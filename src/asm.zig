@@ -71,9 +71,17 @@ pub const @"lsr x0, x1, x0" = 0x9ac02420; // LSRV x0, x1, x0 (Rd=0, Rn=1, Rm=0)
 
 pub const @"add x0, x0, #1" = 0x91000400;
 pub const @"sub x0, x0, #1" = 0xd1000400;
+pub const @"add x0, x0, #4" = 0x91001000;
+pub const @"sub x0, x0, #4" = 0xd1001000;
 
 pub const @"sub x0, x22, x21" = 0xcb1502c0;
 pub const @"asr x0, x0, #3" = 0x9343fc00;
+pub const @"asr x0, x0, #2" = 0x9342fc00; // SBFM x0, x0, #2, #63
+pub const @"asr x1, x1, #2" = 0x9342fc21; // SBFM x1, x1, #2, #63
+pub const @"asr x2, x2, #2" = 0x9342fc42; // SBFM x2, x2, #2, #63
+pub const @"asr x16, x16, #2" = 0x9342fe10; // SBFM x16, x16, #2, #63
+pub const @"lsl x0, x0, #2" = 0xd37ef400; // UBFM x0, x0, #62, #61
+pub const @"mov x0, #4" = 0xd2800080;
 
 pub const @"cbz x0, 0" = 0xb4000000;
 
@@ -174,6 +182,25 @@ pub fn @".push Xn"(n: usize) u32 {
 pub fn @"lsr Xn, Xm, #s"(n: u5, m: u5, s: u6) u32 {
     return 0x9ac12800 | @as(u32, @intCast(n)) | @as(u32, @intCast(m)) << 5 | @as(u32, @intCast(s)) << 10;
 }
+
+/// LSL Xn, Xn, #2 — tag an integer (UBFM Xn, Xn, #62, #61)
+pub fn @"lsl Xn, Xn, #2"(n: u5) u32 {
+    const nn: u32 = n;
+    return 0xd37ef400 | nn | (nn << 5);
+}
+
+/// ASR Xn, Xn, #2 — untag an integer (SBFM Xn, Xn, #2, #63)
+pub fn @"asr Xn, Xn, #2"(n: u5) u32 {
+    const nn: u32 = n;
+    return 0x9342fc00 | nn | (nn << 5);
+}
+
+/// LSR x9, x9, #2 — shift right 2 (UBFM x9, x9, #2, #63)
+pub const @"lsr x9, x9, #2" = 0xd342fd29;
+/// LSL x9, x9, #2 — shift left 2 (UBFM x9, x9, #62, #61)
+pub const @"lsl x9, x9, #2" = 0xd37ef529;
+/// ADD x9, x9, #2 — add 2 to x9 (used to set TAG_FLT after clearing lower bits)
+pub const @"add x9, x9, #2" = 0x91000929;
 
 // SP-relative helpers for locals frames
 // Reserve a stack frame: sub sp, sp, #imm (imm must be a multiple of 16, imm <= 4095)

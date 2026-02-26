@@ -79,21 +79,21 @@ pub const Fy = struct {
     const MACRO_STACK_PAGES = 2; // 8KB usable = 1024 values (for compile-time macros)
     const TRAMP_STACK_PAGES = 1; // 4KB usable = 512 values
 
-    // Tagged value encoding:
-    // - Integers: stored as raw i64 (even values have TAG_INT=0 in LSB)
-    // - Heap refs: ((id + HEAP_BASE) << 1) | TAG_STR, always odd and >= 2^41
-    // Odd integers below 2^41 are safely distinguished from heap refs by the
-    // HEAP_BASE threshold check in isStr(). Collision is impossible for any
-    // integer below 2^40 (~1 trillion), which covers all practical use cases.
-    const TAG_INT = 0;
-    const TAG_STR = 1;
-    const TAG_MASK = 1;
-    const TAG_BITS = 1;
+    // Tagged value encoding (2-bit tags):
+    // - Integers: (n << 2) | TAG_INT, range ±2^61
+    // - Heap refs: ((id + HEAP_BASE) << 2) | TAG_STR
+    // - Floats: (f64_bits & ~3) | TAG_FLT, inline (loses 2 LSB mantissa bits)
+    const TAG_INT = 0b00;
+    const TAG_STR = 0b01;
+    const TAG_FLT = 0b10;
+    // 0b11 reserved
+    const TAG_MASK = 0b11;
+    const TAG_BITS = 2;
     const HEAP_BASE: u64 = 1 << 40;
     pub const Value = i64;
 
     pub fn makeInt(n: i64) Value {
-        return n;
+        return n << TAG_BITS;
     }
 
     fn makeStr(id: usize) Value {
@@ -103,19 +103,23 @@ pub const Fy = struct {
     }
 
     pub fn isInt(v: Value) bool {
-        return !isStr(v);
+        return (@as(u64, @bitCast(v)) & TAG_MASK) == TAG_INT;
     }
 
     pub fn isStr(v: Value) bool {
-        if (v < 0) return false; // Negative values are always integers
-        if ((v & TAG_MASK) != TAG_STR) return false;
+        if (v < 0) return false;
+        if ((@as(u64, @bitCast(v)) & TAG_MASK) != TAG_STR) return false;
         const raw: u64 = @bitCast(v);
         return (raw >> TAG_BITS) >= HEAP_BASE;
     }
 
+    pub fn isFloat(v: Value) bool {
+        return (@as(u64, @bitCast(v)) & TAG_MASK) == TAG_FLT;
+    }
+
     pub fn getInt(v: Value) i64 {
         std.debug.assert(isInt(v));
-        return v;
+        return v >> TAG_BITS;
     }
 
     pub fn getStrId(v: Value) usize {
@@ -126,11 +130,16 @@ pub const Fy = struct {
     }
 
     fn makeFloat(f: f64) Value {
-        return @bitCast(f);
+        const bits: u64 = @bitCast(f);
+        const tagged: u64 = (bits & ~@as(u64, TAG_MASK)) | TAG_FLT;
+        return @as(Value, @bitCast(tagged));
     }
 
     fn getFloat(v: Value) f64 {
-        return @bitCast(v);
+        std.debug.assert(isFloat(v));
+        const bits: u64 = @bitCast(v);
+        const clean: u64 = bits & ~@as(u64, TAG_MASK);
+        return @bitCast(clean);
     }
 
     pub fn init(allocator: std.mem.Allocator) Fy {
@@ -683,7 +692,7 @@ pub const Fy = struct {
             op,
             Asm.@"mov x0, #0",
             Asm.@"b 2",
-            Asm.@"mov x0, #1",
+            Asm.@"mov x0, #4", // makeInt(1) = 1 << 2 = 4
             Asm.@".push x0",
         }, 2, 1);
     }
@@ -800,7 +809,9 @@ pub const Fy = struct {
                 .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch runtimeError("out of memory"),
             };
             // Append x
-            if (isInt(x)) {
+            if (isFloat(x)) {
+                items.append(Heap.Item{ .Float = getFloat(x) }) catch runtimeError("out of memory");
+            } else if (isInt(x)) {
                 items.append(Heap.Item{ .Number = getInt(x) }) catch runtimeError("out of memory");
             } else {
                 if (fy.heap.typeOf(x)) |t| switch (t) {
@@ -858,7 +869,9 @@ pub const Fy = struct {
             var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
             items.ensureTotalCapacity(qq.items.items.len + 1) catch runtimeError("out of memory");
             // Prepend val
-            if (isInt(val)) {
+            if (isFloat(val)) {
+                items.append(Heap.Item{ .Float = getFloat(val) }) catch runtimeError("out of memory");
+            } else if (isInt(val)) {
                 items.append(Heap.Item{ .Number = getInt(val) }) catch runtimeError("out of memory");
             } else {
                 if (fy.heap.typeOf(val)) |t| switch (t) {
@@ -902,14 +915,21 @@ pub const Fy = struct {
                 } else {}
                 return;
             }
-            // Everything that isn't a heap ref is an integer
-            outPrint("{d}\n", .{a});
+            if (isFloat(a)) {
+                floatPrint(a);
+                return;
+            }
+            outPrint("{d}\n", .{getInt(a)});
         }
 
         fn printHex(a: Value) void {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (isInt(a)) {
-                outPrint("0x{x}\n", .{@as(u64, @bitCast(a))});
+                outPrint("0x{x}\n", .{@as(u64, @bitCast(getInt(a)))});
+                return;
+            }
+            if (isFloat(a)) {
+                outPrint("0x{x}\n", .{@as(u64, @bitCast(getFloat(a)))});
                 return;
             }
             if (isStr(a)) {
@@ -956,8 +976,9 @@ pub const Fy = struct {
                     },
                 } else {}
             }
-            const i: i64 = a;
-            outPrint("{c}", .{@as(u8, @intCast(i))});
+            if (isInt(a)) {
+                outPrint("{c}", .{@as(u8, @intCast(getInt(a)))});
+            }
         }
 
         fn spy(a: Value) Value {
@@ -966,21 +987,30 @@ pub const Fy = struct {
         }
 
         fn spyStack(base: Value, end: Value) void {
-            const p: [*]Value = @ptrFromInt(@as(usize, @intCast(getInt(base))));
-            const l: usize = @intCast(getInt(end - base));
+            // base/end are raw stack pointer addresses (x21/x22), NOT tagged values
+            const p: [*]Value = @ptrFromInt(@as(usize, @bitCast(base)));
+            const l: usize = @as(usize, @bitCast(end)) - @as(usize, @bitCast(base));
             const len: usize = l / @sizeOf(Value);
             const s: []Value = p[0..len];
             outPrint("--| ", .{});
             for (2..len + 1) |v| {
-                outPrint("{} ", .{s[len - v]});
+                const val = s[len - v];
+                if (isFloat(val)) {
+                    outPrint("{d} ", .{getFloat(val)});
+                } else if (isStr(val)) {
+                    outPrint("<heap:{}> ", .{getStrId(val)});
+                } else {
+                    outPrint("{} ", .{getInt(val)});
+                }
             }
             outPrint("\n", .{});
         }
 
         fn collectGarbage(stack_ptr_raw: Value, stack_base_raw: Value) void {
             const fy_inst = @as(*Fy, @ptrFromInt(fyPtr));
-            const stack_ptr: usize = @as(usize, @intCast(getInt(stack_ptr_raw)));
-            const stack_base: usize = @as(usize, @intCast(getInt(stack_base_raw)));
+            // These are raw stack addresses (x21/x22), NOT tagged values
+            const stack_ptr: usize = @as(usize, @bitCast(stack_ptr_raw));
+            const stack_base: usize = @as(usize, @bitCast(stack_base_raw));
             fy_inst.heap.gc(stack_ptr, stack_base);
         }
 
@@ -988,7 +1018,7 @@ pub const Fy = struct {
             if (pred == 0) return;
             const callable = resolveCallable(f);
             if (isInt(callable)) {
-                const ptr: usize = @intCast(callable);
+                const ptr: usize = @intCast(getInt(callable));
                 if (ptr == 0) return;
                 const fun: *const fn () Value = @ptrFromInt(ptr);
                 _ = fun();
@@ -1168,7 +1198,7 @@ pub const Fy = struct {
 
         // alloc: ( size -- ptr ) allocate zeroed memory via libc malloc
         fn allocMem(size_v: Value) Value {
-            const n: usize = @intCast(@as(u64, @bitCast(size_v)));
+            const n: usize = @intCast(@as(u64, @bitCast(getInt(size_v))));
             const mem = c_std.malloc(n);
             if (mem == null) runtimeError("alloc: malloc failed");
             const p: [*]u8 = @ptrCast(mem);
@@ -1178,7 +1208,7 @@ pub const Fy = struct {
 
         // free: ( ptr -- 0 ) free memory allocated by alloc
         fn freeMem(ptr_v: Value) Value {
-            const up: usize = @intCast(@as(u64, @bitCast(ptr_v)));
+            const up: usize = @intCast(@as(u64, @bitCast(getInt(ptr_v))));
             c_std.free(@ptrFromInt(up));
             return makeInt(0);
         }
@@ -1338,7 +1368,7 @@ pub const Fy = struct {
             if (!isStr(s)) runtimeError("snth expects string");
             const str = fy.heap.getString(s);
             if (n < 0) return makeInt(-1);
-            const idx: usize = @intCast(@as(u64, @bitCast(n)));
+            const idx: usize = @intCast(getInt(n));
             if (idx >= str.len) return makeInt(-1);
             return makeInt(@as(i64, str[idx]));
         }
@@ -1349,8 +1379,8 @@ pub const Fy = struct {
             if (!isStr(s)) runtimeError("ssub expects string");
             const str = fy.heap.getString(s);
             if (start_v < 0) return fy.heap.storeString("") catch runtimeError("ssub: store failed");
-            const start: usize = @intCast(@as(u64, @bitCast(start_v)));
-            const len: usize = if (len_v < 0) 0 else @intCast(@as(u64, @bitCast(len_v)));
+            const start: usize = @intCast(getInt(start_v));
+            const len: usize = if (len_v < 0) 0 else @intCast(getInt(len_v));
             if (start >= str.len) return fy.heap.storeString("") catch runtimeError("ssub: store failed");
             const end = @min(start + len, str.len);
             return fy.heap.storeString(str[start..end]) catch runtimeError("ssub: store failed");
@@ -1504,7 +1534,7 @@ pub const Fy = struct {
         fn intToStr(n: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             var buf: [32]u8 = undefined;
-            const s = std.fmt.bufPrint(&buf, "{d}", .{n}) catch runtimeError("i>s: format failed");
+            const s = std.fmt.bufPrint(&buf, "{d}", .{getInt(n)}) catch runtimeError("i>s: format failed");
             return fy.heap.storeString(s) catch runtimeError("i>s: store failed");
         }
 
@@ -1521,7 +1551,16 @@ pub const Fy = struct {
                     .Quote => {},
                 } else {}
             }
-            outPrint("{d}", .{a});
+            if (isFloat(a)) {
+                const f = getFloat(a);
+                if (f == @trunc(f) and !std.math.isNan(f) and !std.math.isInf(f)) {
+                    outPrint("{d}.0", .{@as(i64, @intFromFloat(f))});
+                } else {
+                    outPrint("{d}", .{f});
+                }
+            } else {
+                outPrint("{d}", .{getInt(a)});
+            }
         }
 
         // List directory entries (path -- quote)
@@ -1558,10 +1597,11 @@ pub const Fy = struct {
         }
 
         fn isInteger(a: Value) Value {
-            const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(a)) return makeInt(1);
-            const t = fy.heap.typeOf(a);
-            return makeInt(@as(i64, @intFromBool(t == null)));
+            return makeInt(@as(i64, @intFromBool(isInt(a))));
+        }
+
+        fn isFloatVal(a: Value) Value {
+            return makeInt(@as(i64, @intFromBool(isFloat(a))));
         }
 
         fn isQuote(a: Value) Value {
@@ -1664,7 +1704,7 @@ pub const Fy = struct {
         // Memory operations
         fn memStore32(addr: Value, val: Value) void {
             const ptr: *align(1) u32 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
-            ptr.* = @truncate(@as(u64, @bitCast(val)));
+            ptr.* = @truncate(@as(u64, @bitCast(getInt(val))));
         }
         fn memStoreF32(addr: Value, val: Value) void {
             const ptr: *align(1) f32 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
@@ -1680,7 +1720,7 @@ pub const Fy = struct {
         }
         fn memStore16(addr: Value, val: Value) void {
             const ptr: *align(1) u16 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
-            ptr.* = @truncate(@as(u64, @bitCast(val)));
+            ptr.* = @truncate(@as(u64, @bitCast(getInt(val))));
         }
         fn memLoad16(addr: Value) Value {
             const ptr: *align(1) i16 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
@@ -1851,9 +1891,10 @@ pub const Fy = struct {
                         },
                         .Quote => items.append(Heap.Item{ .Quote = mapped }) catch runtimeError("out of memory"),
                     } else runtimeError("map: invalid heap value");
+                } else if (isFloat(mapped)) {
+                    items.append(Heap.Item{ .Float = getFloat(mapped) }) catch runtimeError("out of memory");
                 } else {
-                    const n: i64 = mapped; // treat any non-heap value as integer payload
-                    items.append(Heap.Item{ .Number = n }) catch runtimeError("out of memory");
+                    items.append(Heap.Item{ .Number = getInt(mapped) }) catch runtimeError("out of memory");
                 }
             }
             return fy.heap.storeQuote(items) catch runtimeError("heap store failed");
@@ -1974,20 +2015,20 @@ pub const Fy = struct {
         .{ "-", binOp(Asm.@"sub x0, x1, x0", true) },
         // a b -- a-b
         .{ "!-", binOp(Asm.@"sub x0, x1, x0", false) },
-        // a b -- a*b
-        .{ "*", binOp(Asm.@"mul x0, x0, x1", false) },
+        // a b -- a*b (untag one operand so (a<<2)*b = (a*b)<<2)
+        .{ "*", inlineWord(&[_]u32{ Asm.@".pop x0, x1", Asm.@"asr x1, x1, #2", Asm.@"mul x0, x0, x1", Asm.@".push x0" }, 2, 1) },
         // a b -- a&b
         .{ "&", binOp(Asm.@"and x0, x0, x1", false) },
         // a b -- a|b
         .{ "or", binOp(Asm.@"orr x0, x0, x1", false) },
         // a b -- a^b
         .{ "xor", binOp(Asm.@"eor x0, x0, x1", false) },
-        // a b -- a<<b
-        .{ "<<", binOp(Asm.@"lsl x0, x1, x0", false) },
-        // a b -- a>>b
-        .{ ">>", binOp(Asm.@"lsr x0, x1, x0", false) },
-        // a b -- a/b
-        .{ "/", binOp(Asm.@"sdiv x0, x1, x0", true) },
+        // a b -- a<<b (untag shift count; (a<<2)<<b = (a<<b)<<2)
+        .{ "<<", inlineWord(&[_]u32{ Asm.@".pop x0, x1", Asm.@"asr x0, x0, #2", Asm.@"lsl x0, x1, x0", Asm.@".push x0" }, 2, 1) },
+        // a b -- a>>b (untag both, shift, retag)
+        .{ ">>", inlineWord(&[_]u32{ Asm.@".pop x0, x1", Asm.@"asr x0, x0, #2", Asm.@"asr x1, x1, #2", Asm.@"lsr x0, x1, x0", Asm.@"lsl x0, x0, #2", Asm.@".push x0" }, 2, 1) },
+        // a b -- a/b (sdiv gives untagged result, retag with lsl)
+        .{ "/", inlineWord(&[_]u32{ Asm.@".pop x1, x0", Asm.@"sdiv x0, x1, x0", Asm.@"lsl x0, x0, #2", Asm.@".push x0" }, 2, 1) },
         .{ "=", cmpOp(Asm.@"beq #2") },
         .{ "!=", cmpOp(Asm.@"bne #2") },
         .{ ">", cmpOp(Asm.@"blt #2") },
@@ -2019,7 +2060,7 @@ pub const Fy = struct {
         // a b -- b a b
         .{ "tuck", inlineWord(&[_]u32{ Asm.@".pop x0, x1", Asm.@".push x0, x1", Asm.@".push x0" }, 2, 3) },
         // xu ... x1 x0 u -- xu ... x1 x0 xu
-        .{ "pick", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@"ldr x0, [x21, x0, lsl #3]", Asm.@".push x0" }, 1, 1) },
+        .{ "pick", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@"asr x0, x0, #2", Asm.@"ldr x0, [x21, x0, lsl #3]", Asm.@".push x0" }, 1, 1) },
         // a b c -- b c a
         .{
             "rot", inlineWord(&[_]u32{
@@ -2043,7 +2084,7 @@ pub const Fy = struct {
             }, 3, 3),
         },
         // -- a
-        .{ "depth", inlineWord(&[_]u32{ Asm.@"sub x0, x22, x21", Asm.@"asr x0, x0, #3", Asm.@"sub x0, x0, #1", Asm.@".push x0" }, 0, 1) },
+        .{ "depth", inlineWord(&[_]u32{ Asm.@"sub x0, x22, x21", Asm.@"asr x0, x0, #3", Asm.@"sub x0, x0, #1", Asm.@"lsl x0, x0, #2", Asm.@".push x0" }, 0, 1) },
         // Retain stack (return stack) operations
         // x -- (to retain)
         .{ ">r", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@".rpush x0" }, 1, 0) },
@@ -2057,7 +2098,8 @@ pub const Fy = struct {
                 .code = &[_]u32{
                     Asm.@".pop x0, x1", // x0=function, x1=value
                     Asm.@".rpush x1", // save value before calling resolver (which may clobber x1)
-                    Asm.CALLSLOT, // resolve function/quote in x0
+                    Asm.CALLSLOT, // resolve function/quote in x0 (returns tagged ptr)
+                    Asm.@"asr x0, x0, #2", // untag the code pointer
                     Asm.@"blr Xn"(0), // call resolved pointer
                     Asm.@".rpop x1", // restore saved value
                     Asm.@".push x1",
@@ -2091,21 +2133,21 @@ pub const Fy = struct {
             .p = 0,
             .callSlot0 = &Builtins.collectGarbage,
         } },
-        // a -- a + 1
-        .{ "1+", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@"add x0, x0, #1", Asm.@".push x0" }, 1, 1) },
-        // a -- a - 1
-        .{ "1-", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@"sub x0, x0, #1", Asm.@".push x0" }, 1, 1) },
+        // a -- a + 1 (tagged: add 4 = 1<<TAG_BITS)
+        .{ "1+", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@"add x0, x0, #4", Asm.@".push x0" }, 1, 1) },
+        // a -- a - 1 (tagged: sub 4 = 1<<TAG_BITS)
+        .{ "1-", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@"sub x0, x0, #4", Asm.@".push x0" }, 1, 1) },
         // f -- !f (boolean not)
         .{ "not", inlineWord(&[_]u32{
             Asm.@".pop x0",
             Asm.@"cbz Xn, offset"(0, 3),
             Asm.@"mov x0, #0",
             Asm.@"b offset"(2),
-            Asm.@"mov x0, #1",
+            Asm.@"mov x0, #4", // makeInt(1) = 4
             Asm.@".push x0",
         }, 1, 1) },
         // ... f -- f(...)
-        .{ "do", .{ .code = &[_]u32{ Asm.@".pop x0", Asm.CALLSLOT, Asm.@"blr Xn"(0) }, .c = 0, .p = 0, .callSlot0 = &Builtins.resolveCallable } },
+        .{ "do", .{ .code = &[_]u32{ Asm.@".pop x0", Asm.CALLSLOT, Asm.@"asr x0, x0, #2", Asm.@"blr Xn"(0) }, .c = 0, .p = 0, .callSlot0 = &Builtins.resolveCallable } },
         // ... ft -- ft(...) | ...
         .{ "do?", fnToWord(Builtins.doIf) },
         // ... c ft ff -- ft(...) | ff(...)
@@ -2115,12 +2157,14 @@ pub const Fy = struct {
             Asm.@"cmp x2, #0",
             Asm.@"csel x0, x0, x1, ne",
             Asm.CALLSLOT,
+            Asm.@"asr x0, x0, #2", // untag code pointer
             Asm.@"blr Xn"(0),
         }, .c = 0, .p = 1, .callSlot0 = &Builtins.resolveCallable } },
         // flag [body] -- ... run body if flag is truthy
         .{ "then", .{ .code = &[_]u32{
             Asm.@".pop x0", // pop body quote
-            Asm.CALLSLOT, // resolve to code pointer
+            Asm.CALLSLOT, // resolve to code pointer (tagged)
+            Asm.@"asr x0, x0, #2", // untag code pointer
             Asm.@".pop x1", // pop condition
             Asm.@"cbz Xn, offset"(1, 2), // if 0, skip blr
             Asm.@"blr Xn"(0), // call body
@@ -2128,7 +2172,8 @@ pub const Fy = struct {
         // flag [body] -- ... run body if flag is falsy
         .{ "unless", .{ .code = &[_]u32{
             Asm.@".pop x0", // pop body quote
-            Asm.CALLSLOT, // resolve to code pointer
+            Asm.CALLSLOT, // resolve to code pointer (tagged)
+            Asm.@"asr x0, x0, #2", // untag code pointer
             Asm.@".pop x1", // pop condition
             Asm.@"cbnz Xn, offset"(1, 2), // if non-zero, skip blr
             Asm.@"blr Xn"(0), // call body
@@ -2140,7 +2185,8 @@ pub const Fy = struct {
             "dotimes", .{
                 .code = &[_]u32{
                     Asm.@".pop x0", // function (or quote)
-                    Asm.CALLSLOT, // resolve to pointer in x0
+                    Asm.CALLSLOT, // resolve to pointer in x0 (tagged)
+                    Asm.@"asr x0, x0, #2", // untag code pointer
                     Asm.@"mov x1, x0", // keep pointer in x1
                     Asm.@".pop x0", // counter in x0
                     Asm.@"cbz Xn, offset"(0, 9), // if zero, jump to end
@@ -2150,8 +2196,8 @@ pub const Fy = struct {
                     Asm.@"blr Xn"(1), // call func in x1
                     Asm.@".rpop x1", // restore func ptr
                     Asm.@".rpop x0", // restore counter
-                    // Decrement counter and loop
-                    Asm.@"sub x0, x0, #1",
+                    // Decrement counter and loop (tagged: sub 4 = 1<<TAG_BITS)
+                    Asm.@"sub x0, x0, #4",
                     Asm.@"cbz Xn, offset"(0, 2), // if zero, skip branch
                     Asm.@"b offset"(-8), // back to loop start
                 },
@@ -2166,7 +2212,8 @@ pub const Fy = struct {
             "repeat", .{
                 .code = &[_]u32{
                     Asm.@".pop x0", // pop quote
-                    Asm.CALLSLOT, // resolve to pointer
+                    Asm.CALLSLOT, // resolve to pointer (tagged)
+                    Asm.@"asr x0, x0, #2", // untag code pointer
                     Asm.@".rpush x0", // save pointer on return stack
                     // loop start: peek predicate (pop+push to preserve)
                     Asm.@".pop x1",
@@ -2229,6 +2276,7 @@ pub const Fy = struct {
         .{ "slen", fnToWord(Builtins.strLen) }, // String length
         .{ "string?", fnToWord(Builtins.isString) }, // Check if value is string
         .{ "int?", fnToWord(Builtins.isInteger) }, // Check if value is integer
+        .{ "float?", fnToWord(Builtins.isFloatVal) }, // Check if value is float
         .{ "quote?", fnToWord(Builtins.isQuote) }, // Check if value is quote
         .{ "word?", fnToWord(Builtins.isWordValue) }, // Check if value is word-wrapper quote
         .{ "word->str", fnToWord(Builtins.wordToStr) }, // Extract word name as string
@@ -2266,16 +2314,21 @@ pub const Fy = struct {
         // FFI: generic calls with 0..3 args; expects stack: fptr [a [b [c]]]
         .{
             "ccall0", inlineWord(&[_]u32{
-                Asm.@".pop Xn"(16), // fptr -> x16
+                Asm.@".pop Xn"(16), // fptr -> x16 (tagged)
+                Asm.@"asr x16, x16, #2", // untag fptr
                 Asm.@"blr Xn"(16), // call
-                Asm.@".push x0", // return value
+                Asm.@"lsl x0, x0, #2", // retag return value
+                Asm.@".push x0",
             }, 1, 1),
         },
         .{
             "ccall1", inlineWord(&[_]u32{
-                Asm.@".pop x0", // a
-                Asm.@".pop Xn"(16), // fptr
+                Asm.@".pop x0", // a (tagged)
+                Asm.@".pop Xn"(16), // fptr (tagged)
+                Asm.@"asr x16, x16, #2", // untag fptr
+                Asm.@"asr x0, x0, #2", // untag arg
                 Asm.@"blr Xn"(16),
+                Asm.@"lsl x0, x0, #2", // retag return
                 Asm.@".push x0",
             }, 2, 1),
         },
@@ -2283,9 +2336,13 @@ pub const Fy = struct {
         .{ "ccall1pac", fnToWord(Builtins.ccall1pac) },
         .{
             "ccall2", inlineWord(&[_]u32{
-                Asm.@".pop x1, x0", // x0=a (NOS), x1=b (TOS)
-                Asm.@".pop Xn"(16), // fptr
+                Asm.@".pop x1, x0", // x0=a (NOS), x1=b (TOS) — both tagged
+                Asm.@".pop Xn"(16), // fptr (tagged)
+                Asm.@"asr x16, x16, #2", // untag fptr
+                Asm.@"asr x0, x0, #2", // untag a
+                Asm.@"asr x1, x1, #2", // untag b
                 Asm.@"blr Xn"(16),
+                Asm.@"lsl x0, x0, #2", // retag return
                 Asm.@".push x0",
             }, 3, 1),
         },
@@ -2299,7 +2356,12 @@ pub const Fy = struct {
                 Asm.@".pop Xn"(2), // x2 = c
                 Asm.@".pop x1, x0", // x1=b, x0=a
                 Asm.@".pop Xn"(16), // fptr
+                Asm.@"asr x16, x16, #2", // untag fptr
+                Asm.@"asr x0, x0, #2", // untag a
+                Asm.@"asr x1, x1, #2", // untag b
+                Asm.@"asr x2, x2, #2", // untag c
                 Asm.@"blr Xn"(16),
+                Asm.@"lsl x0, x0, #2", // retag return
                 Asm.@".push x0",
             }, 4, 1),
         },
@@ -3254,19 +3316,29 @@ pub const Fy = struct {
             for (args_part) |arg_type| {
                 switch (arg_type) {
                     'i', 'p', '4' => {
+                        // Tag C integer as fy integer before pushing to fy stack
+                        tramp.append(Asm.@"lsl Xn, Xn, #2"(int_reg)) catch return Error.OutOfMemory;
                         tramp.append(Asm.@".push Xn"(int_reg)) catch return Error.OutOfMemory;
                         int_reg += 1;
                     },
                     'f' => {
-                        // C float in sN → widen to f64 → bitcast to i64 → push
+                        // C float in sN → widen to f64 → bitcast to i64 → tag as float → push
                         tramp.append(Asm.@"fcvt Dd, Sn"(float_reg, float_reg)) catch return Error.OutOfMemory;
                         tramp.append(Asm.@"fmov Xd, Dn"(9, float_reg)) catch return Error.OutOfMemory;
+                        // makeFloat: clear lower 2 bits, set TAG_FLT=2
+                        tramp.append(Asm.@"lsr x9, x9, #2") catch return Error.OutOfMemory;
+                        tramp.append(Asm.@"lsl x9, x9, #2") catch return Error.OutOfMemory;
+                        tramp.append(Asm.@"add x9, x9, #2") catch return Error.OutOfMemory;
                         tramp.append(Asm.@".push Xn"(9)) catch return Error.OutOfMemory;
                         float_reg += 1;
                     },
                     'd' => {
-                        // C double in dN → bitcast to i64 → push
+                        // C double in dN → bitcast to i64 → tag as float → push
                         tramp.append(Asm.@"fmov Xd, Dn"(9, float_reg)) catch return Error.OutOfMemory;
+                        // makeFloat: clear lower 2 bits, set TAG_FLT=2
+                        tramp.append(Asm.@"lsr x9, x9, #2") catch return Error.OutOfMemory;
+                        tramp.append(Asm.@"lsl x9, x9, #2") catch return Error.OutOfMemory;
+                        tramp.append(Asm.@"add x9, x9, #2") catch return Error.OutOfMemory;
                         tramp.append(Asm.@".push Xn"(9)) catch return Error.OutOfMemory;
                         float_reg += 1;
                     },
@@ -3284,13 +3356,21 @@ pub const Fy = struct {
             const is_void = ret_part.len == 0 or ret_part[0] == 'v';
             if (!is_void) {
                 if (ret_part[0] == 'i' or ret_part[0] == 'p') {
+                    // Pop tagged fy integer, untag to C integer
                     tramp.append(Asm.@".pop x0") catch return Error.OutOfMemory;
+                    tramp.append(Asm.@"asr x0, x0, #2") catch return Error.OutOfMemory;
                 } else if (ret_part[0] == 'f') {
+                    // Pop tagged fy float, untag (clear lower 2 bits), convert to C float
                     tramp.append(Asm.@".pop Xn"(9)) catch return Error.OutOfMemory;
+                    tramp.append(Asm.@"lsr x9, x9, #2") catch return Error.OutOfMemory;
+                    tramp.append(Asm.@"lsl x9, x9, #2") catch return Error.OutOfMemory;
                     tramp.append(Asm.@"fmov Dd, Xn"(0, 9)) catch return Error.OutOfMemory;
                     tramp.append(Asm.@"fcvt Sd, Dn"(0, 0)) catch return Error.OutOfMemory;
                 } else if (ret_part[0] == 'd') {
+                    // Pop tagged fy float, untag (clear lower 2 bits), return as C double
                     tramp.append(Asm.@".pop Xn"(9)) catch return Error.OutOfMemory;
+                    tramp.append(Asm.@"lsr x9, x9, #2") catch return Error.OutOfMemory;
+                    tramp.append(Asm.@"lsl x9, x9, #2") catch return Error.OutOfMemory;
                     tramp.append(Asm.@"fmov Dd, Xn"(0, 9)) catch return Error.OutOfMemory;
                 }
             }
@@ -3307,8 +3387,8 @@ pub const Fy = struct {
             const tramp_fptr: u64 = @intCast(@intFromPtr(tramp_entry.ptr));
             self.fy.fyalloc.free(tramp_code);
 
-            // Emit inline code: push trampoline address as constant
-            try self.emitNumber(tramp_fptr, 0);
+            // Emit inline code: push trampoline address as tagged integer
+            try self.emitNumber(tramp_fptr << 2, 0); // tag as integer (TAG_INT=0, shift left 2)
             try self.emitPush();
         }
 
@@ -4415,7 +4495,13 @@ pub const Fy = struct {
         for (q.items.items) |item| switch (item) {
             .Word => |w| {
                 if (std.mem.eql(u8, w, name)) {
-                    try new_items.append(Heap.Item{ .Number = val });
+                    if (isFloat(val)) {
+                        try new_items.append(Heap.Item{ .Float = getFloat(val) });
+                    } else if (isStr(val)) {
+                        try new_items.append(Heap.Item{ .Quote = val });
+                    } else {
+                        try new_items.append(Heap.Item{ .Number = getInt(val) });
+                    }
                     changed = true;
                 } else {
                     const dw = try self.fyalloc.dupe(u8, w);
