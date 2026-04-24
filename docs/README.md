@@ -2,15 +2,15 @@
 
 **Slab Audio Workstation (SAW)** — livecodable DAW with a Zig frame
 and fy-scripted machines. These design documents describe what we're
-building before we build it.
+building and what the current prototype has proven.
 
 **Current status:** see
-[10-roadmap.md § Current status](10-roadmap.md#current-status-2026-04-23)
-and [sessions/session-01.md](sessions/session-01.md).
+[10-roadmap.md § Current status](10-roadmap.md#current-status-2026-04-24),
+[sessions/session-01.md](sessions/session-01.md), and
+[sessions/session-02.md](sessions/session-02.md).
 
-These docs describe what we're building before we build it. Read in
-order the first time; skim thereafter. Each doc is self-contained but
-assumes the vocabulary established in earlier ones.
+Read in order the first time; skim thereafter. Each doc is
+self-contained but assumes the vocabulary established in earlier ones.
 
 1. [00-vision.md](00-vision.md) — what this product is and why it
    could be good
@@ -36,6 +36,8 @@ assumes the vocabulary established in earlier ones.
     stack-effect checks, dev vs ship compile strategies
 11. [10-roadmap.md](10-roadmap.md) — MVP slice, milestones, explicit
     non-goals
+12. [12-ux-interaction-spec.md](12-ux-interaction-spec.md) — frame UI
+    behavior, zoom rules, keybinds, and tooltips
 
 ## Terminology crib sheet
 

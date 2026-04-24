@@ -31,6 +31,8 @@ pub const Clip = struct {
     /// Display name (null-terminated within name_buf[0..name_len]).
     name_buf: [MAX_NAME]u8 = [_]u8{0} ** MAX_NAME,
     name_len: u8 = 0,
+    /// Transient UI flag — not persisted, not consumed by the engine.
+    selected: bool = false,
     notes: std.ArrayList(Note) = .empty,
 
     pub fn init(display_name: []const u8, start_beat: f64, length_beats: f64) Clip {

@@ -44,7 +44,6 @@ fn resizeEdgeW() f32 {
     return theme.fine(4);
 }
 const BOX_MIN_DRAG: f32 = 3;
-const PX_PER_BEAT_MIN: f32 = 8;
 const PX_PER_BEAT_MAX: f32 = 96;
 const ROW_H_MIN: f32 = 6;
 const ROW_H_MAX: f32 = 24;
@@ -70,6 +69,7 @@ var draw_active: bool = false;
 var draw_start_beat: f64 = 0;
 var draw_current_beat: f64 = 0;
 var draw_pitch: u8 = 60;
+var draw_start_x: f32 = 0;
 
 // Box select.
 var box_active: bool = false;
@@ -124,6 +124,7 @@ pub fn deinit(alloc: std.mem.Allocator) void {
 pub const Result = struct {
     minimize: bool = false,
     close: bool = false,
+    consumed_delete: bool = false,
 };
 
 pub fn draw(
@@ -157,9 +158,9 @@ pub fn draw(
     const resolved = clip_opt.?;
 
     maybeResetOnClipChange(selected, resolved.clip);
-    drawPianoRoll(body, resolved.clip, resolved.color, alloc, m);
+    const consumed_delete = drawPianoRoll(body, resolved.clip, resolved.color, alloc, m);
 
-    return .{ .minimize = res.minimize, .close = res.close };
+    return .{ .minimize = res.minimize, .close = res.close, .consumed_delete = consumed_delete };
 }
 
 // ── Resolution + reset on switch ─────────────────────────────────────
@@ -182,6 +183,7 @@ fn maybeResetOnClipChange(selected: ?ClipRef, clip: *Clip) void {
     if (key != last_clip_key) {
         last_clip_key = key;
         clip.deselectAll();
+        initialized_scroll = false;
         // Cancel any in-progress drag state.
         cancelAllDrags();
     }
@@ -226,7 +228,7 @@ fn drawPianoRoll(
     track_color: c.rl.Color,
     alloc: std.mem.Allocator,
     m: widgets.Mouse,
-) void {
+) bool {
     // Overview strip, ruler, keyboard, grid — stacked vertically.
     const overview_rect = widgets.rect(r.x, r.y, r.width, overviewH());
     const ruler_rect = widgets.rect(r.x, r.y + overviewH(), r.width, rulerH());
@@ -237,9 +239,9 @@ fn drawPianoRoll(
     const kbd_rect = widgets.rect(r.x, grid_top, keyboardW(), grid_h);
     const grid_rect = widgets.rect(r.x + keyboardW(), grid_top, r.width - keyboardW(), grid_h);
 
-    initScrollIfNeeded(grid_rect);
-    handleWheel(grid_rect, m);
-    clampScroll(grid_rect);
+    initScrollIfNeeded(grid_rect, clip.*);
+    handleWheel(grid_rect, clip.*, m);
+    clampScroll(grid_rect, clip.*);
 
     drawRuler(ruler_rect, grid_rect, clip.*);
     drawKeyboard(kbd_rect);
@@ -282,15 +284,40 @@ fn drawPianoRoll(
     drawOverview(overview_rect, grid_rect, clip.*, track_color, m);
 
     if (c.rl.IsKeyPressed(c.rl.KEY_DELETE) or c.rl.IsKeyPressed(c.rl.KEY_BACKSPACE)) {
-        clip.removeSelected();
+        if (clip.selectedCount() > 0) {
+            clip.removeSelected();
+            return true;
+        }
     }
 
     handleInput(grid_rect, clip, alloc, m);
+    return false;
 }
 
-fn initScrollIfNeeded(grid: c.rl.Rectangle) void {
+fn initScrollIfNeeded(grid: c.rl.Rectangle, clip: Clip) void {
     if (initialized_scroll) return;
     const rows = @as(f32, @floatFromInt(@as(u32, KEY_HI) - @as(u32, KEY_LO) + 1));
+    px_per_beat = minPxPerBeat(grid, clip);
+
+    var lo_pitch: u8 = 60;
+    var hi_pitch: u8 = 60;
+    if (clip.notes.items.len > 0) {
+        lo_pitch = clip.notes.items[0].pitch;
+        hi_pitch = clip.notes.items[0].pitch;
+        for (clip.notes.items) |note| {
+            if (note.pitch < lo_pitch) lo_pitch = note.pitch;
+            if (note.pitch > hi_pitch) hi_pitch = note.pitch;
+        }
+        const span = @as(f32, @floatFromInt(@as(u32, hi_pitch) - @as(u32, lo_pitch) + 5));
+        row_h = std.math.clamp(grid.height / span, ROW_H_MIN, ROW_H_MAX);
+        const center_pitch = (@as(f32, @floatFromInt(lo_pitch)) + @as(f32, @floatFromInt(hi_pitch))) / 2.0;
+        const center_row = @as(f32, @floatFromInt(KEY_HI)) - center_pitch;
+        scroll_y = center_row * row_h - grid.height / 2.0;
+        initialized_scroll = true;
+        clampScroll(grid, clip);
+        return;
+    }
+
     const total = rows * row_h;
     if (grid.height < total) {
         // Start centered around the middle of the pitch range (≈ C4).
@@ -301,16 +328,30 @@ fn initScrollIfNeeded(grid: c.rl.Rectangle) void {
     initialized_scroll = true;
 }
 
-fn clampScroll(grid: c.rl.Rectangle) void {
+fn minPxPerBeat(grid: c.rl.Rectangle, clip: Clip) f32 {
+    return @max(1.0, grid.width / @max(@as(f32, @floatCast(clip.length_beats)), 1.0));
+}
+
+fn clampPxPerBeat(v: f32, grid: c.rl.Rectangle, clip: Clip) f32 {
+    const min_px = minPxPerBeat(grid, clip);
+    const max_px = @max(min_px, PX_PER_BEAT_MAX);
+    return std.math.clamp(v, min_px, max_px);
+}
+
+fn clampScroll(grid: c.rl.Rectangle, clip: Clip) void {
     const rows = @as(f32, @floatFromInt(@as(u32, KEY_HI) - @as(u32, KEY_LO) + 1));
     const total_h = rows * row_h;
     const max_sy = @max(0, total_h - grid.height);
     if (scroll_y < 0) scroll_y = 0;
     if (scroll_y > max_sy) scroll_y = max_sy;
+    px_per_beat = clampPxPerBeat(px_per_beat, grid, clip);
     if (scroll_x < 0) scroll_x = 0;
+    const content_w = @as(f32, @floatCast(clip.length_beats)) * px_per_beat;
+    const max_sx = @max(0, content_w - grid.width);
+    if (scroll_x > max_sx) scroll_x = max_sx;
 }
 
-fn handleWheel(grid: c.rl.Rectangle, m: widgets.Mouse) void {
+fn handleWheel(grid: c.rl.Rectangle, clip: Clip, m: widgets.Mouse) void {
     if (!widgets.contains(grid, m.x, m.y)) return;
     if (m.wheel_x == 0 and m.wheel_y == 0) return;
 
@@ -325,7 +366,7 @@ fn handleWheel(grid: c.rl.Rectangle, m: widgets.Mouse) void {
         if (w != 0) {
             const mouse_beat = (m.x - grid.x + scroll_x) / px_per_beat;
             const factor: f32 = std.math.clamp(1.0 + w * 0.12, 0.5, 2.0);
-            px_per_beat = std.math.clamp(px_per_beat * factor, PX_PER_BEAT_MIN, PX_PER_BEAT_MAX);
+            px_per_beat = clampPxPerBeat(px_per_beat * factor, grid, clip);
             scroll_x = mouse_beat * px_per_beat - (m.x - grid.x);
         }
     } else if (alt) {
@@ -348,29 +389,31 @@ fn handleWheel(grid: c.rl.Rectangle, m: widgets.Mouse) void {
 
 fn drawRuler(ruler: c.rl.Rectangle, grid: c.rl.Rectangle, clip: Clip) void {
     _ = clip;
-    var beat: u32 = 0;
+    var step: u32 = 0;
     while (true) {
-        const bx = grid.x + @as(f32, @floatFromInt(beat)) * px_per_beat - scroll_x;
+        const beat = @as(f32, @floatFromInt(step)) * @as(f32, @floatCast(GRID_SNAP));
+        const bx = grid.x + beat * px_per_beat - scroll_x;
         if (bx > grid.x + grid.width - 2) break;
         if (bx < grid.x - 4) {
-            beat += 1;
+            step += 1;
             continue;
         }
-        const is_bar = beat % 4 == 0;
-        const tick_h: f32 = if (is_bar) rulerH() - 4 else 5;
+        const is_beat = step % 4 == 0;
+        const is_bar = step % 16 == 0;
+        const tick_h: f32 = if (is_bar) rulerH() - 4 else if (is_beat) 5 else 3;
         c.rl.DrawRectangle(
             @intFromFloat(bx),
             @intFromFloat(ruler.y + rulerH() - tick_h - 2),
             1,
             @intFromFloat(tick_h),
-            if (is_bar) theme.text_dim else theme.slab_lo,
+            if (is_bar) theme.grid_bar else if (is_beat) theme.grid_beat else theme.grid_sub,
         );
         if (is_bar) {
             var buf: [8]u8 = undefined;
-            const s = std.fmt.bufPrintZ(&buf, "{d}", .{beat / 4 + 1}) catch "?";
+            const s = std.fmt.bufPrintZ(&buf, "{d}", .{step / 16 + 1}) catch "?";
             widgets.drawLabelF(s.ptr, bx + 2, ruler.y + 1, theme.fsTiny(), theme.text_dim);
         }
-        beat += 1;
+        step += 1;
     }
 }
 
@@ -409,7 +452,7 @@ fn drawKeyboard(r: c.rl.Rectangle) void {
             @intFromFloat(y + row_h - 1),
             @intFromFloat(r.width),
             1,
-            theme.slab_edge,
+            theme.grid_bar,
         );
         if (pitch % 12 == 0) {
             var buf: [8]u8 = undefined;
@@ -436,29 +479,31 @@ fn drawGrid(r: c.rl.Rectangle, clip: Clip) void {
                     @intFromFloat(y),
                     @intFromFloat(r.width),
                     @intFromFloat(row_h),
-                    theme.pane_alt,
+                    theme.grid_row,
                 );
             }
         }
         if (pitch == KEY_LO) break;
     }
 
-    // Beat lines.
-    var beat: u32 = 0;
+    // Sixteenth, beat, and bar lines.
+    var step: u32 = 0;
     while (true) {
-        const bx = r.x + @as(f32, @floatFromInt(beat)) * px_per_beat - scroll_x;
+        const beat = @as(f32, @floatFromInt(step)) * @as(f32, @floatCast(GRID_SNAP));
+        const bx = r.x + beat * px_per_beat - scroll_x;
         if (bx > r.x + r.width - 1) break;
         if (bx >= r.x) {
-            const is_bar = beat % 4 == 0;
+            const is_beat = step % 4 == 0;
+            const is_bar = step % 16 == 0;
             c.rl.DrawRectangle(
                 @intFromFloat(bx),
                 @intFromFloat(r.y),
                 1,
                 @intFromFloat(r.height),
-                if (is_bar) theme.slab_edge else theme.slab_lo,
+                if (is_bar) theme.grid_bar else if (is_beat) theme.grid_beat else theme.grid_sub,
             );
         }
-        beat += 1;
+        step += 1;
     }
 }
 
@@ -538,12 +583,18 @@ fn handleInput(
 ) void {
     if (updateInProgressDrag(grid, clip, alloc, m)) return;
 
+    if (widgets.contains(grid, m.x, m.y) and !widgets.hasActiveDrag()) {
+        if (findNoteAt(grid, clip.*, m.x, m.y)) |h| {
+            widgets.requestCursor(if (h.edge_resize) c.rl.MOUSE_CURSOR_RESIZE_EW else c.rl.MOUSE_CURSOR_POINTING_HAND, 1);
+        }
+    }
+
     if (!m.left_pressed) return;
     if (!widgets.contains(grid, m.x, m.y)) return;
     if (widgets.hasActiveDrag()) return;
 
     const pitch = pitchAtY(grid, m.y) orelse return;
-    const beat = snapPositive(beatAtX(grid, m.x));
+    const beat = snapDownPositive(beatAtX(grid, m.x));
     const hit = findNoteAt(grid, clip.*, m.x, m.y);
     const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
 
@@ -576,6 +627,7 @@ fn handleInput(
             draw_pitch = pitch;
             draw_start_beat = beat;
             draw_current_beat = beat + DEFAULT_NOTE_BEATS;
+            draw_start_x = m.x;
         },
         .select => {
             if (!shift) clip.deselectAll();
@@ -641,7 +693,9 @@ fn updateDraw(grid: c.rl.Rectangle, clip: *Clip, alloc: std.mem.Allocator, m: wi
         widgets.cancelDrag();
         return;
     }
-    draw_current_beat = snapPositive(beatAtX(grid, m.x));
+    if (@abs(m.x - draw_start_x) >= BOX_MIN_DRAG) {
+        draw_current_beat = snapPositive(beatAtX(grid, m.x));
+    }
 }
 
 fn updateBox(grid: c.rl.Rectangle, clip: *Clip, m: widgets.Mouse) void {
@@ -693,6 +747,7 @@ fn updateMove(grid: c.rl.Rectangle, clip: *Clip, m: widgets.Mouse) void {
         widgets.cancelDrag();
         return;
     }
+    widgets.requestCursor(c.rl.MOUSE_CURSOR_POINTING_HAND, 3);
     const d_beats = snap(@as(f64, (m.x - move_start_mouse_x) / px_per_beat));
     const d_rows = std.math.clamp(@as(i32, @intFromFloat(@round((m.y - move_start_mouse_y) / row_h))), -127, 127);
     for (move_snaps.items) |s| {
@@ -731,6 +786,7 @@ fn updateResize(grid: c.rl.Rectangle, clip: *Clip, m: widgets.Mouse) void {
         widgets.cancelDrag();
         return;
     }
+    widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
     const d_beats = snap(@as(f64, (m.x - resize_start_mouse_x) / px_per_beat));
     for (resize_snaps.items) |s| {
         if (s.idx >= clip.notes.items.len) continue;
@@ -822,6 +878,8 @@ fn drawOverview(
     track_color: c.rl.Color,
     m: widgets.Mouse,
 ) void {
+    if (strip.width <= 4 or strip.height <= 4 or grid.width <= 0 or grid.height <= 0) return;
+
     widgets.bevelSunken(strip, theme.pane_bg, theme.slab_hi, theme.slab_lo);
     const inner = widgets.rect(strip.x + 2, strip.y + 2, strip.width - 4, strip.height - 4);
     c.rl.DrawRectangleRec(inner, theme.pane_bg);
@@ -873,6 +931,17 @@ fn handleOverviewInput(
     const view_beat_l = scroll_x / px_per_beat;
     const vp_x = inner.x + view_beat_l * px_per_beat_ov;
     const vp_w = @max(1.0, (grid.width / px_per_beat) * px_per_beat_ov);
+
+    if (widgets.contains(inner, m.x, m.y) and (m.wheel_x != 0 or m.wheel_y != 0)) {
+        const w: f32 = if (m.wheel_y != 0) m.wheel_y else m.wheel_x;
+        const anchor_beat = (m.x - inner.x) / px_per_beat_ov;
+        const factor: f32 = std.math.clamp(1.0 + w * 0.12, 0.5, 2.0);
+        px_per_beat = clampPxPerBeat(px_per_beat * factor, grid, clip);
+        scroll_x = anchor_beat * px_per_beat - grid.width / 2.0;
+        if (scroll_x < 0) scroll_x = 0;
+        last_scroll_time = c.rl.GetTime();
+        return;
+    }
 
     if (overview_drag) {
         if (!widgets.isDraggingKey(OVERVIEW_KEY) or !m.left_down) {
@@ -930,6 +999,11 @@ fn snap(beats: f64) f64 {
 /// new-note-start.
 fn snapPositive(beats: f64) f64 {
     const s = snap(beats);
+    return if (s < 0) 0 else s;
+}
+
+fn snapDownPositive(beats: f64) f64 {
+    const s = @floor(beats / GRID_SNAP) * GRID_SNAP;
     return if (s < 0) 0 else s;
 }
 

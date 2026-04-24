@@ -18,6 +18,69 @@ pub fn measureIcon(icon: Icon, size: f32) f32 {
     return icons_mod.measure(icon, size);
 }
 
+// ── Deferred tooltip ─────────────────────────────────────────────────
+
+const TOOLTIP_DELAY: f64 = 0.45;
+var tooltip_text: ?[*:0]const u8 = null;
+var tooltip_x: f32 = 0;
+var tooltip_y: f32 = 0;
+var tooltip_key: u64 = 0;
+var tooltip_hover_key: u64 = 0;
+var tooltip_hover_since: f64 = 0;
+var requested_cursor: c_int = c.rl.MOUSE_CURSOR_DEFAULT;
+var requested_cursor_priority: u8 = 0;
+
+pub fn beginFrame() void {
+    tooltip_text = null;
+    requested_cursor = c.rl.MOUSE_CURSOR_DEFAULT;
+    requested_cursor_priority = 0;
+}
+
+pub fn requestCursor(cursor: c_int, priority: u8) void {
+    if (priority >= requested_cursor_priority) {
+        requested_cursor = cursor;
+        requested_cursor_priority = priority;
+    }
+}
+
+pub fn applyCursor() void {
+    c.rl.SetMouseCursor(requested_cursor);
+}
+
+pub fn tooltip(r: c.rl.Rectangle, text: [*:0]const u8, m: Mouse) void {
+    if (!contains(r, m.x, m.y) or hasActiveDrag()) return;
+    const key = keyFromIds(0x7001_71F5_0000_0001, rectKey(r, 0), @intFromPtr(text));
+    const now = c.rl.GetTime();
+    if (tooltip_hover_key != key) {
+        tooltip_hover_key = key;
+        tooltip_hover_since = now;
+    }
+    if (now - tooltip_hover_since < TOOLTIP_DELAY) return;
+    tooltip_text = text;
+    tooltip_x = m.x;
+    tooltip_y = m.y;
+    tooltip_key = key;
+}
+
+pub fn drawTooltip(sw: f32, sh: f32) void {
+    const text = tooltip_text orelse return;
+    _ = tooltip_key;
+    const pad_x = theme.size(6);
+    const pad_y = theme.fine(4);
+    const size = theme.fsTiny();
+    const tw = measureTextF(text, size);
+    const w = tw + pad_x * 2;
+    const h = size + pad_y * 2;
+    var x = tooltip_x + theme.size(12);
+    var y = tooltip_y + theme.size(14);
+    if (x + w > sw - 2) x = sw - w - 2;
+    if (y + h > sh - 2) y = tooltip_y - h - theme.size(8);
+    const r = rect(@max(2, x), @max(2, y), w, h);
+    c.rl.DrawRectangleRec(r, theme.slab_edge);
+    c.rl.DrawRectangleRec(rect(r.x + 1, r.y + 1, r.width - 2, r.height - 2), theme.pane_alt);
+    drawLabelF(text, r.x + pad_x, r.y + pad_y - 1, size, theme.text_fg);
+}
+
 // ── Mouse snapshot (built once per frame) ────────────────────────────
 
 pub const Mouse = struct {
@@ -277,6 +340,7 @@ pub fn paneHeader(
         const lr = rect(left_x, r.y, btn_sz, r.height);
         const active_fill: ?c.rl.Color = if (opts.left_tool_active) theme.accent_hi else null;
         left_tool_clicked = iconButton(lr, icon, active_fill, m);
+        tooltip(lr, if (opts.left_tool_active) "Select tool" else "Draw tool", m);
         left_x += btn_sz + gap;
     }
 
@@ -286,6 +350,7 @@ pub fn paneHeader(
         right_x -= btn_sz;
         const close_rect = rect(right_x, r.y, btn_sz, r.height);
         close_clicked = iconButton(close_rect, .x, null, m);
+        tooltip(close_rect, "Close panel", m);
         right_x -= gap;
     }
 
@@ -293,6 +358,7 @@ pub fn paneHeader(
     const min_rect = rect(right_x, r.y, btn_sz, r.height);
     const min_icon: Icon = if (opts.collapsed) .plus else .minus;
     const min_clicked = iconButton(min_rect, min_icon, null, m);
+    tooltip(min_rect, if (opts.collapsed) "Expand panel" else "Collapse panel", m);
     right_x -= gap;
 
     // Title bar fills between left tool and right buttons.
@@ -312,6 +378,12 @@ pub fn button(r: c.rl.Rectangle, label: [*:0]const u8, m: Mouse) bool {
     return buttonColored(r, label, null, m);
 }
 
+pub fn buttonTip(r: c.rl.Rectangle, label: [*:0]const u8, tip: [*:0]const u8, m: Mouse) bool {
+    const clicked = button(r, label, m);
+    tooltip(r, tip, m);
+    return clicked;
+}
+
 pub fn iconButton(r: c.rl.Rectangle, icon: Icon, active_fill: ?c.rl.Color, m: Mouse) bool {
     const hover = contains(r, m.x, m.y) and !hasActiveDrag();
     const pressed = hover and m.left_down;
@@ -325,6 +397,12 @@ pub fn iconButton(r: c.rl.Rectangle, icon: Icon, active_fill: ?c.rl.Color, m: Mo
     const ix = r.x + (r.width - w) / 2;
     const iy = r.y + (r.height - icon_size) / 2 - 1;
     drawIcon(icon, ix, iy, icon_size, theme.text_fg);
+    return clicked;
+}
+
+pub fn iconButtonTip(r: c.rl.Rectangle, icon: Icon, active_fill: ?c.rl.Color, tip: [*:0]const u8, m: Mouse) bool {
+    const clicked = iconButton(r, icon, active_fill, m);
+    tooltip(r, tip, m);
     return clicked;
 }
 

@@ -140,6 +140,7 @@ pub const DrawPanelFn = *const fn (
 /// Called when the transport stops or the host otherwise wants the
 /// machine to drop any sustained voices and reset to silence.
 pub const ResetFn = *const fn (state: *anyopaque) void;
+pub const DeinitFn = *const fn (state: *anyopaque, alloc: std.mem.Allocator) void;
 
 pub const Machine = struct {
     name: []const u8,
@@ -147,6 +148,7 @@ pub const Machine = struct {
     render: RenderFn,
     draw_panel: DrawPanelFn,
     reset: ResetFn,
+    deinit: ?DeinitFn = null,
     /// Preferred panel card width in pixels. The bay uses this to size
     /// the rect passed to draw_panel. 0 = bay chooses a default.
     panel_w: f32 = 0,

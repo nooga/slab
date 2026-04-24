@@ -20,7 +20,15 @@ var tap_times: [TAP_MAX]f64 = .{ 0, 0, 0, 0 };
 var tap_count: usize = 0;
 var tap_last: f64 = 0;
 
-pub fn draw(r: c.rl.Rectangle, transport: *Transport, m: widgets.Mouse) void {
+pub const Result = struct {
+    open_project: bool = false,
+    save_project: bool = false,
+    save_project_as: bool = false,
+};
+
+pub fn draw(r: c.rl.Rectangle, transport: *Transport, m: widgets.Mouse) Result {
+    var result: Result = .{};
+
     // Bar background — flat, no bevel.
     c.rl.DrawRectangleRec(r, theme.pane_bg);
     // Bottom hairline separates bar from the panes below.
@@ -40,16 +48,41 @@ pub fn draw(r: c.rl.Rectangle, transport: *Transport, m: widgets.Mouse) void {
     const field_w_bpm = theme.size(80);
     const field_w_pos = theme.size(74);
 
+    // ── File operations ──────────────────────────────────────────────
+    if (widgets.iconButtonTip(widgets.rect(x, y, btn_w, h), .folder, null, "Open project  Cmd+O", m)) {
+        result.open_project = true;
+    }
+    x += btn_w + GAP;
+
+    if (widgets.iconButtonTip(widgets.rect(x, y, btn_w, h), .file, null, "Save project  Cmd+S", m)) {
+        result.save_project = true;
+    }
+    x += btn_w + GAP;
+
+    if (widgets.iconButtonTip(widgets.rect(x, y, btn_w, h), .pencil, null, "Save project as  Cmd+Shift+S", m)) {
+        result.save_project_as = true;
+    }
+    x += btn_w + GROUP_GAP;
+
+    drawSeparator(widgets.rect(x, y, theme.size(10), h));
+    x += theme.size(10) + GROUP_GAP;
+
     // ── Transport buttons ─────────────────────────────────────────────
     const playing = transport.isPlaying();
     const play_icon: widgets.Icon = if (playing) .stop else .play;
     const play_fill: ?c.rl.Color = if (playing) theme.accent_play else null;
-    if (widgets.iconButton(widgets.rect(x, y, btn_w, h), play_icon, play_fill, m)) {
+    if (widgets.iconButtonTip(widgets.rect(x, y, btn_w, h), play_icon, play_fill, if (playing) "Stop  Space" else "Play  Space", m)) {
         transport.toggle();
     }
     x += btn_w + GAP;
 
-    _ = widgets.iconButton(widgets.rect(x, y, btn_w, h), .record, null, m);
+    _ = widgets.iconButtonTip(widgets.rect(x, y, btn_w, h), .record, null, "Record arm", m);
+    x += btn_w + GROUP_GAP;
+
+    const loop_fill: ?c.rl.Color = if (transport.loopEnabled()) theme.accent_hi else null;
+    if (widgets.iconButtonTip(widgets.rect(x, y, btn_w, h), .repeat, loop_fill, "Loop on/off", m)) {
+        transport.toggleLoop();
+    }
     x += btn_w + GROUP_GAP;
 
     // ── BPM field with metronome LED ─────────────────────────────────
@@ -58,7 +91,7 @@ pub fn draw(r: c.rl.Rectangle, transport: *Transport, m: widgets.Mouse) void {
     x += field_w_bpm + GAP;
 
     // ── Tap tempo button ─────────────────────────────────────────────
-    if (widgets.button(widgets.rect(x, y, tap_w, h), "TAP", m)) {
+    if (widgets.buttonTip(widgets.rect(x, y, tap_w, h), "TAP", "Tap tempo", m)) {
         handleTap(transport);
     }
     x += tap_w + GROUP_GAP;
@@ -79,6 +112,12 @@ pub fn draw(r: c.rl.Rectangle, transport: *Transport, m: widgets.Mouse) void {
         title_size,
         theme.accent_hi,
     );
+
+    return result;
+}
+
+fn drawSeparator(r: c.rl.Rectangle) void {
+    widgets.bevelRaised(r, theme.slab_fill, theme.slab_hi, theme.slab_lo);
 }
 
 fn bpmField(r: c.rl.Rectangle, transport: *const Transport) void {

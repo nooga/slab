@@ -16,21 +16,33 @@ Brutalist grey, 1px bevels, serious tool.
 
 ## Status
 
-Pre-code. Design documents only. Start at [docs/README.md](docs/README.md).
+Working prototype. The Zig host now has audio I/O, transport,
+arrangement clips, piano-roll editing, a compact immediate-mode UI,
+fy-authored machines, per-track machine instantiation, and basic loop
+playback. It is still early and intentionally rough: save/load and
+undo/redo exist for the arrangement document, but fy panel parameter
+state is not serialized yet; loop wrapping is not sample-accurate, and
+livecoding propagation to per-track fy instances is not complete.
+
+Start at [docs/README.md](docs/README.md), especially the current
+status in [docs/10-roadmap.md](docs/10-roadmap.md) and session notes in
+[docs/sessions/](docs/sessions/).
 
 ## Layout
 
 ```
 build.zig, build.zig.zon     zig build system
-src/                         zig host (stub)
-docs/                        design docs — read these first
+src/                         zig host: audio, transport, UI, engine
+machines/                    fy machine sources and shared fy helpers
+docs/                        design docs and session notes
+vendor/                      miniaudio + icon font assets
 ```
 
 ## Building
 
 ```sh
 zig build              # build
-zig build run          # build and run the stub
+zig build run          # build and run Slab
 zig build test         # run unit tests
 ```
 

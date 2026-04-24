@@ -36,8 +36,18 @@ const CONTENT_PAD_BEATS: f64 = 8;
 
 const DRAG_SALT: u64 = 0xC114_4ABA_BEEF_0001;
 const OVERVIEW_KEY: u64 = 0xCAFE_F00D_1234_5678;
+const BOX_KEY: u64 = 0xB02B_51EC_7AAA_0001;
+const LOOP_START_KEY: u64 = 0x1009_570A_AAAA_0001;
+const LOOP_END_KEY: u64 = 0x1009_E0D0_AAAA_0001;
+const BOX_MIN_DRAG: f32 = 3;
+const MAX_DRAG_CLIPS: usize = 256;
 
 const DragMode = enum { none, move, resize_r };
+const ClipDragSnap = struct {
+    track: u32,
+    clip: u32,
+    start_beat: f64,
+};
 
 // Module-scope state.
 var px_per_beat: f32 = 24;
@@ -50,6 +60,15 @@ var drag_ref: ClipRef = .{ .track = 0, .clip = 0 };
 var drag_start_beat: f64 = 0;
 var drag_start_length: f64 = 0;
 var drag_start_mouse_x: f32 = 0;
+var drag_snaps: [MAX_DRAG_CLIPS]ClipDragSnap = undefined;
+var drag_snap_count: usize = 0;
+var drag_track_delta: i32 = 0;
+
+var box_active: bool = false;
+var box_start_x: f32 = 0;
+var box_start_y: f32 = 0;
+var box_start_track: ?usize = null;
+var box_shift: bool = false;
 
 // Overview-strip drag.
 var ov_drag: bool = false;
@@ -58,6 +77,8 @@ var ov_drag_offset: f32 = 0;
 // Ruler scrub.
 const RULER_KEY: u64 = 0x5C0B_0001_AAAA_BBBB;
 var ruler_drag: bool = false;
+var loop_start_drag: bool = false;
+var loop_end_drag: bool = false;
 
 // Vertical scrollbar (lazy) — mirrors clip_editor.
 fn scrollbarW() f32 {
@@ -71,6 +92,28 @@ var sbv_drag: bool = false;
 var sbv_drag_start_mouse_y: f32 = 0;
 var sbv_drag_start_scroll_y: f32 = 0;
 
+pub const Result = struct {
+    add_track: bool = false,
+};
+
+pub fn deleteSelectedClips(tracks: []Track, alloc: std.mem.Allocator, focused_clip: *?ClipRef) bool {
+    var deleted = false;
+    for (tracks) |*t| {
+        var i: usize = 0;
+        while (i < t.clips.items.len) {
+            if (t.clips.items[i].selected) {
+                var removed = t.clips.orderedRemove(i);
+                removed.deinit(alloc);
+                deleted = true;
+            } else {
+                i += 1;
+            }
+        }
+    }
+    if (deleted) focused_clip.* = null;
+    return deleted;
+}
+
 pub fn draw(
     r: c.rl.Rectangle,
     tracks: []Track,
@@ -79,7 +122,8 @@ pub fn draw(
     selected_clip: *?ClipRef,
     transport: *Transport,
     m: widgets.Mouse,
-) void {
+) Result {
+    var result: Result = .{};
     c.rl.DrawRectangleRec(r, theme.pane_bg);
 
     const header_w = theme.trackHeaderW();
@@ -96,16 +140,38 @@ pub fn draw(
     // Header column "ruler" block (spans overview + ruler rows).
     widgets.bevelSunken(hdr_top, theme.pane_alt, theme.slab_hi, theme.slab_lo);
     widgets.drawLabelF("TRACKS", header_x + 4, r.y + 4, theme.fsTiny(), theme.text_dim);
+    const add_sz = @min(hdr_top.height - 4, theme.size(18));
+    var tool_x = hdr_top.x + hdr_top.width - add_sz - 2;
+    const add_rect = widgets.rect(tool_x, hdr_top.y + 2, add_sz, add_sz);
+    if (widgets.iconButtonTip(add_rect, .plus, null, "Add track", m)) {
+        result.add_track = true;
+    }
+    tool_x -= add_sz + 1;
+    if (widgets.iconButtonTip(widgets.rect(tool_x, hdr_top.y + 2, add_sz, add_sz), .x, null, "Clear loop", m)) {
+        transport.clearLoop();
+    }
+    tool_x -= add_sz + 1;
+    if (widgets.iconButtonTip(widgets.rect(tool_x, hdr_top.y + 2, add_sz, add_sz), .repeat, null, "Loop selected clips", m)) {
+        if (selectedClipRange(tracks)) |range| transport.setLoopBeats(range.start, range.end);
+    }
+    tool_x -= add_sz + 1;
+    if (widgets.iconButtonTip(widgets.rect(tool_x, hdr_top.y + 2, add_sz, add_sz), .repeat, theme.slab_lo, "Loop entire arrangement", m)) {
+        const end = @max(4.0, contentEndBeats(tracks));
+        transport.setLoopBeats(0, end);
+    }
+
+    // Clamp scrolls once we know content extent.
+    const content_beats = contentBeats(tracks);
+    const lanes_h = r.y + r.height - (r.y + overviewH() + rulerH());
+    const lanes_top = r.y + overviewH() + rulerH();
 
     // ── Wheel input (scroll / zoom) ──────────────────────────────────
     handleWheel(widgets.rect(timeline_x, r.y, timeline_w, r.height), m);
 
     // ── Continue an in-progress clip drag ─────────────────────────────
-    continueDrag(tracks, m);
+    continueDrag(tracks, alloc, selected_clip, m, lanes_top);
+    updateBoxSelect(tracks, selected_track, selected_clip, m, timeline_x, timeline_w, timeline_x0, lanes_top);
 
-    // Clamp scrolls once we know content extent.
-    const content_beats = contentBeats(tracks);
-    const lanes_h = r.y + r.height - (r.y + overviewH() + rulerH());
     clampScroll(content_beats, timeline_w);
     clampScrollY(tracks.len, lanes_h);
 
@@ -117,14 +183,15 @@ pub fn draw(
         @intFromFloat(ruler_rect.width),
         @intFromFloat(ruler_rect.height),
     );
+    drawLoopRegion(ruler_rect, timeline_x0, transport);
     drawBeatTicks(ruler_rect, timeline_x, timeline_w, timeline_x0);
     c.rl.EndScissorMode();
 
+    handleLoopBounds(ruler_rect, timeline_x0, transport, m);
     // Click / drag the ruler to scrub the playhead.
-    handleRulerScrub(ruler_rect, timeline_x0, transport, m);
+    if (!loop_start_drag and !loop_end_drag) handleRulerScrub(ruler_rect, timeline_x0, transport, m);
 
     // ── Per-track lane + clips ───────────────────────────────────────
-    const lanes_top = r.y + overviewH() + rulerH();
     var press_consumed = false;
 
     // Scissor-clip the timeline zone so clips don't bleed into the
@@ -141,7 +208,8 @@ pub fn draw(
         if (ly >= r.y + r.height) break;
         const lane_timeline = widgets.rect(timeline_x, ly, timeline_w, theme.laneH());
         const lane_is_sel = selected_track.* != null and selected_track.*.? == ti;
-        drawTimelineLane(lane_timeline, t.*, ti, lane_is_sel);
+        drawTimelineLane(lane_timeline, t.*, ti, lane_is_sel, timeline_x0);
+        const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
 
         // Hit-test pass (reverse order, topmost first).
         var i: usize = t.clips.items.len;
@@ -150,34 +218,43 @@ pub fn draw(
             const clip = &t.clips.items[i];
             const clip_rect = clipRect(lane_timeline, clip.*, timeline_x0);
             if (!press_consumed and widgets.contains(clip_rect, m.x, m.y)) {
+                const edge_hover = m.x >= clip_rect.x + clip_rect.width - resizeEdgeW();
+                if (!widgets.hasActiveDrag()) {
+                    widgets.requestCursor(if (edge_hover) c.rl.MOUSE_CURSOR_RESIZE_EW else c.rl.MOUSE_CURSOR_POINTING_HAND, 1);
+                }
                 if (m.left_pressed and !widgets.hasActiveDrag()) {
                     const ref: ClipRef = .{ .track = @intCast(ti), .clip = @intCast(i) };
+                    if (shift) {
+                        clip.selected = !clip.selected;
+                    } else if (!clip.selected) {
+                        deselectAllClips(tracks);
+                        clip.selected = true;
+                    }
+                    if (!clip.selected) {
+                        selected_clip.* = null;
+                        press_consumed = true;
+                        break;
+                    }
                     selected_clip.* = ref;
                     selected_track.* = ti;
                     press_consumed = true;
-                    const mode: DragMode = if (m.x >= clip_rect.x + clip_rect.width - resizeEdgeW())
-                        .resize_r
-                    else
-                        .move;
-                    beginDrag(ref, clip.*, m, mode);
+                    const mode: DragMode = if (edge_hover) .resize_r else .move;
+                    beginDrag(tracks, ref, clip.*, m, mode);
                 }
             }
         }
 
         // Draw pass (forward order).
-        for (t.clips.items, 0..) |*clip, ci| {
+        for (t.clips.items) |*clip| {
             const clip_rect = clipRect(lane_timeline, clip.*, timeline_x0);
-            const is_sel = blk: {
-                if (selected_clip.*) |s| if (s.track == ti and s.clip == ci) break :blk true;
-                break :blk false;
-            };
-            drawClip(clip_rect, clip.*, t.color, is_sel);
+            drawClip(clip_rect, clip.*, t.color, clip.selected);
         }
 
         // Double-click on empty timeline area → create clip.
         if (!press_consumed and m.double_clicked and widgets.contains(lane_timeline, m.x, m.y)) {
             const beat = snap(@as(f64, (m.x - timeline_x0 + scroll_x) / px_per_beat));
             const start = if (beat < 0) 0 else beat;
+            deselectAllClips(tracks);
             createClipOnTrack(t, alloc, ti, start, selected_clip);
             selected_track.* = ti;
             press_consumed = true;
@@ -185,13 +262,13 @@ pub fn draw(
 
         // Single click on empty timeline area → track-only selection.
         if (!press_consumed and m.left_pressed and widgets.contains(lane_timeline, m.x, m.y) and !widgets.hasActiveDrag()) {
-            selected_track.* = ti;
-            selected_clip.* = null;
+            beginBoxSelect(ti, m, shift);
             press_consumed = true;
         }
     }
 
     c.rl.EndScissorMode();
+    drawBoxSelectOverlay(timeline_x, timeline_w, lanes_top, r.y + r.height, m);
 
     // Playhead spans the ruler and all lanes. Scissor to the
     // timeline zone so it doesn't cross into the track-header column.
@@ -213,6 +290,15 @@ pub fn draw(
     );
     c.rl.EndScissorMode();
 
+    c.rl.BeginScissorMode(
+        @intFromFloat(timeline_x),
+        @intFromFloat(lanes_top),
+        @intFromFloat(timeline_w),
+        @intFromFloat(r.y + r.height - lanes_top),
+    );
+    drawLoopRegion(widgets.rect(timeline_x, lanes_top, timeline_w, r.y + r.height - lanes_top), timeline_x0, transport);
+    c.rl.EndScissorMode();
+
     // Track headers — live in the right column but scroll vertically
     // with the lanes. Scissor to the lane band so they don't leak
     // into the overview strip or beyond the bottom.
@@ -230,11 +316,10 @@ pub fn draw(
         const lane_is_sel = selected_track.* != null and selected_track.*.? == ti;
         if (drawLaneHeader(lane_header, t, lane_is_sel, m)) {
             selected_track.* = ti;
+            deselectAllClips(tracks);
             // Clear clip selection unless the clicked track already
             // owns the currently-selected clip.
-            if (selected_clip.*) |s| {
-                if (s.track != ti) selected_clip.* = null;
-            }
+            selected_clip.* = null;
         }
     }
     c.rl.EndScissorMode();
@@ -245,11 +330,13 @@ pub fn draw(
 
     // Overview strip on top (rendered last so nothing scissor-clips it).
     drawOverview(overview_rect, timeline_w, tracks, content_beats, transport, m);
+    return result;
 }
 
 fn handleWheel(zone: c.rl.Rectangle, m: widgets.Mouse) void {
     if (!widgets.contains(zone, m.x, m.y)) return;
     if (m.wheel_x == 0 and m.wheel_y == 0) return;
+    if (m.y < zone.y + overviewH()) return;
     const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
     const alt = c.rl.IsKeyDown(c.rl.KEY_LEFT_ALT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_ALT);
 
@@ -275,6 +362,10 @@ fn handleWheel(zone: c.rl.Rectangle, m: widgets.Mouse) void {
 }
 
 fn contentBeats(tracks: []Track) f64 {
+    return contentEndBeats(tracks) + CONTENT_PAD_BEATS;
+}
+
+fn contentEndBeats(tracks: []Track) f64 {
     var max_end: f64 = DEFAULT_CONTENT_BEATS;
     for (tracks) |t| {
         for (t.clips.items) |clip| {
@@ -282,7 +373,27 @@ fn contentBeats(tracks: []Track) f64 {
             if (end > max_end) max_end = end;
         }
     }
-    return max_end + CONTENT_PAD_BEATS;
+    return max_end;
+}
+
+fn selectedClipRange(tracks: []Track) ?struct { start: f64, end: f64 } {
+    var found = false;
+    var start: f64 = 0;
+    var end: f64 = 0;
+    for (tracks) |t| {
+        for (t.clips.items) |clip| {
+            if (!clip.selected) continue;
+            if (!found) {
+                found = true;
+                start = clip.start_beat;
+                end = clip.start_beat + clip.length_beats;
+            } else {
+                start = @min(start, clip.start_beat);
+                end = @max(end, clip.start_beat + clip.length_beats);
+            }
+        }
+    }
+    return if (found) .{ .start = start, .end = end } else null;
 }
 
 fn clampScroll(content_beats: f64, timeline_w: f32) void {
@@ -298,9 +409,99 @@ fn clampScrollY(n_tracks: usize, lanes_h: f32) void {
     if (scroll_y > max_sy) scroll_y = max_sy;
 }
 
+// ── Clip selection ───────────────────────────────────────────────────
+
+fn deselectAllClips(tracks: []Track) void {
+    for (tracks) |*t| {
+        for (t.clips.items) |*clip| clip.selected = false;
+    }
+}
+
+fn beginBoxSelect(track_idx: usize, m: widgets.Mouse, shift: bool) void {
+    if (!widgets.tryStartDrag(BOX_KEY)) return;
+    box_active = true;
+    box_start_x = m.x;
+    box_start_y = m.y;
+    box_start_track = track_idx;
+    box_shift = shift;
+}
+
+fn updateBoxSelect(
+    tracks: []Track,
+    selected_track: *?usize,
+    selected_clip: *?ClipRef,
+    m: widgets.Mouse,
+    timeline_x: f32,
+    timeline_w: f32,
+    timeline_x0: f32,
+    lanes_top: f32,
+) void {
+    if (!box_active) return;
+    if (widgets.isDraggingKey(BOX_KEY) and m.left_down) return;
+
+    const dx = m.x - box_start_x;
+    const dy = m.y - box_start_y;
+    if (@abs(dx) < BOX_MIN_DRAG and @abs(dy) < BOX_MIN_DRAG) {
+        deselectAllClips(tracks);
+        selected_track.* = box_start_track;
+        selected_clip.* = null;
+    } else {
+        if (!box_shift) deselectAllClips(tracks);
+        const box_r = normalizedRect(box_start_x, box_start_y, m.x, m.y);
+        var primary: ?ClipRef = null;
+        for (tracks, 0..) |*t, ti| {
+            const ly = lanes_top + @as(f32, @floatFromInt(ti)) * theme.laneH() - scroll_y;
+            const lane = widgets.rect(timeline_x, ly, timeline_w, theme.laneH());
+            for (t.clips.items, 0..) |*clip, ci| {
+                const clip_r = clipRect(lane, clip.*, timeline_x0);
+                if (rectsOverlap(clip_r, box_r)) {
+                    clip.selected = true;
+                    primary = .{ .track = @intCast(ti), .clip = @intCast(ci) };
+                }
+            }
+        }
+        selected_clip.* = primary;
+        if (primary) |p| selected_track.* = p.track;
+    }
+    box_active = false;
+    box_start_track = null;
+    widgets.cancelDrag();
+}
+
+fn drawBoxSelectOverlay(timeline_x: f32, timeline_w: f32, lanes_top: f32, lanes_bottom: f32, m: widgets.Mouse) void {
+    if (!box_active) return;
+    if (@abs(m.x - box_start_x) < BOX_MIN_DRAG and @abs(m.y - box_start_y) < BOX_MIN_DRAG) return;
+    const rr = normalizedRect(box_start_x, box_start_y, m.x, m.y);
+    const clipped = intersectRect(rr, widgets.rect(timeline_x, lanes_top, timeline_w, lanes_bottom - lanes_top)) orelse return;
+    c.rl.DrawRectangleRec(clipped, c.rl.ColorAlpha(theme.accent_hi, 0.2));
+    c.rl.DrawRectangleLinesEx(clipped, 1, theme.accent_hi);
+}
+
+fn normalizedRect(x0: f32, y0: f32, x1: f32, y1: f32) c.rl.Rectangle {
+    const nx0 = @min(x0, x1);
+    const ny0 = @min(y0, y1);
+    const nx1 = @max(x0, x1);
+    const ny1 = @max(y0, y1);
+    return widgets.rect(nx0, ny0, nx1 - nx0, ny1 - ny0);
+}
+
+fn rectsOverlap(a: c.rl.Rectangle, b: c.rl.Rectangle) bool {
+    return a.x < b.x + b.width and a.x + a.width > b.x and
+        a.y < b.y + b.height and a.y + a.height > b.y;
+}
+
+fn intersectRect(a: c.rl.Rectangle, b: c.rl.Rectangle) ?c.rl.Rectangle {
+    const x0 = @max(a.x, b.x);
+    const y0 = @max(a.y, b.y);
+    const x1 = @min(a.x + a.width, b.x + b.width);
+    const y1 = @min(a.y + a.height, b.y + b.height);
+    if (x1 <= x0 or y1 <= y0) return null;
+    return widgets.rect(x0, y0, x1 - x0, y1 - y0);
+}
+
 // ── Clip drag ────────────────────────────────────────────────────────
 
-fn beginDrag(ref: ClipRef, clip: Clip, m: widgets.Mouse, mode: DragMode) void {
+fn beginDrag(tracks: []Track, ref: ClipRef, clip: Clip, m: widgets.Mouse, mode: DragMode) void {
     const key = widgets.keyFromIds(DRAG_SALT, ref.track, ref.clip);
     if (!widgets.tryStartDrag(key)) return;
     drag_mode = mode;
@@ -308,9 +509,14 @@ fn beginDrag(ref: ClipRef, clip: Clip, m: widgets.Mouse, mode: DragMode) void {
     drag_start_beat = clip.start_beat;
     drag_start_length = clip.length_beats;
     drag_start_mouse_x = m.x;
+    drag_track_delta = 0;
+    drag_snap_count = 0;
+    if (mode == .move) {
+        snapshotSelectedClips(tracks);
+    }
 }
 
-fn continueDrag(tracks: []Track, m: widgets.Mouse) void {
+fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?ClipRef, m: widgets.Mouse, lanes_top: f32) void {
     if (drag_mode == .none) return;
     const key = widgets.keyFromIds(DRAG_SALT, drag_ref.track, drag_ref.clip);
     if (!widgets.isDraggingKey(key)) {
@@ -319,6 +525,7 @@ fn continueDrag(tracks: []Track, m: widgets.Mouse) void {
     }
 
     if (!m.left_down) {
+        finishClipDrag(tracks, alloc, selected_clip, m, lanes_top);
         widgets.cancelDrag();
         drag_mode = .none;
         return;
@@ -339,18 +546,118 @@ fn continueDrag(tracks: []Track, m: widgets.Mouse) void {
 
     const dx = m.x - drag_start_mouse_x;
     const d_beats = snap(@as(f64, dx / px_per_beat));
+    drag_track_delta = @as(i32, @intFromFloat(@floor((m.y - lanes_top + scroll_y) / theme.laneH()))) - @as(i32, @intCast(drag_ref.track));
 
     switch (drag_mode) {
         .none => {},
         .move => {
-            const new_start = drag_start_beat + d_beats;
-            clip.start_beat = if (new_start < 0) 0 else new_start;
+            widgets.requestCursor(c.rl.MOUSE_CURSOR_POINTING_HAND, 3);
+            if (drag_snap_count > 0) {
+                for (drag_snaps[0..drag_snap_count]) |s| {
+                    if (s.track >= tracks.len) continue;
+                    const st = &tracks[s.track];
+                    if (s.clip >= st.clips.items.len) continue;
+                    const new_start = s.start_beat + d_beats;
+                    st.clips.items[s.clip].start_beat = if (new_start < 0) 0 else new_start;
+                }
+            } else {
+                const new_start = drag_start_beat + d_beats;
+                clip.start_beat = if (new_start < 0) 0 else new_start;
+            }
         },
         .resize_r => {
+            widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
             const new_len = drag_start_length + d_beats;
             clip.length_beats = if (new_len < MIN_CLIP_BEATS) MIN_CLIP_BEATS else new_len;
         },
     }
+}
+
+fn finishClipDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?ClipRef, m: widgets.Mouse, lanes_top: f32) void {
+    if (drag_mode == .none) return;
+    if (drag_ref.track >= tracks.len) return;
+    const src_t = &tracks[drag_ref.track];
+    if (drag_ref.clip >= src_t.clips.items.len) return;
+
+    const target_i_signed = @as(i32, @intFromFloat(@floor((m.y - lanes_top + scroll_y) / theme.laneH())));
+    if (target_i_signed < 0) return;
+    const target_i: usize = @intCast(target_i_signed);
+    if (target_i >= tracks.len or target_i == drag_ref.track) return;
+
+    if (drag_snap_count > 0) {
+        moveSelectedClipsBetweenTracks(tracks, alloc, selected_clip, target_i_signed - @as(i32, @intCast(drag_ref.track)));
+        return;
+    }
+
+    var moved = src_t.clips.orderedRemove(drag_ref.clip);
+    moved.selected = true;
+    tracks[target_i].addClip(alloc, moved) catch |err| {
+        std.log.err("move clip failed: {s}", .{@errorName(err)});
+        moved.deinit(alloc);
+        return;
+    };
+    selected_clip.* = .{
+        .track = @intCast(target_i),
+        .clip = @intCast(tracks[target_i].clips.items.len - 1),
+    };
+}
+
+fn snapshotSelectedClips(tracks: []Track) void {
+    drag_snap_count = 0;
+    for (tracks, 0..) |*t, ti| {
+        for (t.clips.items, 0..) |clip, ci| {
+            if (!clip.selected) continue;
+            if (drag_snap_count >= MAX_DRAG_CLIPS) return;
+            drag_snaps[drag_snap_count] = .{
+                .track = @intCast(ti),
+                .clip = @intCast(ci),
+                .start_beat = clip.start_beat,
+            };
+            drag_snap_count += 1;
+        }
+    }
+}
+
+fn moveSelectedClipsBetweenTracks(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?ClipRef, delta: i32) void {
+    if (delta == 0) return;
+    var moved: [MAX_DRAG_CLIPS]struct { clip: Clip, target: usize, primary: bool } = undefined;
+    var moved_count: usize = 0;
+
+    var s_i = drag_snap_count;
+    while (s_i > 0) {
+        s_i -= 1;
+        const s = drag_snaps[s_i];
+        if (s.track >= tracks.len) continue;
+        const target_signed = @as(i32, @intCast(s.track)) + delta;
+        if (target_signed < 0 or target_signed >= @as(i32, @intCast(tracks.len))) continue;
+        const st = &tracks[s.track];
+        if (s.clip >= st.clips.items.len) continue;
+        if (!st.clips.items[s.clip].selected) continue;
+        moved[moved_count] = .{
+            .clip = st.clips.orderedRemove(s.clip),
+            .target = @intCast(target_signed),
+            .primary = s.track == drag_ref.track and s.clip == drag_ref.clip,
+        };
+        moved_count += 1;
+    }
+
+    var primary_ref: ?ClipRef = null;
+    for (moved[0..moved_count]) |*entry| {
+        entry.clip.selected = true;
+        const target = entry.target;
+        tracks[target].addClip(alloc, entry.clip) catch |err| {
+            std.log.err("move selected clips failed: {s}", .{@errorName(err)});
+            entry.clip.deinit(alloc);
+            continue;
+        };
+        if (entry.primary) {
+            primary_ref = .{
+                .track = @intCast(target),
+                .clip = @intCast(tracks[target].clips.items.len - 1),
+            };
+        }
+    }
+    selected_clip.* = primary_ref;
 }
 
 // ── Rendering helpers ────────────────────────────────────────────────
@@ -371,7 +678,7 @@ fn drawBeatTicks(ruler: c.rl.Rectangle, timeline_x: f32, timeline_w: f32, timeli
             @intFromFloat(ruler.y + rulerH() - tick_h - 2),
             1,
             @intFromFloat(tick_h),
-            if (is_bar) theme.text_dim else theme.slab_lo,
+            if (is_bar) theme.grid_bar else theme.grid_beat,
         );
         if (is_bar) {
             var buf: [8]u8 = undefined;
@@ -382,9 +689,27 @@ fn drawBeatTicks(ruler: c.rl.Rectangle, timeline_x: f32, timeline_w: f32, timeli
     }
 }
 
-fn drawTimelineLane(r: c.rl.Rectangle, t: Track, idx: usize, selected: bool) void {
+fn drawTimelineLane(r: c.rl.Rectangle, t: Track, idx: usize, selected: bool, timeline_x0: f32) void {
     const bg = if (selected) theme.pane_alt else if (idx % 2 == 0) theme.pane_bg else theme.pane_alt;
     c.rl.DrawRectangleRec(r, bg);
+
+    var beat: u32 = 0;
+    while (true) {
+        const bx = timeline_x0 + @as(f32, @floatFromInt(beat)) * px_per_beat - scroll_x;
+        if (bx > r.x + r.width - 1) break;
+        if (bx >= r.x) {
+            const is_bar = beat % 4 == 0;
+            c.rl.DrawRectangle(
+                @intFromFloat(bx),
+                @intFromFloat(r.y),
+                1,
+                @intFromFloat(r.height),
+                if (is_bar) theme.grid_bar else theme.grid_beat,
+            );
+        }
+        beat += 1;
+    }
+
     c.rl.DrawRectangle(@intFromFloat(r.x), @intFromFloat(r.y), 2, @intFromFloat(r.height), t.color);
     c.rl.DrawRectangle(
         @intFromFloat(r.x),
@@ -493,6 +818,7 @@ fn drawLaneHeader(r: c.rl.Rectangle, t: *Track, selected: bool, m: widgets.Mouse
     const mute_fill = if (is_muted) theme.accent_rec else theme.slab_fill;
     widgets.bevelRaised(mute_r, mute_fill, theme.slab_hi, theme.slab_lo);
     widgets.drawLabelF("M", mute_r.x + 3, mute_r.y, theme.fsTiny(), theme.text_fg);
+    widgets.tooltip(mute_r, if (is_muted) "Unmute track" else "Mute track", m);
     if (widgets.contains(mute_r, m.x, m.y) and m.left_released and !widgets.hasActiveDrag()) {
         t.mute.store(!is_muted, .monotonic);
     }
@@ -501,6 +827,7 @@ fn drawLaneHeader(r: c.rl.Rectangle, t: *Track, selected: bool, m: widgets.Mouse
     const solo_fill = if (is_solo) theme.accent_hi else theme.slab_fill;
     widgets.bevelRaised(solo_r, solo_fill, theme.slab_hi, theme.slab_lo);
     widgets.drawLabelF("S", solo_r.x + 4, solo_r.y, theme.fsTiny(), theme.text_fg);
+    widgets.tooltip(solo_r, if (is_solo) "Unsolo track" else "Solo track", m);
     if (widgets.contains(solo_r, m.x, m.y) and m.left_released and !widgets.hasActiveDrag()) {
         t.solo.store(!is_solo, .monotonic);
     }
@@ -512,6 +839,7 @@ fn drawLaneHeader(r: c.rl.Rectangle, t: *Track, selected: bool, m: widgets.Mouse
     if (widgets.hFader(vol_r, &v_norm, m)) {
         t.setVolume(v_norm * 1.25);
     }
+    widgets.tooltip(vol_r, "Track volume", m);
 
     const click_region = widgets.rect(content_x, r.y + 1, content_w - btn_w * 2 - 4, theme.size(14));
     if (widgets.contains(click_region, m.x, m.y) and m.left_pressed and !widgets.hasActiveDrag()) {
@@ -523,7 +851,8 @@ fn drawLaneHeader(r: c.rl.Rectangle, t: *Track, selected: bool, m: widgets.Mouse
 fn createClipOnTrack(t: *Track, alloc: std.mem.Allocator, track_idx: usize, start_beat: f64, selected: *?ClipRef) void {
     var buf: [clip_mod.MAX_NAME]u8 = undefined;
     const name_str = std.fmt.bufPrint(&buf, "Clip {d}", .{t.clips.items.len + 1}) catch "Clip";
-    const new_clip = Clip.init(name_str, start_beat, DEFAULT_CLIP_BEATS);
+    var new_clip = Clip.init(name_str, start_beat, DEFAULT_CLIP_BEATS);
+    new_clip.selected = true;
     t.addClip(alloc, new_clip) catch |err| {
         std.log.err("create clip failed: {s}", .{@errorName(err)});
         return;
@@ -538,7 +867,73 @@ fn snap(beats: f64) f64 {
     return @round(beats / grid) * grid;
 }
 
+fn beatToX(timeline_x0: f32, beat: f64) f32 {
+    return timeline_x0 + @as(f32, @floatCast(beat)) * px_per_beat - scroll_x;
+}
+
+fn beatAtX(timeline_x0: f32, x: f32) f64 {
+    return @as(f64, (x - timeline_x0 + scroll_x) / px_per_beat);
+}
+
+fn drawLoopRegion(r: c.rl.Rectangle, timeline_x0: f32, transport: *const Transport) void {
+    if (!transport.loopEnabled()) return;
+    const s = transport.loopStartBeats();
+    const e = transport.loopEndBeats();
+    if (e <= s) return;
+    const x0 = beatToX(timeline_x0, s);
+    const x1 = beatToX(timeline_x0, e);
+    const lx0 = std.math.clamp(x0, r.x, r.x + r.width);
+    const lx1 = std.math.clamp(x1, r.x, r.x + r.width);
+    if (lx1 > lx0) {
+        c.rl.DrawRectangleRec(widgets.rect(lx0, r.y, lx1 - lx0, r.height), c.rl.ColorAlpha(theme.accent_hi, 0.14));
+    }
+    if (x0 >= r.x and x0 <= r.x + r.width) {
+        c.rl.DrawRectangle(@intFromFloat(x0), @intFromFloat(r.y), 2, @intFromFloat(r.height), theme.accent_hi);
+    }
+    if (x1 >= r.x and x1 <= r.x + r.width) {
+        c.rl.DrawRectangle(@intFromFloat(x1), @intFromFloat(r.y), 2, @intFromFloat(r.height), theme.accent_hi);
+    }
+}
+
 // ── Ruler scrub ──────────────────────────────────────────────────────
+
+fn handleLoopBounds(ruler: c.rl.Rectangle, timeline_x0: f32, transport: *Transport, m: widgets.Mouse) void {
+    if (!transport.loopEnabled()) return;
+    const start_x = beatToX(timeline_x0, transport.loopStartBeats());
+    const end_x = beatToX(timeline_x0, transport.loopEndBeats());
+    const start_hit = widgets.rect(start_x - 4, ruler.y, 8, ruler.height);
+    const end_hit = widgets.rect(end_x - 4, ruler.y, 8, ruler.height);
+
+    if (loop_start_drag or loop_end_drag) {
+        widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
+        const key = if (loop_start_drag) LOOP_START_KEY else LOOP_END_KEY;
+        if (!widgets.isDraggingKey(key) or !m.left_down) {
+            loop_start_drag = false;
+            loop_end_drag = false;
+            widgets.cancelDrag();
+            return;
+        }
+        const beat = snap(beatAtX(timeline_x0, m.x));
+        const s = transport.loopStartBeats();
+        const e = transport.loopEndBeats();
+        if (loop_start_drag) {
+            transport.setLoopBeats(@max(0, @min(beat, e - 0.25)), e);
+        } else {
+            transport.setLoopBeats(s, @max(s + 0.25, beat));
+        }
+        return;
+    }
+
+    const over_start = widgets.contains(start_hit, m.x, m.y);
+    const over_end = widgets.contains(end_hit, m.x, m.y);
+    if (over_start or over_end) widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 2);
+    if (!m.left_pressed or widgets.hasActiveDrag()) return;
+    if (over_start and widgets.tryStartDrag(LOOP_START_KEY)) {
+        loop_start_drag = true;
+    } else if (over_end and widgets.tryStartDrag(LOOP_END_KEY)) {
+        loop_end_drag = true;
+    }
+}
 
 fn handleRulerScrub(ruler: c.rl.Rectangle, timeline_x0: f32, transport: *Transport, m: widgets.Mouse) void {
     if (ruler_drag) {
@@ -547,7 +942,7 @@ fn handleRulerScrub(ruler: c.rl.Rectangle, timeline_x0: f32, transport: *Transpo
             widgets.cancelDrag();
             return;
         }
-        const beat = @as(f64, (m.x - timeline_x0 + scroll_x) / px_per_beat);
+        const beat = beatAtX(timeline_x0, m.x);
         transport.seekToBeats(beat);
         return;
     }
@@ -558,7 +953,7 @@ fn handleRulerScrub(ruler: c.rl.Rectangle, timeline_x0: f32, transport: *Transpo
 
     if (!widgets.tryStartDrag(RULER_KEY)) return;
     ruler_drag = true;
-    const beat = @as(f64, (m.x - timeline_x0 + scroll_x) / px_per_beat);
+    const beat = beatAtX(timeline_x0, m.x);
     transport.seekToBeats(beat);
 }
 
@@ -691,15 +1086,29 @@ fn drawOverview(
         c.rl.DrawRectangle(@intFromFloat(ph_x), @intFromFloat(inner.y), 1, @intFromFloat(inner.height), theme.accent_hi);
     }
 
-    handleOverviewInput(inner, vp_w, px_per_beat_ov, m);
+    handleOverviewInput(inner, vp_w, px_per_beat_ov, cb, strip.width - 4, m);
 }
 
 fn handleOverviewInput(
     inner: c.rl.Rectangle,
     vp_w: f32,
     px_per_beat_ov: f32,
+    content_beats: f32,
+    viewport_w: f32,
     m: widgets.Mouse,
 ) void {
+    if (widgets.contains(inner, m.x, m.y) and (m.wheel_x != 0 or m.wheel_y != 0)) {
+        const w: f32 = if (m.wheel_y != 0) m.wheel_y else m.wheel_x;
+        const anchor_beat = (m.x - inner.x) / px_per_beat_ov;
+        const factor: f32 = std.math.clamp(1.0 + w * 0.12, 0.5, 2.0);
+        const min_px = @max(1.0, viewport_w / @max(content_beats, 1.0));
+        px_per_beat = std.math.clamp(px_per_beat * factor, min_px, PX_PER_BEAT_MAX);
+        scroll_x = anchor_beat * px_per_beat - viewport_w / 2.0;
+        if (scroll_x < 0) scroll_x = 0;
+        last_scroll_time = c.rl.GetTime();
+        return;
+    }
+
     if (ov_drag) {
         if (!widgets.isDraggingKey(OVERVIEW_KEY) or !m.left_down) {
             ov_drag = false;

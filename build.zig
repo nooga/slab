@@ -34,6 +34,10 @@ pub fn build(b: *std.Build) void {
         .file = b.path("vendor/miniaudio.c"),
         .flags = &.{"-fno-sanitize=undefined"},
     });
+    exe_mod.addCSourceFile(.{
+        .file = b.path("src/native_dialog.m"),
+        .flags = &.{"-fobjc-arc"},
+    });
     exe_mod.addIncludePath(b.path("vendor"));
 
     // macOS frameworks needed by raylib + miniaudio.

@@ -16,6 +16,10 @@ pub const slab_fill = rgb(64, 64, 68);
 pub const slab_hi = rgb(100, 100, 104);
 pub const slab_lo = rgb(40, 40, 42);
 pub const slab_edge = rgb(12, 12, 14);
+pub const grid_sub = rgb(48, 48, 52);
+pub const grid_beat = rgb(56, 56, 60);
+pub const grid_bar = rgb(86, 86, 92);
+pub const grid_row = rgb(38, 38, 41);
 pub const splitter_bg = rgb(16, 16, 18);
 pub const splitter_hover = rgb(180, 150, 60);
 
@@ -100,7 +104,7 @@ pub fn topBarH() f32 {
     return dim(22);
 }
 pub fn statusBarH() f32 {
-    return dim(16);
+    return dim(28);
 }
 pub fn splitterW() f32 {
     return 1;

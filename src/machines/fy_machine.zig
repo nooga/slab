@@ -52,6 +52,7 @@ pub const FyMachine = struct {
             .render = renderImpl,
             .draw_panel = drawPanelImpl,
             .reset = resetImpl,
+            .deinit = deinitImpl,
             .panel_w = self.panel_w,
         };
     }
@@ -90,4 +91,11 @@ fn drawPanelImpl(state: *anyopaque, r: c.rl.Rectangle, m: widgets.Mouse) void {
 
 fn resetImpl(state: *anyopaque) void {
     _ = state;
+}
+
+fn deinitImpl(state: *anyopaque, alloc: std.mem.Allocator) void {
+    const self: *FyMachine = @ptrCast(@alignCast(state));
+    self.host.deinit();
+    alloc.destroy(self.host);
+    alloc.destroy(self);
 }

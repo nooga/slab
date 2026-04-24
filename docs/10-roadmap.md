@@ -5,45 +5,57 @@ each milestone yields something usable and each subsequent
 milestone compounds on working foundations. This doc is a bet on
 order, not a schedule.
 
-## Current status (2026-04-23)
+## Current status (2026-04-24)
 
-One long session of work has landed a working Zig-only prototype:
-audible clip playback, full piano-roll editing, arrangement with
-scroll/zoom/minimap, and an ABI-shaped note/machine contract that
-matches [04-block-contract.md](04-block-contract.md) byte-for-byte
-(stubbed service pointers).
+Slab now has a working DAW-frame prototype with real fy machine
+instances. You can create tracks, assign fy machines from the browser,
+draw/box-select/move/resize/delete clips and notes, drag clips between
+tracks, loop selected clips or the whole arrangement, and hear multiple
+tracks play through miniaudio. The arrangement document can now be
+saved/loaded and edited with snapshot undo/redo.
 
 **Order of build was reversed vs the plan below.** We went
-outside-in — built the DAW shell and a Zig reference machine first,
-deferred fy integration and the Phase-0 substrate. Rationale in
-[sessions/session-01.md](sessions/session-01.md).
+outside-in — built the DAW shell first, then added fy machine hosting
+inside that shell. Rationale and details are in
+[sessions/session-01.md](sessions/session-01.md) and
+[sessions/session-02.md](sessions/session-02.md).
 
 Rough phase mapping of what exists:
 
-- **Phase 0 substrate** — *deferred.* fy is imported as a Zig module
-  but nothing links it yet; no `dsp:` mode, no hot-patch. The Zig
-  sine machine stands in and proves the host-side shape.
+- **Phase 0 substrate** — *partial and inverted.* Slab embeds fy as a
+  Zig module and can compile/call fy machine audio and UI words through
+  C callbacks. There is a hot-patch server attached to the catalog
+  host, but not yet propagated cleanly to all live per-track instances.
+  No `dsp:` mode or heap blacklist yet.
 - **Phase 1 kernels** — *not started.* No NEON, no `vec-each`, no
   combinators.
-- **Phase 2 machines + panels** — *partial.* Panel protocol ✓,
-  widget library ✓, note event protocol ✓ (ABI shape complete;
-  MPE + `note_hold` unused); voice pool ✗, param smoothing ✗,
-  block arena ✗, double-buffered params ✗. One trivial machine
-  (`Sine`, monophonic).
-- **Phase 3 DAW frame** — *partial.* Transport ✓, tracks ✓,
-  clips + piano roll ✓, arrangement ✓, inline per-lane mixer ✓;
-  machine browser ✗, project save/load ✗, undo/redo ✗.
+- **Phase 2 machines + panels** — *partial.* fy-authored machine audio
+  and panels ✓, panel protocol ✓, widget library ✓, note event protocol
+  ✓ (ABI shape complete; MPE + `note_hold` unused); voice pool ✗,
+  param smoothing ✗, block arena ✗, double-buffered params ✗. Current
+  fy examples include `sine`, `square`, and `mono1`.
+- **Phase 3 DAW frame** — *partial.* Transport ✓, loop toggle/range ✓,
+  tracks ✓, add tracks ✓, clips + piano roll ✓, arrangement ✓,
+  multi-select/box-select/delete clips ✓, drag clips between tracks ✓,
+  inline per-lane mixer ✓, machine browser ✓, project save/load ✓
+  (arrangement + machine assignment state), undo/redo ✓.
 
-**Known sharp edges** carried into next session:
+**Known sharp edges** carried forward:
 
-- Audio thread reads `ArrayList.items` of clips/notes directly —
-  data-race with UI appends. The doc calls for an SPSC snapshot
-  ring; we haven't built it yet.
-- No mid-block transport splits, no tempo map.
-- Sine is monophonic; overlapping note-ons steal without crossfade.
+- Loop wrapping happens after each callback/block, not by splitting
+  render at the exact loop boundary. This is usable but not
+  sample-tight yet.
+- Live hot-patch currently targets the registry/catalog host rather
+  than all per-track fy instances.
+- fy machine callbacks rely on global/thread-local fy runtime pointers;
+  this works for the current single audio thread + UI thread shape but
+  needs a cleaner instance dispatch model before parallel graph render.
 - Scrubbing during playback clicks (no anti-click on seek).
 - Font rasterization is SFNS bilinear, not the bitmap font the
   UI-widgets doc calls for.
+- Project save/load and undo/redo do not serialize fy panel parameter
+  state yet; that needs a host-visible param model rather than anonymous
+  fy cells.
 - `*_KEY: u64` magic hex constants in module-scope drag state are
   cosmetic debt — `@intFromPtr(&tag)` would replace them.
 

@@ -15,6 +15,8 @@ pub const Track = struct {
     name_len: u8 = 0,
     color: c.rl.Color,
     machine: machine.Machine,
+    /// Registry index for persistence. Null means the silent placeholder.
+    machine_idx: ?u8 = null,
 
     /// Clip list — UI-thread-owned. Audio thread reads via snapshot only.
     clips: std.ArrayList(clip_mod.Clip) = .empty,
@@ -53,10 +55,20 @@ pub const Track = struct {
     }
 
     pub fn deinit(self: *Track, alloc: std.mem.Allocator) void {
+        if (self.machine.deinit) |deinit_fn| {
+            deinit_fn(self.machine.state, alloc);
+        }
         for (self.clips.items) |*clip| clip.deinit(alloc);
         self.clips.deinit(alloc);
         alloc.destroy(self.snap[0]);
         alloc.destroy(self.snap[1]);
+    }
+
+    pub fn replaceMachine(self: *Track, alloc: std.mem.Allocator, mach: machine.Machine) void {
+        if (self.machine.deinit) |deinit_fn| {
+            deinit_fn(self.machine.state, alloc);
+        }
+        self.machine = mach;
     }
 
     pub fn addClip(self: *Track, alloc: std.mem.Allocator, clip: clip_mod.Clip) !void {

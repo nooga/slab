@@ -132,9 +132,9 @@ pub const State = struct {
             (self.clip_editor_visible and widgets.contains(rects.hit_clip_top, m.x, m.y));
 
         if (self.drag == .browser or over_v) {
-            c.rl.SetMouseCursor(c.rl.MOUSE_CURSOR_RESIZE_EW);
+            widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 2);
         } else if (self.drag == .machine_top or self.drag == .clip_top or over_h) {
-            c.rl.SetMouseCursor(c.rl.MOUSE_CURSOR_RESIZE_NS);
+            widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 2);
         }
 
         if (self.drag == .none and m.left_pressed) {
