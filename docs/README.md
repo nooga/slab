@@ -1,0 +1,55 @@
+# Slab — design docs
+
+**Slab Audio Workstation (SAW)** — livecodable DAW with a Zig frame
+and fy-scripted machines. These design documents describe what we're
+building before we build it.
+
+**Current status:** see
+[10-roadmap.md § Current status](10-roadmap.md#current-status-2026-04-23)
+and [sessions/session-01.md](sessions/session-01.md).
+
+These docs describe what we're building before we build it. Read in
+order the first time; skim thereafter. Each doc is self-contained but
+assumes the vocabulary established in earlier ones.
+
+1. [00-vision.md](00-vision.md) — what this product is and why it
+   could be good
+2. [01-architecture.md](01-architecture.md) — Zig host / fy machines,
+   process model, embedding fy
+3. [02-machines.md](02-machines.md) — the machine as the extensibility
+   unit; manifest, lifecycle, versioning
+4. [03-memory-model.md](03-memory-model.md) — arenas, double-buffered
+   params, the no-GC-on-audio invariant
+5. [04-block-contract.md](04-block-contract.md) — the `ctx` struct
+   passed to every machine's `process`; note events; port model
+6. [05-kernels.md](05-kernels.md) — `dsp:` mode, NEON assembler
+   extension, combinator-based authoring, compile-time fusion
+7. [06-ui-widgets.md](06-ui-widgets.md) — brutalist UI, 1px bevel
+   primitives, widget library, panel protocol, pop-the-face gesture
+8. [07-transport.md](07-transport.md) — audio-clock-authoritative
+   transport, block scheduling, graph model, plugin delay
+   compensation
+9. [08-services.md](08-services.md) — polyphonic voice pool,
+   oversampler wrapper, param smoother, modulation matrix, preset
+   system
+10. [09-hot-reload.md](09-hot-reload.md) — livecoding model,
+    stack-effect checks, dev vs ship compile strategies
+11. [10-roadmap.md](10-roadmap.md) — MVP slice, milestones, explicit
+    non-goals
+
+## Terminology crib sheet
+
+| term | meaning |
+|---|---|
+| **host** | the Zig program; owns transport, mixer, windowing, audio I/O |
+| **machine** | a fy-authored unit: manifest + panel + dsp + params |
+| **panel** | a machine's UI surface; fy words that draw and handle events |
+| **kernel** | a reusable `dsp:` word: a filter, oscillator, shaper, etc. |
+| **`dsp:` mode** | restricted fy compile mode: no heap allocation, NEON available, audio-thread-safe |
+| **block** | N audio samples processed in one go; typically 64–256 |
+| **ctx** | the context struct passed to every machine each block |
+| **arena** | a preallocated memory region with bump-pointer or slab semantics |
+| **voice pool** | host service that matches note-on/off to voice slots |
+| **PDC** | plugin delay compensation — per-chain latency alignment |
+| **params struct** | the machine's control-facing state; double-buffered |
+| **hot-patch** | redefine a word at runtime via fy's trampoline indirection |

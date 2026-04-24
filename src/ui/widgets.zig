@@ -1,0 +1,570 @@
+//! Immediate-mode widget primitives. 1px bevels, no AA. Drag state
+//! is tracked in a single module-scope "active drag" slot — good
+//! enough because only one widget can be actively dragged at a time.
+
+const std = @import("std");
+const c = @import("../c.zig");
+const theme = @import("theme.zig");
+const fonts = @import("fonts.zig");
+const icons_mod = @import("icons.zig");
+
+pub const Icon = icons_mod.Icon;
+
+pub fn drawIcon(icon: Icon, x: f32, y: f32, size: f32, color: c.rl.Color) void {
+    icons_mod.draw(icon, x, y, size, color);
+}
+
+pub fn measureIcon(icon: Icon, size: f32) f32 {
+    return icons_mod.measure(icon, size);
+}
+
+// ── Mouse snapshot (built once per frame) ────────────────────────────
+
+pub const Mouse = struct {
+    x: f32,
+    y: f32,
+    left_pressed: bool,
+    left_down: bool,
+    left_released: bool,
+    right_pressed: bool,
+    double_clicked: bool,
+    /// Horizontal wheel delta — from trackpad 2-finger swipe or
+    /// tilt-wheels. Positive = physical swipe right.
+    wheel_x: f32,
+    /// Vertical wheel delta. Positive = physical swipe up.
+    wheel_y: f32,
+
+    pub fn sample() Mouse {
+        const mx: f32 = @floatFromInt(c.rl.GetMouseX());
+        const my: f32 = @floatFromInt(c.rl.GetMouseY());
+        const pressed = c.rl.IsMouseButtonPressed(c.rl.MOUSE_BUTTON_LEFT);
+
+        // Double-click detection — module-scope state tracks the last
+        // press time & position.
+        var dbl = false;
+        if (pressed) {
+            const now = c.rl.GetTime();
+            const dx = mx - last_click_x;
+            const dy = my - last_click_y;
+            if (now - last_click_time < DBL_CLICK_TIME and
+                @abs(dx) < DBL_CLICK_DIST and @abs(dy) < DBL_CLICK_DIST)
+            {
+                dbl = true;
+                last_click_time = 0; // prevent chaining into a triple
+            } else {
+                last_click_time = now;
+            }
+            last_click_x = mx;
+            last_click_y = my;
+        }
+
+        const wv = c.rl.GetMouseWheelMoveV();
+
+        return .{
+            .x = mx,
+            .y = my,
+            .left_pressed = pressed,
+            .left_down = c.rl.IsMouseButtonDown(c.rl.MOUSE_BUTTON_LEFT),
+            .left_released = c.rl.IsMouseButtonReleased(c.rl.MOUSE_BUTTON_LEFT),
+            .right_pressed = c.rl.IsMouseButtonPressed(c.rl.MOUSE_BUTTON_RIGHT),
+            .double_clicked = dbl,
+            .wheel_x = wv.x,
+            .wheel_y = wv.y,
+        };
+    }
+};
+
+const DBL_CLICK_TIME: f64 = 0.35;
+const DBL_CLICK_DIST: f32 = 4;
+var last_click_time: f64 = 0;
+var last_click_x: f32 = 0;
+var last_click_y: f32 = 0;
+
+// ── Drag state (module-scope; single active drag at a time) ─────────
+
+var active_drag_key: u64 = 0;
+var drag_start_val: f32 = 0;
+var drag_start_y: f32 = 0;
+
+pub fn hasActiveDrag() bool {
+    return active_drag_key != 0;
+}
+
+pub fn cancelDrag() void {
+    active_drag_key = 0;
+}
+
+/// Try to claim exclusive drag ownership for `key`. Returns true if
+/// the drag can start (nothing else is dragging).
+pub fn tryStartDrag(key: u64) bool {
+    if (active_drag_key != 0) return false;
+    active_drag_key = key;
+    return true;
+}
+
+pub fn isDraggingKey(key: u64) bool {
+    return active_drag_key == key;
+}
+
+pub fn rectKeyOf(r: c.rl.Rectangle, salt: u64) u64 {
+    return rectKey(r, salt);
+}
+
+pub fn keyFromIds(salt: u64, a: u64, b: u64) u64 {
+    var h = salt;
+    h ^= a;
+    h = h *% 0x9E3779B97F4A7C15;
+    h ^= b;
+    h = h *% 0x9E3779B97F4A7C15;
+    return if (h == 0) 1 else h;
+}
+
+fn rectKey(r: c.rl.Rectangle, salt: u64) u64 {
+    var h = salt;
+    h ^= @as(u64, @bitCast(@as(i64, @intFromFloat(r.x * 16))));
+    h = h *% 0x9E3779B97F4A7C15;
+    h ^= @as(u64, @bitCast(@as(i64, @intFromFloat(r.y * 16))));
+    h = h *% 0x9E3779B97F4A7C15;
+    h ^= @as(u64, @bitCast(@as(i64, @intFromFloat(r.width * 16))));
+    h = h *% 0x9E3779B97F4A7C15;
+    h ^= @as(u64, @bitCast(@as(i64, @intFromFloat(r.height * 16))));
+    return if (h == 0) 1 else h;
+}
+
+// ── Rect helpers ─────────────────────────────────────────────────────
+
+pub fn contains(r: c.rl.Rectangle, x: f32, y: f32) bool {
+    return x >= r.x and y >= r.y and x < r.x + r.width and y < r.y + r.height;
+}
+
+pub fn rect(x: f32, y: f32, w: f32, h: f32) c.rl.Rectangle {
+    return .{ .x = x, .y = y, .width = w, .height = h };
+}
+
+// ── Bevels ───────────────────────────────────────────────────────────
+
+pub fn bevelRaised(r: c.rl.Rectangle, fill: c.rl.Color, hi: c.rl.Color, lo: c.rl.Color) void {
+    c.rl.DrawRectangleRec(r, fill);
+    const x: c_int = @intFromFloat(r.x);
+    const y: c_int = @intFromFloat(r.y);
+    const w: c_int = @intFromFloat(r.width);
+    const h: c_int = @intFromFloat(r.height);
+    c.rl.DrawRectangle(x, y, w, 1, hi);
+    c.rl.DrawRectangle(x, y, 1, h, hi);
+    c.rl.DrawRectangle(x, y + h - 1, w, 1, lo);
+    c.rl.DrawRectangle(x + w - 1, y, 1, h, lo);
+}
+
+pub fn bevelSunken(r: c.rl.Rectangle, fill: c.rl.Color, hi: c.rl.Color, lo: c.rl.Color) void {
+    bevelRaised(r, fill, lo, hi);
+}
+
+pub fn panelFrame(r: c.rl.Rectangle) void {
+    c.rl.DrawRectangleRec(r, theme.pane_bg);
+    c.rl.DrawRectangleLinesEx(r, 1, theme.slab_edge);
+}
+
+// ── Text ─────────────────────────────────────────────────────────────
+
+pub fn drawLabel(text: [*:0]const u8, x: c_int, y: c_int, size: c_int, color: c.rl.Color) void {
+    fonts.drawUI(text, @floatFromInt(x), @floatFromInt(y), @floatFromInt(size), color);
+}
+
+pub fn drawLabelF(text: [*:0]const u8, x: f32, y: f32, size: f32, color: c.rl.Color) void {
+    fonts.drawUI(text, x, y, size, color);
+}
+
+pub fn drawMono(text: [*:0]const u8, x: f32, y: f32, size: f32, color: c.rl.Color) void {
+    fonts.drawMono(text, x, y, size, color);
+}
+
+pub fn measureText(text: [*:0]const u8, size: c_int) c_int {
+    return @intFromFloat(fonts.measureUI(text, @floatFromInt(size)));
+}
+
+pub fn measureTextF(text: [*:0]const u8, size: f32) f32 {
+    return fonts.measureUI(text, size);
+}
+
+// ── Arrow / triangle toggle button ───────────────────────────────────
+//
+// Tiny square button with a filled triangle pointing in one direction.
+// Click to toggle; returns true on click.
+
+pub const ArrowDir = enum { left, right, up, down };
+
+pub fn arrowButton(r: c.rl.Rectangle, dir: ArrowDir, m: Mouse) bool {
+    const hover = contains(r, m.x, m.y) and !hasActiveDrag();
+    const pressed = hover and m.left_down;
+    const clicked = hover and m.left_released;
+    const fill = if (pressed) theme.slab_lo else if (hover) theme.slab_hi else theme.slab_fill;
+    bevelRaised(r, fill, theme.slab_hi, theme.slab_lo);
+
+    const cx = r.x + r.width / 2;
+    const cy = r.y + r.height / 2;
+    const s = @min(r.width, r.height) / 2 - 3;
+    var p1: c.rl.Vector2 = undefined;
+    var p2: c.rl.Vector2 = undefined;
+    var p3: c.rl.Vector2 = undefined;
+    switch (dir) {
+        .left => {
+            p1 = .{ .x = cx + s / 2, .y = cy - s };
+            p2 = .{ .x = cx + s / 2, .y = cy + s };
+            p3 = .{ .x = cx - s / 2, .y = cy };
+        },
+        .right => {
+            p1 = .{ .x = cx - s / 2, .y = cy - s };
+            p2 = .{ .x = cx + s / 2, .y = cy };
+            p3 = .{ .x = cx - s / 2, .y = cy + s };
+        },
+        .up => {
+            p1 = .{ .x = cx - s, .y = cy + s / 2 };
+            p2 = .{ .x = cx, .y = cy - s / 2 };
+            p3 = .{ .x = cx + s, .y = cy + s / 2 };
+        },
+        .down => {
+            p1 = .{ .x = cx - s, .y = cy - s / 2 };
+            p2 = .{ .x = cx + s, .y = cy - s / 2 };
+            p3 = .{ .x = cx, .y = cy + s / 2 };
+        },
+    }
+    c.rl.DrawTriangle(p1, p2, p3, theme.text_fg);
+    return clicked;
+}
+
+// ── Pane header ──────────────────────────────────────────────────────
+//
+// Title bar + up to two trailing buttons, each with its own bevel,
+// laid out side-by-side (no nested bevels). OpenTTD-style packed.
+//
+// Buttons, in order from the right edge inward:
+//   • close (optional, rendered only when has_close)
+//   • minimize/restore (always)
+//
+// Button position stays fixed across expanded/collapsed states — only
+// the minimize icon swaps between `minus` (expanded, click to collapse)
+// and `plus` (collapsed, click to restore).
+
+pub const HeaderOpts = struct {
+    title: [*:0]const u8,
+    collapsed: bool = false,
+    has_close: bool = false,
+    /// Optional tool button on the left of the title bar (e.g. a
+    /// pencil for "draw mode" on the clip editor). `left_tool_active`
+    /// controls whether it renders in its active-accent fill.
+    left_tool: ?Icon = null,
+    left_tool_active: bool = false,
+};
+
+pub const HeaderResult = struct {
+    minimize: bool = false,
+    close: bool = false,
+    left_tool: bool = false,
+};
+
+pub fn paneHeader(
+    r: c.rl.Rectangle,
+    opts: HeaderOpts,
+    m: Mouse,
+) HeaderResult {
+    const btn_sz = r.height;
+    const gap: f32 = 1;
+
+    // Left-side tool (optional).
+    var left_x = r.x;
+    var left_tool_clicked = false;
+    if (opts.left_tool) |icon| {
+        const lr = rect(left_x, r.y, btn_sz, r.height);
+        const active_fill: ?c.rl.Color = if (opts.left_tool_active) theme.accent_hi else null;
+        left_tool_clicked = iconButton(lr, icon, active_fill, m);
+        left_x += btn_sz + gap;
+    }
+
+    var right_x = r.x + r.width;
+    var close_clicked = false;
+    if (opts.has_close) {
+        right_x -= btn_sz;
+        const close_rect = rect(right_x, r.y, btn_sz, r.height);
+        close_clicked = iconButton(close_rect, .x, null, m);
+        right_x -= gap;
+    }
+
+    right_x -= btn_sz;
+    const min_rect = rect(right_x, r.y, btn_sz, r.height);
+    const min_icon: Icon = if (opts.collapsed) .plus else .minus;
+    const min_clicked = iconButton(min_rect, min_icon, null, m);
+    right_x -= gap;
+
+    // Title bar fills between left tool and right buttons.
+    const title_w = right_x - left_x;
+    if (title_w > 0) {
+        const title_rect = rect(left_x, r.y, title_w, r.height);
+        bevelRaised(title_rect, theme.slab_fill, theme.slab_hi, theme.slab_lo);
+        drawLabelF(opts.title, title_rect.x + 4, title_rect.y + 2, theme.fsTiny(), theme.text_fg);
+    }
+
+    return .{ .minimize = min_clicked, .close = close_clicked, .left_tool = left_tool_clicked };
+}
+
+// ── Button ───────────────────────────────────────────────────────────
+
+pub fn button(r: c.rl.Rectangle, label: [*:0]const u8, m: Mouse) bool {
+    return buttonColored(r, label, null, m);
+}
+
+pub fn iconButton(r: c.rl.Rectangle, icon: Icon, active_fill: ?c.rl.Color, m: Mouse) bool {
+    const hover = contains(r, m.x, m.y) and !hasActiveDrag();
+    const pressed = hover and m.left_down;
+    const clicked = hover and m.left_released;
+    const base_fill = active_fill orelse theme.slab_fill;
+    const fill = if (pressed) theme.slab_lo else if (hover) theme.slab_hi else base_fill;
+    bevelRaised(r, fill, theme.slab_hi, theme.slab_lo);
+
+    const icon_size = @min(r.width, r.height) - 4;
+    const w = measureIcon(icon, icon_size);
+    const ix = r.x + (r.width - w) / 2;
+    const iy = r.y + (r.height - icon_size) / 2 - 1;
+    drawIcon(icon, ix, iy, icon_size, theme.text_fg);
+    return clicked;
+}
+
+pub fn buttonColored(r: c.rl.Rectangle, label: [*:0]const u8, active_fill: ?c.rl.Color, m: Mouse) bool {
+    const hover = contains(r, m.x, m.y) and !hasActiveDrag();
+    const pressed = hover and m.left_down;
+    const clicked = hover and m.left_released;
+    const base_fill = active_fill orelse theme.slab_fill;
+    const fill = if (pressed) theme.slab_lo else if (hover) theme.slab_hi else base_fill;
+    bevelRaised(r, fill, theme.slab_hi, theme.slab_lo);
+    const size = theme.fsBody();
+    const tw = measureTextF(label, size);
+    const tx = r.x + (r.width - tw) / 2;
+    const ty = r.y + (r.height - size) / 2 - 1;
+    drawLabelF(label, tx, ty, size, theme.text_fg);
+    return clicked;
+}
+
+// ── Knob ─────────────────────────────────────────────────────────────
+//
+// `r` is the full cell rect. The knob circle is capped at KNOB_MAX_R so
+// it stays small in tall cells; the label/value are drawn flush against
+// the circle rather than at the extremes of the rect.
+//
+// Arc sweep: 225° (7 o'clock) → -45° (5 o'clock) CCW via 12 o'clock.
+//
+// Angle conventions:
+//   KNOB_A_*   — CCW radians (cos/sin, screen y-down), for the notch line
+//   KNOB_DEG_* — raylib CW degrees (0=East, +CW),      for DrawRing
+
+const KNOB_MAX_R_BASE: f32 = 14.0; // cap so knobs stay compact in tall cells
+const KNOB_A_MIN: f32 = std.math.pi * 1.25; // 7 o'clock
+const KNOB_A_MAX: f32 = -std.math.pi * 0.25; // 5 o'clock
+const KNOB_DEG_START: f32 = 135.0;
+const KNOB_DEG_RANGE: f32 = 270.0;
+
+pub fn knob(r: c.rl.Rectangle, label: [*:0]const u8, val: *f32, m: Mouse) bool {
+    const k = rectKey(r, 0x4b4e4f4200000001);
+    var changed = false;
+    const dragging = active_drag_key == k;
+
+    if (dragging) {
+        if (!m.left_down) {
+            active_drag_key = 0;
+        } else {
+            const dy = drag_start_y - m.y;
+            const nv = std.math.clamp(drag_start_val + dy / 150.0, 0.0, 1.0);
+            if (nv != val.*) {
+                val.* = nv;
+                changed = true;
+            }
+        }
+    } else if (active_drag_key == 0 and m.left_pressed and contains(r, m.x, m.y)) {
+        active_drag_key = k;
+        drag_start_val = val.*;
+        drag_start_y = m.y;
+    }
+
+    const hot = dragging or (active_drag_key == 0 and contains(r, m.x, m.y));
+
+    // Radius: honour the cell geometry but never exceed KNOB_MAX_R.
+    const label_h = theme.fsTiny() + 1;
+    const value_h = theme.fsTiny() + 1;
+    const radius = @max(
+        @min(theme.fine(KNOB_MAX_R_BASE), r.width / 2.0 - 3.0, (r.height - label_h - value_h) / 2.0 - 2.0),
+        2.0,
+    );
+
+    // Circle centre: vertically pack [label · circle · value] as a block.
+    const cx = r.x + r.width / 2.0;
+    const block_h = label_h + radius * 2.0 + 4.0 + value_h;
+    const block_y = r.y + (r.height - block_h) / 2.0;
+    const cy = block_y + label_h + radius + 2.0;
+
+    // ── Label — flush above the circle ───────────────────────────
+    const label_col = if (hot) theme.text_fg else theme.text_dim;
+    const label_size = theme.fsTiny();
+    const tw = measureTextF(label, label_size);
+    drawLabelF(label, cx - tw / 2.0, block_y, label_size, label_col);
+
+    // ── Knob body ────────────────────────────────────────────────
+    const bg = if (dragging) theme.slab_lo else theme.pane_bg;
+    c.rl.DrawCircle(@intFromFloat(cx), @intFromFloat(cy), radius + 2, theme.slab_edge);
+    c.rl.DrawCircle(@intFromFloat(cx), @intFromFloat(cy), radius + 1, bg);
+
+    const t = val.*;
+    const center = c.rl.Vector2{ .x = cx, .y = cy };
+    const inner_r = radius - 3.0;
+    const outer_r = radius - 1.0;
+    const SEG: c_int = 36;
+    c.rl.DrawRing(center, inner_r, outer_r, KNOB_DEG_START, KNOB_DEG_START + KNOB_DEG_RANGE, SEG, theme.slab_hi);
+    if (t > 0.001) {
+        c.rl.DrawRing(center, inner_r, outer_r, KNOB_DEG_START, KNOB_DEG_START + t * KNOB_DEG_RANGE, SEG, theme.accent_hi);
+    }
+
+    // Notch: 5 px yellow tick on the arc at the current position.
+    const cur_angle = KNOB_A_MIN + (KNOB_A_MAX - KNOB_A_MIN) * t;
+    const notch_outer = radius;
+    const notch_inner = radius - 5.0;
+    c.rl.DrawLineEx(
+        .{ .x = cx + @cos(cur_angle) * notch_inner, .y = cy - @sin(cur_angle) * notch_inner },
+        .{ .x = cx + @cos(cur_angle) * notch_outer, .y = cy - @sin(cur_angle) * notch_outer },
+        2.0,
+        theme.accent_hi,
+    );
+
+    // ── Value — flush below the circle ───────────────────────────
+    const value_y = cy + radius + 2.0;
+    var vbuf: [12:0]u8 = undefined;
+    const vs = std.fmt.bufPrintZ(&vbuf, "{d:.2}", .{t}) catch "?";
+    const vw = measureTextF(vs.ptr, label_size);
+    const val_col = if (dragging) theme.accent_hi else theme.text_mute;
+    drawLabelF(vs.ptr, cx - vw / 2.0, value_y, label_size, val_col);
+
+    return changed;
+}
+
+// ── Display field ────────────────────────────────────────────────────
+//
+// Raised outer bevel + sunken inner bevel. Returns the inner content
+// rect so the caller can draw text / LEDs / sub-widgets inside it.
+
+pub fn displayField(r: c.rl.Rectangle) c.rl.Rectangle {
+    bevelRaised(r, theme.slab_fill, theme.slab_hi, theme.slab_lo);
+    const inset = rect(r.x + 2, r.y + 2, r.width - 4, r.height - 4);
+    bevelSunken(inset, theme.pane_bg, theme.slab_hi, theme.slab_lo);
+    return rect(inset.x + 1, inset.y + 1, inset.width - 2, inset.height - 2);
+}
+
+// ── LED ──────────────────────────────────────────────────────────────
+//
+// Small rectangular LED — bright fill + 1 px dark border. Dim when
+// off, bright in the given color when on.
+
+pub fn led(r: c.rl.Rectangle, on: bool, color: c.rl.Color) void {
+    const fill = if (on) color else theme.slab_lo;
+    c.rl.DrawRectangleRec(r, fill);
+    c.rl.DrawRectangleLinesEx(r, 1, theme.slab_edge);
+    if (on) {
+        // tiny bright 1 px highlight in the top-left corner
+        c.rl.DrawRectangle(@intFromFloat(r.x + 1), @intFromFloat(r.y + 1), 1, 1, theme.text_fg);
+    }
+}
+
+// ── Horizontal fader ─────────────────────────────────────────────────
+
+pub fn hFader(r: c.rl.Rectangle, val: *f32, m: Mouse) bool {
+    const k = rectKey(r, 0x4846_4144_4552_0001); // "HFADER" salt
+    var changed = false;
+
+    if (active_drag_key == k) {
+        if (!m.left_down) {
+            active_drag_key = 0;
+        } else {
+            const nv = std.math.clamp((m.x - r.x) / r.width, 0.0, 1.0);
+            if (nv != val.*) {
+                val.* = nv;
+                changed = true;
+            }
+        }
+    } else if (active_drag_key == 0 and m.left_pressed and contains(r, m.x, m.y)) {
+        active_drag_key = k;
+        // Jump to click position on press.
+        val.* = std.math.clamp((m.x - r.x) / r.width, 0.0, 1.0);
+        changed = true;
+    }
+
+    bevelSunken(r, theme.pane_alt, theme.slab_hi, theme.slab_lo);
+    const inner = rect(r.x + 1, r.y + 1, r.width - 2, r.height - 2);
+    const fill_w = inner.width * std.math.clamp(val.*, 0.0, 1.0);
+    if (fill_w > 0) {
+        c.rl.DrawRectangle(
+            @intFromFloat(inner.x),
+            @intFromFloat(inner.y),
+            @intFromFloat(fill_w),
+            @intFromFloat(inner.height),
+            theme.slab_hi,
+        );
+    }
+    return changed;
+}
+
+// ── Meter ────────────────────────────────────────────────────────────
+
+pub fn meter(r: c.rl.Rectangle, peak: f32) void {
+    bevelSunken(r, theme.slab_edge, theme.slab_hi, theme.slab_lo);
+    const inner = rect(r.x + 1, r.y + 1, r.width - 2, r.height - 2);
+
+    const clamped = std.math.clamp(peak, 0.0, 1.0);
+    const fill_h = inner.height * clamped;
+    if (fill_h <= 0) return;
+
+    const green_top = inner.height * 0.6;
+    const yellow_top = inner.height * 0.85;
+
+    if (fill_h <= green_top) {
+        c.rl.DrawRectangle(
+            @intFromFloat(inner.x),
+            @intFromFloat(inner.y + inner.height - fill_h),
+            @intFromFloat(inner.width),
+            @intFromFloat(fill_h),
+            theme.accent_play,
+        );
+        return;
+    }
+
+    // green band
+    c.rl.DrawRectangle(
+        @intFromFloat(inner.x),
+        @intFromFloat(inner.y + inner.height - green_top),
+        @intFromFloat(inner.width),
+        @intFromFloat(green_top),
+        theme.accent_play,
+    );
+
+    if (fill_h <= yellow_top) {
+        c.rl.DrawRectangle(
+            @intFromFloat(inner.x),
+            @intFromFloat(inner.y + inner.height - fill_h),
+            @intFromFloat(inner.width),
+            @intFromFloat(fill_h - green_top),
+            theme.accent_hi,
+        );
+        return;
+    }
+
+    // yellow band
+    c.rl.DrawRectangle(
+        @intFromFloat(inner.x),
+        @intFromFloat(inner.y + inner.height - yellow_top),
+        @intFromFloat(inner.width),
+        @intFromFloat(yellow_top - green_top),
+        theme.accent_hi,
+    );
+    // red above
+    c.rl.DrawRectangle(
+        @intFromFloat(inner.x),
+        @intFromFloat(inner.y + inner.height - fill_h),
+        @intFromFloat(inner.width),
+        @intFromFloat(fill_h - yellow_top),
+        theme.accent_rec,
+    );
+}

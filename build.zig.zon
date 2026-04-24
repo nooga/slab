@@ -1,0 +1,15 @@
+.{
+    .name = .slab,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.16.0",
+    .paths = .{""},
+    .fingerprint = 0xc659b8b8e507d92d,
+    .dependencies = .{
+        .fy = .{
+            // fy is the sibling language runtime. We link against it via
+            // a path dep while both projects live in the same workspace;
+            // switch to a pinned URL+hash when fy gets tagged releases.
+            .path = "../fy",
+        },
+    },
+}
