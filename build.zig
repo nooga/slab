@@ -24,30 +24,25 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
 
-    // raylib via homebrew — @cImport in src/c.zig picks up the header here.
-    exe_mod.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
-    exe_mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
-    exe_mod.linkSystemLibrary("raylib", .{});
+    configureNativeDeps(b, exe_mod);
 
-    // miniaudio — vendored single-header, single-TU.
-    exe_mod.addCSourceFile(.{
-        .file = b.path("vendor/miniaudio.c"),
-        .flags = &.{"-fno-sanitize=undefined"},
+    const bench_mod = b.createModule(.{
+        .root_source_file = b.path("src/bench_mono1.zig"),
+        .target = target,
+        .optimize = optimize,
     });
-    exe_mod.addCSourceFile(.{
-        .file = b.path("src/native_dialog.m"),
-        .flags = &.{"-fobjc-arc"},
-    });
-    exe_mod.addIncludePath(b.path("vendor"));
+    bench_mod.addImport("fy", fy_mod);
+    configureNativeDeps(b, bench_mod);
 
-    // macOS frameworks needed by raylib + miniaudio.
-    exe_mod.linkFramework("CoreAudio", .{});
-    exe_mod.linkFramework("AudioToolbox", .{});
-    exe_mod.linkFramework("CoreFoundation", .{});
-    exe_mod.linkFramework("Cocoa", .{});
-    exe_mod.linkFramework("IOKit", .{});
-    exe_mod.linkFramework("OpenGL", .{});
-    exe_mod.link_libc = true;
+    const bench = b.addExecutable(.{
+        .name = "bench-mono1",
+        .root_module = bench_mod,
+    });
+
+    const bench_cmd = b.addRunArtifact(bench);
+    if (b.args) |args| bench_cmd.addArgs(args);
+    const bench_step = b.step("bench-mono1", "Benchmark mono1 fy voice rendering");
+    bench_step.dependOn(&bench_cmd.step);
 
     const install = b.addInstallArtifact(exe, .{});
     b.getInstallStep().dependOn(&install.step);
@@ -72,4 +67,31 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
+}
+
+fn configureNativeDeps(b: *std.Build, mod: *std.Build.Module) void {
+    // raylib via homebrew — @cImport in src/c.zig picks up the header here.
+    mod.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+    mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+    mod.linkSystemLibrary("raylib", .{});
+
+    // miniaudio — vendored single-header, single-TU.
+    mod.addCSourceFile(.{
+        .file = b.path("vendor/miniaudio.c"),
+        .flags = &.{"-fno-sanitize=undefined"},
+    });
+    mod.addCSourceFile(.{
+        .file = b.path("src/native_dialog.m"),
+        .flags = &.{"-fobjc-arc"},
+    });
+    mod.addIncludePath(b.path("vendor"));
+
+    // macOS frameworks needed by raylib + miniaudio.
+    mod.linkFramework("CoreAudio", .{});
+    mod.linkFramework("AudioToolbox", .{});
+    mod.linkFramework("CoreFoundation", .{});
+    mod.linkFramework("Cocoa", .{});
+    mod.linkFramework("IOKit", .{});
+    mod.linkFramework("OpenGL", .{});
+    mod.link_libc = true;
 }

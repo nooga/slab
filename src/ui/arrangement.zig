@@ -11,6 +11,7 @@ const std = @import("std");
 const c = @import("../c.zig");
 const theme = @import("theme.zig");
 const widgets = @import("widgets.zig");
+const snap_mod = @import("snap.zig");
 const track_mod = @import("../track.zig");
 const Track = track_mod.Track;
 const clip_mod = @import("../clip.zig");
@@ -91,10 +92,48 @@ const SBV_KEY: u64 = 0xACAB_1234_AAAA_9999;
 var sbv_drag: bool = false;
 var sbv_drag_start_mouse_y: f32 = 0;
 var sbv_drag_start_scroll_y: f32 = 0;
+const ARR_CONTEXT_KEY: u64 = 0xC077_7E17_AAAA_0001;
+
+pub const CopiedClip = struct {
+    rel_track: i32,
+    clip: Clip,
+};
 
 pub const Result = struct {
     add_track: bool = false,
+    command: widgets.EditCommand = .none,
+    command_beat: ?f64 = null,
+    command_track: ?usize = null,
+    rename_clip: ?ClipRef = null,
+    rename_track: ?usize = null,
+    rename_rect: ?c.rl.Rectangle = null,
 };
+
+pub const RenameTarget = struct {
+    kind: enum { none, track, clip } = .none,
+    track: usize = 0,
+    clip: usize = 0,
+};
+
+const ContextTarget = struct {
+    beat: f64 = 0,
+    track: ?usize = null,
+};
+
+var context_target: ContextTarget = .{};
+
+pub fn cancelInteractions() bool {
+    const had_active = drag_mode != .none or box_active or ov_drag or ruler_drag or loop_start_drag or loop_end_drag or sbv_drag;
+    drag_mode = .none;
+    box_active = false;
+    ov_drag = false;
+    ruler_drag = false;
+    loop_start_drag = false;
+    loop_end_drag = false;
+    sbv_drag = false;
+    widgets.cancelDrag();
+    return had_active;
+}
 
 pub fn deleteSelectedClips(tracks: []Track, alloc: std.mem.Allocator, focused_clip: *?ClipRef) bool {
     var deleted = false;
@@ -114,6 +153,270 @@ pub fn deleteSelectedClips(tracks: []Track, alloc: std.mem.Allocator, focused_cl
     return deleted;
 }
 
+pub fn clearSelection(tracks: []Track, focused_clip: *?ClipRef) bool {
+    var changed = false;
+    for (tracks) |*t| {
+        for (t.clips.items) |*clip| {
+            if (clip.selected) changed = true;
+            clip.selected = false;
+        }
+    }
+    if (focused_clip.* != null) changed = true;
+    focused_clip.* = null;
+    return changed;
+}
+
+pub fn selectAllClips(tracks: []Track, selected_track: *?usize, focused_clip: *?ClipRef) bool {
+    var changed = false;
+    var primary: ?ClipRef = null;
+    for (tracks, 0..) |*t, ti| {
+        for (t.clips.items, 0..) |*clip, ci| {
+            if (!clip.selected) changed = true;
+            clip.selected = true;
+            if (primary == null) primary = .{ .track = @intCast(ti), .clip = @intCast(ci) };
+        }
+    }
+    focused_clip.* = primary;
+    if (primary) |p| selected_track.* = p.track;
+    return changed;
+}
+
+pub fn hasSelectedClips(tracks: []Track) bool {
+    return selectedClipRange(tracks) != null;
+}
+
+fn hasAnyClips(tracks: []Track) bool {
+    for (tracks) |t| {
+        if (t.clips.items.len > 0) return true;
+    }
+    return false;
+}
+
+pub fn copySelectedClips(tracks: []Track, alloc: std.mem.Allocator, out: *std.ArrayList(CopiedClip)) bool {
+    out.clearRetainingCapacity();
+    var min_track: ?usize = null;
+    var min_start: f64 = std.math.inf(f64);
+    for (tracks, 0..) |*t, ti| {
+        for (t.clips.items) |clip| {
+            if (!clip.selected) continue;
+            if (min_track == null or ti < min_track.?) min_track = ti;
+            min_start = @min(min_start, clip.start_beat);
+        }
+    }
+    const base_track = min_track orelse return false;
+    errdefer {
+        for (out.items) |*item| item.clip.deinit(alloc);
+        out.clearRetainingCapacity();
+    }
+    for (tracks, 0..) |*t, ti| {
+        for (t.clips.items) |*clip| {
+            if (!clip.selected) continue;
+            var copied = clip.clone(alloc) catch |err| {
+                std.log.err("copy clip failed: {s}", .{@errorName(err)});
+                continue;
+            };
+            copied.start_beat -= min_start;
+            copied.selected = true;
+            for (copied.notes.items) |*n| n.selected = false;
+            out.append(alloc, .{
+                .rel_track = @as(i32, @intCast(ti)) - @as(i32, @intCast(base_track)),
+                .clip = copied,
+            }) catch |err| {
+                std.log.err("copy clip append failed: {s}", .{@errorName(err)});
+                copied.deinit(alloc);
+            };
+        }
+    }
+    return out.items.len > 0;
+}
+
+pub fn pasteClips(
+    tracks: []Track,
+    alloc: std.mem.Allocator,
+    selected_track: *?usize,
+    focused_clip: *?ClipRef,
+    items: []const CopiedClip,
+    target_beat: f64,
+    target_track: ?usize,
+    edit_snap: snap_mod.Setting,
+) bool {
+    if (items.len == 0 or tracks.len == 0) return false;
+    const base_track = target_track orelse selected_track.* orelse 0;
+    deselectAllClips(tracks);
+    var first: ?ClipRef = null;
+    var changed = false;
+    for (items) |*item| {
+        const target_i_signed = @as(i32, @intCast(base_track)) + item.rel_track;
+        if (target_i_signed < 0 or target_i_signed >= @as(i32, @intCast(tracks.len))) continue;
+        const target_i: usize = @intCast(target_i_signed);
+        var clip = item.clip.clone(alloc) catch |err| {
+            std.log.err("paste clip clone failed: {s}", .{@errorName(err)});
+            continue;
+        };
+        clip.start_beat = snap_mod.snapPositive(edit_snap, target_beat + clip.start_beat, false);
+        clip.selected = true;
+        tracks[target_i].addClip(alloc, clip) catch |err| {
+            std.log.err("paste clip failed: {s}", .{@errorName(err)});
+            clip.deinit(alloc);
+            continue;
+        };
+        changed = true;
+        if (first == null) first = .{
+            .track = @intCast(target_i),
+            .clip = @intCast(tracks[target_i].clips.items.len - 1),
+        };
+    }
+    focused_clip.* = first;
+    if (first) |p| selected_track.* = p.track;
+    return changed;
+}
+
+pub fn loopSelectedClips(tracks: []Track, transport: *Transport) bool {
+    if (selectedClipRange(tracks)) |range| {
+        transport.setLoopBeats(range.start, range.end);
+        return true;
+    }
+    return false;
+}
+
+pub fn splitSelectedClipsAt(tracks: []Track, alloc: std.mem.Allocator, focused_clip: *?ClipRef, beat: f64) bool {
+    var changed = false;
+    var first: ?ClipRef = null;
+    for (tracks, 0..) |*t, ti| {
+        const original_len = t.clips.items.len;
+        var ci: usize = 0;
+        while (ci < original_len) : (ci += 1) {
+            var clip = &t.clips.items[ci];
+            if (!clip.selected) continue;
+            const local = beat - clip.start_beat;
+            if (local <= minClipBeats(.note_16) or local >= clip.length_beats - minClipBeats(.note_16)) continue;
+
+            var right = Clip.init(clip.name(), beat, clip.start_beat + clip.length_beats - beat);
+            right.selected = true;
+            errdefer right.deinit(alloc);
+
+            var ni: usize = 0;
+            while (ni < clip.notes.items.len) {
+                var note = clip.notes.items[ni];
+                if (note.start_beat >= local) {
+                    _ = clip.notes.orderedRemove(ni);
+                    note.start_beat -= local;
+                    note.selected = false;
+                    right.addNote(alloc, note) catch |err| {
+                        std.log.err("split clip note move failed: {s}", .{@errorName(err)});
+                        continue;
+                    };
+                } else {
+                    const note_end = note.start_beat + note.length_beats;
+                    if (note_end > local) {
+                        clip.notes.items[ni].length_beats = @max(minClipBeats(.note_16), local - note.start_beat);
+                    }
+                    ni += 1;
+                }
+            }
+
+            clip.length_beats = local;
+            clip.selected = false;
+            t.addClip(alloc, right) catch |err| {
+                std.log.err("split clip append failed: {s}", .{@errorName(err)});
+                right.deinit(alloc);
+                continue;
+            };
+            changed = true;
+            if (first == null) first = .{ .track = @intCast(ti), .clip = @intCast(t.clips.items.len - 1) };
+        }
+    }
+    if (first) |p| focused_clip.* = p;
+    return changed;
+}
+
+pub fn nudgeSelectedClips(tracks: []Track, alloc: std.mem.Allocator, focused_clip: *?ClipRef, beat_delta: f64, track_delta: i32, edit_snap: snap_mod.Setting) bool {
+    if (track_delta != 0) {
+        return nudgeSelectedClipsTracks(tracks, alloc, focused_clip, track_delta);
+    }
+    if (beat_delta == 0) return false;
+    var changed = false;
+    for (tracks) |*t| {
+        for (t.clips.items) |*clip| {
+            if (!clip.selected) continue;
+            const next = snap_mod.snapPositive(edit_snap, clip.start_beat + beat_delta, false);
+            if (next != clip.start_beat) changed = true;
+            clip.start_beat = next;
+        }
+    }
+    return changed;
+}
+
+pub fn duplicateSelectedClips(tracks: []Track, alloc: std.mem.Allocator, selected_track: *?usize, focused_clip: *?ClipRef, edit_snap: snap_mod.Setting) bool {
+    var first: ?ClipRef = null;
+    var changed = false;
+
+    for (tracks, 0..) |*t, ti| {
+        const original_len = t.clips.items.len;
+        var ci: usize = 0;
+        while (ci < original_len) : (ci += 1) {
+            const src = &t.clips.items[ci];
+            if (!src.selected) continue;
+            var dup = src.clone(alloc) catch |err| {
+                std.log.err("duplicate clip failed: {s}", .{@errorName(err)});
+                continue;
+            };
+            src.selected = false;
+            const raw_start = src.start_beat + src.length_beats;
+            const snapped_start = snap_mod.snapPositive(edit_snap, raw_start, false);
+            dup.start_beat = if (snapped_start > src.start_beat) snapped_start else raw_start;
+            dup.selected = true;
+            for (dup.notes.items) |*n| n.selected = false;
+            t.addClip(alloc, dup) catch |err| {
+                std.log.err("duplicate clip append failed: {s}", .{@errorName(err)});
+                dup.deinit(alloc);
+                continue;
+            };
+            changed = true;
+            if (first == null) first = .{ .track = @intCast(ti), .clip = @intCast(t.clips.items.len - 1) };
+        }
+    }
+    focused_clip.* = first;
+    if (first) |p| selected_track.* = p.track;
+    return changed;
+}
+
+fn nudgeSelectedClipsTracks(tracks: []Track, alloc: std.mem.Allocator, focused_clip: *?ClipRef, delta: i32) bool {
+    var moved: [MAX_DRAG_CLIPS]struct { clip: Clip, target: usize } = undefined;
+    var moved_count: usize = 0;
+
+    var ti: usize = tracks.len;
+    while (ti > 0) {
+        ti -= 1;
+        var ci: usize = tracks[ti].clips.items.len;
+        while (ci > 0) {
+            ci -= 1;
+            if (!tracks[ti].clips.items[ci].selected) continue;
+            const target_signed = @as(i32, @intCast(ti)) + delta;
+            if (target_signed < 0 or target_signed >= @as(i32, @intCast(tracks.len))) continue;
+            if (moved_count >= MAX_DRAG_CLIPS) return moved_count > 0;
+            moved[moved_count] = .{
+                .clip = tracks[ti].clips.orderedRemove(ci),
+                .target = @intCast(target_signed),
+            };
+            moved_count += 1;
+        }
+    }
+
+    var first: ?ClipRef = null;
+    for (moved[0..moved_count]) |*entry| {
+        entry.clip.selected = true;
+        tracks[entry.target].addClip(alloc, entry.clip) catch |err| {
+            std.log.err("nudge clips between tracks failed: {s}", .{@errorName(err)});
+            entry.clip.deinit(alloc);
+            continue;
+        };
+        if (first == null) first = .{ .track = @intCast(entry.target), .clip = @intCast(tracks[entry.target].clips.items.len - 1) };
+    }
+    focused_clip.* = first;
+    return moved_count > 0;
+}
+
 pub fn draw(
     r: c.rl.Rectangle,
     tracks: []Track,
@@ -121,6 +424,9 @@ pub fn draw(
     selected_track: *?usize,
     selected_clip: *?ClipRef,
     transport: *Transport,
+    edit_snap: snap_mod.Setting,
+    can_paste_clips: bool,
+    rename_target: RenameTarget,
     m: widgets.Mouse,
 ) Result {
     var result: Result = .{};
@@ -169,7 +475,7 @@ pub fn draw(
     handleWheel(widgets.rect(timeline_x, r.y, timeline_w, r.height), m);
 
     // ── Continue an in-progress clip drag ─────────────────────────────
-    continueDrag(tracks, alloc, selected_clip, m, lanes_top);
+    continueDrag(tracks, alloc, selected_clip, edit_snap, m, lanes_top);
     updateBoxSelect(tracks, selected_track, selected_clip, m, timeline_x, timeline_w, timeline_x0, lanes_top);
 
     clampScroll(content_beats, timeline_w);
@@ -184,10 +490,10 @@ pub fn draw(
         @intFromFloat(ruler_rect.height),
     );
     drawLoopRegion(ruler_rect, timeline_x0, transport);
-    drawBeatTicks(ruler_rect, timeline_x, timeline_w, timeline_x0);
+    drawBeatTicks(ruler_rect, timeline_x, timeline_w, timeline_x0, edit_snap);
     c.rl.EndScissorMode();
 
-    handleLoopBounds(ruler_rect, timeline_x0, transport, m);
+    handleLoopBounds(ruler_rect, timeline_x0, transport, edit_snap, m);
     // Click / drag the ruler to scrub the playhead.
     if (!loop_start_drag and !loop_end_drag) handleRulerScrub(ruler_rect, timeline_x0, transport, m);
 
@@ -208,7 +514,7 @@ pub fn draw(
         if (ly >= r.y + r.height) break;
         const lane_timeline = widgets.rect(timeline_x, ly, timeline_w, theme.laneH());
         const lane_is_sel = selected_track.* != null and selected_track.*.? == ti;
-        drawTimelineLane(lane_timeline, t.*, ti, lane_is_sel, timeline_x0);
+        drawTimelineLane(lane_timeline, t.*, ti, lane_is_sel, timeline_x0, edit_snap);
         const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
 
         // Hit-test pass (reverse order, topmost first).
@@ -221,6 +527,16 @@ pub fn draw(
                 const edge_hover = m.x >= clip_rect.x + clip_rect.width - resizeEdgeW();
                 if (!widgets.hasActiveDrag()) {
                     widgets.requestCursor(if (edge_hover) c.rl.MOUSE_CURSOR_RESIZE_EW else c.rl.MOUSE_CURSOR_POINTING_HAND, 1);
+                }
+                if (m.double_clicked and !widgets.hasActiveDrag()) {
+                    const ref: ClipRef = .{ .track = @intCast(ti), .clip = @intCast(i) };
+                    deselectAllClips(tracks);
+                    clip.selected = true;
+                    selected_clip.* = ref;
+                    selected_track.* = ti;
+                    result.rename_clip = ref;
+                    press_consumed = true;
+                    break;
                 }
                 if (m.left_pressed and !widgets.hasActiveDrag()) {
                     const ref: ClipRef = .{ .track = @intCast(ti), .clip = @intCast(i) };
@@ -241,18 +557,32 @@ pub fn draw(
                     const mode: DragMode = if (edge_hover) .resize_r else .move;
                     beginDrag(tracks, ref, clip.*, m, mode);
                 }
+                if (m.right_pressed and !widgets.hasActiveDrag()) {
+                    const ref: ClipRef = .{ .track = @intCast(ti), .clip = @intCast(i) };
+                    if (!clip.selected) {
+                        deselectAllClips(tracks);
+                        clip.selected = true;
+                    }
+                    selected_clip.* = ref;
+                    selected_track.* = ti;
+                    context_target = .{ .beat = beatAtX(timeline_x0, m.x), .track = ti };
+                    _ = widgets.openContextMenu(ARR_CONTEXT_KEY, r, m);
+                    press_consumed = true;
+                }
             }
         }
 
         // Draw pass (forward order).
-        for (t.clips.items) |*clip| {
+        for (t.clips.items, 0..) |*clip, ci| {
             const clip_rect = clipRect(lane_timeline, clip.*, timeline_x0);
-            drawClip(clip_rect, clip.*, t.color, clip.selected);
+            const editing = rename_target.kind == .clip and rename_target.track == ti and rename_target.clip == ci;
+            drawClip(clip_rect, clip.*, t.color, clip.selected, editing);
+            if (editing) result.rename_rect = clipNameRect(clip_rect);
         }
 
         // Double-click on empty timeline area → create clip.
         if (!press_consumed and m.double_clicked and widgets.contains(lane_timeline, m.x, m.y)) {
-            const beat = snap(@as(f64, (m.x - timeline_x0 + scroll_x) / px_per_beat));
+            const beat = snap_mod.snapDownPositive(edit_snap, @as(f64, (m.x - timeline_x0 + scroll_x) / px_per_beat), altBypassSnap());
             const start = if (beat < 0) 0 else beat;
             deselectAllClips(tracks);
             createClipOnTrack(t, alloc, ti, start, selected_clip);
@@ -263,6 +593,15 @@ pub fn draw(
         // Single click on empty timeline area → track-only selection.
         if (!press_consumed and m.left_pressed and widgets.contains(lane_timeline, m.x, m.y) and !widgets.hasActiveDrag()) {
             beginBoxSelect(ti, m, shift);
+            press_consumed = true;
+        }
+
+        if (!press_consumed and m.right_pressed and widgets.contains(lane_timeline, m.x, m.y) and !widgets.hasActiveDrag()) {
+            selected_track.* = ti;
+            selected_clip.* = null;
+            deselectAllClips(tracks);
+            context_target = .{ .beat = beatAtX(timeline_x0, m.x), .track = ti };
+            _ = widgets.openContextMenu(ARR_CONTEXT_KEY, r, m);
             press_consumed = true;
         }
     }
@@ -314,12 +653,22 @@ pub fn draw(
         if (ly >= r.y + r.height) break;
         const lane_header = widgets.rect(header_x, ly, header_w, theme.laneH());
         const lane_is_sel = selected_track.* != null and selected_track.*.? == ti;
-        if (drawLaneHeader(lane_header, t, lane_is_sel, m)) {
-            selected_track.* = ti;
-            deselectAllClips(tracks);
-            // Clear clip selection unless the clicked track already
-            // owns the currently-selected clip.
-            selected_clip.* = null;
+        const editing = rename_target.kind == .track and rename_target.track == ti;
+        const hres = drawLaneHeader(lane_header, t, lane_is_sel, editing, m);
+        if (editing) result.rename_rect = hres.name_rect;
+        switch (hres.action) {
+            .none => {},
+            .select => {
+                selected_track.* = ti;
+                deselectAllClips(tracks);
+                selected_clip.* = null;
+            },
+            .rename => {
+                selected_track.* = ti;
+                deselectAllClips(tracks);
+                selected_clip.* = null;
+                result.rename_track = ti;
+            },
         }
     }
     c.rl.EndScissorMode();
@@ -330,6 +679,30 @@ pub fn draw(
 
     // Overview strip on top (rendered last so nothing scissor-clips it).
     drawOverview(overview_rect, timeline_w, tracks, content_beats, transport, m);
+    if (widgets.openContextMenu(ARR_CONTEXT_KEY, r, m)) {
+        context_target = .{ .beat = beatAtX(timeline_x0, m.x), .track = selected_track.* };
+    }
+    const has_selection = hasSelectedClips(tracks);
+    const has_clips = hasAnyClips(tracks);
+    const arr_context_items = [_]widgets.MenuItem{
+        .{ .label = "Copy", .command = .copy, .enabled = has_selection },
+        .{ .label = "Cut", .command = .cut, .enabled = has_selection },
+        .{ .label = "Paste", .command = .paste, .enabled = can_paste_clips },
+        .{ .separator = true },
+        .{ .label = "Duplicate", .command = .duplicate, .enabled = has_selection },
+        .{ .label = "Split at playhead", .command = .split_at_playhead, .enabled = has_selection },
+        .{ .label = "Delete", .command = .delete, .enabled = has_selection },
+        .{ .separator = true },
+        .{ .label = "Rename", .command = .rename, .enabled = has_selection },
+        .{ .label = "Select all", .command = .select_all, .enabled = has_clips },
+        .{ .label = "Clear selection", .command = .clear_selection, .enabled = has_selection },
+        .{ .label = "Loop selection", .command = .loop_selection, .enabled = has_selection },
+    };
+    result.command = widgets.contextMenu(ARR_CONTEXT_KEY, &arr_context_items, m);
+    if (result.command != .none) {
+        result.command_beat = context_target.beat;
+        result.command_track = context_target.track;
+    }
     return result;
 }
 
@@ -359,6 +732,14 @@ fn handleWheel(zone: c.rl.Rectangle, m: widgets.Mouse) void {
         scroll_y -= m.wheel_y * 30;
     }
     last_scroll_time = c.rl.GetTime();
+}
+
+fn altBypassSnap() bool {
+    return c.rl.IsKeyDown(c.rl.KEY_LEFT_ALT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_ALT);
+}
+
+fn minClipBeats(edit_snap: snap_mod.Setting) f64 {
+    return @min(edit_snap.beats() orelse MIN_CLIP_BEATS, MIN_CLIP_BEATS);
 }
 
 fn contentBeats(tracks: []Track) f64 {
@@ -516,7 +897,7 @@ fn beginDrag(tracks: []Track, ref: ClipRef, clip: Clip, m: widgets.Mouse, mode: 
     }
 }
 
-fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?ClipRef, m: widgets.Mouse, lanes_top: f32) void {
+fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?ClipRef, edit_snap: snap_mod.Setting, m: widgets.Mouse, lanes_top: f32) void {
     if (drag_mode == .none) return;
     const key = widgets.keyFromIds(DRAG_SALT, drag_ref.track, drag_ref.clip);
     if (!widgets.isDraggingKey(key)) {
@@ -545,7 +926,7 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
     const clip = &t.clips.items[drag_ref.clip];
 
     const dx = m.x - drag_start_mouse_x;
-    const d_beats = snap(@as(f64, dx / px_per_beat));
+    const d_beats = snap_mod.snapNearest(edit_snap, @as(f64, dx / px_per_beat), altBypassSnap());
     drag_track_delta = @as(i32, @intFromFloat(@floor((m.y - lanes_top + scroll_y) / theme.laneH()))) - @as(i32, @intCast(drag_ref.track));
 
     switch (drag_mode) {
@@ -568,7 +949,7 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
         .resize_r => {
             widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
             const new_len = drag_start_length + d_beats;
-            clip.length_beats = if (new_len < MIN_CLIP_BEATS) MIN_CLIP_BEATS else new_len;
+            clip.length_beats = if (new_len < minClipBeats(edit_snap)) minClipBeats(edit_snap) else new_len;
         },
     }
 }
@@ -662,52 +1043,56 @@ fn moveSelectedClipsBetweenTracks(tracks: []Track, alloc: std.mem.Allocator, sel
 
 // ── Rendering helpers ────────────────────────────────────────────────
 
-fn drawBeatTicks(ruler: c.rl.Rectangle, timeline_x: f32, timeline_w: f32, timeline_x0: f32) void {
-    var beat: u32 = 0;
+fn drawBeatTicks(ruler: c.rl.Rectangle, timeline_x: f32, timeline_w: f32, timeline_x0: f32, edit_snap: snap_mod.Setting) void {
+    const step = snap_mod.visualStep(edit_snap, px_per_beat);
+    var beat: f64 = 0;
     while (true) {
-        const bx = timeline_x0 + @as(f32, @floatFromInt(beat)) * px_per_beat - scroll_x;
+        const bx = timeline_x0 + @as(f32, @floatCast(beat)) * px_per_beat - scroll_x;
         if (bx > timeline_x + timeline_w - 2) break;
         if (bx < timeline_x - 20) {
-            beat += 1;
+            beat += step;
             continue;
         }
-        const is_bar = beat % 4 == 0;
-        const tick_h: f32 = if (is_bar) rulerH() - 4 else 5;
+        const is_bar = snap_mod.isBar(beat);
+        const is_beat = snap_mod.isBeat(beat);
+        const tick_h: f32 = if (is_bar) rulerH() - 4 else if (is_beat) 5 else 3;
         c.rl.DrawRectangle(
             @intFromFloat(bx),
             @intFromFloat(ruler.y + rulerH() - tick_h - 2),
             1,
             @intFromFloat(tick_h),
-            if (is_bar) theme.grid_bar else theme.grid_beat,
+            if (is_bar) theme.grid_bar else if (is_beat) theme.grid_beat else theme.grid_sub,
         );
         if (is_bar) {
             var buf: [8]u8 = undefined;
-            const s = std.fmt.bufPrintZ(&buf, "{d}", .{beat / 4 + 1}) catch "?";
+            const s = std.fmt.bufPrintZ(&buf, "{d}", .{@as(u32, @intFromFloat(@round(beat / 4.0))) + 1}) catch "?";
             widgets.drawLabelF(s.ptr, bx + 2, ruler.y + 1, theme.fsTiny(), theme.text_dim);
         }
-        beat += 1;
+        beat += step;
     }
 }
 
-fn drawTimelineLane(r: c.rl.Rectangle, t: Track, idx: usize, selected: bool, timeline_x0: f32) void {
+fn drawTimelineLane(r: c.rl.Rectangle, t: Track, idx: usize, selected: bool, timeline_x0: f32, edit_snap: snap_mod.Setting) void {
     const bg = if (selected) theme.pane_alt else if (idx % 2 == 0) theme.pane_bg else theme.pane_alt;
     c.rl.DrawRectangleRec(r, bg);
 
-    var beat: u32 = 0;
+    const step = snap_mod.visualStep(edit_snap, px_per_beat);
+    var beat: f64 = 0;
     while (true) {
-        const bx = timeline_x0 + @as(f32, @floatFromInt(beat)) * px_per_beat - scroll_x;
+        const bx = timeline_x0 + @as(f32, @floatCast(beat)) * px_per_beat - scroll_x;
         if (bx > r.x + r.width - 1) break;
         if (bx >= r.x) {
-            const is_bar = beat % 4 == 0;
+            const is_bar = snap_mod.isBar(beat);
+            const is_beat = snap_mod.isBeat(beat);
             c.rl.DrawRectangle(
                 @intFromFloat(bx),
                 @intFromFloat(r.y),
                 1,
                 @intFromFloat(r.height),
-                if (is_bar) theme.grid_bar else theme.grid_beat,
+                if (is_bar) theme.grid_bar else if (is_beat) theme.grid_beat else theme.grid_sub,
             );
         }
-        beat += 1;
+        beat += step;
     }
 
     c.rl.DrawRectangle(@intFromFloat(r.x), @intFromFloat(r.y), 2, @intFromFloat(r.height), t.color);
@@ -726,7 +1111,7 @@ fn clipRect(lane: c.rl.Rectangle, clip: Clip, timeline_x0: f32) c.rl.Rectangle {
     return widgets.rect(x, lane.y + 2, w, lane.height - 4);
 }
 
-fn drawClip(r: c.rl.Rectangle, clip: Clip, color: c.rl.Color, selected: bool) void {
+fn drawClip(r: c.rl.Rectangle, clip: Clip, color: c.rl.Color, selected: bool, editing_name: bool) void {
     // Body — dimmed track color
     const body = dim(color, 0.55);
     c.rl.DrawRectangleRec(r, body);
@@ -741,18 +1126,20 @@ fn drawClip(r: c.rl.Rectangle, clip: Clip, color: c.rl.Color, selected: bool) vo
     c.rl.DrawRectangleLinesEx(r, 1, edge);
 
     // Name
-    var name_buf: [clip_mod.MAX_NAME + 1:0]u8 = undefined;
-    const n = clip.name();
-    const copy_n = @min(n.len, clip_mod.MAX_NAME);
-    @memcpy(name_buf[0..copy_n], n[0..copy_n]);
-    name_buf[copy_n] = 0;
-    widgets.drawLabelF(
-        @ptrCast(&name_buf[0]),
-        r.x + 3,
-        r.y,
-        theme.fsTiny(),
-        theme.bg,
-    );
+    if (!editing_name) {
+        var name_buf: [clip_mod.MAX_NAME + 1:0]u8 = undefined;
+        const n = clip.name();
+        const copy_n = @min(n.len, clip_mod.MAX_NAME);
+        @memcpy(name_buf[0..copy_n], n[0..copy_n]);
+        name_buf[copy_n] = 0;
+        widgets.drawLabelF(
+            @ptrCast(&name_buf[0]),
+            r.x + 3,
+            r.y,
+            theme.fsTiny(),
+            theme.bg,
+        );
+    }
 
     // Tiny note ticks in the body to hint content (only if there are notes).
     if (clip.notes.items.len > 0) {
@@ -775,7 +1162,13 @@ fn drawClip(r: c.rl.Rectangle, clip: Clip, color: c.rl.Color, selected: bool) vo
     }
 }
 
-fn drawLaneHeader(r: c.rl.Rectangle, t: *Track, selected: bool, m: widgets.Mouse) bool {
+const HeaderAction = enum { none, select, rename };
+const HeaderResult = struct {
+    action: HeaderAction = .none,
+    name_rect: c.rl.Rectangle,
+};
+
+fn drawLaneHeader(r: c.rl.Rectangle, t: *Track, selected: bool, editing_name: bool, m: widgets.Mouse) HeaderResult {
     const bg = if (selected) theme.slab_fill else theme.pane_bg;
     c.rl.DrawRectangleRec(r, bg);
     c.rl.DrawRectangle(@intFromFloat(r.x), @intFromFloat(r.y), @intFromFloat(r.width), 1, theme.slab_edge);
@@ -807,12 +1200,15 @@ fn drawLaneHeader(r: c.rl.Rectangle, t: *Track, selected: bool, m: widgets.Mouse
     const solo_r = widgets.rect(content_x + content_w - btn_w, row1_y, btn_w, btn_h);
     const mute_r = widgets.rect(solo_r.x - btn_w - 2, row1_y, btn_w, btn_h);
 
-    var name_buf: [track_mod.MAX_NAME + 1:0]u8 = undefined;
-    const n = t.name();
-    const copy_n = @min(n.len, track_mod.MAX_NAME);
-    @memcpy(name_buf[0..copy_n], n[0..copy_n]);
-    name_buf[copy_n] = 0;
-    widgets.drawLabelF(@ptrCast(&name_buf[0]), content_x, row1_y + 1, theme.fsBody(), theme.text_fg);
+    const name_rect = widgets.rect(content_x, row1_y, content_w - btn_w * 2 - 4, btn_h);
+    if (!editing_name) {
+        var name_buf: [track_mod.MAX_NAME + 1:0]u8 = undefined;
+        const n = t.name();
+        const copy_n = @min(n.len, track_mod.MAX_NAME);
+        @memcpy(name_buf[0..copy_n], n[0..copy_n]);
+        name_buf[copy_n] = 0;
+        widgets.drawLabelF(@ptrCast(&name_buf[0]), content_x, row1_y + 1, theme.fsBody(), theme.text_fg);
+    }
 
     const is_muted = t.mute.load(.monotonic);
     const mute_fill = if (is_muted) theme.accent_rec else theme.slab_fill;
@@ -843,9 +1239,13 @@ fn drawLaneHeader(r: c.rl.Rectangle, t: *Track, selected: bool, m: widgets.Mouse
 
     const click_region = widgets.rect(content_x, r.y + 1, content_w - btn_w * 2 - 4, theme.size(14));
     if (widgets.contains(click_region, m.x, m.y) and m.left_pressed and !widgets.hasActiveDrag()) {
-        return true;
+        return .{ .action = if (m.double_clicked) .rename else .select, .name_rect = name_rect };
     }
-    return false;
+    return .{ .action = .none, .name_rect = name_rect };
+}
+
+fn clipNameRect(r: c.rl.Rectangle) c.rl.Rectangle {
+    return widgets.rect(r.x + 2, r.y + 1, @max(8, r.width - 4), 11);
 }
 
 fn createClipOnTrack(t: *Track, alloc: std.mem.Allocator, track_idx: usize, start_beat: f64, selected: *?ClipRef) void {
@@ -858,13 +1258,6 @@ fn createClipOnTrack(t: *Track, alloc: std.mem.Allocator, track_idx: usize, star
         return;
     };
     selected.* = .{ .track = @intCast(track_idx), .clip = @intCast(t.clips.items.len - 1) };
-}
-
-/// Snap a beat value to the current grid (currently fixed at 1/4 beat
-/// = sixteenth-note granularity).
-fn snap(beats: f64) f64 {
-    const grid: f64 = 0.25;
-    return @round(beats / grid) * grid;
 }
 
 fn beatToX(timeline_x0: f32, beat: f64) f32 {
@@ -897,7 +1290,7 @@ fn drawLoopRegion(r: c.rl.Rectangle, timeline_x0: f32, transport: *const Transpo
 
 // ── Ruler scrub ──────────────────────────────────────────────────────
 
-fn handleLoopBounds(ruler: c.rl.Rectangle, timeline_x0: f32, transport: *Transport, m: widgets.Mouse) void {
+fn handleLoopBounds(ruler: c.rl.Rectangle, timeline_x0: f32, transport: *Transport, edit_snap: snap_mod.Setting, m: widgets.Mouse) void {
     if (!transport.loopEnabled()) return;
     const start_x = beatToX(timeline_x0, transport.loopStartBeats());
     const end_x = beatToX(timeline_x0, transport.loopEndBeats());
@@ -913,13 +1306,13 @@ fn handleLoopBounds(ruler: c.rl.Rectangle, timeline_x0: f32, transport: *Transpo
             widgets.cancelDrag();
             return;
         }
-        const beat = snap(beatAtX(timeline_x0, m.x));
+        const beat = snap_mod.snapNearest(edit_snap, beatAtX(timeline_x0, m.x), altBypassSnap());
         const s = transport.loopStartBeats();
         const e = transport.loopEndBeats();
         if (loop_start_drag) {
-            transport.setLoopBeats(@max(0, @min(beat, e - 0.25)), e);
+            transport.setLoopBeats(@max(0, @min(beat, e - minClipBeats(edit_snap))), e);
         } else {
-            transport.setLoopBeats(s, @max(s + 0.25, beat));
+            transport.setLoopBeats(s, @max(s + minClipBeats(edit_snap), beat));
         }
         return;
     }

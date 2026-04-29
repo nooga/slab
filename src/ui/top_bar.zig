@@ -10,6 +10,7 @@ const std = @import("std");
 const c = @import("../c.zig");
 const theme = @import("theme.zig");
 const widgets = @import("widgets.zig");
+const snap_mod = @import("snap.zig");
 const Transport = @import("../transport.zig").Transport;
 
 const GAP: f32 = 0;
@@ -26,7 +27,7 @@ pub const Result = struct {
     save_project_as: bool = false,
 };
 
-pub fn draw(r: c.rl.Rectangle, transport: *Transport, m: widgets.Mouse) Result {
+pub fn draw(r: c.rl.Rectangle, transport: *Transport, edit_snap: *snap_mod.Setting, m: widgets.Mouse) Result {
     var result: Result = .{};
 
     // Bar background — flat, no bevel.
@@ -47,6 +48,8 @@ pub fn draw(r: c.rl.Rectangle, transport: *Transport, m: widgets.Mouse) Result {
     const tap_w = theme.size(30);
     const field_w_bpm = theme.size(80);
     const field_w_pos = theme.size(74);
+    const snap_btn_w = theme.size(18);
+    const snap_field_w = theme.size(54);
 
     // ── File operations ──────────────────────────────────────────────
     if (widgets.iconButtonTip(widgets.rect(x, y, btn_w, h), .folder, null, "Open project  Cmd+O", m)) {
@@ -99,7 +102,23 @@ pub fn draw(r: c.rl.Rectangle, transport: *Transport, m: widgets.Mouse) Result {
     // ── Position field ───────────────────────────────────────────────
     const pos_rect = widgets.rect(x, y, field_w_pos, h);
     posField(pos_rect, transport);
-    x += field_w_pos;
+    x += field_w_pos + GROUP_GAP;
+
+    drawSeparator(widgets.rect(x, y, theme.size(10), h));
+    x += theme.size(10) + GROUP_GAP;
+
+    if (widgets.buttonTip(widgets.rect(x, y, snap_btn_w, h), "-", "Coarser snap  [", m)) {
+        edit_snap.* = edit_snap.*.coarser();
+    }
+    x += snap_btn_w + GAP;
+    const snap_rect = widgets.rect(x, y, snap_field_w, h);
+    snapField(snap_rect, edit_snap.*);
+    widgets.tooltip(snap_rect, edit_snap.tooltip(), m);
+    x += snap_field_w + GAP;
+    if (widgets.buttonTip(widgets.rect(x, y, snap_btn_w, h), "+", "Finer snap  ]", m)) {
+        edit_snap.* = edit_snap.*.finer();
+    }
+    x += snap_btn_w;
 
     // ── SLAB title, right aligned ────────────────────────────────────
     const title = "SLAB";
@@ -178,6 +197,13 @@ fn posField(r: c.rl.Rectangle, transport: *const Transport) void {
         theme.fsTiny(),
         theme.text_mute,
     );
+}
+
+fn snapField(r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
+    const inner = widgets.displayField(r);
+    const label = edit_snap.label();
+    const tw = widgets.measureTextF(label, theme.fsBody());
+    widgets.drawLabelF(label, inner.x + (inner.width - tw) / 2, inner.y + 1, theme.fsBody(), theme.text_fg);
 }
 
 fn handleTap(transport: *Transport) void {

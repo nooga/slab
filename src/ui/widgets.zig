@@ -29,11 +29,42 @@ var tooltip_hover_key: u64 = 0;
 var tooltip_hover_since: f64 = 0;
 var requested_cursor: c_int = c.rl.MOUSE_CURSOR_DEFAULT;
 var requested_cursor_priority: u8 = 0;
+var context_key: u64 = 0;
+var context_x: f32 = 0;
+var context_y: f32 = 0;
+const MAX_CONTEXT_ITEMS: usize = 16;
+var context_draw_items: [MAX_CONTEXT_ITEMS]MenuItem = undefined;
+var context_draw_len: usize = 0;
+var context_draw_active: bool = false;
+
+pub const EditCommand = enum {
+    none,
+    copy,
+    cut,
+    paste,
+    duplicate,
+    delete,
+    select_all,
+    clear_selection,
+    loop_selection,
+    split_at_playhead,
+    quantize,
+    rename,
+};
+
+pub const MenuItem = struct {
+    label: [*:0]const u8 = "",
+    command: EditCommand = .none,
+    enabled: bool = true,
+    separator: bool = false,
+};
 
 pub fn beginFrame() void {
     tooltip_text = null;
     requested_cursor = c.rl.MOUSE_CURSOR_DEFAULT;
     requested_cursor_priority = 0;
+    context_draw_len = 0;
+    context_draw_active = false;
 }
 
 pub fn requestCursor(cursor: c_int, priority: u8) void {
@@ -79,6 +110,96 @@ pub fn drawTooltip(sw: f32, sh: f32) void {
     c.rl.DrawRectangleRec(r, theme.slab_edge);
     c.rl.DrawRectangleRec(rect(r.x + 1, r.y + 1, r.width - 2, r.height - 2), theme.pane_alt);
     drawLabelF(text, r.x + pad_x, r.y + pad_y - 1, size, theme.text_fg);
+}
+
+// ── Context menu ────────────────────────────────────────────────────
+
+pub fn openContextMenu(key: u64, r: c.rl.Rectangle, m: Mouse) bool {
+    if (!m.right_pressed or !contains(r, m.x, m.y)) return false;
+    context_key = key;
+    context_x = m.x;
+    context_y = m.y;
+    cancelDrag();
+    return true;
+}
+
+pub fn closeContextMenu() void {
+    context_key = 0;
+}
+
+pub fn contextMenu(key: u64, items: []const MenuItem, m: Mouse) EditCommand {
+    if (context_key != key) return .none;
+    const draw_len = @min(items.len, MAX_CONTEXT_ITEMS);
+    @memcpy(context_draw_items[0..draw_len], items[0..draw_len]);
+    context_draw_len = draw_len;
+    context_draw_active = true;
+
+    const row_h = contextMenuRowH();
+    const r = contextMenuRect(items);
+
+    var clicked: EditCommand = .none;
+    for (items, 0..) |item, i| {
+        const row = rect(r.x + 1, r.y + 1 + @as(f32, @floatFromInt(i)) * row_h, r.width - 2, row_h);
+        if (item.separator) continue;
+        const hover = contains(row, m.x, m.y);
+        if (hover and item.enabled and m.left_released) clicked = item.command;
+    }
+
+    if (clicked != .none) {
+        closeContextMenu();
+        return clicked;
+    }
+    if ((m.left_pressed or m.right_pressed) and !contains(r, m.x, m.y)) closeContextMenu();
+    return .none;
+}
+
+pub fn drawContextMenu() void {
+    if (!context_draw_active) return;
+    const items = context_draw_items[0..context_draw_len];
+    const r = contextMenuRect(items);
+    const row_h = contextMenuRowH();
+    const pad_x = theme.size(6);
+    const mx: f32 = @floatFromInt(c.rl.GetMouseX());
+    const my: f32 = @floatFromInt(c.rl.GetMouseY());
+
+    c.rl.DrawRectangleRec(r, theme.slab_edge);
+    c.rl.DrawRectangleRec(rect(r.x + 1, r.y + 1, r.width - 2, r.height - 2), theme.pane_bg);
+    for (items, 0..) |item, i| {
+        const row = rect(r.x + 1, r.y + 1 + @as(f32, @floatFromInt(i)) * row_h, r.width - 2, row_h);
+        if (item.separator) {
+            const y = row.y + row.height / 2;
+            c.rl.DrawRectangle(@intFromFloat(row.x + pad_x), @intFromFloat(y), @intFromFloat(row.width - pad_x * 2), 1, theme.slab_lo);
+            c.rl.DrawRectangle(@intFromFloat(row.x + pad_x), @intFromFloat(y + 1), @intFromFloat(row.width - pad_x * 2), 1, theme.slab_hi);
+            continue;
+        }
+        const hover = contains(row, mx, my);
+        if (hover and item.enabled) c.rl.DrawRectangleRec(row, theme.slab_hi);
+        const col = if (item.enabled) theme.text_fg else theme.text_mute;
+        drawLabelF(item.label, row.x + pad_x, row.y + (row.height - theme.fsBody()) / 2 - 1, theme.fsBody(), col);
+    }
+}
+
+fn contextMenuRowH() f32 {
+    return theme.size(18);
+}
+
+fn contextMenuRect(items: []const MenuItem) c.rl.Rectangle {
+    const row_h = contextMenuRowH();
+    const w = contextMenuWidth(items, theme.size(6));
+    const h = row_h * @as(f32, @floatFromInt(items.len)) + 2;
+    const sw: f32 = @floatFromInt(c.rl.GetScreenWidth());
+    const sh: f32 = @floatFromInt(c.rl.GetScreenHeight());
+    const x = @min(context_x, sw - w - 2);
+    const y = @min(context_y, sh - h - 2);
+    return rect(@max(2, x), @max(2, y), w, h);
+}
+
+fn contextMenuWidth(items: []const MenuItem, pad_x: f32) f32 {
+    var w: f32 = theme.size(96);
+    for (items) |item| {
+        w = @max(w, measureTextF(item.label, theme.fsBody()) + pad_x * 2);
+    }
+    return w;
 }
 
 // ── Mouse snapshot (built once per frame) ────────────────────────────
@@ -323,6 +444,7 @@ pub const HeaderResult = struct {
     minimize: bool = false,
     close: bool = false,
     left_tool: bool = false,
+    title_rect: ?c.rl.Rectangle = null,
 };
 
 pub fn paneHeader(
@@ -331,7 +453,7 @@ pub fn paneHeader(
     m: Mouse,
 ) HeaderResult {
     const btn_sz = r.height;
-    const gap: f32 = 1;
+    const gap: f32 = 0;
 
     // Left-side tool (optional).
     var left_x = r.x;
@@ -363,13 +485,15 @@ pub fn paneHeader(
 
     // Title bar fills between left tool and right buttons.
     const title_w = right_x - left_x;
+    var title_rect_out: ?c.rl.Rectangle = null;
     if (title_w > 0) {
         const title_rect = rect(left_x, r.y, title_w, r.height);
+        title_rect_out = title_rect;
         bevelRaised(title_rect, theme.slab_fill, theme.slab_hi, theme.slab_lo);
-        drawLabelF(opts.title, title_rect.x + 4, title_rect.y + 2, theme.fsTiny(), theme.text_fg);
+        drawLabelF(opts.title, title_rect.x + 4, title_rect.y + 1, theme.fsTiny(), theme.text_fg);
     }
 
-    return .{ .minimize = min_clicked, .close = close_clicked, .left_tool = left_tool_clicked };
+    return .{ .minimize = min_clicked, .close = close_clicked, .left_tool = left_tool_clicked, .title_rect = title_rect_out };
 }
 
 // ── Button ───────────────────────────────────────────────────────────
@@ -419,6 +543,100 @@ pub fn buttonColored(r: c.rl.Rectangle, label: [*:0]const u8, active_fill: ?c.rl
     const ty = r.y + (r.height - size) / 2 - 1;
     drawLabelF(label, tx, ty, size, theme.text_fg);
     return clicked;
+}
+
+// ── Machine switches ─────────────────────────────────────────────────
+
+pub fn toggleCell(r: c.rl.Rectangle, label: [*:0]const u8, on: *bool, m: Mouse) bool {
+    const hover = contains(r, m.x, m.y) and !hasActiveDrag();
+    const pressed = hover and m.left_down;
+    const clicked = hover and m.left_released;
+    if (clicked) on.* = !on.*;
+
+    const fill = if (pressed) theme.slab_lo else if (on.*) theme.slab_hi else if (hover) theme.slab_fill else theme.pane_alt;
+    bevelRaised(r, fill, theme.slab_hi, theme.slab_lo);
+
+    const led_r = rect(r.x + 4, r.y + (r.height - 6) / 2, 6, 6);
+    led(led_r, on.*, theme.accent_hi);
+    const text_col = if (on.* or hover) theme.text_fg else theme.text_dim;
+    drawLabelF(label, r.x + 14, r.y + (r.height - theme.fsBody()) / 2 - 1, theme.fsBody(), text_col);
+    return clicked;
+}
+
+pub fn switch3(
+    r: c.rl.Rectangle,
+    label: [*:0]const u8,
+    opt0: [*:0]const u8,
+    opt1: [*:0]const u8,
+    opt2: [*:0]const u8,
+    value: *u8,
+    m: Mouse,
+) bool {
+    var changed = false;
+    const label_h = theme.fsTiny() + 2;
+    const label_col = if (contains(r, m.x, m.y)) theme.text_fg else theme.text_dim;
+    drawLabelF(label, r.x, r.y, theme.fsTiny(), label_col);
+
+    const strip = rect(r.x, r.y + label_h, r.width, r.height - label_h);
+    bevelRaised(strip, theme.slab_fill, theme.slab_hi, theme.slab_lo);
+    const opts = [_][*:0]const u8{ opt0, opt1, opt2 };
+    const cell_w = strip.width / 3.0;
+
+    for (opts, 0..) |opt, i| {
+        const fi: f32 = @floatFromInt(i);
+        const cell = rect(strip.x + fi * cell_w, strip.y, cell_w, strip.height);
+        const active = value.* == i;
+        const hover = contains(cell, m.x, m.y) and !hasActiveDrag();
+        if (hover and m.left_released) {
+            value.* = @intCast(i);
+            changed = true;
+        }
+        const fill = if (active) theme.slab_hi else if (hover) theme.slab_fill else theme.pane_alt;
+        c.rl.DrawRectangleRec(rect(cell.x + 1, cell.y + 1, cell.width - 2, cell.height - 2), fill);
+        if (i > 0) c.rl.DrawRectangle(@intFromFloat(cell.x), @intFromFloat(cell.y + 1), 1, @intFromFloat(cell.height - 2), theme.slab_edge);
+        const size = theme.fsTiny();
+        const tw = measureTextF(opt, size);
+        drawLabelF(opt, cell.x + (cell.width - tw) / 2, cell.y + (cell.height - size) / 2 - 1, size, if (active) theme.text_fg else theme.text_dim);
+    }
+    return changed;
+}
+
+pub fn switch3Vertical(
+    r: c.rl.Rectangle,
+    label: [*:0]const u8,
+    opt0: [*:0]const u8,
+    opt1: [*:0]const u8,
+    opt2: [*:0]const u8,
+    value: *u8,
+    m: Mouse,
+) bool {
+    var changed = false;
+    const label_h = theme.fsTiny() + 2;
+    const label_col = if (contains(r, m.x, m.y)) theme.text_fg else theme.text_dim;
+    drawLabelF(label, r.x, r.y, theme.fsTiny(), label_col);
+
+    const strip = rect(r.x, r.y + label_h, r.width, r.height - label_h);
+    bevelRaised(strip, theme.slab_fill, theme.slab_hi, theme.slab_lo);
+    const opts = [_][*:0]const u8{ opt0, opt1, opt2 };
+    const cell_h = strip.height / 3.0;
+
+    for (opts, 0..) |opt, i| {
+        const fi: f32 = @floatFromInt(i);
+        const cell = rect(strip.x, strip.y + fi * cell_h, strip.width, cell_h);
+        const active = value.* == i;
+        const hover = contains(cell, m.x, m.y) and !hasActiveDrag();
+        if (hover and m.left_released) {
+            value.* = @intCast(i);
+            changed = true;
+        }
+        const fill = if (active) theme.slab_hi else if (hover) theme.slab_fill else theme.pane_alt;
+        c.rl.DrawRectangleRec(rect(cell.x + 1, cell.y + 1, cell.width - 2, cell.height - 2), fill);
+        if (i > 0) c.rl.DrawRectangle(@intFromFloat(cell.x + 1), @intFromFloat(cell.y), @intFromFloat(cell.width - 2), 1, theme.slab_edge);
+        const size = theme.fsTiny();
+        const tw = measureTextF(opt, size);
+        drawLabelF(opt, cell.x + (cell.width - tw) / 2, cell.y + (cell.height - size) / 2 - 1, size, if (active) theme.text_fg else theme.text_dim);
+    }
+    return changed;
 }
 
 // ── Knob ─────────────────────────────────────────────────────────────

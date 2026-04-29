@@ -74,7 +74,7 @@ pub fn serialize(alloc: std.mem.Allocator, tracks: []const track_mod.Track, tran
 
     for (tracks) |*t| {
         const machine_idx: i32 = if (t.machine_idx) |idx| @intCast(idx) else -1;
-        try appendFmt(alloc, &out, "TRACK\t{s}\t{d}\t{d}\t{d}\t{d}\t{d:.6}\t{d}\t{d}\t{d}\n", .{
+        try appendFmt(alloc, &out, "TRACK\t{s}\t{d}\t{d}\t{d}\t{d}\t{d:.6}\t{d}\t{d}\t{d}\t{d}\n", .{
             t.name(),
             machine_idx,
             t.color.r,
@@ -84,6 +84,7 @@ pub fn serialize(alloc: std.mem.Allocator, tracks: []const track_mod.Track, tran
             @intFromBool(t.mute.load(.monotonic)),
             @intFromBool(t.solo.load(.monotonic)),
             t.clips.items.len,
+            t.poly_voices,
         });
         for (t.clips.items) |*clip| {
             try appendFmt(alloc, &out, "CLIP\t{s}\t{d:.6}\t{d:.6}\t{d}\n", .{
@@ -147,13 +148,14 @@ pub fn apply(
         const mute = try parseBool(nextField(&fields) orelse return error.InvalidProject);
         const solo = try parseBool(nextField(&fields) orelse return error.InvalidProject);
         const clip_count = try parseUsize(nextField(&fields) orelse return error.InvalidProject);
+        const poly_voices = normalizePolyVoices(if (nextField(&fields)) |raw| try parseU8(raw) else 1);
 
         var mach = silent_machine;
         var machine_idx: ?u8 = null;
         if (machine_idx_raw >= 0) {
             const idx: usize = @intCast(machine_idx_raw);
             if (idx < reg.count) {
-                mach = try reg.instantiate(idx);
+                mach = try reg.instantiateWithPolyphony(idx, poly_voices);
                 machine_idx = @intCast(idx);
             }
         }
@@ -161,6 +163,7 @@ pub fn apply(
         var t = try track_mod.Track.init(alloc, name, .{ .r = r, .g = g, .b = b, .a = 255 }, mach);
         errdefer t.deinit(alloc);
         t.machine_idx = machine_idx;
+        t.poly_voices = poly_voices;
         t.setVolume(volume);
         t.mute.store(mute, .monotonic);
         t.solo.store(solo, .monotonic);
@@ -267,6 +270,13 @@ fn parseU8(s: []const u8) !u8 {
     return std.fmt.parseInt(u8, s, 10);
 }
 
+fn normalizePolyVoices(v: u8) u8 {
+    if (v >= 16) return 16;
+    if (v >= 8) return 8;
+    if (v >= 4) return 4;
+    return 1;
+}
+
 fn parseF32(s: []const u8) !f32 {
     return std.fmt.parseFloat(f32, s);
 }
@@ -281,12 +291,14 @@ fn testRender(_: *anyopaque, _: *const machine_mod.MachineCtx, l: []f32, r: []f3
 }
 
 fn testReset(_: *anyopaque) void {}
+fn testDraw(_: *anyopaque, _: c.rl.Rectangle, _: @import("ui/widgets.zig").Mouse) void {}
 
 var test_machine_state: u8 = 0;
 const test_machine = machine_mod.Machine{
     .name = "(test)",
     .state = &test_machine_state,
     .render = testRender,
+    .draw_panel = testDraw,
     .reset = testReset,
 };
 

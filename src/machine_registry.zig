@@ -2,16 +2,30 @@
 //! names (phase-cell, gain-cell, …) don't alias across machines.
 
 const std = @import("std");
+const Fy = @import("fy").Fy;
 const machine = @import("machine.zig");
 const fy_host_mod = @import("fy_host.zig");
 const FyHost = fy_host_mod.FyHost;
 const fy_machine_mod = @import("machines/fy_machine.zig");
 const FyMachine = fy_machine_mod.FyMachine;
+const poly_mod = @import("machines/poly.zig");
 
 pub const MAX_MACHINES = 8;
 pub const MAX_NAME = 32;
 pub const MAX_PATH = 256;
 pub const MAX_WORD = 64;
+
+const RawMachine = extern struct {
+    audio: Fy.Value,
+    ui: Fy.Value,
+    state_size: u32,
+    params_size: u32,
+    in_notes: u8,
+    out_notes: u8,
+    in_audio: u8,
+    out_audio: u8,
+    _pad: [4]u8,
+};
 
 pub const Entry = struct {
     name: [MAX_NAME]u8 = [_]u8{0} ** MAX_NAME,
@@ -23,6 +37,11 @@ pub const Entry = struct {
     ui_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
     ui_word_len: u8 = 0,
     panel_w: f32 = 0,
+    params_size: usize = 0,
+    in_notes: bool = false,
+    out_notes: bool = false,
+    in_audio: bool = false,
+    out_audio: bool = false,
     host: *FyHost, // heap-allocated, owned by this entry
     fy_machine: FyMachine, // references host
 
@@ -70,12 +89,39 @@ pub const Registry = struct {
 
         const audio_cb = try host.createAudioCallback(e.audioWordSlice());
         const ui_cb = try host.createAudioCallback(e.uiWordSlice());
+        const reset_cb = tryOptionalResetCallback(host, e.audioWordSlice());
 
         const inst = try self.alloc.create(FyMachine);
         errdefer self.alloc.destroy(inst);
-        inst.* = FyMachine.init(host, e.nameSlice(), audio_cb, ui_cb);
+        inst.* = FyMachine.init(host, e.nameSlice(), audio_cb, ui_cb, reset_cb, e.params_size);
         inst.panel_w = e.panel_w;
         return inst.machineInterface();
+    }
+
+    pub fn instantiateWithPolyphony(self: *Registry, idx: usize, voices: u8) !machine.Machine {
+        if (voices <= 1) return self.instantiate(idx);
+        if (idx >= self.count) return error.InvalidMachineIndex;
+
+        const voice_count = @min(voices, poly_mod.MAX_VOICES);
+        const e = &self.entries[idx];
+        const poly = try self.alloc.create(poly_mod.PolyMachine);
+        errdefer self.alloc.destroy(poly);
+        poly.* = poly_mod.PolyMachine.init(e.nameSlice(), voice_count);
+        poly.panel_w = e.panel_w;
+
+        var made: usize = 0;
+        errdefer {
+            for (0..made) |vi| {
+                if (poly.voices[vi].deinit) |deinit_fn| {
+                    deinit_fn(poly.voices[vi].state, self.alloc);
+                }
+            }
+        }
+
+        while (made < voice_count) : (made += 1) {
+            poly.voices[made] = try self.instantiate(idx);
+        }
+        return poly.machineInterface();
     }
 
     pub fn deinit(self: *Registry) void {
@@ -106,11 +152,21 @@ pub const Registry = struct {
 
         const audio_cb = try host.createAudioCallback(audio_word);
         const ui_cb = try host.createAudioCallback(ui_word);
+        const reset_cb = tryOptionalResetCallback(host, audio_word);
+        const manifest_val = try host.callWord("manifest");
+        const raw_ptr: usize = @intCast(@as(u64, @bitCast(manifest_val)) >> 2);
+        const raw: *const RawMachine = @ptrFromInt(raw_ptr);
+        const params_size: usize = @intCast(raw.params_size >> 2);
 
         var e = Entry{
             .host = host,
-            .fy_machine = FyMachine.init(host, display_name, audio_cb, ui_cb),
+            .fy_machine = FyMachine.init(host, display_name, audio_cb, ui_cb, reset_cb, 0),
             .panel_w = panel_w,
+            .params_size = params_size,
+            .in_notes = raw.in_notes != 0,
+            .out_notes = raw.out_notes != 0,
+            .in_audio = raw.in_audio != 0,
+            .out_audio = raw.out_audio != 0,
         };
         e.fy_machine.panel_w = panel_w;
         const n = @min(display_name.len, MAX_NAME);
@@ -130,3 +186,14 @@ pub const Registry = struct {
         self.count += 1;
     }
 };
+
+fn tryOptionalResetCallback(host: *FyHost, audio_word: []const u8) ?*const fn () callconv(.c) void {
+    const reset_word =
+        if (std.mem.eql(u8, audio_word, "mono1-audio"))
+            "mono1-reset"
+        else if (std.mem.eql(u8, audio_word, "chorus1-audio"))
+            "chorus1-reset"
+        else
+            return null;
+    return host.createAudioCallback(reset_word) catch null;
+}

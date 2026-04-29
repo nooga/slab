@@ -7,7 +7,7 @@
 //!   • draw (pencil)    — click-drag on empty grid creates a note;
 //!     click on existing note deletes it.
 //!
-//! Global shortcuts while the editor is visible:
+//! Focused shortcuts:
 //!   • Delete / Backspace → remove selected notes
 //!   • Wheel              → horizontal zoom around mouse
 //!   • Shift+Wheel        → horizontal scroll
@@ -21,6 +21,7 @@ const std = @import("std");
 const c = @import("../c.zig");
 const theme = @import("theme.zig");
 const widgets = @import("widgets.zig");
+const snap_mod = @import("snap.zig");
 const track_mod = @import("../track.zig");
 const clip_mod = @import("../clip.zig");
 const Clip = clip_mod.Clip;
@@ -37,7 +38,6 @@ fn keyboardW() f32 {
 fn rulerH() f32 {
     return theme.size(14);
 }
-const GRID_SNAP: f64 = 0.25;
 const MIN_NOTE_BEATS: f64 = 0.25;
 const DEFAULT_NOTE_BEATS: f64 = 0.5;
 fn resizeEdgeW() f32 {
@@ -62,6 +62,9 @@ var last_clip_key: u64 = 0; // to detect clip switch → clear selection
 
 fn overviewH() f32 {
     return theme.size(22);
+}
+fn velocityLaneH() f32 {
+    return theme.size(50);
 }
 
 // Draw-mode in-progress note.
@@ -89,6 +92,12 @@ var resize_active: bool = false;
 var resize_start_mouse_x: f32 = 0;
 var resize_snaps: std.ArrayList(ResizeSnap) = .empty;
 
+// Velocity lane drag.
+const VelocityDragMode = enum { none, one, selected };
+var velocity_active: bool = false;
+var velocity_drag_idx: usize = 0;
+var velocity_drag_mode: VelocityDragMode = .none;
+
 // Overview-strip drag.
 var overview_drag: bool = false;
 var overview_drag_offset: f32 = 0; // mouse→viewport-left offset at drag start
@@ -113,25 +122,175 @@ const BOX_KEY: u64 = 0xB0B0_0001_5ADB_E1EC;
 const MOVE_KEY: u64 = 0x507E_0001_AAAA_BBBB;
 const RESIZE_KEY: u64 = 0xBEEF_1000_0000_0001;
 const DRAW_KEY: u64 = 0xD00D_2222_3333_4444;
+const VELOCITY_KEY: u64 = 0x7110_C17E_AAAA_0001;
 const OVERVIEW_KEY: u64 = 0x00FE_7_AAAA_BBBB;
 const SB_KEY: u64 = 0x5CB0_1111_2222_3333;
+const PR_CONTEXT_KEY: u64 = 0xC077_7E17_BBBB_0001;
 
 pub fn deinit(alloc: std.mem.Allocator) void {
     move_snaps.deinit(alloc);
     resize_snaps.deinit(alloc);
 }
 
+pub fn cancelInteractions() bool {
+    const had_active = draw_active or box_active or move_active or resize_active or velocity_active or overview_drag or sb_drag;
+    cancelAllDrags();
+    return had_active;
+}
+
 pub const Result = struct {
     minimize: bool = false,
     close: bool = false,
-    consumed_delete: bool = false,
+    audition_pitch: ?u8 = null,
+    command: widgets.EditCommand = .none,
+    command_beat: ?f64 = null,
+    command_pitch: ?u8 = null,
+    rename_rect: ?c.rl.Rectangle = null,
 };
+
+const ContextTarget = struct {
+    beat: f64 = 0,
+    pitch: ?u8 = null,
+};
+
+var context_target: ContextTarget = .{};
+
+pub fn deleteSelectedNotes(tracks: []track_mod.Track, selected: ?ClipRef) bool {
+    const resolved = resolveClip(tracks, selected) orelse return false;
+    if (resolved.clip.selectedCount() == 0) return false;
+    resolved.clip.removeSelected();
+    return true;
+}
+
+pub fn clearSelection(tracks: []track_mod.Track, selected: ?ClipRef) bool {
+    const resolved = resolveClip(tracks, selected) orelse return false;
+    const changed = resolved.clip.selectedCount() > 0;
+    resolved.clip.deselectAll();
+    return changed;
+}
+
+pub fn selectAllNotes(tracks: []track_mod.Track, selected: ?ClipRef) bool {
+    const resolved = resolveClip(tracks, selected) orelse return false;
+    var changed = false;
+    for (resolved.clip.notes.items) |*note| {
+        if (!note.selected) changed = true;
+        note.selected = true;
+    }
+    return changed;
+}
+
+pub fn copySelectedNotes(tracks: []track_mod.Track, selected: ?ClipRef, alloc: std.mem.Allocator, out: *std.ArrayList(Note)) bool {
+    const resolved = resolveClip(tracks, selected) orelse return false;
+    out.clearRetainingCapacity();
+    var min_start: f64 = std.math.inf(f64);
+    for (resolved.clip.notes.items) |note| {
+        if (!note.selected) continue;
+        min_start = @min(min_start, note.start_beat);
+    }
+    if (min_start == std.math.inf(f64)) return false;
+    for (resolved.clip.notes.items) |note| {
+        if (!note.selected) continue;
+        var copied = note;
+        copied.start_beat -= min_start;
+        copied.selected = true;
+        out.append(alloc, copied) catch |err| {
+            std.log.err("copy note failed: {s}", .{@errorName(err)});
+        };
+    }
+    return out.items.len > 0;
+}
+
+pub fn pasteNotes(tracks: []track_mod.Track, selected: ?ClipRef, alloc: std.mem.Allocator, notes: []const Note, arrangement_beat: f64, target_pitch: ?u8, edit_snap: snap_mod.Setting) bool {
+    const resolved = resolveClip(tracks, selected) orelse return false;
+    if (notes.len == 0) return false;
+    const local_target = snap_mod.snapPositive(edit_snap, @max(0.0, arrangement_beat - resolved.clip.start_beat), false);
+    const pitch_delta: i32 = if (target_pitch) |pitch| blk: {
+        var min_pitch: u8 = notes[0].pitch;
+        for (notes) |note| min_pitch = @min(min_pitch, note.pitch);
+        break :blk @as(i32, @intCast(pitch)) - @as(i32, @intCast(min_pitch));
+    } else 0;
+    resolved.clip.deselectAll();
+    var changed = false;
+    for (notes) |src| {
+        var note = src;
+        note.start_beat = local_target + src.start_beat;
+        note.pitch = @intCast(std.math.clamp(@as(i32, @intCast(src.pitch)) + pitch_delta, 0, 127));
+        note.selected = true;
+        resolved.clip.addNote(alloc, note) catch |err| {
+            std.log.err("paste note failed: {s}", .{@errorName(err)});
+            continue;
+        };
+        changed = true;
+    }
+    return changed;
+}
+
+pub fn nudgeSelectedNotes(tracks: []track_mod.Track, selected: ?ClipRef, beat_delta: f64, pitch_delta: i32, edit_snap: snap_mod.Setting) bool {
+    const resolved = resolveClip(tracks, selected) orelse return false;
+    var changed = false;
+    for (resolved.clip.notes.items) |*note| {
+        if (!note.selected) continue;
+        const next_start = snap_mod.snapPositive(edit_snap, note.start_beat + beat_delta, false);
+        const next_pitch_i = std.math.clamp(@as(i32, @intCast(note.pitch)) + pitch_delta, 0, 127);
+        const next_pitch: u8 = @intCast(next_pitch_i);
+        if (next_start != note.start_beat or next_pitch != note.pitch) changed = true;
+        note.start_beat = next_start;
+        note.pitch = next_pitch;
+    }
+    return changed;
+}
+
+pub fn duplicateSelectedNotes(tracks: []track_mod.Track, selected: ?ClipRef, alloc: std.mem.Allocator, edit_snap: snap_mod.Setting) bool {
+    const resolved = resolveClip(tracks, selected) orelse return false;
+    if (resolved.clip.selectedCount() == 0) return false;
+
+    var first_start: f64 = std.math.inf(f64);
+    var last_end: f64 = 0;
+    for (resolved.clip.notes.items) |note| {
+        if (!note.selected) continue;
+        first_start = @min(first_start, note.start_beat);
+        last_end = @max(last_end, note.start_beat + note.length_beats);
+    }
+    const raw_offset = @max(last_end - first_start, MIN_NOTE_BEATS);
+    const snapped_offset = snap_mod.snapNearest(edit_snap, raw_offset, false);
+    const offset = if (snapped_offset >= minNoteBeats(edit_snap)) snapped_offset else raw_offset;
+    const original_len = resolved.clip.notes.items.len;
+
+    var i: usize = 0;
+    while (i < original_len) : (i += 1) {
+        if (!resolved.clip.notes.items[i].selected) continue;
+        var note = resolved.clip.notes.items[i];
+        resolved.clip.notes.items[i].selected = false;
+        note.start_beat += offset;
+        note.selected = true;
+        resolved.clip.addNote(alloc, note) catch |err| {
+            std.log.err("duplicate note failed: {s}", .{@errorName(err)});
+        };
+    }
+    return true;
+}
+
+pub fn quantizeSelectedNotes(tracks: []track_mod.Track, selected: ?ClipRef, edit_snap: snap_mod.Setting) bool {
+    const resolved = resolveClip(tracks, selected) orelse return false;
+    var changed = false;
+    for (resolved.clip.notes.items) |*note| {
+        if (!note.selected) continue;
+        const next_start = snap_mod.snapPositive(edit_snap, note.start_beat, false);
+        const next_len = @max(minNoteBeats(edit_snap), snap_mod.snapNearest(edit_snap, note.length_beats, false));
+        if (next_start != note.start_beat or next_len != note.length_beats) changed = true;
+        note.start_beat = next_start;
+        note.length_beats = next_len;
+    }
+    return changed;
+}
 
 pub fn draw(
     r: c.rl.Rectangle,
     tracks: []track_mod.Track,
     alloc: std.mem.Allocator,
     selected: ?ClipRef,
+    edit_snap: snap_mod.Setting,
+    can_paste_notes: bool,
     m: widgets.Mouse,
 ) Result {
     c.rl.DrawRectangleRec(r, theme.pane_bg);
@@ -158,9 +317,17 @@ pub fn draw(
     const resolved = clip_opt.?;
 
     maybeResetOnClipChange(selected, resolved.clip);
-    const consumed_delete = drawPianoRoll(body, resolved.clip, resolved.color, alloc, m);
+    const pres = drawPianoRoll(body, resolved.clip, resolved.color, alloc, edit_snap, can_paste_notes, m);
 
-    return .{ .minimize = res.minimize, .close = res.close, .consumed_delete = consumed_delete };
+    return .{
+        .minimize = res.minimize,
+        .close = res.close,
+        .audition_pitch = pres.audition_pitch,
+        .command = pres.command,
+        .command_beat = pres.command_beat,
+        .command_pitch = pres.command_pitch,
+        .rename_rect = if (selected != null) res.title_rect else null,
+    };
 }
 
 // ── Resolution + reset on switch ─────────────────────────────────────
@@ -194,6 +361,8 @@ fn cancelAllDrags() void {
     box_active = false;
     move_active = false;
     resize_active = false;
+    velocity_active = false;
+    velocity_drag_mode = .none;
     overview_drag = false;
     sb_drag = false;
     widgets.cancelDrag();
@@ -222,28 +391,39 @@ fn clipEditorTitle(tracks: []track_mod.Track, selected: ?ClipRef) [*:0]const u8 
 
 // ── Piano roll draw + input ──────────────────────────────────────────
 
+const PianoRollResult = struct {
+    audition_pitch: ?u8 = null,
+    command: widgets.EditCommand = .none,
+    command_beat: ?f64 = null,
+    command_pitch: ?u8 = null,
+};
+
 fn drawPianoRoll(
     r: c.rl.Rectangle,
     clip: *Clip,
     track_color: c.rl.Color,
     alloc: std.mem.Allocator,
+    edit_snap: snap_mod.Setting,
+    can_paste_notes: bool,
     m: widgets.Mouse,
-) bool {
+) PianoRollResult {
     // Overview strip, ruler, keyboard, grid — stacked vertically.
     const overview_rect = widgets.rect(r.x, r.y, r.width, overviewH());
     const ruler_rect = widgets.rect(r.x, r.y + overviewH(), r.width, rulerH());
     widgets.bevelSunken(ruler_rect, theme.pane_alt, theme.slab_hi, theme.slab_lo);
 
     const grid_top = ruler_rect.y + rulerH();
-    const grid_h = r.height - overviewH() - rulerH();
+    const vel_h = @min(velocityLaneH(), @max(theme.size(28), r.height * 0.22));
+    const grid_h = @max(theme.size(48), r.height - overviewH() - rulerH() - vel_h - 1);
     const kbd_rect = widgets.rect(r.x, grid_top, keyboardW(), grid_h);
     const grid_rect = widgets.rect(r.x + keyboardW(), grid_top, r.width - keyboardW(), grid_h);
+    const vel_rect = widgets.rect(grid_rect.x, grid_rect.y + grid_rect.height + 1, grid_rect.width, vel_h);
 
     initScrollIfNeeded(grid_rect, clip.*);
     handleWheel(grid_rect, clip.*, m);
     clampScroll(grid_rect, clip.*);
 
-    drawRuler(ruler_rect, grid_rect, clip.*);
+    drawRuler(ruler_rect, grid_rect, edit_snap);
     drawKeyboard(kbd_rect);
 
     // Everything that scrolls must be clipped to the grid viewport —
@@ -255,14 +435,14 @@ fn drawPianoRoll(
         @intFromFloat(grid_rect.width),
         @intFromFloat(grid_rect.height),
     );
-    drawGrid(grid_rect, clip.*);
+    drawGrid(grid_rect, edit_snap);
     drawExistingNotes(grid_rect, clip.*, track_color);
     drawClipEndOverlay(grid_rect, clip.*);
 
     if (draw_active) {
         const start = @min(draw_start_beat, draw_current_beat);
         const end = @max(draw_start_beat, draw_current_beat);
-        const len = @max(end - start, MIN_NOTE_BEATS);
+        const len = @max(end - start, minNoteBeats(edit_snap));
         const nr = noteRect(grid_rect, .{
             .pitch = draw_pitch,
             .start_beat = start,
@@ -278,20 +458,36 @@ fn drawPianoRoll(
 
     // Lazy vertical scrollbar (after scissor so it overlays grid).
     drawAndHandleScrollbar(grid_rect, m);
+    const velocity_consumed = handleVelocityLane(vel_rect, grid_rect, clip, m);
+    drawVelocityLane(vel_rect, grid_rect, clip.*, track_color);
 
     // Overview is drawn AFTER the scissor block so its contents and
     // viewport-window outline aren't clipped.
     drawOverview(overview_rect, grid_rect, clip.*, track_color, m);
 
-    if (c.rl.IsKeyPressed(c.rl.KEY_DELETE) or c.rl.IsKeyPressed(c.rl.KEY_BACKSPACE)) {
-        if (clip.selectedCount() > 0) {
-            clip.removeSelected();
-            return true;
-        }
+    var result = PianoRollResult{ .audition_pitch = if (velocity_consumed) null else handleInput(grid_rect, clip, alloc, edit_snap, m) };
+    _ = widgets.openContextMenu(PR_CONTEXT_KEY, grid_rect, m);
+    const has_selection = clip.selectedCount() > 0;
+    const has_notes = clip.notes.items.len > 0;
+    const pr_context_items = [_]widgets.MenuItem{
+        .{ .label = "Copy", .command = .copy, .enabled = has_selection },
+        .{ .label = "Cut", .command = .cut, .enabled = has_selection },
+        .{ .label = "Paste", .command = .paste, .enabled = can_paste_notes },
+        .{ .separator = true },
+        .{ .label = "Duplicate", .command = .duplicate, .enabled = has_selection },
+        .{ .label = "Quantize", .command = .quantize, .enabled = has_selection },
+        .{ .label = "Delete", .command = .delete, .enabled = has_selection },
+        .{ .separator = true },
+        .{ .label = "Rename clip", .command = .rename },
+        .{ .label = "Select all", .command = .select_all, .enabled = has_notes },
+        .{ .label = "Clear selection", .command = .clear_selection, .enabled = has_selection },
+    };
+    result.command = widgets.contextMenu(PR_CONTEXT_KEY, &pr_context_items, m);
+    if (result.command != .none) {
+        result.command_beat = context_target.beat + clip.start_beat;
+        result.command_pitch = context_target.pitch;
     }
-
-    handleInput(grid_rect, clip, alloc, m);
-    return false;
+    return result;
 }
 
 fn initScrollIfNeeded(grid: c.rl.Rectangle, clip: Clip) void {
@@ -387,19 +583,18 @@ fn handleWheel(grid: c.rl.Rectangle, clip: Clip, m: widgets.Mouse) void {
     last_scroll_time = c.rl.GetTime();
 }
 
-fn drawRuler(ruler: c.rl.Rectangle, grid: c.rl.Rectangle, clip: Clip) void {
-    _ = clip;
-    var step: u32 = 0;
+fn drawRuler(ruler: c.rl.Rectangle, grid: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
+    const grid_step = snap_mod.visualStep(edit_snap, px_per_beat);
+    var beat: f64 = 0;
     while (true) {
-        const beat = @as(f32, @floatFromInt(step)) * @as(f32, @floatCast(GRID_SNAP));
-        const bx = grid.x + beat * px_per_beat - scroll_x;
+        const bx = grid.x + @as(f32, @floatCast(beat)) * px_per_beat - scroll_x;
         if (bx > grid.x + grid.width - 2) break;
         if (bx < grid.x - 4) {
-            step += 1;
+            beat += grid_step;
             continue;
         }
-        const is_beat = step % 4 == 0;
-        const is_bar = step % 16 == 0;
+        const is_beat = snap_mod.isBeat(beat);
+        const is_bar = snap_mod.isBar(beat);
         const tick_h: f32 = if (is_bar) rulerH() - 4 else if (is_beat) 5 else 3;
         c.rl.DrawRectangle(
             @intFromFloat(bx),
@@ -410,10 +605,10 @@ fn drawRuler(ruler: c.rl.Rectangle, grid: c.rl.Rectangle, clip: Clip) void {
         );
         if (is_bar) {
             var buf: [8]u8 = undefined;
-            const s = std.fmt.bufPrintZ(&buf, "{d}", .{step / 16 + 1}) catch "?";
+            const s = std.fmt.bufPrintZ(&buf, "{d}", .{@as(u32, @intFromFloat(@round(beat / 4.0))) + 1}) catch "?";
             widgets.drawLabelF(s.ptr, bx + 2, ruler.y + 1, theme.fsTiny(), theme.text_dim);
         }
-        step += 1;
+        beat += grid_step;
     }
 }
 
@@ -464,8 +659,7 @@ fn drawKeyboard(r: c.rl.Rectangle) void {
     }
 }
 
-fn drawGrid(r: c.rl.Rectangle, clip: Clip) void {
-    _ = clip;
+fn drawGrid(r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
     c.rl.DrawRectangleRec(r, theme.pane_bg);
 
     // Row shading matching black/white keys.
@@ -486,15 +680,14 @@ fn drawGrid(r: c.rl.Rectangle, clip: Clip) void {
         if (pitch == KEY_LO) break;
     }
 
-    // Sixteenth, beat, and bar lines.
-    var step: u32 = 0;
+    const grid_step = snap_mod.visualStep(edit_snap, px_per_beat);
+    var beat: f64 = 0;
     while (true) {
-        const beat = @as(f32, @floatFromInt(step)) * @as(f32, @floatCast(GRID_SNAP));
-        const bx = r.x + beat * px_per_beat - scroll_x;
+        const bx = r.x + @as(f32, @floatCast(beat)) * px_per_beat - scroll_x;
         if (bx > r.x + r.width - 1) break;
         if (bx >= r.x) {
-            const is_beat = step % 4 == 0;
-            const is_bar = step % 16 == 0;
+            const is_beat = snap_mod.isBeat(beat);
+            const is_bar = snap_mod.isBar(beat);
             c.rl.DrawRectangle(
                 @intFromFloat(bx),
                 @intFromFloat(r.y),
@@ -503,7 +696,7 @@ fn drawGrid(r: c.rl.Rectangle, clip: Clip) void {
                 if (is_bar) theme.grid_bar else if (is_beat) theme.grid_beat else theme.grid_sub,
             );
         }
-        step += 1;
+        beat += grid_step;
     }
 }
 
@@ -544,6 +737,84 @@ fn drawExistingNotes(grid: c.rl.Rectangle, clip: Clip, track_color: c.rl.Color) 
     }
 }
 
+fn drawVelocityLane(r: c.rl.Rectangle, grid: c.rl.Rectangle, clip: Clip, track_color: c.rl.Color) void {
+    widgets.bevelSunken(r, theme.pane_alt, theme.slab_hi, theme.slab_lo);
+    widgets.drawLabelF("VEL", r.x + 4, r.y + 2, theme.fsTiny(), theme.text_mute);
+
+    c.rl.BeginScissorMode(@intFromFloat(r.x + 1), @intFromFloat(r.y + 1), @intFromFloat(r.width - 2), @intFromFloat(r.height - 2));
+    defer c.rl.EndScissorMode();
+
+    const base_y = r.y + r.height - 4;
+    const max_h = r.height - theme.size(14);
+    for (clip.notes.items) |note| {
+        const nr = noteRect(grid, note);
+        if (nr.x + nr.width < r.x or nr.x > r.x + r.width) continue;
+        const bar_h = @max(2, (@as(f32, @floatFromInt(note.velocity)) / 127.0) * max_h);
+        const bar = widgets.rect(nr.x, base_y - bar_h, @max(nr.width, 3), bar_h);
+        const fill = if (note.selected) lighten(track_color, 1.25) else dim(track_color, 0.72);
+        c.rl.DrawRectangleRec(bar, fill);
+        c.rl.DrawRectangleLinesEx(bar, 1, if (note.selected) theme.text_fg else theme.slab_edge);
+    }
+}
+
+fn handleVelocityLane(r: c.rl.Rectangle, grid: c.rl.Rectangle, clip: *Clip, m: widgets.Mouse) bool {
+    if (velocity_active) {
+        if (!widgets.isDraggingKey(VELOCITY_KEY) or !m.left_down) {
+            velocity_active = false;
+            velocity_drag_mode = .none;
+            widgets.cancelDrag();
+            return true;
+        }
+        applyVelocityAt(r, clip, m.y);
+        widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 3);
+        return true;
+    }
+
+    if (!widgets.contains(r, m.x, m.y)) return false;
+    widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 1);
+    if (!m.left_pressed or widgets.hasActiveDrag()) return true;
+    const idx = findVelocityBarAt(r, grid, clip.*, m.x) orelse return true;
+    if (!widgets.tryStartDrag(VELOCITY_KEY)) return true;
+    velocity_active = true;
+    velocity_drag_idx = idx;
+    if (clip.notes.items[idx].selected) {
+        velocity_drag_mode = .selected;
+    } else {
+        clip.deselectAll();
+        clip.notes.items[idx].selected = true;
+        velocity_drag_mode = .one;
+    }
+    applyVelocityAt(r, clip, m.y);
+    return true;
+}
+
+fn applyVelocityAt(r: c.rl.Rectangle, clip: *Clip, y: f32) void {
+    const top = r.y + theme.size(10);
+    const bottom = r.y + r.height - 4;
+    const norm = 1.0 - std.math.clamp((y - top) / @max(1, bottom - top), 0.0, 1.0);
+    const velocity: u8 = @intFromFloat(std.math.clamp(@round(norm * 127.0), 1, 127));
+    switch (velocity_drag_mode) {
+        .none => {},
+        .one => if (velocity_drag_idx < clip.notes.items.len) {
+            clip.notes.items[velocity_drag_idx].velocity = velocity;
+        },
+        .selected => for (clip.notes.items) |*note| {
+            if (note.selected) note.velocity = velocity;
+        },
+    }
+}
+
+fn findVelocityBarAt(r: c.rl.Rectangle, grid: c.rl.Rectangle, clip: Clip, x: f32) ?usize {
+    var i = clip.notes.items.len;
+    while (i > 0) {
+        i -= 1;
+        const nr = noteRect(grid, clip.notes.items[i]);
+        const bar = widgets.rect(nr.x, r.y, @max(nr.width, 3), r.height);
+        if (widgets.contains(bar, x, r.y + r.height / 2)) return i;
+    }
+    return null;
+}
+
 fn drawBoxSelect(grid: c.rl.Rectangle, m: widgets.Mouse) void {
     const x0 = @min(box_start_x, m.x);
     const y0 = @min(box_start_y, m.y);
@@ -579,9 +850,10 @@ fn handleInput(
     grid: c.rl.Rectangle,
     clip: *Clip,
     alloc: std.mem.Allocator,
+    edit_snap: snap_mod.Setting,
     m: widgets.Mouse,
-) void {
-    if (updateInProgressDrag(grid, clip, alloc, m)) return;
+) ?u8 {
+    if (updateInProgressDrag(grid, clip, alloc, edit_snap, m)) return null;
 
     if (widgets.contains(grid, m.x, m.y) and !widgets.hasActiveDrag()) {
         if (findNoteAt(grid, clip.*, m.x, m.y)) |h| {
@@ -589,12 +861,27 @@ fn handleInput(
         }
     }
 
-    if (!m.left_pressed) return;
-    if (!widgets.contains(grid, m.x, m.y)) return;
-    if (widgets.hasActiveDrag()) return;
+    if (!m.left_pressed and !m.right_pressed) return null;
+    if (!widgets.contains(grid, m.x, m.y)) return null;
+    if (widgets.hasActiveDrag()) return null;
 
-    const pitch = pitchAtY(grid, m.y) orelse return;
-    const beat = snapDownPositive(beatAtX(grid, m.x));
+    if (m.right_pressed) {
+        context_target = .{
+            .beat = snap_mod.snapDownPositive(edit_snap, beatAtX(grid, m.x), altBypassSnap()),
+            .pitch = pitchAtY(grid, m.y),
+        };
+        if (findNoteAt(grid, clip.*, m.x, m.y)) |h| {
+            if (!clip.notes.items[h.idx].selected) {
+                clip.deselectAll();
+                clip.notes.items[h.idx].selected = true;
+            }
+        }
+        _ = widgets.openContextMenu(PR_CONTEXT_KEY, grid, m);
+        return null;
+    }
+
+    const pitch = pitchAtY(grid, m.y) orelse return null;
+    const beat = snap_mod.snapDownPositive(edit_snap, beatAtX(grid, m.x), altBypassSnap());
     const hit = findNoteAt(grid, clip.*, m.x, m.y);
     const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
 
@@ -616,27 +903,28 @@ fn handleInput(
             }
             beginMove(alloc, clip.*, m) catch {};
         }
-        return;
+        return clip.notes.items[h.idx].pitch;
     }
 
     // Empty-grid click: the only behaviour that depends on mode.
     switch (mode) {
         .draw => {
-            if (!widgets.tryStartDrag(DRAW_KEY)) return;
+            if (!widgets.tryStartDrag(DRAW_KEY)) return null;
             draw_active = true;
             draw_pitch = pitch;
             draw_start_beat = beat;
-            draw_current_beat = beat + DEFAULT_NOTE_BEATS;
+            draw_current_beat = beat + defaultNoteBeats(edit_snap);
             draw_start_x = m.x;
         },
         .select => {
             if (!shift) clip.deselectAll();
-            if (!widgets.tryStartDrag(BOX_KEY)) return;
+            if (!widgets.tryStartDrag(BOX_KEY)) return null;
             box_active = true;
             box_start_x = m.x;
             box_start_y = m.y;
         },
     }
+    return pitch;
 }
 
 const Hit = struct { idx: u32, edge_resize: bool };
@@ -657,10 +945,11 @@ fn updateInProgressDrag(
     grid: c.rl.Rectangle,
     clip: *Clip,
     alloc: std.mem.Allocator,
+    edit_snap: snap_mod.Setting,
     m: widgets.Mouse,
 ) bool {
     if (draw_active) {
-        updateDraw(grid, clip, alloc, m);
+        updateDraw(grid, clip, alloc, edit_snap, m);
         return true;
     }
     if (box_active) {
@@ -668,21 +957,21 @@ fn updateInProgressDrag(
         return true;
     }
     if (move_active) {
-        updateMove(grid, clip, m);
+        updateMove(grid, clip, edit_snap, m);
         return true;
     }
     if (resize_active) {
-        updateResize(grid, clip, m);
+        updateResize(grid, clip, edit_snap, m);
         return true;
     }
     return false;
 }
 
-fn updateDraw(grid: c.rl.Rectangle, clip: *Clip, alloc: std.mem.Allocator, m: widgets.Mouse) void {
+fn updateDraw(grid: c.rl.Rectangle, clip: *Clip, alloc: std.mem.Allocator, edit_snap: snap_mod.Setting, m: widgets.Mouse) void {
     if (!widgets.isDraggingKey(DRAW_KEY) or !m.left_down) {
         const start = @min(draw_start_beat, draw_current_beat);
         const end = @max(draw_start_beat, draw_current_beat);
-        const len = @max(end - start, MIN_NOTE_BEATS);
+        const len = @max(end - start, minNoteBeats(edit_snap));
         clip.addNote(alloc, .{
             .pitch = draw_pitch,
             .start_beat = start,
@@ -694,7 +983,7 @@ fn updateDraw(grid: c.rl.Rectangle, clip: *Clip, alloc: std.mem.Allocator, m: wi
         return;
     }
     if (@abs(m.x - draw_start_x) >= BOX_MIN_DRAG) {
-        draw_current_beat = snapPositive(beatAtX(grid, m.x));
+        draw_current_beat = snap_mod.snapPositive(edit_snap, beatAtX(grid, m.x), altBypassSnap());
     }
 }
 
@@ -740,7 +1029,7 @@ fn beginMove(alloc: std.mem.Allocator, clip: Clip, m: widgets.Mouse) !void {
     move_start_mouse_y = m.y;
 }
 
-fn updateMove(grid: c.rl.Rectangle, clip: *Clip, m: widgets.Mouse) void {
+fn updateMove(grid: c.rl.Rectangle, clip: *Clip, edit_snap: snap_mod.Setting, m: widgets.Mouse) void {
     _ = grid;
     if (!widgets.isDraggingKey(MOVE_KEY) or !m.left_down) {
         move_active = false;
@@ -748,7 +1037,7 @@ fn updateMove(grid: c.rl.Rectangle, clip: *Clip, m: widgets.Mouse) void {
         return;
     }
     widgets.requestCursor(c.rl.MOUSE_CURSOR_POINTING_HAND, 3);
-    const d_beats = snap(@as(f64, (m.x - move_start_mouse_x) / px_per_beat));
+    const d_beats = snap_mod.snapNearest(edit_snap, @as(f64, (m.x - move_start_mouse_x) / px_per_beat), altBypassSnap());
     const d_rows = std.math.clamp(@as(i32, @intFromFloat(@round((m.y - move_start_mouse_y) / row_h))), -127, 127);
     for (move_snaps.items) |s| {
         if (s.idx >= clip.notes.items.len) continue;
@@ -779,7 +1068,7 @@ fn beginResize(alloc: std.mem.Allocator, clip: Clip, m: widgets.Mouse) !void {
     resize_start_mouse_x = m.x;
 }
 
-fn updateResize(grid: c.rl.Rectangle, clip: *Clip, m: widgets.Mouse) void {
+fn updateResize(grid: c.rl.Rectangle, clip: *Clip, edit_snap: snap_mod.Setting, m: widgets.Mouse) void {
     _ = grid;
     if (!widgets.isDraggingKey(RESIZE_KEY) or !m.left_down) {
         resize_active = false;
@@ -787,12 +1076,12 @@ fn updateResize(grid: c.rl.Rectangle, clip: *Clip, m: widgets.Mouse) void {
         return;
     }
     widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
-    const d_beats = snap(@as(f64, (m.x - resize_start_mouse_x) / px_per_beat));
+    const d_beats = snap_mod.snapNearest(edit_snap, @as(f64, (m.x - resize_start_mouse_x) / px_per_beat), altBypassSnap());
     for (resize_snaps.items) |s| {
         if (s.idx >= clip.notes.items.len) continue;
         const n = &clip.notes.items[s.idx];
         const new_len = s.length + d_beats;
-        n.length_beats = if (new_len < MIN_NOTE_BEATS) MIN_NOTE_BEATS else new_len;
+        n.length_beats = if (new_len < minNoteBeats(edit_snap)) minNoteBeats(edit_snap) else new_len;
     }
 }
 
@@ -990,21 +1279,16 @@ fn pitchAtY(grid: c.rl.Rectangle, y: f32) ?u8 {
     return @intCast(pitch);
 }
 
-/// Signed grid snap — preserves sign so drag deltas can go negative.
-fn snap(beats: f64) f64 {
-    return @round(beats / GRID_SNAP) * GRID_SNAP;
+fn altBypassSnap() bool {
+    return c.rl.IsKeyDown(c.rl.KEY_LEFT_ALT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_ALT);
 }
 
-/// Snap to grid and clamp to ≥0 — for absolute beat positions like
-/// new-note-start.
-fn snapPositive(beats: f64) f64 {
-    const s = snap(beats);
-    return if (s < 0) 0 else s;
+fn minNoteBeats(edit_snap: snap_mod.Setting) f64 {
+    return @min(edit_snap.beats() orelse MIN_NOTE_BEATS, MIN_NOTE_BEATS);
 }
 
-fn snapDownPositive(beats: f64) f64 {
-    const s = @floor(beats / GRID_SNAP) * GRID_SNAP;
-    return if (s < 0) 0 else s;
+fn defaultNoteBeats(edit_snap: snap_mod.Setting) f64 {
+    return @max(edit_snap.beats() orelse DEFAULT_NOTE_BEATS, MIN_NOTE_BEATS);
 }
 
 fn isBlackKey(pitch: u8) bool {
@@ -1022,6 +1306,15 @@ fn lighten(color: c.rl.Color, factor: f32) c.rl.Color {
         .r = @intFromFloat(@min(r, 255)),
         .g = @intFromFloat(@min(g, 255)),
         .b = @intFromFloat(@min(b, 255)),
+        .a = color.a,
+    };
+}
+
+fn dim(color: c.rl.Color, factor: f32) c.rl.Color {
+    return .{
+        .r = @intFromFloat(@as(f32, @floatFromInt(color.r)) * factor),
+        .g = @intFromFloat(@as(f32, @floatFromInt(color.g)) * factor),
+        .b = @intFromFloat(@as(f32, @floatFromInt(color.b)) * factor),
         .a = color.a,
     };
 }

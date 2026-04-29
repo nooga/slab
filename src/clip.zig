@@ -50,8 +50,23 @@ pub const Clip = struct {
         self.notes.deinit(alloc);
     }
 
+    pub fn clone(self: *const Clip, alloc: std.mem.Allocator) !Clip {
+        var c = Clip.init(self.name(), self.start_beat, self.length_beats);
+        c.selected = self.selected;
+        errdefer c.deinit(alloc);
+        try c.notes.appendSlice(alloc, self.notes.items);
+        return c;
+    }
+
     pub fn name(self: *const Clip) []const u8 {
         return self.name_buf[0..self.name_len];
+    }
+
+    pub fn setName(self: *Clip, display_name: []const u8) void {
+        @memset(&self.name_buf, 0);
+        const n = @min(display_name.len, MAX_NAME);
+        @memcpy(self.name_buf[0..n], display_name[0..n]);
+        self.name_len = @intCast(n);
     }
 
     pub fn endBeat(self: *const Clip) f64 {

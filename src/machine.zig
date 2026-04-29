@@ -141,6 +141,10 @@ pub const DrawPanelFn = *const fn (
 /// machine to drop any sustained voices and reset to silence.
 pub const ResetFn = *const fn (state: *anyopaque) void;
 pub const DeinitFn = *const fn (state: *anyopaque, alloc: std.mem.Allocator) void;
+pub const SyncParamsFn = *const fn (dst: *anyopaque, src: *anyopaque) void;
+pub const PresetCountFn = *const fn (state: *anyopaque) u8;
+pub const PresetNameFn = *const fn (state: *anyopaque, index: u8) [*:0]const u8;
+pub const ApplyPresetFn = *const fn (state: *anyopaque, index: u8) void;
 
 pub const Machine = struct {
     name: []const u8,
@@ -149,6 +153,10 @@ pub const Machine = struct {
     draw_panel: DrawPanelFn,
     reset: ResetFn,
     deinit: ?DeinitFn = null,
+    sync_params: ?SyncParamsFn = null,
+    preset_count: ?PresetCountFn = null,
+    preset_name: ?PresetNameFn = null,
+    apply_preset: ?ApplyPresetFn = null,
     /// Preferred panel card width in pixels. The bay uses this to size
     /// the rect passed to draw_panel. 0 = bay chooses a default.
     panel_w: f32 = 0,

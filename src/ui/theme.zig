@@ -16,8 +16,8 @@ pub const slab_fill = rgb(64, 64, 68);
 pub const slab_hi = rgb(100, 100, 104);
 pub const slab_lo = rgb(40, 40, 42);
 pub const slab_edge = rgb(12, 12, 14);
-pub const grid_sub = rgb(48, 48, 52);
-pub const grid_beat = rgb(56, 56, 60);
+pub const grid_sub = rgb(58, 58, 64);
+pub const grid_beat = rgb(70, 70, 76);
 pub const grid_bar = rgb(86, 86, 92);
 pub const grid_row = rgb(38, 38, 41);
 pub const splitter_bg = rgb(16, 16, 18);
@@ -126,7 +126,7 @@ pub fn collapsedH() f32 {
 }
 /// Pane header (title bar) height.
 pub fn paneHeaderH() f32 {
-    return dim(16);
+    return dim(12);
 }
 /// Fixed per-track header strip width inside the arrangement lane.
 pub fn trackHeaderW() f32 {

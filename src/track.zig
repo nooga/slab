@@ -1,6 +1,6 @@
-//! Track: one audio path hosting a single machine (for now — insert
-//! chain later). Volume/mute/solo are UI-owned atomics consumed by
-//! the engine on the audio thread.
+//! Track: one audio path hosting an instrument plus a small fixed insert
+//! chain. Volume/mute/solo are UI-owned atomics consumed by the engine on
+//! the audio thread.
 
 const std = @import("std");
 const c = @import("c.zig");
@@ -9,6 +9,7 @@ const clip_mod = @import("clip.zig");
 const snap_mod = @import("snapshot.zig");
 
 pub const MAX_NAME = 32;
+pub const MAX_EFFECTS = 4;
 
 pub const Track = struct {
     name_buf: [MAX_NAME]u8 = [_]u8{0} ** MAX_NAME,
@@ -17,6 +18,12 @@ pub const Track = struct {
     machine: machine.Machine,
     /// Registry index for persistence. Null means the silent placeholder.
     machine_idx: ?u8 = null,
+    /// 1 = mono. Larger values wrap the assigned machine in a host-side
+    /// poly allocator with this many independent instances.
+    poly_voices: u8 = 1,
+    effects: [MAX_EFFECTS]machine.Machine = undefined,
+    effect_count: u8 = 0,
+    effect_idx: [MAX_EFFECTS]?u8 = [_]?u8{null} ** MAX_EFFECTS,
 
     /// Clip list — UI-thread-owned. Audio thread reads via snapshot only.
     clips: std.ArrayList(clip_mod.Clip) = .empty,
@@ -58,6 +65,11 @@ pub const Track = struct {
         if (self.machine.deinit) |deinit_fn| {
             deinit_fn(self.machine.state, alloc);
         }
+        for (self.effects[0..self.effect_count]) |*fx| {
+            if (fx.deinit) |deinit_fn| {
+                deinit_fn(fx.state, alloc);
+            }
+        }
         for (self.clips.items) |*clip| clip.deinit(alloc);
         self.clips.deinit(alloc);
         alloc.destroy(self.snap[0]);
@@ -71,12 +83,26 @@ pub const Track = struct {
         self.machine = mach;
     }
 
+    pub fn addEffect(self: *Track, mach: machine.Machine, idx: u8) !void {
+        if (self.effect_count >= MAX_EFFECTS) return error.EffectChainFull;
+        self.effects[self.effect_count] = mach;
+        self.effect_idx[self.effect_count] = idx;
+        self.effect_count += 1;
+    }
+
     pub fn addClip(self: *Track, alloc: std.mem.Allocator, clip: clip_mod.Clip) !void {
         try self.clips.append(alloc, clip);
     }
 
     pub fn name(self: *const Track) []const u8 {
         return self.name_buf[0..self.name_len];
+    }
+
+    pub fn setName(self: *Track, track_name: []const u8) void {
+        @memset(&self.name_buf, 0);
+        const n = @min(track_name.len, MAX_NAME);
+        @memcpy(self.name_buf[0..n], track_name[0..n]);
+        self.name_len = @intCast(n);
     }
 
     pub fn volume(self: *const Track) f32 {
@@ -161,9 +187,13 @@ test "publishSnapshot round-trip" {
     const alloc = testing.allocator;
     const machine_mod = @import("machine.zig");
     var t = try Track.init(alloc, "test", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, machine_mod.Machine{
+        .name = "test",
         .state = undefined,
         .render = struct {
             fn f(_: *anyopaque, _: *const machine_mod.MachineCtx, _: []f32, _: []f32) void {}
+        }.f,
+        .draw_panel = struct {
+            fn f(_: *anyopaque, _: @import("c.zig").rl.Rectangle, _: @import("ui/widgets.zig").Mouse) void {}
         }.f,
         .reset = struct {
             fn f(_: *anyopaque) void {}

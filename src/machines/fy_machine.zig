@@ -10,30 +10,42 @@ const FyHost = fy_host_mod.FyHost;
 const theme = @import("../ui/theme.zig");
 const widgets = @import("../ui/widgets.zig");
 
+const MAX_PARAMS = 256;
+
 pub const FyMachine = struct {
     host: *FyHost,
     render_fn: std.atomic.Value(?*const fn () callconv(.c) void),
     ui_fn: std.atomic.Value(?*const fn () callconv(.c) void),
+    reset_fn: std.atomic.Value(?*const fn () callconv(.c) void),
     name_buf: [64]u8,
     name_len: usize,
+    params: [MAX_PARAMS]u8 = [_]u8{0} ** MAX_PARAMS,
+    params_size: usize = 0,
+    preset_index: u8 = 0,
     panel_w: f32 = 108,
+    probe_counter: u32 = 0,
 
     pub fn init(
         host: *FyHost,
         name: []const u8,
         audio_cb: *const fn () callconv(.c) void,
         ui_cb: ?*const fn () callconv(.c) void,
+        reset_cb: ?*const fn () callconv(.c) void,
+        params_size: usize,
     ) FyMachine {
         var m = FyMachine{
             .host = host,
             .render_fn = std.atomic.Value(?*const fn () callconv(.c) void).init(audio_cb),
             .ui_fn = std.atomic.Value(?*const fn () callconv(.c) void).init(ui_cb),
+            .reset_fn = std.atomic.Value(?*const fn () callconv(.c) void).init(reset_cb),
             .name_buf = undefined,
             .name_len = 0,
+            .params_size = @min(params_size, MAX_PARAMS),
         };
         const n = @min(name.len, 63);
         @memcpy(m.name_buf[0..n], name[0..n]);
         m.name_len = n;
+        initDefaultParams(&m);
         return m;
     }
 
@@ -53,6 +65,10 @@ pub const FyMachine = struct {
             .draw_panel = drawPanelImpl,
             .reset = resetImpl,
             .deinit = deinitImpl,
+            .sync_params = syncParamsImpl,
+            .preset_count = presetCountImpl,
+            .preset_name = presetNameImpl,
+            .apply_preset = applyPresetImpl,
             .panel_w = self.panel_w,
         };
     }
@@ -66,18 +82,73 @@ fn renderImpl(
 ) void {
     const self: *FyMachine = @ptrCast(@alignCast(state));
     const cb = self.render_fn.load(.acquire) orelse return;
+    const probe = fyProbeEnabled();
+    const wait_start = if (probe) probeNowNs() else 0;
+    fy_host_mod.lockCallbacks();
+    defer fy_host_mod.unlockCallbacks();
+    const wait_ns = if (probe) probeNowNs() - wait_start else 0;
+
     Fy.Builtins.fyPtr = @intFromPtr(&self.host.fy);
-    FyHost.setCtx(ctx);
+    var local_ctx = ctx.*;
+    local_ctx.params_current = if (self.params_size > 0) @ptrCast(&self.params[0]) else null;
+    FyHost.setCtx(&local_ctx);
+    FyHost.setParams(local_ctx.params_current);
     FyHost.setAudioBuffers(l.ptr, r.ptr);
+    defer FyHost.clearAudioBuffers();
+    defer FyHost.setParams(null);
+    defer FyHost.clearCtx();
+
+    var debug_name: [65:0]u8 = [_:0]u8{0} ** 65;
+    const n = @min(self.name_len, 64);
+    @memcpy(debug_name[0..n], self.name_buf[0..n]);
+    debug_name[n] = 0;
+    FyHost.setDebugMachineName(@ptrCast(&debug_name[0]));
+    const render_start = if (probe) probeNowNs() else 0;
     cb();
-    FyHost.clearCtx();
-    FyHost.clearAudioBuffers();
+    if (probe) {
+        const render_ns = probeNowNs() - render_start;
+        const budget_ns: i128 = @divTrunc(@as(i128, @intCast(ctx.block_size)) * std.time.ns_per_s, @as(i128, @intFromFloat(ctx.sample_rate)));
+        self.probe_counter +%= 1;
+        if (fyProbeVerbose() or render_ns > @divTrunc(budget_ns, 2) or self.probe_counter % 512 == 0) {
+            std.debug.print(
+                "fy-probe \"{s}\" block={} frames={} events={} wait_us={d:.1} render_us={d:.1} budget_us={d:.1}\n",
+                .{
+                    self.name_buf[0..self.name_len],
+                    ctx.block_start,
+                    ctx.block_size,
+                    ctx.note_in_count,
+                    @as(f64, @floatFromInt(wait_ns)) / 1_000.0,
+                    @as(f64, @floatFromInt(render_ns)) / 1_000.0,
+                    @as(f64, @floatFromInt(budget_ns)) / 1_000.0,
+                },
+            );
+        }
+    }
+}
+
+fn fyProbeEnabled() bool {
+    return std.c.getenv("SLAB_FY_PROBE") != null;
+}
+
+fn fyProbeVerbose() bool {
+    return std.c.getenv("SLAB_FY_PROBE_VERBOSE") != null;
+}
+
+fn probeNowNs() i128 {
+    var info: std.c.mach_timebase_info_data = undefined;
+    _ = std.c.mach_timebase_info(&info);
+    return @divTrunc(@as(i128, @intCast(std.c.mach_absolute_time())) * @as(i128, @intCast(info.numer)), @as(i128, @intCast(info.denom)));
 }
 
 fn drawPanelImpl(state: *anyopaque, r: c.rl.Rectangle, m: widgets.Mouse) void {
     const self: *FyMachine = @ptrCast(@alignCast(state));
+    fy_host_mod.lockCallbacks();
+    defer fy_host_mod.unlockCallbacks();
+
     Fy.Builtins.fyPtr = @intFromPtr(&self.host.fy);
     FyHost.setUiContext(r, m);
+    FyHost.setParams(if (self.params_size > 0) @ptrCast(&self.params[0]) else null);
+    defer FyHost.setParams(null);
     defer FyHost.clearUiContext();
 
     const cb = self.ui_fn.load(.acquire) orelse {
@@ -90,7 +161,135 @@ fn drawPanelImpl(state: *anyopaque, r: c.rl.Rectangle, m: widgets.Mouse) void {
 }
 
 fn resetImpl(state: *anyopaque) void {
-    _ = state;
+    const self: *FyMachine = @ptrCast(@alignCast(state));
+    const cb = self.reset_fn.load(.acquire) orelse return;
+    fy_host_mod.lockCallbacks();
+    defer fy_host_mod.unlockCallbacks();
+
+    Fy.Builtins.fyPtr = @intFromPtr(&self.host.fy);
+    FyHost.setParams(if (self.params_size > 0) @ptrCast(&self.params[0]) else null);
+    defer FyHost.setParams(null);
+    cb();
+}
+
+fn syncParamsImpl(dst_state: *anyopaque, src_state: *anyopaque) void {
+    const dst: *FyMachine = @ptrCast(@alignCast(dst_state));
+    const src: *FyMachine = @ptrCast(@alignCast(src_state));
+    if (!std.mem.eql(u8, dst.name_buf[0..dst.name_len], src.name_buf[0..src.name_len])) return;
+    const n = @min(dst.params_size, src.params_size);
+    if (n == 0) return;
+    @memcpy(dst.params[0..n], src.params[0..n]);
+}
+
+pub const Mono1Params = extern struct {
+    gain: f32,
+    range: f32,
+    saw: f32,
+    pulse: f32,
+    pw: f32,
+    sub: f32,
+    noise: f32,
+    attack: f32,
+    decay: f32,
+    sustain: f32,
+    release: f32,
+    cutoff: f32,
+    resonance: f32,
+    drive: f32,
+    hpf: f32,
+    fenv: f32,
+    keytrack: f32,
+    lfo_rate: f32,
+    lfo_delay: f32,
+    lfo_pitch: f32,
+    lfo_pw: f32,
+    lfo_amp: f32,
+    lfo_cutoff: f32,
+};
+
+fn initDefaultParams(self: *FyMachine) void {
+    if (std.mem.eql(u8, self.name_buf[0..self.name_len], "mono1") and self.params_size >= @sizeOf(Mono1Params)) {
+        applyMono1Preset(self, 0);
+    } else if (std.mem.eql(u8, self.name_buf[0..self.name_len], "chorus") and self.params_size >= @sizeOf(Chorus1Params)) {
+        const p: *align(1) Chorus1Params = @ptrCast(&self.params[0]);
+        p.* = .{ .mode = 0.0, .mix = 0.42, .noise = 0.02, .level = 1.0 };
+    }
+}
+
+pub const Chorus1Params = extern struct {
+    mode: f32,
+    mix: f32,
+    noise: f32,
+    level: f32,
+};
+
+const Mono1Preset = struct {
+    name: [*:0]const u8,
+    params: Mono1Params,
+};
+
+const mono1_presets = [_]Mono1Preset{
+    .{ .name = "JUNO SAW", .params = .{ .gain = 0.48, .range = 1.0, .saw = 0.78, .pulse = 0.0, .pw = 0.5, .sub = 0.22, .noise = 0.0, .attack = 0.012, .decay = 0.18, .sustain = 0.72, .release = 0.16, .cutoff = 0.74, .resonance = 0.08, .drive = 0.12, .hpf = 0.0, .fenv = 0.58, .keytrack = 0.10, .lfo_rate = 0.26, .lfo_delay = 0.0, .lfo_pitch = 0.0, .lfo_pw = 0.0, .lfo_amp = 0.0, .lfo_cutoff = 0.0 } },
+    .{ .name = "JUNO BOTH", .params = .{ .gain = 0.42, .range = 1.0, .saw = 0.62, .pulse = 0.38, .pw = 0.5, .sub = 0.18, .noise = 0.0, .attack = 0.01, .decay = 0.16, .sustain = 0.68, .release = 0.14, .cutoff = 0.70, .resonance = 0.12, .drive = 0.14, .hpf = 0.0, .fenv = 0.60, .keytrack = 0.10, .lfo_rate = 0.26, .lfo_delay = 0.0, .lfo_pitch = 0.0, .lfo_pw = 0.0, .lfo_amp = 0.0, .lfo_cutoff = 0.0 } },
+    .{ .name = "JUNO SUB", .params = .{ .gain = 0.5, .range = 0.0, .saw = 0.62, .pulse = 0.0, .pw = 0.5, .sub = 0.38, .noise = 0.0, .attack = 0.008, .decay = 0.22, .sustain = 0.78, .release = 0.18, .cutoff = 0.68, .resonance = 0.10, .drive = 0.16, .hpf = 0.0, .fenv = 0.55, .keytrack = 0.08, .lfo_rate = 0.26, .lfo_delay = 0.0, .lfo_pitch = 0.0, .lfo_pw = 0.0, .lfo_amp = 0.0, .lfo_cutoff = 0.0 } },
+    .{ .name = "JP PUNCH BASS", .params = .{ .gain = 0.62, .range = 0.0, .saw = 0.58, .pulse = 0.22, .pw = 0.44, .sub = 0.48, .noise = 0.0, .attack = 0.004, .decay = 0.12, .sustain = 0.44, .release = 0.07, .cutoff = 0.52, .resonance = 0.10, .drive = 0.34, .hpf = 0.0, .fenv = 0.86, .keytrack = 0.06, .lfo_rate = 0.18, .lfo_delay = 0.0, .lfo_pitch = 0.0, .lfo_pw = 0.0, .lfo_amp = 0.0, .lfo_cutoff = 0.0 } },
+    .{ .name = "JP LUSH CHORD", .params = .{ .gain = 0.36, .range = 1.0, .saw = 0.70, .pulse = 0.34, .pw = 0.55, .sub = 0.12, .noise = 0.0, .attack = 0.045, .decay = 0.42, .sustain = 0.78, .release = 0.44, .cutoff = 0.62, .resonance = 0.08, .drive = 0.10, .hpf = 0.04, .fenv = 0.36, .keytrack = 0.18, .lfo_rate = 0.22, .lfo_delay = 0.18, .lfo_pitch = 0.006, .lfo_pw = 0.18, .lfo_amp = 0.0, .lfo_cutoff = 0.10 } },
+    .{ .name = "JP SOFT STRINGS", .params = .{ .gain = 0.34, .range = 1.0, .saw = 0.82, .pulse = 0.0, .pw = 0.50, .sub = 0.10, .noise = 0.0, .attack = 0.12, .decay = 0.55, .sustain = 0.88, .release = 0.58, .cutoff = 0.58, .resonance = 0.04, .drive = 0.06, .hpf = 0.08, .fenv = 0.24, .keytrack = 0.22, .lfo_rate = 0.20, .lfo_delay = 0.22, .lfo_pitch = 0.004, .lfo_pw = 0.0, .lfo_amp = 0.0, .lfo_cutoff = 0.12 } },
+    .{ .name = "JP GLASS PLUCK", .params = .{ .gain = 0.46, .range = 2.0, .saw = 0.38, .pulse = 0.52, .pw = 0.42, .sub = 0.0, .noise = 0.02, .attack = 0.002, .decay = 0.16, .sustain = 0.12, .release = 0.13, .cutoff = 0.70, .resonance = 0.18, .drive = 0.08, .hpf = 0.18, .fenv = 0.72, .keytrack = 0.26, .lfo_rate = 0.30, .lfo_delay = 0.0, .lfo_pitch = 0.0, .lfo_pw = 0.0, .lfo_amp = 0.0, .lfo_cutoff = 0.0 } },
+    .{ .name = "JP BRASS LEAD", .params = .{ .gain = 0.48, .range = 1.0, .saw = 0.74, .pulse = 0.32, .pw = 0.46, .sub = 0.08, .noise = 0.0, .attack = 0.018, .decay = 0.28, .sustain = 0.62, .release = 0.20, .cutoff = 0.66, .resonance = 0.12, .drive = 0.18, .hpf = 0.02, .fenv = 0.62, .keytrack = 0.16, .lfo_rate = 0.34, .lfo_delay = 0.16, .lfo_pitch = 0.010, .lfo_pw = 0.04, .lfo_amp = 0.0, .lfo_cutoff = 0.0 } },
+    .{ .name = "JP ARP PULSE", .params = .{ .gain = 0.44, .range = 1.0, .saw = 0.12, .pulse = 0.86, .pw = 0.36, .sub = 0.08, .noise = 0.0, .attack = 0.004, .decay = 0.13, .sustain = 0.36, .release = 0.09, .cutoff = 0.60, .resonance = 0.16, .drive = 0.16, .hpf = 0.08, .fenv = 0.66, .keytrack = 0.20, .lfo_rate = 0.40, .lfo_delay = 0.0, .lfo_pitch = 0.0, .lfo_pw = 0.12, .lfo_amp = 0.0, .lfo_cutoff = 0.0 } },
+};
+
+const Chorus1Preset = struct {
+    name: [*:0]const u8,
+    params: Chorus1Params,
+};
+
+const chorus1_presets = [_]Chorus1Preset{
+    .{ .name = "JUNO I", .params = .{ .mode = 0.0, .mix = 0.36, .noise = 0.01, .level = 1.0 } },
+    .{ .name = "JUNO II", .params = .{ .mode = 1.0, .mix = 0.46, .noise = 0.015, .level = 1.0 } },
+    .{ .name = "JUNO I+II", .params = .{ .mode = 2.0, .mix = 0.52, .noise = 0.02, .level = 0.96 } },
+    .{ .name = "CLEAN WIDE", .params = .{ .mode = 1.0, .mix = 0.38, .noise = 0.0, .level = 1.0 } },
+};
+
+fn presetCountImpl(state: *anyopaque) u8 {
+    const self: *FyMachine = @ptrCast(@alignCast(state));
+    if (std.mem.eql(u8, self.name_buf[0..self.name_len], "mono1")) return mono1_presets.len;
+    if (std.mem.eql(u8, self.name_buf[0..self.name_len], "chorus")) return chorus1_presets.len;
+    return 0;
+}
+
+fn presetNameImpl(state: *anyopaque, index: u8) [*:0]const u8 {
+    const self: *FyMachine = @ptrCast(@alignCast(state));
+    if (std.mem.eql(u8, self.name_buf[0..self.name_len], "mono1")) {
+        return mono1_presets[@min(index, mono1_presets.len - 1)].name;
+    }
+    if (std.mem.eql(u8, self.name_buf[0..self.name_len], "chorus")) {
+        return chorus1_presets[@min(index, chorus1_presets.len - 1)].name;
+    }
+    return "";
+}
+
+fn applyPresetImpl(state: *anyopaque, index: u8) void {
+    const self: *FyMachine = @ptrCast(@alignCast(state));
+    if (std.mem.eql(u8, self.name_buf[0..self.name_len], "mono1")) applyMono1Preset(self, index);
+    if (std.mem.eql(u8, self.name_buf[0..self.name_len], "chorus")) applyChorus1Preset(self, index);
+}
+
+fn applyMono1Preset(self: *FyMachine, index: u8) void {
+    if (self.params_size < @sizeOf(Mono1Params)) return;
+    const i = @min(index, mono1_presets.len - 1);
+    const p: *align(1) Mono1Params = @ptrCast(&self.params[0]);
+    p.* = mono1_presets[i].params;
+    self.preset_index = @intCast(i);
+}
+
+fn applyChorus1Preset(self: *FyMachine, index: u8) void {
+    if (self.params_size < @sizeOf(Chorus1Params)) return;
+    const i = @min(index, chorus1_presets.len - 1);
+    const p: *align(1) Chorus1Params = @ptrCast(&self.params[0]);
+    p.* = chorus1_presets[i].params;
+    self.preset_index = @intCast(i);
 }
 
 fn deinitImpl(state: *anyopaque, alloc: std.mem.Allocator) void {
