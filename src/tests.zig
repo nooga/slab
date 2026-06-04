@@ -20,6 +20,10 @@ fn runCases(fy: *Fy, testCases: []const TestCase) !void {
     }
 }
 
+fn expectContains(haystack: []const u8, needle: []const u8) !void {
+    try std.testing.expect(std.mem.indexOf(u8, haystack, needle) != null);
+}
+
 test "Basic expressions and built-in words" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
@@ -540,4 +544,78 @@ test "noalloc: rejects call to non-noalloc: user word" {
     _ = try fy.run(": normal qnil ;");
     const result = fy.run("noalloc: bad normal ; bad");
     try std.testing.expectError(error.UnknownWord, result);
+}
+
+test "compiler report and disasm expose noalloc float memory ops" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run("noalloc: report-float dup 1.5 swap f!32 f@32 2.0 f* 3.0 f+ ;");
+    try std.testing.expectEqual(Fy.makeInt(1), try fy.run("4 alloc report-float 6.0 f="));
+
+    const report = fy.reportWord("report-float") orelse return error.MissingReport;
+    try std.testing.expect(report.instruction_count > 0);
+    try std.testing.expect(report.f32_store_count >= 1);
+    try std.testing.expect(report.f32_load_count >= 1);
+    try std.testing.expect(report.float_alu_count >= 2);
+    try std.testing.expect(report.ret_count == 1);
+
+    const disasm = try fy.disassembleWordAlloc(std.testing.allocator, "report-float");
+    defer std.testing.allocator.free(disasm);
+    try expectContains(disasm, "str s");
+    try expectContains(disasm, "ldr s");
+    try expectContains(disasm, "fmul d");
+    try expectContains(disasm, "fadd d");
+
+    const json = try report.writeJsonAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(json);
+    try expectContains(json, "\"instruction_count\"");
+    try expectContains(json, "\"float_alu_count\"");
+    try expectContains(json, "\"f32_load_count\"");
+}
+
+test "compiler report tracks branchy noalloc words" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run("noalloc: report-abs dup 0 < [ 0 swap - ] [ ] ifte ;");
+    try std.testing.expectEqual(Fy.makeInt(5), try fy.run("-5 report-abs"));
+
+    const report = fy.reportWord("report-abs") orelse return error.MissingReport;
+    try std.testing.expect(report.instruction_count > 0);
+    try std.testing.expect(report.local_branch_count > 0);
+    try std.testing.expect(report.ret_count == 1);
+
+    const disasm = try fy.disassembleWordAlloc(std.testing.allocator, "report-abs");
+    defer std.testing.allocator.free(disasm);
+    try expectContains(disasm, "b");
+}
+
+test "compiler report and disasm follow hot-patched word body" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run("noalloc: patchme 1.0 2.0 f+ ;");
+    try std.testing.expectEqual(Fy.makeInt(1), try fy.run("patchme 3.0 f="));
+
+    const add_disasm = try fy.disassembleWordAlloc(std.testing.allocator, "patchme");
+    defer std.testing.allocator.free(add_disasm);
+    try expectContains(add_disasm, "fadd d");
+
+    const add_report = fy.reportWord("patchme") orelse return error.MissingReport;
+    try std.testing.expect(add_report.float_alu_count >= 1);
+
+    _ = try fy.run("noalloc: patchme 1.0 2.0 f* ;");
+    try std.testing.expectEqual(Fy.makeInt(1), try fy.run("patchme 2.0 f="));
+
+    const mul_disasm = try fy.disassembleWordAlloc(std.testing.allocator, "patchme");
+    defer std.testing.allocator.free(mul_disasm);
+    try expectContains(mul_disasm, "fmul d");
+
+    const mul_report = fy.reportWord("patchme") orelse return error.MissingReport;
+    try std.testing.expect(mul_report.float_alu_count >= 1);
+    try std.testing.expect(mul_report.instruction_count == add_report.instruction_count);
 }

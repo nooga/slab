@@ -629,6 +629,7 @@ pub const Fy = struct {
         callSlot0: ?*const anyopaque = null,
         callSlot3: ?*const anyopaque = null,
         image_addr: ?usize = null, // entry point in JIT image for BL-callable words
+        image_len: usize = 0, // length in u32 instructions of image_addr body
         trampoline_addr: ?usize = null, // stable B-trampoline in image (for hot-patching)
         immediate: bool = false, // compile-time word (macro): execute instead of compile
         noalloc: bool = false, // declared with noalloc: — must not call heap-allocating words
@@ -987,6 +988,236 @@ pub const Fy = struct {
             .c = c,
             .p = p,
         };
+    }
+
+    pub const CompileReport = struct {
+        instruction_count: usize = 0,
+        push_count: usize = 0,
+        pop_count: usize = 0,
+        stack_round_trip_pairs: usize = 0,
+        local_branch_count: usize = 0,
+        bl_count: usize = 0,
+        blr_count: usize = 0,
+        ret_count: usize = 0,
+        float_alu_count: usize = 0,
+        float_compare_count: usize = 0,
+        float_select_count: usize = 0,
+        float_tag_clear_count: usize = 0,
+        float_retag_count: usize = 0,
+        f32_load_count: usize = 0,
+        f32_store_count: usize = 0,
+
+        pub fn writeJsonAlloc(self: CompileReport, allocator: std.mem.Allocator) ![]u8 {
+            return std.fmt.allocPrint(allocator,
+                \\{{
+                \\  "instruction_count": {},
+                \\  "push_count": {},
+                \\  "pop_count": {},
+                \\  "stack_round_trip_pairs": {},
+                \\  "local_branch_count": {},
+                \\  "bl_count": {},
+                \\  "blr_count": {},
+                \\  "ret_count": {},
+                \\  "float_alu_count": {},
+                \\  "float_compare_count": {},
+                \\  "float_select_count": {},
+                \\  "float_tag_clear_count": {},
+                \\  "float_retag_count": {},
+                \\  "f32_load_count": {},
+                \\  "f32_store_count": {}
+                \\}}
+            , .{
+                self.instruction_count,
+                self.push_count,
+                self.pop_count,
+                self.stack_round_trip_pairs,
+                self.local_branch_count,
+                self.bl_count,
+                self.blr_count,
+                self.ret_count,
+                self.float_alu_count,
+                self.float_compare_count,
+                self.float_select_count,
+                self.float_tag_clear_count,
+                self.float_retag_count,
+                self.f32_load_count,
+                self.f32_store_count,
+            });
+        }
+    };
+
+    fn isPush(instr: u32) bool {
+        return instr == Asm.@".push x0" or
+            instr == Asm.@".push x1" or
+            instr == Asm.@".push x0, x1" or
+            instr == Asm.@".push x1, x0" or
+            instr == Asm.@".push x2, x3" or
+            instr == Asm.@".push Xn"(2);
+    }
+
+    fn isPop(instr: u32) bool {
+        return instr == Asm.@".pop x0" or
+            instr == Asm.@".pop x1" or
+            instr == Asm.@".pop x0, x1" or
+            instr == Asm.@".pop x1, x0" or
+            instr == Asm.@".pop Xn"(2) or
+            instr == Asm.@".pop Xn"(9) or
+            instr == Asm.@".pop Xn"(10) or
+            instr == Asm.@".pop Xn"(11) or
+            instr == Asm.@".pop Xn"(16);
+    }
+
+    fn isAnyLocalBranch(instr: u32) bool {
+        return (instr & 0xfc000000) == 0x14000000 or // b/bl
+            (instr & 0x7e000000) == 0x34000000 or // cbz/cbnz
+            (instr & 0xff000010) == 0x54000000; // b.cond
+    }
+
+    fn isBl(instr: u32) bool {
+        return (instr & 0xfc000000) == 0x94000000;
+    }
+
+    fn isBlr(instr: u32) bool {
+        return (instr & 0xfffffc1f) == 0xd63f0000;
+    }
+
+    fn isFloatAlu(instr: u32) bool {
+        const op = instr & 0xffe0fc00;
+        return op == 0x1e602800 or // fadd d
+            op == 0x1e603800 or // fsub d
+            op == 0x1e600800 or // fmul d
+            op == 0x1e601800 or // fdiv d
+            op == 0x1e604800 or // fmax d
+            op == 0x1e605800 or // fmin d
+            (instr & 0xffe00c00) == 0x1f400000 or // fmadd d
+            (instr & 0xfffffc00) == 0x1e614000; // fneg d
+    }
+
+    fn isFloatCompare(instr: u32) bool {
+        return (instr & 0xffe0fc1f) == 0x1e602000;
+    }
+
+    fn isFloatSelect(instr: u32) bool {
+        return (instr & 0xffe00c00) == 0x1e600c00;
+    }
+
+    fn isF32Load(instr: u32) bool {
+        return (instr & 0xffc00000) == 0xbd400000;
+    }
+
+    fn isF32Store(instr: u32) bool {
+        return (instr & 0xffc00000) == 0xbd000000;
+    }
+
+    pub fn analyzeCode(code: []const u32) CompileReport {
+        var report = CompileReport{ .instruction_count = code.len };
+        var i: usize = 0;
+        while (i < code.len) : (i += 1) {
+            const instr = code[i];
+            if (isPush(instr)) report.push_count += 1;
+            if (isPop(instr)) report.pop_count += 1;
+            if (i + 1 < code.len and Compiler.isStackRoundTrip(instr, code[i + 1])) {
+                report.stack_round_trip_pairs += 1;
+            }
+            if (isAnyLocalBranch(instr)) report.local_branch_count += 1;
+            if (isBl(instr)) report.bl_count += 1;
+            if (isBlr(instr)) report.blr_count += 1;
+            if (instr == Asm.ret) report.ret_count += 1;
+            if (isFloatAlu(instr)) report.float_alu_count += 1;
+            if (isFloatCompare(instr)) report.float_compare_count += 1;
+            if (isFloatSelect(instr)) report.float_select_count += 1;
+            if (i + 1 < code.len and
+                (instr & 0xfffffc00) == (Asm.@"lsr Xn, Xn, #2"(0) & 0xfffffc00) and
+                (code[i + 1] & 0xfffffc00) == (Asm.@"lsl Xn, Xn, #2"(0) & 0xfffffc00))
+            {
+                report.float_tag_clear_count += 1;
+            }
+            if (i + 2 < code.len and
+                (instr & 0xfffffc00) == (Asm.@"lsr Xn, Xn, #2"(0) & 0xfffffc00) and
+                (code[i + 1] & 0xfffffc00) == (Asm.@"lsl Xn, Xn, #2"(0) & 0xfffffc00) and
+                (code[i + 2] & 0xfffffc00) == (Asm.@"add Xn, Xn, #2"(0) & 0xfffffc00))
+            {
+                report.float_retag_count += 1;
+            }
+            if (isF32Load(instr)) report.f32_load_count += 1;
+            if (isF32Store(instr)) report.f32_store_count += 1;
+        }
+        return report;
+    }
+
+    pub fn wordCode(self: *const Fy, name: []const u8) ?[]const u32 {
+        const word = self.userWords.get(name) orelse return null;
+        if (word.image_addr) |addr| {
+            if (word.image_len == 0) return null;
+            const ptr: [*]const u32 = @ptrFromInt(addr);
+            return ptr[0..word.image_len];
+        }
+        if (word.code.len > 0) return word.code;
+        return null;
+    }
+
+    pub fn reportWord(self: *const Fy, name: []const u8) ?CompileReport {
+        const code = self.wordCode(name) orelse return null;
+        return analyzeCode(code);
+    }
+
+    pub fn disassembleWordAlloc(self: *const Fy, allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+        const code = self.wordCode(name) orelse return error.UnknownWord;
+        return disassembleAlloc(allocator, code);
+    }
+
+    fn appendBytes(out: *compat.ArrayList(u8), bytes: []const u8) !void {
+        for (bytes) |b| try out.append(b);
+    }
+
+    fn appendFmt(out: *compat.ArrayList(u8), comptime fmt: []const u8, args: anytype) !void {
+        var buf: [160]u8 = undefined;
+        const s = try std.fmt.bufPrint(&buf, fmt, args);
+        try appendBytes(out, s);
+    }
+
+    pub fn disasmMnemonic(instr: u32) []const u8 {
+        if (instr == Asm.@".push x0") return "push x0";
+        if (instr == Asm.@".push x1") return "push x1";
+        if (instr == Asm.@".push x0, x1") return "push x0, x1";
+        if (instr == Asm.@".push x1, x0") return "push x1, x0";
+        if (instr == Asm.@".pop x0") return "pop x0";
+        if (instr == Asm.@".pop x1") return "pop x1";
+        if (instr == Asm.@".pop x0, x1") return "pop x0, x1";
+        if (instr == Asm.@".pop x1, x0") return "pop x1, x0";
+        if (instr == Asm.ret) return "ret";
+        if (isBl(instr)) return "bl";
+        if (isBlr(instr)) return "blr";
+        if ((instr & 0xfc000000) == 0x14000000) return "b";
+        if ((instr & 0x7e000000) == 0x34000000) return "cbz/cbnz";
+        if ((instr & 0xff000010) == 0x54000000) return "b.cond";
+        if ((instr & 0xfffffc00) == (Asm.@"lsr Xn, Xn, #2"(0) & 0xfffffc00)) return "lsr xn, xn, #2";
+        if ((instr & 0xfffffc00) == (Asm.@"lsl Xn, Xn, #2"(0) & 0xfffffc00)) return "lsl xn, xn, #2";
+        if ((instr & 0xfffffc00) == (Asm.@"add Xn, Xn, #2"(0) & 0xfffffc00)) return "add xn, xn, #2";
+        if ((instr & 0xfffffc00) == (Asm.@"fmov Dd, Xn"(0, 0) & 0xfffffc00)) return "fmov d, x";
+        if ((instr & 0xfffffc00) == (Asm.@"fmov Xd, Dn"(0, 0) & 0xfffffc00)) return "fmov x, d";
+        if ((instr & 0xffe0fc00) == 0x1e602800) return "fadd d";
+        if ((instr & 0xffe0fc00) == 0x1e603800) return "fsub d";
+        if ((instr & 0xffe0fc00) == 0x1e600800) return "fmul d";
+        if ((instr & 0xffe0fc00) == 0x1e601800) return "fdiv d";
+        if ((instr & 0xffe00c00) == 0x1f400000) return "fmadd d";
+        if ((instr & 0xffe0fc00) == 0x1e604800) return "fmax d";
+        if ((instr & 0xffe0fc00) == 0x1e605800) return "fmin d";
+        if ((instr & 0xfffffc00) == 0x1e614000) return "fneg d";
+        if (isFloatCompare(instr)) return "fcmp d";
+        if (isFloatSelect(instr)) return "fcsel d";
+        if (isF32Load(instr)) return "ldr s";
+        if (isF32Store(instr)) return "str s";
+        return "unknown";
+    }
+
+    pub fn disassembleAlloc(allocator: std.mem.Allocator, code: []const u32) ![]u8 {
+        var out = compat.ArrayList(u8).init(allocator);
+        errdefer out.deinit();
+        for (code, 0..) |instr, i| {
+            try appendFmt(&out, "{d:0>4}: {x:0>8} {s}\n", .{ i, instr, disasmMnemonic(instr) });
+        }
+        return out.toOwnedSlice();
     }
 
     pub const Builtins = struct {
@@ -3995,6 +4226,7 @@ pub const Fy = struct {
             try val_compiler.emitPush();
             try val_compiler.leavePersist();
             const val_code = try val_compiler.code.toOwnedSlice();
+            const val_code_len = val_code.len;
             const val_exe = self.fy.image.link(val_code);
             const entry_addr = @intFromPtr(val_exe.ptr);
             self.fy.fyalloc.free(val_code);
@@ -4010,6 +4242,7 @@ pub const Fy = struct {
             try self.declareWord(reg_name);
             if (self.fy.userWords.getPtr(reg_name)) |word| {
                 word.image_addr = entry_addr;
+                word.image_len = val_code_len;
                 // Constants just push a literal at runtime — no heap interaction possible.
                 word.noalloc = true;
             }
@@ -4034,6 +4267,7 @@ pub const Fy = struct {
             // Resolve relocations and link into JIT image
             const link_base = @intFromPtr(self.fy.image.mem.ptr) + self.fy.image.end;
             body_compiler.resolveRelocations(link_base, body_code);
+            const body_code_len = body_code.len;
             const body_exe = self.fy.image.link(body_code);
             const entry_addr = @intFromPtr(body_exe.ptr);
             self.fy.fyalloc.free(body_code);
@@ -4051,6 +4285,7 @@ pub const Fy = struct {
             try self.declareWord(reg_name);
             if (self.fy.userWords.getPtr(reg_name)) |word| {
                 word.image_addr = entry_addr;
+                word.image_len = body_code_len;
                 word.immediate = true;
             }
             if (final_name) |fn_| self.fy.fyalloc.free(fn_);
@@ -4078,6 +4313,7 @@ pub const Fy = struct {
             const link_base = @intFromPtr(self.fy.image.mem.ptr) + self.fy.image.end;
             compiler.resolveRelocations(link_base, code);
 
+            const code_len = code.len;
             const entry = self.fy.image.link(code);
             const entry_addr = @intFromPtr(entry.ptr);
             self.fy.fyalloc.free(code);
@@ -4097,9 +4333,11 @@ pub const Fy = struct {
                     const ow: i26 = @intCast(@divExact(ob, 4));
                     self.fy.image.patchInstruction(tramp, Asm.@"b offset"(ow));
                     word.image_addr = entry_addr;
+                    word.image_len = code_len;
                 } else {
                     const tramp = self.fy.image.linkTrampoline(entry_addr);
                     word.image_addr = entry_addr;
+                    word.image_len = code_len;
                     word.trampoline_addr = tramp;
                 }
                 word.noalloc = true;
@@ -4126,6 +4364,7 @@ pub const Fy = struct {
 
         /// Helper: build a user word from a code-emitting sub-compiler, link it, and register it.
         fn registerGeneratedWord(self: *Compiler, word_name: []const u8, code_slice: []u32) Error!void {
+            const code_len = code_slice.len;
             const exe = self.fy.image.link(code_slice);
             const entry_addr = @intFromPtr(exe.ptr);
             self.fy.fyalloc.free(code_slice);
@@ -4133,6 +4372,7 @@ pub const Fy = struct {
             try self.declareWord(word_name);
             if (self.fy.userWords.getPtr(word_name)) |word| {
                 word.image_addr = entry_addr;
+                word.image_len = code_len;
             }
         }
 
@@ -4423,6 +4663,7 @@ pub const Fy = struct {
                         compiler.resolveRelocations(link_base, code);
 
                         // Link into JIT image
+                        const code_len = code.len;
                         const entry = self.fy.image.link(code);
                         const entry_addr = @intFromPtr(entry.ptr);
                         self.fy.fyalloc.free(code);
@@ -4445,10 +4686,12 @@ pub const Fy = struct {
                                 const ow: i26 = @intCast(@divExact(ob, 4));
                                 self.fy.image.patchInstruction(tramp, Asm.@"b offset"(ow));
                                 word.image_addr = entry_addr;
+                                word.image_len = code_len;
                             } else {
                                 // First definition: create trampoline
                                 const tramp = self.fy.image.linkTrampoline(entry_addr);
                                 word.image_addr = entry_addr;
+                                word.image_len = code_len;
                                 word.trampoline_addr = tramp;
                             }
                         }
