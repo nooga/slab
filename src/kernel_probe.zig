@@ -58,7 +58,7 @@ pub fn main(init: std.process.Init) !void {
         try runTanhTableCase(alloc, cli, &host);
         return;
     }
-    if (std.mem.eql(u8, cli.case_name, "saw-polyblep-render")) {
+    if (isOscillatorCase(cli.case_name)) {
         try runSawPolyblepCase(alloc, cli, &host);
         return;
     }
@@ -133,9 +133,20 @@ fn usage() void {
         \\  zig build kernel-probe -- --kernel=kernels/00-primitives/v2.fy --word=k-v2-add --case=v2-add --iters=1000000 --out=scratch/kernel_v2_add
         \\
         \\cases:
-        \\  v2-add | v2-mul | v2-fmadd | tanh-table-sweep | tanh-rational-sweep | saw-polyblep-render
+        \\  v2-add | v2-mul | v2-fmadd | tanh-table-sweep | tanh-rational-sweep
+        \\  saw-polyblep-render | saw-falling-polyblep-render | saw-cap-polyblep-render
+        \\  saw-topcut-polyblep-render | square-polyblep-render | pulse-polyblep-render
         \\
     , .{});
+}
+
+fn isOscillatorCase(name: []const u8) bool {
+    return std.mem.eql(u8, name, "saw-polyblep-render") or
+        std.mem.eql(u8, name, "saw-falling-polyblep-render") or
+        std.mem.eql(u8, name, "saw-cap-polyblep-render") or
+        std.mem.eql(u8, name, "saw-topcut-polyblep-render") or
+        std.mem.eql(u8, name, "square-polyblep-render") or
+        std.mem.eql(u8, name, "pulse-polyblep-render");
 }
 
 fn caseData(name: []const u8) !CaseData {
@@ -361,6 +372,8 @@ fn runSawPolyblepCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     const freq = sample_rate * @as(f64, @floatFromInt(fundamental_bin)) / @as(f64, @floatFromInt(sample_count));
     const inv_sample_rate = 1.0 / sample_rate;
     const initial_phase: f64 = 0.137;
+    const pulse_width: f64 = 0.37;
+    const use_pulse_width = std.mem.eql(u8, cli.case_name, "pulse-polyblep-render");
 
     const out = try alloc.alloc(f64, sample_count);
     defer alloc.free(out);
@@ -372,36 +385,52 @@ fn runSawPolyblepCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     var expected_phase = initial_phase;
     const dt = freq * inv_sample_rate;
     for (expected, naive) |*exp, *dry| {
-        exp.* = zigSawPolyblep(expected_phase, dt);
-        dry.* = zigSawRaw(expected_phase);
+        exp.* = oscillatorExpected(cli.case_name, expected_phase, dt, pulse_width);
+        dry.* = oscillatorNaive(cli.case_name, expected_phase, pulse_width);
         expected_phase = wrap01(expected_phase + dt);
     }
 
     var perf_out: f64 = 0;
     var perf_phase = initial_phase;
-    const perf_args = [_]Fy.Dsp2RawArg{
+    const perf_args4 = [_]Fy.Dsp2RawArg{
         .{ .ptr = @intFromPtr(&perf_out) },
         .{ .ptr = @intFromPtr(&perf_phase) },
         .{ .f64 = freq },
         .{ .f64 = inv_sample_rate },
     };
+    const perf_args5 = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&perf_out) },
+        .{ .ptr = @intFromPtr(&perf_phase) },
+        .{ .f64 = freq },
+        .{ .f64 = inv_sample_rate },
+        .{ .f64 = pulse_width },
+    };
+    const perf_args = if (use_pulse_width) perf_args5[0..] else perf_args4[0..];
     const warmup = @min(cli.iterations, 1_000);
-    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, warmup, &perf_args);
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, warmup, perf_args);
 
     perf_phase = initial_phase;
     const start = nowNs();
-    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, cli.iterations, &perf_args);
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, cli.iterations, perf_args);
     const run_ns = nowNs() - start;
 
     var phase = initial_phase;
     for (out) |*dst| {
-        const sample_args = [_]Fy.Dsp2RawArg{
+        const sample_args4 = [_]Fy.Dsp2RawArg{
             .{ .ptr = @intFromPtr(dst) },
             .{ .ptr = @intFromPtr(&phase) },
             .{ .f64 = freq },
             .{ .f64 = inv_sample_rate },
         };
-        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, 1, &sample_args);
+        const sample_args5 = [_]Fy.Dsp2RawArg{
+            .{ .ptr = @intFromPtr(dst) },
+            .{ .ptr = @intFromPtr(&phase) },
+            .{ .f64 = freq },
+            .{ .f64 = inv_sample_rate },
+            .{ .f64 = pulse_width },
+        };
+        const sample_args = if (use_pulse_width) sample_args5[0..] else sample_args4[0..];
+        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, 1, sample_args);
     }
 
     var metrics = computeSliceMetrics(out, expected, run_ns, cli.iterations);
@@ -440,6 +469,49 @@ fn zigPolyblep(phase: f64, dt: f64) f64 {
 
 fn zigSawPolyblep(phase: f64, dt: f64) f64 {
     return zigSawRaw(phase) - zigPolyblep(phase, dt);
+}
+
+fn zigSawFallingRaw(phase: f64) f64 {
+    return 1.0 - phase - phase;
+}
+
+fn zigSawFallingPolyblep(phase: f64, dt: f64) f64 {
+    return zigSawFallingRaw(phase) + zigPolyblep(phase, dt);
+}
+
+fn zigCapRampRaw(phase: f64) f64 {
+    return 4.0 * phase - 2.0 * phase * phase - 1.0;
+}
+
+fn zigCapSawPolyblep(phase: f64, dt: f64) f64 {
+    return zigCapRampRaw(phase) - zigPolyblep(phase, dt);
+}
+
+fn zigPulseRaw(phase: f64, width: f64) f64 {
+    return if (phase < width) 1.0 else -1.0;
+}
+
+fn zigPulsePolyblep(phase: f64, dt: f64, width: f64) f64 {
+    const edge = wrap01(phase - width);
+    return zigPulseRaw(phase, width) + zigPolyblep(phase, dt) - zigPolyblep(edge, dt);
+}
+
+fn oscillatorExpected(case_name: []const u8, phase: f64, dt: f64, width: f64) f64 {
+    if (std.mem.eql(u8, case_name, "saw-falling-polyblep-render")) return zigSawFallingPolyblep(phase, dt);
+    if (std.mem.eql(u8, case_name, "saw-cap-polyblep-render")) return zigCapSawPolyblep(phase, dt);
+    if (std.mem.eql(u8, case_name, "saw-topcut-polyblep-render")) return std.math.clamp(zigSawPolyblep(phase, dt), -1.0, 0.65);
+    if (std.mem.eql(u8, case_name, "square-polyblep-render")) return zigPulsePolyblep(phase, dt, 0.5);
+    if (std.mem.eql(u8, case_name, "pulse-polyblep-render")) return zigPulsePolyblep(phase, dt, width);
+    return zigSawPolyblep(phase, dt);
+}
+
+fn oscillatorNaive(case_name: []const u8, phase: f64, width: f64) f64 {
+    if (std.mem.eql(u8, case_name, "saw-falling-polyblep-render")) return zigSawFallingRaw(phase);
+    if (std.mem.eql(u8, case_name, "saw-cap-polyblep-render")) return zigCapRampRaw(phase);
+    if (std.mem.eql(u8, case_name, "saw-topcut-polyblep-render")) return std.math.clamp(zigSawRaw(phase), -1.0, 0.65);
+    if (std.mem.eql(u8, case_name, "square-polyblep-render")) return zigPulseRaw(phase, 0.5);
+    if (std.mem.eql(u8, case_name, "pulse-polyblep-render")) return zigPulseRaw(phase, width);
+    return zigSawRaw(phase);
 }
 
 fn wrap01(x: f64) f64 {

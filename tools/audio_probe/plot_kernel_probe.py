@@ -270,7 +270,7 @@ def main() -> int:
     outputs = []
     if metrics.get("case") == "tanh-table-sweep":
         outputs.append(plot_tanh_transfer(args.prefix, rows, metrics))
-    elif metrics.get("case") == "saw-polyblep-render":
+    elif "alias_residual_db" in metrics:
         outputs.append(plot_saw_oscillator(args.prefix, rows, metrics))
     else:
         outputs.append(plot_lane_result(args.prefix, rows, metrics))
