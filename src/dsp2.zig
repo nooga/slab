@@ -52,8 +52,16 @@ const Loc = union(enum) {
     d: u5,
 };
 
+pub const ArgAbi = enum {
+    tagged,
+    raw,
+    raw_registers,
+};
+
 const D_REGS = [_]u5{ 0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31 };
 const X_REGS = [_]u5{ 9, 10, 11, 12, 13, 14, 15, 16, 17 };
+pub const RAW_X_ARG_REGS = [_]u5{ 0, 1, 2, 3, 4, 5, 6, 7 };
+pub const RAW_D_ARG_REGS = [_]u5{ 8, 9, 10, 11, 12, 13, 14, 15 };
 
 pub const Builder = struct {
     allocator: std.mem.Allocator,
@@ -154,7 +162,16 @@ pub const Builder = struct {
     }
 
     pub fn emit(self: *Builder, out: *compat.ArrayList(u32)) Error!void {
-        if (self.stores.items.len == 0 or self.stack.items.len != 0) return Error.BadStackEffect;
+        return self.emitWithArgAbi(out, .tagged);
+    }
+
+    pub fn emitWithArgAbi(self: *Builder, out: *compat.ArrayList(u32), arg_abi: ArgAbi) Error!void {
+        const pure_outputs = self.stores.items.len == 0;
+        if (pure_outputs) {
+            if (self.stack.items.len == 0) return Error.BadStackEffect;
+        } else if (self.stack.items.len != 0) {
+            return Error.BadStackEffect;
+        }
 
         const locs = self.allocator.alloc(Loc, self.values.items.len) catch return Error.OutOfMemory;
         defer self.allocator.free(locs);
@@ -164,15 +181,38 @@ pub const Builder = struct {
             .builder = self,
             .out = out,
             .locs = locs,
+            .arg_abi = arg_abi,
         };
-        for (self.stores.items) |store| {
-            const val_reg = try cg.valueD(store.value);
-            const ptr_reg = try cg.valueX(store.ptr);
-            try out.append(Asm.str_d_imm(val_reg, ptr_reg, 0));
+        if (pure_outputs) {
+            const output_regs = self.allocator.alloc(u5, self.stack.items.len) catch return Error.OutOfMemory;
+            defer self.allocator.free(output_regs);
+            for (self.stack.items, 0..) |value, i| {
+                output_regs[i] = try cg.valueD(value);
+            }
+            if (arg_abi != .raw_registers and self.initial_arity > 0) {
+                try out.append(Asm.add_imm(21, 21, @intCast(self.initial_arity * 8)));
+            }
+            for (output_regs) |reg| {
+                try out.append(Asm.@"fmov Xd, Dn"(9, reg));
+                try out.append(Asm.@"lsr Xn, Xn, #2"(9));
+                try out.append(Asm.@"lsl Xn, Xn, #2"(9));
+                try out.append(Asm.@"add Xn, Xn, #2"(9));
+                try out.append(Asm.@".push Xn"(9));
+            }
+        } else {
+            for (self.stores.items) |store| {
+                const val_reg = try cg.valueD(store.value);
+                const ptr_reg = try cg.valueX(store.ptr);
+                try out.append(Asm.str_d_imm(val_reg, ptr_reg, 0));
+            }
+            if (arg_abi != .raw_registers and self.initial_arity > 0) {
+                try out.append(Asm.add_imm(21, 21, @intCast(self.initial_arity * 8)));
+            }
         }
-        if (self.initial_arity > 0) {
-            try out.append(Asm.add_imm(21, 21, @intCast(self.initial_arity * 8)));
-        }
+    }
+
+    pub fn outputCount(self: *const Builder) usize {
+        return self.stack.items.len;
     }
 
     fn addValue(self: *Builder, value: Value) Error!usize {
@@ -288,7 +328,9 @@ pub const Program = struct {
                 b.deinit();
                 continue;
             }
-            if (b.stores.items.len > 0 and b.stack.items.len == 0) {
+            if ((b.stores.items.len > 0 and b.stack.items.len == 0) or
+                (b.stores.items.len == 0 and b.stack.items.len > 0))
+            {
                 b.initial_arity = arity;
                 return b;
             }
@@ -338,6 +380,7 @@ const Codegen = struct {
     builder: *Builder,
     out: *compat.ArrayList(u32),
     locs: []Loc,
+    arg_abi: ArgAbi,
     next_d: usize = 0,
     next_x: usize = 0,
 
@@ -360,12 +403,21 @@ const Codegen = struct {
         const value = self.builder.values.items[id];
         if (value.ty != .ptr and value.ty != .int) return Error.TypeMismatch;
 
+        if (value.op == .arg and self.arg_abi == .raw_registers) {
+            if (value.arg_index >= RAW_X_ARG_REGS.len) return Error.RegisterExhausted;
+            const reg = RAW_X_ARG_REGS[value.arg_index];
+            self.locs[id] = .{ .x = reg };
+            return reg;
+        }
+
         const reg = try self.allocX();
         switch (value.op) {
             .arg => {
                 const offset = (self.builder.initial_arity - 1 - value.arg_index) * 8;
                 try self.out.append(Asm.ldr_x_imm(reg, 21, @intCast(offset)));
-                try self.out.append(Asm.@"asr Xn, Xn, #2"(reg));
+                if (self.arg_abi == .tagged) {
+                    try self.out.append(Asm.@"asr Xn, Xn, #2"(reg));
+                }
             },
             .int_const => {
                 for (Asm.movImm64(reg, @as(u64, @bitCast(value.int_value)))) |instr| try self.out.append(instr);
@@ -381,15 +433,26 @@ const Codegen = struct {
         const value = self.builder.values.items[id];
         if (value.ty != .f64) return Error.TypeMismatch;
 
+        if (value.op == .arg and self.arg_abi == .raw_registers) {
+            if (value.arg_index >= RAW_D_ARG_REGS.len) return Error.RegisterExhausted;
+            const reg = RAW_D_ARG_REGS[value.arg_index];
+            self.locs[id] = .{ .d = reg };
+            return reg;
+        }
+
         const reg = try self.allocD();
         switch (value.op) {
             .arg => {
-                const x = try self.allocX();
                 const offset = (self.builder.initial_arity - 1 - value.arg_index) * 8;
-                try self.out.append(Asm.ldr_x_imm(x, 21, @intCast(offset)));
-                try self.out.append(Asm.@"lsr Xn, Xn, #2"(x));
-                try self.out.append(Asm.@"lsl Xn, Xn, #2"(x));
-                try self.out.append(Asm.@"fmov Dd, Xn"(reg, x));
+                if (self.arg_abi == .raw) {
+                    try self.out.append(Asm.ldr_d_imm(reg, 21, @intCast(offset)));
+                } else {
+                    const x = try self.allocX();
+                    try self.out.append(Asm.ldr_x_imm(x, 21, @intCast(offset)));
+                    try self.out.append(Asm.@"lsr Xn, Xn, #2"(x));
+                    try self.out.append(Asm.@"lsl Xn, Xn, #2"(x));
+                    try self.out.append(Asm.@"fmov Dd, Xn"(reg, x));
+                }
             },
             .f64_const => try self.emitF64Const(reg, value.float_value),
             .load_f64 => {

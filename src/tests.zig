@@ -29,6 +29,11 @@ fn makeFyFloat(value: f64) Fy.Value {
     return @bitCast((bits & ~@as(u64, 3)) | 2);
 }
 
+fn getFyFloat(value: Fy.Value) f64 {
+    const bits: u64 = @bitCast(value);
+    return @bitCast(bits & ~@as(u64, 3));
+}
+
 test "Basic expressions and built-in words" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
@@ -912,6 +917,111 @@ test "dsp2: inlines called dsp2 word before typed codegen" {
     try std.testing.expectEqual(@as(usize, 0), wrapper_report.bl_count);
     try std.testing.expectEqual(@as(usize, 0), wrapper_report.push_count);
     try std.testing.expectEqual(@as(usize, 0), wrapper_report.pop_count);
+}
+
+test "dsp2: pure f64 helper is callable and inlines into pointer adapter" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run(
+        \\dsp2: rat-shape
+        \\  -4.0 4.0 fclamp
+        \\  dup dup f*
+        \\  dup 27.0 f+
+        \\  2 pick f*
+        \\  1 pick 9.0 f* 27.0 f+
+        \\  f/
+        \\  -1.0 1.0 fclamp
+        \\  swap drop swap drop
+        \\;
+        \\dsp2: rat-adapter
+        \\  3 pick f@64
+        \\  1 pick f*
+        \\  rat-shape
+        \\  5 pick f!64
+        \\  drop drop drop drop drop
+        \\;
+    );
+
+    const direct_input = 1.25;
+    const direct = try fy.run("1.25 rat-shape");
+    const direct_x2 = direct_input * direct_input;
+    const direct_expected = @min(@max(direct_input * (27.0 + direct_x2) / (27.0 + 9.0 * direct_x2), -1.0), 1.0);
+    try std.testing.expectApproxEqAbs(direct_expected, getFyFloat(direct), 0.000000000001);
+
+    var out: f64 = 0;
+    var input: f64 = 0.5;
+    var table: [1]f64 = .{0};
+    const args = [_]Fy.Value{
+        Fy.makeInt(@intCast(@intFromPtr(&out))),
+        Fy.makeInt(@intCast(@intFromPtr(&input))),
+        Fy.makeInt(@intCast(@intFromPtr(&table))),
+        Fy.makeInt(0),
+        makeFyFloat(2.5),
+    };
+
+    _ = try fy.callWordRepeatedWithArgsNoResult("rat-adapter", 1, &args);
+    const x = input * 2.5;
+    const x2 = x * x;
+    const expected = @min(@max(x * (27.0 + x2) / (27.0 + 9.0 * x2), -1.0), 1.0);
+    try std.testing.expectApproxEqAbs(expected, out, 0.000000000001);
+
+    const helper_report = fy.reportWord("rat-shape") orelse return error.MissingReport;
+    const adapter_report = fy.reportWord("rat-adapter") orelse return error.MissingReport;
+    try std.testing.expect(helper_report.push_count >= 1);
+    try std.testing.expectEqual(@as(usize, 0), adapter_report.bl_count);
+    try std.testing.expectEqual(@as(usize, 0), adapter_report.push_count);
+    try std.testing.expectEqual(@as(usize, 0), adapter_report.pop_count);
+}
+
+test "dsp2: raw repeated call uses untagged pointer and f64 args" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run(
+        \\dsp2: rat-shape
+        \\  -4.0 4.0 fclamp
+        \\  dup dup f*
+        \\  dup 27.0 f+
+        \\  2 pick f*
+        \\  1 pick 9.0 f* 27.0 f+
+        \\  f/
+        \\  -1.0 1.0 fclamp
+        \\  swap drop swap drop
+        \\;
+        \\dsp2: rat-adapter
+        \\  3 pick f@64
+        \\  1 pick f*
+        \\  rat-shape
+        \\  5 pick f!64
+        \\  drop drop drop drop drop
+        \\;
+    );
+
+    var out: f64 = 0;
+    var input: f64 = 0.5;
+    var table: [1]f64 = .{0};
+    const args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out) },
+        .{ .ptr = @intFromPtr(&input) },
+        .{ .ptr = @intFromPtr(&table) },
+        .{ .int = 0 },
+        .{ .f64 = 2.5 },
+    };
+
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("rat-adapter", 1, &args);
+    const x = input * 2.5;
+    const x2 = x * x;
+    const expected = @min(@max(x * (27.0 + x2) / (27.0 + 9.0 * x2), -1.0), 1.0);
+    try std.testing.expectApproxEqAbs(expected, out, 0.000000000001);
+
+    const tagged_report = fy.reportWord("rat-adapter") orelse return error.MissingReport;
+    const raw_report = try fy.reportDsp2RawWord("rat-adapter");
+    try std.testing.expect(raw_report.instruction_count < tagged_report.instruction_count);
+    try std.testing.expectEqual(@as(usize, 0), raw_report.push_count);
+    try std.testing.expectEqual(@as(usize, 0), raw_report.pop_count);
 }
 
 test "dsp: rejects heap allocation" {

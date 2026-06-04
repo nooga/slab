@@ -1157,6 +1157,20 @@ pub const Fy = struct {
         }
     };
 
+    pub const Dsp2RawArg = union(enum) {
+        ptr: usize,
+        int: i64,
+        f64: f64,
+
+        fn bits(self: Dsp2RawArg) u64 {
+            return switch (self) {
+                .ptr => |v| @intCast(v),
+                .int => |v| @bitCast(v),
+                .f64 => |v| @bitCast(v),
+            };
+        }
+    };
+
     fn isPush(instr: u32) bool {
         inline for (0..32) |n| {
             if (instr == Asm.@".push Xn"(n)) return true;
@@ -1292,6 +1306,11 @@ pub const Fy = struct {
         return word.dsp;
     }
 
+    pub fn isDsp2Word(self: *const Fy, name: []const u8) bool {
+        const word = self.userWords.get(name) orelse return false;
+        return word.dsp2;
+    }
+
     fn straightLineDspBody(word: Word) ?[]const u32 {
         if (!word.dsp2) return null;
         const addr = word.image_body_addr orelse return null;
@@ -1307,6 +1326,37 @@ pub const Fy = struct {
             return null;
         }
         return body;
+    }
+
+    fn buildDsp2BodyAlloc(self: *Fy, word: Word, arg_abi: Dsp2.ArgAbi) ![]u32 {
+        if (!word.dsp2) return error.NotDspWord;
+        const tokens = word.dsp2_body orelse return error.NotDspWord;
+
+        var program = Dsp2.Program.init(self.fyalloc);
+        defer program.deinit();
+        try program.addTokens(tokens);
+
+        var builder = try program.build();
+        defer builder.deinit();
+
+        var body = compat.ArrayList(u32).init(self.fyalloc);
+        errdefer body.deinit();
+        try builder.emitWithArgAbi(&body, arg_abi);
+        return body.toOwnedSlice();
+    }
+
+    pub fn reportDsp2RawWord(self: *Fy, name: []const u8) !CompileReport {
+        const word = self.userWords.get(name) orelse return error.UnknownWord;
+        const body = try self.buildDsp2BodyAlloc(word, .raw_registers);
+        defer self.fyalloc.free(body);
+        return analyzeCode(body);
+    }
+
+    pub fn disassembleDsp2RawWordAlloc(self: *Fy, allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+        const word = self.userWords.get(name) orelse return error.UnknownWord;
+        const body = try self.buildDsp2BodyAlloc(word, .raw_registers);
+        defer self.fyalloc.free(body);
+        return disassembleAlloc(allocator, body);
     }
 
     pub fn disassembleWordAlloc(self: *const Fy, allocator: std.mem.Allocator, name: []const u8) ![]u8 {
@@ -1551,6 +1601,64 @@ pub const Fy = struct {
             const offset_words: i26 = @intCast(@divExact(offset_bytes, 4));
             code.items[bl_pos] = Asm.@"bl offset"(offset_words);
         }
+
+        const wrapper_code = try code.toOwnedSlice();
+        const executable = self.image.link(wrapper_code);
+        self.fyalloc.free(wrapper_code);
+
+        Builtins.fyPtr = @intFromPtr(self);
+        const fun: *const fn () Value = @ptrCast(@alignCast(executable));
+        return fun();
+    }
+
+    pub fn callDsp2RawRepeatedWithArgsNoResult(self: *Fy, name: []const u8, iterations: u64, args: []const Dsp2RawArg) !Value {
+        if (iterations == 0) return makeInt(0);
+
+        const word = self.userWords.get(name) orelse return error.UnknownWord;
+        const raw_body = try self.buildDsp2BodyAlloc(word, .raw_registers);
+        defer self.fyalloc.free(raw_body);
+
+        const report = analyzeCode(raw_body);
+        if (report.local_branch_count != 0 or
+            report.bl_count != 0 or
+            report.blr_count != 0 or
+            report.ret_count != 0 or
+            report.push_count != 0 or
+            report.pop_count != 0)
+        {
+            return error.UnsupportedDsp2RawBody;
+        }
+
+        var code = compat.ArrayList(u32).init(self.fyalloc);
+        errdefer code.deinit();
+
+        try code.append(Asm.@"stp x29, x30, [sp, #0x10]!");
+        try code.append(Asm.@"mov x29, sp");
+        try code.append(Asm.@"stp x21, x22, [sp, #0x10]!");
+        try code.append(Asm.@".rpush Xn"(23));
+        for (Asm.movImm64(23, iterations)) |instr| try code.append(instr);
+
+        if (args.len > Dsp2.RAW_X_ARG_REGS.len) return error.RegisterExhausted;
+        for (args, 0..) |arg, i| {
+            const x_reg = Dsp2.RAW_X_ARG_REGS[i];
+            for (Asm.movImm64(x_reg, arg.bits())) |instr| try code.append(instr);
+            switch (arg) {
+                .f64 => try code.append(Asm.@"fmov Dd, Xn"(Dsp2.RAW_D_ARG_REGS[i], x_reg)),
+                else => {},
+            }
+        }
+
+        const loop_pos = code.items.len;
+        try code.appendSlice(raw_body);
+        try code.append(Asm.@"subs Xn, Xn, #imm"(23, 1));
+        const bne_pos = code.items.len;
+        try code.append(Asm.@"b.cond offset"(Asm.COND_NE, @intCast(@as(isize, @intCast(loop_pos)) - @as(isize, @intCast(bne_pos)))));
+
+        try code.append(Asm.@".rpop Xn"(23));
+        try code.append(Asm.@"ldp x21, x22, [sp], #0x10");
+        try code.append(Asm.@"ldp x29, x30, [sp], #0x10");
+        try code.append(Asm.@"mov x0, #0");
+        try code.append(Asm.ret);
 
         const wrapper_code = try code.toOwnedSlice();
         const executable = self.image.link(wrapper_code);
@@ -5005,6 +5113,8 @@ pub const Fy = struct {
                 word.inlineable = false;
                 word.dsp = true;
                 word.dsp2 = true;
+                word.c = builder.initial_arity;
+                word.p = builder.outputCount();
                 word.dsp2_body = dsp2_body;
                 dsp2_body = null;
             }
