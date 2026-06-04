@@ -629,3 +629,43 @@ test "benchmark wrapper calls a word repeatedly" {
     try std.testing.expectEqual(Fy.makeInt(3), try fy.callWordRepeated("bench-plus", 1000));
     try std.testing.expectEqual(Fy.makeInt(0), try fy.callWordRepeated("bench-plus", 0));
 }
+
+test "inline-noalloc copies straight-line inlineable callees" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run("noalloc: plain-inc 1 + ; noalloc: plain-call 41 plain-inc ;");
+    try std.testing.expectEqual(Fy.makeInt(42), try fy.run("plain-call"));
+    const plain_report = fy.reportWord("plain-call") orelse return error.MissingReport;
+    try std.testing.expectEqual(@as(usize, 1), plain_report.bl_count);
+
+    _ = try fy.run("inline-noalloc: inline-inc 1 + ; inline-noalloc: inline-call 41 inline-inc ;");
+    try std.testing.expectEqual(Fy.makeInt(42), try fy.run("inline-call"));
+    const inline_report = fy.reportWord("inline-call") orelse return error.MissingReport;
+    try std.testing.expectEqual(@as(usize, 0), inline_report.bl_count);
+    try std.testing.expect(inline_report.instruction_count > plain_report.instruction_count);
+
+    const disasm = try fy.disassembleWordAlloc(std.testing.allocator, "inline-call");
+    defer std.testing.allocator.free(disasm);
+    try std.testing.expect(std.mem.indexOf(u8, disasm, "bl") == null);
+
+    _ = try fy.run("inline-noalloc: inline-inc 2 + ;");
+    try std.testing.expectEqual(Fy.makeInt(43), try fy.run("41 inline-inc"));
+    try std.testing.expectEqual(Fy.makeInt(42), try fy.run("inline-call"));
+}
+
+test "inline-noalloc falls back to calls for branchy callees" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run("inline-noalloc: inline-abs dup 0 < [ 0 swap - ] [ ] ifte ; inline-noalloc: inline-abs-call -5 inline-abs ;");
+    try std.testing.expectEqual(Fy.makeInt(5), try fy.run("inline-abs-call"));
+
+    const callee_report = fy.reportWord("inline-abs") orelse return error.MissingReport;
+    try std.testing.expect(callee_report.local_branch_count > 0);
+
+    const caller_report = fy.reportWord("inline-abs-call") orelse return error.MissingReport;
+    try std.testing.expectEqual(@as(usize, 1), caller_report.bl_count);
+}

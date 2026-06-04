@@ -26,6 +26,11 @@ const cases = [_]Case{
         .word = "bench-call",
     },
     .{
+        .name = "inline-word-call",
+        .source = "inline-noalloc: bench-inline-inc 1 + ; inline-noalloc: bench-inline-call 41 bench-inline-inc ;",
+        .word = "bench-inline-call",
+    },
+    .{
         .name = "branch-ifte",
         .source = "noalloc: bench-branch 5 dup 3 > [ 1 + ] [ 1 - ] ifte ;",
         .word = "bench-branch",

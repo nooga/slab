@@ -630,9 +630,12 @@ pub const Fy = struct {
         callSlot3: ?*const anyopaque = null,
         image_addr: ?usize = null, // entry point in JIT image for BL-callable words
         image_len: usize = 0, // length in u32 instructions of image_addr body
+        image_body_addr: ?usize = null, // entry body after UserWord prologue, for opt-in inlining
+        image_body_len: usize = 0,
         trampoline_addr: ?usize = null, // stable B-trampoline in image (for hot-patching)
         immediate: bool = false, // compile-time word (macro): execute instead of compile
         noalloc: bool = false, // declared with noalloc: — must not call heap-allocating words
+        inlineable: bool = false, // declared with inline-noalloc: — may be copied into opt-in callers
 
         const DEFINE = ":";
         const END = ";";
@@ -3179,6 +3182,8 @@ pub const Fy = struct {
         prevQuoteCodePos: usize = 0,
         // When true, heap-allocating builtins and non-noalloc: user words are errors.
         noalloc_mode: bool = false,
+        // When true, calls to straight-line inlineable noalloc words are copied into the caller.
+        inline_noalloc_calls: bool = false,
         // Detailed compile error message for callers (handleConnection, REPL)
         last_error: [256]u8 = undefined,
         last_error_len: usize = 0,
@@ -3201,6 +3206,8 @@ pub const Fy = struct {
             target_addr: usize, // absolute byte address in image (or SELF_CALL)
         };
         const SELF_CALL: usize = std.math.maxInt(usize);
+        const USER_WORD_PROLOGUE_INSTRS = 2;
+        const USER_WORD_EPILOGUE_INSTRS = 2;
 
         const Error = error{
             ExpectedWord,
@@ -3416,7 +3423,31 @@ pub const Fy = struct {
             };
         }
 
+        fn straightLineInlineBody(word: Word) ?[]const u32 {
+            if (!word.inlineable) return null;
+            const addr = word.image_body_addr orelse return null;
+            if (word.image_body_len == 0) return null;
+            const ptr: [*]const u32 = @ptrFromInt(addr);
+            const body = ptr[0..word.image_body_len];
+            for (body) |instr| {
+                if (instr == Asm.CALLSLOT or instr == Asm.CALLSLOT0 or instr == Asm.CALLSLOT3 or instr == Asm.RECUR) {
+                    return null;
+                }
+            }
+            const report = Fy.analyzeCode(body);
+            if (report.local_branch_count != 0 or report.bl_count != 0 or report.blr_count != 0 or report.ret_count != 0) {
+                return null;
+            }
+            return body;
+        }
+
         fn emitWord(self: *Compiler, word: Word) !void {
+            if (self.inline_noalloc_calls) {
+                if (straightLineInlineBody(word)) |body| {
+                    for (body) |instr| try self.emit(instr);
+                    return;
+                }
+            }
             // User words with trampoline: BL to trampoline (enables hot-patching)
             if (word.trampoline_addr) |addr| {
                 try self.emitBL(addr);
@@ -4340,7 +4371,7 @@ pub const Fy = struct {
         /// rejects heap-allocating builtins and non-noalloc: user word calls
         /// at compile time.  Intended for audio-thread words that must not
         /// touch the GC heap at runtime.
-        fn compileNoalloc(self: *Compiler) Error!void {
+        fn compileNoalloc(self: *Compiler, inlineable: bool) Error!void {
             const name_tok = try self.parser.nextToken();
             const w = switch (name_tok orelse return Error.UnexpectedEndOfInput) {
                 .Word => |n| n,
@@ -4352,6 +4383,7 @@ pub const Fy = struct {
             compiler.namespace = self.namespace;
             compiler.currentDef = w;
             compiler.noalloc_mode = true; // ← enables safety checks
+            compiler.inline_noalloc_calls = inlineable;
 
             const code = try compiler.compile(.UserWord);
 
@@ -4361,6 +4393,11 @@ pub const Fy = struct {
             const code_len = code.len;
             const entry = self.fy.image.link(code);
             const entry_addr = @intFromPtr(entry.ptr);
+            const body_len = if (code_len >= USER_WORD_PROLOGUE_INSTRS + USER_WORD_EPILOGUE_INSTRS)
+                code_len - USER_WORD_PROLOGUE_INSTRS - USER_WORD_EPILOGUE_INSTRS
+            else
+                0;
+            const body_addr = if (body_len > 0) entry_addr + USER_WORD_PROLOGUE_INSTRS * @sizeOf(u32) else 0;
             self.fy.fyalloc.free(code);
 
             const final_name = if (self.namespace) |ns| blk: {
@@ -4379,13 +4416,18 @@ pub const Fy = struct {
                     self.fy.image.patchInstruction(tramp, Asm.@"b offset"(ow));
                     word.image_addr = entry_addr;
                     word.image_len = code_len;
+                    word.image_body_addr = if (body_len > 0) body_addr else null;
+                    word.image_body_len = body_len;
                 } else {
                     const tramp = self.fy.image.linkTrampoline(entry_addr);
                     word.image_addr = entry_addr;
                     word.image_len = code_len;
+                    word.image_body_addr = if (body_len > 0) body_addr else null;
+                    word.image_body_len = body_len;
                     word.trampoline_addr = tramp;
                 }
                 word.noalloc = true;
+                word.inlineable = inlineable;
             }
             if (final_name) |fn_| self.fy.fyalloc.free(fn_);
         }
@@ -4711,6 +4753,11 @@ pub const Fy = struct {
                         const code_len = code.len;
                         const entry = self.fy.image.link(code);
                         const entry_addr = @intFromPtr(entry.ptr);
+                        const body_len = if (code_len >= USER_WORD_PROLOGUE_INSTRS + USER_WORD_EPILOGUE_INSTRS)
+                            code_len - USER_WORD_PROLOGUE_INSTRS - USER_WORD_EPILOGUE_INSTRS
+                        else
+                            0;
+                        const body_addr = if (body_len > 0) entry_addr + USER_WORD_PROLOGUE_INSTRS * @sizeOf(u32) else 0;
                         self.fy.fyalloc.free(code);
 
                         // Apply namespace prefix for import (e.g., "raylib:" → "raylib:word")
@@ -4732,13 +4779,19 @@ pub const Fy = struct {
                                 self.fy.image.patchInstruction(tramp, Asm.@"b offset"(ow));
                                 word.image_addr = entry_addr;
                                 word.image_len = code_len;
+                                word.image_body_addr = if (body_len > 0) body_addr else null;
+                                word.image_body_len = body_len;
                             } else {
                                 // First definition: create trampoline
                                 const tramp = self.fy.image.linkTrampoline(entry_addr);
                                 word.image_addr = entry_addr;
                                 word.image_len = code_len;
+                                word.image_body_addr = if (body_len > 0) body_addr else null;
+                                word.image_body_len = body_len;
                                 word.trampoline_addr = tramp;
                             }
+                            word.noalloc = false;
+                            word.inlineable = false;
                         }
                         // Free the prefixed name if we allocated one (declareWord dupes it)
                         if (final_name) |fn_| self.fy.fyalloc.free(fn_);
@@ -4840,7 +4893,12 @@ pub const Fy = struct {
                         }
                         if (std.mem.eql(u8, w, "noalloc:")) {
                             self.resetQuoteTracking();
-                            try self.compileNoalloc();
+                            try self.compileNoalloc(false);
+                            continue;
+                        }
+                        if (std.mem.eql(u8, w, "inline-noalloc:")) {
+                            self.resetQuoteTracking();
+                            try self.compileNoalloc(true);
                             continue;
                         }
                         // Self-recursion: emit BL back to own entry point
