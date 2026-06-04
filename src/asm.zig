@@ -90,6 +90,11 @@ pub const @"cmp x0, x1" = 0xeb01001f;
 pub const @"cmp x2, #0" = 0xf100005f;
 pub const @"csel x0, x0, x1, ne" = 0x9a811000;
 
+pub const COND_EQ: u4 = 0;
+pub const COND_NE: u4 = 1;
+pub const COND_LT: u4 = 11;
+pub const COND_GT: u4 = 12;
+
 pub const @"b 0" = 0x14000000;
 pub const @"b 2" = @"b 0" + 2;
 
@@ -189,18 +194,25 @@ pub fn @"lsl Xn, Xn, #2"(n: u5) u32 {
     return 0xd37ef400 | nn | (nn << 5);
 }
 
+/// LSR Xn, Xn, #2 — logical shift right 2 (UBFM Xn, Xn, #2, #63).
+/// Used with LSL for a "clear low 2 bits" roundtrip on float values.
+pub fn @"lsr Xn, Xn, #2"(n: u5) u32 {
+    const nn: u32 = n;
+    return 0xd342fc00 | nn | (nn << 5);
+}
+
 /// ASR Xn, Xn, #2 — untag an integer (SBFM Xn, Xn, #2, #63)
 pub fn @"asr Xn, Xn, #2"(n: u5) u32 {
     const nn: u32 = n;
     return 0x9342fc00 | nn | (nn << 5);
 }
 
-/// LSR x9, x9, #2 — shift right 2 (UBFM x9, x9, #2, #63)
-pub const @"lsr x9, x9, #2" = 0xd342fd29;
-/// LSL x9, x9, #2 — shift left 2 (UBFM x9, x9, #62, #61)
-pub const @"lsl x9, x9, #2" = 0xd37ef529;
-/// ADD x9, x9, #2 — add 2 to x9 (used to set TAG_FLT after clearing lower bits)
-pub const @"add x9, x9, #2" = 0x91000929;
+/// ADD Xn, Xn, #2 — set TAG_FLT (=2) after a `lsr ; lsl` roundtrip cleared
+/// the low 2 bits.
+pub fn @"add Xn, Xn, #2"(n: u5) u32 {
+    const nn: u32 = n;
+    return 0x91000800 | nn | (nn << 5);
+}
 
 // SP-relative helpers for locals frames
 // Reserve a stack frame: sub sp, sp, #imm (imm must be a multiple of 16, imm <= 4095)
@@ -231,6 +243,61 @@ pub fn @"mov Xd, Xn"(d: u5, n: u5) u32 {
 }
 
 // --- Floating-point register instructions ---
+
+// FADD Dd, Dn, Dm — double-precision add
+pub fn @"fadd Dd, Dn, Dm"(d: u5, n: u5, m: u5) u32 {
+    return 0x1E602800 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
+}
+
+// FSUB Dd, Dn, Dm — double-precision subtract
+pub fn @"fsub Dd, Dn, Dm"(d: u5, n: u5, m: u5) u32 {
+    return 0x1E603800 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
+}
+
+// FMUL Dd, Dn, Dm — double-precision multiply
+pub fn @"fmul Dd, Dn, Dm"(d: u5, n: u5, m: u5) u32 {
+    return 0x1E600800 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
+}
+
+// FMADD Dd, Dn, Dm, Da — double-precision fused multiply-add: Dd = Dn * Dm + Da
+pub fn @"fmadd Dd, Dn, Dm, Da"(d: u5, n: u5, m: u5, a: u5) u32 {
+    return 0x1F400000 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, a) << 10) | (@as(u32, m) << 16);
+}
+
+// FDIV Dd, Dn, Dm — double-precision divide
+pub fn @"fdiv Dd, Dn, Dm"(d: u5, n: u5, m: u5) u32 {
+    return 0x1E601800 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
+}
+
+// FMIN Dd, Dn, Dm — double-precision minimum
+pub fn @"fmin Dd, Dn, Dm"(d: u5, n: u5, m: u5) u32 {
+    return 0x1E605800 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
+}
+
+// FMAX Dd, Dn, Dm — double-precision maximum
+pub fn @"fmax Dd, Dn, Dm"(d: u5, n: u5, m: u5) u32 {
+    return 0x1E604800 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
+}
+
+// FNEG Dd, Dn — double-precision negate
+pub fn @"fneg Dd, Dn"(d: u5, n: u5) u32 {
+    return 0x1E614000 | @as(u32, d) | (@as(u32, n) << 5);
+}
+
+// FCSEL Dd, Dn, Dm, cond — double-precision conditional select
+pub fn @"fcsel Dd, Dn, Dm, cond"(d: u5, n: u5, m: u5, cond: u4) u32 {
+    return 0x1E600C00 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, cond) << 12) | (@as(u32, m) << 16);
+}
+
+// FCMP Dn, Dm — double-precision compare, writes NZCV flags
+pub fn @"fcmp Dn, Dm"(n: u5, m: u5) u32 {
+    return 0x1E602000 | (@as(u32, n) << 5) | (@as(u32, m) << 16);
+}
+
+// CSET Xd, cond — materialize a condition as integer 0 or 1.
+pub fn @"cset Xd, cond"(d: u5, cond: u4) u32 {
+    return 0x9A9F07E0 | @as(u32, d) | (@as(u32, cond ^ 1) << 12);
+}
 
 // FMOV Dd, Xn — move 64-bit general register to double-precision float register
 // Encoding: 0x9E670000 | Rn<<5 | Rd

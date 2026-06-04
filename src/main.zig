@@ -12,17 +12,37 @@ const c_std = @cImport({
     @cInclude("stdlib.h");
     @cInclude("stdio.h");
 });
-const Editor = @import("zigline").Editor;
+// NOTE: zigline dependency removed pending 0.16 port — the REPL is stubbed
+// out below. The fy library target (src/lib.zig) does not need it.
 const Asm = @import("asm.zig");
 const Args = @import("args.zig");
+const compat = @import("compat.zig");
 
-extern fn __clear_cache(start: usize, end: usize) callconv(.C) void;
+extern fn __clear_cache(start: usize, end: usize) callconv(.c) void;
+
+/// Minimal mutex for hot-patch coordination. Zig 0.16 removed
+/// `std.Thread.Mutex` in favour of the async `std.Io.Mutex` which
+/// requires an Io instance. This wrapper provides the tiny blocking
+/// lock/unlock surface fy uses, built on `std.atomic.Mutex` + yield.
+const HotMutex = struct {
+    state: std.atomic.Mutex = .unlocked,
+
+    pub fn lock(m: *HotMutex) void {
+        while (!m.state.tryLock()) {
+            std.Thread.yield() catch {};
+        }
+    }
+
+    pub fn unlock(m: *HotMutex) void {
+        m.state.unlock();
+    }
+};
 
 /// Prints a hexdump of the given slice.
 /// @param mem the slice to print
 /// @param len the length of the slice
 fn debugSlice(mem: []u8, len: usize) void {
-    const w = std.io.getStdErr().writer();
+    const w = compat.stderrWriter();
     // hexdump the image in 4 byte chunks
     var i: usize = 0;
 
@@ -36,7 +56,7 @@ fn debugSlice(mem: []u8, len: usize) void {
 
     w.print("\n000  ", .{}) catch {};
     while (i < len) {
-        w.print("{} ", .{std.fmt.fmtSliceHexLower(mem[i .. i + 4])}) catch {};
+        w.print("{} ", .{compat.fmtSliceHexLower(mem[i .. i + 4])}) catch {};
         // add a newline every 16 bytes
         i += 4;
         if (i % 64 == 0) {
@@ -48,14 +68,14 @@ fn debugSlice(mem: []u8, len: usize) void {
 
 inline fn outPrint(comptime fmt: []const u8, args: anytype) void {
     if (builtin.is_test) {
-        std.io.getStdErr().writer().print(fmt, args) catch {};
+        compat.stderrWriter().print(fmt, args) catch {};
     } else {
-        std.io.getStdOut().writer().print(fmt, args) catch {};
+        compat.stdoutWriter().print(fmt, args) catch {};
     }
 }
 
 fn errPrint(comptime fmt: []const u8, args: anytype) void {
-    std.io.getStdErr().writer().print(fmt, args) catch {};
+    compat.stderrWriter().print(fmt, args) catch {};
 }
 
 pub const Fy = struct {
@@ -63,16 +83,16 @@ pub const Fy = struct {
     userWords: std.StringHashMap(Word),
     importedFiles: std.StringHashMap(void),
     file_ns_map: std.StringHashMap([]const u8), // abs file path -> namespace prefix for hot-patching
-    data_stack_mem: ?[*]align(std.mem.page_size) u8 = null,
+    data_stack_mem: ?[*]align(std.heap.page_size_min) u8 = null,
     data_stack_top: usize = 0, // x21/x22 init value = top of usable region
-    macro_data_stack_mem: ?[*]align(std.mem.page_size) u8 = null,
+    macro_data_stack_mem: ?[*]align(std.heap.page_size_min) u8 = null,
     macro_data_stack_top: usize = 0, // separate stack for macro execution
-    tramp_stack_mem: ?[*]align(std.mem.page_size) u8 = null,
+    tramp_stack_mem: ?[*]align(std.heap.page_size_min) u8 = null,
     tramp_stack_top: usize = 0,
     image: Image,
     heap: Heap,
-    struct_layouts: std.ArrayList(StructLayout),
-    hot_mutex: std.Thread.Mutex = .{},
+    struct_layouts: compat.ArrayList(StructLayout),
+    hot_mutex: HotMutex = .{},
 
     const version = "v0.0.1";
     const DATA_STACK_PAGES = 8; // 32KB usable = 4096 values
@@ -151,7 +171,7 @@ pub const Fy = struct {
             .fyalloc = allocator,
             .image = image,
             .heap = Heap.init(allocator),
-            .struct_layouts = std.ArrayList(StructLayout).init(allocator),
+            .struct_layouts = compat.ArrayList(StructLayout).init(allocator),
         };
         fy.initStacks();
         return fy;
@@ -186,7 +206,7 @@ pub const Fy = struct {
     }
 
     fn initStacks(self: *Fy) void {
-        const page = std.mem.page_size;
+        const page = std.heap.page_size_min;
         // Data stack: [guard page][usable pages][guard page]
         {
             const usable = DATA_STACK_PAGES * page;
@@ -194,7 +214,7 @@ pub const Fy = struct {
             if (darwin) {
                 const raw = darwin_c.mmap(null, total, darwin_c.PROT_NONE, darwin_c.MAP_PRIVATE | darwin_c.MAP_ANON, -1, 0);
                 if (raw == darwin_c.MAP_FAILED) @panic("failed to allocate data stack");
-                const ptr: [*]align(page) u8 = @alignCast(@ptrCast(raw));
+                const ptr: [*]align(page) u8 = @ptrCast(@alignCast(raw));
                 if (darwin_c.mprotect(@ptrCast(ptr + page), usable, darwin_c.PROT_READ | darwin_c.PROT_WRITE) != 0)
                     @panic("failed to protect data stack");
                 self.data_stack_mem = ptr;
@@ -218,7 +238,7 @@ pub const Fy = struct {
             if (darwin) {
                 const raw = darwin_c.mmap(null, total, darwin_c.PROT_NONE, darwin_c.MAP_PRIVATE | darwin_c.MAP_ANON, -1, 0);
                 if (raw == darwin_c.MAP_FAILED) @panic("failed to allocate macro data stack");
-                const ptr: [*]align(page) u8 = @alignCast(@ptrCast(raw));
+                const ptr: [*]align(page) u8 = @ptrCast(@alignCast(raw));
                 if (darwin_c.mprotect(@ptrCast(ptr + page), usable, darwin_c.PROT_READ | darwin_c.PROT_WRITE) != 0)
                     @panic("failed to protect macro data stack");
                 self.macro_data_stack_mem = ptr;
@@ -242,7 +262,7 @@ pub const Fy = struct {
             if (darwin) {
                 const raw = darwin_c.mmap(null, total, darwin_c.PROT_NONE, darwin_c.MAP_PRIVATE | darwin_c.MAP_ANON, -1, 0);
                 if (raw == darwin_c.MAP_FAILED) @panic("failed to allocate tramp stack");
-                const ptr: [*]align(page) u8 = @alignCast(@ptrCast(raw));
+                const ptr: [*]align(page) u8 = @ptrCast(@alignCast(raw));
                 if (darwin_c.mprotect(@ptrCast(ptr + page), usable, darwin_c.PROT_READ | darwin_c.PROT_WRITE) != 0)
                     @panic("failed to protect tramp stack");
                 self.tramp_stack_mem = ptr;
@@ -262,7 +282,7 @@ pub const Fy = struct {
     }
 
     fn deinitStacks(self: *Fy) void {
-        const page = std.mem.page_size;
+        const page = std.heap.page_size_min;
         if (self.data_stack_mem) |ptr| {
             const total = DATA_STACK_PAGES * page + 2 * page;
             if (darwin) {
@@ -406,11 +426,11 @@ pub const Fy = struct {
         };
 
         const QuoteObj = struct {
-            items: std.ArrayList(Item),
+            items: compat.ArrayList(Item),
             // Immutable lexical locals declared in [ | a b | ... ]
-            locals_names: std.ArrayList([]u8),
+            locals_names: compat.ArrayList([]u8),
             // Captured variables from enclosing scope (populated by compileQuote)
-            captures: std.ArrayList(CaptureInfo),
+            captures: compat.ArrayList(CaptureInfo),
             cached_ptr: ?usize = null,
         };
 
@@ -421,14 +441,14 @@ pub const Fy = struct {
         };
 
         allocator: std.mem.Allocator,
-        entries: std.ArrayList(Entry),
+        entries: compat.ArrayList(Entry),
         free_head: ?usize = null,
         roots: std.AutoHashMap(usize, void),
 
         fn init(allocator: std.mem.Allocator) Heap {
             return Heap{
                 .allocator = allocator,
-                .entries = std.ArrayList(Entry).init(allocator),
+                .entries = compat.ArrayList(Entry).init(allocator),
                 .roots = std.AutoHashMap(usize, void).init(allocator),
             };
         }
@@ -496,7 +516,7 @@ pub const Fy = struct {
             // Mark phase: walk data stack from current ptr to base
             var addr = stack_ptr;
             while (addr < stack_base) : (addr += @sizeOf(Value)) {
-                const v: Value = @as(*const Value, @alignCast(@ptrCast(@as([*]const u8, @ptrFromInt(addr))))).*;
+                const v: Value = @as(*const Value, @ptrCast(@alignCast(@as([*]const u8, @ptrFromInt(addr))))).*;
                 if (Fy.isStr(v)) {
                     self.markReachable(&marked, Fy.getStrId(v));
                 }
@@ -586,8 +606,8 @@ pub const Fy = struct {
             return Fy.makeInt(@as(i64, @intCast(s.len)));
         }
 
-        fn storeQuote(self: *Heap, items: std.ArrayList(Item)) !Value {
-            const q = QuoteObj{ .items = items, .locals_names = std.ArrayList([]u8).init(self.allocator), .captures = std.ArrayList(CaptureInfo).init(self.allocator), .cached_ptr = null };
+        fn storeQuote(self: *Heap, items: compat.ArrayList(Item)) !Value {
+            const q = QuoteObj{ .items = items, .locals_names = compat.ArrayList([]u8).init(self.allocator), .captures = compat.ArrayList(CaptureInfo).init(self.allocator), .cached_ptr = null };
             const id = try self.allocSlot(Entry{ .Quote = q });
             return Fy.makeStr(id);
         }
@@ -611,6 +631,7 @@ pub const Fy = struct {
         image_addr: ?usize = null, // entry point in JIT image for BL-callable words
         trampoline_addr: ?usize = null, // stable B-trampoline in image (for hot-patching)
         immediate: bool = false, // compile-time word (macro): execute instead of compile
+        noalloc: bool = false, // declared with noalloc: — must not call heap-allocating words
 
         const DEFINE = ":";
         const END = ";";
@@ -620,7 +641,7 @@ pub const Fy = struct {
 
     fn fnToWord(comptime fun: anytype) Word {
         const T = @TypeOf(fun);
-        const typeinfo = @typeInfo(T).Fn;
+        const typeinfo = @typeInfo(T).@"fn";
         const paramCount = typeinfo.params.len;
         var returnCount = 0;
         for (0..paramCount) |i| {
@@ -660,11 +681,21 @@ pub const Fy = struct {
         }
 
         const constCode = code[0..].*;
+        // Zig 0.16: when `fun` is a comptime-passed function reference,
+        // `&fun` takes the address of the local parameter slot (on the
+        // compile-time stack), not the function's code address. We
+        // need a coercion to an actual function-pointer type to get
+        // the callable address. `*const @TypeOf(fun)` does this iff
+        // `@TypeOf(fun)` is a function type (not already a ptr).
+        const slot_addr = if (@typeInfo(T) == .@"fn") blk: {
+            const fp: *const T = &fun;
+            break :blk @as(*const anyopaque, @ptrCast(fp));
+        } else @as(*const anyopaque, @ptrCast(fun));
         return Word{
             .code = &constCode,
             .c = paramCount,
             .p = returnCount,
-            .callSlot0 = &fun,
+            .callSlot0 = slot_addr,
         };
     }
 
@@ -697,6 +728,259 @@ pub const Fy = struct {
         }, 2, 1);
     }
 
+    fn floatBinOp(comptime op: u32) Word {
+        return inlineWord(&[_]u32{
+            Asm.@".pop Xn"(9), // b
+            Asm.@".pop Xn"(10), // a
+            Asm.@"lsr Xn, Xn, #2"(9),
+            Asm.@"lsl Xn, Xn, #2"(9),
+            Asm.@"lsr Xn, Xn, #2"(10),
+            Asm.@"lsl Xn, Xn, #2"(10),
+            Asm.@"fmov Dd, Xn"(0, 10),
+            Asm.@"fmov Dd, Xn"(1, 9),
+            op,
+            Asm.@"fmov Xd, Dn"(0, 0),
+            Asm.@"lsr Xn, Xn, #2"(0),
+            Asm.@"lsl Xn, Xn, #2"(0),
+            Asm.@"add Xn, Xn, #2"(0),
+            Asm.@".push x0",
+        }, 2, 1);
+    }
+
+    fn rawFloatBits(comptime value: f64) u64 {
+        return @bitCast(value);
+    }
+
+    fn emitFloatArgToReg(comptime x_reg: u5, comptime d_reg: u5) [3]u32 {
+        return .{
+            Asm.@"lsr Xn, Xn, #2"(x_reg),
+            Asm.@"lsl Xn, Xn, #2"(x_reg),
+            Asm.@"fmov Dd, Xn"(d_reg, x_reg),
+        };
+    }
+
+    fn emitRetagFloatResult(comptime x_reg: u5, comptime d_reg: u5) [4]u32 {
+        return .{
+            Asm.@"fmov Xd, Dn"(x_reg, d_reg),
+            Asm.@"lsr Xn, Xn, #2"(x_reg),
+            Asm.@"lsl Xn, Xn, #2"(x_reg),
+            Asm.@"add Xn, Xn, #2"(x_reg),
+        };
+    }
+
+    fn floatMAddWord() Word {
+        return inlineWord(&[_]u32{
+            Asm.@".pop Xn"(9), // b
+            Asm.@".pop Xn"(10), // a
+            Asm.@".pop Xn"(11), // acc
+            emitFloatArgToReg(9, 2)[0],
+            emitFloatArgToReg(9, 2)[1],
+            emitFloatArgToReg(9, 2)[2],
+            emitFloatArgToReg(10, 1)[0],
+            emitFloatArgToReg(10, 1)[1],
+            emitFloatArgToReg(10, 1)[2],
+            emitFloatArgToReg(11, 0)[0],
+            emitFloatArgToReg(11, 0)[1],
+            emitFloatArgToReg(11, 0)[2],
+            Asm.@"fmadd Dd, Dn, Dm, Da"(0, 1, 2, 0),
+            emitRetagFloatResult(0, 0)[0],
+            emitRetagFloatResult(0, 0)[1],
+            emitRetagFloatResult(0, 0)[2],
+            emitRetagFloatResult(0, 0)[3],
+            Asm.@".push x0",
+        }, 3, 1);
+    }
+
+    fn floatMAWord() Word {
+        return inlineWord(&[_]u32{
+            Asm.@".pop Xn"(9), // c
+            Asm.@".pop Xn"(10), // b
+            Asm.@".pop Xn"(11), // a
+            emitFloatArgToReg(9, 0)[0],
+            emitFloatArgToReg(9, 0)[1],
+            emitFloatArgToReg(9, 0)[2],
+            emitFloatArgToReg(10, 2)[0],
+            emitFloatArgToReg(10, 2)[1],
+            emitFloatArgToReg(10, 2)[2],
+            emitFloatArgToReg(11, 1)[0],
+            emitFloatArgToReg(11, 1)[1],
+            emitFloatArgToReg(11, 1)[2],
+            Asm.@"fmadd Dd, Dn, Dm, Da"(0, 1, 2, 0),
+            emitRetagFloatResult(0, 0)[0],
+            emitRetagFloatResult(0, 0)[1],
+            emitRetagFloatResult(0, 0)[2],
+            emitRetagFloatResult(0, 0)[3],
+            Asm.@".push x0",
+        }, 3, 1);
+    }
+
+    fn floatSlewWord() Word {
+        return inlineWord(&[_]u32{
+            Asm.@".pop Xn"(9), // coeff
+            Asm.@".pop Xn"(10), // target
+            Asm.@".pop Xn"(11), // current
+            emitFloatArgToReg(9, 2)[0],
+            emitFloatArgToReg(9, 2)[1],
+            emitFloatArgToReg(9, 2)[2],
+            emitFloatArgToReg(10, 1)[0],
+            emitFloatArgToReg(10, 1)[1],
+            emitFloatArgToReg(10, 1)[2],
+            emitFloatArgToReg(11, 0)[0],
+            emitFloatArgToReg(11, 0)[1],
+            emitFloatArgToReg(11, 0)[2],
+            Asm.@"fsub Dd, Dn, Dm"(1, 1, 0),
+            Asm.@"fmadd Dd, Dn, Dm, Da"(0, 1, 2, 0),
+            emitRetagFloatResult(0, 0)[0],
+            emitRetagFloatResult(0, 0)[1],
+            emitRetagFloatResult(0, 0)[2],
+            emitRetagFloatResult(0, 0)[3],
+            Asm.@".push x0",
+        }, 3, 1);
+    }
+
+    fn floatCmpOp(comptime cond: u4) Word {
+        return inlineWord(&[_]u32{
+            Asm.@".pop Xn"(9), // b
+            Asm.@".pop Xn"(10), // a
+            Asm.@"lsr Xn, Xn, #2"(9),
+            Asm.@"lsl Xn, Xn, #2"(9),
+            Asm.@"lsr Xn, Xn, #2"(10),
+            Asm.@"lsl Xn, Xn, #2"(10),
+            Asm.@"fmov Dd, Xn"(0, 10),
+            Asm.@"fmov Dd, Xn"(1, 9),
+            Asm.@"fcmp Dn, Dm"(0, 1),
+            Asm.@"cset Xd, cond"(0, cond),
+            Asm.@"lsl Xn, Xn, #2"(0),
+            Asm.@".push x0",
+        }, 2, 1);
+    }
+
+    fn floatNegWord() Word {
+        return inlineWord(&[_]u32{
+            Asm.@".pop x0",
+            Asm.@"lsr Xn, Xn, #2"(0),
+            Asm.@"lsl Xn, Xn, #2"(0),
+            Asm.@"fmov Dd, Xn"(0, 0),
+            Asm.@"fneg Dd, Dn"(0, 0),
+            Asm.@"fmov Xd, Dn"(0, 0),
+            Asm.@"lsr Xn, Xn, #2"(0),
+            Asm.@"lsl Xn, Xn, #2"(0),
+            Asm.@"add Xn, Xn, #2"(0),
+            Asm.@".push x0",
+        }, 1, 1);
+    }
+
+    fn floatClamp01Word() Word {
+        const zero = Asm.movImm64(9, rawFloatBits(0.0));
+        const one = Asm.movImm64(10, rawFloatBits(1.0));
+        return inlineWord(&[_]u32{
+            Asm.@".pop x0",
+            emitFloatArgToReg(0, 0)[0],
+            emitFloatArgToReg(0, 0)[1],
+            emitFloatArgToReg(0, 0)[2],
+            zero[0],
+            zero[1],
+            zero[2],
+            zero[3],
+            Asm.@"fmov Dd, Xn"(1, 9),
+            one[0],
+            one[1],
+            one[2],
+            one[3],
+            Asm.@"fmov Dd, Xn"(2, 10),
+            Asm.@"fmax Dd, Dn, Dm"(0, 0, 1),
+            Asm.@"fmin Dd, Dn, Dm"(0, 0, 2),
+            emitRetagFloatResult(0, 0)[0],
+            emitRetagFloatResult(0, 0)[1],
+            emitRetagFloatResult(0, 0)[2],
+            emitRetagFloatResult(0, 0)[3],
+            Asm.@".push x0",
+        }, 1, 1);
+    }
+
+    fn floatClampWord() Word {
+        return inlineWord(&[_]u32{
+            Asm.@".pop Xn"(9), // hi
+            Asm.@".pop Xn"(10), // lo
+            Asm.@".pop x0", // x
+            emitFloatArgToReg(9, 2)[0],
+            emitFloatArgToReg(9, 2)[1],
+            emitFloatArgToReg(9, 2)[2],
+            emitFloatArgToReg(10, 1)[0],
+            emitFloatArgToReg(10, 1)[1],
+            emitFloatArgToReg(10, 1)[2],
+            emitFloatArgToReg(0, 0)[0],
+            emitFloatArgToReg(0, 0)[1],
+            emitFloatArgToReg(0, 0)[2],
+            Asm.@"fmax Dd, Dn, Dm"(0, 0, 1),
+            Asm.@"fmin Dd, Dn, Dm"(0, 0, 2),
+            emitRetagFloatResult(0, 0)[0],
+            emitRetagFloatResult(0, 0)[1],
+            emitRetagFloatResult(0, 0)[2],
+            emitRetagFloatResult(0, 0)[3],
+            Asm.@".push x0",
+        }, 3, 1);
+    }
+
+    fn floatWrap01Word() Word {
+        const zero = Asm.movImm64(9, rawFloatBits(0.0));
+        const one = Asm.movImm64(10, rawFloatBits(1.0));
+        return inlineWord(&[_]u32{
+            Asm.@".pop x0",
+            emitFloatArgToReg(0, 0)[0],
+            emitFloatArgToReg(0, 0)[1],
+            emitFloatArgToReg(0, 0)[2],
+            zero[0],
+            zero[1],
+            zero[2],
+            zero[3],
+            Asm.@"fmov Dd, Xn"(1, 9),
+            one[0],
+            one[1],
+            one[2],
+            one[3],
+            Asm.@"fmov Dd, Xn"(2, 10),
+            Asm.@"fsub Dd, Dn, Dm"(3, 0, 2), // x - 1
+            Asm.@"fcmp Dn, Dm"(0, 2),
+            Asm.@"fcsel Dd, Dn, Dm, cond"(0, 3, 0, Asm.COND_GT),
+            Asm.@"fadd Dd, Dn, Dm"(3, 0, 2), // x + 1
+            Asm.@"fcmp Dn, Dm"(0, 1),
+            Asm.@"fcsel Dd, Dn, Dm, cond"(0, 3, 0, Asm.COND_LT),
+            emitRetagFloatResult(0, 0)[0],
+            emitRetagFloatResult(0, 0)[1],
+            emitRetagFloatResult(0, 0)[2],
+            emitRetagFloatResult(0, 0)[3],
+            Asm.@".push x0",
+        }, 1, 1);
+    }
+
+    fn floatLoad32Word() Word {
+        return inlineWord(&[_]u32{
+            Asm.@".pop Xn"(9), // tagged address
+            Asm.@"asr Xn, Xn, #2"(9),
+            Asm.ldr_s_imm(0, 9, 0),
+            Asm.@"fcvt Dd, Sn"(0, 0),
+            Asm.@"fmov Xd, Dn"(0, 0),
+            Asm.@"lsr Xn, Xn, #2"(0),
+            Asm.@"lsl Xn, Xn, #2"(0),
+            Asm.@"add Xn, Xn, #2"(0),
+            Asm.@".push x0",
+        }, 1, 1);
+    }
+
+    fn floatStore32Word() Word {
+        return inlineWord(&[_]u32{
+            Asm.@".pop Xn"(9), // tagged address
+            Asm.@".pop x0", // tagged f64 value
+            Asm.@"asr Xn, Xn, #2"(9),
+            Asm.@"lsr Xn, Xn, #2"(0),
+            Asm.@"lsl Xn, Xn, #2"(0),
+            Asm.@"fmov Dd, Xn"(0, 0),
+            Asm.@"fcvt Sd, Dn"(0, 0),
+            Asm.str_s_imm(0, 9, 0),
+        }, 2, 0);
+    }
+
     fn inlineWord(comptime code: []const u32, comptime c: usize, comptime p: usize) Word {
         return Word{
             .code = code,
@@ -707,7 +991,7 @@ pub const Fy = struct {
 
     pub const Builtins = struct {
         // Quote concatenation: (... a b -- q)
-        fn quoteConcat(b: Value, a: Value) Value {
+        fn quoteConcat(b: Value, a: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             // Ensure both are quotes
             if (!isStr(a) or !isStr(b)) runtimeError("cat expects quotes");
@@ -715,7 +999,7 @@ pub const Fy = struct {
             if (fy.heap.typeOf(b) orelse Heap.ObjType.String != .Quote) runtimeError("cat expects quote B");
             const qa = fy.heap.getQuote(a);
             const qb = fy.heap.getQuote(b);
-            var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
+            var items = compat.ArrayList(Heap.Item).init(fy.fyalloc);
             items.ensureTotalCapacity(qa.items.items.len + qb.items.items.len) catch runtimeError("out of memory");
             // copy items from qa
             for (qa.items.items) |it| switch (it) {
@@ -737,7 +1021,7 @@ pub const Fy = struct {
         }
 
         // Quote length: (q -- n)
-        fn quoteLen(q: Value) Value {
+        fn quoteLen(q: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote) runtimeError("qlen expects quote");
             const qq = fy.heap.getQuote(q);
@@ -745,7 +1029,7 @@ pub const Fy = struct {
         }
 
         // Quote empty? (q -- 1|0)
-        fn quoteEmpty(q: Value) Value {
+        fn quoteEmpty(q: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote) runtimeError("qempty? expects quote");
             const qq = fy.heap.getQuote(q);
@@ -760,7 +1044,7 @@ pub const Fy = struct {
                 .Quote => |qv| qv,
                 .Word => |w| blk: {
                     // Wrap single word into a one-item quote
-                    var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
+                    var items = compat.ArrayList(Heap.Item).init(fy.fyalloc);
                     items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch runtimeError("out of memory") }) catch runtimeError("out of memory");
                     break :blk fy.heap.storeQuote(items) catch runtimeError("store quote failed");
                 },
@@ -768,7 +1052,7 @@ pub const Fy = struct {
         }
 
         // qhead: (q -- head)
-        fn quoteHead(q: Value) Value {
+        fn quoteHead(q: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote) runtimeError("qhead expects quote");
             const qq = fy.heap.getQuote(q);
@@ -777,12 +1061,12 @@ pub const Fy = struct {
         }
 
         // qtail: (q -- tail)
-        fn quoteTail(q: Value) Value {
+        fn quoteTail(q: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote) runtimeError("qtail expects quote");
             const qq = fy.heap.getQuote(q);
             if (qq.items.items.len == 0) return q; // tail of empty is empty
-            var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
+            var items = compat.ArrayList(Heap.Item).init(fy.fyalloc);
             items.ensureTotalCapacity(qq.items.items.len - 1) catch runtimeError("out of memory");
             for (qq.items.items[1..]) |it| switch (it) {
                 .Number => |n| items.append(Heap.Item{ .Number = n }) catch runtimeError("out of memory"),
@@ -795,11 +1079,11 @@ pub const Fy = struct {
         }
 
         // qpush: (q x -- q') append element x to quote q
-        fn quotePush(x: Value, q: Value) Value {
+        fn quotePush(x: Value, q: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote) runtimeError("qpush expects quote");
             const qq = fy.heap.getQuote(q);
-            var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
+            var items = compat.ArrayList(Heap.Item).init(fy.fyalloc);
             items.ensureTotalCapacity(qq.items.items.len + 1) catch runtimeError("out of memory");
             for (qq.items.items) |it| switch (it) {
                 .Number => |n| items.append(Heap.Item{ .Number = n }) catch runtimeError("out of memory"),
@@ -842,17 +1126,17 @@ pub const Fy = struct {
         }
 
         // qnil: ( -- q) create empty quote
-        fn quoteNil() Value {
+        fn quoteNil() callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            const items = std.ArrayList(Heap.Item).init(fy.fyalloc);
+            const items = compat.ArrayList(Heap.Item).init(fy.fyalloc);
             return fy.heap.storeQuote(items) catch runtimeError("heap store failed");
         }
 
         // range: ( n -- q ) create quote [0 1 2 ... n-1]
-        fn quoteRange(n: Value) Value {
+        fn quoteRange(n: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             const count: usize = @intCast(getInt(n));
-            var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
+            var items = compat.ArrayList(Heap.Item).init(fy.fyalloc);
             items.ensureTotalCapacity(count) catch runtimeError("out of memory");
             for (0..count) |i| {
                 items.append(Heap.Item{ .Number = @intCast(i) }) catch runtimeError("out of memory");
@@ -861,12 +1145,12 @@ pub const Fy = struct {
         }
 
         // curry: (val quot -- quot') prepend value to quote
-        fn quoteCurry(quot: Value, val: Value) Value {
+        fn quoteCurry(quot: Value, val: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(quot) or (fy.heap.typeOf(quot) orelse Heap.ObjType.String) != .Quote)
                 runtimeError("curry expects quote");
             const qq = fy.heap.getQuote(quot);
-            var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
+            var items = compat.ArrayList(Heap.Item).init(fy.fyalloc);
             items.ensureTotalCapacity(qq.items.items.len + 1) catch runtimeError("out of memory");
             // Prepend val
             if (isFloat(val)) {
@@ -893,7 +1177,7 @@ pub const Fy = struct {
             return fy.heap.storeQuote(items) catch runtimeError("heap store failed");
         }
 
-        fn print(a: Value) void {
+        fn print(a: Value) callconv(.c) void {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (isStr(a)) {
                 if (fy.heap.typeOf(a)) |t| switch (t) {
@@ -904,7 +1188,7 @@ pub const Fy = struct {
                     },
                     .Quote => {
                         // Pretty-print quote contents
-                        const stdout = std.io.getStdOut().writer();
+                        const stdout = compat.stdoutWriter();
                         fy.writeQuote(stdout, a) catch {
                             outPrint("<quote>\n", .{});
                             return;
@@ -922,7 +1206,7 @@ pub const Fy = struct {
             outPrint("{d}\n", .{getInt(a)});
         }
 
-        fn printHex(a: Value) void {
+        fn printHex(a: Value) callconv(.c) void {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (isInt(a)) {
                 outPrint("0x{x}\n", .{@as(u64, @bitCast(getInt(a)))});
@@ -940,7 +1224,7 @@ pub const Fy = struct {
                         return;
                     },
                     .Quote => {
-                        const stdout = std.io.getStdOut().writer();
+                        const stdout = compat.stdoutWriter();
                         fy.writeQuote(stdout, a) catch {
                             outPrint("<quote>\n", .{});
                             return;
@@ -953,11 +1237,11 @@ pub const Fy = struct {
             outPrint("{x}\n", .{a});
         }
 
-        fn printNewline() void {
+        fn printNewline() callconv(.c) void {
             outPrint("\n", .{});
         }
 
-        fn printChar(a: Value) void {
+        fn printChar(a: Value) callconv(.c) void {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (isStr(a)) {
                 if (fy.heap.typeOf(a)) |t| switch (t) {
@@ -981,12 +1265,12 @@ pub const Fy = struct {
             }
         }
 
-        fn spy(a: Value) Value {
+        fn spy(a: Value) callconv(.c) Value {
             print(a);
             return a;
         }
 
-        fn spyStack(base: Value, end: Value) void {
+        fn spyStack(base: Value, end: Value) callconv(.c) void {
             // base/end are raw stack pointer addresses (x21/x22), NOT tagged values
             const p: [*]Value = @ptrFromInt(@as(usize, @bitCast(base)));
             const l: usize = @as(usize, @bitCast(end)) - @as(usize, @bitCast(base));
@@ -1006,7 +1290,7 @@ pub const Fy = struct {
             outPrint("\n", .{});
         }
 
-        fn collectGarbage(stack_ptr_raw: Value, stack_base_raw: Value) void {
+        fn collectGarbage(stack_ptr_raw: Value, stack_base_raw: Value) callconv(.c) void {
             const fy_inst = @as(*Fy, @ptrFromInt(fyPtr));
             // These are raw stack addresses (x21/x22), NOT tagged values
             const stack_ptr: usize = @as(usize, @bitCast(stack_ptr_raw));
@@ -1014,7 +1298,7 @@ pub const Fy = struct {
             fy_inst.heap.gc(stack_ptr, stack_base);
         }
 
-        fn doIf(f: Value, pred: Value) void {
+        fn doIf(f: Value, pred: Value) callconv(.c) void {
             if (pred == 0) return;
             const callable = resolveCallable(f);
             if (isInt(callable)) {
@@ -1027,7 +1311,7 @@ pub const Fy = struct {
 
         // cond: auto-managed multi-way conditional
         // value [ [cond1] [body1] [cond2] [body2] ... [default] ] cond
-        fn condImpl(cases: Value, value: Value) Value {
+        fn condImpl(cases: Value, value: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(cases)) runtimeError("cond expects quote");
             if ((fy.heap.typeOf(cases) orelse Heap.ObjType.String) != .Quote) runtimeError("cond expects quote");
@@ -1083,11 +1367,11 @@ pub const Fy = struct {
         }
 
         // IO: slurp (path -- string)
-        fn slurp(path: Value) Value {
+        fn slurp(path: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(path) or (fy.heap.typeOf(path) orelse Heap.ObjType.String) != .String) runtimeError("slurp expects string path");
             const p = fy.heap.getString(path);
-            const data = std.fs.cwd().readFileAlloc(fy.fyalloc, p, std.math.maxInt(usize)) catch runtimeError("slurp failed");
+            const data = compat.readFileAlloc(fy.fyalloc, p, std.math.maxInt(usize)) catch runtimeError("slurp failed");
             // Store as fy string (copies into heap-managed storage)
             const v = fy.heap.storeString(data) catch runtimeError("heap store failed");
             // Free the temporary buffer allocated by readFileAlloc
@@ -1096,16 +1380,14 @@ pub const Fy = struct {
         }
 
         // IO: spit (string path -- 0)
-        fn spit(path: Value, content: Value) Value {
+        fn spit(path: Value, content: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(path) or (fy.heap.typeOf(path) orelse Heap.ObjType.String) != .String) runtimeError("spit expects string path");
             const p = fy.heap.getString(path);
-            var file = std.fs.cwd().createFile(p, .{}) catch runtimeError("spit: open failed");
-            defer file.close();
             if (isStr(content)) {
                 if ((fy.heap.typeOf(content) orelse Heap.ObjType.String) != .String) runtimeError("spit expects string content");
                 const s = fy.heap.getString(content);
-                _ = file.writeAll(s) catch runtimeError("spit: write failed");
+                compat.writeFile(fy.fyalloc, p, s) catch runtimeError("spit: write failed");
             } else {
                 runtimeError("spit expects string content");
             }
@@ -1113,9 +1395,9 @@ pub const Fy = struct {
         }
 
         // IO: readln (-- string)
-        fn readln() Value {
+        fn readln() callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            var reader = std.io.getStdIn().reader();
+            var reader = compat.stdinReader();
             var buf = reader.readUntilDelimiterAlloc(fy.fyalloc, '\n', 64 * 1024) catch |e| switch (e) {
                 error.EndOfStream => fy.fyalloc.alloc(u8, 0) catch runtimeError("out of memory"),
                 else => runtimeError("readln failed"),
@@ -1128,7 +1410,7 @@ pub const Fy = struct {
         }
 
         // FFI: dl-open (path -- handle)
-        fn dlOpen(path: Value) Value {
+        fn dlOpen(path: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(path) or (fy.heap.typeOf(path) orelse Heap.ObjType.String) != .String) runtimeError("dl-open expects string path");
             const p = fy.heap.getString(path);
@@ -1148,7 +1430,7 @@ pub const Fy = struct {
         }
 
         // FFI: dl-sym (handle symbol -- fptr)
-        fn dlSym(sym: Value, handle_v: Value) Value {
+        fn dlSym(sym: Value, handle_v: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isInt(handle_v)) runtimeError("dl-sym expects handle int");
             if (!isStr(sym) or (fy.heap.typeOf(sym) orelse Heap.ObjType.String) != .String) runtimeError("dl-sym expects string symbol");
@@ -1164,7 +1446,7 @@ pub const Fy = struct {
         }
 
         // FFI: dl-close (handle -- 0)
-        fn dlClose(handle_v: Value) Value {
+        fn dlClose(handle_v: Value) callconv(.c) Value {
             if (!isInt(handle_v)) runtimeError("dl-close expects handle int");
             const h: usize = @intCast(getInt(handle_v));
             const p: ?*anyopaque = @ptrFromInt(h);
@@ -1174,7 +1456,7 @@ pub const Fy = struct {
 
         // FFI helper: cstr-new (string -- ptr)
         // Allocates with libc malloc so it can be freed by cstr-free.
-        fn cstrNew(sv: Value) Value {
+        fn cstrNew(sv: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(sv) or (fy.heap.typeOf(sv) orelse Heap.ObjType.String) != .String) runtimeError("cstr-new expects string");
             const s = fy.heap.getString(sv);
@@ -1188,7 +1470,7 @@ pub const Fy = struct {
         }
 
         // FFI helper: cstr-free (ptr -- 0)
-        fn cstrFree(ptr_v: Value) Value {
+        fn cstrFree(ptr_v: Value) callconv(.c) Value {
             if (!isInt(ptr_v)) runtimeError("cstr-free expects integer pointer");
             const up: usize = @intCast(getInt(ptr_v));
             const mem: ?*anyopaque = @ptrFromInt(up);
@@ -1197,7 +1479,7 @@ pub const Fy = struct {
         }
 
         // alloc: ( size -- ptr ) allocate zeroed memory via libc malloc
-        fn allocMem(size_v: Value) Value {
+        fn allocMem(size_v: Value) callconv(.c) Value {
             const n: usize = @intCast(@as(u64, @bitCast(getInt(size_v))));
             const mem = c_std.malloc(n);
             if (mem == null) runtimeError("alloc: malloc failed");
@@ -1207,7 +1489,7 @@ pub const Fy = struct {
         }
 
         // free: ( ptr -- 0 ) free memory allocated by alloc
-        fn freeMem(ptr_v: Value) Value {
+        fn freeMem(ptr_v: Value) callconv(.c) Value {
             const up: usize = @intCast(@as(u64, @bitCast(getInt(ptr_v))));
             c_std.free(@ptrFromInt(up));
             return makeInt(0);
@@ -1215,7 +1497,7 @@ pub const Fy = struct {
 
         // with-cstr: (string callable -- result)
         // Allocates C string, calls C-style function pointer (usize)->usize with arg ptr, frees, returns result.
-        fn withCstr(callable: Value, sv: Value) Value {
+        fn withCstr(callable: Value, sv: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(sv) or (fy.heap.typeOf(sv) orelse Heap.ObjType.String) != .String) runtimeError("with-cstr expects string");
             const s = fy.heap.getString(sv);
@@ -1241,7 +1523,7 @@ pub const Fy = struct {
 
         // with-cstr-f: (string fptr quote -- result)
         // Like with-cstr-q but supplies both ptr and fptr to the quote running on an isolated trampoline stack.
-        fn withCstrF(quote: Value, fptr_val: Value, sv: Value) Value {
+        fn withCstrF(quote: Value, fptr_val: Value, sv: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(sv) or (fy.heap.typeOf(sv) orelse Heap.ObjType.String) != .String) runtimeError("with-cstr-f expects string");
             if (!isInt(fptr_val)) runtimeError("with-cstr-f expects integer function pointer");
@@ -1279,7 +1561,7 @@ pub const Fy = struct {
         // use ccall1 expecting (fptr ptr) on the stack if it duplicates fptr inside the quote.
         // To support the common pattern [ ccall1 ] for C functions, we supply (ptr,fptr) on the
         // trampoline stack by passing fptr as the "acc" parameter to adapt2 while the head is ptr.
-        fn withCstrQ(quote: Value, sv: Value) Value {
+        fn withCstrQ(quote: Value, sv: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(sv) or (fy.heap.typeOf(sv) orelse Heap.ObjType.String) != .String) runtimeError("with-cstr-q expects string");
             const s = fy.heap.getString(sv);
@@ -1310,7 +1592,7 @@ pub const Fy = struct {
         }
 
         // PAC-safe 1-arg call: (... fptr a -- ret)
-        fn ccall1pac(a: Value, fptr: Value) Value {
+        fn ccall1pac(a: Value, fptr: Value) callconv(.c) Value {
             // Note: parameter order maps to stack top first; expects a above fptr
             if ((fptr & TAG_MASK) != TAG_INT) runtimeError("ccall1pac expects integer function pointer");
             if ((a & TAG_MASK) != TAG_INT) runtimeError("ccall1pac expects integer/pointer argument");
@@ -1324,13 +1606,13 @@ pub const Fy = struct {
 
         // String concatenation (stack order: ... a b -> concat(a,b))
         // Due to calling convention, x0 holds top-of-stack (b) and x1 holds next (a)
-        fn strConcat(b: Value, a: Value) Value {
+        fn strConcat(b: Value, a: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             return fy.heap.concat(a, b) catch runtimeError("string concatenation failed");
         }
 
         // String length
-        fn strLen(a: Value) Value {
+        fn strLen(a: Value) callconv(.c) Value {
             if (!isStr(a)) {
                 runtimeError("expected string for length");
             }
@@ -1341,7 +1623,7 @@ pub const Fy = struct {
         // Capture a local value into a quote: replaces word `name` with literal `val`
         // Stack: ( quote name val -- quote' )
         // fnToWord pops TOS→first param, so: first=val, second=name, third=quote
-        fn captureInQuote(captured_val: Value, name_val: Value, quote_val: Value) Value {
+        fn captureInQuote(captured_val: Value, name_val: Value, quote_val: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(name_val)) runtimeError("_cap: name must be string");
             const name = fy.heap.getString(name_val);
@@ -1349,7 +1631,7 @@ pub const Fy = struct {
         }
 
         // String equality (content comparison, not heap ID)
-        fn strEq(b: Value, a: Value) Value {
+        fn strEq(b: Value, a: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (isStr(a) and isStr(b)) {
                 const t_a = fy.heap.typeOf(a) orelse return makeInt(0);
@@ -1363,7 +1645,7 @@ pub const Fy = struct {
         }
 
         // Byte at index (s n -- c), returns -1 if out of bounds
-        fn strNth(n: Value, s: Value) Value {
+        fn strNth(n: Value, s: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(s)) runtimeError("snth expects string");
             const str = fy.heap.getString(s);
@@ -1374,7 +1656,7 @@ pub const Fy = struct {
         }
 
         // Substring (s start len -- s')
-        fn strSub(len_v: Value, start_v: Value, s: Value) Value {
+        fn strSub(len_v: Value, start_v: Value, s: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(s)) runtimeError("ssub expects string");
             const str = fy.heap.getString(s);
@@ -1387,11 +1669,11 @@ pub const Fy = struct {
         }
 
         // Split string into lines (s -- quote)
-        fn strLines(s: Value) Value {
+        fn strLines(s: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(s)) runtimeError("slines expects string");
             const str = fy.heap.getString(s);
-            var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
+            var items = compat.ArrayList(Heap.Item).init(fy.fyalloc);
             var start: usize = 0;
             for (str, 0..) |c, i| {
                 if (c == '\n') {
@@ -1412,7 +1694,7 @@ pub const Fy = struct {
         }
 
         // Find substring (s needle -- idx), -1 if not found
-        fn strFind(needle: Value, s: Value) Value {
+        fn strFind(needle: Value, s: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(s) or !isStr(needle)) return makeInt(-1);
             const haystack = fy.heap.getString(s);
@@ -1425,7 +1707,7 @@ pub const Fy = struct {
         }
 
         // Starts-with (s prefix -- flag)
-        fn strStarts(prefix: Value, s: Value) Value {
+        fn strStarts(prefix: Value, s: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(s) or !isStr(prefix)) return makeInt(0);
             const str = fy.heap.getString(s);
@@ -1435,7 +1717,7 @@ pub const Fy = struct {
         }
 
         // Ends-with (s suffix -- flag)
-        fn strEnds(suffix: Value, s: Value) Value {
+        fn strEnds(suffix: Value, s: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(s) or !isStr(suffix)) return makeInt(0);
             const str = fy.heap.getString(s);
@@ -1445,7 +1727,7 @@ pub const Fy = struct {
         }
 
         // Replace all occurrences (s old new -- s')
-        fn strReplace(new_v: Value, old_v: Value, s: Value) Value {
+        fn strReplace(new_v: Value, old_v: Value, s: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(s) or !isStr(old_v) or !isStr(new_v)) runtimeError("sreplace expects 3 strings");
             const str = fy.heap.getString(s);
@@ -1490,7 +1772,7 @@ pub const Fy = struct {
         }
 
         // Trim whitespace (s -- s')
-        fn strTrim(s: Value) Value {
+        fn strTrim(s: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(s)) runtimeError("strim expects string");
             const str = fy.heap.getString(s);
@@ -1499,12 +1781,12 @@ pub const Fy = struct {
         }
 
         // Split by delimiter (s delim -- quote)
-        fn strSplit(delim: Value, s: Value) Value {
+        fn strSplit(delim: Value, s: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(s) or !isStr(delim)) runtimeError("ssplit expects 2 strings");
             const str = fy.heap.getString(s);
             const d = fy.heap.getString(delim);
-            var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
+            var items = compat.ArrayList(Heap.Item).init(fy.fyalloc);
             if (d.len == 0) {
                 // split into individual bytes
                 for (str) |c| {
@@ -1531,7 +1813,7 @@ pub const Fy = struct {
         }
 
         // Integer to string (n -- s)
-        fn intToStr(n: Value) Value {
+        fn intToStr(n: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             var buf: [32]u8 = undefined;
             const s = std.fmt.bufPrint(&buf, "{d}", .{getInt(n)}) catch runtimeError("i>s: format failed");
@@ -1539,7 +1821,7 @@ pub const Fy = struct {
         }
 
         // Print string raw, no quotes or newline (s --)
-        fn strWrite(a: Value) void {
+        fn strWrite(a: Value) callconv(.c) void {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (isStr(a)) {
                 if (fy.heap.typeOf(a)) |t| switch (t) {
@@ -1564,14 +1846,13 @@ pub const Fy = struct {
         }
 
         // List directory entries (path -- quote)
-        fn dirList(path: Value) Value {
+        fn dirList(path: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(path)) runtimeError("dir-list expects string path");
             const p = fy.heap.getString(path);
-            var dir = std.fs.cwd().openDir(p, .{ .iterate = true }) catch runtimeError("dir-list: open failed");
-            defer dir.close();
-            var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
-            var iter = dir.iterate();
+            var iter = compat.openDirIter(fy.fyalloc, p) catch runtimeError("dir-list: open failed");
+            defer iter.close();
+            var items = compat.ArrayList(Heap.Item).init(fy.fyalloc);
             while (iter.next() catch runtimeError("dir-list: iterate failed")) |entry| {
                 const name = fy.fyalloc.dupe(u8, entry.name) catch runtimeError("out of memory");
                 items.append(Heap.Item{ .String = name }) catch runtimeError("out of memory");
@@ -1580,38 +1861,38 @@ pub const Fy = struct {
         }
 
         // Create directory recursively (path -- 0)
-        fn mkdirP(path: Value) Value {
+        fn mkdirP(path: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(path)) runtimeError("mkdir-p expects string path");
             const p = fy.heap.getString(path);
-            std.fs.cwd().makePath(p) catch runtimeError("mkdir-p failed");
+            compat.makePath(fy.fyalloc, p) catch runtimeError("mkdir-p failed");
             return makeInt(0);
         }
 
         // Type checking
-        fn isString(a: Value) Value {
+        fn isString(a: Value) callconv(.c) Value {
             if (!isStr(a)) return makeInt(0);
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             const t = fy.heap.typeOf(a) orelse return makeInt(0);
             return makeInt(@as(i64, @intFromBool(t == .String)));
         }
 
-        fn isInteger(a: Value) Value {
+        fn isInteger(a: Value) callconv(.c) Value {
             return makeInt(@as(i64, @intFromBool(isInt(a))));
         }
 
-        fn isFloatVal(a: Value) Value {
+        fn isFloatVal(a: Value) callconv(.c) Value {
             return makeInt(@as(i64, @intFromBool(isFloat(a))));
         }
 
-        fn isQuote(a: Value) Value {
+        fn isQuote(a: Value) callconv(.c) Value {
             if (!isStr(a)) return makeInt(0);
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             const t = fy.heap.typeOf(a) orelse return makeInt(0);
             return makeInt(@as(i64, @intFromBool(t == .Quote)));
         }
 
-        fn isWordValue(a: Value) Value {
+        fn isWordValue(a: Value) callconv(.c) Value {
             if (!isStr(a)) return makeInt(0);
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             const t = fy.heap.typeOf(a) orelse return makeInt(0);
@@ -1621,7 +1902,7 @@ pub const Fy = struct {
             return makeInt(@as(i64, @intFromBool(q.items.items[0] == .Word)));
         }
 
-        fn wordToStr(a: Value) Value {
+        fn wordToStr(a: Value) callconv(.c) Value {
             if (!isStr(a)) return makeInt(0);
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             const t = fy.heap.typeOf(a) orelse return makeInt(0);
@@ -1634,7 +1915,7 @@ pub const Fy = struct {
             }
         }
 
-        fn quoteNth(n: Value, q: Value) Value {
+        fn quoteNth(n: Value, q: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote)
                 runtimeError("qnth expects quote");
@@ -1644,7 +1925,7 @@ pub const Fy = struct {
             return itemToValue(fy, qq.items.items[idx]);
         }
 
-        fn quoteNthType(n: Value, q: Value) Value {
+        fn quoteNthType(n: Value, q: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote)
                 runtimeError("qnth-type expects quote");
@@ -1662,34 +1943,34 @@ pub const Fy = struct {
         }
 
         // Float builtins — floats are f64 bitcast into i64 Value
-        fn floatAdd(b: Value, a: Value) Value {
+        fn floatAdd(b: Value, a: Value) callconv(.c) Value {
             return makeFloat(getFloat(a) + getFloat(b));
         }
-        fn floatSub(b: Value, a: Value) Value {
+        fn floatSub(b: Value, a: Value) callconv(.c) Value {
             return makeFloat(getFloat(a) - getFloat(b));
         }
-        fn floatMul(b: Value, a: Value) Value {
+        fn floatMul(b: Value, a: Value) callconv(.c) Value {
             return makeFloat(getFloat(a) * getFloat(b));
         }
-        fn floatDiv(b: Value, a: Value) Value {
+        fn floatDiv(b: Value, a: Value) callconv(.c) Value {
             return makeFloat(getFloat(a) / getFloat(b));
         }
-        fn floatLt(b: Value, a: Value) Value {
+        fn floatLt(b: Value, a: Value) callconv(.c) Value {
             return makeInt(@as(i64, @intFromBool(getFloat(a) < getFloat(b))));
         }
-        fn floatGt(b: Value, a: Value) Value {
+        fn floatGt(b: Value, a: Value) callconv(.c) Value {
             return makeInt(@as(i64, @intFromBool(getFloat(a) > getFloat(b))));
         }
-        fn floatEq(b: Value, a: Value) Value {
+        fn floatEq(b: Value, a: Value) callconv(.c) Value {
             return makeInt(@as(i64, @intFromBool(getFloat(a) == getFloat(b))));
         }
-        fn intToFloat(a: Value) Value {
+        fn intToFloat(a: Value) callconv(.c) Value {
             return makeFloat(@as(f64, @floatFromInt(getInt(a))));
         }
-        fn floatToInt(a: Value) Value {
+        fn floatToInt(a: Value) callconv(.c) Value {
             return makeInt(@as(i64, @intFromFloat(getFloat(a))));
         }
-        fn floatPrint(a: Value) void {
+        fn floatPrint(a: Value) callconv(.c) void {
             const f = getFloat(a);
             if (f == @trunc(f) and !std.math.isNan(f) and !std.math.isInf(f)) {
                 outPrint("{d}.0\n", .{@as(i64, @intFromFloat(f))});
@@ -1697,46 +1978,46 @@ pub const Fy = struct {
                 outPrint("{d}\n", .{f});
             }
         }
-        fn floatNeg(a: Value) Value {
+        fn floatNeg(a: Value) callconv(.c) Value {
             return makeFloat(-getFloat(a));
         }
 
         // Memory operations
-        fn memStore32(addr: Value, val: Value) void {
+        fn memStore32(addr: Value, val: Value) callconv(.c) void {
             const ptr: *align(1) u32 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
             ptr.* = @truncate(@as(u64, @bitCast(getInt(val))));
         }
-        fn memStoreF32(addr: Value, val: Value) void {
+        fn memStoreF32(addr: Value, val: Value) callconv(.c) void {
             const ptr: *align(1) f32 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
             ptr.* = @floatCast(getFloat(val));
         }
-        fn memLoad32(addr: Value) Value {
+        fn memLoad32(addr: Value) callconv(.c) Value {
             const ptr: *align(1) u32 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
             return makeInt(@as(i64, ptr.*));
         }
-        fn memLoadF32(addr: Value) Value {
+        fn memLoadF32(addr: Value) callconv(.c) Value {
             const ptr: *align(1) f32 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
             return makeFloat(@as(f64, ptr.*));
         }
-        fn memStore16(addr: Value, val: Value) void {
+        fn memStore16(addr: Value, val: Value) callconv(.c) void {
             const ptr: *align(1) u16 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
             ptr.* = @truncate(@as(u64, @bitCast(getInt(val))));
         }
-        fn memLoad16(addr: Value) Value {
+        fn memLoad16(addr: Value) callconv(.c) Value {
             const ptr: *align(1) i16 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
             return makeInt(@as(i64, ptr.*)); // sign-extends
         }
-        fn memStore64(addr: Value, val: Value) void {
+        fn memStore64(addr: Value, val: Value) callconv(.c) void {
             const ptr: *align(1) i64 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
             ptr.* = val;
         }
-        fn memLoad64(addr: Value) Value {
+        fn memLoad64(addr: Value) callconv(.c) Value {
             const ptr: *align(1) i64 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
             return ptr.*;
         }
 
         // Resolve a callable: if int pointer, return as-is; if quote, JIT and cache
-        pub fn resolveCallable(v: Value) Value {
+        pub fn resolveCallable(v: Value) callconv(.c) Value {
             if (isInt(v)) return v;
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (fy.heap.typeOf(v)) |t| switch (t) {
@@ -1757,11 +2038,11 @@ pub const Fy = struct {
 
         // Adapters: self-contained trampolines that save/restore x21/x22
         // and set up their own data stack from base/end parameters.
-        var adapt1: ?*const fn (usize, Value, Value, Value) Value = null;
-        var adapt2: ?*const fn (usize, Value, Value, Value, Value) Value = null;
-        var adapt1v: ?*const fn (usize, Value, Value, Value) void = null;
+        var adapt1: ?*const fn (usize, Value, Value, Value) callconv(.c) Value = null;
+        var adapt2: ?*const fn (usize, Value, Value, Value, Value) callconv(.c) Value = null;
+        var adapt1v: ?*const fn (usize, Value, Value, Value) callconv(.c) void = null;
 
-        pub fn getAdapt1(fy: *Fy) *const fn (usize, Value, Value, Value) Value {
+        pub fn getAdapt1(fy: *Fy) *const fn (usize, Value, Value, Value) callconv(.c) Value {
             if (adapt1) |t| return t;
             const code = &[_]u32{
                 // x0=fptr, x1=base, x2=end, x3=a
@@ -1789,12 +2070,12 @@ pub const Fy = struct {
             const buf = fy.fyalloc.dupe(u32, code[0..]) catch runtimeError("out of memory");
             const fnptr = fy.jit(buf) catch runtimeError("jit adapt1 failed");
             const addr: usize = @intFromPtr(fnptr.call);
-            const typed: *const fn (usize, Value, Value, Value) Value = @ptrFromInt(addr);
+            const typed: *const fn (usize, Value, Value, Value) callconv(.c) Value = @ptrFromInt(addr);
             adapt1 = typed;
             return typed;
         }
 
-        pub fn getAdapt2(fy: *Fy) *const fn (usize, Value, Value, Value, Value) Value {
+        pub fn getAdapt2(fy: *Fy) *const fn (usize, Value, Value, Value, Value) callconv(.c) Value {
             if (adapt2) |t| return t;
             const code = &[_]u32{
                 // x0=fptr, x1=base, x2=end, x3=head, x4=acc
@@ -1824,12 +2105,12 @@ pub const Fy = struct {
             const buf = fy.fyalloc.dupe(u32, code[0..]) catch runtimeError("out of memory");
             const fnptr = fy.jit(buf) catch runtimeError("jit adapt2 failed");
             const addr: usize = @intFromPtr(fnptr.call);
-            const typed: *const fn (usize, Value, Value, Value, Value) Value = @ptrFromInt(addr);
+            const typed: *const fn (usize, Value, Value, Value, Value) callconv(.c) Value = @ptrFromInt(addr);
             adapt2 = typed;
             return typed;
         }
 
-        fn getAdapt1v(fy: *Fy) *const fn (usize, Value, Value, Value) void {
+        fn getAdapt1v(fy: *Fy) *const fn (usize, Value, Value, Value) callconv(.c) void {
             if (adapt1v) |t| return t;
             const code = &[_]u32{
                 // x0=fptr, x1=base, x2=end, x3=a
@@ -1849,7 +2130,7 @@ pub const Fy = struct {
             const buf = fy.fyalloc.dupe(u32, code[0..]) catch runtimeError("out of memory");
             const fnptr = fy.jit(buf) catch runtimeError("jit adapt1v failed");
             const addr: usize = @intFromPtr(fnptr.call);
-            const typed: *const fn (usize, Value, Value, Value) void = @ptrFromInt(addr);
+            const typed: *const fn (usize, Value, Value, Value) callconv(.c) void = @ptrFromInt(addr);
             adapt1v = typed;
             return typed;
         }
@@ -1857,18 +2138,18 @@ pub const Fy = struct {
         // Adapter pointer helpers were used by a legacy ASM map loop and are removed.
 
         // General map: list f -- list' using adapter to call any callable (word or quote)
-        fn bmap(f: Value, list: Value) Value {
+        fn bmap(f: Value, list: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(list) or (fy.heap.typeOf(list) orelse Heap.ObjType.String) != .Quote) runtimeError("map expects quote");
             const fptr_val = resolveCallable(f);
             if (!isInt(fptr_val)) runtimeError("map expects callable");
             const fptr: usize = @intCast(getInt(fptr_val));
             const adapt = getAdapt1(fy);
-            var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
+            var items = compat.ArrayList(Heap.Item).init(fy.fyalloc);
             const q = fy.heap.getQuote(list);
             for (q.items.items) |it| {
                 // Debug hook (set FY_DEBUG_ADAPTER=1 to enable)
-                if (std.posix.getenvZ("FY_DEBUG_ADAPTER")) |_| {
+                if (std.c.getenv("FY_DEBUG_ADAPTER")) |_| {
                     errPrint("[bmap] it={any}\n", .{it});
                 }
                 const arg = itemToValue(fy, it);
@@ -1876,11 +2157,11 @@ pub const Fy = struct {
                 const tramp_end_aligned: usize = fy.tramp_stack_top;
                 const base_val: Value = @bitCast(@as(i64, @intCast(tramp_end_aligned)));
                 const end_val: Value = base_val;
-                if (std.posix.getenvZ("FY_DEBUG_ADAPTER")) |_| {
+                if (std.c.getenv("FY_DEBUG_ADAPTER")) |_| {
                     errPrint("[bmap] fptr=0x{x} base=0x{x} end=0x{x} arg={any}\n", .{ fptr, tramp_end_aligned, tramp_end_aligned, arg });
                 }
                 const mapped = adapt(fptr, base_val, end_val, arg);
-                if (std.posix.getenvZ("FY_DEBUG_ADAPTER")) |_| {
+                if (std.c.getenv("FY_DEBUG_ADAPTER")) |_| {
                     errPrint("[bmap] -> mapped={any}\n", .{mapped});
                 }
                 if (isStr(mapped)) {
@@ -1901,7 +2182,7 @@ pub const Fy = struct {
         }
 
         // General reduce: acc list f -- result using adapter to call any callable
-        fn breduce(f: Value, list: Value, acc0: Value) Value {
+        fn breduce(f: Value, list: Value, acc0: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(list) or (fy.heap.typeOf(list) orelse Heap.ObjType.String) != .Quote) runtimeError("reduce expects quote");
             const fptr_val = resolveCallable(f);
@@ -1911,18 +2192,18 @@ pub const Fy = struct {
             var acc = acc0;
             const q = fy.heap.getQuote(list);
             for (q.items.items) |it| {
-                if (std.posix.getenvZ("FY_DEBUG_ADAPTER")) |_| {
-                    errPrint("[breduce] it={any} acc={any}\n", .{it, acc});
+                if (std.c.getenv("FY_DEBUG_ADAPTER")) |_| {
+                    errPrint("[breduce] it={any} acc={any}\n", .{ it, acc });
                 }
                 const head = itemToValue(fy, it);
                 const tramp_end_aligned: usize = fy.tramp_stack_top;
                 const base_val: Value = @bitCast(@as(i64, @intCast(tramp_end_aligned)));
                 const end_val: Value = base_val;
-                if (std.posix.getenvZ("FY_DEBUG_ADAPTER")) |_| {
+                if (std.c.getenv("FY_DEBUG_ADAPTER")) |_| {
                     errPrint("[breduce] fptr=0x{x} base=0x{x} end=0x{x} head={any} acc={any}\n", .{ fptr, tramp_end_aligned, tramp_end_aligned, head, acc });
                 }
                 acc = adapt(fptr, base_val, end_val, head, acc);
-                if (std.posix.getenvZ("FY_DEBUG_ADAPTER")) |_| {
+                if (std.c.getenv("FY_DEBUG_ADAPTER")) |_| {
                     errPrint("[breduce] -> acc'={any}\n", .{acc});
                 }
             }
@@ -1930,7 +2211,7 @@ pub const Fy = struct {
         }
 
         // each: (list f -- 0) execute f for each element, discard results
-        fn beach(f: Value, list: Value) Value {
+        fn beach(f: Value, list: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(list) or (fy.heap.typeOf(list) orelse Heap.ObjType.String) != .Quote) runtimeError("each expects quote");
             const fptr_val = resolveCallable(f);
@@ -1948,14 +2229,14 @@ pub const Fy = struct {
         }
 
         // filter: (list f -- list') keep elements where f returns non-zero
-        fn bfilter(f: Value, list: Value) Value {
+        fn bfilter(f: Value, list: Value) callconv(.c) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(list) or (fy.heap.typeOf(list) orelse Heap.ObjType.String) != .Quote) runtimeError("filter expects quote");
             const fptr_val = resolveCallable(f);
             if (!isInt(fptr_val)) runtimeError("filter expects callable");
             const fptr: usize = @intCast(getInt(fptr_val));
             const adapt = getAdapt1(fy);
-            var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
+            var items = compat.ArrayList(Heap.Item).init(fy.fyalloc);
             const q = fy.heap.getQuote(list);
             for (q.items.items) |it| {
                 const arg = itemToValue(fy, it);
@@ -1976,7 +2257,7 @@ pub const Fy = struct {
         }
 
         // Compiler primitives for macros (only usable during macro expansion)
-        fn emitLit(value: Value) void {
+        fn emitLit(value: Value) callconv(.c) void {
             if (compilerPtr == 0) runtimeError("emit-lit: not in macro context");
             const compiler = @as(*Compiler, @ptrFromInt(compilerPtr));
             const v: u64 = @bitCast(value);
@@ -1984,7 +2265,7 @@ pub const Fy = struct {
             compiler.emitPush() catch runtimeError("emit-lit: emitPush failed");
         }
 
-        fn emitWordMacro(name_val: Value) void {
+        fn emitWordMacro(name_val: Value) callconv(.c) void {
             if (compilerPtr == 0) runtimeError("emit-word: not in macro context");
             const compiler = @as(*Compiler, @ptrFromInt(compilerPtr));
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
@@ -1993,13 +2274,13 @@ pub const Fy = struct {
             compiler.emitWord(word) catch runtimeError("emit-word: emitWord failed");
         }
 
-        fn peekQuote() Value {
+        fn peekQuote() callconv(.c) Value {
             if (compilerPtr == 0) runtimeError("peek-quote: not in macro context");
             const compiler = @as(*Compiler, @ptrFromInt(compilerPtr));
             return compiler.lastQuote orelse makeInt(0);
         }
 
-        fn macroUnpush() void {
+        fn macroUnpush() callconv(.c) void {
             if (compilerPtr == 0) runtimeError("unpush: not in macro context");
             const compiler = @as(*Compiler, @ptrFromInt(compilerPtr));
             if (compiler.lastQuote == null) runtimeError("unpush: no quote to remove");
@@ -2063,7 +2344,8 @@ pub const Fy = struct {
         .{ "pick", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@"asr x0, x0, #2", Asm.@"ldr x0, [x21, x0, lsl #3]", Asm.@".push x0" }, 1, 1) },
         // a b c -- b c a
         .{
-            "rot", inlineWord(&[_]u32{
+            "rot",
+            inlineWord(&[_]u32{
                 Asm.@".pop x0", // pop c
                 Asm.@".pop x1", // pop b
                 Asm.@".pop Xn"(2), // pop a using the helper function
@@ -2074,7 +2356,8 @@ pub const Fy = struct {
         },
         // a b c -- c a b
         .{
-            "-rot", inlineWord(&[_]u32{
+            "-rot",
+            inlineWord(&[_]u32{
                 Asm.@".pop x0", // pop c
                 Asm.@".pop x1", // pop b
                 Asm.@".pop Xn"(2), // pop a
@@ -2094,7 +2377,8 @@ pub const Fy = struct {
         .{ "r@", inlineWord(&[_]u32{ Asm.@".rpop x0", Asm.@".rpush x0", Asm.@".push x0" }, 0, 1) },
         // x f -- x
         .{
-            "dip", .{
+            "dip",
+            Word{
                 .code = &[_]u32{
                     Asm.@".pop x0, x1", // x0=function, x1=value
                     Asm.@".rpush x1", // save value before calling resolver (which may clobber x1)
@@ -2120,14 +2404,14 @@ pub const Fy = struct {
         // a -- a
         .{ "spy", fnToWord(Builtins.spy) },
         // --
-        .{ ".dbg", .{
+        .{ ".dbg", Word{
             .code = &[_]u32{ Asm.@"mov x0, x21", Asm.@"mov x1, x22", Asm.CALLSLOT },
             .c = 0,
             .p = 0,
             .callSlot0 = &Builtins.spyStack,
         } },
         // -- (trigger garbage collection)
-        .{ "gc", .{
+        .{ "gc", Word{
             .code = &[_]u32{ Asm.@"mov x0, x21", Asm.@"mov x1, x22", Asm.CALLSLOT },
             .c = 0,
             .p = 0,
@@ -2138,51 +2422,79 @@ pub const Fy = struct {
         // a -- a - 1 (tagged: sub 4 = 1<<TAG_BITS)
         .{ "1-", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@"sub x0, x0, #4", Asm.@".push x0" }, 1, 1) },
         // f -- !f (boolean not)
-        .{ "not", inlineWord(&[_]u32{
-            Asm.@".pop x0",
-            Asm.@"cbz Xn, offset"(0, 3),
-            Asm.@"mov x0, #0",
-            Asm.@"b offset"(2),
-            Asm.@"mov x0, #4", // makeInt(1) = 4
-            Asm.@".push x0",
-        }, 1, 1) },
+        .{
+            "not",
+            inlineWord(&[_]u32{
+                Asm.@".pop x0",
+                Asm.@"cbz Xn, offset"(0, 3),
+                Asm.@"mov x0, #0",
+                Asm.@"b offset"(2),
+                Asm.@"mov x0, #4", // makeInt(1) = 4
+                Asm.@".push x0",
+            }, 1, 1),
+        },
         // ... f -- f(...)
-        .{ "do", .{ .code = &[_]u32{ Asm.@".pop x0", Asm.CALLSLOT, Asm.@"asr x0, x0, #2", Asm.@"blr Xn"(0) }, .c = 0, .p = 0, .callSlot0 = &Builtins.resolveCallable } },
+        .{ "do", Word{ .code = &[_]u32{ Asm.@".pop x0", Asm.CALLSLOT, Asm.@"asr x0, x0, #2", Asm.@"blr Xn"(0) }, .c = 0, .p = 0, .callSlot0 = &Builtins.resolveCallable } },
         // ... ft -- ft(...) | ...
         .{ "do?", fnToWord(Builtins.doIf) },
         // ... c ft ff -- ft(...) | ff(...)
-        .{ "ifte", .{ .code = &[_]u32{
-            Asm.@".pop x1, x0",
-            Asm.@".pop Xn"(2),
-            Asm.@"cmp x2, #0",
-            Asm.@"csel x0, x0, x1, ne",
-            Asm.CALLSLOT,
-            Asm.@"asr x0, x0, #2", // untag code pointer
-            Asm.@"blr Xn"(0),
-        }, .c = 0, .p = 1, .callSlot0 = &Builtins.resolveCallable } },
+        .{
+            "ifte",
+            Word{
+                .code = &[_]u32{
+                    Asm.@".pop x1, x0",
+                    Asm.@".pop Xn"(2),
+                    Asm.@"cmp x2, #0",
+                    Asm.@"csel x0, x0, x1, ne",
+                    Asm.CALLSLOT,
+                    Asm.@"asr x0, x0, #2", // untag code pointer
+                    Asm.@"blr Xn"(0),
+                },
+                .c = 0,
+                .p = 1,
+                .callSlot0 = &Builtins.resolveCallable,
+            },
+        },
         // flag [body] -- ... run body if flag is truthy
-        .{ "then", .{ .code = &[_]u32{
-            Asm.@".pop x0", // pop body quote
-            Asm.CALLSLOT, // resolve to code pointer (tagged)
-            Asm.@"asr x0, x0, #2", // untag code pointer
-            Asm.@".pop x1", // pop condition
-            Asm.@"cbz Xn, offset"(1, 2), // if 0, skip blr
-            Asm.@"blr Xn"(0), // call body
-        }, .c = 2, .p = 0, .callSlot0 = &Builtins.resolveCallable } },
+        .{
+            "then",
+            Word{
+                .code = &[_]u32{
+                    Asm.@".pop x0", // pop body quote
+                    Asm.CALLSLOT, // resolve to code pointer (tagged)
+                    Asm.@"asr x0, x0, #2", // untag code pointer
+                    Asm.@".pop x1", // pop condition
+                    Asm.@"cbz Xn, offset"(1, 2), // if 0, skip blr
+                    Asm.@"blr Xn"(0), // call body
+                },
+                .c = 2,
+                .p = 0,
+                .callSlot0 = &Builtins.resolveCallable,
+            },
+        },
         // flag [body] -- ... run body if flag is falsy
-        .{ "unless", .{ .code = &[_]u32{
-            Asm.@".pop x0", // pop body quote
-            Asm.CALLSLOT, // resolve to code pointer (tagged)
-            Asm.@"asr x0, x0, #2", // untag code pointer
-            Asm.@".pop x1", // pop condition
-            Asm.@"cbnz Xn, offset"(1, 2), // if non-zero, skip blr
-            Asm.@"blr Xn"(0), // call body
-        }, .c = 2, .p = 0, .callSlot0 = &Builtins.resolveCallable } },
+        .{
+            "unless",
+            Word{
+                .code = &[_]u32{
+                    Asm.@".pop x0", // pop body quote
+                    Asm.CALLSLOT, // resolve to code pointer (tagged)
+                    Asm.@"asr x0, x0, #2", // untag code pointer
+                    Asm.@".pop x1", // pop condition
+                    Asm.@"cbnz Xn, offset"(1, 2), // if non-zero, skip blr
+                    Asm.@"blr Xn"(0), // call body
+                },
+                .c = 2,
+                .p = 0,
+                .callSlot0 = &Builtins.resolveCallable,
+            },
+        },
         // value [pairs] -- result  multi-way conditional
         .{ "cond", fnToWord(Builtins.condImpl) },
         // ... n f -- ...
         .{
-            "dotimes", .{
+            "dotimes",
+            Word{
                 .code = &[_]u32{
                     Asm.@".pop x0", // function (or quote)
                     Asm.CALLSLOT, // resolve to pointer in x0 (tagged)
@@ -2209,7 +2521,8 @@ pub const Fy = struct {
         // ... f -- ...
         // repeat the quote until the top of the stack is 0
         .{
-            "repeat", .{
+            "repeat",
+            Word{
                 .code = &[_]u32{
                     Asm.@".pop x0", // pop quote
                     Asm.CALLSLOT, // resolve to pointer (tagged)
@@ -2266,7 +2579,7 @@ pub const Fy = struct {
         .{ "compose", fnToWord(Builtins.quoteConcat) }, // alias for qcat
 
         // Reduce: acc list f -- result (Zig builtin)
-        .{ "reduce", .{ .code = &[_]u32{ Asm.@".pop x0", Asm.@".pop x1", Asm.@".pop x2", Asm.CALLSLOT3, Asm.@".push x0" }, .c = 3, .p = 1, .callSlot3 = &Builtins.breduce } },
+        .{ "reduce", Word{ .code = &[_]u32{ Asm.@".pop x0", Asm.@".pop x1", Asm.@".pop x2", Asm.CALLSLOT3, Asm.@".push x0" }, .c = 3, .p = 1, .callSlot3 = &Builtins.breduce } },
 
         // Old ASM-loop version of map removed in favor of Zig builtin bmap.
         // Map: list f -- list' (Zig builtin)
@@ -2284,14 +2597,20 @@ pub const Fy = struct {
         .{ "qnth-type", fnToWord(Builtins.quoteNthType) }, // (q n -- type) 0=int 1=float 2=word 3=string 4=quote
 
         // Float arithmetic and conversion
-        .{ "f+", fnToWord(Builtins.floatAdd) },
-        .{ "f-", fnToWord(Builtins.floatSub) },
-        .{ "f*", fnToWord(Builtins.floatMul) },
-        .{ "f/", fnToWord(Builtins.floatDiv) },
-        .{ "f<", fnToWord(Builtins.floatLt) },
-        .{ "f>", fnToWord(Builtins.floatGt) },
-        .{ "f=", fnToWord(Builtins.floatEq) },
-        .{ "fneg", fnToWord(Builtins.floatNeg) },
+        .{ "f+", floatBinOp(Asm.@"fadd Dd, Dn, Dm"(0, 0, 1)) },
+        .{ "f-", floatBinOp(Asm.@"fsub Dd, Dn, Dm"(0, 0, 1)) },
+        .{ "f*", floatBinOp(Asm.@"fmul Dd, Dn, Dm"(0, 0, 1)) },
+        .{ "f/", floatBinOp(Asm.@"fdiv Dd, Dn, Dm"(0, 0, 1)) },
+        .{ "fmadd", floatMAddWord() },
+        .{ "fma", floatMAWord() },
+        .{ "fslew", floatSlewWord() },
+        .{ "fclamp", floatClampWord() },
+        .{ "fclamp01", floatClamp01Word() },
+        .{ "fwrap01", floatWrap01Word() },
+        .{ "f<", floatCmpOp(Asm.COND_LT) },
+        .{ "f>", floatCmpOp(Asm.COND_GT) },
+        .{ "f=", floatCmpOp(Asm.COND_EQ) },
+        .{ "fneg", floatNegWord() },
         .{ "i>f", fnToWord(Builtins.intToFloat) },
         .{ "f>i", fnToWord(Builtins.floatToInt) },
         .{ "f.", fnToWord(Builtins.floatPrint) },
@@ -2313,7 +2632,8 @@ pub const Fy = struct {
 
         // FFI: generic calls with 0..3 args; expects stack: fptr [a [b [c]]]
         .{
-            "ccall0", inlineWord(&[_]u32{
+            "ccall0",
+            inlineWord(&[_]u32{
                 Asm.@".pop Xn"(16), // fptr -> x16 (tagged)
                 Asm.@"asr x16, x16, #2", // untag fptr
                 Asm.@"blr Xn"(16), // call
@@ -2322,7 +2642,8 @@ pub const Fy = struct {
             }, 1, 1),
         },
         .{
-            "ccall1", inlineWord(&[_]u32{
+            "ccall1",
+            inlineWord(&[_]u32{
                 Asm.@".pop x0", // a (tagged)
                 Asm.@".pop Xn"(16), // fptr (tagged)
                 Asm.@"asr x16, x16, #2", // untag fptr
@@ -2335,7 +2656,8 @@ pub const Fy = struct {
         // PAC-safe variant implemented in Zig to leverage compiler-emitted authenticated branch
         .{ "ccall1pac", fnToWord(Builtins.ccall1pac) },
         .{
-            "ccall2", inlineWord(&[_]u32{
+            "ccall2",
+            inlineWord(&[_]u32{
                 Asm.@".pop x1, x0", // x0=a (NOS), x1=b (TOS) — both tagged
                 Asm.@".pop Xn"(16), // fptr (tagged)
                 Asm.@"asr x16, x16, #2", // untag fptr
@@ -2347,7 +2669,8 @@ pub const Fy = struct {
             }, 3, 1),
         },
         .{
-            "ccall3", inlineWord(&[_]u32{
+            "ccall3",
+            inlineWord(&[_]u32{
                 Asm.@".pop x0, x1", // c, b
                 Asm.@".pop Xn"(2), // a -> x2
                 Asm.@".push Xn"(2), // a
@@ -2371,9 +2694,9 @@ pub const Fy = struct {
 
         // Memory operations
         .{ "!32", fnToWord(Builtins.memStore32) }, // (val addr -- )
-        .{ "f!32", fnToWord(Builtins.memStoreF32) }, // (fval addr -- )
+        .{ "f!32", floatStore32Word() }, // (fval addr -- )
         .{ "@32", fnToWord(Builtins.memLoad32) }, // (addr -- val)
-        .{ "f@32", fnToWord(Builtins.memLoadF32) }, // (addr -- fval)
+        .{ "f@32", floatLoad32Word() }, // (addr -- fval)
         .{ "!16", fnToWord(Builtins.memStore16) }, // (val addr -- )
         .{ "@16", fnToWord(Builtins.memLoad16) }, // (addr -- val)
         .{ "!64", fnToWord(Builtins.memStore64) }, // (val addr -- )
@@ -2390,7 +2713,7 @@ pub const Fy = struct {
         .{ "unpush", fnToWord(Builtins.macroUnpush) }, // (--) remove last quote push
     });
 
-    fn findWord(self: *Fy, word: []const u8) ?Word {
+    pub fn findWord(self: *Fy, word: []const u8) ?Word {
         return self.userWords.get(word) orelse words.get(word);
     }
 
@@ -2563,8 +2886,8 @@ pub const Fy = struct {
     // compiler
     pub const Compiler = struct {
         parser: *Parser,
-        code: std.ArrayList(u32),
-        relocations: std.ArrayList(Relocation),
+        code: compat.ArrayList(u32),
+        relocations: compat.ArrayList(Relocation),
         prev: u32 = 0,
         fy: *Fy,
         // Name of the word currently being defined (for self-recursion)
@@ -2578,6 +2901,8 @@ pub const Fy = struct {
         lastQuoteCodePos: usize = 0,
         prevQuote: ?Value = null,
         prevQuoteCodePos: usize = 0,
+        // When true, heap-allocating builtins and non-noalloc: user words are errors.
+        noalloc_mode: bool = false,
         // Detailed compile error message for callers (handleConnection, REPL)
         last_error: [256]u8 = undefined,
         last_error_len: usize = 0,
@@ -2642,8 +2967,8 @@ pub const Fy = struct {
 
         pub fn init(fy: *Fy, parser: *Parser) Compiler {
             return Compiler{
-                .code = std.ArrayList(u32).init(fy.fyalloc),
-                .relocations = std.ArrayList(Relocation).init(fy.fyalloc),
+                .code = compat.ArrayList(u32).init(fy.fyalloc),
+                .relocations = compat.ArrayList(Relocation).init(fy.fyalloc),
                 .parser = parser,
                 .fy = fy,
                 .currentDef = null,
@@ -2658,6 +2983,58 @@ pub const Fy = struct {
         fn emit(self: *Compiler, instr: u32) !void {
             try self.code.append(instr);
             self.prev = instr;
+        }
+
+        fn isStackRoundTrip(a: u32, b: u32) bool {
+            return (a == Asm.@".push x0" and b == Asm.@".pop x0") or
+                (a == Asm.@".push x1" and b == Asm.@".pop x1") or
+                (a == Asm.@".push x2" and b == Asm.@".pop x2") or
+                (a == Asm.@".push x0, x1" and b == Asm.@".pop x0, x1") or
+                (a == Asm.@".push x1, x0" and b == Asm.@".pop x1, x0") or
+                (a == Asm.@".push x2, x3" and b == Asm.@".pop x2, x3");
+        }
+
+        fn isLocalBranch(instr: u32) bool {
+            return (instr & 0xfc000000) == 0x14000000 or // b
+                (instr & 0x7e000000) == 0x34000000 or // cbz/cbnz
+                (instr & 0xff000010) == 0x54000000; // b.cond
+        }
+
+        fn optimizeStackRoundTrips(self: *Compiler) Error!void {
+            const old_len = self.code.items.len;
+            if (old_len < 2) return;
+            for (self.code.items) |instr| {
+                if (isLocalBranch(instr)) return;
+            }
+
+            const old_to_new = self.fy.fyalloc.alloc(usize, old_len) catch return Error.OutOfMemory;
+            defer self.fy.fyalloc.free(old_to_new);
+
+            var read: usize = 0;
+            var write: usize = 0;
+            var changed = false;
+            while (read < old_len) {
+                if (read + 1 < old_len and isStackRoundTrip(self.code.items[read], self.code.items[read + 1])) {
+                    old_to_new[read] = write;
+                    old_to_new[read + 1] = write;
+                    read += 2;
+                    changed = true;
+                    continue;
+                }
+
+                old_to_new[read] = write;
+                self.code.items[write] = self.code.items[read];
+                write += 1;
+                read += 1;
+            }
+
+            if (!changed) return;
+
+            self.code.shrinkRetainingCapacity(write);
+            for (self.relocations.items) |*rel| {
+                rel.code_offset = old_to_new[rel.code_offset];
+            }
+            self.prev = if (write > 0) self.code.items[write - 1] else 0;
         }
 
         fn resetQuoteTracking(self: *Compiler) void {
@@ -2871,6 +3248,24 @@ pub const Fy = struct {
             }
         }
 
+        // Words that allocate on the fy GC heap or perform I/O — forbidden in noalloc: words.
+        const NOALLOC_BLACKLIST = std.StaticStringMap(void).initComptime(.{
+            // Quote constructors / combinators
+            .{ "qnil", {} },    .{ "qpush", {} },    .{ "cat", {} },     .{ "qcat", {} },
+            .{ "compose", {} }, .{ "curry", {} },    .{ "range", {} },   .{ "map", {} },
+            .{ "reduce", {} },  .{ "filter", {} },   .{ "each", {} },
+            // String constructors
+               .{ "s+", {} },
+            .{ "ssub", {} },    .{ "sreplace", {} }, .{ "ssplit", {} },  .{ "slines", {} },
+            .{ "strim", {} },   .{ "i>s", {} },
+            // I/O (allocates strings / blocks audio thread)
+                 .{ "slurp", {} },   .{ "spit", {} },
+            .{ "readln", {} },  .{ "dir-list", {} }, .{ "mkdir-p", {} },
+            // Explicit memory management
+            .{ "alloc", {} },
+            .{ "free", {} },    .{ "gc", {} },
+        });
+
         fn compileToken(self: *Compiler, token: Parser.Token) Error!void {
             switch (token) {
                 .Number => |n| {
@@ -2892,6 +3287,20 @@ pub const Fy = struct {
                         break :blk self.fy.findWord(buf[0 .. ns.len + w.len]) orelse self.fy.findWord(w);
                     } else self.fy.findWord(w);
                     if (word) |w_val| {
+                        // noalloc: safety gate — reject heap-touching calls.
+                        if (self.noalloc_mode) {
+                            if (NOALLOC_BLACKLIST.get(w) != null) {
+                                self.setError("'{s}' is not allowed in noalloc:", .{w});
+                                return Error.UnknownWord;
+                            }
+                            // Transitive: calling a non-noalloc: user word is also an error.
+                            if (self.fy.userWords.get(w)) |uw| {
+                                if (!uw.noalloc) {
+                                    self.setError("noalloc: word calls non-noalloc: word '{s}'", .{w});
+                                    return Error.UnknownWord;
+                                }
+                            }
+                        }
                         try self.emitWord(w_val);
                     } else {
                         self.setError("unknown word '{s}'", .{w});
@@ -2952,7 +3361,7 @@ pub const Fy = struct {
 
         // Recursively parse a quote and store it on the heap, supporting arbitrary nesting
         pub fn parseQuoteToHeap(self: *Compiler) Error!Value {
-            var items = std.ArrayList(Fy.Heap.Item).init(self.fy.fyalloc);
+            var items = compat.ArrayList(Fy.Heap.Item).init(self.fy.fyalloc);
             var items_ok = false;
             errdefer {
                 if (!items_ok) {
@@ -2965,7 +3374,7 @@ pub const Fy = struct {
                     items.deinit();
                 }
             }
-            var locals: ?std.ArrayList([]u8) = null;
+            var locals: ?compat.ArrayList([]u8) = null;
             var first = true;
             while (true) {
                 const t = (try self.parser.nextToken()) orelse return Error.UnexpectedEndOfInput;
@@ -2978,7 +3387,7 @@ pub const Fy = struct {
                         } else if (first and std.mem.eql(u8, w2, "|")) {
                             // Begin locals header
                             first = false;
-                            var names = std.ArrayList([]u8).init(self.fy.fyalloc);
+                            var names = compat.ArrayList([]u8).init(self.fy.fyalloc);
                             var names_ok = false;
                             errdefer {
                                 if (!names_ok) {
@@ -3085,6 +3494,11 @@ pub const Fy = struct {
             } else {
                 try self.emit(Asm.@".pop Xn"(16)); // fptr (TOS)
             }
+            // Untag fptr (stored as TAG_INT = fptr << 2) before calling.
+            // Matches ccall0/1/2/3 which untag x16 here. Without this, a
+            // bind: whose fptr comes from a `::` constant (e.g. `_sin`
+            // emitted as BL → push) jumps to fptr*4 and faults.
+            try self.emit(Asm.@"asr x16, x16, #2");
 
             // String pre-pass: convert fy strings to C strings on the data stack
             if (has_any_str) {
@@ -3172,14 +3586,22 @@ pub const Fy = struct {
                 }
             }
 
-            // Route float args from temp x registers to d/s registers
+            // Route float args from temp x registers to d/s registers.
+            // Clear the TAG_FLT low-2-bits on the temp register before the
+            // fmov — otherwise the C callee sees `real_bits | 2`, a ~2^-52
+            // ulp perturbation that is invisible for sin/cos but wrong for
+            // bit-exact math. Matches the `bits & ~3` step of getFloat().
             for (args_part, 0..) |arg_type, arg_idx| {
                 switch (arg_type) {
                     'f' => {
+                        try self.emit(Asm.@"lsr Xn, Xn, #2"(float_temps[arg_idx]));
+                        try self.emit(Asm.@"lsl Xn, Xn, #2"(float_temps[arg_idx]));
                         try self.emit(Asm.@"fmov Dd, Xn"(target_regs[arg_idx], float_temps[arg_idx]));
                         try self.emit(Asm.@"fcvt Sd, Dn"(target_regs[arg_idx], target_regs[arg_idx]));
                     },
                     'd' => {
+                        try self.emit(Asm.@"lsr Xn, Xn, #2"(float_temps[arg_idx]));
+                        try self.emit(Asm.@"lsl Xn, Xn, #2"(float_temps[arg_idx]));
                         try self.emit(Asm.@"fmov Dd, Xn"(target_regs[arg_idx], float_temps[arg_idx]));
                     },
                     else => {},
@@ -3207,8 +3629,16 @@ pub const Fy = struct {
             } else if (ret_part[0] == 'f') {
                 try self.emit(Asm.@"fcvt Dd, Sn"(0, 0));
                 try self.emit(Asm.@"fmov Xd, Dn"(0, 0));
+                // makeFloat: (bits & ~3) | 2
+                try self.emit(Asm.@"lsr Xn, Xn, #2"(0));
+                try self.emit(Asm.@"lsl Xn, Xn, #2"(0));
+                try self.emit(Asm.@"add Xn, Xn, #2"(0));
             } else if (ret_part[0] == 'd') {
                 try self.emit(Asm.@"fmov Xd, Dn"(0, 0));
+                // makeFloat: (bits & ~3) | 2
+                try self.emit(Asm.@"lsr Xn, Xn, #2"(0));
+                try self.emit(Asm.@"lsl Xn, Xn, #2"(0));
+                try self.emit(Asm.@"add Xn, Xn, #2"(0));
             } else {
                 self.setError("bind: unknown return type '{c}' in signature", .{ret_part[0]});
                 return Error.UnknownWord;
@@ -3288,7 +3718,7 @@ pub const Fy = struct {
             const cb_stack_top: u64 = @intFromPtr(cb_stack_ptr) + cb_stack_size;
 
             // Build trampoline code
-            var tramp = std.ArrayList(u32).init(self.fy.fyalloc);
+            var tramp = compat.ArrayList(u32).init(self.fy.fyalloc);
             defer tramp.deinit();
 
             // Save frame, x20 (locals frame pointer), and fy data stack registers
@@ -3325,20 +3755,20 @@ pub const Fy = struct {
                         // C float in sN → widen to f64 → bitcast to i64 → tag as float → push
                         tramp.append(Asm.@"fcvt Dd, Sn"(float_reg, float_reg)) catch return Error.OutOfMemory;
                         tramp.append(Asm.@"fmov Xd, Dn"(9, float_reg)) catch return Error.OutOfMemory;
-                        // makeFloat: clear lower 2 bits, set TAG_FLT=2
-                        tramp.append(Asm.@"lsr x9, x9, #2") catch return Error.OutOfMemory;
-                        tramp.append(Asm.@"lsl x9, x9, #2") catch return Error.OutOfMemory;
-                        tramp.append(Asm.@"add x9, x9, #2") catch return Error.OutOfMemory;
+                        // makeFloat: (bits & ~3) | 2
+                        tramp.append(Asm.@"lsr Xn, Xn, #2"(9)) catch return Error.OutOfMemory;
+                        tramp.append(Asm.@"lsl Xn, Xn, #2"(9)) catch return Error.OutOfMemory;
+                        tramp.append(Asm.@"add Xn, Xn, #2"(9)) catch return Error.OutOfMemory;
                         tramp.append(Asm.@".push Xn"(9)) catch return Error.OutOfMemory;
                         float_reg += 1;
                     },
                     'd' => {
                         // C double in dN → bitcast to i64 → tag as float → push
                         tramp.append(Asm.@"fmov Xd, Dn"(9, float_reg)) catch return Error.OutOfMemory;
-                        // makeFloat: clear lower 2 bits, set TAG_FLT=2
-                        tramp.append(Asm.@"lsr x9, x9, #2") catch return Error.OutOfMemory;
-                        tramp.append(Asm.@"lsl x9, x9, #2") catch return Error.OutOfMemory;
-                        tramp.append(Asm.@"add x9, x9, #2") catch return Error.OutOfMemory;
+                        // makeFloat: (bits & ~3) | 2
+                        tramp.append(Asm.@"lsr Xn, Xn, #2"(9)) catch return Error.OutOfMemory;
+                        tramp.append(Asm.@"lsl Xn, Xn, #2"(9)) catch return Error.OutOfMemory;
+                        tramp.append(Asm.@"add Xn, Xn, #2"(9)) catch return Error.OutOfMemory;
                         tramp.append(Asm.@".push Xn"(9)) catch return Error.OutOfMemory;
                         float_reg += 1;
                     },
@@ -3362,15 +3792,15 @@ pub const Fy = struct {
                 } else if (ret_part[0] == 'f') {
                     // Pop tagged fy float, untag (clear lower 2 bits), convert to C float
                     tramp.append(Asm.@".pop Xn"(9)) catch return Error.OutOfMemory;
-                    tramp.append(Asm.@"lsr x9, x9, #2") catch return Error.OutOfMemory;
-                    tramp.append(Asm.@"lsl x9, x9, #2") catch return Error.OutOfMemory;
+                    tramp.append(Asm.@"lsr Xn, Xn, #2"(9)) catch return Error.OutOfMemory;
+                    tramp.append(Asm.@"lsl Xn, Xn, #2"(9)) catch return Error.OutOfMemory;
                     tramp.append(Asm.@"fmov Dd, Xn"(0, 9)) catch return Error.OutOfMemory;
                     tramp.append(Asm.@"fcvt Sd, Dn"(0, 0)) catch return Error.OutOfMemory;
                 } else if (ret_part[0] == 'd') {
                     // Pop tagged fy float, untag (clear lower 2 bits), return as C double
                     tramp.append(Asm.@".pop Xn"(9)) catch return Error.OutOfMemory;
-                    tramp.append(Asm.@"lsr x9, x9, #2") catch return Error.OutOfMemory;
-                    tramp.append(Asm.@"lsl x9, x9, #2") catch return Error.OutOfMemory;
+                    tramp.append(Asm.@"lsr Xn, Xn, #2"(9)) catch return Error.OutOfMemory;
+                    tramp.append(Asm.@"lsl Xn, Xn, #2"(9)) catch return Error.OutOfMemory;
                     tramp.append(Asm.@"fmov Dd, Xn"(0, 9)) catch return Error.OutOfMemory;
                 }
             }
@@ -3431,13 +3861,10 @@ pub const Fy = struct {
             self.fy.importedFiles.put(key, {}) catch return Error.OutOfMemory;
 
             // Read file
-            const file = std.fs.cwd().openFile(file_path, .{}) catch {
+            const src = compat.readFileAlloc(self.fy.fyalloc, file_path, std.math.maxInt(usize)) catch {
                 self.setError("cannot open file: {s}", .{file_path});
                 return Error.UnknownWord;
             };
-            defer file.close();
-            const stat = file.stat() catch return Error.OutOfMemory;
-            const src = file.reader().readAllAlloc(self.fy.fyalloc, stat.size) catch return Error.OutOfMemory;
             defer self.fy.fyalloc.free(src);
 
             // Skip shebang
@@ -3557,7 +3984,7 @@ pub const Fy = struct {
             const body_exe = self.fy.image.link(body_code);
             self.fy.fyalloc.free(body_code);
             Builtins.fyPtr = @intFromPtr(self.fy);
-            const body_fn: *const fn () Value = @alignCast(@ptrCast(body_exe));
+            const body_fn: *const fn () Value = @ptrCast(@alignCast(body_exe));
             const value: u64 = @bitCast(body_fn());
 
             // Build a tiny word that just pushes this literal value
@@ -3583,6 +4010,8 @@ pub const Fy = struct {
             try self.declareWord(reg_name);
             if (self.fy.userWords.getPtr(reg_name)) |word| {
                 word.image_addr = entry_addr;
+                // Constants just push a literal at runtime — no heap interaction possible.
+                word.noalloc = true;
             }
             if (final_name) |fn_| self.fy.fyalloc.free(fn_);
         }
@@ -3627,6 +4056,57 @@ pub const Fy = struct {
             if (final_name) |fn_| self.fy.fyalloc.free(fn_);
         }
 
+        /// `noalloc: name body ;` — like `:` but marks the word as noalloc and
+        /// rejects heap-allocating builtins and non-noalloc: user word calls
+        /// at compile time.  Intended for audio-thread words that must not
+        /// touch the GC heap at runtime.
+        fn compileNoalloc(self: *Compiler) Error!void {
+            const name_tok = try self.parser.nextToken();
+            const w = switch (name_tok orelse return Error.UnexpectedEndOfInput) {
+                .Word => |n| n,
+                else => return Error.ExpectedWord,
+            };
+
+            var compiler = Compiler.init(self.fy, self.parser);
+            defer compiler.deinit();
+            compiler.namespace = self.namespace;
+            compiler.currentDef = w;
+            compiler.noalloc_mode = true; // ← enables safety checks
+
+            const code = try compiler.compile(.UserWord);
+
+            const link_base = @intFromPtr(self.fy.image.mem.ptr) + self.fy.image.end;
+            compiler.resolveRelocations(link_base, code);
+
+            const entry = self.fy.image.link(code);
+            const entry_addr = @intFromPtr(entry.ptr);
+            self.fy.fyalloc.free(code);
+
+            const final_name = if (self.namespace) |ns| blk: {
+                const prefixed = self.fy.fyalloc.alloc(u8, ns.len + w.len) catch return Error.OutOfMemory;
+                @memcpy(prefixed[0..ns.len], ns);
+                @memcpy(prefixed[ns.len..], w);
+                break :blk prefixed;
+            } else null;
+            const reg_name = final_name orelse w;
+
+            try self.declareWord(reg_name);
+            if (self.fy.userWords.getPtr(reg_name)) |word| {
+                if (word.trampoline_addr) |tramp| {
+                    const ob: i64 = @as(i64, @intCast(entry_addr)) - @as(i64, @intCast(tramp));
+                    const ow: i26 = @intCast(@divExact(ob, 4));
+                    self.fy.image.patchInstruction(tramp, Asm.@"b offset"(ow));
+                    word.image_addr = entry_addr;
+                } else {
+                    const tramp = self.fy.image.linkTrampoline(entry_addr);
+                    word.image_addr = entry_addr;
+                    word.trampoline_addr = tramp;
+                }
+                word.noalloc = true;
+            }
+            if (final_name) |fn_| self.fy.fyalloc.free(fn_);
+        }
+
         fn parseFieldType(name: []const u8) ?FieldType {
             const map = std.StaticStringMap(FieldType).initComptime(.{
                 .{ "i8", .i8 },
@@ -3666,7 +4146,7 @@ pub const Fy = struct {
             };
 
             // Parse field definitions: type name type name ... ;
-            var fields_list = std.ArrayList(FieldDef).init(self.fy.fyalloc);
+            var fields_list = compat.ArrayList(FieldDef).init(self.fy.fyalloc);
             defer fields_list.deinit();
 
             var current_offset: u16 = 0;
@@ -3729,7 +4209,8 @@ pub const Fy = struct {
                 var c = Compiler.init(self.fy, self.parser);
                 defer c.deinit();
                 try c.enterPersist();
-                try c.emitNumber(@as(u64, total_size), 0);
+                // Push total_size as a fy-tagged integer (makeInt = n << 2).
+                try c.emitNumber(@as(u64, total_size) << 2, 0);
                 try c.emitPush();
                 try c.leavePersist();
                 const code = c.code.toOwnedSlice() catch return Error.OutOfMemory;
@@ -3747,8 +4228,8 @@ pub const Fy = struct {
                 var c = Compiler.init(self.fy, self.parser);
                 defer c.deinit();
                 try c.enterPersist();
-                // x0 = total_size (argument to allocMem)
-                try c.emitNumber(@as(u64, total_size), 0);
+                // allocMem expects a fy-tagged integer — pass makeInt(total_size).
+                try c.emitNumber(@as(u64, total_size) << 2, 0);
                 // Load allocMem address into x17 and call
                 try c.emitPtr(alloc_mem_addr, 17);
                 try c.emit(Asm.@"blr Xn"(17));
@@ -3770,12 +4251,14 @@ pub const Fy = struct {
                 defer c.deinit();
                 try c.enterPersist();
 
-                // 1. Call alloc(total_size)
-                try c.emitNumber(@as(u64, total_size), 0);
+                // 1. Call alloc(total_size) — pass makeInt(total_size).
+                try c.emitNumber(@as(u64, total_size) << 2, 0);
                 try c.emitPtr(alloc_mem_addr, 17);
                 try c.emit(Asm.@"blr Xn"(17));
-                // x0 = struct pointer, save in x9 (safe: no more function calls follow)
+                // x0 = makeInt(raw_ptr). Untag into x9 for indexed stores;
+                // keep the tagged form alive in x0 for the final push.
                 try c.emit(Asm.@"mov Xd, Xn"(9, 0));
+                try c.emit(Asm.@"asr Xn, Xn, #2"(9)); // x9 = raw malloc ptr
 
                 // 2. Pop and store each field in reverse order (TOS = last field)
                 var fi: usize = n_fields;
@@ -3815,8 +4298,10 @@ pub const Fy = struct {
                     }
                 }
 
-                // 3. Push struct pointer
-                try c.emit(Asm.@"mov Xd, Xn"(0, 9)); // mov x0, x9
+                // 3. Push struct pointer as a fy-tagged integer (makeInt(raw_ptr)).
+                // x9 is the raw ptr (untagged). Retag: lsl x0, x9, #2.
+                try c.emit(Asm.@"lsl Xn, Xn, #2"(9)); // x9 = makeInt(raw_ptr)
+                try c.emit(Asm.@"mov Xd, Xn"(0, 9)); // x0 = makeInt(raw_ptr)
                 try c.emitPush();
                 try c.leavePersist();
                 const code = c.code.toOwnedSlice() catch return Error.OutOfMemory;
@@ -3837,8 +4322,9 @@ pub const Fy = struct {
                     var c = Compiler.init(self.fy, self.parser);
                     defer c.deinit();
                     try c.enterPersist();
-                    // pop ptr into x9, pop value into x0
-                    try c.emit(Asm.@".pop Xn"(9)); // ptr
+                    // Pop tagged ptr into x9, untag to get raw memory address.
+                    try c.emit(Asm.@".pop Xn"(9)); // ptr (fy-tagged makeInt)
+                    try c.emit(Asm.@"asr Xn, Xn, #2"(9)); // x9 = raw ptr
                     try c.emit(Asm.@".pop x0"); // value
                     switch (field.field_type) {
                         .i8, .u8 => try c.emit(Asm.strb_imm(0, 9, off)),
@@ -3855,7 +4341,8 @@ pub const Fy = struct {
                             try c.emit(Asm.str_d_imm(0, 9, off));
                         },
                     }
-                    // push ptr back
+                    // Retag raw ptr in x9 and push back as fy integer.
+                    try c.emit(Asm.@"lsl Xn, Xn, #2"(9)); // x9 = makeInt(raw_ptr)
                     try c.emit(Asm.@"mov Xd, Xn"(0, 9));
                     try c.emitPush();
                     try c.leavePersist();
@@ -3876,10 +4363,11 @@ pub const Fy = struct {
                     var c = Compiler.init(self.fy, self.parser);
                     defer c.deinit();
                     try c.enterPersist();
-                    // peek ptr (pop + push back)
-                    try c.emit(Asm.@".pop Xn"(9)); // ptr
+                    // Pop tagged ptr, push it back, then untag x9 for the load.
+                    try c.emit(Asm.@".pop Xn"(9)); // ptr (fy-tagged makeInt)
                     try c.emit(Asm.@"mov Xd, Xn"(0, 9));
-                    try c.emitPush(); // push ptr back
+                    try c.emitPush(); // push tagged ptr back
+                    try c.emit(Asm.@"asr Xn, Xn, #2"(9)); // x9 = raw memory ptr
                     switch (field.field_type) {
                         .i8 => try c.emit(Asm.ldrb_imm(0, 9, off)),
                         .u8 => try c.emit(Asm.ldrb_imm(0, 9, off)),
@@ -4060,6 +4548,11 @@ pub const Fy = struct {
                         if (std.mem.eql(u8, w, "macro:")) {
                             self.resetQuoteTracking();
                             try self.compileMacro();
+                            continue;
+                        }
+                        if (std.mem.eql(u8, w, "noalloc:")) {
+                            self.resetQuoteTracking();
+                            try self.compileNoalloc();
                             continue;
                         }
                         // Self-recursion: emit BL back to own entry point
@@ -4289,6 +4782,7 @@ pub const Fy = struct {
                     try self.leavePersist();
                 },
             }
+            try self.optimizeStackRoundTrips();
             return self.code.toOwnedSlice();
         }
 
@@ -4302,7 +4796,7 @@ pub const Fy = struct {
     // };
 
     const Image = struct {
-        mem: []align(std.mem.page_size) u8, // full reserved range
+        mem: []align(std.heap.page_size_min) u8, // full reserved range
         committed: usize, // bytes that are usable (multiple of page_size)
         end: usize, // write cursor (bytes written so far)
 
@@ -4316,18 +4810,18 @@ pub const Fy = struct {
                 const raw = darwin_c.mmap(null, RESERVE_SIZE, darwin_c.PROT_READ | darwin_c.PROT_WRITE, darwin_c.MAP_PRIVATE | darwin_c.MAP_ANON | darwin_c.MAP_JIT, -1, 0);
                 if (raw == darwin_c.MAP_FAILED) return error.OutOfMemory;
                 const ptr_any: ?*anyopaque = @ptrCast(raw);
-                const ptr_page: [*]align(std.mem.page_size) u8 = @alignCast(@ptrCast(ptr_any));
-                const mem: []align(std.mem.page_size) u8 = ptr_page[0..RESERVE_SIZE];
+                const ptr_page: [*]align(std.heap.page_size_min) u8 = @ptrCast(@alignCast(ptr_any));
+                const mem: []align(std.heap.page_size_min) u8 = ptr_page[0..RESERVE_SIZE];
                 return Image{ .mem = mem, .committed = RESERVE_SIZE, .end = 0 };
             }
             const flags: std.posix.MAP = .{ .TYPE = .PRIVATE, .ANONYMOUS = true };
             const mem = try std.posix.mmap(null, RESERVE_SIZE, std.posix.PROT.NONE, flags, -1, 0);
             // Commit the first page as RW
-            const first_page: []align(std.mem.page_size) u8 = mem[0..std.mem.page_size];
+            const first_page: []align(std.heap.page_size_min) u8 = mem[0..std.heap.page_size_min];
             try std.posix.mprotect(first_page, std.posix.PROT.READ | std.posix.PROT.WRITE);
             return Image{
                 .mem = mem,
-                .committed = std.mem.page_size,
+                .committed = std.heap.page_size_min,
                 .end = 0,
             };
         }
@@ -4345,19 +4839,19 @@ pub const Fy = struct {
             if (self.committed >= RESERVE_SIZE) return error.OutOfMemory;
             if (darwin) {
                 const next: ?*anyopaque = @ptrCast(self.mem.ptr + self.committed);
-                if (darwin_c.mprotect(next, std.mem.page_size, darwin_c.PROT_READ | darwin_c.PROT_WRITE) != 0)
+                if (darwin_c.mprotect(next, std.heap.page_size_min, darwin_c.PROT_READ | darwin_c.PROT_WRITE) != 0)
                     return error.OutOfMemory;
             } else {
-                const next_ptr: [*]align(std.mem.page_size) u8 = @alignCast(self.mem.ptr + self.committed);
-                const next_page: []align(std.mem.page_size) u8 = next_ptr[0..std.mem.page_size];
+                const next_ptr: [*]align(std.heap.page_size_min) u8 = @alignCast(self.mem.ptr + self.committed);
+                const next_page: []align(std.heap.page_size_min) u8 = next_ptr[0..std.heap.page_size_min];
                 try std.posix.mprotect(next_page, std.posix.PROT.READ | std.posix.PROT.WRITE);
             }
-            self.committed += std.mem.page_size;
+            self.committed += std.heap.page_size_min;
         }
 
         fn protect(self: *Image, executable: bool) !void {
             if (darwin) return; // No-op; use pthread_jit_write_protect_np
-            const committed_slice: []align(std.mem.page_size) u8 = @alignCast(self.mem[0..self.committed]);
+            const committed_slice: []align(std.heap.page_size_min) u8 = @alignCast(self.mem[0..self.committed]);
             if (executable) {
                 try std.posix.mprotect(committed_slice, std.posix.PROT.READ | std.posix.PROT.EXEC);
             } else {
@@ -4401,12 +4895,12 @@ pub const Fy = struct {
             if (darwin) {
                 _ = darwin_c.pthread_jit_write_protect_np(0);
                 _ = darwin_c.mprotect(self.mem.ptr, self.committed, darwin_c.PROT_READ | darwin_c.PROT_WRITE | darwin_c.PROT_EXEC);
-                const ptr: *u32 = @alignCast(@ptrCast(self.mem.ptr + offset));
+                const ptr: *u32 = @ptrCast(@alignCast(self.mem.ptr + offset));
                 ptr.* = instr;
                 _ = darwin_c.pthread_jit_write_protect_np(1);
             } else {
                 self.protect(false) catch @panic("failed to set image writable for patch");
-                const ptr: *u32 = @alignCast(@ptrCast(self.mem.ptr + offset));
+                const ptr: *u32 = @ptrCast(@alignCast(self.mem.ptr + offset));
                 ptr.* = instr;
                 self.protect(true) catch @panic("failed to set image executable after patch");
             }
@@ -4438,12 +4932,12 @@ pub const Fy = struct {
         // free the original code buffer as we already have machine code in executable memory
         self.fyalloc.free(code);
         // cast the memory to a function pointer and call
-        const fun: *const fn () Value = @alignCast(@ptrCast(executable));
+        const fun: *const fn () Value = @ptrCast(@alignCast(executable));
         return Fn{ .call = fun };
     }
 
     /// Recursively collect word names referenced in a quote (excluding its own locals).
-    fn collectQuoteWordRefs(self: *Fy, q: *Heap.QuoteObj, out: *std.ArrayList([]const u8)) void {
+    fn collectQuoteWordRefs(self: *Fy, q: *Heap.QuoteObj, out: *compat.ArrayList([]const u8)) void {
         for (q.items.items) |it| switch (it) {
             .Word => |w| {
                 // Skip if it's one of this quote's own locals
@@ -4491,7 +4985,7 @@ pub const Fy = struct {
             if (std.mem.eql(u8, ln, name)) return qv;
         }
         var changed = false;
-        var new_items = std.ArrayList(Heap.Item).init(self.fyalloc);
+        var new_items = compat.ArrayList(Heap.Item).init(self.fyalloc);
         for (q.items.items) |item| switch (item) {
             .Word => |w| {
                 if (std.mem.eql(u8, w, name)) {
@@ -4534,11 +5028,11 @@ pub const Fy = struct {
         // calls above may have triggered heap.entries reallocation via storeQuote,
         // invalidating the original q pointer.
         const q_fresh = self.heap.getQuote(qv);
-        var new_locals = std.ArrayList([]u8).init(self.fyalloc);
+        var new_locals = compat.ArrayList([]u8).init(self.fyalloc);
         for (q_fresh.locals_names.items) |ln| {
             try new_locals.append(try self.fyalloc.dupe(u8, ln));
         }
-        var new_captures = std.ArrayList(Heap.CaptureInfo).init(self.fyalloc);
+        var new_captures = compat.ArrayList(Heap.CaptureInfo).init(self.fyalloc);
         for (q_fresh.captures.items) |cap| {
             try new_captures.append(.{ .name = try self.fyalloc.dupe(u8, cap.name), .offset = cap.offset });
         }
@@ -4659,13 +5153,13 @@ pub const Fy = struct {
                     const t = self.heap.typeOf(qv) orelse break :capture_blk;
                     if (t != .Quote) break :capture_blk;
                     const nested_q = self.heap.getQuote(qv);
-                    var refs = std.ArrayList([]const u8).init(self.fyalloc);
+                    var refs = compat.ArrayList([]const u8).init(self.fyalloc);
                     defer refs.deinit();
                     self.collectQuoteWordRefs(nested_q, &refs);
 
                     // Collect captures: (local_index, local_name) pairs
                     const CapInfo = struct { idx: usize, name: []const u8 };
-                    var found_caps = std.ArrayList(CapInfo).init(self.fyalloc);
+                    var found_caps = compat.ArrayList(CapInfo).init(self.fyalloc);
                     defer found_caps.deinit();
                     for (refs.items) |ref_w| {
                         var found = false;
@@ -4735,7 +5229,7 @@ pub const Fy = struct {
         return code;
     }
 
-    fn runWithBaseDir(self: *Fy, src: []const u8, base_dir: ?[]const u8) !Fy.Value {
+    pub fn runWithBaseDir(self: *Fy, src: []const u8, base_dir: ?[]const u8) !Fy.Value {
         // Set fyPtr for Builtins to access heap
         Builtins.fyPtr = @intFromPtr(self);
 
@@ -4788,7 +5282,7 @@ pub const Fy = struct {
         while (keys.next()) |k| {
             errPrint("{s} ", .{k.*});
         }
-        std.io.getStdErr().writer().writeAll("\n") catch {};
+        compat.stderrWriter().writeAll("\n") catch {};
     }
 };
 
@@ -4817,7 +5311,7 @@ fn resolveAddr(fy: *Fy, addr: usize) ?[]const u8 {
 /// Walk the ARM64 frame pointer chain and print fy word names for each
 /// return address that falls within the JIT image.
 fn printFyTrace(fy: *Fy, initial_fp: usize) void {
-    const w = std.io.getStdErr().writer();
+    const w = compat.stderrWriter();
     const image_base = @intFromPtr(fy.image.mem.ptr);
     const image_top = image_base + fy.image.end;
     var fp = initial_fp;
@@ -4841,23 +5335,23 @@ fn printFyTrace(fy: *Fy, initial_fp: usize) void {
 /// Fatal runtime error with fy stack trace. Replaces @panic for user-facing
 /// errors so messages are always printed (including ReleaseSmall).
 fn runtimeError(comptime msg: []const u8) noreturn {
-    @setCold(true);
-    const w = std.io.getStdErr().writer();
+    @branchHint(.cold);
+    const w = compat.stderrWriter();
     w.print("fy: {s}\n", .{msg}) catch {};
     if (fy_global) |fy| {
         printFyTrace(fy, @frameAddress());
     }
-    std.posix.exit(1);
+    std.process.exit(1);
 }
 
 fn runtimeErrorFmt(comptime fmt: []const u8, args: anytype) noreturn {
-    @setCold(true);
-    const w = std.io.getStdErr().writer();
+    @branchHint(.cold);
+    const w = compat.stderrWriter();
     w.print("fy: " ++ fmt ++ "\n", args) catch {};
     if (fy_global) |fy| {
         printFyTrace(fy, @frameAddress());
     }
-    std.posix.exit(1);
+    std.process.exit(1);
 }
 
 /// macOS ARM64 signal handler — catches SIGSEGV/SIGBUS from JIT code.
@@ -4865,19 +5359,19 @@ fn runtimeErrorFmt(comptime fmt: []const u8, args: anytype) noreturn {
 /// when the handler returns (before exit takes effect).
 var signal_entered: bool = false;
 
-fn fySignalHandler(_: c_int, info: *const std.posix.siginfo_t, ctx: ?*anyopaque) callconv(.C) void {
+fn fySignalHandler(_: c_int, info: *const std.posix.siginfo_t, ctx: ?*anyopaque) callconv(.c) void {
     if (@atomicLoad(bool, &signal_entered, .acquire)) {
         c_std.abort(); // re-entered — hard abort
     }
     @atomicStore(bool, &signal_entered, true, .release);
 
-    const w = std.io.getStdErr().writer();
+    const w = compat.stderrWriter();
     const fault_addr = @intFromPtr(info.addr);
 
     // Try to diagnose stack overflow/underflow from guard page hits
     if (fy_global) |fy| {
         if (fy.data_stack_mem) |mem_ptr| {
-            const page = std.mem.page_size;
+            const page = std.heap.page_size_min;
             const base = @intFromPtr(mem_ptr);
             const usable = Fy.DATA_STACK_PAGES * page;
             // Bottom guard: [base, base+page)
@@ -4909,14 +5403,14 @@ fn printTraceFromCtx(fy: *Fy, ctx: ?*anyopaque) void {
     if (!darwin) return;
     const uc_bytes: [*]const u8 = @ptrCast(ctx orelse return);
     // uc_mcontext pointer is at offset 48 in ucontext_t
-    const mctx_ptr: usize = @as(*const usize, @alignCast(@ptrCast(uc_bytes + 48))).*;
+    const mctx_ptr: usize = @as(*const usize, @ptrCast(@alignCast(uc_bytes + 48))).*;
     if (mctx_ptr == 0) return;
     const mctx: [*]const u8 = @ptrFromInt(mctx_ptr);
     // In mcontext64: __ss starts at offset 16; __fp at __ss+232, __pc at __ss+256
-    const fp = @as(*const usize, @alignCast(@ptrCast(mctx + 248))).*;
-    const pc = @as(*const usize, @alignCast(@ptrCast(mctx + 272))).*;
+    const fp = @as(*const usize, @ptrCast(@alignCast(mctx + 248))).*;
+    const pc = @as(*const usize, @ptrCast(@alignCast(mctx + 272))).*;
 
-    const w = std.io.getStdErr().writer();
+    const w = compat.stderrWriter();
     const image_base = @intFromPtr(fy.image.mem.ptr);
     const image_top = image_base + fy.image.end;
     // Show the faulting PC if it's in our image
@@ -4942,60 +5436,12 @@ fn installSignalHandler() void {
 }
 
 pub fn repl(allocator: std.mem.Allocator, fy: *Fy) !void {
-    const stdout = std.io.getStdOut().writer();
-    var editor = Editor.init(allocator, .{});
-    defer editor.deinit();
-
-    var handler: struct {
-        editor: *Editor,
-        pub fn paste(self: *@This(), text: []const u32) void {
-            self.editor.insertUtf32(text);
-        }
-    } = .{ .editor = &editor };
-    editor.setHandler(&handler);
-
-    try stdout.print("fy! {s}\n", .{Fy.version});
-    // Initialize persistent VM data stack once for this REPL session
-    fy.initVmStack();
-
-    while (true) {
-        const line: []const u8 = editor.getLine("fy> ") catch |err| switch (err) {
-            error.Eof => break,
-            else => return err,
-        };
-        defer allocator.free(line);
-        try editor.addToHistory(line);
-        if (line.len == 0) {
-            allocator.free(line);
-            continue;
-        }
-        // Compile this line to preserve stack across prompts and return top-of-stack
-        var parser2 = Fy.Parser.init(line);
-        var compiler2 = Fy.Compiler.init(fy, &parser2);
-        const code = compiler2.compile(.SessionRet) catch |err| {
-            if (compiler2.lastErrorStr()) |detail| {
-                try stdout.print("line {d}: {s}\n", .{ parser2.line, detail });
-            } else {
-                try stdout.print("error: {}\n", .{err});
-            }
-            compiler2.deinit();
-            continue;
-        };
-        // Resolve BL relocations for user word calls in REPL input
-        const link_base = @intFromPtr(fy.image.mem.ptr) + fy.image.end;
-        compiler2.resolveRelocations(link_base, code);
-        var compiled = fy.jit(code) catch |err| {
-            compiler2.deinit();
-            try stdout.print("error: {}\n", .{err});
-            continue;
-        };
-        compiler2.deinit();
-        const r = compiled.call();
-        try stdout.print("    ", .{});
-        try fy.writeValue(stdout, r);
-        try stdout.print("\n", .{});
-    }
-    return;
+    _ = allocator;
+    _ = fy;
+    // REPL is stubbed pending zigline port to zig 0.16. Library consumers
+    // (e.g. slab) don't use this path. When the CLI is revived, restore
+    // the body from git history (commit 8986bfc).
+    return error.ReplDisabled;
 }
 
 pub fn runFile(allocator: std.mem.Allocator, fy: *Fy, path: []const u8) !void {
@@ -5147,16 +5593,16 @@ pub fn main() !void {
     }
 
     if (parsedArgs.help) {
-        std.io.getStdErr().writer().writeAll(
+        compat.stderrWriter().writeAll(
             "Usage: fy [options] [files]\n" ++
-            "Options:\n" ++
-            "  -e, --eval <expr>  Evaluate expr\n" ++
-            "  -r, --repl         Launch interactive REPL\n" ++
-            "  -i, --image        Dump executable memory image to fy.out\n" ++
-            "  -v, --version      Display version and exit\n" ++
-            "  -s, --serve        Enable hot-patching server (writes .fy-port)\n" ++
-            "  -p, --port <n>     Set hot-patch server port (default: auto)\n" ++
-            "  -h, --help         Display this help and exit\n",
+                "Options:\n" ++
+                "  -e, --eval <expr>  Evaluate expr\n" ++
+                "  -r, --repl         Launch interactive REPL\n" ++
+                "  -i, --image        Dump executable memory image to fy.out\n" ++
+                "  -v, --version      Display version and exit\n" ++
+                "  -s, --serve        Enable hot-patching server (writes .fy-port)\n" ++
+                "  -p, --port <n>     Set hot-patch server port (default: auto)\n" ++
+                "  -h, --help         Display this help and exit\n",
         ) catch {};
         return;
     }
@@ -5200,7 +5646,7 @@ pub fn main() !void {
                 _ = c_std.fputs(@ptrCast(port_str.ptr), file);
                 _ = c_std.fclose(file);
             } else {
-                std.io.getStdErr().writer().writeAll("hot-patch: failed to write .fy-port\n") catch {};
+                compat.stderrWriter().writeAll("hot-patch: failed to write .fy-port\n") catch {};
             }
         }
 
@@ -5219,7 +5665,7 @@ pub fn main() !void {
     if (parsedArgs.eval) |e| {
         const result = fy.run(e);
         if (result) |r| {
-            const stdout = std.io.getStdOut().writer();
+            const stdout = compat.stdoutWriter();
             try fy.writeValue(stdout, r);
             try stdout.print("\n", .{});
         } else |err| {

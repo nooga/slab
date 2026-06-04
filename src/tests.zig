@@ -37,6 +37,22 @@ test "Basic expressions and built-in words" {
         .{ .input = "2 2 *", .expected = Fy.makeInt(4) },
         .{ .input = "12 3 /", .expected = Fy.makeInt(4) },
         .{ .input = "12 5 &", .expected = Fy.makeInt(4) },
+        .{ .input = "1.5 2.25 f+ 3.75 f=", .expected = Fy.makeInt(1) },
+        .{ .input = "5.0 2.0 f- 3.0 f=", .expected = Fy.makeInt(1) },
+        .{ .input = "1.25 4.0 f* 5.0 f=", .expected = Fy.makeInt(1) },
+        .{ .input = "9.0 2.0 f/ 4.5 f=", .expected = Fy.makeInt(1) },
+        .{ .input = "10.0 2.0 3.0 fmadd 16.0 f=", .expected = Fy.makeInt(1) },
+        .{ .input = "2.0 3.0 10.0 fma 16.0 f=", .expected = Fy.makeInt(1) },
+        .{ .input = "10.0 20.0 0.25 fslew 12.5 f=", .expected = Fy.makeInt(1) },
+        .{ .input = "-0.5 fclamp01 0.0 f=", .expected = Fy.makeInt(1) },
+        .{ .input = "1.5 fclamp01 1.0 f=", .expected = Fy.makeInt(1) },
+        .{ .input = "5.0 2.0 4.0 fclamp 4.0 f=", .expected = Fy.makeInt(1) },
+        .{ .input = "1.25 fwrap01 0.25 f=", .expected = Fy.makeInt(1) },
+        .{ .input = "-0.25 fwrap01 0.75 f=", .expected = Fy.makeInt(1) },
+        .{ .input = "2.5 fneg -2.5 f=", .expected = Fy.makeInt(1) },
+        .{ .input = "1.0 2.0 f<", .expected = Fy.makeInt(1) },
+        .{ .input = "2.0 1.0 f>", .expected = Fy.makeInt(1) },
+        .{ .input = "4 alloc dup 1.5 swap f!32 f@32 1.5 f=", .expected = Fy.makeInt(1) },
         .{ .input = "1 2 =", .expected = Fy.makeInt(0) },
         .{ .input = "1 1 =", .expected = Fy.makeInt(1) },
         .{ .input = "1 2 !=", .expected = Fy.makeInt(1) },
@@ -478,4 +494,50 @@ test "Macros - peek-quote and unpush" {
         .{ .input = "[3 4 +] const", .expected = Fy.makeInt(7) },
         .{ .input = "[10 2 * 1 +] const", .expected = Fy.makeInt(21) },
     });
+}
+
+test "noalloc: valid word compiles and runs" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+    try runCases(&fy, &[_]TestCase{
+        // Arithmetic and float ops are fine
+        .{ .input = "noalloc: add3 3 + ; 10 add3", .expected = Fy.makeInt(13) },
+        // Stack ops fine
+        .{ .input = "noalloc: double dup + ; 7 double", .expected = Fy.makeInt(14) },
+        // Conditional via ifte (quotes are compile-time, ifte is a stack op)
+        .{ .input = "noalloc: abs dup 0 < [ 0 swap - ] [ ] ifte ; -5 abs", .expected = Fy.makeInt(5) },
+        // Calling another noalloc: word is allowed
+        .{ .input = "noalloc: sq dup * ; noalloc: sq2 sq 2 * ; 4 sq2", .expected = Fy.makeInt(32) },
+    });
+}
+
+test "noalloc: rejects heap-allocating builtins" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    // Each of these should fail to compile
+    const bad = [_][]const u8{
+        "noalloc: bad qnil ; bad",
+        "noalloc: bad alloc ; bad",
+        "noalloc: bad 5 range ; bad",
+        "noalloc: bad dup s+ ; bad",
+        "noalloc: bad gc ; bad",
+    };
+    for (bad) |src| {
+        const result = fy.run(src);
+        try std.testing.expectError(error.UnknownWord, result);
+    }
+}
+
+test "noalloc: rejects call to non-noalloc: user word" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    // Define a regular (allocating) word then try to call it from noalloc:
+    _ = try fy.run(": normal qnil ;");
+    const result = fy.run("noalloc: bad normal ; bad");
+    try std.testing.expectError(error.UnknownWord, result);
 }

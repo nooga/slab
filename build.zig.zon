@@ -1,11 +1,11 @@
 .{
-    .name = "fy", //
+    .name = .fy,
     .version = "0.0.1",
+    .fingerprint = 0x5ba71746e1bb417b,
+    .minimum_zig_version = "0.16.0",
     .paths = .{ "src/", "build.zig", "build.zig.zon" },
-    .dependencies = .{ //
-        .zigline = .{
-            .url = "https://github.com/alimpfard/zigline/archive/501d068514215bcad2e0bbf2449873558d313741.zip",
-            .hash = "1220391df38627008551e1f35da79f959fdc58f2643c306d69ec6b1343f936d71361",
-        },
-    },
+    // zigline was used by the REPL (src/main.zig `repl` fn). It hasn't been
+    // ported to zig 0.16 yet. When the CLI is revived, re-add it here and
+    // flip the `want_exe` option in build.zig.
+    .dependencies = .{},
 }
