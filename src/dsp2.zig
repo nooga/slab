@@ -25,9 +25,13 @@ const Op = enum {
     f64_const,
     load_f64,
     fadd,
+    fsub,
     fmul,
     fdiv,
     fclamp,
+    fwrap01,
+    fsel_lt,
+    fpolyblep,
 };
 
 const Value = struct {
@@ -36,6 +40,7 @@ const Value = struct {
     a: usize = 0,
     b: usize = 0,
     c: usize = 0,
+    d: usize = 0,
     arg_index: usize = 0,
     int_value: i64 = 0,
     float_value: f64 = 0,
@@ -139,6 +144,10 @@ pub const Builder = struct {
             try self.floatBin(.fadd);
             return;
         }
+        if (std.mem.eql(u8, word, "f-")) {
+            try self.floatBin(.fsub);
+            return;
+        }
         if (std.mem.eql(u8, word, "f*")) {
             try self.floatBin(.fmul);
             return;
@@ -155,6 +164,35 @@ pub const Builder = struct {
             try self.expectTy(lo, .f64);
             try self.expectTy(hi, .f64);
             const id = try self.addValue(.{ .op = .fclamp, .ty = .f64, .a = x, .b = lo, .c = hi });
+            try self.stack.append(id);
+            return;
+        }
+        if (std.mem.eql(u8, word, "fwrap01")) {
+            const x = try self.pop();
+            try self.expectTy(x, .f64);
+            const id = try self.addValue(.{ .op = .fwrap01, .ty = .f64, .a = x });
+            try self.stack.append(id);
+            return;
+        }
+        if (std.mem.eql(u8, word, "fsel-lt")) {
+            const if_false = try self.pop();
+            const if_true = try self.pop();
+            const b = try self.pop();
+            const a = try self.pop();
+            try self.expectTy(a, .f64);
+            try self.expectTy(b, .f64);
+            try self.expectTy(if_true, .f64);
+            try self.expectTy(if_false, .f64);
+            const id = try self.addValue(.{ .op = .fsel_lt, .ty = .f64, .a = a, .b = b, .c = if_true, .d = if_false });
+            try self.stack.append(id);
+            return;
+        }
+        if (std.mem.eql(u8, word, "fpolyblep")) {
+            const dt = try self.pop();
+            const phase = try self.pop();
+            try self.expectTy(phase, .f64);
+            try self.expectTy(dt, .f64);
+            const id = try self.addValue(.{ .op = .fpolyblep, .ty = .f64, .a = phase, .b = dt });
             try self.stack.append(id);
             return;
         }
@@ -459,11 +497,12 @@ const Codegen = struct {
                 const ptr = try self.valueX(value.a);
                 try self.out.append(Asm.ldr_d_imm(reg, ptr, 0));
             },
-            .fadd, .fmul, .fdiv => {
+            .fadd, .fsub, .fmul, .fdiv => {
                 const a = try self.valueD(value.a);
                 const b = try self.valueD(value.b);
                 const instr = switch (value.op) {
                     .fadd => Asm.@"fadd Dd, Dn, Dm"(reg, a, b),
+                    .fsub => Asm.@"fsub Dd, Dn, Dm"(reg, a, b),
                     .fmul => Asm.@"fmul Dd, Dn, Dm"(reg, a, b),
                     .fdiv => Asm.@"fdiv Dd, Dn, Dm"(reg, a, b),
                     else => unreachable,
@@ -476,6 +515,61 @@ const Codegen = struct {
                 const hi = try self.valueD(value.c);
                 try self.out.append(Asm.@"fmax Dd, Dn, Dm"(reg, x, lo));
                 try self.out.append(Asm.@"fmin Dd, Dn, Dm"(reg, reg, hi));
+            },
+            .fwrap01 => {
+                const x = try self.valueD(value.a);
+                const zero = try self.allocD();
+                try self.emitF64Const(zero, 0.0);
+                const one = try self.allocD();
+                try self.emitF64Const(one, 1.0);
+
+                const xm1 = try self.allocD();
+                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(xm1, x, one));
+                try self.out.append(Asm.@"fcmp Dn, Dm"(x, one));
+                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, xm1, x, Asm.COND_GT));
+
+                const xp1 = try self.allocD();
+                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(xp1, reg, one));
+                try self.out.append(Asm.@"fcmp Dn, Dm"(reg, zero));
+                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, xp1, reg, Asm.COND_LT));
+            },
+            .fsel_lt => {
+                const a = try self.valueD(value.a);
+                const b = try self.valueD(value.b);
+                const if_true = try self.valueD(value.c);
+                const if_false = try self.valueD(value.d);
+                try self.out.append(Asm.@"fcmp Dn, Dm"(a, b));
+                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, if_true, if_false, Asm.COND_LT));
+            },
+            .fpolyblep => {
+                const phase = try self.valueD(value.a);
+                const dt = try self.valueD(value.b);
+                const zero = try self.allocD();
+                try self.emitF64Const(zero, 0.0);
+                const one = try self.allocD();
+                try self.emitF64Const(one, 1.0);
+
+                const scratch_a = try self.allocD();
+                const scratch_b = try self.allocD();
+                const scratch_c = try self.allocD();
+
+                try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(scratch_a, phase, dt));
+                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(scratch_b, scratch_a, scratch_a));
+                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(reg, scratch_a, scratch_a));
+                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(reg, reg, scratch_b));
+                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(reg, reg, one));
+                try self.out.append(Asm.@"fcmp Dn, Dm"(phase, dt));
+                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, reg, zero, Asm.COND_LT));
+
+                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_a, phase, one));
+                try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(scratch_a, scratch_a, dt));
+                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(scratch_b, scratch_a, scratch_a));
+                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_c, scratch_a, scratch_a));
+                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_c, scratch_c, scratch_b));
+                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_c, scratch_c, one));
+                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_a, one, dt));
+                try self.out.append(Asm.@"fcmp Dn, Dm"(scratch_a, phase));
+                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, scratch_c, reg, Asm.COND_LT));
             },
             else => return Error.TypeMismatch,
         }
