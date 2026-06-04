@@ -59,6 +59,35 @@ Rough phase mapping of what exists:
 - `*_KEY: u64` magic hex constants in module-scope drag state are
   cosmetic debt — `@intFromPtr(&tag)` would replace them.
 
+## Current refocus (2026-06-04)
+
+The next major push is the DSP substrate, not more DAW-frame UI.
+The frame is far enough along to host machines; the limiting question is
+whether Fy kernels can be made fast, inspectable, composable, and good
+enough to build serious instruments/effects.
+
+See [13-dsp-workbench.md](13-dsp-workbench.md) for the full plan.
+
+Near-term objective:
+
+1. Formalize `noalloc:` and `dsp:` in `../fy`.
+2. Lower `dsp:` through typed/static analysis, inlining, macro-time
+   quote fusion, and registerized AArch64/NEON codegen.
+3. Ban runtime quotations in `dsp:` while preserving compile-time quote
+   manipulation for macros/combinators.
+4. Emit compiler reports and disassembly that can be tested.
+5. Build an offline DSP workbench that renders arbitrary Fy kernels or
+   machines, feeds audio/events/param sweeps, and writes WAVs, plots,
+   metrics, perf JSON, and reports.
+6. Build the layered kernel library from primitives up through voices
+   and complete machines.
+7. Ratchet audio quality, compiler quality, and performance with
+   fixtures and bounded metrics.
+
+The product-level target remains a complete Slab-rendered track with
+virtual analog weight, saturation, effects, and mastering. This refocus
+builds the evidence loop needed to get there.
+
 ## Phase 0 — Substrate (no DAW yet)
 
 **Goal:** prove the livecoding-through-to-audio loop works at
@@ -84,28 +113,46 @@ save, and hear the pitch shift within a block. Single-file, no UI.
 
 ## Phase 1 — First kernel library
 
-**Goal:** enough kernels to build a simple synth, without the DAW
-around it yet. Scaffolding for what comes next.
+**Goal:** enough compiler substrate, workbench tooling, and kernels to
+build a simple synth with evidence before returning to more DAW frame
+work.
 
-1. **NEON asm extension.** Add the instruction subset from
+1. **Formal `noalloc:` / `dsp:` modes in `../fy`.** `noalloc:` bans
+   heap/ambient I/O/transitive unsafe calls. `dsp:` adds static
+   type/effect checks, runtime-quote bans, macro-time quote fusion,
+   compiler metadata, and audio-kernel restrictions.
+2. **Registerized lowering path.** Lower `dsp:` through typed stack IR
+   into value/register form so hot loops keep stack values in registers
+   rather than repeatedly materializing the Fy data stack.
+3. **Compiler report + disassembly output.** Count instructions,
+   calls/spills/tag ops inside loops, registers used, and emitted bytes.
+   Make those fields testable.
+4. **DSP workbench MVP.** Offline runner for one Fy entry word:
+   generated or file input audio/control streams, param sweeps, WAV
+   output, waveform/spectrum/spectrogram/control plots, metrics JSON,
+   perf JSON, disassembly, and report markdown.
+5. **NEON asm extension.** Add the instruction subset from
    [05-kernels.md](05-kernels.md) to `../fy/src/asm.zig`.
-2. **`vec-each` macro.** 4-wide unrolled loop + scalar tail. Prove
+6. **`vec-each` macro.** 4-wide unrolled loop + scalar tail. Prove
    it emits sane code; compare a `vec-each`-based gain against a
-   hand-written scalar loop.
-3. **Baseline kernels:**
+   hand-written scalar loop and a Zig/C reference in the workbench.
+7. **Baseline kernels:**
    - `polyblep-saw`, `polyblep-pulse`, `sine`
    - `adsr`
    - `svf` (state-variable ZDF)
    - `ladder` (Moog TPT)
    - `tanh` / `softclip`
    - `one-pole` (for smoothing)
-4. **Param smoother as a service.** Minimal: one-pole per smooth-annotated field, block-rate updates.
-5. **`pipeline` combinator.** Prove compile-time stage fusion works
+8. **Param smoother as a service.** Minimal: one-pole per
+   smooth-annotated field, block-rate updates.
+9. **`pipeline` combinator.** Prove compile-time stage fusion works
    for `(x -- y)`-shape stages.
 
 **Exit criteria:** a single-voice mono bass synth with saw + ladder
-+ envelope + softclip, rendered with 2× the CPU efficiency of the
-Phase-0 scalar baseline. Still no UI frame.
++ envelope + softclip, rendered through the workbench with passing
+audio metrics, passing compiler/disassembly constraints, and at least
+2x the CPU efficiency of the Phase-0 scalar baseline. Still no new UI
+frame work required.
 
 ## Phase 2 — Machines and panels
 

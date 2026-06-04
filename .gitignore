@@ -4,4 +4,7 @@ zig-cache/
 .DS_Store
 *.o
 *.dSYM/
+__pycache__/
+*.pyc
 .fy-port
+scratch/

@@ -267,6 +267,49 @@ words that must be audio-safe. Upstream to fy.
 - Transitive check cost: walking every BL target of a word at compile
   time is O(word size). Fine.
 
+## Stage 5b — `dsp:` compiler mode and reports
+
+**Goal:** move from "safe to call on the audio thread" to "compiled as
+an audio kernel." `noalloc:` prevents the worst failures; `dsp:` is the
+formal compiler mode for fast, inspectable DSP.
+
+**Build (in fy):**
+- New `dsp:` directive layered on `noalloc:`.
+- Reject runtime quotation allocation and dynamic quote calls. Quote
+  bodies are allowed only as compile-time macro inputs or inline
+  control-flow bodies that disappear before codegen.
+- Record static stack effects and typed effects for every `dsp:` word.
+- Inline eligible `dsp:` callees before branch lowering. Avoid the
+  already-tested "copy lowered machine code" approach; it did not help
+  mono1 and can increase I-cache pressure.
+- Add a typed stack IR or equivalent value graph so adjacent float and
+  pointer operations can be fused without untag/retag and stack
+  materialization between every primitive.
+- Add codegen metadata: instruction counts, calls inside loop, stack
+  spills inside loop, scalar tag ops inside loop, register counts,
+  emitted bytes, and disassembly.
+
+**Test (in fy and Slab):**
+1. `dsp: gain ( in out n g -- ) ... ;` compiles under the heap/I/O
+   blacklist and emits a report with zero calls/spills inside the
+   sample loop.
+2. A runtime quote literal or call to a non-`dsp:` helper is refused.
+3. A small arithmetic pipeline lowers without repeated scalar
+   untag/retag between adjacent float ops.
+4. The report and disassembly can be written by a Slab-side workbench
+   fixture.
+5. Compare scalar Fy, optimized `dsp:` Fy, and a Zig/C reference for
+   gain, one-pole, and softclip. Store perf/audio/compiler metrics as
+   ratcheted bounds.
+
+**Watch for:**
+- Hot-patch vs inlining. Dev mode may preserve trampoline calls; ship
+  mode needs an inline-site registry and dependent-caller re-emission.
+- Branch relocation correctness. Previous peephole work had to skip
+  branchy words until relocation was made safe.
+- False confidence from sound-only tests. Compiler reports and disasm
+  constraints are part of correctness for this stage.
+
 ## Stage 6 — UI from fy
 
 **Goal:** a fy word renders the machine's panel using Slab-provided

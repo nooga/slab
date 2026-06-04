@@ -11,7 +11,7 @@ pointers in ctx.
 ```zig
 pub const MachineCtx = extern struct {
     // Block parameters
-    sample_rate:       f64,        // 48000.0 typically
+    sample_rate:       f64,        // effective processing rate for this call
     block_size:        u32,        // samples in this block (64..1024)
     block_start:       u64,        // global sample count at block start
     tempo_bpm:         f64,        // host tempo (automatable)
@@ -66,6 +66,22 @@ pub const MachineCtx = extern struct {
 ```
 
 Stable `extern struct`. Matches fy's `struct:` so fy reads it directly.
+
+`sample_rate` means the effective processing rate seen by this machine
+call. At base rate this is usually 48000.0. Inside an oversampled
+machine or island, it is `base_sample_rate * oversample_factor`.
+Before the oversampler service lands, the ABI should promote reserved
+space into explicit rate fields:
+
+```zig
+base_sample_rate:    f64,  // project/device rate
+process_sample_rate: f64,  // effective rate for this process call
+oversample_factor:   u32,
+```
+
+Do not design kernels that assume `sample_rate` remains the project
+rate under oversampling. Oscillators, filters, envelopes, LFOs, delay
+lines, and smoothing all need the effective processing rate.
 
 Rules:
 

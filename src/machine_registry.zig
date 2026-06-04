@@ -10,7 +10,7 @@ const fy_machine_mod = @import("machines/fy_machine.zig");
 const FyMachine = fy_machine_mod.FyMachine;
 const poly_mod = @import("machines/poly.zig");
 
-pub const MAX_MACHINES = 8;
+pub const MAX_MACHINES = 16;
 pub const MAX_NAME = 32;
 pub const MAX_PATH = 256;
 pub const MAX_WORD = 64;
@@ -193,6 +193,14 @@ fn tryOptionalResetCallback(host: *FyHost, audio_word: []const u8) ?*const fn ()
             "mono1-reset"
         else if (std.mem.eql(u8, audio_word, "chorus1-audio"))
             "chorus1-reset"
+        else if (std.mem.eql(u8, audio_word, "comp1-audio"))
+            "comp1-reset"
+        else if (std.mem.eql(u8, audio_word, "fm1-audio"))
+            "fm1-reset"
+        else if (std.mem.eql(u8, audio_word, "delay1-audio"))
+            "delay1-reset"
+        else if (std.mem.eql(u8, audio_word, "verb1-audio"))
+            "verb1-reset"
         else
             return null;
     return host.createAudioCallback(reset_word) catch null;

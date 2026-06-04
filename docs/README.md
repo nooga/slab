@@ -36,8 +36,13 @@ self-contained but assumes the vocabulary established in earlier ones.
     stack-effect checks, dev vs ship compile strategies
 11. [10-roadmap.md](10-roadmap.md) — MVP slice, milestones, explicit
     non-goals
-12. [12-ux-interaction-spec.md](12-ux-interaction-spec.md) — frame UI
+12. [11-fy-integration-plan.md](11-fy-integration-plan.md) — staged
+    plan for embedding Fy and moving audio words into the host
+13. [12-ux-interaction-spec.md](12-ux-interaction-spec.md) — frame UI
     behavior, zoom rules, keybinds, and tooltips
+14. [13-dsp-workbench.md](13-dsp-workbench.md) — current refocus:
+    `dsp:` compiler work, layered kernels, offline render/plot/metric
+    harness, and test ratchet
 
 ## Terminology crib sheet
 
@@ -55,3 +60,5 @@ self-contained but assumes the vocabulary established in earlier ones.
 | **PDC** | plugin delay compensation — per-chain latency alignment |
 | **params struct** | the machine's control-facing state; double-buffered |
 | **hot-patch** | redefine a word at runtime via fy's trampoline indirection |
+| **DSP workbench** | offline runner that renders Fy kernels/machines and emits WAVs, plots, metrics, perf reports, and disassembly |
+| **test ratchet** | bounded regression system for sound, compiler quality, and performance metrics |

@@ -818,6 +818,10 @@ const SINE_PATH = "machines/sine_v1/sine.fy";
 const MONO1_PATH = "machines/mono1/mono1.fy";
 const DRUM1_PATH = "machines/drum1/drum1.fy";
 const CHORUS1_PATH = "machines/chorus1/chorus1.fy";
+const COMP1_PATH = "machines/comp1/comp1.fy";
+const FM1_PATH = "machines/fm1/fm1.fy";
+const DELAY1_PATH = "machines/delay1/delay1.fy";
+const VERB1_PATH = "machines/verb1/verb1.fy";
 
 test "Stage 2: manifest returns correct Machine struct" {
     var host = FyHost.init(std.testing.allocator);
@@ -862,6 +866,55 @@ test "mono1 manifest compiles and exposes expected ABI shape" {
     try std.testing.expectEqual(@as(u8, 0), m.out_notes);
     try std.testing.expectEqual(@as(u8, 0), m.in_audio);
     try std.testing.expectEqual(@as(u8, 1 * 4), m.out_audio);
+}
+
+test "fm1 manifest compiles and exposes expected ABI shape" {
+    var host = FyHost.init(std.testing.allocator);
+    defer host.deinit();
+
+    try host.registerSlabBuiltins();
+    try host.compileFile(FM1_PATH);
+    _ = try host.createAudioCallback("fm1-audio");
+    _ = try host.createAudioCallback("fm1-reset");
+    const manifest_val = try host.callWord("manifest");
+
+    const raw_ptr: usize = @intCast(@as(u64, @bitCast(manifest_val)) >> 2);
+    const m: *const RawMachine = @ptrFromInt(raw_ptr);
+
+    try std.testing.expect(Fy.isStr(m.audio));
+    try std.testing.expectEqual(@as(u32, 4 * 4), m.state_size);
+    try std.testing.expectEqual(@as(u32, 56 * 4), m.params_size);
+    try std.testing.expectEqual(@as(u8, 1 * 4), m.in_notes);
+    try std.testing.expectEqual(@as(u8, 0), m.out_notes);
+    try std.testing.expectEqual(@as(u8, 0), m.in_audio);
+    try std.testing.expectEqual(@as(u8, 1 * 4), m.out_audio);
+}
+
+test "delay1 and verb1 manifests compile and expose effect ABI shape" {
+    inline for (.{
+        .{ DELAY1_PATH, "delay1-audio", "delay1-reset", @as(u32, 28 * 4) },
+        .{ VERB1_PATH, "verb1-audio", "verb1-reset", @as(u32, 20 * 4) },
+    }) |case| {
+        var host = FyHost.init(std.testing.allocator);
+        defer host.deinit();
+
+        try host.registerSlabBuiltins();
+        try host.compileFile(case[0]);
+        _ = try host.createAudioCallback(case[1]);
+        _ = try host.createAudioCallback(case[2]);
+        const manifest_val = try host.callWord("manifest");
+
+        const raw_ptr: usize = @intCast(@as(u64, @bitCast(manifest_val)) >> 2);
+        const m: *const RawMachine = @ptrFromInt(raw_ptr);
+
+        try std.testing.expect(Fy.isStr(m.audio));
+        try std.testing.expectEqual(@as(u32, 4 * 4), m.state_size);
+        try std.testing.expectEqual(case[3], m.params_size);
+        try std.testing.expectEqual(@as(u8, 0), m.in_notes);
+        try std.testing.expectEqual(@as(u8, 0), m.out_notes);
+        try std.testing.expectEqual(@as(u8, 1 * 4), m.in_audio);
+        try std.testing.expectEqual(@as(u8, 1 * 4), m.out_audio);
+    }
 }
 
 test "Stage 2: GC rooting — quote refs survive collection" {
@@ -1454,6 +1507,110 @@ fn renderDrum1TestBlock(host: *FyHost, render: *const fn () callconv(.c) void, e
     if (expect_sound) try std.testing.expect(peak > 0.001);
 }
 
+test "fm1 renders bounded phase-modulated tones" {
+    const FRAMES = 64;
+    var host = FyHost.init(std.testing.allocator);
+    defer host.deinit();
+    try host.registerSlabBuiltins();
+    try host.compileFile(FM1_PATH);
+
+    const render = try host.createAudioCallback("fm1-audio");
+    const reset = try host.createAudioCallback("fm1-reset");
+    var params = @import("machines/fy_machine.zig").Fm1Params{
+        .level = 0.48,
+        .algorithm = 0.0,
+        .feedback = 0.18,
+        .op2_level = 0.60,
+        .op3_level = 0.34,
+        .op4_level = 0.18,
+        .op2_ratio = 0.25,
+        .op3_ratio = 0.50,
+        .op4_ratio = 0.75,
+        .attack = 0.002,
+        .decay = 0.24,
+        .sustain = 0.45,
+        .release = 0.16,
+        .wave = 0.0,
+    };
+    var on_event = [_]machine_mod.NoteEvent{.{
+        .sample_offset = 0,
+        .kind = .note_on,
+        .channel = 0,
+        .note_id = -1,
+        .pitch = 60,
+        .velocity = 1.0,
+    }};
+
+    var l_buf = [_]f32{0.0} ** FRAMES;
+    var r_buf = [_]f32{0.0} ** FRAMES;
+    try renderFm1TestBlock(&host, render, &params, &on_event, FRAMES, &l_buf, &r_buf);
+    try expectFm1BlockNonzeroBounded(l_buf, r_buf);
+
+    const alg0_l = l_buf;
+    params.algorithm = 0.80;
+    try renderFm1TestBlock(&host, render, &params, &on_event, FRAMES, &l_buf, &r_buf);
+    try expectFm1BlockNonzeroBounded(l_buf, r_buf);
+
+    var diff_sum: f32 = 0.0;
+    for (alg0_l, l_buf) |a, b| diff_sum += @abs(a - b);
+    try std.testing.expect(diff_sum > 0.001);
+
+    params.wave = 0.45;
+    try renderFm1TestBlock(&host, render, &params, &on_event, FRAMES, &l_buf, &r_buf);
+    try expectFm1BlockNonzeroBounded(l_buf, r_buf);
+
+    Fy.Builtins.fyPtr = @intFromPtr(&host.fy);
+    FyHost.setParams(@ptrCast(&params));
+    reset();
+    FyHost.setParams(null);
+
+    try renderFm1TestBlock(&host, render, &params, &.{}, FRAMES, &l_buf, &r_buf);
+    for (l_buf, r_buf) |l, r| {
+        try std.testing.expectApproxEqAbs(@as(f32, 0.0), l, 0.000001);
+        try std.testing.expectApproxEqAbs(@as(f32, 0.0), r, 0.000001);
+    }
+}
+
+fn renderFm1TestBlock(
+    host: *FyHost,
+    render: *const fn () callconv(.c) void,
+    params: *@import("machines/fy_machine.zig").Fm1Params,
+    events: []const machine_mod.NoteEvent,
+    comptime FRAMES: usize,
+    l_buf: *[FRAMES]f32,
+    r_buf: *[FRAMES]f32,
+) !void {
+    @memset(l_buf[0..], 0);
+    @memset(r_buf[0..], 0);
+    var ctx = std.mem.zeroes(MachineCtx);
+    ctx.sample_rate = 48000.0;
+    ctx.block_size = FRAMES;
+    ctx.note_in = if (events.len > 0) @ptrCast(events.ptr) else null;
+    ctx.note_in_count = @intCast(events.len);
+    ctx.params_current = params;
+
+    Fy.Builtins.fyPtr = @intFromPtr(&host.fy);
+    FyHost.setCtx(&ctx);
+    FyHost.setParams(ctx.params_current);
+    FyHost.setAudioBuffers(l_buf.ptr, r_buf.ptr);
+    render();
+    FyHost.clearAudioBuffers();
+    FyHost.setParams(null);
+    FyHost.clearCtx();
+}
+
+fn expectFm1BlockNonzeroBounded(l_buf: anytype, r_buf: anytype) !void {
+    var peak: f32 = 0.0;
+    for (l_buf, r_buf) |l, r| {
+        try std.testing.expect(std.math.isFinite(l));
+        try std.testing.expect(std.math.isFinite(r));
+        try std.testing.expect(@abs(l) <= 1.0);
+        try std.testing.expect(@abs(r) <= 1.0);
+        peak = @max(peak, @abs(l), @abs(r));
+    }
+    try std.testing.expect(peak > 0.0001);
+}
+
 const ChorusTestParams = extern struct {
     mode: f32 = 0.0,
     mix: f32 = 0.42,
@@ -1671,6 +1828,256 @@ test "chorus1 registry defaults pass dry signal immediately" {
 
     try std.testing.expect(out_l[1] > 0.25);
     try std.testing.expect(out_r[1] < -0.1);
+}
+
+const Comp1TestParams = @import("machines/fy_machine.zig").Comp1Params;
+
+fn renderComp1TestBlock(
+    host: *FyHost,
+    render: *const fn () callconv(.c) void,
+    comptime FRAMES: usize,
+    in_l: *[FRAMES]f32,
+    in_r: *[FRAMES]f32,
+    out_l: *[FRAMES]f32,
+    out_r: *[FRAMES]f32,
+    params: *Comp1TestParams,
+) void {
+    const in_ports = [_][*]const f32{ in_l[0..].ptr, in_r[0..].ptr };
+    var ctx = std.mem.zeroes(MachineCtx);
+    ctx.sample_rate = 48000.0;
+    ctx.block_size = FRAMES;
+    ctx.audio_in = @ptrCast(&in_ports[0]);
+    ctx.audio_in_count = 2;
+    ctx.params_current = params;
+
+    Fy.Builtins.fyPtr = @intFromPtr(&host.fy);
+    FyHost.setCtx(&ctx);
+    FyHost.setParams(ctx.params_current);
+    FyHost.setAudioBuffers(out_l, out_r);
+    render();
+    FyHost.clearAudioBuffers();
+    FyHost.setParams(null);
+    FyHost.clearCtx();
+}
+
+test "comp1 processes audio and remains bounded" {
+    const FRAMES = 64;
+    var host = FyHost.init(std.testing.allocator);
+    defer host.deinit();
+    try host.registerSlabBuiltins();
+    try host.compileFile(COMP1_PATH);
+
+    const render = try host.createAudioCallback("comp1-audio");
+    var in_l = [_]f32{0.8} ** FRAMES;
+    var in_r = [_]f32{-0.8} ** FRAMES;
+    var out_l = [_]f32{0.0} ** FRAMES;
+    var out_r = [_]f32{0.0} ** FRAMES;
+    var params = Comp1TestParams{
+        .threshold = 0.10,
+        .ratio = 1.0,
+        .attack = 0.0,
+        .release = 0.35,
+        .makeup = 0.25,
+        .mix = 1.0,
+        .drive = 0.0,
+    };
+
+    for (0..48) |_| {
+        renderComp1TestBlock(&host, render, FRAMES, &in_l, &in_r, &out_l, &out_r, &params);
+    }
+
+    var peak: f32 = 0.0;
+    for (out_l, out_r) |l, r| {
+        try std.testing.expect(std.math.isFinite(l));
+        try std.testing.expect(std.math.isFinite(r));
+        peak = @max(peak, @abs(l), @abs(r));
+    }
+    try std.testing.expect(peak > 0.02);
+    try std.testing.expect(peak < 0.72);
+}
+
+test "comp1 mix zero returns dry input" {
+    const FRAMES = 64;
+    var host = FyHost.init(std.testing.allocator);
+    defer host.deinit();
+    try host.registerSlabBuiltins();
+    try host.compileFile(COMP1_PATH);
+
+    const render = try host.createAudioCallback("comp1-audio");
+    var in_l = [_]f32{0.25} ** FRAMES;
+    var in_r = [_]f32{-0.125} ** FRAMES;
+    var out_l = [_]f32{0.0} ** FRAMES;
+    var out_r = [_]f32{0.0} ** FRAMES;
+    var params = Comp1TestParams{
+        .threshold = 0.10,
+        .ratio = 1.0,
+        .attack = 0.0,
+        .release = 0.35,
+        .makeup = 0.25,
+        .mix = 0.0,
+        .drive = 1.0,
+    };
+
+    renderComp1TestBlock(&host, render, FRAMES, &in_l, &in_r, &out_l, &out_r, &params);
+
+    for (out_l, out_r, in_l, in_r) |ol, or_, il, ir| {
+        try std.testing.expectApproxEqAbs(il, ol, 0.000001);
+        try std.testing.expectApproxEqAbs(ir, or_, 0.000001);
+    }
+}
+
+test "delay1 produces bounded delayed tail" {
+    const FRAMES = 64;
+    var host = FyHost.init(std.testing.allocator);
+    defer host.deinit();
+    try host.registerSlabBuiltins();
+    try host.compileFile(DELAY1_PATH);
+
+    const render = try host.createAudioCallback("delay1-audio");
+    var params = @import("machines/fy_machine.zig").Delay1Params{
+        .time = 0.0,
+        .feedback = 0.35,
+        .mix = 0.65,
+        .tone = 0.55,
+        .ping = 0.8,
+        .mod = 0.0,
+        .level = 0.8,
+    };
+
+    var in_l = [_]f32{0.0} ** FRAMES;
+    var in_r = [_]f32{0.0} ** FRAMES;
+    var out_l = [_]f32{0.0} ** FRAMES;
+    var out_r = [_]f32{0.0} ** FRAMES;
+    in_l[0] = 0.8;
+    renderEffectTestBlock(&host, render, FRAMES, &in_l, &in_r, &out_l, &out_r, &params);
+    try expectEffectBlockFiniteBounded(out_l, out_r);
+
+    var tail_peak: f32 = 0.0;
+    @memset(in_l[0..], 0);
+    var block: usize = 0;
+    while (block < 8) : (block += 1) {
+        renderEffectTestBlock(&host, render, FRAMES, &in_l, &in_r, &out_l, &out_r, &params);
+        try expectEffectBlockFiniteBounded(out_l, out_r);
+        for (out_l, out_r) |l, r| tail_peak = @max(tail_peak, @abs(l), @abs(r));
+    }
+    try std.testing.expect(tail_peak > 0.001);
+}
+
+test "verb1 produces bounded stereo tail" {
+    const FRAMES = 64;
+    var host = FyHost.init(std.testing.allocator);
+    defer host.deinit();
+    try host.registerSlabBuiltins();
+    try host.compileFile(VERB1_PATH);
+
+    const render = try host.createAudioCallback("verb1-audio");
+    var params = @import("machines/fy_machine.zig").Verb1Params{
+        .size = 0.75,
+        .damp = 0.42,
+        .mix = 0.7,
+        .width = 0.9,
+        .level = 0.78,
+    };
+
+    var in_l = [_]f32{0.0} ** FRAMES;
+    var in_r = [_]f32{0.0} ** FRAMES;
+    var out_l = [_]f32{0.0} ** FRAMES;
+    var out_r = [_]f32{0.0} ** FRAMES;
+    in_l[0] = 0.8;
+    in_r[0] = 0.2;
+    renderEffectTestBlock(&host, render, FRAMES, &in_l, &in_r, &out_l, &out_r, &params);
+    try expectEffectBlockFiniteBounded(out_l, out_r);
+
+    var tail_peak: f32 = 0.0;
+    var wet_energy: f64 = 0.0;
+    @memset(in_l[0..], 0);
+    @memset(in_r[0..], 0);
+    var block: usize = 0;
+    while (block < 220) : (block += 1) {
+        renderEffectTestBlock(&host, render, FRAMES, &in_l, &in_r, &out_l, &out_r, &params);
+        try expectEffectBlockFiniteBounded(out_l, out_r);
+        for (out_l, out_r) |l, r| {
+            tail_peak = @max(tail_peak, @abs(l), @abs(r));
+            wet_energy += @as(f64, l) * @as(f64, l) + @as(f64, r) * @as(f64, r);
+        }
+    }
+    try std.testing.expect(tail_peak > 0.02);
+    try std.testing.expect(wet_energy > 0.02);
+}
+
+test "verb1 silent input stays silent after reset" {
+    const FRAMES = 64;
+    var host = FyHost.init(std.testing.allocator);
+    defer host.deinit();
+    try host.registerSlabBuiltins();
+    try host.compileFile(VERB1_PATH);
+
+    const render = try host.createAudioCallback("verb1-audio");
+    const reset = try host.createAudioCallback("verb1-reset");
+    var params = @import("machines/fy_machine.zig").Verb1Params{
+        .size = 0.7,
+        .damp = 0.4,
+        .mix = 1.0,
+        .width = 1.0,
+        .level = 1.0,
+    };
+
+    Fy.Builtins.fyPtr = @intFromPtr(&host.fy);
+    FyHost.setParams(@ptrCast(&params));
+    reset();
+    FyHost.setParams(null);
+
+    var in_l = [_]f32{0.0} ** FRAMES;
+    var in_r = [_]f32{0.0} ** FRAMES;
+    var out_l = [_]f32{0.0} ** FRAMES;
+    var out_r = [_]f32{0.0} ** FRAMES;
+    var block: usize = 0;
+    while (block < 24) : (block += 1) {
+        renderEffectTestBlock(&host, render, FRAMES, &in_l, &in_r, &out_l, &out_r, &params);
+        for (out_l, out_r) |l, r| {
+            try std.testing.expectApproxEqAbs(@as(f32, 0.0), l, 0.000001);
+            try std.testing.expectApproxEqAbs(@as(f32, 0.0), r, 0.000001);
+        }
+    }
+}
+
+fn renderEffectTestBlock(
+    host: *FyHost,
+    render: *const fn () callconv(.c) void,
+    comptime FRAMES: usize,
+    in_l: *[FRAMES]f32,
+    in_r: *[FRAMES]f32,
+    out_l: *[FRAMES]f32,
+    out_r: *[FRAMES]f32,
+    params: *anyopaque,
+) void {
+    const in_ports = [_][*]const f32{ in_l[0..].ptr, in_r[0..].ptr };
+    @memset(out_l[0..], 0);
+    @memset(out_r[0..], 0);
+    var ctx = std.mem.zeroes(MachineCtx);
+    ctx.sample_rate = 48000.0;
+    ctx.block_size = FRAMES;
+    ctx.audio_in = @ptrCast(&in_ports[0]);
+    ctx.audio_in_count = 2;
+    ctx.params_current = params;
+
+    Fy.Builtins.fyPtr = @intFromPtr(&host.fy);
+    FyHost.setCtx(&ctx);
+    FyHost.setParams(ctx.params_current);
+    FyHost.setAudioBuffers(out_l, out_r);
+    render();
+    FyHost.clearAudioBuffers();
+    FyHost.setParams(null);
+    FyHost.clearCtx();
+}
+
+fn expectEffectBlockFiniteBounded(l_buf: anytype, r_buf: anytype) !void {
+    for (l_buf, r_buf) |l, r| {
+        try std.testing.expect(std.math.isFinite(l));
+        try std.testing.expect(std.math.isFinite(r));
+        try std.testing.expect(@abs(l) <= 1.5);
+        try std.testing.expect(@abs(r) <= 1.5);
+    }
 }
 
 fn emptyAudioCallback() callconv(.c) void {}

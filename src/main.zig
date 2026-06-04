@@ -136,7 +136,12 @@ fn assignMachineToTrack(
     audio.stop();
     defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
 
-    const mach = try reg.instantiateWithPolyphony(reg_idx, normalized);
+    const mach = blk: {
+        fy_host_mod.lockCallbacks();
+        defer fy_host_mod.unlockCallbacks();
+        break :blk try reg.instantiateWithPolyphony(reg_idx, normalized);
+    };
+    mach.reset(mach.state);
     t.replaceMachine(alloc, mach);
     t.machine_idx = @intCast(reg_idx);
     t.poly_voices = normalized;
@@ -151,7 +156,12 @@ fn addEffectToTrack(
     audio.stop();
     defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
 
-    const mach = try reg.instantiate(reg_idx);
+    const mach = blk: {
+        fy_host_mod.lockCallbacks();
+        defer fy_host_mod.unlockCallbacks();
+        break :blk try reg.instantiate(reg_idx);
+    };
+    mach.reset(mach.state);
     try t.addEffect(mach, @intCast(reg_idx));
 }
 
@@ -310,8 +320,12 @@ pub fn main() !void {
     try reg.load("sine", "machines/sine_v1/sine.fy", "sine-audio", "sine-ui", 108);
     try reg.load("square", "machines/square_v1/square.fy", "square-audio", "square-ui", 108);
     try reg.load("mono1", "machines/mono1/mono1.fy", "mono1-audio", "mono1-ui", 580);
-    try reg.load("drum1", "machines/drum1/drum1.fy", "drum1-audio", "drum1-ui", 428);
+    try reg.load("drum1", "machines/drum1/drum1.fy", "drum1-audio", "drum1-ui", 587);
     try reg.load("chorus", "machines/chorus1/chorus1.fy", "chorus1-audio", "chorus1-ui", 320);
+    try reg.load("comp1", "machines/comp1/comp1.fy", "comp1-audio", "comp1-ui", 375);
+    try reg.load("fm1", "machines/fm1/fm1.fy", "fm1-audio", "fm1-ui", 428);
+    try reg.load("delay1", "machines/delay1/delay1.fy", "delay1-audio", "delay1-ui", 375);
+    try reg.load("verb1", "machines/verb1/verb1.fy", "verb1-audio", "verb1-ui", 270);
 
     // Hot-patch server on the sine machine's host.
     defer fy_host_mod.deleteFilePosix(".fy-port");
@@ -327,7 +341,7 @@ pub fn main() !void {
         if (DEV_BOOT_AUTOPLAY) transport.play();
     }
 
-    // Registry indices: 0 sine, 1 square, 2 mono1, 3 drum1, 4 chorus.
+    // Registry indices: 0 sine, 1 square, 2 mono1, 3 drum1, 4 chorus, 5 comp1, 6 fm1, 7 delay1, 8 verb1.
     const MONO1_REG: usize = 2;
     const CHORUS_REG: usize = 4;
 

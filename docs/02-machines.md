@@ -73,6 +73,56 @@ Declarations are keyed by `category:name` (e.g. `instrument:tal-u-no`).
 Loading a manifest twice with the same key replaces the declaration
 and hot-re-instantiates existing instances where possible.
 
+## Authoring DSL direction
+
+Machine authors should not juggle raw cells for ordinary machine
+structure. The DSL should let a machine declare its host-visible
+surfaces once:
+
+- Params and defaults.
+- UI control hints.
+- Smoothing policy.
+- Persistent buffers and state.
+- Voice state.
+- Assets.
+- Ports, latency, and oversampling.
+- Test fixture scaffolds for the DSP workbench.
+
+Sketch:
+
+```forth
+params: TapeParams
+  knob input      f32 default 0.0  range -24.0 24.0 unit "dB" smooth 5ms
+  knob drive      f32 default 0.4  range 0.0 1.0
+  knob tone       f32 default 0.5  range 0.0 1.0
+  knob wow        f32 default 0.1  range 0.0 1.0
+  knob flutter    f32 default 0.05 range 0.0 1.0
+  toggle hiss     bool default false raw
+;
+
+buffers: TapeBuffers
+  delay wow-delay samples 4096 interp cubic
+  state hf-loss-state f32 2
+;
+
+machine: tape-sat
+  category: effect
+  params: TapeParams
+  buffers: TapeBuffers
+  audio-in: 1
+  audio-out: 1
+  oversample: 4
+  panel: auto-panel
+  dsp: tape-process
+;
+```
+
+The generated host metadata should include extern layout, default
+values, UI binding, smoothing tables, modulation eligibility,
+persistent/block scratch sizing, and a starting test fixture. Custom
+panels remain important, but an `auto-panel` path makes a new kernel
+playable and testable immediately.
+
 ## Lifecycle
 
 ```

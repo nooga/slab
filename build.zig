@@ -39,6 +39,42 @@ pub fn build(b: *std.Build) void {
         .root_module = bench_mod,
     });
 
+    const probe_mod = b.createModule(.{
+        .root_source_file = b.path("src/machine_probe.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    probe_mod.addImport("fy", fy_mod);
+    configureNativeDeps(b, probe_mod);
+
+    const probe = b.addExecutable(.{
+        .name = "machine-probe",
+        .root_module = probe_mod,
+    });
+
+    const kernel_probe_mod = b.createModule(.{
+        .root_source_file = b.path("src/kernel_probe.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    kernel_probe_mod.addImport("fy", fy_mod);
+    configureNativeDeps(b, kernel_probe_mod);
+
+    const kernel_probe = b.addExecutable(.{
+        .name = "kernel-probe",
+        .root_module = kernel_probe_mod,
+    });
+
+    const kernel_probe_cmd = b.addRunArtifact(kernel_probe);
+    if (b.args) |args| kernel_probe_cmd.addArgs(args);
+    const kernel_probe_step = b.step("kernel-probe", "Run a testable Fy DSP kernel fixture");
+    kernel_probe_step.dependOn(&kernel_probe_cmd.step);
+
+    const probe_cmd = b.addRunArtifact(probe);
+    if (b.args) |args| probe_cmd.addArgs(args);
+    const probe_step = b.step("machine-probe", "Render machine chains offline into scratch/");
+    probe_step.dependOn(&probe_cmd.step);
+
     const bench_cmd = b.addRunArtifact(bench);
     if (b.args) |args| bench_cmd.addArgs(args);
     const bench_step = b.step("bench-mono1", "Benchmark mono1 fy voice rendering");

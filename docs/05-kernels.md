@@ -54,6 +54,86 @@ inline-constant quotes (for control flow, not data), locals, pointer
 load/store at typed widths (`@64`/`!64`/`@32`/`!32`/`@f32`/`!f32`/etc),
 struct field accessors, params accessors.
 
+## `dsp:` compiler contract
+
+`dsp:` source may look like normal concatenative Fy. The emitted kernel
+must not behave like a literal runtime stack program in the hot loop.
+The stack is the source-level notation; the compiler lowers it to a
+typed value graph and keeps values in registers.
+
+Expected lowering path:
+
+```
+fy tokens / AST
+  -> static stack-effect + type-effect check
+  -> inline eligible `dsp:` callees
+  -> macro expansion and quote fusion
+  -> typed stack IR
+  -> stack-to-SSA / value graph
+  -> register allocation + spill plan
+  -> AArch64 scalar or NEON codegen
+  -> code metadata + disassembly
+```
+
+Compiler invariants for sample/lane loops:
+
+- Hot stack values live in GPR/FPR/NEON registers, not in memory.
+- Adjacent float operations fuse without untagging and retagging after
+  every primitive.
+- Pointer locals such as input/output buffers, phase/state pointers,
+  and coefficient pointers are pinned where register pressure allows.
+- Calls inside the inner loop are absent unless the word explicitly
+  opts into a `noinline:` call.
+- Stack spills, scalar tag operations, and calls inside loops are
+  counted and reported.
+
+The benchmark history in
+[sessions/mono1-benchmarks.md](sessions/mono1-benchmarks.md) is the
+evidence for this direction: peepholes and naive machine-code body
+copying were weak, while source-level fused DSP words helped. The real
+compiler win is pre-lowering fusion and register planning.
+
+## Quotation model
+
+Runtime quote allocation is banned in `dsp:`. A `dsp:` word cannot
+construct quote values, push quote refs onto the runtime stack, or call
+dynamic quote combinators.
+
+Compile-time quote manipulation remains central:
+
+- Quotes may appear as macro inputs.
+- Macros may inspect, transform, fuse, and emit quote bodies.
+- Combinators such as `vec-each`, `pipeline`, `stateful:`,
+  `voice-each`, and `oversample` consume compile-time quote bodies.
+- By codegen time, no runtime quote value remains in the kernel.
+
+This is the key distinction: dynamic quotations are not realtime-safe,
+but macro-time quotations are how the kernel DSL stays pleasant while
+still compiling to tight code.
+
+## Compiler reports
+
+Every `dsp:` word should be able to emit a machine-readable compiler
+report alongside disassembly:
+
+```json
+{
+  "word": "gain-v",
+  "mode": "dsp-ship",
+  "instructions": 18,
+  "loop_instructions": 5,
+  "calls_inside_loop": 0,
+  "stack_spills_inside_loop": 0,
+  "scalar_float_tag_ops_inside_loop": 0,
+  "neon_registers": 3,
+  "gpr_registers": 4
+}
+```
+
+These fields are testable. A kernel that sounds correct but starts
+emitting calls or stack spills inside the loop should fail a compiler
+ratchet before it becomes part of the library.
+
 ## NEON instruction set
 
 Extension to fy's `src/asm.zig`. Concretely ~300–500 lines of
@@ -277,6 +357,11 @@ The combinator:
 Up/downsampling kernels are stock (polyphase FIR halfband cascades,
 written once as `dsp:` kernels in the core library).
 
+Oversampling should prefer islands/chains over tiny independent
+wrappers. Do not upsample/downsample around every stage in a chain:
+upsample once, run oscillator/filter/nonlinearity or input/nonlinearity
+chain at the higher processing rate, then downsample once.
+
 ## Compile-time fusion — how it actually works
 
 fy has `macro:` which runs fy code at compile time. A combinator
@@ -294,7 +379,11 @@ loop, not three function-call bodies.
 
 ## Kernel library — initial surface
 
-These are what the core ships with. All `dsp:` words.
+These are what the core ships with. All `dsp:` words. The broader
+organization is layered in
+[13-dsp-workbench.md](13-dsp-workbench.md#kernel-library-as-layers):
+primitives -> control -> shapers -> state/time -> filters -> voices ->
+machines.
 
 ### Oscillators
 

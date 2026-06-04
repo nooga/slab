@@ -159,10 +159,25 @@ inputs, they're upsampled before the machine runs.
 
 Latency introduced is reported to PDC automatically.
 
-The machine doesn't know oversampling is happening — it just sees
-a bigger block size and a proportionally higher effective sample
-rate (`ctx.sample_rate` still reports the underlying rate; the
-machine uses it as-is; oversampling is transparent).
+The machine should not have to manage resampler buffers, but it must be
+rate-aware. Inside an oversampled call, oscillator phase increments,
+filters, envelopes, LFOs, delay lengths, smoothing, and any time-based
+kernel need the effective processing rate.
+
+The ctx should therefore expose both rates:
+
+```zig
+base_sample_rate:    f64,  // project/device rate
+process_sample_rate: f64,  // rate for this process call
+oversample_factor:   u32,
+```
+
+`ctx.sample_rate` may remain as a compatibility alias, but its meaning
+must be explicit. Prefer making it the effective process rate and using
+`base_sample_rate` when a machine needs project-rate decisions. Fully
+"transparent" oversampling where the block gets bigger but the reported
+sample rate stays at the base rate will make generated oscillators,
+modulators, filters, and delay lines wrong.
 
 ## 4. Modulation matrix
 

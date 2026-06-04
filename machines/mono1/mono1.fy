@@ -201,15 +201,15 @@ noalloc: env-coeff  ( seconds -- coeff )
 ;
 
 noalloc: do-attack  ( env -- env )
-  1.0 over f- attack-coeff-cell f@32 f* f+
+  1.0 attack-coeff-cell f@32 fslew
 ;
 
 noalloc: do-decay  ( env -- env )
-  sustain-level-cell f@32 over f- decay-coeff-cell f@32 f* f+
+  sustain-level-cell f@32 decay-coeff-cell f@32 fslew
 ;
 
 noalloc: do-release  ( env -- env )
-  0.0 over f- release-coeff-cell f@32 f* f+
+  0.0 release-coeff-cell f@32 fslew
 ;
 
 noalloc: amp-env-tick
@@ -242,8 +242,7 @@ noalloc: amp-env-tick
 ;
 
 noalloc: clamp01
-  dup 0.0 f< [ drop 0.0 ] then
-  dup 1.0 f> [ drop 1.0 ] then
+  fclamp01
 ;
 
 noalloc: lfo-rate-hz
@@ -285,9 +284,8 @@ noalloc: lfo-triangle
 ;
 
 noalloc: lfo-pitch-mul
-  1.0 lfo-cell f@32 lfo-pitch-amt-cell f@32 f* f+
-  dup 0.5 f< [ drop 0.5 ] then
-  dup 2.0 f> [ drop 2.0 ] then
+  1.0 lfo-cell f@32 lfo-pitch-amt-cell f@32 fmadd
+  0.5 2.0 fclamp
 ;
 
 noalloc: lfo-amp-mul
@@ -301,9 +299,7 @@ noalloc: lfo-amp-mul
 ;
 
 noalloc: lfo-tick
-  lfo-phase-cell f@32 lfo-inc-cell f@32 f+
-  dup 1.0 f>
-  [ 1.0 f- ] then
+  lfo-phase-cell f@32 lfo-inc-cell f@32 f+ fwrap01
   lfo-phase-cell f!32
 
   lfo-delay-cell f@32 lfo-delay-inc-cell f@32 f+
@@ -314,7 +310,7 @@ noalloc: lfo-tick
   lfo-cell f!32
 
   base-step-cell f@32 lfo-pitch-mul f*
-  dup 0.45 f> [ drop 0.45 ] then
+  0.0 0.45 fclamp
   step-cell f!32
   step-cell f@32 0.5 f* sub-step-cell f!32
 ;
@@ -346,25 +342,23 @@ noalloc: polyblep  ( t dt -- correction )
 ;
 
 noalloc: saw-sample
-  phase-cell f@32 2.0 f* 1.0 f-
+  phase-cell f@32 2.0 -1.0 fma
   phase-cell f@32 step-cell f@32 polyblep
   f-
 ;
 
 noalloc: saw-raw-sample
-  phase-cell f@32 2.0 f* 1.0 f-
+  phase-cell f@32 2.0 -1.0 fma
 ;
 
 noalloc: clamped-pw
   pw-cell f@32
-  lfo-cell f@32 lfo-pw-amt-cell f@32 f* f+
-  dup 0.08 f< [ drop 0.08 ] then
-  dup 0.92 f> [ drop 0.92 ] then
+  lfo-cell f@32 lfo-pw-amt-cell f@32 fmadd
+  0.08 0.92 fclamp
 ;
 
 noalloc: pulse-edge-phase
-  phase-cell f@32 clamped-pw f-
-  dup 0.0 f< [ 1.0 f+ ] then
+  phase-cell f@32 clamped-pw f- fwrap01
 ;
 
 noalloc: pulse-sample
@@ -374,13 +368,13 @@ noalloc: pulse-sample
   f+
   pulse-edge-phase step-cell f@32 polyblep
   f-
-  clamped-pw 2.0 f* 1.0 f- f-
+  clamped-pw 2.0 -1.0 fma f-
 ;
 
 noalloc: pulse-raw-sample
   phase-cell f@32 clamped-pw f<
   [ 1.0 ] [ -1.0 ] ifte
-  clamped-pw 2.0 f* 1.0 f- f-
+  clamped-pw 2.0 -1.0 fma f-
 ;
 
 noalloc: square50-raw-sample
@@ -389,8 +383,7 @@ noalloc: square50-raw-sample
 ;
 
 noalloc: sub-edge-phase
-  sub-phase-cell f@32 0.5 f-
-  dup 0.0 f< [ 1.0 f+ ] then
+  sub-phase-cell f@32 0.5 f- fwrap01
 ;
 
 noalloc: sub-sample
@@ -412,13 +405,11 @@ noalloc: mix-level-sum
 ;
 
 noalloc: limit1
-  dup 1.0 f> [ drop 1.0 ] then
-  dup -1.0 f< [ drop -1.0 ] then
+  -1.0 1.0 fclamp
 ;
 
 noalloc: softclip
-  dup -2.0 f< [ drop -2.0 ] then
-  dup 2.0 f> [ drop 2.0 ] then
+  -2.0 2.0 fclamp
   dup dup f* 0.111111 f* 1.0 swap f- f*
 ;
 
@@ -433,10 +424,10 @@ noalloc: keytrack-norm
 
 noalloc: cutoff-norm
   cutoff-cell f@32
-  fenv-bipolar amp-cell f@32 f* f+
+  fenv-bipolar amp-cell f@32 fmadd
   keytrack-norm f+
-  lfo-cell f@32 lfo-cut-amt-cell f@32 f* f+
-  clamp01
+  lfo-cell f@32 lfo-cut-amt-cell f@32 fmadd
+  fclamp01
 ;
 
 noalloc: cutoff-hz
@@ -461,8 +452,7 @@ noalloc: filter-coeff
   TWO_PI cutoff-hz f* safe-sr f/
   fneg exp
   1.0 swap f-
-  dup 0.001 f< [ drop 0.001 ] then
-  dup 0.72 f> [ drop 0.72 ] then
+  0.001 0.72 fclamp
 ;
 
 noalloc: res-gain
@@ -484,30 +474,22 @@ noalloc: hpf-sample  ( sample -- sample )
 ;
 
 noalloc: lp1-tick
-  filt-in-cell f@32 f1-cell f@32 f-
-  filter-coeff-cell f@32 f*
-  f1-cell f@32 f+
+  f1-cell f@32 filt-in-cell f@32 filter-coeff-cell f@32 fslew
   dup f1-cell f!32
 ;
 
 noalloc: lp2-tick
-  f1-cell f@32 f2-cell f@32 f-
-  filter-coeff-cell f@32 f*
-  f2-cell f@32 f+
+  f2-cell f@32 f1-cell f@32 filter-coeff-cell f@32 fslew
   dup f2-cell f!32
 ;
 
 noalloc: lp3-tick
-  f2-cell f@32 f3-cell f@32 f-
-  filter-coeff-cell f@32 f*
-  f3-cell f@32 f+
+  f3-cell f@32 f2-cell f@32 filter-coeff-cell f@32 fslew
   dup f3-cell f!32
 ;
 
 noalloc: lp4-tick
-  f3-cell f@32 f4-cell f@32 f-
-  filter-coeff-cell f@32 f*
-  f4-cell f@32 f+
+  f4-cell f@32 f3-cell f@32 filter-coeff-cell f@32 fslew
   dup f4-cell f!32
 ;
 
@@ -524,37 +506,33 @@ noalloc: vcf-sample  ( sample -- sample )
 noalloc: mixed-sample
   0.0
   saw-level-cell f@32 0.0001 f>
-  [ saw-raw-sample saw-level-cell f@32 f* f+ ] then
+  [ saw-raw-sample saw-level-cell f@32 fmadd ] then
   pulse-level-cell f@32 0.0001 f>
-  [ pulse-raw-sample pulse-level-cell f@32 f* f+ ] then
+  [ pulse-raw-sample pulse-level-cell f@32 fmadd ] then
   sub-level-cell f@32 0.0001 f>
-  [ sub-raw-sample sub-level-cell f@32 f* f+ ] then
+  [ sub-raw-sample sub-level-cell f@32 fmadd ] then
   noise-level-cell f@32 0.0001 f>
-  [ slab:noise noise-level-cell f@32 f* f+ ] then
+  [ slab:noise noise-level-cell f@32 fmadd ] then
   mix-level-sum f/
 ;
 
 noalloc: mixed-sample-hq
   0.0
   saw-level-cell f@32 0.0001 f>
-  [ saw-sample saw-level-cell f@32 f* f+ ] then
+  [ saw-sample saw-level-cell f@32 fmadd ] then
   pulse-level-cell f@32 0.0001 f>
-  [ pulse-sample pulse-level-cell f@32 f* f+ ] then
+  [ pulse-sample pulse-level-cell f@32 fmadd ] then
   sub-level-cell f@32 0.0001 f>
-  [ sub-sample sub-level-cell f@32 f* f+ ] then
+  [ sub-sample sub-level-cell f@32 fmadd ] then
   noise-level-cell f@32 0.0001 f>
-  [ slab:noise noise-level-cell f@32 f* f+ ] then
+  [ slab:noise noise-level-cell f@32 fmadd ] then
   mix-level-sum f/
 ;
 
 noalloc: advance-phase
-  phase-cell f@32 step-cell f@32 f+
-  dup 1.0 f>
-  [ 1.0 f- ] then
+  phase-cell f@32 step-cell f@32 f+ fwrap01
   phase-cell f!32
-  sub-phase-cell f@32 sub-step-cell f@32 f+
-  dup 1.0 f>
-  [ 1.0 f- ] then
+  sub-phase-cell f@32 sub-step-cell f@32 f+ fwrap01
   sub-phase-cell f!32
 ;
 

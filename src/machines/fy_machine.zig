@@ -213,6 +213,17 @@ fn initDefaultParams(self: *FyMachine) void {
     } else if (std.mem.eql(u8, self.name_buf[0..self.name_len], "chorus") and self.params_size >= @sizeOf(Chorus1Params)) {
         const p: *align(1) Chorus1Params = @ptrCast(&self.params[0]);
         p.* = .{ .mode = 0.0, .mix = 0.42, .noise = 0.02, .level = 1.0 };
+    } else if (std.mem.eql(u8, self.name_buf[0..self.name_len], "comp1") and self.params_size >= @sizeOf(Comp1Params)) {
+        const p: *align(1) Comp1Params = @ptrCast(&self.params[0]);
+        p.* = .{ .threshold = 0.42, .ratio = 0.42, .attack = 0.12, .release = 0.36, .makeup = 0.42, .mix = 0.72, .drive = 0.10 };
+    } else if (std.mem.eql(u8, self.name_buf[0..self.name_len], "fm1") and self.params_size >= @sizeOf(Fm1Params)) {
+        applyFm1Preset(self, 0);
+    } else if (std.mem.eql(u8, self.name_buf[0..self.name_len], "delay1") and self.params_size >= @sizeOf(Delay1Params)) {
+        const p: *align(1) Delay1Params = @ptrCast(&self.params[0]);
+        p.* = .{ .time = 0.36, .feedback = 0.42, .mix = 0.32, .tone = 0.52, .ping = 0.45, .mod = 0.08, .level = 0.78 };
+    } else if (std.mem.eql(u8, self.name_buf[0..self.name_len], "verb1") and self.params_size >= @sizeOf(Verb1Params)) {
+        const p: *align(1) Verb1Params = @ptrCast(&self.params[0]);
+        p.* = .{ .size = 0.68, .damp = 0.42, .mix = 0.42, .width = 0.86, .level = 0.90 };
     }
 }
 
@@ -220,6 +231,51 @@ pub const Chorus1Params = extern struct {
     mode: f32,
     mix: f32,
     noise: f32,
+    level: f32,
+};
+
+pub const Comp1Params = extern struct {
+    threshold: f32,
+    ratio: f32,
+    attack: f32,
+    release: f32,
+    makeup: f32,
+    mix: f32,
+    drive: f32,
+};
+
+pub const Fm1Params = extern struct {
+    level: f32,
+    algorithm: f32,
+    feedback: f32,
+    op2_level: f32,
+    op3_level: f32,
+    op4_level: f32,
+    op2_ratio: f32,
+    op3_ratio: f32,
+    op4_ratio: f32,
+    attack: f32,
+    decay: f32,
+    sustain: f32,
+    release: f32,
+    wave: f32,
+};
+
+pub const Delay1Params = extern struct {
+    time: f32,
+    feedback: f32,
+    mix: f32,
+    tone: f32,
+    ping: f32,
+    mod: f32,
+    level: f32,
+};
+
+pub const Verb1Params = extern struct {
+    size: f32,
+    damp: f32,
+    mix: f32,
+    width: f32,
     level: f32,
 };
 
@@ -252,10 +308,23 @@ const chorus1_presets = [_]Chorus1Preset{
     .{ .name = "CLEAN WIDE", .params = .{ .mode = 1.0, .mix = 0.38, .noise = 0.0, .level = 1.0 } },
 };
 
+const Fm1Preset = struct {
+    name: [*:0]const u8,
+    params: Fm1Params,
+};
+
+const fm1_presets = [_]Fm1Preset{
+    .{ .name = "DX EPIANO", .params = .{ .level = 0.44, .algorithm = 0.34, .feedback = 0.08, .op2_level = 0.42, .op3_level = 0.24, .op4_level = 0.10, .op2_ratio = 0.26, .op3_ratio = 0.51, .op4_ratio = 0.64, .attack = 0.005, .decay = 0.30, .sustain = 0.42, .release = 0.24, .wave = 0.0 } },
+    .{ .name = "FM BASS", .params = .{ .level = 0.58, .algorithm = 0.02, .feedback = 0.34, .op2_level = 0.62, .op3_level = 0.12, .op4_level = 0.05, .op2_ratio = 0.24, .op3_ratio = 0.14, .op4_ratio = 0.40, .attack = 0.002, .decay = 0.18, .sustain = 0.56, .release = 0.08, .wave = 0.0 } },
+    .{ .name = "OPL BELL", .params = .{ .level = 0.42, .algorithm = 0.34, .feedback = 0.18, .op2_level = 0.38, .op3_level = 0.70, .op4_level = 0.28, .op2_ratio = 0.51, .op3_ratio = 0.76, .op4_ratio = 0.89, .attack = 0.002, .decay = 0.46, .sustain = 0.08, .release = 0.42, .wave = 0.42 } },
+    .{ .name = "GLASS STACK", .params = .{ .level = 0.40, .algorithm = 0.72, .feedback = 0.12, .op2_level = 0.50, .op3_level = 0.44, .op4_level = 0.36, .op2_ratio = 0.39, .op3_ratio = 0.64, .op4_ratio = 0.76, .attack = 0.015, .decay = 0.38, .sustain = 0.30, .release = 0.35, .wave = 0.0 } },
+};
+
 fn presetCountImpl(state: *anyopaque) u8 {
     const self: *FyMachine = @ptrCast(@alignCast(state));
     if (std.mem.eql(u8, self.name_buf[0..self.name_len], "mono1")) return mono1_presets.len;
     if (std.mem.eql(u8, self.name_buf[0..self.name_len], "chorus")) return chorus1_presets.len;
+    if (std.mem.eql(u8, self.name_buf[0..self.name_len], "fm1")) return fm1_presets.len;
     return 0;
 }
 
@@ -267,6 +336,9 @@ fn presetNameImpl(state: *anyopaque, index: u8) [*:0]const u8 {
     if (std.mem.eql(u8, self.name_buf[0..self.name_len], "chorus")) {
         return chorus1_presets[@min(index, chorus1_presets.len - 1)].name;
     }
+    if (std.mem.eql(u8, self.name_buf[0..self.name_len], "fm1")) {
+        return fm1_presets[@min(index, fm1_presets.len - 1)].name;
+    }
     return "";
 }
 
@@ -274,6 +346,7 @@ fn applyPresetImpl(state: *anyopaque, index: u8) void {
     const self: *FyMachine = @ptrCast(@alignCast(state));
     if (std.mem.eql(u8, self.name_buf[0..self.name_len], "mono1")) applyMono1Preset(self, index);
     if (std.mem.eql(u8, self.name_buf[0..self.name_len], "chorus")) applyChorus1Preset(self, index);
+    if (std.mem.eql(u8, self.name_buf[0..self.name_len], "fm1")) applyFm1Preset(self, index);
 }
 
 fn applyMono1Preset(self: *FyMachine, index: u8) void {
@@ -289,6 +362,14 @@ fn applyChorus1Preset(self: *FyMachine, index: u8) void {
     const i = @min(index, chorus1_presets.len - 1);
     const p: *align(1) Chorus1Params = @ptrCast(&self.params[0]);
     p.* = chorus1_presets[i].params;
+    self.preset_index = @intCast(i);
+}
+
+fn applyFm1Preset(self: *FyMachine, index: u8) void {
+    if (self.params_size < @sizeOf(Fm1Params)) return;
+    const i = @min(index, fm1_presets.len - 1);
+    const p: *align(1) Fm1Params = @ptrCast(&self.params[0]);
+    p.* = fm1_presets[i].params;
     self.preset_index = @intCast(i);
 }
 
