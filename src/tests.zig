@@ -669,3 +669,26 @@ test "inline-noalloc falls back to calls for branchy callees" {
     const caller_report = fy.reportWord("inline-abs-call") orelse return error.MissingReport;
     try std.testing.expectEqual(@as(usize, 1), caller_report.bl_count);
 }
+
+test "dsp: marks words and inlines straight-line dsp callees" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run("dsp: dsp-inc 1 + ; dsp: dsp-call 41 dsp-inc ;");
+    try std.testing.expect(fy.isDspWord("dsp-inc"));
+    try std.testing.expect(fy.isDspWord("dsp-call"));
+    try std.testing.expectEqual(Fy.makeInt(42), try fy.run("dsp-call"));
+
+    const report = fy.reportWord("dsp-call") orelse return error.MissingReport;
+    try std.testing.expectEqual(@as(usize, 0), report.bl_count);
+}
+
+test "dsp: rejects heap allocation" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    const result = fy.run("dsp: bad alloc ; bad");
+    try std.testing.expectError(error.UnknownWord, result);
+}

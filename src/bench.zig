@@ -11,14 +11,14 @@ const Case = struct {
 
 const cases = [_]Case{
     .{
-        .name = "int-add",
-        .source = "noalloc: bench-int-add 1 2 + ;",
-        .word = "bench-int-add",
+        .name = "dsp-int-add",
+        .source = "dsp: bench-dsp-int-add 1 2 + ;",
+        .word = "bench-dsp-int-add",
     },
     .{
-        .name = "stack-shuffle",
-        .source = "noalloc: bench-stack 1 2 3 4 over2 + + + + + ;",
-        .word = "bench-stack",
+        .name = "dsp-stack-shuffle",
+        .source = "dsp: bench-dsp-stack 1 2 3 4 over2 + + + + + ;",
+        .word = "bench-dsp-stack",
     },
     .{
         .name = "word-call",
@@ -26,29 +26,29 @@ const cases = [_]Case{
         .word = "bench-call",
     },
     .{
-        .name = "inline-word-call",
-        .source = "inline-noalloc: bench-inline-inc 1 + ; inline-noalloc: bench-inline-call 41 bench-inline-inc ;",
-        .word = "bench-inline-call",
+        .name = "dsp-word-call",
+        .source = "dsp: bench-dsp-inc 1 + ; dsp: bench-dsp-call 41 bench-dsp-inc ;",
+        .word = "bench-dsp-call",
     },
     .{
-        .name = "branch-ifte",
-        .source = "noalloc: bench-branch 5 dup 3 > [ 1 + ] [ 1 - ] ifte ;",
-        .word = "bench-branch",
+        .name = "dsp-branch-ifte",
+        .source = "dsp: bench-dsp-branch 5 dup 3 > [ 1 + ] [ 1 - ] ifte ;",
+        .word = "bench-dsp-branch",
     },
     .{
-        .name = "float-muladd",
-        .source = "noalloc: bench-float 0.5 0.25 f* 0.125 f+ ;",
-        .word = "bench-float",
+        .name = "dsp-float-muladd",
+        .source = "dsp: bench-dsp-float 0.5 0.25 f* 0.125 f+ ;",
+        .word = "bench-dsp-float",
     },
     .{
-        .name = "float-shape",
-        .source = "noalloc: bench-shape -0.25 fwrap01 0.5 f* fclamp01 ;",
-        .word = "bench-shape",
+        .name = "dsp-float-shape",
+        .source = "dsp: bench-dsp-shape -0.25 fwrap01 0.5 f* fclamp01 ;",
+        .word = "bench-dsp-shape",
     },
     .{
-        .name = "f32-load-store",
-        .source = ":: bench-mem 4 alloc ; noalloc: bench-f32 bench-mem dup 0.5 swap f!32 f@32 0.25 f+ ;",
-        .word = "bench-f32",
+        .name = "dsp-f32-load-store",
+        .source = ":: bench-dsp-mem 4 alloc ; dsp: bench-dsp-f32 bench-dsp-mem dup 0.5 swap f!32 f@32 0.25 f+ ;",
+        .word = "bench-dsp-f32",
     },
 };
 

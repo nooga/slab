@@ -636,6 +636,7 @@ pub const Fy = struct {
         immediate: bool = false, // compile-time word (macro): execute instead of compile
         noalloc: bool = false, // declared with noalloc: — must not call heap-allocating words
         inlineable: bool = false, // declared with inline-noalloc: — may be copied into opt-in callers
+        dsp: bool = false, // declared with dsp: — Slab audio-thread kernel mode
 
         const DEFINE = ":";
         const END = ";";
@@ -1162,6 +1163,11 @@ pub const Fy = struct {
     pub fn reportWord(self: *const Fy, name: []const u8) ?CompileReport {
         const code = self.wordCode(name) orelse return null;
         return analyzeCode(code);
+    }
+
+    pub fn isDspWord(self: *const Fy, name: []const u8) bool {
+        const word = self.userWords.get(name) orelse return false;
+        return word.dsp;
     }
 
     pub fn disassembleWordAlloc(self: *const Fy, allocator: std.mem.Allocator, name: []const u8) ![]u8 {
@@ -4371,7 +4377,7 @@ pub const Fy = struct {
         /// rejects heap-allocating builtins and non-noalloc: user word calls
         /// at compile time.  Intended for audio-thread words that must not
         /// touch the GC heap at runtime.
-        fn compileNoalloc(self: *Compiler, inlineable: bool) Error!void {
+        fn compileNoalloc(self: *Compiler, inlineable: bool, dsp: bool) Error!void {
             const name_tok = try self.parser.nextToken();
             const w = switch (name_tok orelse return Error.UnexpectedEndOfInput) {
                 .Word => |n| n,
@@ -4428,6 +4434,7 @@ pub const Fy = struct {
                 }
                 word.noalloc = true;
                 word.inlineable = inlineable;
+                word.dsp = dsp;
             }
             if (final_name) |fn_| self.fy.fyalloc.free(fn_);
         }
@@ -4792,6 +4799,7 @@ pub const Fy = struct {
                             }
                             word.noalloc = false;
                             word.inlineable = false;
+                            word.dsp = false;
                         }
                         // Free the prefixed name if we allocated one (declareWord dupes it)
                         if (final_name) |fn_| self.fy.fyalloc.free(fn_);
@@ -4893,12 +4901,17 @@ pub const Fy = struct {
                         }
                         if (std.mem.eql(u8, w, "noalloc:")) {
                             self.resetQuoteTracking();
-                            try self.compileNoalloc(false);
+                            try self.compileNoalloc(false, false);
                             continue;
                         }
                         if (std.mem.eql(u8, w, "inline-noalloc:")) {
                             self.resetQuoteTracking();
-                            try self.compileNoalloc(true);
+                            try self.compileNoalloc(true, false);
+                            continue;
+                        }
+                        if (std.mem.eql(u8, w, "dsp:")) {
+                            self.resetQuoteTracking();
+                            try self.compileNoalloc(true, true);
                             continue;
                         }
                         // Self-recursion: emit BL back to own entry point
