@@ -5180,6 +5180,7 @@ pub const Fy = struct {
             }
             if (self.dsp_mode) {
                 Dsp.optimizeRegisterStack(self.fy.fyalloc, &self.code) catch return Error.OutOfMemory;
+                Dsp.optimizeLeafFrame(&self.code);
             }
             return self.code.toOwnedSlice();
         }

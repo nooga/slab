@@ -261,3 +261,26 @@ pub fn optimizeRegisterStack(allocator: std.mem.Allocator, code: *compat.ArrayLi
     out.deinit();
     try optimizeIntegerAddMovChains(allocator, code);
 }
+
+/// Strip the frame pointer/link-register save/restore from straight-line DSP
+/// leaf words. This is only valid when the body has no branches or calls, so
+/// there are no relocation offsets to repair and LR is still live for `ret`.
+pub fn optimizeLeafFrame(code: *compat.ArrayList(u32)) void {
+    if (code.items.len < 4) return;
+    if (code.items[0] != Asm.@"stp x29, x30, [sp, #0x10]!" or
+        code.items[1] != Asm.@"mov x29, sp" or
+        code.items[code.items.len - 2] != Asm.@"ldp x29, x30, [sp], #0x10" or
+        code.items[code.items.len - 1] != Asm.ret)
+    {
+        return;
+    }
+
+    for (code.items[2 .. code.items.len - 2]) |instr| {
+        if (isAnyLocalBranch(instr) or isBl(instr) or isBlr(instr) or instr == Asm.ret) return;
+    }
+
+    const body_len = code.items.len - 4;
+    std.mem.copyForwards(u32, code.items[0..body_len], code.items[2 .. code.items.len - 2]);
+    code.items[body_len] = Asm.ret;
+    code.shrinkRetainingCapacity(body_len + 1);
+}
