@@ -702,6 +702,7 @@ test "dsp: register stack keeps straight-line arithmetic off the fy stack" {
     try std.testing.expectEqual(@as(usize, 1), reg_report.push_count);
     try std.testing.expectEqual(@as(usize, 0), reg_report.pop_count);
     try std.testing.expectEqual(@as(usize, 0), reg_report.stack_round_trip_pairs);
+    try std.testing.expect(reg_report.instruction_count <= 8);
     try std.testing.expect(reg_report.push_count < stack_report.push_count);
     try std.testing.expect(reg_report.pop_count < stack_report.pop_count);
 

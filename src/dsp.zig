@@ -8,6 +8,11 @@ const PairRegs = struct {
     second: u5,
 };
 
+const MovRegs = struct {
+    dst: u5,
+    src: u5,
+};
+
 fn isAnyLocalBranch(instr: u32) bool {
     return (instr & 0xfc000000) == 0x14000000 or
         (instr & 0x7e000000) == 0x34000000 or
@@ -59,8 +64,86 @@ fn pairPopRegs(instr: u32) ?PairRegs {
     return null;
 }
 
+fn isWideMoveToReg(instr: u32, reg: u5) bool {
+    return (instr & 0x1f) == reg and
+        ((instr & 0xff800000) == 0xd2800000 or
+            (instr & 0xff800000) == 0xf2800000);
+}
+
+fn isMovz(instr: u32) bool {
+    return (instr & 0xff800000) == 0xd2800000;
+}
+
+fn retargetPendingX0Literal(out: *compat.ArrayList(u32), dst: u5) bool {
+    if (out.items.len == 0 or !isWideMoveToReg(out.items[out.items.len - 1], 0)) return false;
+
+    var start = out.items.len - 1;
+    while (start > 0 and !isMovz(out.items[start]) and isWideMoveToReg(out.items[start - 1], 0)) {
+        start -= 1;
+    }
+    if (!isMovz(out.items[start])) return false;
+
+    var i = start;
+    while (i < out.items.len) : (i += 1) {
+        out.items[i] = (out.items[i] & ~@as(u32, 0x1f)) | @as(u32, dst);
+    }
+    return true;
+}
+
 fn appendMov(out: *compat.ArrayList(u32), dst: u5, src: u5) !void {
+    if (src == 0 and retargetPendingX0Literal(out, dst)) return;
     if (dst != src) try out.append(Asm.@"mov Xd, Xn"(dst, src));
+}
+
+fn movRegs(instr: u32) ?MovRegs {
+    if ((instr & 0xffe0ffe0) != 0xaa0003e0) return null;
+    return .{
+        .dst = @intCast(instr & 0x1f),
+        .src = @intCast((instr >> 16) & 0x1f),
+    };
+}
+
+fn addReg(dst: u5, lhs: u5, rhs: u5) u32 {
+    return 0x8b000000 | @as(u32, dst) | (@as(u32, lhs) << 5) | (@as(u32, rhs) << 16);
+}
+
+fn optimizeIntegerAddMovChains(allocator: std.mem.Allocator, code: *compat.ArrayList(u32)) !void {
+    var out = compat.ArrayList(u32).init(allocator);
+    errdefer out.deinit();
+    try out.ensureTotalCapacity(code.items.len);
+
+    var i: usize = 0;
+    var changed = false;
+    while (i < code.items.len) {
+        if (i + 3 < code.items.len and
+            code.items[i + 2] == Asm.@"add x0, x0, x1")
+        {
+            if (movRegs(code.items[i])) |mov_top| {
+                if (movRegs(code.items[i + 1])) |mov_next| {
+                    if (movRegs(code.items[i + 3])) |mov_result| {
+                        if (mov_top.dst == 0 and mov_next.dst == 1 and mov_result.src == 0) {
+                            try out.append(addReg(mov_result.dst, mov_top.src, mov_next.src));
+                            i += 4;
+                            changed = true;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        try out.append(code.items[i]);
+        i += 1;
+    }
+
+    if (!changed) {
+        out.deinit();
+        return;
+    }
+
+    code.clearRetainingCapacity();
+    try code.appendSlice(out.items);
+    out.deinit();
 }
 
 fn flush(out: *compat.ArrayList(u32), stack: []const u5) !void {
@@ -176,4 +259,5 @@ pub fn optimizeRegisterStack(allocator: std.mem.Allocator, code: *compat.ArrayLi
     code.clearRetainingCapacity();
     try code.appendSlice(out.items);
     out.deinit();
+    try optimizeIntegerAddMovChains(allocator, code);
 }
