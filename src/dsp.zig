@@ -13,6 +13,18 @@ const MovRegs = struct {
     src: u5,
 };
 
+const Literal = struct {
+    reg: u5,
+    value: u64,
+    end: usize,
+};
+
+const AddRegs = struct {
+    dst: u5,
+    lhs: u5,
+    rhs: u5,
+};
+
 fn isAnyLocalBranch(instr: u32) bool {
     return (instr & 0xfc000000) == 0x14000000 or
         (instr & 0x7e000000) == 0x34000000 or
@@ -107,6 +119,96 @@ fn addReg(dst: u5, lhs: u5, rhs: u5) u32 {
     return 0x8b000000 | @as(u32, dst) | (@as(u32, lhs) << 5) | (@as(u32, rhs) << 16);
 }
 
+fn addRegs(instr: u32) ?AddRegs {
+    if ((instr & 0xffe00000) != 0x8b000000) return null;
+    return .{
+        .dst = @intCast(instr & 0x1f),
+        .lhs = @intCast((instr >> 5) & 0x1f),
+        .rhs = @intCast((instr >> 16) & 0x1f),
+    };
+}
+
+fn wideMoveShift(instr: u32) u6 {
+    return @intCast(((instr >> 21) & 0x3) * 16);
+}
+
+fn wideMoveImm(instr: u32) u64 {
+    return @as(u64, (instr >> 5) & 0xffff);
+}
+
+fn parseLiteral(code: []const u32, start: usize) ?Literal {
+    if (start >= code.len or !isMovz(code[start])) return null;
+
+    const reg: u5 = @intCast(code[start] & 0x1f);
+    var value = wideMoveImm(code[start]) << wideMoveShift(code[start]);
+    var end = start + 1;
+
+    while (end < code.len and
+        isWideMoveToReg(code[end], reg) and
+        !isMovz(code[end]))
+    {
+        const shift = wideMoveShift(code[end]);
+        const mask = @as(u64, 0xffff) << shift;
+        value = (value & ~mask) | (wideMoveImm(code[end]) << shift);
+        end += 1;
+    }
+
+    return .{ .reg = reg, .value = value, .end = end };
+}
+
+fn appendLiteral(out: *compat.ArrayList(u32), reg: u5, value: u64) !void {
+    const rr: u32 = reg;
+    try out.append(0xd2800000 | rr | (@as(u32, @truncate(value)) & 0xffff) << 5);
+    if (value > 0xffff) {
+        try out.append(0xf2a00000 | rr | (@as(u32, @truncate(value >> 16)) & 0xffff) << 5);
+    }
+    if (value > 0xffffffff) {
+        try out.append(0xf2c00000 | rr | (@as(u32, @truncate(value >> 32)) & 0xffff) << 5);
+    }
+    if (value > 0xffffffffffff) {
+        try out.append(0xf2e00000 | rr | (@as(u32, @truncate(value >> 48)) & 0xffff) << 5);
+    }
+}
+
+fn optimizeLiteralIntegerAdds(allocator: std.mem.Allocator, code: *compat.ArrayList(u32)) !void {
+    var out = compat.ArrayList(u32).init(allocator);
+    errdefer out.deinit();
+    try out.ensureTotalCapacity(code.items.len);
+
+    var i: usize = 0;
+    var changed = false;
+    while (i < code.items.len) {
+        if (parseLiteral(code.items, i)) |a| {
+            if (parseLiteral(code.items, a.end)) |b| {
+                if (b.end < code.items.len) {
+                    if (addRegs(code.items[b.end])) |add| {
+                        const matches_ordered = add.lhs == b.reg and add.rhs == a.reg;
+                        const matches_swapped = add.lhs == a.reg and add.rhs == b.reg;
+                        if (matches_ordered or matches_swapped) {
+                            try appendLiteral(&out, add.dst, a.value +% b.value);
+                            i = b.end + 1;
+                            changed = true;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        try out.append(code.items[i]);
+        i += 1;
+    }
+
+    if (!changed) {
+        out.deinit();
+        return;
+    }
+
+    code.clearRetainingCapacity();
+    try code.appendSlice(out.items);
+    out.deinit();
+}
+
 fn optimizeIntegerAddMovChains(allocator: std.mem.Allocator, code: *compat.ArrayList(u32)) !void {
     var out = compat.ArrayList(u32).init(allocator);
     errdefer out.deinit();
@@ -144,6 +246,7 @@ fn optimizeIntegerAddMovChains(allocator: std.mem.Allocator, code: *compat.Array
     code.clearRetainingCapacity();
     try code.appendSlice(out.items);
     out.deinit();
+    try optimizeLiteralIntegerAdds(allocator, code);
 }
 
 fn flush(out: *compat.ArrayList(u32), stack: []const u5) !void {
