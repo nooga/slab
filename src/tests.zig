@@ -619,3 +619,13 @@ test "compiler report and disasm follow hot-patched word body" {
     try std.testing.expect(mul_report.float_alu_count >= 1);
     try std.testing.expect(mul_report.instruction_count == add_report.instruction_count);
 }
+
+test "benchmark wrapper calls a word repeatedly" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run("noalloc: bench-plus 1 2 + ;");
+    try std.testing.expectEqual(Fy.makeInt(3), try fy.callWordRepeated("bench-plus", 1000));
+    try std.testing.expectEqual(Fy.makeInt(0), try fy.callWordRepeated("bench-plus", 0));
+}

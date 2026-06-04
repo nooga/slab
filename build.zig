@@ -52,6 +52,37 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_unit_tests.step);
 
     // ------------------------------------------------------------------
+    // Microbenchmarks — generated-code timing plus compiler report counters.
+    // Use `zig build bench --release=fast -- --iters 10000000`.
+    // ------------------------------------------------------------------
+    const bench_mod = b.createModule(.{
+        .root_source_file = b.path("src/bench.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    bench_mod.addImport("fy", fy_mod);
+    const bench_exe = b.addExecutable(.{
+        .name = "fy-bench",
+        .root_module = bench_mod,
+    });
+    const run_bench = b.addRunArtifact(bench_exe);
+    if (b.args) |args| run_bench.addArgs(args);
+
+    if (builtin.os.tag == .macos) {
+        const sign_bench_enabled = b.option(bool, "codesign-bench", "Codesign benchmark executable for macOS JIT (default: false)") orelse false;
+        if (sign_bench_enabled) {
+            const sign_bench = b.addSystemCommand(&[_][]const u8{
+                "codesign", "-s", codesign_id, "--force", "--entitlements", "entitlements.plist", "--options", "runtime",
+            });
+            sign_bench.addFileArg(bench_exe.getEmittedBin());
+            sign_bench.step.dependOn(&bench_exe.step);
+            run_bench.step.dependOn(&sign_bench.step);
+        }
+    }
+    const bench_step = b.step("bench", "Run fy microbenchmarks");
+    bench_step.dependOn(&run_bench.step);
+
+    // ------------------------------------------------------------------
     // Optional CLI executable — gated on -Dexe=true. The REPL pulls in
     // zigline which hasn't been ported to zig 0.16 yet. Build when it
     // becomes relevant again; for now the library target is what slab

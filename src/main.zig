@@ -1220,6 +1220,51 @@ pub const Fy = struct {
         return out.toOwnedSlice();
     }
 
+    pub fn callWordRepeated(self: *Fy, name: []const u8, iterations: u64) !Value {
+        if (iterations == 0) return makeInt(0);
+
+        const word = self.userWords.get(name) orelse return error.UnknownWord;
+        const target_addr = word.image_addr orelse word.trampoline_addr orelse return error.UnknownWord;
+
+        var code = compat.ArrayList(u32).init(self.fyalloc);
+        errdefer code.deinit();
+
+        try code.append(Asm.@"stp x29, x30, [sp, #0x10]!");
+        try code.append(Asm.@"mov x29, sp");
+        try code.append(Asm.@"stp x21, x22, [sp, #0x10]!");
+        try code.append(Asm.@".rpush Xn"(23));
+        for (Asm.movImm64(21, self.data_stack_top)) |instr| try code.append(instr);
+        try code.append(Asm.@"mov Xd, Xn"(22, 21));
+        for (Asm.movImm64(23, iterations)) |instr| try code.append(instr);
+
+        const loop_pos = code.items.len;
+        const bl_pos = code.items.len;
+        try code.append(0);
+        try code.append(Asm.@".pop x0");
+        try code.append(Asm.@"subs Xn, Xn, #imm"(23, 1));
+        const bne_pos = code.items.len;
+        try code.append(Asm.@"b.cond offset"(Asm.COND_NE, @intCast(@as(isize, @intCast(loop_pos)) - @as(isize, @intCast(bne_pos)))));
+
+        try code.append(Asm.@".rpop Xn"(23));
+        try code.append(Asm.@"ldp x21, x22, [sp], #0x10");
+        try code.append(Asm.@"ldp x29, x30, [sp], #0x10");
+        try code.append(Asm.ret);
+
+        const linked_base = @intFromPtr(self.image.mem.ptr) + self.image.end;
+        const instr_addr = linked_base + bl_pos * 4;
+        const offset_bytes: i64 = @as(i64, @intCast(target_addr)) - @as(i64, @intCast(instr_addr));
+        const offset_words: i26 = @intCast(@divExact(offset_bytes, 4));
+        code.items[bl_pos] = Asm.@"bl offset"(offset_words);
+
+        const wrapper_code = try code.toOwnedSlice();
+        const executable = self.image.link(wrapper_code);
+        self.fyalloc.free(wrapper_code);
+
+        Builtins.fyPtr = @intFromPtr(self);
+        const fun: *const fn () Value = @ptrCast(@alignCast(executable));
+        return fun();
+    }
+
     pub const Builtins = struct {
         // Quote concatenation: (... a b -- q)
         fn quoteConcat(b: Value, a: Value) callconv(.c) Value {

@@ -176,6 +176,15 @@ pub fn @"b offset"(offset: i26) u32 {
     return @"b 0" | (@as(u32, @bitCast(@as(i32, offset))) & 0x3ffffff);
 }
 
+pub fn @"b.cond offset"(cond: u4, offset: i19) u32 {
+    return 0x54000000 | ((@as(u32, @bitCast(@as(i32, offset))) & 0x7ffff) << 5) | cond;
+}
+
+pub fn @"subs Xn, Xn, #imm"(n: u5, imm: u12) u32 {
+    const nn: u32 = n;
+    return 0xf1000000 | (@as(u32, imm) << 10) | (nn << 5) | nn;
+}
+
 pub fn @".pop Xn"(n: usize) u32 {
     return @".pop x0" + @as(u32, @intCast(n));
 }
