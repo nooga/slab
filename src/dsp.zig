@@ -128,6 +128,14 @@ fn addRegs(instr: u32) ?AddRegs {
     };
 }
 
+fn fmovXFromD(instr: u32) ?MovRegs {
+    if ((instr & 0xfffffc00) != (Asm.@"fmov Xd, Dn"(0, 0) & 0xfffffc00)) return null;
+    return .{
+        .dst = @intCast(instr & 0x1f),
+        .src = @intCast((instr >> 5) & 0x1f),
+    };
+}
+
 fn wideMoveShift(instr: u32) u6 {
     return @intCast(((instr >> 21) & 0x3) * 16);
 }
@@ -426,5 +434,44 @@ pub fn optimizeScalarReturn(code: *compat.ArrayList(u32)) bool {
     }
 
     code.items[push_index] = Asm.@"mov Xd, Xn"(0, src);
+    return true;
+}
+
+/// Convert a straight-line DSP word ending in tagged-float result publication
+/// into an f64 scalar ABI that returns the sample in `d0`.
+pub fn optimizeF64ScalarReturn(code: *compat.ArrayList(u32)) bool {
+    if (code.items.len < 6 or code.items[code.items.len - 1] != Asm.ret) return false;
+
+    for (code.items[0 .. code.items.len - 1]) |instr| {
+        if (isAnyLocalBranch(instr) or isBl(instr) or isBlr(instr) or instr == Asm.ret) return false;
+    }
+
+    const push_index = code.items.len - 2;
+    const pushed_reg = pushReg(code.items[push_index]) orelse return false;
+
+    var cursor = push_index;
+    var x_reg = pushed_reg;
+    if (cursor > 0) {
+        if (movRegs(code.items[cursor - 1])) |mov| {
+            if (mov.dst == pushed_reg) {
+                x_reg = mov.src;
+                cursor -= 1;
+            }
+        }
+    }
+
+    if (cursor < 4) return false;
+    const suffix_start = cursor - 4;
+    const fmov = fmovXFromD(code.items[suffix_start]) orelse return false;
+    if (fmov.dst != x_reg or fmov.src != 0) return false;
+    if (code.items[suffix_start + 1] != Asm.@"lsr Xn, Xn, #2"(x_reg) or
+        code.items[suffix_start + 2] != Asm.@"lsl Xn, Xn, #2"(x_reg) or
+        code.items[suffix_start + 3] != Asm.@"add Xn, Xn, #2"(x_reg))
+    {
+        return false;
+    }
+
+    code.items[suffix_start] = Asm.ret;
+    code.shrinkRetainingCapacity(suffix_start + 1);
     return true;
 }

@@ -8,6 +8,7 @@ const Case = struct {
     source: []const u8,
     word: []const u8,
     scalar_abi: bool = false,
+    f64_abi: bool = false,
 };
 
 const cases = [_]Case{
@@ -73,6 +74,12 @@ const cases = [_]Case{
         .source = "dsp: bench-dsp-scalar-float 0.5 0.25 f* 0.125 f+ ;",
         .word = "bench-dsp-scalar-float",
         .scalar_abi = true,
+    },
+    .{
+        .name = "dsp-f64-scalar-float-muladd",
+        .source = "dsp: bench-dsp-f64-scalar-float 0.5 0.25 f* 0.125 f+ ;",
+        .word = "bench-dsp-f64-scalar-float",
+        .f64_abi = true,
     },
     .{
         .name = "dsp-float-shape",
@@ -147,20 +154,27 @@ fn runCase(allocator: std.mem.Allocator, io: std.Io, case: Case, opts: Options) 
     const compile_ns = nowNs(io) - compile_start;
 
     const warmup_iters = @min(opts.iterations, 100_000);
-    _ = if (case.scalar_abi)
-        try fy.callDspScalarRepeated(case.word, warmup_iters)
-    else
-        try fy.callWordRepeated(case.word, warmup_iters);
+    if (case.f64_abi) {
+        _ = try fy.callDspF64ScalarRepeated(case.word, warmup_iters);
+    } else if (case.scalar_abi) {
+        _ = try fy.callDspScalarRepeated(case.word, warmup_iters);
+    } else {
+        _ = try fy.callWordRepeated(case.word, warmup_iters);
+    }
 
     const run_start = nowNs(io);
-    const result = if (case.scalar_abi)
-        try fy.callDspScalarRepeated(case.word, opts.iterations)
+    const result = if (case.f64_abi)
+        @as(u64, @bitCast(try fy.callDspF64ScalarRepeated(case.word, opts.iterations)))
+    else if (case.scalar_abi)
+        @as(u64, @bitCast(try fy.callDspScalarRepeated(case.word, opts.iterations)))
     else
-        try fy.callWordRepeated(case.word, opts.iterations);
+        @as(u64, @bitCast(try fy.callWordRepeated(case.word, opts.iterations)));
     const run_ns = nowNs(io) - run_start;
     const ns_per_iter = @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(opts.iterations));
 
-    const report = if (case.scalar_abi)
+    const report = if (case.f64_abi)
+        try fy.reportDspF64ScalarWord(case.word)
+    else if (case.scalar_abi)
         try fy.reportDspScalarWord(case.word)
     else
         fy.reportWord(case.word) orelse return error.MissingReport;
@@ -191,7 +205,9 @@ fn runCase(allocator: std.mem.Allocator, io: std.Io, case: Case, opts: Options) 
     );
 
     if (opts.disasm) {
-        const disasm = if (case.scalar_abi)
+        const disasm = if (case.f64_abi)
+            try fy.disassembleDspF64ScalarWordAlloc(allocator, case.word)
+        else if (case.scalar_abi)
             try fy.disassembleDspScalarWordAlloc(allocator, case.word)
         else
             try fy.disassembleWordAlloc(allocator, case.word);

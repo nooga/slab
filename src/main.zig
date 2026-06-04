@@ -1366,6 +1366,98 @@ pub const Fy = struct {
         return analyzeCode(scalar_code.items);
     }
 
+    pub fn callDspF64ScalarRepeated(self: *Fy, name: []const u8, iterations: u64) !f64 {
+        if (iterations == 0) return 0.0;
+
+        const word = self.userWords.get(name) orelse return error.UnknownWord;
+        if (!word.dsp) return error.NotDspWord;
+        const source_addr = word.image_addr orelse return error.UnknownWord;
+        if (word.image_len == 0) return error.UnknownWord;
+
+        const source_ptr: [*]const u32 = @ptrFromInt(source_addr);
+        const source_code = source_ptr[0..word.image_len];
+
+        var scalar_code = compat.ArrayList(u32).init(self.fyalloc);
+        defer scalar_code.deinit();
+        try scalar_code.appendSlice(source_code);
+        if (!Dsp.optimizeF64ScalarReturn(&scalar_code)) return error.UnsupportedDspF64Scalar;
+
+        var code = compat.ArrayList(u32).init(self.fyalloc);
+        errdefer code.deinit();
+
+        try code.append(Asm.@"stp x29, x30, [sp, #0x10]!");
+        try code.append(Asm.@"mov x29, sp");
+        try code.append(Asm.@"stp x21, x22, [sp, #0x10]!");
+        try code.append(Asm.@".rpush Xn"(23));
+        for (Asm.movImm64(21, self.data_stack_top)) |instr| try code.append(instr);
+        try code.append(Asm.@"mov Xd, Xn"(22, 21));
+        for (Asm.movImm64(23, iterations)) |instr| try code.append(instr);
+
+        const loop_pos = code.items.len;
+        const bl_pos = code.items.len;
+        try code.append(0);
+        try code.append(Asm.@"subs Xn, Xn, #imm"(23, 1));
+        const bne_pos = code.items.len;
+        try code.append(Asm.@"b.cond offset"(Asm.COND_NE, @intCast(@as(isize, @intCast(loop_pos)) - @as(isize, @intCast(bne_pos)))));
+
+        try code.append(Asm.@".rpop Xn"(23));
+        try code.append(Asm.@"ldp x21, x22, [sp], #0x10");
+        try code.append(Asm.@"ldp x29, x30, [sp], #0x10");
+        try code.append(Asm.ret);
+
+        const scalar_pos = code.items.len;
+        try code.appendSlice(scalar_code.items);
+
+        const linked_base = @intFromPtr(self.image.mem.ptr) + self.image.end;
+        const instr_addr = linked_base + bl_pos * 4;
+        const target_addr = linked_base + scalar_pos * 4;
+        const offset_bytes: i64 = @as(i64, @intCast(target_addr)) - @as(i64, @intCast(instr_addr));
+        const offset_words: i26 = @intCast(@divExact(offset_bytes, 4));
+        code.items[bl_pos] = Asm.@"bl offset"(offset_words);
+
+        const wrapper_code = try code.toOwnedSlice();
+        const executable = self.image.link(wrapper_code);
+        self.fyalloc.free(wrapper_code);
+
+        Builtins.fyPtr = @intFromPtr(self);
+        const fun: *const fn () f64 = @ptrCast(@alignCast(executable));
+        return fun();
+    }
+
+    pub fn disassembleDspF64ScalarWordAlloc(self: *const Fy, allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+        const word = self.userWords.get(name) orelse return error.UnknownWord;
+        if (!word.dsp) return error.NotDspWord;
+        const source_addr = word.image_addr orelse return error.UnknownWord;
+        if (word.image_len == 0) return error.UnknownWord;
+
+        const source_ptr: [*]const u32 = @ptrFromInt(source_addr);
+        const source_code = source_ptr[0..word.image_len];
+
+        var scalar_code = compat.ArrayList(u32).init(self.fyalloc);
+        defer scalar_code.deinit();
+        try scalar_code.appendSlice(source_code);
+        if (!Dsp.optimizeF64ScalarReturn(&scalar_code)) return error.UnsupportedDspF64Scalar;
+
+        return disassembleAlloc(allocator, scalar_code.items);
+    }
+
+    pub fn reportDspF64ScalarWord(self: *const Fy, name: []const u8) !CompileReport {
+        const word = self.userWords.get(name) orelse return error.UnknownWord;
+        if (!word.dsp) return error.NotDspWord;
+        const source_addr = word.image_addr orelse return error.UnknownWord;
+        if (word.image_len == 0) return error.UnknownWord;
+
+        const source_ptr: [*]const u32 = @ptrFromInt(source_addr);
+        const source_code = source_ptr[0..word.image_len];
+
+        var scalar_code = compat.ArrayList(u32).init(self.fyalloc);
+        defer scalar_code.deinit();
+        try scalar_code.appendSlice(source_code);
+        if (!Dsp.optimizeF64ScalarReturn(&scalar_code)) return error.UnsupportedDspF64Scalar;
+
+        return analyzeCode(scalar_code.items);
+    }
+
     pub const Builtins = struct {
         // Quote concatenation: (... a b -- q)
         fn quoteConcat(b: Value, a: Value) callconv(.c) Value {

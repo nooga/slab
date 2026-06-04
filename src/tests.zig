@@ -646,6 +646,22 @@ test "DSP scalar benchmark wrapper returns x0 without fy-stack result pop" {
     try std.testing.expectError(error.UnsupportedDspScalar, fy.callDspScalarRepeated("scalar-branch", 1));
 }
 
+test "DSP f64 scalar benchmark wrapper returns d0 without tagged-float publication" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run("dsp: scalar-float 0.5 0.25 f* 0.125 f+ ;");
+    try std.testing.expectEqual(@as(f64, 0.25), try fy.callDspF64ScalarRepeated("scalar-float", 1000));
+    try std.testing.expectEqual(@as(f64, 0.0), try fy.callDspF64ScalarRepeated("scalar-float", 0));
+    const scalar_report = try fy.reportDspF64ScalarWord("scalar-float");
+    try std.testing.expectEqual(@as(usize, 0), scalar_report.push_count);
+    try std.testing.expect(scalar_report.float_alu_count > 0);
+
+    _ = try fy.run("dsp: scalar-int 1 2 + ;");
+    try std.testing.expectError(error.UnsupportedDspF64Scalar, fy.callDspF64ScalarRepeated("scalar-int", 1));
+}
+
 test "inline-noalloc copies straight-line inlineable callees" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
