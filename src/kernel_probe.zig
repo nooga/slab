@@ -34,6 +34,13 @@ const Metrics = struct {
     zig_table_ns_per_iter: f64 = 0,
     zig_rational_ns_per_iter: f64 = 0,
     table_vs_libc_tanh_max_abs_error: f64 = 0,
+    rms: f64 = 0,
+    peak: f64 = 0,
+    mean: f64 = 0,
+    final_phase: f64 = 0,
+    fundamental_hz: f64 = 0,
+    alias_residual_db: f64 = 0,
+    naive_alias_residual_db: f64 = 0,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -49,6 +56,10 @@ pub fn main(init: std.process.Init) !void {
         std.mem.eql(u8, cli.case_name, "tanh-rational-sweep"))
     {
         try runTanhTableCase(alloc, cli, &host);
+        return;
+    }
+    if (std.mem.eql(u8, cli.case_name, "saw-polyblep-render")) {
+        try runSawPolyblepCase(alloc, cli, &host);
         return;
     }
 
@@ -122,7 +133,7 @@ fn usage() void {
         \\  zig build kernel-probe -- --kernel=kernels/00-primitives/v2.fy --word=k-v2-add --case=v2-add --iters=1000000 --out=scratch/kernel_v2_add
         \\
         \\cases:
-        \\  v2-add | v2-mul | v2-fmadd | tanh-table-sweep | tanh-rational-sweep
+        \\  v2-add | v2-mul | v2-fmadd | tanh-table-sweep | tanh-rational-sweep | saw-polyblep-render
         \\
     , .{});
 }
@@ -343,6 +354,140 @@ fn benchmarkZigRational(input: []const f64, drive: f64, iterations: u64) f64 {
     return @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(iterations));
 }
 
+fn runSawPolyblepCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sample_count: usize = 4096;
+    const sample_rate: f64 = 48_000.0;
+    const fundamental_bin: usize = 171;
+    const freq = sample_rate * @as(f64, @floatFromInt(fundamental_bin)) / @as(f64, @floatFromInt(sample_count));
+    const inv_sample_rate = 1.0 / sample_rate;
+    const initial_phase: f64 = 0.137;
+
+    const out = try alloc.alloc(f64, sample_count);
+    defer alloc.free(out);
+    const expected = try alloc.alloc(f64, sample_count);
+    defer alloc.free(expected);
+    const naive = try alloc.alloc(f64, sample_count);
+    defer alloc.free(naive);
+
+    var expected_phase = initial_phase;
+    const dt = freq * inv_sample_rate;
+    for (expected, naive) |*exp, *dry| {
+        exp.* = zigSawPolyblep(expected_phase, dt);
+        dry.* = zigSawRaw(expected_phase);
+        expected_phase = wrap01(expected_phase + dt);
+    }
+
+    var perf_out: f64 = 0;
+    var perf_phase = initial_phase;
+    const perf_args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&perf_out) },
+        .{ .ptr = @intFromPtr(&perf_phase) },
+        .{ .f64 = freq },
+        .{ .f64 = inv_sample_rate },
+    };
+    const warmup = @min(cli.iterations, 1_000);
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, warmup, &perf_args);
+
+    perf_phase = initial_phase;
+    const start = nowNs();
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, cli.iterations, &perf_args);
+    const run_ns = nowNs() - start;
+
+    var phase = initial_phase;
+    for (out) |*dst| {
+        const sample_args = [_]Fy.Dsp2RawArg{
+            .{ .ptr = @intFromPtr(dst) },
+            .{ .ptr = @intFromPtr(&phase) },
+            .{ .f64 = freq },
+            .{ .f64 = inv_sample_rate },
+        };
+        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, 1, &sample_args);
+    }
+
+    var metrics = computeSliceMetrics(out, expected, run_ns, cli.iterations);
+    fillSignalMetrics(out, &metrics);
+    metrics.final_phase = phase;
+    metrics.fundamental_hz = freq;
+    metrics.alias_residual_db = harmonicResidualDb(out, fundamental_bin);
+    metrics.naive_alias_residual_db = harmonicResidualDb(naive, fundamental_bin);
+
+    try writeSawArtifacts(alloc, cli, host, out, expected, naive, metrics, sample_rate);
+    if (metrics.nonfinite_count != 0 or metrics.max_abs_error > 0.000000000001) {
+        return error.KernelRatchetFailed;
+    }
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} samples={} freq={d:.3} ns_per_iter={d:.3} max_abs_error={d:.12} alias_residual_db={d:.2}\n",
+        .{ cli.kernel, cli.word, cli.case_name, sample_count, freq, metrics.ns_per_iter, metrics.max_abs_error, metrics.alias_residual_db },
+    );
+}
+
+fn zigSawRaw(phase: f64) f64 {
+    return phase + phase - 1.0;
+}
+
+fn zigPolyblep(phase: f64, dt: f64) f64 {
+    if (phase < dt) {
+        const u = phase / dt;
+        return u + u - u * u - 1.0;
+    }
+    if (phase > 1.0 - dt) {
+        const u = (phase - 1.0) / dt;
+        return u * u + u + u + 1.0;
+    }
+    return 0.0;
+}
+
+fn zigSawPolyblep(phase: f64, dt: f64) f64 {
+    return zigSawRaw(phase) - zigPolyblep(phase, dt);
+}
+
+fn wrap01(x: f64) f64 {
+    if (x > 1.0) return x - 1.0;
+    if (x < 0.0) return x + 1.0;
+    return x;
+}
+
+fn fillSignalMetrics(signal: []const f64, metrics: *Metrics) void {
+    if (signal.len == 0) return;
+    var sum: f64 = 0;
+    var sum_sq: f64 = 0;
+    var peak: f64 = 0;
+    for (signal) |x| {
+        sum += x;
+        sum_sq += x * x;
+        peak = @max(peak, @abs(x));
+    }
+    metrics.mean = sum / @as(f64, @floatFromInt(signal.len));
+    metrics.rms = @sqrt(sum_sq / @as(f64, @floatFromInt(signal.len)));
+    metrics.peak = peak;
+}
+
+fn harmonicResidualDb(signal: []const f64, fundamental_bin: usize) f64 {
+    const n = signal.len;
+    if (n == 0 or fundamental_bin == 0) return 0;
+
+    var total_power: f64 = 0;
+    var harmonic_power: f64 = 0;
+    var k: usize = 1;
+    while (k < n / 2) : (k += 1) {
+        var re: f64 = 0;
+        var im: f64 = 0;
+        for (signal, 0..) |x, i| {
+            const angle = 2.0 * std.math.pi * @as(f64, @floatFromInt(k * i)) / @as(f64, @floatFromInt(n));
+            re += x * @cos(angle);
+            im -= x * @sin(angle);
+        }
+        const power = re * re + im * im;
+        total_power += power;
+        if (k % fundamental_bin == 0) harmonic_power += power;
+    }
+
+    if (total_power <= 0) return -300;
+    const residual = @max(total_power - harmonic_power, 1.0e-300);
+    return 10.0 * @log10(residual / total_power);
+}
+
 fn computeTrueTanhError(input: []const f64, out: []const f64, drive: f64) f64 {
     var max_abs_error: f64 = 0;
     for (input, out) |inp, actual| {
@@ -537,6 +682,104 @@ fn writeTanhArtifacts(
             inp,
             actual,
             exp,
+            actual - exp,
+        });
+    }
+    try writeFile(alloc, lanes_path, csv.items);
+}
+
+fn writeSawArtifacts(
+    alloc: std.mem.Allocator,
+    cli: Cli,
+    host: *FyHost,
+    out: []const f64,
+    expected: []const f64,
+    naive: []const f64,
+    metrics: Metrics,
+    sample_rate: f64,
+) !void {
+    const metrics_path = try std.fmt.allocPrint(alloc, "{s}_metrics.json", .{cli.out_prefix});
+    defer alloc.free(metrics_path);
+    const disasm_path = try std.fmt.allocPrint(alloc, "{s}_disasm.txt", .{cli.out_prefix});
+    defer alloc.free(disasm_path);
+    const lanes_path = try std.fmt.allocPrint(alloc, "{s}_lanes.csv", .{cli.out_prefix});
+    defer alloc.free(lanes_path);
+
+    const report = if (host.fy.isDsp2Word(cli.word))
+        try host.fy.reportDsp2RawWord(cli.word)
+    else
+        host.fy.reportWord(cli.word) orelse return error.MissingReport;
+    const metrics_json = try std.fmt.allocPrint(alloc,
+        \\{{
+        \\  "kernel": "{s}",
+        \\  "word": "{s}",
+        \\  "case": "{s}",
+        \\  "samples": {d},
+        \\  "sample_rate": {d:.6},
+        \\  "fundamental_hz": {d:.6},
+        \\  "iterations": {d},
+        \\  "ns_per_iter": {d:.6},
+        \\  "max_abs_error": {d:.12},
+        \\  "nonfinite_count": {d},
+        \\  "rms": {d:.12},
+        \\  "peak": {d:.12},
+        \\  "mean": {d:.12},
+        \\  "final_phase": {d:.12},
+        \\  "alias_residual_db": {d:.6},
+        \\  "naive_alias_residual_db": {d:.6},
+        \\  "instruction_count": {d},
+        \\  "push_count": {d},
+        \\  "pop_count": {d},
+        \\  "float_alu_count": {d},
+        \\  "neon_float_alu_count": {d},
+        \\  "neon_load_count": {d},
+        \\  "neon_store_count": {d}
+        \\}}
+        \\
+    , .{
+        cli.kernel,
+        cli.word,
+        cli.case_name,
+        out.len,
+        sample_rate,
+        metrics.fundamental_hz,
+        cli.iterations,
+        metrics.ns_per_iter,
+        metrics.max_abs_error,
+        metrics.nonfinite_count,
+        metrics.rms,
+        metrics.peak,
+        metrics.mean,
+        metrics.final_phase,
+        metrics.alias_residual_db,
+        metrics.naive_alias_residual_db,
+        report.instruction_count,
+        report.push_count,
+        report.pop_count,
+        report.float_alu_count,
+        report.neon_float_alu_count,
+        report.neon_load_count,
+        report.neon_store_count,
+    });
+    defer alloc.free(metrics_json);
+    try writeFile(alloc, metrics_path, metrics_json);
+
+    const disasm = if (host.fy.isDsp2Word(cli.word))
+        try host.fy.disassembleDsp2RawWordAlloc(alloc, cli.word)
+    else
+        try host.fy.disassembleWordAlloc(alloc, cli.word);
+    defer alloc.free(disasm);
+    try writeFile(alloc, disasm_path, disasm);
+
+    var csv: std.ArrayList(u8) = .empty;
+    defer csv.deinit(alloc);
+    try csv.appendSlice(alloc, "sample,out,expected,naive,error\n");
+    for (out, expected, naive, 0..) |actual, exp, dry, i| {
+        try appendFmt(alloc, &csv, "{d},{d:.12},{d:.12},{d:.12},{d:.12}\n", .{
+            i,
+            actual,
+            exp,
+            dry,
             actual - exp,
         });
     }

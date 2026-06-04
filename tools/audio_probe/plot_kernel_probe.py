@@ -135,6 +135,60 @@ def plot_lane_result(prefix: Path, rows, metrics):
     return out
 
 
+def plot_saw_oscillator(prefix: Path, rows, metrics):
+    np, plt = require_plot_libs()
+    y = np.array([as_float(r, "out") for r in rows], dtype=np.float64)
+    expected = np.array([as_float(r, "expected") for r in rows], dtype=np.float64)
+    naive = np.array([as_float(r, "naive") for r in rows], dtype=np.float64)
+    sample_rate = float(metrics.get("sample_rate", 48000.0))
+    n = len(y)
+    t_ms = np.arange(n, dtype=np.float64) * 1000.0 / sample_rate
+
+    window = np.hanning(n)
+    freq = np.fft.rfftfreq(n, d=1.0 / sample_rate)
+    spec = 20.0 * np.log10(np.maximum(np.abs(np.fft.rfft(y * window)), 1.0e-12))
+    naive_spec = 20.0 * np.log10(np.maximum(np.abs(np.fft.rfft(naive * window)), 1.0e-12))
+    spec -= np.max(spec)
+    naive_spec -= np.max(naive_spec)
+
+    fig, (ax0, ax1, ax2) = plt.subplots(
+        3,
+        1,
+        figsize=(12, 9),
+        gridspec_kw={"height_ratios": [2.2, 1.0, 1.8]},
+    )
+    fig.patch.set_facecolor("#e8e8e8")
+
+    show = min(512, n)
+    ax0.plot(t_ms[:show], naive[:show], color="#777777", linewidth=0.9, label="naive saw")
+    ax0.plot(t_ms[:show], y[:show], color="#d13f31", linewidth=1.2, label="fy polyBLEP")
+    ax0.plot(t_ms[:show], expected[:show], color="#247a7a", linewidth=0.9, linestyle="--", label="zig oracle")
+    ax0.set_title(f"{metrics.get('word', 'saw')} waveform")
+    ax0.set_ylabel("sample")
+    ax0.legend(loc="best", frameon=True, facecolor="#eeeeee", edgecolor="#222222")
+    style_axes(ax0)
+
+    err = y - expected
+    ax1.plot(t_ms[:show], err[:show], color="#2c2c2c", linewidth=1.0)
+    ax1.set_ylabel("fy - oracle")
+    style_axes(ax1)
+
+    ax2.plot(freq, naive_spec, color="#777777", linewidth=0.9, label="naive")
+    ax2.plot(freq, spec, color="#d13f31", linewidth=1.1, label="polyBLEP")
+    ax2.set_xlim(0, sample_rate / 2.0)
+    ax2.set_ylim(-120, 4)
+    ax2.set_xlabel("frequency (Hz)")
+    ax2.set_ylabel("dBFS rel.")
+    ax2.legend(loc="best", frameon=True, facecolor="#eeeeee", edgecolor="#222222")
+    style_axes(ax2)
+
+    fig.tight_layout()
+    out = prefix.with_name(prefix.name + "_oscillator.png")
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    return out
+
+
 def plot_report(prefix: Path, metrics):
     np, plt = require_plot_libs()
     keys = [
@@ -182,6 +236,11 @@ def plot_report(prefix: Path, metrics):
         lines.insert(6, f"zig/libc: {float(metrics.get('zig_table_vs_libc_tanh_speedup', 0.0)):.2f}x")
     if "table_vs_libc_tanh_max_abs_error" in metrics:
         lines.insert(7, f"vs tanh err: {float(metrics['table_vs_libc_tanh_max_abs_error']):.3e}")
+    if "alias_residual_db" in metrics:
+        lines.insert(3, f"rms/peak: {float(metrics.get('rms', 0.0)):.3f}/{float(metrics.get('peak', 0.0)):.3f}")
+        lines.insert(4, f"freq: {float(metrics.get('fundamental_hz', 0.0)):.2f} Hz")
+        lines.insert(5, f"alias: {float(metrics['alias_residual_db']):.2f} dB")
+        lines.insert(6, f"naive alias: {float(metrics.get('naive_alias_residual_db', 0.0)):.2f} dB")
     ax1.axis("off")
     ax1.set_facecolor("#f3f3f3")
     ax1.text(
@@ -211,6 +270,8 @@ def main() -> int:
     outputs = []
     if metrics.get("case") == "tanh-table-sweep":
         outputs.append(plot_tanh_transfer(args.prefix, rows, metrics))
+    elif metrics.get("case") == "saw-polyblep-render":
+        outputs.append(plot_saw_oscillator(args.prefix, rows, metrics))
     else:
         outputs.append(plot_lane_result(args.prefix, rows, metrics))
     outputs.append(plot_report(args.prefix, metrics))
