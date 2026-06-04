@@ -682,6 +682,31 @@ test "dsp: marks words and inlines straight-line dsp callees" {
 
     const report = fy.reportWord("dsp-call") orelse return error.MissingReport;
     try std.testing.expectEqual(@as(usize, 0), report.bl_count);
+    try std.testing.expectEqual(@as(usize, 1), report.push_count);
+    try std.testing.expectEqual(@as(usize, 0), report.pop_count);
+    try std.testing.expectEqual(@as(usize, 0), report.stack_round_trip_pairs);
+}
+
+test "dsp: register stack keeps straight-line arithmetic off the fy stack" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run("inline-noalloc: stack-add 1 2 + ; dsp: reg-add 1 2 + ;");
+    try std.testing.expectEqual(Fy.makeInt(3), try fy.run("stack-add"));
+    try std.testing.expectEqual(Fy.makeInt(3), try fy.run("reg-add"));
+
+    const stack_report = fy.reportWord("stack-add") orelse return error.MissingReport;
+    const reg_report = fy.reportWord("reg-add") orelse return error.MissingReport;
+
+    try std.testing.expectEqual(@as(usize, 1), reg_report.push_count);
+    try std.testing.expectEqual(@as(usize, 0), reg_report.pop_count);
+    try std.testing.expectEqual(@as(usize, 0), reg_report.stack_round_trip_pairs);
+    try std.testing.expect(reg_report.push_count < stack_report.push_count);
+    try std.testing.expect(reg_report.pop_count < stack_report.pop_count);
+
+    _ = try fy.run("dsp: reg-over2 1 2 3 4 over2 + + + + + ;");
+    try std.testing.expectEqual(Fy.makeInt(13), try fy.run("reg-over2"));
 }
 
 test "dsp: rejects heap allocation" {

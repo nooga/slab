@@ -17,6 +17,7 @@ const c_std = @cImport({
 const Asm = @import("asm.zig");
 const Args = @import("args.zig");
 const compat = @import("compat.zig");
+const Dsp = @import("dsp.zig");
 
 extern fn __clear_cache(start: usize, end: usize) callconv(.c) void;
 
@@ -317,6 +318,7 @@ pub const Fy = struct {
         while (keys.next()) |k| {
             if (self.userWords.getPtr(k.*)) |v| {
                 self.fyalloc.free(v.code);
+                if (v.inline_body) |body| self.fyalloc.free(body);
                 self.fyalloc.free(k.*);
             }
         }
@@ -632,6 +634,7 @@ pub const Fy = struct {
         image_len: usize = 0, // length in u32 instructions of image_addr body
         image_body_addr: ?usize = null, // entry body after UserWord prologue, for opt-in inlining
         image_body_len: usize = 0,
+        inline_body: ?[]u32 = null, // canonical pre-target-alloc body copied into inline callers
         trampoline_addr: ?usize = null, // stable B-trampoline in image (for hot-patching)
         immediate: bool = false, // compile-time word (macro): execute instead of compile
         noalloc: bool = false, // declared with noalloc: — must not call heap-allocating words
@@ -1051,24 +1054,21 @@ pub const Fy = struct {
     };
 
     fn isPush(instr: u32) bool {
-        return instr == Asm.@".push x0" or
-            instr == Asm.@".push x1" or
-            instr == Asm.@".push x0, x1" or
+        inline for (0..32) |n| {
+            if (instr == Asm.@".push Xn"(n)) return true;
+        }
+        return instr == Asm.@".push x0, x1" or
             instr == Asm.@".push x1, x0" or
-            instr == Asm.@".push x2, x3" or
-            instr == Asm.@".push Xn"(2);
+            instr == Asm.@".push x2, x3";
     }
 
     fn isPop(instr: u32) bool {
-        return instr == Asm.@".pop x0" or
-            instr == Asm.@".pop x1" or
-            instr == Asm.@".pop x0, x1" or
+        inline for (0..32) |n| {
+            if (instr == Asm.@".pop Xn"(n)) return true;
+        }
+        return instr == Asm.@".pop x0, x1" or
             instr == Asm.@".pop x1, x0" or
-            instr == Asm.@".pop Xn"(2) or
-            instr == Asm.@".pop Xn"(9) or
-            instr == Asm.@".pop Xn"(10) or
-            instr == Asm.@".pop Xn"(11) or
-            instr == Asm.@".pop Xn"(16);
+            instr == Asm.@".pop x2, x3";
     }
 
     fn isAnyLocalBranch(instr: u32) bool {
@@ -3190,6 +3190,11 @@ pub const Fy = struct {
         noalloc_mode: bool = false,
         // When true, calls to straight-line inlineable noalloc words are copied into the caller.
         inline_noalloc_calls: bool = false,
+        // Slab-facing audio-thread compiler mode. Enables noalloc plus DSP-specific codegen passes.
+        dsp_mode: bool = false,
+        // Capture a canonical body for inline expansion before DSP target allocation mutates registers.
+        capture_inline_body: bool = false,
+        inline_body: ?[]u32 = null,
         // Detailed compile error message for callers (handleConnection, REPL)
         last_error: [256]u8 = undefined,
         last_error_len: usize = 0,
@@ -3267,6 +3272,7 @@ pub const Fy = struct {
         pub fn deinit(self: *Compiler) void {
             self.code.deinit();
             self.relocations.deinit();
+            if (self.inline_body) |body| self.fy.fyalloc.free(body);
         }
 
         fn emit(self: *Compiler, instr: u32) !void {
@@ -3431,10 +3437,15 @@ pub const Fy = struct {
 
         fn straightLineInlineBody(word: Word) ?[]const u32 {
             if (!word.inlineable) return null;
-            const addr = word.image_body_addr orelse return null;
-            if (word.image_body_len == 0) return null;
-            const ptr: [*]const u32 = @ptrFromInt(addr);
-            const body = ptr[0..word.image_body_len];
+            const body = if (word.inline_body) |owned|
+                owned
+            else blk: {
+                const addr = word.image_body_addr orelse return null;
+                if (word.image_body_len == 0) return null;
+                const ptr: [*]const u32 = @ptrFromInt(addr);
+                break :blk ptr[0..word.image_body_len];
+            };
+            if (body.len == 0) return null;
             for (body) |instr| {
                 if (instr == Asm.CALLSLOT or instr == Asm.CALLSLOT0 or instr == Asm.CALLSLOT3 or instr == Asm.RECUR) {
                     return null;
@@ -3656,6 +3667,10 @@ pub const Fy = struct {
                 // Free existing code if there is any
                 if (word.code.len > 0) {
                     self.fy.fyalloc.free(word.code);
+                }
+                if (word.inline_body) |old| {
+                    self.fy.fyalloc.free(old);
+                    word.inline_body = null;
                 }
                 // Make a copy of the code
                 const codeCopy = try self.fy.fyalloc.dupe(u32, code);
@@ -4390,8 +4405,13 @@ pub const Fy = struct {
             compiler.currentDef = w;
             compiler.noalloc_mode = true; // ← enables safety checks
             compiler.inline_noalloc_calls = inlineable;
+            compiler.dsp_mode = dsp;
+            compiler.capture_inline_body = inlineable;
 
             const code = try compiler.compile(.UserWord);
+            var inline_body = compiler.inline_body;
+            compiler.inline_body = null;
+            errdefer if (inline_body) |body| self.fy.fyalloc.free(body);
 
             const link_base = @intFromPtr(self.fy.image.mem.ptr) + self.fy.image.end;
             compiler.resolveRelocations(link_base, code);
@@ -4416,6 +4436,8 @@ pub const Fy = struct {
 
             try self.declareWord(reg_name);
             if (self.fy.userWords.getPtr(reg_name)) |word| {
+                if (word.inline_body) |old| self.fy.fyalloc.free(old);
+                word.inline_body = null;
                 if (word.trampoline_addr) |tramp| {
                     const ob: i64 = @as(i64, @intCast(entry_addr)) - @as(i64, @intCast(tramp));
                     const ow: i26 = @intCast(@divExact(ob, 4));
@@ -4432,6 +4454,8 @@ pub const Fy = struct {
                     word.image_body_len = body_len;
                     word.trampoline_addr = tramp;
                 }
+                word.inline_body = inline_body;
+                inline_body = null;
                 word.noalloc = true;
                 word.inlineable = inlineable;
                 word.dsp = dsp;
@@ -4779,6 +4803,8 @@ pub const Fy = struct {
                         // Declare word AFTER successful compilation (fixes ghost word bug)
                         try self.declareWord(reg_name);
                         if (self.fy.userWords.getPtr(reg_name)) |word| {
+                            if (word.inline_body) |old| self.fy.fyalloc.free(old);
+                            word.inline_body = null;
                             if (word.trampoline_addr) |tramp| {
                                 // Redefinition: patch existing trampoline to jump to new body
                                 const ob: i64 = @as(i64, @intCast(entry_addr)) - @as(i64, @intCast(tramp));
@@ -5142,6 +5168,19 @@ pub const Fy = struct {
                 },
             }
             try self.optimizeStackRoundTrips();
+            if (wrap == .UserWord and self.capture_inline_body) {
+                const code_len = self.code.items.len;
+                if (code_len >= USER_WORD_PROLOGUE_INSTRS + USER_WORD_EPILOGUE_INSTRS) {
+                    const body_start = USER_WORD_PROLOGUE_INSTRS;
+                    const body_end = code_len - USER_WORD_EPILOGUE_INSTRS;
+                    if (body_end > body_start) {
+                        self.inline_body = self.fy.fyalloc.dupe(u32, self.code.items[body_start..body_end]) catch return Error.OutOfMemory;
+                    }
+                }
+            }
+            if (self.dsp_mode) {
+                Dsp.optimizeRegisterStack(self.fy.fyalloc, &self.code) catch return Error.OutOfMemory;
+            }
             return self.code.toOwnedSlice();
         }
 

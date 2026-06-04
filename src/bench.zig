@@ -11,6 +11,11 @@ const Case = struct {
 
 const cases = [_]Case{
     .{
+        .name = "noalloc-int-add",
+        .source = "noalloc: bench-noalloc-int-add 1 2 + ;",
+        .word = "bench-noalloc-int-add",
+    },
+    .{
         .name = "dsp-int-add",
         .source = "dsp: bench-dsp-int-add 1 2 + ;",
         .word = "bench-dsp-int-add",
@@ -26,6 +31,11 @@ const cases = [_]Case{
         .word = "bench-call",
     },
     .{
+        .name = "inline-word-call",
+        .source = "inline-noalloc: bench-inline-inc 1 + ; inline-noalloc: bench-inline-call 41 bench-inline-inc ;",
+        .word = "bench-inline-call",
+    },
+    .{
         .name = "dsp-word-call",
         .source = "dsp: bench-dsp-inc 1 + ; dsp: bench-dsp-call 41 bench-dsp-inc ;",
         .word = "bench-dsp-call",
@@ -34,6 +44,11 @@ const cases = [_]Case{
         .name = "dsp-branch-ifte",
         .source = "dsp: bench-dsp-branch 5 dup 3 > [ 1 + ] [ 1 - ] ifte ;",
         .word = "bench-dsp-branch",
+    },
+    .{
+        .name = "noalloc-float-muladd",
+        .source = "noalloc: bench-noalloc-float 0.5 0.25 f* 0.125 f+ ;",
+        .word = "bench-noalloc-float",
     },
     .{
         .name = "dsp-float-muladd",
