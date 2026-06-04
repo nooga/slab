@@ -204,12 +204,28 @@ fn runTanhTableCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
         Fy.makeInt(@intCast(span)),
         makeFyFloat(drive),
     };
+    const perf_raw_args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out[0]) },
+        .{ .ptr = @intFromPtr(&input[0]) },
+        .{ .ptr = @intFromPtr(table.ptr) },
+        .{ .int = @intCast(span) },
+        .{ .f64 = drive },
+    };
+    const use_raw_dsp2 = host.fy.isDsp2Word(cli.word);
 
     const warmup = @min(cli.iterations, 1_000);
-    _ = try host.fy.callWordRepeatedWithArgsNoResult(cli.word, warmup, &perf_args);
+    if (use_raw_dsp2) {
+        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, warmup, &perf_raw_args);
+    } else {
+        _ = try host.fy.callWordRepeatedWithArgsNoResult(cli.word, warmup, &perf_args);
+    }
 
     const start = nowNs();
-    _ = try host.fy.callWordRepeatedWithArgsNoResult(cli.word, cli.iterations, &perf_args);
+    if (use_raw_dsp2) {
+        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, cli.iterations, &perf_raw_args);
+    } else {
+        _ = try host.fy.callWordRepeatedWithArgsNoResult(cli.word, cli.iterations, &perf_args);
+    }
     const run_ns = nowNs() - start;
     const libc_tanh_ns_per_iter = benchmarkLibcTanh(input, drive, cli.iterations);
     const zig_table_ns_per_iter = benchmarkZigTable(table, input, drive, cli.iterations);
@@ -224,7 +240,18 @@ fn runTanhTableCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
             Fy.makeInt(@intCast(span)),
             makeFyFloat(drive),
         };
-        _ = try host.fy.callWordRepeatedWithArgsNoResult(cli.word, 1, &sample_args);
+        const sample_raw_args = [_]Fy.Dsp2RawArg{
+            .{ .ptr = @intFromPtr(dst) },
+            .{ .ptr = @intFromPtr(inp) },
+            .{ .ptr = @intFromPtr(table.ptr) },
+            .{ .int = @intCast(span) },
+            .{ .f64 = drive },
+        };
+        if (use_raw_dsp2) {
+            _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, 1, &sample_raw_args);
+        } else {
+            _ = try host.fy.callWordRepeatedWithArgsNoResult(cli.word, 1, &sample_args);
+        }
     }
 
     var metrics = computeSliceMetrics(out, expected, run_ns, cli.iterations);
@@ -354,7 +381,10 @@ fn writeArtifacts(alloc: std.mem.Allocator, cli: Cli, host: *FyHost, data: CaseD
     const lanes_path = try std.fmt.allocPrint(alloc, "{s}_lanes.csv", .{cli.out_prefix});
     defer alloc.free(lanes_path);
 
-    const report = host.fy.reportWord(cli.word) orelse return error.MissingReport;
+    const report = if (host.fy.isDsp2Word(cli.word))
+        try host.fy.reportDsp2RawWord(cli.word)
+    else
+        host.fy.reportWord(cli.word) orelse return error.MissingReport;
     const metrics_json = try std.fmt.allocPrint(alloc,
         \\{{
         \\  "kernel": "{s}",
@@ -392,7 +422,10 @@ fn writeArtifacts(alloc: std.mem.Allocator, cli: Cli, host: *FyHost, data: CaseD
     defer alloc.free(metrics_json);
     try writeFile(alloc, metrics_path, metrics_json);
 
-    const disasm = try host.fy.disassembleWordAlloc(alloc, cli.word);
+    const disasm = if (host.fy.isDsp2Word(cli.word))
+        try host.fy.disassembleDsp2RawWordAlloc(alloc, cli.word)
+    else
+        try host.fy.disassembleWordAlloc(alloc, cli.word);
     defer alloc.free(disasm);
     try writeFile(alloc, disasm_path, disasm);
 
@@ -427,7 +460,10 @@ fn writeTanhArtifacts(
     const lanes_path = try std.fmt.allocPrint(alloc, "{s}_lanes.csv", .{cli.out_prefix});
     defer alloc.free(lanes_path);
 
-    const report = host.fy.reportWord(cli.word) orelse return error.MissingReport;
+    const report = if (host.fy.isDsp2Word(cli.word))
+        try host.fy.reportDsp2RawWord(cli.word)
+    else
+        host.fy.reportWord(cli.word) orelse return error.MissingReport;
     const metrics_json = try std.fmt.allocPrint(alloc,
         \\{{
         \\  "kernel": "{s}",
@@ -485,7 +521,10 @@ fn writeTanhArtifacts(
     defer alloc.free(metrics_json);
     try writeFile(alloc, metrics_path, metrics_json);
 
-    const disasm = try host.fy.disassembleWordAlloc(alloc, cli.word);
+    const disasm = if (host.fy.isDsp2Word(cli.word))
+        try host.fy.disassembleDsp2RawWordAlloc(alloc, cli.word)
+    else
+        try host.fy.disassembleWordAlloc(alloc, cli.word);
     defer alloc.free(disasm);
     try writeFile(alloc, disasm_path, disasm);
 

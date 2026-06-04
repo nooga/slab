@@ -59,9 +59,7 @@ dsp: k-tanh-rational
   drop drop drop drop drop
 ;
 
-dsp2: k-tanh-rational-core-dsp2
-  3 pick f@64
-  1 pick f*
+dsp2: k-tanh-rational-shape-dsp2
   -4.0 4.0 fclamp
   dup dup f*
   dup 27.0 f+
@@ -70,6 +68,12 @@ dsp2: k-tanh-rational-core-dsp2
   f/
   -1.0 1.0 fclamp
   swap drop swap drop
+;
+
+dsp2: k-tanh-rational-core-dsp2
+  3 pick f@64
+  1 pick f*
+  k-tanh-rational-shape-dsp2
   5 pick f!64
   drop drop drop drop drop
 ;
