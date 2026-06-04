@@ -1036,6 +1036,8 @@ test "dsp2: branchless float select and wrap support oscillator helpers" {
         \\dsp2: cap fcapramp ;
         \\dsp2: polyblep fpolyblep ;
         \\dsp2: pulse fpulseblep ;
+        \\dsp2: adsr fadsr-linear ;
+        \\dsp2: adsr-cap fadsr-cap ;
     );
 
     try std.testing.expectApproxEqAbs(10.0, getFyFloat(try fy.run("0.25 0.5 10.0 20.0 choose-lt")), 0.000000000001);
@@ -1055,6 +1057,16 @@ test "dsp2: branchless float select and wrap support oscillator helpers" {
     try std.testing.expectApproxEqAbs(-0.75, getFyFloat(try fy.run("0.95 0.10 0.50 pulse")), 0.000000000001);
     try std.testing.expectApproxEqAbs(0.75, getFyFloat(try fy.run("0.45 0.10 0.50 pulse")), 0.000000000001);
     try std.testing.expectApproxEqAbs(-0.75, getFyFloat(try fy.run("0.55 0.10 0.50 pulse")), 0.000000000001);
+    try std.testing.expectApproxEqAbs(0.5, getFyFloat(try fy.run("0.05 0.10 0.20 0.40 0.70 0.30 adsr")), 0.000000000001);
+    try std.testing.expectApproxEqAbs(0.7, getFyFloat(try fy.run("0.20 0.10 0.20 0.40 0.70 0.30 adsr")), 0.000000000001);
+    try std.testing.expectApproxEqAbs(0.4, getFyFloat(try fy.run("0.50 0.10 0.20 0.40 0.70 0.30 adsr")), 0.000000000001);
+    try std.testing.expectApproxEqAbs(0.2, getFyFloat(try fy.run("0.85 0.10 0.20 0.40 0.70 0.30 adsr")), 0.000000000001);
+    try std.testing.expectApproxEqAbs(0.0, getFyFloat(try fy.run("1.05 0.10 0.20 0.40 0.70 0.30 adsr")), 0.000000000001);
+    try std.testing.expectApproxEqAbs(0.9375, getFyFloat(try fy.run("0.05 0.10 0.20 0.40 0.70 0.30 adsr-cap")), 0.000000000001);
+    try std.testing.expectApproxEqAbs(0.4375, getFyFloat(try fy.run("0.20 0.10 0.20 0.40 0.70 0.30 adsr-cap")), 0.000000000001);
+    try std.testing.expectApproxEqAbs(0.4, getFyFloat(try fy.run("0.50 0.10 0.20 0.40 0.70 0.30 adsr-cap")), 0.000000000001);
+    try std.testing.expectApproxEqAbs(0.025, getFyFloat(try fy.run("0.85 0.10 0.20 0.40 0.70 0.30 adsr-cap")), 0.000000000001);
+    try std.testing.expectApproxEqAbs(0.0, getFyFloat(try fy.run("1.05 0.10 0.20 0.40 0.70 0.30 adsr-cap")), 0.000000000001);
 }
 
 test "dsp: rejects heap allocation" {
