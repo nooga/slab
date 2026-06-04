@@ -405,6 +405,8 @@ test "Memory operations - alloc, !32, @32, free" {
         .{ .input = "32 alloc dup 42 swap !32 @32", .expected = Fy.makeInt(42) },
         // Store and load multiple values
         .{ .input = "16 alloc dup 10 swap !32 dup 4 + 20 swap !32 dup @32 swap 4 + @32 +", .expected = Fy.makeInt(30) },
+        // Raw f64 store/load keeps IEEE lane data in memory.
+        .{ .input = "16 alloc dup 1.5 swap f!64 f@64 1.5 f=", .expected = Fy.makeInt(1) },
         // Free returns 0
         .{ .input = "8 alloc free", .expected = Fy.makeInt(0) },
     });
@@ -573,6 +575,40 @@ test "compiler report and disasm expose noalloc float memory ops" {
     try expectContains(json, "\"instruction_count\"");
     try expectContains(json, "\"float_alu_count\"");
     try expectContains(json, "\"f32_load_count\"");
+}
+
+test "DSP NEON f64x2 words operate on raw f64 buffers and report vector code" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run(
+        \\:: va 16 alloc ;
+        \\:: vb 16 alloc ;
+        \\:: vc 16 alloc ;
+        \\1.0 va f!64 2.0 va 8 + f!64
+        \\3.0 vb f!64 4.0 vb 8 + f!64
+        \\dsp: neon-add v2f+ ;
+        \\dsp: neon-mul v2f* ;
+        \\dsp: neon-fmadd v2fmadd ;
+    );
+
+    try std.testing.expectEqual(Fy.makeInt(1), try fy.run("vc va vb neon-add vc f@64 4.0 f= vc 8 + f@64 6.0 f= &"));
+    try std.testing.expectEqual(Fy.makeInt(1), try fy.run("vc va vb neon-mul vc f@64 3.0 f= vc 8 + f@64 8.0 f= &"));
+    try std.testing.expectEqual(Fy.makeInt(1), try fy.run("vc va vb neon-add vc vc va vb neon-fmadd vc f@64 7.0 f= vc 8 + f@64 14.0 f= &"));
+
+    const report = fy.reportWord("neon-add") orelse return error.MissingReport;
+    try std.testing.expectEqual(@as(usize, 1), report.neon_float_alu_count);
+    try std.testing.expectEqual(@as(usize, 2), report.neon_load_count);
+    try std.testing.expectEqual(@as(usize, 1), report.neon_store_count);
+
+    const disasm = try fy.disassembleWordAlloc(std.testing.allocator, "neon-add");
+    defer std.testing.allocator.free(disasm);
+    try expectContains(disasm, "fadd v.2d");
+
+    const json = try report.writeJsonAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(json);
+    try expectContains(json, "\"neon_float_alu_count\"");
 }
 
 test "compiler report tracks branchy noalloc words" {

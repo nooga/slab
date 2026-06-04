@@ -9,6 +9,7 @@ const Case = struct {
     word: []const u8,
     scalar_abi: bool = false,
     f64_abi: bool = false,
+    neon_args: bool = false,
 };
 
 const cases = [_]Case{
@@ -91,6 +92,12 @@ const cases = [_]Case{
         .source = ":: bench-dsp-mem 4 alloc ; dsp: bench-dsp-f32 bench-dsp-mem dup 0.5 swap f!32 f@32 0.25 f+ ;",
         .word = "bench-dsp-f32",
     },
+    .{
+        .name = "dsp-neon-v2f-add",
+        .source = "dsp: bench-dsp-neon-v2f-add v2f+ ;",
+        .word = "bench-dsp-neon-v2f-add",
+        .neon_args = true,
+    },
 };
 
 const Options = struct {
@@ -104,7 +111,7 @@ fn usage() void {
         \\usage: fy-bench [--iters N] [--filter NAME] [--disasm]
         \\
         \\Runs fixed fy microbenchmarks and prints TSV:
-        \\case compile_ns run_ns iterations ns_per_iter result instructions pushes pops roundtrips branches bl blr falu fcmp fsel tag_clear tag_retag f32_load f32_store
+        \\case compile_ns run_ns iterations ns_per_iter result instructions pushes pops roundtrips branches bl blr falu fcmp fsel tag_clear tag_retag f32_load f32_store neon_falu neon_load neon_store
         \\
     , .{});
 }
@@ -153,8 +160,19 @@ fn runCase(allocator: std.mem.Allocator, io: std.Io, case: Case, opts: Options) 
     _ = try fy.run(case.source);
     const compile_ns = nowNs(io) - compile_start;
 
+    var neon_a align(16) = [_]f64{ 1.0, 2.0 };
+    var neon_b align(16) = [_]f64{ 3.0, 4.0 };
+    var neon_out align(16) = [_]f64{ 0.0, 0.0 };
+    const neon_args = [_]Fy.Value{
+        Fy.makeInt(@intCast(@intFromPtr(&neon_out))),
+        Fy.makeInt(@intCast(@intFromPtr(&neon_a))),
+        Fy.makeInt(@intCast(@intFromPtr(&neon_b))),
+    };
+
     const warmup_iters = @min(opts.iterations, 100_000);
-    if (case.f64_abi) {
+    if (case.neon_args) {
+        _ = try fy.callWordRepeatedWithArgsNoResult(case.word, warmup_iters, &neon_args);
+    } else if (case.f64_abi) {
         _ = try fy.callDspF64ScalarRepeated(case.word, warmup_iters);
     } else if (case.scalar_abi) {
         _ = try fy.callDspScalarRepeated(case.word, warmup_iters);
@@ -163,7 +181,11 @@ fn runCase(allocator: std.mem.Allocator, io: std.Io, case: Case, opts: Options) 
     }
 
     const run_start = nowNs(io);
-    const result = if (case.f64_abi)
+    const result = if (case.neon_args) blk: {
+        neon_out = .{ 0.0, 0.0 };
+        _ = try fy.callWordRepeatedWithArgsNoResult(case.word, opts.iterations, &neon_args);
+        break :blk @as(u64, @bitCast(neon_out[0]));
+    } else if (case.f64_abi)
         @as(u64, @bitCast(try fy.callDspF64ScalarRepeated(case.word, opts.iterations)))
     else if (case.scalar_abi)
         @as(u64, @bitCast(try fy.callDspScalarRepeated(case.word, opts.iterations)))
@@ -179,7 +201,7 @@ fn runCase(allocator: std.mem.Allocator, io: std.Io, case: Case, opts: Options) 
     else
         fy.reportWord(case.word) orelse return error.MissingReport;
     std.debug.print(
-        "{s}\t{d}\t{d}\t{d}\t{d:.3}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\n",
+        "{s}\t{d}\t{d}\t{d}\t{d:.3}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\n",
         .{
             case.name,
             compile_ns,
@@ -201,6 +223,9 @@ fn runCase(allocator: std.mem.Allocator, io: std.Io, case: Case, opts: Options) 
             report.float_retag_count,
             report.f32_load_count,
             report.f32_store_count,
+            report.neon_float_alu_count,
+            report.neon_load_count,
+            report.neon_store_count,
         },
     );
 
@@ -225,7 +250,7 @@ pub fn main(init: std.process.Init) !void {
         return err;
     };
     const allocator = std.heap.page_allocator;
-    std.debug.print("case\tcompile_ns\trun_ns\titerations\tns_per_iter\tresult\tinstructions\tpushes\tpops\troundtrips\tbranches\tbl\tblr\tfalu\tfcmp\tfsel\ttag_clear\ttag_retag\tf32_load\tf32_store\n", .{});
+    std.debug.print("case\tcompile_ns\trun_ns\titerations\tns_per_iter\tresult\tinstructions\tpushes\tpops\troundtrips\tbranches\tbl\tblr\tfalu\tfcmp\tfsel\ttag_clear\ttag_retag\tf32_load\tf32_store\tneon_falu\tneon_load\tneon_store\n", .{});
     for (cases) |case| {
         if (shouldRun(case, opts.filter)) {
             try runCase(allocator, io, case, opts);

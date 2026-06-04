@@ -273,6 +273,26 @@ pub fn @"fmadd Dd, Dn, Dm, Da"(d: u5, n: u5, m: u5, a: u5) u32 {
     return 0x1F400000 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, a) << 10) | (@as(u32, m) << 16);
 }
 
+// FADD Vd.2D, Vn.2D, Vm.2D — vector double-precision add
+pub fn @"fadd Vd.2D, Vn.2D, Vm.2D"(d: u5, n: u5, m: u5) u32 {
+    return 0x4E61D400 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
+}
+
+// FMUL Vd.2D, Vn.2D, Vm.2D — vector double-precision multiply
+pub fn @"fmul Vd.2D, Vn.2D, Vm.2D"(d: u5, n: u5, m: u5) u32 {
+    return 0x6E61DC00 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
+}
+
+// FMLA Vd.2D, Vn.2D, Vm.2D — vector fused multiply-add: Vd += Vn * Vm
+pub fn @"fmla Vd.2D, Vn.2D, Vm.2D"(d: u5, n: u5, m: u5) u32 {
+    return 0x4E60CC00 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
+}
+
+// DUP Vd.2D, Xn — duplicate a 64-bit general register into both vector lanes
+pub fn @"dup Vd.2D, Xn"(d: u5, n: u5) u32 {
+    return 0x4E080C00 | @as(u32, d) | (@as(u32, n) << 5);
+}
+
 // FDIV Dd, Dn, Dm — double-precision divide
 pub fn @"fdiv Dd, Dn, Dm"(d: u5, n: u5, m: u5) u32 {
     return 0x1E601800 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
@@ -381,6 +401,12 @@ pub fn str_d_imm(rt: u5, rn: u5, offset_bytes: u12) u32 {
     return 0xFD000000 | (scaled << 10) | (@as(u32, rn) << 5) | @as(u32, rt);
 }
 
+// STR Qt, [Xn, #imm] — 128-bit vector store, unsigned byte offset (must be multiple of 16)
+pub fn str_q_imm(rt: u5, rn: u5, offset_bytes: u12) u32 {
+    const scaled: u32 = @as(u32, offset_bytes) >> 4;
+    return 0x3D800000 | (scaled << 10) | (@as(u32, rn) << 5) | @as(u32, rt);
+}
+
 // LDRB Wt, [Xn, #imm] — 8-bit load, unsigned byte offset (0..4095)
 pub fn ldrb_imm(rt: u5, rn: u5, offset: u12) u32 {
     return 0x39400000 | (@as(u32, offset) << 10) | (@as(u32, rn) << 5) | @as(u32, rt);
@@ -414,6 +440,12 @@ pub fn ldr_s_imm(rt: u5, rn: u5, offset_bytes: u12) u32 {
 pub fn ldr_d_imm(rt: u5, rn: u5, offset_bytes: u12) u32 {
     const scaled: u32 = @as(u32, offset_bytes) >> 3;
     return 0xFD400000 | (scaled << 10) | (@as(u32, rn) << 5) | @as(u32, rt);
+}
+
+// LDR Qt, [Xn, #imm] — 128-bit vector load, unsigned byte offset (must be multiple of 16)
+pub fn ldr_q_imm(rt: u5, rn: u5, offset_bytes: u12) u32 {
+    const scaled: u32 = @as(u32, offset_bytes) >> 4;
+    return 0x3DC00000 | (scaled << 10) | (@as(u32, rn) << 5) | @as(u32, rt);
 }
 
 // --- Helpers for callback trampolines ---

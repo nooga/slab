@@ -648,6 +648,7 @@ pub const Fy = struct {
     };
 
     fn fnToWord(comptime fun: anytype) Word {
+        @setEvalBranchQuota(4000);
         const T = @TypeOf(fun);
         const typeinfo = @typeInfo(T).@"fn";
         const paramCount = typeinfo.params.len;
@@ -989,6 +990,64 @@ pub const Fy = struct {
         }, 2, 0);
     }
 
+    fn floatLoad64Word() Word {
+        return inlineWord(&[_]u32{
+            Asm.@".pop Xn"(9), // tagged address
+            Asm.@"asr Xn, Xn, #2"(9),
+            Asm.ldr_d_imm(0, 9, 0),
+            emitRetagFloatResult(0, 0)[0],
+            emitRetagFloatResult(0, 0)[1],
+            emitRetagFloatResult(0, 0)[2],
+            emitRetagFloatResult(0, 0)[3],
+            Asm.@".push x0",
+        }, 1, 1);
+    }
+
+    fn floatStore64Word() Word {
+        return inlineWord(&[_]u32{
+            Asm.@".pop Xn"(9), // tagged address
+            Asm.@".pop x0", // tagged f64 value
+            Asm.@"asr Xn, Xn, #2"(9),
+            emitFloatArgToReg(0, 0)[0],
+            emitFloatArgToReg(0, 0)[1],
+            emitFloatArgToReg(0, 0)[2],
+            Asm.str_d_imm(0, 9, 0),
+        }, 2, 0);
+    }
+
+    fn vector2BinWord(comptime op: u32) Word {
+        return inlineWord(&[_]u32{
+            Asm.@".pop Xn"(11), // b ptr
+            Asm.@".pop Xn"(10), // a ptr
+            Asm.@".pop Xn"(9), // dst ptr
+            Asm.@"asr Xn, Xn, #2"(11),
+            Asm.@"asr Xn, Xn, #2"(10),
+            Asm.@"asr Xn, Xn, #2"(9),
+            Asm.ldr_q_imm(0, 10, 0),
+            Asm.ldr_q_imm(1, 11, 0),
+            op,
+            Asm.str_q_imm(0, 9, 0),
+        }, 3, 0);
+    }
+
+    fn vector2MAddWord() Word {
+        return inlineWord(&[_]u32{
+            Asm.@".pop Xn"(12), // b ptr
+            Asm.@".pop Xn"(11), // a ptr
+            Asm.@".pop Xn"(10), // acc ptr
+            Asm.@".pop Xn"(9), // dst ptr
+            Asm.@"asr Xn, Xn, #2"(12),
+            Asm.@"asr Xn, Xn, #2"(11),
+            Asm.@"asr Xn, Xn, #2"(10),
+            Asm.@"asr Xn, Xn, #2"(9),
+            Asm.ldr_q_imm(0, 10, 0),
+            Asm.ldr_q_imm(1, 11, 0),
+            Asm.ldr_q_imm(2, 12, 0),
+            Asm.@"fmla Vd.2D, Vn.2D, Vm.2D"(0, 1, 2),
+            Asm.str_q_imm(0, 9, 0),
+        }, 4, 0);
+    }
+
     fn inlineWord(comptime code: []const u32, comptime c: usize, comptime p: usize) Word {
         return Word{
             .code = code,
@@ -1013,6 +1072,9 @@ pub const Fy = struct {
         float_retag_count: usize = 0,
         f32_load_count: usize = 0,
         f32_store_count: usize = 0,
+        neon_float_alu_count: usize = 0,
+        neon_load_count: usize = 0,
+        neon_store_count: usize = 0,
 
         pub fn writeJsonAlloc(self: CompileReport, allocator: std.mem.Allocator) ![]u8 {
             return std.fmt.allocPrint(allocator,
@@ -1031,7 +1093,10 @@ pub const Fy = struct {
                 \\  "float_tag_clear_count": {},
                 \\  "float_retag_count": {},
                 \\  "f32_load_count": {},
-                \\  "f32_store_count": {}
+                \\  "f32_store_count": {},
+                \\  "neon_float_alu_count": {},
+                \\  "neon_load_count": {},
+                \\  "neon_store_count": {}
                 \\}}
             , .{
                 self.instruction_count,
@@ -1049,6 +1114,9 @@ pub const Fy = struct {
                 self.float_retag_count,
                 self.f32_load_count,
                 self.f32_store_count,
+                self.neon_float_alu_count,
+                self.neon_load_count,
+                self.neon_store_count,
             });
         }
     };
@@ -1113,6 +1181,21 @@ pub const Fy = struct {
         return (instr & 0xffc00000) == 0xbd000000;
     }
 
+    fn isNeonFloatAlu(instr: u32) bool {
+        const op = instr & 0xffe0fc00;
+        return op == (Asm.@"fadd Vd.2D, Vn.2D, Vm.2D"(0, 0, 0) & 0xffe0fc00) or
+            op == (Asm.@"fmul Vd.2D, Vn.2D, Vm.2D"(0, 0, 0) & 0xffe0fc00) or
+            op == (Asm.@"fmla Vd.2D, Vn.2D, Vm.2D"(0, 0, 0) & 0xffe0fc00);
+    }
+
+    fn isNeonLoad(instr: u32) bool {
+        return (instr & 0xffc00000) == (Asm.ldr_q_imm(0, 0, 0) & 0xffc00000);
+    }
+
+    fn isNeonStore(instr: u32) bool {
+        return (instr & 0xffc00000) == (Asm.str_q_imm(0, 0, 0) & 0xffc00000);
+    }
+
     pub fn analyzeCode(code: []const u32) CompileReport {
         var report = CompileReport{ .instruction_count = code.len };
         var i: usize = 0;
@@ -1145,6 +1228,9 @@ pub const Fy = struct {
             }
             if (isF32Load(instr)) report.f32_load_count += 1;
             if (isF32Store(instr)) report.f32_store_count += 1;
+            if (isNeonFloatAlu(instr)) report.neon_float_alu_count += 1;
+            if (isNeonLoad(instr)) report.neon_load_count += 1;
+            if (isNeonStore(instr)) report.neon_store_count += 1;
         }
         return report;
     }
@@ -1194,12 +1280,15 @@ pub const Fy = struct {
         if (instr == Asm.@".pop x1") return "pop x1";
         if (instr == Asm.@".pop x0, x1") return "pop x0, x1";
         if (instr == Asm.@".pop x1, x0") return "pop x1, x0";
+        if (isPush(instr)) return "push xn";
+        if (isPop(instr)) return "pop xn";
         if (instr == Asm.ret) return "ret";
         if (isBl(instr)) return "bl";
         if (isBlr(instr)) return "blr";
         if ((instr & 0xfc000000) == 0x14000000) return "b";
         if ((instr & 0x7e000000) == 0x34000000) return "cbz/cbnz";
         if ((instr & 0xff000010) == 0x54000000) return "b.cond";
+        if ((instr & 0xfffffc00) == (Asm.@"asr Xn, Xn, #2"(0) & 0xfffffc00)) return "asr xn, xn, #2";
         if ((instr & 0xfffffc00) == (Asm.@"lsr Xn, Xn, #2"(0) & 0xfffffc00)) return "lsr xn, xn, #2";
         if ((instr & 0xfffffc00) == (Asm.@"lsl Xn, Xn, #2"(0) & 0xfffffc00)) return "lsl xn, xn, #2";
         if ((instr & 0xfffffc00) == (Asm.@"add Xn, Xn, #2"(0) & 0xfffffc00)) return "add xn, xn, #2";
@@ -1213,10 +1302,16 @@ pub const Fy = struct {
         if ((instr & 0xffe0fc00) == 0x1e604800) return "fmax d";
         if ((instr & 0xffe0fc00) == 0x1e605800) return "fmin d";
         if ((instr & 0xfffffc00) == 0x1e614000) return "fneg d";
+        if ((instr & 0xffe0fc00) == (Asm.@"fadd Vd.2D, Vn.2D, Vm.2D"(0, 0, 0) & 0xffe0fc00)) return "fadd v.2d";
+        if ((instr & 0xffe0fc00) == (Asm.@"fmul Vd.2D, Vn.2D, Vm.2D"(0, 0, 0) & 0xffe0fc00)) return "fmul v.2d";
+        if ((instr & 0xffe0fc00) == (Asm.@"fmla Vd.2D, Vn.2D, Vm.2D"(0, 0, 0) & 0xffe0fc00)) return "fmla v.2d";
+        if ((instr & 0xfffffc00) == (Asm.@"dup Vd.2D, Xn"(0, 0) & 0xfffffc00)) return "dup v.2d, x";
         if (isFloatCompare(instr)) return "fcmp d";
         if (isFloatSelect(instr)) return "fcsel d";
         if (isF32Load(instr)) return "ldr s";
         if (isF32Store(instr)) return "str s";
+        if (isNeonLoad(instr)) return "ldr q";
+        if (isNeonStore(instr)) return "str q";
         return "unknown";
     }
 
@@ -1319,6 +1414,55 @@ pub const Fy = struct {
         const linked_base = @intFromPtr(self.image.mem.ptr) + self.image.end;
         const instr_addr = linked_base + bl_pos * 4;
         const target_addr = linked_base + scalar_pos * 4;
+        const offset_bytes: i64 = @as(i64, @intCast(target_addr)) - @as(i64, @intCast(instr_addr));
+        const offset_words: i26 = @intCast(@divExact(offset_bytes, 4));
+        code.items[bl_pos] = Asm.@"bl offset"(offset_words);
+
+        const wrapper_code = try code.toOwnedSlice();
+        const executable = self.image.link(wrapper_code);
+        self.fyalloc.free(wrapper_code);
+
+        Builtins.fyPtr = @intFromPtr(self);
+        const fun: *const fn () Value = @ptrCast(@alignCast(executable));
+        return fun();
+    }
+
+    pub fn callWordRepeatedWithArgsNoResult(self: *Fy, name: []const u8, iterations: u64, args: []const Value) !Value {
+        if (iterations == 0) return makeInt(0);
+
+        const word = self.userWords.get(name) orelse return error.UnknownWord;
+        const target_addr = word.image_addr orelse word.trampoline_addr orelse return error.UnknownWord;
+
+        var code = compat.ArrayList(u32).init(self.fyalloc);
+        errdefer code.deinit();
+
+        try code.append(Asm.@"stp x29, x30, [sp, #0x10]!");
+        try code.append(Asm.@"mov x29, sp");
+        try code.append(Asm.@"stp x21, x22, [sp, #0x10]!");
+        try code.append(Asm.@".rpush Xn"(23));
+        for (Asm.movImm64(21, self.data_stack_top)) |instr| try code.append(instr);
+        try code.append(Asm.@"mov Xd, Xn"(22, 21));
+        for (Asm.movImm64(23, iterations)) |instr| try code.append(instr);
+
+        const loop_pos = code.items.len;
+        for (args) |arg| {
+            for (Asm.movImm64(0, @bitCast(arg))) |instr| try code.append(instr);
+            try code.append(Asm.@".push x0");
+        }
+        const bl_pos = code.items.len;
+        try code.append(0);
+        try code.append(Asm.@"subs Xn, Xn, #imm"(23, 1));
+        const bne_pos = code.items.len;
+        try code.append(Asm.@"b.cond offset"(Asm.COND_NE, @intCast(@as(isize, @intCast(loop_pos)) - @as(isize, @intCast(bne_pos)))));
+
+        try code.append(Asm.@".rpop Xn"(23));
+        try code.append(Asm.@"ldp x21, x22, [sp], #0x10");
+        try code.append(Asm.@"ldp x29, x30, [sp], #0x10");
+        try code.append(Asm.@"mov x0, #0");
+        try code.append(Asm.ret);
+
+        const linked_base = @intFromPtr(self.image.mem.ptr) + self.image.end;
+        const instr_addr = linked_base + bl_pos * 4;
         const offset_bytes: i64 = @as(i64, @intCast(target_addr)) - @as(i64, @intCast(instr_addr));
         const offset_words: i26 = @intCast(@divExact(offset_bytes, 4));
         code.items[bl_pos] = Asm.@"bl offset"(offset_words);
@@ -3083,6 +3227,9 @@ pub const Fy = struct {
         .{ "i>f", fnToWord(Builtins.intToFloat) },
         .{ "f>i", fnToWord(Builtins.floatToInt) },
         .{ "f.", fnToWord(Builtins.floatPrint) },
+        .{ "v2f+", vector2BinWord(Asm.@"fadd Vd.2D, Vn.2D, Vm.2D"(0, 0, 1)) },
+        .{ "v2f*", vector2BinWord(Asm.@"fmul Vd.2D, Vn.2D, Vm.2D"(0, 0, 1)) },
+        .{ "v2fmadd", vector2MAddWord() },
 
         // IO
         .{ "slurp", fnToWord(Builtins.slurp) }, // (path -- string)
@@ -3166,6 +3313,8 @@ pub const Fy = struct {
         .{ "f!32", floatStore32Word() }, // (fval addr -- )
         .{ "@32", fnToWord(Builtins.memLoad32) }, // (addr -- val)
         .{ "f@32", floatLoad32Word() }, // (addr -- fval)
+        .{ "f!64", floatStore64Word() }, // (fval addr -- )
+        .{ "f@64", floatLoad64Word() }, // (addr -- fval)
         .{ "!16", fnToWord(Builtins.memStore16) }, // (val addr -- )
         .{ "@16", fnToWord(Builtins.memLoad16) }, // (addr -- val)
         .{ "!64", fnToWord(Builtins.memStore64) }, // (val addr -- )

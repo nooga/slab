@@ -171,6 +171,9 @@ Floats are f64 values stored as bitcast i64. Use `i>f` / `f>i` to convert.
 | `i>f` | `n -- f` | Integer to float |
 | `f>i` | `f -- n` | Float to integer (truncate) |
 | `f.` | `f --` | Print float |
+| `v2f+` | `dst a b --` | Add two raw f64x2 buffers with NEON and store to dst |
+| `v2f*` | `dst a b --` | Multiply two raw f64x2 buffers with NEON and store to dst |
+| `v2fmadd` | `dst acc a b --` | Fused multiply-add raw f64x2 buffers: dst = acc + a*b |
 
 ## Quote Operations
 
@@ -231,6 +234,8 @@ Floats are f64 values stored as bitcast i64. Use `i>f` / `f>i` to convert.
 | `@32` | `addr -- val` | Load 32-bit value |
 | `f!32` | `fval addr --` | Store float32 |
 | `f@32` | `addr -- fval` | Load float32 |
+| `f!64` | `fval addr --` | Store raw float64 |
+| `f@64` | `addr -- fval` | Load raw float64 |
 | `!16` | `val addr --` | Store 16-bit value |
 | `@16` | `addr -- val` | Load 16-bit value |
 
