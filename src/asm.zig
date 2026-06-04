@@ -223,6 +223,11 @@ pub fn @"add Xn, Xn, #2"(n: u5) u32 {
     return 0x91000800 | nn | (nn << 5);
 }
 
+/// ADD Xd, Xn, #imm — unsigned 12-bit immediate, no shift.
+pub fn add_imm(d: u5, n: u5, imm: u12) u32 {
+    return 0x91000000 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, imm) << 10);
+}
+
 // SP-relative helpers for locals frames
 // Reserve a stack frame: sub sp, sp, #imm (imm must be a multiple of 16, imm <= 4095)
 pub fn sub_sp_imm(imm: u12) u32 {
@@ -362,6 +367,18 @@ pub fn @"fcvt Sd, Dn"(d: u5, n: u5) u32 {
 // Encoding: 0x1E22C000 | Rn<<5 | Rd
 pub fn @"fcvt Dd, Sn"(d: u5, n: u5) u32 {
     return 0x1E22C000 | @as(u32, d) | (@as(u32, n) << 5);
+}
+
+// SCVTF Dd, Xn — signed integer to double-precision float
+// Encoding: 0x9E620000 | Rn<<5 | Rd
+pub fn @"scvtf Dd, Xn"(d: u5, n: u5) u32 {
+    return 0x9E620000 | @as(u32, d) | (@as(u32, n) << 5);
+}
+
+// FCVTZS Xd, Dn — double-precision float to signed integer, toward zero
+// Encoding: 0x9E780000 | Rn<<5 | Rd
+pub fn @"fcvtzs Xd, Dn"(d: u5, n: u5) u32 {
+    return 0x9E780000 | @as(u32, d) | (@as(u32, n) << 5);
 }
 
 // --- Sized memory access instructions for struct fields ---

@@ -24,6 +24,11 @@ fn expectContains(haystack: []const u8, needle: []const u8) !void {
     try std.testing.expect(std.mem.indexOf(u8, haystack, needle) != null);
 }
 
+fn makeFyFloat(value: f64) Fy.Value {
+    const bits: u64 = @bitCast(value);
+    return @bitCast((bits & ~@as(u64, 3)) | 2);
+}
+
 test "Basic expressions and built-in words" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
@@ -611,6 +616,23 @@ test "DSP NEON f64x2 words operate on raw f64 buffers and report vector code" {
     try expectContains(json, "\"neon_float_alu_count\"");
 }
 
+test "float integer conversions are inline machine code" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run("noalloc: conv-roundtrip 3 i>f f>i ;");
+    try std.testing.expectEqual(Fy.makeInt(3), try fy.run("conv-roundtrip"));
+
+    const report = fy.reportWord("conv-roundtrip") orelse return error.MissingReport;
+    try std.testing.expectEqual(@as(usize, 0), report.blr_count);
+
+    const disasm = try fy.disassembleWordAlloc(std.testing.allocator, "conv-roundtrip");
+    defer std.testing.allocator.free(disasm);
+    try expectContains(disasm, "scvtf d, x");
+    try expectContains(disasm, "fcvtzs x, d");
+}
+
 test "compiler report tracks branchy noalloc words" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
@@ -780,6 +802,116 @@ test "dsp: register stack keeps straight-line arithmetic off the fy stack" {
 
     _ = try fy.run("dsp: reg-over2 1 2 3 4 over2 + + + + + ;");
     try std.testing.expectEqual(Fy.makeInt(13), try fy.run("reg-over2"));
+}
+
+test "dsp: register stack flushes before stack-memory words" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run("dsp: reg-pick 10 20 30 1 pick + + + ;");
+    try std.testing.expectEqual(Fy.makeInt(80), try fy.run("reg-pick"));
+}
+
+test "dsp2: rational f64 shaper lowers stack code to typed register code" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run(
+        \\dsp2: rat
+        \\  3 pick f@64
+        \\  1 pick f*
+        \\  -4.0 4.0 fclamp
+        \\  dup dup f*
+        \\  dup 27.0 f+
+        \\  2 pick f*
+        \\  1 pick 9.0 f* 27.0 f+
+        \\  f/
+        \\  -1.0 1.0 fclamp
+        \\  swap drop swap drop
+        \\  5 pick f!64
+        \\  drop drop drop drop drop
+        \\;
+    );
+
+    var out: f64 = 0;
+    var input: f64 = 0.5;
+    var table: [1]f64 = .{0};
+    const span: i64 = 0;
+    const drive: f64 = 2.5;
+    const args = [_]Fy.Value{
+        Fy.makeInt(@intCast(@intFromPtr(&out))),
+        Fy.makeInt(@intCast(@intFromPtr(&input))),
+        Fy.makeInt(@intCast(@intFromPtr(&table))),
+        Fy.makeInt(span),
+        makeFyFloat(drive),
+    };
+
+    _ = try fy.callWordRepeatedWithArgsNoResult("rat", 1, &args);
+    const x = input * drive;
+    const x2 = x * x;
+    const expected = @min(@max(x * (27.0 + x2) / (27.0 + 9.0 * x2), -1.0), 1.0);
+    try std.testing.expectApproxEqAbs(expected, out, 0.000000000001);
+
+    const report = fy.reportWord("rat") orelse return error.MissingReport;
+    try std.testing.expectEqual(@as(usize, 0), report.push_count);
+    try std.testing.expectEqual(@as(usize, 0), report.pop_count);
+    try std.testing.expect(report.instruction_count < 60);
+
+    const disasm = try fy.disassembleWordAlloc(std.testing.allocator, "rat");
+    defer std.testing.allocator.free(disasm);
+    try expectContains(disasm, "fdiv d");
+    try expectContains(disasm, "fmax d");
+    try expectContains(disasm, "fmin d");
+}
+
+test "dsp2: inlines called dsp2 word before typed codegen" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run(
+        \\dsp2: rat-core
+        \\  3 pick f@64
+        \\  1 pick f*
+        \\  -4.0 4.0 fclamp
+        \\  dup dup f*
+        \\  dup 27.0 f+
+        \\  2 pick f*
+        \\  1 pick 9.0 f* 27.0 f+
+        \\  f/
+        \\  -1.0 1.0 fclamp
+        \\  swap drop swap drop
+        \\  5 pick f!64
+        \\  drop drop drop drop drop
+        \\;
+        \\dsp2: rat-wrapper rat-core ;
+    );
+
+    var out: f64 = 0;
+    var input: f64 = 0.5;
+    var table: [1]f64 = .{0};
+    const args = [_]Fy.Value{
+        Fy.makeInt(@intCast(@intFromPtr(&out))),
+        Fy.makeInt(@intCast(@intFromPtr(&input))),
+        Fy.makeInt(@intCast(@intFromPtr(&table))),
+        Fy.makeInt(0),
+        makeFyFloat(2.5),
+    };
+
+    _ = try fy.callWordRepeatedWithArgsNoResult("rat-wrapper", 1, &args);
+    const x = input * 2.5;
+    const x2 = x * x;
+    const expected = @min(@max(x * (27.0 + x2) / (27.0 + 9.0 * x2), -1.0), 1.0);
+    try std.testing.expectApproxEqAbs(expected, out, 0.000000000001);
+
+    const core_report = fy.reportWord("rat-core") orelse return error.MissingReport;
+    const wrapper_report = fy.reportWord("rat-wrapper") orelse return error.MissingReport;
+    try std.testing.expectEqual(core_report.instruction_count, wrapper_report.instruction_count);
+    try std.testing.expectEqual(@as(usize, 0), wrapper_report.bl_count);
+    try std.testing.expectEqual(@as(usize, 0), wrapper_report.push_count);
+    try std.testing.expectEqual(@as(usize, 0), wrapper_report.pop_count);
 }
 
 test "dsp: rejects heap allocation" {

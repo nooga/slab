@@ -413,6 +413,11 @@ fn flush(out: *compat.ArrayList(u32), stack: []const u5) !void {
     }
 }
 
+fn needsRealFyStack(instr: u32) bool {
+    return instr == Asm.@"ldr x0, [x21, x0, lsl #3]" or
+        instr == Asm.@"sub x0, x22, x21";
+}
+
 /// Optimize straight-line DSP code by keeping fy stack values in caller-saved
 /// registers instead of eagerly spilling every push/pop to the fy data stack.
 /// Branch/call bodies are deliberately skipped for now; control-flow-aware
@@ -503,6 +508,10 @@ pub fn optimizeRegisterStack(allocator: std.mem.Allocator, code: *compat.ArrayLi
             continue;
         }
 
+        if (needsRealFyStack(instr) and depth > 0) {
+            try flush(&out, stack[0..depth]);
+            depth = 0;
+        }
         try out.append(instr);
     }
 

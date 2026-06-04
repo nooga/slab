@@ -18,6 +18,7 @@ const Asm = @import("asm.zig");
 const Args = @import("args.zig");
 const compat = @import("compat.zig");
 const Dsp = @import("dsp.zig");
+const Dsp2 = @import("dsp2.zig");
 
 extern fn __clear_cache(start: usize, end: usize) callconv(.c) void;
 
@@ -319,10 +320,18 @@ pub const Fy = struct {
             if (self.userWords.getPtr(k.*)) |v| {
                 self.fyalloc.free(v.code);
                 if (v.inline_body) |body| self.fyalloc.free(body);
+                if (v.dsp2_body) |body| Dsp2.freeTokens(self.fyalloc, body);
                 self.fyalloc.free(k.*);
             }
         }
         self.userWords.deinit();
+    }
+
+    fn clearOwnedWordBodies(self: *Fy, word: *Word) void {
+        if (word.inline_body) |body| self.fyalloc.free(body);
+        word.inline_body = null;
+        if (word.dsp2_body) |body| Dsp2.freeTokens(self.fyalloc, body);
+        word.dsp2_body = null;
     }
 
     fn deinitImportedFiles(self: *Fy) void {
@@ -635,11 +644,13 @@ pub const Fy = struct {
         image_body_addr: ?usize = null, // entry body after UserWord prologue, for opt-in inlining
         image_body_len: usize = 0,
         inline_body: ?[]u32 = null, // canonical pre-target-alloc body copied into inline callers
+        dsp2_body: ?[]Dsp2.BodyToken = null, // flattened typed token body for IR-stage inlining
         trampoline_addr: ?usize = null, // stable B-trampoline in image (for hot-patching)
         immediate: bool = false, // compile-time word (macro): execute instead of compile
         noalloc: bool = false, // declared with noalloc: — must not call heap-allocating words
         inlineable: bool = false, // declared with inline-noalloc: — may be copied into opt-in callers
         dsp: bool = false, // declared with dsp: — Slab audio-thread kernel mode
+        dsp2: bool = false, // declared with dsp2: — typed DSP compiler pipeline
 
         const DEFINE = ":";
         const END = ";";
@@ -775,6 +786,31 @@ pub const Fy = struct {
             Asm.@"lsl Xn, Xn, #2"(x_reg),
             Asm.@"add Xn, Xn, #2"(x_reg),
         };
+    }
+
+    fn intToFloatWord() Word {
+        return inlineWord(&[_]u32{
+            Asm.@".pop Xn"(9),
+            Asm.@"asr Xn, Xn, #2"(9),
+            Asm.@"scvtf Dd, Xn"(0, 9),
+            emitRetagFloatResult(0, 0)[0],
+            emitRetagFloatResult(0, 0)[1],
+            emitRetagFloatResult(0, 0)[2],
+            emitRetagFloatResult(0, 0)[3],
+            Asm.@".push x0",
+        }, 1, 1);
+    }
+
+    fn floatToIntWord() Word {
+        return inlineWord(&[_]u32{
+            Asm.@".pop Xn"(9),
+            emitFloatArgToReg(9, 0)[0],
+            emitFloatArgToReg(9, 0)[1],
+            emitFloatArgToReg(9, 0)[2],
+            Asm.@"fcvtzs Xd, Dn"(0, 0),
+            Asm.@"lsl Xn, Xn, #2"(0),
+            Asm.@".push x0",
+        }, 1, 1);
     }
 
     fn floatMAddWord() Word {
@@ -1256,6 +1292,23 @@ pub const Fy = struct {
         return word.dsp;
     }
 
+    fn straightLineDspBody(word: Word) ?[]const u32 {
+        if (!word.dsp2) return null;
+        const addr = word.image_body_addr orelse return null;
+        if (word.image_body_len == 0) return null;
+        const ptr: [*]const u32 = @ptrFromInt(addr);
+        const body = ptr[0..word.image_body_len];
+        const report = analyzeCode(body);
+        if (report.local_branch_count != 0 or
+            report.bl_count != 0 or
+            report.blr_count != 0 or
+            report.ret_count != 0)
+        {
+            return null;
+        }
+        return body;
+    }
+
     pub fn disassembleWordAlloc(self: *const Fy, allocator: std.mem.Allocator, name: []const u8) ![]u8 {
         const code = self.wordCode(name) orelse return error.UnknownWord;
         return disassembleAlloc(allocator, code);
@@ -1280,6 +1333,9 @@ pub const Fy = struct {
         if (instr == Asm.@".pop x1") return "pop x1";
         if (instr == Asm.@".pop x0, x1") return "pop x0, x1";
         if (instr == Asm.@".pop x1, x0") return "pop x1, x0";
+        if (instr == Asm.@"stp x29, x30, [sp, #0x10]!") return "stp fp, lr";
+        if (instr == Asm.@"ldp x29, x30, [sp], #0x10") return "ldp fp, lr";
+        if (instr == Asm.@"mov x29, sp") return "mov fp, sp";
         if (isPush(instr)) return "push xn";
         if (isPop(instr)) return "pop xn";
         if (instr == Asm.ret) return "ret";
@@ -1294,6 +1350,13 @@ pub const Fy = struct {
         if ((instr & 0xfffffc00) == (Asm.@"add Xn, Xn, #2"(0) & 0xfffffc00)) return "add xn, xn, #2";
         if ((instr & 0xfffffc00) == (Asm.@"fmov Dd, Xn"(0, 0) & 0xfffffc00)) return "fmov d, x";
         if ((instr & 0xfffffc00) == (Asm.@"fmov Xd, Dn"(0, 0) & 0xfffffc00)) return "fmov x, d";
+        if ((instr & 0xffe01c00) == 0x1e601000) return "fmov d, #imm";
+        if ((instr & 0xfffffc00) == (Asm.@"scvtf Dd, Xn"(0, 0) & 0xfffffc00)) return "scvtf d, x";
+        if ((instr & 0xfffffc00) == (Asm.@"fcvtzs Xd, Dn"(0, 0) & 0xfffffc00)) return "fcvtzs x, d";
+        if ((instr & 0xffc00000) == 0xfd400000) return "ldr d";
+        if ((instr & 0xffc00000) == 0xfd000000) return "str d";
+        if ((instr & 0xffc00000) == 0xf9400000) return "ldr x";
+        if ((instr & 0xffc00000) == 0x91000000) return "add x, x, #imm";
         if ((instr & 0xffe0fc00) == 0x1e602800) return "fadd d";
         if ((instr & 0xffe0fc00) == 0x1e603800) return "fsub d";
         if ((instr & 0xffe0fc00) == 0x1e600800) return "fmul d";
@@ -1431,7 +1494,11 @@ pub const Fy = struct {
         if (iterations == 0) return makeInt(0);
 
         const word = self.userWords.get(name) orelse return error.UnknownWord;
-        const target_addr = word.image_addr orelse word.trampoline_addr orelse return error.UnknownWord;
+        const inline_body = straightLineDspBody(word);
+        const target_addr = if (inline_body == null)
+            word.image_addr orelse word.trampoline_addr orelse return error.UnknownWord
+        else
+            0;
 
         var code = compat.ArrayList(u32).init(self.fyalloc);
         errdefer code.deinit();
@@ -1444,13 +1511,29 @@ pub const Fy = struct {
         try code.append(Asm.@"mov Xd, Xn"(22, 21));
         for (Asm.movImm64(23, iterations)) |instr| try code.append(instr);
 
-        const loop_pos = code.items.len;
-        for (args) |arg| {
-            for (Asm.movImm64(0, @bitCast(arg))) |instr| try code.append(instr);
-            try code.append(Asm.@".push x0");
+        if (inline_body != null) {
+            for (args) |arg| {
+                for (Asm.movImm64(0, @bitCast(arg))) |instr| try code.append(instr);
+                try code.append(Asm.@".push x0");
+            }
+            try code.append(Asm.@"mov Xd, Xn"(22, 21));
         }
-        const bl_pos = code.items.len;
-        try code.append(0);
+
+        const loop_pos = code.items.len;
+        if (inline_body != null) {
+            try code.append(Asm.@"mov Xd, Xn"(21, 22));
+        } else {
+            for (args) |arg| {
+                for (Asm.movImm64(0, @bitCast(arg))) |instr| try code.append(instr);
+                try code.append(Asm.@".push x0");
+            }
+        }
+        const bl_pos = if (inline_body == null) code.items.len else 0;
+        if (inline_body) |body| {
+            try code.appendSlice(body);
+        } else {
+            try code.append(0);
+        }
         try code.append(Asm.@"subs Xn, Xn, #imm"(23, 1));
         const bne_pos = code.items.len;
         try code.append(Asm.@"b.cond offset"(Asm.COND_NE, @intCast(@as(isize, @intCast(loop_pos)) - @as(isize, @intCast(bne_pos)))));
@@ -1461,11 +1544,13 @@ pub const Fy = struct {
         try code.append(Asm.@"mov x0, #0");
         try code.append(Asm.ret);
 
-        const linked_base = @intFromPtr(self.image.mem.ptr) + self.image.end;
-        const instr_addr = linked_base + bl_pos * 4;
-        const offset_bytes: i64 = @as(i64, @intCast(target_addr)) - @as(i64, @intCast(instr_addr));
-        const offset_words: i26 = @intCast(@divExact(offset_bytes, 4));
-        code.items[bl_pos] = Asm.@"bl offset"(offset_words);
+        if (inline_body == null) {
+            const linked_base = @intFromPtr(self.image.mem.ptr) + self.image.end;
+            const instr_addr = linked_base + bl_pos * 4;
+            const offset_bytes: i64 = @as(i64, @intCast(target_addr)) - @as(i64, @intCast(instr_addr));
+            const offset_words: i26 = @intCast(@divExact(offset_bytes, 4));
+            code.items[bl_pos] = Asm.@"bl offset"(offset_words);
+        }
 
         const wrapper_code = try code.toOwnedSlice();
         const executable = self.image.link(wrapper_code);
@@ -3224,8 +3309,8 @@ pub const Fy = struct {
         .{ "f>", floatCmpOp(Asm.COND_GT) },
         .{ "f=", floatCmpOp(Asm.COND_EQ) },
         .{ "fneg", floatNegWord() },
-        .{ "i>f", fnToWord(Builtins.intToFloat) },
-        .{ "f>i", fnToWord(Builtins.floatToInt) },
+        .{ "i>f", intToFloatWord() },
+        .{ "f>i", floatToIntWord() },
         .{ "f.", fnToWord(Builtins.floatPrint) },
         .{ "v2f+", vector2BinWord(Asm.@"fadd Vd.2D, Vn.2D, Vm.2D"(0, 0, 1)) },
         .{ "v2f*", vector2BinWord(Asm.@"fmul Vd.2D, Vn.2D, Vm.2D"(0, 0, 1)) },
@@ -4001,13 +4086,12 @@ pub const Fy = struct {
                 if (word.code.len > 0) {
                     self.fy.fyalloc.free(word.code);
                 }
-                if (word.inline_body) |old| {
-                    self.fy.fyalloc.free(old);
-                    word.inline_body = null;
-                }
+                self.fy.clearOwnedWordBodies(word);
                 // Make a copy of the code
                 const codeCopy = try self.fy.fyalloc.dupe(u32, code);
                 word.code = codeCopy;
+                word.dsp = false;
+                word.dsp2 = false;
             }
         }
 
@@ -4671,10 +4755,14 @@ pub const Fy = struct {
             const reg_name = final_name orelse cname;
             try self.declareWord(reg_name);
             if (self.fy.userWords.getPtr(reg_name)) |word| {
+                self.fy.clearOwnedWordBodies(word);
                 word.image_addr = entry_addr;
                 word.image_len = val_code_len;
                 // Constants just push a literal at runtime — no heap interaction possible.
                 word.noalloc = true;
+                word.inlineable = false;
+                word.dsp = false;
+                word.dsp2 = false;
             }
             if (final_name) |fn_| self.fy.fyalloc.free(fn_);
         }
@@ -4714,9 +4802,14 @@ pub const Fy = struct {
             // Register the word with immediate=true
             try self.declareWord(reg_name);
             if (self.fy.userWords.getPtr(reg_name)) |word| {
+                self.fy.clearOwnedWordBodies(word);
                 word.image_addr = entry_addr;
                 word.image_len = body_code_len;
                 word.immediate = true;
+                word.noalloc = false;
+                word.inlineable = false;
+                word.dsp = false;
+                word.dsp2 = false;
             }
             if (final_name) |fn_| self.fy.fyalloc.free(fn_);
         }
@@ -4769,8 +4862,7 @@ pub const Fy = struct {
 
             try self.declareWord(reg_name);
             if (self.fy.userWords.getPtr(reg_name)) |word| {
-                if (word.inline_body) |old| self.fy.fyalloc.free(old);
-                word.inline_body = null;
+                self.fy.clearOwnedWordBodies(word);
                 if (word.trampoline_addr) |tramp| {
                     const ob: i64 = @as(i64, @intCast(entry_addr)) - @as(i64, @intCast(tramp));
                     const ow: i26 = @intCast(@divExact(ob, 4));
@@ -4792,6 +4884,129 @@ pub const Fy = struct {
                 word.noalloc = true;
                 word.inlineable = inlineable;
                 word.dsp = dsp;
+                word.dsp2 = false;
+            }
+            if (final_name) |fn_| self.fy.fyalloc.free(fn_);
+        }
+
+        /// `dsp2: name body ;` — typed DSP compiler pipeline. It rejects any
+        /// unsupported dynamic feature instead of falling back to the tagged
+        /// stack compiler.
+        fn findDsp2Body(self: *Compiler, name: []const u8) ?[]const Dsp2.BodyToken {
+            const word = if (self.namespace) |ns| blk: {
+                var buf: [256]u8 = undefined;
+                if (ns.len + name.len > buf.len) break :blk self.fy.findWord(name);
+                @memcpy(buf[0..ns.len], ns);
+                @memcpy(buf[ns.len .. ns.len + name.len], name);
+                break :blk self.fy.findWord(buf[0 .. ns.len + name.len]) orelse self.fy.findWord(name);
+            } else self.fy.findWord(name);
+            if (word) |w| {
+                if (w.dsp2) return w.dsp2_body;
+            }
+            return null;
+        }
+
+        fn compileDsp2(self: *Compiler) Error!void {
+            const name_tok = try self.parser.nextToken();
+            const w = switch (name_tok orelse return Error.UnexpectedEndOfInput) {
+                .Word => |n| n,
+                else => return Error.ExpectedWord,
+            };
+
+            var program = Dsp2.Program.init(self.fy.fyalloc);
+            defer program.deinit();
+
+            while (true) {
+                const tok = try self.parser.nextToken() orelse return Error.UnexpectedEndOfInput;
+                switch (tok) {
+                    .Word => |word| {
+                        if (std.mem.eql(u8, word, Word.END)) break;
+                        if (self.findDsp2Body(word)) |body| {
+                            program.addTokens(body) catch |err| {
+                                self.setError("dsp2: cannot inline '{s}' ({s})", .{ word, @errorName(err) });
+                                return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
+                            };
+                            continue;
+                        }
+                        program.addWord(word) catch |err| {
+                            self.setError("dsp2: unsupported word or stack effect near '{s}' ({s})", .{ word, @errorName(err) });
+                            return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
+                        };
+                    },
+                    .Number => |n| program.addNumber(n) catch |err| {
+                        return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
+                    },
+                    .Float => |f| program.addFloat(f) catch |err| {
+                        return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
+                    },
+                    .String => {
+                        self.setError("dsp2: strings are not allowed", .{});
+                        return Error.UnknownWord;
+                    },
+                }
+            }
+
+            var builder = program.build() catch |err| {
+                self.setError("dsp2: {s}", .{@errorName(err)});
+                return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
+            };
+            defer builder.deinit();
+
+            var dsp2_body: ?[]Dsp2.BodyToken = Dsp2.cloneTokens(self.fy.fyalloc, program.tokens.items) catch return Error.OutOfMemory;
+            errdefer if (dsp2_body) |body| Dsp2.freeTokens(self.fy.fyalloc, body);
+
+            var c = Compiler.init(self.fy, self.parser);
+            defer c.deinit();
+            try c.enterPersist();
+            builder.emit(&c.code) catch |err| {
+                self.setError("dsp2 emit: {s}", .{@errorName(err)});
+                return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
+            };
+            try c.leavePersist();
+            const code = c.code.toOwnedSlice() catch return Error.OutOfMemory;
+            const code_len = code.len;
+            const entry = self.fy.image.link(code);
+            const entry_addr = @intFromPtr(entry.ptr);
+            const body_len = if (code_len >= USER_WORD_PROLOGUE_INSTRS + USER_WORD_EPILOGUE_INSTRS)
+                code_len - USER_WORD_PROLOGUE_INSTRS - USER_WORD_EPILOGUE_INSTRS
+            else
+                0;
+            const body_addr = if (body_len > 0) entry_addr + USER_WORD_PROLOGUE_INSTRS * @sizeOf(u32) else 0;
+            self.fy.fyalloc.free(code);
+
+            const final_name = if (self.namespace) |ns| blk: {
+                const prefixed = self.fy.fyalloc.alloc(u8, ns.len + w.len) catch return Error.OutOfMemory;
+                @memcpy(prefixed[0..ns.len], ns);
+                @memcpy(prefixed[ns.len..], w);
+                break :blk prefixed;
+            } else null;
+            const reg_name = final_name orelse w;
+
+            try self.declareWord(reg_name);
+            if (self.fy.userWords.getPtr(reg_name)) |word| {
+                self.fy.clearOwnedWordBodies(word);
+                if (word.trampoline_addr) |tramp| {
+                    const ob: i64 = @as(i64, @intCast(entry_addr)) - @as(i64, @intCast(tramp));
+                    const ow: i26 = @intCast(@divExact(ob, 4));
+                    self.fy.image.patchInstruction(tramp, Asm.@"b offset"(ow));
+                    word.image_addr = entry_addr;
+                    word.image_len = code_len;
+                    word.image_body_addr = if (body_len > 0) body_addr else null;
+                    word.image_body_len = body_len;
+                } else {
+                    const tramp = self.fy.image.linkTrampoline(entry_addr);
+                    word.image_addr = entry_addr;
+                    word.image_len = code_len;
+                    word.image_body_addr = if (body_len > 0) body_addr else null;
+                    word.image_body_len = body_len;
+                    word.trampoline_addr = tramp;
+                }
+                word.noalloc = true;
+                word.inlineable = false;
+                word.dsp = true;
+                word.dsp2 = true;
+                word.dsp2_body = dsp2_body;
+                dsp2_body = null;
             }
             if (final_name) |fn_| self.fy.fyalloc.free(fn_);
         }
@@ -5136,8 +5351,7 @@ pub const Fy = struct {
                         // Declare word AFTER successful compilation (fixes ghost word bug)
                         try self.declareWord(reg_name);
                         if (self.fy.userWords.getPtr(reg_name)) |word| {
-                            if (word.inline_body) |old| self.fy.fyalloc.free(old);
-                            word.inline_body = null;
+                            self.fy.clearOwnedWordBodies(word);
                             if (word.trampoline_addr) |tramp| {
                                 // Redefinition: patch existing trampoline to jump to new body
                                 const ob: i64 = @as(i64, @intCast(entry_addr)) - @as(i64, @intCast(tramp));
@@ -5159,6 +5373,7 @@ pub const Fy = struct {
                             word.noalloc = false;
                             word.inlineable = false;
                             word.dsp = false;
+                            word.dsp2 = false;
                         }
                         // Free the prefixed name if we allocated one (declareWord dupes it)
                         if (final_name) |fn_| self.fy.fyalloc.free(fn_);
@@ -5266,6 +5481,11 @@ pub const Fy = struct {
                         if (std.mem.eql(u8, w, "inline-noalloc:")) {
                             self.resetQuoteTracking();
                             try self.compileNoalloc(true, false);
+                            continue;
+                        }
+                        if (std.mem.eql(u8, w, "dsp2:")) {
+                            self.resetQuoteTracking();
+                            try self.compileDsp2();
                             continue;
                         }
                         if (std.mem.eql(u8, w, "dsp:")) {
