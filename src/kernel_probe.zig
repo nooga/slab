@@ -13,6 +13,16 @@ const OSC_SAMPLE_RATE: u32 = 48_000;
 const OSC_LISTEN_SECONDS: usize = 2;
 const OSC_SWEEP_START_HZ: f64 = 50.0;
 const OSC_SWEEP_END_HZ: f64 = 2000.0;
+const FILTER_SAMPLE_RATE: u32 = 48_000;
+const FILTER_RENDER_SECONDS: f64 = 2.0;
+const FILTER_GAP_SECONDS: f64 = 0.12;
+const FILTER_CUTOFF_START_HZ: f64 = 80.0;
+const FILTER_CUTOFF_END_HZ: f64 = 8000.0;
+const FILTER_INPUT_HZ: f64 = 110.0;
+const FILTER_SAW_GAIN: f64 = 0.0;
+const FILTER_NOISE_GAIN: f64 = 0.34;
+const FILTER_DRIVE: f64 = 1.2;
+const FILTER_RESONANCES = [_]f64{ 0.0, 0.45, 0.80, 1.08, 1.25 };
 
 const Cli = struct {
     kernel: []const u8 = "kernels/00-primitives/v2.fy",
@@ -64,6 +74,10 @@ pub fn main(init: std.process.Init) !void {
     }
     if (isEnvelopeCase(cli.case_name)) {
         try runEnvelopeCase(alloc, cli, &host);
+        return;
+    }
+    if (isFilterCase(cli.case_name)) {
+        try runFilterCase(alloc, cli);
         return;
     }
     if (isOscillatorCase(cli.case_name)) {
@@ -143,10 +157,15 @@ fn usage() void {
         \\cases:
         \\  v2-add | v2-mul | v2-fmadd | tanh-table-sweep | tanh-rational-sweep
         \\  adsr-linear-render | adsr-cap-render
+        \\  ms20-lpf-grid
         \\  saw-polyblep-render | saw-falling-polyblep-render | saw-cap-polyblep-render
         \\  saw-topcut-polyblep-render | square-polyblep-render | pulse-polyblep-render
         \\
     , .{});
+}
+
+fn isFilterCase(name: []const u8) bool {
+    return std.mem.eql(u8, name, "ms20-lpf-grid");
 }
 
 fn isEnvelopeCase(name: []const u8) bool {
@@ -377,6 +396,105 @@ fn benchmarkZigRational(input: []const f64, drive: f64, iterations: u64) f64 {
     }
     const run_ns = nowNs() - start;
     return @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(iterations));
+}
+
+const Ms20LpfState = struct {
+    ic1: f64 = 0,
+    ic2: f64 = 0,
+};
+
+fn runFilterCase(alloc: std.mem.Allocator, cli: Cli) !void {
+    const sample_rate = FILTER_SAMPLE_RATE;
+    const frames_per_render: usize = @intFromFloat(FILTER_RENDER_SECONDS * @as(f64, @floatFromInt(sample_rate)));
+    const gap_frames: usize = @intFromFloat(FILTER_GAP_SECONDS * @as(f64, @floatFromInt(sample_rate)));
+    const render_count = FILTER_RESONANCES.len;
+    const total_frames = render_count * frames_per_render + (render_count - 1) * gap_frames;
+
+    const output = try alloc.alloc(f64, total_frames);
+    defer alloc.free(output);
+    @memset(output, 0);
+
+    const start = nowNs();
+    var peak: f64 = 0;
+    var sum: f64 = 0;
+    var sum_sq: f64 = 0;
+    var nonfinite_count: usize = 0;
+    var offset: usize = 0;
+    for (FILTER_RESONANCES) |resonance| {
+        var state = Ms20LpfState{};
+        var osc_phase: f64 = 0;
+        var noise_state: u32 = 0x1234abcd;
+        var i: usize = 0;
+        while (i < frames_per_render) : (i += 1) {
+            const pos = @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(frames_per_render - 1));
+            const cutoff = FILTER_CUTOFF_START_HZ * @exp(@log(FILTER_CUTOFF_END_HZ / FILTER_CUTOFF_START_HZ) * pos);
+            const dt = FILTER_INPUT_HZ / @as(f64, @floatFromInt(sample_rate));
+            const input = zigSawPolyblep(osc_phase, dt) * FILTER_SAW_GAIN + whiteNoise(&noise_state) * FILTER_NOISE_GAIN;
+            osc_phase = wrap01(osc_phase + dt);
+            const y = ms20ishLpfStep(&state, input, cutoff, resonance, FILTER_DRIVE, sample_rate);
+            output[offset + i] = y;
+            if (!std.math.isFinite(y)) {
+                nonfinite_count += 1;
+            } else {
+                peak = @max(peak, @abs(y));
+                sum += y;
+                sum_sq += y * y;
+            }
+        }
+        offset += frames_per_render;
+        if (offset < output.len) offset += gap_frames;
+    }
+    const run_ns = nowNs() - start;
+
+    var metrics = Metrics{};
+    metrics.ns_per_iter = @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(render_count * frames_per_render));
+    metrics.nonfinite_count = nonfinite_count;
+    metrics.peak = peak;
+    const finite_count = @as(f64, @floatFromInt(output.len - nonfinite_count));
+    if (finite_count > 0) {
+        metrics.mean = sum / finite_count;
+        metrics.rms = @sqrt(sum_sq / finite_count);
+    }
+
+    try writeFilterArtifacts(alloc, cli, output, metrics, sample_rate, frames_per_render, gap_frames);
+    if (metrics.nonfinite_count != 0 or metrics.peak > 8.0) return error.KernelRatchetFailed;
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} renders={} frames={} ns_per_sample={d:.3} peak={d:.3} rms={d:.3}\n",
+        .{ cli.kernel, cli.word, cli.case_name, render_count, frames_per_render, metrics.ns_per_iter, metrics.peak, metrics.rms },
+    );
+}
+
+fn ms20ishLpfStep(state: *Ms20LpfState, input: f64, cutoff_hz: f64, resonance: f64, drive: f64, sample_rate: u32) f64 {
+    const oversample: usize = 4;
+    const os_rate = @as(f64, @floatFromInt(sample_rate * oversample));
+    const fc = std.math.clamp(cutoff_hz, 20.0, @as(f64, @floatFromInt(sample_rate)) * 0.42);
+    const g = @tan(std.math.pi * fc / os_rate);
+    const damping = @max(0.015, 1.2 / (1.0 + resonance * 8.0));
+    const x = input;
+    var out: f64 = state.ic2;
+    var i: usize = 0;
+    while (i < oversample) : (i += 1) {
+        const driven = diodeClip(x * drive, 1.0);
+        const h = 1.0 / (1.0 + 2.0 * damping * g + g * g);
+        const hp = (driven - (2.0 * damping + g) * state.ic1 - state.ic2) * h;
+        const bp = g * hp + state.ic1;
+        state.ic1 = diodeClip(g * hp + bp, 1.05);
+        const lp = g * bp + state.ic2;
+        state.ic2 = diodeClip(g * bp + lp, 1.05);
+        out = diodeClip(lp, 1.8);
+    }
+    return out;
+}
+
+fn diodeClip(x: f64, amount: f64) f64 {
+    return tanhRationalApprox(x * amount);
+}
+
+fn whiteNoise(state: *u32) f64 {
+    state.* = state.* *% 1664525 +% 1013904223;
+    const v = (state.* >> 8) & 0x00ff_ffff;
+    return @as(f64, @floatFromInt(v)) / 8_388_607.5 - 1.0;
 }
 
 fn runEnvelopeCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
@@ -1009,6 +1127,127 @@ fn writeEnvelopeArtifacts(
     try writeFile(alloc, lanes_path, csv.items);
 }
 
+fn writeFilterArtifacts(
+    alloc: std.mem.Allocator,
+    cli: Cli,
+    output: []const f64,
+    metrics: Metrics,
+    sample_rate: u32,
+    frames_per_render: usize,
+    gap_frames: usize,
+) !void {
+    const metrics_path = try std.fmt.allocPrint(alloc, "{s}_metrics.json", .{cli.out_prefix});
+    defer alloc.free(metrics_path);
+    const lanes_path = try std.fmt.allocPrint(alloc, "{s}_lanes.csv", .{cli.out_prefix});
+    defer alloc.free(lanes_path);
+    const wav_path = try std.fmt.allocPrint(alloc, "{s}.wav", .{cli.out_prefix});
+    defer alloc.free(wav_path);
+
+    var metrics_json: std.ArrayList(u8) = .empty;
+    defer metrics_json.deinit(alloc);
+    try appendFmt(alloc, &metrics_json,
+        \\{{
+        \\  "kernel": "{s}",
+        \\  "word": "{s}",
+        \\  "case": "{s}",
+        \\  "sample_rate": {d},
+        \\  "renders": {d},
+        \\  "render_frames": {d},
+        \\  "gap_frames": {d},
+        \\  "seconds_per_render": {d:.6},
+        \\  "cutoff_start_hz": {d:.6},
+        \\  "cutoff_end_hz": {d:.6},
+        \\  "input_hz": {d:.6},
+        \\  "saw_gain": {d:.6},
+        \\  "noise_gain": {d:.6},
+        \\  "drive": {d:.6},
+        \\  "oversample": 4,
+        \\  "wav_path": "{s}",
+        \\  "wav_samples": {d},
+        \\  "wav_seconds": {d:.6},
+        \\  "iterations": {d},
+        \\  "ns_per_iter": {d:.6},
+        \\  "nonfinite_count": {d},
+        \\  "rms": {d:.12},
+        \\  "peak": {d:.12},
+        \\  "mean": {d:.12},
+        \\  "instruction_count": 0,
+        \\  "push_count": 0,
+        \\  "pop_count": 0,
+        \\  "float_alu_count": 0,
+        \\  "neon_float_alu_count": 0,
+        \\  "neon_load_count": 0,
+        \\  "neon_store_count": 0,
+        \\  "resonances": [
+        \\
+    , .{
+        cli.kernel,
+        cli.word,
+        cli.case_name,
+        sample_rate,
+        FILTER_RESONANCES.len,
+        frames_per_render,
+        gap_frames,
+        @as(f64, @floatFromInt(frames_per_render)) / @as(f64, @floatFromInt(sample_rate)),
+        FILTER_CUTOFF_START_HZ,
+        FILTER_CUTOFF_END_HZ,
+        FILTER_INPUT_HZ,
+        FILTER_SAW_GAIN,
+        FILTER_NOISE_GAIN,
+        FILTER_DRIVE,
+        wav_path,
+        output.len,
+        @as(f64, @floatFromInt(output.len)) / @as(f64, @floatFromInt(sample_rate)),
+        cli.iterations,
+        metrics.ns_per_iter,
+        metrics.nonfinite_count,
+        metrics.rms,
+        metrics.peak,
+        metrics.mean,
+    });
+    for (FILTER_RESONANCES, 0..) |resonance, i| {
+        try appendFmt(alloc, &metrics_json, "    {d:.6}{s}\n", .{
+            resonance,
+            if (i + 1 == FILTER_RESONANCES.len) "" else ",",
+        });
+    }
+    try metrics_json.appendSlice(alloc,
+        \\  ]
+        \\}
+        \\
+    );
+    try writeFile(alloc, metrics_path, metrics_json.items);
+
+    var csv: std.ArrayList(u8) = .empty;
+    defer csv.deinit(alloc);
+    try csv.appendSlice(alloc, "render,sample,time,input_hz,cutoff_hz,resonance,out\n");
+    const decimate: usize = 64;
+    var offset: usize = 0;
+    for (FILTER_RESONANCES, 0..) |resonance, render| {
+        var i: usize = 0;
+        while (i < frames_per_render) : (i += decimate) {
+            const pos = if (frames_per_render > 1)
+                @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(frames_per_render - 1))
+            else
+                0.0;
+            const cutoff = FILTER_CUTOFF_START_HZ * @exp(@log(FILTER_CUTOFF_END_HZ / FILTER_CUTOFF_START_HZ) * pos);
+            try appendFmt(alloc, &csv, "{d},{d},{d:.12},{d:.6},{d:.6},{d:.6},{d:.12}\n", .{
+                render,
+                i,
+                @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(sample_rate)),
+                FILTER_INPUT_HZ,
+                cutoff,
+                resonance,
+                output[offset + i],
+            });
+        }
+        offset += frames_per_render;
+        if (offset < output.len) offset += gap_frames;
+    }
+    try writeFile(alloc, lanes_path, csv.items);
+    try writeWav16StereoBuffer(alloc, wav_path, output, sample_rate);
+}
+
 fn writeSawArtifacts(
     alloc: std.mem.Allocator,
     cli: Cli,
@@ -1179,6 +1418,42 @@ fn writeWav16OscSweep(
         putI16(buf[off + 2 ..][0..2], pcm);
         off += 4;
         phase = wrap01(phase + dt);
+    }
+    try writeFile(alloc, path, buf);
+}
+
+fn writeWav16StereoBuffer(
+    alloc: std.mem.Allocator,
+    path: []const u8,
+    samples: []const f64,
+    sample_rate: u32,
+) !void {
+    const data_bytes: u32 = @intCast(samples.len * 2 * 2);
+    const total_bytes: usize = 44 + data_bytes;
+    const buf = try alloc.alloc(u8, total_bytes);
+    defer alloc.free(buf);
+    @memset(buf, 0);
+
+    @memcpy(buf[0..4], "RIFF");
+    putU32(buf[4..8], 36 + data_bytes);
+    @memcpy(buf[8..12], "WAVE");
+    @memcpy(buf[12..16], "fmt ");
+    putU32(buf[16..20], 16);
+    putU16(buf[20..22], 1);
+    putU16(buf[22..24], 2);
+    putU32(buf[24..28], sample_rate);
+    putU32(buf[28..32], sample_rate * 2 * 2);
+    putU16(buf[32..34], 4);
+    putU16(buf[34..36], 16);
+    @memcpy(buf[36..40], "data");
+    putU32(buf[40..44], data_bytes);
+
+    var off: usize = 44;
+    for (samples) |sample| {
+        const pcm = sampleToI16(sample);
+        putI16(buf[off..][0..2], pcm);
+        putI16(buf[off + 2 ..][0..2], pcm);
+        off += 4;
     }
     try writeFile(alloc, path, buf);
 }

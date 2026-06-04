@@ -18,6 +18,7 @@ import math
 import os
 import sys
 import tempfile
+import wave
 from pathlib import Path
 
 
@@ -239,6 +240,125 @@ def plot_envelope(prefix: Path, rows, metrics):
     return out
 
 
+def read_wav_mono(path: Path):
+    np, _ = require_plot_libs()
+    with wave.open(str(path), "rb") as wav:
+        channels = wav.getnchannels()
+        sample_width = wav.getsampwidth()
+        sample_rate = wav.getframerate()
+        frames = wav.getnframes()
+        raw = wav.readframes(frames)
+    if sample_width != 2:
+        raise ValueError(f"only 16-bit PCM WAV is supported: {path}")
+    data = np.frombuffer(raw, dtype="<i2").astype(np.float64) / 32768.0
+    if channels > 1:
+        data = data.reshape(-1, channels)[:, 0]
+    return data, sample_rate
+
+
+def plot_ms20_filter_grid(prefix: Path, rows, metrics):
+    np, plt = require_plot_libs()
+    wav_path = Path(str(metrics.get("wav_path", prefix.with_suffix(".wav"))))
+    if not wav_path.is_absolute():
+        wav_path = prefix.parent / wav_path.name
+    y, sample_rate = read_wav_mono(wav_path)
+
+    resonances = [float(v) for v in metrics.get("resonances", [])]
+    render_frames = int(metrics.get("render_frames", 0))
+    gap_frames = int(metrics.get("gap_frames", 0))
+    if render_frames <= 0 or not resonances:
+        raise ValueError("ms20-lpf-grid metrics must include render_frames and resonances")
+
+    nfft = 2048
+    hop = 512
+    window = np.hanning(nfft)
+    freqs = np.fft.rfftfreq(nfft, d=1.0 / sample_rate)
+    freq_mask = (freqs >= 20.0) & (freqs <= min(12000.0, sample_rate / 2.0))
+    shown_freqs = freqs[freq_mask]
+    spectrograms = []
+    ridge_p90 = []
+    offset = 0
+    for _resonance in resonances:
+        segment = y[offset : offset + render_frames]
+        if len(segment) < render_frames:
+            segment = np.pad(segment, (0, render_frames - len(segment)))
+        cols = []
+        ridge_excess = []
+        for start in range(0, max(1, len(segment) - nfft), hop):
+            frame = segment[start : start + nfft]
+            if len(frame) < nfft:
+                frame = np.pad(frame, (0, nfft - len(frame)))
+            power = np.abs(np.fft.rfft(frame * window)) ** 2
+            db = 10.0 * np.log10(np.maximum(power, 1.0e-24))
+            cols.append(db[freq_mask])
+
+            t = (start + nfft * 0.5) / sample_rate
+            pos = min(1.0, t / (render_frames / sample_rate))
+            cutoff = float(metrics.get("cutoff_start_hz", 80.0)) * math.exp(
+                math.log(float(metrics.get("cutoff_end_hz", 8000.0)) / float(metrics.get("cutoff_start_hz", 80.0))) * pos
+            )
+            band = (freqs > cutoff * 0.92) & (freqs < cutoff * 1.08)
+            sides = ((freqs > cutoff * 0.55) & (freqs < cutoff * 0.75)) | (
+                (freqs > cutoff * 1.35) & (freqs < min(sample_rate / 2.0, cutoff * 1.8))
+            )
+            if np.any(band) and np.any(sides):
+                ridge_excess.append(float(np.max(db[band]) - np.median(db[sides])))
+        spectrograms.append(np.stack(cols, axis=1))
+        ridge_p90.append(float(np.percentile(ridge_excess, 90)) if ridge_excess else math.nan)
+        offset += render_frames + gap_frames
+
+    all_db = np.concatenate([s.reshape(-1) for s in spectrograms])
+    vmin = float(np.percentile(all_db, 8))
+    vmax = float(np.percentile(all_db, 99.7))
+    seconds = render_frames / sample_rate
+    cutoff_t = np.linspace(0.0, seconds, 512)
+    cutoff_y = float(metrics.get("cutoff_start_hz", 80.0)) * np.exp(
+        np.log(float(metrics.get("cutoff_end_hz", 8000.0)) / float(metrics.get("cutoff_start_hz", 80.0))) * (cutoff_t / seconds)
+    )
+
+    fig, axes = plt.subplots(
+        len(resonances),
+        1,
+        figsize=(13, 2.4 * len(resonances) + 1.0),
+        sharex=True,
+        sharey=True,
+        constrained_layout=True,
+    )
+    if len(resonances) == 1:
+        axes = [axes]
+    fig.patch.set_facecolor("#e8e8e8")
+
+    last_image = None
+    for ax, resonance, spec, ridge in zip(axes, resonances, spectrograms, ridge_p90):
+        last_image = ax.imshow(
+            spec,
+            origin="lower",
+            aspect="auto",
+            extent=[0.0, seconds, float(shown_freqs[0]), float(shown_freqs[-1])],
+            cmap="magma",
+            vmin=vmin,
+            vmax=vmax,
+            interpolation="nearest",
+        )
+        ax.plot(cutoff_t, cutoff_y, color="#c7f3ff", linewidth=1.0, alpha=0.95)
+        ax.set_ylim(20, min(12000, sample_rate / 2))
+        ax.set_ylabel(f"res {resonance:.2f}\n+{ridge:.1f} dB")
+        style_axes(ax)
+
+    axes[0].set_title(
+        f"{metrics.get('word', 'ms20-lpf')} cutoff sweep "
+        f"{float(metrics.get('cutoff_start_hz', 0.0)):.0f}-"
+        f"{float(metrics.get('cutoff_end_hz', 0.0)):.0f} Hz"
+    )
+    axes[-1].set_xlabel("time (s)")
+    if last_image is not None:
+        fig.colorbar(last_image, ax=axes, fraction=0.018, pad=0.012, label="dB, shared scale")
+    out = prefix.with_name(prefix.name + "_ms20_spectrogram.png")
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    return out
+
+
 def is_envelope_case(metrics) -> bool:
     return str(metrics.get("case", "")).startswith("adsr-")
 
@@ -299,6 +419,11 @@ def plot_report(prefix: Path, metrics):
         lines.insert(3, f"a/d/s/r: {float(metrics.get('attack', 0.0)):.3f}/{float(metrics.get('decay', 0.0)):.3f}/{float(metrics.get('sustain', 0.0)):.3f}/{float(metrics.get('release', 0.0)):.3f}")
         lines.insert(4, f"gate: {float(metrics.get('gate', 0.0)):.3f} s")
         lines.insert(5, f"rms/peak: {float(metrics.get('rms', 0.0)):.3f}/{float(metrics.get('peak', 0.0)):.3f}")
+    if metrics.get("case") == "ms20-lpf-grid":
+        lines.insert(3, f"renders: {int(metrics.get('renders', 0))}")
+        lines.insert(4, f"cutoff: {float(metrics.get('cutoff_start_hz', 0.0)):.0f}-{float(metrics.get('cutoff_end_hz', 0.0)):.0f} Hz")
+        lines.insert(5, f"drive: {float(metrics.get('drive', 0.0)):.2f}")
+        lines.insert(6, f"rms/peak: {float(metrics.get('rms', 0.0)):.3f}/{float(metrics.get('peak', 0.0)):.3f}")
     ax1.axis("off")
     ax1.set_facecolor("#f3f3f3")
     ax1.text(
@@ -328,6 +453,8 @@ def main() -> int:
     outputs = []
     if metrics.get("case") == "tanh-table-sweep":
         outputs.append(plot_tanh_transfer(args.prefix, rows, metrics))
+    elif metrics.get("case") == "ms20-lpf-grid":
+        outputs.append(plot_ms20_filter_grid(args.prefix, rows, metrics))
     elif is_envelope_case(metrics):
         outputs.append(plot_envelope(args.prefix, rows, metrics))
     elif "alias_residual_db" in metrics:

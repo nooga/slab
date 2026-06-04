@@ -208,6 +208,52 @@ zig build kernel-probe -- \
   --out=scratch/kernel_tanh_table
 ```
 
+Current filter prototype:
+
+```
+kernels/04-filters/ms20_lpf_probe.fy
+  ms20-lpf-zig-prototype  ( rendered by the Zig oracle for now )
+```
+
+This is an MS-20-inspired low-pass workbench case: a nonlinear
+two-pole resonant model with internal oversampling and clipped
+integrator/output states. The probe renders deterministic white noise
+through logarithmic cutoff sweeps at several resonance settings, writes
+a WAV for listening, and emits a stacked spectrogram with a shared dB
+scale plus a cutoff overlay. The noise input is intentional: it makes
+the resonance ridge and cutoff movement easier to inspect than a pitched
+oscillator. It is intentionally not final fy kernel code yet; it gives
+us a reference behavior and artifact format before we lock down stateful
+filter ABI details.
+
+Run it through:
+
+```sh
+zig build -Doptimize=ReleaseFast kernel-probe -- \
+  --kernel=kernels/04-filters/ms20_lpf_probe.fy \
+  --word=ms20-lpf-zig-prototype \
+  --case=ms20-lpf-grid \
+  --iters=1 \
+  --out=scratch/ms20_lpf_grid
+
+python3 tools/audio_probe/plot_kernel_probe.py scratch/ms20_lpf_grid
+```
+
+The most promising listening profiles from the early MS-20-ish pass are
+kept reproducible in `tools/audio_probe/render_ms20_sweeps.py`:
+
+```sh
+python3 tools/audio_probe/render_ms20_sweeps.py --profile=f-hot --source=both
+python3 tools/audio_probe/render_ms20_sweeps.py --profile=g-wet --source=both
+```
+
+`f-hot` is the balanced candidate: dirty resonance without the obvious
+state latch. `g-wet` is the wilder character candidate: more resonant
+feedback motion and better for stress-testing. Both use the same design
+choice learned from the failed dirty prototype: keep integrator state
+mostly linear/leaky, and put the nastiness in a DC-blocked clipped
+feedback path instead of hard-clipping the state itself.
+
 ### Layer 0: primitives
 
 Arithmetic, interpolation, clamps, wrapping, min/max, FMA, reciprocal
