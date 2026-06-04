@@ -30,6 +30,15 @@ v2-add
 v2-mul
 v2-fmadd
 tanh-table-sweep
+tanh-rational-sweep
+saw-polyblep-render
+saw-falling-polyblep-render
+saw-cap-polyblep-render
+saw-topcut-polyblep-render
+square-polyblep-render
+pulse-polyblep-render
+adsr-linear-render
+adsr-cap-render
 ```
 
 Table saturator fixture:
@@ -51,6 +60,47 @@ python3 tools/audio_probe/plot_kernel_probe.py scratch/kernel_tanh_table
 
 For `tanh-table-sweep`, metrics also include a libc `tanh` baseline,
 a native Zig table-lookup baseline, and table error versus true tanh.
+
+Oscillator fixture example:
+
+```sh
+zig build kernel-probe -- \
+  --kernel=kernels/01-oscillators/square_polyblep.fy \
+  --word=k-square-polyblep \
+  --case=square-polyblep-render \
+  --iters=1000000 \
+  --out=scratch/sweep_square_50_2000
+```
+
+Oscillator probes emit the normal metrics/disassembly/CSV artifacts plus
+a 48 kHz stereo WAV. The WAV is a 2 second 50-2000 Hz sweep for audition;
+the metrics still use the fixed bin-aligned render for deterministic
+alias/error ratchets.
+
+Envelope fixture example:
+
+```sh
+zig build kernel-probe -- \
+  --kernel=kernels/03-envelopes/adsr_linear.fy \
+  --word=k-adsr-linear \
+  --case=adsr-linear-render \
+  --iters=1000000 \
+  --out=scratch/kernel_adsr_linear
+```
+
+Capacitor-like ADSR:
+
+```sh
+zig build kernel-probe -- \
+  --kernel=kernels/03-envelopes/adsr_cap.fy \
+  --word=k-adsr-cap \
+  --case=adsr-cap-render \
+  --iters=1000000 \
+  --out=scratch/kernel_adsr_cap
+```
+
+Envelope probes emit time/value CSV, metrics, disassembly, and an
+envelope plot with attack, decay, gate-off, and release-end markers.
 
 ## Render
 

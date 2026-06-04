@@ -9,6 +9,10 @@ extern "c" fn tanh(x: f64) f64;
 const O_WRONLY: c_int = 1;
 const O_CREAT: c_int = 0x200;
 const O_TRUNC: c_int = 0x400;
+const OSC_SAMPLE_RATE: u32 = 48_000;
+const OSC_LISTEN_SECONDS: usize = 2;
+const OSC_SWEEP_START_HZ: f64 = 50.0;
+const OSC_SWEEP_END_HZ: f64 = 2000.0;
 
 const Cli = struct {
     kernel: []const u8 = "kernels/00-primitives/v2.fy",
@@ -56,6 +60,10 @@ pub fn main(init: std.process.Init) !void {
         std.mem.eql(u8, cli.case_name, "tanh-rational-sweep"))
     {
         try runTanhTableCase(alloc, cli, &host);
+        return;
+    }
+    if (isEnvelopeCase(cli.case_name)) {
+        try runEnvelopeCase(alloc, cli, &host);
         return;
     }
     if (isOscillatorCase(cli.case_name)) {
@@ -134,10 +142,16 @@ fn usage() void {
         \\
         \\cases:
         \\  v2-add | v2-mul | v2-fmadd | tanh-table-sweep | tanh-rational-sweep
+        \\  adsr-linear-render | adsr-cap-render
         \\  saw-polyblep-render | saw-falling-polyblep-render | saw-cap-polyblep-render
         \\  saw-topcut-polyblep-render | square-polyblep-render | pulse-polyblep-render
         \\
     , .{});
+}
+
+fn isEnvelopeCase(name: []const u8) bool {
+    return std.mem.eql(u8, name, "adsr-linear-render") or
+        std.mem.eql(u8, name, "adsr-cap-render");
 }
 
 fn isOscillatorCase(name: []const u8) bool {
@@ -365,9 +379,119 @@ fn benchmarkZigRational(input: []const f64, drive: f64, iterations: u64) f64 {
     return @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(iterations));
 }
 
+fn runEnvelopeCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sample_count: usize = 1201;
+    const control_rate: f64 = 1000.0;
+    const attack: f64 = 0.08;
+    const decay: f64 = 0.18;
+    const sustain: f64 = 0.42;
+    const gate: f64 = 0.72;
+    const release: f64 = 0.35;
+
+    const time = try alloc.alloc(f64, sample_count);
+    defer alloc.free(time);
+    const out = try alloc.alloc(f64, sample_count);
+    defer alloc.free(out);
+    const expected = try alloc.alloc(f64, sample_count);
+    defer alloc.free(expected);
+
+    for (time, expected, out, 0..) |*t, *exp, *dst, i| {
+        t.* = @as(f64, @floatFromInt(i)) / control_rate;
+        exp.* = envelopeExpected(cli.case_name, t.*, attack, decay, sustain, gate, release);
+        dst.* = 0;
+    }
+
+    var perf_out: f64 = 0;
+    var perf_time: f64 = 0.375;
+    const perf_args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&perf_out) },
+        .{ .ptr = @intFromPtr(&perf_time) },
+        .{ .f64 = attack },
+        .{ .f64 = decay },
+        .{ .f64 = sustain },
+        .{ .f64 = gate },
+        .{ .f64 = release },
+    };
+    const warmup = @min(cli.iterations, 1_000);
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, warmup, &perf_args);
+
+    const start = nowNs();
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, cli.iterations, &perf_args);
+    const run_ns = nowNs() - start;
+
+    for (time, out) |*t, *dst| {
+        const sample_args = [_]Fy.Dsp2RawArg{
+            .{ .ptr = @intFromPtr(dst) },
+            .{ .ptr = @intFromPtr(t) },
+            .{ .f64 = attack },
+            .{ .f64 = decay },
+            .{ .f64 = sustain },
+            .{ .f64 = gate },
+            .{ .f64 = release },
+        };
+        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, 1, &sample_args);
+    }
+
+    var metrics = computeSliceMetrics(out, expected, run_ns, cli.iterations);
+    fillSignalMetrics(out, &metrics);
+    try writeEnvelopeArtifacts(alloc, cli, host, time, out, expected, metrics, control_rate, attack, decay, sustain, gate, release);
+    if (metrics.nonfinite_count != 0 or metrics.max_abs_error > 0.000000000001) {
+        return error.KernelRatchetFailed;
+    }
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} samples={} ns_per_iter={d:.3} max_abs_error={d:.12} peak={d:.3}\n",
+        .{ cli.kernel, cli.word, cli.case_name, sample_count, metrics.ns_per_iter, metrics.max_abs_error, metrics.peak },
+    );
+}
+
+fn zigAdsrLinear(time: f64, attack: f64, decay: f64, sustain: f64, gate: f64, release: f64) f64 {
+    if (time < attack) return std.math.clamp(time / attack, 0.0, 1.0);
+    const decay_end = attack + decay;
+    if (time < decay_end) {
+        const u = (time - attack) / decay;
+        return 1.0 - (1.0 - sustain) * u;
+    }
+    if (time < gate) return sustain;
+    const release_end = gate + release;
+    if (time < release_end) {
+        const u = (time - gate) / release;
+        return sustain * (1.0 - u);
+    }
+    return 0.0;
+}
+
+fn zigCapCurve(u_unclamped: f64) f64 {
+    const u = std.math.clamp(u_unclamped, 0.0, 1.0);
+    const inv = 1.0 - u;
+    const inv2 = inv * inv;
+    return inv2 * inv2;
+}
+
+fn zigAdsrCap(time: f64, attack: f64, decay: f64, sustain: f64, gate: f64, release: f64) f64 {
+    if (time < attack) return 1.0 - zigCapCurve(time / attack);
+    const decay_end = attack + decay;
+    if (time < decay_end) {
+        const u = (time - attack) / decay;
+        return sustain + (1.0 - sustain) * zigCapCurve(u);
+    }
+    if (time < gate) return sustain;
+    const release_end = gate + release;
+    if (time < release_end) {
+        const u = (time - gate) / release;
+        return sustain * zigCapCurve(u);
+    }
+    return 0.0;
+}
+
+fn envelopeExpected(case_name: []const u8, time: f64, attack: f64, decay: f64, sustain: f64, gate: f64, release: f64) f64 {
+    if (std.mem.eql(u8, case_name, "adsr-cap-render")) return zigAdsrCap(time, attack, decay, sustain, gate, release);
+    return zigAdsrLinear(time, attack, decay, sustain, gate, release);
+}
+
 fn runSawPolyblepCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     const sample_count: usize = 4096;
-    const sample_rate: f64 = 48_000.0;
+    const sample_rate: f64 = @floatFromInt(OSC_SAMPLE_RATE);
     const fundamental_bin: usize = 171;
     const freq = sample_rate * @as(f64, @floatFromInt(fundamental_bin)) / @as(f64, @floatFromInt(sample_count));
     const inv_sample_rate = 1.0 / sample_rate;
@@ -414,6 +538,36 @@ fn runSawPolyblepCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, cli.iterations, perf_args);
     const run_ns = nowNs() - start;
 
+    const final_analysis_phase = try renderOscillatorBuffer(host, cli.word, out, initial_phase, freq, inv_sample_rate, pulse_width, use_pulse_width);
+
+    var metrics = computeSliceMetrics(out, expected, run_ns, cli.iterations);
+    fillSignalMetrics(out, &metrics);
+    metrics.final_phase = final_analysis_phase;
+    metrics.fundamental_hz = freq;
+    metrics.alias_residual_db = harmonicResidualDb(out, fundamental_bin);
+    metrics.naive_alias_residual_db = harmonicResidualDb(naive, fundamental_bin);
+
+    try writeSawArtifacts(alloc, cli, host, out, expected, naive, metrics, OSC_SAMPLE_RATE, pulse_width);
+    if (metrics.nonfinite_count != 0 or metrics.max_abs_error > 0.000000000001) {
+        return error.KernelRatchetFailed;
+    }
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} samples={} freq={d:.3} ns_per_iter={d:.3} max_abs_error={d:.12} alias_residual_db={d:.2}\n",
+        .{ cli.kernel, cli.word, cli.case_name, sample_count, freq, metrics.ns_per_iter, metrics.max_abs_error, metrics.alias_residual_db },
+    );
+}
+
+fn renderOscillatorBuffer(
+    host: *FyHost,
+    word: []const u8,
+    out: []f64,
+    initial_phase: f64,
+    freq: f64,
+    inv_sample_rate: f64,
+    pulse_width: f64,
+    use_pulse_width: bool,
+) !f64 {
     var phase = initial_phase;
     for (out) |*dst| {
         const sample_args4 = [_]Fy.Dsp2RawArg{
@@ -430,25 +584,9 @@ fn runSawPolyblepCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
             .{ .f64 = pulse_width },
         };
         const sample_args = if (use_pulse_width) sample_args5[0..] else sample_args4[0..];
-        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, 1, sample_args);
+        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(word, 1, sample_args);
     }
-
-    var metrics = computeSliceMetrics(out, expected, run_ns, cli.iterations);
-    fillSignalMetrics(out, &metrics);
-    metrics.final_phase = phase;
-    metrics.fundamental_hz = freq;
-    metrics.alias_residual_db = harmonicResidualDb(out, fundamental_bin);
-    metrics.naive_alias_residual_db = harmonicResidualDb(naive, fundamental_bin);
-
-    try writeSawArtifacts(alloc, cli, host, out, expected, naive, metrics, sample_rate);
-    if (metrics.nonfinite_count != 0 or metrics.max_abs_error > 0.000000000001) {
-        return error.KernelRatchetFailed;
-    }
-
-    std.debug.print(
-        "kernel {s}:{s} case={s} samples={} freq={d:.3} ns_per_iter={d:.3} max_abs_error={d:.12} alias_residual_db={d:.2}\n",
-        .{ cli.kernel, cli.word, cli.case_name, sample_count, freq, metrics.ns_per_iter, metrics.max_abs_error, metrics.alias_residual_db },
-    );
+    return phase;
 }
 
 fn zigSawRaw(phase: f64) f64 {
@@ -760,15 +898,20 @@ fn writeTanhArtifacts(
     try writeFile(alloc, lanes_path, csv.items);
 }
 
-fn writeSawArtifacts(
+fn writeEnvelopeArtifacts(
     alloc: std.mem.Allocator,
     cli: Cli,
     host: *FyHost,
+    time: []const f64,
     out: []const f64,
     expected: []const f64,
-    naive: []const f64,
     metrics: Metrics,
-    sample_rate: f64,
+    control_rate: f64,
+    attack: f64,
+    decay: f64,
+    sustain: f64,
+    gate: f64,
+    release: f64,
 ) !void {
     const metrics_path = try std.fmt.allocPrint(alloc, "{s}_metrics.json", .{cli.out_prefix});
     defer alloc.free(metrics_path);
@@ -781,13 +924,128 @@ fn writeSawArtifacts(
         try host.fy.reportDsp2RawWord(cli.word)
     else
         host.fy.reportWord(cli.word) orelse return error.MissingReport;
+    const seconds = if (time.len > 0) time[time.len - 1] else 0.0;
     const metrics_json = try std.fmt.allocPrint(alloc,
         \\{{
         \\  "kernel": "{s}",
         \\  "word": "{s}",
         \\  "case": "{s}",
         \\  "samples": {d},
-        \\  "sample_rate": {d:.6},
+        \\  "control_rate": {d:.6},
+        \\  "seconds": {d:.6},
+        \\  "attack": {d:.6},
+        \\  "decay": {d:.6},
+        \\  "sustain": {d:.6},
+        \\  "gate": {d:.6},
+        \\  "release": {d:.6},
+        \\  "release_end": {d:.6},
+        \\  "iterations": {d},
+        \\  "ns_per_iter": {d:.6},
+        \\  "max_abs_error": {d:.12},
+        \\  "nonfinite_count": {d},
+        \\  "rms": {d:.12},
+        \\  "peak": {d:.12},
+        \\  "mean": {d:.12},
+        \\  "instruction_count": {d},
+        \\  "push_count": {d},
+        \\  "pop_count": {d},
+        \\  "float_alu_count": {d},
+        \\  "neon_float_alu_count": {d},
+        \\  "neon_load_count": {d},
+        \\  "neon_store_count": {d}
+        \\}}
+        \\
+    , .{
+        cli.kernel,
+        cli.word,
+        cli.case_name,
+        time.len,
+        control_rate,
+        seconds,
+        attack,
+        decay,
+        sustain,
+        gate,
+        release,
+        gate + release,
+        cli.iterations,
+        metrics.ns_per_iter,
+        metrics.max_abs_error,
+        metrics.nonfinite_count,
+        metrics.rms,
+        metrics.peak,
+        metrics.mean,
+        report.instruction_count,
+        report.push_count,
+        report.pop_count,
+        report.float_alu_count,
+        report.neon_float_alu_count,
+        report.neon_load_count,
+        report.neon_store_count,
+    });
+    defer alloc.free(metrics_json);
+    try writeFile(alloc, metrics_path, metrics_json);
+
+    const disasm = if (host.fy.isDsp2Word(cli.word))
+        try host.fy.disassembleDsp2RawWordAlloc(alloc, cli.word)
+    else
+        try host.fy.disassembleWordAlloc(alloc, cli.word);
+    defer alloc.free(disasm);
+    try writeFile(alloc, disasm_path, disasm);
+
+    var csv: std.ArrayList(u8) = .empty;
+    defer csv.deinit(alloc);
+    try csv.appendSlice(alloc, "sample,time,out,expected,error,gate\n");
+    for (time, out, expected, 0..) |t, actual, exp, i| {
+        try appendFmt(alloc, &csv, "{d},{d:.12},{d:.12},{d:.12},{d:.12},{d:.12}\n", .{
+            i,
+            t,
+            actual,
+            exp,
+            actual - exp,
+            if (t < gate) @as(f64, 1.0) else 0.0,
+        });
+    }
+    try writeFile(alloc, lanes_path, csv.items);
+}
+
+fn writeSawArtifacts(
+    alloc: std.mem.Allocator,
+    cli: Cli,
+    host: *FyHost,
+    out: []const f64,
+    expected: []const f64,
+    naive: []const f64,
+    metrics: Metrics,
+    sample_rate: u32,
+    pulse_width: f64,
+) !void {
+    const wav_samples = @as(usize, sample_rate) * OSC_LISTEN_SECONDS;
+    const metrics_path = try std.fmt.allocPrint(alloc, "{s}_metrics.json", .{cli.out_prefix});
+    defer alloc.free(metrics_path);
+    const disasm_path = try std.fmt.allocPrint(alloc, "{s}_disasm.txt", .{cli.out_prefix});
+    defer alloc.free(disasm_path);
+    const lanes_path = try std.fmt.allocPrint(alloc, "{s}_lanes.csv", .{cli.out_prefix});
+    defer alloc.free(lanes_path);
+    const wav_path = try std.fmt.allocPrint(alloc, "{s}.wav", .{cli.out_prefix});
+    defer alloc.free(wav_path);
+
+    const report = if (host.fy.isDsp2Word(cli.word))
+        try host.fy.reportDsp2RawWord(cli.word)
+    else
+        host.fy.reportWord(cli.word) orelse return error.MissingReport;
+    const metrics_json = try std.fmt.allocPrint(alloc,
+        \\{{
+        \\  "kernel": "{s}",
+        \\  "word": "{s}",
+        \\  "case": "{s}",
+        \\  "samples": {d},
+        \\  "sample_rate": {d},
+        \\  "wav_path": "{s}",
+        \\  "wav_samples": {d},
+        \\  "wav_seconds": {d:.6},
+        \\  "wav_sweep_start_hz": {d:.6},
+        \\  "wav_sweep_end_hz": {d:.6},
         \\  "fundamental_hz": {d:.6},
         \\  "iterations": {d},
         \\  "ns_per_iter": {d:.6},
@@ -814,6 +1072,11 @@ fn writeSawArtifacts(
         cli.case_name,
         out.len,
         sample_rate,
+        wav_path,
+        wav_samples,
+        @as(f64, @floatFromInt(wav_samples)) / @as(f64, @floatFromInt(sample_rate)),
+        OSC_SWEEP_START_HZ,
+        OSC_SWEEP_END_HZ,
         metrics.fundamental_hz,
         cli.iterations,
         metrics.ns_per_iter,
@@ -835,6 +1098,7 @@ fn writeSawArtifacts(
     });
     defer alloc.free(metrics_json);
     try writeFile(alloc, metrics_path, metrics_json);
+    try writeWav16OscSweep(alloc, wav_path, cli.case_name, wav_samples, sample_rate, pulse_width);
 
     const disasm = if (host.fy.isDsp2Word(cli.word))
         try host.fy.disassembleDsp2RawWordAlloc(alloc, cli.word)
@@ -867,6 +1131,77 @@ fn appendFmt(alloc: std.mem.Allocator, out: *std.ArrayList(u8), comptime fmt: []
 fn ensureScratch() !void {
     const rc = mkdir("scratch", 0o755);
     if (rc != 0 and std.c._errno().* != 17) return error.MkdirFailed;
+}
+
+fn writeWav16OscSweep(
+    alloc: std.mem.Allocator,
+    path: []const u8,
+    case_name: []const u8,
+    frames: usize,
+    sample_rate: u32,
+    pulse_width: f64,
+) !void {
+    const data_bytes: u32 = @intCast(frames * 2 * 2);
+    const total_bytes: usize = 44 + data_bytes;
+    const buf = try alloc.alloc(u8, total_bytes);
+    defer alloc.free(buf);
+    @memset(buf, 0);
+
+    @memcpy(buf[0..4], "RIFF");
+    putU32(buf[4..8], 36 + data_bytes);
+    @memcpy(buf[8..12], "WAVE");
+    @memcpy(buf[12..16], "fmt ");
+    putU32(buf[16..20], 16);
+    putU16(buf[20..22], 1);
+    putU16(buf[22..24], 2);
+    putU32(buf[24..28], sample_rate);
+    putU32(buf[28..32], sample_rate * 2 * 2);
+    putU16(buf[32..34], 4);
+    putU16(buf[34..36], 16);
+    @memcpy(buf[36..40], "data");
+    putU32(buf[40..44], data_bytes);
+
+    var off: usize = 44;
+    var phase: f64 = 0.0;
+    const sr_f: f64 = @floatFromInt(sample_rate);
+    const sweep_ratio = OSC_SWEEP_END_HZ / OSC_SWEEP_START_HZ;
+    var i: usize = 0;
+    while (i < frames) : (i += 1) {
+        const pos = if (frames > 1)
+            @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(frames - 1))
+        else
+            0.0;
+        const freq = OSC_SWEEP_START_HZ * @exp(@log(sweep_ratio) * pos);
+        const dt = freq / sr_f;
+        const sample = oscillatorExpected(case_name, phase, dt, pulse_width);
+        const pcm = sampleToI16(sample);
+        putI16(buf[off..][0..2], pcm);
+        putI16(buf[off + 2 ..][0..2], pcm);
+        off += 4;
+        phase = wrap01(phase + dt);
+    }
+    try writeFile(alloc, path, buf);
+}
+
+fn sampleToI16(v: f64) i16 {
+    const clipped = std.math.clamp(v, -1.0, 1.0);
+    return @intFromFloat(clipped * 32767.0);
+}
+
+fn putU16(dst: []u8, v: u16) void {
+    dst[0] = @intCast(v & 0xff);
+    dst[1] = @intCast((v >> 8) & 0xff);
+}
+
+fn putI16(dst: []u8, v: i16) void {
+    putU16(dst, @bitCast(v));
+}
+
+fn putU32(dst: []u8, v: u32) void {
+    dst[0] = @intCast(v & 0xff);
+    dst[1] = @intCast((v >> 8) & 0xff);
+    dst[2] = @intCast((v >> 16) & 0xff);
+    dst[3] = @intCast((v >> 24) & 0xff);
 }
 
 fn writeFile(alloc: std.mem.Allocator, path: []const u8, data: []const u8) !void {

@@ -189,6 +189,60 @@ def plot_saw_oscillator(prefix: Path, rows, metrics):
     return out
 
 
+def plot_envelope(prefix: Path, rows, metrics):
+    np, plt = require_plot_libs()
+    t = np.array([as_float(r, "time") for r in rows], dtype=np.float64)
+    y = np.array([as_float(r, "out") for r in rows], dtype=np.float64)
+    expected = np.array([as_float(r, "expected") for r in rows], dtype=np.float64)
+    gate = float(metrics.get("gate", 0.0))
+    attack = float(metrics.get("attack", 0.0))
+    decay = float(metrics.get("decay", 0.0))
+    release_end = float(metrics.get("release_end", gate))
+
+    fig, (ax0, ax1) = plt.subplots(
+        2,
+        1,
+        figsize=(12, 7),
+        gridspec_kw={"height_ratios": [3, 1]},
+        sharex=True,
+    )
+    fig.patch.set_facecolor("#e8e8e8")
+
+    ax0.plot(t, y, color="#d13f31", linewidth=1.8, label="fy envelope")
+    ax0.plot(t, expected, color="#247a7a", linewidth=1.1, linestyle="--", label="zig oracle")
+    markers = [
+        (attack, "attack"),
+        (attack + decay, "decay"),
+        (gate, "gate off"),
+        (release_end, "release end"),
+    ]
+    for x, label in markers:
+        ax0.axvline(x, color="#2c2c2c", linewidth=0.8, linestyle=":")
+        ax0.text(x, 1.03, label, rotation=90, va="bottom", ha="right", fontsize=8)
+    ax0.set_ylim(-0.05, 1.1)
+    ax0.set_title(f"{metrics.get('word', 'envelope')} ADSR")
+    ax0.set_ylabel("level")
+    ax0.legend(loc="best", frameon=True, facecolor="#eeeeee", edgecolor="#222222")
+    style_axes(ax0)
+
+    err = y - expected
+    ax1.axhline(0, color="#222222", linewidth=0.9)
+    ax1.plot(t, err, color="#2c2c2c", linewidth=1.0)
+    ax1.set_xlabel("time (s)")
+    ax1.set_ylabel("fy - oracle")
+    style_axes(ax1)
+
+    fig.tight_layout()
+    out = prefix.with_name(prefix.name + "_envelope.png")
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    return out
+
+
+def is_envelope_case(metrics) -> bool:
+    return str(metrics.get("case", "")).startswith("adsr-")
+
+
 def plot_report(prefix: Path, metrics):
     np, plt = require_plot_libs()
     keys = [
@@ -241,6 +295,10 @@ def plot_report(prefix: Path, metrics):
         lines.insert(4, f"freq: {float(metrics.get('fundamental_hz', 0.0)):.2f} Hz")
         lines.insert(5, f"alias: {float(metrics['alias_residual_db']):.2f} dB")
         lines.insert(6, f"naive alias: {float(metrics.get('naive_alias_residual_db', 0.0)):.2f} dB")
+    if is_envelope_case(metrics):
+        lines.insert(3, f"a/d/s/r: {float(metrics.get('attack', 0.0)):.3f}/{float(metrics.get('decay', 0.0)):.3f}/{float(metrics.get('sustain', 0.0)):.3f}/{float(metrics.get('release', 0.0)):.3f}")
+        lines.insert(4, f"gate: {float(metrics.get('gate', 0.0)):.3f} s")
+        lines.insert(5, f"rms/peak: {float(metrics.get('rms', 0.0)):.3f}/{float(metrics.get('peak', 0.0)):.3f}")
     ax1.axis("off")
     ax1.set_facecolor("#f3f3f3")
     ax1.text(
@@ -270,6 +328,8 @@ def main() -> int:
     outputs = []
     if metrics.get("case") == "tanh-table-sweep":
         outputs.append(plot_tanh_transfer(args.prefix, rows, metrics))
+    elif is_envelope_case(metrics):
+        outputs.append(plot_envelope(args.prefix, rows, metrics))
     elif "alias_residual_db" in metrics:
         outputs.append(plot_saw_oscillator(args.prefix, rows, metrics))
     else:
