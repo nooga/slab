@@ -387,3 +387,44 @@ pub fn optimizeLeafFrame(code: *compat.ArrayList(u32)) void {
     code.items[body_len] = Asm.ret;
     code.shrinkRetainingCapacity(body_len + 1);
 }
+
+/// Convert a straight-line DSP word from fy-stack result ABI to scalar `x0`
+/// result ABI. The normal word remains unchanged; callers use this on a cloned
+/// body for host/kernel-style scalar benchmarks.
+pub fn optimizeScalarReturn(code: *compat.ArrayList(u32)) bool {
+    if (code.items.len < 2 or code.items[code.items.len - 1] != Asm.ret) return false;
+
+    for (code.items[0 .. code.items.len - 1]) |instr| {
+        if (isAnyLocalBranch(instr) or isBl(instr) or isBlr(instr) or instr == Asm.ret) return false;
+    }
+
+    const push_index = code.items.len - 2;
+    const src = pushReg(code.items[push_index]) orelse return false;
+
+    if (src == 0) {
+        code.items[push_index] = Asm.ret;
+        code.shrinkRetainingCapacity(push_index + 1);
+        return true;
+    }
+
+    var start = push_index;
+    while (start > 0 and !isMovz(code.items[start - 1]) and isWideMoveToReg(code.items[start - 1], src)) {
+        start -= 1;
+    }
+
+    if (start > 0 and isMovz(code.items[start - 1]) and isWideMoveToReg(code.items[start - 1], src)) {
+        start -= 1;
+        var i = start;
+        while (i < push_index) : (i += 1) {
+            if (!isWideMoveToReg(code.items[i], src)) break;
+            code.items[i] = (code.items[i] & ~@as(u32, 0x1f)) | @as(u32, 0);
+        } else {
+            code.items[push_index] = Asm.ret;
+            code.shrinkRetainingCapacity(push_index + 1);
+            return true;
+        }
+    }
+
+    code.items[push_index] = Asm.@"mov Xd, Xn"(0, src);
+    return true;
+}

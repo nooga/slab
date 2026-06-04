@@ -7,6 +7,7 @@ const Case = struct {
     name: []const u8,
     source: []const u8,
     word: []const u8,
+    scalar_abi: bool = false,
 };
 
 const cases = [_]Case{
@@ -19,6 +20,12 @@ const cases = [_]Case{
         .name = "dsp-int-add",
         .source = "dsp: bench-dsp-int-add 1 2 + ;",
         .word = "bench-dsp-int-add",
+    },
+    .{
+        .name = "dsp-scalar-int-add",
+        .source = "dsp: bench-dsp-scalar-int-add 1 2 + ;",
+        .word = "bench-dsp-scalar-int-add",
+        .scalar_abi = true,
     },
     .{
         .name = "dsp-stack-shuffle",
@@ -41,6 +48,12 @@ const cases = [_]Case{
         .word = "bench-dsp-call",
     },
     .{
+        .name = "dsp-scalar-word-call",
+        .source = "dsp: bench-dsp-scalar-inc 1 + ; dsp: bench-dsp-scalar-call 41 bench-dsp-scalar-inc ;",
+        .word = "bench-dsp-scalar-call",
+        .scalar_abi = true,
+    },
+    .{
         .name = "dsp-branch-ifte",
         .source = "dsp: bench-dsp-branch 5 dup 3 > [ 1 + ] [ 1 - ] ifte ;",
         .word = "bench-dsp-branch",
@@ -54,6 +67,12 @@ const cases = [_]Case{
         .name = "dsp-float-muladd",
         .source = "dsp: bench-dsp-float 0.5 0.25 f* 0.125 f+ ;",
         .word = "bench-dsp-float",
+    },
+    .{
+        .name = "dsp-scalar-float-muladd",
+        .source = "dsp: bench-dsp-scalar-float 0.5 0.25 f* 0.125 f+ ;",
+        .word = "bench-dsp-scalar-float",
+        .scalar_abi = true,
     },
     .{
         .name = "dsp-float-shape",
@@ -128,14 +147,23 @@ fn runCase(allocator: std.mem.Allocator, io: std.Io, case: Case, opts: Options) 
     const compile_ns = nowNs(io) - compile_start;
 
     const warmup_iters = @min(opts.iterations, 100_000);
-    _ = try fy.callWordRepeated(case.word, warmup_iters);
+    _ = if (case.scalar_abi)
+        try fy.callDspScalarRepeated(case.word, warmup_iters)
+    else
+        try fy.callWordRepeated(case.word, warmup_iters);
 
     const run_start = nowNs(io);
-    const result = try fy.callWordRepeated(case.word, opts.iterations);
+    const result = if (case.scalar_abi)
+        try fy.callDspScalarRepeated(case.word, opts.iterations)
+    else
+        try fy.callWordRepeated(case.word, opts.iterations);
     const run_ns = nowNs(io) - run_start;
     const ns_per_iter = @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(opts.iterations));
 
-    const report = fy.reportWord(case.word) orelse return error.MissingReport;
+    const report = if (case.scalar_abi)
+        try fy.reportDspScalarWord(case.word)
+    else
+        fy.reportWord(case.word) orelse return error.MissingReport;
     std.debug.print(
         "{s}\t{d}\t{d}\t{d}\t{d:.3}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\n",
         .{
@@ -163,7 +191,10 @@ fn runCase(allocator: std.mem.Allocator, io: std.Io, case: Case, opts: Options) 
     );
 
     if (opts.disasm) {
-        const disasm = try fy.disassembleWordAlloc(allocator, case.word);
+        const disasm = if (case.scalar_abi)
+            try fy.disassembleDspScalarWordAlloc(allocator, case.word)
+        else
+            try fy.disassembleWordAlloc(allocator, case.word);
         defer allocator.free(disasm);
         std.debug.print("\n[{s} disasm]\n{s}\n", .{ case.name, disasm });
     }

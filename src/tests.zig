@@ -630,6 +630,22 @@ test "benchmark wrapper calls a word repeatedly" {
     try std.testing.expectEqual(Fy.makeInt(0), try fy.callWordRepeated("bench-plus", 0));
 }
 
+test "DSP scalar benchmark wrapper returns x0 without fy-stack result pop" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run("dsp: scalar-plus 1 2 + ;");
+    try std.testing.expectEqual(Fy.makeInt(3), try fy.callDspScalarRepeated("scalar-plus", 1000));
+    try std.testing.expectEqual(Fy.makeInt(0), try fy.callDspScalarRepeated("scalar-plus", 0));
+    const scalar_report = try fy.reportDspScalarWord("scalar-plus");
+    try std.testing.expectEqual(@as(usize, 0), scalar_report.push_count);
+    try std.testing.expect(scalar_report.instruction_count <= 2);
+
+    _ = try fy.run("dsp: scalar-branch 5 dup 3 > [ 1 + ] [ 1 - ] ifte ;");
+    try std.testing.expectError(error.UnsupportedDspScalar, fy.callDspScalarRepeated("scalar-branch", 1));
+}
+
 test "inline-noalloc copies straight-line inlineable callees" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
