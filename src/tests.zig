@@ -1033,7 +1033,9 @@ test "dsp2: branchless float select and wrap support oscillator helpers" {
         \\dsp2: choose-lt fsel-lt ;
         \\dsp2: wrap fwrap01 ;
         \\dsp2: phase-advance01 f+ fwrap01 ;
+        \\dsp2: cap fcapramp ;
         \\dsp2: polyblep fpolyblep ;
+        \\dsp2: pulse fpulseblep ;
     );
 
     try std.testing.expectApproxEqAbs(10.0, getFyFloat(try fy.run("0.25 0.5 10.0 20.0 choose-lt")), 0.000000000001);
@@ -1041,9 +1043,18 @@ test "dsp2: branchless float select and wrap support oscillator helpers" {
     try std.testing.expectApproxEqAbs(0.25, getFyFloat(try fy.run("1.25 wrap")), 0.000000000001);
     try std.testing.expectApproxEqAbs(0.75, getFyFloat(try fy.run("-0.25 wrap")), 0.000000000001);
     try std.testing.expectApproxEqAbs(0.15, getFyFloat(try fy.run("0.90 0.25 phase-advance01")), 0.000000000001);
+    try std.testing.expectApproxEqAbs(-1.0, getFyFloat(try fy.run("0.0 cap")), 0.000000000001);
+    try std.testing.expectApproxEqAbs(0.5, getFyFloat(try fy.run("0.5 cap")), 0.000000000001);
+    try std.testing.expectApproxEqAbs(1.0, getFyFloat(try fy.run("1.0 cap")), 0.000000000001);
     try std.testing.expectApproxEqAbs(-0.25, getFyFloat(try fy.run("0.05 0.10 polyblep")), 0.000000000001);
     try std.testing.expectApproxEqAbs(0.25, getFyFloat(try fy.run("0.95 0.10 polyblep")), 0.000000000001);
     try std.testing.expectApproxEqAbs(0.0, getFyFloat(try fy.run("0.50 0.10 polyblep")), 0.000000000001);
+    try std.testing.expectApproxEqAbs(1.0, getFyFloat(try fy.run("0.25 0.10 0.50 pulse")), 0.000000000001);
+    try std.testing.expectApproxEqAbs(-1.0, getFyFloat(try fy.run("0.75 0.10 0.50 pulse")), 0.000000000001);
+    try std.testing.expectApproxEqAbs(0.75, getFyFloat(try fy.run("0.05 0.10 0.50 pulse")), 0.000000000001);
+    try std.testing.expectApproxEqAbs(-0.75, getFyFloat(try fy.run("0.95 0.10 0.50 pulse")), 0.000000000001);
+    try std.testing.expectApproxEqAbs(0.75, getFyFloat(try fy.run("0.45 0.10 0.50 pulse")), 0.000000000001);
+    try std.testing.expectApproxEqAbs(-0.75, getFyFloat(try fy.run("0.55 0.10 0.50 pulse")), 0.000000000001);
 }
 
 test "dsp: rejects heap allocation" {
