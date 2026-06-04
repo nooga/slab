@@ -25,6 +25,13 @@ const AddRegs = struct {
     rhs: u5,
 };
 
+const FloatBinOp = struct {
+    dst: u5,
+    lhs: u5,
+    rhs: u5,
+    op: enum { add, mul },
+};
+
 fn isAnyLocalBranch(instr: u32) bool {
     return (instr & 0xfc000000) == 0x14000000 or
         (instr & 0x7e000000) == 0x34000000 or
@@ -136,6 +143,33 @@ fn fmovXFromD(instr: u32) ?MovRegs {
     };
 }
 
+fn fmovDFromX(instr: u32) ?MovRegs {
+    if ((instr & 0xfffffc00) != (Asm.@"fmov Dd, Xn"(0, 0) & 0xfffffc00)) return null;
+    return .{
+        .dst = @intCast(instr & 0x1f),
+        .src = @intCast((instr >> 5) & 0x1f),
+    };
+}
+
+fn sameRegOp(instr: u32, pattern: u32) ?u5 {
+    if ((instr & 0xfffffc00) != (pattern & 0xfffffc00)) return null;
+    const reg: u5 = @intCast(instr & 0x1f);
+    if (((instr >> 5) & 0x1f) != reg) return null;
+    return reg;
+}
+
+fn floatBinOp(instr: u32) ?FloatBinOp {
+    const op = instr & 0xffe0fc00;
+    if (op != 0x1e602800 and op != 0x1e600800) return null;
+
+    return .{
+        .dst = @intCast(instr & 0x1f),
+        .lhs = @intCast((instr >> 5) & 0x1f),
+        .rhs = @intCast((instr >> 16) & 0x1f),
+        .op = if (op == 0x1e602800) .add else .mul,
+    };
+}
+
 fn wideMoveShift(instr: u32) u6 {
     return @intCast(((instr >> 21) & 0x3) * 16);
 }
@@ -176,6 +210,121 @@ fn appendLiteral(out: *compat.ArrayList(u32), reg: u5, value: u64) !void {
     if (value > 0xffffffffffff) {
         try out.append(0xf2e00000 | rr | (@as(u32, @truncate(value >> 48)) & 0xffff) << 5);
     }
+}
+
+fn writeF64ScalarLiteralReturn(code: *compat.ArrayList(u32), value: f64) bool {
+    var out: [6]u32 = undefined;
+    var len: usize = 0;
+    const bits: u64 = @bitCast(value);
+
+    out[len] = 0xd2800000 | (@as(u32, @truncate(bits)) & 0xffff) << 5;
+    len += 1;
+    if (bits > 0xffff) {
+        out[len] = 0xf2a00000 | (@as(u32, @truncate(bits >> 16)) & 0xffff) << 5;
+        len += 1;
+    }
+    if (bits > 0xffffffff) {
+        out[len] = 0xf2c00000 | (@as(u32, @truncate(bits >> 32)) & 0xffff) << 5;
+        len += 1;
+    }
+    if (bits > 0xffffffffffff) {
+        out[len] = 0xf2e00000 | (@as(u32, @truncate(bits >> 48)) & 0xffff) << 5;
+        len += 1;
+    }
+    out[len] = Asm.@"fmov Dd, Xn"(0, 0);
+    len += 1;
+    out[len] = Asm.ret;
+    len += 1;
+
+    if (code.items.len < len) return false;
+    std.mem.copyForwards(u32, code.items[0..len], out[0..len]);
+    code.shrinkRetainingCapacity(len);
+    return true;
+}
+
+fn optimizeF64LiteralOps(code: *compat.ArrayList(u32)) bool {
+    var x_known = [_]bool{false} ** 32;
+    var x_value: [32]u64 = undefined;
+    var d_known = [_]bool{false} ** 32;
+    var d_value: [32]f64 = undefined;
+    var saw_float_op = false;
+
+    var i: usize = 0;
+    while (i < code.items.len) {
+        const instr = code.items[i];
+
+        if (instr == Asm.ret) {
+            if (!saw_float_op or !d_known[0]) return false;
+            return writeF64ScalarLiteralReturn(code, d_value[0]);
+        }
+
+        if (parseLiteral(code.items, i)) |literal| {
+            x_known[literal.reg] = true;
+            x_value[literal.reg] = literal.value;
+            i = literal.end;
+            continue;
+        }
+
+        if (movRegs(instr)) |mov| {
+            x_known[mov.dst] = x_known[mov.src];
+            if (x_known[mov.src]) x_value[mov.dst] = x_value[mov.src];
+            i += 1;
+            continue;
+        }
+
+        if (sameRegOp(instr, Asm.@"lsr Xn, Xn, #2"(0))) |reg| {
+            if (!x_known[reg]) return false;
+            x_value[reg] >>= 2;
+            i += 1;
+            continue;
+        }
+
+        if (sameRegOp(instr, Asm.@"lsl Xn, Xn, #2"(0))) |reg| {
+            if (!x_known[reg]) return false;
+            x_value[reg] <<= 2;
+            i += 1;
+            continue;
+        }
+
+        if (sameRegOp(instr, Asm.@"add Xn, Xn, #2"(0))) |reg| {
+            if (!x_known[reg]) return false;
+            x_value[reg] +%= 2;
+            i += 1;
+            continue;
+        }
+
+        if (fmovDFromX(instr)) |mov| {
+            if (!x_known[mov.src]) return false;
+            d_known[mov.dst] = true;
+            d_value[mov.dst] = @bitCast(x_value[mov.src]);
+            i += 1;
+            continue;
+        }
+
+        if (fmovXFromD(instr)) |mov| {
+            if (!d_known[mov.src]) return false;
+            x_known[mov.dst] = true;
+            x_value[mov.dst] = @bitCast(d_value[mov.src]);
+            i += 1;
+            continue;
+        }
+
+        if (floatBinOp(instr)) |op| {
+            if (!d_known[op.lhs] or !d_known[op.rhs]) return false;
+            d_known[op.dst] = true;
+            d_value[op.dst] = switch (op.op) {
+                .add => d_value[op.lhs] + d_value[op.rhs],
+                .mul => d_value[op.lhs] * d_value[op.rhs],
+            };
+            saw_float_op = true;
+            i += 1;
+            continue;
+        }
+
+        return false;
+    }
+
+    return false;
 }
 
 fn optimizeLiteralIntegerAdds(allocator: std.mem.Allocator, code: *compat.ArrayList(u32)) !void {
@@ -473,5 +622,6 @@ pub fn optimizeF64ScalarReturn(code: *compat.ArrayList(u32)) bool {
 
     code.items[suffix_start] = Asm.ret;
     code.shrinkRetainingCapacity(suffix_start + 1);
+    _ = optimizeF64LiteralOps(code);
     return true;
 }
