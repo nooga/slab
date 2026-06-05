@@ -94,6 +94,7 @@ pub const Fy = struct {
     image: Image,
     heap: Heap,
     struct_layouts: compat.ArrayList(StructLayout),
+    untagged_struct_layouts: compat.ArrayList(StructLayout),
     hot_mutex: HotMutex = .{},
 
     const version = "v0.0.1";
@@ -174,6 +175,7 @@ pub const Fy = struct {
             .image = image,
             .heap = Heap.init(allocator),
             .struct_layouts = compat.ArrayList(StructLayout).init(allocator),
+            .untagged_struct_layouts = compat.ArrayList(StructLayout).init(allocator),
         };
         fy.initStacks();
         return fy;
@@ -182,14 +184,10 @@ pub const Fy = struct {
     pub fn deinit(self: *Fy) void {
         self.image.deinit();
         self.heap.deinit();
-        for (self.struct_layouts.items) |layout| {
-            for (layout.fields) |field| {
-                self.fyalloc.free(field.name);
-            }
-            self.fyalloc.free(layout.fields);
-            self.fyalloc.free(layout.name);
-        }
+        self.deinitStructLayouts(self.struct_layouts.items);
         self.struct_layouts.deinit();
+        self.deinitStructLayouts(self.untagged_struct_layouts.items);
+        self.untagged_struct_layouts.deinit();
         deinitUserWords(self);
         {
             var it = self.file_ns_map.iterator();
@@ -205,6 +203,16 @@ pub const Fy = struct {
         Builtins.adapt1 = null;
         Builtins.adapt2 = null;
         Builtins.adapt1v = null;
+    }
+
+    fn deinitStructLayouts(self: *Fy, layouts: []StructLayout) void {
+        for (layouts) |layout| {
+            for (layout.fields) |field| {
+                self.fyalloc.free(field.name);
+            }
+            self.fyalloc.free(layout.fields);
+            self.fyalloc.free(layout.name);
+        }
     }
 
     fn initStacks(self: *Fy) void {
@@ -1171,6 +1179,35 @@ pub const Fy = struct {
         }
     };
 
+    pub const Dsp2RawArgKind = enum {
+        ptr,
+        int,
+        f64,
+    };
+
+    pub const Dsp2RawRepeatedSlots = extern struct {
+        iterations: u64 = 0,
+        arg_bits: [Dsp2.RAW_X_ARG_REGS.len]u64 = [_]u64{0} ** Dsp2.RAW_X_ARG_REGS.len,
+    };
+
+    pub const Dsp2RawRepeatedCaller = struct {
+        fy: *Fy,
+        entry: *const fn () Value,
+        slots: *Dsp2RawRepeatedSlots,
+        arg_count: usize,
+
+        pub fn call(self: *Dsp2RawRepeatedCaller, iterations: u64, args: []const Dsp2RawArg) !Value {
+            if (iterations == 0) return makeInt(0);
+            if (args.len != self.arg_count) return error.RegisterExhausted;
+            self.slots.iterations = iterations;
+            for (args, 0..) |arg, i| {
+                self.slots.arg_bits[i] = arg.bits();
+            }
+            Builtins.fyPtr = @intFromPtr(self.fy);
+            return self.entry();
+        }
+    };
+
     fn isPush(instr: u32) bool {
         inline for (0..32) |n| {
             if (instr == Asm.@".push Xn"(n)) return true;
@@ -1449,6 +1486,13 @@ pub const Fy = struct {
         try code.append(Asm.@"stp x29, x30, [sp, #0x10]!");
         try code.append(Asm.@"mov x29, sp");
         try code.append(Asm.@"stp x21, x22, [sp, #0x10]!");
+        try code.append(Asm.sub_sp_imm(64));
+        inline for (0..8) |i| {
+            try code.append(Asm.str_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
+        }
+        inline for (.{ 19, 20, 24, 25, 26, 27, 28 }) |reg| {
+            try code.append(Asm.@".rpush Xn"(reg));
+        }
         try code.append(Asm.@".rpush Xn"(23));
         for (Asm.movImm64(21, self.data_stack_top)) |instr| try code.append(instr);
         try code.append(Asm.@"mov Xd, Xn"(22, 21));
@@ -1463,6 +1507,13 @@ pub const Fy = struct {
         try code.append(Asm.@"b.cond offset"(Asm.COND_NE, @intCast(@as(isize, @intCast(loop_pos)) - @as(isize, @intCast(bne_pos)))));
 
         try code.append(Asm.@".rpop Xn"(23));
+        inline for (.{ 28, 27, 26, 25, 24, 20, 19 }) |reg| {
+            try code.append(Asm.@".rpop Xn"(reg));
+        }
+        inline for (0..8) |i| {
+            try code.append(Asm.ldr_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
+        }
+        try code.append(Asm.add_sp_imm(64));
         try code.append(Asm.@"ldp x21, x22, [sp], #0x10");
         try code.append(Asm.@"ldp x29, x30, [sp], #0x10");
         try code.append(Asm.ret);
@@ -1612,7 +1663,27 @@ pub const Fy = struct {
     }
 
     pub fn callDsp2RawRepeatedWithArgsNoResult(self: *Fy, name: []const u8, iterations: u64, args: []const Dsp2RawArg) !Value {
-        if (iterations == 0) return makeInt(0);
+        return self.callDsp2RawRepeatedWithArgsNoResultInternal(name, iterations, args, false, false);
+    }
+
+    pub fn callDsp2RawRepeatedWithAutoOutNoResult(self: *Fy, name: []const u8, iterations: u64, args: []const Dsp2RawArg) !Value {
+        return self.callDsp2RawRepeatedWithArgsNoResultInternal(name, iterations, args, true, false);
+    }
+
+    pub fn callDsp2RawRepeatedWithAutoOutInNoResult(self: *Fy, name: []const u8, iterations: u64, args: []const Dsp2RawArg) !Value {
+        return self.callDsp2RawRepeatedWithArgsNoResultInternal(name, iterations, args, true, true);
+    }
+
+    pub fn compileDsp2RawRepeatedCaller(
+        self: *Fy,
+        name: []const u8,
+        slots: *Dsp2RawRepeatedSlots,
+        arg_kinds: []const Dsp2RawArgKind,
+        auto_advance_out: bool,
+        auto_advance_arg3: bool,
+    ) !Dsp2RawRepeatedCaller {
+        if (arg_kinds.len > Dsp2.RAW_X_ARG_REGS.len) return error.RegisterExhausted;
+        if (auto_advance_arg3 and arg_kinds.len <= 3) return error.RegisterExhausted;
 
         const word = self.userWords.get(name) orelse return error.UnknownWord;
         const raw_body = try self.buildDsp2BodyAlloc(word, .raw_registers);
@@ -1635,6 +1706,87 @@ pub const Fy = struct {
         try code.append(Asm.@"stp x29, x30, [sp, #0x10]!");
         try code.append(Asm.@"mov x29, sp");
         try code.append(Asm.@"stp x21, x22, [sp, #0x10]!");
+        try code.append(Asm.sub_sp_imm(64));
+        inline for (0..8) |i| {
+            try code.append(Asm.str_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
+        }
+        try code.append(Asm.@".rpush Xn"(23));
+
+        const slots_addr = @intFromPtr(slots);
+        for (Asm.movImm64(18, slots_addr)) |instr| try code.append(instr);
+        try code.append(Asm.ldr_x_imm(23, 18, 0));
+        for (arg_kinds, 0..) |kind, i| {
+            const x_reg = Dsp2.RAW_X_ARG_REGS[i];
+            try code.append(Asm.ldr_x_imm(x_reg, 18, @intCast(8 + i * 8)));
+            if (kind == .f64) {
+                try code.append(Asm.@"fmov Dd, Xn"(Dsp2.RAW_D_ARG_REGS[i], x_reg));
+            }
+        }
+
+        const loop_pos = code.items.len;
+        try code.appendSlice(raw_body);
+        if (auto_advance_out) {
+            try code.append(Asm.add_imm(Dsp2.RAW_X_ARG_REGS[0], Dsp2.RAW_X_ARG_REGS[0], 8));
+        }
+        if (auto_advance_arg3) {
+            try code.append(Asm.add_imm(Dsp2.RAW_X_ARG_REGS[3], Dsp2.RAW_X_ARG_REGS[3], 8));
+        }
+        try code.append(Asm.@"subs Xn, Xn, #imm"(23, 1));
+        const bne_pos = code.items.len;
+        try code.append(Asm.@"b.cond offset"(Asm.COND_NE, @intCast(@as(isize, @intCast(loop_pos)) - @as(isize, @intCast(bne_pos)))));
+
+        try code.append(Asm.@".rpop Xn"(23));
+        inline for (0..8) |i| {
+            try code.append(Asm.ldr_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
+        }
+        try code.append(Asm.add_sp_imm(64));
+        try code.append(Asm.@"ldp x21, x22, [sp], #0x10");
+        try code.append(Asm.@"ldp x29, x30, [sp], #0x10");
+        try code.append(Asm.@"mov x0, #0");
+        try code.append(Asm.ret);
+
+        const wrapper_code = try code.toOwnedSlice();
+        const executable = self.image.link(wrapper_code);
+        self.fyalloc.free(wrapper_code);
+
+        const fun: *const fn () Value = @ptrCast(@alignCast(executable));
+        return .{
+            .fy = self,
+            .entry = fun,
+            .slots = slots,
+            .arg_count = arg_kinds.len,
+        };
+    }
+
+    fn callDsp2RawRepeatedWithArgsNoResultInternal(self: *Fy, name: []const u8, iterations: u64, args: []const Dsp2RawArg, auto_advance_out: bool, auto_advance_arg3: bool) !Value {
+        if (iterations == 0) return makeInt(0);
+        if (auto_advance_arg3 and args.len <= 3) return error.RegisterExhausted;
+
+        const word = self.userWords.get(name) orelse return error.UnknownWord;
+        const raw_body = try self.buildDsp2BodyAlloc(word, .raw_registers);
+        defer self.fyalloc.free(raw_body);
+
+        const report = analyzeCode(raw_body);
+        if (report.local_branch_count != 0 or
+            report.bl_count != 0 or
+            report.blr_count != 0 or
+            report.ret_count != 0 or
+            report.push_count != 0 or
+            report.pop_count != 0)
+        {
+            return error.UnsupportedDsp2RawBody;
+        }
+
+        var code = compat.ArrayList(u32).init(self.fyalloc);
+        errdefer code.deinit();
+
+        try code.append(Asm.@"stp x29, x30, [sp, #0x10]!");
+        try code.append(Asm.@"mov x29, sp");
+        try code.append(Asm.@"stp x21, x22, [sp, #0x10]!");
+        try code.append(Asm.sub_sp_imm(64));
+        inline for (0..8) |i| {
+            try code.append(Asm.str_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
+        }
         try code.append(Asm.@".rpush Xn"(23));
         for (Asm.movImm64(23, iterations)) |instr| try code.append(instr);
 
@@ -1650,11 +1802,21 @@ pub const Fy = struct {
 
         const loop_pos = code.items.len;
         try code.appendSlice(raw_body);
+        if (auto_advance_out) {
+            try code.append(Asm.add_imm(Dsp2.RAW_X_ARG_REGS[0], Dsp2.RAW_X_ARG_REGS[0], 8));
+        }
+        if (auto_advance_arg3) {
+            try code.append(Asm.add_imm(Dsp2.RAW_X_ARG_REGS[3], Dsp2.RAW_X_ARG_REGS[3], 8));
+        }
         try code.append(Asm.@"subs Xn, Xn, #imm"(23, 1));
         const bne_pos = code.items.len;
         try code.append(Asm.@"b.cond offset"(Asm.COND_NE, @intCast(@as(isize, @intCast(loop_pos)) - @as(isize, @intCast(bne_pos)))));
 
         try code.append(Asm.@".rpop Xn"(23));
+        inline for (0..8) |i| {
+            try code.append(Asm.ldr_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
+        }
+        try code.append(Asm.add_sp_imm(64));
         try code.append(Asm.@"ldp x21, x22, [sp], #0x10");
         try code.append(Asm.@"ldp x29, x30, [sp], #0x10");
         try code.append(Asm.@"mov x0, #0");
@@ -4127,6 +4289,36 @@ pub const Fy = struct {
                     try self.emitPush();
                 },
                 .Word => |w| {
+                    if (std.mem.eql(u8, w, "struct:")) {
+                        self.resetQuoteTracking();
+                        try self.compileStruct();
+                        return;
+                    }
+                    if (std.mem.eql(u8, w, "ustruct:")) {
+                        self.resetQuoteTracking();
+                        try self.compileUstruct();
+                        return;
+                    }
+                    if (std.mem.eql(u8, w, "noalloc:")) {
+                        self.resetQuoteTracking();
+                        try self.compileNoalloc(false, false);
+                        return;
+                    }
+                    if (std.mem.eql(u8, w, "inline-noalloc:")) {
+                        self.resetQuoteTracking();
+                        try self.compileNoalloc(true, false);
+                        return;
+                    }
+                    if (std.mem.eql(u8, w, "dsp:")) {
+                        self.resetQuoteTracking();
+                        try self.compileNoalloc(true, true);
+                        return;
+                    }
+                    if (std.mem.eql(u8, w, "dsp2:")) {
+                        self.resetQuoteTracking();
+                        try self.compileDsp2();
+                        return;
+                    }
                     // Namespace-aware lookup: if compiling inside a namespace,
                     // try "ns:word" first (for intra-module references), then bare "word"
                     const word = if (self.namespace) |ns| blk: {
@@ -5014,6 +5206,145 @@ pub const Fy = struct {
             return null;
         }
 
+        const UstructAccessorKind = enum {
+            load,
+            ptr,
+            store,
+        };
+
+        const UstructAccessor = struct {
+            field: FieldDef,
+            kind: UstructAccessorKind,
+        };
+
+        fn findUstructField(self: *Compiler, struct_name: []const u8, field_name: []const u8) ?FieldDef {
+            for (self.fy.untagged_struct_layouts.items) |layout| {
+                if (!std.mem.eql(u8, layout.name, struct_name)) continue;
+                for (layout.fields) |field| {
+                    if (std.mem.eql(u8, field.name, field_name)) return field;
+                }
+                return null;
+            }
+            return null;
+        }
+
+        fn findUstructAccessor(self: *Compiler, name: []const u8) ?UstructAccessor {
+            const dot = std.mem.indexOfScalar(u8, name, '.') orelse return null;
+            const struct_name = name[0..dot];
+            const field_part = name[dot + 1 ..];
+            if (field_part.len == 0) return null;
+
+            const Parsed = struct {
+                kind: UstructAccessorKind,
+                field_name: []const u8,
+            };
+            const parsed: Parsed = if (std.mem.endsWith(u8, field_part, "@"))
+                .{ .kind = .load, .field_name = field_part[0 .. field_part.len - 1] }
+            else if (std.mem.endsWith(u8, field_part, "!"))
+                .{ .kind = .store, .field_name = field_part[0 .. field_part.len - 1] }
+            else if (std.mem.endsWith(u8, field_part, "-p"))
+                .{ .kind = .ptr, .field_name = field_part[0 .. field_part.len - 2] }
+            else
+                return null;
+
+            const field = self.findUstructField(struct_name, parsed.field_name) orelse return null;
+            return .{ .field = field, .kind = parsed.kind };
+        }
+
+        fn appendUstructAccessorTokens(self: *Compiler, program: *Dsp2.Program, accessor: UstructAccessor) Error!void {
+            switch (accessor.kind) {
+                .ptr => {
+                    program.addNumber(accessor.field.offset) catch return Error.OutOfMemory;
+                    program.addWord("ptr+") catch return Error.OutOfMemory;
+                },
+                .load => {
+                    if (accessor.field.field_type != .f64) {
+                        self.setError("dsp2: ustruct load supports f64 fields for now", .{});
+                        return Error.UnknownWord;
+                    }
+                    program.addNumber(accessor.field.offset) catch return Error.OutOfMemory;
+                    program.addWord("ptr+") catch return Error.OutOfMemory;
+                    program.addWord("f@64") catch return Error.OutOfMemory;
+                },
+                .store => {
+                    if (accessor.field.field_type != .f64) {
+                        self.setError("dsp2: ustruct store supports f64 fields for now", .{});
+                        return Error.UnknownWord;
+                    }
+                    program.addWord("dup") catch return Error.OutOfMemory;
+                    program.addNumber(accessor.field.offset) catch return Error.OutOfMemory;
+                    program.addWord("ptr+") catch return Error.OutOfMemory;
+                    program.addNumber(2) catch return Error.OutOfMemory;
+                    program.addWord("pick") catch return Error.OutOfMemory;
+                    program.addWord("swap") catch return Error.OutOfMemory;
+                    program.addWord("f!64") catch return Error.OutOfMemory;
+                    program.addWord("nip") catch return Error.OutOfMemory;
+                },
+            }
+        }
+
+        fn appendUstructGroupedLoadTokens(self: *Compiler, program: *Dsp2.Program, struct_name: []const u8) Error!void {
+            var field_index: i64 = 0;
+            while (true) : (field_index += 1) {
+                const tok = try self.parser.nextToken() orelse return Error.UnexpectedEndOfInput;
+                const field_name = switch (tok) {
+                    .Word => |w| w,
+                    else => return Error.ExpectedWord,
+                };
+                if (std.mem.eql(u8, field_name, Word.END)) break;
+
+                const field = self.findUstructField(struct_name, field_name) orelse {
+                    self.setError("dsp2: unknown ustruct field {s}.{s}", .{ struct_name, field_name });
+                    return Error.UnknownWord;
+                };
+                if (field.field_type != .f64) {
+                    self.setError("dsp2: ustruct grouped load supports f64 fields for now", .{});
+                    return Error.UnknownWord;
+                }
+
+                program.addNumber(field_index + 1) catch return Error.OutOfMemory;
+                program.addWord("pick") catch return Error.OutOfMemory;
+                program.addNumber(field.offset) catch return Error.OutOfMemory;
+                program.addWord("ptr+") catch return Error.OutOfMemory;
+                program.addWord("f@64") catch return Error.OutOfMemory;
+            }
+        }
+
+        const Dsp2LocalFrame = struct {
+            start: usize,
+            len: usize,
+        };
+
+        fn findDsp2Local(names: []const []const u8, frames: []const Dsp2LocalFrame, word: []const u8) ?Dsp2.LocalRef {
+            var frame_i = frames.len;
+            while (frame_i > 0) {
+                frame_i -= 1;
+                const frame = frames[frame_i];
+                const frame_names = names[frame.start .. frame.start + frame.len];
+                for (frame_names, 0..) |name, i| {
+                    if (std.mem.eql(u8, name, word)) {
+                        return .{
+                            .depth = frames.len - 1 - frame_i,
+                            .index = i,
+                        };
+                    }
+                }
+            }
+            return null;
+        }
+
+        fn parseDsp2Locals(self: *Compiler, names: *compat.ArrayList([]const u8)) Error!void {
+            while (true) {
+                const tok = try self.parser.nextToken() orelse return Error.UnexpectedEndOfInput;
+                const word = switch (tok) {
+                    .Word => |w| w,
+                    else => return Error.ExpectedWord,
+                };
+                if (std.mem.eql(u8, word, "|")) break;
+                names.append(word) catch return Error.OutOfMemory;
+            }
+        }
+
         fn compileDsp2(self: *Compiler) Error!void {
             const name_tok = try self.parser.nextToken();
             const w = switch (name_tok orelse return Error.UnexpectedEndOfInput) {
@@ -5023,12 +5354,34 @@ pub const Fy = struct {
 
             var program = Dsp2.Program.init(self.fy.fyalloc);
             defer program.deinit();
+            var local_names = compat.ArrayList([]const u8).init(self.fy.fyalloc);
+            defer local_names.deinit();
+            var local_frames = compat.ArrayList(Dsp2LocalFrame).init(self.fy.fyalloc);
+            defer local_frames.deinit();
 
             while (true) {
                 const tok = try self.parser.nextToken() orelse return Error.UnexpectedEndOfInput;
                 switch (tok) {
                     .Word => |word| {
                         if (std.mem.eql(u8, word, Word.END)) break;
+                        if (std.mem.eql(u8, word, "|")) {
+                            const frame_start = local_names.items.len;
+                            try self.parseDsp2Locals(&local_names);
+                            const frame_len = local_names.items.len - frame_start;
+                            local_frames.append(.{ .start = frame_start, .len = frame_len }) catch return Error.OutOfMemory;
+                            program.beginLocalFrame(frame_len) catch return Error.OutOfMemory;
+                            continue;
+                        }
+                        if (findDsp2Local(local_names.items, local_frames.items, word)) |local_ref| {
+                            program.addLocalArg(local_ref) catch |err| {
+                                return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
+                            };
+                            continue;
+                        }
+                        if (std.mem.endsWith(u8, word, "@:") and word.len > 2) {
+                            try self.appendUstructGroupedLoadTokens(&program, word[0 .. word.len - 2]);
+                            continue;
+                        }
                         if (self.findDsp2Body(word)) |body| {
                             program.addTokens(body) catch |err| {
                                 self.setError("dsp2: cannot inline '{s}' ({s})", .{ word, @errorName(err) });
@@ -5036,22 +5389,34 @@ pub const Fy = struct {
                             };
                             continue;
                         }
+                        if (self.findUstructAccessor(word)) |accessor| {
+                            try self.appendUstructAccessorTokens(&program, accessor);
+                            continue;
+                        }
                         program.addWord(word) catch |err| {
                             self.setError("dsp2: unsupported word or stack effect near '{s}' ({s})", .{ word, @errorName(err) });
                             return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
                         };
                     },
-                    .Number => |n| program.addNumber(n) catch |err| {
-                        return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
+                    .Number => |n| {
+                        program.addNumber(n) catch |err| {
+                            return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
+                        };
                     },
-                    .Float => |f| program.addFloat(f) catch |err| {
-                        return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
+                    .Float => |f| {
+                        program.addFloat(f) catch |err| {
+                            return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
+                        };
                     },
                     .String => {
                         self.setError("dsp2: strings are not allowed", .{});
                         return Error.UnknownWord;
                     },
                 }
+            }
+            var frame_i = local_frames.items.len;
+            while (frame_i > 0) : (frame_i -= 1) {
+                program.endLocalFrame() catch return Error.OutOfMemory;
             }
 
             var builder = program.build() catch |err| {
@@ -5067,6 +5432,50 @@ pub const Fy = struct {
             defer c.deinit();
             try c.enterPersist();
             builder.emit(&c.code) catch |err| {
+                if (err == error.RegisterExhausted) {
+                    try c.code.append(Asm.@"mov x0, #0");
+                    try c.code.append(Asm.ret);
+                    try c.leavePersist();
+                    const code = c.code.toOwnedSlice() catch return Error.OutOfMemory;
+                    const code_len = code.len;
+                    const entry = self.fy.image.link(code);
+                    const entry_addr = @intFromPtr(entry.ptr);
+                    self.fy.fyalloc.free(code);
+
+                    const final_name = if (self.namespace) |ns| blk: {
+                        const prefixed = self.fy.fyalloc.alloc(u8, ns.len + w.len) catch return Error.OutOfMemory;
+                        @memcpy(prefixed[0..ns.len], ns);
+                        @memcpy(prefixed[ns.len..], w);
+                        break :blk prefixed;
+                    } else null;
+                    const reg_name = final_name orelse w;
+
+                    try self.declareWord(reg_name);
+                    if (self.fy.userWords.getPtr(reg_name)) |word| {
+                        self.fy.clearOwnedWordBodies(word);
+                        const tramp = if (word.trampoline_addr) |tramp| tramp else self.fy.image.linkTrampoline(entry_addr);
+                        if (word.trampoline_addr) |existing| {
+                            const ob: i64 = @as(i64, @intCast(entry_addr)) - @as(i64, @intCast(existing));
+                            const ow: i26 = @intCast(@divExact(ob, 4));
+                            self.fy.image.patchInstruction(existing, Asm.@"b offset"(ow));
+                        }
+                        word.image_addr = entry_addr;
+                        word.image_len = code_len;
+                        word.image_body_addr = null;
+                        word.image_body_len = 0;
+                        word.trampoline_addr = tramp;
+                        word.noalloc = true;
+                        word.inlineable = false;
+                        word.dsp = true;
+                        word.dsp2 = true;
+                        word.c = builder.initial_arity;
+                        word.p = builder.outputCount();
+                        word.dsp2_body = dsp2_body;
+                        dsp2_body = null;
+                    }
+                    if (final_name) |fn_| self.fy.fyalloc.free(fn_);
+                    return;
+                }
                 self.setError("dsp2 emit: {s}", .{@errorName(err)});
                 return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
             };
@@ -5136,6 +5545,74 @@ pub const Fy = struct {
                 .{ "ptr", .ptr },
             });
             return map.get(name);
+        }
+
+        fn parseStructLayout(self: *Compiler) Error!StructLayout {
+            const name_tok = try self.parser.nextToken();
+            const struct_name = switch (name_tok orelse return Error.UnexpectedEndOfInput) {
+                .Word => |w| w,
+                else => return Error.ExpectedWord,
+            };
+
+            var fields_list = compat.ArrayList(FieldDef).init(self.fy.fyalloc);
+            errdefer {
+                for (fields_list.items) |field| self.fy.fyalloc.free(field.name);
+                fields_list.deinit();
+            }
+
+            var current_offset: u16 = 0;
+            var max_align: u16 = 1;
+
+            while (true) {
+                const type_tok = try self.parser.nextToken();
+                const type_word = switch (type_tok orelse return Error.UnexpectedEndOfInput) {
+                    .Word => |w| w,
+                    else => return Error.ExpectedWord,
+                };
+                if (std.mem.eql(u8, type_word, ";")) break;
+
+                const field_type = parseFieldType(type_word) orelse {
+                    self.setError("unknown field type: {s}", .{type_word});
+                    return Error.UnknownWord;
+                };
+
+                const field_tok = try self.parser.nextToken();
+                const field_name = switch (field_tok orelse return Error.UnexpectedEndOfInput) {
+                    .Word => |w| w,
+                    else => return Error.ExpectedWord,
+                };
+
+                const align_val = field_type.alignment();
+                if (align_val > max_align) max_align = align_val;
+                current_offset = std.mem.alignForward(u16, current_offset, align_val);
+
+                fields_list.append(.{
+                    .name = self.fy.fyalloc.dupe(u8, field_name) catch return Error.OutOfMemory,
+                    .offset = current_offset,
+                    .field_type = field_type,
+                }) catch return Error.OutOfMemory;
+
+                current_offset += field_type.size();
+            }
+
+            const total_size: u16 = std.mem.alignForward(u16, current_offset, max_align);
+            const fields_owned = fields_list.toOwnedSlice() catch return Error.OutOfMemory;
+            errdefer self.fy.fyalloc.free(fields_owned);
+            return .{
+                .name = self.fy.fyalloc.dupe(u8, struct_name) catch return Error.OutOfMemory,
+                .size = total_size,
+                .fields = fields_owned,
+            };
+        }
+
+        fn compileUstruct(self: *Compiler) Error!void {
+            const layout = try self.parseStructLayout();
+            errdefer {
+                for (layout.fields) |field| self.fy.fyalloc.free(field.name);
+                self.fy.fyalloc.free(layout.fields);
+                self.fy.fyalloc.free(layout.name);
+            }
+            self.fy.untagged_struct_layouts.append(layout) catch return Error.OutOfMemory;
         }
 
         /// Helper: build a user word from a code-emitting sub-compiler, link it, and register it.
@@ -5598,6 +6075,11 @@ pub const Fy = struct {
                             try self.compileDsp2();
                             continue;
                         }
+                        if (std.mem.eql(u8, w, "ustruct:")) {
+                            self.resetQuoteTracking();
+                            try self.compileUstruct();
+                            continue;
+                        }
                         if (std.mem.eql(u8, w, "dsp:")) {
                             self.resetQuoteTracking();
                             try self.compileNoalloc(true, true);
@@ -5771,6 +6253,31 @@ pub const Fy = struct {
                         if (std.mem.eql(u8, w, "struct:")) {
                             self.resetQuoteTracking();
                             try self.compileStruct();
+                            continue;
+                        }
+                        if (std.mem.eql(u8, w, "ustruct:")) {
+                            self.resetQuoteTracking();
+                            try self.compileUstruct();
+                            continue;
+                        }
+                        if (std.mem.eql(u8, w, "noalloc:")) {
+                            self.resetQuoteTracking();
+                            try self.compileNoalloc(false, false);
+                            continue;
+                        }
+                        if (std.mem.eql(u8, w, "inline-noalloc:")) {
+                            self.resetQuoteTracking();
+                            try self.compileNoalloc(true, false);
+                            continue;
+                        }
+                        if (std.mem.eql(u8, w, "dsp:")) {
+                            self.resetQuoteTracking();
+                            try self.compileNoalloc(true, true);
+                            continue;
+                        }
+                        if (std.mem.eql(u8, w, "dsp2:")) {
+                            self.resetQuoteTracking();
+                            try self.compileDsp2();
                             continue;
                         }
                         if (std.mem.eql(u8, w, "callback:")) {

@@ -919,6 +919,263 @@ test "dsp2: inlines called dsp2 word before typed codegen" {
     try std.testing.expectEqual(@as(usize, 0), wrapper_report.pop_count);
 }
 
+test "dsp2: supports nip and drop2 stack cleanup" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run(
+        \\dsp2: keep-top 0.0 f+ nip ;
+        \\dsp2: cleanup
+        \\  3 pick f@64
+        \\  1 pick f*
+        \\  5 pick f!64
+        \\  drop2 nip drop2
+        \\;
+    );
+
+    try std.testing.expectApproxEqAbs(3.5, getFyFloat(try fy.run("1.25 3.5 keep-top")), 0.000000000001);
+
+    var out: f64 = 0;
+    var input: f64 = 0.5;
+    var unused: [1]f64 = .{0};
+    const args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out) },
+        .{ .ptr = @intFromPtr(&input) },
+        .{ .ptr = @intFromPtr(&unused) },
+        .{ .int = 0 },
+        .{ .f64 = 2.5 },
+    };
+
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("cleanup", 1, &args);
+    try std.testing.expectApproxEqAbs(1.25, out, 0.000000000001);
+}
+
+test "dsp2: raw repeated wrapper can advance output and input streams" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run(
+        \\dsp2: stream-copy2
+        \\  | out state params input |
+        \\  input f@64
+        \\  2.0
+        \\  f*
+        \\  out
+        \\  f!64
+        \\  drop2 drop2
+        \\;
+    );
+
+    var out = [_]f64{0} ** 4;
+    var input = [_]f64{ 0.25, -0.5, 0.75, -1.0 };
+    var state: f64 = 0;
+    var params: f64 = 0;
+    const args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out[0]) },
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+        .{ .ptr = @intFromPtr(&input[0]) },
+    };
+
+    _ = try fy.callDsp2RawRepeatedWithAutoOutInNoResult("stream-copy2", out.len, &args);
+    try std.testing.expectApproxEqAbs(0.5, out[0], 0.000000000001);
+    try std.testing.expectApproxEqAbs(-1.0, out[1], 0.000000000001);
+    try std.testing.expectApproxEqAbs(1.5, out[2], 0.000000000001);
+    try std.testing.expectApproxEqAbs(-2.0, out[3], 0.000000000001);
+}
+
+test "dsp2: cached raw repeated caller reuses wrapper with new slots" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run(
+        \\dsp2: cached-copy2
+        \\  | out state params input |
+        \\  input f@64
+        \\  2.0
+        \\  f*
+        \\  out
+        \\  f!64
+        \\  drop2 drop2
+        \\;
+    );
+
+    var slots = Fy.Dsp2RawRepeatedSlots{};
+    var caller = try fy.compileDsp2RawRepeatedCaller(
+        "cached-copy2",
+        &slots,
+        &.{ .ptr, .ptr, .ptr, .ptr },
+        true,
+        true,
+    );
+
+    var state: f64 = 0;
+    var params: f64 = 0;
+    var out_a = [_]f64{0} ** 2;
+    var in_a = [_]f64{ 0.5, -0.25 };
+    const args_a = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out_a[0]) },
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+        .{ .ptr = @intFromPtr(&in_a[0]) },
+    };
+    _ = try caller.call(out_a.len, &args_a);
+    try std.testing.expectApproxEqAbs(1.0, out_a[0], 0.000000000001);
+    try std.testing.expectApproxEqAbs(-0.5, out_a[1], 0.000000000001);
+
+    var out_b = [_]f64{0} ** 3;
+    var in_b = [_]f64{ 1.0, 1.25, -1.5 };
+    const args_b = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out_b[0]) },
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+        .{ .ptr = @intFromPtr(&in_b[0]) },
+    };
+    _ = try caller.call(out_b.len, &args_b);
+    try std.testing.expectApproxEqAbs(2.0, out_b[0], 0.000000000001);
+    try std.testing.expectApproxEqAbs(2.5, out_b[1], 0.000000000001);
+    try std.testing.expectApproxEqAbs(-3.0, out_b[2], 0.000000000001);
+}
+
+test "dsp2: ustruct accessors lower to raw IR" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run("ustruct: U f64 x f64 y ;");
+    _ = fy.run(
+        \\dsp2: sum-xy
+        \\  dup U.x@
+        \\  1 pick U.y@
+        \\  f+
+        \\  2 pick f!64
+        \\  drop2
+        \\;
+    ) catch |err| {
+        std.debug.print("sum-xy failed: {}\n", .{err});
+        return err;
+    };
+    _ = fy.run(
+        \\dsp2: write-y
+        \\  2.5 swap U.y! drop
+        \\;
+    ) catch |err| {
+        std.debug.print("write-y failed: {}\n", .{err});
+        return err;
+    };
+    _ = fy.run(
+        \\dsp2: write-y-p
+        \\  3.5 1 pick U.y-p f!64 drop
+        \\;
+    ) catch |err| {
+        std.debug.print("write-y-p failed: {}\n", .{err});
+        return err;
+    };
+    _ = fy.run(
+        \\dsp2: grouped-sum
+        \\  0.0
+        \\  U@: x y ;
+        \\  f+
+        \\  3 pick f!64
+        \\  drop2 drop
+        \\;
+    ) catch |err| {
+        std.debug.print("grouped-sum failed: {}\n", .{err});
+        return err;
+    };
+    _ = fy.run(
+        \\dsp2: local-sum
+        \\  | out u |
+        \\  u U.x@
+        \\  u U.y@
+        \\  f+
+        \\  out f!64
+        \\  drop2
+        \\;
+    ) catch |err| {
+        std.debug.print("local-sum failed: {}\n", .{err});
+        return err;
+    };
+    _ = fy.run(
+        \\dsp2: local-temp-sum
+        \\  | out u |
+        \\  u U.x@
+        \\  u U.y@
+        \\  f+
+        \\  | sum |
+        \\  sum
+        \\  sum
+        \\  f+
+        \\  out f!64
+        \\  drop
+        \\  drop2
+        \\;
+    ) catch |err| {
+        std.debug.print("local-temp-sum failed: {}\n", .{err});
+        return err;
+    };
+    _ = fy.run(
+        \\dsp2: local-helper
+        \\  | u |
+        \\  u U.x@
+        \\  | x |
+        \\  x
+        \\  x
+        \\  f+
+        \\  nip
+        \\  nip
+        \\;
+        \\dsp2: local-inline-sum
+        \\  | out u |
+        \\  u local-helper
+        \\  out f!64
+        \\  drop2
+        \\;
+    ) catch |err| {
+        std.debug.print("local-inline-sum failed: {}\n", .{err});
+        return err;
+    };
+
+    const U = extern struct {
+        x: f64,
+        y: f64,
+    };
+    var out: f64 = 0;
+    var u = U{ .x = 1.25, .y = 0.75 };
+    const sum_args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out) },
+        .{ .ptr = @intFromPtr(&u) },
+    };
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("sum-xy", 1, &sum_args);
+    try std.testing.expectApproxEqAbs(2.0, out, 0.000000000001);
+    out = 0;
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("grouped-sum", 1, &sum_args);
+    try std.testing.expectApproxEqAbs(2.0, out, 0.000000000001);
+    out = 0;
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("local-sum", 1, &sum_args);
+    try std.testing.expectApproxEqAbs(2.0, out, 0.000000000001);
+    out = 0;
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("local-temp-sum", 1, &sum_args);
+    try std.testing.expectApproxEqAbs(4.0, out, 0.000000000001);
+    out = 0;
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("local-inline-sum", 1, &sum_args);
+    try std.testing.expectApproxEqAbs(2.5, out, 0.000000000001);
+
+    const state_args = [_]Fy.Dsp2RawArg{.{ .ptr = @intFromPtr(&u) }};
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("write-y", 1, &state_args);
+    try std.testing.expectApproxEqAbs(2.5, u.y, 0.000000000001);
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("write-y-p", 1, &state_args);
+    try std.testing.expectApproxEqAbs(3.5, u.y, 0.000000000001);
+
+    const report = try fy.reportDsp2RawWord("sum-xy");
+    try std.testing.expectEqual(@as(usize, 0), report.bl_count);
+    try std.testing.expectEqual(@as(usize, 0), report.push_count);
+    try std.testing.expectEqual(@as(usize, 0), report.pop_count);
+}
+
 test "dsp2: pure f64 helper is callable and inlines into pointer adapter" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();

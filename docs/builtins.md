@@ -239,6 +239,81 @@ Floats are f64 values stored as bitcast i64. Use `i>f` / `f>i` to convert.
 | `!16` | `val addr --` | Store 16-bit value |
 | `@16` | `addr -- val` | Load 16-bit value |
 
+### Untagged DSP Structs
+
+`ustruct:` declares a raw host-compatible layout for `dsp2:` code:
+
+```forth
+ustruct: VoiceState
+  f64 phase
+  f64 env
+;
+```
+
+Inside `dsp2:`, field accessors are expanded before IR construction:
+
+| Accessor | Stack Effect | Description |
+|----------|-------------|-------------|
+| `VoiceState.phase@` | `ptr -- f` | Load an f64 field |
+| `VoiceState.phase!` | `f ptr -- ptr` | Store an f64 field and keep the struct ptr |
+| `VoiceState.phase-p` | `ptr -- field-ptr` | Get the raw field pointer |
+
+Grouped f64 loads are available inside `dsp2:` with `Struct@:`:
+
+```forth
+dsp2: env-args
+  VoiceParams@: attack decay sustain gate release ;
+  adsr-cap
+;
+```
+
+`Struct@:` expands to `pick + field@` IR for each listed field. It is
+intended for the common DSP shape where the struct pointer is one stack
+slot below the values being accumulated; each subsequent load adjusts the
+pick depth automatically.
+
+`dsp2:` can also name its entry arguments with local aliases:
+
+```forth
+dsp2: sum-xy
+  | out state |
+  state VoiceState.x@
+  state VoiceState.y@
+  f+
+  out f!64
+  drop2
+;
+```
+
+These locals are compile-time aliases to the initial stack arguments.
+They do not allocate, create a runtime frame, or consume the original
+arguments; clean up the original stack entries with `drop`, `drop2`, or
+`nip` when the word should leave no stack outputs.
+
+The same syntax can be used later in a `dsp2:` word to name computed
+temporaries from the current stack:
+
+```forth
+dsp2: pulse-step
+  | state params |
+  VoiceState@: phase ;
+  VoiceParams@: hz inv-sample-rate ;
+  f*
+  | phase dt |
+  phase dt phase-advance01
+  state VoiceState.phase-p
+  f!64
+  phase dt 0.5 pulse-polyblep
+  nip nip nip nip
+;
+```
+
+Temporary locals are also aliases. They make repeated use explicit, but
+the original stack values still need to be cleaned up.
+
+These accessors are untagged and DSP-only. Use normal `struct:` for
+tagged fy heap/FFI structs and manifests.
+
 ## FFI
 
 | Word | Stack Effect | Description |

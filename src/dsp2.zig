@@ -23,6 +23,7 @@ const Op = enum {
     arg,
     int_const,
     f64_const,
+    ptr_add,
     load_f64,
     fadd,
     fsub,
@@ -36,6 +37,8 @@ const Op = enum {
     fpulseblep,
     fadsr_linear,
     fadsr_cap,
+    fms20_lpf4,
+    fms20_lpf4_cubic,
 };
 
 const Value = struct {
@@ -57,6 +60,16 @@ const Store = struct {
     value: usize,
 };
 
+const LocalFrame = struct {
+    args: [16]usize = undefined,
+    len: usize = 0,
+};
+
+pub const LocalRef = struct {
+    depth: usize,
+    index: usize,
+};
+
 const Loc = union(enum) {
     none,
     x: u5,
@@ -71,6 +84,7 @@ pub const ArgAbi = enum {
 
 const D_REGS = [_]u5{ 0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31 };
 const X_REGS = [_]u5{ 9, 10, 11, 12, 13, 14, 15, 16, 17 };
+const RAW_X_SCRATCH_REGS = [_]u5{ 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20, 24, 25, 26, 27, 28 };
 pub const RAW_X_ARG_REGS = [_]u5{ 0, 1, 2, 3, 4, 5, 6, 7 };
 pub const RAW_D_ARG_REGS = [_]u5{ 8, 9, 10, 11, 12, 13, 14, 15 };
 
@@ -78,6 +92,8 @@ pub const Builder = struct {
     allocator: std.mem.Allocator,
     values: compat.ArrayList(Value),
     stack: compat.ArrayList(usize),
+    args: compat.ArrayList(usize),
+    local_frames: compat.ArrayList(LocalFrame),
     stores: compat.ArrayList(Store),
     initial_arity: usize = 0,
 
@@ -86,6 +102,8 @@ pub const Builder = struct {
             .allocator = allocator,
             .values = compat.ArrayList(Value).init(allocator),
             .stack = compat.ArrayList(usize).init(allocator),
+            .args = compat.ArrayList(usize).init(allocator),
+            .local_frames = compat.ArrayList(LocalFrame).init(allocator),
             .stores = compat.ArrayList(Store).init(allocator),
         };
     }
@@ -93,6 +111,8 @@ pub const Builder = struct {
     pub fn deinit(self: *Builder) void {
         self.values.deinit();
         self.stack.deinit();
+        self.args.deinit();
+        self.local_frames.deinit();
         self.stores.deinit();
     }
 
@@ -106,6 +126,31 @@ pub const Builder = struct {
         try self.stack.append(id);
     }
 
+    pub fn addLocalArg(self: *Builder, ref: LocalRef) Error!void {
+        if (ref.depth >= self.local_frames.items.len) return Error.StackUnderflow;
+        const frame_index = self.local_frames.items.len - 1 - ref.depth;
+        const frame = self.local_frames.items[frame_index];
+        if (ref.index >= frame.len) return Error.StackUnderflow;
+        try self.stack.append(frame.args[ref.index]);
+    }
+
+    pub fn beginLocalFrame(self: *Builder, arity: usize) Error!void {
+        if (arity > 16) return Error.RegisterExhausted;
+        if (self.stack.items.len < arity) return Error.StackUnderflow;
+        var frame = LocalFrame{ .len = arity };
+        const base = self.stack.items.len - arity;
+        var i: usize = 0;
+        while (i < arity) : (i += 1) {
+            frame.args[i] = self.stack.items[base + i];
+        }
+        try self.local_frames.append(frame);
+    }
+
+    pub fn endLocalFrame(self: *Builder) Error!void {
+        if (self.local_frames.items.len == 0) return Error.StackUnderflow;
+        _ = self.local_frames.pop();
+    }
+
     pub fn addWord(self: *Builder, word: []const u8) Error!void {
         if (std.mem.eql(u8, word, "dup")) {
             const a = try self.peek(0);
@@ -116,10 +161,22 @@ pub const Builder = struct {
             _ = try self.pop();
             return;
         }
+        if (std.mem.eql(u8, word, "drop2")) {
+            _ = try self.pop();
+            _ = try self.pop();
+            return;
+        }
         if (std.mem.eql(u8, word, "swap")) {
             if (self.stack.items.len < 2) return Error.StackUnderflow;
             const n = self.stack.items.len;
             std.mem.swap(usize, &self.stack.items[n - 1], &self.stack.items[n - 2]);
+            return;
+        }
+        if (std.mem.eql(u8, word, "nip")) {
+            if (self.stack.items.len < 2) return Error.StackUnderflow;
+            const top = try self.pop();
+            _ = try self.pop();
+            try self.stack.append(top);
             return;
         }
         if (std.mem.eql(u8, word, "pick")) {
@@ -135,6 +192,21 @@ pub const Builder = struct {
             const ptr = try self.pop();
             try self.expectTy(ptr, .ptr);
             const id = try self.addValue(.{ .op = .load_f64, .ty = .f64, .a = ptr });
+            try self.stack.append(id);
+            return;
+        }
+        if (std.mem.eql(u8, word, "ptr+")) {
+            const offset_id = try self.pop();
+            const ptr = try self.pop();
+            try self.expectTy(ptr, .ptr);
+            const offset = self.values.items[offset_id];
+            if (offset.op != .int_const or offset.int_value < 0) return Error.NonConstantPick;
+            const id = try self.addValue(.{
+                .op = .ptr_add,
+                .ty = .ptr,
+                .a = ptr,
+                .int_value = offset.int_value,
+            });
             try self.stack.append(id);
             return;
         }
@@ -272,7 +344,41 @@ pub const Builder = struct {
             try self.stack.append(id);
             return;
         }
+        if (std.mem.eql(u8, word, "fms20-lpf4")) {
+            try self.addMs20Lpf4(.fms20_lpf4);
+            return;
+        }
+        if (std.mem.eql(u8, word, "fms20-lpf4-cubic")) {
+            try self.addMs20Lpf4(.fms20_lpf4_cubic);
+            return;
+        }
         return Error.UnsupportedWord;
+    }
+
+    fn addMs20Lpf4(self: *Builder, op: Op) Error!void {
+        const drive = try self.pop();
+        const damping = try self.pop();
+        const g = try self.pop();
+        const input = try self.pop();
+        const ic2 = try self.pop();
+        const ic1 = try self.pop();
+        try self.expectTy(ic1, .ptr);
+        try self.expectTy(ic2, .ptr);
+        try self.expectTy(input, .f64);
+        try self.expectTy(g, .f64);
+        try self.expectTy(damping, .f64);
+        try self.expectTy(drive, .f64);
+        const id = try self.addValue(.{
+            .op = op,
+            .ty = .f64,
+            .a = ic1,
+            .b = ic2,
+            .c = input,
+            .d = g,
+            .e = damping,
+            .f = drive,
+        });
+        try self.stack.append(id);
     }
 
     pub fn emit(self: *Builder, out: *compat.ArrayList(u32)) Error!void {
@@ -280,44 +386,115 @@ pub const Builder = struct {
     }
 
     pub fn emitWithArgAbi(self: *Builder, out: *compat.ArrayList(u32), arg_abi: ArgAbi) Error!void {
-        const pure_outputs = self.stores.items.len == 0;
-        if (pure_outputs) {
-            if (self.stack.items.len == 0) return Error.BadStackEffect;
-        } else if (self.stack.items.len != 0) {
-            return Error.BadStackEffect;
-        }
+        const has_outputs = self.stack.items.len != 0;
+        if (self.stores.items.len == 0 and !has_outputs) return Error.BadStackEffect;
 
         const locs = self.allocator.alloc(Loc, self.values.items.len) catch return Error.OutOfMemory;
         defer self.allocator.free(locs);
         @memset(locs, .none);
 
+        const remaining_uses = self.allocator.alloc(u32, self.values.items.len) catch return Error.OutOfMemory;
+        defer self.allocator.free(remaining_uses);
+        @memset(remaining_uses, 0);
+        self.countUses(remaining_uses);
+
         var cg = Codegen{
             .builder = self,
             .out = out,
             .locs = locs,
+            .remaining_uses = remaining_uses,
             .arg_abi = arg_abi,
         };
-        if (pure_outputs) {
-            const output_regs = self.allocator.alloc(u5, self.stack.items.len) catch return Error.OutOfMemory;
-            defer self.allocator.free(output_regs);
+
+        const spill_stores = self.stores.items.len > 1;
+        const spill_frame_bytes: u12 = @intCast(std.mem.alignForward(usize, self.stores.items.len * 16, 16));
+        if (spill_stores) {
+            try out.append(Asm.sub_sp_imm(spill_frame_bytes));
+            for (self.stores.items, 0..) |store, i| {
+                const val_reg = try cg.valueD(store.value);
+                const ptr_reg = try cg.valueX(store.ptr);
+                const offset: u12 = @intCast(i * 16);
+                try out.append(Asm.str_d_imm(val_reg, 31, offset));
+                try out.append(Asm.str_x_imm(ptr_reg, 31, offset + 8));
+                cg.consumeValue(store.value);
+                cg.consumeValue(store.ptr);
+            }
+        }
+
+        if (has_outputs) {
+            const output_locs = self.allocator.alloc(Loc, self.stack.items.len) catch return Error.OutOfMemory;
+            defer self.allocator.free(output_locs);
             for (self.stack.items, 0..) |value, i| {
-                output_regs[i] = try cg.valueD(value);
+                const ty = self.values.items[value].ty;
+                output_locs[i] = if (ty == .f64)
+                    .{ .d = try cg.valueD(value) }
+                else if (ty == .ptr or ty == .int)
+                    .{ .x = try cg.valueX(value) }
+                else
+                    return Error.TypeMismatch;
+            }
+            if (spill_stores) {
+                for (self.stores.items, 0..) |_, i| {
+                    const val_reg = try cg.allocD();
+                    const ptr_reg = try cg.allocX();
+                    const offset: u12 = @intCast(i * 16);
+                    try out.append(Asm.ldr_d_imm(val_reg, 31, offset));
+                    try out.append(Asm.ldr_x_imm(ptr_reg, 31, offset + 8));
+                    try out.append(Asm.str_d_imm(val_reg, ptr_reg, 0));
+                    cg.releaseD(val_reg);
+                    cg.releaseX(ptr_reg);
+                }
+                try out.append(Asm.add_sp_imm(spill_frame_bytes));
+            } else {
+                for (self.stores.items) |store| {
+                    const val_reg = try cg.valueD(store.value);
+                    const ptr_reg = try cg.valueX(store.ptr);
+                    try out.append(Asm.str_d_imm(val_reg, ptr_reg, 0));
+                    cg.consumeValue(store.value);
+                    cg.consumeValue(store.ptr);
+                }
             }
             if (arg_abi != .raw_registers and self.initial_arity > 0) {
                 try out.append(Asm.add_imm(21, 21, @intCast(self.initial_arity * 8)));
             }
-            for (output_regs) |reg| {
-                try out.append(Asm.@"fmov Xd, Dn"(9, reg));
-                try out.append(Asm.@"lsr Xn, Xn, #2"(9));
-                try out.append(Asm.@"lsl Xn, Xn, #2"(9));
-                try out.append(Asm.@"add Xn, Xn, #2"(9));
-                try out.append(Asm.@".push Xn"(9));
+            for (output_locs) |loc| {
+                switch (loc) {
+                    .d => |reg| {
+                        try out.append(Asm.@"fmov Xd, Dn"(9, reg));
+                        try out.append(Asm.@"lsr Xn, Xn, #2"(9));
+                        try out.append(Asm.@"lsl Xn, Xn, #2"(9));
+                        try out.append(Asm.@"add Xn, Xn, #2"(9));
+                        try out.append(Asm.@".push Xn"(9));
+                    },
+                    .x => |reg| {
+                        try out.append(Asm.@"lsl Xn, Xn, #2"(reg));
+                        try out.append(Asm.@".push Xn"(reg));
+                    },
+                    .none => return Error.TypeMismatch,
+                }
             }
+            for (self.stack.items) |value| cg.consumeValue(value);
         } else {
-            for (self.stores.items) |store| {
-                const val_reg = try cg.valueD(store.value);
-                const ptr_reg = try cg.valueX(store.ptr);
-                try out.append(Asm.str_d_imm(val_reg, ptr_reg, 0));
+            if (spill_stores) {
+                for (self.stores.items, 0..) |_, i| {
+                    const val_reg = try cg.allocD();
+                    const ptr_reg = try cg.allocX();
+                    const offset: u12 = @intCast(i * 16);
+                    try out.append(Asm.ldr_d_imm(val_reg, 31, offset));
+                    try out.append(Asm.ldr_x_imm(ptr_reg, 31, offset + 8));
+                    try out.append(Asm.str_d_imm(val_reg, ptr_reg, 0));
+                    cg.releaseD(val_reg);
+                    cg.releaseX(ptr_reg);
+                }
+                try out.append(Asm.add_sp_imm(spill_frame_bytes));
+            } else {
+                for (self.stores.items) |store| {
+                    const val_reg = try cg.valueD(store.value);
+                    const ptr_reg = try cg.valueX(store.ptr);
+                    try out.append(Asm.str_d_imm(val_reg, ptr_reg, 0));
+                    cg.consumeValue(store.value);
+                    cg.consumeValue(store.ptr);
+                }
             }
             if (arg_abi != .raw_registers and self.initial_arity > 0) {
                 try out.append(Asm.add_imm(21, 21, @intCast(self.initial_arity * 8)));
@@ -333,6 +510,48 @@ pub const Builder = struct {
         const id = self.values.items.len;
         try self.values.append(value);
         return id;
+    }
+
+    fn countUses(self: *const Builder, remaining_uses: []u32) void {
+        for (self.values.items) |value| {
+            switch (value.op) {
+                .arg, .int_const, .f64_const => {},
+                .ptr_add, .load_f64, .fwrap01, .fcapramp => remaining_uses[value.a] += 1,
+                .fadd, .fsub, .fmul, .fdiv, .fpolyblep => {
+                    remaining_uses[value.a] += 1;
+                    remaining_uses[value.b] += 1;
+                },
+                .fclamp => {
+                    remaining_uses[value.a] += 1;
+                    remaining_uses[value.b] += 1;
+                    remaining_uses[value.c] += 1;
+                },
+                .fsel_lt => {
+                    remaining_uses[value.a] += 1;
+                    remaining_uses[value.b] += 1;
+                    remaining_uses[value.c] += 1;
+                    remaining_uses[value.d] += 1;
+                },
+                .fpulseblep => {
+                    remaining_uses[value.a] += 1;
+                    remaining_uses[value.b] += 1;
+                    remaining_uses[value.c] += 1;
+                },
+                .fadsr_linear, .fadsr_cap, .fms20_lpf4, .fms20_lpf4_cubic => {
+                    remaining_uses[value.a] += 1;
+                    remaining_uses[value.b] += 1;
+                    remaining_uses[value.c] += 1;
+                    remaining_uses[value.d] += 1;
+                    remaining_uses[value.e] += 1;
+                    remaining_uses[value.f] += 1;
+                },
+            }
+        }
+        for (self.stores.items) |store| {
+            remaining_uses[store.ptr] += 1;
+            remaining_uses[store.value] += 1;
+        }
+        for (self.stack.items) |value| remaining_uses[value] += 1;
     }
 
     fn pop(self: *Builder) Error!usize {
@@ -367,6 +586,9 @@ pub const Builder = struct {
 pub const BodyToken = union(enum) {
     number: i64,
     float: f64,
+    local_frame_begin: usize,
+    local_frame_end,
+    local_arg: LocalRef,
     word: []const u8,
 };
 
@@ -393,6 +615,18 @@ pub const Program = struct {
         try self.tokens.append(.{ .float = value });
     }
 
+    pub fn addLocalArg(self: *Program, ref: LocalRef) Error!void {
+        try self.tokens.append(.{ .local_arg = ref });
+    }
+
+    pub fn beginLocalFrame(self: *Program, arity: usize) Error!void {
+        try self.tokens.append(.{ .local_frame_begin = arity });
+    }
+
+    pub fn endLocalFrame(self: *Program) Error!void {
+        try self.tokens.append(.local_frame_end);
+    }
+
     pub fn addWord(self: *Program, word: []const u8) Error!void {
         try self.tokens.append(.{ .word = word });
     }
@@ -410,6 +644,7 @@ pub const Program = struct {
             while (i < arity) : (i += 1) {
                 const id = try b.addValue(.{ .op = .arg, .ty = .unknown, .arg_index = i });
                 try b.stack.append(id);
+                try b.args.append(id);
             }
             var failed = false;
             for (self.tokens.items) |tok| {
@@ -422,6 +657,27 @@ pub const Program = struct {
                         },
                     },
                     .float => |f| b.addFloat(f) catch |err| switch (err) {
+                        error.OutOfMemory => return err,
+                        else => {
+                            failed = true;
+                            break;
+                        },
+                    },
+                    .local_arg => |ref| b.addLocalArg(ref) catch |err| switch (err) {
+                        error.OutOfMemory => return err,
+                        else => {
+                            failed = true;
+                            break;
+                        },
+                    },
+                    .local_frame_begin => |frame_arity| b.beginLocalFrame(frame_arity) catch |err| switch (err) {
+                        error.OutOfMemory => return err,
+                        else => {
+                            failed = true;
+                            break;
+                        },
+                    },
+                    .local_frame_end => b.endLocalFrame() catch |err| switch (err) {
                         error.OutOfMemory => return err,
                         else => {
                             failed = true;
@@ -442,9 +698,7 @@ pub const Program = struct {
                 b.deinit();
                 continue;
             }
-            if ((b.stores.items.len > 0 and b.stack.items.len == 0) or
-                (b.stores.items.len == 0 and b.stack.items.len > 0))
-            {
+            if (b.stores.items.len > 0 or b.stack.items.len > 0) {
                 b.initial_arity = arity;
                 return b;
             }
@@ -472,6 +726,9 @@ pub fn cloneTokens(allocator: std.mem.Allocator, tokens: []const BodyToken) Erro
         cloned[i] = switch (tok) {
             .number => |n| .{ .number = n },
             .float => |f| .{ .float = f },
+            .local_frame_begin => |arity| .{ .local_frame_begin = arity },
+            .local_frame_end => .local_frame_end,
+            .local_arg => |ref| .{ .local_arg = ref },
             .word => |w| blk: {
                 const owned = allocator.dupe(u8, w) catch return Error.OutOfMemory;
                 break :blk .{ .word = owned };
@@ -494,11 +751,20 @@ const Codegen = struct {
     builder: *Builder,
     out: *compat.ArrayList(u32),
     locs: []Loc,
+    remaining_uses: []u32,
     arg_abi: ArgAbi,
     next_d: usize = 0,
     next_x: usize = 0,
+    free_d: [D_REGS.len]u5 = undefined,
+    free_d_count: usize = 0,
+    free_x: [RAW_X_SCRATCH_REGS.len]u5 = undefined,
+    free_x_count: usize = 0,
 
     fn allocD(self: *Codegen) Error!u5 {
+        if (self.free_d_count > 0) {
+            self.free_d_count -= 1;
+            return self.free_d[self.free_d_count];
+        }
         if (self.next_d >= D_REGS.len) return Error.RegisterExhausted;
         const reg = D_REGS[self.next_d];
         self.next_d += 1;
@@ -506,10 +772,42 @@ const Codegen = struct {
     }
 
     fn allocX(self: *Codegen) Error!u5 {
-        if (self.next_x >= X_REGS.len) return Error.RegisterExhausted;
-        const reg = X_REGS[self.next_x];
+        if (self.free_x_count > 0) {
+            self.free_x_count -= 1;
+            return self.free_x[self.free_x_count];
+        }
+        const regs = if (self.arg_abi == .raw_registers) RAW_X_SCRATCH_REGS[0..] else X_REGS[0..];
+        if (self.next_x >= regs.len) return Error.RegisterExhausted;
+        const reg = regs[self.next_x];
         self.next_x += 1;
         return reg;
+    }
+
+    fn releaseD(self: *Codegen, reg: u5) void {
+        std.debug.assert(self.free_d_count < self.free_d.len);
+        self.free_d[self.free_d_count] = reg;
+        self.free_d_count += 1;
+    }
+
+    fn releaseX(self: *Codegen, reg: u5) void {
+        std.debug.assert(self.free_x_count < self.free_x.len);
+        self.free_x[self.free_x_count] = reg;
+        self.free_x_count += 1;
+    }
+
+    fn consumeValue(self: *Codegen, id: usize) void {
+        if (self.remaining_uses[id] == 0) return;
+        self.remaining_uses[id] -= 1;
+        if (self.remaining_uses[id] != 0) return;
+
+        const value = self.builder.values.items[id];
+        const raw_arg = self.arg_abi == .raw_registers and value.op == .arg;
+        switch (self.locs[id]) {
+            .d => |reg| if (!raw_arg) self.releaseD(reg),
+            .x => |reg| if (!raw_arg) self.releaseX(reg),
+            .none => {},
+        }
+        self.locs[id] = .none;
     }
 
     fn valueX(self: *Codegen, id: usize) Error!u5 {
@@ -535,6 +833,11 @@ const Codegen = struct {
             },
             .int_const => {
                 for (Asm.movImm64(reg, @as(u64, @bitCast(value.int_value)))) |instr| try self.out.append(instr);
+            },
+            .ptr_add => {
+                const base = try self.valueX(value.a);
+                try self.out.append(Asm.add_imm(reg, base, @intCast(value.int_value)));
+                self.consumeValue(value.a);
             },
             else => return Error.TypeMismatch,
         }
@@ -566,12 +869,14 @@ const Codegen = struct {
                     try self.out.append(Asm.@"lsr Xn, Xn, #2"(x));
                     try self.out.append(Asm.@"lsl Xn, Xn, #2"(x));
                     try self.out.append(Asm.@"fmov Dd, Xn"(reg, x));
+                    self.releaseX(x);
                 }
             },
             .f64_const => try self.emitF64Const(reg, value.float_value),
             .load_f64 => {
                 const ptr = try self.valueX(value.a);
                 try self.out.append(Asm.ldr_d_imm(reg, ptr, 0));
+                self.consumeValue(value.a);
             },
             .fadd, .fsub, .fmul, .fdiv => {
                 const a = try self.valueD(value.a);
@@ -584,6 +889,8 @@ const Codegen = struct {
                     else => unreachable,
                 };
                 try self.out.append(instr);
+                self.consumeValue(value.a);
+                self.consumeValue(value.b);
             },
             .fclamp => {
                 const x = try self.valueD(value.a);
@@ -591,6 +898,9 @@ const Codegen = struct {
                 const hi = try self.valueD(value.c);
                 try self.out.append(Asm.@"fmax Dd, Dn, Dm"(reg, x, lo));
                 try self.out.append(Asm.@"fmin Dd, Dn, Dm"(reg, reg, hi));
+                self.consumeValue(value.a);
+                self.consumeValue(value.b);
+                self.consumeValue(value.c);
             },
             .fwrap01 => {
                 const x = try self.valueD(value.a);
@@ -608,6 +918,11 @@ const Codegen = struct {
                 try self.out.append(Asm.@"fadd Dd, Dn, Dm"(xp1, reg, one));
                 try self.out.append(Asm.@"fcmp Dn, Dm"(reg, zero));
                 try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, xp1, reg, Asm.COND_LT));
+                self.releaseD(zero);
+                self.releaseD(one);
+                self.releaseD(xm1);
+                self.releaseD(xp1);
+                self.consumeValue(value.a);
             },
             .fsel_lt => {
                 const a = try self.valueD(value.a);
@@ -616,6 +931,10 @@ const Codegen = struct {
                 const if_false = try self.valueD(value.d);
                 try self.out.append(Asm.@"fcmp Dn, Dm"(a, b));
                 try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, if_true, if_false, Asm.COND_LT));
+                self.consumeValue(value.a);
+                self.consumeValue(value.b);
+                self.consumeValue(value.c);
+                self.consumeValue(value.d);
             },
             .fcapramp => {
                 const phase = try self.valueD(value.a);
@@ -629,6 +948,10 @@ const Codegen = struct {
                 try self.out.append(Asm.@"fmul Dd, Dn, Dm"(reg, phase, scratch));
                 try self.out.append(Asm.@"fmul Dd, Dn, Dm"(reg, reg, two));
                 try self.out.append(Asm.@"fsub Dd, Dn, Dm"(reg, reg, one));
+                self.releaseD(two);
+                self.releaseD(one);
+                self.releaseD(scratch);
+                self.consumeValue(value.a);
             },
             .fpolyblep => {
                 const phase = try self.valueD(value.a);
@@ -659,6 +982,13 @@ const Codegen = struct {
                 try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_a, one, dt));
                 try self.out.append(Asm.@"fcmp Dn, Dm"(scratch_a, phase));
                 try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, scratch_c, reg, Asm.COND_LT));
+                self.releaseD(zero);
+                self.releaseD(one);
+                self.releaseD(scratch_a);
+                self.releaseD(scratch_b);
+                self.releaseD(scratch_c);
+                self.consumeValue(value.a);
+                self.consumeValue(value.b);
             },
             .fpulseblep => {
                 const phase = try self.valueD(value.a);
@@ -719,6 +1049,15 @@ const Codegen = struct {
                 try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_a, scratch_a, one));
                 try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(scratch_c, scratch_a, scratch_c, Asm.COND_LT));
                 try self.out.append(Asm.@"fsub Dd, Dn, Dm"(reg, reg, scratch_c));
+                self.releaseD(zero);
+                self.releaseD(one);
+                self.releaseD(neg_one);
+                self.releaseD(scratch_a);
+                self.releaseD(scratch_b);
+                self.releaseD(scratch_c);
+                self.consumeValue(value.a);
+                self.consumeValue(value.b);
+                self.consumeValue(value.c);
             },
             .fadsr_linear => {
                 const time = try self.valueD(value.a);
@@ -760,6 +1099,18 @@ const Codegen = struct {
                 try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, reg, scratch_b, Asm.COND_LT));
                 try self.out.append(Asm.@"fcmp Dn, Dm"(time, scratch_d));
                 try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, reg, zero, Asm.COND_LT));
+                self.releaseD(zero);
+                self.releaseD(one);
+                self.releaseD(scratch_a);
+                self.releaseD(scratch_b);
+                self.releaseD(scratch_c);
+                self.releaseD(scratch_d);
+                self.consumeValue(value.a);
+                self.consumeValue(value.b);
+                self.consumeValue(value.c);
+                self.consumeValue(value.d);
+                self.consumeValue(value.e);
+                self.consumeValue(value.f);
             },
             .fadsr_cap => {
                 const time = try self.valueD(value.a);
@@ -810,11 +1161,183 @@ const Codegen = struct {
                 try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, reg, scratch_b, Asm.COND_LT));
                 try self.out.append(Asm.@"fcmp Dn, Dm"(time, scratch_c));
                 try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, reg, zero, Asm.COND_LT));
+                self.releaseD(zero);
+                self.releaseD(one);
+                self.releaseD(scratch_a);
+                self.releaseD(scratch_b);
+                self.releaseD(scratch_c);
+                self.releaseD(scratch_d);
+                self.consumeValue(value.a);
+                self.consumeValue(value.b);
+                self.consumeValue(value.c);
+                self.consumeValue(value.d);
+                self.consumeValue(value.e);
+                self.consumeValue(value.f);
+            },
+            .fms20_lpf4, .fms20_lpf4_cubic => {
+                const use_cubic_clip = value.op == .fms20_lpf4_cubic;
+                const ic1_ptr = try self.valueX(value.a);
+                const ic2_ptr = try self.valueX(value.b);
+                const input = try self.valueD(value.c);
+                const g = try self.valueD(value.d);
+                const damping = try self.valueD(value.e);
+                const drive = try self.valueD(value.f);
+
+                const ic1 = try self.allocD();
+                const ic2 = try self.allocD();
+                const one = try self.allocD();
+                const two = try self.allocD();
+                const clip_state = try self.allocD();
+                const clip_out = try self.allocD();
+                const c27 = try self.allocD();
+                const c9 = try self.allocD();
+                const neg_one = try self.allocD();
+                const s0 = try self.allocD();
+                const s1 = try self.allocD();
+                const s2 = try self.allocD();
+                const s3 = try self.allocD();
+                const s4 = try self.allocD();
+                const s5 = try self.allocD();
+                const s6 = try self.allocD();
+
+                try self.out.append(Asm.ldr_d_imm(ic1, ic1_ptr, 0));
+                try self.out.append(Asm.ldr_d_imm(ic2, ic2_ptr, 0));
+                try self.emitF64Const(one, 1.0);
+                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(two, one, one));
+                try self.emitF64Const(clip_state, 1.05);
+                try self.emitF64Const(clip_out, 1.8);
+                if (use_cubic_clip) {
+                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(c27, two, one));
+                    try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(c27, one, c27));
+                    try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(c9, one, two));
+                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(c9, one, c9));
+                } else {
+                    try self.emitF64Const(c27, 27.0);
+                    try self.emitF64Const(c9, 9.0);
+                }
+                try self.emitF64Const(neg_one, -1.0);
+
+                if (use_cubic_clip) {
+                    try self.emitCubicClipInto(s0, input, drive, one, neg_one, c27, c9, s3, s4, s5);
+                } else {
+                    try self.emitTanhRationalInto(s0, input, drive, one, c27, c9, neg_one, s3, s4, s5);
+                }
+
+                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s3, two, damping));
+                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s2, s3, g));
+                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s3, s3, g));
+                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s3, s3, one));
+                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s4, g, g));
+                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s3, s3, s4));
+                try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(s1, one, s3));
+
+                var i: usize = 0;
+                while (i < 4) : (i += 1) {
+                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s3, s2, ic1));
+                    try self.out.append(Asm.@"fsub Dd, Dn, Dm"(s3, s0, s3));
+                    try self.out.append(Asm.@"fsub Dd, Dn, Dm"(s3, s3, ic2));
+                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s3, s3, s1));
+
+                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s4, g, s3));
+                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s5, s4, ic1));
+                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s4, s4, s5));
+                    if (use_cubic_clip) {
+                        try self.emitCubicClipInto(ic1, s4, clip_state, one, neg_one, c27, c9, s3, s4, s6);
+                    } else {
+                        try self.emitTanhRationalInto(ic1, s4, clip_state, one, c27, c9, neg_one, s3, s4, s6);
+                    }
+
+                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s4, g, s5));
+                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(reg, s4, ic2));
+                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s4, s4, reg));
+                    if (use_cubic_clip) {
+                        try self.emitCubicClipInto(ic2, s4, clip_state, one, neg_one, c27, c9, s3, s4, s6);
+                    } else {
+                        try self.emitTanhRationalInto(ic2, s4, clip_state, one, c27, c9, neg_one, s3, s4, s6);
+                    }
+                }
+
+                if (use_cubic_clip) {
+                    try self.emitCubicClipInto(reg, reg, clip_out, one, neg_one, c27, c9, s0, s1, s2);
+                } else {
+                    try self.emitTanhRationalInto(reg, reg, clip_out, one, c27, c9, neg_one, s0, s1, s2);
+                }
+                try self.out.append(Asm.str_d_imm(ic1, ic1_ptr, 0));
+                try self.out.append(Asm.str_d_imm(ic2, ic2_ptr, 0));
+                self.releaseD(ic1);
+                self.releaseD(ic2);
+                self.releaseD(one);
+                self.releaseD(two);
+                self.releaseD(clip_state);
+                self.releaseD(clip_out);
+                self.releaseD(c27);
+                self.releaseD(c9);
+                self.releaseD(neg_one);
+                self.releaseD(s0);
+                self.releaseD(s1);
+                self.releaseD(s2);
+                self.releaseD(s3);
+                self.releaseD(s4);
+                self.releaseD(s5);
+                self.releaseD(s6);
+                self.consumeValue(value.a);
+                self.consumeValue(value.b);
+                self.consumeValue(value.c);
+                self.consumeValue(value.d);
+                self.consumeValue(value.e);
+                self.consumeValue(value.f);
             },
             else => return Error.TypeMismatch,
         }
         self.locs[id] = .{ .d = reg };
         return reg;
+    }
+
+    fn emitTanhRationalInto(
+        self: *Codegen,
+        dst: u5,
+        x: u5,
+        amount: u5,
+        hi: u5,
+        c27: u5,
+        c9: u5,
+        neg_one: u5,
+        s0: u5,
+        s1: u5,
+        s2: u5,
+    ) Error!void {
+        try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s0, x, amount));
+        try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s1, s0, s0));
+        try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s2, c27, s1));
+        try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s2, s0, s2));
+        try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s1, c9, s1));
+        try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s1, c27, s1));
+        try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(dst, s2, s1));
+        try self.out.append(Asm.@"fmax Dd, Dn, Dm"(dst, dst, neg_one));
+        try self.out.append(Asm.@"fmin Dd, Dn, Dm"(dst, dst, hi));
+    }
+
+    fn emitCubicClipInto(
+        self: *Codegen,
+        dst: u5,
+        x: u5,
+        amount: u5,
+        hi: u5,
+        lo: u5,
+        one_third: u5,
+        gain: u5,
+        s0: u5,
+        s1: u5,
+        s2: u5,
+    ) Error!void {
+        try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s0, x, amount));
+        try self.out.append(Asm.@"fmax Dd, Dn, Dm"(s0, s0, lo));
+        try self.out.append(Asm.@"fmin Dd, Dn, Dm"(s0, s0, hi));
+        try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s1, s0, s0));
+        try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s2, s1, s0));
+        try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s2, s2, one_third));
+        try self.out.append(Asm.@"fsub Dd, Dn, Dm"(dst, s0, s2));
+        try self.out.append(Asm.@"fmul Dd, Dn, Dm"(dst, dst, gain));
     }
 
     fn emitF64Const(self: *Codegen, reg: u5, value: f64) Error!void {
@@ -825,6 +1348,7 @@ const Codegen = struct {
         const x = try self.allocX();
         for (Asm.movImm64(x, @bitCast(value))) |instr| try self.out.append(instr);
         try self.out.append(Asm.@"fmov Dd, Xn"(reg, x));
+        self.releaseX(x);
     }
 };
 
