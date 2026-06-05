@@ -1,6 +1,7 @@
 const std = @import("std");
 const Fy = @import("fy").Fy;
 const FyHost = @import("fy_host.zig").FyHost;
+const machine = @import("machine.zig");
 
 extern fn close(fd: c_int) c_int;
 extern fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
@@ -23,6 +24,8 @@ const FILTER_SAW_GAIN: f64 = 0.0;
 const FILTER_NOISE_GAIN: f64 = 0.34;
 const FILTER_DRIVE: f64 = 1.2;
 const FILTER_RESONANCES = [_]f64{ 0.0, 0.45, 0.80, 1.08, 1.25 };
+const VOICE_SAMPLE_RATE: u32 = 48_000;
+const VOICE_SECONDS: f64 = 3.0;
 
 const Cli = struct {
     kernel: []const u8 = "kernels/00-primitives/v2.fy",
@@ -47,6 +50,7 @@ const Metrics = struct {
     libc_tanh_ns_per_iter: f64 = 0,
     zig_table_ns_per_iter: f64 = 0,
     zig_rational_ns_per_iter: f64 = 0,
+    zig_reference_ns_per_iter: f64 = 0,
     table_vs_libc_tanh_max_abs_error: f64 = 0,
     rms: f64 = 0,
     peak: f64 = 0,
@@ -77,11 +81,19 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (isFilterCase(cli.case_name)) {
-        try runFilterCase(alloc, cli);
+        try runFilterCase(alloc, cli, &host);
         return;
     }
     if (isOscillatorCase(cli.case_name)) {
         try runSawPolyblepCase(alloc, cli, &host);
+        return;
+    }
+    if (isControlCase(cli.case_name)) {
+        try runControlCase(alloc, cli, &host);
+        return;
+    }
+    if (std.mem.eql(u8, cli.case_name, "ms20-voice-render")) {
+        try runMs20VoiceCase(alloc, cli, &host);
         return;
     }
 
@@ -157,7 +169,9 @@ fn usage() void {
         \\cases:
         \\  v2-add | v2-mul | v2-fmadd | tanh-table-sweep | tanh-rational-sweep
         \\  adsr-linear-render | adsr-cap-render
-        \\  ms20-lpf-grid
+        \\  ms20-lpf-grid | ms20-lpf4-render
+        \\  hz-step-render | slew-onepole-render | vca-render | osc-mix2-render | dc-block-render
+        \\  ms20-voice-render
         \\  saw-polyblep-render | saw-falling-polyblep-render | saw-cap-polyblep-render
         \\  saw-topcut-polyblep-render | square-polyblep-render | pulse-polyblep-render
         \\
@@ -165,7 +179,9 @@ fn usage() void {
 }
 
 fn isFilterCase(name: []const u8) bool {
-    return std.mem.eql(u8, name, "ms20-lpf-grid");
+    return std.mem.eql(u8, name, "ms20-lpf-grid") or
+        std.mem.eql(u8, name, "ms20-lpf4-render") or
+        std.mem.eql(u8, name, "ms20-lpf4-cubic-render");
 }
 
 fn isEnvelopeCase(name: []const u8) bool {
@@ -180,6 +196,14 @@ fn isOscillatorCase(name: []const u8) bool {
         std.mem.eql(u8, name, "saw-topcut-polyblep-render") or
         std.mem.eql(u8, name, "square-polyblep-render") or
         std.mem.eql(u8, name, "pulse-polyblep-render");
+}
+
+fn isControlCase(name: []const u8) bool {
+    return std.mem.eql(u8, name, "hz-step-render") or
+        std.mem.eql(u8, name, "slew-onepole-render") or
+        std.mem.eql(u8, name, "vca-render") or
+        std.mem.eql(u8, name, "osc-mix2-render") or
+        std.mem.eql(u8, name, "dc-block-render");
 }
 
 fn caseData(name: []const u8) !CaseData {
@@ -403,7 +427,14 @@ const Ms20LpfState = struct {
     ic2: f64 = 0,
 };
 
-fn runFilterCase(alloc: std.mem.Allocator, cli: Cli) !void {
+fn runFilterCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    if (std.mem.eql(u8, cli.case_name, "ms20-lpf4-render") or
+        std.mem.eql(u8, cli.case_name, "ms20-lpf4-cubic-render"))
+    {
+        try runMs20FyFilterCase(alloc, cli, host);
+        return;
+    }
+
     const sample_rate = FILTER_SAMPLE_RATE;
     const frames_per_render: usize = @intFromFloat(FILTER_RENDER_SECONDS * @as(f64, @floatFromInt(sample_rate)));
     const gap_frames: usize = @intFromFloat(FILTER_GAP_SECONDS * @as(f64, @floatFromInt(sample_rate)));
@@ -431,7 +462,8 @@ fn runFilterCase(alloc: std.mem.Allocator, cli: Cli) !void {
             const dt = FILTER_INPUT_HZ / @as(f64, @floatFromInt(sample_rate));
             const input = zigSawPolyblep(osc_phase, dt) * FILTER_SAW_GAIN + whiteNoise(&noise_state) * FILTER_NOISE_GAIN;
             osc_phase = wrap01(osc_phase + dt);
-            const y = ms20ishLpfStep(&state, input, cutoff, resonance, FILTER_DRIVE, sample_rate);
+            const coeffs = ms20Coeffs(cutoff, resonance, sample_rate);
+            const y = ms20ishLpfStepWithCoeffs(&state, input, coeffs.g, coeffs.damping, FILTER_DRIVE);
             output[offset + i] = y;
             if (!std.math.isFinite(y)) {
                 nonfinite_count += 1;
@@ -466,35 +498,511 @@ fn runFilterCase(alloc: std.mem.Allocator, cli: Cli) !void {
 }
 
 fn ms20ishLpfStep(state: *Ms20LpfState, input: f64, cutoff_hz: f64, resonance: f64, drive: f64, sample_rate: u32) f64 {
+    const coeffs = ms20Coeffs(cutoff_hz, resonance, sample_rate);
+    return ms20ishLpfStepWithCoeffs(state, input, coeffs.g, coeffs.damping, drive);
+}
+
+const Ms20Coeffs = struct {
+    g: f64,
+    damping: f64,
+};
+
+fn ms20Coeffs(cutoff_hz: f64, resonance: f64, sample_rate: u32) Ms20Coeffs {
     const oversample: usize = 4;
     const os_rate = @as(f64, @floatFromInt(sample_rate * oversample));
     const fc = std.math.clamp(cutoff_hz, 20.0, @as(f64, @floatFromInt(sample_rate)) * 0.42);
     const g = @tan(std.math.pi * fc / os_rate);
     const damping = @max(0.015, 1.2 / (1.0 + resonance * 8.0));
-    const x = input;
+    return .{ .g = g, .damping = damping };
+}
+
+fn ms20ishLpfStepWithCoeffs(state: *Ms20LpfState, input: f64, g: f64, damping: f64, drive: f64) f64 {
+    return ms20ishLpfStepWithCoeffsClip(state, input, g, damping, drive, .rational);
+}
+
+const Ms20Clip = enum {
+    rational,
+    cubic,
+};
+
+fn ms20ishLpfStepWithCoeffsClip(state: *Ms20LpfState, input: f64, g: f64, damping: f64, drive: f64, clip: Ms20Clip) f64 {
+    const oversample: usize = 4;
+    const driven = clipSample(input * drive, 1.0, clip);
+    const h = 1.0 / (1.0 + 2.0 * damping * g + g * g);
+    const coeff = 2.0 * damping + g;
     var out: f64 = state.ic2;
     var i: usize = 0;
     while (i < oversample) : (i += 1) {
-        const driven = diodeClip(x * drive, 1.0);
-        const h = 1.0 / (1.0 + 2.0 * damping * g + g * g);
-        const hp = (driven - (2.0 * damping + g) * state.ic1 - state.ic2) * h;
+        const hp = (driven - coeff * state.ic1 - state.ic2) * h;
         const bp = g * hp + state.ic1;
-        state.ic1 = diodeClip(g * hp + bp, 1.05);
+        state.ic1 = clipSample(g * hp + bp, 1.05, clip);
         const lp = g * bp + state.ic2;
-        state.ic2 = diodeClip(g * bp + lp, 1.05);
-        out = diodeClip(lp, 1.8);
+        state.ic2 = clipSample(g * bp + lp, 1.05, clip);
+        out = lp;
     }
-    return out;
+    return clipSample(out, 1.8, clip);
+}
+
+fn runMs20FyFilterCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sample_count: usize = 8192;
+    const sample_rate = FILTER_SAMPLE_RATE;
+    const resonance: f64 = 1.08;
+    const drive: f64 = 1.2;
+    const clip: Ms20Clip = if (std.mem.eql(u8, cli.case_name, "ms20-lpf4-cubic-render")) .cubic else .rational;
+    const out = try alloc.alloc(f64, sample_count);
+    defer alloc.free(out);
+    const expected = try alloc.alloc(f64, sample_count);
+    defer alloc.free(expected);
+    const input = try alloc.alloc(f64, sample_count);
+    defer alloc.free(input);
+    const g = try alloc.alloc(f64, sample_count);
+    defer alloc.free(g);
+    const damping = try alloc.alloc(f64, sample_count);
+    defer alloc.free(damping);
+    @memset(out, 0);
+    @memset(expected, 0);
+
+    var perf_out: f64 = 0;
+    var perf_ic1: f64 = 0;
+    var perf_ic2: f64 = 0;
+    const perf_coeffs = ms20Coeffs(920.0, resonance, sample_rate);
+    const perf_args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&perf_out) },
+        .{ .ptr = @intFromPtr(&perf_ic1) },
+        .{ .ptr = @intFromPtr(&perf_ic2) },
+        .{ .f64 = 0.25 },
+        .{ .f64 = perf_coeffs.g },
+        .{ .f64 = perf_coeffs.damping },
+        .{ .f64 = drive },
+    };
+    const warmup = @min(cli.iterations, 1_000);
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, warmup, &perf_args);
+
+    perf_out = 0;
+    perf_ic1 = 0;
+    perf_ic2 = 0;
+    const start = nowNs();
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, cli.iterations, &perf_args);
+    const run_ns = nowNs() - start;
+    const zig_reference_ns_per_iter = benchmarkZigMs20Filter(perf_coeffs.g, perf_coeffs.damping, drive, clip, cli.iterations);
+
+    var osc_phase: f64 = 0.19;
+    var noise_state: u32 = 0x91f00d3d;
+    var i: usize = 0;
+    while (i < sample_count) : (i += 1) {
+        const pos = @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(sample_count - 1));
+        const cutoff = 90.0 * @exp(@log(7200.0 / 90.0) * pos);
+        const coeffs = ms20Coeffs(cutoff, resonance, sample_rate);
+        const dt = 110.0 / @as(f64, @floatFromInt(sample_rate));
+        input[i] = zigSawFallingPolyblep(osc_phase, dt) * 0.72 + whiteNoise(&noise_state) * 0.04;
+        g[i] = coeffs.g;
+        damping[i] = coeffs.damping;
+        osc_phase = wrap01(osc_phase + dt);
+    }
+
+    var zig_state = Ms20LpfState{};
+    for (expected, input, g, damping) |*exp, x, gg, damp| {
+        exp.* = ms20ishLpfStepWithCoeffsClip(&zig_state, x, gg, damp, drive, clip);
+    }
+
+    var fy_ic1: f64 = 0;
+    var fy_ic2: f64 = 0;
+    i = 0;
+    while (i < sample_count) : (i += 1) {
+        const sample_args = [_]Fy.Dsp2RawArg{
+            .{ .ptr = @intFromPtr(&out[i]) },
+            .{ .ptr = @intFromPtr(&fy_ic1) },
+            .{ .ptr = @intFromPtr(&fy_ic2) },
+            .{ .f64 = input[i] },
+            .{ .f64 = g[i] },
+            .{ .f64 = damping[i] },
+            .{ .f64 = drive },
+        };
+        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, 1, &sample_args);
+    }
+
+    var metrics = computeSliceMetrics(out, expected, run_ns, cli.iterations);
+    metrics.zig_reference_ns_per_iter = zig_reference_ns_per_iter;
+    fillSignalMetrics(out, &metrics);
+    try writeControlArtifacts(alloc, cli, host, out, expected, metrics);
+    if (metrics.nonfinite_count != 0 or metrics.max_abs_error > 0.000000000001) {
+        return error.KernelRatchetFailed;
+    }
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} samples={} ns_per_iter={d:.3} max_abs_error={d:.12} peak={d:.3}\n",
+        .{ cli.kernel, cli.word, cli.case_name, sample_count, metrics.ns_per_iter, metrics.max_abs_error, metrics.peak },
+    );
 }
 
 fn diodeClip(x: f64, amount: f64) f64 {
     return tanhRationalApprox(x * amount);
 }
 
+fn cubicClip(x: f64, amount: f64) f64 {
+    const z = std.math.clamp(x * amount, -1.0, 1.0);
+    return 1.5 * (z - (z * z * z) / 3.0);
+}
+
+fn clipSample(x: f64, amount: f64, clip: Ms20Clip) f64 {
+    return switch (clip) {
+        .rational => diodeClip(x, amount),
+        .cubic => cubicClip(x, amount),
+    };
+}
+
 fn whiteNoise(state: *u32) f64 {
     state.* = state.* *% 1664525 +% 1013904223;
     const v = (state.* >> 8) & 0x00ff_ffff;
     return @as(f64, @floatFromInt(v)) / 8_388_607.5 - 1.0;
+}
+
+fn runControlCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sample_count: usize = 1024;
+    const out = try alloc.alloc(f64, sample_count);
+    defer alloc.free(out);
+    const expected = try alloc.alloc(f64, sample_count);
+    defer alloc.free(expected);
+    @memset(out, 0);
+    @memset(expected, 0);
+
+    var perf_out: f64 = 0;
+    var perf_a: f64 = 0.25;
+    var perf_b: f64 = -0.5;
+    const perf_hz_step = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&perf_out) },
+        .{ .f64 = 440.0 },
+        .{ .f64 = 1.0 / 48_000.0 },
+    };
+    const perf_slew = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&perf_out) },
+        .{ .ptr = @intFromPtr(&perf_a) },
+        .{ .f64 = 0.8 },
+        .{ .f64 = 0.035 },
+    };
+    const perf_vca = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&perf_out) },
+        .{ .ptr = @intFromPtr(&perf_a) },
+        .{ .f64 = 0.62 },
+        .{ .f64 = 0.74 },
+    };
+    const perf_mix = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&perf_out) },
+        .{ .ptr = @intFromPtr(&perf_a) },
+        .{ .ptr = @intFromPtr(&perf_b) },
+        .{ .f64 = 0.64 },
+        .{ .f64 = 0.36 },
+    };
+    const perf_dc = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&perf_out) },
+        .{ .ptr = @intFromPtr(&perf_a) },
+        .{ .ptr = @intFromPtr(&perf_b) },
+        .{ .f64 = 0.42 },
+        .{ .f64 = 0.995 },
+    };
+    const perf_args = if (std.mem.eql(u8, cli.case_name, "hz-step-render"))
+        perf_hz_step[0..]
+    else if (std.mem.eql(u8, cli.case_name, "slew-onepole-render"))
+        perf_slew[0..]
+    else if (std.mem.eql(u8, cli.case_name, "vca-render"))
+        perf_vca[0..]
+    else if (std.mem.eql(u8, cli.case_name, "osc-mix2-render"))
+        perf_mix[0..]
+    else
+        perf_dc[0..];
+    const warmup = @min(cli.iterations, 1_000);
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, warmup, perf_args);
+
+    perf_out = 0;
+    perf_a = 0.25;
+    perf_b = -0.5;
+    const start = nowNs();
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, cli.iterations, perf_args);
+    const run_ns = nowNs() - start;
+
+    if (std.mem.eql(u8, cli.case_name, "hz-step-render")) {
+        const inv_sample_rate = 1.0 / 48_000.0;
+        var i: usize = 0;
+        while (i < sample_count) : (i += 1) {
+            const hz = 40.0 + @as(f64, @floatFromInt(i)) * 3.25;
+            expected[i] = hz * inv_sample_rate;
+            const sample_args = [_]Fy.Dsp2RawArg{
+                .{ .ptr = @intFromPtr(&out[i]) },
+                .{ .f64 = hz },
+                .{ .f64 = inv_sample_rate },
+            };
+            _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, 1, &sample_args);
+        }
+    } else if (std.mem.eql(u8, cli.case_name, "slew-onepole-render")) {
+        const target = 0.8;
+        const coeff = 0.035;
+        var state: f64 = -0.65;
+        var exp_state: f64 = state;
+        for (out, expected) |*dst, *exp| {
+            exp_state = exp_state + (target - exp_state) * coeff;
+            exp.* = exp_state;
+            const sample_args = [_]Fy.Dsp2RawArg{
+                .{ .ptr = @intFromPtr(dst) },
+                .{ .ptr = @intFromPtr(&state) },
+                .{ .f64 = target },
+                .{ .f64 = coeff },
+            };
+            _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, 1, &sample_args);
+        }
+    } else if (std.mem.eql(u8, cli.case_name, "vca-render")) {
+        const amp = 0.62;
+        const level = 0.74;
+        var input: f64 = 0;
+        for (out, expected, 0..) |*dst, *exp, i| {
+            const phase = @as(f64, @floatFromInt(i)) / 64.0;
+            input = @sin(phase * 2.0 * std.math.pi);
+            exp.* = input * amp * level;
+            const sample_args = [_]Fy.Dsp2RawArg{
+                .{ .ptr = @intFromPtr(dst) },
+                .{ .ptr = @intFromPtr(&input) },
+                .{ .f64 = amp },
+                .{ .f64 = level },
+            };
+            _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, 1, &sample_args);
+        }
+    } else if (std.mem.eql(u8, cli.case_name, "osc-mix2-render")) {
+        const gain_a = 0.64;
+        const gain_b = 0.36;
+        var osc_a: f64 = 0;
+        var osc_b: f64 = 0;
+        var phase_a: f64 = 0;
+        var phase_b: f64 = 0.17;
+        const dt_a = 13.0 / @as(f64, @floatFromInt(sample_count));
+        const dt_b = 19.0 / @as(f64, @floatFromInt(sample_count));
+        for (out, expected) |*dst, *exp| {
+            osc_a = zigSawPolyblep(phase_a, dt_a);
+            osc_b = zigPulsePolyblep(phase_b, dt_b, 0.42);
+            phase_a = wrap01(phase_a + dt_a);
+            phase_b = wrap01(phase_b + dt_b);
+            exp.* = osc_a * gain_a + osc_b * gain_b;
+            const sample_args = [_]Fy.Dsp2RawArg{
+                .{ .ptr = @intFromPtr(dst) },
+                .{ .ptr = @intFromPtr(&osc_a) },
+                .{ .ptr = @intFromPtr(&osc_b) },
+                .{ .f64 = gain_a },
+                .{ .f64 = gain_b },
+            };
+            _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, 1, &sample_args);
+        }
+    } else if (std.mem.eql(u8, cli.case_name, "dc-block-render")) {
+        const coeff = 0.995;
+        var prev_x: f64 = 0;
+        var prev_y: f64 = 0;
+        var exp_prev_x: f64 = 0;
+        var exp_prev_y: f64 = 0;
+        var input: f64 = 0;
+        for (out, expected, 0..) |*dst, *exp, i| {
+            const step: f64 = if (i >= 128) 0.42 else 0.0;
+            input = step + 0.08 * @sin(@as(f64, @floatFromInt(i)) * 0.17);
+            const y = input - exp_prev_x + coeff * exp_prev_y;
+            exp_prev_x = input;
+            exp_prev_y = y;
+            exp.* = y;
+            const sample_args = [_]Fy.Dsp2RawArg{
+                .{ .ptr = @intFromPtr(dst) },
+                .{ .ptr = @intFromPtr(&prev_x) },
+                .{ .ptr = @intFromPtr(&prev_y) },
+                .{ .f64 = input },
+                .{ .f64 = coeff },
+            };
+            _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, 1, &sample_args);
+        }
+    } else {
+        return error.InvalidCase;
+    }
+
+    var metrics = computeSliceMetrics(out, expected, run_ns, cli.iterations);
+    fillSignalMetrics(out, &metrics);
+    try writeControlArtifacts(alloc, cli, host, out, expected, metrics);
+    if (metrics.nonfinite_count != 0 or metrics.max_abs_error > 0.000000000001) {
+        return error.KernelRatchetFailed;
+    }
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} samples={} ns_per_iter={d:.3} max_abs_error={d:.12} peak={d:.3}\n",
+        .{ cli.kernel, cli.word, cli.case_name, sample_count, metrics.ns_per_iter, metrics.max_abs_error, metrics.peak },
+    );
+}
+
+const Ms20VoiceState = extern struct {
+    phase1: f64 = 0,
+    phase2: f64 = 0.37,
+    ic1: f64 = 0,
+    ic2: f64 = 0,
+    dc_prev_x: f64 = 0,
+    dc_prev_y: f64 = 0,
+    amp: f64 = 0,
+    age: f64 = 0,
+};
+
+const Ms20VoiceParams = extern struct {
+    note_hz: f64 = 110,
+    target_amp: f64 = 0,
+    inv_sample_rate: f64 = 1.0 / 48_000.0,
+    detune: f64 = 1.0058,
+    g: f64 = 0,
+    damping: f64 = 0,
+    drive: f64 = 1.25,
+    level: f64 = 0.72,
+    amp_coeff: f64 = 0.0035,
+    gate_time: f64 = 1.0e9,
+    amp_attack: f64 = 0.0055,
+    amp_decay: f64 = 0.12,
+    amp_sustain: f64 = 0.46,
+    amp_release: f64 = 0.13,
+    g_env: f64 = 0,
+    filter_attack: f64 = 0.014,
+    filter_decay: f64 = 0.14,
+    filter_sustain: f64 = 0.18,
+    filter_release: f64 = 0.11,
+};
+
+const TimedNoteEvent = struct {
+    absolute_sample: u64,
+    event: machine.NoteEvent,
+};
+
+fn makeNoteEvent(sample_offset: u32, kind: machine.NoteKind, note_id: i32, pitch: f32, velocity: f32) machine.NoteEvent {
+    return .{
+        .sample_offset = sample_offset,
+        .kind = kind,
+        .channel = 0,
+        .note_id = note_id,
+        .pitch = pitch,
+        .velocity = velocity,
+    };
+}
+
+fn makeTimedNoteEvent(absolute_sample: u64, kind: machine.NoteKind, note_id: i32, pitch: f32, velocity: f32) TimedNoteEvent {
+    return .{
+        .absolute_sample = absolute_sample,
+        .event = makeNoteEvent(0, kind, note_id, pitch, velocity),
+    };
+}
+
+fn midiToHz(pitch: f64) f64 {
+    return 440.0 * @exp(@log(2.0) * ((pitch - 69.0) / 12.0));
+}
+
+fn runMs20VoiceCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sample_rate = VOICE_SAMPLE_RATE;
+    const frames: usize = @intFromFloat(VOICE_SECONDS * @as(f64, @floatFromInt(sample_rate)));
+    const out = try alloc.alloc(f64, frames);
+    defer alloc.free(out);
+    const env = try alloc.alloc(f64, frames);
+    defer alloc.free(env);
+    const cutoff = try alloc.alloc(f64, frames);
+    defer alloc.free(cutoff);
+    const note_track = try alloc.alloc(f64, frames);
+    defer alloc.free(note_track);
+    const gate_track = try alloc.alloc(f64, frames);
+    defer alloc.free(gate_track);
+
+    var state = Ms20VoiceState{};
+    const inv_sr = 1.0 / @as(f64, @floatFromInt(sample_rate));
+    const resonance = 1.25;
+    const base_coeffs = ms20Coeffs(180.0, resonance, sample_rate);
+    const peak_coeffs = ms20Coeffs(5000.0, resonance, sample_rate);
+    var params = Ms20VoiceParams{
+        .inv_sample_rate = inv_sr,
+        .g = base_coeffs.g,
+        .damping = base_coeffs.damping,
+        .g_env = peak_coeffs.g - base_coeffs.g,
+    };
+    const events = [_]TimedNoteEvent{
+        makeTimedNoteEvent(0, .note_on, 1, 45.0, 0.95),
+        makeTimedNoteEvent(@intFromFloat(0.62 * @as(f64, @floatFromInt(sample_rate))), .note_off, 1, 45.0, 0.0),
+        makeTimedNoteEvent(@intFromFloat(0.76 * @as(f64, @floatFromInt(sample_rate))), .note_on, 2, 48.0, 0.88),
+        makeTimedNoteEvent(@intFromFloat(1.36 * @as(f64, @floatFromInt(sample_rate))), .note_off, 2, 48.0, 0.0),
+        makeTimedNoteEvent(@intFromFloat(1.52 * @as(f64, @floatFromInt(sample_rate))), .note_on, 3, 43.0, 1.0),
+        makeTimedNoteEvent(@intFromFloat(2.55 * @as(f64, @floatFromInt(sample_rate))), .note_off, 3, 43.0, 0.0),
+    };
+
+    const start = nowNs();
+    @memset(out, 0);
+    @memset(env, 0);
+    @memset(cutoff, 1650.0);
+    @memset(note_track, 0);
+    @memset(gate_track, 0);
+
+    var cursor: usize = 0;
+    var event_index: usize = 0;
+    while (cursor < frames) {
+        const next_event_sample = if (event_index < events.len)
+            @min(@as(usize, @intCast(events[event_index].absolute_sample)), frames)
+        else
+            frames;
+        if (next_event_sample > cursor) {
+            const count = next_event_sample - cursor;
+            const segment_start_age = state.age;
+            const args = [_]Fy.Dsp2RawArg{
+                .{ .ptr = @intFromPtr(&out[cursor]) },
+                .{ .ptr = @intFromPtr(&state) },
+                .{ .ptr = @intFromPtr(&params) },
+            };
+            _ = try host.fy.callDsp2RawRepeatedWithAutoOutNoResult(cli.word, @intCast(count), &args);
+            var i = cursor;
+            while (i < next_event_sample) : (i += 1) {
+                const age = segment_start_age + @as(f64, @floatFromInt(i - cursor + 1)) * inv_sr;
+                env[i] = envelopeExpected("adsr-cap-render", age, params.amp_attack, params.amp_decay, params.amp_sustain, params.gate_time, params.amp_release) * params.target_amp;
+                const fenv = envelopeExpected("adsr-cap-render", age, params.filter_attack, params.filter_decay, params.filter_sustain, params.gate_time, params.filter_release);
+                const g_now = params.g + params.g_env * fenv;
+                cutoff[i] = @as(f64, @floatFromInt(sample_rate * 4)) * std.math.atan(g_now) / std.math.pi;
+                note_track[i] = if (params.target_amp > 0.0001) params.note_hz else 0;
+                gate_track[i] = if (age < params.gate_time) 1 else 0;
+            }
+            cursor = next_event_sample;
+        }
+        while (event_index < events.len and events[event_index].absolute_sample == cursor) : (event_index += 1) {
+            const ev = events[event_index].event;
+            if (ev.isOn()) {
+                params.note_hz = midiToHz(@floatCast(ev.pitch));
+                params.target_amp = @floatCast(ev.velocity);
+                params.gate_time = 1.0e9;
+                state.phase1 = 0;
+                state.phase2 = 0.37;
+                state.age = 0;
+            } else if (ev.kind == .note_off) {
+                params.gate_time = state.age;
+            }
+        }
+    }
+    const run_ns = nowNs() - start;
+
+    var metrics = Metrics{};
+    metrics.ns_per_iter = @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(frames));
+    metrics.fundamental_hz = midiToHz(45.0);
+    fillSignalMetrics(out, &metrics);
+    for (out) |x| {
+        if (!std.math.isFinite(x)) metrics.nonfinite_count += 1;
+    }
+
+    try writeVoiceArtifacts(alloc, cli, host, out, env, cutoff, note_track, gate_track, events.len, metrics, sample_rate);
+    if (metrics.nonfinite_count != 0 or metrics.peak > 4.0) return error.KernelRatchetFailed;
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} peak={d:.3} rms={d:.3}\n",
+        .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, metrics.peak, metrics.rms },
+    );
+}
+
+fn benchmarkZigMs20Filter(g: f64, damping: f64, drive: f64, clip: Ms20Clip, iterations: u64) f64 {
+    if (iterations == 0) return 0;
+    var state = Ms20LpfState{};
+    var sink: f64 = 0;
+    const sink_ptr: *volatile f64 = @ptrCast(&sink);
+    var i: u64 = 0;
+    const start = nowNs();
+    while (i < iterations) : (i += 1) {
+        sink_ptr.* = ms20ishLpfStepWithCoeffsClip(&state, 0.25, g, damping, drive, clip);
+    }
+    const run_ns = nowNs() - start;
+    return @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(iterations));
 }
 
 fn runEnvelopeCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
@@ -1246,6 +1754,194 @@ fn writeFilterArtifacts(
     }
     try writeFile(alloc, lanes_path, csv.items);
     try writeWav16StereoBuffer(alloc, wav_path, output, sample_rate);
+}
+
+fn writeControlArtifacts(
+    alloc: std.mem.Allocator,
+    cli: Cli,
+    host: *FyHost,
+    out: []const f64,
+    expected: []const f64,
+    metrics: Metrics,
+) !void {
+    const metrics_path = try std.fmt.allocPrint(alloc, "{s}_metrics.json", .{cli.out_prefix});
+    defer alloc.free(metrics_path);
+    const disasm_path = try std.fmt.allocPrint(alloc, "{s}_disasm.txt", .{cli.out_prefix});
+    defer alloc.free(disasm_path);
+    const lanes_path = try std.fmt.allocPrint(alloc, "{s}_lanes.csv", .{cli.out_prefix});
+    defer alloc.free(lanes_path);
+
+    const report = if (host.fy.isDsp2Word(cli.word))
+        try host.fy.reportDsp2RawWord(cli.word)
+    else
+        host.fy.reportWord(cli.word) orelse return error.MissingReport;
+    const metrics_json = try std.fmt.allocPrint(alloc,
+        \\{{
+        \\  "kernel": "{s}",
+        \\  "word": "{s}",
+        \\  "case": "{s}",
+        \\  "samples": {d},
+        \\  "iterations": {d},
+        \\  "ns_per_iter": {d:.6},
+        \\  "zig_reference_ns_per_iter": {d:.6},
+        \\  "max_abs_error": {d:.12},
+        \\  "nonfinite_count": {d},
+        \\  "rms": {d:.12},
+        \\  "peak": {d:.12},
+        \\  "mean": {d:.12},
+        \\  "instruction_count": {d},
+        \\  "push_count": {d},
+        \\  "pop_count": {d},
+        \\  "float_alu_count": {d},
+        \\  "neon_float_alu_count": {d},
+        \\  "neon_load_count": {d},
+        \\  "neon_store_count": {d}
+        \\}}
+        \\
+    , .{
+        cli.kernel,
+        cli.word,
+        cli.case_name,
+        out.len,
+        cli.iterations,
+        metrics.ns_per_iter,
+        metrics.zig_reference_ns_per_iter,
+        metrics.max_abs_error,
+        metrics.nonfinite_count,
+        metrics.rms,
+        metrics.peak,
+        metrics.mean,
+        report.instruction_count,
+        report.push_count,
+        report.pop_count,
+        report.float_alu_count,
+        report.neon_float_alu_count,
+        report.neon_load_count,
+        report.neon_store_count,
+    });
+    defer alloc.free(metrics_json);
+    try writeFile(alloc, metrics_path, metrics_json);
+
+    const disasm = if (host.fy.isDsp2Word(cli.word))
+        try host.fy.disassembleDsp2RawWordAlloc(alloc, cli.word)
+    else
+        try host.fy.disassembleWordAlloc(alloc, cli.word);
+    defer alloc.free(disasm);
+    try writeFile(alloc, disasm_path, disasm);
+
+    var csv: std.ArrayList(u8) = .empty;
+    defer csv.deinit(alloc);
+    try csv.appendSlice(alloc, "sample,out,expected,error\n");
+    for (out, expected, 0..) |actual, exp, i| {
+        try appendFmt(alloc, &csv, "{d},{d:.12},{d:.12},{d:.12}\n", .{
+            i,
+            actual,
+            exp,
+            actual - exp,
+        });
+    }
+    try writeFile(alloc, lanes_path, csv.items);
+}
+
+fn writeVoiceArtifacts(
+    alloc: std.mem.Allocator,
+    cli: Cli,
+    host: *FyHost,
+    out: []const f64,
+    env: []const f64,
+    cutoff: []const f64,
+    note_track: []const f64,
+    gate_track: []const f64,
+    event_count: usize,
+    metrics: Metrics,
+    sample_rate: u32,
+) !void {
+    const metrics_path = try std.fmt.allocPrint(alloc, "{s}_metrics.json", .{cli.out_prefix});
+    defer alloc.free(metrics_path);
+    const disasm_path = try std.fmt.allocPrint(alloc, "{s}_disasm.txt", .{cli.out_prefix});
+    defer alloc.free(disasm_path);
+    const lanes_path = try std.fmt.allocPrint(alloc, "{s}_lanes.csv", .{cli.out_prefix});
+    defer alloc.free(lanes_path);
+    const wav_path = try std.fmt.allocPrint(alloc, "{s}.wav", .{cli.out_prefix});
+    defer alloc.free(wav_path);
+
+    const report = try host.fy.reportDsp2RawWord(cli.word);
+    const metrics_json = try std.fmt.allocPrint(alloc,
+        \\{{
+        \\  "kernel": "{s}",
+        \\  "word": "{s}",
+        \\  "case": "{s}",
+        \\  "sample_rate": {d},
+        \\  "samples": {d},
+        \\  "seconds": {d:.6},
+        \\  "wav_path": "{s}",
+        \\  "fundamental_hz": {d:.6},
+        \\  "ns_per_sample": {d:.6},
+        \\  "nonfinite_count": {d},
+        \\  "rms": {d:.12},
+        \\  "peak": {d:.12},
+        \\  "mean": {d:.12},
+        \\  "note_event_count": {d},
+        \\  "oscillators": 2,
+        \\  "filter": "zig-ms20ish-same-math-as-fy-k-ms20-lpf4",
+        \\  "vca": "amp-envelope-times-level",
+        \\  "dc_block_coeff": 0.995000,
+        \\  "instruction_count": {d},
+        \\  "push_count": {d},
+        \\  "pop_count": {d},
+        \\  "float_alu_count": {d},
+        \\  "neon_float_alu_count": {d},
+        \\  "neon_load_count": {d},
+        \\  "neon_store_count": {d}
+        \\}}
+        \\
+    , .{
+        cli.kernel,
+        cli.word,
+        cli.case_name,
+        sample_rate,
+        out.len,
+        @as(f64, @floatFromInt(out.len)) / @as(f64, @floatFromInt(sample_rate)),
+        wav_path,
+        metrics.fundamental_hz,
+        metrics.ns_per_iter,
+        metrics.nonfinite_count,
+        metrics.rms,
+        metrics.peak,
+        metrics.mean,
+        event_count,
+        report.instruction_count,
+        report.push_count,
+        report.pop_count,
+        report.float_alu_count,
+        report.neon_float_alu_count,
+        report.neon_load_count,
+        report.neon_store_count,
+    });
+    defer alloc.free(metrics_json);
+    try writeFile(alloc, metrics_path, metrics_json);
+    try writeWav16StereoBuffer(alloc, wav_path, out, sample_rate);
+    const disasm = try host.fy.disassembleDsp2RawWordAlloc(alloc, cli.word);
+    defer alloc.free(disasm);
+    try writeFile(alloc, disasm_path, disasm);
+
+    var csv: std.ArrayList(u8) = .empty;
+    defer csv.deinit(alloc);
+    try csv.appendSlice(alloc, "sample,time,out,amp_env,cutoff_hz,note_hz,gate\n");
+    const decimate: usize = 32;
+    var i: usize = 0;
+    while (i < out.len) : (i += decimate) {
+        try appendFmt(alloc, &csv, "{d},{d:.12},{d:.12},{d:.12},{d:.6},{d:.6},{d:.1}\n", .{
+            i,
+            @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(sample_rate)),
+            out[i],
+            env[i],
+            cutoff[i],
+            note_track[i],
+            gate_track[i],
+        });
+    }
+    try writeFile(alloc, lanes_path, csv.items);
 }
 
 fn writeSawArtifacts(

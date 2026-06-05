@@ -326,11 +326,17 @@ pub fn main() !void {
     try reg.load("fm1", "machines/fm1/fm1.fy", "fm1-audio", "fm1-ui", 428);
     try reg.load("delay1", "machines/delay1/delay1.fy", "delay1-audio", "delay1-ui", 375);
     try reg.load("verb1", "machines/verb1/verb1.fy", "verb1-audio", "verb1-ui", 270);
+    try reg.loadRawFixture("raw-osc");
+    try reg.loadRawFixture("raw-silence");
+    try reg.loadRawFixture("raw-sat");
+    try reg.loadRawManifest("machines/raw_ms20/raw-ms20.manifest");
 
     // Hot-patch server on the sine machine's host.
     defer fy_host_mod.deleteFilePosix(".fy-port");
-    _ = reg.entries[0].host.startHotPatchServer() catch |err|
-        std.log.warn("hot-patch: {}", .{err});
+    if (reg.entries[0].host) |host| {
+        _ = host.startHotPatchServer() catch |err|
+            std.log.warn("hot-patch: {}", .{err});
+    }
 
     // ── Tracks — start with silent placeholder machines ──────────────
     var transport: transport_mod.Transport = .{};

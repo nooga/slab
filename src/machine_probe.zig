@@ -5,6 +5,7 @@ const machine_mod = @import("machine.zig");
 const fy_host_mod = @import("fy_host.zig");
 const FyMachine = @import("machines/fy_machine.zig").FyMachine;
 const fy_machine_mod = @import("machines/fy_machine.zig");
+const fy_raw_machine_mod = @import("machines/fy_raw_machine.zig");
 
 const SAMPLE_RATE: u32 = 48_000;
 const BLOCK_FRAMES: usize = 256;
@@ -156,13 +157,21 @@ fn loadRegistry(reg: *registry_mod.Registry) !void {
 }
 
 fn instantiateChain(alloc: std.mem.Allocator, reg: *registry_mod.Registry, chain_text: []const u8, out: *[MAX_CHAIN]ChainItem) !usize {
-    _ = alloc;
     var count: usize = 0;
     var it = std.mem.splitScalar(u8, chain_text, ',');
     while (it.next()) |raw_name| {
         const name = std.mem.trim(u8, raw_name, " \t\r\n");
         if (name.len == 0) continue;
         if (count >= MAX_CHAIN) return error.ChainTooLong;
+        if (fy_raw_machine_mod.fixtureSpec(name)) |spec| {
+            const raw = try fy_raw_machine_mod.FyRawMachine.create(alloc, spec);
+            out[count] = .{
+                .reg_idx = std.math.maxInt(usize),
+                .mach = raw.machineInterface(),
+            };
+            count += 1;
+            continue;
+        }
         const idx = findMachine(reg, name) orelse return error.UnknownMachine;
         out[count] = .{
             .reg_idx = idx,
@@ -274,7 +283,8 @@ fn fillAudioInput(input: InputSpec, frame: usize, l: []f32, r: []f32) void {
 
 fn isAudioEffect(item: *const ChainItem) bool {
     const name = item.mach.name;
-    return std.mem.eql(u8, name, "chorus") or
+    return std.mem.eql(u8, name, "raw-sat") or
+        std.mem.eql(u8, name, "chorus") or
         std.mem.eql(u8, name, "comp1") or
         std.mem.eql(u8, name, "delay1") or
         std.mem.eql(u8, name, "verb1");

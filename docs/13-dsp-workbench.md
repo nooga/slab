@@ -185,6 +185,58 @@ The probe writes metrics JSON, disassembly text, and lane CSV. Numeric
 mismatch or non-finite output fails the process, so the command can be
 used directly as a ratchet.
 
+Current scalar voice-building fixtures:
+
+```
+kernels/00-primitives/control.fy
+  k-hz-step        ( out hz inv-sample-rate -- )
+  k-slew-onepole   ( out current target coeff -- )
+  k-vca            ( out input amp level -- )
+  k-osc-mix2       ( out osc-a osc-b gain-a gain-b -- )
+
+kernels/04-filters/dc_block.fy
+  k-dc-block       ( out prev-x prev-y input coeff -- )
+```
+
+These are the first reusable pieces for a subtractive voice. They use
+explicit raw pointers for state cells so the same shape can later map to
+a per-voice slab in `MachineCtx.voice_pool` or a dedicated voice-state
+pointer. Run them through:
+
+```sh
+zig build kernel-probe -- \
+  --kernel=kernels/00-primitives/control.fy \
+  --word=k-osc-mix2 \
+  --case=osc-mix2-render \
+  --iters=100000 \
+  --out=scratch/kernel_osc_mix2
+
+zig build kernel-probe -- \
+  --kernel=kernels/04-filters/dc_block.fy \
+  --word=k-dc-block \
+  --case=dc-block-render \
+  --iters=100000 \
+  --out=scratch/kernel_dc_block
+```
+
+The cases currently covered are `hz-step-render`,
+`slew-onepole-render`, `vca-render`, `osc-mix2-render`, and
+`dc-block-render`. Each writes metrics JSON, disassembly text, and lane
+CSV. The stateful words are intentionally not hidden behind a struct yet
+because the current raw `dsp2:` ABI has no pointer-offset primitive; the
+eventual compiler IR should turn the explicit cells into a real voice
+state layout without changing the mathematical tests.
+
+Current perf read: tiny stateless adapters such as VCA and oscillator
+mix are sub-nanosecond to about one nanosecond in the probe, while
+stateful pointer-heavy words such as one-pole smoothing and DC block
+land around 6-7 ns/sample. That is not the math being expensive; it is
+the current raw ABI and stack-shaped expression forcing extra loads,
+stores, and pointer traffic. The right compiler work is lower-level
+stateful primitives, pointer-offset/state-field support, and IR
+optimization that keeps loaded state in registers across adjacent
+operations.
+
 Current shaper fixture:
 
 ```
@@ -211,20 +263,53 @@ zig build kernel-probe -- \
 Current filter prototype:
 
 ```
+kernels/04-filters/ms20_lpf.fy
+  k-ms20-lpf4  ( out ic1 ic2 input g damping drive -- )
+  k-ms20-lpf4-cubic  ( out ic1 ic2 input g damping drive -- )
+
 kernels/04-filters/ms20_lpf_probe.fy
   ms20-lpf-zig-prototype  ( rendered by the Zig oracle for now )
 ```
 
-This is an MS-20-inspired low-pass workbench case: a nonlinear
-two-pole resonant model with internal oversampling and clipped
-integrator/output states. The probe renders deterministic white noise
-through logarithmic cutoff sweeps at several resonance settings, writes
-a WAV for listening, and emits a stacked spectrogram with a shared dB
-scale plus a cutoff overlay. The noise input is intentional: it makes
-the resonance ridge and cutoff movement easier to inspect than a pitched
-oscillator. It is intentionally not final fy kernel code yet; it gives
-us a reference behavior and artifact format before we lock down stateful
-filter ABI details.
+`k-ms20-lpf4` is the first real fy MS-20-style lowpass kernel. It wraps
+the low-level fy `dsp2:` primitive `fms20-lpf4`, which performs four
+nonlinear integrator substeps, clipped feedback/state update, and
+output clipping while updating two f64 state cells. Coefficients are
+passed in as `g` and `damping`; the host/probe still computes cutoff to
+coefficient because `dsp2:` does not yet have `tan`, exponential cutoff
+mapping, or a dedicated coefficient primitive.
+
+Run the fy kernel ratchet through:
+
+```sh
+zig build -Doptimize=ReleaseFast kernel-probe -- \
+  --kernel=kernels/04-filters/ms20_lpf.fy \
+  --word=k-ms20-lpf4 \
+  --case=ms20-lpf4-render \
+  --iters=100000 \
+  --out=scratch/kernel_ms20_lpf4
+```
+
+The rational profile is intentionally gnarly but division-heavy: after
+hoisting invariant work it still emits about 157 instructions with 138
+scalar float ops. The current ReleaseFast ratchet puts it in the same
+range as native Zig for the same math (`fy` around 75 ns/sample, Zig
+reference around 80 ns/sample on the measured run), so the remaining
+cost is mostly the clipper/filter algorithm, not a giant fy tax. The
+main cost centers are scalar `fdiv` in the rational clipper and the
+filter denominator.
+
+`k-ms20-lpf4-cubic` is a division-free clipper experiment. It avoids
+the rational clipper divisions, but it is not a drop-in replacement:
+the current curve saturates much harder in the ratchet. Keep it as a
+separate character candidate until listening plots say otherwise.
+
+The older `ms20-lpf-grid` case remains useful as a listening/plotting
+workbench: it renders deterministic white noise through logarithmic
+cutoff sweeps at several resonance settings, writes a WAV for listening,
+and emits a stacked spectrogram with a shared dB scale plus a cutoff
+overlay. The noise input is intentional: it makes the resonance ridge
+and cutoff movement easier to inspect than a pitched oscillator.
 
 Run it through:
 
@@ -253,6 +338,66 @@ feedback motion and better for stress-testing. Both use the same design
 choice learned from the failed dirty prototype: keep integrator state
 mostly linear/leaky, and put the nastiness in a DC-blocked clipped
 feedback path instead of hard-clipping the state itself.
+
+Current voice workbench fixture:
+
+```
+kernels/06-voices/ms20_voice_probe.fy
+  includes k-ms20-lpf4 for filter-kernel availability
+```
+
+This renders the first complete subtractive voice sketch: falling
+polyBLEP saw plus variable pulse, amp envelope, filter envelope,
+smoothed cutoff, driven MS-20-ish lowpass, VCA, and DC blocker. The
+rig now sequences Slab-shaped `NoteEvent`s: note-on/off events are
+collected into block-local events with `sample_offset`, `kind`, `pitch`,
+`velocity`, and `note_id`, mirroring the data the DAW sends through
+`MachineCtx.note_in`.
+
+The full voice render uses the same filter math in-process rather than
+calling the fy filter across the host/JIT boundary once per sample. The
+fy filter itself is ratcheted by `ms20-lpf4-render`; the voice rig is
+for sequencing, listening, and whole-signal metrics until we add a fused
+voice or buffer ABI.
+
+Run it through:
+
+```sh
+zig build kernel-probe -- \
+  --kernel=kernels/06-voices/ms20_voice_probe.fy \
+  --word=k-ms20-lpf4 \
+  --case=ms20-voice-render \
+  --iters=1 \
+  --out=scratch/ms20_voice_probe
+```
+
+The probe writes `scratch/ms20_voice_probe.wav`,
+`scratch/ms20_voice_probe_metrics.json`, and
+`scratch/ms20_voice_probe_lanes.csv`. The lane CSV includes output,
+amp envelope, cutoff, active note Hz, and gate state.
+
+The first DAW-facing bridge for this voice is `raw-ms20`, registered
+through `FyRawMachine` rather than the older callback/global-cell machine
+style used by `machines/mono1/mono1.fy`. It uses the raw `voice_sample`
+ABI plus host-bound raw controls:
+
+```text
+prepare(state, params, sample_rate)  -> update sample-rate derived params
+host raw controls                    -> write params + filter coefficients
+note_on(state, params, hz, velocity) -> set note hz, amp, phase, age
+note_off(state, params)              -> latch current age as gate time
+render(out, state, params)           -> k-ms20-voice-sample
+```
+
+The v0 panel is generated from
+`machines/raw_ms20/raw-ms20.manifest`: VCO detune, oscillator mix/pulse
+width, LPF cutoff/peak/drive/env amount, VCA level, amp ADSR, and filter
+ADSR. The registry loads `raw-ms20` from that manifest, including source
+path, entry words, state/param sizes, panel width, and control metadata.
+Direct controls write raw params by byte offset. Value controls feed
+manifest `derive` rows; the MS-20 cutoff/peak/env mapping is now declared
+as `derive|ms20-lpf|cutoff|resonance|env-peak|32|40|112`, which writes
+`g`, `damping`, and `g-env` for the DSP2 voice.
 
 ### Layer 0: primitives
 
@@ -634,6 +779,144 @@ must be explicit. Prefer making it the effective process rate and adding
 Machine authors should not juggle raw cells for ordinary structure.
 The DSL should let them declare the important surfaces once and get
 safe host-visible layout, UI binding, smoothing, buffers, and tests.
+
+For raw DSP code, fy now has `ustruct:`. It records an untagged,
+host-compatible layout and lets `dsp2:` lower field access directly to
+pointer-offset IR. Accessors are `Name.field@` for f64 loads,
+`Name.field!` for f64 stores, and `Name.field-p` when a kernel needs the
+field address. These are IR-expanded, so the generated code keeps the
+same zero-call shape as hand-written `ptr+ f@64` accessors.
+
+For repeated f64 loads, `Name@:` groups field reads and emits the
+corresponding `pick + field@` sequence before IR construction:
+
+```forth
+Ms20VoiceParams@: amp-attack amp-decay amp-sustain gate-time amp-release ;
+```
+
+The grouped form assumes the source struct pointer is one stack slot
+below the values being accumulated, which matches the common DSP pattern
+of preserving state/params pointers below derived arguments.
+
+`dsp2:` words can name their entry arguments with compile-time locals:
+
+```forth
+dsp2: voice-filter
+  | state params input |
+  state Ms20VoiceState.ic1-p
+  state Ms20VoiceState.ic2-p
+  input
+  params Ms20VoiceParams.g@
+  params Ms20VoiceParams.damping@
+  params Ms20VoiceParams.drive@
+  fms20-lpf4
+  nip nip nip
+;
+```
+
+The locals are IR aliases for the original arguments, not runtime quote
+locals. They remove most `pick` noise while preserving the explicit stack
+contract: the original arguments still exist until the word drops or nips
+them away.
+
+The same form works for computed temporaries:
+
+```forth
+state params v-amp-env
+| amp |
+state params v-osc-mix
+| osc |
+state params osc v-filter
+nip
+params Ms20VoiceParams.level@
+f*
+amp
+f*
+```
+
+That gives fused DSP code a readable way to reuse intermediate signals
+without falling back to manual `pick` ladders.
+
+## Raw DSP2 machine adapter
+
+The DAW host should not grow custom Zig wrappers for each serious
+machine. The current bridge experiment is `FyRawMachine`: a generic
+adapter driven by a small spec containing source path, storage sizes,
+mode, and raw DSP2 word names.
+
+The first supported fast path is `voice_sample`:
+
+```text
+prepare(state, params, sample_rate)        optional, block-rate
+note_on(state, params, hz, velocity)       optional, event-rate
+note_off(state, params)                    optional, event-rate
+render(out, state, params)                 sample-rate, raw repeated
+```
+
+The host owns state bytes, params bytes, event segmentation, MIDI-note
+to Hz conversion, output buffers, and render scheduling. fy owns the
+machine-specific behavior in the raw DSP2 words. This is the interface
+shape we want for the MS-20 voice path: one generic host adapter, many
+fy machines.
+
+Effects use the `effect_block` path:
+
+```text
+prepare(state, params, sample_rate)        optional, block-rate
+render(out, state, params, input)          sample-rate, raw repeated
+```
+
+The render word still describes one sample, but the fy raw-call wrapper
+executes it across the whole audio block while auto-advancing `out` and
+`input` by one `f64` each iteration. The host converts the DAW's `f32`
+input channels into `f64` scratch streams, calls the word once per
+channel per block, then copies the saturated/clamped result back to
+`f32`. This is the first practical realtime effect ABI; a later stereo
+block ABI can fuse left/right into one call.
+
+Current fixtures:
+
+- `machines/raw_fixtures/silence.fy` checks the adapter writes zeros.
+- `machines/raw_fixtures/oscillator.fy` checks note-on/off and repeated
+  raw sample rendering.
+- `machines/raw_fixtures/saturator.fy` checks block audio input to raw
+  DSP2 effect processing.
+- `machines/raw_ms20/raw-ms20.manifest` exposes the first playable raw
+  DSP2 voice machine with host-bound controls, backed by
+  `kernels/06-voices/ms20_voice_probe.fy`.
+
+`raw-osc`, `raw-silence`, `raw-sat`, and `raw-ms20` are exposed in the
+realtime DAW browser. `raw-sat` is still a fixture-grade effect, but it
+uses the block raw ABI and should not stall playback the way the old
+sample-callback adapter did.
+
+Raw manifest format is deliberately small and line-oriented:
+
+```text
+name|raw-ms20
+path|kernels/06-voices/ms20_voice_probe.fy
+mode|voice-sample
+render|k-ms20-voice-sample
+prepare|ms20-voice-prepare
+note-on|ms20-voice-note-on
+note-off|ms20-voice-note-off
+state-size|64
+params-size|176
+panel-w|680
+control|VCO|PW|pulse-width|direct-f64|168|0.05|0.95|0.44|linear
+control|LPF|CUT|cutoff|value|-|60.0|5000.0|180.0|exp
+control|LPF|DRV|drive|direct-f64|48|0.4|2.2|1.25|linear
+const-f64|64|0.0035
+derive|ms20-lpf|cutoff|resonance|env-peak|32|40|112
+```
+
+Control rows are
+`control|module|label|id|kind|offset|min|max|default|curve`. `direct-f64`
+controls write `offset` in the raw params struct. `value` controls are
+named scalar inputs for derived mappings and do not write params directly.
+`const-f64|offset|value` writes fixed params at sync time. `derive` rows
+encode small host-side coefficient mappings while keeping the machine
+definition in the manifest instead of adding custom Zig wrappers.
 
 Desired shape:
 

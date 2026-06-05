@@ -1,0 +1,33 @@
+# raw-ms20 manifest
+name|raw-ms20
+path|kernels/06-voices/ms20_voice_probe.fy
+mode|voice-sample
+render|k-ms20-voice-sample
+prepare|ms20-voice-prepare
+note-on|ms20-voice-note-on
+note-off|ms20-voice-note-off
+state-size|64
+params-size|176
+panel-w|680
+
+# control|module|label|id|kind|offset|min|max|default|curve
+control|VCO|DET|detune|direct-f64|24|0.995|1.018|1.0058|linear
+control|VCO|SAW|saw-level|direct-f64|152|0.0|1.0|0.62|linear
+control|VCO|PUL|pulse-level|direct-f64|160|0.0|1.0|0.38|linear
+control|VCO|PW|pulse-width|direct-f64|168|0.05|0.95|0.44|linear
+control|LPF|CUT|cutoff|value|-|60.0|5000.0|180.0|exp
+control|LPF|PEAK|resonance|value|-|0.0|2.0|1.25|linear
+control|LPF|DRV|drive|direct-f64|48|0.4|2.2|1.25|linear
+control|LPF|ENV|env-peak|value|-|250.0|8000.0|5000.0|exp
+control|VCA|LVL|level|direct-f64|56|0.0|1.0|0.72|linear
+control|AMP ENV|ATK|amp-attack|direct-f64|80|0.001|0.4|0.0055|exp
+control|AMP ENV|DEC|amp-decay|direct-f64|88|0.01|1.2|0.12|exp
+control|AMP ENV|SUS|amp-sustain|direct-f64|96|0.0|1.0|0.46|linear
+control|AMP ENV|REL|amp-release|direct-f64|104|0.01|1.2|0.13|exp
+control|FLT ENV|ATK|filter-attack|direct-f64|120|0.001|0.5|0.014|exp
+control|FLT ENV|DEC|filter-decay|direct-f64|128|0.01|1.4|0.14|exp
+control|FLT ENV|SUS|filter-sustain|direct-f64|136|0.0|1.0|0.18|linear
+control|FLT ENV|REL|filter-release|direct-f64|144|0.01|1.2|0.11|exp
+
+const-f64|64|0.0035
+derive|ms20-lpf|cutoff|resonance|env-peak|32|40|112

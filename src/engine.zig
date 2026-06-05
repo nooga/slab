@@ -170,6 +170,11 @@ pub const Engine = struct {
         const req = self.audition_request.load(.acquire);
         var send_on = false;
         if (req != self.audition_seen) {
+            if (self.audition_active and self.audition_track_local < self.tracks.len) {
+                const old = &self.tracks[self.audition_track_local];
+                old.machine.reset(old.machine.state);
+                for (old.effects[0..old.effect_count]) |*fx| fx.reset(fx.state);
+            }
             self.audition_seen = req;
             self.audition_active = true;
             self.audition_remaining = self.transport.sample_rate / 5;
