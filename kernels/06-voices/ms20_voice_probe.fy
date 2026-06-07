@@ -7,6 +7,7 @@
 include "../01-oscillators/primitives/phase.fy"
 include "../01-oscillators/primitives/blep.fy"
 include "../01-oscillators/primitives/shapes.fy"
+include "../02-shapers/tanh_table.fy"
 include "../03-envelopes/primitives/segments.fy"
 include "../04-filters/ms20_lpf.fy"
 include "../04-filters/ms20_svf.fy"
@@ -180,6 +181,10 @@ dsp2: v-osc-mix
   params Ms20VoiceParams.saw-level@
   f*
   f+
+  ( gentle analog mixer saturation: drive into the rational-tanh shaper
+    so a hot VCO1+VCO2 sum rounds over instead of clipping hard. )
+  1.3 f*
+  k-tanh-rational-shape-dsp2
   nip
   nip
 ;
