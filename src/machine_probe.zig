@@ -154,6 +154,7 @@ fn loadRegistry(reg: *registry_mod.Registry) !void {
     try reg.load("fm1", "machines/fm1/fm1.fy", "fm1-audio", "fm1-ui", 428);
     try reg.load("delay1", "machines/delay1/delay1.fy", "delay1-audio", "delay1-ui", 375);
     try reg.load("verb1", "machines/verb1/verb1.fy", "verb1-audio", "verb1-ui", 270);
+    try reg.loadRawManifest("machines/raw_ms20/raw-ms20.manifest");
 }
 
 fn instantiateChain(alloc: std.mem.Allocator, reg: *registry_mod.Registry, chain_text: []const u8, out: *[MAX_CHAIN]ChainItem) !usize {

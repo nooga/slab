@@ -96,6 +96,10 @@ pub fn main(init: std.process.Init) !void {
         try runMs20VoiceCase(alloc, cli, &host);
         return;
     }
+    if (std.mem.eql(u8, cli.case_name, "ms20-svf-sweep")) {
+        try runMs20SvfSweepCase(alloc, cli, &host);
+        return;
+    }
 
     const data = try caseData(cli.case_name);
     var a align(16) = data.a;
@@ -471,6 +475,126 @@ fn runFilterCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
                 peak = @max(peak, @abs(y));
                 sum += y;
                 sum_sq += y * y;
+            }
+        }
+        offset += frames_per_render;
+        if (offset < output.len) offset += gap_frames;
+    }
+    const run_ns = nowNs() - start;
+
+    var metrics = Metrics{};
+    metrics.ns_per_iter = @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(render_count * frames_per_render));
+    metrics.nonfinite_count = nonfinite_count;
+    metrics.peak = peak;
+    const finite_count = @as(f64, @floatFromInt(output.len - nonfinite_count));
+    if (finite_count > 0) {
+        metrics.mean = sum / finite_count;
+        metrics.rms = @sqrt(sum_sq / finite_count);
+    }
+
+    try writeFilterArtifacts(alloc, cli, output, metrics, sample_rate, frames_per_render, gap_frames);
+    if (metrics.nonfinite_count != 0 or metrics.peak > 8.0) return error.KernelRatchetFailed;
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} renders={} frames={} ns_per_sample={d:.3} peak={d:.3} rms={d:.3}\n",
+        .{ cli.kernel, cli.word, cli.case_name, render_count, frames_per_render, metrics.ns_per_iter, metrics.peak, metrics.rms },
+    );
+}
+
+// Layout mirrors the SvfState / SvfParams ustructs in ms20_svf.fy.
+const SvfState = extern struct {
+    ic1: f64 = 0,
+    ic2: f64 = 0,
+    fb_dc: f64 = 0,
+    out_dc: f64 = 0,
+};
+const SvfParams = extern struct {
+    g: f64 = 0,
+    damping: f64 = 0,
+    drive: f64 = 0,
+    resonance: f64 = 0,
+    fb_gain: f64 = 0,
+    fb_clip: f64 = 0,
+    out_clip: f64 = 0,
+    leak: f64 = 0,
+    fb_dc_coeff: f64 = 0,
+    out_dc_coeff: f64 = 0,
+};
+
+// Render the g-wet filter sweep ENTIRELY through the fy chain:
+//   k-svf-coeffs-* (coefficients computed in fy) + k-ms20-svf (filter in fy).
+// No Zig/libm DSP on the signal path - this is exactly what the DAW machine
+// will run. Writes a WAV for listening / plotting against the Python oracle
+// (tools/audio_probe/render_ms20_sweeps.py, profile g-wet).
+fn runMs20SvfSweepCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sample_rate = FILTER_SAMPLE_RATE;
+    const os_rate = @as(f64, @floatFromInt(sample_rate)) * 4.0;
+    // Shorter than the grid case: each sample makes two ad-hoc fy calls.
+    const render_secs: f64 = 0.6;
+    const frames_per_render: usize = @intFromFloat(render_secs * @as(f64, @floatFromInt(sample_rate)));
+    const gap_frames: usize = @intFromFloat(FILTER_GAP_SECONDS * @as(f64, @floatFromInt(sample_rate)));
+    const render_count = FILTER_RESONANCES.len;
+    const total_frames = render_count * frames_per_render + (render_count - 1) * gap_frames;
+
+    const output = try alloc.alloc(f64, total_frames);
+    defer alloc.free(output);
+    @memset(output, 0);
+
+    const saw_gain: f64 = 0.55;
+    const noise_gain: f64 = 0.03;
+
+    const start = nowNs();
+    var peak: f64 = 0;
+    var sum: f64 = 0;
+    var sum_sq: f64 = 0;
+    var nonfinite_count: usize = 0;
+    var offset: usize = 0;
+    for (FILTER_RESONANCES) |resonance| {
+        var params = SvfParams{};
+        var state = SvfState{};
+        // DC-block + profile coefficients are constant over the render.
+        const dc_args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&params) }, .{ .f64 = os_rate } };
+        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("k-svf-coeffs-dc", 1, &dc_args);
+        const prof_args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&params) }, .{ .f64 = resonance } };
+        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("k-svf-coeffs-profile", 1, &prof_args);
+
+        var osc_phase: f64 = 0;
+        var noise_state: u32 = 0x1234abcd;
+        var out_sample: f64 = 0;
+        var i: usize = 0;
+        while (i < frames_per_render) : (i += 1) {
+            const pos = @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(frames_per_render - 1));
+            const cutoff = FILTER_CUTOFF_START_HZ * @exp(@log(FILTER_CUTOFF_END_HZ / FILTER_CUTOFF_START_HZ) * pos);
+            const dt = FILTER_INPUT_HZ / @as(f64, @floatFromInt(sample_rate));
+            const input = zigSawPolyblep(osc_phase, dt) * saw_gain + whiteNoise(&noise_state) * noise_gain;
+            osc_phase = wrap01(osc_phase + dt);
+
+            // tone coefficients (g, damping) track the swept cutoff, in fy.
+            const tone_args = [_]Fy.Dsp2RawArg{
+                .{ .ptr = @intFromPtr(&params) },
+                .{ .f64 = cutoff },
+                .{ .f64 = resonance },
+                .{ .f64 = os_rate },
+            };
+            _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("k-svf-coeffs-tone", 1, &tone_args);
+
+            const filt_args = [_]Fy.Dsp2RawArg{
+                .{ .ptr = @intFromPtr(&out_sample) },
+                .{ .ptr = @intFromPtr(&state) },
+                .{ .ptr = @intFromPtr(&params) },
+                .{ .f64 = input },
+                .{ .f64 = params.g },
+                .{ .f64 = params.damping },
+            };
+            _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("k-ms20-svf", 1, &filt_args);
+
+            output[offset + i] = out_sample;
+            if (!std.math.isFinite(out_sample)) {
+                nonfinite_count += 1;
+            } else {
+                peak = @max(peak, @abs(out_sample));
+                sum += out_sample;
+                sum_sq += out_sample * out_sample;
             }
         }
         offset += frames_per_render;
