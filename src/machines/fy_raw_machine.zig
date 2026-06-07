@@ -159,7 +159,7 @@ pub fn fixtureSpec(name: []const u8) ?Spec {
         .note_on_word = "ms20-voice-note-on",
         .note_off_word = "ms20-voice-note-off",
         .state_size = 64,
-        .params_size = 176,
+        .params_size = 256,
         .panel_w = 680,
         .manifest_path = "machines/raw_ms20/raw-ms20.manifest",
     };
@@ -188,6 +188,13 @@ pub const FyRawMachine = struct {
     note_off_caller: ?RawCaller = null,
     render_caller: ?RawCaller = null,
     effect_caller: ?RawCaller = null,
+    // raw-ms20 g-wet svf: host fills the SvfParams profile region per block by
+    // calling these fy coeff words (replaces the old Zig coefficient derive).
+    svf_dc_slots: RawSlots = .{},
+    svf_profile_slots: RawSlots = .{},
+    svf_dc_caller: ?RawCaller = null,
+    svf_profile_caller: ?RawCaller = null,
+    svf_profile_offset: usize = 0,
     raw_control_bits: [MAX_RAW_CONTROLS]std.atomic.Value(u32) = undefined,
     raw_controls: [MAX_RAW_CONTROLS]RawControl = undefined,
     raw_control_count: usize = 0,
@@ -296,6 +303,26 @@ pub const FyRawMachine = struct {
                 );
             },
         }
+
+        // raw-ms20: fill the SvfParams profile region (offset 176) per block
+        // via fy coeff words instead of a Zig derive.
+        if (std.mem.eql(u8, self.spec.name, "raw-ms20")) {
+            self.svf_profile_offset = 176;
+            self.svf_dc_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
+                "k-svf-coeffs-dc",
+                &self.svf_dc_slots,
+                &.{ .ptr, .f64 },
+                false,
+                false,
+            );
+            self.svf_profile_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
+                "k-svf-coeffs-profile",
+                &self.svf_profile_slots,
+                &.{ .ptr, .f64 },
+                false,
+                false,
+            );
+        }
     }
 
     fn initRawControls(self: *FyRawMachine, alloc: std.mem.Allocator) !void {
@@ -375,6 +402,21 @@ pub const FyRawMachine = struct {
                     self.writeParamF64(derive.out2_offset, @max(0.0, peak.g - base.g));
                 },
             }
+        }
+
+        // raw-ms20: fill the SvfParams profile region in fy (drive/resonance/
+        // fb_gain/clips/leak + the two DC-block coeffs). g and damping stay
+        // per-sample in the voice; nothing here computes filter coefficients.
+        if (self.svf_profile_caller) |*pc| {
+            const profile_ptr = self.paramsPtr() + self.svf_profile_offset;
+            const os_rate = sample_rate * 4.0;
+            const resonance = self.controlValueById("resonance") orelse 1.0;
+            if (self.svf_dc_caller) |*dc| {
+                const dc_args = [_]Fy.Dsp2RawArg{ .{ .ptr = profile_ptr }, .{ .f64 = os_rate } };
+                _ = dc.call(1, &dc_args) catch {};
+            }
+            const prof_args = [_]Fy.Dsp2RawArg{ .{ .ptr = profile_ptr }, .{ .f64 = resonance } };
+            _ = pc.call(1, &prof_args) catch {};
         }
     }
 
@@ -974,28 +1016,31 @@ test "raw DSP2 MS-20 fixture renders a finite note through generic adapter" {
     try testing.expect(peak <= 1.0);
 }
 
-test "raw DSP2 MS-20 controls write coefficient params" {
-    const g_offset: usize = 32;
-    const damping_offset: usize = 40;
-    const g_env_offset: usize = 112;
+test "raw DSP2 MS-20 fills the svf profile region in fy (no Zig derive)" {
+    const cutoff_off: usize = 32;
+    const env_peak_off: usize = 112;
+    const svf_drive: usize = 192;
+    const svf_resonance: usize = 200;
+    const svf_fb_gain: usize = 208;
+    const svf_fb_dc: usize = 240;
+    const svf_out_dc: usize = 248;
 
     const spec = fixtureSpec("raw-ms20").?;
     const inst = try FyRawMachine.create(testing.allocator, spec);
     defer inst.machineInterface().deinit.?(inst, testing.allocator);
 
     inst.syncRawParams(48_000);
-    const g_default = inst.readParamF64(g_offset);
-    const env_default = inst.readParamF64(g_env_offset);
-    try testing.expect(g_default > 0.002);
-    try testing.expect(env_default > 0.07);
 
-    const controls = inst.raw_controls[0..inst.raw_control_count];
-    for (controls, 0..) |control, i| {
-        if (std.mem.eql(u8, control.idSlice(), "cutoff")) inst.setControlNorm(i, 1.0);
-        if (std.mem.eql(u8, control.idSlice(), "resonance")) inst.setControlNorm(i, 1.0);
-    }
-    inst.syncRawParams(48_000);
+    // Controls land at their declared offsets as raw values (defaults).
+    try testing.expect(inst.readParamF64(cutoff_off) > 60.0);
+    try testing.expect(inst.readParamF64(env_peak_off) > 1000.0);
 
-    try testing.expect(inst.readParamF64(g_offset) > g_default);
-    try testing.expect(inst.readParamF64(damping_offset) < 0.08);
+    // Profile region computed in fy by k-svf-coeffs-profile / -dc.
+    try testing.expectApproxEqAbs(@as(f64, 1.90), inst.readParamF64(svf_drive), 1e-6);
+    try testing.expectApproxEqAbs(@as(f64, 5.4), inst.readParamF64(svf_fb_gain), 1e-6);
+    try testing.expect(inst.readParamF64(svf_resonance) > 0.0);
+    try testing.expect(inst.readParamF64(svf_fb_dc) > 0.0);
+    try testing.expect(inst.readParamF64(svf_fb_dc) < 0.01);
+    try testing.expect(inst.readParamF64(svf_out_dc) > 0.0);
+    try testing.expect(inst.readParamF64(svf_out_dc) < inst.readParamF64(svf_fb_dc));
 }

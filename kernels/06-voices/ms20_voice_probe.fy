@@ -9,6 +9,7 @@ include "../01-oscillators/primitives/blep.fy"
 include "../01-oscillators/primitives/shapes.fy"
 include "../03-envelopes/primitives/segments.fy"
 include "../04-filters/ms20_lpf.fy"
+include "../04-filters/ms20_svf.fy"
 
 ustruct: Ms20VoiceState
   f64 phase1
@@ -26,9 +27,9 @@ ustruct: Ms20VoiceParams
   f64 target-amp
   f64 inv-sample-rate
   f64 detune
-  f64 g
-  f64 damping
-  f64 drive
+  f64 cutoff           ( base filter cutoff Hz - control @32 )
+  f64 resonance        ( filter resonance - control @40 )
+  f64 drive            ( unused on svf path; profile.drive drives the filter )
   f64 level
   f64 amp-coeff
   f64 gate-time
@@ -36,7 +37,7 @@ ustruct: Ms20VoiceParams
   f64 amp-decay
   f64 amp-sustain
   f64 amp-release
-  f64 g-env
+  f64 env-peak         ( filter env peak cutoff Hz - control @112 )
   f64 filter-attack
   f64 filter-decay
   f64 filter-sustain
@@ -44,6 +45,19 @@ ustruct: Ms20VoiceParams
   f64 saw-level
   f64 pulse-level
   f64 pulse-width
+  ( appended SvfParams profile region @176; host fills it per block via
+    k-svf-coeffs-dc / k-svf-coeffs-profile (profile-ptr = params 176 ptr+).
+    Layout MUST match SvfParams so fms20-svf reads drive@+16 .. out-dc@+72. )
+  f64 svf-g
+  f64 svf-damping
+  f64 svf-drive
+  f64 svf-resonance
+  f64 svf-fb-gain
+  f64 svf-fb-clip
+  f64 svf-out-clip
+  f64 svf-leak
+  f64 svf-fb-dc-coeff
+  f64 svf-out-dc-coeff
 ;
 
 ( state params sample-rate -- : update sample-rate derived params. )
@@ -167,30 +181,38 @@ dsp2: v-osc-mix
   nip
 ;
 
-( state params -- value : filter g from base coefficient plus capacitor ADSR envelope. )
+( state params -- g : envelope-modulated cutoff -> filter g, computed in fy.
+  cutoff = base + (env-peak - base) * filter-adsr ; g = svf-g(cutoff, osr). )
 dsp2: v-filter-g
   | state params |
   Ms20VoiceState@: age ;
   Ms20VoiceParams@: filter-attack filter-decay filter-sustain gate-time filter-release ;
   adsr-cap
-  params Ms20VoiceParams.g-env@
+  params Ms20VoiceParams.env-peak@
+  params Ms20VoiceParams.cutoff@
+  f-
   f*
-  params Ms20VoiceParams.g@
+  params Ms20VoiceParams.cutoff@
   f+
+  4.0
+  params Ms20VoiceParams.inv-sample-rate@
+  f/
+  svf-g
   nip
   nip
 ;
 
-( state params input -- value : run the voice's MS-20-style filter. )
+( state params input -- value : run the g-wet svf filter. Filter state
+  {ic1,ic2,fb_dc,out_dc} is the contiguous block at state+16; static profile
+  at params+176; g per-sample (envelope-modulated); damping from resonance. )
 dsp2: v-filter
   | state params input |
-  state Ms20VoiceState.ic1-p
-  state Ms20VoiceState.ic2-p
+  state 16 ptr+
+  params 176 ptr+
   input
   state params v-filter-g
-  params Ms20VoiceParams.damping@
-  params Ms20VoiceParams.drive@
-  fms20-lpf4
+  params Ms20VoiceParams.resonance@ svf-damping
+  fms20-svf
   nip
   nip
   nip
@@ -287,18 +309,16 @@ dsp2: k-ms20-voice-sample
   | out state params |
   state params v-age-next
   drop
-  state params v-amp-env
-  | amp |
   state params v-osc-mix
   | osc |
   state params osc v-filter
   nip
+  ( amp env after the filter: keep register pressure low while fms20-svf inlines )
+  state params v-amp-env
+  f*
   params Ms20VoiceParams.level@
   f*
-  amp
-  f*
-  nip
-  | sample |
-  out state sample v-dc-out
-  drop2 drop2
+  out
+  f!64
+  drop2 drop
 ;
