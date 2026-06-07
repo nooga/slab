@@ -43,6 +43,10 @@ self-contained but assumes the vocabulary established in earlier ones.
 14. [13-dsp-workbench.md](13-dsp-workbench.md) — current refocus:
     `dsp:` compiler work, layered kernels, offline render/plot/metric
     harness, and test ratchet
+15. [14-ms20-machine.md](14-ms20-machine.md) — the MS-20 voice: analog
+    VCOs, dual filters, MG/EGs, kernels, and the register/fusion strategy
+16. [15-machine-panels.md](15-machine-panels.md) — declarative beveled
+    machine panels: strips, controls, auto title bar, custom-draw hatch
 
 ## Terminology crib sheet
 
