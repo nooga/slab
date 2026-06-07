@@ -83,24 +83,72 @@ Reassemble per the topology above with hardwired modulation:
 ## Register / fusion strategy
 
 The full voice (2 VCOs + mixer + 2 filters + 2 EGs + MG + mod) **will not fit
-in one 32-register dsp2 word** even with the arg-aware pool. Two paths:
+in one 32-register dsp2 word** even with the arg-aware pool. dsp2 has no
+function calls — a word reference is spliced inline as a flattened token body
+(`dsp2_body`) *before* register allocation, so the whole voice is one
+straight-line expression competing for 32 float registers. The allocator has
+no global spilling; it hard-errors `RegisterExhausted`.
 
-1. **Stage decomposition (now).** Split the per-sample voice into a few
-   fused words, each well under 32 regs, chained by the host via precompiled
-   `Dsp2RawRepeatedCaller`s (no per-call relink):
-   - `mod`   — advance phases/age; compute MG, EG1, EG2 → mod values.
-   - `osc`   — VCO1, VCO2, ring, noise, PWM/FM → saturating mixer → sample.
-   - `filt`  — HPF → LPF with cutoff mod.
-   - `vca`   — EG2 × level.
-   Each stage is independently ratcheted. This works with today's allocator.
+The fix is **composition in fy via a real (non-inlined) call** — a new
+`call:` form in dsp2. Stages stay separate compiled words, each with its own
+fresh 32-register budget, and the voice composes them in fy (not in the host):
 
-2. **Spilling (durable follow-up).** Add register spilling to the dsp2
-   codegen (str/ldr to a body frame + operand pinning) so stages can collapse
-   back into one fused word for maximum efficiency. This is the "fuse as much
-   as possible" lever; pursue it once the staged voice works.
+```
+dsp2: k-ms20-voice-sample
+  | out state params |
+  state params       call: v-mod    ( advance phases/age; MG, EG1, EG2 → state scratch )
+  state params       call: v-osc    ( VCO1, VCO2, ring, noise, PWM/FM → sat mixer → state.osc-out )
+  state params       call: v-filt   ( HPF → LPF with cutoff mod → state.filt-out )
+  out state params   call: v-vca    ( EG2 × level → out )
+;
+```
 
-**Plan: ship staged (1), then collapse with spilling (2).** Either way the
-coefficient/mod math stays in fy; nothing computes DSP in Zig.
+### `call:` semantics
+
+At each `call:` the compiler emits, all from machinery that already exists:
+
+1. **Arg marshal** into the raw-entry ABI the callee already uses: pointers →
+   `RAW_X_ARG_REGS` (x0–x7), floats → `RAW_D_ARG_REGS` (d8–d15). The compiler
+   knows each arg's ptr-vs-float kind (`argUsedAsPtr`).
+2. **Localized spill** of the live caller-saved registers around the call —
+   the same `sub_sp_imm` / `str` / `ldr` / `add_sp_imm` frame dance already used
+   for deferred stores, but scoped to one call site. dsp2 already tracks
+   liveness (`consumeValue` last-use), so it spills exactly the registers live
+   across the boundary. In sequential composition that set is tiny (just the
+   pointers), so the spill is nearly free — but it is correct even when it is
+   not.
+3. **Slot-load + `blr`** — load the callee address from a patchable per-call
+   slot (the `Dsp2RawRepeatedSlots` + `blr Xn` mechanism the host caller
+   already uses) and branch with link.
+4. **Reload** the spilled registers; push the d0 result back as a value if the
+   callee returns one.
+
+Communication between stages is through **scratch fields in voice state**
+(`osc-out`, `filt-out`, MG/EG values), not threaded return values — so each
+stage stays at 2–3 pointer/float args and never touches the 6-arg
+`compileDsp2RawRepeatedCaller` path (the spun-off segfault).
+
+### Two bonuses
+
+- **The slot is patchable**, so every `call:` boundary is a **word-level
+  hot-patch point**: edit `v-filt` while audio plays, repatch its slot, the
+  composed voice runs the new filter next block. The signature livecoding
+  capability falls out of the composition mechanism.
+- **It generalizes** beyond the MS-20 — any machine composes fused kernels the
+  same way. It is the missing "compose without re-fusing into one
+  register-starved blob" primitive.
+
+### Rule & follow-up
+
+Anything live across a `call:` is either pinned in a callee-saved register or
+auto-spilled. Pointers reused across several calls want pinning (x19–x21) to
+avoid repeated save/restore — an optimization, not correctness.
+
+Full global spilling (str/ldr to a body frame + operand pinning so a *single*
+word can exceed 32 live regs) remains a durable follow-up — the "fuse as much
+as possible" lever — but it is **not** the gate. `call:` composition unblocks
+the entire voice with only call-site-local spilling. The coefficient/mod math
+stays in fy regardless; nothing computes DSP in Zig.
 
 ## Filter call
 
@@ -124,7 +172,8 @@ hatch) is a good early proof.
 3. HPF kernel + HPF→LPF series.
 4. EG1 (DAR); confirm EG2 cap ADSR curves.
 5. Hardwired routing: FM, PWM, cutoff mod; ring mod.
-6. Assemble the voice with stage decomposition (register strategy 1).
+6. Add `call:` composition to dsp2; assemble the voice from fused stages
+   (v-mod/v-osc/v-filt/v-vca) via state-scratch handoff.
 7. Panel: declare the strips (docs/15); custom ADSR cell.
-8. Spilling (register strategy 2) to collapse stages; polyphony via a
-   higher-order voice-pool machine (docs/15).
+8. Global spilling (durable follow-up) to optionally collapse hot stages back
+   inline; polyphony via a higher-order voice-pool machine (docs/15).
