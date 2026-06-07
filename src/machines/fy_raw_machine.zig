@@ -35,9 +35,12 @@ const RawParamCurve = enum {
     exp,
 };
 
+const MAX_OPTS = 8;
+
 const RawParamKind = enum {
     direct_f64,
     value,
+    switch_sel,
 };
 
 const RawControl = struct {
@@ -53,6 +56,15 @@ const RawControl = struct {
     max: f64,
     default: f64,
     curve: RawParamCurve = .linear,
+    // switch_sel only: discrete options. The control stores the selected
+    // index; sync writes option_values[index] to the param offset.
+    option_count: usize = 0,
+    option_values: [MAX_OPTS]f64 = [_]f64{0} ** MAX_OPTS,
+    option_labels: [MAX_OPTS][MAX_CONTROL_TEXT:0]u8 = [_][MAX_CONTROL_TEXT:0]u8{[_:0]u8{0} ** MAX_CONTROL_TEXT} ** MAX_OPTS,
+
+    fn optionLabelZ(self: *const RawControl, i: usize) [*:0]const u8 {
+        return @ptrCast(&self.option_labels[i][0]);
+    }
 
     fn moduleZ(self: *const RawControl) [*:0]const u8 {
         return @ptrCast(&self.module[0]);
@@ -177,7 +189,7 @@ pub fn fixtureSpec(name: []const u8) ?Spec {
         .note_on_word = "ms20-voice-note-on",
         .note_off_word = "ms20-voice-note-off",
         .state_size = 64,
-        .params_size = 256,
+        .params_size = 264,
         .panel_w = 680,
         .manifest_path = "machines/raw_ms20/raw-ms20.manifest",
     };
@@ -354,7 +366,11 @@ pub const FyRawMachine = struct {
         if (self.spec.manifest_path) |path| try self.loadRawControlsFromManifest(alloc, path);
         var i: usize = 0;
         while (i < MAX_RAW_CONTROLS) : (i += 1) {
-            const value: f32 = if (i < self.raw_control_count) valueToNorm(self.raw_controls[i], self.raw_controls[i].default) else 0;
+            const value: f32 = if (i < self.raw_control_count) blk: {
+                const ctl = self.raw_controls[i];
+                // switches store the selected index directly (not a 0..1 norm).
+                break :blk if (ctl.kind == .switch_sel) @floatCast(ctl.default) else valueToNorm(ctl, ctl.default);
+            } else 0;
             self.raw_control_bits[i] = std.atomic.Value(u32).init(@bitCast(value));
         }
         self.syncRawParams(48_000.0);
@@ -402,13 +418,18 @@ pub const FyRawMachine = struct {
         self.raw_control_bits[idx].store(@bitCast(std.math.clamp(value, 0.0, 1.0)), .monotonic);
     }
 
+    // Unclamped store — switches keep the selected index here, not a 0..1 norm.
+    fn setControlRaw(self: *FyRawMachine, idx: usize, value: f32) void {
+        self.raw_control_bits[idx].store(@bitCast(value), .monotonic);
+    }
+
     fn syncRawParams(self: *FyRawMachine, sample_rate: f64) void {
         const controls = self.raw_controls[0..self.raw_control_count];
         for (controls, 0..) |control, i| {
-            const value = normToValue(control, self.controlNorm(i));
             switch (control.kind) {
-                .direct_f64 => self.writeParamF64(control.offset, value),
+                .direct_f64 => self.writeParamF64(control.offset, normToValue(control, self.controlNorm(i))),
                 .value => {},
+                .switch_sel => self.writeParamF64(control.offset, control.option_values[switchIndex(control, self.controlNorm(i))]),
             }
         }
 
@@ -524,16 +545,47 @@ fn parseControlFields(fields: *std.mem.SplitIterator(u8, .scalar)) !RawControl {
     control.id_len = try copyZ(&control.id, id);
     control.kind = parseParamKind(kind) orelse return error.InvalidRawManifest;
     control.offset = if (std.mem.eql(u8, offset, "-")) 0 else try std.fmt.parseInt(usize, offset, 10);
-    control.min = try std.fmt.parseFloat(f64, min);
-    control.max = try std.fmt.parseFloat(f64, max);
-    control.default = try std.fmt.parseFloat(f64, default);
-    control.curve = parseParamCurve(curve) orelse return error.InvalidRawManifest;
+    control.min = parseF64Or(min, 0);
+    control.max = parseF64Or(max, 1);
+    control.default = parseF64Or(default, 0);
+    control.curve = parseParamCurve(curve) orelse .linear;
+
+    if (control.kind == .switch_sel) {
+        const opts = fields.next() orelse return error.InvalidRawManifest;
+        var it = std.mem.splitScalar(u8, opts, ',');
+        var n: usize = 0;
+        while (it.next()) |pair| {
+            if (n >= MAX_OPTS) break;
+            var kv = std.mem.splitScalar(u8, pair, '=');
+            const lbl = kv.next() orelse continue;
+            const val = kv.next() orelse "0";
+            control.option_labels[n][0] = 0;
+            _ = try copyZ(&control.option_labels[n], lbl);
+            control.option_values[n] = std.fmt.parseFloat(f64, val) catch 0;
+            n += 1;
+        }
+        if (n == 0) return error.InvalidRawManifest;
+        control.option_count = n;
+    }
     return control;
+}
+
+fn parseF64Or(s: []const u8, fallback: f64) f64 {
+    if (std.mem.eql(u8, s, "-")) return fallback;
+    return std.fmt.parseFloat(f64, s) catch fallback;
+}
+
+fn switchIndex(control: RawControl, raw: f32) usize {
+    if (control.option_count == 0) return 0;
+    const r = @round(@as(f64, raw));
+    const hi: f64 = @floatFromInt(control.option_count - 1);
+    return @intFromFloat(std.math.clamp(r, 0, hi));
 }
 
 fn parseParamKind(raw: []const u8) ?RawParamKind {
     if (std.mem.eql(u8, raw, "direct-f64")) return .direct_f64;
     if (std.mem.eql(u8, raw, "value")) return .value;
+    if (std.mem.eql(u8, raw, "switch")) return .switch_sel;
     return null;
 }
 
@@ -940,9 +992,21 @@ fn drawStrip(self: *FyRawMachine, rect_: c.rl.Rectangle, view: StripView, mouse:
             cell_w,
             @min(cell_h, inner.y + inner.height - (inner.y + @as(f32, @floatFromInt(row)) * cell_h)),
         );
-        var value = self.controlNorm(gi);
-        if (widgets.knob(kr, ctl.labelZ(), &value, mouse)) {
-            self.setControlNorm(gi, value);
+        switch (ctl.kind) {
+            .switch_sel => {
+                var labels: [MAX_OPTS][*:0]const u8 = undefined;
+                for (0..ctl.option_count) |oi| labels[oi] = ctl.optionLabelZ(oi);
+                var idx: u8 = @intCast(switchIndex(ctl.*, self.controlNorm(gi)));
+                if (widgets.knobStepped(kr, ctl.labelZ(), labels[0..ctl.option_count], &idx, mouse)) {
+                    self.setControlRaw(gi, @floatFromInt(idx));
+                }
+            },
+            else => {
+                var value = self.controlNorm(gi);
+                if (widgets.knob(kr, ctl.labelZ(), &value, mouse)) {
+                    self.setControlNorm(gi, value);
+                }
+            },
         }
         local_i += 1;
     }

@@ -782,6 +782,89 @@ pub fn knob(r: c.rl.Rectangle, label: [*:0]const u8, val: *f32, m: Mouse) bool {
     return changed;
 }
 
+// ── Stepped knob (rotary switch) ──────────────────────────────────────
+//
+// A knob that snaps to N discrete detents (e.g. octave 32/16/8/4). `value`
+// is the selected index. Tick marks show each detent; the readout is the
+// option label. Vertical drag snaps between detents.
+pub fn knobStepped(r: c.rl.Rectangle, label: [*:0]const u8, options: []const [*:0]const u8, value: *u8, m: Mouse) bool {
+    if (options.len == 0) return false;
+    const count = options.len;
+    const maxidx: f32 = if (count > 1) @floatFromInt(count - 1) else 1.0;
+    const k = rectKey(r, 0x4b4e4f4253544550);
+    var changed = false;
+    const dragging = active_drag_key == k;
+
+    if (dragging) {
+        if (!m.left_down) {
+            active_drag_key = 0;
+        } else {
+            const dy = drag_start_y - m.y;
+            const t = std.math.clamp(drag_start_val + dy / 120.0, 0.0, 1.0);
+            const ni: u8 = @intFromFloat(@round(t * maxidx));
+            if (ni != value.*) {
+                value.* = ni;
+                changed = true;
+            }
+        }
+    } else if (active_drag_key == 0 and m.left_pressed and contains(r, m.x, m.y)) {
+        active_drag_key = k;
+        drag_start_val = @as(f32, @floatFromInt(value.*)) / maxidx;
+        drag_start_y = m.y;
+    }
+
+    const hot = dragging or (active_drag_key == 0 and contains(r, m.x, m.y));
+    const label_h = theme.fsTiny() + 1;
+    const value_h = theme.fsTiny() + 1;
+    const radius = @max(
+        @min(theme.fine(KNOB_MAX_R_BASE), r.width / 2.0 - 3.0, (r.height - label_h - value_h) / 2.0 - 2.0),
+        2.0,
+    );
+    const cx = r.x + r.width / 2.0;
+    const block_h = label_h + radius * 2.0 + 4.0 + value_h;
+    const block_y = r.y + (r.height - block_h) / 2.0;
+    const cy = block_y + label_h + radius + 2.0;
+
+    const label_col = if (hot) theme.text_fg else theme.text_dim;
+    const label_size = theme.fsTiny();
+    const tw = measureTextF(label, label_size);
+    drawLabelF(label, cx - tw / 2.0, block_y, label_size, label_col);
+
+    const bg = if (dragging) theme.slab_lo else theme.pane_bg;
+    c.rl.DrawCircle(@intFromFloat(cx), @intFromFloat(cy), radius + 2, theme.slab_edge);
+    c.rl.DrawCircle(@intFromFloat(cx), @intFromFloat(cy), radius + 1, bg);
+
+    const center = c.rl.Vector2{ .x = cx, .y = cy };
+    const inner_r = radius - 3.0;
+    const outer_r = radius - 1.0;
+    const SEG: c_int = 36;
+    c.rl.DrawRing(center, inner_r, outer_r, KNOB_DEG_START, KNOB_DEG_START + KNOB_DEG_RANGE, SEG, theme.slab_hi);
+
+    // Detent ticks: one per option, the selected one highlighted.
+    var s: usize = 0;
+    while (s < count) : (s += 1) {
+        const ts = @as(f32, @floatFromInt(s)) / maxidx;
+        const a = KNOB_A_MIN + (KNOB_A_MAX - KNOB_A_MIN) * ts;
+        const sel = s == value.*;
+        const col = if (sel) theme.accent_hi else theme.text_mute;
+        const ti = if (sel) radius - 6.0 else radius - 4.0;
+        c.rl.DrawLineEx(
+            .{ .x = cx + @cos(a) * ti, .y = cy - @sin(a) * ti },
+            .{ .x = cx + @cos(a) * radius, .y = cy - @sin(a) * radius },
+            2.0,
+            col,
+        );
+    }
+
+    const value_y = cy + radius + 2.0;
+    const vs = options[value.*];
+    const vw = measureTextF(vs, label_size);
+    const val_col = if (dragging) theme.accent_hi else theme.text_mute;
+    drawLabelF(vs, cx - vw / 2.0, value_y, label_size, val_col);
+
+    return changed;
+}
+
 // ── Display field ────────────────────────────────────────────────────
 //
 // Raised outer bevel + sunken inner bevel. Returns the inner content

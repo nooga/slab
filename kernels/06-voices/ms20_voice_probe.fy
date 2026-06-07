@@ -58,6 +58,7 @@ ustruct: Ms20VoiceParams
   f64 svf-leak
   f64 svf-fb-dc-coeff
   f64 svf-out-dc-coeff
+  f64 vco-octave       ( @256, octave/SCALE frequency multiplier - switch )
 ;
 
 ( state params sample-rate -- : update sample-rate derived params. )
@@ -133,7 +134,8 @@ dsp2: v-amp-env
 dsp2: v-saw1
   | state params |
   Ms20VoiceState@: phase1 ;
-  Ms20VoiceParams@: note-hz inv-sample-rate ;
+  Ms20VoiceParams@: note-hz vco-octave inv-sample-rate ;
+  f*
   f*
   | phase dt |
   phase dt phase-advance01
@@ -150,7 +152,8 @@ dsp2: v-saw1
 dsp2: v-pulse2
   | state params |
   Ms20VoiceState@: phase2 ;
-  Ms20VoiceParams@: note-hz detune inv-sample-rate ;
+  Ms20VoiceParams@: note-hz detune vco-octave inv-sample-rate ;
+  f*
   f*
   f*
   | phase dt |

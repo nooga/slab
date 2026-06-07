@@ -392,7 +392,7 @@ test "raw manifest loads MS-20 machine spec" {
     try std.testing.expect(e.in_notes);
     try std.testing.expect(!e.in_audio);
     try std.testing.expectEqual(@as(usize, 64), e.raw_state_size);
-    try std.testing.expectEqual(@as(usize, 256), e.params_size);
+    try std.testing.expectEqual(@as(usize, 264), e.params_size);
 }
 
 fn tryOptionalResetCallback(host: *FyHost, audio_word: []const u8) ?*const fn () callconv(.c) void {
