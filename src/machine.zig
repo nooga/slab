@@ -160,4 +160,8 @@ pub const Machine = struct {
     /// Preferred panel card width in pixels. The bay uses this to size
     /// the rect passed to draw_panel. 0 = bay chooses a default.
     panel_w: f32 = 0,
+    /// When true, the bay draws the title bar (name + preset) and passes
+    /// draw_panel only the body rect below it. When false (legacy callback
+    /// machines like mono1) the machine draws its own title bar.
+    host_titlebar: bool = false,
 };

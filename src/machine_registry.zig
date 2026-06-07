@@ -243,7 +243,8 @@ pub const Registry = struct {
             const key = parts.next() orelse continue;
             if (std.mem.eql(u8, key, "control") or
                 std.mem.eql(u8, key, "derive") or
-                std.mem.eql(u8, key, "const-f64")) continue;
+                std.mem.eql(u8, key, "const-f64") or
+                std.mem.eql(u8, key, "strip")) continue;
             const value = parts.next() orelse return error.InvalidRawManifest;
 
             if (std.mem.eql(u8, key, "name")) {

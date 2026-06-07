@@ -101,6 +101,24 @@ const RawConstF64 = struct {
     value: f64,
 };
 
+const MAX_RAW_STRIPS = 16;
+
+// Declared panel strip (module box): `strip|MODULE|width|cols`. width is in
+// base px (scaled to fit); cols is the knob columns. Order = declaration order.
+const RawStrip = struct {
+    module: [MAX_CONTROL_TEXT:0]u8 = [_:0]u8{0} ** MAX_CONTROL_TEXT,
+    module_len: usize = 0,
+    width: f32 = 60,
+    cols: usize = 1,
+
+    fn moduleSlice(self: *const RawStrip) []const u8 {
+        return self.module[0..self.module_len];
+    }
+    fn moduleZ(self: *const RawStrip) [*:0]const u8 {
+        return @ptrCast(&self.module[0]);
+    }
+};
+
 pub const Mode = enum {
     voice_sample,
     effect_sample,
@@ -202,6 +220,8 @@ pub const FyRawMachine = struct {
     raw_derive_count: usize = 0,
     raw_consts: [MAX_RAW_CONSTS]RawConstF64 = undefined,
     raw_const_count: usize = 0,
+    raw_strips: [MAX_RAW_STRIPS]RawStrip = undefined,
+    raw_strip_count: usize = 0,
     panel_w: f32 = 128,
     failed: bool = false,
 
@@ -243,6 +263,7 @@ pub const FyRawMachine = struct {
             .reset = resetImpl,
             .deinit = deinitImpl,
             .panel_w = self.panel_w,
+            .host_titlebar = true,
         };
     }
 
@@ -329,6 +350,7 @@ pub const FyRawMachine = struct {
         self.raw_control_count = 0;
         self.raw_derive_count = 0;
         self.raw_const_count = 0;
+        self.raw_strip_count = 0;
         if (self.spec.manifest_path) |path| try self.loadRawControlsFromManifest(alloc, path);
         var i: usize = 0;
         while (i < MAX_RAW_CONTROLS) : (i += 1) {
@@ -363,6 +385,11 @@ pub const FyRawMachine = struct {
                 const cnst = try parseConstF64Fields(&fields);
                 self.raw_consts[self.raw_const_count] = cnst;
                 self.raw_const_count += 1;
+            } else if (std.mem.eql(u8, tag, "strip")) {
+                if (self.raw_strip_count >= MAX_RAW_STRIPS) return error.RawStripLimitExceeded;
+                const s = try parseStripFields(&fields);
+                self.raw_strips[self.raw_strip_count] = s;
+                self.raw_strip_count += 1;
             }
         }
     }
@@ -545,6 +572,18 @@ fn parseConstF64Fields(fields: *std.mem.SplitIterator(u8, .scalar)) !RawConstF64
         .offset = try std.fmt.parseInt(usize, offset, 10),
         .value = try std.fmt.parseFloat(f64, value),
     };
+}
+
+fn parseStripFields(fields: *std.mem.SplitIterator(u8, .scalar)) !RawStrip {
+    var s = RawStrip{};
+    const module = fields.next() orelse return error.InvalidRawManifest;
+    const width = fields.next() orelse return error.InvalidRawManifest;
+    const cols = fields.next() orelse "1";
+    s.module_len = try copyZ(&s.module, module);
+    s.width = try std.fmt.parseFloat(f32, width);
+    s.cols = std.fmt.parseInt(usize, cols, 10) catch 1;
+    if (s.cols == 0) s.cols = 1;
+    return s;
 }
 
 fn parseParamCurve(raw: []const u8) ?RawParamCurve {
@@ -784,27 +823,23 @@ fn deinitImpl(state: *anyopaque, alloc: std.mem.Allocator) void {
     alloc.destroy(self);
 }
 
+// Generic machine panel body: beveled module strips laid out from the
+// manifest controls. The bay draws the title bar (host_titlebar = true), so
+// `rect` here is the body below it. Control-less fixtures show an info readout.
 fn drawPanelImpl(state: *anyopaque, rect: c.rl.Rectangle, mouse: widgets.Mouse) void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     if (rect.width <= 0 or rect.height <= 0) return;
 
-    if (std.mem.eql(u8, self.spec.name, "raw-ms20")) {
-        drawMs20Panel(self, rect, mouse);
+    c.rl.DrawRectangleRec(rect, theme.pane_bg);
+
+    if (self.raw_control_count == 0) {
+        drawFixtureInfo(self, rect);
         return;
     }
+    drawControlStrips(self, rect, mouse);
+}
 
-    var title: [MAX_NAME + 1:0]u8 = [_:0]u8{0} ** (MAX_NAME + 1);
-    @memcpy(title[0..self.name_len], self.name_buf[0..self.name_len]);
-    title[self.name_len] = 0;
-
-    const header_h = @min(rect.height, theme.paneHeaderH());
-    widgets.bevelRaised(widgets.rect(rect.x, rect.y, rect.width, header_h), theme.slab_fill, theme.slab_hi, theme.slab_lo);
-    widgets.drawLabelF(@ptrCast(&title[0]), rect.x + 4, rect.y + 1, theme.fsTiny(), theme.text_fg);
-
-    if (rect.height <= header_h) return;
-    const body = widgets.rect(rect.x, rect.y + header_h, rect.width, rect.height - header_h);
-    c.rl.DrawRectangleRec(body, theme.pane_alt);
-
+fn drawFixtureInfo(self: *FyRawMachine, body: c.rl.Rectangle) void {
     const mode_text: [*:0]const u8 = switch (self.spec.mode) {
         .voice_sample => "raw voice/sample",
         .effect_sample => "raw effect/sample",
@@ -816,8 +851,6 @@ fn drawPanelImpl(state: *anyopaque, rect: c.rl.Rectangle, mouse: widgets.Mouse) 
         "saw osc  note in"
     else if (std.mem.eql(u8, self.spec.name, "raw-sat"))
         "rational tanh  drive 1.35"
-    else if (std.mem.eql(u8, self.spec.name, "raw-ms20"))
-        "2 osc  ms20 lpf  adsr"
     else if (std.mem.eql(u8, self.spec.name, "raw-silence"))
         "zero output"
     else
@@ -828,72 +861,91 @@ fn drawPanelImpl(state: *anyopaque, rect: c.rl.Rectangle, mouse: widgets.Mouse) 
     widgets.drawLabelF(status, body.x + 5, body.y + 38, theme.fsTiny(), if (self.failed) theme.accent_rec else theme.accent_play);
 }
 
-fn drawMs20Panel(self: *FyRawMachine, rect: c.rl.Rectangle, mouse: widgets.Mouse) void {
-    const header_h = @min(rect.height, theme.paneHeaderH());
-    widgets.bevelRaised(widgets.rect(rect.x, rect.y, rect.width, header_h), theme.slab_fill, theme.slab_hi, theme.slab_lo);
-    widgets.drawLabelF("RAW-MS20", rect.x + 4, rect.y + 1, theme.fsTiny(), theme.text_fg);
-    if (rect.height <= header_h) return;
+const StripView = struct {
+    title: [*:0]const u8,
+    module: []const u8,
+    width: f32,
+    cols: usize,
+};
 
-    const body = widgets.rect(rect.x, rect.y + header_h, rect.width, rect.height - header_h);
-    c.rl.DrawRectangleRec(body, theme.pane_bg);
+// Strips come from manifest `strip|` lines if declared, else are derived as
+// one column per distinct module in control order.
+fn collectStrips(self: *FyRawMachine, out: *[MAX_RAW_STRIPS]StripView) usize {
+    if (self.raw_strip_count > 0) {
+        for (self.raw_strips[0..self.raw_strip_count], 0..) |*s, i| {
+            out[i] = .{ .title = s.moduleZ(), .module = s.moduleSlice(), .width = s.width, .cols = s.cols };
+        }
+        return self.raw_strip_count;
+    }
+    var n: usize = 0;
+    for (self.raw_controls[0..self.raw_control_count]) |*ctl| {
+        const m = ctl.module[0..ctl.module_len];
+        var found = false;
+        for (out[0..n]) |ex| {
+            if (std.mem.eql(u8, ex.module, m)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found and n < MAX_RAW_STRIPS) {
+            out[n] = .{ .title = ctl.moduleZ(), .module = m, .width = 60, .cols = 1 };
+            n += 1;
+        }
+    }
+    return n;
+}
 
-    const modules = [_][*:0]const u8{ "VCO", "LPF", "VCA", "AMP ENV", "FLT ENV" };
-    const widths = [_]f32{ 58, 176, 58, 188, 188 };
-    var total_base: f32 = 0;
-    for (widths) |w| total_base += w;
-    const scale = @min(1.0, body.width / theme.size(total_base));
-    const gap: f32 = 1;
+fn drawControlStrips(self: *FyRawMachine, body: c.rl.Rectangle, mouse: widgets.Mouse) void {
+    var strips: [MAX_RAW_STRIPS]StripView = undefined;
+    const n = collectStrips(self, &strips);
+    if (n == 0) return;
+
+    var total: f32 = 0;
+    for (strips[0..n]) |s| total += s.width;
+    if (total <= 0) return;
+    // Strips sit flush and fill the body exactly: each gets a fraction of the
+    // width proportional to its declared width, and the last takes the
+    // remainder. This avoids per-strip theme.size rounding so the strip block
+    // lines up precisely with the host title bar (no overhang).
     var x = body.x;
-
-    for (modules, widths) |module_name, base_w| {
-        const module_w = @min(theme.size(base_w) * scale, body.x + body.width - x);
-        if (module_w <= 0) break;
-        const mr = widgets.rect(x, body.y, module_w, body.height);
-        drawMs20Module(self, mr, module_name, mouse);
-        x += module_w + gap;
-        if (x >= body.x + body.width) break;
+    for (strips[0..n], 0..) |s, i| {
+        const w = if (i + 1 == n) (body.x + body.width - x) else body.width * s.width / total;
+        if (w <= 0) break;
+        drawStrip(self, widgets.rect(x, body.y, w, body.height), s, mouse);
+        x += w;
     }
 }
 
-fn drawMs20Module(self: *FyRawMachine, rect: c.rl.Rectangle, module_name: [*:0]const u8, mouse: widgets.Mouse) void {
-    c.rl.DrawRectangleRec(rect, theme.pane_alt);
-    c.rl.DrawRectangleLinesEx(rect, 1, theme.slab_edge);
-    widgets.drawLabelF(module_name, rect.x + 4, rect.y + 3, theme.fsTiny(), theme.text_dim);
+fn drawStrip(self: *FyRawMachine, rect_: c.rl.Rectangle, view: StripView, mouse: widgets.Mouse) void {
+    const inner = widgets.strip(rect_, view.title);
 
-    const top = rect.y + theme.size(15);
-    const controls = self.raw_controls[0..self.raw_control_count];
-    const count = countModuleControls(controls, module_name);
+    var count: usize = 0;
+    for (self.raw_controls[0..self.raw_control_count]) |*ctl| {
+        if (std.mem.eql(u8, ctl.module[0..ctl.module_len], view.module)) count += 1;
+    }
     if (count == 0) return;
 
-    const cols: usize = if (rect.width >= theme.size(92) and count > 1) 2 else 1;
+    const cols = view.cols;
     const rows = (count + cols - 1) / cols;
-    const cell_w = rect.width / @as(f32, @floatFromInt(cols));
-    const cell_h = @max(theme.size(48), (rect.y + rect.height - top) / @as(f32, @floatFromInt(rows)));
+    const cell_w = inner.width / @as(f32, @floatFromInt(cols));
+    const cell_h = @max(theme.size(44), inner.height / @as(f32, @floatFromInt(rows)));
     var local_i: usize = 0;
-    for (controls, 0..) |control, global_i| {
-        if (!std.mem.eql(u8, control.module[0..control.module_len], std.mem.span(module_name))) continue;
+    for (self.raw_controls[0..self.raw_control_count], 0..) |*ctl, gi| {
+        if (!std.mem.eql(u8, ctl.module[0..ctl.module_len], view.module)) continue;
         const col = local_i % cols;
         const row = local_i / cols;
         const kr = widgets.rect(
-            rect.x + @as(f32, @floatFromInt(col)) * cell_w,
-            top + @as(f32, @floatFromInt(row)) * cell_h,
+            inner.x + @as(f32, @floatFromInt(col)) * cell_w,
+            inner.y + @as(f32, @floatFromInt(row)) * cell_h,
             cell_w,
-            @min(cell_h, rect.y + rect.height - (top + @as(f32, @floatFromInt(row)) * cell_h)),
+            @min(cell_h, inner.y + inner.height - (inner.y + @as(f32, @floatFromInt(row)) * cell_h)),
         );
-        var value = self.controlNorm(global_i);
-        if (widgets.knob(kr, control.labelZ(), &value, mouse)) {
-            self.setControlNorm(global_i, value);
+        var value = self.controlNorm(gi);
+        if (widgets.knob(kr, ctl.labelZ(), &value, mouse)) {
+            self.setControlNorm(gi, value);
         }
         local_i += 1;
     }
-}
-
-fn countModuleControls(controls: []const RawControl, module_name: [*:0]const u8) usize {
-    var count: usize = 0;
-    for (controls) |control| {
-        if (std.mem.eql(u8, control.module[0..control.module_len], std.mem.span(module_name))) count += 1;
-    }
-    return count;
 }
 
 fn midiToHz(pitch: f32) f64 {

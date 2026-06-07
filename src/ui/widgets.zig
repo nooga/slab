@@ -577,14 +577,14 @@ pub fn switch3(
     const label_col = if (contains(r, m.x, m.y)) theme.text_fg else theme.text_dim;
     drawLabelF(label, r.x, r.y, theme.fsTiny(), label_col);
 
-    const strip = rect(r.x, r.y + label_h, r.width, r.height - label_h);
-    bevelRaised(strip, theme.slab_fill, theme.slab_hi, theme.slab_lo);
+    const box = rect(r.x, r.y + label_h, r.width, r.height - label_h);
+    bevelRaised(box, theme.slab_fill, theme.slab_hi, theme.slab_lo);
     const opts = [_][*:0]const u8{ opt0, opt1, opt2 };
-    const cell_w = strip.width / 3.0;
+    const cell_w = box.width / 3.0;
 
     for (opts, 0..) |opt, i| {
         const fi: f32 = @floatFromInt(i);
-        const cell = rect(strip.x + fi * cell_w, strip.y, cell_w, strip.height);
+        const cell = rect(box.x + fi * cell_w, box.y, cell_w, box.height);
         const active = value.* == i;
         const hover = contains(cell, m.x, m.y) and !hasActiveDrag();
         if (hover and m.left_released) {
@@ -615,14 +615,58 @@ pub fn switch3Vertical(
     const label_col = if (contains(r, m.x, m.y)) theme.text_fg else theme.text_dim;
     drawLabelF(label, r.x, r.y, theme.fsTiny(), label_col);
 
-    const strip = rect(r.x, r.y + label_h, r.width, r.height - label_h);
-    bevelRaised(strip, theme.slab_fill, theme.slab_hi, theme.slab_lo);
+    const box = rect(r.x, r.y + label_h, r.width, r.height - label_h);
+    bevelRaised(box, theme.slab_fill, theme.slab_hi, theme.slab_lo);
     const opts = [_][*:0]const u8{ opt0, opt1, opt2 };
-    const cell_h = strip.height / 3.0;
+    const cell_h = box.height / 3.0;
 
     for (opts, 0..) |opt, i| {
         const fi: f32 = @floatFromInt(i);
-        const cell = rect(strip.x, strip.y + fi * cell_h, strip.width, cell_h);
+        const cell = rect(box.x, box.y + fi * cell_h, box.width, cell_h);
+        const active = value.* == i;
+        const hover = contains(cell, m.x, m.y) and !hasActiveDrag();
+        if (hover and m.left_released) {
+            value.* = @intCast(i);
+            changed = true;
+        }
+        const fill = if (active) theme.slab_hi else if (hover) theme.slab_fill else theme.pane_alt;
+        c.rl.DrawRectangleRec(rect(cell.x + 1, cell.y + 1, cell.width - 2, cell.height - 2), fill);
+        if (i > 0) c.rl.DrawRectangle(@intFromFloat(cell.x + 1), @intFromFloat(cell.y), @intFromFloat(cell.width - 2), 1, theme.slab_edge);
+        const size = theme.fsTiny();
+        const tw = measureTextF(opt, size);
+        drawLabelF(opt, cell.x + (cell.width - tw) / 2, cell.y + (cell.height - size) / 2 - 1, size, if (active) theme.text_fg else theme.text_dim);
+    }
+    return changed;
+}
+
+// ── Strip: a beveled module box (mono1 style) ─────────────────────────
+//
+// One raised bevel panel for a whole module, with the title at top-left.
+// Returns the body rect (below the title band) for laying out controls.
+pub fn strip(r: c.rl.Rectangle, title: [*:0]const u8) c.rl.Rectangle {
+    bevelRaised(r, theme.slab_fill, theme.slab_hi, theme.slab_lo);
+    drawLabelF(title, r.x + theme.size(4), r.y + theme.size(3), theme.fsTiny(), theme.text_dim);
+    const header_h = theme.fsTiny() + theme.size(6);
+    return rect(r.x, r.y + header_h, r.width, r.height - header_h);
+}
+
+// ── Vertical N-option selector (octave / waveform) ────────────────────
+//
+// Generalizes switch3Vertical to any number of options. `value` is the
+// selected index. Returns true when changed.
+pub fn switchV(r: c.rl.Rectangle, label: [*:0]const u8, options: []const [*:0]const u8, value: *u8, m: Mouse) bool {
+    if (options.len == 0) return false;
+    var changed = false;
+    const label_h = theme.fsTiny() + 2;
+    const label_col = if (contains(r, m.x, m.y)) theme.text_fg else theme.text_dim;
+    drawLabelF(label, r.x, r.y, theme.fsTiny(), label_col);
+
+    const box = rect(r.x, r.y + label_h, r.width, r.height - label_h);
+    bevelRaised(box, theme.slab_fill, theme.slab_hi, theme.slab_lo);
+    const cell_h = box.height / @as(f32, @floatFromInt(options.len));
+    for (options, 0..) |opt, i| {
+        const fi: f32 = @floatFromInt(i);
+        const cell = rect(box.x, box.y + fi * cell_h, box.width, cell_h);
         const active = value.* == i;
         const hover = contains(cell, m.x, m.y) and !hasActiveDrag();
         if (hover and m.left_released) {

@@ -35,15 +35,25 @@ pub fn draw(r: c.rl.Rectangle, tracks: []Track, selected: ?usize, collapsed: boo
             const DEFAULT_PANEL_W = theme.size(200);
             const pw = @min(if (t.machine.panel_w > 0) theme.size(t.machine.panel_w) else DEFAULT_PANEL_W, r.width);
             const panel_rect = widgets.rect(x, r.y, pw, r.height);
-            t.machine.draw_panel(t.machine.state, panel_rect, m);
+            if (t.machine.host_titlebar) {
+                // Host-drawn title bar: name on the left, body below.
+                widgets.bevelRaised(widgets.rect(x, r.y, pw, header_h), theme.slab_fill, theme.slab_hi, theme.slab_lo);
+                var nbuf: [64:0]u8 = [_:0]u8{0} ** 64;
+                const nlen = @min(t.machine.name.len, 64);
+                @memcpy(nbuf[0..nlen], t.machine.name[0..nlen]);
+                nbuf[nlen] = 0;
+                widgets.drawLabelF(@ptrCast(&nbuf[0]), x + theme.size(6), r.y + (header_h - theme.fsTiny()) / 2 - 1, theme.fsTiny(), theme.text_fg);
+                t.machine.draw_panel(t.machine.state, widgets.rect(x, r.y + header_h, pw, r.height - header_h), m);
+            } else {
+                t.machine.draw_panel(t.machine.state, panel_rect, m);
+            }
             if (t.machine_idx != null) {
                 const controls_rect = machineControlsRect(panel_rect, t.machine.panel_w);
                 if (drawPresetDropdown(controls_rect, idx, &t.machine, header_h, m)) |preset| {
                     result.preset_index = preset;
                 }
-                if (drawPolyDropdown(controls_rect, idx, t.poly_voices, header_h, m)) |voices| {
-                    result.poly_voices = voices;
-                }
+                // Voice/polyphony select removed from the leaf title bar: poly
+                // becomes a higher-order voice-pool machine (docs/15).
             }
             x += pw;
             for (t.effects[0..t.effect_count]) |*fx| {
@@ -85,10 +95,9 @@ fn drawPresetDropdown(panel: c.rl.Rectangle, track_idx: usize, mach: *const @imp
     const count = count_fn(mach.state);
     if (count == 0) return null;
 
-    const poly_w = theme.size(54);
     const w = theme.size(78);
     const h = @min(header_h, panel.height);
-    const r = widgets.rect(panel.x + panel.width - poly_w - w, panel.y, w, h);
+    const r = widgets.rect(panel.x + panel.width - w, panel.y, w, h);
     const hover = widgets.contains(r, m.x, m.y) and !widgets.hasActiveDrag();
     const pressed = hover and m.left_down;
     const clicked = hover and m.left_released;
