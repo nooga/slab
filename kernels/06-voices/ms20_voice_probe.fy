@@ -21,6 +21,8 @@ ustruct: Ms20VoiceState
   f64 dc-prev-y
   f64 amp-smooth
   f64 age
+  f64 osc-out          ( @64 scratch: VCO mix, written by v-osc-stage )
+  f64 filt-out         ( @72 scratch: filter out, written by v-filt-stage )
 ;
 
 ustruct: Ms20VoiceParams
@@ -313,21 +315,52 @@ dsp2: k-ms20-voice-dc-probe
   drop2 drop
 ;
 
-( out state params -- : render one mono voice sample, update state, and write output. )
-dsp2: k-ms20-voice-sample
-  | out state params |
+( ── Voice stages (composed via dsp2 `call:`) ───────────────────────────
+  Each stage is a separate compiled word with its own 32-register budget;
+  they hand off through state-scratch (osc-out @64, filt-out @72) instead of
+  the data stack, so the full voice no longer fights the register ceiling.
+  See docs/14 §register strategy. )
+
+( state params -- : advance age, render the saturating VCO mix, store osc-out. )
+dsp2: v-osc-stage
+  | state params |
   state params v-age-next
   drop
   state params v-osc-mix
-  | osc |
-  state params osc v-filter
-  nip
-  ( amp env after the filter: keep register pressure low while fms20-svf inlines )
+  state Ms20VoiceState.osc-out-p
+  f!64
+  drop2
+;
+
+( state params -- : read osc-out, run the g-wet svf, store filt-out. )
+dsp2: v-filt-stage
+  | state params |
+  state params
+  state Ms20VoiceState.osc-out@
+  v-filter
+  state Ms20VoiceState.filt-out-p
+  f!64
+  drop2
+;
+
+( out state params -- : amp env * filt-out * level -> out. )
+dsp2: v-vca-stage
+  | out state params |
   state params v-amp-env
+  state Ms20VoiceState.filt-out@
   f*
   params Ms20VoiceParams.level@
   f*
   out
   f!64
   drop2 drop
+;
+
+( out state params -- : render one mono voice sample by composing the stages.
+  A `call:` boundary gives each stage a fresh register budget. )
+dsp2: k-ms20-voice-sample
+  | out state params |
+  state params       call: v-osc-stage
+  state params       call: v-filt-stage
+  out state params   call: v-vca-stage
 ;

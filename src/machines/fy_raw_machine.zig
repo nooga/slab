@@ -188,7 +188,7 @@ pub fn fixtureSpec(name: []const u8) ?Spec {
         .prepare_word = "ms20-voice-prepare",
         .note_on_word = "ms20-voice-note-on",
         .note_off_word = "ms20-voice-note-off",
-        .state_size = 64,
+        .state_size = 80,
         .params_size = 272,
         .panel_w = 680,
         .manifest_path = "machines/raw_ms20/raw-ms20.manifest",
@@ -317,13 +317,23 @@ pub const FyRawMachine = struct {
         }
         switch (self.spec.mode) {
             .voice_sample => {
-                self.render_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
-                    self.spec.render_word,
-                    &self.render_slots,
-                    &.{ .ptr, .ptr, .ptr },
-                    true,
-                    false,
-                );
+                // A `call:` composition voice is invoked through the dedicated
+                // composition caller (same out/state/params + auto-advance ABI).
+                if (self.host.fy.isCompositionWord(self.spec.render_word)) {
+                    self.render_caller = try self.host.fy.compileDsp2CompositionCaller(
+                        self.spec.render_word,
+                        &self.render_slots,
+                        true,
+                    );
+                } else {
+                    self.render_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
+                        self.spec.render_word,
+                        &self.render_slots,
+                        &.{ .ptr, .ptr, .ptr },
+                        true,
+                        false,
+                    );
+                }
             },
             .effect_sample => {},
             .effect_block => {
@@ -489,6 +499,9 @@ pub const FyRawMachine = struct {
 };
 
 fn validateWord(host: *FyHost, word: []const u8) !void {
+    // Composition (`call:`) words have no value-graph raw body to report —
+    // they are validated by compileDsp2CompositionCaller instead.
+    if (host.fy.isCompositionWord(word)) return;
     _ = try host.fy.reportDsp2RawWord(word);
 }
 

@@ -6,7 +6,7 @@ render|k-ms20-voice-sample
 prepare|ms20-voice-prepare
 note-on|ms20-voice-note-on
 note-off|ms20-voice-note-off
-state-size|64
+state-size|80
 params-size|272
 panel-w|336
 

@@ -391,7 +391,7 @@ test "raw manifest loads MS-20 machine spec" {
     try std.testing.expectEqualStrings("ms20-voice-prepare", e.rawPrepareWordSlice().?);
     try std.testing.expect(e.in_notes);
     try std.testing.expect(!e.in_audio);
-    try std.testing.expectEqual(@as(usize, 64), e.raw_state_size);
+    try std.testing.expectEqual(@as(usize, 80), e.raw_state_size);
     try std.testing.expectEqual(@as(usize, 272), e.params_size);
 }
 
