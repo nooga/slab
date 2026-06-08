@@ -11,6 +11,7 @@ include "../02-shapers/tanh_table.fy"
 include "../03-envelopes/primitives/segments.fy"
 include "../04-filters/ms20_lpf.fy"
 include "../04-filters/ms20_svf.fy"
+include "../04-filters/ms20_hpf.fy"
 
 ustruct: Ms20VoiceState
   f64 phase1
@@ -24,6 +25,8 @@ ustruct: Ms20VoiceState
   f64 osc-out          ( @64 scratch: VCO mix, written by v-osc-stage )
   f64 filt-out         ( @72 scratch: filter out, written by v-filt-stage )
   f64 noise-rng        ( @80 float-LCG noise state, reseeded on note-on )
+  f64 hpf-lp           ( @88 HPF Chamberlin lowpass state )
+  f64 hpf-bp           ( @96 HPF Chamberlin bandpass state )
 ;
 
 ustruct: Ms20VoiceParams
@@ -67,6 +70,8 @@ ustruct: Ms20VoiceParams
   f64 vco1-wave        ( @272, VCO1 waveform index 0=tri 1=saw 2=pulse - switch )
   f64 vco2-wave        ( @280, VCO2 waveform index 0=saw 1=square 2=pulse - switch )
   f64 noise-level      ( @288, white-noise amount mixed into the VCO sum )
+  f64 hpf-cutoff       ( @296, series HPF cutoff Hz )
+  f64 hpf-resonance    ( @304, series HPF resonance/peak )
 ;
 
 ( state params sample-rate -- : update sample-rate derived params. )
@@ -363,6 +368,23 @@ dsp2: v-osc-stage
   drop2
 ;
 
+( state params -- : self-oscillating series HPF on osc-out, in place.
+  coeffs computed in fy: f = 2*svf-g(hpf-cutoff, fs), q = svf-damping(res).
+  HPF state {lp,bp} lives at state+88. )
+dsp2: v-hpf-stage
+  | state params |
+  state 88 ptr+
+  params Ms20VoiceParams.hpf-cutoff@
+  1.0 params Ms20VoiceParams.inv-sample-rate@ f/
+  svf-g 2.0 f*
+  params Ms20VoiceParams.hpf-resonance@ svf-damping
+  state Ms20VoiceState.osc-out@
+  k-hpf
+  state Ms20VoiceState.osc-out-p
+  f!64
+  drop2
+;
+
 ( state params -- : read osc-out, run the g-wet svf, store filt-out. )
 dsp2: v-filt-stage
   | state params |
@@ -392,6 +414,7 @@ dsp2: v-vca-stage
 dsp2: k-ms20-voice-sample
   | out state params |
   state params       call: v-osc-stage
+  state params       call: v-hpf-stage
   state params       call: v-filt-stage
   out state params   call: v-vca-stage
 ;

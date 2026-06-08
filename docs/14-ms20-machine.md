@@ -28,7 +28,7 @@ noise─┘                  ▲      ▲       ▲
 - **VCO2** — waveform: sawtooth / square / narrow-pulse / ring; PITCH
   (interval vs VCO1); SCALE (16′/8′/4′/2′).
 - **MIXER** — VCO1 level, VCO2 level; the sum is softly saturated (color).
-- **HPF** (6 dB/oct) + **LPF** (12 dB/oct), in series, both self-oscillating
+- **HPF** (12 dB/oct, 2-pole) + **LPF** (12 dB/oct), in series, both self-oscillating
   (the MS-20 "scream"), each with CUTOFF + PEAK(resonance).
 - **MG** (LFO) — FREQUENCY + WAVEFORM (morph saw↔tri↔ramp); pulse + sloped
   outputs.
@@ -65,8 +65,11 @@ enters the voice — same discipline as `fms20-svf`.
   `tanh_rational` drive (reuse the filter's clip) for color.
 - **MG / LFO** — phasor + morphable waveform (saw↔tri↔ramp) + a pulse output;
   frequency control.
-- **HPF** — the missing 6 dB/oct high-pass, g-wet-style (nonlinear, resonant)
-  so HPF→LPF gives the real MS-20 series tone.
+- **HPF** — a 2-pole (12 dB/oct) self-oscillating high-pass so HPF→LPF gives
+  the real MS-20 series tone. Implemented lean in fy (a Chamberlin SVF, HP tap,
+  with a bandpass-state clip for bounded self-oscillation) on its own call:
+  stage — not a fused Zig op, since the spine frees the register budget.
+  Ear-tuned: no g-wet oracle exists for the HP.
 - **Ring mod** — VCO1 × VCO2.
 - **EG1 (DAR)** — delay/attack/release; reuse the RC-discharge shape from
   `adsr-cap`. EG2 stays the cap ADSR (already analog).
@@ -152,10 +155,11 @@ stays in fy regardless; nothing computes DSP in Zig.
 
 ## Filter call
 
-Add the **self-oscillating HPF** to match the real MS-20 (HPF→LPF series) —
-it is a primary character element, not optional. Model it on `fms20-svf`
-(reuse the nonlinear-feedback structure as a high-pass tap), ratcheted
-against an HPF oracle.
+The **self-oscillating HPF** matches the real MS-20 (HPF→LPF series) — a
+primary character element. Implemented as a lean Chamberlin SVF in fy
+(`kernels/04-filters/ms20_hpf.fy`, `k-hpf`) on its own `v-hpf-stage`, reusing
+`svf-g`/`svf-damping` for coeffs. Ear-tuned (no oracle); fuse or add an oracle
+later only if needed.
 
 ## Panel
 

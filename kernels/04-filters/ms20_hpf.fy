@@ -1,0 +1,43 @@
+( ms20_hpf.fy - lean self-oscillating 2-pole high-pass for the MS-20
+  HPF -> LPF series.
+
+  A classic Chamberlin state-variable filter, high-pass tap, with a soft
+  clip on the bandpass state so high resonance self-oscillates without
+  blowing up. Ear-tuned (no oracle): unlike the g-wet low-pass this has no
+  Python reference, so it is judged by listening, per docs/14.
+
+  Lives in its own voice stage on the dsp2 call: spine, so it gets a fresh
+  32-register budget and does not need to be a fused Zig op.
+
+  coeffs: f = 2*tan(pi*fc/fs) ~ 2*svf-g(fc, fs) ; q = svf-damping(res).
+  per sample (state lp,bp):
+    lp' = lp + f*bp
+    hp  = in - lp' - q*bp
+    bp' = clip(bp + f*hp)        ( clip bounds self-oscillation ) )
+
+include "../02-shapers/tanh_table.fy"
+
+ustruct: HpfState
+  f64 lp
+  f64 bp
+;
+
+( state f q input -- hp : one Chamberlin SVF sample, high-pass output. )
+dsp2: k-hpf
+  | st f q v0 |
+  st HpfState.lp@
+  | lp |
+  st HpfState.bp@
+  | bp |
+  lp f bp f* f+
+  | lp2 |
+  v0 lp2 f- q bp f* f-
+  | hp |
+  bp f hp f* f+
+  k-tanh-rational-shape-dsp2
+  | bp2 |
+  lp2 st HpfState.lp-p f!64
+  bp2 st HpfState.bp-p f!64
+  hp
+  nip nip nip nip nip nip nip nip nip
+;

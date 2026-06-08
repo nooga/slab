@@ -23,7 +23,7 @@ const MAX_STATE = 1024;
 const MAX_PARAMS = 1024;
 const MAX_NAME = 64;
 const MAX_BLOCK = 4096;
-const MAX_RAW_CONTROLS = 24;
+const MAX_RAW_CONTROLS = 32;
 const MAX_RAW_DERIVES = 8;
 const MAX_RAW_CONSTS = 16;
 const MAX_CONTROL_TEXT = 24;
@@ -188,8 +188,8 @@ pub fn fixtureSpec(name: []const u8) ?Spec {
         .prepare_word = "ms20-voice-prepare",
         .note_on_word = "ms20-voice-note-on",
         .note_off_word = "ms20-voice-note-off",
-        .state_size = 88,
-        .params_size = 296,
+        .state_size = 104,
+        .params_size = 312,
         .panel_w = 680,
         .manifest_path = "machines/raw_ms20/raw-ms20.manifest",
     };
