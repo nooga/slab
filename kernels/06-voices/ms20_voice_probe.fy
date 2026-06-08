@@ -27,6 +27,8 @@ ustruct: Ms20VoiceState
   f64 noise-rng        ( @80 float-LCG noise state, reseeded on note-on )
   f64 hpf-lp           ( @88 HPF Chamberlin lowpass state )
   f64 hpf-bp           ( @96 HPF Chamberlin bandpass state )
+  f64 mg-phase         ( @104 free-running MG/LFO phase )
+  f64 mg-out           ( @112 scratch: MG bipolar value, written by v-mod-stage )
 ;
 
 ustruct: Ms20VoiceParams
@@ -72,6 +74,9 @@ ustruct: Ms20VoiceParams
   f64 noise-level      ( @288, white-noise amount mixed into the VCO sum )
   f64 hpf-cutoff       ( @296, series HPF cutoff Hz )
   f64 hpf-resonance    ( @304, series HPF resonance/peak )
+  f64 mg-freq          ( @312, MG/LFO frequency Hz )
+  f64 mg-wave          ( @320, MG waveform morph 0=ramp-down .. 0.5=tri .. 1=ramp-up )
+  f64 mg-cutoff        ( @328, MG -> LPF cutoff intensity Hz )
 ;
 
 ( state params sample-rate -- : update sample-rate derived params. )
@@ -241,6 +246,11 @@ dsp2: v-filter-g
   f*
   params Ms20VoiceParams.cutoff@
   f+
+  ( + MG -> cutoff modulation (Hz); svf-g clamps the result to [20,20160] )
+  state Ms20VoiceState.mg-out@
+  params Ms20VoiceParams.mg-cutoff@
+  f*
+  f+
   4.0
   params Ms20VoiceParams.inv-sample-rate@
   f/
@@ -368,6 +378,38 @@ dsp2: v-osc-stage
   drop2
 ;
 
+( phase skew -- bipolar : variable-slope LFO shape. skew picks the peak
+  position: ~0 falling ramp, 0.5 triangle, ~1 rising ramp. )
+dsp2: mg-shape
+  | phase skew |
+  phase skew
+  phase skew f/
+  1.0 phase f- 1.0 skew f- f/
+  fsel-lt
+  2.0 f* 1.0 f-
+  nip
+  nip
+;
+
+( state params -- : advance the MG/LFO phase and store its bipolar value. )
+dsp2: v-mod-stage
+  | state params |
+  state Ms20VoiceState.mg-phase@
+  params Ms20VoiceParams.mg-freq@
+  params Ms20VoiceParams.inv-sample-rate@
+  f*
+  phase-advance01
+  dup
+  state Ms20VoiceState.mg-phase-p
+  f!64
+  params Ms20VoiceParams.mg-wave@
+  0.02 0.98 fclamp
+  mg-shape
+  state Ms20VoiceState.mg-out-p
+  f!64
+  drop2
+;
+
 ( state params -- : self-oscillating series HPF on osc-out, in place.
   coeffs computed in fy: f = 2*svf-g(hpf-cutoff, fs), q = svf-damping(res).
   HPF state {lp,bp} lives at state+88. )
@@ -414,6 +456,7 @@ dsp2: v-vca-stage
 dsp2: k-ms20-voice-sample
   | out state params |
   state params       call: v-osc-stage
+  state params       call: v-mod-stage
   state params       call: v-hpf-stage
   state params       call: v-filt-stage
   out state params   call: v-vca-stage

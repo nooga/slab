@@ -6,9 +6,9 @@ render|k-ms20-voice-sample
 prepare|ms20-voice-prepare
 note-on|ms20-voice-note-on
 note-off|ms20-voice-note-off
-state-size|104
-params-size|312
-panel-w|448
+state-size|120
+params-size|336
+panel-w|504
 
 # control|module|label|id|kind|offset|min|max|default|curve
 control|VCO1|WAVE|vco1-wave|switch|272|-|-|1|-|TRI=0,SAW=1,PUL=2
@@ -35,6 +35,9 @@ control|FLT ENV|ATK|filter-attack|direct-f64|120|0.001|0.5|0.014|exp
 control|FLT ENV|DEC|filter-decay|direct-f64|128|0.01|1.4|0.14|exp
 control|FLT ENV|SUS|filter-sustain|direct-f64|136|0.0|1.0|0.18|linear
 control|FLT ENV|REL|filter-release|direct-f64|144|0.01|1.2|0.11|exp
+control|MG|FREQ|mg-freq|direct-f64|312|0.05|30.0|3.0|exp
+control|MG|WAVE|mg-wave|direct-f64|320|0.0|1.0|0.5|linear
+control|MG|CUT|mg-cutoff|direct-f64|328|0.0|3000.0|0.0|linear
 
 # strip|module|width(px, scaled to fit)|knob-columns  — panel layout, in order
 # MS-20 style: narrow vertical strips, knobs stacked one per column.
@@ -46,5 +49,6 @@ strip|LPF|56|1
 strip|VCA|56|1
 strip|AMP ENV|56|1
 strip|FLT ENV|56|1
+strip|MG|56|1
 
 const-f64|64|0.0035
