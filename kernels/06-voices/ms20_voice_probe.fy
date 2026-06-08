@@ -23,6 +23,7 @@ ustruct: Ms20VoiceState
   f64 age
   f64 osc-out          ( @64 scratch: VCO mix, written by v-osc-stage )
   f64 filt-out         ( @72 scratch: filter out, written by v-filt-stage )
+  f64 noise-rng        ( @80 float-LCG noise state, reseeded on note-on )
 ;
 
 ustruct: Ms20VoiceParams
@@ -64,6 +65,8 @@ ustruct: Ms20VoiceParams
   f64 vco-octave       ( @256, VCO1 octave/SCALE frequency multiplier - switch )
   f64 vco2-octave      ( @264, VCO2 octave/SCALE frequency multiplier - switch )
   f64 vco1-wave        ( @272, VCO1 waveform index 0=tri 1=saw 2=pulse - switch )
+  f64 vco2-wave        ( @280, VCO2 waveform index 0=saw 1=square 2=pulse - switch )
+  f64 noise-level      ( @288, white-noise amount mixed into the VCO sum )
 ;
 
 ( state params sample-rate -- : update sample-rate derived params. )
@@ -160,7 +163,9 @@ dsp2: v-vco1
 ;
 
 ( state params -- value : render oscillator 2 pulse and advance phase. )
-dsp2: v-pulse2
+( state params -- value : VCO2 with waveform select (saw/square/pulse),
+  detuned and octave-scaled. )
+dsp2: v-vco2
   | state params |
   Ms20VoiceState@: phase2 ;
   Ms20VoiceParams@: note-hz detune vco2-octave inv-sample-rate ;
@@ -171,28 +176,47 @@ dsp2: v-pulse2
   phase dt phase-advance01
   state Ms20VoiceState.phase2-p
   f!64
-  phase dt
-  params Ms20VoiceParams.pulse-width@
-  pulse-polyblep
+  params Ms20VoiceParams.vco2-wave@
+  phase dt saw-falling-polyblep
+  phase dt 0.5 pulse-polyblep
+  phase dt params Ms20VoiceParams.pulse-width@ pulse-polyblep
+  wave-sel3
   nip
   nip
   nip
   nip
 ;
 
-( state params -- value : mix the two oscillator primitives. )
+( state -- value : float-LCG white-ish noise in -1..1, advancing rng state. )
+dsp2: v-noise-raw
+  | state |
+  state Ms20VoiceState.noise-rng@
+  1103515245.0 f*
+  0.31337 f+
+  ffrac
+  dup
+  state Ms20VoiceState.noise-rng-p
+  f!64
+  2.0 f* 1.0 f-
+  nip
+;
+
+( state params -- value : VCO1*lvl + VCO2*lvl + noise*lvl, gently saturated. )
 dsp2: v-osc-mix
   | state params |
   state params v-vco1
-  state params v-pulse2
+  params Ms20VoiceParams.saw-level@
+  f*
+  state params v-vco2
   params Ms20VoiceParams.pulse-level@
   f*
-  swap
-  params Ms20VoiceParams.saw-level@
+  f+
+  state v-noise-raw
+  params Ms20VoiceParams.noise-level@
   f*
   f+
   ( gentle analog mixer saturation: drive into the rational-tanh shaper
-    so a hot VCO1+VCO2 sum rounds over instead of clipping hard. )
+    so a hot sum rounds over instead of clipping hard. )
   1.3 f*
   k-tanh-rational-shape-dsp2
   nip
