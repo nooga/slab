@@ -31,6 +31,7 @@ const Op = enum {
     fdiv,
     fclamp,
     fwrap01,
+    ffrac,
     fsel_lt,
     fcapramp,
     fpolyblep,
@@ -243,6 +244,13 @@ pub const Builder = struct {
             try self.expectTy(lo, .f64);
             try self.expectTy(hi, .f64);
             const id = try self.addValue(.{ .op = .fclamp, .ty = .f64, .a = x, .b = lo, .c = hi });
+            try self.stack.append(id);
+            return;
+        }
+        if (std.mem.eql(u8, word, "ffrac")) {
+            const x = try self.pop();
+            try self.expectTy(x, .f64);
+            const id = try self.addValue(.{ .op = .ffrac, .ty = .f64, .a = x });
             try self.stack.append(id);
             return;
         }
@@ -599,7 +607,7 @@ pub const Builder = struct {
         for (self.values.items) |value| {
             switch (value.op) {
                 .arg, .int_const, .f64_const => {},
-                .ptr_add, .load_f64, .fwrap01, .fcapramp => remaining_uses[value.a] += 1,
+                .ptr_add, .load_f64, .fwrap01, .ffrac, .fcapramp => remaining_uses[value.a] += 1,
                 .fadd, .fsub, .fmul, .fdiv, .fpolyblep => {
                     remaining_uses[value.a] += 1;
                     remaining_uses[value.b] += 1;
@@ -1021,6 +1029,15 @@ const Codegen = struct {
                 self.consumeValue(value.a);
                 self.consumeValue(value.b);
                 self.consumeValue(value.c);
+            },
+            .ffrac => {
+                // frac(x) = x - floor(x)
+                const x = try self.valueD(value.a);
+                const fl = try self.allocD();
+                try self.out.append(Asm.@"frintm Dd, Dn"(fl, x));
+                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(reg, x, fl));
+                self.releaseD(fl);
+                self.consumeValue(value.a);
             },
             .fwrap01 => {
                 const x = try self.valueD(value.a);

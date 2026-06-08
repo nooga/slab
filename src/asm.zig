@@ -278,6 +278,11 @@ pub fn @"fmul Dd, Dn, Dm"(d: u5, n: u5, m: u5) u32 {
     return 0x1E600800 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
 }
 
+// FRINTM Dd, Dn — round double toward minus infinity (floor)
+pub fn @"frintm Dd, Dn"(d: u5, n: u5) u32 {
+    return 0x1E654000 | @as(u32, d) | (@as(u32, n) << 5);
+}
+
 // FMADD Dd, Dn, Dm, Da — double-precision fused multiply-add: Dd = Dn * Dm + Da
 pub fn @"fmadd Dd, Dn, Dm, Da"(d: u5, n: u5, m: u5, a: u5) u32 {
     return 0x1F400000 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, a) << 10) | (@as(u32, m) << 16);
