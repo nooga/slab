@@ -29,6 +29,9 @@ ustruct: Ms20VoiceState
   f64 hpf-bp           ( @96 HPF Chamberlin bandpass state )
   f64 mg-phase         ( @104 free-running MG/LFO phase )
   f64 mg-out           ( @112 scratch: MG bipolar value, written by v-mod-stage )
+  f64 flt-env          ( @120 scratch: filter ADSR value, written by v-mod-stage )
+  f64 pitch-mod        ( @128 scratch: VCO frequency multiplier from MG+EG routing )
+  f64 pw-eff           ( @136 scratch: effective pulse width after PWM routing )
 ;
 
 ustruct: Ms20VoiceParams
@@ -77,6 +80,9 @@ ustruct: Ms20VoiceParams
   f64 mg-freq          ( @312, MG/LFO frequency Hz )
   f64 mg-wave          ( @320, MG waveform morph 0=ramp-down .. 0.5=tri .. 1=ramp-up )
   f64 mg-cutoff        ( @328, MG -> LPF cutoff intensity Hz )
+  f64 mg-pitch         ( @336, MG -> VCO pitch intensity (frequency ratio) )
+  f64 mg-pw            ( @344, MG -> pulse width intensity (PWM) )
+  f64 eg-pitch         ( @352, filter EG -> VCO pitch intensity )
 ;
 
 ( state params sample-rate -- : update sample-rate derived params. )
@@ -157,6 +163,7 @@ dsp2: v-vco1
   Ms20VoiceParams@: note-hz vco-octave inv-sample-rate ;
   f*
   f*
+  state Ms20VoiceState.pitch-mod@ f*
   | phase dt |
   phase dt phase-advance01
   state Ms20VoiceState.phase1-p
@@ -164,7 +171,7 @@ dsp2: v-vco1
   params Ms20VoiceParams.vco1-wave@
   phase tri-raw
   phase dt saw-falling-polyblep
-  phase dt params Ms20VoiceParams.pulse-width@ pulse-polyblep
+  phase dt state Ms20VoiceState.pw-eff@ pulse-polyblep
   wave-sel3
   nip
   nip
@@ -182,6 +189,7 @@ dsp2: v-vco2
   f*
   f*
   f*
+  state Ms20VoiceState.pitch-mod@ f*
   | phase dt |
   phase dt phase-advance01
   state Ms20VoiceState.phase2-p
@@ -189,7 +197,7 @@ dsp2: v-vco2
   params Ms20VoiceParams.vco2-wave@
   phase dt saw-falling-polyblep
   phase dt 0.5 pulse-polyblep
-  phase dt params Ms20VoiceParams.pulse-width@ pulse-polyblep
+  phase dt state Ms20VoiceState.pw-eff@ pulse-polyblep
   wave-sel3
   nip
   nip
@@ -237,9 +245,7 @@ dsp2: v-osc-mix
   cutoff = base + (env-peak - base) * filter-adsr ; g = svf-g(cutoff, osr). )
 dsp2: v-filter-g
   | state params |
-  Ms20VoiceState@: age ;
-  Ms20VoiceParams@: filter-attack filter-decay filter-sustain gate-time filter-release ;
-  adsr-cap
+  state Ms20VoiceState.flt-env@
   params Ms20VoiceParams.env-peak@
   params Ms20VoiceParams.cutoff@
   f-
@@ -370,8 +376,6 @@ dsp2: k-ms20-voice-dc-probe
 ( state params -- : advance age, render the saturating VCO mix, store osc-out. )
 dsp2: v-osc-stage
   | state params |
-  state params v-age-next
-  drop
   state params v-osc-mix
   state Ms20VoiceState.osc-out-p
   f!64
@@ -391,23 +395,45 @@ dsp2: mg-shape
   nip
 ;
 
-( state params -- : advance the MG/LFO phase and store its bipolar value. )
+( state params -- : modulation hub. Runs first: advances note age and the
+  MG/LFO, computes the filter envelope once, and derives the pitch (FM) and
+  pulse-width (PWM) modulations the VCOs read. All written to state scratch
+  so later stages (osc, filt) just read them. )
 dsp2: v-mod-stage
   | state params |
+  state params v-age-next
+  drop
+  ( MG: advance phase, store bipolar value, keep it on the stack )
   state Ms20VoiceState.mg-phase@
-  params Ms20VoiceParams.mg-freq@
-  params Ms20VoiceParams.inv-sample-rate@
-  f*
+  params Ms20VoiceParams.mg-freq@ params Ms20VoiceParams.inv-sample-rate@ f*
   phase-advance01
-  dup
-  state Ms20VoiceState.mg-phase-p
-  f!64
-  params Ms20VoiceParams.mg-wave@
+  dup state Ms20VoiceState.mg-phase-p f!64
+  params Ms20VoiceParams.mg-wave@ 0.02 0.98 fclamp mg-shape
+  dup state Ms20VoiceState.mg-out-p f!64
+  | mg |
+  ( filter ADSR, stored for both cutoff and pitch routing. Use explicit
+    per-field accessors: the grouped @: form assumes [state params] on top,
+    which is not the case here (mg is on the stack). )
+  state Ms20VoiceState.age@
+  params Ms20VoiceParams.filter-attack@
+  params Ms20VoiceParams.filter-decay@
+  params Ms20VoiceParams.filter-sustain@
+  params Ms20VoiceParams.gate-time@
+  params Ms20VoiceParams.filter-release@
+  adsr-cap
+  dup state Ms20VoiceState.flt-env-p f!64
+  | fenv |
+  ( pitch-mod = 1 + mg*mg-pitch + fenv*eg-pitch )
+  1.0
+  mg params Ms20VoiceParams.mg-pitch@ f* f+
+  fenv params Ms20VoiceParams.eg-pitch@ f* f+
+  state Ms20VoiceState.pitch-mod-p f!64
+  ( pw-eff = clamp(pulse-width + mg*mg-pw, 0.02, 0.98) )
+  params Ms20VoiceParams.pulse-width@
+  mg params Ms20VoiceParams.mg-pw@ f* f+
   0.02 0.98 fclamp
-  mg-shape
-  state Ms20VoiceState.mg-out-p
-  f!64
-  drop2
+  state Ms20VoiceState.pw-eff-p f!64
+  drop2 drop2
 ;
 
 ( state params -- : self-oscillating series HPF on osc-out, in place.
@@ -455,8 +481,8 @@ dsp2: v-vca-stage
   A `call:` boundary gives each stage a fresh register budget. )
 dsp2: k-ms20-voice-sample
   | out state params |
-  state params       call: v-osc-stage
   state params       call: v-mod-stage
+  state params       call: v-osc-stage
   state params       call: v-hpf-stage
   state params       call: v-filt-stage
   out state params   call: v-vca-stage

@@ -188,8 +188,8 @@ pub fn fixtureSpec(name: []const u8) ?Spec {
         .prepare_word = "ms20-voice-prepare",
         .note_on_word = "ms20-voice-note-on",
         .note_off_word = "ms20-voice-note-off",
-        .state_size = 120,
-        .params_size = 336,
+        .state_size = 144,
+        .params_size = 360,
         .panel_w = 680,
         .manifest_path = "machines/raw_ms20/raw-ms20.manifest",
     };

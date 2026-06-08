@@ -391,8 +391,8 @@ test "raw manifest loads MS-20 machine spec" {
     try std.testing.expectEqualStrings("ms20-voice-prepare", e.rawPrepareWordSlice().?);
     try std.testing.expect(e.in_notes);
     try std.testing.expect(!e.in_audio);
-    try std.testing.expectEqual(@as(usize, 120), e.raw_state_size);
-    try std.testing.expectEqual(@as(usize, 336), e.params_size);
+    try std.testing.expectEqual(@as(usize, 144), e.raw_state_size);
+    try std.testing.expectEqual(@as(usize, 360), e.params_size);
 }
 
 fn tryOptionalResetCallback(host: *FyHost, audio_word: []const u8) ?*const fn () callconv(.c) void {
