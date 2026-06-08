@@ -63,6 +63,7 @@ ustruct: Ms20VoiceParams
   f64 svf-out-dc-coeff
   f64 vco-octave       ( @256, VCO1 octave/SCALE frequency multiplier - switch )
   f64 vco2-octave      ( @264, VCO2 octave/SCALE frequency multiplier - switch )
+  f64 vco1-wave        ( @272, VCO1 waveform index 0=tri 1=saw 2=pulse - switch )
 ;
 
 ( state params sample-rate -- : update sample-rate derived params. )
@@ -134,8 +135,10 @@ dsp2: v-amp-env
   nip
 ;
 
-( state params -- value : render oscillator 1 falling saw and advance phase. )
-dsp2: v-saw1
+( state params -- value : VCO1 with waveform select (tri/saw/pulse), octave
+  scaled, phase advanced. The three candidates are computed and fsel-picked —
+  no branches in dsp2; the spine keeps the register budget per-stage. )
+dsp2: v-vco1
   | state params |
   Ms20VoiceState@: phase1 ;
   Ms20VoiceParams@: note-hz vco-octave inv-sample-rate ;
@@ -145,7 +148,11 @@ dsp2: v-saw1
   phase dt phase-advance01
   state Ms20VoiceState.phase1-p
   f!64
+  params Ms20VoiceParams.vco1-wave@
+  phase tri-raw
   phase dt saw-falling-polyblep
+  phase dt params Ms20VoiceParams.pulse-width@ pulse-polyblep
+  wave-sel3
   nip
   nip
   nip
@@ -176,7 +183,7 @@ dsp2: v-pulse2
 ( state params -- value : mix the two oscillator primitives. )
 dsp2: v-osc-mix
   | state params |
-  state params v-saw1
+  state params v-vco1
   state params v-pulse2
   params Ms20VoiceParams.pulse-level@
   f*

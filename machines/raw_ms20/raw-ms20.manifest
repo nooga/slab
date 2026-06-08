@@ -7,12 +7,13 @@ prepare|ms20-voice-prepare
 note-on|ms20-voice-note-on
 note-off|ms20-voice-note-off
 state-size|80
-params-size|272
+params-size|280
 panel-w|336
 
 # control|module|label|id|kind|offset|min|max|default|curve
+control|VCO1|WAVE|vco1-wave|switch|272|-|-|1|-|TRI=0,SAW=1,PUL=2
 control|VCO1|SCALE|vco-octave|switch|256|-|-|2|-|32=0.25,16=0.5,8=1.0,4=2.0
-control|VCO1|SAW|saw-level|direct-f64|152|0.0|1.0|0.62|linear
+control|VCO1|LVL|saw-level|direct-f64|152|0.0|1.0|0.62|linear
 control|VCO2|SCALE|vco2-octave|switch|264|-|-|2|-|32=0.25,16=0.5,8=1.0,4=2.0
 control|VCO2|DET|detune|direct-f64|24|0.995|1.018|1.0058|linear
 control|VCO2|PUL|pulse-level|direct-f64|160|0.0|1.0|0.38|linear
