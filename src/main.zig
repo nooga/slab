@@ -329,6 +329,7 @@ pub const Fy = struct {
                 self.fyalloc.free(v.code);
                 if (v.inline_body) |body| self.fyalloc.free(body);
                 if (v.dsp2_body) |body| Dsp2.freeTokens(self.fyalloc, body);
+                if (v.dsp2_calls) |calls| self.fyalloc.free(calls);
                 self.fyalloc.free(k.*);
             }
         }
@@ -340,6 +341,8 @@ pub const Fy = struct {
         word.inline_body = null;
         if (word.dsp2_body) |body| Dsp2.freeTokens(self.fyalloc, body);
         word.dsp2_body = null;
+        if (word.dsp2_calls) |calls| self.fyalloc.free(calls);
+        word.dsp2_calls = null;
     }
 
     fn deinitImportedFiles(self: *Fy) void {
@@ -641,6 +644,15 @@ pub const Fy = struct {
         }
     };
 
+    /// One resolved `call:` in a composition word: the callee's standalone
+    /// entry address and which of the composition word's pointer args (by
+    /// incoming index) to pass, in order.
+    pub const Dsp2CompCall = struct {
+        addr: usize,
+        args: [8]u5 = undefined,
+        nargs: usize,
+    };
+
     const Word = struct {
         code: []const u32, //machine code (for builtins/inline words)
         c: usize, //consumes
@@ -653,6 +665,7 @@ pub const Fy = struct {
         image_body_len: usize = 0,
         inline_body: ?[]u32 = null, // canonical pre-target-alloc body copied into inline callers
         dsp2_body: ?[]Dsp2.BodyToken = null, // flattened typed token body for IR-stage inlining
+        dsp2_calls: ?[]Dsp2CompCall = null, // resolved call sequence for a `call:` composition word
         trampoline_addr: ?usize = null, // stable B-trampoline in image (for hot-patching)
         immediate: bool = false, // compile-time word (macro): execute instead of compile
         noalloc: bool = false, // declared with noalloc: — must not call heap-allocating words
@@ -1346,6 +1359,98 @@ pub const Fy = struct {
     pub fn isDsp2Word(self: *const Fy, name: []const u8) bool {
         const word = self.userWords.get(name) orelse return false;
         return word.dsp2;
+    }
+
+    /// True if `name` is a `call:` composition word (emitted via the call
+    /// sequencer, not the value-graph). Such words must be invoked through
+    /// compileDsp2CompositionCaller, not compileDsp2RawRepeatedCaller.
+    pub fn isCompositionWord(self: *const Fy, name: []const u8) bool {
+        const word = self.userWords.get(name) orelse return false;
+        return word.dsp2_calls != null;
+    }
+
+    /// Build a repeated caller for a composition word. Same entry/slots ABI as
+    /// compileDsp2RawRepeatedCaller (so the host calls it identically), but the
+    /// loop body is the resolved `call:` sequence. The 1..3 pointer args are
+    /// stashed in callee-saved x21/x22/x23 and marshalled into x0.. per call;
+    /// the loop counter lives on the frame (no spare callee-saved register).
+    pub fn compileDsp2CompositionCaller(
+        self: *Fy,
+        name: []const u8,
+        slots: *Dsp2RawRepeatedSlots,
+        auto_advance_out: bool,
+    ) !Dsp2RawRepeatedCaller {
+        const word = self.userWords.get(name) orelse return error.UnknownWord;
+        const calls = word.dsp2_calls orelse return error.UnsupportedDsp2RawBody;
+        const arity = word.c;
+        if (arity == 0 or arity > 3) return error.RegisterExhausted;
+
+        var code = compat.ArrayList(u32).init(self.fyalloc);
+        errdefer code.deinit();
+
+        // Prologue: save link, x21/x22, x23, and d8-d15 (stages clobber them).
+        // Frame: 64 bytes for d8-d15 (offsets 0..56) + the loop counter at 64.
+        try code.append(Asm.@"stp x29, x30, [sp, #0x10]!");
+        try code.append(Asm.@"mov x29, sp");
+        try code.append(Asm.@"stp x21, x22, [sp, #0x10]!");
+        try code.append(Asm.@".rpush Xn"(23));
+        try code.append(Asm.sub_sp_imm(80));
+        inline for (0..8) |i| {
+            try code.append(Asm.str_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
+        }
+
+        const slots_addr = @intFromPtr(slots);
+        for (Asm.movImm64(18, slots_addr)) |instr| try code.append(instr);
+        // counter = iterations (slots @0) -> frame[64]
+        try code.append(Asm.ldr_x_imm(9, 18, 0));
+        try code.append(Asm.str_x_imm(9, 31, 64));
+        // stash pointer args from slots arg_bits[0..arity] (slots @8,16,24)
+        if (arity >= 1) try code.append(Asm.ldr_x_imm(21, 18, 8));
+        if (arity >= 2) try code.append(Asm.ldr_x_imm(22, 18, 16));
+        if (arity >= 3) try code.append(Asm.ldr_x_imm(23, 18, 24));
+
+        const loop_pos = code.items.len;
+        for (calls) |call| {
+            var j: usize = 0;
+            while (j < call.nargs) : (j += 1) {
+                const src: u5 = @intCast(21 + @as(usize, call.args[j]));
+                try code.append(Asm.movReg(Dsp2.RAW_X_ARG_REGS[j], src));
+            }
+            for (Asm.movImm64(9, call.addr)) |instr| try code.append(instr);
+            try code.append(Asm.@"blr Xn"(9));
+        }
+        if (auto_advance_out) {
+            try code.append(Asm.add_imm(21, 21, 8));
+        }
+        // counter-- ; loop while != 0
+        try code.append(Asm.ldr_x_imm(9, 31, 64));
+        try code.append(Asm.@"subs Xn, Xn, #imm"(9, 1));
+        try code.append(Asm.str_x_imm(9, 31, 64));
+        const bne_pos = code.items.len;
+        try code.append(Asm.@"b.cond offset"(Asm.COND_NE, @intCast(@as(isize, @intCast(loop_pos)) - @as(isize, @intCast(bne_pos)))));
+
+        // Epilogue.
+        inline for (0..8) |i| {
+            try code.append(Asm.ldr_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
+        }
+        try code.append(Asm.add_sp_imm(80));
+        try code.append(Asm.@".rpop Xn"(23));
+        try code.append(Asm.@"ldp x21, x22, [sp], #0x10");
+        try code.append(Asm.@"ldp x29, x30, [sp], #0x10");
+        try code.append(Asm.@"mov x0, #0");
+        try code.append(Asm.ret);
+
+        const wrapper_code = try code.toOwnedSlice();
+        const executable = self.image.link(wrapper_code);
+        self.fyalloc.free(wrapper_code);
+
+        const fun: *const fn () Value = @ptrCast(@alignCast(executable));
+        return .{
+            .fy = self,
+            .entry = fun,
+            .slots = slots,
+            .arg_count = arity,
+        };
     }
 
     fn straightLineDspBody(word: Word) ?[]const u32 {
@@ -5586,8 +5691,7 @@ pub const Fy = struct {
                 return Error.UnknownWord;
             }
 
-            const Call = struct { addr: usize, args: [8]u5 = undefined, nargs: usize };
-            var calls = compat.ArrayList(Call).init(self.fy.fyalloc);
+            var calls = compat.ArrayList(Dsp2CompCall).init(self.fy.fyalloc);
             defer calls.deinit();
             var pending: [16]u5 = undefined;
             var pending_n: usize = 0;
@@ -5622,7 +5726,7 @@ pub const Fy = struct {
                         return Error.UnknownWord;
                     }
                     const addr = try self.buildDsp2RawCallable(callee);
-                    var call = Call{ .addr = addr, .nargs = cn };
+                    var call = Dsp2CompCall{ .addr = addr, .nargs = cn };
                     const base = pending_n - cn;
                     var j: usize = 0;
                     while (j < cn) : (j += 1) call.args[j] = pending[base + j];
@@ -5689,6 +5793,9 @@ pub const Fy = struct {
             var dsp2_body: ?[]Dsp2.BodyToken = Dsp2.cloneTokens(self.fy.fyalloc, program.tokens.items) catch return Error.OutOfMemory;
             errdefer if (dsp2_body) |body| Dsp2.freeTokens(self.fy.fyalloc, body);
 
+            var calls_owned: ?[]Dsp2CompCall = calls.toOwnedSlice() catch return Error.OutOfMemory;
+            errdefer if (calls_owned) |cs| self.fy.fyalloc.free(cs);
+
             const final_name = if (self.namespace) |ns| blk: {
                 const prefixed = self.fy.fyalloc.alloc(u8, ns.len + w.len) catch return Error.OutOfMemory;
                 @memcpy(prefixed[0..ns.len], ns);
@@ -5719,6 +5826,8 @@ pub const Fy = struct {
                 word.p = 0;
                 word.dsp2_body = dsp2_body;
                 dsp2_body = null;
+                word.dsp2_calls = calls_owned;
+                calls_owned = null;
             }
             if (final_name) |fn_| self.fy.fyalloc.free(fn_);
         }

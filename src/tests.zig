@@ -1375,3 +1375,23 @@ test "dsp2: call: composition chains stages through state memory in order" {
     try std.testing.expectApproxEqAbs(3.0, state, 0.000000000001);
     try std.testing.expectApproxEqAbs(6.0, out, 0.000000000001);
 }
+
+test "dsp2: composition repeated caller loops with auto-advanced output" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run(
+        \\dsp2: t-w | out | 1.5 out f!64 drop ;
+        \\dsp2: t-rep | out | out call: t-w ;
+    );
+
+    try std.testing.expect(fy.isCompositionWord("t-rep"));
+
+    var slots: Fy.Dsp2RawRepeatedSlots = .{};
+    var caller = try fy.compileDsp2CompositionCaller("t-rep", &slots, true);
+    var out = [_]f64{0} ** 4;
+    const args = [_]Fy.Dsp2RawArg{.{ .ptr = @intFromPtr(&out[0]) }};
+    _ = try caller.call(4, &args);
+    for (out) |v| try std.testing.expectApproxEqAbs(1.5, v, 0.000000000001);
+}
