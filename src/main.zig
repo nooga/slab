@@ -5372,6 +5372,18 @@ pub const Fy = struct {
                             program.beginLocalFrame(frame_len) catch return Error.OutOfMemory;
                             continue;
                         }
+                        if (std.mem.eql(u8, word, "call:")) {
+                            const callee_tok = try self.parser.nextToken() orelse return Error.UnexpectedEndOfInput;
+                            const callee = switch (callee_tok) {
+                                .Word => |n| n,
+                                else => {
+                                    self.setError("dsp2: call: expects a word name", .{});
+                                    return Error.ExpectedWord;
+                                },
+                            };
+                            program.addCallWord(callee) catch return Error.OutOfMemory;
+                            continue;
+                        }
                         if (findDsp2Local(local_names.items, local_frames.items, word)) |local_ref| {
                             program.addLocalArg(local_ref) catch |err| {
                                 return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
@@ -5417,6 +5429,12 @@ pub const Fy = struct {
             var frame_i = local_frames.items.len;
             while (frame_i > 0) : (frame_i -= 1) {
                 program.endLocalFrame() catch return Error.OutOfMemory;
+            }
+
+            // Composition word (contains `call:`) — emit a call-sequencing
+            // wrapper instead of a value-graph body.
+            if (Dsp2.isComposition(program.tokens.items)) {
+                return self.compileDsp2Composition(w, &program, local_frames.items);
             }
 
             var builder = program.build() catch |err| {
@@ -5524,6 +5542,181 @@ pub const Fy = struct {
                 word.dsp2 = true;
                 word.c = builder.initial_arity;
                 word.p = builder.outputCount();
+                word.dsp2_body = dsp2_body;
+                dsp2_body = null;
+            }
+            if (final_name) |fn_| self.fy.fyalloc.free(fn_);
+        }
+
+        /// Compile a dsp2 word `name` as a standalone callable: its raw-register
+        /// body followed by `ret`. Returns the entry address. Pointer args arrive
+        /// in x0.., the body reads them per the raw-register ABI; effects are via
+        /// memory (f!64). Caller treats x9-x20,x24-x28,d-regs as clobbered.
+        fn buildDsp2RawCallable(self: *Compiler, word: Word) Error!usize {
+            const raw_body = self.fy.buildDsp2BodyAlloc(word, .raw_registers) catch |err| {
+                self.setError("dsp2 call: cannot build raw body ({s})", .{@errorName(err)});
+                return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
+            };
+            defer self.fy.fyalloc.free(raw_body);
+
+            var cc = compat.ArrayList(u32).init(self.fy.fyalloc);
+            errdefer cc.deinit();
+            cc.appendSlice(raw_body) catch return Error.OutOfMemory;
+            cc.append(Asm.ret) catch return Error.OutOfMemory;
+            const slice = cc.toOwnedSlice() catch return Error.OutOfMemory;
+            const entry = self.fy.image.link(slice);
+            const addr = @intFromPtr(entry.ptr);
+            self.fy.fyalloc.free(slice);
+            return addr;
+        }
+
+        /// Emit a pure-composition word: a sequence of `args call: stage`. Each
+        /// stage is a real call (blr) with a fresh 32-register budget; stages
+        /// communicate through voice-state memory. The composition word stashes
+        /// its 1..3 pointer args in callee-saved x21/x22/x23 (which raw stage
+        /// bodies never touch) and marshals them into x0.. before each call.
+        fn compileDsp2Composition(self: *Compiler, w: []const u8, program: *Dsp2.Program, frames: []const Dsp2LocalFrame) Error!void {
+            if (frames.len != 1) {
+                self.setError("dsp2 call: composition needs exactly one | | frame", .{});
+                return Error.UnknownWord;
+            }
+            const arity = frames[0].len;
+            if (arity == 0 or arity > 3) {
+                self.setError("dsp2 call: composition supports 1..3 pointer args", .{});
+                return Error.UnknownWord;
+            }
+
+            const Call = struct { addr: usize, args: [8]u5 = undefined, nargs: usize };
+            var calls = compat.ArrayList(Call).init(self.fy.fyalloc);
+            defer calls.deinit();
+            var pending: [16]u5 = undefined;
+            var pending_n: usize = 0;
+
+            for (program.tokens.items) |tok| switch (tok) {
+                .local_frame_begin, .local_frame_end => {},
+                .local_arg => |ref| {
+                    if (ref.depth != 0 or ref.index >= arity) {
+                        self.setError("dsp2 call: only top-frame args may feed call:", .{});
+                        return Error.UnknownWord;
+                    }
+                    if (pending_n >= pending.len) return Error.UnknownWord;
+                    pending[pending_n] = @intCast(ref.index);
+                    pending_n += 1;
+                },
+                .call_word => |name| {
+                    const callee = self.fy.userWords.get(name) orelse {
+                        self.setError("dsp2 call: unknown word '{s}'", .{name});
+                        return Error.UnknownWord;
+                    };
+                    if (!callee.dsp2) {
+                        self.setError("dsp2 call: target '{s}' is not a dsp2 word", .{name});
+                        return Error.UnknownWord;
+                    }
+                    if (callee.p != 0) {
+                        self.setError("dsp2 call: target '{s}' must write via memory (no stack output)", .{name});
+                        return Error.UnknownWord;
+                    }
+                    const cn = callee.c;
+                    if (cn > pending_n or cn > 8) {
+                        self.setError("dsp2 call: '{s}' wants {d} args, {d} available", .{ name, cn, pending_n });
+                        return Error.UnknownWord;
+                    }
+                    const addr = try self.buildDsp2RawCallable(callee);
+                    var call = Call{ .addr = addr, .nargs = cn };
+                    const base = pending_n - cn;
+                    var j: usize = 0;
+                    while (j < cn) : (j += 1) call.args[j] = pending[base + j];
+                    pending_n = base;
+                    calls.append(call) catch return Error.OutOfMemory;
+                },
+                else => {
+                    self.setError("dsp2 call: composition body may only contain args and call:", .{});
+                    return Error.UnknownWord;
+                },
+            };
+            if (pending_n != 0) {
+                self.setError("dsp2 call: {d} leftover arg(s) with no call", .{pending_n});
+                return Error.UnknownWord;
+            }
+            if (calls.items.len == 0) {
+                self.setError("dsp2 call: composition word has no calls", .{});
+                return Error.UnknownWord;
+            }
+
+            var code = compat.ArrayList(u32).init(self.fy.fyalloc);
+            errdefer code.deinit();
+            // Prologue — mirrors compileDsp2RawRepeatedCaller: save link, x21/x22,
+            // x23, and d8-d15 (stages clobber them).
+            try code.append(Asm.@"stp x29, x30, [sp, #0x10]!");
+            try code.append(Asm.@"mov x29, sp");
+            try code.append(Asm.@"stp x21, x22, [sp, #0x10]!");
+            try code.append(Asm.sub_sp_imm(64));
+            inline for (0..8) |i| {
+                try code.append(Asm.str_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
+            }
+            try code.append(Asm.@".rpush Xn"(23));
+            // Stash incoming pointer args x0..x(arity-1) -> x21,x22,x23.
+            if (arity >= 1) try code.append(Asm.movReg(21, 0));
+            if (arity >= 2) try code.append(Asm.movReg(22, 1));
+            if (arity >= 3) try code.append(Asm.movReg(23, 2));
+            // Calls.
+            for (calls.items) |call| {
+                var j: usize = 0;
+                while (j < call.nargs) : (j += 1) {
+                    const src: u5 = @intCast(21 + @as(usize, call.args[j]));
+                    try code.append(Asm.movReg(Dsp2.RAW_X_ARG_REGS[j], src));
+                }
+                for (Asm.movImm64(9, call.addr)) |instr| try code.append(instr);
+                try code.append(Asm.@"blr Xn"(9));
+            }
+            // Epilogue.
+            try code.append(Asm.@".rpop Xn"(23));
+            inline for (0..8) |i| {
+                try code.append(Asm.ldr_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
+            }
+            try code.append(Asm.add_sp_imm(64));
+            try code.append(Asm.@"ldp x21, x22, [sp], #0x10");
+            try code.append(Asm.@"ldp x29, x30, [sp], #0x10");
+            try code.append(Asm.@"mov x0, #0");
+            try code.append(Asm.ret);
+
+            const code_slice = code.toOwnedSlice() catch return Error.OutOfMemory;
+            const code_len = code_slice.len;
+            const entry = self.fy.image.link(code_slice);
+            const entry_addr = @intFromPtr(entry.ptr);
+            self.fy.fyalloc.free(code_slice);
+
+            var dsp2_body: ?[]Dsp2.BodyToken = Dsp2.cloneTokens(self.fy.fyalloc, program.tokens.items) catch return Error.OutOfMemory;
+            errdefer if (dsp2_body) |body| Dsp2.freeTokens(self.fy.fyalloc, body);
+
+            const final_name = if (self.namespace) |ns| blk: {
+                const prefixed = self.fy.fyalloc.alloc(u8, ns.len + w.len) catch return Error.OutOfMemory;
+                @memcpy(prefixed[0..ns.len], ns);
+                @memcpy(prefixed[ns.len..], w);
+                break :blk prefixed;
+            } else null;
+            const reg_name = final_name orelse w;
+
+            try self.declareWord(reg_name);
+            if (self.fy.userWords.getPtr(reg_name)) |word| {
+                self.fy.clearOwnedWordBodies(word);
+                const tramp = if (word.trampoline_addr) |t| t else self.fy.image.linkTrampoline(entry_addr);
+                if (word.trampoline_addr) |existing| {
+                    const ob: i64 = @as(i64, @intCast(entry_addr)) - @as(i64, @intCast(existing));
+                    const ow: i26 = @intCast(@divExact(ob, 4));
+                    self.fy.image.patchInstruction(existing, Asm.@"b offset"(ow));
+                }
+                word.image_addr = entry_addr;
+                word.image_len = code_len;
+                word.image_body_addr = null;
+                word.image_body_len = 0;
+                word.trampoline_addr = tramp;
+                word.noalloc = true;
+                word.inlineable = false;
+                word.dsp = true;
+                word.dsp2 = true;
+                word.c = arity;
+                word.p = 0;
                 word.dsp2_body = dsp2_body;
                 dsp2_body = null;
             }

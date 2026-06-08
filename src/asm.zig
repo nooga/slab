@@ -157,6 +157,11 @@ pub fn @"blr Xn"(n: u5) u32 {
     return @"blr x0" | @as(u32, @intCast(n)) << 5;
 }
 
+/// mov Xd, Xn  (alias of ORR Xd, XZR, Xn) — 64-bit register move.
+pub fn movReg(d: u5, n: u5) u32 {
+    return 0xaa0003e0 | (@as(u32, @intCast(n)) << 16) | @as(u32, @intCast(d));
+}
+
 pub fn @"cbz Xn, offset"(n: u5, offset: u19) u32 {
     return @"cbz x0, 0" | @as(u32, @intCast(n)) | @as(u32, @intCast(offset)) << 5;
 }

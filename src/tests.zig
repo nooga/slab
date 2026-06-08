@@ -1334,3 +1334,44 @@ test "dsp: rejects heap allocation" {
     const result = fy.run("dsp: bad alloc ; bad");
     try std.testing.expectError(error.UnknownWord, result);
 }
+
+test "dsp2: call: composition invokes a stage that writes via memory" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run(
+        \\dsp2: t-stage | out | 2.5 out f!64 drop ;
+        \\dsp2: t-compose | out | out call: t-stage ;
+    );
+
+    const addr = fy.userWords.get("t-compose").?.image_addr.?;
+    const f: *const fn (*f64) callconv(.c) void = @ptrFromInt(addr);
+    var out: f64 = 0;
+    f(&out);
+    try std.testing.expectApproxEqAbs(2.5, out, 0.000000000001);
+}
+
+test "dsp2: call: composition chains stages through state memory in order" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run(
+        \\dsp2: t-a | state | 3.0 state f!64 drop ;
+        \\dsp2: t-b | out state | state f@64 2.0 f* out f!64 drop2 ;
+        \\dsp2: t-chain
+        \\  | out state |
+        \\  state call: t-a
+        \\  out state call: t-b
+        \\;
+    );
+
+    const addr = fy.userWords.get("t-chain").?.image_addr.?;
+    const f: *const fn (*f64, *f64) callconv(.c) void = @ptrFromInt(addr);
+    var out: f64 = 0;
+    var state: f64 = 0;
+    f(&out, &state);
+    try std.testing.expectApproxEqAbs(3.0, state, 0.000000000001);
+    try std.testing.expectApproxEqAbs(6.0, out, 0.000000000001);
+}

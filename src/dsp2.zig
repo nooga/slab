@@ -680,7 +680,22 @@ pub const BodyToken = union(enum) {
     local_frame_end,
     local_arg: LocalRef,
     word: []const u8,
+    // `call: name` — a real (non-inlined) call to another dsp2 word. Only legal
+    // in a pure-composition word; compiled via the composition emitter, not the
+    // value-graph Builder.
+    call_word: []const u8,
 };
+
+/// True if the token stream contains any `call:` — i.e. this is a composition
+/// word that must be emitted via the dedicated call-sequencing path rather than
+/// the value-graph Builder.
+pub fn isComposition(tokens: []const BodyToken) bool {
+    for (tokens) |tok| switch (tok) {
+        .call_word => return true,
+        else => {},
+    };
+    return false;
+}
 
 pub const Program = struct {
     allocator: std.mem.Allocator,
@@ -719,6 +734,10 @@ pub const Program = struct {
 
     pub fn addWord(self: *Program, word: []const u8) Error!void {
         try self.tokens.append(.{ .word = word });
+    }
+
+    pub fn addCallWord(self: *Program, word: []const u8) Error!void {
+        try self.tokens.append(.{ .call_word = word });
     }
 
     pub fn addTokens(self: *Program, tokens: []const BodyToken) Error!void {
@@ -782,6 +801,9 @@ pub const Program = struct {
                             break;
                         },
                     },
+                    // call_word never belongs in a value-graph build — composition
+                    // words are routed to the dedicated emitter before build().
+                    .call_word => return Error.UnsupportedWord,
                 }
             }
             if (failed) {
@@ -806,6 +828,7 @@ pub fn cloneTokens(allocator: std.mem.Allocator, tokens: []const BodyToken) Erro
         while (i < cloned_count) : (i += 1) {
             switch (cloned[i]) {
                 .word => |w| allocator.free(w),
+                .call_word => |w| allocator.free(w),
                 else => {},
             }
         }
@@ -823,6 +846,10 @@ pub fn cloneTokens(allocator: std.mem.Allocator, tokens: []const BodyToken) Erro
                 const owned = allocator.dupe(u8, w) catch return Error.OutOfMemory;
                 break :blk .{ .word = owned };
             },
+            .call_word => |w| blk: {
+                const owned = allocator.dupe(u8, w) catch return Error.OutOfMemory;
+                break :blk .{ .call_word = owned };
+            },
         };
         cloned_count += 1;
     }
@@ -832,6 +859,7 @@ pub fn cloneTokens(allocator: std.mem.Allocator, tokens: []const BodyToken) Erro
 pub fn freeTokens(allocator: std.mem.Allocator, tokens: []BodyToken) void {
     for (tokens) |tok| switch (tok) {
         .word => |w| allocator.free(w),
+        .call_word => |w| allocator.free(w),
         else => {},
     };
     allocator.free(tokens);
