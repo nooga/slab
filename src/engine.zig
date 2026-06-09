@@ -27,6 +27,15 @@ pub const Engine = struct {
     audition_track_local: usize = 0,
     trace_counter: u32 = 0,
 
+    /// Master bus. Audio tracks accumulate (planar) into master_l/r, then
+    /// the master Track's FX chain + fader run before the interleaved
+    /// write to the device. Set once at startup; address is stable.
+    master: ?*Track = null,
+    master_l: [MAX_BLOCK]f32 = undefined,
+    master_r: [MAX_BLOCK]f32 = undefined,
+    master_fx_l: [MAX_BLOCK]f32 = undefined,
+    master_fx_r: [MAX_BLOCK]f32 = undefined,
+
     pub fn auditionNote(self: *Engine, track_idx: usize, pitch: u8) void {
         self.audition_track.store(@intCast(@min(track_idx, std.math.maxInt(u32))), .monotonic);
         self.audition_pitch_bits.store(@bitCast(@as(f32, @floatFromInt(pitch))), .monotonic);
@@ -53,10 +62,14 @@ pub const Engine = struct {
                     for (t.effects[0..t.effect_count]) |*fx| fx.reset(fx.state);
                     t.setMeter(0, 0);
                 }
+                if (self.master) |mb| {
+                    for (mb.effects[0..mb.effect_count]) |*fx| fx.reset(fx.state);
+                }
                 self.was_playing = false;
             }
             if (!self.renderAudition(out_slice, frames)) {
                 for (self.tracks) |*t| t.setMeter(0, 0);
+                if (self.master) |mb| mb.setMeter(0, 0);
             }
         } else {
             self.was_playing = true;
@@ -129,6 +142,9 @@ pub const Engine = struct {
             t.machine.reset(t.machine.state);
             for (t.effects[0..t.effect_count]) |*fx| fx.reset(fx.state);
         }
+        if (self.master) |mb| {
+            for (mb.effects[0..mb.effect_count]) |*fx| fx.reset(fx.state);
+        }
     }
 
     fn nextRenderChunk(self: *Engine, max_frames: u32, pos: u64) usize {
@@ -193,6 +209,8 @@ pub const Engine = struct {
         const r = r_buf[0..n];
         @memset(l, 0);
         @memset(r, 0);
+        @memset(self.master_l[0..n], 0);
+        @memset(self.master_r[0..n], 0);
 
         var events: [2]machine.NoteEvent = undefined;
         var event_count: usize = 0;
@@ -243,12 +261,13 @@ pub const Engine = struct {
         while (i < n) : (i += 1) {
             const sl = final_l[i] * v;
             const sr = final_r[i] * v;
-            out[i * 2] += sl;
-            out[i * 2 + 1] += sr;
+            self.master_l[i] += sl;
+            self.master_r[i] += sr;
             peak_l = @max(peak_l, @abs(sl));
             peak_r = @max(peak_r, @abs(sr));
         }
         t.setMeter(peak_l, peak_r);
+        self.finishMaster(out, @intCast(n));
 
         if (self.audition_remaining <= frames) {
             self.audition_active = false;
@@ -268,6 +287,11 @@ pub const Engine = struct {
         var r_buf: [MAX_BLOCK]f32 = undefined;
         var fx_l_buf: [MAX_BLOCK]f32 = undefined;
         var fx_r_buf: [MAX_BLOCK]f32 = undefined;
+
+        // Tracks accumulate into the master bus (planar), not into `out`,
+        // so the master FX chain can process the sum in finishMaster.
+        @memset(self.master_l[0..frames], 0);
+        @memset(self.master_r[0..frames], 0);
 
         var any_solo = false;
         for (self.tracks) |*t| {
@@ -339,8 +363,8 @@ pub const Engine = struct {
             while (i < frames) : (i += 1) {
                 const sl = final_l[i] * v;
                 const sr2 = final_r[i] * v;
-                out[i * 2] += sl;
-                out[i * 2 + 1] += sr2;
+                self.master_l[i] += sl;
+                self.master_r[i] += sr2;
                 const al = @abs(sl);
                 const ar = @abs(sr2);
                 if (al > peak_l) peak_l = al;
@@ -395,6 +419,48 @@ pub const Engine = struct {
                 );
             }
         }
+
+        self.finishMaster(out, frames);
+    }
+
+    /// Master bus post-processing: run the master Track's FX chain over the
+    /// accumulated planar bus, apply the master fader, write interleaved to
+    /// `out`, and update the master meter. With no master configured (or no
+    /// FX) it is fader/passthrough. The top-level masterSoftClip then runs
+    /// once over the whole device buffer.
+    fn finishMaster(self: *Engine, out: []f32, frames: u32) void {
+        const n: usize = frames;
+        var l: []f32 = self.master_l[0..n];
+        var r: []f32 = self.master_r[0..n];
+        var mv: f32 = 1.0;
+        if (self.master) |mb| {
+            if (mb.effect_count > 0) {
+                const base = machine.MachineCtx{
+                    .sample_rate = @floatFromInt(self.transport.sample_rate),
+                    .block_size = frames,
+                    .block_start = 0,
+                    .tempo_bpm = @floatCast(self.transport.bpm()),
+                    .ppq_position = 0,
+                    .transport_state = if (self.transport.isPlaying()) .playing else .stopped,
+                };
+                const rendered = renderEffects(mb, base, l, r, self.master_fx_l[0..n], self.master_fx_r[0..n]);
+                l = rendered.l;
+                r = rendered.r;
+            }
+            mv = mb.volume();
+        }
+        var peak_l: f32 = 0;
+        var peak_r: f32 = 0;
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const sl = l[i] * mv;
+            const sr = r[i] * mv;
+            out[i * 2] = sl;
+            out[i * 2 + 1] = sr;
+            peak_l = @max(peak_l, @abs(sl));
+            peak_r = @max(peak_r, @abs(sr));
+        }
+        if (self.master) |mb| mb.setMeter(peak_l, peak_r);
     }
 };
 

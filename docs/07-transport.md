@@ -95,6 +95,18 @@ Concepts:
 
 Topologically a DAG. Cycles via sends are rejected (send-to-a-return-that-sends-to-itself).
 
+> **Status (implemented):** the **master bus** exists. Audio tracks
+> accumulate (post-fader) into a planar master bus on the `Engine`
+> struct; the master Track's effect chain processes the sum, the master
+> fader is applied, then the interleaved write + soft-clip. The master is
+> a standalone `Track` (`kind = .master`) outside the `tracks` array — a
+> silent instrument with an effects-only chain, its `volume()` the master
+> fader and `meter()` the master meter. It is edited via the machine bay
+> (`device_sel` selects track vs master) and shown as a pinned strip at
+> the bottom of the track bay. **Returns + sends are not yet built**
+> (next step). Master FX + fader are **not yet persisted** (effect chains
+> aren't serialized at all yet — a separate task).
+
 ### Why not a free node graph?
 
 Because **v1 needs to be shippable**, and a node-graph editor is a

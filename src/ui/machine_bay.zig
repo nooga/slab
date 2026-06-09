@@ -23,7 +23,9 @@ pub const Result = struct {
 const ADD_MENU_KEY: u64 = 0x4d414444; // "MADD"
 
 var poly_dropdown_track: ?usize = null;
-var preset_dropdown_track: ?usize = null;
+// Which instrument's preset dropdown is open, keyed by machine pointer (the
+// bay shows one device at a time; pointer identity survives selection change).
+var preset_dropdown_mach: ?*const @import("../machine.zig").Machine = null;
 var bay_scroll_x: f32 = 0; // horizontal scroll of the device chain
 
 // Note-activity LED glow, keyed by track index. Bumped to 1.0 when the
@@ -152,7 +154,7 @@ fn drawAddButton(btn: c.rl.Rectangle, reg: *const Registry, m: widgets.Mouse) ?u
     return null;
 }
 
-pub fn draw(r: c.rl.Rectangle, tracks: []Track, selected: ?usize, collapsed: bool, reg: *const Registry, m: widgets.Mouse) Result {
+pub fn draw(r: c.rl.Rectangle, device: ?*Track, track_idx: ?usize, is_bus: bool, collapsed: bool, reg: *const Registry, m: widgets.Mouse) Result {
     c.rl.DrawRectangleRec(r, theme.pane_bg);
     var result = Result{};
 
@@ -163,29 +165,28 @@ pub fn draw(r: c.rl.Rectangle, tracks: []Track, selected: ?usize, collapsed: boo
         return .{ .minimize = res.minimize };
     }
 
-    // No machine loaded (no track selected, or a track with nothing assigned)
-    // → one continuous placeholder title bar across the whole bay with a hint,
-    // instead of an empty machine panel / stub + a seam.
-    const have_track = if (selected) |idx| idx < tracks.len else false;
-    const have_machine = if (selected) |idx| (idx < tracks.len and tracks[idx].machine_idx != null) else false;
-    if (!have_machine) {
-        const hint: [*:0]const u8 = if (have_track) "no machine — click + to add one" else "select a track";
-        const res = drawPlaceholder(r, header_h, false, hint, m);
+    const t = device orelse {
+        // Nothing selected.
+        const res = drawPlaceholder(r, header_h, false, "select a track", m);
+        return .{ .minimize = res.minimize };
+    };
+
+    // Audio track with no instrument assigned → placeholder + "+". Buses
+    // (master/return) have no instrument, so they skip this and go straight
+    // to the effects-only chain below.
+    if (!is_bus and t.machine_idx == null) {
+        const res = drawPlaceholder(r, header_h, false, "no machine — click + to add one", m);
         result.minimize = res.minimize;
-        if (have_track) {
-            if (drawAddButton(widgets.rect(r.x, r.y, header_h, header_h), reg, m)) |idx| result.add_machine = idx;
-        }
+        if (drawAddButton(widgets.rect(r.x, r.y, header_h, header_h), reg, m)) |i| result.add_machine = i;
         return result;
     }
 
-    const idx = selected.?;
-    const t = &tracks[idx];
     const DEFAULT_PANEL_W = theme.size(200);
-    const inst_pw = if (t.machine.panel_w > 0) theme.size(t.machine.panel_w) else DEFAULT_PANEL_W;
+    const inst_pw: f32 = if (is_bus) 0 else (if (t.machine.panel_w > 0) theme.size(t.machine.panel_w) else DEFAULT_PANEL_W);
 
-    // Measure the chain (instrument + effects + trailing "+") to decide whether
-    // a horizontal minimap is needed at the bottom of the bay.
-    var content_w = inst_pw;
+    // Measure the chain ((instrument) + effects + trailing "+") to decide
+    // whether a horizontal minimap is needed at the bottom of the bay.
+    var content_w: f32 = inst_pw;
     for (t.effects[0..t.effect_count]) |*fx| {
         content_w += if (fx.panel_w > 0) theme.size(fx.panel_w) else DEFAULT_PANEL_W;
     }
@@ -205,48 +206,56 @@ pub fn draw(r: c.rl.Rectangle, tracks: []Track, selected: ?usize, collapsed: boo
 
     // ── Device chain ─────────────────────────────────────────────────
     var x = r.x - bay_scroll_x;
-    const inst_rect = widgets.rect(x, r.y, inst_pw, dev_h);
-    const inst_body = widgets.rect(x, r.y + header_h, inst_pw, dev_h - header_h);
-    const inst_enabled = t.isEnabled();
 
-    // Note-activity LED glow for the selected track.
-    const seq = t.noteSeq();
-    if (idx < led_glow.len) {
-        if (seq != led_seen[idx]) {
-            led_glow[idx] = 1.0;
-            led_seen[idx] = seq;
-        } else led_glow[idx] = @max(0, led_glow[idx] - 0.05);
-    }
-    const glow: f32 = if (idx < led_glow.len) led_glow[idx] else 0;
+    // Instrument slot — audio tracks only. Buses start straight at effects.
+    if (!is_bus) {
+        const inst_rect = widgets.rect(x, r.y, inst_pw, dev_h);
+        const inst_body = widgets.rect(x, r.y + header_h, inst_pw, dev_h - header_h);
+        const inst_enabled = t.isEnabled();
 
-    if (t.machine.host_titlebar) {
-        const ctrls = drawDeviceBar(
-            widgets.rect(x, r.y, inst_pw, header_h),
-            t.machine.name,
-            inst_enabled,
-            glow,
-            presetReservedW(&t.machine),
-            .speaker_high,
-            .speaker_slash,
-            "Enabled — click to silence",
-            "Silenced — click to enable",
-            "Remove machine",
-            m,
-        );
-        if (ctrls.toggle) t.toggleEnabled();
-        if (ctrls.remove) result.remove_machine = true;
-        t.machine.draw_panel(t.machine.state, inst_body, m);
-        if (!inst_enabled) c.rl.DrawRectangleRec(inst_body, c.rl.ColorAlpha(theme.bg, 0.45));
-    } else {
-        t.machine.draw_panel(t.machine.state, inst_rect, m);
-        if (!inst_enabled) c.rl.DrawRectangleRec(inst_rect, c.rl.ColorAlpha(theme.bg, 0.45));
-    }
-    if (t.machine_idx != null) {
-        if (drawPresetDropdown(machineControlsRect(inst_rect, t.machine.panel_w), idx, &t.machine, header_h, m)) |preset| {
-            result.preset_index = preset;
+        // Note-activity LED glow, keyed by the shown audio track index.
+        var glow: f32 = 0;
+        if (track_idx) |ti| {
+            if (ti < led_glow.len) {
+                const seq = t.noteSeq();
+                if (seq != led_seen[ti]) {
+                    led_glow[ti] = 1.0;
+                    led_seen[ti] = seq;
+                } else led_glow[ti] = @max(0, led_glow[ti] - 0.05);
+                glow = led_glow[ti];
+            }
         }
+
+        if (t.machine.host_titlebar) {
+            const ctrls = drawDeviceBar(
+                widgets.rect(x, r.y, inst_pw, header_h),
+                t.machine.name,
+                inst_enabled,
+                glow,
+                presetReservedW(&t.machine),
+                .speaker_high,
+                .speaker_slash,
+                "Enabled — click to silence",
+                "Silenced — click to enable",
+                "Remove machine",
+                m,
+            );
+            if (ctrls.toggle) t.toggleEnabled();
+            if (ctrls.remove) result.remove_machine = true;
+            t.machine.draw_panel(t.machine.state, inst_body, m);
+            if (!inst_enabled) c.rl.DrawRectangleRec(inst_body, c.rl.ColorAlpha(theme.bg, 0.45));
+        } else {
+            t.machine.draw_panel(t.machine.state, inst_rect, m);
+            if (!inst_enabled) c.rl.DrawRectangleRec(inst_rect, c.rl.ColorAlpha(theme.bg, 0.45));
+        }
+        if (t.machine_idx != null) {
+            if (drawPresetDropdown(machineControlsRect(inst_rect, t.machine.panel_w), &t.machine, header_h, m)) |preset| {
+                result.preset_index = preset;
+            }
+        }
+        x += inst_pw;
     }
-    x += inst_pw;
+
     for (t.effects[0..t.effect_count], 0..) |*fx, i| {
         const fx_w = if (fx.panel_w > 0) theme.size(fx.panel_w) else DEFAULT_PANEL_W;
         const fx_rect = widgets.rect(x, r.y, fx_w, dev_h);
@@ -283,7 +292,7 @@ pub fn draw(r: c.rl.Rectangle, tracks: []Track, selected: ?usize, collapsed: boo
         const res = drawPlaceholder(widgets.rect(x, r.y, r.x + r.width - x, dev_h), header_h, false, null, m);
         result.minimize = res.minimize;
     }
-    if (have_track and plus_x + header_h <= r.x + r.width) {
+    if (plus_x + header_h <= r.x + r.width) {
         if (drawAddButton(widgets.rect(plus_x, r.y, header_h, header_h), reg, m)) |i| result.add_machine = i;
     }
 
@@ -293,10 +302,12 @@ pub fn draw(r: c.rl.Rectangle, tracks: []Track, selected: ?usize, collapsed: boo
         widgets.bevelSunken(strip, theme.pane_bg, theme.slab_hi, theme.slab_lo);
         const inner = widgets.rect(strip.x + 2, strip.y + 2, strip.width - 4, strip.height - 4);
         const scale = inner.width / content_w;
-        // Device blocks (instrument brighter than effects).
+        // Device blocks (instrument brighter than effects; buses have none).
         var bx = inner.x;
-        c.rl.DrawRectangle(@intFromFloat(bx), @intFromFloat(inner.y), @intFromFloat(@max(1, inst_pw * scale - 1)), @intFromFloat(inner.height), theme.slab_hi);
-        bx += inst_pw * scale;
+        if (!is_bus) {
+            c.rl.DrawRectangle(@intFromFloat(bx), @intFromFloat(inner.y), @intFromFloat(@max(1, inst_pw * scale - 1)), @intFromFloat(inner.height), theme.slab_hi);
+            bx += inst_pw * scale;
+        }
         for (t.effects[0..t.effect_count]) |*fx| {
             const fw = (if (fx.panel_w > 0) theme.size(fx.panel_w) else DEFAULT_PANEL_W) * scale;
             c.rl.DrawRectangle(@intFromFloat(bx), @intFromFloat(inner.y), @intFromFloat(@max(1, fw - 1)), @intFromFloat(inner.height), theme.slab_fill);
@@ -319,29 +330,29 @@ fn machineControlsRect(panel: c.rl.Rectangle, panel_w: f32) c.rl.Rectangle {
     return widgets.rect(panel.x, panel.y, visible_w, panel.height);
 }
 
-fn drawPresetDropdown(panel: c.rl.Rectangle, track_idx: usize, mach: *const @import("../machine.zig").Machine, header_h: f32, m: widgets.Mouse) ?u8 {
+fn drawPresetDropdown(panel: c.rl.Rectangle, mach: *const @import("../machine.zig").Machine, header_h: f32, m: widgets.Mouse) ?u8 {
     const count_fn = mach.preset_count orelse return null;
     const name_fn = mach.preset_name orelse return null;
     const count = count_fn(mach.state);
     if (count == 0) return null;
 
+    const open_here = preset_dropdown_mach == mach;
     const w = theme.size(78);
     const h = @min(header_h, panel.height);
     const r = widgets.rect(panel.x + panel.width - w, panel.y, w, h);
     const hover = widgets.contains(r, m.x, m.y) and !widgets.hasActiveDrag();
     const pressed = hover and m.left_down;
     const clicked = hover and m.left_released;
-    const fill = if (pressed) theme.slab_lo else if (hover or preset_dropdown_track == track_idx) theme.slab_hi else theme.slab_fill;
+    const fill = if (pressed) theme.slab_lo else if (hover or open_here) theme.slab_hi else theme.slab_fill;
     widgets.bevelRaised(r, fill, theme.slab_hi, theme.slab_lo);
     widgets.drawLabelF("PRESET", r.x + 4, r.y + (r.height - theme.fsTiny()) / 2 - 1, theme.fsTiny(), theme.text_fg);
     widgets.drawLabelF("v", r.x + r.width - 8, r.y + (r.height - theme.fsTiny()) / 2 - 1, theme.fsTiny(), theme.text_dim);
     widgets.tooltip(r, "Preset", m);
     if (clicked) {
-        preset_dropdown_track = if (preset_dropdown_track != null and preset_dropdown_track.? == track_idx) null else track_idx;
-        poly_dropdown_track = null;
+        preset_dropdown_mach = if (open_here) null else mach;
     }
 
-    if (preset_dropdown_track != null and preset_dropdown_track.? == track_idx) {
+    if (preset_dropdown_mach == mach) {
         const row_h = theme.size(18);
         const menu = widgets.rect(r.x, r.y + r.height + 1, r.width, row_h * @as(f32, @floatFromInt(count)) + 2);
         c.rl.DrawRectangleRec(menu, theme.slab_edge);
@@ -353,12 +364,12 @@ fn drawPresetDropdown(panel: c.rl.Rectangle, track_idx: usize, mach: *const @imp
             if (row_hover) c.rl.DrawRectangleRec(row, theme.slab_hi);
             widgets.drawLabelF(name_fn(mach.state, i), row.x + 5, row.y + (row.height - theme.fsBody()) / 2 - 1, theme.fsBody(), theme.text_fg);
             if (row_hover and m.left_released) {
-                preset_dropdown_track = null;
+                preset_dropdown_mach = null;
                 return i;
             }
         }
         if (m.left_pressed and !widgets.contains(menu, m.x, m.y) and !widgets.contains(r, m.x, m.y)) {
-            preset_dropdown_track = null;
+            preset_dropdown_mach = null;
         }
     }
     return null;
@@ -378,7 +389,7 @@ fn drawPolyDropdown(panel: c.rl.Rectangle, track_idx: usize, voices: u8, header_
     widgets.tooltip(r, "Polyphony mode", m);
     if (clicked) {
         poly_dropdown_track = if (poly_dropdown_track != null and poly_dropdown_track.? == track_idx) null else track_idx;
-        preset_dropdown_track = null;
+        preset_dropdown_mach = null;
     }
 
     if (poly_dropdown_track != null and poly_dropdown_track.? == track_idx) {

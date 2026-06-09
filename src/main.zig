@@ -359,9 +359,18 @@ pub fn main() !void {
     tracks_buf[0] = try track_mod.Track.init(alloc, "Track 1", theme.track_colors[0], silent_machine);
     defer for (tracks_buf[0..track_count]) |*t| t.deinit(alloc);
 
+    // Master bus — a standalone Track (silent instrument, effects-only,
+    // its volume() is the master fader and meter() the master meter). It
+    // lives outside tracks_buf so no audio-track index ever shifts.
+    var master = try track_mod.Track.init(alloc, "Master", theme.slab_hi, silent_machine);
+    master.kind = .master;
+    master.setVolume(1.0); // unity — Track defaults to 0.8, which would quiet the mix
+    defer master.deinit(alloc);
+
     var engine = engine_mod.Engine{
         .transport = &transport,
         .tracks = tracks_buf[0..track_count],
+        .master = &master,
     };
 
     // ── Audio device ─────────────────────────────────────────────────
@@ -379,6 +388,9 @@ pub fn main() !void {
     var selected_clip: ?clip_mod.ClipRef = null;
     var prev_selected_clip: ?clip_mod.ClipRef = selected_clip;
     var selected_track: ?usize = 0;
+    // Which device the machine bay shows. Decoupled from selected_track (the
+    // audio/clip selection) so buses can be edited without touching clip code.
+    var device_sel: arrangement.DeviceSel = .audio;
     var history: history_mod.History = .{};
     defer history.deinit(alloc);
     var project_path = try alloc.dupe(u8, document_mod.SAVE_PATH);
@@ -453,7 +465,7 @@ pub fn main() !void {
         // (Side browser removed — machines are added via the "+" in the
         // machine-bay titlebar; see mbres.add_machine below.)
 
-        const ares = arrangement.draw(rects.arrangement, tracks, alloc, &selected_track, &selected_clip, &transport, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), pane_m);
+        const ares = arrangement.draw(rects.arrangement, tracks, &master, &device_sel, alloc, &selected_track, &selected_clip, &transport, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), pane_m);
         if (ares.rename_clip) |ref| beginRenameClip(&rename, tracks, ref);
         if (ares.rename_track) |ti| beginRenameTrack(&rename, tracks, ti);
         if (ares.rename_rect) |rr| rename.rect = rr;
@@ -504,13 +516,33 @@ pub fn main() !void {
                 }, tracks, &transport, &selected_track, &selected_clip, &rename, &dirty);
             }
         }
-        const mbres = machine_bay.draw(rects.machine_bay, tracks, selected_track, layout.machine_bay_collapsed, &reg, pane_m);
+        // Resolve which device the machine bay edits from device_sel.
+        var bay_dev: ?*track_mod.Track = null;
+        var bay_idx: ?usize = null;
+        var bay_is_bus = false;
+        switch (device_sel) {
+            .audio => {
+                if (selected_track) |ti| if (ti < tracks.len) {
+                    bay_dev = &tracks[ti];
+                    bay_idx = ti;
+                };
+            },
+            .master => {
+                bay_dev = &master;
+                bay_is_bus = true;
+            },
+        }
+
+        const mbres = machine_bay.draw(rects.machine_bay, bay_dev, bay_idx, bay_is_bus, layout.machine_bay_collapsed, &reg, pane_m);
         if (mbres.minimize) layout.machine_bay_collapsed = !layout.machine_bay_collapsed;
         if (mbres.add_machine) |reg_idx| {
-            if (selected_track) |ti| if (ti < tracks.len) {
+            if (bay_dev) |dev| {
                 const entry = &reg.entries[reg_idx];
-                if (entry.in_audio and entry.out_audio and !entry.in_notes) {
-                    addEffectToTrack(&audio, &reg, &tracks[ti], reg_idx) catch |err| {
+                const is_effect = entry.in_audio and entry.out_audio and !entry.in_notes;
+                if (bay_is_bus and !is_effect) {
+                    status.set("Master takes effects only", .{});
+                } else if (is_effect) {
+                    addEffectToTrack(&audio, &reg, dev, reg_idx) catch |err| {
                         std.log.err("add effect failed: {s}", .{@errorName(err)});
                         status.set("Effect failed: {s}", .{@errorName(err)});
                         continue;
@@ -518,7 +550,7 @@ pub fn main() !void {
                     dirty = true;
                     status.set("Added {s}", .{entry.nameSlice()});
                 } else {
-                    assignMachineToTrack(alloc, &audio, &reg, &tracks[ti], reg_idx, 1) catch |err| {
+                    assignMachineToTrack(alloc, &audio, &reg, dev, reg_idx, 1) catch |err| {
                         std.log.err("instantiate machine failed: {s}", .{@errorName(err)});
                         continue;
                     };
@@ -526,42 +558,44 @@ pub fn main() !void {
                     status.set("Assigned {s}", .{entry.nameSlice()});
                     const nm = entry.nameSlice();
                     const n = @min(nm.len, track_mod.MAX_NAME);
-                    @memcpy(tracks[ti].name_buf[0..n], nm[0..n]);
-                    tracks[ti].name_len = @intCast(n);
+                    @memcpy(dev.name_buf[0..n], nm[0..n]);
+                    dev.name_len = @intCast(n);
                 }
-            };
+            }
         }
         if (mbres.remove_machine) {
-            if (selected_track) |ti| if (ti < tracks.len and tracks[ti].machine_idx != null) {
+            if (!bay_is_bus) if (bay_dev) |dev| if (dev.machine_idx != null) {
                 pushHistorySnapshot(alloc, &history, tracks, &transport);
                 audio.stop();
                 defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
-                tracks[ti].replaceMachine(alloc, silent_machine);
-                tracks[ti].machine_idx = null;
-                tracks[ti].setEnabled(true);
+                dev.replaceMachine(alloc, silent_machine);
+                dev.machine_idx = null;
+                dev.setEnabled(true);
                 dirty = true;
                 status.set("Removed machine", .{});
             };
         }
         if (mbres.remove_effect) |fx_i| {
-            if (selected_track) |ti| if (ti < tracks.len and fx_i < tracks[ti].effect_count) {
-                pushHistorySnapshot(alloc, &history, tracks, &transport);
+            if (bay_dev) |dev| if (fx_i < dev.effect_count) {
+                // Audio-track effect removals are undoable; master FX aren't
+                // captured by the snapshot (FX chains aren't serialized yet).
+                if (!bay_is_bus) pushHistorySnapshot(alloc, &history, tracks, &transport);
                 audio.stop();
                 defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
-                tracks[ti].removeEffect(alloc, fx_i);
+                dev.removeEffect(alloc, fx_i);
                 dirty = true;
                 status.set("Removed effect", .{});
             };
         }
         if (mbres.preset_index) |preset| {
-            if (selected_track) |ti| if (ti < tracks.len) {
-                if (tracks[ti].machine.apply_preset) |apply| {
+            if (!bay_is_bus) if (bay_dev) |dev| {
+                if (dev.machine.apply_preset) |apply| {
                     pushHistorySnapshot(alloc, &history, tracks, &transport);
                     audio.stop();
                     defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
-                    apply(tracks[ti].machine.state, preset);
+                    apply(dev.machine.state, preset);
                     dirty = true;
-                    status.set("Preset {s}", .{if (tracks[ti].machine.preset_name) |name| name(tracks[ti].machine.state, preset) else ""});
+                    status.set("Preset {s}", .{if (dev.machine.preset_name) |name| name(dev.machine.state, preset) else ""});
                 }
             };
         }

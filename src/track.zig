@@ -11,9 +11,17 @@ const snap_mod = @import("snapshot.zig");
 pub const MAX_NAME = 32;
 pub const MAX_EFFECTS = 16;
 
+/// What role a Track plays in the signal graph. Audio tracks have an
+/// instrument + clips and sum into the master. `ret` (return) and
+/// `master` are buses: silent instrument, effects-only chain, no clips.
+/// `ret` is defined now for persistence/forward-compat; unused until the
+/// returns+sends phase.
+pub const Kind = enum(u8) { audio, ret, master };
+
 pub const Track = struct {
     name_buf: [MAX_NAME]u8 = [_]u8{0} ** MAX_NAME,
     name_len: u8 = 0,
+    kind: Kind = .audio,
     color: c.rl.Color,
     machine: machine.Machine,
     /// Registry index for persistence. Null means the silent placeholder.

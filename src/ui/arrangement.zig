@@ -115,6 +115,16 @@ pub const RenameTarget = struct {
     clip: usize = 0,
 };
 
+/// Which lane the machine bay reads — the audio selection (`selected_track`)
+/// or the master bus. Owned by main; the arrangement flips it as the user
+/// clicks the track area vs the master strip.
+pub const DeviceSel = enum { audio, master };
+
+/// Height of the pinned master strip at the bottom of the track bay.
+fn masterStripH() f32 {
+    return theme.laneH();
+}
+
 const ContextTarget = struct {
     beat: f64 = 0,
     track: ?usize = null,
@@ -425,6 +435,8 @@ fn nudgeSelectedClipsTracks(tracks: []Track, alloc: std.mem.Allocator, focused_c
 pub fn draw(
     r: c.rl.Rectangle,
     tracks: []Track,
+    master: *Track,
+    device_sel: *DeviceSel,
     alloc: std.mem.Allocator,
     selected_track: *?usize,
     selected_clip: *?ClipRef,
@@ -437,11 +449,18 @@ pub fn draw(
     var result: Result = .{};
     c.rl.DrawRectangleRec(r, theme.pane_bg);
 
+    var master_clicked = false;
+
     const header_w = theme.trackHeaderW();
     const timeline_x = r.x;
     const timeline_w = r.width - header_w;
     const header_x = r.x + timeline_w;
     const timeline_x0 = timeline_x + 2;
+
+    // Pinned master strip at the bottom; the scrollable lane band shrinks
+    // by its height.
+    const master_h = masterStripH();
+    const lanes_bottom = r.y + r.height - master_h;
 
     // ── Layout slices ────────────────────────────────────────────────
     const overview_rect = widgets.rect(timeline_x, r.y, timeline_w, overviewH());
@@ -462,8 +481,8 @@ pub fn draw(
 
     // Clamp scrolls once we know content extent.
     const content_beats = contentBeats(tracks);
-    const lanes_h = r.y + r.height - (r.y + overviewH() + rulerH());
     const lanes_top = r.y + overviewH() + rulerH();
+    const lanes_h = @max(0, lanes_bottom - lanes_top);
 
     // ── Wheel input (scroll / zoom) ──────────────────────────────────
     handleWheel(widgets.rect(timeline_x, r.y, timeline_w, r.height), m);
@@ -500,23 +519,23 @@ pub fn draw(
         @intFromFloat(timeline_x),
         @intFromFloat(lanes_top),
         @intFromFloat(timeline_w),
-        @intFromFloat(r.y + r.height - lanes_top),
+        @intFromFloat(lanes_bottom - lanes_top),
     );
     // Lane backgrounds first, then the loop region, so the loop marquee sits
     // behind the clips (drawn below).
     for (tracks, 0..) |*t, ti| {
         const ly = lanes_top + @as(f32, @floatFromInt(ti)) * theme.laneH() - scroll_y;
         if (ly + theme.laneH() <= lanes_top) continue;
-        if (ly >= r.y + r.height) break;
+        if (ly >= lanes_bottom) break;
         const lane_timeline = widgets.rect(timeline_x, ly, timeline_w, theme.laneH());
         const lane_is_sel = selected_track.* != null and selected_track.*.? == ti;
         drawTimelineLane(lane_timeline, t.*, ti, lane_is_sel, timeline_x0, edit_snap);
     }
-    drawLoopRegion(widgets.rect(timeline_x, lanes_top, timeline_w, r.y + r.height - lanes_top), timeline_x0, transport);
+    drawLoopRegion(widgets.rect(timeline_x, lanes_top, timeline_w, lanes_bottom - lanes_top), timeline_x0, transport);
     for (tracks, 0..) |*t, ti| {
         const ly = lanes_top + @as(f32, @floatFromInt(ti)) * theme.laneH() - scroll_y;
         if (ly + theme.laneH() <= lanes_top) continue;
-        if (ly >= r.y + r.height) break;
+        if (ly >= lanes_bottom) break;
         const lane_timeline = widgets.rect(timeline_x, ly, timeline_w, theme.laneH());
         const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
 
@@ -613,7 +632,7 @@ pub fn draw(
     // box-select from "nowhere": a plain click clears the whole selection,
     // a drag marquees from blank space. Right-click clears + opens the menu.
     if (!press_consumed and !widgets.hasActiveDrag()) {
-        const lanes_zone = widgets.rect(timeline_x, lanes_top, timeline_w, r.y + r.height - lanes_top);
+        const lanes_zone = widgets.rect(timeline_x, lanes_top, timeline_w, lanes_bottom - lanes_top);
         if (widgets.contains(lanes_zone, m.x, m.y)) {
             const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
             if (m.left_pressed) {
@@ -631,16 +650,15 @@ pub fn draw(
     }
 
     c.rl.EndScissorMode();
-    drawBoxSelectOverlay(timeline_x, timeline_w, lanes_top, r.y + r.height, m);
+    drawBoxSelectOverlay(timeline_x, timeline_w, lanes_top, lanes_bottom, m);
 
-    // Playhead spans the ruler and all lanes. Scissor to the
-    // timeline zone so it doesn't cross into the track-header column.
+    // Playhead spans the ruler and all lanes (stops above the master strip).
     const playhead_top = r.y + overviewH();
     c.rl.BeginScissorMode(
         @intFromFloat(timeline_x),
         @intFromFloat(playhead_top),
         @intFromFloat(timeline_w),
-        @intFromFloat(r.y + r.height - playhead_top),
+        @intFromFloat(lanes_bottom - playhead_top),
     );
     const beats_pos: f32 = @floatCast(transport.beats());
     const playhead_x = timeline_x0 + beats_pos * px_per_beat - scroll_x;
@@ -648,7 +666,7 @@ pub fn draw(
         @intFromFloat(playhead_x),
         @intFromFloat(playhead_top),
         1,
-        @intFromFloat(r.y + r.height - playhead_top),
+        @intFromFloat(lanes_bottom - playhead_top),
         theme.accent_hi,
     );
     c.rl.EndScissorMode();
@@ -660,12 +678,12 @@ pub fn draw(
         @intFromFloat(header_x),
         @intFromFloat(lanes_top),
         @intFromFloat(header_w),
-        @intFromFloat(r.y + r.height - lanes_top),
+        @intFromFloat(lanes_bottom - lanes_top),
     );
     for (tracks, 0..) |*t, ti| {
         const ly = lanes_top + @as(f32, @floatFromInt(ti)) * theme.laneH() - scroll_y;
         if (ly + theme.laneH() <= lanes_top) continue;
-        if (ly >= r.y + r.height) break;
+        if (ly >= lanes_bottom) break;
         const lane_header = widgets.rect(header_x, ly, header_w, theme.laneH());
         const lane_is_sel = selected_track.* != null and selected_track.*.? == ti;
         const editing = rename_target.kind == .track and rename_target.track == ti;
@@ -689,8 +707,25 @@ pub fn draw(
     c.rl.EndScissorMode();
 
     // Lazy vertical scrollbar.
-    const lanes_rect = widgets.rect(r.x, lanes_top, r.width, r.y + r.height - lanes_top);
+    const lanes_rect = widgets.rect(r.x, lanes_top, r.width, lanes_bottom - lanes_top);
     drawAndHandleScrollbar(lanes_rect, @as(f32, @floatFromInt(tracks.len)) * theme.laneH(), m);
+
+    // Pinned master strip at the bottom of the track bay.
+    {
+        const strip = widgets.rect(r.x, lanes_bottom, r.width, master_h);
+        if (drawMasterStrip(strip, header_x, header_w, timeline_x, timeline_w, master, device_sel.* == .master, m)) {
+            master_clicked = true;
+        }
+    }
+
+    // Flip the bay between master and audio: clicking the master strip parks
+    // on master; clicking anywhere in the track lanes/headers returns to the
+    // audio selection (even re-clicking the already-selected track).
+    if (master_clicked) {
+        device_sel.* = .master;
+    } else if (m.left_pressed and widgets.contains(widgets.rect(r.x, lanes_top, r.width, lanes_h), m.x, m.y)) {
+        device_sel.* = .audio;
+    }
 
     // Overview strip on top (rendered last so nothing scissor-clips it).
     drawOverview(overview_rect, timeline_w, tracks, content_beats, transport, m);
@@ -1280,6 +1315,47 @@ fn drawLaneHeader(r: c.rl.Rectangle, t: *Track, idx: usize, selected: bool, edit
         return .{ .action = if (m.double_clicked) .rename else .select, .name_rect = name_rect };
     }
     return .{ .action = .none, .name_rect = name_rect };
+}
+
+/// Pinned master strip: blank timeline (left) + a header (right) with the
+/// MASTER label, volume fader and stereo meter. Returns true when the strip
+/// is clicked (to select the master for the machine bay).
+fn drawMasterStrip(strip: c.rl.Rectangle, header_x: f32, header_w: f32, timeline_x: f32, timeline_w: f32, master: *Track, selected: bool, m: widgets.Mouse) bool {
+    // Blank timeline area — master has no clips.
+    c.rl.DrawRectangleRec(widgets.rect(timeline_x, strip.y, timeline_w, strip.height), theme.pane_bg);
+    // Top separator across the whole strip.
+    c.rl.DrawRectangle(@intFromFloat(strip.x), @intFromFloat(strip.y), @intFromFloat(strip.width), 1, theme.slab_edge);
+
+    const hdr = widgets.rect(header_x, strip.y, header_w, strip.height);
+    c.rl.DrawRectangleRec(hdr, if (selected) theme.slab_fill else theme.pane_alt);
+
+    const spine_w = theme.fine(4);
+    const accent_w = theme.fine(2);
+    c.rl.DrawRectangle(@intFromFloat(hdr.x), @intFromFloat(hdr.y), @intFromFloat(spine_w), @intFromFloat(hdr.height), theme.slab_hi);
+    if (selected) {
+        c.rl.DrawRectangle(@intFromFloat(hdr.x + spine_w), @intFromFloat(hdr.y), @intFromFloat(accent_w), @intFromFloat(hdr.height), theme.accent_hi);
+    }
+
+    const content_x = hdr.x + spine_w + accent_w + theme.size(5);
+    const meter_w = theme.fine(4);
+    const meter_gap: f32 = 1;
+    const meter_total = meter_w * 2 + meter_gap;
+    const meter_x = hdr.x + hdr.width - meter_total - 3;
+    const peaks = master.meter();
+    widgets.meter(widgets.rect(meter_x, hdr.y + 2, meter_w, hdr.height - 4), peaks.l);
+    widgets.meter(widgets.rect(meter_x + meter_w + meter_gap, hdr.y + 2, meter_w, hdr.height - 4), peaks.r);
+
+    const content_w = meter_x - content_x - 4;
+    widgets.drawLabelF("MASTER", content_x, hdr.y + 3, theme.fsBody(), if (selected) theme.text_fg else theme.text_dim);
+
+    const fader_h = theme.size(12);
+    const vol_r = widgets.rect(content_x, hdr.y + hdr.height - fader_h - 3, content_w, fader_h);
+    var v_norm: f32 = std.math.clamp(master.volume() / 1.25, 0.0, 1.0);
+    if (widgets.hFader(vol_r, &v_norm, m)) master.setVolume(v_norm * 1.25);
+    widgets.tooltip(vol_r, "Master volume", m);
+
+    // Click anywhere on the strip (not consumed by the fader) → select master.
+    return m.left_pressed and widgets.contains(strip, m.x, m.y) and !widgets.hasActiveDrag();
 }
 
 fn clipNameRect(r: c.rl.Rectangle) c.rl.Rectangle {
