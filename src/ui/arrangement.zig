@@ -669,7 +669,7 @@ pub fn draw(
         const lane_header = widgets.rect(header_x, ly, header_w, theme.laneH());
         const lane_is_sel = selected_track.* != null and selected_track.*.? == ti;
         const editing = rename_target.kind == .track and rename_target.track == ti;
-        const hres = drawLaneHeader(lane_header, t, lane_is_sel, editing, m);
+        const hres = drawLaneHeader(lane_header, t, ti, lane_is_sel, editing, m);
         if (editing) result.rename_rect = hres.name_rect;
         switch (hres.action) {
             .none => {},
@@ -1186,10 +1186,12 @@ const HeaderResult = struct {
     name_rect: c.rl.Rectangle,
 };
 
-fn drawLaneHeader(r: c.rl.Rectangle, t: *Track, selected: bool, editing_name: bool, m: widgets.Mouse) HeaderResult {
-    const bg = if (selected) theme.slab_fill else theme.pane_bg;
+fn drawLaneHeader(r: c.rl.Rectangle, t: *Track, idx: usize, selected: bool, editing_name: bool, m: widgets.Mouse) HeaderResult {
+    // Background mirrors the timeline lane striping; the selected row goes a
+    // step brighter. Flat fill in both states (no bevel inset) so content
+    // doesn't jitter 1px when selection toggles.
+    const bg = if (selected) theme.slab_fill else if (idx % 2 == 0) theme.pane_bg else theme.pane_alt;
     c.rl.DrawRectangleRec(r, bg);
-    c.rl.DrawRectangle(@intFromFloat(r.x), @intFromFloat(r.y), @intFromFloat(r.width), 1, theme.slab_edge);
     c.rl.DrawRectangle(
         @intFromFloat(r.x),
         @intFromFloat(r.y + r.height - 1),
@@ -1197,7 +1199,17 @@ fn drawLaneHeader(r: c.rl.Rectangle, t: *Track, selected: bool, editing_name: bo
         1,
         theme.slab_edge,
     );
-    c.rl.DrawRectangle(@intFromFloat(r.x), @intFromFloat(r.y), 3, @intFromFloat(r.height), t.color);
+
+    // Track-colour spine, plus an amber accent stripe when selected. The
+    // accent column is always reserved so the content x stays fixed.
+    const spine_w = theme.fine(4);
+    const accent_w = theme.fine(2);
+    c.rl.DrawRectangle(@intFromFloat(r.x), @intFromFloat(r.y), @intFromFloat(spine_w), @intFromFloat(r.height), t.color);
+    if (selected) {
+        c.rl.DrawRectangle(@intFromFloat(r.x + spine_w), @intFromFloat(r.y), @intFromFloat(accent_w), @intFromFloat(r.height), theme.accent_hi);
+    }
+
+    const content_x = r.x + spine_w + accent_w + theme.size(5);
 
     const meter_w = theme.fine(4);
     const meter_gap: f32 = 1;
@@ -1209,7 +1221,6 @@ fn drawLaneHeader(r: c.rl.Rectangle, t: *Track, selected: bool, editing_name: bo
     widgets.meter(widgets.rect(meter_x, meter_y, meter_w, meter_h), peaks.l);
     widgets.meter(widgets.rect(meter_x + meter_w + meter_gap, meter_y, meter_w, meter_h), peaks.r);
 
-    const content_x = r.x + 5;
     const content_w = meter_x - content_x - 4;
 
     const row1_y = r.y + 2;
@@ -1218,14 +1229,23 @@ fn drawLaneHeader(r: c.rl.Rectangle, t: *Track, selected: bool, editing_name: bo
     const solo_r = widgets.rect(content_x + content_w - btn_w, row1_y, btn_w, btn_h);
     const mute_r = widgets.rect(solo_r.x - btn_w - 2, row1_y, btn_w, btn_h);
 
-    const name_rect = widgets.rect(content_x, row1_y, content_w - btn_w * 2 - 4, btn_h);
+    // Index badge then the name. The badge is dimmed; the name brightens
+    // on the selected row.
+    const idx_w = theme.size(12);
+    var idx_buf: [8:0]u8 = undefined;
+    const idx_s = std.fmt.bufPrintZ(&idx_buf, "{d}", .{idx + 1}) catch "?";
+    widgets.drawLabelF(idx_s.ptr, content_x, row1_y + 1, theme.fsTiny(), theme.text_mute);
+
+    const name_x = content_x + idx_w;
+    const name_w = @max(8.0, content_w - idx_w - btn_w * 2 - 4);
+    const name_rect = widgets.rect(name_x, row1_y, name_w, btn_h);
     if (!editing_name) {
         var name_buf: [track_mod.MAX_NAME + 1:0]u8 = undefined;
         const n = t.name();
         const copy_n = @min(n.len, track_mod.MAX_NAME);
         @memcpy(name_buf[0..copy_n], n[0..copy_n]);
         name_buf[copy_n] = 0;
-        widgets.drawLabelF(@ptrCast(&name_buf[0]), content_x, row1_y + 1, theme.fsBody(), theme.text_fg);
+        widgets.drawLabelF(@ptrCast(&name_buf[0]), name_x, row1_y + 1, theme.fsBody(), if (selected) theme.text_fg else theme.text_dim);
     }
 
     const is_muted = t.mute.load(.monotonic);
