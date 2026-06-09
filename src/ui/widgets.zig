@@ -492,7 +492,7 @@ pub fn paneHeader(
         const title_rect = rect(left_x, r.y, title_w, r.height);
         title_rect_out = title_rect;
         bevelRaised(title_rect, theme.slab_fill, theme.slab_hi, theme.slab_lo);
-        drawLabelF(opts.title, title_rect.x + 4, title_rect.y + 1, theme.fsTiny(), theme.text_fg);
+        drawLabelF(opts.title, title_rect.x + theme.size(6), title_rect.y + (title_rect.height - theme.fsTiny()) / 2 - 1, theme.fsTiny(), theme.text_fg);
     }
 
     return .{ .minimize = min_clicked, .close = close_clicked, .left_tool = left_tool_clicked, .title_rect = title_rect_out };

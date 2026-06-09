@@ -24,13 +24,24 @@ pub fn draw(r: c.rl.Rectangle, tracks: []Track, selected: ?usize, collapsed: boo
     const header_h = @min(r.height, theme.paneHeaderH());
 
     if (collapsed) {
-        const res = drawPlaceholder(r, header_h, true, m);
+        const res = drawPlaceholder(r, header_h, true, null, m);
+        return .{ .minimize = res.minimize };
+    }
+
+    // No machine loaded (no track selected, or a track with nothing assigned)
+    // → one continuous placeholder title bar across the whole bay with a hint,
+    // instead of an empty machine panel / stub + a seam.
+    const have_machine = if (selected) |idx| (idx < tracks.len and tracks[idx].machine_idx != null) else false;
+    if (!have_machine) {
+        const hint: [*:0]const u8 = if (selected != null) "no machine — assign one from the browser" else "select a track";
+        const res = drawPlaceholder(r, header_h, false, hint, m);
         return .{ .minimize = res.minimize };
     }
 
     var x = r.x;
-    if (selected) |idx| {
-        if (idx < tracks.len) {
+    {
+        const idx = selected.?;
+        {
             const t = &tracks[idx];
             const DEFAULT_PANEL_W = theme.size(200);
             const pw = @min(if (t.machine.panel_w > 0) theme.size(t.machine.panel_w) else DEFAULT_PANEL_W, r.width);
@@ -62,20 +73,12 @@ pub fn draw(r: c.rl.Rectangle, tracks: []Track, selected: ?usize, collapsed: boo
                 fx.draw_panel(fx.state, widgets.rect(x, r.y, fx_w, r.height), m);
                 x += fx_w;
             }
-        } else {
-            const empty_w = @min(theme.size(200), r.width);
-            drawEmptyPanel(widgets.rect(x, r.y, empty_w, r.height), header_h);
-            x += empty_w;
         }
-    } else {
-        const empty_w = @min(theme.size(200), r.width);
-        drawEmptyPanel(widgets.rect(x, r.y, empty_w, r.height), header_h);
-        x += empty_w;
     }
 
     if (x < r.x + r.width) {
         const rest = widgets.rect(x, r.y, r.x + r.width - x, r.height);
-        const res = drawPlaceholder(rest, header_h, false, m);
+        const res = drawPlaceholder(rest, header_h, false, null, m);
         result.minimize = res.minimize;
         return result;
     }
@@ -192,12 +195,13 @@ fn polyLabel(v: u8) [*:0]const u8 {
     };
 }
 
-fn drawPlaceholder(r: c.rl.Rectangle, header_h: f32, collapsed: bool, m: widgets.Mouse) widgets.HeaderResult {
+fn drawPlaceholder(r: c.rl.Rectangle, header_h: f32, collapsed: bool, hint: ?[*:0]const u8, m: widgets.Mouse) widgets.HeaderResult {
     if (r.width <= 0 or r.height <= 0) return .{};
     const header = widgets.rect(r.x, r.y, r.width, @min(header_h, r.height));
     const res = widgets.paneHeader(header, .{ .title = "", .collapsed = collapsed }, m);
     if (r.height > header.height) {
         c.rl.DrawRectangleRec(widgets.rect(r.x, r.y + header.height, r.width, r.height - header.height), theme.pane_bg);
+        if (hint) |h| widgets.drawLabelF(h, r.x + theme.size(6), r.y + header.height + theme.size(6), theme.fsBody(), theme.text_mute);
     }
     return res;
 }

@@ -558,7 +558,6 @@ pub fn main() !void {
         }
 
         layout.drawSplitters(rects, m);
-        drawStatusBar(rects.status_bar, &transport, selected_track, selected_clip, tracks, project_path, project_path_chosen, dirty, status.text(), focus, edit_snap);
         if (rename.active()) drawInlineRename(&rename);
         widgets.drawTooltip(sw, sh);
         widgets.drawContextMenu();
@@ -1544,59 +1543,64 @@ fn drawStatusBar(
     focus: FocusPane,
     edit_snap: snap_mod.Setting,
 ) void {
-    c.rl.DrawRectangleRec(r, theme.pane_bg);
-    c.rl.DrawRectangle(@intFromFloat(r.x), @intFromFloat(r.y), @intFromFloat(r.width), 1, theme.slab_edge);
+    _ = selected_track;
+    _ = selected_clip;
+    _ = tracks;
+    _ = focus;
 
-    const fh = r.height - 4;
-    var x = r.x + 2;
-    const y = r.y + 2;
+    // Toolbar-style bar: flat dark background; chips fill the full bar height
+    // and abut (their raised bevels are the only edges — no inset, no gaps).
+    // Left group flush left, right group flush right, bare spacer between.
+    c.rl.DrawRectangleRec(r, theme.bg);
 
+    // ── Left group: transport position, snap, zoom ───────────────────
     const playing = transport.isPlaying();
-    const state_s: [*:0]const u8 = if (playing) "Playing" else "Stopped";
-    drawStatusCell(widgets.rect(x, y, theme.size(88), fh), "TRANSPORT", state_s, if (playing) theme.accent_play else theme.text_fg);
-    x += theme.size(89);
+    var pos_buf: [24:0]u8 = undefined;
+    const beats = transport.beats();
+    const bar = @as(u32, @intFromFloat(@floor(beats / 4))) + 1;
+    const beat_in_bar = @as(u32, @intFromFloat(@floor(@mod(beats, 4)))) + 1;
+    const sixteenth = @as(u32, @intFromFloat(@floor(@mod(beats, 1) * 4))) + 1;
+    const pos = std.fmt.bufPrintZ(&pos_buf, "{d}.{d}.{d}", .{ bar, beat_in_bar, sixteenth }) catch "?";
+    var zoom_buf: [12:0]u8 = undefined;
+    const zoom = std.fmt.bufPrintZ(&zoom_buf, "{d:.0}%", .{theme.ui_scale * 100}) catch "?";
 
-    var buf: [96:0]u8 = undefined;
-    const label: [*:0]const u8 = if (selected_clip) |s| blk: {
-        const t = &tracks[s.track];
-        if (s.clip < t.clips.items.len) {
-            const cname = t.clips.items[s.clip].name();
-            break :blk (std.fmt.bufPrintZ(&buf, "{s} / {s}", .{ t.name(), cname }) catch @as([:0]const u8, "?")).ptr;
-        }
-        break :blk "(invalid)";
-    } else if (selected_track) |ti| blk: {
-        break :blk (std.fmt.bufPrintZ(&buf, "{s}", .{tracks[ti].name()}) catch @as([:0]const u8, "?")).ptr;
-    } else "(none)";
-    const sel_w = @min(theme.size(320), @max(theme.size(170), r.width * 0.34));
-    drawStatusCell(widgets.rect(x, y, sel_w, fh), if (selected_clip != null) "CLIP" else "TRACK", label, theme.text_fg);
-    x += sel_w + theme.size(1);
+    var x = r.x;
+    x += statusChip(x, r.y, r.height, if (playing) .stop else .play, pos.ptr, if (playing) theme.accent_play else theme.text_fg);
+    x += statusChip(x, r.y, r.height, .metronome, edit_snap.label(), theme.text_dim);
+    x += statusChip(x, r.y, r.height, null, zoom.ptr, theme.text_dim);
 
+    // ── Right group: transient message, then project (flush right) ────
     var path_buf: [128:0]u8 = undefined;
     const path_label = if (project_path_chosen)
         (std.fmt.bufPrintZ(&path_buf, "{s}{s}", .{ if (dirty) "*" else "", basename(project_path) }) catch "?")
     else
         (if (dirty) @as([:0]const u8, "*Untitled") else @as([:0]const u8, "Untitled"));
-    drawStatusCell(widgets.rect(x, y, @min(theme.size(260), @max(theme.size(130), r.width * 0.18)), fh), "PROJECT", path_label.ptr, theme.text_dim);
-    x += @min(theme.size(260), @max(theme.size(130), r.width * 0.18)) + theme.size(1);
+    const has_msg = std.mem.len(status_text) > 0;
+    const msg_w: f32 = if (has_msg) statusChipWidth(.caret_right, status_text) else 0;
+    const proj_w = statusChipWidth(.file, path_label.ptr);
+    var rx = @max(x, r.x + r.width - msg_w - proj_w);
+    if (has_msg) rx += statusChip(rx, r.y, r.height, .caret_right, status_text, theme.accent_hi);
+    _ = statusChip(rx, r.y, r.height, .file, path_label.ptr, if (dirty) theme.accent_hi else theme.text_dim);
+}
 
-    drawStatusCell(widgets.rect(x, y, theme.size(116), fh), "FOCUS", focusLabel(focus), theme.text_dim);
-    x += theme.size(117);
+fn statusChipWidth(icon: ?widgets.Icon, value: [*:0]const u8) f32 {
+    const fs = theme.fsBody();
+    const pad = theme.size(6);
+    const icon_w: f32 = if (icon != null) fs + theme.size(3) else 0;
+    return pad * 2 + icon_w + widgets.measureTextF(value, fs);
+}
 
-    drawStatusCell(widgets.rect(x, y, theme.size(72), fh), "SNAP", edit_snap.label(), theme.text_dim);
-    x += theme.size(73);
-
-    var detail_buf: [128:0]u8 = undefined;
-    const detail = selectionDetails(&detail_buf, selected_clip, tracks);
-    const detail_w = @min(theme.size(300), @max(theme.size(150), r.width * 0.2));
-    drawStatusCell(widgets.rect(x, y, detail_w, fh), "DETAILS", detail, theme.text_dim);
-    x += detail_w + theme.size(1);
-
-    if (std.mem.len(status_text) > 0) {
-        drawStatusCell(widgets.rect(x, y, @min(theme.size(260), @max(theme.size(140), r.width * 0.2)), fh), "STATUS", status_text, theme.accent_hi);
+fn statusChip(x: f32, y: f32, h: f32, icon: ?widgets.Icon, value: [*:0]const u8, col: c.rl.Color) f32 {
+    const fs = theme.fsBody();
+    const w = statusChipWidth(icon, value);
+    widgets.bevelRaised(widgets.rect(x, y, w, h), theme.slab_fill, theme.slab_hi, theme.slab_lo);
+    var tx = x + theme.size(6);
+    if (icon) |ic| {
+        widgets.drawIcon(ic, tx, y + (h - fs) / 2, fs, col);
+        tx += fs + theme.size(3);
     }
-
-    const zoom = std.fmt.bufPrintZ(&buf, "{d:.0}% / {d:.0}%", .{ theme.ui_scale * 100, theme.font_scale * 100 }) catch "?";
-    drawStatusCell(widgets.rect(r.x + r.width - theme.size(118), y, theme.size(116), fh), "UI ZOOM", zoom.ptr, theme.text_dim);
+    widgets.drawLabelF(value, tx, y + (h - fs) / 2 - 1, fs, col);
+    return w;
 }
 
 fn drawStatusCell(r: c.rl.Rectangle, cap: [*:0]const u8, value: [*:0]const u8, value_color: c.rl.Color) void {

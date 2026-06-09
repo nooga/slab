@@ -116,7 +116,9 @@ pub fn topBarH() f32 {
     return dim(22);
 }
 pub fn statusBarH() f32 {
-    return dim(28);
+    // Dropped for now — it duplicated the top toolbar. Zeroed so the panes
+    // reclaim the space; the draw call is skipped in main.
+    return 0;
 }
 pub fn splitterW() f32 {
     return 1;
