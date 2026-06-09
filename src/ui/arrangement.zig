@@ -609,6 +609,27 @@ pub fn draw(
         }
     }
 
+    // Empty area below the last track (still inside the timeline) → start a
+    // box-select from "nowhere": a plain click clears the whole selection,
+    // a drag marquees from blank space. Right-click clears + opens the menu.
+    if (!press_consumed and !widgets.hasActiveDrag()) {
+        const lanes_zone = widgets.rect(timeline_x, lanes_top, timeline_w, r.y + r.height - lanes_top);
+        if (widgets.contains(lanes_zone, m.x, m.y)) {
+            const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
+            if (m.left_pressed) {
+                beginBoxSelect(null, m, shift);
+                press_consumed = true;
+            } else if (m.right_pressed) {
+                selected_track.* = null;
+                selected_clip.* = null;
+                deselectAllClips(tracks);
+                context_target = .{ .beat = beatAtX(timeline_x0, m.x), .track = null };
+                _ = widgets.openContextMenu(ARR_CONTEXT_KEY, r, m);
+                press_consumed = true;
+            }
+        }
+    }
+
     c.rl.EndScissorMode();
     drawBoxSelectOverlay(timeline_x, timeline_w, lanes_top, r.y + r.height, m);
 
@@ -795,7 +816,7 @@ fn deselectAllClips(tracks: []Track) void {
     }
 }
 
-fn beginBoxSelect(track_idx: usize, m: widgets.Mouse, shift: bool) void {
+fn beginBoxSelect(track_idx: ?usize, m: widgets.Mouse, shift: bool) void {
     if (!widgets.tryStartDrag(BOX_KEY)) return;
     box_active = true;
     box_start_x = m.x;
