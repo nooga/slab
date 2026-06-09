@@ -141,14 +141,38 @@ A single generic routine (replacing `drawMs20Panel`):
 `raw-ms20` (and any declarative machine) gets the `mono1` aesthetic for
 free; the flat `drawMs20Panel`/`drawMs20Module` are deleted.
 
-## Escape hatch: custom draw
+## Displays (built-in visualizers)
 
-Generic covers knobs/switches. For richer widgets — an **ADSR curve**, a
-**VU meter**, a scope — a machine marks a strip or cell `custom` and the
-engine hands it the rect to draw into. Raw machines draw via a fy UI word
-using the existing panel builtins (`slab:panel-x/y/w/h`, `widget:*`); the
-engine sets the UI context to the cell rect before the call. This keeps the
-common case declarative while leaving room for bespoke visuals.
+Beyond knobs/switches, a **display** cell shows a built-in visualizer in a
+shared sunken-black field. Declared like a strip and placed in the layout:
+
+```
+display|NAME|kind|source[,source2...]
+display|EG|adsr|FLT ENV,AMP ENV       # one field, two overlaid labelled curves
+...
+cell|1.6|HPF*4/EG*1                    # short display under a taller HPF
+```
+
+- `kind` selects a built-in renderer (`adsr` today; `lfo`, `scope`,
+  `schematic`, `vu` are the obvious next ones — each is a new `switch` arm).
+- `source` names the module(s) the renderer reads. Comma-separated sources
+  are **overlaid** in the one field, one accent pen each, labelled inline.
+- `adsr` reads the source module's ATK/DEC/SUS/REL knob norms and draws the
+  cap-discharge envelope shape, reacting live as the knobs move.
+
+These visualizers are **drawn in Zig today** (selected by the manifest kind).
+They are the visual reference for the planned fy-drawn displays.
+
+## Escape hatch: fy-drawn custom displays (planned)
+
+The durable goal (docs/00, docs/02): a machine draws its own bespoke display
+in **fy**, not Zig. The shape: a small immediate-mode gfx API exposed as fy
+builtins (`g-pen`, `g-line`, `g-rect`, …), a machine-declared `draw` word the
+host calls each frame with the cell rect + params pointer, and a
+`display|NAME|fy|<word>` kind to wire it. The current Zig `adsr` renderer is
+the reference to match. Hazard to design around: hot-reload recompiling the
+fy module while the UI/audio threads run — pre-existing to the livecoding
+model, to be handled there, not invented here.
 
 ## Client rect + title bar
 

@@ -54,13 +54,17 @@ strip|FLT ENV|1
 strip|MG|1
 strip|MOD|4
 
+# display|NAME|kind|source[,source2...]  — built-in visualizer cell (docs/15).
+# Comma-separated sources share one black field (small labeled graphs).
+display|EG|adsr|FLT ENV,AMP ENV
+
 # Weighted box layout (docs/15): row|<h> then cell|<w>|MOD1/MOD2 (/ stacks).
 # Short modules stack to share a column; MOD is a full-width horizontal row.
 row|4
 cell|1|VCO1/MG
 cell|1|VCO2
 cell|1|MIX*3/VCA*1
-cell|1|HPF
+cell|1.6|HPF*4/EG*1
 cell|1|LPF
 cell|1|AMP ENV
 cell|1|FLT ENV

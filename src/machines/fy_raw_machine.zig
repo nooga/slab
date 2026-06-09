@@ -131,17 +131,38 @@ const RawStrip = struct {
     }
 };
 
-// Weighted box layout (docs/15): rows -> cells -> stacked strips. Each level
-// splits its parent's extent by weight. Optional: if no row| lines are
-// declared, the renderer falls back to a single flat row of strips.
+// Built-in display (custom-draw cell, docs/15 escape hatch): a sunken field
+// drawn by a built-in visualizer instead of knobs. Declared:
+//   display|NAME|kind|source        e.g. display|FLT GRAPH|adsr|FLT ENV
+// and placed in the layout like a strip.
+const MAX_RAW_DISPLAYS = 8;
+const RawDisplayKind = enum { adsr };
+const RawDisplay = struct {
+    name: [MAX_CONTROL_TEXT:0]u8 = [_:0]u8{0} ** MAX_CONTROL_TEXT,
+    name_len: usize = 0,
+    kind: RawDisplayKind = .adsr,
+    source: [MAX_CONTROL_TEXT:0]u8 = [_:0]u8{0} ** MAX_CONTROL_TEXT,
+    source_len: usize = 0,
+
+    fn nameZ(self: *const RawDisplay) [*:0]const u8 {
+        return @ptrCast(&self.name[0]);
+    }
+    fn sourceSlice(self: *const RawDisplay) []const u8 {
+        return self.source[0..self.source_len];
+    }
+};
+
+// Weighted box layout (docs/15): rows -> cells -> stacked items (strip or
+// display). Each level splits its parent's extent by weight. If no row| lines
+// are declared, the renderer falls back to a single flat row of strips.
 const MAX_LAYOUT_ROWS = 8;
 const MAX_ROW_CELLS = 16;
 const MAX_CELL_STRIPS = 6;
 
-const LayoutStrip = struct { strip: usize = 0, weight: f32 = 1 };
+const LayoutItem = struct { is_display: bool = false, index: usize = 0, weight: f32 = 1 };
 const LayoutCell = struct {
-    strips: [MAX_CELL_STRIPS]LayoutStrip = undefined,
-    strip_count: usize = 0,
+    items: [MAX_CELL_STRIPS]LayoutItem = undefined,
+    item_count: usize = 0,
     weight: f32 = 1,
 };
 const LayoutRow = struct {
@@ -255,6 +276,8 @@ pub const FyRawMachine = struct {
     raw_strip_count: usize = 0,
     raw_rows: [MAX_LAYOUT_ROWS]LayoutRow = undefined,
     raw_row_count: usize = 0,
+    raw_displays: [MAX_RAW_DISPLAYS]RawDisplay = undefined,
+    raw_display_count: usize = 0,
     panel_w: f32 = 128,
     failed: bool = false,
 
@@ -395,6 +418,7 @@ pub const FyRawMachine = struct {
         self.raw_const_count = 0;
         self.raw_strip_count = 0;
         self.raw_row_count = 0;
+        self.raw_display_count = 0;
         if (self.spec.manifest_path) |path| try self.loadRawControlsFromManifest(alloc, path);
         var i: usize = 0;
         while (i < MAX_RAW_CONTROLS) : (i += 1) {
@@ -438,6 +462,17 @@ pub const FyRawMachine = struct {
                 const s = try parseStripFields(&fields);
                 self.raw_strips[self.raw_strip_count] = s;
                 self.raw_strip_count += 1;
+            } else if (std.mem.eql(u8, tag, "display")) {
+                if (self.raw_display_count >= MAX_RAW_DISPLAYS) return error.RawStripLimitExceeded;
+                var d = RawDisplay{};
+                const name = fields.next() orelse return error.InvalidRawManifest;
+                const kind = fields.next() orelse return error.InvalidRawManifest;
+                const source = fields.next() orelse "";
+                d.name_len = try copyZ(&d.name, name);
+                d.source_len = try copyZ(&d.source, source);
+                d.kind = if (std.mem.eql(u8, kind, "adsr")) .adsr else return error.InvalidRawManifest;
+                self.raw_displays[self.raw_display_count] = d;
+                self.raw_display_count += 1;
             } else if (std.mem.eql(u8, tag, "row")) {
                 if (self.raw_row_count >= MAX_LAYOUT_ROWS) return error.RawStripLimitExceeded;
                 var row = LayoutRow{};
@@ -462,10 +497,16 @@ pub const FyRawMachine = struct {
                             name = std.mem.trim(u8, seg[0..star], " ");
                         } else |_| {}
                     }
-                    const si = stripIndexByModule(self, name) orelse return error.InvalidRawManifest;
-                    if (cell.strip_count < MAX_CELL_STRIPS) {
-                        cell.strips[cell.strip_count] = .{ .strip = si, .weight = hw };
-                        cell.strip_count += 1;
+                    var item = LayoutItem{ .weight = hw };
+                    if (stripIndexByModule(self, name)) |si| {
+                        item.index = si;
+                    } else if (displayIndexByName(self, name)) |di| {
+                        item.is_display = true;
+                        item.index = di;
+                    } else return error.InvalidRawManifest;
+                    if (cell.item_count < MAX_CELL_STRIPS) {
+                        cell.items[cell.item_count] = item;
+                        cell.item_count += 1;
                     }
                 }
                 const row = &self.raw_rows[self.raw_row_count - 1];
@@ -1031,6 +1072,105 @@ fn stripViewAt(self: *const FyRawMachine, idx: usize) StripView {
     return .{ .title = s.moduleZ(), .module = s.moduleSlice(), .width = 1, .cols = s.cols };
 }
 
+fn displayIndexByName(self: *const FyRawMachine, name: []const u8) ?usize {
+    for (self.raw_displays[0..self.raw_display_count], 0..) |*d, i| {
+        if (std.mem.eql(u8, d.name[0..d.name_len], name)) return i;
+    }
+    return null;
+}
+
+fn controlNormByLabel(self: *const FyRawMachine, module: []const u8, label: []const u8) ?f32 {
+    for (self.raw_controls[0..self.raw_control_count], 0..) |*ctl, i| {
+        if (std.mem.eql(u8, ctl.module[0..ctl.module_len], module) and
+            std.mem.eql(u8, ctl.label[0..ctl.label_len], label))
+            return self.controlNorm(i);
+    }
+    return null;
+}
+
+// Capacitor charge/discharge easing toward a target: fast then slow, used for
+// every ADSR segment (matches the cap-discharge envelope). shape(0)=0, shape(1)=1.
+fn capShape(t: f32) f32 {
+    const k: f32 = 4.0;
+    return (1.0 - @exp(-k * t)) / (1.0 - @exp(-k));
+}
+
+fn drawDisplay(self: *FyRawMachine, rect: c.rl.Rectangle, disp: *const RawDisplay) void {
+    // One shared sunken-black field; comma-separated sources are drawn as small
+    // labeled graphs side-by-side inside it (compact, no per-graph header).
+    const field = widgets.displayField(rect);
+    switch (disp.kind) {
+        .adsr => {
+            // Overlay every source curve in the same field, one pen each.
+            const pens = [_]c.rl.Color{ theme.accent_hi, theme.accent_play, theme.accent_rec };
+            var it = std.mem.splitScalar(u8, disp.sourceSlice(), ',');
+            var idx: usize = 0;
+            while (it.next()) |raw| : (idx += 1) {
+                const src = std.mem.trim(u8, raw, " ");
+                drawAdsrCurve(self, field, src, pens[idx % pens.len], idx);
+            }
+        },
+    }
+}
+
+// Draw the A/D/S/R envelope shape (segment widths from the knob norms, a fixed
+// sustain hold), reacting live to the source module's ATK/DEC/SUS/REL knobs.
+fn drawAdsrCurve(self: *FyRawMachine, area: c.rl.Rectangle, source: []const u8, col: c.rl.Color, label_idx: usize) void {
+    const atk = controlNormByLabel(self, source, "ATK") orelse 0.3;
+    const dec = controlNormByLabel(self, source, "DEC") orelse 0.3;
+    const sus = controlNormByLabel(self, source, "SUS") orelse 0.5;
+    const rel = controlNormByLabel(self, source, "REL") orelse 0.3;
+
+    const pad = theme.fine(2);
+    const x0 = area.x + pad;
+    const w = area.width - 2 * pad;
+    const top = area.y + pad;
+    const h = area.height - 2 * pad;
+    if (w <= 1 or h <= 1) return;
+    const base = top + h;
+
+    const hold: f32 = 0.5;
+    const wsum = atk + dec + hold + rel + 0.0001;
+    const aw = w * atk / wsum;
+    const dw = w * dec / wsum;
+    const hw = w * hold / wsum;
+    const rw = w * rel / wsum;
+
+    const xa1 = x0 + aw;
+    const xd1 = xa1 + dw;
+    const xh1 = xd1 + hw;
+    const xr1 = xh1 + rw;
+
+    if (label_idx == 0) c.rl.DrawLineEx(.{ .x = x0, .y = base }, .{ .x = x0 + w, .y = base }, 1.0, theme.slab_edge);
+
+    drawCapSeg(x0, 0.0, xa1, 1.0, base, h, col);
+    drawCapSeg(xa1, 1.0, xd1, sus, base, h, col);
+    c.rl.DrawLineEx(.{ .x = xd1, .y = base - sus * h }, .{ .x = xh1, .y = base - sus * h }, 1.5, col);
+    drawCapSeg(xh1, sus, xr1, 0.0, base, h, col);
+
+    // inline label: first token of the source, in the curve's colour, offset so
+    // overlaid sources' labels sit side by side.
+    var buf: [12:0]u8 = [_:0]u8{0} ** 12;
+    const tok_end = std.mem.indexOfScalar(u8, source, ' ') orelse source.len;
+    const tlen = @min(tok_end, 11);
+    @memcpy(buf[0..tlen], source[0..tlen]);
+    buf[tlen] = 0;
+    widgets.drawLabelF(@ptrCast(&buf[0]), area.x + 1 + @as(f32, @floatFromInt(label_idx)) * theme.size(22), top - 1, theme.fsTiny(), col);
+}
+
+fn drawCapSeg(xa: f32, la: f32, xb: f32, lb: f32, base: f32, h: f32, col: c.rl.Color) void {
+    const N: usize = 14;
+    var prev = c.rl.Vector2{ .x = xa, .y = base - la * h };
+    var i: usize = 1;
+    while (i <= N) : (i += 1) {
+        const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(N));
+        const l = la + (lb - la) * capShape(t);
+        const p = c.rl.Vector2{ .x = xa + (xb - xa) * t, .y = base - l * h };
+        c.rl.DrawLineEx(prev, p, 1.5, col);
+        prev = p;
+    }
+}
+
 // Weighted box layout (docs/15): split body height across rows, each row's
 // width across cells, each cell's height across its stacked strips. Last
 // element in each axis takes the remainder so the block fills exactly.
@@ -1048,12 +1188,17 @@ fn drawLayoutTree(self: *FyRawMachine, body: c.rl.Rectangle, mouse: widgets.Mous
             for (r.cells[0..r.cell_count], 0..) |*cc, ci| {
                 const cw = if (ci + 1 == r.cell_count) (body.x + body.width - x) else body.width * cc.weight / total_cw;
                 var total_sw: f32 = 0;
-                for (cc.strips[0..cc.strip_count]) |ss| total_sw += ss.weight;
+                for (cc.items[0..cc.item_count]) |it| total_sw += it.weight;
                 if (total_sw > 0) {
                     var sy = y;
-                    for (cc.strips[0..cc.strip_count], 0..) |ss, si| {
-                        const sh = if (si + 1 == cc.strip_count) (y + rh - sy) else rh * ss.weight / total_sw;
-                        drawStrip(self, widgets.rect(x, sy, cw, sh), stripViewAt(self, ss.strip), mouse);
+                    for (cc.items[0..cc.item_count], 0..) |it, ii| {
+                        const sh = if (ii + 1 == cc.item_count) (y + rh - sy) else rh * it.weight / total_sw;
+                        const item_rect = widgets.rect(x, sy, cw, sh);
+                        if (it.is_display) {
+                            drawDisplay(self, item_rect, &self.raw_displays[it.index]);
+                        } else {
+                            drawStrip(self, item_rect, stripViewAt(self, it.index), mouse);
+                        }
                         sy += sh;
                     }
                 }
