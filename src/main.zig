@@ -531,6 +531,28 @@ pub fn main() !void {
                 }
             };
         }
+        if (mbres.remove_machine) {
+            if (selected_track) |ti| if (ti < tracks.len and tracks[ti].machine_idx != null) {
+                pushHistorySnapshot(alloc, &history, tracks, &transport);
+                audio.stop();
+                defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+                tracks[ti].replaceMachine(alloc, silent_machine);
+                tracks[ti].machine_idx = null;
+                tracks[ti].setEnabled(true);
+                dirty = true;
+                status.set("Removed machine", .{});
+            };
+        }
+        if (mbres.remove_effect) |fx_i| {
+            if (selected_track) |ti| if (ti < tracks.len and fx_i < tracks[ti].effect_count) {
+                pushHistorySnapshot(alloc, &history, tracks, &transport);
+                audio.stop();
+                defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+                tracks[ti].removeEffect(alloc, fx_i);
+                dirty = true;
+                status.set("Removed effect", .{});
+            };
+        }
         if (mbres.preset_index) |preset| {
             if (selected_track) |ti| if (ti < tracks.len) {
                 if (tracks[ti].machine.apply_preset) |apply| {

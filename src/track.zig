@@ -43,6 +43,18 @@ pub const Track = struct {
     meter_l: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     meter_r: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
+    /// Instrument enable. When false the engine skips the instrument
+    /// render and feeds silence into the effect chain. UI-owned, read by
+    /// the audio thread — a plain atomic flip, no chain mutation.
+    enabled: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
+    /// Per-effect bypass bitmask — bit i set = effect i is bypassed
+    /// (passed through untouched). UI-owned, read by the audio thread.
+    effect_bypass: std.atomic.Value(u16) = std.atomic.Value(u16).init(0),
+    /// Bumped by the engine on any block that dispatches a note-on to the
+    /// instrument. The UI reads the sequence to drive the note-activity
+    /// LED — no timestamps on the audio thread.
+    note_pulse: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+
     pub fn init(alloc: std.mem.Allocator, track_name: []const u8, color: c.rl.Color, mach: machine.Machine) !Track {
         const s0 = try alloc.create(snap_mod.TrackSnapshot);
         errdefer alloc.destroy(s0);
@@ -88,6 +100,60 @@ pub const Track = struct {
         self.effects[self.effect_count] = mach;
         self.effect_idx[self.effect_count] = idx;
         self.effect_count += 1;
+    }
+
+    /// Remove effect `i`, deinit it, shift the tail down, and slide the
+    /// bypass bitmask to match. Caller must hold the audio thread (stop
+    /// the device) — this mutates the chain the engine reads.
+    pub fn removeEffect(self: *Track, alloc: std.mem.Allocator, i: usize) void {
+        if (i >= self.effect_count) return;
+        if (self.effects[i].deinit) |deinit_fn| deinit_fn(self.effects[i].state, alloc);
+        var j = i;
+        while (j + 1 < self.effect_count) : (j += 1) {
+            self.effects[j] = self.effects[j + 1];
+            self.effect_idx[j] = self.effect_idx[j + 1];
+        }
+        self.effect_count -= 1;
+        self.effect_idx[self.effect_count] = null;
+        // Rebuild the bypass mask: drop bit i, shift higher bits down.
+        const old = self.effect_bypass.load(.monotonic);
+        const low_mask: u16 = (@as(u16, 1) << @intCast(i)) - 1;
+        const low = old & low_mask;
+        // No bits above index 15 exist; guard the shift so i==15 can't trap.
+        const high: u16 = if (i + 1 < 16) (old >> @intCast(i + 1)) << @intCast(i) else 0;
+        self.effect_bypass.store(low | high, .monotonic);
+    }
+
+    pub fn isEnabled(self: *const Track) bool {
+        return self.enabled.load(.monotonic);
+    }
+
+    pub fn setEnabled(self: *Track, on: bool) void {
+        self.enabled.store(on, .monotonic);
+    }
+
+    pub fn toggleEnabled(self: *Track) void {
+        self.enabled.store(!self.enabled.load(.monotonic), .monotonic);
+    }
+
+    pub fn effectBypassed(self: *const Track, i: usize) bool {
+        if (i >= 16) return false;
+        return (self.effect_bypass.load(.monotonic) & (@as(u16, 1) << @intCast(i))) != 0;
+    }
+
+    pub fn toggleEffectBypass(self: *Track, i: usize) void {
+        if (i >= 16) return;
+        const bit = @as(u16, 1) << @intCast(i);
+        self.effect_bypass.store(self.effect_bypass.load(.monotonic) ^ bit, .monotonic);
+    }
+
+    /// Audio thread: signal that a note-on hit the instrument this block.
+    pub fn pulseNote(self: *Track) void {
+        _ = self.note_pulse.fetchAdd(1, .release);
+    }
+
+    pub fn noteSeq(self: *const Track) u32 {
+        return self.note_pulse.load(.acquire);
     }
 
     pub fn addClip(self: *Track, alloc: std.mem.Allocator, clip: clip_mod.Clip) !void {
@@ -216,4 +282,57 @@ test "publishSnapshot round-trip" {
     try testing.expectEqual(@as(u8, 80), s.notes[0].velocity);
     try testing.expectApproxEqAbs(@as(f64, 0.5), s.notes[0].start_beat, 1e-12);
     try testing.expectApproxEqAbs(@as(f64, 1.0), s.notes[0].length_beats, 1e-12);
+}
+
+fn testMachine() machine.Machine {
+    return machine.Machine{
+        .name = "fx",
+        .state = undefined,
+        .render = struct {
+            fn f(_: *anyopaque, _: *const machine.MachineCtx, _: []f32, _: []f32) void {}
+        }.f,
+        .draw_panel = struct {
+            fn f(_: *anyopaque, _: c.rl.Rectangle, _: @import("ui/widgets.zig").Mouse) void {}
+        }.f,
+        .reset = struct {
+            fn f(_: *anyopaque) void {}
+        }.f,
+    };
+}
+
+test "removeEffect shifts chain and bypass mask" {
+    const alloc = testing.allocator;
+    var t = try Track.init(alloc, "t", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, testMachine());
+    defer t.deinit(alloc);
+
+    // Fill the whole chain so the i==15 edge is exercised.
+    var i: u8 = 0;
+    while (i < MAX_EFFECTS) : (i += 1) try t.addEffect(testMachine(), i);
+    try testing.expectEqual(@as(u8, MAX_EFFECTS), t.effect_count);
+
+    // Bypass a few effects across the range, including the last bit.
+    t.toggleEffectBypass(0);
+    t.toggleEffectBypass(5);
+    t.toggleEffectBypass(15);
+    try testing.expect(t.effectBypassed(0));
+    try testing.expect(t.effectBypassed(5));
+    try testing.expect(t.effectBypassed(15));
+
+    // Removing the last effect must not trap on the shift, and clears bit 15.
+    t.removeEffect(alloc, 15);
+    try testing.expectEqual(@as(u8, MAX_EFFECTS - 1), t.effect_count);
+    try testing.expect(t.effectBypassed(0));
+    try testing.expect(t.effectBypassed(5));
+    try testing.expect(!t.effectBypassed(14)); // nothing shifted into the freed slot
+
+    // Removing a middle effect shifts higher bypass bits down by one.
+    t.removeEffect(alloc, 0); // drop bit 0; bit 5 moves to index 4
+    try testing.expect(!t.effectBypassed(0));
+    try testing.expect(t.effectBypassed(4));
+    try testing.expectEqual(@as(u8, MAX_EFFECTS - 2), t.effect_count);
+
+    // Out-of-range removal is a no-op.
+    const before = t.effect_count;
+    t.removeEffect(alloc, 999);
+    try testing.expectEqual(before, t.effect_count);
 }

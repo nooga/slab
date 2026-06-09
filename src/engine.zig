@@ -231,6 +231,7 @@ pub const Engine = struct {
         };
 
         const t = &self.tracks[self.audition_track_local];
+        if (send_on) t.pulseNote();
         t.machine.render(t.machine.state, &ctx, l, r);
         const rendered = renderEffects(t, ctx, l, r, fx_l_buf[0..n], fx_r_buf[0..n]);
         const final_l = rendered.l;
@@ -312,9 +313,18 @@ pub const Engine = struct {
                 .note_in_count = @intCast(n_events),
             };
 
+            // Note-activity LED: pulse when a note-on is dispatched this block.
+            for (events[0..n_events]) |ev| {
+                if (ev.kind == .note_on) {
+                    t.pulseNote();
+                    break;
+                }
+            }
+
             const track_probe = trackProbeEnabled();
             const inst_start = if (track_probe) probeNowNs() else 0;
-            t.machine.render(t.machine.state, &ctx, l, r);
+            // Disabled instrument → feed silence into the effect chain.
+            if (t.isEnabled()) t.machine.render(t.machine.state, &ctx, l, r);
             const inst_ns = if (track_probe) probeNowNs() - inst_start else 0;
             const fx_start = if (track_probe) probeNowNs() else 0;
             const rendered = renderEffects(t, ctx, l, r, fx_l_buf[0..frames], fx_r_buf[0..frames]);
@@ -549,7 +559,8 @@ fn renderEffects(
     var next_l = scratch_l;
     var next_r = scratch_r;
 
-    for (t.effects[0..t.effect_count]) |*fx| {
+    for (t.effects[0..t.effect_count], 0..) |*fx, i| {
+        if (t.effectBypassed(i)) continue; // bypassed → pass through untouched
         @memset(next_l, 0);
         @memset(next_r, 0);
         const in_ports = [_][*]const f32{ cur_l.ptr, cur_r.ptr };

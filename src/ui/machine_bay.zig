@@ -16,6 +16,8 @@ pub const Result = struct {
     poly_voices: ?u8 = null,
     preset_index: ?u8 = null,
     add_machine: ?usize = null, // registry index to assign to the selected track
+    remove_machine: bool = false, // delete the instrument on the selected track
+    remove_effect: ?usize = null, // delete effect [i] on the selected track
 };
 
 const ADD_MENU_KEY: u64 = 0x4d414444; // "MADD"
@@ -23,6 +25,111 @@ const ADD_MENU_KEY: u64 = 0x4d414444; // "MADD"
 var poly_dropdown_track: ?usize = null;
 var preset_dropdown_track: ?usize = null;
 var bay_scroll_x: f32 = 0; // horizontal scroll of the device chain
+
+// Note-activity LED glow, keyed by track index. Bumped to 1.0 when the
+// engine's note sequence advances, decayed each frame for a soft pulse.
+var led_seen: [16]u32 = [_]u32{0} ** 16;
+var led_glow: [16]f32 = [_]f32{0} ** 16;
+
+fn lerpColor(a: c.rl.Color, b: c.rl.Color, t: f32) c.rl.Color {
+    const k = std.math.clamp(t, 0, 1);
+    return .{
+        .r = @intFromFloat(@as(f32, @floatFromInt(a.r)) + (@as(f32, @floatFromInt(b.r)) - @as(f32, @floatFromInt(a.r))) * k),
+        .g = @intFromFloat(@as(f32, @floatFromInt(a.g)) + (@as(f32, @floatFromInt(b.g)) - @as(f32, @floatFromInt(a.g))) * k),
+        .b = @intFromFloat(@as(f32, @floatFromInt(a.b)) + (@as(f32, @floatFromInt(b.b)) - @as(f32, @floatFromInt(a.b))) * k),
+        .a = 255,
+    };
+}
+
+// A small square titlebar button (enable toggle / delete). Returns true
+// on click. `lit` brightens the fill; `danger` tints red on hover.
+fn titlebarButton(btn: c.rl.Rectangle, icon: widgets.Icon, lit: bool, danger: bool, hint: [*:0]const u8, m: widgets.Mouse) bool {
+    const hover = widgets.contains(btn, m.x, m.y) and !widgets.hasActiveDrag();
+    const pressed = hover and m.left_down;
+    const fill = if (pressed)
+        theme.slab_lo
+    else if (hover and danger)
+        theme.accent_rec
+    else if (hover or lit)
+        theme.slab_hi
+    else
+        theme.slab_fill;
+    widgets.bevelRaised(btn, fill, theme.slab_hi, theme.slab_lo);
+    const icol = if (lit) theme.accent_hi else theme.text_dim;
+    const isz = theme.fsTiny();
+    widgets.drawIcon(icon, btn.x + (btn.width - isz) / 2, btn.y + (btn.height - isz) / 2, isz, if (hover and danger) theme.text_fg else icol);
+    widgets.tooltip(btn, hint, m);
+    return hover and m.left_pressed;
+}
+
+// Note-activity LED — a small filled indicator, not interactive.
+fn drawNoteLed(r: c.rl.Rectangle, glow: f32, m: widgets.Mouse) void {
+    const base = c.rl.Color{ .r = 28, .g = 52, .b = 34, .a = 255 };
+    const col = lerpColor(base, theme.accent_play, glow);
+    const d = theme.fine(7);
+    const cx = r.x + r.width / 2;
+    const cy = r.y + r.height / 2;
+    c.rl.DrawRectangle(@intFromFloat(cx - d / 2), @intFromFloat(cy - d / 2), @intFromFloat(d), @intFromFloat(d), col);
+    c.rl.DrawRectangleLinesEx(widgets.rect(cx - d / 2 - 1, cy - d / 2 - 1, d + 2, d + 2), 1, theme.slab_edge);
+    widgets.tooltip(r, "Note activity", m);
+}
+
+fn presetReservedW(mach: *const @import("../machine.zig").Machine) f32 {
+    if (mach.preset_count) |cf| {
+        if (cf(mach.state) > 0) return theme.size(78);
+    }
+    return 0;
+}
+
+const DeviceCtrls = struct { toggle: bool = false, remove: bool = false };
+
+// Host-drawn device titlebar: a title bevel that ENDS before the control
+// cells, then snug enable/bypass + delete cells abutting it (and a region
+// reserved at the far right for the preset dropdown). The note LED, when
+// present, sits inside the title bevel at its right edge.
+//
+//   [ ----- name ----- ● ][ v ][ x ]( preset )
+//
+fn drawDeviceBar(
+    bar: c.rl.Rectangle,
+    name: []const u8,
+    active: bool,
+    glow: ?f32,
+    reserve_right: f32,
+    icon_on: widgets.Icon,
+    icon_off: widgets.Icon,
+    hint_on: [*:0]const u8,
+    hint_off: [*:0]const u8,
+    del_hint: [*:0]const u8,
+    m: widgets.Mouse,
+) DeviceCtrls {
+    var res = DeviceCtrls{};
+    const bw = theme.size(16);
+    const del = widgets.rect(bar.x + bar.width - reserve_right - bw, bar.y, bw, bar.height);
+    const en = widgets.rect(del.x - bw, bar.y, bw, bar.height);
+    const title_w = @max(0, en.x - bar.x);
+    const title_bar = widgets.rect(bar.x, bar.y, title_w, bar.height);
+
+    widgets.bevelRaised(title_bar, theme.slab_fill, theme.slab_hi, theme.slab_lo);
+    const led_w: f32 = if (glow != null) theme.size(16) else 0;
+    var nbuf: [64:0]u8 = [_:0]u8{0} ** 64;
+    const nlen = @min(name.len, 63);
+    @memcpy(nbuf[0..nlen], name[0..nlen]);
+    nbuf[nlen] = 0;
+    widgets.drawLabelF(@ptrCast(&nbuf[0]), title_bar.x + theme.size(6), title_bar.y + (title_bar.height - theme.fsTiny()) / 2 - 1, theme.fsTiny(), theme.text_fg);
+    if (glow) |g| {
+        const led_r = widgets.rect(title_bar.x + title_bar.width - led_w, title_bar.y, led_w, title_bar.height);
+        drawNoteLed(led_r, g, m);
+    }
+
+    if (title_w > theme.size(24)) {
+        const icon = if (active) icon_on else icon_off;
+        const hint = if (active) hint_on else hint_off;
+        if (titlebarButton(en, icon, active, false, hint, m)) res.toggle = true;
+        if (titlebarButton(del, .trash, false, true, del_hint, m)) res.remove = true;
+    }
+    return res;
+}
 
 // "+" button at the left of the machine-bay titlebar → machine picker menu.
 // Returns the chosen registry index when an item is clicked.
@@ -99,16 +206,40 @@ pub fn draw(r: c.rl.Rectangle, tracks: []Track, selected: ?usize, collapsed: boo
     // ── Device chain ─────────────────────────────────────────────────
     var x = r.x - bay_scroll_x;
     const inst_rect = widgets.rect(x, r.y, inst_pw, dev_h);
+    const inst_body = widgets.rect(x, r.y + header_h, inst_pw, dev_h - header_h);
+    const inst_enabled = t.isEnabled();
+
+    // Note-activity LED glow for the selected track.
+    const seq = t.noteSeq();
+    if (idx < led_glow.len) {
+        if (seq != led_seen[idx]) {
+            led_glow[idx] = 1.0;
+            led_seen[idx] = seq;
+        } else led_glow[idx] = @max(0, led_glow[idx] - 0.05);
+    }
+    const glow: f32 = if (idx < led_glow.len) led_glow[idx] else 0;
+
     if (t.machine.host_titlebar) {
-        widgets.bevelRaised(widgets.rect(x, r.y, inst_pw, header_h), theme.slab_fill, theme.slab_hi, theme.slab_lo);
-        var nbuf: [64:0]u8 = [_:0]u8{0} ** 64;
-        const nlen = @min(t.machine.name.len, 64);
-        @memcpy(nbuf[0..nlen], t.machine.name[0..nlen]);
-        nbuf[nlen] = 0;
-        widgets.drawLabelF(@ptrCast(&nbuf[0]), x + theme.size(6), r.y + (header_h - theme.fsTiny()) / 2 - 1, theme.fsTiny(), theme.text_fg);
-        t.machine.draw_panel(t.machine.state, widgets.rect(x, r.y + header_h, inst_pw, dev_h - header_h), m);
+        const ctrls = drawDeviceBar(
+            widgets.rect(x, r.y, inst_pw, header_h),
+            t.machine.name,
+            inst_enabled,
+            glow,
+            presetReservedW(&t.machine),
+            .speaker_high,
+            .speaker_slash,
+            "Enabled — click to silence",
+            "Silenced — click to enable",
+            "Remove machine",
+            m,
+        );
+        if (ctrls.toggle) t.toggleEnabled();
+        if (ctrls.remove) result.remove_machine = true;
+        t.machine.draw_panel(t.machine.state, inst_body, m);
+        if (!inst_enabled) c.rl.DrawRectangleRec(inst_body, c.rl.ColorAlpha(theme.bg, 0.45));
     } else {
         t.machine.draw_panel(t.machine.state, inst_rect, m);
+        if (!inst_enabled) c.rl.DrawRectangleRec(inst_rect, c.rl.ColorAlpha(theme.bg, 0.45));
     }
     if (t.machine_idx != null) {
         if (drawPresetDropdown(machineControlsRect(inst_rect, t.machine.panel_w), idx, &t.machine, header_h, m)) |preset| {
@@ -116,9 +247,33 @@ pub fn draw(r: c.rl.Rectangle, tracks: []Track, selected: ?usize, collapsed: boo
         }
     }
     x += inst_pw;
-    for (t.effects[0..t.effect_count]) |*fx| {
+    for (t.effects[0..t.effect_count], 0..) |*fx, i| {
         const fx_w = if (fx.panel_w > 0) theme.size(fx.panel_w) else DEFAULT_PANEL_W;
-        fx.draw_panel(fx.state, widgets.rect(x, r.y, fx_w, dev_h), m);
+        const fx_rect = widgets.rect(x, r.y, fx_w, dev_h);
+        const fx_body = widgets.rect(x, r.y + header_h, fx_w, dev_h - header_h);
+        const bypassed = t.effectBypassed(i);
+        if (fx.host_titlebar) {
+            const ctrls = drawDeviceBar(
+                widgets.rect(x, r.y, fx_w, header_h),
+                fx.name,
+                !bypassed,
+                null,
+                0,
+                .eye,
+                .eye_slash,
+                "Active — click to bypass",
+                "Bypassed — click to enable",
+                "Remove effect",
+                m,
+            );
+            if (ctrls.toggle) t.toggleEffectBypass(i);
+            if (ctrls.remove) result.remove_effect = i;
+            fx.draw_panel(fx.state, fx_body, m);
+            if (bypassed) c.rl.DrawRectangleRec(fx_body, c.rl.ColorAlpha(theme.bg, 0.45));
+        } else {
+            fx.draw_panel(fx.state, fx_rect, m);
+            if (bypassed) c.rl.DrawRectangleRec(fx_rect, c.rl.ColorAlpha(theme.bg, 0.45));
+        }
         x += fx_w;
     }
 
