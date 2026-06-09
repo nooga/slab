@@ -5,6 +5,29 @@ neighborhood. The aesthetic is not nostalgia — it's *license*.
 Machines inside the frame get to look however they want because the
 frame absorbs everything.
 
+## North star: 1997 exotic OS, 2026 affordances
+
+The *surface* is a late-90s exotic workstation — **BeOS, SGI IRIX (Indigo
+Magic), NeXTSTEP, Amiga Workbench**, and the era's software instruments
+(Reaktor, ReBirth, Buzz). Chunky 1px-beveled chrome, segmented toolbars,
+a fixed industrial palette, bitmap/mono type — every surface reads as a
+*machine panel*, the computer-as-instrument.
+
+The *interaction model* is 2026, none of the 1997 pain:
+
+- **No blocking modal dialogs.** File ops, pickers, prompts are inline /
+  non-modal / context menus.
+- **Drag-to-edit everything.** Any numeric field (BPM, tempo, snap, a
+  titlebar value) edits like a knob: drag, scroll, double-click to type.
+- **Live feedback.** Hover, focus, armed/active state are always visible.
+- **Non-modal context menus**, beveled (raised chrome + amber selection bar).
+- **Keyboard-driven, undoable, responsive.** No waiting, no submodes you
+  can't escape.
+
+So: the look of 1997, the logic of now. When a UI decision is ambiguous,
+pick the option that serves *both* — chunky beveled chrome that behaves
+like a modern, direct-manipulation instrument.
+
 ## Visual language
 
 - **Base palette:** five greys plus three accents.
