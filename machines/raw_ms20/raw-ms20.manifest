@@ -8,7 +8,7 @@ note-on|ms20-voice-note-on
 note-off|ms20-voice-note-off
 state-size|144
 params-size|360
-panel-w|560
+panel-w|420
 
 # control|module|label|id|kind|offset|min|max|default|curve
 control|VCO1|WAVE|vco1-wave|switch|272|-|-|1|-|TRI=0,SAW=1,PUL=2
@@ -42,17 +42,29 @@ control|MOD|MG>PW|mg-pw|direct-f64|344|0.0|0.45|0.0|linear
 control|MOD|MG>CUT|mg-cutoff|direct-f64|328|0.0|3000.0|0.0|linear
 control|MOD|EG>PIT|eg-pitch|direct-f64|352|0.0|1.0|0.0|linear
 
-# strip|module|width(px, scaled to fit)|knob-columns  — panel layout, in order
-# MS-20 style: narrow vertical strips, knobs stacked one per column.
-strip|VCO1|56|1
-strip|VCO2|56|1
-strip|MIX|56|1
-strip|HPF|56|1
-strip|LPF|56|1
-strip|VCA|56|1
-strip|AMP ENV|56|1
-strip|FLT ENV|56|1
-strip|MG|56|1
-strip|MOD|56|1
+# strip|MODULE|knob-cols  — module + its internal knob-grid columns.
+strip|VCO1|1
+strip|VCO2|1
+strip|MIX|1
+strip|HPF|1
+strip|LPF|1
+strip|VCA|1
+strip|AMP ENV|1
+strip|FLT ENV|1
+strip|MG|1
+strip|MOD|4
+
+# Weighted box layout (docs/15): row|<h> then cell|<w>|MOD1/MOD2 (/ stacks).
+# Short modules stack to share a column; MOD is a full-width horizontal row.
+row|4
+cell|1|VCO1/MG
+cell|1|VCO2
+cell|1|MIX*3/VCA*1
+cell|1|HPF
+cell|1|LPF
+cell|1|AMP ENV
+cell|1|FLT ENV
+row|1
+cell|1|MOD
 
 const-f64|64|0.0035

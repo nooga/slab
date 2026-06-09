@@ -131,6 +131,25 @@ const RawStrip = struct {
     }
 };
 
+// Weighted box layout (docs/15): rows -> cells -> stacked strips. Each level
+// splits its parent's extent by weight. Optional: if no row| lines are
+// declared, the renderer falls back to a single flat row of strips.
+const MAX_LAYOUT_ROWS = 8;
+const MAX_ROW_CELLS = 16;
+const MAX_CELL_STRIPS = 6;
+
+const LayoutStrip = struct { strip: usize = 0, weight: f32 = 1 };
+const LayoutCell = struct {
+    strips: [MAX_CELL_STRIPS]LayoutStrip = undefined,
+    strip_count: usize = 0,
+    weight: f32 = 1,
+};
+const LayoutRow = struct {
+    cells: [MAX_ROW_CELLS]LayoutCell = undefined,
+    cell_count: usize = 0,
+    weight: f32 = 1,
+};
+
 pub const Mode = enum {
     voice_sample,
     effect_sample,
@@ -234,6 +253,8 @@ pub const FyRawMachine = struct {
     raw_const_count: usize = 0,
     raw_strips: [MAX_RAW_STRIPS]RawStrip = undefined,
     raw_strip_count: usize = 0,
+    raw_rows: [MAX_LAYOUT_ROWS]LayoutRow = undefined,
+    raw_row_count: usize = 0,
     panel_w: f32 = 128,
     failed: bool = false,
 
@@ -373,6 +394,7 @@ pub const FyRawMachine = struct {
         self.raw_derive_count = 0;
         self.raw_const_count = 0;
         self.raw_strip_count = 0;
+        self.raw_row_count = 0;
         if (self.spec.manifest_path) |path| try self.loadRawControlsFromManifest(alloc, path);
         var i: usize = 0;
         while (i < MAX_RAW_CONTROLS) : (i += 1) {
@@ -416,6 +438,41 @@ pub const FyRawMachine = struct {
                 const s = try parseStripFields(&fields);
                 self.raw_strips[self.raw_strip_count] = s;
                 self.raw_strip_count += 1;
+            } else if (std.mem.eql(u8, tag, "row")) {
+                if (self.raw_row_count >= MAX_LAYOUT_ROWS) return error.RawStripLimitExceeded;
+                var row = LayoutRow{};
+                if (fields.next()) |w| row.weight = @floatCast(parseF64Or(std.mem.trim(u8, w, " "), 1.0));
+                self.raw_rows[self.raw_row_count] = row;
+                self.raw_row_count += 1;
+            } else if (std.mem.eql(u8, tag, "cell")) {
+                if (self.raw_row_count == 0) return error.InvalidRawManifest;
+                const ww = fields.next() orelse "1";
+                const modlist = fields.next() orelse return error.InvalidRawManifest;
+                var cell = LayoutCell{};
+                cell.weight = @floatCast(parseF64Or(std.mem.trim(u8, ww, " "), 1.0));
+                var segs = std.mem.splitScalar(u8, modlist, '/');
+                while (segs.next()) |seg_raw| {
+                    const seg = std.mem.trim(u8, seg_raw, " \t");
+                    if (seg.len == 0) continue;
+                    var name = seg;
+                    var hw: f32 = 1;
+                    if (std.mem.lastIndexOfScalar(u8, seg, '*')) |star| {
+                        if (std.fmt.parseFloat(f32, seg[star + 1 ..])) |v| {
+                            hw = v;
+                            name = std.mem.trim(u8, seg[0..star], " ");
+                        } else |_| {}
+                    }
+                    const si = stripIndexByModule(self, name) orelse return error.InvalidRawManifest;
+                    if (cell.strip_count < MAX_CELL_STRIPS) {
+                        cell.strips[cell.strip_count] = .{ .strip = si, .weight = hw };
+                        cell.strip_count += 1;
+                    }
+                }
+                const row = &self.raw_rows[self.raw_row_count - 1];
+                if (row.cell_count < MAX_ROW_CELLS) {
+                    row.cells[row.cell_count] = cell;
+                    row.cell_count += 1;
+                }
             }
         }
     }
@@ -640,13 +697,15 @@ fn parseConstF64Fields(fields: *std.mem.SplitIterator(u8, .scalar)) !RawConstF64
 }
 
 fn parseStripFields(fields: *std.mem.SplitIterator(u8, .scalar)) !RawStrip {
+    // strip|MODULE|cols  — cols is the strip's knob-grid column count. Width
+    // is no longer declared here; placement comes from the row|/cell| layout
+    // (or the flat fallback gives every strip equal width).
     var s = RawStrip{};
     const module = fields.next() orelse return error.InvalidRawManifest;
-    const width = fields.next() orelse return error.InvalidRawManifest;
     const cols = fields.next() orelse "1";
     s.module_len = try copyZ(&s.module, module);
-    s.width = try std.fmt.parseFloat(f32, width);
-    s.cols = std.fmt.parseInt(usize, cols, 10) catch 1;
+    s.width = 1;
+    s.cols = std.fmt.parseInt(usize, std.mem.trim(u8, cols, " "), 10) catch 1;
     if (s.cols == 0) s.cols = 1;
     return s;
 }
@@ -960,7 +1019,56 @@ fn collectStrips(self: *FyRawMachine, out: *[MAX_RAW_STRIPS]StripView) usize {
     return n;
 }
 
+fn stripIndexByModule(self: *const FyRawMachine, name: []const u8) ?usize {
+    for (self.raw_strips[0..self.raw_strip_count], 0..) |*s, i| {
+        if (std.mem.eql(u8, s.moduleSlice(), name)) return i;
+    }
+    return null;
+}
+
+fn stripViewAt(self: *const FyRawMachine, idx: usize) StripView {
+    const s = &self.raw_strips[idx];
+    return .{ .title = s.moduleZ(), .module = s.moduleSlice(), .width = 1, .cols = s.cols };
+}
+
+// Weighted box layout (docs/15): split body height across rows, each row's
+// width across cells, each cell's height across its stacked strips. Last
+// element in each axis takes the remainder so the block fills exactly.
+fn drawLayoutTree(self: *FyRawMachine, body: c.rl.Rectangle, mouse: widgets.Mouse) void {
+    var total_rw: f32 = 0;
+    for (self.raw_rows[0..self.raw_row_count]) |*r| total_rw += r.weight;
+    if (total_rw <= 0) return;
+    var y = body.y;
+    for (self.raw_rows[0..self.raw_row_count], 0..) |*r, ri| {
+        const rh = if (ri + 1 == self.raw_row_count) (body.y + body.height - y) else body.height * r.weight / total_rw;
+        var total_cw: f32 = 0;
+        for (r.cells[0..r.cell_count]) |*cc| total_cw += cc.weight;
+        if (total_cw > 0) {
+            var x = body.x;
+            for (r.cells[0..r.cell_count], 0..) |*cc, ci| {
+                const cw = if (ci + 1 == r.cell_count) (body.x + body.width - x) else body.width * cc.weight / total_cw;
+                var total_sw: f32 = 0;
+                for (cc.strips[0..cc.strip_count]) |ss| total_sw += ss.weight;
+                if (total_sw > 0) {
+                    var sy = y;
+                    for (cc.strips[0..cc.strip_count], 0..) |ss, si| {
+                        const sh = if (si + 1 == cc.strip_count) (y + rh - sy) else rh * ss.weight / total_sw;
+                        drawStrip(self, widgets.rect(x, sy, cw, sh), stripViewAt(self, ss.strip), mouse);
+                        sy += sh;
+                    }
+                }
+                x += cw;
+            }
+        }
+        y += rh;
+    }
+}
+
 fn drawControlStrips(self: *FyRawMachine, body: c.rl.Rectangle, mouse: widgets.Mouse) void {
+    if (self.raw_row_count > 0) {
+        drawLayoutTree(self, body, mouse);
+        return;
+    }
     var strips: [MAX_RAW_STRIPS]StripView = undefined;
     const n = collectStrips(self, &strips);
     if (n == 0) return;

@@ -83,11 +83,11 @@ are optional (default 1):
 
 ```
 # row|<height-weight>
-# cell|<width-weight>|MODULE[*hw] MODULE2[*hw] ...      (MODULE*hw = strip height weight)
+# cell|<width-weight>|MODULE[*hw]/MODULE2[*hw]/...   ( '/' stacks; *hw = strip height weight )
 row|4
-cell|1|VCO1 MG
+cell|1|VCO1/MG
 cell|1|VCO2
-cell|1|MIX*3 VCA*1
+cell|1|MIX*3/VCA*1
 cell|1|HPF
 cell|1|LPF
 cell|1|AMP ENV
@@ -96,8 +96,10 @@ row|1
 cell|1|MOD
 ```
 
-Here VCO1 stacks over MG in one column; MIX (weight 3) over VCA (weight 1)
-in another; the bottom row is MOD spanning full width with horizontal knobs.
+Stacked modules in a cell are separated by `/` (module names may contain
+spaces, e.g. `AMP ENV`, so space can't be the separator). Here VCO1 stacks
+over MG in one column; MIX (weight 3) over VCA (weight 1) in another; the
+bottom row is MOD spanning full width with horizontal knobs.
 Controls attach to a strip by their existing `module` field. If no `row|`
 lines are present, the engine falls back to the legacy single flat row (so
 existing fixtures are unaffected).
