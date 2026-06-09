@@ -32,6 +32,10 @@ var requested_cursor_priority: u8 = 0;
 var context_key: u64 = 0;
 var context_x: f32 = 0;
 var context_y: f32 = 0;
+// Set when a menu opens this frame, so the opening click isn't also treated
+// as an outside-click that immediately closes it (button dropdowns open
+// below the cursor, not at it).
+var menu_just_opened: bool = false;
 const MAX_CONTEXT_ITEMS: usize = 16;
 var context_draw_items: [MAX_CONTEXT_ITEMS]MenuItem = undefined;
 var context_draw_len: usize = 0;
@@ -49,6 +53,9 @@ pub const EditCommand = enum {
     loop_selection,
     loop_arrangement,
     clear_loop,
+    file_open,
+    file_save,
+    file_save_as,
     split_at_playhead,
     quantize,
     rename,
@@ -61,12 +68,13 @@ pub const MenuItem = struct {
     separator: bool = false,
 };
 
-pub fn beginFrame() void {
+pub fn beginFrame(m: Mouse) void {
     tooltip_text = null;
     requested_cursor = c.rl.MOUSE_CURSOR_DEFAULT;
     requested_cursor_priority = 0;
     context_draw_len = 0;
     context_draw_active = false;
+    frame_mouse = m;
 }
 
 pub fn requestCursor(cursor: c_int, priority: u8) void {
@@ -129,7 +137,35 @@ pub fn closeContextMenu() void {
     context_key = 0;
 }
 
+/// Open a menu (same beveled deferred renderer as context menus) at an
+/// explicit point — for left-click button dropdowns, not right-click.
+pub fn openMenuAt(key: u64, x: f32, y: f32) void {
+    context_key = key;
+    context_x = x;
+    context_y = y;
+    menu_just_opened = true;
+    cancelDrag();
+}
+
+pub fn menuOpen(key: u64) bool {
+    return context_key == key;
+}
+
+pub fn menuActive() bool {
+    return context_key != 0;
+}
+
+// The real pointer for this frame, captured before panes run. An open menu is
+// modal for the mouse: panes are passed a neutralized mouse, while the menu
+// keeps handling input off this raw copy.
+var frame_mouse: Mouse = undefined;
+
+pub fn neutralMouse() Mouse {
+    return .{ .x = -100000, .y = -100000, .left_pressed = false, .left_down = false, .left_released = false, .right_pressed = false, .double_clicked = false, .wheel_x = 0, .wheel_y = 0 };
+}
+
 pub fn contextMenu(key: u64, items: []const MenuItem, m: Mouse) EditCommand {
+    _ = m; // an open menu is modal — always use the raw frame mouse.
     if (context_key != key) return .none;
     const draw_len = @min(items.len, MAX_CONTEXT_ITEMS);
     @memcpy(context_draw_items[0..draw_len], items[0..draw_len]);
@@ -143,15 +179,19 @@ pub fn contextMenu(key: u64, items: []const MenuItem, m: Mouse) EditCommand {
     for (items, 0..) |item, i| {
         const row = rect(r.x + 1, r.y + 1 + @as(f32, @floatFromInt(i)) * row_h, r.width - 2, row_h);
         if (item.separator) continue;
-        const hover = contains(row, m.x, m.y);
-        if (hover and item.enabled and m.left_released) clicked = item.command;
+        const hover = contains(row, frame_mouse.x, frame_mouse.y);
+        if (hover and item.enabled and frame_mouse.left_released) clicked = item.command;
     }
 
     if (clicked != .none) {
         closeContextMenu();
         return clicked;
     }
-    if ((m.left_pressed or m.right_pressed) and !contains(r, m.x, m.y)) closeContextMenu();
+    if (menu_just_opened) {
+        menu_just_opened = false;
+    } else if ((frame_mouse.left_pressed or frame_mouse.right_pressed) and !contains(r, frame_mouse.x, frame_mouse.y)) {
+        closeContextMenu();
+    }
     return .none;
 }
 

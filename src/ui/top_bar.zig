@@ -27,7 +27,9 @@ pub const Result = struct {
     save_project_as: bool = false,
 };
 
-pub fn draw(r: c.rl.Rectangle, transport: *Transport, edit_snap: *snap_mod.Setting, m: widgets.Mouse) Result {
+const FILE_MENU_KEY: u64 = 0x5346494c45; // "SFILE"
+
+pub fn draw(r: c.rl.Rectangle, transport: *Transport, edit_snap: *snap_mod.Setting, project_path: []const u8, project_path_chosen: bool, dirty: bool, m: widgets.Mouse) Result {
     var result: Result = .{};
 
     // Bar background — flat, no bevel.
@@ -51,21 +53,37 @@ pub fn draw(r: c.rl.Rectangle, transport: *Transport, edit_snap: *snap_mod.Setti
     const snap_btn_w = theme.size(18);
     const snap_field_w = theme.size(54);
 
-    // ── File operations ──────────────────────────────────────────────
-    if (widgets.iconButtonTip(widgets.rect(x, y, btn_w, h), .folder, null, "Open project  Cmd+O", m)) {
-        result.open_project = true;
+    // ── File: one dropdown button showing the project name ───────────
+    {
+        var name_buf: [64:0]u8 = [_:0]u8{0} ** 64;
+        const name = fileLabel(&name_buf, project_path, project_path_chosen, dirty);
+        const fs = theme.fsBody();
+        const icon_sz = fs;
+        const nw = widgets.measureTextF(name, fs);
+        const file_w = theme.size(6) + icon_sz + theme.size(4) + nw + theme.size(4) + icon_sz + theme.size(6);
+        const file_rect = widgets.rect(x, y, file_w, h);
+        const open = widgets.menuOpen(FILE_MENU_KEY);
+        const hover = widgets.contains(file_rect, m.x, m.y) and !widgets.hasActiveDrag();
+        const fill = if (open or hover) theme.slab_hi else theme.slab_fill;
+        widgets.bevelRaised(file_rect, fill, theme.slab_hi, theme.slab_lo);
+        widgets.drawIcon(.file, file_rect.x + theme.size(6), y + (h - icon_sz) / 2, icon_sz, theme.text_dim);
+        widgets.drawLabelF(name, file_rect.x + theme.size(6) + icon_sz + theme.size(4), y + (h - fs) / 2 - 1, fs, if (dirty) theme.accent_hi else theme.text_fg);
+        widgets.drawIcon(.caret_down, file_rect.x + file_w - icon_sz - theme.size(4), y + (h - icon_sz) / 2, icon_sz, theme.text_dim);
+        widgets.tooltip(file_rect, "Project file", m);
+        if (hover and m.left_pressed and !open) widgets.openMenuAt(FILE_MENU_KEY, file_rect.x, file_rect.y + file_rect.height);
+        const file_items = [_]widgets.MenuItem{
+            .{ .label = "Open\u{2026}  Cmd+O", .command = .file_open },
+            .{ .label = "Save  Cmd+S", .command = .file_save },
+            .{ .label = "Save As\u{2026}  Cmd+Shift+S", .command = .file_save_as },
+        };
+        switch (widgets.contextMenu(FILE_MENU_KEY, &file_items, m)) {
+            .file_open => result.open_project = true,
+            .file_save => result.save_project = true,
+            .file_save_as => result.save_project_as = true,
+            else => {},
+        }
+        x += file_w + GROUP_GAP;
     }
-    x += btn_w + GAP;
-
-    if (widgets.iconButtonTip(widgets.rect(x, y, btn_w, h), .file, null, "Save project  Cmd+S", m)) {
-        result.save_project = true;
-    }
-    x += btn_w + GAP;
-
-    if (widgets.iconButtonTip(widgets.rect(x, y, btn_w, h), .pencil, null, "Save project as  Cmd+Shift+S", m)) {
-        result.save_project_as = true;
-    }
-    x += btn_w + GROUP_GAP;
 
     drawSeparator(widgets.rect(x, y, theme.size(10), h));
     x += theme.size(10) + GROUP_GAP;
@@ -141,6 +159,24 @@ pub fn draw(r: c.rl.Rectangle, transport: *Transport, edit_snap: *snap_mod.Setti
     widgets.drawLabelF(title, logo_x + theme.size(8) + icon_sz + theme.size(5), r.y + (r.height - title_size) / 2 - 1, title_size, theme.accent_hi);
 
     return result;
+}
+
+fn fileLabel(buf: *[64:0]u8, path: []const u8, chosen: bool, dirty: bool) [*:0]const u8 {
+    if (!chosen) return if (dirty) "*Untitled" else "Untitled";
+    var start: usize = 0;
+    for (path, 0..) |ch, i| {
+        if (ch == '/') start = i + 1;
+    }
+    const base = path[start..];
+    var off: usize = 0;
+    if (dirty) {
+        buf[0] = '*';
+        off = 1;
+    }
+    const n = @min(base.len, 63 - off);
+    @memcpy(buf[off .. off + n], base[0..n]);
+    buf[off + n] = 0;
+    return @ptrCast(&buf[0]);
 }
 
 fn drawSeparator(r: c.rl.Rectangle) void {

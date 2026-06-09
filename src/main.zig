@@ -396,14 +396,19 @@ pub fn main() !void {
         const m = widgets.Mouse.sample();
         const sw: f32 = @floatFromInt(c.rl.GetScreenWidth());
         const sh: f32 = @floatFromInt(c.rl.GetScreenHeight());
-        widgets.beginFrame();
+        widgets.beginFrame(m);
 
-        layout.handleInput(sw, sh, m);
+        // While a menu is open it's modal for the mouse: panes get a
+        // neutralized mouse (no hover/clicks fall through), the menu keeps
+        // handling input off the raw frame mouse captured in beginFrame.
+        const pane_m = if (widgets.menuActive()) widgets.neutralMouse() else m;
+
+        layout.handleInput(sw, sh, pane_m);
 
         var rects = layout.compute(sw, sh);
         var tracks = tracks_buf[0..track_count];
         if (!layout.clip_editor_visible and focus == .piano_roll) focus = .arrangement;
-        if (m.left_pressed) focus = focusFromPoint(rects, m, layout.clip_editor_visible);
+        if (pane_m.left_pressed) focus = focusFromPoint(rects, pane_m, layout.clip_editor_visible);
 
         if (rename.active()) {
             try updateRename(alloc, &history, &rename, tracks, &transport, &dirty, &status, m);
@@ -443,10 +448,10 @@ pub fn main() !void {
         c.rl.BeginDrawing();
         c.rl.ClearBackground(theme.bg);
 
-        const tres = top_bar.draw(rects.top_bar, &transport, &edit_snap, m);
+        const tres = top_bar.draw(rects.top_bar, &transport, &edit_snap, project_path, project_path_chosen, dirty, pane_m);
 
         // Browser — handles machine assignment to the selected track.
-        const bres = browser.draw(rects.browser, layout.browser_collapsed, &reg, m);
+        const bres = browser.draw(rects.browser, layout.browser_collapsed, &reg, pane_m);
         if (bres.toggled) layout.browser_collapsed = !layout.browser_collapsed;
         if (bres.assigned) |reg_idx| {
             if (selected_track) |ti| if (ti < tracks.len) {
@@ -475,7 +480,7 @@ pub fn main() !void {
             };
         }
 
-        const ares = arrangement.draw(rects.arrangement, tracks, alloc, &selected_track, &selected_clip, &transport, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), m);
+        const ares = arrangement.draw(rects.arrangement, tracks, alloc, &selected_track, &selected_clip, &transport, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), pane_m);
         if (ares.rename_clip) |ref| beginRenameClip(&rename, tracks, ref);
         if (ares.rename_track) |ti| beginRenameTrack(&rename, tracks, ti);
         if (ares.rename_rect) |rr| rename.rect = rr;
@@ -511,7 +516,7 @@ pub fn main() !void {
             rects = layout.compute(sw, sh);
         }
         if (layout.clip_editor_visible) {
-            const cres = clip_editor.draw(rects.clip_editor, tracks, alloc, selected_clip, edit_snap, clipboard.mode == .notes, m);
+            const cres = clip_editor.draw(rects.clip_editor, tracks, alloc, selected_clip, edit_snap, clipboard.mode == .notes, pane_m);
             if (rename.active() and rename.kind == .clip) {
                 if (cres.rename_rect) |rr| rename.rect = rr;
             }
@@ -526,7 +531,7 @@ pub fn main() !void {
                 }, tracks, &transport, &selected_track, &selected_clip, &rename, &dirty);
             }
         }
-        const mbres = machine_bay.draw(rects.machine_bay, tracks, selected_track, layout.machine_bay_collapsed, m);
+        const mbres = machine_bay.draw(rects.machine_bay, tracks, selected_track, layout.machine_bay_collapsed, pane_m);
         if (mbres.minimize) layout.machine_bay_collapsed = !layout.machine_bay_collapsed;
         if (mbres.preset_index) |preset| {
             if (selected_track) |ti| if (ti < tracks.len) {
@@ -1409,7 +1414,7 @@ fn executeEditCommand(
             changed = if (focus == .piano_roll) clip_editor.quantizeSelectedNotes(tracks, selected_clip.*, edit_snap) else false;
             if (changed) status.set("Quantized", .{});
         },
-        .none, .copy, .select_all, .clear_selection, .rename => {},
+        .none, .copy, .select_all, .clear_selection, .rename, .file_open, .file_save, .file_save_as => {},
     }
 
     if (changed) {
