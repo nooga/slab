@@ -2,6 +2,7 @@
 //! mode the machine's own title strip is the strip title; unused space is
 //! filled by a packed placeholder cell with the collapse button.
 
+const std = @import("std");
 const c = @import("../c.zig");
 const theme = @import("theme.zig");
 const widgets = @import("widgets.zig");
@@ -70,66 +71,89 @@ pub fn draw(r: c.rl.Rectangle, tracks: []Track, selected: ?usize, collapsed: boo
         return result;
     }
 
-    // Horizontal scroll of the device chain (trackpad h-wheel or shift+wheel).
+    const idx = selected.?;
+    const t = &tracks[idx];
+    const DEFAULT_PANEL_W = theme.size(200);
+    const inst_pw = if (t.machine.panel_w > 0) theme.size(t.machine.panel_w) else DEFAULT_PANEL_W;
+
+    // Measure the chain (instrument + effects + trailing "+") to decide whether
+    // a horizontal minimap is needed at the bottom of the bay.
+    var content_w = inst_pw;
+    for (t.effects[0..t.effect_count]) |*fx| {
+        content_w += if (fx.panel_w > 0) theme.size(fx.panel_w) else DEFAULT_PANEL_W;
+    }
+    content_w += header_h;
+    const overflow = content_w > r.width;
+    const minimap_h: f32 = if (overflow) theme.size(11) else 0;
+    const dev_h = r.height - minimap_h;
+    const max_scroll = @max(0, content_w - r.width);
+
+    // Horizontal scroll (trackpad h-wheel / Shift+wheel).
     {
         const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
         const wheel: f32 = if (m.wheel_x != 0) m.wheel_x else if (shift) m.wheel_y else 0;
         if (wheel != 0 and widgets.contains(r, m.x, m.y)) bay_scroll_x -= wheel * theme.size(40);
-        if (bay_scroll_x < 0) bay_scroll_x = 0;
     }
+    bay_scroll_x = std.math.clamp(bay_scroll_x, 0, max_scroll);
+
+    // ── Device chain ─────────────────────────────────────────────────
     var x = r.x - bay_scroll_x;
-    {
-        const idx = selected.?;
-        {
-            const t = &tracks[idx];
-            const DEFAULT_PANEL_W = theme.size(200);
-            const pw = if (t.machine.panel_w > 0) theme.size(t.machine.panel_w) else DEFAULT_PANEL_W;
-            const panel_rect = widgets.rect(x, r.y, pw, r.height);
-            if (t.machine.host_titlebar) {
-                // Host-drawn title bar: name on the left, body below.
-                widgets.bevelRaised(widgets.rect(x, r.y, pw, header_h), theme.slab_fill, theme.slab_hi, theme.slab_lo);
-                var nbuf: [64:0]u8 = [_:0]u8{0} ** 64;
-                const nlen = @min(t.machine.name.len, 64);
-                @memcpy(nbuf[0..nlen], t.machine.name[0..nlen]);
-                nbuf[nlen] = 0;
-                widgets.drawLabelF(@ptrCast(&nbuf[0]), x + theme.size(6), r.y + (header_h - theme.fsTiny()) / 2 - 1, theme.fsTiny(), theme.text_fg);
-                t.machine.draw_panel(t.machine.state, widgets.rect(x, r.y + header_h, pw, r.height - header_h), m);
-            } else {
-                t.machine.draw_panel(t.machine.state, panel_rect, m);
-            }
-            if (t.machine_idx != null) {
-                const controls_rect = machineControlsRect(panel_rect, t.machine.panel_w);
-                if (drawPresetDropdown(controls_rect, idx, &t.machine, header_h, m)) |preset| {
-                    result.preset_index = preset;
-                }
-                // Voice/polyphony select removed from the leaf title bar: poly
-                // becomes a higher-order voice-pool machine (docs/15).
-            }
-            x += pw;
-            for (t.effects[0..t.effect_count]) |*fx| {
-                const fx_w = if (fx.panel_w > 0) theme.size(fx.panel_w) else DEFAULT_PANEL_W;
-                fx.draw_panel(fx.state, widgets.rect(x, r.y, fx_w, r.height), m);
-                x += fx_w;
-            }
+    const inst_rect = widgets.rect(x, r.y, inst_pw, dev_h);
+    if (t.machine.host_titlebar) {
+        widgets.bevelRaised(widgets.rect(x, r.y, inst_pw, header_h), theme.slab_fill, theme.slab_hi, theme.slab_lo);
+        var nbuf: [64:0]u8 = [_:0]u8{0} ** 64;
+        const nlen = @min(t.machine.name.len, 64);
+        @memcpy(nbuf[0..nlen], t.machine.name[0..nlen]);
+        nbuf[nlen] = 0;
+        widgets.drawLabelF(@ptrCast(&nbuf[0]), x + theme.size(6), r.y + (header_h - theme.fsTiny()) / 2 - 1, theme.fsTiny(), theme.text_fg);
+        t.machine.draw_panel(t.machine.state, widgets.rect(x, r.y + header_h, inst_pw, dev_h - header_h), m);
+    } else {
+        t.machine.draw_panel(t.machine.state, inst_rect, m);
+    }
+    if (t.machine_idx != null) {
+        if (drawPresetDropdown(machineControlsRect(inst_rect, t.machine.panel_w), idx, &t.machine, header_h, m)) |preset| {
+            result.preset_index = preset;
         }
     }
+    x += inst_pw;
+    for (t.effects[0..t.effect_count]) |*fx| {
+        const fx_w = if (fx.panel_w > 0) theme.size(fx.panel_w) else DEFAULT_PANEL_W;
+        fx.draw_panel(fx.state, widgets.rect(x, r.y, fx_w, dev_h), m);
+        x += fx_w;
+    }
 
-    // Clamp scroll for next frame so the chain + "+" stay reachable.
-    const content_w = (x + bay_scroll_x - r.x) + header_h;
-    const max_scroll = @max(0, content_w - r.width);
-    if (bay_scroll_x > max_scroll) bay_scroll_x = max_scroll;
-
-    // Trailing placeholder fills the rest of the bay; the "+" add-machine
-    // button sits at its left — i.e. immediately to the right of the device
-    // chain, not glued to the window edge.
+    // Trailing placeholder + the "+" at the right end of the chain.
     const plus_x = x;
     if (x < r.x + r.width) {
-        const rest = widgets.rect(x, r.y, r.x + r.width - x, r.height);
-        const res = drawPlaceholder(rest, header_h, false, null, m);
+        const res = drawPlaceholder(widgets.rect(x, r.y, r.x + r.width - x, dev_h), header_h, false, null, m);
         result.minimize = res.minimize;
     }
     if (have_track and plus_x + header_h <= r.x + r.width) {
-        if (drawAddButton(widgets.rect(plus_x, r.y, header_h, header_h), reg, m)) |idx| result.add_machine = idx;
+        if (drawAddButton(widgets.rect(plus_x, r.y, header_h, header_h), reg, m)) |i| result.add_machine = i;
+    }
+
+    // ── Minimap (only when the chain overflows the bay) ──────────────
+    if (overflow) {
+        const strip = widgets.rect(r.x, r.y + dev_h, r.width, minimap_h);
+        widgets.bevelSunken(strip, theme.pane_bg, theme.slab_hi, theme.slab_lo);
+        const inner = widgets.rect(strip.x + 2, strip.y + 2, strip.width - 4, strip.height - 4);
+        const scale = inner.width / content_w;
+        // Device blocks (instrument brighter than effects).
+        var bx = inner.x;
+        c.rl.DrawRectangle(@intFromFloat(bx), @intFromFloat(inner.y), @intFromFloat(@max(1, inst_pw * scale - 1)), @intFromFloat(inner.height), theme.slab_hi);
+        bx += inst_pw * scale;
+        for (t.effects[0..t.effect_count]) |*fx| {
+            const fw = (if (fx.panel_w > 0) theme.size(fx.panel_w) else DEFAULT_PANEL_W) * scale;
+            c.rl.DrawRectangle(@intFromFloat(bx), @intFromFloat(inner.y), @intFromFloat(@max(1, fw - 1)), @intFromFloat(inner.height), theme.slab_fill);
+            bx += fw;
+        }
+        // Viewport window + drag/click to scroll (centres on the cursor).
+        const vp = widgets.rect(inner.x + bay_scroll_x * scale, inner.y, @max(2.0, r.width * scale), inner.height);
+        c.rl.DrawRectangleRec(vp, c.rl.ColorAlpha(theme.accent_hi, 0.25));
+        c.rl.DrawRectangleLinesEx(vp, 1, theme.accent_hi);
+        if (m.left_down and widgets.contains(strip, m.x, m.y)) {
+            bay_scroll_x = std.math.clamp((m.x - inner.x) / scale - r.width / 2, 0, max_scroll);
+        }
     }
     return result;
 }
