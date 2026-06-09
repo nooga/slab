@@ -335,6 +335,31 @@ pub fn isDraggingKey(key: u64) bool {
     return active_drag_key == key;
 }
 
+/// A numeric readout edited like a knob: vertical drag (up = increase) and
+/// scroll wheel. Returns the (possibly changed) value, clamped to [lo,hi].
+/// `per_px` = units per pixel dragged; `scroll_step` = units per wheel notch.
+pub fn dragValueV(r: c.rl.Rectangle, salt: u64, value: f32, lo: f32, hi: f32, per_px: f32, scroll_step: f32, m: Mouse) f32 {
+    const k = rectKey(r, salt);
+    var v = value;
+    if (active_drag_key == k) {
+        if (!m.left_down) {
+            active_drag_key = 0;
+        } else {
+            v = std.math.clamp(drag_start_val + (drag_start_y - m.y) * per_px, lo, hi);
+        }
+    } else if (active_drag_key == 0 and m.left_pressed and contains(r, m.x, m.y)) {
+        active_drag_key = k;
+        drag_start_val = value;
+        drag_start_y = m.y;
+    } else if (active_drag_key == 0 and contains(r, m.x, m.y) and m.wheel_y != 0) {
+        v = std.math.clamp(value + m.wheel_y * scroll_step, lo, hi);
+    }
+    if ((active_drag_key == k or (active_drag_key == 0 and contains(r, m.x, m.y)))) {
+        requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 1);
+    }
+    return v;
+}
+
 pub fn rectKeyOf(r: c.rl.Rectangle, salt: u64) u64 {
     return rectKey(r, salt);
 }

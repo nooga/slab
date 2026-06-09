@@ -106,10 +106,18 @@ pub fn draw(r: c.rl.Rectangle, transport: *Transport, edit_snap: *snap_mod.Setti
     }
     x += btn_w + GROUP_GAP;
 
-    // ── BPM field with metronome LED ─────────────────────────────────
-    const bpm_rect = widgets.rect(x, y, field_w_bpm, h);
-    bpmField(bpm_rect, transport);
+    // ── BPM: -  [LED 124.0 BPM]  +   (field drags/scrolls like a knob) ─
+    const step_w = theme.size(16);
+    if (widgets.buttonTip(widgets.rect(x, y, step_w, h), "-", "BPM -1", m)) {
+        transport.setBpm(@round(transport.bpm()) - 1);
+    }
+    x += step_w + GAP;
+    bpmField(widgets.rect(x, y, field_w_bpm, h), transport, m);
     x += field_w_bpm + GAP;
+    if (widgets.buttonTip(widgets.rect(x, y, step_w, h), "+", "BPM +1", m)) {
+        transport.setBpm(@round(transport.bpm()) + 1);
+    }
+    x += step_w + GAP;
 
     // ── Tap tempo button ─────────────────────────────────────────────
     if (widgets.buttonTip(widgets.rect(x, y, tap_w, h), "TAP", "Tap tempo", m)) {
@@ -183,7 +191,13 @@ fn drawSeparator(r: c.rl.Rectangle) void {
     widgets.bevelRaised(r, theme.slab_fill, theme.slab_hi, theme.slab_lo);
 }
 
-fn bpmField(r: c.rl.Rectangle, transport: *const Transport) void {
+const BPM_SALT: u64 = 0x42504d44; // "BPMD"
+
+fn bpmField(r: c.rl.Rectangle, transport: *Transport, m: widgets.Mouse) void {
+    // Drag vertically / scroll to edit, like a knob.
+    const new_bpm = widgets.dragValueV(r, BPM_SALT, transport.bpm(), 20.0, 400.0, 0.5, 1.0, m);
+    if (new_bpm != transport.bpm()) transport.setBpm(new_bpm);
+
     const inner = widgets.displayField(r);
 
     // Metronome LED — pulses for ~80 ms at the start of each beat,
