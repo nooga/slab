@@ -28,24 +28,38 @@ write manifest lines; the engine does bevels, placement, and readouts.
 ## Panel model
 
 ```
-panel
-└─ strips (modules, declared width, packed left→right, wrap into rows)
-   └─ cells (declared columns × rows grid)
-      ├─ knob     ( label · arc · value readout )   — f32 control
-      ├─ switchV  ( label · vertical option list )  — enum control (octave, waveform)
-      ├─ blank    ( spacer )
-      └─ custom   ( a rect handed to the machine to draw into — see Escape hatch )
+panel  (body rect)
+└─ rows            (stacked top→bottom; each has a height weight)
+   └─ cells        (placed left→right within a row; each has a width weight)
+      └─ strips    (stacked top→bottom within a cell; each has a height weight)
+         └─ cells  (the strip's own knob grid: declared columns × rows)
+            ├─ knob     ( label · arc · value readout )   — f32 control
+            ├─ switchV / stepped knob — enum control (octave, waveform)
+            ├─ blank    ( spacer )
+            └─ custom   ( a rect handed to the machine to draw — Escape hatch )
 ```
 
-- A **strip** is a beveled box (`bevelRaised` header bar in `slab_fill`
-  with `slab_hi`/`slab_lo` edges; sunken body) with its title auto-drawn.
-- **Declared widths**: each strip declares its width in grid units; the
-  engine packs strips left→right and **wraps to a new row** when the next
-  strip would exceed the body width (so `mono1`'s 2-row layout emerges
-  naturally). Row height = body height ÷ row count.
-- **Cells** fill the strip body in a declared `columns` grid; knobs flow
-  row-major. Standard knob cell = label on top, arc in the middle, value
-  readout below (the `mono1` look).
+This is a small **weighted box layout** — two levels of nesting (rows →
+cells → strips), no arbitrary recursion. It is generic and reusable: a
+machine only declares the tree and weights; the engine computes every rect.
+The per-strip renderer (`drawStrip`) and the knob/switch widgets are
+unchanged — the engine just feeds them rects.
+
+- A **row** spans the full body width; its height = `body.h × row_weight /
+  Σ row_weights`. Rows stack top→bottom.
+- A **cell** is a column within a row; its width = `row.w × cell_weight /
+  Σ cell_weights`. A cell holds one *or more* stacked strips — this is how a
+  short module (VCA) shares a column with another (so it stops wasting a
+  full-height strip).
+- A **strip** inside a cell gets height = `cell.h × strip_weight /
+  Σ strip_weights`. It is the familiar beveled box (`bevelRaised` header in
+  `slab_fill`, sunken body, auto title).
+- A **strip's knob grid** is its declared `cols` × `ceil(n/cols)`. A wide,
+  short strip (e.g. **MOD** as a full-width bottom row) just uses `cols = N`
+  so its knobs flow horizontally — same renderer, no special case.
+
+Weights default to 1, so simple panels stay terse; you add weights only
+where proportions matter (e.g. a tall ENV row vs. a short MOD row).
 
 The panel is a pure function of (control declaration, body rect). It owns
 no scroll state — see Client rect.
@@ -55,18 +69,38 @@ no scroll state — see Client rect.
 The raw manifest already carries control grouping. We extend it minimally;
 `direct-f64` knob lines are unchanged.
 
-Per-strip layout line (new) — declares order, width, and column count:
+**Strip declaration** — names a module and its knob-grid column count:
 
 ```
-strip|VCO1|width|cols
-strip|VCO1|3|1
-strip|MIXER|5|1
-strip|LPF|5|2
+strip|MODULE|cols
+strip|VCO1|1
+strip|MOD|4        ( 4 knobs in a row → horizontal when placed in a wide cell )
 ```
 
-`width` is in strip-grid units; `cols` is the knob columns inside the strip.
-Strip order is the order of `strip|` lines. Controls attach to a strip by
-their existing `module` field.
+**Layout block** — the weighted box tree. `row|` opens a row; `cell|` adds a
+cell to the current row. A cell lists one or more modules (stacked); weights
+are optional (default 1):
+
+```
+# row|<height-weight>
+# cell|<width-weight>|MODULE[*hw] MODULE2[*hw] ...      (MODULE*hw = strip height weight)
+row|4
+cell|1|VCO1 MG
+cell|1|VCO2
+cell|1|MIX*3 VCA*1
+cell|1|HPF
+cell|1|LPF
+cell|1|AMP ENV
+cell|1|FLT ENV
+row|1
+cell|1|MOD
+```
+
+Here VCO1 stacks over MG in one column; MIX (weight 3) over VCA (weight 1)
+in another; the bottom row is MOD spanning full width with horizontal knobs.
+Controls attach to a strip by their existing `module` field. If no `row|`
+lines are present, the engine falls back to the legacy single flat row (so
+existing fixtures are unaffected).
 
 Switch (enum) control kind (new) — for octave/waveform selectors:
 
@@ -91,8 +125,9 @@ engine. Optional `unit`/format can be added later for the readout text.
 
 A single generic routine (replacing `drawMs20Panel`):
 
-1. **Measure**: from `strip|` widths, pack into rows that fit the body
-   width; compute each strip rect (row height = body ÷ rows).
+1. **Measure**: walk the layout tree — split body height across rows by
+   weight, each row's width across cells by weight, each cell's height across
+   its stacked strips by weight — yielding one rect per strip.
 2. **Draw strip**: `widgets.strip(rect, title)` — beveled frame + header.
 3. **Lay cells**: split the strip body into `cols` columns × `ceil(n/cols)`
    rows; place each control's cell on the 4px grid.
