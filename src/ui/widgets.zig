@@ -164,8 +164,11 @@ pub fn drawContextMenu() void {
     const mx: f32 = @floatFromInt(c.rl.GetMouseX());
     const my: f32 = @floatFromInt(c.rl.GetMouseY());
 
+    // Hard 1px outer edge, then a raised beveled body — the menu reads as a
+    // floating chrome panel (BeOS/Win95). Hovered item gets an amber
+    // selection bar with dark text.
     c.rl.DrawRectangleRec(r, theme.slab_edge);
-    c.rl.DrawRectangleRec(rect(r.x + 1, r.y + 1, r.width - 2, r.height - 2), theme.pane_bg);
+    bevelRaised(rect(r.x + 1, r.y + 1, r.width - 2, r.height - 2), theme.slab_fill, theme.slab_hi, theme.slab_lo);
     for (items, 0..) |item, i| {
         const row = rect(r.x + 1, r.y + 1 + @as(f32, @floatFromInt(i)) * row_h, r.width - 2, row_h);
         if (item.separator) {
@@ -174,9 +177,9 @@ pub fn drawContextMenu() void {
             c.rl.DrawRectangle(@intFromFloat(row.x + pad_x), @intFromFloat(y + 1), @intFromFloat(row.width - pad_x * 2), 1, theme.slab_hi);
             continue;
         }
-        const hover = contains(row, mx, my);
-        if (hover and item.enabled) c.rl.DrawRectangleRec(row, theme.slab_hi);
-        const col = if (item.enabled) theme.text_fg else theme.text_mute;
+        const hover = contains(row, mx, my) and item.enabled;
+        if (hover) c.rl.DrawRectangleRec(rect(row.x + 2, row.y, row.width - 4, row.height), theme.accent_hi);
+        const col = if (!item.enabled) theme.text_mute else if (hover) theme.bg else theme.text_fg;
         drawLabelF(item.label, row.x + pad_x, row.y + (row.height - theme.fsBody()) / 2 - 1, theme.fsBody(), col);
     }
 }

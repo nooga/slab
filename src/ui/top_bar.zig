@@ -120,17 +120,25 @@ pub fn draw(r: c.rl.Rectangle, transport: *Transport, edit_snap: *snap_mod.Setti
     }
     x += snap_btn_w;
 
-    // ── SLAB title, right aligned ────────────────────────────────────
+    // ── Logo plate (right) + blank-bevel filler ─────────────────────
     const title = "SLAB";
     const title_size = theme.fsTitle();
     const tw = widgets.measureTextF(title, title_size);
-    widgets.drawLabelF(
-        title,
-        r.x + r.width - tw - 6,
-        r.y + (r.height - title_size) / 2 - 1,
-        title_size,
-        theme.accent_hi,
-    );
+    const icon_sz = title_size;
+    const logo_w = theme.size(8) + icon_sz + theme.size(5) + tw + theme.size(8);
+    const logo_x = r.x + r.width - logo_w;
+
+    // Inert raised bevel fills the empty space between the controls and the
+    // logo so the bar reads as one complete instrument panel.
+    const fill_x = x + GROUP_GAP;
+    if (logo_x - fill_x > theme.size(4)) {
+        widgets.bevelRaised(widgets.rect(fill_x, y, logo_x - fill_x - GROUP_GAP, h), theme.slab_fill, theme.slab_hi, theme.slab_lo);
+    }
+
+    // Logo plate: waveform glyph + wordmark, amber on raised chrome.
+    widgets.bevelRaised(widgets.rect(logo_x, y, logo_w, h), theme.slab_fill, theme.slab_hi, theme.slab_lo);
+    widgets.drawIcon(.waveform, logo_x + theme.size(8), r.y + (r.height - icon_sz) / 2, icon_sz, theme.accent_hi);
+    widgets.drawLabelF(title, logo_x + theme.size(8) + icon_sz + theme.size(5), r.y + (r.height - title_size) / 2 - 1, title_size, theme.accent_hi);
 
     return result;
 }
