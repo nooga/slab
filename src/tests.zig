@@ -1395,3 +1395,35 @@ test "dsp2: composition repeated caller loops with auto-advanced output" {
     _ = try caller.call(4, &args);
     for (out) |v| try std.testing.expectApproxEqAbs(1.5, v, 0.000000000001);
 }
+
+test "struct/ustruct introspection: size, field offsets, field sizes" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run("ustruct: IV f64 a f64 b f32 c f64 d ;");
+    try runCases(&fy, &[_]TestCase{
+        .{ .input = "IV.size", .expected = Fy.makeInt(32) }, // c pads to 8 for d
+        .{ .input = "IV.a", .expected = Fy.makeInt(0) },
+        .{ .input = "IV.b", .expected = Fy.makeInt(8) },
+        .{ .input = "IV.c", .expected = Fy.makeInt(16) },
+        .{ .input = "IV.d", .expected = Fy.makeInt(24) },
+        .{ .input = "IV.c-size", .expected = Fy.makeInt(4) },
+        .{ .input = "IV.d-size", .expected = Fy.makeInt(8) },
+    });
+
+    _ = try fy.run("struct: TV u32 n ptr p f32 g ;");
+    try runCases(&fy, &[_]TestCase{
+        .{ .input = "TV.n", .expected = Fy.makeInt(0) },
+        .{ .input = "TV.p", .expected = Fy.makeInt(8) },
+        .{ .input = "TV.g", .expected = Fy.makeInt(16) },
+        .{ .input = "TV.p-size", .expected = Fy.makeInt(8) },
+        .{ .input = "TV.size", .expected = Fy.makeInt(24) }, // 20 padded to ptr align
+    });
+
+    // Introspection constants are usable inside normal word definitions.
+    _ = try fy.run(": iv-b-end IV.b IV.b-size + ;");
+    try runCases(&fy, &[_]TestCase{
+        .{ .input = "iv-b-end", .expected = Fy.makeInt(16) },
+    });
+}

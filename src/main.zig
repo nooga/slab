@@ -5915,6 +5915,41 @@ pub const Fy = struct {
                 self.fy.fyalloc.free(layout.name);
             }
             self.fy.untagged_struct_layouts.append(layout) catch return Error.OutOfMemory;
+            const stored = &self.fy.untagged_struct_layouts.items[self.fy.untagged_struct_layouts.items.len - 1];
+            try self.generateLayoutIntrospection(stored, true);
+        }
+
+        /// Generate `name` as a word that pushes makeInt(value) — used for
+        /// the struct/ustruct introspection constants below.
+        fn generateConstIntWord(self: *Compiler, name: []const u8, value: u64) Error!void {
+            var c = Compiler.init(self.fy, self.parser);
+            defer c.deinit();
+            try c.enterPersist();
+            try c.emitNumber(value << 2, 0);
+            try c.emitPush();
+            try c.leavePersist();
+            const code = c.code.toOwnedSlice() catch return Error.OutOfMemory;
+            try self.registerGeneratedWord(name, code);
+        }
+
+        /// Introspection words for a struct/ustruct layout: `S.size` (total
+        /// bytes, skipped when the caller already generated it), and per field
+        /// `S.field` (byte offset) + `S.field-size` (field bytes). All push
+        /// plain fy integers and are callable from normal words and macros.
+        fn generateLayoutIntrospection(self: *Compiler, layout: *const StructLayout, gen_size: bool) Error!void {
+            if (gen_size) {
+                const sz_name = std.fmt.allocPrint(self.fy.fyalloc, "{s}.size", .{layout.name}) catch return Error.OutOfMemory;
+                defer self.fy.fyalloc.free(sz_name);
+                try self.generateConstIntWord(sz_name, layout.size);
+            }
+            for (layout.fields) |field| {
+                const off_name = std.fmt.allocPrint(self.fy.fyalloc, "{s}.{s}", .{ layout.name, field.name }) catch return Error.OutOfMemory;
+                defer self.fy.fyalloc.free(off_name);
+                try self.generateConstIntWord(off_name, field.offset);
+                const fsz_name = std.fmt.allocPrint(self.fy.fyalloc, "{s}.{s}-size", .{ layout.name, field.name }) catch return Error.OutOfMemory;
+                defer self.fy.fyalloc.free(fsz_name);
+                try self.generateConstIntWord(fsz_name, field.field_type.size());
+            }
         }
 
         /// Helper: build a user word from a code-emitting sub-compiler, link it, and register it.
@@ -5996,6 +6031,9 @@ pub const Fy = struct {
                 .size = total_size,
                 .fields = fields_owned,
             }) catch return Error.OutOfMemory;
+
+            // Field-offset/size introspection words (S.size is generated below).
+            try self.generateLayoutIntrospection(&self.fy.struct_layouts.items[self.fy.struct_layouts.items.len - 1], false);
 
             const alloc_mem_addr: u64 = @intFromPtr(&Builtins.allocMem);
 
