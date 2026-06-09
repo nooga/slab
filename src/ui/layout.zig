@@ -53,7 +53,10 @@ pub const State = struct {
     drag: Drag = .none,
 
     pub fn effBrowserW(self: *const State) f32 {
-        return if (self.browser_collapsed) theme.collapsedW() else theme.size(self.browser_w);
+        // Side browser removed — machines are added from the machine-bay "+".
+        // Zero width so the arrangement spans the full window.
+        _ = self;
+        return 0;
     }
 
     pub fn effMachineBayH(self: *const State) f32 {

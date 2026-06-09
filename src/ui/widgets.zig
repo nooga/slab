@@ -64,6 +64,7 @@ pub const EditCommand = enum {
 pub const MenuItem = struct {
     label: [*:0]const u8 = "",
     command: EditCommand = .none,
+    id: u32 = 0,
     enabled: bool = true,
     separator: bool = false,
 };
@@ -164,9 +165,11 @@ pub fn neutralMouse() Mouse {
     return .{ .x = -100000, .y = -100000, .left_pressed = false, .left_down = false, .left_released = false, .right_pressed = false, .double_clicked = false, .wheel_x = 0, .wheel_y = 0 };
 }
 
-pub fn contextMenu(key: u64, items: []const MenuItem, m: Mouse) EditCommand {
-    _ = m; // an open menu is modal — always use the raw frame mouse.
-    if (context_key != key) return .none;
+// Shared menu input core: registers the items for deferred drawing, hit-tests
+// the raw frame mouse, closes on item-click or outside-click, and returns the
+// clicked item index (skipping separators/disabled). An open menu is modal.
+fn menuTick(key: u64, items: []const MenuItem) ?usize {
+    if (context_key != key) return null;
     const draw_len = @min(items.len, MAX_CONTEXT_ITEMS);
     @memcpy(context_draw_items[0..draw_len], items[0..draw_len]);
     context_draw_len = draw_len;
@@ -175,15 +178,14 @@ pub fn contextMenu(key: u64, items: []const MenuItem, m: Mouse) EditCommand {
     const row_h = contextMenuRowH();
     const r = contextMenuRect(items);
 
-    var clicked: EditCommand = .none;
+    var clicked: ?usize = null;
     for (items, 0..) |item, i| {
         const row = rect(r.x + 1, r.y + 1 + @as(f32, @floatFromInt(i)) * row_h, r.width - 2, row_h);
         if (item.separator) continue;
-        const hover = contains(row, frame_mouse.x, frame_mouse.y);
-        if (hover and item.enabled and frame_mouse.left_released) clicked = item.command;
+        if (contains(row, frame_mouse.x, frame_mouse.y) and item.enabled and frame_mouse.left_released) clicked = i;
     }
 
-    if (clicked != .none) {
+    if (clicked != null) {
         closeContextMenu();
         return clicked;
     }
@@ -192,7 +194,20 @@ pub fn contextMenu(key: u64, items: []const MenuItem, m: Mouse) EditCommand {
     } else if ((frame_mouse.left_pressed or frame_mouse.right_pressed) and !contains(r, frame_mouse.x, frame_mouse.y)) {
         closeContextMenu();
     }
+    return null;
+}
+
+pub fn contextMenu(key: u64, items: []const MenuItem, m: Mouse) EditCommand {
+    _ = m; // modal — uses the raw frame mouse.
+    if (menuTick(key, items)) |i| return items[i].command;
     return .none;
+}
+
+/// Like contextMenu but for arbitrary lists — returns the clicked item's `id`.
+pub fn menuPickId(key: u64, items: []const MenuItem, m: Mouse) ?u32 {
+    _ = m;
+    if (menuTick(key, items)) |i| return items[i].id;
+    return null;
 }
 
 pub fn drawContextMenu() void {

@@ -450,35 +450,8 @@ pub fn main() !void {
 
         const tres = top_bar.draw(rects.top_bar, &transport, &edit_snap, project_path, project_path_chosen, dirty, pane_m);
 
-        // Browser — handles machine assignment to the selected track.
-        const bres = browser.draw(rects.browser, layout.browser_collapsed, &reg, pane_m);
-        if (bres.toggled) layout.browser_collapsed = !layout.browser_collapsed;
-        if (bres.assigned) |reg_idx| {
-            if (selected_track) |ti| if (ti < tracks.len) {
-                const entry = &reg.entries[reg_idx];
-                if (entry.in_audio and entry.out_audio and !entry.in_notes) {
-                    addEffectToTrack(&audio, &reg, &tracks[ti], reg_idx) catch |err| {
-                        std.log.err("add effect failed: {s}", .{@errorName(err)});
-                        status.set("Effect failed: {s}", .{@errorName(err)});
-                        continue;
-                    };
-                    dirty = true;
-                    status.set("Added {s}", .{entry.nameSlice()});
-                } else {
-                    assignMachineToTrack(alloc, &audio, &reg, &tracks[ti], reg_idx, 1) catch |err| {
-                        std.log.err("instantiate machine failed: {s}", .{@errorName(err)});
-                        continue;
-                    };
-                    dirty = true;
-                    status.set("Assigned {s}", .{entry.nameSlice()});
-                    // Rename track to the machine name.
-                    const nm = entry.nameSlice();
-                    const n = @min(nm.len, track_mod.MAX_NAME);
-                    @memcpy(tracks[ti].name_buf[0..n], nm[0..n]);
-                    tracks[ti].name_len = @intCast(n);
-                }
-            };
-        }
+        // (Side browser removed — machines are added via the "+" in the
+        // machine-bay titlebar; see mbres.add_machine below.)
 
         const ares = arrangement.draw(rects.arrangement, tracks, alloc, &selected_track, &selected_clip, &transport, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), pane_m);
         if (ares.rename_clip) |ref| beginRenameClip(&rename, tracks, ref);
@@ -531,8 +504,33 @@ pub fn main() !void {
                 }, tracks, &transport, &selected_track, &selected_clip, &rename, &dirty);
             }
         }
-        const mbres = machine_bay.draw(rects.machine_bay, tracks, selected_track, layout.machine_bay_collapsed, pane_m);
+        const mbres = machine_bay.draw(rects.machine_bay, tracks, selected_track, layout.machine_bay_collapsed, &reg, pane_m);
         if (mbres.minimize) layout.machine_bay_collapsed = !layout.machine_bay_collapsed;
+        if (mbres.add_machine) |reg_idx| {
+            if (selected_track) |ti| if (ti < tracks.len) {
+                const entry = &reg.entries[reg_idx];
+                if (entry.in_audio and entry.out_audio and !entry.in_notes) {
+                    addEffectToTrack(&audio, &reg, &tracks[ti], reg_idx) catch |err| {
+                        std.log.err("add effect failed: {s}", .{@errorName(err)});
+                        status.set("Effect failed: {s}", .{@errorName(err)});
+                        continue;
+                    };
+                    dirty = true;
+                    status.set("Added {s}", .{entry.nameSlice()});
+                } else {
+                    assignMachineToTrack(alloc, &audio, &reg, &tracks[ti], reg_idx, 1) catch |err| {
+                        std.log.err("instantiate machine failed: {s}", .{@errorName(err)});
+                        continue;
+                    };
+                    dirty = true;
+                    status.set("Assigned {s}", .{entry.nameSlice()});
+                    const nm = entry.nameSlice();
+                    const n = @min(nm.len, track_mod.MAX_NAME);
+                    @memcpy(tracks[ti].name_buf[0..n], nm[0..n]);
+                    tracks[ti].name_len = @intCast(n);
+                }
+            };
+        }
         if (mbres.preset_index) |preset| {
             if (selected_track) |ti| if (ti < tracks.len) {
                 if (tracks[ti].machine.apply_preset) |apply| {

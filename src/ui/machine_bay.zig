@@ -6,18 +6,44 @@ const c = @import("../c.zig");
 const theme = @import("theme.zig");
 const widgets = @import("widgets.zig");
 const Track = @import("../track.zig").Track;
+const registry_mod = @import("../machine_registry.zig");
+const Registry = registry_mod.Registry;
 
 pub const Result = struct {
     minimize: bool = false,
     close: bool = false,
     poly_voices: ?u8 = null,
     preset_index: ?u8 = null,
+    add_machine: ?usize = null, // registry index to assign to the selected track
 };
+
+const ADD_MENU_KEY: u64 = 0x4d414444; // "MADD"
 
 var poly_dropdown_track: ?usize = null;
 var preset_dropdown_track: ?usize = null;
 
-pub fn draw(r: c.rl.Rectangle, tracks: []Track, selected: ?usize, collapsed: bool, m: widgets.Mouse) Result {
+// "+" button at the left of the machine-bay titlebar → machine picker menu.
+// Returns the chosen registry index when an item is clicked.
+fn drawAddButton(btn: c.rl.Rectangle, reg: *const Registry, m: widgets.Mouse) ?usize {
+    const open = widgets.menuOpen(ADD_MENU_KEY);
+    const hover = widgets.contains(btn, m.x, m.y) and !widgets.hasActiveDrag();
+    const fill = if (open or hover) theme.slab_hi else theme.slab_fill;
+    widgets.bevelRaised(btn, fill, theme.slab_hi, theme.slab_lo);
+    const isz = theme.fsBody();
+    widgets.drawIcon(.plus, btn.x + (btn.width - isz) / 2, btn.y + (btn.height - isz) / 2, isz, theme.text_fg);
+    widgets.tooltip(btn, "Add machine", m);
+    if (hover and m.left_pressed and !open) widgets.openMenuAt(ADD_MENU_KEY, btn.x, btn.y + btn.height);
+    var items: [registry_mod.MAX_MACHINES]widgets.MenuItem = undefined;
+    var n: usize = 0;
+    for (reg.entries[0..reg.count], 0..) |*e, i| {
+        items[n] = .{ .label = e.nameZ(), .id = @intCast(i) };
+        n += 1;
+    }
+    if (widgets.menuPickId(ADD_MENU_KEY, items[0..n], m)) |id| return @intCast(id);
+    return null;
+}
+
+pub fn draw(r: c.rl.Rectangle, tracks: []Track, selected: ?usize, collapsed: bool, reg: *const Registry, m: widgets.Mouse) Result {
     c.rl.DrawRectangleRec(r, theme.pane_bg);
     var result = Result{};
 
@@ -31,11 +57,16 @@ pub fn draw(r: c.rl.Rectangle, tracks: []Track, selected: ?usize, collapsed: boo
     // No machine loaded (no track selected, or a track with nothing assigned)
     // → one continuous placeholder title bar across the whole bay with a hint,
     // instead of an empty machine panel / stub + a seam.
+    const have_track = if (selected) |idx| idx < tracks.len else false;
     const have_machine = if (selected) |idx| (idx < tracks.len and tracks[idx].machine_idx != null) else false;
     if (!have_machine) {
-        const hint: [*:0]const u8 = if (selected != null) "no machine — assign one from the browser" else "select a track";
+        const hint: [*:0]const u8 = if (have_track) "no machine — click + to add one" else "select a track";
         const res = drawPlaceholder(r, header_h, false, hint, m);
-        return .{ .minimize = res.minimize };
+        result.minimize = res.minimize;
+        if (have_track) {
+            if (drawAddButton(widgets.rect(r.x, r.y, header_h, header_h), reg, m)) |idx| result.add_machine = idx;
+        }
+        return result;
     }
 
     var x = r.x;
@@ -76,13 +107,18 @@ pub fn draw(r: c.rl.Rectangle, tracks: []Track, selected: ?usize, collapsed: boo
         }
     }
 
+    // Trailing placeholder fills the rest of the bay; the "+" add-machine
+    // button sits at its left — i.e. immediately to the right of the device
+    // chain, not glued to the window edge.
+    const plus_x = x;
     if (x < r.x + r.width) {
         const rest = widgets.rect(x, r.y, r.x + r.width - x, r.height);
         const res = drawPlaceholder(rest, header_h, false, null, m);
         result.minimize = res.minimize;
-        return result;
     }
-
+    if (have_track and plus_x + header_h <= r.x + r.width) {
+        if (drawAddButton(widgets.rect(plus_x, r.y, header_h, header_h), reg, m)) |idx| result.add_machine = idx;
+    }
     return result;
 }
 

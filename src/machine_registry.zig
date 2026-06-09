@@ -77,6 +77,10 @@ pub const Entry = struct {
         return self.name[0..self.name_len];
     }
 
+    pub fn nameZ(self: *const Entry) [*:0]const u8 {
+        return @ptrCast(&self.name[0]);
+    }
+
     pub fn machineInterface(self: *Entry) machine.Machine {
         return self.fy_machine.?.machineInterface();
     }
