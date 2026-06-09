@@ -21,6 +21,7 @@ const ADD_MENU_KEY: u64 = 0x4d414444; // "MADD"
 
 var poly_dropdown_track: ?usize = null;
 var preset_dropdown_track: ?usize = null;
+var bay_scroll_x: f32 = 0; // horizontal scroll of the device chain
 
 // "+" button at the left of the machine-bay titlebar → machine picker menu.
 // Returns the chosen registry index when an item is clicked.
@@ -69,13 +70,20 @@ pub fn draw(r: c.rl.Rectangle, tracks: []Track, selected: ?usize, collapsed: boo
         return result;
     }
 
-    var x = r.x;
+    // Horizontal scroll of the device chain (trackpad h-wheel or shift+wheel).
+    {
+        const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
+        const wheel: f32 = if (m.wheel_x != 0) m.wheel_x else if (shift) m.wheel_y else 0;
+        if (wheel != 0 and widgets.contains(r, m.x, m.y)) bay_scroll_x -= wheel * theme.size(40);
+        if (bay_scroll_x < 0) bay_scroll_x = 0;
+    }
+    var x = r.x - bay_scroll_x;
     {
         const idx = selected.?;
         {
             const t = &tracks[idx];
             const DEFAULT_PANEL_W = theme.size(200);
-            const pw = @min(if (t.machine.panel_w > 0) theme.size(t.machine.panel_w) else DEFAULT_PANEL_W, r.width);
+            const pw = if (t.machine.panel_w > 0) theme.size(t.machine.panel_w) else DEFAULT_PANEL_W;
             const panel_rect = widgets.rect(x, r.y, pw, r.height);
             if (t.machine.host_titlebar) {
                 // Host-drawn title bar: name on the left, body below.
@@ -99,13 +107,17 @@ pub fn draw(r: c.rl.Rectangle, tracks: []Track, selected: ?usize, collapsed: boo
             }
             x += pw;
             for (t.effects[0..t.effect_count]) |*fx| {
-                if (x >= r.x + r.width) break;
-                const fx_w = @min(if (fx.panel_w > 0) theme.size(fx.panel_w) else DEFAULT_PANEL_W, r.x + r.width - x);
+                const fx_w = if (fx.panel_w > 0) theme.size(fx.panel_w) else DEFAULT_PANEL_W;
                 fx.draw_panel(fx.state, widgets.rect(x, r.y, fx_w, r.height), m);
                 x += fx_w;
             }
         }
     }
+
+    // Clamp scroll for next frame so the chain + "+" stay reachable.
+    const content_w = (x + bay_scroll_x - r.x) + header_h;
+    const max_scroll = @max(0, content_w - r.width);
+    if (bay_scroll_x > max_scroll) bay_scroll_x = max_scroll;
 
     // Trailing placeholder fills the rest of the bay; the "+" add-machine
     // button sits at its left — i.e. immediately to the right of the device

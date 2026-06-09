@@ -9,7 +9,7 @@ const clip_mod = @import("clip.zig");
 const snap_mod = @import("snapshot.zig");
 
 pub const MAX_NAME = 32;
-pub const MAX_EFFECTS = 4;
+pub const MAX_EFFECTS = 16;
 
 pub const Track = struct {
     name_buf: [MAX_NAME]u8 = [_]u8{0} ** MAX_NAME,
