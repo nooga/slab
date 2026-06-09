@@ -279,6 +279,11 @@ pub fn loopSelectedClips(tracks: []Track, transport: *Transport) bool {
     return false;
 }
 
+pub fn loopArrangement(tracks: []Track, transport: *Transport) bool {
+    transport.setLoopBeats(0, @max(4.0, contentEndBeats(tracks)));
+    return true;
+}
+
 pub fn splitSelectedClipsAt(tracks: []Track, alloc: std.mem.Allocator, focused_clip: *?ClipRef, beat: f64) bool {
     var changed = false;
     var first: ?ClipRef = null;
@@ -447,24 +452,13 @@ pub fn draw(
     widgets.bevelSunken(hdr_top, theme.pane_alt, theme.slab_hi, theme.slab_lo);
     widgets.drawLabelF("TRACKS", header_x + 4, r.y + 4, theme.fsTiny(), theme.text_dim);
     const add_sz = @min(hdr_top.height - 4, theme.size(18));
-    var tool_x = hdr_top.x + hdr_top.width - add_sz - 2;
+    const tool_x = hdr_top.x + hdr_top.width - add_sz - 2;
     const add_rect = widgets.rect(tool_x, hdr_top.y + 2, add_sz, add_sz);
     if (widgets.iconButtonTip(add_rect, .plus, null, "Add track", m)) {
         result.add_track = true;
     }
-    tool_x -= add_sz + 1;
-    if (widgets.iconButtonTip(widgets.rect(tool_x, hdr_top.y + 2, add_sz, add_sz), .x, null, "Clear loop", m)) {
-        transport.clearLoop();
-    }
-    tool_x -= add_sz + 1;
-    if (widgets.iconButtonTip(widgets.rect(tool_x, hdr_top.y + 2, add_sz, add_sz), .repeat, null, "Loop selected clips", m)) {
-        if (selectedClipRange(tracks)) |range| transport.setLoopBeats(range.start, range.end);
-    }
-    tool_x -= add_sz + 1;
-    if (widgets.iconButtonTip(widgets.rect(tool_x, hdr_top.y + 2, add_sz, add_sz), .repeat, theme.slab_lo, "Loop entire arrangement", m)) {
-        const end = @max(4.0, contentEndBeats(tracks));
-        transport.setLoopBeats(0, end);
-    }
+    // Loop controls moved off the track header — right-click the timeline for
+    // Loop selection / Loop arrangement / Clear loop, plus ruler drag.
 
     // Clamp scrolls once we know content extent.
     const content_beats = contentBeats(tracks);
@@ -508,6 +502,8 @@ pub fn draw(
         @intFromFloat(timeline_w),
         @intFromFloat(r.y + r.height - lanes_top),
     );
+    // Lane backgrounds first, then the loop region, so the loop marquee sits
+    // behind the clips (drawn below).
     for (tracks, 0..) |*t, ti| {
         const ly = lanes_top + @as(f32, @floatFromInt(ti)) * theme.laneH() - scroll_y;
         if (ly + theme.laneH() <= lanes_top) continue;
@@ -515,6 +511,13 @@ pub fn draw(
         const lane_timeline = widgets.rect(timeline_x, ly, timeline_w, theme.laneH());
         const lane_is_sel = selected_track.* != null and selected_track.*.? == ti;
         drawTimelineLane(lane_timeline, t.*, ti, lane_is_sel, timeline_x0, edit_snap);
+    }
+    drawLoopRegion(widgets.rect(timeline_x, lanes_top, timeline_w, r.y + r.height - lanes_top), timeline_x0, transport);
+    for (tracks, 0..) |*t, ti| {
+        const ly = lanes_top + @as(f32, @floatFromInt(ti)) * theme.laneH() - scroll_y;
+        if (ly + theme.laneH() <= lanes_top) continue;
+        if (ly >= r.y + r.height) break;
+        const lane_timeline = widgets.rect(timeline_x, ly, timeline_w, theme.laneH());
         const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
 
         // Hit-test pass (reverse order, topmost first).
@@ -629,15 +632,6 @@ pub fn draw(
     );
     c.rl.EndScissorMode();
 
-    c.rl.BeginScissorMode(
-        @intFromFloat(timeline_x),
-        @intFromFloat(lanes_top),
-        @intFromFloat(timeline_w),
-        @intFromFloat(r.y + r.height - lanes_top),
-    );
-    drawLoopRegion(widgets.rect(timeline_x, lanes_top, timeline_w, r.y + r.height - lanes_top), timeline_x0, transport);
-    c.rl.EndScissorMode();
-
     // Track headers — live in the right column but scroll vertically
     // with the lanes. Scissor to the lane band so they don't leak
     // into the overview strip or beyond the bottom.
@@ -696,7 +690,10 @@ pub fn draw(
         .{ .label = "Rename", .command = .rename, .enabled = has_selection },
         .{ .label = "Select all", .command = .select_all, .enabled = has_clips },
         .{ .label = "Clear selection", .command = .clear_selection, .enabled = has_selection },
+        .{ .separator = true },
         .{ .label = "Loop selection", .command = .loop_selection, .enabled = has_selection },
+        .{ .label = "Loop arrangement", .command = .loop_arrangement, .enabled = has_clips },
+        .{ .label = "Clear loop", .command = .clear_loop, .enabled = true },
     };
     result.command = widgets.contextMenu(ARR_CONTEXT_KEY, &arr_context_items, m);
     if (result.command != .none) {

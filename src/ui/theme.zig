@@ -23,24 +23,36 @@ pub const grid_row = rgb(38, 38, 41);
 pub const splitter_bg = rgb(16, 16, 18);
 pub const splitter_hover = rgb(180, 150, 60);
 
-// Text
-pub const text_fg = rgb(220, 220, 215);
-pub const text_dim = rgb(140, 140, 135);
-pub const text_mute = rgb(90, 90, 90);
+// Text — three steps, kept legible on the dark greys (the dimmest were
+// almost invisible for knob readouts / lists / status bar).
+pub const text_fg = rgb(224, 224, 219);
+pub const text_dim = rgb(160, 160, 154);
+pub const text_mute = rgb(116, 116, 112);
 
 // Accents
 pub const accent_play = rgb(80, 200, 100);
 pub const accent_rec = rgb(215, 70, 60);
 pub const accent_hi = rgb(215, 175, 80);
 
-// Track colors — cycled when creating tracks.
+// Semantic aliases — amber is the global "active" colour: selection,
+// playhead, and the focused-pane border all use it, so track colours can
+// stay purely about per-track identity.
+pub const accent_sel = accent_hi;
+pub const focus_border = accent_hi;
+pub const playhead = accent_hi;
+
+// Track colors — cycled when creating tracks. A cohesive set of muted,
+// evenly-spaced hues at a consistent saturation/value so no track screams
+// and none clash with the amber accent.
 pub const track_colors = [_]c.rl.Color{
-    rgb(170, 100, 100),
-    rgb(170, 150, 80),
-    rgb(100, 160, 110),
-    rgb(90, 140, 180),
-    rgb(150, 110, 180),
-    rgb(180, 130, 90),
+    rgb(190, 112, 110), // rose
+    rgb(198, 142, 86), // orange
+    rgb(170, 176, 98), // olive
+    rgb(112, 178, 120), // green
+    rgb(96, 176, 166), // teal
+    rgb(106, 150, 200), // blue
+    rgb(142, 132, 206), // indigo
+    rgb(184, 120, 190), // magenta
 };
 
 // Runtime UI metrics. Keep the 1 px bevel/splitter unscaled; scale
@@ -126,7 +138,7 @@ pub fn collapsedH() f32 {
 }
 /// Pane header (title bar) height.
 pub fn paneHeaderH() f32 {
-    return dim(12);
+    return dim(16);
 }
 /// Fixed per-track header strip width inside the arrangement lane.
 pub fn trackHeaderW() f32 {

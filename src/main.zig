@@ -1391,6 +1391,17 @@ fn executeEditCommand(
             changed = if (focus == .arrangement) arrangement.loopSelectedClips(tracks, transport) else false;
             if (changed) status.set("Looped selection", .{});
         },
+        .loop_arrangement => {
+            changed = if (focus == .arrangement) arrangement.loopArrangement(tracks, transport) else false;
+            if (changed) status.set("Looped arrangement", .{});
+        },
+        .clear_loop => {
+            if (focus == .arrangement) {
+                transport.clearLoop();
+                changed = true;
+                status.set("Loop cleared", .{});
+            }
+        },
         .split_at_playhead => {
             changed = if (focus == .arrangement) arrangement.splitSelectedClipsAt(tracks, alloc, selected_clip, transport.beats()) else false;
             if (changed) status.set("Split clips", .{});

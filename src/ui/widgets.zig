@@ -47,6 +47,8 @@ pub const EditCommand = enum {
     select_all,
     clear_selection,
     loop_selection,
+    loop_arrangement,
+    clear_loop,
     split_at_playhead,
     quantize,
     rename,

@@ -30,8 +30,8 @@ const ClipRef = clip_mod.ClipRef;
 
 // ── Grid constants ───────────────────────────────────────────────────
 
-const KEY_LO: u8 = 36; // C2 (bottom row)
-const KEY_HI: u8 = 84; // C6 (top row; inclusive)
+const KEY_LO: u8 = 12; // C0 (bottom row)
+const KEY_HI: u8 = 119; // B8 (top row; inclusive)
 fn keyboardW() f32 {
     return theme.size(28);
 }
@@ -667,13 +667,24 @@ fn drawGrid(r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
     while (true) : (pitch -%= 1) {
         const y = pitchTopY(r, pitch);
         if (y + row_h >= r.y and y <= r.y + r.height) {
-            if (isBlackKey(pitch)) {
+            if (!isBlackKey(pitch)) {
                 c.rl.DrawRectangle(
                     @intFromFloat(r.x),
                     @intFromFloat(y),
                     @intFromFloat(r.width),
                     @intFromFloat(row_h),
                     theme.grid_row,
+                );
+            }
+            // Octave separator: a brighter line at the bottom of each C row
+            // (the C↓B boundary) so octaves are countable across the grid.
+            if (pitch % 12 == 0) {
+                c.rl.DrawRectangle(
+                    @intFromFloat(r.x),
+                    @intFromFloat(y + row_h - 1),
+                    @intFromFloat(r.width),
+                    1,
+                    theme.grid_beat,
                 );
             }
         }
@@ -732,7 +743,7 @@ fn drawExistingNotes(grid: c.rl.Rectangle, clip: Clip, track_color: c.rl.Color) 
         if (nr.x + nr.width < grid.x or nr.x > grid.x + grid.width) continue;
         if (nr.y + nr.height < grid.y or nr.y > grid.y + grid.height) continue;
         c.rl.DrawRectangleRec(nr, track_color);
-        const edge = if (note.selected) theme.text_fg else theme.slab_edge;
+        const edge = if (note.selected) theme.accent_sel else theme.slab_edge;
         c.rl.DrawRectangleLinesEx(nr, 1, edge);
     }
 }
