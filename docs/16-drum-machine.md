@@ -49,6 +49,36 @@ raw MIDI pitch instead of Hz to note-on. The fy word maps pitch→slot with
 plain comparisons (36 kick, 38 snare, 39 clap, 42 CH, 46 OH, 45 tom, …).
 `raw-ms20` keeps the Hz convention; the flag defaults off.
 
+### Note map (host-facing)
+
+The machine declares which notes it answers to, and what they mean, so the
+host can render a **drum-lane piano roll**: instead of 128 anonymous keys,
+the pattern editor shows one labelled lane per declared note.
+
+Manifest vocabulary (machines/lib/manifest.fy):
+
+```
+36 "KICK"  note-label
+38 "SNARE" note-label
+39 "CLAP"  note-label
+42 "CH"    note-label
+46 "OH"    note-label
+45 "TOM"   note-label
+```
+
+- Walks into `Desc.note_labels` (pitch + short label, bounded array);
+  exposed on the registry Entry / machine interface as the machine's
+  **note map**.
+- Piano roll behaviour: if the track's machine has a note map, render only
+  those lanes (declaration order, label on the left, lane per note); else
+  the normal chromatic roll. The map is *advisory* — notes outside it are
+  still delivered.
+- Doubles as documentation in the manifest: the note map and the fy
+  pitch→slot comparisons sit next to each other in the same file.
+- Melodic machines benefit too: a future bass machine could declare a
+  playable range the roll can clamp to. Range declaration (`note-range`)
+  is the obvious follow-up; labels-only is enough for drums.
+
 ## The voices
 
 Each voice is deliberately a *synthesis model with character controls*,
