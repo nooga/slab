@@ -47,6 +47,9 @@ self-contained but assumes the vocabulary established in earlier ones.
     VCOs, dual filters, MG/EGs, kernels, and the register/fusion strategy
 16. [15-machine-panels.md](15-machine-panels.md) — declarative beveled
     machine panels: strips, controls, auto title bar, custom-draw hatch
+17. [16-drum-machine.md](16-drum-machine.md) — the drum machine: x0x-family
+    voices with modifiable character, drum kernels, slot triggering,
+    vertical strip panel, drum1 decommission plan
 
 ## Terminology crib sheet
 
