@@ -1,8 +1,9 @@
-( snare.fy - analog-model snare: two detuned sine partials with their own
-  decay - the drum shell - plus high-passed noise with a faster decay -
-  the snappy wires. TONE-vs-SNAP balance and the snap HP cutoff are the
-  character axes; 909-ish at the defaults, 707-ish with a higher snap
-  cutoff and shorter body.
+( snare.fy - analog-model snare after the 909/808 recipe: two sine
+  partials at ~1x / 1.83x for the shell modes, the upper partial with
+  its OWN faster decay - one shared envelope on a static inharmonic
+  pair rings like a gong - plus a short pitch pulse at the hit, plus
+  high-passed noise with a separate snappy decay. TONE-vs-SNAP balance
+  and the snap HP cutoff are the character axes.
 
   The voice will not fit one straight-line dsp2 word, so it is staged:
   shell and snap write into the SnareState.mix scratch, the accum stage
@@ -25,11 +26,12 @@ ustruct: SnareState
   f64 svf-bp
   f64 vel
   f64 mix           ( stage scratch: shell + snap sum )
+  f64 pitch-env     ( short 909-style pitch pulse at the hit )
 ;
 
 ustruct: SnareParams
   ( user-facing )
-  f64 tune-hz       ( fundamental, ~120..400; second partial at 1.78x )
+  f64 tune-hz       ( fundamental, ~120..400; second mode at 1.83x )
   f64 body-decay    ( shell decay -60 dB time, s )
   f64 snap-level    ( wires amount, 0..1 )
   f64 snap-decay    ( wires decay -60 dB time, s )
@@ -40,6 +42,7 @@ ustruct: SnareParams
   f64 body-coeff
   f64 snap-coeff
   f64 svf-f
+  f64 pitch-coeff   ( fixed ~20 ms pitch-pulse decay )
 ;
 
 ( state params sample-rate -- : block-rate coefficient fill. )
@@ -53,6 +56,8 @@ dsp2: snare-prepare
   params SnareParams.snap-coeff-p f!64
   params SnareParams.snap-hz@ sr svf2-coeff
   params SnareParams.svf-f-p f!64
+  0.02 sr decay-exp-coeff
+  params SnareParams.pitch-coeff-p f!64
   drop2 drop
 ;
 
@@ -66,27 +71,35 @@ dsp2: snare-trigger
   0.5 gate 0.0  state SnareState.phase1@ fsel-lt state SnareState.phase1-p f!64
   0.5 gate 0.31 state SnareState.phase2@ fsel-lt state SnareState.phase2-p f!64
   0.5 gate 0.7654321 state SnareState.noise-rng@ fsel-lt state SnareState.noise-rng-p f!64
+  0.5 gate 1.0 state SnareState.pitch-env@ fsel-lt state SnareState.pitch-env-p f!64
   drop2 drop2
 ;
 
-( state params -- : shell - two sine partials * body env -> mix. )
+( state params -- : shell - two pitch-pulsed sine modes -> mix. The
+  upper mode rides the body env SQUARED - half the decay time - so the
+  pair thumps instead of ringing like a bell. )
 dsp2: snare-shell-write
   | state params |
-  state SnareState.phase1@
-  params SnareParams.tune-hz@ params SnareParams.inv-sample-rate@ f* f+ ffrac
+  state SnareState.pitch-env-p params SnareParams.pitch-coeff@ decay-exp-step
+  | penv |
+  params SnareParams.tune-hz@  1.0 1.4 penv f* f+  f*
+  params SnareParams.inv-sample-rate@ f*
+  | dt |
+  state SnareState.phase1@ dt f+ ffrac
   dup state SnareState.phase1-p f!64
   sine-shape
   | p1 |
-  state SnareState.phase2@
-  params SnareParams.tune-hz@ 1.78 f* params SnareParams.inv-sample-rate@ f* f+ ffrac
+  state SnareState.phase2@ dt 1.83 f* f+ ffrac
   dup state SnareState.phase2-p f!64
-  sine-shape 0.6 f*
+  sine-shape
   | p2 |
-  p1 p2 f+
   state SnareState.body-env-p params SnareParams.body-coeff@ decay-exp-step
-  f* 0.85 f*
+  | benv |
+  p1 benv f*
+  p2 benv benv f* f* 0.5 f*
+  f+ 0.85 f*
   state SnareState.mix-p f!64
-  drop2 drop2
+  drop2 drop2 drop2 drop
 ;
 
 ( state params -- : wires - high-passed noise * snap env, added to mix. )
@@ -96,7 +109,7 @@ dsp2: snare-snap-write
   state SnareState.svf-lp-p
   state SnareState.noise-rng-p noise-step
   params SnareParams.svf-f@
-  1.0
+  1.3
   svf2-hp-step
   state SnareState.snap-env-p params SnareParams.snap-coeff@ decay-exp-step
   f*

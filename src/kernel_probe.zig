@@ -2496,10 +2496,10 @@ fn drumVoiceCase(name: []const u8) ?DrumVoiceConfig {
     if (std.mem.eql(u8, name, "drum-snare-render")) return .{
         .prepare_word = "snare-prepare",
         .trigger_word = "snare-trigger",
-        .state_f64s = 9,
+        .state_f64s = 10,
         // tune body-decay snap-level snap-decay snap-hz level
         .param_defaults = &.{ 185.0, 0.18, 0.8, 0.10, 1800.0, 0.9 },
-        .params_f64s = 10,
+        .params_f64s = 11,
     };
     if (std.mem.eql(u8, name, "drum-clap-render")) return .{
         .prepare_word = "clap-prepare",
