@@ -92,6 +92,10 @@ pub fn main(init: std.process.Init) !void {
         try runControlCase(alloc, cli, &host);
         return;
     }
+    if (isDrumCase(cli.case_name)) {
+        try runDrumCase(alloc, cli, &host);
+        return;
+    }
     if (std.mem.eql(u8, cli.case_name, "ms20-voice-render")) {
         try runMs20VoiceCase(alloc, cli, &host);
         return;
@@ -2320,4 +2324,313 @@ fn nowNs() u64 {
         @as(u128, @intCast(std.c.mach_absolute_time())) * @as(u128, @intCast(info.numer)),
         @as(u128, @intCast(info.denom)),
     ));
+}
+
+// ── Drum kernel cases (kernels/05-drums, docs/16) ─────────────────────
+
+const DRUM_SAMPLE_RATE: u32 = 48_000;
+const LN_1000: f64 = 6.907755278982137;
+
+fn isDrumCase(name: []const u8) bool {
+    return std.mem.eql(u8, name, "sine-shape-render") or
+        std.mem.eql(u8, name, "decay-exp-render") or
+        std.mem.eql(u8, name, "drum-kick-render");
+}
+
+fn runDrumCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    if (std.mem.eql(u8, cli.case_name, "sine-shape-render")) return runSineShapeCase(alloc, cli, host);
+    if (std.mem.eql(u8, cli.case_name, "decay-exp-render")) return runDecayExpCase(alloc, cli, host);
+    return runDrumKickCase(alloc, cli, host);
+}
+
+// Phase grid over [0,2) (exercises the frac wrap) against libm sine.
+fn runSineShapeCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sample_count: usize = 4096;
+    const xs = try alloc.alloc(f64, sample_count);
+    defer alloc.free(xs);
+    const out = try alloc.alloc(f64, sample_count);
+    defer alloc.free(out);
+    const expected = try alloc.alloc(f64, sample_count);
+    defer alloc.free(expected);
+
+    for (xs, expected, out, 0..) |*x, *exp, *dst, i| {
+        x.* = 2.0 * @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(sample_count));
+        exp.* = @sin(2.0 * std.math.pi * x.*);
+        dst.* = 0;
+    }
+
+    var perf_out: f64 = 0;
+    const perf_args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&perf_out) },
+        .{ .f64 = 0.337 },
+    };
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, @min(cli.iterations, 1_000), &perf_args);
+    const start = nowNs();
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, cli.iterations, &perf_args);
+    const run_ns = nowNs() - start;
+
+    for (xs, out) |x, *dst| {
+        const args = [_]Fy.Dsp2RawArg{
+            .{ .ptr = @intFromPtr(dst) },
+            .{ .f64 = x },
+        };
+        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, 1, &args);
+    }
+
+    var metrics = computeSliceMetrics(out, expected, run_ns, cli.iterations);
+    fillSignalMetrics(out, &metrics);
+
+    var csv: std.ArrayList(u8) = .empty;
+    defer csv.deinit(alloc);
+    try csv.appendSlice(alloc, "sample,phase,out,expected,error\n");
+    for (xs, out, expected, 0..) |x, actual, exp, i| {
+        try appendFmt(alloc, &csv, "{d},{d:.12},{d:.12},{d:.12},{d:.12}\n", .{ i, x, actual, exp, actual - exp });
+    }
+    try writeDrumArtifacts(alloc, cli, host, csv.items, metrics, null);
+    if (metrics.nonfinite_count != 0 or metrics.max_abs_error > 0.00001) return error.KernelRatchetFailed;
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} samples={} ns_per_iter={d:.3} max_abs_error={d:.12}\n",
+        .{ cli.kernel, cli.word, cli.case_name, sample_count, metrics.ns_per_iter, metrics.max_abs_error },
+    );
+}
+
+// Two ratchets: the series coefficient against libm exp over a log sweep of
+// decay times, and a 0.5 s decay trace against pow(coeff, n).
+fn runDecayExpCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sr: f64 = @floatFromInt(DRUM_SAMPLE_RATE);
+
+    const grid: usize = 257;
+    var coeff_out: f64 = 0;
+    var max_coeff_err: f64 = 0;
+    var gi: usize = 0;
+    while (gi < grid) : (gi += 1) {
+        const u = @as(f64, @floatFromInt(gi)) / @as(f64, @floatFromInt(grid - 1));
+        const t = 0.0005 * std.math.pow(f64, 10_000.0, u); // 0.5 ms .. 5 s
+        const args = [_]Fy.Dsp2RawArg{
+            .{ .ptr = @intFromPtr(&coeff_out) },
+            .{ .f64 = t },
+            .{ .f64 = sr },
+        };
+        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("k-decay-exp-coeff", 1, &args);
+        const expected_c = @exp(-LN_1000 / (std.math.clamp(t, 0.0005, 10.0) * sr));
+        if (!std.math.isFinite(coeff_out)) return error.KernelRatchetFailed;
+        max_coeff_err = @max(max_coeff_err, @abs(coeff_out - expected_c));
+    }
+
+    const frames: usize = DRUM_SAMPLE_RATE / 2;
+    const tau: f64 = 0.3;
+    const coeff = @exp(-LN_1000 / (tau * sr));
+    const out = try alloc.alloc(f64, frames);
+    defer alloc.free(out);
+    const expected = try alloc.alloc(f64, frames);
+    defer alloc.free(expected);
+    var env: f64 = 1.0;
+
+    const start = nowNs();
+    for (out, expected, 0..) |*dst, *exp, i| {
+        const args = [_]Fy.Dsp2RawArg{
+            .{ .ptr = @intFromPtr(dst) },
+            .{ .ptr = @intFromPtr(&env) },
+            .{ .f64 = coeff },
+        };
+        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, 1, &args);
+        exp.* = std.math.pow(f64, coeff, @as(f64, @floatFromInt(i + 1)));
+    }
+    const run_ns = nowNs() - start;
+
+    var metrics = computeSliceMetrics(out, expected, run_ns, frames);
+    fillSignalMetrics(out, &metrics);
+    const trace_err = metrics.max_abs_error;
+    metrics.max_abs_error = @max(max_coeff_err, trace_err);
+
+    var csv: std.ArrayList(u8) = .empty;
+    defer csv.deinit(alloc);
+    try csv.appendSlice(alloc, "sample,time,out,expected,error\n");
+    for (out, expected, 0..) |actual, exp, i| {
+        try appendFmt(alloc, &csv, "{d},{d:.9},{d:.12},{d:.12},{d:.12}\n", .{
+            i,
+            @as(f64, @floatFromInt(i)) / sr,
+            actual,
+            exp,
+            actual - exp,
+        });
+    }
+    try writeDrumArtifacts(alloc, cli, host, csv.items, metrics, null);
+    if (metrics.nonfinite_count != 0 or max_coeff_err > 0.000002 or trace_err > 0.000000001) {
+        return error.KernelRatchetFailed;
+    }
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} frames={} coeff_err={d:.12} trace_err={d:.12}\n",
+        .{ cli.kernel, cli.word, cli.case_name, frames, max_coeff_err, trace_err },
+    );
+}
+
+// Mirrors of the KickState / KickParams ustructs in kernels/05-drums/kick.fy.
+const KickStateMirror = extern struct {
+    phase: f64 = 0,
+    amp_env: f64 = 0,
+    pitch_env: f64 = 0,
+    click_env: f64 = 0,
+    noise_rng: f64 = 0,
+    vel: f64 = 0,
+};
+
+const KickParamsMirror = extern struct {
+    tune_hz: f64 = 50.0,
+    sweep_amount: f64 = 7.0,
+    sweep_time: f64 = 0.055,
+    decay_s: f64 = 0.42,
+    click_level: f64 = 0.35,
+    drive: f64 = 1.8,
+    level: f64 = 0.9,
+    inv_sample_rate: f64 = 0,
+    amp_coeff: f64 = 0,
+    pitch_coeff: f64 = 0,
+    click_coeff: f64 = 0,
+};
+
+// Three hits at different velocities; audition WAV + lane CSV + stat ratchet.
+fn runDrumKickCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sr: f64 = @floatFromInt(DRUM_SAMPLE_RATE);
+    const frames: usize = 2 * DRUM_SAMPLE_RATE;
+    const out = try alloc.alloc(f64, frames);
+    defer alloc.free(out);
+    @memset(out, 0);
+
+    var state = KickStateMirror{};
+    var params = KickParamsMirror{};
+
+    const prep_args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+        .{ .f64 = sr },
+    };
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("kick-prepare", 1, &prep_args);
+
+    const Hit = struct { frame: usize, velocity: f64 };
+    const hits = [_]Hit{
+        .{ .frame = 0, .velocity = 1.0 },
+        .{ .frame = @intFromFloat(0.7 * sr), .velocity = 0.6 },
+        .{ .frame = @intFromFloat(1.4 * sr), .velocity = 1.0 },
+    };
+
+    const start = nowNs();
+    var cursor: usize = 0;
+    var hit_index: usize = 0;
+    while (cursor < frames) {
+        while (hit_index < hits.len and hits[hit_index].frame == cursor) : (hit_index += 1) {
+            const trig_args = [_]Fy.Dsp2RawArg{
+                .{ .ptr = @intFromPtr(&state) },
+                .{ .ptr = @intFromPtr(&params) },
+                .{ .f64 = hits[hit_index].velocity },
+            };
+            _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("kick-trigger", 1, &trig_args);
+        }
+        const next = if (hit_index < hits.len) @min(hits[hit_index].frame, frames) else frames;
+        const count = next - cursor;
+        if (count > 0) {
+            const args = [_]Fy.Dsp2RawArg{
+                .{ .ptr = @intFromPtr(&out[cursor]) },
+                .{ .ptr = @intFromPtr(&state) },
+                .{ .ptr = @intFromPtr(&params) },
+            };
+            _ = try host.fy.callDsp2RawRepeatedWithAutoOutNoResult(cli.word, @intCast(count), &args);
+            cursor = next;
+        }
+    }
+    const run_ns = nowNs() - start;
+
+    var metrics = Metrics{};
+    metrics.ns_per_iter = @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(frames));
+    fillSignalMetrics(out, &metrics);
+    for (out) |x| {
+        if (!std.math.isFinite(x)) metrics.nonfinite_count += 1;
+    }
+
+    var csv: std.ArrayList(u8) = .empty;
+    defer csv.deinit(alloc);
+    try csv.appendSlice(alloc, "sample,time,out\n");
+    for (out, 0..) |x, i| {
+        try appendFmt(alloc, &csv, "{d},{d:.9},{d:.12}\n", .{ i, @as(f64, @floatFromInt(i)) / sr, x });
+    }
+    try writeDrumArtifacts(alloc, cli, host, csv.items, metrics, out);
+
+    if (metrics.nonfinite_count != 0 or metrics.peak < 0.2 or metrics.peak > 1.0 or @abs(metrics.mean) > 0.02) {
+        return error.KernelRatchetFailed;
+    }
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} peak={d:.3} rms={d:.3} mean={d:.6}\n",
+        .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, metrics.peak, metrics.rms, metrics.mean },
+    );
+}
+
+fn writeDrumArtifacts(
+    alloc: std.mem.Allocator,
+    cli: Cli,
+    host: *FyHost,
+    csv_text: []const u8,
+    metrics: Metrics,
+    wav: ?[]const f64,
+) !void {
+    const metrics_path = try std.fmt.allocPrint(alloc, "{s}_metrics.json", .{cli.out_prefix});
+    defer alloc.free(metrics_path);
+    const disasm_path = try std.fmt.allocPrint(alloc, "{s}_disasm.txt", .{cli.out_prefix});
+    defer alloc.free(disasm_path);
+    const lanes_path = try std.fmt.allocPrint(alloc, "{s}_lanes.csv", .{cli.out_prefix});
+    defer alloc.free(lanes_path);
+
+    const report = try host.fy.reportDsp2RawWord(cli.word);
+    const metrics_json = try std.fmt.allocPrint(alloc,
+        \\{{
+        \\  "kernel": "{s}",
+        \\  "word": "{s}",
+        \\  "case": "{s}",
+        \\  "sample_rate": {d},
+        \\  "iterations": {d},
+        \\  "ns_per_iter": {d:.6},
+        \\  "max_abs_error": {d:.12},
+        \\  "nonfinite_count": {d},
+        \\  "rms": {d:.12},
+        \\  "peak": {d:.12},
+        \\  "mean": {d:.12},
+        \\  "instruction_count": {d},
+        \\  "push_count": {d},
+        \\  "pop_count": {d},
+        \\  "float_alu_count": {d}
+        \\}}
+        \\
+    , .{
+        cli.kernel,
+        cli.word,
+        cli.case_name,
+        DRUM_SAMPLE_RATE,
+        cli.iterations,
+        metrics.ns_per_iter,
+        metrics.max_abs_error,
+        metrics.nonfinite_count,
+        metrics.rms,
+        metrics.peak,
+        metrics.mean,
+        report.instruction_count,
+        report.push_count,
+        report.pop_count,
+        report.float_alu_count,
+    });
+    defer alloc.free(metrics_json);
+    try writeFile(alloc, metrics_path, metrics_json);
+
+    const disasm = try host.fy.disassembleDsp2RawWordAlloc(alloc, cli.word);
+    defer alloc.free(disasm);
+    try writeFile(alloc, disasm_path, disasm);
+
+    try writeFile(alloc, lanes_path, csv_text);
+
+    if (wav) |samples| {
+        const wav_path = try std.fmt.allocPrint(alloc, "{s}.wav", .{cli.out_prefix});
+        defer alloc.free(wav_path);
+        try writeWav16StereoBuffer(alloc, wav_path, samples, DRUM_SAMPLE_RATE);
+    }
 }

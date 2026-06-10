@@ -173,3 +173,17 @@ python3 tools/audio_probe/compare_probe.py \
   scratch/new.wav \
   --out-prefix scratch/verb_compare
 ```
+
+Drum kernels (kernels/05-drums, docs/16):
+
+```sh
+zig build kernel-probe -- --kernel=kernels/05-drums/sine.fy --word=k-sine-shape --case=sine-shape-render --iters=1000000 --out=scratch/drum_sine
+zig build kernel-probe -- --kernel=kernels/05-drums/decay.fy --word=k-decay-exp --case=decay-exp-render --iters=1000000 --out=scratch/drum_decay
+zig build kernel-probe -- --kernel=kernels/05-drums/kick.fy --word=k-kick-render --case=drum-kick-render --iters=96000 --out=scratch/drum_kick
+```
+
+`sine-shape-render` ratchets the polynomial sine against libm over a
+wrapping phase grid; `decay-exp-render` ratchets the series decay
+coefficient against libm exp plus an exact multiplicative trace;
+`drum-kick-render` renders three velocity-varied kick hits to a WAV +
+lane CSV with peak/DC/finite ratchets.
