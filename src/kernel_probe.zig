@@ -1993,7 +1993,11 @@ fn writeVoiceArtifacts(
     const wav_path = try std.fmt.allocPrint(alloc, "{s}.wav", .{cli.out_prefix});
     defer alloc.free(wav_path);
 
-    const report = try host.fy.reportDsp2RawWord(cli.word);
+    // Composition words have no single raw body to report/disassemble.
+    const report = if (host.fy.isCompositionWord(cli.word))
+        Fy.CompileReport{}
+    else
+        try host.fy.reportDsp2RawWord(cli.word);
     const metrics_json = try std.fmt.allocPrint(alloc,
         \\{{
         \\  "kernel": "{s}",
@@ -2049,9 +2053,11 @@ fn writeVoiceArtifacts(
     defer alloc.free(metrics_json);
     try writeFile(alloc, metrics_path, metrics_json);
     try writeWav16StereoBuffer(alloc, wav_path, out, sample_rate);
-    const disasm = try host.fy.disassembleDsp2RawWordAlloc(alloc, cli.word);
-    defer alloc.free(disasm);
-    try writeFile(alloc, disasm_path, disasm);
+    if (!host.fy.isCompositionWord(cli.word)) {
+        const disasm = try host.fy.disassembleDsp2RawWordAlloc(alloc, cli.word);
+        defer alloc.free(disasm);
+        try writeFile(alloc, disasm_path, disasm);
+    }
 
     var csv: std.ArrayList(u8) = .empty;
     defer csv.deinit(alloc);
@@ -2334,13 +2340,13 @@ const LN_1000: f64 = 6.907755278982137;
 fn isDrumCase(name: []const u8) bool {
     return std.mem.eql(u8, name, "sine-shape-render") or
         std.mem.eql(u8, name, "decay-exp-render") or
-        std.mem.eql(u8, name, "drum-kick-render");
+        drumVoiceCase(name) != null;
 }
 
 fn runDrumCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     if (std.mem.eql(u8, cli.case_name, "sine-shape-render")) return runSineShapeCase(alloc, cli, host);
     if (std.mem.eql(u8, cli.case_name, "decay-exp-render")) return runDecayExpCase(alloc, cli, host);
-    return runDrumKickCase(alloc, cli, host);
+    return runDrumVoiceCase(alloc, cli, host, drumVoiceCase(cli.case_name).?);
 }
 
 // Phase grid over [0,2) (exercises the frac wrap) against libm sine.
@@ -2467,47 +2473,66 @@ fn runDecayExpCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     );
 }
 
-// Mirrors of the KickState / KickParams ustructs in kernels/05-drums/kick.fy.
-const KickStateMirror = extern struct {
-    phase: f64 = 0,
-    amp_env: f64 = 0,
-    pitch_env: f64 = 0,
-    click_env: f64 = 0,
-    noise_rng: f64 = 0,
-    vel: f64 = 0,
+// One config per drum voice: state/params cell counts mirror the voice's
+// ustructs (user-facing params first, derived zeros after — the prepare
+// word fills those), plus a default param set that matches the manifest.
+const DrumVoiceConfig = struct {
+    prepare_word: []const u8,
+    trigger_word: []const u8,
+    state_f64s: usize,
+    param_defaults: []const f64,
+    params_f64s: usize,
 };
 
-const KickParamsMirror = extern struct {
-    tune_hz: f64 = 50.0,
-    sweep_amount: f64 = 7.0,
-    sweep_time: f64 = 0.055,
-    decay_s: f64 = 0.42,
-    click_level: f64 = 0.35,
-    drive: f64 = 1.8,
-    level: f64 = 0.9,
-    inv_sample_rate: f64 = 0,
-    amp_coeff: f64 = 0,
-    pitch_coeff: f64 = 0,
-    click_coeff: f64 = 0,
-};
+fn drumVoiceCase(name: []const u8) ?DrumVoiceConfig {
+    if (std.mem.eql(u8, name, "drum-kick-render")) return .{
+        .prepare_word = "kick-prepare",
+        .trigger_word = "kick-trigger",
+        .state_f64s = 7,
+        // tune sweep bend decay click drive level
+        .param_defaults = &.{ 50.0, 7.0, 0.055, 0.42, 0.35, 1.8, 0.9 },
+        .params_f64s = 11,
+    };
+    if (std.mem.eql(u8, name, "drum-snare-render")) return .{
+        .prepare_word = "snare-prepare",
+        .trigger_word = "snare-trigger",
+        .state_f64s = 9,
+        // tune body-decay snap-level snap-decay snap-hz level
+        .param_defaults = &.{ 185.0, 0.18, 0.8, 0.10, 1800.0, 0.9 },
+        .params_f64s = 10,
+    };
+    if (std.mem.eql(u8, name, "drum-clap-render")) return .{
+        .prepare_word = "clap-prepare",
+        .trigger_word = "clap-trigger",
+        .state_f64s = 7,
+        // tone-hz spread-s decay-s level
+        .param_defaults = &.{ 1100.0, 0.011, 0.28, 0.9 },
+        .params_f64s = 9,
+    };
+    return null;
+}
+
+const MAX_DRUM_CELLS = 32;
 
 // Three hits at different velocities; audition WAV + lane CSV + stat ratchet.
-fn runDrumKickCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+fn runDrumVoiceCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost, cfg: DrumVoiceConfig) !void {
     const sr: f64 = @floatFromInt(DRUM_SAMPLE_RATE);
     const frames: usize = 2 * DRUM_SAMPLE_RATE;
     const out = try alloc.alloc(f64, frames);
     defer alloc.free(out);
     @memset(out, 0);
 
-    var state = KickStateMirror{};
-    var params = KickParamsMirror{};
+    var state align(8) = [_]f64{0} ** MAX_DRUM_CELLS;
+    var params align(8) = [_]f64{0} ** MAX_DRUM_CELLS;
+    if (cfg.state_f64s > MAX_DRUM_CELLS or cfg.params_f64s > MAX_DRUM_CELLS) return error.InvalidCase;
+    @memcpy(params[0..cfg.param_defaults.len], cfg.param_defaults);
 
     const prep_args = [_]Fy.Dsp2RawArg{
         .{ .ptr = @intFromPtr(&state) },
         .{ .ptr = @intFromPtr(&params) },
         .{ .f64 = sr },
     };
-    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("kick-prepare", 1, &prep_args);
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cfg.prepare_word, 1, &prep_args);
 
     const Hit = struct { frame: usize, velocity: f64 };
     const hits = [_]Hit{
@@ -2515,6 +2540,13 @@ fn runDrumKickCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
         .{ .frame = @intFromFloat(0.7 * sr), .velocity = 0.6 },
         .{ .frame = @intFromFloat(1.4 * sr), .velocity = 1.0 },
     };
+
+    // Staged voices are `call:` compositions and need the composition caller.
+    var comp_slots = Fy.Dsp2RawRepeatedSlots{};
+    var comp_caller: ?Fy.Dsp2RawRepeatedCaller = null;
+    if (host.fy.isCompositionWord(cli.word)) {
+        comp_caller = try host.fy.compileDsp2CompositionCaller(cli.word, &comp_slots, true);
+    }
 
     const start = nowNs();
     var cursor: usize = 0;
@@ -2524,9 +2556,10 @@ fn runDrumKickCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
             const trig_args = [_]Fy.Dsp2RawArg{
                 .{ .ptr = @intFromPtr(&state) },
                 .{ .ptr = @intFromPtr(&params) },
+                .{ .f64 = 1.0 },
                 .{ .f64 = hits[hit_index].velocity },
             };
-            _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("kick-trigger", 1, &trig_args);
+            _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cfg.trigger_word, 1, &trig_args);
         }
         const next = if (hit_index < hits.len) @min(hits[hit_index].frame, frames) else frames;
         const count = next - cursor;
@@ -2536,7 +2569,11 @@ fn runDrumKickCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
                 .{ .ptr = @intFromPtr(&state) },
                 .{ .ptr = @intFromPtr(&params) },
             };
-            _ = try host.fy.callDsp2RawRepeatedWithAutoOutNoResult(cli.word, @intCast(count), &args);
+            if (comp_caller) |*cc| {
+                _ = try cc.call(@intCast(count), &args);
+            } else {
+                _ = try host.fy.callDsp2RawRepeatedWithAutoOutNoResult(cli.word, @intCast(count), &args);
+            }
             cursor = next;
         }
     }
@@ -2582,7 +2619,11 @@ fn writeDrumArtifacts(
     const lanes_path = try std.fmt.allocPrint(alloc, "{s}_lanes.csv", .{cli.out_prefix});
     defer alloc.free(lanes_path);
 
-    const report = try host.fy.reportDsp2RawWord(cli.word);
+    // Composition words have no single raw body to report/disassemble.
+    const report = if (host.fy.isCompositionWord(cli.word))
+        Fy.CompileReport{}
+    else
+        try host.fy.reportDsp2RawWord(cli.word);
     const metrics_json = try std.fmt.allocPrint(alloc,
         \\{{
         \\  "kernel": "{s}",
@@ -2622,9 +2663,11 @@ fn writeDrumArtifacts(
     defer alloc.free(metrics_json);
     try writeFile(alloc, metrics_path, metrics_json);
 
-    const disasm = try host.fy.disassembleDsp2RawWordAlloc(alloc, cli.word);
-    defer alloc.free(disasm);
-    try writeFile(alloc, disasm_path, disasm);
+    if (!host.fy.isCompositionWord(cli.word)) {
+        const disasm = try host.fy.disassembleDsp2RawWordAlloc(alloc, cli.word);
+        defer alloc.free(disasm);
+        try writeFile(alloc, disasm_path, disasm);
+    }
 
     try writeFile(alloc, lanes_path, csv_text);
 

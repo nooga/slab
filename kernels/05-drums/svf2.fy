@@ -1,0 +1,51 @@
+( svf2.fy - lean Chamberlin state-variable filter for the drum voices:
+  band-pass for clap / hat color, high-pass for snare snap. Two f64 state
+  cells; a voice embeds them as adjacent fields and passes their base
+  pointer. f = 2 * sin of pi*fc/sr - computed at block rate by svf2-coeff
+  via the polynomial sine; q is the damping, roughly 1/Q. Stable for
+  fc well under sr/6, which svf2-coeff's clamp guarantees. )
+
+include "sine.fy"
+
+ustruct: Svf2State
+  f64 lp
+  f64 bp
+;
+
+( fc sr -- f : filter coefficient at block rate. )
+dsp2: svf2-coeff
+  | fc sr |
+  fc 20.0 7500.0 fclamp  2.0 sr f*  f/
+  sine-shape
+  2.0 f*
+  nip nip
+;
+
+( state in f q -- band : one band-pass step, state advanced in place. )
+dsp2: svf2-bp-step
+  | state in f q |
+  state Svf2State.lp@  f state Svf2State.bp@ f*  f+
+  | lp |
+  in lp f-  q state Svf2State.bp@ f*  f-
+  | hp |
+  state Svf2State.bp@  f hp f*  f+
+  | bp |
+  lp state Svf2State.lp-p f!64
+  bp state Svf2State.bp-p f!64
+  bp
+  nip nip nip nip nip nip nip
+;
+
+( state in f q -- high : one high-pass step, state advanced in place. )
+dsp2: svf2-hp-step
+  | state in f q |
+  state Svf2State.lp@  f state Svf2State.bp@ f*  f+
+  | lp |
+  in lp f-  q state Svf2State.bp@ f*  f-
+  | hp |
+  state Svf2State.bp@  f hp f*  f+
+  state Svf2State.bp-p f!64
+  lp state Svf2State.lp-p f!64
+  hp
+  nip nip nip nip nip nip
+;

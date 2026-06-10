@@ -1,0 +1,129 @@
+( snare.fy - analog-model snare: two detuned sine partials with their own
+  decay - the drum shell - plus high-passed noise with a faster decay -
+  the snappy wires. TONE-vs-SNAP balance and the snap HP cutoff are the
+  character axes; 909-ish at the defaults, 707-ish with a higher snap
+  cutoff and shorter body.
+
+  The voice will not fit one straight-line dsp2 word, so it is staged:
+  shell and snap write into the SnareState.mix scratch, the accum stage
+  drives the sum into out. k-snare-render composes them with call:
+  boundaries - fresh registers per stage. Probe: drum-snare-render. )
+
+include "sine.fy"
+include "decay.fy"
+include "noise.fy"
+include "svf2.fy"
+include "../02-shapers/tanh_table.fy"
+
+ustruct: SnareState
+  f64 phase1
+  f64 phase2
+  f64 body-env
+  f64 snap-env
+  f64 noise-rng
+  f64 svf-lp        ( Svf2State region - lp/bp adjacent, passed as base )
+  f64 svf-bp
+  f64 vel
+  f64 mix           ( stage scratch: shell + snap sum )
+;
+
+ustruct: SnareParams
+  ( user-facing )
+  f64 tune-hz       ( fundamental, ~120..400; second partial at 1.78x )
+  f64 body-decay    ( shell decay -60 dB time, s )
+  f64 snap-level    ( wires amount, 0..1 )
+  f64 snap-decay    ( wires decay -60 dB time, s )
+  f64 snap-hz       ( noise high-pass cutoff )
+  f64 level
+  ( derived - filled by snare-prepare )
+  f64 inv-sample-rate
+  f64 body-coeff
+  f64 snap-coeff
+  f64 svf-f
+;
+
+( state params sample-rate -- : block-rate coefficient fill. )
+dsp2: snare-prepare
+  | state params sr |
+  1.0 sr f/
+  params SnareParams.inv-sample-rate-p f!64
+  params SnareParams.body-decay@ sr decay-exp-coeff
+  params SnareParams.body-coeff-p f!64
+  params SnareParams.snap-decay@ sr decay-exp-coeff
+  params SnareParams.snap-coeff-p f!64
+  params SnareParams.snap-hz@ sr svf2-coeff
+  params SnareParams.svf-f-p f!64
+  drop2 drop
+;
+
+( state params gate velocity -- : fire the snare when gate is 1. )
+dsp2: snare-trigger
+  | state params gate velocity |
+  0.5 gate  velocity 0.0 1.0 fclamp  state SnareState.vel@  fsel-lt
+  state SnareState.vel-p f!64
+  0.5 gate 1.0 state SnareState.body-env@ fsel-lt state SnareState.body-env-p f!64
+  0.5 gate 1.0 state SnareState.snap-env@ fsel-lt state SnareState.snap-env-p f!64
+  0.5 gate 0.0  state SnareState.phase1@ fsel-lt state SnareState.phase1-p f!64
+  0.5 gate 0.31 state SnareState.phase2@ fsel-lt state SnareState.phase2-p f!64
+  0.5 gate 0.7654321 state SnareState.noise-rng@ fsel-lt state SnareState.noise-rng-p f!64
+  drop2 drop2
+;
+
+( state params -- : shell - two sine partials * body env -> mix. )
+dsp2: snare-shell-write
+  | state params |
+  state SnareState.phase1@
+  params SnareParams.tune-hz@ params SnareParams.inv-sample-rate@ f* f+ ffrac
+  dup state SnareState.phase1-p f!64
+  sine-shape
+  | p1 |
+  state SnareState.phase2@
+  params SnareParams.tune-hz@ 1.78 f* params SnareParams.inv-sample-rate@ f* f+ ffrac
+  dup state SnareState.phase2-p f!64
+  sine-shape 0.6 f*
+  | p2 |
+  p1 p2 f+
+  state SnareState.body-env-p params SnareParams.body-coeff@ decay-exp-step
+  f* 0.85 f*
+  state SnareState.mix-p f!64
+  drop2 drop2
+;
+
+( state params -- : wires - high-passed noise * snap env, added to mix. )
+dsp2: snare-snap-write
+  | state params |
+  state SnareState.mix@
+  state SnareState.svf-lp-p
+  state SnareState.noise-rng-p noise-step
+  params SnareParams.svf-f@
+  1.0
+  svf2-hp-step
+  state SnareState.snap-env-p params SnareParams.snap-coeff@ decay-exp-step
+  f*
+  params SnareParams.snap-level@ f*
+  f+
+  state SnareState.mix-p f!64
+  drop2
+;
+
+( out state params -- : drive the mix and accumulate into out. )
+dsp2: snare-accum
+  | out state params |
+  out f@64
+  state SnareState.mix@
+  state SnareState.vel@ f*
+  1.4 f*
+  k-tanh-rational-shape-dsp2
+  params SnareParams.level@ f*
+  f+
+  out f!64
+  drop2 drop
+;
+
+( out state params -- : one mono snare sample, staged composition. )
+dsp2: k-snare-render
+  | out state params |
+  state params call: snare-shell-write
+  state params call: snare-snap-write
+  out state params call: snare-accum
+;

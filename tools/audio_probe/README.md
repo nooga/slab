@@ -180,6 +180,8 @@ Drum kernels (kernels/05-drums, docs/16):
 zig build kernel-probe -- --kernel=kernels/05-drums/sine.fy --word=k-sine-shape --case=sine-shape-render --iters=1000000 --out=scratch/drum_sine
 zig build kernel-probe -- --kernel=kernels/05-drums/decay.fy --word=k-decay-exp --case=decay-exp-render --iters=1000000 --out=scratch/drum_decay
 zig build kernel-probe -- --kernel=kernels/05-drums/kick.fy --word=k-kick-render --case=drum-kick-render --iters=96000 --out=scratch/drum_kick
+zig build kernel-probe -- --kernel=kernels/05-drums/snare.fy --word=k-snare-render --case=drum-snare-render --iters=96000 --out=scratch/drum_snare
+zig build kernel-probe -- --kernel=kernels/05-drums/clap.fy --word=k-clap-render --case=drum-clap-render --iters=96000 --out=scratch/drum_clap
 ```
 
 `sine-shape-render` ratchets the polynomial sine against libm over a

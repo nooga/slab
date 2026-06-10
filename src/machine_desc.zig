@@ -443,10 +443,26 @@ test "descriptor walker reads the drum2 note map" {
 
     try testing.expectEqualStrings("drum2", d.nameSlice());
     try testing.expect(d.note_pitch);
-    try testing.expectEqual(@as(usize, 1), d.note_label_count);
+    try testing.expectEqual(@as(usize, 3), d.note_label_count);
     try testing.expectEqual(@as(u8, 36), d.note_labels[0].pitch);
     try testing.expectEqualStrings("KICK", d.note_labels[0].labelSlice());
-    try testing.expectEqual(@as(usize, 7), d.control_count);
+    try testing.expectEqual(@as(u8, 38), d.note_labels[1].pitch);
+    try testing.expectEqualStrings("SNARE", d.note_labels[1].labelSlice());
+    try testing.expectEqual(@as(u8, 39), d.note_labels[2].pitch);
+    try testing.expectEqualStrings("CLAP", d.note_labels[2].labelSlice());
+    try testing.expectEqual(@as(usize, 17), d.control_count);
+    try testing.expectEqual(@as(usize, 3), d.strip_count);
+
+    // Snare controls land past the kick params region (offset computed in
+    // fy as KickParams.size + SnareParams.field).
+    var found = false;
+    for (d.controls[0..d.control_count]) |*ctl| {
+        if (std.mem.eql(u8, ctl.idSlice(), "snare-tune")) {
+            try testing.expectEqual(@as(usize, 88 + 0), ctl.offset);
+            found = true;
+        }
+    }
+    try testing.expect(found);
 }
 
 test "descriptor walker reads the MS-20 manifest from fy" {

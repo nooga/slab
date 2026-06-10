@@ -9,6 +9,7 @@
 
 include "sine.fy"
 include "decay.fy"
+include "noise.fy"
 include "../02-shapers/tanh_table.fy"
 
 ustruct: KickState
@@ -18,6 +19,7 @@ ustruct: KickState
   f64 click-env
   f64 noise-rng
   f64 vel
+  f64 mix           ( stage scratch: swept sine body )
 ;
 
 ustruct: KickParams
@@ -50,35 +52,23 @@ dsp2: kick-prepare
   drop2 drop
 ;
 
-( state params velocity -- : fire the kick. )
+( state params gate velocity -- : fire the kick when gate is 1; gate 0
+  leaves the voice untouched. Branchless so a multi-slot note-on can call
+  every slot's trigger with per-slot gates. )
 dsp2: kick-trigger
-  | state params velocity |
-  velocity 0.0 1.0 fclamp
+  | state params gate velocity |
+  0.5 gate  velocity 0.0 1.0 fclamp  state KickState.vel@  fsel-lt
   state KickState.vel-p f!64
-  1.0 state KickState.amp-env-p f!64
-  1.0 state KickState.pitch-env-p f!64
-  1.0 state KickState.click-env-p f!64
-  0.0 state KickState.phase-p f!64
-  0.1234567 state KickState.noise-rng-p f!64
-  drop2 drop
+  0.5 gate 1.0 state KickState.amp-env@   fsel-lt state KickState.amp-env-p f!64
+  0.5 gate 1.0 state KickState.pitch-env@ fsel-lt state KickState.pitch-env-p f!64
+  0.5 gate 1.0 state KickState.click-env@ fsel-lt state KickState.click-env-p f!64
+  0.5 gate 0.0 state KickState.phase@     fsel-lt state KickState.phase-p f!64
+  0.5 gate 0.1234567 state KickState.noise-rng@ fsel-lt state KickState.noise-rng-p f!64
+  drop2 drop2
 ;
 
-( state -- value : float-LCG white-ish noise in -1..1, advancing rng state. )
-dsp2: kick-noise-raw
-  | state |
-  state KickState.noise-rng@
-  1103515245.0 f*
-  0.31337 f+
-  ffrac
-  dup
-  state KickState.noise-rng-p
-  f!64
-  2.0 f* 1.0 f-
-  nip
-;
-
-( state params -- value : one kick sample. )
-dsp2: kick-body
+( state params -- : swept sine body -> mix scratch. )
+dsp2: kick-osc-write
   | state params |
   ( pitch envelope -> instantaneous frequency -> phase advance )
   state KickState.pitch-env-p params KickParams.pitch-coeff@ decay-exp-step
@@ -90,24 +80,32 @@ dsp2: kick-body
   state KickState.phase@ f+ ffrac
   dup state KickState.phase-p f!64
   sine-shape
-  | body |
+  state KickState.mix-p f!64
+  drop2 drop
+;
+
+( out state params -- : body * amp env + click, driven, into out. )
+dsp2: kick-accum
+  | out state params |
+  out f@64
+  state KickState.mix@
   state KickState.amp-env-p params KickParams.amp-coeff@ decay-exp-step
-  | aenv |
+  f*
   state KickState.click-env-p params KickParams.click-coeff@ decay-exp-step
-  | cenv |
-  body aenv f*
-  state kick-noise-raw cenv f* params KickParams.click-level@ f* f+
+  state KickState.noise-rng-p noise-step f*
+  params KickParams.click-level@ f* f+
   state KickState.vel@ f*
   params KickParams.drive@ f*
   k-tanh-rational-shape-dsp2
   params KickParams.level@ f*
-  nip nip nip nip nip nip
-;
-
-( out state params -- : raw render entry, one mono sample per call. )
-dsp2: k-kick-render
-  | out state params |
-  state params kick-body
+  f+
   out f!64
   drop2 drop
+;
+
+( out state params -- : one mono kick sample, staged composition. )
+dsp2: k-kick-render
+  | out state params |
+  state params call: kick-osc-write
+  out state params call: kick-accum
 ;
