@@ -9,7 +9,9 @@
   every stage accumulating into the host-zeroed out cell.
 
   note-pitch mode: note-on receives raw MIDI pitch and gates each slot's
-  branchless trigger - 36 kick, 38 snare, 39 clap. )
+  branchless trigger by PITCH CLASS, so the kit answers in every octave:
+  C = kick, D = snare, D# = clap. The note map advertises the canonical
+  GM octave - 36 / 38 / 39. )
 
 include "../../kernels/05-drums/kick.fy"
 include "../../kernels/05-drums/snare.fy"
@@ -29,21 +31,24 @@ dsp2: drum2-prepare
   drop2 drop
 ;
 
-( state params pitch velocity -- : gate each slot's trigger by pitch. )
+( state params pitch velocity -- : gate each slot's trigger by the
+  note's pitch class - C kick, D snare, D# clap, any octave. )
 dsp2: drum2-note-on
   | state params pitch velocity |
+  pitch 12.0 f/ ffrac 12.0 f*
+  | pc |
   state params
-  pitch 37.0 1.0 0.0 fsel-lt
+  pc 0.5 1.0 0.0 fsel-lt
   velocity kick-trigger
   state KickState.size ptr+
   params KickParams.size ptr+
-  pitch 37.0 0.0  pitch 38.5 1.0 0.0 fsel-lt  fsel-lt
+  pc 2.5  1.5 pc 1.0 0.0 fsel-lt  0.0  fsel-lt
   velocity snare-trigger
   state KickState.size ptr+ SnareState.size ptr+
   params KickParams.size ptr+ SnareParams.size ptr+
-  pitch 38.5 0.0  pitch 39.5 1.0 0.0 fsel-lt  fsel-lt
+  pc 3.5  2.5 pc 1.0 0.0 fsel-lt  0.0  fsel-lt
   velocity clap-trigger
-  drop2 drop2
+  drop2 drop2 drop
 ;
 
 ( --- render stages: region base + voice helper, accumulate into out.
