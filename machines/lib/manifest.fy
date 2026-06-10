@@ -41,6 +41,8 @@ struct: MachineDesc
   ptr displays       ( DisplayDesc chain or 0 )
   ptr rows           ( RowDesc chain or 0 )
   ptr consts         ( ConstDesc chain or 0 )
+  ptr note-pitch     ( int flag: note-on gets raw MIDI pitch, not Hz )
+  ptr note-labels    ( NoteLabelDesc chain or 0 — drum-lane piano roll )
 ;
 
 struct: ControlDesc
@@ -64,6 +66,7 @@ struct: RowDesc     ptr next  ptr weight  ptr cells ;
 struct: CellDesc    ptr next  ptr weight  ptr items ;
 struct: ItemDesc    ptr next  ptr name  ptr weight ;
 struct: ConstDesc   ptr next  ptr offset  ptr value ;
+struct: NoteLabelDesc ptr next  ptr pitch  ptr label ;
 
 ( --- builder state ------------------------------------------------ )
 :: _mf-md         8 alloc ;
@@ -75,6 +78,7 @@ struct: ConstDesc   ptr next  ptr offset  ptr value ;
 :: _mf-last-cell  8 alloc ;
 :: _mf-last-item  8 alloc ;
 :: _mf-last-const 8 alloc ;
+:: _mf-last-nl    8 alloc ;
 
 : _mf-md@ _mf-md @64 ;
 
@@ -98,6 +102,7 @@ struct: ConstDesc   ptr next  ptr offset  ptr value ;
   0 _mf-last-cell !64
   0 _mf-last-item !64
   0 _mf-last-const !64
+  0 _mf-last-nl !64
 ;
 
 : render!        ( str -- ) cstr-new _mf-md@ MachineDesc.render! drop ;
@@ -108,6 +113,23 @@ struct: ConstDesc   ptr next  ptr offset  ptr value ;
 : state-size!    ( n -- ) _mf-md@ MachineDesc.state-size! drop ;
 : params-size!   ( n -- ) _mf-md@ MachineDesc.params-size! drop ;
 : panel-w!       ( f -- ) _mf-md@ MachineDesc.panel-w! drop ;
+
+( note-on receives raw MIDI pitch instead of Hz — drum machines, where
+  the pitch is an address, not a frequency. )
+: note-pitch  ( -- ) 1 _mf-md@ MachineDesc.note-pitch! drop ;
+
+( declare a note the machine answers to; the piano roll renders one
+  labelled lane per declared note instead of the chromatic keyboard. )
+: note-label  ( pitch label -- )
+  NoteLabelDesc.alloc
+  swap cstr-new swap NoteLabelDesc.label!
+  NoteLabelDesc.pitch!
+  _mf-last-nl @64 0 =
+  [ dup _mf-md@ MachineDesc.note-labels! drop ]
+  [ dup _mf-last-nl @64 NoteLabelDesc.next! drop ]
+  ifte
+  _mf-last-nl !64
+;
 
 ( --- controls ------------------------------------------------------ )
 : _mf-append-ctl  ( ctl -- )

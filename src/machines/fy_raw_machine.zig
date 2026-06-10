@@ -96,6 +96,7 @@ pub const FyRawMachine = struct {
             .deinit = deinitImpl,
             .panel_w = self.panel_w,
             .host_titlebar = true,
+            .note_labels = self.desc.noteLabels(),
         };
     }
 
@@ -360,7 +361,9 @@ fn applyNoteEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
             if (ev.velocity <= 0) {
                 try callNoteOff(self);
             } else {
-                try callNoteOn(self, midiToHz(ev.pitch), ev.velocity);
+                // note-pitch machines (drums) address slots by raw MIDI pitch.
+                const note_arg = if (self.desc.note_pitch) @as(f64, ev.pitch) else midiToHz(ev.pitch);
+                try callNoteOn(self, note_arg, ev.velocity);
             }
         },
         .note_off, .reset => try callNoteOff(self),

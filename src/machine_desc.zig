@@ -13,6 +13,7 @@
 const std = @import("std");
 const Fy = @import("fy").Fy;
 const FyHost = @import("fy_host.zig").FyHost;
+const machine = @import("machine.zig");
 
 pub const MAX_NAME = 64;
 pub const MAX_WORD = 64;
@@ -25,6 +26,7 @@ pub const MAX_DISPLAYS = 8;
 pub const MAX_ROWS = 8;
 pub const MAX_ROW_CELLS = 16;
 pub const MAX_CELL_ITEMS = 6;
+pub const MAX_NOTE_LABELS = 32;
 
 pub const Mode = enum {
     voice_sample,
@@ -158,6 +160,14 @@ pub const Desc = struct {
     display_count: usize = 0,
     rows: [MAX_ROWS]LayoutRow = undefined,
     row_count: usize = 0,
+    // note-on receives raw MIDI pitch instead of Hz (drum machines).
+    note_pitch: bool = false,
+    note_labels: [MAX_NOTE_LABELS]machine.NoteLabel = undefined,
+    note_label_count: usize = 0,
+
+    pub fn noteLabels(self: *const Desc) []const machine.NoteLabel {
+        return self.note_labels[0..self.note_label_count];
+    }
 
     pub fn nameSlice(self: *const Desc) []const u8 {
         return self.name[0..self.name_len];
@@ -216,6 +226,8 @@ const MachineDescRaw = extern struct {
     displays: Fy.Value,
     rows: Fy.Value,
     consts: Fy.Value,
+    note_pitch: Fy.Value,
+    note_labels: Fy.Value,
 };
 
 const ControlRaw = extern struct {
@@ -239,6 +251,7 @@ const RowRaw = extern struct { next: Fy.Value, weight: Fy.Value, cells: Fy.Value
 const CellRaw = extern struct { next: Fy.Value, weight: Fy.Value, items: Fy.Value };
 const ItemRaw = extern struct { next: Fy.Value, name: Fy.Value, weight: Fy.Value };
 const ConstRaw = extern struct { next: Fy.Value, offset: Fy.Value, value: Fy.Value };
+const NoteLabelRaw = extern struct { next: Fy.Value, pitch: Fy.Value, label: Fy.Value };
 
 // ── tagged-value decode ───────────────────────────────────────────────
 
@@ -370,6 +383,20 @@ pub fn read(host: *FyHost) !Desc {
         d.display_count += 1;
     }
 
+    d.note_pitch = asInt(md.note_pitch) != 0;
+    var nl_it = rawPtr(NoteLabelRaw, md.note_labels);
+    while (nl_it) |nl| : (nl_it = rawPtr(NoteLabelRaw, nl.next)) {
+        if (d.note_label_count >= MAX_NOTE_LABELS) return error.TooManyNoteLabels;
+        const out = &d.note_labels[d.note_label_count];
+        out.* = .{};
+        out.pitch = @intCast(std.math.clamp(asInt(nl.pitch), 0, 127));
+        const text = cstrSlice(nl.label);
+        if (text.len > machine.NOTE_LABEL_TEXT) return error.MachineDescStringTooLong;
+        @memcpy(out.label[0..text.len], text);
+        out.label_len = @intCast(text.len);
+        d.note_label_count += 1;
+    }
+
     var row_it = rawPtr(RowRaw, md.rows);
     while (row_it) |row| : (row_it = rawPtr(RowRaw, row.next)) {
         if (d.row_count >= MAX_ROWS) return error.TooManyRows;
@@ -405,6 +432,20 @@ pub fn read(host: *FyHost) !Desc {
 }
 
 const testing = std.testing;
+
+test "descriptor walker reads the drum2 note map" {
+    var host = FyHost.init(testing.allocator);
+    defer host.deinit();
+    try host.compileFile("machines/drum2/drum2.fy");
+    const d = try read(&host);
+
+    try testing.expectEqualStrings("drum2", d.nameSlice());
+    try testing.expect(d.note_pitch);
+    try testing.expectEqual(@as(usize, 1), d.note_label_count);
+    try testing.expectEqual(@as(u8, 36), d.note_labels[0].pitch);
+    try testing.expectEqualStrings("KICK", d.note_labels[0].labelSlice());
+    try testing.expectEqual(@as(usize, 7), d.control_count);
+}
 
 test "descriptor walker reads the MS-20 manifest from fy" {
     var host = FyHost.init(testing.allocator);

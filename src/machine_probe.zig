@@ -157,6 +157,7 @@ fn loadRegistry(reg: *registry_mod.Registry) !void {
     try reg.loadFyMachine("machines/raw_fixtures/silence.fy");
     try reg.loadFyMachine("machines/raw_fixtures/saturator.fy");
     try reg.loadFyMachine("machines/ms20/ms20.fy");
+    try reg.loadFyMachine("machines/drum2/drum2.fy");
 }
 
 fn instantiateChain(reg: *registry_mod.Registry, chain_text: []const u8, out: *[MAX_CHAIN]ChainItem) !usize {

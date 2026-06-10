@@ -146,6 +146,25 @@ pub const PresetCountFn = *const fn (state: *anyopaque) u8;
 pub const PresetNameFn = *const fn (state: *anyopaque, index: u8) [*:0]const u8;
 pub const ApplyPresetFn = *const fn (state: *anyopaque, index: u8) void;
 
+pub const NOTE_LABEL_TEXT = 23;
+
+/// One entry of a machine's note map: a MIDI pitch it answers to plus a
+/// short label. Machines with a note map (drum machines) get a labelled
+/// drum-lane piano roll instead of the chromatic keyboard.
+pub const NoteLabel = struct {
+    pitch: u8 = 0,
+    label: [NOTE_LABEL_TEXT:0]u8 = [_:0]u8{0} ** NOTE_LABEL_TEXT,
+    label_len: u8 = 0,
+
+    pub fn labelSlice(self: *const NoteLabel) []const u8 {
+        return self.label[0..self.label_len];
+    }
+
+    pub fn labelZ(self: *const NoteLabel) [*:0]const u8 {
+        return @ptrCast(&self.label[0]);
+    }
+};
+
 pub const Machine = struct {
     name: []const u8,
     state: *anyopaque,
@@ -164,4 +183,7 @@ pub const Machine = struct {
     /// draw_panel only the body rect below it. When false (legacy callback
     /// machines like mono1) the machine draws its own title bar.
     host_titlebar: bool = false,
+    /// Advisory note map (drum machines); empty = chromatic machine.
+    /// Points into instance-owned storage, valid for the machine's lifetime.
+    note_labels: []const NoteLabel = &.{},
 };
