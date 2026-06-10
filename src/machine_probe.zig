@@ -5,7 +5,6 @@ const machine_mod = @import("machine.zig");
 const fy_host_mod = @import("fy_host.zig");
 const FyMachine = @import("machines/fy_machine.zig").FyMachine;
 const fy_machine_mod = @import("machines/fy_machine.zig");
-const fy_raw_machine_mod = @import("machines/fy_raw_machine.zig");
 
 const SAMPLE_RATE: u32 = 48_000;
 const BLOCK_FRAMES: usize = 256;
@@ -62,7 +61,7 @@ pub fn main(init: std.process.Init) !void {
     try loadRegistry(&reg);
 
     var chain: [MAX_CHAIN]ChainItem = undefined;
-    const chain_len = try instantiateChain(alloc, &reg, cli.chain, &chain);
+    const chain_len = try instantiateChain(&reg, cli.chain, &chain);
     defer {
         for (chain[0..chain_len]) |*item| {
             if (item.mach.deinit) |deinit_fn| deinit_fn(item.mach.state, alloc);
@@ -154,25 +153,19 @@ fn loadRegistry(reg: *registry_mod.Registry) !void {
     try reg.load("fm1", "machines/fm1/fm1.fy", "fm1-audio", "fm1-ui", 428);
     try reg.load("delay1", "machines/delay1/delay1.fy", "delay1-audio", "delay1-ui", 375);
     try reg.load("verb1", "machines/verb1/verb1.fy", "verb1-audio", "verb1-ui", 270);
-    try reg.loadRawManifest("machines/raw_ms20/raw-ms20.manifest");
+    try reg.loadFyMachine("machines/raw_fixtures/oscillator.fy");
+    try reg.loadFyMachine("machines/raw_fixtures/silence.fy");
+    try reg.loadFyMachine("machines/raw_fixtures/saturator.fy");
+    try reg.loadFyMachine("machines/ms20/ms20.fy");
 }
 
-fn instantiateChain(alloc: std.mem.Allocator, reg: *registry_mod.Registry, chain_text: []const u8, out: *[MAX_CHAIN]ChainItem) !usize {
+fn instantiateChain(reg: *registry_mod.Registry, chain_text: []const u8, out: *[MAX_CHAIN]ChainItem) !usize {
     var count: usize = 0;
     var it = std.mem.splitScalar(u8, chain_text, ',');
     while (it.next()) |raw_name| {
         const name = std.mem.trim(u8, raw_name, " \t\r\n");
         if (name.len == 0) continue;
         if (count >= MAX_CHAIN) return error.ChainTooLong;
-        if (fy_raw_machine_mod.fixtureSpec(name)) |spec| {
-            const raw = try fy_raw_machine_mod.FyRawMachine.create(alloc, spec);
-            out[count] = .{
-                .reg_idx = std.math.maxInt(usize),
-                .mach = raw.machineInterface(),
-            };
-            count += 1;
-            continue;
-        }
         const idx = findMachine(reg, name) orelse return error.UnknownMachine;
         out[count] = .{
             .reg_idx = idx,

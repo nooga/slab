@@ -1,9 +1,11 @@
 //! Generic raw-DSP2 fy machine adapter.
 //!
-//! This is the testbed for the next machine ABI: the host owns scheduling,
-//! state storage, params storage, note/event routing, and buffers; fy owns
-//! the raw DSP2 entrypoints. The adapter is intentionally generic so adding
-//! a new machine does not require a Zig wrapper.
+//! The host owns scheduling, state storage, params storage, note/event
+//! routing, and buffers; fy owns the raw DSP2 entrypoints. The machine is
+//! fully described by the `manifest` word in its .fy file (vocabulary in
+//! machines/lib/manifest.fy, walker in src/machine_desc.zig) — entry words,
+//! sizes, controls, panel layout, and the optional block-prepare word. The
+//! adapter is generic: adding a machine never requires a Zig wrapper.
 
 const std = @import("std");
 const Fy = @import("fy").Fy;
@@ -11,236 +13,26 @@ const c = @import("../c.zig");
 const machine = @import("../machine.zig");
 const fy_host_mod = @import("../fy_host.zig");
 const FyHost = fy_host_mod.FyHost;
+const machine_desc = @import("../machine_desc.zig");
 const theme = @import("../ui/theme.zig");
 const widgets = @import("../ui/widgets.zig");
 
-extern fn close(fd: c_int) c_int;
-extern fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
-extern fn fstat(fd: c_int, sb: *std.c.Stat) c_int;
-const O_RDONLY: c_int = 0;
-
 const MAX_STATE = 1024;
 const MAX_PARAMS = 1024;
-const MAX_NAME = 64;
 const MAX_BLOCK = 4096;
-const MAX_RAW_CONTROLS = 32;
-const MAX_RAW_DERIVES = 8;
-const MAX_RAW_CONSTS = 16;
-const MAX_CONTROL_TEXT = 24;
+const MAX_OPTS = machine_desc.MAX_OPTS;
+const MAX_CONTROLS = machine_desc.MAX_CONTROLS;
+const MAX_STRIPS = machine_desc.MAX_STRIPS;
 const RawCaller = Fy.Dsp2RawRepeatedCaller;
 const RawSlots = Fy.Dsp2RawRepeatedSlots;
 
-const RawParamCurve = enum {
-    linear,
-    exp,
-};
-
-const MAX_OPTS = 8;
-
-const RawParamKind = enum {
-    direct_f64,
-    value,
-    switch_sel,
-};
-
-const RawControl = struct {
-    module: [MAX_CONTROL_TEXT:0]u8 = [_:0]u8{0} ** MAX_CONTROL_TEXT,
-    module_len: usize = 0,
-    label: [MAX_CONTROL_TEXT:0]u8 = [_:0]u8{0} ** MAX_CONTROL_TEXT,
-    label_len: usize = 0,
-    id: [MAX_CONTROL_TEXT:0]u8 = [_:0]u8{0} ** MAX_CONTROL_TEXT,
-    id_len: usize = 0,
-    kind: RawParamKind,
-    offset: usize = 0,
-    min: f64,
-    max: f64,
-    default: f64,
-    curve: RawParamCurve = .linear,
-    // switch_sel only: discrete options. The control stores the selected
-    // index; sync writes option_values[index] to the param offset.
-    option_count: usize = 0,
-    option_values: [MAX_OPTS]f64 = [_]f64{0} ** MAX_OPTS,
-    option_labels: [MAX_OPTS][MAX_CONTROL_TEXT:0]u8 = [_][MAX_CONTROL_TEXT:0]u8{[_:0]u8{0} ** MAX_CONTROL_TEXT} ** MAX_OPTS,
-
-    fn optionLabelZ(self: *const RawControl, i: usize) [*:0]const u8 {
-        return @ptrCast(&self.option_labels[i][0]);
-    }
-
-    fn moduleZ(self: *const RawControl) [*:0]const u8 {
-        return @ptrCast(&self.module[0]);
-    }
-
-    fn labelZ(self: *const RawControl) [*:0]const u8 {
-        return @ptrCast(&self.label[0]);
-    }
-
-    fn idSlice(self: *const RawControl) []const u8 {
-        return self.id[0..self.id_len];
-    }
-};
-
-const RawDeriveKind = enum {
-    ms20_lpf,
-};
-
-const RawDerive = struct {
-    kind: RawDeriveKind,
-    a: [MAX_CONTROL_TEXT:0]u8 = [_:0]u8{0} ** MAX_CONTROL_TEXT,
-    a_len: usize = 0,
-    b: [MAX_CONTROL_TEXT:0]u8 = [_:0]u8{0} ** MAX_CONTROL_TEXT,
-    b_len: usize = 0,
-    c: [MAX_CONTROL_TEXT:0]u8 = [_:0]u8{0} ** MAX_CONTROL_TEXT,
-    c_len: usize = 0,
-    out0_offset: usize = 0,
-    out1_offset: usize = 0,
-    out2_offset: usize = 0,
-
-    fn aSlice(self: *const RawDerive) []const u8 {
-        return self.a[0..self.a_len];
-    }
-
-    fn bSlice(self: *const RawDerive) []const u8 {
-        return self.b[0..self.b_len];
-    }
-
-    fn cSlice(self: *const RawDerive) []const u8 {
-        return self.c[0..self.c_len];
-    }
-};
-
-const RawConstF64 = struct {
-    offset: usize,
-    value: f64,
-};
-
-const MAX_RAW_STRIPS = 16;
-
-// Declared panel strip (module box): `strip|MODULE|width|cols`. width is in
-// base px (scaled to fit); cols is the knob columns. Order = declaration order.
-const RawStrip = struct {
-    module: [MAX_CONTROL_TEXT:0]u8 = [_:0]u8{0} ** MAX_CONTROL_TEXT,
-    module_len: usize = 0,
-    width: f32 = 60,
-    cols: usize = 1,
-
-    fn moduleSlice(self: *const RawStrip) []const u8 {
-        return self.module[0..self.module_len];
-    }
-    fn moduleZ(self: *const RawStrip) [*:0]const u8 {
-        return @ptrCast(&self.module[0]);
-    }
-};
-
-// Built-in display (custom-draw cell, docs/15 escape hatch): a sunken field
-// drawn by a built-in visualizer instead of knobs. Declared:
-//   display|NAME|kind|source        e.g. display|FLT GRAPH|adsr|FLT ENV
-// and placed in the layout like a strip.
-const MAX_RAW_DISPLAYS = 8;
-const RawDisplayKind = enum { adsr };
-const RawDisplay = struct {
-    name: [MAX_CONTROL_TEXT:0]u8 = [_:0]u8{0} ** MAX_CONTROL_TEXT,
-    name_len: usize = 0,
-    kind: RawDisplayKind = .adsr,
-    source: [MAX_CONTROL_TEXT:0]u8 = [_:0]u8{0} ** MAX_CONTROL_TEXT,
-    source_len: usize = 0,
-
-    fn nameZ(self: *const RawDisplay) [*:0]const u8 {
-        return @ptrCast(&self.name[0]);
-    }
-    fn sourceSlice(self: *const RawDisplay) []const u8 {
-        return self.source[0..self.source_len];
-    }
-};
-
-// Weighted box layout (docs/15): rows -> cells -> stacked items (strip or
-// display). Each level splits its parent's extent by weight. If no row| lines
-// are declared, the renderer falls back to a single flat row of strips.
-const MAX_LAYOUT_ROWS = 8;
-const MAX_ROW_CELLS = 16;
-const MAX_CELL_STRIPS = 6;
-
-const LayoutItem = struct { is_display: bool = false, index: usize = 0, weight: f32 = 1 };
-const LayoutCell = struct {
-    items: [MAX_CELL_STRIPS]LayoutItem = undefined,
-    item_count: usize = 0,
-    weight: f32 = 1,
-};
-const LayoutRow = struct {
-    cells: [MAX_ROW_CELLS]LayoutCell = undefined,
-    cell_count: usize = 0,
-    weight: f32 = 1,
-};
-
-pub const Mode = enum {
-    voice_sample,
-    effect_sample,
-    effect_block,
-};
-
-pub const Spec = struct {
-    name: []const u8,
-    path: []const u8,
-    mode: Mode,
-    render_word: []const u8,
-    prepare_word: ?[]const u8 = null,
-    note_on_word: ?[]const u8 = null,
-    note_off_word: ?[]const u8 = null,
-    state_size: usize,
-    params_size: usize,
-    panel_w: f32 = 128,
-    manifest_path: ?[]const u8 = null,
-};
-
-pub fn fixtureSpec(name: []const u8) ?Spec {
-    if (std.mem.eql(u8, name, "raw-silence")) return .{
-        .name = "raw-silence",
-        .path = "machines/raw_fixtures/silence.fy",
-        .mode = .voice_sample,
-        .render_word = "raw-silence-render",
-        .state_size = 8,
-        .params_size = 8,
-    };
-    if (std.mem.eql(u8, name, "raw-osc")) return .{
-        .name = "raw-osc",
-        .path = "machines/raw_fixtures/oscillator.fy",
-        .mode = .voice_sample,
-        .render_word = "raw-osc-render",
-        .prepare_word = "raw-osc-prepare",
-        .note_on_word = "raw-osc-note-on",
-        .note_off_word = "raw-osc-note-off",
-        .state_size = 8,
-        .params_size = 24,
-    };
-    if (std.mem.eql(u8, name, "raw-sat")) return .{
-        .name = "raw-sat",
-        .path = "machines/raw_fixtures/saturator.fy",
-        .mode = .effect_block,
-        .render_word = "raw-sat-render",
-        .prepare_word = "raw-sat-prepare",
-        .state_size = 8,
-        .params_size = 8,
-    };
-    if (std.mem.eql(u8, name, "raw-ms20")) return .{
-        .name = "raw-ms20",
-        .path = "kernels/06-voices/ms20_voice_probe.fy",
-        .mode = .voice_sample,
-        .render_word = "k-ms20-voice-sample",
-        .prepare_word = "ms20-voice-prepare",
-        .note_on_word = "ms20-voice-note-on",
-        .note_off_word = "ms20-voice-note-off",
-        .state_size = 144,
-        .params_size = 360,
-        .panel_w = 680,
-        .manifest_path = "machines/raw_ms20/raw-ms20.manifest",
-    };
-    return null;
-}
+pub const Mode = machine_desc.Mode;
+const Control = machine_desc.Control;
+const Display = machine_desc.Display;
 
 pub const FyRawMachine = struct {
     host: *FyHost,
-    spec: Spec,
-    name_buf: [MAX_NAME]u8 = [_]u8{0} ** MAX_NAME,
-    name_len: usize = 0,
+    desc: machine_desc.Desc,
     state_buf: [MAX_STATE]u8 align(8) = [_]u8{0} ** MAX_STATE,
     params_buf: [MAX_PARAMS]u8 align(8) = [_]u8{0} ** MAX_PARAMS,
     mono_buf: [MAX_BLOCK]f64 align(8) = [_]f64{0} ** MAX_BLOCK,
@@ -253,37 +45,20 @@ pub const FyRawMachine = struct {
     note_off_slots: RawSlots = .{},
     render_slots: RawSlots = .{},
     effect_slots: RawSlots = .{},
+    block_prepare_slots: RawSlots = .{},
     prepare_caller: ?RawCaller = null,
     note_on_caller: ?RawCaller = null,
     note_off_caller: ?RawCaller = null,
     render_caller: ?RawCaller = null,
     effect_caller: ?RawCaller = null,
-    // raw-ms20 g-wet svf: host fills the SvfParams profile region per block by
-    // calling these fy coeff words (replaces the old Zig coefficient derive).
-    svf_dc_slots: RawSlots = .{},
-    svf_profile_slots: RawSlots = .{},
-    svf_dc_caller: ?RawCaller = null,
-    svf_profile_caller: ?RawCaller = null,
-    svf_profile_offset: usize = 0,
-    raw_control_bits: [MAX_RAW_CONTROLS]std.atomic.Value(u32) = undefined,
-    raw_controls: [MAX_RAW_CONTROLS]RawControl = undefined,
-    raw_control_count: usize = 0,
-    raw_derives: [MAX_RAW_DERIVES]RawDerive = undefined,
-    raw_derive_count: usize = 0,
-    raw_consts: [MAX_RAW_CONSTS]RawConstF64 = undefined,
-    raw_const_count: usize = 0,
-    raw_strips: [MAX_RAW_STRIPS]RawStrip = undefined,
-    raw_strip_count: usize = 0,
-    raw_rows: [MAX_LAYOUT_ROWS]LayoutRow = undefined,
-    raw_row_count: usize = 0,
-    raw_displays: [MAX_RAW_DISPLAYS]RawDisplay = undefined,
-    raw_display_count: usize = 0,
+    // Optional per-block dsp2 word (params sample-rate --): coefficient fills
+    // that must not run per sample, e.g. the MS-20 svf profile region.
+    block_prepare_caller: ?RawCaller = null,
+    raw_control_bits: [MAX_CONTROLS]std.atomic.Value(u32) = undefined,
     panel_w: f32 = 128,
     failed: bool = false,
 
-    pub fn create(alloc: std.mem.Allocator, spec: Spec) !*FyRawMachine {
-        if (spec.state_size > MAX_STATE or spec.params_size > MAX_PARAMS) return error.RawMachineStorageTooLarge;
-
+    pub fn create(alloc: std.mem.Allocator, path: []const u8) !*FyRawMachine {
         const self = try alloc.create(FyRawMachine);
         errdefer alloc.destroy(self);
         const host = try alloc.create(FyHost);
@@ -291,28 +66,29 @@ pub const FyRawMachine = struct {
         host.* = FyHost.init(alloc);
         errdefer host.deinit();
 
-        try host.compileFile(spec.path);
-        try validateWord(host, spec.render_word);
-        if (spec.prepare_word) |word| try validateWord(host, word);
-        if (spec.note_on_word) |word| try validateWord(host, word);
-        if (spec.note_off_word) |word| try validateWord(host, word);
+        try host.compileFile(path);
+        const desc = try machine_desc.read(host);
+        if (desc.state_size > MAX_STATE or desc.params_size > MAX_PARAMS) return error.RawMachineStorageTooLarge;
+
+        try validateWord(host, desc.renderWord());
+        if (desc.prepareWord()) |word| try validateWord(host, word);
+        if (desc.noteOnWord()) |word| try validateWord(host, word);
+        if (desc.noteOffWord()) |word| try validateWord(host, word);
+        if (desc.blockPrepareWord()) |word| try validateWord(host, word);
 
         self.* = .{
             .host = host,
-            .spec = spec,
-            .name_buf = [_]u8{0} ** MAX_NAME,
-            .name_len = @min(spec.name.len, MAX_NAME),
-            .panel_w = spec.panel_w,
+            .desc = desc,
+            .panel_w = desc.panel_w,
         };
-        @memcpy(self.name_buf[0..self.name_len], spec.name[0..self.name_len]);
-        try self.initRawControls(alloc);
         try self.compileCallers();
+        self.initRawControls();
         return self;
     }
 
     pub fn machineInterface(self: *FyRawMachine) machine.Machine {
         return .{
-            .name = self.name_buf[0..self.name_len],
+            .name = self.desc.nameSlice(),
             .state = self,
             .render = renderImpl,
             .draw_panel = drawPanelImpl,
@@ -332,7 +108,7 @@ pub const FyRawMachine = struct {
     }
 
     fn compileCallers(self: *FyRawMachine) !void {
-        if (self.spec.prepare_word) |word| {
+        if (self.desc.prepareWord()) |word| {
             self.prepare_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
                 word,
                 &self.prepare_slots,
@@ -341,7 +117,7 @@ pub const FyRawMachine = struct {
                 false,
             );
         }
-        if (self.spec.note_on_word) |word| {
+        if (self.desc.noteOnWord()) |word| {
             self.note_on_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
                 word,
                 &self.note_on_slots,
@@ -350,7 +126,7 @@ pub const FyRawMachine = struct {
                 false,
             );
         }
-        if (self.spec.note_off_word) |word| {
+        if (self.desc.noteOffWord()) |word| {
             self.note_off_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
                 word,
                 &self.note_off_slots,
@@ -359,19 +135,28 @@ pub const FyRawMachine = struct {
                 false,
             );
         }
-        switch (self.spec.mode) {
+        if (self.desc.blockPrepareWord()) |word| {
+            self.block_prepare_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
+                word,
+                &self.block_prepare_slots,
+                &.{ .ptr, .f64 },
+                false,
+                false,
+            );
+        }
+        switch (self.desc.mode) {
             .voice_sample => {
                 // A `call:` composition voice is invoked through the dedicated
                 // composition caller (same out/state/params + auto-advance ABI).
-                if (self.host.fy.isCompositionWord(self.spec.render_word)) {
+                if (self.host.fy.isCompositionWord(self.desc.renderWord())) {
                     self.render_caller = try self.host.fy.compileDsp2CompositionCaller(
-                        self.spec.render_word,
+                        self.desc.renderWord(),
                         &self.render_slots,
                         true,
                     );
                 } else {
                     self.render_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
-                        self.spec.render_word,
+                        self.desc.renderWord(),
                         &self.render_slots,
                         &.{ .ptr, .ptr, .ptr },
                         true,
@@ -382,7 +167,7 @@ pub const FyRawMachine = struct {
             .effect_sample => {},
             .effect_block => {
                 self.effect_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
-                    self.spec.render_word,
+                    self.desc.renderWord(),
                     &self.effect_slots,
                     &.{ .ptr, .ptr, .ptr, .ptr },
                     true,
@@ -390,132 +175,19 @@ pub const FyRawMachine = struct {
                 );
             },
         }
-
-        // raw-ms20: fill the SvfParams profile region (offset 176) per block
-        // via fy coeff words instead of a Zig derive.
-        if (std.mem.eql(u8, self.spec.name, "raw-ms20")) {
-            self.svf_profile_offset = 176;
-            self.svf_dc_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
-                "k-svf-coeffs-dc",
-                &self.svf_dc_slots,
-                &.{ .ptr, .f64 },
-                false,
-                false,
-            );
-            self.svf_profile_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
-                "k-svf-coeffs-profile",
-                &self.svf_profile_slots,
-                &.{ .ptr, .f64 },
-                false,
-                false,
-            );
-        }
     }
 
-    fn initRawControls(self: *FyRawMachine, alloc: std.mem.Allocator) !void {
-        self.raw_control_count = 0;
-        self.raw_derive_count = 0;
-        self.raw_const_count = 0;
-        self.raw_strip_count = 0;
-        self.raw_row_count = 0;
-        self.raw_display_count = 0;
-        if (self.spec.manifest_path) |path| try self.loadRawControlsFromManifest(alloc, path);
+    fn initRawControls(self: *FyRawMachine) void {
         var i: usize = 0;
-        while (i < MAX_RAW_CONTROLS) : (i += 1) {
-            const value: f32 = if (i < self.raw_control_count) blk: {
-                const ctl = self.raw_controls[i];
+        while (i < MAX_CONTROLS) : (i += 1) {
+            const value: f32 = if (i < self.desc.control_count) blk: {
+                const ctl = self.desc.controls[i];
                 // switches store the selected index directly (not a 0..1 norm).
                 break :blk if (ctl.kind == .switch_sel) @floatCast(ctl.default) else valueToNorm(ctl, ctl.default);
             } else 0;
             self.raw_control_bits[i] = std.atomic.Value(u32).init(@bitCast(value));
         }
         self.syncRawParams(48_000.0);
-    }
-
-    fn loadRawControlsFromManifest(self: *FyRawMachine, alloc: std.mem.Allocator, path: []const u8) !void {
-        const data = try readFilePosix(alloc, path);
-        defer alloc.free(data);
-
-        var lines = std.mem.splitScalar(u8, data, '\n');
-        while (lines.next()) |line_raw| {
-            const line = std.mem.trim(u8, line_raw, " \t\r");
-            if (line.len == 0 or line[0] == '#') continue;
-            var fields = std.mem.splitScalar(u8, line, '|');
-            const tag = fields.next() orelse continue;
-            if (std.mem.eql(u8, tag, "control")) {
-                if (self.raw_control_count >= MAX_RAW_CONTROLS) return error.RawControlLimitExceeded;
-                const control = try parseControlFields(&fields);
-                self.raw_controls[self.raw_control_count] = control;
-                self.raw_control_count += 1;
-            } else if (std.mem.eql(u8, tag, "derive")) {
-                if (self.raw_derive_count >= MAX_RAW_DERIVES) return error.RawDeriveLimitExceeded;
-                const derive = try parseDeriveFields(&fields);
-                self.raw_derives[self.raw_derive_count] = derive;
-                self.raw_derive_count += 1;
-            } else if (std.mem.eql(u8, tag, "const-f64")) {
-                if (self.raw_const_count >= MAX_RAW_CONSTS) return error.RawConstLimitExceeded;
-                const cnst = try parseConstF64Fields(&fields);
-                self.raw_consts[self.raw_const_count] = cnst;
-                self.raw_const_count += 1;
-            } else if (std.mem.eql(u8, tag, "strip")) {
-                if (self.raw_strip_count >= MAX_RAW_STRIPS) return error.RawStripLimitExceeded;
-                const s = try parseStripFields(&fields);
-                self.raw_strips[self.raw_strip_count] = s;
-                self.raw_strip_count += 1;
-            } else if (std.mem.eql(u8, tag, "display")) {
-                if (self.raw_display_count >= MAX_RAW_DISPLAYS) return error.RawStripLimitExceeded;
-                var d = RawDisplay{};
-                const name = fields.next() orelse return error.InvalidRawManifest;
-                const kind = fields.next() orelse return error.InvalidRawManifest;
-                const source = fields.next() orelse "";
-                d.name_len = try copyZ(&d.name, name);
-                d.source_len = try copyZ(&d.source, source);
-                d.kind = if (std.mem.eql(u8, kind, "adsr")) .adsr else return error.InvalidRawManifest;
-                self.raw_displays[self.raw_display_count] = d;
-                self.raw_display_count += 1;
-            } else if (std.mem.eql(u8, tag, "row")) {
-                if (self.raw_row_count >= MAX_LAYOUT_ROWS) return error.RawStripLimitExceeded;
-                var row = LayoutRow{};
-                if (fields.next()) |w| row.weight = @floatCast(parseF64Or(std.mem.trim(u8, w, " "), 1.0));
-                self.raw_rows[self.raw_row_count] = row;
-                self.raw_row_count += 1;
-            } else if (std.mem.eql(u8, tag, "cell")) {
-                if (self.raw_row_count == 0) return error.InvalidRawManifest;
-                const ww = fields.next() orelse "1";
-                const modlist = fields.next() orelse return error.InvalidRawManifest;
-                var cell = LayoutCell{};
-                cell.weight = @floatCast(parseF64Or(std.mem.trim(u8, ww, " "), 1.0));
-                var segs = std.mem.splitScalar(u8, modlist, '/');
-                while (segs.next()) |seg_raw| {
-                    const seg = std.mem.trim(u8, seg_raw, " \t");
-                    if (seg.len == 0) continue;
-                    var name = seg;
-                    var hw: f32 = 1;
-                    if (std.mem.lastIndexOfScalar(u8, seg, '*')) |star| {
-                        if (std.fmt.parseFloat(f32, seg[star + 1 ..])) |v| {
-                            hw = v;
-                            name = std.mem.trim(u8, seg[0..star], " ");
-                        } else |_| {}
-                    }
-                    var item = LayoutItem{ .weight = hw };
-                    if (stripIndexByModule(self, name)) |si| {
-                        item.index = si;
-                    } else if (displayIndexByName(self, name)) |di| {
-                        item.is_display = true;
-                        item.index = di;
-                    } else return error.InvalidRawManifest;
-                    if (cell.item_count < MAX_CELL_STRIPS) {
-                        cell.items[cell.item_count] = item;
-                        cell.item_count += 1;
-                    }
-                }
-                const row = &self.raw_rows[self.raw_row_count - 1];
-                if (row.cell_count < MAX_ROW_CELLS) {
-                    row.cells[row.cell_count] = cell;
-                    row.cell_count += 1;
-                }
-            }
-        }
     }
 
     fn controlNorm(self: *const FyRawMachine, idx: usize) f32 {
@@ -532,65 +204,34 @@ pub const FyRawMachine = struct {
     }
 
     fn syncRawParams(self: *FyRawMachine, sample_rate: f64) void {
-        const controls = self.raw_controls[0..self.raw_control_count];
+        const controls = self.desc.controls[0..self.desc.control_count];
         for (controls, 0..) |control, i| {
             switch (control.kind) {
                 .direct_f64 => self.writeParamF64(control.offset, normToValue(control, self.controlNorm(i))),
-                .value => {},
                 .switch_sel => self.writeParamF64(control.offset, control.option_values[switchIndex(control, self.controlNorm(i))]),
             }
         }
 
-        for (self.raw_consts[0..self.raw_const_count]) |cnst| {
+        for (self.desc.consts[0..self.desc.const_count]) |cnst| {
             self.writeParamF64(cnst.offset, cnst.value);
         }
 
-        for (self.raw_derives[0..self.raw_derive_count]) |derive| {
-            switch (derive.kind) {
-                .ms20_lpf => {
-                    const cutoff_hz = self.controlValueById(derive.aSlice()) orelse continue;
-                    const resonance = self.controlValueById(derive.bSlice()) orelse continue;
-                    const env_peak_hz = self.controlValueById(derive.cSlice()) orelse continue;
-                    const base = ms20Coeffs(cutoff_hz, resonance, sample_rate);
-                    const peak = ms20Coeffs(@max(env_peak_hz, cutoff_hz), resonance, sample_rate);
-                    self.writeParamF64(derive.out0_offset, base.g);
-                    self.writeParamF64(derive.out1_offset, base.damping);
-                    self.writeParamF64(derive.out2_offset, @max(0.0, peak.g - base.g));
-                },
-            }
+        // Per-block coefficient fill in fy (params sample-rate --). Runs after
+        // controls/consts land so the word reads fresh raw values.
+        if (self.block_prepare_caller) |*bp| {
+            const args = [_]Fy.Dsp2RawArg{ .{ .ptr = self.paramsPtr() }, .{ .f64 = sample_rate } };
+            _ = bp.call(1, &args) catch {};
         }
-
-        // raw-ms20: fill the SvfParams profile region in fy (drive/resonance/
-        // fb_gain/clips/leak + the two DC-block coeffs). g and damping stay
-        // per-sample in the voice; nothing here computes filter coefficients.
-        if (self.svf_profile_caller) |*pc| {
-            const profile_ptr = self.paramsPtr() + self.svf_profile_offset;
-            const os_rate = sample_rate * 4.0;
-            const resonance = self.controlValueById("resonance") orelse 1.0;
-            if (self.svf_dc_caller) |*dc| {
-                const dc_args = [_]Fy.Dsp2RawArg{ .{ .ptr = profile_ptr }, .{ .f64 = os_rate } };
-                _ = dc.call(1, &dc_args) catch {};
-            }
-            const prof_args = [_]Fy.Dsp2RawArg{ .{ .ptr = profile_ptr }, .{ .f64 = resonance } };
-            _ = pc.call(1, &prof_args) catch {};
-        }
-    }
-
-    fn controlValueById(self: *const FyRawMachine, id: []const u8) ?f64 {
-        for (self.raw_controls[0..self.raw_control_count], 0..) |control, i| {
-            if (std.mem.eql(u8, control.idSlice(), id)) return normToValue(control, self.controlNorm(i));
-        }
-        return null;
     }
 
     fn writeParamF64(self: *FyRawMachine, offset: usize, value: f64) void {
-        if (offset + @sizeOf(f64) > self.spec.params_size) return;
+        if (offset + @sizeOf(f64) > self.desc.params_size) return;
         const ptr: *align(8) f64 = @ptrCast(@alignCast(&self.params_buf[offset]));
         ptr.* = value;
     }
 
     fn readParamF64(self: *const FyRawMachine, offset: usize) f64 {
-        if (offset + @sizeOf(f64) > self.spec.params_size) return 0;
+        if (offset + @sizeOf(f64) > self.desc.params_size) return 0;
         const ptr: *align(8) const f64 = @ptrCast(@alignCast(&self.params_buf[offset]));
         return ptr.*;
     }
@@ -603,7 +244,7 @@ fn validateWord(host: *FyHost, word: []const u8) !void {
     _ = try host.fy.reportDsp2RawWord(word);
 }
 
-fn normToValue(control: RawControl, norm: f32) f64 {
+fn normToValue(control: Control, norm: f32) f64 {
     const t = std.math.clamp(@as(f64, norm), 0.0, 1.0);
     return switch (control.curve) {
         .linear => control.min + (control.max - control.min) * t,
@@ -611,7 +252,7 @@ fn normToValue(control: RawControl, norm: f32) f64 {
     };
 }
 
-fn valueToNorm(control: RawControl, value: f64) f32 {
+fn valueToNorm(control: Control, value: f64) f32 {
     const v = std.math.clamp(value, control.min, control.max);
     const t = switch (control.curve) {
         .linear => (v - control.min) / (control.max - control.min),
@@ -620,171 +261,11 @@ fn valueToNorm(control: RawControl, value: f64) f32 {
     return @floatCast(std.math.clamp(t, 0.0, 1.0));
 }
 
-const Ms20Coeffs = struct {
-    g: f64,
-    damping: f64,
-};
-
-fn ms20Coeffs(cutoff_hz: f64, resonance: f64, sample_rate: f64) Ms20Coeffs {
-    const os_rate = sample_rate * 4.0;
-    const fc = std.math.clamp(cutoff_hz, 20.0, sample_rate * 0.42);
-    const g = @tan(std.math.pi * fc / os_rate);
-    const damping = @max(0.015, 1.2 / (1.0 + resonance * 8.0));
-    return .{ .g = g, .damping = damping };
-}
-
-fn parseControlFields(fields: *std.mem.SplitIterator(u8, .scalar)) !RawControl {
-    var control = RawControl{
-        .kind = .direct_f64,
-        .min = 0,
-        .max = 1,
-        .default = 0,
-    };
-
-    const module = fields.next() orelse return error.InvalidRawManifest;
-    const label = fields.next() orelse return error.InvalidRawManifest;
-    const id = fields.next() orelse return error.InvalidRawManifest;
-    const kind = fields.next() orelse return error.InvalidRawManifest;
-    const offset = fields.next() orelse return error.InvalidRawManifest;
-    const min = fields.next() orelse return error.InvalidRawManifest;
-    const max = fields.next() orelse return error.InvalidRawManifest;
-    const default = fields.next() orelse return error.InvalidRawManifest;
-    const curve = fields.next() orelse "linear";
-
-    control.module_len = try copyZ(&control.module, module);
-    control.label_len = try copyZ(&control.label, label);
-    control.id_len = try copyZ(&control.id, id);
-    control.kind = parseParamKind(kind) orelse return error.InvalidRawManifest;
-    control.offset = if (std.mem.eql(u8, offset, "-")) 0 else try std.fmt.parseInt(usize, offset, 10);
-    control.min = parseF64Or(min, 0);
-    control.max = parseF64Or(max, 1);
-    control.default = parseF64Or(default, 0);
-    control.curve = parseParamCurve(curve) orelse .linear;
-
-    if (control.kind == .switch_sel) {
-        const opts = fields.next() orelse return error.InvalidRawManifest;
-        var it = std.mem.splitScalar(u8, opts, ',');
-        var n: usize = 0;
-        while (it.next()) |pair| {
-            if (n >= MAX_OPTS) break;
-            var kv = std.mem.splitScalar(u8, pair, '=');
-            const lbl = kv.next() orelse continue;
-            const val = kv.next() orelse "0";
-            control.option_labels[n][0] = 0;
-            _ = try copyZ(&control.option_labels[n], lbl);
-            control.option_values[n] = std.fmt.parseFloat(f64, val) catch 0;
-            n += 1;
-        }
-        if (n == 0) return error.InvalidRawManifest;
-        control.option_count = n;
-    }
-    return control;
-}
-
-fn parseF64Or(s: []const u8, fallback: f64) f64 {
-    if (std.mem.eql(u8, s, "-")) return fallback;
-    return std.fmt.parseFloat(f64, s) catch fallback;
-}
-
-fn switchIndex(control: RawControl, raw: f32) usize {
+fn switchIndex(control: Control, raw: f32) usize {
     if (control.option_count == 0) return 0;
     const r = @round(@as(f64, raw));
     const hi: f64 = @floatFromInt(control.option_count - 1);
     return @intFromFloat(std.math.clamp(r, 0, hi));
-}
-
-fn parseParamKind(raw: []const u8) ?RawParamKind {
-    if (std.mem.eql(u8, raw, "direct-f64")) return .direct_f64;
-    if (std.mem.eql(u8, raw, "value")) return .value;
-    if (std.mem.eql(u8, raw, "switch")) return .switch_sel;
-    return null;
-}
-
-fn parseDeriveFields(fields: *std.mem.SplitIterator(u8, .scalar)) !RawDerive {
-    var derive = RawDerive{
-        .kind = .ms20_lpf,
-    };
-
-    const kind = fields.next() orelse return error.InvalidRawManifest;
-    const a = fields.next() orelse return error.InvalidRawManifest;
-    const b = fields.next() orelse return error.InvalidRawManifest;
-    const c_ = fields.next() orelse return error.InvalidRawManifest;
-    const out0 = fields.next() orelse return error.InvalidRawManifest;
-    const out1 = fields.next() orelse return error.InvalidRawManifest;
-    const out2 = fields.next() orelse return error.InvalidRawManifest;
-
-    derive.kind = parseDeriveKind(kind) orelse return error.InvalidRawManifest;
-    derive.a_len = try copyZ(&derive.a, a);
-    derive.b_len = try copyZ(&derive.b, b);
-    derive.c_len = try copyZ(&derive.c, c_);
-    derive.out0_offset = try std.fmt.parseInt(usize, out0, 10);
-    derive.out1_offset = try std.fmt.parseInt(usize, out1, 10);
-    derive.out2_offset = try std.fmt.parseInt(usize, out2, 10);
-    return derive;
-}
-
-fn parseDeriveKind(raw: []const u8) ?RawDeriveKind {
-    if (std.mem.eql(u8, raw, "ms20-lpf")) return .ms20_lpf;
-    return null;
-}
-
-fn parseConstF64Fields(fields: *std.mem.SplitIterator(u8, .scalar)) !RawConstF64 {
-    const offset = fields.next() orelse return error.InvalidRawManifest;
-    const value = fields.next() orelse return error.InvalidRawManifest;
-    return .{
-        .offset = try std.fmt.parseInt(usize, offset, 10),
-        .value = try std.fmt.parseFloat(f64, value),
-    };
-}
-
-fn parseStripFields(fields: *std.mem.SplitIterator(u8, .scalar)) !RawStrip {
-    // strip|MODULE|cols  — cols is the strip's knob-grid column count. Width
-    // is no longer declared here; placement comes from the row|/cell| layout
-    // (or the flat fallback gives every strip equal width).
-    var s = RawStrip{};
-    const module = fields.next() orelse return error.InvalidRawManifest;
-    const cols = fields.next() orelse "1";
-    s.module_len = try copyZ(&s.module, module);
-    s.width = 1;
-    s.cols = std.fmt.parseInt(usize, std.mem.trim(u8, cols, " "), 10) catch 1;
-    if (s.cols == 0) s.cols = 1;
-    return s;
-}
-
-fn parseParamCurve(raw: []const u8) ?RawParamCurve {
-    if (std.mem.eql(u8, raw, "linear")) return .linear;
-    if (std.mem.eql(u8, raw, "exp")) return .exp;
-    return null;
-}
-
-fn copyZ(dest: *[MAX_CONTROL_TEXT:0]u8, src: []const u8) !usize {
-    if (src.len >= MAX_CONTROL_TEXT) return error.RawManifestStringTooLong;
-    @memset(dest, 0);
-    @memcpy(dest[0..src.len], src);
-    dest[src.len] = 0;
-    return src.len;
-}
-
-fn readFilePosix(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
-    const z = try alloc.dupeZ(u8, path);
-    defer alloc.free(z);
-    const fd = open(z, O_RDONLY);
-    if (fd < 0) return error.FileOpenFailed;
-    defer _ = close(fd);
-    var st: std.c.Stat = undefined;
-    if (fstat(fd, &st) != 0) return error.StatFailed;
-    const size: usize = @intCast(st.size);
-    if (size > 64 * 1024) return error.FileTooLarge;
-    const buf = try alloc.alloc(u8, size);
-    errdefer alloc.free(buf);
-    var done: usize = 0;
-    while (done < size) {
-        const n = try std.posix.read(@intCast(fd), buf[done..]);
-        if (n == 0) break;
-        done += n;
-    }
-    if (done != size) return error.ReadFailed;
-    return buf;
 }
 
 fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []f32) void {
@@ -804,7 +285,7 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
         return;
     };
 
-    switch (self.spec.mode) {
+    switch (self.desc.mode) {
         .voice_sample => renderVoiceSample(self, ctx, l[0..frames], r[0..frames]) catch {
             self.failed = true;
             @memset(l[0..frames], 0);
@@ -824,8 +305,7 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
 }
 
 fn callPrepare(self: *FyRawMachine, sample_rate: f64) !void {
-    _ = self.spec.prepare_word orelse return;
-    const caller = if (self.prepare_caller) |*c_| c_ else return error.UnknownWord;
+    const caller = if (self.prepare_caller) |*c_| c_ else return;
     const args = [_]Fy.Dsp2RawArg{
         .{ .ptr = self.statePtr() },
         .{ .ptr = self.paramsPtr() },
@@ -889,8 +369,7 @@ fn applyNoteEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
 }
 
 fn callNoteOn(self: *FyRawMachine, hz: f64, velocity: f64) !void {
-    _ = self.spec.note_on_word orelse return;
-    const caller = if (self.note_on_caller) |*c_| c_ else return error.UnknownWord;
+    const caller = if (self.note_on_caller) |*c_| c_ else return;
     const args = [_]Fy.Dsp2RawArg{
         .{ .ptr = self.statePtr() },
         .{ .ptr = self.paramsPtr() },
@@ -901,8 +380,7 @@ fn callNoteOn(self: *FyRawMachine, hz: f64, velocity: f64) !void {
 }
 
 fn callNoteOff(self: *FyRawMachine) !void {
-    _ = self.spec.note_off_word orelse return;
-    const caller = if (self.note_off_caller) |*c_| c_ else return error.UnknownWord;
+    const caller = if (self.note_off_caller) |*c_| c_ else return;
     const args = [_]Fy.Dsp2RawArg{
         .{ .ptr = self.statePtr() },
         .{ .ptr = self.paramsPtr() },
@@ -922,7 +400,7 @@ fn renderEffectSample(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []
             .{ .ptr = self.paramsPtr() },
             .{ .f64 = xl },
         };
-        _ = try self.host.fy.callDsp2RawRepeatedWithArgsNoResult(self.spec.render_word, 1, &args_l);
+        _ = try self.host.fy.callDsp2RawRepeatedWithArgsNoResult(self.desc.renderWord(), 1, &args_l);
         l[i] = @floatCast(std.math.clamp(out_sample, -1.0, 1.0));
 
         const xr: f64 = if (in_r) |p| p[i] else xl;
@@ -932,7 +410,7 @@ fn renderEffectSample(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []
             .{ .ptr = self.paramsPtr() },
             .{ .f64 = xr },
         };
-        _ = try self.host.fy.callDsp2RawRepeatedWithArgsNoResult(self.spec.render_word, 1, &args_r);
+        _ = try self.host.fy.callDsp2RawRepeatedWithArgsNoResult(self.desc.renderWord(), 1, &args_r);
         r[i] = @floatCast(std.math.clamp(out_sample, -1.0, 1.0));
     }
 }
@@ -976,8 +454,8 @@ fn inputChannels(ctx: *const machine.MachineCtx) struct { ?[*]const f32, ?[*]con
 
 fn resetImpl(state: *anyopaque) void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
-    @memset(self.state_buf[0..self.spec.state_size], 0);
-    @memset(self.params_buf[0..self.spec.params_size], 0);
+    @memset(self.state_buf[0..self.desc.state_size], 0);
+    @memset(self.params_buf[0..self.desc.params_size], 0);
     self.failed = false;
 }
 
@@ -989,7 +467,7 @@ fn deinitImpl(state: *anyopaque, alloc: std.mem.Allocator) void {
 }
 
 // Generic machine panel body: beveled module strips laid out from the
-// manifest controls. The bay draws the title bar (host_titlebar = true), so
+// descriptor controls. The bay draws the title bar (host_titlebar = true), so
 // `rect` here is the body below it. Control-less fixtures show an info readout.
 fn drawPanelImpl(state: *anyopaque, rect: c.rl.Rectangle, mouse: widgets.Mouse) void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
@@ -997,7 +475,7 @@ fn drawPanelImpl(state: *anyopaque, rect: c.rl.Rectangle, mouse: widgets.Mouse) 
 
     c.rl.DrawRectangleRec(rect, theme.pane_bg);
 
-    if (self.raw_control_count == 0) {
+    if (self.desc.control_count == 0) {
         drawFixtureInfo(self, rect);
         return;
     }
@@ -1005,18 +483,18 @@ fn drawPanelImpl(state: *anyopaque, rect: c.rl.Rectangle, mouse: widgets.Mouse) 
 }
 
 fn drawFixtureInfo(self: *FyRawMachine, body: c.rl.Rectangle) void {
-    const mode_text: [*:0]const u8 = switch (self.spec.mode) {
+    const mode_text: [*:0]const u8 = switch (self.desc.mode) {
         .voice_sample => "raw voice/sample",
         .effect_sample => "raw effect/sample",
         .effect_block => "raw effect/block",
     };
     widgets.drawLabelF(mode_text, body.x + 5, body.y + 6, theme.fsTiny(), theme.text_dim);
 
-    const detail: [*:0]const u8 = if (std.mem.eql(u8, self.spec.name, "raw-osc"))
+    const detail: [*:0]const u8 = if (std.mem.eql(u8, self.desc.nameSlice(), "raw-osc"))
         "saw osc  note in"
-    else if (std.mem.eql(u8, self.spec.name, "raw-sat"))
+    else if (std.mem.eql(u8, self.desc.nameSlice(), "raw-sat"))
         "rational tanh  drive 1.35"
-    else if (std.mem.eql(u8, self.spec.name, "raw-silence"))
+    else if (std.mem.eql(u8, self.desc.nameSlice(), "raw-silence"))
         "zero output"
     else
         "dsp2 fixture";
@@ -1033,18 +511,18 @@ const StripView = struct {
     cols: usize,
 };
 
-// Strips come from manifest `strip|` lines if declared, else are derived as
-// one column per distinct module in control order.
-fn collectStrips(self: *FyRawMachine, out: *[MAX_RAW_STRIPS]StripView) usize {
-    if (self.raw_strip_count > 0) {
-        for (self.raw_strips[0..self.raw_strip_count], 0..) |*s, i| {
-            out[i] = .{ .title = s.moduleZ(), .module = s.moduleSlice(), .width = s.width, .cols = s.cols };
+// Strips come from descriptor `strip` declarations if present, else are
+// derived as one column per distinct module in control order.
+fn collectStrips(self: *FyRawMachine, out: *[MAX_STRIPS]StripView) usize {
+    if (self.desc.strip_count > 0) {
+        for (self.desc.strips[0..self.desc.strip_count], 0..) |*s, i| {
+            out[i] = .{ .title = s.moduleZ(), .module = s.moduleSlice(), .width = 1, .cols = s.cols };
         }
-        return self.raw_strip_count;
+        return self.desc.strip_count;
     }
     var n: usize = 0;
-    for (self.raw_controls[0..self.raw_control_count]) |*ctl| {
-        const m = ctl.module[0..ctl.module_len];
+    for (self.desc.controls[0..self.desc.control_count]) |*ctl| {
+        const m = ctl.moduleSlice();
         var found = false;
         for (out[0..n]) |ex| {
             if (std.mem.eql(u8, ex.module, m)) {
@@ -1052,36 +530,22 @@ fn collectStrips(self: *FyRawMachine, out: *[MAX_RAW_STRIPS]StripView) usize {
                 break;
             }
         }
-        if (!found and n < MAX_RAW_STRIPS) {
-            out[n] = .{ .title = ctl.moduleZ(), .module = m, .width = 60, .cols = 1 };
+        if (!found and n < MAX_STRIPS) {
+            out[n] = .{ .title = ctl.moduleZ(), .module = m, .width = 1, .cols = 1 };
             n += 1;
         }
     }
     return n;
 }
 
-fn stripIndexByModule(self: *const FyRawMachine, name: []const u8) ?usize {
-    for (self.raw_strips[0..self.raw_strip_count], 0..) |*s, i| {
-        if (std.mem.eql(u8, s.moduleSlice(), name)) return i;
-    }
-    return null;
-}
-
 fn stripViewAt(self: *const FyRawMachine, idx: usize) StripView {
-    const s = &self.raw_strips[idx];
+    const s = &self.desc.strips[idx];
     return .{ .title = s.moduleZ(), .module = s.moduleSlice(), .width = 1, .cols = s.cols };
 }
 
-fn displayIndexByName(self: *const FyRawMachine, name: []const u8) ?usize {
-    for (self.raw_displays[0..self.raw_display_count], 0..) |*d, i| {
-        if (std.mem.eql(u8, d.name[0..d.name_len], name)) return i;
-    }
-    return null;
-}
-
 fn controlNormByLabel(self: *const FyRawMachine, module: []const u8, label: []const u8) ?f32 {
-    for (self.raw_controls[0..self.raw_control_count], 0..) |*ctl, i| {
-        if (std.mem.eql(u8, ctl.module[0..ctl.module_len], module) and
+    for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
+        if (std.mem.eql(u8, ctl.moduleSlice(), module) and
             std.mem.eql(u8, ctl.label[0..ctl.label_len], label))
             return self.controlNorm(i);
     }
@@ -1095,7 +559,7 @@ fn capShape(t: f32) f32 {
     return (1.0 - @exp(-k * t)) / (1.0 - @exp(-k));
 }
 
-fn drawDisplay(self: *FyRawMachine, rect: c.rl.Rectangle, disp: *const RawDisplay) void {
+fn drawDisplay(self: *FyRawMachine, rect: c.rl.Rectangle, disp: *const Display) void {
     // One shared sunken-black field; comma-separated sources are drawn as small
     // labeled graphs side-by-side inside it (compact, no per-graph header).
     const field = widgets.displayField(rect);
@@ -1176,11 +640,11 @@ fn drawCapSeg(xa: f32, la: f32, xb: f32, lb: f32, base: f32, h: f32, col: c.rl.C
 // element in each axis takes the remainder so the block fills exactly.
 fn drawLayoutTree(self: *FyRawMachine, body: c.rl.Rectangle, mouse: widgets.Mouse) void {
     var total_rw: f32 = 0;
-    for (self.raw_rows[0..self.raw_row_count]) |*r| total_rw += r.weight;
+    for (self.desc.rows[0..self.desc.row_count]) |*r| total_rw += r.weight;
     if (total_rw <= 0) return;
     var y = body.y;
-    for (self.raw_rows[0..self.raw_row_count], 0..) |*r, ri| {
-        const rh = if (ri + 1 == self.raw_row_count) (body.y + body.height - y) else body.height * r.weight / total_rw;
+    for (self.desc.rows[0..self.desc.row_count], 0..) |*r, ri| {
+        const rh = if (ri + 1 == self.desc.row_count) (body.y + body.height - y) else body.height * r.weight / total_rw;
         var total_cw: f32 = 0;
         for (r.cells[0..r.cell_count]) |*cc| total_cw += cc.weight;
         if (total_cw > 0) {
@@ -1195,7 +659,7 @@ fn drawLayoutTree(self: *FyRawMachine, body: c.rl.Rectangle, mouse: widgets.Mous
                         const sh = if (ii + 1 == cc.item_count) (y + rh - sy) else rh * it.weight / total_sw;
                         const item_rect = widgets.rect(x, sy, cw, sh);
                         if (it.is_display) {
-                            drawDisplay(self, item_rect, &self.raw_displays[it.index]);
+                            drawDisplay(self, item_rect, &self.desc.displays[it.index]);
                         } else {
                             drawStrip(self, item_rect, stripViewAt(self, it.index), mouse);
                         }
@@ -1210,11 +674,11 @@ fn drawLayoutTree(self: *FyRawMachine, body: c.rl.Rectangle, mouse: widgets.Mous
 }
 
 fn drawControlStrips(self: *FyRawMachine, body: c.rl.Rectangle, mouse: widgets.Mouse) void {
-    if (self.raw_row_count > 0) {
+    if (self.desc.row_count > 0) {
         drawLayoutTree(self, body, mouse);
         return;
     }
-    var strips: [MAX_RAW_STRIPS]StripView = undefined;
+    var strips: [MAX_STRIPS]StripView = undefined;
     const n = collectStrips(self, &strips);
     if (n == 0) return;
 
@@ -1238,8 +702,8 @@ fn drawStrip(self: *FyRawMachine, rect_: c.rl.Rectangle, view: StripView, mouse:
     const inner = widgets.strip(rect_, view.title);
 
     var count: usize = 0;
-    for (self.raw_controls[0..self.raw_control_count]) |*ctl| {
-        if (std.mem.eql(u8, ctl.module[0..ctl.module_len], view.module)) count += 1;
+    for (self.desc.controls[0..self.desc.control_count]) |*ctl| {
+        if (std.mem.eql(u8, ctl.moduleSlice(), view.module)) count += 1;
     }
     if (count == 0) return;
 
@@ -1248,8 +712,8 @@ fn drawStrip(self: *FyRawMachine, rect_: c.rl.Rectangle, view: StripView, mouse:
     const cell_w = inner.width / @as(f32, @floatFromInt(cols));
     const cell_h = @max(theme.size(44), inner.height / @as(f32, @floatFromInt(rows)));
     var local_i: usize = 0;
-    for (self.raw_controls[0..self.raw_control_count], 0..) |*ctl, gi| {
-        if (!std.mem.eql(u8, ctl.module[0..ctl.module_len], view.module)) continue;
+    for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, gi| {
+        if (!std.mem.eql(u8, ctl.moduleSlice(), view.module)) continue;
         const col = local_i % cols;
         const row = local_i / cols;
         const kr = widgets.rect(
@@ -1289,8 +753,7 @@ fn testRender(mach: machine.Machine, ctx: *const machine.MachineCtx, l: []f32, r
 }
 
 test "raw DSP2 silence fixture renders zeros through generic adapter" {
-    const spec = fixtureSpec("raw-silence").?;
-    const inst = try FyRawMachine.create(testing.allocator, spec);
+    const inst = try FyRawMachine.create(testing.allocator, "machines/raw_fixtures/silence.fy");
     const mach = inst.machineInterface();
     defer mach.deinit.?(mach.state, testing.allocator);
 
@@ -1308,8 +771,7 @@ test "raw DSP2 silence fixture renders zeros through generic adapter" {
 }
 
 test "raw DSP2 oscillator fixture responds to note events" {
-    const spec = fixtureSpec("raw-osc").?;
-    const inst = try FyRawMachine.create(testing.allocator, spec);
+    const inst = try FyRawMachine.create(testing.allocator, "machines/raw_fixtures/oscillator.fy");
     const mach = inst.machineInterface();
     defer mach.deinit.?(mach.state, testing.allocator);
 
@@ -1340,8 +802,7 @@ test "raw DSP2 oscillator fixture responds to note events" {
 }
 
 test "raw DSP2 saturator fixture processes audio input through generic adapter" {
-    const spec = fixtureSpec("raw-sat").?;
-    const inst = try FyRawMachine.create(testing.allocator, spec);
+    const inst = try FyRawMachine.create(testing.allocator, "machines/raw_fixtures/saturator.fy");
     const mach = inst.machineInterface();
     defer mach.deinit.?(mach.state, testing.allocator);
 
@@ -1369,8 +830,7 @@ test "raw DSP2 saturator fixture processes audio input through generic adapter" 
 }
 
 test "raw DSP2 MS-20 fixture renders a finite note through generic adapter" {
-    const spec = fixtureSpec("raw-ms20").?;
-    const inst = try FyRawMachine.create(testing.allocator, spec);
+    const inst = try FyRawMachine.create(testing.allocator, "machines/ms20/ms20.fy");
     const mach = inst.machineInterface();
     defer mach.deinit.?(mach.state, testing.allocator);
 
@@ -1407,8 +867,7 @@ test "raw DSP2 MS-20 fills the svf profile region in fy (no Zig derive)" {
     const svf_fb_dc: usize = 240;
     const svf_out_dc: usize = 248;
 
-    const spec = fixtureSpec("raw-ms20").?;
-    const inst = try FyRawMachine.create(testing.allocator, spec);
+    const inst = try FyRawMachine.create(testing.allocator, "machines/ms20/ms20.fy");
     defer inst.machineInterface().deinit.?(inst, testing.allocator);
 
     inst.syncRawParams(48_000);
@@ -1417,7 +876,7 @@ test "raw DSP2 MS-20 fills the svf profile region in fy (no Zig derive)" {
     try testing.expect(inst.readParamF64(cutoff_off) > 60.0);
     try testing.expect(inst.readParamF64(env_peak_off) > 1000.0);
 
-    // Profile region computed in fy by k-svf-coeffs-profile / -dc.
+    // Profile region computed in fy by ms20-block-prepare (k-svf-coeffs-*).
     try testing.expectApproxEqAbs(@as(f64, 1.90), inst.readParamF64(svf_drive), 1e-6);
     try testing.expectApproxEqAbs(@as(f64, 5.4), inst.readParamF64(svf_fb_gain), 1e-6);
     try testing.expect(inst.readParamF64(svf_resonance) > 0.0);

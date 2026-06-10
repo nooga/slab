@@ -16,3 +16,13 @@ dsp2: raw-silence-render
   f!64
   drop2 drop
 ;
+
+include "../lib/manifest.fy"
+
+: manifest
+  "raw-silence" voice-sample machine*
+  "raw-silence-render" render!
+  RawSilenceState.size  state-size!
+  RawSilenceParams.size params-size!
+  machine-desc
+;

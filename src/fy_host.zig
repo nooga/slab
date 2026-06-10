@@ -746,6 +746,19 @@ test "Stage 0: integer arithmetic round-trips" {
     try std.testing.expectEqual(Fy.makeInt(10), got);
 }
 
+test "Stage 0: struct accessors and introspection work through the host" {
+    var host = FyHost.init(std.testing.allocator);
+    defer host.deinit();
+    try host.compile("struct: P ptr a ptr b ;");
+    // P.new pops fields in reverse; P.a@ is (ptr -- ptr value)
+    const a = try host.callWord("7 9 P.new P.a@ nip");
+    try std.testing.expectEqual(Fy.makeInt(7), a);
+    const sz = try host.callWord("P.size");
+    try std.testing.expectEqual(Fy.makeInt(16), sz);
+    const off = try host.callWord("P.b");
+    try std.testing.expectEqual(Fy.makeInt(8), off);
+}
+
 test "Stage 1: slab:sr returns properly tagged float" {
     var host = FyHost.init(std.testing.allocator);
     defer host.deinit();

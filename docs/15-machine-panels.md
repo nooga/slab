@@ -64,10 +64,18 @@ where proportions matter (e.g. a tall ENV row vs. a short MOD row).
 The panel is a pure function of (control declaration, body rect). It owns
 no scroll state — see Client rect.
 
-## Declaration (manifest extension)
+## Declaration (machine descriptor)
 
-The raw manifest already carries control grouping. We extend it minimally;
-`direct-f64` knob lines are unchanged.
+> **Status:** the pipe-delimited `.manifest` text file is gone. A machine's
+> `manifest` word (vocabulary in `machines/lib/manifest.fy`, walker in
+> `src/machine_desc.zig`) declares the same data in fy, with param offsets
+> from ustruct introspection (`MyParams.field`). The pipe syntax below is
+> kept as compact documentation of the *data model*; the fy words map 1:1
+> (`strip`, `knob`, `switch`/`opt`, `row`/`cell`/`item`, `adsr-display`,
+> `const-f64`). See `machines/ms20/ms20.fy` for the live example.
+
+The descriptor carries control grouping; `direct-f64` knob declarations are
+plain `knob` words.
 
 **Strip declaration** — names a module and its knob-grid column count:
 
@@ -119,9 +127,8 @@ multiplier). Rendered as a `switchV` cell.
 Knobs stay as today (`direct-f64`), now drawn with a value readout by the
 engine. Optional `unit`/format can be added later for the readout text.
 
-> Parity note: when machines move to a fy `machine:` descriptor (docs/02),
-> the descriptor emits this same strip/control spec — the renderer is the
-> same. The manifest is the interim source.
+> Parity note: this landed — machines declare the strip/control spec in
+> their fy `manifest` word; the renderer is unchanged.
 
 ## The renderer
 

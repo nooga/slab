@@ -52,3 +52,14 @@ dsp2: raw-sat-render
   drop
   drop2 drop2
 ;
+
+include "../lib/manifest.fy"
+
+: manifest
+  "raw-sat" effect-block machine*
+  "raw-sat-render"  render!
+  "raw-sat-prepare" prepare!
+  RawSatState.size  state-size!
+  RawSatParams.size params-size!
+  machine-desc
+;

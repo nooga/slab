@@ -70,3 +70,16 @@ dsp2: raw-osc-render
   drop
   drop2 drop
 ;
+
+include "../lib/manifest.fy"
+
+: manifest
+  "raw-osc" voice-sample machine*
+  "raw-osc-render"   render!
+  "raw-osc-prepare"  prepare!
+  "raw-osc-note-on"  note-on!
+  "raw-osc-note-off" note-off!
+  RawOscState.size  state-size!
+  RawOscParams.size params-size!
+  machine-desc
+;
