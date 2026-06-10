@@ -23,12 +23,25 @@ const theme = @import("theme.zig");
 const widgets = @import("widgets.zig");
 const snap_mod = @import("snap.zig");
 const track_mod = @import("../track.zig");
+const machine_mod = @import("../machine.zig");
 const clip_mod = @import("../clip.zig");
 const Clip = clip_mod.Clip;
 const Note = clip_mod.Note;
 const ClipRef = clip_mod.ClipRef;
 
 // ── Grid constants ───────────────────────────────────────────────────
+
+// Active machine's note map (drum machines): mapped rows render as
+// labelled lanes, the rest dim out. Set per frame from the resolved
+// track's machine; empty = chromatic roll.
+var note_map: []const machine_mod.NoteLabel = &.{};
+
+fn mapLabel(pitch: u8) ?[*:0]const u8 {
+    for (note_map) |*nl| {
+        if (nl.pitch == pitch) return nl.labelZ();
+    }
+    return null;
+}
 
 const KEY_LO: u8 = 12; // C0 (bottom row)
 const KEY_HI: u8 = 119; // B8 (top row; inclusive)
@@ -316,6 +329,7 @@ pub fn draw(
     }
     const resolved = clip_opt.?;
 
+    note_map = resolved.note_labels;
     maybeResetOnClipChange(selected, resolved.clip);
     const pres = drawPianoRoll(body, resolved.clip, resolved.color, alloc, edit_snap, can_paste_notes, m);
 
@@ -335,6 +349,7 @@ pub fn draw(
 const Resolved = struct {
     clip: *Clip,
     color: c.rl.Color,
+    note_labels: []const machine_mod.NoteLabel = &.{},
 };
 
 fn resolveClip(tracks: []track_mod.Track, selected: ?ClipRef) ?Resolved {
@@ -342,7 +357,11 @@ fn resolveClip(tracks: []track_mod.Track, selected: ?ClipRef) ?Resolved {
     if (s.track >= tracks.len) return null;
     const t = &tracks[s.track];
     if (s.clip >= t.clips.items.len) return null;
-    return .{ .clip = &t.clips.items[s.clip], .color = t.color };
+    return .{
+        .clip = &t.clips.items[s.clip],
+        .color = t.color,
+        .note_labels = t.machine.note_labels,
+    };
 }
 
 fn maybeResetOnClipChange(selected: ?ClipRef, clip: *Clip) void {
@@ -514,6 +533,24 @@ fn initScrollIfNeeded(grid: c.rl.Rectangle, clip: Clip) void {
         return;
     }
 
+    if (note_map.len > 0) {
+        // Empty clip on a drum machine: zoom to the declared lanes.
+        var lo: u8 = note_map[0].pitch;
+        var hi: u8 = note_map[0].pitch;
+        for (note_map) |*nl| {
+            lo = @min(lo, nl.pitch);
+            hi = @max(hi, nl.pitch);
+        }
+        const span = @as(f32, @floatFromInt(@as(u32, hi) - @as(u32, lo) + 5));
+        row_h = std.math.clamp(grid.height / span, ROW_H_MIN, ROW_H_MAX);
+        const center_pitch = (@as(f32, @floatFromInt(lo)) + @as(f32, @floatFromInt(hi))) / 2.0;
+        const center_row = @as(f32, @floatFromInt(KEY_HI)) - center_pitch;
+        scroll_y = center_row * row_h - grid.height / 2.0;
+        initialized_scroll = true;
+        clampScroll(grid, clip);
+        return;
+    }
+
     const total = rows * row_h;
     if (grid.height < total) {
         // Start centered around the middle of the pitch range (≈ C4).
@@ -633,8 +670,10 @@ fn drawKeyboard(r: c.rl.Rectangle) void {
             if (pitch == KEY_LO) break;
             continue;
         }
-        const is_black = isBlackKey(pitch);
-        const fill = if (is_black) theme.slab_lo else theme.slab_fill;
+        const lane_label = if (note_map.len > 0) mapLabel(pitch) else null;
+        const fill = if (note_map.len > 0)
+            (if (lane_label != null) theme.slab_fill else theme.slab_lo)
+        else if (isBlackKey(pitch)) theme.slab_lo else theme.slab_fill;
         c.rl.DrawRectangle(
             @intFromFloat(r.x),
             @intFromFloat(y),
@@ -649,7 +688,9 @@ fn drawKeyboard(r: c.rl.Rectangle) void {
             1,
             theme.grid_bar,
         );
-        if (pitch % 12 == 0) {
+        if (lane_label) |label| {
+            widgets.drawLabelF(label, r.x + 3, y + (row_h - theme.fsTiny()) / 2.0, theme.fsTiny(), theme.text_fg);
+        } else if (note_map.len == 0 and pitch % 12 == 0) {
             var buf: [8]u8 = undefined;
             const octave = @as(i32, @intCast(pitch / 12)) - 1;
             const s = std.fmt.bufPrintZ(&buf, "C{d}", .{octave}) catch "C";
@@ -667,7 +708,8 @@ fn drawGrid(r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
     while (true) : (pitch -%= 1) {
         const y = pitchTopY(r, pitch);
         if (y + row_h >= r.y and y <= r.y + r.height) {
-            if (!isBlackKey(pitch)) {
+            const lit = if (note_map.len > 0) mapLabel(pitch) != null else !isBlackKey(pitch);
+            if (lit) {
                 c.rl.DrawRectangle(
                     @intFromFloat(r.x),
                     @intFromFloat(y),
