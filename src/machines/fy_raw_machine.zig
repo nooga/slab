@@ -250,6 +250,7 @@ fn normToValue(control: Control, norm: f32) f64 {
     return switch (control.curve) {
         .linear => control.min + (control.max - control.min) * t,
         .exp => control.min * @exp(@log(control.max / control.min) * t),
+        .pow => control.min + (control.max - control.min) * t * t,
     };
 }
 
@@ -258,6 +259,7 @@ fn valueToNorm(control: Control, value: f64) f32 {
     const t = switch (control.curve) {
         .linear => (v - control.min) / (control.max - control.min),
         .exp => @log(v / control.min) / @log(control.max / control.min),
+        .pow => @sqrt((v - control.min) / (control.max - control.min)),
     };
     return @floatCast(std.math.clamp(t, 0.0, 1.0));
 }
@@ -736,13 +738,34 @@ fn drawStrip(self: *FyRawMachine, rect_: c.rl.Rectangle, view: StripView, mouse:
             },
             else => {
                 var value = self.controlNorm(gi);
-                if (widgets.knob(kr, ctl.labelZ(), &value, mouse)) {
+                var vbuf: [16:0]u8 = undefined;
+                const display = formatControlValue(&vbuf, normToValue(ctl.*, value));
+                if (widgets.knobEx(kr, ctl.labelZ(), &value, mouse, display)) {
                     self.setControlNorm(gi, value);
                 }
             },
         }
         local_i += 1;
     }
+}
+
+// Compact real-value readout for knobs: 3 significant-ish digits, k-suffix
+// above 1000 (so 1.2k, 182, 50.3, 0.055 all fit the tiny font).
+fn formatControlValue(buf: *[16:0]u8, v: f64) [*:0]const u8 {
+    const av = @abs(v);
+    const s = if (av >= 10_000.0)
+        std.fmt.bufPrintZ(buf, "{d:.1}k", .{v / 1000.0})
+    else if (av >= 1000.0)
+        std.fmt.bufPrintZ(buf, "{d:.2}k", .{v / 1000.0})
+    else if (av >= 100.0)
+        std.fmt.bufPrintZ(buf, "{d:.0}", .{v})
+    else if (av >= 10.0)
+        std.fmt.bufPrintZ(buf, "{d:.1}", .{v})
+    else if (av >= 1.0)
+        std.fmt.bufPrintZ(buf, "{d:.2}", .{v})
+    else
+        std.fmt.bufPrintZ(buf, "{d:.3}", .{v});
+    return (s catch return "?").ptr;
 }
 
 fn midiToHz(pitch: f32) f64 {

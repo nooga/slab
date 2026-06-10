@@ -329,6 +329,7 @@ var last_click_y: f32 = 0;
 var active_drag_key: u64 = 0;
 var drag_start_val: f32 = 0;
 var drag_start_y: f32 = 0;
+var knob_drag_last_y: f32 = 0;
 
 pub fn hasActiveDrag() bool {
     return active_drag_key != 0;
@@ -787,6 +788,13 @@ const KNOB_DEG_START: f32 = 135.0;
 const KNOB_DEG_RANGE: f32 = 270.0;
 
 pub fn knob(r: c.rl.Rectangle, label: [*:0]const u8, val: *f32, m: Mouse) bool {
+    return knobEx(r, label, val, m, null);
+}
+
+/// Knob with an optional real-value readout (Hz, seconds, …) supplied by
+/// the caller; null falls back to the 0..1 norm. Shift while dragging
+/// switches to fine adjustment (10x slower).
+pub fn knobEx(r: c.rl.Rectangle, label: [*:0]const u8, val: *f32, m: Mouse, display: ?[*:0]const u8) bool {
     const k = rectKey(r, 0x4b4e4f4200000001);
     var changed = false;
     const dragging = active_drag_key == k;
@@ -795,8 +803,13 @@ pub fn knob(r: c.rl.Rectangle, label: [*:0]const u8, val: *f32, m: Mouse) bool {
         if (!m.left_down) {
             active_drag_key = 0;
         } else {
-            const dy = drag_start_y - m.y;
-            const nv = std.math.clamp(drag_start_val + dy / 150.0, 0.0, 1.0);
+            // Per-frame delta (not drag-start anchored) so toggling Shift
+            // mid-drag rescales without a value jump.
+            const fine = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
+            const sens: f32 = if (fine) 1500.0 else 150.0;
+            const dy = knob_drag_last_y - m.y;
+            knob_drag_last_y = m.y;
+            const nv = std.math.clamp(val.* + dy / sens, 0.0, 1.0);
             if (nv != val.*) {
                 val.* = nv;
                 changed = true;
@@ -806,6 +819,7 @@ pub fn knob(r: c.rl.Rectangle, label: [*:0]const u8, val: *f32, m: Mouse) bool {
         active_drag_key = k;
         drag_start_val = val.*;
         drag_start_y = m.y;
+        knob_drag_last_y = m.y;
     }
 
     const hot = dragging or (active_drag_key == 0 and contains(r, m.x, m.y));
@@ -859,10 +873,13 @@ pub fn knob(r: c.rl.Rectangle, label: [*:0]const u8, val: *f32, m: Mouse) bool {
     // ── Value — flush below the circle ───────────────────────────
     const value_y = cy + radius + 2.0;
     var vbuf: [12:0]u8 = undefined;
-    const vs = std.fmt.bufPrintZ(&vbuf, "{d:.2}", .{t}) catch "?";
-    const vw = measureTextF(vs.ptr, label_size);
+    const vs: [*:0]const u8 = display orelse blk: {
+        const s = std.fmt.bufPrintZ(&vbuf, "{d:.2}", .{t}) catch "?";
+        break :blk s.ptr;
+    };
+    const vw = measureTextF(vs, label_size);
     const val_col = if (dragging) theme.accent_hi else theme.text_mute;
-    drawLabelF(vs.ptr, cx - vw / 2.0, value_y, label_size, val_col);
+    drawLabelF(vs, cx - vw / 2.0, value_y, label_size, val_col);
 
     return changed;
 }

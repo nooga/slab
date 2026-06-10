@@ -41,9 +41,9 @@ dsp2: ms20-block-prepare
   "VCO2" "DET"   "detune"      Ms20VoiceParams.detune      0.995 1.018 1.0058 curve-lin knob
   "VCO2" "PW"    "pulse-width" Ms20VoiceParams.pulse-width 0.05 0.95 0.44 curve-lin knob
 
-  "MIX" "V1"    "saw-level"   Ms20VoiceParams.saw-level   0.0 1.0 0.62 curve-lin knob
-  "MIX" "V2"    "pulse-level" Ms20VoiceParams.pulse-level 0.0 1.0 0.38 curve-lin knob
-  "MIX" "NOISE" "noise-level" Ms20VoiceParams.noise-level 0.0 1.0 0.0  curve-lin knob
+  "MIX" "V1"    "saw-level"   Ms20VoiceParams.saw-level   0.0 1.0 0.62 curve-pow knob
+  "MIX" "V2"    "pulse-level" Ms20VoiceParams.pulse-level 0.0 1.0 0.38 curve-pow knob
+  "MIX" "NOISE" "noise-level" Ms20VoiceParams.noise-level 0.0 1.0 0.0  curve-pow knob
 
   "HPF" "CUT"  "hpf-cutoff"    Ms20VoiceParams.hpf-cutoff    20.0 2000.0 20.0 curve-exp knob
   "HPF" "PEAK" "hpf-resonance" Ms20VoiceParams.hpf-resonance 0.0 2.0 0.0 curve-lin knob
@@ -53,7 +53,7 @@ dsp2: ms20-block-prepare
   "LPF" "DRV"  "drive"     Ms20VoiceParams.drive     0.4 2.2 1.25 curve-lin knob
   "LPF" "ENV"  "env-peak"  Ms20VoiceParams.env-peak  250.0 8000.0 5000.0 curve-exp knob
 
-  "VCA" "LVL" "level" Ms20VoiceParams.level 0.0 1.0 0.72 curve-lin knob
+  "VCA" "LVL" "level" Ms20VoiceParams.level 0.0 1.0 0.72 curve-pow knob
 
   "AMP ENV" "ATK" "amp-attack"  Ms20VoiceParams.amp-attack  0.001 0.4 0.0055 curve-exp knob
   "AMP ENV" "DEC" "amp-decay"   Ms20VoiceParams.amp-decay   0.01 1.2 0.12 curve-exp knob
@@ -68,10 +68,10 @@ dsp2: ms20-block-prepare
   "MG" "FREQ" "mg-freq" Ms20VoiceParams.mg-freq 0.05 30.0 3.0 curve-exp knob
   "MG" "WAVE" "mg-wave" Ms20VoiceParams.mg-wave 0.0 1.0 0.5 curve-lin knob
 
-  "MOD" "MG>PIT" "mg-pitch"  Ms20VoiceParams.mg-pitch  0.0 0.12 0.0 curve-lin knob
-  "MOD" "MG>PW"  "mg-pw"     Ms20VoiceParams.mg-pw     0.0 0.45 0.0 curve-lin knob
-  "MOD" "MG>CUT" "mg-cutoff" Ms20VoiceParams.mg-cutoff 0.0 3000.0 0.0 curve-lin knob
-  "MOD" "EG>PIT" "eg-pitch"  Ms20VoiceParams.eg-pitch  0.0 1.0 0.0 curve-lin knob
+  "MOD" "MG>PIT" "mg-pitch"  Ms20VoiceParams.mg-pitch  0.0 0.12 0.0 curve-pow knob
+  "MOD" "MG>PW"  "mg-pw"     Ms20VoiceParams.mg-pw     0.0 0.45 0.0 curve-pow knob
+  "MOD" "MG>CUT" "mg-cutoff" Ms20VoiceParams.mg-cutoff 0.0 3000.0 0.0 curve-pow knob
+  "MOD" "EG>PIT" "eg-pitch"  Ms20VoiceParams.eg-pitch  0.0 1.0 0.0 curve-pow knob
 
   ( module knob-cols — module strip + its internal knob-grid columns )
   "VCO1" 1 strip

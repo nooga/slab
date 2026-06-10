@@ -28,14 +28,15 @@ dsp2: drum2-note-on
   note-pitch
   36 "KICK" note-label
 
-  ( module label id offset min max default curve )
-  "KICK" "TUNE"  "kick-tune"   KickParams.tune-hz      30.0 120.0 50.0 curve-exp knob
-  "KICK" "SWEEP" "kick-sweep"  KickParams.sweep-amount 0.0 12.0 7.0 curve-lin knob
-  "KICK" "BEND"  "kick-bend"   KickParams.sweep-time   0.01 0.3 0.055 curve-exp knob
-  "KICK" "DEC"   "kick-decay"  KickParams.decay-s      0.05 2.0 0.42 curve-exp knob
-  "KICK" "CLICK" "kick-click"  KickParams.click-level  0.0 1.0 0.35 curve-lin knob
-  "KICK" "DRIVE" "kick-drive"  KickParams.drive        0.5 6.0 1.8 curve-lin knob
-  "KICK" "LVL"   "kick-level"  KickParams.level        0.0 1.0 0.9 curve-lin knob
+  ( module label id offset min max default curve — frequencies and times
+    are log [curve-exp], levels and sends squared audio taper [curve-pow] )
+  "KICK" "TUNE"  "kick-tune"   KickParams.tune-hz      20.0 200.0 50.0 curve-exp knob
+  "KICK" "SWEEP" "kick-sweep"  KickParams.sweep-amount 0.0 16.0 7.0 curve-pow knob
+  "KICK" "BEND"  "kick-bend"   KickParams.sweep-time   0.005 0.4 0.055 curve-exp knob
+  "KICK" "DEC"   "kick-decay"  KickParams.decay-s      0.05 2.5 0.42 curve-exp knob
+  "KICK" "CLICK" "kick-click"  KickParams.click-level  0.0 1.0 0.35 curve-pow knob
+  "KICK" "DRIVE" "kick-drive"  KickParams.drive        0.5 6.0 1.8 curve-exp knob
+  "KICK" "LVL"   "kick-level"  KickParams.level        0.0 1.0 0.9 curve-pow knob
 
   "KICK" 1 strip
   machine-desc

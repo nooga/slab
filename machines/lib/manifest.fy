@@ -87,7 +87,8 @@ struct: NoteLabelDesc ptr next  ptr pitch  ptr label ;
 : effect-sample 1 ;
 : effect-block 2 ;
 : curve-lin 0 ;
-: curve-exp 1 ;
+: curve-exp 1 ;  ( log taper - frequencies, times; min must be > 0 )
+: curve-pow 2 ;  ( squared audio taper - levels, sends, 0-based ranges )
 
 ( --- machine header ------------------------------------------------ )
 : machine*  ( name-str mode -- )

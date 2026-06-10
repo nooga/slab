@@ -36,7 +36,8 @@ pub const Mode = enum {
 
 pub const ParamCurve = enum {
     linear,
-    exp,
+    exp, // log taper: frequencies, times (min > 0)
+    pow, // squared audio taper: levels, sends, 0-based ranges
 };
 
 pub const ParamKind = enum {
@@ -339,6 +340,7 @@ pub fn read(host: *FyHost) !Desc {
         out.curve = switch (asInt(ctl.curve)) {
             0 => .linear,
             1 => .exp,
+            2 => .pow,
             else => return error.InvalidMachineDesc,
         };
         var opt_it = rawPtr(OptionRaw, ctl.options);
