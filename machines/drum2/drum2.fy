@@ -20,6 +20,15 @@ include "../../kernels/05-drums/clap.fy"
 include "../../kernels/05-drums/hat.fy"
 include "../lib/manifest.fy"
 
+( master section - no per-sample state, just three params at the tail
+  of the params block: accent shapes velocity at note-on, drive/level
+  shape the summed kit in the final render stage. )
+ustruct: Drum2Master
+  f64 accent        ( 0 = every hit full force, 1 = full velocity range )
+  f64 drive         ( summed-kit gain into the rational-tanh glue )
+  f64 level
+;
+
 ( state params sample-rate -- : fill every slot's derived coefficients. )
 dsp2: drum2-prepare
   | state params sr |
@@ -45,30 +54,36 @@ dsp2: drum2-note-on
   | state params pitch velocity |
   pitch 12.0 f/ ffrac 12.0 f*
   | pc |
+  ( accent: blend the incoming velocity toward full force )
+  params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+ HatParams.size ptr+ KickParams.size ptr+
+  Drum2Master.accent@
+  | acc |
+  1.0 acc f-  acc velocity f*  f+  0.0 1.0 fclamp
+  | vel |
   state params
   pc 0.5 1.0 0.0 fsel-lt
-  velocity kick-trigger
+  vel kick-trigger
   state KickState.size ptr+
   params KickParams.size ptr+
   pc 2.5  1.5 pc 1.0 0.0 fsel-lt  0.0  fsel-lt
-  velocity snare-trigger
+  vel snare-trigger
   state KickState.size ptr+ SnareState.size ptr+
   params KickParams.size ptr+ SnareParams.size ptr+
   pc 3.5  2.5 pc 1.0 0.0 fsel-lt  0.0  fsel-lt
-  velocity clap-trigger
+  vel clap-trigger
   state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+
   params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+
   pc 6.5  5.5 pc 1.0 0.0 fsel-lt  0.0  fsel-lt
-  velocity hat-ch-trigger
+  vel hat-ch-trigger
   state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+
   params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+
   pc 10.5  9.5 pc 1.0 0.0 fsel-lt  0.0  fsel-lt
-  velocity hat-oh-trigger
+  vel hat-oh-trigger
   state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+ HatState.size ptr+
   params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+ HatParams.size ptr+
   pc 9.5  8.5 pc 1.0 0.0 fsel-lt  0.0  fsel-lt
-  velocity kick-trigger
-  drop2 drop2 drop
+  vel kick-trigger
+  drop2 drop2 drop2 drop
 ;
 
 ( --- render stages: region base + voice helper, accumulate into out.
@@ -151,6 +166,19 @@ dsp2: d2-tom-accum
   drop2 drop
 ;
 
+( out state params -- : drive the summed kit and scale - overwrites out. )
+dsp2: d2-master
+  | out state params |
+  params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+ HatParams.size ptr+ KickParams.size ptr+
+  | master |
+  out f@64
+  master Drum2Master.drive@ f*
+  k-tanh-rational-shape-dsp2
+  master Drum2Master.level@ f*
+  out f!64
+  drop2 drop2
+;
+
 ( out state params -- : one summed mono drum sample. )
 dsp2: k-drum2-render
   | out state params |
@@ -166,6 +194,7 @@ dsp2: k-drum2-render
   out state params call: d2-hat-accum
   state params call: d2-tom-osc
   out state params call: d2-tom-accum
+  out state params call: d2-master
 ;
 
 : manifest
@@ -174,7 +203,7 @@ dsp2: k-drum2-render
   "drum2-prepare"  prepare!
   "drum2-note-on"  note-on!
   KickState.size SnareState.size + ClapState.size + HatState.size + KickState.size +  state-size!
-  KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.size +  params-size!
+  KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.size + Drum2Master.size +  params-size!
   520.0 panel-w!
   note-pitch
   36 "KICK" note-label
@@ -222,10 +251,25 @@ dsp2: k-drum2-render
   KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.sweep-time +  0.09 const-f64
   KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.click-level + 0.05 const-f64
 
+  "MASTER" "ACC" "master-accent" KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.size + Drum2Master.accent + 0.0 1.0 0.7 curve-lin knob
+  "MASTER" "DRIVE" "master-drive" KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.size + Drum2Master.drive +  0.5 5.0 1.0 curve-exp knob
+  "MASTER" "LVL" "master-level"   KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.size + Drum2Master.level +  0.0 1.0 0.9 curve-pow knob
+
   "KICK" 1 strip
   "SNARE" 1 strip
   "CLAP" 1 strip
   "HAT" 1 strip
   "TOM" 1 strip
+  "MASTER" 3 strip
+
+  ( five voice strips over a short horizontal master row )
+  5.0 row
+    1.0 cell  "KICK" 1.0 item
+    1.0 cell  "SNARE" 1.0 item
+    1.0 cell  "CLAP" 1.0 item
+    1.0 cell  "HAT" 1.0 item
+    1.0 cell  "TOM" 1.0 item
+  1.0 row
+    1.0 cell  "MASTER" 1.0 item
   machine-desc
 ;

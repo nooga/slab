@@ -147,7 +147,6 @@ fn loadRegistry(reg: *registry_mod.Registry) !void {
     try reg.load("sine", "machines/sine_v1/sine.fy", "sine-audio", "sine-ui", 108);
     try reg.load("square", "machines/square_v1/square.fy", "square-audio", "square-ui", 108);
     try reg.load("mono1", "machines/mono1/mono1.fy", "mono1-audio", "mono1-ui", 580);
-    try reg.load("drum1", "machines/drum1/drum1.fy", "drum1-audio", "drum1-ui", 428);
     try reg.load("chorus", "machines/chorus1/chorus1.fy", "chorus1-audio", "chorus1-ui", 320);
     try reg.load("comp1", "machines/comp1/comp1.fy", "comp1-audio", "comp1-ui", 375);
     try reg.load("fm1", "machines/fm1/fm1.fy", "fm1-audio", "fm1-ui", 428);

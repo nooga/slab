@@ -829,7 +829,6 @@ const RawMachine = extern struct {
 const MACHINE_LIB = "machines/lib";
 const SINE_PATH = "machines/sine_v1/sine.fy";
 const MONO1_PATH = "machines/mono1/mono1.fy";
-const DRUM1_PATH = "machines/drum1/drum1.fy";
 const CHORUS1_PATH = "machines/chorus1/chorus1.fy";
 const COMP1_PATH = "machines/comp1/comp1.fy";
 const FM1_PATH = "machines/fm1/fm1.fy";
@@ -1414,110 +1413,6 @@ fn renderMono1TestBlock(
     FyHost.clearAudioBuffers();
     FyHost.setParams(null);
     FyHost.clearCtx();
-}
-
-test "Stage 3: drum1 renders bounded drum lanes without crashing" {
-    const FRAMES = 64;
-    var host = FyHost.init(std.testing.allocator);
-    defer host.deinit();
-    try host.registerSlabBuiltins();
-    try host.compileFile(DRUM1_PATH);
-
-    const render = try host.createAudioCallback("drum1-audio");
-    const pitches = [_]f32{ 36.0, 38.0, 42.0, 46.0, 60.0, 72.0 };
-    for (pitches) |pitch| {
-        var on_event = [_]machine_mod.NoteEvent{.{
-            .sample_offset = 0,
-            .kind = .note_on,
-            .channel = 0,
-            .note_id = -1,
-            .pitch = pitch,
-            .velocity = 0.9,
-        }};
-        const should_sound = pitch == 36.0 or pitch == 38.0 or pitch == 42.0 or pitch == 46.0 or pitch == 60.0 or pitch == 72.0;
-        try renderDrum1TestBlock(&host, render, &on_event, FRAMES, should_sound);
-
-        var block: usize = 0;
-        while (block < 32) : (block += 1) {
-            try renderDrum1TestBlock(&host, render, &.{}, FRAMES, false);
-        }
-
-        var off_event = [_]machine_mod.NoteEvent{.{
-            .sample_offset = FRAMES - 1,
-            .kind = .note_off,
-            .channel = 0,
-            .note_id = -1,
-            .pitch = pitch,
-            .velocity = 0,
-        }};
-        try renderDrum1TestBlock(&host, render, &off_event, FRAMES, false);
-    }
-
-    var stacked = [_]machine_mod.NoteEvent{
-        .{
-            .sample_offset = 0,
-            .kind = .note_on,
-            .channel = 0,
-            .note_id = -1,
-            .pitch = 36,
-            .velocity = 0.9,
-        },
-        .{
-            .sample_offset = 8,
-            .kind = .note_on,
-            .channel = 0,
-            .note_id = -1,
-            .pitch = 38,
-            .velocity = 0.9,
-        },
-        .{
-            .sample_offset = 16,
-            .kind = .note_on,
-            .channel = 0,
-            .note_id = -1,
-            .pitch = 42,
-            .velocity = 0.9,
-        },
-        .{
-            .sample_offset = 24,
-            .kind = .note_on,
-            .channel = 0,
-            .note_id = -1,
-            .pitch = 46,
-            .velocity = 0.9,
-        },
-    };
-    try renderDrum1TestBlock(&host, render, &stacked, FRAMES, true);
-
-    var tail_block: usize = 0;
-    while (tail_block < 128) : (tail_block += 1) {
-        try renderDrum1TestBlock(&host, render, &.{}, FRAMES, false);
-    }
-}
-
-fn renderDrum1TestBlock(host: *FyHost, render: *const fn () callconv(.c) void, events: []machine_mod.NoteEvent, comptime FRAMES: usize, expect_sound: bool) !void {
-    var l_buf = [_]f32{0.0} ** FRAMES;
-    var r_buf = [_]f32{0.0} ** FRAMES;
-    var ctx = std.mem.zeroes(MachineCtx);
-    ctx.sample_rate = 48000.0;
-    ctx.block_size = FRAMES;
-    ctx.note_in = if (events.len > 0) @ptrCast(events.ptr) else null;
-    ctx.note_in_count = @intCast(events.len);
-
-    Fy.Builtins.fyPtr = @intFromPtr(&host.fy);
-    FyHost.setCtx(&ctx);
-    FyHost.setAudioBuffers(&l_buf, &r_buf);
-    render();
-    FyHost.clearCtx();
-    FyHost.clearAudioBuffers();
-
-    var peak: f32 = 0;
-    for (l_buf, r_buf) |l, r| {
-        try std.testing.expect(std.math.isFinite(l));
-        try std.testing.expect(std.math.isFinite(r));
-        peak = @max(peak, @abs(l), @abs(r));
-    }
-    if (expect_sound) try std.testing.expect(peak > 0.001);
 }
 
 test "fm1 renders bounded phase-modulated tones" {
