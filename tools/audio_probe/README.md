@@ -182,6 +182,8 @@ zig build kernel-probe -- --kernel=kernels/05-drums/decay.fy --word=k-decay-exp 
 zig build kernel-probe -- --kernel=kernels/05-drums/kick.fy --word=k-kick-render --case=drum-kick-render --iters=96000 --out=scratch/drum_kick
 zig build kernel-probe -- --kernel=kernels/05-drums/snare.fy --word=k-snare-render --case=drum-snare-render --iters=96000 --out=scratch/drum_snare
 zig build kernel-probe -- --kernel=kernels/05-drums/clap.fy --word=k-clap-render --case=drum-clap-render --iters=96000 --out=scratch/drum_clap
+zig build kernel-probe -- --kernel=kernels/05-drums/hat.fy --word=k-hat-render --case=drum-hat-render --iters=96000 --out=scratch/drum_hat_ch
+zig build kernel-probe -- --kernel=kernels/05-drums/hat.fy --word=k-hat-render --case=drum-openhat-render --iters=96000 --out=scratch/drum_hat_oh
 ```
 
 `sine-shape-render` ratchets the polynomial sine against libm over a

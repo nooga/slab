@@ -443,15 +443,16 @@ test "descriptor walker reads the drum2 note map" {
 
     try testing.expectEqualStrings("drum2", d.nameSlice());
     try testing.expect(d.note_pitch);
-    try testing.expectEqual(@as(usize, 3), d.note_label_count);
+    try testing.expectEqual(@as(usize, 6), d.note_label_count);
     try testing.expectEqual(@as(u8, 36), d.note_labels[0].pitch);
     try testing.expectEqualStrings("KICK", d.note_labels[0].labelSlice());
-    try testing.expectEqual(@as(u8, 38), d.note_labels[1].pitch);
-    try testing.expectEqualStrings("SNARE", d.note_labels[1].labelSlice());
-    try testing.expectEqual(@as(u8, 39), d.note_labels[2].pitch);
-    try testing.expectEqualStrings("CLAP", d.note_labels[2].labelSlice());
-    try testing.expectEqual(@as(usize, 17), d.control_count);
-    try testing.expectEqual(@as(usize, 3), d.strip_count);
+    try testing.expectEqual(@as(u8, 42), d.note_labels[3].pitch);
+    try testing.expectEqualStrings("CH", d.note_labels[3].labelSlice());
+    try testing.expectEqual(@as(u8, 46), d.note_labels[5].pitch);
+    try testing.expectEqualStrings("OH", d.note_labels[5].labelSlice());
+    try testing.expectEqual(@as(usize, 27), d.control_count);
+    try testing.expectEqual(@as(usize, 5), d.strip_count);
+    try testing.expectEqual(@as(usize, 2), d.const_count);
 
     // Snare controls land past the kick params region (offset computed in
     // fy as KickParams.size + SnareParams.field).

@@ -1,21 +1,23 @@
-( drum2.fy — synthesized drum machine, docs/16. Kick, snare, and clap
-  slots; hats and tom land next.
+( drum2.fy — synthesized drum machine, docs/16. Kick, snare, clap,
+  hats [CH/OH with choke], and tom.
 
   DSP lives in the kernels rig [kernels/05-drums]. State and params are
-  the voice structs laid out back to back - [KickState|SnareState|
-  ClapState] - and the stage wrappers below compute each slot's region
-  base with introspected sizes, never hand-written offsets. The render
-  word is a call: composition, one fresh register budget per stage,
-  every stage accumulating into the host-zeroed out cell.
+  the voice structs laid out back to back - [Kick|Snare|Clap|Hat|Tom] -
+  where TOM reuses the kick voice on its own region. The stage wrappers
+  below compute each slot's region base with introspected sizes, never
+  hand-written offsets. The render word is a call: composition, one
+  fresh register budget per stage, every stage accumulating into the
+  host-zeroed out cell.
 
   note-pitch mode: note-on receives raw MIDI pitch and gates each slot's
   branchless trigger by PITCH CLASS, so the kit answers in every octave:
-  C = kick, D = snare, D# = clap. The note map advertises the canonical
-  GM octave - 36 / 38 / 39. )
+  C = kick, D = snare, D# = clap, F# = closed hat, A = tom, A# = open
+  hat. The note map advertises the canonical GM octave. )
 
 include "../../kernels/05-drums/kick.fy"
 include "../../kernels/05-drums/snare.fy"
 include "../../kernels/05-drums/clap.fy"
+include "../../kernels/05-drums/hat.fy"
 include "../lib/manifest.fy"
 
 ( state params sample-rate -- : fill every slot's derived coefficients. )
@@ -28,11 +30,17 @@ dsp2: drum2-prepare
   state KickState.size ptr+ SnareState.size ptr+
   params KickParams.size ptr+ SnareParams.size ptr+
   sr clap-prepare
+  state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+
+  params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+
+  sr hat-prepare
+  state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+ HatState.size ptr+
+  params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+ HatParams.size ptr+
+  sr kick-prepare
   drop2 drop
 ;
 
 ( state params pitch velocity -- : gate each slot's trigger by the
-  note's pitch class - C kick, D snare, D# clap, any octave. )
+  note's pitch class - C kick, D snare, D# clap, F# CH, A tom, A# OH. )
 dsp2: drum2-note-on
   | state params pitch velocity |
   pitch 12.0 f/ ffrac 12.0 f*
@@ -48,6 +56,18 @@ dsp2: drum2-note-on
   params KickParams.size ptr+ SnareParams.size ptr+
   pc 3.5  2.5 pc 1.0 0.0 fsel-lt  0.0  fsel-lt
   velocity clap-trigger
+  state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+
+  params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+
+  pc 6.5  5.5 pc 1.0 0.0 fsel-lt  0.0  fsel-lt
+  velocity hat-ch-trigger
+  state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+
+  params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+
+  pc 10.5  9.5 pc 1.0 0.0 fsel-lt  0.0  fsel-lt
+  velocity hat-oh-trigger
+  state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+ HatState.size ptr+
+  params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+ HatParams.size ptr+
+  pc 9.5  8.5 pc 1.0 0.0 fsel-lt  0.0  fsel-lt
+  velocity kick-trigger
   drop2 drop2 drop
 ;
 
@@ -89,6 +109,48 @@ dsp2: d2-clap-accum
   drop2 drop
 ;
 
+dsp2: d2-hat-metal
+  | state params |
+  state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+
+  params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+
+  hat-metal-write
+  drop2
+;
+
+dsp2: d2-hat-filter
+  | state params |
+  state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+
+  params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+
+  hat-filter-write
+  drop2
+;
+
+dsp2: d2-hat-accum
+  | out state params |
+  out
+  state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+
+  params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+
+  hat-accum
+  drop2 drop
+;
+
+dsp2: d2-tom-osc
+  | state params |
+  state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+ HatState.size ptr+
+  params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+ HatParams.size ptr+
+  kick-osc-write
+  drop2
+;
+
+dsp2: d2-tom-accum
+  | out state params |
+  out
+  state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+ HatState.size ptr+
+  params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+ HatParams.size ptr+
+  kick-accum
+  drop2 drop
+;
+
 ( out state params -- : one summed mono drum sample. )
 dsp2: k-drum2-render
   | out state params |
@@ -99,6 +161,11 @@ dsp2: k-drum2-render
   out state params call: d2-snare-accum
   state params call: d2-clap-env
   out state params call: d2-clap-accum
+  state params call: d2-hat-metal
+  state params call: d2-hat-filter
+  out state params call: d2-hat-accum
+  state params call: d2-tom-osc
+  out state params call: d2-tom-accum
 ;
 
 : manifest
@@ -106,13 +173,16 @@ dsp2: k-drum2-render
   "k-drum2-render" render!
   "drum2-prepare"  prepare!
   "drum2-note-on"  note-on!
-  KickState.size SnareState.size + ClapState.size +  state-size!
-  KickParams.size SnareParams.size + ClapParams.size +  params-size!
-  312.0 panel-w!
+  KickState.size SnareState.size + ClapState.size + HatState.size + KickState.size +  state-size!
+  KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.size +  params-size!
+  520.0 panel-w!
   note-pitch
   36 "KICK" note-label
   38 "SNARE" note-label
   39 "CLAP" note-label
+  42 "CH" note-label
+  45 "TOM" note-label
+  46 "OH" note-label
 
   ( module label id offset min max default curve — frequencies and times
     are log [curve-exp], levels and sends squared audio taper [curve-pow] )
@@ -136,8 +206,26 @@ dsp2: k-drum2-render
   "CLAP" "DEC"  "clap-decay"  KickParams.size SnareParams.size + ClapParams.decay-s +  0.05 1.5 0.28 curve-exp knob
   "CLAP" "LVL"  "clap-level"  KickParams.size SnareParams.size + ClapParams.level +    0.0 1.0 0.9 curve-pow knob
 
+  "HAT" "TUNE"  "hat-tune"   KickParams.size SnareParams.size + ClapParams.size + HatParams.tune +     0.6 1.8 1.0 curve-exp knob
+  "HAT" "TONE"  "hat-tone"   KickParams.size SnareParams.size + ClapParams.size + HatParams.tone +     0.6 1.6 1.0 curve-exp knob
+  "HAT" "CHDEC" "hat-chdec"  KickParams.size SnareParams.size + ClapParams.size + HatParams.ch-decay + 0.02 0.4 0.07 curve-exp knob
+  "HAT" "OHDEC" "hat-ohdec"  KickParams.size SnareParams.size + ClapParams.size + HatParams.oh-decay + 0.1 2.0 0.6 curve-exp knob
+  "HAT" "LVL"   "hat-level"  KickParams.size SnareParams.size + ClapParams.size + HatParams.level +    0.0 1.5 0.85 curve-pow knob
+
+  "TOM" "TUNE"  "tom-tune"   KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.tune-hz +      60.0 360.0 110.0 curve-exp knob
+  "TOM" "SWEEP" "tom-sweep"  KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.sweep-amount + 0.0 6.0 1.2 curve-pow knob
+  "TOM" "DEC"   "tom-decay"  KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.decay-s +      0.05 1.5 0.3 curve-exp knob
+  "TOM" "DRIVE" "tom-drive"  KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.drive +        0.5 6.0 1.3 curve-exp knob
+  "TOM" "LVL"   "tom-level"  KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.level +        0.0 1.0 0.85 curve-pow knob
+
+  ( tom: fixed kick-voice params the strip does not expose )
+  KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.sweep-time +  0.09 const-f64
+  KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.click-level + 0.05 const-f64
+
   "KICK" 1 strip
   "SNARE" 1 strip
   "CLAP" 1 strip
+  "HAT" 1 strip
+  "TOM" 1 strip
   machine-desc
 ;

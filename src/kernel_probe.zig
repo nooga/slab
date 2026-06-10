@@ -2509,6 +2509,21 @@ fn drumVoiceCase(name: []const u8) ?DrumVoiceConfig {
         .param_defaults = &.{ 1100.0, 0.011, 0.28, 0.9 },
         .params_f64s = 9,
     };
+    if (std.mem.eql(u8, name, "drum-hat-render")) return .{
+        .prepare_word = "hat-prepare",
+        .trigger_word = "hat-ch-trigger",
+        .state_f64s = 15,
+        // tune tone ch-decay oh-decay level
+        .param_defaults = &.{ 1.0, 1.0, 0.07, 0.6, 0.85 },
+        .params_f64s = 15,
+    };
+    if (std.mem.eql(u8, name, "drum-openhat-render")) return .{
+        .prepare_word = "hat-prepare",
+        .trigger_word = "hat-oh-trigger",
+        .state_f64s = 15,
+        .param_defaults = &.{ 1.0, 1.0, 0.07, 0.6, 0.85 },
+        .params_f64s = 15,
+    };
     return null;
 }
 
