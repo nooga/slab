@@ -5333,6 +5333,31 @@ pub const Fy = struct {
             return null;
         }
 
+        // S.size / S.field / S.field-size as dsp2 int constants — the same
+        // introspection surface the normal compiler generates as words, so
+        // dsp2 code can do e.g. `state KickState.size ptr+` for slot regions.
+        fn findUstructConst(self: *Compiler, name: []const u8) ?i64 {
+            const dot = std.mem.indexOfScalar(u8, name, '.') orelse return null;
+            const struct_name = name[0..dot];
+            const field_part = name[dot + 1 ..];
+            if (field_part.len == 0) return null;
+            for (self.fy.untagged_struct_layouts.items) |layout| {
+                if (!std.mem.eql(u8, layout.name, struct_name)) continue;
+                if (std.mem.eql(u8, field_part, "size")) return @intCast(layout.size);
+                if (std.mem.endsWith(u8, field_part, "-size")) {
+                    const field_name = field_part[0 .. field_part.len - 5];
+                    for (layout.fields) |field| {
+                        if (std.mem.eql(u8, field.name, field_name)) return @intCast(field.field_type.size());
+                    }
+                }
+                for (layout.fields) |field| {
+                    if (std.mem.eql(u8, field.name, field_part)) return @intCast(field.offset);
+                }
+                return null;
+            }
+            return null;
+        }
+
         fn findUstructAccessor(self: *Compiler, name: []const u8) ?UstructAccessor {
             const dot = std.mem.indexOfScalar(u8, name, '.') orelse return null;
             const struct_name = name[0..dot];
@@ -5508,6 +5533,10 @@ pub const Fy = struct {
                         }
                         if (self.findUstructAccessor(word)) |accessor| {
                             try self.appendUstructAccessorTokens(&program, accessor);
+                            continue;
+                        }
+                        if (self.findUstructConst(word)) |value| {
+                            program.addNumber(value) catch return Error.OutOfMemory;
                             continue;
                         }
                         program.addWord(word) catch |err| {

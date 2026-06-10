@@ -1427,3 +1427,20 @@ test "struct/ustruct introspection: size, field offsets, field sizes" {
         .{ .input = "iv-b-end", .expected = Fy.makeInt(16) },
     });
 }
+
+test "dsp2: ustruct introspection constants resolve as int consts" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    _ = try fy.run(
+        \\ustruct: IC f64 a f64 b f64 c ;
+        \\dsp2: k-ic-third | out base | base IC.c ptr+ f@64 out f!64 drop2 ;
+    );
+    var vals = [_]f64{ 1.5, 2.5, 3.5 };
+    var out: f64 = 0;
+    const args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out) },
+        .{ .ptr = @intFromPtr(&vals[0]) },
+    };
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("k-ic-third", 1, &args);
+    try std.testing.expectEqual(@as(f64, 3.5), out);
+}
