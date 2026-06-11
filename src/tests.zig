@@ -1463,3 +1463,22 @@ test "dsp2: f@i / f!i runtime-indexed f64 access" {
     try std.testing.expectEqual(@as(f64, 20.0), cells[0]); // stored old cells[1] at idx 0.5 -> floor 0
     try std.testing.expectEqual(@as(f64, 20.0), cells[1]);
 }
+
+test "dsp2: p@64 loads a pointer through state" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    // state cell 0 holds a pointer to a buffer; read element idx from it.
+    _ = try fy.run(
+        \\dsp2: k-pload | out state idx | state p@64 idx f@i out f!64 drop2 drop ;
+    );
+    var buffer = [_]f64{ 7.0, 8.0, 9.0 };
+    var state = [_]u64{@intFromPtr(&buffer[0])};
+    var out: f64 = 0;
+    const args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out) },
+        .{ .ptr = @intFromPtr(&state[0]) },
+        .{ .f64 = 2.0 },
+    };
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("k-pload", 1, &args);
+    try std.testing.expectEqual(@as(f64, 9.0), out);
+}

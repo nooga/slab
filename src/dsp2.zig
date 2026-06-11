@@ -26,6 +26,7 @@ const Op = enum {
     ptr_add,
     ptr_add_idx, // base ptr + floor(f64 index) * 8 — runtime element addressing
     load_f64,
+    load_ptr, // load a 64-bit pointer from memory (host-injected buffer bases)
     fadd,
     fsub,
     fmul,
@@ -195,6 +196,13 @@ pub const Builder = struct {
             const ptr = try self.pop();
             try self.expectTy(ptr, .ptr);
             const id = try self.addValue(.{ .op = .load_f64, .ty = .f64, .a = ptr });
+            try self.stack.append(id);
+            return;
+        }
+        if (std.mem.eql(u8, word, "p@64")) {
+            const ptr = try self.pop();
+            try self.expectTy(ptr, .ptr);
+            const id = try self.addValue(.{ .op = .load_ptr, .ty = .ptr, .a = ptr });
             try self.stack.append(id);
             return;
         }
@@ -457,7 +465,7 @@ pub const Builder = struct {
     fn argUsedAsPtr(self: *const Builder, id: usize) bool {
         for (self.values.items) |v| {
             switch (v.op) {
-                .load_f64, .ptr_add => if (v.a == id) return true,
+                .load_f64, .load_ptr, .ptr_add => if (v.a == id) return true,
                 .ptr_add_idx => if (v.a == id) return true,
                 .fms20_lpf4, .fms20_lpf4_cubic, .fms20_svf => if (v.a == id or v.b == id) return true,
                 else => {},
@@ -630,7 +638,7 @@ pub const Builder = struct {
         for (self.values.items) |value| {
             switch (value.op) {
                 .arg, .int_const, .f64_const => {},
-                .ptr_add, .load_f64, .fwrap01, .ffrac, .fcapramp => remaining_uses[value.a] += 1,
+                .ptr_add, .load_f64, .load_ptr, .fwrap01, .ffrac, .fcapramp => remaining_uses[value.a] += 1,
                 .ptr_add_idx, .fadd, .fsub, .fmul, .fdiv, .fpolyblep => {
                     remaining_uses[value.a] += 1;
                     remaining_uses[value.b] += 1;
@@ -988,6 +996,11 @@ const Codegen = struct {
             .ptr_add => {
                 const base = try self.valueX(value.a);
                 try self.out.append(Asm.add_imm(reg, base, @intCast(value.int_value)));
+                self.consumeValue(value.a);
+            },
+            .load_ptr => {
+                const ptr = try self.valueX(value.a);
+                try self.out.append(Asm.ldr_x_imm(reg, ptr, 0));
                 self.consumeValue(value.a);
             },
             .ptr_add_idx => {
