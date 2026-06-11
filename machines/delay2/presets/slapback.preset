@@ -1,0 +1,5 @@
+# delay2 preset
+delay-time|0.110
+delay-fb|0.180
+delay-damp|9000
+delay-mix|0.300

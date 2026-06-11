@@ -96,6 +96,10 @@ pub fn main(init: std.process.Init) !void {
         try runDrumCase(alloc, cli, &host);
         return;
     }
+    if (std.mem.eql(u8, cli.case_name, "delay-render")) {
+        try runDelayCase(alloc, cli, &host);
+        return;
+    }
     if (std.mem.eql(u8, cli.case_name, "ms20-voice-render")) {
         try runMs20VoiceCase(alloc, cli, &host);
         return;
@@ -2616,6 +2620,126 @@ fn runDrumVoiceCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost, cfg: Drum
     std.debug.print(
         "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} peak={d:.3} rms={d:.3} mean={d:.6}\n",
         .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, metrics.peak, metrics.rms, metrics.mean },
+    );
+}
+
+// ── Effect kernel cases (kernels/07-effects) ──────────────────────────
+
+// k-delay-tick against a sample-exact Zig mirror of the same algorithm:
+// host-style ring injection (pointer + element count in state cells 0/1),
+// impulse-train input, then echo-placement and decay ratchets.
+fn runDelayCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sr: f64 = @floatFromInt(DRUM_SAMPLE_RATE);
+    const frames: usize = 2 * DRUM_SAMPLE_RATE;
+    const ring_len: usize = 65536;
+
+    const ring = try alloc.alloc(f64, ring_len);
+    defer alloc.free(ring);
+    @memset(ring, 0);
+    const ref_ring = try alloc.alloc(f64, ring_len);
+    defer alloc.free(ref_ring);
+    @memset(ref_ring, 0);
+
+    const input = try alloc.alloc(f64, frames);
+    defer alloc.free(input);
+    @memset(input, 0);
+    input[0] = 0.9;
+    input[DRUM_SAMPLE_RATE] = 0.9;
+    const out = try alloc.alloc(f64, frames);
+    defer alloc.free(out);
+    @memset(out, 0);
+
+    // State mirrors DelayState; the ring is injected the way the host does
+    // it — pointer bits in cell 0, element count (f64) in cell 1.
+    var state align(8) = [_]f64{0} ** 8;
+    @as(*usize, @ptrCast(&state[0])).* = @intFromPtr(ring.ptr);
+    state[1] = @floatFromInt(ring_len);
+
+    // DelayParams: time-s feedback mix damp-hz, derived filled by prepare.
+    var params align(8) = [_]f64{ 0.25, 0.5, 0.5, 4000.0, 0, 0 };
+    const prep_args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&params) },
+        .{ .f64 = sr },
+    };
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("delay-block-prepare", 1, &prep_args);
+
+    // Same caller shape the machine adapter uses: out and in auto-advance.
+    var slots = Fy.Dsp2RawRepeatedSlots{};
+    var caller = try host.fy.compileDsp2RawRepeatedCaller(
+        cli.word,
+        &slots,
+        &.{ .ptr, .ptr, .ptr, .ptr },
+        true,
+        true,
+    );
+    const render_args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out[0]) },
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+        .{ .ptr = @intFromPtr(&input[0]) },
+    };
+    const start = nowNs();
+    _ = try caller.call(@intCast(frames), &render_args);
+    const run_ns = nowNs() - start;
+
+    // Zig mirror, op-for-op.
+    const expected = try alloc.alloc(f64, frames);
+    defer alloc.free(expected);
+    {
+        const len: f64 = @floatFromInt(ring_len);
+        const dt_target = std.math.clamp(params[4], 2.0, len - 4.0);
+        const damp_a = params[5];
+        var tz: f64 = 0;
+        var w: f64 = 0;
+        var dz: f64 = 0;
+        for (input, expected) |x, *exp| {
+            tz += (dt_target - tz) * 0.0008;
+            const rp0 = w - tz;
+            const rp = if (rp0 < 0) rp0 + len else rp0;
+            const idx0: usize = @intFromFloat(rp);
+            const rp1 = rp + 1.0;
+            const rpw = if (rp1 < len) rp1 else rp1 - len;
+            const idx1: usize = @intFromFloat(rpw);
+            const s0 = ref_ring[idx0];
+            const rd = s0 + (ref_ring[idx1] - s0) * (rp - @floor(rp));
+            dz += (rd - dz) * damp_a;
+            ref_ring[@intFromFloat(w)] = x + dz * params[1];
+            const w1 = w + 1.0;
+            w = if (w1 < len) w1 else w1 - len;
+            exp.* = x * (1.0 - params[2]) + rd * params[2];
+        }
+    }
+
+    var metrics = computeSliceMetrics(out, expected, run_ns, frames);
+    fillSignalMetrics(out, &metrics);
+
+    // Echo placement: first echo of the t=0 impulse lands a wet tap near
+    // 0.25 s (the slewed delay converges from 0, so allow a window) and a
+    // quieter feedback repeat follows.
+    var first_echo: f64 = 0;
+    for (out[1000 .. DRUM_SAMPLE_RATE / 2]) |x| first_echo = @max(first_echo, @abs(x));
+    var second_echo: f64 = 0;
+    for (out[DRUM_SAMPLE_RATE / 2 .. DRUM_SAMPLE_RATE - 100]) |x| second_echo = @max(second_echo, @abs(x));
+
+    var csv: std.ArrayList(u8) = .empty;
+    defer csv.deinit(alloc);
+    try csv.appendSlice(alloc, "sample,time,in,out,expected,error\n");
+    for (input, out, expected, 0..) |x, actual, exp, i| {
+        try appendFmt(alloc, &csv, "{d},{d:.9},{d:.6},{d:.12},{d:.12},{d:.12}\n", .{
+            i, @as(f64, @floatFromInt(i)) / sr, x, actual, exp, actual - exp,
+        });
+    }
+    try writeDrumArtifacts(alloc, cli, host, csv.items, metrics, out);
+
+    if (metrics.nonfinite_count != 0 or metrics.max_abs_error > 0.000000001 or
+        first_echo < 0.2 or second_echo < 0.05 or second_echo > first_echo)
+    {
+        return error.KernelRatchetFailed;
+    }
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} max_abs_error={d:.12} echo1={d:.3} echo2={d:.3}\n",
+        .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, metrics.max_abs_error, first_echo, second_echo },
     );
 }
 
