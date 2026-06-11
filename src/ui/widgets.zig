@@ -45,8 +45,19 @@ var menu_armed: bool = true;
 var menu_open_mx: f32 = 0;
 var menu_open_my: f32 = 0;
 const MAX_CONTEXT_ITEMS: usize = 40;
-var context_draw_items: [MAX_CONTEXT_ITEMS]MenuItem = undefined;
-var context_draw_len: usize = 0;
+pub const MAX_MENU_DEPTH: usize = 4;
+// Per-level registered items/rects for the deferred draw (children overlay
+// parents) and the outside-click test next frame.
+var menu_lvl_items: [MAX_MENU_DEPTH][MAX_CONTEXT_ITEMS]MenuItem = undefined;
+var menu_lvl_len: [MAX_MENU_DEPTH]usize = [_]usize{0} ** MAX_MENU_DEPTH;
+var menu_lvl_rect: [MAX_MENU_DEPTH]c.rl.Rectangle = undefined;
+var menu_lvl_count: usize = 0;
+var menu_prev_rects: [MAX_MENU_DEPTH]c.rl.Rectangle = undefined;
+var menu_prev_count: usize = 0;
+// Expansion path: which item (id + row index) is expanded at each level.
+var menu_path_id: [MAX_MENU_DEPTH]u32 = undefined;
+var menu_path_idx: [MAX_MENU_DEPTH]usize = undefined;
+var menu_expand_depth: usize = 0;
 var context_draw_active: bool = false;
 
 pub const EditCommand = enum {
@@ -75,13 +86,38 @@ pub const MenuItem = struct {
     id: u32 = 0,
     enabled: bool = true,
     separator: bool = false,
+    /// Hovering expands a child menu (drawn with a right-aligned arrow);
+    /// the caller supplies the child's items via menuSubTick.
+    submenu: bool = false,
+    /// Right-aligned dim shortcut hint; derived from `command` when null.
+    shortcut: ?[*:0]const u8 = null,
 };
+
+/// Keybind hints shown right-aligned in menus, derived from the command.
+fn commandShortcut(cmd: EditCommand) ?[*:0]const u8 {
+    return switch (cmd) {
+        .copy => "cmd C",
+        .cut => "cmd X",
+        .paste => "cmd V",
+        .select_all => "cmd A",
+        .duplicate => "D",
+        .delete => "del",
+        .rename => "enter",
+        .file_save => "cmd S",
+        .file_save_as => "cmd sh S",
+        .file_open => "cmd O",
+        else => null,
+    };
+}
 
 pub fn beginFrame(m: Mouse) void {
     tooltip_text = null;
     requested_cursor = c.rl.MOUSE_CURSOR_DEFAULT;
     requested_cursor_priority = 0;
-    context_draw_len = 0;
+    menu_prev_count = menu_lvl_count;
+    @memcpy(menu_prev_rects[0..menu_lvl_count], menu_lvl_rect[0..menu_lvl_count]);
+    menu_lvl_count = 0;
+    @memset(menu_lvl_len[0..], 0);
     context_draw_active = false;
     frame_mouse = m;
 }
@@ -141,6 +177,7 @@ pub fn openContextMenu(key: u64, r: c.rl.Rectangle, m: Mouse) bool {
     menu_armed = false;
     menu_open_mx = m.x;
     menu_open_my = m.y;
+    menu_expand_depth = 0;
     cancelDrag();
     return true;
 }
@@ -159,6 +196,7 @@ pub fn openMenuAt(key: u64, x: f32, y: f32) void {
     menu_armed = false;
     menu_open_mx = @floatFromInt(c.rl.GetMouseX());
     menu_open_my = @floatFromInt(c.rl.GetMouseY());
+    menu_expand_depth = 0;
     cancelDrag();
 }
 
@@ -179,80 +217,141 @@ pub fn neutralMouse() Mouse {
     return .{ .x = -100000, .y = -100000, .left_pressed = false, .left_down = false, .left_released = false, .right_pressed = false, .double_clicked = false, .wheel_x = 0, .wheel_y = 0 };
 }
 
-// Shared menu input core: registers the items for deferred drawing, hit-tests
-// the raw frame mouse, closes on item-click or outside-click, and returns the
-// clicked item index (skipping separators/disabled). An open menu is modal.
-fn menuTick(key: u64, items: []const MenuItem) ?usize {
+// Shared menu input core, one call per visible level. Level 0 anchors at
+// the open point; deeper levels anchor beside their parent's expanded row.
+// Hovering a `submenu` item expands it; hovering a plain item collapses
+// deeper levels. Returns the clicked item index. An open menu is modal.
+fn menuLevelTick(key: u64, level: usize, items: []const MenuItem) ?usize {
     if (context_key != key) return null;
+    if (level >= MAX_MENU_DEPTH) return null;
+    if (level > menu_expand_depth) return null;
+
     const draw_len = @min(items.len, MAX_CONTEXT_ITEMS);
-    @memcpy(context_draw_items[0..draw_len], items[0..draw_len]);
-    context_draw_len = draw_len;
+    @memcpy(menu_lvl_items[level][0..draw_len], items[0..draw_len]);
+    menu_lvl_len[level] = draw_len;
+    menu_lvl_count = @max(menu_lvl_count, level + 1);
     context_draw_active = true;
 
     const row_h = contextMenuRowH();
-    const r = contextMenuRect(items);
+    const r = menuLevelRect(level, items);
+    menu_lvl_rect[level] = r;
 
+    var hovered: ?usize = null;
     var clicked: ?usize = null;
     for (items, 0..) |item, i| {
         const row = rect(r.x + 1, r.y + 1 + @as(f32, @floatFromInt(i)) * row_h, r.width - 2, row_h);
         if (item.separator) continue;
-        if (contains(row, frame_mouse.x, frame_mouse.y) and item.enabled and frame_mouse.left_released) clicked = i;
+        if (!contains(row, frame_mouse.x, frame_mouse.y)) continue;
+        hovered = i;
+        if (item.enabled and frame_mouse.left_released) clicked = i;
+    }
+
+    // Hover steering: expand submenus, collapse stale children.
+    if (hovered) |hi| {
+        const item = items[hi];
+        if (item.submenu and item.enabled) {
+            const already = menu_expand_depth > level and menu_path_idx[level] == hi;
+            if (!already) {
+                menu_path_id[level] = item.id;
+                menu_path_idx[level] = hi;
+                menu_expand_depth = level + 1;
+            }
+        } else if (menu_expand_depth > level) {
+            menu_expand_depth = level;
+        }
     }
 
     const dragged = @abs(frame_mouse.x - menu_open_mx) + @abs(frame_mouse.y - menu_open_my) > 8;
-    if (clicked != null and (menu_armed or dragged)) {
-        closeContextMenu();
-        return clicked;
+    if (clicked) |ci| {
+        if (items[ci].submenu) {
+            // clicking a submenu row just expands it (hover already did)
+        } else if (menu_armed or dragged) {
+            closeContextMenu();
+            return ci;
+        }
     }
     if (!menu_armed and !frame_mouse.left_down) menu_armed = true;
-    clicked = null;
-    if (menu_just_opened) {
-        menu_just_opened = false;
-    } else if ((frame_mouse.left_pressed or frame_mouse.right_pressed) and !contains(r, frame_mouse.x, frame_mouse.y)) {
-        closeContextMenu();
+
+    if (level == 0) {
+        if (menu_just_opened) {
+            menu_just_opened = false;
+        } else if (frame_mouse.left_pressed or frame_mouse.right_pressed) {
+            var inside = false;
+            for (menu_prev_rects[0..menu_prev_count]) |pr| {
+                if (contains(pr, frame_mouse.x, frame_mouse.y)) inside = true;
+            }
+            if (!inside) closeContextMenu();
+        }
     }
     return null;
 }
 
 pub fn contextMenu(key: u64, items: []const MenuItem, m: Mouse) EditCommand {
     _ = m; // modal — uses the raw frame mouse.
-    if (menuTick(key, items)) |i| return items[i].command;
+    if (menuLevelTick(key, 0, items)) |i| return items[i].command;
     return .none;
 }
 
 /// Like contextMenu but for arbitrary lists — returns the clicked item's `id`.
 pub fn menuPickId(key: u64, items: []const MenuItem, m: Mouse) ?u32 {
     _ = m;
-    if (menuTick(key, items)) |i| return items[i].id;
+    if (menuLevelTick(key, 0, items)) |i| return items[i].id;
+    return null;
+}
+
+/// The id of the item currently expanded at `level`, if any — the caller
+/// uses it to build the child level's items for menuSubTick.
+pub fn menuSubOpen(key: u64, level: usize) ?u32 {
+    if (context_key != key) return null;
+    if (menu_expand_depth <= level) return null;
+    return menu_path_id[level];
+}
+
+/// Register + tick the child menu at `level` (1-based below the root).
+pub fn menuSubTick(key: u64, level: usize, items: []const MenuItem, m: Mouse) ?u32 {
+    _ = m;
+    if (menuLevelTick(key, level, items)) |i| return items[i].id;
     return null;
 }
 
 pub fn drawContextMenu() void {
     if (!context_draw_active) return;
-    const items = context_draw_items[0..context_draw_len];
-    const r = contextMenuRect(items);
     const row_h = contextMenuRowH();
     const pad_x = theme.size(6);
     const mx: f32 = @floatFromInt(c.rl.GetMouseX());
     const my: f32 = @floatFromInt(c.rl.GetMouseY());
 
-    // Hard 1px outer edge, then a raised beveled body — the menu reads as a
-    // floating chrome panel (BeOS/Win95). Hovered item gets an amber
-    // selection bar with dark text.
-    c.rl.DrawRectangleRec(r, theme.slab_edge);
-    bevelRaised(rect(r.x + 1, r.y + 1, r.width - 2, r.height - 2), theme.slab_fill, theme.slab_hi, theme.slab_lo);
-    for (items, 0..) |item, i| {
-        const row = rect(r.x + 1, r.y + 1 + @as(f32, @floatFromInt(i)) * row_h, r.width - 2, row_h);
-        if (item.separator) {
-            const y = row.y + row.height / 2;
-            c.rl.DrawRectangle(@intFromFloat(row.x + pad_x), @intFromFloat(y), @intFromFloat(row.width - pad_x * 2), 1, theme.slab_lo);
-            c.rl.DrawRectangle(@intFromFloat(row.x + pad_x), @intFromFloat(y + 1), @intFromFloat(row.width - pad_x * 2), 1, theme.slab_hi);
-            continue;
+    var level: usize = 0;
+    while (level < menu_lvl_count) : (level += 1) {
+        const items = menu_lvl_items[level][0..menu_lvl_len[level]];
+        if (items.len == 0) continue;
+        const r = menu_lvl_rect[level];
+
+        // Hard 1px outer edge, then a raised beveled body — floating chrome.
+        c.rl.DrawRectangleRec(r, theme.slab_edge);
+        bevelRaised(rect(r.x + 1, r.y + 1, r.width - 2, r.height - 2), theme.slab_fill, theme.slab_hi, theme.slab_lo);
+        for (items, 0..) |item, i| {
+            const row = rect(r.x + 1, r.y + 1 + @as(f32, @floatFromInt(i)) * row_h, r.width - 2, row_h);
+            if (item.separator) {
+                const y = row.y + row.height / 2;
+                c.rl.DrawRectangle(@intFromFloat(row.x + pad_x), @intFromFloat(y), @intFromFloat(row.width - pad_x * 2), 1, theme.slab_lo);
+                c.rl.DrawRectangle(@intFromFloat(row.x + pad_x), @intFromFloat(y + 1), @intFromFloat(row.width - pad_x * 2), 1, theme.slab_hi);
+                continue;
+            }
+            const expanded = item.submenu and menu_expand_depth > level and menu_path_idx[level] == i;
+            const hover = (contains(row, mx, my) or expanded) and item.enabled;
+            if (hover) c.rl.DrawRectangleRec(rect(row.x + 2, row.y, row.width - 4, row.height), theme.accent_hi);
+            const col = if (!item.enabled) theme.text_mute else if (hover) theme.bg else theme.text_fg;
+            drawLabelF(item.label, row.x + pad_x, row.y + (row.height - theme.fsBody()) / 2 - 1, theme.fsBody(), col);
+            if (item.submenu) {
+                const acol = if (hover) theme.bg else theme.text_dim;
+                drawLabelF(">", row.x + row.width - pad_x - measureTextF(">", theme.fsBody()), row.y + (row.height - theme.fsBody()) / 2 - 1, theme.fsBody(), acol);
+            } else if (item.shortcut orelse commandShortcut(item.command)) |hint| {
+                const hs = theme.fsTiny();
+                const hcol = if (hover) theme.bg else theme.text_mute;
+                drawLabelF(hint, row.x + row.width - pad_x - measureTextF(hint, hs), row.y + (row.height - hs) / 2 - 1, hs, hcol);
+            }
         }
-        const hover = contains(row, mx, my) and item.enabled;
-        if (hover) c.rl.DrawRectangleRec(rect(row.x + 2, row.y, row.width - 4, row.height), theme.accent_hi);
-        const col = if (!item.enabled) theme.text_mute else if (hover) theme.bg else theme.text_fg;
-        drawLabelF(item.label, row.x + pad_x, row.y + (row.height - theme.fsBody()) / 2 - 1, theme.fsBody(), col);
     }
 }
 
@@ -260,21 +359,35 @@ fn contextMenuRowH() f32 {
     return theme.size(18);
 }
 
-fn contextMenuRect(items: []const MenuItem) c.rl.Rectangle {
+fn menuLevelRect(level: usize, items: []const MenuItem) c.rl.Rectangle {
     const row_h = contextMenuRowH();
     const w = contextMenuWidth(items, theme.size(6));
     const h = row_h * @as(f32, @floatFromInt(items.len)) + 2;
     const sw: f32 = @floatFromInt(c.rl.GetScreenWidth());
     const sh: f32 = @floatFromInt(c.rl.GetScreenHeight());
-    const x = @min(context_x, sw - w - 2);
-    const y = @min(context_y, sh - h - 2);
+    if (level == 0) {
+        const x = @min(context_x, sw - w - 2);
+        const y = @min(context_y, sh - h - 2);
+        return rect(@max(2, x), @max(2, y), w, h);
+    }
+    const parent = menu_lvl_rect[level - 1];
+    const row_y = parent.y + 1 + @as(f32, @floatFromInt(menu_path_idx[level - 1])) * row_h;
+    var x = parent.x + parent.width - 2;
+    if (x + w > sw - 2) x = @max(2, parent.x - w + 2); // flip left when cramped
+    const y = @min(row_y, sh - h - 2);
     return rect(@max(2, x), @max(2, y), w, h);
 }
 
 fn contextMenuWidth(items: []const MenuItem, pad_x: f32) f32 {
     var w: f32 = theme.size(96);
     for (items) |item| {
-        w = @max(w, measureTextF(item.label, theme.fsBody()) + pad_x * 2);
+        var extra: f32 = 0;
+        if (item.submenu) {
+            extra = measureTextF(">", theme.fsBody()) + pad_x;
+        } else if (item.shortcut orelse commandShortcut(item.command)) |hint| {
+            extra = measureTextF(hint, theme.fsTiny()) + pad_x;
+        }
+        w = @max(w, measureTextF(item.label, theme.fsBody()) + pad_x * 2 + extra);
     }
     return w;
 }

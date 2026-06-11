@@ -82,24 +82,48 @@ pub fn dirFromMachinePath(buf: []u8, machine_path: []const u8) ?[]const u8 {
     return buf[0 .. dir.len + suffix.len];
 }
 
-/// Scan a preset directory into a sorted List. Missing directory = empty.
-pub fn scan(dir_path: []const u8) List {
-    var list = List{};
+const DT_DIR: u8 = 4;
+
+fn scanInto(list: *List, dir_path: []const u8, prefix: []const u8, recurse: bool) void {
     var zbuf: [512:0]u8 = undefined;
-    if (dir_path.len >= zbuf.len) return list;
+    if (dir_path.len >= zbuf.len) return;
     @memcpy(zbuf[0..dir_path.len], dir_path);
     zbuf[dir_path.len] = 0;
-    const dir = opendir(@ptrCast(&zbuf[0])) orelse return list;
+    const dir = opendir(@ptrCast(&zbuf[0])) orelse return;
     defer _ = closedir(dir);
     while (readdir(dir)) |entry| {
         const name_full = entry.d_name[0..entry.d_namlen];
+        if (name_full.len == 0 or name_full[0] == '.') continue;
+        if (entry.d_type == DT_DIR) {
+            // One level of grouping subdirectories: "dir/name".
+            if (!recurse) continue;
+            var sub_buf: [512]u8 = undefined;
+            const sub = std.fmt.bufPrint(&sub_buf, "{s}/{s}", .{ dir_path, name_full }) catch continue;
+            scanInto(list, sub, name_full, false);
+            continue;
+        }
         if (!std.mem.endsWith(u8, name_full, ".preset")) continue;
         const stem = name_full[0 .. name_full.len - ".preset".len];
-        if (stem.len == 0 or stem.len > MAX_NAME) continue;
-        if (list.count >= MAX_PRESETS) break;
-        list.names[list.count] = Name.set(stem);
+        if (stem.len == 0) continue;
+        if (list.count >= MAX_PRESETS) return;
+        if (prefix.len > 0) {
+            var nm_buf: [128]u8 = undefined;
+            const nm = std.fmt.bufPrint(&nm_buf, "{s}/{s}", .{ prefix, stem }) catch continue;
+            if (nm.len > MAX_NAME) continue;
+            list.names[list.count] = Name.set(nm);
+        } else {
+            if (stem.len > MAX_NAME) continue;
+            list.names[list.count] = Name.set(stem);
+        }
         list.count += 1;
     }
+}
+
+/// Scan a preset directory (plus one level of subdirectories — entries
+/// named "dir/name") into a sorted List. Missing directory = empty.
+pub fn scan(dir_path: []const u8) List {
+    var list = List{};
+    scanInto(&list, dir_path, "", true);
     // Insertion sort — stable, allocation-free, and tiny n. Sorted order is
     // the index contract between the picker menus and apply-by-index.
     var i: usize = 1;
@@ -137,6 +161,11 @@ pub fn writeFile(dir_path: []const u8, name: []const u8, content: []const u8) bo
     @memcpy(dir_z[0..dir_path.len], dir_path);
     dir_z[dir_path.len] = 0;
     _ = mkdir(@ptrCast(&dir_z[0]), 0o755); // EEXIST is fine
+    if (std.mem.indexOfScalar(u8, name, '/')) |slash| {
+        var sub_z: [512:0]u8 = undefined;
+        const sub = std.fmt.bufPrintZ(&sub_z, "{s}/{s}", .{ dir_path, name[0..slash] }) catch return false;
+        _ = mkdir(sub.ptr, 0o755);
+    }
 
     var path_buf: [512:0]u8 = undefined;
     const path = std.fmt.bufPrintZ(&path_buf, "{s}/{s}.preset", .{ dir_path, name }) catch return false;

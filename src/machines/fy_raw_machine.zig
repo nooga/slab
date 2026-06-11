@@ -61,6 +61,7 @@ pub const FyRawMachine = struct {
     preset_dir: [512]u8 = [_]u8{0} ** 512,
     preset_dir_len: usize = 0,
     presets: presets_mod.List = .{},
+    current_preset_idx: i32 = -1,
 
     pub fn create(alloc: std.mem.Allocator, path: []const u8) !*FyRawMachine {
         const self = try alloc.create(FyRawMachine);
@@ -109,6 +110,7 @@ pub const FyRawMachine = struct {
             .preset_name = presetNameImpl,
             .apply_preset = applyPresetImpl,
             .save_preset = savePresetImpl,
+            .current_preset = currentPresetImpl,
         };
     }
 
@@ -268,9 +270,15 @@ fn presetNameImpl(state: *anyopaque, index: u8) [*:0]const u8 {
 // Apply = parse `id|value` lines and store each matching control's value
 // (clamped via valueToNorm; switches store the option index raw). Runs on
 // the UI thread; the audio thread sees the atomics next block.
+fn currentPresetImpl(state: *anyopaque) i32 {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    return self.current_preset_idx;
+}
+
 fn applyPresetImpl(state: *anyopaque, index: u8) void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     if (index >= self.presets.count) return;
+    self.current_preset_idx = index;
     var fbuf: [presets_mod.MAX_FILE]u8 = undefined;
     const data = presets_mod.readFileBuf(&fbuf, self.presetDir(), self.presets.names[index].slice()) orelse return;
     var lines = std.mem.splitScalar(u8, data, '\n');
@@ -321,7 +329,10 @@ fn savePresetImpl(state: *anyopaque) ?u8 {
 
     self.presets = presets_mod.scan(self.presetDir());
     for (self.presets.names[0..self.presets.count], 0..) |*pn, i| {
-        if (std.mem.eql(u8, pn.slice(), name)) return @intCast(i);
+        if (std.mem.eql(u8, pn.slice(), name)) {
+            self.current_preset_idx = @intCast(i);
+            return @intCast(i);
+        }
     }
     return null;
 }

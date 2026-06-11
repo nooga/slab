@@ -148,6 +148,9 @@ pub const ApplyPresetFn = *const fn (state: *anyopaque, index: u8) void;
 /// Save the machine's current control values as a new preset (the machine
 /// picks the name). Returns the new preset's index, or null on failure.
 pub const SavePresetFn = *const fn (state: *anyopaque) ?u8;
+/// Index of the last applied/saved preset, or -1 — drives the
+/// "name -> preset" titlebar label.
+pub const CurrentPresetFn = *const fn (state: *anyopaque) i32;
 
 pub const NOTE_LABEL_TEXT = 23;
 
@@ -180,6 +183,7 @@ pub const Machine = struct {
     preset_name: ?PresetNameFn = null,
     apply_preset: ?ApplyPresetFn = null,
     save_preset: ?SavePresetFn = null,
+    current_preset: ?CurrentPresetFn = null,
     /// Preferred panel card width in pixels. The bay uses this to size
     /// the rect passed to draw_panel. 0 = bay chooses a default.
     panel_w: f32 = 0,

@@ -24,14 +24,13 @@ pub const Result = struct {
 };
 
 const ADD_MENU_KEY: u64 = 0x4d414444; // "MADD"
-const ADD_PRESET_MENU_KEY: u64 = 0x4d505245; // "MPRE"
 const PRESET_MENU_KEY: u64 = 0x50524553; // "PRES"
 const SAVE_ITEM_ID: u32 = 9001;
 const DEFAULT_ITEM_ID: u32 = 9000;
 
-// Two-stage add: a picked machine with presets opens a second menu.
-var add_pending_idx: ?usize = null;
-var add_pending_list: presets_mod.List = .{};
+// Preset lists per registry machine, scanned when the add menu opens so
+// hover drill-down doesn't hit the filesystem every frame.
+var add_scan_cache: [registry_mod.MAX_MACHINES]presets_mod.List = undefined;
 
 var poly_dropdown_track: ?usize = null;
 var bay_scroll_x: f32 = 0; // horizontal scroll of the device chain
@@ -84,15 +83,8 @@ fn drawNoteLed(r: c.rl.Rectangle, glow: f32, m: widgets.Mouse) void {
     widgets.tooltip(r, "Note activity", m);
 }
 
-fn presetReservedW(mach: *const @import("../machine.zig").Machine) f32 {
-    if (mach.save_preset != null) return theme.size(78) + 2;
-    if (mach.preset_count) |cf| {
-        if (cf(mach.state) > 0) return theme.size(78);
-    }
-    return 0;
-}
 
-const DeviceCtrls = struct { toggle: bool = false, remove: bool = false };
+const DeviceCtrls = struct { toggle: bool = false, remove: bool = false, title_rect: c.rl.Rectangle = .{ .x = 0, .y = 0, .width = 0, .height = 0 } };
 
 // Host-drawn device titlebar: a title bevel that ENDS before the control
 // cells, then snug enable/bypass + delete cells abutting it (and a region
@@ -120,6 +112,7 @@ fn drawDeviceBar(
     const en = widgets.rect(del.x - bw, bar.y, bw, bar.height);
     const title_w = @max(0, en.x - bar.x);
     const title_bar = widgets.rect(bar.x, bar.y, title_w, bar.height);
+    res.title_rect = title_bar;
 
     widgets.bevelRaised(title_bar, theme.slab_fill, theme.slab_hi, theme.slab_lo);
     const led_w: f32 = if (glow != null) theme.size(16) else 0;
@@ -147,52 +140,63 @@ const AddPick = struct {
     preset: ?u8 = null,
 };
 
-// "+" button at the left of the machine-bay titlebar → machine picker menu.
-// Picking a machine whose preset directory is non-empty opens a second
-// menu to add it with a preset applied ("(default)" skips).
+// "+" button at the left of the machine-bay titlebar → machine picker.
+// Machines with presets carry a hover submenu (and another level for
+// preset subdirectories); "(default)" or a plain machine row adds bare.
 fn drawAddButton(btn: c.rl.Rectangle, reg: *const Registry, m: widgets.Mouse) ?AddPick {
-    const open = widgets.menuOpen(ADD_MENU_KEY) or widgets.menuOpen(ADD_PRESET_MENU_KEY);
+    const open = widgets.menuOpen(ADD_MENU_KEY);
     const hover = widgets.contains(btn, m.x, m.y) and !widgets.hasActiveDrag();
     const fill = if (open or hover) theme.slab_hi else theme.slab_fill;
     widgets.bevelRaised(btn, fill, theme.slab_hi, theme.slab_lo);
     const isz = theme.fsBody();
     widgets.drawIcon(.plus, btn.x + (btn.width - isz) / 2, btn.y + (btn.height - isz) / 2, isz, theme.text_fg);
     widgets.tooltip(btn, "Add machine", m);
-    if (hover and m.left_pressed and !open) widgets.openMenuAt(ADD_MENU_KEY, btn.x, btn.y + btn.height);
+    if (hover and m.left_pressed and !open) {
+        for (reg.entries[0..reg.count], 0..) |*e, i| {
+            var dbuf: [512]u8 = undefined;
+            add_scan_cache[i] = if (presets_mod.dirFromMachinePath(&dbuf, e.pathSlice())) |dir|
+                presets_mod.scan(dir)
+            else
+                presets_mod.List{};
+        }
+        widgets.openMenuAt(ADD_MENU_KEY, btn.x, btn.y + btn.height);
+    }
+    if (!widgets.menuOpen(ADD_MENU_KEY)) return null;
 
     var items: [registry_mod.MAX_MACHINES]widgets.MenuItem = undefined;
     var n: usize = 0;
     for (reg.entries[0..reg.count], 0..) |*e, i| {
-        items[n] = .{ .label = e.nameZ(), .id = @intCast(i) };
+        items[n] = .{
+            .label = e.nameZ(),
+            .id = @intCast(i),
+            .submenu = add_scan_cache[i].count > 0,
+        };
         n += 1;
     }
     if (widgets.menuPickId(ADD_MENU_KEY, items[0..n], m)) |id| {
-        var dbuf: [512]u8 = undefined;
-        const list = if (presets_mod.dirFromMachinePath(&dbuf, reg.entries[id].pathSlice())) |dir|
-            presets_mod.scan(dir)
-        else
-            presets_mod.List{};
-        if (list.count == 0) return .{ .reg_idx = @intCast(id) };
-        add_pending_idx = @intCast(id);
-        add_pending_list = list;
-        widgets.openMenuAt(ADD_PRESET_MENU_KEY, btn.x, btn.y + btn.height);
-        return null;
+        return .{ .reg_idx = @intCast(id) };
     }
 
-    if (add_pending_idx) |pending| {
+    if (widgets.menuSubOpen(ADD_MENU_KEY, 0)) |mach_id| {
+        const list = &add_scan_cache[mach_id];
         var pitems: [presets_mod.MAX_PRESETS + 1]widgets.MenuItem = undefined;
         pitems[0] = .{ .label = "(default)", .id = DEFAULT_ITEM_ID };
-        for (add_pending_list.names[0..add_pending_list.count], 0..) |*pn, i| {
-            pitems[1 + i] = .{ .label = pn.z(), .id = @intCast(i) };
-        }
-        if (widgets.menuPickId(ADD_PRESET_MENU_KEY, pitems[0 .. 1 + add_pending_list.count], m)) |sel| {
-            add_pending_idx = null;
+        const pn = 1 + presetTopItems(list, pitems[1..]);
+        if (widgets.menuSubTick(ADD_MENU_KEY, 1, pitems[0..pn], m)) |sel| {
             return .{
-                .reg_idx = pending,
+                .reg_idx = @intCast(mach_id),
                 .preset = if (sel == DEFAULT_ITEM_ID) null else @intCast(sel),
             };
         }
-        if (!widgets.menuOpen(ADD_PRESET_MENU_KEY)) add_pending_idx = null;
+        if (widgets.menuSubOpen(ADD_MENU_KEY, 1)) |dir_id| {
+            if (dir_id >= DIR_ID_BASE) {
+                var ditems: [presets_mod.MAX_PRESETS]widgets.MenuItem = undefined;
+                const dn = presetDirItems(list, dir_id - DIR_ID_BASE, &ditems);
+                if (widgets.menuSubTick(ADD_MENU_KEY, 2, ditems[0..dn], m)) |sel| {
+                    return .{ .reg_idx = @intCast(mach_id), .preset = @intCast(sel) };
+                }
+            }
+        }
     }
     return null;
 }
@@ -273,12 +277,13 @@ pub fn draw(r: c.rl.Rectangle, device: ?*Track, track_idx: ?usize, is_bus: bool,
         }
 
         if (t.machine.host_titlebar) {
+            var tbuf: [96]u8 = undefined;
             const ctrls = drawDeviceBar(
                 widgets.rect(x, r.y, inst_pw, header_h),
-                t.machine.name,
+                deviceTitle(&tbuf, &t.machine),
                 inst_enabled,
                 glow,
-                presetReservedW(&t.machine),
+                0,
                 .speaker_high,
                 .speaker_slash,
                 "Enabled — click to silence",
@@ -288,16 +293,16 @@ pub fn draw(r: c.rl.Rectangle, device: ?*Track, track_idx: ?usize, is_bus: bool,
             );
             if (ctrls.toggle) t.toggleEnabled();
             if (ctrls.remove) result.remove_machine = true;
+            if (t.machine_idx != null) {
+                const pa = titlebarPresetMenu(ctrls.title_rect, &t.machine, m);
+                if (pa.apply) |preset| result.preset_index = preset;
+                if (pa.save) result.save_preset = true;
+            }
             t.machine.draw_panel(t.machine.state, inst_body, m);
             if (!inst_enabled) c.rl.DrawRectangleRec(inst_body, c.rl.ColorAlpha(theme.bg, 0.45));
         } else {
             t.machine.draw_panel(t.machine.state, inst_rect, m);
             if (!inst_enabled) c.rl.DrawRectangleRec(inst_rect, c.rl.ColorAlpha(theme.bg, 0.45));
-        }
-        if (t.machine_idx != null) {
-            const pa = drawPresetChip(machineControlsRect(inst_rect, t.machine.panel_w), &t.machine, header_h, m);
-            if (pa.apply) |preset| result.preset_index = preset;
-            if (pa.save) result.save_preset = true;
         }
         x += inst_pw;
     }
@@ -384,36 +389,99 @@ const PresetAction = struct {
     save: bool = false,
 };
 
-// Titlebar preset chip → shared widget menu: preset list (sorted index
-// contract with the machine's own scan) and, for machines that can save,
-// a "Save preset" row that snapshots the current knobs.
-fn drawPresetChip(panel: c.rl.Rectangle, mach: *const @import("../machine.zig").Machine, header_h: f32, m: widgets.Mouse) PresetAction {
+const DIR_ID_BASE: u32 = 10000;
+var dir_label_bufs: [8][presets_mod.MAX_NAME + 1:0]u8 = undefined;
+
+// Top-level menu rows for a sorted preset list: plain leaves (id = flat
+// list index), then one hover-submenu row per distinct subdirectory.
+fn presetTopItems(list: *const presets_mod.List, items: []widgets.MenuItem) usize {
+    var n: usize = 0;
+    for (list.names[0..list.count], 0..) |*nm, i| {
+        if (std.mem.indexOfScalar(u8, nm.slice(), '/') != null) continue;
+        if (n >= items.len) return n;
+        items[n] = .{ .label = nm.z(), .id = @intCast(i) };
+        n += 1;
+    }
+    var ord: usize = 0;
+    var last: []const u8 = "";
+    for (list.names[0..list.count]) |*nm| {
+        const sl = std.mem.indexOfScalar(u8, nm.slice(), '/') orelse continue;
+        const dirn = nm.slice()[0..sl];
+        if (std.mem.eql(u8, dirn, last)) continue;
+        last = dirn;
+        if (ord < dir_label_bufs.len and n < items.len) {
+            const buf = &dir_label_bufs[ord];
+            const l = @min(dirn.len, presets_mod.MAX_NAME);
+            @memcpy(buf[0..l], dirn[0..l]);
+            buf[l] = 0;
+            items[n] = .{ .label = @ptrCast(&buf[0]), .id = @intCast(DIR_ID_BASE + ord), .submenu = true };
+            n += 1;
+        }
+        ord += 1;
+    }
+    return n;
+}
+
+// Rows of the ord-th distinct subdirectory: id = flat list index, label =
+// the name after the slash (NUL follows in Name storage, so no copy).
+fn presetDirItems(list: *const presets_mod.List, dir_ord: usize, items: []widgets.MenuItem) usize {
+    var n: usize = 0;
+    var ord: usize = 0;
+    var last: []const u8 = "";
+    for (list.names[0..list.count], 0..) |*nm, i| {
+        const sl = std.mem.indexOfScalar(u8, nm.slice(), '/') orelse continue;
+        const dirn = nm.slice()[0..sl];
+        if (!std.mem.eql(u8, dirn, last)) {
+            last = dirn;
+            ord += 1;
+        }
+        if (ord - 1 != dir_ord) continue;
+        if (n >= items.len) return n;
+        items[n] = .{ .label = @ptrCast(&nm.text[sl + 1]), .id = @intCast(i) };
+        n += 1;
+    }
+    return n;
+}
+
+// "name -> preset" titlebar label; plain name for preset-less machines.
+fn deviceTitle(buf: []u8, mach: *const @import("../machine.zig").Machine) []const u8 {
+    const count: usize = if (mach.preset_count) |cf| cf(mach.state) else 0;
+    if (count == 0 and mach.save_preset == null) return mach.name;
+    var cur: [*:0]const u8 = "init";
+    if (mach.current_preset) |cpf| {
+        const idx = cpf(mach.state);
+        if (idx >= 0) {
+            if (mach.preset_name) |nf| cur = nf(mach.state, @intCast(idx));
+        }
+    }
+    return std.fmt.bufPrint(buf, "{s} -> {s}", .{ mach.name, std.mem.span(cur) }) catch mach.name;
+}
+
+// Clicking the machine name opens the preset menu: leaves, subdirectory
+// submenus, and a Save row for machines that can snapshot their knobs.
+fn titlebarPresetMenu(title_rect: c.rl.Rectangle, mach: *const @import("../machine.zig").Machine, m: widgets.Mouse) PresetAction {
     const count: usize = if (mach.preset_count) |cf| cf(mach.state) else 0;
     const can_save = mach.save_preset != null;
     if (count == 0 and !can_save) return .{};
-    const name_fn = mach.preset_name;
 
     const key = widgets.keyFromIds(PRESET_MENU_KEY, @intFromPtr(mach.state), 1);
     const open_here = widgets.menuOpen(key);
-    const w = theme.size(78);
-    const h = @min(header_h, panel.height);
-    const r = widgets.rect(panel.x + panel.width - w, panel.y, w, h);
-    const hover = widgets.contains(r, m.x, m.y) and !widgets.hasActiveDrag();
-    const pressed = hover and m.left_down;
-    const fill = if (pressed) theme.slab_lo else if (hover or open_here) theme.slab_hi else theme.slab_fill;
-    widgets.bevelRaised(r, fill, theme.slab_hi, theme.slab_lo);
-    widgets.drawLabelF("PRESET", r.x + 4, r.y + (r.height - theme.fsTiny()) / 2 - 1, theme.fsTiny(), theme.text_fg);
-    widgets.drawLabelF("v", r.x + r.width - 8, r.y + (r.height - theme.fsTiny()) / 2 - 1, theme.fsTiny(), theme.text_dim);
-    widgets.tooltip(r, "Preset", m);
-    if (hover and m.left_pressed and !open_here) widgets.openMenuAt(key, r.x, r.y + r.height);
+    const hover = widgets.contains(title_rect, m.x, m.y) and !widgets.hasActiveDrag();
+    if (hover) widgets.tooltip(title_rect, "Preset", m);
+    if (hover and m.left_pressed and !open_here) widgets.openMenuAt(key, title_rect.x, title_rect.y + title_rect.height);
+
+    // The machine's own sorted list backs the flat indices the menu uses.
+    var list = presets_mod.List{};
+    if (mach.preset_name) |nf| {
+        var i: usize = 0;
+        while (i < count and i < presets_mod.MAX_PRESETS) : (i += 1) {
+            list.names[i] = presets_mod.Name.set(std.mem.span(nf(mach.state, @intCast(i))));
+        }
+        list.count = i;
+    }
 
     var items: [presets_mod.MAX_PRESETS + 2]widgets.MenuItem = undefined;
-    var n: usize = 0;
-    var i: usize = 0;
-    while (i < count and n < items.len) : (i += 1) {
-        items[n] = .{ .label = if (name_fn) |nf| nf(mach.state, @intCast(i)) else "?", .id = @intCast(i) };
-        n += 1;
-    }
+    var n = presetTopItems(&list, items[0 .. presets_mod.MAX_PRESETS]);
     if (can_save) {
         if (n > 0) {
             items[n] = .{ .separator = true };
@@ -425,6 +493,15 @@ fn drawPresetChip(panel: c.rl.Rectangle, mach: *const @import("../machine.zig").
     if (widgets.menuPickId(key, items[0..n], m)) |id| {
         if (id == SAVE_ITEM_ID) return .{ .save = true };
         return .{ .apply = @intCast(id) };
+    }
+    if (widgets.menuSubOpen(key, 0)) |dir_id| {
+        if (dir_id >= DIR_ID_BASE) {
+            var ditems: [presets_mod.MAX_PRESETS]widgets.MenuItem = undefined;
+            const dn = presetDirItems(&list, dir_id - DIR_ID_BASE, &ditems);
+            if (widgets.menuSubTick(key, 1, ditems[0..dn], m)) |id| {
+                return .{ .apply = @intCast(id) };
+            }
+        }
     }
     return .{};
 }

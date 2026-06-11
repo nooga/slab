@@ -22,6 +22,7 @@ pub const FyMachine = struct {
     params: [MAX_PARAMS]u8 = [_]u8{0} ** MAX_PARAMS,
     params_size: usize = 0,
     preset_index: u8 = 0,
+    preset_applied: bool = false,
     panel_w: f32 = 108,
     probe_counter: u32 = 0,
 
@@ -67,6 +68,7 @@ pub const FyMachine = struct {
             .deinit = deinitImpl,
             .sync_params = syncParamsImpl,
             .preset_count = presetCountImpl,
+            .current_preset = currentPresetImpl,
             .preset_name = presetNameImpl,
             .apply_preset = applyPresetImpl,
             .panel_w = self.panel_w,
@@ -347,6 +349,12 @@ fn applyPresetImpl(state: *anyopaque, index: u8) void {
     if (std.mem.eql(u8, self.name_buf[0..self.name_len], "mono1")) applyMono1Preset(self, index);
     if (std.mem.eql(u8, self.name_buf[0..self.name_len], "chorus")) applyChorus1Preset(self, index);
     if (std.mem.eql(u8, self.name_buf[0..self.name_len], "fm1")) applyFm1Preset(self, index);
+    self.preset_applied = true;
+}
+
+fn currentPresetImpl(state: *anyopaque) i32 {
+    const self: *FyMachine = @ptrCast(@alignCast(state));
+    return if (self.preset_applied) self.preset_index else -1;
 }
 
 fn applyMono1Preset(self: *FyMachine, index: u8) void {
