@@ -27,6 +27,23 @@ titlebar chip writes `user-N.preset` to the same directory. The picker
 menus and apply-by-index share one contract: the directory scan is
 sorted by name.
 
+**Host-allocated buffers (implemented):** a machine requests audio-rate
+storage in its manifest instead of growing its state struct:
+
+```forth
+"dline" DelayState.buf DelayState.buf-len 1.6 buffer
+```
+
+At create, the host allocates `ceil(seconds × sample-rate)` zeroed f64
+cells per channel (UI thread — never the audio thread) and writes the
+base pointer and element count into that channel's state at the two
+introspected offsets. Kernels read them back with `p@64` / `f@64` and
+index with `f@i` / `f!i`. Reset memsets state, zeroes the buffers, and
+re-injects the pointers. Effect machines get per-channel state regions,
+so L and R own independent rings. This is the first concrete instance
+of the asset-arena idea in docs/03 — a read-only `asset` sibling for
+samples/IRs/wavetables follows the same pointer-injection shape.
+
 Kind is inferred from the parent directory: `instrument/`,
 `effect/`, `note/` (transformers / generators), `utility/`
 (meters, analyzers). Kind controls the default port configuration

@@ -27,6 +27,7 @@ pub const MAX_ROWS = 8;
 pub const MAX_ROW_CELLS = 16;
 pub const MAX_CELL_ITEMS = 6;
 pub const MAX_NOTE_LABELS = 32;
+pub const MAX_BUFFERS = 8;
 
 pub const Mode = enum {
     voice_sample,
@@ -88,6 +89,21 @@ pub const Control = struct {
 pub const ConstF64 = struct {
     offset: usize = 0,
     value: f64 = 0,
+};
+
+/// A host-allocated audio-rate f64 buffer the machine requests by length in
+/// seconds. The host allocates per channel and writes the base pointer +
+/// element count into that channel's state at the two introspected offsets.
+pub const BufferReq = struct {
+    name: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
+    name_len: usize = 0,
+    ptr_offset: usize = 0,
+    len_offset: usize = 0,
+    seconds: f64 = 0,
+
+    pub fn nameSlice(self: *const BufferReq) []const u8 {
+        return self.name[0..self.name_len];
+    }
 };
 
 pub const Strip = struct {
@@ -165,6 +181,8 @@ pub const Desc = struct {
     note_pitch: bool = false,
     note_labels: [MAX_NOTE_LABELS]machine.NoteLabel = undefined,
     note_label_count: usize = 0,
+    buffers: [MAX_BUFFERS]BufferReq = undefined,
+    buffer_count: usize = 0,
 
     pub fn noteLabels(self: *const Desc) []const machine.NoteLabel {
         return self.note_labels[0..self.note_label_count];
@@ -229,6 +247,7 @@ const MachineDescRaw = extern struct {
     consts: Fy.Value,
     note_pitch: Fy.Value,
     note_labels: Fy.Value,
+    buffers: Fy.Value,
 };
 
 const ControlRaw = extern struct {
@@ -253,6 +272,7 @@ const CellRaw = extern struct { next: Fy.Value, weight: Fy.Value, items: Fy.Valu
 const ItemRaw = extern struct { next: Fy.Value, name: Fy.Value, weight: Fy.Value };
 const ConstRaw = extern struct { next: Fy.Value, offset: Fy.Value, value: Fy.Value };
 const NoteLabelRaw = extern struct { next: Fy.Value, pitch: Fy.Value, label: Fy.Value };
+const BufferRaw = extern struct { next: Fy.Value, name: Fy.Value, ptr_offset: Fy.Value, len_offset: Fy.Value, seconds: Fy.Value };
 
 // ── tagged-value decode ───────────────────────────────────────────────
 
@@ -397,6 +417,20 @@ pub fn read(host: *FyHost) !Desc {
         @memcpy(out.label[0..text.len], text);
         out.label_len = @intCast(text.len);
         d.note_label_count += 1;
+    }
+
+    var buf_it = rawPtr(BufferRaw, md.buffers);
+    while (buf_it) |b| : (buf_it = rawPtr(BufferRaw, b.next)) {
+        if (d.buffer_count >= MAX_BUFFERS) return error.TooManyBuffers;
+        const out = &d.buffers[d.buffer_count];
+        out.* = .{};
+        out.name_len = try copyText(&out.name, cstrSlice(b.name));
+        out.ptr_offset = @intCast(asInt(b.ptr_offset));
+        out.len_offset = @intCast(asInt(b.len_offset));
+        out.seconds = asF64(b.seconds);
+        if (out.seconds <= 0 or out.ptr_offset == out.len_offset) return error.InvalidMachineDesc;
+        if (out.ptr_offset + 8 > d.state_size or out.len_offset + 8 > d.state_size) return error.InvalidMachineDesc;
+        d.buffer_count += 1;
     }
 
     var row_it = rawPtr(RowRaw, md.rows);

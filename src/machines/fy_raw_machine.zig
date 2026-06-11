@@ -20,6 +20,10 @@ const widgets = @import("../ui/widgets.zig");
 
 const MAX_STATE = 1024;
 const MAX_PARAMS = 1024;
+// Host-allocated buffers are sized in seconds at the highest sample rate we
+// run at; kernels read the element count back from state and clamp, so a
+// lower device rate just means extra headroom.
+const BUFFER_SR = 96_000.0;
 const MAX_BLOCK = 4096;
 const MAX_OPTS = machine_desc.MAX_OPTS;
 const MAX_CONTROLS = machine_desc.MAX_CONTROLS;
@@ -34,7 +38,10 @@ const Display = machine_desc.Display;
 pub const FyRawMachine = struct {
     host: *FyHost,
     desc: machine_desc.Desc,
-    state_buf: [MAX_STATE]u8 align(8) = [_]u8{0} ** MAX_STATE,
+    // Two state regions: effect machines run L through region 0 and R through
+    // region 1 so per-channel state (filters, delay write heads) never
+    // cross-talks. Voice machines use region 0 only.
+    state_buf: [2 * MAX_STATE]u8 align(8) = [_]u8{0} ** (2 * MAX_STATE),
     params_buf: [MAX_PARAMS]u8 align(8) = [_]u8{0} ** MAX_PARAMS,
     mono_buf: [MAX_BLOCK]f64 align(8) = [_]f64{0} ** MAX_BLOCK,
     in_l_buf: [MAX_BLOCK]f64 align(8) = [_]f64{0} ** MAX_BLOCK,
@@ -62,6 +69,10 @@ pub const FyRawMachine = struct {
     preset_dir_len: usize = 0,
     presets: presets_mod.List = .{},
     current_preset_idx: i32 = -1,
+    // Host-allocated audio buffers (manifest `buffer` requests), one per
+    // channel. Base pointer + element count are injected into each channel's
+    // state at the request's introspected offsets.
+    buffer_mem: [machine_desc.MAX_BUFFERS][2][]f64 = undefined,
 
     pub fn create(alloc: std.mem.Allocator, path: []const u8) !*FyRawMachine {
         const self = try alloc.create(FyRawMachine);
@@ -90,9 +101,57 @@ pub const FyRawMachine = struct {
             self.preset_dir_len = dir.len;
             self.presets = presets_mod.scan(dir);
         }
+        try self.allocBuffers(alloc);
+        errdefer self.freeBuffersUpTo(alloc, self.desc.buffer_count);
         try self.compileCallers();
         self.initRawControls();
         return self;
+    }
+
+    fn allocBuffers(self: *FyRawMachine, alloc: std.mem.Allocator) !void {
+        var done: usize = 0;
+        errdefer self.freeBuffersUpTo(alloc, done);
+        for (self.desc.buffers[0..self.desc.buffer_count], 0..) |*req, bi| {
+            const n: usize = @max(1, @as(usize, @intFromFloat(@ceil(req.seconds * BUFFER_SR))));
+            const mem_l = try alloc.alloc(f64, n);
+            errdefer alloc.free(mem_l);
+            const mem_r = try alloc.alloc(f64, n);
+            @memset(mem_l, 0);
+            @memset(mem_r, 0);
+            self.buffer_mem[bi] = .{ mem_l, mem_r };
+            done = bi + 1;
+        }
+        self.injectBuffers();
+    }
+
+    fn freeBuffersUpTo(self: *FyRawMachine, alloc: std.mem.Allocator, count: usize) void {
+        for (self.buffer_mem[0..count]) |pair| {
+            for (pair) |mem| alloc.free(mem);
+        }
+    }
+
+    // Write each buffer's base pointer + element count into both channel
+    // states. Must rerun after any state memset (reset).
+    fn injectBuffers(self: *FyRawMachine) void {
+        for (self.desc.buffers[0..self.desc.buffer_count], 0..) |*req, bi| {
+            for (0..2) |ch| {
+                const mem = self.buffer_mem[bi][ch];
+                self.writeStateUsize(ch, req.ptr_offset, @intFromPtr(mem.ptr));
+                self.writeStateF64(ch, req.len_offset, @floatFromInt(mem.len));
+            }
+        }
+    }
+
+    fn writeStateUsize(self: *FyRawMachine, ch: usize, offset: usize, value: usize) void {
+        if (offset + @sizeOf(usize) > self.desc.state_size) return;
+        const ptr: *align(8) usize = @ptrCast(@alignCast(&self.state_buf[ch * MAX_STATE + offset]));
+        ptr.* = value;
+    }
+
+    fn writeStateF64(self: *FyRawMachine, ch: usize, offset: usize, value: f64) void {
+        if (offset + @sizeOf(f64) > self.desc.state_size) return;
+        const ptr: *align(8) f64 = @ptrCast(@alignCast(&self.state_buf[ch * MAX_STATE + offset]));
+        ptr.* = value;
     }
 
     pub fn machineInterface(self: *FyRawMachine) machine.Machine {
@@ -120,6 +179,10 @@ pub const FyRawMachine = struct {
 
     fn statePtr(self: *FyRawMachine) usize {
         return @intFromPtr(&self.state_buf[0]);
+    }
+
+    fn statePtrCh(self: *FyRawMachine, ch: usize) usize {
+        return @intFromPtr(&self.state_buf[ch * MAX_STATE]);
     }
 
     fn paramsPtr(self: *FyRawMachine) usize {
@@ -408,12 +471,16 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
 
 fn callPrepare(self: *FyRawMachine, sample_rate: f64) !void {
     const caller = if (self.prepare_caller) |*c_| c_ else return;
-    const args = [_]Fy.Dsp2RawArg{
-        .{ .ptr = self.statePtr() },
-        .{ .ptr = self.paramsPtr() },
-        .{ .f64 = sample_rate },
-    };
-    _ = try caller.call(1, &args);
+    // Effect machines keep per-channel state, so prepare runs once per region.
+    const channels: usize = if (self.desc.mode == .voice_sample) 1 else 2;
+    for (0..channels) |ch| {
+        const args = [_]Fy.Dsp2RawArg{
+            .{ .ptr = self.statePtrCh(ch) },
+            .{ .ptr = self.paramsPtr() },
+            .{ .f64 = sample_rate },
+        };
+        _ = try caller.call(1, &args);
+    }
 }
 
 fn renderVoiceSample(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f32, r: []f32) !void {
@@ -500,7 +567,7 @@ fn renderEffectSample(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []
         const xl: f64 = if (in_l) |p| p[i] else 0;
         const args_l = [_]Fy.Dsp2RawArg{
             .{ .ptr = @intFromPtr(&out_sample) },
-            .{ .ptr = self.statePtr() },
+            .{ .ptr = self.statePtrCh(0) },
             .{ .ptr = self.paramsPtr() },
             .{ .f64 = xl },
         };
@@ -510,7 +577,7 @@ fn renderEffectSample(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []
         const xr: f64 = if (in_r) |p| p[i] else xl;
         const args_r = [_]Fy.Dsp2RawArg{
             .{ .ptr = @intFromPtr(&out_sample) },
-            .{ .ptr = self.statePtr() },
+            .{ .ptr = self.statePtrCh(1) },
             .{ .ptr = self.paramsPtr() },
             .{ .f64 = xr },
         };
@@ -527,7 +594,7 @@ fn renderEffectBlock(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
 
     const args_l = [_]Fy.Dsp2RawArg{
         .{ .ptr = @intFromPtr(&self.out_l_buf[0]) },
-        .{ .ptr = self.statePtr() },
+        .{ .ptr = self.statePtrCh(0) },
         .{ .ptr = self.paramsPtr() },
         .{ .ptr = @intFromPtr(&self.in_l_buf[0]) },
     };
@@ -535,7 +602,7 @@ fn renderEffectBlock(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
 
     const args_r = [_]Fy.Dsp2RawArg{
         .{ .ptr = @intFromPtr(&self.out_r_buf[0]) },
-        .{ .ptr = self.statePtr() },
+        .{ .ptr = self.statePtrCh(1) },
         .{ .ptr = self.paramsPtr() },
         .{ .ptr = @intFromPtr(&self.in_r_buf[0]) },
     };
@@ -559,12 +626,18 @@ fn inputChannels(ctx: *const machine.MachineCtx) struct { ?[*]const f32, ?[*]con
 fn resetImpl(state: *anyopaque) void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     @memset(self.state_buf[0..self.desc.state_size], 0);
+    @memset(self.state_buf[MAX_STATE..][0..self.desc.state_size], 0);
     @memset(self.params_buf[0..self.desc.params_size], 0);
+    for (self.buffer_mem[0..self.desc.buffer_count]) |pair| {
+        for (pair) |mem| @memset(mem, 0);
+    }
+    self.injectBuffers();
     self.failed = false;
 }
 
 fn deinitImpl(state: *anyopaque, alloc: std.mem.Allocator) void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    self.freeBuffersUpTo(alloc, self.desc.buffer_count);
     self.host.deinit();
     alloc.destroy(self.host);
     alloc.destroy(self);
@@ -1009,6 +1082,59 @@ test "raw DSP2 MS-20 fills the svf profile region in fy (no Zig derive)" {
     try testing.expect(inst.readParamF64(svf_fb_dc) < 0.01);
     try testing.expect(inst.readParamF64(svf_out_dc) > 0.0);
     try testing.expect(inst.readParamF64(svf_out_dc) < inst.readParamF64(svf_fb_dc));
+}
+
+test "raw DSP2 delay machine: host buffer injection and echo" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/delay2/delay2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+
+    // One buffer request, allocated per channel and injected into both
+    // channel states (pointer in cell 0, element count in cell 1).
+    try testing.expectEqual(@as(usize, 1), inst.desc.buffer_count);
+    const len_f: f64 = @floatFromInt(inst.buffer_mem[0][0].len);
+    for (0..2) |ch| {
+        const base = ch * MAX_STATE;
+        const ptr_bits: *align(8) const usize = @ptrCast(@alignCast(&inst.state_buf[base]));
+        try testing.expectEqual(@intFromPtr(inst.buffer_mem[0][ch].ptr), ptr_bits.*);
+        const len_cell: *align(8) const f64 = @ptrCast(@alignCast(&inst.state_buf[base + 8]));
+        try testing.expectEqual(len_f, len_cell.*);
+    }
+
+    // Impulse in the first block, silence after: the wet tap must come back
+    // roughly one delay time later, and only on the channel that got fed.
+    const block = 512;
+    var in_l = [_]f32{0} ** block;
+    var in_r = [_]f32{0} ** block;
+    in_l[0] = 0.9;
+    const in_ports = [_][*]const f32{ &in_l, &in_r };
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = block;
+    ctx.audio_in = @ptrCast(&in_ports[0]);
+    ctx.audio_in_count = 2;
+
+    var l = [_]f32{0} ** block;
+    var r = [_]f32{0} ** block;
+    var echo_l: f64 = 0;
+    var echo_r: f64 = 0;
+    var blk: usize = 0;
+    while (blk < 48) : (blk += 1) {
+        testRender(mach, &ctx, &l, &r);
+        if (blk == 0) {
+            in_l[0] = 0; // impulse only once
+            try testing.expect(l[0] > 0.4); // dry portion passes immediately
+        } else {
+            for (l) |x| echo_l = @max(echo_l, @abs(x));
+            for (r) |x| echo_r = @max(echo_r, @abs(x));
+        }
+        for (l, r) |sl, sr| {
+            try testing.expect(std.math.isFinite(sl));
+            try testing.expect(std.math.isFinite(sr));
+        }
+    }
+    try testing.expect(echo_l > 0.05); // wet repeat arrived
+    try testing.expect(echo_r < 0.0001); // R state/ring independent of L
 }
 
 test "raw machine presets: scan factory, save round-trip, apply restores" {

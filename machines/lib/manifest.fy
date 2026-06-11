@@ -43,6 +43,7 @@ struct: MachineDesc
   ptr consts         ( ConstDesc chain or 0 )
   ptr note-pitch     ( int flag: note-on gets raw MIDI pitch, not Hz )
   ptr note-labels    ( NoteLabelDesc chain or 0 — drum-lane piano roll )
+  ptr buffers        ( BufferDesc chain or 0 — host-allocated audio buffers )
 ;
 
 struct: ControlDesc
@@ -67,6 +68,7 @@ struct: CellDesc    ptr next  ptr weight  ptr items ;
 struct: ItemDesc    ptr next  ptr name  ptr weight ;
 struct: ConstDesc   ptr next  ptr offset  ptr value ;
 struct: NoteLabelDesc ptr next  ptr pitch  ptr label ;
+struct: BufferDesc  ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr seconds ;
 
 ( --- builder state ------------------------------------------------ )
 :: _mf-md         8 alloc ;
@@ -79,6 +81,7 @@ struct: NoteLabelDesc ptr next  ptr pitch  ptr label ;
 :: _mf-last-item  8 alloc ;
 :: _mf-last-const 8 alloc ;
 :: _mf-last-nl    8 alloc ;
+:: _mf-last-buf   8 alloc ;
 
 : _mf-md@ _mf-md @64 ;
 
@@ -104,6 +107,7 @@ struct: NoteLabelDesc ptr next  ptr pitch  ptr label ;
   0 _mf-last-item !64
   0 _mf-last-const !64
   0 _mf-last-nl !64
+  0 _mf-last-buf !64
 ;
 
 : render!        ( str -- ) cstr-new _mf-md@ MachineDesc.render! drop ;
@@ -236,6 +240,25 @@ struct: NoteLabelDesc ptr next  ptr pitch  ptr label ;
   [ dup _mf-last-item @64 ItemDesc.next! drop ]
   ifte
   _mf-last-item !64
+;
+
+( --- host-allocated buffers ---------------------------------------- )
+( Request an audio-rate f64 buffer from the host: per channel, the host
+  allocates ceil[seconds * sample-rate] zeroed f64 cells at machine
+  create, then writes the base pointer and the element count into that
+  channel's STATE at the two introspected field offsets. Kernels read
+  them back with p@64 / f@64 and index with f@i / f!i. )
+: buffer  ( name ptr-offset len-offset seconds -- )
+  BufferDesc.alloc
+  BufferDesc.seconds!
+  BufferDesc.len-offset!
+  BufferDesc.ptr-offset!
+  swap cstr-new swap BufferDesc.name!
+  _mf-last-buf @64 0 =
+  [ dup _mf-md@ MachineDesc.buffers! drop ]
+  [ dup _mf-last-buf @64 BufferDesc.next! drop ]
+  ifte
+  _mf-last-buf !64
 ;
 
 ( --- params constants ---------------------------------------------- )
