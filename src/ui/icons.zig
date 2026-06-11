@@ -43,6 +43,8 @@ pub const Icon = enum(u21) {
     lock_open = 0xe306,
     eye = 0xe220,
     eye_slash = 0xe224,
+    plugs_connected = 0xeb5a,
+    plugs = 0xeb56,
     note_pencil = 0xe34c,
     arrow_clockwise = 0xe036,
 

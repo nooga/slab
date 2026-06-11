@@ -174,6 +174,7 @@ pub fn openContextMenu(key: u64, r: c.rl.Rectangle, m: Mouse) bool {
     context_key = key;
     context_x = m.x;
     context_y = m.y;
+    menu_just_opened = true; // the opening right-click is not an outside click
     menu_armed = false;
     menu_open_mx = m.x;
     menu_open_my = m.y;
