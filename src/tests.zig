@@ -1389,11 +1389,50 @@ test "dsp2: composition repeated caller loops with auto-advanced output" {
     try std.testing.expect(fy.isCompositionWord("t-rep"));
 
     var slots: Fy.Dsp2RawRepeatedSlots = .{};
-    var caller = try fy.compileDsp2CompositionCaller("t-rep", &slots, true);
+    var caller = try fy.compileDsp2CompositionCaller("t-rep", &slots, true, false);
     var out = [_]f64{0} ** 4;
     const args = [_]Fy.Dsp2RawArg{.{ .ptr = @intFromPtr(&out[0]) }};
     _ = try caller.call(4, &args);
     for (out) |v| try std.testing.expectApproxEqAbs(1.5, v, 0.000000000001);
+}
+
+test "dsp2: 4-arg composition caller with auto-advanced out and in" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    // Effect ABI shape: out state params in. Stage 1 accumulates the input
+    // into state, stage 2 writes state + params gain to out.
+    _ = try fy.run(
+        \\dsp2: t-fx-acc | state in | state f@64 in f@64 f+ state f!64 drop2 ;
+        \\dsp2: t-fx-out | out state params | state f@64 params f@64 f* out f!64 drop2 drop ;
+        \\dsp2: t-fx
+        \\  | out state params in |
+        \\  state in call: t-fx-acc
+        \\  out state params call: t-fx-out
+        \\;
+    );
+
+    try std.testing.expect(fy.isCompositionWord("t-fx"));
+
+    var slots: Fy.Dsp2RawRepeatedSlots = .{};
+    var caller = try fy.compileDsp2CompositionCaller("t-fx", &slots, true, true);
+    var out = [_]f64{0} ** 4;
+    const in = [_]f64{ 1.0, 2.0, 3.0, 4.0 };
+    var state: f64 = 0;
+    var params: f64 = 10.0;
+    const args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out[0]) },
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+        .{ .ptr = @intFromPtr(&in[0]) },
+    };
+    _ = try caller.call(4, &args);
+    // running sums 1,3,6,10 × gain 10
+    try std.testing.expectApproxEqAbs(10.0, out[0], 0.000000000001);
+    try std.testing.expectApproxEqAbs(30.0, out[1], 0.000000000001);
+    try std.testing.expectApproxEqAbs(60.0, out[2], 0.000000000001);
+    try std.testing.expectApproxEqAbs(100.0, out[3], 0.000000000001);
 }
 
 test "struct/ustruct introspection: size, field offsets, field sizes" {

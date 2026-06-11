@@ -1379,11 +1379,13 @@ pub const Fy = struct {
         name: []const u8,
         slots: *Dsp2RawRepeatedSlots,
         auto_advance_out: bool,
+        auto_advance_arg3: bool,
     ) !Dsp2RawRepeatedCaller {
         const word = self.userWords.get(name) orelse return error.UnknownWord;
         const calls = word.dsp2_calls orelse return error.UnsupportedDsp2RawBody;
         const arity = word.c;
-        if (arity == 0 or arity > 3) return error.RegisterExhausted;
+        if (arity == 0 or arity > 4) return error.RegisterExhausted;
+        if (auto_advance_arg3 and arity <= 3) return error.RegisterExhausted;
 
         var code = compat.ArrayList(u32).init(self.fyalloc);
         errdefer code.deinit();
@@ -1394,6 +1396,7 @@ pub const Fy = struct {
         try code.append(Asm.@"mov x29, sp");
         try code.append(Asm.@"stp x21, x22, [sp, #0x10]!");
         try code.append(Asm.@".rpush Xn"(23));
+        try code.append(Asm.@".rpush Xn"(24));
         try code.append(Asm.sub_sp_imm(80));
         inline for (0..8) |i| {
             try code.append(Asm.str_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
@@ -1404,10 +1407,11 @@ pub const Fy = struct {
         // counter = iterations (slots @0) -> frame[64]
         try code.append(Asm.ldr_x_imm(9, 18, 0));
         try code.append(Asm.str_x_imm(9, 31, 64));
-        // stash pointer args from slots arg_bits[0..arity] (slots @8,16,24)
+        // stash pointer args from slots arg_bits[0..arity] (slots @8,16,24,32)
         if (arity >= 1) try code.append(Asm.ldr_x_imm(21, 18, 8));
         if (arity >= 2) try code.append(Asm.ldr_x_imm(22, 18, 16));
         if (arity >= 3) try code.append(Asm.ldr_x_imm(23, 18, 24));
+        if (arity >= 4) try code.append(Asm.ldr_x_imm(24, 18, 32));
 
         const loop_pos = code.items.len;
         for (calls) |call| {
@@ -1422,6 +1426,9 @@ pub const Fy = struct {
         if (auto_advance_out) {
             try code.append(Asm.add_imm(21, 21, 8));
         }
+        if (auto_advance_arg3) {
+            try code.append(Asm.add_imm(24, 24, 8));
+        }
         // counter-- ; loop while != 0
         try code.append(Asm.ldr_x_imm(9, 31, 64));
         try code.append(Asm.@"subs Xn, Xn, #imm"(9, 1));
@@ -1434,6 +1441,7 @@ pub const Fy = struct {
             try code.append(Asm.ldr_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
         }
         try code.append(Asm.add_sp_imm(80));
+        try code.append(Asm.@".rpop Xn"(24));
         try code.append(Asm.@".rpop Xn"(23));
         try code.append(Asm.@"ldp x21, x22, [sp], #0x10");
         try code.append(Asm.@"ldp x29, x30, [sp], #0x10");
@@ -5707,16 +5715,16 @@ pub const Fy = struct {
         /// Emit a pure-composition word: a sequence of `args call: stage`. Each
         /// stage is a real call (blr) with a fresh 32-register budget; stages
         /// communicate through voice-state memory. The composition word stashes
-        /// its 1..3 pointer args in callee-saved x21/x22/x23 (which raw stage
-        /// bodies never touch) and marshals them into x0.. before each call.
+        /// its 1..4 pointer args in x21/x22/x23/x24 (reserved — raw stage
+        /// bodies never touch them) and marshals them into x0.. before each call.
         fn compileDsp2Composition(self: *Compiler, w: []const u8, program: *Dsp2.Program, frames: []const Dsp2LocalFrame) Error!void {
             if (frames.len != 1) {
                 self.setError("dsp2 call: composition needs exactly one | | frame", .{});
                 return Error.UnknownWord;
             }
             const arity = frames[0].len;
-            if (arity == 0 or arity > 3) {
-                self.setError("dsp2 call: composition supports 1..3 pointer args", .{});
+            if (arity == 0 or arity > 4) {
+                self.setError("dsp2 call: composition supports 1..4 pointer args", .{});
                 return Error.UnknownWord;
             }
 
@@ -5788,10 +5796,12 @@ pub const Fy = struct {
                 try code.append(Asm.str_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
             }
             try code.append(Asm.@".rpush Xn"(23));
-            // Stash incoming pointer args x0..x(arity-1) -> x21,x22,x23.
+            try code.append(Asm.@".rpush Xn"(24));
+            // Stash incoming pointer args x0..x(arity-1) -> x21..x24.
             if (arity >= 1) try code.append(Asm.movReg(21, 0));
             if (arity >= 2) try code.append(Asm.movReg(22, 1));
             if (arity >= 3) try code.append(Asm.movReg(23, 2));
+            if (arity >= 4) try code.append(Asm.movReg(24, 3));
             // Calls.
             for (calls.items) |call| {
                 var j: usize = 0;
@@ -5803,6 +5813,7 @@ pub const Fy = struct {
                 try code.append(Asm.@"blr Xn"(9));
             }
             // Epilogue.
+            try code.append(Asm.@".rpop Xn"(24));
             try code.append(Asm.@".rpop Xn"(23));
             inline for (0..8) |i| {
                 try code.append(Asm.ldr_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
