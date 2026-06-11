@@ -36,7 +36,15 @@ var context_y: f32 = 0;
 // as an outside-click that immediately closes it (button dropdowns open
 // below the cursor, not at it).
 var menu_just_opened: bool = false;
-const MAX_CONTEXT_ITEMS: usize = 16;
+// The opening click must not select: a clamped menu can land under the
+// cursor, and releasing the opening press would instantly pick a row.
+// The menu arms once that press is released; before that, a release only
+// selects if the cursor clearly dragged away from the opening point
+// (deliberate press-drag-release selection still works).
+var menu_armed: bool = true;
+var menu_open_mx: f32 = 0;
+var menu_open_my: f32 = 0;
+const MAX_CONTEXT_ITEMS: usize = 40;
 var context_draw_items: [MAX_CONTEXT_ITEMS]MenuItem = undefined;
 var context_draw_len: usize = 0;
 var context_draw_active: bool = false;
@@ -130,6 +138,9 @@ pub fn openContextMenu(key: u64, r: c.rl.Rectangle, m: Mouse) bool {
     context_key = key;
     context_x = m.x;
     context_y = m.y;
+    menu_armed = false;
+    menu_open_mx = m.x;
+    menu_open_my = m.y;
     cancelDrag();
     return true;
 }
@@ -145,6 +156,9 @@ pub fn openMenuAt(key: u64, x: f32, y: f32) void {
     context_x = x;
     context_y = y;
     menu_just_opened = true;
+    menu_armed = false;
+    menu_open_mx = @floatFromInt(c.rl.GetMouseX());
+    menu_open_my = @floatFromInt(c.rl.GetMouseY());
     cancelDrag();
 }
 
@@ -185,10 +199,13 @@ fn menuTick(key: u64, items: []const MenuItem) ?usize {
         if (contains(row, frame_mouse.x, frame_mouse.y) and item.enabled and frame_mouse.left_released) clicked = i;
     }
 
-    if (clicked != null) {
+    const dragged = @abs(frame_mouse.x - menu_open_mx) + @abs(frame_mouse.y - menu_open_my) > 8;
+    if (clicked != null and (menu_armed or dragged)) {
         closeContextMenu();
         return clicked;
     }
+    if (!menu_armed and !frame_mouse.left_down) menu_armed = true;
+    clicked = null;
     if (menu_just_opened) {
         menu_just_opened = false;
     } else if ((frame_mouse.left_pressed or frame_mouse.right_pressed) and !contains(r, frame_mouse.x, frame_mouse.y)) {

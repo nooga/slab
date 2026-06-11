@@ -14,9 +14,18 @@ machines/instrument/tal-u-no/
 ├── params.struct       params struct layout (required)
 ├── panel.fy            UI words (required)
 ├── dsp.fy              process word + kernels (required)
-├── preset/             *.preset files (optional)
+├── presets/            *.preset files (optional)
 └── assets/             wavetables, samples, IRs (optional)
 ```
+
+**Presets (implemented):** one file per preset at
+`machines/<name>/presets/<preset>.preset` — plain `id|value` lines keyed
+by the manifest's stable control ids, values in real units (Hz, seconds;
+switches store the option index) so retuning a knob range never moves a
+saved sound. Factory presets are checked-in files; "Save preset" in the
+titlebar chip writes `user-N.preset` to the same directory. The picker
+menus and apply-by-index share one contract: the directory scan is
+sorted by name.
 
 Kind is inferred from the parent directory: `instrument/`,
 `effect/`, `note/` (transformers / generators), `utility/`

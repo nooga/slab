@@ -547,6 +547,10 @@ pub fn main() !void {
                         status.set("Effect failed: {s}", .{@errorName(err)});
                         continue;
                     };
+                    if (mbres.add_preset) |pi| {
+                        const fx = &dev.effects[dev.effect_count - 1];
+                        if (fx.apply_preset) |ap| ap(fx.state, pi);
+                    }
                     dirty = true;
                     status.set("Added {s}", .{entry.nameSlice()});
                 } else {
@@ -554,6 +558,9 @@ pub fn main() !void {
                         std.log.err("instantiate machine failed: {s}", .{@errorName(err)});
                         continue;
                     };
+                    if (mbres.add_preset) |pi| {
+                        if (dev.machine.apply_preset) |ap| ap(dev.machine.state, pi);
+                    }
                     dirty = true;
                     status.set("Assigned {s}", .{entry.nameSlice()});
                     const nm = entry.nameSlice();
@@ -585,6 +592,18 @@ pub fn main() !void {
                 dev.removeEffect(alloc, fx_i);
                 dirty = true;
                 status.set("Removed effect", .{});
+            };
+        }
+        if (mbres.save_preset) {
+            if (!bay_is_bus) if (bay_dev) |dev| {
+                if (dev.machine.save_preset) |save| {
+                    if (save(dev.machine.state)) |idx| {
+                        dirty = true;
+                        status.set("Saved preset {s}", .{if (dev.machine.preset_name) |name| name(dev.machine.state, idx) else ""});
+                    } else {
+                        status.set("Preset save failed", .{});
+                    }
+                }
             };
         }
         if (mbres.preset_index) |preset| {

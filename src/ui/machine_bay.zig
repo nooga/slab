@@ -9,23 +9,31 @@ const widgets = @import("widgets.zig");
 const Track = @import("../track.zig").Track;
 const registry_mod = @import("../machine_registry.zig");
 const Registry = registry_mod.Registry;
+const presets_mod = @import("../presets.zig");
 
 pub const Result = struct {
     minimize: bool = false,
     close: bool = false,
     poly_voices: ?u8 = null,
     preset_index: ?u8 = null,
+    save_preset: bool = false, // save the instrument's current knobs as a preset
     add_machine: ?usize = null, // registry index to assign to the selected track
+    add_preset: ?u8 = null, // preset (by sorted index) to apply after add
     remove_machine: bool = false, // delete the instrument on the selected track
     remove_effect: ?usize = null, // delete effect [i] on the selected track
 };
 
 const ADD_MENU_KEY: u64 = 0x4d414444; // "MADD"
+const ADD_PRESET_MENU_KEY: u64 = 0x4d505245; // "MPRE"
+const PRESET_MENU_KEY: u64 = 0x50524553; // "PRES"
+const SAVE_ITEM_ID: u32 = 9001;
+const DEFAULT_ITEM_ID: u32 = 9000;
+
+// Two-stage add: a picked machine with presets opens a second menu.
+var add_pending_idx: ?usize = null;
+var add_pending_list: presets_mod.List = .{};
 
 var poly_dropdown_track: ?usize = null;
-// Which instrument's preset dropdown is open, keyed by machine pointer (the
-// bay shows one device at a time; pointer identity survives selection change).
-var preset_dropdown_mach: ?*const @import("../machine.zig").Machine = null;
 var bay_scroll_x: f32 = 0; // horizontal scroll of the device chain
 
 // Note-activity LED glow, keyed by track index. Bumped to 1.0 when the
@@ -77,6 +85,7 @@ fn drawNoteLed(r: c.rl.Rectangle, glow: f32, m: widgets.Mouse) void {
 }
 
 fn presetReservedW(mach: *const @import("../machine.zig").Machine) f32 {
+    if (mach.save_preset != null) return theme.size(78) + 2;
     if (mach.preset_count) |cf| {
         if (cf(mach.state) > 0) return theme.size(78);
     }
@@ -133,10 +142,16 @@ fn drawDeviceBar(
     return res;
 }
 
+const AddPick = struct {
+    reg_idx: usize,
+    preset: ?u8 = null,
+};
+
 // "+" button at the left of the machine-bay titlebar → machine picker menu.
-// Returns the chosen registry index when an item is clicked.
-fn drawAddButton(btn: c.rl.Rectangle, reg: *const Registry, m: widgets.Mouse) ?usize {
-    const open = widgets.menuOpen(ADD_MENU_KEY);
+// Picking a machine whose preset directory is non-empty opens a second
+// menu to add it with a preset applied ("(default)" skips).
+fn drawAddButton(btn: c.rl.Rectangle, reg: *const Registry, m: widgets.Mouse) ?AddPick {
+    const open = widgets.menuOpen(ADD_MENU_KEY) or widgets.menuOpen(ADD_PRESET_MENU_KEY);
     const hover = widgets.contains(btn, m.x, m.y) and !widgets.hasActiveDrag();
     const fill = if (open or hover) theme.slab_hi else theme.slab_fill;
     widgets.bevelRaised(btn, fill, theme.slab_hi, theme.slab_lo);
@@ -144,13 +159,41 @@ fn drawAddButton(btn: c.rl.Rectangle, reg: *const Registry, m: widgets.Mouse) ?u
     widgets.drawIcon(.plus, btn.x + (btn.width - isz) / 2, btn.y + (btn.height - isz) / 2, isz, theme.text_fg);
     widgets.tooltip(btn, "Add machine", m);
     if (hover and m.left_pressed and !open) widgets.openMenuAt(ADD_MENU_KEY, btn.x, btn.y + btn.height);
+
     var items: [registry_mod.MAX_MACHINES]widgets.MenuItem = undefined;
     var n: usize = 0;
     for (reg.entries[0..reg.count], 0..) |*e, i| {
         items[n] = .{ .label = e.nameZ(), .id = @intCast(i) };
         n += 1;
     }
-    if (widgets.menuPickId(ADD_MENU_KEY, items[0..n], m)) |id| return @intCast(id);
+    if (widgets.menuPickId(ADD_MENU_KEY, items[0..n], m)) |id| {
+        var dbuf: [512]u8 = undefined;
+        const list = if (presets_mod.dirFromMachinePath(&dbuf, reg.entries[id].pathSlice())) |dir|
+            presets_mod.scan(dir)
+        else
+            presets_mod.List{};
+        if (list.count == 0) return .{ .reg_idx = @intCast(id) };
+        add_pending_idx = @intCast(id);
+        add_pending_list = list;
+        widgets.openMenuAt(ADD_PRESET_MENU_KEY, btn.x, btn.y + btn.height);
+        return null;
+    }
+
+    if (add_pending_idx) |pending| {
+        var pitems: [presets_mod.MAX_PRESETS + 1]widgets.MenuItem = undefined;
+        pitems[0] = .{ .label = "(default)", .id = DEFAULT_ITEM_ID };
+        for (add_pending_list.names[0..add_pending_list.count], 0..) |*pn, i| {
+            pitems[1 + i] = .{ .label = pn.z(), .id = @intCast(i) };
+        }
+        if (widgets.menuPickId(ADD_PRESET_MENU_KEY, pitems[0 .. 1 + add_pending_list.count], m)) |sel| {
+            add_pending_idx = null;
+            return .{
+                .reg_idx = pending,
+                .preset = if (sel == DEFAULT_ITEM_ID) null else @intCast(sel),
+            };
+        }
+        if (!widgets.menuOpen(ADD_PRESET_MENU_KEY)) add_pending_idx = null;
+    }
     return null;
 }
 
@@ -177,7 +220,10 @@ pub fn draw(r: c.rl.Rectangle, device: ?*Track, track_idx: ?usize, is_bus: bool,
     if (!is_bus and t.machine_idx == null) {
         const res = drawPlaceholder(r, header_h, false, "no machine — click + to add one", m);
         result.minimize = res.minimize;
-        if (drawAddButton(widgets.rect(r.x, r.y, header_h, header_h), reg, m)) |i| result.add_machine = i;
+        if (drawAddButton(widgets.rect(r.x, r.y, header_h, header_h), reg, m)) |pick| {
+            result.add_machine = pick.reg_idx;
+            result.add_preset = pick.preset;
+        }
         return result;
     }
 
@@ -249,9 +295,9 @@ pub fn draw(r: c.rl.Rectangle, device: ?*Track, track_idx: ?usize, is_bus: bool,
             if (!inst_enabled) c.rl.DrawRectangleRec(inst_rect, c.rl.ColorAlpha(theme.bg, 0.45));
         }
         if (t.machine_idx != null) {
-            if (drawPresetDropdown(machineControlsRect(inst_rect, t.machine.panel_w), &t.machine, header_h, m)) |preset| {
-                result.preset_index = preset;
-            }
+            const pa = drawPresetChip(machineControlsRect(inst_rect, t.machine.panel_w), &t.machine, header_h, m);
+            if (pa.apply) |preset| result.preset_index = preset;
+            if (pa.save) result.save_preset = true;
         }
         x += inst_pw;
     }
@@ -293,7 +339,10 @@ pub fn draw(r: c.rl.Rectangle, device: ?*Track, track_idx: ?usize, is_bus: bool,
         result.minimize = res.minimize;
     }
     if (plus_x + header_h <= r.x + r.width) {
-        if (drawAddButton(widgets.rect(plus_x, r.y, header_h, header_h), reg, m)) |i| result.add_machine = i;
+        if (drawAddButton(widgets.rect(plus_x, r.y, header_h, header_h), reg, m)) |pick| {
+            result.add_machine = pick.reg_idx;
+            result.add_preset = pick.preset;
+        }
     }
 
     // ── Minimap (only when the chain overflows the bay) ──────────────
@@ -330,49 +379,54 @@ fn machineControlsRect(panel: c.rl.Rectangle, panel_w: f32) c.rl.Rectangle {
     return widgets.rect(panel.x, panel.y, visible_w, panel.height);
 }
 
-fn drawPresetDropdown(panel: c.rl.Rectangle, mach: *const @import("../machine.zig").Machine, header_h: f32, m: widgets.Mouse) ?u8 {
-    const count_fn = mach.preset_count orelse return null;
-    const name_fn = mach.preset_name orelse return null;
-    const count = count_fn(mach.state);
-    if (count == 0) return null;
+const PresetAction = struct {
+    apply: ?u8 = null,
+    save: bool = false,
+};
 
-    const open_here = preset_dropdown_mach == mach;
+// Titlebar preset chip → shared widget menu: preset list (sorted index
+// contract with the machine's own scan) and, for machines that can save,
+// a "Save preset" row that snapshots the current knobs.
+fn drawPresetChip(panel: c.rl.Rectangle, mach: *const @import("../machine.zig").Machine, header_h: f32, m: widgets.Mouse) PresetAction {
+    const count: usize = if (mach.preset_count) |cf| cf(mach.state) else 0;
+    const can_save = mach.save_preset != null;
+    if (count == 0 and !can_save) return .{};
+    const name_fn = mach.preset_name;
+
+    const key = widgets.keyFromIds(PRESET_MENU_KEY, @intFromPtr(mach.state), 1);
+    const open_here = widgets.menuOpen(key);
     const w = theme.size(78);
     const h = @min(header_h, panel.height);
     const r = widgets.rect(panel.x + panel.width - w, panel.y, w, h);
     const hover = widgets.contains(r, m.x, m.y) and !widgets.hasActiveDrag();
     const pressed = hover and m.left_down;
-    const clicked = hover and m.left_released;
     const fill = if (pressed) theme.slab_lo else if (hover or open_here) theme.slab_hi else theme.slab_fill;
     widgets.bevelRaised(r, fill, theme.slab_hi, theme.slab_lo);
     widgets.drawLabelF("PRESET", r.x + 4, r.y + (r.height - theme.fsTiny()) / 2 - 1, theme.fsTiny(), theme.text_fg);
     widgets.drawLabelF("v", r.x + r.width - 8, r.y + (r.height - theme.fsTiny()) / 2 - 1, theme.fsTiny(), theme.text_dim);
     widgets.tooltip(r, "Preset", m);
-    if (clicked) {
-        preset_dropdown_mach = if (open_here) null else mach;
-    }
+    if (hover and m.left_pressed and !open_here) widgets.openMenuAt(key, r.x, r.y + r.height);
 
-    if (preset_dropdown_mach == mach) {
-        const row_h = theme.size(18);
-        const menu = widgets.rect(r.x, r.y + r.height + 1, r.width, row_h * @as(f32, @floatFromInt(count)) + 2);
-        c.rl.DrawRectangleRec(menu, theme.slab_edge);
-        c.rl.DrawRectangleRec(widgets.rect(menu.x + 1, menu.y + 1, menu.width - 2, menu.height - 2), theme.pane_bg);
-        var i: u8 = 0;
-        while (i < count) : (i += 1) {
-            const row = widgets.rect(menu.x + 1, menu.y + 1 + @as(f32, @floatFromInt(i)) * row_h, menu.width - 2, row_h);
-            const row_hover = widgets.contains(row, m.x, m.y);
-            if (row_hover) c.rl.DrawRectangleRec(row, theme.slab_hi);
-            widgets.drawLabelF(name_fn(mach.state, i), row.x + 5, row.y + (row.height - theme.fsBody()) / 2 - 1, theme.fsBody(), theme.text_fg);
-            if (row_hover and m.left_released) {
-                preset_dropdown_mach = null;
-                return i;
-            }
-        }
-        if (m.left_pressed and !widgets.contains(menu, m.x, m.y) and !widgets.contains(r, m.x, m.y)) {
-            preset_dropdown_mach = null;
-        }
+    var items: [presets_mod.MAX_PRESETS + 2]widgets.MenuItem = undefined;
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < count and n < items.len) : (i += 1) {
+        items[n] = .{ .label = if (name_fn) |nf| nf(mach.state, @intCast(i)) else "?", .id = @intCast(i) };
+        n += 1;
     }
-    return null;
+    if (can_save) {
+        if (n > 0) {
+            items[n] = .{ .separator = true };
+            n += 1;
+        }
+        items[n] = .{ .label = "Save preset", .id = SAVE_ITEM_ID };
+        n += 1;
+    }
+    if (widgets.menuPickId(key, items[0..n], m)) |id| {
+        if (id == SAVE_ITEM_ID) return .{ .save = true };
+        return .{ .apply = @intCast(id) };
+    }
+    return .{};
 }
 
 fn drawPolyDropdown(panel: c.rl.Rectangle, track_idx: usize, voices: u8, header_h: f32, m: widgets.Mouse) ?u8 {
@@ -389,7 +443,6 @@ fn drawPolyDropdown(panel: c.rl.Rectangle, track_idx: usize, voices: u8, header_
     widgets.tooltip(r, "Polyphony mode", m);
     if (clicked) {
         poly_dropdown_track = if (poly_dropdown_track != null and poly_dropdown_track.? == track_idx) null else track_idx;
-        preset_dropdown_mach = null;
     }
 
     if (poly_dropdown_track != null and poly_dropdown_track.? == track_idx) {

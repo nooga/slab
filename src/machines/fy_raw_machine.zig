@@ -14,6 +14,7 @@ const machine = @import("../machine.zig");
 const fy_host_mod = @import("../fy_host.zig");
 const FyHost = fy_host_mod.FyHost;
 const machine_desc = @import("../machine_desc.zig");
+const presets_mod = @import("../presets.zig");
 const theme = @import("../ui/theme.zig");
 const widgets = @import("../ui/widgets.zig");
 
@@ -57,6 +58,9 @@ pub const FyRawMachine = struct {
     raw_control_bits: [MAX_CONTROLS]std.atomic.Value(u32) = undefined,
     panel_w: f32 = 128,
     failed: bool = false,
+    preset_dir: [512]u8 = [_]u8{0} ** 512,
+    preset_dir_len: usize = 0,
+    presets: presets_mod.List = .{},
 
     pub fn create(alloc: std.mem.Allocator, path: []const u8) !*FyRawMachine {
         const self = try alloc.create(FyRawMachine);
@@ -81,6 +85,10 @@ pub const FyRawMachine = struct {
             .desc = desc,
             .panel_w = desc.panel_w,
         };
+        if (presets_mod.dirFromMachinePath(self.preset_dir[0..], path)) |dir| {
+            self.preset_dir_len = dir.len;
+            self.presets = presets_mod.scan(dir);
+        }
         try self.compileCallers();
         self.initRawControls();
         return self;
@@ -97,7 +105,15 @@ pub const FyRawMachine = struct {
             .panel_w = self.panel_w,
             .host_titlebar = true,
             .note_labels = self.desc.noteLabels(),
+            .preset_count = presetCountImpl,
+            .preset_name = presetNameImpl,
+            .apply_preset = applyPresetImpl,
+            .save_preset = savePresetImpl,
         };
+    }
+
+    fn presetDir(self: *const FyRawMachine) []const u8 {
+        return self.preset_dir[0..self.preset_dir_len];
     }
 
     fn statePtr(self: *FyRawMachine) usize {
@@ -237,6 +253,78 @@ pub const FyRawMachine = struct {
         return ptr.*;
     }
 };
+
+fn presetCountImpl(state: *anyopaque) u8 {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    return @intCast(@min(self.presets.count, 255));
+}
+
+fn presetNameImpl(state: *anyopaque, index: u8) [*:0]const u8 {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    if (index >= self.presets.count) return "";
+    return self.presets.names[index].z();
+}
+
+// Apply = parse `id|value` lines and store each matching control's value
+// (clamped via valueToNorm; switches store the option index raw). Runs on
+// the UI thread; the audio thread sees the atomics next block.
+fn applyPresetImpl(state: *anyopaque, index: u8) void {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    if (index >= self.presets.count) return;
+    var fbuf: [presets_mod.MAX_FILE]u8 = undefined;
+    const data = presets_mod.readFileBuf(&fbuf, self.presetDir(), self.presets.names[index].slice()) orelse return;
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |line| {
+        const pair = presets_mod.parseLine(line) orelse continue;
+        for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
+            if (!std.mem.eql(u8, ctl.idSlice(), pair.id)) continue;
+            switch (ctl.kind) {
+                .switch_sel => {
+                    const hi: f64 = @floatFromInt(@max(ctl.option_count, 1) - 1);
+                    self.setControlRaw(i, @floatCast(std.math.clamp(pair.value, 0, hi)));
+                },
+                else => self.setControlNorm(i, valueToNorm(ctl.*, pair.value)),
+            }
+            break;
+        }
+    }
+}
+
+// Save the current control values as `user-N.preset` (first free N) and
+// rescan so the new preset shows up immediately.
+fn savePresetImpl(state: *anyopaque) ?u8 {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    if (self.preset_dir_len == 0) return null;
+
+    var name_buf: [presets_mod.MAX_NAME]u8 = undefined;
+    var n: usize = 1;
+    const name = blk: while (n < 100) : (n += 1) {
+        const candidate = std.fmt.bufPrint(&name_buf, "user-{d}", .{n}) catch return null;
+        if (!self.presets.contains(candidate)) break :blk candidate;
+    } else return null;
+
+    var content: [presets_mod.MAX_FILE]u8 = undefined;
+    var used: usize = 0;
+    {
+        const line = std.fmt.bufPrint(content[used..], "# {s} preset\n", .{self.desc.nameSlice()}) catch return null;
+        used += line.len;
+    }
+    for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
+        const value: f64 = switch (ctl.kind) {
+            .switch_sel => @floatFromInt(switchIndex(ctl.*, self.controlNorm(i))),
+            else => normToValue(ctl.*, self.controlNorm(i)),
+        };
+        const line = std.fmt.bufPrint(content[used..], "{s}|{d:.9}\n", .{ ctl.idSlice(), value }) catch return null;
+        used += line.len;
+    }
+    if (!presets_mod.writeFile(self.presetDir(), name, content[0..used])) return null;
+
+    self.presets = presets_mod.scan(self.presetDir());
+    for (self.presets.names[0..self.presets.count], 0..) |*pn, i| {
+        if (std.mem.eql(u8, pn.slice(), name)) return @intCast(i);
+    }
+    return null;
+}
 
 fn validateWord(host: *FyHost, word: []const u8) !void {
     // Composition (`call:`) words have no value-graph raw body to report —
@@ -910,4 +998,29 @@ test "raw DSP2 MS-20 fills the svf profile region in fy (no Zig derive)" {
     try testing.expect(inst.readParamF64(svf_fb_dc) < 0.01);
     try testing.expect(inst.readParamF64(svf_out_dc) > 0.0);
     try testing.expect(inst.readParamF64(svf_out_dc) < inst.readParamF64(svf_fb_dc));
+}
+
+test "raw machine presets: scan factory, save round-trip, apply restores" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/drum2/drum2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+
+    // Factory presets present and sorted.
+    try testing.expect(inst.presets.count >= 2);
+    try testing.expect(inst.presets.contains("808-boom"));
+    try testing.expect(inst.presets.contains("909-punch"));
+
+    // Move a knob, save, perturb, apply — value comes back.
+    inst.setControlNorm(0, 0.25);
+    const before = normToValue(inst.desc.controls[0], inst.controlNorm(0));
+    const idx = savePresetImpl(inst) orelse return error.PresetSaveFailed;
+    inst.setControlNorm(0, 0.9);
+    applyPresetImpl(inst, idx);
+    const after = normToValue(inst.desc.controls[0], inst.controlNorm(0));
+    try testing.expectApproxEqAbs(before, after, 0.001);
+
+    // Clean up the user-N file the save created.
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/{s}.preset", .{ inst.presetDir(), inst.presets.names[idx].slice() });
+    fy_host_mod.deleteFilePosix(path);
 }
