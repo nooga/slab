@@ -1444,3 +1444,22 @@ test "dsp2: ustruct introspection constants resolve as int consts" {
     _ = try fy.callDsp2RawRepeatedWithArgsNoResult("k-ic-third", 1, &args);
     try std.testing.expectEqual(@as(f64, 3.5), out);
 }
+
+test "dsp2: f@i / f!i runtime-indexed f64 access" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    _ = try fy.run(
+        \\dsp2: k-ring-rot | out base idx | base idx f@i  base idx 1.0 f+ f@i f+  out f!64  base idx f@i  base 0.5 f!i  drop2 drop ;
+    );
+    var cells = [_]f64{ 10.0, 20.0, 30.0, 40.0 };
+    var out: f64 = 0;
+    const args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out) },
+        .{ .ptr = @intFromPtr(&cells[0]) },
+        .{ .f64 = 1.0 },
+    };
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("k-ring-rot", 1, &args);
+    try std.testing.expectEqual(@as(f64, 50.0), out); // cells[1] + cells[2]
+    try std.testing.expectEqual(@as(f64, 20.0), cells[0]); // stored old cells[1] at idx 0.5 -> floor 0
+    try std.testing.expectEqual(@as(f64, 20.0), cells[1]);
+}

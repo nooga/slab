@@ -24,6 +24,7 @@ const Op = enum {
     int_const,
     f64_const,
     ptr_add,
+    ptr_add_idx, // base ptr + floor(f64 index) * 8 — runtime element addressing
     load_f64,
     fadd,
     fsub,
@@ -218,6 +219,27 @@ pub const Builder = struct {
             try self.expectTy(ptr, .ptr);
             try self.expectTy(value, .f64);
             try self.stores.append(.{ .ptr = ptr, .value = value });
+            return;
+        }
+        if (std.mem.eql(u8, word, "f@i")) {
+            const idx = try self.pop();
+            const base = try self.pop();
+            try self.expectTy(base, .ptr);
+            try self.expectTy(idx, .f64);
+            const pa = try self.addValue(.{ .op = .ptr_add_idx, .ty = .ptr, .a = base, .b = idx });
+            const id = try self.addValue(.{ .op = .load_f64, .ty = .f64, .a = pa });
+            try self.stack.append(id);
+            return;
+        }
+        if (std.mem.eql(u8, word, "f!i")) {
+            const idx = try self.pop();
+            const base = try self.pop();
+            const v = try self.pop();
+            try self.expectTy(base, .ptr);
+            try self.expectTy(idx, .f64);
+            try self.expectTy(v, .f64);
+            const pa = try self.addValue(.{ .op = .ptr_add_idx, .ty = .ptr, .a = base, .b = idx });
+            try self.stores.append(.{ .ptr = pa, .value = v });
             return;
         }
         if (std.mem.eql(u8, word, "f+")) {
@@ -436,6 +458,7 @@ pub const Builder = struct {
         for (self.values.items) |v| {
             switch (v.op) {
                 .load_f64, .ptr_add => if (v.a == id) return true,
+                .ptr_add_idx => if (v.a == id) return true,
                 .fms20_lpf4, .fms20_lpf4_cubic, .fms20_svf => if (v.a == id or v.b == id) return true,
                 else => {},
             }
@@ -608,7 +631,7 @@ pub const Builder = struct {
             switch (value.op) {
                 .arg, .int_const, .f64_const => {},
                 .ptr_add, .load_f64, .fwrap01, .ffrac, .fcapramp => remaining_uses[value.a] += 1,
-                .fadd, .fsub, .fmul, .fdiv, .fpolyblep => {
+                .ptr_add_idx, .fadd, .fsub, .fmul, .fdiv, .fpolyblep => {
                     remaining_uses[value.a] += 1;
                     remaining_uses[value.b] += 1;
                 },
@@ -966,6 +989,16 @@ const Codegen = struct {
                 const base = try self.valueX(value.a);
                 try self.out.append(Asm.add_imm(reg, base, @intCast(value.int_value)));
                 self.consumeValue(value.a);
+            },
+            .ptr_add_idx => {
+                const base = try self.valueX(value.a);
+                const idx = try self.valueD(value.b);
+                const xi = try self.allocX();
+                try self.out.append(Asm.@"fcvtzs Xd, Dn"(xi, idx));
+                try self.out.append(Asm.@"add Xd, Xn, Xm, lsl #3"(reg, base, xi));
+                self.releaseX(xi);
+                self.consumeValue(value.a);
+                self.consumeValue(value.b);
             },
             else => return Error.TypeMismatch,
         }

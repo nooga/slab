@@ -387,6 +387,11 @@ pub fn @"scvtf Dd, Xn"(d: u5, n: u5) u32 {
 
 // FCVTZS Xd, Dn — double-precision float to signed integer, toward zero
 // Encoding: 0x9E780000 | Rn<<5 | Rd
+/// ADD Xd, Xn, Xm, LSL #3 — base + index*8, the f64 indexed-address step.
+pub fn @"add Xd, Xn, Xm, lsl #3"(d: u5, n: u5, m: u5) u32 {
+    return 0x8B000C00 | (@as(u32, m) << 16) | (@as(u32, n) << 5) | @as(u32, d);
+}
+
 pub fn @"fcvtzs Xd, Dn"(d: u5, n: u5) u32 {
     return 0x9E780000 | @as(u32, d) | (@as(u32, n) << 5);
 }
