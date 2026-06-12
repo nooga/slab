@@ -47,6 +47,7 @@ struct: MachineDesc
   ptr channel-cell   ( int state offset + 1, or 0 — host writes channel index )
   ptr detector-cell  ( int state offset + 1, or 0 — host writes pointer to a
                        per-block detector buffer: max abs of both inputs )
+  ptr voices         ( int voice count for voice-sample machines, 0 = mono )
 ;
 
 struct: ControlDesc
@@ -114,6 +115,7 @@ struct: BufferDesc  ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr seco
 ;
 
 : render!        ( str -- ) cstr-new _mf-md@ MachineDesc.render! drop ;
+: voices!        ( n -- ) _mf-md@ MachineDesc.voices! drop ;
 : prepare!       ( str -- ) cstr-new _mf-md@ MachineDesc.prepare! drop ;
 : note-on!       ( str -- ) cstr-new _mf-md@ MachineDesc.note-on! drop ;
 : note-off!      ( str -- ) cstr-new _mf-md@ MachineDesc.note-off! drop ;

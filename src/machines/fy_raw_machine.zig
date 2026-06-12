@@ -20,6 +20,9 @@ const widgets = @import("../ui/widgets.zig");
 
 const MAX_STATE = 1024;
 const MAX_PARAMS = 1024;
+// State regions: polyphonic voice machines get one per voice, effect
+// machines use two (L/R). Region index is injected at channel_cell.
+const MAX_REGIONS = 8;
 // Host-allocated buffers are sized in seconds at the highest sample rate we
 // run at; kernels read the element count back from state and clamp, so a
 // lower device rate just means extra headroom.
@@ -38,10 +41,10 @@ const Display = machine_desc.Display;
 pub const FyRawMachine = struct {
     host: *FyHost,
     desc: machine_desc.Desc,
-    // Two state regions: effect machines run L through region 0 and R through
-    // region 1 so per-channel state (filters, delay write heads) never
-    // cross-talks. Voice machines use region 0 only.
-    state_buf: [2 * MAX_STATE]u8 align(8) = [_]u8{0} ** (2 * MAX_STATE),
+    // Per-region state: effect machines run L through region 0 and R through
+    // region 1 so per-channel state never cross-talks; polyphonic voice
+    // machines get one region per voice.
+    state_buf: [MAX_REGIONS * MAX_STATE]u8 align(8) = [_]u8{0} ** (MAX_REGIONS * MAX_STATE),
     params_buf: [MAX_PARAMS]u8 align(8) = [_]u8{0} ** MAX_PARAMS,
     mono_buf: [MAX_BLOCK]f64 align(8) = [_]f64{0} ** MAX_BLOCK,
     in_l_buf: [MAX_BLOCK]f64 align(8) = [_]f64{0} ** MAX_BLOCK,
@@ -76,6 +79,14 @@ pub const FyRawMachine = struct {
     // Stereo-linked detector trace (manifest `detector-cell`): filled per
     // block with max(|L|,|R|), read by both channels for linked dynamics.
     det_buf: [MAX_BLOCK]f64 align(8) = [_]f64{0} ** MAX_BLOCK,
+    // Voice allocator (voice machines with desc.voices > 1). Voices are
+    // never freed — like the Juno-106, every voice always renders; note-on
+    // takes the oldest un-gated voice, else steals the oldest gated one.
+    // note_id is -1 throughout the sequencer, so matching is by pitch.
+    voice_pitch: [MAX_REGIONS]f32 = [_]f32{-1} ** MAX_REGIONS,
+    voice_gate: [MAX_REGIONS]bool = [_]bool{false} ** MAX_REGIONS,
+    voice_age: [MAX_REGIONS]u64 = [_]u64{0} ** MAX_REGIONS,
+    age_counter: u64 = 0,
 
     pub fn create(alloc: std.mem.Allocator, path: []const u8) !*FyRawMachine {
         const self = try alloc.create(FyRawMachine);
@@ -88,6 +99,10 @@ pub const FyRawMachine = struct {
         try host.compileFile(path);
         const desc = try machine_desc.read(host);
         if (desc.state_size > MAX_STATE or desc.params_size > MAX_PARAMS) return error.RawMachineStorageTooLarge;
+        if (desc.voices > MAX_REGIONS) return error.RawMachineTooManyVoices;
+        // Host buffers are allocated per channel (2); polyphonic machines
+        // would need per-voice rings — not wired yet.
+        if (desc.voices > 1 and desc.buffer_count > 0) return error.RawMachineVoicesWithBuffers;
 
         try validateWord(host, desc.renderWord());
         if (desc.prepareWord()) |word| try validateWord(host, word);
@@ -145,7 +160,9 @@ pub const FyRawMachine = struct {
             }
         }
         if (self.desc.channel_cell) |off| {
-            for (0..2) |ch| self.writeStateF64(ch, off, @floatFromInt(ch));
+            // Region index: channel for effects, voice index for synths
+            // (per-voice detune spread reads this).
+            for (0..self.regionCount()) |reg| self.writeStateF64(reg, off, @floatFromInt(reg));
         }
         if (self.desc.detector_cell) |off| {
             for (0..2) |ch| self.writeStateUsize(ch, off, @intFromPtr(&self.det_buf[0]));
@@ -193,6 +210,10 @@ pub const FyRawMachine = struct {
 
     fn statePtrCh(self: *FyRawMachine, ch: usize) usize {
         return @intFromPtr(&self.state_buf[ch * MAX_STATE]);
+    }
+
+    fn regionCount(self: *const FyRawMachine) usize {
+        return if (self.desc.mode == .voice_sample) @max(self.desc.voices, 1) else 2;
     }
 
     fn paramsPtr(self: *FyRawMachine) usize {
@@ -493,11 +514,11 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
 
 fn callPrepare(self: *FyRawMachine, sample_rate: f64) !void {
     const caller = if (self.prepare_caller) |*c_| c_ else return;
-    // Effect machines keep per-channel state, so prepare runs once per region.
-    const channels: usize = if (self.desc.mode == .voice_sample) 1 else 2;
-    for (0..channels) |ch| {
+    // Prepare runs once per state region: per channel for effects, per
+    // voice for polyphonic machines.
+    for (0..self.regionCount()) |reg| {
         const args = [_]Fy.Dsp2RawArg{
-            .{ .ptr = self.statePtrCh(ch) },
+            .{ .ptr = self.statePtrCh(reg) },
             .{ .ptr = self.paramsPtr() },
             .{ .f64 = sample_rate },
         };
@@ -537,34 +558,104 @@ fn renderVoiceSample(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
 fn renderVoiceSegment(self: *FyRawMachine, start: usize, end: usize) !void {
     if (end <= start) return;
     const caller = if (self.render_caller) |*c_| c_ else return error.UnknownWord;
-    const args = [_]Fy.Dsp2RawArg{
-        .{ .ptr = @intFromPtr(&self.mono_buf[start]) },
-        .{ .ptr = self.statePtr() },
-        .{ .ptr = self.paramsPtr() },
-    };
-    _ = try caller.call(@intCast(end - start), &args);
+    // Polyphonic machines render every voice every block (Juno-style — no
+    // freeing, silent voices are cheap and predictable); kernels of
+    // multi-voice machines ACCUMULATE into the host-zeroed out buffer.
+    for (0..self.regionCount()) |voice| {
+        const args = [_]Fy.Dsp2RawArg{
+            .{ .ptr = @intFromPtr(&self.mono_buf[start]) },
+            .{ .ptr = self.statePtrCh(voice) },
+            .{ .ptr = self.paramsPtr() },
+        };
+        _ = try caller.call(@intCast(end - start), &args);
+    }
 }
 
 fn applyNoteEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
     switch (ev.kind) {
         .note_on => {
             if (ev.velocity <= 0) {
-                try callNoteOff(self);
+                try noteOffEvent(self, ev.pitch);
             } else {
-                // note-pitch machines (drums) address slots by raw MIDI pitch.
-                const note_arg = if (self.desc.note_pitch) @as(f64, ev.pitch) else midiToHz(ev.pitch);
-                try callNoteOn(self, note_arg, ev.velocity);
+                try noteOnEvent(self, ev);
             }
         },
-        .note_off, .reset => try callNoteOff(self),
+        .note_off => try noteOffEvent(self, ev.pitch),
+        .reset => {
+            for (0..self.regionCount()) |voice| {
+                self.voice_gate[voice] = false;
+                try callNoteOff(self, voice);
+            }
+        },
         else => {},
     }
 }
 
-fn callNoteOn(self: *FyRawMachine, hz: f64, velocity: f64) !void {
+// Pick a voice: oldest un-gated first, else steal the oldest gated.
+fn allocVoice(self: *FyRawMachine) usize {
+    const n = self.regionCount();
+    var best: usize = 0;
+    var best_age: u64 = std.math.maxInt(u64);
+    var found_free = false;
+    for (0..n) |v| {
+        if (self.voice_gate[v]) continue;
+        if (self.voice_age[v] < best_age) {
+            best = v;
+            best_age = self.voice_age[v];
+            found_free = true;
+        }
+    }
+    if (found_free) return best;
+    best_age = std.math.maxInt(u64);
+    for (0..n) |v| {
+        if (self.voice_age[v] < best_age) {
+            best = v;
+            best_age = self.voice_age[v];
+        }
+    }
+    return best;
+}
+
+fn noteOnEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
+    const voice = allocVoice(self);
+    self.age_counter += 1;
+    self.voice_age[voice] = self.age_counter;
+    self.voice_pitch[voice] = ev.pitch;
+    self.voice_gate[voice] = true;
+    // note-pitch machines (drums) address slots by raw MIDI pitch.
+    const note_arg = if (self.desc.note_pitch) @as(f64, ev.pitch) else midiToHz(ev.pitch);
+    try callNoteOn(self, voice, note_arg, ev.velocity);
+}
+
+// note_id is -1 throughout the sequencer, so note-off matches the newest
+// gated voice holding this pitch. Mono machines just release voice 0.
+fn noteOffEvent(self: *FyRawMachine, pitch: f32) !void {
+    const n = self.regionCount();
+    if (n == 1) {
+        self.voice_gate[0] = false;
+        try callNoteOff(self, 0);
+        return;
+    }
+    var found: ?usize = null;
+    var newest: u64 = 0;
+    for (0..n) |v| {
+        if (!self.voice_gate[v]) continue;
+        if (self.voice_pitch[v] != pitch) continue;
+        if (self.voice_age[v] >= newest) {
+            newest = self.voice_age[v];
+            found = v;
+        }
+    }
+    if (found) |v| {
+        self.voice_gate[v] = false;
+        try callNoteOff(self, v);
+    }
+}
+
+fn callNoteOn(self: *FyRawMachine, voice: usize, hz: f64, velocity: f64) !void {
     const caller = if (self.note_on_caller) |*c_| c_ else return;
     const args = [_]Fy.Dsp2RawArg{
-        .{ .ptr = self.statePtr() },
+        .{ .ptr = self.statePtrCh(voice) },
         .{ .ptr = self.paramsPtr() },
         .{ .f64 = hz },
         .{ .f64 = velocity },
@@ -572,10 +663,10 @@ fn callNoteOn(self: *FyRawMachine, hz: f64, velocity: f64) !void {
     _ = try caller.call(1, &args);
 }
 
-fn callNoteOff(self: *FyRawMachine) !void {
+fn callNoteOff(self: *FyRawMachine, voice: usize) !void {
     const caller = if (self.note_off_caller) |*c_| c_ else return;
     const args = [_]Fy.Dsp2RawArg{
-        .{ .ptr = self.statePtr() },
+        .{ .ptr = self.statePtrCh(voice) },
         .{ .ptr = self.paramsPtr() },
     };
     _ = try caller.call(1, &args);
@@ -652,8 +743,11 @@ fn inputChannels(ctx: *const machine.MachineCtx) struct { ?[*]const f32, ?[*]con
 
 fn resetImpl(state: *anyopaque) void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
-    @memset(self.state_buf[0..self.desc.state_size], 0);
-    @memset(self.state_buf[MAX_STATE..][0..self.desc.state_size], 0);
+    for (0..self.regionCount()) |reg| {
+        @memset(self.state_buf[reg * MAX_STATE ..][0..self.desc.state_size], 0);
+    }
+    @memset(self.voice_gate[0..], false);
+    @memset(self.voice_pitch[0..], -1);
     @memset(self.params_buf[0..self.desc.params_size], 0);
     for (self.buffer_mem[0..self.desc.buffer_count]) |pair| {
         for (pair) |mem| @memset(mem, 0);
@@ -1316,6 +1410,59 @@ test "raw DSP2 chorus machine: inverted-LFO stereo spread" {
     }
     try testing.expect(energy > 1.0);
     try testing.expect(lr_diff > 0.02 * energy);
+}
+
+test "raw DSP2 juno machine: polyphonic chord through the voice pool" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/juno2/juno2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    try testing.expectEqual(@as(usize, 8), inst.desc.voices);
+
+    // C major triad on, then release only the E: C and G keep sounding.
+    var events = [_]machine.NoteEvent{
+        .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = -1, .pitch = 60, .velocity = 0.9 },
+        .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = -1, .pitch = 64, .velocity = 0.9 },
+        .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = -1, .pitch = 67, .velocity = 0.9 },
+    };
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = 512;
+    ctx.note_in = @ptrCast(events[0..].ptr);
+    ctx.note_in_count = events.len;
+
+    var l = [_]f32{0} ** 512;
+    var r = [_]f32{0} ** 512;
+    testRender(mach, &ctx, &l, &r);
+
+    // Three voices gated on distinct pitches.
+    var gated: usize = 0;
+    for (inst.voice_gate[0..8]) |g| {
+        if (g) gated += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), gated);
+
+    // Release the E by pitch.
+    var off = [_]machine.NoteEvent{
+        .{ .sample_offset = 0, .kind = .note_off, .channel = 0, .note_id = -1, .pitch = 64, .velocity = 0 },
+    };
+    ctx.note_in = @ptrCast(off[0..].ptr);
+    ctx.note_in_count = 1;
+    var blk: usize = 0;
+    var energy: f64 = 0;
+    while (blk < 20) : (blk += 1) {
+        testRender(mach, &ctx, &l, &r);
+        ctx.note_in_count = 0; // only the first block carries the off
+        for (l) |x| {
+            try testing.expect(std.math.isFinite(x));
+            energy += @abs(x);
+        }
+    }
+    gated = 0;
+    for (inst.voice_gate[0..8]) |g| {
+        if (g) gated += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), gated);
+    try testing.expect(energy > 5.0); // held C+G still sounding
 }
 
 test "raw machine presets: scan factory, save round-trip, apply restores" {

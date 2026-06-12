@@ -189,6 +189,8 @@ pub const Desc = struct {
     // State offset where the host writes a pointer to the per-block
     // stereo-linked detector buffer (max abs of both inputs per sample).
     detector_cell: ?usize = null,
+    // Voice count for polyphonic voice-sample machines; 1 = mono.
+    voices: usize = 1,
 
     pub fn noteLabels(self: *const Desc) []const machine.NoteLabel {
         return self.note_labels[0..self.note_label_count];
@@ -256,6 +258,7 @@ const MachineDescRaw = extern struct {
     buffers: Fy.Value,
     channel_cell: Fy.Value,
     detector_cell: Fy.Value,
+    voices: Fy.Value,
 };
 
 const ControlRaw = extern struct {
@@ -453,6 +456,9 @@ pub fn read(host: *FyHost) !Desc {
         if (off + 8 > d.state_size) return error.InvalidMachineDesc;
         d.detector_cell = off;
     }
+    const voices = asInt(md.voices);
+    if (voices > 0) d.voices = @intCast(voices);
+    if (d.voices > 1 and d.mode != .voice_sample) return error.InvalidMachineDesc;
 
     var row_it = rawPtr(RowRaw, md.rows);
     while (row_it) |row| : (row_it = rawPtr(RowRaw, row.next)) {

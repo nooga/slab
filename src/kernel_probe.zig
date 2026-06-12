@@ -118,6 +118,10 @@ pub fn main(init: std.process.Init) !void {
         try runChorusCase(alloc, cli, &host);
         return;
     }
+    if (std.mem.eql(u8, cli.case_name, "juno-voice-render")) {
+        try runJunoCase(alloc, cli, &host);
+        return;
+    }
     if (std.mem.eql(u8, cli.case_name, "ms20-voice-render")) {
         try runMs20VoiceCase(alloc, cli, &host);
         return;
@@ -2823,6 +2827,95 @@ fn runPow2Case(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     std.debug.print(
         "kernel {s}:{s} case={s} samples={} ns_per_iter={d:.3} max_err={d:.12}\n",
         .{ cli.kernel, cli.word, cli.case_name, sample_count, metrics.ns_per_iter, max_err },
+    );
+}
+
+// k-juno-voice: one voice, A3 note for 1.5 s then release; ratchets
+// finite output, sensible peak, audible sustain, and a decayed tail.
+fn runJunoCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sr: f64 = @floatFromInt(DRUM_SAMPLE_RATE);
+    const frames: usize = 3 * DRUM_SAMPLE_RATE;
+    const out = try alloc.alloc(f64, frames);
+    defer alloc.free(out);
+    @memset(out, 0);
+
+    var state align(8) = [_]f64{0} ** 24;
+    // JunoParams user defaults: lfo-rate vibrato range saw pulse pwm
+    // pwm-mode sub noise detune hpf cutoff res env-amt lfo-vcf kybd
+    // a d s r vca-mode level (+ derived)
+    var params align(8) = [_]f64{
+        1.5, 0.0,   1.0, 1.0, 0.0,  0.0, 0.0, 0.4, 0.0,  0.0,
+        20.0, 1800.0, 0.15, 0.4, 0.0, 0.3, 0.01, 0.3, 0.6, 0.4,
+        0.0, 0.8,
+        0, 0, 0, 0, 0, 0,
+    };
+
+    const bp_args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&params) }, .{ .f64 = sr } };
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("juno-block-prepare", 1, &bp_args);
+    const on_args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+        .{ .f64 = 220.0 },
+        .{ .f64 = 0.9 },
+    };
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("juno-note-on", 1, &on_args);
+
+    var slots = Fy.Dsp2RawRepeatedSlots{};
+    var caller = try host.fy.compileDsp2CompositionCaller(cli.word, &slots, true, false);
+    const held: usize = 3 * DRUM_SAMPLE_RATE / 2;
+    const args_a = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out[0]) },
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+    };
+    const start = nowNs();
+    _ = try caller.call(@intCast(held), &args_a);
+    const off_args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+    };
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("juno-note-off", 1, &off_args);
+    const args_b = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out[held]) },
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+    };
+    _ = try caller.call(@intCast(frames - held), &args_b);
+    const run_ns = nowNs() - start;
+
+    var metrics = Metrics{};
+    metrics.ns_per_iter = @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(frames));
+    fillSignalMetrics(out, &metrics);
+    for (out) |x| {
+        if (!std.math.isFinite(x)) metrics.nonfinite_count += 1;
+    }
+
+    var sustain_rms: f64 = 0;
+    for (out[DRUM_SAMPLE_RATE .. DRUM_SAMPLE_RATE + DRUM_SAMPLE_RATE / 4]) |x| sustain_rms += x * x;
+    sustain_rms = @sqrt(sustain_rms / @as(f64, @floatFromInt(DRUM_SAMPLE_RATE / 4)));
+    var tail_rms: f64 = 0;
+    for (out[frames - DRUM_SAMPLE_RATE / 4 ..]) |x| tail_rms += x * x;
+    tail_rms = @sqrt(tail_rms / @as(f64, @floatFromInt(DRUM_SAMPLE_RATE / 4)));
+
+    var csv: std.ArrayList(u8) = .empty;
+    defer csv.deinit(alloc);
+    try csv.appendSlice(alloc, "sample,time,out\n");
+    var j: usize = 0;
+    while (j < frames) : (j += 16) {
+        try appendFmt(alloc, &csv, "{d},{d:.9},{d:.9}\n", .{ j, @as(f64, @floatFromInt(j)) / sr, out[j] });
+    }
+    try writeDrumArtifacts(alloc, cli, host, csv.items, metrics, out);
+
+    if (metrics.nonfinite_count != 0 or metrics.peak < 0.05 or metrics.peak > 1.0 or
+        sustain_rms < 0.02 or tail_rms > sustain_rms * 0.02)
+    {
+        std.debug.print("juno ratchet detail: peak={d:.3} sustain_rms={d:.4} tail_rms={d:.6}\n", .{ metrics.peak, sustain_rms, tail_rms });
+        return error.KernelRatchetFailed;
+    }
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} peak={d:.3} sustain_rms={d:.4} tail_rms={d:.6}\n",
+        .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, metrics.peak, sustain_rms, tail_rms },
     );
 }
 
