@@ -2842,9 +2842,10 @@ fn runJunoCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     var state align(8) = [_]f64{0} ** 24;
     // JunoParams user defaults: lfo-rate vibrato range saw pulse pwm
     // pwm-mode sub noise detune hpf cutoff res env-amt lfo-vcf kybd
-    // a d s r vca-mode level (+ derived)
+    // a d s r vca-mode level (+ derived). Pure saw (sub/noise off) so the
+    // pitch-correlation ratchet has an unambiguous 220 Hz period.
     var params align(8) = [_]f64{
-        1.5, 0.0,   1.0, 1.0, 0.0,  0.0, 0.0, 0.4, 0.0,  0.0,
+        1.5, 0.0,   1.0, 1.0, 0.0,  0.0, 0.0, 0.0, 0.0,  0.0,
         20.0, 1800.0, 0.15, 0.4, 0.0, 0.3, 0.01, 0.3, 0.6, 0.4,
         0.0, 0.8,
         0, 0, 0, 0, 0, 0,
@@ -2897,6 +2898,29 @@ fn runJunoCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     for (out[frames - DRUM_SAMPLE_RATE / 4 ..]) |x| tail_rms += x * x;
     tail_rms = @sqrt(tail_rms / @as(f64, @floatFromInt(DRUM_SAMPLE_RATE / 4)));
 
+    // Pitch sanity: the sustain must be PERIODIC at the played note, not
+    // noise — normalized autocorrelation at the 220 Hz lag. (Numeric
+    // peak/RMS ratchets alone cannot tell a saw from noise.)
+    var pitch_corr: f64 = -1;
+    {
+        const seg = out[DRUM_SAMPLE_RATE..][0..8192];
+        var best: f64 = -1;
+        var lag: usize = 210;
+        while (lag <= 228) : (lag += 1) {
+            var num: f64 = 0;
+            var e0: f64 = 0;
+            var e1: f64 = 0;
+            for (seg[0 .. seg.len - lag], seg[lag..]) |a, b| {
+                num += a * b;
+                e0 += a * a;
+                e1 += b * b;
+            }
+            const r = num / @max(@sqrt(e0 * e1), 1e-30);
+            best = @max(best, r);
+        }
+        pitch_corr = best;
+    }
+
     var csv: std.ArrayList(u8) = .empty;
     defer csv.deinit(alloc);
     try csv.appendSlice(alloc, "sample,time,out\n");
@@ -2907,15 +2931,15 @@ fn runJunoCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     try writeDrumArtifacts(alloc, cli, host, csv.items, metrics, out);
 
     if (metrics.nonfinite_count != 0 or metrics.peak < 0.05 or metrics.peak > 1.0 or
-        sustain_rms < 0.02 or tail_rms > sustain_rms * 0.02)
+        sustain_rms < 0.02 or tail_rms > sustain_rms * 0.02 or pitch_corr < 0.6)
     {
-        std.debug.print("juno ratchet detail: peak={d:.3} sustain_rms={d:.4} tail_rms={d:.6}\n", .{ metrics.peak, sustain_rms, tail_rms });
+        std.debug.print("juno ratchet detail: peak={d:.3} sustain_rms={d:.4} tail_rms={d:.6} pitch_corr={d:.3}\n", .{ metrics.peak, sustain_rms, tail_rms, pitch_corr });
         return error.KernelRatchetFailed;
     }
 
     std.debug.print(
-        "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} peak={d:.3} sustain_rms={d:.4} tail_rms={d:.6}\n",
-        .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, metrics.peak, sustain_rms, tail_rms },
+        "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} peak={d:.3} sustain_rms={d:.4} tail_rms={d:.6} pitch_corr={d:.3}\n",
+        .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, metrics.peak, sustain_rms, tail_rms, pitch_corr },
     );
 }
 

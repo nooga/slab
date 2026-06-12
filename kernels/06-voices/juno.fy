@@ -141,19 +141,21 @@ dsp2: v-jn-dco
     0.5  params JunoParams.pwm@ 0.45 f*  f-
     0.5  params JunoParams.pwm@ 0.225 f* 1.0 state JunoState.lfo-out@ f+ f*  f-
   fsel-lt | width |
-  phs dt saw-falling-polyblep params JunoParams.saw-on@ f*
-  phs dt width pulse-polyblep params JunoParams.pulse-on@ f* f+
+  ( each source term is bound before summing - a naked running sum
+    would interleave with the bind values pushed by later | x | frames )
+  phs dt saw-falling-polyblep params JunoParams.saw-on@ f* | osc-saw |
+  phs dt width pulse-polyblep params JunoParams.pulse-on@ f* | osc-pls |
   ( sub: blep square at half rate )
   state JunoState.sub-phase@ dt 0.5 f* phase-advance01 | sph |
   sph state JunoState.sub-phase-p f!64
-  sph  dt 0.5 f*  0.5 pulse-polyblep params JunoParams.sub-level@ f* f+
+  sph  dt 0.5 f*  0.5 pulse-polyblep params JunoParams.sub-level@ f* | osc-sub |
   ( noise: float LCG )
   state JunoState.noise-rng@ 1103515245.0 f* 0.31337 f+ ffrac | rng |
   rng state JunoState.noise-rng-p f!64
-  rng 2.0 f* 1.0 f-  params JunoParams.noise-level@ f*  f+
-  0.32 f*
+  rng 2.0 f* 1.0 f-  params JunoParams.noise-level@ f* | osc-nz |
+  osc-saw osc-pls f+ osc-sub f+ osc-nz f+ 0.32 f*
   state JunoState.osc-mix-p f!64
-  drop2 drop2 drop2 drop
+  drop2 drop2 drop2 drop2 drop2 drop
 ;
 
 ( state params -- : envelope/LFO/tracking-modulated 4-pole, then HPF. )
