@@ -19,7 +19,9 @@ test {
     _ = @import("ms20_svf_test.zig");
 }
 
-pub const MAX_MACHINES = 16;
+// Soft cap used to size UI-side menu arrays; the registry itself is a
+// heap slice and grows by doubling.
+pub const MAX_MACHINES = 64;
 pub const MAX_NAME = 32;
 pub const MAX_PATH = 256;
 pub const MAX_WORD = 64;
@@ -88,12 +90,26 @@ pub const Entry = struct {
 };
 
 pub const Registry = struct {
-    entries: [MAX_MACHINES]Entry = undefined,
+    entries: []Entry = &.{},
+    cap: usize = 0,
     count: usize = 0,
     alloc: std.mem.Allocator,
 
     pub fn init(alloc: std.mem.Allocator) Registry {
         return .{ .alloc = alloc };
+    }
+
+    // Entries are only ever referenced transiently (per frame / during a
+    // load), so doubling reallocation is safe; loads happen on the UI
+    // thread at startup.
+    fn ensureRoom(self: *Registry) !void {
+        if (self.count < self.cap) return;
+        const new_cap = if (self.cap == 0) 16 else self.cap * 2;
+        const new_entries = try self.alloc.alloc(Entry, new_cap);
+        @memcpy(new_entries[0..self.count], self.entries[0..self.count]);
+        if (self.cap != 0) self.alloc.free(self.entries);
+        self.entries = new_entries;
+        self.cap = new_cap;
     }
 
     pub fn instantiate(self: *Registry, idx: usize) !machine.Machine {
@@ -156,6 +172,7 @@ pub const Registry = struct {
                 self.alloc.destroy(host);
             }
         }
+        if (self.cap != 0) self.alloc.free(self.entries);
     }
 
     /// Register a manifest-driven raw machine: compile its .fy file in a
@@ -163,7 +180,7 @@ pub const Registry = struct {
     /// only the header (name, mode, sizes, ports). instantiate() re-reads
     /// the full descriptor on the instance's own host.
     pub fn loadFyMachine(self: *Registry, path: []const u8) !void {
-        if (self.count >= MAX_MACHINES) return error.RegistryFull;
+        try self.ensureRoom();
 
         var host = FyHost.init(self.alloc);
         defer host.deinit();
@@ -196,7 +213,7 @@ pub const Registry = struct {
         ui_word: []const u8,
         panel_w: f32,
     ) !void {
-        if (self.count >= MAX_MACHINES) return error.RegistryFull;
+        try self.ensureRoom();
 
         const host = try self.alloc.create(FyHost);
         errdefer self.alloc.destroy(host);

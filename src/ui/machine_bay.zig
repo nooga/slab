@@ -151,8 +151,10 @@ fn drawAddButton(btn: c.rl.Rectangle, reg: *const Registry, m: widgets.Mouse) ?A
     const isz = theme.fsBody();
     widgets.drawIcon(.plus, btn.x + (btn.width - isz) / 2, btn.y + (btn.height - isz) / 2, isz, theme.text_fg);
     widgets.tooltip(btn, "Add machine", m);
+    // Menu arrays are bounded; the registry itself grows, so clamp.
+    const menu_count = @min(reg.count, registry_mod.MAX_MACHINES);
     if (hover and m.left_pressed and !open) {
-        for (reg.entries[0..reg.count], 0..) |*e, i| {
+        for (reg.entries[0..menu_count], 0..) |*e, i| {
             var dbuf: [512]u8 = undefined;
             add_scan_cache[i] = if (presets_mod.dirFromMachinePath(&dbuf, e.pathSlice())) |dir|
                 presets_mod.scan(dir)
@@ -165,7 +167,7 @@ fn drawAddButton(btn: c.rl.Rectangle, reg: *const Registry, m: widgets.Mouse) ?A
 
     var items: [registry_mod.MAX_MACHINES]widgets.MenuItem = undefined;
     var n: usize = 0;
-    for (reg.entries[0..reg.count], 0..) |*e, i| {
+    for (reg.entries[0..menu_count], 0..) |*e, i| {
         items[n] = .{
             .label = e.nameZ(),
             .id = @intCast(i),
