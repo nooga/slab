@@ -73,6 +73,9 @@ pub const FyRawMachine = struct {
     // channel. Base pointer + element count are injected into each channel's
     // state at the request's introspected offsets.
     buffer_mem: [machine_desc.MAX_BUFFERS][2][]f64 = undefined,
+    // Stereo-linked detector trace (manifest `detector-cell`): filled per
+    // block with max(|L|,|R|), read by both channels for linked dynamics.
+    det_buf: [MAX_BLOCK]f64 align(8) = [_]f64{0} ** MAX_BLOCK,
 
     pub fn create(alloc: std.mem.Allocator, path: []const u8) !*FyRawMachine {
         const self = try alloc.create(FyRawMachine);
@@ -143,6 +146,9 @@ pub const FyRawMachine = struct {
         }
         if (self.desc.channel_cell) |off| {
             for (0..2) |ch| self.writeStateF64(ch, off, @floatFromInt(ch));
+        }
+        if (self.desc.detector_cell) |off| {
+            for (0..2) |ch| self.writeStateUsize(ch, off, @intFromPtr(&self.det_buf[0]));
         }
     }
 
@@ -607,6 +613,11 @@ fn renderEffectBlock(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
     const in_l, const in_r = inputChannels(ctx);
     for (self.in_l_buf[0..l.len], 0..) |*dst, i| dst.* = if (in_l) |p| p[i] else 0;
     for (self.in_r_buf[0..r.len], 0..) |*dst, i| dst.* = if (in_r) |p| p[i] else self.in_l_buf[i];
+    if (self.desc.detector_cell != null) {
+        for (self.det_buf[0..l.len], self.in_l_buf[0..l.len], self.in_r_buf[0..l.len]) |*d, xl, xr| {
+            d.* = @max(@abs(xl), @abs(xr));
+        }
+    }
 
     const args_l = [_]Fy.Dsp2RawArg{
         .{ .ptr = @intFromPtr(&self.out_l_buf[0]) },
@@ -1207,6 +1218,57 @@ test "raw DSP2 reverb machine: channel cell, wide decorrelated tail" {
     try testing.expect(tail_l > 0.5); // the tank rings well past the impulse
     try testing.expect(tail_r > 0.5);
     try testing.expect(lr_diff > 0.1 * tail_l); // channels are decorrelated
+}
+
+test "raw DSP2 compressor machine: stereo-linked gain" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/comp2/comp2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+
+    // Loud tone on L only, quiet tone on R: linked detection means the
+    // loud left channel must pull the quiet right channel down by the
+    // same gain. With per-channel (unlinked) detection R would stay ~1:1.
+    const block = 512;
+    var in_l: [block]f32 = undefined;
+    var in_r: [block]f32 = undefined;
+    const in_ports = [_][*]const f32{ &in_l, &in_r };
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = block;
+    ctx.audio_in = @ptrCast(&in_ports[0]);
+    ctx.audio_in_count = 2;
+
+    var l: [block]f32 = undefined;
+    var r: [block]f32 = undefined;
+    var phase: f64 = 0;
+    var blk: usize = 0;
+    var r_gain_db: f64 = 0;
+    while (blk < 40) : (blk += 1) {
+        for (&in_l, &in_r) |*a, *b| {
+            const s = @sin(phase);
+            phase += 2.0 * std.math.pi * 1000.0 / 48_000.0;
+            a.* = @floatCast(0.9 * s); // ~ -1 dBFS: far over the -18 dB threshold
+            b.* = @floatCast(0.02 * s); // ~ -34 dBFS: far under it
+        }
+        testRender(mach, &ctx, &l, &r);
+        if (blk == 39) {
+            var in_e: f64 = 0;
+            var out_e: f64 = 0;
+            for (in_r, r) |x, y| {
+                in_e += @as(f64, x) * x;
+                out_e += @as(f64, y) * y;
+            }
+            r_gain_db = 10.0 * std.math.log10(out_e / in_e);
+        }
+        for (l, r) |sl, sr| {
+            try testing.expect(std.math.isFinite(sl));
+            try testing.expect(std.math.isFinite(sr));
+        }
+    }
+    // Default: thresh -18, ratio 4 -> the ~-1 dBFS left drives ~12 dB of
+    // reduction, which must land on the quiet right channel too.
+    try testing.expect(r_gain_db < -8.0);
+    try testing.expect(r_gain_db > -20.0);
 }
 
 test "raw machine presets: scan factory, save round-trip, apply restores" {

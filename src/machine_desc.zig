@@ -186,6 +186,9 @@ pub const Desc = struct {
     // State offset where the host writes the channel index (0.0 L / 1.0 R)
     // after buffer injection and reset; null = machine doesn't care.
     channel_cell: ?usize = null,
+    // State offset where the host writes a pointer to the per-block
+    // stereo-linked detector buffer (max abs of both inputs per sample).
+    detector_cell: ?usize = null,
 
     pub fn noteLabels(self: *const Desc) []const machine.NoteLabel {
         return self.note_labels[0..self.note_label_count];
@@ -252,6 +255,7 @@ const MachineDescRaw = extern struct {
     note_labels: Fy.Value,
     buffers: Fy.Value,
     channel_cell: Fy.Value,
+    detector_cell: Fy.Value,
 };
 
 const ControlRaw = extern struct {
@@ -442,6 +446,12 @@ pub fn read(host: *FyHost) !Desc {
         const off: usize = @intCast(chan_cell - 1); // stored +1 so 0 = none
         if (off + 8 > d.state_size) return error.InvalidMachineDesc;
         d.channel_cell = off;
+    }
+    const det_cell = asInt(md.detector_cell);
+    if (det_cell > 0) {
+        const off: usize = @intCast(det_cell - 1);
+        if (off + 8 > d.state_size) return error.InvalidMachineDesc;
+        d.detector_cell = off;
     }
 
     var row_it = rawPtr(RowRaw, md.rows);

@@ -1,0 +1,8 @@
+# comp2 preset
+comp-thresh|-30
+comp-ratio|8
+comp-knee|3
+comp-atk|0.001
+comp-rel|0.09
+comp-makeup|10
+comp-mix|0.45

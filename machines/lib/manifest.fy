@@ -45,6 +45,8 @@ struct: MachineDesc
   ptr note-labels    ( NoteLabelDesc chain or 0 — drum-lane piano roll )
   ptr buffers        ( BufferDesc chain or 0 — host-allocated audio buffers )
   ptr channel-cell   ( int state offset + 1, or 0 — host writes channel index )
+  ptr detector-cell  ( int state offset + 1, or 0 — host writes pointer to a
+                       per-block detector buffer: max abs of both inputs )
 ;
 
 struct: ControlDesc
@@ -268,6 +270,16 @@ struct: BufferDesc  ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr seco
   offsets, slight delay detunes.  Stored as offset+1 so 0 means "none". )
 : channel-cell  ( offset -- )
   1 + _mf-md@ MachineDesc.channel-cell! drop
+;
+
+( The host writes a pointer to a block-length detector buffer — per
+  sample the max of abs of both input channels — into STATE at this
+  introspected offset.  Both channels read the SAME buffer, which is
+  what makes a compressor stereo-linked.  Kernels index it with a
+  sample counter zeroed in their prepare word - prepare runs once per
+  block.  Stored as offset+1 so 0 means "none". )
+: detector-cell  ( offset -- )
+  1 + _mf-md@ MachineDesc.detector-cell! drop
 ;
 
 ( --- params constants ---------------------------------------------- )

@@ -43,7 +43,10 @@ re-injects the pointers. Effect machines get per-channel state regions,
 so L and R own independent rings. A `channel-cell` declaration makes the
 host also write the channel index (0.0 L / 1.0 R) into state, which
 effects use to decorrelate channels (verb2 picks its L/R tap sets and
-LFO phase from it). This is the first concrete instance
+LFO phase from it). A `detector-cell` declaration injects a pointer to a
+host-filled per-block trace of `max(|L|,|R|)` — both channels reading
+one detector is what stereo-links comp2's gain. This is the first
+concrete instance
 of the asset-arena idea in docs/03 — a read-only `asset` sibling for
 samples/IRs/wavetables follows the same pointer-injection shape.
 

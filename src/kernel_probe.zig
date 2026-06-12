@@ -104,6 +104,16 @@ pub fn main(init: std.process.Init) !void {
         try runReverbCase(alloc, cli, &host);
         return;
     }
+    if (std.mem.eql(u8, cli.case_name, "log2-sweep") or
+        std.mem.eql(u8, cli.case_name, "exp2-sweep"))
+    {
+        try runPow2Case(alloc, cli, &host);
+        return;
+    }
+    if (std.mem.eql(u8, cli.case_name, "comp-render")) {
+        try runCompCase(alloc, cli, &host);
+        return;
+    }
     if (std.mem.eql(u8, cli.case_name, "ms20-voice-render")) {
         try runMs20VoiceCase(alloc, cli, &host);
         return;
@@ -2744,6 +2754,212 @@ fn runDelayCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     std.debug.print(
         "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} max_abs_error={d:.12} echo1={d:.3} echo2={d:.3}\n",
         .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, metrics.max_abs_error, first_echo, second_echo },
+    );
+}
+
+// log2-approx / exp2-approx against libm over their full stated domains.
+fn runPow2Case(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const is_log = std.mem.eql(u8, cli.case_name, "log2-sweep");
+    const sample_count: usize = 8192;
+    const xs = try alloc.alloc(f64, sample_count);
+    defer alloc.free(xs);
+    const out = try alloc.alloc(f64, sample_count);
+    defer alloc.free(out);
+    const expected = try alloc.alloc(f64, sample_count);
+    defer alloc.free(expected);
+
+    for (xs, expected, out, 0..) |*x, *exp, *dst, i| {
+        const t = @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(sample_count - 1));
+        if (is_log) {
+            // log sweep of x across [2^-24, 2^24]
+            x.* = std.math.pow(f64, 2.0, -24.0 + 48.0 * t);
+            exp.* = std.math.log2(x.*);
+        } else {
+            x.* = -32.0 + 64.0 * t;
+            exp.* = std.math.pow(f64, 2.0, x.*);
+        }
+        dst.* = 0;
+    }
+
+    const start = nowNs();
+    for (xs, out) |x, *dst| {
+        const args = [_]Fy.Dsp2RawArg{
+            .{ .ptr = @intFromPtr(dst) },
+            .{ .f64 = x },
+        };
+        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, 1, &args);
+    }
+    const run_ns = nowNs() - start;
+
+    // exp2 spans ~19 orders of magnitude — ratchet relative error there,
+    // absolute error for log2.
+    var max_err: f64 = 0;
+    var nonfinite: usize = 0;
+    for (out, expected) |actual, exp| {
+        if (!std.math.isFinite(actual)) nonfinite += 1;
+        const err = if (is_log) @abs(actual - exp) else @abs(actual - exp) / @max(@abs(exp), 1e-30);
+        max_err = @max(max_err, err);
+    }
+
+    var metrics = Metrics{};
+    metrics.ns_per_iter = @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(sample_count));
+    metrics.max_abs_error = max_err;
+    metrics.nonfinite_count = @intCast(nonfinite);
+    fillSignalMetrics(out, &metrics);
+
+    var csv: std.ArrayList(u8) = .empty;
+    defer csv.deinit(alloc);
+    try csv.appendSlice(alloc, "sample,x,out,expected,error\n");
+    for (xs, out, expected, 0..) |x, actual, exp, i| {
+        try appendFmt(alloc, &csv, "{d},{d:.12},{d:.12},{d:.12},{d:.12}\n", .{ i, x, actual, exp, actual - exp });
+    }
+    try writeDrumArtifacts(alloc, cli, host, csv.items, metrics, null);
+    if (nonfinite != 0 or max_err > 0.00001) return error.KernelRatchetFailed;
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} samples={} ns_per_iter={d:.3} max_err={d:.12}\n",
+        .{ cli.kernel, cli.word, cli.case_name, sample_count, metrics.ns_per_iter, max_err },
+    );
+}
+
+// The Zig-side gain computer the kernel must match: soft-knee overshoot
+// in log2 units times slope, all from the same constants.
+fn compExpectedGainDb(level_db: f64, thresh_db: f64, ratio: f64, knee_db: f64) f64 {
+    const l = (level_db - thresh_db) / 6.0205999132796239;
+    const w = @max(knee_db / 6.0205999132796239, 1e-6);
+    const half = w / 2.0;
+    const over = if (l <= -half) 0.0 else if (l >= half) l else (l + half) * (l + half) / (2.0 * w);
+    return over * (1.0 / ratio - 1.0) * 6.0205999132796239;
+}
+
+// k-comp-tick: 1 kHz bursts at stepped levels through the full staged
+// compressor with a host-style detector trace. Ratchets the static curve
+// against the reference gain computer and the attack/release timing.
+fn runCompCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sr: f64 = @floatFromInt(DRUM_SAMPLE_RATE);
+    const burst_len: usize = DRUM_SAMPLE_RATE / 2;
+    const levels_db = [_]f64{ -30.0, -18.0, -12.0, -6.0, 0.0 };
+    const frames: usize = burst_len * levels_db.len;
+
+    const thresh_db = -18.0;
+    const ratio = 4.0;
+    const knee_db = 6.0;
+    const atk_s = 0.005;
+    const rel_s = 0.120;
+
+    const input = try alloc.alloc(f64, frames);
+    defer alloc.free(input);
+    const det = try alloc.alloc(f64, frames);
+    defer alloc.free(det);
+    const out = try alloc.alloc(f64, frames);
+    defer alloc.free(out);
+    @memset(out, 0);
+    for (input, det, 0..) |*x, *d, i| {
+        const level = std.math.pow(f64, 10.0, levels_db[i / burst_len] / 20.0);
+        x.* = level * @sin(2.0 * std.math.pi * 1000.0 * @as(f64, @floatFromInt(i)) / sr);
+        d.* = @abs(x.*);
+    }
+
+    // CompState: detector pointer in cell 0, rest zero.
+    var state align(8) = [_]f64{0} ** 16;
+    @as(*usize, @ptrCast(&state[0])).* = @intFromPtr(det.ptr);
+    // CompParams: thresh ratio knee atk rel makeup mix + derived.
+    var params align(8) = [_]f64{0} ** 16;
+    params[0] = thresh_db;
+    params[1] = ratio;
+    params[2] = knee_db;
+    params[3] = atk_s;
+    params[4] = rel_s;
+    params[5] = 0.0; // makeup
+    params[6] = 1.0; // full wet
+
+    const bp_args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&params) }, .{ .f64 = sr } };
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("comp-block-prepare", 1, &bp_args);
+
+    var slots = Fy.Dsp2RawRepeatedSlots{};
+    var caller = try host.fy.compileDsp2CompositionCaller(cli.word, &slots, true, true);
+    const render_args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out[0]) },
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+        .{ .ptr = @intFromPtr(&input[0]) },
+    };
+    const start = nowNs();
+    _ = try caller.call(@intCast(frames), &render_args);
+    const run_ns = nowNs() - start;
+
+    var metrics = Metrics{};
+    metrics.ns_per_iter = @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(frames));
+    fillSignalMetrics(out, &metrics);
+    for (out) |x| {
+        if (!std.math.isFinite(x)) metrics.nonfinite_count += 1;
+    }
+
+    // Static curve: steady-state gain over the last 100 ms of each burst.
+    var max_curve_err_db: f64 = 0;
+    for (levels_db, 0..) |ldb, bi| {
+        const tail_start = (bi + 1) * burst_len - DRUM_SAMPLE_RATE / 10;
+        const tail_end = (bi + 1) * burst_len;
+        var in_e: f64 = 0;
+        var out_e: f64 = 0;
+        for (input[tail_start..tail_end], out[tail_start..tail_end]) |x, y| {
+            in_e += x * x;
+            out_e += y * y;
+        }
+        const meas_db = 10.0 * std.math.log10(@max(out_e, 1e-30) / @max(in_e, 1e-30));
+        const exp_db = compExpectedGainDb(ldb, thresh_db, ratio, knee_db);
+        max_curve_err_db = @max(max_curve_err_db, @abs(meas_db - exp_db));
+    }
+
+    // Timing: at the -30 -> -18 -> ... -6 dB step (burst 3 onset), gain
+    // reduction should settle within a few attack times. Find when |out|
+    // envelope first comes within 1 dB of its steady tail level.
+    const onset = 3 * burst_len;
+    var settle: usize = 0;
+    {
+        var tail_peak: f64 = 0;
+        for (out[onset + burst_len - DRUM_SAMPLE_RATE / 10 .. onset + burst_len]) |y| tail_peak = @max(tail_peak, @abs(y));
+        const hi = tail_peak * 1.122; // +1 dB
+        var run: usize = 0;
+        var k: usize = onset;
+        var block_peak: f64 = 0;
+        while (k < onset + burst_len) : (k += 1) {
+            block_peak = @max(block_peak, @abs(out[k]));
+            if ((k - onset) % 48 == 47) { // 1 ms windows
+                if (block_peak <= hi) {
+                    run += 1;
+                    if (run >= 3) {
+                        settle = k - onset;
+                        break;
+                    }
+                } else run = 0;
+                block_peak = 0;
+            }
+        }
+    }
+    const settle_s = @as(f64, @floatFromInt(settle)) / sr;
+
+    var csv: std.ArrayList(u8) = .empty;
+    defer csv.deinit(alloc);
+    try csv.appendSlice(alloc, "sample,time,in,out\n");
+    var j: usize = 0;
+    while (j < frames) : (j += 16) {
+        try appendFmt(alloc, &csv, "{d},{d:.9},{d:.9},{d:.9}\n", .{
+            j, @as(f64, @floatFromInt(j)) / sr, input[j], out[j],
+        });
+    }
+    try writeDrumArtifacts(alloc, cli, host, csv.items, metrics, out);
+
+    if (metrics.nonfinite_count != 0 or max_curve_err_db > 1.0 or
+        settle == 0 or settle_s > 10.0 * atk_s)
+    {
+        std.debug.print("comp ratchet detail: curve_err={d:.3}dB settle={d:.4}s\n", .{ max_curve_err_db, settle_s });
+        return error.KernelRatchetFailed;
+    }
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} curve_err={d:.3}dB settle={d:.4}s\n",
+        .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, max_curve_err_db, settle_s },
     );
 }
 
