@@ -114,6 +114,10 @@ pub fn main(init: std.process.Init) !void {
         try runCompCase(alloc, cli, &host);
         return;
     }
+    if (std.mem.eql(u8, cli.case_name, "chorus-render")) {
+        try runChorusCase(alloc, cli, &host);
+        return;
+    }
     if (std.mem.eql(u8, cli.case_name, "ms20-voice-render")) {
         try runMs20VoiceCase(alloc, cli, &host);
         return;
@@ -2819,6 +2823,118 @@ fn runPow2Case(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     std.debug.print(
         "kernel {s}:{s} case={s} samples={} ns_per_iter={d:.3} max_err={d:.12}\n",
         .{ cli.kernel, cli.word, cli.case_name, sample_count, metrics.ns_per_iter, max_err },
+    );
+}
+
+// k-chorus-tick in mode I, full wet, tone wide open: an impulse train
+// recovers the modulated tap's delay per impulse; ratchet the trace
+// against the Juno voicing (center 3.35 ms, depth ±1.8 ms, 0.513 Hz).
+fn runChorusCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sr: f64 = @floatFromInt(DRUM_SAMPLE_RATE);
+    const frames: usize = 5 * DRUM_SAMPLE_RATE;
+    const ring_len: usize = 1152;
+    const spacing: usize = 1024;
+
+    const ring = try alloc.alloc(f64, ring_len);
+    defer alloc.free(ring);
+    @memset(ring, 0);
+    const input = try alloc.alloc(f64, frames);
+    defer alloc.free(input);
+    @memset(input, 0);
+    var k: usize = 0;
+    while (k < frames) : (k += spacing) input[k] = 1.0;
+    const out = try alloc.alloc(f64, frames);
+    defer alloc.free(out);
+    @memset(out, 0);
+
+    var state align(8) = [_]f64{0} ** 8;
+    @as(*usize, @ptrCast(&state[0])).* = @intFromPtr(ring.ptr);
+    state[1] = @floatFromInt(ring_len);
+    state[2] = 0.0; // left channel
+
+    // mode rate-mul depth-mul tone-hz spread mix + derived
+    var params align(8) = [_]f64{ 0.0, 1.0, 1.0, 18000.0, 1.0, 1.0, 0, 0, 0, 0 };
+    const bp_args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&params) }, .{ .f64 = sr } };
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("chorus-block-prepare", 1, &bp_args);
+
+    var slots = Fy.Dsp2RawRepeatedSlots{};
+    var caller = try host.fy.compileDsp2RawRepeatedCaller(
+        cli.word,
+        &slots,
+        &.{ .ptr, .ptr, .ptr, .ptr },
+        true,
+        true,
+    );
+    const render_args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out[0]) },
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+        .{ .ptr = @intFromPtr(&input[0]) },
+    };
+    const start = nowNs();
+    _ = try caller.call(@intCast(frames), &render_args);
+    const run_ns = nowNs() - start;
+
+    var metrics = Metrics{};
+    metrics.ns_per_iter = @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(frames));
+    fillSignalMetrics(out, &metrics);
+    for (out) |x| {
+        if (!std.math.isFinite(x)) metrics.nonfinite_count += 1;
+    }
+
+    // Recover the delay per impulse: centroid of |out| within the window
+    // after each impulse (the wet response is 1-2 interpolated taps).
+    var delays = std.ArrayList(f64).empty;
+    defer delays.deinit(alloc);
+    k = 0;
+    while (k + spacing <= frames) : (k += spacing) {
+        var num: f64 = 0;
+        var den: f64 = 0;
+        for (out[k .. k + spacing], 0..) |y, off| {
+            const a = @abs(y);
+            num += a * @as(f64, @floatFromInt(off));
+            den += a;
+        }
+        if (den > 0.01) try delays.append(alloc, num / den);
+    }
+    var d_min: f64 = 1e9;
+    var d_max: f64 = -1e9;
+    for (delays.items) |d| {
+        d_min = @min(d_min, d);
+        d_max = @max(d_max, d);
+    }
+    // LFO period from mean crossings of the delay trace.
+    var crossings: usize = 0;
+    const d_mid = (d_min + d_max) / 2.0;
+    for (delays.items[1..], delays.items[0 .. delays.items.len - 1]) |b, a| {
+        if ((a < d_mid) != (b < d_mid)) crossings += 1;
+    }
+    const trace_dur = @as(f64, @floatFromInt(delays.items.len * spacing)) / sr;
+    const rate_hz = @as(f64, @floatFromInt(crossings)) / 2.0 / trace_dur;
+
+    const center = 0.00335 * sr;
+    const depth = 0.0018 * sr;
+
+    var csv: std.ArrayList(u8) = .empty;
+    defer csv.deinit(alloc);
+    try csv.appendSlice(alloc, "impulse,time,delay_samples\n");
+    for (delays.items, 0..) |d, i| {
+        try appendFmt(alloc, &csv, "{d},{d:.6},{d:.3}\n", .{ i, @as(f64, @floatFromInt(i * spacing)) / sr, d });
+    }
+    try writeDrumArtifacts(alloc, cli, host, csv.items, metrics, out);
+
+    if (metrics.nonfinite_count != 0 or
+        @abs(d_min - (center - depth)) > 12.0 or
+        @abs(d_max - (center + depth)) > 12.0 or
+        @abs(rate_hz - 0.513) > 0.12)
+    {
+        std.debug.print("chorus ratchet detail: dmin={d:.1} dmax={d:.1} (want {d:.1}..{d:.1}) rate={d:.3}Hz\n", .{ d_min, d_max, center - depth, center + depth, rate_hz });
+        return error.KernelRatchetFailed;
+    }
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} delay={d:.1}..{d:.1}spl rate={d:.3}Hz\n",
+        .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, d_min, d_max, rate_hz },
     );
 }
 

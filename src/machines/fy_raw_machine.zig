@@ -1271,6 +1271,53 @@ test "raw DSP2 compressor machine: stereo-linked gain" {
     try testing.expect(r_gain_db > -20.0);
 }
 
+test "raw DSP2 chorus machine: inverted-LFO stereo spread" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/chorus2/chorus2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+
+    // Mono tone in: with SPREAD = 1 the two channels' modulated taps run
+    // mirrored LFOs, so the wet outputs must differ; the difference is
+    // the whole point of the Juno stereo.
+    const block = 512;
+    var in_l: [block]f32 = undefined;
+    var in_r: [block]f32 = undefined;
+    const in_ports = [_][*]const f32{ &in_l, &in_r };
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = block;
+    ctx.audio_in = @ptrCast(&in_ports[0]);
+    ctx.audio_in_count = 2;
+
+    var l: [block]f32 = undefined;
+    var r: [block]f32 = undefined;
+    var phase: f64 = 0;
+    var energy: f64 = 0;
+    var lr_diff: f64 = 0;
+    var blk: usize = 0;
+    while (blk < 30) : (blk += 1) {
+        for (&in_l, &in_r) |*a, *b| {
+            const s: f32 = @floatCast(0.5 * @sin(phase));
+            phase += 2.0 * std.math.pi * 440.0 / 48_000.0;
+            a.* = s;
+            b.* = s;
+        }
+        testRender(mach, &ctx, &l, &r);
+        if (blk >= 10) {
+            for (l, r) |sl, sr| {
+                energy += @abs(sl);
+                lr_diff += @abs(sl - sr);
+            }
+        }
+        for (l, r) |sl, sr| {
+            try testing.expect(std.math.isFinite(sl));
+            try testing.expect(std.math.isFinite(sr));
+        }
+    }
+    try testing.expect(energy > 1.0);
+    try testing.expect(lr_diff > 0.02 * energy);
+}
+
 test "raw machine presets: scan factory, save round-trip, apply restores" {
     const inst = try FyRawMachine.create(testing.allocator, "machines/drum2/drum2.fy");
     const mach = inst.machineInterface();
