@@ -183,6 +183,9 @@ pub const Desc = struct {
     note_label_count: usize = 0,
     buffers: [MAX_BUFFERS]BufferReq = undefined,
     buffer_count: usize = 0,
+    // State offset where the host writes the channel index (0.0 L / 1.0 R)
+    // after buffer injection and reset; null = machine doesn't care.
+    channel_cell: ?usize = null,
 
     pub fn noteLabels(self: *const Desc) []const machine.NoteLabel {
         return self.note_labels[0..self.note_label_count];
@@ -248,6 +251,7 @@ const MachineDescRaw = extern struct {
     note_pitch: Fy.Value,
     note_labels: Fy.Value,
     buffers: Fy.Value,
+    channel_cell: Fy.Value,
 };
 
 const ControlRaw = extern struct {
@@ -431,6 +435,13 @@ pub fn read(host: *FyHost) !Desc {
         if (out.seconds <= 0 or out.ptr_offset == out.len_offset) return error.InvalidMachineDesc;
         if (out.ptr_offset + 8 > d.state_size or out.len_offset + 8 > d.state_size) return error.InvalidMachineDesc;
         d.buffer_count += 1;
+    }
+
+    const chan_cell = asInt(md.channel_cell);
+    if (chan_cell > 0) {
+        const off: usize = @intCast(chan_cell - 1); // stored +1 so 0 = none
+        if (off + 8 > d.state_size) return error.InvalidMachineDesc;
+        d.channel_cell = off;
     }
 
     var row_it = rawPtr(RowRaw, md.rows);

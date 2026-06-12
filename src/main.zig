@@ -331,6 +331,7 @@ pub fn main() !void {
     try reg.loadFyMachine("machines/ms20/ms20.fy");
     try reg.loadFyMachine("machines/drum2/drum2.fy");
     try reg.loadFyMachine("machines/delay2/delay2.fy");
+    try reg.loadFyMachine("machines/verb2/verb2.fy");
 
     // Hot-patch server on the sine machine's host.
     defer fy_host_mod.deleteFilePosix(".fy-port");

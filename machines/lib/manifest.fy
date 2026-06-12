@@ -44,6 +44,7 @@ struct: MachineDesc
   ptr note-pitch     ( int flag: note-on gets raw MIDI pitch, not Hz )
   ptr note-labels    ( NoteLabelDesc chain or 0 — drum-lane piano roll )
   ptr buffers        ( BufferDesc chain or 0 — host-allocated audio buffers )
+  ptr channel-cell   ( int state offset + 1, or 0 — host writes channel index )
 ;
 
 struct: ControlDesc
@@ -259,6 +260,14 @@ struct: BufferDesc  ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr seco
   [ dup _mf-last-buf @64 BufferDesc.next! drop ]
   ifte
   _mf-last-buf !64
+;
+
+( The host writes the channel index — 0.0 left, 1.0 right — into STATE at
+  this introspected offset after buffer injection and after every reset.
+  Effect machines use it to decorrelate the two channels: LFO phase
+  offsets, slight delay detunes.  Stored as offset+1 so 0 means "none". )
+: channel-cell  ( offset -- )
+  1 + _mf-md@ MachineDesc.channel-cell! drop
 ;
 
 ( --- params constants ---------------------------------------------- )

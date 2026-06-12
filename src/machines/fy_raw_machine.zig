@@ -131,7 +131,8 @@ pub const FyRawMachine = struct {
     }
 
     // Write each buffer's base pointer + element count into both channel
-    // states. Must rerun after any state memset (reset).
+    // states, plus the channel index if requested. Must rerun after any
+    // state memset (reset).
     fn injectBuffers(self: *FyRawMachine) void {
         for (self.desc.buffers[0..self.desc.buffer_count], 0..) |*req, bi| {
             for (0..2) |ch| {
@@ -139,6 +140,9 @@ pub const FyRawMachine = struct {
                 self.writeStateUsize(ch, req.ptr_offset, @intFromPtr(mem.ptr));
                 self.writeStateF64(ch, req.len_offset, @floatFromInt(mem.len));
             }
+        }
+        if (self.desc.channel_cell) |off| {
+            for (0..2) |ch| self.writeStateF64(ch, off, @floatFromInt(ch));
         }
     }
 
@@ -235,6 +239,7 @@ pub const FyRawMachine = struct {
                         self.desc.renderWord(),
                         &self.render_slots,
                         true,
+                        false,
                     );
                 } else {
                     self.render_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
@@ -248,13 +253,24 @@ pub const FyRawMachine = struct {
             },
             .effect_sample => {},
             .effect_block => {
-                self.effect_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
-                    self.desc.renderWord(),
-                    &self.effect_slots,
-                    &.{ .ptr, .ptr, .ptr, .ptr },
-                    true,
-                    true,
-                );
+                // Staged effects (`call:` compositions, e.g. the reverb tank)
+                // go through the composition caller; both advance out + in.
+                if (self.host.fy.isCompositionWord(self.desc.renderWord())) {
+                    self.effect_caller = try self.host.fy.compileDsp2CompositionCaller(
+                        self.desc.renderWord(),
+                        &self.effect_slots,
+                        true,
+                        true,
+                    );
+                } else {
+                    self.effect_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
+                        self.desc.renderWord(),
+                        &self.effect_slots,
+                        &.{ .ptr, .ptr, .ptr, .ptr },
+                        true,
+                        true,
+                    );
+                }
             },
         }
     }
@@ -1135,6 +1151,62 @@ test "raw DSP2 delay machine: host buffer injection and echo" {
     }
     try testing.expect(echo_l > 0.05); // wet repeat arrived
     try testing.expect(echo_r < 0.0001); // R state/ring independent of L
+}
+
+test "raw DSP2 reverb machine: channel cell, wide decorrelated tail" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/verb2/verb2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+
+    // Channel index injected at the manifest's channel-cell offset (16:
+    // after buf ptr + len) — 0.0 left, 1.0 right.
+    const cell = inst.desc.channel_cell.?;
+    const l_chan: *align(8) const f64 = @ptrCast(@alignCast(&inst.state_buf[cell]));
+    const r_chan: *align(8) const f64 = @ptrCast(@alignCast(&inst.state_buf[MAX_STATE + cell]));
+    try testing.expectEqual(@as(f64, 0.0), l_chan.*);
+    try testing.expectEqual(@as(f64, 1.0), r_chan.*);
+
+    // Centered impulse in: the tail must ring on both channels but differ
+    // between them (decorrelated tap sets), and stay finite.
+    const block = 512;
+    var in_l = [_]f32{0} ** block;
+    var in_r = [_]f32{0} ** block;
+    in_l[0] = 0.9;
+    in_r[0] = 0.9;
+    const in_ports = [_][*]const f32{ &in_l, &in_r };
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = block;
+    ctx.audio_in = @ptrCast(&in_ports[0]);
+    ctx.audio_in_count = 2;
+
+    var l = [_]f32{0} ** block;
+    var r = [_]f32{0} ** block;
+    var tail_l: f64 = 0;
+    var tail_r: f64 = 0;
+    var lr_diff: f64 = 0;
+    var blk: usize = 0;
+    while (blk < 60) : (blk += 1) {
+        testRender(mach, &ctx, &l, &r);
+        if (blk == 0) {
+            in_l[0] = 0;
+            in_r[0] = 0;
+        }
+        if (blk >= 20) {
+            for (l, r) |sl, sr| {
+                tail_l += @abs(sl);
+                tail_r += @abs(sr);
+                lr_diff += @abs(sl - sr);
+            }
+        }
+        for (l, r) |sl, sr| {
+            try testing.expect(std.math.isFinite(sl));
+            try testing.expect(std.math.isFinite(sr));
+        }
+    }
+    try testing.expect(tail_l > 0.5); // the tank rings well past the impulse
+    try testing.expect(tail_r > 0.5);
+    try testing.expect(lr_diff > 0.1 * tail_l); // channels are decorrelated
 }
 
 test "raw machine presets: scan factory, save round-trip, apply restores" {

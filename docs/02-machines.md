@@ -40,7 +40,10 @@ base pointer and element count into that channel's state at the two
 introspected offsets. Kernels read them back with `p@64` / `f@64` and
 index with `f@i` / `f!i`. Reset memsets state, zeroes the buffers, and
 re-injects the pointers. Effect machines get per-channel state regions,
-so L and R own independent rings. This is the first concrete instance
+so L and R own independent rings. A `channel-cell` declaration makes the
+host also write the channel index (0.0 L / 1.0 R) into state, which
+effects use to decorrelate channels (verb2 picks its L/R tap sets and
+LFO phase from it). This is the first concrete instance
 of the asset-arena idea in docs/03 — a read-only `asset` sibling for
 samples/IRs/wavetables follows the same pointer-injection shape.
 

@@ -100,6 +100,10 @@ pub fn main(init: std.process.Init) !void {
         try runDelayCase(alloc, cli, &host);
         return;
     }
+    if (std.mem.eql(u8, cli.case_name, "reverb-render")) {
+        try runReverbCase(alloc, cli, &host);
+        return;
+    }
     if (std.mem.eql(u8, cli.case_name, "ms20-voice-render")) {
         try runMs20VoiceCase(alloc, cli, &host);
         return;
@@ -2564,7 +2568,7 @@ fn runDrumVoiceCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost, cfg: Drum
     var comp_slots = Fy.Dsp2RawRepeatedSlots{};
     var comp_caller: ?Fy.Dsp2RawRepeatedCaller = null;
     if (host.fy.isCompositionWord(cli.word)) {
-        comp_caller = try host.fy.compileDsp2CompositionCaller(cli.word, &comp_slots, true);
+        comp_caller = try host.fy.compileDsp2CompositionCaller(cli.word, &comp_slots, true, false);
     }
 
     const start = nowNs();
@@ -2740,6 +2744,124 @@ fn runDelayCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     std.debug.print(
         "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} max_abs_error={d:.12} echo1={d:.3} echo2={d:.3}\n",
         .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, metrics.max_abs_error, first_echo, second_echo },
+    );
+}
+
+// k-verb-tick: impulse through the plate, full wet. Ratchets: finite,
+// RT60 (Schroeder backward integration) in a plausible plate range for
+// the default decay, and a tail that is actually decaying.
+fn runReverbCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sr: f64 = @floatFromInt(DRUM_SAMPLE_RATE);
+    const frames: usize = 5 * DRUM_SAMPLE_RATE;
+    const ring_len: usize = 86400; // 0.9 s at 96k, matches the manifest request
+
+    const ring = try alloc.alloc(f64, ring_len);
+    defer alloc.free(ring);
+    @memset(ring, 0);
+
+    const input = try alloc.alloc(f64, frames);
+    defer alloc.free(input);
+    @memset(input, 0);
+    input[0] = 1.0;
+    const out = try alloc.alloc(f64, frames);
+    defer alloc.free(out);
+    @memset(out, 0);
+
+    // VerbState mirror: ring pointer, element count, channel id up front.
+    var state align(8) = [_]f64{0} ** 64;
+    @as(*usize, @ptrCast(&state[0])).* = @intFromPtr(ring.ptr);
+    state[1] = @floatFromInt(ring_len);
+    state[2] = 0.0; // left channel
+
+    // VerbParams: predelay decay damp-hz bw-hz mix mod-depth mod-rate + derived.
+    var params align(8) = [_]f64{0} ** 32;
+    params[0] = 0.01;
+    params[1] = 0.75;
+    params[2] = 5000.0;
+    params[3] = 9000.0;
+    params[4] = 1.0; // full wet so the ratchets see only the tank
+    params[5] = 10.0;
+    params[6] = 1.2;
+
+    const bp_args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&params) }, .{ .f64 = sr } };
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("verb-block-prepare", 1, &bp_args);
+    const prep_args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+        .{ .f64 = sr },
+    };
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("verb-prepare", 1, &prep_args);
+
+    var slots = Fy.Dsp2RawRepeatedSlots{};
+    var caller = try host.fy.compileDsp2CompositionCaller(cli.word, &slots, true, true);
+    const render_args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out[0]) },
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+        .{ .ptr = @intFromPtr(&input[0]) },
+    };
+    const start = nowNs();
+    _ = try caller.call(@intCast(frames), &render_args);
+    const run_ns = nowNs() - start;
+
+    var metrics = Metrics{};
+    metrics.ns_per_iter = @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(frames));
+    fillSignalMetrics(out, &metrics);
+    for (out) |x| {
+        if (!std.math.isFinite(x)) metrics.nonfinite_count += 1;
+    }
+
+    // Schroeder backward integration -> RT60 from the -5..-25 dB slope.
+    const edc = try alloc.alloc(f64, frames);
+    defer alloc.free(edc);
+    var acc: f64 = 0;
+    var i: usize = frames;
+    while (i > 0) {
+        i -= 1;
+        acc += out[i] * out[i];
+        edc[i] = acc;
+    }
+    const e0 = @max(edc[0], 1e-30);
+    var t5: f64 = -1;
+    var t25: f64 = -1;
+    for (edc, 0..) |e, j| {
+        const db = 10.0 * std.math.log10(@max(e, 1e-30) / e0);
+        if (t5 < 0 and db <= -5.0) t5 = @as(f64, @floatFromInt(j)) / sr;
+        if (t25 < 0 and db <= -25.0) {
+            t25 = @as(f64, @floatFromInt(j)) / sr;
+            break;
+        }
+    }
+    const rt60: f64 = if (t5 >= 0 and t25 > t5) (t25 - t5) * 3.0 else -1;
+
+    // Tail actually decays: late RMS well under early RMS.
+    var early: f64 = 0;
+    var late: f64 = 0;
+    for (out[0..DRUM_SAMPLE_RATE]) |x| early += x * x;
+    for (out[frames - DRUM_SAMPLE_RATE ..]) |x| late += x * x;
+
+    var csv: std.ArrayList(u8) = .empty;
+    defer csv.deinit(alloc);
+    try csv.appendSlice(alloc, "sample,time,out,edc_db\n");
+    var j: usize = 0;
+    while (j < frames) : (j += 64) {
+        const db = 10.0 * std.math.log10(@max(edc[j], 1e-30) / e0);
+        try appendFmt(alloc, &csv, "{d},{d:.9},{d:.12},{d:.3}\n", .{
+            j, @as(f64, @floatFromInt(j)) / sr, out[j], db,
+        });
+    }
+    try writeDrumArtifacts(alloc, cli, host, csv.items, metrics, out);
+
+    if (metrics.nonfinite_count != 0 or metrics.peak > 4.0 or
+        rt60 < 0.8 or rt60 > 12.0 or late >= early * 0.25)
+    {
+        std.debug.print("reverb ratchet detail: rt60={d:.3} early={d:.6} late={d:.6} peak={d:.3}\n", .{ rt60, early, late, metrics.peak });
+        return error.KernelRatchetFailed;
+    }
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} rt60={d:.2}s peak={d:.3} rms={d:.4}\n",
+        .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, rt60, metrics.peak, metrics.rms },
     );
 }
 

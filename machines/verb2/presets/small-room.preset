@@ -1,0 +1,7 @@
+# verb2 preset
+verb-predelay|0.005
+verb-decay|0.52
+verb-damp|3200
+verb-tone|7500
+verb-mix|0.22
+verb-mod|6
