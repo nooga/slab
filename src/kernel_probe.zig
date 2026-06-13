@@ -122,6 +122,10 @@ pub fn main(init: std.process.Init) !void {
         try runJunoCase(alloc, cli, &host);
         return;
     }
+    if (std.mem.eql(u8, cli.case_name, "funk-render")) {
+        try runFunkCase(alloc, cli, &host);
+        return;
+    }
     if (std.mem.eql(u8, cli.case_name, "ms20-voice-render")) {
         try runMs20VoiceCase(alloc, cli, &host);
         return;
@@ -2827,6 +2831,146 @@ fn runPow2Case(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     std.debug.print(
         "kernel {s}:{s} case={s} samples={} ns_per_iter={d:.3} max_err={d:.12}\n",
         .{ cli.kernel, cli.word, cli.case_name, sample_count, metrics.ns_per_iter, max_err },
+    );
+}
+
+// k-funk-tick: a pluck train (sharp attacks, decaying tails) through the
+// FUNK OVERLOAD macro at two settings. At funk=0.5 the filter must open
+// on each attack (brightness, via zero-crossing rate, rises right after
+// onset). At funk=0.92 the gate must chop the gaps far deeper than at
+// 0.5 (gap RMS relative to peak RMS collapses). One render helper, two
+// passes off fresh state.
+const FunkPass = struct {
+    bright_early: f64, // 7th-harmonic / fundamental just after attack
+    bright_late: f64, // ditto in the decayed tail
+    gate_depth: f64, // gap RMS / peak RMS
+    peak: f64,
+    nonfinite: usize,
+};
+
+fn funkRenderPass(
+    host: *FyHost,
+    funk: f64,
+    input: []const f64,
+    out: []f64,
+    sr: f64,
+    spacing: usize,
+) !FunkPass {
+    var state align(8) = [_]f64{0} ** 8;
+    var params align(8) = [_]f64{ funk, 420.0, 0.08, 1.0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    const bp = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&params) }, .{ .f64 = sr } };
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("funk-block-prepare", 1, &bp);
+
+    var slots = Fy.Dsp2RawRepeatedSlots{};
+    var caller = try host.fy.compileDsp2CompositionCaller("k-funk-tick", &slots, true, true);
+    const args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out[0]) },
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+        .{ .ptr = @intFromPtr(&input[0]) },
+    };
+    _ = try caller.call(@intCast(out.len), &args);
+
+    var p = FunkPass{ .bright_early = 0, .bright_late = 0, .gate_depth = 0, .peak = 0, .nonfinite = 0 };
+    for (out) |x| {
+        if (!std.math.isFinite(x)) p.nonfinite += 1;
+        p.peak = @max(p.peak, @abs(x));
+    }
+
+    // Per-pluck windows: early (just after attack, filter open) and late
+    // (decayed tail, filter closed). Brightness = 7th-harmonic / fundamental
+    // (normalizes out the pluck's amplitude decay); level = RMS for the gate.
+    const f0 = 220.0;
+    const f7 = 220.0 * 7.0; // 1540 Hz — only passes when the filter is open
+    var be: f64 = 0;
+    var bl: f64 = 0;
+    var peak_sq: f64 = 0;
+    var gap_sq: f64 = 0;
+    var nwin: f64 = 0;
+    var a: usize = spacing; // skip the first onset transient
+    while (a + spacing <= out.len) : (a += spacing) {
+        const early = out[a + 50 .. a + 2050];
+        const late = out[a + 8000 .. a + 10000];
+        be += goertzelMag(early, f7, sr) / @max(goertzelMag(early, f0, sr), 1e-9);
+        bl += goertzelMag(late, f7, sr) / @max(goertzelMag(late, f0, sr), 1e-9);
+        for (out[a + 50 .. a + 1500]) |x| peak_sq += x * x;
+        for (out[a + 8000 .. a + 11500]) |x| gap_sq += x * x;
+        nwin += 1;
+    }
+    p.bright_early = be / nwin;
+    p.bright_late = bl / nwin;
+    const peak_rms = @sqrt(peak_sq / (nwin * 1450));
+    const gap_rms = @sqrt(gap_sq / (nwin * 3500));
+    p.gate_depth = gap_rms / @max(peak_rms, 1e-12);
+    return p;
+}
+
+fn runFunkCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sr: f64 = @floatFromInt(DRUM_SAMPLE_RATE);
+    const frames: usize = 4 * DRUM_SAMPLE_RATE;
+    const spacing: usize = DRUM_SAMPLE_RATE / 4; // 4 plucks/sec
+
+    const input = try alloc.alloc(f64, frames);
+    defer alloc.free(input);
+    @memset(input, 0);
+    var a: usize = 0;
+    while (a < frames) : (a += spacing) {
+        var i: usize = 0;
+        while (i < spacing and a + i < frames) : (i += 1) {
+            const t = @as(f64, @floatFromInt(i)) / sr;
+            const env = @exp(-t / 0.12); // plucked decay
+            // Harmonic-rich pluck (band-limited saw, 12 partials) so the
+            // filter sweep actually changes the spectrum / crossing rate.
+            var s: f64 = 0;
+            var h: usize = 1;
+            while (h <= 12) : (h += 1) {
+                s += @sin(2.0 * std.math.pi * 220.0 * @as(f64, @floatFromInt(h)) * t) / @as(f64, @floatFromInt(h));
+            }
+            input[a + i] = 0.45 * env * s;
+        }
+    }
+
+    const out_lo = try alloc.alloc(f64, frames);
+    defer alloc.free(out_lo);
+    const out_hi = try alloc.alloc(f64, frames);
+    defer alloc.free(out_hi);
+    @memset(out_lo, 0);
+    @memset(out_hi, 0);
+
+    const start = nowNs();
+    const lo = try funkRenderPass(host, 0.5, input, out_lo, sr, spacing);
+    const hi = try funkRenderPass(host, 0.92, input, out_hi, sr, spacing);
+    const run_ns = nowNs() - start;
+
+    var metrics = Metrics{};
+    metrics.ns_per_iter = @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(2 * frames));
+    fillSignalMetrics(out_hi, &metrics);
+    metrics.nonfinite_count = @intCast(lo.nonfinite + hi.nonfinite);
+
+    const wah_ratio = lo.bright_early / @max(lo.bright_late, 1e-9);
+    const gate_tighten = hi.gate_depth / @max(lo.gate_depth, 1e-9);
+
+    var csv: std.ArrayList(u8) = .empty;
+    defer csv.deinit(alloc);
+    try csv.appendSlice(alloc, "sample,time,in,funk50,funk92\n");
+    var j: usize = 0;
+    while (j < frames) : (j += 16) {
+        try appendFmt(alloc, &csv, "{d},{d:.6},{d:.6},{d:.6},{d:.6}\n", .{
+            j, @as(f64, @floatFromInt(j)) / sr, input[j], out_lo[j], out_hi[j],
+        });
+    }
+    try writeDrumArtifacts(alloc, cli, host, csv.items, metrics, out_hi);
+
+    if (metrics.nonfinite_count != 0 or hi.peak > 1.0 or lo.peak > 1.0 or
+        wah_ratio < 1.15 or gate_tighten > 0.6)
+    {
+        std.debug.print("funk ratchet detail: wah_ratio={d:.3} gate_tighten={d:.3} depth50={d:.4} depth92={d:.4} peak50={d:.3} peak92={d:.3}\n", .{ wah_ratio, gate_tighten, lo.gate_depth, hi.gate_depth, lo.peak, hi.peak });
+        return error.KernelRatchetFailed;
+    }
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} wah_ratio={d:.2} gate_tighten={d:.2} depth50={d:.3} depth92={d:.3}\n",
+        .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, wah_ratio, gate_tighten, lo.gate_depth, hi.gate_depth },
     );
 }
 

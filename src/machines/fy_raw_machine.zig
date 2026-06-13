@@ -1465,6 +1465,70 @@ test "raw DSP2 juno machine: polyphonic chord through the voice pool" {
     try testing.expect(energy > 5.0); // held C+G still sounding
 }
 
+test "raw DSP2 funk machine: macro drives the gate stutter" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/funk/funk.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+
+    // The funk macro is control 0; render a pluck (loud attack, decaying
+    // tail) at min vs max and compare the tail energy. At max the gate
+    // slams the tail shut, so its tail/peak ratio must collapse.
+    const block = 512;
+    var in_l: [block]f32 = undefined;
+    var in_r: [block]f32 = undefined;
+    const in_ports = [_][*]const f32{ &in_l, &in_r };
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = block;
+    ctx.audio_in = @ptrCast(&in_ports[0]);
+    ctx.audio_in_count = 2;
+    var l: [block]f32 = undefined;
+    var r: [block]f32 = undefined;
+
+    const run = struct {
+        fn pass(mc: machine.Machine, cx: *machine.MachineCtx, il: *[block]f32, ir: *[block]f32, ol: *[block]f32, or_: *[block]f32) struct { peak: f64, tail: f64 } {
+            // 64 blocks: a sharp pluck at block 0, decaying, silent tail.
+            var peak_sq: f64 = 0;
+            var tail_sq: f64 = 0;
+            var blk: usize = 0;
+            while (blk < 64) : (blk += 1) {
+                for (il, ir, 0..) |*aa, *bb, i| {
+                    const n: f64 = @floatFromInt(blk * block + i);
+                    const env = @exp(-n / 9000.0);
+                    var s: f64 = 0;
+                    var h: usize = 1;
+                    while (h <= 8) : (h += 1) {
+                        s += @sin(2.0 * std.math.pi * 220.0 * @as(f64, @floatFromInt(h)) * n / 48000.0) / @as(f64, @floatFromInt(h));
+                    }
+                    const v: f32 = @floatCast(0.4 * env * s);
+                    aa.* = v;
+                    bb.* = v;
+                }
+                mc.render(mc.state, cx, ol, or_);
+                for (ol) |x| {
+                    if (blk < 3) peak_sq += @as(f64, x) * x;
+                    if (blk >= 40) tail_sq += @as(f64, x) * x;
+                }
+            }
+            return .{ .peak = @sqrt(peak_sq), .tail = @sqrt(tail_sq) };
+        }
+    };
+
+    inst.setControlNorm(0, 0.0); // clean
+    const clean = run.pass(mach, &ctx, &in_l, &in_r, &l, &r);
+    mach.reset(mach.state);
+    inst.setControlRaw(0, 1.0); // funk macro is a knob (norm), 1.0 = full
+    inst.setControlNorm(0, 1.0); // OVERLOAD
+    const loud = run.pass(mach, &ctx, &in_l, &in_r, &l, &r);
+
+    try testing.expect(std.math.isFinite(clean.peak) and std.math.isFinite(loud.peak));
+    try testing.expect(clean.peak > 0.01); // the effect passes audio
+    // Tail-to-peak ratio collapses under the gate.
+    const clean_ratio = clean.tail / @max(clean.peak, 1e-9);
+    const loud_ratio = loud.tail / @max(loud.peak, 1e-9);
+    try testing.expect(loud_ratio < clean_ratio * 0.5);
+}
+
 test "raw machine presets: scan factory, save round-trip, apply restores" {
     const inst = try FyRawMachine.create(testing.allocator, "machines/drum2/drum2.fy");
     const mach = inst.machineInterface();
