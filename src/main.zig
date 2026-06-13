@@ -26,6 +26,7 @@ const snap_mod = @import("ui/snap.zig");
 const browser = @import("ui/browser.zig");
 const arrangement = @import("ui/arrangement.zig");
 const clip_editor = @import("ui/clip_editor.zig");
+const audio_clip_editor = @import("ui/audio_clip_editor.zig");
 const machine_bay = @import("ui/machine_bay.zig");
 
 test {
@@ -521,7 +522,10 @@ pub fn main() !void {
             rects = layout.compute(sw, sh);
         }
         if (layout.clip_editor_visible) {
-            const cres = clip_editor.draw(rects.clip_editor, tracks, alloc, selected_clip, edit_snap, clipboard.mode == .notes, pane_m);
+            const cres = if (selectedClipIsAudio(tracks, selected_clip))
+                audio_clip_editor.draw(rects.clip_editor, tracks, &audio_pool, selected_clip, transport.bpm(), pane_m)
+            else
+                clip_editor.draw(rects.clip_editor, tracks, alloc, selected_clip, edit_snap, clipboard.mode == .notes, pane_m);
             if (rename.active() and rename.kind == .clip) {
                 if (cres.rename_rect) |rr| rename.rect = rr;
             }
@@ -1682,6 +1686,14 @@ fn clipRefEq(a: ?clip_mod.ClipRef, b: ?clip_mod.ClipRef) bool {
     if (a == null and b == null) return true;
     if (a == null or b == null) return false;
     return a.?.track == b.?.track and a.?.clip == b.?.clip;
+}
+
+fn selectedClipIsAudio(tracks: []track_mod.Track, selected: ?clip_mod.ClipRef) bool {
+    const s = selected orelse return false;
+    if (s.track >= tracks.len) return false;
+    const t = &tracks[s.track];
+    if (s.clip >= t.clips.items.len) return false;
+    return t.clips.items[s.clip].isAudio();
 }
 
 fn drawStatusBar(
