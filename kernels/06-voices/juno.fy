@@ -166,7 +166,9 @@ dsp2: v-jn-vcf
   state JunoState.lfo-out@ params JunoParams.lfo-vcf-hz@ f* f+
   state JunoState.note-hz@ 261.6 f-  params JunoParams.kybd@ f*  6.0 f* f+
   4.0 params JunoParams.inv-sr@ f/ svf-g | g |
-  params JunoParams.resonance@ 2.2 f* svf-damping | damp |
+  ( lpf4 damping convention - 1.2/[1+res*8], NOT the svf's mapping:
+    that one rings at zero resonance and whistles at the cutoff )
+  1.2  1.0 params JunoParams.resonance@ 8.0 f* f+  f/ 0.015 2.0 fclamp | damp |
   state JunoState.ic1-p state JunoState.ic2-p
   state JunoState.osc-mix@
   g damp 1.0

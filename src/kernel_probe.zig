@@ -2921,6 +2921,22 @@ fn runJunoCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
         pitch_corr = best;
     }
 
+    // Filter-ring sanity: with the default patch the effective cutoff sits
+    // near 3.7 kHz; an under-damped 4-pole whistles there — and the whistle
+    // can be harmonically locked, invisible to the pitch ratchet. The
+    // strongest 3.2–4.4 kHz component must stay well under the fundamental.
+    var ring_ratio: f64 = 0;
+    {
+        const seg = out[DRUM_SAMPLE_RATE..][0..4096];
+        var fund: f64 = 0;
+        var ring: f64 = 0;
+        var f: f64 = 200.0;
+        while (f <= 240.0) : (f += 5.0) fund = @max(fund, goertzelMag(seg, f, sr));
+        f = 3200.0;
+        while (f <= 4400.0) : (f += 40.0) ring = @max(ring, goertzelMag(seg, f, sr));
+        ring_ratio = ring / @max(fund, 1e-12);
+    }
+
     var csv: std.ArrayList(u8) = .empty;
     defer csv.deinit(alloc);
     try csv.appendSlice(alloc, "sample,time,out\n");
@@ -2931,16 +2947,29 @@ fn runJunoCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     try writeDrumArtifacts(alloc, cli, host, csv.items, metrics, out);
 
     if (metrics.nonfinite_count != 0 or metrics.peak < 0.05 or metrics.peak > 1.0 or
-        sustain_rms < 0.02 or tail_rms > sustain_rms * 0.02 or pitch_corr < 0.6)
+        sustain_rms < 0.02 or tail_rms > sustain_rms * 0.02 or pitch_corr < 0.6 or
+        ring_ratio > 0.25)
     {
-        std.debug.print("juno ratchet detail: peak={d:.3} sustain_rms={d:.4} tail_rms={d:.6} pitch_corr={d:.3}\n", .{ metrics.peak, sustain_rms, tail_rms, pitch_corr });
+        std.debug.print("juno ratchet detail: peak={d:.3} sustain_rms={d:.4} tail_rms={d:.6} pitch_corr={d:.3} ring_ratio={d:.3}\n", .{ metrics.peak, sustain_rms, tail_rms, pitch_corr, ring_ratio });
         return error.KernelRatchetFailed;
     }
 
     std.debug.print(
-        "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} peak={d:.3} sustain_rms={d:.4} tail_rms={d:.6} pitch_corr={d:.3}\n",
-        .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, metrics.peak, sustain_rms, tail_rms, pitch_corr },
+        "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} peak={d:.3} sustain_rms={d:.4} tail_rms={d:.6} pitch_corr={d:.3} ring_ratio={d:.3}\n",
+        .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, metrics.peak, sustain_rms, tail_rms, pitch_corr, ring_ratio },
     );
+}
+
+fn goertzelMag(seg: []const f64, freq: f64, sr: f64) f64 {
+    var re: f64 = 0;
+    var im: f64 = 0;
+    const w = 2.0 * std.math.pi * freq / sr;
+    for (seg, 0..) |s, i| {
+        const a = w * @as(f64, @floatFromInt(i));
+        re += s * @cos(a);
+        im += s * @sin(a);
+    }
+    return 2.0 * @sqrt(re * re + im * im) / @as(f64, @floatFromInt(seg.len));
 }
 
 // k-chorus-tick in mode I, full wet, tone wide open: an impulse train
