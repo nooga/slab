@@ -16,6 +16,8 @@ const FyHost = fy_host_mod.FyHost;
 const machine_desc = @import("../machine_desc.zig");
 const presets_mod = @import("../presets.zig");
 const wav = @import("../wav.zig");
+const waveform = @import("../waveform.zig");
+const native_dialog = @import("../native_dialog.zig");
 const theme = @import("../ui/theme.zig");
 const widgets = @import("../ui/widgets.zig");
 
@@ -83,6 +85,13 @@ pub const FyRawMachine = struct {
     // A valid silent target for assets that failed to load, so a kernel's
     // clamped read hits real zeroed memory instead of an empty slice's ptr.
     asset_silence: [2]f64 align(8) = .{ 0, 0 },
+    // Peak pyramid per asset for oscillogram drawing (UI thread only).
+    asset_cache: [machine_desc.MAX_ASSETS]waveform.PeakCache = [_]waveform.PeakCache{.{}} ** machine_desc.MAX_ASSETS,
+    // Display name (basename) of each asset's currently loaded file.
+    asset_label: [machine_desc.MAX_ASSETS][96]u8 = undefined,
+    asset_label_len: [machine_desc.MAX_ASSETS]usize = [_]usize{0} ** machine_desc.MAX_ASSETS,
+    // Stored so runtime sample loads can (re)allocate without a passed alloc.
+    alloc: std.mem.Allocator = undefined,
     // Stereo-linked detector trace (manifest `detector-cell`): filled per
     // block with max(|L|,|R|), read by both channels for linked dynamics.
     det_buf: [MAX_BLOCK]f64 align(8) = [_]f64{0} ** MAX_BLOCK,
@@ -121,6 +130,7 @@ pub const FyRawMachine = struct {
             .host = host,
             .desc = desc,
             .panel_w = desc.panel_w,
+            .alloc = alloc,
         };
         if (presets_mod.dirFromMachinePath(self.preset_dir[0..], path)) |dir| {
             self.preset_dir_len = dir.len;
@@ -145,15 +155,58 @@ pub const FyRawMachine = struct {
             var pbuf: [768]u8 = undefined;
             const full = std.fmt.bufPrint(&pbuf, "{s}/{s}", .{ dir, req.fileSlice() }) catch continue;
             self.asset_mem[ai] = wav.load(alloc, full) catch wav.Sample{ .data = &.{}, .sample_rate = 0 };
+            self.asset_cache[ai].build(alloc, self.asset_mem[ai].data) catch {};
+            self.setAssetLabel(ai, req.fileSlice());
         }
         self.injectAssets();
     }
 
+    fn setAssetLabel(self: *FyRawMachine, ai: usize, path: []const u8) void {
+        const base = std.fs.path.basename(path);
+        const n = @min(base.len, self.asset_label[ai].len);
+        @memcpy(self.asset_label[ai][0..n], base[0..n]);
+        self.asset_label_len[ai] = n;
+    }
+
     fn freeAssets(self: *FyRawMachine, alloc: std.mem.Allocator) void {
-        for (self.asset_mem[0..self.desc.asset_count]) |*s| {
+        for (self.asset_mem[0..self.desc.asset_count], 0..) |*s, ai| {
             if (s.data.len > 0) alloc.free(s.data);
             s.* = .{ .data = &.{}, .sample_rate = 0 };
+            self.asset_cache[ai].deinit(alloc);
         }
+    }
+
+    // Swap an asset's audio at runtime (UI thread). lockCallbacks fences the
+    // render path so the audio thread can't be mid-read of the old buffer
+    // while we free it and repoint params. The peak cache is UI-only and
+    // needs no fence. On failure the old sample is kept.
+    fn loadAssetRuntime(self: *FyRawMachine, ai: usize, path: []const u8) bool {
+        if (ai >= self.desc.asset_count) return false;
+        var loaded = wav.load(self.alloc, path) catch return false;
+        var new_cache = waveform.PeakCache{};
+        new_cache.build(self.alloc, loaded.data) catch {
+            loaded.deinit(self.alloc);
+            return false;
+        };
+
+        fy_host_mod.lockCallbacks();
+        const old = self.asset_mem[ai];
+        self.asset_mem[ai] = loaded;
+        self.injectAssets();
+        fy_host_mod.unlockCallbacks();
+
+        if (old.data.len > 0) self.alloc.free(old.data);
+        self.asset_cache[ai].deinit(self.alloc);
+        self.asset_cache[ai] = new_cache;
+        self.setAssetLabel(ai, path);
+        return true;
+    }
+
+    fn assetIndexByName(self: *const FyRawMachine, name: []const u8) ?usize {
+        for (self.desc.assets[0..self.desc.asset_count], 0..) |*a, i| {
+            if (std.mem.eql(u8, a.nameSlice(), name)) return i;
+        }
+        return null;
     }
 
     // Asset pointer/length/native-SR live in params (shared, read-only).
@@ -908,7 +961,7 @@ fn capShape(t: f32) f32 {
     return (1.0 - @exp(-k * t)) / (1.0 - @exp(-k));
 }
 
-fn drawDisplay(self: *FyRawMachine, rect: c.rl.Rectangle, disp: *const Display) void {
+fn drawDisplay(self: *FyRawMachine, rect: c.rl.Rectangle, disp: *const Display, mouse: widgets.Mouse) void {
     // One shared sunken-black field; comma-separated sources are drawn as small
     // labeled graphs side-by-side inside it (compact, no per-graph header).
     const field = widgets.displayField(rect);
@@ -923,6 +976,54 @@ fn drawDisplay(self: *FyRawMachine, rect: c.rl.Rectangle, disp: *const Display) 
                 drawAdsrCurve(self, field, src, pens[idx % pens.len], idx);
             }
         },
+        .waveform => drawWaveformDisplay(self, field, disp.sourceSlice(), mouse),
+    }
+}
+
+// Oscillogram of a loaded asset: a top bar with the filename + a LOAD button
+// (opens the native audio picker and hot-swaps the sample), then the peak
+// waveform with read-only start/loop markers from the matching controls.
+fn drawWaveformDisplay(self: *FyRawMachine, field: c.rl.Rectangle, asset_name: []const u8, mouse: widgets.Mouse) void {
+    const ai = self.assetIndexByName(asset_name) orelse return;
+
+    const bar_h = theme.size(16);
+    const bar = widgets.rect(field.x, field.y, field.width, bar_h);
+    const wave = widgets.rect(field.x, field.y + bar_h, field.width, @max(1, field.height - bar_h));
+
+    // filename (or a hint) on the left.
+    var nbuf: [110:0]u8 = [_:0]u8{0} ** 110;
+    const label = self.asset_label[ai][0..self.asset_label_len[ai]];
+    const ln = @min(label.len, 109);
+    if (ln > 0) @memcpy(nbuf[0..ln], label[0..ln]) else @memcpy(nbuf[0..9], "no sample");
+    widgets.drawLabelF(@ptrCast(&nbuf[0]), bar.x + theme.size(4), bar.y + (bar_h - theme.fsTiny()) / 2 - 1, theme.fsTiny(), theme.text_dim);
+
+    const btn_w = theme.size(44);
+    const btn = widgets.rect(bar.x + bar.width - btn_w - 2, bar.y + 1, btn_w, bar_h - 2);
+    if (widgets.button(btn, "LOAD", mouse)) {
+        if (native_dialog.openAudioFile(self.alloc) catch null) |path| {
+            defer self.alloc.free(path);
+            _ = self.loadAssetRuntime(ai, path);
+        }
+    }
+
+    c.rl.DrawRectangleRec(wave, theme.slab_edge);
+    const inner = widgets.rect(wave.x + 1, wave.y + 1, wave.width - 2, wave.height - 2);
+    const cache = &self.asset_cache[ai];
+    waveform.draw(inner, cache, 0, @floatFromInt(@max(cache.sample_count, 1)), theme.accent_hi);
+
+    // Read-only markers: START / LOOP BEG / LOOP END as fractional positions.
+    drawMarker(self, inner, "smp-start", theme.accent_play);
+    drawMarker(self, inner, "smp-loop-start", theme.accent_hi);
+    drawMarker(self, inner, "smp-loop-end", theme.accent_hi);
+}
+
+fn drawMarker(self: *FyRawMachine, area: c.rl.Rectangle, id: []const u8, col: c.rl.Color) void {
+    for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
+        if (!std.mem.eql(u8, ctl.idSlice(), id)) continue;
+        const frac = std.math.clamp(@as(f32, self.controlNorm(i)), 0, 1);
+        const x = area.x + frac * area.width;
+        c.rl.DrawLineEx(.{ .x = x, .y = area.y }, .{ .x = x, .y = area.y + area.height }, 1.0, col);
+        return;
     }
 }
 
@@ -1008,7 +1109,7 @@ fn drawLayoutTree(self: *FyRawMachine, body: c.rl.Rectangle, mouse: widgets.Mous
                         const sh = if (ii + 1 == cc.item_count) (y + rh - sy) else rh * it.weight / total_sw;
                         const item_rect = widgets.rect(x, sy, cw, sh);
                         if (it.is_display) {
-                            drawDisplay(self, item_rect, &self.desc.displays[it.index]);
+                            drawDisplay(self, item_rect, &self.desc.displays[it.index], mouse);
                         } else {
                             drawStrip(self, item_rect, stripViewAt(self, it.index), mouse);
                         }
@@ -1617,6 +1718,17 @@ test "raw DSP2 sampler machine: asset loads and polyphonic notes sound" {
         }
     }
     try testing.expect(energy > 1.0); // the sample is playing
+
+    // Runtime hot-swap (the path the LOAD button drives, minus the dialog):
+    // the params pointer must follow the new buffer, the peak cache rebuild,
+    // and the old buffer free without leaking (testing allocator enforces).
+    const old_ptr = @intFromPtr(inst.asset_mem[0].data.ptr);
+    try testing.expect(inst.loadAssetRuntime(0, "machines/sampler/assets/default.wav"));
+    const new_ptr = @intFromPtr(inst.asset_mem[0].data.ptr);
+    try testing.expect(new_ptr != old_ptr); // a fresh allocation
+    const pbits: *align(8) const usize = @ptrCast(@alignCast(&inst.params_buf[off]));
+    try testing.expectEqual(new_ptr, pbits.*);
+    try testing.expect(inst.asset_cache[0].sample_count > 1000);
 }
 
 test "raw machine presets: scan factory, save round-trip, apply restores" {

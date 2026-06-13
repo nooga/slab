@@ -37,6 +37,19 @@ char *slab_save_project_dialog(const char *default_name) {
     }
 }
 
+char *slab_open_audio_dialog(void) {
+    @autoreleasepool {
+        NSOpenPanel *panel = [NSOpenPanel openPanel];
+        [panel setCanChooseFiles:YES];
+        [panel setCanChooseDirectories:NO];
+        [panel setAllowsMultipleSelection:NO];
+        [panel setAllowedFileTypes:@[@"wav", @"wave", @"aif", @"aiff"]];
+        [panel setTitle:@"Load Audio Sample"];
+        if ([panel runModal] != NSModalResponseOK) return NULL;
+        return copy_path([[panel URL] path]);
+    }
+}
+
 void slab_free_dialog_path(char *path) {
     free(path);
 }

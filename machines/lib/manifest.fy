@@ -204,6 +204,20 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   _mf-last-strip !64
 ;
 
+( bind a waveform oscillogram to a host asset (by asset name); the panel
+  draws the loaded sample plus a LOAD button. )
+: waveform-display  ( name asset-name -- )
+  DisplayDesc.alloc
+  swap cstr-new swap DisplayDesc.sources!
+  swap cstr-new swap DisplayDesc.name!
+  1 swap DisplayDesc.kind!
+  _mf-last-disp @64 0 =
+  [ dup _mf-md@ MachineDesc.displays! drop ]
+  [ dup _mf-last-disp @64 DisplayDesc.next! drop ]
+  ifte
+  _mf-last-disp !64
+;
+
 ( sources: comma-separated module names overlaid in one field. )
 : adsr-display  ( name sources -- )
   DisplayDesc.alloc

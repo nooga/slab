@@ -123,6 +123,10 @@ pub const AssetReq = struct {
     pub fn fileSlice(self: *const AssetReq) []const u8 {
         return self.file[0..self.file_len];
     }
+
+    pub fn nameSlice(self: *const AssetReq) []const u8 {
+        return self.name[0..self.name_len];
+    }
 };
 
 pub const Strip = struct {
@@ -139,7 +143,7 @@ pub const Strip = struct {
     }
 };
 
-pub const DisplayKind = enum { adsr };
+pub const DisplayKind = enum { adsr, waveform };
 
 pub const Display = struct {
     name: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
@@ -433,6 +437,7 @@ pub fn read(host: *FyHost) !Desc {
         out.name_len = try copyText(&out.name, cstrSlice(disp.name));
         out.kind = switch (asInt(disp.kind)) {
             0 => .adsr,
+            1 => .waveform,
             else => return error.InvalidMachineDesc,
         };
         out.source_len = try copyText(&out.source, cstrSlice(disp.sources));

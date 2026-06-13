@@ -17,6 +17,7 @@ test {
     _ = machine_desc;
     _ = @import("presets.zig");
     _ = @import("wav.zig");
+    _ = @import("waveform.zig");
     _ = @import("ms20_svf_test.zig");
 }
 

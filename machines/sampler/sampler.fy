@@ -42,12 +42,20 @@ include "../lib/manifest.fy"
 
   "AMP" "LEVEL" "smp-level" SamplerParams.level 0.0 1.0 0.7 curve-pow knob
 
+  "WAVE" "smp" waveform-display
   "PITCH" 1 strip
   "LOOP" 1 strip
   "ENV" 1 strip
   "AMP" 1 strip
 
-  "ENV ADSR" "ENV" adsr-display
+  ( oscillogram across the top, control strips below )
+  1.5 row
+    1.0 cell  "WAVE" 1.0 item
+  2.5 row
+    1.1 cell  "PITCH" 1.0 item
+    1.1 cell  "LOOP" 1.0 item
+    1.3 cell  "ENV" 1.0 item
+    0.6 cell  "AMP" 1.0 item
 
   machine-desc
 ;
