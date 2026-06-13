@@ -45,7 +45,7 @@ const LOOP_END_KEY: u64 = 0x1009_E0D0_AAAA_0001;
 const BOX_MIN_DRAG: f32 = 3;
 const MAX_DRAG_CLIPS: usize = 256;
 
-const DragMode = enum { none, move, resize_r };
+const DragMode = enum { none, move, resize_r, resize_l };
 const ClipDragSnap = struct {
     track: u32,
     clip: u32,
@@ -66,6 +66,9 @@ var drag_ref: ClipRef = .{ .track = 0, .clip = 0 };
 var drag_start_beat: f64 = 0;
 var drag_start_length: f64 = 0;
 var drag_start_mouse_x: f32 = 0;
+// Audio source window captured at the start of a left-edge trim.
+var drag_start_audio_start_sec: f64 = 0;
+var drag_start_audio_dur_sec: f64 = 0;
 var drag_snaps: [MAX_DRAG_CLIPS]ClipDragSnap = undefined;
 var drag_snap_count: usize = 0;
 var drag_track_delta: i32 = 0;
@@ -580,8 +583,11 @@ pub fn draw(
             const clip_rect = clipRect(lane_timeline, clip.*, timeline_x0);
             if (!press_consumed and widgets.contains(clip_rect, m.x, m.y)) {
                 const edge_hover = m.x >= clip_rect.x + clip_rect.width - resizeEdgeW();
+                // Audio clips can be trimmed from the left edge (carving into
+                // the source window); note clips only resize on the right.
+                const left_edge_hover = clip.isAudio() and m.x <= clip_rect.x + resizeEdgeW() and !edge_hover;
                 if (!widgets.hasActiveDrag()) {
-                    widgets.requestCursor(if (edge_hover) c.rl.MOUSE_CURSOR_RESIZE_EW else c.rl.MOUSE_CURSOR_POINTING_HAND, 1);
+                    widgets.requestCursor(if (edge_hover or left_edge_hover) c.rl.MOUSE_CURSOR_RESIZE_EW else c.rl.MOUSE_CURSOR_POINTING_HAND, 1);
                 }
                 if (m.double_clicked and !widgets.hasActiveDrag()) {
                     const ref: ClipRef = .{ .track = @intCast(ti), .clip = @intCast(i) };
@@ -609,7 +615,7 @@ pub fn draw(
                     selected_clip.* = ref;
                     selected_track.* = ti;
                     press_consumed = true;
-                    const mode: DragMode = if (edge_hover) .resize_r else .move;
+                    const mode: DragMode = if (edge_hover) .resize_r else if (left_edge_hover) .resize_l else .move;
                     beginDrag(tracks, ref, clip.*, m, mode);
                 }
                 if (m.right_pressed and !widgets.hasActiveDrag()) {
@@ -990,6 +996,8 @@ fn beginDrag(tracks: []Track, ref: ClipRef, clip: Clip, m: widgets.Mouse, mode: 
     drag_start_beat = clip.start_beat;
     drag_start_length = clip.length_beats;
     drag_start_mouse_x = m.x;
+    drag_start_audio_start_sec = clip.audio.start_sec;
+    drag_start_audio_dur_sec = clip.audio.dur_sec;
     drag_track_delta = 0;
     drag_snap_count = 0;
     if (mode == .move) {
@@ -1053,11 +1061,34 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
             // For audio, resizing trims the source window so reflow keeps it.
             if (clip.isAudio()) clip.audio.dur_sec = clip.length_beats * 60.0 / cur_bpm;
         },
+        .resize_l => {
+            // Audio only: move the left edge while the right edge stays fixed,
+            // carving into (or back out of) the front of the source window.
+            widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
+            const min_len = minClipBeats(edit_snap);
+            const right_beat = drag_start_beat + drag_start_length;
+            // Clamp the move so the window stays within [0, source] and the
+            // clip keeps a minimum length.
+            const sec_per_beat = 60.0 / cur_bpm;
+            const max_back = drag_start_audio_start_sec / sec_per_beat; // can't trim before source start
+            var delta = d_beats;
+            if (delta < -max_back) delta = -max_back; // expanding left limited by source head
+            if (delta > drag_start_length - min_len) delta = drag_start_length - min_len;
+            if (drag_start_beat + delta < 0) delta = -drag_start_beat;
+            const new_start = drag_start_beat + delta;
+            clip.start_beat = new_start;
+            clip.length_beats = right_beat - new_start;
+            const delta_sec = delta * sec_per_beat;
+            clip.audio.start_sec = @max(0.0, drag_start_audio_start_sec + delta_sec);
+            clip.audio.dur_sec = @max(0.0, drag_start_audio_dur_sec - delta_sec);
+        },
     }
 }
 
 fn finishClipDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?ClipRef, m: widgets.Mouse, lanes_top: f32) void {
     if (drag_mode == .none) return;
+    // Only a body move relocates between tracks; resizes stay on their lane.
+    if (drag_mode != .move) return;
     if (drag_ref.track >= tracks.len) return;
     const src_t = &tracks[drag_ref.track];
     if (drag_ref.clip >= src_t.clips.items.len) return;

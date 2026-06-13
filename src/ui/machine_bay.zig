@@ -220,21 +220,21 @@ pub fn draw(r: c.rl.Rectangle, device: ?*Track, track_idx: ?usize, is_bus: bool,
         return .{ .minimize = res.minimize };
     };
 
-    // Audio track with no instrument assigned → placeholder + "+". Buses
-    // (master/return) have no instrument, so they skip this and go straight
-    // to the effects-only chain below.
-    if (!is_bus and t.machine_idx == null) {
-        const res = drawPlaceholder(r, header_h, false, "no machine — click + to add one", m);
-        result.minimize = res.minimize;
-        if (drawAddButton(widgets.rect(r.x, r.y, header_h, header_h), reg, m)) |pick| {
-            result.add_machine = pick.reg_idx;
-            result.add_preset = pick.preset;
-        }
-        return result;
-    }
-
+    // A track with no instrument (e.g. an audio-clip track) still renders a
+    // compact placeholder instrument slot, then the effect chain and the
+    // trailing "+", so it can hold and chain audio→audio machines. Buses
+    // (master/return) have no instrument slot at all.
     const DEFAULT_PANEL_W = theme.size(200);
-    const inst_pw: f32 = if (is_bus) 0 else (if (t.machine.panel_w > 0) theme.size(t.machine.panel_w) else DEFAULT_PANEL_W);
+    const no_instrument = !is_bus and t.machine_idx == null;
+    const PLACEHOLDER_PW = theme.size(150);
+    const inst_pw: f32 = if (is_bus)
+        0
+    else if (no_instrument)
+        PLACEHOLDER_PW
+    else if (t.machine.panel_w > 0)
+        theme.size(t.machine.panel_w)
+    else
+        DEFAULT_PANEL_W;
 
     // Measure the chain ((instrument) + effects + trailing "+") to decide
     // whether a horizontal minimap is needed at the bottom of the bay.
@@ -260,7 +260,15 @@ pub fn draw(r: c.rl.Rectangle, device: ?*Track, track_idx: ?usize, is_bus: bool,
     var x = r.x - bay_scroll_x;
 
     // Instrument slot — audio tracks only. Buses start straight at effects.
-    if (!is_bus) {
+    if (no_instrument) {
+        // Empty instrument slot: a hint placeholder. Machines are added via
+        // the trailing "+" (effects route to the chain, an instrument fills
+        // this slot) — no separate add button here.
+        const ph_rect = widgets.rect(x, r.y, inst_pw, dev_h);
+        const res = drawPlaceholder(ph_rect, header_h, false, "no instrument — + adds fx", m);
+        result.minimize = res.minimize;
+        x += inst_pw;
+    } else if (!is_bus) {
         const inst_rect = widgets.rect(x, r.y, inst_pw, dev_h);
         const inst_body = widgets.rect(x, r.y + header_h, inst_pw, dev_h - header_h);
         const inst_enabled = t.isEnabled();

@@ -1011,20 +1011,51 @@ fn drawWaveformDisplay(self: *FyRawMachine, field: c.rl.Rectangle, asset_name: [
     const cache = &self.asset_cache[ai];
     waveform.draw(inner, cache, 0, @floatFromInt(@max(cache.sample_count, 1)), theme.accent_hi);
 
-    // Read-only markers: START / LOOP BEG / LOOP END as fractional positions.
-    drawMarker(self, inner, "smp-start", theme.accent_play);
-    drawMarker(self, inner, "smp-loop-start", theme.accent_hi);
-    drawMarker(self, inner, "smp-loop-end", theme.accent_hi);
+    // Draggable markers: START / LOOP BEG / LOOP END. Dragging writes the
+    // matching control's normalized value live (the audio thread reads it
+    // atomically) and the source knob follows.
+    drawMarker(self, inner, "smp-start", theme.accent_play, mouse);
+    drawMarker(self, inner, "smp-loop-start", theme.accent_hi, mouse);
+    drawMarker(self, inner, "smp-loop-end", theme.accent_hi, mouse);
 }
 
-fn drawMarker(self: *FyRawMachine, area: c.rl.Rectangle, id: []const u8, col: c.rl.Color) void {
+const MARKER_SALT: u64 = 0x5A3B_0FF5_7A6C_0001;
+
+fn drawMarker(self: *FyRawMachine, area: c.rl.Rectangle, id: []const u8, col: c.rl.Color, mouse: widgets.Mouse) void {
+    var idx: usize = 0;
+    var found = false;
     for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
-        if (!std.mem.eql(u8, ctl.idSlice(), id)) continue;
-        const frac = std.math.clamp(@as(f32, self.controlNorm(i)), 0, 1);
-        const x = area.x + frac * area.width;
-        c.rl.DrawLineEx(.{ .x = x, .y = area.y }, .{ .x = x, .y = area.y + area.height }, 1.0, col);
-        return;
+        if (std.mem.eql(u8, ctl.idSlice(), id)) {
+            idx = i;
+            found = true;
+            break;
+        }
     }
+    if (!found) return;
+
+    const frac = std.math.clamp(@as(f32, self.controlNorm(idx)), 0, 1);
+    const x = area.x + frac * area.width;
+    const key = widgets.keyFromIds(MARKER_SALT, @intFromPtr(self), idx);
+    const dragging = widgets.isDraggingKey(key);
+    const hot = widgets.contains(area, mouse.x, mouse.y) and @abs(mouse.x - x) <= theme.fine(4);
+
+    if (dragging) {
+        if (mouse.left_down) {
+            const nf = std.math.clamp((mouse.x - area.x) / area.width, 0, 1);
+            self.setControlNorm(idx, nf);
+        } else {
+            widgets.cancelDrag();
+        }
+    } else if (hot and mouse.left_pressed and !widgets.hasActiveDrag()) {
+        _ = widgets.tryStartDrag(key);
+    }
+    if (hot or dragging) widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 2);
+
+    const lw: f32 = if (hot or dragging) 2.0 else 1.0;
+    c.rl.DrawLineEx(.{ .x = x, .y = area.y }, .{ .x = x, .y = area.y + area.height }, lw, col);
+    // A small grab tab at the top so the handle reads as draggable.
+    const tab = theme.fine(3);
+    c.rl.DrawRectangleRec(widgets.rect(x - tab, area.y, tab * 2 + 1, tab + 1), col);
 }
 
 // Draw the A/D/S/R envelope shape (segment widths from the knob norms, a fixed
