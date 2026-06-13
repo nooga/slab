@@ -7,6 +7,7 @@ const c = @import("c.zig");
 const machine = @import("machine.zig");
 const clip_mod = @import("clip.zig");
 const snap_mod = @import("snapshot.zig");
+const audio_pool_mod = @import("audio_pool.zig");
 
 pub const MAX_NAME = 32;
 pub const MAX_EFFECTS = 16;
@@ -203,15 +204,35 @@ pub const Track = struct {
     /// Called by the UI thread once per frame (after all mutations) to
     /// publish a frozen snapshot for the audio thread. Writes to the
     /// non-published slot, then flips the atomic index with Release ordering.
-    pub fn publishSnapshot(self: *Track) void {
+    pub fn publishSnapshot(self: *Track, pool: *const audio_pool_mod.AudioPool) void {
         const published = self.snap_published.load(.monotonic);
         const write_idx: u32 = 1 - published;
         const dst = self.snap[write_idx];
 
         dst.clip_count = 0;
         dst.note_count = 0;
+        dst.audio_clip_count = 0;
 
         for (self.clips.items) |*clip| {
+            if (clip.isAudio()) {
+                if (dst.audio_clip_count >= snap_mod.MAX_AUDIO_CLIPS_PER_TRACK) {
+                    std.debug.assert(false); // bump MAX_AUDIO_CLIPS_PER_TRACK
+                    continue;
+                }
+                var snap = snap_mod.AudioClipSnap{
+                    .start_beat = clip.start_beat,
+                    .length_beats = clip.length_beats,
+                    .gain = clip.audio.gain,
+                };
+                if (pool.get(clip.audio.source)) |src| {
+                    snap.data = src.sample.data.ptr;
+                    snap.len = @intCast(src.sample.data.len);
+                    snap.source_rate = src.sample.sample_rate;
+                }
+                dst.audio_clips[dst.audio_clip_count] = snap;
+                dst.audio_clip_count += 1;
+                continue;
+            }
             if (dst.clip_count >= snap_mod.MAX_CLIPS_PER_TRACK) {
                 std.debug.assert(false); // bump MAX_CLIPS_PER_TRACK
                 break;
@@ -278,7 +299,9 @@ test "publishSnapshot round-trip" {
     var clip = clip_mod.Clip.init("A", 2.0, 4.0);
     try clip.addNote(alloc, .{ .pitch = 60, .start_beat = 0.5, .length_beats = 1.0, .velocity = 80 });
     try t.addClip(alloc, clip);
-    t.publishSnapshot();
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    t.publishSnapshot(&pool);
 
     const s = t.currentSnapshot();
     try testing.expectEqual(@as(u32, 1), s.clip_count);

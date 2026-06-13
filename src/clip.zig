@@ -1,14 +1,29 @@
-//! Clip + Note data model. MIDI-like note clips for now; audio clips
-//! will be a separate variant later. Heap-allocated — both the clip
-//! list on a track and the note list on a clip grow dynamically.
+//! Clip + Note data model. Clips are either MIDI-like *note* clips (a list
+//! of notes fed to the track's instrument) or *audio* clips (a reference
+//! into the host AudioPool, mixed directly into the track on the audio
+//! thread). Heap-allocated — both the clip list on a track and the note
+//! list on a clip grow dynamically.
 //!
-//! All data here is UI-thread-owned. When we later feed notes to the
-//! audio thread, we'll publish a frozen snapshot — for now the engine
-//! ignores clips entirely.
+//! All data here is UI-thread-owned. The audio thread reads a frozen
+//! snapshot (see snapshot.zig) — never these structs directly.
 
 const std = @import("std");
 
 pub const MAX_NAME = 32;
+
+/// Whether a clip carries note data (driving the track instrument) or
+/// references decoded audio in the pool (mixed in directly).
+pub const ClipKind = enum(u8) { note, audio };
+
+/// An audio clip's reference into the host AudioPool plus its clip-local
+/// playback parameters. Speed/warp and a trim window land in Phase D; for
+/// now an audio clip plays its source from the top at native rate.
+pub const AudioRef = struct {
+    /// Index into the document's AudioPool. Stable for the doc lifetime.
+    source: u32 = 0,
+    /// Linear playback gain applied on the audio thread.
+    gain: f32 = 1.0,
+};
 
 pub const Note = struct {
     /// MIDI note number (0..127).
@@ -33,6 +48,10 @@ pub const Clip = struct {
     name_len: u8 = 0,
     /// Transient UI flag — not persisted, not consumed by the engine.
     selected: bool = false,
+    /// note vs audio. `notes` is meaningful only for `.note`; `audio`
+    /// only for `.audio`.
+    kind: ClipKind = .note,
+    audio: AudioRef = .{},
     notes: std.ArrayList(Note) = .empty,
 
     pub fn init(display_name: []const u8, start_beat: f64, length_beats: f64) Clip {
@@ -46,6 +65,19 @@ pub const Clip = struct {
         return c;
     }
 
+    /// An audio clip referencing pool `source`. Length is the caller's
+    /// responsibility (typically the source duration at project tempo).
+    pub fn initAudio(display_name: []const u8, start_beat: f64, length_beats: f64, source: u32) Clip {
+        var c = Clip.init(display_name, start_beat, length_beats);
+        c.kind = .audio;
+        c.audio = .{ .source = source };
+        return c;
+    }
+
+    pub fn isAudio(self: *const Clip) bool {
+        return self.kind == .audio;
+    }
+
     pub fn deinit(self: *Clip, alloc: std.mem.Allocator) void {
         self.notes.deinit(alloc);
     }
@@ -53,6 +85,8 @@ pub const Clip = struct {
     pub fn clone(self: *const Clip, alloc: std.mem.Allocator) !Clip {
         var c = Clip.init(self.name(), self.start_beat, self.length_beats);
         c.selected = self.selected;
+        c.kind = self.kind;
+        c.audio = self.audio;
         errdefer c.deinit(alloc);
         try c.notes.appendSlice(alloc, self.notes.items);
         return c;

@@ -10,6 +10,7 @@ const transport_mod = @import("transport.zig");
 const engine_mod = @import("engine.zig");
 const track_mod = @import("track.zig");
 const clip_mod = @import("clip.zig");
+const audio_pool_mod = @import("audio_pool.zig");
 const registry_mod = @import("machine_registry.zig");
 const fy_host_mod = @import("fy_host.zig");
 const document_mod = @import("document.zig");
@@ -345,6 +346,13 @@ pub fn main() !void {
             std.log.warn("hot-patch: {}", .{err});
     }
 
+    // ── Audio pool — host-owned decoded audio backing arrangement clips.
+    // Registered with the document layer (a process singleton) so save /
+    // load / undo resolve clip ↔ file path through it.
+    var audio_pool = audio_pool_mod.AudioPool.init(alloc);
+    defer audio_pool.deinit();
+    document_mod.setPool(&audio_pool);
+
     // ── Tracks — start with silent placeholder machines ──────────────
     var transport: transport_mod.Transport = .{};
     transport.sample_rate = audio_mod.SAMPLE_RATE;
@@ -472,11 +480,16 @@ pub fn main() !void {
         // (Side browser removed — machines are added via the "+" in the
         // machine-bay titlebar; see mbres.add_machine below.)
 
-        const ares = arrangement.draw(rects.arrangement, tracks, &master, &device_sel, alloc, &selected_track, &selected_clip, &transport, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), pane_m);
+        const ares = arrangement.draw(rects.arrangement, tracks, &master, &device_sel, &audio_pool, alloc, &selected_track, &selected_clip, &transport, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), pane_m);
         if (ares.rename_clip) |ref| beginRenameClip(&rename, tracks, ref);
         if (ares.rename_track) |ti| beginRenameTrack(&rename, tracks, ti);
         if (ares.rename_rect) |rr| rename.rect = rr;
-        if (ares.command != .none) {
+        if (ares.command == .import_audio) {
+            importAudioClip(alloc, &audio_pool, &history, &status, tracks, &transport, edit_snap, &selected_track, &selected_clip, &dirty, ares.command_beat, ares.command_track) catch |err| {
+                std.log.err("import audio failed: {s}", .{@errorName(err)});
+                status.set("Audio import failed", .{});
+            };
+        } else if (ares.command != .none) {
             try executeEditCommand(alloc, &history, &clipboard, &status, .arrangement, edit_snap, ares.command, .{
                 .beat = ares.command_beat,
                 .track = ares.command_track,
@@ -648,7 +661,7 @@ pub fn main() !void {
         widgets.drawContextMenu();
         widgets.applyCursor();
 
-        for (tracks) |*t| t.publishSnapshot();
+        for (tracks) |*t| t.publishSnapshot(&audio_pool);
 
         c.rl.EndDrawing();
         if (tres.save_project) {
@@ -697,6 +710,55 @@ pub fn main() !void {
         }
         prev_selected_clip = selected_clip;
     }
+}
+
+/// Import an audio file into the pool and drop it as an audio clip on the
+/// target track at `target_beat`. Length is the source duration at the
+/// current tempo. Pushes an undo snapshot and selects the new clip.
+fn importAudioClip(
+    alloc: std.mem.Allocator,
+    pool: *audio_pool_mod.AudioPool,
+    history: *history_mod.History,
+    status: *StatusMessage,
+    tracks: []track_mod.Track,
+    transport: *transport_mod.Transport,
+    edit_snap: snap_mod.Setting,
+    selected_track: *?usize,
+    selected_clip: *?clip_mod.ClipRef,
+    dirty: *bool,
+    target_beat: ?f64,
+    target_track: ?usize,
+) !void {
+    if (tracks.len == 0) return;
+    const ti = @min(target_track orelse selected_track.* orelse 0, tracks.len - 1);
+
+    const path = (try native_dialog.openAudioFile(alloc)) orelse return; // cancelled
+    defer alloc.free(path);
+
+    const source = try pool.loadFile(path);
+    const src = pool.get(source) orelse return;
+
+    const bpm: f64 = transport.bpm();
+    const len_beats = @max(0.25, src.seconds() * bpm / 60.0);
+    const raw_start = target_beat orelse transport.beats();
+    const start = snap_mod.snapDownPositive(edit_snap, @max(0.0, raw_start), false);
+
+    const before = try document_mod.serialize(alloc, tracks, transport);
+    errdefer alloc.free(before);
+
+    _ = arrangement.clearSelection(tracks, selected_clip);
+    var clip = clip_mod.Clip.initAudio(src.name(), start, len_beats, source);
+    clip.selected = true;
+    tracks[ti].addClip(alloc, clip) catch |err| {
+        clip.deinit(alloc);
+        return err;
+    };
+    try history.pushUndo(alloc, before);
+
+    selected_track.* = ti;
+    selected_clip.* = .{ .track = @intCast(ti), .clip = @intCast(tracks[ti].clips.items.len - 1) };
+    dirty.* = true;
+    status.set("Imported {s}", .{src.name()});
 }
 
 fn handleProjectShortcuts(
@@ -881,7 +943,9 @@ fn applyProjectBytes(
     selected_track.* = if (track_count.* > 0) 0 else null;
     selected_clip.* = null;
     prev_selected_clip.* = null;
-    for (tracks.*) |*t| t.publishSnapshot();
+    if (document_mod.activePool()) |p| {
+        for (tracks.*) |*t| t.publishSnapshot(p);
+    }
 }
 
 fn pushHistorySnapshot(alloc: std.mem.Allocator, history: *history_mod.History, tracks: []track_mod.Track, transport: *transport_mod.Transport) void {
@@ -1494,7 +1558,9 @@ fn executeEditCommand(
             changed = if (focus == .piano_roll) clip_editor.quantizeSelectedNotes(tracks, selected_clip.*, edit_snap) else false;
             if (changed) status.set("Quantized", .{});
         },
-        .none, .copy, .select_all, .clear_selection, .rename, .file_open, .file_save, .file_save_as => {},
+        // `import_audio` is intercepted in the arrangement-result handler
+        // (it needs the audio pool + file dialog); never reaches here.
+        .none, .copy, .select_all, .clear_selection, .rename, .file_open, .file_save, .file_save_as, .import_audio => {},
     }
 
     if (changed) {

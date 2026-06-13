@@ -127,6 +127,25 @@ When transport is in a clip's range, the track's first insert (or
 the clip directly, for audio clips) receives the clip's data. When
 outside any clip, the track is silent (or looping, per settings).
 
+**As built (Phase C).** Audio clips are implemented and play back in
+the arrangement. The host owns an **AudioPool** (`src/audio_pool.zig`):
+decoded f64 mono sources (via `wav.zig`) each paired with a
+`waveform.PeakCache` for zoomable waveform drawing. A `Clip` carries a
+`kind` (`note` | `audio`); audio clips hold an `AudioRef { source, gain }`
+indexing the pool. `Track.publishSnapshot` freezes each audio clip's raw
+`data` pointer + length + native rate into the `TrackSnapshot`; the audio
+thread mixes them (`engine.mixAudioClips`) on top of the instrument output
+into the same planar L/R, so the track's insert chain processes the sum.
+The source plays from its top at native rate (linear-interp resample to the
+engine rate) and stops when either the timeline window or the source data
+runs out — speed/warp and a trim window are Phase D. Sources are pool-indexed
+and never freed mid-session, so the snapshot pointer stays valid without a
+fence. The pool survives undo/redo; the document persists audio clips by
+file path (`ACLIP` line) and re-resolves to a pool index on load (dedup by
+path). Import via the arrangement's right-click **Import audio…**. Unlike
+the doc's "audio-head track" split above, an audio clip can sit on any
+track and coexists with that track's instrument — the engine simply sums.
+
 ### Topological order
 
 Computed once at graph build; cached until the graph changes.

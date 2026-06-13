@@ -18,6 +18,8 @@ const clip_mod = @import("../clip.zig");
 const Clip = clip_mod.Clip;
 const ClipRef = clip_mod.ClipRef;
 const Transport = @import("../transport.zig").Transport;
+const audio_pool_mod = @import("../audio_pool.zig");
+const waveform = @import("../waveform.zig");
 
 fn rulerH() f32 {
     return theme.size(14);
@@ -437,6 +439,7 @@ pub fn draw(
     tracks: []Track,
     master: *Track,
     device_sel: *DeviceSel,
+    pool: *const audio_pool_mod.AudioPool,
     alloc: std.mem.Allocator,
     selected_track: *?usize,
     selected_clip: *?ClipRef,
@@ -598,7 +601,7 @@ pub fn draw(
         for (t.clips.items, 0..) |*clip, ci| {
             const clip_rect = clipRect(lane_timeline, clip.*, timeline_x0);
             const editing = rename_target.kind == .clip and rename_target.track == ti and rename_target.clip == ci;
-            drawClip(clip_rect, clip.*, t.color, clip.selected, editing);
+            drawClip(clip_rect, clip.*, t.color, clip.selected, editing, pool);
             if (editing) result.rename_rect = clipNameRect(clip_rect);
         }
 
@@ -735,6 +738,8 @@ pub fn draw(
     const has_selection = hasSelectedClips(tracks);
     const has_clips = hasAnyClips(tracks);
     const arr_context_items = [_]widgets.MenuItem{
+        .{ .label = "Import audio\xE2\x80\xA6", .command = .import_audio, .enabled = tracks.len > 0 },
+        .{ .separator = true },
         .{ .label = "Copy", .command = .copy, .enabled = has_selection },
         .{ .label = "Cut", .command = .cut, .enabled = has_selection },
         .{ .label = "Paste", .command = .paste, .enabled = can_paste_clips },
@@ -1164,7 +1169,7 @@ fn clipRect(lane: c.rl.Rectangle, clip: Clip, timeline_x0: f32) c.rl.Rectangle {
     return widgets.rect(x, lane.y + 2, w, lane.height - 4);
 }
 
-fn drawClip(r: c.rl.Rectangle, clip: Clip, color: c.rl.Color, selected: bool, editing_name: bool) void {
+fn drawClip(r: c.rl.Rectangle, clip: Clip, color: c.rl.Color, selected: bool, editing_name: bool, pool: *const audio_pool_mod.AudioPool) void {
     // Body — dimmed track color
     const body = dim(color, 0.55);
     c.rl.DrawRectangleRec(r, body);
@@ -1192,6 +1197,23 @@ fn drawClip(r: c.rl.Rectangle, clip: Clip, color: c.rl.Color, selected: bool, ed
             theme.fsTiny(),
             theme.bg,
         );
+    }
+
+    // Audio clip → draw its waveform across the body (the source mapped to
+    // the clip width). Zoomable for free via the peak pyramid.
+    if (clip.isAudio()) {
+        const body_top = r.y + strip_h + 1;
+        const body_h = r.height - strip_h - 2;
+        if (body_h > 2 and r.width > 1) {
+            if (pool.get(clip.audio.source)) |src| {
+                if (src.cache.sample_count > 0) {
+                    const wf_rect = widgets.rect(r.x + 1, body_top, r.width - 2, body_h);
+                    const wcol = if (selected) theme.text_fg else theme.accent_hi;
+                    waveform.draw(wf_rect, &src.cache, 0, @floatFromInt(src.cache.sample_count), wcol);
+                }
+            }
+        }
+        return;
     }
 
     // Tiny note ticks in the body to hint content (only if there are notes).

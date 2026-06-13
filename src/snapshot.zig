@@ -11,6 +11,7 @@
 
 pub const MAX_CLIPS_PER_TRACK: usize = 64;
 pub const MAX_NOTES_PER_TRACK: usize = 2048;
+pub const MAX_AUDIO_CLIPS_PER_TRACK: usize = 64;
 
 pub const NoteSnap = struct {
     start_beat: f64,
@@ -26,9 +27,24 @@ pub const ClipHeader = struct {
     notes_count: u32,
 };
 
+/// A placed audio clip, frozen for the audio thread. `data`/`len` point at
+/// the pool source's decoded f64 mono buffer — valid because pool sources
+/// are never freed mid-session. `data` is null when the source went
+/// missing (skipped on playback).
+pub const AudioClipSnap = struct {
+    start_beat: f64,
+    length_beats: f64,
+    data: ?[*]const f64 = null,
+    len: u32 = 0,
+    source_rate: f64 = 0,
+    gain: f32 = 1.0,
+};
+
 pub const TrackSnapshot = struct {
     clips: [MAX_CLIPS_PER_TRACK]ClipHeader = undefined,
     clip_count: u32 = 0,
     notes: [MAX_NOTES_PER_TRACK]NoteSnap = undefined,
     note_count: u32 = 0,
+    audio_clips: [MAX_AUDIO_CLIPS_PER_TRACK]AudioClipSnap = undefined,
+    audio_clip_count: u32 = 0,
 };

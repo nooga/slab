@@ -349,6 +349,9 @@ pub const Engine = struct {
             const inst_start = if (track_probe) probeNowNs() else 0;
             // Disabled instrument → feed silence into the effect chain.
             if (t.isEnabled()) t.machine.render(t.machine.state, &ctx, l, r);
+            // Audio clips mix on top of the instrument output, into the same
+            // planar L/R, so the track's insert chain processes the sum.
+            mixAudioClips(snap, block_start, frames, spb, sr, l, r);
             const inst_ns = if (track_probe) probeNowNs() - inst_start else 0;
             const fx_start = if (track_probe) probeNowNs() else 0;
             const rendered = renderEffects(t, ctx, l, r, fx_l_buf[0..frames], fx_r_buf[0..frames]);
@@ -648,6 +651,56 @@ fn renderEffects(
     return .{ .l = cur_l, .r = cur_r };
 }
 
+/// Mix all audio clips overlapping this block into the planar L/R buffers.
+/// Pure read + linear interpolation — no allocation. The source plays from
+/// its top at native rate (natural resample to the engine rate); it stops
+/// when either the timeline clip window or the source data runs out.
+fn mixAudioClips(
+    snap: *const snap_mod.TrackSnapshot,
+    block_start: u64,
+    frames: u32,
+    samples_per_beat: f64,
+    sample_rate: u32,
+    l: []f32,
+    r: []f32,
+) void {
+    const block_lo: f64 = @floatFromInt(block_start);
+    const block_hi: f64 = block_lo + @as(f64, @floatFromInt(frames));
+
+    for (snap.audio_clips[0..snap.audio_clip_count]) |clip| {
+        const data = clip.data orelse continue;
+        if (clip.len == 0 or clip.source_rate <= 0) continue;
+
+        const clip_start = clip.start_beat * samples_per_beat;
+        const clip_end = (clip.start_beat + clip.length_beats) * samples_per_beat;
+        const lo = @max(block_lo, clip_start);
+        const hi = @min(block_hi, clip_end);
+        if (hi <= lo) continue;
+
+        // Source samples advanced per engine output sample.
+        const engine_rate: f64 = @floatFromInt(sample_rate);
+        const step = clip.source_rate / engine_rate;
+        const len = clip.len;
+
+        var a = lo;
+        while (a < hi) : (a += 1) {
+            const i: usize = @intFromFloat(a - block_lo);
+            if (i >= frames) break;
+            const src_pos = (a - clip_start) * step;
+            if (src_pos < 0) continue;
+            const idx0f = @floor(src_pos);
+            const idx0: usize = @intFromFloat(idx0f);
+            if (idx0 >= len) break; // source exhausted — rest of clip is silent
+            const frac: f32 = @floatCast(src_pos - idx0f);
+            const s0: f32 = @floatCast(data[idx0]);
+            const s1: f32 = if (idx0 + 1 < len) @floatCast(data[idx0 + 1]) else s0;
+            const v = (s0 + (s1 - s0) * frac) * clip.gain;
+            l[i] += v;
+            r[i] += v;
+        }
+    }
+}
+
 fn gatherEvents(
     snap: *const snap_mod.TrackSnapshot,
     beat_start: f64,
@@ -860,6 +913,74 @@ test "gatherEvents: note clamped to clip end" {
     try testing.expect(events[0].kind == .note_on);
     try testing.expect(events[1].kind == .note_off);
     try testing.expectEqual(@as(u32, 48), events[1].sample_offset);
+}
+
+test "mixAudioClips: places source at clip start and resamples by rate" {
+    // Source: a ramp 0,1,2,3,... at 24 kHz; engine at 48 kHz → step 0.5.
+    var data: [8]f64 = undefined;
+    for (&data, 0..) |*s, i| s.* = @floatFromInt(i);
+
+    var snap = snap_mod.TrackSnapshot{};
+    snap.audio_clip_count = 1;
+    snap.audio_clips[0] = .{
+        .start_beat = 1.0,
+        .length_beats = 4.0,
+        .data = &data,
+        .len = data.len,
+        .source_rate = 24_000,
+        .gain = 1.0,
+    };
+
+    const spb: f64 = 100.0; // samples per beat → clip starts at sample 100
+    var l = [_]f32{0} ** 8;
+    var r = [_]f32{0} ** 8;
+    // Block starting exactly at the clip's first sample.
+    mixAudioClips(&snap, 100, 8, spb, 48_000, &l, &r);
+
+    // step = 24000/48000 = 0.5 → src positions 0,0.5,1,1.5,... interpolated.
+    try testing.expectApproxEqAbs(@as(f32, 0.0), l[0], 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), l[1], 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 1.0), l[2], 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 1.5), l[3], 1e-5);
+    // L and R are fed identically (mono source).
+    for (l, r) |lv, rv| try testing.expectEqual(lv, rv);
+}
+
+test "mixAudioClips: silent before clip start and after source ends" {
+    var data = [_]f64{ 0.5, 0.5 };
+    var snap = snap_mod.TrackSnapshot{};
+    snap.audio_clip_count = 1;
+    snap.audio_clips[0] = .{
+        .start_beat = 1.0,
+        .length_beats = 8.0,
+        .data = &data,
+        .len = data.len,
+        .source_rate = 48_000,
+        .gain = 1.0,
+    };
+    const spb: f64 = 4.0; // clip starts at sample 4
+
+    var l = [_]f32{0} ** 8;
+    var r = [_]f32{0} ** 8;
+    // Block [0,8): samples 0..3 are before the clip, 4..5 read the source,
+    // 6..7 are past the 2-sample source (silent).
+    mixAudioClips(&snap, 0, 8, spb, 48_000, &l, &r);
+    try testing.expectEqual(@as(f32, 0), l[0]);
+    try testing.expectEqual(@as(f32, 0), l[3]);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), l[4], 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), l[5], 1e-5);
+    try testing.expectEqual(@as(f32, 0), l[6]);
+    try testing.expectEqual(@as(f32, 0), l[7]);
+}
+
+test "mixAudioClips: missing source data is skipped" {
+    var snap = snap_mod.TrackSnapshot{};
+    snap.audio_clip_count = 1;
+    snap.audio_clips[0] = .{ .start_beat = 0, .length_beats = 4, .data = null };
+    var l = [_]f32{0} ** 4;
+    var r = [_]f32{0} ** 4;
+    mixAudioClips(&snap, 0, 4, 10.0, 48_000, &l, &r);
+    for (l) |v| try testing.expectEqual(@as(f32, 0), v);
 }
 
 test "softClip: linear pass-through inside the knee" {

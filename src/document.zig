@@ -10,6 +10,7 @@ const clip_mod = @import("clip.zig");
 const registry_mod = @import("machine_registry.zig");
 const transport_mod = @import("transport.zig");
 const machine_mod = @import("machine.zig");
+const audio_pool_mod = @import("audio_pool.zig");
 
 extern fn close(fd: c_int) c_int;
 extern fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
@@ -20,6 +21,21 @@ const O_CREAT: c_int = 0x200;
 const O_TRUNC: c_int = 0x400;
 
 pub const SAVE_PATH = "slab-project.slab";
+
+/// The process-wide audio pool, registered once at startup. serialize()
+/// resolves an audio clip's source index → file path through it; apply()
+/// resolves a saved path → pool index (loading on demand). It is a host
+/// singleton (one per process), so it is registered here rather than
+/// threaded through every serialize/apply call site. Tests set it directly.
+var active_pool: ?*audio_pool_mod.AudioPool = null;
+
+pub fn setPool(pool: *audio_pool_mod.AudioPool) void {
+    active_pool = pool;
+}
+
+pub fn activePool() ?*audio_pool_mod.AudioPool {
+    return active_pool;
+}
 
 pub fn readFile(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
     const z = try alloc.dupeZ(u8, path);
@@ -59,7 +75,11 @@ pub fn writeFile(alloc: std.mem.Allocator, path: []const u8, data: []const u8) !
     }
 }
 
-pub fn serialize(alloc: std.mem.Allocator, tracks: []const track_mod.Track, transport: *const transport_mod.Transport) ![]u8 {
+pub fn serialize(
+    alloc: std.mem.Allocator,
+    tracks: []const track_mod.Track,
+    transport: *const transport_mod.Transport,
+) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(alloc);
 
@@ -87,6 +107,20 @@ pub fn serialize(alloc: std.mem.Allocator, tracks: []const track_mod.Track, tran
             t.poly_voices,
         });
         for (t.clips.items) |*clip| {
+            if (clip.isAudio()) {
+                const src_path = if (active_pool) |p|
+                    (if (p.get(clip.audio.source)) |s| s.path() else "")
+                else
+                    "";
+                try appendFmt(alloc, &out, "ACLIP\t{s}\t{d:.6}\t{d:.6}\t{d:.6}\t{s}\n", .{
+                    clip.name(),
+                    clip.start_beat,
+                    clip.length_beats,
+                    clip.audio.gain,
+                    src_path,
+                });
+                continue;
+            }
             try appendFmt(alloc, &out, "CLIP\t{s}\t{d:.6}\t{d:.6}\t{d}\n", .{
                 clip.name(),
                 clip.start_beat,
@@ -172,7 +206,28 @@ pub fn apply(
         while (ci < clip_count) : (ci += 1) {
             const clip_line = parser.next() orelse return error.InvalidProject;
             var clip_fields = split(clip_line);
-            if (!std.mem.eql(u8, nextField(&clip_fields) orelse "", "CLIP")) return error.InvalidProject;
+            const tag = nextField(&clip_fields) orelse return error.InvalidProject;
+
+            // Audio clip: name, start, len, gain, source path.
+            if (std.mem.eql(u8, tag, "ACLIP")) {
+                const clip_name = nextField(&clip_fields) orelse return error.InvalidProject;
+                const start = try parseF64(nextField(&clip_fields) orelse return error.InvalidProject);
+                const len = try parseF64(nextField(&clip_fields) orelse return error.InvalidProject);
+                const gain = try parseF32(nextField(&clip_fields) orelse return error.InvalidProject);
+                const src_path = nextField(&clip_fields) orelse "";
+                // A missing/failed source still keeps the clip (it just plays
+                // silent) so the document round-trips losslessly.
+                const source: u32 = if (src_path.len > 0)
+                    (if (active_pool) |p| (p.loadFile(src_path) catch 0) else 0)
+                else
+                    0;
+                var aclip = clip_mod.Clip.initAudio(clip_name, start, len, source);
+                aclip.audio.gain = gain;
+                try t.addClip(alloc, aclip);
+                continue;
+            }
+
+            if (!std.mem.eql(u8, tag, "CLIP")) return error.InvalidProject;
             const clip_name = nextField(&clip_fields) orelse return error.InvalidProject;
             const start = try parseF64(nextField(&clip_fields) orelse return error.InvalidProject);
             const len = try parseF64(nextField(&clip_fields) orelse return error.InvalidProject);
@@ -320,6 +375,11 @@ test "project snapshot round-trips tracks clips notes and loop" {
     try clip.addNote(alloc, .{ .pitch = 64, .start_beat = 0.5, .length_beats = 1.25, .velocity = 91 });
     try tracks[0].addClip(alloc, clip);
 
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    setPool(&pool);
+    defer active_pool = null;
+
     const bytes = try serialize(alloc, tracks[0..], &transport);
     defer alloc.free(bytes);
 
@@ -347,4 +407,50 @@ test "project snapshot round-trips tracks clips notes and loop" {
     try std.testing.expectApproxEqAbs(@as(f64, 1.0), loaded_transport.loopStartBeats(), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f64, 9.0), loaded_transport.loopEndBeats(), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 132.5), loaded_transport.bpm(), 0.001);
+}
+
+test "audio clips round-trip through the pool by path" {
+    const alloc = std.testing.allocator;
+
+    var transport: transport_mod.Transport = .{};
+    transport.sample_rate = 48_000;
+    transport.setBpm(120);
+
+    var tracks = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "Audio", .{ .r = 1, .g = 2, .b = 3, .a = 255 }, test_machine),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    setPool(&pool);
+    defer active_pool = null;
+    const src = try pool.loadFile("machines/sampler/assets/default.wav");
+
+    var aclip = clip_mod.Clip.initAudio("Loop", 3.0, 2.5, src);
+    aclip.audio.gain = 0.5;
+    try tracks[0].addClip(alloc, aclip);
+
+    const bytes = try serialize(alloc, tracks[0..], &transport);
+    defer alloc.free(bytes);
+
+    var reg = registry_mod.Registry.init(alloc);
+    defer reg.deinit();
+    var loaded_transport: transport_mod.Transport = .{};
+    loaded_transport.sample_rate = 48_000;
+    var loaded_buf: [2]track_mod.Track = undefined;
+    var loaded_count: usize = 0;
+    try apply(alloc, bytes, &reg, loaded_buf[0..], &loaded_count, &loaded_transport, test_machine);
+    defer for (loaded_buf[0..loaded_count]) |*t| t.deinit(alloc);
+
+    // Path-dedup means no second load happened.
+    try std.testing.expectEqual(@as(usize, 1), pool.count());
+    try std.testing.expectEqual(@as(usize, 1), loaded_buf[0].clips.items.len);
+    const got = &loaded_buf[0].clips.items[0];
+    try std.testing.expect(got.isAudio());
+    try std.testing.expectEqualStrings("Loop", got.name());
+    try std.testing.expectApproxEqAbs(@as(f64, 3.0), got.start_beat, 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.5), got.length_beats, 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), got.audio.gain, 1e-4);
+    try std.testing.expectEqual(src, got.audio.source);
 }

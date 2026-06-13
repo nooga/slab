@@ -78,6 +78,7 @@ pub const EditCommand = enum {
     split_at_playhead,
     quantize,
     rename,
+    import_audio,
 };
 
 pub const MenuItem = struct {

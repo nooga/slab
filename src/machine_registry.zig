@@ -18,6 +18,7 @@ test {
     _ = @import("presets.zig");
     _ = @import("wav.zig");
     _ = @import("waveform.zig");
+    _ = @import("audio_pool.zig");
     _ = @import("ms20_svf_test.zig");
 }
 
