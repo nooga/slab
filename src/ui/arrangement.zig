@@ -54,6 +54,9 @@ const ClipDragSnap = struct {
 
 // Module-scope state.
 var px_per_beat: f32 = 24;
+// Current project tempo, captured at the top of draw() so drag handlers
+// (which don't take the transport) can convert beats↔source-seconds.
+var cur_bpm: f64 = 120;
 var scroll_x: f32 = 0;
 var scroll_y: f32 = 0;
 var last_scroll_time: f64 = 0;
@@ -296,7 +299,7 @@ pub fn loopArrangement(tracks: []Track, transport: *Transport) bool {
     return true;
 }
 
-pub fn splitSelectedClipsAt(tracks: []Track, alloc: std.mem.Allocator, focused_clip: *?ClipRef, beat: f64) bool {
+pub fn splitSelectedClipsAt(tracks: []Track, alloc: std.mem.Allocator, focused_clip: *?ClipRef, beat: f64, bpm: f64) bool {
     var changed = false;
     var first: ?ClipRef = null;
     for (tracks, 0..) |*t, ti| {
@@ -307,6 +310,27 @@ pub fn splitSelectedClipsAt(tracks: []Track, alloc: std.mem.Allocator, focused_c
             if (!clip.selected) continue;
             const local = beat - clip.start_beat;
             if (local <= minClipBeats(.note_16) or local >= clip.length_beats - minClipBeats(.note_16)) continue;
+
+            // Audio clip: carve the source window at the split point. The
+            // right part reads from where the left part stopped.
+            if (clip.isAudio()) {
+                const split_sec = local * 60.0 / @max(1.0, bpm);
+                var right_a = Clip.initAudio(clip.name(), beat, clip.start_beat + clip.length_beats - beat, clip.audio.source);
+                right_a.selected = true;
+                right_a.audio.gain = clip.audio.gain;
+                right_a.audio.start_sec = clip.audio.start_sec + split_sec;
+                right_a.audio.dur_sec = @max(0.0, clip.audio.dur_sec - split_sec);
+                clip.audio.dur_sec = split_sec;
+                clip.length_beats = local;
+                clip.selected = false;
+                t.addClip(alloc, right_a) catch |err| {
+                    std.log.err("split audio clip append failed: {s}", .{@errorName(err)});
+                    continue;
+                };
+                changed = true;
+                if (first == null) first = .{ .track = @intCast(ti), .clip = @intCast(t.clips.items.len - 1) };
+                continue;
+            }
 
             var right = Clip.init(clip.name(), beat, clip.start_beat + clip.length_beats - beat);
             right.selected = true;
@@ -451,6 +475,12 @@ pub fn draw(
 ) Result {
     var result: Result = .{};
     c.rl.DrawRectangleRec(r, theme.pane_bg);
+
+    // Audio clips are unwarped: their beat-length is derived from the source
+    // window at the current tempo, so changing bpm rescales them against the
+    // bar grid. Do this before any interaction/draw uses length_beats.
+    cur_bpm = @max(1.0, @as(f64, transport.bpm()));
+    reflowAudioClips(tracks, cur_bpm);
 
     var master_clicked = false;
 
@@ -856,6 +886,18 @@ fn deselectAllClips(tracks: []Track) void {
     }
 }
 
+/// Recompute every audio clip's `length_beats` from its source window at
+/// `bpm`. The window (`dur_sec`) is tempo-independent, so this keeps the
+/// clip's bar-span correct as the project tempo changes.
+pub fn reflowAudioClips(tracks: []Track, bpm: f64) void {
+    for (tracks) |*t| {
+        for (t.clips.items) |*clip| {
+            if (!clip.isAudio()) continue;
+            clip.length_beats = @max(MIN_CLIP_BEATS, clip.audio.dur_sec * bpm / 60.0);
+        }
+    }
+}
+
 fn beginBoxSelect(track_idx: ?usize, m: widgets.Mouse, shift: bool) void {
     if (!widgets.tryStartDrag(BOX_KEY)) return;
     box_active = true;
@@ -1008,6 +1050,8 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
             widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
             const new_len = drag_start_length + d_beats;
             clip.length_beats = if (new_len < minClipBeats(edit_snap)) minClipBeats(edit_snap) else new_len;
+            // For audio, resizing trims the source window so reflow keeps it.
+            if (clip.isAudio()) clip.audio.dur_sec = clip.length_beats * 60.0 / cur_bpm;
         },
     }
 }
@@ -1209,7 +1253,12 @@ fn drawClip(r: c.rl.Rectangle, clip: Clip, color: c.rl.Color, selected: bool, ed
                 if (src.cache.sample_count > 0) {
                     const wf_rect = widgets.rect(r.x + 1, body_top, r.width - 2, body_h);
                     const wcol = if (selected) theme.text_fg else theme.accent_hi;
-                    waveform.draw(wf_rect, &src.cache, 0, @floatFromInt(src.cache.sample_count), wcol);
+                    // Draw only this clip's source window.
+                    const rate = src.sample.sample_rate;
+                    const win_start = clip.audio.start_sec * rate;
+                    const total: f64 = @floatFromInt(src.cache.sample_count);
+                    const win_end = @min(total, win_start + clip.audio.dur_sec * rate);
+                    waveform.draw(wf_rect, &src.cache, win_start, win_end, wcol);
                 }
             }
         }

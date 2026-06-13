@@ -686,7 +686,7 @@ fn mixAudioClips(
         while (a < hi) : (a += 1) {
             const i: usize = @intFromFloat(a - block_lo);
             if (i >= frames) break;
-            const src_pos = (a - clip_start) * step;
+            const src_pos = clip.start_sample + (a - clip_start) * step;
             if (src_pos < 0) continue;
             const idx0f = @floor(src_pos);
             const idx0: usize = @intFromFloat(idx0f);
@@ -971,6 +971,31 @@ test "mixAudioClips: silent before clip start and after source ends" {
     try testing.expectApproxEqAbs(@as(f32, 0.5), l[5], 1e-5);
     try testing.expectEqual(@as(f32, 0), l[6]);
     try testing.expectEqual(@as(f32, 0), l[7]);
+}
+
+test "mixAudioClips: start_sample offsets into the source (split clips)" {
+    var data: [8]f64 = undefined;
+    for (&data, 0..) |*s, i| s.* = @floatFromInt(i);
+
+    var snap = snap_mod.TrackSnapshot{};
+    snap.audio_clip_count = 1;
+    snap.audio_clips[0] = .{
+        .start_beat = 0,
+        .length_beats = 4,
+        .data = &data,
+        .len = data.len,
+        .source_rate = 48_000,
+        .start_sample = 3, // begin reading at source sample 3
+        .gain = 1.0,
+    };
+    var l = [_]f32{0} ** 4;
+    var r = [_]f32{0} ** 4;
+    // Engine rate == source rate → step 1, so out[i] = data[3+i].
+    mixAudioClips(&snap, 0, 4, 100.0, 48_000, &l, &r);
+    try testing.expectApproxEqAbs(@as(f32, 3), l[0], 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 4), l[1], 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 5), l[2], 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 6), l[3], 1e-5);
 }
 
 test "mixAudioClips: missing source data is skipped" {

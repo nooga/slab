@@ -228,6 +228,7 @@ pub const Track = struct {
                     snap.data = src.sample.data.ptr;
                     snap.len = @intCast(src.sample.data.len);
                     snap.source_rate = src.sample.sample_rate;
+                    snap.start_sample = clip.audio.start_sec * src.sample.sample_rate;
                 }
                 dst.audio_clips[dst.audio_clip_count] = snap;
                 dst.audio_clip_count += 1;

@@ -37,6 +37,8 @@ pub const AudioClipSnap = struct {
     data: ?[*]const f64 = null,
     len: u32 = 0,
     source_rate: f64 = 0,
+    /// First source sample this clip reads (= start_sec * source_rate).
+    start_sample: f64 = 0,
     gain: f32 = 1.0,
 };
 

@@ -16,13 +16,23 @@ pub const MAX_NAME = 32;
 pub const ClipKind = enum(u8) { note, audio };
 
 /// An audio clip's reference into the host AudioPool plus its clip-local
-/// playback parameters. Speed/warp and a trim window land in Phase D; for
-/// now an audio clip plays its source from the top at native rate.
+/// playback parameters.
+///
+/// The clip plays a *window* of the source — `[start_sec, start_sec+dur_sec)`
+/// in source seconds — at native rate (no time-stretch). The window is the
+/// bpm-independent source of truth; the clip's `length_beats` is *derived*
+/// from it at the current tempo (`dur_sec * bpm / 60`), so changing the
+/// project tempo rescales the clip against the bar grid and splitting carves
+/// the window in two. Speed/warp lands in a later phase.
 pub const AudioRef = struct {
     /// Index into the document's AudioPool. Stable for the doc lifetime.
     source: u32 = 0,
     /// Linear playback gain applied on the audio thread.
     gain: f32 = 1.0,
+    /// Offset into the source (seconds) where this clip starts reading.
+    start_sec: f64 = 0,
+    /// Length of the played window in source seconds (tempo-independent).
+    dur_sec: f64 = 0,
 };
 
 pub const Note = struct {

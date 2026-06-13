@@ -739,7 +739,8 @@ fn importAudioClip(
     const src = pool.get(source) orelse return;
 
     const bpm: f64 = transport.bpm();
-    const len_beats = @max(0.25, src.seconds() * bpm / 60.0);
+    const dur_sec = src.seconds();
+    const len_beats = @max(0.25, dur_sec * bpm / 60.0);
     const raw_start = target_beat orelse transport.beats();
     const start = snap_mod.snapDownPositive(edit_snap, @max(0.0, raw_start), false);
 
@@ -748,6 +749,8 @@ fn importAudioClip(
 
     _ = arrangement.clearSelection(tracks, selected_clip);
     var clip = clip_mod.Clip.initAudio(src.name(), start, len_beats, source);
+    clip.audio.start_sec = 0;
+    clip.audio.dur_sec = dur_sec;
     clip.selected = true;
     tracks[ti].addClip(alloc, clip) catch |err| {
         clip.deinit(alloc);
@@ -1551,7 +1554,7 @@ fn executeEditCommand(
             }
         },
         .split_at_playhead => {
-            changed = if (focus == .arrangement) arrangement.splitSelectedClipsAt(tracks, alloc, selected_clip, transport.beats()) else false;
+            changed = if (focus == .arrangement) arrangement.splitSelectedClipsAt(tracks, alloc, selected_clip, transport.beats(), transport.bpm()) else false;
             if (changed) status.set("Split clips", .{});
         },
         .quantize => {
