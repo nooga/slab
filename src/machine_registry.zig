@@ -16,6 +16,7 @@ test {
     _ = fy_raw_machine_mod.FyRawMachine;
     _ = machine_desc;
     _ = @import("presets.zig");
+    _ = @import("wav.zig");
     _ = @import("ms20_svf_test.zig");
 }
 

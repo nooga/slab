@@ -15,6 +15,7 @@ const fy_host_mod = @import("../fy_host.zig");
 const FyHost = fy_host_mod.FyHost;
 const machine_desc = @import("../machine_desc.zig");
 const presets_mod = @import("../presets.zig");
+const wav = @import("../wav.zig");
 const theme = @import("../ui/theme.zig");
 const widgets = @import("../ui/widgets.zig");
 
@@ -76,6 +77,12 @@ pub const FyRawMachine = struct {
     // channel. Base pointer + element count are injected into each channel's
     // state at the request's introspected offsets.
     buffer_mem: [machine_desc.MAX_BUFFERS][2][]f64 = undefined,
+    // Read-only audio assets loaded from disk at create (manifest `asset`),
+    // shared across voices via params.
+    asset_mem: [machine_desc.MAX_ASSETS]wav.Sample = [_]wav.Sample{.{ .data = &.{}, .sample_rate = 0 }} ** machine_desc.MAX_ASSETS,
+    // A valid silent target for assets that failed to load, so a kernel's
+    // clamped read hits real zeroed memory instead of an empty slice's ptr.
+    asset_silence: [2]f64 align(8) = .{ 0, 0 },
     // Stereo-linked detector trace (manifest `detector-cell`): filled per
     // block with max(|L|,|R|), read by both channels for linked dynamics.
     det_buf: [MAX_BLOCK]f64 align(8) = [_]f64{0} ** MAX_BLOCK,
@@ -121,9 +128,51 @@ pub const FyRawMachine = struct {
         }
         try self.allocBuffers(alloc);
         errdefer self.freeBuffersUpTo(alloc, self.desc.buffer_count);
+        try self.loadAssets(alloc, path);
+        errdefer self.freeAssets(alloc);
         try self.compileCallers();
-        self.initRawControls();
+        self.initRawControls(); // runs block-prepare, which reads asset SR
         return self;
+    }
+
+    // Load each declared asset (path relative to the machine's directory)
+    // into f64 mono and inject ptr/len/native-sr into params. Missing files
+    // are non-fatal: the asset stays empty (len 0) and the voice is silent
+    // until something is loaded at runtime (Phase B).
+    fn loadAssets(self: *FyRawMachine, alloc: std.mem.Allocator, machine_path: []const u8) !void {
+        const dir = std.fs.path.dirname(machine_path) orelse ".";
+        for (self.desc.assets[0..self.desc.asset_count], 0..) |*req, ai| {
+            var pbuf: [768]u8 = undefined;
+            const full = std.fmt.bufPrint(&pbuf, "{s}/{s}", .{ dir, req.fileSlice() }) catch continue;
+            self.asset_mem[ai] = wav.load(alloc, full) catch wav.Sample{ .data = &.{}, .sample_rate = 0 };
+        }
+        self.injectAssets();
+    }
+
+    fn freeAssets(self: *FyRawMachine, alloc: std.mem.Allocator) void {
+        for (self.asset_mem[0..self.desc.asset_count]) |*s| {
+            if (s.data.len > 0) alloc.free(s.data);
+            s.* = .{ .data = &.{}, .sample_rate = 0 };
+        }
+    }
+
+    // Asset pointer/length/native-SR live in params (shared, read-only).
+    // syncRawParams never touches these offsets, so they persist across
+    // blocks; only reset (which memsets params) needs a re-inject.
+    fn injectAssets(self: *FyRawMachine) void {
+        for (self.desc.assets[0..self.desc.asset_count], 0..) |*req, ai| {
+            const s = self.asset_mem[ai];
+            const ptr: usize = if (s.data.len > 0) @intFromPtr(s.data.ptr) else @intFromPtr(&self.asset_silence[0]);
+            self.writeParamUsize(req.ptr_offset, ptr);
+            self.writeParamF64(req.len_offset, @floatFromInt(s.data.len));
+            self.writeParamF64(req.sr_offset, if (s.sample_rate > 0) s.sample_rate else 48_000);
+        }
+    }
+
+    fn writeParamUsize(self: *FyRawMachine, offset: usize, value: usize) void {
+        if (offset + @sizeOf(usize) > self.desc.params_size) return;
+        const ptr: *align(8) usize = @ptrCast(@alignCast(&self.params_buf[offset]));
+        ptr.* = value;
     }
 
     fn allocBuffers(self: *FyRawMachine, alloc: std.mem.Allocator) !void {
@@ -753,12 +802,14 @@ fn resetImpl(state: *anyopaque) void {
         for (pair) |mem| @memset(mem, 0);
     }
     self.injectBuffers();
+    self.injectAssets(); // params were memset; restore the asset pointers
     self.failed = false;
 }
 
 fn deinitImpl(state: *anyopaque, alloc: std.mem.Allocator) void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     self.freeBuffersUpTo(alloc, self.desc.buffer_count);
+    self.freeAssets(alloc);
     self.host.deinit();
     alloc.destroy(self.host);
     alloc.destroy(self);
@@ -1527,6 +1578,45 @@ test "raw DSP2 funk machine: macro drives the gate stutter" {
     const clean_ratio = clean.tail / @max(clean.peak, 1e-9);
     const loud_ratio = loud.tail / @max(loud.peak, 1e-9);
     try testing.expect(loud_ratio < clean_ratio * 0.5);
+}
+
+test "raw DSP2 sampler machine: asset loads and polyphonic notes sound" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/sampler/sampler.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+
+    // The bundled asset loaded into the arena and got injected into params.
+    try testing.expectEqual(@as(usize, 1), inst.desc.asset_count);
+    try testing.expect(inst.asset_mem[0].data.len > 1000);
+    const off = inst.desc.assets[0].ptr_offset;
+    const ptr_bits: *align(8) const usize = @ptrCast(@alignCast(&inst.params_buf[off]));
+    try testing.expectEqual(@intFromPtr(inst.asset_mem[0].data.ptr), ptr_bits.*);
+    try testing.expectEqual(@as(usize, 8), inst.desc.voices);
+
+    // Two-note chord through the voice pool produces sound; reset silences.
+    var events = [_]machine.NoteEvent{
+        .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = -1, .pitch = 57, .velocity = 0.9 }, // A3 = root
+        .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = -1, .pitch = 64, .velocity = 0.9 },
+    };
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = 512;
+    ctx.note_in = @ptrCast(events[0..].ptr);
+    ctx.note_in_count = events.len;
+
+    var l = [_]f32{0} ** 512;
+    var r = [_]f32{0} ** 512;
+    var energy: f64 = 0;
+    var blk: usize = 0;
+    while (blk < 8) : (blk += 1) {
+        testRender(mach, &ctx, &l, &r);
+        ctx.note_in_count = 0;
+        for (l) |x| {
+            try testing.expect(std.math.isFinite(x));
+            energy += @abs(x);
+        }
+    }
+    try testing.expect(energy > 1.0); // the sample is playing
 }
 
 test "raw machine presets: scan factory, save round-trip, apply restores" {

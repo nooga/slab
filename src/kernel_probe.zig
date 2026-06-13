@@ -2,6 +2,7 @@ const std = @import("std");
 const Fy = @import("fy").Fy;
 const FyHost = @import("fy_host.zig").FyHost;
 const machine = @import("machine.zig");
+const wav = @import("wav.zig");
 
 extern fn close(fd: c_int) c_int;
 extern fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
@@ -124,6 +125,10 @@ pub fn main(init: std.process.Init) !void {
     }
     if (std.mem.eql(u8, cli.case_name, "funk-render")) {
         try runFunkCase(alloc, cli, &host);
+        return;
+    }
+    if (std.mem.eql(u8, cli.case_name, "sampler-render")) {
+        try runSamplerCase(alloc, cli, &host);
         return;
     }
     if (std.mem.eql(u8, cli.case_name, "ms20-voice-render")) {
@@ -2834,6 +2839,173 @@ fn runPow2Case(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     );
 }
 
+// k-sampler-voice: load the bundled 220 Hz pluck via the asset arena and
+// play it at root (220) and an octave up (440); ratchet that the rendered
+// fundamental matches the played note (resampling pitch is correct), that
+// looping sustains where a one-shot would have ended, and finiteness.
+fn runSamplerCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sr: f64 = @floatFromInt(DRUM_SAMPLE_RATE);
+
+    // Load the asset the same way the host does (the rig has no FyRawMachine).
+    var sample = wav.load(alloc, "machines/sampler/assets/default.wav") catch {
+        std.debug.print("sampler: could not load bundled asset\n", .{});
+        return error.KernelRatchetFailed;
+    };
+    defer sample.deinit(alloc);
+
+    const frames: usize = DRUM_SAMPLE_RATE; // 1 s
+    const out = try alloc.alloc(f64, frames);
+    defer alloc.free(out);
+
+    // SamplerParams field order mirrors the ustruct (3 asset + user + derived).
+    const P = struct {
+        const smp_ptr = 0;
+        const smp_len = 1;
+        const smp_sr = 2;
+        const tune = 3;
+        const root_hz = 4;
+        const start = 5;
+        const loop_on = 6;
+        const loop_start = 7;
+        const loop_end = 8;
+        const atk = 9;
+        const dec = 10;
+        const sus = 11;
+        const rel = 12;
+        const level = 13;
+    };
+
+    const detect = struct {
+        // Strongest 12-TET note in 110..900 Hz via Goertzel, returned in Hz.
+        fn pitch(seg: []const f64, srate: f64) f64 {
+            var best_mag: f64 = 0;
+            var best_f: f64 = 0;
+            var midi: f64 = 45; // A2
+            while (midi <= 81) : (midi += 1) {
+                const f = 440.0 * std.math.pow(f64, 2.0, (midi - 69.0) / 12.0);
+                const m = goertzelMag(seg, f, srate);
+                if (m > best_mag) {
+                    best_mag = m;
+                    best_f = f;
+                }
+            }
+            return best_f;
+        }
+    };
+
+    const renderNote = struct {
+        fn go(h: *FyHost, smp: wav.Sample, note_hz: f64, loop: f64, dec: f64, rel: f64, o: []f64, srate: f64) !void {
+            @memset(o, 0);
+            var state align(8) = [_]f64{0} ** 8;
+            var params align(8) = [_]f64{0} ** 24;
+            params[P.smp_ptr] = @bitCast(@intFromPtr(smp.data.ptr));
+            params[P.smp_len] = @floatFromInt(smp.data.len);
+            params[P.smp_sr] = smp.sample_rate;
+            params[P.root_hz] = 220.0;
+            params[P.loop_on] = loop;
+            params[P.loop_end] = 1.0;
+            params[P.atk] = 0.002;
+            params[P.dec] = dec;
+            params[P.sus] = 1.0;
+            params[P.rel] = rel;
+            params[P.level] = 0.9;
+            const bp = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&params) }, .{ .f64 = srate } };
+            _ = try h.fy.callDsp2RawRepeatedWithArgsNoResult("sampler-block-prepare", 1, &bp);
+            const on = [_]Fy.Dsp2RawArg{
+                .{ .ptr = @intFromPtr(&state) }, .{ .ptr = @intFromPtr(&params) },
+                .{ .f64 = note_hz }, .{ .f64 = 0.9 },
+            };
+            _ = try h.fy.callDsp2RawRepeatedWithArgsNoResult("sampler-note-on", 1, &on);
+            var slots = Fy.Dsp2RawRepeatedSlots{};
+            var caller = try h.fy.compileDsp2CompositionCaller("k-sampler-voice", &slots, true, false);
+            const args = [_]Fy.Dsp2RawArg{
+                .{ .ptr = @intFromPtr(&o[0]) }, .{ .ptr = @intFromPtr(&state) }, .{ .ptr = @intFromPtr(&params) },
+            };
+            _ = try caller.call(@intCast(o.len), &args);
+        }
+    };
+
+    // Root note (220): rendered pitch must be 220.
+    const start = nowNs();
+    try renderNote.go(host, sample, 220.0, 0.0, 0.6, 0.3, out, sr);
+    const run_ns = nowNs() - start;
+    const pitch_root = detect.pitch(out[2000..18386], sr);
+
+    // Octave up (440): resampled faster, rendered pitch must be 440.
+    try renderNote.go(host, sample, 440.0, 0.0, 0.6, 0.3, out, sr);
+    const pitch_oct = detect.pitch(out[2000..18386], sr);
+
+    // One-shot vs loop: the bundled pluck decays to near silence by ~0.9 s;
+    // looping the first 60 ms keeps it ringing at the tail.
+    try renderNote.go(host, sample, 220.0, 0.0, 5.0, 5.0, out, sr); // long env, one-shot
+    var oneshot_tail: f64 = 0;
+    for (out[frames - 4000 ..]) |x| oneshot_tail += x * x;
+    var params_loop align(8) = [_]f64{0} ** 24;
+    _ = &params_loop;
+    var loop_state align(8) = [_]f64{0} ** 8;
+    {
+        // loop the first 60 ms with a long sustain
+        @memset(out, 0);
+        params_loop[P.smp_ptr] = @bitCast(@intFromPtr(sample.data.ptr));
+        params_loop[P.smp_len] = @floatFromInt(sample.data.len);
+        params_loop[P.smp_sr] = sample.sample_rate;
+        params_loop[P.root_hz] = 220.0;
+        params_loop[P.loop_on] = 1.0;
+        params_loop[P.loop_start] = 0.0;
+        params_loop[P.loop_end] = 60.0 * sample.sample_rate / 1000.0 / @as(f64, @floatFromInt(sample.data.len));
+        params_loop[P.atk] = 0.002;
+        params_loop[P.dec] = 5.0;
+        params_loop[P.sus] = 1.0;
+        params_loop[P.rel] = 5.0;
+        params_loop[P.level] = 0.9;
+        const bp = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&params_loop) }, .{ .f64 = sr } };
+        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("sampler-block-prepare", 1, &bp);
+        const on = [_]Fy.Dsp2RawArg{
+            .{ .ptr = @intFromPtr(&loop_state) }, .{ .ptr = @intFromPtr(&params_loop) },
+            .{ .f64 = 220.0 }, .{ .f64 = 0.9 },
+        };
+        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("sampler-note-on", 1, &on);
+        var slots = Fy.Dsp2RawRepeatedSlots{};
+        var caller = try host.fy.compileDsp2CompositionCaller("k-sampler-voice", &slots, true, false);
+        const args = [_]Fy.Dsp2RawArg{
+            .{ .ptr = @intFromPtr(&out[0]) }, .{ .ptr = @intFromPtr(&loop_state) }, .{ .ptr = @intFromPtr(&params_loop) },
+        };
+        _ = try caller.call(@intCast(out.len), &args);
+    }
+    var loop_tail: f64 = 0;
+    for (out[frames - 4000 ..]) |x| loop_tail += x * x;
+
+    var metrics = Metrics{};
+    metrics.ns_per_iter = @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(frames));
+    fillSignalMetrics(out, &metrics);
+    for (out) |x| {
+        if (!std.math.isFinite(x)) metrics.nonfinite_count += 1;
+    }
+
+    var csv: std.ArrayList(u8) = .empty;
+    defer csv.deinit(alloc);
+    try csv.appendSlice(alloc, "sample,time,loop_out\n");
+    var j: usize = 0;
+    while (j < frames) : (j += 16) {
+        try appendFmt(alloc, &csv, "{d},{d:.6},{d:.9}\n", .{ j, @as(f64, @floatFromInt(j)) / sr, out[j] });
+    }
+    try writeDrumArtifacts(alloc, cli, host, csv.items, metrics, out);
+
+    const root_err = @abs(pitch_root - 220.0) / 220.0;
+    const oct_err = @abs(pitch_oct - 440.0) / 440.0;
+    if (metrics.nonfinite_count != 0 or root_err > 0.02 or oct_err > 0.02 or
+        loop_tail < oneshot_tail * 4.0)
+    {
+        std.debug.print("sampler ratchet detail: pitch_root={d:.1} pitch_oct={d:.1} oneshot_tail={d:.6} loop_tail={d:.6}\n", .{ pitch_root, pitch_oct, oneshot_tail, loop_tail });
+        return error.KernelRatchetFailed;
+    }
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} pitch_root={d:.1}Hz pitch_oct={d:.1}Hz loop/oneshot_tail={d:.1}x\n",
+        .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, pitch_root, pitch_oct, loop_tail / @max(oneshot_tail, 1e-12) },
+    );
+}
+
 // k-funk-tick: a pluck train (sharp attacks, decaying tails) through the
 // FUNK OVERLOAD macro at two settings. At funk=0.5 the filter must open
 // on each attack (brightness, via zero-crossing rate, rises right after
@@ -3493,7 +3665,7 @@ fn writeDrumArtifacts(
     host: *FyHost,
     csv_text: []const u8,
     metrics: Metrics,
-    wav: ?[]const f64,
+    wav_samples: ?[]const f64,
 ) !void {
     const metrics_path = try std.fmt.allocPrint(alloc, "{s}_metrics.json", .{cli.out_prefix});
     defer alloc.free(metrics_path);
@@ -3554,7 +3726,7 @@ fn writeDrumArtifacts(
 
     try writeFile(alloc, lanes_path, csv_text);
 
-    if (wav) |samples| {
+    if (wav_samples) |samples| {
         const wav_path = try std.fmt.allocPrint(alloc, "{s}.wav", .{cli.out_prefix});
         defer alloc.free(wav_path);
         try writeWav16StereoBuffer(alloc, wav_path, samples, DRUM_SAMPLE_RATE);

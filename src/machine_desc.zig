@@ -28,6 +28,8 @@ pub const MAX_ROW_CELLS = 16;
 pub const MAX_CELL_ITEMS = 6;
 pub const MAX_NOTE_LABELS = 32;
 pub const MAX_BUFFERS = 8;
+pub const MAX_ASSETS = 4;
+pub const MAX_PATH = 128;
 
 pub const Mode = enum {
     voice_sample,
@@ -103,6 +105,23 @@ pub const BufferReq = struct {
 
     pub fn nameSlice(self: *const BufferReq) []const u8 {
         return self.name[0..self.name_len];
+    }
+};
+
+/// A read-only audio asset loaded from disk at create. The host writes the
+/// base pointer, sample count, and native sample rate into PARAMS at the
+/// three introspected offsets (shared across voices).
+pub const AssetReq = struct {
+    name: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
+    name_len: usize = 0,
+    ptr_offset: usize = 0,
+    len_offset: usize = 0,
+    sr_offset: usize = 0,
+    file: [MAX_PATH:0]u8 = [_:0]u8{0} ** MAX_PATH,
+    file_len: usize = 0,
+
+    pub fn fileSlice(self: *const AssetReq) []const u8 {
+        return self.file[0..self.file_len];
     }
 };
 
@@ -191,6 +210,8 @@ pub const Desc = struct {
     detector_cell: ?usize = null,
     // Voice count for polyphonic voice-sample machines; 1 = mono.
     voices: usize = 1,
+    assets: [MAX_ASSETS]AssetReq = undefined,
+    asset_count: usize = 0,
 
     pub fn noteLabels(self: *const Desc) []const machine.NoteLabel {
         return self.note_labels[0..self.note_label_count];
@@ -259,6 +280,7 @@ const MachineDescRaw = extern struct {
     channel_cell: Fy.Value,
     detector_cell: Fy.Value,
     voices: Fy.Value,
+    assets: Fy.Value,
 };
 
 const ControlRaw = extern struct {
@@ -284,6 +306,7 @@ const ItemRaw = extern struct { next: Fy.Value, name: Fy.Value, weight: Fy.Value
 const ConstRaw = extern struct { next: Fy.Value, offset: Fy.Value, value: Fy.Value };
 const NoteLabelRaw = extern struct { next: Fy.Value, pitch: Fy.Value, label: Fy.Value };
 const BufferRaw = extern struct { next: Fy.Value, name: Fy.Value, ptr_offset: Fy.Value, len_offset: Fy.Value, seconds: Fy.Value };
+const AssetRaw = extern struct { next: Fy.Value, name: Fy.Value, ptr_offset: Fy.Value, len_offset: Fy.Value, sr_offset: Fy.Value, file: Fy.Value };
 
 // ── tagged-value decode ───────────────────────────────────────────────
 
@@ -459,6 +482,25 @@ pub fn read(host: *FyHost) !Desc {
     const voices = asInt(md.voices);
     if (voices > 0) d.voices = @intCast(voices);
     if (d.voices > 1 and d.mode != .voice_sample) return error.InvalidMachineDesc;
+
+    var asset_it = rawPtr(AssetRaw, md.assets);
+    while (asset_it) |as| : (asset_it = rawPtr(AssetRaw, as.next)) {
+        if (d.asset_count >= MAX_ASSETS) return error.TooManyAssets;
+        const out = &d.assets[d.asset_count];
+        out.* = .{};
+        out.name_len = try copyText(&out.name, cstrSlice(as.name));
+        out.ptr_offset = @intCast(asInt(as.ptr_offset));
+        out.len_offset = @intCast(asInt(as.len_offset));
+        out.sr_offset = @intCast(asInt(as.sr_offset));
+        const file = cstrSlice(as.file);
+        if (file.len == 0 or file.len >= MAX_PATH) return error.InvalidMachineDesc;
+        @memcpy(out.file[0..file.len], file);
+        out.file_len = file.len;
+        if (out.ptr_offset + 8 > d.params_size or out.len_offset + 8 > d.params_size or out.sr_offset + 8 > d.params_size) {
+            return error.InvalidMachineDesc;
+        }
+        d.asset_count += 1;
+    }
 
     var row_it = rawPtr(RowRaw, md.rows);
     while (row_it) |row| : (row_it = rawPtr(RowRaw, row.next)) {

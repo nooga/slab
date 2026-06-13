@@ -336,6 +336,7 @@ pub fn main() !void {
     try reg.loadFyMachine("machines/chorus2/chorus2.fy");
     try reg.loadFyMachine("machines/juno2/juno2.fy");
     try reg.loadFyMachine("machines/funk/funk.fy");
+    try reg.loadFyMachine("machines/sampler/sampler.fy");
 
     // Hot-patch server on the sine machine's host.
     defer fy_host_mod.deleteFilePosix(".fy-port");

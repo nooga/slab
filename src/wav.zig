@@ -1,0 +1,267 @@
+//! Minimal RIFF/WAVE loader → f64 mono. The asset arena's first consumer
+//! (samplers, wavetables): load a file on the UI thread into host memory,
+//! then inject a pointer + length into a machine's params so a `dsp:` voice
+//! can read it with `p@64` / `f@i`. Read-only and shared across voices.
+//!
+//! Supports PCM 8/16/24/32-bit and IEEE-float 32/64-bit, mono or multi-
+//! channel (folded to mono by averaging). The std.fs surface moved in zig
+//! 0.16, so IO is direct libc externs (the codebase convention; see
+//! presets.zig, machine_registry.zig).
+
+const std = @import("std");
+
+extern fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
+extern fn close(fd: c_int) c_int;
+extern fn read(fd: c_int, buf: [*]u8, count: usize) isize;
+extern fn lseek(fd: c_int, offset: i64, whence: c_int) i64;
+const O_RDONLY: c_int = 0;
+const SEEK_SET: c_int = 0;
+const SEEK_END: c_int = 2;
+
+// Refuse pathological files: 32 M samples of f64 ≈ 256 MB, plenty for a
+// sampler and a hard guard against a malformed size field.
+pub const MAX_SAMPLES: usize = 32 * 1024 * 1024;
+const MAX_FILE_BYTES: usize = 512 * 1024 * 1024;
+
+pub const Sample = struct {
+    data: []f64,
+    sample_rate: f64,
+
+    pub fn deinit(self: *Sample, alloc: std.mem.Allocator) void {
+        alloc.free(self.data);
+        self.data = &.{};
+    }
+};
+
+pub const Error = error{
+    OpenFailed,
+    ReadFailed,
+    NotRiffWave,
+    NoFmtChunk,
+    NoDataChunk,
+    UnsupportedFormat,
+    TooLarge,
+    Empty,
+    OutOfMemory,
+};
+
+fn rdU16(b: []const u8, o: usize) u16 {
+    return @as(u16, b[o]) | (@as(u16, b[o + 1]) << 8);
+}
+fn rdU32(b: []const u8, o: usize) u32 {
+    return @as(u32, b[o]) | (@as(u32, b[o + 1]) << 8) | (@as(u32, b[o + 2]) << 16) | (@as(u32, b[o + 3]) << 24);
+}
+
+/// Load `path` into a freshly allocated f64 mono buffer. Caller owns the
+/// returned `data` (free via Sample.deinit).
+pub fn load(alloc: std.mem.Allocator, path: []const u8) Error!Sample {
+    var zbuf: [1024:0]u8 = undefined;
+    if (path.len >= zbuf.len) return Error.OpenFailed;
+    @memcpy(zbuf[0..path.len], path);
+    zbuf[path.len] = 0;
+
+    const fd = open(@ptrCast(&zbuf[0]), O_RDONLY);
+    if (fd < 0) return Error.OpenFailed;
+    defer _ = close(fd);
+
+    const end = lseek(fd, 0, SEEK_END);
+    if (end <= 0) return Error.ReadFailed;
+    if (@as(usize, @intCast(end)) > MAX_FILE_BYTES) return Error.TooLarge;
+    _ = lseek(fd, 0, SEEK_SET);
+
+    const file_len: usize = @intCast(end);
+    const raw = alloc.alloc(u8, file_len) catch return Error.OutOfMemory;
+    defer alloc.free(raw);
+    var done: usize = 0;
+    while (done < file_len) {
+        const n = read(fd, raw[done..].ptr, file_len - done);
+        if (n < 0) return Error.ReadFailed;
+        if (n == 0) break;
+        done += @intCast(n);
+    }
+    if (done < 44) return Error.NotRiffWave;
+
+    return parse(alloc, raw[0..done]);
+}
+
+/// Parse an in-memory RIFF/WAVE image into f64 mono. Exposed for tests.
+pub fn parse(alloc: std.mem.Allocator, buf: []const u8) Error!Sample {
+    if (buf.len < 12) return Error.NotRiffWave;
+    if (!std.mem.eql(u8, buf[0..4], "RIFF") or !std.mem.eql(u8, buf[8..12], "WAVE")) return Error.NotRiffWave;
+
+    var audio_format: u16 = 0;
+    var channels: u16 = 0;
+    var sample_rate: u32 = 0;
+    var bits: u16 = 0;
+    var have_fmt = false;
+    var data_off: usize = 0;
+    var data_len: usize = 0;
+
+    var pos: usize = 12;
+    while (pos + 8 <= buf.len) {
+        const id = buf[pos .. pos + 4];
+        const size: usize = rdU32(buf, pos + 4);
+        const body = pos + 8;
+        if (std.mem.eql(u8, id, "fmt ") and body + 16 <= buf.len) {
+            audio_format = rdU16(buf, body);
+            channels = rdU16(buf, body + 2);
+            sample_rate = rdU32(buf, body + 4);
+            bits = rdU16(buf, body + 14);
+            // WAVE_FORMAT_EXTENSIBLE: real format tag is in the subformat GUID's
+            // first two bytes.
+            if (audio_format == 0xFFFE and body + 26 <= buf.len) {
+                audio_format = rdU16(buf, body + 24);
+            }
+            have_fmt = true;
+        } else if (std.mem.eql(u8, id, "data")) {
+            data_off = body;
+            data_len = @min(size, buf.len - body);
+        }
+        pos = body + size + (size & 1); // chunks are word-aligned
+    }
+
+    if (!have_fmt) return Error.NoFmtChunk;
+    if (data_off == 0 or data_len == 0) return Error.NoDataChunk;
+    if (channels == 0 or sample_rate == 0) return Error.UnsupportedFormat;
+
+    const bytes_per = bits / 8;
+    if (bytes_per == 0) return Error.UnsupportedFormat;
+    const frame_bytes = bytes_per * channels;
+    const frames = data_len / frame_bytes;
+    if (frames == 0) return Error.Empty;
+    if (frames > MAX_SAMPLES) return Error.TooLarge;
+
+    const out = alloc.alloc(f64, frames) catch return Error.OutOfMemory;
+    errdefer alloc.free(out);
+
+    const data = buf[data_off..][0..data_len];
+    var fi: usize = 0;
+    while (fi < frames) : (fi += 1) {
+        var acc: f64 = 0;
+        var ch: usize = 0;
+        while (ch < channels) : (ch += 1) {
+            const so = fi * frame_bytes + ch * bytes_per;
+            acc += decodeSample(data, so, audio_format, bits) catch return Error.UnsupportedFormat;
+        }
+        out[fi] = acc / @as(f64, @floatFromInt(channels));
+    }
+
+    return .{ .data = out, .sample_rate = @floatFromInt(sample_rate) };
+}
+
+fn decodeSample(d: []const u8, o: usize, fmt: u16, bits: u16) Error!f64 {
+    // fmt 1 = PCM int, fmt 3 = IEEE float.
+    if (fmt == 1) {
+        switch (bits) {
+            8 => return (@as(f64, @floatFromInt(d[o])) - 128.0) / 128.0, // 8-bit is unsigned
+            16 => {
+                const v: i16 = @bitCast(rdU16(d, o));
+                return @as(f64, @floatFromInt(v)) / 32768.0;
+            },
+            24 => {
+                const u: u32 = @as(u32, d[o]) | (@as(u32, d[o + 1]) << 8) | (@as(u32, d[o + 2]) << 16);
+                const v: i32 = if (u & 0x800000 != 0) @as(i32, @bitCast(u | 0xFF000000)) else @intCast(u);
+                return @as(f64, @floatFromInt(v)) / 8388608.0;
+            },
+            32 => {
+                const v: i32 = @bitCast(rdU32(d, o));
+                return @as(f64, @floatFromInt(v)) / 2147483648.0;
+            },
+            else => return Error.UnsupportedFormat,
+        }
+    } else if (fmt == 3) {
+        switch (bits) {
+            32 => return @as(f64, @as(f32, @bitCast(rdU32(d, o)))),
+            64 => {
+                var word: u64 = 0;
+                inline for (0..8) |k| word |= @as(u64, d[o + k]) << (8 * k);
+                return @bitCast(word);
+            },
+            else => return Error.UnsupportedFormat,
+        }
+    }
+    return Error.UnsupportedFormat;
+}
+
+// ── tests ─────────────────────────────────────────────────────────────
+
+const testing = std.testing;
+
+fn writeU32(b: []u8, o: usize, v: u32) void {
+    b[o] = @truncate(v);
+    b[o + 1] = @truncate(v >> 8);
+    b[o + 2] = @truncate(v >> 16);
+    b[o + 3] = @truncate(v >> 24);
+}
+fn writeU16(b: []u8, o: usize, v: u16) void {
+    b[o] = @truncate(v);
+    b[o + 1] = @truncate(v >> 8);
+}
+
+test "parse 16-bit mono PCM" {
+    const n = 4;
+    var buf: [44 + n * 2]u8 = undefined;
+    @memcpy(buf[0..4], "RIFF");
+    writeU32(&buf, 4, @intCast(buf.len - 8));
+    @memcpy(buf[8..12], "WAVE");
+    @memcpy(buf[12..16], "fmt ");
+    writeU32(&buf, 16, 16);
+    writeU16(&buf, 20, 1); // PCM
+    writeU16(&buf, 22, 1); // mono
+    writeU32(&buf, 24, 48000);
+    writeU32(&buf, 28, 96000);
+    writeU16(&buf, 32, 2);
+    writeU16(&buf, 34, 16);
+    @memcpy(buf[36..40], "data");
+    writeU32(&buf, 40, n * 2);
+    writeU16(&buf, 44, @bitCast(@as(i16, 16384))); // 0.5
+    writeU16(&buf, 46, @bitCast(@as(i16, -16384))); // -0.5
+    writeU16(&buf, 48, @bitCast(@as(i16, 32767))); // ~1.0
+    writeU16(&buf, 50, @bitCast(@as(i16, 0)));
+
+    var s = try parse(testing.allocator, &buf);
+    defer s.deinit(testing.allocator);
+    try testing.expectEqual(@as(f64, 48000), s.sample_rate);
+    try testing.expectEqual(@as(usize, 4), s.data.len);
+    try testing.expectApproxEqAbs(@as(f64, 0.5), s.data[0], 1e-4);
+    try testing.expectApproxEqAbs(@as(f64, -0.5), s.data[1], 1e-4);
+    try testing.expectApproxEqAbs(@as(f64, 0.0), s.data[3], 1e-9);
+}
+
+test "parse stereo folds to mono" {
+    const frames = 3;
+    var buf: [44 + frames * 4]u8 = undefined;
+    @memcpy(buf[0..4], "RIFF");
+    writeU32(&buf, 4, @intCast(buf.len - 8));
+    @memcpy(buf[8..12], "WAVE");
+    @memcpy(buf[12..16], "fmt ");
+    writeU32(&buf, 16, 16);
+    writeU16(&buf, 20, 1);
+    writeU16(&buf, 22, 2); // stereo
+    writeU32(&buf, 24, 44100);
+    writeU32(&buf, 28, 176400);
+    writeU16(&buf, 32, 4);
+    writeU16(&buf, 34, 16);
+    @memcpy(buf[36..40], "data");
+    writeU32(&buf, 40, frames * 4);
+    // L=1.0 R=0.0 -> 0.5 ; L=-0.5 R=0.5 -> 0 ; L=0 R=0 -> 0
+    writeU16(&buf, 44, @bitCast(@as(i16, 32767)));
+    writeU16(&buf, 46, @bitCast(@as(i16, 0)));
+    writeU16(&buf, 48, @bitCast(@as(i16, -16384)));
+    writeU16(&buf, 50, @bitCast(@as(i16, 16384)));
+    writeU16(&buf, 52, @bitCast(@as(i16, 0)));
+    writeU16(&buf, 54, @bitCast(@as(i16, 0)));
+
+    var s = try parse(testing.allocator, &buf);
+    defer s.deinit(testing.allocator);
+    try testing.expectEqual(@as(f64, 44100), s.sample_rate);
+    try testing.expectEqual(@as(usize, 3), s.data.len);
+    try testing.expectApproxEqAbs(@as(f64, 0.5), s.data[0], 1e-4);
+    try testing.expectApproxEqAbs(@as(f64, 0.0), s.data[1], 1e-4);
+}
+
+test "rejects non-RIFF" {
+    var buf = [_]u8{0} ** 64;
+    @memcpy(buf[0..4], "JUNK");
+    try testing.expectError(Error.NotRiffWave, parse(testing.allocator, &buf));
+}

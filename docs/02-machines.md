@@ -45,8 +45,20 @@ host also write the channel index (0.0 L / 1.0 R) into state, which
 effects use to decorrelate channels (verb2 picks its L/R tap sets and
 LFO phase from it). A `detector-cell` declaration injects a pointer to a
 host-filled per-block trace of `max(|L|,|R|)` — both channels reading
-one detector is what stereo-links comp2's gain. This is the first
-concrete instance
+one detector is what stereo-links comp2's gain.
+
+**The asset arena (implemented):** the read-only sibling of host buffers.
+A machine declares `"name" Params.ptr Params.len Params.sr "file.wav"
+asset`; at create the host loads the WAV (src/wav.zig — PCM 8/16/24/32,
+float 32/64, folded to f64 mono) from a path relative to the machine
+directory and injects the base pointer, sample count, and native sample
+rate into **params** (shared and read-only, so one copy serves every
+voice — unlike buffers, which are per-channel and writable). Kernels read
+it with `p@64` / `f@i`; an unloaded asset points at silence so a clamped
+read is never out of bounds. The sampler is the first consumer (voice
+pool + resampled playback); wavetable synths and convolution reverb use
+the same mechanism. Re-injected after reset. This was the first concrete
+instance
 of the asset-arena idea in docs/03 — a read-only `asset` sibling for
 samples/IRs/wavetables follows the same pointer-injection shape.
 

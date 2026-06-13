@@ -48,6 +48,7 @@ struct: MachineDesc
   ptr detector-cell  ( int state offset + 1, or 0 — host writes pointer to a
                        per-block detector buffer: max abs of both inputs )
   ptr voices         ( int voice count for voice-sample machines, 0 = mono )
+  ptr assets         ( AssetDesc chain or 0 — host-loaded read-only audio )
 ;
 
 struct: ControlDesc
@@ -73,6 +74,7 @@ struct: ItemDesc    ptr next  ptr name  ptr weight ;
 struct: ConstDesc   ptr next  ptr offset  ptr value ;
 struct: NoteLabelDesc ptr next  ptr pitch  ptr label ;
 struct: BufferDesc  ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr seconds ;
+struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-offset  ptr file ;
 
 ( --- builder state ------------------------------------------------ )
 :: _mf-md         8 alloc ;
@@ -86,6 +88,7 @@ struct: BufferDesc  ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr seco
 :: _mf-last-const 8 alloc ;
 :: _mf-last-nl    8 alloc ;
 :: _mf-last-buf   8 alloc ;
+:: _mf-last-asset 8 alloc ;
 
 : _mf-md@ _mf-md @64 ;
 
@@ -112,6 +115,7 @@ struct: BufferDesc  ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr seco
   0 _mf-last-const !64
   0 _mf-last-nl !64
   0 _mf-last-buf !64
+  0 _mf-last-asset !64
 ;
 
 : render!        ( str -- ) cstr-new _mf-md@ MachineDesc.render! drop ;
@@ -282,6 +286,26 @@ struct: BufferDesc  ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr seco
   block.  Stored as offset+1 so 0 means "none". )
 : detector-cell  ( offset -- )
   1 + _mf-md@ MachineDesc.detector-cell! drop
+;
+
+( Request a read-only audio asset from the host.  At create the host
+  loads `file` [relative to the machine's directory] into f64 mono and
+  writes the base pointer, sample count, and native sample-rate into
+  PARAMS at the three introspected offsets [params are shared and the
+  asset is read-only, so one copy serves every voice].  Kernels read it
+  with p@64 / f@64 and index with f@i.  Re-injected after reset. )
+: asset  ( name ptr-offset len-offset sr-offset file -- )
+  AssetDesc.alloc
+  swap cstr-new swap AssetDesc.file!
+  AssetDesc.sr-offset!
+  AssetDesc.len-offset!
+  AssetDesc.ptr-offset!
+  swap cstr-new swap AssetDesc.name!
+  _mf-last-asset @64 0 =
+  [ dup _mf-md@ MachineDesc.assets! drop ]
+  [ dup _mf-last-asset @64 AssetDesc.next! drop ]
+  ifte
+  _mf-last-asset !64
 ;
 
 ( --- params constants ---------------------------------------------- )
