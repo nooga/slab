@@ -401,6 +401,9 @@ const PresetAction = struct {
 
 const DIR_ID_BASE: u32 = 10000;
 var dir_label_bufs: [8][presets_mod.MAX_NAME + 1:0]u8 = undefined;
+// Persistent backing for the open preset menu's item labels (see
+// titlebarPresetMenu — the menu draws deferred, so a stack list would dangle).
+var preset_menu_list: presets_mod.List = .{};
 
 // Top-level menu rows for a sorted preset list: plain leaves (id = flat
 // list index), then one hover-submenu row per distinct subdirectory.
@@ -480,18 +483,24 @@ fn titlebarPresetMenu(title_rect: c.rl.Rectangle, mach: *const @import("../machi
     if (hover) widgets.tooltip(title_rect, "Preset", m);
     if (hover and m.left_pressed and !open_here) widgets.openMenuAt(key, title_rect.x, title_rect.y + title_rect.height);
 
-    // The machine's own sorted list backs the flat indices the menu uses.
-    var list = presets_mod.List{};
-    if (mach.preset_name) |nf| {
-        var i: usize = 0;
-        while (i < count and i < presets_mod.MAX_PRESETS) : (i += 1) {
-            list.names[i] = presets_mod.Name.set(std.mem.span(nf(mach.state, @intCast(i))));
+    // The menu's item labels point into this list, but the menu is drawn
+    // *deferred* (drawContextMenu at end of frame), so the backing store must
+    // outlive this call — a local would dangle (garbage labels). It is
+    // module-level and only (re)populated for the menu that is actually open,
+    // so a later machine's bar can't clobber the open menu's names.
+    if (widgets.menuOpen(key)) {
+        preset_menu_list = .{};
+        if (mach.preset_name) |nf| {
+            var i: usize = 0;
+            while (i < count and i < presets_mod.MAX_PRESETS) : (i += 1) {
+                preset_menu_list.names[i] = presets_mod.Name.set(std.mem.span(nf(mach.state, @intCast(i))));
+            }
+            preset_menu_list.count = i;
         }
-        list.count = i;
     }
 
     var items: [presets_mod.MAX_PRESETS + 2]widgets.MenuItem = undefined;
-    var n = presetTopItems(&list, items[0 .. presets_mod.MAX_PRESETS]);
+    var n = presetTopItems(&preset_menu_list, items[0 .. presets_mod.MAX_PRESETS]);
     if (can_save) {
         if (n > 0) {
             items[n] = .{ .separator = true };
@@ -507,7 +516,7 @@ fn titlebarPresetMenu(title_rect: c.rl.Rectangle, mach: *const @import("../machi
     if (widgets.menuSubOpen(key, 0)) |dir_id| {
         if (dir_id >= DIR_ID_BASE) {
             var ditems: [presets_mod.MAX_PRESETS]widgets.MenuItem = undefined;
-            const dn = presetDirItems(&list, dir_id - DIR_ID_BASE, &ditems);
+            const dn = presetDirItems(&preset_menu_list, dir_id - DIR_ID_BASE, &ditems);
             if (widgets.menuSubTick(key, 1, ditems[0..dn], m)) |id| {
                 return .{ .apply = @intCast(id) };
             }
