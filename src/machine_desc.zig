@@ -549,7 +549,7 @@ test "descriptor walker reads the drum2 note map" {
     try host.compileFile("machines/drum2/drum2.fy");
     const d = try read(&host);
 
-    try testing.expectEqualStrings("drum2", d.nameSlice());
+    try testing.expectEqualStrings("DS-404 Drums", d.nameSlice());
     try testing.expect(d.note_pitch);
     try testing.expectEqual(@as(usize, 6), d.note_label_count);
     try testing.expectEqual(@as(u8, 36), d.note_labels[0].pitch);
@@ -581,7 +581,7 @@ test "descriptor walker reads the MS-20 manifest from fy" {
     try host.compileFile("machines/ms20/ms20.fy");
     const d = try read(&host);
 
-    try testing.expectEqualStrings("raw-ms20", d.nameSlice());
+    try testing.expectEqualStrings("SM-24 Mono", d.nameSlice());
     try testing.expectEqual(Mode.voice_sample, d.mode);
     try testing.expectEqualStrings("k-ms20-voice-sample", d.renderWord());
     try testing.expectEqualStrings("ms20-voice-prepare", d.prepareWord().?);

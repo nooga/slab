@@ -88,12 +88,19 @@ const EditTarget = struct {
     pitch: ?u8 = null,
 };
 
-const RenameKind = enum { none, track, clip };
+const RenameKind = enum { none, track, clip, preset_save, preset_rename };
 
 const RenameState = struct {
     kind: RenameKind = .none,
     track: usize = 0,
     clip: usize = 0,
+    /// For preset_save/preset_rename: the device's owning track (stable for
+    /// the session) and which device on it owns the preset — null effect =
+    /// instrument, else the effect index.
+    device_track: ?*track_mod.Track = null,
+    device_effect: ?usize = null,
+    /// For preset_rename: the preset index being renamed.
+    preset_index: u8 = 0,
     buf: [track_mod.MAX_NAME + 1:0]u8 = [_:0]u8{0} ** (track_mod.MAX_NAME + 1),
     len: usize = 0,
     cursor: usize = 0,
@@ -150,6 +157,7 @@ fn assignMachineToTrack(
 }
 
 fn addEffectToTrack(
+    alloc: std.mem.Allocator,
     audio: *audio_mod.Audio,
     reg: *registry_mod.Registry,
     t: *track_mod.Track,
@@ -164,7 +172,35 @@ fn addEffectToTrack(
         break :blk try reg.instantiate(reg_idx);
     };
     mach.reset(mach.state);
-    try t.addEffect(mach, @intCast(reg_idx));
+    try t.addEffect(alloc, mach, @intCast(reg_idx));
+}
+
+fn replaceEffectOnTrack(
+    alloc: std.mem.Allocator,
+    audio: *audio_mod.Audio,
+    reg: *registry_mod.Registry,
+    t: *track_mod.Track,
+    i: usize,
+    reg_idx: usize,
+) !void {
+    audio.stop();
+    defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+
+    const mach = blk: {
+        fy_host_mod.lockCallbacks();
+        defer fy_host_mod.unlockCallbacks();
+        break :blk try reg.instantiate(reg_idx);
+    };
+    mach.reset(mach.state);
+    t.replaceEffect(alloc, i, mach, @intCast(reg_idx));
+}
+
+// DeviceRef → effect index (null = instrument), for resolving a machine.
+fn refEffect(ref: machine_bay.DeviceRef) ?usize {
+    return switch (ref) {
+        .instrument => null,
+        .effect => |i| i,
+    };
 }
 
 // 80s synthpop demo: vi–IV–I–V in C major (Am | F | C | G), 4 bars looped.
@@ -301,7 +337,13 @@ fn polyStatusLabel(v: u8) []const u8 {
 }
 
 pub fn main() !void {
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    // DebugAllocator keeps leak + double-free + bounds checking, but
+    // stack_trace_frames=0 skips the per-allocation stack unwind. The fy
+    // compiler allocates heavily during machine load; capturing a 6-frame
+    // trace per alloc cost ~6s at startup (24 machines) vs ~130ms without.
+    // Trade-off: leak reports no longer show the allocation site — bump
+    // frames back up temporarily when hunting a specific leak.
+    var gpa: std.heap.DebugAllocator(.{ .stack_trace_frames = 0 }) = .init;
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -319,17 +361,6 @@ pub fn main() !void {
     var reg = registry_mod.Registry.init(alloc);
     defer reg.deinit();
 
-    try reg.load("sine", "machines/sine_v1/sine.fy", "sine-audio", "sine-ui", 108);
-    try reg.load("square", "machines/square_v1/square.fy", "square-audio", "square-ui", 108);
-    try reg.load("mono1", "machines/mono1/mono1.fy", "mono1-audio", "mono1-ui", 580);
-    try reg.load("chorus", "machines/chorus1/chorus1.fy", "chorus1-audio", "chorus1-ui", 320);
-    try reg.load("comp1", "machines/comp1/comp1.fy", "comp1-audio", "comp1-ui", 375);
-    try reg.load("fm1", "machines/fm1/fm1.fy", "fm1-audio", "fm1-ui", 428);
-    try reg.load("delay1", "machines/delay1/delay1.fy", "delay1-audio", "delay1-ui", 375);
-    try reg.load("verb1", "machines/verb1/verb1.fy", "verb1-audio", "verb1-ui", 270);
-    try reg.loadFyMachine("machines/raw_fixtures/oscillator.fy");
-    try reg.loadFyMachine("machines/raw_fixtures/silence.fy");
-    try reg.loadFyMachine("machines/raw_fixtures/saturator.fy");
     try reg.loadFyMachine("machines/ms20/ms20.fy");
     try reg.loadFyMachine("machines/drum2/drum2.fy");
     try reg.loadFyMachine("machines/delay2/delay2.fy");
@@ -340,19 +371,14 @@ pub fn main() !void {
     try reg.loadFyMachine("machines/funk/funk.fy");
     try reg.loadFyMachine("machines/sampler/sampler.fy");
 
-    // Hot-patch server on the sine machine's host.
-    defer fy_host_mod.deleteFilePosix(".fy-port");
-    if (reg.entries[0].host) |host| {
-        _ = host.startHotPatchServer() catch |err|
-            std.log.warn("hot-patch: {}", .{err});
-    }
-
     // ── Audio pool — host-owned decoded audio backing arrangement clips.
     // Registered with the document layer (a process singleton) so save /
     // load / undo resolve clip ↔ file path through it.
     var audio_pool = audio_pool_mod.AudioPool.init(alloc);
     defer audio_pool.deinit();
     document_mod.setPool(&audio_pool);
+    // Registered so serialize() resolves track machine index → stable id.
+    document_mod.setRegistry(&reg);
 
     // ── Tracks — start with silent placeholder machines ──────────────
     var transport: transport_mod.Transport = .{};
@@ -363,12 +389,6 @@ pub fn main() !void {
         if (DEV_BOOT_AUTOPLAY) transport.play();
     }
 
-    // Registry indices: 0 sine, 1 square, 2 mono1, 3 chorus, 4 comp1, 5 fm1, 6 delay1, 7 verb1.
-    const MONO1_REG: usize = 2;
-    const CHORUS_REG: usize = 3;
-
-    _ = MONO1_REG;
-    _ = CHORUS_REG;
 
     var tracks_buf: [MAX_TRACKS]track_mod.Track = undefined;
     var track_count: usize = 1;
@@ -382,6 +402,8 @@ pub fn main() !void {
     master.kind = .master;
     master.setVolume(1.0); // unity — Track defaults to 0.8, which would quiet the mix
     defer master.deinit(alloc);
+    // Registered so serialize/apply persist the master bus (volume + FX chain).
+    document_mod.setMaster(&master);
 
     var engine = engine_mod.Engine{
         .transport = &transport,
@@ -566,13 +588,13 @@ pub fn main() !void {
                 if (bay_is_bus and !is_effect) {
                     status.set("Master takes effects only", .{});
                 } else if (is_effect) {
-                    addEffectToTrack(&audio, &reg, dev, reg_idx) catch |err| {
+                    addEffectToTrack(alloc, &audio, &reg, dev, reg_idx) catch |err| {
                         std.log.err("add effect failed: {s}", .{@errorName(err)});
                         status.set("Effect failed: {s}", .{@errorName(err)});
                         continue;
                     };
                     if (mbres.add_preset) |pi| {
-                        const fx = &dev.effects[dev.effect_count - 1];
+                        const fx = &dev.effects.items[dev.effects.items.len - 1].mach;
                         if (fx.apply_preset) |ap| ap(fx.state, pi);
                     }
                     dirty = true;
@@ -594,54 +616,108 @@ pub fn main() !void {
                 }
             }
         }
-        if (mbres.remove_machine) {
-            if (!bay_is_bus) if (bay_dev) |dev| if (dev.machine_idx != null) {
-                pushHistorySnapshot(alloc, &history, tracks, &transport);
-                audio.stop();
-                defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
-                dev.replaceMachine(alloc, silent_machine);
-                dev.machine_idx = null;
-                dev.setEnabled(true);
-                dirty = true;
-                status.set("Removed machine", .{});
-            };
-        }
-        if (mbres.remove_effect) |fx_i| {
-            if (bay_dev) |dev| if (fx_i < dev.effect_count) {
-                // Audio-track effect removals are undoable; master FX aren't
-                // captured by the snapshot (FX chains aren't serialized yet).
-                if (!bay_is_bus) pushHistorySnapshot(alloc, &history, tracks, &transport);
-                audio.stop();
-                defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
-                dev.removeEffect(alloc, fx_i);
-                dirty = true;
-                status.set("Removed effect", .{});
-            };
-        }
-        if (mbres.save_preset) {
-            if (!bay_is_bus) if (bay_dev) |dev| {
-                if (dev.machine.save_preset) |save| {
-                    if (save(dev.machine.state)) |idx| {
-                        dirty = true;
-                        status.set("Saved preset {s}", .{if (dev.machine.preset_name) |name| name(dev.machine.state, idx) else ""});
-                    } else {
-                        status.set("Preset save failed", .{});
-                    }
+        // Name block → replace an existing device's machine.
+        if (mbres.replace_machine) |reg_idx| {
+            if (mbres.replace_ref) |ref| if (bay_dev) |dev| {
+                const entry = &reg.entries[reg_idx];
+                const is_effect = entry.in_audio and entry.out_audio and !entry.in_notes;
+                switch (ref) {
+                    .instrument => {
+                        if (bay_is_bus or is_effect) {
+                            status.set("Pick an instrument", .{});
+                        } else {
+                            pushHistorySnapshot(alloc, &history, tracks, &transport);
+                            assignMachineToTrack(alloc, &audio, &reg, dev, reg_idx, dev.poly_voices) catch |err| {
+                                std.log.err("replace instrument failed: {s}", .{@errorName(err)});
+                                status.set("Replace failed: {s}", .{@errorName(err)});
+                                continue;
+                            };
+                            if (mbres.replace_preset) |pi| if (dev.machine.apply_preset) |ap| ap(dev.machine.state, pi);
+                            const nm = entry.nameSlice();
+                            const n = @min(nm.len, track_mod.MAX_NAME);
+                            @memcpy(dev.name_buf[0..n], nm[0..n]);
+                            dev.name_len = @intCast(n);
+                            dirty = true;
+                            status.set("Replaced with {s}", .{entry.nameSlice()});
+                        }
+                    },
+                    .effect => |i| {
+                        if (!is_effect) {
+                            status.set("Replacement must be an effect", .{});
+                        } else if (i < dev.effectCount()) {
+                            if (!bay_is_bus) pushHistorySnapshot(alloc, &history, tracks, &transport);
+                            replaceEffectOnTrack(alloc, &audio, &reg, dev, i, reg_idx) catch |err| {
+                                std.log.err("replace effect failed: {s}", .{@errorName(err)});
+                                status.set("Replace failed: {s}", .{@errorName(err)});
+                                continue;
+                            };
+                            if (mbres.replace_preset) |pi| {
+                                const fx = &dev.effects.items[i].mach;
+                                if (fx.apply_preset) |ap| ap(fx.state, pi);
+                            }
+                            dirty = true;
+                            status.set("Replaced effect with {s}", .{entry.nameSlice()});
+                        }
+                    },
                 }
             };
         }
-        if (mbres.preset_index) |preset| {
-            if (!bay_is_bus) if (bay_dev) |dev| {
-                if (dev.machine.apply_preset) |apply| {
+        // Delete (confirmed) → remove the targeted device.
+        if (mbres.remove_ref) |ref| if (bay_dev) |dev| {
+            switch (ref) {
+                .instrument => if (!bay_is_bus and dev.machine_idx != null) {
                     pushHistorySnapshot(alloc, &history, tracks, &transport);
                     audio.stop();
                     defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
-                    apply(dev.machine.state, preset);
+                    dev.replaceMachine(alloc, silent_machine);
+                    dev.machine_idx = null;
+                    dev.setEnabled(true);
                     dirty = true;
-                    status.set("Preset {s}", .{if (dev.machine.preset_name) |name| name(dev.machine.state, preset) else ""});
-                }
+                    status.set("Removed machine", .{});
+                },
+                .effect => |fx_i| if (fx_i < dev.effectCount()) {
+                    // Audio-track effect removals are undoable; master FX aren't
+                    // captured by the snapshot (FX chains aren't serialized yet).
+                    if (!bay_is_bus) pushHistorySnapshot(alloc, &history, tracks, &transport);
+                    audio.stop();
+                    defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+                    dev.removeEffect(alloc, fx_i);
+                    dirty = true;
+                    status.set("Removed effect", .{});
+                },
+            }
+        };
+        // Drag-reorder effects.
+        if (mbres.reorder_from) |from| if (mbres.reorder_to) |to| if (bay_dev) |dev| {
+            if (!bay_is_bus) pushHistorySnapshot(alloc, &history, tracks, &transport);
+            audio.stop();
+            defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+            dev.moveEffect(from, to);
+            dirty = true;
+            status.set("Reordered effects", .{});
+        };
+        // Preset block → apply / save (name entry) / rename (name entry).
+        if (mbres.preset_apply) |preset| if (mbres.preset_apply_ref) |ref| if (bay_dev) |dev| {
+            if (deviceMachineOf(dev, refEffect(ref))) |mach| if (mach.apply_preset) |apply| {
+                if (!bay_is_bus) pushHistorySnapshot(alloc, &history, tracks, &transport);
+                audio.stop();
+                defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+                apply(mach.state, preset);
+                dirty = true;
+                status.set("Preset {s}", .{if (mach.preset_name) |name| name(mach.state, preset) else ""});
             };
-        }
+        };
+        if (mbres.preset_save_ref) |ref| if (bay_dev) |dev| {
+            beginPresetSave(&rename, dev, refEffect(ref), mbres.preset_anchor);
+        };
+        if (mbres.preset_rename_ref) |ref| if (mbres.preset_rename_index) |idx| if (bay_dev) |dev| {
+            const eff = refEffect(ref);
+            if (deviceMachineOf(dev, eff)) |mach| {
+                var cur: []const u8 = "";
+                if (mach.preset_name) |nf| cur = std.mem.span(nf(mach.state, idx));
+                beginPresetRename(&rename, dev, eff, idx, cur, mbres.preset_anchor);
+            }
+        };
         if (mbres.poly_voices) |voices| {
             if (selected_track) |ti| if (ti < tracks.len) {
                 if (tracks[ti].machine_idx) |reg_idx| {
@@ -982,6 +1058,32 @@ fn beginRenameClip(rename: *RenameState, tracks: []track_mod.Track, ref: clip_mo
     renameSelectAll(rename);
 }
 
+fn deviceMachineOf(t: *track_mod.Track, effect: ?usize) ?*@import("machine.zig").Machine {
+    if (effect) |i| {
+        if (i >= t.effects.items.len) return null;
+        return &t.effects.items[i].mach;
+    }
+    return &t.machine;
+}
+
+// Float the inline text field over the preset block (widened to a usable
+// minimum so typing isn't cramped against a tiny preset label).
+fn anchorRenameRect(rename: *RenameState, anchor: c.rl.Rectangle) void {
+    rename.rect = .{ .x = anchor.x, .y = anchor.y, .width = @max(anchor.width, 120), .height = @max(anchor.height, 18) };
+}
+
+fn beginPresetSave(rename: *RenameState, dev: *track_mod.Track, effect: ?usize, anchor: c.rl.Rectangle) void {
+    rename.* = .{ .kind = .preset_save, .device_track = dev, .device_effect = effect };
+    anchorRenameRect(rename, anchor);
+}
+
+fn beginPresetRename(rename: *RenameState, dev: *track_mod.Track, effect: ?usize, index: u8, current: []const u8, anchor: c.rl.Rectangle) void {
+    rename.* = .{ .kind = .preset_rename, .device_track = dev, .device_effect = effect, .preset_index = index };
+    renameSetText(rename, current);
+    anchorRenameRect(rename, anchor);
+    renameSelectAll(rename);
+}
+
 fn renameSetText(rename: *RenameState, text: []const u8) void {
     @memset(&rename.buf, 0);
     const n = @min(text.len, track_mod.MAX_NAME);
@@ -1239,6 +1341,16 @@ fn commitRename(
     dirty: *bool,
     status: *StatusMessage,
 ) !void {
+    // Preset save/rename act on machine preset files, not the document.
+    switch (rename.kind) {
+        .preset_save, .preset_rename => {
+            commitPreset(rename, tracks, dirty, status);
+            rename.kind = .none;
+            return;
+        },
+        else => {},
+    }
+
     if (rename.len == 0) {
         rename.kind = .none;
         status.set("Rename canceled", .{});
@@ -1257,7 +1369,8 @@ fn commitRename(
             tracks[rename.track].clips.items[rename.clip].setName(text);
             changed = true;
         },
-        .none => {},
+        // Preset kinds are handled above and returned early.
+        .preset_save, .preset_rename, .none => {},
     }
     if (changed) {
         try history.pushUndo(alloc, before);
@@ -1269,11 +1382,49 @@ fn commitRename(
     rename.kind = .none;
 }
 
+// Apply a preset save/rename to the targeted device's machine. Preset files
+// live next to the machine, so there's no document snapshot/undo here.
+fn commitPreset(rename: *RenameState, tracks: []track_mod.Track, dirty: *bool, status: *StatusMessage) void {
+    _ = tracks;
+    const t = rename.device_track orelse {
+        status.set("Preset target gone", .{});
+        return;
+    };
+    const mach = deviceMachineOf(t, rename.device_effect) orelse {
+        status.set("Preset target gone", .{});
+        return;
+    };
+    if (rename.len == 0) {
+        status.set("Preset name empty", .{});
+        return;
+    }
+    var name_buf: [track_mod.MAX_NAME + 1:0]u8 = [_:0]u8{0} ** (track_mod.MAX_NAME + 1);
+    @memcpy(name_buf[0..rename.len], rename.buf[0..rename.len]);
+    const name_z: [*:0]const u8 = @ptrCast(&name_buf[0]);
+    switch (rename.kind) {
+        .preset_save => {
+            const f = mach.save_preset_named orelse return;
+            if (f(mach.state, name_z) != null) {
+                dirty.* = true;
+                status.set("Saved preset {s}", .{name_buf[0..rename.len]});
+            } else status.set("Preset save failed (name in use?)", .{});
+        },
+        .preset_rename => {
+            const f = mach.rename_preset orelse return;
+            if (f(mach.state, rename.preset_index, name_z) != null) {
+                dirty.* = true;
+                status.set("Renamed preset {s}", .{name_buf[0..rename.len]});
+            } else status.set("Preset rename failed (name in use?)", .{});
+        },
+        else => {},
+    }
+}
+
 fn arrangementRenameTarget(rename: *const RenameState) arrangement.RenameTarget {
     return switch (rename.kind) {
         .track => .{ .kind = .track, .track = rename.track },
         .clip => .{ .kind = .clip, .track = rename.track, .clip = rename.clip },
-        .none => .{},
+        .preset_save, .preset_rename, .none => .{},
     };
 }
 
@@ -1884,30 +2035,24 @@ test "synthpop demo notes fit a 4-bar loop and span bass to lead range" {
     try std.testing.expect(hi >= 83); // lead reaches B5
 }
 
-test "synthpop_8bar demo clip note counts match file contents" {
-    const data = try document_mod.readFile(std.testing.allocator, "demos/synthpop_8bar.slab");
-    defer std.testing.allocator.free(data);
+test "synthpop_8bar demo loads as JSON with expected note counts" {
+    const alloc = std.testing.allocator;
+    const data = try document_mod.readFile(alloc, "demos/synthpop_8bar.slab");
+    defer alloc.free(data);
 
-    var lines = std.mem.splitScalar(u8, data, '\n');
-    var expected: ?usize = null;
-    var actual: usize = 0;
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \r\n");
-        if (line.len == 0) continue;
-        if (std.mem.startsWith(u8, line, "CLIP\t")) {
-            if (expected) |n| try std.testing.expectEqual(n, actual);
-            var fields = std.mem.splitScalar(u8, line, '\t');
-            _ = fields.next();
-            _ = fields.next();
-            _ = fields.next();
-            _ = fields.next();
-            expected = try std.fmt.parseInt(usize, fields.next() orelse return error.InvalidProject, 10);
-            actual = 0;
-        } else if (std.mem.startsWith(u8, line, "NOTE\t")) {
-            actual += 1;
-        }
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, data, .{});
+    defer parsed.deinit();
+    const tracks = parsed.value.object.get("tracks").?.array;
+    try std.testing.expectEqual(@as(usize, 3), tracks.items.len);
+
+    // Bass=60, Chords=32, Arp=64 (each track has one note clip).
+    const expected = [_]usize{ 60, 32, 64 };
+    for (tracks.items, expected) |trk, want| {
+        const clips = trk.object.get("clips").?.array;
+        try std.testing.expectEqual(@as(usize, 1), clips.items.len);
+        const notes = clips.items[0].object.get("notes").?.array;
+        try std.testing.expectEqual(want, notes.items.len);
     }
-    if (expected) |n| try std.testing.expectEqual(n, actual);
 }
 
 const _fy_host = @import("fy_host.zig");

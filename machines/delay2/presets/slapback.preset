@@ -1,5 +1,1 @@
-# delay2 preset
-delay-time|0.110
-delay-fb|0.180
-delay-damp|9000
-delay-mix|0.300
+{"schema": 1, "machine": "delay2", "note": "Tight rockabilly slapback", "params": {"delay-time": 0.11, "delay-fb": 0.18, "delay-damp": 9000, "delay-mix": 0.3}}

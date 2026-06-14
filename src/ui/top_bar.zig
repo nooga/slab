@@ -71,10 +71,12 @@ pub fn draw(r: c.rl.Rectangle, transport: *Transport, edit_snap: *snap_mod.Setti
         widgets.drawIcon(.caret_down, file_rect.x + file_w - icon_sz - theme.size(4), y + (h - icon_sz) / 2, icon_sz, theme.text_dim);
         widgets.tooltip(file_rect, "Project file", m);
         if (hover and m.left_pressed and !open) widgets.openMenuAt(FILE_MENU_KEY, file_rect.x, file_rect.y + file_rect.height);
+        // Labels carry no keybind text — the menu renderer draws the
+        // right-aligned shortcut hint from the command (see commandShortcut).
         const file_items = [_]widgets.MenuItem{
-            .{ .label = "Open\u{2026}  Cmd+O", .command = .file_open },
-            .{ .label = "Save  Cmd+S", .command = .file_save },
-            .{ .label = "Save As\u{2026}  Cmd+Shift+S", .command = .file_save_as },
+            .{ .label = "Open\u{2026}", .command = .file_open },
+            .{ .label = "Save", .command = .file_save },
+            .{ .label = "Save As\u{2026}", .command = .file_save_as },
         };
         switch (widgets.contextMenu(FILE_MENU_KEY, &file_items, m)) {
             .file_open => result.open_project = true,

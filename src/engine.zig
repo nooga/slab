@@ -59,11 +59,11 @@ pub const Engine = struct {
                 // play → stop transition: drop all sustained notes.
                 for (self.tracks) |*t| {
                     t.machine.reset(t.machine.state);
-                    for (t.effects[0..t.effect_count]) |*fx| fx.reset(fx.state);
+                    for (t.effects.items) |*fx| fx.mach.reset(fx.mach.state);
                     t.setMeter(0, 0);
                 }
                 if (self.master) |mb| {
-                    for (mb.effects[0..mb.effect_count]) |*fx| fx.reset(fx.state);
+                    for (mb.effects.items) |*fx| fx.mach.reset(fx.mach.state);
                 }
                 self.was_playing = false;
             }
@@ -140,10 +140,10 @@ pub const Engine = struct {
     fn resetAllMachines(self: *Engine) void {
         for (self.tracks) |*t| {
             t.machine.reset(t.machine.state);
-            for (t.effects[0..t.effect_count]) |*fx| fx.reset(fx.state);
+            for (t.effects.items) |*fx| fx.mach.reset(fx.mach.state);
         }
         if (self.master) |mb| {
-            for (mb.effects[0..mb.effect_count]) |*fx| fx.reset(fx.state);
+            for (mb.effects.items) |*fx| fx.mach.reset(fx.mach.state);
         }
     }
 
@@ -189,7 +189,7 @@ pub const Engine = struct {
             if (self.audition_active and self.audition_track_local < self.tracks.len) {
                 const old = &self.tracks[self.audition_track_local];
                 old.machine.reset(old.machine.state);
-                for (old.effects[0..old.effect_count]) |*fx| fx.reset(fx.state);
+                for (old.effects.items) |*fx| fx.mach.reset(fx.mach.state);
             }
             self.audition_seen = req;
             self.audition_active = true;
@@ -389,7 +389,7 @@ pub const Engine = struct {
                             @as(f64, @floatFromInt(fx_ns)) / 1_000_000.0,
                             @as(f64, @floatFromInt(total_ns)) / 1_000_000.0,
                             @as(f64, @floatFromInt(budget_ns)) / 1_000_000.0,
-                            t.effect_count,
+                            t.effectCount(),
                         },
                     );
                 }
@@ -437,7 +437,7 @@ pub const Engine = struct {
         var r: []f32 = self.master_r[0..n];
         var mv: f32 = 1.0;
         if (self.master) |mb| {
-            if (mb.effect_count > 0) {
+            if (mb.effectCount() > 0) {
                 const base = machine.MachineCtx{
                     .sample_rate = @floatFromInt(self.transport.sample_rate),
                     .block_size = frames,
@@ -628,7 +628,7 @@ fn renderEffects(
     var next_l = scratch_l;
     var next_r = scratch_r;
 
-    for (t.effects[0..t.effect_count], 0..) |*fx, i| {
+    for (t.effects.items, 0..) |*fx, i| {
         if (t.effectBypassed(i)) continue; // bypassed → pass through untouched
         @memset(next_l, 0);
         @memset(next_r, 0);
@@ -638,7 +638,7 @@ fn renderEffects(
         ctx.note_in_count = 0;
         ctx.audio_in = @ptrCast(&in_ports[0]);
         ctx.audio_in_count = 2;
-        fx.render(fx.state, &ctx, next_l, next_r);
+        fx.mach.render(fx.mach.state, &ctx, next_l, next_r);
 
         const old_l = cur_l;
         const old_r = cur_r;

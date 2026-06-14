@@ -10,7 +10,17 @@ const snap_mod = @import("snapshot.zig");
 const audio_pool_mod = @import("audio_pool.zig");
 
 pub const MAX_NAME = 32;
-pub const MAX_EFFECTS = 16;
+
+/// One slot in a track's insert chain: the effect machine, its registry
+/// index (for persistence/forward-compat), and a per-effect bypass flag.
+/// `bypass` is a plain atomic the audio thread reads each block; chain
+/// mutations (add/remove/move/replace) happen with the device stopped, so
+/// the backing `ArrayList` only reallocs while the engine is idle.
+pub const Effect = struct {
+    mach: machine.Machine,
+    idx: ?u8 = null,
+    bypass: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+};
 
 /// What role a Track plays in the signal graph. Audio tracks have an
 /// instrument + clips and sum into the master. `ret` (return) and
@@ -30,9 +40,11 @@ pub const Track = struct {
     /// 1 = mono. Larger values wrap the assigned machine in a host-side
     /// poly allocator with this many independent instances.
     poly_voices: u8 = 1,
-    effects: [MAX_EFFECTS]machine.Machine = undefined,
-    effect_count: u8 = 0,
-    effect_idx: [MAX_EFFECTS]?u8 = [_]?u8{null} ** MAX_EFFECTS,
+    /// Insert chain — UI-thread-owned, heap-backed, unbounded. The audio
+    /// thread reads `effects.items` fresh each block; all mutations run
+    /// with the device stopped (see main.zig), so a realloc never races a
+    /// render.
+    effects: std.ArrayList(Effect) = .empty,
 
     /// Clip list — UI-thread-owned. Audio thread reads via snapshot only.
     clips: std.ArrayList(clip_mod.Clip) = .empty,
@@ -56,9 +68,6 @@ pub const Track = struct {
     /// render and feeds silence into the effect chain. UI-owned, read by
     /// the audio thread — a plain atomic flip, no chain mutation.
     enabled: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
-    /// Per-effect bypass bitmask — bit i set = effect i is bypassed
-    /// (passed through untouched). UI-owned, read by the audio thread.
-    effect_bypass: std.atomic.Value(u16) = std.atomic.Value(u16).init(0),
     /// Bumped by the engine on any block that dispatches a note-on to the
     /// instrument. The UI reads the sequence to drive the note-activity
     /// LED — no timestamps on the audio thread.
@@ -86,11 +95,12 @@ pub const Track = struct {
         if (self.machine.deinit) |deinit_fn| {
             deinit_fn(self.machine.state, alloc);
         }
-        for (self.effects[0..self.effect_count]) |*fx| {
-            if (fx.deinit) |deinit_fn| {
-                deinit_fn(fx.state, alloc);
+        for (self.effects.items) |*fx| {
+            if (fx.mach.deinit) |deinit_fn| {
+                deinit_fn(fx.mach.state, alloc);
             }
         }
+        self.effects.deinit(alloc);
         for (self.clips.items) |*clip| clip.deinit(alloc);
         self.clips.deinit(alloc);
         alloc.destroy(self.snap[0]);
@@ -104,33 +114,37 @@ pub const Track = struct {
         self.machine = mach;
     }
 
-    pub fn addEffect(self: *Track, mach: machine.Machine, idx: u8) !void {
-        if (self.effect_count >= MAX_EFFECTS) return error.EffectChainFull;
-        self.effects[self.effect_count] = mach;
-        self.effect_idx[self.effect_count] = idx;
-        self.effect_count += 1;
+    pub fn addEffect(self: *Track, alloc: std.mem.Allocator, mach: machine.Machine, idx: u8) !void {
+        try self.effects.append(alloc, .{ .mach = mach, .idx = idx });
     }
 
-    /// Remove effect `i`, deinit it, shift the tail down, and slide the
-    /// bypass bitmask to match. Caller must hold the audio thread (stop
-    /// the device) — this mutates the chain the engine reads.
+    /// Remove effect `i`, deinit it, and shift the tail down. Caller must
+    /// hold the audio thread (stop the device) — this mutates the chain
+    /// the engine reads.
     pub fn removeEffect(self: *Track, alloc: std.mem.Allocator, i: usize) void {
-        if (i >= self.effect_count) return;
-        if (self.effects[i].deinit) |deinit_fn| deinit_fn(self.effects[i].state, alloc);
-        var j = i;
-        while (j + 1 < self.effect_count) : (j += 1) {
-            self.effects[j] = self.effects[j + 1];
-            self.effect_idx[j] = self.effect_idx[j + 1];
-        }
-        self.effect_count -= 1;
-        self.effect_idx[self.effect_count] = null;
-        // Rebuild the bypass mask: drop bit i, shift higher bits down.
-        const old = self.effect_bypass.load(.monotonic);
-        const low_mask: u16 = (@as(u16, 1) << @intCast(i)) - 1;
-        const low = old & low_mask;
-        // No bits above index 15 exist; guard the shift so i==15 can't trap.
-        const high: u16 = if (i + 1 < 16) (old >> @intCast(i + 1)) << @intCast(i) else 0;
-        self.effect_bypass.store(low | high, .monotonic);
+        if (i >= self.effects.items.len) return;
+        if (self.effects.items[i].mach.deinit) |deinit_fn| deinit_fn(self.effects.items[i].mach.state, alloc);
+        _ = self.effects.orderedRemove(i);
+    }
+
+    /// Move effect `from` to position `to`, preserving the order of the
+    /// rest. Per-effect bypass travels with the element. Audio-stopped.
+    pub fn moveEffect(self: *Track, from: usize, to: usize) void {
+        const n = self.effects.items.len;
+        if (from >= n or to >= n or from == to) return;
+        const e = self.effects.orderedRemove(from);
+        // orderedRemove shifts the tail down; clamp the insert index.
+        self.effects.insertAssumeCapacity(@min(to, self.effects.items.len), e);
+    }
+
+    /// Swap effect `i`'s machine for a new one, deinit the old, keeping the
+    /// slot's position and bypass state. Audio-stopped.
+    pub fn replaceEffect(self: *Track, alloc: std.mem.Allocator, i: usize, mach: machine.Machine, idx: u8) void {
+        if (i >= self.effects.items.len) return;
+        const slot = &self.effects.items[i];
+        if (slot.mach.deinit) |deinit_fn| deinit_fn(slot.mach.state, alloc);
+        slot.mach = mach;
+        slot.idx = idx;
     }
 
     pub fn isEnabled(self: *const Track) bool {
@@ -145,15 +159,19 @@ pub const Track = struct {
         self.enabled.store(!self.enabled.load(.monotonic), .monotonic);
     }
 
+    pub fn effectCount(self: *const Track) usize {
+        return self.effects.items.len;
+    }
+
     pub fn effectBypassed(self: *const Track, i: usize) bool {
-        if (i >= 16) return false;
-        return (self.effect_bypass.load(.monotonic) & (@as(u16, 1) << @intCast(i))) != 0;
+        if (i >= self.effects.items.len) return false;
+        return self.effects.items[i].bypass.load(.monotonic);
     }
 
     pub fn toggleEffectBypass(self: *Track, i: usize) void {
-        if (i >= 16) return;
-        const bit = @as(u16, 1) << @intCast(i);
-        self.effect_bypass.store(self.effect_bypass.load(.monotonic) ^ bit, .monotonic);
+        if (i >= self.effects.items.len) return;
+        const e = &self.effects.items[i];
+        e.bypass.store(!e.bypass.load(.monotonic), .monotonic);
     }
 
     /// Audio thread: signal that a note-on hit the instrument this block.
@@ -336,39 +354,54 @@ fn testMachine() machine.Machine {
     };
 }
 
-test "removeEffect shifts chain and bypass mask" {
+test "removeEffect shifts chain and bypass travels with the slot" {
     const alloc = testing.allocator;
     var t = try Track.init(alloc, "t", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, testMachine());
     defer t.deinit(alloc);
 
-    // Fill the whole chain so the i==15 edge is exercised.
+    // Build an unbounded chain past the old fixed 16-slot cap.
     var i: u8 = 0;
-    while (i < MAX_EFFECTS) : (i += 1) try t.addEffect(testMachine(), i);
-    try testing.expectEqual(@as(u8, MAX_EFFECTS), t.effect_count);
+    while (i < 20) : (i += 1) try t.addEffect(alloc, testMachine(), i);
+    try testing.expectEqual(@as(usize, 20), t.effectCount());
 
-    // Bypass a few effects across the range, including the last bit.
+    // Bypass a few effects, including one past the old 16-bit mask range.
     t.toggleEffectBypass(0);
     t.toggleEffectBypass(5);
-    t.toggleEffectBypass(15);
+    t.toggleEffectBypass(18);
     try testing.expect(t.effectBypassed(0));
     try testing.expect(t.effectBypassed(5));
-    try testing.expect(t.effectBypassed(15));
+    try testing.expect(t.effectBypassed(18));
 
-    // Removing the last effect must not trap on the shift, and clears bit 15.
-    t.removeEffect(alloc, 15);
-    try testing.expectEqual(@as(u8, MAX_EFFECTS - 1), t.effect_count);
-    try testing.expect(t.effectBypassed(0));
-    try testing.expect(t.effectBypassed(5));
-    try testing.expect(!t.effectBypassed(14)); // nothing shifted into the freed slot
+    // Removing the last effect is fine; nothing shifts into the freed slot.
+    t.removeEffect(alloc, 19);
+    try testing.expectEqual(@as(usize, 19), t.effectCount());
+    try testing.expect(t.effectBypassed(18));
 
-    // Removing a middle effect shifts higher bypass bits down by one.
-    t.removeEffect(alloc, 0); // drop bit 0; bit 5 moves to index 4
+    // Removing a middle effect shifts higher bypass flags down by one.
+    t.removeEffect(alloc, 0); // bypass at 5 moves to index 4
     try testing.expect(!t.effectBypassed(0));
     try testing.expect(t.effectBypassed(4));
-    try testing.expectEqual(@as(u8, MAX_EFFECTS - 2), t.effect_count);
+    try testing.expectEqual(@as(usize, 18), t.effectCount());
 
     // Out-of-range removal is a no-op.
-    const before = t.effect_count;
+    const before = t.effectCount();
     t.removeEffect(alloc, 999);
-    try testing.expectEqual(before, t.effect_count);
+    try testing.expectEqual(before, t.effectCount());
+}
+
+test "moveEffect reorders and bypass follows the moved slot" {
+    const alloc = testing.allocator;
+    var t = try Track.init(alloc, "t", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, testMachine());
+    defer t.deinit(alloc);
+
+    var i: u8 = 0;
+    while (i < 4) : (i += 1) try t.addEffect(alloc, testMachine(), i);
+    t.toggleEffectBypass(0); // bypass the head effect
+
+    // Move the bypassed head to the tail; its bypass flag travels with it.
+    t.moveEffect(0, 3);
+    try testing.expectEqual(@as(?u8, 1), t.effects.items[0].idx);
+    try testing.expectEqual(@as(?u8, 0), t.effects.items[3].idx);
+    try testing.expect(!t.effectBypassed(0));
+    try testing.expect(t.effectBypassed(3));
 }

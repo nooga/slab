@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "verb2", "note": "Long, dark, modulated cathedral", "params": {"verb-predelay": 0.06, "verb-decay": 0.97, "verb-damp": 2200, "verb-tone": 5500, "verb-mix": 0.42, "verb-mod": 18}}

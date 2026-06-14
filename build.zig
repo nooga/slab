@@ -26,32 +26,6 @@ pub fn build(b: *std.Build) void {
 
     configureNativeDeps(b, exe_mod);
 
-    const bench_mod = b.createModule(.{
-        .root_source_file = b.path("src/bench_mono1.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    bench_mod.addImport("fy", fy_mod);
-    configureNativeDeps(b, bench_mod);
-
-    const bench = b.addExecutable(.{
-        .name = "bench-mono1",
-        .root_module = bench_mod,
-    });
-
-    const probe_mod = b.createModule(.{
-        .root_source_file = b.path("src/machine_probe.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    probe_mod.addImport("fy", fy_mod);
-    configureNativeDeps(b, probe_mod);
-
-    const probe = b.addExecutable(.{
-        .name = "machine-probe",
-        .root_module = probe_mod,
-    });
-
     const kernel_probe_mod = b.createModule(.{
         .root_source_file = b.path("src/kernel_probe.zig"),
         .target = target,
@@ -69,16 +43,6 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| kernel_probe_cmd.addArgs(args);
     const kernel_probe_step = b.step("kernel-probe", "Run a testable Fy DSP kernel fixture");
     kernel_probe_step.dependOn(&kernel_probe_cmd.step);
-
-    const probe_cmd = b.addRunArtifact(probe);
-    if (b.args) |args| probe_cmd.addArgs(args);
-    const probe_step = b.step("machine-probe", "Render machine chains offline into scratch/");
-    probe_step.dependOn(&probe_cmd.step);
-
-    const bench_cmd = b.addRunArtifact(bench);
-    if (b.args) |args| bench_cmd.addArgs(args);
-    const bench_step = b.step("bench-mono1", "Benchmark mono1 fy voice rendering");
-    bench_step.dependOn(&bench_cmd.step);
 
     const install = b.addInstallArtifact(exe, .{});
     b.getInstallStep().dependOn(&install.step);

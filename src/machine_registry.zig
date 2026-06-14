@@ -1,13 +1,12 @@
-//! Registry of fy machines.  Each entry owns its own FyHost so word
-//! names (phase-cell, gain-cell, …) don't alias across machines.
+//! Registry of fy machines. Each entry is a manifest-driven raw (DSP2)
+//! machine: loadFyMachine compiles the .fy in a throwaway host to read the
+//! descriptor header, and instantiate() builds a fresh FyRawMachine (with its
+//! own host) per track assignment so word names don't alias across machines.
 
 const std = @import("std");
-const Fy = @import("fy").Fy;
 const machine = @import("machine.zig");
 const fy_host_mod = @import("fy_host.zig");
 const FyHost = fy_host_mod.FyHost;
-const fy_machine_mod = @import("machines/fy_machine.zig");
-const FyMachine = fy_machine_mod.FyMachine;
 const poly_mod = @import("machines/poly.zig");
 const fy_raw_machine_mod = @import("machines/fy_raw_machine.zig");
 const machine_desc = @import("machine_desc.zig");
@@ -27,35 +26,12 @@ test {
 pub const MAX_MACHINES = 64;
 pub const MAX_NAME = 32;
 pub const MAX_PATH = 256;
-pub const MAX_WORD = 64;
-
-const EntryKind = enum {
-    callback,
-    raw_dsp2,
-};
-
-const RawMachine = extern struct {
-    audio: Fy.Value,
-    ui: Fy.Value,
-    state_size: u32,
-    params_size: u32,
-    in_notes: u8,
-    out_notes: u8,
-    in_audio: u8,
-    out_audio: u8,
-    _pad: [4]u8,
-};
 
 pub const Entry = struct {
-    kind: EntryKind = .callback,
     name: [MAX_NAME]u8 = [_]u8{0} ** MAX_NAME,
     name_len: u8 = 0,
     path: [MAX_PATH]u8 = [_]u8{0} ** MAX_PATH,
     path_len: u16 = 0,
-    audio_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
-    audio_word_len: u8 = 0,
-    ui_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
-    ui_word_len: u8 = 0,
     raw_mode: fy_raw_machine_mod.Mode = .voice_sample,
     raw_state_size: usize = 0,
     panel_w: f32 = 0,
@@ -64,8 +40,6 @@ pub const Entry = struct {
     out_notes: bool = false,
     in_audio: bool = false,
     out_audio: bool = false,
-    host: ?*FyHost = null, // heap-allocated, owned by this entry
-    fy_machine: ?FyMachine = null, // references host
 
     pub fn nameSlice(self: *const Entry) []const u8 {
         return self.name[0..self.name_len];
@@ -75,20 +49,18 @@ pub const Entry = struct {
         return @ptrCast(&self.name[0]);
     }
 
-    pub fn machineInterface(self: *Entry) machine.Machine {
-        return self.fy_machine.?.machineInterface();
-    }
-
     pub fn pathSlice(self: *const Entry) []const u8 {
         return self.path[0..self.path_len];
     }
 
-    pub fn audioWordSlice(self: *const Entry) []const u8 {
-        return self.audio_word[0..self.audio_word_len];
-    }
-
-    pub fn uiWordSlice(self: *const Entry) []const u8 {
-        return self.ui_word[0..self.ui_word_len];
+    /// Stable machine id = the machine's directory name (e.g.
+    /// `machines/ms20/ms20.fy` → `ms20`). Independent of the cosmetic
+    /// display name, unique by construction, stable across renames — the
+    /// key projects and presets reference machines by.
+    pub fn idSlice(self: *const Entry) []const u8 {
+        const path = self.pathSlice();
+        const dir = std.fs.path.dirname(path) orelse return path;
+        return std.fs.path.basename(dir);
     }
 };
 
@@ -118,28 +90,23 @@ pub const Registry = struct {
     pub fn instantiate(self: *Registry, idx: usize) !machine.Machine {
         if (idx >= self.count) return error.InvalidMachineIndex;
         const e = &self.entries[idx];
-        if (e.kind == .raw_dsp2) {
-            const raw = try fy_raw_machine_mod.FyRawMachine.create(self.alloc, e.pathSlice());
-            return raw.machineInterface();
+        const raw = try fy_raw_machine_mod.FyRawMachine.create(self.alloc, e.pathSlice());
+        return raw.machineInterface();
+    }
+
+    /// Resolve a stable machine id (directory name) to its current index.
+    pub fn findById(self: *const Registry, id: []const u8) ?usize {
+        for (self.entries[0..self.count], 0..) |*e, i| {
+            if (std.mem.eql(u8, e.idSlice(), id)) return i;
         }
+        return null;
+    }
 
-        const host = try self.alloc.create(FyHost);
-        errdefer self.alloc.destroy(host);
-        host.* = FyHost.init(self.alloc);
-        errdefer host.deinit();
-
-        try host.registerSlabBuiltins();
-        try host.compileFile(e.pathSlice());
-
-        const audio_cb = try host.createAudioCallback(e.audioWordSlice());
-        const ui_cb = try host.createAudioCallback(e.uiWordSlice());
-        const reset_cb = tryOptionalResetCallback(host, e.audioWordSlice());
-
-        const inst = try self.alloc.create(FyMachine);
-        errdefer self.alloc.destroy(inst);
-        inst.* = FyMachine.init(host, e.nameSlice(), audio_cb, ui_cb, reset_cb, e.params_size);
-        inst.panel_w = e.panel_w;
-        return inst.machineInterface();
+    /// Instantiate a machine by stable id (with polyphony). Null id → error,
+    /// so callers can fall back to a silent placeholder.
+    pub fn instantiateByIdWithPolyphony(self: *Registry, id: []const u8, voices: u8) !machine.Machine {
+        const idx = self.findById(id) orelse return error.InvalidMachineIndex;
+        return self.instantiateWithPolyphony(idx, voices);
     }
 
     pub fn instantiateWithPolyphony(self: *Registry, idx: usize, voices: u8) !machine.Machine {
@@ -169,12 +136,8 @@ pub const Registry = struct {
     }
 
     pub fn deinit(self: *Registry) void {
-        for (self.entries[0..self.count]) |*e| {
-            if (e.host) |host| {
-                host.deinit();
-                self.alloc.destroy(host);
-            }
-        }
+        // Raw entries hold no live host (loadFyMachine compiles in a throwaway
+        // host and keeps only the descriptor header); just free the slice.
         if (self.cap != 0) self.alloc.free(self.entries);
     }
 
@@ -191,7 +154,6 @@ pub const Registry = struct {
         const desc = try machine_desc.read(&host);
 
         var e = Entry{
-            .kind = .raw_dsp2,
             .raw_mode = desc.mode,
             .raw_state_size = desc.state_size,
             .params_size = desc.params_size,
@@ -207,61 +169,6 @@ pub const Registry = struct {
         self.count += 1;
     }
 
-    /// Load a fy machine file into its own Fy instance and register it.
-    pub fn load(
-        self: *Registry,
-        display_name: []const u8,
-        path: []const u8,
-        audio_word: []const u8,
-        ui_word: []const u8,
-        panel_w: f32,
-    ) !void {
-        try self.ensureRoom();
-
-        const host = try self.alloc.create(FyHost);
-        errdefer self.alloc.destroy(host);
-        host.* = FyHost.init(self.alloc);
-        errdefer host.deinit();
-
-        try host.registerSlabBuiltins();
-        try host.compileFile(path);
-
-        const audio_cb = try host.createAudioCallback(audio_word);
-        const ui_cb = try host.createAudioCallback(ui_word);
-        const reset_cb = tryOptionalResetCallback(host, audio_word);
-        const manifest_val = try host.callWord("manifest");
-        const raw_ptr: usize = @intCast(@as(u64, @bitCast(manifest_val)) >> 2);
-        const raw: *const RawMachine = @ptrFromInt(raw_ptr);
-        const params_size: usize = @intCast(raw.params_size >> 2);
-
-        var e = Entry{
-            .kind = .callback,
-            .host = host,
-            .fy_machine = FyMachine.init(host, display_name, audio_cb, ui_cb, reset_cb, 0),
-            .panel_w = panel_w,
-            .params_size = params_size,
-            .in_notes = raw.in_notes != 0,
-            .out_notes = raw.out_notes != 0,
-            .in_audio = raw.in_audio != 0,
-            .out_audio = raw.out_audio != 0,
-        };
-        e.fy_machine.?.panel_w = panel_w;
-        const n = @min(display_name.len, MAX_NAME);
-        @memcpy(e.name[0..n], display_name[0..n]);
-        e.name_len = @intCast(n);
-        const path_n = @min(path.len, MAX_PATH);
-        @memcpy(e.path[0..path_n], path[0..path_n]);
-        e.path_len = @intCast(path_n);
-        const audio_n = @min(audio_word.len, MAX_WORD);
-        @memcpy(e.audio_word[0..audio_n], audio_word[0..audio_n]);
-        e.audio_word_len = @intCast(audio_n);
-        const ui_n = @min(ui_word.len, MAX_WORD);
-        @memcpy(e.ui_word[0..ui_n], ui_word[0..ui_n]);
-        e.ui_word_len = @intCast(ui_n);
-
-        self.entries[self.count] = e;
-        self.count += 1;
-    }
 };
 
 fn copyEntryString(dest: []u8, len: *u8, src: []const u8) !void {
@@ -284,8 +191,12 @@ test "fy manifest loads MS-20 machine entry" {
     try reg.loadFyMachine("machines/ms20/ms20.fy");
     try std.testing.expectEqual(@as(usize, 1), reg.count);
     const e = &reg.entries[0];
-    try std.testing.expectEqualStrings("raw-ms20", e.nameSlice());
+    try std.testing.expectEqualStrings("SM-24 Mono", e.nameSlice());
     try std.testing.expectEqualStrings("machines/ms20/ms20.fy", e.pathSlice());
+    // Stable id is the directory name, independent of the display name.
+    try std.testing.expectEqualStrings("ms20", e.idSlice());
+    try std.testing.expectEqual(@as(?usize, 0), reg.findById("ms20"));
+    try std.testing.expectEqual(@as(?usize, null), reg.findById("nope"));
     try std.testing.expect(e.in_notes);
     try std.testing.expect(!e.in_audio);
     try std.testing.expectEqual(@as(usize, 144), e.raw_state_size);
@@ -293,21 +204,3 @@ test "fy manifest loads MS-20 machine entry" {
     try std.testing.expectEqual(@as(f32, 420.0), e.panel_w);
 }
 
-fn tryOptionalResetCallback(host: *FyHost, audio_word: []const u8) ?*const fn () callconv(.c) void {
-    const reset_word =
-        if (std.mem.eql(u8, audio_word, "mono1-audio"))
-            "mono1-reset"
-        else if (std.mem.eql(u8, audio_word, "chorus1-audio"))
-            "chorus1-reset"
-        else if (std.mem.eql(u8, audio_word, "comp1-audio"))
-            "comp1-reset"
-        else if (std.mem.eql(u8, audio_word, "fm1-audio"))
-            "fm1-reset"
-        else if (std.mem.eql(u8, audio_word, "delay1-audio"))
-            "delay1-reset"
-        else if (std.mem.eql(u8, audio_word, "verb1-audio"))
-            "verb1-reset"
-        else
-            return null;
-    return host.createAudioCallback(reset_word) catch null;
-}

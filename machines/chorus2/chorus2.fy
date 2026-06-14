@@ -10,7 +10,7 @@ include "../../kernels/07-effects/chorus.fy"
 include "../lib/manifest.fy"
 
 : manifest
-  "chorus2" effect-block machine*
+  "Chorus" effect-block machine*
   "k-chorus-tick"        render!
   "chorus-block-prepare" block-prepare!
   ChorusState.size  state-size!

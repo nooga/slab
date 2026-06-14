@@ -1,10 +1,11 @@
-//! Machine presets: one file per preset at
-//! `<machine-dir>/presets/<name>.preset`, plain `id|value` lines keyed by
-//! the manifest's stable control ids. Values are real (Hz, seconds, an
-//! option index for switches) — not 0..1 norms — so retuning a knob range
-//! later doesn't move saved sounds; they clamp into range on apply.
-//! Factory presets are simply checked-in files; user saves land in the
-//! same directory. All IO runs on the UI thread.
+//! Machine presets: one JSON file per preset at
+//! `<machine-dir>/presets/<name>.preset`:
+//! `{"schema":1,"machine":"<id>","note":"…","params":{"<id>":value,…}}`.
+//! Param values are real (Hz, seconds, an option index for switches) — not
+//! 0..1 norms — so retuning a knob range later doesn't move saved sounds;
+//! they clamp into range on apply. `machine`/`note` are hub forward-compat
+//! metadata the loader ignores. Factory presets are checked-in files; user
+//! saves land in the same directory. All IO runs on the UI thread.
 
 const std = @import("std");
 
@@ -15,6 +16,7 @@ extern fn close(fd: c_int) c_int;
 extern fn read(fd: c_int, buf: [*]u8, count: usize) isize;
 extern fn write(fd: c_int, buf: [*]const u8, count: usize) isize;
 extern fn mkdir(path: [*:0]const u8, mode: c_uint) c_int;
+extern fn rename(old: [*:0]const u8, new: [*:0]const u8) c_int;
 const O_RDONLY: c_int = 0;
 const O_WRONLY: c_int = 1;
 const O_CREAT: c_int = 0x200;
@@ -181,31 +183,31 @@ pub fn writeFile(dir_path: []const u8, name: []const u8, content: []const u8) bo
     return true;
 }
 
-pub const Pair = struct {
-    id: []const u8,
-    value: f64,
-};
-
-/// Parse one `id|value` line; comments (#) and blanks yield null.
-pub fn parseLine(line_raw: []const u8) ?Pair {
-    const line = std.mem.trim(u8, line_raw, " \t\r");
-    if (line.len == 0 or line[0] == '#') return null;
-    const sep = std.mem.indexOfScalar(u8, line, '|') orelse return null;
-    const id = std.mem.trim(u8, line[0..sep], " ");
-    if (id.len == 0) return null;
-    const value = std.fmt.parseFloat(f64, std.mem.trim(u8, line[sep + 1 ..], " ")) catch return null;
-    return .{ .id = id, .value = value };
+/// Rename `<dir>/<old>.preset` to `<dir>/<new>.preset`. Both names are bare
+/// stems (no extension). Returns false on any failure. Refuses to clobber an
+/// existing `<new>.preset` — the caller validates collisions up front, but
+/// this is the last line of defense.
+pub fn renameFile(dir_path: []const u8, old_name: []const u8, new_name: []const u8) bool {
+    var old_z: [512:0]u8 = undefined;
+    var new_z: [512:0]u8 = undefined;
+    const old_p = std.fmt.bufPrintZ(&old_z, "{s}/{s}.preset", .{ dir_path, old_name }) catch return false;
+    const new_p = std.fmt.bufPrintZ(&new_z, "{s}/{s}.preset", .{ dir_path, new_name }) catch return false;
+    // Don't overwrite a different existing preset.
+    if (!std.mem.eql(u8, old_name, new_name)) {
+        const probe = open(new_p.ptr, O_RDONLY);
+        if (probe >= 0) {
+            _ = close(probe);
+            return false;
+        }
+    }
+    return rename(old_p.ptr, new_p.ptr) == 0;
 }
+
+// Preset bodies are JSON ({"schema":1,"machine":id,"params":{…}}); parsing
+// lives in the machine (fy_raw_machine.applyPresetImpl) which owns the
+// control schema. This module only handles file discovery/read/write/rename.
 
 const testing = std.testing;
-
-test "preset line parsing" {
-    try testing.expectEqual(@as(?Pair, null), parseLine("# comment"));
-    try testing.expectEqual(@as(?Pair, null), parseLine("   "));
-    const p = parseLine("kick-tune|48.5").?;
-    try testing.expectEqualStrings("kick-tune", p.id);
-    try testing.expectApproxEqAbs(@as(f64, 48.5), p.value, 1e-12);
-}
 
 test "preset dir derivation" {
     var buf: [512]u8 = undefined;

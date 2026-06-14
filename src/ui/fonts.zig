@@ -28,6 +28,9 @@ const text_codepoints = blk: {
         0x20AC, 0x2122, // € ™
         0x2190, 0x2191, 0x2192, 0x2193, // ← ↑ → ↓
         0x21A9, 0x2212, // ↩ −
+        // Apple keyboard symbols (present in SFNS) for shortcut hints.
+        0x2318, 0x21E7, 0x2325, 0x2303, // ⌘ ⇧ ⌥ ⌃
+        0x232B, 0x2326, // ⌫ ⌦  backspace / forward-delete
     };
     const ascii_n: usize = @intCast(ascii_hi - ascii_lo + 1);
     const lat1_n: usize = @intCast(lat1_hi - lat1_lo + 1);

@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "delay2", "note": "Long, dark feedback wash", "params": {"delay-time": 0.55, "delay-fb": 0.8, "delay-damp": 2000, "delay-mix": 0.5}}

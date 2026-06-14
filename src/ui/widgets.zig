@@ -95,18 +95,20 @@ pub const MenuItem = struct {
 };
 
 /// Keybind hints shown right-aligned in menus, derived from the command.
+/// Uses the Apple keyboard glyphs (⌘ ⇧ ⌥ ⌃ ⌫ ↩) — loaded into the UI font
+/// atlas in fonts.zig.
 fn commandShortcut(cmd: EditCommand) ?[*:0]const u8 {
     return switch (cmd) {
-        .copy => "cmd C",
-        .cut => "cmd X",
-        .paste => "cmd V",
-        .select_all => "cmd A",
+        .copy => "\u{2318}C",
+        .cut => "\u{2318}X",
+        .paste => "\u{2318}V",
+        .select_all => "\u{2318}A",
         .duplicate => "D",
-        .delete => "del",
-        .rename => "enter",
-        .file_save => "cmd S",
-        .file_save_as => "cmd sh S",
-        .file_open => "cmd O",
+        .delete => "\u{232B}",
+        .rename => "\u{21A9}",
+        .file_save => "\u{2318}S",
+        .file_save_as => "\u{2318}\u{21E7}S",
+        .file_open => "\u{2318}O",
         else => null,
     };
 }

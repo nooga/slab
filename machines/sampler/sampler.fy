@@ -14,7 +14,7 @@ include "../../kernels/06-voices/sampler.fy"
 include "../lib/manifest.fy"
 
 : manifest
-  "sampler" voice-sample machine*
+  "Sampler" voice-sample machine*
   "k-sampler-voice"       render!
   "sampler-note-on"       note-on!
   "sampler-note-off"      note-off!

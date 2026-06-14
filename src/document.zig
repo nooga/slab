@@ -37,6 +37,31 @@ pub fn activePool() ?*audio_pool_mod.AudioPool {
     return active_pool;
 }
 
+/// Process-wide registry, registered once at startup (like `active_pool`).
+/// serialize() maps a track's machine index → stable machine id through it.
+/// Threading it through every serialize call site (undo snapshots fire from
+/// many edit handlers) would be noise, so it's a host singleton.
+var active_reg: ?*const registry_mod.Registry = null;
+
+pub fn setRegistry(reg: *const registry_mod.Registry) void {
+    active_reg = reg;
+}
+
+/// Process-wide master bus, registered once at startup. It lives outside the
+/// audio-track array, so (like the pool/registry) it's a host singleton that
+/// serialize/apply read rather than a threaded parameter.
+var active_master: ?*track_mod.Track = null;
+
+pub fn setMaster(m: *track_mod.Track) void {
+    active_master = m;
+}
+
+fn machineId(idx: u8) []const u8 {
+    const reg = active_reg orelse return "";
+    if (idx >= reg.count) return "";
+    return reg.entries[idx].idSlice();
+}
+
 pub fn readFile(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
     const z = try alloc.dupeZ(u8, path);
     defer alloc.free(z);
@@ -75,6 +100,10 @@ pub fn writeFile(alloc: std.mem.Allocator, path: []const u8, data: []const u8) !
     }
 }
 
+/// Serialize the document (and undo snapshots) to JSON. Machine indices map
+/// to stable machine ids via the registered registry (`setRegistry`) so
+/// projects survive registry reordering; settings embed inline via
+/// `write_params_json`.
 pub fn serialize(
     alloc: std.mem.Allocator,
     tracks: []const track_mod.Track,
@@ -83,66 +112,118 @@ pub fn serialize(
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(alloc);
 
-    try out.appendSlice(alloc, "SLAB1\n");
-    try appendFmt(alloc, &out, "LOOP\t{d}\t{d:.6}\t{d:.6}\t{d:.3}\n", .{
-        @intFromBool(transport.loopEnabled()),
-        transport.loopStartBeats(),
-        transport.loopEndBeats(),
-        transport.bpm(),
+    try out.appendSlice(alloc, "{\"schema\":1,\"transport\":{\"bpm\":");
+    try appendFmt(alloc, &out, "{d}", .{transport.bpm()});
+    try appendFmt(alloc, &out, ",\"loop\":{{\"on\":{s},\"start\":{d},\"end\":{d}}}}}", .{
+        boolStr(transport.loopEnabled()), transport.loopStartBeats(), transport.loopEndBeats(),
     });
-    try appendFmt(alloc, &out, "TRACKS\t{d}\n", .{tracks.len});
 
-    for (tracks) |*t| {
-        const machine_idx: i32 = if (t.machine_idx) |idx| @intCast(idx) else -1;
-        try appendFmt(alloc, &out, "TRACK\t{s}\t{d}\t{d}\t{d}\t{d}\t{d:.6}\t{d}\t{d}\t{d}\t{d}\n", .{
-            t.name(),
-            machine_idx,
-            t.color.r,
-            t.color.g,
-            t.color.b,
-            t.volume(),
-            @intFromBool(t.mute.load(.monotonic)),
-            @intFromBool(t.solo.load(.monotonic)),
-            t.clips.items.len,
-            t.poly_voices,
+    try out.appendSlice(alloc, ",\"tracks\":[");
+    for (tracks, 0..) |*t, ti| {
+        if (ti > 0) try out.append(alloc, ',');
+        try out.appendSlice(alloc, "{\"name\":");
+        try appendJsonString(alloc, &out, t.name());
+        try appendFmt(alloc, &out, ",\"color\":[{d},{d},{d}]", .{ t.color.r, t.color.g, t.color.b });
+        try appendFmt(alloc, &out, ",\"volume\":{d},\"mute\":{s},\"solo\":{s},\"poly\":{d}", .{
+            t.volume(), boolStr(t.mute.load(.monotonic)), boolStr(t.solo.load(.monotonic)), t.poly_voices,
         });
-        for (t.clips.items) |*clip| {
+
+        // Instrument: stable id + inline settings, or null.
+        try out.appendSlice(alloc, ",\"instrument\":");
+        if (t.machine_idx) |idx| {
+            try out.appendSlice(alloc, "{\"machine\":");
+            try appendJsonString(alloc, &out, machineId(idx));
+            try out.appendSlice(alloc, ",\"params\":");
+            try appendParams(alloc, &out, t.machine);
+            try out.append(alloc, '}');
+        } else try out.appendSlice(alloc, "null");
+
+        // Effect chain.
+        try out.appendSlice(alloc, ",\"effects\":");
+        try appendEffects(alloc, &out, t);
+
+        // Clips.
+        try out.appendSlice(alloc, ",\"clips\":[");
+        for (t.clips.items, 0..) |*clip, ci| {
+            if (ci > 0) try out.append(alloc, ',');
             if (clip.isAudio()) {
                 const src_path = if (active_pool) |p|
                     (if (p.get(clip.audio.source)) |s| s.path() else "")
                 else
                     "";
-                try appendFmt(alloc, &out, "ACLIP\t{s}\t{d:.6}\t{d:.6}\t{d:.6}\t{d:.6}\t{d:.6}\t{d:.6}\t{d:.6}\t{s}\n", .{
-                    clip.name(),
-                    clip.start_beat,
-                    clip.length_beats,
-                    clip.audio.gain,
-                    clip.audio.start_sec,
-                    clip.audio.dur_sec,
-                    clip.audio.fade_in_sec,
-                    clip.audio.fade_out_sec,
-                    src_path,
+                try out.appendSlice(alloc, "{\"type\":\"audio\",\"name\":");
+                try appendJsonString(alloc, &out, clip.name());
+                try appendFmt(alloc, &out, ",\"start\":{d},\"len\":{d},\"gain\":{d},\"start_sec\":{d},\"dur_sec\":{d},\"fade_in\":{d},\"fade_out\":{d},\"source\":", .{
+                    clip.start_beat, clip.length_beats, clip.audio.gain,
+                    clip.audio.start_sec, clip.audio.dur_sec, clip.audio.fade_in_sec, clip.audio.fade_out_sec,
                 });
+                try appendJsonString(alloc, &out, src_path);
+                try out.append(alloc, '}');
                 continue;
             }
-            try appendFmt(alloc, &out, "CLIP\t{s}\t{d:.6}\t{d:.6}\t{d}\n", .{
-                clip.name(),
-                clip.start_beat,
-                clip.length_beats,
-                clip.notes.items.len,
-            });
-            for (clip.notes.items) |note| {
-                try appendFmt(alloc, &out, "NOTE\t{d}\t{d:.6}\t{d:.6}\t{d}\n", .{
-                    note.pitch,
-                    note.start_beat,
-                    note.length_beats,
-                    note.velocity,
+            try out.appendSlice(alloc, "{\"type\":\"note\",\"name\":");
+            try appendJsonString(alloc, &out, clip.name());
+            try appendFmt(alloc, &out, ",\"start\":{d},\"len\":{d},\"notes\":[", .{ clip.start_beat, clip.length_beats });
+            for (clip.notes.items, 0..) |note, ni| {
+                if (ni > 0) try out.append(alloc, ',');
+                try appendFmt(alloc, &out, "{{\"pitch\":{d},\"start\":{d},\"len\":{d},\"vel\":{d}}}", .{
+                    note.pitch, note.start_beat, note.length_beats, note.velocity,
                 });
             }
+            try out.appendSlice(alloc, "]}");
         }
+        try out.appendSlice(alloc, "]}");
     }
+    try out.append(alloc, ']');
+
+    // Master bus — volume + effect chain (no instrument, no clips).
+    if (active_master) |m| {
+        try appendFmt(alloc, &out, ",\"master\":{{\"volume\":{d},\"effects\":", .{m.volume()});
+        try appendEffects(alloc, &out, m);
+        try out.append(alloc, '}');
+    }
+    try out.append(alloc, '}');
 
     return try out.toOwnedSlice(alloc);
+}
+
+fn boolStr(b: bool) []const u8 {
+    return if (b) "true" else "false";
+}
+
+fn appendEffects(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track_mod.Track) !void {
+    try out.append(alloc, '[');
+    for (t.effects.items, 0..) |*fx, ei| {
+        if (ei > 0) try out.append(alloc, ',');
+        try out.appendSlice(alloc, "{\"machine\":");
+        try appendJsonString(alloc, out, if (fx.idx) |fi| machineId(fi) else "");
+        try appendFmt(alloc, out, ",\"bypass\":{s},\"params\":", .{boolStr(t.effectBypassed(ei))});
+        try appendParams(alloc, out, fx.mach);
+        try out.append(alloc, '}');
+    }
+    try out.append(alloc, ']');
+}
+
+fn appendParams(alloc: std.mem.Allocator, out: *std.ArrayList(u8), mach: machine_mod.Machine) !void {
+    if (mach.write_params_json) |f| {
+        try f(mach.state, out, alloc);
+    } else try out.appendSlice(alloc, "{}");
+}
+
+fn appendJsonString(alloc: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) !void {
+    try out.append(alloc, '"');
+    for (s) |ch| switch (ch) {
+        '"' => try out.appendSlice(alloc, "\\\""),
+        '\\' => try out.appendSlice(alloc, "\\\\"),
+        '\n' => try out.appendSlice(alloc, "\\n"),
+        '\r' => try out.appendSlice(alloc, "\\r"),
+        '\t' => try out.appendSlice(alloc, "\\t"),
+        else => if (ch < 0x20) {
+            var b: [8]u8 = undefined;
+            try out.appendSlice(alloc, std.fmt.bufPrint(&b, "\\u{x:0>4}", .{ch}) catch "");
+        } else try out.append(alloc, ch),
+    };
+    try out.append(alloc, '"');
 }
 
 pub fn apply(
@@ -154,16 +235,22 @@ pub fn apply(
     transport: *transport_mod.Transport,
     silent_machine: machine_mod.Machine,
 ) !void {
-    var parser = Parser.init(data);
-    const magic = parser.next() orelse return error.InvalidProject;
-    if (!std.mem.eql(u8, trim(magic), "SLAB1")) return error.InvalidProject;
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, data, .{}) catch return error.InvalidProject;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidProject;
+    const root = parsed.value.object;
 
-    const loop_line = parser.next() orelse return error.InvalidProject;
-    try parseLoop(loop_line, transport);
-
-    const track_count_line = parser.next() orelse return error.InvalidProject;
-    const requested_tracks = try parseCountLine(track_count_line, "TRACKS");
-    if (requested_tracks > tracks_buf.len) return error.TooManyTracks;
+    if (objGet(root, "transport")) |tv| if (tv == .object) {
+        const to = tv.object;
+        if (objGet(to, "bpm")) |b| transport.setBpm(@floatCast(asF64(b)));
+        if (objGet(to, "loop")) |lv| if (lv == .object) {
+            const lo = lv.object;
+            const st = if (objGet(lo, "start")) |x| asF64(x) else 0;
+            const en = if (objGet(lo, "end")) |x| asF64(x) else 0;
+            transport.setLoopBeats(st, en);
+            transport.setLoopEnabled(if (objGet(lo, "on")) |x| asBool(x) else false);
+        };
+    };
 
     for (tracks_buf[0..track_count.*]) |*t| t.deinit(alloc);
     track_count.* = 0;
@@ -172,33 +259,40 @@ pub fn apply(
         track_count.* = 0;
     }
 
-    var ti: usize = 0;
-    while (ti < requested_tracks) : (ti += 1) {
-        const track_line = parser.next() orelse return error.InvalidProject;
-        var fields = split(track_line);
-        if (!std.mem.eql(u8, nextField(&fields) orelse "", "TRACK")) return error.InvalidProject;
-        const name = nextField(&fields) orelse return error.InvalidProject;
-        const machine_idx_raw = try parseI32(nextField(&fields) orelse return error.InvalidProject);
-        const r = try parseU8(nextField(&fields) orelse return error.InvalidProject);
-        const g = try parseU8(nextField(&fields) orelse return error.InvalidProject);
-        const b = try parseU8(nextField(&fields) orelse return error.InvalidProject);
-        const volume = try parseF32(nextField(&fields) orelse return error.InvalidProject);
-        const mute = try parseBool(nextField(&fields) orelse return error.InvalidProject);
-        const solo = try parseBool(nextField(&fields) orelse return error.InvalidProject);
-        const clip_count = try parseUsize(nextField(&fields) orelse return error.InvalidProject);
-        const poly_voices = normalizePolyVoices(if (nextField(&fields)) |raw| try parseU8(raw) else 1);
+    const tracks_v = objGet(root, "tracks") orelse return;
+    if (tracks_v != .array) return error.InvalidProject;
+    if (tracks_v.array.items.len > tracks_buf.len) return error.TooManyTracks;
 
+    for (tracks_v.array.items) |trk_v| {
+        if (trk_v != .object) return error.InvalidProject;
+        const to = trk_v.object;
+
+        const name = strOf(objGet(to, "name")) orelse "";
+        var color = c.rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+        if (objGet(to, "color")) |cv| if (cv == .array and cv.array.items.len >= 3) {
+            color.r = asU8(cv.array.items[0]);
+            color.g = asU8(cv.array.items[1]);
+            color.b = asU8(cv.array.items[2]);
+        };
+        const volume: f32 = @floatCast(if (objGet(to, "volume")) |x| asF64(x) else 0.8);
+        const mute = if (objGet(to, "mute")) |x| asBool(x) else false;
+        const solo = if (objGet(to, "solo")) |x| asBool(x) else false;
+        const poly_voices = normalizePolyVoices(if (objGet(to, "poly")) |x| asU8(x) else 1);
+
+        // Instrument — resolve by stable id, instantiate, restore settings.
         var mach = silent_machine;
         var machine_idx: ?u8 = null;
-        if (machine_idx_raw >= 0) {
-            const idx: usize = @intCast(machine_idx_raw);
-            if (idx < reg.count) {
-                mach = try reg.instantiateWithPolyphony(idx, poly_voices);
-                machine_idx = @intCast(idx);
+        if (objGet(to, "instrument")) |iv| if (iv == .object) {
+            if (strOf(objGet(iv.object, "machine"))) |mid| {
+                if (reg.findById(mid)) |idx| {
+                    mach = try reg.instantiateWithPolyphony(idx, poly_voices);
+                    machine_idx = @intCast(idx);
+                    if (objGet(iv.object, "params")) |pv| applyParams(mach, pv);
+                }
             }
-        }
+        };
 
-        var t = try track_mod.Track.init(alloc, name, .{ .r = r, .g = g, .b = b, .a = 255 }, mach);
+        var t = try track_mod.Track.init(alloc, name, color, mach);
         errdefer t.deinit(alloc);
         t.machine_idx = machine_idx;
         t.poly_voices = poly_voices;
@@ -206,135 +300,140 @@ pub fn apply(
         t.mute.store(mute, .monotonic);
         t.solo.store(solo, .monotonic);
 
-        var ci: usize = 0;
-        while (ci < clip_count) : (ci += 1) {
-            const clip_line = parser.next() orelse return error.InvalidProject;
-            var clip_fields = split(clip_line);
-            const tag = nextField(&clip_fields) orelse return error.InvalidProject;
+        // Effect chain — instantiate by id, restore params + bypass.
+        if (objGet(to, "effects")) |ev| try applyEffects(alloc, reg, &t, ev);
 
-            // Audio clip: name, start, len, gain, source path.
-            if (std.mem.eql(u8, tag, "ACLIP")) {
-                const clip_name = nextField(&clip_fields) orelse return error.InvalidProject;
-                const start = try parseF64(nextField(&clip_fields) orelse return error.InvalidProject);
-                const len = try parseF64(nextField(&clip_fields) orelse return error.InvalidProject);
-                const gain = try parseF32(nextField(&clip_fields) orelse return error.InvalidProject);
-                const start_sec = try parseF64(nextField(&clip_fields) orelse return error.InvalidProject);
-                const dur_sec = try parseF64(nextField(&clip_fields) orelse return error.InvalidProject);
-                const fade_in_sec = try parseF64(nextField(&clip_fields) orelse return error.InvalidProject);
-                const fade_out_sec = try parseF64(nextField(&clip_fields) orelse return error.InvalidProject);
-                const src_path = nextField(&clip_fields) orelse "";
-                // A missing/failed source still keeps the clip (it just plays
-                // silent) so the document round-trips losslessly.
-                const source: u32 = if (src_path.len > 0)
-                    (if (active_pool) |p| (p.loadFile(src_path) catch 0) else 0)
-                else
-                    0;
-                var aclip = clip_mod.Clip.initAudio(clip_name, start, len, source);
-                aclip.audio.gain = gain;
-                aclip.audio.start_sec = start_sec;
-                aclip.audio.dur_sec = dur_sec;
-                aclip.audio.fade_in_sec = fade_in_sec;
-                aclip.audio.fade_out_sec = fade_out_sec;
-                try t.addClip(alloc, aclip);
-                continue;
+        // Clips.
+        if (objGet(to, "clips")) |cv| if (cv == .array) {
+            for (cv.array.items) |clv| {
+                if (clv != .object) continue;
+                try applyClip(alloc, &t, clv.object);
             }
+        };
 
-            if (!std.mem.eql(u8, tag, "CLIP")) return error.InvalidProject;
-            const clip_name = nextField(&clip_fields) orelse return error.InvalidProject;
-            const start = try parseF64(nextField(&clip_fields) orelse return error.InvalidProject);
-            const len = try parseF64(nextField(&clip_fields) orelse return error.InvalidProject);
-            const note_count = try parseUsize(nextField(&clip_fields) orelse return error.InvalidProject);
-            var clip = clip_mod.Clip.init(clip_name, start, len);
-            errdefer clip.deinit(alloc);
-
-            var ni: usize = 0;
-            while (ni < note_count) : (ni += 1) {
-                const note_line = parser.next() orelse return error.InvalidProject;
-                var note_fields = split(note_line);
-                if (!std.mem.eql(u8, nextField(&note_fields) orelse "", "NOTE")) return error.InvalidProject;
-                try clip.addNote(alloc, .{
-                    .pitch = try parseU8(nextField(&note_fields) orelse return error.InvalidProject),
-                    .start_beat = try parseF64(nextField(&note_fields) orelse return error.InvalidProject),
-                    .length_beats = try parseF64(nextField(&note_fields) orelse return error.InvalidProject),
-                    .velocity = try parseU8(nextField(&note_fields) orelse return error.InvalidProject),
-                });
-            }
-            try t.addClip(alloc, clip);
-        }
-
-        tracks_buf[ti] = t;
+        tracks_buf[track_count.*] = t;
         track_count.* += 1;
     }
+
+    // Master bus — volume + effect chain into the registered master.
+    if (active_master) |m| if (objGet(root, "master")) |mv| if (mv == .object) {
+        const mo = mv.object;
+        if (objGet(mo, "volume")) |x| m.setVolume(@floatCast(asF64(x)));
+        for (m.effects.items) |*fx| if (fx.mach.deinit) |d| d(fx.mach.state, alloc);
+        m.effects.clearRetainingCapacity();
+        if (objGet(mo, "effects")) |ev| try applyEffects(alloc, reg, m, ev);
+    };
 }
+
+// Restore an effect chain (instantiate by id, restore params + bypass) onto a
+// track. Shared by audio tracks and the master bus.
+fn applyEffects(alloc: std.mem.Allocator, reg: *registry_mod.Registry, t: *track_mod.Track, ev: std.json.Value) !void {
+    if (ev != .array) return;
+    for (ev.array.items) |fxv| {
+        if (fxv != .object) continue;
+        const fo = fxv.object;
+        const mid = strOf(objGet(fo, "machine")) orelse continue;
+        const idx = reg.findById(mid) orelse continue;
+        const fxmach = reg.instantiate(idx) catch continue;
+        fxmach.reset(fxmach.state);
+        try t.addEffect(alloc, fxmach, @intCast(idx));
+        if (objGet(fo, "params")) |pv| applyParams(fxmach, pv);
+        if (objGet(fo, "bypass")) |bv| if (asBool(bv)) t.toggleEffectBypass(t.effects.items.len - 1);
+    }
+}
+
+// ── JSON value helpers ───────────────────────────────────────────────
+
+fn objGet(obj: std.json.ObjectMap, key: []const u8) ?std.json.Value {
+    return obj.get(key);
+}
+
+fn asF64(v: std.json.Value) f64 {
+    return switch (v) {
+        .integer => |i| @floatFromInt(i),
+        .float => |f| f,
+        .number_string => |s| std.fmt.parseFloat(f64, s) catch 0,
+        .bool => |b| if (b) 1 else 0,
+        else => 0,
+    };
+}
+
+fn asU8(v: std.json.Value) u8 {
+    const f = asF64(v);
+    if (f <= 0) return 0;
+    if (f >= 255) return 255;
+    return @intFromFloat(f);
+}
+
+fn asBool(v: std.json.Value) bool {
+    return switch (v) {
+        .bool => |b| b,
+        .integer => |i| i != 0,
+        else => false,
+    };
+}
+
+fn strOf(v: ?std.json.Value) ?[]const u8 {
+    const val = v orelse return null;
+    return switch (val) {
+        .string => |s| s,
+        else => null,
+    };
+}
+
+fn applyParams(mach: machine_mod.Machine, params: std.json.Value) void {
+    if (params != .object) return;
+    const set = mach.set_param orelse return;
+    var it = params.object.iterator();
+    while (it.next()) |kv| set(mach.state, kv.key_ptr.*, asF64(kv.value_ptr.*));
+}
+
+fn applyClip(alloc: std.mem.Allocator, t: *track_mod.Track, co: std.json.ObjectMap) !void {
+    const ctype = strOf(objGet(co, "type")) orelse "note";
+    const name = strOf(objGet(co, "name")) orelse "";
+    const start = if (objGet(co, "start")) |x| asF64(x) else 0;
+    const len = if (objGet(co, "len")) |x| asF64(x) else 0;
+
+    if (std.mem.eql(u8, ctype, "audio")) {
+        const src_path = strOf(objGet(co, "source")) orelse "";
+        // A missing/failed source still keeps the clip (plays silent) so the
+        // document round-trips losslessly.
+        const source: u32 = if (src_path.len > 0)
+            (if (active_pool) |p| (p.loadFile(src_path) catch 0) else 0)
+        else
+            0;
+        var aclip = clip_mod.Clip.initAudio(name, start, len, source);
+        aclip.audio.gain = @floatCast(if (objGet(co, "gain")) |x| asF64(x) else 1.0);
+        aclip.audio.start_sec = if (objGet(co, "start_sec")) |x| asF64(x) else 0;
+        aclip.audio.dur_sec = if (objGet(co, "dur_sec")) |x| asF64(x) else 0;
+        aclip.audio.fade_in_sec = if (objGet(co, "fade_in")) |x| asF64(x) else 0;
+        aclip.audio.fade_out_sec = if (objGet(co, "fade_out")) |x| asF64(x) else 0;
+        try t.addClip(alloc, aclip);
+        return;
+    }
+
+    var clip = clip_mod.Clip.init(name, start, len);
+    errdefer clip.deinit(alloc);
+    if (objGet(co, "notes")) |nv| if (nv == .array) {
+        for (nv.array.items) |note_v| {
+            if (note_v != .object) continue;
+            const no = note_v.object;
+            try clip.addNote(alloc, .{
+                .pitch = asU8(objGet(no, "pitch") orelse continue),
+                .start_beat = if (objGet(no, "start")) |x| asF64(x) else 0,
+                .length_beats = if (objGet(no, "len")) |x| asF64(x) else 0,
+                .velocity = asU8(objGet(no, "vel") orelse continue),
+            });
+        }
+    };
+    try t.addClip(alloc, clip);
+}
+
 
 fn appendFmt(alloc: std.mem.Allocator, out: *std.ArrayList(u8), comptime fmt: []const u8, args: anytype) !void {
     const s = try std.fmt.allocPrint(alloc, fmt, args);
     defer alloc.free(s);
     try out.appendSlice(alloc, s);
-}
-
-const Parser = struct {
-    it: std.mem.SplitIterator(u8, .scalar),
-
-    fn init(data: []const u8) Parser {
-        return .{ .it = std.mem.splitScalar(u8, data, '\n') };
-    }
-
-    fn next(self: *Parser) ?[]const u8 {
-        while (self.it.next()) |line| {
-            const t = trim(line);
-            if (t.len == 0) continue;
-            return t;
-        }
-        return null;
-    }
-};
-
-fn split(line: []const u8) std.mem.SplitIterator(u8, .scalar) {
-    return std.mem.splitScalar(u8, line, '\t');
-}
-
-fn nextField(it: *std.mem.SplitIterator(u8, .scalar)) ?[]const u8 {
-    return if (it.next()) |f| trim(f) else null;
-}
-
-fn trim(s: []const u8) []const u8 {
-    return std.mem.trim(u8, s, " \r\n");
-}
-
-fn parseLoop(line: []const u8, transport: *transport_mod.Transport) !void {
-    var fields = split(line);
-    if (!std.mem.eql(u8, nextField(&fields) orelse "", "LOOP")) return error.InvalidProject;
-    const enabled = try parseBool(nextField(&fields) orelse return error.InvalidProject);
-    const start = try parseF64(nextField(&fields) orelse return error.InvalidProject);
-    const end = try parseF64(nextField(&fields) orelse return error.InvalidProject);
-    const bpm = try parseF32(nextField(&fields) orelse return error.InvalidProject);
-    transport.setBpm(bpm);
-    transport.setLoopBeats(start, end);
-    transport.setLoopEnabled(enabled);
-}
-
-fn parseCountLine(line: []const u8, tag: []const u8) !usize {
-    var fields = split(line);
-    if (!std.mem.eql(u8, nextField(&fields) orelse "", tag)) return error.InvalidProject;
-    return parseUsize(nextField(&fields) orelse return error.InvalidProject);
-}
-
-fn parseBool(s: []const u8) !bool {
-    const v = try parseUsize(s);
-    return v != 0;
-}
-
-fn parseUsize(s: []const u8) !usize {
-    return std.fmt.parseInt(usize, s, 10);
-}
-
-fn parseI32(s: []const u8) !i32 {
-    return std.fmt.parseInt(i32, s, 10);
-}
-
-fn parseU8(s: []const u8) !u8 {
-    return std.fmt.parseInt(u8, s, 10);
 }
 
 fn normalizePolyVoices(v: u8) u8 {
@@ -344,13 +443,6 @@ fn normalizePolyVoices(v: u8) u8 {
     return 1;
 }
 
-fn parseF32(s: []const u8) !f32 {
-    return std.fmt.parseFloat(f32, s);
-}
-
-fn parseF64(s: []const u8) !f64 {
-    return std.fmt.parseFloat(f64, s);
-}
 
 fn testRender(_: *anyopaque, _: *const machine_mod.MachineCtx, l: []f32, r: []f32) void {
     @memset(l, 0);
@@ -419,6 +511,83 @@ test "project snapshot round-trips tracks clips notes and loop" {
     try std.testing.expectApproxEqAbs(@as(f64, 1.0), loaded_transport.loopStartBeats(), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f64, 9.0), loaded_transport.loopEndBeats(), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 132.5), loaded_transport.bpm(), 0.001);
+}
+
+test "JSON project round-trips instrument-by-id, settings, and effect chain" {
+    const alloc = std.testing.allocator;
+    var reg = registry_mod.Registry.init(alloc);
+    defer reg.deinit();
+    try reg.loadFyMachine("machines/ms20/ms20.fy");
+    try reg.loadFyMachine("machines/delay2/delay2.fy");
+    setRegistry(&reg);
+    defer active_reg = null;
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    setPool(&pool);
+    defer active_pool = null;
+
+    var transport: transport_mod.Transport = .{};
+    transport.sample_rate = 48_000;
+
+    const ms20_idx = reg.findById("ms20").?;
+    const inst = try reg.instantiate(ms20_idx);
+    inst.set_param.?(inst.state, "cutoff", 250.0);
+    var tracks = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "Lead", .{ .r = 1, .g = 2, .b = 3, .a = 255 }, inst),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    tracks[0].machine_idx = @intCast(ms20_idx);
+    const delay_idx = reg.findById("delay2").?;
+    const fx = try reg.instantiate(delay_idx);
+    fx.reset(fx.state);
+    try tracks[0].addEffect(alloc, fx, @intCast(delay_idx));
+    tracks[0].toggleEffectBypass(0); // bypassed
+
+    // Capture the source instrument's settings for an exact comparison.
+    var src_params: std.ArrayList(u8) = .empty;
+    defer src_params.deinit(alloc);
+    try inst.write_params_json.?(inst.state, &src_params, alloc);
+
+    // Master bus — non-default volume + a bypassed effect.
+    var master = try track_mod.Track.init(alloc, "Master", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, test_machine);
+    master.kind = .master;
+    defer master.deinit(alloc);
+    setMaster(&master);
+    defer active_master = null;
+    master.setVolume(0.5);
+    const mfx = try reg.instantiate(delay_idx);
+    mfx.reset(mfx.state);
+    try master.addEffect(alloc, mfx, @intCast(delay_idx));
+    master.toggleEffectBypass(0);
+
+    const bytes = try serialize(alloc, tracks[0..], &transport);
+    defer alloc.free(bytes);
+
+    var loaded_buf: [1]track_mod.Track = undefined;
+    var loaded_count: usize = 0;
+    var lt: transport_mod.Transport = .{};
+    lt.sample_rate = 48_000;
+    try apply(alloc, bytes, &reg, loaded_buf[0..], &loaded_count, &lt, test_machine);
+    defer for (loaded_buf[0..loaded_count]) |*t| t.deinit(alloc);
+
+    try std.testing.expectEqual(@as(usize, 1), loaded_count);
+    const lt0 = &loaded_buf[0];
+    // Instrument resolved by stable id (not index).
+    try std.testing.expectEqual(@as(?u8, @intCast(ms20_idx)), lt0.machine_idx);
+    // Effect chain restored, with bypass.
+    try std.testing.expectEqual(@as(usize, 1), lt0.effects.items.len);
+    try std.testing.expect(lt0.effectBypassed(0));
+    // Instrument settings round-tripped exactly (same dump on both sides).
+    var ld_params: std.ArrayList(u8) = .empty;
+    defer ld_params.deinit(alloc);
+    try lt0.machine.write_params_json.?(lt0.machine.state, &ld_params, alloc);
+    try std.testing.expectEqualStrings(src_params.items, ld_params.items);
+    try std.testing.expect(std.mem.indexOf(u8, ld_params.items, "\"cutoff\":") != null);
+
+    // Master bus restored in place (volume + bypassed effect).
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), master.volume(), 0.0001);
+    try std.testing.expectEqual(@as(usize, 1), master.effects.items.len);
+    try std.testing.expect(master.effectBypassed(0));
 }
 
 test "audio clips round-trip through the pool by path" {

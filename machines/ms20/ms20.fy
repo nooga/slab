@@ -19,7 +19,7 @@ dsp2: ms20-block-prepare
 ;
 
 : manifest
-  "raw-ms20" voice-sample machine*
+  "SM-24 Mono" voice-sample machine*
   "k-ms20-voice-sample" render!
   "ms20-voice-prepare"  prepare!
   "ms20-voice-note-on"  note-on!

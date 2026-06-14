@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "comp2", "note": "Fast pumping bus squash", "params": {"comp-thresh": -22, "comp-ratio": 4, "comp-knee": 3, "comp-atk": 0.02, "comp-rel": 0.12, "comp-makeup": 5, "comp-mix": 1}}

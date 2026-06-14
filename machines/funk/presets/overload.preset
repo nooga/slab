@@ -1,5 +1,1 @@
-# funk preset
-funk-macro|1.0
-funk-freq|620
-funk-speed|0.03
-funk-mix|0.9
+{"schema": 1, "machine": "funk", "note": "Saturated overload wah", "params": {"funk-macro": 1, "funk-freq": 620, "funk-speed": 0.03, "funk-mix": 0.9}}

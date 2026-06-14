@@ -10,7 +10,7 @@ include "../../kernels/07-effects/delay.fy"
 include "../lib/manifest.fy"
 
 : manifest
-  "delay2" effect-block machine*
+  "Delay" effect-block machine*
   "k-delay-tick"        render!
   "delay-prepare"       prepare!
   "delay-block-prepare" block-prepare!

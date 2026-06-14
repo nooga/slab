@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "sampler", "note": "Looped, slow-attack pad", "params": {"smp-tune": 0, "smp-root": 220, "smp-start": 0, "smp-loop": 1, "smp-loop-start": 0.1, "smp-loop-end": 0.9, "smp-atk": 0.4, "smp-dec": 1, "smp-sus": 0.8, "smp-rel": 1.2, "smp-level": 0.7}}

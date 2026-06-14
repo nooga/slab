@@ -9,7 +9,7 @@ include "../../kernels/07-effects/reverb.fy"
 include "../lib/manifest.fy"
 
 : manifest
-  "verb2" effect-block machine*
+  "Verb" effect-block machine*
   "k-verb-tick"        render!
   "verb-prepare"       prepare!
   "verb-block-prepare" block-prepare!

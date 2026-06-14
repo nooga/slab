@@ -10,7 +10,7 @@ include "../../kernels/07-effects/funk.fy"
 include "../lib/manifest.fy"
 
 : manifest
-  "funk" effect-block machine*
+  "Funk Overload" effect-block machine*
   "k-funk-tick"        render!
   "funk-block-prepare" block-prepare!
   FunkState.size  state-size!

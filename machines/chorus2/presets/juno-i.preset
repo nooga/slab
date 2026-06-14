@@ -1,7 +1,1 @@
-# chorus2 preset
-chorus-mode|0
-chorus-rate|1
-chorus-depth|1
-chorus-tone|8000
-chorus-spread|1
-chorus-mix|0.5
+{"schema": 1, "machine": "chorus2", "note": "Classic single-mode Juno chorus", "params": {"chorus-mode": 0, "chorus-rate": 1, "chorus-depth": 1, "chorus-tone": 8000, "chorus-spread": 1, "chorus-mix": 0.5}}

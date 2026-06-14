@@ -1,5 +1,1 @@
-# delay2 preset
-delay-time|0.420
-delay-fb|0.720
-delay-damp|2500
-delay-mix|0.450
+{"schema": 1, "machine": "delay2", "note": "Dark dub feedback tail", "params": {"delay-time": 0.42, "delay-fb": 0.72, "delay-damp": 2500, "delay-mix": 0.45}}

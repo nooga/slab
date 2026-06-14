@@ -49,6 +49,8 @@ pub const PolyMachine = struct {
             .preset_count = presetCountImpl,
             .preset_name = presetNameImpl,
             .apply_preset = applyPresetImpl,
+            .write_params_json = writeParamsJsonImpl,
+            .set_param = setParamImpl,
             .panel_w = self.panel_w,
         };
     }
@@ -461,6 +463,28 @@ fn applyPresetImpl(state: *anyopaque, index: u8) void {
     const f = self.voices[0].apply_preset orelse return;
     f(self.voices[0].state, index);
     syncChildParams(self);
+}
+
+// Project persistence: dump voice 0's settings; apply each param to every
+// voice so all voices stay identical (mirrors syncChildParams).
+fn writeParamsJsonImpl(state: *anyopaque, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
+    const self: *PolyMachine = @ptrCast(@alignCast(state));
+    if (self.voice_count == 0) {
+        try out.appendSlice(alloc, "{}");
+        return;
+    }
+    const f = self.voices[0].write_params_json orelse {
+        try out.appendSlice(alloc, "{}");
+        return;
+    };
+    try f(self.voices[0].state, out, alloc);
+}
+
+fn setParamImpl(state: *anyopaque, id: []const u8, value: f64) void {
+    const self: *PolyMachine = @ptrCast(@alignCast(state));
+    for (0..self.voice_count) |vi| {
+        if (self.voices[vi].set_param) |f| f(self.voices[vi].state, id, value);
+    }
 }
 
 fn resetImpl(state: *anyopaque) void {

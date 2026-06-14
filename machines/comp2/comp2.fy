@@ -10,7 +10,7 @@ include "../../kernels/07-effects/comp.fy"
 include "../lib/manifest.fy"
 
 : manifest
-  "comp2" effect-block machine*
+  "Comp" effect-block machine*
   "k-comp-tick"        render!
   "comp-prepare"       prepare!
   "comp-block-prepare" block-prepare!

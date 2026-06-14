@@ -148,9 +148,22 @@ pub const ApplyPresetFn = *const fn (state: *anyopaque, index: u8) void;
 /// Save the machine's current control values as a new preset (the machine
 /// picks the name). Returns the new preset's index, or null on failure.
 pub const SavePresetFn = *const fn (state: *anyopaque) ?u8;
+/// Save the current control values under a host-supplied name. The machine
+/// sanitizes the name and overwrites any same-named preset. Returns the new
+/// sorted index, or null on failure (empty/invalid name, IO error).
+pub const SavePresetNamedFn = *const fn (state: *anyopaque, name: [*:0]const u8) ?u8;
+/// Rename preset `index` to `new_name` on disk and rescan. Returns the
+/// renamed preset's new sorted index, or null on failure.
+pub const RenamePresetFn = *const fn (state: *anyopaque, index: u8, new_name: [*:0]const u8) ?u8;
 /// Index of the last applied/saved preset, or -1 — drives the
 /// "name -> preset" titlebar label.
 pub const CurrentPresetFn = *const fn (state: *anyopaque) i32;
+/// Append the machine's current settings as a JSON object `{"id":value,…}`
+/// (real values, same convention as presets) for embedding in a project.
+pub const WriteParamsJsonFn = *const fn (state: *anyopaque, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void;
+/// Apply one control `id` → `value` pair when restoring a machine's settings
+/// from a project. Unknown ids are ignored.
+pub const SetParamFn = *const fn (state: *anyopaque, id: []const u8, value: f64) void;
 
 pub const NOTE_LABEL_TEXT = 23;
 
@@ -183,7 +196,12 @@ pub const Machine = struct {
     preset_name: ?PresetNameFn = null,
     apply_preset: ?ApplyPresetFn = null,
     save_preset: ?SavePresetFn = null,
+    save_preset_named: ?SavePresetNamedFn = null,
+    rename_preset: ?RenamePresetFn = null,
     current_preset: ?CurrentPresetFn = null,
+    /// Project persistence: dump/restore the machine's settings as JSON.
+    write_params_json: ?WriteParamsJsonFn = null,
+    set_param: ?SetParamFn = null,
     /// Preferred panel card width in pixels. The bay uses this to size
     /// the rect passed to draw_panel. 0 = bay chooses a default.
     panel_w: f32 = 0,

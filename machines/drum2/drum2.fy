@@ -198,7 +198,7 @@ dsp2: k-drum2-render
 ;
 
 : manifest
-  "drum2" voice-sample machine*
+  "DS-404 Drums" voice-sample machine*
   "k-drum2-render" render!
   "drum2-prepare"  prepare!
   "drum2-note-on"  note-on!

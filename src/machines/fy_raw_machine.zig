@@ -298,12 +298,24 @@ pub const FyRawMachine = struct {
             .preset_name = presetNameImpl,
             .apply_preset = applyPresetImpl,
             .save_preset = savePresetImpl,
+            .save_preset_named = savePresetNamedImpl,
+            .rename_preset = renamePresetImpl,
             .current_preset = currentPresetImpl,
+            .write_params_json = writeParamsJsonImpl,
+            .set_param = setParamImpl,
         };
     }
 
     fn presetDir(self: *const FyRawMachine) []const u8 {
         return self.preset_dir[0..self.preset_dir_len];
+    }
+
+    /// Stable machine id = the machine's directory name, derived from the
+    /// preset dir (`machines/ms20/presets` → `ms20`). Embedded in preset
+    /// JSON for hub forward-compat; the loader ignores it.
+    fn machineId(self: *const FyRawMachine) []const u8 {
+        const dir = std.fs.path.dirname(self.presetDir()) orelse return "";
+        return std.fs.path.basename(dir);
     }
 
     fn statePtr(self: *FyRawMachine) usize {
@@ -483,58 +495,102 @@ fn currentPresetImpl(state: *anyopaque) i32 {
     return self.current_preset_idx;
 }
 
+// Store one real-valued control by its stable id. Shared by preset apply,
+// the host param-set path (project load), and anything that restores a
+// machine's settings from an id→value map. Switches clamp to the option
+// index; direct controls go through valueToNorm.
+fn applyControlValue(self: *FyRawMachine, id: []const u8, value: f64) void {
+    for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
+        if (!std.mem.eql(u8, ctl.idSlice(), id)) continue;
+        switch (ctl.kind) {
+            .switch_sel => {
+                const hi: f64 = @floatFromInt(@max(ctl.option_count, 1) - 1);
+                self.setControlRaw(i, @floatCast(std.math.clamp(value, 0, hi)));
+            },
+            else => self.setControlNorm(i, valueToNorm(ctl.*, value)),
+        }
+        return;
+    }
+}
+
 fn applyPresetImpl(state: *anyopaque, index: u8) void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     if (index >= self.presets.count) return;
     self.current_preset_idx = index;
     var fbuf: [presets_mod.MAX_FILE]u8 = undefined;
     const data = presets_mod.readFileBuf(&fbuf, self.presetDir(), self.presets.names[index].slice()) orelse return;
-    var lines = std.mem.splitScalar(u8, data, '\n');
-    while (lines.next()) |line| {
-        const pair = presets_mod.parseLine(line) orelse continue;
-        for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
-            if (!std.mem.eql(u8, ctl.idSlice(), pair.id)) continue;
-            switch (ctl.kind) {
-                .switch_sel => {
-                    const hi: f64 = @floatFromInt(@max(ctl.option_count, 1) - 1);
-                    self.setControlRaw(i, @floatCast(std.math.clamp(pair.value, 0, hi)));
-                },
-                else => self.setControlNorm(i, valueToNorm(ctl.*, pair.value)),
-            }
-            break;
-        }
-    }
+
+    var parsed = std.json.parseFromSlice(std.json.Value, self.alloc, data, .{}) catch return;
+    defer parsed.deinit();
+    if (parsed.value != .object) return;
+    const params = parsed.value.object.get("params") orelse return;
+    if (params != .object) return;
+    var it = params.object.iterator();
+    while (it.next()) |kv| applyControlValue(self, kv.key_ptr.*, jsonF64(kv.value_ptr.*));
 }
 
-// Save the current control values as `user-N.preset` (first free N) and
-// rescan so the new preset shows up immediately.
-fn savePresetImpl(state: *anyopaque) ?u8 {
+fn jsonF64(v: std.json.Value) f64 {
+    return switch (v) {
+        .integer => |i| @floatFromInt(i),
+        .float => |f| f,
+        .number_string => |s| std.fmt.parseFloat(f64, s) catch 0,
+        else => 0,
+    };
+}
+
+// Host param-set (project load): apply one id→value pair. Same real-value
+// convention as presets.
+fn setParamImpl(state: *anyopaque, id: []const u8, value: f64) void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
-    if (self.preset_dir_len == 0) return null;
+    applyControlValue(self, id, value);
+}
 
-    var name_buf: [presets_mod.MAX_NAME]u8 = undefined;
-    var n: usize = 1;
-    const name = blk: while (n < 100) : (n += 1) {
-        const candidate = std.fmt.bufPrint(&name_buf, "user-{d}", .{n}) catch return null;
-        if (!self.presets.contains(candidate)) break :blk candidate;
-    } else return null;
+// Dump current control values as a JSON object {"id": realValue, ...} into
+// `out`. Real values match the preset convention (Hz/sec/option index), so
+// presets and embedded project settings share one representation.
+fn writeParamsJsonImpl(state: *anyopaque, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    try out.append(alloc, '{');
+    // Control ids are [a-z0-9-] (no JSON-escaping needed); values are finite.
+    var buf: [96]u8 = undefined;
+    for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
+        const value: f64 = switch (ctl.kind) {
+            .switch_sel => @floatFromInt(switchIndex(ctl.*, self.controlNorm(i))),
+            else => normToValue(ctl.*, self.controlNorm(i)),
+        };
+        const sep: []const u8 = if (i > 0) "," else "";
+        const frag = std.fmt.bufPrint(&buf, "{s}\"{s}\":{d}", .{ sep, ctl.idSlice(), value }) catch continue;
+        try out.appendSlice(alloc, frag);
+    }
+    try out.append(alloc, '}');
+}
 
-    var content: [presets_mod.MAX_FILE]u8 = undefined;
+// Serialize the current control values to a JSON preset body:
+// {"schema":1,"machine":"<id>","params":{"id":value,...}}.
+// Control ids are [a-z0-9-] so no JSON escaping is needed.
+fn buildPresetContent(self: *FyRawMachine, content: []u8) ?usize {
     var used: usize = 0;
     {
-        const line = std.fmt.bufPrint(content[used..], "# {s} preset\n", .{self.desc.nameSlice()}) catch return null;
-        used += line.len;
+        const head = std.fmt.bufPrint(content[used..], "{{\"schema\":1,\"machine\":\"{s}\",\"params\":{{", .{self.machineId()}) catch return null;
+        used += head.len;
     }
     for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
         const value: f64 = switch (ctl.kind) {
             .switch_sel => @floatFromInt(switchIndex(ctl.*, self.controlNorm(i))),
             else => normToValue(ctl.*, self.controlNorm(i)),
         };
-        const line = std.fmt.bufPrint(content[used..], "{s}|{d:.9}\n", .{ ctl.idSlice(), value }) catch return null;
-        used += line.len;
+        const sep: []const u8 = if (i > 0) "," else "";
+        const frag = std.fmt.bufPrint(content[used..], "{s}\"{s}\":{d}", .{ sep, ctl.idSlice(), value }) catch return null;
+        used += frag.len;
     }
-    if (!presets_mod.writeFile(self.presetDir(), name, content[0..used])) return null;
+    const tail = std.fmt.bufPrint(content[used..], "}}}}\n", .{}) catch return null;
+    used += tail.len;
+    return used;
+}
 
+// Rescan the preset directory and re-find `name` as the current preset.
+// Returns its sorted index, or null if it didn't reappear.
+fn rescanAndSelect(self: *FyRawMachine, name: []const u8) ?u8 {
     self.presets = presets_mod.scan(self.presetDir());
     for (self.presets.names[0..self.presets.count], 0..) |*pn, i| {
         if (std.mem.eql(u8, pn.slice(), name)) {
@@ -543,6 +599,62 @@ fn savePresetImpl(state: *anyopaque) ?u8 {
         }
     }
     return null;
+}
+
+// Write the current control values to `<name>.preset`, rescan, and select
+// it. Returns the new sorted index. Shared by auto- and named-save paths.
+fn writePreset(self: *FyRawMachine, name: []const u8) ?u8 {
+    if (self.preset_dir_len == 0) return null;
+    var content: [presets_mod.MAX_FILE]u8 = undefined;
+    const used = buildPresetContent(self, &content) orelse return null;
+    if (!presets_mod.writeFile(self.presetDir(), name, content[0..used])) return null;
+    return rescanAndSelect(self, name);
+}
+
+// Save the current control values as `user-N.preset` (first free N) and
+// rescan so the new preset shows up immediately.
+fn savePresetImpl(state: *anyopaque) ?u8 {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    if (self.preset_dir_len == 0) return null;
+    var name_buf: [presets_mod.MAX_NAME]u8 = undefined;
+    var n: usize = 1;
+    const name = blk: while (n < 100) : (n += 1) {
+        const candidate = std.fmt.bufPrint(&name_buf, "user-{d}", .{n}) catch return null;
+        if (!self.presets.contains(candidate)) break :blk candidate;
+    } else return null;
+    return writePreset(self, name);
+}
+
+// Save under a caller-supplied name. Sanitizes to the preset name limits;
+// an empty/oversized name fails. Overwrites an existing preset of the same
+// name (the rescan picks up the single file either way).
+fn savePresetNamedImpl(state: *anyopaque, name_z: [*:0]const u8) ?u8 {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    const name = presetSanitize(std.mem.span(name_z)) orelse return null;
+    return writePreset(self, name);
+}
+
+// Rename preset `index` to `new_name`: rename the file on disk, rescan, and
+// keep it selected. Returns the new sorted index.
+fn renamePresetImpl(state: *anyopaque, index: u8, new_name_z: [*:0]const u8) ?u8 {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    if (self.preset_dir_len == 0 or index >= self.presets.count) return null;
+    const new_name = presetSanitize(std.mem.span(new_name_z)) orelse return null;
+    var old_buf: [presets_mod.MAX_NAME]u8 = undefined;
+    const old = self.presets.names[index].slice();
+    if (old.len > old_buf.len) return null;
+    @memcpy(old_buf[0..old.len], old);
+    if (!presets_mod.renameFile(self.presetDir(), old_buf[0..old.len], new_name)) return null;
+    return rescanAndSelect(self, new_name);
+}
+
+// Trim surrounding space and reject empty / oversized / path-bearing names
+// (the `/` subdir separator is reserved for factory grouping dirs).
+fn presetSanitize(raw: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0 or trimmed.len > presets_mod.MAX_NAME) return null;
+    if (std.mem.indexOfScalar(u8, trimmed, '/') != null) return null;
+    return trimmed;
 }
 
 fn validateWord(host: *FyHost, word: []const u8) !void {
@@ -1784,5 +1896,33 @@ test "raw machine presets: scan factory, save round-trip, apply restores" {
     // Clean up the user-N file the save created.
     var path_buf: [512]u8 = undefined;
     const path = try std.fmt.bufPrint(&path_buf, "{s}/{s}.preset", .{ inst.presetDir(), inst.presets.names[idx].slice() });
+    fy_host_mod.deleteFilePosix(path);
+}
+
+test "raw machine presets: named save + rename round-trip" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/drum2/drum2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+
+    // Named save lands a file at the chosen stem and selects it.
+    inst.setControlNorm(0, 0.3);
+    const before = normToValue(inst.desc.controls[0], inst.controlNorm(0));
+    const idx = savePresetNamedImpl(inst, "zz-test-named") orelse return error.PresetSaveFailed;
+    try testing.expectEqualStrings("zz-test-named", inst.presets.names[idx].slice());
+
+    // Invalid names are refused.
+    try testing.expectEqual(@as(?u8, null), savePresetNamedImpl(inst, "   "));
+    try testing.expectEqual(@as(?u8, null), savePresetNamedImpl(inst, "has/slash"));
+
+    // Rename moves the file; the value survives an apply afterwards.
+    const ridx = renamePresetImpl(inst, idx, "zz-test-renamed") orelse return error.PresetRenameFailed;
+    try testing.expectEqualStrings("zz-test-renamed", inst.presets.names[ridx].slice());
+    try testing.expect(!inst.presets.contains("zz-test-named"));
+    inst.setControlNorm(0, 0.95);
+    applyPresetImpl(inst, ridx);
+    try testing.expectApproxEqAbs(before, normToValue(inst.desc.controls[0], inst.controlNorm(0)), 0.001);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/zz-test-renamed.preset", .{inst.presetDir()});
     fy_host_mod.deleteFilePosix(path);
 }

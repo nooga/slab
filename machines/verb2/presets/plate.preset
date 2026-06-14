@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "verb2", "note": "Bright, short plate", "params": {"verb-predelay": 0.012, "verb-decay": 0.82, "verb-damp": 3500, "verb-tone": 7500, "verb-mix": 0.3, "verb-mod": 6}}

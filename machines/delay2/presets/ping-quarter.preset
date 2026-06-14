@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "delay2", "note": "Clean quarter-note ping", "params": {"delay-time": 0.3, "delay-fb": 0.45, "delay-damp": 4000, "delay-mix": 0.32}}
