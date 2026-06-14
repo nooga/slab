@@ -45,7 +45,7 @@ const LOOP_END_KEY: u64 = 0x1009_E0D0_AAAA_0001;
 const BOX_MIN_DRAG: f32 = 3;
 const MAX_DRAG_CLIPS: usize = 256;
 
-const DragMode = enum { none, move, resize_r, resize_l };
+const DragMode = enum { none, move, resize_r, resize_l, fade_in, fade_out };
 const ClipDragSnap = struct {
     track: u32,
     clip: u32,
@@ -69,6 +69,8 @@ var drag_start_mouse_x: f32 = 0;
 // Audio source window captured at the start of a left-edge trim.
 var drag_start_audio_start_sec: f64 = 0;
 var drag_start_audio_dur_sec: f64 = 0;
+// Fade length captured at the start of a fade-handle drag.
+var drag_start_fade_sec: f64 = 0;
 var drag_snaps: [MAX_DRAG_CLIPS]ClipDragSnap = undefined;
 var drag_snap_count: usize = 0;
 var drag_track_delta: i32 = 0;
@@ -582,12 +584,27 @@ pub fn draw(
             const clip = &t.clips.items[i];
             const clip_rect = clipRect(lane_timeline, clip.*, timeline_x0);
             if (!press_consumed and widgets.contains(clip_rect, m.x, m.y)) {
-                const edge_hover = m.x >= clip_rect.x + clip_rect.width - resizeEdgeW();
+                // Audio fade handles live in the top corners (see drawClip);
+                // detect them first so they win over move/trim in that zone.
+                const fade_zone_h = @min(theme.size(10), clip_rect.height * 0.5);
+                var fade_in_hover = false;
+                var fade_out_hover = false;
+                if (clip.isAudio() and clip.audio.dur_sec > 0 and m.y <= clip_rect.y + fade_zone_h) {
+                    const dur = clip.audio.dur_sec;
+                    const in_frac: f32 = @floatCast(std.math.clamp(clip.audio.fade_in_sec / dur, 0, 1));
+                    const out_frac: f32 = @floatCast(std.math.clamp(clip.audio.fade_out_sec / dur, 0, 1));
+                    const in_x = clip_rect.x + in_frac * clip_rect.width;
+                    const out_x = clip_rect.x + clip_rect.width - out_frac * clip_rect.width;
+                    const hit = theme.size(6);
+                    fade_in_hover = @abs(m.x - in_x) <= hit;
+                    fade_out_hover = !fade_in_hover and @abs(m.x - out_x) <= hit;
+                }
+                const edge_hover = !fade_out_hover and m.x >= clip_rect.x + clip_rect.width - resizeEdgeW();
                 // Audio clips can be trimmed from the left edge (carving into
                 // the source window); note clips only resize on the right.
-                const left_edge_hover = clip.isAudio() and m.x <= clip_rect.x + resizeEdgeW() and !edge_hover;
+                const left_edge_hover = clip.isAudio() and !fade_in_hover and m.x <= clip_rect.x + resizeEdgeW() and !edge_hover;
                 if (!widgets.hasActiveDrag()) {
-                    widgets.requestCursor(if (edge_hover or left_edge_hover) c.rl.MOUSE_CURSOR_RESIZE_EW else c.rl.MOUSE_CURSOR_POINTING_HAND, 1);
+                    widgets.requestCursor(if (edge_hover or left_edge_hover or fade_in_hover or fade_out_hover) c.rl.MOUSE_CURSOR_RESIZE_EW else c.rl.MOUSE_CURSOR_POINTING_HAND, 1);
                     // Full clip name on hover-and-pause (the body label is truncated).
                     var tip_buf: [clip_mod.MAX_NAME + 1:0]u8 = undefined;
                     const nm = clip.name();
@@ -622,7 +639,8 @@ pub fn draw(
                     selected_clip.* = ref;
                     selected_track.* = ti;
                     press_consumed = true;
-                    const mode: DragMode = if (edge_hover) .resize_r else if (left_edge_hover) .resize_l else .move;
+                    const mode: DragMode =
+                        if (fade_in_hover) .fade_in else if (fade_out_hover) .fade_out else if (edge_hover) .resize_r else if (left_edge_hover) .resize_l else .move;
                     beginDrag(tracks, ref, clip.*, m, mode);
                 }
                 if (m.right_pressed and !widgets.hasActiveDrag()) {
@@ -1005,6 +1023,11 @@ fn beginDrag(tracks: []Track, ref: ClipRef, clip: Clip, m: widgets.Mouse, mode: 
     drag_start_mouse_x = m.x;
     drag_start_audio_start_sec = clip.audio.start_sec;
     drag_start_audio_dur_sec = clip.audio.dur_sec;
+    drag_start_fade_sec = switch (mode) {
+        .fade_in => clip.audio.fade_in_sec,
+        .fade_out => clip.audio.fade_out_sec,
+        else => 0,
+    };
     drag_track_delta = 0;
     drag_snap_count = 0;
     if (mode == .move) {
@@ -1067,6 +1090,18 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
             clip.length_beats = if (new_len < minClipBeats(edit_snap)) minClipBeats(edit_snap) else new_len;
             // For audio, resizing trims the source window so reflow keeps it.
             if (clip.isAudio()) clip.audio.dur_sec = clip.length_beats * 60.0 / cur_bpm;
+        },
+        .fade_in, .fade_out => {
+            // Fades drag unsnapped in seconds, clamped to the window length.
+            widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
+            const raw_beats = @as(f64, dx / px_per_beat);
+            const delta_sec = raw_beats * 60.0 / cur_bpm;
+            const dur = clip.audio.dur_sec;
+            if (drag_mode == .fade_in) {
+                clip.audio.fade_in_sec = std.math.clamp(drag_start_fade_sec + delta_sec, 0, dur);
+            } else {
+                clip.audio.fade_out_sec = std.math.clamp(drag_start_fade_sec - delta_sec, 0, dur);
+            }
         },
         .resize_l => {
             // Audio only: move the left edge while the right edge stays fixed,
@@ -1291,19 +1326,24 @@ fn drawClip(r: c.rl.Rectangle, clip: Clip, color: c.rl.Color, selected: bool, ed
                     waveform.draw(wf_rect, &src.cache, win_start, win_end, wcol);
                 }
             }
-            // Fade ramp guides (slope from the body floor to the top edge).
+            // Fade ramp guides + grab handles in the top corners. The handle
+            // x's match the hit zone in the draw()-side hit-test.
             const dur = clip.audio.dur_sec;
             if (dur > 0) {
-                const top = body_top;
+                const top = r.y;
                 const bot = body_top + body_h;
-                if (clip.audio.fade_in_sec > 0) {
-                    const fw = @as(f32, @floatCast(@min(1.0, clip.audio.fade_in_sec / dur))) * (r.width - 2);
-                    c.rl.DrawLineEx(.{ .x = r.x + 1, .y = bot }, .{ .x = r.x + 1 + fw, .y = top }, 1.0, theme.bg);
-                }
-                if (clip.audio.fade_out_sec > 0) {
-                    const fw = @as(f32, @floatCast(@min(1.0, clip.audio.fade_out_sec / dur))) * (r.width - 2);
-                    c.rl.DrawLineEx(.{ .x = r.x + r.width - 1 - fw, .y = top }, .{ .x = r.x + r.width - 1, .y = bot }, 1.0, theme.bg);
-                }
+                const in_frac: f32 = @floatCast(std.math.clamp(clip.audio.fade_in_sec / dur, 0, 1));
+                const out_frac: f32 = @floatCast(std.math.clamp(clip.audio.fade_out_sec / dur, 0, 1));
+                const in_x = r.x + in_frac * r.width;
+                const out_x = r.x + r.width - out_frac * r.width;
+                if (clip.audio.fade_in_sec > 0)
+                    c.rl.DrawLineEx(.{ .x = r.x + 1, .y = bot }, .{ .x = in_x, .y = top }, 1.0, theme.bg);
+                if (clip.audio.fade_out_sec > 0)
+                    c.rl.DrawLineEx(.{ .x = out_x, .y = top }, .{ .x = r.x + r.width - 1, .y = bot }, 1.0, theme.bg);
+                // Handle dots (always shown so the affordance is discoverable).
+                const hs = theme.fine(3);
+                c.rl.DrawRectangleRec(widgets.rect(in_x - hs, top, hs * 2, hs + 1), theme.bg);
+                c.rl.DrawRectangleRec(widgets.rect(out_x - hs, top, hs * 2, hs + 1), theme.bg);
             }
         }
         return;

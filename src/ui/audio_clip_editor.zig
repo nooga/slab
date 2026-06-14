@@ -137,7 +137,8 @@ pub fn draw(
 fn edgeHandle(clip: *clip_mod.Clip, area: c.rl.Rectangle, x: f32, source_sec: f64, salt: u64, id: u64, m: widgets.Mouse) ?f64 {
     const key = widgets.keyFromIds(salt, @intFromPtr(clip), id);
     const dragging = widgets.isDraggingKey(key);
-    const hot = widgets.contains(area, m.x, m.y) and @abs(m.x - x) <= theme.fine(4);
+    // Reserve the top strip for the fade handles that sit on the same x.
+    const hot = widgets.contains(area, m.x, m.y) and @abs(m.x - x) <= theme.fine(4) and m.y > area.y + theme.size(9);
 
     var out: ?f64 = null;
     if (dragging) {
