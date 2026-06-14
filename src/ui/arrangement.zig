@@ -1336,10 +1336,14 @@ fn drawClip(r: c.rl.Rectangle, clip: Clip, color: c.rl.Color, selected: bool, ed
                 const out_frac: f32 = @floatCast(std.math.clamp(clip.audio.fade_out_sec / dur, 0, 1));
                 const in_x = r.x + in_frac * r.width;
                 const out_x = r.x + r.width - out_frac * r.width;
-                if (clip.audio.fade_in_sec > 0)
+                if (clip.audio.fade_in_sec > 0) {
+                    shadeClipFade(r.x + 1, in_x, body_top, body_h, true);
                     c.rl.DrawLineEx(.{ .x = r.x + 1, .y = bot }, .{ .x = in_x, .y = top }, 1.0, theme.bg);
-                if (clip.audio.fade_out_sec > 0)
+                }
+                if (clip.audio.fade_out_sec > 0) {
+                    shadeClipFade(out_x, r.x + r.width - 1, body_top, body_h, false);
                     c.rl.DrawLineEx(.{ .x = out_x, .y = top }, .{ .x = r.x + r.width - 1, .y = bot }, 1.0, theme.bg);
+                }
                 // Handle dots (always shown so the affordance is discoverable).
                 const hs = theme.fine(3);
                 c.rl.DrawRectangleRec(widgets.rect(in_x - hs, top, hs * 2, hs + 1), theme.bg);
@@ -1367,6 +1371,21 @@ fn drawClip(r: c.rl.Rectangle, clip: Clip, color: c.rl.Color, selected: bool, ed
                 c.rl.DrawRectangle(@intFromFloat(x0), @intFromFloat(ny), @intFromFloat(x1 - x0), 1, theme.text_fg);
             }
         }
+    }
+}
+
+/// Shade an audio clip's attenuated fade wedge as per-column bars (a filled
+/// triangle): tall at the silent edge, shrinking to nothing at full level.
+fn shadeClipFade(x0: f32, x1: f32, top: f32, h: f32, fade_in: bool) void {
+    const span = x1 - x0;
+    if (span < 1 or h < 1) return;
+    const col = c.rl.ColorAlpha(theme.bg, 0.5);
+    var x = @floor(x0);
+    while (x < x1) : (x += 1) {
+        const p = std.math.clamp((x - x0) / span, 0, 1);
+        const atten: f32 = if (fade_in) 1 - p else p;
+        const hh = h * atten;
+        if (hh >= 1) c.rl.DrawLineEx(.{ .x = x, .y = top }, .{ .x = x, .y = top + hh }, 1.0, col);
     }
 }
 
