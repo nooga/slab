@@ -33,6 +33,9 @@ pub const AudioRef = struct {
     start_sec: f64 = 0,
     /// Length of the played window in source seconds (tempo-independent).
     dur_sec: f64 = 0,
+    /// Linear fade-in / fade-out lengths, in source seconds (0 = none).
+    fade_in_sec: f64 = 0,
+    fade_out_sec: f64 = 0,
 };
 
 pub const Note = struct {

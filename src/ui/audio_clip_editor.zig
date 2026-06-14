@@ -89,6 +89,28 @@ pub fn draw(
         clip.length_beats = @max(0.01, (s1 - s0) * bpm / 60.0);
     }
 
+    // Fade handles — small markers near the top, dragged inward to set the
+    // fade-in (from the window start) and fade-out (from the window end).
+    const dur = clip.audio.dur_sec;
+    const px_per_sec: f64 = @as(f64, w) / source_sec;
+    const fi = std.math.clamp(clip.audio.fade_in_sec, 0, dur);
+    const fo = std.math.clamp(clip.audio.fade_out_sec, 0, dur - fi);
+    const fade_y = wave_in.y;
+    const in_x = x_start + @as(f32, @floatCast(fi * px_per_sec));
+    const out_x = x_end - @as(f32, @floatCast(fo * px_per_sec));
+    // Ramp guides.
+    c.rl.DrawLineEx(.{ .x = x_start, .y = wave_in.y + wave_in.height }, .{ .x = in_x, .y = fade_y }, 1.0, theme.text_mute);
+    c.rl.DrawLineEx(.{ .x = out_x, .y = fade_y }, .{ .x = x_end, .y = wave_in.y + wave_in.height }, 1.0, theme.text_mute);
+
+    if (fadeHandle(clip, wave_in, in_x, fade_y, EDGE_SALT, 2, m)) |hx| {
+        const v = (@as(f64, hx - x_start) / px_per_sec);
+        clip.audio.fade_in_sec = std.math.clamp(v, 0, dur);
+    }
+    if (fadeHandle(clip, wave_in, out_x, fade_y, EDGE_SALT, 3, m)) |hx| {
+        const v = (@as(f64, x_end - hx) / px_per_sec);
+        clip.audio.fade_out_sec = std.math.clamp(v, 0, dur);
+    }
+
     // ── Control row: gain slider + numeric readouts ──────────────────
     const row = widgets.rect(body.x + 4, wave.y + wave.height + 2, body.width - 8, row_h);
     const gain_w = @min(row.width * 0.45, theme.size(160));
@@ -132,6 +154,26 @@ fn edgeHandle(clip: *clip_mod.Clip, area: c.rl.Rectangle, x: f32, source_sec: f6
     c.rl.DrawLineEx(.{ .x = x, .y = area.y }, .{ .x = x, .y = area.y + area.height }, lw, theme.accent_play);
     const tab = theme.fine(3);
     c.rl.DrawRectangleRec(widgets.rect(x - tab, area.y, tab * 2 + 1, tab + 1), theme.accent_play);
+    return out;
+}
+
+/// A small square fade handle near the top edge, dragged horizontally.
+/// Returns the new handle x while dragging, else null.
+fn fadeHandle(clip: *clip_mod.Clip, area: c.rl.Rectangle, x: f32, y: f32, salt: u64, id: u64, m: widgets.Mouse) ?f32 {
+    const sz = theme.size(7);
+    const box = widgets.rect(x - sz / 2, y, sz, sz);
+    const key = widgets.keyFromIds(salt, @intFromPtr(clip), id);
+    const dragging = widgets.isDraggingKey(key);
+    const hot = widgets.contains(box, m.x, m.y);
+
+    var out: ?f32 = null;
+    if (dragging) {
+        if (m.left_down) out = std.math.clamp(m.x, area.x, area.x + area.width) else widgets.cancelDrag();
+    } else if (hot and m.left_pressed and !widgets.hasActiveDrag()) {
+        _ = widgets.tryStartDrag(key);
+    }
+    if (hot or dragging) widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
+    c.rl.DrawRectangleRec(box, if (hot or dragging) theme.text_fg else theme.accent_hi);
     return out;
 }
 

@@ -112,13 +112,15 @@ pub fn serialize(
                     (if (p.get(clip.audio.source)) |s| s.path() else "")
                 else
                     "";
-                try appendFmt(alloc, &out, "ACLIP\t{s}\t{d:.6}\t{d:.6}\t{d:.6}\t{d:.6}\t{d:.6}\t{s}\n", .{
+                try appendFmt(alloc, &out, "ACLIP\t{s}\t{d:.6}\t{d:.6}\t{d:.6}\t{d:.6}\t{d:.6}\t{d:.6}\t{d:.6}\t{s}\n", .{
                     clip.name(),
                     clip.start_beat,
                     clip.length_beats,
                     clip.audio.gain,
                     clip.audio.start_sec,
                     clip.audio.dur_sec,
+                    clip.audio.fade_in_sec,
+                    clip.audio.fade_out_sec,
                     src_path,
                 });
                 continue;
@@ -218,6 +220,8 @@ pub fn apply(
                 const gain = try parseF32(nextField(&clip_fields) orelse return error.InvalidProject);
                 const start_sec = try parseF64(nextField(&clip_fields) orelse return error.InvalidProject);
                 const dur_sec = try parseF64(nextField(&clip_fields) orelse return error.InvalidProject);
+                const fade_in_sec = try parseF64(nextField(&clip_fields) orelse return error.InvalidProject);
+                const fade_out_sec = try parseF64(nextField(&clip_fields) orelse return error.InvalidProject);
                 const src_path = nextField(&clip_fields) orelse "";
                 // A missing/failed source still keeps the clip (it just plays
                 // silent) so the document round-trips losslessly.
@@ -229,6 +233,8 @@ pub fn apply(
                 aclip.audio.gain = gain;
                 aclip.audio.start_sec = start_sec;
                 aclip.audio.dur_sec = dur_sec;
+                aclip.audio.fade_in_sec = fade_in_sec;
+                aclip.audio.fade_out_sec = fade_out_sec;
                 try t.addClip(alloc, aclip);
                 continue;
             }
@@ -437,6 +443,8 @@ test "audio clips round-trip through the pool by path" {
     aclip.audio.gain = 0.5;
     aclip.audio.start_sec = 0.25;
     aclip.audio.dur_sec = 1.5;
+    aclip.audio.fade_in_sec = 0.1;
+    aclip.audio.fade_out_sec = 0.2;
     try tracks[0].addClip(alloc, aclip);
 
     const bytes = try serialize(alloc, tracks[0..], &transport);
@@ -462,5 +470,7 @@ test "audio clips round-trip through the pool by path" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), got.audio.gain, 1e-4);
     try std.testing.expectApproxEqAbs(@as(f64, 0.25), got.audio.start_sec, 1e-4);
     try std.testing.expectApproxEqAbs(@as(f64, 1.5), got.audio.dur_sec, 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.1), got.audio.fade_in_sec, 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.2), got.audio.fade_out_sec, 1e-4);
     try std.testing.expectEqual(src, got.audio.source);
 }

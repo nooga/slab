@@ -588,6 +588,13 @@ pub fn draw(
                 const left_edge_hover = clip.isAudio() and m.x <= clip_rect.x + resizeEdgeW() and !edge_hover;
                 if (!widgets.hasActiveDrag()) {
                     widgets.requestCursor(if (edge_hover or left_edge_hover) c.rl.MOUSE_CURSOR_RESIZE_EW else c.rl.MOUSE_CURSOR_POINTING_HAND, 1);
+                    // Full clip name on hover-and-pause (the body label is truncated).
+                    var tip_buf: [clip_mod.MAX_NAME + 1:0]u8 = undefined;
+                    const nm = clip.name();
+                    const cn = @min(nm.len, clip_mod.MAX_NAME);
+                    @memcpy(tip_buf[0..cn], nm[0..cn]);
+                    tip_buf[cn] = 0;
+                    widgets.tooltip(clip_rect, @ptrCast(&tip_buf[0]), m);
                 }
                 if (m.double_clicked and !widgets.hasActiveDrag()) {
                     const ref: ClipRef = .{ .track = @intCast(ti), .clip = @intCast(i) };
@@ -774,7 +781,7 @@ pub fn draw(
     const has_selection = hasSelectedClips(tracks);
     const has_clips = hasAnyClips(tracks);
     const arr_context_items = [_]widgets.MenuItem{
-        .{ .label = "Import audio\xE2\x80\xA6", .command = .import_audio, .enabled = tracks.len > 0 },
+        .{ .label = "Import audio\u{2026}", .command = .import_audio, .enabled = tracks.len > 0 },
         .{ .separator = true },
         .{ .label = "Copy", .command = .copy, .enabled = has_selection },
         .{ .label = "Cut", .command = .cut, .enabled = has_selection },
@@ -1258,20 +1265,12 @@ fn drawClip(r: c.rl.Rectangle, clip: Clip, color: c.rl.Color, selected: bool, ed
     const edge = if (selected) theme.text_fg else theme.slab_edge;
     c.rl.DrawRectangleLinesEx(r, 1, edge);
 
-    // Name
+    // Name — truncated with an ellipsis so a short clip's label never spills
+    // past its body (the full name is available via the hover tooltip).
     if (!editing_name) {
-        var name_buf: [clip_mod.MAX_NAME + 1:0]u8 = undefined;
-        const n = clip.name();
-        const copy_n = @min(n.len, clip_mod.MAX_NAME);
-        @memcpy(name_buf[0..copy_n], n[0..copy_n]);
-        name_buf[copy_n] = 0;
-        widgets.drawLabelF(
-            @ptrCast(&name_buf[0]),
-            r.x + 3,
-            r.y,
-            theme.fsTiny(),
-            theme.bg,
-        );
+        var name_buf: [clip_mod.MAX_NAME + 5:0]u8 = undefined;
+        fitLabelZ(&name_buf, clip.name(), r.width - 6, theme.fsTiny());
+        widgets.drawLabelF(@ptrCast(&name_buf[0]), r.x + 3, r.y, theme.fsTiny(), theme.bg);
     }
 
     // Audio clip → draw its waveform across the body (the source mapped to
@@ -1290,6 +1289,20 @@ fn drawClip(r: c.rl.Rectangle, clip: Clip, color: c.rl.Color, selected: bool, ed
                     const total: f64 = @floatFromInt(src.cache.sample_count);
                     const win_end = @min(total, win_start + clip.audio.dur_sec * rate);
                     waveform.draw(wf_rect, &src.cache, win_start, win_end, wcol);
+                }
+            }
+            // Fade ramp guides (slope from the body floor to the top edge).
+            const dur = clip.audio.dur_sec;
+            if (dur > 0) {
+                const top = body_top;
+                const bot = body_top + body_h;
+                if (clip.audio.fade_in_sec > 0) {
+                    const fw = @as(f32, @floatCast(@min(1.0, clip.audio.fade_in_sec / dur))) * (r.width - 2);
+                    c.rl.DrawLineEx(.{ .x = r.x + 1, .y = bot }, .{ .x = r.x + 1 + fw, .y = top }, 1.0, theme.bg);
+                }
+                if (clip.audio.fade_out_sec > 0) {
+                    const fw = @as(f32, @floatCast(@min(1.0, clip.audio.fade_out_sec / dur))) * (r.width - 2);
+                    c.rl.DrawLineEx(.{ .x = r.x + r.width - 1 - fw, .y = top }, .{ .x = r.x + r.width - 1, .y = bot }, 1.0, theme.bg);
                 }
             }
         }
@@ -1315,6 +1328,28 @@ fn drawClip(r: c.rl.Rectangle, clip: Clip, color: c.rl.Color, selected: bool, ed
             }
         }
     }
+}
+
+/// Copy `name` into `dst` (NUL-terminated), truncating with a trailing "…"
+/// until it fits within `max_w` pixels at `size`. Empties `dst` if nothing
+/// fits.
+fn fitLabelZ(dst: *[clip_mod.MAX_NAME + 5:0]u8, name: []const u8, max_w: f32, size: f32) void {
+    const ell = "\u{2026}"; // … (3 bytes)
+    var n = @min(name.len, clip_mod.MAX_NAME);
+    @memcpy(dst[0..n], name[0..n]);
+    dst[n] = 0;
+    if (max_w <= 0) {
+        dst[0] = 0;
+        return;
+    }
+    if (widgets.measureTextF(@ptrCast(&dst[0]), size) <= max_w) return;
+    while (n > 0) : (n -= 1) {
+        @memcpy(dst[0 .. n - 1], name[0 .. n - 1]);
+        @memcpy(dst[n - 1 ..][0..ell.len], ell);
+        dst[n - 1 + ell.len] = 0;
+        if (widgets.measureTextF(@ptrCast(&dst[0]), size) <= max_w) return;
+    }
+    dst[0] = 0;
 }
 
 const HeaderAction = enum { none, select, rename };

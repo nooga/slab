@@ -225,10 +225,14 @@ pub const Track = struct {
                     .gain = clip.audio.gain,
                 };
                 if (pool.get(clip.audio.source)) |src| {
+                    const rate = src.sample.sample_rate;
                     snap.data = src.sample.data.ptr;
                     snap.len = @intCast(src.sample.data.len);
-                    snap.source_rate = src.sample.sample_rate;
-                    snap.start_sample = clip.audio.start_sec * src.sample.sample_rate;
+                    snap.source_rate = rate;
+                    snap.start_sample = clip.audio.start_sec * rate;
+                    snap.dur_samples = clip.audio.dur_sec * rate;
+                    snap.fade_in_samples = clip.audio.fade_in_sec * rate;
+                    snap.fade_out_samples = clip.audio.fade_out_sec * rate;
                 }
                 dst.audio_clips[dst.audio_clip_count] = snap;
                 dst.audio_clip_count += 1;

@@ -39,6 +39,10 @@ pub const AudioClipSnap = struct {
     source_rate: f64 = 0,
     /// First source sample this clip reads (= start_sec * source_rate).
     start_sample: f64 = 0,
+    /// Played window length and fade lengths, in source samples.
+    dur_samples: f64 = 0,
+    fade_in_samples: f64 = 0,
+    fade_out_samples: f64 = 0,
     gain: f32 = 1.0,
 };
 

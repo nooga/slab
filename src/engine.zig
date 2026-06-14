@@ -694,7 +694,17 @@ fn mixAudioClips(
             const frac: f32 = @floatCast(src_pos - idx0f);
             const s0: f32 = @floatCast(data[idx0]);
             const s1: f32 = if (idx0 + 1 < len) @floatCast(data[idx0 + 1]) else s0;
-            const v = (s0 + (s1 - s0) * frac) * clip.gain;
+            // Linear fade-in/out envelope over the played window.
+            const pos = src_pos - clip.start_sample; // samples into the window
+            var fade: f64 = 1.0;
+            if (clip.fade_in_samples > 0 and pos < clip.fade_in_samples)
+                fade = pos / clip.fade_in_samples;
+            if (clip.fade_out_samples > 0) {
+                const remaining = clip.dur_samples - pos;
+                if (remaining < clip.fade_out_samples)
+                    fade = @min(fade, @max(0.0, remaining) / clip.fade_out_samples);
+            }
+            const v = (s0 + (s1 - s0) * frac) * clip.gain * @as(f32, @floatCast(fade));
             l[i] += v;
             r[i] += v;
         }
@@ -996,6 +1006,35 @@ test "mixAudioClips: start_sample offsets into the source (split clips)" {
     try testing.expectApproxEqAbs(@as(f32, 4), l[1], 1e-5);
     try testing.expectApproxEqAbs(@as(f32, 5), l[2], 1e-5);
     try testing.expectApproxEqAbs(@as(f32, 6), l[3], 1e-5);
+}
+
+test "mixAudioClips: linear fade-in/out ramps the window edges" {
+    // 8-sample window, value 1.0 everywhere; fade in/out of 2 samples each.
+    var data = [_]f64{1.0} ** 8;
+    var snap = snap_mod.TrackSnapshot{};
+    snap.audio_clip_count = 1;
+    snap.audio_clips[0] = .{
+        .start_beat = 0,
+        .length_beats = 8,
+        .data = &data,
+        .len = data.len,
+        .source_rate = 48_000,
+        .start_sample = 0,
+        .dur_samples = 8,
+        .fade_in_samples = 2,
+        .fade_out_samples = 2,
+        .gain = 1.0,
+    };
+    var l = [_]f32{0} ** 8;
+    var r = [_]f32{0} ** 8;
+    mixAudioClips(&snap, 0, 8, 100.0, 48_000, &l, &r);
+    // fade-in: pos 0 → 0.0, pos 1 → 0.5; middle → 1.0; fade-out near the end.
+    try testing.expectApproxEqAbs(@as(f32, 0.0), l[0], 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), l[1], 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 1.0), l[3], 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 1.0), l[4], 1e-5);
+    // pos 7 → remaining 1 → 0.5; (pos 8 would be 0 but window/source end at 8).
+    try testing.expectApproxEqAbs(@as(f32, 0.5), l[7], 1e-5);
 }
 
 test "mixAudioClips: missing source data is skipped" {

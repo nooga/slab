@@ -9,6 +9,47 @@
 const c = @import("../c.zig");
 const icons_mod = @import("icons.zig");
 
+// Glyph coverage for the UI/mono fonts. Loading with `null` gives raylib's
+// default 95 ASCII glyphs, so anything outside that (an ellipsis "…", a
+// dash "—", curly quotes, an arrow, a degree sign) rendered as a "?". We
+// load basic ASCII + Latin-1 + a curated slice of General Punctuation so
+// menu labels, names, and readouts render their real characters.
+const text_codepoints = blk: {
+    const ascii_lo: c_int = 0x20;
+    const ascii_hi: c_int = 0x7E; // basic Latin printable
+    const lat1_lo: c_int = 0xA0;
+    const lat1_hi: c_int = 0xFF; // Latin-1 supplement (incl. ° × ÷ ©)
+    const punct = [_]c_int{
+        0x2013, 0x2014, // – —  en/em dash
+        0x2018, 0x2019, 0x201C, 0x201D, // ' ' " "  curly quotes
+        0x2022, 0x2026, // • …  bullet, ellipsis
+        0x2032, 0x2033, // ′ ″  primes
+        0x2039, 0x203A, // ‹ ›
+        0x20AC, 0x2122, // € ™
+        0x2190, 0x2191, 0x2192, 0x2193, // ← ↑ → ↓
+        0x21A9, 0x2212, // ↩ −
+    };
+    const ascii_n: usize = @intCast(ascii_hi - ascii_lo + 1);
+    const lat1_n: usize = @intCast(lat1_hi - lat1_lo + 1);
+    var cps: [ascii_n + lat1_n + punct.len]c_int = undefined;
+    var i: usize = 0;
+    var cp: c_int = ascii_lo;
+    while (cp <= ascii_hi) : (cp += 1) {
+        cps[i] = cp;
+        i += 1;
+    }
+    cp = lat1_lo;
+    while (cp <= lat1_hi) : (cp += 1) {
+        cps[i] = cp;
+        i += 1;
+    }
+    for (punct) |p| {
+        cps[i] = p;
+        i += 1;
+    }
+    break :blk cps;
+};
+
 pub var ui: c.rl.Font = undefined;
 pub var ui_lg: c.rl.Font = undefined;
 pub var mono: c.rl.Font = undefined;
@@ -67,7 +108,8 @@ pub fn deinit() void {
 }
 
 fn tryLoad(path: [*:0]const u8, size: c_int) ?c.rl.Font {
-    const f = c.rl.LoadFontEx(path, size, null, 0);
+    var cps = text_codepoints; // LoadFontEx wants a mutable pointer
+    const f = c.rl.LoadFontEx(path, size, cps[0..].ptr, @intCast(cps.len));
     if (f.texture.id == 0) return null;
     return f;
 }
