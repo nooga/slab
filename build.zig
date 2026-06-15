@@ -63,7 +63,11 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run Slab");
     run_step.dependOn(&run_cmd.step);
 
-    const tests = b.addTest(.{ .root_module = exe_mod });
+    const test_filter = b.option([]const u8, "test-filter", "Only run tests whose name contains this substring");
+    const tests = b.addTest(.{
+        .root_module = exe_mod,
+        .filters = if (test_filter) |f| &.{f} else &.{},
+    });
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);

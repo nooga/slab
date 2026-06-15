@@ -214,9 +214,12 @@ test "complete voice (eg-bank + voice) matches the Zig reference" {
     var fy_out: f64 = 0;
     var max_err: f64 = 0;
 
+    // Each composed render is 7 fresh JIT links (6 EG + voice), so keep the
+    // sample count just large enough to cross every envelope stage (attack →
+    // sustain → release): equivalence holds sample-for-sample regardless.
     var i: usize = 0;
-    while (i < 4000) : (i += 1) {
-        const gate: f64 = if (i >= 20 and i < 2500) 1.0 else 0.0;
+    while (i < 600) : (i += 1) {
+        const gate: f64 = if (i >= 20 and i < 400) 1.0 else 0.0;
         const ref = renderRef(&ref_vs, &ref_es, &ref_vp, &ep, gate);
         try renderFy(&host, &fy_out, &fy_vs, &fy_es, &ep, &fy_vp, gate);
         try std.testing.expect(std.math.isFinite(fy_out));
@@ -237,19 +240,21 @@ test "dx7 voice envelope shapes amplitude (silent -> swell -> release)" {
     vp.w01 = 1.0;
     vp.c0 = 1.0;
     var ep = [_]f64{0} ** 60;
-    // Slow-ish attack carrier with a loud sustain (L3 near 0 dB); modulator
-    // with its own env. (L=0.95 -> ~-0.8 dB; lower L maps deep into dB.)
-    setEg(&ep, 0, 0.002, 0.002, 0.001, 0.003, 1.0, 0.97, 0.95, 0.0, 1.0, 1.0);
-    setEg(&ep, 1, 0.002, 0.002, 0.001, 0.003, 1.0, 0.8, 0.7, 0.0, 1.0, 0.16);
+    // Attack carrier with a loud sustain (L3 near 0 dB) and a quick release;
+    // modulator with its own env. (L=0.95 -> ~-0.8 dB; lower L maps deep into
+    // dB.) Rates are brisk so the swell/release fit a short sample window —
+    // each render is 7 fresh JIT links, so we keep the count small.
+    setEg(&ep, 0, 0.01, 0.01, 0.005, 0.01, 1.0, 0.97, 0.95, 0.0, 1.0, 1.0);
+    setEg(&ep, 1, 0.01, 0.01, 0.005, 0.01, 1.0, 0.8, 0.7, 0.0, 1.0, 0.16);
 
     var vs = [_]f64{0} ** 18;
     var es = [_]f64{0} ** 18;
     initEgBank(&es);
     var out: f64 = 0;
-    const n = 3600;
+    const n = 900;
     var buf: [n]f64 = undefined;
     for (&buf, 0..) |*s, i| {
-        const gate: f64 = if (i < 2500) 1.0 else 0.0; // note off at 2500
+        const gate: f64 = if (i < 550) 1.0 else 0.0; // note off at 550
         try renderFy(&host, &out, &vs, &es, &ep, &vp, gate);
         s.* = out;
     }
@@ -263,8 +268,8 @@ test "dx7 voice envelope shapes amplitude (silent -> swell -> release)" {
     }.f;
 
     const early = rmsWin(&buf, 0, 40); // envelope near zero
-    const mid = rmsWin(&buf, 1500, 1600); // attacked / sustaining
-    const late = rmsWin(&buf, 3400, 3500); // after release
+    const mid = rmsWin(&buf, 400, 500); // attacked / sustaining
+    const late = rmsWin(&buf, 820, 900); // after release
 
     try std.testing.expect(early < 0.01); // starts silent
     try std.testing.expect(mid > 0.1); // swells
