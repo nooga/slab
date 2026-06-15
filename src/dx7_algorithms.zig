@@ -134,15 +134,60 @@ pub fn applyRouting(vp: *VoiceParams, alg: Algorithm, feedback: f64) void {
     setFb(vp, alg.feedback_op - 1, feedback);
 }
 
-// ── The DX7 algorithm table will live here; seeded with the unambiguous ones.
+// ── The 32 DX7 algorithms ───────────────────────────────────────────────
+//
+// Transcribed from the authoritative Dexed/MSFA `algorithms[32]` byte table
+// by simulating its bus machinery: operators are processed op6→op1; each
+// reads a modulation bus (IN_BUS) and writes one (OUT_BUS), where a plain
+// write overwrites the bus (forming a serial chain) and OUT_BUS_ADD unions
+// onto it (parallel modulators); OUT_BUS_ADD into the main output marks a
+// carrier; the feedback bit (FB_IN) marks the operator whose phase is fed
+// back. Each row's edges all satisfy modulator# > carrier#, so the whole
+// table passes `validate` against the voice's fixed op6→op1 eval order.
+//
+// Caveat: algorithms 4 and 6 use a *multi-operator* feedback loop in real
+// DX7 hardware (op4→op6 and op5→op6 respectively). The voice models only
+// single-operator self-feedback, so both are approximated as self-feedback
+// on op6 (the operator that receives the loop signal, FB_IN). Every other
+// algorithm is exact.
+pub const dx7_algorithms = [32]Algorithm{
+    .{ .edges = &.{ .{ 6, 5 }, .{ 5, 4 }, .{ 4, 3 }, .{ 2, 1 } }, .carriers = &.{ 1, 3 }, .feedback_op = 6 }, // 1
+    .{ .edges = &.{ .{ 6, 5 }, .{ 5, 4 }, .{ 4, 3 }, .{ 2, 1 } }, .carriers = &.{ 1, 3 }, .feedback_op = 2 }, // 2
+    .{ .edges = &.{ .{ 6, 5 }, .{ 5, 4 }, .{ 3, 2 }, .{ 2, 1 } }, .carriers = &.{ 1, 4 }, .feedback_op = 6 }, // 3
+    .{ .edges = &.{ .{ 6, 5 }, .{ 5, 4 }, .{ 3, 2 }, .{ 2, 1 } }, .carriers = &.{ 1, 4 }, .feedback_op = 6 }, // 4*
+    .{ .edges = &.{ .{ 6, 5 }, .{ 4, 3 }, .{ 2, 1 } }, .carriers = &.{ 1, 3, 5 }, .feedback_op = 6 }, // 5
+    .{ .edges = &.{ .{ 6, 5 }, .{ 4, 3 }, .{ 2, 1 } }, .carriers = &.{ 1, 3, 5 }, .feedback_op = 6 }, // 6*
+    .{ .edges = &.{ .{ 6, 5 }, .{ 5, 3 }, .{ 4, 3 }, .{ 2, 1 } }, .carriers = &.{ 1, 3 }, .feedback_op = 6 }, // 7
+    .{ .edges = &.{ .{ 6, 5 }, .{ 5, 3 }, .{ 4, 3 }, .{ 2, 1 } }, .carriers = &.{ 1, 3 }, .feedback_op = 4 }, // 8
+    .{ .edges = &.{ .{ 6, 5 }, .{ 5, 3 }, .{ 4, 3 }, .{ 2, 1 } }, .carriers = &.{ 1, 3 }, .feedback_op = 2 }, // 9
+    .{ .edges = &.{ .{ 6, 4 }, .{ 5, 4 }, .{ 3, 2 }, .{ 2, 1 } }, .carriers = &.{ 1, 4 }, .feedback_op = 3 }, // 10
+    .{ .edges = &.{ .{ 6, 4 }, .{ 5, 4 }, .{ 3, 2 }, .{ 2, 1 } }, .carriers = &.{ 1, 4 }, .feedback_op = 6 }, // 11
+    .{ .edges = &.{ .{ 6, 3 }, .{ 5, 3 }, .{ 4, 3 }, .{ 2, 1 } }, .carriers = &.{ 1, 3 }, .feedback_op = 2 }, // 12
+    .{ .edges = &.{ .{ 6, 3 }, .{ 5, 3 }, .{ 4, 3 }, .{ 2, 1 } }, .carriers = &.{ 1, 3 }, .feedback_op = 6 }, // 13
+    .{ .edges = &.{ .{ 6, 4 }, .{ 5, 4 }, .{ 4, 3 }, .{ 2, 1 } }, .carriers = &.{ 1, 3 }, .feedback_op = 6 }, // 14
+    .{ .edges = &.{ .{ 6, 4 }, .{ 5, 4 }, .{ 4, 3 }, .{ 2, 1 } }, .carriers = &.{ 1, 3 }, .feedback_op = 2 }, // 15
+    .{ .edges = &.{ .{ 6, 5 }, .{ 4, 3 }, .{ 5, 1 }, .{ 3, 1 }, .{ 2, 1 } }, .carriers = &.{1}, .feedback_op = 6 }, // 16
+    .{ .edges = &.{ .{ 6, 5 }, .{ 4, 3 }, .{ 5, 1 }, .{ 3, 1 }, .{ 2, 1 } }, .carriers = &.{1}, .feedback_op = 2 }, // 17
+    .{ .edges = &.{ .{ 6, 5 }, .{ 5, 4 }, .{ 4, 1 }, .{ 3, 1 }, .{ 2, 1 } }, .carriers = &.{1}, .feedback_op = 3 }, // 18
+    .{ .edges = &.{ .{ 6, 5 }, .{ 6, 4 }, .{ 3, 2 }, .{ 2, 1 } }, .carriers = &.{ 1, 4, 5 }, .feedback_op = 6 }, // 19
+    .{ .edges = &.{ .{ 6, 4 }, .{ 5, 4 }, .{ 3, 2 }, .{ 3, 1 } }, .carriers = &.{ 1, 2, 4 }, .feedback_op = 3 }, // 20
+    .{ .edges = &.{ .{ 6, 5 }, .{ 6, 4 }, .{ 3, 2 }, .{ 3, 1 } }, .carriers = &.{ 1, 2, 4, 5 }, .feedback_op = 3 }, // 21
+    .{ .edges = &.{ .{ 6, 5 }, .{ 6, 4 }, .{ 6, 3 }, .{ 2, 1 } }, .carriers = &.{ 1, 3, 4, 5 }, .feedback_op = 6 }, // 22
+    .{ .edges = &.{ .{ 6, 5 }, .{ 6, 4 }, .{ 3, 2 } }, .carriers = &.{ 1, 2, 4, 5 }, .feedback_op = 6 }, // 23
+    .{ .edges = &.{ .{ 6, 5 }, .{ 6, 4 }, .{ 6, 3 } }, .carriers = &.{ 1, 2, 3, 4, 5 }, .feedback_op = 6 }, // 24
+    .{ .edges = &.{ .{ 6, 5 }, .{ 6, 4 } }, .carriers = &.{ 1, 2, 3, 4, 5 }, .feedback_op = 6 }, // 25
+    .{ .edges = &.{ .{ 6, 4 }, .{ 5, 4 }, .{ 3, 2 } }, .carriers = &.{ 1, 2, 4 }, .feedback_op = 6 }, // 26
+    .{ .edges = &.{ .{ 6, 4 }, .{ 5, 4 }, .{ 3, 2 } }, .carriers = &.{ 1, 2, 4 }, .feedback_op = 3 }, // 27
+    .{ .edges = &.{ .{ 5, 4 }, .{ 4, 3 }, .{ 2, 1 } }, .carriers = &.{ 1, 3, 6 }, .feedback_op = 5 }, // 28
+    .{ .edges = &.{ .{ 6, 5 }, .{ 4, 3 } }, .carriers = &.{ 1, 2, 3, 5 }, .feedback_op = 6 }, // 29
+    .{ .edges = &.{ .{ 5, 4 }, .{ 4, 3 } }, .carriers = &.{ 1, 2, 3, 6 }, .feedback_op = 5 }, // 30
+    .{ .edges = &.{.{ 6, 5 }}, .carriers = &.{ 1, 2, 3, 4, 5 }, .feedback_op = 6 }, // 31
+    .{ .edges = &.{}, .carriers = &.{ 1, 2, 3, 4, 5, 6 }, .feedback_op = 6 }, // 32
+};
 
 /// Algorithm 32: all six operators are independent carriers (additive organ),
-/// feedback on op6. (The clearest DX7 algorithm to pin the builder against.)
-pub const alg32: Algorithm = .{
-    .edges = &.{},
-    .carriers = &.{ 1, 2, 3, 4, 5, 6 },
-    .feedback_op = 6,
-};
+/// feedback on op6. The clearest DX7 algorithm to pin the builder against.
+pub const alg32: Algorithm = dx7_algorithms[31];
 
 const testing = std.testing;
 
@@ -175,6 +220,18 @@ test "applyRouting: a 4-op stack into one carrier" {
     try testing.expectEqual(@as(f64, 1.0), vp.c2); // op3 carrier
     try testing.expectEqual(@as(f64, 0.0), vp.c0);
     try testing.expectEqual(@as(f64, 0.5), vp.fb5);
+}
+
+test "all 32 DX7 algorithms validate and match canonical carrier counts" {
+    // Canonical carrier counts from the DX7 algorithm chart (alg 1..32).
+    const counts = [32]u8{ 2, 2, 2, 2, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 3, 3, 4, 4, 4, 5, 5, 3, 3, 3, 4, 4, 5, 6 };
+    for (dx7_algorithms, 0..) |alg, i| {
+        try testing.expect(validate(alg));
+        try testing.expectEqual(counts[i], @as(u8, @intCast(alg.carriers.len)));
+        // Every carrier and operator referenced is in range, no duplicate edges.
+        var vp = VoiceParams{};
+        applyRouting(&vp, alg, 0.5); // must not hit `unreachable` in setW
+    }
 }
 
 test "validate rejects a lower-numbered modulator" {
