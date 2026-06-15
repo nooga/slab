@@ -119,3 +119,69 @@ dsp2: k-fm86-voice-sample
   state params       call: fm86-eg-op5
   out state params   call: k-dx7-voice
 ;
+
+( ── machine wiring: prepare / note / block-prepare ───────────────────── )
+
+( stage -- stage' : idle-init guard. A freshly created (zeroed) voice has
+  stage 0, which the EG would treat as "ramp toward L1" — a drone before any
+  note. Map stage 0 -> 4 (idle, holding silent); once a note has played the
+  stage is >=1 and this is the identity, so it is safe to run every block. )
+dsp2: eg-idle-guard
+  | s |
+  s 0.5 4.0 s fsel-lt
+  nip
+;
+
+( state params sample-rate -- : per-voice prepare (runs every block). Store
+  1/sr for ratio->increment, and idle-init each operator envelope. )
+dsp2: fm86-prepare
+  | state params sample-rate |
+  1.0 sample-rate f/ params Fm86Params.inv-sample-rate-p f!64
+  state Fm86State.eg0-stage@ eg-idle-guard state Fm86State.eg0-stage-p f!64
+  state Fm86State.eg1-stage@ eg-idle-guard state Fm86State.eg1-stage-p f!64
+  state Fm86State.eg2-stage@ eg-idle-guard state Fm86State.eg2-stage-p f!64
+  state Fm86State.eg3-stage@ eg-idle-guard state Fm86State.eg3-stage-p f!64
+  state Fm86State.eg4-stage@ eg-idle-guard state Fm86State.eg4-stage-p f!64
+  state Fm86State.eg5-stage@ eg-idle-guard state Fm86State.eg5-stage-p f!64
+  drop2 drop
+;
+
+( state params hz velocity -- : start a note. Store the fundamental, raise the
+  gate, and clear every envelope's prev-gate so the next sample sees a note-on
+  edge (retrigger from the current value, no click). Velocity is unused in
+  Phase-1 — the MASTER knob sets level. )
+dsp2: fm86-note-on
+  | state params hz velocity |
+  hz   params Fm86Params.note-hz-p f!64
+  1.0  state Fm86State.gate-p f!64
+  0.0  state Fm86State.eg0-pgate-p f!64
+  0.0  state Fm86State.eg1-pgate-p f!64
+  0.0  state Fm86State.eg2-pgate-p f!64
+  0.0  state Fm86State.eg3-pgate-p f!64
+  0.0  state Fm86State.eg4-pgate-p f!64
+  0.0  state Fm86State.eg5-pgate-p f!64
+  drop2 drop2
+;
+
+( state params -- : release. Drop the gate; the next sample's note-off edge
+  sends every envelope to stage 4 (release toward L4). )
+dsp2: fm86-note-off
+  | state params |
+  0.0 state Fm86State.gate-p f!64
+  drop2
+;
+
+( params sample-rate -- : per-block fill. Each operator's phase increment is
+  ratio * fundamental / sample-rate. Routing (w/c/fb) is filled host-side from
+  the validated 32-algorithm table when ALGO changes. )
+dsp2: fm86-block-prepare
+  | params sample-rate |
+  params Fm86Params.note-hz@ 1.0 sample-rate f/ f*   | base |
+  params Fm86Params.ratio0@ base f* params Fm86Params.inc0-p f!64
+  params Fm86Params.ratio1@ base f* params Fm86Params.inc1-p f!64
+  params Fm86Params.ratio2@ base f* params Fm86Params.inc2-p f!64
+  params Fm86Params.ratio3@ base f* params Fm86Params.inc3-p f!64
+  params Fm86Params.ratio4@ base f* params Fm86Params.inc4-p f!64
+  params Fm86Params.ratio5@ base f* params Fm86Params.inc5-p f!64
+  drop2 drop
+;

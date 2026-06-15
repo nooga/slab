@@ -362,6 +362,7 @@ pub fn main() !void {
     defer reg.deinit();
 
     try reg.loadFyMachine("machines/ms20/ms20.fy");
+    try reg.loadFyMachine("machines/fm86/fm86.fy");
     try reg.loadFyMachine("machines/drum2/drum2.fy");
     try reg.loadFyMachine("machines/delay2/delay2.fy");
     try reg.loadFyMachine("machines/verb2/verb2.fy");

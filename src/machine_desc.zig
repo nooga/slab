@@ -18,7 +18,7 @@ const machine = @import("machine.zig");
 pub const MAX_NAME = 64;
 pub const MAX_WORD = 64;
 pub const MAX_TEXT = 24;
-pub const MAX_CONTROLS = 32;
+pub const MAX_CONTROLS = 128;
 pub const MAX_OPTS = 8;
 pub const MAX_CONSTS = 16;
 pub const MAX_STRIPS = 16;
@@ -590,6 +590,37 @@ fn parseRows(d: *const Desc, head: ?*const RowRaw, out: []LayoutRow) !usize {
 }
 
 const testing = std.testing;
+
+test "descriptor walker reads the FM-86 manifest (7 tabs, 63 controls)" {
+    var host = FyHost.init(testing.allocator);
+    defer host.deinit();
+    try host.compileFile("machines/fm86/fm86.fy");
+    const d = try read(&host);
+
+    try testing.expectEqualStrings("FM-86", d.nameSlice());
+    try testing.expectEqual(Mode.voice_sample, d.mode);
+    try testing.expectEqualStrings("k-fm86-voice-sample", d.renderWord());
+    try testing.expectEqualStrings("fm86-prepare", d.prepareWord().?);
+    try testing.expectEqualStrings("fm86-block-prepare", d.blockPrepareWord().?);
+    // 3 global + 6 operators * 10 = 63 controls; 7 tabs.
+    try testing.expectEqual(@as(usize, 63), d.control_count);
+    try testing.expectEqual(@as(usize, 7), d.page_count);
+    try testing.expectEqual(@as(usize, 0), d.row_count);
+    try testing.expectEqualStrings("GLOBAL", d.pages[0].nameSlice());
+    try testing.expectEqualStrings("OP 6", d.pages[6].nameSlice());
+    try testing.expectEqual(@as(usize, 6), d.const_count); // 6 rate-scale consts
+
+    // The ALGO control's offset is the Fm86Params.algo field, which the host's
+    // routing hook reads. It must be inside the params region.
+    var found_algo = false;
+    for (d.controls[0..d.control_count]) |*ctl| {
+        if (std.mem.eql(u8, ctl.idSlice(), "algo")) {
+            try testing.expect(ctl.offset + 8 <= d.params_size);
+            found_algo = true;
+        }
+    }
+    try testing.expect(found_algo);
+}
 
 test "descriptor walker reads a tabbed (paged) panel" {
     var host = FyHost.init(testing.allocator);

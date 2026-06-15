@@ -14,6 +14,7 @@ const machine = @import("../machine.zig");
 const fy_host_mod = @import("../fy_host.zig");
 const FyHost = fy_host_mod.FyHost;
 const machine_desc = @import("../machine_desc.zig");
+const dx7_algorithms = @import("../dx7_algorithms.zig");
 const presets_mod = @import("../presets.zig");
 const wav = @import("../wav.zig");
 const waveform = @import("../waveform.zig");
@@ -74,6 +75,14 @@ pub const FyRawMachine = struct {
     // Active panel tab for paged machines (index into desc.pages). Per
     // instance, UI-thread only.
     ui_tab: usize = 0,
+    // FM-86 algorithm-routing hook: byte offsets of the `algo`/`feedback`/
+    // `master` controls in params, resolved once. `algo_off == null` after
+    // resolution means "not an FM-86 machine" so the hook is skipped. See
+    // applyAlgorithmRouting.
+    fm86_resolved: bool = false,
+    fm86_algo_off: ?usize = null,
+    fm86_feedback_off: usize = 0,
+    fm86_master_off: usize = 0,
     preset_dir: [512]u8 = [_]u8{0} ** 512,
     preset_dir_len: usize = 0,
     presets: presets_mod.List = .{},
@@ -458,11 +467,53 @@ pub const FyRawMachine = struct {
             self.writeParamF64(cnst.offset, cnst.value);
         }
 
+        // FM-86: expand ALGO -> routing params from the validated 32-algorithm
+        // table (dsp2 block-prepare can't build/index a table). Runs before
+        // block-prepare; both only touch params, no ordering dependency.
+        self.applyAlgorithmRouting();
+
         // Per-block coefficient fill in fy (params sample-rate --). Runs after
         // controls/consts land so the word reads fresh raw values.
         if (self.block_prepare_caller) |*bp| {
             const args = [_]Fy.Dsp2RawArg{ .{ .ptr = self.paramsPtr() }, .{ .f64 = sample_rate } };
             _ = bp.call(1, &args) catch {};
+        }
+    }
+
+    // Resolve the FM-86 control offsets once; non-FM machines (no `algo`
+    // control) leave fm86_algo_off null and pay only this one scan.
+    fn resolveFm86(self: *FyRawMachine) void {
+        self.fm86_resolved = true;
+        const algo = self.paramOffsetById("algo") orelse return;
+        self.fm86_algo_off = algo;
+        self.fm86_feedback_off = self.paramOffsetById("feedback") orelse algo;
+        self.fm86_master_off = self.paramOffsetById("master") orelse algo;
+    }
+
+    fn paramOffsetById(self: *const FyRawMachine, id: []const u8) ?usize {
+        for (self.desc.controls[0..self.desc.control_count]) |*ctl| {
+            if (std.mem.eql(u8, ctl.idSlice(), id)) return ctl.offset;
+        }
+        return null;
+    }
+
+    // Fill the voice's w/c/fb routing from the selected DX7 algorithm, then
+    // fold MASTER into the carrier weights. The params region's first 39 f64
+    // are exactly a dx7_algorithms.VoiceParams (Fm86Params' prefix), so we
+    // route in place. Cheap and idempotent — safe to re-run every block.
+    fn applyAlgorithmRouting(self: *FyRawMachine) void {
+        if (!self.fm86_resolved) self.resolveFm86();
+        const algo_off = self.fm86_algo_off orelse return;
+
+        const algo_f = self.readParamF64(algo_off);
+        const idx: usize = @intFromFloat(std.math.clamp(@round(algo_f), 1, 32));
+        const feedback = self.readParamF64(self.fm86_feedback_off);
+        const master = self.readParamF64(self.fm86_master_off);
+
+        const vp: *dx7_algorithms.VoiceParams = @ptrCast(@alignCast(&self.params_buf[0]));
+        dx7_algorithms.applyRouting(vp, dx7_algorithms.dx7_algorithms[idx - 1], feedback);
+        inline for (.{ "c0", "c1", "c2", "c3", "c4", "c5" }) |f| {
+            @field(vp, f) *= master;
         }
     }
 
@@ -1457,6 +1508,43 @@ test "raw DSP2 oscillator fixture responds to note events" {
         try testing.expect(std.math.isFinite(sl));
         try testing.expectEqual(sl, sr);
     }
+}
+
+test "FM-86 plays a note end to end (routing hook + staged voice)" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/fm86/fm86.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+
+    var events = [_]machine.NoteEvent{
+        .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 1, .pitch = 57, .velocity = 0.9 },
+        .{ .sample_offset = 700, .kind = .note_off, .channel = 0, .note_id = 1, .pitch = 57, .velocity = 0 },
+    };
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = 1024;
+    ctx.note_in = @ptrCast(events[0..].ptr);
+    ctx.note_in_count = events.len;
+
+    var l = [_]f32{0} ** 1024;
+    var r = [_]f32{0} ** 1024;
+    testRender(mach, &ctx, &l, &r);
+
+    // Finite, mono-duplicated, and within the clamp.
+    for (l, r) |sl, sr| {
+        try testing.expect(std.math.isFinite(sl));
+        try testing.expectEqual(sl, sr);
+        try testing.expect(@abs(sl) <= 1.0);
+    }
+
+    // The default patch (algorithm 1) must make sound once the carrier
+    // envelopes have opened, then fall after note-off — proving the algorithm
+    // routing hook filled carriers/weights and the staged voice ran.
+    var sustain_energy: f64 = 0;
+    for (l[300..700]) |s| sustain_energy += @abs(s);
+    var release_tail: f64 = 0;
+    for (l[1000..1024]) |s| release_tail += @abs(s);
+    try testing.expect(sustain_energy > 1.0);
+    try testing.expect(release_tail * 16 < sustain_energy);
 }
 
 test "raw DSP2 saturator fixture processes audio input through generic adapter" {
