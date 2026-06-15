@@ -19,6 +19,8 @@ test {
     _ = @import("waveform.zig");
     _ = @import("audio_pool.zig");
     _ = @import("ms20_svf_test.zig");
+    _ = @import("fm_operator_test.zig");
+    _ = @import("dx7_eg_test.zig");
 }
 
 // Soft cap used to size UI-side menu arrays; the registry itself is a
