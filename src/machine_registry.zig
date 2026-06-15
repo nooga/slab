@@ -24,6 +24,7 @@ test {
     _ = @import("dx7_voice_test.zig");
     _ = @import("dx7_voice_render_test.zig");
     _ = @import("dx7_algorithms.zig");
+    _ = @import("fm86_voice_test.zig");
 }
 
 // Soft cap used to size UI-side menu arrays; the registry itself is a
