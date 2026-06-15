@@ -71,6 +71,9 @@ pub const FyRawMachine = struct {
     raw_control_bits: [MAX_CONTROLS]std.atomic.Value(u32) = undefined,
     panel_w: f32 = 128,
     failed: bool = false,
+    // Active panel tab for paged machines (index into desc.pages). Per
+    // instance, UI-thread only.
+    ui_tab: usize = 0,
     preset_dir: [512]u8 = [_]u8{0} ** 512,
     preset_dir_len: usize = 0,
     presets: presets_mod.List = .{},
@@ -1232,12 +1235,44 @@ fn drawCapSeg(xa: f32, la: f32, xb: f32, lb: f32, base: f32, h: f32, col: c.rl.C
 // width across cells, each cell's height across its stacked strips. Last
 // element in each axis takes the remainder so the block fills exactly.
 fn drawLayoutTree(self: *FyRawMachine, body: c.rl.Rectangle, mouse: widgets.Mouse) void {
+    drawRows(self, self.desc.rows[0..self.desc.row_count], body, mouse);
+}
+
+// Height of the panel's tab bar (paged machines).
+const TAB_BAR_H: f32 = 16;
+
+// Tab bar across the top of the body; clicking a tab swaps the active page.
+// Brutalist: 1px-separated beveled cells, the active one raised/lit.
+fn drawTabBar(self: *FyRawMachine, bar: c.rl.Rectangle, mouse: widgets.Mouse) void {
+    const n = self.desc.page_count;
+    if (n == 0) return;
+    c.rl.DrawRectangleRec(bar, theme.pane_alt);
+    const cw = bar.width / @as(f32, @floatFromInt(n));
+    var x = bar.x;
+    for (self.desc.pages[0..n], 0..) |*pg, i| {
+        const w = if (i + 1 == n) (bar.x + bar.width - x) else cw;
+        const cell = widgets.rect(x, bar.y, w, bar.height);
+        const active = i == self.ui_tab;
+        const hover = widgets.contains(cell, mouse.x, mouse.y) and !widgets.hasActiveDrag();
+        if (hover and mouse.left_released) self.ui_tab = i;
+        const fill = if (active) theme.slab_hi else if (hover) theme.slab_fill else theme.pane_alt;
+        c.rl.DrawRectangleRec(widgets.rect(cell.x + 1, cell.y + 1, cell.width - 2, cell.height - 2), fill);
+        if (i > 0) c.rl.DrawRectangle(@intFromFloat(cell.x), @intFromFloat(cell.y + 1), 1, @intFromFloat(cell.height - 2), theme.slab_edge);
+        const size = theme.fsTiny();
+        const tw = widgets.measureTextF(pg.nameZ(), size);
+        widgets.drawLabelF(pg.nameZ(), cell.x + (cell.width - tw) / 2, cell.y + (cell.height - size) / 2 - 1, size, if (active) theme.text_fg else theme.text_dim);
+        x += w;
+    }
+}
+
+fn drawRows(self: *FyRawMachine, rows: []const machine_desc.LayoutRow, body: c.rl.Rectangle, mouse: widgets.Mouse) void {
+    const row_count = rows.len;
     var total_rw: f32 = 0;
-    for (self.desc.rows[0..self.desc.row_count]) |*r| total_rw += r.weight;
+    for (rows) |*r| total_rw += r.weight;
     if (total_rw <= 0) return;
     var y = body.y;
-    for (self.desc.rows[0..self.desc.row_count], 0..) |*r, ri| {
-        const rh = if (ri + 1 == self.desc.row_count) (body.y + body.height - y) else body.height * r.weight / total_rw;
+    for (rows, 0..) |*r, ri| {
+        const rh = if (ri + 1 == row_count) (body.y + body.height - y) else body.height * r.weight / total_rw;
         var total_cw: f32 = 0;
         for (r.cells[0..r.cell_count]) |*cc| total_cw += cc.weight;
         if (total_cw > 0) {
@@ -1267,6 +1302,15 @@ fn drawLayoutTree(self: *FyRawMachine, body: c.rl.Rectangle, mouse: widgets.Mous
 }
 
 fn drawControlStrips(self: *FyRawMachine, body: c.rl.Rectangle, mouse: widgets.Mouse) void {
+    if (self.desc.page_count > 0) {
+        if (self.ui_tab >= self.desc.page_count) self.ui_tab = 0;
+        const bar = widgets.rect(body.x, body.y, body.width, TAB_BAR_H);
+        drawTabBar(self, bar, mouse);
+        const page_body = widgets.rect(body.x, body.y + TAB_BAR_H, body.width, body.height - TAB_BAR_H);
+        const pg = &self.desc.pages[self.ui_tab];
+        drawRows(self, pg.rows[0..pg.row_count], page_body, mouse);
+        return;
+    }
     if (self.desc.row_count > 0) {
         drawLayoutTree(self, body, mouse);
         return;

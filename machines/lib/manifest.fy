@@ -49,6 +49,9 @@ struct: MachineDesc
                        per-block detector buffer: max abs of both inputs )
   ptr voices         ( int voice count for voice-sample machines, 0 = mono )
   ptr assets         ( AssetDesc chain or 0 — host-loaded read-only audio )
+  ptr pages          ( PageDesc chain or 0 — tabbed panel; rows declared after
+                       a `page` belong to it, and the panel shows a tab bar.
+                       When 0, the top-level `rows` chain is the whole panel. )
 ;
 
 struct: ControlDesc
@@ -68,6 +71,7 @@ struct: ControlDesc
 struct: OptionDesc  ptr next  ptr label  ptr value ;
 struct: StripDesc   ptr next  ptr module  ptr cols ;
 struct: DisplayDesc ptr next  ptr name  ptr kind  ptr sources ;
+struct: PageDesc    ptr next  ptr name  ptr rows ;
 struct: RowDesc     ptr next  ptr weight  ptr cells ;
 struct: CellDesc    ptr next  ptr weight  ptr items ;
 struct: ItemDesc    ptr next  ptr name  ptr weight ;
@@ -83,6 +87,8 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
 :: _mf-last-strip 8 alloc ;
 :: _mf-last-disp  8 alloc ;
 :: _mf-last-row   8 alloc ;
+:: _mf-last-page  8 alloc ;
+:: _mf-cur-page   8 alloc ;
 :: _mf-last-cell  8 alloc ;
 :: _mf-last-item  8 alloc ;
 :: _mf-last-const 8 alloc ;
@@ -110,6 +116,8 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   0 _mf-last-strip !64
   0 _mf-last-disp !64
   0 _mf-last-row !64
+  0 _mf-last-page !64
+  0 _mf-cur-page !64
   0 _mf-last-cell !64
   0 _mf-last-item !64
   0 _mf-last-const !64
@@ -231,11 +239,29 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   _mf-last-disp !64
 ;
 
+( Open a named tab.  Rows declared after this belong to the page until the
+  next `page`; the panel grows a tab bar.  Mixing top-level rows and pages is
+  not supported — use one or the other. )
+: page  ( name -- )
+  PageDesc.alloc
+  swap cstr-new swap PageDesc.name!
+  _mf-last-page @64 0 =
+  [ dup _mf-md@ MachineDesc.pages! drop ]
+  [ dup _mf-last-page @64 PageDesc.next! drop ]
+  ifte
+  dup _mf-last-page !64
+  _mf-cur-page !64
+  0 _mf-last-row !64
+;
+
 : row  ( height-weight -- )
   RowDesc.alloc
   RowDesc.weight!
   _mf-last-row @64 0 =
-  [ dup _mf-md@ MachineDesc.rows! drop ]
+  [ _mf-cur-page @64 0 =
+    [ dup _mf-md@ MachineDesc.rows! drop ]
+    [ dup _mf-cur-page @64 PageDesc.rows! drop ]
+    ifte ]
   [ dup _mf-last-row @64 RowDesc.next! drop ]
   ifte
   _mf-last-row !64

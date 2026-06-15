@@ -24,6 +24,7 @@ pub const MAX_CONSTS = 16;
 pub const MAX_STRIPS = 16;
 pub const MAX_DISPLAYS = 8;
 pub const MAX_ROWS = 8;
+pub const MAX_PAGES = 8;
 pub const MAX_ROW_CELLS = 16;
 pub const MAX_CELL_ITEMS = 6;
 pub const MAX_NOTE_LABELS = 32;
@@ -173,6 +174,23 @@ pub const LayoutRow = struct {
     weight: f32 = 1,
 };
 
+/// One tab of a paged panel: a name and its own layout-row tree. Built only
+/// when the manifest declares `page`s; otherwise the panel uses `Desc.rows`.
+pub const Page = struct {
+    name: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
+    name_len: usize = 0,
+    rows: [MAX_ROWS]LayoutRow = undefined,
+    row_count: usize = 0,
+
+    pub fn nameSlice(self: *const Page) []const u8 {
+        return self.name[0..self.name_len];
+    }
+
+    pub fn nameZ(self: *const Page) [*:0]const u8 {
+        return @ptrCast(&self.name[0]);
+    }
+};
+
 pub const Desc = struct {
     name: [MAX_NAME]u8 = [_]u8{0} ** MAX_NAME,
     name_len: usize = 0,
@@ -200,6 +218,10 @@ pub const Desc = struct {
     display_count: usize = 0,
     rows: [MAX_ROWS]LayoutRow = undefined,
     row_count: usize = 0,
+    // Tabbed panel: when non-empty, each page is a named tab carrying its own
+    // row tree, and the top-level `rows` are unused.
+    pages: [MAX_PAGES]Page = undefined,
+    page_count: usize = 0,
     // note-on receives raw MIDI pitch instead of Hz (drum machines).
     note_pitch: bool = false,
     note_labels: [MAX_NOTE_LABELS]machine.NoteLabel = undefined,
@@ -285,7 +307,10 @@ const MachineDescRaw = extern struct {
     detector_cell: Fy.Value,
     voices: Fy.Value,
     assets: Fy.Value,
+    pages: Fy.Value,
 };
+
+const PageRaw = extern struct { next: Fy.Value, name: Fy.Value, rows: Fy.Value };
 
 const ControlRaw = extern struct {
     next: Fy.Value,
@@ -507,10 +532,34 @@ pub fn read(host: *FyHost) !Desc {
         d.asset_count += 1;
     }
 
-    var row_it = rawPtr(RowRaw, md.rows);
+    d.row_count = try parseRows(&d, rawPtr(RowRaw, md.rows), &d.rows);
+
+    // Pages (tabbed panel): each carries its own row tree. Mixing top-level
+    // rows with pages is rejected so the renderer has one source of truth.
+    var page_it = rawPtr(PageRaw, md.pages);
+    while (page_it) |pg| : (page_it = rawPtr(PageRaw, pg.next)) {
+        if (d.page_count >= MAX_PAGES) return error.TooManyPages;
+        const out = &d.pages[d.page_count];
+        out.* = .{};
+        out.name_len = try copyText(&out.name, cstrSlice(pg.name));
+        if (out.name_len == 0) return error.InvalidMachineDesc;
+        out.row_count = try parseRows(&d, rawPtr(RowRaw, pg.rows), &out.rows);
+        d.page_count += 1;
+    }
+    if (d.page_count > 0 and d.row_count > 0) return error.InvalidMachineDesc;
+
+    return d;
+}
+
+/// Walk a RowDesc chain into `out`, resolving each item to a strip or display
+/// index. Returns the number of rows written. Shared by the top-level panel
+/// and every page.
+fn parseRows(d: *const Desc, head: ?*const RowRaw, out: []LayoutRow) !usize {
+    var count: usize = 0;
+    var row_it = head;
     while (row_it) |row| : (row_it = rawPtr(RowRaw, row.next)) {
-        if (d.row_count >= MAX_ROWS) return error.TooManyRows;
-        const out_row = &d.rows[d.row_count];
+        if (count >= out.len) return error.TooManyRows;
+        const out_row = &out[count];
         out_row.* = .{};
         out_row.weight = @floatCast(asF64(row.weight));
         var cell_it = rawPtr(CellRaw, row.cells);
@@ -535,13 +584,34 @@ pub fn read(host: *FyHost) !Desc {
             }
             out_row.cell_count += 1;
         }
-        d.row_count += 1;
+        count += 1;
     }
-
-    return d;
+    return count;
 }
 
 const testing = std.testing;
+
+test "descriptor walker reads a tabbed (paged) panel" {
+    var host = FyHost.init(testing.allocator);
+    defer host.deinit();
+    try host.compileFile("machines/raw_fixtures/pages.fy");
+    const d = try read(&host);
+
+    try testing.expectEqualStrings("raw-pages", d.nameSlice());
+    // Pages replace the top-level rows.
+    try testing.expectEqual(@as(usize, 0), d.row_count);
+    try testing.expectEqual(@as(usize, 2), d.page_count);
+    try testing.expectEqualStrings("PAGE A", d.pages[0].nameSlice());
+    try testing.expectEqualStrings("PAGE B", d.pages[1].nameSlice());
+    // Each page carries its own one-row layout pointing at its strip.
+    try testing.expectEqual(@as(usize, 1), d.pages[0].row_count);
+    try testing.expectEqual(@as(usize, 1), d.pages[0].rows[0].cell_count);
+    const item_a = d.pages[0].rows[0].cells[0].items[0];
+    try testing.expect(!item_a.is_display);
+    try testing.expectEqualStrings("AONE", d.strips[item_a.index].moduleSlice());
+    const item_b = d.pages[1].rows[0].cells[0].items[0];
+    try testing.expectEqualStrings("BTWO", d.strips[item_b.index].moduleSlice());
+}
 
 test "descriptor walker reads the drum2 note map" {
     var host = FyHost.init(testing.allocator);
