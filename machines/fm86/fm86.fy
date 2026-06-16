@@ -15,6 +15,7 @@
 
 include "../../kernels/06-voices/fm86_voice.fy"
 include "../lib/manifest.fy"
+include "fm86_algo.fy"
 
 : manifest
   "FM-86" voice-sample machine*
@@ -23,6 +24,8 @@ include "../lib/manifest.fy"
   "fm86-note-on"        note-on!
   "fm86-note-off"       note-off!
   "fm86-block-prepare"  block-prepare!
+  "fm86-derive"         derive!
+  fm86-algo-table       derive-data!
   Fm86State.size  state-size!
   Fm86Params.size params-size!
   480.0 panel-w!

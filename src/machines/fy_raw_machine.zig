@@ -75,14 +75,10 @@ pub const FyRawMachine = struct {
     // Active panel tab for paged machines (index into desc.pages). Per
     // instance, UI-thread only.
     ui_tab: usize = 0,
-    // FM-86 algorithm-routing hook: byte offsets of the `algo`/`feedback`/
-    // `master` controls in params, resolved once. `algo_off == null` after
-    // resolution means "not an FM-86 machine" so the hook is skipped. See
-    // applyAlgorithmRouting.
-    fm86_resolved: bool = false,
-    fm86_algo_off: ?usize = null,
-    fm86_feedback_off: usize = 0,
-    fm86_master_off: usize = 0,
+    // Generic derived-params hook (params derive-data --): a machine-declared
+    // dsp2 word run each block to compute params from controls + opaque data.
+    derive_slots: RawSlots = .{},
+    derive_caller: ?RawCaller = null,
     preset_dir: [512]u8 = [_]u8{0} ** 512,
     preset_dir_len: usize = 0,
     presets: presets_mod.List = .{},
@@ -383,6 +379,15 @@ pub const FyRawMachine = struct {
                 false,
             );
         }
+        if (self.desc.deriveWord()) |word| {
+            self.derive_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
+                word,
+                &self.derive_slots,
+                &.{ .ptr, .ptr },
+                false,
+                false,
+            );
+        }
         switch (self.desc.mode) {
             .voice_sample => {
                 // A `call:` composition voice is invoked through the dedicated
@@ -472,53 +477,21 @@ pub const FyRawMachine = struct {
             self.writeParamF64(cnst.offset, cnst.value);
         }
 
-        // FM-86: expand ALGO -> routing params from the validated 32-algorithm
-        // table (dsp2 block-prepare can't build/index a table). Runs before
-        // block-prepare; both only touch params, no ordering dependency.
-        self.applyAlgorithmRouting();
+        // Machine-declared derive hook (params derive-data --): compute derived
+        // params from the fresh control values, e.g. FM-86 expands ALGO into the
+        // voice routing from its own fy table. Generic — the frame has no
+        // machine-specific knowledge. Runs before block-prepare; both only touch
+        // params, no ordering dependency.
+        if (self.derive_caller) |*dv| {
+            const args = [_]Fy.Dsp2RawArg{ .{ .ptr = self.paramsPtr() }, .{ .ptr = self.desc.derive_data } };
+            _ = dv.call(1, &args) catch {};
+        }
 
         // Per-block coefficient fill in fy (params sample-rate --). Runs after
         // controls/consts land so the word reads fresh raw values.
         if (self.block_prepare_caller) |*bp| {
             const args = [_]Fy.Dsp2RawArg{ .{ .ptr = self.paramsPtr() }, .{ .f64 = sample_rate } };
             _ = bp.call(1, &args) catch {};
-        }
-    }
-
-    // Resolve the FM-86 control offsets once; non-FM machines (no `algo`
-    // control) leave fm86_algo_off null and pay only this one scan.
-    fn resolveFm86(self: *FyRawMachine) void {
-        self.fm86_resolved = true;
-        const algo = self.paramOffsetById("algo") orelse return;
-        self.fm86_algo_off = algo;
-        self.fm86_feedback_off = self.paramOffsetById("feedback") orelse algo;
-        self.fm86_master_off = self.paramOffsetById("master") orelse algo;
-    }
-
-    fn paramOffsetById(self: *const FyRawMachine, id: []const u8) ?usize {
-        for (self.desc.controls[0..self.desc.control_count]) |*ctl| {
-            if (std.mem.eql(u8, ctl.idSlice(), id)) return ctl.offset;
-        }
-        return null;
-    }
-
-    // Fill the voice's w/c/fb routing from the selected DX7 algorithm, then
-    // fold MASTER into the carrier weights. The params region's first 39 f64
-    // are exactly a dx7_algorithms.VoiceParams (Fm86Params' prefix), so we
-    // route in place. Cheap and idempotent — safe to re-run every block.
-    fn applyAlgorithmRouting(self: *FyRawMachine) void {
-        if (!self.fm86_resolved) self.resolveFm86();
-        const algo_off = self.fm86_algo_off orelse return;
-
-        const algo_f = self.readParamF64(algo_off);
-        const idx: usize = @intFromFloat(std.math.clamp(@round(algo_f), 1, 32));
-        const feedback = self.readParamF64(self.fm86_feedback_off);
-        const master = self.readParamF64(self.fm86_master_off);
-
-        const vp: *dx7_algorithms.VoiceParams = @ptrCast(@alignCast(&self.params_buf[0]));
-        dx7_algorithms.applyRouting(vp, dx7_algorithms.dx7_algorithms[idx - 1], feedback);
-        inline for (.{ "c0", "c1", "c2", "c3", "c4", "c5" }) |f| {
-            @field(vp, f) *= master;
         }
     }
 
@@ -1047,6 +1020,8 @@ fn deinitImpl(state: *anyopaque, alloc: std.mem.Allocator) void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     self.freeBuffersUpTo(alloc, self.desc.buffer_count);
     self.freeAssets(alloc);
+    // derive-data is libc-malloc'd by fy's `alloc`; fy doesn't track it.
+    if (self.desc.derive_data != 0) std.c.free(@ptrFromInt(self.desc.derive_data));
     self.host.deinit();
     alloc.destroy(self.host);
     alloc.destroy(self);
@@ -1582,27 +1557,43 @@ test "FM-86 plays a note end to end (routing hook + staged voice)" {
     try testing.expect(release_tail * 16 < sustain_energy);
 }
 
-test "FM-86 ALGO int_range control selects the algorithm routing" {
+test "FM-86 fy derive routing matches the dx7_algorithms oracle (all 32)" {
     const inst = try FyRawMachine.create(testing.allocator, "machines/fm86/fm86.fy");
     const mach = inst.machineInterface();
     defer mach.deinit.?(mach.state, testing.allocator);
 
-    // Select algorithm 22 (carriers 1,3,4,5) through the host set-param path.
-    mach.set_param.?(mach.state, "algo", 22);
+    // master 1.0 so carrier weights compare 1:1 with the oracle (which doesn't
+    // fold master); a non-zero feedback to check the fb fields land.
+    const feedback: f64 = 0.6;
+    mach.set_param.?(mach.state, "master", 1.0);
+    mach.set_param.?(mach.state, "feedback", feedback);
 
+    const vp: *const dx7_algorithms.VoiceParams = @ptrCast(@alignCast(&inst.params_buf[0]));
     var ctx = std.mem.zeroes(machine.MachineCtx);
     ctx.sample_rate = 48_000;
-    ctx.block_size = 32;
-    var l = [_]f32{0} ** 32;
-    var r = [_]f32{0} ** 32;
-    testRender(mach, &ctx, &l, &r); // runs syncRawParams -> routing hook
+    ctx.block_size = 16;
+    var l = [_]f32{0} ** 16;
+    var r = [_]f32{0} ** 16;
 
-    // The int param landed and the routing matches algorithm 22's carriers.
-    try testing.expectEqual(@as(f64, 22), inst.readParamF64(inst.fm86_algo_off.?));
-    const vp: *const dx7_algorithms.VoiceParams = @ptrCast(@alignCast(&inst.params_buf[0]));
-    try testing.expect(vp.c0 > 0 and vp.c2 > 0 and vp.c3 > 0 and vp.c4 > 0); // carriers 1,3,4,5
-    try testing.expectEqual(@as(f64, 0), vp.c1);
-    try testing.expectEqual(@as(f64, 0), vp.c5);
+    // The ALGO int-step selects each algorithm; the fy derive word fills the
+    // routing from its own table. Pin all 27 routing fields against the
+    // validated Zig oracle for every algorithm.
+    for (1..33) |n| {
+        mach.set_param.?(mach.state, "algo", @floatFromInt(n));
+        testRender(mach, &ctx, &l, &r); // syncRawParams -> fy derive fills routing
+
+        var want = dx7_algorithms.VoiceParams{};
+        dx7_algorithms.applyRouting(&want, dx7_algorithms.dx7_algorithms[n - 1], feedback);
+
+        // Tolerance, not exact: feedback/master flow through the f32 control
+        // atomics, so a value like 0.6 comes back as 0.6 + ~1e-7.
+        inline for (.{ "w01", "w02", "w03", "w04", "w05", "w12", "w13", "w14", "w15", "w23", "w24", "w25", "w34", "w35", "w45", "c0", "c1", "c2", "c3", "c4", "c5", "fb0", "fb1", "fb2", "fb3", "fb4", "fb5" }) |f| {
+            testing.expectApproxEqAbs(@field(want, f), @field(vp.*, f), 1e-5) catch |e| {
+                std.debug.print("algorithm {d} field {s}: want {d} got {d}\n", .{ n, f, @field(want, f), @field(vp.*, f) });
+                return e;
+            };
+        }
+    }
 }
 
 test "raw DSP2 saturator fixture processes audio input through generic adapter" {

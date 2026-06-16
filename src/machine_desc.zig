@@ -209,6 +209,13 @@ pub const Desc = struct {
     note_off_word_len: usize = 0,
     block_prepare_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
     block_prepare_word_len: usize = 0,
+    // Generic derived-params hook: a dsp2 word (params derive-data --) the host
+    // calls each block, plus an opaque machine-built data pointer. Lets a
+    // machine keep all its specific logic in fy (e.g. FM-86 algorithm routing)
+    // instead of the frame.
+    derive_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
+    derive_word_len: usize = 0,
+    derive_data: usize = 0,
     state_size: usize = 0,
     params_size: usize = 0,
     panel_w: f32 = 128,
@@ -271,6 +278,10 @@ pub const Desc = struct {
         return if (self.block_prepare_word_len == 0) null else self.block_prepare_word[0..self.block_prepare_word_len];
     }
 
+    pub fn deriveWord(self: *const Desc) ?[]const u8 {
+        return if (self.derive_word_len == 0) null else self.derive_word[0..self.derive_word_len];
+    }
+
     pub fn stripIndexByModule(self: *const Desc, name: []const u8) ?usize {
         for (self.strips[0..self.strip_count], 0..) |*s, i| {
             if (std.mem.eql(u8, s.moduleSlice(), name)) return i;
@@ -312,6 +323,8 @@ const MachineDescRaw = extern struct {
     voices: Fy.Value,
     assets: Fy.Value,
     pages: Fy.Value,
+    derive: Fy.Value,
+    derive_data: Fy.Value,
 };
 
 const PageRaw = extern struct { next: Fy.Value, name: Fy.Value, rows: Fy.Value };
@@ -401,6 +414,10 @@ pub fn read(host: *FyHost) !Desc {
     d.note_on_word_len = try copyBuf(d.note_on_word[0..], cstrSlice(md.note_on));
     d.note_off_word_len = try copyBuf(d.note_off_word[0..], cstrSlice(md.note_off));
     d.block_prepare_word_len = try copyBuf(d.block_prepare_word[0..], cstrSlice(md.block_prepare));
+    d.derive_word_len = try copyBuf(d.derive_word[0..], cstrSlice(md.derive));
+    // derive-data is an opaque heap pointer (fy `alloc` returns the raw address
+    // as a tagged int); >>2 recovers it. 0 = none.
+    d.derive_data = @intCast(@as(u64, @bitCast(md.derive_data)) >> 2);
     d.state_size = @intCast(asInt(md.state_size));
     d.params_size = @intCast(asInt(md.params_size));
     if (d.state_size == 0 or d.params_size == 0) return error.InvalidMachineDesc;
@@ -608,6 +625,9 @@ test "descriptor walker reads the FM-86 manifest (7 tabs, 63 controls)" {
     try testing.expectEqualStrings("k-fm86-voice-sample", d.renderWord());
     try testing.expectEqualStrings("fm86-prepare", d.prepareWord().?);
     try testing.expectEqualStrings("fm86-block-prepare", d.blockPrepareWord().?);
+    // Routing lives in fy: a derive word + a machine-built data table.
+    try testing.expectEqualStrings("fm86-derive", d.deriveWord().?);
+    try testing.expect(d.derive_data != 0);
     // 3 global + 6 operators * 10 = 63 controls; 7 tabs.
     try testing.expectEqual(@as(usize, 63), d.control_count);
     try testing.expectEqual(@as(usize, 7), d.page_count);

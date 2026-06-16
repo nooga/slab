@@ -158,6 +158,9 @@ pub const Registry = struct {
         defer host.deinit();
         try host.compileFile(path);
         const desc = try machine_desc.read(&host);
+        // The descriptor's derive-data is a libc-malloc'd table built by the
+        // throwaway manifest; only the instance keeps it, so free it here.
+        defer if (desc.derive_data != 0) std.c.free(@ptrFromInt(desc.derive_data));
 
         var e = Entry{
             .raw_mode = desc.mode,

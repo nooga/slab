@@ -52,6 +52,9 @@ struct: MachineDesc
   ptr pages          ( PageDesc chain or 0 — tabbed panel; rows declared after
                        a `page` belong to it, and the panel shows a tab bar.
                        When 0, the top-level `rows` chain is the whole panel. )
+  ptr derive         ( cstr or 0 — dsp2 word: params derive-data -- . Called
+                       each block to compute derived params from controls. )
+  ptr derive-data    ( ptr or 0 — opaque machine-built data passed to derive. )
 ;
 
 struct: ControlDesc
@@ -132,6 +135,8 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
 : note-on!       ( str -- ) cstr-new _mf-md@ MachineDesc.note-on! drop ;
 : note-off!      ( str -- ) cstr-new _mf-md@ MachineDesc.note-off! drop ;
 : block-prepare! ( str -- ) cstr-new _mf-md@ MachineDesc.block-prepare! drop ;
+: derive!        ( str -- ) cstr-new _mf-md@ MachineDesc.derive! drop ;
+: derive-data!   ( ptr -- ) _mf-md@ MachineDesc.derive-data! drop ;
 : state-size!    ( n -- ) _mf-md@ MachineDesc.state-size! drop ;
 : params-size!   ( n -- ) _mf-md@ MachineDesc.params-size! drop ;
 : panel-w!       ( f -- ) _mf-md@ MachineDesc.panel-w! drop ;
