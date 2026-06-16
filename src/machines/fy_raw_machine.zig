@@ -1596,6 +1596,48 @@ test "FM-86 fy derive routing matches the dx7_algorithms oracle (all 32)" {
     }
 }
 
+test "FM-86 plays an imported DX7 preset (E.PIANO 1)" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/fm86/fm86.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+
+    // Find the imported E.PIANO preset and apply it through the real loader.
+    const count = mach.preset_count.?(mach.state);
+    var idx: i32 = -1;
+    var i: u8 = 0;
+    while (i < count) : (i += 1) {
+        if (std.mem.eql(u8, std.mem.span(mach.preset_name.?(mach.state, i)), "e-piano-1")) idx = i;
+    }
+    // The factory bank is generated locally (machines/fm86/tools/dx7_import.py)
+    // and may not be committed (Yamaha-derived); validate when present.
+    if (idx < 0) return error.SkipZigTest;
+    mach.apply_preset.?(mach.state, @intCast(idx));
+
+    var events = [_]machine.NoteEvent{
+        .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 1, .pitch = 60, .velocity = 0.9 },
+    };
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = 4096;
+    ctx.note_in = @ptrCast(events[0..].ptr);
+    ctx.note_in_count = events.len;
+    var l = [_]f32{0} ** 4096;
+    var r = [_]f32{0} ** 4096;
+    testRender(mach, &ctx, &l, &r);
+
+    var energy: f64 = 0;
+    var peak: f64 = 0;
+    for (l, r) |sl, sr| {
+        try testing.expect(std.math.isFinite(sl));
+        try testing.expectEqual(sl, sr);
+        try testing.expect(@abs(sl) <= 1.0);
+        energy += @abs(sl);
+        peak = @max(peak, @abs(sl));
+    }
+    try testing.expect(energy > 5.0); // the patch makes sound
+    try testing.expect(peak > 0.05);
+}
+
 test "raw DSP2 saturator fixture processes audio input through generic adapter" {
     const inst = try FyRawMachine.create(testing.allocator, "machines/raw_fixtures/saturator.fy");
     const mach = inst.machineInterface();
