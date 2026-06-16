@@ -1,11 +1,12 @@
-//! Rig validation for the composed FM-86 voice render word
-//! (kernels/06-voices/fm86_voice.fy).
+//! Rig validation for the FM-86 voice stages (kernels/06-voices/fm86_voice.fy).
 //!
-//! The machine's audio path runs ONE dsp2 word per sample. This pins that
-//! single staged word (k-fm86-voice-sample = 6 `call:` EG stages + the matrix
-//! `call:`) against the same plain-Zig reference used for the component
-//! voice/EG tests — proving the `call:`/state-handoff composition produces the
-//! identical signal to the validated parts, with no register-budget fallout.
+//! The machine runs ONE word per sample (k-fm86-voice-sample), which composes
+//! the stages with `call:`. The raw-register probe path can't build a `call:`
+//! word, so here we drive the same stages directly — six fm86-eg-opN (each one
+//! validated dx7-eg-step writing gain*output-level into its lvl slot) then the
+//! matrix — and pin the result sample-exact against the plain-Zig reference.
+//! The composed call: word itself is exercised end-to-end via the machine
+//! adapter (src/machines/fy_raw_machine.zig).
 
 const std = @import("std");
 const Fy = @import("fy").Fy;
@@ -125,14 +126,26 @@ fn renderRef(st: *State, p: *Params, gate: f64) f64 {
     return voiceStep(&st.op, p);
 }
 
+// Drive the voice the way k-fm86-voice-sample's `call:` stages do, but as
+// separate raw-probe calls: the raw-register probe path cannot build a word
+// containing `call:` (only the machine's caller path can), so we exercise each
+// stage word — none of which contain `call:` — directly. This pins the staged
+// DSP sample-exact; the composed call: word itself is covered by the machine
+// end-to-end test (src/machines/fy_raw_machine.zig).
+const EG_WORDS = [_][:0]const u8{ "fm86-eg-op0", "fm86-eg-op1", "fm86-eg-op2", "fm86-eg-op3", "fm86-eg-op4", "fm86-eg-op5" };
+
 fn renderFy(host: *FyHost, out: *f64, st: *State, p: *Params, gate: f64) !void {
     st.gate = gate;
-    const args = [_]Fy.Dsp2RawArg{
+    const eg_args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(st) }, .{ .ptr = @intFromPtr(p) } };
+    for (EG_WORDS) |w| {
+        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(w, 1, &eg_args);
+    }
+    const voice_args = [_]Fy.Dsp2RawArg{
         .{ .ptr = @intFromPtr(out) },
         .{ .ptr = @intFromPtr(st) },
         .{ .ptr = @intFromPtr(p) },
     };
-    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("k-fm86-voice-sample", 1, &args);
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("k-dx7-voice", 1, &voice_args);
 }
 
 fn initIdle(st: *State) void {
@@ -152,7 +165,7 @@ fn setEg(p: *Params, i: usize, s1: f64, s2: f64, s3: f64, s4: f64, l1: f64, l2: 
     p.eg[b + 8] = rs;
 }
 
-test "k-fm86-voice-sample (staged) matches the Zig reference" {
+test "fm86 voice stages match the Zig reference" {
     var host = FyHost.init(std.testing.allocator);
     defer host.deinit();
     try host.compileFile(PATH);

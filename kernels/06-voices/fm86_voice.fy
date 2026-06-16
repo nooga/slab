@@ -146,13 +146,23 @@ dsp2: fm86-prepare
   drop2 drop
 ;
 
-( state params hz velocity -- : start a note. Store the fundamental, raise the
-  gate, and clear every envelope's prev-gate so the next sample sees a note-on
-  edge (retrigger from the current value, no click). Velocity is unused in
+( state params hz velocity -- : start a note. Store the fundamental and set
+  each operator's phase increment immediately (ratio * hz / sr) — note-on runs
+  inside the block, after block-prepare has already filled increments from the
+  *previous* note-hz, so the attack block would otherwise be silent (inc 0).
+  Raise the gate and clear every envelope's prev-gate so the next sample sees a
+  note-on edge (retrigger from current value, no click). Velocity is unused in
   Phase-1 — the MASTER knob sets level. )
 dsp2: fm86-note-on
   | state params hz velocity |
-  hz   params Fm86Params.note-hz-p f!64
+  hz params Fm86Params.note-hz-p f!64
+  hz params Fm86Params.inv-sample-rate@ f*   | base |
+  params Fm86Params.ratio0@ base f* params Fm86Params.inc0-p f!64
+  params Fm86Params.ratio1@ base f* params Fm86Params.inc1-p f!64
+  params Fm86Params.ratio2@ base f* params Fm86Params.inc2-p f!64
+  params Fm86Params.ratio3@ base f* params Fm86Params.inc3-p f!64
+  params Fm86Params.ratio4@ base f* params Fm86Params.inc4-p f!64
+  params Fm86Params.ratio5@ base f* params Fm86Params.inc5-p f!64
   1.0  state Fm86State.gate-p f!64
   0.0  state Fm86State.eg0-pgate-p f!64
   0.0  state Fm86State.eg1-pgate-p f!64
@@ -160,7 +170,7 @@ dsp2: fm86-note-on
   0.0  state Fm86State.eg3-pgate-p f!64
   0.0  state Fm86State.eg4-pgate-p f!64
   0.0  state Fm86State.eg5-pgate-p f!64
-  drop2 drop2
+  drop2 drop2 drop
 ;
 
 ( state params -- : release. Drop the gate; the next sample's note-off edge
