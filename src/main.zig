@@ -96,6 +96,12 @@ pub const Fy = struct {
     struct_layouts: compat.ArrayList(StructLayout),
     untagged_struct_layouts: compat.ArrayList(StructLayout),
     hot_mutex: HotMutex = .{},
+    // Cache of compiled dsp2 raw-repeated callers, keyed by word name, so the
+    // one-shot convenience calls (tests, kernel probe) don't rebuild + relink
+    // the JIT wrapper on every call. Invalidated by dsp2_caller_gen, which is
+    // bumped whenever a word is (re)defined.
+    dsp2_caller_cache: std.StringHashMap(CachedRawCaller) = undefined,
+    dsp2_caller_gen: u64 = 0,
 
     const version = "v0.0.1";
     const DATA_STACK_PAGES = 8; // 32KB usable = 4096 values
@@ -176,12 +182,21 @@ pub const Fy = struct {
             .heap = Heap.init(allocator),
             .struct_layouts = compat.ArrayList(StructLayout).init(allocator),
             .untagged_struct_layouts = compat.ArrayList(StructLayout).init(allocator),
+            .dsp2_caller_cache = std.StringHashMap(CachedRawCaller).init(allocator),
         };
         fy.initStacks();
         return fy;
     }
 
     pub fn deinit(self: *Fy) void {
+        {
+            var it = self.dsp2_caller_cache.iterator();
+            while (it.next()) |kv| {
+                self.fyalloc.destroy(kv.value_ptr.slots);
+                self.fyalloc.free(kv.key_ptr.*);
+            }
+            self.dsp2_caller_cache.deinit();
+        }
         self.image.deinit();
         self.heap.deinit();
         self.deinitStructLayouts(self.struct_layouts.items);
@@ -1221,6 +1236,31 @@ pub const Fy = struct {
         }
     };
 
+    // A cached caller plus the metadata used to decide whether a later call can
+    // reuse it. `slots` is heap-owned (its address is baked into the wrapper).
+    const CachedRawCaller = struct {
+        caller: Dsp2RawRepeatedCaller,
+        slots: *Dsp2RawRepeatedSlots,
+        auto_out: bool,
+        auto_arg3: bool,
+        kinds: [Dsp2.RAW_X_ARG_REGS.len]Dsp2RawArgKind = undefined,
+        kind_count: usize,
+        gen: u64,
+
+        fn matches(self: *const CachedRawCaller, args: []const Dsp2RawArg, auto_out: bool, auto_arg3: bool) bool {
+            if (self.kind_count != args.len or self.auto_out != auto_out or self.auto_arg3 != auto_arg3) return false;
+            for (args, 0..) |a, i| {
+                const k: Dsp2RawArgKind = switch (a) {
+                    .ptr => .ptr,
+                    .int => .int,
+                    .f64 => .f64,
+                };
+                if (self.kinds[i] != k) return false;
+            }
+            return true;
+        }
+    };
+
     fn isPush(instr: u32) bool {
         inline for (0..32) |n| {
             if (instr == Asm.@".push Xn"(n)) return true;
@@ -1874,74 +1914,55 @@ pub const Fy = struct {
     fn callDsp2RawRepeatedWithArgsNoResultInternal(self: *Fy, name: []const u8, iterations: u64, args: []const Dsp2RawArg, auto_advance_out: bool, auto_advance_arg3: bool) !Value {
         if (iterations == 0) return makeInt(0);
         if (auto_advance_arg3 and args.len <= 3) return error.RegisterExhausted;
-
-        const word = self.userWords.get(name) orelse return error.UnknownWord;
-        const raw_body = try self.buildDsp2BodyAlloc(word, .raw_registers);
-        defer self.fyalloc.free(raw_body);
-
-        const report = analyzeCode(raw_body);
-        if (report.local_branch_count != 0 or
-            report.bl_count != 0 or
-            report.blr_count != 0 or
-            report.ret_count != 0 or
-            report.push_count != 0 or
-            report.pop_count != 0)
-        {
-            return error.UnsupportedDsp2RawBody;
-        }
-
-        var code = compat.ArrayList(u32).init(self.fyalloc);
-        errdefer code.deinit();
-
-        try code.append(Asm.@"stp x29, x30, [sp, #0x10]!");
-        try code.append(Asm.@"mov x29, sp");
-        try code.append(Asm.@"stp x21, x22, [sp, #0x10]!");
-        try code.append(Asm.sub_sp_imm(64));
-        inline for (0..8) |i| {
-            try code.append(Asm.str_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
-        }
-        try code.append(Asm.@".rpush Xn"(23));
-        for (Asm.movImm64(23, iterations)) |instr| try code.append(instr);
-
         if (args.len > Dsp2.RAW_X_ARG_REGS.len) return error.RegisterExhausted;
-        for (args, 0..) |arg, i| {
-            const x_reg = Dsp2.RAW_X_ARG_REGS[i];
-            for (Asm.movImm64(x_reg, arg.bits())) |instr| try code.append(instr);
-            switch (arg) {
-                .f64 => try code.append(Asm.@"fmov Dd, Xn"(Dsp2.RAW_D_ARG_REGS[i], x_reg)),
-                else => {},
+
+        // Fast path: reuse a cached caller (compiled+linked once) whose word is
+        // still current and whose argument shape matches — just reload its slots
+        // and run, instead of rebuilding and relinking the JIT wrapper.
+        if (self.dsp2_caller_cache.getPtr(name)) |cached| {
+            if (cached.gen == self.dsp2_caller_gen and cached.matches(args, auto_advance_out, auto_advance_arg3)) {
+                return cached.caller.call(iterations, args);
             }
         }
 
-        const loop_pos = code.items.len;
-        try code.appendSlice(raw_body);
-        if (auto_advance_out) {
-            try code.append(Asm.add_imm(Dsp2.RAW_X_ARG_REGS[0], Dsp2.RAW_X_ARG_REGS[0], 8));
-        }
-        if (auto_advance_arg3) {
-            try code.append(Asm.add_imm(Dsp2.RAW_X_ARG_REGS[3], Dsp2.RAW_X_ARG_REGS[3], 8));
-        }
-        try code.append(Asm.@"subs Xn, Xn, #imm"(23, 1));
-        const bne_pos = code.items.len;
-        try code.append(Asm.@"b.cond offset"(Asm.COND_NE, @intCast(@as(isize, @intCast(loop_pos)) - @as(isize, @intCast(bne_pos)))));
+        // Build a reusable caller. `slots` is heap-owned — its address is baked
+        // into the wrapper, so it must outlive the caller (held by the cache).
+        const slots = try self.fyalloc.create(Dsp2RawRepeatedSlots);
+        slots.* = .{};
+        var kinds: [Dsp2.RAW_X_ARG_REGS.len]Dsp2RawArgKind = undefined;
+        for (args, 0..) |a, i| kinds[i] = switch (a) {
+            .ptr => .ptr,
+            .int => .int,
+            .f64 => .f64,
+        };
+        const caller = self.compileDsp2RawRepeatedCaller(name, slots, kinds[0..args.len], auto_advance_out, auto_advance_arg3) catch |e| {
+            self.fyalloc.destroy(slots);
+            return e;
+        };
 
-        try code.append(Asm.@".rpop Xn"(23));
-        inline for (0..8) |i| {
-            try code.append(Asm.ldr_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
+        const gop = self.dsp2_caller_cache.getOrPut(name) catch |e| {
+            self.fyalloc.destroy(slots);
+            return e;
+        };
+        if (gop.found_existing) {
+            self.fyalloc.destroy(gop.value_ptr.slots); // replace the stale entry
+        } else {
+            gop.key_ptr.* = self.fyalloc.dupe(u8, name) catch |e| {
+                _ = self.dsp2_caller_cache.remove(name);
+                self.fyalloc.destroy(slots);
+                return e;
+            };
         }
-        try code.append(Asm.add_sp_imm(64));
-        try code.append(Asm.@"ldp x21, x22, [sp], #0x10");
-        try code.append(Asm.@"ldp x29, x30, [sp], #0x10");
-        try code.append(Asm.@"mov x0, #0");
-        try code.append(Asm.ret);
-
-        const wrapper_code = try code.toOwnedSlice();
-        const executable = self.image.link(wrapper_code);
-        self.fyalloc.free(wrapper_code);
-
-        Builtins.fyPtr = @intFromPtr(self);
-        const fun: *const fn () Value = @ptrCast(@alignCast(executable));
-        return fun();
+        gop.value_ptr.* = .{
+            .caller = caller,
+            .slots = slots,
+            .auto_out = auto_advance_out,
+            .auto_arg3 = auto_advance_arg3,
+            .kinds = kinds,
+            .kind_count = args.len,
+            .gen = self.dsp2_caller_gen,
+        };
+        return gop.value_ptr.caller.call(iterations, args);
     }
 
     pub fn disassembleDspScalarWordAlloc(self: *const Fy, allocator: std.mem.Allocator, name: []const u8) ![]u8 {
@@ -4491,9 +4512,11 @@ pub const Fy = struct {
                     .p = 0,
                 });
             }
+            self.fy.dsp2_caller_gen += 1; // invalidate cached raw callers
         }
 
         fn defineWord(self: *Compiler, name: []const u8, code: []u32) !void {
+            self.fy.dsp2_caller_gen += 1; // invalidate cached raw callers
             if (self.fy.userWords.getPtr(name)) |word| {
                 // Free existing code if there is any
                 if (word.code.len > 0) {
