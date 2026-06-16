@@ -47,6 +47,10 @@ pub const ParamCurve = enum {
 pub const ParamKind = enum {
     direct_f64,
     switch_sel,
+    // Integer selector over [min, max]: stores the raw integer, rendered as a
+    // detented rotary with generated number labels. For ranges too wide for
+    // switch_sel's option list (e.g. the 32 DX7 algorithms).
+    int_range,
 };
 
 pub const Control = struct {
@@ -414,6 +418,7 @@ pub fn read(host: *FyHost) !Desc {
         out.kind = switch (asInt(ctl.kind)) {
             0 => .direct_f64,
             1 => .switch_sel,
+            2 => .int_range,
             else => return error.InvalidMachineDesc,
         };
         out.offset = @intCast(asInt(ctl.offset));
@@ -434,6 +439,7 @@ pub fn read(host: *FyHost) !Desc {
             out.option_count += 1;
         }
         if (out.kind == .switch_sel and out.option_count == 0) return error.InvalidMachineDesc;
+        if (out.kind == .int_range and !(out.max > out.min)) return error.InvalidMachineDesc;
         d.control_count += 1;
     }
 
@@ -610,11 +616,14 @@ test "descriptor walker reads the FM-86 manifest (7 tabs, 63 controls)" {
     try testing.expectEqualStrings("OP 6", d.pages[6].nameSlice());
     try testing.expectEqual(@as(usize, 6), d.const_count); // 6 rate-scale consts
 
-    // The ALGO control's offset is the Fm86Params.algo field, which the host's
-    // routing hook reads. It must be inside the params region.
+    // The ALGO control is an int_range selector over the 32 algorithms; its
+    // offset is the Fm86Params.algo field the host's routing hook reads.
     var found_algo = false;
     for (d.controls[0..d.control_count]) |*ctl| {
         if (std.mem.eql(u8, ctl.idSlice(), "algo")) {
+            try testing.expectEqual(ParamKind.int_range, ctl.kind);
+            try testing.expectEqual(@as(f64, 1), ctl.min);
+            try testing.expectEqual(@as(f64, 32), ctl.max);
             try testing.expect(ctl.offset + 8 <= d.params_size);
             found_algo = true;
         }

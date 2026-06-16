@@ -433,8 +433,12 @@ pub const FyRawMachine = struct {
         while (i < MAX_CONTROLS) : (i += 1) {
             const value: f32 = if (i < self.desc.control_count) blk: {
                 const ctl = self.desc.controls[i];
-                // switches store the selected index directly (not a 0..1 norm).
-                break :blk if (ctl.kind == .switch_sel) @floatCast(ctl.default) else valueToNorm(ctl, ctl.default);
+                // switches store the selected index and int-steps the raw
+                // integer directly (not a 0..1 norm).
+                break :blk switch (ctl.kind) {
+                    .switch_sel, .int_range => @floatCast(ctl.default),
+                    .direct_f64 => valueToNorm(ctl, ctl.default),
+                };
             } else 0;
             self.raw_control_bits[i] = std.atomic.Value(u32).init(@bitCast(value));
         }
@@ -460,6 +464,7 @@ pub const FyRawMachine = struct {
             switch (control.kind) {
                 .direct_f64 => self.writeParamF64(control.offset, normToValue(control, self.controlNorm(i))),
                 .switch_sel => self.writeParamF64(control.offset, control.option_values[switchIndex(control, self.controlNorm(i))]),
+                .int_range => self.writeParamF64(control.offset, intRangeValue(control, self.controlNorm(i))),
             }
         }
 
@@ -561,7 +566,8 @@ fn applyControlValue(self: *FyRawMachine, id: []const u8, value: f64) void {
                 const hi: f64 = @floatFromInt(@max(ctl.option_count, 1) - 1);
                 self.setControlRaw(i, @floatCast(std.math.clamp(value, 0, hi)));
             },
-            else => self.setControlNorm(i, valueToNorm(ctl.*, value)),
+            .int_range => self.setControlRaw(i, @floatCast(intRangeValue(ctl.*, @floatCast(value)))),
+            .direct_f64 => self.setControlNorm(i, valueToNorm(ctl.*, value)),
         }
         return;
     }
@@ -610,7 +616,8 @@ fn writeParamsJsonImpl(state: *anyopaque, out: *std.ArrayList(u8), alloc: std.me
     for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
         const value: f64 = switch (ctl.kind) {
             .switch_sel => @floatFromInt(switchIndex(ctl.*, self.controlNorm(i))),
-            else => normToValue(ctl.*, self.controlNorm(i)),
+            .int_range => intRangeValue(ctl.*, self.controlNorm(i)),
+            .direct_f64 => normToValue(ctl.*, self.controlNorm(i)),
         };
         const sep: []const u8 = if (i > 0) "," else "";
         const frag = std.fmt.bufPrint(&buf, "{s}\"{s}\":{d}", .{ sep, ctl.idSlice(), value }) catch continue;
@@ -631,7 +638,8 @@ fn buildPresetContent(self: *FyRawMachine, content: []u8) ?usize {
     for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
         const value: f64 = switch (ctl.kind) {
             .switch_sel => @floatFromInt(switchIndex(ctl.*, self.controlNorm(i))),
-            else => normToValue(ctl.*, self.controlNorm(i)),
+            .int_range => intRangeValue(ctl.*, self.controlNorm(i)),
+            .direct_f64 => normToValue(ctl.*, self.controlNorm(i)),
         };
         const sep: []const u8 = if (i > 0) "," else "";
         const frag = std.fmt.bufPrint(content[used..], "{s}\"{s}\":{d}", .{ sep, ctl.idSlice(), value }) catch return null;
@@ -742,6 +750,16 @@ fn switchIndex(control: Control, raw: f32) usize {
     const r = @round(@as(f64, raw));
     const hi: f64 = @floatFromInt(control.option_count - 1);
     return @intFromFloat(std.math.clamp(r, 0, hi));
+}
+
+// Number of selectable steps in an int_range control (max - min + 1).
+fn intRangeCount(control: Control) usize {
+    return @intFromFloat(@round(control.max - control.min) + 1);
+}
+
+// The int_range param value: the stored raw rounded and clamped to [min, max].
+fn intRangeValue(control: Control, raw: f32) f64 {
+    return std.math.clamp(@round(@as(f64, raw)), control.min, control.max);
 }
 
 fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []f32) void {
@@ -1419,7 +1437,24 @@ fn drawStrip(self: *FyRawMachine, rect_: c.rl.Rectangle, view: StripView, mouse:
                     self.setControlRaw(gi, @floatFromInt(idx));
                 }
             },
-            else => {
+            .int_range => {
+                // Detented rotary over [min, max] with generated number labels.
+                const INT_LABEL_CAP = 64;
+                const n_steps = @min(intRangeCount(ctl.*), INT_LABEL_CAP);
+                const lo: i64 = @intFromFloat(@round(ctl.min));
+                var numbuf: [INT_LABEL_CAP][8]u8 = undefined;
+                var labels: [INT_LABEL_CAP][*:0]const u8 = undefined;
+                for (0..n_steps) |s| {
+                    _ = std.fmt.bufPrintZ(numbuf[s][0..], "{d}", .{lo + @as(i64, @intCast(s))}) catch {};
+                    labels[s] = @ptrCast(&numbuf[s][0]);
+                }
+                const cur: i64 = @intFromFloat(intRangeValue(ctl.*, self.controlNorm(gi)));
+                var idx: u8 = @intCast(std.math.clamp(cur - lo, 0, @as(i64, @intCast(n_steps - 1))));
+                if (widgets.knobStepped(kr, ctl.labelZ(), labels[0..n_steps], &idx, mouse)) {
+                    self.setControlRaw(gi, @floatFromInt(lo + @as(i64, idx)));
+                }
+            },
+            .direct_f64 => {
                 var value = self.controlNorm(gi);
                 var vbuf: [16:0]u8 = undefined;
                 const display = formatControlValue(&vbuf, normToValue(ctl.*, value));
@@ -1545,6 +1580,29 @@ test "FM-86 plays a note end to end (routing hook + staged voice)" {
     for (l[1000..1024]) |s| release_tail += @abs(s);
     try testing.expect(sustain_energy > 1.0);
     try testing.expect(release_tail * 16 < sustain_energy);
+}
+
+test "FM-86 ALGO int_range control selects the algorithm routing" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/fm86/fm86.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+
+    // Select algorithm 22 (carriers 1,3,4,5) through the host set-param path.
+    mach.set_param.?(mach.state, "algo", 22);
+
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = 32;
+    var l = [_]f32{0} ** 32;
+    var r = [_]f32{0} ** 32;
+    testRender(mach, &ctx, &l, &r); // runs syncRawParams -> routing hook
+
+    // The int param landed and the routing matches algorithm 22's carriers.
+    try testing.expectEqual(@as(f64, 22), inst.readParamF64(inst.fm86_algo_off.?));
+    const vp: *const dx7_algorithms.VoiceParams = @ptrCast(@alignCast(&inst.params_buf[0]));
+    try testing.expect(vp.c0 > 0 and vp.c2 > 0 and vp.c3 > 0 and vp.c4 > 0); // carriers 1,3,4,5
+    try testing.expectEqual(@as(f64, 0), vp.c1);
+    try testing.expectEqual(@as(f64, 0), vp.c5);
 }
 
 test "raw DSP2 saturator fixture processes audio input through generic adapter" {

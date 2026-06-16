@@ -28,7 +28,7 @@ include "../lib/manifest.fy"
   480.0 panel-w!
 
   ( ── global ───────────────────────────────────────────────────────── )
-  "GLOBAL" "ALGO"   "algo"     Fm86Params.algo     1.0 32.0 1.0 curve-lin knob
+  "GLOBAL" "ALGO"   "algo"     Fm86Params.algo     1.0 32.0 1.0 int-step
   "GLOBAL" "FBK"    "feedback" Fm86Params.feedback 0.0 3.0  0.0 curve-lin knob
   "GLOBAL" "MASTER" "master"   Fm86Params.master   0.0 1.0  0.7 curve-pow knob
 

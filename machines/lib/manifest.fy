@@ -177,6 +177,22 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
 ;
 
 ( default is the selected option index. Follow with `opt` lines. )
+( Integer selector over [min, max]: a detented rotary with generated number
+  labels. The param receives the raw integer. For ranges too wide for `switch`'s
+  option list, e.g. the 32 DX7 algorithms. )
+: int-step  ( module label id offset min max default -- )
+  ControlDesc.alloc
+  ControlDesc.default!
+  ControlDesc.max!
+  ControlDesc.min!
+  ControlDesc.offset!
+  swap cstr-new swap ControlDesc.id!
+  swap cstr-new swap ControlDesc.label!
+  swap cstr-new swap ControlDesc.module!
+  2 swap ControlDesc.kind!
+  _mf-append-ctl
+;
+
 : switch  ( module label id offset default -- )
   ControlDesc.alloc
   ControlDesc.default!
