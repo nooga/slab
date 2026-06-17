@@ -1613,29 +1613,49 @@ test "FM-86 plays an imported DX7 preset (E.PIANO 1)" {
     if (idx < 0) return error.SkipZigTest;
     mach.apply_preset.?(mach.state, @intCast(idx));
 
-    var events = [_]machine.NoteEvent{
-        .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 1, .pitch = 60, .velocity = 0.9 },
-    };
+    // Hold the note across ~0.5 s (render caps a call at MAX_BLOCK), note-on
+    // only in the first block, then keep rendering with the gate held.
     var ctx = std.mem.zeroes(machine.MachineCtx);
     ctx.sample_rate = 48_000;
     ctx.block_size = 4096;
-    ctx.note_in = @ptrCast(events[0..].ptr);
-    ctx.note_in_count = events.len;
-    var l = [_]f32{0} ** 4096;
-    var r = [_]f32{0} ** 4096;
-    testRender(mach, &ctx, &l, &r);
+    var on = [_]machine.NoteEvent{
+        .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 1, .pitch = 60, .velocity = 0.9 },
+    };
 
-    var energy: f64 = 0;
+    var attack_rms: f64 = 0;
+    var late_rms: f64 = 0;
     var peak: f64 = 0;
-    for (l, r) |sl, sr| {
-        try testing.expect(std.math.isFinite(sl));
-        try testing.expectEqual(sl, sr);
-        try testing.expect(@abs(sl) <= 1.0);
-        energy += @abs(sl);
-        peak = @max(peak, @abs(sl));
+    const blocks = 6; // 6 * 4096 ~= 0.5 s
+    var b: usize = 0;
+    while (b < blocks) : (b += 1) {
+        if (b == 0) {
+            ctx.note_in = @ptrCast(on[0..].ptr);
+            ctx.note_in_count = on.len;
+        } else {
+            ctx.note_in = null;
+            ctx.note_in_count = 0;
+        }
+        var l = [_]f32{0} ** 4096;
+        var r = [_]f32{0} ** 4096;
+        testRender(mach, &ctx, &l, &r);
+        var sum: f64 = 0;
+        for (l, r) |sl, sr| {
+            try testing.expect(std.math.isFinite(sl));
+            try testing.expectEqual(sl, sr);
+            try testing.expect(@abs(sl) <= 1.0);
+            sum += @as(f64, sl) * sl;
+            peak = @max(peak, @abs(sl));
+        }
+        const rms = @sqrt(sum / 4096.0);
+        if (b == 0) attack_rms = rms;
+        if (b == blocks - 1) late_rms = rms;
     }
-    try testing.expect(energy > 5.0); // the patch makes sound
-    try testing.expect(peak > 0.05);
+
+    try testing.expect(peak > 0.05); // makes sound
+    // Still ringing ~0.5 s in — the bug where decay/release was ~10x too fast
+    // left this near-silent (notes played only their attack transient).
+    try testing.expect(late_rms > 0.01);
+    try testing.expect(late_rms > attack_rms * 0.05);
 }
 
 test "raw DSP2 saturator fixture processes audio input through generic adapter" {

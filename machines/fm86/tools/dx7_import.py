@@ -23,8 +23,11 @@ import sys, os, json, re, math
 MASTER_BASE = 0.75    # divided by the summed carrier level for headroom
 MOD_INDEX   = 2.0     # extra output scaling for modulators (index, not volume)
 OL_MAX      = 2.5     # matches fm86.fy op-level range
-STEP_MIN    = 0.00001 # EG per-sample dB step at DX7 rate 0 (slowest)
-STEP_MAX    = 0.08    # ... at DX7 rate 99 (fastest); matches fm86.fy r1-4 range
+# EG per-sample step. Calibrated to DX7 segment times: rate 0 ~ 40 s full
+# traversal, rate 99 ~ a few ms (at 48 kHz). step(rate) = MIN*(MAX/MIN)^(r/99).
+# (Previously ~10x too fast, so notes only played their attack.)
+STEP_MIN    = 0.0000005 # rate 0  -> ~1/(STEP_MIN*48k) ~= 42 s for a full segment
+STEP_MAX    = 0.01      # rate 99 -> ~2 ms; both within fm86.fy r1-4 range
 RATIO_MAX   = 32.0
 
 # Carriers (output operators) per DX7 algorithm, op numbers 1..6. From the
