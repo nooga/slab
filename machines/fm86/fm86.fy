@@ -22,11 +22,11 @@ include "fm86_algo.fy"
   "fm86-prepare"        prepare!
   "fm86-note-on"        note-on!
   "fm86-note-off"       note-off!
-  "fm86-block-prepare"  block-prepare!
   "fm86-derive"         derive!
   fm86-algo-table       derive-data!
   Fm86State.size  state-size!
   Fm86Params.size params-size!
+  8 voices!
   480.0 panel-w!
 
   ( ── global ───────────────────────────────────────────────────────── )

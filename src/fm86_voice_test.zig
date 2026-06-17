@@ -14,11 +14,12 @@ const FyHost = @import("fy_host.zig").FyHost;
 
 const PATH = "kernels/06-voices/fm86_voice.fy";
 
-// Mirrors ustruct Fm86State (37 f64): 6 op phase blocks, 6 EG blocks, gate.
+// Mirrors ustruct Fm86State: 6 op phase blocks, 6 EG blocks, gate, note-hz.
 const State = extern struct {
     op: [18]f64 = [_]f64{0} ** 18,
     eg: [18]f64 = [_]f64{0} ** 18, // per op: value, stage, prev-gate
     gate: f64 = 0,
+    note_hz: f64 = 0,
 };
 
 // Mirrors ustruct Fm86Params (110 f64). The first 39 are a Dx7VoiceParams.
@@ -48,7 +49,6 @@ const Params = extern struct {
     algo: f64 = 0,
     feedback: f64 = 0,
     master: f64 = 0,
-    note_hz: f64 = 0,
     inv_sr: f64 = 0,
 };
 

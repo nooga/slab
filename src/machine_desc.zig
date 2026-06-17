@@ -624,7 +624,8 @@ test "descriptor walker reads the FM-86 manifest (7 tabs, 63 controls)" {
     try testing.expectEqual(Mode.voice_sample, d.mode);
     try testing.expectEqualStrings("k-fm86-voice-sample", d.renderWord());
     try testing.expectEqualStrings("fm86-prepare", d.prepareWord().?);
-    try testing.expectEqualStrings("fm86-block-prepare", d.blockPrepareWord().?);
+    try testing.expect(d.blockPrepareWord() == null); // inc is per-sample now
+    try testing.expectEqual(@as(usize, 8), d.voices); // polyphonic
     // Routing lives in fy: a derive word + a machine-built data table.
     try testing.expectEqualStrings("fm86-derive", d.deriveWord().?);
     try testing.expect(d.derive_data != 0);

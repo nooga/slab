@@ -33,8 +33,9 @@ ustruct: Fm86State
   f64 eg3-value f64 eg3-stage f64 eg3-pgate
   f64 eg4-value f64 eg4-stage f64 eg4-pgate
   f64 eg5-value f64 eg5-stage f64 eg5-pgate
-  ( --- scratch --- )
+  ( --- per-voice scratch --- )
   f64 gate                                   ( 1.0 held while the note is on )
+  f64 note-hz                                ( fundamental; per voice for polyphony )
 ;
 
 ustruct: Fm86Params
@@ -60,7 +61,9 @@ ustruct: Fm86Params
   f64 ratio0 f64 ratio1 f64 ratio2 f64 ratio3 f64 ratio4 f64 ratio5
   ( --- global / per-note --- )
   f64 algo f64 feedback f64 master
-  f64 note-hz f64 inv-sample-rate
+  f64 inv-sample-rate
+  ( inc0..5 (the Dx7VoiceParams prefix) and lvl0..5 are per-sample scratch the
+    stages fill from per-voice state; note-hz now lives in Fm86State. )
 ;
 
 ( Per-operator EG stage: advance dx7-eg-step on op N's EG block (gate read
@@ -105,19 +108,48 @@ dsp2: fm86-eg-op5
   drop2
 ;
 
-( out state params -- : one FM-86 voice sample. Six EG stages refresh the
-  per-op levels, then the validated matrix sums the carriers. Each `call:` is
-  a fresh register budget; the prefix-compatible layout lets k-dx7-voice read
-  Fm86State/Fm86Params directly. )
+( state params -- : fill the per-op phase increments from this voice's own
+  fundamental (note-hz lives in state, so each polyphonic voice plays its own
+  pitch). inc = ratio * note-hz / sr, written into the params scratch the
+  matrix reads — like the per-op levels. )
+dsp2: fm86-inc-stage
+  | state params |
+  state Fm86State.note-hz@ params Fm86Params.inv-sample-rate@ f*   | base |
+  params Fm86Params.ratio0@ base f* params Fm86Params.inc0-p f!64
+  params Fm86Params.ratio1@ base f* params Fm86Params.inc1-p f!64
+  params Fm86Params.ratio2@ base f* params Fm86Params.inc2-p f!64
+  params Fm86Params.ratio3@ base f* params Fm86Params.inc3-p f!64
+  params Fm86Params.ratio4@ base f* params Fm86Params.inc4-p f!64
+  params Fm86Params.ratio5@ base f* params Fm86Params.inc5-p f!64
+  drop2 drop
+;
+
+( out state params -- : run the validated matrix and ADD this voice's sample
+  to out (the host renders every voice into the same zeroed buffer, so voices
+  must accumulate — a plain write would let the last/idle voice clobber the
+  chord). dx7-voice-step reads Fm86State/Fm86Params via the prefix layout. )
+dsp2: fm86-matrix-add
+  | out state params |
+  out f@64
+  state params dx7-voice-step
+  f+
+  out f!64
+  drop2 drop
+;
+
+( out state params -- : one FM-86 voice sample. The inc stage sets per-voice
+  pitch, six EG stages refresh the per-op levels, then the matrix accumulates
+  the carriers. Each `call:` is a fresh register budget. )
 dsp2: k-fm86-voice-sample
   | out state params |
+  state params       call: fm86-inc-stage
   state params       call: fm86-eg-op0
   state params       call: fm86-eg-op1
   state params       call: fm86-eg-op2
   state params       call: fm86-eg-op3
   state params       call: fm86-eg-op4
   state params       call: fm86-eg-op5
-  out state params   call: k-dx7-voice
+  out state params   call: fm86-matrix-add
 ;
 
 ( ── machine wiring: prepare / note / block-prepare ───────────────────── )
@@ -146,23 +178,14 @@ dsp2: fm86-prepare
   drop2 drop
 ;
 
-( state params hz velocity -- : start a note. Store the fundamental and set
-  each operator's phase increment immediately (ratio * hz / sr) — note-on runs
-  inside the block, after block-prepare has already filled increments from the
-  *previous* note-hz, so the attack block would otherwise be silent (inc 0).
-  Raise the gate and clear every envelope's prev-gate so the next sample sees a
-  note-on edge (retrigger from current value, no click). Velocity is unused in
-  Phase-1 — the MASTER knob sets level. )
+( state params hz velocity -- : start a note. Store this voice's fundamental
+  (per-voice, in state, so polyphony plays distinct pitches — the inc stage
+  reads it each sample). Raise the gate and clear every envelope's prev-gate so
+  the next sample sees a note-on edge (retrigger from current value, no click).
+  Velocity is unused in Phase-1 — the MASTER knob sets level. )
 dsp2: fm86-note-on
   | state params hz velocity |
-  hz params Fm86Params.note-hz-p f!64
-  hz params Fm86Params.inv-sample-rate@ f*   | base |
-  params Fm86Params.ratio0@ base f* params Fm86Params.inc0-p f!64
-  params Fm86Params.ratio1@ base f* params Fm86Params.inc1-p f!64
-  params Fm86Params.ratio2@ base f* params Fm86Params.inc2-p f!64
-  params Fm86Params.ratio3@ base f* params Fm86Params.inc3-p f!64
-  params Fm86Params.ratio4@ base f* params Fm86Params.inc4-p f!64
-  params Fm86Params.ratio5@ base f* params Fm86Params.inc5-p f!64
+  hz   state Fm86State.note-hz-p f!64
   1.0  state Fm86State.gate-p f!64
   0.0  state Fm86State.eg0-pgate-p f!64
   0.0  state Fm86State.eg1-pgate-p f!64
@@ -170,7 +193,7 @@ dsp2: fm86-note-on
   0.0  state Fm86State.eg3-pgate-p f!64
   0.0  state Fm86State.eg4-pgate-p f!64
   0.0  state Fm86State.eg5-pgate-p f!64
-  drop2 drop2 drop
+  drop2 drop2
 ;
 
 ( state params -- : release. Drop the gate; the next sample's note-off edge
@@ -179,19 +202,4 @@ dsp2: fm86-note-off
   | state params |
   0.0 state Fm86State.gate-p f!64
   drop2
-;
-
-( params sample-rate -- : per-block fill. Each operator's phase increment is
-  ratio * fundamental / sample-rate. Routing (w/c/fb) is filled host-side from
-  the validated 32-algorithm table when ALGO changes. )
-dsp2: fm86-block-prepare
-  | params sample-rate |
-  params Fm86Params.note-hz@ 1.0 sample-rate f/ f*   | base |
-  params Fm86Params.ratio0@ base f* params Fm86Params.inc0-p f!64
-  params Fm86Params.ratio1@ base f* params Fm86Params.inc1-p f!64
-  params Fm86Params.ratio2@ base f* params Fm86Params.inc2-p f!64
-  params Fm86Params.ratio3@ base f* params Fm86Params.inc3-p f!64
-  params Fm86Params.ratio4@ base f* params Fm86Params.inc4-p f!64
-  params Fm86Params.ratio5@ base f* params Fm86Params.inc5-p f!64
-  drop2 drop
 ;

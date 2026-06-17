@@ -1658,6 +1658,44 @@ test "FM-86 plays an imported DX7 preset (E.PIANO 1)" {
     try testing.expect(late_rms > attack_rms * 0.05);
 }
 
+test "FM-86 is polyphonic — a chord sounds all three notes" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/fm86/fm86.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+
+    // Three held notes, distinct note ids so the voice pool keeps them all.
+    const pitches = [_]f32{ 60, 64, 67 }; // C4, E4, G4
+    var events = [_]machine.NoteEvent{
+        .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 1, .pitch = pitches[0], .velocity = 0.9 },
+        .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 2, .pitch = pitches[1], .velocity = 0.9 },
+        .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 3, .pitch = pitches[2], .velocity = 0.9 },
+    };
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = 4096;
+    ctx.note_in = @ptrCast(events[0..].ptr);
+    ctx.note_in_count = events.len;
+    var l = [_]f32{0} ** 4096;
+    var r = [_]f32{0} ** 4096;
+    testRender(mach, &ctx, &l, &r);
+
+    // Goertzel magnitude at each note's fundamental; all three must be present.
+    for (pitches) |p| {
+        const hz = midiToHz(p);
+        const w = 2.0 * std.math.pi * hz / 48_000.0;
+        const cw = @cos(w);
+        var s1: f64 = 0;
+        var s2: f64 = 0;
+        for (l) |x| {
+            const s0 = @as(f64, x) + 2.0 * cw * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        const mag = @sqrt(s1 * s1 + s2 * s2 - 2.0 * cw * s1 * s2) * 2.0 / 4096.0;
+        try testing.expect(mag > 0.02); // this pitch is sounding
+    }
+}
+
 test "raw DSP2 saturator fixture processes audio input through generic adapter" {
     const inst = try FyRawMachine.create(testing.allocator, "machines/raw_fixtures/saturator.fy");
     const mach = inst.machineInterface();
