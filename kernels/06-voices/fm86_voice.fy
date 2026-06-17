@@ -36,6 +36,7 @@ ustruct: Fm86State
   ( --- per-voice scratch --- )
   f64 gate                                   ( 1.0 held while the note is on )
   f64 note-hz                                ( fundamental; per voice for polyphony )
+  f64 vout                                   ( this voice's sample, before accumulate )
 ;
 
 ustruct: Fm86Params
@@ -124,22 +125,30 @@ dsp2: fm86-inc-stage
   drop2 drop
 ;
 
-( out state params -- : run the validated matrix and ADD this voice's sample
-  to out (the host renders every voice into the same zeroed buffer, so voices
-  must accumulate — a plain write would let the last/idle voice clobber the
-  chord). dx7-voice-step reads Fm86State/Fm86Params via the prefix layout. )
-dsp2: fm86-matrix-add
-  | out state params |
-  out f@64
+( state params -- : run the validated 6-op matrix and store this voice's sample
+  in state scratch. Kept its own `call:` stage so the heavy matrix gets a full
+  register budget (same as k-dx7-voice) — folding the accumulate in here too
+  overflows it and corrupts the caller's pointers. )
+dsp2: fm86-matrix-stage
+  | state params |
   state params dx7-voice-step
-  f+
-  out f!64
+  state Fm86State.vout-p f!64
+  drop2
+;
+
+( out state params -- : add this voice's sample to out. The host renders every
+  voice into the same zeroed buffer, so voices must accumulate — a plain write
+  would let the last/idle voice clobber the chord. Light, like Juno's VCA. )
+dsp2: fm86-out-add
+  | out state params |
+  out f@64 state Fm86State.vout@ f+ out f!64
   drop2 drop
 ;
 
 ( out state params -- : one FM-86 voice sample. The inc stage sets per-voice
-  pitch, six EG stages refresh the per-op levels, then the matrix accumulates
-  the carriers. Each `call:` is a fresh register budget. )
+  pitch, six EG stages refresh the per-op levels, the matrix computes the
+  sample into scratch, and a light stage accumulates it into out. Each `call:`
+  is a fresh register budget. )
 dsp2: k-fm86-voice-sample
   | out state params |
   state params       call: fm86-inc-stage
@@ -149,7 +158,8 @@ dsp2: k-fm86-voice-sample
   state params       call: fm86-eg-op3
   state params       call: fm86-eg-op4
   state params       call: fm86-eg-op5
-  out state params   call: fm86-matrix-add
+  state params       call: fm86-matrix-stage
+  out state params   call: fm86-out-add
 ;
 
 ( ── machine wiring: prepare / note / block-prepare ───────────────────── )

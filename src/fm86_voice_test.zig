@@ -20,6 +20,7 @@ const State = extern struct {
     eg: [18]f64 = [_]f64{0} ** 18, // per op: value, stage, prev-gate
     gate: f64 = 0,
     note_hz: f64 = 0,
+    vout: f64 = 0,
 };
 
 // Mirrors ustruct Fm86Params (110 f64). The first 39 are a Dx7VoiceParams.

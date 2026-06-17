@@ -1696,6 +1696,42 @@ test "FM-86 is polyphonic — a chord sounds all three notes" {
     }
 }
 
+test "FM-86 survives many small live-style blocks with note churn" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/fm86/fm86.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 44_100;
+    ctx.block_size = 256;
+    var l = [_]f32{0} ** 256;
+    var r = [_]f32{0} ** 256;
+
+    var blk: usize = 0;
+    while (blk < 300) : (blk += 1) {
+        // Periodically toss in note-ons (chords + voice stealing) and offs.
+        var evs: [4]machine.NoteEvent = undefined;
+        var n: usize = 0;
+        if (blk % 5 == 0) {
+            const base: i32 = @intCast(48 + (blk % 24));
+            for (0..3) |k| {
+                evs[n] = .{ .sample_offset = @intCast(k * 30), .kind = .note_on, .channel = 0, .note_id = @intCast(blk * 4 + k), .pitch = @floatFromInt(base + @as(i32, @intCast(k * 4))), .velocity = 0.8 };
+                n += 1;
+            }
+        }
+        if (blk % 7 == 3) {
+            // After any note-ons above — the render loop requires events sorted
+            // by sample_offset (the real host guarantees this).
+            evs[n] = .{ .sample_offset = 120, .kind = .note_off, .channel = 0, .note_id = @intCast((blk - 1) * 4), .pitch = 0, .velocity = 0 };
+            n += 1;
+        }
+        ctx.note_in = if (n > 0) @ptrCast(evs[0..].ptr) else null;
+        ctx.note_in_count = @intCast(n);
+        testRender(mach, &ctx, &l, &r);
+        for (l) |s| try testing.expect(std.math.isFinite(s));
+    }
+}
+
 test "raw DSP2 saturator fixture processes audio input through generic adapter" {
     const inst = try FyRawMachine.create(testing.allocator, "machines/raw_fixtures/saturator.fy");
     const mach = inst.machineInterface();
