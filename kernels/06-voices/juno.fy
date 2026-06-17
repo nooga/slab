@@ -17,8 +17,8 @@
 include "../01-oscillators/primitives/phase.fy"
 include "../01-oscillators/primitives/blep.fy"
 include "../03-envelopes/primitives/segments.fy"
-include "../04-filters/ms20_svf.fy"
-include "../04-filters/ms20_lpf.fy"
+include "../04-filters/ms20_svf.fy"   ( svf-g: tiny-angle tan -> filter g )
+include "../04-filters/ladder.fy"     ( clean linear ZDF 4-pole ladder )
 
 ustruct: JunoState
   f64 voice-idx   ( host-injected region/voice index )
@@ -30,13 +30,17 @@ ustruct: JunoState
   f64 gate-time   ( age at release; huge while held )
   f64 note-hz
   f64 vel
-  f64 ic1         ( lpf4 integrator states )
-  f64 ic2
+  f64 ic1         ( ladder integrator states - MUST stay contiguous, )
+  f64 ic2         ( ladder4-core indexes &ic1 as a 4-cell LadderState )
+  f64 ic3
+  f64 ic4
   f64 hpf-lp      ( HPF one-pole lowpass state )
   f64 osc-mix     ( stage scratch )
   f64 lfo-out     ( stage scratch, bipolar triangle )
   f64 env-out     ( stage scratch, shared VCF/VCA envelope )
   f64 vcf-out     ( stage scratch )
+  f64 g-z         ( per-sample ladder g, from v-jn-cutoff )
+  f64 k-z         ( per-sample ladder feedback, from v-jn-cutoff )
 ;
 
 ustruct: JunoParams
@@ -158,28 +162,49 @@ dsp2: v-jn-dco
   drop2 drop2 drop2 drop2 drop2 drop
 ;
 
-( state params -- : envelope/LFO/tracking-modulated 4-pole, then HPF. )
-dsp2: v-jn-vcf
+( state params -- : envelope/LFO/keyboard-modulated cutoff -> ladder g
+  [via svf-g, at the base rate], and resonance -> feedback k. svf-g clamps
+  the modulated cutoff into [20, 20160], so the sum can never push the
+  filter past its stable range - the modulation is smooth edge to edge,
+  unlike the old MS-20 lurch. )
+dsp2: v-jn-cutoff
   | state params |
   params JunoParams.cutoff-hz@
   state JunoState.env-out@ params JunoParams.env-amt-hz@ f* f+
   state JunoState.lfo-out@ params JunoParams.lfo-vcf-hz@ f* f+
   state JunoState.note-hz@ 261.6 f-  params JunoParams.kybd@ f*  6.0 f* f+
-  4.0 params JunoParams.inv-sr@ f/ svf-g | g |
-  ( lpf4 damping convention - 1.2/[1+res*8], NOT the svf's mapping:
-    that one rings at zero resonance and whistles at the cutoff )
-  1.2  1.0 params JunoParams.resonance@ 8.0 f* f+  f/ 0.015 2.0 fclamp | damp |
-  state JunoState.ic1-p state JunoState.ic2-p
-  state JunoState.osc-mix@
-  g damp 1.0
-  fms20-lpf4 | lp |
-  ( one-pole highpass: hp = x - lp-state )
+  1.0 params JunoParams.inv-sr@ f/ svf-g
+  state JunoState.g-z-p f!64
+  ( resonance -> feedback, capped below the linear ladder's blow-up at 4 )
+  params JunoParams.resonance@ 3.9 f*
+  state JunoState.k-z-p f!64
+  drop2
+;
+
+( state params -- : the clean linear ZDF 4-pole ladder. Mild input gain
+  compensation [1 + 0.2*k] keeps the low end from thinning as resonance
+  rises, the way the Juno's IR3109 stays full. )
+dsp2: v-jn-ladder
+  | state params |
+  state JunoState.ic1-p
+  state JunoState.osc-mix@  1.0 state JunoState.k-z@ 0.2 f* f+  f*
+  state JunoState.g-z@
+  state JunoState.k-z@
+  ladder4-core
+  state JunoState.vcf-out-p f!64
+  drop2
+;
+
+( state params -- : one-pole highpass on the ladder output: hp = x - lp. )
+dsp2: v-jn-hpf
+  | state params |
+  state JunoState.vcf-out@ | lp |
   state JunoState.hpf-lp@ | hz0 |
   hz0  lp hz0 f-  params JunoParams.hpf-a@ f*  f+ | hz1 |
   hz1 state JunoState.hpf-lp-p f!64
   lp hz1 f-
   state JunoState.vcf-out-p f!64
-  drop2 drop2 drop2 drop
+  drop2 drop2 drop
 ;
 
 ( out state params -- : VCA - env or gate mode - ACCUMULATE into out. )
@@ -201,6 +226,8 @@ dsp2: k-juno-voice
   | out state params |
   state params call: v-jn-mod
   state params call: v-jn-dco
-  state params call: v-jn-vcf
+  state params call: v-jn-cutoff
+  state params call: v-jn-ladder
+  state params call: v-jn-hpf
   out state params call: v-jn-vca
 ;

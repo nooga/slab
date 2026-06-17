@@ -139,6 +139,10 @@ pub fn main(init: std.process.Init) !void {
         try runMs20SvfSweepCase(alloc, cli, &host);
         return;
     }
+    if (std.mem.eql(u8, cli.case_name, "ladder-sweep")) {
+        try runLadderSweepCase(alloc, cli, &host);
+        return;
+    }
 
     const data = try caseData(cli.case_name);
     var a align(16) = data.a;
@@ -626,6 +630,91 @@ fn runMs20SvfSweepCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void 
                 .{ .f64 = params.damping },
             };
             _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("k-ms20-svf", 1, &filt_args);
+
+            output[offset + i] = out_sample;
+            if (!std.math.isFinite(out_sample)) {
+                nonfinite_count += 1;
+            } else {
+                peak = @max(peak, @abs(out_sample));
+                sum += out_sample;
+                sum_sq += out_sample * out_sample;
+            }
+        }
+        offset += frames_per_render;
+        if (offset < output.len) offset += gap_frames;
+    }
+    const run_ns = nowNs() - start;
+
+    var metrics = Metrics{};
+    metrics.ns_per_iter = @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(render_count * frames_per_render));
+    metrics.nonfinite_count = nonfinite_count;
+    metrics.peak = peak;
+    const finite_count = @as(f64, @floatFromInt(output.len - nonfinite_count));
+    if (finite_count > 0) {
+        metrics.mean = sum / finite_count;
+        metrics.rms = @sqrt(sum_sq / finite_count);
+    }
+
+    try writeFilterArtifacts(alloc, cli, output, metrics, sample_rate, frames_per_render, gap_frames);
+    if (metrics.nonfinite_count != 0 or metrics.peak > 8.0) return error.KernelRatchetFailed;
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} renders={} frames={} ns_per_sample={d:.3} peak={d:.3} rms={d:.3}\n",
+        .{ cli.kernel, cli.word, cli.case_name, render_count, frames_per_render, metrics.ns_per_iter, metrics.peak, metrics.rms },
+    );
+}
+
+// Exercise the clean linear ZDF 4-pole ladder (kernels/04-filters/ladder.fy)
+// across a cutoff sweep at several resonance settings, entirely through the fy
+// chain. g = tan(pi*fc/sr) is computed here and passed in; k is the feedback,
+// capped below the linear ladder's oscillation threshold of 4. Writes a WAV for
+// listening / spectrogram plotting.
+fn runLadderSweepCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sample_rate = FILTER_SAMPLE_RATE;
+    const sr_f: f64 = @floatFromInt(sample_rate);
+    const render_secs: f64 = 0.6;
+    const frames_per_render: usize = @intFromFloat(render_secs * sr_f);
+    const gap_frames: usize = @intFromFloat(FILTER_GAP_SECONDS * sr_f);
+    const render_count = FILTER_RESONANCES.len;
+    const total_frames = render_count * frames_per_render + (render_count - 1) * gap_frames;
+
+    const output = try alloc.alloc(f64, total_frames);
+    defer alloc.free(output);
+    @memset(output, 0);
+
+    const saw_gain: f64 = 0.5;
+    const noise_gain: f64 = 0.03;
+
+    const start = nowNs();
+    var peak: f64 = 0;
+    var sum: f64 = 0;
+    var sum_sq: f64 = 0;
+    var nonfinite_count: usize = 0;
+    var offset: usize = 0;
+    for (FILTER_RESONANCES) |resonance| {
+        // k = feedback; clamp below 4 so the linear ladder never blows up.
+        const k = @min(resonance, 1.0) * 3.9;
+        var lstate = [_]f64{ 0, 0, 0, 0 };
+        var out_sample: f64 = 0;
+        var osc_phase: f64 = 0;
+        var noise_state: u32 = 0x1234abcd;
+        var i: usize = 0;
+        while (i < frames_per_render) : (i += 1) {
+            const pos = @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(frames_per_render - 1));
+            const cutoff = FILTER_CUTOFF_START_HZ * @exp(@log(FILTER_CUTOFF_END_HZ / FILTER_CUTOFF_START_HZ) * pos);
+            const g = std.math.tan(std.math.pi * cutoff / sr_f);
+            const dt = FILTER_INPUT_HZ / sr_f;
+            const input = zigSawPolyblep(osc_phase, dt) * saw_gain + whiteNoise(&noise_state) * noise_gain;
+            osc_phase = wrap01(osc_phase + dt);
+
+            const args = [_]Fy.Dsp2RawArg{
+                .{ .ptr = @intFromPtr(&out_sample) },
+                .{ .ptr = @intFromPtr(&lstate[0]) },
+                .{ .f64 = input },
+                .{ .f64 = g },
+                .{ .f64 = k },
+            };
+            _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("k-ladder4", 1, &args);
 
             output[offset + i] = out_sample;
             if (!std.math.isFinite(out_sample)) {
