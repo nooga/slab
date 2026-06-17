@@ -11,6 +11,7 @@ const engine_mod = @import("engine.zig");
 const track_mod = @import("track.zig");
 const clip_mod = @import("clip.zig");
 const audio_pool_mod = @import("audio_pool.zig");
+const wav_mod = @import("wav.zig");
 const registry_mod = @import("machine_registry.zig");
 const fy_host_mod = @import("fy_host.zig");
 const document_mod = @import("document.zig");
@@ -28,6 +29,7 @@ const arrangement = @import("ui/arrangement.zig");
 const clip_editor = @import("ui/clip_editor.zig");
 const audio_clip_editor = @import("ui/audio_clip_editor.zig");
 const machine_bay = @import("ui/machine_bay.zig");
+const render_dialog = @import("ui/render_dialog.zig");
 
 test {
     _ = @import("fy_host.zig");
@@ -87,6 +89,34 @@ const EditTarget = struct {
     track: ?usize = null,
     pitch: ?u8 = null,
 };
+
+/// An in-flight offline bounce running on a worker thread. The UI thread
+/// polls `progress`/`done` to draw the progress bar and finalizes the WAV
+/// once the worker signals completion.
+const RenderJob = struct {
+    active: bool = false,
+    thread: ?std.Thread = null,
+    buf: []f32 = &.{},
+    path: []u8 = &.{},
+    total_frames: usize = 0,
+    start_sample: u64 = 0,
+    sample_rate: u32 = 48_000,
+    start_ns: i128 = 0,
+    progress: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    cancel: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+};
+
+fn renderWorker(engine: *engine_mod.Engine, job: *RenderJob) void {
+    engine.renderOffline(job.buf, job.total_frames, job.start_sample, &job.progress, &job.cancel);
+    job.done.store(true, .release);
+}
+
+fn nowNs() i128 {
+    var info: std.c.mach_timebase_info_data = undefined;
+    _ = std.c.mach_timebase_info(&info);
+    return @divTrunc(@as(i128, @intCast(std.c.mach_absolute_time())) * @as(i128, @intCast(info.numer)), @as(i128, @intCast(info.denom)));
+}
 
 const RenameKind = enum { none, track, clip, preset_save, preset_rename };
 
@@ -442,6 +472,8 @@ pub fn main() !void {
     var status: StatusMessage = .{};
     var edit_snap: snap_mod.Setting = .note_16;
     var rename: RenameState = .{};
+    var render_dlg: render_dialog.State = .{};
+    var render_job: RenderJob = .{};
 
     while (!c.rl.WindowShouldClose()) {
         const m = widgets.Mouse.sample();
@@ -452,7 +484,7 @@ pub fn main() !void {
         // While a menu is open it's modal for the mouse: panes get a
         // neutralized mouse (no hover/clicks fall through), the menu keeps
         // handling input off the raw frame mouse captured in beginFrame.
-        const pane_m = if (widgets.menuActive()) widgets.neutralMouse() else m;
+        const pane_m = if (widgets.menuActive() or render_dlg.active) widgets.neutralMouse() else m;
 
         layout.handleInput(sw, sh, pane_m);
 
@@ -461,7 +493,9 @@ pub fn main() !void {
         if (!layout.clip_editor_visible and focus == .piano_roll) focus = .arrangement;
         if (pane_m.left_pressed) focus = focusFromPoint(rects, pane_m, layout.clip_editor_visible);
 
-        if (rename.active()) {
+        if (render_dlg.active) {
+            // Modal: only Esc/Enter act, handled after the dialog draws below.
+        } else if (rename.active()) {
             try updateRename(alloc, &history, &rename, tracks, &transport, &dirty, &status, m);
         } else if (try handleProjectShortcuts(
             alloc,
@@ -490,6 +524,7 @@ pub fn main() !void {
             handleSnapKeys(&edit_snap, &status);
             try handleFocusedEditCommands(alloc, &history, &clipboard, &status, focus, edit_snap, tracks, &transport, &selected_track, &selected_clip, &rename, &dirty);
             try handleFocusedDelete(alloc, &history, &status, focus, tracks, &transport, &selected_clip, &dirty);
+            if (commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_R)) render_dlg.active = true;
             if (c.rl.IsKeyPressed(c.rl.KEY_SPACE)) transport.toggle();
             if (c.rl.IsKeyPressed(c.rl.KEY_HOME)) transport.rewind();
             if (c.rl.IsKeyPressed(c.rl.KEY_TAB)) layout.clip_editor_visible = !layout.clip_editor_visible;
@@ -500,6 +535,7 @@ pub fn main() !void {
         c.rl.ClearBackground(theme.bg);
 
         const tres = top_bar.draw(rects.top_bar, &transport, &edit_snap, project_path, project_path_chosen, dirty, pane_m);
+        if (tres.render_audio) render_dlg.active = true;
 
         // (Side browser removed — machines are added via the "+" in the
         // machine-bay titlebar; see mbres.add_machine below.)
@@ -738,6 +774,18 @@ pub fn main() !void {
 
         layout.drawSplitters(rects, m);
         if (rename.active()) drawInlineRename(&rename);
+
+        // Render Audio modal (drawn on top; modal for the mouse).
+        var render_action: render_dialog.Result = .none;
+        if (render_dlg.active) {
+            const loop_available = transport.loopEnabled() and transport.loopEndBeats() > transport.loopStartBeats();
+            const prog: ?render_dialog.Progress = if (render_job.active) renderProgress(&render_job) else null;
+            render_action = render_dialog.draw(&render_dlg, sw, sh, loop_available, prog, m);
+            if (c.rl.IsKeyPressed(c.rl.KEY_ESCAPE)) render_action = .cancel;
+            if (!render_job.active and (c.rl.IsKeyPressed(c.rl.KEY_ENTER) or c.rl.IsKeyPressed(c.rl.KEY_KP_ENTER)))
+                render_action = .render;
+        }
+
         widgets.drawTooltip(sw, sh);
         widgets.drawContextMenu();
         widgets.applyCursor();
@@ -745,6 +793,32 @@ pub fn main() !void {
         for (tracks) |*t| t.publishSnapshot(&audio_pool);
 
         c.rl.EndDrawing();
+
+        switch (render_action) {
+            .none => {},
+            .cancel => {
+                if (render_job.active) {
+                    render_job.cancel.store(true, .monotonic); // worker stops; finalize below
+                } else {
+                    render_dlg.active = false;
+                }
+            },
+            .render => {
+                if (!render_job.active) {
+                    startRender(alloc, &engine, &audio, &transport, tracks, render_dlg, project_path, &render_job, &status) catch |err| {
+                        std.log.err("render start failed: {s}", .{@errorName(err)});
+                        status.set("Render failed", .{});
+                        render_dlg.active = false;
+                    };
+                }
+            },
+        }
+
+        // Finalize a worker render once it signals done (or after a cancel).
+        if (render_job.active and render_job.done.load(.acquire)) {
+            finishRender(alloc, &audio, &render_job, &status);
+            render_dlg.active = false;
+        }
         if (tres.save_project) {
             try saveProject(
                 alloc,
@@ -790,6 +864,16 @@ pub fn main() !void {
             );
         }
         prev_selected_clip = selected_clip;
+    }
+
+    // Window closing mid-render: stop the worker and free its buffers before
+    // the engine/allocator tear down (the worker holds pointers into both).
+    if (render_job.active) {
+        render_job.cancel.store(true, .monotonic);
+        if (render_job.thread) |t| t.join();
+        alloc.free(render_job.buf);
+        alloc.free(render_job.path);
+        render_job = .{};
     }
 }
 
@@ -936,6 +1020,135 @@ fn saveProject(
     dirty.* = false;
     status.set("Saved {s}", .{basename(project_path.*)});
     std.log.info("saved {s}", .{project_path.*});
+}
+
+/// Begin an offline project bounce → 24-bit stereo WAV. Resolves the range,
+/// prompts for a path, stops the device, and spawns a worker thread that
+/// renders into `job.buf`. The UI thread polls progress and calls
+/// finishRender once the worker is done. The device stays stopped for the
+/// (brief, faster-than-realtime) duration because the offline render shares
+/// the engine's scratch/machine state with the live callback.
+fn startRender(
+    alloc: std.mem.Allocator,
+    engine: *engine_mod.Engine,
+    audio: *audio_mod.Audio,
+    transport: *transport_mod.Transport,
+    tracks: []track_mod.Track,
+    dlg: render_dialog.State,
+    project_path: []const u8,
+    job: *RenderJob,
+    status: *StatusMessage,
+) !void {
+    const sr: u64 = transport.sample_rate;
+
+    // Resolve the render range in samples.
+    var start: u64 = 0;
+    var end: u64 = 0;
+    const loop_available = transport.loopEnabled() and transport.loopEndBeats() > transport.loopStartBeats();
+    if (dlg.rangeMode() == .loop and loop_available) {
+        start = transport.beatsToSamples(transport.loopStartBeats());
+        end = transport.beatsToSamples(transport.loopEndBeats());
+    } else {
+        var last_beat: f64 = 0;
+        for (tracks) |*t| {
+            for (t.clips.items) |*clip| last_beat = @max(last_beat, clip.endBeat());
+        }
+        end = transport.beatsToSamples(last_beat);
+    }
+    if (end <= start) {
+        status.set("Nothing to render", .{});
+        return;
+    }
+
+    const tail_frames: u64 = @intFromFloat(@max(0.0, dlg.tail_sec) * @as(f32, @floatFromInt(sr)));
+    const total_frames: usize = @intCast((end - start) + tail_frames);
+
+    // Native save panel — default name derived from the project file.
+    var name_buf: [128]u8 = undefined;
+    const default_name = defaultBounceName(&name_buf, project_path);
+    const path = (try native_dialog.saveAudioFile(alloc, default_name)) orelse return; // cancelled
+
+    // Render buffer (interleaved stereo). ~46 MB per minute of stereo f32.
+    const buf = alloc.alloc(f32, total_frames * audio_mod.CHANNELS) catch |err| {
+        alloc.free(path);
+        return err;
+    };
+
+    job.* = .{
+        .active = true,
+        .buf = buf,
+        .path = path,
+        .total_frames = total_frames,
+        .start_sample = start,
+        .sample_rate = @intCast(sr),
+        .start_ns = nowNs(),
+    };
+
+    // The device must be stopped while the worker renders.
+    audio.stop();
+    job.thread = std.Thread.spawn(.{}, renderWorker, .{ engine, job }) catch |err| {
+        // Spawn failed — fall back to a synchronous render so we still produce output.
+        engine.renderOffline(buf, total_frames, start, &job.progress, &job.cancel);
+        job.done.store(true, .release);
+        std.log.warn("render thread spawn failed ({s}); ran synchronously", .{@errorName(err)});
+        return;
+    };
+}
+
+/// Build the live Progress telemetry from a running job.
+fn renderProgress(job: *RenderJob) render_dialog.Progress {
+    const sr_f: f64 = @floatFromInt(job.sample_rate);
+    const done_f: f64 = @floatFromInt(job.progress.load(.monotonic));
+    const total_f: f64 = @floatFromInt(job.total_frames);
+    const elapsed: f64 = @as(f64, @floatFromInt(nowNs() - job.start_ns)) / 1_000_000_000.0;
+    const rendered_s = done_f / sr_f;
+    return .{
+        .fraction = if (total_f > 0) @floatCast(done_f / total_f) else 0,
+        .elapsed_s = elapsed,
+        .speed_x = if (elapsed > 0.001) rendered_s / elapsed else 0,
+        .rendered_s = rendered_s,
+        .total_s = total_f / sr_f,
+    };
+}
+
+/// Join the worker, restart the device, and (unless cancelled) encode + write
+/// the WAV. Frees the job's buffers and clears it.
+fn finishRender(alloc: std.mem.Allocator, audio: *audio_mod.Audio, job: *RenderJob, status: *StatusMessage) void {
+    if (job.thread) |t| t.join();
+    job.thread = null;
+    audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+
+    const cancelled = job.cancel.load(.monotonic);
+    if (!cancelled) {
+        if (wav_mod.encodeStereo24(alloc, job.buf, job.sample_rate)) |wav_bytes| {
+            defer alloc.free(wav_bytes);
+            if (document_mod.writeFile(alloc, job.path, wav_bytes)) |_| {
+                const secs = @as(f64, @floatFromInt(job.total_frames)) / @as(f64, @floatFromInt(job.sample_rate));
+                status.set("Rendered {s} ({d:.1}s)", .{ basename(job.path), secs });
+                std.log.info("rendered {s} ({d} frames)", .{ job.path, job.total_frames });
+            } else |err| {
+                std.log.err("wav write failed: {s}", .{@errorName(err)});
+                status.set("Render failed (write)", .{});
+            }
+        } else |err| {
+            std.log.err("wav encode failed: {s}", .{@errorName(err)});
+            status.set("Render failed (encode)", .{});
+        }
+    } else {
+        status.set("Render cancelled", .{});
+    }
+
+    alloc.free(job.buf);
+    alloc.free(job.path);
+    job.* = .{};
+}
+
+/// Build a default ".wav" file name from the project path basename.
+fn defaultBounceName(buf: []u8, project_path: []const u8) []const u8 {
+    const base = basename(project_path);
+    const stem = if (std.mem.lastIndexOfScalar(u8, base, '.')) |i| base[0..i] else base;
+    if (stem.len == 0) return "bounce.wav";
+    return std.fmt.bufPrint(buf, "{s}.wav", .{stem}) catch "bounce.wav";
 }
 
 fn openProject(
@@ -1719,7 +1932,7 @@ fn executeEditCommand(
         },
         // `import_audio` is intercepted in the arrangement-result handler
         // (it needs the audio pool + file dialog); never reaches here.
-        .none, .copy, .select_all, .clear_selection, .rename, .file_open, .file_save, .file_save_as, .import_audio => {},
+        .none, .copy, .select_all, .clear_selection, .rename, .file_open, .file_save, .file_save_as, .render_audio, .import_audio => {},
     }
 
     if (changed) {

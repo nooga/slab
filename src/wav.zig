@@ -183,6 +183,52 @@ fn decodeSample(d: []const u8, o: usize, fmt: u16, bits: u16) Error!f64 {
     return Error.UnsupportedFormat;
 }
 
+// ── 24-bit PCM stereo encoder (project bounce) ─────────────────────────
+//
+// Encode interleaved L R L R… f32 samples in [-1, 1] into a standard
+// 44-byte-header 24-bit PCM stereo WAV. Returns an owned byte buffer; the
+// caller writes it to disk (e.g. via document.writeFile, which uses the
+// codebase's libc IO convention). Samples are hard-clamped to [-1, 1] and
+// rounded to signed 24-bit.
+pub fn encodeStereo24(alloc: std.mem.Allocator, interleaved: []const f32, sample_rate: u32) Error![]u8 {
+    const channels: u32 = 2;
+    const bytes_per_sample: u32 = 3; // 24-bit
+    const block_align: u32 = channels * bytes_per_sample; // 6
+    const byte_rate: u32 = sample_rate * block_align;
+    const data_len: usize = interleaved.len * bytes_per_sample;
+
+    const buf = try alloc.alloc(u8, 44 + data_len);
+    errdefer alloc.free(buf);
+
+    @memcpy(buf[0..4], "RIFF");
+    writeU32(buf, 4, @intCast(36 + data_len));
+    @memcpy(buf[8..12], "WAVE");
+    @memcpy(buf[12..16], "fmt ");
+    writeU32(buf, 16, 16);
+    writeU16(buf, 20, 1); // PCM
+    writeU16(buf, 22, @intCast(channels));
+    writeU32(buf, 24, sample_rate);
+    writeU32(buf, 28, byte_rate);
+    writeU16(buf, 32, @intCast(block_align));
+    writeU16(buf, 34, 24); // bits per sample
+    @memcpy(buf[36..40], "data");
+    writeU32(buf, 40, @intCast(data_len));
+
+    var o: usize = 44;
+    for (interleaved) |s| {
+        const clamped = std.math.clamp(s, -1.0, 1.0);
+        var v: i32 = @intFromFloat(@round(clamped * 8_388_607.0));
+        if (v > 8_388_607) v = 8_388_607;
+        if (v < -8_388_608) v = -8_388_608;
+        const u: u32 = @bitCast(v);
+        buf[o] = @truncate(u);
+        buf[o + 1] = @truncate(u >> 8);
+        buf[o + 2] = @truncate(u >> 16);
+        o += 3;
+    }
+    return buf;
+}
+
 // ── tests ─────────────────────────────────────────────────────────────
 
 const testing = std.testing;
@@ -264,4 +310,23 @@ test "rejects non-RIFF" {
     var buf = [_]u8{0} ** 64;
     @memcpy(buf[0..4], "JUNK");
     try testing.expectError(Error.NotRiffWave, parse(testing.allocator, &buf));
+}
+
+test "encodeStereo24 round-trips through parse" {
+    // Two frames: (0.5, -0.5) folds to 0.0; (1.0, 0.0) folds to 0.5.
+    const interleaved = [_]f32{ 0.5, -0.5, 1.0, 0.0 };
+    const bytes = try encodeStereo24(testing.allocator, &interleaved, 48_000);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqualSlices(u8, "RIFF", bytes[0..4]);
+    try testing.expectEqualSlices(u8, "WAVE", bytes[8..12]);
+    try testing.expectEqual(@as(u16, 24), rdU16(bytes, 34));
+    try testing.expectEqual(@as(usize, 44 + 4 * 3), bytes.len);
+
+    var s = try parse(testing.allocator, bytes);
+    defer s.deinit(testing.allocator);
+    try testing.expectEqual(@as(f64, 48_000), s.sample_rate);
+    try testing.expectEqual(@as(usize, 2), s.data.len);
+    try testing.expectApproxEqAbs(@as(f64, 0.0), s.data[0], 1e-4);
+    try testing.expectApproxEqAbs(@as(f64, 0.5), s.data[1], 1e-4);
 }

@@ -75,6 +75,7 @@ pub const EditCommand = enum {
     file_open,
     file_save,
     file_save_as,
+    render_audio,
     split_at_playhead,
     quantize,
     rename,
@@ -109,6 +110,7 @@ fn commandShortcut(cmd: EditCommand) ?[*:0]const u8 {
         .file_save => "\u{2318}S",
         .file_save_as => "\u{2318}\u{21E7}S",
         .file_open => "\u{2318}O",
+        .render_audio => "\u{2318}R",
         else => null,
     };
 }

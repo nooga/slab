@@ -50,6 +50,17 @@ char *slab_open_audio_dialog(void) {
     }
 }
 
+char *slab_save_audio_dialog(const char *default_name) {
+    @autoreleasepool {
+        NSSavePanel *panel = [NSSavePanel savePanel];
+        [panel setAllowedFileTypes:@[@"wav"]];
+        [panel setTitle:@"Render Audio"];
+        [panel setNameFieldStringValue:[NSString stringWithUTF8String:(default_name != NULL ? default_name : "bounce.wav")]];
+        if ([panel runModal] != NSModalResponseOK) return NULL;
+        return copy_path([[panel URL] path]);
+    }
+}
+
 void slab_free_dialog_path(char *path) {
     free(path);
 }

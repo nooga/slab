@@ -25,6 +25,7 @@ pub const Result = struct {
     open_project: bool = false,
     save_project: bool = false,
     save_project_as: bool = false,
+    render_audio: bool = false,
 };
 
 const FILE_MENU_KEY: u64 = 0x5346494c45; // "SFILE"
@@ -77,11 +78,14 @@ pub fn draw(r: c.rl.Rectangle, transport: *Transport, edit_snap: *snap_mod.Setti
             .{ .label = "Open\u{2026}", .command = .file_open },
             .{ .label = "Save", .command = .file_save },
             .{ .label = "Save As\u{2026}", .command = .file_save_as },
+            .{ .separator = true },
+            .{ .label = "Render Audio\u{2026}", .command = .render_audio },
         };
         switch (widgets.contextMenu(FILE_MENU_KEY, &file_items, m)) {
             .file_open => result.open_project = true,
             .file_save => result.save_project = true,
             .file_save_as => result.save_project_as = true,
+            .render_audio => result.render_audio = true,
             else => {},
         }
         x += file_w + GROUP_GAP;

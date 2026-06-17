@@ -47,6 +47,47 @@ pub const Engine = struct {
         self.render(out, frames);
     }
 
+    /// Offline (non-realtime) bounce. Renders `total_frames` starting at
+    /// `start_sample` into the interleaved stereo `out` buffer (length must
+    /// be `total_frames * CHANNELS`), reusing the exact per-block signal
+    /// path as live playback — instruments, audio clips, insert FX, the
+    /// master FX chain/fader, and the master soft-clip stage.
+    ///
+    /// MUST be called with the audio device stopped: it shares the Engine's
+    /// scratch buffers and each machine's single state with the live
+    /// callback. Machines are reset before (clean start) and after (so live
+    /// playback resumes cleanly). Loop is ignored — a bounce is always a
+    /// single linear pass over the requested range.
+    ///
+    /// `progress` (frames rendered so far) and `cancel` (abort request) are
+    /// optional and let a UI thread poll / interrupt a render running on a
+    /// worker thread. On cancel the pass stops early; the caller discards the
+    /// buffer.
+    pub fn renderOffline(
+        self: *Engine,
+        out: []f32,
+        total_frames: usize,
+        start_sample: u64,
+        progress: ?*std.atomic.Value(usize),
+        cancel: ?*std.atomic.Value(bool),
+    ) void {
+        self.resetAllMachines();
+        var done: usize = 0;
+        var pos = start_sample;
+        while (done < total_frames) {
+            if (cancel) |c| if (c.load(.monotonic)) break;
+            const chunk: u32 = @intCast(@min(@as(usize, MAX_BLOCK), total_frames - done));
+            const slice = out[done * audio.CHANNELS ..][0 .. chunk * audio.CHANNELS];
+            self.renderChunk(slice, chunk, pos);
+            masterSoftClip(slice);
+            done += chunk;
+            pos += chunk;
+            if (progress) |p| p.store(done, .monotonic);
+        }
+        self.resetAllMachines();
+        self.was_playing = false;
+    }
+
     fn render(self: *Engine, out: [*]f32, frames: u32) void {
         const n: usize = frames;
         const total = n * audio.CHANNELS;
