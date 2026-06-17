@@ -21,6 +21,27 @@ var tap_times: [TAP_MAX]f64 = .{ 0, 0, 0, 0 };
 var tap_count: usize = 0;
 var tap_last: f64 = 0;
 
+// Logo wordmark texture, loaded once (lazily, so the GL context exists) from
+// the repo-relative path — same convention as fonts.zig. Mipmapped + trilinear
+// for a clean downscale of the large source image into the small plate.
+var logo_tex: c.rl.Texture2D = undefined;
+var logo_loaded = false;
+var logo_ok = false;
+
+fn logoTexture() ?c.rl.Texture2D {
+    if (!logo_loaded) {
+        logo_loaded = true;
+        var t = c.rl.LoadTexture("slab.png");
+        if (t.id != 0) {
+            c.rl.GenTextureMipmaps(&t);
+            c.rl.SetTextureFilter(t, c.rl.TEXTURE_FILTER_TRILINEAR);
+            logo_tex = t;
+            logo_ok = true;
+        }
+    }
+    return if (logo_ok) logo_tex else null;
+}
+
 pub const Result = struct {
     open_project: bool = false,
     save_project: bool = false,
@@ -157,7 +178,12 @@ pub fn draw(r: c.rl.Rectangle, transport: *Transport, edit_snap: *snap_mod.Setti
     const title_size = theme.fsTitle();
     const tw = widgets.measureTextF(title, title_size);
     const icon_sz = title_size;
-    const logo_w = theme.size(8) + icon_sz + theme.size(5) + tw + theme.size(8);
+    const pad = theme.size(3);
+    const tex = logoTexture();
+    const logo_w = if (tex) |t| blk: {
+        const aspect = @as(f32, @floatFromInt(t.width)) / @as(f32, @floatFromInt(t.height));
+        break :blk (h - pad * 2) * aspect + pad * 2;
+    } else theme.size(8) + icon_sz + theme.size(5) + tw + theme.size(8);
     const logo_x = r.x + r.width - logo_w;
 
     // Inert raised bevel fills the empty space between the controls and the
@@ -167,10 +193,19 @@ pub fn draw(r: c.rl.Rectangle, transport: *Transport, edit_snap: *snap_mod.Setti
         widgets.bevelRaised(widgets.rect(fill_x, y, logo_x - fill_x - GROUP_GAP, h), theme.slab_fill, theme.slab_hi, theme.slab_lo);
     }
 
-    // Logo plate: waveform glyph + wordmark, amber on raised chrome.
+    // Logo plate: the slab.png wordmark on raised chrome, fit to plate height.
+    // Falls back to the waveform glyph + amber wordmark if the image is absent.
     widgets.bevelRaised(widgets.rect(logo_x, y, logo_w, h), theme.slab_fill, theme.slab_hi, theme.slab_lo);
-    widgets.drawIcon(.waveform, logo_x + theme.size(8), r.y + (r.height - icon_sz) / 2, icon_sz, theme.accent_hi);
-    widgets.drawLabelF(title, logo_x + theme.size(8) + icon_sz + theme.size(5), r.y + (r.height - title_size) / 2 - 1, title_size, theme.accent_hi);
+    if (tex) |t| {
+        const dh = h - pad * 2;
+        const dw = dh * (@as(f32, @floatFromInt(t.width)) / @as(f32, @floatFromInt(t.height)));
+        const dest = widgets.rect(logo_x + pad, y + pad, dw, dh);
+        const src = c.rl.Rectangle{ .x = 0, .y = 0, .width = @floatFromInt(t.width), .height = @floatFromInt(t.height) };
+        c.rl.DrawTexturePro(t, src, dest, c.rl.Vector2{ .x = 0, .y = 0 }, 0, c.rl.Color{ .r = 255, .g = 255, .b = 255, .a = 255 });
+    } else {
+        widgets.drawIcon(.waveform, logo_x + theme.size(8), r.y + (r.height - icon_sz) / 2, icon_sz, theme.accent_hi);
+        widgets.drawLabelF(title, logo_x + theme.size(8) + icon_sz + theme.size(5), r.y + (r.height - title_size) / 2 - 1, title_size, theme.accent_hi);
+    }
 
     return result;
 }
