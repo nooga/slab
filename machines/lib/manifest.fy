@@ -73,7 +73,13 @@ struct: ControlDesc
 
 struct: OptionDesc  ptr next  ptr label  ptr value ;
 struct: StripDesc   ptr next  ptr module  ptr cols ;
-struct: DisplayDesc ptr next  ptr name  ptr kind  ptr sources ;
+( kind 0 adsr, 1 waveform, 2 meter.  off0..off6 are state byte offsets used
+  only by the meter kind, in order: gain-min, in-peak, out-peak,
+  ms-momentary, ms-short, ms-integrated-sum, integrated-count. )
+struct: DisplayDesc
+  ptr next  ptr name  ptr kind  ptr sources
+  ptr off0  ptr off1  ptr off2  ptr off3  ptr off4  ptr off5  ptr off6
+;
 struct: PageDesc    ptr next  ptr name  ptr rows ;
 struct: RowDesc     ptr next  ptr weight  ptr cells ;
 struct: CellDesc    ptr next  ptr weight  ptr items ;
@@ -253,6 +259,28 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   swap cstr-new swap DisplayDesc.sources!
   swap cstr-new swap DisplayDesc.name!
   0 swap DisplayDesc.kind!
+  _mf-last-disp @64 0 =
+  [ dup _mf-md@ MachineDesc.displays! drop ]
+  [ dup _mf-last-disp @64 DisplayDesc.next! drop ]
+  ifte
+  _mf-last-disp !64
+;
+
+( A live level/loudness meter [kind 2].  The seven state byte offsets are
+  read each frame by the panel: gain-min [GR], in-peak, out-peak, and the
+  four LUFS mean-square cells.  Offsets are pushed in that order, count on
+  top. )
+: meter-display  ( name gmin ipk opk msm mss msum mn -- )
+  DisplayDesc.alloc
+  DisplayDesc.off6!
+  DisplayDesc.off5!
+  DisplayDesc.off4!
+  DisplayDesc.off3!
+  DisplayDesc.off2!
+  DisplayDesc.off1!
+  DisplayDesc.off0!
+  swap cstr-new swap DisplayDesc.name!
+  2 swap DisplayDesc.kind!
   _mf-last-disp @64 0 =
   [ dup _mf-md@ MachineDesc.displays! drop ]
   [ dup _mf-last-disp @64 DisplayDesc.next! drop ]

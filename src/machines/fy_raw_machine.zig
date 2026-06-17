@@ -111,6 +111,9 @@ pub const FyRawMachine = struct {
     voice_gate: [MAX_REGIONS]bool = [_]bool{false} ** MAX_REGIONS,
     voice_age: [MAX_REGIONS]u64 = [_]u64{0} ** MAX_REGIONS,
     age_counter: u64 = 0,
+    // Per-frame meter ballistics (meter display kind). One per machine; a
+    // limiter has a single meter. Updated on the UI thread from live state.
+    meter_ui: MeterUi = .{},
 
     pub fn create(alloc: std.mem.Allocator, path: []const u8) !*FyRawMachine {
         const self = try alloc.create(FyRawMachine);
@@ -289,6 +292,12 @@ pub const FyRawMachine = struct {
         if (offset + @sizeOf(f64) > self.desc.state_size) return;
         const ptr: *align(8) f64 = @ptrCast(@alignCast(&self.state_buf[ch * MAX_STATE + offset]));
         ptr.* = value;
+    }
+
+    fn readStateF64(self: *const FyRawMachine, ch: usize, offset: usize) f64 {
+        if (offset + @sizeOf(f64) > self.desc.state_size) return 0;
+        const ptr: *align(8) const f64 = @ptrCast(@alignCast(&self.state_buf[ch * MAX_STATE + offset]));
+        return ptr.*;
     }
 
     pub fn machineInterface(self: *FyRawMachine) machine.Machine {
@@ -1136,6 +1145,200 @@ fn drawDisplay(self: *FyRawMachine, rect: c.rl.Rectangle, disp: *const Display, 
             }
         },
         .waveform => drawWaveformDisplay(self, field, disp.sourceSlice(), mouse),
+        .meter => drawMeterDisplay(self, field, disp),
+    }
+}
+
+// ── L2-style level / loudness meter ───────────────────────────────────
+//
+// Vertical full-scale meter (0 dB at top, -60 dB floor): per-channel input
+// and output level bars, a gain-reduction band descending from the top, dB
+// scale ticks, peak-hold lines, and LUFS (momentary/short-term/integrated)
+// + output-peak numeric readouts. All log conversions happen here; the
+// kernel stores only linear cells.
+
+const METER_DB_FLOOR: f32 = -60.0;
+const METER_GR_RANGE: f32 = 24.0; // dB of GR shown across the band height
+
+const MeterUi = struct {
+    // Smoothed display values (dB), fast attack / slow release.
+    in_db: [2]f32 = .{ METER_DB_FLOOR, METER_DB_FLOOR },
+    out_db: [2]f32 = .{ METER_DB_FLOOR, METER_DB_FLOOR },
+    gr_db: f32 = 0,
+    // Peak-hold (dB) with hold time then decay.
+    in_hold: [2]f32 = .{ METER_DB_FLOOR, METER_DB_FLOOR },
+    out_hold: [2]f32 = .{ METER_DB_FLOOR, METER_DB_FLOOR },
+    gr_hold: f32 = 0,
+    hold_age: f32 = 0,
+    out_peak_db: f32 = METER_DB_FLOOR, // max output peak since last clear (clip readout)
+    last_t: f64 = 0,
+};
+
+fn lin2db(x: f64) f32 {
+    return @floatCast(20.0 * std.math.log10(@max(x, 1e-7)));
+}
+
+fn ms2lufs(ms: f64) f32 {
+    return @floatCast(-0.691 + 10.0 * std.math.log10(@max(ms, 1e-12)));
+}
+
+// dB → y within [top, bottom], 0 dB at top, floor at bottom.
+fn dbToY(db: f32, top: f32, bottom: f32) f32 {
+    const frac = std.math.clamp((db - METER_DB_FLOOR) / (0.0 - METER_DB_FLOOR), 0.0, 1.0);
+    return bottom - frac * (bottom - top);
+}
+
+fn drawMeterDisplay(self: *FyRawMachine, field: c.rl.Rectangle, disp: *const Display) void {
+    const D = machine_desc.MeterOffset;
+    const regions = self.regionCount();
+    const r1: usize = if (regions > 1) 1 else 0;
+
+    // Pull live linear cells (region 0 = L, region 1 = R).
+    const gminL = self.readStateF64(0, disp.meterOffset(.gmin));
+    const gminR = self.readStateF64(r1, disp.meterOffset(.gmin));
+    const gmin = @min(gminL, gminR);
+    const gr_now: f32 = -lin2db(@max(gmin, 1e-7)); // gmin<=1 → reduction in dB ≥0
+    const in_now = [2]f32{ lin2db(self.readStateF64(0, disp.meterOffset(.ipk))), lin2db(self.readStateF64(r1, disp.meterOffset(.ipk))) };
+    const out_now = [2]f32{ lin2db(self.readStateF64(0, disp.meterOffset(.opk))), lin2db(self.readStateF64(r1, disp.meterOffset(.opk))) };
+
+    const msmL = self.readStateF64(0, disp.meterOffset(.msm));
+    const msmR = self.readStateF64(r1, disp.meterOffset(.msm));
+    const mssL = self.readStateF64(0, disp.meterOffset(.mss));
+    const mssR = self.readStateF64(r1, disp.meterOffset(.mss));
+    const msumL = self.readStateF64(0, disp.meterOffset(.msum));
+    const msumR = self.readStateF64(r1, disp.meterOffset(.msum));
+    const mn = @max(self.readStateF64(0, disp.meterOffset(.mn)), 1.0);
+    const lufs_m = ms2lufs(msmL + msmR);
+    const lufs_s = ms2lufs(mssL + mssR);
+    const lufs_i = ms2lufs((msumL + msumR) / mn);
+
+    _ = D;
+
+    // Ballistics.
+    var ui = &self.meter_ui;
+    const t = c.rl.GetTime();
+    var dt: f32 = if (ui.last_t > 0) @floatCast(t - ui.last_t) else 0.016;
+    ui.last_t = t;
+    dt = std.math.clamp(dt, 0.0, 0.1);
+    const rel_db_s: f32 = 36.0; // bar release rate dB/s
+    const hold_s: f32 = 1.5;
+    const hold_decay: f32 = 18.0;
+
+    var ch: usize = 0;
+    while (ch < 2) : (ch += 1) {
+        ui.in_db[ch] = ballistic(ui.in_db[ch], in_now[ch], rel_db_s, dt);
+        ui.out_db[ch] = ballistic(ui.out_db[ch], out_now[ch], rel_db_s, dt);
+    }
+    ui.gr_db = ballisticGr(ui.gr_db, gr_now, 60.0, dt);
+
+    // Peak-hold: refresh on new max, else age & decay.
+    var any_new = false;
+    ch = 0;
+    while (ch < 2) : (ch += 1) {
+        if (in_now[ch] > ui.in_hold[ch]) {
+            ui.in_hold[ch] = in_now[ch];
+            any_new = true;
+        }
+        if (out_now[ch] > ui.out_hold[ch]) {
+            ui.out_hold[ch] = out_now[ch];
+            any_new = true;
+        }
+    }
+    if (gr_now > ui.gr_hold) {
+        ui.gr_hold = gr_now;
+        any_new = true;
+    }
+    if (out_now[0] > ui.out_peak_db) ui.out_peak_db = out_now[0];
+    if (out_now[1] > ui.out_peak_db) ui.out_peak_db = out_now[1];
+    if (any_new) ui.hold_age = 0 else ui.hold_age += dt;
+    if (ui.hold_age > hold_s) {
+        ch = 0;
+        while (ch < 2) : (ch += 1) {
+            ui.in_hold[ch] -= hold_decay * dt;
+            ui.out_hold[ch] -= hold_decay * dt;
+        }
+        ui.gr_hold -= hold_decay * dt;
+    }
+
+    // Layout: a graph area on top, a readout strip at the bottom.
+    const read_h = theme.size(46);
+    const graph = widgets.rect(field.x, field.y, field.width, @max(1, field.height - read_h));
+    c.rl.DrawRectangleRec(graph, theme.slab_edge);
+    const top = graph.y + theme.size(4);
+    const bot = graph.y + graph.height - theme.size(4);
+
+    // dB scale ticks down the left.
+    const scale_x = graph.x + theme.size(2);
+    const ticks = [_]f32{ 0, -6, -12, -24, -36, -48, -60 };
+    for (ticks) |dbv| {
+        const y = dbToY(dbv, top, bot);
+        c.rl.DrawRectangle(@intFromFloat(graph.x), @intFromFloat(y), @intFromFloat(graph.width), 1, theme.grid_sub);
+        var lb: [8:0]u8 = undefined;
+        const s = std.fmt.bufPrintZ(&lb, "{d:.0}", .{dbv}) catch "";
+        widgets.drawLabelF(s, scale_x, y + 1, theme.fsTiny() - 1, theme.text_mute);
+    }
+
+    // Column geometry: [scale ~22px] IN-L IN-R | GR | OUT-L OUT-R
+    const col_x = graph.x + theme.size(22);
+    const col_w = graph.x + graph.width - theme.size(4) - col_x;
+    const bar_w = @max(2, (col_w - theme.size(8)) / 5.0);
+    var x = col_x;
+
+    drawLevelBar(widgets.rect(x, top, bar_w, bot - top), ui.in_db[0], ui.in_hold[0], theme.text_dim, top, bot);
+    x += bar_w + 1;
+    drawLevelBar(widgets.rect(x, top, bar_w, bot - top), ui.in_db[1], ui.in_hold[1], theme.text_dim, top, bot);
+    x += bar_w + theme.size(3);
+
+    // GR band: descends from the top, height ∝ reduction.
+    const gr_col = widgets.rect(x, top, bar_w, bot - top);
+    c.rl.DrawRectangleRec(gr_col, theme.pane_alt);
+    const gr_h = std.math.clamp(ui.gr_db / METER_GR_RANGE, 0.0, 1.0) * (bot - top);
+    if (gr_h > 0)
+        c.rl.DrawRectangleRec(widgets.rect(gr_col.x, top, bar_w, gr_h), theme.accent_rec);
+    if (ui.gr_hold > 0.05) {
+        const hy = top + std.math.clamp(ui.gr_hold / METER_GR_RANGE, 0.0, 1.0) * (bot - top);
+        c.rl.DrawRectangle(@intFromFloat(gr_col.x), @intFromFloat(hy), @intFromFloat(bar_w), 1, theme.text_fg);
+    }
+    x += bar_w + theme.size(3);
+
+    drawLevelBar(widgets.rect(x, top, bar_w, bot - top), ui.out_db[0], ui.out_hold[0], theme.accent_play, top, bot);
+    x += bar_w + 1;
+    drawLevelBar(widgets.rect(x, top, bar_w, bot - top), ui.out_db[1], ui.out_hold[1], theme.accent_play, top, bot);
+
+    // Readout strip.
+    var ry = graph.y + graph.height + theme.size(2);
+    const fs = theme.fsTiny();
+    const clip = ui.out_peak_db > -0.05;
+    var b: [40:0]u8 = undefined;
+    const grs = std.fmt.bufPrintZ(&b, "GR {d:.1} dB", .{ui.gr_db}) catch "";
+    widgets.drawLabelF(grs, field.x + theme.size(2), ry, fs, theme.accent_rec);
+    var b2: [40:0]u8 = undefined;
+    const ops = std.fmt.bufPrintZ(&b2, "OUT {d:.1} dB", .{ui.out_peak_db}) catch "";
+    widgets.drawLabelF(ops, field.x + field.width / 2, ry, fs, if (clip) theme.accent_rec else theme.text_dim);
+    ry += fs + theme.size(3);
+    var b3: [56:0]u8 = undefined;
+    const ls = std.fmt.bufPrintZ(&b3, "M {d:.1}  S {d:.1}  I {d:.1} LUFS", .{ lufs_m, lufs_s, lufs_i }) catch "";
+    widgets.drawLabelF(ls, field.x + theme.size(2), ry, fs, theme.text_fg);
+}
+
+fn ballistic(cur: f32, target: f32, rel_db_s: f32, dt: f32) f32 {
+    if (target >= cur) return target; // instant attack
+    return @max(target, cur - rel_db_s * dt);
+}
+
+fn ballisticGr(cur: f32, target: f32, rel_db_s: f32, dt: f32) f32 {
+    if (target >= cur) return target;
+    return @max(target, cur - rel_db_s * dt);
+}
+
+fn drawLevelBar(r: c.rl.Rectangle, db: f32, hold_db: f32, col: c.rl.Color, top: f32, bot: f32) void {
+    c.rl.DrawRectangleRec(r, theme.pane_alt);
+    const y = dbToY(db, top, bot);
+    if (bot - y > 0)
+        c.rl.DrawRectangleRec(widgets.rect(r.x, y, r.width, bot - y), col);
+    if (hold_db > METER_DB_FLOOR + 0.5) {
+        const hy = dbToY(hold_db, top, bot);
+        c.rl.DrawRectangle(@intFromFloat(r.x), @intFromFloat(hy), @intFromFloat(r.width), 1, theme.text_fg);
     }
 }
 

@@ -213,3 +213,17 @@ test "fy manifest loads MS-20 machine entry" {
     try std.testing.expectEqual(@as(f32, 420.0), e.panel_w);
 }
 
+test "fy manifest loads the limiter machine (kernel + meter display)" {
+    var reg = Registry.init(std.testing.allocator);
+    defer reg.deinit();
+    // Compiles kernels/07-effects/limiter.fy (the dsp2 words) and reads the
+    // manifest — a syntax or stack error in the kernel surfaces here.
+    try reg.loadFyMachine("machines/limiter2/limiter2.fy");
+    try std.testing.expectEqual(@as(usize, 1), reg.count);
+    const e = &reg.entries[0];
+    try std.testing.expectEqualStrings("Limiter", e.nameSlice());
+    try std.testing.expectEqualStrings("limiter2", e.idSlice());
+    try std.testing.expect(e.in_audio);
+    try std.testing.expect(!e.in_notes);
+}
+

@@ -397,6 +397,7 @@ pub fn main() !void {
     try reg.loadFyMachine("machines/delay2/delay2.fy");
     try reg.loadFyMachine("machines/verb2/verb2.fy");
     try reg.loadFyMachine("machines/comp2/comp2.fy");
+    try reg.loadFyMachine("machines/limiter2/limiter2.fy");
     try reg.loadFyMachine("machines/chorus2/chorus2.fy");
     try reg.loadFyMachine("machines/juno2/juno2.fy");
     try reg.loadFyMachine("machines/funk/funk.fy");

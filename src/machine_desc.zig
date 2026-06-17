@@ -148,7 +148,12 @@ pub const Strip = struct {
     }
 };
 
-pub const DisplayKind = enum { adsr, waveform };
+pub const DisplayKind = enum { adsr, waveform, meter };
+
+/// Meter display state-offset slots (byte offsets into a region's state),
+/// in the order the manifest `meter-display` word pushes them.
+pub const METER_OFFSETS = 7;
+pub const MeterOffset = enum(usize) { gmin = 0, ipk, opk, msm, mss, msum, mn };
 
 pub const Display = struct {
     name: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
@@ -156,6 +161,8 @@ pub const Display = struct {
     kind: DisplayKind = .adsr,
     source: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
     source_len: usize = 0,
+    /// Meter kind only: state byte offsets, see MeterOffset.
+    offsets: [METER_OFFSETS]usize = [_]usize{0} ** METER_OFFSETS,
 
     pub fn nameSlice(self: *const Display) []const u8 {
         return self.name[0..self.name_len];
@@ -163,6 +170,10 @@ pub const Display = struct {
 
     pub fn sourceSlice(self: *const Display) []const u8 {
         return self.source[0..self.source_len];
+    }
+
+    pub fn meterOffset(self: *const Display, o: MeterOffset) usize {
+        return self.offsets[@intFromEnum(o)];
     }
 };
 
@@ -345,7 +356,19 @@ const ControlRaw = extern struct {
 
 const OptionRaw = extern struct { next: Fy.Value, label: Fy.Value, value: Fy.Value };
 const StripRaw = extern struct { next: Fy.Value, module: Fy.Value, cols: Fy.Value };
-const DisplayRaw = extern struct { next: Fy.Value, name: Fy.Value, kind: Fy.Value, sources: Fy.Value };
+const DisplayRaw = extern struct {
+    next: Fy.Value,
+    name: Fy.Value,
+    kind: Fy.Value,
+    sources: Fy.Value,
+    off0: Fy.Value,
+    off1: Fy.Value,
+    off2: Fy.Value,
+    off3: Fy.Value,
+    off4: Fy.Value,
+    off5: Fy.Value,
+    off6: Fy.Value,
+};
 const RowRaw = extern struct { next: Fy.Value, weight: Fy.Value, cells: Fy.Value };
 const CellRaw = extern struct { next: Fy.Value, weight: Fy.Value, items: Fy.Value };
 const ItemRaw = extern struct { next: Fy.Value, name: Fy.Value, weight: Fy.Value };
@@ -486,9 +509,18 @@ pub fn read(host: *FyHost) !Desc {
         out.kind = switch (asInt(disp.kind)) {
             0 => .adsr,
             1 => .waveform,
+            2 => .meter,
             else => return error.InvalidMachineDesc,
         };
         out.source_len = try copyText(&out.source, cstrSlice(disp.sources));
+        if (out.kind == .meter) {
+            const raw = [_]Fy.Value{ disp.off0, disp.off1, disp.off2, disp.off3, disp.off4, disp.off5, disp.off6 };
+            for (&out.offsets, raw) |*o, v| {
+                const off: usize = @intCast(asInt(v));
+                if (off + 8 > d.state_size) return error.InvalidMachineDesc;
+                o.* = off;
+            }
+        }
         d.display_count += 1;
     }
 
