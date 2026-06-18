@@ -21,6 +21,7 @@ const Transport = @import("../transport.zig").Transport;
 const audio_pool_mod = @import("../audio_pool.zig");
 const waveform = @import("../waveform.zig");
 const meter_mod = @import("../meter.zig");
+const meter_gen = @import("../meter_gen.zig");
 
 fn rulerH() f32 {
     return theme.size(14);
@@ -1251,18 +1252,46 @@ const METER_CHOICES = [_]MeterChoice{
     .{ .label = "12/8", .num = 12, .den = 8 },
 };
 
+// Algorithmic meter generators (docs/07 §generators). These REPLACE the
+// whole meter map (materialize-on-run), so they ignore the target bar.
+const METER_GEN_BASE: u32 = 2000;
+const GenKind = enum { fib, euclid3, euclid5, additive223, additive332 };
+const MeterGen = struct { label: [*:0]const u8, kind: GenKind };
+const METER_GENS = [_]MeterGen{
+    .{ .label = "Generate: Fibonacci /8", .kind = .fib },
+    .{ .label = "Generate: Euclid 3/8", .kind = .euclid3 },
+    .{ .label = "Generate: Euclid 5/8", .kind = .euclid5 },
+    .{ .label = "Generate: Additive 2+2+3", .kind = .additive223 },
+    .{ .label = "Generate: Additive 3+3+2", .kind = .additive332 },
+};
+// Main-thread scratch for generators (never touched by audio).
+var gen_pts: [meter_mod.MAX_POINTS]meter_mod.MeterPoint = undefined;
+var gen_nums: [64]u8 = undefined;
+
 fn meterMenuTick(meter_state: *meter_mod.MeterState, m: widgets.Mouse) void {
     if (!widgets.menuOpen(METER_MENU_KEY)) return;
-    var items: [METER_CHOICES.len + 1]widgets.MenuItem = undefined;
+    var items: [METER_CHOICES.len + 1 + METER_GENS.len]widgets.MenuItem = undefined;
     inline for (METER_CHOICES, 0..) |ch, i| items[i] = .{ .label = ch.label, .id = @intCast(i) };
     // A change can be removed only if one starts exactly on the target bar
     // (and never bar 0, the base meter).
     const seg = cur_meter.segmentForBar(meter_menu_bar);
     const can_remove = meter_menu_bar > 0 and seg.start_bar == meter_menu_bar;
     items[METER_CHOICES.len] = .{ .label = "Remove change here", .id = METER_REMOVE_ID, .enabled = can_remove };
+    inline for (METER_GENS, 0..) |g, i| items[METER_CHOICES.len + 1 + i] = .{ .label = g.label, .id = METER_GEN_BASE + @as(u32, @intCast(i)) };
+
     if (widgets.menuPickId(METER_MENU_KEY, &items, m)) |id| {
         if (id == METER_REMOVE_ID) {
             meter_state.removeChange(meter_menu_bar);
+        } else if (id >= METER_GEN_BASE) {
+            const g = METER_GENS[id - METER_GEN_BASE];
+            const pts = switch (g.kind) {
+                .fib => meter_gen.fibonacci(&gen_pts, &gen_nums, 8, 8, 13),
+                .euclid3 => meter_gen.euclidean(&gen_pts, 3, 8, 8),
+                .euclid5 => meter_gen.euclidean(&gen_pts, 5, 8, 8),
+                .additive223 => meter_gen.additive(&gen_pts, &gen_nums, &.{ 2, 2, 3 }, 8, 4),
+                .additive332 => meter_gen.additive(&gen_pts, &gen_nums, &.{ 3, 3, 2 }, 8, 4),
+            };
+            meter_state.stage(pts);
         } else {
             const ch = METER_CHOICES[id];
             meter_state.insertChange(meter_menu_bar, ch.num, ch.den);

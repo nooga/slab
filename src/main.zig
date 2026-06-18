@@ -35,6 +35,7 @@ const render_dialog = @import("ui/render_dialog.zig");
 test {
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
+    _ = @import("meter_gen.zig");
 }
 
 const MAX_TRACKS: usize = 16;
