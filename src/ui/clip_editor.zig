@@ -340,19 +340,25 @@ pub fn duplicateSelectedNotes(tracks: []track_mod.Track, selected: ?ClipRef, all
     return true;
 }
 
+// Apply swing to a grid-snapped beat: delay odd grid steps toward the next
+// one (0 = straight). Only acts on an 8th-note grid or finer. Shared by the
+// grid lines, note drawing, and Quantize so the groove is consistent and
+// visible everywhere.
+fn applySwing(snapped: f64, edit_snap: snap_mod.Setting) f64 {
+    if (swing <= 0) return snapped;
+    const g = snap_mod.activeStep(edit_snap, false) orelse return snapped;
+    if (g > 0.5001) return snapped; // swing is meaningless coarser than 1/8
+    const idx = @round(snapped / g);
+    if (@mod(@as(i64, @intFromFloat(idx)), 2) != 0) return snapped + @as(f64, swing) * 0.5 * g;
+    return snapped;
+}
+
 pub fn quantizeSelectedNotes(tracks: []track_mod.Track, selected: ?ClipRef, edit_snap: snap_mod.Setting) bool {
     const resolved = resolveClip(tracks, selected) orelse return false;
-    const step = snap_mod.activeStep(edit_snap, false); // grid step in beats, if any
     var changed = false;
     for (resolved.clip.notes.items) |*note| {
         if (!note.selected) continue;
-        var next_start = snap_mod.snapPositive(edit_snap, note.start_beat, false);
-        // Swing: delay every other grid step toward the next one (0 = straight).
-        if (swing > 0) if (step) |g| {
-            const idx = @round(next_start / g);
-            const odd = @mod(@as(i64, @intFromFloat(idx)), 2) != 0;
-            if (odd) next_start += @as(f64, swing) * 0.5 * g;
-        };
+        const next_start = applySwing(snap_mod.snapPositive(edit_snap, note.start_beat, false), edit_snap);
         const next_len = @max(minNoteBeats(edit_snap), snap_mod.snapNearest(edit_snap, note.length_beats, false));
         if (next_start != note.start_beat or next_len != note.length_beats) changed = true;
         note.start_beat = next_start;
@@ -406,7 +412,7 @@ pub fn snapSelectedToScale(tracks: []track_mod.Track, selected: ?ClipRef) bool {
 
 // ── Header tools: KEY / SCALE / SWING, drawn into the pane header ─────
 
-const SCALE_MENU_KEY: u64 = 0x5CA1_E5E1_EC70_0001;
+const KEYSCALE_MENU_KEY: u64 = 0x5CA1_E5E1_EC70_0001;
 
 const HeaderToolClick = struct { fwd: bool = false, back: bool = false };
 
@@ -420,46 +426,53 @@ fn headerCell(rect_: c.rl.Rectangle, text: [*:0]const u8, m: widgets.Mouse) Head
     return .{ .fwd = hov and m.left_released, .back = hov and m.right_pressed };
 }
 
-// Lay KEY / SCALE / SWING into the right end of the header title bar.
+// One combined "C Major" picker (root → scale submenu sets both) + a swing
+// fader, laid into the right end of the header title bar.
 fn drawHeaderTools(title_rect: c.rl.Rectangle, m: widgets.Mouse) void {
-    // Scale picker menu (modal) — ticked unconditionally so it stays live even
-    // if the strip is hidden by a narrow header.
-    if (widgets.menuOpen(SCALE_MENU_KEY)) {
-        var items: [SCALES.len]widgets.MenuItem = undefined;
-        for (SCALES, 0..) |sc, i| items[i] = .{ .label = sc.name, .id = @intCast(i) };
-        if (widgets.menuPickId(SCALE_MENU_KEY, &items, m)) |id| scale_idx = @intCast(id);
+    // Key/scale picker menu (modal) — ticked unconditionally so it stays live
+    // even if the strip is hidden by a narrow header. Top level is the 12
+    // roots (each a submenu); a root expanded shows the scales. Clicking a
+    // root sets the root and keeps the scale; clicking a scale sets both.
+    if (widgets.menuOpen(KEYSCALE_MENU_KEY)) {
+        var roots: [12]widgets.MenuItem = undefined;
+        for (ROOT_NAMES, 0..) |nm, i| roots[i] = .{ .label = nm, .id = @intCast(i), .submenu = true };
+        if (widgets.menuPickId(KEYSCALE_MENU_KEY, &roots, m)) |rid| key_root = @intCast(rid);
+        if (widgets.menuSubOpen(KEYSCALE_MENU_KEY, 0)) |rid| {
+            var scales: [SCALES.len]widgets.MenuItem = undefined;
+            for (SCALES, 0..) |sc, i| scales[i] = .{ .label = sc.name, .id = @intCast(i) };
+            if (widgets.menuSubTick(KEYSCALE_MENU_KEY, 1, &scales, m)) |sid| {
+                key_root = @intCast(rid);
+                scale_idx = @intCast(sid);
+            }
+        }
     }
 
     const fs = theme.fsTiny();
     const gap = theme.size(3);
     const h = title_rect.height - 4;
     const cy = title_rect.y + 2;
-    const key_w = theme.size(30);
-    const scale_w = theme.size(62);
+    const ks_w = theme.size(92);
     const sw_lbl_w = widgets.measureTextF("SW", fs);
     const sw_fader_w = theme.size(48);
     const val_w = theme.size(26);
-    const total = key_w + scale_w + sw_lbl_w + sw_fader_w + val_w + gap * 4;
+    const total = ks_w + sw_lbl_w + sw_fader_w + val_w + gap * 3;
     // Keep the title legible: only show the tools when there's room beside it.
     if (title_rect.width < total + theme.size(56)) return;
     var x = title_rect.x + title_rect.width - total - theme.size(4);
 
     {
-        const cell = widgets.rect(x, cy, key_w, h);
-        const click = headerCell(cell, ROOT_NAMES[key_root % 12], m);
-        if (click.fwd) key_root = (key_root + 1) % 12;
-        if (click.back) key_root = (key_root + 11) % 12;
-        widgets.tooltip(cell, "Key root — click cycles, right-click back", m);
-        x += key_w + gap;
-    }
-    {
-        const cell = widgets.rect(x, cy, scale_w, h);
-        const click = headerCell(cell, SCALES[scale_idx].name, m);
-        if (click.fwd and !widgets.menuOpen(SCALE_MENU_KEY)) {
-            widgets.openMenuAt(SCALE_MENU_KEY, cell.x, cell.y + cell.height);
+        var buf: [24:0]u8 = undefined;
+        const label = if (scale_idx == 0)
+            (std.fmt.bufPrintZ(&buf, "{s}", .{ROOT_NAMES[key_root % 12]}) catch "C")
+        else
+            (std.fmt.bufPrintZ(&buf, "{s} {s}", .{ ROOT_NAMES[key_root % 12], SCALES[scale_idx].name }) catch "C");
+        const cell = widgets.rect(x, cy, ks_w, h);
+        const click = headerCell(cell, label.ptr, m);
+        if (click.fwd and !widgets.menuOpen(KEYSCALE_MENU_KEY)) {
+            widgets.openMenuAt(KEYSCALE_MENU_KEY, cell.x, cell.y + cell.height);
         }
-        widgets.tooltip(cell, "Scale — click to choose", m);
-        x += scale_w + gap;
+        widgets.tooltip(cell, "Key & scale — pick a root, then a scale", m);
+        x += ks_w + gap;
     }
     {
         widgets.drawLabelF("SW", x, cy + (h - fs) / 2 - 1, fs, theme.text_dim);
@@ -467,7 +480,7 @@ fn drawHeaderTools(title_rect: c.rl.Rectangle, m: widgets.Mouse) void {
         const fr = widgets.rect(x, cy + 1, sw_fader_w, h - 2);
         var v: f32 = swing;
         if (widgets.hFader(fr, &v, m)) swing = v;
-        widgets.tooltip(fr, "Swing — applied on Quantize", m);
+        widgets.tooltip(fr, "Swing — shifts off-beats on the grid, draw, and Quantize", m);
         x += sw_fader_w + gap;
         var buf: [8:0]u8 = undefined;
         const pct: i32 = @intFromFloat(@round(swing * 100));
@@ -925,7 +938,11 @@ fn drawGrid(r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
     const grid_step = snap_mod.visualStep(edit_snap, px_per_beat);
     var beat: f64 = 0;
     while (true) {
-        const bx = r.x + @as(f32, @floatCast(beat)) * px_per_beat - scroll_x;
+        // Off-beat lines slide right with SWING so the groove is visible and
+        // matches where drawn/quantized notes land (applySwing no-ops on
+        // beats/bars and on grids coarser than 1/8).
+        const draw_beat = applySwing(beat, edit_snap);
+        const bx = r.x + @as(f32, @floatCast(draw_beat)) * px_per_beat - scroll_x;
         if (bx > r.x + r.width - 1) break;
         if (bx >= r.x) {
             const is_beat = snap_mod.isBeat(beat);
@@ -1123,7 +1140,11 @@ fn handleInput(
     }
 
     const pitch = pitchAtY(grid, m.y) orelse return null;
-    const beat = snap_mod.snapDownPositive(edit_snap, beatAtX(grid, m.x), altBypassSnap());
+    // Drawn notes land on the swung grid (matches the shifted off-beat lines).
+    const beat = blk: {
+        const snapped = snap_mod.snapDownPositive(edit_snap, beatAtX(grid, m.x), altBypassSnap());
+        break :blk if (altBypassSnap()) snapped else applySwing(snapped, edit_snap);
+    };
     const hit = findNoteAt(grid, clip.*, m.x, m.y);
     const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
 
@@ -1592,4 +1613,17 @@ test "scale membership, root, and snap" {
     // reset module state
     key_root = 0;
     scale_idx = 0;
+}
+
+test "swing delays off-beats on a fine grid only" {
+    swing = 0.5;
+    // 1/8 grid: off-beats (idx odd) shift; downbeats stay put.
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), applySwing(0.0, .note_8), 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.625), applySwing(0.5, .note_8), 1e-9); // 0.5 + 0.5*0.5*0.5
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), applySwing(1.0, .note_8), 1e-9);
+    // 1/4 grid is too coarse — no swing.
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), applySwing(1.0, .note_4), 1e-9);
+    // swing off → identity.
+    swing = 0;
+    try std.testing.expectApproxEqAbs(@as(f64, 0.5), applySwing(0.5, .note_8), 1e-9);
 }
