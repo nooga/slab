@@ -37,7 +37,12 @@ const Dirent = extern struct {
     d_name: [1024]u8,
 };
 
-pub const MAX_PRESETS = 32;
+// Per-machine preset ceiling. Bounded (codebase idiom) rather than heap-backed;
+// 256 is the natural cap since the machine vtable indexes presets with a u8
+// (presetCount/presetName), and `count` clamps to 255. Many presets are meant
+// to live in bank subdirectories (presets/<bank>/<name>) so the picker groups
+// them into submenus instead of one flat list — see machine_bay presetTopItems.
+pub const MAX_PRESETS = 256;
 pub const MAX_NAME = 31;
 pub const MAX_FILE = 8192;
 

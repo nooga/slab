@@ -517,7 +517,9 @@ const PresetAction = struct {
 };
 
 const DIR_ID_BASE: u32 = 10000;
-var dir_label_bufs: [8][presets_mod.MAX_NAME + 1:0]u8 = undefined;
+// Backing for bank-submenu row labels: one slot per distinct preset
+// subdirectory. Capped — banks beyond this just don't get a submenu row.
+var dir_label_bufs: [16][presets_mod.MAX_NAME + 1:0]u8 = undefined;
 // Persistent backing for the open preset menu's item labels (see
 // presetMenu — the menu draws deferred, so a stack list would dangle).
 var preset_menu_list: presets_mod.List = .{};
