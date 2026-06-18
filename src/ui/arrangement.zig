@@ -20,6 +20,7 @@ const ClipRef = clip_mod.ClipRef;
 const Transport = @import("../transport.zig").Transport;
 const audio_pool_mod = @import("../audio_pool.zig");
 const waveform = @import("../waveform.zig");
+const meter_mod = @import("../meter.zig");
 
 fn rulerH() f32 {
     return theme.size(14);
@@ -57,6 +58,9 @@ var px_per_beat: f32 = 24;
 // Current project tempo, captured at the top of draw() so drag handlers
 // (which don't take the transport) can convert beats↔source-seconds.
 var cur_bpm: f64 = 120;
+// Live meter map for this frame's grid, captured at the top of draw().
+var default_meter_pts = [_]meter_mod.MeterPoint{.{ .start_bar = 0, .numerator = 4, .denominator = 4 }};
+var cur_meter: meter_mod.MeterMap = .{ .points = &default_meter_pts };
 var scroll_x: f32 = 0;
 var scroll_y: f32 = 0;
 var last_scroll_time: f64 = 0;
@@ -473,12 +477,14 @@ pub fn draw(
     selected_track: *?usize,
     selected_clip: *?ClipRef,
     transport: *Transport,
+    meter_map: meter_mod.MeterMap,
     edit_snap: snap_mod.Setting,
     can_paste_clips: bool,
     rename_target: RenameTarget,
     m: widgets.Mouse,
 ) Result {
     var result: Result = .{};
+    cur_meter = meter_map;
     c.rl.DrawRectangleRec(r, theme.pane_bg);
 
     // Audio clips are unwarped: their beat-length is derived from the source
@@ -1219,31 +1225,50 @@ fn moveSelectedClipsBetweenTracks(tracks: []Track, alloc: std.mem.Allocator, sel
 // ── Rendering helpers ────────────────────────────────────────────────
 
 fn drawBeatTicks(ruler: c.rl.Rectangle, timeline_x: f32, timeline_w: f32, timeline_x0: f32, edit_snap: snap_mod.Setting) void {
+    const right = timeline_x + timeline_w - 2;
+
+    // Fine sub-grid (uniform snap guide), drawn under the meter lines.
     const step = snap_mod.visualStep(edit_snap, px_per_beat);
     var beat: f64 = 0;
     while (true) {
-        const bx = timeline_x0 + @as(f32, @floatCast(beat)) * px_per_beat - scroll_x;
-        if (bx > timeline_x + timeline_w - 2) break;
-        if (bx < timeline_x - 20) {
-            beat += step;
-            continue;
-        }
-        const is_bar = snap_mod.isBar(beat);
-        const is_beat = snap_mod.isBeat(beat);
-        const tick_h: f32 = if (is_bar) rulerH() - 4 else if (is_beat) 5 else 3;
-        c.rl.DrawRectangle(
-            @intFromFloat(bx),
-            @intFromFloat(ruler.y + rulerH() - tick_h - 2),
-            1,
-            @intFromFloat(tick_h),
-            if (is_bar) theme.grid_bar else if (is_beat) theme.grid_beat else theme.grid_sub,
-        );
-        if (is_bar) {
-            var buf: [8]u8 = undefined;
-            const s = std.fmt.bufPrintZ(&buf, "{d}", .{@as(u32, @intFromFloat(@round(beat / 4.0))) + 1}) catch "?";
-            widgets.drawLabelF(s.ptr, bx + 2, ruler.y + 1, theme.fsTiny(), theme.text_dim);
+        const bx = beatToX(timeline_x0, beat);
+        if (bx > right) break;
+        if (bx >= timeline_x) {
+            c.rl.DrawRectangle(@intFromFloat(bx), @intFromFloat(ruler.y + rulerH() - 5), 1, 3, theme.grid_sub);
         }
         beat += step;
+    }
+
+    // Meter-driven bar lines + numbers and per-bar beat lines.
+    const first_beat = @max(0.0, beatAtX(timeline_x0, timeline_x));
+    var bar = cur_meter.beatToBarPos(first_beat).bar;
+    while (true) {
+        const bstart = cur_meter.barStartBeat(bar);
+        const bx = beatToX(timeline_x0, bstart);
+        if (bx > right) break;
+        const seg = cur_meter.segmentForBar(bar);
+        const unit = seg.unitBeats();
+        var k: u8 = 0;
+        while (k < seg.numerator) : (k += 1) {
+            const x = beatToX(timeline_x0, bstart + @as(f64, @floatFromInt(k)) * unit);
+            if (x > right) break;
+            if (x < timeline_x) continue;
+            const is_bar = k == 0;
+            const tick_h: f32 = if (is_bar) rulerH() - 4 else 5;
+            c.rl.DrawRectangle(
+                @intFromFloat(x),
+                @intFromFloat(ruler.y + rulerH() - tick_h - 2),
+                1,
+                @intFromFloat(tick_h),
+                if (is_bar) theme.grid_bar else theme.grid_beat,
+            );
+        }
+        if (bx >= timeline_x - 20) {
+            var buf: [8]u8 = undefined;
+            const s = std.fmt.bufPrintZ(&buf, "{d}", .{bar + 1}) catch "?";
+            widgets.drawLabelF(s.ptr, bx + 2, ruler.y + 1, theme.fsTiny(), theme.text_dim);
+        }
+        bar += 1;
     }
 }
 
@@ -1251,23 +1276,33 @@ fn drawTimelineLane(r: c.rl.Rectangle, t: Track, idx: usize, selected: bool, tim
     const bg = if (selected) theme.pane_alt else if (idx % 2 == 0) theme.pane_bg else theme.pane_alt;
     c.rl.DrawRectangleRec(r, bg);
 
+    const right = r.x + r.width - 1;
+
+    // Fine sub-grid (uniform), then meter-driven beat and bar lines on top.
     const step = snap_mod.visualStep(edit_snap, px_per_beat);
     var beat: f64 = 0;
     while (true) {
-        const bx = timeline_x0 + @as(f32, @floatCast(beat)) * px_per_beat - scroll_x;
-        if (bx > r.x + r.width - 1) break;
-        if (bx >= r.x) {
-            const is_bar = snap_mod.isBar(beat);
-            const is_beat = snap_mod.isBeat(beat);
-            c.rl.DrawRectangle(
-                @intFromFloat(bx),
-                @intFromFloat(r.y),
-                1,
-                @intFromFloat(r.height),
-                if (is_bar) theme.grid_bar else if (is_beat) theme.grid_beat else theme.grid_sub,
-            );
-        }
+        const bx = beatToX(timeline_x0, beat);
+        if (bx > right) break;
+        if (bx >= r.x) c.rl.DrawRectangle(@intFromFloat(bx), @intFromFloat(r.y), 1, @intFromFloat(r.height), theme.grid_sub);
         beat += step;
+    }
+
+    const first_beat = @max(0.0, beatAtX(timeline_x0, r.x));
+    var bar = cur_meter.beatToBarPos(first_beat).bar;
+    while (true) {
+        const bstart = cur_meter.barStartBeat(bar);
+        if (beatToX(timeline_x0, bstart) > right) break;
+        const seg = cur_meter.segmentForBar(bar);
+        const unit = seg.unitBeats();
+        var k: u8 = 0;
+        while (k < seg.numerator) : (k += 1) {
+            const x = beatToX(timeline_x0, bstart + @as(f64, @floatFromInt(k)) * unit);
+            if (x > right) break;
+            if (x < r.x) continue;
+            c.rl.DrawRectangle(@intFromFloat(x), @intFromFloat(r.y), 1, @intFromFloat(r.height), if (k == 0) theme.grid_bar else theme.grid_beat);
+        }
+        bar += 1;
     }
 
     c.rl.DrawRectangle(@intFromFloat(r.x), @intFromFloat(r.y), 2, @intFromFloat(r.height), t.color);

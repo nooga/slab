@@ -12,6 +12,7 @@ const theme = @import("theme.zig");
 const widgets = @import("widgets.zig");
 const snap_mod = @import("snap.zig");
 const Transport = @import("../transport.zig").Transport;
+const meter_mod = @import("../meter.zig");
 
 const GAP: f32 = 0;
 const GROUP_GAP: f32 = 0;
@@ -51,7 +52,7 @@ pub const Result = struct {
 
 const FILE_MENU_KEY: u64 = 0x5346494c45; // "SFILE"
 
-pub fn draw(r: c.rl.Rectangle, transport: *Transport, edit_snap: *snap_mod.Setting, project_path: []const u8, project_path_chosen: bool, dirty: bool, m: widgets.Mouse) Result {
+pub fn draw(r: c.rl.Rectangle, transport: *Transport, meter_map: meter_mod.MeterMap, edit_snap: *snap_mod.Setting, project_path: []const u8, project_path_chosen: bool, dirty: bool, m: widgets.Mouse) Result {
     var result: Result = .{};
 
     // Bar background — flat, no bevel.
@@ -139,7 +140,7 @@ pub fn draw(r: c.rl.Rectangle, transport: *Transport, edit_snap: *snap_mod.Setti
         transport.setBpm(@round(transport.bpm()) - 1);
     }
     x += step_w + GAP;
-    bpmField(widgets.rect(x, y, field_w_bpm, h), transport, m);
+    bpmField(widgets.rect(x, y, field_w_bpm, h), transport, meter_map, m);
     x += field_w_bpm + GAP;
     if (widgets.buttonTip(widgets.rect(x, y, step_w, h), "+", "BPM +1", m)) {
         transport.setBpm(@round(transport.bpm()) + 1);
@@ -154,7 +155,7 @@ pub fn draw(r: c.rl.Rectangle, transport: *Transport, edit_snap: *snap_mod.Setti
 
     // ── Position field ───────────────────────────────────────────────
     const pos_rect = widgets.rect(x, y, field_w_pos, h);
-    posField(pos_rect, transport);
+    posField(pos_rect, transport, meter_map);
     x += field_w_pos + GROUP_GAP;
 
     drawSeparator(widgets.rect(x, y, theme.size(10), h));
@@ -234,18 +235,18 @@ fn drawSeparator(r: c.rl.Rectangle) void {
 
 const BPM_SALT: u64 = 0x42504d44; // "BPMD"
 
-fn bpmField(r: c.rl.Rectangle, transport: *Transport, m: widgets.Mouse) void {
+fn bpmField(r: c.rl.Rectangle, transport: *Transport, meter_map: meter_mod.MeterMap, m: widgets.Mouse) void {
     // Drag vertically / scroll to edit, like a knob.
     const new_bpm = widgets.dragValueV(r, BPM_SALT, transport.bpm(), 20.0, 400.0, 0.5, 1.0, m);
     if (new_bpm != transport.bpm()) transport.setBpm(new_bpm);
 
     const inner = widgets.displayField(r);
 
-    // Metronome LED — pulses for ~80 ms at the start of each beat,
-    // red on the downbeat of each 4-beat bar, green elsewhere.
+    // Metronome LED — pulses at the start of each beat, red on the bar's
+    // downbeat (meter-aware), green on other beats.
     const beats = transport.beats();
     const beat_frac = @mod(beats, 1);
-    const is_downbeat = @as(u32, @intFromFloat(@floor(@mod(beats, 4)))) == 0;
+    const is_downbeat = meter_map.beatToBarPos(beats).beat == 0;
     const pulse_on = transport.isPlaying() and beat_frac < 0.12;
     const led_color = if (is_downbeat) theme.accent_rec else theme.accent_play;
 
@@ -276,15 +277,15 @@ fn bpmField(r: c.rl.Rectangle, transport: *Transport, m: widgets.Mouse) void {
     );
 }
 
-fn posField(r: c.rl.Rectangle, transport: *const Transport) void {
+fn posField(r: c.rl.Rectangle, transport: *const Transport, meter_map: meter_mod.MeterMap) void {
     const inner = widgets.displayField(r);
 
     var buf: [32]u8 = undefined;
-    const beats = transport.beats();
-    const bar = @as(u32, @intFromFloat(@floor(beats / 4))) + 1;
-    const beat_in_bar = @as(u32, @intFromFloat(@floor(@mod(beats, 4)))) + 1;
-    const sixteenth = @as(u32, @intFromFloat(@floor(@mod(beats, 1) * 4))) + 1;
-    const s = std.fmt.bufPrintZ(&buf, "{d}.{d}.{d}", .{ bar, beat_in_bar, sixteenth }) catch "?";
+    const pos = meter_map.beatToBarPos(transport.beats());
+    // bar.beat.sub — sub is the 1/16-of-quarter division of the meter-beat
+    // (1..4 for a quarter beat, 1..2 for an eighth), matching 4/4 habit.
+    const sub = pos.tick / (meter_mod.PPQN / 4) + 1;
+    const s = std.fmt.bufPrintZ(&buf, "{d}.{d}.{d}", .{ pos.bar + 1, pos.beat + 1, sub }) catch "?";
     widgets.drawLabelF(s.ptr, inner.x + 3, inner.y + 1, theme.fsBody(), theme.text_fg);
 
     const cap = "BAR";

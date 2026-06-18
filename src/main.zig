@@ -546,13 +546,13 @@ pub fn main() !void {
         c.rl.BeginDrawing();
         c.rl.ClearBackground(theme.bg);
 
-        const tres = top_bar.draw(rects.top_bar, &transport, &edit_snap, project_path, project_path_chosen, dirty, pane_m);
+        const tres = top_bar.draw(rects.top_bar, &transport, meter_state.liveMap(), &edit_snap, project_path, project_path_chosen, dirty, pane_m);
         if (tres.render_audio) render_dlg.active = true;
 
         // (Side browser removed — machines are added via the "+" in the
         // machine-bay titlebar; see mbres.add_machine below.)
 
-        const ares = arrangement.draw(rects.arrangement, tracks, &master, &device_sel, &audio_pool, alloc, &selected_track, &selected_clip, &transport, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), pane_m);
+        const ares = arrangement.draw(rects.arrangement, tracks, &master, &device_sel, &audio_pool, alloc, &selected_track, &selected_clip, &transport, meter_state.liveMap(), edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), pane_m);
         if (ares.rename_clip) |ref| beginRenameClip(&rename, tracks, ref);
         if (ares.rename_track) |ti| beginRenameTrack(&rename, tracks, ti);
         if (ares.rename_rect) |rr| rename.rect = rr;
