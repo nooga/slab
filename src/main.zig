@@ -1934,6 +1934,14 @@ fn executeEditCommand(
             changed = if (focus == .piano_roll) clip_editor.quantizeSelectedNotes(tracks, selected_clip.*, edit_snap) else false;
             if (changed) status.set("Quantized", .{});
         },
+        .humanize => {
+            changed = if (focus == .piano_roll) clip_editor.humanizeSelectedNotes(tracks, selected_clip.*, edit_snap) else false;
+            if (changed) status.set("Humanized", .{});
+        },
+        .snap_to_scale => {
+            changed = if (focus == .piano_roll) clip_editor.snapSelectedToScale(tracks, selected_clip.*) else false;
+            if (changed) status.set("Snapped to scale", .{});
+        },
         // `import_audio` is intercepted in the arrangement-result handler
         // (it needs the audio pool + file dialog); never reaches here.
         .none, .copy, .select_all, .clear_selection, .rename, .file_open, .file_save, .file_save_as, .render_audio, .import_audio => {},

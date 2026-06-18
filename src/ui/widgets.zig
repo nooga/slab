@@ -78,6 +78,8 @@ pub const EditCommand = enum {
     render_audio,
     split_at_playhead,
     quantize,
+    humanize,
+    snap_to_scale,
     rename,
     import_audio,
 };

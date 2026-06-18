@@ -45,6 +45,63 @@ fn mapLabel(pitch: u8) ?[*:0]const u8 {
 
 const KEY_LO: u8 = 12; // C0 (bottom row)
 const KEY_HI: u8 = 119; // B8 (top row; inclusive)
+
+// ── Feel & key state (persistent across the session) ─────────────────
+//
+// swing delays odd grid steps on quantize (0 = straight); key_root + scale
+// constrain edits and shade the in-key rows. scale_idx 0 is Off (chromatic).
+
+pub var swing: f32 = 0; // 0..1 → up to half a grid step of delay on off-beats
+pub var key_root: u8 = 0; // 0=C .. 11=B
+pub var scale_idx: usize = 0;
+
+const Scale = struct {
+    name: [*:0]const u8,
+    // Bit i set = semitone i above the root is in the scale.
+    mask: u12,
+};
+
+const SCALES = [_]Scale{
+    .{ .name = "Off", .mask = 0b111111111111 }, // chromatic — no constraint
+    .{ .name = "Major", .mask = 0b101010110101 },
+    .{ .name = "Minor", .mask = 0b010110101101 }, // natural minor
+    .{ .name = "Dorian", .mask = 0b011010101101 },
+    .{ .name = "Phrygian", .mask = 0b010110101011 },
+    .{ .name = "Mixolyd", .mask = 0b011010110101 },
+    .{ .name = "Penta", .mask = 0b001010010101 }, // major pentatonic
+    .{ .name = "MinPenta", .mask = 0b010010101001 },
+    .{ .name = "Harm.Min", .mask = 0b100110101101 },
+};
+
+const ROOT_NAMES = [_][*:0]const u8{ "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+
+fn scaleActive() bool {
+    return scale_idx > 0 and scale_idx < SCALES.len and note_map.len == 0;
+}
+
+fn inScale(pitch: u8) bool {
+    if (!scaleActive()) return true;
+    const degree: u4 = @intCast((@as(u8, pitch) + 12 - (key_root % 12)) % 12);
+    return (SCALES[scale_idx].mask >> degree) & 1 == 1;
+}
+
+fn isRootPitch(pitch: u8) bool {
+    return scaleActive() and (pitch % 12) == (key_root % 12);
+}
+
+// Nearest in-scale pitch (search outward; falls back to the input).
+fn snapPitchToScale(pitch: u8) u8 {
+    if (!scaleActive()) return pitch;
+    if (inScale(pitch)) return pitch;
+    var off: i32 = 1;
+    while (off <= 6) : (off += 1) {
+        const up = @as(i32, pitch) + off;
+        if (up <= 127 and inScale(@intCast(up))) return @intCast(up);
+        const dn = @as(i32, pitch) - off;
+        if (dn >= 0 and inScale(@intCast(dn))) return @intCast(dn);
+    }
+    return pitch;
+}
 fn keyboardW() f32 {
     return theme.size(28);
 }
@@ -285,16 +342,127 @@ pub fn duplicateSelectedNotes(tracks: []track_mod.Track, selected: ?ClipRef, all
 
 pub fn quantizeSelectedNotes(tracks: []track_mod.Track, selected: ?ClipRef, edit_snap: snap_mod.Setting) bool {
     const resolved = resolveClip(tracks, selected) orelse return false;
+    const step = snap_mod.activeStep(edit_snap, false); // grid step in beats, if any
     var changed = false;
     for (resolved.clip.notes.items) |*note| {
         if (!note.selected) continue;
-        const next_start = snap_mod.snapPositive(edit_snap, note.start_beat, false);
+        var next_start = snap_mod.snapPositive(edit_snap, note.start_beat, false);
+        // Swing: delay every other grid step toward the next one (0 = straight).
+        if (swing > 0) if (step) |g| {
+            const idx = @round(next_start / g);
+            const odd = @mod(@as(i64, @intFromFloat(idx)), 2) != 0;
+            if (odd) next_start += @as(f64, swing) * 0.5 * g;
+        };
         const next_len = @max(minNoteBeats(edit_snap), snap_mod.snapNearest(edit_snap, note.length_beats, false));
         if (next_start != note.start_beat or next_len != note.length_beats) changed = true;
         note.start_beat = next_start;
         note.length_beats = next_len;
     }
     return changed;
+}
+
+// ── Humanize: subtle random timing + velocity jitter ─────────────────
+
+var humanize_rng: std.Random.DefaultPrng = std.Random.DefaultPrng.init(0x5eed_1234);
+var humanize_seed_bump: u64 = 0;
+
+pub fn humanizeSelectedNotes(tracks: []track_mod.Track, selected: ?ClipRef, edit_snap: snap_mod.Setting) bool {
+    const resolved = resolveClip(tracks, selected) orelse return false;
+    // Re-seed each call so repeated humanize keeps shuffling.
+    humanize_seed_bump +%= 0x9E37_79B9_7F4A_7C15;
+    humanize_rng.seed(0x5eed_1234 ^ humanize_seed_bump);
+    const rnd = humanize_rng.random();
+    // Timing spread: a fraction of the grid step (fallback 1/16 beat).
+    const step = snap_mod.activeStep(edit_snap, false) orelse 0.25;
+    const time_amt = step * 0.25; // up to ±25% of a grid step
+    var changed = false;
+    for (resolved.clip.notes.items) |*note| {
+        if (!note.selected) continue;
+        const dt = (rnd.float(f64) * 2.0 - 1.0) * time_amt;
+        const start = @max(0.0, note.start_beat + dt);
+        const dv: i32 = @intFromFloat(@round((rnd.float(f32) * 2.0 - 1.0) * 14.0));
+        const vel: u8 = @intCast(std.math.clamp(@as(i32, note.velocity) + dv, 1, 127));
+        if (start != note.start_beat or vel != note.velocity) changed = true;
+        note.start_beat = start;
+        note.velocity = vel;
+    }
+    return changed;
+}
+
+// ── Snap selected notes' pitches to the active scale ─────────────────
+
+pub fn snapSelectedToScale(tracks: []track_mod.Track, selected: ?ClipRef) bool {
+    if (!scaleActive()) return false;
+    const resolved = resolveClip(tracks, selected) orelse return false;
+    var changed = false;
+    for (resolved.clip.notes.items) |*note| {
+        if (!note.selected) continue;
+        const np = snapPitchToScale(note.pitch);
+        if (np != note.pitch) changed = true;
+        note.pitch = np;
+    }
+    return changed;
+}
+
+// ── Header tools: KEY / SCALE / SWING, drawn into the pane header ─────
+
+const HeaderToolClick = struct { fwd: bool = false, back: bool = false };
+
+fn headerCell(rect_: c.rl.Rectangle, text: [*:0]const u8, m: widgets.Mouse) HeaderToolClick {
+    const hov = widgets.contains(rect_, m.x, m.y) and !widgets.hasActiveDrag();
+    const fill = if (hov) theme.slab_hi else theme.slab_fill;
+    widgets.bevelRaised(rect_, fill, theme.slab_hi, theme.slab_lo);
+    const fs = theme.fsTiny();
+    const tw = widgets.measureTextF(text, fs);
+    widgets.drawLabelF(text, rect_.x + (rect_.width - tw) / 2, rect_.y + (rect_.height - fs) / 2 - 1, fs, theme.text_fg);
+    return .{ .fwd = hov and m.left_released, .back = hov and m.right_pressed };
+}
+
+// Lay KEY / SCALE / SWING into the right end of the header title bar.
+fn drawHeaderTools(title_rect: c.rl.Rectangle, m: widgets.Mouse) void {
+    const fs = theme.fsTiny();
+    const gap = theme.size(3);
+    const h = title_rect.height - 4;
+    const cy = title_rect.y + 2;
+    const key_w = theme.size(30);
+    const scale_w = theme.size(62);
+    const sw_lbl_w = widgets.measureTextF("SW", fs);
+    const sw_fader_w = theme.size(48);
+    const val_w = theme.size(26);
+    const total = key_w + scale_w + sw_lbl_w + sw_fader_w + val_w + gap * 4;
+    // Keep the title legible: only show the tools when there's room beside it.
+    if (title_rect.width < total + theme.size(56)) return;
+    var x = title_rect.x + title_rect.width - total - theme.size(4);
+
+    {
+        const cell = widgets.rect(x, cy, key_w, h);
+        const click = headerCell(cell, ROOT_NAMES[key_root % 12], m);
+        if (click.fwd) key_root = (key_root + 1) % 12;
+        if (click.back) key_root = (key_root + 11) % 12;
+        widgets.tooltip(cell, "Key root — click cycles, right-click back", m);
+        x += key_w + gap;
+    }
+    {
+        const cell = widgets.rect(x, cy, scale_w, h);
+        const click = headerCell(cell, SCALES[scale_idx].name, m);
+        if (click.fwd) scale_idx = (scale_idx + 1) % SCALES.len;
+        if (click.back) scale_idx = (scale_idx + SCALES.len - 1) % SCALES.len;
+        widgets.tooltip(cell, "Scale — click cycles, right-click back", m);
+        x += scale_w + gap;
+    }
+    {
+        widgets.drawLabelF("SW", x, cy + (h - fs) / 2 - 1, fs, theme.text_dim);
+        x += sw_lbl_w + gap;
+        const fr = widgets.rect(x, cy + 1, sw_fader_w, h - 2);
+        var v: f32 = swing;
+        if (widgets.hFader(fr, &v, m)) swing = v;
+        widgets.tooltip(fr, "Swing — applied on Quantize", m);
+        x += sw_fader_w + gap;
+        var buf: [8:0]u8 = undefined;
+        const pct: i32 = @intFromFloat(@round(swing * 100));
+        const s = std.fmt.bufPrintZ(&buf, "{d}%", .{pct}) catch "0%";
+        widgets.drawLabelF(s.ptr, x, cy + (h - fs) / 2 - 1, fs, theme.text_fg);
+    }
 }
 
 pub fn draw(
@@ -330,6 +498,7 @@ pub fn draw(
     const resolved = clip_opt.?;
 
     note_map = resolved.note_labels;
+    if (res.title_rect) |tr| drawHeaderTools(tr, m);
     maybeResetOnClipChange(selected, resolved.clip);
     const pres = drawPianoRoll(body, resolved.clip, resolved.color, alloc, edit_snap, can_paste_notes, m);
 
@@ -495,6 +664,8 @@ fn drawPianoRoll(
         .{ .separator = true },
         .{ .label = "Duplicate", .command = .duplicate, .enabled = has_selection },
         .{ .label = "Quantize", .command = .quantize, .enabled = has_selection },
+        .{ .label = "Humanize", .command = .humanize, .enabled = has_selection },
+        .{ .label = "Snap to scale", .command = .snap_to_scale, .enabled = has_selection and scaleActive() },
         .{ .label = "Delete", .command = .delete, .enabled = has_selection },
         .{ .separator = true },
         .{ .label = "Rename clip", .command = .rename },
@@ -708,14 +879,21 @@ fn drawGrid(r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
     while (true) : (pitch -%= 1) {
         const y = pitchTopY(r, pitch);
         if (y + row_h >= r.y and y <= r.y + r.height) {
-            const lit = if (note_map.len > 0) mapLabel(pitch) != null else !isBlackKey(pitch);
+            const lit = if (note_map.len > 0)
+                mapLabel(pitch) != null
+            else if (scaleActive())
+                inScale(pitch)
+            else
+                !isBlackKey(pitch);
             if (lit) {
+                // Root rows get a brighter shade so the key reads at a glance.
+                const row_col = if (isRootPitch(pitch)) theme.grid_beat else theme.grid_row;
                 c.rl.DrawRectangle(
                     @intFromFloat(r.x),
                     @intFromFloat(y),
                     @intFromFloat(r.width),
                     @intFromFloat(row_h),
-                    theme.grid_row,
+                    row_col,
                 );
             }
             // Octave separator: a brighter line at the bottom of each C row
@@ -964,7 +1142,7 @@ fn handleInput(
         .draw => {
             if (!widgets.tryStartDrag(DRAW_KEY)) return null;
             draw_active = true;
-            draw_pitch = pitch;
+            draw_pitch = snapPitchToScale(pitch);
             draw_start_beat = beat;
             draw_current_beat = beat + defaultNoteBeats(edit_snap);
             draw_start_x = m.x;
@@ -1098,7 +1276,7 @@ fn updateMove(grid: c.rl.Rectangle, clip: *Clip, edit_snap: snap_mod.Setting, m:
         const new_start = s.start_beat + d_beats;
         n.start_beat = if (new_start < 0) 0 else new_start;
         const new_pitch: i32 = @as(i32, @intCast(s.pitch)) - d_rows; // up = higher pitch
-        n.pitch = @intCast(std.math.clamp(new_pitch, 0, 127));
+        n.pitch = snapPitchToScale(@intCast(std.math.clamp(new_pitch, 0, 127)));
     }
 }
 
@@ -1375,4 +1553,32 @@ fn dim(color: c.rl.Color, factor: f32) c.rl.Color {
 fn rectsOverlap(a: c.rl.Rectangle, b: c.rl.Rectangle) bool {
     return !(a.x + a.width < b.x or b.x + b.width < a.x or
         a.y + a.height < b.y or b.y + b.height < a.y);
+}
+
+test "scale membership, root, and snap" {
+    note_map = &.{};
+    // C Major.
+    key_root = 0;
+    scale_idx = 1;
+    try std.testing.expect(inScale(60)); // C
+    try std.testing.expect(!inScale(61)); // C#
+    try std.testing.expect(inScale(62)); // D
+    try std.testing.expect(inScale(64)); // E
+    try std.testing.expect(!inScale(66)); // F#
+    try std.testing.expect(inScale(67)); // G
+    try std.testing.expect(isRootPitch(72)); // C
+    try std.testing.expect(!isRootPitch(74)); // D
+    try std.testing.expect(inScale(snapPitchToScale(61))); // off-key snaps in-key
+    // A natural minor (same notes as C major).
+    key_root = 9;
+    scale_idx = 2;
+    try std.testing.expect(inScale(69)); // A
+    try std.testing.expect(inScale(60)); // C
+    try std.testing.expect(!inScale(61)); // C#
+    // Off = chromatic, everything passes.
+    scale_idx = 0;
+    try std.testing.expect(inScale(61));
+    // reset module state
+    key_root = 0;
+    scale_idx = 0;
 }
