@@ -55,6 +55,8 @@ struct: MachineDesc
   ptr derive         ( cstr or 0 — dsp2 word: params derive-data -- . Called
                        each block to compute derived params from controls. )
   ptr derive-data    ( ptr or 0 — opaque machine-built data passed to derive. )
+  ptr tempo-cell     ( int params offset + 1, or 0 — host writes ctx tempo_bpm
+                       here each block, just before block-prepare. )
 ;
 
 struct: ControlDesc
@@ -390,6 +392,13 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   block.  Stored as offset+1 so 0 means "none". )
 : detector-cell  ( offset -- )
   1 + _mf-md@ MachineDesc.detector-cell! drop
+;
+
+( The host writes ctx.tempo_bpm into PARAMS at this introspected offset
+  each block, right before block-prepare runs, so a block-prepare word can
+  derive a tempo-synced value.  Stored as offset+1 so 0 means "none". )
+: tempo-cell  ( offset -- )
+  1 + _mf-md@ MachineDesc.tempo-cell! drop
 ;
 
 ( Request a read-only audio asset from the host.  At create the host

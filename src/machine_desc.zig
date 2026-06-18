@@ -256,6 +256,9 @@ pub const Desc = struct {
     // State offset where the host writes a pointer to the per-block
     // stereo-linked detector buffer (max abs of both inputs per sample).
     detector_cell: ?usize = null,
+    // Params offset where the host writes ctx.tempo_bpm each block, just
+    // before block-prepare runs; null = machine doesn't sync to tempo.
+    tempo_cell: ?usize = null,
     // Voice count for polyphonic voice-sample machines; 1 = mono.
     voices: usize = 1,
     assets: [MAX_ASSETS]AssetReq = undefined,
@@ -336,6 +339,7 @@ const MachineDescRaw = extern struct {
     pages: Fy.Value,
     derive: Fy.Value,
     derive_data: Fy.Value,
+    tempo_cell: Fy.Value,
 };
 
 const PageRaw = extern struct { next: Fy.Value, name: Fy.Value, rows: Fy.Value };
@@ -564,6 +568,12 @@ pub fn read(host: *FyHost) !Desc {
         const off: usize = @intCast(det_cell - 1);
         if (off + 8 > d.state_size) return error.InvalidMachineDesc;
         d.detector_cell = off;
+    }
+    const tempo_cell = asInt(md.tempo_cell);
+    if (tempo_cell > 0) {
+        const off: usize = @intCast(tempo_cell - 1); // stored +1 so 0 = none
+        if (off + 8 > d.params_size) return error.InvalidMachineDesc; // params, not state
+        d.tempo_cell = off;
     }
     const voices = asInt(md.voices);
     if (voices > 0) d.voices = @intCast(voices);

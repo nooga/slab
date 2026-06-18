@@ -16,7 +16,10 @@ include "../lib/manifest.fy"
   "delay-block-prepare" block-prepare!
   DelayState.size  state-size!
   DelayParams.size params-size!
-  150.0 panel-w!
+  190.0 panel-w!
+
+  ( host writes ctx tempo into params here each block, for SYNC mode )
+  DelayParams.tempo-bpm tempo-cell
 
   ( 1.6 s ring per channel; TIME tops out at 1.5 s with headroom )
   "dline" DelayState.buf DelayState.buf-len 1.6 buffer
@@ -26,6 +29,15 @@ include "../lib/manifest.fy"
   "DELAY" "DAMP" "delay-damp" DelayParams.damp-hz  500.0 16000.0 5500.0 curve-exp knob
   "DELAY" "MIX"  "delay-mix"  DelayParams.mix      0.0   1.0    0.35   curve-pow knob
   "DELAY" 2 strip
+
+  ( SYNC off → TIME knob in seconds; on → 60/bpm * DIV.  DIV option values
+    are beat multipliers, quarter-note = 1.0. )
+  "SYNC" "SYNC" "delay-sync" DelayParams.sync 0.0 switch
+    "FREE" 0.0 opt  "SYNC" 1.0 opt
+  "SYNC" "DIV"  "delay-div"  DelayParams.div  2.0 switch
+    "1/16" 0.25 opt  "1/8T" 0.33333 opt  "1/8" 0.5 opt  "1/8." 0.75 opt
+    "1/4" 1.0 opt  "1/4." 1.5 opt  "1/2" 2.0 opt
+  "SYNC" 2 strip
 
   machine-desc
 ;

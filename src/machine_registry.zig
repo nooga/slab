@@ -283,3 +283,22 @@ test "fy manifest loads + instantiates the gate machine" {
     defer if (m.deinit) |d| d(m.state, std.testing.allocator);
 }
 
+// Exercises the tempo-cell path end to end: delay2 declares a tempo-cell, and
+// its block-prepare derives the delay time from ctx.tempo_bpm in SYNC mode.
+// Loading + instantiating compiles the rewritten delay-block-prepare and parses
+// the new descriptor field; a clean instantiate proves the fy and the
+// fy↔Zig MachineDesc layout (with tempo-cell appended) stayed in sync.
+test "fy manifest loads + instantiates the delay machine (tempo-cell)" {
+    var reg = Registry.init(std.testing.allocator);
+    defer reg.deinit();
+    try reg.loadFyMachine("machines/delay2/delay2.fy");
+    try std.testing.expectEqual(@as(usize, 1), reg.count);
+    const e = &reg.entries[0];
+    try std.testing.expectEqualStrings("Delay", e.nameSlice());
+    try std.testing.expectEqualStrings("delay2", e.idSlice());
+    try std.testing.expect(e.in_audio);
+    try std.testing.expect(!e.in_notes);
+    const m = try reg.instantiate(0);
+    defer if (m.deinit) |d| d(m.state, std.testing.allocator);
+}
+

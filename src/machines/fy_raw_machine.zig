@@ -468,7 +468,7 @@ pub const FyRawMachine = struct {
             } else 0;
             self.raw_control_bits[i] = std.atomic.Value(u32).init(@bitCast(value));
         }
-        self.syncRawParams(48_000.0);
+        self.syncRawParams(48_000.0, 120.0); // no transport yet at init; sane default
     }
 
     fn controlNorm(self: *const FyRawMachine, idx: usize) f32 {
@@ -484,7 +484,7 @@ pub const FyRawMachine = struct {
         self.raw_control_bits[idx].store(@bitCast(value), .monotonic);
     }
 
-    fn syncRawParams(self: *FyRawMachine, sample_rate: f64) void {
+    fn syncRawParams(self: *FyRawMachine, sample_rate: f64, tempo_bpm: f64) void {
         const controls = self.desc.controls[0..self.desc.control_count];
         for (controls, 0..) |control, i| {
             switch (control.kind) {
@@ -507,6 +507,10 @@ pub const FyRawMachine = struct {
             const args = [_]Fy.Dsp2RawArg{ .{ .ptr = self.paramsPtr() }, .{ .ptr = self.desc.derive_data } };
             _ = dv.call(1, &args) catch {};
         }
+
+        // Host-written tempo cell: deposit ctx.tempo_bpm into params so a
+        // tempo-syncing block-prepare can read it (e.g. delay2 SYNC mode).
+        if (self.desc.tempo_cell) |off| self.writeParamF64(off, tempo_bpm);
 
         // Per-block coefficient fill in fy (params sample-rate --). Runs after
         // controls/consts land so the word reads fresh raw values.
@@ -765,7 +769,7 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
     defer fy_host_mod.unlockCallbacks();
     Fy.Builtins.fyPtr = @intFromPtr(&self.host.fy);
 
-    self.syncRawParams(ctx.sample_rate);
+    self.syncRawParams(ctx.sample_rate, ctx.tempo_bpm);
     callPrepare(self, ctx.sample_rate) catch {
         self.failed = true;
         @memset(l[0..frames], 0);
@@ -2150,7 +2154,7 @@ test "raw DSP2 MS-20 fills the svf profile region in fy (no Zig derive)" {
     const inst = try FyRawMachine.create(testing.allocator, "machines/ms20/ms20.fy");
     defer inst.machineInterface().deinit.?(inst, testing.allocator);
 
-    inst.syncRawParams(48_000);
+    inst.syncRawParams(48_000, 120.0);
 
     // Controls land at their declared offsets as raw values (defaults).
     try testing.expect(inst.readParamF64(cutoff_off) > 60.0);

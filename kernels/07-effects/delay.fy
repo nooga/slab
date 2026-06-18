@@ -23,19 +23,32 @@ ustruct: DelayState
 
 ustruct: DelayParams
   ( user-facing )
-  f64 time-s    ( delay time, s )
+  f64 time-s    ( delay time, s — used when sync is off )
   f64 feedback  ( 0..0.9 )
   f64 mix       ( dry/wet 0..1 )
   f64 damp-hz   ( feedback lowpass cutoff )
+  f64 sync      ( switch: 0 free / 1 tempo-synced )
+  f64 div       ( switch option value: beat multiplier, quarter = 1.0 )
+  ( host-written each block via the manifest tempo-cell )
+  f64 tempo-bpm ( ctx.tempo_bpm; 0 until the host first writes it )
   ( derived - filled by delay-block-prepare )
-  f64 time-spl  ( time-s * sr )
+  f64 time-spl  ( effective time * sr )
   f64 damp-a    ( one-pole coefficient, 0..1 )
 ;
 
-( params sample-rate -- : block-rate derived fill. )
+( params sample-rate -- : block-rate derived fill.  Effective delay time is
+  the TIME knob when free, or 60/bpm * div when SYNC is on; selected
+  branchlessly via the sync flag (dsp2 has no if/then).  bpm is clamped to
+  20..999 first so a zero/garbage tempo can't produce inf*0 = NaN. )
 dsp2: delay-block-prepare
   | params sr |
-  params DelayParams.time-s@ sr f*
+  60.0 params DelayParams.tempo-bpm@ 20.0 999.0 fclamp f/
+  params DelayParams.div@ f*
+  0.02 1.5 fclamp
+  params DelayParams.sync@ f*
+  params DelayParams.time-s@ 1.0 params DelayParams.sync@ f- f*
+  f+
+  sr f*
   params DelayParams.time-spl-p f!64
   params DelayParams.damp-hz@ 6.2831853 f* sr f/ 0.0 1.0 fclamp
   params DelayParams.damp-a-p f!64
