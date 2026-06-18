@@ -596,7 +596,7 @@ pub fn main() !void {
             const cres = if (selectedClipIsAudio(tracks, selected_clip))
                 audio_clip_editor.draw(rects.clip_editor, tracks, &audio_pool, selected_clip, transport.bpm(), pane_m)
             else
-                clip_editor.draw(rects.clip_editor, tracks, alloc, selected_clip, edit_snap, clipboard.mode == .notes, pane_m);
+                clip_editor.draw(rects.clip_editor, tracks, alloc, selected_clip, meter_state.liveMap(), edit_snap, clipboard.mode == .notes, pane_m);
             if (rename.active() and rename.kind == .clip) {
                 if (cres.rename_rect) |rr| rename.rect = rr;
             }

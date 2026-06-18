@@ -31,6 +31,7 @@ const clip_mod = @import("../clip.zig");
 const Clip = clip_mod.Clip;
 const Note = clip_mod.Note;
 const ClipRef = clip_mod.ClipRef;
+const meter_mod = @import("../meter.zig");
 
 // ── Grid constants ───────────────────────────────────────────────────
 
@@ -132,6 +133,11 @@ var row_h: f32 = 10;
 var scroll_x: f32 = 0;
 var scroll_y: f32 = 0;
 var initialized_scroll: bool = false;
+// Live meter map + the edited clip's absolute start beat, captured per
+// frame so the grid draws bars in project (absolute) beat space.
+var ce_default_meter_pts = [_]meter_mod.MeterPoint{.{ .start_bar = 0, .numerator = 4, .denominator = 4 }};
+var cur_meter: meter_mod.MeterMap = .{ .points = &ce_default_meter_pts };
+var cur_clip_start: f64 = 0;
 var last_clip_key: u64 = 0; // to detect clip switch → clear selection
 
 fn overviewH() f32 {
@@ -498,10 +504,12 @@ pub fn draw(
     tracks: []track_mod.Track,
     alloc: std.mem.Allocator,
     selected: ?ClipRef,
+    meter_map: meter_mod.MeterMap,
     edit_snap: snap_mod.Setting,
     can_paste_notes: bool,
     m: widgets.Mouse,
 ) Result {
+    cur_meter = meter_map;
     c.rl.DrawRectangleRec(r, theme.pane_bg);
 
     const header = widgets.rect(r.x, r.y, r.width, theme.paneHeaderH());
@@ -635,6 +643,7 @@ fn drawPianoRoll(
     const grid_rect = widgets.rect(r.x + keyboardW(), grid_top, r.width - keyboardW(), grid_h);
     const vel_rect = widgets.rect(grid_rect.x, grid_rect.y + grid_rect.height + 1, grid_rect.width, vel_h);
 
+    cur_clip_start = clip.start_beat;
     initScrollIfNeeded(grid_rect, clip.*);
     handleWheel(grid_rect, clip.*, m);
     clampScroll(grid_rect, clip.*);
@@ -821,32 +830,56 @@ fn handleWheel(grid: c.rl.Rectangle, clip: Clip, m: widgets.Mouse) void {
     last_scroll_time = c.rl.GetTime();
 }
 
+// Local clip-beat → x. Local beat 0 is the clip start (absolute
+// cur_clip_start), so the grid lines up with the project meter.
+fn ceBeatToX(x0: f32, local_beat: f64) f32 {
+    return x0 + @as(f32, @floatCast(local_beat)) * px_per_beat - scroll_x;
+}
+
+// Local clip-beat at the left edge of the grid (where x == x0).
+fn ceFirstLocalBeat() f64 {
+    if (scroll_x <= 0) return 0;
+    return @as(f64, @floatCast(scroll_x)) / @as(f64, @floatCast(px_per_beat));
+}
+
 fn drawRuler(ruler: c.rl.Rectangle, grid: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
+    const x0 = grid.x;
+    const right = grid.x + grid.width - 2;
+
+    // Fine sub-grid (uniform snap guide).
     const grid_step = snap_mod.visualStep(edit_snap, px_per_beat);
     var beat: f64 = 0;
     while (true) {
-        const bx = grid.x + @as(f32, @floatCast(beat)) * px_per_beat - scroll_x;
-        if (bx > grid.x + grid.width - 2) break;
-        if (bx < grid.x - 4) {
-            beat += grid_step;
-            continue;
-        }
-        const is_beat = snap_mod.isBeat(beat);
-        const is_bar = snap_mod.isBar(beat);
-        const tick_h: f32 = if (is_bar) rulerH() - 4 else if (is_beat) 5 else 3;
-        c.rl.DrawRectangle(
-            @intFromFloat(bx),
-            @intFromFloat(ruler.y + rulerH() - tick_h - 2),
-            1,
-            @intFromFloat(tick_h),
-            if (is_bar) theme.grid_bar else if (is_beat) theme.grid_beat else theme.grid_sub,
-        );
-        if (is_bar) {
-            var buf: [8]u8 = undefined;
-            const s = std.fmt.bufPrintZ(&buf, "{d}", .{@as(u32, @intFromFloat(@round(beat / 4.0))) + 1}) catch "?";
-            widgets.drawLabelF(s.ptr, bx + 2, ruler.y + 1, theme.fsTiny(), theme.text_dim);
-        }
+        const bx = ceBeatToX(x0, beat);
+        if (bx > right) break;
+        if (bx >= grid.x) c.rl.DrawRectangle(@intFromFloat(bx), @intFromFloat(ruler.y + rulerH() - 5), 1, 3, theme.grid_sub);
         beat += grid_step;
+    }
+
+    // Meter-driven bar lines + numbers and per-bar beat lines (absolute).
+    const first_abs = cur_clip_start + ceFirstLocalBeat();
+    var bar = cur_meter.beatToBarPos(first_abs).bar;
+    while (true) {
+        const seg = cur_meter.segmentForBar(bar);
+        const unit = seg.unitBeats();
+        const abs_start = cur_meter.barStartBeat(bar);
+        const bsx = ceBeatToX(x0, abs_start - cur_clip_start);
+        if (bsx > right) break;
+        var k: u8 = 0;
+        while (k < seg.numerator) : (k += 1) {
+            const x = ceBeatToX(x0, abs_start + @as(f64, @floatFromInt(k)) * unit - cur_clip_start);
+            if (x > right) break;
+            if (x < grid.x) continue;
+            const is_bar = k == 0;
+            const tick_h: f32 = if (is_bar) rulerH() - 4 else 5;
+            c.rl.DrawRectangle(@intFromFloat(x), @intFromFloat(ruler.y + rulerH() - tick_h - 2), 1, @intFromFloat(tick_h), if (is_bar) theme.grid_bar else theme.grid_beat);
+        }
+        if (bsx >= grid.x - 20) {
+            var buf: [8]u8 = undefined;
+            const s = std.fmt.bufPrintZ(&buf, "{d}", .{bar + 1}) catch "?";
+            widgets.drawLabelF(s.ptr, bsx + 2, ruler.y + 1, theme.fsTiny(), theme.text_dim);
+        }
+        bar += 1;
     }
 }
 
@@ -941,27 +974,36 @@ fn drawGrid(r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
         if (pitch == KEY_LO) break;
     }
 
+    const right = r.x + r.width - 1;
+
+    // Fine sub-grid (uniform, swing applied so off-beat lines match where
+    // drawn/quantized notes land; applySwing no-ops on beats/bars).
     const grid_step = snap_mod.visualStep(edit_snap, px_per_beat);
     var beat: f64 = 0;
     while (true) {
-        // Off-beat lines slide right with SWING so the groove is visible and
-        // matches where drawn/quantized notes land (applySwing no-ops on
-        // beats/bars and on grids coarser than 1/8).
         const draw_beat = applySwing(beat, edit_snap);
-        const bx = r.x + @as(f32, @floatCast(draw_beat)) * px_per_beat - scroll_x;
-        if (bx > r.x + r.width - 1) break;
-        if (bx >= r.x) {
-            const is_beat = snap_mod.isBeat(beat);
-            const is_bar = snap_mod.isBar(beat);
-            c.rl.DrawRectangle(
-                @intFromFloat(bx),
-                @intFromFloat(r.y),
-                1,
-                @intFromFloat(r.height),
-                if (is_bar) theme.grid_bar else if (is_beat) theme.grid_beat else theme.grid_sub,
-            );
-        }
+        const bx = ceBeatToX(r.x, draw_beat);
+        if (bx > right) break;
+        if (bx >= r.x) c.rl.DrawRectangle(@intFromFloat(bx), @intFromFloat(r.y), 1, @intFromFloat(r.height), theme.grid_sub);
         beat += grid_step;
+    }
+
+    // Meter-driven bar and beat lines (absolute beats, no swing).
+    const first_abs = cur_clip_start + ceFirstLocalBeat();
+    var bar = cur_meter.beatToBarPos(first_abs).bar;
+    while (true) {
+        const seg = cur_meter.segmentForBar(bar);
+        const unit = seg.unitBeats();
+        const abs_start = cur_meter.barStartBeat(bar);
+        if (ceBeatToX(r.x, abs_start - cur_clip_start) > right) break;
+        var k: u8 = 0;
+        while (k < seg.numerator) : (k += 1) {
+            const x = ceBeatToX(r.x, abs_start + @as(f64, @floatFromInt(k)) * unit - cur_clip_start);
+            if (x > right) break;
+            if (x < r.x) continue;
+            c.rl.DrawRectangle(@intFromFloat(x), @intFromFloat(r.y), 1, @intFromFloat(r.height), if (k == 0) theme.grid_bar else theme.grid_beat);
+        }
+        bar += 1;
     }
 }
 
