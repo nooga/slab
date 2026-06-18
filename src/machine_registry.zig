@@ -255,3 +255,17 @@ test "EQ machine instantiates (staged derive uses the composition caller)" {
     defer if (m.deinit) |d| d(m.state, std.testing.allocator);
 }
 
+test "fy manifest loads + instantiates the saturator machine" {
+    var reg = Registry.init(std.testing.allocator);
+    defer reg.deinit();
+    try reg.loadFyMachine("machines/sat2/sat2.fy");
+    try std.testing.expectEqual(@as(usize, 1), reg.count);
+    const e = &reg.entries[0];
+    try std.testing.expectEqualStrings("Saturator", e.nameSlice());
+    try std.testing.expectEqualStrings("sat2", e.idSlice());
+    try std.testing.expect(e.in_audio);
+    try std.testing.expect(!e.in_notes);
+    const m = try reg.instantiate(0);
+    defer if (m.deinit) |d| d(m.state, std.testing.allocator);
+}
+

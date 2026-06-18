@@ -119,6 +119,10 @@ pub fn main(init: std.process.Init) !void {
         try runEqCase(alloc, cli, &host);
         return;
     }
+    if (std.mem.eql(u8, cli.case_name, "sat-render")) {
+        try runSatCase(alloc, cli, &host);
+        return;
+    }
     if (std.mem.eql(u8, cli.case_name, "chorus-render")) {
         try runChorusCase(alloc, cli, &host);
         return;
@@ -3796,6 +3800,99 @@ fn runEqCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     std.debug.print(
         "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} max_gain_err={d:.3}dB peak={d:.3} rms={d:.3}\n",
         .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, max_err_db, metrics.peak, metrics.rms },
+    );
+}
+
+// k-sat-tick: a 220 Hz sine driven at low then high gain (Tube). Ratchets:
+// finite, output bounded by the shaper ceiling, and the crest factor drops
+// under heavy drive (the waveform flattens) — i.e. it actually saturates.
+fn runSatCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sr: f64 = @floatFromInt(DRUM_SAMPLE_RATE);
+    const burst: usize = DRUM_SAMPLE_RATE / 2;
+    const frames: usize = burst * 2;
+    const drives_db = [_]f64{ 0.0, 24.0 };
+
+    const input = try alloc.alloc(f64, frames);
+    defer alloc.free(input);
+    const out = try alloc.alloc(f64, frames);
+    defer alloc.free(out);
+    @memset(out, 0);
+    for (input, 0..) |*x, i| {
+        x.* = 0.5 * @sin(2.0 * std.math.pi * 220.0 * @as(f64, @floatFromInt(i)) / sr);
+    }
+
+    // SatParams: drive-db mode tone-hz mix out-db + 7 derived.
+    var params align(8) = [_]f64{0} ** 16;
+    params[1] = 0.0; // mode = Tube (asymmetric)
+    params[2] = 18000.0; // tone open
+    params[3] = 1.0; // full wet
+    params[4] = 0.0; // out 0 dB
+    // SatState: dc-x1 dc-y1 lp.
+    var state align(8) = [_]f64{0} ** 8;
+
+    var slots = Fy.Dsp2RawRepeatedSlots{};
+    var caller = try host.fy.compileDsp2RawRepeatedCaller(cli.word, &slots, &.{ .ptr, .ptr, .ptr, .ptr }, true, true);
+
+    const start = nowNs();
+    for (drives_db, 0..) |ddb, seg| {
+        params[0] = ddb;
+        const bp_args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&params) }, .{ .f64 = sr } };
+        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("sat-block-prepare", 1, &bp_args);
+        const off = seg * burst;
+        const render_args = [_]Fy.Dsp2RawArg{
+            .{ .ptr = @intFromPtr(&out[off]) },
+            .{ .ptr = @intFromPtr(&state) },
+            .{ .ptr = @intFromPtr(&params) },
+            .{ .ptr = @intFromPtr(&input[off]) },
+        };
+        _ = try caller.call(@intCast(burst), &render_args);
+    }
+    const run_ns = nowNs() - start;
+
+    var metrics = Metrics{};
+    metrics.ns_per_iter = @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(frames));
+    fillSignalMetrics(out, &metrics);
+    for (out) |x| {
+        if (!std.math.isFinite(x)) metrics.nonfinite_count += 1;
+    }
+
+    // Crest factor (peak/rms) over each burst's tail; a pure sine is ~1.414,
+    // a flattened (saturated) wave is lower.
+    var crest = [_]f64{ 0, 0 };
+    for (0..2) |seg| {
+        const tail_start = (seg + 1) * burst - DRUM_SAMPLE_RATE / 10;
+        const tail_end = (seg + 1) * burst;
+        var pk: f64 = 0;
+        var e: f64 = 0;
+        var n: usize = 0;
+        for (out[tail_start..tail_end]) |y| {
+            pk = @max(pk, @abs(y));
+            e += y * y;
+            n += 1;
+        }
+        const rms = @sqrt(e / @as(f64, @floatFromInt(n)));
+        crest[seg] = pk / @max(rms, 1e-12);
+    }
+
+    var csv: std.ArrayList(u8) = .empty;
+    defer csv.deinit(alloc);
+    try csv.appendSlice(alloc, "sample,time,in,out\n");
+    var j: usize = 0;
+    while (j < frames) : (j += 16) {
+        try appendFmt(alloc, &csv, "{d},{d:.9},{d:.9},{d:.9}\n", .{
+            j, @as(f64, @floatFromInt(j)) / sr, input[j], out[j],
+        });
+    }
+    try writeDrumArtifacts(alloc, cli, host, csv.items, metrics, out);
+
+    if (metrics.nonfinite_count != 0 or metrics.peak > 1.2 or crest[1] >= crest[0] * 0.9) {
+        std.debug.print("sat ratchet detail: crest_lo={d:.3} crest_hi={d:.3} peak={d:.3}\n", .{ crest[0], crest[1], metrics.peak });
+        return error.KernelRatchetFailed;
+    }
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} crest_lo={d:.3} crest_hi={d:.3} peak={d:.3}\n",
+        .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, crest[0], crest[1], metrics.peak },
     );
 }
 
