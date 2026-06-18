@@ -31,7 +31,6 @@ fn overviewH() f32 {
 fn resizeEdgeW() f32 {
     return theme.fine(4);
 }
-const DEFAULT_CLIP_BEATS: f64 = 4.0;
 const MIN_CLIP_BEATS: f64 = 0.25;
 const PX_PER_BEAT_MIN: f32 = 6;
 const PX_PER_BEAT_MAX: f32 = 96;
@@ -1671,7 +1670,10 @@ fn clipNameRect(r: c.rl.Rectangle) c.rl.Rectangle {
 fn createClipOnTrack(t: *Track, alloc: std.mem.Allocator, track_idx: usize, start_beat: f64, selected: *?ClipRef) void {
     var buf: [clip_mod.MAX_NAME]u8 = undefined;
     const name_str = std.fmt.bufPrint(&buf, "Clip {d}", .{t.clips.items.len + 1}) catch "Clip";
-    var new_clip = Clip.init(name_str, start_beat, DEFAULT_CLIP_BEATS);
+    // A "one-bar clip" is one bar of the current meter (3 beats in 3/4,
+    // 3.5 in 7/8), not a fixed 4 beats.
+    const len_beats = cur_meter.barLenBeats(cur_meter.beatToBarPos(start_beat).bar);
+    var new_clip = Clip.init(name_str, start_beat, len_beats);
     new_clip.selected = true;
     t.addClip(alloc, new_clip) catch |err| {
         std.log.err("create clip failed: {s}", .{@errorName(err)});
