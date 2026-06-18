@@ -477,14 +477,14 @@ pub fn draw(
     selected_track: *?usize,
     selected_clip: *?ClipRef,
     transport: *Transport,
-    meter_map: meter_mod.MeterMap,
+    meter_state: *meter_mod.MeterState,
     edit_snap: snap_mod.Setting,
     can_paste_clips: bool,
     rename_target: RenameTarget,
     m: widgets.Mouse,
 ) Result {
     var result: Result = .{};
-    cur_meter = meter_map;
+    cur_meter = meter_state.liveMap();
     c.rl.DrawRectangleRec(r, theme.pane_bg);
 
     // Audio clips are unwarped: their beat-length is derived from the source
@@ -553,6 +553,14 @@ pub fn draw(
     handleLoopBounds(ruler_rect, timeline_x0, transport, edit_snap, m);
     // Click / drag the ruler to scrub the playhead.
     if (!loop_start_drag and !loop_end_drag) handleRulerScrub(ruler_rect, timeline_x0, transport, m);
+
+    // Right-click the ruler → meter-change menu at the bar under the cursor.
+    if (m.right_pressed and widgets.contains(ruler_rect, m.x, m.y) and !widgets.hasActiveDrag()) {
+        const b = @max(0.0, beatAtX(timeline_x0, m.x));
+        meter_menu_bar = cur_meter.beatToBarPos(b).bar;
+        widgets.openMenuAt(METER_MENU_KEY, m.x, m.y);
+    }
+    meterMenuTick(meter_state, m);
 
     // ── Per-track lane + clips ───────────────────────────────────────
     var press_consumed = false;
@@ -1223,6 +1231,43 @@ fn moveSelectedClipsBetweenTracks(tracks: []Track, alloc: std.mem.Allocator, sel
 }
 
 // ── Rendering helpers ────────────────────────────────────────────────
+
+const METER_MENU_KEY: u64 = 0x4d_45_54_52_4d_4e_55_01; // "METRMNU"
+const METER_REMOVE_ID: u32 = 1000;
+// Bar the meter menu targets (set when opened on a ruler right-click).
+var meter_menu_bar: u32 = 0;
+
+const MeterChoice = struct { label: [*:0]const u8, num: u8, den: u8 };
+const METER_CHOICES = [_]MeterChoice{
+    .{ .label = "4/4", .num = 4, .den = 4 },
+    .{ .label = "3/4", .num = 3, .den = 4 },
+    .{ .label = "2/4", .num = 2, .den = 4 },
+    .{ .label = "5/4", .num = 5, .den = 4 },
+    .{ .label = "6/8", .num = 6, .den = 8 },
+    .{ .label = "7/8", .num = 7, .den = 8 },
+    .{ .label = "5/8", .num = 5, .den = 8 },
+    .{ .label = "9/8", .num = 9, .den = 8 },
+    .{ .label = "12/8", .num = 12, .den = 8 },
+};
+
+fn meterMenuTick(meter_state: *meter_mod.MeterState, m: widgets.Mouse) void {
+    if (!widgets.menuOpen(METER_MENU_KEY)) return;
+    var items: [METER_CHOICES.len + 1]widgets.MenuItem = undefined;
+    inline for (METER_CHOICES, 0..) |ch, i| items[i] = .{ .label = ch.label, .id = @intCast(i) };
+    // A change can be removed only if one starts exactly on the target bar
+    // (and never bar 0, the base meter).
+    const seg = cur_meter.segmentForBar(meter_menu_bar);
+    const can_remove = meter_menu_bar > 0 and seg.start_bar == meter_menu_bar;
+    items[METER_CHOICES.len] = .{ .label = "Remove change here", .id = METER_REMOVE_ID, .enabled = can_remove };
+    if (widgets.menuPickId(METER_MENU_KEY, &items, m)) |id| {
+        if (id == METER_REMOVE_ID) {
+            meter_state.removeChange(meter_menu_bar);
+        } else {
+            const ch = METER_CHOICES[id];
+            meter_state.insertChange(meter_menu_bar, ch.num, ch.den);
+        }
+    }
+}
 
 fn drawBeatTicks(ruler: c.rl.Rectangle, timeline_x: f32, timeline_w: f32, timeline_x0: f32, edit_snap: snap_mod.Setting) void {
     const right = timeline_x + timeline_w - 2;
