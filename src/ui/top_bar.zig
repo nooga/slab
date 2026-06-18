@@ -306,45 +306,51 @@ fn posField(r: c.rl.Rectangle, transport: *const Transport, meter_map: meter_mod
 }
 
 const METER_SALT: u64 = 0x4d54524e; // "MTRN"
+const DENOM_MENU_KEY: u64 = 0x44_45_4e_4f_4d_4d_4e_55; // "DENOMMNU"
 
-/// Base meter (bar 0) editor: drag the numerator (left), click the
-/// denominator (right) to cycle 2/4/8/16. Edits stage through MeterState
-/// and the engine adopts at the next bar boundary.
+// Denominator choices — powers of two plus a few non-power values
+// (irrational meters). Each item's id IS the denominator.
+const DENOM_ITEMS = [_]widgets.MenuItem{
+    .{ .label = "/1", .id = 1 },
+    .{ .label = "/2", .id = 2 },
+    .{ .label = "/3", .id = 3 },
+    .{ .label = "/4", .id = 4 },
+    .{ .label = "/6", .id = 6 },
+    .{ .label = "/8", .id = 8 },
+    .{ .label = "/12", .id = 12 },
+    .{ .label = "/16", .id = 16 },
+    .{ .label = "/32", .id = 32 },
+};
+
+/// Base meter (bar 0) editor: vertical-drag/scroll anywhere on the field
+/// to set the numerator; right-click for a denominator menu. Edits stage
+/// through MeterState and the engine adopts at the next bar boundary.
 fn meterField(r: c.rl.Rectangle, state: *meter_mod.MeterState, m: widgets.Mouse) void {
     const base = state.liveMap().points[0];
 
-    // Right ~40% is the denominator (click to ×2-cycle); left is the
-    // numerator (vertical drag / scroll).
-    const den_w = @round(r.width * 0.42);
-    const num_rect = widgets.rect(r.x, r.y, r.width - den_w, r.height);
-    const den_rect = widgets.rect(r.x + r.width - den_w, r.y, den_w, r.height);
-
-    const new_num = widgets.dragValueV(num_rect, METER_SALT, @floatFromInt(base.numerator), 1, 32, 0.1, 1.0, m);
+    const new_num = widgets.dragValueV(r, METER_SALT, @floatFromInt(base.numerator), 1, 32, 0.1, 1.0, m);
     var num: u8 = @intFromFloat(@round(new_num));
-    var den = base.denominator;
-
-    const den_hit = m.left_pressed and m.x >= den_rect.x and m.x < den_rect.x + den_rect.width and
-        m.y >= den_rect.y and m.y < den_rect.y + den_rect.height;
-    if (den_hit) den = switch (den) {
-        2 => 4,
-        4 => 8,
-        8 => 16,
-        else => 2,
-    };
     if (num < 1) num = 1;
+    if (num != base.numerator) state.editMeterAt(0, num, base.denominator);
 
-    if (num != base.numerator or den != base.denominator) state.editMeterAt(0, num, den);
+    // Right-click → denominator menu.
+    if (m.right_pressed and widgets.contains(r, m.x, m.y)) widgets.openMenuAt(DENOM_MENU_KEY, m.x, m.y);
+    if (widgets.menuOpen(DENOM_MENU_KEY)) {
+        if (widgets.menuPickId(DENOM_MENU_KEY, &DENOM_ITEMS, m)) |id| {
+            state.editMeterAt(0, base.numerator, @intCast(id));
+        }
+    }
 
     const inner = widgets.displayField(r);
     var buf: [16]u8 = undefined;
-    const s = std.fmt.bufPrintZ(&buf, "{d}/{d}", .{ num, den }) catch "?";
+    const s = std.fmt.bufPrintZ(&buf, "{d}/{d}", .{ base.numerator, base.denominator }) catch "?";
     widgets.drawLabelF(s.ptr, inner.x + 3, inner.y + 1, theme.fsBody(), theme.text_fg);
 
     const cap = "METER";
     const cap_w = widgets.measureTextF(cap, theme.fsTiny());
     widgets.drawLabelF(cap, inner.x + inner.width - cap_w - 2, inner.y + inner.height - theme.fsTiny() - 1, theme.fsTiny(), theme.text_mute);
 
-    widgets.tooltip(r, "Meter: drag numerator, click denominator", m);
+    widgets.tooltip(r, "Meter: drag numerator, right-click denominator", m);
 }
 
 fn snapField(r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {

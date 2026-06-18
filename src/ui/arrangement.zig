@@ -807,7 +807,9 @@ pub fn draw(
 
     // Overview strip on top (rendered last so nothing scissor-clips it).
     drawOverview(overview_rect, timeline_w, tracks, content_beats, transport, m);
-    if (widgets.openContextMenu(ARR_CONTEXT_KEY, r, m)) {
+    // The ruler owns right-click (meter menu); keep the arrangement menu off it.
+    const rclick_on_ruler = m.right_pressed and widgets.contains(ruler_rect, m.x, m.y);
+    if (!rclick_on_ruler and widgets.openContextMenu(ARR_CONTEXT_KEY, r, m)) {
         context_target = .{ .beat = beatAtX(timeline_x0, m.x), .track = selected_track.* };
     }
     const has_selection = hasSelectedClips(tracks);
