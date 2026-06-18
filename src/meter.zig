@@ -101,6 +101,48 @@ pub const MeterMap = struct {
         return acc;
     }
 
+    /// Bar context for a quarter-beat, in one walk. This is what the
+    /// engine fills into `MachineCtx` per block: the bar index, the
+    /// quarter-beat where that bar starts, and the bar's length. A
+    /// machine derives normalized bar phase as
+    /// `(ppq_position - bar_start_beat) / bar_len_beats`.
+    pub const BarInfo = struct {
+        bar: u32,
+        bar_start_beat: f64,
+        bar_len_beats: f64,
+    };
+
+    pub fn barInfoAtBeat(self: MeterMap, beat_q_in: f64) BarInfo {
+        std.debug.assert(self.points.len > 0);
+        const beat_q = if (beat_q_in < 0) 0 else beat_q_in;
+
+        var acc_beat: f64 = 0;
+        var i: usize = 0;
+        while (i < self.points.len) : (i += 1) {
+            const p = self.points[i];
+            const seg_len = p.barLenBeats();
+            const is_last = i + 1 >= self.points.len;
+
+            if (!is_last) {
+                const seg_bars = self.points[i + 1].start_bar - p.start_bar;
+                const seg_total = @as(f64, @floatFromInt(seg_bars)) * seg_len;
+                if (beat_q >= acc_beat + seg_total) {
+                    acc_beat += seg_total;
+                    continue;
+                }
+            }
+
+            const into = beat_q - acc_beat;
+            const bars_into = std.math.floor(into / seg_len);
+            return .{
+                .bar = p.start_bar + @as(u32, @intFromFloat(bars_into)),
+                .bar_start_beat = acc_beat + bars_into * seg_len,
+                .bar_len_beats = seg_len,
+            };
+        }
+        unreachable;
+    }
+
     /// Map a quarter-beat (from project start) to a musical position.
     /// Negative input clamps to 0.
     pub fn beatToBarPos(self: MeterMap, beat_q_in: f64) BarPos {
@@ -209,6 +251,26 @@ test "variable meter: 4/4 then 7/8 prefix-sum and seek" {
     try testing.expectEqual(BarPos{ .bar = 4, .beat = 6, .tick = 0 }, m.beatToBarPos(19.0));
     // Downbeat of bar 5.
     try testing.expectEqual(BarPos{ .bar = 5, .beat = 0, .tick = 0 }, m.beatToBarPos(19.5));
+}
+
+test "barInfoAtBeat reports bar, start, and length" {
+    const pts = [_]MeterPoint{
+        .{ .start_bar = 0, .numerator = 4, .denominator = 4 },
+        .{ .start_bar = 4, .numerator = 7, .denominator = 8 },
+    };
+    const m = MeterMap{ .points = &pts };
+
+    // Mid bar 2 (4/4): starts at 8.0, length 4.0.
+    const a = m.barInfoAtBeat(9.5);
+    try testing.expectEqual(@as(u32, 2), a.bar);
+    try testing.expectEqual(@as(f64, 8.0), a.bar_start_beat);
+    try testing.expectEqual(@as(f64, 4.0), a.bar_len_beats);
+
+    // Mid the first 7/8 bar: bar 4 starts at 16.0, length 3.5.
+    const b = m.barInfoAtBeat(17.0);
+    try testing.expectEqual(@as(u32, 4), b.bar);
+    try testing.expectEqual(@as(f64, 16.0), b.bar_start_beat);
+    try testing.expectEqual(@as(f64, 3.5), b.bar_len_beats);
 }
 
 test "segmentForBar picks the governing point" {

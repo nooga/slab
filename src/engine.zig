@@ -9,13 +9,23 @@ const machine = @import("machine.zig");
 const Transport = @import("transport.zig").Transport;
 const Track = @import("track.zig").Track;
 const snap_mod = @import("snapshot.zig");
+const meter = @import("meter.zig");
 
 pub const MAX_BLOCK = audio.BLOCK_FRAMES * 4;
 pub const MAX_EVENTS_PER_TRACK = 128;
 
+/// Fallback meter when the document hasn't installed one: constant 4/4.
+const default_meter_points = [_]meter.MeterPoint{
+    .{ .start_bar = 0, .numerator = 4, .denominator = 4 },
+};
+
 pub const Engine = struct {
     transport: *Transport,
     tracks: []Track,
+    /// Document-owned meter map (read-only on the audio thread). Points to
+    /// a constant 4/4 until the document installs its own; the backing
+    /// slice must outlive the engine.
+    meter_map: meter.MeterMap = .{ .points = &default_meter_points },
     was_playing: bool = false,
     audition_request: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     audition_track: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
@@ -350,6 +360,8 @@ pub const Engine = struct {
         const spb = self.transport.samplesPerBeat();
         const beat_start = self.transport.samplesToBeats(block_start);
         const beat_end = self.transport.samplesToBeats(block_start + frames);
+        // Meter position for this block (homogeneous within the block).
+        const bar_info = self.meter_map.barInfoAtBeat(beat_start);
 
         var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
 
@@ -379,6 +391,9 @@ pub const Engine = struct {
                 .transport_state = .playing,
                 .note_in = if (n_events > 0) @ptrCast(&events[0]) else null,
                 .note_in_count = @intCast(n_events),
+                .bar = bar_info.bar,
+                .beat_in_bar = beat_start - bar_info.bar_start_beat,
+                .bar_len_beats = bar_info.bar_len_beats,
             };
 
             // Note-activity LED: pulse when a note-on is dispatched this block.

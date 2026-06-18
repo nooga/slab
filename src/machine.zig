@@ -119,7 +119,17 @@ pub const MachineCtx = extern struct {
     _pad_g: u32 = 0,
     services: ?*anyopaque = null,
 
-    _reserved: [8]u64 = @splat(0),
+    // Meter position, filled by the host from the document's meter map
+    // (docs/07 §meter-map). Carved from the reserved tail so existing fy
+    // ctx offsets are unchanged. `beat_in_bar` is quarter-beats since the
+    // current bar's downbeat; normalized bar phase is
+    // `beat_in_bar / bar_len_beats`.
+    bar: u32 = 0,
+    _pad_h: u32 = 0,
+    beat_in_bar: f64 = 0,
+    bar_len_beats: f64 = 0,
+
+    _reserved: [5]u64 = @splat(0),
 };
 
 // ── Machine vtable (host-facing) ─────────────────────────────────────
