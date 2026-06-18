@@ -1267,6 +1267,14 @@ fn drawBeatTicks(ruler: c.rl.Rectangle, timeline_x: f32, timeline_w: f32, timeli
             var buf: [8]u8 = undefined;
             const s = std.fmt.bufPrintZ(&buf, "{d}", .{bar + 1}) catch "?";
             widgets.drawLabelF(s.ptr, bx + 2, ruler.y + 1, theme.fsTiny(), theme.text_dim);
+            // Where the meter changes (a segment starts on this bar), label
+            // the new signature in accent, right of the bar number.
+            if (seg.start_bar == bar) {
+                const nw = widgets.measureTextF(s.ptr, theme.fsTiny());
+                var mbuf: [12]u8 = undefined;
+                const ms = std.fmt.bufPrintZ(&mbuf, "{d}/{d}", .{ seg.numerator, seg.denominator }) catch "?";
+                widgets.drawLabelF(ms.ptr, bx + 2 + nw + 3, ruler.y + 1, theme.fsTiny(), theme.accent_hi);
+            }
         }
         bar += 1;
     }

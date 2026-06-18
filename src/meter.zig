@@ -222,6 +222,33 @@ pub const MeterStore = struct {
         self.buf[self.len] = p;
         self.len += 1;
     }
+
+    /// Insert (or, if a point already starts at `p.start_bar`, replace)
+    /// keeping the list sorted by start_bar. Ignored past capacity.
+    pub fn insertSorted(self: *MeterStore, p: MeterPoint) void {
+        var i: usize = 0;
+        while (i < self.len and self.buf[i].start_bar < p.start_bar) : (i += 1) {}
+        if (i < self.len and self.buf[i].start_bar == p.start_bar) {
+            self.buf[i] = p;
+            return;
+        }
+        if (self.len >= MAX_POINTS) return;
+        var j = self.len;
+        while (j > i) : (j -= 1) self.buf[j] = self.buf[j - 1];
+        self.buf[i] = p;
+        self.len += 1;
+    }
+
+    /// Remove the point starting at `start_bar`. Bar 0 (the base meter) is
+    /// never removed. No-op if no point starts exactly there.
+    pub fn removeAt(self: *MeterStore, start_bar: u32) void {
+        if (start_bar == 0) return;
+        var i: usize = 0;
+        while (i < self.len and self.buf[i].start_bar != start_bar) : (i += 1) {}
+        if (i >= self.len) return;
+        while (i + 1 < self.len) : (i += 1) self.buf[i] = self.buf[i + 1];
+        self.len -= 1;
+    }
 };
 
 /// Runtime meter state with a safe edit→play handoff. The UI/generator
@@ -302,6 +329,24 @@ pub const MeterState = struct {
             self.live.buf[index].denominator = denominator;
         }
         _ = self.seq.fetchAdd(1, .release); // -> even
+        self.dirty.store(true, .release);
+    }
+
+    /// UI thread: insert or replace a meter change at `start_bar`
+    /// (start_bar 0 edits the base meter), pending adoption at the next
+    /// bar boundary.
+    pub fn insertChange(self: *MeterState, start_bar: u32, numerator: u8, denominator: u8) void {
+        _ = self.seq.fetchAdd(1, .release);
+        self.live.insertSorted(.{ .start_bar = start_bar, .numerator = numerator, .denominator = denominator });
+        _ = self.seq.fetchAdd(1, .release);
+        self.dirty.store(true, .release);
+    }
+
+    /// UI thread: remove the meter change at `start_bar` (bar 0 is kept).
+    pub fn removeChange(self: *MeterState, start_bar: u32) void {
+        _ = self.seq.fetchAdd(1, .release);
+        self.live.removeAt(start_bar);
+        _ = self.seq.fetchAdd(1, .release);
         self.dirty.store(true, .release);
     }
 
@@ -430,6 +475,44 @@ test "MeterState: editMeterAt changes a point, visible after adopt" {
     try testing.expectEqual(@as(f64, 4.0), st.map().barLenBeats(0));
     st.adoptIfPending();
     try testing.expectEqual(@as(f64, 2.5), st.map().barLenBeats(0));
+}
+
+test "MeterStore: insertSorted keeps order and replaces duplicates" {
+    var s: MeterStore = .{}; // [0:4/4]
+    s.insertSorted(.{ .start_bar = 8, .numerator = 5, .denominator = 4 });
+    s.insertSorted(.{ .start_bar = 4, .numerator = 7, .denominator = 8 });
+    try testing.expectEqual(@as(usize, 3), s.len);
+    try testing.expectEqual(@as(u32, 0), s.buf[0].start_bar);
+    try testing.expectEqual(@as(u32, 4), s.buf[1].start_bar);
+    try testing.expectEqual(@as(u32, 8), s.buf[2].start_bar);
+    // Replace the one at bar 4.
+    s.insertSorted(.{ .start_bar = 4, .numerator = 3, .denominator = 4 });
+    try testing.expectEqual(@as(usize, 3), s.len);
+    try testing.expectEqual(@as(u8, 3), s.buf[1].numerator);
+}
+
+test "MeterStore: removeAt drops a change but never bar 0" {
+    var s: MeterStore = .{};
+    s.insertSorted(.{ .start_bar = 4, .numerator = 7, .denominator = 8 });
+    s.insertSorted(.{ .start_bar = 8, .numerator = 5, .denominator = 4 });
+    s.removeAt(4);
+    try testing.expectEqual(@as(usize, 2), s.len);
+    try testing.expectEqual(@as(u32, 8), s.buf[1].start_bar);
+    s.removeAt(0); // ignored
+    try testing.expectEqual(@as(usize, 2), s.len);
+    s.removeAt(999); // no such bar
+    try testing.expectEqual(@as(usize, 2), s.len);
+}
+
+test "MeterState: insert/remove change visible after adopt" {
+    var st: MeterState = .{};
+    st.insertChange(4, 7, 8);
+    st.adoptIfPending();
+    try testing.expectEqual(@as(f64, 4.0), st.map().barLenBeats(0));
+    try testing.expectEqual(@as(f64, 3.5), st.map().barLenBeats(4));
+    st.removeChange(4);
+    st.adoptIfPending();
+    try testing.expectEqual(@as(f64, 4.0), st.map().barLenBeats(4));
 }
 
 test "MeterState: commitImmediate adopts without a boundary" {
