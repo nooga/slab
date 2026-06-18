@@ -406,6 +406,8 @@ pub fn snapSelectedToScale(tracks: []track_mod.Track, selected: ?ClipRef) bool {
 
 // ── Header tools: KEY / SCALE / SWING, drawn into the pane header ─────
 
+const SCALE_MENU_KEY: u64 = 0x5CA1_E5E1_EC70_0001;
+
 const HeaderToolClick = struct { fwd: bool = false, back: bool = false };
 
 fn headerCell(rect_: c.rl.Rectangle, text: [*:0]const u8, m: widgets.Mouse) HeaderToolClick {
@@ -420,6 +422,14 @@ fn headerCell(rect_: c.rl.Rectangle, text: [*:0]const u8, m: widgets.Mouse) Head
 
 // Lay KEY / SCALE / SWING into the right end of the header title bar.
 fn drawHeaderTools(title_rect: c.rl.Rectangle, m: widgets.Mouse) void {
+    // Scale picker menu (modal) — ticked unconditionally so it stays live even
+    // if the strip is hidden by a narrow header.
+    if (widgets.menuOpen(SCALE_MENU_KEY)) {
+        var items: [SCALES.len]widgets.MenuItem = undefined;
+        for (SCALES, 0..) |sc, i| items[i] = .{ .label = sc.name, .id = @intCast(i) };
+        if (widgets.menuPickId(SCALE_MENU_KEY, &items, m)) |id| scale_idx = @intCast(id);
+    }
+
     const fs = theme.fsTiny();
     const gap = theme.size(3);
     const h = title_rect.height - 4;
@@ -445,9 +455,10 @@ fn drawHeaderTools(title_rect: c.rl.Rectangle, m: widgets.Mouse) void {
     {
         const cell = widgets.rect(x, cy, scale_w, h);
         const click = headerCell(cell, SCALES[scale_idx].name, m);
-        if (click.fwd) scale_idx = (scale_idx + 1) % SCALES.len;
-        if (click.back) scale_idx = (scale_idx + SCALES.len - 1) % SCALES.len;
-        widgets.tooltip(cell, "Scale — click cycles, right-click back", m);
+        if (click.fwd and !widgets.menuOpen(SCALE_MENU_KEY)) {
+            widgets.openMenuAt(SCALE_MENU_KEY, cell.x, cell.y + cell.height);
+        }
+        widgets.tooltip(cell, "Scale — click to choose", m);
         x += scale_w + gap;
     }
     {
