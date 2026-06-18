@@ -389,13 +389,25 @@ pub const FyRawMachine = struct {
             );
         }
         if (self.desc.deriveWord()) |word| {
-            self.derive_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
-                word,
-                &self.derive_slots,
-                &.{ .ptr, .ptr },
-                false,
-                false,
-            );
+            // A staged derive (`call:` composition, e.g. the EQ's per-band
+            // coefficient fill) goes through the composition caller; both
+            // args are pointers and nothing auto-advances.
+            if (self.host.fy.isCompositionWord(word)) {
+                self.derive_caller = try self.host.fy.compileDsp2CompositionCaller(
+                    word,
+                    &self.derive_slots,
+                    false,
+                    false,
+                );
+            } else {
+                self.derive_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
+                    word,
+                    &self.derive_slots,
+                    &.{ .ptr, .ptr },
+                    false,
+                    false,
+                );
+            }
         }
         switch (self.desc.mode) {
             .voice_sample => {
@@ -1146,6 +1158,140 @@ fn drawDisplay(self: *FyRawMachine, rect: c.rl.Rectangle, disp: *const Display, 
         },
         .waveform => drawWaveformDisplay(self, field, disp.sourceSlice(), mouse),
         .meter => drawMeterDisplay(self, field, disp),
+        .response => drawResponseDisplay(self, field),
+    }
+}
+
+// ── Frequency-response curve (parametric EQ) ──────────────────────────
+//
+// Recomputes the composite biquad magnitude from the machine's own band
+// controls (read on the UI thread from the same norms the audio thread
+// turns into params) and draws it as a 1 px polyline over a log-frequency
+// axis. The audio truth stays in fy (kernels/07-effects/eq.fy); this curve
+// is a cosmetic mirror, so a fixed 48 kHz display rate is fine.
+
+const EQ_DB_RANGE: f64 = 18.0; // half-range; the field spans ±18 dB
+
+const Biquad = struct { b0: f64, b1: f64, b2: f64, a0: f64, a1: f64, a2: f64 };
+
+fn rbjPeak(fc: f64, db: f64, q: f64, sr: f64) Biquad {
+    const w = 2.0 * std.math.pi * fc / sr;
+    const cw = @cos(w);
+    const sw = @sin(w);
+    const a = std.math.pow(f64, 10.0, db / 40.0);
+    const alpha = sw / (2.0 * q);
+    return .{ .b0 = 1 + alpha * a, .b1 = -2 * cw, .b2 = 1 - alpha * a, .a0 = 1 + alpha / a, .a1 = -2 * cw, .a2 = 1 - alpha / a };
+}
+
+fn rbjLowShelf(fc: f64, db: f64, sr: f64) Biquad {
+    const w = 2.0 * std.math.pi * fc / sr;
+    const cw = @cos(w);
+    const sw = @sin(w);
+    const a = std.math.pow(f64, 10.0, db / 40.0);
+    const beta = 2.0 * @sqrt(a) * (sw / 2.0) * std.math.sqrt2;
+    const ap1 = a + 1.0;
+    const am1 = a - 1.0;
+    return .{
+        .b0 = a * (ap1 - am1 * cw + beta),
+        .b1 = 2 * a * (am1 - ap1 * cw),
+        .b2 = a * (ap1 - am1 * cw - beta),
+        .a0 = ap1 + am1 * cw + beta,
+        .a1 = -2 * (am1 + ap1 * cw),
+        .a2 = ap1 + am1 * cw - beta,
+    };
+}
+
+fn rbjHighShelf(fc: f64, db: f64, sr: f64) Biquad {
+    const w = 2.0 * std.math.pi * fc / sr;
+    const cw = @cos(w);
+    const sw = @sin(w);
+    const a = std.math.pow(f64, 10.0, db / 40.0);
+    const beta = 2.0 * @sqrt(a) * (sw / 2.0) * std.math.sqrt2;
+    const ap1 = a + 1.0;
+    const am1 = a - 1.0;
+    return .{
+        .b0 = a * (ap1 + am1 * cw + beta),
+        .b1 = -2 * a * (am1 + ap1 * cw),
+        .b2 = a * (ap1 + am1 * cw - beta),
+        .a0 = ap1 - am1 * cw + beta,
+        .a1 = 2 * (am1 - ap1 * cw),
+        .a2 = ap1 - am1 * cw - beta,
+    };
+}
+
+fn rbjHpf(fc: f64, q: f64, sr: f64) Biquad {
+    const w = 2.0 * std.math.pi * fc / sr;
+    const cw = @cos(w);
+    const sw = @sin(w);
+    const alpha = sw / (2.0 * q);
+    const omc = 1.0 + cw;
+    return .{ .b0 = omc / 2.0, .b1 = -omc, .b2 = omc / 2.0, .a0 = 1 + alpha, .a1 = -2 * cw, .a2 = 1 - alpha };
+}
+
+fn biquadMagDb(bq: Biquad, f: f64, sr: f64) f64 {
+    const w = 2.0 * std.math.pi * f / sr;
+    const cw = @cos(w);
+    const c2w = @cos(2.0 * w);
+    const num = bq.b0 * bq.b0 + bq.b1 * bq.b1 + bq.b2 * bq.b2 + 2.0 * (bq.b0 * bq.b1 + bq.b1 * bq.b2) * cw + 2.0 * bq.b0 * bq.b2 * c2w;
+    const den = bq.a0 * bq.a0 + bq.a1 * bq.a1 + bq.a2 * bq.a2 + 2.0 * (bq.a0 * bq.a1 + bq.a1 * bq.a2) * cw + 2.0 * bq.a0 * bq.a2 * c2w;
+    return 10.0 * std.math.log10(@max(num / @max(den, 1e-12), 1e-12));
+}
+
+fn controlValueById(self: *const FyRawMachine, id: []const u8) ?f64 {
+    for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
+        if (std.mem.eql(u8, ctl.idSlice(), id)) {
+            return switch (ctl.kind) {
+                .direct_f64 => normToValue(ctl.*, self.controlNorm(i)),
+                .switch_sel => ctl.option_values[switchIndex(ctl.*, self.controlNorm(i))],
+                .int_range => intRangeValue(ctl.*, self.controlNorm(i)),
+            };
+        }
+    }
+    return null;
+}
+
+fn drawResponseDisplay(self: *FyRawMachine, field: c.rl.Rectangle) void {
+    const sr: f64 = 48000.0;
+
+    const hpf_on = (controlValueById(self,"eq-hpf-on") orelse 0.0) >= 0.5;
+    const hpf = rbjHpf(controlValueById(self,"eq-hpf-hz") orelse 20.0, std.math.sqrt1_2, sr);
+    const ls = rbjLowShelf(controlValueById(self,"eq-ls-hz") orelse 100.0, controlValueById(self,"eq-ls-db") orelse 0.0, sr);
+    const p1 = rbjPeak(controlValueById(self,"eq-p1-hz") orelse 500.0, controlValueById(self,"eq-p1-db") orelse 0.0, controlValueById(self,"eq-p1-q") orelse 0.9, sr);
+    const p2 = rbjPeak(controlValueById(self,"eq-p2-hz") orelse 3000.0, controlValueById(self,"eq-p2-db") orelse 0.0, controlValueById(self,"eq-p2-q") orelse 0.9, sr);
+    const hs = rbjHighShelf(controlValueById(self,"eq-hs-hz") orelse 8000.0, controlValueById(self,"eq-hs-db") orelse 0.0, sr);
+
+    // Horizontal grid: 0 dB centre + ±9 dB lines.
+    const mid_y = field.y + field.height * 0.5;
+    c.rl.DrawLineEx(.{ .x = field.x, .y = mid_y }, .{ .x = field.x + field.width, .y = mid_y }, 1.0, theme.grid_beat);
+    inline for (.{ -9.0, 9.0 }) |g| {
+        const gy = field.y + @as(f32, @floatCast(0.5 - (@as(f64, g)) / (2.0 * EQ_DB_RANGE))) * field.height;
+        c.rl.DrawLineEx(.{ .x = field.x, .y = gy }, .{ .x = field.x + field.width, .y = gy }, 1.0, theme.grid_sub);
+    }
+    // Vertical decade lines at 100 / 1k / 10k Hz (log axis 20..20000).
+    inline for (.{ 100.0, 1000.0, 10000.0 }) |fline| {
+        const tx = std.math.log10(@as(f64, fline) / 20.0) / 3.0; // 20..20000 spans 3 decades
+        const vx = field.x + @as(f32, @floatCast(tx)) * field.width;
+        c.rl.DrawLineEx(.{ .x = vx, .y = field.y }, .{ .x = vx, .y = field.y + field.height }, 1.0, theme.grid_sub);
+    }
+
+    const N: usize = 160;
+    var prev = c.rl.Vector2{ .x = 0, .y = 0 };
+    var i: usize = 0;
+    while (i < N) : (i += 1) {
+        const t = @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(N - 1));
+        const f = 20.0 * std.math.pow(f64, 1000.0, t); // 20 → 20000 Hz, log-spaced
+        var db: f64 = 0;
+        if (hpf_on) db += biquadMagDb(hpf, f, sr);
+        db += biquadMagDb(ls, f, sr);
+        db += biquadMagDb(p1, f, sr);
+        db += biquadMagDb(p2, f, sr);
+        db += biquadMagDb(hs, f, sr);
+        const yn = std.math.clamp(0.5 - db / (2.0 * EQ_DB_RANGE), 0.0, 1.0);
+        const px = field.x + @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(N - 1)) * field.width;
+        const py = field.y + @as(f32, @floatCast(yn)) * field.height;
+        const p = c.rl.Vector2{ .x = px, .y = py };
+        if (i > 0) c.rl.DrawLineEx(prev, p, 1.5, theme.accent_hi);
+        prev = p;
     }
 }
 

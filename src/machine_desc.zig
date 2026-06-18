@@ -148,7 +148,7 @@ pub const Strip = struct {
     }
 };
 
-pub const DisplayKind = enum { adsr, waveform, meter };
+pub const DisplayKind = enum { adsr, waveform, meter, response };
 
 /// Meter display state-offset slots (byte offsets into a region's state),
 /// in the order the manifest `meter-display` word pushes them.
@@ -510,6 +510,7 @@ pub fn read(host: *FyHost) !Desc {
             0 => .adsr,
             1 => .waveform,
             2 => .meter,
+            3 => .response,
             else => return error.InvalidMachineDesc,
         };
         out.source_len = try copyText(&out.source, cstrSlice(disp.sources));
@@ -781,3 +782,4 @@ test "descriptor walker reads the MS-20 manifest from fy" {
     }
     try testing.expect(found);
 }
+

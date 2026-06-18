@@ -115,6 +115,10 @@ pub fn main(init: std.process.Init) !void {
         try runCompCase(alloc, cli, &host);
         return;
     }
+    if (std.mem.eql(u8, cli.case_name, "eq-render")) {
+        try runEqCase(alloc, cli, &host);
+        return;
+    }
     if (std.mem.eql(u8, cli.case_name, "chorus-render")) {
         try runChorusCase(alloc, cli, &host);
         return;
@@ -3627,6 +3631,171 @@ fn runCompCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     std.debug.print(
         "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} curve_err={d:.3}dB settle={d:.4}s\n",
         .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, max_curve_err_db, settle_s },
+    );
+}
+
+// k-eq-tick: sine bursts at several frequencies through a known curve.
+// Ratchets: finite output, and the measured per-frequency gain matches the
+// analytic composite biquad magnitude (same RBJ formulas) within tolerance —
+// i.e. the fy coefficient fill and the per-sample biquads are correct.
+const EqBiquad = struct { b0: f64, b1: f64, b2: f64, a0: f64, a1: f64, a2: f64 };
+
+fn eqRbjPeak(fc: f64, db: f64, q: f64, sr: f64) EqBiquad {
+    const w = 2.0 * std.math.pi * fc / sr;
+    const cw = @cos(w);
+    const sw = @sin(w);
+    const a = std.math.pow(f64, 10.0, db / 40.0);
+    const alpha = sw / (2.0 * q);
+    return .{ .b0 = 1 + alpha * a, .b1 = -2 * cw, .b2 = 1 - alpha * a, .a0 = 1 + alpha / a, .a1 = -2 * cw, .a2 = 1 - alpha / a };
+}
+
+fn eqRbjShelf(fc: f64, db: f64, sr: f64, high: bool) EqBiquad {
+    const w = 2.0 * std.math.pi * fc / sr;
+    const cw = @cos(w);
+    const sw = @sin(w);
+    const a = std.math.pow(f64, 10.0, db / 40.0);
+    const beta = 2.0 * @sqrt(a) * (sw / 2.0) * std.math.sqrt2;
+    const ap1 = a + 1.0;
+    const am1 = a - 1.0;
+    if (high) return .{
+        .b0 = a * (ap1 + am1 * cw + beta),
+        .b1 = -2 * a * (am1 + ap1 * cw),
+        .b2 = a * (ap1 + am1 * cw - beta),
+        .a0 = ap1 - am1 * cw + beta,
+        .a1 = 2 * (am1 - ap1 * cw),
+        .a2 = ap1 - am1 * cw - beta,
+    };
+    return .{
+        .b0 = a * (ap1 - am1 * cw + beta),
+        .b1 = 2 * a * (am1 - ap1 * cw),
+        .b2 = a * (ap1 - am1 * cw - beta),
+        .a0 = ap1 + am1 * cw + beta,
+        .a1 = -2 * (am1 + ap1 * cw),
+        .a2 = ap1 + am1 * cw - beta,
+    };
+}
+
+fn eqBiquadMagDb(bq: EqBiquad, f: f64, sr: f64) f64 {
+    const w = 2.0 * std.math.pi * f / sr;
+    const cw = @cos(w);
+    const c2w = @cos(2.0 * w);
+    const num = bq.b0 * bq.b0 + bq.b1 * bq.b1 + bq.b2 * bq.b2 + 2.0 * (bq.b0 * bq.b1 + bq.b1 * bq.b2) * cw + 2.0 * bq.b0 * bq.b2 * c2w;
+    const den = bq.a0 * bq.a0 + bq.a1 * bq.a1 + bq.a2 * bq.a2 + 2.0 * (bq.a0 * bq.a1 + bq.a1 * bq.a2) * cw + 2.0 * bq.a0 * bq.a2 * c2w;
+    return 10.0 * std.math.log10(@max(num / @max(den, 1e-30), 1e-30));
+}
+
+fn runEqCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sr: f64 = @floatFromInt(DRUM_SAMPLE_RATE);
+    const test_freqs = [_]f64{ 80.0, 300.0, 1000.0, 3000.0, 8000.0, 14000.0 };
+    const burst_len: usize = DRUM_SAMPLE_RATE / 4; // 0.25 s per burst
+    const frames: usize = burst_len * test_freqs.len;
+
+    // A known shaping curve: +6 dB low shelf @100, flat low-mid, -8 dB peak
+    // @3k (Q1.2), +4 dB high shelf @8k, HPF off.
+    const ls_hz = 100.0;
+    const ls_db = 6.0;
+    const p1_hz = 1000.0;
+    const p1_db = 0.0;
+    const p1_q = 0.9;
+    const p2_hz = 3000.0;
+    const p2_db = -8.0;
+    const p2_q = 1.2;
+    const hs_hz = 8000.0;
+    const hs_db = 4.0;
+
+    const input = try alloc.alloc(f64, frames);
+    defer alloc.free(input);
+    const out = try alloc.alloc(f64, frames);
+    defer alloc.free(out);
+    @memset(out, 0);
+    for (input, 0..) |*x, i| {
+        const f = test_freqs[i / burst_len];
+        x.* = 0.5 * @sin(2.0 * std.math.pi * f * @as(f64, @floatFromInt(i)) / sr);
+    }
+
+    // EqParams flat layout (see EqParams ustruct): 12 user cells, sr, 25 coeffs.
+    var params align(8) = [_]f64{0} ** 40;
+    params[0] = 20.0; // hpf-hz
+    params[1] = 0.0; // hpf-on (off)
+    params[2] = ls_hz;
+    params[3] = ls_db;
+    params[4] = p1_hz;
+    params[5] = p1_db;
+    params[6] = p1_q;
+    params[7] = p2_hz;
+    params[8] = p2_db;
+    params[9] = p2_q;
+    params[10] = hs_hz;
+    params[11] = hs_db;
+    // EqState: sig + 5*(z1,z2) = 11 cells.
+    var state align(8) = [_]f64{0} ** 16;
+
+    // Stash sr (block-prepare) then fill coefficients (the five derive stages).
+    const bp_args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&params) }, .{ .f64 = sr } };
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("eq-block-prepare", 1, &bp_args);
+    const coef_args = [_]Fy.Dsp2RawArg{.{ .ptr = @intFromPtr(&params) }};
+    inline for (.{ "eq-coef-hpf", "eq-coef-ls", "eq-coef-p1", "eq-coef-p2", "eq-coef-hs" }) |cw| {
+        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cw, 1, &coef_args);
+    }
+
+    var slots = Fy.Dsp2RawRepeatedSlots{};
+    var caller = try host.fy.compileDsp2CompositionCaller(cli.word, &slots, true, true);
+    const render_args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out[0]) },
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+        .{ .ptr = @intFromPtr(&input[0]) },
+    };
+    const start = nowNs();
+    _ = try caller.call(@intCast(frames), &render_args);
+    const run_ns = nowNs() - start;
+
+    var metrics = Metrics{};
+    metrics.ns_per_iter = @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(frames));
+    fillSignalMetrics(out, &metrics);
+    for (out) |x| {
+        if (!std.math.isFinite(x)) metrics.nonfinite_count += 1;
+    }
+
+    // Per-burst measured gain vs analytic composite magnitude.
+    const ls = eqRbjShelf(ls_hz, ls_db, sr, false);
+    const p1 = eqRbjPeak(p1_hz, p1_db, p1_q, sr);
+    const p2 = eqRbjPeak(p2_hz, p2_db, p2_q, sr);
+    const hs = eqRbjShelf(hs_hz, hs_db, sr, true);
+    var max_err_db: f64 = 0;
+    for (test_freqs, 0..) |f, bi| {
+        const tail_start = (bi + 1) * burst_len - DRUM_SAMPLE_RATE / 20; // last 50 ms
+        const tail_end = (bi + 1) * burst_len;
+        var in_e: f64 = 0;
+        var out_e: f64 = 0;
+        for (input[tail_start..tail_end], out[tail_start..tail_end]) |x, y| {
+            in_e += x * x;
+            out_e += y * y;
+        }
+        const meas_db = 10.0 * std.math.log10(@max(out_e, 1e-30) / @max(in_e, 1e-30));
+        const exp_db = eqBiquadMagDb(ls, f, sr) + eqBiquadMagDb(p1, f, sr) + eqBiquadMagDb(p2, f, sr) + eqBiquadMagDb(hs, f, sr);
+        max_err_db = @max(max_err_db, @abs(meas_db - exp_db));
+    }
+
+    var csv: std.ArrayList(u8) = .empty;
+    defer csv.deinit(alloc);
+    try csv.appendSlice(alloc, "sample,time,in,out\n");
+    var j: usize = 0;
+    while (j < frames) : (j += 16) {
+        try appendFmt(alloc, &csv, "{d},{d:.9},{d:.9},{d:.9}\n", .{
+            j, @as(f64, @floatFromInt(j)) / sr, input[j], out[j],
+        });
+    }
+    try writeDrumArtifacts(alloc, cli, host, csv.items, metrics, out);
+
+    if (metrics.nonfinite_count != 0 or max_err_db > 1.5) {
+        std.debug.print("eq ratchet detail: max_gain_err={d:.3}dB\n", .{max_err_db});
+        return error.KernelRatchetFailed;
+    }
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} max_gain_err={d:.3}dB peak={d:.3} rms={d:.3}\n",
+        .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, max_err_db, metrics.peak, metrics.rms },
     );
 }
 

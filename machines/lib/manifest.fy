@@ -266,6 +266,21 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   _mf-last-disp !64
 ;
 
+( A frequency-response curve [kind 3].  The display reads the machine's
+  own band controls and recomputes the composite biquad magnitude, so it
+  needs no sources or state offsets — just a name for panel placement. )
+: response-display  ( name -- )
+  DisplayDesc.alloc
+  0 swap DisplayDesc.sources!
+  swap cstr-new swap DisplayDesc.name!
+  3 swap DisplayDesc.kind!
+  _mf-last-disp @64 0 =
+  [ dup _mf-md@ MachineDesc.displays! drop ]
+  [ dup _mf-last-disp @64 DisplayDesc.next! drop ]
+  ifte
+  _mf-last-disp !64
+;
+
 ( A live level/loudness meter [kind 2].  The seven state byte offsets are
   read each frame by the panel: gain-min [GR], in-peak, out-peak, and the
   four LUFS mean-square cells.  Offsets are pushed in that order, count on
