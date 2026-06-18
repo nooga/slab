@@ -224,6 +224,84 @@ pub const MeterStore = struct {
     }
 };
 
+/// Runtime meter state with a safe edit→play handoff. The UI/generator
+/// thread edits `live`; the audio thread reads a private `audio_copy` and
+/// only refreshes it at a bar boundary (docs/07 §runtime-change), so a
+/// meter change never re-lays bars under a moving playhead mid-bar.
+///
+/// Concurrency: a seqlock guards `live`. `stage()` brackets a full
+/// rewrite (odd→write→even, Release) and marks `dirty`. `adoptIfPending()`
+/// runs on the audio thread at a boundary: it snapshots `live` under the
+/// seqlock and commits to `audio_copy` only if no write straddled the
+/// copy — a torn read keeps the old copy and stays dirty for next time.
+/// `commitImmediate()` is the non-realtime path (project load, edits while
+/// stopped) and assumes no concurrent render.
+///
+/// NOTE: `MeterPoint.groups` is copied by slice header only; until the
+/// generator slice owns group storage, staged points must use empty
+/// groups (or storage that outlives the state).
+pub const MeterState = struct {
+    live: MeterStore = .{},
+    audio_copy: MeterStore = .{},
+    seq: std.atomic.Value(u32) = .init(0),
+    dirty: std.atomic.Value(bool) = .init(false),
+
+    /// Audio thread: the map to use this block.
+    pub fn map(self: *const MeterState) MeterMap {
+        return self.audio_copy.map();
+    }
+
+    /// UI thread: the authoritative (possibly not-yet-adopted) map, for
+    /// drawing and editing.
+    pub fn liveMap(self: *const MeterState) MeterMap {
+        return self.live.map();
+    }
+
+    /// UI thread: direct access to the live store for building a map
+    /// in place (project load). Pair with `commitImmediate`.
+    pub fn liveStore(self: *MeterState) *MeterStore {
+        return &self.live;
+    }
+
+    /// UI/generator thread: replace the live map and mark it for adoption
+    /// at the next bar boundary.
+    pub fn stage(self: *MeterState, points: []const MeterPoint) void {
+        _ = self.seq.fetchAdd(1, .release); // -> odd: write in progress
+        self.live.clear();
+        for (points) |p| self.live.append(p);
+        if (self.live.len == 0) self.live.reset();
+        _ = self.seq.fetchAdd(1, .release); // -> even: stable
+        self.dirty.store(true, .release);
+    }
+
+    /// Audio thread: adopt a pending edit, only safe to call at a bar
+    /// boundary (or when not rendering). No-op when nothing is pending.
+    pub fn adoptIfPending(self: *MeterState) void {
+        if (!self.dirty.load(.acquire)) return;
+        const s1 = self.seq.load(.acquire);
+        if (s1 & 1 != 0) return; // writer mid-update; try next boundary
+        var tmp: MeterStore = undefined;
+        const n = self.live.len;
+        var i: usize = 0;
+        while (i < n and i < MAX_POINTS) : (i += 1) tmp.buf[i] = self.live.buf[i];
+        if (self.seq.load(.acquire) != s1) return; // torn; keep old copy
+        // Validated — publish into the audio copy.
+        i = 0;
+        while (i < n) : (i += 1) self.audio_copy.buf[i] = tmp.buf[i];
+        self.audio_copy.len = n;
+        self.dirty.store(false, .release);
+    }
+
+    /// Non-realtime: force the audio copy to match live immediately.
+    /// Caller guarantees no concurrent render (load / stopped).
+    pub fn commitImmediate(self: *MeterState) void {
+        var i: usize = 0;
+        while (i < self.live.len) : (i += 1) self.audio_copy.buf[i] = self.live.buf[i];
+        self.audio_copy.len = self.live.len;
+        self.dirty.store(false, .release);
+    }
+};
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 const testing = std.testing;
@@ -309,6 +387,38 @@ test "barInfoAtBeat reports bar, start, and length" {
     try testing.expectEqual(@as(u32, 4), b.bar);
     try testing.expectEqual(@as(f64, 16.0), b.bar_start_beat);
     try testing.expectEqual(@as(f64, 3.5), b.bar_len_beats);
+}
+
+test "MeterState: stage is not visible to audio until adopted" {
+    var st: MeterState = .{};
+    // Default audio map is 4/4.
+    try testing.expectEqual(@as(f64, 4.0), st.map().barLenBeats(0));
+
+    // Stage a 7/8 map. The audio map must NOT change yet.
+    st.stage(&.{.{ .start_bar = 0, .numerator = 7, .denominator = 8 }});
+    try testing.expectEqual(@as(f64, 4.0), st.map().barLenBeats(0));
+    // The live (authoritative) map reflects the edit immediately.
+    try testing.expectEqual(@as(f64, 3.5), st.liveMap().barLenBeats(0));
+
+    // Adopt (as the engine does at a bar boundary) — now audio sees it.
+    st.adoptIfPending();
+    try testing.expectEqual(@as(f64, 3.5), st.map().barLenBeats(0));
+
+    // Idempotent: a second adopt with nothing pending is a no-op.
+    st.adoptIfPending();
+    try testing.expectEqual(@as(f64, 3.5), st.map().barLenBeats(0));
+}
+
+test "MeterState: commitImmediate adopts without a boundary" {
+    var st: MeterState = .{};
+    st.stage(&.{
+        .{ .start_bar = 0, .numerator = 5, .denominator = 4 },
+        .{ .start_bar = 2, .numerator = 3, .denominator = 4 },
+    });
+    st.commitImmediate();
+    const m = st.map();
+    try testing.expectEqual(@as(f64, 5.0), m.barLenBeats(0));
+    try testing.expectEqual(@as(f64, 3.0), m.barLenBeats(2));
 }
 
 test "segmentForBar picks the governing point" {

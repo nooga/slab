@@ -14,18 +14,20 @@ const meter = @import("meter.zig");
 pub const MAX_BLOCK = audio.BLOCK_FRAMES * 4;
 pub const MAX_EVENTS_PER_TRACK = 128;
 
-/// Fallback meter store (constant 4/4) used until the document installs
+/// Fallback meter state (constant 4/4) used until the document installs
 /// its own. Module-level so the address is stable for the field default.
-var default_meter_store: meter.MeterStore = .{};
+var default_meter_state: meter.MeterState = .{};
 
 pub const Engine = struct {
     transport: *Transport,
     tracks: []Track,
-    /// Document-owned meter store (read-only on the audio thread). Points
-    /// to a constant 4/4 until the document installs its own; must outlive
-    /// the engine. Reading `.map()` per block picks up project loads
-    /// without a refresh.
-    meter_store: *const meter.MeterStore = &default_meter_store,
+    /// Document-owned meter state (must outlive the engine). The audio
+    /// thread reads `.map()` per block and adopts staged edits at bar
+    /// boundaries (docs/07 §runtime-change).
+    meter_state: *meter.MeterState = &default_meter_state,
+    /// Bar index from the previous chunk; a change marks a boundary at
+    /// which a staged meter edit may be adopted.
+    meter_last_bar: ?u32 = null,
     was_playing: bool = false,
     audition_request: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     audition_track: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
@@ -361,7 +363,15 @@ pub const Engine = struct {
         const beat_start = self.transport.samplesToBeats(block_start);
         const beat_end = self.transport.samplesToBeats(block_start + frames);
         // Meter position for this block (homogeneous within the block).
-        const bar_info = self.meter_store.map().barInfoAtBeat(beat_start);
+        // Adopt a staged meter edit only when we cross into a new bar, so
+        // bars never re-lay under the playhead mid-bar (docs/07).
+        var bar_info = self.meter_state.map().barInfoAtBeat(beat_start);
+        const at_boundary = self.meter_last_bar == null or bar_info.bar != self.meter_last_bar.?;
+        if (at_boundary) {
+            self.meter_state.adoptIfPending();
+            bar_info = self.meter_state.map().barInfoAtBeat(beat_start);
+        }
+        self.meter_last_bar = bar_info.bar;
 
         var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
 

@@ -442,15 +442,16 @@ pub fn main() !void {
     document_mod.setMaster(&master);
 
     // Document-owned meter map (defaults to 4/4). Registered so
-    // serialize/apply persist it; the engine reads it per block.
-    var meter_store: meter_mod.MeterStore = .{};
-    document_mod.setMeterStore(&meter_store);
+    // serialize/apply persist it; the engine reads it per block and adopts
+    // staged edits at bar boundaries.
+    var meter_state: meter_mod.MeterState = .{};
+    document_mod.setMeterState(&meter_state);
 
     var engine = engine_mod.Engine{
         .transport = &transport,
         .tracks = tracks_buf[0..track_count],
         .master = &master,
-        .meter_store = &meter_store,
+        .meter_state = &meter_state,
     };
 
     // ── Audio device ─────────────────────────────────────────────────

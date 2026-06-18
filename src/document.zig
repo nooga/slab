@@ -60,9 +60,9 @@ pub fn setMaster(m: *track_mod.Track) void {
 /// Process-wide meter store, registered once at startup (like the master
 /// bus). serialize()/apply() read and repopulate it rather than threading
 /// it through every call site. See docs/07 §meter-map.
-var active_meter: ?*meter_mod.MeterStore = null;
+var active_meter: ?*meter_mod.MeterState = null;
 
-pub fn setMeterStore(m: *meter_mod.MeterStore) void {
+pub fn setMeterState(m: *meter_mod.MeterState) void {
     active_meter = m;
 }
 
@@ -130,9 +130,9 @@ pub fn serialize(
 
     // Meter map (docs/07 §meter-map). Groups are not serialized yet —
     // they arrive with the generator slice.
-    if (active_meter) |ms| {
+    if (active_meter) |st| {
         try out.appendSlice(alloc, ",\"meter\":[");
-        for (ms.map().points, 0..) |p, i| {
+        for (st.liveMap().points, 0..) |p, i| {
             if (i > 0) try out.append(alloc, ',');
             try appendFmt(alloc, &out, "{{\"bar\":{d},\"num\":{d},\"den\":{d}}}", .{
                 p.start_bar, p.numerator, p.denominator,
@@ -277,7 +277,8 @@ pub fn apply(
 
     // Meter map: repopulate the store, or fall back to 4/4 for projects
     // saved before meter support. First point is forced to start_bar 0.
-    if (active_meter) |ms| {
+    if (active_meter) |st| {
+        const ms = st.liveStore();
         ms.clear();
         if (objGet(root, "meter")) |mv| if (mv == .array) {
             for (mv.array.items) |pv| {
@@ -291,6 +292,7 @@ pub fn apply(
             }
         };
         if (ms.len == 0) ms.reset();
+        st.commitImmediate();
     }
 
     for (tracks_buf[0..track_count.*]) |*t| t.deinit(alloc);
@@ -694,12 +696,15 @@ test "meter map round-trips through serialize/apply" {
     var transport: transport_mod.Transport = .{};
     transport.sample_rate = 48_000;
 
-    // Source store: 4/4 then 7/8 at bar 4.
-    var src_store: meter_mod.MeterStore = .{};
-    src_store.clear();
-    src_store.append(.{ .start_bar = 0, .numerator = 4, .denominator = 4 });
-    src_store.append(.{ .start_bar = 4, .numerator = 7, .denominator = 8 });
-    setMeterStore(&src_store);
+    // Source state: 4/4 then 7/8 at bar 4.
+    var src_state: meter_mod.MeterState = .{};
+    {
+        const ls = src_state.liveStore();
+        ls.clear();
+        ls.append(.{ .start_bar = 0, .numerator = 4, .denominator = 4 });
+        ls.append(.{ .start_bar = 4, .numerator = 7, .denominator = 8 });
+    }
+    setMeterState(&src_state);
     defer active_meter = null;
 
     var pool = audio_pool_mod.AudioPool.init(alloc);
@@ -715,9 +720,9 @@ test "meter map round-trips through serialize/apply" {
     const bytes = try serialize(alloc, tracks[0..], &transport);
     defer alloc.free(bytes);
 
-    // Load into a fresh store.
-    var dst_store: meter_mod.MeterStore = .{};
-    setMeterStore(&dst_store);
+    // Load into a fresh state.
+    var dst_state: meter_mod.MeterState = .{};
+    setMeterState(&dst_state);
 
     var reg = registry_mod.Registry.init(alloc);
     defer reg.deinit();
@@ -728,7 +733,8 @@ test "meter map round-trips through serialize/apply" {
     try apply(alloc, bytes, &reg, loaded_buf[0..], &loaded_count, &lt, test_machine);
     defer for (loaded_buf[0..loaded_count]) |*t| t.deinit(alloc);
 
-    const pts = dst_store.map().points;
+    // Adopted immediately on load — both the live and audio maps match.
+    const pts = dst_state.map().points;
     try std.testing.expectEqual(@as(usize, 2), pts.len);
     try std.testing.expectEqual(@as(u32, 0), pts[0].start_bar);
     try std.testing.expectEqual(@as(u8, 4), pts[0].numerator);
@@ -746,9 +752,9 @@ test "project without meter falls back to 4/4" {
     var lt: transport_mod.Transport = .{};
     lt.sample_rate = 48_000;
 
-    var store: meter_mod.MeterStore = .{};
-    store.clear(); // emptied — apply must restore 4/4 when JSON has no meter
-    setMeterStore(&store);
+    var state: meter_mod.MeterState = .{};
+    state.liveStore().clear(); // emptied — apply must restore 4/4 when JSON has no meter
+    setMeterState(&state);
     defer active_meter = null;
 
     var pool = audio_pool_mod.AudioPool.init(alloc);
@@ -762,7 +768,7 @@ test "project without meter falls back to 4/4" {
     try apply(alloc, json, &reg, loaded_buf[0..], &loaded_count, &lt, test_machine);
     defer for (loaded_buf[0..loaded_count]) |*t| t.deinit(alloc);
 
-    const pts = store.map().points;
+    const pts = state.map().points;
     try std.testing.expectEqual(@as(usize, 1), pts.len);
     try std.testing.expectEqual(@as(u8, 4), pts[0].numerator);
     try std.testing.expectEqual(@as(u8, 4), pts[0].denominator);
