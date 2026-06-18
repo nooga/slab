@@ -17,6 +17,42 @@ const std = @import("std");
 /// `(4/D) * PPQN` ticks.
 pub const PPQN: u32 = 960;
 
+/// Accent strength of a meter-beat: the bar downbeat, a secondary
+/// (group-start) accent, or a weak beat.
+pub const Accent = enum(u8) { weak = 0, group = 1, downbeat = 2 };
+
+/// Max additive groups per bar (numerator ≤ 32, min group 2 → ≤ 16).
+pub const MAX_GROUPS: usize = 16;
+
+/// Default musical grouping for a meter with no explicit `groups`. Simple
+/// meters (denominator ≤ 4) get one group — only the downbeat is accented.
+/// Compound-feel meters (eighths/finer) split into 3s when divisible by 3,
+/// else 2s with the leftover folded into a trailing 3 (5→2+3, 7→2+2+3).
+fn defaultGroups(num: u8, den: u8, out: *[MAX_GROUPS]u8) []const u8 {
+    if (num <= 1 or den < 8) {
+        out[0] = num;
+        return out[0..1];
+    }
+    var n: usize = 0;
+    if (num % 3 == 0) {
+        // All 3s: 6→3+3, 9→3+3+3, 12→3+3+3+3.
+        while (n < num / 3) : (n += 1) out[n] = 3;
+    } else if (num % 2 == 0) {
+        // All 2s: 4→2+2, 8→2+2+2+2.
+        while (n < num / 2) : (n += 1) out[n] = 2;
+    } else {
+        // Odd, not divisible by 3: 2s then a trailing 3. 5→2+3, 7→2+2+3.
+        var rem: u8 = num;
+        while (rem > 3) : (rem -= 2) {
+            out[n] = 2;
+            n += 1;
+        }
+        out[n] = 3;
+        n += 1;
+    }
+    return out[0..n];
+}
+
 /// One entry in a meter map. Applies from `start_bar` until the next
 /// point's `start_bar` (or forever, if it is the last point).
 pub const MeterPoint = struct {
@@ -39,6 +75,37 @@ pub const MeterPoint = struct {
     pub fn unitBeats(self: MeterPoint) f64 {
         const d: f64 = @floatFromInt(self.denominator);
         return 4.0 / d;
+    }
+
+    /// This meter's additive grouping — the explicit `groups` if set and
+    /// summing to the numerator, otherwise a musical default (see
+    /// `defaultGroups`). Written into `out`; the returned slice sums to
+    /// the numerator.
+    pub fn groupsInto(self: MeterPoint, out: *[MAX_GROUPS]u8) []const u8 {
+        if (self.groups.len > 0 and self.groups.len <= MAX_GROUPS) {
+            var sum: u32 = 0;
+            for (self.groups) |g| sum += g;
+            if (sum == self.numerator) {
+                for (self.groups, 0..) |g, i| out[i] = g;
+                return out[0..self.groups.len];
+            }
+        }
+        return defaultGroups(self.numerator, self.denominator, out);
+    }
+
+    /// Accent strength of meter-beat `beat_index` (0-based) within a bar:
+    /// downbeat at 0, secondary at each group start, weak otherwise.
+    pub fn accentAt(self: MeterPoint, beat_index: u32) Accent {
+        if (beat_index == 0) return .downbeat;
+        var buf: [MAX_GROUPS]u8 = undefined;
+        const g = self.groupsInto(&buf);
+        var acc: u32 = 0;
+        for (g) |x| {
+            acc += x; // boundary after this group = start of the next
+            if (acc == beat_index) return .group;
+            if (acc > beat_index) break;
+        }
+        return .weak;
     }
 };
 
@@ -72,6 +139,21 @@ pub const MeterMap = struct {
             if (p.start_bar <= bar) seg = p else break;
         }
         return seg;
+    }
+
+    /// Metronome state at a quarter-beat: the current meter-beat's accent
+    /// and the phase (0..1) into it. The UI pulses when phase is near 0.
+    pub const MeterBeat = struct { accent: Accent, phase: f64 };
+    pub fn meterBeat(self: MeterMap, beat_q: f64) MeterBeat {
+        const info = self.barInfoAtBeat(beat_q);
+        const seg = self.segmentForBar(info.bar);
+        const unit = seg.unitBeats();
+        const into = @max(0.0, beat_q - info.bar_start_beat);
+        const bi = std.math.floor(into / unit);
+        return .{
+            .accent = seg.accentAt(@intFromFloat(bi)),
+            .phase = (into - bi * unit) / unit,
+        };
     }
 
     /// Quarter-beats in the given bar.
@@ -525,6 +607,60 @@ test "MeterState: commitImmediate adopts without a boundary" {
     const m = st.map();
     try testing.expectEqual(@as(f64, 5.0), m.barLenBeats(0));
     try testing.expectEqual(@as(f64, 3.0), m.barLenBeats(2));
+}
+
+test "default grouping: simple vs compound meters" {
+    var buf: [MAX_GROUPS]u8 = undefined;
+    // Simple meters (/4) → one group; only the downbeat accents.
+    try testing.expectEqualSlices(u8, &.{4}, defaultGroups(4, 4, &buf));
+    try testing.expectEqualSlices(u8, &.{3}, defaultGroups(3, 4, &buf));
+    // Compound-feel (/8): 3s when divisible, else 2s + trailing 3.
+    try testing.expectEqualSlices(u8, &.{ 3, 3 }, defaultGroups(6, 8, &buf));
+    try testing.expectEqualSlices(u8, &.{ 3, 3, 3 }, defaultGroups(9, 8, &buf));
+    try testing.expectEqualSlices(u8, &.{ 2, 3 }, defaultGroups(5, 8, &buf));
+    try testing.expectEqualSlices(u8, &.{ 2, 2, 3 }, defaultGroups(7, 8, &buf));
+    try testing.expectEqualSlices(u8, &.{ 2, 2 }, defaultGroups(4, 8, &buf));
+}
+
+test "accentAt: 7/8 default groups to 2+2+3" {
+    const p = MeterPoint{ .start_bar = 0, .numerator = 7, .denominator = 8 };
+    // Downbeat at 0; secondary at group starts 2 and 4; rest weak.
+    try testing.expectEqual(Accent.downbeat, p.accentAt(0));
+    try testing.expectEqual(Accent.weak, p.accentAt(1));
+    try testing.expectEqual(Accent.group, p.accentAt(2));
+    try testing.expectEqual(Accent.weak, p.accentAt(3));
+    try testing.expectEqual(Accent.group, p.accentAt(4));
+    try testing.expectEqual(Accent.weak, p.accentAt(5));
+    try testing.expectEqual(Accent.weak, p.accentAt(6));
+}
+
+test "accentAt: explicit groups override the default (3+2+2)" {
+    const p = MeterPoint{ .start_bar = 0, .numerator = 7, .denominator = 8, .groups = &.{ 3, 2, 2 } };
+    try testing.expectEqual(Accent.downbeat, p.accentAt(0));
+    try testing.expectEqual(Accent.group, p.accentAt(3));
+    try testing.expectEqual(Accent.group, p.accentAt(5));
+    try testing.expectEqual(Accent.weak, p.accentAt(2));
+}
+
+test "accentAt: 4/4 has no secondary accents" {
+    const p = MeterPoint{ .start_bar = 0, .numerator = 4, .denominator = 4 };
+    try testing.expectEqual(Accent.downbeat, p.accentAt(0));
+    try testing.expectEqual(Accent.weak, p.accentAt(1));
+    try testing.expectEqual(Accent.weak, p.accentAt(2));
+    try testing.expectEqual(Accent.weak, p.accentAt(3));
+}
+
+test "meterBeat: accent + phase" {
+    var pts = MeterMap.singlePoint(7, 8);
+    const m = MeterMap{ .points = &pts };
+    // Start of the 3rd eighth (beat index 2) = group accent, phase 0.
+    const a = m.meterBeat(1.0); // 1.0 quarter = 2 eighths in
+    try testing.expectEqual(Accent.group, a.accent);
+    try testing.expectApproxEqAbs(@as(f64, 0.0), a.phase, 1e-9);
+    // Halfway into the downbeat eighth.
+    const b = m.meterBeat(0.25); // 0.25 quarter = half an eighth
+    try testing.expectEqual(Accent.downbeat, b.accent);
+    try testing.expectApproxEqAbs(@as(f64, 0.5), b.phase, 1e-9);
 }
 
 test "segmentForBar picks the governing point" {

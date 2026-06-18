@@ -248,13 +248,16 @@ fn bpmField(r: c.rl.Rectangle, transport: *Transport, meter_map: meter_mod.Meter
 
     const inner = widgets.displayField(r);
 
-    // Metronome LED — pulses at the start of each beat, red on the bar's
-    // downbeat (meter-aware), green on other beats.
-    const beats = transport.beats();
-    const beat_frac = @mod(beats, 1);
-    const is_downbeat = meter_map.beatToBarPos(beats).beat == 0;
-    const pulse_on = transport.isPlaying() and beat_frac < 0.12;
-    const led_color = if (is_downbeat) theme.accent_rec else theme.accent_play;
+    // Metronome LED — pulses at the start of each meter-beat: red on the
+    // bar downbeat, amber on a group (secondary) accent, green on weak
+    // beats (meter- and grouping-aware).
+    const mb = meter_map.meterBeat(transport.beats());
+    const pulse_on = transport.isPlaying() and mb.phase < 0.12;
+    const led_color = switch (mb.accent) {
+        .downbeat => theme.accent_rec,
+        .group => theme.accent_hi,
+        .weak => theme.accent_play,
+    };
 
     const led_sz = theme.fine(6);
     const led_rect = widgets.rect(inner.x + 2, inner.y + (inner.height - led_sz) / 2, led_sz, led_sz);

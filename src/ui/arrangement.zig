@@ -1299,14 +1299,18 @@ fn drawBeatTicks(ruler: c.rl.Rectangle, timeline_x: f32, timeline_w: f32, timeli
             const x = beatToX(timeline_x0, bstart + @as(f64, @floatFromInt(k)) * unit);
             if (x > right) break;
             if (x < timeline_x) continue;
-            const is_bar = k == 0;
-            const tick_h: f32 = if (is_bar) rulerH() - 4 else 5;
+            const acc = seg.accentAt(k);
+            const tick_h: f32 = switch (acc) {
+                .downbeat => rulerH() - 4,
+                .group => @round((rulerH() - 4) * 0.55),
+                .weak => 5,
+            };
             c.rl.DrawRectangle(
                 @intFromFloat(x),
                 @intFromFloat(ruler.y + rulerH() - tick_h - 2),
                 1,
                 @intFromFloat(tick_h),
-                if (is_bar) theme.grid_bar else theme.grid_beat,
+                if (acc == .weak) theme.grid_beat else theme.grid_bar,
             );
         }
         if (bx >= timeline_x - 20) {
@@ -1354,7 +1358,7 @@ fn drawTimelineLane(r: c.rl.Rectangle, t: Track, idx: usize, selected: bool, tim
             const x = beatToX(timeline_x0, bstart + @as(f64, @floatFromInt(k)) * unit);
             if (x > right) break;
             if (x < r.x) continue;
-            c.rl.DrawRectangle(@intFromFloat(x), @intFromFloat(r.y), 1, @intFromFloat(r.height), if (k == 0) theme.grid_bar else theme.grid_beat);
+            c.rl.DrawRectangle(@intFromFloat(x), @intFromFloat(r.y), 1, @intFromFloat(r.height), if (seg.accentAt(k) == .weak) theme.grid_beat else theme.grid_bar);
         }
         bar += 1;
     }

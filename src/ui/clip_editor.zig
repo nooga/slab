@@ -870,9 +870,13 @@ fn drawRuler(ruler: c.rl.Rectangle, grid: c.rl.Rectangle, edit_snap: snap_mod.Se
             const x = ceBeatToX(x0, abs_start + @as(f64, @floatFromInt(k)) * unit - cur_clip_start);
             if (x > right) break;
             if (x < grid.x) continue;
-            const is_bar = k == 0;
-            const tick_h: f32 = if (is_bar) rulerH() - 4 else 5;
-            c.rl.DrawRectangle(@intFromFloat(x), @intFromFloat(ruler.y + rulerH() - tick_h - 2), 1, @intFromFloat(tick_h), if (is_bar) theme.grid_bar else theme.grid_beat);
+            const acc = seg.accentAt(k);
+            const tick_h: f32 = switch (acc) {
+                .downbeat => rulerH() - 4,
+                .group => @round((rulerH() - 4) * 0.55),
+                .weak => 5,
+            };
+            c.rl.DrawRectangle(@intFromFloat(x), @intFromFloat(ruler.y + rulerH() - tick_h - 2), 1, @intFromFloat(tick_h), if (acc == .weak) theme.grid_beat else theme.grid_bar);
         }
         if (bsx >= grid.x - 20) {
             var buf: [8]u8 = undefined;
@@ -1001,7 +1005,7 @@ fn drawGrid(r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
             const x = ceBeatToX(r.x, abs_start + @as(f64, @floatFromInt(k)) * unit - cur_clip_start);
             if (x > right) break;
             if (x < r.x) continue;
-            c.rl.DrawRectangle(@intFromFloat(x), @intFromFloat(r.y), 1, @intFromFloat(r.height), if (k == 0) theme.grid_bar else theme.grid_beat);
+            c.rl.DrawRectangle(@intFromFloat(x), @intFromFloat(r.y), 1, @intFromFloat(r.height), if (seg.accentAt(k) == .weak) theme.grid_beat else theme.grid_bar);
         }
         bar += 1;
     }
