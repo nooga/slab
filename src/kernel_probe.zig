@@ -123,6 +123,10 @@ pub fn main(init: std.process.Init) !void {
         try runSatCase(alloc, cli, &host);
         return;
     }
+    if (std.mem.eql(u8, cli.case_name, "gate-render")) {
+        try runGateCase(alloc, cli, &host);
+        return;
+    }
     if (std.mem.eql(u8, cli.case_name, "chorus-render")) {
         try runChorusCase(alloc, cli, &host);
         return;
@@ -3893,6 +3897,101 @@ fn runSatCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     std.debug.print(
         "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} crest_lo={d:.3} crest_hi={d:.3} peak={d:.3}\n",
         .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, crest[0], crest[1], metrics.peak },
+    );
+}
+
+// k-gate-tick: a 220 Hz sine, loud (above threshold) then quiet (below).
+// Ratchets: finite, the loud segment passes near unity, and the quiet
+// segment is attenuated toward the RANGE floor — i.e. the gate opens and
+// closes. The detector trace is abs(input) (mono), as the host fills it.
+fn runGateCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sr: f64 = @floatFromInt(DRUM_SAMPLE_RATE);
+    const half: usize = DRUM_SAMPLE_RATE / 2;
+    const frames: usize = half * 2;
+
+    const input = try alloc.alloc(f64, frames);
+    defer alloc.free(input);
+    const det = try alloc.alloc(f64, frames);
+    defer alloc.free(det);
+    const out = try alloc.alloc(f64, frames);
+    defer alloc.free(out);
+    @memset(out, 0);
+    for (input, det, 0..) |*x, *d, i| {
+        const amp: f64 = if (i < half) 0.5 else 0.003; // loud above thresh, quiet below
+        x.* = amp * @sin(2.0 * std.math.pi * 220.0 * @as(f64, @floatFromInt(i)) / sr);
+        d.* = @abs(x.*);
+    }
+
+    // GateState: det ptr in cell 0, rest zero. (idx 0 -> walks the whole run.)
+    var state align(8) = [_]f64{0} ** 8;
+    @as(*usize, @ptrCast(&state[0])).* = @intFromPtr(det.ptr);
+    // GateParams: thresh range atk hold rel + derived.
+    var params align(8) = [_]f64{0} ** 16;
+    params[0] = -40.0; // thresh-db
+    params[1] = -60.0; // range-db (floor)
+    params[2] = 0.001; // atk-s
+    params[3] = 0.05; // hold-s
+    params[4] = 0.05; // rel-s
+
+    const bp_args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&params) }, .{ .f64 = sr } };
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("gate-block-prepare", 1, &bp_args);
+
+    var slots = Fy.Dsp2RawRepeatedSlots{};
+    var caller = try host.fy.compileDsp2CompositionCaller(cli.word, &slots, true, true);
+    const render_args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out[0]) },
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+        .{ .ptr = @intFromPtr(&input[0]) },
+    };
+    const start = nowNs();
+    _ = try caller.call(@intCast(frames), &render_args);
+    const run_ns = nowNs() - start;
+
+    var metrics = Metrics{};
+    metrics.ns_per_iter = @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(frames));
+    fillSignalMetrics(out, &metrics);
+    for (out) |x| {
+        if (!std.math.isFinite(x)) metrics.nonfinite_count += 1;
+    }
+
+    // Open ratio over the loud tail; attenuation over the quiet tail.
+    const win = DRUM_SAMPLE_RATE / 10; // 100 ms
+    var in_a: f64 = 0;
+    var out_a: f64 = 0;
+    for (input[half - win .. half], out[half - win .. half]) |x, y| {
+        in_a += x * x;
+        out_a += y * y;
+    }
+    var in_b: f64 = 0;
+    var out_b: f64 = 0;
+    for (input[frames - win .. frames], out[frames - win .. frames]) |x, y| {
+        in_b += x * x;
+        out_b += y * y;
+    }
+    const open_ratio_db = 10.0 * std.math.log10(@max(out_a, 1e-30) / @max(in_a, 1e-30));
+    const closed_db = 10.0 * std.math.log10(@max(out_b, 1e-30) / @max(in_b, 1e-30));
+
+    var csv: std.ArrayList(u8) = .empty;
+    defer csv.deinit(alloc);
+    try csv.appendSlice(alloc, "sample,time,in,out\n");
+    var j: usize = 0;
+    while (j < frames) : (j += 16) {
+        try appendFmt(alloc, &csv, "{d},{d:.9},{d:.9},{d:.9}\n", .{
+            j, @as(f64, @floatFromInt(j)) / sr, input[j], out[j],
+        });
+    }
+    try writeDrumArtifacts(alloc, cli, host, csv.items, metrics, out);
+
+    // Open: within ~1 dB of unity. Closed: attenuated by at least 30 dB.
+    if (metrics.nonfinite_count != 0 or @abs(open_ratio_db) > 1.0 or closed_db > -30.0) {
+        std.debug.print("gate ratchet detail: open={d:.3}dB closed={d:.3}dB\n", .{ open_ratio_db, closed_db });
+        return error.KernelRatchetFailed;
+    }
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} open={d:.3}dB closed={d:.3}dB\n",
+        .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, open_ratio_db, closed_db },
     );
 }
 

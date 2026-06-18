@@ -399,6 +399,7 @@ pub fn main() !void {
     try reg.loadFyMachine("machines/comp2/comp2.fy");
     try reg.loadFyMachine("machines/eq2/eq2.fy");
     try reg.loadFyMachine("machines/sat2/sat2.fy");
+    try reg.loadFyMachine("machines/gate2/gate2.fy");
     try reg.loadFyMachine("machines/limiter2/limiter2.fy");
     try reg.loadFyMachine("machines/chorus2/chorus2.fy");
     try reg.loadFyMachine("machines/juno2/juno2.fy");

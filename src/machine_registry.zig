@@ -269,3 +269,17 @@ test "fy manifest loads + instantiates the saturator machine" {
     defer if (m.deinit) |d| d(m.state, std.testing.allocator);
 }
 
+test "fy manifest loads + instantiates the gate machine" {
+    var reg = Registry.init(std.testing.allocator);
+    defer reg.deinit();
+    try reg.loadFyMachine("machines/gate2/gate2.fy");
+    try std.testing.expectEqual(@as(usize, 1), reg.count);
+    const e = &reg.entries[0];
+    try std.testing.expectEqualStrings("Gate", e.nameSlice());
+    try std.testing.expectEqualStrings("gate2", e.idSlice());
+    try std.testing.expect(e.in_audio);
+    try std.testing.expect(!e.in_notes);
+    const m = try reg.instantiate(0);
+    defer if (m.deinit) |d| d(m.state, std.testing.allocator);
+}
+
