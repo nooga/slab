@@ -292,6 +292,19 @@ pub const MeterState = struct {
         self.dirty.store(false, .release);
     }
 
+    /// UI thread: edit one live point's numerator/denominator in place
+    /// (seqlock-bracketed) and mark it pending for adoption at the next
+    /// bar boundary. No-op if `index` is out of range.
+    pub fn editMeterAt(self: *MeterState, index: usize, numerator: u8, denominator: u8) void {
+        _ = self.seq.fetchAdd(1, .release); // -> odd
+        if (index < self.live.len) {
+            self.live.buf[index].numerator = numerator;
+            self.live.buf[index].denominator = denominator;
+        }
+        _ = self.seq.fetchAdd(1, .release); // -> even
+        self.dirty.store(true, .release);
+    }
+
     /// Non-realtime: force the audio copy to match live immediately.
     /// Caller guarantees no concurrent render (load / stopped).
     pub fn commitImmediate(self: *MeterState) void {
@@ -407,6 +420,16 @@ test "MeterState: stage is not visible to audio until adopted" {
     // Idempotent: a second adopt with nothing pending is a no-op.
     st.adoptIfPending();
     try testing.expectEqual(@as(f64, 3.5), st.map().barLenBeats(0));
+}
+
+test "MeterState: editMeterAt changes a point, visible after adopt" {
+    var st: MeterState = .{};
+    st.editMeterAt(0, 5, 8); // 5/8
+    // Authoritative map reflects it; audio map waits for adopt.
+    try testing.expectEqual(@as(f64, 2.5), st.liveMap().barLenBeats(0));
+    try testing.expectEqual(@as(f64, 4.0), st.map().barLenBeats(0));
+    st.adoptIfPending();
+    try testing.expectEqual(@as(f64, 2.5), st.map().barLenBeats(0));
 }
 
 test "MeterState: commitImmediate adopts without a boundary" {

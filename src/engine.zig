@@ -119,6 +119,9 @@ pub const Engine = struct {
                     for (mb.effects.items) |*fx| fx.mach.reset(fx.mach.state);
                 }
                 self.was_playing = false;
+                // Force the first block on resume to be a boundary, so a
+                // meter edited while stopped is adopted immediately.
+                self.meter_last_bar = null;
             }
             if (!self.renderAudition(out_slice, frames)) {
                 for (self.tracks) |*t| t.setMeter(0, 0);

@@ -52,7 +52,8 @@ pub const Result = struct {
 
 const FILE_MENU_KEY: u64 = 0x5346494c45; // "SFILE"
 
-pub fn draw(r: c.rl.Rectangle, transport: *Transport, meter_map: meter_mod.MeterMap, edit_snap: *snap_mod.Setting, project_path: []const u8, project_path_chosen: bool, dirty: bool, m: widgets.Mouse) Result {
+pub fn draw(r: c.rl.Rectangle, transport: *Transport, meter_state: *meter_mod.MeterState, edit_snap: *snap_mod.Setting, project_path: []const u8, project_path_chosen: bool, dirty: bool, m: widgets.Mouse) Result {
+    const meter_map = meter_state.liveMap();
     var result: Result = .{};
 
     // Bar background — flat, no bevel.
@@ -157,6 +158,11 @@ pub fn draw(r: c.rl.Rectangle, transport: *Transport, meter_map: meter_mod.Meter
     const pos_rect = widgets.rect(x, y, field_w_pos, h);
     posField(pos_rect, transport, meter_map);
     x += field_w_pos + GROUP_GAP;
+
+    // ── Meter (time signature) field ─────────────────────────────────
+    const field_w_meter = theme.size(54);
+    meterField(widgets.rect(x, y, field_w_meter, h), meter_state, m);
+    x += field_w_meter + GROUP_GAP;
 
     drawSeparator(widgets.rect(x, y, theme.size(10), h));
     x += theme.size(10) + GROUP_GAP;
@@ -297,6 +303,48 @@ fn posField(r: c.rl.Rectangle, transport: *const Transport, meter_map: meter_mod
         theme.fsTiny(),
         theme.text_mute,
     );
+}
+
+const METER_SALT: u64 = 0x4d54524e; // "MTRN"
+
+/// Base meter (bar 0) editor: drag the numerator (left), click the
+/// denominator (right) to cycle 2/4/8/16. Edits stage through MeterState
+/// and the engine adopts at the next bar boundary.
+fn meterField(r: c.rl.Rectangle, state: *meter_mod.MeterState, m: widgets.Mouse) void {
+    const base = state.liveMap().points[0];
+
+    // Right ~40% is the denominator (click to ×2-cycle); left is the
+    // numerator (vertical drag / scroll).
+    const den_w = @round(r.width * 0.42);
+    const num_rect = widgets.rect(r.x, r.y, r.width - den_w, r.height);
+    const den_rect = widgets.rect(r.x + r.width - den_w, r.y, den_w, r.height);
+
+    const new_num = widgets.dragValueV(num_rect, METER_SALT, @floatFromInt(base.numerator), 1, 32, 0.1, 1.0, m);
+    var num: u8 = @intFromFloat(@round(new_num));
+    var den = base.denominator;
+
+    const den_hit = m.left_pressed and m.x >= den_rect.x and m.x < den_rect.x + den_rect.width and
+        m.y >= den_rect.y and m.y < den_rect.y + den_rect.height;
+    if (den_hit) den = switch (den) {
+        2 => 4,
+        4 => 8,
+        8 => 16,
+        else => 2,
+    };
+    if (num < 1) num = 1;
+
+    if (num != base.numerator or den != base.denominator) state.editMeterAt(0, num, den);
+
+    const inner = widgets.displayField(r);
+    var buf: [16]u8 = undefined;
+    const s = std.fmt.bufPrintZ(&buf, "{d}/{d}", .{ num, den }) catch "?";
+    widgets.drawLabelF(s.ptr, inner.x + 3, inner.y + 1, theme.fsBody(), theme.text_fg);
+
+    const cap = "METER";
+    const cap_w = widgets.measureTextF(cap, theme.fsTiny());
+    widgets.drawLabelF(cap, inner.x + inner.width - cap_w - 2, inner.y + inner.height - theme.fsTiny() - 1, theme.fsTiny(), theme.text_mute);
+
+    widgets.tooltip(r, "Meter: drag numerator, click denominator", m);
 }
 
 fn snapField(r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {

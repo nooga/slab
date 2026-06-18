@@ -546,7 +546,7 @@ pub fn main() !void {
         c.rl.BeginDrawing();
         c.rl.ClearBackground(theme.bg);
 
-        const tres = top_bar.draw(rects.top_bar, &transport, meter_state.liveMap(), &edit_snap, project_path, project_path_chosen, dirty, pane_m);
+        const tres = top_bar.draw(rects.top_bar, &transport, &meter_state, &edit_snap, project_path, project_path_chosen, dirty, pane_m);
         if (tres.render_audio) render_dlg.active = true;
 
         // (Side browser removed — machines are added via the "+" in the
