@@ -178,7 +178,7 @@ pub fn serialize(
 
     // Master bus — volume + effect chain (no instrument, no clips).
     if (active_master) |m| {
-        try appendFmt(alloc, &out, ",\"master\":{{\"volume\":{d},\"effects\":", .{m.volume()});
+        try appendFmt(alloc, &out, ",\"master\":{{\"volume\":{d},\"pan\":{d},\"effects\":", .{ m.volume(), m.pan() });
         try appendEffects(alloc, &out, m);
         try out.append(alloc, '}');
     }
@@ -321,6 +321,7 @@ pub fn apply(
     if (active_master) |m| if (objGet(root, "master")) |mv| if (mv == .object) {
         const mo = mv.object;
         if (objGet(mo, "volume")) |x| m.setVolume(@floatCast(asF64(x)));
+        if (objGet(mo, "pan")) |x| m.setPan(@floatCast(asF64(x)));
         for (m.effects.items) |*fx| if (fx.mach.deinit) |d| d(fx.mach.state, alloc);
         m.effects.clearRetainingCapacity();
         if (objGet(mo, "effects")) |ev| try applyEffects(alloc, reg, m, ev);

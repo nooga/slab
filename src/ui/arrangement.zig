@@ -1560,6 +1560,16 @@ fn drawMasterStrip(strip: c.rl.Rectangle, header_x: f32, header_w: f32, timeline
     if (widgets.hFader(vol_r, &v_norm, m)) master.setVolume(v_norm * 1.25);
     widgets.tooltip(vol_r, "Master volume", m);
 
+    // Pan bar above the volume fader, when the strip is tall enough.
+    const pan_h = theme.size(7);
+    const pan_y = vol_r.y - pan_h - 2;
+    if (pan_y > hdr.y + 3 + theme.fsBody() + 1) {
+        const pan_r = widgets.rect(content_x, pan_y, content_w, pan_h);
+        var pan_v: f32 = master.pan();
+        if (widgets.panBar(pan_r, &pan_v, m)) master.setPan(pan_v);
+        widgets.tooltip(pan_r, "Master pan (double-click to center)", m);
+    }
+
     // Click anywhere on the strip (not consumed by the fader) → select master.
     return m.left_pressed and widgets.contains(strip, m.x, m.y) and !widgets.hasActiveDrag();
 }

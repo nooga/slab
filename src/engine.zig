@@ -483,6 +483,8 @@ pub const Engine = struct {
         var l: []f32 = self.master_l[0..n];
         var r: []f32 = self.master_r[0..n];
         var mv: f32 = 1.0;
+        var mpl: f32 = 1.0;
+        var mpr: f32 = 1.0;
         if (self.master) |mb| {
             if (mb.effectCount() > 0) {
                 const base = machine.MachineCtx{
@@ -498,13 +500,18 @@ pub const Engine = struct {
                 r = rendered.r;
             }
             mv = mb.volume();
+            const pg = mb.panGains();
+            mpl = pg.l;
+            mpr = pg.r;
         }
+        const mvl = mv * mpl;
+        const mvr = mv * mpr;
         var peak_l: f32 = 0;
         var peak_r: f32 = 0;
         var i: usize = 0;
         while (i < n) : (i += 1) {
-            const sl = l[i] * mv;
-            const sr = r[i] * mv;
+            const sl = l[i] * mvl;
+            const sr = r[i] * mvr;
             out[i * 2] = sl;
             out[i * 2 + 1] = sr;
             peak_l = @max(peak_l, @abs(sl));
