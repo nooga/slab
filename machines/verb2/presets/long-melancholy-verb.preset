@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "verb2", "note": "Summer ending: long melancholic pad verb", "params": {"verb-predelay": 0.06, "verb-decay": 0.97, "verb-damp": 4000, "verb-tone": 7500, "verb-mix": 0.42, "verb-mod": 14}}

@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "comp2", "note": "Keeps rubber bass even", "params": {"comp-thresh": -22, "comp-ratio": 5, "comp-knee": 4, "comp-atk": 0.004, "comp-rel": 0.18, "comp-makeup": 5, "comp-mix": 1}}

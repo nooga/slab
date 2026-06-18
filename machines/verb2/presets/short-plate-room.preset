@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "verb2", "note": "Lido: short beach-club room", "params": {"verb-predelay": 0.008, "verb-decay": 0.5, "verb-damp": 6000, "verb-tone": 9000, "verb-mix": 0.25, "verb-mod": 6}}

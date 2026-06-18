@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "delay2", "note": "Long fading transition echo", "params": {"delay-time": 0.7, "delay-fb": 0.7, "delay-damp": 4000, "delay-mix": 0.4}}

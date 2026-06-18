@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "delay2", "note": "Filtered PA/announcement echo", "params": {"delay-time": 0.28, "delay-fb": 0.5, "delay-damp": 1800, "delay-mix": 0.45}}

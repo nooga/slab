@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "verb2", "note": "Marble bar: reflective small room", "params": {"verb-predelay": 0.005, "verb-decay": 0.55, "verb-damp": 8000, "verb-tone": 12000, "verb-mix": 0.3, "verb-mod": 4}}

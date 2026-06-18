@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "delay2", "note": "1/8 lead delay (\u2248120 BPM)", "params": {"delay-time": 0.25, "delay-fb": 0.35, "delay-damp": 6000, "delay-mix": 0.3}}

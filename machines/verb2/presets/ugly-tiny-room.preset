@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "verb2", "note": "Autogrill bathroom \u2014 ugly/funny small verb", "params": {"verb-predelay": 0.002, "verb-decay": 0.45, "verb-damp": 3000, "verb-tone": 5000, "verb-mix": 0.35, "verb-mod": 2}}

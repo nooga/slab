@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "comp2", "note": "Old cue-music master control", "params": {"comp-thresh": -14, "comp-ratio": 2, "comp-knee": 12, "comp-atk": 0.02, "comp-rel": 0.4, "comp-makeup": 2, "comp-mix": 1}}

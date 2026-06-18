@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "delay2", "note": "Polite quarter-note TV delay (\u2248120 BPM)", "params": {"delay-time": 0.5, "delay-fb": 0.4, "delay-damp": 4500, "delay-mix": 0.3}}
