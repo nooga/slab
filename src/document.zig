@@ -124,8 +124,8 @@ pub fn serialize(
         try out.appendSlice(alloc, "{\"name\":");
         try appendJsonString(alloc, &out, t.name());
         try appendFmt(alloc, &out, ",\"color\":[{d},{d},{d}]", .{ t.color.r, t.color.g, t.color.b });
-        try appendFmt(alloc, &out, ",\"volume\":{d},\"mute\":{s},\"solo\":{s},\"poly\":{d}", .{
-            t.volume(), boolStr(t.mute.load(.monotonic)), boolStr(t.solo.load(.monotonic)), t.poly_voices,
+        try appendFmt(alloc, &out, ",\"volume\":{d},\"pan\":{d},\"mute\":{s},\"solo\":{s},\"poly\":{d}", .{
+            t.volume(), t.pan(), boolStr(t.mute.load(.monotonic)), boolStr(t.solo.load(.monotonic)), t.poly_voices,
         });
 
         // Instrument: stable id + inline settings, or null.
@@ -275,6 +275,7 @@ pub fn apply(
             color.b = asU8(cv.array.items[2]);
         };
         const volume: f32 = @floatCast(if (objGet(to, "volume")) |x| asF64(x) else 0.8);
+        const pan_v: f32 = @floatCast(if (objGet(to, "pan")) |x| asF64(x) else 0.0);
         const mute = if (objGet(to, "mute")) |x| asBool(x) else false;
         const solo = if (objGet(to, "solo")) |x| asBool(x) else false;
         const poly_voices = normalizePolyVoices(if (objGet(to, "poly")) |x| asU8(x) else 1);
@@ -297,6 +298,7 @@ pub fn apply(
         t.machine_idx = machine_idx;
         t.poly_voices = poly_voices;
         t.setVolume(volume);
+        t.setPan(pan_v);
         t.mute.store(mute, .monotonic);
         t.solo.store(solo, .monotonic);
 

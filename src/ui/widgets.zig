@@ -1168,6 +1168,56 @@ pub fn hFader(r: c.rl.Rectangle, val: *f32, m: Mouse) bool {
     return changed;
 }
 
+// ── Pan bar ──────────────────────────────────────────────────────────
+//
+// Center-detented horizontal control: `val` is −1 (hard left) .. +1 (hard
+// right), 0 center. A fill grows from the centre toward the handle so the
+// pan amount and side read at a glance. Double-click recenters. Returns
+// true when the value changed.
+
+pub fn panBar(r: c.rl.Rectangle, val: *f32, m: Mouse) bool {
+    const k = rectKey(r, 0x5041_4e42_4152_0001); // "PANBAR" salt
+    var changed = false;
+
+    if (active_drag_key == k) {
+        if (!m.left_down) {
+            active_drag_key = 0;
+        } else {
+            const nv = std.math.clamp((m.x - r.x) / r.width * 2.0 - 1.0, -1.0, 1.0);
+            if (nv != val.*) {
+                val.* = nv;
+                changed = true;
+            }
+        }
+    } else if (active_drag_key == 0 and m.left_pressed and contains(r, m.x, m.y)) {
+        if (m.double_clicked) {
+            if (val.* != 0) {
+                val.* = 0;
+                changed = true;
+            }
+        } else {
+            active_drag_key = k;
+            val.* = std.math.clamp((m.x - r.x) / r.width * 2.0 - 1.0, -1.0, 1.0);
+            changed = true;
+        }
+    }
+
+    bevelSunken(r, theme.pane_alt, theme.slab_hi, theme.slab_lo);
+    const inner = rect(r.x + 1, r.y + 1, r.width - 2, r.height - 2);
+    const cx = inner.x + inner.width * 0.5;
+    // Center detent tick.
+    c.rl.DrawRectangle(@intFromFloat(cx), @intFromFloat(inner.y), 1, @intFromFloat(inner.height), theme.slab_lo);
+    const p = std.math.clamp(val.*, -1.0, 1.0);
+    const handle_x = cx + p * (inner.width * 0.5);
+    // Fill from center to handle.
+    const x0 = @min(cx, handle_x);
+    const w = @abs(handle_x - cx);
+    if (w >= 1) c.rl.DrawRectangle(@intFromFloat(x0), @intFromFloat(inner.y), @intFromFloat(w), @intFromFloat(inner.height), theme.slab_hi);
+    // Handle tick.
+    c.rl.DrawRectangle(@intFromFloat(handle_x - 0.5), @intFromFloat(inner.y), 1, @intFromFloat(inner.height), theme.text_dim);
+    return changed;
+}
+
 // ── Meter ────────────────────────────────────────────────────────────
 
 pub fn meter(r: c.rl.Rectangle, peak: f32) void {

@@ -56,6 +56,8 @@ pub const Track = struct {
 
     /// 0..1 linear gain, bit-cast for atomic.
     volume_bits: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0.8))),
+    /// -1 (hard left) .. +1 (hard right), 0 center. Bit-cast for atomic.
+    pan_bits: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0.0))),
     mute: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     solo: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
@@ -205,6 +207,23 @@ pub const Track = struct {
     pub fn setVolume(self: *Track, v: f32) void {
         const clamped = std.math.clamp(v, 0.0, 1.25);
         self.volume_bits.store(@bitCast(clamped), .monotonic);
+    }
+
+    pub fn pan(self: *const Track) f32 {
+        return @bitCast(self.pan_bits.load(.monotonic));
+    }
+
+    pub fn setPan(self: *Track, p: f32) void {
+        const clamped = std.math.clamp(p, -1.0, 1.0);
+        self.pan_bits.store(@bitCast(clamped), .monotonic);
+    }
+
+    /// Equal-power pan gains (gl, gr) for the current pan position. Center
+    /// (0) is −3 dB on each side; hard left/right is unity on one side, zero
+    /// on the other.
+    pub fn panGains(self: *const Track) struct { l: f32, r: f32 } {
+        const angle = (self.pan() + 1.0) * (std.math.pi / 4.0); // 0..π/2
+        return .{ .l = @cos(angle), .r = @sin(angle) };
     }
 
     pub fn setMeter(self: *Track, l: f32, r: f32) void {

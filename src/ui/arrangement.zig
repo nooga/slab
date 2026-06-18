@@ -1506,6 +1506,16 @@ fn drawLaneHeader(r: c.rl.Rectangle, t: *Track, idx: usize, selected: bool, edit
     }
     widgets.tooltip(vol_r, "Track volume", m);
 
+    // Pan bar above the volume fader, when the row is tall enough to hold it.
+    const pan_h = theme.size(7);
+    const pan_y = row2_y - pan_h - 2;
+    if (pan_y > row1_y + btn_h + 2) {
+        const pan_r = widgets.rect(content_x, pan_y, content_w, pan_h);
+        var pan_v: f32 = t.pan();
+        if (widgets.panBar(pan_r, &pan_v, m)) t.setPan(pan_v);
+        widgets.tooltip(pan_r, "Pan (double-click to center)", m);
+    }
+
     const click_region = widgets.rect(content_x, r.y + 1, content_w - btn_w * 2 - 4, theme.size(14));
     if (widgets.contains(click_region, m.x, m.y) and m.left_pressed and !widgets.hasActiveDrag()) {
         return .{ .action = if (m.double_clicked) .rename else .select, .name_rect = name_rect };
