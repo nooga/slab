@@ -691,6 +691,12 @@ fn hotPatchHandleConn(host: *FyHost, fd: c_int) void {
         return;
     }
 
+    // Compile and execute while no audio callback is inside fy. The audio
+    // thread uses callback_mutex around JIT entry; hot-patch mutates the same
+    // image/trampolines and user-word table, so it must join that exclusion.
+    lockCallbacks();
+    defer unlockCallbacks();
+
     // Compile and execute under the hot-patch mutex.
     // runWithBaseDir re-runs top-level statements (e.g. phase reset) which
     // is desirable on hot-patch.
