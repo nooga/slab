@@ -14,18 +14,18 @@ const meter = @import("meter.zig");
 pub const MAX_BLOCK = audio.BLOCK_FRAMES * 4;
 pub const MAX_EVENTS_PER_TRACK = 128;
 
-/// Fallback meter when the document hasn't installed one: constant 4/4.
-const default_meter_points = [_]meter.MeterPoint{
-    .{ .start_bar = 0, .numerator = 4, .denominator = 4 },
-};
+/// Fallback meter store (constant 4/4) used until the document installs
+/// its own. Module-level so the address is stable for the field default.
+var default_meter_store: meter.MeterStore = .{};
 
 pub const Engine = struct {
     transport: *Transport,
     tracks: []Track,
-    /// Document-owned meter map (read-only on the audio thread). Points to
-    /// a constant 4/4 until the document installs its own; the backing
-    /// slice must outlive the engine.
-    meter_map: meter.MeterMap = .{ .points = &default_meter_points },
+    /// Document-owned meter store (read-only on the audio thread). Points
+    /// to a constant 4/4 until the document installs its own; must outlive
+    /// the engine. Reading `.map()` per block picks up project loads
+    /// without a refresh.
+    meter_store: *const meter.MeterStore = &default_meter_store,
     was_playing: bool = false,
     audition_request: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     audition_track: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
@@ -361,7 +361,7 @@ pub const Engine = struct {
         const beat_start = self.transport.samplesToBeats(block_start);
         const beat_end = self.transport.samplesToBeats(block_start + frames);
         // Meter position for this block (homogeneous within the block).
-        const bar_info = self.meter_map.barInfoAtBeat(beat_start);
+        const bar_info = self.meter_store.map().barInfoAtBeat(beat_start);
 
         var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
 

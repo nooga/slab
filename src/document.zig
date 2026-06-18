@@ -11,6 +11,7 @@ const registry_mod = @import("machine_registry.zig");
 const transport_mod = @import("transport.zig");
 const machine_mod = @import("machine.zig");
 const audio_pool_mod = @import("audio_pool.zig");
+const meter_mod = @import("meter.zig");
 
 extern fn close(fd: c_int) c_int;
 extern fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
@@ -54,6 +55,15 @@ var active_master: ?*track_mod.Track = null;
 
 pub fn setMaster(m: *track_mod.Track) void {
     active_master = m;
+}
+
+/// Process-wide meter store, registered once at startup (like the master
+/// bus). serialize()/apply() read and repopulate it rather than threading
+/// it through every call site. See docs/07 §meter-map.
+var active_meter: ?*meter_mod.MeterStore = null;
+
+pub fn setMeterStore(m: *meter_mod.MeterStore) void {
+    active_meter = m;
 }
 
 fn machineId(idx: u8) []const u8 {
@@ -117,6 +127,19 @@ pub fn serialize(
     try appendFmt(alloc, &out, ",\"loop\":{{\"on\":{s},\"start\":{d},\"end\":{d}}}}}", .{
         boolStr(transport.loopEnabled()), transport.loopStartBeats(), transport.loopEndBeats(),
     });
+
+    // Meter map (docs/07 §meter-map). Groups are not serialized yet —
+    // they arrive with the generator slice.
+    if (active_meter) |ms| {
+        try out.appendSlice(alloc, ",\"meter\":[");
+        for (ms.map().points, 0..) |p, i| {
+            if (i > 0) try out.append(alloc, ',');
+            try appendFmt(alloc, &out, "{{\"bar\":{d},\"num\":{d},\"den\":{d}}}", .{
+                p.start_bar, p.numerator, p.denominator,
+            });
+        }
+        try out.append(alloc, ']');
+    }
 
     try out.appendSlice(alloc, ",\"tracks\":[");
     for (tracks, 0..) |*t, ti| {
@@ -251,6 +274,24 @@ pub fn apply(
             transport.setLoopEnabled(if (objGet(lo, "on")) |x| asBool(x) else false);
         };
     };
+
+    // Meter map: repopulate the store, or fall back to 4/4 for projects
+    // saved before meter support. First point is forced to start_bar 0.
+    if (active_meter) |ms| {
+        ms.clear();
+        if (objGet(root, "meter")) |mv| if (mv == .array) {
+            for (mv.array.items) |pv| {
+                if (pv != .object) continue;
+                const po = pv.object;
+                ms.append(.{
+                    .start_bar = if (ms.len == 0) 0 else @intFromFloat(asF64(objGet(po, "bar") orelse continue)),
+                    .numerator = @intFromFloat(asF64(objGet(po, "num") orelse continue)),
+                    .denominator = @intFromFloat(asF64(objGet(po, "den") orelse continue)),
+                });
+            }
+        };
+        if (ms.len == 0) ms.reset();
+    }
 
     for (tracks_buf[0..track_count.*]) |*t| t.deinit(alloc);
     track_count.* = 0;
@@ -645,4 +686,84 @@ test "audio clips round-trip through the pool by path" {
     try std.testing.expectApproxEqAbs(@as(f64, 0.1), got.audio.fade_in_sec, 1e-4);
     try std.testing.expectApproxEqAbs(@as(f64, 0.2), got.audio.fade_out_sec, 1e-4);
     try std.testing.expectEqual(src, got.audio.source);
+}
+
+test "meter map round-trips through serialize/apply" {
+    const alloc = std.testing.allocator;
+
+    var transport: transport_mod.Transport = .{};
+    transport.sample_rate = 48_000;
+
+    // Source store: 4/4 then 7/8 at bar 4.
+    var src_store: meter_mod.MeterStore = .{};
+    src_store.clear();
+    src_store.append(.{ .start_bar = 0, .numerator = 4, .denominator = 4 });
+    src_store.append(.{ .start_bar = 4, .numerator = 7, .denominator = 8 });
+    setMeterStore(&src_store);
+    defer active_meter = null;
+
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    setPool(&pool);
+    defer active_pool = null;
+
+    var tracks = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "T", .{ .r = 1, .g = 2, .b = 3, .a = 255 }, test_machine),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+
+    const bytes = try serialize(alloc, tracks[0..], &transport);
+    defer alloc.free(bytes);
+
+    // Load into a fresh store.
+    var dst_store: meter_mod.MeterStore = .{};
+    setMeterStore(&dst_store);
+
+    var reg = registry_mod.Registry.init(alloc);
+    defer reg.deinit();
+    var lt: transport_mod.Transport = .{};
+    lt.sample_rate = 48_000;
+    var loaded_buf: [2]track_mod.Track = undefined;
+    var loaded_count: usize = 0;
+    try apply(alloc, bytes, &reg, loaded_buf[0..], &loaded_count, &lt, test_machine);
+    defer for (loaded_buf[0..loaded_count]) |*t| t.deinit(alloc);
+
+    const pts = dst_store.map().points;
+    try std.testing.expectEqual(@as(usize, 2), pts.len);
+    try std.testing.expectEqual(@as(u32, 0), pts[0].start_bar);
+    try std.testing.expectEqual(@as(u8, 4), pts[0].numerator);
+    try std.testing.expectEqual(@as(u8, 4), pts[0].denominator);
+    try std.testing.expectEqual(@as(u32, 4), pts[1].start_bar);
+    try std.testing.expectEqual(@as(u8, 7), pts[1].numerator);
+    try std.testing.expectEqual(@as(u8, 8), pts[1].denominator);
+}
+
+test "project without meter falls back to 4/4" {
+    const alloc = std.testing.allocator;
+
+    var reg = registry_mod.Registry.init(alloc);
+    defer reg.deinit();
+    var lt: transport_mod.Transport = .{};
+    lt.sample_rate = 48_000;
+
+    var store: meter_mod.MeterStore = .{};
+    store.clear(); // emptied — apply must restore 4/4 when JSON has no meter
+    setMeterStore(&store);
+    defer active_meter = null;
+
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    setPool(&pool);
+    defer active_pool = null;
+
+    const json = "{\"schema\":1,\"transport\":{\"bpm\":120},\"tracks\":[]}";
+    var loaded_buf: [1]track_mod.Track = undefined;
+    var loaded_count: usize = 0;
+    try apply(alloc, json, &reg, loaded_buf[0..], &loaded_count, &lt, test_machine);
+    defer for (loaded_buf[0..loaded_count]) |*t| t.deinit(alloc);
+
+    const pts = store.map().points;
+    try std.testing.expectEqual(@as(usize, 1), pts.len);
+    try std.testing.expectEqual(@as(u8, 4), pts[0].numerator);
+    try std.testing.expectEqual(@as(u8, 4), pts[0].denominator);
 }

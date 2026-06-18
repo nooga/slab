@@ -186,6 +186,44 @@ pub const MeterMap = struct {
     }
 };
 
+/// Max meter-change points a document can hold. Hand-authored maps need
+/// a handful; per-bar generators (a later slice) are the reason for the
+/// headroom.
+pub const MAX_POINTS: usize = 256;
+
+/// Document-owned, bounded backing store for a meter map. Defaults to a
+/// constant 4/4. The runtime owns one of these (serialized via
+/// document.zig); the engine reads `map()` on the audio thread. Mutating
+/// it while audio plays is not yet guarded — the next-bar-boundary swap
+/// (docs/07 §runtime-change) is a separate slice.
+pub const MeterStore = struct {
+    buf: [MAX_POINTS]MeterPoint =
+        [_]MeterPoint{.{ .start_bar = 0, .numerator = 4, .denominator = 4 }} ** MAX_POINTS,
+    len: usize = 1,
+
+    pub fn map(self: *const MeterStore) MeterMap {
+        return .{ .points = self.buf[0..self.len] };
+    }
+
+    /// Reset to a constant 4/4.
+    pub fn reset(self: *MeterStore) void {
+        self.buf[0] = .{ .start_bar = 0, .numerator = 4, .denominator = 4 };
+        self.len = 1;
+    }
+
+    pub fn clear(self: *MeterStore) void {
+        self.len = 0;
+    }
+
+    /// Append a point; ignored past capacity. Caller keeps points sorted
+    /// and strictly increasing in start_bar.
+    pub fn append(self: *MeterStore, p: MeterPoint) void {
+        if (self.len >= MAX_POINTS) return;
+        self.buf[self.len] = p;
+        self.len += 1;
+    }
+};
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 const testing = std.testing;

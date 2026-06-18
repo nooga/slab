@@ -8,6 +8,7 @@ const c = @import("c.zig");
 const audio_mod = @import("audio.zig");
 const transport_mod = @import("transport.zig");
 const engine_mod = @import("engine.zig");
+const meter_mod = @import("meter.zig");
 const track_mod = @import("track.zig");
 const clip_mod = @import("clip.zig");
 const audio_pool_mod = @import("audio_pool.zig");
@@ -440,10 +441,16 @@ pub fn main() !void {
     // Registered so serialize/apply persist the master bus (volume + FX chain).
     document_mod.setMaster(&master);
 
+    // Document-owned meter map (defaults to 4/4). Registered so
+    // serialize/apply persist it; the engine reads it per block.
+    var meter_store: meter_mod.MeterStore = .{};
+    document_mod.setMeterStore(&meter_store);
+
     var engine = engine_mod.Engine{
         .transport = &transport,
         .tracks = tracks_buf[0..track_count],
         .master = &master,
+        .meter_store = &meter_store,
     };
 
     // ── Audio device ─────────────────────────────────────────────────
