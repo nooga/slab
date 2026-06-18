@@ -59,6 +59,16 @@ these rules.
 - Drag loop start/end handles in the ruler to edit loop bounds.
 - Click overview outside viewport: center viewport on that beat and
   begin dragging.
+- Double-click ruler (no clip under cursor): drop a locator marker at
+  the snapped beat; type to name it.
+- Right-click ruler: insert a tempo change, signature change, or
+  locator marker at the snapped beat.
+- Drag a marker: move it along the ruler, snapped to the grid. Moving
+  a binding marker edits its tempo/meter map point; moving a locator
+  moves only the label.
+- Double-click a binding marker: edit its value (BPM, or numerator/
+  denominator/grouping).
+- Next/prev marker navigation jumps the playhead between markers.
 
 ### Piano roll
 
@@ -69,9 +79,17 @@ these rules.
 - Click note: select note.
 - Drag note body: move note in time and pitch.
 - Drag note right edge: resize note.
+- Alt-drag note right edge: resize note with snap bypassed and a 1/64-note
+  minimum.
 - Drag empty grid in draw mode: create a note.
 - Drag empty grid in select mode: box select.
 - Delete/Backspace: remove selected notes.
+- Arrow keys: nudge selected notes by grid step or semitone.
+- Shift-Up/Shift-Down: move selected notes up/down one octave.
+- Context menu includes Octave up and Octave down for selected notes.
+- `Q`: quantize selected notes.
+- `H`: humanize selected notes.
+- `S`: snap selected notes to the active scale.
 - Wheel: pan time and pitch.
 - Shift-wheel: time zoom around cursor beat.
 - Alt-wheel: vertical pitch zoom around cursor pitch row.
@@ -103,6 +121,29 @@ playback wrapping is transport-owned.
 - Loop entire arrangement uses beat 0 through the latest clip end.
 - Clearing loop disables loop playback but may keep the last bounds for
   later reuse.
+
+## Markers and meter
+
+Markers and the meter map are defined in
+[docs/07](07-transport.md#markers). This section is their interaction
+contract in the frame.
+
+- **Bar lines come from the meter map**, not `beat % 4`. The ruler
+  reads `MeterMap.barStartBeat`; bar spacing varies when the meter
+  changes. In-bar subdivision follows the denominator, with brighter
+  lines at `groups` boundaries (e.g. 7/8 as 2+2+3).
+- **Snap is meter-aware.** Bar-snap and "one bar" lengths consult the
+  meter map at that bar. A "one-bar clip" created on the arrangement
+  is as long as the bar it lands in.
+- **A meter change re-lays the grid at the next bar boundary**, never
+  mid-bar, including when a generator re-materializes after a
+  hot-patch. The playhead, loop, and metronome accent stay put until
+  the downbeat.
+- **Generators are run from the meter editor, not typed inline.** The
+  document keeps the materialized map; the chosen generator word and
+  its seed are stored alongside so it can be re-run.
+- Locator markers are navigation only and never affect the grid,
+  snapping, or timing.
 
 ## Zoom rules
 

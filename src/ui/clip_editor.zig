@@ -9,6 +9,9 @@
 //!
 //! Focused shortcuts:
 //!   • Delete / Backspace → remove selected notes
+//!   • Arrow keys         → nudge selected notes
+//!   • Shift+Up/Down     → move selected notes by octave
+//!   • Q / H / S          → quantize / humanize / snap to scale
 //!   • Wheel              → horizontal zoom around mouse
 //!   • Shift+Wheel        → horizontal scroll
 //!
@@ -109,6 +112,7 @@ fn rulerH() f32 {
     return theme.size(14);
 }
 const MIN_NOTE_BEATS: f64 = 0.25;
+const MIN_FINE_NOTE_BEATS: f64 = 0.0625;
 const DEFAULT_NOTE_BEATS: f64 = 0.5;
 fn resizeEdgeW() f32 {
     return theme.fine(4);
@@ -687,6 +691,8 @@ fn drawPianoRoll(
         .{ .label = "Paste", .command = .paste, .enabled = can_paste_notes },
         .{ .separator = true },
         .{ .label = "Duplicate", .command = .duplicate, .enabled = has_selection },
+        .{ .label = "Octave up", .command = .octave_up, .enabled = has_selection },
+        .{ .label = "Octave down", .command = .octave_down, .enabled = has_selection },
         .{ .label = "Quantize", .command = .quantize, .enabled = has_selection },
         .{ .label = "Humanize", .command = .humanize, .enabled = has_selection },
         .{ .label = "Snap to scale", .command = .snap_to_scale, .enabled = has_selection and scaleActive() },
@@ -1340,11 +1346,12 @@ fn updateResize(grid: c.rl.Rectangle, clip: *Clip, edit_snap: snap_mod.Setting, 
     }
     widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
     const d_beats = snap_mod.snapNearest(edit_snap, @as(f64, (m.x - resize_start_mouse_x) / px_per_beat), altBypassSnap());
+    const min_len = resizeMinNoteBeats(edit_snap, altBypassSnap());
     for (resize_snaps.items) |s| {
         if (s.idx >= clip.notes.items.len) continue;
         const n = &clip.notes.items[s.idx];
         const new_len = s.length + d_beats;
-        n.length_beats = if (new_len < minNoteBeats(edit_snap)) minNoteBeats(edit_snap) else new_len;
+        n.length_beats = if (new_len < min_len) min_len else new_len;
     }
 }
 
@@ -1550,6 +1557,11 @@ fn minNoteBeats(edit_snap: snap_mod.Setting) f64 {
     return @min(edit_snap.beats() orelse MIN_NOTE_BEATS, MIN_NOTE_BEATS);
 }
 
+fn resizeMinNoteBeats(edit_snap: snap_mod.Setting, snap_bypassed: bool) f64 {
+    if (snap_bypassed) return @min(minNoteBeats(edit_snap), MIN_FINE_NOTE_BEATS);
+    return minNoteBeats(edit_snap);
+}
+
 fn defaultNoteBeats(edit_snap: snap_mod.Setting) f64 {
     return @max(edit_snap.beats() orelse DEFAULT_NOTE_BEATS, MIN_NOTE_BEATS);
 }
@@ -1626,4 +1638,10 @@ test "swing delays off-beats on a fine grid only" {
     // swing off → identity.
     swing = 0;
     try std.testing.expectApproxEqAbs(@as(f64, 0.5), applySwing(0.5, .note_8), 1e-9);
+}
+
+test "option resize can go below sixteenth" {
+    try std.testing.expectApproxEqAbs(@as(f64, 0.25), resizeMinNoteBeats(.note_16, false), 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0625), resizeMinNoteBeats(.note_16, true), 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0625), resizeMinNoteBeats(.note_64, true), 1e-9);
 }

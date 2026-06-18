@@ -424,7 +424,6 @@ pub fn main() !void {
         if (DEV_BOOT_AUTOPLAY) transport.play();
     }
 
-
     var tracks_buf: [MAX_TRACKS]track_mod.Track = undefined;
     var track_count: usize = 1;
     tracks_buf[0] = try track_mod.Track.init(alloc, "Track 1", theme.track_colors[0], silent_machine);
@@ -1722,7 +1721,7 @@ fn handleFocusedEditCommands(
     }
 
     var changed = false;
-    const before = if (editMutationKeyPressed()) try document_mod.serialize(alloc, tracks, transport) else null;
+    const before = if (editMutationKeyPressed(focus)) try document_mod.serialize(alloc, tracks, transport) else null;
     defer if (before) |snapshot| if (!changed) alloc.free(snapshot);
 
     if (!cmd and c.rl.IsKeyPressed(c.rl.KEY_D)) {
@@ -1731,6 +1730,12 @@ fn handleFocusedEditCommands(
             .piano_roll => clip_editor.duplicateSelectedNotes(tracks, selected_clip.*, alloc, edit_snap),
             .browser, .machine_bay, .top_bar => false,
         };
+    } else if (!cmd and focus == .piano_roll and c.rl.IsKeyPressed(c.rl.KEY_Q)) {
+        changed = clip_editor.quantizeSelectedNotes(tracks, selected_clip.*, edit_snap);
+    } else if (!cmd and focus == .piano_roll and c.rl.IsKeyPressed(c.rl.KEY_H)) {
+        changed = clip_editor.humanizeSelectedNotes(tracks, selected_clip.*, edit_snap);
+    } else if (!cmd and focus == .piano_roll and c.rl.IsKeyPressed(c.rl.KEY_S)) {
+        changed = clip_editor.snapSelectedToScale(tracks, selected_clip.*);
     } else if (!cmd and arrowKeyPressed()) {
         const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
         const alt = c.rl.IsKeyDown(c.rl.KEY_LEFT_ALT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_ALT);
@@ -1942,6 +1947,14 @@ fn executeEditCommand(
             changed = if (focus == .piano_roll) clip_editor.snapSelectedToScale(tracks, selected_clip.*) else false;
             if (changed) status.set("Snapped to scale", .{});
         },
+        .octave_up => {
+            changed = if (focus == .piano_roll) clip_editor.nudgeSelectedNotes(tracks, selected_clip.*, 0, 12, edit_snap) else false;
+            if (changed) status.set("Octave up", .{});
+        },
+        .octave_down => {
+            changed = if (focus == .piano_roll) clip_editor.nudgeSelectedNotes(tracks, selected_clip.*, 0, -12, edit_snap) else false;
+            if (changed) status.set("Octave down", .{});
+        },
         // `import_audio` is intercepted in the arrangement-result handler
         // (it needs the audio pool + file dialog); never reaches here.
         .none, .copy, .select_all, .clear_selection, .rename, .file_open, .file_save, .file_save_as, .render_audio, .import_audio => {},
@@ -1956,8 +1969,11 @@ fn executeEditCommand(
     }
 }
 
-fn editMutationKeyPressed() bool {
-    return !commandModifierDown() and (c.rl.IsKeyPressed(c.rl.KEY_D) or arrowKeyPressed());
+fn editMutationKeyPressed(focus: FocusPane) bool {
+    if (commandModifierDown()) return false;
+    if (c.rl.IsKeyPressed(c.rl.KEY_D) or arrowKeyPressed()) return true;
+    return focus == .piano_roll and (c.rl.IsKeyPressed(c.rl.KEY_Q) or
+        c.rl.IsKeyPressed(c.rl.KEY_H) or c.rl.IsKeyPressed(c.rl.KEY_S));
 }
 
 fn arrowKeyPressed() bool {
