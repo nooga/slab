@@ -13,31 +13,89 @@ pub const BLOCK_FRAMES: u32 = 256;
 /// length = frames * 2. Called from the miniaudio thread.
 pub const RenderFn = *const fn (ctx: *anyopaque, out: [*]f32, frames: u32) void;
 
+/// Audio-thread capture callback. `in` is `frames` mono f32 input samples
+/// (null when the device has no capture half). Called before render, so the
+/// transport still reads the block-start position. Must not allocate.
+pub const CaptureFn = *const fn (ctx: *anyopaque, in: ?[*]const f32, frames: u32) void;
+
+/// One enumerated capture device — opaque id (passed back to select it) plus
+/// a display name, copied out of context-owned memory immediately.
+pub const MA_NAME_CAP = 255;
+pub const MAX_INPUT_DEVICES = 32;
+pub const InputDevice = struct {
+    id: c.ma.ma_device_id,
+    name: [MA_NAME_CAP:0]u8 = [_:0]u8{0} ** MA_NAME_CAP,
+};
+
 pub const Audio = struct {
     device: c.ma.ma_device,
+    context: c.ma.ma_context = undefined,
+    has_context: bool = false,
     initialized: bool = false,
+    /// True when the device opened in duplex mode (capture is available).
+    capture_available: bool = false,
+    /// Explicit capture device chosen by the user (else system default).
+    capture_id: c.ma.ma_device_id = undefined,
+    has_capture_id: bool = false,
     render_ctx: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     render_fn: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    capture_ctx: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    capture_fn: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     probe_counter: u32 = 0,
     probe_overruns: u32 = 0,
 
     pub fn init(self: *Audio) !void {
         self.render_ctx = std.atomic.Value(usize).init(0);
         self.render_fn = std.atomic.Value(usize).init(0);
+        self.capture_ctx = std.atomic.Value(usize).init(0);
+        self.capture_fn = std.atomic.Value(usize).init(0);
         self.probe_counter = 0;
         self.probe_overruns = 0;
         self.initialized = false;
+        self.capture_available = false;
+        self.has_capture_id = false;
 
-        var cfg = c.ma.ma_device_config_init(c.ma.ma_device_type_playback);
-        cfg.playback.format = c.ma.ma_format_f32;
-        cfg.playback.channels = CHANNELS;
-        cfg.sampleRate = SAMPLE_RATE;
-        cfg.periodSizeInFrames = requestedBlockFrames();
-        cfg.dataCallback = audioCallback;
-        cfg.pUserData = self;
-
-        if (c.ma.ma_device_init(null, &cfg, &self.device) != c.ma.MA_SUCCESS)
+        // A persistent context backs both device init and enumeration.
+        if (c.ma.ma_context_init(null, 0, null, &self.context) != c.ma.MA_SUCCESS)
             return error.AudioInitFailed;
+        self.has_context = true;
+        try self.openDevice();
+    }
+
+    /// Open (or re-open) the device from the current `capture_id` selection.
+    /// Assumes no device is initialized. Prefers duplex (playback + mono
+    /// capture); on failure falls back to playback-only so the app runs.
+    fn openDevice(self: *Audio) !void {
+        self.capture_available = false;
+
+        var duplex = c.ma.ma_device_config_init(c.ma.ma_device_type_duplex);
+        duplex.playback.format = c.ma.ma_format_f32;
+        duplex.playback.channels = CHANNELS;
+        duplex.capture.format = c.ma.ma_format_f32;
+        duplex.capture.channels = 1;
+        if (self.has_capture_id) duplex.capture.pDeviceID = &self.capture_id;
+        duplex.sampleRate = SAMPLE_RATE;
+        duplex.periodSizeInFrames = requestedBlockFrames();
+        duplex.dataCallback = audioCallback;
+        duplex.pUserData = self;
+
+        if (c.ma.ma_device_init(&self.context, &duplex, &self.device) == c.ma.MA_SUCCESS) {
+            self.capture_available = true;
+        } else {
+            // A chosen device that won't open shouldn't strand the app —
+            // drop the selection and fall back to playback-only.
+            self.has_capture_id = false;
+            var play = c.ma.ma_device_config_init(c.ma.ma_device_type_playback);
+            play.playback.format = c.ma.ma_format_f32;
+            play.playback.channels = CHANNELS;
+            play.sampleRate = SAMPLE_RATE;
+            play.periodSizeInFrames = requestedBlockFrames();
+            play.dataCallback = audioCallback;
+            play.pUserData = self;
+            if (c.ma.ma_device_init(&self.context, &play, &self.device) != c.ma.MA_SUCCESS)
+                return error.AudioInitFailed;
+            std.log.warn("audio: capture unavailable; recording disabled (playback-only device)", .{});
+        }
         if (c.ma.ma_device_start(&self.device) != c.ma.MA_SUCCESS) {
             c.ma.ma_device_uninit(&self.device);
             return error.AudioStartFailed;
@@ -45,10 +103,74 @@ pub const Audio = struct {
         self.initialized = true;
     }
 
+    /// Enumerate capture (input) devices into `out`; returns the count
+    /// written. Names/ids are copied so they outlive the context call.
+    pub fn listInputDevices(self: *Audio, out: []InputDevice) usize {
+        if (!self.has_context) return 0;
+        var infos: [*c]c.ma.ma_device_info = undefined;
+        var count: c.ma.ma_uint32 = 0;
+        if (c.ma.ma_context_get_devices(&self.context, null, null, &infos, &count) != c.ma.MA_SUCCESS)
+            return 0;
+        const n = @min(out.len, @as(usize, count));
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            out[i].id = infos[i].id;
+            const src = std.mem.sliceTo(&infos[i].name, 0);
+            const m = @min(src.len, MA_NAME_CAP);
+            @memcpy(out[i].name[0..m], src[0..m]);
+            out[i].name[m] = 0;
+        }
+        return n;
+    }
+
+    /// Switch the capture device (null = system default). Stops, re-opens, and
+    /// restarts; the render/capture hooks persist across the swap.
+    pub fn useInputDevice(self: *Audio, id: ?*const c.ma.ma_device_id) !void {
+        if (self.initialized) {
+            _ = c.ma.ma_device_stop(&self.device);
+            c.ma.ma_device_uninit(&self.device);
+            self.initialized = false;
+        }
+        if (id) |p| {
+            self.capture_id = p.*;
+            self.has_capture_id = true;
+        } else {
+            self.has_capture_id = false;
+        }
+        try self.openDevice();
+    }
+
+    /// Name of the active capture device (empty when capture is unavailable).
+    pub fn currentInputName(self: *const Audio) []const u8 {
+        if (!self.capture_available) return "";
+        return std.mem.sliceTo(&self.device.capture.name, 0);
+    }
+
+    /// Best-effort round-trip latency (input + output) in frames, used to
+    /// nudge a recorded clip back onto the grid. Valid after init.
+    pub fn roundTripLatencyFrames(self: *const Audio) u32 {
+        if (!self.initialized) return 0;
+        const cap = self.device.capture.internalPeriodSizeInFrames;
+        const play = self.device.playback.internalPeriodSizeInFrames;
+        return cap + play;
+    }
+
+    /// Install the input-capture hook (audio thread reads it each block).
+    pub fn setCapture(self: *Audio, ctx: ?*anyopaque, func: ?CaptureFn) void {
+        const ctx_v: usize = if (ctx) |p| @intFromPtr(p) else 0;
+        const fn_v: usize = if (func) |p| @intFromPtr(p) else 0;
+        self.capture_ctx.store(ctx_v, .monotonic);
+        self.capture_fn.store(fn_v, .release);
+    }
+
     pub fn deinit(self: *Audio) void {
         if (self.initialized) {
             c.ma.ma_device_uninit(&self.device);
             self.initialized = false;
+        }
+        if (self.has_context) {
+            _ = c.ma.ma_context_uninit(&self.context);
+            self.has_context = false;
         }
     }
 
@@ -76,12 +198,22 @@ pub const Audio = struct {
 fn audioCallback(
     dev: ?*c.ma.ma_device,
     out_raw: ?*anyopaque,
-    _: ?*const anyopaque,
+    in_raw: ?*const anyopaque,
     frames: c.ma.ma_uint32,
 ) callconv(.c) void {
     const self: *Audio = @ptrCast(@alignCast(dev.?.pUserData));
     const out_ptr = out_raw orelse return;
     const out_f32: [*]f32 = @ptrCast(@alignCast(out_ptr));
+
+    // Capture runs first: the recorder stamps the block-start position from
+    // the transport, which render() is about to advance.
+    const cap_raw = self.capture_fn.load(.acquire);
+    if (cap_raw != 0) {
+        const cap_ctx: *anyopaque = @ptrFromInt(self.capture_ctx.load(.monotonic));
+        const capture: CaptureFn = @ptrFromInt(cap_raw);
+        const in_f32: ?[*]const f32 = if (in_raw) |p| @ptrCast(@alignCast(p)) else null;
+        capture(cap_ctx, in_f32, @intCast(frames));
+    }
 
     const fn_raw = self.render_fn.load(.acquire);
     if (fn_raw == 0) {

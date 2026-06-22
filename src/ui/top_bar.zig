@@ -48,11 +48,15 @@ pub const Result = struct {
     save_project: bool = false,
     save_project_as: bool = false,
     render_audio: bool = false,
+    record_toggle: bool = false,
+    /// Index into `input_names` the user picked from the input-device menu.
+    input_pick: ?usize = null,
 };
 
 const FILE_MENU_KEY: u64 = 0x5346494c45; // "SFILE"
+const INPUT_MENU_KEY: u64 = 0x494e505544_4556; // "INPUDEV"
 
-pub fn draw(r: c.rl.Rectangle, transport: *Transport, meter_state: *meter_mod.MeterState, edit_snap: *snap_mod.Setting, project_path: []const u8, project_path_chosen: bool, dirty: bool, m: widgets.Mouse) Result {
+pub fn draw(r: c.rl.Rectangle, transport: *Transport, meter_state: *meter_mod.MeterState, edit_snap: *snap_mod.Setting, project_path: []const u8, project_path_chosen: bool, dirty: bool, recording: bool, can_record: bool, input_names: []const [*:0]const u8, current_input_idx: ?usize, m: widgets.Mouse) Result {
     const meter_map = meter_state.liveMap();
     var result: Result = .{};
 
@@ -126,8 +130,41 @@ pub fn draw(r: c.rl.Rectangle, transport: *Transport, meter_state: *meter_mod.Me
     }
     x += btn_w + GAP;
 
-    _ = widgets.iconButtonTip(widgets.rect(x, y, btn_w, h), .record, null, "Record arm", m);
-    x += btn_w + GROUP_GAP;
+    const rec_fill: ?c.rl.Color = if (recording) theme.accent_rec else null;
+    const rec_tip = if (!can_record) "Record (no input device)" else if (recording) "Stop recording" else "Record  (arm a track first)";
+    if (widgets.iconButtonTip(widgets.rect(x, y, btn_w, h), .record, rec_fill, rec_tip, m) and can_record) {
+        result.record_toggle = true;
+    }
+    x += btn_w + GAP;
+
+    // ── Input-device picker (caret dropdown next to record) ──────────
+    {
+        const dd_w = theme.size(14);
+        const dd = widgets.rect(x, y, dd_w, h);
+        const open = widgets.menuOpen(INPUT_MENU_KEY);
+        const hover = widgets.contains(dd, m.x, m.y) and !widgets.hasActiveDrag();
+        const fill = if (open or hover) theme.slab_hi else theme.slab_fill;
+        widgets.bevelRaised(dd, fill, theme.slab_hi, theme.slab_lo);
+        const ic = theme.fsBody();
+        widgets.drawIcon(.caret_down, dd.x + (dd_w - ic) / 2, y + (h - ic) / 2, ic, theme.text_dim);
+        const cur_tip: [*:0]const u8 = if (input_names.len == 0)
+            "Input device (none found)"
+        else if (current_input_idx) |ci| input_names[@min(ci, input_names.len - 1)] else "Select input device";
+        widgets.tooltip(dd, cur_tip, m);
+        if (hover and m.left_pressed and !open and input_names.len > 0)
+            widgets.openMenuAt(INPUT_MENU_KEY, dd.x, dd.y + dd.height);
+        if (widgets.menuOpen(INPUT_MENU_KEY) and input_names.len > 0) {
+            var items: [34]widgets.MenuItem = undefined;
+            const n = @min(input_names.len, items.len);
+            for (0..n) |i| {
+                items[i] = .{ .label = input_names[i], .id = @intCast(i) };
+            }
+            if (widgets.menuPickId(INPUT_MENU_KEY, items[0..n], m)) |id| {
+                result.input_pick = @intCast(id);
+            }
+        }
+        x += dd_w + GROUP_GAP;
+    }
 
     const loop_fill: ?c.rl.Color = if (transport.loopEnabled()) theme.accent_hi else null;
     if (widgets.iconButtonTip(widgets.rect(x, y, btn_w, h), .repeat, loop_fill, "Loop on/off", m)) {

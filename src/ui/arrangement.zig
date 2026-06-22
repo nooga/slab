@@ -22,6 +22,7 @@ const audio_pool_mod = @import("../audio_pool.zig");
 const waveform = @import("../waveform.zig");
 const meter_mod = @import("../meter.zig");
 const meter_gen = @import("../meter_gen.zig");
+const recorder_mod = @import("../recorder.zig");
 
 fn rulerH() f32 {
     return theme.size(14);
@@ -481,9 +482,20 @@ pub fn draw(
     edit_snap: snap_mod.Setting,
     can_paste_clips: bool,
     rename_target: RenameTarget,
+    recorder: ?*const recorder_mod.Recorder,
     m: widgets.Mouse,
 ) Result {
     var result: Result = .{};
+    // The track a live recording is being written to (first armed audio
+    // track), so its lane shows the take growing in real time.
+    const rec_track_idx: ?usize = blk: {
+        const rec = recorder orelse break :blk null;
+        if (!rec.isRecording()) break :blk null;
+        for (tracks, 0..) |*t, i| {
+            if (t.kind == .audio and t.isArmed()) break :blk i;
+        }
+        break :blk null;
+    };
     cur_meter = meter_state.liveMap();
     c.rl.DrawRectangleRec(r, theme.pane_bg);
 
@@ -678,6 +690,11 @@ pub fn draw(
             const editing = rename_target.kind == .clip and rename_target.track == ti and rename_target.clip == ci;
             drawClip(clip_rect, clip.*, t.color, clip.selected, editing, pool);
             if (editing) result.rename_rect = clipNameRect(clip_rect);
+        }
+
+        // Live recording overlay — the take growing on the armed track.
+        if (rec_track_idx == ti) {
+            if (recorder) |rec| drawLiveRecordClip(lane_timeline, rec, transport, timeline_x0);
         }
 
         // Double-click on empty timeline area → create clip.
@@ -1408,6 +1425,42 @@ fn clipRect(lane: c.rl.Rectangle, clip: Clip, timeline_x0: f32) c.rl.Rectangle {
     return widgets.rect(x, lane.y + 2, w, lane.height - 4);
 }
 
+/// Draw the in-progress take on the armed track: a red region from the take's
+/// start beat to the playhead, with a live waveform from the recorder's peak
+/// buckets. Replaced by the real clip when recording stops.
+fn drawLiveRecordClip(lane: c.rl.Rectangle, rec: *const recorder_mod.Recorder, transport: *Transport, timeline_x0: f32) void {
+    const start_b = transport.samplesToBeats(rec.startSampleValue());
+    const end_b = transport.beats();
+    if (end_b <= start_b) return;
+
+    const x = timeline_x0 + @as(f32, @floatCast(start_b)) * px_per_beat - scroll_x;
+    const w = @as(f32, @floatCast(end_b - start_b)) * px_per_beat;
+    if (w < 1) return;
+    const r = widgets.rect(x, lane.y + 2, w, lane.height - 4);
+
+    c.rl.DrawRectangleRec(r, c.rl.ColorAlpha(theme.accent_rec, 0.30));
+    const strip_h: f32 = 11;
+    c.rl.DrawRectangleRec(widgets.rect(r.x, r.y, r.width, strip_h), theme.accent_rec);
+    widgets.drawLabelF("\u{25CF} REC", r.x + 3, r.y, theme.fsTiny(), theme.bg);
+    c.rl.DrawRectangleLinesEx(r, 1, theme.accent_rec);
+
+    const peaks = rec.livePeaks();
+    const body_top = r.y + strip_h + 1;
+    const body_h = r.height - strip_h - 2;
+    if (peaks.len > 0 and body_h > 2) {
+        const mid = body_top + body_h * 0.5;
+        const cols: usize = @intFromFloat(@max(1.0, @min(w, 4096.0)));
+        var col: usize = 0;
+        while (col < cols) : (col += 1) {
+            const frac = @as(f32, @floatFromInt(col)) / @as(f32, @floatFromInt(cols));
+            const pi = @min(peaks.len - 1, @as(usize, @intFromFloat(frac * @as(f32, @floatFromInt(peaks.len)))));
+            const hh = peaks[pi] * body_h * 0.5;
+            const cx = r.x + @as(f32, @floatFromInt(col));
+            c.rl.DrawLineEx(.{ .x = cx, .y = mid - hh }, .{ .x = cx, .y = mid + hh }, 1.0, theme.accent_hi);
+        }
+    }
+}
+
 fn drawClip(r: c.rl.Rectangle, clip: Clip, color: c.rl.Color, selected: bool, editing_name: bool, pool: *const audio_pool_mod.AudioPool) void {
     // Body — dimmed track color
     const body = dim(color, 0.55);
@@ -1581,6 +1634,7 @@ fn drawLaneHeader(r: c.rl.Rectangle, t: *Track, idx: usize, selected: bool, edit
     const btn_w = theme.size(14);
     const solo_r = widgets.rect(content_x + content_w - btn_w, row1_y, btn_w, btn_h);
     const mute_r = widgets.rect(solo_r.x - btn_w - 2, row1_y, btn_w, btn_h);
+    const arm_r = widgets.rect(mute_r.x - btn_w - 2, row1_y, btn_w, btn_h);
 
     // Index badge then the name. The badge is dimmed; the name brightens
     // on the selected row.
@@ -1590,7 +1644,7 @@ fn drawLaneHeader(r: c.rl.Rectangle, t: *Track, idx: usize, selected: bool, edit
     widgets.drawLabelF(idx_s.ptr, content_x, row1_y + 1, theme.fsTiny(), theme.text_mute);
 
     const name_x = content_x + idx_w;
-    const name_w = @max(8.0, content_w - idx_w - btn_w * 2 - 4);
+    const name_w = @max(8.0, content_w - idx_w - btn_w * 3 - 6);
     const name_rect = widgets.rect(name_x, row1_y, name_w, btn_h);
     if (!editing_name) {
         var name_buf: [track_mod.MAX_NAME + 1:0]u8 = undefined;
@@ -1599,6 +1653,17 @@ fn drawLaneHeader(r: c.rl.Rectangle, t: *Track, idx: usize, selected: bool, edit
         @memcpy(name_buf[0..copy_n], n[0..copy_n]);
         name_buf[copy_n] = 0;
         widgets.drawLabelF(@ptrCast(&name_buf[0]), name_x, row1_y + 1, theme.fsBody(), if (selected) theme.text_fg else theme.text_dim);
+    }
+
+    // Record-arm. Only audio tracks can be armed (buses have no input).
+    const can_arm = t.kind == .audio;
+    const is_armed = t.isArmed();
+    const arm_fill = if (is_armed) theme.accent_rec else theme.slab_fill;
+    widgets.bevelRaised(arm_r, arm_fill, theme.slab_hi, theme.slab_lo);
+    widgets.drawLabelF("R", arm_r.x + 4, arm_r.y, theme.fsTiny(), if (can_arm) theme.text_fg else theme.text_mute);
+    widgets.tooltip(arm_r, if (is_armed) "Disarm (record)" else "Arm for recording", m);
+    if (can_arm and widgets.contains(arm_r, m.x, m.y) and m.left_released and !widgets.hasActiveDrag()) {
+        t.setArmed(!is_armed);
     }
 
     const is_muted = t.mute.load(.monotonic);

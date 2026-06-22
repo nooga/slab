@@ -60,6 +60,9 @@ pub const Track = struct {
     pan_bits: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0.0))),
     mute: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     solo: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// Record-arm. UI-owned; the recorder records into the armed audio
+    /// track. Not persisted (a transient performance state).
+    armed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     /// Meter levels written by engine, read by UI. Peak per channel,
     /// decaying toward zero each UI frame.
@@ -147,6 +150,18 @@ pub const Track = struct {
         if (slot.mach.deinit) |deinit_fn| deinit_fn(slot.mach.state, alloc);
         slot.mach = mach;
         slot.idx = idx;
+    }
+
+    pub fn isArmed(self: *const Track) bool {
+        return self.armed.load(.monotonic);
+    }
+
+    pub fn setArmed(self: *Track, on: bool) void {
+        self.armed.store(on, .monotonic);
+    }
+
+    pub fn toggleArmed(self: *Track) void {
+        self.armed.store(!self.armed.load(.monotonic), .monotonic);
     }
 
     pub fn isEnabled(self: *const Track) bool {

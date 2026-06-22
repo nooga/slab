@@ -115,7 +115,15 @@ pub fn parse(alloc: std.mem.Allocator, buf: []const u8) Error!Sample {
             have_fmt = true;
         } else if (std.mem.eql(u8, id, "data")) {
             data_off = body;
-            data_len = @min(size, buf.len - body);
+            if (size == 0 or body + size > buf.len) {
+                // A streaming take whose header size was never patched (clean
+                // stop didn't run — e.g. a crash mid-record) leaves this at 0;
+                // a truncated file leaves it overlong. Either way the trailing
+                // data chunk runs to EOF.
+                data_len = buf.len - body;
+                break;
+            }
+            data_len = size;
         }
         pos = body + size + (size & 1); // chunks are word-aligned
     }
@@ -272,6 +280,36 @@ test "parse 16-bit mono PCM" {
     try testing.expectApproxEqAbs(@as(f64, 0.5), s.data[0], 1e-4);
     try testing.expectApproxEqAbs(@as(f64, -0.5), s.data[1], 1e-4);
     try testing.expectApproxEqAbs(@as(f64, 0.0), s.data[3], 1e-9);
+}
+
+test "salvages an unfinalized take (data size left at 0 -> runs to EOF)" {
+    // A streaming recorder that never patched its header: float32 mono, the
+    // data chunk size still 0. The loader should read to end of file.
+    const n = 3;
+    var buf: [44 + n * 4]u8 = undefined;
+    @memcpy(buf[0..4], "RIFF");
+    writeU32(&buf, 4, 0); // RIFF size never patched
+    @memcpy(buf[8..12], "WAVE");
+    @memcpy(buf[12..16], "fmt ");
+    writeU32(&buf, 16, 16);
+    writeU16(&buf, 20, 3); // IEEE float
+    writeU16(&buf, 22, 1); // mono
+    writeU32(&buf, 24, 48000);
+    writeU32(&buf, 28, 192000);
+    writeU16(&buf, 32, 4);
+    writeU16(&buf, 34, 32);
+    @memcpy(buf[36..40], "data");
+    writeU32(&buf, 40, 0); // data size never patched
+    writeU32(&buf, 44, @bitCast(@as(f32, 0.25)));
+    writeU32(&buf, 48, @bitCast(@as(f32, -0.5)));
+    writeU32(&buf, 52, @bitCast(@as(f32, 1.0)));
+
+    var s = try parse(testing.allocator, &buf);
+    defer s.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 3), s.data.len);
+    try testing.expectApproxEqAbs(@as(f64, 0.25), s.data[0], 1e-6);
+    try testing.expectApproxEqAbs(@as(f64, -0.5), s.data[1], 1e-6);
+    try testing.expectApproxEqAbs(@as(f64, 1.0), s.data[2], 1e-6);
 }
 
 test "parse stereo folds to mono" {

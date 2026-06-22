@@ -17,6 +17,7 @@ const registry_mod = @import("machine_registry.zig");
 const fy_host_mod = @import("fy_host.zig");
 const document_mod = @import("document.zig");
 const history_mod = @import("history.zig");
+const recorder_mod = @import("recorder.zig");
 const native_dialog = @import("native_dialog.zig");
 
 const theme = @import("ui/theme.zig");
@@ -465,6 +466,23 @@ pub fn main() !void {
     }
     audio.setRender(&engine, engine_mod.Engine.renderCallback);
 
+    // ── Recorder ─────────────────────────────────────────────────────
+    // Owns the SPSC ring + writer thread; the audio thread pushes input
+    // through `captureFn` each block. Only active when the device opened a
+    // capture half (duplex).
+    var recorder = try recorder_mod.Recorder.init(alloc, &transport);
+    defer recorder.deinit();
+    if (audio.capture_available) audio.setCapture(&recorder, recorder_mod.Recorder.captureFn);
+    var rec_finishing = false;
+    var rec_track: ?usize = null;
+
+    // Input-device picker state. Re-enumerated periodically (picks up hotplug
+    // within ~1s). `input_name_ptrs` are C-string views into `input_devices`.
+    var input_devices: [audio_mod.MAX_INPUT_DEVICES]audio_mod.InputDevice = undefined;
+    var input_name_ptrs: [audio_mod.MAX_INPUT_DEVICES][*:0]const u8 = undefined;
+    var input_count: usize = 0;
+    var input_refresh: u32 = 0;
+
     // ── UI state ─────────────────────────────────────────────────────
     var layout: layout_mod.State = .{};
     layout.clip_editor_visible = true;
@@ -548,13 +566,64 @@ pub fn main() !void {
         c.rl.BeginDrawing();
         c.rl.ClearBackground(theme.bg);
 
-        const tres = top_bar.draw(rects.top_bar, &transport, &meter_state, &edit_snap, project_path, project_path_chosen, dirty, pane_m);
+        const rec_busy = recorder.isRecording() or rec_finishing;
+
+        // Refresh the input-device list ~once/sec and resolve the active one.
+        if (input_refresh % 60 == 0) {
+            input_count = audio.listInputDevices(&input_devices);
+            for (0..input_count) |i| input_name_ptrs[i] = &input_devices[i].name;
+        }
+        input_refresh +%= 1;
+        const cur_input_name = audio.currentInputName();
+        var current_input_idx: ?usize = null;
+        for (0..input_count) |i| {
+            if (std.mem.eql(u8, std.mem.sliceTo(&input_devices[i].name, 0), cur_input_name)) {
+                current_input_idx = i;
+                break;
+            }
+        }
+
+        const tres = top_bar.draw(rects.top_bar, &transport, &meter_state, &edit_snap, project_path, project_path_chosen, dirty, rec_busy, audio.capture_available, input_name_ptrs[0..input_count], current_input_idx, pane_m);
         if (tres.render_audio) render_dlg.active = true;
+        if (tres.input_pick) |pi| {
+            if (rec_busy) {
+                status.set("Stop recording before switching input", .{});
+            } else if (pi < input_count) {
+                audio.useInputDevice(&input_devices[pi].id) catch |err| {
+                    std.log.err("input switch failed: {s}", .{@errorName(err)});
+                    status.set("Input switch failed", .{});
+                };
+                input_refresh = 0; // force re-enumerate + re-resolve next frame
+                status.set("Input: {s}", .{std.mem.sliceTo(&input_devices[pi].name, 0)});
+            }
+        }
+        if (tres.record_toggle and !rec_finishing) {
+            if (recorder.isRecording()) {
+                recorder.requestStop();
+                transport.stop();
+                rec_finishing = true;
+            } else {
+                rec_track = firstArmedAudioTrack(tracks);
+                if (rec_track == null) {
+                    status.set("Arm a track (R) to record", .{});
+                } else {
+                    recorder.start() catch |err| {
+                        std.log.err("record start failed: {s}", .{@errorName(err)});
+                        status.set("Record failed to start", .{});
+                        rec_track = null;
+                    };
+                    if (rec_track != null) {
+                        transport.play();
+                        status.set("Recording\u{2026}", .{});
+                    }
+                }
+            }
+        }
 
         // (Side browser removed — machines are added via the "+" in the
         // machine-bay titlebar; see mbres.add_machine below.)
 
-        const ares = arrangement.draw(rects.arrangement, tracks, &master, &device_sel, &audio_pool, alloc, &selected_track, &selected_clip, &transport, &meter_state, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), pane_m);
+        const ares = arrangement.draw(rects.arrangement, tracks, &master, &device_sel, &audio_pool, alloc, &selected_track, &selected_clip, &transport, &meter_state, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), &recorder, pane_m);
         if (ares.rename_clip) |ref| beginRenameClip(&rename, tracks, ref);
         if (ares.rename_track) |ti| beginRenameTrack(&rename, tracks, ti);
         if (ares.rename_rect) |rr| rename.rect = rr;
@@ -833,6 +902,18 @@ pub fn main() !void {
             finishRender(alloc, &audio, &render_job, &status);
             render_dlg.active = false;
         }
+
+        // Finalize a recording once the writer thread has flushed and closed
+        // the take file: turn it into a pooled source + clip on the armed track.
+        if (rec_finishing and recorder.isFinished()) {
+            const res = recorder.finish();
+            placeRecordedClip(alloc, &audio_pool, &history, &status, tracks, &transport, &recorder, &audio, res, rec_track, &selected_track, &selected_clip, &dirty) catch |err| {
+                std.log.err("record finalize failed: {s}", .{@errorName(err)});
+                status.set("Recording finalize failed", .{});
+            };
+            rec_finishing = false;
+            rec_track = null;
+        }
         if (tres.save_project) {
             try saveProject(
                 alloc,
@@ -941,6 +1022,78 @@ fn importAudioClip(
     selected_clip.* = .{ .track = @intCast(ti), .clip = @intCast(tracks[ti].clips.items.len - 1) };
     dirty.* = true;
     status.set("Imported {s}", .{src.name()});
+}
+
+/// First record-armed audio track, or null. Buses can't be armed.
+fn firstArmedAudioTrack(tracks: []track_mod.Track) ?usize {
+    for (tracks, 0..) |*t, i| {
+        if (t.kind == .audio and t.isArmed()) return i;
+    }
+    return null;
+}
+
+/// Turn a finished take into a pooled source + audio clip on the armed track.
+/// Runs on the UI thread after the writer thread closed the WAV.
+fn placeRecordedClip(
+    alloc: std.mem.Allocator,
+    pool: *audio_pool_mod.AudioPool,
+    history: *history_mod.History,
+    status: *StatusMessage,
+    tracks: []track_mod.Track,
+    transport: *transport_mod.Transport,
+    recorder: *recorder_mod.Recorder,
+    audio: *audio_mod.Audio,
+    res: recorder_mod.Result,
+    rec_track: ?usize,
+    selected_track: *?usize,
+    selected_clip: *?clip_mod.ClipRef,
+    dirty: *bool,
+) !void {
+    if (res.frames == 0) {
+        status.set("Recording was empty", .{});
+        return;
+    }
+    const ti = (rec_track orelse firstArmedAudioTrack(tracks)) orelse return;
+    if (ti >= tracks.len) return;
+
+    const source = try pool.loadFile(res.path);
+    const src = pool.get(source) orelse return;
+
+    const dur_sec = src.seconds();
+    const bpm: f64 = transport.bpm();
+    const len_beats = @max(0.25, dur_sec * bpm / 60.0);
+
+    // Latency-compensate: captured audio arrives a round-trip late, so place
+    // the clip earlier by that much so it lands where the sound occurred.
+    const latency: u64 = audio.roundTripLatencyFrames();
+    const adj_sample = if (res.start_sample > latency) res.start_sample - latency else 0;
+    const start = transport.samplesToBeats(adj_sample);
+
+    const before = try document_mod.serialize(alloc, tracks, transport);
+    errdefer alloc.free(before);
+
+    _ = arrangement.clearSelection(tracks, selected_clip);
+    var clip = clip_mod.Clip.initAudio(src.name(), start, len_beats, source);
+    clip.audio.start_sec = 0;
+    clip.audio.dur_sec = dur_sec;
+    clip.selected = true;
+    tracks[ti].addClip(alloc, clip) catch |err| {
+        clip.deinit(alloc);
+        return err;
+    };
+    try history.pushUndo(alloc, before);
+
+    selected_track.* = ti;
+    selected_clip.* = .{ .track = @intCast(ti), .clip = @intCast(tracks[ti].clips.items.len - 1) };
+    dirty.* = true;
+
+    const secs = @as(f64, @floatFromInt(res.frames)) / @as(f64, @floatFromInt(recorder_mod.SAMPLE_RATE));
+    const dropped = recorder.overruns.load(.monotonic);
+    if (dropped > 0) {
+        status.set("Recorded {d:.1}s ({d} frames dropped)", .{ secs, dropped });
+    } else {
+        status.set("Recorded {d:.1}s", .{secs});
+    }
 }
 
 fn handleProjectShortcuts(

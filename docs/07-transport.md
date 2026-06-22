@@ -418,16 +418,61 @@ document; edited on the ruler per
 
 ## Recording
 
-When `transport_state == .recording`, tracks that are record-armed
-capture their input:
-- Instrument track armed: record incoming note events (from
-  keyboard / MIDI in) to the active clip.
-- Audio track armed: record the summed output of its input chain to
-  the active clip's audio buffer (appending).
+### Audio input capture (implemented — v1)
 
-Implementation detail: recording uses a lock-free SPSC ring between
-audio thread and a writer thread that persists to disk (for audio)
-or to the Document (for notes).
+The device opens in **duplex** mode (`ma_device_type_duplex`): stereo
+f32 playback plus a **mono f32 capture** half, both at 48 kHz in one
+callback. If duplex init fails — no input device, denied mic
+permission — the device falls back to playback-only and recording is
+disabled (`Audio.capture_available == false`); the app still runs.
+See `src/audio.zig`.
+
+The pipeline (`src/recorder.zig`):
+
+1. **Capture (audio thread).** `Recorder.captureFn` runs *before*
+   render each block, so it stamps the take's start from the
+   block-start transport position. It only copies the input block into
+   a preallocated **lock-free SPSC ring** (`Ring`) — no allocation, no
+   syscalls, no locks. A short push counts as an overrun.
+2. **Writer thread.** Drains the ring and streams it to a float32-mono
+   **WAV** under `recordings/take-NNN.wav`, patching the RIFF/data
+   sizes on close. (Streaming to a real file — not an in-memory buffer
+   — so takes survive reload: audio clips resolve by path through the
+   `AudioPool`.)
+3. **Finalize (UI thread).** When the writer signals done, the host
+   joins it, `AudioPool.loadFile`s the take (reusing the normal
+   loader), and drops an audio clip on the armed track via the same
+   undoable path as audio import. The clip start is **latency-
+   compensated** — shifted earlier by `Audio.roundTripLatencyFrames()`
+   (capture + playback internal periods) so it lands where the sound
+   actually occurred.
+
+UI: a per-track **R** arm toggle (audio tracks only) in the
+arrangement header; the top-bar record button records the first armed
+track, starts the transport, and lights `accent_rec` while capturing.
+`Track.armed` is a transient atomic (not persisted). While recording,
+the armed lane shows a **live take** — a red region growing from the
+take's start beat to the playhead, with a waveform drawn from the
+recorder's peak buckets (the writer thread fills one peak per
+`SAMPLES_PER_BUCKET` drained frames; the UI reads the published count).
+It's replaced by the real clip on stop.
+
+**Input device** is chosen from a caret dropdown next to the record
+button (top bar). `Audio` keeps a persistent `ma_context`;
+`listInputDevices` enumerates capture devices and `useInputDevice`
+stops/re-opens/restarts the device with the chosen `ma_device_id`
+(render + capture hooks persist across the swap). Device switching is
+blocked while recording.
+
+### Deferred
+
+- **Monitoring** — no live input-through-graph monitoring yet (it adds
+  a full round-trip of latency). The `audio_in` ports on `MachineCtx`
+  are the eventual route.
+- **Multitrack / takes / punch / count-in / loop-record.**
+- **Note recording.** Instrument-track note capture (keyboard / MIDI
+  in → active clip) is unbuilt; it reuses the same arm model but writes
+  to the Document, not disk.
 
 ## Summary of what the transport guarantees
 
