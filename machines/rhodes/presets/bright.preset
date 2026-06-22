@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "rhodes", "note": "Bright barky Rhodes - hard hammer, hot pickup", "params": {"rd-tine-q": 0.65, "rd-bar-q": 0.35, "rd-bar-detune": 0.2, "rd-pickup-drive": 0.6, "rd-bark": 0.6, "rd-bark-decay": 0.1, "rd-warmth": 0.35, "rd-damper": 0.8, "rd-level": 0.5}}

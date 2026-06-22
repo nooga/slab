@@ -406,6 +406,7 @@ pub fn main() !void {
     try reg.loadFyMachine("machines/limiter2/limiter2.fy");
     try reg.loadFyMachine("machines/chorus2/chorus2.fy");
     try reg.loadFyMachine("machines/juno2/juno2.fy");
+    try reg.loadFyMachine("machines/rhodes/rhodes.fy");
     try reg.loadFyMachine("machines/funk/funk.fy");
     try reg.loadFyMachine("machines/sampler/sampler.fy");
 

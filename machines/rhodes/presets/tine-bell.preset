@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "rhodes", "note": "Bell tine - high Q tine, subtle bar, long ringing sustain", "params": {"rd-tine-q": 0.92, "rd-bar-q": 0.25, "rd-bar-detune": 0.15, "rd-pickup-drive": 0.25, "rd-bark": 0.2, "rd-bark-decay": 0.15, "rd-warmth": 0.45, "rd-damper": 0.6, "rd-level": 0.48}}

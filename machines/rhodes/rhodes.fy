@@ -1,0 +1,47 @@
+( rhodes.fy — Rhodes-type electric piano machine.
+
+  The voice lives in the kernels rig [kernels/06-voices/rhodes.fy];
+  this file declares the machine.  The host voice pool calls the render
+  composition once per voice per segment against per-voice state; all
+  note data is per-voice, params are shared.  channel-cell injects the
+  voice index (unused in DSP but reserved for future per-voice detune).
+
+  Panel: TINE | BAR | PICKUP | AMP.  The tine Q is the sustain knob -
+  high Q rings for seconds, low Q dies fast.  Damper controls how fast
+  the note decays after key release (sustain pedal up = high damper). )
+
+include "../../kernels/06-voices/rhodes.fy"
+include "../lib/manifest.fy"
+
+: manifest
+  "Rhodes E-Piano" voice-sample machine*
+  "k-rhodes-voice"       render!
+  "rhodes-note-on"       note-on!
+  "rhodes-note-off"      note-off!
+  "rhodes-block-prepare" block-prepare!
+  8 voices!
+  RhodesState.size  state-size!
+  RhodesParams.size params-size!
+  360.0 panel-w!
+
+  RhodesState.voice-idx channel-cell
+
+  "TINE" "BELL"  "rd-tine-q"     RhodesParams.tine-q     0.0 1.0 0.7 curve-lin knob
+  "TINE" "BARK"  "rd-bark"       RhodesParams.bark        0.0 1.0 0.3 curve-lin knob
+  "TINE" "SNAP"  "rd-bark-decay" RhodesParams.bark-decay  0.0 1.0 0.2 curve-lin knob
+  "TINE" 1 strip
+
+  "BODY" "DECAY"  "rd-bar-q"      RhodesParams.bar-q       0.0 1.0 0.4 curve-lin knob
+  "BODY" "CHORUS" "rd-bar-detune" RhodesParams.bar-detune  0.0 1.0 0.3 curve-lin knob
+  "BODY" 1 strip
+
+  "PICKUP" "DRIVE" "rd-pickup-drive" RhodesParams.pickup-drive 0.0 1.0 0.3 curve-lin knob
+  "PICKUP" 1 strip
+
+  "AMP" "TONE"    "rd-warmth" RhodesParams.warmth 0.0 1.0 0.5 curve-lin knob
+  "AMP" "RELEASE" "rd-damper" RhodesParams.damper 0.0 1.0 0.7 curve-lin knob
+  "AMP" "LEVEL"   "rd-level"  RhodesParams.level  0.0 1.0 0.5 curve-pow knob
+  "AMP" 1 strip
+
+  machine-desc
+;

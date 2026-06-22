@@ -81,3 +81,9 @@ dsp2: k-tanh-rational-core-dsp2
 dsp2: k-tanh-rational-dsp2
   k-tanh-rational-core-dsp2
 ;
+
+( x -- tanh(x) : rational tanh, no extra stack leak. )
+dsp2: k-tanh-rational-clean
+  k-tanh-rational-shape-dsp2
+  nip
+;

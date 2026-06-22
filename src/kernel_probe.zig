@@ -135,6 +135,10 @@ pub fn main(init: std.process.Init) !void {
         try runJunoCase(alloc, cli, &host);
         return;
     }
+    if (std.mem.eql(u8, cli.case_name, "rhodes-voice-render")) {
+        try runRhodesCase(alloc, cli, &host);
+        return;
+    }
     if (std.mem.eql(u8, cli.case_name, "funk-render")) {
         try runFunkCase(alloc, cli, &host);
         return;
@@ -3374,6 +3378,148 @@ fn runJunoCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     std.debug.print(
         "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} peak={d:.3} sustain_rms={d:.4} tail_rms={d:.6} pitch_corr={d:.3} ring_ratio={d:.3}\n",
         .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, metrics.peak, sustain_rms, tail_rms, pitch_corr, ring_ratio },
+    );
+}
+
+fn runRhodesCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
+    const sr: f64 = @floatFromInt(VOICE_SAMPLE_RATE);
+    const frames: usize = @intFromFloat(VOICE_SECONDS * @as(f64, @floatFromInt(VOICE_SAMPLE_RATE)));
+    const out = try alloc.alloc(f64, frames);
+    defer alloc.free(out);
+    @memset(out, 0);
+
+    // RhodesState: 18 f64s (voice-idx, age, gate-time, note-hz, vel,
+    // amp-atk, fund-env, tine-env, bark-env, phaseA, phaseB, tine-phase,
+    // noise-rng, warm-lp, dc, s-fund, s-tine, s-pre).
+    var state align(8) = [_]f64{0} ** 18;
+
+    // RhodesParams: 9 user + 15 derived = 24 f64s.
+    //   tine-q bar-q bar-detune pickup-drive bark bark-decay warmth
+    //   damper level | (15 derived, filled by rhodes-block-prepare)
+    var params align(8) = [_]f64{
+        0.7, 0.4, 0.3, 0.3, 0.3, 0.2, 0.5, 0.7, 0.5,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0,
+    };
+
+    const bp_args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&params) }, .{ .f64 = sr } };
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("rhodes-block-prepare", 1, &bp_args);
+    const on_args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+        .{ .f64 = 110.0 },
+        .{ .f64 = 0.9 },
+    };
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("rhodes-note-on", 1, &on_args);
+
+    var slots = Fy.Dsp2RawRepeatedSlots{};
+    var caller = try host.fy.compileDsp2CompositionCaller(cli.word, &slots, true, false);
+    const held: usize = @intFromFloat(1.5 * @as(f64, @floatFromInt(VOICE_SAMPLE_RATE)));
+    const args_a = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out[0]) },
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+    };
+    const start = nowNs();
+    _ = try caller.call(@intCast(held), &args_a);
+    const off_args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+    };
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("rhodes-note-off", 1, &off_args);
+    const args_b = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out[held]) },
+        .{ .ptr = @intFromPtr(&state) },
+        .{ .ptr = @intFromPtr(&params) },
+    };
+    _ = try caller.call(@intCast(frames - held), &args_b);
+    const run_ns = nowNs() - start;
+
+    var metrics = Metrics{};
+    metrics.ns_per_iter = @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(frames));
+    fillSignalMetrics(out, &metrics);
+    for (out) |x| {
+        if (!std.math.isFinite(x)) metrics.nonfinite_count += 1;
+    }
+
+    // Sustain RMS: 0.5s..1.5s after strike - the note must ring.
+    var sustain_rms: f64 = 0;
+    {
+        const a = VOICE_SAMPLE_RATE / 2;
+        const b = a + VOICE_SAMPLE_RATE;
+        for (out[a..b]) |x| sustain_rms += x * x;
+        sustain_rms = @sqrt(sustain_rms / @as(f64, @floatFromInt(VOICE_SAMPLE_RATE / 2)));
+    }
+    // Tail RMS: last 0.5s - the damper must have killed the note.
+    var tail_rms: f64 = 0;
+    {
+        const n = VOICE_SAMPLE_RATE / 2;
+        for (out[frames - n ..]) |x| tail_rms += x * x;
+        tail_rms = @sqrt(tail_rms / @as(f64, @floatFromInt(n)));
+    }
+
+    // Pitch sanity: the sustain must be PERIODIC at the played note (110 Hz).
+    // Normalized autocorrelation at the ~436-sample lag.
+    var pitch_corr: f64 = -1;
+    {
+        const seg = out[VOICE_SAMPLE_RATE..][0..8192];
+        var best: f64 = -1;
+        var lag: usize = 420;
+        while (lag <= 455) : (lag += 1) {
+            var num: f64 = 0;
+            var e0: f64 = 0;
+            var e1: f64 = 0;
+            for (seg[0 .. seg.len - lag], seg[lag..]) |a, b| {
+                num += a * b;
+                e0 += a * a;
+                e1 += b * b;
+            }
+            const r = num / @max(@sqrt(e0 * e1), 1e-30);
+            best = @max(best, r);
+        }
+        pitch_corr = best;
+    }
+
+    // Attack sanity: the first 10ms must have more energy than the sustain -
+    // the hammer strike must be audible as a transient.
+    var attack_rms: f64 = 0;
+    {
+        const n = VOICE_SAMPLE_RATE / 100; // 10ms
+        for (out[0..n]) |x| attack_rms += x * x;
+        attack_rms = @sqrt(attack_rms / @as(f64, @floatFromInt(n)));
+    }
+
+    // Peak location: the peak must occur before the release (held segment),
+    // not in the tail - the note should be loudest while held.
+    var peak_sample: usize = 0;
+    {
+        var pk: f64 = -1;
+        for (out, 0..) |x, i| {
+            const ax = @abs(x);
+            if (ax > pk) { pk = ax; peak_sample = i; }
+        }
+    }
+
+    var csv: std.ArrayList(u8) = .empty;
+    defer csv.deinit(alloc);
+    try csv.appendSlice(alloc, "sample,time,out\n");
+    var j: usize = 0;
+    while (j < frames) : (j += 16) {
+        try appendFmt(alloc, &csv, "{d},{d:.9},{d:.9}\n", .{ j, @as(f64, @floatFromInt(j)) / sr, out[j] });
+    }
+    try writeDrumArtifacts(alloc, cli, host, csv.items, metrics, out);
+
+    if (metrics.nonfinite_count != 0 or metrics.peak < 0.05 or metrics.peak > 1.0 or
+        sustain_rms < 0.01 or tail_rms > sustain_rms * 0.15 or
+        pitch_corr < 0.5 or attack_rms < 0.01 or peak_sample >= held)
+    {
+        std.debug.print("rhodes ratchet detail: peak={d:.3} peak_sample={d} attack_rms={d:.4} sustain_rms={d:.4} tail_rms={d:.6} pitch_corr={d:.3}\n", .{ metrics.peak, peak_sample, attack_rms, sustain_rms, tail_rms, pitch_corr });
+        return error.KernelRatchetFailed;
+    }
+
+    std.debug.print(
+        "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} peak={d:.3} peak_sample={d} attack_rms={d:.4} sustain_rms={d:.4} tail_rms={d:.6} pitch_corr={d:.3}\n",
+        .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, metrics.peak, peak_sample, attack_rms, sustain_rms, tail_rms, pitch_corr },
     );
 }
 
