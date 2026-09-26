@@ -5,6 +5,10 @@ words compiled in a restricted `dsp:` mode, with a NEON extension
 to fy's assembler and a set of combinators that let authors write
 readable DSP that compiles to tight ARM64+NEON.
 
+> **As built:** this doc is the original design. The language as it
+> actually works today (frames, typed fields, memory order, spilling,
+> the word set) is in [18-fy-dsp-language.md](18-fy-dsp-language.md).
+
 ## The philosophy
 
 - Kernels are fy, not Zig. One language, one hot-patch model, one

@@ -54,6 +54,9 @@ self-contained but assumes the vocabulary established in earlier ones.
 18. [17-direction.md](17-direction.md) — **active plan**: fy `dsp:`
     language, one ctx ABI, workbench v2, machine DSL, routing, and the
     road to the warm sound
+19. [18-fy-dsp-language.md](18-fy-dsp-language.md) — the `dsp:` language
+    as implemented: consuming and typed locals, dotted fields, memory
+    order, composition, spilling, word set
 
 ## Terminology crib sheet
 

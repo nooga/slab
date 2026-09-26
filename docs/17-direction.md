@@ -213,7 +213,10 @@ macro primitives, so plain fy stays stable. Detailed spec: a new
 - Errors name the word, token, and line: "`f+` expects 2 f64, stack has
   1 (after `s.cutoff`)".
 
-**A2. Consuming locals, typed bindings, dotted fields.**
+**A2. Consuming locals, typed bindings, dotted fields.** *(Done
+2026-09-26; see docs/18. Bindings live in frames, not in the paren
+declaration: a leading `| s:JunoState x -- y |` frame is the
+declaration, so point-free words keep `( x -- y )`.)*
 ```
 dsp: jn-hpf ( s:JunoState p:JunoParams x -- y )
   s.hpf-lp  x over f- p.hpf-a f* f+ | lp |
@@ -226,7 +229,8 @@ dsp: jn-hpf ( s:JunoState p:JunoParams x -- y )
   trap).
 - A migration script rewrites the existing kernels.
 
-**A3. Register spilling + multi-value returns.** Plain word calls
+**A3. Register spilling + multi-value returns.** *(Done 2026-09-26;
+see docs/18 §Registers and spilling.)* Plain word calls
 inline as values, so stages return results and the scratch fields go
 away:
 ```
@@ -505,8 +509,8 @@ step says otherwise.
 | 1 ✅ | **Workbench v2, minimal:** machine loader through the real adapter, impulse/sweep/note stimuli, report + contact sheet, A/B diff. Record goldens for every machine. | `zig build bench -- machines/ms20` produces a readable sheet; goldens committed. |
 | 2 ✅ | A1: rename to `dsp:`, stack effects, errors. | Goldens match; a deliberate typo gives a located error. Done: `dsp: name ( a b -- c )`; errors like ``dsp: typo: unsupported word in dsp: at `fplus` (line 1); stack depth 3``. |
 | 3 ✅ | Track B: ctx ABI, stereo, no clamp, voice service, smoothing; the bench moves with it. | Goldens re-recorded after A/B review; special cells deleted. Done: ctx/io ABI (bit-exact), D5 no clamp, idle-voice skipping plus allocation, 20 ms knob glide, `stereo` flag, mono note stack with `ctx.legato`. Glide, unison, and ctx-addressed buffers/tables move to G4 and A7. |
-| 4 | A2: locals, typed bindings, dotted fields + migration. | Goldens match; drop/nip-only lines ≈ 0. |
-| 5 | A3: spilling, multi-return. | Scratch fields gone from voice state; the juno voice no longer needs `call:` stages. |
+| 4 ✅ | A2: locals, typed bindings, dotted fields + migration. | Goldens match; drop/nip-only lines ≈ 0. Done: consuming frames, `\| ins -- outs \|` declarations, `s:T` / `s.f` / `s.f&` / `-> s.f`, program-order stores; 672 cleanup tokens and 1450 accessors migrated by tools/migrate/, all goldens bit-exact but one intended MS-20 change (docs/18 §Migrations). |
+| 5 ✅ | A3: spilling, multi-return. | Scratch fields gone from voice state; the juno voice no longer needs `call:` stages. Done: Belady spilling with a dry-pass trace, cheaper constants, `over`/`rot`; Juno, Rhodes and MS-20 are single voice words, faster than the staged versions (Juno 159→148, Rhodes 109→84, MS-20 200→188 ns/smp). |
 | 6 | A4 + A5 + A7: math, `dsp-std`, fused ops out, `table:`. | No DSP ops left in `dsp2.zig`'s op list; no hand-rolled series in kernels. |
 | 7 | A6 + D: parsing words, manifest DSL, curves, units. | All machines ported; `ms20.fy` shorter by half. |
 | 8 🔶 | G4 MS-20 fix + knob-response probes on every synth. | Knob-response curves roughly straight on the bench. MS-20 done 2026-09-26, ahead of steps 4–7 after the first listen: an OTA + diode LPF in fy, octave modulation, live DRV (docs/14 §LPF v2). The other synths are still to do. |
