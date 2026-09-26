@@ -1479,7 +1479,7 @@ fn controlCell(ui: *const Ui, ctl: *const Control, tier: ui_ctl.Size) [2]i32 {
     const opts = optionSlices(ctl, &ob);
     const label = ctl.label[0..ctl.label_len];
     return switch (ctl.widgetFor()) {
-        .auto, .knob => ui_ctl.knobCell(tier),
+        .auto, .knob => ui_ctl.knobCell(tier, false),
         .fader => ui_ctl.faderCell(ui, tier, label),
         .lever => ui_ctl.toggleCell(ui, .{ .positions = @intCast(opts.len), .label = label, .marks = opts }),
         .slide => ui_ctl.slideCell(ui, .{ .positions = @intCast(opts.len), .label = label, .marks = opts }),
@@ -1536,7 +1536,7 @@ fn drawKnob(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Contr
             const idx = switchIndex(ctl.*, self.controlNorm(gi));
             var v: f32 = if (n > 1) @as(f32, @floatFromInt(idx)) / @as(f32, @floatFromInt(n - 1)) else 0;
             const readout = std.mem.span(ctl.optionLabelZ(idx));
-            if (ui_ctl.knob(ui, kr, gi, &v, .{ .size = tier, .variant = .stepped, .steps = @intCast(n), .label = label, .readout = readout })) {
+            if (ui_ctl.knob(ui, kr, gi, &v, .{ .size = tier, .variant = .stepped, .steps = @intCast(n), .label = label, .readout = readout, .show_readout = false })) {
                 const ni: usize = @intFromFloat(@round(v * @as(f32, @floatFromInt(n - 1))));
                 self.setControlRaw(gi, @floatFromInt(ni));
             }
@@ -1553,7 +1553,7 @@ fn drawKnob(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Contr
             // Detents only render for small counts; wide ranges are a
             // plain knob that still snaps to integers.
             const stepped = n_steps <= 24;
-            if (ui_ctl.knob(ui, kr, gi, &v, .{ .size = tier, .variant = if (stepped) .stepped else .plain, .steps = @intCast(@min(n_steps, 255)), .label = label, .readout = readout })) {
+            if (ui_ctl.knob(ui, kr, gi, &v, .{ .size = tier, .variant = if (stepped) .stepped else .plain, .steps = @intCast(@min(n_steps, 255)), .label = label, .readout = readout, .show_readout = false })) {
                 const ni: i64 = @intFromFloat(@round(v * steps_f));
                 self.setControlRaw(gi, @floatFromInt(lo + ni));
             }
@@ -1567,6 +1567,7 @@ fn drawKnob(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Contr
                 .variant = if (ctl.bipolar()) .bipolar else .plain,
                 .label = label,
                 .readout = readout,
+                .show_readout = false,
                 .default = valueToNorm(ctl.*, ctl.default),
             })) self.setControlNorm(gi, value);
         },

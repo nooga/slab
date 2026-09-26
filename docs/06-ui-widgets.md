@@ -232,8 +232,8 @@ arrangement or the piano roll: those are working surfaces.
 **Title-strip display:** each machine's title strip carries a small
 display. It shows the preset name; while a control is touched it shows
 `PARAM value unit` ("CUTOFF 1.25 kHz"), then returns to the preset after
-~1s. This is the precise-value channel, so per-knob readouts can be
-dropped when space is tight.
+~1s. This is the value channel: machine panels print no per-control
+readouts (a value is not a label), as on hardware.
 
 ## Control catalogue
 

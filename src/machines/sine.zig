@@ -146,8 +146,8 @@ fn drawPanelImpl(state: *anyopaque, ui: *ui_core.Ui, r: ui_core.Rect) void {
     // Gate LED in the strip header, right-aligned.
     ui_ctl.led(ui, r.right() - 10, r.y + 5, .round5, if (self.gate) .on else .off, ui_style.led_green);
     var g_norm: f32 = self.gain();
-    const cell = ui_ctl.knobCell(.m);
-    if (ui_ctl.knob(ui, body.cutLeft(cell[0] + 12), "gain", &g_norm, .{ .label = "GAIN" })) self.setGain(g_norm);
+    const cell = ui_ctl.knobCell(.m, false);
+    if (ui_ctl.knob(ui, body.cutLeft(cell[0] + 12), "gain", &g_norm, .{ .label = "GAIN", .show_readout = false })) self.setGain(g_norm);
     // Pitch readout: MIDI note while gated, dashes when idle.
     var buf: [8]u8 = undefined;
     const s = if (self.gate) (std.fmt.bufPrint(&buf, "{d:.0}", .{self.pitch}) catch "?") else "--";

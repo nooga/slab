@@ -171,6 +171,10 @@ pub const Ui = struct {
     edit_ended: bool = false,
 
     touch: Touch = .{},
+    /// While set, touches report this scope instead of the innermost one:
+    /// the machine bay sets it around a panel so every control in it,
+    /// however deeply scoped, feeds that machine's title display.
+    touch_scope: ?Id = null,
     wants_frame: bool = true,
     frame: u64 = 0,
     white: atlas_mod.Region,
@@ -513,7 +517,7 @@ pub const Ui = struct {
         @memcpy(t.label[0..t.label_len], label[0..t.label_len]);
         t.value_len = @min(value.len, t.value.len);
         @memcpy(t.value[0..t.value_len], value[0..t.value_len]);
-        t.scope = ui.scopeId();
+        t.scope = ui.touch_scope orelse ui.scopeId();
         t.time = ui.in.time;
     }
 

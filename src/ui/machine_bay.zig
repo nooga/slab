@@ -283,8 +283,9 @@ fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, active: bool,
     var out = DeviceOut{};
     ui.pushId(mach.state);
     defer ui.popId();
+    const scope = ui.scopeId();
     if (!mach.host_titlebar) {
-        mach.draw_panel(mach.state, ui, card);
+        drawPanel(ui, mach, card, scope);
         if (!active) ui.rect(card, ui_style.chassis.alpha(115));
         return out;
     }
@@ -345,7 +346,7 @@ fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, active: bool,
         const key = pane.keyFromIds(PRESET_MENU_KEY, @intFromPtr(mach.state), 1);
         var popen = menu.isOpen(key);
         const caret_clicked = ctl.button(ui, caret, "preset-caret", &popen, .{ .glyph = .tri_down, .glyph_on = ui_style.text, .flush = true });
-        titleDisplay(ui, disp, mach, preset, ui.isHot(pid));
+        titleDisplay(ui, disp, scope, preset, ui.isHot(pid));
         menu.tip(ui, disp, "Preset");
         const pa = presetMenu(disp, pb.clicked or caret_clicked, mach);
         if (pa.apply) |p| {
@@ -362,10 +363,10 @@ fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, active: bool,
             result.preset_anchor = bridge.toRl(disp);
         }
     } else {
-        titleDisplay(ui, bar, mach, "", false);
+        titleDisplay(ui, bar, scope, "", false);
     }
 
-    mach.draw_panel(mach.state, ui, body);
+    drawPanel(ui, mach, body, scope);
     // Silenced/bypassed: the panel dims (drawn in the Ui list, over it).
     if (!active) ui.rect(body, ui_style.chassis.alpha(115));
     return out;
@@ -373,10 +374,16 @@ fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, active: bool,
 
 /// The device's title display: the preset name, or `LABEL value` while a
 /// control in this machine's panel is being touched (docs/06 §Displays).
-fn titleDisplay(ui: *Ui, r: Rect, mach: *Machine, preset: []const u8, hot: bool) void {
-    // The panel pushes its instance pointer as a scope under ours, so its
-    // controls report touches with this id.
-    const panel_scope = ui.id(mach.state);
+/// The machine's panel, with every touch in it reported under the device's
+/// scope (a voice pool draws its first voice's panel, a panel scopes its
+/// own controls; neither changes whose title display they feed).
+fn drawPanel(ui: *Ui, mach: *Machine, r: Rect, scope: ui_core.Id) void {
+    ui.touch_scope = scope;
+    defer ui.touch_scope = null;
+    mach.draw_panel(mach.state, ui, r);
+}
+
+fn titleDisplay(ui: *Ui, r: Rect, panel_scope: ui_core.Id, preset: []const u8, hot: bool) void {
     const t = &ui.touch;
     var buf: [48]u8 = undefined;
     const live = t.scope == panel_scope and ui.in.time - t.time < ui_core.TOUCH_HOLD;

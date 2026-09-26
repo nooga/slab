@@ -227,7 +227,7 @@ panel draws:
 | Word | Control | Edits |
 |---|---|---|
 | `as-knob` | rotary (stepped for options) | anything |
-| `as-fader` | panel fader, no readout | values |
+| `as-fader` | panel fader | values |
 | `as-lever` | toggle lever with marks | two options |
 | `as-slide` | slide switch | options |
 | `as-list` | LED option column | options |
@@ -240,8 +240,12 @@ lever for other pairs, a list for 3–6 options, a stepped knob beyond. A
 centred range (`-x..x`) draws bipolar. A widget that can't edit its
 control (a fader on a switch) is a descriptor error.
 
-The title strip carries the title display (docs/06 §Displays), which
-shows the touched parameter's value — the only readout faders have.
+Values are not labels: panel controls print no readouts. The title
+strip's display (docs/06 §Displays) shows `LABEL VALUE` for whichever
+control is hovered or dragged, as a hardware unit's display does. The bay
+sets `Ui.touch_scope` around the panel, so every control in it reports to
+that machine's display however it is scoped (a voice pool draws its first
+voice's panel; radio caps scope their segments).
 `machines/juno2/juno2.fy` is the reference: a Juno-106 face of faders,
 LED buttons and levers.
 

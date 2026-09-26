@@ -94,17 +94,17 @@ pub const KnobOpts = struct {
     disabled: bool = false,
 };
 
-/// Natural cell size of a knob: legend · knob · readout.
-pub fn knobCell(size: Size) [2]i32 {
+/// Natural cell size of a knob: legend · knob · readout (if shown).
+pub fn knobCell(size: Size, readout: bool) [2]i32 {
     const g = sprites.knobGeom(size);
-    return .{ g.d + 8, LEGEND_H + g.d + LEGEND_H };
+    return .{ g.d + 8, LEGEND_H + g.d + if (readout) LEGEND_H else 0 };
 }
 
 pub fn knob(ui: *Ui, r: Rect, key: anytype, v: *f32, o: KnobOpts) bool {
     const wid = ui.id(key);
     const art = &ui.art.knobs[@intFromEnum(o.size)];
     const g = art.geom;
-    const cell = knobCell(o.size);
+    const cell = knobCell(o.size, o.show_readout);
     const box = r.center(cell[0], cell[1]);
     const kr = Rect.xywh(box.x + @divFloor(box.w - g.d, 2), box.y + LEGEND_H, g.d, g.d);
 
@@ -565,15 +565,15 @@ pub fn stepper(ui: *Ui, r: Rect, key: anytype) i32 {
 }
 
 pub fn segmented(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8) bool {
-    return segmentedEx(ui, r, key, v, labels, false, null);
+    return segmentedEx(ui, r, key, v, labels, false, null, "");
 }
 
 /// Segmented group as toolbar tiles (see `ButtonOpts.flush`).
 pub fn segmentedFlush(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8) bool {
-    return segmentedEx(ui, r, key, v, labels, true, null);
+    return segmentedEx(ui, r, key, v, labels, true, null, "");
 }
 
-fn segmentedEx(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8, flush: bool, led_col: ?Color) bool {
+fn segmentedEx(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8, flush: bool, led_col: ?Color, name: []const u8) bool {
     const before = v.*;
     ui.pushId(key);
     defer ui.popId();
@@ -587,7 +587,7 @@ fn segmentedEx(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u
         if (b.pressed) v.* = @intCast(i);
         const on = v.* == i;
         cap(ui, cr, on, on, ui.isHot(wid), .{ .label = lab, .flush = flush, .led = led_col });
-        if (ui.isHot(wid)) ui.setTouch("", lab);
+        if (ui.isHot(wid)) ui.setTouch(name, lab);
     }
     return v.* != before;
 }
@@ -598,8 +598,8 @@ fn segmentedEx(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u
 // are the catalogue's faders and buttons in that form, sized by the
 // panel's tier.
 
-/// Panel fader: the slider kind and travel for a tier. No readout; the
-/// title display shows the value while it's touched.
+/// Panel fader: the slider kind and travel for a tier. Panels print no
+/// readouts; the title display shows the value while it's touched.
 pub fn faderKind(size: Size) SliderKind {
     return if (size == .s) .mini else .slider;
 }
@@ -661,7 +661,7 @@ pub fn radio(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8,
     ui.textIn(&ui.fonts.legend, area.cutTop(LEGEND_H), o.label, style.text_dim, .center, true);
     const h = buttonHeight(o.size);
     const caps = area.takeTop(h).center(@as(i32, @intCast(labels.len)) * radioCapW(ui, labels), h);
-    return segmentedEx(ui, caps, key, v, labels, false, o.led);
+    return segmentedEx(ui, caps, key, v, labels, false, o.led, o.label);
 }
 
 // ── Selectors ────────────────────────────────────────────────────────

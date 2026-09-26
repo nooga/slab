@@ -172,9 +172,9 @@ fn knobsPanel(ui: *Ui, r: Rect, st: *State) void {
     const variants = [_]ctl.KnobVariant{ .plain, .bipolar, .stepped, .encoder };
     const labels = [_][]const u8{ "CUTOFF", "PAN", "RANGE", "TUNE" };
     const sizes = [_]ctl.Size{ .l, .m, .s };
-    const cw = ctl.knobCell(.l)[0] + 12;
+    const cw = ctl.knobCell(.l, true)[0] + 12;
     for (sizes, 0..) |sz, si| {
-        const cell = ctl.knobCell(sz);
+        const cell = ctl.knobCell(sz, true);
         var row = body.cutTop(cell[1]);
         for (variants, 0..) |vr, vi| {
             var buf: [16]u8 = undefined;
@@ -388,14 +388,14 @@ const STRIP_HEAD: i32 = 14;
 
 /// Natural width of the SM-24 faceplate at a tier: the sum of its strips.
 fn machineWidth(ui: *const Ui, sz: ctl.Size) i32 {
-    const cw = ctl.knobCell(sz)[0] + 4;
+    const cw = ctl.knobCell(sz, true)[0] + 4;
     return (ctl.listCell(ui, &SM24_OCTS)[0] + cw + 6) + cw * 2 + (ctl.sliderWidth(.slider) * 4 + 4);
 }
 
 /// Natural height at a tier: title strip, strip header, two knob rows,
 /// the bottom seam.
 fn machineHeight(sz: ctl.Size) i32 {
-    return TITLE_H + STRIP_HEAD + 2 * ctl.knobCell(sz)[1] + 1;
+    return TITLE_H + STRIP_HEAD + 2 * ctl.knobCell(sz, true)[1] + 1;
 }
 
 /// Largest tier whose natural height fits `h`, or null (collapsed).
@@ -413,7 +413,7 @@ fn machine(ui: *Ui, r: Rect, st: *State) void {
     ctl.titleStrip(ui, plate.cutTop(TITLE_H), "SM-24 MONO", presets[st.preset]);
     const sz = tierFor(r.h) orelse return;
     var body = plate;
-    const cell = ctl.knobCell(sz);
+    const cell = ctl.knobCell(sz, true);
     const cw = cell[0] + 4;
     // VCO
     var vco = ctl.strip(ui, body.cutLeft(ctl.listCell(ui, &SM24_OCTS)[0] + cw + 6), "VCO");
@@ -449,7 +449,7 @@ fn delay(ui: *Ui, r: Rect, st: *State) void {
     ctl.titleStrip(ui, plate.cutTop(TITLE_H), "DELAY", "TAPE ECHO");
     if (tierFor(r.h) == null) return;
     var body = ctl.strip(ui, plate, "");
-    const cell = ctl.knobCell(.m);
+    const cell = ctl.knobCell(.m, true);
     var row = body.cutTop(cell[1]);
     _ = ctl.knob(ui, row.cutLeft(cell[0] + 4), "time", &st.d_time, .{ .label = "TIME" });
     _ = ctl.knob(ui, row.cutLeft(cell[0] + 4), "fb", &st.d_fb, .{ .label = "FEEDBK" });
