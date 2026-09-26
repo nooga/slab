@@ -244,6 +244,7 @@ pub const SliderOpts = struct {
     label: []const u8 = "",
     readout: ?[]const u8 = null,
     show_readout: bool = true,
+    /// Scale ticks along the slot; 0 = none (slider inside a toolbar).
     ticks: u8 = 11,
     mod: ?f32 = null,
     disabled: bool = false,
@@ -296,7 +297,7 @@ pub fn slider(ui: *Ui, r: Rect, key: anytype, v: *f32, o: SliderOpts) bool {
         const bot = top + travel;
         // Ticks either side of the slot.
         const n: i32 = @max(o.ticks, 2);
-        var i: i32 = 0;
+        var i: i32 = if (o.ticks == 0) n else 0;
         while (i < n) : (i += 1) {
             const ty = top + @divFloor(i * travel, n - 1);
             const centre = o.bipolar and i * 2 == n - 1;
@@ -318,7 +319,7 @@ pub fn slider(ui: *Ui, r: Rect, key: anytype, v: *f32, o: SliderOpts) bool {
         const cy = area.y + @divFloor(area.h, 2);
         const left = area.x + half;
         const n: i32 = @max(o.ticks, 2);
-        var i: i32 = 0;
+        var i: i32 = if (o.ticks == 0) n else 0;
         while (i < n) : (i += 1) {
             const tx = left + @divFloor(i * travel, n - 1);
             const centre = o.bipolar and i * 2 == n - 1;

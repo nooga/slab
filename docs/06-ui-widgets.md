@@ -512,7 +512,9 @@ the grid is quiet.
   highlight, amber outline when selected. Velocity lane below: a 3px stem
   per note with a lit cap.
 - **Pane titles** (clip editor, machine bay) are 20px faceplates with the
-  same 3px colour bar and the name in bold body type.
+  same 3px colour bar and the name in bold body type. The clip editor's
+  head is a flush toolbar: DRAW latch, title (engraved NOTES/AUDIO + clip
+  name), key/scale tile and swing, collapse and close.
 
 ## App layout (current)
 

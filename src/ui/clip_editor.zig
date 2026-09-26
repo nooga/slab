@@ -22,8 +22,13 @@
 
 const std = @import("std");
 const c = @import("../c.zig");
-const theme = @import("theme.zig");
 const widgets = @import("widgets.zig");
+const bridge = @import("bridge.zig");
+const ui_core = @import("core.zig");
+const ui_style = @import("style.zig");
+const ctl = @import("controls.zig");
+const Ui = ui_core.Ui;
+const Rect = ui_core.Rect;
 const snap_mod = @import("snap.zig");
 const track_mod = @import("../track.zig");
 const machine_mod = @import("../machine.zig");
@@ -107,16 +112,16 @@ fn snapPitchToScale(pitch: u8) u8 {
     return pitch;
 }
 fn keyboardW() f32 {
-    return theme.size(28);
+    return 32;
 }
 fn rulerH() f32 {
-    return theme.size(14);
+    return 16;
 }
 const MIN_NOTE_BEATS: f64 = 0.25;
 const MIN_FINE_NOTE_BEATS: f64 = 0.0625;
 const DEFAULT_NOTE_BEATS: f64 = 0.5;
 fn resizeEdgeW() f32 {
-    return theme.fine(4);
+    return 4;
 }
 const BOX_MIN_DRAG: f32 = 3;
 const PX_PER_BEAT_MAX: f32 = 96;
@@ -141,10 +146,10 @@ var cur_clip_start: f64 = 0;
 var last_clip_key: u64 = 0; // to detect clip switch → clear selection
 
 fn overviewH() f32 {
-    return theme.size(22);
+    return 16;
 }
 fn velocityLaneH() f32 {
-    return theme.size(50);
+    return 48;
 }
 
 // Draw-mode in-progress note.
@@ -186,7 +191,7 @@ var overview_drag_offset: f32 = 0; // mouse→viewport-left offset at drag start
 // near the right edge, fades out ~1.5 s after activity ends.
 var last_scroll_time: f64 = 0;
 fn scrollbarW() f32 {
-    return theme.fine(6);
+    return 6;
 }
 const SCROLLBAR_HOVER_RANGE: f32 = 28;
 const SCROLLBAR_FADE_VISIBLE: f64 = 0.9;
@@ -424,21 +429,61 @@ pub fn snapSelectedToScale(tracks: []track_mod.Track, selected: ?ClipRef) bool {
 
 const KEYSCALE_MENU_KEY: u64 = 0x5CA1_E5E1_EC70_0001;
 
-const HeaderToolClick = struct { fwd: bool = false, back: bool = false };
+// ── Pane head (shared with the audio clip editor) ────────────────────
 
-fn headerCell(rect_: c.rl.Rectangle, text: [*:0]const u8, m: widgets.Mouse) HeaderToolClick {
-    const hov = widgets.contains(rect_, m.x, m.y) and !widgets.hasActiveDrag();
-    const fill = if (hov) theme.slab_hi else theme.slab_fill;
-    widgets.bevelRaised(rect_, fill, theme.slab_hi, theme.slab_lo);
-    const fs = theme.fsTiny();
-    const tw = widgets.measureTextF(text, fs);
-    widgets.drawLabelF(text, rect_.x + (rect_.width - tw) / 2, rect_.y + (rect_.height - fs) / 2 - 1, fs, theme.text_fg);
-    return .{ .fwd = hov and m.left_released, .back = hov and m.right_pressed };
+pub const HEAD_H: i32 = 20;
+
+pub const Head = struct {
+    body: Rect,
+    /// Title tile (also the rename field's anchor).
+    title: Rect,
+    /// Room cut for the caller's tools, right of the title; empty when the
+    /// bar is too narrow to keep the title legible.
+    tools: Rect = .{},
+    minimize: bool = false,
+    close: bool = false,
+};
+
+/// Editor pane head: one 20px toolbar of flush tiles — optional DRAW latch,
+/// the title (track-colour bar, engraved kind, clip name), the caller's
+/// tools, collapse and close.
+pub fn paneHead(ui: *Ui, r: Rect, kind: []const u8, name: []const u8, color: ?ui_style.Color, draw_mode: ?*bool, tools_w: i32, m: widgets.Mouse) Head {
+    var rest = r;
+    var bar = rest.cutTop(HEAD_H);
+    var out = Head{ .body = rest, .title = .{} };
+    const close_r = bar.cutRight(18);
+    out.close = ctl.button(ui, close_r, "close", null, .{ .label = "\u{D7}", .flush = true });
+    bridge.tip(close_r, "Close panel", m);
+    const min_r = bar.cutRight(18);
+    out.minimize = ctl.button(ui, min_r, "min", null, .{ .label = "-", .flush = true });
+    bridge.tip(min_r, "Collapse panel", m);
+    if (draw_mode) |dm| {
+        const dr = bar.cutLeft(52);
+        _ = ctl.button(ui, dr, "draw", dm, .{ .kind = .latch, .label = "DRAW", .led = ui_style.accent, .flush = true });
+        bridge.tip(dr, if (dm.*) "Draw tool: click to switch to select" else "Select tool: click to switch to draw", m);
+    }
+    if (tools_w > 0 and bar.w >= tools_w + 96) out.tools = bar.cutRight(tools_w);
+    out.title = bar;
+    var body = ui.plate(bar, .{});
+    if (color) |col| ui.rect(body.cutLeft(3), col);
+    const kw = ui.engraved(&ui.fonts.legend, body.x + 4, body.y + @divFloor(body.h - 12, 2), kind, ui_style.text_mute);
+    _ = body.cutLeft(4 + kw + 8);
+    ui.textIn(&ui.fonts.body_bold, body, name, ui_style.text_dim, .left, true);
+    return out;
 }
 
+/// Empty editor body: flat glass with a centred engraved note.
+pub fn emptyBody(ui: *Ui, r: Rect, msg: []const u8) void {
+    ui.rect(r, ui_style.pane);
+    ui.textIn(&ui.fonts.legend, r, msg, ui_style.text_mute, .center, false);
+}
+
+const TOOLS_W: i32 = 196;
+const KS_W: i32 = 92;
+
 // One combined "C Major" picker (root → scale submenu sets both) + a swing
-// fader, laid into the right end of the header title bar.
-fn drawHeaderTools(title_rect: c.rl.Rectangle, m: widgets.Mouse) void {
+// fader, flush tiles at the right end of the head.
+fn drawHeaderTools(ui: *Ui, tools: Rect, m: widgets.Mouse) void {
     // Key/scale picker menu (modal) — ticked unconditionally so it stays live
     // even if the strip is hidden by a narrow header. Top level is the 12
     // roots (each a submenu); a root expanded shows the scales. Clicking a
@@ -456,50 +501,41 @@ fn drawHeaderTools(title_rect: c.rl.Rectangle, m: widgets.Mouse) void {
             }
         }
     }
+    if (tools.empty()) return;
 
-    const fs = theme.fsTiny();
-    const gap = theme.size(3);
-    const h = title_rect.height - 4;
-    const cy = title_rect.y + 2;
-    const ks_w = theme.size(92);
-    const sw_lbl_w = widgets.measureTextF("SW", fs);
-    const sw_fader_w = theme.size(48);
-    const val_w = theme.size(26);
-    const total = ks_w + sw_lbl_w + sw_fader_w + val_w + gap * 3;
-    // Keep the title legible: only show the tools when there's room beside it.
-    if (title_rect.width < total + theme.size(56)) return;
-    var x = title_rect.x + title_rect.width - total - theme.size(4);
-
+    var t = tools;
     {
-        var buf: [24:0]u8 = undefined;
+        var buf: [24]u8 = undefined;
+        const root = std.mem.span(ROOT_NAMES[key_root % 12]);
         const label = if (scale_idx == 0)
-            (std.fmt.bufPrintZ(&buf, "{s}", .{ROOT_NAMES[key_root % 12]}) catch "C")
+            root
         else
-            (std.fmt.bufPrintZ(&buf, "{s} {s}", .{ ROOT_NAMES[key_root % 12], SCALES[scale_idx].name }) catch "C");
-        const cell = widgets.rect(x, cy, ks_w, h);
-        const click = headerCell(cell, label.ptr, m);
-        if (click.fwd and !widgets.menuOpen(KEYSCALE_MENU_KEY)) {
-            widgets.openMenuAt(KEYSCALE_MENU_KEY, cell.x, cell.y + cell.height);
+            (std.fmt.bufPrint(&buf, "{s} {s}", .{ root, std.mem.span(SCALES[scale_idx].name) }) catch root);
+        const ks_r = t.cutLeft(KS_W);
+        const open = widgets.menuOpen(KEYSCALE_MENU_KEY);
+        if (ctl.button(ui, ks_r, "keyscale", null, .{ .label = label, .flush = true }) and !open) {
+            bridge.openMenuBelow(KEYSCALE_MENU_KEY, ks_r);
         }
-        widgets.tooltip(cell, "Key & scale — pick a root, then a scale", m);
-        x += ks_w + gap;
+        bridge.tip(ks_r, "Key & scale: pick a root, then a scale", m);
     }
     {
-        widgets.drawLabelF("SW", x, cy + (h - fs) / 2 - 1, fs, theme.text_dim);
-        x += sw_lbl_w + gap;
-        const fr = widgets.rect(x, cy + 1, sw_fader_w, h - 2);
-        var v: f32 = swing;
-        if (widgets.hFader(fr, &v, m)) swing = v;
-        widgets.tooltip(fr, "Swing — shifts off-beats on the grid, draw, and Quantize", m);
-        x += sw_fader_w + gap;
-        var buf: [8:0]u8 = undefined;
+        var body = ui.plate(t, .{});
+        const lbl = body.cutLeft(18);
+        ui.textIn(&ui.fonts.legend, lbl, "SW", ui_style.text_dim, .center, true);
+        var buf: [8]u8 = undefined;
         const pct: i32 = @intFromFloat(@round(swing * 100));
-        const s = std.fmt.bufPrintZ(&buf, "{d}%", .{pct}) catch "0%";
-        widgets.drawLabelF(s.ptr, x, cy + (h - fs) / 2 - 1, fs, theme.text_fg);
+        const s = std.fmt.bufPrint(&buf, "{d}%", .{pct}) catch "0%";
+        ctl.display(ui, body.cutRight(4 * ctl.CELL_W + 4).insetXY(0, @divFloor(body.h - ctl.displayHeight(false), 2)), s, .{ .align_ = .right });
+        _ = body.cutRight(2);
+        const fr = body.insetXY(0, @divFloor(body.h - 14, 2));
+        var v: f32 = swing;
+        if (ctl.slider(ui, fr, "swing", &v, .{ .kind = .mini, .horizontal = true, .show_readout = false, .ticks = 0 })) swing = v;
+        bridge.tip(fr, "Swing: shifts off-beats on the grid, draw, and Quantize", m);
     }
 }
 
 pub fn draw(
+    ui: *Ui,
     r: c.rl.Rectangle,
     tracks: []track_mod.Track,
     alloc: std.mem.Allocator,
@@ -510,42 +546,37 @@ pub fn draw(
     m: widgets.Mouse,
 ) Result {
     cur_meter = meter_map;
-    c.rl.DrawRectangleRec(r, theme.pane_bg);
+    ui.pushId("clip-editor");
+    defer ui.popId();
 
-    const header = widgets.rect(r.x, r.y, r.width, theme.paneHeaderH());
-    const res = widgets.paneHeader(header, .{
-        .title = clipEditorTitle(tracks, selected),
-        .has_close = true,
-        .left_tool = .pencil,
-        .left_tool_active = mode == .draw,
-    }, m);
-    if (res.left_tool) {
-        mode = if (mode == .draw) .select else .draw;
+    const clip_opt = resolveClip(tracks, selected);
+    var draw_on = mode == .draw;
+    const name = if (clip_opt) |res| res.clip.name() else "";
+    const color: ?ui_style.Color = if (clip_opt) |res| ui_style.nearestTrack(.{ .r = res.color.r, .g = res.color.g, .b = res.color.b }) else null;
+    const head = paneHead(ui, bridge.fromRl(r), "NOTES", name, color, if (clip_opt != null) &draw_on else null, if (clip_opt != null) TOOLS_W else 0, m);
+    if (draw_on != (mode == .draw)) {
+        mode = if (draw_on) .draw else .select;
         cancelAllDrags();
     }
 
-    const body = widgets.rect(r.x + 1, r.y + theme.paneHeaderH() + 1, r.width - 2, r.height - theme.paneHeaderH() - 2);
-
-    const clip_opt = resolveClip(tracks, selected);
-    if (clip_opt == null) {
-        widgets.drawLabelF("no clip selected", body.x + 6, body.y + 6, theme.fsBody(), theme.text_mute);
-        return .{ .minimize = res.minimize, .close = res.close };
-    }
-    const resolved = clip_opt.?;
+    const resolved = clip_opt orelse {
+        emptyBody(ui, head.body, "NO CLIP SELECTED");
+        return .{ .minimize = head.minimize, .close = head.close };
+    };
 
     note_map = resolved.note_labels;
-    if (res.title_rect) |tr| drawHeaderTools(tr, m);
+    drawHeaderTools(ui, head.tools, m);
     maybeResetOnClipChange(selected, resolved.clip);
-    const pres = drawPianoRoll(body, resolved.clip, resolved.color, alloc, edit_snap, can_paste_notes, m);
+    const pres = drawPianoRoll(ui, bridge.toRl(head.body), resolved.clip, resolved.color, alloc, edit_snap, can_paste_notes, m);
 
     return .{
-        .minimize = res.minimize,
-        .close = res.close,
+        .minimize = head.minimize,
+        .close = head.close,
         .audition_pitch = pres.audition_pitch,
         .command = pres.command,
         .command_beat = pres.command_beat,
         .command_pitch = pres.command_pitch,
-        .rename_rect = if (selected != null) res.title_rect else null,
+        .rename_rect = bridge.toRl(head.title),
     };
 }
 
@@ -592,26 +623,6 @@ fn cancelAllDrags() void {
     widgets.cancelDrag();
 }
 
-// ── Title ─────────────────────────────────────────────────────────────
-
-fn clipEditorTitle(tracks: []track_mod.Track, selected: ?ClipRef) [*:0]const u8 {
-    const S = struct {
-        var buf: [96:0]u8 = undefined;
-    };
-    const resolved = resolveClip(tracks, selected) orelse return "CLIP";
-    const cname = resolved.clip.name();
-    const n = @min(cname.len, 80);
-    const prefix = "CLIP — ";
-    var i: usize = 0;
-    while (i < prefix.len) : (i += 1) S.buf[i] = prefix[i];
-    var j: usize = 0;
-    while (j < n) : ({
-        i += 1;
-        j += 1;
-    }) S.buf[i] = cname[j];
-    S.buf[i] = 0;
-    return @ptrCast(&S.buf[0]);
-}
 
 // ── Piano roll draw + input ──────────────────────────────────────────
 
@@ -623,72 +634,65 @@ const PianoRollResult = struct {
 };
 
 fn drawPianoRoll(
+    ui: *Ui,
     r: c.rl.Rectangle,
     clip: *Clip,
-    track_color: c.rl.Color,
+    track_color_rl: c.rl.Color,
     alloc: std.mem.Allocator,
     edit_snap: snap_mod.Setting,
     can_paste_notes: bool,
     m: widgets.Mouse,
 ) PianoRollResult {
-    // Overview strip, ruler, keyboard, grid — stacked vertically.
+    const track_color = ui_style.nearestTrack(.{ .r = track_color_rl.r, .g = track_color_rl.g, .b = track_color_rl.b });
+    // Overview strip, ruler, keyboard + grid, velocity lane — stacked.
     const overview_rect = widgets.rect(r.x, r.y, r.width, overviewH());
     const ruler_rect = widgets.rect(r.x, r.y + overviewH(), r.width, rulerH());
-    widgets.bevelSunken(ruler_rect, theme.pane_alt, theme.slab_hi, theme.slab_lo);
 
     const grid_top = ruler_rect.y + rulerH();
-    const vel_h = @min(velocityLaneH(), @max(theme.size(28), r.height * 0.22));
-    const grid_h = @max(theme.size(48), r.height - overviewH() - rulerH() - vel_h - 1);
+    const vel_h = @round(@min(velocityLaneH(), @max(28, r.height * 0.22)));
+    const grid_h = @max(48, r.height - overviewH() - rulerH() - vel_h);
     const kbd_rect = widgets.rect(r.x, grid_top, keyboardW(), grid_h);
     const grid_rect = widgets.rect(r.x + keyboardW(), grid_top, r.width - keyboardW(), grid_h);
-    const vel_rect = widgets.rect(grid_rect.x, grid_rect.y + grid_rect.height + 1, grid_rect.width, vel_h);
+    const vel_rect = widgets.rect(grid_rect.x, grid_rect.y + grid_rect.height, grid_rect.width, vel_h);
 
     cur_clip_start = clip.start_beat;
     initScrollIfNeeded(grid_rect, clip.*);
     handleWheel(grid_rect, clip.*, m);
     clampScroll(grid_rect, clip.*);
 
-    drawRuler(ruler_rect, grid_rect, edit_snap);
-    drawKeyboard(kbd_rect);
+    drawRuler(ui, ruler_rect, grid_rect, edit_snap);
+    drawKeyboard(ui, kbd_rect);
 
-    // Everything that scrolls must be clipped to the grid viewport —
-    // otherwise notes and draw-previews bleed into the keyboard and
-    // the adjacent panes.
-    c.rl.BeginScissorMode(
-        @intFromFloat(grid_rect.x),
-        @intFromFloat(grid_rect.y),
-        @intFromFloat(grid_rect.width),
-        @intFromFloat(grid_rect.height),
-    );
-    drawGrid(grid_rect, edit_snap);
-    drawExistingNotes(grid_rect, clip.*, track_color);
-    drawClipEndOverlay(grid_rect, clip.*);
+    // Everything that scrolls is clipped to the grid viewport so notes and
+    // draw-previews never bleed into the keyboard or the adjacent panes.
+    ui.clip(bridge.fromRl(grid_rect));
+    drawGrid(ui, grid_rect, edit_snap);
+    drawExistingNotes(ui, grid_rect, clip.*, track_color);
+    drawClipEndOverlay(ui, grid_rect, clip.*);
 
     if (draw_active) {
         const start = @min(draw_start_beat, draw_current_beat);
         const end = @max(draw_start_beat, draw_current_beat);
         const len = @max(end - start, minNoteBeats(edit_snap));
-        const nr = noteRect(grid_rect, .{
+        const nr = frectRl(noteRect(grid_rect, .{
             .pitch = draw_pitch,
             .start_beat = start,
             .length_beats = len,
-        });
-        c.rl.DrawRectangleRec(nr, lighten(track_color, 1.25));
-        c.rl.DrawRectangleLinesEx(nr, 1, theme.text_fg);
+        }));
+        ui.rect(nr, track_color.mix(ui_style.text, 0.3));
+        ui.bevel(nr, ui_style.text, ui_style.text);
     }
     if (box_active) {
-        drawBoxSelect(grid_rect, m);
+        drawBoxSelect(ui, grid_rect, m);
     }
-    c.rl.EndScissorMode();
+    ui.unclip();
 
-    // Lazy vertical scrollbar (after scissor so it overlays grid).
-    drawAndHandleScrollbar(grid_rect, m);
+    // Lazy vertical scrollbar (over the grid).
+    drawAndHandleScrollbar(ui, grid_rect, m);
     const velocity_consumed = handleVelocityLane(vel_rect, grid_rect, clip, m);
-    drawVelocityLane(vel_rect, grid_rect, clip.*, track_color);
+    drawVelocityLane(ui, widgets.rect(r.x, vel_rect.y, keyboardW(), vel_h), vel_rect, grid_rect, clip.*, track_color);
 
-    // Overview is drawn AFTER the scissor block so its contents and
-    // viewport-window outline aren't clipped.
-    drawOverview(overview_rect, grid_rect, clip.*, track_color, m);
+    drawOverview(ui, overview_rect, grid_rect, clip.*, track_color, m);
 
     var result = PianoRollResult{ .audition_pitch = if (velocity_consumed) null else handleInput(grid_rect, clip, alloc, edit_snap, m) };
     _ = widgets.openContextMenu(PR_CONTEXT_KEY, grid_rect, m);
@@ -842,9 +846,36 @@ fn ceFirstLocalBeat() f64 {
     return @as(f64, @floatCast(scroll_x)) / @as(f64, @floatCast(px_per_beat));
 }
 
-fn drawRuler(ruler: c.rl.Rectangle, grid: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
+
+
+
+
+
+fn ipx(v: f32) i32 {
+    return @intFromFloat(@floor(v));
+}
+
+fn frect(x: f32, y: f32, w: f32, h: f32) Rect {
+    const x0 = ipx(x);
+    const y0 = ipx(y);
+    return Rect.xywh(x0, y0, ipx(x + w) - x0, ipx(y + h) - y0);
+}
+
+fn frectRl(r: c.rl.Rectangle) Rect {
+    return frect(r.x, r.y, r.width, r.height);
+}
+
+/// Ruler faceplate: snap sub-ticks, meter-driven beat/bar ticks and bar
+/// numbers, aligned to the grid below (the part over the keyboard is blank
+/// plate).
+fn drawRuler(ui: *Ui, ruler: c.rl.Rectangle, grid: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
+    const rr = bridge.fromRl(ruler);
+    ui.clip(rr);
+    defer ui.unclip();
+    const body = ui.plate(rr, .{});
     const x0 = grid.x;
     const right = grid.x + grid.width - 2;
+    const bot = body.bottom();
 
     // Fine sub-grid (uniform snap guide).
     const grid_step = snap_mod.visualStep(edit_snap, px_per_beat);
@@ -852,7 +883,7 @@ fn drawRuler(ruler: c.rl.Rectangle, grid: c.rl.Rectangle, edit_snap: snap_mod.Se
     while (true) {
         const bx = ceBeatToX(x0, beat);
         if (bx > right) break;
-        if (bx >= grid.x) c.rl.DrawRectangle(@intFromFloat(bx), @intFromFloat(ruler.y + rulerH() - 5), 1, 3, theme.grid_sub);
+        if (bx >= grid.x) ui.rect(Rect.xywh(ipx(bx), bot - 2, 1, 2), ui_style.face_lo);
         beat += grid_step;
     }
 
@@ -871,109 +902,96 @@ fn drawRuler(ruler: c.rl.Rectangle, grid: c.rl.Rectangle, edit_snap: snap_mod.Se
             if (x > right) break;
             if (x < grid.x) continue;
             const acc = seg.accentAt(k);
-            const tick_h: f32 = switch (acc) {
-                .downbeat => rulerH() - 4,
-                .group => @round((rulerH() - 4) * 0.55),
-                .weak => 5,
+            const tick_h: i32 = switch (acc) {
+                .downbeat => 7,
+                .group => 5,
+                .weak => 3,
             };
-            c.rl.DrawRectangle(@intFromFloat(x), @intFromFloat(ruler.y + rulerH() - tick_h - 2), 1, @intFromFloat(tick_h), if (acc == .weak) theme.grid_beat else theme.grid_bar);
+            ui.rect(Rect.xywh(ipx(x), bot - tick_h, 1, tick_h), if (acc == .weak) ui_style.text_mute else ui_style.text_dim);
         }
-        if (bsx >= grid.x - 20) {
+        if (bsx >= grid.x - 20 and bsx + 3 >= grid.x) {
             var buf: [8]u8 = undefined;
-            const s = std.fmt.bufPrintZ(&buf, "{d}", .{bar + 1}) catch "?";
-            widgets.drawLabelF(s.ptr, bsx + 2, ruler.y + 1, theme.fsTiny(), theme.text_dim);
+            const s = std.fmt.bufPrint(&buf, "{d}", .{bar + 1}) catch "?";
+            _ = ui.engraved(&ui.fonts.legend, ipx(bsx) + 3, body.y, s, ui_style.text_dim);
         }
         bar += 1;
     }
 }
 
-fn drawKeyboard(r: c.rl.Rectangle) void {
-    c.rl.DrawRectangleRec(r, theme.pane_alt);
-    c.rl.BeginScissorMode(
-        @intFromFloat(r.x),
-        @intFromFloat(r.y),
-        @intFromFloat(r.width),
-        @intFromFloat(r.height),
-    );
-    defer c.rl.EndScissorMode();
+/// Key column (hardware): white bed with black-key bars and octave labels
+/// on the Cs; with a drum note map, labelled lanes on faceplate and unmapped
+/// rows dark.
+fn drawKeyboard(ui: *Ui, r: c.rl.Rectangle) void {
+    const kr = bridge.fromRl(r);
+    ui.clip(kr);
+    defer ui.unclip();
+    const drum = note_map.len > 0;
+    ui.rect(kr, if (drum) ui_style.face_lo else ui_style.key_white);
+    const bw = @divFloor(kr.w * 62, 100);
+    const seam = ui_style.key_white.shade(-50);
 
     var pitch: u8 = KEY_HI;
     while (true) : (pitch -%= 1) {
-        const y = pitchTopY(r, pitch);
-        if (y + row_h < r.y) {
-            if (pitch == KEY_LO) break;
-            continue;
-        }
-        if (y > r.y + r.height) {
-            if (pitch == KEY_LO) break;
-            continue;
-        }
-        const lane_label = if (note_map.len > 0) mapLabel(pitch) else null;
-        const fill = if (note_map.len > 0)
-            (if (lane_label != null) theme.slab_fill else theme.slab_lo)
-        else if (isBlackKey(pitch)) theme.slab_lo else theme.slab_fill;
-        c.rl.DrawRectangle(
-            @intFromFloat(r.x),
-            @intFromFloat(y),
-            @intFromFloat(r.width),
-            @intFromFloat(row_h),
-            fill,
-        );
-        c.rl.DrawRectangle(
-            @intFromFloat(r.x),
-            @intFromFloat(y + row_h - 1),
-            @intFromFloat(r.width),
-            1,
-            theme.grid_bar,
-        );
-        if (lane_label) |label| {
-            widgets.drawLabelF(label, r.x + 3, y + (row_h - theme.fsTiny()) / 2.0, theme.fsTiny(), theme.text_fg);
-        } else if (note_map.len == 0 and pitch % 12 == 0) {
-            var buf: [8]u8 = undefined;
-            const octave = @as(i32, @intCast(pitch / 12)) - 1;
-            const s = std.fmt.bufPrintZ(&buf, "C{d}", .{octave}) catch "C";
-            widgets.drawLabelF(s.ptr, r.x + 3, y, theme.fsTiny(), theme.text_fg);
+        const fy = pitchTopY(r, pitch);
+        if (fy + row_h >= r.y and fy <= r.y + r.height) {
+            const y = ipx(fy);
+            const h = ipx(fy + row_h) - y;
+            if (drum) {
+                if (mapLabel(pitch)) |label| {
+                    const row = Rect.xywh(kr.x, y, kr.w, h);
+                    ui.rect(row, ui_style.face);
+                    ui.rect(Rect.xywh(kr.x, y + h - 1, kr.w, 1), ui_style.edge);
+                    ui.textIn(&ui.fonts.legend, row.insetXY(3, 0), std.mem.span(label), ui_style.text_dim, .left, true);
+                } else {
+                    ui.rect(Rect.xywh(kr.x, y + h - 1, kr.w, 1), ui_style.edge);
+                }
+            } else if (isBlackKey(pitch)) {
+                ui.rect(Rect.xywh(kr.x, y, bw, h), ui_style.key_black);
+                ui.rect(Rect.xywh(kr.x, y, bw, 1), ui_style.key_black.shade(30));
+                // White-key seam behind the black key's middle.
+                ui.rect(Rect.xywh(kr.x + bw, y + @divFloor(h, 2), kr.w - bw, 1), seam);
+            } else {
+                const n = pitch % 12;
+                // Adjacent white keys (E|F, B|C) meet on a row boundary.
+                if (n == 4 or n == 11) ui.rect(Rect.xywh(kr.x, y, kr.w, 1), seam);
+                if (n == 0) {
+                    ui.rect(Rect.xywh(kr.x, y + h - 1, kr.w, 1), ui_style.key_white.shade(-70));
+                    if (h >= 8) {
+                        var buf: [8]u8 = undefined;
+                        const octave = @as(i32, @intCast(pitch / 12)) - 1;
+                        const s = std.fmt.bufPrint(&buf, "C{d}", .{octave}) catch "C";
+                        ui.textIn(&ui.fonts.legend, Rect.xywh(kr.x, y, kr.w - 2, h), s, ui_style.text_mute.shade(-30), .right, false);
+                    }
+                }
+            }
         }
         if (pitch == KEY_LO) break;
     }
+    // Seam against the grid.
+    ui.rect(Rect.xywh(kr.right() - 1, kr.y, 1, kr.h), ui_style.edge);
 }
 
-fn drawGrid(r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
-    c.rl.DrawRectangleRec(r, theme.pane_bg);
+/// Note grid (flat glass): lit rows for white keys / in-scale / mapped
+/// pitches, root rows a step brighter, octave lines under the Cs, then the
+/// swung snap sub-grid and the meter's beat and bar lines.
+fn drawGrid(ui: *Ui, r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
+    const gr = bridge.fromRl(r);
+    ui.rect(gr, ui_style.pane);
 
-    // Row shading matching black/white keys.
     var pitch: u8 = KEY_HI;
     while (true) : (pitch -%= 1) {
-        const y = pitchTopY(r, pitch);
-        if (y + row_h >= r.y and y <= r.y + r.height) {
+        const fy = pitchTopY(r, pitch);
+        if (fy + row_h >= r.y and fy <= r.y + r.height) {
+            const y = ipx(fy);
+            const h = ipx(fy + row_h) - y;
             const lit = if (note_map.len > 0)
                 mapLabel(pitch) != null
             else if (scaleActive())
                 inScale(pitch)
             else
                 !isBlackKey(pitch);
-            if (lit) {
-                // Root rows get a brighter shade so the key reads at a glance.
-                const row_col = if (isRootPitch(pitch)) theme.grid_beat else theme.grid_row;
-                c.rl.DrawRectangle(
-                    @intFromFloat(r.x),
-                    @intFromFloat(y),
-                    @intFromFloat(r.width),
-                    @intFromFloat(row_h),
-                    row_col,
-                );
-            }
-            // Octave separator: a brighter line at the bottom of each C row
-            // (the C↓B boundary) so octaves are countable across the grid.
-            if (pitch % 12 == 0) {
-                c.rl.DrawRectangle(
-                    @intFromFloat(r.x),
-                    @intFromFloat(y + row_h - 1),
-                    @intFromFloat(r.width),
-                    1,
-                    theme.grid_beat,
-                );
-            }
+            if (lit) ui.rect(Rect.xywh(gr.x, y, gr.w, h), if (isRootPitch(pitch)) ui_style.pane_alt.shade(8) else ui_style.pane_alt);
+            if (pitch % 12 == 0) ui.rect(Rect.xywh(gr.x, y + h - 1, gr.w, 1), ui_style.grid_beat);
         }
         if (pitch == KEY_LO) break;
     }
@@ -985,10 +1003,9 @@ fn drawGrid(r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
     const grid_step = snap_mod.visualStep(edit_snap, px_per_beat);
     var beat: f64 = 0;
     while (true) {
-        const draw_beat = applySwing(beat, edit_snap);
-        const bx = ceBeatToX(r.x, draw_beat);
+        const bx = ceBeatToX(r.x, applySwing(beat, edit_snap));
         if (bx > right) break;
-        if (bx >= r.x) c.rl.DrawRectangle(@intFromFloat(bx), @intFromFloat(r.y), 1, @intFromFloat(r.height), theme.grid_sub);
+        if (bx >= r.x) ui.rect(Rect.xywh(ipx(bx), gr.y, 1, gr.h), ui_style.grid_sub);
         beat += grid_step;
     }
 
@@ -1005,67 +1022,71 @@ fn drawGrid(r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
             const x = ceBeatToX(r.x, abs_start + @as(f64, @floatFromInt(k)) * unit - cur_clip_start);
             if (x > right) break;
             if (x < r.x) continue;
-            c.rl.DrawRectangle(@intFromFloat(x), @intFromFloat(r.y), 1, @intFromFloat(r.height), if (seg.accentAt(k) == .weak) theme.grid_beat else theme.grid_bar);
+            ui.rect(Rect.xywh(ipx(x), gr.y, 1, gr.h), if (seg.accentAt(k) == .weak) ui_style.grid_beat else ui_style.grid_bar);
         }
         bar += 1;
     }
 }
 
-fn drawClipEndOverlay(r: c.rl.Rectangle, clip: Clip) void {
+/// Past the clip end the glass goes to chassis; the end itself is a red line.
+fn drawClipEndOverlay(ui: *Ui, r: c.rl.Rectangle, clip: Clip) void {
     const end_x = r.x + @as(f32, @floatCast(clip.length_beats)) * px_per_beat - scroll_x;
-    // Dimmed overlay past the clip end (solid dark, no alpha — keeps
-    // brutalist no-gradient rule).
-    if (end_x < r.x + r.width) {
-        const x0 = @max(end_x, r.x);
-        c.rl.DrawRectangle(
-            @intFromFloat(x0),
-            @intFromFloat(r.y),
-            @intFromFloat(r.x + r.width - x0),
-            @intFromFloat(r.height),
-            theme.bg,
-        );
-        // Red end line (draw after overlay so it's on top).
-        if (end_x >= r.x and end_x < r.x + r.width) {
-            c.rl.DrawRectangle(
-                @intFromFloat(end_x),
-                @intFromFloat(r.y),
-                1,
-                @intFromFloat(r.height),
-                theme.accent_rec,
-            );
-        }
-    }
+    if (end_x >= r.x + r.width) return;
+    const x0 = @max(end_x, r.x);
+    ui.rect(frect(x0, r.y, r.x + r.width - x0, r.height), ui_style.chassis);
+    if (end_x >= r.x) ui.rect(frect(end_x, r.y, 1, r.height), ui_style.rec);
 }
 
-fn drawExistingNotes(grid: c.rl.Rectangle, clip: Clip, track_color: c.rl.Color) void {
+/// Notes: dark rim, body brightness follows velocity, a lit top line;
+/// amber outline when selected.
+fn drawExistingNotes(ui: *Ui, grid: c.rl.Rectangle, clip: Clip, col: ui_style.Color) void {
+    const rim = col.mix(ui_style.chassis, 0.55);
     for (clip.notes.items) |note| {
-        const nr = noteRect(grid, note);
-        if (nr.x + nr.width < grid.x or nr.x > grid.x + grid.width) continue;
-        if (nr.y + nr.height < grid.y or nr.y > grid.y + grid.height) continue;
-        c.rl.DrawRectangleRec(nr, track_color);
-        const edge = if (note.selected) theme.accent_sel else theme.slab_edge;
-        c.rl.DrawRectangleLinesEx(nr, 1, edge);
+        const fr = noteRect(grid, note);
+        if (fr.x + fr.width < grid.x or fr.x > grid.x + grid.width) continue;
+        if (fr.y + fr.height < grid.y or fr.y > grid.y + grid.height) continue;
+        const nr = frectRl(fr);
+        const vel = @as(f32, @floatFromInt(note.velocity)) / 127.0;
+        const fill = col.mix(ui_style.pane, 0.55 * (1 - vel));
+        ui.rect(nr, rim);
+        if (nr.w > 2 and nr.h > 2) {
+            ui.rect(nr.inset(1), fill);
+            ui.rect(Rect.xywh(nr.x + 1, nr.y + 1, nr.w - 2, 1), fill.mix(ui_style.text, 0.35));
+        }
+        if (note.selected) ui.bevel(nr, ui_style.accent, ui_style.accent);
     }
 }
 
-fn drawVelocityLane(r: c.rl.Rectangle, grid: c.rl.Rectangle, clip: Clip, track_color: c.rl.Color) void {
-    widgets.bevelSunken(r, theme.pane_alt, theme.slab_hi, theme.slab_lo);
-    widgets.drawLabelF("VEL", r.x + 4, r.y + 2, theme.fsTiny(), theme.text_mute);
+/// Velocity lane: a faceplate label tile under the keyboard, then a 3px
+/// stem per note (height = velocity) with a lit cap over flat glass;
+/// selected stems carry an amber cap.
+fn drawVelocityLane(ui: *Ui, label_r: c.rl.Rectangle, r: c.rl.Rectangle, grid: c.rl.Rectangle, clip: Clip, col: ui_style.Color) void {
+    const lr = ui.plate(bridge.fromRl(label_r), .{});
+    _ = ui.engraved(&ui.fonts.legend, lr.x + 3, lr.y + 1, "VEL", ui_style.text_dim);
+    const vr = bridge.fromRl(r);
+    ui.rect(vr, ui_style.pane);
+    ui.rect(Rect.xywh(vr.x, vr.y, vr.w, 1), ui_style.edge);
+    ui.clip(vr);
+    defer ui.unclip();
 
-    c.rl.BeginScissorMode(@intFromFloat(r.x + 1), @intFromFloat(r.y + 1), @intFromFloat(r.width - 2), @intFromFloat(r.height - 2));
-    defer c.rl.EndScissorMode();
-
-    const base_y = r.y + r.height - 4;
-    const max_h = r.height - theme.size(14);
+    const base_y = r.y + r.height - velBottomPad();
+    const max_h = base_y - (r.y + velTopPad());
+    ui.rect(frect(r.x, base_y, r.width, 1), ui_style.grid_bar);
     for (clip.notes.items) |note| {
         const nr = noteRect(grid, note);
         if (nr.x + nr.width < r.x or nr.x > r.x + r.width) continue;
         const bar_h = @max(2, (@as(f32, @floatFromInt(note.velocity)) / 127.0) * max_h);
-        const bar = widgets.rect(nr.x, base_y - bar_h, @max(nr.width, 3), bar_h);
-        const fill = if (note.selected) lighten(track_color, 1.25) else dim(track_color, 0.72);
-        c.rl.DrawRectangleRec(bar, fill);
-        c.rl.DrawRectangleLinesEx(bar, 1, if (note.selected) theme.text_fg else theme.slab_edge);
+        const stem = frect(nr.x, base_y - bar_h, 3, bar_h);
+        ui.rect(stem, if (note.selected) col else col.mix(ui_style.pane, 0.5));
+        ui.rect(Rect.xywh(stem.x, stem.y, 3, 2), if (note.selected) ui_style.accent else col);
     }
+}
+
+fn velTopPad() f32 {
+    return 6;
+}
+fn velBottomPad() f32 {
+    return 3;
 }
 
 fn handleVelocityLane(r: c.rl.Rectangle, grid: c.rl.Rectangle, clip: *Clip, m: widgets.Mouse) bool {
@@ -1100,8 +1121,8 @@ fn handleVelocityLane(r: c.rl.Rectangle, grid: c.rl.Rectangle, clip: *Clip, m: w
 }
 
 fn applyVelocityAt(r: c.rl.Rectangle, clip: *Clip, y: f32) void {
-    const top = r.y + theme.size(10);
-    const bottom = r.y + r.height - 4;
+    const top = r.y + velTopPad();
+    const bottom = r.y + r.height - velBottomPad();
     const norm = 1.0 - std.math.clamp((y - top) / @max(1, bottom - top), 0.0, 1.0);
     const velocity: u8 = @intFromFloat(std.math.clamp(@round(norm * 127.0), 1, 127));
     switch (velocity_drag_mode) {
@@ -1126,7 +1147,7 @@ fn findVelocityBarAt(r: c.rl.Rectangle, grid: c.rl.Rectangle, clip: Clip, x: f32
     return null;
 }
 
-fn drawBoxSelect(grid: c.rl.Rectangle, m: widgets.Mouse) void {
+fn drawBoxSelect(ui: *Ui, grid: c.rl.Rectangle, m: widgets.Mouse) void {
     const x0 = @min(box_start_x, m.x);
     const y0 = @min(box_start_y, m.y);
     const x1 = @max(box_start_x, m.x);
@@ -1136,11 +1157,9 @@ fn drawBoxSelect(grid: c.rl.Rectangle, m: widgets.Mouse) void {
     const cy0 = std.math.clamp(y0, grid.y, grid.y + grid.height);
     const cx1 = std.math.clamp(x1, grid.x, grid.x + grid.width);
     const cy1 = std.math.clamp(y1, grid.y, grid.y + grid.height);
-    const rr = widgets.rect(cx0, cy0, cx1 - cx0, cy1 - cy0);
-    // Semi-transparent yellow fill + solid accent border.
-    const fill = c.rl.ColorAlpha(theme.accent_hi, 0.25);
-    c.rl.DrawRectangleRec(rr, fill);
-    c.rl.DrawRectangleLinesEx(rr, 1, theme.accent_hi);
+    const rr = frect(cx0, cy0, cx1 - cx0, cy1 - cy0);
+    ui.rect(rr, ui_style.accent.alpha(40));
+    ui.bevel(rr, ui_style.accent, ui_style.accent);
 }
 
 fn pitchTopY(r: c.rl.Rectangle, pitch: u8) f32 {
@@ -1403,7 +1422,7 @@ fn updateResize(grid: c.rl.Rectangle, clip: *Clip, edit_snap: snap_mod.Setting, 
 
 // ── Vertical scrollbar (lazy) ────────────────────────────────────────
 
-fn drawAndHandleScrollbar(grid: c.rl.Rectangle, m: widgets.Mouse) void {
+fn drawAndHandleScrollbar(ui: *Ui, grid: c.rl.Rectangle, m: widgets.Mouse) void {
     const rows = @as(f32, @floatFromInt(@as(u32, KEY_HI) - @as(u32, KEY_LO) + 1));
     const content_h = rows * row_h;
     if (content_h <= grid.height) return; // nothing to scroll
@@ -1429,7 +1448,7 @@ fn drawAndHandleScrollbar(grid: c.rl.Rectangle, m: widgets.Mouse) void {
 
     const bar_x = grid.x + grid.width - scrollbarW();
     const track = widgets.rect(bar_x, grid.y, scrollbarW(), grid.height);
-    c.rl.DrawRectangleRec(track, c.rl.ColorAlpha(theme.slab_edge, alpha * 0.6));
+    ui.rect(frectRl(track), ui_style.chassis.alpha(@intFromFloat(alpha * 160)));
 
     const thumb_h = @max(16.0, (grid.height / content_h) * grid.height);
     const scroll_range = content_h - grid.height;
@@ -1438,8 +1457,8 @@ fn drawAndHandleScrollbar(grid: c.rl.Rectangle, m: widgets.Mouse) void {
     const thumb = widgets.rect(bar_x + 1, thumb_y, scrollbarW() - 2, thumb_h);
 
     const hover_thumb = widgets.contains(thumb, m.x, m.y);
-    const thumb_color = if (sb_drag or hover_thumb) theme.accent_hi else theme.slab_hi;
-    c.rl.DrawRectangleRec(thumb, c.rl.ColorAlpha(thumb_color, alpha));
+    const thumb_color = if (sb_drag or hover_thumb) ui_style.accent else ui_style.face_hi;
+    ui.rect(frectRl(thumb), thumb_color.alpha(@intFromFloat(alpha * 255)));
 
     // ── Input ─────────────────────────────────────────────────────────
     if (sb_drag) {
@@ -1477,17 +1496,17 @@ fn drawAndHandleScrollbar(grid: c.rl.Rectangle, m: widgets.Mouse) void {
 // ── Overview / minimap strip ─────────────────────────────────────────
 
 fn drawOverview(
+    ui: *Ui,
     strip: c.rl.Rectangle,
     grid: c.rl.Rectangle,
     clip: Clip,
-    track_color: c.rl.Color,
+    track_color: ui_style.Color,
     m: widgets.Mouse,
 ) void {
     if (strip.width <= 4 or strip.height <= 4 or grid.width <= 0 or grid.height <= 0) return;
 
-    widgets.bevelSunken(strip, theme.pane_bg, theme.slab_hi, theme.slab_lo);
+    _ = ui.well(bridge.fromRl(strip), ui_style.well);
     const inner = widgets.rect(strip.x + 2, strip.y + 2, strip.width - 4, strip.height - 4);
-    c.rl.DrawRectangleRec(inner, theme.pane_bg);
 
     // The strip represents the clip [0 .. length_beats] horizontally.
     // Pitch compresses into the strip's vertical span.
@@ -1502,13 +1521,7 @@ fn drawOverview(
         const n_w = @max(@as(f32, @floatCast(note.length_beats)) * px_per_beat_ov, 1.0);
         const pitch_idx: f32 = @as(f32, @floatFromInt(@as(u32, KEY_HI) - @as(u32, note.pitch)));
         const n_y = inner.y + pitch_idx * px_per_row_ov;
-        c.rl.DrawRectangle(
-            @intFromFloat(@max(n_x, inner.x)),
-            @intFromFloat(std.math.clamp(n_y, inner.y, inner.y + inner.height - 1)),
-            @intFromFloat(@min(n_w, inner.x + inner.width - n_x)),
-            1,
-            track_color,
-        );
+        ui.rect(frect(@max(n_x, inner.x), std.math.clamp(n_y, inner.y, inner.y + inner.height - 1), @min(n_w, inner.x + inner.width - n_x), 1), track_color);
     }
 
     // Viewport window — reflects grid's currently visible beat range.
@@ -1519,8 +1532,8 @@ fn drawOverview(
     const vp_x_clamped = std.math.clamp(vp_x, inner.x, inner.x + inner.width);
     const vp_right = std.math.clamp(vp_x + vp_w, inner.x, inner.x + inner.width);
     const vp = widgets.rect(vp_x_clamped, inner.y, vp_right - vp_x_clamped, inner.height);
-    c.rl.DrawRectangleRec(vp, c.rl.ColorAlpha(theme.accent_hi, 0.2));
-    c.rl.DrawRectangleLinesEx(vp, 1, theme.accent_hi);
+    ui.rect(frectRl(vp), ui_style.accent.alpha(40));
+    ui.bevel(frectRl(vp), ui_style.accent, ui_style.accent);
 
     handleOverviewInput(inner, grid, clip, m);
 }
@@ -1619,26 +1632,7 @@ fn isBlackKey(pitch: u8) bool {
     };
 }
 
-fn lighten(color: c.rl.Color, factor: f32) c.rl.Color {
-    const r: f32 = @as(f32, @floatFromInt(color.r)) * factor;
-    const g: f32 = @as(f32, @floatFromInt(color.g)) * factor;
-    const b: f32 = @as(f32, @floatFromInt(color.b)) * factor;
-    return .{
-        .r = @intFromFloat(@min(r, 255)),
-        .g = @intFromFloat(@min(g, 255)),
-        .b = @intFromFloat(@min(b, 255)),
-        .a = color.a,
-    };
-}
 
-fn dim(color: c.rl.Color, factor: f32) c.rl.Color {
-    return .{
-        .r = @intFromFloat(@as(f32, @floatFromInt(color.r)) * factor),
-        .g = @intFromFloat(@as(f32, @floatFromInt(color.g)) * factor),
-        .b = @intFromFloat(@as(f32, @floatFromInt(color.b)) * factor),
-        .a = color.a,
-    };
-}
 
 fn rectsOverlap(a: c.rl.Rectangle, b: c.rl.Rectangle) bool {
     return !(a.x + a.width < b.x or b.x + b.width < a.x or

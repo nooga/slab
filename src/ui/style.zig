@@ -103,6 +103,24 @@ pub const track = [_]Color{
     Color.hex(0xe46ab6), // pink
 };
 
+/// Track colour as drawn: any colour snaps to the nearest entry of `track`,
+/// so no track is ever amber/yellow whatever the project file says.
+pub fn nearestTrack(col: Color) Color {
+    var best = track[0];
+    var best_d: i32 = std.math.maxInt(i32);
+    for (track) |t| {
+        const dr = @as(i32, t.r) - col.r;
+        const dg = @as(i32, t.g) - col.g;
+        const db = @as(i32, t.b) - col.b;
+        const d = dr * dr * 3 + dg * dg * 4 + db * db * 2;
+        if (d < best_d) {
+            best_d = d;
+            best = t;
+        }
+    }
+    return best;
+}
+
 // ── Material strengths (docs/06 §Strengths are tokens) ───────────────
 pub const Materials = struct {
     /// Noise tile amplitude, in levels of 255 (±).

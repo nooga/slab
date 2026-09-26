@@ -1410,22 +1410,9 @@ fn drawMasterHeader(ui: *Ui, hdr_legacy: c.rl.Rectangle, master: *Track, selecte
     return ui.behaviorEx(ui.id("select"), Rect.xywh(r.x, r.y, r.w, 20), .{ .focusable = false }).pressed;
 }
 
-/// Track colour as drawn: project colours snap to the nearest colour of the
-/// track palette, so no track is ever amber/yellow (docs/06 §Palette).
+/// Track colour as drawn (docs/06 §Palette): snapped to the track palette.
 fn trackColor(col: c.rl.Color) ui_style.Color {
-    var best = ui_style.track[0];
-    var best_d: i32 = std.math.maxInt(i32);
-    for (ui_style.track) |t| {
-        const dr = @as(i32, t.r) - col.r;
-        const dg = @as(i32, t.g) - col.g;
-        const db = @as(i32, t.b) - col.b;
-        const d = dr * dr * 3 + dg * dg * 4 + db * db * 2;
-        if (d < best_d) {
-            best_d = d;
-            best = t;
-        }
-    }
-    return best;
+    return ui_style.nearestTrack(.{ .r = col.r, .g = col.g, .b = col.b });
 }
 
 fn clipNameRect(r: c.rl.Rectangle) c.rl.Rectangle {
