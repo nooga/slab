@@ -503,3 +503,66 @@ pub fn movImm64(rd: u5, val: u64) [4]u32 {
         movk(rd, @truncate(val >> 48), 48),
     };
 }
+
+// --- dsp: math and mask encodings (scalar d-registers; masks are all-ones
+// or zero 64-bit patterns, the same shape NEON .2d compares produce) ---
+
+pub fn @"fabs Dd, Dn"(d: u5, n: u5) u32 {
+    return 0x1E60C000 | @as(u32, d) | (@as(u32, n) << 5);
+}
+pub fn @"fsqrt Dd, Dn"(d: u5, n: u5) u32 {
+    return 0x1E61C000 | @as(u32, d) | (@as(u32, n) << 5);
+}
+pub fn @"fmov Dd, Dn"(d: u5, n: u5) u32 {
+    return 0x1E604000 | @as(u32, d) | (@as(u32, n) << 5);
+}
+pub fn @"fcmgt Dd, Dn, Dm"(d: u5, n: u5, m: u5) u32 {
+    return 0x7EE0E400 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
+}
+pub fn @"fcmge Dd, Dn, Dm"(d: u5, n: u5, m: u5) u32 {
+    return 0x7E60E400 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
+}
+pub fn @"fcmeq Dd, Dn, Dm"(d: u5, n: u5, m: u5) u32 {
+    return 0x5E60E400 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
+}
+pub fn @"and Vd.8B, Vn.8B, Vm.8B"(d: u5, n: u5, m: u5) u32 {
+    return 0x0E201C00 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
+}
+pub fn @"orr Vd.8B, Vn.8B, Vm.8B"(d: u5, n: u5, m: u5) u32 {
+    return 0x0EA01C00 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
+}
+pub fn @"mvn Vd.8B, Vn.8B"(d: u5, n: u5) u32 {
+    return 0x2E205800 | @as(u32, d) | (@as(u32, n) << 5);
+}
+// BSL: Vd = (Vd & Vn) | (~Vd & Vm) — Vd holds the mask on entry.
+pub fn @"bsl Vd.8B, Vn.8B, Vm.8B"(d: u5, n: u5, m: u5) u32 {
+    return 0x2E601C00 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
+}
+// FCVTMS Xd, Dn — floor to signed integer.
+pub fn @"fcvtms Xd, Dn"(d: u5, n: u5) u32 {
+    return 0x9E700000 | @as(u32, d) | (@as(u32, n) << 5);
+}
+pub fn @"lsl Xd, Xn, #52"(d: u5, n: u5) u32 {
+    return 0xD34C2C00 | @as(u32, d) | (@as(u32, n) << 5);
+}
+pub fn @"lsr Xd, Xn, #52"(d: u5, n: u5) u32 {
+    return 0xD374FC00 | @as(u32, d) | (@as(u32, n) << 5);
+}
+pub fn @"and Xd, Xn, #0x7ff"(d: u5, n: u5) u32 {
+    return 0x92402800 | @as(u32, d) | (@as(u32, n) << 5);
+}
+pub fn @"and Xd, Xn, #0xfffffffffffff"(d: u5, n: u5) u32 {
+    return 0x9240CC00 | @as(u32, d) | (@as(u32, n) << 5);
+}
+pub fn @"orr Xd, Xn, #0x3ff0000000000000"(d: u5, n: u5) u32 {
+    return 0xB24C2400 | @as(u32, d) | (@as(u32, n) << 5);
+}
+pub fn @"add Xd, Xn, #1023"(d: u5, n: u5) u32 {
+    return 0x910FFC00 | @as(u32, d) | (@as(u32, n) << 5);
+}
+pub fn @"sub Xd, Xn, #1023"(d: u5, n: u5) u32 {
+    return 0xD10FFC00 | @as(u32, d) | (@as(u32, n) << 5);
+}
+pub const COND_MI: u4 = 4;
+pub const COND_LS: u4 = 9;
+pub const COND_GE: u4 = 10;

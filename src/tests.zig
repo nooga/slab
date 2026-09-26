@@ -1270,20 +1270,41 @@ test "dsp: raw repeated call uses untagged pointer and f64 args" {
     try std.testing.expectEqual(@as(usize, 0), raw_report.pop_count);
 }
 
-test "dsp: branchless float select and wrap support oscillator helpers" {
+test "dsp: oscillator and envelope helpers written in fy" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
     _ = try fy.run(
         \\dsp: choose-lt fsel-lt ;
-        \\dsp: wrap fwrap01 ;
-        \\dsp: phase-advance01 f+ fwrap01 ;
-        \\dsp: cap fcapramp ;
-        \\dsp: polyblep fpolyblep ;
-        \\dsp: pulse fpulseblep ;
-        \\dsp: adsr fadsr-linear ;
-        \\dsp: adsr-cap fadsr-cap ;
+        \\dsp: wrap | x | 1.0 x  x 1.0 f-  x fsel-lt | r |  r 0.0  r 1.0 f+  r fsel-lt ;
+        \\dsp: phase-advance01 f+ wrap ;
+        \\dsp: cap | p | p 2.0 p f- f* 2.0 f* 1.0 f- ;
+        \\dsp: polyblep | phase dt -- c |
+        \\  phase dt f/ | t |
+        \\  phase dt  t t f+ t t f* f- 1.0 f-  0.0  fsel-lt | c |
+        \\  phase 1.0 f- dt f/ | u |
+        \\  1.0 dt f-  phase  u u f+ u u f* f+ 1.0 f+  c  fsel-lt ;
+        \\dsp: pulse | phase dt width -- y |
+        \\  phase width 1.0 -1.0 fsel-lt
+        \\  phase dt polyblep f+
+        \\  phase width f- | p |
+        \\  p 0.0  p 1.0 f+  p  fsel-lt  dt polyblep f- ;
+        \\dsp: adsr | time atk dec sus gate rel -- amp |
+        \\  time atk f/ 0.0 1.0 fclamp | a |
+        \\  time atk  a  1.0  time atk f- dec f/  1.0 sus f- f*  f-  fsel-lt | a |
+        \\  time atk dec f+  a  sus  fsel-lt | a |
+        \\  time gate  a  1.0 time gate f- rel f/ f- sus f*  fsel-lt | a |
+        \\  time gate rel f+  a  0.0  fsel-lt ;
+        \\dsp: adsr-cap | time atk dec sus gate rel -- amp |
+        \\  1.0 time atk f/ 0.0 1.0 fclamp f- | q | q q f* | q2 |
+        \\  1.0 q2 q2 f* f- | a |
+        \\  1.0 time atk f- dec f/ f- | q | q q f* | q2 |
+        \\  time atk  a  sus  q2 q2 f*  1.0 sus f- f*  f+  fsel-lt | a |
+        \\  time atk dec f+  a  sus  fsel-lt | a |
+        \\  1.0 time gate f- rel f/ f- | q | q q f* | q2 |
+        \\  time gate  a  sus  q2 q2 f* f*  fsel-lt | a |
+        \\  time gate rel f+  a  0.0  fsel-lt ;
     );
 
     try std.testing.expectApproxEqAbs(10.0, getFyFloat(try fy.run("0.25 0.5 10.0 20.0 choose-lt")), 0.000000000001);
@@ -1536,6 +1557,58 @@ test "dsp: build errors are reported, not swallowed" {
     defer fy.deinit();
     try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-err-typo | p | 1.0 2.0 fplus p f!64 ;"));
     try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-err-under | x | x f+ ;"));
+}
+
+test "dsp: native math, masks and exponent bits" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run(
+        \\dsp: t-abs fabs ;
+        \\dsp: t-neg fneg ;
+        \\dsp: t-sqrt fsqrt ;
+        \\dsp: t-floor floor ;
+        \\dsp: t-min fmin ;
+        \\dsp: t-max fmax ;
+        \\dsp: t-e2i fexp2i ;
+        \\dsp: t-l2i flog2i ;
+        \\dsp: t-mant fmant ;
+        \\dsp: t-le | a b | a b f<= 1.0 2.0 select ;
+        \\dsp: t-ge | a b | a b f>= 1.0 2.0 select ;
+        \\dsp: t-eq | a b | a b f= mask>f ;
+        \\dsp: t-gt | a b | a b f> mask>f ;
+        \\dsp: t-in | x | x 0.0 f>= x 1.0 f< and | m | m x -1.0 select  m mask>f f+ ;
+        \\dsp: t-out | x | x 0.0 f< x 1.0 f>= or not 5.0 6.0 select ;
+    );
+
+    const ok = std.testing.expectApproxEqAbs;
+    const eps = 0.000000000001;
+    try ok(2.5, getFyFloat(try fy.run("-2.5 t-abs")), eps);
+    try ok(-2.5, getFyFloat(try fy.run("2.5 t-neg")), eps);
+    try ok(3.0, getFyFloat(try fy.run("9.0 t-sqrt")), eps);
+    try ok(-3.0, getFyFloat(try fy.run("-2.5 t-floor")), eps);
+    try ok(1.5, getFyFloat(try fy.run("1.5 2.5 t-min")), eps);
+    try ok(2.5, getFyFloat(try fy.run("1.5 2.5 t-max")), eps);
+    try ok(8.0, getFyFloat(try fy.run("3.7 t-e2i")), eps);
+    try ok(0.25, getFyFloat(try fy.run("-1.5 t-e2i")), eps);
+    try ok(3.0, getFyFloat(try fy.run("12.0 t-l2i")), eps);
+    try ok(-2.0, getFyFloat(try fy.run("-0.3 t-l2i")), eps);
+    try ok(1.5, getFyFloat(try fy.run("-12.0 t-mant")), eps);
+    try ok(1.0, getFyFloat(try fy.run("2.0 2.0 t-le")), eps);
+    try ok(2.0, getFyFloat(try fy.run("2.5 2.0 t-le")), eps);
+    try ok(1.0, getFyFloat(try fy.run("2.0 2.0 t-ge")), eps);
+    try ok(2.0, getFyFloat(try fy.run("1.5 2.0 t-ge")), eps);
+    try ok(1.0, getFyFloat(try fy.run("3.0 3.0 t-eq")), eps);
+    try ok(0.0, getFyFloat(try fy.run("3.0 4.0 t-eq")), eps);
+    try ok(1.0, getFyFloat(try fy.run("4.0 3.0 t-gt")), eps);
+    try ok(0.0, getFyFloat(try fy.run("3.0 3.0 t-gt")), eps);
+    // The mask is used twice, so it is materialized and bsl selects.
+    try ok(1.5, getFyFloat(try fy.run("0.5 t-in")), eps);
+    try ok(-1.0, getFyFloat(try fy.run("1.5 t-in")), eps);
+    try ok(-1.0, getFyFloat(try fy.run("-0.5 t-in")), eps);
+    try ok(5.0, getFyFloat(try fy.run("0.5 t-out")), eps);
+    try ok(6.0, getFyFloat(try fy.run("1.0 t-out")), eps);
 }
 
 test "dsp: typed locals, dotted fields, -> stores and & addresses" {

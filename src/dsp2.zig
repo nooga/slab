@@ -17,6 +17,8 @@ const Ty = enum {
     int,
     ptr,
     f64,
+    /// All-ones or zero 64-bit pattern in a d-register (a compare result).
+    mask,
 };
 
 const Op = enum {
@@ -31,16 +33,24 @@ const Op = enum {
     fsub,
     fmul,
     fdiv,
-    fclamp,
-    fwrap01,
-    ffrac,
-    fsel_lt,
-    fcapramp,
-    fpolyblep,
-    fpulseblep,
-    fadsr_linear,
-    fadsr_cap,
+    fmin,
+    fmax,
+    fabs,
+    fneg,
+    fsqrt,
+    ffloor,
+    fexp2i, // 2^floor(a), built from exponent bits
+    flog2i, // floor(log2 |a|) from the exponent bits
+    fmant, // |a| with the exponent set to 0: mantissa in [1, 2)
+    fcmp, // mask; int_value is a Cmp
+    mand,
+    mor,
+    mnot,
+    mask_to_f, // 1.0 where set, 0.0 elsewhere
+    select, // a ? b : c, a a mask
 };
+
+const Cmp = enum(i64) { lt, le, gt, ge, eq };
 
 const Value = struct {
     op: Op,
@@ -277,137 +287,83 @@ pub const Builder = struct {
             try self.stores.append(.{ .ptr = pa, .value = v });
             return;
         }
-        if (std.mem.eql(u8, word, "f+")) {
-            try self.floatBin(.fadd);
+        const bins = .{
+            .{ "f+", Op.fadd },   .{ "f-", Op.fsub },     .{ "f*", Op.fmul },
+            .{ "f/", Op.fdiv },   .{ "fmin", Op.fmin },   .{ "fmax", Op.fmax },
+        };
+        inline for (bins) |e| if (std.mem.eql(u8, word, e[0])) return self.floatBin(e[1]);
+        const uns = .{
+            .{ "fabs", Op.fabs },     .{ "fneg", Op.fneg },     .{ "fsqrt", Op.fsqrt },
+            .{ "floor", Op.ffloor },  .{ "fexp2i", Op.fexp2i }, .{ "flog2i", Op.flog2i },
+            .{ "fmant", Op.fmant },
+        };
+        inline for (uns) |e| if (std.mem.eql(u8, word, e[0])) {
+            const x = try self.pop();
+            try self.stack.append(try self.unary(e[1], x));
+            return;
+        };
+        const cmps = .{
+            .{ "f<", Cmp.lt }, .{ "f<=", Cmp.le }, .{ "f>", Cmp.gt }, .{ "f>=", Cmp.ge }, .{ "f=", Cmp.eq },
+        };
+        inline for (cmps) |e| if (std.mem.eql(u8, word, e[0])) {
+            const b = try self.pop();
+            const a = try self.pop();
+            try self.stack.append(try self.compare(e[1], a, b));
+            return;
+        };
+        if (std.mem.eql(u8, word, "and") or std.mem.eql(u8, word, "or")) {
+            const b = try self.pop();
+            const a = try self.pop();
+            try self.expectTy(a, .mask);
+            try self.expectTy(b, .mask);
+            const op: Op = if (word[0] == 'a') .mand else .mor;
+            try self.stack.append(try self.addValue(.{ .op = op, .ty = .mask, .a = a, .b = b }));
             return;
         }
-        if (std.mem.eql(u8, word, "f-")) {
-            try self.floatBin(.fsub);
+        if (std.mem.eql(u8, word, "not") or std.mem.eql(u8, word, "mask>f")) {
+            const a = try self.pop();
+            try self.expectTy(a, .mask);
+            const is_not = word[0] == 'n';
+            try self.stack.append(try self.addValue(.{
+                .op = if (is_not) .mnot else .mask_to_f,
+                .ty = if (is_not) .mask else .f64,
+                .a = a,
+            }));
             return;
         }
-        if (std.mem.eql(u8, word, "f*")) {
-            try self.floatBin(.fmul);
+        if (std.mem.eql(u8, word, "select")) {
+            // ( m t f -- m ? t : f )
+            const f = try self.pop();
+            const t = try self.pop();
+            const m = try self.pop();
+            try self.stack.append(try self.selectValue(m, t, f));
             return;
         }
-        if (std.mem.eql(u8, word, "f/")) {
-            try self.floatBin(.fdiv);
+        // Sugar over the ops above.
+        if (std.mem.eql(u8, word, "fsel-lt")) {
+            // ( a b t f -- a < b ? t : f )
+            const f = try self.pop();
+            const t = try self.pop();
+            const b = try self.pop();
+            const a = try self.pop();
+            const m = try self.compare(.lt, a, b);
+            try self.stack.append(try self.selectValue(m, t, f));
             return;
         }
         if (std.mem.eql(u8, word, "fclamp")) {
+            // ( x lo hi -- min(max(x, lo), hi) )
             const hi = try self.pop();
             const lo = try self.pop();
             const x = try self.pop();
-            try self.expectTy(x, .f64);
-            try self.expectTy(lo, .f64);
-            try self.expectTy(hi, .f64);
-            const id = try self.addValue(.{ .op = .fclamp, .ty = .f64, .a = x, .b = lo, .c = hi });
-            try self.stack.append(id);
+            const m = try self.binValue(.fmax, x, lo);
+            try self.stack.append(try self.binValue(.fmin, m, hi));
             return;
         }
         if (std.mem.eql(u8, word, "ffrac")) {
+            // x - floor(x)
             const x = try self.pop();
-            try self.expectTy(x, .f64);
-            const id = try self.addValue(.{ .op = .ffrac, .ty = .f64, .a = x });
-            try self.stack.append(id);
-            return;
-        }
-        if (std.mem.eql(u8, word, "fwrap01")) {
-            const x = try self.pop();
-            try self.expectTy(x, .f64);
-            const id = try self.addValue(.{ .op = .fwrap01, .ty = .f64, .a = x });
-            try self.stack.append(id);
-            return;
-        }
-        if (std.mem.eql(u8, word, "fsel-lt")) {
-            const if_false = try self.pop();
-            const if_true = try self.pop();
-            const b = try self.pop();
-            const a = try self.pop();
-            try self.expectTy(a, .f64);
-            try self.expectTy(b, .f64);
-            try self.expectTy(if_true, .f64);
-            try self.expectTy(if_false, .f64);
-            const id = try self.addValue(.{ .op = .fsel_lt, .ty = .f64, .a = a, .b = b, .c = if_true, .d = if_false });
-            try self.stack.append(id);
-            return;
-        }
-        if (std.mem.eql(u8, word, "fcapramp")) {
-            const phase = try self.pop();
-            try self.expectTy(phase, .f64);
-            const id = try self.addValue(.{ .op = .fcapramp, .ty = .f64, .a = phase });
-            try self.stack.append(id);
-            return;
-        }
-        if (std.mem.eql(u8, word, "fpolyblep")) {
-            const dt = try self.pop();
-            const phase = try self.pop();
-            try self.expectTy(phase, .f64);
-            try self.expectTy(dt, .f64);
-            const id = try self.addValue(.{ .op = .fpolyblep, .ty = .f64, .a = phase, .b = dt });
-            try self.stack.append(id);
-            return;
-        }
-        if (std.mem.eql(u8, word, "fpulseblep")) {
-            const width = try self.pop();
-            const dt = try self.pop();
-            const phase = try self.pop();
-            try self.expectTy(phase, .f64);
-            try self.expectTy(dt, .f64);
-            try self.expectTy(width, .f64);
-            const id = try self.addValue(.{ .op = .fpulseblep, .ty = .f64, .a = phase, .b = dt, .c = width });
-            try self.stack.append(id);
-            return;
-        }
-        if (std.mem.eql(u8, word, "fadsr-linear")) {
-            const release = try self.pop();
-            const gate = try self.pop();
-            const sustain = try self.pop();
-            const decay = try self.pop();
-            const attack = try self.pop();
-            const time = try self.pop();
-            try self.expectTy(time, .f64);
-            try self.expectTy(attack, .f64);
-            try self.expectTy(decay, .f64);
-            try self.expectTy(sustain, .f64);
-            try self.expectTy(gate, .f64);
-            try self.expectTy(release, .f64);
-            const id = try self.addValue(.{
-                .op = .fadsr_linear,
-                .ty = .f64,
-                .a = time,
-                .b = attack,
-                .c = decay,
-                .d = sustain,
-                .e = gate,
-                .f = release,
-            });
-            try self.stack.append(id);
-            return;
-        }
-        if (std.mem.eql(u8, word, "fadsr-cap")) {
-            const release = try self.pop();
-            const gate = try self.pop();
-            const sustain = try self.pop();
-            const decay = try self.pop();
-            const attack = try self.pop();
-            const time = try self.pop();
-            try self.expectTy(time, .f64);
-            try self.expectTy(attack, .f64);
-            try self.expectTy(decay, .f64);
-            try self.expectTy(sustain, .f64);
-            try self.expectTy(gate, .f64);
-            try self.expectTy(release, .f64);
-            const id = try self.addValue(.{
-                .op = .fadsr_cap,
-                .ty = .f64,
-                .a = time,
-                .b = attack,
-                .c = decay,
-                .d = sustain,
-                .e = gate,
-                .f = release,
-            });
-            try self.stack.append(id);
+            const fl = try self.unary(.ffloor, x);
+            try self.stack.append(try self.binValue(.fsub, x, fl));
             return;
         }
         return Error.UnsupportedWord;
@@ -641,34 +597,15 @@ pub const Builder = struct {
         for (self.values.items) |value| {
             switch (value.op) {
                 .arg, .int_const, .f64_const => {},
-                .ptr_add, .load_f64, .load_ptr, .fwrap01, .ffrac, .fcapramp => remaining_uses[value.a] += 1,
-                .ptr_add_idx, .fadd, .fsub, .fmul, .fdiv, .fpolyblep => {
+                .ptr_add, .load_f64, .load_ptr, .fabs, .fneg, .fsqrt, .ffloor, .fexp2i, .flog2i, .fmant, .mnot, .mask_to_f => remaining_uses[value.a] += 1,
+                .ptr_add_idx, .fadd, .fsub, .fmul, .fdiv, .fmin, .fmax, .fcmp, .mand, .mor => {
                     remaining_uses[value.a] += 1;
                     remaining_uses[value.b] += 1;
                 },
-                .fclamp => {
+                .select => {
                     remaining_uses[value.a] += 1;
                     remaining_uses[value.b] += 1;
                     remaining_uses[value.c] += 1;
-                },
-                .fsel_lt => {
-                    remaining_uses[value.a] += 1;
-                    remaining_uses[value.b] += 1;
-                    remaining_uses[value.c] += 1;
-                    remaining_uses[value.d] += 1;
-                },
-                .fpulseblep => {
-                    remaining_uses[value.a] += 1;
-                    remaining_uses[value.b] += 1;
-                    remaining_uses[value.c] += 1;
-                },
-                .fadsr_linear, .fadsr_cap => {
-                    remaining_uses[value.a] += 1;
-                    remaining_uses[value.b] += 1;
-                    remaining_uses[value.c] += 1;
-                    remaining_uses[value.d] += 1;
-                    remaining_uses[value.e] += 1;
-                    remaining_uses[value.f] += 1;
                 },
             }
         }
@@ -727,10 +664,31 @@ pub const Builder = struct {
     fn floatBin(self: *Builder, op: Op) Error!void {
         const b = try self.pop();
         const a = try self.pop();
+        try self.stack.append(try self.binValue(op, a, b));
+    }
+
+    fn binValue(self: *Builder, op: Op, a: usize, b: usize) Error!usize {
         try self.expectTy(a, .f64);
         try self.expectTy(b, .f64);
-        const id = try self.addValue(.{ .op = op, .ty = .f64, .a = a, .b = b });
-        try self.stack.append(id);
+        return self.addValue(.{ .op = op, .ty = .f64, .a = a, .b = b });
+    }
+
+    fn unary(self: *Builder, op: Op, a: usize) Error!usize {
+        try self.expectTy(a, .f64);
+        return self.addValue(.{ .op = op, .ty = .f64, .a = a });
+    }
+
+    fn compare(self: *Builder, cmp: Cmp, a: usize, b: usize) Error!usize {
+        try self.expectTy(a, .f64);
+        try self.expectTy(b, .f64);
+        return self.addValue(.{ .op = .fcmp, .ty = .mask, .a = a, .b = b, .int_value = @intFromEnum(cmp) });
+    }
+
+    fn selectValue(self: *Builder, m: usize, t: usize, f: usize) Error!usize {
+        try self.expectTy(m, .mask);
+        try self.expectTy(t, .f64);
+        try self.expectTy(f, .f64);
+        return self.addValue(.{ .op = .select, .ty = .f64, .a = m, .b = t, .c = f });
     }
 };
 
@@ -1245,7 +1203,7 @@ const Codegen = struct {
             return self.locs[id].d;
         }
         const value = self.builder.values.items[id];
-        if (value.ty != .f64) return Error.TypeMismatch;
+        if (value.ty != .f64 and value.ty != .mask) return Error.TypeMismatch;
 
         if (value.op == .arg and self.arg_abi == .raw_registers) {
             if (value.arg_index >= RAW_D_ARG_REGS.len) return Error.RegisterExhausted;
@@ -1299,7 +1257,7 @@ const Codegen = struct {
                 self.consumeValue(value.a);
                 return reg;
             },
-            .fadd, .fsub, .fmul, .fdiv => {
+            .fadd, .fsub, .fmul, .fdiv, .fmin, .fmax, .mand, .mor => {
                 const a = try self.valueD(value.a);
                 const b = try self.valueD(value.b);
                 const reg = try self.allocD();
@@ -1308,6 +1266,10 @@ const Codegen = struct {
                     .fsub => Asm.@"fsub Dd, Dn, Dm"(reg, a, b),
                     .fmul => Asm.@"fmul Dd, Dn, Dm"(reg, a, b),
                     .fdiv => Asm.@"fdiv Dd, Dn, Dm"(reg, a, b),
+                    .fmin => Asm.@"fmin Dd, Dn, Dm"(reg, a, b),
+                    .fmax => Asm.@"fmax Dd, Dn, Dm"(reg, a, b),
+                    .mand => Asm.@"and Vd.8B, Vn.8B, Vm.8B"(reg, a, b),
+                    .mor => Asm.@"orr Vd.8B, Vn.8B, Vm.8B"(reg, a, b),
                     else => unreachable,
                 };
                 try self.out.append(instr);
@@ -1315,313 +1277,113 @@ const Codegen = struct {
                 self.consumeValue(value.b);
                 return reg;
             },
-            .fclamp => {
-                const x = try self.valueD(value.a);
-                const lo = try self.valueD(value.b);
-                const hi = try self.valueD(value.c);
+            .fabs, .fneg, .fsqrt, .ffloor, .mnot => {
+                const a = try self.valueD(value.a);
                 const reg = try self.allocD();
-                try self.out.append(Asm.@"fmax Dd, Dn, Dm"(reg, x, lo));
-                try self.out.append(Asm.@"fmin Dd, Dn, Dm"(reg, reg, hi));
-                self.consumeValue(value.a);
-                self.consumeValue(value.b);
-                self.consumeValue(value.c);
-                return reg;
-            },
-            .ffrac => {
-                // frac(x) = x - floor(x)
-                const x = try self.valueD(value.a);
-                const reg = try self.allocD();
-                const fl = try self.allocD();
-                try self.out.append(Asm.@"frintm Dd, Dn"(fl, x));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(reg, x, fl));
-                self.releaseD(fl);
+                try self.out.append(switch (value.op) {
+                    .fabs => Asm.@"fabs Dd, Dn"(reg, a),
+                    .fneg => Asm.@"fneg Dd, Dn"(reg, a),
+                    .fsqrt => Asm.@"fsqrt Dd, Dn"(reg, a),
+                    .ffloor => Asm.@"frintm Dd, Dn"(reg, a),
+                    .mnot => Asm.@"mvn Vd.8B, Vn.8B"(reg, a),
+                    else => unreachable,
+                });
                 self.consumeValue(value.a);
                 return reg;
             },
-            .fwrap01 => {
-                const x = try self.valueD(value.a);
+            .fexp2i, .flog2i, .fmant => {
+                const a = try self.valueD(value.a);
                 const reg = try self.allocD();
-                const zero = try self.allocD();
-                try self.emitF64Const(zero, 0.0);
-                const one = try self.allocD();
-                try self.emitF64Const(one, 1.0);
-
-                const xm1 = try self.allocD();
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(xm1, x, one));
-                try self.out.append(Asm.@"fcmp Dn, Dm"(x, one));
-                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, xm1, x, Asm.COND_GT));
-
-                const xp1 = try self.allocD();
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(xp1, reg, one));
-                try self.out.append(Asm.@"fcmp Dn, Dm"(reg, zero));
-                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, xp1, reg, Asm.COND_LT));
-                self.releaseD(zero);
-                self.releaseD(one);
-                self.releaseD(xm1);
-                self.releaseD(xp1);
+                const x = try self.allocX();
+                switch (value.op) {
+                    .fexp2i => {
+                        try self.out.append(Asm.@"fcvtms Xd, Dn"(x, a));
+                        try self.out.append(Asm.@"add Xd, Xn, #1023"(x, x));
+                        try self.out.append(Asm.@"lsl Xd, Xn, #52"(x, x));
+                        try self.out.append(Asm.@"fmov Dd, Xn"(reg, x));
+                    },
+                    .flog2i => {
+                        try self.out.append(Asm.@"fmov Xd, Dn"(x, a));
+                        try self.out.append(Asm.@"lsr Xd, Xn, #52"(x, x));
+                        try self.out.append(Asm.@"and Xd, Xn, #0x7ff"(x, x));
+                        try self.out.append(Asm.@"sub Xd, Xn, #1023"(x, x));
+                        try self.out.append(Asm.@"scvtf Dd, Xn"(reg, x));
+                    },
+                    .fmant => {
+                        try self.out.append(Asm.@"fmov Xd, Dn"(x, a));
+                        try self.out.append(Asm.@"and Xd, Xn, #0xfffffffffffff"(x, x));
+                        try self.out.append(Asm.@"orr Xd, Xn, #0x3ff0000000000000"(x, x));
+                        try self.out.append(Asm.@"fmov Dd, Xn"(reg, x));
+                    },
+                    else => unreachable,
+                }
+                self.releaseX(x);
                 self.consumeValue(value.a);
                 return reg;
             },
-            .fsel_lt => {
+            .fcmp => {
+                // Materialized mask. a<b is b>a; NaN compares false.
                 const a = try self.valueD(value.a);
                 const b = try self.valueD(value.b);
-                const if_true = try self.valueD(value.c);
-                const if_false = try self.valueD(value.d);
                 const reg = try self.allocD();
-                try self.out.append(Asm.@"fcmp Dn, Dm"(a, b));
-                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, if_true, if_false, Asm.COND_LT));
+                try self.out.append(switch (@as(Cmp, @enumFromInt(value.int_value))) {
+                    .lt => Asm.@"fcmgt Dd, Dn, Dm"(reg, b, a),
+                    .le => Asm.@"fcmge Dd, Dn, Dm"(reg, b, a),
+                    .gt => Asm.@"fcmgt Dd, Dn, Dm"(reg, a, b),
+                    .ge => Asm.@"fcmge Dd, Dn, Dm"(reg, a, b),
+                    .eq => Asm.@"fcmeq Dd, Dn, Dm"(reg, a, b),
+                });
+                self.consumeValue(value.a);
+                self.consumeValue(value.b);
+                return reg;
+            },
+            .mask_to_f => {
+                const m = try self.valueD(value.a);
+                const one = try self.allocD();
+                try self.emitF64Const(one, 1.0);
+                const reg = try self.allocD();
+                try self.out.append(Asm.@"and Vd.8B, Vn.8B, Vm.8B"(reg, m, one));
+                self.releaseD(one);
+                self.consumeValue(value.a);
+                return reg;
+            },
+            .select => {
+                const mv = self.builder.values.items[value.a];
+                const fresh = self.locs[value.a] == .none and self.spill_slot[value.a] == null;
+                if (mv.op == .fcmp and fresh and self.remaining_uses[value.a] == 1) {
+                    // The compare's only use: fcmp + fcsel, no mask register.
+                    // The conditions are the ordered ones, so NaN selects
+                    // the false arm exactly like the materialized mask.
+                    const a = try self.valueD(mv.a);
+                    const b = try self.valueD(mv.b);
+                    const t = try self.valueD(value.b);
+                    const f = try self.valueD(value.c);
+                    const reg = try self.allocD();
+                    const cond: u4 = switch (@as(Cmp, @enumFromInt(mv.int_value))) {
+                        .lt => Asm.COND_MI,
+                        .le => Asm.COND_LS,
+                        .gt => Asm.COND_GT,
+                        .ge => Asm.COND_GE,
+                        .eq => Asm.COND_EQ,
+                    };
+                    try self.out.append(Asm.@"fcmp Dn, Dm"(a, b));
+                    try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, t, f, cond));
+                    self.consumeValue(mv.a);
+                    self.consumeValue(mv.b);
+                    self.consumeValue(value.a);
+                    self.consumeValue(value.b);
+                    self.consumeValue(value.c);
+                    return reg;
+                }
+                const m = try self.valueD(value.a);
+                const t = try self.valueD(value.b);
+                const f = try self.valueD(value.c);
+                const reg = try self.allocD();
+                try self.out.append(Asm.@"fmov Dd, Dn"(reg, m));
+                try self.out.append(Asm.@"bsl Vd.8B, Vn.8B, Vm.8B"(reg, t, f));
                 self.consumeValue(value.a);
                 self.consumeValue(value.b);
                 self.consumeValue(value.c);
-                self.consumeValue(value.d);
-                return reg;
-            },
-            .fcapramp => {
-                const phase = try self.valueD(value.a);
-                const reg = try self.allocD();
-                const two = try self.allocD();
-                try self.emitF64Const(two, 2.0);
-                const one = try self.allocD();
-                try self.emitF64Const(one, 1.0);
-                const scratch = try self.allocD();
-
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch, two, phase));
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(reg, phase, scratch));
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(reg, reg, two));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(reg, reg, one));
-                self.releaseD(two);
-                self.releaseD(one);
-                self.releaseD(scratch);
-                self.consumeValue(value.a);
-                return reg;
-            },
-            .fpolyblep => {
-                const phase = try self.valueD(value.a);
-                const dt = try self.valueD(value.b);
-                const reg = try self.allocD();
-                const zero = try self.allocD();
-                try self.emitF64Const(zero, 0.0);
-                const one = try self.allocD();
-                try self.emitF64Const(one, 1.0);
-
-                const scratch_a = try self.allocD();
-                const scratch_b = try self.allocD();
-                const scratch_c = try self.allocD();
-
-                try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(scratch_a, phase, dt));
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(scratch_b, scratch_a, scratch_a));
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(reg, scratch_a, scratch_a));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(reg, reg, scratch_b));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(reg, reg, one));
-                try self.out.append(Asm.@"fcmp Dn, Dm"(phase, dt));
-                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, reg, zero, Asm.COND_LT));
-
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_a, phase, one));
-                try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(scratch_a, scratch_a, dt));
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(scratch_b, scratch_a, scratch_a));
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_c, scratch_a, scratch_a));
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_c, scratch_c, scratch_b));
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_c, scratch_c, one));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_a, one, dt));
-                try self.out.append(Asm.@"fcmp Dn, Dm"(scratch_a, phase));
-                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, scratch_c, reg, Asm.COND_LT));
-                self.releaseD(zero);
-                self.releaseD(one);
-                self.releaseD(scratch_a);
-                self.releaseD(scratch_b);
-                self.releaseD(scratch_c);
-                self.consumeValue(value.a);
-                self.consumeValue(value.b);
-                return reg;
-            },
-            .fpulseblep => {
-                const phase = try self.valueD(value.a);
-                const dt = try self.valueD(value.b);
-                const width = try self.valueD(value.c);
-                const reg = try self.allocD();
-                const zero = try self.allocD();
-                try self.emitF64Const(zero, 0.0);
-                const one = try self.allocD();
-                try self.emitF64Const(one, 1.0);
-                const neg_one = try self.allocD();
-                try self.emitF64Const(neg_one, -1.0);
-                const scratch_a = try self.allocD();
-                const scratch_b = try self.allocD();
-                const scratch_c = try self.allocD();
-
-                try self.out.append(Asm.@"fcmp Dn, Dm"(phase, width));
-                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, one, neg_one, Asm.COND_LT));
-
-                try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(scratch_a, phase, dt));
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(scratch_b, scratch_a, scratch_a));
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_c, scratch_a, scratch_a));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_c, scratch_c, scratch_b));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_c, scratch_c, one));
-                try self.out.append(Asm.@"fcmp Dn, Dm"(phase, dt));
-                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(scratch_c, scratch_c, zero, Asm.COND_LT));
-
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_b, one, dt));
-                try self.out.append(Asm.@"fcmp Dn, Dm"(scratch_b, phase));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_a, phase, one));
-                try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(scratch_a, scratch_a, dt));
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(scratch_b, scratch_a, scratch_a));
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_a, scratch_a, scratch_a));
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_b, scratch_b, scratch_a));
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_b, scratch_b, one));
-                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(scratch_c, scratch_b, scratch_c, Asm.COND_LT));
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(reg, reg, scratch_c));
-
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_a, phase, width));
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_b, scratch_a, one));
-                try self.out.append(Asm.@"fcmp Dn, Dm"(scratch_a, zero));
-                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(scratch_a, scratch_b, scratch_a, Asm.COND_LT));
-
-                try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(scratch_b, scratch_a, dt));
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(scratch_c, scratch_b, scratch_b));
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_b, scratch_b, scratch_b));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_c, scratch_b, scratch_c));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_c, scratch_c, one));
-                try self.out.append(Asm.@"fcmp Dn, Dm"(scratch_a, dt));
-                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(scratch_c, scratch_c, zero, Asm.COND_LT));
-
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_b, one, dt));
-                try self.out.append(Asm.@"fcmp Dn, Dm"(scratch_b, scratch_a));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_b, scratch_a, one));
-                try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(scratch_b, scratch_b, dt));
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(scratch_a, scratch_b, scratch_b));
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_b, scratch_b, scratch_b));
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_a, scratch_a, scratch_b));
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_a, scratch_a, one));
-                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(scratch_c, scratch_a, scratch_c, Asm.COND_LT));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(reg, reg, scratch_c));
-                self.releaseD(zero);
-                self.releaseD(one);
-                self.releaseD(neg_one);
-                self.releaseD(scratch_a);
-                self.releaseD(scratch_b);
-                self.releaseD(scratch_c);
-                self.consumeValue(value.a);
-                self.consumeValue(value.b);
-                self.consumeValue(value.c);
-                return reg;
-            },
-            .fadsr_linear => {
-                const time = try self.valueD(value.a);
-                const attack = try self.valueD(value.b);
-                const decay = try self.valueD(value.c);
-                const sustain = try self.valueD(value.d);
-                const gate = try self.valueD(value.e);
-                const release = try self.valueD(value.f);
-                const reg = try self.allocD();
-                const zero = try self.allocD();
-                try self.emitF64Const(zero, 0.0);
-                const one = try self.allocD();
-                try self.emitF64Const(one, 1.0);
-                const scratch_a = try self.allocD();
-                const scratch_b = try self.allocD();
-                const scratch_c = try self.allocD();
-                const scratch_d = try self.allocD();
-
-                try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(reg, time, attack));
-                try self.out.append(Asm.@"fmax Dd, Dn, Dm"(reg, reg, zero));
-                try self.out.append(Asm.@"fmin Dd, Dn, Dm"(reg, reg, one));
-
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_a, attack, decay));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_b, time, attack));
-                try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(scratch_b, scratch_b, decay));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_c, one, sustain));
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(scratch_b, scratch_b, scratch_c));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_b, one, scratch_b));
-                try self.out.append(Asm.@"fcmp Dn, Dm"(time, attack));
-                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, reg, scratch_b, Asm.COND_LT));
-                try self.out.append(Asm.@"fcmp Dn, Dm"(time, scratch_a));
-                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, reg, sustain, Asm.COND_LT));
-
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_b, time, gate));
-                try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(scratch_b, scratch_b, release));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_b, one, scratch_b));
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(scratch_b, scratch_b, sustain));
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_d, gate, release));
-                try self.out.append(Asm.@"fcmp Dn, Dm"(time, gate));
-                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, reg, scratch_b, Asm.COND_LT));
-                try self.out.append(Asm.@"fcmp Dn, Dm"(time, scratch_d));
-                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, reg, zero, Asm.COND_LT));
-                self.releaseD(zero);
-                self.releaseD(one);
-                self.releaseD(scratch_a);
-                self.releaseD(scratch_b);
-                self.releaseD(scratch_c);
-                self.releaseD(scratch_d);
-                self.consumeValue(value.a);
-                self.consumeValue(value.b);
-                self.consumeValue(value.c);
-                self.consumeValue(value.d);
-                self.consumeValue(value.e);
-                self.consumeValue(value.f);
-                return reg;
-            },
-            .fadsr_cap => {
-                const time = try self.valueD(value.a);
-                const attack = try self.valueD(value.b);
-                const decay = try self.valueD(value.c);
-                const sustain = try self.valueD(value.d);
-                const gate = try self.valueD(value.e);
-                const release = try self.valueD(value.f);
-                const reg = try self.allocD();
-                const zero = try self.allocD();
-                try self.emitF64Const(zero, 0.0);
-                const one = try self.allocD();
-                try self.emitF64Const(one, 1.0);
-                const scratch_a = try self.allocD();
-                const scratch_b = try self.allocD();
-                const scratch_c = try self.allocD();
-                const scratch_d = try self.allocD();
-
-                try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(scratch_a, time, attack));
-                try self.out.append(Asm.@"fmax Dd, Dn, Dm"(scratch_a, scratch_a, zero));
-                try self.out.append(Asm.@"fmin Dd, Dn, Dm"(scratch_a, scratch_a, one));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_a, one, scratch_a));
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(scratch_b, scratch_a, scratch_a));
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(scratch_b, scratch_b, scratch_b));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(reg, one, scratch_b));
-
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_c, attack, decay));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_a, time, attack));
-                try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(scratch_a, scratch_a, decay));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_a, one, scratch_a));
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(scratch_b, scratch_a, scratch_a));
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(scratch_b, scratch_b, scratch_b));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_d, one, sustain));
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(scratch_b, scratch_b, scratch_d));
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_b, sustain, scratch_b));
-                try self.out.append(Asm.@"fcmp Dn, Dm"(time, attack));
-                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, reg, scratch_b, Asm.COND_LT));
-                try self.out.append(Asm.@"fcmp Dn, Dm"(time, scratch_c));
-                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, reg, sustain, Asm.COND_LT));
-
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_a, time, gate));
-                try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(scratch_a, scratch_a, release));
-                try self.out.append(Asm.@"fsub Dd, Dn, Dm"(scratch_a, one, scratch_a));
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(scratch_b, scratch_a, scratch_a));
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(scratch_b, scratch_b, scratch_b));
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(scratch_b, sustain, scratch_b));
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(scratch_c, gate, release));
-                try self.out.append(Asm.@"fcmp Dn, Dm"(time, gate));
-                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, reg, scratch_b, Asm.COND_LT));
-                try self.out.append(Asm.@"fcmp Dn, Dm"(time, scratch_c));
-                try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, reg, zero, Asm.COND_LT));
-                self.releaseD(zero);
-                self.releaseD(one);
-                self.releaseD(scratch_a);
-                self.releaseD(scratch_b);
-                self.releaseD(scratch_c);
-                self.releaseD(scratch_d);
-                self.consumeValue(value.a);
-                self.consumeValue(value.b);
-                self.consumeValue(value.c);
-                self.consumeValue(value.d);
-                self.consumeValue(value.e);
-                self.consumeValue(value.f);
                 return reg;
             },
             else => return Error.TypeMismatch,
