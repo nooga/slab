@@ -147,8 +147,8 @@ pub fn serialize(
         try out.appendSlice(alloc, "{\"name\":");
         try appendJsonString(alloc, &out, t.name());
         try appendFmt(alloc, &out, ",\"color\":[{d},{d},{d}]", .{ t.color.r, t.color.g, t.color.b });
-        try appendFmt(alloc, &out, ",\"volume\":{d},\"pan\":{d},\"mute\":{s},\"solo\":{s},\"poly\":{d}", .{
-            t.volume(), t.pan(), boolStr(t.mute.load(.monotonic)), boolStr(t.solo.load(.monotonic)), t.poly_voices,
+        try appendFmt(alloc, &out, ",\"volume\":{d},\"pan\":{d},\"mute\":{s},\"solo\":{s}", .{
+            t.volume(), t.pan(), boolStr(t.mute.load(.monotonic)), boolStr(t.solo.load(.monotonic)),
         });
 
         // Instrument: stable id + inline settings, or null.
@@ -321,7 +321,6 @@ pub fn apply(
         const pan_v: f32 = @floatCast(if (objGet(to, "pan")) |x| asF64(x) else 0.0);
         const mute = if (objGet(to, "mute")) |x| asBool(x) else false;
         const solo = if (objGet(to, "solo")) |x| asBool(x) else false;
-        const poly_voices = normalizePolyVoices(if (objGet(to, "poly")) |x| asU8(x) else 1);
 
         // Instrument — resolve by stable id, instantiate, restore settings.
         var mach = silent_machine;
@@ -329,7 +328,7 @@ pub fn apply(
         if (objGet(to, "instrument")) |iv| if (iv == .object) {
             if (strOf(objGet(iv.object, "machine"))) |mid| {
                 if (reg.findById(mid)) |idx| {
-                    mach = try reg.instantiateWithPolyphony(idx, poly_voices);
+                    mach = try reg.instantiate(idx);
                     machine_idx = @intCast(idx);
                     if (objGet(iv.object, "params")) |pv| applyParams(mach, pv);
                 }
@@ -339,7 +338,6 @@ pub fn apply(
         var t = try track_mod.Track.init(alloc, name, color, mach);
         errdefer t.deinit(alloc);
         t.machine_idx = machine_idx;
-        t.poly_voices = poly_voices;
         t.setVolume(volume);
         t.setPan(pan_v);
         t.mute.store(mute, .monotonic);
@@ -481,14 +479,6 @@ fn appendFmt(alloc: std.mem.Allocator, out: *std.ArrayList(u8), comptime fmt: []
     defer alloc.free(s);
     try out.appendSlice(alloc, s);
 }
-
-fn normalizePolyVoices(v: u8) u8 {
-    if (v >= 16) return 16;
-    if (v >= 8) return 8;
-    if (v >= 4) return 4;
-    return 1;
-}
-
 
 fn testRender(_: *anyopaque, _: *const machine_mod.MachineCtx, l: []f32, r: []f32) void {
     @memset(l, 0);

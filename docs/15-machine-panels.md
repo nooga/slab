@@ -203,10 +203,11 @@ model, to be handled there, not invented here.
 The host (machine bay) owns the chrome; the machine owns the body.
 
 - **Title strip (auto)**: machine name + preset chip. **No voice/MONO
-  select.** Polyphony is *not* a leaf-machine concern — it becomes a
-  higher-order **voice-pool machine** that wraps a mono machine and owns
-  voice allocation. So the leaf's title bar drops the poly dropdown
-  (`drawPolyDropdown` in `machine_bay.zig`).
+  select.** A machine declares its own voices (`voices!` in its
+  manifest) and allocates them itself. The host-side pool that wrapped N
+  copies of a machine is gone: panel edits reached only the first copy.
+  A higher-order voice-pool machine for mono machines stays a possible
+  later addition.
 - **Body rect**: everything below the title — the panel surface the layout
   engine fills.
 - **Scroll is the container's concern, not the panel's.** The panel reports

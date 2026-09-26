@@ -34,7 +34,6 @@ pub const DeviceRef = union(enum) {
 
 pub const Result = struct {
     minimize: bool = false,
-    poly_voices: ?u8 = null,
 
     // Trailing "+" — add a brand-new device to the chain.
     add_machine: ?usize = null, // registry index to add

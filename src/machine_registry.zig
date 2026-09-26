@@ -7,7 +7,6 @@ const std = @import("std");
 const machine = @import("machine.zig");
 const fy_host_mod = @import("fy_host.zig");
 const FyHost = fy_host_mod.FyHost;
-const poly_mod = @import("machines/poly.zig");
 const fy_raw_machine_mod = @import("machines/fy_raw_machine.zig");
 const machine_desc = @import("machine_desc.zig");
 
@@ -130,39 +129,6 @@ pub const Registry = struct {
             if (std.mem.eql(u8, e.idSlice(), id)) return i;
         }
         return null;
-    }
-
-    /// Instantiate a machine by stable id (with polyphony). Null id → error,
-    /// so callers can fall back to a silent placeholder.
-    pub fn instantiateByIdWithPolyphony(self: *Registry, id: []const u8, voices: u8) !machine.Machine {
-        const idx = self.findById(id) orelse return error.InvalidMachineIndex;
-        return self.instantiateWithPolyphony(idx, voices);
-    }
-
-    pub fn instantiateWithPolyphony(self: *Registry, idx: usize, voices: u8) !machine.Machine {
-        if (voices <= 1) return self.instantiate(idx);
-        if (idx >= self.count) return error.InvalidMachineIndex;
-
-        const voice_count = @min(voices, poly_mod.MAX_VOICES);
-        const e = &self.entries[idx];
-        const poly = try self.alloc.create(poly_mod.PolyMachine);
-        errdefer self.alloc.destroy(poly);
-        poly.* = poly_mod.PolyMachine.init(e.nameSlice(), voice_count);
-        poly.panel_w = e.panel_w;
-
-        var made: usize = 0;
-        errdefer {
-            for (0..made) |vi| {
-                if (poly.voices[vi].deinit) |deinit_fn| {
-                    deinit_fn(poly.voices[vi].state, self.alloc);
-                }
-            }
-        }
-
-        while (made < voice_count) : (made += 1) {
-            poly.voices[made] = try self.instantiate(idx);
-        }
-        return poly.machineInterface();
     }
 
     pub fn deinit(self: *Registry) void {

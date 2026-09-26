@@ -19,7 +19,6 @@
       "volume": 0.8,
       "mute": false,
       "solo": false,
-      "poly": 1,
       "instrument": {
         "machine": "ms20",
         "params": {}
@@ -406,7 +405,6 @@
       "volume": 0.7,
       "mute": false,
       "solo": false,
-      "poly": 8,
       "instrument": {
         "machine": "juno2",
         "params": {}
@@ -625,7 +623,6 @@
       "volume": 0.62,
       "mute": false,
       "solo": false,
-      "poly": 4,
       "instrument": {
         "machine": "juno2",
         "params": {}

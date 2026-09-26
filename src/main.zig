@@ -179,21 +179,18 @@ fn assignMachineToTrack(
     reg: *registry_mod.Registry,
     t: *track_mod.Track,
     reg_idx: usize,
-    voices: u8,
 ) !void {
-    const normalized = normalizePolyVoices(voices);
     audio.stop();
     defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
 
     const mach = blk: {
         fy_host_mod.lockCallbacks();
         defer fy_host_mod.unlockCallbacks();
-        break :blk try reg.instantiateWithPolyphony(reg_idx, normalized);
+        break :blk try reg.instantiate(reg_idx);
     };
     mach.reset(mach.state);
     t.replaceMachine(alloc, mach);
     t.machine_idx = @intCast(reg_idx);
-    t.poly_voices = normalized;
 }
 
 fn addEffectToTrack(
@@ -358,22 +355,6 @@ fn addClipFromNotes(
 
 fn applyPresetTo(t: *track_mod.Track, preset_idx: u8) void {
     if (t.machine.apply_preset) |apply| apply(t.machine.state, preset_idx);
-}
-
-fn normalizePolyVoices(v: u8) u8 {
-    if (v >= 16) return 16;
-    if (v >= 8) return 8;
-    if (v >= 4) return 4;
-    return 1;
-}
-
-fn polyStatusLabel(v: u8) []const u8 {
-    return switch (normalizePolyVoices(v)) {
-        4 => "Poly 4",
-        8 => "Poly 8",
-        16 => "Poly 16",
-        else => "Mono",
-    };
 }
 
 /// `slab [project.slab] [--render out.wav]`: open a project at startup, or
@@ -804,7 +785,7 @@ pub fn main(init: std.process.Init) !void {
                     dirty = true;
                     status.set("Added {s}", .{entry.nameSlice()});
                 } else {
-                    assignMachineToTrack(alloc, &audio, &reg, dev, reg_idx, 1) catch |err| {
+                    assignMachineToTrack(alloc, &audio, &reg, dev, reg_idx) catch |err| {
                         std.log.err("instantiate machine failed: {s}", .{@errorName(err)});
                         continue;
                     };
@@ -831,7 +812,7 @@ pub fn main(init: std.process.Init) !void {
                             status.set("Pick an instrument", .{});
                         } else {
                             pushHistorySnapshot(alloc, &history, tracks, &transport);
-                            assignMachineToTrack(alloc, &audio, &reg, dev, reg_idx, dev.poly_voices) catch |err| {
+                            assignMachineToTrack(alloc, &audio, &reg, dev, reg_idx) catch |err| {
                                 std.log.err("replace instrument failed: {s}", .{@errorName(err)});
                                 status.set("Replace failed: {s}", .{@errorName(err)});
                                 continue;
@@ -922,22 +903,6 @@ pub fn main(init: std.process.Init) !void {
                 beginPresetRename(&rename, dev, eff, idx, cur, mbres.preset_anchor);
             }
         };
-        if (mbres.poly_voices) |voices| {
-            if (selected_track) |ti| if (ti < tracks.len) {
-                if (tracks[ti].machine_idx) |reg_idx| {
-                    if (tracks[ti].poly_voices != voices) {
-                        pushHistorySnapshot(alloc, &history, tracks, &transport);
-                        assignMachineToTrack(alloc, &audio, &reg, &tracks[ti], reg_idx, voices) catch |err| {
-                            std.log.err("polyphony change failed: {s}", .{@errorName(err)});
-                            status.set("Polyphony failed: {s}", .{@errorName(err)});
-                            continue;
-                        };
-                        dirty = true;
-                        status.set("{s} {s}", .{ tracks[ti].name(), polyStatusLabel(voices) });
-                    }
-                }
-            };
-        }
 
         try runRename(ui, alloc, &history, &rename, tracks, &transport, &dirty, &status);
 
@@ -2234,8 +2199,3 @@ test "synthpop_8bar demo loads as JSON with expected note counts" {
 }
 
 const _fy_host = @import("fy_host.zig");
-const _poly = @import("machines/poly.zig");
-
-test {
-    _ = _poly;
-}

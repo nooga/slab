@@ -37,9 +37,6 @@ pub const Track = struct {
     machine: machine.Machine,
     /// Registry index for persistence. Null means the silent placeholder.
     machine_idx: ?u8 = null,
-    /// 1 = mono. Larger values wrap the assigned machine in a host-side
-    /// poly allocator with this many independent instances.
-    poly_voices: u8 = 1,
     /// Insert chain — UI-thread-owned, heap-backed, unbounded. The audio
     /// thread reads `effects.items` fresh each block; all mutations run
     /// with the device stopped (see main.zig), so a realloc never races a
