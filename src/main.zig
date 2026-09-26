@@ -105,6 +105,10 @@ pub const Fy = struct {
     // Path of the source file being compiled, when known (include/import
     // set it; hosts may set it around a top-level run).
     src_file: ?[]const u8 = null,
+    // Memory of every `table:` ever built. Never freed before deinit: code
+    // compiled against an old table's address may still be running after a
+    // hot reload redefines it.
+    tables: compat.ArrayList([]f64) = undefined,
 
     const version = "v0.0.1";
     const DATA_STACK_PAGES = 8; // 32KB usable = 4096 values
@@ -186,6 +190,7 @@ pub const Fy = struct {
             .struct_layouts = compat.ArrayList(StructLayout).init(allocator),
             .untagged_struct_layouts = compat.ArrayList(StructLayout).init(allocator),
             .dsp2_caller_cache = std.StringHashMap(CachedRawCaller).init(allocator),
+            .tables = compat.ArrayList([]f64).init(allocator),
         };
         fy.initStacks();
         return fy;
@@ -200,6 +205,8 @@ pub const Fy = struct {
             }
             self.dsp2_caller_cache.deinit();
         }
+        for (self.tables.items) |t| self.fyalloc.free(t);
+        self.tables.deinit();
         self.image.deinit();
         self.heap.deinit();
         self.deinitStructLayouts(self.struct_layouts.items);
@@ -361,6 +368,7 @@ pub const Fy = struct {
         word.dsp2_body = null;
         if (word.dsp2_calls) |calls| self.fyalloc.free(calls);
         word.dsp2_calls = null;
+        word.dsp_const = null;
     }
 
     fn deinitImportedFiles(self: *Fy) void {
@@ -671,6 +679,9 @@ pub const Fy = struct {
         nargs: usize,
     };
 
+    /// A compile-time value a `dsp:` word inlines as a literal.
+    const DspConst = union(enum) { int: i64, float: f64 };
+
     const Word = struct {
         code: []const u32, //machine code (for builtins/inline words)
         c: usize, //consumes
@@ -690,6 +701,7 @@ pub const Fy = struct {
         inlineable: bool = false, // declared with inline-noalloc: — may be copied into opt-in callers
         dsp: bool = false, // declared with dsp1: (legacy NEON/register-stack mode; the new dsp: sets .dsp2)
         dsp2: bool = false, // declared with dsp: — typed DSP compiler pipeline (was dsp2:)
+        dsp_const: ?DspConst = null, // `::` constant / `table:` address, inlined by dsp: words
 
         const DEFINE = ":";
         const END = ";";
@@ -1634,6 +1646,49 @@ pub const Fy = struct {
             try appendFmt(&out, "{d:0>4}: {x:0>8} {s}\n", .{ i, instr, disasmMnemonic(instr) });
         }
         return out.toOwnedSlice();
+    }
+
+    /// A C-callable wrapper that pushes its argument onto a fresh data
+    /// stack, calls the fy word at `target_addr`, and returns the top value.
+    fn argCallWrapper(self: *Fy, target_addr: usize) !*const fn (Value) callconv(.c) Value {
+        var code = compat.ArrayList(u32).init(self.fyalloc);
+        errdefer code.deinit();
+
+        try code.append(Asm.@"stp x29, x30, [sp, #0x10]!");
+        try code.append(Asm.@"mov x29, sp");
+        try code.append(Asm.@"stp x21, x22, [sp, #0x10]!");
+        try code.append(Asm.sub_sp_imm(64));
+        inline for (0..8) |i| {
+            try code.append(Asm.str_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
+        }
+        inline for (.{ 19, 20, 23, 24, 25, 26, 27, 28 }) |reg| {
+            try code.append(Asm.@".rpush Xn"(reg));
+        }
+        for (Asm.movImm64(21, self.data_stack_top)) |instr| try code.append(instr);
+        try code.append(Asm.@"mov Xd, Xn"(22, 21));
+        try code.append(Asm.@".push x0");
+        const bl_pos = code.items.len;
+        try code.append(0);
+        try code.append(Asm.@".pop x0");
+        inline for (.{ 28, 27, 26, 25, 24, 23, 20, 19 }) |reg| {
+            try code.append(Asm.@".rpop Xn"(reg));
+        }
+        inline for (0..8) |i| {
+            try code.append(Asm.ldr_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
+        }
+        try code.append(Asm.add_sp_imm(64));
+        try code.append(Asm.@"ldp x21, x22, [sp], #0x10");
+        try code.append(Asm.@"ldp x29, x30, [sp], #0x10");
+        try code.append(Asm.ret);
+
+        const linked_base = @intFromPtr(self.image.mem.ptr) + self.image.end;
+        const offset_bytes: i64 = @as(i64, @intCast(target_addr)) - @as(i64, @intCast(linked_base + bl_pos * 4));
+        code.items[bl_pos] = Asm.@"bl offset"(@intCast(@divExact(offset_bytes, 4)));
+
+        const wrapper_code = try code.toOwnedSlice();
+        const executable = self.image.link(wrapper_code);
+        self.fyalloc.free(wrapper_code);
+        return @ptrCast(@alignCast(executable));
     }
 
     pub fn callWordRepeated(self: *Fy, name: []const u8, iterations: u64) !Value {
@@ -5180,6 +5235,27 @@ pub const Fy = struct {
                 else => return Error.ExpectedWord,
             };
 
+            // A lone literal body keeps its exact value for dsp: words (a
+            // tagged float drops two mantissa bits).
+            var exact: ?DspConst = null;
+            {
+                const saved_pos = self.parser.pos;
+                const saved_line = self.parser.line;
+                const t1 = try self.parser.nextToken();
+                const t2 = try self.parser.nextToken();
+                const ends = if (t2) |t| switch (t) {
+                    .Word => |w| std.mem.eql(u8, w, Word.END),
+                    else => false,
+                } else false;
+                if (ends) if (t1) |t| switch (t) {
+                    .Float => |f| exact = .{ .float = f },
+                    .Number => |n| exact = .{ .int = n },
+                    else => {},
+                };
+                self.parser.pos = saved_pos;
+                self.parser.line = saved_line;
+            }
+
             // Compile the body (terminated by ;) as a full Function so it can execute standalone
             var body_compiler = Compiler.init(self.fy, self.parser);
             body_compiler.namespace = self.namespace;
@@ -5196,7 +5272,19 @@ pub const Fy = struct {
             Builtins.fyPtr = @intFromPtr(self.fy);
             const body_fn: *const fn () Value = @ptrCast(@alignCast(body_exe));
             const value: u64 = @bitCast(body_fn());
+            const v: Value = @bitCast(value);
+            const dspc: ?DspConst = exact orelse if (isFloat(v))
+                DspConst{ .float = getFloat(v) }
+            else if (isInt(v))
+                DspConst{ .int = getInt(v) }
+            else
+                null;
+            try self.defineConstWord(cname, value, dspc);
+        }
 
+        /// Register `name` as a word pushing the tagged `value`; dsp: words
+        /// inline `dspc` in its place.
+        fn defineConstWord(self: *Compiler, cname: []const u8, value: u64, dspc: ?DspConst) Error!void {
             // Build a tiny word that just pushes this literal value
             var val_compiler = Compiler.init(self.fy, self.parser); // parser unused
             defer val_compiler.deinit();
@@ -5228,8 +5316,66 @@ pub const Fy = struct {
                 word.inlineable = false;
                 word.dsp = false;
                 word.dsp2 = false;
+                word.dsp_const = dspc;
             }
             if (final_name) |fn_| self.fy.fyalloc.free(fn_);
+            self.fy.dsp2_caller_gen +%= 1;
+        }
+
+        /// `table: name len body ;` — build a table of len + 1 f64 at load.
+        /// The body is ordinary fy run for i = 0..len (i a float), leaving
+        /// one number. The extra cell at i = len lets interpolation at the
+        /// last index read valid memory (and equals cell 0 for a periodic
+        /// body). `name` pushes the table's address; dsp: words read it with
+        /// f@i. `name-len` is len, as a float.
+        fn compileTable(self: *Compiler) Error!void {
+            const name_tok = try self.parser.nextToken();
+            const tname = switch (name_tok orelse return Error.UnexpectedEndOfInput) {
+                .Word => |w| w,
+                else => return Error.ExpectedWord,
+            };
+            const len_tok = try self.parser.nextToken();
+            const len: usize = switch (len_tok orelse return Error.UnexpectedEndOfInput) {
+                .Number => |n| if (n > 0 and n <= (1 << 24)) @intCast(n) else {
+                    self.setError("table: {s}: length must be 1..16777216", .{tname});
+                    return Error.ExpectedWord;
+                },
+                else => {
+                    self.setError("table: {s}: expected a length after the name", .{tname});
+                    return Error.ExpectedWord;
+                },
+            };
+
+            var compiler = Compiler.init(self.fy, self.parser);
+            defer compiler.deinit();
+            compiler.namespace = self.namespace;
+            const code = try compiler.compile(.UserWord);
+            const link_base = @intFromPtr(self.fy.image.mem.ptr) + self.fy.image.end;
+            compiler.resolveRelocations(link_base, code);
+            const entry = self.fy.image.link(code);
+            self.fy.fyalloc.free(code);
+
+            const call = self.fy.argCallWrapper(@intFromPtr(entry.ptr)) catch return Error.OutOfMemory;
+            const mem = self.fy.fyalloc.alloc(f64, len + 1) catch return Error.OutOfMemory;
+            self.fy.tables.append(mem) catch {
+                self.fy.fyalloc.free(mem);
+                return Error.OutOfMemory;
+            };
+            Builtins.fyPtr = @intFromPtr(self.fy);
+            for (mem, 0..) |*cell, i| {
+                const r = call(makeFloat(@floatFromInt(i)));
+                cell.* = if (isFloat(r)) getFloat(r) else if (isInt(r)) @floatFromInt(getInt(r)) else {
+                    self.setError("table: {s}: the body must leave a number (i = {d})", .{ tname, i });
+                    return Error.ExpectedWord;
+                };
+            }
+
+            const addr: i64 = @intCast(@intFromPtr(mem.ptr));
+            try self.defineConstWord(tname, @bitCast(makeInt(addr)), .{ .int = addr });
+            var buf: [256]u8 = undefined;
+            const len_name = std.fmt.bufPrint(&buf, "{s}-len", .{tname}) catch return Error.OutOfMemory;
+            const flen: f64 = @floatFromInt(len);
+            try self.defineConstWord(len_name, @bitCast(makeFloat(flen)), .{ .float = flen });
         }
 
         /// `macro: name body ;` — compile body as standalone function, register as immediate word.
@@ -5779,6 +5925,13 @@ pub const Fy = struct {
                             program.addNumber(value) catch return Error.OutOfMemory;
                             continue;
                         }
+                        if (self.fy.userWords.get(word)) |uw| if (uw.dsp_const) |dc| {
+                            switch (dc) {
+                                .int => |n| program.addNumber(n) catch return Error.OutOfMemory,
+                                .float => |f| program.addFloat(f) catch return Error.OutOfMemory,
+                            }
+                            continue;
+                        };
                         program.addWord(word) catch |err| {
                             self.setError("dsp: unsupported word or stack effect near '{s}' ({s})", .{ word, @errorName(err) });
                             return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
@@ -6684,6 +6837,11 @@ pub const Fy = struct {
                         if (std.mem.eql(u8, w, "::")) {
                             self.resetQuoteTracking();
                             try self.compileConstant();
+                            continue;
+                        }
+                        if (std.mem.eql(u8, w, "table:")) {
+                            self.resetQuoteTracking();
+                            try self.compileTable();
                             continue;
                         }
                         if (std.mem.eql(u8, w, "macro:")) {

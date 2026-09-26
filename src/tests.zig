@@ -1613,6 +1613,52 @@ test "dsp: native math, masks and exponent bits" {
     try ok(6.0, getFyFloat(try fy.run("1.0 t-out")), eps);
 }
 
+test "dsp: :: constants and table: are visible to dsp words" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run(
+        \\:: GAIN 0.1234567890123456789 ;
+        \\:: TAPS 3 ;
+        \\:: TWICE 2.0 3.0 f* ;
+        \\table: sq 8 dup f* ;
+        \\table: ramp 4 f>i 2 * ;
+        \\dsp: t-ramp | out x | ramp x f@i out f!64 ;
+        \\dsp: t-gain | out | GAIN out f!64 ;
+        \\dsp: t-twice | out | TWICE out f!64 ;
+        \\dsp: t-sq | out x | sq x f@i out f!64 ;
+        \\dsp: t-sq-len | out | sq-len out f!64 ;
+        \\dsp: t-lerp | out x |
+        \\  x floor | i |  x i f- | fr |
+        \\  sq i f@i | a |  sq 8 ptr+ i f@i  a f-  fr f*  a f+  out f!64 ;
+    );
+
+    var out: f64 = 0;
+    const one = [_]Fy.Dsp2RawArg{.{ .ptr = @intFromPtr(&out) }};
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("t-gain", 1, &one);
+    try std.testing.expectEqual(@as(f64, 0.1234567890123456789), out); // exact, not tagged
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("t-twice", 1, &one);
+    try std.testing.expectApproxEqAbs(6.0, out, 1e-12);
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("t-sq-len", 1, &one);
+    try std.testing.expectEqual(@as(f64, 8.0), out);
+    const at = struct {
+        fn f(fy_: *Fy, word: []const u8, o: *f64, x: f64) !f64 {
+            const args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(o) }, .{ .f64 = x } };
+            _ = try fy_.callDsp2RawRepeatedWithArgsNoResult(word, 1, &args);
+            return o.*;
+        }
+    }.f;
+    try std.testing.expectApproxEqAbs(9.0, try at(&fy, "t-sq", &out, 3.0), 1e-12);
+    try std.testing.expectApproxEqAbs(64.0, try at(&fy, "t-sq", &out, 8.0), 1e-12); // the extra cell
+    try std.testing.expectApproxEqAbs(12.5, try at(&fy, "t-lerp", &out, 3.5), 1e-12);
+    // An int body is converted: ramp[i] = 2 i
+    try std.testing.expectEqual(@as(f64, 6.0), try at(&fy, "t-ramp", &out, 3.0));
+    // Normal fy sees the address and the length.
+    try std.testing.expect(Fy.getInt(try fy.run("sq")) != 0);
+    try std.testing.expectEqual(@as(i64, 3), Fy.getInt(try fy.run("TAPS")));
+}
+
 test "dsp: typed locals, dotted fields, -> stores and & addresses" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();

@@ -658,6 +658,12 @@ pub const Builder = struct {
             self.values.items[id].ty = ty;
             return;
         }
+        // An integer literal used as a pointer is an absolute address (a
+        // `table:`).
+        if (old == .int and ty == .ptr and self.values.items[id].op == .int_const) {
+            self.values.items[id].ty = .ptr;
+            return;
+        }
         if (old != ty) return Error.TypeMismatch;
     }
 
