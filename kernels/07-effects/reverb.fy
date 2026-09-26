@@ -40,11 +40,6 @@ include "../05-drums/sine.fy"
 ustruct: VerbState
   f64 buf        ( host-injected ring base pointer )
   f64 buf-len    ( host-injected element count )
-  f64 diff       ( stage scratch: diffused input )
-  f64 ta         ( stage scratch: branch A first-delay output )
-  f64 tb         ( stage scratch: branch B first-delay output )
-  f64 mlfo-a     ( stage scratch: branch A mod offset, samples )
-  f64 mlfo-b     ( stage scratch: branch B mod offset, samples )
   f64 lfo-phase
   f64 seeded     ( 0 fresh state, 1 after first prepare )
   f64 in-lpf     ( bandwidth filter state )
@@ -80,7 +75,7 @@ ustruct: VerbParams
   f64 mod-depth-spl
 ;
 
-( --- ring helpers: inlined into each stage ------------------------- )
+( --- ring helpers: inlined into the tick ------------------------- )
 
 ( buf off posp len x g -- y : one allpass ring tick.
   v = ring out, w = x - g*v written back, y = v + g*w. )
@@ -193,71 +188,55 @@ dsp: verb-prepare
 
 ( --- per-sample stages ----------------------------------------------- )
 
-( state params in -- : predelay ring + bandwidth lowpass -> diff. )
-dsp: verb-pre
-  | state:VerbState params:VerbParams in:Io |
-  state.buf& p@64 | buf |
-  in.in-l | x |
+( Predelay ring + bandwidth lowpass -> diffuser input. )
+dsp: verb-pre | state:VerbState params:VerbParams buf x -- d |
   buf 0.0 state.pre-pos& params.pre-len x vb-dl | v |
   state.in-lpf | z |
   z  v z f-  params.bw-a f*  f+ | zn |
   zn -> state.in-lpf
-  zn -> state.diff
+  zn
 ;
 
-( state params -- : input diffusion allpasses 1+2, g 0.75. )
-dsp: verb-in-ap12
-  | state:VerbState params:VerbParams |
-  state.buf& p@64 | buf |
+( Input diffusion allpasses 1+2, g 0.75. )
+dsp: verb-in-ap12 | state:VerbState params:VerbParams buf x -- y |
   buf 12288.0 state.inap1-pos& params.inap1-len
-    state.diff 0.75 vb-ap | y1 |
+    x 0.75 vb-ap | y1 |
   buf 12768.0 state.inap2-pos& params.inap2-len
     y1 0.75 vb-ap
-  -> state.diff
 ;
 
-( state params -- : input diffusion allpasses 3+4, g 0.625. )
-dsp: verb-in-ap34
-  | state:VerbState params:VerbParams |
-  state.buf& p@64 | buf |
+( Input diffusion allpasses 3+4, g 0.625. )
+dsp: verb-in-ap34 | state:VerbState params:VerbParams buf x -- y |
   buf 13128.0 state.inap3-pos& params.inap3-len
-    state.diff 0.625 vb-ap | y3 |
+    x 0.625 vb-ap | y3 |
   buf 14376.0 state.inap4-pos& params.inap4-len
     y3 0.625 vb-ap
-  -> state.diff
 ;
 
-( state params -- : advance the tank LFO, derive both mod offsets. )
-dsp: verb-lfo
-  | state:VerbState params:VerbParams |
+( Advance the tank LFO, derive both mod offsets [samples]. )
+dsp: verb-lfo | state:VerbState params:VerbParams -- ma mb |
   state.lfo-phase state.mod-inc-ch f+ ffrac | ph |
   ph -> state.lfo-phase
   params.mod-depth-spl | dep |
-  dep 0.5 0.5 ph sine-shape f* f+ f* -> state.mlfo-a
-  dep 0.5 0.5 ph 0.25 f+ sine-shape f* f+ f* -> state.mlfo-b
+  dep 0.5 0.5 ph sine-shape f* f+ f*
+  dep 0.5 0.5 ph 0.25 f+ sine-shape f* f+ f*
 ;
 
-( state params -- : branch A front half - feedback from branch B's last
-  delay, modulated decay-diffusion allpass, first long delay -> ta. )
-dsp: verb-tank-a-in
-  | state:VerbState params:VerbParams |
-  state.buf& p@64 | buf |
+( Branch A front half - feedback from branch B's last delay, modulated
+  decay-diffusion allpass, first long delay. )
+dsp: verb-tank-a-in | state:VerbState params:VerbParams buf d m -- ta |
   buf 75128.0 state.b-d2-pos params.b-d2-len 0.0 vb-tap
   params.decay f*
-  state.diff f+ | fba |
+  d f+ | fba |
   buf 15288.0 state.a-ap1-pos& params.a-ap1-len
-    fba 0.70 state.mlfo-a vb-apm | y |
+    fba 0.70 m vb-apm | y |
   buf 17592.0 state.a-d1-pos& params.a-d1-len y vb-dl
-  -> state.ta
 ;
 
-( state params -- : branch A back half - damping, decay, second
-  allpass, second delay. )
-dsp: verb-tank-a-out
-  | state:VerbState params:VerbParams |
-  state.buf& p@64 | buf |
+( Branch A back half - damping, decay, second allpass, second delay. )
+dsp: verb-tank-a-out | state:VerbState params:VerbParams buf ta -- |
   state.damp-a-z | z |
-  z  state.ta z f-  params.damp-a f*  f+ | zn |
+  z  ta z f-  params.damp-a f*  f+ | zn |
   zn -> state.damp-a-z
   buf 31992.0 state.a-ap2-pos& params.a-ap2-len
     zn params.decay f* 0.50 vb-ap | y |
@@ -265,25 +244,20 @@ dsp: verb-tank-a-out
   drop
 ;
 
-( state params -- : branch B front half, fed from branch A's last delay. )
-dsp: verb-tank-b-in
-  | state:VerbState params:VerbParams |
-  state.buf& p@64 | buf |
+( Branch B front half, fed from branch A's last delay. )
+dsp: verb-tank-b-in | state:VerbState params:VerbParams buf d m -- tb |
   buf 37816.0 state.a-d2-pos params.a-d2-len 0.0 vb-tap
   params.decay f*
-  state.diff f+ | fbb |
+  d f+ | fbb |
   buf 49848.0 state.b-ap1-pos& params.b-ap1-len
-    fbb 0.70 state.mlfo-b vb-apm | y |
+    fbb 0.70 m vb-apm | y |
   buf 52920.0 state.b-d1-pos& params.b-d1-len y vb-dl
-  -> state.tb
 ;
 
-( state params -- : branch B back half. )
-dsp: verb-tank-b-out
-  | state:VerbState params:VerbParams |
-  state.buf& p@64 | buf |
+( Branch B back half. )
+dsp: verb-tank-b-out | state:VerbState params:VerbParams buf tb -- |
   state.damp-b-z | z |
-  z  state.tb z f-  params.damp-a f*  f+ | zn |
+  z  tb z f-  params.damp-a f*  f+ | zn |
   zn -> state.damp-b-z
   buf 66552.0 state.b-ap2-pos& params.b-ap2-len
     zn params.decay f* 0.50 vb-ap | y |
@@ -291,10 +265,8 @@ dsp: verb-tank-b-out
   drop
 ;
 
-( out state params in -- : seven output taps, dry/wet mix. )
-dsp: verb-out
-  | out state:VerbState params:VerbParams in:Io |
-  state.buf& p@64 | buf |
+( Seven output taps, dry/wet mix. )
+dsp: verb-out | out state:VerbState params:VerbParams buf x -- |
   buf 52920.0 state.b-d1-pos params.b-d1-len
     state.tap-1 vb-tap
   buf 52920.0 state.b-d1-pos params.b-d1-len
@@ -310,22 +282,23 @@ dsp: verb-out
   buf 37816.0 state.a-d2-pos params.a-d2-len
     state.tap-7 vb-tap f-
   0.6 f* | wet |
-  in.in-l | x |
   x  1.0 params.mix f-  f*
   wet params.mix f*  f+
   out f!64
 ;
 
-( io ctx state params -- : the full plate tick, staged. )
-dsp: k-verb-tick
-  | io ctx state params |
-  state params io call: verb-pre
-  state params call: verb-in-ap12
-  state params call: verb-in-ap34
-  state params call: verb-lfo
-  state params call: verb-tank-a-in
-  state params call: verb-tank-a-out
-  state params call: verb-tank-b-in
-  state params call: verb-tank-b-out
-  io state params io call: verb-out
+( io ctx state params -- : the full plate tick.  Ring writes [f!i] land
+  at the end of the word; no read in a later stage hits the slot an
+  earlier stage wrote this sample [taps sit >= 1 sample behind the
+  write head], so that ordering is unobservable. )
+dsp: k-verb-tick | io:Io ctx state:VerbState params -- |
+  state.buf& p@64 | buf |
+  io.in-l | x |
+  state params buf x verb-pre | d0 |
+  state params buf d0 verb-in-ap12 | d1 |
+  state params buf d1 verb-in-ap34 | d |
+  state params verb-lfo | ma mb |
+  state params buf  state params buf d ma verb-tank-a-in  verb-tank-a-out
+  state params buf  state params buf d mb verb-tank-b-in  verb-tank-b-out
+  io state params buf x verb-out
 ;

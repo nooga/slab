@@ -31,9 +31,8 @@ include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../00-primitives/pow2.fy"
 include "../00-primitives/trig.fy"
 
-( running sample between stages, then five biquads' z-state. )
+( five biquads' z-state. )
 ustruct: EqState
-  f64 sig
   f64 hpf-z1  f64 hpf-z2
   f64 ls-z1   f64 ls-z2
   f64 p1-z1   f64 p1-z2
@@ -169,13 +168,12 @@ dsp: eq-coef-hs
 
 ( ctx state params -- : fill every band's coefficients.  derive-data is
   unused; each stage gets its own register budget. )
-dsp: eq-derive
-  | ctx state params |
-  params call: eq-coef-hpf
-  params call: eq-coef-ls
-  params call: eq-coef-p1
-  params call: eq-coef-p2
-  params call: eq-coef-hs
+dsp: eq-derive | ctx state params -- |
+  params eq-coef-hpf
+  params eq-coef-ls
+  params eq-coef-p1
+  params eq-coef-p2
+  params eq-coef-hs
 ;
 
 ( ctx state params -- : stash sr for the derive stages.  No coefficient
@@ -186,74 +184,65 @@ dsp: eq-block-prepare
   sr -> params.sr
 ;
 
-( ---- per-sample biquad stages (one call: stage per band) ------------ )
+( ---- per-sample biquad stages ---------------------------------------- )
 
-( in state params -- : high-pass reads the input cell, writes state.sig. )
-dsp: eq-tick-hpf
-  | in:Io state:EqState params:EqParams |
-  in.in-l | x |
+( High-pass. )
+dsp: eq-tick-hpf | state:EqState params:EqParams x -- y |
   params.hpf-b0 x f* state.hpf-z1 f+ | y |
   params.hpf-b1 x f*  params.hpf-a1 y f* f-  state.hpf-z2 f+
   -> state.hpf-z1
   params.hpf-b2 x f*  params.hpf-a2 y f* f-
   -> state.hpf-z2
-  y -> state.sig
+  y
 ;
 
-( state params -- : low shelf, reads/writes state.sig. )
-dsp: eq-tick-ls
-  | state:EqState params:EqParams |
-  state.sig | x |
+( Low shelf. )
+dsp: eq-tick-ls | state:EqState params:EqParams x -- y |
   params.ls-b0 x f* state.ls-z1 f+ | y |
   params.ls-b1 x f*  params.ls-a1 y f* f-  state.ls-z2 f+
   -> state.ls-z1
   params.ls-b2 x f*  params.ls-a2 y f* f-
   -> state.ls-z2
-  y -> state.sig
+  y
 ;
 
-( state params -- : low-mid peak. )
-dsp: eq-tick-p1
-  | state:EqState params:EqParams |
-  state.sig | x |
+( Low-mid peak. )
+dsp: eq-tick-p1 | state:EqState params:EqParams x -- y |
   params.p1-b0 x f* state.p1-z1 f+ | y |
   params.p1-b1 x f*  params.p1-a1 y f* f-  state.p1-z2 f+
   -> state.p1-z1
   params.p1-b2 x f*  params.p1-a2 y f* f-
   -> state.p1-z2
-  y -> state.sig
+  y
 ;
 
-( state params -- : high-mid peak. )
-dsp: eq-tick-p2
-  | state:EqState params:EqParams |
-  state.sig | x |
+( High-mid peak. )
+dsp: eq-tick-p2 | state:EqState params:EqParams x -- y |
   params.p2-b0 x f* state.p2-z1 f+ | y |
   params.p2-b1 x f*  params.p2-a1 y f* f-  state.p2-z2 f+
   -> state.p2-z1
   params.p2-b2 x f*  params.p2-a2 y f* f-
   -> state.p2-z2
-  y -> state.sig
+  y
 ;
 
-( out state params -- : high shelf, reads state.sig, writes out. )
-dsp: eq-tick-hs
-  | out state:EqState params:EqParams |
-  state.sig | x |
+( High shelf. )
+dsp: eq-tick-hs | state:EqState params:EqParams x -- y |
   params.hs-b0 x f* state.hs-z1 f+ | y |
   params.hs-b1 x f*  params.hs-a1 y f* f-  state.hs-z2 f+
   -> state.hs-z1
   params.hs-b2 x f*  params.hs-a2 y f* f-
   -> state.hs-z2
-  y out f!64
+  y
 ;
 
 ( io ctx state params -- : the full EQ tick, five biquads in series. )
-dsp: k-eq-tick
-  | io ctx state params |
-  io state params call: eq-tick-hpf
-  state params call: eq-tick-ls
-  state params call: eq-tick-p1
-  state params call: eq-tick-p2
-  io state params call: eq-tick-hs
+dsp: k-eq-tick | io:Io ctx state params -- |
+  state params
+  state params
+  state params
+  state params
+  state params io.in-l eq-tick-hpf
+  eq-tick-ls eq-tick-p1 eq-tick-p2 eq-tick-hs
+  io f!64
 ;

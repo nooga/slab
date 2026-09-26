@@ -12,8 +12,7 @@
   ~10 ms release] into `level`; `level` vs THRESH decides open/closed; a
   sample-counted HOLD bridges short dips; the gain slews toward its target
   [1 open, floor closed] with the ATK or REL coefficient.  Branch-free via
-  fsel-lt.  Stages are split into call: words so each gets a fresh
-  register budget [same discipline as comp.fy]. )
+  fsel-lt.  Stages are value-returning words inlined into one tick. )
 
 include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../00-primitives/pow2.fy"
@@ -23,7 +22,6 @@ ustruct: GateState
   f64 level    ( detector peak-follower envelope )
   f64 gain     ( current gate gain, floor..1 )
   f64 hold-ctr ( samples left before the gate may start closing )
-  f64 tgt      ( target gain for this sample - scratch between stages )
 ;
 
 ustruct: GateParams
@@ -61,54 +59,43 @@ dsp: gate-block-prepare
 ;
 
 
-( state params -- : peak-follower on the shared detector trace.  Instant
-  attack to a higher peak, exponential release otherwise. )
-dsp: gate-detect
-  | io:Io state:GateState params:GateParams |
+( Peak-follower on the shared detector trace.  Instant attack to a higher
+  peak, exponential release otherwise. )
+dsp: gate-detect | io:Io state:GateState params:GateParams -- lv |
   io.det | d |
-  state.level | lv |
-  lv d  d  d  lv d f- params.det-rel-c f* f+  fsel-lt
-  -> state.level
+  state.level | lv0 |
+  lv0 d  d  d  lv0 d f- params.det-rel-c f* f+  fsel-lt | lv |
+  lv -> state.level
+  lv
 ;
 
-( state params -- : open/hold/close decision -> target gain + hold counter.
+( Open/hold/close decision -> target gain + hold counter.
   open  = thresh < level ; gateon = open OR hold-ctr > 0 ;
   target = floor + gateon*(1-floor) ; new hold = open ? hold-spl : max(hold-1,0). )
-dsp: gate-decide
-  | state:GateState params:GateParams |
-  state.level | lv |
+dsp: gate-decide | state:GateState params:GateParams lv -- target |
   params.thresh-lin lv 1.0 0.0 fsel-lt | open |
   state.hold-ctr | hold |
   0.5  open  0.0 hold 1.0 0.0 fsel-lt  f+  1.0 0.0 fsel-lt | gateon |
-  params.floor-lin  gateon 1.0 params.floor-lin f- f*  f+
-  -> state.tgt
+  params.floor-lin  gateon 1.0 params.floor-lin f- f*  f+ | target |
   open 0.5  hold 1.0 f- 0.0 0.0 hold 1.0 f- fsel-lt  params.hold-spl  fsel-lt
   -> state.hold-ctr
+  target
 ;
 
-( state params -- : slew the gain toward the target [attack opening,
-  release closing]. )
-dsp: gate-slew
-  | state:GateState params:GateParams |
-  state.gain | g |
-  state.tgt | target |
-  g target params.atk-c params.rel-c fsel-lt | c |
-  target  g target f-  c f*  f+
-  -> state.gain
+( Slew the gain toward the target [attack opening, release closing]. )
+dsp: gate-slew | state:GateState params:GateParams target -- g |
+  state.gain | g0 |
+  g0 target params.atk-c params.rel-c fsel-lt | c |
+  target  g0 target f-  c f*  f+ | g |
+  g -> state.gain
+  g
 ;
 
-( out state params in -- : apply the gate gain. )
-dsp: gate-apply
-  | out state:GateState params in:Io |
-  in.in-l state.gain f*
-  out f!64
-;
-
-( io ctx state params -- : the full gate tick, staged. )
-dsp: k-gate-tick
-  | io ctx state params |
-  io state params call: gate-detect
-  state params call: gate-decide
-  state params call: gate-slew
-  io state params io call: gate-apply
+( io ctx state params -- : the full gate tick. )
+dsp: k-gate-tick | io:Io ctx state params -- |
+  io state params gate-detect | lv |
+  state params lv gate-decide | target |
+  state params target gate-slew | g |
+  io.in-l g f*
+  io f!64
 ;

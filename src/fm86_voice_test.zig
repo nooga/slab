@@ -1,12 +1,10 @@
-//! Rig validation for the FM-86 voice stages (kernels/06-voices/fm86_voice.fy).
+//! Rig validation for the FM-86 voice (kernels/06-voices/fm86_voice.fy).
 //!
-//! The machine runs ONE word per sample (k-fm86-voice-sample), which composes
-//! the stages with `call:`. The raw-register probe path can't build a `call:`
-//! word, so here we drive the same stages directly — six fm86-eg-opN (each one
-//! validated dx7-eg-step writing gain*output-level into its lvl slot) then the
-//! matrix — and pin the result sample-exact against the plain-Zig reference.
-//! The composed call: word itself is exercised end-to-end via the machine
-//! adapter (src/machines/fy_raw_machine.zig).
+//! The machine runs ONE word per sample (k-fm86-voice-sample), which inlines
+//! six dx7-eg-step envelopes and the six-operator matrix. Here we drive that
+//! word directly through the raw probe path and pin it against the plain-Zig
+//! reference; the machine adapter (src/machines/fy_raw_machine.zig) covers it
+//! end to end.
 
 const std = @import("std");
 const Fy = @import("fy").Fy;
@@ -20,13 +18,11 @@ const State = extern struct {
     eg: [18]f64 = [_]f64{0} ** 18, // per op: value, stage, prev-gate
     gate: f64 = 0,
     note_hz: f64 = 0,
-    vout: f64 = 0,
 };
 
-// Mirrors ustruct Fm86Params (110 f64). The first 39 are a Dx7VoiceParams.
+// Mirrors ustruct Fm86Params (98 f64). The first 27 are the routing block of
+// a Dx7VoiceParams (fb, w, c); the per-op inc/lvl are values inside the voice.
 const Params = extern struct {
-    inc: [6]f64 = [_]f64{0} ** 6,
-    lvl: [6]f64 = [_]f64{0} ** 6, // written by the kernel each sample
     fb: [6]f64 = [_]f64{0} ** 6,
     w01: f64 = 0,
     w02: f64 = 0,
@@ -75,13 +71,13 @@ fn op(st: *[18]f64, i: usize, inc: f64, mod: f64, level: f64, fb: f64) f64 {
     return out;
 }
 
-fn voiceStep(st: *[18]f64, p: *const Params) f64 {
-    const o5 = op(st, 5, p.inc[5], 0.0, p.lvl[5], p.fb[5]);
-    const o4 = op(st, 4, p.inc[4], p.w45 * o5, p.lvl[4], p.fb[4]);
-    const o3 = op(st, 3, p.inc[3], p.w34 * o4 + p.w35 * o5, p.lvl[3], p.fb[3]);
-    const o2 = op(st, 2, p.inc[2], p.w23 * o3 + p.w24 * o4 + p.w25 * o5, p.lvl[2], p.fb[2]);
-    const o1 = op(st, 1, p.inc[1], p.w12 * o2 + p.w13 * o3 + p.w14 * o4 + p.w15 * o5, p.lvl[1], p.fb[1]);
-    const o0 = op(st, 0, p.inc[0], p.w01 * o1 + p.w02 * o2 + p.w03 * o3 + p.w04 * o4 + p.w05 * o5, p.lvl[0], p.fb[0]);
+fn voiceStep(st: *[18]f64, p: *const Params, inc: *const [6]f64, lvl: *const [6]f64) f64 {
+    const o5 = op(st, 5, inc[5], 0.0, lvl[5], p.fb[5]);
+    const o4 = op(st, 4, inc[4], p.w45 * o5, lvl[4], p.fb[4]);
+    const o3 = op(st, 3, inc[3], p.w34 * o4 + p.w35 * o5, lvl[3], p.fb[3]);
+    const o2 = op(st, 2, inc[2], p.w23 * o3 + p.w24 * o4 + p.w25 * o5, lvl[2], p.fb[2]);
+    const o1 = op(st, 1, inc[1], p.w12 * o2 + p.w13 * o3 + p.w14 * o4 + p.w15 * o5, lvl[1], p.fb[1]);
+    const o0 = op(st, 0, inc[0], p.w01 * o1 + p.w02 * o2 + p.w03 * o3 + p.w04 * o4 + p.w05 * o5, lvl[0], p.fb[0]);
     return p.c[0] * o0 + p.c[1] * o1 + p.c[2] * o2 + p.c[3] * o3 + p.c[4] * o4 + p.c[5] * o5;
 }
 
@@ -120,33 +116,30 @@ fn egGain(st: []f64, ep: []const f64, gate: f64) f64 {
     return std.math.exp2((newval - 1.0) * 16.0);
 }
 
-fn renderRef(st: *State, p: *Params, gate: f64) f64 {
+fn renderRef(st: *State, p: *const Params, gate: f64) f64 {
+    var inc: [6]f64 = undefined;
+    var lvl: [6]f64 = undefined;
+    const base = st.note_hz * p.inv_sr;
     inline for (0..6) |i| {
-        p.lvl[i] = p.ol[i] * egGain(st.eg[i * 3 .. i * 3 + 3], p.eg[i * 9 .. i * 9 + 9], gate);
+        inc[i] = p.ratio[i] * base;
+        lvl[i] = p.ol[i] * egGain(st.eg[i * 3 .. i * 3 + 3], p.eg[i * 9 .. i * 9 + 9], gate);
     }
-    return voiceStep(&st.op, p);
+    return voiceStep(&st.op, p, &inc, &lvl);
 }
 
-// Drive the voice the way k-fm86-voice-sample's `call:` stages do, but as
-// separate raw-probe calls: the raw-register probe path cannot build a word
-// containing `call:` (only the machine's caller path can), so we exercise each
-// stage word — none of which contain `call:` — directly. This pins the staged
-// DSP sample-exact; the composed call: word itself is covered by the machine
-// end-to-end test (src/machines/fy_raw_machine.zig).
-const EG_WORDS = [_][:0]const u8{ "fm86-eg-op0", "fm86-eg-op1", "fm86-eg-op2", "fm86-eg-op3", "fm86-eg-op4", "fm86-eg-op5" };
-
+// One raw call of the render word; it accumulates into out, so zero it
+// first. ctx is unused by the voice (a dummy pointer).
 fn renderFy(host: *FyHost, out: *f64, st: *State, p: *Params, gate: f64) !void {
     st.gate = gate;
-    const eg_args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(st) }, .{ .ptr = @intFromPtr(p) } };
-    for (EG_WORDS) |w| {
-        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(w, 1, &eg_args);
-    }
-    const voice_args = [_]Fy.Dsp2RawArg{
+    out.* = 0;
+    var ctx_dummy: [8]f64 = [_]f64{0} ** 8;
+    const args = [_]Fy.Dsp2RawArg{
         .{ .ptr = @intFromPtr(out) },
+        .{ .ptr = @intFromPtr(&ctx_dummy) },
         .{ .ptr = @intFromPtr(st) },
         .{ .ptr = @intFromPtr(p) },
     };
-    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("k-dx7-voice", 1, &voice_args);
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("k-fm86-voice-sample", 1, &args);
 }
 
 fn initIdle(st: *State) void {
@@ -166,7 +159,7 @@ fn setEg(p: *Params, i: usize, s1: f64, s2: f64, s3: f64, s4: f64, l1: f64, l2: 
     p.eg[b + 8] = rs;
 }
 
-test "fm86 voice stages match the Zig reference" {
+test "fm86 voice matches the Zig reference" {
     var host = FyHost.init(std.testing.allocator);
     defer host.deinit();
     try host.compileFile(PATH);
@@ -174,8 +167,9 @@ test "fm86 voice stages match the Zig reference" {
 
     // 2-op: op1 modulates op0 (the only carrier), each with its own envelope.
     var p = Params{};
-    p.inc[0] = 220.0 / 48000.0;
-    p.inc[1] = 220.0 / 48000.0;
+    p.ratio[0] = 1.0;
+    p.ratio[1] = 1.0;
+    p.inv_sr = 1.0 / 48000.0;
     p.w01 = 1.0;
     p.c[0] = 1.0;
     p.ol[0] = 1.0;
@@ -184,9 +178,9 @@ test "fm86 voice stages match the Zig reference" {
     setEg(&p, 1, 0.012, 0.006, 0.004, 0.01, 1.0, 0.7, 0.5, 0.0, 1.0);
 
     var fy_p = p;
-    var ref_p = p;
-    var fy_st = State{};
-    var ref_st = State{};
+    const ref_p = p;
+    var fy_st = State{ .note_hz = 220.0 };
+    var ref_st = State{ .note_hz = 220.0 };
     initIdle(&fy_st);
     initIdle(&ref_st);
 
@@ -210,8 +204,9 @@ test "fm86 voice envelope shapes amplitude (silent -> swell -> release)" {
     Fy.Builtins.fyPtr = @intFromPtr(&host.fy);
 
     var p = Params{};
-    p.inc[0] = 0.02;
-    p.inc[1] = 0.02;
+    p.ratio[0] = 1.0;
+    p.ratio[1] = 1.0;
+    p.inv_sr = 1.0;
     p.w01 = 1.0;
     p.c[0] = 1.0;
     p.ol[0] = 1.0;
@@ -219,7 +214,7 @@ test "fm86 voice envelope shapes amplitude (silent -> swell -> release)" {
     setEg(&p, 0, 0.01, 0.01, 0.005, 0.01, 1.0, 0.97, 0.95, 0.0, 1.0);
     setEg(&p, 1, 0.01, 0.01, 0.005, 0.01, 1.0, 0.8, 0.7, 0.0, 1.0);
 
-    var st = State{};
+    var st = State{ .note_hz = 0.02 };
     initIdle(&st);
     var out: f64 = 0;
     const n = 900;

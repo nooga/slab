@@ -1,22 +1,20 @@
 ( fm86_voice.fy — the complete FM-86 (DX7) voice as ONE render word.
 
-  The audio render path runs a single dsp2 word per sample (a pre-built JIT
-  loop, FyRawMachine.renderVoiceSegment). The full voice is six per-operator
-  envelopes plus the six-operator algorithm matrix — too deep for one word's
-  32-register budget. So, exactly like the MS-20 voice
-  (ms20_voice_probe.fy, k-ms20-voice-sample), it is composed from `call:`
-  STAGES: each stage is a separate compiled word with a fresh register budget
-  that hands off through state/params memory rather than the data stack.
+  The audio render path runs a single dsp word per sample (a pre-built JIT
+  loop, FyRawMachine.renderVoiceSegment). k-fm86-voice-sample inlines the
+  whole voice: six operators [fm-op-step], each with its own validated
+  dx7-eg-step envelope, routed by the same upper-triangular matrix as
+  dx7-voice-step [dx7_voice.fy]. Per-operator phase increments and
+  envelope-scaled levels are values computed just before each operator
+  runs; nothing hands off through memory. Measured in ReleaseFast this is
+  ~40% cheaper than the old `call:` stages that passed inc/lvl through
+  params scratch.
 
-  Layout trick: Fm86State's first 18 f64 are a Dx7VoiceState, and Fm86Params'
-  first 39 are a Dx7VoiceParams, so the matrix stage is literally k-dx7-voice
-  (no duplication). Each fm86-eg-opN advances one validated dx7-eg-step and
-  writes gain*output-level into that operator's params `lvl` slot, which the
-  matrix then reads. Both building blocks (dx7-eg-step, dx7-voice-step) are
-  pinned sample-exact in the rig; this file only wires them. )
+  Fm86Params starts with the routing block of a Dx7VoiceParams [fb, w, c;
+  no inc/lvl], filled each block by fm86-derive [fm86_algo.fy]. )
 
 include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
-include "dx7_voice.fy"
+include "../01-oscillators/fm_operator.fy"
 include "../03-envelopes/dx7_eg.fy"
 
 ustruct: Fm86State
@@ -34,16 +32,13 @@ ustruct: Fm86State
   f64 eg3-value f64 eg3-stage f64 eg3-pgate
   f64 eg4-value f64 eg4-stage f64 eg4-pgate
   f64 eg5-value f64 eg5-stage f64 eg5-pgate
-  ( --- per-voice scratch --- )
+  ( --- per-voice note --- )
   f64 gate                                   ( 1.0 held while the note is on )
   f64 note-hz                                ( fundamental; per voice for polyphony )
-  f64 vout                                   ( this voice's sample, before accumulate )
 ;
 
 ustruct: Fm86Params
-  ( --- prefix: a Dx7VoiceParams --- )
-  f64 inc0 f64 inc1 f64 inc2 f64 inc3 f64 inc4 f64 inc5   ( phase increments )
-  f64 lvl0 f64 lvl1 f64 lvl2 f64 lvl3 f64 lvl4 f64 lvl5   ( env*outlevel, per sample )
+  ( --- routing, filled by fm86-derive (Dx7VoiceParams minus inc/lvl) --- )
   f64 fb0  f64 fb1  f64 fb2  f64 fb3  f64 fb4  f64 fb5    ( per-op self feedback )
   f64 w01 f64 w02 f64 w03 f64 w04 f64 w05
   f64 w12 f64 w13 f64 w14 f64 w15
@@ -64,94 +59,60 @@ ustruct: Fm86Params
   ( --- global / per-note --- )
   f64 algo f64 feedback f64 master
   f64 inv-sample-rate
-  ( inc0..5 (the Dx7VoiceParams prefix) and lvl0..5 are per-sample scratch the
-    stages fill from per-voice state; note-hz now lives in Fm86State. )
 ;
 
-( Per-operator EG stage: advance dx7-eg-step on op N's EG block (gate read
-  from state scratch), scale by op N's output level, store into lvlN so the
-  matrix reads the envelope-scaled level this sample. dx7-eg-step is inlined
-  by name (it needs an f64 gate arg, which `call:` can't pass), but each of
-  these words is itself a `call:` boundary, so one EG fits the budget. )
-dsp: fm86-eg-op0
-  | state:Fm86State params:Fm86Params |
-  state.eg0-value&  params.eg0-s1&  state.gate  dx7-eg-step
-  params.ol0 f*  -> params.lvl0
-;
-dsp: fm86-eg-op1
-  | state:Fm86State params:Fm86Params |
-  state.eg1-value&  params.eg1-s1&  state.gate  dx7-eg-step
-  params.ol1 f*  -> params.lvl1
-;
-dsp: fm86-eg-op2
-  | state:Fm86State params:Fm86Params |
-  state.eg2-value&  params.eg2-s1&  state.gate  dx7-eg-step
-  params.ol2 f*  -> params.lvl2
-;
-dsp: fm86-eg-op3
-  | state:Fm86State params:Fm86Params |
-  state.eg3-value&  params.eg3-s1&  state.gate  dx7-eg-step
-  params.ol3 f*  -> params.lvl3
-;
-dsp: fm86-eg-op4
-  | state:Fm86State params:Fm86Params |
-  state.eg4-value&  params.eg4-s1&  state.gate  dx7-eg-step
-  params.ol4 f*  -> params.lvl4
-;
-dsp: fm86-eg-op5
-  | state:Fm86State params:Fm86Params |
-  state.eg5-value&  params.eg5-s1&  state.gate  dx7-eg-step
-  params.ol5 f*  -> params.lvl5
+( One operator's level this sample: advance its dx7-eg-step on its own EG
+  block and scale the gain by the operator's output level. )
+dsp: fm86-eg | eg egp gate ol -- lvl |
+  eg egp gate dx7-eg-step ol f*
 ;
 
-( state params -- : fill the per-op phase increments from this voice's own
-  fundamental (note-hz lives in state, so each polyphonic voice plays its own
-  pitch). inc = ratio * note-hz / sr, written into the params scratch the
-  matrix reads — like the per-op levels. )
-dsp: fm86-inc-stage
-  | state:Fm86State params:Fm86Params |
-  state.note-hz params.inv-sample-rate f*   | base |
-  params.ratio0 base f* -> params.inc0
-  params.ratio1 base f* -> params.inc1
-  params.ratio2 base f* -> params.inc2
-  params.ratio3 base f* -> params.inc3
-  params.ratio4 base f* -> params.inc4
-  params.ratio5 base f* -> params.inc5
+( One voice sample: the dx7-voice-step matrix with each operator's phase
+  increment [ratio * note-hz / sr] and envelope-scaled level computed in
+  place, just before the operator runs.  Operators evaluate high -> low, so
+  each is modulated only by higher operators already computed; carriers
+  sum into the output. )
+dsp: fm86-voice-step | state:Fm86State params:Fm86Params -- out |
+  state.gate | gate |
+  state.note-hz params.inv-sample-rate f* | base |
+  state.op5-phase&  params.ratio5 base f*
+    0.0
+    state.eg5-value& params.eg5-s1& gate params.ol5 fm86-eg
+  params.fb5 fm-op-step | out5 |
+  state.op4-phase&  params.ratio4 base f*
+    params.w45 out5 f*
+    state.eg4-value& params.eg4-s1& gate params.ol4 fm86-eg
+  params.fb4 fm-op-step | out4 |
+  state.op3-phase&  params.ratio3 base f*
+    params.w34 out4 f* params.w35 out5 f* f+
+    state.eg3-value& params.eg3-s1& gate params.ol3 fm86-eg
+  params.fb3 fm-op-step | out3 |
+  state.op2-phase&  params.ratio2 base f*
+    params.w23 out3 f* params.w24 out4 f* f+ params.w25 out5 f* f+
+    state.eg2-value& params.eg2-s1& gate params.ol2 fm86-eg
+  params.fb2 fm-op-step | out2 |
+  state.op1-phase&  params.ratio1 base f*
+    params.w12 out2 f* params.w13 out3 f* f+ params.w14 out4 f* f+ params.w15 out5 f* f+
+    state.eg1-value& params.eg1-s1& gate params.ol1 fm86-eg
+  params.fb1 fm-op-step | out1 |
+  state.op0-phase&  params.ratio0 base f*
+    params.w01 out1 f* params.w02 out2 f* f+ params.w03 out3 f* f+ params.w04 out4 f* f+ params.w05 out5 f* f+
+    state.eg0-value& params.eg0-s1& gate params.ol0 fm86-eg
+  params.fb0 fm-op-step | out0 |
+  params.c0 out0 f*
+  params.c1 out1 f* f+
+  params.c2 out2 f* f+
+  params.c3 out3 f* f+
+  params.c4 out4 f* f+
+  params.c5 out5 f* f+
 ;
 
-( state params -- : run the validated 6-op matrix and store this voice's sample
-  in state scratch. Kept its own `call:` stage so the heavy matrix gets a full
-  register budget (same as k-dx7-voice) — folding the accumulate in here too
-  overflows it and corrupts the caller's pointers. )
-dsp: fm86-matrix-stage
-  | state:Fm86State params |
-  state params dx7-voice-step
-  -> state.vout
-;
-
-( out state params -- : add this voice's sample to out. The host renders every
-  voice into the same zeroed buffer, so voices must accumulate — a plain write
-  would let the last/idle voice clobber the chord. Light, like Juno's VCA. )
-dsp: fm86-out-add
-  | out state:Fm86State params |
-  out f@64 state.vout f+ out f!64
-;
-
-( io ctx state params -- : one FM-86 voice sample. The inc stage sets per-voice
-  pitch, six EG stages refresh the per-op levels, the matrix computes the
-  sample into scratch, and a light stage accumulates it into out. Each `call:`
-  is a fresh register budget. )
-dsp: k-fm86-voice-sample
-  | io ctx state params |
-  state params call: fm86-inc-stage
-  state params call: fm86-eg-op0
-  state params call: fm86-eg-op1
-  state params call: fm86-eg-op2
-  state params call: fm86-eg-op3
-  state params call: fm86-eg-op4
-  state params call: fm86-eg-op5
-  state params call: fm86-matrix-stage
-  io state params call: fm86-out-add
+( io ctx state params -- : one FM-86 voice sample, ACCUMULATED into out.
+  The host renders every voice into the same zeroed buffer, so voices must
+  accumulate - a plain write would let the last/idle voice clobber the
+  chord. )
+dsp: k-fm86-voice-sample | io ctx state params -- |
+  io f@64  state params fm86-voice-step  f+  io f!64
 ;
 
 ( ── machine wiring: prepare / note / block-prepare ───────────────────── )
@@ -180,7 +141,7 @@ dsp: fm86-prepare
 ;
 
 ( ctx state params -- : start a note. Store this voice's fundamental
-  (per-voice, in state, so polyphony plays distinct pitches — the inc stage
+  (per-voice, in state, so polyphony plays distinct pitches — the voice
   reads it each sample). Raise the gate and clear every envelope's prev-gate so
   the next sample sees a note-on edge (retrigger from current value, no click).
   Velocity is unused in Phase-1 — the MASTER knob sets level. )

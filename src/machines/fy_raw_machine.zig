@@ -1986,7 +1986,6 @@ test "FM-86 fy derive routing matches the dx7_algorithms oracle (all 32)" {
     mach.set_param.?(mach.state, "master", 1.0);
     mach.set_param.?(mach.state, "feedback", feedback);
 
-    const vp: *const dx7_algorithms.VoiceParams = @ptrCast(@alignCast(&inst.params_buf[0]));
     var ctx = std.mem.zeroes(machine.MachineCtx);
     ctx.sample_rate = 48_000;
     ctx.block_size = 16;
@@ -2006,8 +2005,10 @@ test "FM-86 fy derive routing matches the dx7_algorithms oracle (all 32)" {
         // Tolerance, not exact: feedback/master flow through the f32 control
         // atomics, so a value like 0.6 comes back as 0.6 + ~1e-7.
         inline for (.{ "w01", "w02", "w03", "w04", "w05", "w12", "w13", "w14", "w15", "w23", "w24", "w25", "w34", "w35", "w45", "c0", "c1", "c2", "c3", "c4", "c5", "fb0", "fb1", "fb2", "fb3", "fb4", "fb5" }) |f| {
-            testing.expectApproxEqAbs(@field(want, f), @field(vp.*, f), 1e-5) catch |e| {
-                std.debug.print("algorithm {d} field {s}: want {d} got {d}\n", .{ n, f, @field(want, f), @field(vp.*, f) });
+            // Fm86Params carries the routing block by name (no inc/lvl prefix).
+            const got = inst.readParamF64(try fyFieldOffset(inst, "Fm86Params." ++ f));
+            testing.expectApproxEqAbs(@field(want, f), got, 1e-5) catch |e| {
+                std.debug.print("algorithm {d} field {s}: want {d} got {d}\n", .{ n, f, @field(want, f), got });
                 return e;
             };
         }

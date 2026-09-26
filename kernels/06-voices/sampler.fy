@@ -25,7 +25,6 @@ ustruct: SamplerState
   f64 age        ( seconds since note-on )
   f64 gate-time  ( age at release; huge while held )
   f64 vel
-  f64 samp       ( stage scratch: interpolated sample )
 ;
 
 ustruct: SamplerParams
@@ -90,12 +89,11 @@ dsp: sampler-note-off
   state.age -> state.gate-time
 ;
 
-( state params -- : interpolated read at phase, then advance with loop
-  wrap or one-shot park.  The read index is clamped to a valid range and
-  the output gated past the sample end, so an empty/exhausted asset is
-  silent rather than an out-of-bounds dereference. )
-dsp: smp-read
-  | state:SamplerState params:SamplerParams |
+( Interpolated read at phase, then advance with loop wrap or one-shot
+  park.  The read index is clamped to a valid range and the output gated
+  past the sample end, so an empty/exhausted asset is silent rather than
+  an out-of-bounds dereference. )
+dsp: smp-read | state:SamplerState params:SamplerParams -- smp |
   params.smp-ptr& p@64 | buf |
   params.smp-len | len |
   len 2.0 f- 0.0 268435456.0 fclamp | hi |
@@ -103,9 +101,8 @@ dsp: smp-read
   ph 0.0 hi fclamp | rp |
   buf rp f@i | s0 |
   buf rp 1.0 f+ f@i | s1 |
-  s0  s1 s0 f-  rp ffrac f*  f+ | smp |
-  smp  ph len 1.0 0.0 fsel-lt  f*
-  -> state.samp
+  s0  s1 s0 f-  rp ffrac f*  f+
+  ph len 1.0 0.0 fsel-lt  f*
   ph state.inc f+ | ph2 |
   ph2 params.loop-end-spl  ph2  ph2 params.loop-len-spl f-  fsel-lt | ph-loop |
   ph2 len  ph2  len  fsel-lt | ph-shot |
@@ -113,9 +110,8 @@ dsp: smp-read
   -> state.phase
 ;
 
-( out state params -- : cap-ADSR amp, accumulate into out. )
-dsp: smp-amp
-  | out state:SamplerState params:SamplerParams |
+( Cap-ADSR amp, accumulate into out. )
+dsp: smp-amp | out state:SamplerState params:SamplerParams smp -- |
   state.age params.inv-sr f+ | age |
   age -> state.age
   age
@@ -123,14 +119,13 @@ dsp: smp-amp
   state.gate-time params.rel
   adsr-cap | env |
   out f@64
-  state.samp env f*  state.vel f*  params.level f*
+  smp env f*  state.vel f*  params.level f*
   f+
   out f!64
 ;
 
-( io ctx state params -- : one sampler voice tick, staged. )
-dsp: k-sampler-voice
-  | io ctx state params |
-  state params call: smp-read
-  io state params call: smp-amp
+( io ctx state params -- : one sampler voice tick. )
+dsp: k-sampler-voice | io ctx state params -- |
+  state params smp-read | smp |
+  io state params smp smp-amp
 ;

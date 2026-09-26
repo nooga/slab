@@ -14,8 +14,7 @@
            l                        above the knee
     gain = exp2 [over * [1/ratio - 1]]
 
-  Gain stages are split so the inlined log2/exp2 ladders never share one
-  word's register budget.  Parallel MIX blends
+  Parallel MIX blends
   the compressed signal with dry for New-York-style drum smash.
   Probe case: comp-render - static curve + timing vs a Zig reference. )
 
@@ -25,9 +24,6 @@ include "../05-drums/decay.fy"
 
 ustruct: CompState
   f64 env      ( linear envelope )
-  f64 lvl-l2   ( log2 of envelope )
-  f64 grl2     ( gain in log2 units, <= 0 )
-  f64 gain     ( linear gain )
   f64 gr-db    ( gain reduction in dB, >= 0 - meter feed )
 ;
 
@@ -74,62 +70,52 @@ dsp: comp-block-prepare
 ;
 
 
-( state params -- : envelope follower on the shared detector trace.
-  Rising signal takes the attack coefficient, falling the release. )
-dsp: comp-detect
-  | io:Io state:CompState params:CompParams |
+( Envelope follower on the shared detector trace.  Rising signal takes
+  the attack coefficient, falling the release. )
+dsp: comp-detect | io:Io state:CompState params:CompParams -- env |
   io.det | d |
   state.env | e |
   e d  params.atk-c  params.rel-c  fsel-lt | c |
-  d  e d f-  c f*  f+
-  -> state.env
+  d  e d f-  c f*  f+ | en |
+  en -> state.env
+  en
 ;
 
-( state params -- : envelope into log2 units. )
-dsp: comp-level
-  | state:CompState params |
-  state.env 0.000001 1000000.0 fclamp log2-approx
-  -> state.lvl-l2
+( Envelope into log2 units. )
+dsp: comp-level | env -- l2 |
+  env 0.000001 1000000.0 fclamp log2-approx
 ;
 
-( state params -- : soft-knee overshoot and log2 gain. )
-dsp: comp-knee
-  | state:CompState params:CompParams |
-  state.lvl-l2 params.thresh-l2 f- | l |
+( Soft-knee overshoot and log2 gain. )
+dsp: comp-knee | params:CompParams l2 -- grl2 |
+  l2 params.thresh-l2 f- | l |
   params.knee-l2 0.5 f* | half |
   l half f+ | lh |
   lh lh f* params.inv-knee2 f* | qk |
   l half  qk  l  fsel-lt | sel |
   l  0.0 half f-  0.0  sel  fsel-lt
   params.slope f*
-  -> state.grl2
 ;
 
-( state params -- : back to linear, plus the dB meter cell. )
-dsp: comp-gain
-  | state:CompState params |
-  state.grl2 exp2-approx
-  -> state.gain
-  state.grl2 -6.0205999132796239 f*
+( Back to linear, plus the dB meter cell. )
+dsp: comp-gain | state:CompState grl2 -- gain |
+  grl2 -6.0205999132796239 f*
   -> state.gr-db
+  grl2 exp2-approx
 ;
 
-( out state params in -- : apply gain + makeup, parallel mix. )
-dsp: comp-apply
-  | out state:CompState params:CompParams in:Io |
-  in.in-l | x |
-  x state.gain f* params.makeup-lin f* | wet |
+( Apply gain + makeup, parallel mix. )
+dsp: comp-apply | out params:CompParams x gain -- |
+  x gain f* params.makeup-lin f* | wet |
   x  1.0 params.mix f-  f*
   wet params.mix f*  f+
   out f!64
 ;
 
-( io ctx state params -- : the full compressor tick, staged. )
-dsp: k-comp-tick
-  | io ctx state params |
-  io state params call: comp-detect
-  state params call: comp-level
-  state params call: comp-knee
-  state params call: comp-gain
-  io state params io call: comp-apply
+( io ctx state params -- : the full compressor tick. )
+dsp: k-comp-tick | io:Io ctx state params -- |
+  io state params comp-detect comp-level
+  params swap comp-knee
+  state swap comp-gain | gain |
+  io params io.in-l gain comp-apply
 ;

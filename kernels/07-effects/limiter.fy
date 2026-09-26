@@ -36,7 +36,6 @@ ustruct: LimState
   f64 gmin      ( block min gain - GR meter feed, reset per block to 1 )
   f64 ipk       ( block input peak  - reset per block to 0 )
   f64 opk       ( block output peak - reset per block to 0 )
-  f64 ylast     ( last output sample, fed to the LUFS chain )
   f64 k1z1      ( K-weight stage 1 transposed-DF2 state )
   f64 k1z2
   f64 k2z1      ( K-weight stage 2 state )
@@ -98,10 +97,9 @@ dsp: lim-prepare
   -> state.gain
 ;
 
-( state params -- : gain computer.  Reads the shared detector trace,
-  applies input drive, derives the target gain and slews the envelope. )
-dsp: lim-gain
-  | io:Io state:LimState params:LimParams |
+( Gain computer.  Reads the shared detector trace, applies input drive,
+  derives the target gain and slews the envelope. )
+dsp: lim-gain | io:Io state:LimState params:LimParams -- g |
   io.det params.gain-lin f* | d |
   ( dc = max(d, 1e-9) )
   d 0.000000001 0.000000001 d fsel-lt | dc |
@@ -116,15 +114,16 @@ dsp: lim-gain
   ( gmin = min(gmin, g) )
   state.gmin g state.gmin g fsel-lt
   -> state.gmin
+  g
 ;
 
-( out state params in -- : input drive, lookahead delay, gain + ceiling
-  clamp, output, and the block input/output peak meters. )
-dsp: lim-io
-  | out state:LimState params:LimParams in:Io |
+( Input drive, lookahead delay, gain + ceiling clamp, output, and the
+  block input/output peak meters.  io is both the input frame and the
+  output cell [out-l at offset 0]. )
+dsp: lim-io | io:Io state:LimState params:LimParams g -- y |
   state.dline& p@64 | buf |
   state.dline-len | len |
-  in.in-l params.gain-lin f* | xg |
+  io.in-l params.gain-lin f* | xg |
   state.wpos | w |
   xg buf w f!i
   ( delayed read at w - look, wrapped into 0..len )
@@ -135,22 +134,20 @@ dsp: lim-io
   w 1.0 f+ | w1 |
   w1 len w1 w1 len f- fsel-lt -> state.wpos
   ( apply gain, clamp to ceiling )
-  xd state.gain f* | y0 |
+  xd g f* | y0 |
   y0 0.0 params.ceil-lin f- params.ceil-lin fclamp | y |
-  y out f!64
-  y -> state.ylast
+  y io f!64
   ( meters: |xg| -> ipk, |y| -> opk [block max] )
   xg 0.0 0.0 xg f- xg fsel-lt | axg |
   state.ipk axg axg state.ipk fsel-lt -> state.ipk
   y 0.0 0.0 y f- y fsel-lt | ay |
   state.opk ay ay state.opk fsel-lt -> state.opk
+  y
 ;
 
-( state params -- : BS.1770 K-weighting on the output, mean-square
-  accumulation [momentary / short-term one-poles + integrated sum]. )
-dsp: lim-lufs
-  | state:LimState params:LimParams |
-  state.ylast | x |
+( BS.1770 K-weighting on the output sample x, mean-square accumulation
+  [momentary / short-term one-poles + integrated sum]. )
+dsp: lim-lufs | state:LimState params:LimParams x -- |
   ( stage 1 - transposed direct form II )
   params.k1b0 x f* state.k1z1 f+ | y1 |
   params.k1b1 x f* params.k1a1 y1 f* f- state.k1z2 f+ -> state.k1z1
@@ -167,11 +164,8 @@ dsp: lim-lufs
   state.mn 1.0 f+ -> state.mn
 ;
 
-( io ctx state params -- : the full limiter tick, staged so no single
-  word blows the register budget. )
-dsp: k-lim-tick
-  | io ctx state params |
-  io state params call: lim-gain
-  io state params io call: lim-io
-  state params call: lim-lufs
+( io ctx state params -- : the full limiter tick. )
+dsp: k-lim-tick | io ctx state params -- |
+  io state params  io state params lim-gain  lim-io | y |
+  state params y lim-lufs
 ;

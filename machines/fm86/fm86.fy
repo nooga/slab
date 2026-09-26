@@ -3,8 +3,7 @@
   The DSP is the validated rig stack: each operator is a phase-mod sine with
   two-sample feedback (fm_operator.fy), each has a 4-rate/4-level dB-domain
   envelope (dx7_eg.fy), and the 32 algorithms route them through the matrix
-  (dx7_voice.fy). fm86_voice.fy composes the whole voice into one render word
-  via `call:` stages. This file is just the machine: entry words, sizes, the
+  (dx7_voice.fy). fm86_voice.fy inlines the whole voice into one render word. This file is just the machine: entry words, sizes, the
   tabbed panel, and offsets from Fm86Params introspection.
 
   ALGO selects one of the 32 DX7 algorithms; the fy `derive` word (fm86_algo.fy)

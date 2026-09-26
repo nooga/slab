@@ -29,9 +29,6 @@ ustruct: FunkState
   f64 ic1        ( lpf4 integrator states )
   f64 ic2
   f64 gate-gain  ( smoothed gate )
-  f64 wet        ( stage scratch )
-  f64 fg         ( stage scratch: filter g for this sample's substeps )
-  f64 fx         ( stage scratch: driven filter input, held over the substeps )
 ;
 
 ustruct: FunkParams
@@ -74,67 +71,52 @@ dsp: funk-block-prepare
   -> params.rel-c
 ;
 
-( state params in -- : envelope follower on the rectified input. )
-dsp: fo-env
-  | state:FunkState params:FunkParams in:Io |
-  in.in-l | x |
+( Envelope follower on the rectified input. )
+dsp: fo-env | state:FunkState params:FunkParams x -- e |
   x 0.0  0.0 x f-  x  fsel-lt | tgt |
-  state.env | e |
-  e tgt  params.atk-c  params.rel-c  fsel-lt | c |
-  tgt  e tgt f-  c f*  f+
-  -> state.env
+  state.env | e0 |
+  e0 tgt  params.atk-c  params.rel-c  fsel-lt | c |
+  tgt  e0 tgt f-  c f*  f+ | e |
+  e -> state.env
+  e
 ;
 
-( state params in -- : drive + envelope-swept cutoff for this sample; the
-  lowpass itself runs in the four fo-sub substeps [4x oversampled]. )
-dsp: fo-filt
-  | state:FunkState params:FunkParams in:Io |
-  state.env params.sweep-hz f*
-  params.base-hz f+ | cutoff |
-  cutoff params.osr svf-g -> state.fg
-  ( drive into tanh, then the filter's own unity input clip )
-  in.in-l params.drive f* k-tanh-rational-shape-dsp2 k-tanh-rational-shape-dsp2
-  -> state.fx
+( Envelope-swept cutoff -> filter g at the oversampled rate, and the
+  driven filter input: drive into tanh, then the filter's own unity input
+  clip.  The lowpass itself runs in four fo-sub substeps [4x oversampled]. )
+dsp: fo-filt | params:FunkParams e x -- g fx |
+  e params.sweep-hz f*
+  params.base-hz f+
+  params.osr svf-g
+  x params.drive f* k-tanh-rational-shape-dsp2 k-tanh-rational-shape-dsp2
 ;
 
-( state params -- : one of four saturating lowpass substeps per sample
-  [input held]; the last one leaves its output in wet. )
-dsp: fo-sub | state:FunkState params:FunkParams -- |
-  state.ic1& state.ic2&
-  state.fx state.fg params.damp
-  tpt-svf-lp-sat-step
-  -> state.wet
+( One of four saturating lowpass substeps per sample [input held]. )
+dsp: fo-sub | state:FunkState params:FunkParams x g -- y |
+  state.ic1& state.ic2&  x g params.damp  tpt-svf-lp-sat-step
 ;
 
-( state params -- : output clip after the substeps, tanh[1.8*lp]. )
-dsp: fo-sat | state:FunkState params -- |
-  state.wet 1.8 f* k-tanh-rational-shape-dsp2 -> state.wet
-;
-
-( out state params in -- : envelope gate on the wet path, dry/wet mix. )
-dsp: fo-out
-  | out state:FunkState params:FunkParams in:Io |
-  state.env | e |
+( Envelope gate on the wet path, dry/wet mix. )
+dsp: fo-out | out state:FunkState params:FunkParams x e wet -- |
   params.gate-thresh e  1.0 0.0  fsel-lt | gt |
   state.gate-gain | gg0 |
   gt  gg0 gt f-  params.gate-c f*  f+ | gg |
   gg -> state.gate-gain
-  state.wet gg f* params.wet-gain f* | wet |
-  in.in-l | x |
+  wet gg f* params.wet-gain f* | w |
   x  1.0 params.mix f-  f*
-  wet params.mix f*  f+
+  w params.mix f*  f+
   out f!64
 ;
 
-( io ctx state params -- : one FUNK OVERLOAD tick, staged. )
-dsp: k-funk-tick
-  | io ctx state params |
-  state params io call: fo-env
-  state params io call: fo-filt
-  state params call: fo-sub
-  state params call: fo-sub
-  state params call: fo-sub
-  state params call: fo-sub
-  state params call: fo-sat
-  io state params io call: fo-out
+( io ctx state params -- : one FUNK OVERLOAD tick.  The last substep's
+  output goes through the output clip, tanh[1.8*lp]. )
+dsp: k-funk-tick | io:Io ctx state params -- |
+  io.in-l | x |
+  state params x fo-env | e |
+  params e x fo-filt | g fx |
+  state params fx g fo-sub drop
+  state params fx g fo-sub drop
+  state params fx g fo-sub drop
+  state params fx g fo-sub  1.8 f* k-tanh-rational-shape-dsp2 | wet |
+  io state params x e wet fo-out
 ;

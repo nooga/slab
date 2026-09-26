@@ -16,8 +16,7 @@ ustruct: FmOpState
   out = level * sine( phase + mod + fb*0.5*(fb1+fb2) ), phase advances by inc
   and wraps, and the feedback history shifts. inc is cycles/sample, mod is in
   0..1 phase units, fb is the self-feedback amount. )
-dsp: fm-op-step
-  | state:FmOpState inc mod level fb |
+dsp: fm-op-step | state:FmOpState inc mod level fb -- out |
   ( feedback modulation = fb * 0.5 * (fb1 + fb2) — the DX two-sample average )
   state.fb1 state.fb2 f+ 0.5 f* fb f*
   | fbmod |
@@ -28,14 +27,10 @@ dsp: fm-op-step
   dup -> state.fb1
   ( advance phase = frac(phase + inc) )
   state.phase inc f+ ffrac -> state.phase
-  ( out remains on top; drop the six named slots below it )
 ;
 
-( out state inc mod level fb -- : raw probe entry, one operator sample to out.
-  fm-op-step is called inline (by name); `call:` composition is pointer-args
-  only, but inline calls take f64 args like decay-exp-coeff in kick-prepare. )
-dsp: k-fm-op
-  | out state inc mod level fb |
+( out state inc mod level fb -- : raw probe entry, one operator sample to out. )
+dsp: k-fm-op | out state inc mod level fb -- |
   state inc mod level fb fm-op-step
   out f!64
 ;
