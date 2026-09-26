@@ -500,8 +500,7 @@ fn presetTopItems(list: *const presets_mod.List, items: []menu.Item) usize {
             const buf = &dir_label_bufs[ord];
             const l = @min(dirn.len, presets_mod.MAX_NAME);
             @memcpy(buf[0..l], dirn[0..l]);
-            buf[l] = 0;
-            items[n] = .{ .label = @ptrCast(&buf[0]), .id = @intCast(DIR_ID_BASE + ord), .submenu = true };
+            items[n] = .{ .label = buf[0..l], .id = @intCast(DIR_ID_BASE + ord), .submenu = true };
             n += 1;
         }
         ord += 1;
@@ -511,7 +510,7 @@ fn presetTopItems(list: *const presets_mod.List, items: []menu.Item) usize {
 
 
 // Rows of the ord-th distinct subdirectory: id = flat list index, label =
-// the name after the slash (NUL follows in Name storage, so no copy).
+// the name after the slash.
 fn presetDirItems(list: *const presets_mod.List, dir_ord: usize, items: []menu.Item) usize {
     var n: usize = 0;
     var ord: usize = 0;
@@ -525,7 +524,7 @@ fn presetDirItems(list: *const presets_mod.List, dir_ord: usize, items: []menu.I
         }
         if (ord - 1 != dir_ord) continue;
         if (n >= items.len) return n;
-        items[n] = .{ .label = @ptrCast(&nm.text[sl + 1]), .id = @intCast(i) };
+        items[n] = .{ .label = nm.slice()[sl + 1 ..], .id = @intCast(i) };
         n += 1;
     }
     return n;
