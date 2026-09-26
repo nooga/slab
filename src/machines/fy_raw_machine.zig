@@ -1229,6 +1229,7 @@ const PanelPass = union(enum) {
 const TAB_BAR_H: i32 = 20;
 const STRIP_HEAD: i32 = 14; // legend line + 2px, see ui_ctl.strip
 const STRIP_PAD: i32 = 4; // between the strip title and its controls
+const ROW_GAP: i32 = 4; // between rows of a strip's controls
 
 /// Largest tier at which every strip's control grid fits its rect.
 fn chooseTier(self: *FyRawMachine, ui: *Ui, body: Rect) ui_ctl.Size {
@@ -1396,16 +1397,13 @@ fn drawStrip(self: *FyRawMachine, ui: *Ui, r: Rect, view: StripView, tier: ui_ct
     defer ui.unclip();
     var grid = body;
     _ = grid.cutTop(STRIP_PAD);
-    // Slack beyond the natural size is shared evenly between columns and,
-    // as gaps below each row, between rows. A control keeps its natural
-    // size, centred across its column and at the top of its row, so
-    // legends line up along a row and across strips. Below the smallest
-    // tier the strip clips instead of overlapping controls (docs/06
-    // §Sizing).
+    // Horizontal slack is shared evenly between columns; rows stack from
+    // the top at their natural pitch, so rows of equal height line up
+    // across strips. A control keeps its natural size, centred across its
+    // column and at the top of its row. Below the smallest tier the strip
+    // clips instead of overlapping controls (docs/06 §Sizing).
     const cols: i32 = @intCast(t.cols);
-    const rows: i32 = @intCast(t.rows);
     const slack_w = @max(0, grid.w - t.width());
-    const slack_h = @max(0, grid.h - t.height());
     var col_x: [MAX_CONTROLS + 1]i32 = undefined;
     col_x[0] = grid.x;
     for (0..t.cols) |ci| {
@@ -1414,10 +1412,7 @@ fn drawStrip(self: *FyRawMachine, ui: *Ui, r: Rect, view: StripView, tier: ui_ct
     }
     var row_y: [MAX_CONTROLS + 1]i32 = undefined;
     row_y[0] = grid.y;
-    for (0..t.rows) |ri| {
-        const rr: i32 = @intCast(ri);
-        row_y[ri + 1] = row_y[ri] + t.row_h[ri] + @divFloor(slack_h * (rr + 1), rows) - @divFloor(slack_h * rr, rows);
-    }
+    for (0..t.rows) |ri| row_y[ri + 1] = row_y[ri] + t.row_h[ri] + ROW_GAP;
     var local_i: usize = 0;
     for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, gi| {
         if (!std.mem.eql(u8, ctl.moduleSlice(), view.module)) continue;
@@ -1448,7 +1443,7 @@ const StripTable = struct {
     fn height(t: *const StripTable) i32 {
         var h: i32 = 0;
         for (t.row_h[0..t.rows]) |rh| h += rh;
-        return h;
+        return h + ROW_GAP * @as(i32, @intCast(t.rows -| 1));
     }
 };
 

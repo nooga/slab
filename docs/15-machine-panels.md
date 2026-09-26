@@ -159,10 +159,10 @@ One generic routine (`drawPanelImpl` in `src/machines/fy_raw_machine.zig`):
 3. **Lay the table**: the strip's controls fill `cols` per row. Each column
    is as wide as its widest control and each row as tall as its tallest,
    at the tier's natural sizes, so knobs, faders and switches pack without
-   a uniform grid. Slack is shared evenly between columns and, as gaps
-   below each row, between rows. A control sits at its natural size,
-   centred across its column and at the top of its row, so legends line
-   up along a row and across strips.
+   a uniform grid. Horizontal slack is shared evenly between columns;
+   rows stack from the top at their natural pitch (4px apart), so rows
+   line up across strips and spare height is plain faceplate below. A
+   control sits at its natural size, centred across its column.
 4. **Draw the control** as its widget (§Controls and interaction).
 
 ## Displays (built-in visualizers)

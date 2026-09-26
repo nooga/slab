@@ -763,9 +763,9 @@ test "descriptor walker reads the drum2 note map" {
     try testing.expectEqual(@as(u8, 46), d.note_labels[5].pitch);
     try testing.expectEqualStrings("OH", d.note_labels[5].labelSlice());
     try testing.expectEqual(@as(usize, 30), d.control_count);
-    try testing.expectEqual(@as(usize, 6), d.strip_count);
+    try testing.expectEqual(@as(usize, 7), d.strip_count);
     try testing.expectEqual(@as(usize, 2), d.const_count);
-    try testing.expectEqual(@as(usize, 2), d.row_count);
+    try testing.expectEqual(@as(usize, 1), d.row_count);
 
     // Snare controls land past the kick params region (offset computed in
     // fy as KickParams.size + SnareParams.field).

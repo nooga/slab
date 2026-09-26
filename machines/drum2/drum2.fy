@@ -142,7 +142,7 @@ dsp: k-drum2-render | io ctx state params -- |
   "drum2-note-on"  note-on!
   KickState.size SnareState.size + ClapState.size + HatState.size + KickState.size +  state-size!
   KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.size + Drum2Master.size +  params-size!
-  520.0 panel-w!
+  780.0 panel-w!
   note-pitch
   36 "KICK" note-label
   38 "SNARE" note-label
@@ -159,31 +159,31 @@ dsp: k-drum2-render | io ctx state params -- |
   "KICK" "DEC"   "kick-decay"  KickParams.decay-s      0.05 2.5 0.42 curve-exp knob
   "KICK" "CLICK" "kick-click"  KickParams.click-level  0.0 1.0 0.35 curve-pow knob
   "KICK" "DRIVE" "kick-drive"  KickParams.drive        0.5 6.0 1.8 curve-exp knob
-  "KICK" "LVL"   "kick-level"  KickParams.level        0.0 1.0 0.9 curve-pow knob
+  "MIX" "BD"    "kick-level"  KickParams.level        0.0 1.0 0.9 curve-pow knob as-fader
 
   "SNARE" "TUNE" "snare-tune"  KickParams.size SnareParams.tune-hz +    110.0 440.0 185.0 curve-exp knob
   "SNARE" "DEC"  "snare-decay" KickParams.size SnareParams.body-decay + 0.05 0.8 0.18 curve-exp knob
   "SNARE" "SNAP" "snare-snap"  KickParams.size SnareParams.snap-level + 0.0 1.0 0.8 curve-pow knob
   "SNARE" "SDEC" "snare-sdec"  KickParams.size SnareParams.snap-decay + 0.03 0.6 0.10 curve-exp knob
   "SNARE" "TONE" "snare-tone"  KickParams.size SnareParams.snap-hz +    400.0 6000.0 1800.0 curve-exp knob
-  "SNARE" "LVL"  "snare-level" KickParams.size SnareParams.level +      0.0 1.0 0.9 curve-pow knob
+  "MIX" "SD"   "snare-level" KickParams.size SnareParams.level +      0.0 1.0 0.9 curve-pow knob as-fader
 
   "CLAP" "TONE" "clap-tone"   KickParams.size SnareParams.size + ClapParams.tone-hz +  400.0 3000.0 1100.0 curve-exp knob
   "CLAP" "SPRD" "clap-spread" KickParams.size SnareParams.size + ClapParams.spread-s + 0.004 0.04 0.011 curve-exp knob
   "CLAP" "DEC"  "clap-decay"  KickParams.size SnareParams.size + ClapParams.decay-s +  0.05 1.5 0.28 curve-exp knob
-  "CLAP" "LVL"  "clap-level"  KickParams.size SnareParams.size + ClapParams.level +    0.0 1.0 0.9 curve-pow knob
+  "MIX" "CP"   "clap-level"  KickParams.size SnareParams.size + ClapParams.level +    0.0 1.0 0.9 curve-pow knob as-fader
 
   "HAT" "TUNE"  "hat-tune"   KickParams.size SnareParams.size + ClapParams.size + HatParams.tune +     0.6 1.8 1.0 curve-exp knob
   "HAT" "TONE"  "hat-tone"   KickParams.size SnareParams.size + ClapParams.size + HatParams.tone +     0.6 1.6 1.0 curve-exp knob
   "HAT" "CHDEC" "hat-chdec"  KickParams.size SnareParams.size + ClapParams.size + HatParams.ch-decay + 0.02 0.4 0.07 curve-exp knob
   "HAT" "OHDEC" "hat-ohdec"  KickParams.size SnareParams.size + ClapParams.size + HatParams.oh-decay + 0.1 2.0 0.6 curve-exp knob
-  "HAT" "LVL"   "hat-level"  KickParams.size SnareParams.size + ClapParams.size + HatParams.level +    0.0 1.5 0.85 curve-pow knob
+  "MIX" "HH"    "hat-level"  KickParams.size SnareParams.size + ClapParams.size + HatParams.level +    0.0 1.5 0.85 curve-pow knob as-fader
 
   "TOM" "TUNE"  "tom-tune"   KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.tune-hz +      60.0 360.0 110.0 curve-exp knob
   "TOM" "SWEEP" "tom-sweep"  KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.sweep-amount + 0.0 6.0 1.2 curve-pow knob
   "TOM" "DEC"   "tom-decay"  KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.decay-s +      0.05 1.5 0.3 curve-exp knob
   "TOM" "DRIVE" "tom-drive"  KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.drive +        0.5 6.0 1.3 curve-exp knob
-  "TOM" "LVL"   "tom-level"  KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.level +        0.0 1.0 0.85 curve-pow knob
+  "MIX" "TOM"   "tom-level"  KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.level +        0.0 1.0 0.85 curve-pow knob as-fader
 
   ( tom: fixed kick-voice params the strip does not expose )
   KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.sweep-time +  0.09 const-f64
@@ -191,23 +191,25 @@ dsp: k-drum2-render | io ctx state params -- |
 
   "MASTER" "ACC" "master-accent" KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.size + Drum2Master.accent + 0.0 1.0 0.7 curve-lin knob
   "MASTER" "DRIVE" "master-drive" KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.size + Drum2Master.drive +  0.5 5.0 1.0 curve-exp knob
-  "MASTER" "LVL" "master-level"   KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.size + Drum2Master.level +  0.0 1.0 0.9 curve-pow knob
+  "MASTER" "LVL" "master-level"   KickParams.size SnareParams.size + ClapParams.size + HatParams.size + KickParams.size + Drum2Master.level +  0.0 1.0 0.9 curve-pow knob as-fader
 
-  "KICK" 1 strip
-  "SNARE" 1 strip
-  "CLAP" 1 strip
-  "HAT" 1 strip
-  "TOM" 1 strip
+  ( 808-style: a knob column per voice, the voice levels as faders in a
+    MIX section, then the master bus. )
+  "KICK" 2 strip
+  "SNARE" 2 strip
+  "CLAP" 2 strip
+  "HAT" 2 strip
+  "TOM" 2 strip
+  "MIX" 5 strip
   "MASTER" 3 strip
 
-  ( five voice strips over a short horizontal master row )
-  5.0 row
+  1.0 row
     1.0 cell  "KICK" 1.0 item
     1.0 cell  "SNARE" 1.0 item
     1.0 cell  "CLAP" 1.0 item
     1.0 cell  "HAT" 1.0 item
     1.0 cell  "TOM" 1.0 item
-  1.0 row
+    1.0 cell  "MIX" 1.0 item
     1.0 cell  "MASTER" 1.0 item
   machine-desc
 ;
