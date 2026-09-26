@@ -1,0 +1,308 @@
+//! Workbench transport bar on the new Ui (docs/06 §Packing: a toolbar of
+//! flush tiles). Replaces the legacy top_bar.zig.
+//!
+//!   [file ▾][■/▶][●][▾][⟲][-][● 124.0][+][TAP][ 1.1.1][ 4/4][-][1/16][+][     ][SLAB]
+//!
+//! Menus (file, input device, meter denominator) and tooltips still go
+//! through the legacy widgets until menus move onto the new core.
+
+const std = @import("std");
+const c = @import("../c.zig");
+const core = @import("core.zig");
+const style = @import("style.zig");
+const ctl = @import("controls.zig");
+const widgets = @import("widgets.zig");
+const snap_mod = @import("snap.zig");
+const Transport = @import("../transport.zig").Transport;
+const meter_mod = @import("../meter.zig");
+
+const Ui = core.Ui;
+const Rect = core.Rect;
+
+pub const HEIGHT: i32 = 32;
+
+pub const Result = struct {
+    open_project: bool = false,
+    save_project: bool = false,
+    save_project_as: bool = false,
+    render_audio: bool = false,
+    record_toggle: bool = false,
+    /// Index into `input_names` the user picked from the input-device menu.
+    input_pick: ?usize = null,
+};
+
+pub const Args = struct {
+    transport: *Transport,
+    meter_state: *meter_mod.MeterState,
+    edit_snap: *snap_mod.Setting,
+    project_path: []const u8,
+    project_path_chosen: bool,
+    dirty: bool,
+    recording: bool,
+    can_record: bool,
+    input_names: []const [*:0]const u8,
+    current_input_idx: ?usize,
+    /// Legacy mouse, for the legacy menus and tooltips.
+    m: widgets.Mouse,
+};
+
+const FILE_MENU_KEY: u64 = 0x5346494c45; // "SFILE"
+const INPUT_MENU_KEY: u64 = 0x494e505544_4556; // "INPUDEV"
+const DENOM_MENU_KEY: u64 = 0x44_45_4e_4f_4d_4d_4e_55; // "DENOMMNU"
+
+const DENOM_ITEMS = [_]widgets.MenuItem{
+    .{ .label = "/1", .id = 1 },
+    .{ .label = "/2", .id = 2 },
+    .{ .label = "/3", .id = 3 },
+    .{ .label = "/4", .id = 4 },
+    .{ .label = "/6", .id = 6 },
+    .{ .label = "/8", .id = 8 },
+    .{ .label = "/12", .id = 12 },
+    .{ .label = "/16", .id = 16 },
+    .{ .label = "/32", .id = 32 },
+};
+
+pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
+    ui.pushId("transport");
+    defer ui.popId();
+    var res = Result{};
+    var bar = r;
+    const t = a.transport;
+    const map = a.meter_state.liveMap();
+
+    fileTile(ui, bar.cutLeft(fileTileW(ui, a)), a, &res);
+
+    // Transport.
+    var playing = t.isPlaying();
+    const play_r = bar.cutLeft(36);
+    if (ctl.button(ui, play_r, "play", &playing, .{ .glyph = if (playing) .square6 else .tri_right, .glyph_on = style.play, .flush = true })) t.toggle();
+    tip(play_r, if (playing) "Stop  Space" else "Play  Space", a.m);
+    var rec_on = a.recording;
+    const rec_r = bar.cutLeft(36);
+    if (ctl.button(ui, rec_r, "rec", &rec_on, .{ .glyph = .round7, .glyph_on = style.rec, .flush = true, .disabled = !a.can_record })) res.record_toggle = true;
+    tip(rec_r, if (!a.can_record) "Record (no input device)" else if (a.recording) "Stop recording" else "Record  (arm a track first)", a.m);
+    inputTile(ui, bar.cutLeft(16), a, &res);
+    var loop_on = t.loopEnabled();
+    const loop_r = bar.cutLeft(36);
+    if (ctl.button(ui, loop_r, "loop", &loop_on, .{ .label = "LOOP", .lit = style.accent, .flush = true })) t.toggleLoop();
+    tip(loop_r, "Loop on/off", a.m);
+
+    // Tempo: - [LED 124.0] +  TAP
+    if (ctl.button(ui, bar.cutLeft(20), "bpm-", null, .{ .label = "-", .flush = true })) t.setBpm(@round(t.bpm()) - 1);
+    bpmTile(ui, bar.cutLeft(108), t, map, a.m);
+    if (ctl.button(ui, bar.cutLeft(20), "bpm+", null, .{ .label = "+", .flush = true })) t.setBpm(@round(t.bpm()) + 1);
+    const tap_r = bar.cutLeft(48);
+    if (ctl.button(ui, tap_r, "tap", null, .{ .label = "TAP", .flush = true })) handleTap(t, ui.in.time);
+    tip(tap_r, "Tap tempo", a.m);
+
+    // Position and meter.
+    var pbuf: [32]u8 = undefined;
+    const pos = map.beatToBarPos(t.beats());
+    const sub = pos.tick / (meter_mod.PPQN / 4) + 1;
+    const pos_s = std.fmt.bufPrint(&pbuf, "{d}.{d}.{d}", .{ pos.bar + 1, pos.beat + 1, sub }) catch "?";
+    const pos_r = bar.cutLeft(120);
+    ctl.display(ui, pos_r, pos_s, .{ .align_ = .right, .large = true, .flush = true });
+    tip(pos_r, "Position  bar.beat.sub", a.m);
+    meterTile(ui, bar.cutLeft(76), a.meter_state, a.m);
+
+    // Snap: - [1/16] +
+    if (ctl.button(ui, bar.cutLeft(20), "snap-", null, .{ .label = "-", .flush = true })) a.edit_snap.* = a.edit_snap.coarser();
+    const snap_r = bar.cutLeft(76);
+    ctl.display(ui, snap_r, std.mem.span(a.edit_snap.label()), .{ .align_ = .center, .large = true, .flush = true });
+    tip(snap_r, a.edit_snap.tooltip(), a.m);
+    if (ctl.button(ui, bar.cutLeft(20), "snap+", null, .{ .label = "+", .flush = true })) a.edit_snap.* = a.edit_snap.finer();
+
+    // Logo plate on the right, blank plate between.
+    logoTile(ui, bar.cutRight(logoW(bar.h)));
+    _ = ui.plate(bar, .{});
+    return res;
+}
+
+// ── Tiles ────────────────────────────────────────────────────────────
+
+fn fileLabel(buf: []u8, path: []const u8, chosen: bool, dirty: bool) []const u8 {
+    if (!chosen) return if (dirty) "*Untitled" else "Untitled";
+    const base = std.fs.path.basename(path);
+    return std.fmt.bufPrint(buf, "{s}{s}", .{ if (dirty) "*" else "", base }) catch base;
+}
+
+fn fileTileW(ui: *const Ui, a: Args) i32 {
+    var buf: [80]u8 = undefined;
+    const name = fileLabel(&buf, a.project_path, a.project_path_chosen, a.dirty);
+    return @max(96, ui.fonts.body.measure(name) + 36);
+}
+
+/// Project name as a dropdown tile: opens the (legacy) file menu.
+fn fileTile(ui: *Ui, r: Rect, a: Args, res: *Result) void {
+    var buf: [80]u8 = undefined;
+    const name = fileLabel(&buf, a.project_path, a.project_path_chosen, a.dirty);
+    const open = widgets.menuOpen(FILE_MENU_KEY);
+    var shown = open;
+    if (ctl.button(ui, r, "file", &shown, .{ .flush = true }) and !open) {
+        widgets.openMenuAt(FILE_MENU_KEY, @floatFromInt(r.x), @floatFromInt(r.bottom()));
+    }
+    const inner = r.insetXY(8, 0);
+    ui.textIn(&ui.fonts.body, inner, name, if (a.dirty) style.accent else style.text, .left, true);
+    ctl.led(ui, inner.right() - 7, r.y + @divFloor(r.h - 4, 2), .tri_down, .off, style.text_dim);
+    tip(r, "Project file", a.m);
+    const items = [_]widgets.MenuItem{
+        .{ .label = "Open\u{2026}", .command = .file_open },
+        .{ .label = "Save", .command = .file_save },
+        .{ .label = "Save As\u{2026}", .command = .file_save_as },
+        .{ .separator = true },
+        .{ .label = "Render Audio\u{2026}", .command = .render_audio },
+    };
+    switch (widgets.contextMenu(FILE_MENU_KEY, &items, a.m)) {
+        .file_open => res.open_project = true,
+        .file_save => res.save_project = true,
+        .file_save_as => res.save_project_as = true,
+        .render_audio => res.render_audio = true,
+        else => {},
+    }
+}
+
+/// Input-device caret next to record: opens the (legacy) device menu.
+fn inputTile(ui: *Ui, r: Rect, a: Args, res: *Result) void {
+    const have = a.input_names.len > 0;
+    var open = widgets.menuOpen(INPUT_MENU_KEY);
+    if (ctl.button(ui, r, "input", &open, .{ .glyph = .tri_down, .glyph_on = style.text, .flush = true, .disabled = !have }) and have and !widgets.menuOpen(INPUT_MENU_KEY)) {
+        widgets.openMenuAt(INPUT_MENU_KEY, @floatFromInt(r.x), @floatFromInt(r.bottom()));
+    }
+    const cur_tip: [*:0]const u8 = if (!have)
+        "Input device (none found)"
+    else if (a.current_input_idx) |ci| a.input_names[@min(ci, a.input_names.len - 1)] else "Select input device";
+    tip(r, cur_tip, a.m);
+    if (widgets.menuOpen(INPUT_MENU_KEY) and have) {
+        var items: [34]widgets.MenuItem = undefined;
+        const n = @min(a.input_names.len, items.len);
+        for (0..n) |i| items[i] = .{ .label = a.input_names[i], .id = @intCast(i) };
+        if (widgets.menuPickId(INPUT_MENU_KEY, items[0..n], a.m)) |id| res.input_pick = @intCast(id);
+    }
+}
+
+/// BPM readout that edits like a knob: vertical drag (Shift fine), ⌘-wheel
+/// steps, double-click resets to 120. The LED pulses on each meter-beat:
+/// red downbeat, amber group accent, green weak beat.
+fn bpmTile(ui: *Ui, r: Rect, t: *Transport, map: meter_mod.MeterMap, m: widgets.Mouse) void {
+    const wid = ui.id("bpm");
+    const b = ui.behavior(wid, r, false);
+    var bpm = t.bpm();
+    if (b.double) {
+        bpm = 120;
+    } else if (b.held) {
+        bpm -= ui.in.dy * ui.renderer.zoom * (if (ui.in.shift) @as(f32, 0.05) else 0.5);
+    }
+    if (ui.in.cmd and ui.in.wheel_y != 0 and r.contains(ui.in.ix(), ui.in.iy())) bpm += ui.in.wheel_y;
+    bpm = std.math.clamp(bpm, 20, 400);
+    if (bpm != t.bpm()) t.setBpm(bpm);
+    if (ui.isHot(wid)) ui.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 1);
+
+    var buf: [16]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "{d:.1}", .{t.bpm()}) catch "?";
+    ctl.display(ui, r, s, .{ .align_ = .right, .large = true, .flush = true, .color = if (ui.active == wid) style.accent else style.phosphor });
+    const mb = map.meterBeat(t.beats());
+    const on = t.isPlaying() and mb.phase < 0.12;
+    const col = switch (mb.accent) {
+        .downbeat => style.led_red,
+        .group => style.led_amber,
+        .weak => style.led_green,
+    };
+    ctl.led(ui, r.x + 5, r.y + @divFloor(r.h - 1 - 5, 2), .round5, if (on) .on else .off, col);
+    if (t.isPlaying()) ui.animate();
+    tip(r, "Tempo: drag, \u{2318}-scroll, double-click 120", m);
+}
+
+/// Time signature of bar 0: drag the numerator, right-click for the
+/// denominator menu. Edits stage through MeterState (adopted at the next
+/// bar boundary).
+fn meterTile(ui: *Ui, r: Rect, state: *meter_mod.MeterState, m: widgets.Mouse) void {
+    const wid = ui.id("meter");
+    const base = state.liveMap().points[0];
+    const b = ui.behavior(wid, r, false);
+    if (b.pressed) ui.drag_acc = @floatFromInt(base.numerator);
+    if (b.held) {
+        ui.drag_acc = std.math.clamp(ui.drag_acc - ui.in.dy * ui.renderer.zoom * 0.1, 1, 32);
+        const num: u8 = @intFromFloat(@round(ui.drag_acc));
+        if (num != base.numerator) state.editMeterAt(0, num, base.denominator);
+    }
+    if (ui.isHot(wid)) ui.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 1);
+    if (ui.in.right_pressed and r.contains(ui.in.ix(), ui.in.iy())) widgets.openMenuAt(DENOM_MENU_KEY, m.x, m.y);
+    if (widgets.menuOpen(DENOM_MENU_KEY)) {
+        if (widgets.menuPickId(DENOM_MENU_KEY, &DENOM_ITEMS, m)) |id| state.editMeterAt(0, base.numerator, @intCast(id));
+    }
+    var buf: [16]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "{d}/{d}", .{ base.numerator, base.denominator }) catch "?";
+    ctl.display(ui, r, s, .{ .align_ = .center, .large = true, .flush = true, .color = if (ui.active == wid) style.accent else style.phosphor });
+    tip(r, "Meter: drag numerator, right-click denominator", m);
+}
+
+// ── Logo ─────────────────────────────────────────────────────────────
+
+var logo_tex: c.rl.Texture2D = undefined;
+var logo_state: enum { unloaded, ok, missing } = .unloaded;
+
+/// The slab.png wordmark, loaded once (lazily, so the GL context exists).
+/// Mipmapped: it's a photographic image downscaled into a small plate,
+/// the one place a filtered texture is right.
+fn logoTexture() ?c.rl.Texture2D {
+    if (logo_state == .unloaded) {
+        var tex = c.rl.LoadTexture("slab.png");
+        if (tex.id != 0) {
+            c.rl.GenTextureMipmaps(&tex);
+            c.rl.SetTextureFilter(tex, c.rl.TEXTURE_FILTER_TRILINEAR);
+            logo_tex = tex;
+            logo_state = .ok;
+        } else logo_state = .missing;
+    }
+    return if (logo_state == .ok) logo_tex else null;
+}
+
+pub fn unloadLogo() void {
+    if (logo_state == .ok) c.rl.UnloadTexture(logo_tex);
+    logo_state = .unloaded;
+}
+
+const LOGO_PAD: i32 = 5;
+
+fn logoW(h: i32) i32 {
+    const tex = logoTexture() orelse return 72;
+    const ih = h - 1 - 2 * LOGO_PAD;
+    return @divFloor(ih * tex.width, tex.height) + 2 * LOGO_PAD + 2;
+}
+
+fn logoTile(ui: *Ui, r: Rect) void {
+    const body = ui.plate(r, .{});
+    if (logoTexture()) |tex| {
+        const ih = r.h - 1 - 2 * LOGO_PAD;
+        const iw = @divFloor(ih * tex.width, tex.height);
+        ui.texture(tex, Rect.xywh(body.x + @divFloor(body.w - iw, 2), r.y + LOGO_PAD, iw, ih), .{ .r = 255, .g = 255, .b = 255 });
+    } else {
+        ui.textIn(&ui.fonts.body_bold, body, "SLAB", style.accent, .center, true);
+    }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
+/// Legacy deferred tooltip over a new-core rect.
+fn tip(r: Rect, text: [*:0]const u8, m: widgets.Mouse) void {
+    if (r.empty()) return;
+    widgets.tooltip(widgets.rect(@floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h)), text, m);
+}
+
+// Tap tempo: average of the last few intervals; a 2 s gap restarts.
+const TAP_MAX = 4;
+var tap_times: [TAP_MAX]f64 = .{ 0, 0, 0, 0 };
+var tap_count: usize = 0;
+
+fn handleTap(t: *Transport, now: f64) void {
+    if (tap_count > 0 and now - tap_times[tap_count - 1] > 2.0) tap_count = 0;
+    if (tap_count == TAP_MAX) {
+        std.mem.copyForwards(f64, tap_times[0 .. TAP_MAX - 1], tap_times[1..TAP_MAX]);
+        tap_count -= 1;
+    }
+    tap_times[tap_count] = now;
+    tap_count += 1;
+    if (tap_count < 2) return;
+    const interval = (tap_times[tap_count - 1] - tap_times[0]) / @as(f64, @floatFromInt(tap_count - 1));
+    if (interval > 0.1) t.setBpm(@floatCast(60.0 / interval));
+}

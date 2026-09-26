@@ -113,7 +113,8 @@ pub fn unscale(px: f32) f32 {
 
 // Layout metrics — OpenTTD-compact, recomputed each frame.
 pub fn topBarH() f32 {
-    return dim(22);
+    // The transport bar is on the new Ui now: fixed logical height.
+    return @floatFromInt(@import("transport_bar.zig").HEIGHT);
 }
 pub fn statusBarH() f32 {
     // Dropped for now — it duplicated the top toolbar. Zeroed so the panes

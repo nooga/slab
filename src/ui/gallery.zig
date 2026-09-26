@@ -104,6 +104,7 @@ pub fn run(alloc: std.mem.Allocator) !void {
         // Idle screens wait for events instead of redrawing at 120 fps.
         if (ui.wants_frame) c.rl.DisableEventWaiting() else c.rl.EnableEventWaiting();
         ui.endFrame();
+        ui.present();
     }
 }
 

@@ -22,6 +22,8 @@ pub const Cmd = union(enum) {
     /// `src` tiled over `r`, anchored to the screen origin (noise).
     tile: struct { src: Region, r: Rect, tint: Color },
     line: struct { x0: f32, y0: f32, x1: f32, y1: f32, c: Color },
+    /// A whole non-atlas texture stretched into `r` (logo image).
+    texture: struct { tex: c.rl.Texture2D, r: Rect, tint: Color },
     clip_push: Rect,
     clip_pop,
 };
@@ -109,6 +111,7 @@ pub const Renderer = struct {
             .sprite => |q| c.rl.DrawTexturePro(r.tex, srcRect(q.src), .{ .x = q.x, .y = q.y, .width = q.w, .height = q.h }, .{ .x = 0, .y = 0 }, 0, rl(q.tint)),
             .tile => |q| r.tile(q.src, q.r, q.tint),
             .line => |q| c.rl.DrawLineEx(.{ .x = q.x0, .y = q.y0 }, .{ .x = q.x1, .y = q.y1 }, 1.0, rl(q.c)),
+            .texture => |q| c.rl.DrawTexturePro(q.tex, .{ .x = 0, .y = 0, .width = @floatFromInt(q.tex.width), .height = @floatFromInt(q.tex.height) }, .{ .x = @floatFromInt(q.r.x), .y = @floatFromInt(q.r.y), .width = @floatFromInt(q.r.w), .height = @floatFromInt(q.r.h) }, .{ .x = 0, .y = 0 }, 0, rl(q.tint)),
             .clip_push => |q| r.pushClip(q),
             .clip_pop => r.popClip(),
         }

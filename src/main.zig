@@ -25,7 +25,9 @@ const widgets = @import("ui/widgets.zig");
 const fonts = @import("ui/fonts.zig");
 const ui_gallery = @import("ui/gallery.zig");
 const layout_mod = @import("ui/layout.zig");
-const top_bar = @import("ui/top_bar.zig");
+const transport_bar = @import("ui/transport_bar.zig");
+const ui_core = @import("ui/core.zig");
+const ui_geom = @import("ui/geom.zig");
 const snap_mod = @import("ui/snap.zig");
 const browser = @import("ui/browser.zig");
 const arrangement = @import("ui/arrangement.zig");
@@ -414,7 +416,7 @@ pub fn main(init: std.process.Init) !void {
     if (cli.gallery) return ui_gallery.run(alloc);
     if (cli.render) |out| return renderHeadless(alloc, cli.project orelse return error.MissingProject, out);
 
-    c.rl.SetConfigFlags(c.rl.FLAG_WINDOW_RESIZABLE | c.rl.FLAG_VSYNC_HINT);
+    c.rl.SetConfigFlags(c.rl.FLAG_WINDOW_RESIZABLE | c.rl.FLAG_VSYNC_HINT | c.rl.FLAG_WINDOW_HIGHDPI);
     c.rl.InitWindow(1400, 860, "slab");
     defer c.rl.CloseWindow();
     c.rl.SetTargetFPS(120);
@@ -423,6 +425,13 @@ pub fn main(init: std.process.Init) !void {
     fonts.init();
     defer fonts.deinit();
     defer clip_editor.deinit(alloc);
+
+    // New UI core (docs/06). Runs alongside the legacy widgets while panes
+    // migrate: legacy panes draw first, then the Ui's draw list, then the
+    // legacy menus and tooltips on top of both.
+    const ui = try ui_core.Ui.init(alloc);
+    defer ui.deinit(alloc);
+    defer transport_bar.unloadLogo();
 
     // ── Machine registry (each entry owns its own Fy instance) ───────
     var reg = registry_mod.Registry.init(alloc);
@@ -544,11 +553,16 @@ pub fn main(init: std.process.Init) !void {
         const sw: f32 = @floatFromInt(c.rl.GetScreenWidth());
         const sh: f32 = @floatFromInt(c.rl.GetScreenHeight());
         widgets.beginFrame(m);
+        ui.beginFrame();
+        // One owner of the pointer at a time: a legacy menu, modal or drag
+        // hides input from the new Ui, and a new-Ui drag hides it from the
+        // legacy panes.
+        if (widgets.menuActive() or render_dlg.active or widgets.hasActiveDrag()) ui.suppressInput();
 
         // While a menu is open it's modal for the mouse: panes get a
         // neutralized mouse (no hover/clicks fall through), the menu keeps
         // handling input off the raw frame mouse captured in beginFrame.
-        const pane_m = if (widgets.menuActive() or render_dlg.active) widgets.neutralMouse() else m;
+        const pane_m = if (widgets.menuActive() or render_dlg.active or ui.active != 0) widgets.neutralMouse() else m;
 
         layout.handleInput(sw, sh, pane_m);
 
@@ -615,7 +629,19 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        const tres = top_bar.draw(rects.top_bar, &transport, &meter_state, &edit_snap, project_path, project_path_chosen, dirty, rec_busy, audio.capture_available, input_name_ptrs[0..input_count], current_input_idx, pane_m);
+        const tres = transport_bar.draw(ui, uiRect(rects.top_bar), .{
+            .transport = &transport,
+            .meter_state = &meter_state,
+            .edit_snap = &edit_snap,
+            .project_path = project_path,
+            .project_path_chosen = project_path_chosen,
+            .dirty = dirty,
+            .recording = rec_busy,
+            .can_record = audio.capture_available,
+            .input_names = input_name_ptrs[0..input_count],
+            .current_input_idx = current_input_idx,
+            .m = pane_m,
+        });
         if (tres.render_audio) render_dlg.active = true;
         if (tres.input_pick) |pi| {
             if (rec_busy) {
@@ -888,6 +914,7 @@ pub fn main(init: std.process.Init) !void {
         }
 
         layout.drawSplitters(rects, m);
+        ui.render();
         if (rename.active()) drawInlineRename(&rename);
 
         // Render Audio modal (drawn on top; modal for the mouse).
@@ -904,6 +931,7 @@ pub fn main(init: std.process.Init) !void {
         widgets.drawTooltip(sw, sh);
         widgets.drawContextMenu();
         widgets.applyCursor();
+        ui.endFrame();
 
         for (tracks) |*t| t.publishSnapshot(&audio_pool);
 
@@ -1398,6 +1426,12 @@ fn openProject(
 fn replaceProjectPath(alloc: std.mem.Allocator, project_path: *[]u8, next: []u8) void {
     alloc.free(project_path.*);
     project_path.* = next;
+}
+
+/// Legacy f32 layout rect → new-core logical rect (the app runs the Ui at
+/// zoom 1, so points and logical px coincide).
+fn uiRect(r: c.rl.Rectangle) ui_geom.Rect {
+    return ui_geom.Rect.xywh(@intFromFloat(@round(r.x)), @intFromFloat(@round(r.y)), @intFromFloat(@round(r.width)), @intFromFloat(@round(r.height)));
 }
 
 fn basename(path: []const u8) []const u8 {

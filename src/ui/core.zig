@@ -276,6 +276,8 @@ pub const Ui = struct {
         if (in.nkeys > 0 and ui.focus != 0) ui.focus_visible = true;
     }
 
+    /// Frame bookkeeping: end orphaned drags, apply the cursor. Call after
+    /// every widget of the frame ran; drawing is separate (`render`).
     pub fn endFrame(ui: *Ui) void {
         std.debug.assert(ui.id_depth == 0); // unbalanced pushId/popId
         if (ui.in.released and ui.active != 0) {
@@ -284,14 +286,45 @@ pub const Ui = struct {
             ui.edit_ended = true;
         }
         if (ui.in.time - ui.touch.time < TOUCH_HOLD + 0.1) ui.wants_frame = true;
-        if (ui.cursor != ui.cursor_set) {
+        // Only touch the cursor when we asked for one (or to release ours),
+        // so a host that sets cursors itself keeps working.
+        if (ui.cursor_prio > 0) {
             c.rl.SetMouseCursor(ui.cursor);
             ui.cursor_set = ui.cursor;
+        } else if (ui.cursor_set != c.rl.MOUSE_CURSOR_DEFAULT) {
+            c.rl.SetMouseCursor(c.rl.MOUSE_CURSOR_DEFAULT);
+            ui.cursor_set = c.rl.MOUSE_CURSOR_DEFAULT;
         }
+    }
+
+    /// Flush this frame's draw lists. Call between BeginDrawing/EndDrawing.
+    pub fn render(ui: *Ui) void {
+        ui.renderer.flush(&.{ &ui.dl, &ui.overlay });
+    }
+
+    /// Whole-window present for a screen the Ui owns entirely (gallery).
+    pub fn present(ui: *Ui) void {
         c.rl.BeginDrawing();
         c.rl.ClearBackground(@bitCast(style.chassis));
-        ui.renderer.flush(&.{ &ui.dl, &ui.overlay });
+        ui.render();
         c.rl.EndDrawing();
+    }
+
+    /// Make this frame's pointer and keys invisible to widgets (a host
+    /// modal or menu owns the input this frame).
+    pub fn suppressInput(ui: *Ui) void {
+        const in = &ui.in;
+        in.down = false;
+        in.pressed = false;
+        in.released = false;
+        in.right_pressed = false;
+        in.double = false;
+        in.wheel_x = 0;
+        in.wheel_y = 0;
+        in.nkeys = 0;
+        // Park the pointer off-screen so nothing is hovered.
+        in.mx = -1e6;
+        in.my = -1e6;
     }
 
     /// Ask for another frame (animations, afterglow, blinking).
@@ -481,6 +514,12 @@ pub const Ui = struct {
             .h = @floatFromInt(@as(i32, src.h) * k),
             .tint = tint,
         } });
+    }
+
+    /// A texture that isn't the atlas (the logo image). Breaks the batch
+    /// for one quad; keep these rare.
+    pub fn texture(ui: *Ui, tex: c.rl.Texture2D, dst: Rect, tint: Color) void {
+        ui.dl.push(.{ .texture = .{ .tex = tex, .r = dst, .tint = tint } });
     }
 
     pub fn line(ui: *Ui, x0: f32, y0: f32, x1: f32, y1: f32, col: Color) void {
