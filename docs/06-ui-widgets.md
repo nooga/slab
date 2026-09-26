@@ -34,8 +34,10 @@ user who has used any DAW in the last ten years.
 The UI is laid out in **logical pixels, as `i32`**. There are no
 fractional rects anywhere in UI code.
 
-- **Grid:** positions and sizes are multiples of 4. Standard row is 16;
-  tall row is 20. A 1px line or bevel is the only thing off the 4-grid.
+- **Grid:** positions and sizes are multiples of 4. Standard row is 20;
+  compact row is 16. A 1px line or bevel is the only thing off the 4-grid.
+- **1 logical px = 1 macOS point.** Base sizes are chosen so 1× reads at
+  the size of native macOS UI (body text ≈ 13pt); retina doubles it.
 - **Scale** maps logical to device pixels, chosen once per frame:
   - **Integer (1×, 2×, 3×).** The default and the reference look. Every
     logical pixel becomes an s×s block: bevels, glyphs, sprites, all
@@ -61,17 +63,18 @@ Two modes, one layout.
 - **Pixel mode (integer scales): Tamzen.** Loaded from BDF files in
   `vendor/tamzen/` by a small parser at startup (BDF is plain text; no
   build step). Strikes:
-  - **Body:** Tamzen 6×12 (12px line, sits in a 16px row with 2px lead).
-  - **Legend:** Tamzen 5×9, uppercase only (small-caps effect). Used for
-    faceplate labels, strip titles, units.
-  - **Title:** Tamzen 8×16, rare (pane titles at most).
+  - **Body:** Tamzen 8×16, regular and bold (9px caps, ≈ macOS 13pt):
+    names, menus, titles, body text. Sits in a 20px row.
+  - **Legend:** Tamzen 6×12, uppercase, regular and bold (5×7 caps, the
+    small-caps effect): faceplate labels, strip titles, readouts, units.
+    Its caps are also the display dot-matrix face.
   At 2× and 3× the 1× strike is pixel-multiplied, not swapped for a
   bigger strike, so the UI looks identical at every integer scale.
 - **Smooth mode (fractional scales): a vector face** (SF Pro / SF Mono from
   the system, Helvetica/Menlo fallback) rasterized **at the exact device
   pixel size** with point sampling. Never rasterize at 2× and filter down:
   that is what makes the current text blurry.
-- **Mono / numeric:** Tamzen 6×12 in pixel mode (it is monospaced); SF
+- **Mono / numeric:** Tamzen is monospaced, so readouts use it as is; SF
   Mono in smooth mode. Numeric readouts use tabular digits so values
   don't jitter while dragging.
 - **Baselines:** text is placed by the font's ascent, never by
@@ -90,7 +93,7 @@ engraving all agree with it.
 
 | Layer | What | Treatment |
 |---|---|---|
-| **Chassis** | window background, gaps between panes | darkest grey, noise |
+| **Chassis** | window background (only ever visible where nothing is laid out yet) | darkest grey, noise |
 | **Faceplate** | pane headers, machine strips, transport, track headers | raised 1px bevel, noise, faint vertical gradient, optional chamfer |
 | **Well** | displays, text fields, meter slots, slider slots | sunken 1px bevel, near-black, **flat** |
 | **Working surface** | arrangement grid, piano roll, waveforms | flat, dark, no material |
@@ -99,6 +102,18 @@ engraving all agree with it.
 Rule: **material belongs to hardware, data sits on flat dark glass.**
 Anything that shows the user's work (clips, notes, curves, meters) is
 flat. That contrast is what reads as "expensive console".
+
+### Packing
+
+Panels are bolted edge to edge like console modules. **No gaps, no
+margins, no padding between panels:** plates tile their region exactly
+and the chassis never shows between them. Adjacent plates share a single
+1px seam: every tiling plate draws its dark edge on its right and bottom
+only (`Outline.seam`); a free-standing object (a cap, a stepper) draws all
+four (`Outline.all`). Content starts right inside the bevel; breathing
+room comes from the controls' own fixed cells, never from padding.
+Leftover space in a row is filled with a blank plate, not left as
+chassis.
 
 ### Bevels
 
@@ -146,27 +161,38 @@ Tokens, not literals. Starting values (from the current theme):
 
 | Token | Value | Use |
 |---|---|---|
-| `chassis` | `#141416` | window background |
-| `face` | `#404044` | faceplate fill |
-| `face_hi` | `#646468` | bevel highlight |
-| `face_lo` | `#28282a` | bevel shadow |
-| `edge` | `#0c0c0e` | outline against chassis |
-| `pane` | `#202022` | working-surface background |
-| `pane_alt` | `#28282a` | alternating rows, lanes |
-| `well` | `#0e0f10` | display / field background |
-| `text` | `#e0e0db` | primary text |
-| `text_dim` | `#a0a09a` | secondary text, legends |
-| `text_mute` | `#747470` | disabled, hints |
-| `accent` | `#d7af50` | amber: selection, playhead, focus, "active" |
-| `play` | `#50c864` | transport play |
-| `rec` | `#d7463c` | record, arm, clip warnings |
-| `mod` | `#40a0ff` | modulation, CV |
-| `phosphor` | `#3fe0cc` | display segments (VFD teal) |
+**Graphite:** neutral greys with a faint blue cast and clean steps
+between layers (chassis < pane < face), so packed panels read apart
+without gaps; accents are saturated but few. Values live in
+`ui/style.zig`:
+
+| Token | Value | Use |
+|---|---|---|
+| `chassis` | `#111215` | window background |
+| `face` | `#33363c` | faceplate fill |
+| `face_hi` | `#4e525a` | bevel highlight |
+| `face_lo` | `#23252a` | bevel shadow |
+| `edge` | `#08090b` | seams and outlines |
+| `pane` | `#1a1c20` | working-surface background |
+| `pane_alt` | `#1f2126` | selected lane, note grid |
+| `well` | `#0a0b0d` | display / field background |
+| `grid_sub` / `grid_beat` / `grid_bar` | `#22252a` / `#2a2d33` / `#3a3e46` | time grid |
+| `key_white` / `key_black` | `#c9ccd1` / `#15161a` | piano keys |
+| `text` | `#eceef0` | primary text |
+| `text_dim` | `#a7abb2` | secondary text, legends |
+| `text_mute` | `#6f747c` | disabled, hints |
+| `accent` | `#ffb23e` | amber: selection, playhead, focus, "active" |
+| `play` | `#3ddc84` | transport play |
+| `rec` | `#ff4d4d` | record, arm, clip warnings |
+| `mod` | `#6b8cff` | modulation, CV |
+| `phosphor` | `#5ef2d6` | display segments (mint VFD) |
 
 - **Amber means "active" and nothing else.** Selection, playhead, focus
   ring, lit latch LEDs. Track colours never use amber/yellow hues;
   project colours outside the track set are snapped to the nearest one.
-- **Track colours** are the fixed muted set in `theme.track_colors`.
+- **Track colours** are the fixed set `style.track`: rose, lime, green,
+  teal, sky, indigo, violet, pink. Saturated but controlled; none of them
+  amber or yellow.
 - Machines may override `phosphor` and LED colours for their own panel.
   That is their personality inside the frame's rules.
 
@@ -215,7 +241,7 @@ One family per call, variants as options. Every control:
 
 ### Knobs
 
-Sizes **L 32 / M 24 / S 16** (square cell, legend above, optional readout
+Sizes **L 40 / M 32 / S 24** (square cell, legend above, optional readout
 below).
 
 | Variant | Behaviour |
@@ -406,6 +432,40 @@ hatch for the fy-side API.
 type strike, display, and every control family × size × state, with a
 materials-off switch and a scale selector. The look is tuned there first;
 panes adopt it after.
+
+## Working surfaces
+
+The arrangement and piano roll (`ui/surfaces.zig`) are flat glass framed
+by hardware. The user's material is the most saturated thing on screen;
+the grid is quiet.
+
+- **Time grid:** 1px lines in three steps, `grid_sub` < `grid_beat` <
+  `grid_bar`; subdivisions only when ≥ 6px apart; alternate bars get a
+  faint (+2%) wash so long rows stay readable.
+- **Ruler:** a faceplate above the grid: engraved bar numbers, beat and
+  bar ticks, the loop as an amber bracket along its bottom edge (the loop
+  lives in the ruler; it isn't smeared across the lanes), and an amber
+  ▼ marker for the playhead.
+- **Playhead:** a 1px `accent` line through every lane.
+- **Track header** (right of the lanes, one per lane): faceplate with a
+  3px full-height colour bar, name (body font), R/M/S as lit latch caps
+  (rec red, mute blue, solo yellow), a mini volume slider, and a ladder
+  meter on the right edge. Standard lane: 40px (two 20px rows); an
+  automation lane adds 28 and the header spans both.
+- **Clip:** 1px edge in the track colour darkened, a 12px name band in
+  full track colour with dark legend text, a body tinted from the track
+  colour (72% toward `pane`) carrying a note or waveform preview in a
+  lighter tint. Selected: 1px amber outline.
+- **Automation:** breakpoint line in the track colour, 3×3 hollow point
+  handles, parameter name as a muted legend in the lane.
+- **Piano roll:** key column faceplate (one row per semitone; white bed,
+  black keys as 62%-wide bars, seams on E|F and B|C, octave labels on
+  C), note grid with black-key rows darkened and octave lines on B|C,
+  notes as flat blocks whose brightness follows velocity with a 1px top
+  highlight, amber outline when selected. Velocity lane below: a 3px stem
+  per note with a lit cap.
+- **Pane titles** (clip editor, machine bay) are 20px faceplates with the
+  same 3px colour bar and the name in bold body type.
 
 ## App layout (current)
 

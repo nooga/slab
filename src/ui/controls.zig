@@ -24,7 +24,7 @@ pub const LedShape = sprites.LedShape;
 /// Pointer travel (window points) for a full 0→1 sweep.
 const DRAG_RANGE: f32 = 200;
 const FINE: f32 = 10;
-const LEGEND_H: i32 = 9;
+const LEGEND_H: i32 = 12;
 
 fn dragDelta(ui: *const Ui) f32 {
     // Up = increase, measured in window points so the feel doesn't change
@@ -89,7 +89,7 @@ pub const KnobOpts = struct {
 /// Natural cell size of a knob: legend · knob · readout.
 pub fn knobCell(size: Size) [2]i32 {
     const g = sprites.knobGeom(size);
-    return .{ g.d + 8, LEGEND_H + 1 + g.d + 1 + LEGEND_H };
+    return .{ g.d + 8, LEGEND_H + g.d + LEGEND_H };
 }
 
 pub fn knob(ui: *Ui, r: Rect, key: anytype, v: *f32, o: KnobOpts) bool {
@@ -98,7 +98,7 @@ pub fn knob(ui: *Ui, r: Rect, key: anytype, v: *f32, o: KnobOpts) bool {
     const g = art.geom;
     const cell = knobCell(o.size);
     const box = r.center(cell[0], cell[1]);
-    const kr = Rect.xywh(box.x + @divFloor(box.w - g.d, 2), box.y + LEGEND_H + 1, g.d, g.d);
+    const kr = Rect.xywh(box.x + @divFloor(box.w - g.d, 2), box.y + LEGEND_H, g.d, g.d);
 
     const b = ui.behavior(wid, box, o.disabled);
     const before = v.*;
@@ -180,7 +180,7 @@ pub fn knob(ui: *Ui, r: Rect, key: anytype, v: *f32, o: KnobOpts) bool {
     // Readout.
     if (o.show_readout) {
         const col = if (ui.active == wid) style.accent else if (o.disabled) style.face_hi else style.text_mute;
-        ui.textIn(&ui.fonts.legend, Rect.xywh(box.x - 4, kr.bottom() + 1, box.w + 8, LEGEND_H), readout, col, .center, false);
+        ui.textIn(&ui.fonts.legend, Rect.xywh(box.x - 4, kr.bottom(), box.w + 8, LEGEND_H), readout, col, .center, false);
     }
     focusRing(ui, wid, kr.inset(-1));
     return v.* != before;
@@ -243,7 +243,8 @@ pub const SliderOpts = struct {
 
 /// Width (across the slot) of a vertical slider's cell.
 pub fn sliderWidth(kind: SliderKind) i32 {
-    return sprites.sliderGeom(kind).cap_w + 12;
+    // Room for ticks either side and a 4-character readout with a gap.
+    return @max(sprites.sliderGeom(kind).cap_w + 12, 28);
 }
 
 pub fn slider(ui: *Ui, r: Rect, key: anytype, v: *f32, o: SliderOpts) bool {
@@ -253,8 +254,8 @@ pub fn slider(ui: *Ui, r: Rect, key: anytype, v: *f32, o: SliderOpts) bool {
     const before = v.*;
 
     var area = r;
-    const legend_r = if (o.label.len > 0) area.cutTop(LEGEND_H + 1) else Rect{};
-    const readout_r = if (o.show_readout) area.cutBottom(LEGEND_H + 1) else Rect{};
+    const legend_r = if (o.label.len > 0) area.cutTop(LEGEND_H) else Rect{};
+    const readout_r = if (o.show_readout) area.cutBottom(LEGEND_H) else Rect{};
 
     // Along-axis geometry.
     const along_len = if (o.horizontal) area.w else area.h;
@@ -340,7 +341,7 @@ pub const ToggleOpts = struct {
 };
 
 pub fn toggleCell() [2]i32 {
-    return .{ 32, LEGEND_H + 1 + sprites.LEVER_H };
+    return .{ 40, LEGEND_H + sprites.LEVER_H };
 }
 
 /// `v` = position index, 0 = up.
@@ -349,7 +350,7 @@ pub fn toggle(ui: *Ui, r: Rect, key: anytype, v: *u8, o: ToggleOpts) bool {
     const before = v.*;
     const n = @max(o.positions, 2);
     var area = r;
-    const legend_r = if (o.label.len > 0) area.cutTop(LEGEND_H + 1) else Rect{};
+    const legend_r = if (o.label.len > 0) area.cutTop(LEGEND_H) else Rect{};
     const lever = Rect.xywh(area.x + @divFloor(area.w - sprites.LEVER_W, 2) - (if (o.marks.len > 0) @as(i32, 5) else 0), area.y, sprites.LEVER_W, sprites.LEVER_H);
 
     const b = ui.behavior(wid, area, o.disabled);
@@ -387,10 +388,17 @@ pub const SlideOpts = struct {
     disabled: bool = false,
 };
 
-const SLIDE_PITCH: i32 = 8;
+const SLIDE_PITCH: i32 = 10;
 
-pub fn slideCell(positions: u8) [2]i32 {
-    return .{ @as(i32, positions) * SLIDE_PITCH + 8, LEGEND_H + 1 + LEGEND_H + 10 };
+/// Position pitch: wide enough that each mark sits over its position.
+fn slidePitch(ui: *const Ui, marks: []const []const u8) i32 {
+    var p = SLIDE_PITCH;
+    for (marks) |m| p = @max(p, ui.fonts.legend.measure(m) + 2);
+    return p;
+}
+
+pub fn slideCell(ui: *const Ui, o: SlideOpts) [2]i32 {
+    return .{ @as(i32, @max(o.positions, 2)) * slidePitch(ui, o.marks) + 12, LEGEND_H * 2 + 12 };
 }
 
 pub fn slide(ui: *Ui, r: Rect, key: anytype, v: *u8, o: SlideOpts) bool {
@@ -398,14 +406,15 @@ pub fn slide(ui: *Ui, r: Rect, key: anytype, v: *u8, o: SlideOpts) bool {
     const before = v.*;
     const n: i32 = @max(o.positions, 2);
     var area = r;
-    const legend_r = if (o.label.len > 0) area.cutTop(LEGEND_H + 1) else Rect{};
+    const legend_r = if (o.label.len > 0) area.cutTop(LEGEND_H) else Rect{};
     const marks_r = if (o.marks.len > 0) area.cutTop(LEGEND_H) else Rect{};
-    const slot = Rect.xywh(area.x + @divFloor(area.w - n * SLIDE_PITCH - 2, 2), area.y + 1, n * SLIDE_PITCH + 2, 8);
+    const pitch = slidePitch(ui, o.marks);
+    const slot = Rect.xywh(area.x + @divFloor(area.w - n * pitch - 2, 2), area.y + 1, n * pitch + 2, 10);
 
     const b = ui.behavior(wid, area, o.disabled);
     if (b.held) {
         const rel = ui.in.ix() - slot.x - 1;
-        v.* = @intCast(std.math.clamp(@divFloor(rel, SLIDE_PITCH), 0, n - 1));
+        v.* = @intCast(std.math.clamp(@divFloor(rel, pitch), 0, n - 1));
     }
     const k = arrowSteps(ui, wid);
     if (k > 0 and v.* < n - 1) v.* += 1;
@@ -413,13 +422,13 @@ pub fn slide(ui: *Ui, r: Rect, key: anytype, v: *u8, o: SlideOpts) bool {
 
     if (o.label.len > 0) ui.textIn(&ui.fonts.legend, legend_r, o.label, legendCol(ui, wid, o.disabled), .center, true);
     for (o.marks, 0..) |m, i| {
-        const cx = slot.x + 1 + @as(i32, @intCast(i)) * SLIDE_PITCH + @divFloor(SLIDE_PITCH, 2);
+        const cx = slot.x + 1 + @as(i32, @intCast(i)) * pitch + @divFloor(pitch, 2);
         const w = ui.fonts.legend.measure(m);
         _ = ui.engraved(&ui.fonts.legend, cx - @divFloor(w, 2), marks_r.y, m, if (i == v.*) style.text else style.text_mute);
     }
     const inner = ui.well(slot, style.well);
-    const thumb = Rect.xywh(inner.x + @as(i32, v.*) * SLIDE_PITCH, inner.y, SLIDE_PITCH, inner.h);
-    _ = ui.plate(thumb, .{ .fill = style.cap, .outline = false });
+    const thumb = Rect.xywh(inner.x + @as(i32, v.*) * pitch, inner.y, pitch, inner.h);
+    _ = ui.plate(thumb, .{ .fill = style.cap, .outline = .none });
     ui.rect(Rect.xywh(thumb.x + @divFloor(thumb.w, 2), thumb.y + 2, 1, thumb.h - 4), style.edge);
     if (ui.isHot(wid) and o.marks.len > v.*) ui.setTouch(o.label, o.marks[v.*]);
     focusRing(ui, wid, slot.inset(-1));
@@ -437,14 +446,18 @@ pub const ButtonOpts = struct {
     led: ?Color = null,
     /// Cap itself lights in this colour when on (808 style).
     lit: ?Color = null,
+    /// A shape printed on the cap (transport ▶ ■ ●), lit in `glyph_on`
+    /// while the button is on.
+    glyph: ?LedShape = null,
+    glyph_on: Color = style.accent,
     disabled: bool = false,
 };
 
 pub fn buttonHeight(size: Size) i32 {
     return switch (size) {
-        .s => 12,
-        .m => 16,
-        .l => 20,
+        .s => 16,
+        .m => 20,
+        .l => 24,
     };
 }
 
@@ -492,6 +505,12 @@ fn cap(ui: *Ui, r: Rect, down: bool, is_on: bool, hot: bool, o: ButtonOpts) void
         led(ui, lr.x, lr.y + @divFloor(lr.h - 3, 2), .round3, if (is_on) .on else .off, lc);
         _ = content.cutLeft(2);
     }
+    if (o.glyph) |shape| {
+        const sz = sprites.ledSize(shape);
+        const gx = content.x + @divFloor(content.w - sz[0], 2);
+        const gy = content.y + @divFloor(content.h - sz[1], 2);
+        if (is_on) led(ui, gx, gy, shape, .on, o.glyph_on) else ledShape(ui, gx, gy, shape, if (hot) style.text else style.text_dim);
+    }
     if (o.label.len > 0) {
         const f = &ui.fonts.legend;
         const col = if (o.disabled) style.text_mute else if (o.lit != null and is_on) style.text else style.text_dim;
@@ -521,10 +540,10 @@ pub fn segmented(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const
 
 // ── Selectors ────────────────────────────────────────────────────────
 
-const LIST_ROW: i32 = 11;
+const LIST_ROW: i32 = 14;
 
 pub fn listCell(options: usize) [2]i32 {
-    return .{ 32, LEGEND_H + 1 + @as(i32, @intCast(options)) * LIST_ROW };
+    return .{ 40, LEGEND_H + @as(i32, @intCast(options)) * LIST_ROW };
 }
 
 /// Vertical option column (octave, waveform): click or drag through.
@@ -532,7 +551,7 @@ pub fn list(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const []const u8,
     const wid = ui.id(key);
     const before = v.*;
     var area = r;
-    const legend_r = if (label.len > 0) area.cutTop(LEGEND_H + 1) else Rect{};
+    const legend_r = if (label.len > 0) area.cutTop(LEGEND_H) else Rect{};
     const rows = Rect.xywh(area.x, area.y, area.w, @as(i32, @intCast(options.len)) * LIST_ROW);
     const b = ui.behavior(wid, rows, false);
     if (b.held) {
@@ -547,7 +566,7 @@ pub fn list(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const []const u8,
     for (options, 0..) |opt, i| {
         const row = Rect.xywh(rows.x, rows.y + @as(i32, @intCast(i)) * LIST_ROW, rows.w, LIST_ROW);
         const on = i == v.*;
-        led(ui, row.x + 2, row.y + 4, .round3, if (on) .on else .off, style.led_amber);
+        led(ui, row.x + 2, row.y + 5, .round3, if (on) .on else .off, style.led_amber);
         _ = ui.engraved(&ui.fonts.legend, row.x + 8, row.y + 1, opt, if (on) style.text else style.text_mute);
     }
     if (ui.isHot(wid) and v.* < options.len) ui.setTouch(label, options[v.*]);
@@ -580,8 +599,8 @@ pub fn displaySelect(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const []
     if (k > 0 and @as(i32, v.*) < n - 1) v.* += 1;
     if (k < 0 and v.* > 0) v.* -= 1;
 
-    _ = ui.plate(left, .{ .fill = style.cap });
-    _ = ui.plate(right, .{ .fill = style.cap });
+    _ = ui.plate(left, .{ .fill = style.cap, .outline = .all });
+    _ = ui.plate(right, .{ .fill = style.cap, .outline = .all });
     ledShape(ui, left.x + 2, left.y + @divFloor(left.h - 7, 2), .tri_left, if (bl.held) style.text else style.text_dim);
     ledShape(ui, right.x + 4, right.y + @divFloor(right.h - 7, 2), .tri_right, if (br.held) style.text else style.text_dim);
     if (v.* < options.len) {
@@ -692,13 +711,15 @@ pub const DisplayOpts = struct {
     align_: Ui.Align = .left,
     /// Draw the unlit cell grid.
     ghost: bool = true,
+    /// Each matrix dot is 2×2 logical px (transport readouts).
+    large: bool = false,
 };
 
 pub const CELL_W: i32 = 6;
 pub const CELL_H: i32 = 12;
 
-pub fn displayHeight() i32 {
-    return CELL_H + 4;
+pub fn displayHeight(large: bool) i32 {
+    return if (large) CELL_H * 2 + 4 else CELL_H + 4;
 }
 
 /// Dot-matrix readout (docs/06 §Displays). Tamzen 6×12 is the matrix face:
@@ -706,44 +727,49 @@ pub fn displayHeight() i32 {
 pub fn display(ui: *Ui, r: Rect, s: []const u8, o: DisplayOpts) void {
     const inner = ui.well(r, style.well);
     const m = style.materials;
-    const f = &ui.fonts.body;
-    const cells = @divFloor(inner.w - 2, CELL_W);
+    const f = &ui.fonts.legend;
+    const k: i32 = if (o.large) 2 else 1;
+    const cw = CELL_W * k;
+    const ch = CELL_H * k;
+    const cells = @divFloor(inner.w - 2 * k, cw);
     if (cells <= 0) return;
-    const text_w = @min(f.measure(s), cells * CELL_W);
-    const x0 = inner.x + 1 + switch (o.align_) {
+    const text_w = @min(f.measure(s) * k, cells * cw);
+    const x0 = inner.x + k + switch (o.align_) {
         .left => 0,
-        .center => @divFloor(cells * CELL_W - text_w, 2 * CELL_W) * CELL_W,
-        .right => cells * CELL_W - text_w,
+        .center => @divFloor(cells * cw - text_w, 2 * cw) * cw,
+        .right => cells * cw - text_w,
     };
-    const y0 = inner.y + @divFloor(inner.h - CELL_H, 2);
+    const y0 = inner.y + @divFloor(inner.h - ch, 2);
     ui.clip(inner);
     // Ghost cells: the unlit 5×7 cap box of every cell.
     if (o.ghost and m.ghost_alpha > 0) {
         var i: i32 = 0;
-        while (i < cells) : (i += 1) ui.rect(Rect.xywh(inner.x + 1 + i * CELL_W, y0 + 2, 5, 7), o.color.alpha(m.ghost_alpha));
+        while (i < cells) : (i += 1) ui.rect(Rect.xywh(inner.x + k + i * cw, y0 + 2 * k, 5 * k, 7 * k), o.color.alpha(m.ghost_alpha));
     }
     // Halo, then lit glyphs.
     var pen = x0;
     var it = font_mod.Utf8Iter{ .s = s };
     while (it.next()) |cp| {
-        if (pen + CELL_W > inner.right()) break;
+        if (pen + cw > inner.right()) break;
         const idx = f.index(cp);
         const g = &f.glyphs[idx];
         const halo = ui.art.display_halo[idx];
-        if (m.halo_alpha > 0 and halo.w > 0) ui.sprite(halo, pen + g.dx - 1, y0 + g.dy - 1, o.color.alpha(m.halo_alpha));
-        if (g.src.w > 0) ui.sprite(g.src, pen + g.dx, y0 + g.dy, o.color);
-        pen += g.advance;
+        if (m.halo_alpha > 0 and halo.w > 0) ui.spriteScaled(halo, pen + (g.dx - 1) * k, y0 + (g.dy - 1) * k, k, o.color.alpha(m.halo_alpha));
+        if (g.src.w > 0) ui.spriteScaled(g.src, pen + g.dx * k, y0 + g.dy * k, k, o.color);
+        pen += g.advance * k;
     }
-    // Dot gaps: at 2× and up, a 1-device-px well-coloured mesh on every
-    // logical pixel boundary turns solid glyphs into a dot matrix.
+    // Dot gaps: once a matrix dot spans 2+ device px, a 1-device-px
+    // well-coloured mesh on every dot boundary turns solid glyphs into a
+    // dot matrix.
     const ds = ui.deviceScale();
-    if (ds >= 2) {
+    const dot_dev = ds * @as(f32, @floatFromInt(k));
+    if (dot_dev >= 2) {
         const gap = 1.0 / ds;
         const gap_col = style.well.alpha(200);
-        var x: i32 = inner.x + 1;
-        while (x < inner.right()) : (x += 1) ui.frect(@as(f32, @floatFromInt(x + 1)) - gap, @floatFromInt(y0), gap, CELL_H, gap_col);
+        var x: i32 = inner.x + k;
+        while (x < inner.right()) : (x += k) ui.frect(@as(f32, @floatFromInt(x + k)) - gap, @floatFromInt(y0), gap, @floatFromInt(ch), gap_col);
         var y: i32 = y0;
-        while (y < y0 + CELL_H) : (y += 1) ui.frect(@floatFromInt(inner.x), @as(f32, @floatFromInt(y + 1)) - gap, @floatFromInt(inner.w), gap, gap_col);
+        while (y < y0 + ch) : (y += k) ui.frect(@floatFromInt(inner.x), @as(f32, @floatFromInt(y + k)) - gap, @floatFromInt(inner.w), gap, gap_col);
     }
     ui.unclip();
 }
@@ -802,8 +828,8 @@ fn trace(ui: *Ui, inner: Rect, pts: []const f32, col: Color) void {
 /// Module strip: a faceplate with an engraved title. Returns the body.
 pub fn strip(ui: *Ui, r: Rect, title: []const u8) Rect {
     var body = ui.plate(r, .{});
-    const head = body.cutTop(LEGEND_H + 3);
-    if (title.len > 0) _ = ui.engraved(&ui.fonts.legend, head.x + 3, head.y + 2, title, style.text_dim);
+    const head = body.cutTop(LEGEND_H + 2);
+    if (title.len > 0) _ = ui.engraved(&ui.fonts.legend, head.x + 3, head.y + 1, title, style.text_dim);
     return body;
 }
 

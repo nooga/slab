@@ -31,9 +31,9 @@ pub const KnobGeom = struct {
 
 pub fn knobGeom(size: Size) KnobGeom {
     return switch (size) {
-        .l => .{ .d = 32, .cap_r = 11, .top_r = 7.5, .arc_r0 = 12.5, .arc_r1 = 14.5, .mod_r0 = 15, .mod_r1 = 16, .pointer_w = 0.7 },
-        .m => .{ .d = 24, .cap_r = 7.5, .top_r = 5, .arc_r0 = 8.5, .arc_r1 = 10.5, .mod_r0 = 11, .mod_r1 = 12, .pointer_w = 0.6 },
-        .s => .{ .d = 16, .cap_r = 4.5, .top_r = 3, .arc_r0 = 5.5, .arc_r1 = 6.8, .mod_r0 = 7, .mod_r1 = 8, .pointer_w = 0.55 },
+        .l => .{ .d = 40, .cap_r = 14, .top_r = 9.5, .arc_r0 = 15.5, .arc_r1 = 18, .mod_r0 = 18.5, .mod_r1 = 20, .pointer_w = 0.8 },
+        .m => .{ .d = 32, .cap_r = 11, .top_r = 7.5, .arc_r0 = 12.5, .arc_r1 = 14.5, .mod_r0 = 15, .mod_r1 = 16, .pointer_w = 0.7 },
+        .s => .{ .d = 24, .cap_r = 7.5, .top_r = 5, .arc_r0 = 8.5, .arc_r1 = 10.5, .mod_r0 = 11, .mod_r1 = 12, .pointer_w = 0.6 },
     };
 }
 
@@ -45,7 +45,7 @@ pub const SWEEP_RANGE: f32 = 270.0;
 pub const RingPx = struct { x: i8, y: i8, t: f32 };
 
 pub const Ring = struct {
-    px: [320]RingPx = undefined,
+    px: [512]RingPx = undefined,
     len: usize = 0,
 
     pub fn slice(r: *const Ring) []const RingPx {
@@ -74,9 +74,9 @@ pub const SliderGeom = struct {
 
 pub fn sliderGeom(kind: SliderKind) SliderGeom {
     return switch (kind) {
-        .fader => .{ .cap_w = 16, .cap_h = 28, .slot_w = 4 },
-        .slider => .{ .cap_w = 12, .cap_h = 16, .slot_w = 4 },
-        .mini => .{ .cap_w = 8, .cap_h = 10, .slot_w = 2 },
+        .fader => .{ .cap_w = 20, .cap_h = 32, .slot_w = 4 },
+        .slider => .{ .cap_w = 14, .cap_h = 20, .slot_w = 4 },
+        .mini => .{ .cap_w = 10, .cap_h = 12, .slot_w = 2 },
     };
 }
 
@@ -88,8 +88,8 @@ pub const SliderArt = struct {
 
 // ── Toggle lever ─────────────────────────────────────────────────────
 
-pub const LEVER_W: i32 = 12;
-pub const LEVER_H: i32 = 24;
+pub const LEVER_W: i32 = 14;
+pub const LEVER_H: i32 = 28;
 
 // ── LEDs ─────────────────────────────────────────────────────────────
 
@@ -299,9 +299,9 @@ fn buildLever(a: *Atlas, pos: u2) !Region {
         var x: i32 = 0;
         while (x < LEVER_W) : (x += 1) {
             const r = dist(x, y, cx, cy);
-            if (r < 5) {
+            if (r < 6) {
                 var col = style.face.shade(-6);
-                if (r >= 4) col = style.edge else if (lightAt(x, y, cx, cy) > 0.4) col = style.face_hi;
+                if (r >= 5) col = style.edge else if (lightAt(x, y, cx, cy) > 0.4) col = style.face_hi;
                 a.put(reg, x, y, col);
             }
         }
@@ -312,8 +312,9 @@ fn buildLever(a: *Atlas, pos: u2) !Region {
         1 => 0,
         else => 1,
     };
-    const tip_y = cy + dir * 8;
-    const tip_r: f32 = if (pos == 1) 3.5 else 2.5;
+    const reach: f32 = 10;
+    const tip_y = cy + dir * reach;
+    const tip_r: f32 = if (pos == 1) 4 else 3;
     y = 0;
     while (y < LEVER_H) : (y += 1) {
         var x: i32 = 0;
@@ -324,8 +325,8 @@ fn buildLever(a: *Atlas, pos: u2) !Region {
             var in_shaft = false;
             if (pos != 1) {
                 const along = (fy - cy) * dir;
-                if (along >= 0 and along <= 8) {
-                    const half = 2.2 - 0.8 * (along / 8);
+                if (along >= 0 and along <= reach) {
+                    const half = 2.4 - 0.9 * (along / reach);
                     in_shaft = @abs(fx - cx) < half;
                 }
             }
@@ -452,7 +453,8 @@ test "knob rings are sorted along the sweep and stay inside the cell" {
         prev = p.t;
     }
     // Sweep gap at the bottom: nothing straight below the centre.
+    const mid = @divFloor(k.geom.d, 2);
     for (k.arc.slice()) |p| {
-        try std.testing.expect(!(p.x == 15 or p.x == 16) or p.y < 16);
+        try std.testing.expect(!(p.x == mid - 1 or p.x == mid) or p.y < mid);
     }
 }

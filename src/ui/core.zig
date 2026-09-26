@@ -68,13 +68,14 @@ const DBL_DIST: f32 = 4;
 // ── Fonts ────────────────────────────────────────────────────────────
 
 pub const Fonts = struct {
-    /// Tamzen 6×12: body, values, and the display dot-matrix face.
+    /// Tamzen 8×16 (9px caps ≈ macOS 13pt at 1 logical px per point):
+    /// names, menus, body text.
     body: Font,
     body_bold: Font,
-    /// Tamzen 5×9, used uppercase: faceplate legends, units.
+    /// Tamzen 6×12, used uppercase: faceplate legends, readouts, units.
+    /// Its 5×7 caps double as the display dot-matrix face.
     legend: Font,
-    /// Tamzen 8×16: pane titles.
-    title: Font,
+    legend_bold: Font,
 };
 
 // ── Touch (feeds title-strip displays) ───────────────────────────────
@@ -166,12 +167,12 @@ pub const Ui = struct {
         var atlas = try atlas_mod.Atlas.init(alloc);
         defer atlas.deinit(alloc);
         const fonts = Fonts{
-            .body = try font_mod.loadBdf(&atlas, tamzen.r6x12),
-            .body_bold = try font_mod.loadBdf(&atlas, tamzen.b6x12),
-            .legend = try font_mod.loadBdf(&atlas, tamzen.r5x9),
-            .title = try font_mod.loadBdf(&atlas, tamzen.r8x16),
+            .body = try font_mod.loadBdf(&atlas, tamzen.r8x16),
+            .body_bold = try font_mod.loadBdf(&atlas, tamzen.b8x16),
+            .legend = try font_mod.loadBdf(&atlas, tamzen.r6x12),
+            .legend_bold = try font_mod.loadBdf(&atlas, tamzen.b6x12),
         };
-        const art = try sprites.build(&atlas, &fonts.body);
+        const art = try sprites.build(&atlas, &fonts.legend);
 
         const ui = try alloc.create(Ui);
         errdefer alloc.destroy(ui);
@@ -419,6 +420,18 @@ pub const Ui = struct {
         } });
     }
 
+    /// Sprite pixel-multiplied by an integer factor (large displays).
+    pub fn spriteScaled(ui: *Ui, src: atlas_mod.Region, x: i32, y: i32, k: i32, tint: Color) void {
+        ui.dl.push(.{ .sprite = .{
+            .src = src,
+            .x = @floatFromInt(x),
+            .y = @floatFromInt(y),
+            .w = @floatFromInt(@as(i32, src.w) * k),
+            .h = @floatFromInt(@as(i32, src.h) * k),
+            .tint = tint,
+        } });
+    }
+
     pub fn line(ui: *Ui, x0: f32, y0: f32, x1: f32, y1: f32, col: Color) void {
         ui.dl.push(.{ .line = .{ .x0 = x0, .y0 = y0, .x1 = x1, .y1 = y1, .c = col } });
     }
@@ -486,10 +499,20 @@ pub const Ui = struct {
         ui.noise(r);
     }
 
+    pub const Outline = enum {
+        /// No edge (a thumb or cap inside another control).
+        none,
+        /// Edge on all four sides (a free-standing object).
+        all,
+        /// Edge on the right and bottom only. Plates that tile a region
+        /// with no gaps then share exactly one 1px seam between them.
+        seam,
+    };
+
     pub const PlateOpts = struct {
         fill: Color = style.face,
         chamfer: u8 = 0,
-        outline: bool = true,
+        outline: Outline = .seam,
     };
 
     /// Raised faceplate: gradient, noise, bevel, optional chamfer.
@@ -500,14 +523,22 @@ pub const Ui = struct {
         const top = o.fill.shade(@divFloor(g, 2));
         const bot = o.fill.shade(-@divFloor(g + 1, 2));
         var body = r;
-        if (o.outline) {
-            ui.rect(r, style.edge);
-            body = r.inset(1);
+        switch (o.outline) {
+            .none => {},
+            .all => {
+                ui.rect(r, style.edge);
+                body = r.inset(1);
+            },
+            .seam => {
+                ui.rect(Rect.xywh(r.right() - 1, r.y, 1, r.h), style.edge);
+                ui.rect(Rect.xywh(r.x, r.bottom() - 1, r.w - 1, 1), style.edge);
+                body = Rect.xywh(r.x, r.y, r.w - 1, r.h - 1);
+            },
         }
         ui.vgrad(body, top, bot);
         ui.noise(body);
         ui.bevel(body, style.face_hi, style.face_lo);
-        if (o.chamfer > 0) ui.chamferCorners(r, o.chamfer, o.outline);
+        if (o.chamfer > 0) ui.chamferCorners(r, o.chamfer, o.outline != .none);
         return body.inset(1);
     }
 

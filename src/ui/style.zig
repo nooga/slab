@@ -41,45 +41,67 @@ pub const Color = extern struct {
 const std = @import("std");
 
 // ── Surfaces ─────────────────────────────────────────────────────────
-pub const chassis = Color.hex(0x141416);
-pub const face = Color.hex(0x404044);
-pub const face_hi = Color.hex(0x646468);
-pub const face_lo = Color.hex(0x28282a);
-pub const edge = Color.hex(0x0c0c0e);
-pub const pane = Color.hex(0x202022);
-pub const pane_alt = Color.hex(0x28282a);
-pub const well = Color.hex(0x0e0f10);
-pub const well_hi = Color.hex(0x303034); // sunken bevel's lit (bottom/right) edge
+// Graphite: neutral greys with a faint blue cast, clean steps between
+// layers (chassis < pane < face) so packed panels still read apart.
+pub const chassis = Color.hex(0x111215);
+pub const face = Color.hex(0x33363c);
+pub const face_hi = Color.hex(0x4e525a);
+pub const face_lo = Color.hex(0x23252a);
+pub const edge = Color.hex(0x08090b);
+pub const pane = Color.hex(0x1a1c20);
+pub const pane_alt = Color.hex(0x1f2126);
+pub const well = Color.hex(0x0a0b0d);
+pub const well_hi = Color.hex(0x2a2d33); // sunken bevel's lit (bottom/right) edge
+
+// ── Working-surface grid ─────────────────────────────────────────────
+pub const grid_sub = Color.hex(0x22252a);
+pub const grid_beat = Color.hex(0x2a2d33);
+pub const grid_bar = Color.hex(0x3a3e46);
+pub const key_white = Color.hex(0xc9ccd1);
+pub const key_black = Color.hex(0x15161a);
 
 // ── Text ─────────────────────────────────────────────────────────────
-pub const text = Color.hex(0xe0e0db);
-pub const text_dim = Color.hex(0xa0a09a);
-pub const text_mute = Color.hex(0x747470);
-pub const engrave = Color.hex(0x000000).alpha(110);
+pub const text = Color.hex(0xeceef0);
+pub const text_dim = Color.hex(0xa7abb2);
+pub const text_mute = Color.hex(0x6f747c);
+pub const engrave = Color.hex(0x000000).alpha(120);
 
 // ── Accents ──────────────────────────────────────────────────────────
 /// Amber: selection, playhead, focus, "active". Nothing else.
-pub const accent = Color.hex(0xd7af50);
-pub const play = Color.hex(0x50c864);
-pub const rec = Color.hex(0xd7463c);
-pub const mod = Color.hex(0x40a0ff);
-/// Display segments (VFD teal). Machines may override per panel.
-pub const phosphor = Color.hex(0x3fe0cc);
+pub const accent = Color.hex(0xffb23e);
+pub const play = Color.hex(0x3ddc84);
+pub const rec = Color.hex(0xff4d4d);
+pub const mod = Color.hex(0x6b8cff);
+/// Display segments (mint VFD). Machines may override per panel.
+pub const phosphor = Color.hex(0x5ef2d6);
 
 // ── Controls ─────────────────────────────────────────────────────────
 /// Knob value arc at rest; turns `accent` while hot/active.
-pub const arc_on = Color.hex(0xb4b4ac);
-pub const arc_off = Color.hex(0x1a1a1c);
-pub const cap = Color.hex(0x4a4a4f);
-pub const pointer = Color.hex(0xf0f0ea);
+pub const arc_on = Color.hex(0xc9ccd2);
+pub const arc_off = Color.hex(0x15171a);
+pub const cap = Color.hex(0x3d4047);
+pub const pointer = Color.hex(0xf4f5f6);
 
 // ── LED colours ──────────────────────────────────────────────────────
-pub const led_red = Color.hex(0xff3a2a);
-pub const led_green = Color.hex(0x48f060);
+pub const led_red = Color.hex(0xff4d4d);
+pub const led_green = Color.hex(0x3ddc84);
 pub const led_amber = accent;
-pub const led_blue = Color.hex(0x50b0ff);
+pub const led_blue = Color.hex(0x4aa8ff);
 /// Meter "hot" zone (between green and clip red).
-pub const led_yellow = Color.hex(0xe8d040);
+pub const led_yellow = Color.hex(0xf2d544);
+
+// ── Track colours ────────────────────────────────────────────────────
+/// Saturated but controlled; no amber/yellow (reserved for "active").
+pub const track = [_]Color{
+    Color.hex(0xec6a7a), // rose
+    Color.hex(0x9ad45a), // lime
+    Color.hex(0x4cc38a), // green
+    Color.hex(0x3cc6c0), // teal
+    Color.hex(0x4aa8f0), // sky
+    Color.hex(0x7b7ff0), // indigo
+    Color.hex(0xb56ce6), // violet
+    Color.hex(0xe46ab6), // pink
+};
 
 // ── Material strengths (docs/06 §Strengths are tokens) ───────────────
 pub const Materials = struct {
