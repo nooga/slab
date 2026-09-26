@@ -522,12 +522,12 @@ menu opened from the dialog owns it.
 
 ## Splash
 
-The app opens the way 2000s instruments did: a small borderless window
-(720×426) with `splash.png` above a packed status strip (wordmark,
-dot-matrix status naming the machine being compiled, LED progress), a
-hard 1px frame around it. When booting is done the same window gains its
-decorations, becomes resizable and grows into the centred workbench. No
-artificial hold: the splash lasts as long as the boot.
+The 2000s way: a 720x426 card centred in the main window, `splash.png`
+above a packed status strip (wordmark, dot-matrix status naming the
+machine being compiled, LED progress), a hard 1px frame, no shadow. It is
+redrawn on the empty chassis between machine compiles; once the workbench
+is up the card stays over the live UI for 1.2s and then vanishes, at once
+on any click or key. It never takes the input.
 
 ## Escape hatch: push pixels
 

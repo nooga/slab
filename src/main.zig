@@ -414,8 +414,8 @@ pub fn main(init: std.process.Init) !void {
     if (cli.gallery) return ui_gallery.run(alloc);
     if (cli.render) |out| return renderHeadless(alloc, cli.project orelse return error.MissingProject, out);
 
-    // The window opens as the splash and becomes the workbench once booted.
-    splash.openWindow(c.rl.FLAG_VSYNC_HINT | c.rl.FLAG_WINDOW_HIGHDPI);
+    c.rl.SetConfigFlags(c.rl.FLAG_WINDOW_RESIZABLE | c.rl.FLAG_VSYNC_HINT | c.rl.FLAG_WINDOW_HIGHDPI);
+    c.rl.InitWindow(1400, 860, "slab");
     defer c.rl.CloseWindow();
     c.rl.SetTargetFPS(120);
     c.rl.SetExitKey(c.rl.KEY_NULL);
@@ -445,10 +445,10 @@ pub fn main(init: std.process.Init) !void {
         var ubuf: [48]u8 = undefined;
         const msg = std.ascii.upperString(&ubuf, std.fmt.bufPrint(&sbuf, "LOADING {s}", .{name}) catch "LOADING");
         const frac = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(registry_mod.builtin_machines.len));
-        splash.bootFrame(ui, msg, frac);
+        splash.bootFrame(ui, screenRect(), msg, frac);
         reg.loadFyMachine(path) catch |err| std.log.err("machine {s} failed to load: {s}", .{ path, @errorName(err) });
     }
-    splash.bootFrame(ui, "STARTING AUDIO", 1);
+    splash.bootFrame(ui, screenRect(), "STARTING AUDIO", 1);
 
     // ── Audio pool — host-owned decoded audio backing arrangement clips.
     // Registered with the document layer (a process singleton) so save /
@@ -547,7 +547,7 @@ pub fn main(init: std.process.Init) !void {
     var render_job: RenderJob = .{};
 
     if (cli.project) |path| {
-        splash.bootFrame(ui, "LOADING PROJECT", 1);
+        splash.bootFrame(ui, screenRect(), "LOADING PROJECT", 1);
         if (document_mod.readFile(alloc, path)) |data| {
             defer alloc.free(data);
             var boot_tracks = tracks_buf[0..track_count];
@@ -560,7 +560,7 @@ pub fn main(init: std.process.Init) !void {
         } else |err| std.log.err("open {s} failed: {s}", .{ path, @errorName(err) });
     }
 
-    splash.becomeWorkbench(1400, 860);
+    splash.finishBoot();
     while (!c.rl.WindowShouldClose()) {
         const m = widgets.Mouse.sample();
         const sw: f32 = @floatFromInt(c.rl.GetScreenWidth());
@@ -942,6 +942,7 @@ pub fn main(init: std.process.Init) !void {
             render_action = render_dialog.draw(ui, uiRect(widgets.rect(0, 0, sw, sh)), &render_dlg, loop_available, prog);
         }
 
+        splash.overlay(ui, screenRect());
         menu.draw(ui);
         ui.render();
 
@@ -1445,6 +1446,10 @@ fn replaceProjectPath(alloc: std.mem.Allocator, project_path: *[]u8, next: []u8)
 
 /// Legacy f32 layout rect → new-core logical rect (the app runs the Ui at
 /// zoom 1, so points and logical px coincide).
+fn screenRect() ui_geom.Rect {
+    return ui_geom.Rect.xywh(0, 0, c.rl.GetScreenWidth(), c.rl.GetScreenHeight());
+}
+
 fn uiRect(r: c.rl.Rectangle) ui_geom.Rect {
     return ui_geom.Rect.xywh(@intFromFloat(@round(r.x)), @intFromFloat(@round(r.y)), @intFromFloat(@round(r.width)), @intFromFloat(@round(r.height)));
 }

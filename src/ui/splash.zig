@@ -1,8 +1,8 @@
-//! Startup splash (docs/06 §Splash), the 2000s way: the app opens as a
-//! small borderless window showing splash.png with a packed status strip
-//! (wordmark, dot-matrix status, LED progress), redrawn between machine
-//! compiles; when booting is done the same window becomes the decorated,
-//! resizable workbench.
+//! Startup splash (docs/06 §Splash), the 2000s way: a card centred in the
+//! main window, splash.png above a packed status strip (wordmark,
+//! dot-matrix status, LED progress). Redrawn on the empty chassis between
+//! machine compiles; once the workbench is up it stays over the UI for a
+//! moment and then vanishes (at once on any click or key).
 
 const std = @import("std");
 const c = @import("../c.zig");
@@ -13,66 +13,75 @@ const ctl = @import("controls.zig");
 const Ui = core.Ui;
 const Rect = core.Rect;
 
-/// Splash window size (logical px), the image's aspect.
-pub const W: c_int = 720;
-pub const H: c_int = 426;
+/// Card size (logical px): the image's aspect plus the strip.
+const W: i32 = 720;
+const H: i32 = 426;
 const STRIP_H: i32 = 20;
 const SEGS: i32 = 24;
+/// How long the card stays over the live workbench.
+const HOLD_S: f32 = 1.2;
 
 var tex: c.rl.Texture2D = undefined;
-var state: enum { unloaded, ok, missing } = .unloaded;
+var tex_state: enum { unloaded, ok, missing } = .unloaded;
 
-/// Open the app window as the splash: borderless, centred, image-sized.
-pub fn openWindow(flags: c_uint) void {
-    c.rl.SetConfigFlags(flags | c.rl.FLAG_WINDOW_UNDECORATED);
-    c.rl.InitWindow(W, H, "slab");
-}
-
-/// Turn the splash window into the workbench: decorations back, resizable,
-/// `w`×`h`, centred on the monitor it's on. Drops the image.
-pub fn becomeWorkbench(w: c_int, h: c_int) void {
-    unload();
-    c.rl.ClearWindowState(c.rl.FLAG_WINDOW_UNDECORATED);
-    c.rl.SetWindowState(c.rl.FLAG_WINDOW_RESIZABLE);
-    c.rl.SetWindowSize(w, h);
-    const mon = c.rl.GetCurrentMonitor();
-    const pos = c.rl.GetMonitorPosition(mon);
-    const mw = c.rl.GetMonitorWidth(mon);
-    const mh = c.rl.GetMonitorHeight(mon);
-    c.rl.SetWindowPosition(@as(c_int, @intFromFloat(pos.x)) + @divFloor(mw - w, 2), @as(c_int, @intFromFloat(pos.y)) + @max(0, @divFloor(mh - h, 2)));
-}
+/// Where the card is in its life.
+var phase: enum { booting, over_ui, gone } = .booting;
+/// Seconds the card has been over the workbench.
+var shown_s: f32 = 0;
 
 fn texture() ?c.rl.Texture2D {
-    if (state == .unloaded) {
+    if (tex_state == .unloaded) {
         var t = c.rl.LoadTexture("splash.png");
         if (t.id != 0) {
             // Photographic and scaled down: the one place filtering is right.
             c.rl.GenTextureMipmaps(&t);
             c.rl.SetTextureFilter(t, c.rl.TEXTURE_FILTER_TRILINEAR);
             tex = t;
-            state = .ok;
-        } else state = .missing;
+            tex_state = .ok;
+        } else tex_state = .missing;
     }
-    return if (state == .ok) tex else null;
+    return if (tex_state == .ok) tex else null;
 }
 
 pub fn unload() void {
-    if (state == .ok) c.rl.UnloadTexture(tex);
-    state = .unloaded;
+    if (tex_state == .ok) c.rl.UnloadTexture(tex);
+    tex_state = .unloaded;
 }
 
-/// Present one boot frame: `status` on the display, `progress` 0..1 on the
-/// LED bar.
-pub fn bootFrame(ui: *Ui, status: []const u8, progress: f32) void {
+/// Present one boot frame on the empty chassis: `status` on the display,
+/// `progress` 0..1 on the LED bar.
+pub fn bootFrame(ui: *Ui, screen: Rect, status: []const u8, progress: f32) void {
     ui.beginFrame();
-    draw(ui, Rect.xywh(0, 0, W, H), status, progress);
+    ui.chassis(screen);
+    card(ui, screen.center(W, H), status, progress);
     ui.endFrame();
     ui.present();
 }
 
-fn draw(ui: *Ui, screen: Rect, status: []const u8, progress: f32) void {
-    ui.rect(screen, style.chassis);
-    var img = screen;
+/// Booting is done: from now on the card sits over the workbench.
+pub fn finishBoot() void {
+    phase = .over_ui;
+    shown_s = 0;
+}
+
+/// Draw the card over the workbench (call before `menu.draw`) until it
+/// times out or the user clicks or types. It never takes the input.
+pub fn overlay(ui: *Ui, screen: Rect) void {
+    if (phase != .over_ui) return;
+    const in = &ui.raw_in;
+    if (shown_s >= HOLD_S or in.pressed or in.right_pressed or in.nkeys > 0) {
+        phase = .gone;
+        unload();
+        return;
+    }
+    card(ui, screen.center(W, H), "READY", 1);
+    shown_s += @max(in.dt, 1.0 / 120.0);
+    ui.animate();
+}
+
+fn card(ui: *Ui, r: Rect, status: []const u8, progress: f32) void {
+    ui.rect(r, style.chassis);
+    var img = r.inset(1);
     const strip = img.cutBottom(STRIP_H);
     if (texture()) |t| {
         // Cover the area above the strip: scale to fill, centre, crop.
@@ -88,7 +97,7 @@ fn draw(ui: *Ui, screen: Rect, status: []const u8, progress: f32) void {
         ui.unclip();
     }
 
-    // Status strip: a faceplate under the picture, framed by a hard edge.
+    // Status strip: a faceplate under the picture.
     var body = ui.plate(strip, .{ .outline = .none });
     ui.rect(Rect.xywh(strip.x, strip.y, strip.w, 1), style.edge);
     const name = body.cutLeft(52);
@@ -102,8 +111,8 @@ fn draw(ui: *Ui, screen: Rect, status: []const u8, progress: f32) void {
     while (i < SEGS) : (i += 1) {
         const x0 = inner.x + @divFloor(i * inner.w, SEGS);
         const x1 = inner.x + @divFloor((i + 1) * inner.w, SEGS);
-        ctl.ledBar(ui, Rect.xywh(x0, inner.y, x1 - x0 - 1, inner.h), if (i < lit) .on else .off, style.phosphor);
+        ctl.ledBar(ui, Rect.xywh(x0, inner.y, x1 - x0 - 1, inner.h), if (i < lit) .on else .off, style.vfd);
     }
-    // Hard 1px frame around the whole borderless window.
-    ui.bevel(screen, style.edge, style.edge);
+    // Hard 1px frame: the card floats like hardware, no shadow.
+    ui.bevel(r, style.edge, style.edge);
 }
