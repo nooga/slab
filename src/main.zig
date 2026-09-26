@@ -657,8 +657,18 @@ pub fn main(init: std.process.Init) !void {
             .input_names = input_name_ptrs[0..input_count],
             .current_input_idx = current_input_idx,
             .master_peak = .{ master.meter().l, master.meter().r },
+            .master_volume = master.volume(),
         });
         if (tres.render_audio) render_dlg.active = true;
+        if (tres.master_volume) |v| {
+            master.setVolume(v);
+            dirty = true;
+        }
+        if (tres.panic) {
+            transport.stop();
+            engine.panic();
+            status.set("All sound killed", .{});
+        }
         if (tres.input_pick) |pi| {
             if (rec_busy) {
                 status.set("Stop recording before switching input", .{});

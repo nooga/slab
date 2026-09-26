@@ -31,6 +31,10 @@ pub const Result = struct {
     record_toggle: bool = false,
     /// Index into `input_names` the user picked from the input-device menu.
     input_pick: ?usize = null,
+    /// New master fader gain (linear, 0..MASTER_MAX_GAIN).
+    master_volume: ?f32 = null,
+    /// KILL: stop and silence everything.
+    panic: bool = false,
 };
 
 pub const Args = struct {
@@ -46,6 +50,8 @@ pub const Args = struct {
     current_input_idx: ?usize,
     /// Master bus peak (linear, L/R) for the output meter.
     master_peak: [2]f32 = .{ 0, 0 },
+    /// Master fader gain (linear).
+    master_volume: f32 = 1,
 };
 
 const FILE_MENU_KEY: u64 = 0x5346494c45; // "SFILE"
@@ -117,24 +123,48 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     // Logo plate on the right, the master meter beside it, blank plate
     // between.
     logoTile(ui, bar.cutRight(logoW(bar.h)));
-    if (bar.w >= MASTER_MIN_W) masterTile(ui, bar.cutRight(@min(MASTER_W, bar.w)), a.master_peak);
+    if (bar.w >= MASTER_MIN_W) masterTile(ui, bar.cutRight(@min(MASTER_W, bar.w)), a, &res);
     _ = ui.plate(bar, .{});
     return res;
 }
 
 // ── Tiles ────────────────────────────────────────────────────────────
 
-const MASTER_W: i32 = 260;
-const MASTER_MIN_W: i32 = 140;
+const MASTER_W: i32 = 400;
+const MASTER_MIN_W: i32 = 220;
+const VOL_W: i32 = 96;
+const KILL_W: i32 = 44;
+/// Master fader range (linear), as on the master track header.
+pub const MASTER_MAX_GAIN: f32 = 1.25;
 
-/// Master output: a horizontal stereo bargraph pair around a shared dB
-/// scale, with clip LEDs (click to reset).
-fn masterTile(ui: *Ui, r: Rect, peak: [2]f32) void {
-    var body = ui.plate(r, .{});
-    ui.textIn(&ui.fonts.legend, body.cutLeft(34), "OUT", style.text_dim, .center, true);
+/// Master section: KILL, the master fader, and the output meter (a
+/// horizontal stereo bargraph pair around a shared dB scale, clip LEDs
+/// that reset on click).
+fn masterTile(ui: *Ui, r: Rect, a: Args, res: *Result) void {
+    ui.pushId("master");
+    defer ui.popId();
+    var row = r;
+    const kill_r = row.cutLeft(KILL_W);
+    if (ctl.button(ui, kill_r, "kill", null, .{ .label = "KILL", .flush = true })) res.panic = true;
+    menu.tip(ui, kill_r, "Kill all sound: stop, and reset every machine (hung notes, tails)");
+
+    var vol = ui.plate(row.cutLeft(VOL_W), .{});
+    ui.textIn(&ui.fonts.legend, vol.cutLeft(24), "VOL", style.text_dim, .center, true);
+    _ = vol.cutRight(4);
+    const vol_r = vol.center(vol.w, 14);
+    var v = std.math.clamp(a.master_volume / MASTER_MAX_GAIN, 0, 1);
+    if (ctl.slider(ui, vol_r, "vol", &v, .{ .kind = .mini, .horizontal = true, .show_readout = false, .ticks = 0, .default = 1 / MASTER_MAX_GAIN })) {
+        res.master_volume = v * MASTER_MAX_GAIN;
+    }
+    var tbuf: [40]u8 = undefined;
+    const db = 20 * std.math.log10(@max(a.master_volume, 1e-4));
+    menu.tip(ui, vol_r, std.fmt.bufPrint(&tbuf, "Master volume {d:.1} dB (double-click: 0 dB)", .{db}) catch "Master volume");
+
+    var body = ui.plate(row, .{});
+    ui.textIn(&ui.fonts.legend, body.cutLeft(30), "OUT", style.text_dim, .center, true);
     _ = body.cutRight(4);
-    ctl.meterStereo(ui, body, "master-meter", peak, peak, .{ .horizontal = true });
-    menu.tip(ui, r, "Master output (peak, dBFS)");
+    ctl.meterStereo(ui, body, "meter", a.master_peak, a.master_peak, .{ .horizontal = true });
+    menu.tip(ui, row, "Master output (peak, dBFS)");
 }
 
 fn fileLabel(buf: []u8, path: []const u8, chosen: bool, dirty: bool) []const u8 {

@@ -599,6 +599,9 @@ the grid is quiet.
 └──────────────────────────────────────────────────────────────┘
 ```
 
+- The top bar ends in the master section before the logo: KILL (stop
+  and reset every machine: hung notes, tails), the master VOL fader, and
+  the OUT meter (horizontal stereo bargraphs around a shared dB scale).
 - The clip editor opens when a clip is selected and collapses when empty.
 - The machine bay shows the selected track's chain; machines are added
   from its "+" menu. Each machine is a faceplate with a title strip

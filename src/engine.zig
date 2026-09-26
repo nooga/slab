@@ -37,6 +37,9 @@ pub const Engine = struct {
     audition_remaining: u32 = 0,
     audition_pitch: f32 = 60,
     audition_track_local: usize = 0,
+    /// Panic request from the UI thread, served at the top of the next
+    /// render (machine state belongs to the audio thread).
+    panic_request: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     trace_counter: u32 = 0,
 
     /// Master bus. Audio tracks accumulate (planar) into master_l/r, then
@@ -52,6 +55,14 @@ pub const Engine = struct {
         self.audition_track.store(@intCast(@min(track_idx, std.math.maxInt(u32))), .monotonic);
         self.audition_pitch_bits.store(@bitCast(@as(f32, @floatFromInt(pitch))), .monotonic);
         _ = self.audition_request.fetchAdd(1, .release);
+    }
+
+    /// Kill all sound: every machine and effect is reset on the audio
+    /// thread's next block (hung notes, reverb and delay tails) and any
+    /// audition is cut. Callable from the UI thread; the caller stops the
+    /// transport if silence should stay.
+    pub fn panic(self: *Engine) void {
+        self.panic_request.store(true, .release);
     }
 
     pub fn renderCallback(ctx: *anyopaque, out: [*]f32, frames: u32) void {
@@ -105,6 +116,12 @@ pub const Engine = struct {
         const total = n * audio.CHANNELS;
         var out_slice = out[0..total];
         @memset(out_slice, 0);
+
+        if (self.panic_request.swap(false, .acquire)) {
+            self.resetAllMachines();
+            self.audition_active = false;
+            self.audition_seen = self.audition_request.load(.acquire);
+        }
 
         const playing = self.transport.isPlaying();
         if (!playing) {
