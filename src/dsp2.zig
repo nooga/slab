@@ -40,9 +40,6 @@ const Op = enum {
     fpulseblep,
     fadsr_linear,
     fadsr_cap,
-    fms20_lpf4,
-    fms20_lpf4_cubic,
-    fms20_svf,
 };
 
 const Value = struct {
@@ -385,76 +382,7 @@ pub const Builder = struct {
             try self.stack.append(id);
             return;
         }
-        if (std.mem.eql(u8, word, "fms20-lpf4")) {
-            try self.addMs20Lpf4(.fms20_lpf4);
-            return;
-        }
-        if (std.mem.eql(u8, word, "fms20-lpf4-cubic")) {
-            try self.addMs20Lpf4(.fms20_lpf4_cubic);
-            return;
-        }
-        if (std.mem.eql(u8, word, "fms20-svf")) {
-            try self.addMs20Svf();
-            return;
-        }
         return Error.UnsupportedWord;
-    }
-
-    // fms20-svf ( state params input g damping -- out )
-    // state  -> *SvfState  { f64 ic1, ic2, fb_dc, out_dc }       (offsets 0,8,16,24)
-    // params -> *SvfParams; only the STATIC profile is read from it:
-    //   drive@16 resonance@24 fb_gain@32 fb_clip@40 out_clip@48
-    //   leak@56 fb_dc_coeff@64 out_dc_coeff@72
-    // g and damping are per-sample stack args (params.g@0/damping@8 are ignored
-    // here) so a voice can envelope-modulate cutoff per sample.
-    // Full g-wet MS-20 topology (4x oversampled nonlinear feedback SVF).
-    fn addMs20Svf(self: *Builder) Error!void {
-        const damping = try self.pop();
-        const g = try self.pop();
-        const input = try self.pop();
-        const params = try self.pop();
-        const state = try self.pop();
-        try self.expectTy(state, .ptr);
-        try self.expectTy(params, .ptr);
-        try self.expectTy(input, .f64);
-        try self.expectTy(g, .f64);
-        try self.expectTy(damping, .f64);
-        const id = try self.addValue(.{
-            .op = .fms20_svf,
-            .ty = .f64,
-            .a = state,
-            .b = params,
-            .c = input,
-            .d = g,
-            .e = damping,
-        });
-        try self.stack.append(id);
-    }
-
-    fn addMs20Lpf4(self: *Builder, op: Op) Error!void {
-        const drive = try self.pop();
-        const damping = try self.pop();
-        const g = try self.pop();
-        const input = try self.pop();
-        const ic2 = try self.pop();
-        const ic1 = try self.pop();
-        try self.expectTy(ic1, .ptr);
-        try self.expectTy(ic2, .ptr);
-        try self.expectTy(input, .f64);
-        try self.expectTy(g, .f64);
-        try self.expectTy(damping, .f64);
-        try self.expectTy(drive, .f64);
-        const id = try self.addValue(.{
-            .op = op,
-            .ty = .f64,
-            .a = ic1,
-            .b = ic2,
-            .c = input,
-            .d = g,
-            .e = damping,
-            .f = drive,
-        });
-        try self.stack.append(id);
     }
 
     pub fn emit(self: *Builder, out: *compat.ArrayList(u32)) Error!void {
@@ -462,14 +390,13 @@ pub const Builder = struct {
     }
 
     // True if the value `id` (an arg) is used as a pointer operand anywhere
-    // (load_f64 / ptr_add base, a store pointer, or an fms20 state pointer).
+    // (load_f64 / ptr_add base, or a store pointer).
     // Such an arg lives in an x-register, so its d(8+i) reg is free scratch.
     fn argUsedAsPtr(self: *const Builder, id: usize) bool {
         for (self.values.items) |v| {
             switch (v.op) {
                 .load_f64, .load_ptr, .ptr_add => if (v.a == id) return true,
                 .ptr_add_idx => if (v.a == id) return true,
-                .fms20_lpf4, .fms20_lpf4_cubic, .fms20_svf => if (v.a == id or v.b == id) return true,
                 else => {},
             }
         }
@@ -502,7 +429,7 @@ pub const Builder = struct {
         // RAW_D_ARG_REGS[i]=d(8+i) and must not be allocated as scratch; a
         // pointer arg lives in an x-register, so its d(8+i) is free. We free
         // d(8+i) only when arg i is provably used as a pointer (load/ptr+/store/
-        // fms20 base) — conservative, so a true f64 arg is always reserved.
+        // base) — conservative, so a true f64 arg is always reserved.
         {
             var n: usize = 0;
             var r: usize = 0;
@@ -661,20 +588,13 @@ pub const Builder = struct {
                     remaining_uses[value.b] += 1;
                     remaining_uses[value.c] += 1;
                 },
-                .fadsr_linear, .fadsr_cap, .fms20_lpf4, .fms20_lpf4_cubic => {
+                .fadsr_linear, .fadsr_cap => {
                     remaining_uses[value.a] += 1;
                     remaining_uses[value.b] += 1;
                     remaining_uses[value.c] += 1;
                     remaining_uses[value.d] += 1;
                     remaining_uses[value.e] += 1;
                     remaining_uses[value.f] += 1;
-                },
-                .fms20_svf => {
-                    remaining_uses[value.a] += 1;
-                    remaining_uses[value.b] += 1;
-                    remaining_uses[value.c] += 1;
-                    remaining_uses[value.d] += 1;
-                    remaining_uses[value.e] += 1;
                 },
             }
         }
@@ -1384,254 +1304,6 @@ const Codegen = struct {
                 self.consumeValue(value.e);
                 self.consumeValue(value.f);
             },
-            .fms20_lpf4, .fms20_lpf4_cubic => {
-                const use_cubic_clip = value.op == .fms20_lpf4_cubic;
-                const ic1_ptr = try self.valueX(value.a);
-                const ic2_ptr = try self.valueX(value.b);
-                const input = try self.valueD(value.c);
-                const g = try self.valueD(value.d);
-                const damping = try self.valueD(value.e);
-                const drive = try self.valueD(value.f);
-
-                const ic1 = try self.allocD();
-                const ic2 = try self.allocD();
-                const one = try self.allocD();
-                const two = try self.allocD();
-                const clip_state = try self.allocD();
-                const clip_out = try self.allocD();
-                const c27 = try self.allocD();
-                const c9 = try self.allocD();
-                const neg_one = try self.allocD();
-                const s0 = try self.allocD();
-                const s1 = try self.allocD();
-                const s2 = try self.allocD();
-                const s3 = try self.allocD();
-                const s4 = try self.allocD();
-                const s5 = try self.allocD();
-                const s6 = try self.allocD();
-
-                try self.out.append(Asm.ldr_d_imm(ic1, ic1_ptr, 0));
-                try self.out.append(Asm.ldr_d_imm(ic2, ic2_ptr, 0));
-                try self.emitF64Const(one, 1.0);
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(two, one, one));
-                try self.emitF64Const(clip_state, 1.05);
-                try self.emitF64Const(clip_out, 1.8);
-                if (use_cubic_clip) {
-                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(c27, two, one));
-                    try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(c27, one, c27));
-                    try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(c9, one, two));
-                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(c9, one, c9));
-                } else {
-                    try self.emitF64Const(c27, 27.0);
-                    try self.emitF64Const(c9, 9.0);
-                }
-                try self.emitF64Const(neg_one, -1.0);
-
-                if (use_cubic_clip) {
-                    try self.emitCubicClipInto(s0, input, drive, one, neg_one, c27, c9, s3, s4, s5);
-                } else {
-                    try self.emitTanhRationalInto(s0, input, drive, one, c27, c9, neg_one, s3, s4, s5);
-                }
-
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s3, two, damping));
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s2, s3, g));
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s3, s3, g));
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s3, s3, one));
-                try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s4, g, g));
-                try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s3, s3, s4));
-                try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(s1, one, s3));
-
-                var i: usize = 0;
-                while (i < 4) : (i += 1) {
-                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s3, s2, ic1));
-                    try self.out.append(Asm.@"fsub Dd, Dn, Dm"(s3, s0, s3));
-                    try self.out.append(Asm.@"fsub Dd, Dn, Dm"(s3, s3, ic2));
-                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s3, s3, s1));
-
-                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s4, g, s3));
-                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s5, s4, ic1));
-                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s4, s4, s5));
-                    if (use_cubic_clip) {
-                        try self.emitCubicClipInto(ic1, s4, clip_state, one, neg_one, c27, c9, s3, s4, s6);
-                    } else {
-                        try self.emitTanhRationalInto(ic1, s4, clip_state, one, c27, c9, neg_one, s3, s4, s6);
-                    }
-
-                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s4, g, s5));
-                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(reg, s4, ic2));
-                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s4, s4, reg));
-                    if (use_cubic_clip) {
-                        try self.emitCubicClipInto(ic2, s4, clip_state, one, neg_one, c27, c9, s3, s4, s6);
-                    } else {
-                        try self.emitTanhRationalInto(ic2, s4, clip_state, one, c27, c9, neg_one, s3, s4, s6);
-                    }
-                }
-
-                if (use_cubic_clip) {
-                    try self.emitCubicClipInto(reg, reg, clip_out, one, neg_one, c27, c9, s0, s1, s2);
-                } else {
-                    try self.emitTanhRationalInto(reg, reg, clip_out, one, c27, c9, neg_one, s0, s1, s2);
-                }
-                try self.out.append(Asm.str_d_imm(ic1, ic1_ptr, 0));
-                try self.out.append(Asm.str_d_imm(ic2, ic2_ptr, 0));
-                self.releaseD(ic1);
-                self.releaseD(ic2);
-                self.releaseD(one);
-                self.releaseD(two);
-                self.releaseD(clip_state);
-                self.releaseD(clip_out);
-                self.releaseD(c27);
-                self.releaseD(c9);
-                self.releaseD(neg_one);
-                self.releaseD(s0);
-                self.releaseD(s1);
-                self.releaseD(s2);
-                self.releaseD(s3);
-                self.releaseD(s4);
-                self.releaseD(s5);
-                self.releaseD(s6);
-                self.consumeValue(value.a);
-                self.consumeValue(value.b);
-                self.consumeValue(value.c);
-                self.consumeValue(value.d);
-                self.consumeValue(value.e);
-                self.consumeValue(value.f);
-            },
-            .fms20_svf => {
-                // ( state params input g damping -- out )  full g-wet topology.
-                const state_ptr = try self.valueX(value.a);
-                const params_ptr = try self.valueX(value.b);
-                const x = try self.valueD(value.c);
-                const g = try self.valueD(value.d);
-                const damping = try self.valueD(value.e);
-
-                // Live filter state (offsets 0,8,16,24 in SvfState).
-                const ic1 = try self.allocD();
-                const ic2 = try self.allocD();
-                const fb_dc = try self.allocD();
-                const out_dc = try self.allocD();
-                try self.out.append(Asm.ldr_d_imm(ic1, state_ptr, 0));
-                try self.out.append(Asm.ldr_d_imm(ic2, state_ptr, 8));
-                try self.out.append(Asm.ldr_d_imm(fb_dc, state_ptr, 16));
-                try self.out.append(Asm.ldr_d_imm(out_dc, state_ptr, 24));
-
-                // Constants for the rational-tanh clip. (0.20 and res*fb_gain
-                // are recomputed in the loop to keep register pressure low.)
-                const one = try self.allocD();
-                const neg_one = try self.allocD();
-                const c27 = try self.allocD();
-                const c9 = try self.allocD();
-                try self.emitF64Const(one, 1.0);
-                try self.emitF64Const(neg_one, -1.0);
-                try self.emitF64Const(c27, 27.0);
-                try self.emitF64Const(c9, 9.0);
-
-                // Loop-invariants, computed once: 2*damping+g, h=1/(1+2dg+g^2), x*drive.
-                const a2dg = try self.allocD();
-                const h = try self.allocD();
-                const xd = try self.allocD();
-                {
-                    const drive = try self.allocD();
-                    const tmp = try self.allocD();
-                    try self.out.append(Asm.ldr_d_imm(drive, params_ptr, 16));
-                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(a2dg, damping, damping)); // 2*damping
-                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(tmp, a2dg, g)); // 2*damping*g
-                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(a2dg, a2dg, g)); // 2*damping+g
-                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(h, one, tmp)); // 1+2dg
-                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(tmp, g, g)); // g*g
-                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(h, h, tmp)); // 1+2dg+g*g
-                    try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(h, one, h)); // 1/denom
-                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(xd, x, drive));
-                    self.releaseD(drive);
-                    self.releaseD(tmp);
-                }
-                // x (input) and damping are dead after the precompute; free
-                // their registers so the loop scratch can reuse them. This
-                // keeps register pressure low enough to inline into a voice.
-                self.consumeValue(value.c);
-                self.consumeValue(value.e);
-
-                const s0 = try self.allocD();
-                const s1 = try self.allocD();
-                const s2 = try self.allocD();
-                const s3 = try self.allocD();
-                const cf = try self.allocD(); // per-iter coeff loaded from params
-                const fb = try self.allocD(); // feedback
-
-                var i: usize = 0;
-                while (i < 4) : (i += 1) {
-                    // fb_dc += fb_dc_coeff * (ic2 - fb_dc)
-                    try self.out.append(Asm.@"fsub Dd, Dn, Dm"(s0, ic2, fb_dc));
-                    try self.out.append(Asm.ldr_d_imm(cf, params_ptr, 64)); // fb_dc_coeff
-                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s0, s0, cf));
-                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(fb_dc, fb_dc, s0));
-                    // feedback = clip((ic2 - fb_dc) * (res*fb_gain), fb_clip)
-                    try self.out.append(Asm.@"fsub Dd, Dn, Dm"(s0, ic2, fb_dc));
-                    try self.out.append(Asm.ldr_d_imm(cf, params_ptr, 24)); // resonance
-                    try self.out.append(Asm.ldr_d_imm(s1, params_ptr, 32)); // fb_gain
-                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(cf, cf, s1)); // res*fb_gain
-                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s0, s0, cf));
-                    try self.out.append(Asm.ldr_d_imm(cf, params_ptr, 40)); // fb_clip
-                    try self.emitTanhRationalInto(fb, s0, cf, one, c27, c9, neg_one, s1, s2, s3);
-                    // driven = clip(x*drive - feedback, 1.0)
-                    try self.out.append(Asm.@"fsub Dd, Dn, Dm"(s0, xd, fb));
-                    try self.emitTanhRationalInto(s0, s0, one, one, c27, c9, neg_one, s1, s2, s3);
-                    // hp = (driven - (2*damping+g)*ic1 - ic2) * h
-                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s1, a2dg, ic1));
-                    try self.out.append(Asm.@"fsub Dd, Dn, Dm"(s0, s0, s1));
-                    try self.out.append(Asm.@"fsub Dd, Dn, Dm"(s0, s0, ic2));
-                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s0, s0, h)); // s0 = hp
-                    // bp = g*hp + ic1 ; next_ic1 = g*hp + bp ; ic1 = leak*next_ic1
-                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s1, g, s0)); // g*hp
-                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s2, s1, ic1)); // bp
-                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s3, s1, s2)); // next_ic1
-                    try self.out.append(Asm.ldr_d_imm(cf, params_ptr, 56)); // leak
-                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(ic1, s3, cf));
-                    // lp = g*bp + ic2 ; next_ic2 = g*bp + lp ; ic2 = leak*next_ic2
-                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s1, g, s2)); // g*bp
-                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s3, s1, ic2)); // lp
-                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s0, s1, s3)); // next_ic2
-                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(ic2, s0, cf)); // cf still = leak
-                    // colored = clip(lp + 0.20*bp, out_clip)
-                    try self.emitF64Const(s1, 0.20);
-                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s0, s1, s2)); // 0.20*bp
-                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s0, s3, s0)); // lp + 0.20*bp
-                    try self.out.append(Asm.ldr_d_imm(cf, params_ptr, 48)); // out_clip
-                    try self.emitTanhRationalInto(s0, s0, cf, one, c27, c9, neg_one, s1, s2, s3);
-                    // out_dc += out_dc_coeff*(colored - out_dc) ; out = colored - out_dc
-                    try self.out.append(Asm.@"fsub Dd, Dn, Dm"(s1, s0, out_dc));
-                    try self.out.append(Asm.ldr_d_imm(cf, params_ptr, 72)); // out_dc_coeff
-                    try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s1, s1, cf));
-                    try self.out.append(Asm.@"fadd Dd, Dn, Dm"(out_dc, out_dc, s1));
-                    try self.out.append(Asm.@"fsub Dd, Dn, Dm"(reg, s0, out_dc));
-                }
-
-                try self.out.append(Asm.str_d_imm(ic1, state_ptr, 0));
-                try self.out.append(Asm.str_d_imm(ic2, state_ptr, 8));
-                try self.out.append(Asm.str_d_imm(fb_dc, state_ptr, 16));
-                try self.out.append(Asm.str_d_imm(out_dc, state_ptr, 24));
-
-                self.releaseD(ic1);
-                self.releaseD(ic2);
-                self.releaseD(fb_dc);
-                self.releaseD(out_dc);
-                self.releaseD(one);
-                self.releaseD(neg_one);
-                self.releaseD(c27);
-                self.releaseD(c9);
-                self.releaseD(a2dg);
-                self.releaseD(h);
-                self.releaseD(xd);
-                self.releaseD(s0);
-                self.releaseD(s1);
-                self.releaseD(s2);
-                self.releaseD(s3);
-                self.releaseD(cf);
-                self.releaseD(fb);
-                self.consumeValue(value.a);
-                self.consumeValue(value.b);
-                self.consumeValue(value.d);
-            },
             else => return Error.TypeMismatch,
         }
         self.locs[id] = .{ .d = reg };
@@ -1662,28 +1334,6 @@ const Codegen = struct {
         try self.out.append(Asm.@"fmin Dd, Dn, Dm"(dst, dst, hi));
     }
 
-    fn emitCubicClipInto(
-        self: *Codegen,
-        dst: u5,
-        x: u5,
-        amount: u5,
-        hi: u5,
-        lo: u5,
-        one_third: u5,
-        gain: u5,
-        s0: u5,
-        s1: u5,
-        s2: u5,
-    ) Error!void {
-        try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s0, x, amount));
-        try self.out.append(Asm.@"fmax Dd, Dn, Dm"(s0, s0, lo));
-        try self.out.append(Asm.@"fmin Dd, Dn, Dm"(s0, s0, hi));
-        try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s1, s0, s0));
-        try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s2, s1, s0));
-        try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s2, s2, one_third));
-        try self.out.append(Asm.@"fsub Dd, Dn, Dm"(dst, s0, s2));
-        try self.out.append(Asm.@"fmul Dd, Dn, Dm"(dst, dst, gain));
-    }
 
     fn emitF64Const(self: *Codegen, reg: u5, value: f64) Error!void {
         if (fmovF64Imm(reg, value)) |instr| {
