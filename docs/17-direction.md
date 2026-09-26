@@ -449,7 +449,7 @@ step says otherwise.
 | # | Step | Exit |
 |---|---|---|
 | 1 ✅ | **Workbench v2, minimal:** machine loader through the real adapter, impulse/sweep/note stimuli, report + contact sheet, A/B diff. Record goldens for every machine. | `zig build bench -- machines/ms20` produces a readable sheet; goldens committed. |
-| 2 | A1: rename to `dsp:`, stack effects, errors. | Goldens match; a deliberate typo gives a located error. |
+| 2 ✅ | A1: rename to `dsp:`, stack effects, errors. | Goldens match; a deliberate typo gives a located error. Done: `dsp: name ( a b -- c )`; errors like ``dsp: typo: unsupported word in dsp: at `fplus` (line 1); stack depth 3``. |
 | 3 | Track B: ctx ABI, stereo, no clamp, voice service, smoothing; the bench moves with it. | Goldens re-recorded after A/B review; special cells deleted. |
 | 4 | A2: locals, typed bindings, dotted fields + migration. | Goldens match; drop/nip-only lines ≈ 0. |
 | 5 | A3: spilling, multi-return. | Scratch fields gone from voice state; the juno voice no longer needs `call:` stages. |
