@@ -241,6 +241,14 @@ pub const Track = struct {
         return .{ .l = @cos(angle), .r = @sin(angle) };
     }
 
+    /// Balance law for the master bus: unity at centre, turning one side
+    /// down linearly. (The equal-power pan law above is -3 dB at centre,
+    /// right for placing a mono source, wrong for a stereo master.)
+    pub fn balanceGains(self: *const Track) struct { l: f32, r: f32 } {
+        const p = self.pan();
+        return .{ .l = @min(1.0, 1.0 - p), .r = @min(1.0, 1.0 + p) };
+    }
+
     pub fn setMeter(self: *Track, l: f32, r: f32) void {
         self.meter_l.store(@bitCast(l), .monotonic);
         self.meter_r.store(@bitCast(r), .monotonic);

@@ -528,7 +528,7 @@ pub const Engine = struct {
                 r = rendered.r;
             }
             mv = mb.volume();
-            const pg = mb.panGains();
+            const pg = mb.balanceGains();
             mpl = pg.l;
             mpr = pg.r;
         }

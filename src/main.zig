@@ -370,7 +370,26 @@ fn polyStatusLabel(v: u8) []const u8 {
     };
 }
 
-pub fn main() !void {
+/// `slab [project.slab] [--render out.wav]`: open a project at startup, or
+/// bounce it headless (no window, no audio device) and exit.
+const Cli = struct {
+    project: ?[]const u8 = null,
+    render: ?[]const u8 = null,
+};
+
+pub fn main(init: std.process.Init) !void {
+    var cli: Cli = .{};
+    {
+        var args = std.process.Args.Iterator.init(init.minimal.args);
+        _ = args.next();
+        while (args.next()) |a_z| {
+            const a: []const u8 = a_z;
+            if (std.mem.eql(u8, a, "--render")) {
+                cli.render = args.next() orelse return error.MissingRenderPath;
+            } else cli.project = a;
+        }
+    }
+
     // DebugAllocator keeps leak + double-free + bounds checking, but
     // stack_trace_frames=0 skips the per-allocation stack unwind. The fy
     // compiler allocates heavily during machine load; capturing a 6-frame
@@ -380,6 +399,8 @@ pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{ .stack_trace_frames = 0 }) = .init;
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
+
+    if (cli.render) |out| return renderHeadless(alloc, cli.project orelse return error.MissingProject, out);
 
     c.rl.SetConfigFlags(c.rl.FLAG_WINDOW_RESIZABLE | c.rl.FLAG_VSYNC_HINT);
     c.rl.InitWindow(1400, 860, "slab");
@@ -492,6 +513,19 @@ pub fn main() !void {
     var rename: RenameState = .{};
     var render_dlg: render_dialog.State = .{};
     var render_job: RenderJob = .{};
+
+    if (cli.project) |path| {
+        if (document_mod.readFile(alloc, path)) |data| {
+            defer alloc.free(data);
+            var boot_tracks = tracks_buf[0..track_count];
+            applyProjectBytes(alloc, data, &reg, &tracks_buf, &track_count, &boot_tracks, &transport, &engine, &audio, &selected_track, &selected_clip, &prev_selected_clip) catch |err| {
+                std.log.err("open {s} failed: {s}", .{ path, @errorName(err) });
+            };
+            replaceProjectPath(alloc, &project_path, try alloc.dupe(u8, path));
+            project_path_chosen = true;
+            status.set("Loaded {s}", .{basename(project_path)});
+        } else |err| std.log.err("open {s} failed: {s}", .{ path, @errorName(err) });
+    }
 
     while (!c.rl.WindowShouldClose()) {
         const m = widgets.Mouse.sample();
@@ -1357,6 +1391,72 @@ fn replaceProjectPath(alloc: std.mem.Allocator, project_path: *[]u8, next: []u8)
 fn basename(path: []const u8) []const u8 {
     if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| return path[idx + 1 ..];
     return path;
+}
+
+/// Bounce `project` to `out` (24-bit WAV): every clip plus a 3 s tail,
+/// through the same engine and master soft clip as a DAW render.
+fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, out: []const u8) !void {
+    var reg = registry_mod.Registry.init(alloc);
+    defer reg.deinit();
+    for (registry_mod.builtin_machines) |path| try reg.loadFyMachine(path);
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    document_mod.setPool(&pool);
+    document_mod.setRegistry(&reg);
+
+    var transport: transport_mod.Transport = .{};
+    transport.sample_rate = audio_mod.SAMPLE_RATE;
+    var master = try track_mod.Track.init(alloc, "Master", theme.slab_hi, silent_machine);
+    master.kind = .master;
+    master.setVolume(1.0);
+    defer master.deinit(alloc);
+    document_mod.setMaster(&master);
+    var meter_state: meter_mod.MeterState = .{};
+    document_mod.setMeterState(&meter_state);
+
+    const data = try document_mod.readFile(alloc, project);
+    defer alloc.free(data);
+    var tracks_buf: [MAX_TRACKS]track_mod.Track = undefined;
+    var track_count: usize = 0;
+    try document_mod.apply(alloc, data, &reg, &tracks_buf, &track_count, &transport, silent_machine);
+    defer for (tracks_buf[0..track_count]) |*t| t.deinit(alloc);
+    const tracks = tracks_buf[0..track_count];
+    for (tracks) |*t| t.publishSnapshot(&pool);
+    master.publishSnapshot(&pool);
+
+    var engine = engine_mod.Engine{
+        .transport = &transport,
+        .tracks = tracks,
+        .master = &master,
+        .meter_state = &meter_state,
+    };
+    var last_beat: f64 = 0;
+    for (tracks) |*t| for (t.clips.items) |*clip| {
+        last_beat = @max(last_beat, clip.endBeat());
+    };
+    const frames: usize = @intCast(transport.beatsToSamples(last_beat) + 3 * audio_mod.SAMPLE_RATE);
+    const buf = try alloc.alloc(f32, frames * audio_mod.CHANNELS);
+    defer alloc.free(buf);
+    const t0 = nowNs();
+    engine.renderOffline(buf, frames, 0, null, null);
+    const secs = @as(f64, @floatFromInt(frames)) / @as(f64, @floatFromInt(audio_mod.SAMPLE_RATE));
+    const took = @as(f64, @floatFromInt(nowNs() - t0)) / 1e9;
+
+    var peak: f32 = 0;
+    var sq: f64 = 0;
+    var over: usize = 0;
+    for (buf) |v| {
+        peak = @max(peak, @abs(v));
+        sq += @as(f64, v) * v;
+        if (@abs(v) >= 0.999) over += 1;
+    }
+    const rms = @sqrt(sq / @as(f64, @floatFromInt(buf.len)));
+    const bytes = try wav_mod.encodeStereo24(alloc, buf, audio_mod.SAMPLE_RATE);
+    defer alloc.free(bytes);
+    try document_mod.writeFile(alloc, out, bytes);
+    std.debug.print("rendered {s} -> {s}: {d:.1} s in {d:.2} s ({d:.1}x real time), peak {d:.1} dBFS, rms {d:.1} dBFS, {d} samples at the rail\n", .{
+        project, out, secs, took, secs / took, 20 * std.math.log10(@max(peak, 1e-9)), 20 * std.math.log10(@max(rms, 1e-12)), over,
+    });
 }
 
 fn applyProjectBytes(
