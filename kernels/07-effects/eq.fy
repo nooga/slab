@@ -8,7 +8,7 @@
 
   Coefficients are computed per block in fy from the raw controls, with
   no libm: sin/cos come from kernels/00-primitives/trig.fy (range-reduced
-  Taylor) and A = 10^(dB/40) from exp2-approx (kernels/00-primitives/
+  Taylor) and A = 10^(dB/40) from exp2 (kernels/00-primitives/
   pow2.fy), in eq-block-prepare every block.  Each band's coefficient
   math is its own word, inlined into block-prepare [the compiler spills
   what does not fit the register file].
@@ -22,8 +22,7 @@
   and a non-finite count. )
 
 include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
-include "../00-primitives/pow2.fy"
-include "../00-primitives/trig.fy"
+include "../00-primitives/math.fy"
 
 ( five biquads' z-state. )
 ustruct: EqState
@@ -57,8 +56,8 @@ ustruct: EqParams
 dsp: eq-coef-hpf | params:EqParams sr -- |
   params.hpf-hz 10.0 20000.0 fclamp 6.283185307179586 f*
   sr f/ 0.0 3.0 fclamp | w |
-  w cos-approx | cw |
-  w sin-approx 0.7071067811865476 f* | alpha |   ( sw/(2Q), Q=1/sqrt2 )
+  w cos | cw |
+  w sin 0.7071067811865476 f* | alpha |   ( sw/(2Q), Q=1/sqrt2 )
   1.0 alpha f+ | a0 |
   1.0 a0 f/ | inv |
   1.0 cw f+ | omc |                              ( 1 + cos w )
@@ -80,9 +79,9 @@ dsp: eq-coef-hpf | params:EqParams sr -- |
 dsp: eq-coef-p1 | params:EqParams sr -- |
   params.p1-hz 10.0 20000.0 fclamp 6.283185307179586 f*
   sr f/ 0.0 3.0 fclamp | w |
-  w cos-approx | cw |
-  params.p1-db 0.08304820237218405 f* exp2-approx | a |
-  w sin-approx  params.p1-q 0.05 24.0 fclamp 2.0 f* f/ | alpha |
+  w cos | cw |
+  params.p1-db 0.08304820237218405 f* exp2 | a |
+  w sin  params.p1-q 0.05 24.0 fclamp 2.0 f* f/ | alpha |
   1.0 alpha a f/ f+ | a0 |
   1.0 a0 f/ | inv |
   1.0 alpha a f* f+ inv f* -> params.p1-b0
@@ -97,9 +96,9 @@ dsp: eq-coef-p1 | params:EqParams sr -- |
 dsp: eq-coef-p2 | params:EqParams sr -- |
   params.p2-hz 10.0 20000.0 fclamp 6.283185307179586 f*
   sr f/ 0.0 3.0 fclamp | w |
-  w cos-approx | cw |
-  params.p2-db 0.08304820237218405 f* exp2-approx | a |
-  w sin-approx  params.p2-q 0.05 24.0 fclamp 2.0 f* f/ | alpha |
+  w cos | cw |
+  params.p2-db 0.08304820237218405 f* exp2 | a |
+  w sin  params.p2-q 0.05 24.0 fclamp 2.0 f* f/ | alpha |
   1.0 alpha a f/ f+ | a0 |
   1.0 a0 f/ | inv |
   1.0 alpha a f* f+ inv f* -> params.p2-b0
@@ -115,10 +114,10 @@ dsp: eq-coef-p2 | params:EqParams sr -- |
 dsp: eq-coef-ls | params:EqParams sr -- |
   params.ls-hz 10.0 20000.0 fclamp 6.283185307179586 f*
   sr f/ 0.0 3.0 fclamp | w |
-  w cos-approx | cw |
-  params.ls-db 0.08304820237218405 f* exp2-approx | a |
-  params.ls-db 0.04152410118609203 f* exp2-approx | sqa |
-  w sin-approx sqa f* 1.4142135623730951 f* | beta |   ( 2*sqrt(A)*alpha )
+  w cos | cw |
+  params.ls-db 0.08304820237218405 f* exp2 | a |
+  params.ls-db 0.04152410118609203 f* exp2 | sqa |
+  w sin sqa f* 1.4142135623730951 f* | beta |   ( 2*sqrt(A)*alpha )
   a 1.0 f+ | ap1 |
   a 1.0 f- | am1 |
   ( a0 = ap1 + am1*cw + beta )
@@ -136,10 +135,10 @@ dsp: eq-coef-ls | params:EqParams sr -- |
 dsp: eq-coef-hs | params:EqParams sr -- |
   params.hs-hz 10.0 20000.0 fclamp 6.283185307179586 f*
   sr f/ 0.0 3.0 fclamp | w |
-  w cos-approx | cw |
-  params.hs-db 0.08304820237218405 f* exp2-approx | a |
-  params.hs-db 0.04152410118609203 f* exp2-approx | sqa |
-  w sin-approx sqa f* 1.4142135623730951 f* | beta |
+  w cos | cw |
+  params.hs-db 0.08304820237218405 f* exp2 | a |
+  params.hs-db 0.04152410118609203 f* exp2 | sqa |
+  w sin sqa f* 1.4142135623730951 f* | beta |
   a 1.0 f+ | ap1 |
   a 1.0 f- | am1 |
   ( a0 = ap1 - am1*cw + beta )

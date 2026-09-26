@@ -27,7 +27,7 @@
   Probe case: sat-render - drive sweep, finite + monotonic-ish THD. )
 
 include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
-include "../00-primitives/pow2.fy"
+include "../00-primitives/math.fy"
 
 ustruct: SatState
   f64 dc-x1   ( DC blocker previous input )
@@ -58,9 +58,9 @@ ustruct: SatParams
 dsp: sat-block-prepare
   | ctx:Ctx state params:SatParams |
   ctx.sr | sr |
-  params.drive-db 0.16609640474436813 f* exp2-approx
+  params.drive-db db>lin
   -> params.drive-lin
-  params.out-db 0.16609640474436813 f* exp2-approx
+  params.out-db db>lin
   -> params.out-lin
   params.tone-hz 6.283185307179586 f* sr f/ 0.0 1.0 fclamp
   -> params.tone-g

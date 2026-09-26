@@ -7,10 +7,10 @@
   click + drive ~ 909 punch. Probe case: drum-kick-render - three hits,
   WAV + lane CSV + ratcheted stats. )
 
-include "sine.fy"
+include "../00-primitives/math.fy"
 include "decay.fy"
 include "noise.fy"
-include "../02-shapers/tanh_table.fy"
+include "../02-shapers/rational.fy"   ( tanh-rational )
 
 ustruct: KickState
   f64 phase
@@ -75,7 +75,7 @@ dsp: kick-osc | state:KickState params:KickParams -- body |
   params.inv-sample-rate f*
   state.phase f+ ffrac
   dup -> state.phase
-  sine-shape
+  sin2pi
 ;
 
 ( Body * amp env + click, velocity, driven through the clipper. )
@@ -88,7 +88,7 @@ dsp: kick-amp | state:KickState params:KickParams body -- y |
   params.click-level f* f+
   state.vel f*
   params.drive f*
-  k-tanh-rational-shape-dsp2
+  tanh-rational
   params.level f*
 ;
 

@@ -110,7 +110,7 @@ dsp: jn-mod | state:JunoState params:JunoParams -- lfo env |
   state.lfo-phase params.lfo-inc f+ ffrac | ph |
   ph -> state.lfo-phase
   ph 0.5 f- | u |
-  u 0.0  0.0 u f-  u  fsel-lt 4.0 f* 1.0 f-
+  u fabs 4.0 f* 1.0 f-
   age
   params.atk-s params.dec-s params.sus
   state.gate-time params.rel-s

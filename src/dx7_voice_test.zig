@@ -55,16 +55,8 @@ const Params = extern struct {
     c5: f64 = 0,
 };
 
-fn polySin(phase: f64) f64 {
-    const u = 1.0 - 2.0 * (phase - @floor(phase));
-    const uu = u * u;
-    var p: f64 = 0.064026102748925784;
-    p = p * uu - 0.58185926636534557;
-    p = p * uu + 2.5427128809580819;
-    p = p * uu - 5.1664017645052089;
-    p = p * uu + 3.1415278977538725;
-    return p * u;
-}
+// dsp-std sin2pi, mirrored op for op (src/dsp_std_ref.zig).
+const polySin = @import("dsp_std_ref.zig").sin2pi;
 
 // One operator step on op `i` of an 18-f64 state (phase,fb1,fb2 per op).
 fn op(st: *[18]f64, i: usize, inc: f64, mod: f64, level: f64, fb: f64) f64 {

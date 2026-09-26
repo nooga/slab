@@ -5,7 +5,7 @@
   via the polynomial sine; q is the damping, roughly 1/Q. Stable for
   fc well under sr/6, which svf2-coeff's clamp guarantees. )
 
-include "sine.fy"
+include "../00-primitives/math.fy"
 
 ustruct: Svf2State
   f64 lp
@@ -16,7 +16,7 @@ ustruct: Svf2State
 dsp: svf2-coeff
   | fc sr |
   fc 20.0 7500.0 fclamp  2.0 sr f*  f/
-  sine-shape
+  sin2pi
   2.0 f*
 ;
 

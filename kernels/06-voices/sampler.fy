@@ -17,7 +17,7 @@
 
 include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../03-envelopes/primitives/segments.fy"
-include "../00-primitives/pow2.fy"
+include "../00-primitives/math.fy"
 
 ustruct: SamplerState
   f64 phase      ( fractional sample index into the asset )
@@ -60,7 +60,7 @@ dsp: sampler-block-prepare
   ctx.sr | sr |
   1.0 sr f/ -> params.inv-sr
   params.smp-sr sr f/ -> params.sr-ratio
-  params.tune 0.083333333333 f* exp2-approx -> params.tune-mult
+  params.tune 0.083333333333 f* exp2 -> params.tune-mult
   params.smp-len | len |
   params.start len f* -> params.start-spl
   params.loop-start len f* | ls |

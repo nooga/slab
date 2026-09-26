@@ -1,10 +1,10 @@
 ( fm_operator.fy - one DX-style FM operator: a phase accumulator driving a
   sine, phase-modulated by an external input and its own two-sample-averaged
-  feedback. Pure dsp2; reuses the validated sine-shape polynomial so the
-  operator inherits its ~-104 dB sine accuracy. The 32-algorithm matrix
+  feedback. The sine is dsp-std sin2pi [kernels/00-primitives/math.fy],
+  accurate to ~2e-11. The 32-algorithm matrix
   composes six of these; this file is the single trustworthy building block. )
 
-include "../05-drums/sine.fy"
+include "../00-primitives/math.fy"
 
 ustruct: FmOpState
   f64 phase       ( normalized 0..1 phase accumulator )
@@ -20,8 +20,8 @@ dsp: fm-op-step | state:FmOpState inc mod level fb -- out |
   ( feedback modulation = fb * 0.5 * (fb1 + fb2) — the DX two-sample average )
   state.fb1 state.fb2 f+ 0.5 f* fb f*
   | fbmod |
-  ( out = level * sine-shape(phase + mod + fbmod) )
-  state.phase mod f+ fbmod f+ sine-shape level f*
+  ( out = level * sin2pi(phase + mod + fbmod) )
+  state.phase mod f+ fbmod f+ sin2pi level f*
   ( shift feedback: fb2 <- old fb1, then fb1 <- out (dup keeps out on top) )
   state.fb1 -> state.fb2
   dup -> state.fb1

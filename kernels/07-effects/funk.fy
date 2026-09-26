@@ -22,7 +22,7 @@ include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../05-drums/decay.fy"
 include "../04-filters/coeffs.fy"   ( svf-g, svf-damping, svf-dc-coeff )
 include "../04-filters/tpt_svf.fy"
-include "../02-shapers/tanh_table.fy"
+include "../02-shapers/rational.fy"   ( tanh-rational )
 
 ustruct: FunkState
   f64 env        ( envelope follower )
@@ -73,7 +73,7 @@ dsp: funk-block-prepare
 
 ( Envelope follower on the rectified input. )
 dsp: fo-env | state:FunkState params:FunkParams x -- e |
-  x 0.0  0.0 x f-  x  fsel-lt | tgt |
+  x fabs | tgt |
   state.env | e0 |
   e0 tgt  params.atk-c  params.rel-c  fsel-lt | c |
   tgt  e0 tgt f-  c f*  f+ | e |
@@ -88,7 +88,7 @@ dsp: fo-filt | params:FunkParams e x -- g fx |
   e params.sweep-hz f*
   params.base-hz f+
   params.osr svf-g
-  x params.drive f* k-tanh-rational-shape-dsp2 k-tanh-rational-shape-dsp2
+  x params.drive f* tanh-rational tanh-rational
 ;
 
 ( One of four saturating lowpass substeps per sample [input held]. )
@@ -117,6 +117,6 @@ dsp: k-funk-tick | io:Io ctx state params -- |
   state params fx g fo-sub drop
   state params fx g fo-sub drop
   state params fx g fo-sub drop
-  state params fx g fo-sub  1.8 f* k-tanh-rational-shape-dsp2 | wet |
+  state params fx g fo-sub  1.8 f* tanh-rational | wet |
   io state params x e wet fo-out
 ;

@@ -2,25 +2,13 @@
 
   State is a single f64 cell: trigger writes 1.0, every sample multiplies
   by a coefficient below 1. decay-seconds is the time to fall to -60 dB,
-  coeff = exp of -ln1000 / t*sr. The exp is a 5-term series - the argument
-  is tiny, t clamped to 0.5 ms or more keeps x at 0.29 or less, series
-  error under 1e-6 - ratcheted against libm exp by the decay-exp-render
-  probe case. )
+  coeff = exp of -ln1000 / t*sr, t clamped to 0.5 ms .. 10 s. )
+
+include "../00-primitives/math.fy"
 
 ( decay-seconds sample-rate -- coeff : per-sample decay multiplier. )
-dsp: decay-exp-coeff
-  | t sr |
-  6.907755278982137  t 0.0005 10.0 fclamp sr f*  f/
-  | x |
-  1.0  x 0.2 f*  f-
-  | h5 |
-  1.0  x 0.25 f* h5 f*  f-
-  | h4 |
-  1.0  x 0.3333333333333333 f* h4 f*  f-
-  | h3 |
-  1.0  x 0.5 f* h3 f*  f-
-  | h2 |
-  1.0  x h2 f*  f-
+dsp: decay-exp-coeff | t sr -- coeff |
+  -6.907755278982137  t 0.0005 10.0 fclamp sr f*  f/ exp
 ;
 
 ( env-ptr coeff -- value : advance the decay state one sample, return it. )

@@ -14,7 +14,7 @@
     hp  = in - lp' - q*bp
     bp' = clip(bp + f*hp)        ( clip bounds self-oscillation ) )
 
-include "../02-shapers/tanh_table.fy"
+include "../02-shapers/rational.fy"   ( tanh-rational )
 
 ustruct: HpfState
   f64 lp
@@ -33,7 +33,7 @@ dsp: k-hpf
   v0 lp2 f- q bp f* f-
   | hp |
   bp f hp f* f+
-  k-tanh-rational-shape-dsp2
+  tanh-rational
   | bp2 |
   lp2 -> st.lp
   bp2 -> st.bp

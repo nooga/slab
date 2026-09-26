@@ -31,9 +31,8 @@
 include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../04-filters/coeffs.fy"   ( svf-g, svf-damping, svf-dc-coeff )
 include "../05-drums/noise.fy"          ( noise-step — hammer chiff )
-include "../02-shapers/tanh_table.fy"   ( k-tanh-rational-shape-dsp2 — pickup )
-include "../05-drums/sine.fy"           ( sine-shape — modal oscillators )
-include "../00-primitives/pow2.fy"      ( exp2/log2 — pitch-dependent decay )
+include "../02-shapers/rational.fy"   ( tanh-rational )
+include "../00-primitives/math.fy"      ( dsp-std: sin2pi, exp2, log2 )
 
 ustruct: RhodesState
   f64 age         ( seconds since note-on )
@@ -148,10 +147,10 @@ dsp: rhodes-note-on | ctx:Ctx state:RhodesState params:RhodesParams -- |
   0.0 -> state.warm-lp
   ( a strike from rest: flux starts at the tine's rest position )
   1.0  1.0 params.pickup-off dup f* f+  f/  -> state.phi-prev
-  ctx.vel 0.0001 1.0 fclamp log2-approx 1.4 f* exp2-approx params.drive-amt f*
+  ctx.vel 0.0001 1.0 fclamp log2 1.4 f* exp2 params.drive-amt f*
     -> state.vel-amp
   params.sr 6.283185307179586 ctx.hz f* f/  -> state.emf-norm
-  130.81 ctx.hz 20.0 20000.0 fclamp f/ log2-approx 0.5 f* exp2-approx
+  130.81 ctx.hz 20.0 20000.0 fclamp f/ log2 0.5 f* exp2
     params.fund-tau f* | tau |
   params.sr 0.15915494309189535 tau f/ svf-dc-coeff 1.0 swap f-
     -> state.fund-dec-v
@@ -189,8 +188,8 @@ dsp: rhodes-env
 ( Two fundamental modes (detuned), summed unequally so the pair never
   fully cancels, scaled by the decay and attack envelopes. )
 dsp: rhodes-fund | state:RhodesState params:RhodesParams -- y |
-  state.phaseA sine-shape 0.55 f*
-  state.phaseB sine-shape 0.45 f* f+
+  state.phaseA sin2pi 0.55 f*
+  state.phaseB sin2pi 0.45 f* f+
   state.fund-env f* state.amp-atk f*
   ( advance phases: A at note-hz, B detuned )
   state.phaseA state.note-hz params.inv-sr f* f+ ffrac -> state.phaseA
@@ -202,7 +201,7 @@ dsp: rhodes-fund | state:RhodesState params:RhodesParams -- y |
 ( The 6.267x clamped-free-bar tine overtone — the metallic ping — with its
   own faster decay. )
 dsp: rhodes-tine | state:RhodesState params:RhodesParams -- y |
-  state.tine-phase sine-shape
+  state.tine-phase sin2pi
   state.tine-env f* params.tine-lvl f* state.amp-atk f*
   ( advance: note-hz * 6.267 )
   state.tine-phase

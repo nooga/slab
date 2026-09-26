@@ -9,11 +9,11 @@ include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../01-oscillators/primitives/phase.fy"
 include "../01-oscillators/primitives/blep.fy"
 include "../01-oscillators/primitives/shapes.fy"
-include "../02-shapers/tanh_table.fy"
+include "../02-shapers/rational.fy"   ( tanh-rational )
 include "../03-envelopes/primitives/segments.fy"
 include "../04-filters/coeffs.fy"   ( svf-g, svf-damping, svf-dc-coeff )
 include "../04-filters/ms20_hpf.fy"
-include "../00-primitives/pow2.fy"   ( exp2-approx: octave-domain filter modulation )
+include "../00-primitives/math.fy"   ( exp2: octave-domain filter modulation )
 include "../04-filters/ms20_ota.fy"   ( the LPF: OTA cascade + diode resonance, in fy )
 
 ustruct: Ms20VoiceState
@@ -173,7 +173,7 @@ dsp: v-osc-mix | state params:Ms20VoiceParams pmod pw -- y |
   state params pmod pw v-vco2  params.pulse-level f*  f+
   state v-noise-raw  params.noise-level f*  f+
   1.3 f*
-  k-tanh-rational-shape-dsp2
+  tanh-rational
 ;
 
 ( Modulated cutoff -> filter g.  Modulation sums in OCTAVES, like control
@@ -184,7 +184,7 @@ dsp: v-osc-mix | state params:Ms20VoiceParams pmod pw -- y |
 dsp: v-filter-g | state params:Ms20VoiceParams mg fenv -- g |
   fenv params.env-amount f*
   mg  params.mg-cutoff  f*  f+
-  exp2-approx
+  exp2
   params.cutoff f*
   params.os-inv ms20-ota-g
 ;

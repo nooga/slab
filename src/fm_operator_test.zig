@@ -3,7 +3,7 @@
 //!
 //! Two prongs, the same pattern as ms20_svf_test.zig:
 //!   1. Equivalence — the fy `k-fm-op` JIT output must match a plain-Zig
-//!      reference (the same degree-9 sine poly) sample-for-sample, pinning
+//!      reference (the same dsp-std sin2pi) sample-for-sample, pinning
 //!      the codegen to the model.
 //!   2. Spectral — unmodulated the operator is a clean sine at the carrier;
 //!      modulated, energy lands only at f_c ± n·f_m (FM sidebands).
@@ -22,19 +22,8 @@ const FmOpState = extern struct {
     fb2: f64 = 0,
 };
 
-// The exact degree-9 sine polynomial from kernels/05-drums/sine.fy:
-// sin(2*pi*phase) via u = 1 - 2*frac(phase). Using the identical constants
-// pins the fy codegen equivalence to ~machine epsilon.
-fn polySin(phase: f64) f64 {
-    const u = 1.0 - 2.0 * (phase - @floor(phase));
-    const uu = u * u;
-    var p: f64 = 0.064026102748925784;
-    p = p * uu - 0.58185926636534557;
-    p = p * uu + 2.5427128809580819;
-    p = p * uu - 5.1664017645052089;
-    p = p * uu + 3.1415278977538725;
-    return p * u;
-}
+// dsp-std sin2pi, mirrored op for op (src/dsp_std_ref.zig).
+const polySin = @import("dsp_std_ref.zig").sin2pi;
 
 fn fmOpStep(st: *FmOpState, inc: f64, mod: f64, level: f64, fb: f64) f64 {
     const fbmod = fb * 0.5 * (st.fb1 + st.fb2);

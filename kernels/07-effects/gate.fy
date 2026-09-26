@@ -15,7 +15,7 @@
   fsel-lt.  Stages are value-returning words inlined into one tick. )
 
 include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
-include "../00-primitives/pow2.fy"
+include "../00-primitives/math.fy"
 include "../05-drums/decay.fy"
 
 ustruct: GateState
@@ -44,9 +44,9 @@ ustruct: GateParams
 dsp: gate-block-prepare
   | ctx:Ctx state params:GateParams |
   ctx.sr | sr |
-  params.thresh-db 0.16609640474436813 f* exp2-approx
+  params.thresh-db db>lin
   -> params.thresh-lin
-  params.range-db 0.16609640474436813 f* exp2-approx
+  params.range-db db>lin
   -> params.floor-lin
   params.atk-s sr decay-exp-coeff
   -> params.atk-c

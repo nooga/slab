@@ -19,7 +19,7 @@
   Probe case: comp-render - static curve + timing vs a Zig reference. )
 
 include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
-include "../00-primitives/pow2.fy"
+include "../00-primitives/math.fy"
 include "../05-drums/decay.fy"
 
 ustruct: CompState
@@ -65,7 +65,7 @@ dsp: comp-block-prepare
   -> params.atk-c
   params.rel-s sr decay-exp-coeff
   -> params.rel-c
-  params.makeup-db 0.16609640474436813 f* exp2-approx
+  params.makeup-db db>lin
   -> params.makeup-lin
 ;
 
@@ -83,7 +83,7 @@ dsp: comp-detect | io:Io state:CompState params:CompParams -- env |
 
 ( Envelope into log2 units. )
 dsp: comp-level | env -- l2 |
-  env 0.000001 1000000.0 fclamp log2-approx
+  env 0.000001 1000000.0 fclamp log2
 ;
 
 ( Soft-knee overshoot and log2 gain. )
@@ -101,7 +101,7 @@ dsp: comp-knee | params:CompParams l2 -- grl2 |
 dsp: comp-gain | state:CompState grl2 -- gain |
   grl2 -6.0205999132796239 f*
   -> state.gr-db
-  grl2 exp2-approx
+  grl2 exp2
 ;
 
 ( Apply gain + makeup, parallel mix. )

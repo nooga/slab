@@ -9,7 +9,7 @@
   damping [0.707 Butterworth, -> 0 resonant].  Callers wanting oversampling
   run the step several times per sample [input held]. )
 
-include "../02-shapers/tanh_table.fy"   ( k-tanh-rational-shape-dsp2 )
+include "../02-shapers/rational.fy"   ( tanh-rational )
 
 ( s1p s2p x g d -- lp : one lowpass step; s1p / s2p point at the two
   integrator states. )
@@ -37,8 +37,8 @@ dsp: tpt-svf-lp-sat-step | s1p s2p x g d -- lp |
   x  a s1 f*  f-  s2 f-  h f* | hp |
   g hp f* | ghp |
   ghp s1 f+ | bp |
-  ghp bp f+ 1.05 f* k-tanh-rational-shape-dsp2  s1p f!64
+  ghp bp f+ 1.05 f* tanh-rational  s1p f!64
   g bp f*  s2 f+ | lp |
-  g bp f* lp f+ 1.05 f* k-tanh-rational-shape-dsp2  s2p f!64
+  g bp f* lp f+ 1.05 f* tanh-rational  s2p f!64
   lp
 ;

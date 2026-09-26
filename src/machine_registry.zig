@@ -20,6 +20,7 @@ test {
     _ = @import("audio_pool.zig");
     _ = @import("fm_operator_test.zig");
     _ = @import("dx7_eg_test.zig");
+    _ = @import("dsp_std_test.zig");
     _ = @import("dx7_voice_test.zig");
     _ = @import("dx7_voice_render_test.zig");
     _ = @import("dx7_algorithms.zig");

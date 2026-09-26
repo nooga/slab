@@ -26,7 +26,7 @@
   in linear units. )
 
 include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
-include "../00-primitives/pow2.fy"
+include "../00-primitives/math.fy"
 
 ustruct: LimState
   f64 dline     ( host lookahead ring base pointer )
@@ -69,9 +69,9 @@ ustruct: LimParams
 dsp: lim-block-prepare
   | ctx:Ctx state params:LimParams |
   ctx.sr | sr |
-  params.gain-db 0.16609640474436813 f* exp2-approx
+  params.gain-db db>lin
   -> params.gain-lin
-  params.ceil-db 0.16609640474436813 f* exp2-approx
+  params.ceil-db db>lin
   -> params.ceil-lin
   params.look-ms 0.001 f* sr f* 1.0 4800.0 fclamp | ls |
   ls -> params.look-spl
@@ -102,17 +102,17 @@ dsp: lim-prepare
 dsp: lim-gain | io:Io state:LimState params:LimParams -- g |
   io.det params.gain-lin f* | d |
   ( dc = max(d, 1e-9) )
-  d 0.000000001 0.000000001 d fsel-lt | dc |
+  d 0.000000001 fmax | dc |
   ( gt = min(1, ceil/dc) )
   params.ceil-lin dc f/ | raw |
-  raw 1.0 raw 1.0 fsel-lt | gt |
+  raw 1.0 fmin | gt |
   state.gain | g0 |
   ( c = gt<g0 ? atk : rel )
   gt g0 params.atk-c params.rel-c fsel-lt | c |
   g0 gt g0 f- c f* f+ | g |
   g -> state.gain
   ( gmin = min(gmin, g) )
-  state.gmin g state.gmin g fsel-lt
+  state.gmin g fmin
   -> state.gmin
   g
 ;
@@ -138,10 +138,10 @@ dsp: lim-io | io:Io state:LimState params:LimParams g -- y |
   y0 0.0 params.ceil-lin f- params.ceil-lin fclamp | y |
   y io f!64
   ( meters: |xg| -> ipk, |y| -> opk [block max] )
-  xg 0.0 0.0 xg f- xg fsel-lt | axg |
-  state.ipk axg axg state.ipk fsel-lt -> state.ipk
-  y 0.0 0.0 y f- y fsel-lt | ay |
-  state.opk ay ay state.opk fsel-lt -> state.opk
+  xg fabs | axg |
+  state.ipk axg fmax -> state.ipk
+  y fabs | ay |
+  state.opk ay fmax -> state.opk
   y
 ;
 

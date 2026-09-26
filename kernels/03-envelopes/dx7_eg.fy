@@ -12,7 +12,7 @@
   rate->time curve and key-scaling tables are phase 3); `rate-scale` multiplies
   every step (the key-rate-scaling hook). The output is the exponential gain. )
 
-include "../00-primitives/pow2.fy"
+include "../00-primitives/math.fy"
 
 ustruct: Dx7EgState
   f64 value        ( dB-domain envelope position, 0..1; 1 = 0 dB )
@@ -51,7 +51,7 @@ dsp: dx7-eg-step
   fsel-lt   params.rate-scale f*   | step |
   ( ramp value toward target by +-step; snap when within one step )
   target value f-   | diff |
-  0.0 diff diff   0.0 diff f-   fsel-lt   | adiff |
+  diff fabs   | adiff |
   0.0 diff step   0.0 step f-   fsel-lt   | sstep |
   step adiff 0.0 1.0 fsel-lt   | reached |
   0.5 reached target   value sstep f+   fsel-lt   0.0 1.0 fclamp   | newval |
@@ -61,7 +61,7 @@ dsp: dx7-eg-step
   newval -> state.value
   gate -> state.prev-gate
   ( exponential gain: 2^((value-1)*16) -> 1.0 at 0 dB, ~1.5e-5 at -96 dB )
-  newval 1.0 f- 16.0 f* exp2-approx
+  newval 1.0 f- 16.0 f* exp2
 ;
 
 ( out state params gate -- : raw probe entry, one envelope sample to out. )

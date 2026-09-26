@@ -89,12 +89,6 @@ pub fn main(init: std.process.Init) !void {
         try runDrumCase(alloc, cli, &host);
         return;
     }
-    if (std.mem.eql(u8, cli.case_name, "log2-sweep") or
-        std.mem.eql(u8, cli.case_name, "exp2-sweep"))
-    {
-        try runPow2Case(alloc, cli, &host);
-        return;
-    }
     if (std.mem.eql(u8, cli.case_name, "ladder-sweep")) {
         try runLadderSweepCase(alloc, cli, &host);
         return;
@@ -1774,67 +1768,13 @@ const DRUM_SAMPLE_RATE: u32 = 48_000;
 const LN_1000: f64 = 6.907755278982137;
 
 fn isDrumCase(name: []const u8) bool {
-    return std.mem.eql(u8, name, "sine-shape-render") or
-        std.mem.eql(u8, name, "decay-exp-render") or
+    return std.mem.eql(u8, name, "decay-exp-render") or
         drumVoiceCase(name) != null;
 }
 
 fn runDrumCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
-    if (std.mem.eql(u8, cli.case_name, "sine-shape-render")) return runSineShapeCase(alloc, cli, host);
     if (std.mem.eql(u8, cli.case_name, "decay-exp-render")) return runDecayExpCase(alloc, cli, host);
     return runDrumVoiceCase(alloc, cli, host, drumVoiceCase(cli.case_name).?);
-}
-
-// Phase grid over [0,2) (exercises the frac wrap) against libm sine.
-fn runSineShapeCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
-    const sample_count: usize = 4096;
-    const xs = try alloc.alloc(f64, sample_count);
-    defer alloc.free(xs);
-    const out = try alloc.alloc(f64, sample_count);
-    defer alloc.free(out);
-    const expected = try alloc.alloc(f64, sample_count);
-    defer alloc.free(expected);
-
-    for (xs, expected, out, 0..) |*x, *exp, *dst, i| {
-        x.* = 2.0 * @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(sample_count));
-        exp.* = @sin(2.0 * std.math.pi * x.*);
-        dst.* = 0;
-    }
-
-    var perf_out: f64 = 0;
-    const perf_args = [_]Fy.Dsp2RawArg{
-        .{ .ptr = @intFromPtr(&perf_out) },
-        .{ .f64 = 0.337 },
-    };
-    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, @min(cli.iterations, 1_000), &perf_args);
-    const start = nowNs();
-    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, cli.iterations, &perf_args);
-    const run_ns = nowNs() - start;
-
-    for (xs, out) |x, *dst| {
-        const args = [_]Fy.Dsp2RawArg{
-            .{ .ptr = @intFromPtr(dst) },
-            .{ .f64 = x },
-        };
-        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, 1, &args);
-    }
-
-    var metrics = computeSliceMetrics(out, expected, run_ns, cli.iterations);
-    fillSignalMetrics(out, &metrics);
-
-    var csv: std.ArrayList(u8) = .empty;
-    defer csv.deinit(alloc);
-    try csv.appendSlice(alloc, "sample,phase,out,expected,error\n");
-    for (xs, out, expected, 0..) |x, actual, exp, i| {
-        try appendFmt(alloc, &csv, "{d},{d:.12},{d:.12},{d:.12},{d:.12}\n", .{ i, x, actual, exp, actual - exp });
-    }
-    try writeDrumArtifacts(alloc, cli, host, csv.items, metrics, null);
-    if (metrics.nonfinite_count != 0 or metrics.max_abs_error > 0.00001) return error.KernelRatchetFailed;
-
-    std.debug.print(
-        "kernel {s}:{s} case={s} samples={} ns_per_iter={d:.3} max_abs_error={d:.12}\n",
-        .{ cli.kernel, cli.word, cli.case_name, sample_count, metrics.ns_per_iter, metrics.max_abs_error },
-    );
 }
 
 // Two ratchets: the series coefficient against libm exp over a log sweep of
@@ -2052,72 +1992,6 @@ fn runDrumVoiceCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost, cfg: Drum
     std.debug.print(
         "kernel {s}:{s} case={s} frames={} ns_per_sample={d:.3} peak={d:.3} rms={d:.3} mean={d:.6}\n",
         .{ cli.kernel, cli.word, cli.case_name, frames, metrics.ns_per_iter, metrics.peak, metrics.rms, metrics.mean },
-    );
-}
-
-// ── Effect kernel cases (kernels/07-effects) ──────────────────────────
-
-fn runPow2Case(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
-    const is_log = std.mem.eql(u8, cli.case_name, "log2-sweep");
-    const sample_count: usize = 8192;
-    const xs = try alloc.alloc(f64, sample_count);
-    defer alloc.free(xs);
-    const out = try alloc.alloc(f64, sample_count);
-    defer alloc.free(out);
-    const expected = try alloc.alloc(f64, sample_count);
-    defer alloc.free(expected);
-
-    for (xs, expected, out, 0..) |*x, *exp, *dst, i| {
-        const t = @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(sample_count - 1));
-        if (is_log) {
-            // log sweep of x across [2^-24, 2^24]
-            x.* = std.math.pow(f64, 2.0, -24.0 + 48.0 * t);
-            exp.* = std.math.log2(x.*);
-        } else {
-            x.* = -32.0 + 64.0 * t;
-            exp.* = std.math.pow(f64, 2.0, x.*);
-        }
-        dst.* = 0;
-    }
-
-    const start = nowNs();
-    for (xs, out) |x, *dst| {
-        const args = [_]Fy.Dsp2RawArg{
-            .{ .ptr = @intFromPtr(dst) },
-            .{ .f64 = x },
-        };
-        _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(cli.word, 1, &args);
-    }
-    const run_ns = nowNs() - start;
-
-    // exp2 spans ~19 orders of magnitude — ratchet relative error there,
-    // absolute error for log2.
-    var max_err: f64 = 0;
-    var nonfinite: usize = 0;
-    for (out, expected) |actual, exp| {
-        if (!std.math.isFinite(actual)) nonfinite += 1;
-        const err = if (is_log) @abs(actual - exp) else @abs(actual - exp) / @max(@abs(exp), 1e-30);
-        max_err = @max(max_err, err);
-    }
-
-    var metrics = Metrics{};
-    metrics.ns_per_iter = @as(f64, @floatFromInt(run_ns)) / @as(f64, @floatFromInt(sample_count));
-    metrics.max_abs_error = max_err;
-    metrics.nonfinite_count = @intCast(nonfinite);
-    fillSignalMetrics(out, &metrics);
-
-    var csv: std.ArrayList(u8) = .empty;
-    defer csv.deinit(alloc);
-    try csv.appendSlice(alloc, "sample,x,out,expected,error\n");
-    for (xs, out, expected, 0..) |x, actual, exp, i| {
-        try appendFmt(alloc, &csv, "{d},{d:.12},{d:.12},{d:.12},{d:.12}\n", .{ i, x, actual, exp, actual - exp });
-    }
-    try writeDrumArtifacts(alloc, cli, host, csv.items, metrics, null);
-    if (nonfinite != 0 or max_err > 0.00001) return error.KernelRatchetFailed;
-
-    std.debug.print(
-        "kernel {s}:{s} case={s} samples={} ns_per_iter={d:.3} max_err={d:.12}\n",
-        .{ cli.kernel, cli.word, cli.case_name, sample_count, metrics.ns_per_iter, max_err },
     );
 }
 

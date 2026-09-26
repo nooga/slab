@@ -35,7 +35,7 @@
   reverb-render - impulse, RT60 + echo density ratchets, WAV. )
 
 include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
-include "../05-drums/sine.fy"
+include "../00-primitives/math.fy"
 
 ustruct: VerbState
   f64 buf        ( host-injected ring base pointer )
@@ -218,8 +218,8 @@ dsp: verb-lfo | state:VerbState params:VerbParams -- ma mb |
   state.lfo-phase state.mod-inc-ch f+ ffrac | ph |
   ph -> state.lfo-phase
   params.mod-depth-spl | dep |
-  dep 0.5 0.5 ph sine-shape f* f+ f*
-  dep 0.5 0.5 ph 0.25 f+ sine-shape f* f+ f*
+  dep 0.5 0.5 ph sin2pi f* f+ f*
+  dep 0.5 0.5 ph 0.25 f+ sin2pi f* f+ f*
 ;
 
 ( Branch A front half - feedback from branch B's last delay, modulated

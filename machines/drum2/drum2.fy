@@ -118,7 +118,7 @@ dsp: d2-master | params kit -- y |
   | master:Drum2Master |
   kit
   master.drive f*
-  k-tanh-rational-shape-dsp2
+  tanh-rational
   master.level f*
 ;
 

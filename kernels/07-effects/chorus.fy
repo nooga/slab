@@ -68,7 +68,7 @@ dsp: k-chorus-tick
   ph -> state.lfo-phase
   ph  ctx.chan 0.5 f* params.spread f*  f+ ffrac
   0.5 f- | u |
-  u 0.0  0.0 u f-  u  fsel-lt 4.0 f* 1.0 f- | tri |
+  u fabs 4.0 f* 1.0 f- | tri |
   params.center-spl  params.depth-spl tri f*  f+
   1.0  len 4.0 f-  fclamp | d |
   out.in-l | x |

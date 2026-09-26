@@ -42,7 +42,8 @@ dsp1: k-tanh-table
     y = x * (27 + x*x) / (27 + 9*x*x)
 
   This ignores the table/span slots but keeps the same ABI as
-  k-tanh-table, so the probe can compare both kernels directly. )
+  k-tanh-table, so the probe can compare both kernels directly.  The
+  dsp: shaper kernels use is tanh-rational in rational.fy. )
 
 dsp1: k-tanh-rational
   3 pick f@64
@@ -57,33 +58,4 @@ dsp1: k-tanh-rational
   swap drop swap drop
   5 pick f!64
   drop drop drop drop drop
-;
-
-dsp: k-tanh-rational-shape-dsp2
-  -4.0 4.0 fclamp
-  dup dup f*
-  dup 27.0 f+
-  2 pick f*
-  1 pick 9.0 f* 27.0 f+
-  f/
-  -1.0 1.0 fclamp
-  swap drop swap drop
-;
-
-dsp: k-tanh-rational-core-dsp2
-  3 pick f@64
-  1 pick f*
-  k-tanh-rational-shape-dsp2
-  5 pick f!64
-  drop drop drop drop drop
-;
-
-dsp: k-tanh-rational-dsp2
-  k-tanh-rational-core-dsp2
-;
-
-( x -- tanh(x) : rational tanh, no extra stack leak. )
-dsp: k-tanh-rational-clean
-  k-tanh-rational-shape-dsp2
-  nip
 ;

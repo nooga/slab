@@ -8,11 +8,11 @@
   shell, snap and drive are value-returning words inlined into one
   snare-voice word. Probe: drum-snare-render. )
 
-include "sine.fy"
+include "../00-primitives/math.fy"
 include "decay.fy"
 include "noise.fy"
 include "svf2.fy"
-include "../02-shapers/tanh_table.fy"
+include "../02-shapers/rational.fy"   ( tanh-rational )
 
 ustruct: SnareState
   f64 phase1
@@ -81,11 +81,11 @@ dsp: snare-shell | state:SnareState params:SnareParams -- shell |
   | dt |
   state.phase1 dt f+ ffrac
   dup -> state.phase1
-  sine-shape
+  sin2pi
   | p1 |
   state.phase2 dt 1.83 f* f+ ffrac
   dup -> state.phase2
-  sine-shape
+  sin2pi
   | p2 |
   state.body-env& params.body-coeff decay-exp-step
   | benv |
@@ -113,7 +113,7 @@ dsp: snare-drive | state:SnareState params:SnareParams mix -- y |
   mix
   state.vel f*
   1.4 f*
-  k-tanh-rational-shape-dsp2
+  tanh-rational
   params.level f*
 ;
 

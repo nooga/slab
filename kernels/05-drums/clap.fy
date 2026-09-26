@@ -10,7 +10,7 @@
 include "decay.fy"
 include "noise.fy"
 include "svf2.fy"
-include "../02-shapers/tanh_table.fy"
+include "../02-shapers/rational.fy"   ( tanh-rational )
 
 ustruct: ClapState
   f64 env
@@ -93,7 +93,7 @@ dsp: clap-body | state:ClapState params:ClapParams env -- y |
   env f*
   2.2 f*
   state.vel f*
-  k-tanh-rational-shape-dsp2
+  tanh-rational
   params.level f*
 ;
 

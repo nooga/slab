@@ -177,7 +177,6 @@ python3 tools/audio_probe/compare_probe.py \
 Drum kernels (kernels/05-drums, docs/16):
 
 ```sh
-zig build kernel-probe -- --kernel=kernels/05-drums/sine.fy --word=k-sine-shape --case=sine-shape-render --iters=1000000 --out=scratch/drum_sine
 zig build kernel-probe -- --kernel=kernels/05-drums/decay.fy --word=k-decay-exp --case=decay-exp-render --iters=1000000 --out=scratch/drum_decay
 zig build kernel-probe -- --kernel=kernels/05-drums/kick.fy --word=k-kick-render --case=drum-kick-render --iters=96000 --out=scratch/drum_kick
 zig build kernel-probe -- --kernel=kernels/05-drums/snare.fy --word=k-snare-render --case=drum-snare-render --iters=96000 --out=scratch/drum_snare
@@ -186,8 +185,8 @@ zig build kernel-probe -- --kernel=kernels/05-drums/hat.fy --word=k-hat-render -
 zig build kernel-probe -- --kernel=kernels/05-drums/hat.fy --word=k-hat-render --case=drum-openhat-render --iters=96000 --out=scratch/drum_hat_oh
 ```
 
-`sine-shape-render` ratchets the polynomial sine against libm over a
-wrapping phase grid; `decay-exp-render` ratchets the series decay
-coefficient against libm exp plus an exact multiplicative trace;
+`decay-exp-render` ratchets the decay coefficient against libm exp plus
+an exact multiplicative trace (the dsp-std functions themselves are
+covered by `src/dsp_std_test.zig`);
 `drum-kick-render` renders three velocity-varied kick hits to a WAV +
 lane CSV with peak/DC/finite ratchets.
