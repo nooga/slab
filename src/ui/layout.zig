@@ -1,22 +1,29 @@
-//! Workbench tiling layout with collapsible panes.
+//! Workbench tiling (docs/06 §Packing, §Splitters): panes tile the window
+//! edge to edge in logical pixels; the seams between them are the new Ui's
+//! splitters.
 //!
-//!   ┌─────────── top bar ──────────┐
-//!   │browser│   arrangement lanes  │
-//!   │       ├──────────────────────┤  ← splitter: machine_top
-//!   │       │    clip editor*      │  * collapsible
-//!   │       ├──────────────────────┤  ← splitter: clip_top (if visible)
-//!   │       │    machine bay*      │
-//!   ├─────────── status bar ───────┤
+//!   ┌──────────── transport bar ────────────┐
+//!   │ arrangement                           │
+//!   ├──────────────────────────────── seam ─┤  clip_top  (if visible)
+//!   │ clip editor*                          │
+//!   ├──────────────────────────────── seam ─┤  bay_top
+//!   │ machine bay*                          │
+//!   └───────────────────────────────────────┘
 //!
-//! Browser, clip editor, and machine bay are all collapsible. When a
-//! pane is collapsed the splitter between it and its neighbor is
-//! frozen, and the pane itself shrinks to a thin strip with an
-//! expand button.
+//! `compute` is pure (callers recompute after state changes mid-frame);
+//! `splitters` runs the seam interactions once per frame and draws the
+//! seam lines. Both use the same arithmetic, so seams land where the
+//! splitters put them. Rects are handed to the legacy panes as f32.
 
-const std = @import("std");
 const c = @import("../c.zig");
 const theme = @import("theme.zig");
 const widgets = @import("widgets.zig");
+const ui_core = @import("core.zig");
+const ui_style = @import("style.zig");
+const ctl = @import("controls.zig");
+const machine_bay = @import("machine_bay.zig");
+
+const Rect = ui_core.Rect;
 
 pub const Rects = struct {
     top_bar: c.rl.Rectangle,
@@ -26,172 +33,82 @@ pub const Rects = struct {
     clip_editor: c.rl.Rectangle,
     machine_bay: c.rl.Rectangle,
 
-    split_browser: c.rl.Rectangle,
-    split_machine_top: c.rl.Rectangle,
-    split_clip_top: c.rl.Rectangle,
-
-    hit_browser: c.rl.Rectangle,
-    hit_machine_top: c.rl.Rectangle,
-    hit_clip_top: c.rl.Rectangle,
-
     pub fn zeroRect() c.rl.Rectangle {
         return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
     }
 };
 
-pub const Drag = enum { none, browser, machine_top, clip_top };
+const MIN_ARRANGE: i32 = 120;
+const MIN_CLIP: i32 = 96;
+const MIN_BAY: i32 = 140;
 
 pub const State = struct {
-    browser_w: f32 = 200,
-    machine_bay_h: f32 = 160,
-    clip_editor_h: f32 = 160,
+    /// Machine bay height (logical px) when expanded.
+    bay_h: i32 = 300,
+    /// Clip editor height when visible.
+    clip_h: i32 = 240,
 
-    browser_collapsed: bool = false,
     machine_bay_collapsed: bool = false,
     clip_editor_visible: bool = false,
 
-    drag: Drag = .none,
-
-    pub fn effBrowserW(self: *const State) f32 {
-        // Side browser removed — machines are added from the machine-bay "+".
-        // Zero width so the arrangement spans the full window.
-        _ = self;
-        return 0;
+    fn effBayH(self: *const State) i32 {
+        return if (self.machine_bay_collapsed) machine_bay.TITLE_H else self.bay_h;
     }
 
-    pub fn effMachineBayH(self: *const State) f32 {
-        return if (self.machine_bay_collapsed) theme.collapsedH() else theme.size(self.machine_bay_h);
+    const Split = struct { top: Rect, main: Rect, arr: Rect, clip: Rect, bay: Rect };
+
+    fn split(self: *const State, sw: i32, sh: i32) Split {
+        var screen = Rect.xywh(0, 0, sw, sh);
+        const top = screen.cutTop(@intFromFloat(theme.topBarH()));
+        const main = screen;
+        var rest = screen;
+        const bay = rest.cutBottom(@min(self.effBayH(), @max(0, rest.h - MIN_ARRANGE)));
+        const clip = if (self.clip_editor_visible) rest.cutBottom(@min(self.clip_h, @max(0, rest.h - MIN_ARRANGE))) else Rect{};
+        return .{ .top = top, .main = main, .arr = rest, .clip = clip, .bay = bay };
     }
 
-    pub fn effClipEditorH(self: *const State) f32 {
-        return theme.size(self.clip_editor_h);
-    }
-
-    pub fn compute(self: *const State, sw: f32, sh: f32) Rects {
-        const sp = theme.splitterW();
-        const pad = theme.splitterHitPad();
-
-        const top = widgets.rect(0, 0, sw, theme.topBarH());
-        const status = widgets.rect(0, sh - theme.statusBarH(), sw, theme.statusBarH());
-
-        const main_y = theme.topBarH();
-        const main_h = sh - theme.topBarH() - theme.statusBarH();
-
-        const bw = self.effBrowserW();
-        const browser = widgets.rect(0, main_y, bw, main_h);
-        const center_x = bw + sp;
-        const center_w = sw - bw - sp;
-
-        const split_browser = widgets.rect(bw, main_y, sp, main_h);
-        const hit_browser = widgets.rect(bw - pad, main_y, sp + pad * 2, main_h);
-
-        const bay_h = self.effMachineBayH();
-        const clip_h: f32 = if (self.clip_editor_visible) self.effClipEditorH() else 0;
-        const clip_sp: f32 = if (self.clip_editor_visible) sp else 0;
-
-        const arr_h = main_h - bay_h - sp - clip_h - clip_sp;
-        const arr = widgets.rect(center_x, main_y, center_w, arr_h);
-
-        var cursor_y = main_y + arr_h;
-        var clip_split = Rects.zeroRect();
-        var hit_clip = Rects.zeroRect();
-        var clip_rect = Rects.zeroRect();
-        if (self.clip_editor_visible) {
-            clip_split = widgets.rect(center_x, cursor_y, center_w, sp);
-            hit_clip = widgets.rect(center_x, cursor_y - pad, center_w, sp + pad * 2);
-            cursor_y += sp;
-            clip_rect = widgets.rect(center_x, cursor_y, center_w, clip_h);
-            cursor_y += clip_h;
-        }
-        const machine_split = widgets.rect(center_x, cursor_y, center_w, sp);
-        const hit_machine = widgets.rect(center_x, cursor_y - pad, center_w, sp + pad * 2);
-        cursor_y += sp;
-        const mbay = widgets.rect(center_x, cursor_y, center_w, bay_h);
-
+    pub fn compute(self: *const State, sw_f: f32, sh_f: f32) Rects {
+        const s = self.split(@intFromFloat(sw_f), @intFromFloat(sh_f));
         return .{
-            .top_bar = top,
-            .status_bar = status,
-            .browser = browser,
-            .arrangement = arr,
-            .clip_editor = clip_rect,
-            .machine_bay = mbay,
-            .split_browser = split_browser,
-            .split_machine_top = machine_split,
-            .split_clip_top = clip_split,
-            .hit_browser = hit_browser,
-            .hit_machine_top = hit_machine,
-            .hit_clip_top = hit_clip,
+            .top_bar = rl(s.top),
+            .status_bar = Rects.zeroRect(),
+            .browser = Rects.zeroRect(),
+            .arrangement = rl(s.arr),
+            .clip_editor = rl(s.clip),
+            .machine_bay = rl(s.bay),
         };
     }
 
-    pub fn handleInput(self: *State, sw: f32, sh: f32, m: widgets.Mouse) void {
-        const rects = self.compute(sw, sh);
-
-        const br_active = !self.browser_collapsed;
-        const bay_active = !self.machine_bay_collapsed;
-
-        const over_v = br_active and widgets.contains(rects.hit_browser, m.x, m.y);
-        const over_h = (bay_active and widgets.contains(rects.hit_machine_top, m.x, m.y)) or
-            (self.clip_editor_visible and widgets.contains(rects.hit_clip_top, m.x, m.y));
-
-        if (self.drag == .browser or over_v) {
-            widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 2);
-        } else if (self.drag == .machine_top or self.drag == .clip_top or over_h) {
-            widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 2);
+    /// Seam interactions (drag, double-click fold) and the seam lines. Call
+    /// once per frame, before `compute` is used for the panes.
+    pub fn splitters(self: *State, ui: *ui_core.Ui, sw_f: f32, sh_f: f32) void {
+        const s = self.split(@intFromFloat(sw_f), @intFromFloat(sh_f));
+        // Bay seam: its top edge. Double-click folds it to its title strip.
+        if (!self.machine_bay_collapsed) {
+            _ = ctl.split(ui, s.main, "bay", &self.bay_h, .{
+                .from_end = true,
+                .min = MIN_BAY,
+                .min_other = MIN_ARRANGE + (if (self.clip_editor_visible) self.clip_h else 0),
+                .collapsed = 0,
+            });
         }
-
-        if (self.drag == .none and m.left_pressed) {
-            if (br_active and widgets.contains(rects.hit_browser, m.x, m.y)) {
-                self.drag = .browser;
-            } else if (bay_active and widgets.contains(rects.hit_machine_top, m.x, m.y)) {
-                self.drag = .machine_top;
-            } else if (self.clip_editor_visible and widgets.contains(rects.hit_clip_top, m.x, m.y)) {
-                self.drag = .clip_top;
-            }
-        }
-
-        if (self.drag != .none) {
-            if (!m.left_down) {
-                self.drag = .none;
-            } else {
-                switch (self.drag) {
-                    .none => {},
-                    .browser => {
-                        const max_w = sw - theme.splitterW() - theme.minPane();
-                        const clamped = std.math.clamp(m.x, theme.minPane(), max_w);
-                        self.browser_w = theme.unscale(clamped);
-                    },
-                    .machine_top => {
-                        const bay_top = m.y;
-                        const bay_h = sh - theme.statusBarH() - bay_top;
-                        const clip_part: f32 = if (self.clip_editor_visible) self.effClipEditorH() + theme.splitterW() else 0;
-                        const max_h = sh - theme.topBarH() - theme.statusBarH() - clip_part - theme.minPane() - theme.splitterW();
-                        self.machine_bay_h = theme.unscale(std.math.clamp(bay_h, theme.minPane(), max_h));
-                    },
-                    .clip_top => {
-                        const clip_top_y = m.y;
-                        const clip_bot_y = sh - theme.statusBarH() - self.effMachineBayH() - theme.splitterW();
-                        const new_h = clip_bot_y - clip_top_y - theme.splitterW();
-                        const max_h = sh - theme.topBarH() - theme.statusBarH() - self.effMachineBayH() - theme.splitterW() * 2 - theme.minPane();
-                        self.clip_editor_h = theme.unscale(std.math.clamp(new_h, theme.minPane(), max_h));
-                    },
-                }
-            }
-        }
-    }
-
-    pub fn drawSplitters(self: *const State, rects: Rects, m: widgets.Mouse) void {
-        const br_active = !self.browser_collapsed;
-        const bay_active = !self.machine_bay_collapsed;
-        drawSplitter(rects.split_browser, br_active and (self.drag == .browser or widgets.contains(rects.hit_browser, m.x, m.y)));
-        drawSplitter(rects.split_machine_top, bay_active and (self.drag == .machine_top or widgets.contains(rects.hit_machine_top, m.x, m.y)));
+        // Clip editor seam, measured inside the region above the bay.
         if (self.clip_editor_visible) {
-            drawSplitter(rects.split_clip_top, self.drag == .clip_top or widgets.contains(rects.hit_clip_top, m.x, m.y));
+            const above_bay = Rect.xywh(s.main.x, s.main.y, s.main.w, s.main.h - s.bay.h);
+            _ = ctl.split(ui, above_bay, "clip", &self.clip_h, .{ .from_end = true, .min = MIN_CLIP, .min_other = MIN_ARRANGE });
         }
+        // Legacy panes don't draw their own bottom seams: draw them here,
+        // on the Ui list, so every pane boundary is exactly one dark pixel.
+        const now = self.split(@intFromFloat(sw_f), @intFromFloat(sh_f));
+        seam(ui, now.arr);
+        if (self.clip_editor_visible) seam(ui, now.clip);
     }
 };
 
-fn drawSplitter(r: c.rl.Rectangle, hot: bool) void {
-    const color = if (hot) theme.splitter_hover else theme.splitter_bg;
-    c.rl.DrawRectangleRec(r, color);
+fn seam(ui: *ui_core.Ui, r: Rect) void {
+    if (r.h > 0) ui.rect(Rect.xywh(r.x, r.bottom() - 1, r.w, 1), ui_style.edge);
+}
+
+fn rl(r: Rect) c.rl.Rectangle {
+    return widgets.rect(@floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h));
 }

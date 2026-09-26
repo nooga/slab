@@ -566,9 +566,16 @@ pub fn main(init: std.process.Init) !void {
         // While a menu is open it's modal for the mouse: panes get a
         // neutralized mouse (no hover/clicks fall through), the menu keeps
         // handling input off the raw frame mouse captured in beginFrame.
-        const pane_m = if (widgets.menuActive() or render_dlg.active or ui.active != 0) widgets.neutralMouse() else m;
+        // A new-Ui widget that owns or hovers the pointer (a seam, a toolbar
+        // tile) hides it from the legacy panes, so one press never lands in
+        // both UIs.
+        const pane_m = if (widgets.menuActive() or render_dlg.active or ui.active != 0 or ui.hot != 0) widgets.neutralMouse() else m;
 
-        layout.handleInput(sw, sh, pane_m);
+        // Legacy tooltips/menus driven from new-Ui tiles see the pointer
+        // unless a legacy menu or modal owns it.
+        const bridge_m = if (widgets.menuActive() or render_dlg.active) widgets.neutralMouse() else m;
+
+        layout.splitters(ui, sw, sh);
 
         var rects = layout.compute(sw, sh);
         var tracks = tracks_buf[0..track_count];
@@ -644,7 +651,7 @@ pub fn main(init: std.process.Init) !void {
             .can_record = audio.capture_available,
             .input_names = input_name_ptrs[0..input_count],
             .current_input_idx = current_input_idx,
-            .m = pane_m,
+            .m = bridge_m,
         });
         if (tres.render_audio) render_dlg.active = true;
         if (tres.input_pick) |pi| {
@@ -761,7 +768,7 @@ pub fn main(init: std.process.Init) !void {
             },
         }
 
-        const mbres = machine_bay.draw(ui, rects.machine_bay, bay_dev, bay_idx, bay_is_bus, layout.machine_bay_collapsed, &reg, pane_m);
+        const mbres = machine_bay.draw(ui, rects.machine_bay, bay_dev, bay_idx, bay_is_bus, layout.machine_bay_collapsed, &reg, bridge_m);
         if (mbres.minimize) layout.machine_bay_collapsed = !layout.machine_bay_collapsed;
         if (mbres.add_machine) |reg_idx| {
             if (bay_dev) |dev| {
@@ -917,7 +924,6 @@ pub fn main(init: std.process.Init) !void {
             };
         }
 
-        layout.drawSplitters(rects, m);
         ui.render();
         if (rename.active()) drawInlineRename(&rename);
 

@@ -1250,52 +1250,125 @@ fn walkPanel(self: *FyRawMachine, ui: ?*Ui, body: Rect, pass: PanelPass) bool {
     }
     if (self.desc.row_count > 0) return walkRows(self, ui, self.desc.rows[0..self.desc.row_count], area, pass);
 
+    // No row tree: strips side by side, natural widths plus an equal share
+    // of the slack.
     var strips: [MAX_STRIPS]StripView = undefined;
     const n = collectStrips(self, &strips);
-    for (strips[0..n], 0..) |s, i| {
-        const cell = area.cell(@intCast(n), 1, @intCast(i), 0);
-        if (!walkStrip(self, ui, cell, s, pass)) return false;
+    const tier = pass.tier();
+    var sum_w: i32 = 0;
+    for (strips[0..n]) |sv| {
+        const nat = stripNatural(self, sv, tier);
+        sum_w += nat[0];
+        if (pass == .fit and nat[1] > area.h) return false;
+    }
+    if (pass == .fit) return sum_w <= area.w;
+    var used: i32 = 0;
+    for (strips[0..n], 0..) |sv, i| {
+        const w = portion(area.w, sum_w, stripNatural(self, sv, tier)[0], 1, @floatFromInt(n), i + 1 == n, used);
+        _ = walkStrip(self, ui, Rect.xywh(area.x + used, area.y, w, area.h), sv, pass);
+        used += w;
     }
     return true;
 }
 
-/// Split `total` by f32 weights; the last share takes the remainder so the
-/// shares tile exactly.
-fn share(total: i32, w: f32, sum: f32, last: bool, used: i32) i32 {
-    if (last) return total - used;
-    return @intFromFloat(@floor(@as(f32, @floatFromInt(total)) * w / sum));
+// Natural-size box layout (docs/15 §Tiers and natural size): every row,
+// cell and stacked item first gets its natural size at the tier; only the
+// space beyond that is shared out by weight. A tier fits when the natural
+// sizes fit the body.
+
+/// Displays have no intrinsic size; they take weight-shared space above a
+/// floor that keeps a curve readable.
+const DISPLAY_MIN = [2]i32{ 40, 32 };
+
+fn stripNatural(self: *const FyRawMachine, view: StripView, tier: ui_ctl.Size) [2]i32 {
+    const count = stripControlCount(self, view.module);
+    if (count == 0) return .{ 0, STRIP_HEAD + 3 };
+    const cols: usize = @max(view.cols, 1);
+    const rows = (count + cols - 1) / cols;
+    const cell = ui_ctl.knobCell(tier);
+    // Plate: right/bottom seam + 1px bevel all round, then the header.
+    return .{ @as(i32, @intCast(cols)) * cell[0] + 3, @as(i32, @intCast(rows)) * cell[1] + 3 + STRIP_HEAD };
 }
 
-// Weighted box layout (docs/15): split body height across rows, each row's
-// width across cells, each cell's height across its stacked strips.
+fn itemNatural(self: *const FyRawMachine, it: machine_desc.LayoutItem, tier: ui_ctl.Size) [2]i32 {
+    return if (it.is_display) DISPLAY_MIN else stripNatural(self, stripViewAt(self, it.index), tier);
+}
+
+/// A cell stacks its items: width = widest, height = sum.
+fn cellNatural(self: *const FyRawMachine, cc: *const machine_desc.LayoutCell, tier: ui_ctl.Size) [2]i32 {
+    var n = [2]i32{ 0, 0 };
+    for (cc.items[0..cc.item_count]) |it| {
+        const s = itemNatural(self, it, tier);
+        n[0] = @max(n[0], s[0]);
+        n[1] += s[1];
+    }
+    return n;
+}
+
+/// A row places cells side by side: width = sum, height = tallest.
+fn rowNatural(self: *const FyRawMachine, r: *const machine_desc.LayoutRow, tier: ui_ctl.Size) [2]i32 {
+    var n = [2]i32{ 0, 0 };
+    for (r.cells[0..r.cell_count]) |*cc| {
+        const s = cellNatural(self, cc, tier);
+        n[0] += s[0];
+        n[1] = @max(n[1], s[1]);
+    }
+    return n;
+}
+
+/// Size of part `i` along one axis: its natural size plus a weighted share
+/// of the slack; the last part takes the remainder so the parts tile.
+fn portion(total: i32, sum_nat: i32, nat: i32, w: f32, sum_w: f32, last: bool, used: i32) i32 {
+    if (last) return @max(0, total - used);
+    const slack = @max(0, total - sum_nat);
+    const extra: i32 = if (sum_w > 0) @intFromFloat(@floor(@as(f32, @floatFromInt(slack)) * w / sum_w)) else 0;
+    return nat + extra;
+}
+
 fn walkRows(self: *FyRawMachine, ui: ?*Ui, rows: []const machine_desc.LayoutRow, body: Rect, pass: PanelPass) bool {
-    var total_rw: f32 = 0;
-    for (rows) |*r| total_rw += r.weight;
-    if (total_rw <= 0) return true;
+    const tier = pass.tier();
+    var sum_h: i32 = 0;
+    var sum_rw: f32 = 0;
+    for (rows) |*r| {
+        const n = rowNatural(self, r, tier);
+        if (pass == .fit and n[0] > body.w) return false;
+        sum_h += n[1];
+        sum_rw += r.weight;
+    }
+    if (pass == .fit) return sum_h <= body.h;
+
     var used_h: i32 = 0;
     for (rows, 0..) |*r, ri| {
-        const rh = share(body.h, r.weight, total_rw, ri + 1 == rows.len, used_h);
+        const rh = portion(body.h, sum_h, rowNatural(self, r, tier)[1], r.weight, sum_rw, ri + 1 == rows.len, used_h);
         const row = Rect.xywh(body.x, body.y + used_h, body.w, rh);
         used_h += rh;
-        var total_cw: f32 = 0;
-        for (r.cells[0..r.cell_count]) |*cc| total_cw += cc.weight;
-        if (total_cw <= 0) continue;
+
+        var sum_w: i32 = 0;
+        var sum_cw: f32 = 0;
+        for (r.cells[0..r.cell_count]) |*cc| {
+            sum_w += cellNatural(self, cc, tier)[0];
+            sum_cw += cc.weight;
+        }
         var used_w: i32 = 0;
         for (r.cells[0..r.cell_count], 0..) |*cc, ci| {
-            const cw = share(row.w, cc.weight, total_cw, ci + 1 == r.cell_count, used_w);
+            const cw = portion(row.w, sum_w, cellNatural(self, cc, tier)[0], cc.weight, sum_cw, ci + 1 == r.cell_count, used_w);
             const col = Rect.xywh(row.x + used_w, row.y, cw, row.h);
             used_w += cw;
-            var total_sw: f32 = 0;
-            for (cc.items[0..cc.item_count]) |it| total_sw += it.weight;
-            if (total_sw <= 0) continue;
+
+            var sum_ih: i32 = 0;
+            var sum_iw: f32 = 0;
+            for (cc.items[0..cc.item_count]) |it| {
+                sum_ih += itemNatural(self, it, tier)[1];
+                sum_iw += it.weight;
+            }
             var used_s: i32 = 0;
             for (cc.items[0..cc.item_count], 0..) |it, ii| {
-                const sh = share(col.h, it.weight, total_sw, ii + 1 == cc.item_count, used_s);
+                const sh = portion(col.h, sum_ih, itemNatural(self, it, tier)[1], it.weight, sum_iw, ii + 1 == cc.item_count, used_s);
                 const item = Rect.xywh(col.x, col.y + used_s, col.w, sh);
                 used_s += sh;
                 if (it.is_display) {
-                    if (pass == .draw) drawDisplay(self, ui.?, item, &self.desc.displays[it.index]);
-                } else if (!walkStrip(self, ui, item, stripViewAt(self, it.index), pass)) return false;
+                    drawDisplay(self, ui.?, item, &self.desc.displays[it.index]);
+                } else _ = walkStrip(self, ui, item, stripViewAt(self, it.index), pass);
             }
         }
     }
@@ -1311,20 +1384,11 @@ fn stripControlCount(self: *const FyRawMachine, module: []const u8) usize {
 }
 
 fn walkStrip(self: *FyRawMachine, ui: ?*Ui, r: Rect, view: StripView, pass: PanelPass) bool {
+    // Fitting is decided on natural sizes (walkRows / walkPanel); here we
+    // only draw.
     const count = stripControlCount(self, view.module);
     const cols: usize = @max(view.cols, 1);
-    const rows = (count + cols - 1) / cols;
-    const cell = ui_ctl.knobCell(pass.tier());
-    switch (pass) {
-        .fit => {
-            if (count == 0) return true;
-            // Plate: right/bottom seam + 1px bevel all round, then the header.
-            const bw = r.w - 3;
-            const bh = r.h - 3 - STRIP_HEAD;
-            return @as(i32, @intCast(cols)) * cell[0] <= bw and @as(i32, @intCast(rows)) * cell[1] <= bh;
-        },
-        .draw => |tier| drawStrip(self, ui.?, r, view, tier, cols, rows),
-    }
+    if (pass == .draw) drawStrip(self, ui.?, r, view, pass.draw, cols, (count + cols - 1) / cols);
     return true;
 }
 
