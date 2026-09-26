@@ -95,10 +95,10 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     if (ctl.button(ui, loop_r, "loop", &loop_on, .{ .label = "LOOP", .lit = style.accent, .flush = true })) t.toggleLoop();
     menu.tip(ui, loop_r, "Loop on/off");
 
-    // Tempo: - [LED 124.0] +  TAP
-    if (ctl.button(ui, bar.cutLeft(20), "bpm-", null, .{ .label = "-", .flush = true })) t.setBpm(@round(t.bpm()) - 1);
+    // Tempo: [LED 124.0][▲▼]  TAP
     bpmTile(ui, bar.cutLeft(108), t, map);
-    if (ctl.button(ui, bar.cutLeft(20), "bpm+", null, .{ .label = "+", .flush = true })) t.setBpm(@round(t.bpm()) + 1);
+    const bpm_step = ctl.stepper(ui, bar.cutLeft(ctl.STEPPER_W), "bpm-step");
+    if (bpm_step != 0) t.setBpm(@round(t.bpm()) + @as(f32, @floatFromInt(bpm_step)));
     const tap_r = bar.cutLeft(48);
     if (ctl.button(ui, tap_r, "tap", null, .{ .label = "TAP", .flush = true })) handleTap(t, ui.in.time);
     menu.tip(ui, tap_r, "Tap tempo");
@@ -113,12 +113,15 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     menu.tip(ui, pos_r, "Position  bar.beat.sub");
     meterTile(ui, bar.cutLeft(76), a.meter_state);
 
-    // Snap: - [1/16] +
-    if (ctl.button(ui, bar.cutLeft(20), "snap-", null, .{ .label = "-", .flush = true })) a.edit_snap.* = a.edit_snap.coarser();
+    // Snap: [1/16][▲▼] (▲ = finer)
     const snap_r = bar.cutLeft(76);
     ctl.display(ui, snap_r, std.mem.span(a.edit_snap.label()), .{ .align_ = .center, .large = true, .flush = true });
     menu.tip(ui, snap_r, std.mem.span(a.edit_snap.tooltip()));
-    if (ctl.button(ui, bar.cutLeft(20), "snap+", null, .{ .label = "+", .flush = true })) a.edit_snap.* = a.edit_snap.finer();
+    switch (ctl.stepper(ui, bar.cutLeft(ctl.STEPPER_W), "snap-step")) {
+        1 => a.edit_snap.* = a.edit_snap.finer(),
+        -1 => a.edit_snap.* = a.edit_snap.coarser(),
+        else => {},
+    }
 
     // Logo plate on the right, the master meter beside it, blank plate
     // between.

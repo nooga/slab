@@ -538,6 +538,21 @@ fn cap(ui: *Ui, r: Rect, down: bool, is_on: bool, hot: bool, o: ButtonOpts) void
 }
 
 /// Joined caps, exactly one down.
+pub const STEPPER_W: i32 = 16;
+
+/// Up/down pair stacked in one narrow tile beside a readout (▲ on top,
+/// ▼ below, flush halves). Returns +1, -1 or 0.
+pub fn stepper(ui: *Ui, r: Rect, key: anytype) i32 {
+    ui.pushId(key);
+    defer ui.popId();
+    var col = r;
+    const up = col.cutTop(@divFloor(r.h, 2));
+    var d: i32 = 0;
+    if (button(ui, up, "up", null, .{ .glyph = .tri_up, .flush = true })) d += 1;
+    if (button(ui, col, "down", null, .{ .glyph = .tri_down, .flush = true })) d -= 1;
+    return d;
+}
+
 pub fn segmented(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8) bool {
     return segmentedEx(ui, r, key, v, labels, false);
 }
