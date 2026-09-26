@@ -395,21 +395,7 @@ pub fn main() !void {
     var reg = registry_mod.Registry.init(alloc);
     defer reg.deinit();
 
-    try reg.loadFyMachine("machines/ms20/ms20.fy");
-    try reg.loadFyMachine("machines/fm86/fm86.fy");
-    try reg.loadFyMachine("machines/drum2/drum2.fy");
-    try reg.loadFyMachine("machines/delay2/delay2.fy");
-    try reg.loadFyMachine("machines/verb2/verb2.fy");
-    try reg.loadFyMachine("machines/comp2/comp2.fy");
-    try reg.loadFyMachine("machines/eq2/eq2.fy");
-    try reg.loadFyMachine("machines/sat2/sat2.fy");
-    try reg.loadFyMachine("machines/gate2/gate2.fy");
-    try reg.loadFyMachine("machines/limiter2/limiter2.fy");
-    try reg.loadFyMachine("machines/chorus2/chorus2.fy");
-    try reg.loadFyMachine("machines/juno2/juno2.fy");
-    try reg.loadFyMachine("machines/rhodes/rhodes.fy");
-    try reg.loadFyMachine("machines/funk/funk.fy");
-    try reg.loadFyMachine("machines/sampler/sampler.fy");
+    for (registry_mod.builtin_machines) |path| try reg.loadFyMachine(path);
 
     // ── Audio pool — host-owned decoded audio backing arrangement clips.
     // Registered with the document layer (a process singleton) so save /

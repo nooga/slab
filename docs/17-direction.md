@@ -121,6 +121,50 @@ MS-20 specifics:
 - Resonance acts in two places, which probably bunches its useful
   range into the first part of the knob.
 
+## Findings from the first bench run (2026-09-26)
+
+Step 1 is done (`zig build bench`, [13-dsp-workbench.md](13-dsp-workbench.md#bench-v2--zig-build-bench-implemented-2026-09-26)).
+The first run over all 15 machines found the following, before any new
+DSP work.
+
+**fy: a JIT caller parked a pointer in x18. Fixed** in fy `38f5df4`.
+
+- x18 is Apple's platform register and the kernel zeroes it on context
+  switches.
+- The raw repeated caller and the composition caller loaded the slots
+  base into it, so JIT code faulted at random (`EXC_BAD_ACCESS` at
+  address 0x18). About every other long bench run crashed.
+- The DAW's audio thread runs the same callers.
+
+**Rhodes is 40–59 cents sharp.**
+
+- C3 measures 135.3 Hz against 130.8 Hz.
+- Output has 0.005–0.009 DC.
+- It hits the ±1 clamp at default settings.
+
+**FM-86 ignores velocity.**
+
+- Every level reads −8.9 dB from velocity 0.25 to 1.0.
+- It costs 2.1 µs/sample for a single note, because all 8 voices always
+  render (see D6).
+- The default chord clips 9k samples.
+
+**MS-20: the knob sweep confirms the scaling complaint.**
+
+- DRV has no effect (within baseline noise).
+- Resonance: 40% dead, uneven 0.55; the brightening saturates by about
+  40% of travel.
+- Cutoff and env-peak only bite in the upper part of their travel.
+- hpf-resonance does nothing at the default 20 Hz HPF.
+- Filter attack and decay are dead for the first half.
+
+**Clipping and headroom.** fm86, rhodes, and sampler clip at their own
+defaults, and effects clip on the 0 dBFS ladder step. This is D5
+(remove the per-machine clamp) in practice.
+
+**Denormals.** delay2 emits denormal samples in its tails (186 in the
+impulse case).
+
 ## Decisions
 
 | # | Decision | Why |
@@ -404,7 +448,7 @@ step says otherwise.
 
 | # | Step | Exit |
 |---|---|---|
-| 1 | **Workbench v2, minimal:** machine loader through the real adapter, impulse/sweep/note stimuli, report + contact sheet, A/B diff. Record goldens for every machine. | `zig build bench -- machines/ms20` produces a readable sheet; goldens committed. |
+| 1 ✅ | **Workbench v2, minimal:** machine loader through the real adapter, impulse/sweep/note stimuli, report + contact sheet, A/B diff. Record goldens for every machine. | `zig build bench -- machines/ms20` produces a readable sheet; goldens committed. |
 | 2 | A1: rename to `dsp:`, stack effects, errors. | Goldens match; a deliberate typo gives a located error. |
 | 3 | Track B: ctx ABI, stereo, no clamp, voice service, smoothing; the bench moves with it. | Goldens re-recorded after A/B review; special cells deleted. |
 | 4 | A2: locals, typed bindings, dotted fields + migration. | Goldens match; drop/nip-only lines ≈ 0. |

@@ -548,7 +548,97 @@ inside Slab using bundled machines: solid oscillators, virtual analog
 filters, saturation, chorus/delay/reverb, compression, limiting, and a
 master chain that can stand up outside the toy category.
 
-## The DSP workbench
+## Bench v2 — `zig build bench` (implemented, 2026-09-26)
+
+The machine-level workbench from [17-direction.md](17-direction.md)
+Track C, step 1. It loads machines through the **same adapter the DAW
+uses** (`FyRawMachine` via the manifest, rendered through the `Machine`
+interface with a real `MachineCtx`), so a bench render and a DAW render
+are the same code path.
+
+```sh
+zig build bench -- machines/ms20              # default suite for its kind
+zig build bench -- --all --check --no-sheets  # every machine vs goldens (~10 s)
+zig build bench -- --all --record             # re-record goldens after review
+zig build bench -- ms20 --sweep=all           # knob-response curves, every knob
+zig build bench -- juno2 --case=held --preset=NAME -p jn-cutoff=900
+```
+
+**Suites** (chosen by machine kind, `src/bench/cases.zig`):
+
+| kind | cases |
+|---|---|
+| melodic voice | `notes` (C2..C5), `velocity` (4 levels), `held` (C3 2 s + release), `high` (C6, aliasing), `chord` (poly only) |
+| drum voice (`note-pitch`) | `hits`: one hit per labeled note |
+| effect | `impulse`, `sine` (1 kHz −6 dBFS), `sweep` (20 Hz–20 kHz log), `ladder` (200 Hz at −42..0 dBFS), `burst` (100 ms noise) |
+
+**Output** in `scratch/bench/<machine>/`:
+
+- `report.md`: about 30 lines per machine. Per case:
+  - peak, rms, DC, mono/stereo, ns/sample
+  - NaN, denormal, and clipped-sample counts
+  - a focus table: per-note pitch/cents/level/non-harmonic energy/centroid,
+    envelope shape and release, per-hit decay, gain at 100/1k/10k,
+    Schroeder T60, THD and non-harmonic energy, level along the sweep,
+    and the static transfer curve
+- `<case>.png`: one 1280×940 contact sheet:
+  - full waveform with note markers
+  - log-frequency spectrogram
+  - attack, steady, and tail zooms
+  - spectrum with harmonic ticks, or the impulse magnitude response
+  - the measurement table and a curve
+- `<case>.wav`: for listening.
+
+**Knob sweeps** (`--sweep=ID|all`).
+
+- 21 knob positions × 0.4 s. Voices get C3 retriggered per step;
+  effects get a 110 Hz saw at −12 dBFS.
+- Per step it measures level (dB), brightness (log2 spectral centroid),
+  and pitch (semitones).
+- A no-movement baseline render sets the noise floor.
+- Per knob it reports:
+  - total change on each axis
+  - **dead**: share of the travel doing under 10% of an even share
+  - **uneven**: 0 = change spread evenly, 0.5 = all at one end
+- It flags knobs with no effect (within the baseline) and uneven knobs.
+- Output is a grid sheet `sweep-<id>.png`.
+
+**Goldens.**
+
+- `bench/golden/<machine>.txt` (committed) holds a SHA-256 of the f32
+  output per case.
+- `--check` compares bit-exactly and exits non-zero on any change.
+- Local golden audio in `scratch/bench-golden/` backs a
+  `<case>-diff.png` (new − golden waveform and spectrogram) with
+  max/rms difference in dBFS.
+- A fresh machine instance per case makes renders deterministic; all 70
+  default cases reproduce bit-exactly run to run.
+
+**Implementation.**
+
+| File | Role |
+|---|---|
+| `src/bench_main.zig` | runner |
+| `src/bench/analysis.zig` | FFT, spectra, pitch, harmonics, envelopes, Schroeder EDC, hash |
+| `src/bench/sheet.zig` | panels |
+| `src/bench/plot.zig` | CPU RGBA canvas, 1px lines, PNG via raylib's CPU-side `ExportImage`; no window, no GL, no Python |
+| `src/bench/font.zig` | 6×11 pixel font generated once by `tools/bench/gen_font.py` |
+
+**Known limits (v1).**
+
+- Instances are never deinit'd (fy teardown bug).
+- Only the f32 clamped machine output is visible; the ±1 clamp shows up
+  as a `CLIPPED` count until D5 removes it.
+- The pitch tracker is autocorrelation-based. It makes fifth and octave
+  errors on resonant or detuned tones, so the sweep only trusts pitch
+  when it's stable and uses it as the verdict only for pitch-only knobs.
+- LFO-driven knobs (mg-pitch at a random LFO phase) need a
+  modulation-depth metric.
+- Per-machine `bench.fy` cases, kernel-level auto-wrapping, and
+  track/song levels come later (docs/17 Track C).
+- `kernel-probe` stays until its 34 cases are migrated.
+
+## The DSP workbench (original design)
 
 The workbench is a deterministic offline runner for Fy kernels and
 machines. It should be usable from tests, from Codex, and by a human

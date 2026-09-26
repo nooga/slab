@@ -44,6 +44,23 @@ pub fn build(b: *std.Build) void {
     const kernel_probe_step = b.step("kernel-probe", "Run a testable Fy DSP kernel fixture");
     kernel_probe_step.dependOn(&kernel_probe_cmd.step);
 
+    // Headless machine workbench (docs/17 Track C): same adapter as the DAW.
+    const bench_mod = b.createModule(.{
+        .root_source_file = b.path("src/bench_main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    bench_mod.addImport("fy", fy_mod);
+    configureNativeDeps(b, bench_mod);
+    const bench = b.addExecutable(.{
+        .name = "bench",
+        .root_module = bench_mod,
+    });
+    const bench_cmd = b.addRunArtifact(bench);
+    if (b.args) |args| bench_cmd.addArgs(args);
+    const bench_step = b.step("bench", "Render machines headless: sheets, reports, goldens");
+    bench_step.dependOn(&bench_cmd.step);
+
     const install = b.addInstallArtifact(exe, .{});
     b.getInstallStep().dependOn(&install.step);
 
@@ -71,6 +88,8 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
+    const bench_tests = b.addTest(.{ .root_module = bench_mod });
+    test_step.dependOn(&b.addRunArtifact(bench_tests).step);
 }
 
 fn configureNativeDeps(b: *std.Build, mod: *std.Build.Module) void {

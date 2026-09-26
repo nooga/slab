@@ -475,7 +475,7 @@ pub const FyRawMachine = struct {
         return @bitCast(self.raw_control_bits[idx].load(.monotonic));
     }
 
-    fn setControlNorm(self: *FyRawMachine, idx: usize, value: f32) void {
+    pub fn setControlNorm(self: *FyRawMachine, idx: usize, value: f32) void {
         self.raw_control_bits[idx].store(@bitCast(std.math.clamp(value, 0.0, 1.0)), .monotonic);
     }
 
@@ -724,7 +724,7 @@ fn validateWord(host: *FyHost, word: []const u8) !void {
     _ = try host.fy.reportDsp2RawWord(word);
 }
 
-fn normToValue(control: Control, norm: f32) f64 {
+pub fn normToValue(control: Control, norm: f32) f64 {
     const t = std.math.clamp(@as(f64, norm), 0.0, 1.0);
     return switch (control.curve) {
         .linear => control.min + (control.max - control.min) * t,

@@ -27,6 +27,26 @@ test {
     _ = @import("fm86_voice_test.zig");
 }
 
+/// Machines the DAW registers at startup, in menu order. The bench's `--all`
+/// walks the same list.
+pub const builtin_machines = [_][]const u8{
+    "machines/ms20/ms20.fy",
+    "machines/fm86/fm86.fy",
+    "machines/drum2/drum2.fy",
+    "machines/delay2/delay2.fy",
+    "machines/verb2/verb2.fy",
+    "machines/comp2/comp2.fy",
+    "machines/eq2/eq2.fy",
+    "machines/sat2/sat2.fy",
+    "machines/gate2/gate2.fy",
+    "machines/limiter2/limiter2.fy",
+    "machines/chorus2/chorus2.fy",
+    "machines/juno2/juno2.fy",
+    "machines/rhodes/rhodes.fy",
+    "machines/funk/funk.fy",
+    "machines/sampler/sampler.fy",
+};
+
 // Soft cap used to size UI-side menu arrays; the registry itself is a
 // heap slice and grows by doubling.
 pub const MAX_MACHINES = 64;
