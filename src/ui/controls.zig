@@ -1,0 +1,827 @@
+//! The control catalogue (docs/06 §Control catalogue). One call per
+//! family, variants as options, fixed sizes. Every control takes its cell
+//! rect, a key (explicit id within the current scope) and the value it
+//! edits, and returns whether the value changed.
+//!
+//! Interaction contract (docs/06 §Interaction contract): drag to set,
+//! Shift = fine, double-click = reset, arrows step when focused, the wheel
+//! only with ⌘, hover/drag reports to the title display.
+
+const std = @import("std");
+const c = @import("../c.zig");
+const core = @import("core.zig");
+const style = @import("style.zig");
+const sprites = @import("sprites.zig");
+const font_mod = @import("font.zig");
+
+const Ui = core.Ui;
+const Rect = core.Rect;
+const Color = style.Color;
+pub const Size = sprites.Size;
+pub const SliderKind = sprites.SliderKind;
+pub const LedShape = sprites.LedShape;
+
+/// Pointer travel (window points) for a full 0→1 sweep.
+const DRAG_RANGE: f32 = 200;
+const FINE: f32 = 10;
+const LEGEND_H: i32 = 9;
+
+fn dragDelta(ui: *const Ui) f32 {
+    // Up = increase, measured in window points so the feel doesn't change
+    // with UI zoom.
+    return -ui.in.dy * ui.renderer.zoom;
+}
+
+fn fineK(ui: *const Ui) f32 {
+    return if (ui.in.shift) FINE else 1;
+}
+
+fn legendCol(ui: *const Ui, wid: core.Id, disabled: bool) Color {
+    if (disabled) return style.text_mute;
+    return if (ui.isHot(wid)) style.text else style.text_dim;
+}
+
+fn fmtNorm(buf: []u8, v: f32) []const u8 {
+    return std.fmt.bufPrint(buf, "{d:.2}", .{v}) catch "?";
+}
+
+/// Steps a focused control with the arrow keys; returns the signed step
+/// count (+ = up/right).
+fn arrowSteps(ui: *const Ui, wid: core.Id) i32 {
+    if (ui.focus != wid) return 0;
+    var n: i32 = 0;
+    if (ui.in.keyPressed(c.rl.KEY_UP) or ui.in.keyPressed(c.rl.KEY_RIGHT)) n += 1;
+    if (ui.in.keyPressed(c.rl.KEY_DOWN) or ui.in.keyPressed(c.rl.KEY_LEFT)) n -= 1;
+    return n;
+}
+
+/// Wheel steps, only with ⌘ held (the wheel belongs to the viewport).
+fn wheelSteps(ui: *const Ui, r: Rect) f32 {
+    if (!ui.in.cmd or ui.in.wheel_y == 0) return 0;
+    if (!r.contains(ui.in.ix(), ui.in.iy())) return 0;
+    return ui.in.wheel_y;
+}
+
+fn focusRing(ui: *Ui, wid: core.Id, r: Rect) void {
+    if (ui.focus != wid or ui.active == wid) return;
+    ui.bevel(r, style.accent, style.accent);
+}
+
+// ── Knob ─────────────────────────────────────────────────────────────
+
+pub const KnobVariant = enum { plain, bipolar, stepped, encoder };
+
+pub const KnobOpts = struct {
+    size: Size = .m,
+    variant: KnobVariant = .plain,
+    label: []const u8 = "",
+    default: f32 = 0,
+    /// Detent count for `stepped`.
+    steps: u8 = 0,
+    /// Pre-formatted value ("1.25k"); null shows the 0..1 norm.
+    readout: ?[]const u8 = null,
+    show_readout: bool = true,
+    /// Where modulation currently pushes the value (0..1), if modulated.
+    mod: ?f32 = null,
+    disabled: bool = false,
+};
+
+/// Natural cell size of a knob: legend · knob · readout.
+pub fn knobCell(size: Size) [2]i32 {
+    const g = sprites.knobGeom(size);
+    return .{ g.d + 8, LEGEND_H + 1 + g.d + 1 + LEGEND_H };
+}
+
+pub fn knob(ui: *Ui, r: Rect, key: anytype, v: *f32, o: KnobOpts) bool {
+    const wid = ui.id(key);
+    const art = &ui.art.knobs[@intFromEnum(o.size)];
+    const g = art.geom;
+    const cell = knobCell(o.size);
+    const box = r.center(cell[0], cell[1]);
+    const kr = Rect.xywh(box.x + @divFloor(box.w - g.d, 2), box.y + LEGEND_H + 1, g.d, g.d);
+
+    const b = ui.behavior(wid, box, o.disabled);
+    const before = v.*;
+    const n_steps: f32 = @floatFromInt(@max(o.steps, 2) - 1);
+    if (b.pressed) ui.drag_acc = v.*;
+    if (b.double) {
+        v.* = o.default;
+    } else if (b.held) {
+        const d = dragDelta(ui) / (DRAG_RANGE * fineK(ui));
+        switch (o.variant) {
+            .plain, .bipolar => v.* = std.math.clamp(v.* + d, 0, 1),
+            .stepped => {
+                ui.drag_acc = std.math.clamp(ui.drag_acc + d * 1.5, 0, 1);
+                v.* = @round(ui.drag_acc * n_steps) / n_steps;
+            },
+            .encoder => v.* = v.* + d - @floor(v.* + d),
+        }
+    }
+    const steps: f32 = @as(f32, @floatFromInt(arrowSteps(ui, wid))) + wheelSteps(ui, box);
+    if (steps != 0) {
+        const unit: f32 = if (o.variant == .stepped) 1 / n_steps else 0.01 / fineK(ui);
+        v.* = if (o.variant == .encoder) v.* + steps * unit - @floor(v.* + steps * unit) else std.math.clamp(v.* + steps * unit, 0, 1);
+    }
+
+    var vbuf: [16]u8 = undefined;
+    const readout = o.readout orelse fmtNorm(&vbuf, v.*);
+    if (ui.isHot(wid)) ui.setTouch(o.label, readout);
+
+    // Legend.
+    if (o.label.len > 0) {
+        ui.textIn(&ui.fonts.legend, Rect.xywh(box.x, box.y, box.w, LEGEND_H), o.label, legendCol(ui, wid, o.disabled), .center, true);
+    }
+
+    const t = std.math.clamp(v.*, 0, 1);
+    const hot = ui.isHot(wid);
+    const lit = if (o.disabled) style.text_mute else if (hot) style.accent else style.arc_on;
+
+    // Value arc / LED ring.
+    if (o.variant == .encoder) {
+        const dots: usize = if (o.size == .s) 7 else 11;
+        const rad = (g.arc_r0 + g.arc_r1) / 2;
+        for (0..dots) |i| {
+            const ti = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(dots - 1));
+            const p = ringPoint(g, ti, rad);
+            const on = ti <= t + 0.5 / @as(f32, @floatFromInt(dots - 1)) and ti >= t - 0.5 / @as(f32, @floatFromInt(dots - 1));
+            led(ui, kr.x + p[0] - 1, kr.y + p[1] - 1, .round3, if (on) .on else .off, style.led_amber);
+        }
+    } else {
+        const lo, const hi = switch (o.variant) {
+            .bipolar => .{ @min(0.5, t), @max(0.5, t) },
+            else => .{ 0, t },
+        };
+        for (art.arc.slice()) |p| {
+            const on = p.t >= lo and p.t <= hi and !(o.variant == .bipolar and hi == lo);
+            ui.px(kr.x + p.x, kr.y + p.y, if (on) lit else style.arc_off);
+        }
+        if (o.variant == .stepped) {
+            for (0..@max(o.steps, 2)) |i| {
+                const ti = @as(f32, @floatFromInt(i)) / n_steps;
+                const p = nearest(art.mod.slice(), ti);
+                const here = @abs(ti - t) < 0.001;
+                ui.px(kr.x + p.x, kr.y + p.y, if (here) lit else style.text_mute);
+            }
+        }
+    }
+    if (o.mod) |mv| {
+        const m = std.math.clamp(mv, 0, 1);
+        const lo = @min(m, t);
+        const hi = @max(m, t);
+        for (art.mod.slice()) |p| {
+            if (p.t >= lo and p.t <= hi) ui.px(kr.x + p.x, kr.y + p.y, style.mod);
+        }
+    }
+
+    // Cap + pointer.
+    ui.sprite(art.cap, kr.x, kr.y, .{ .r = 255, .g = 255, .b = 255 });
+    pointer(ui, kr, g, t, if (o.disabled) style.text_mute else style.pointer);
+
+    // Readout.
+    if (o.show_readout) {
+        const col = if (ui.active == wid) style.accent else if (o.disabled) style.face_hi else style.text_mute;
+        ui.textIn(&ui.fonts.legend, Rect.xywh(box.x - 4, kr.bottom() + 1, box.w + 8, LEGEND_H), readout, col, .center, false);
+    }
+    focusRing(ui, wid, kr.inset(-1));
+    return v.* != before;
+}
+
+fn ringPoint(g: sprites.KnobGeom, t: f32, rad: f32) [2]i32 {
+    const a = std.math.degreesToRadians(sprites.SWEEP_MIN + t * sprites.SWEEP_RANGE);
+    const cxy: f32 = @as(f32, @floatFromInt(g.d)) / 2;
+    return .{ @intFromFloat(@floor(cxy + @sin(a) * rad)), @intFromFloat(@floor(cxy - @cos(a) * rad)) };
+}
+
+fn nearest(ring: []const sprites.RingPx, t: f32) sprites.RingPx {
+    var best = ring[0];
+    for (ring) |p| {
+        if (@abs(p.t - t) < @abs(best.t - t)) best = p;
+    }
+    return best;
+}
+
+/// Pointer line on the cap: every pixel whose centre lies within the
+/// pointer's half-width of the segment. Exact, no AA.
+fn pointer(ui: *Ui, kr: Rect, g: sprites.KnobGeom, t: f32, col: Color) void {
+    const a = std.math.degreesToRadians(sprites.SWEEP_MIN + t * sprites.SWEEP_RANGE);
+    const dx = @sin(a);
+    const dy = -@cos(a);
+    const cxy: f32 = @as(f32, @floatFromInt(g.d)) / 2;
+    const r0 = g.cap_r * 0.3;
+    const r1 = g.cap_r - 1.6;
+    const ax = cxy + dx * r0;
+    const ay = cxy + dy * r0;
+    const len = r1 - r0;
+    var y: i32 = 0;
+    while (y < g.d) : (y += 1) {
+        var x: i32 = 0;
+        while (x < g.d) : (x += 1) {
+            const px = @as(f32, @floatFromInt(x)) + 0.5 - ax;
+            const py = @as(f32, @floatFromInt(y)) + 0.5 - ay;
+            const along = px * dx + py * dy;
+            if (along < 0 or along > len) continue;
+            const across = @abs(px * dy - py * dx);
+            if (across <= g.pointer_w) ui.px(kr.x + x, kr.y + y, col);
+        }
+    }
+}
+
+// ── Slider / fader ───────────────────────────────────────────────────
+
+pub const SliderOpts = struct {
+    kind: SliderKind = .slider,
+    horizontal: bool = false,
+    bipolar: bool = false,
+    default: f32 = 0,
+    label: []const u8 = "",
+    readout: ?[]const u8 = null,
+    show_readout: bool = true,
+    ticks: u8 = 11,
+    mod: ?f32 = null,
+    disabled: bool = false,
+};
+
+/// Width (across the slot) of a vertical slider's cell.
+pub fn sliderWidth(kind: SliderKind) i32 {
+    return sprites.sliderGeom(kind).cap_w + 12;
+}
+
+pub fn slider(ui: *Ui, r: Rect, key: anytype, v: *f32, o: SliderOpts) bool {
+    const wid = ui.id(key);
+    const art = &ui.art.sliders[@intFromEnum(o.kind)];
+    const g = art.geom;
+    const before = v.*;
+
+    var area = r;
+    const legend_r = if (o.label.len > 0) area.cutTop(LEGEND_H + 1) else Rect{};
+    const readout_r = if (o.show_readout) area.cutBottom(LEGEND_H + 1) else Rect{};
+
+    // Along-axis geometry.
+    const along_len = if (o.horizontal) area.w else area.h;
+    const travel = @max(1, along_len - g.cap_h);
+    const b = ui.behavior(wid, area, o.disabled);
+    if (b.double) {
+        v.* = o.default;
+    } else if (b.held) {
+        const d = if (o.horizontal) ui.in.dx * ui.renderer.zoom else dragDelta(ui);
+        v.* = std.math.clamp(v.* + d / (@as(f32, @floatFromInt(travel)) * ui.renderer.zoom * fineK(ui)), 0, 1);
+    }
+    const steps: f32 = @as(f32, @floatFromInt(arrowSteps(ui, wid))) + wheelSteps(ui, area);
+    if (steps != 0) v.* = std.math.clamp(v.* + steps * 0.01 / fineK(ui), 0, 1);
+
+    var vbuf: [16]u8 = undefined;
+    const readout = o.readout orelse fmtNorm(&vbuf, v.*);
+    if (ui.isHot(wid)) ui.setTouch(o.label, readout);
+    if (o.label.len > 0) ui.textIn(&ui.fonts.legend, legend_r, o.label, legendCol(ui, wid, o.disabled), .center, true);
+    if (o.show_readout) {
+        const col = if (ui.active == wid) style.accent else style.text_mute;
+        ui.textIn(&ui.fonts.legend, readout_r, readout, col, .center, false);
+    }
+
+    const t = std.math.clamp(v.*, 0, 1);
+    const off: i32 = @intFromFloat(@round(t * @as(f32, @floatFromInt(travel))));
+    const half = @divFloor(g.cap_h, 2);
+    if (!o.horizontal) {
+        const cx = area.x + @divFloor(area.w, 2);
+        const top = area.y + half;
+        const bot = top + travel;
+        // Ticks either side of the slot.
+        const n: i32 = @max(o.ticks, 2);
+        var i: i32 = 0;
+        while (i < n) : (i += 1) {
+            const ty = top + @divFloor(i * travel, n - 1);
+            const centre = o.bipolar and i * 2 == n - 1;
+            const len: i32 = if (centre or i == 0 or i == n - 1) 4 else 2;
+            const col = if (centre) style.text_dim else style.text_mute;
+            ui.rect(Rect.xywh(cx - @divFloor(g.cap_w, 2) - 1 - len, ty, len, 1), col);
+            ui.rect(Rect.xywh(cx + @divFloor(g.cap_w, 2) + 1, ty, len, 1), col);
+        }
+        const slot = Rect.xywh(cx - @divFloor(g.slot_w, 2), top - 2, g.slot_w, travel + 5);
+        _ = ui.well(slot, style.well);
+        if (o.mod) |mv| {
+            const mo: i32 = @intFromFloat(@round(std.math.clamp(mv, 0, 1) * @as(f32, @floatFromInt(travel))));
+            const y0 = bot - @max(off, mo);
+            ui.rect(Rect.xywh(slot.x + 1, y0, @max(1, slot.w - 2), @max(1, @as(i32, @intCast(@abs(off - mo))))), style.mod);
+        }
+        ui.sprite(art.cap_v, cx - @divFloor(g.cap_w, 2), bot - off - half, capTint(ui, wid, o.disabled));
+        focusRing(ui, wid, Rect.xywh(cx - @divFloor(g.cap_w, 2) - 1, bot - off - half - 1, g.cap_w + 2, g.cap_h + 2));
+    } else {
+        const cy = area.y + @divFloor(area.h, 2);
+        const left = area.x + half;
+        const n: i32 = @max(o.ticks, 2);
+        var i: i32 = 0;
+        while (i < n) : (i += 1) {
+            const tx = left + @divFloor(i * travel, n - 1);
+            const centre = o.bipolar and i * 2 == n - 1;
+            const len: i32 = if (centre or i == 0 or i == n - 1) 4 else 2;
+            ui.rect(Rect.xywh(tx, cy - @divFloor(g.cap_w, 2) - 1 - len, 1, len), if (centre) style.text_dim else style.text_mute);
+        }
+        const slot = Rect.xywh(left - 2, cy - @divFloor(g.slot_w, 2), travel + 5, g.slot_w);
+        _ = ui.well(slot, style.well);
+        ui.sprite(art.cap_h, left + off - half, cy - @divFloor(g.cap_w, 2), capTint(ui, wid, o.disabled));
+    }
+    return v.* != before;
+}
+
+fn capTint(ui: *const Ui, wid: core.Id, disabled: bool) Color {
+    if (disabled) return .{ .r = 150, .g = 150, .b = 150 };
+    // Hot caps brighten a touch; the sprite is authored at full white tint.
+    return if (ui.isHot(wid)) .{ .r = 255, .g = 255, .b = 255 } else .{ .r = 235, .g = 235, .b = 235 };
+}
+
+// ── Toggle lever ─────────────────────────────────────────────────────
+
+pub const ToggleOpts = struct {
+    positions: u8 = 2,
+    label: []const u8 = "",
+    /// Printed beside the lever, top to bottom.
+    marks: []const []const u8 = &.{},
+    disabled: bool = false,
+};
+
+pub fn toggleCell() [2]i32 {
+    return .{ 32, LEGEND_H + 1 + sprites.LEVER_H };
+}
+
+/// `v` = position index, 0 = up.
+pub fn toggle(ui: *Ui, r: Rect, key: anytype, v: *u8, o: ToggleOpts) bool {
+    const wid = ui.id(key);
+    const before = v.*;
+    const n = @max(o.positions, 2);
+    var area = r;
+    const legend_r = if (o.label.len > 0) area.cutTop(LEGEND_H + 1) else Rect{};
+    const lever = Rect.xywh(area.x + @divFloor(area.w - sprites.LEVER_W, 2) - (if (o.marks.len > 0) @as(i32, 5) else 0), area.y, sprites.LEVER_W, sprites.LEVER_H);
+
+    const b = ui.behavior(wid, area, o.disabled);
+    if (b.pressed) {
+        if (n == 2) {
+            v.* = 1 - @min(v.*, 1);
+        } else {
+            const upper = ui.in.iy() < lever.y + @divFloor(lever.h, 2);
+            if (upper and v.* > 0) v.* -= 1 else if (!upper and v.* < n - 1) v.* += 1;
+        }
+    }
+    const k = arrowSteps(ui, wid);
+    if (k > 0 and v.* > 0) v.* -= 1;
+    if (k < 0 and v.* < n - 1) v.* += 1;
+
+    if (o.label.len > 0) ui.textIn(&ui.fonts.legend, legend_r, o.label, legendCol(ui, wid, o.disabled), .center, true);
+    const frame: usize = if (n == 2) (if (v.* == 0) 0 else 2) else @min(v.*, 2);
+    ui.sprite(ui.art.lever[frame], lever.x, lever.y, capTint(ui, wid, o.disabled));
+    for (o.marks, 0..) |m, i| {
+        const my = if (o.marks.len == 1) lever.y + 8 else lever.y + 1 + @divFloor(@as(i32, @intCast(i)) * (lever.h - LEGEND_H - 2), @as(i32, @intCast(o.marks.len - 1)));
+        const on = i == v.*;
+        _ = ui.engraved(&ui.fonts.legend, lever.right() + 2, my, m, if (on) style.text else style.text_mute);
+    }
+    if (ui.isHot(wid) and o.marks.len > v.*) ui.setTouch(o.label, o.marks[v.*]);
+    focusRing(ui, wid, lever.inset(-1));
+    return v.* != before;
+}
+
+// ── Slide switch ─────────────────────────────────────────────────────
+
+pub const SlideOpts = struct {
+    label: []const u8 = "",
+    marks: []const []const u8 = &.{},
+    positions: u8 = 2,
+    disabled: bool = false,
+};
+
+const SLIDE_PITCH: i32 = 8;
+
+pub fn slideCell(positions: u8) [2]i32 {
+    return .{ @as(i32, positions) * SLIDE_PITCH + 8, LEGEND_H + 1 + LEGEND_H + 10 };
+}
+
+pub fn slide(ui: *Ui, r: Rect, key: anytype, v: *u8, o: SlideOpts) bool {
+    const wid = ui.id(key);
+    const before = v.*;
+    const n: i32 = @max(o.positions, 2);
+    var area = r;
+    const legend_r = if (o.label.len > 0) area.cutTop(LEGEND_H + 1) else Rect{};
+    const marks_r = if (o.marks.len > 0) area.cutTop(LEGEND_H) else Rect{};
+    const slot = Rect.xywh(area.x + @divFloor(area.w - n * SLIDE_PITCH - 2, 2), area.y + 1, n * SLIDE_PITCH + 2, 8);
+
+    const b = ui.behavior(wid, area, o.disabled);
+    if (b.held) {
+        const rel = ui.in.ix() - slot.x - 1;
+        v.* = @intCast(std.math.clamp(@divFloor(rel, SLIDE_PITCH), 0, n - 1));
+    }
+    const k = arrowSteps(ui, wid);
+    if (k > 0 and v.* < n - 1) v.* += 1;
+    if (k < 0 and v.* > 0) v.* -= 1;
+
+    if (o.label.len > 0) ui.textIn(&ui.fonts.legend, legend_r, o.label, legendCol(ui, wid, o.disabled), .center, true);
+    for (o.marks, 0..) |m, i| {
+        const cx = slot.x + 1 + @as(i32, @intCast(i)) * SLIDE_PITCH + @divFloor(SLIDE_PITCH, 2);
+        const w = ui.fonts.legend.measure(m);
+        _ = ui.engraved(&ui.fonts.legend, cx - @divFloor(w, 2), marks_r.y, m, if (i == v.*) style.text else style.text_mute);
+    }
+    const inner = ui.well(slot, style.well);
+    const thumb = Rect.xywh(inner.x + @as(i32, v.*) * SLIDE_PITCH, inner.y, SLIDE_PITCH, inner.h);
+    _ = ui.plate(thumb, .{ .fill = style.cap, .outline = false });
+    ui.rect(Rect.xywh(thumb.x + @divFloor(thumb.w, 2), thumb.y + 2, 1, thumb.h - 4), style.edge);
+    if (ui.isHot(wid) and o.marks.len > v.*) ui.setTouch(o.label, o.marks[v.*]);
+    focusRing(ui, wid, slot.inset(-1));
+    return v.* != before;
+}
+
+// ── Buttons ──────────────────────────────────────────────────────────
+
+pub const ButtonKind = enum { momentary, latch };
+
+pub const ButtonOpts = struct {
+    kind: ButtonKind = .momentary,
+    label: []const u8 = "",
+    /// LED inside the cap (left of the label), in this colour.
+    led: ?Color = null,
+    /// Cap itself lights in this colour when on (808 style).
+    lit: ?Color = null,
+    disabled: bool = false,
+};
+
+pub fn buttonHeight(size: Size) i32 {
+    return switch (size) {
+        .s => 12,
+        .m => 16,
+        .l => 20,
+    };
+}
+
+/// Returns true on click. For `latch`, `on` is toggled on click.
+pub fn button(ui: *Ui, r: Rect, key: anytype, on: ?*bool, o: ButtonOpts) bool {
+    const wid = ui.id(key);
+    const b = ui.behavior(wid, r, o.disabled);
+    var clicked = b.clicked;
+    if (arrowSteps(ui, wid) != 0 or (ui.focus == wid and ui.in.keyPressed(c.rl.KEY_ENTER))) clicked = true;
+    if (clicked and o.kind == .latch) {
+        if (on) |p| p.* = !p.*;
+    }
+    const is_on = if (on) |p| p.* else false;
+    const down = b.held and b.hover or (o.kind == .latch and is_on);
+    cap(ui, r, down, is_on, ui.isHot(wid), o);
+    if (ui.isHot(wid) and o.label.len > 0) ui.setTouch(o.label, if (is_on) "ON" else "OFF");
+    focusRing(ui, wid, r);
+    return clicked;
+}
+
+fn cap(ui: *Ui, r: Rect, down: bool, is_on: bool, hot: bool, o: ButtonOpts) void {
+    ui.rect(r, style.edge);
+    const body = r.inset(1);
+    var fill = style.cap;
+    if (o.lit) |lc| {
+        if (is_on) fill = style.cap.mix(lc, 0.6);
+    }
+    if (down) {
+        ui.rect(body, fill.shade(-8));
+        ui.bevel(body, style.face_lo.shade(-6), fill.shade(4));
+    } else {
+        const g: i32 = style.materials.gradient;
+        ui.vgrad(body, fill.shade(@divFloor(g, 2) + 2), fill.shade(-@divFloor(g, 2) - 2));
+        ui.bevel(body, if (o.lit != null and is_on) fill.shade(40) else style.face_hi.shade(if (hot) 14 else 0), style.face_lo);
+    }
+    if (o.lit) |lc| {
+        // Lit cap throws a faint glow onto the plate around it.
+        if (is_on) ui.rect(r.inset(-1), lc.alpha(40));
+    }
+    const shift: i32 = if (down) 1 else 0;
+    var content = body.insetXY(3, 0);
+    content.y += shift;
+    if (o.led) |lc| {
+        const lr = content.cutLeft(5);
+        led(ui, lr.x, lr.y + @divFloor(lr.h - 3, 2), .round3, if (is_on) .on else .off, lc);
+        _ = content.cutLeft(2);
+    }
+    if (o.label.len > 0) {
+        const f = &ui.fonts.legend;
+        const col = if (o.disabled) style.text_mute else if (o.lit != null and is_on) style.text else style.text_dim;
+        ui.textIn(f, content, o.label, col, if (o.led != null) .left else .center, !down);
+    }
+}
+
+/// Joined caps, exactly one down.
+pub fn segmented(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8) bool {
+    const before = v.*;
+    ui.pushId(key);
+    defer ui.popId();
+    const n: i32 = @intCast(labels.len);
+    for (labels, 0..) |lab, i| {
+        const cell = r.cell(n, 1, @intCast(i), 0);
+        // Joined: neighbours share one outline column.
+        const cr = if (i > 0) Rect.xywh(cell.x - 1, cell.y, cell.w + 1, cell.h) else cell;
+        const wid = ui.id(i);
+        const b = ui.behavior(wid, cr, false);
+        if (b.pressed) v.* = @intCast(i);
+        const on = v.* == i;
+        cap(ui, cr, on, on, ui.isHot(wid), .{ .label = lab });
+        if (ui.isHot(wid)) ui.setTouch("", lab);
+    }
+    return v.* != before;
+}
+
+// ── Selectors ────────────────────────────────────────────────────────
+
+const LIST_ROW: i32 = 11;
+
+pub fn listCell(options: usize) [2]i32 {
+    return .{ 32, LEGEND_H + 1 + @as(i32, @intCast(options)) * LIST_ROW };
+}
+
+/// Vertical option column (octave, waveform): click or drag through.
+pub fn list(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const []const u8, label: []const u8) bool {
+    const wid = ui.id(key);
+    const before = v.*;
+    var area = r;
+    const legend_r = if (label.len > 0) area.cutTop(LEGEND_H + 1) else Rect{};
+    const rows = Rect.xywh(area.x, area.y, area.w, @as(i32, @intCast(options.len)) * LIST_ROW);
+    const b = ui.behavior(wid, rows, false);
+    if (b.held) {
+        const i = @divFloor(ui.in.iy() - rows.y, LIST_ROW);
+        v.* = @intCast(std.math.clamp(i, 0, @as(i32, @intCast(options.len)) - 1));
+    }
+    const k = arrowSteps(ui, wid);
+    if (k > 0 and v.* > 0) v.* -= 1;
+    if (k < 0 and v.* + 1 < options.len) v.* += 1;
+
+    if (label.len > 0) ui.textIn(&ui.fonts.legend, legend_r, label, legendCol(ui, wid, false), .center, true);
+    for (options, 0..) |opt, i| {
+        const row = Rect.xywh(rows.x, rows.y + @as(i32, @intCast(i)) * LIST_ROW, rows.w, LIST_ROW);
+        const on = i == v.*;
+        led(ui, row.x + 2, row.y + 4, .round3, if (on) .on else .off, style.led_amber);
+        _ = ui.engraved(&ui.fonts.legend, row.x + 8, row.y + 1, opt, if (on) style.text else style.text_mute);
+    }
+    if (ui.isHot(wid) and v.* < options.len) ui.setTouch(label, options[v.*]);
+    focusRing(ui, wid, rows);
+    return v.* != before;
+}
+
+/// Value in a display with ‹ › steppers. Drag vertically to step too.
+pub fn displaySelect(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const []const u8) bool {
+    const wid = ui.id(key);
+    const before = v.*;
+    const n: i32 = @intCast(options.len);
+    var area = r;
+    const left = area.cutLeft(10);
+    const right = area.cutRight(10);
+    ui.pushId(key);
+    const bl = ui.behavior(ui.id("prev"), left, false);
+    const br = ui.behavior(ui.id("next"), right, false);
+    ui.popId();
+    const bm = ui.behavior(wid, area, false);
+    if (bl.clicked and v.* > 0) v.* -= 1;
+    if (br.clicked and @as(i32, v.*) < n - 1) v.* += 1;
+    if (bm.pressed) ui.drag_acc = 0;
+    if (bm.held) {
+        ui.drag_acc += dragDelta(ui) / 24;
+        while (ui.drag_acc >= 1 and @as(i32, v.*) < n - 1) : (ui.drag_acc -= 1) v.* += 1;
+        while (ui.drag_acc <= -1 and v.* > 0) : (ui.drag_acc += 1) v.* -= 1;
+    }
+    const k = arrowSteps(ui, wid);
+    if (k > 0 and @as(i32, v.*) < n - 1) v.* += 1;
+    if (k < 0 and v.* > 0) v.* -= 1;
+
+    _ = ui.plate(left, .{ .fill = style.cap });
+    _ = ui.plate(right, .{ .fill = style.cap });
+    ledShape(ui, left.x + 2, left.y + @divFloor(left.h - 7, 2), .tri_left, if (bl.held) style.text else style.text_dim);
+    ledShape(ui, right.x + 4, right.y + @divFloor(right.h - 7, 2), .tri_right, if (br.held) style.text else style.text_dim);
+    if (v.* < options.len) {
+        display(ui, area.insetXY(-1, 0), options[v.*], .{ .color = if (ui.isHot(wid)) style.phosphor else style.phosphor.mix(style.well, 0.15) });
+        if (ui.isHot(wid)) ui.setTouch("", options[v.*]);
+    }
+    focusRing(ui, wid, area);
+    return v.* != before;
+}
+
+// ── LEDs ─────────────────────────────────────────────────────────────
+
+pub const LedState = enum { off, dim, on, blink };
+
+/// An LED of `shape` with its top-left at (x, y).
+pub fn led(ui: *Ui, x: i32, y: i32, shape: LedShape, state: LedState, col: Color) void {
+    const art = &ui.art.leds[@intFromEnum(shape)];
+    var st = state;
+    if (st == .blink) {
+        // Host clock: every blinking LED is in phase.
+        ui.animate();
+        st = if (@mod(@floor(ui.in.time * 2.5), 2) == 0) .on else .off;
+    }
+    switch (st) {
+        .on => {
+            ui.sprite(art.halo, x - sprites.HALO, y - sprites.HALO, col.alpha(110));
+            ui.sprite(art.body, x, y, col);
+            ui.sprite(art.lens, x, y, .{ .r = 255, .g = 255, .b = 255 });
+        },
+        .dim => {
+            ui.sprite(art.halo, x - sprites.HALO, y - sprites.HALO, col.alpha(35));
+            ui.sprite(art.body, x, y, col.mix(style.well, 0.45));
+        },
+        .off, .blink => {
+            ui.sprite(art.body, x, y, col.mix(style.well, 0.8));
+            ui.sprite(art.lens, x, y, .{ .r = 255, .g = 255, .b = 255, .a = 60 });
+        },
+    }
+}
+
+/// A flat shape tinted `col` (arrows on steppers, printed marks).
+fn ledShape(ui: *Ui, x: i32, y: i32, shape: LedShape, col: Color) void {
+    ui.sprite(ui.art.leds[@intFromEnum(shape)].body, x, y, col);
+}
+
+/// Rectangular bar LED of any grid length.
+pub fn ledBar(ui: *Ui, r: Rect, state: LedState, col: Color) void {
+    switch (state) {
+        .on, .blink => {
+            ui.rect(r.inset(-2), col.alpha(22));
+            ui.rect(r.inset(-1), col.alpha(50));
+            ui.rect(r, col);
+            ui.rect(Rect.xywh(r.x, r.y, r.w, 1), col.mix(.{ .r = 255, .g = 255, .b = 255 }, 0.4));
+        },
+        .dim => ui.rect(r, col.mix(style.well, 0.45)),
+        .off => ui.rect(r, col.mix(style.well, 0.82)),
+    }
+}
+
+pub const LadderOpts = struct {
+    segs: u8 = 16,
+    horizontal: bool = false,
+};
+
+/// Segmented meter. `level` and `peak` are 0..1. The peak falls back
+/// slowly (afterglow) from widget memory, keyed by `key`.
+pub fn ladder(ui: *Ui, r: Rect, key: anytype, level: f32, o: LadderOpts) void {
+    const wid = ui.id(key);
+    const hold = ui.memo(wid, 0);
+    const lv = std.math.clamp(level, 0, 1);
+    if (lv >= hold.*) hold.* = lv else {
+        hold.* = @max(lv, hold.* - 0.012);
+        ui.animate();
+    }
+    const inner = ui.well(r, style.well);
+    const n: i32 = o.segs;
+    var i: i32 = 0;
+    while (i < n) : (i += 1) {
+        const t0 = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(n));
+        const col = if (t0 >= 0.9) style.rec else if (t0 >= 0.7) style.led_yellow else style.led_green;
+        const seg = if (o.horizontal) blk: {
+            const x0 = inner.x + 1 + @divFloor(i * (inner.w - 1), n);
+            const x1 = inner.x + 1 + @divFloor((i + 1) * (inner.w - 1), n);
+            break :blk Rect.xywh(x0, inner.y + 1, x1 - x0 - 1, inner.h - 2);
+        } else blk: {
+            const y1 = inner.bottom() - 1 - @divFloor(i * (inner.h - 1), n);
+            const y0 = inner.bottom() - 1 - @divFloor((i + 1) * (inner.h - 1), n);
+            break :blk Rect.xywh(inner.x + 1, y0 + 1, inner.w - 2, y1 - y0 - 1);
+        };
+        const st: LedState = if (t0 < lv) .on else if (t0 < hold.* and t0 + 1.0 / @as(f32, @floatFromInt(n)) >= hold.*) .on else .off;
+        ledBarFlat(ui, seg, st, col);
+    }
+}
+
+/// Meter segments: no halo (they sit shoulder to shoulder).
+fn ledBarFlat(ui: *Ui, r: Rect, st: LedState, col: Color) void {
+    ui.rect(r, switch (st) {
+        .on, .blink => col,
+        .dim => col.mix(style.well, 0.45),
+        .off => col.mix(style.well, 0.85),
+    });
+}
+
+// ── Displays ─────────────────────────────────────────────────────────
+
+pub const DisplayOpts = struct {
+    color: Color = style.phosphor,
+    align_: Ui.Align = .left,
+    /// Draw the unlit cell grid.
+    ghost: bool = true,
+};
+
+pub const CELL_W: i32 = 6;
+pub const CELL_H: i32 = 12;
+
+pub fn displayHeight() i32 {
+    return CELL_H + 4;
+}
+
+/// Dot-matrix readout (docs/06 §Displays). Tamzen 6×12 is the matrix face:
+/// its caps are 5×7, the classic LCD cell.
+pub fn display(ui: *Ui, r: Rect, s: []const u8, o: DisplayOpts) void {
+    const inner = ui.well(r, style.well);
+    const m = style.materials;
+    const f = &ui.fonts.body;
+    const cells = @divFloor(inner.w - 2, CELL_W);
+    if (cells <= 0) return;
+    const text_w = @min(f.measure(s), cells * CELL_W);
+    const x0 = inner.x + 1 + switch (o.align_) {
+        .left => 0,
+        .center => @divFloor(cells * CELL_W - text_w, 2 * CELL_W) * CELL_W,
+        .right => cells * CELL_W - text_w,
+    };
+    const y0 = inner.y + @divFloor(inner.h - CELL_H, 2);
+    ui.clip(inner);
+    // Ghost cells: the unlit 5×7 cap box of every cell.
+    if (o.ghost and m.ghost_alpha > 0) {
+        var i: i32 = 0;
+        while (i < cells) : (i += 1) ui.rect(Rect.xywh(inner.x + 1 + i * CELL_W, y0 + 2, 5, 7), o.color.alpha(m.ghost_alpha));
+    }
+    // Halo, then lit glyphs.
+    var pen = x0;
+    var it = font_mod.Utf8Iter{ .s = s };
+    while (it.next()) |cp| {
+        if (pen + CELL_W > inner.right()) break;
+        const idx = f.index(cp);
+        const g = &f.glyphs[idx];
+        const halo = ui.art.display_halo[idx];
+        if (m.halo_alpha > 0 and halo.w > 0) ui.sprite(halo, pen + g.dx - 1, y0 + g.dy - 1, o.color.alpha(m.halo_alpha));
+        if (g.src.w > 0) ui.sprite(g.src, pen + g.dx, y0 + g.dy, o.color);
+        pen += g.advance;
+    }
+    // Dot gaps: at 2× and up, a 1-device-px well-coloured mesh on every
+    // logical pixel boundary turns solid glyphs into a dot matrix.
+    const ds = ui.deviceScale();
+    if (ds >= 2) {
+        const gap = 1.0 / ds;
+        const gap_col = style.well.alpha(200);
+        var x: i32 = inner.x + 1;
+        while (x < inner.right()) : (x += 1) ui.frect(@as(f32, @floatFromInt(x + 1)) - gap, @floatFromInt(y0), gap, CELL_H, gap_col);
+        var y: i32 = y0;
+        while (y < y0 + CELL_H) : (y += 1) ui.frect(@floatFromInt(inner.x), @as(f32, @floatFromInt(y + 1)) - gap, @floatFromInt(inner.w), gap, gap_col);
+    }
+    ui.unclip();
+}
+
+/// Scope/curve display with afterglow: the last few frames' traces fade
+/// behind the current one. `pts` are 0..1 (bottom→top), spread across r.
+pub fn scope(ui: *Ui, r: Rect, key: anytype, pts: []const f32, col: Color) void {
+    const inner = ui.well(r, style.well);
+    const tr = ui.trail(ui.id(key));
+    // Record this frame.
+    tr.head = (tr.head + 1) % core.TRAIL;
+    const n = @min(pts.len, core.TRAIL_PTS);
+    @memcpy(tr.pts[tr.head][0..n], pts[0..n]);
+    tr.lens[tr.head] = n;
+
+    ui.clip(inner);
+    // Graticule: centre line.
+    ui.rect(Rect.xywh(inner.x, inner.y + @divFloor(inner.h, 2), inner.w, 1), col.alpha(22));
+    var age: usize = core.TRAIL;
+    while (age > 0) {
+        age -= 1;
+        const slot = (tr.head + core.TRAIL - age) % core.TRAIL;
+        const len = tr.lens[slot];
+        if (len < 2) continue;
+        const a: u8 = if (age == 0) 255 else @intCast(90 / age);
+        trace(ui, inner, tr.pts[slot][0..len], col.alpha(a));
+    }
+    ui.unclip();
+    ui.animate();
+}
+
+/// Static curve (envelope view): no afterglow needed, it only changes on
+/// edit, but it keeps the same glass.
+pub fn curve(ui: *Ui, r: Rect, pts: []const f32, col: Color) void {
+    const inner = ui.well(r, style.well);
+    ui.clip(inner);
+    trace(ui, inner, pts, col);
+    ui.unclip();
+}
+
+fn trace(ui: *Ui, inner: Rect, pts: []const f32, col: Color) void {
+    const w: f32 = @floatFromInt(inner.w - 3);
+    const h: f32 = @floatFromInt(inner.h - 3);
+    const x0: f32 = @as(f32, @floatFromInt(inner.x)) + 1.5;
+    const y0: f32 = @as(f32, @floatFromInt(inner.y)) + 1.5;
+    const k = w / @as(f32, @floatFromInt(pts.len - 1));
+    for (1..pts.len) |i| {
+        const xa = x0 + @as(f32, @floatFromInt(i - 1)) * k;
+        const xb = x0 + @as(f32, @floatFromInt(i)) * k;
+        ui.line(xa, y0 + h * (1 - pts[i - 1]), xb, y0 + h * (1 - pts[i]), col);
+    }
+}
+
+// ── Faceplates ───────────────────────────────────────────────────────
+
+/// Module strip: a faceplate with an engraved title. Returns the body.
+pub fn strip(ui: *Ui, r: Rect, title: []const u8) Rect {
+    var body = ui.plate(r, .{});
+    const head = body.cutTop(LEGEND_H + 3);
+    if (title.len > 0) _ = ui.engraved(&ui.fonts.legend, head.x + 3, head.y + 2, title, style.text_dim);
+    return body;
+}
+
+/// Machine title strip: name + title display (preset, or the touched
+/// parameter while one is being touched in this machine's scope).
+pub fn titleStrip(ui: *Ui, r: Rect, name: []const u8, preset: []const u8) void {
+    var body = ui.plate(r, .{ .chamfer = 2 });
+    const f = &ui.fonts.body_bold;
+    const name_w = f.measure(name) + 8;
+    const name_r = body.cutLeft(name_w);
+    ui.textIn(f, name_r.insetXY(4, 0), name, style.text, .left, true);
+    const disp_r = body.insetXY(2, 1);
+    const t = &ui.touch;
+    var buf: [48]u8 = undefined;
+    const live = t.scope == ui.scopeId() and ui.in.time - t.time < core.TOUCH_HOLD;
+    const s = if (live)
+        std.fmt.bufPrint(&buf, "{s} {s}", .{ t.labelStr(), t.valueStr() }) catch preset
+    else
+        preset;
+    display(ui, disp_r, s, .{});
+}

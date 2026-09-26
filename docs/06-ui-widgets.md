@@ -176,17 +176,19 @@ Readouts simulate OLED/VFD glass: Winamp from another dimension. Displays
 are the only things that emit light.
 
 - **Well:** sunken bevel into `well` (near-black, very slightly tinted).
-- **Face:** a 5×7 dot-matrix font, separate from Tamzen, in the atlas. At
-  2× and up each lit pixel is a dot with a 1-device-px gap: the matrix
-  texture comes from the grid, not from a filter.
-- **Ghost cells:** unlit segments show at 4–6% of `phosphor`. Drawn as an
-  all-on glyph under the text.
+- **Face:** Tamzen 6×12, whose caps are exactly 5×7 (the classic LCD
+  cell), laid out on a fixed 6-px cell grid. At device scale 2 and up a
+  1-device-px mesh in the well colour on every logical pixel boundary
+  turns the solid glyphs into dots: the matrix comes from the grid, not a
+  filter.
+- **Ghost cells:** every cell's unlit 5×7 box shows at ~5% of `phosphor`.
 - **Glow:** each display glyph has a pre-dilated halo variant in the atlas,
   drawn under it at low alpha. Edges stay sharp; nothing blurs at runtime.
-- **Afterglow:** scopes, meters and envelope views decay over a few frames
-  instead of clearing. One render texture per display, faded each frame;
-  it only ticks while something moves. Meter peak-hold is the same
-  mechanism.
+- **Afterglow:** scopes and meters decay over a few frames instead of
+  clearing. Scopes keep their last few traces (a bounded per-id history)
+  and redraw them with falling alpha; meters keep a decaying peak in
+  per-id widget memory. Both only request frames while something moves.
+  No render textures.
 - **No** CRT scanlines, curvature or flicker: wrong era.
 
 Where displays go: transport (position, BPM, meter), machine title strips,
@@ -272,11 +274,20 @@ Pads, jacks/patch points, XY pads. Not in the first catalogue.
 
 ### How controls are made
 
-Every control image is **drawn procedurally in Zig at startup** into the
-atlas, per size and per scale: knob filmstrips (~128 angle frames),
-fader caps, lever positions, cap up/down, LED off/dim/on with halos.
-No image assets; changing the look is a code change, and fractional
-scales get exact sprites because they're simply generated at that size.
+Every control is **drawn procedurally in Zig** (`ui/sprites.zig`); no
+image assets, changing the look is a code change.
+
+- **Static parts are atlas sprites** built at startup: knob caps, fader
+  caps, lever positions, LED bodies/lenses/halos, display-glyph halos,
+  the noise tile.
+- **Dynamic parts are exact pixel runs** emitted per frame from tables
+  built at startup: a knob's value arc and modulation ring are its ring
+  pixels sorted by sweep position (lit = a contiguous range), the pointer
+  is every pixel within half a pixel of its segment. Any angle, no
+  filmstrips, pixel-exact at every size.
+- Sprites are authored at 1× and pixel-multiplied by the integer scale.
+  Fractional scales regenerate them at the device size (not built yet:
+  Phase 1 ships integer scales).
 
 Machine manifests (docs/15) use the same catalogue: control kinds are
 `knob | slider | switch | button | selector | led | display` plus variant
@@ -334,14 +345,21 @@ pub const Ui = struct {
     // overlays (menus, tooltips) queue into a second list drawn last
 };
 
-pub fn knob(ui: *Ui, key: anytype, v: *f32, o: KnobOpts) bool;   // changed
-pub fn slider(ui: *Ui, key: anytype, v: *f32, o: SliderOpts) bool;
-pub fn switch_(ui: *Ui, key: anytype, v: *u8, o: SwitchOpts) bool;
-pub fn button(ui: *Ui, key: anytype, o: ButtonOpts) Click;
-pub fn selector(ui: *Ui, key: anytype, v: *u8, o: SelectorOpts) bool;
-pub fn led(ui: *Ui, r: Rect, s: LedState, o: LedOpts) void;
-pub fn display(ui: *Ui, r: Rect, o: DisplayOpts) void;
-pub fn field(ui: *Ui, key: anytype, buf: *TextBuf, o: FieldOpts) FieldResult;
+// ui/controls.zig — each takes its cell rect; fixed-size controls centre
+// themselves in it. `knobCell(size)` etc. give the natural cell size.
+pub fn knob(ui: *Ui, r: Rect, key: anytype, v: *f32, o: KnobOpts) bool;   // changed
+pub fn slider(ui: *Ui, r: Rect, key: anytype, v: *f32, o: SliderOpts) bool;
+pub fn toggle(ui: *Ui, r: Rect, key: anytype, v: *u8, o: ToggleOpts) bool;
+pub fn slide(ui: *Ui, r: Rect, key: anytype, v: *u8, o: SlideOpts) bool;
+pub fn button(ui: *Ui, r: Rect, key: anytype, on: ?*bool, o: ButtonOpts) bool; // clicked
+pub fn segmented(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8) bool;
+pub fn list(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const []const u8, label: []const u8) bool;
+pub fn displaySelect(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const []const u8) bool;
+pub fn led(ui: *Ui, x: i32, y: i32, shape: LedShape, s: LedState, col: Color) void;
+pub fn ladder(ui: *Ui, r: Rect, key: anytype, level: f32, o: LadderOpts) void;
+pub fn display(ui: *Ui, r: Rect, text: []const u8, o: DisplayOpts) void;
+pub fn scope(ui: *Ui, r: Rect, key: anytype, pts: []const f32, col: Color) void;
+// planned: field (text entry, typed values), menus, tooltips
 ```
 
 - **Rects are `i32`**, logical. `Rect` has RectCut-style helpers
@@ -355,14 +373,16 @@ pub fn field(ui: *Ui, key: anytype, buf: *TextBuf, o: FieldOpts) FieldResult;
 - **Input is a snapshot** built once per frame. Widgets read `ui.in`, never
   raylib. The `active` id owns the pointer from press to release, even
   when the pointer leaves its rect.
-- **Draw list** of a handful of primitives:
-  `rect`, `rect_vgrad`, `bevel`, `chamfer_plate`, `glyphs`, `sprite`,
-  `line` (axis-aligned), `polyline` (curves, waveforms), `clip_push` /
-  `clip_pop`, `texture` (render textures: afterglow, the custom-pixel
-  escape hatch). One renderer flushes it.
-- **One atlas:** fonts, the display matrix face, halos, the noise tile and
-  every control sprite share one texture. A frame is one texture bind and
-  close to one draw call.
+- **Draw list** of seven primitives: `rect`, `vgrad`, `sprite` (atlas
+  region; also fractional rects for device-pixel detail), `tile` (noise,
+  screen-anchored), `line` (curves), `clip_push` / `clip_pop`. Bevels,
+  plates, chamfers and text are helpers on `Ui` that emit these. One
+  renderer (`ui/draw.zig`) flushes it; a `texture` primitive arrives with
+  the push-pixels escape hatch.
+- **One atlas:** fonts, halos, the noise tile and every control sprite
+  share one texture, and raylib's shapes texture points at the atlas's
+  white texel, so fills batch with sprites. A frame is one texture bind
+  and close to one draw call.
 - **Redraw on demand.** The frame is rebuilt when there's input, when the
   transport plays, or when something calls `ui.animate()` (afterglow,
   blinking, tooltips pending). Otherwise the loop waits for events

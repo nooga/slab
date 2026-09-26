@@ -23,6 +23,7 @@ const native_dialog = @import("native_dialog.zig");
 const theme = @import("ui/theme.zig");
 const widgets = @import("ui/widgets.zig");
 const fonts = @import("ui/fonts.zig");
+const ui_gallery = @import("ui/gallery.zig");
 const layout_mod = @import("ui/layout.zig");
 const top_bar = @import("ui/top_bar.zig");
 const snap_mod = @import("ui/snap.zig");
@@ -34,6 +35,11 @@ const machine_bay = @import("ui/machine_bay.zig");
 const render_dialog = @import("ui/render_dialog.zig");
 
 test {
+    _ = @import("ui/sprites.zig");
+    _ = @import("ui/core.zig");
+    _ = @import("ui/geom.zig");
+    _ = @import("ui/atlas.zig");
+    _ = @import("ui/font.zig");
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
     _ = @import("meter_gen.zig");
@@ -371,10 +377,12 @@ fn polyStatusLabel(v: u8) []const u8 {
 }
 
 /// `slab [project.slab] [--render out.wav]`: open a project at startup, or
-/// bounce it headless (no window, no audio device) and exit.
+/// bounce it headless (no window, no audio device) and exit. `slab
+/// --gallery` opens the UI gallery (docs/06), no engine.
 const Cli = struct {
     project: ?[]const u8 = null,
     render: ?[]const u8 = null,
+    gallery: bool = false,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -386,6 +394,8 @@ pub fn main(init: std.process.Init) !void {
             const a: []const u8 = a_z;
             if (std.mem.eql(u8, a, "--render")) {
                 cli.render = args.next() orelse return error.MissingRenderPath;
+            } else if (std.mem.eql(u8, a, "--gallery")) {
+                cli.gallery = true;
             } else cli.project = a;
         }
     }
@@ -400,6 +410,7 @@ pub fn main(init: std.process.Init) !void {
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
+    if (cli.gallery) return ui_gallery.run(alloc);
     if (cli.render) |out| return renderHeadless(alloc, cli.project orelse return error.MissingProject, out);
 
     c.rl.SetConfigFlags(c.rl.FLAG_WINDOW_RESIZABLE | c.rl.FLAG_VSYNC_HINT);
