@@ -32,6 +32,7 @@ const snap_mod = @import("ui/snap.zig");
 const arrangement = @import("ui/arrangement.zig");
 const clip_editor = @import("ui/clip_editor.zig");
 const menu = @import("ui/menu.zig");
+const text_field = @import("ui/text_field.zig");
 const audio_clip_editor = @import("ui/audio_clip_editor.zig");
 const machine_bay = @import("ui/machine_bay.zig");
 const render_dialog = @import("ui/render_dialog.zig");
@@ -43,6 +44,7 @@ test {
     _ = @import("ui/geom.zig");
     _ = @import("ui/atlas.zig");
     _ = @import("ui/font.zig");
+    _ = @import("ui/text_field.zig");
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
     _ = @import("meter_gen.zig");
@@ -144,19 +146,14 @@ const RenameState = struct {
     device_effect: ?usize = null,
     /// For preset_rename: the preset index being renamed.
     preset_index: u8 = 0,
-    buf: [track_mod.MAX_NAME + 1:0]u8 = [_:0]u8{0} ** (track_mod.MAX_NAME + 1),
-    len: usize = 0,
-    cursor: usize = 0,
-    sel_anchor: ?usize = null,
+    tb: text_field.TextBuf = .{ .limit = track_mod.MAX_NAME },
+    /// Anchor for the field, reported by the pane that owns the name.
     rect: c.rl.Rectangle = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
-    mouse_dragging: bool = false,
+    /// Focus the field on its first frame.
+    start_focus: bool = true,
 
     fn active(self: *const RenameState) bool {
         return self.kind != .none;
-    }
-
-    fn text(self: *const RenameState) [*:0]const u8 {
-        return @ptrCast(&self.buf[0]);
     }
 };
 
@@ -585,7 +582,7 @@ pub fn main(init: std.process.Init) !void {
         } else if (menu.active()) {
             // An open menu owns the keyboard (arrows, enter, esc).
         } else if (rename.active()) {
-            try updateRename(alloc, &history, &rename, tracks, &transport, &dirty, &status, m);
+            // The rename field owns the keyboard (runs after the panes).
         } else if (try handleProjectShortcuts(
             alloc,
             &history,
@@ -923,20 +920,18 @@ pub fn main(init: std.process.Init) !void {
             };
         }
 
-        menu.draw(ui);
-        ui.render();
-        if (rename.active()) drawInlineRename(&rename);
+        try runRename(ui, alloc, &history, &rename, tracks, &transport, &dirty, &status);
 
-        // Render Audio modal (drawn on top; modal for the mouse).
+        // Render Audio dialog (modal: input behind it is suppressed above).
         var render_action: render_dialog.Result = .none;
         if (render_dlg.active) {
             const loop_available = transport.loopEnabled() and transport.loopEndBeats() > transport.loopStartBeats();
             const prog: ?render_dialog.Progress = if (render_job.active) renderProgress(&render_job) else null;
-            render_action = render_dialog.draw(&render_dlg, sw, sh, loop_available, prog, m);
-            if (c.rl.IsKeyPressed(c.rl.KEY_ESCAPE)) render_action = .cancel;
-            if (!render_job.active and (c.rl.IsKeyPressed(c.rl.KEY_ENTER) or c.rl.IsKeyPressed(c.rl.KEY_KP_ENTER)))
-                render_action = .render;
+            render_action = render_dialog.draw(ui, uiRect(widgets.rect(0, 0, sw, sh)), &render_dlg, loop_available, prog);
         }
+
+        menu.draw(ui);
+        ui.render();
 
         widgets.applyCursor();
         ui.endFrame();
@@ -1567,7 +1562,6 @@ fn beginRenameTrack(rename: *RenameState, tracks: []track_mod.Track, track_idx: 
     if (track_idx >= tracks.len) return;
     rename.* = .{ .kind = .track, .track = track_idx };
     renameSetText(rename, tracks[track_idx].name());
-    renameSelectAll(rename);
 }
 
 fn beginRenameClip(rename: *RenameState, tracks: []track_mod.Track, ref: clip_mod.ClipRef) void {
@@ -1576,7 +1570,6 @@ fn beginRenameClip(rename: *RenameState, tracks: []track_mod.Track, ref: clip_mo
     if (ref.clip >= t.clips.items.len) return;
     rename.* = .{ .kind = .clip, .track = @intCast(ref.track), .clip = @intCast(ref.clip) };
     renameSetText(rename, t.clips.items[ref.clip].name());
-    renameSelectAll(rename);
 }
 
 fn deviceMachineOf(t: *track_mod.Track, effect: ?usize) ?*@import("machine.zig").Machine {
@@ -1602,127 +1595,18 @@ fn beginPresetRename(rename: *RenameState, dev: *track_mod.Track, effect: ?usize
     rename.* = .{ .kind = .preset_rename, .device_track = dev, .device_effect = effect, .preset_index = index };
     renameSetText(rename, current);
     anchorRenameRect(rename, anchor);
-    renameSelectAll(rename);
 }
 
+/// Start the field with `text`, all selected (typing replaces it).
 fn renameSetText(rename: *RenameState, text: []const u8) void {
-    @memset(&rename.buf, 0);
-    const n = @min(text.len, track_mod.MAX_NAME);
-    @memcpy(rename.buf[0..n], text[0..n]);
-    rename.len = n;
-    rename.cursor = n;
-    rename.sel_anchor = null;
+    rename.tb = text_field.TextBuf.init(text, track_mod.MAX_NAME);
+    rename.tb.selectAll();
 }
 
-fn renameSelectAll(rename: *RenameState) void {
-    rename.sel_anchor = 0;
-    rename.cursor = rename.len;
-}
-
-fn renameHasSelection(rename: *const RenameState) bool {
-    if (rename.sel_anchor) |a| return a != rename.cursor;
-    return false;
-}
-
-fn renameSelection(rename: *const RenameState) struct { start: usize, end: usize } {
-    const a = rename.sel_anchor orelse return .{ .start = rename.cursor, .end = rename.cursor };
-    return .{ .start = @min(a, rename.cursor), .end = @max(a, rename.cursor) };
-}
-
-fn renameDeleteSelection(rename: *RenameState) bool {
-    const sel = renameSelection(rename);
-    if (sel.start == sel.end) return false;
-    const tail = rename.len - sel.end;
-    var i: usize = 0;
-    while (i < tail) : (i += 1) rename.buf[sel.start + i] = rename.buf[sel.end + i];
-    rename.len -= sel.end - sel.start;
-    rename.cursor = sel.start;
-    rename.sel_anchor = null;
-    @memset(rename.buf[rename.len..], 0);
-    return true;
-}
-
-fn renameInsertText(rename: *RenameState, text: []const u8) void {
-    _ = renameDeleteSelection(rename);
-    const n = @min(text.len, track_mod.MAX_NAME - rename.len);
-    if (n == 0) return;
-    var i = rename.len;
-    while (i > rename.cursor) {
-        i -= 1;
-        rename.buf[i + n] = rename.buf[i];
-    }
-    @memcpy(rename.buf[rename.cursor..][0..n], text[0..n]);
-    rename.len += n;
-    rename.cursor += n;
-    rename.buf[rename.len] = 0;
-    rename.sel_anchor = null;
-}
-
-fn renameDeleteBack(rename: *RenameState, word: bool) void {
-    if (renameDeleteSelection(rename)) return;
-    if (rename.cursor == 0) return;
-    const start = if (word) wordLeft(rename.buf[0..rename.len], rename.cursor) else rename.cursor - 1;
-    const count = rename.cursor - start;
-    var i = start;
-    while (i < rename.len - count) : (i += 1) rename.buf[i] = rename.buf[i + count];
-    rename.len -= count;
-    rename.cursor = start;
-    @memset(rename.buf[rename.len..], 0);
-}
-
-fn renameDeleteForward(rename: *RenameState, word: bool) void {
-    if (renameDeleteSelection(rename)) return;
-    if (rename.cursor >= rename.len) return;
-    const end = if (word) wordRight(rename.buf[0..rename.len], rename.cursor) else rename.cursor + 1;
-    const count = end - rename.cursor;
-    var i = rename.cursor;
-    while (i < rename.len - count) : (i += 1) rename.buf[i] = rename.buf[i + count];
-    rename.len -= count;
-    @memset(rename.buf[rename.len..], 0);
-}
-
-fn renameMoveCursor(rename: *RenameState, next: usize, shift: bool) void {
-    if (shift) {
-        if (rename.sel_anchor == null) rename.sel_anchor = rename.cursor;
-    } else {
-        rename.sel_anchor = null;
-    }
-    rename.cursor = @min(next, rename.len);
-}
-
-fn wordLeft(text: []const u8, pos: usize) usize {
-    var i = pos;
-    while (i > 0 and text[i - 1] == ' ') i -= 1;
-    while (i > 0 and text[i - 1] != ' ') i -= 1;
-    return i;
-}
-
-fn wordRight(text: []const u8, pos: usize) usize {
-    var i = pos;
-    while (i < text.len and text[i] != ' ') i += 1;
-    while (i < text.len and text[i] == ' ') i += 1;
-    return i;
-}
-
-fn renameHitTest(rename: *const RenameState, x: f32) usize {
-    const local = x - rename.rect.x - 4;
-    var best: usize = 0;
-    var best_dist: f32 = 999999;
-    var i: usize = 0;
-    while (i <= rename.len) : (i += 1) {
-        var tmp: [track_mod.MAX_NAME + 1:0]u8 = [_:0]u8{0} ** (track_mod.MAX_NAME + 1);
-        @memcpy(tmp[0..i], rename.buf[0..i]);
-        const px = widgets.measureTextF(@ptrCast(&tmp[0]), theme.fsBody());
-        const dist = @abs(px - local);
-        if (dist < best_dist) {
-            best_dist = dist;
-            best = i;
-        }
-    }
-    return best;
-}
-
-fn updateRename(
+/// The inline rename field, floated over the name being edited. Runs after
+/// the panes (they report `rename.rect` this frame) and before the draw.
+fn runRename(
+    ui: *ui_core.Ui,
     alloc: std.mem.Allocator,
     history: *history_mod.History,
     rename: *RenameState,
@@ -1730,127 +1614,21 @@ fn updateRename(
     transport: *transport_mod.Transport,
     dirty: *bool,
     status: *StatusMessage,
-    m: widgets.Mouse,
 ) !void {
-    if (!rename.active()) return;
-
-    const cmd = commandModifierDown();
-    const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
-
-    if (widgets.contains(rename.rect, m.x, m.y)) widgets.requestCursor(c.rl.MOUSE_CURSOR_IBEAM, 4);
-    if (m.left_pressed) {
-        if (widgets.contains(rename.rect, m.x, m.y)) {
-            if (m.double_clicked) {
-                renameSelectAll(rename);
-            } else {
-                const pos = renameHitTest(rename, m.x);
-                rename.cursor = pos;
-                rename.sel_anchor = pos;
-                rename.mouse_dragging = true;
-            }
-        } else {
-            try commitRename(alloc, history, rename, tracks, transport, dirty, status);
-            return;
-        }
+    if (!rename.active() or rename.rect.width <= 0) return;
+    var r = uiRect(rename.rect);
+    r.w = @max(r.w, 60);
+    r.h = @max(r.h, 14);
+    const ev = text_field.field(ui, r, "rename", &rename.tb, .{ .focus = rename.start_focus, .commit_on_blur = true });
+    rename.start_focus = false;
+    switch (ev) {
+        .commit => try commitRename(alloc, history, rename, tracks, transport, dirty, status),
+        .cancel => {
+            rename.kind = .none;
+            status.set("Rename canceled", .{});
+        },
+        .none, .changed => {},
     }
-    if (rename.mouse_dragging) {
-        if (m.left_down) {
-            rename.cursor = renameHitTest(rename, m.x);
-        } else {
-            rename.mouse_dragging = false;
-            if (rename.sel_anchor) |a| {
-                if (a == rename.cursor) rename.sel_anchor = null;
-            }
-        }
-    }
-
-    if (cmd and c.rl.IsKeyPressed(c.rl.KEY_A)) {
-        renameSelectAll(rename);
-        return;
-    }
-    if (cmd and c.rl.IsKeyPressed(c.rl.KEY_C)) {
-        if (renameHasSelection(rename)) {
-            const sel = renameSelection(rename);
-            var tmp: [track_mod.MAX_NAME + 1:0]u8 = [_:0]u8{0} ** (track_mod.MAX_NAME + 1);
-            const n = sel.end - sel.start;
-            @memcpy(tmp[0..n], rename.buf[sel.start..sel.end]);
-            c.rl.SetClipboardText(@ptrCast(&tmp[0]));
-        }
-        return;
-    }
-    if (cmd and c.rl.IsKeyPressed(c.rl.KEY_X)) {
-        if (renameHasSelection(rename)) {
-            const sel = renameSelection(rename);
-            var tmp: [track_mod.MAX_NAME + 1:0]u8 = [_:0]u8{0} ** (track_mod.MAX_NAME + 1);
-            const n = sel.end - sel.start;
-            @memcpy(tmp[0..n], rename.buf[sel.start..sel.end]);
-            c.rl.SetClipboardText(@ptrCast(&tmp[0]));
-            _ = renameDeleteSelection(rename);
-        }
-        return;
-    }
-    if (cmd and c.rl.IsKeyPressed(c.rl.KEY_V)) {
-        const clip_text = c.rl.GetClipboardText();
-        if (clip_text != null) renameInsertText(rename, std.mem.span(clip_text));
-        return;
-    }
-
-    if (c.rl.IsKeyPressed(c.rl.KEY_LEFT)) {
-        if (!shift and renameHasSelection(rename)) {
-            rename.cursor = renameSelection(rename).start;
-            rename.sel_anchor = null;
-        } else {
-            const next = if (cmd) wordLeft(rename.buf[0..rename.len], rename.cursor) else if (rename.cursor > 0) rename.cursor - 1 else 0;
-            renameMoveCursor(rename, next, shift);
-        }
-        return;
-    }
-    if (c.rl.IsKeyPressed(c.rl.KEY_RIGHT)) {
-        if (!shift and renameHasSelection(rename)) {
-            rename.cursor = renameSelection(rename).end;
-            rename.sel_anchor = null;
-        } else {
-            const next = if (cmd) wordRight(rename.buf[0..rename.len], rename.cursor) else @min(rename.cursor + 1, rename.len);
-            renameMoveCursor(rename, next, shift);
-        }
-        return;
-    }
-    if (c.rl.IsKeyPressed(c.rl.KEY_HOME)) {
-        renameMoveCursor(rename, 0, shift);
-        return;
-    }
-    if (c.rl.IsKeyPressed(c.rl.KEY_END)) {
-        renameMoveCursor(rename, rename.len, shift);
-        return;
-    }
-
-    while (true) {
-        const ch = c.rl.GetCharPressed();
-        if (ch <= 0) break;
-        if (ch >= 32 and ch <= 126 and rename.len < track_mod.MAX_NAME) {
-            const one = [1]u8{@intCast(ch)};
-            renameInsertText(rename, &one);
-        }
-    }
-
-    if (c.rl.IsKeyPressed(c.rl.KEY_BACKSPACE)) {
-        renameDeleteBack(rename, cmd);
-        return;
-    }
-
-    if (c.rl.IsKeyPressed(c.rl.KEY_DELETE)) {
-        renameDeleteForward(rename, cmd);
-        return;
-    }
-
-    if (c.rl.IsKeyPressed(c.rl.KEY_ESCAPE)) {
-        rename.kind = .none;
-        status.set("Rename canceled", .{});
-        return;
-    }
-
-    if (!c.rl.IsKeyPressed(c.rl.KEY_ENTER) and !c.rl.IsKeyPressed(c.rl.KEY_KP_ENTER)) return;
-    try commitRename(alloc, history, rename, tracks, transport, dirty, status);
 }
 
 fn commitRename(
@@ -1872,14 +1650,14 @@ fn commitRename(
         else => {},
     }
 
-    if (rename.len == 0) {
+    if (rename.tb.len == 0) {
         rename.kind = .none;
         status.set("Rename canceled", .{});
         return;
     }
 
     const before = try document_mod.serialize(alloc, tracks, transport);
-    const text = rename.buf[0..rename.len];
+    const text = rename.tb.text();
     var changed = false;
     switch (rename.kind) {
         .track => if (rename.track < tracks.len) {
@@ -1915,26 +1693,27 @@ fn commitPreset(rename: *RenameState, tracks: []track_mod.Track, dirty: *bool, s
         status.set("Preset target gone", .{});
         return;
     };
-    if (rename.len == 0) {
+    const name = rename.tb.text();
+    if (name.len == 0) {
         status.set("Preset name empty", .{});
         return;
     }
     var name_buf: [track_mod.MAX_NAME + 1:0]u8 = [_:0]u8{0} ** (track_mod.MAX_NAME + 1);
-    @memcpy(name_buf[0..rename.len], rename.buf[0..rename.len]);
+    @memcpy(name_buf[0..name.len], name);
     const name_z: [*:0]const u8 = @ptrCast(&name_buf[0]);
     switch (rename.kind) {
         .preset_save => {
             const f = mach.save_preset_named orelse return;
             if (f(mach.state, name_z) != null) {
                 dirty.* = true;
-                status.set("Saved preset {s}", .{name_buf[0..rename.len]});
+                status.set("Saved preset {s}", .{name});
             } else status.set("Preset save failed (name in use?)", .{});
         },
         .preset_rename => {
             const f = mach.rename_preset orelse return;
             if (f(mach.state, rename.preset_index, name_z) != null) {
                 dirty.* = true;
-                status.set("Renamed preset {s}", .{name_buf[0..rename.len]});
+                status.set("Renamed preset {s}", .{name});
             } else status.set("Preset rename failed (name in use?)", .{});
         },
         else => {},
@@ -2520,40 +2299,6 @@ fn selectionDetails(buf: *[128:0]u8, selected_clip: ?clip_mod.ClipRef, tracks: [
     }
     const all_detail = std.fmt.bufPrintZ(buf, "{d} tracks  {d} clips", .{ tracks.len, clip_count }) catch return "?";
     return all_detail.ptr;
-}
-
-fn drawInlineRename(rename: *const RenameState) void {
-    if (rename.rect.width <= 0 or rename.rect.height <= 0) return;
-    const r = widgets.rect(rename.rect.x, rename.rect.y, @max(rename.rect.width, theme.size(44)), @max(rename.rect.height, theme.size(14)));
-    c.rl.DrawRectangleRec(r, theme.slab_edge);
-    const inner = widgets.rect(r.x + 1, r.y + 1, r.width - 2, r.height - 2);
-    c.rl.DrawRectangleRec(inner, theme.pane_bg);
-
-    const text_x = inner.x + 3;
-    const text_y = inner.y + (inner.height - theme.fsBody()) / 2 - 1;
-    c.rl.BeginScissorMode(@intFromFloat(inner.x), @intFromFloat(inner.y), @intFromFloat(inner.width), @intFromFloat(inner.height));
-    defer c.rl.EndScissorMode();
-
-    if (renameHasSelection(rename)) {
-        const sel = renameSelection(rename);
-        const x0 = text_x + measureRenamePrefix(rename, sel.start);
-        const x1 = text_x + measureRenamePrefix(rename, sel.end);
-        c.rl.DrawRectangleRec(widgets.rect(x0, inner.y + 2, x1 - x0, inner.height - 4), c.rl.ColorAlpha(theme.accent_hi, 0.35));
-    }
-
-    widgets.drawLabelF(rename.text(), text_x, text_y, theme.fsBody(), theme.text_fg);
-    const blink = @mod(@as(i32, @intFromFloat(c.rl.GetTime() * 2.5)), 2) == 0;
-    if (blink) {
-        const cx = text_x + measureRenamePrefix(rename, rename.cursor);
-        c.rl.DrawRectangle(@intFromFloat(cx), @intFromFloat(inner.y + 3), 1, @intFromFloat(inner.height - 6), theme.accent_hi);
-    }
-}
-
-fn measureRenamePrefix(rename: *const RenameState, end: usize) f32 {
-    var tmp: [track_mod.MAX_NAME + 1:0]u8 = [_:0]u8{0} ** (track_mod.MAX_NAME + 1);
-    const n = @min(end, rename.len);
-    @memcpy(tmp[0..n], rename.buf[0..n]);
-    return widgets.measureTextF(@ptrCast(&tmp[0]), theme.fsBody());
 }
 
 test "synthpop demo notes fit a 4-bar loop and span bass to lead range" {

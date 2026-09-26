@@ -493,6 +493,31 @@ pub fn tip(ui: *Ui, r: Rect, text: []const u8) void;
   pointer. No key: resting is the trigger. A press hides the tip until
   the pointer moves; menus, modals and drags hide it.
 
+## Text fields
+
+`ui/text_field.zig`: `TextBuf` is the bounded editing model (cursor,
+selection, word moves, printable ASCII) and `field(ui, r, key, &buf, o)`
+the widget: a flat well with the text, an amber selection and a blinking
+amber caret (restarting on every edit). It edits while focused: click to
+place the caret, drag to select, double-click selects all; ←/→ (⌥ or ⌘
+by word, ⇧ extends), Home/End, ⌫/Del, ⌘A/C/X/V; Enter commits, Esc
+cancels. Editing keys auto-repeat. The body face at ≥ 18px, the legend
+face below (clip name bands). Inline renames open focused with the name
+selected and commit on a press elsewhere.
+
+## Dialogs
+
+`ui/dialog.zig`: `begin(ui, screen, key, title, w, h)` dims the screen and
+draws a centred chamfered faceplate with an engraved bold title and an
+engraved rule; it returns the body, the button row, and whether Enter or
+Esc was pressed. Bodies are packed rows (`row(ui, &body, "LABEL", h)`:
+engraved legend, then catalogue controls: latches, sliders, dot-matrix
+displays). `buttons(ui, r, labels, default)` is a right-aligned row of
+76px caps; the default (Enter's action) is lit green. Dialogs are modal:
+the host calls `Ui.suppressInput()` while one is open, and `begin` hands
+the input back to the dialog's widgets (`Ui.unsuppressInput`) unless a
+menu opened from the dialog owns it.
+
 ## Escape hatch: push pixels
 
 A machine that needs its own visual (spectrum, waveshaper curve) asks the

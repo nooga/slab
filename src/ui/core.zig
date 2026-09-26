@@ -21,6 +21,10 @@ pub const Id = u64;
 // ── Input ────────────────────────────────────────────────────────────
 
 pub const MAX_KEYS = 16;
+pub const MAX_CHARS = 16;
+
+/// Keys that auto-repeat while held (editing and stepping).
+const REPEAT_KEYS = [_]c_int{ c.rl.KEY_BACKSPACE, c.rl.KEY_DELETE, c.rl.KEY_LEFT, c.rl.KEY_RIGHT, c.rl.KEY_UP, c.rl.KEY_DOWN };
 
 pub const Input = struct {
     /// Pointer in logical pixels (float for sub-pixel drag deltas).
@@ -38,8 +42,12 @@ pub const Input = struct {
     shift: bool = false,
     cmd: bool = false,
     alt: bool = false,
+    /// Keys pressed this frame, auto-repeats included.
     keys: [MAX_KEYS]c_int = undefined,
     nkeys: usize = 0,
+    /// Typed characters (text entry).
+    chars: [MAX_CHARS]u21 = undefined,
+    nchars: usize = 0,
     time: f64 = 0,
     /// Seconds since the previous frame (clamped; 0 on the first).
     dt: f32 = 0,
@@ -60,7 +68,7 @@ pub const Input = struct {
     /// True if anything happened that needs a new frame.
     pub fn any(in: *const Input) bool {
         return in.dx != 0 or in.dy != 0 or in.down or in.pressed or in.released or
-            in.right_pressed or in.wheel_x != 0 or in.wheel_y != 0 or in.nkeys > 0;
+            in.right_pressed or in.wheel_x != 0 or in.wheel_y != 0 or in.nkeys > 0 or in.nchars > 0;
     }
 };
 
@@ -126,6 +134,8 @@ const ID_DEPTH = 32;
 
 pub const Ui = struct {
     in: Input = .{},
+    /// This frame's input before any `suppressInput` (see `unsuppressInput`).
+    raw_in: Input = .{},
     fonts: Fonts,
     art: sprites.Art,
     renderer: draw.Renderer,
@@ -245,6 +255,18 @@ pub const Ui = struct {
             in.keys[in.nkeys] = k;
             in.nkeys += 1;
         }
+        for (REPEAT_KEYS) |k| {
+            if (in.nkeys < MAX_KEYS and c.rl.IsKeyPressedRepeat(k)) {
+                in.keys[in.nkeys] = k;
+                in.nkeys += 1;
+            }
+        }
+        while (in.nchars < MAX_CHARS) {
+            const ch = c.rl.GetCharPressed();
+            if (ch <= 0) break;
+            in.chars[in.nchars] = @intCast(ch);
+            in.nchars += 1;
+        }
         if (in.pressed) {
             if (in.time - ui.last_click_t < DBL_TIME and
                 @abs(in.mx - ui.last_click_x) < DBL_DIST and @abs(in.my - ui.last_click_y) < DBL_DIST)
@@ -258,6 +280,7 @@ pub const Ui = struct {
             ui.last_click_y = in.my;
         }
         ui.in = in;
+        ui.raw_in = in;
 
         ui.frame += 1;
         ui.hot = ui.hot_next;
@@ -322,9 +345,32 @@ pub const Ui = struct {
         in.wheel_x = 0;
         in.wheel_y = 0;
         in.nkeys = 0;
+        in.nchars = 0;
         // Park the pointer off-screen so nothing is hovered.
         in.mx = -1e6;
         in.my = -1e6;
+    }
+
+    /// System clipboard (text entry).
+    pub fn setClipboard(ui: *Ui, s: []const u8) void {
+        _ = ui;
+        var buf: [256:0]u8 = undefined;
+        const n = @min(s.len, buf.len);
+        @memcpy(buf[0..n], s[0..n]);
+        buf[n] = 0;
+        c.rl.SetClipboardText(&buf);
+    }
+
+    pub fn clipboard(ui: *Ui) []const u8 {
+        _ = ui;
+        const p = c.rl.GetClipboardText();
+        return if (p == null) "" else std.mem.span(p);
+    }
+
+    /// Give the frame's input back after `suppressInput`: a modal dialog
+    /// drawn after the panes it blocks takes the input for its own widgets.
+    pub fn unsuppressInput(ui: *Ui) void {
+        ui.in = ui.raw_in;
     }
 
     /// Ask for another frame (animations, afterglow, blinking).
