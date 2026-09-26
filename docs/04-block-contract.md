@@ -86,10 +86,32 @@ LFOs) rather than advancing it.
 - A per-control time from the manifest (`smooth 10ms`) comes with the
   manifest DSL.
 
+**Stereo.** The manifest word `stereo` changes both lanes:
+
+- *Voices* accumulate into both `out-l` and `out-r`, and the host uses
+  both.
+- *Effects* get one true-stereo pass: region 0, both inputs in `in-l`
+  and `in-r`, both outputs written.
+
+Without the flag, the mono and dual-mono behavior above is unchanged.
+The fixtures are `machines/raw_fixtures/stereo_voice.fy` and
+`stereo_swap.fy`.
+
+**Mono note stack.** Single-voice melodic machines keep a held-note
+stack with last-note priority:
+
+- Releasing a note that isn't sounding just forgets it.
+- Releasing the sounding note falls back to the newest still-held note,
+  as a note-on with `ctx.legato = 1`.
+
+`ctx.legato` is also 1 for any note-on that arrives while the voice is
+held, so a kernel can slide instead of retriggering. Before this, the
+first note-off of any pitch released the voice.
+
 **Still to do (docs/17 step 3):**
 
-- stereo voices writing `out-r`
-- the rest of the voice service (D6): mono/legato/glide/unison
+- the rest of the voice service (D6): glide and unison, which land
+  with the mono bass synth and stereo pads (G4) that use them
 - host buffers and tables addressed through ctx instead of injected into
   state
 

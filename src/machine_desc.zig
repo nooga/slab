@@ -245,6 +245,8 @@ pub const Desc = struct {
     page_count: usize = 0,
     // note-on receives raw MIDI pitch instead of Hz (drum machines).
     note_pitch: bool = false,
+    // Voices write out-l and out-r; effects get one true-stereo pass.
+    stereo: bool = false,
     note_labels: [MAX_NOTE_LABELS]machine.NoteLabel = undefined,
     note_label_count: usize = 0,
     buffers: [MAX_BUFFERS]BufferReq = undefined,
@@ -327,6 +329,7 @@ const MachineDescRaw = extern struct {
     pages: Fy.Value,
     derive: Fy.Value,
     derive_data: Fy.Value,
+    stereo: Fy.Value,
 };
 
 const PageRaw = extern struct { next: Fy.Value, name: Fy.Value, rows: Fy.Value };
@@ -516,6 +519,7 @@ pub fn read(host: *FyHost) !Desc {
     }
 
     d.note_pitch = asInt(md.note_pitch) != 0;
+    d.stereo = asInt(md.stereo) != 0;
     var nl_it = rawPtr(NoteLabelRaw, md.note_labels);
     while (nl_it) |nl| : (nl_it = rawPtr(NoteLabelRaw, nl.next)) {
         if (d.note_label_count >= MAX_NOTE_LABELS) return error.TooManyNoteLabels;

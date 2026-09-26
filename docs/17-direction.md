@@ -496,7 +496,7 @@ step says otherwise.
 |---|---|---|
 | 1 ✅ | **Workbench v2, minimal:** machine loader through the real adapter, impulse/sweep/note stimuli, report + contact sheet, A/B diff. Record goldens for every machine. | `zig build bench -- machines/ms20` produces a readable sheet; goldens committed. |
 | 2 ✅ | A1: rename to `dsp:`, stack effects, errors. | Goldens match; a deliberate typo gives a located error. Done: `dsp: name ( a b -- c )`; errors like ``dsp: typo: unsupported word in dsp: at `fplus` (line 1); stack depth 3``. |
-| 3 | Track B: ctx ABI, stereo, no clamp, voice service, smoothing; the bench moves with it. | Goldens re-recorded after A/B review; special cells deleted. |
+| 3 ✅ | Track B: ctx ABI, stereo, no clamp, voice service, smoothing; the bench moves with it. | Goldens re-recorded after A/B review; special cells deleted. Done: ctx/io ABI (bit-exact), D5 no clamp, idle-voice skipping plus allocation, 20 ms knob glide, `stereo` flag, mono note stack with `ctx.legato`. Glide, unison, and ctx-addressed buffers/tables move to G4 and A7. |
 | 4 | A2: locals, typed bindings, dotted fields + migration. | Goldens match; drop/nip-only lines ≈ 0. |
 | 5 | A3: spilling, multi-return. | Scratch fields gone from voice state; the juno voice no longer needs `call:` stages. |
 | 6 | A4 + A5 + A7: math, `dsp-std`, fused ops out, `table:`. | No DSP ops left in `dsp2.zig`'s op list; no hand-rolled series in kernels. |

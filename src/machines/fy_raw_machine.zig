@@ -55,6 +55,7 @@ pub const KernelCtx = extern struct {
     vel: f64 = 0,
     pitch: f64 = 0,
     data: usize = 0,
+    legato: f64 = 0,
 };
 
 /// One sample's audio lanes, mirrored by `Io` in ctx.fy. Render words get a
@@ -147,6 +148,11 @@ pub const FyRawMachine = struct {
     voice_gate: [MAX_REGIONS]bool = [_]bool{false} ** MAX_REGIONS,
     voice_age: [MAX_REGIONS]u64 = [_]u64{0} ** MAX_REGIONS,
     age_counter: u64 = 0,
+    // Mono machines (1 voice, melodic): held-note stack, newest last, for
+    // last-note priority. Releasing the sounding note falls back to the
+    // newest still-held one as a legato retrigger.
+    mono_held: [16]f32 = undefined,
+    mono_held_n: usize = 0,
     // Idle voices are skipped entirely (docs/17 D6). A voice wakes on
     // note-on and goes idle once released and its contribution stays under
     // IDLE_FLOOR for a whole block. voice_peak is this block's max |delta|
@@ -844,7 +850,10 @@ fn callPrepare(self: *FyRawMachine, sample_rate: f64) !void {
 }
 
 fn renderVoiceSample(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f32, r: []f32) !void {
-    for (self.io[0..l.len]) |*f| f.out_l = 0;
+    for (self.io[0..l.len]) |*f| {
+        f.out_l = 0;
+        f.out_r = 0;
+    }
 
     const events = if (ctx.note_in) |p| p[0..ctx.note_in_count] else &[_]machine.NoteEvent{};
     var cursor: usize = 0;
@@ -867,6 +876,13 @@ fn renderVoiceSample(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
 
     // No clamp: machines have headroom (docs/17 D5); only the master bus
     // soft-clips.
+    if (self.desc.stereo) {
+        for (l, r, self.io[0..l.len]) |*sl, *sr, f| {
+            sl.* = @floatCast(f.out_l);
+            sr.* = @floatCast(f.out_r);
+        }
+        return;
+    }
     for (l, r, self.io[0..l.len]) |*sl, *sr, f| {
         const y: f32 = @floatCast(f.out_l);
         sl.* = y;
@@ -905,6 +921,7 @@ fn applyNoteEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
         },
         .note_off => try noteOffEvent(self, ev.pitch),
         .reset => {
+            self.mono_held_n = 0;
             for (0..self.regionCount()) |voice| {
                 self.voice_gate[voice] = false;
                 try callNoteOff(self, voice);
@@ -938,7 +955,32 @@ fn allocVoice(self: *FyRawMachine) usize {
     return 0;
 }
 
+fn isMonoMelodic(self: *const FyRawMachine) bool {
+    return self.regionCount() == 1 and !self.desc.note_pitch;
+}
+
+fn monoForget(self: *FyRawMachine, pitch: f32) void {
+    var w: usize = 0;
+    for (self.mono_held[0..self.mono_held_n]) |p| {
+        if (p == pitch) continue;
+        self.mono_held[w] = p;
+        w += 1;
+    }
+    self.mono_held_n = w;
+}
+
 fn noteOnEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
+    if (isMonoMelodic(self)) {
+        monoForget(self, ev.pitch);
+        if (self.mono_held_n == self.mono_held.len) {
+            std.mem.copyForwards(f32, self.mono_held[0 .. self.mono_held.len - 1], self.mono_held[1..]);
+            self.mono_held_n -= 1;
+        }
+        self.mono_held[self.mono_held_n] = ev.pitch;
+        self.mono_held_n += 1;
+    }
+    // Legato: a note arriving while the voice is still held (mono slide).
+    self.kctx.legato = if (isMonoMelodic(self) and self.voice_gate[0]) 1 else 0;
     const voice = allocVoice(self);
     self.age_counter += 1;
     self.voice_age[voice] = self.age_counter;
@@ -950,12 +992,31 @@ fn noteOnEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
     const note_arg = if (self.desc.note_pitch) @as(f64, ev.pitch) else midiToHz(ev.pitch);
     self.kctx.pitch = ev.pitch;
     try callNoteOn(self, voice, note_arg, ev.velocity);
+    self.kctx.legato = 0;
 }
 
 // note_id is -1 throughout the sequencer, so note-off matches the newest
 // gated voice holding this pitch. Mono machines just release voice 0.
 fn noteOffEvent(self: *FyRawMachine, pitch: f32) !void {
     const n = self.regionCount();
+    if (isMonoMelodic(self)) {
+        monoForget(self, pitch);
+        // Releasing a note that isn't sounding just forgets it.
+        if (!self.voice_gate[0] or self.voice_pitch[0] != pitch) return;
+        if (self.mono_held_n > 0) {
+            // Fall back to the newest held note, legato.
+            const back = self.mono_held[self.mono_held_n - 1];
+            self.voice_pitch[0] = back;
+            self.kctx.legato = 1;
+            self.kctx.pitch = back;
+            try callNoteOn(self, 0, midiToHz(back), self.kctx.vel);
+            self.kctx.legato = 0;
+            return;
+        }
+        self.voice_gate[0] = false;
+        try callNoteOff(self, 0);
+        return;
+    }
     if (n == 1) {
         self.voice_gate[0] = false;
         try callNoteOff(self, 0);
@@ -998,6 +1059,17 @@ fn renderEffectBlock(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
         f.in_r = if (in_r) |p| p[i] else f.in_l;
         f.det = @max(@abs(f.in_l), @abs(f.in_r));
     }
+    if (self.desc.stereo) {
+        // True stereo: one pass sees both inputs and writes both outputs.
+        const e = self.entryArgs(0);
+        const args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&io[0]) }, e[0], e[1], e[2] };
+        _ = try caller.call(l.len, &args);
+        for (l, r, io) |*dl, *dr, f| {
+            dl.* = @floatCast(f.out_l);
+            dr.* = @floatCast(f.out_r);
+        }
+        return;
+    }
     // Dual-mono lanes: each channel pass sees its input in in_l and writes
     // out_l, against its own state region (ctx.chan = channel).
     const outs = [2][]f32{ l, r };
@@ -1025,6 +1097,7 @@ fn resetImpl(state: *anyopaque) void {
     @memset(self.voice_gate[0..], false);
     @memset(self.voice_pitch[0..], -1);
     @memset(self.voice_idle[0..], true);
+    self.mono_held_n = 0;
     @memset(self.params_buf[0..self.desc.params_size], 0);
     for (self.buffer_mem[0..self.desc.buffer_count]) |pair| {
         for (pair) |mem| @memset(mem, 0);
@@ -2232,6 +2305,7 @@ test "kernel ABI: KernelCtx and IoFrame match ctx.fy's Ctx and Io" {
         .{ .name = "Ctx.vel", .off = @offsetOf(KernelCtx, "vel") },
         .{ .name = "Ctx.pitch", .off = @offsetOf(KernelCtx, "pitch") },
         .{ .name = "Ctx.data", .off = @offsetOf(KernelCtx, "data") },
+        .{ .name = "Ctx.legato", .off = @offsetOf(KernelCtx, "legato") },
         .{ .name = "Io.size", .off = @sizeOf(IoFrame) },
         .{ .name = "Io.out-l", .off = @offsetOf(IoFrame, "out_l") },
         .{ .name = "Io.out-r", .off = @offsetOf(IoFrame, "out_r") },
@@ -2242,6 +2316,77 @@ test "kernel ABI: KernelCtx and IoFrame match ctx.fy's Ctx and Io" {
     for (ctx_fields) |f| {
         const v = try host.callWord(f.name);
         try testing.expectEqual(Fy.makeInt(@intCast(f.off)), v);
+    }
+}
+
+test "stereo flag: stereo voices write L and R, stereo effects get one true-stereo pass" {
+    const block = 64;
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = block;
+    var l = [_]f32{0} ** block;
+    var r = [_]f32{0} ** block;
+    {
+        const inst = try FyRawMachine.create(testing.allocator, "machines/raw_fixtures/stereo_voice.fy");
+        const mach = inst.machineInterface();
+        defer mach.deinit.?(mach.state, testing.allocator);
+        const on = [_]machine.NoteEvent{.{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = -1, .pitch = 60, .velocity = 1 }};
+        ctx.note_in = &on;
+        ctx.note_in_count = 1;
+        testRender(mach, &ctx, &l, &r);
+        try testing.expectEqual(@as(f32, 0.25), l[block - 1]);
+        try testing.expectEqual(@as(f32, -0.25), r[block - 1]);
+        ctx.note_in = null;
+        ctx.note_in_count = 0;
+    }
+    {
+        const inst = try FyRawMachine.create(testing.allocator, "machines/raw_fixtures/stereo_swap.fy");
+        const mach = inst.machineInterface();
+        defer mach.deinit.?(mach.state, testing.allocator);
+        var in_l = [_]f32{0.5} ** block;
+        var in_r = [_]f32{-0.75} ** block;
+        const ports = [_][*]const f32{ &in_l, &in_r };
+        ctx.audio_in = @ptrCast(&ports[0]);
+        ctx.audio_in_count = 2;
+        testRender(mach, &ctx, &l, &r);
+        try testing.expectEqual(@as(f32, -0.75), l[0]);
+        try testing.expectEqual(@as(f32, 0.5), r[0]);
+    }
+}
+
+test "mono note stack: last-note priority, releasing the sounding note falls back" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/ms20/ms20.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    const block = 256;
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = block;
+    var l = [_]f32{0} ** block;
+    var r = [_]f32{0} ** block;
+    const Ev = struct {
+        fn on(p: f32) machine.NoteEvent {
+            return .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = -1, .pitch = p, .velocity = 0.8 };
+        }
+        fn off(p: f32) machine.NoteEvent {
+            return .{ .sample_offset = 0, .kind = .note_off, .channel = 0, .note_id = -1, .pitch = p, .velocity = 0 };
+        }
+    };
+    const steps = [_]struct { ev: machine.NoteEvent, gate: bool, pitch: f32 }{
+        .{ .ev = Ev.on(48), .gate = true, .pitch = 48 },
+        .{ .ev = Ev.on(52), .gate = true, .pitch = 52 }, // newest wins
+        .{ .ev = Ev.off(48), .gate = true, .pitch = 52 }, // not sounding: forgotten
+        .{ .ev = Ev.on(55), .gate = true, .pitch = 55 },
+        .{ .ev = Ev.off(55), .gate = true, .pitch = 52 }, // falls back to held 52
+        .{ .ev = Ev.off(52), .gate = false, .pitch = 52 }, // stack empty: release
+    };
+    for (steps) |st| {
+        const evs = [_]machine.NoteEvent{st.ev};
+        ctx.note_in = &evs;
+        ctx.note_in_count = 1;
+        testRender(mach, &ctx, &l, &r);
+        try testing.expectEqual(st.gate, inst.voice_gate[0]);
+        try testing.expectEqual(st.pitch, inst.voice_pitch[0]);
     }
 }
 

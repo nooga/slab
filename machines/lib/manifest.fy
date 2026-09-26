@@ -58,6 +58,8 @@ struct: MachineDesc
                        block-prepare, to compute derived params from controls. )
   ptr derive-data    ( ptr or 0 — opaque machine-built data, handed to every
                        entry word as ctx.data. )
+  ptr stereo         ( int flag: voices write out-l AND out-r; effects get one
+                       true-stereo pass with in-l/in-r instead of dual mono )
 ;
 
 struct: ControlDesc
@@ -152,6 +154,8 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
 ( note-on receives raw MIDI pitch instead of Hz — drum machines, where
   the pitch is an address, not a frequency. )
 : note-pitch  ( -- ) 1 _mf-md@ MachineDesc.note-pitch! drop ;
+( the machine renders true stereo [see MachineDesc.stereo] )
+: stereo  ( -- ) 1 _mf-md@ MachineDesc.stereo! drop ;
 
 ( declare a note the machine answers to; the piano roll renders one
   labelled lane per declared note instead of the chromatic keyboard. )
