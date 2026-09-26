@@ -35,12 +35,6 @@ ustruct: JunoState
   f64 ic3
   f64 ic4
   f64 hpf-lp      ( HPF one-pole lowpass state )
-  f64 osc-mix     ( stage scratch )
-  f64 lfo-out     ( stage scratch, bipolar triangle )
-  f64 env-out     ( stage scratch, shared VCF/VCA envelope )
-  f64 vcf-out     ( stage scratch )
-  f64 g-z         ( per-sample ladder g, from v-jn-cutoff )
-  f64 k-z         ( per-sample ladder feedback, from v-jn-cutoff )
 ;
 
 ustruct: JunoParams
@@ -108,119 +102,97 @@ dsp: juno-note-off
   state.age -> state.gate-time
 ;
 
-( state params -- : advance age + LFO, evaluate the shared envelope. )
-dsp: v-jn-mod
-  | state:JunoState params:JunoParams |
+( Advance age + LFO; the bipolar triangle LFO and the shared VCF/VCA
+  envelope. )
+dsp: jn-mod | state:JunoState params:JunoParams -- lfo env |
   state.age params.inv-sr f+ | age |
   age -> state.age
   state.lfo-phase params.lfo-inc f+ ffrac | ph |
   ph -> state.lfo-phase
   ph 0.5 f- | u |
   u 0.0  0.0 u f-  u  fsel-lt 4.0 f* 1.0 f-
-  -> state.lfo-out
   age
   params.atk-s params.dec-s params.sus
   state.gate-time params.rel-s
   adsr-cap
-  -> state.env-out
 ;
 
-( state params -- : DCO - saw + PWM pulse + sub + noise into osc-mix. )
-dsp: v-jn-dco
-  | ctx:Ctx state:JunoState params:JunoParams |
+( DCO: saw + PWM pulse + sub + noise. )
+dsp: jn-dco | ctx:Ctx state:JunoState params:JunoParams lfo -- osc |
   ( per-voice golden-ratio detune around center, +-0.4% at full knob )
   state.note-hz params.range f*
   1.0
     ctx.chan 0.618034 f* ffrac 0.5 f-
     params.detune f* 0.008 f*
   f+ f*
-  1.0  state.lfo-out params.vib-frac f*  f+ f*
+  1.0  lfo params.vib-frac f*  f+ f*
   params.inv-sr f* | dt |
   state.phase dt phase-advance01 | phs |
   phs -> state.phase
   ( pulse width: manual narrows from square; LFO mode sweeps it )
   params.pwm-mode 0.5
     0.5  params.pwm 0.45 f*  f-
-    0.5  params.pwm 0.225 f* 1.0 state.lfo-out f+ f*  f-
+    0.5  params.pwm 0.225 f* 1.0 lfo f+ f*  f-
   fsel-lt | width |
-  ( each source term is bound before summing - a naked running sum
-    would interleave with the bind values pushed by later | x | frames )
-  phs dt saw-falling-polyblep params.saw-on f* | osc-saw |
-  phs dt width pulse-polyblep params.pulse-on f* | osc-pls |
+  phs dt saw-falling-polyblep params.saw-on f*
+  phs dt width pulse-polyblep params.pulse-on f* f+
   ( sub: blep square at half rate )
   state.sub-phase dt 0.5 f* phase-advance01 | sph |
   sph -> state.sub-phase
-  sph  dt 0.5 f*  0.5 pulse-polyblep params.sub-level f* | osc-sub |
+  sph  dt 0.5 f*  0.5 pulse-polyblep params.sub-level f* f+
   ( noise: float LCG )
   state.noise-rng 1103515245.0 f* 0.31337 f+ ffrac | rng |
   rng -> state.noise-rng
-  rng 2.0 f* 1.0 f-  params.noise-level f* | osc-nz |
-  osc-saw osc-pls f+ osc-sub f+ osc-nz f+ 0.32 f*
-  -> state.osc-mix
+  rng 2.0 f* 1.0 f-  params.noise-level f* f+
+  0.32 f*
 ;
 
-( state params -- : envelope/LFO/keyboard-modulated cutoff -> ladder g
-  [via svf-g, at the base rate], and resonance -> feedback k. svf-g clamps
-  the modulated cutoff into [20, 20160], so the sum can never push the
-  filter past its stable range - the modulation is smooth edge to edge,
-  unlike the old MS-20 lurch. )
-dsp: v-jn-cutoff
-  | state:JunoState params:JunoParams |
+( Envelope/LFO/keyboard-modulated cutoff -> ladder g [via svf-g, at the
+  base rate], and resonance -> feedback k. svf-g clamps the modulated
+  cutoff into [20, 20160], so the sum can never push the filter past its
+  stable range. )
+dsp: jn-cutoff | state:JunoState params:JunoParams lfo env -- g k |
   params.cutoff-hz
-  state.env-out params.env-amt-hz f* f+
-  state.lfo-out params.lfo-vcf-hz f* f+
+  env params.env-amt-hz f* f+
+  lfo params.lfo-vcf-hz f* f+
   state.note-hz 261.6 f-  params.kybd f*  6.0 f* f+
   1.0 params.inv-sr f/ svf-g
-  -> state.g-z
   ( resonance -> feedback, capped below the linear ladder's blow-up at 4 )
   params.resonance 3.9 f*
-  -> state.k-z
 ;
 
-( state params -- : the clean linear ZDF 4-pole ladder. Mild input gain
-  compensation [1 + 0.2*k] keeps the low end from thinning as resonance
-  rises, the way the Juno's IR3109 stays full. )
-dsp: v-jn-ladder
-  | state:JunoState params |
-  state.ic1&
-  state.osc-mix  1.0 state.k-z 0.2 f* f+  f*
-  state.g-z
-  state.k-z
-  ladder4-core
-  -> state.vcf-out
+( The clean linear ZDF 4-pole ladder. Mild input gain compensation
+  [1 + 0.2*k] keeps the low end from thinning as resonance rises, the way
+  the Juno's IR3109 stays full. )
+dsp: jn-ladder | state:JunoState x g k -- y |
+  state.ic1&  x 1.0 k 0.2 f* f+ f*  g k  ladder4-core
 ;
 
-( state params -- : one-pole highpass on the ladder output: hp = x - lp. )
-dsp: v-jn-hpf
-  | state:JunoState params:JunoParams |
-  state.vcf-out | lp |
-  state.hpf-lp | hz0 |
-  hz0  lp hz0 f-  params.hpf-a f*  f+ | hz1 |
-  hz1 -> state.hpf-lp
-  lp hz1 f-
-  -> state.vcf-out
+( One-pole highpass on the ladder output: hp = x - lp. )
+dsp: jn-hpf | state:JunoState params:JunoParams x -- y |
+  state.hpf-lp | lp0 |
+  lp0  x lp0 f-  params.hpf-a f*  f+ | lp |
+  lp -> state.hpf-lp
+  x lp f-
 ;
 
-( out state params -- : VCA - env or gate mode - ACCUMULATE into out. )
-dsp: v-jn-vca
-  | out state:JunoState params:JunoParams |
+( VCA - env or gate mode - ACCUMULATE into out. )
+dsp: jn-vca | out state:JunoState params:JunoParams env y -- |
   params.vca-mode 0.5
-    state.env-out
+    env
     state.age state.gate-time 1.0 0.0 fsel-lt
   fsel-lt | amp |
   out f@64
-  state.vcf-out amp f*
+  y amp f*
   state.vel f* params.level f* 3.5 f* f+  ( +11 dB makeup )
   out f!64
 ;
 
-( io ctx state params -- : one polyphonic voice tick, staged. )
-dsp: k-juno-voice
-  | io ctx state params |
-  state params call: v-jn-mod
-  ctx state params call: v-jn-dco
-  state params call: v-jn-cutoff
-  state params call: v-jn-ladder
-  state params call: v-jn-hpf
-  io state params call: v-jn-vca
+( io ctx state params -- : one polyphonic voice tick. )
+dsp: k-juno-voice | io ctx state params -- |
+  state params jn-mod | lfo env |
+  state  ctx state params lfo jn-dco
+  state params lfo env jn-cutoff  jn-ladder
+  state params rot jn-hpf | y |
+  io state params env y jn-vca
 ;
