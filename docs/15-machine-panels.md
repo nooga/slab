@@ -181,7 +181,7 @@ cell|1.6|HPF*4/EG*1                    # short display under a taller HPF
   `schematic`, `vu` are the obvious next ones — each is a new `switch` arm).
 - `source` names the module(s) the renderer reads. Comma-separated sources
   are **overlaid** in the one field, one accent pen each, labelled inline.
-- `adsr` reads the source module's ATK/DEC/SUS/REL knob norms and draws the
+- `adsr` reads the source module's ATK/DEC/SUS/REL (or A/D/S/R) knob norms and draws the
   cap-discharge envelope shape, reacting live as the knobs move.
 - `eg4-display ( name module -- )` draws a DX-style four-rate / four-level
   envelope from the module's R1..R4 (level per sample) and L1..L4 controls;

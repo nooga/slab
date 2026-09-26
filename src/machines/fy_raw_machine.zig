@@ -2146,10 +2146,11 @@ fn drawMarker(self: *FyRawMachine, ui: *Ui, area: Rect, id: []const u8, col: ui_
 // A/D/S/R shape (segment widths from the knob norms, a fixed sustain
 // hold), reacting live to the source module's ATK/DEC/SUS/REL knobs.
 fn drawAdsrCurve(self: *FyRawMachine, ui: *Ui, area: Rect, source: []const u8, col: ui_style.Color, label_idx: usize) void {
-    const atk = controlNormByLabel(self, source, "ATK") orelse 0.3;
-    const dec = controlNormByLabel(self, source, "DEC") orelse 0.3;
-    const sus = controlNormByLabel(self, source, "SUS") orelse 0.5;
-    const rel = controlNormByLabel(self, source, "REL") orelse 0.3;
+    // Envelope knobs by legend: ATK/DEC/SUS/REL, or the 106's A/D/S/R.
+    const atk = controlNormByLabel(self, source, "ATK") orelse controlNormByLabel(self, source, "A") orelse 0.3;
+    const dec = controlNormByLabel(self, source, "DEC") orelse controlNormByLabel(self, source, "D") orelse 0.3;
+    const sus = controlNormByLabel(self, source, "SUS") orelse controlNormByLabel(self, source, "S") orelse 0.5;
+    const rel = controlNormByLabel(self, source, "REL") orelse controlNormByLabel(self, source, "R") orelse 0.3;
 
     const x0: f32 = @as(f32, @floatFromInt(area.x)) + 2.5;
     const w: f32 = @as(f32, @floatFromInt(area.w)) - 5;

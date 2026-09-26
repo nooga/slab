@@ -20,7 +20,6 @@
    "pan": 0.0,
    "mute": false,
    "solo": false,
-   "poly": 1,
    "instrument": {
     "machine": "drum2",
     "params": {
@@ -3080,7 +3079,6 @@
    "pan": 0.0,
    "mute": false,
    "solo": false,
-   "poly": 1,
    "instrument": {
     "machine": "cream",
     "params": {
@@ -4209,7 +4207,6 @@
    "pan": 0.0,
    "mute": false,
    "solo": false,
-   "poly": 8,
    "instrument": {
     "machine": "juno2",
     "params": {
@@ -5059,7 +5056,6 @@
    "pan": 0.15,
    "mute": false,
    "solo": false,
-   "poly": 8,
    "instrument": {
     "machine": "juno2",
     "params": {
@@ -7827,7 +7823,6 @@
    "pan": 0.0,
    "mute": false,
    "solo": false,
-   "poly": 1,
    "instrument": {
     "machine": "cream",
     "params": {
