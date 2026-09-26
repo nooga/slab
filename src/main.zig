@@ -33,6 +33,7 @@ const arrangement = @import("ui/arrangement.zig");
 const clip_editor = @import("ui/clip_editor.zig");
 const menu = @import("ui/menu.zig");
 const text_field = @import("ui/text_field.zig");
+const splash = @import("ui/splash.zig");
 const audio_clip_editor = @import("ui/audio_clip_editor.zig");
 const machine_bay = @import("ui/machine_bay.zig");
 const render_dialog = @import("ui/render_dialog.zig");
@@ -413,8 +414,8 @@ pub fn main(init: std.process.Init) !void {
     if (cli.gallery) return ui_gallery.run(alloc);
     if (cli.render) |out| return renderHeadless(alloc, cli.project orelse return error.MissingProject, out);
 
-    c.rl.SetConfigFlags(c.rl.FLAG_WINDOW_RESIZABLE | c.rl.FLAG_VSYNC_HINT | c.rl.FLAG_WINDOW_HIGHDPI);
-    c.rl.InitWindow(1400, 860, "slab");
+    // The window opens as the splash and becomes the workbench once booted.
+    splash.openWindow(c.rl.FLAG_VSYNC_HINT | c.rl.FLAG_WINDOW_HIGHDPI);
     defer c.rl.CloseWindow();
     c.rl.SetTargetFPS(120);
     c.rl.SetExitKey(c.rl.KEY_NULL);
@@ -429,6 +430,7 @@ pub fn main(init: std.process.Init) !void {
     const ui = try ui_core.Ui.init(alloc);
     defer ui.deinit(alloc);
     defer transport_bar.unloadLogo();
+    defer splash.unload();
 
     // ── Machine registry (each entry owns its own Fy instance) ───────
     var reg = registry_mod.Registry.init(alloc);
@@ -436,9 +438,17 @@ pub fn main(init: std.process.Init) !void {
 
     // A machine whose fy doesn't compile is skipped, not fatal: machines are
     // livecoded, so a broken one must never take the workbench down.
-    for (registry_mod.builtin_machines) |path| {
+    // Each compile takes a moment: the splash shows which one is running.
+    for (registry_mod.builtin_machines, 0..) |path, i| {
+        var sbuf: [48]u8 = undefined;
+        const name = std.fs.path.basename(std.fs.path.dirname(path) orelse path);
+        var ubuf: [48]u8 = undefined;
+        const msg = std.ascii.upperString(&ubuf, std.fmt.bufPrint(&sbuf, "LOADING {s}", .{name}) catch "LOADING");
+        const frac = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(registry_mod.builtin_machines.len));
+        splash.bootFrame(ui, msg, frac);
         reg.loadFyMachine(path) catch |err| std.log.err("machine {s} failed to load: {s}", .{ path, @errorName(err) });
     }
+    splash.bootFrame(ui, "STARTING AUDIO", 1);
 
     // ── Audio pool — host-owned decoded audio backing arrangement clips.
     // Registered with the document layer (a process singleton) so save /
@@ -537,6 +547,7 @@ pub fn main(init: std.process.Init) !void {
     var render_job: RenderJob = .{};
 
     if (cli.project) |path| {
+        splash.bootFrame(ui, "LOADING PROJECT", 1);
         if (document_mod.readFile(alloc, path)) |data| {
             defer alloc.free(data);
             var boot_tracks = tracks_buf[0..track_count];
@@ -549,6 +560,7 @@ pub fn main(init: std.process.Init) !void {
         } else |err| std.log.err("open {s} failed: {s}", .{ path, @errorName(err) });
     }
 
+    splash.becomeWorkbench(1400, 860);
     while (!c.rl.WindowShouldClose()) {
         const m = widgets.Mouse.sample();
         const sw: f32 = @floatFromInt(c.rl.GetScreenWidth());

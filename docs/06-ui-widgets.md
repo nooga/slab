@@ -518,6 +518,15 @@ the host calls `Ui.suppressInput()` while one is open, and `begin` hands
 the input back to the dialog's widgets (`Ui.unsuppressInput`) unless a
 menu opened from the dialog owns it.
 
+## Splash
+
+The app opens the way 2000s instruments did: a small borderless window
+(720×426) with `splash.png` above a packed status strip (wordmark,
+dot-matrix status naming the machine being compiled, LED progress), a
+hard 1px frame around it. When booting is done the same window gains its
+decorations, becomes resizable and grows into the centred workbench. No
+artificial hold: the splash lasts as long as the boot.
+
 ## Escape hatch: push pixels
 
 A machine that needs its own visual (spectrum, waveshaper curve) asks the
