@@ -1,6 +1,6 @@
-# bench goldens for limiter2: case sha256(f32 L ++ f32 R)
+# bench goldens for limiter2: case sha256(f32 L ++ f32 R) [nonharm_db thd_db]
 impulse 02a47c453c81845cf07bb2a2949bfb2af7ff15d8ec3bd17b460ab71a32d4faca
-sine edced984e1a9d2574f85db67bc362bea20fca103b44343692b38fc0172fff6b1
+sine edced984e1a9d2574f85db67bc362bea20fca103b44343692b38fc0172fff6b1 -70.2 -105.8
 sweep 6ff3488f1a97b6fb004a02da6083b4607e39baad7389da7cd28fc77948451346
 ladder f52b8015696d56f720ff75b2e8671fb99c246fbe8797553b5e209668740beba4
 burst ca825577725a69805eadfbaec4c0b6e63d63d8bfda094237332104b83cff1dba

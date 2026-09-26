@@ -1,6 +1,6 @@
-# bench goldens for delay2: case sha256(f32 L ++ f32 R)
+# bench goldens for delay2: case sha256(f32 L ++ f32 R) [nonharm_db thd_db]
 impulse 543b5d513605f2e22e51b2bfe5dfab1709ff4d7845635f9fe4bff2a07137f236
-sine 48c805d1789bc4f262d4eb8584924f8bfb213717d3f4f98256e8c6245326fa29
+sine 48c805d1789bc4f262d4eb8584924f8bfb213717d3f4f98256e8c6245326fa29 -43.0 -80.5
 sweep 1db7b8a5c099981cc2dd002598d88a7879367946c0f460cb273fad3302b93a82
 ladder ded7a7b5e7ed31f2bc4f10dac4c6bbb053be9a4034abc049f9b39b3a6294d78a
 burst d3e0c1cdeaab0fa0ce6bf02eea60ac9a3e0559ee9e40ad4c6d3c9a6f90953d12

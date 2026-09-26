@@ -21,6 +21,9 @@ test {
     _ = @import("fm_operator_test.zig");
     _ = @import("dx7_eg_test.zig");
     _ = @import("dsp_std_test.zig");
+    _ = @import("oversample_test.zig");
+    _ = @import("moog_ladder_test.zig");
+    _ = @import("analog_test.zig");
     _ = @import("dx7_voice_test.zig");
     _ = @import("dx7_voice_render_test.zig");
     _ = @import("dx7_algorithms.zig");
@@ -31,6 +34,7 @@ test {
 /// walks the same list.
 pub const builtin_machines = [_][]const u8{
     "machines/ms20/ms20.fy",
+    "machines/cream/cream.fy",
     "machines/fm86/fm86.fy",
     "machines/drum2/drum2.fy",
     "machines/delay2/delay2.fy",

@@ -14,6 +14,7 @@ const PROBES =
     \\dsp: t-tan | out x | x tan out f!64 ;
     \\dsp: t-tanh | out x | x tanh out f!64 ;
     \\dsp: t-tanw | out x | x tan-warp out f!64 ;
+    \\dsp: t-tanf | out x | x tanh-fast out f!64 ;
     \\dsp: t-db | out x | x db>lin out f!64 ;
     \\dsp: t-pow | out x | x 1.5 pow out f!64 ;
 ;
@@ -86,6 +87,8 @@ test "dsp-std elementary functions match libm" {
     try std.testing.expect(try sweep(&host, "t-cos", -20.0, 20.0, .abs, cosRef) < 1e-10);
     try std.testing.expect(try sweep(&host, "t-tan", -1.5, 1.5, .rel, tanRef) < 1e-9);
     try std.testing.expect(try sweep(&host, "t-tanw", 0.0, 1.45, .rel, tanRef) < 1e-8);
+    try std.testing.expect(try sweep(&host, "t-tanf", -3.0, 3.0, .abs, tanhRef) < 2e-6);
+    try std.testing.expect(try sweep(&host, "t-tanf", -30.0, 30.0, .abs, tanhRef) < 2e-4);
     try std.testing.expect(try sweep(&host, "t-tanh", -30.0, 30.0, .abs, tanhRef) < 1e-10);
     try std.testing.expect(try sweep(&host, "t-db", -120.0, 24.0, .rel, dbRef) < 1e-10);
 

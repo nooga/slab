@@ -255,6 +255,10 @@ fn isEffect(inst: *const FyRawMachine) bool {
 
 const CaseResult = struct {
     ns_per_sample: f64 = 0,
+    /// Steady-state spectrum figures, kept next to the hash as a ratchet:
+    /// non-harmonic energy (aliasing, noise) and THD, dB. Null for cases
+    /// without a steady tone.
+    ratchet: ?an.Harmonics = null,
     name: []const u8,
     hash: [64]u8,
     l: []f32,
@@ -377,6 +381,7 @@ fn runCase(
 ) !CaseResult {
     const inst = try instantiate(alloc, cli, path);
     const frames: usize = @intFromFloat(cs.seconds * SR);
+    var ratchet: ?an.Harmonics = null;
     var input: ?[]f32 = null;
     if (cs.input != .none) {
         const buf = try alloc.alloc(f32, frames);
@@ -493,6 +498,7 @@ fn runCase(
             defer sp.deinit(alloc);
             const base = an.midiHz(cs.events[0].pitch);
             const hm = an.harmonics(sp, f orelse base);
+            ratchet = hm;
             try tbl.print(alloc, "onset {d:.3}s  peak {d:.1} dB at {d:.3}s\n", .{ sh.onset_s, sh.peak_db, sh.peak_s });
             try tbl.print(alloc, "level at gate-off {d:.1} dB, release -60 dB in {s}\n", .{ at_off, if (rel_t60 > 0) try std.fmt.allocPrint(alloc, "{d:.3}s", .{rel_t60}) else "(not reached)" });
             if (f) |hz| {
@@ -545,6 +551,7 @@ fn runCase(
             var sp = try an.spectrum(alloc, seg, SR, 16384);
             defer sp.deinit(alloc);
             const hm = an.harmonics(sp, cs.input_hz);
+            ratchet = hm;
             const in_rms = cases.dbToAmp(cs.input_db) / std.math.sqrt2;
             try tbl.print(alloc, "in {d:.0} Hz {d:.1} dBFS: gain {d:.2} dB  THD {d:.1} dB  nonharm {d:.1} dB\n", .{ cs.input_hz, cs.input_db, an.dbAmp(an.rms(seg) / in_rms), hm.thd_db, hm.nonharm_db });
             spec_f0 = cs.input_hz;
@@ -649,7 +656,7 @@ fn runCase(
         }
         try cv.savePng(alloc, try std.fmt.allocPrint(alloc, "{s}.png", .{base}));
     }
-    return .{ .name = cs.name, .hash = h, .l = out.l, .r = out.r, .ns_per_sample = out.ns_per_sample };
+    return .{ .name = cs.name, .hash = h, .l = out.l, .r = out.r, .ns_per_sample = out.ns_per_sample, .ratchet = ratchet };
 }
 
 fn bandDb(s: an.Spectrum, f: f64) f64 {
@@ -872,9 +879,13 @@ fn recordGoldens(alloc: std.mem.Allocator, name: []const u8, results: []const Ca
     try mkdirs(alloc, "bench/golden");
     try mkdirs(alloc, try std.fmt.allocPrint(alloc, "scratch/bench-golden/{s}", .{name}));
     var txt: std.ArrayList(u8) = .empty;
-    try txt.print(alloc, "# bench goldens for {s}: case sha256(f32 L ++ f32 R)\n", .{name});
+    try txt.print(alloc, "# bench goldens for {s}: case sha256(f32 L ++ f32 R) [nonharm_db thd_db]\n", .{name});
     for (results) |res| {
-        try txt.print(alloc, "{s} {s}\n", .{ res.name, res.hash });
+        if (res.ratchet) |r| {
+            try txt.print(alloc, "{s} {s} {d:.1} {d:.1}\n", .{ res.name, res.hash, r.nonharm_db, r.thd_db });
+        } else {
+            try txt.print(alloc, "{s} {s}\n", .{ res.name, res.hash });
+        }
         var bytes: std.ArrayList(u8) = .empty;
         try bytes.appendSlice(alloc, std.mem.sliceAsBytes(res.l));
         try bytes.appendSlice(alloc, std.mem.sliceAsBytes(res.r));
@@ -894,11 +905,17 @@ fn checkGoldens(alloc: std.mem.Allocator, cli: *const Cli, name: []const u8, res
     try rep.print(alloc, "## goldens\n", .{});
     for (results) |res| {
         var want: ?[]const u8 = null;
+        var old_nonharm: ?f64 = null;
+        var old_thd: ?f64 = null;
         var it = std.mem.splitScalar(u8, data, '\n');
         while (it.next()) |ln| {
             if (ln.len == 0 or ln[0] == '#') continue;
-            const sp = std.mem.indexOfScalar(u8, ln, ' ') orelse continue;
-            if (std.mem.eql(u8, ln[0..sp], res.name)) want = std.mem.trim(u8, ln[sp + 1 ..], " \r");
+            var tok = std.mem.tokenizeAny(u8, ln, " \r");
+            const case = tok.next() orelse continue;
+            if (!std.mem.eql(u8, case, res.name)) continue;
+            want = tok.next();
+            if (tok.next()) |t| old_nonharm = std.fmt.parseFloat(f64, t) catch null;
+            if (tok.next()) |t| old_thd = std.fmt.parseFloat(f64, t) catch null;
         }
         if (want == null) {
             try rep.print(alloc, "{s}: NEW (no golden)\n", .{res.name});
@@ -910,6 +927,14 @@ fn checkGoldens(alloc: std.mem.Allocator, cli: *const Cli, name: []const u8, res
             continue;
         }
         bad += 1;
+        // The ratchet: a changed render must not get dirtier.
+        if (res.ratchet) |r| if (old_nonharm) |on| {
+            const worse = r.nonharm_db > on + 3.0;
+            try rep.print(alloc, "{s}: nonharm {d:.1} -> {d:.1} dB  thd {d:.1} -> {d:.1} dB{s}\n", .{
+                res.name,                                             on, r.nonharm_db, old_thd orelse 0, r.thd_db,
+                if (worse) "  NONHARM WORSE (aliasing/noise)" else "",
+            });
+        };
         const old = readFile(alloc, try goldenAudioPath(alloc, name, res.name)) catch {
             try rep.print(alloc, "{s}: CHANGED (no local golden audio for a diff)\n", .{res.name});
             continue;

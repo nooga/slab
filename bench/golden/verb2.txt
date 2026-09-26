@@ -1,6 +1,6 @@
-# bench goldens for verb2: case sha256(f32 L ++ f32 R)
+# bench goldens for verb2: case sha256(f32 L ++ f32 R) [nonharm_db thd_db]
 impulse e207cec84763ebb6db195cb112a003cb239737fdf06a2e7324f620fdbd3c823c
-sine 4d38242da698e2d563591ae303bd88f36bf04a3380e08b911250bcfb64e7de79
+sine 4d38242da698e2d563591ae303bd88f36bf04a3380e08b911250bcfb64e7de79 -37.9 -74.1
 sweep 39bdb0ecd5ebbbe66249a918521cc83349e29f331665c6fe94b5b8f556340f8a
 ladder 68c69316974c9c066d2cffb5fdbad94bd92abad8533d1dd3bd2d100031c4e798
 burst 0106cbf0b880a62eb7d91e6b0c6eb12e622616fc5b363f41fa6fec88dd43a4d9

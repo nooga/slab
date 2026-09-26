@@ -21,6 +21,8 @@
   resonance feedback. Both the rig probe [k-ladder4] and the Juno VCF
   inline ladder4-core, so authoring and the DAW share one filter. )
 
+include "../00-primitives/math.fy"   ( tanh-fast for ladder4-sat )
+
 ustruct: LadderState
   f64 s1
   f64 s2
@@ -67,4 +69,41 @@ dsp: k-ladder4
   | out lstate input g k |
   lstate input g k ladder4-core
   out f!64
+;
+
+( lstate input g k drive -- y : the same ladder with the input
+  differential pair modelled - the feedback-summed input goes through
+  tanh[drive x]/drive before the stages.  Small signals pass unchanged;
+  resonance compresses instead of running away, so k may pass 4 and the
+  filter self-oscillates at a level set by drive, the IR3109 way.  The
+  implicit solve still assumes the linear loop, then the forward pass
+  uses the saturated input: one tanh per sample, no oversampling. )
+dsp: ladder4-sat
+  | lstate:LadderState input g k drive |
+  1.0 g f+ | d |
+  g d f/ | G |
+  G G f* | G2 |
+  G2 G f* | G3 |
+  G3 G f* | G4 |
+  1.0 d f/ | id |
+  lstate.s1 id f* | S1 |
+  lstate.s2 id f* | S2 |
+  lstate.s3 id f* | S3 |
+  lstate.s4 id f* | S4 |
+  G3 S1 f* G2 S2 f* f+ G S3 f* f+ S4 f+ | sig |
+  G4 input f* sig f+ 1.0 k G4 f* f+ f/ | y4 |
+  input k y4 f* f-  drive f* tanh-fast  drive f/ | x0 |
+  x0 lstate.s1 f- G f* | v1 |
+  v1 lstate.s1 f+ | y1 |
+  y1 v1 f+ -> lstate.s1
+  y1 lstate.s2 f- G f* | v2 |
+  v2 lstate.s2 f+ | y2 |
+  y2 v2 f+ -> lstate.s2
+  y2 lstate.s3 f- G f* | v3 |
+  v3 lstate.s3 f+ | y3 |
+  y3 v3 f+ -> lstate.s3
+  y3 lstate.s4 f- G f* | v4 |
+  v4 lstate.s4 f+ | y4f |
+  y4f v4 f+ -> lstate.s4
+  y4f
 ;

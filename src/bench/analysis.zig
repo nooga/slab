@@ -47,8 +47,12 @@ pub fn fft(re: []f64, im: []f64) void {
     }
 }
 
-fn hannAt(i: usize, n: usize) f64 {
-    return 0.5 - 0.5 * @cos(2.0 * std.math.pi * @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(n)));
+/// 4-term Blackman-Harris: sidelobes at -92 dB, so a saw's strong upper
+/// harmonics don't leak into the bins between them and pass for aliasing.
+/// Main lobe ±4 bins.
+fn windowAt(i: usize, n: usize) f64 {
+    const x = 2.0 * std.math.pi * @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(n));
+    return 0.35875 - 0.48829 * @cos(x) + 0.14128 * @cos(2 * x) - 0.01168 * @cos(3 * x);
 }
 
 pub fn dbPow(p: f64) f64 {
@@ -62,7 +66,7 @@ pub fn dbAmp(a: f64) f64 {
 // ── Spectra ─────────────────────────────────────────────────────────────
 
 /// Power spectrum, one value per bin 0..n/2. Scaled so a full-scale sine
-/// reads 0 dB at its bin (Hann window, coherent-gain corrected).
+/// reads 0 dB at its bin (Blackman-Harris window, coherent-gain corrected).
 pub const Spectrum = struct {
     pow: []f64,
     bin_hz: f64,
@@ -85,7 +89,7 @@ pub const Spectrum = struct {
     }
 };
 
-/// Welch-averaged Hann spectrum of `x` (50% overlap). Short inputs are
+/// Welch-averaged Blackman-Harris spectrum of `x` (50% overlap). Short inputs are
 /// zero-padded into a single frame.
 pub fn spectrum(alloc: std.mem.Allocator, x: []const f32, sr: f64, n: usize) !Spectrum {
     const re = try alloc.alloc(f64, n);
@@ -96,7 +100,7 @@ pub fn spectrum(alloc: std.mem.Allocator, x: []const f32, sr: f64, n: usize) !Sp
     @memset(pow, 0);
 
     var wsum: f64 = 0;
-    for (0..n) |i| wsum += hannAt(i, n);
+    for (0..n) |i| wsum += windowAt(i, n);
     const norm = 2.0 / wsum;
 
     var frames: usize = 0;
@@ -104,7 +108,7 @@ pub fn spectrum(alloc: std.mem.Allocator, x: []const f32, sr: f64, n: usize) !Sp
     while (true) : (start += n / 2) {
         for (0..n) |i| {
             const s: f64 = if (start + i < x.len) x[start + i] else 0;
-            re[i] = s * hannAt(i, n);
+            re[i] = s * windowAt(i, n);
             im[i] = 0;
         }
         fft(re, im);
@@ -159,7 +163,7 @@ pub const Harmonics = struct {
 
 pub fn harmonics(s: Spectrum, f0: f64) Harmonics {
     if (f0 <= 0) return .{};
-    const guard: f64 = 3; // bins either side of a harmonic (Hann main lobe = 2)
+    const guard: f64 = 5; // bins either side of a harmonic (main lobe = 4)
     var p_fund: f64 = 0;
     var p_harm: f64 = 0;
     var p_non: f64 = 0;
@@ -357,7 +361,7 @@ test "fft finds a sine at its bin" {
     for (&x, 0..) |*v, i| v.* = @floatCast(@sin(2 * std.math.pi * 1000.0 * @as(f64, @floatFromInt(i)) / 48000.0));
     var s = try spectrum(alloc, &x, 48000, 4096);
     defer s.deinit(alloc);
-    // 1 kHz sits 1/3 bin off-center: Hann scalloping costs ~0.6 dB there.
+    // 1 kHz sits 1/3 bin off-center: scalloping costs ~0.5 dB there.
     try std.testing.expect(@abs(s.dbRange(990, 1010)) < 1.5);
     const h = harmonics(s, 1000);
     try std.testing.expect(h.thd_db < -80);

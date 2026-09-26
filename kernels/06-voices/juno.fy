@@ -19,7 +19,8 @@ include "../01-oscillators/primitives/phase.fy"
 include "../01-oscillators/primitives/blep.fy"
 include "../03-envelopes/primitives/segments.fy"
 include "../04-filters/coeffs.fy"   ( svf-g, svf-damping, svf-dc-coeff )
-include "../04-filters/ladder.fy"     ( clean linear ZDF 4-pole ladder )
+include "../04-filters/ladder.fy"     ( ZDF 4-pole ladder, saturating input pair )
+include "../08-analog/analog.fy"      ( AGE: drift + per-voice spread )
 
 ustruct: JunoState
   f64 phase       ( DCO phase, free-running )
@@ -35,6 +36,9 @@ ustruct: JunoState
   f64 ic3
   f64 ic4
   f64 hpf-lp      ( HPF one-pole lowpass state )
+  Drift drift     ( this voice's slow pitch wander )
+  f64 t-spread    ( this voice's envelope-time multiplier, from AGE )
+  f64 cut-spread  ( this voice's cutoff multiplier, from AGE )
 ;
 
 ustruct: JunoParams
@@ -61,6 +65,7 @@ ustruct: JunoParams
   f64 rel-s
   f64 vca-mode    ( 0 env / 1 gate - switch )
   f64 level
+  f64 age-amt     ( AGE 0..1: drift + per-voice component spread )
   ( derived - filled by juno-block-prepare )
   f64 inv-sr
   f64 lfo-inc
@@ -68,6 +73,7 @@ ustruct: JunoParams
   f64 env-amt-hz  ( env-amount * 8000 )
   f64 lfo-vcf-hz  ( lfo-vcf * 3000 )
   f64 vib-frac    ( vibrato * 0.03 - peak pitch deviation ratio )
+  f64 drift-c
 ;
 
 ( ctx state params -- : derived fills, all idempotent. )
@@ -82,18 +88,23 @@ dsp: juno-block-prepare
   params.env-amount 8000.0 f* -> params.env-amt-hz
   params.lfo-vcf 3000.0 f* -> params.lfo-vcf-hz
   params.vibrato 0.03 f* -> params.vib-frac
+  0.3 inv drift-coef -> params.drift-c
 ;
 
 ( ctx state params -- : start this voice.  DCO phases free-run -
   the digitally-controlled oscillators never reset, the envelope does
   the de-clicking, exactly like the hardware. )
 dsp: juno-note-on
-  | ctx:Ctx state:JunoState params |
+  | ctx:Ctx state:JunoState params:JunoParams |
   ctx.hz ctx.vel | hz velocity |
   hz -> state.note-hz
   velocity -> state.vel
   0.0 -> state.age
   1000000000.0 -> state.gate-time
+  state.drift& ctx.chan 1.0 f+ drift-seed-once
+  ( AGE: each voice's parts are a little off, the same way every time )
+  1.0  ctx.chan 7.0 spread params.age-amt f* 0.08 f*  f+ -> state.t-spread
+  ctx.chan 5.0 spread params.age-amt f* 0.14 f* exp2 -> state.cut-spread
 ;
 
 ( ctx state params -- : release this voice from its current age. )
@@ -112,8 +123,8 @@ dsp: jn-mod | state:JunoState params:JunoParams -- lfo env |
   ph 0.5 f- | u |
   u fabs 4.0 f* 1.0 f-
   age
-  params.atk-s params.dec-s params.sus
-  state.gate-time params.rel-s
+  params.atk-s state.t-spread f*  params.dec-s state.t-spread f*  params.sus
+  state.gate-time  params.rel-s state.t-spread f*
   adsr-cap
 ;
 
@@ -126,6 +137,8 @@ dsp: jn-dco | ctx:Ctx state:JunoState params:JunoParams lfo -- osc |
     params.detune f* 0.008 f*
   f+ f*
   1.0  lfo params.vib-frac f*  f+ f*
+  ( AGE drift, ~4 cents RMS at full )
+  1.0  state.drift& params.drift-c drift-step  params.age-amt 0.0023 f* f*  f+ f*
   params.inv-sr f* | dt |
   state.phase dt phase-advance01 | phs |
   phs -> state.phase
@@ -156,16 +169,18 @@ dsp: jn-cutoff | state:JunoState params:JunoParams lfo env -- g k |
   env params.env-amt-hz f* f+
   lfo params.lfo-vcf-hz f* f+
   state.note-hz 261.6 f-  params.kybd f*  6.0 f* f+
+  state.cut-spread f*
   1.0 params.inv-sr f/ svf-g
-  ( resonance -> feedback, capped below the linear ladder's blow-up at 4 )
-  params.resonance 3.9 f*
+  ( resonance -> feedback; past 4 the saturating input keeps the
+    self-oscillation bounded )
+  params.resonance 4.4 f*
 ;
 
-( The clean linear ZDF 4-pole ladder. Mild input gain compensation
-  [1 + 0.2*k] keeps the low end from thinning as resonance rises, the way
-  the Juno's IR3109 stays full. )
+( The ZDF 4-pole ladder with its input pair saturating [ladder4-sat].
+  Mild input gain compensation [1 + 0.2*k] keeps the low end from
+  thinning as resonance rises, the way the Juno's IR3109 stays full. )
 dsp: jn-ladder | state:JunoState x g k -- y |
-  state.ic1&  x 1.0 k 0.2 f* f+ f*  g k  ladder4-core
+  state.ic1&  x 1.0 k 0.2 f* f+ f*  g k  1.6 ladder4-sat
 ;
 
 ( One-pole highpass on the ladder output: hp = x - lp. )

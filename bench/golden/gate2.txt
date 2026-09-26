@@ -1,6 +1,6 @@
-# bench goldens for gate2: case sha256(f32 L ++ f32 R)
+# bench goldens for gate2: case sha256(f32 L ++ f32 R) [nonharm_db thd_db]
 impulse b237c565c29ab2acc473512a4820ec0560e469ef820cba1caa3d7f45537508b8
-sine 24be5602ee00c7edad1dea1e8ed0140fdd2db5c0b9aa8762109178678320f23f
+sine 24be5602ee00c7edad1dea1e8ed0140fdd2db5c0b9aa8762109178678320f23f -70.2 -106.7
 sweep db11b1f039a56bd91c22a03dfc966fe986d6ef7a7452eb9ab913b2da482a05ca
 ladder dff8b4eb806704e91f3ef9dcd44e90f9717308f087f19322dff0b49cc74f9112
 burst e1ab808267aa58669116b6d438fd20f611c2f1c74998d8239afe386bbe0fa291

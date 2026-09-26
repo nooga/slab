@@ -1,6 +1,6 @@
-# bench goldens for chorus2: case sha256(f32 L ++ f32 R)
+# bench goldens for chorus2: case sha256(f32 L ++ f32 R) [nonharm_db thd_db]
 impulse 608f06d90b1c6863ecee67472963eee500a3228e3b7f1a1de9e14e08515c6209
-sine 65e37366048169c7ceb7fb728fe436c4df2273f76dd486e18290dde5b5d2904f
+sine 65e37366048169c7ceb7fb728fe436c4df2273f76dd486e18290dde5b5d2904f -39.3 -103.7
 sweep cdef0a128834df89d33fe1152d531298ce74bfbe2a137b49b313cca3676e90d3
 ladder 1a27d28d19718dcae4b9333e1cccbf532ae5faca682dafe1bbbf059dad841836
 burst fa56c03c8fcff916f635a4631f70465e9fd0bd0078c332f6bd4b1fc0e94ac043

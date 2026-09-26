@@ -1,6 +1,6 @@
-# bench goldens for comp2: case sha256(f32 L ++ f32 R)
+# bench goldens for comp2: case sha256(f32 L ++ f32 R) [nonharm_db thd_db]
 impulse 5dbb1b8bad12d9595d982a16d85298e6a171f708e67a500ebff59ec0e948afc8
-sine 2ff1465cad1ce8aaf6be39608144bbf426ea98378da45988f483d946d6bb759c
+sine 2ff1465cad1ce8aaf6be39608144bbf426ea98378da45988f483d946d6bb759c -70.2 -53.0
 sweep 99aa39e0b27dbbf7ffbb0863f4cf63ceaa4ccc7fc2455ae32a06737bac616912
 ladder 62e1955dbe4559fdc7b57de4eedf49b46a929b28ceedd00685a72eb172720080
 burst 71b7bc58719efa94ee196116393fd5f0a0a30578bb1a4bb2015272ee18ed1c34

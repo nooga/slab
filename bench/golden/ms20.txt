@@ -1,5 +1,5 @@
-# bench goldens for ms20: case sha256(f32 L ++ f32 R)
+# bench goldens for ms20: case sha256(f32 L ++ f32 R) [nonharm_db thd_db]
 notes 46007a9ce0d8113ea60d39f645697ba95b068c23f824ce84890bab81af61dbfd
 velocity 9f4fa770d1d5253e68291a3dd08c3acc2e21a7e11f8635aaf96b1f9fab5deb7c
-held a6f8556af0e2c9e53ff3c97c3b0963ae76254dd840e2f2ec7e842026d445b935
-high 068cd257f8059b2a729176f08b3d53a54ec670ae2bd1bfeba011cfb48b181d13
+held a6f8556af0e2c9e53ff3c97c3b0963ae76254dd840e2f2ec7e842026d445b935 -59.9 -3.7
+high 068cd257f8059b2a729176f08b3d53a54ec670ae2bd1bfeba011cfb48b181d13 -22.2 -17.9

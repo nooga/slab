@@ -18,6 +18,7 @@
   tan         any, radians             ratio of the two
   tan-warp    |x| < 1.45               7e-9 relative [filter prewarp]
   tanh        any                      ~5e-11 absolute
+  tanh-fast   any                      1e-6 below 3, 1e-4 near 5 [loops]
   db>lin lin>db                        via exp2 / log2
 
   Arguments far from zero lose accuracy the usual way: the range
@@ -135,6 +136,17 @@ dsp: tan-warp | x -- t |
   x x f* | s |
   -1.0 s f* 378.0 f+ s f* -17325.0 f+ s f* 135135.0 f+ x f*
   -28.0 s f* 3150.0 f+ s f* -62370.0 f+ s f* 135135.0 f+
+  f/
+;
+
+( x -- ~tanh x : the [7/6] Pade form on x clamped to +-4.97.  1e-6 for
+  |x| < 3, 1e-4 near saturation, smooth and monotonic - for the tanh
+  inside filter loops, where it runs many times a sample. )
+dsp: tanh-fast | x -- y |
+  x -4.97 4.97 fclamp | c |
+  c c f* | s |
+  s 378.0 f+ s f* 17325.0 f+ s f* 135135.0 f+ c f*
+  s 28.0 f* 3150.0 f+ s f* 62370.0 f+ s f* 135135.0 f+
   f/
 ;
 
