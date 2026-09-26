@@ -177,6 +177,21 @@ pub const Builder = struct {
             std.mem.swap(usize, &self.stack.items[n - 1], &self.stack.items[n - 2]);
             return;
         }
+        if (std.mem.eql(u8, word, "over")) {
+            const a = try self.peek(1);
+            try self.stack.append(a);
+            return;
+        }
+        if (std.mem.eql(u8, word, "rot")) {
+            // ( a b c -- b c a )
+            if (self.stack.items.len < 3) return Error.StackUnderflow;
+            const n = self.stack.items.len;
+            const a = self.stack.items[n - 3];
+            self.stack.items[n - 3] = self.stack.items[n - 2];
+            self.stack.items[n - 2] = self.stack.items[n - 1];
+            self.stack.items[n - 1] = a;
+            return;
+        }
         if (std.mem.eql(u8, word, "nip")) {
             if (self.stack.items.len < 2) return Error.StackUnderflow;
             const top = try self.pop();
