@@ -738,56 +738,108 @@ pub fn isComposition(tokens: []const BodyToken) bool {
     return false;
 }
 
+/// Where a body token came from in the source, for error messages. `via`
+/// names the inlined dsp: word whose body produced the token, if any.
+pub const Origin = struct {
+    word: []const u8 = "",
+    line: usize = 0,
+    via: ?[]const u8 = null,
+};
+
+/// Why a build failed: the error, the token it failed at (index into
+/// `tokens`), the symbolic stack depth there, and the arity tried.
+pub const Failure = struct {
+    err: Error,
+    token: usize,
+    depth: usize,
+    arity: usize,
+};
+
 pub const Program = struct {
     allocator: std.mem.Allocator,
     tokens: compat.ArrayList(BodyToken),
+    origins: compat.ArrayList(Origin),
+    /// Origin stamped onto every token appended until changed.
+    cur: Origin = .{},
+    /// Set by build() when it fails: the most informative attempt.
+    fail: ?Failure = null,
 
     pub fn init(allocator: std.mem.Allocator) Program {
         return .{
             .allocator = allocator,
             .tokens = compat.ArrayList(BodyToken).init(allocator),
+            .origins = compat.ArrayList(Origin).init(allocator),
         };
     }
 
     pub fn deinit(self: *Program) void {
         self.tokens.deinit();
+        self.origins.deinit();
+    }
+
+    fn push(self: *Program, tok: BodyToken) Error!void {
+        try self.tokens.append(tok);
+        try self.origins.append(self.cur);
     }
 
     pub fn addNumber(self: *Program, value: i64) Error!void {
-        try self.tokens.append(.{ .number = value });
+        try self.push(.{ .number = value });
     }
 
     pub fn addFloat(self: *Program, value: f64) Error!void {
-        try self.tokens.append(.{ .float = value });
+        try self.push(.{ .float = value });
     }
 
     pub fn addLocalArg(self: *Program, ref: LocalRef) Error!void {
-        try self.tokens.append(.{ .local_arg = ref });
+        try self.push(.{ .local_arg = ref });
     }
 
     pub fn beginLocalFrame(self: *Program, arity: usize) Error!void {
-        try self.tokens.append(.{ .local_frame_begin = arity });
+        try self.push(.{ .local_frame_begin = arity });
     }
 
     pub fn endLocalFrame(self: *Program) Error!void {
-        try self.tokens.append(.local_frame_end);
+        try self.push(.local_frame_end);
     }
 
     pub fn addWord(self: *Program, word: []const u8) Error!void {
-        try self.tokens.append(.{ .word = word });
+        try self.push(.{ .word = word });
     }
 
     pub fn addCallWord(self: *Program, word: []const u8) Error!void {
-        try self.tokens.append(.{ .call_word = word });
+        try self.push(.{ .call_word = word });
     }
 
+    /// Append an inlined body; its tokens are attributed to `via`.
     pub fn addTokens(self: *Program, tokens: []const BodyToken) Error!void {
-        for (tokens) |tok| try self.tokens.append(tok);
+        const saved = self.cur;
+        defer self.cur = saved;
+        if (self.cur.via == null) self.cur.via = if (self.cur.word.len > 0) self.cur.word else null;
+        for (tokens) |tok| try self.push(tok);
     }
 
+    /// Arity implied by the body: a leading `| … |` frame binds exactly
+    /// its names from the entry stack.
+    pub fn impliedArity(self: *const Program) ?usize {
+        if (self.tokens.items.len == 0) return null;
+        return switch (self.tokens.items[0]) {
+            .local_frame_begin => |n| n,
+            else => null,
+        };
+    }
+
+    /// Build at a known arity, or (arity null) search 0..16 for the first
+    /// arity that builds. On failure `fail` records the attempt that got
+    /// furthest into the body, so the caller can point at a token.
     pub fn build(self: *Program) Error!Builder {
-        var arity: usize = 0;
-        while (arity <= 16) : (arity += 1) {
+        return self.buildWith(null);
+    }
+
+    pub fn buildWith(self: *Program, known_arity: ?usize) Error!Builder {
+        self.fail = null;
+        var arity: usize = known_arity orelse 0;
+        const last: usize = known_arity orelse 16;
+        while (arity <= last) : (arity += 1) {
             var b = Builder.init(self.allocator);
             errdefer b.deinit();
             var i: usize = 0;
@@ -796,68 +848,41 @@ pub const Program = struct {
                 try b.stack.append(id);
                 try b.args.append(id);
             }
-            var failed = false;
-            for (self.tokens.items) |tok| {
-                switch (tok) {
-                    .number => |n| b.addNumber(n) catch |err| switch (err) {
-                        error.OutOfMemory => return err,
-                        else => {
-                            failed = true;
-                            break;
-                        },
-                    },
-                    .float => |f| b.addFloat(f) catch |err| switch (err) {
-                        error.OutOfMemory => return err,
-                        else => {
-                            failed = true;
-                            break;
-                        },
-                    },
-                    .local_arg => |ref| b.addLocalArg(ref) catch |err| switch (err) {
-                        error.OutOfMemory => return err,
-                        else => {
-                            failed = true;
-                            break;
-                        },
-                    },
-                    .local_frame_begin => |frame_arity| b.beginLocalFrame(frame_arity) catch |err| switch (err) {
-                        error.OutOfMemory => return err,
-                        else => {
-                            failed = true;
-                            break;
-                        },
-                    },
-                    .local_frame_end => b.endLocalFrame() catch |err| switch (err) {
-                        error.OutOfMemory => return err,
-                        else => {
-                            failed = true;
-                            break;
-                        },
-                    },
-                    .word => |w| b.addWord(w) catch |err| switch (err) {
-                        error.OutOfMemory => return err,
-                        error.UnsupportedWord => return err,
-                        else => {
-                            failed = true;
-                            break;
-                        },
-                    },
+            var failed: ?Failure = null;
+            for (self.tokens.items, 0..) |tok, ti| {
+                const r: Error!void = switch (tok) {
+                    .number => |n| b.addNumber(n),
+                    .float => |f| b.addFloat(f),
+                    .local_arg => |ref| b.addLocalArg(ref),
+                    .local_frame_begin => |frame_arity| b.beginLocalFrame(frame_arity),
+                    .local_frame_end => b.endLocalFrame(),
+                    .word => |w| b.addWord(w),
                     // call_word never belongs in a value-graph build — composition
                     // words are routed to the dedicated emitter before build().
                     .call_word => return Error.UnsupportedWord,
-                }
+                };
+                r catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => {
+                        failed = .{ .err = err, .token = ti, .depth = b.stack.items.len, .arity = arity };
+                        break;
+                    },
+                };
             }
-            if (failed) {
+            if (failed == null and b.stores.items.len == 0 and b.stack.items.len == 0)
+                failed = .{ .err = Error.BadStackEffect, .token = self.tokens.items.len, .depth = 0, .arity = arity };
+            if (failed) |f| {
+                if (self.fail == null or f.token > self.fail.?.token) self.fail = f;
+                // Unknown words fail at every arity; stop searching (the
+                // errdefer frees b).
+                if (f.err == Error.UnsupportedWord) return f.err;
                 b.deinit();
                 continue;
             }
-            if (b.stores.items.len > 0 or b.stack.items.len > 0) {
-                b.initial_arity = arity;
-                return b;
-            }
-            b.deinit();
+            b.initial_arity = arity;
+            return b;
         }
-        return Error.BadStackEffect;
+        return if (self.fail) |f| f.err else Error.BadStackEffect;
     }
 };
 

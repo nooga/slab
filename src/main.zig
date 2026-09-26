@@ -1530,7 +1530,7 @@ pub const Fy = struct {
         defer program.deinit();
         try program.addTokens(tokens);
 
-        var builder = try program.build();
+        var builder = try program.buildWith(word.c);
         defer builder.deinit();
 
         var body = compat.ArrayList(u32).init(self.fyalloc);
@@ -5071,7 +5071,11 @@ pub const Fy = struct {
             // Compile the file body — definitions go into fy.userWords
             // We compile as .None (no function wrapping) so only definitions matter
             const code = compiler.compile(.None) catch |err| {
-                self.setError("error compiling {s} (line {d}): {}", .{ file_path, parser.line, err });
+                if (compiler.lastErrorStr()) |detail| {
+                    self.setError("{s}:{d}: {s}", .{ file_path, parser.line, detail });
+                } else {
+                    self.setError("error compiling {s} (line {d}): {}", .{ file_path, parser.line, err });
+                }
                 return err;
             };
             // Free the generated code — we only care about side-effects (word definitions)
@@ -5511,12 +5515,103 @@ pub const Fy = struct {
             }
         }
 
+        /// A declared `( a b -- c )` right after a dsp: word's name. Only a
+        /// parenthesized group containing `--` counts; any other comment there
+        /// stays a comment.
+        const Dsp2Effect = struct { in: usize, out: usize };
+
+        fn parseDsp2Effect(self: *Compiler) Error!?Dsp2Effect {
+            const p = self.parser;
+            var pos = p.pos;
+            var lines: usize = 0;
+            while (pos < p.code.len and Parser.isWhitespace(p.code[pos])) : (pos += 1) {
+                if (p.code[pos] == '\n') lines += 1;
+            }
+            if (pos >= p.code.len or p.code[pos] != '(') return null;
+            var end = pos + 1;
+            var depth: usize = 1;
+            while (end < p.code.len and depth > 0) : (end += 1) {
+                switch (p.code[end]) {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    else => {},
+                }
+            }
+            if (depth != 0) return Error.UnbalancedParentheses;
+            const inner = p.code[pos + 1 .. end - 1];
+            var it = std.mem.tokenizeAny(u8, inner, " \t\r\n");
+            var in_n: usize = 0;
+            var out_n: usize = 0;
+            var seen = false;
+            while (it.next()) |t| {
+                if (std.mem.eql(u8, t, "--")) {
+                    seen = true;
+                } else if (seen) {
+                    out_n += 1;
+                } else {
+                    in_n += 1;
+                }
+            }
+            if (!seen) return null;
+            for (p.code[pos..end]) |ch| if (ch == '\n') {
+                lines += 1;
+            };
+            p.pos = end;
+            p.line += lines;
+            return .{ .in = in_n, .out = out_n };
+        }
+
+        fn dsp2TokenText(buf: []u8, tok: Dsp2.BodyToken, origin: Dsp2.Origin) []const u8 {
+            return switch (tok) {
+                .word => |w| w,
+                .call_word => |w| w,
+                .number => |n| std.fmt.bufPrint(buf, "{d}", .{n}) catch "?",
+                .float => |f| std.fmt.bufPrint(buf, "{d}", .{f}) catch "?",
+                .local_arg => origin.word,
+                .local_frame_begin => "| … |",
+                .local_frame_end => "end of frame",
+            };
+        }
+
+        /// Turn the Program's recorded failure into a located message.
+        fn dsp2BuildError(self: *Compiler, name: []const u8, program: *const Dsp2.Program, err: Dsp2.Error) Error {
+            if (err == error.OutOfMemory) return Error.OutOfMemory;
+            const f = program.fail orelse {
+                self.setError("dsp: {s}: {s}", .{ name, @errorName(err) });
+                return Error.UnknownWord;
+            };
+            const what: []const u8 = switch (f.err) {
+                error.StackUnderflow => "stack underflow",
+                error.TypeMismatch => "type mismatch (f64 vs ptr/int)",
+                error.NonConstantPick => "needs a compile-time constant (pick / ptr+ offset)",
+                error.RegisterExhausted => "out of registers",
+                error.BadStackEffect => "body leaves nothing on the stack and stores nothing",
+                error.UnsupportedWord => "unsupported word in dsp:",
+                else => @errorName(f.err),
+            };
+            if (f.token >= program.tokens.items.len) {
+                self.setError("dsp: {s}: {s} (arity {d})", .{ name, what, f.arity });
+                return Error.UnknownWord;
+            }
+            const origin = program.origins.items[f.token];
+            var nbuf: [32]u8 = undefined;
+            const tok_text = dsp2TokenText(&nbuf, program.tokens.items[f.token], origin);
+            if (origin.via) |via| {
+                self.setError("dsp: {s}: {s} at `{s}` inside inlined `{s}` (line {d}); stack depth {d}, arity {d}", .{ name, what, tok_text, via, origin.line, f.depth, f.arity });
+            } else {
+                self.setError("dsp: {s}: {s} at `{s}` (line {d}); stack depth {d}, arity {d}", .{ name, what, tok_text, origin.line, f.depth, f.arity });
+            }
+            return Error.UnknownWord;
+        }
+
         fn compileDsp2(self: *Compiler) Error!void {
             const name_tok = try self.parser.nextToken();
             const w = switch (name_tok orelse return Error.UnexpectedEndOfInput) {
                 .Word => |n| n,
                 else => return Error.ExpectedWord,
             };
+
+            const effect = try self.parseDsp2Effect();
 
             var program = Dsp2.Program.init(self.fy.fyalloc);
             defer program.deinit();
@@ -5527,6 +5622,10 @@ pub const Fy = struct {
 
             while (true) {
                 const tok = try self.parser.nextToken() orelse return Error.UnexpectedEndOfInput;
+                program.cur = .{ .line = self.parser.line, .word = switch (tok) {
+                    .Word => |tw| tw,
+                    else => "",
+                } };
                 switch (tok) {
                     .Word => |word| {
                         if (std.mem.eql(u8, word, Word.END)) break;
@@ -5604,14 +5703,21 @@ pub const Fy = struct {
             // Composition word (contains `call:`) — emit a call-sequencing
             // wrapper instead of a value-graph body.
             if (Dsp2.isComposition(program.tokens.items)) {
+                if (effect) |e| if (local_frames.items.len > 0 and e.in != local_frames.items[0].len) {
+                    self.setError("dsp: {s}: declares {d} input(s) but its | | frame binds {d}", .{ w, e.in, local_frames.items[0].len });
+                    return Error.UnknownWord;
+                };
                 return self.compileDsp2Composition(w, &program, local_frames.items);
             }
 
-            var builder = program.build() catch |err| {
-                self.setError("dsp: {s}", .{@errorName(err)});
-                return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
-            };
+            // Arity: the declaration, else a leading | … | frame, else search.
+            const arity: ?usize = if (effect) |e| e.in else program.impliedArity();
+            var builder = program.buildWith(arity) catch |err| return self.dsp2BuildError(w, &program, err);
             defer builder.deinit();
+            if (effect) |e| if (builder.outputCount() != e.out) {
+                self.setError("dsp: {s}: declares {d} output(s) but the body leaves {d}", .{ w, e.out, builder.outputCount() });
+                return Error.UnknownWord;
+            };
 
             var dsp2_body: ?[]Dsp2.BodyToken = Dsp2.cloneTokens(self.fy.fyalloc, program.tokens.items) catch return Error.OutOfMemory;
             errdefer if (dsp2_body) |body| Dsp2.freeTokens(self.fy.fyalloc, body);

@@ -1521,3 +1521,30 @@ test "dsp: p@64 loads a pointer through state" {
     _ = try fy.callDsp2RawRepeatedWithArgsNoResult("k-pload", 1, &args);
     try std.testing.expectEqual(@as(f64, 9.0), out);
 }
+
+test "dsp: declared stack effect sets arity and checks outputs" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    _ = try fy.run(
+        \\dsp: k-eff-add ( out a b -- ) | out a b | a b f+ out f!64 drop2 drop ;
+    );
+    var out: f64 = 0;
+    const args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out) },
+        .{ .f64 = 1.25 },
+        .{ .f64 = 2.5 },
+    };
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("k-eff-add", 1, &args);
+    try std.testing.expectEqual(@as(f64, 3.75), out);
+    // Declared one output, body leaves two.
+    try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-eff-bad ( a b -- c ) | a b | a b f+ a nip nip ;"));
+    // A comment without `--` after the name is still just a comment.
+    _ = try fy.run("dsp: k-eff-comment ( plain note ) | out a | a out f!64 drop2 ;");
+}
+
+test "dsp: build errors are reported, not swallowed" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-err-typo | p | 1.0 2.0 fplus p f!64 drop ;"));
+    try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-err-under | x | x f+ nip ;"));
+}
