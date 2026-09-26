@@ -1,6 +1,7 @@
 ( oscillator.fy - raw DSP2 fixture machine with one note-controlled saw. )
 
 include "../../kernels/00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
+include "../../kernels/01-oscillators/primitives/phase.fy"
 ustruct: RawOscState
   f64 phase
 ;
@@ -48,7 +49,7 @@ dsp: raw-osc-render
   params.inv-sample-rate
   f*
   f+
-  fwrap01
+  wrap01
   | phase |
   phase
   -> state.phase

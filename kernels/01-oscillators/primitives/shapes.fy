@@ -11,8 +11,8 @@ dsp: saw-falling-raw
 ;
 
 ( phase -- sample : convert normalized phase to a convex capacitor-like ramp. )
-dsp: cap-ramp-raw
-  fcapramp
+dsp: cap-ramp-raw | p -- y |
+  p 2.0 p f- f* 2.0 f* 1.0 f-
 ;
 
 ( phase -- sample : naive bipolar triangle (1/n^2 harmonics alias far less
