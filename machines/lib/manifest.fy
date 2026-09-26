@@ -250,6 +250,8 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
 
 ( VFD value with steppers: options, or an integer range of up to 128 )
 : as-display 8 _mf-widget ;
+( joined LED buttons stacked top to bottom, one down )
+: as-vradio  9 _mf-widget ;
 
 ( --- panel: strips, displays, weighted layout --------------------- )
 : _mf-append-disp  ( disp -- )

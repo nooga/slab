@@ -244,6 +244,7 @@ panel draws:
 | `as-slide` | slide switch | options |
 | `as-list` | LED option column | options |
 | `as-radio` | joined LED caps, one down | options |
+| `as-vradio` | the same caps stacked top to bottom | options |
 | `as-button` | LED latch: option 0 off, 1 on | two options |
 | `as-display` | VFD value with ‹ › steppers | options, integer ranges ≤ 128 |
 

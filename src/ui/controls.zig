@@ -565,29 +565,45 @@ pub fn stepper(ui: *Ui, r: Rect, key: anytype) i32 {
 }
 
 pub fn segmented(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8) bool {
-    return segmentedEx(ui, r, key, v, labels, false, null, "");
+    return segmentedEx(ui, r, key, v, labels, .{});
 }
 
 /// Segmented group as toolbar tiles (see `ButtonOpts.flush`).
 pub fn segmentedFlush(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8) bool {
-    return segmentedEx(ui, r, key, v, labels, true, null, "");
+    return segmentedEx(ui, r, key, v, labels, .{ .flush = true });
 }
 
-fn segmentedEx(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8, flush: bool, led_col: ?Color, name: []const u8) bool {
+const SegOpts = struct {
+    /// Toolbar tiles (see `ButtonOpts.flush`).
+    flush: bool = false,
+    /// Caps stacked top to bottom instead of side by side.
+    vertical: bool = false,
+    led: ?Color = null,
+    /// Names the group in the title display.
+    name: []const u8 = "",
+};
+
+fn segmentedEx(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8, o: SegOpts) bool {
     const before = v.*;
     ui.pushId(key);
     defer ui.popId();
     const n: i32 = @intCast(labels.len);
     for (labels, 0..) |lab, i| {
-        const cell = r.cell(n, 1, @intCast(i), 0);
-        // Joined: neighbours share one outline column.
-        const cr = if (i > 0 and !flush) Rect.xywh(cell.x - 1, cell.y, cell.w + 1, cell.h) else cell;
+        const k: i32 = @intCast(i);
+        const cell = if (o.vertical) r.cell(1, n, 0, k) else r.cell(n, 1, k, 0);
+        // Joined: neighbours share one outline row / column.
+        const cr = if (i == 0 or o.flush)
+            cell
+        else if (o.vertical)
+            Rect.xywh(cell.x, cell.y - 1, cell.w, cell.h + 1)
+        else
+            Rect.xywh(cell.x - 1, cell.y, cell.w + 1, cell.h);
         const wid = ui.id(i);
         const b = ui.behaviorEx(wid, cr, .{ .focusable = false });
         if (b.pressed) v.* = @intCast(i);
         const on = v.* == i;
-        cap(ui, cr, on, on, ui.isHot(wid), .{ .label = lab, .flush = flush, .led = led_col });
-        if (ui.isHot(wid)) ui.setTouch(name, lab);
+        cap(ui, cr, on, on, ui.isHot(wid), .{ .label = lab, .flush = o.flush, .led = o.led });
+        if (ui.isHot(wid)) ui.setTouch(o.name, lab);
     }
     return v.* != before;
 }
@@ -642,6 +658,8 @@ pub const RadioOpts = struct {
     size: Size = .m,
     label: []const u8 = "",
     led: Color = style.led_red,
+    /// Caps stacked top to bottom (the 106's range buttons).
+    vertical: bool = false,
 };
 
 fn radioCapW(ui: *const Ui, labels: []const []const u8) i32 {
@@ -651,17 +669,26 @@ fn radioCapW(ui: *const Ui, labels: []const []const u8) i32 {
     return @max(LATCH_W, 3 + 4 + w + 8);
 }
 
+/// The joined caps' size: a row of caps, or a column of them.
+fn radioCaps(ui: *const Ui, labels: []const []const u8, o: RadioOpts) [2]i32 {
+    const n: i32 = @intCast(labels.len);
+    const w = radioCapW(ui, labels);
+    const h = buttonHeight(o.size);
+    return if (o.vertical) .{ w, n * h } else .{ n * w, h };
+}
+
 pub fn radioCell(ui: *const Ui, labels: []const []const u8, o: RadioOpts) [2]i32 {
-    return .{ @as(i32, @intCast(labels.len)) * radioCapW(ui, labels), LEGEND_H + buttonHeight(o.size) };
+    const caps = radioCaps(ui, labels, o);
+    return .{ @max(caps[0], ui.fonts.legend.measure(o.label) + 4), LEGEND_H + caps[1] };
 }
 
 /// Radio buttons: legend over joined LED caps, exactly one down.
 pub fn radio(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8, o: RadioOpts) bool {
     var area = r;
     ui.textIn(&ui.fonts.legend, area.cutTop(LEGEND_H), o.label, style.text_dim, .center, true);
-    const h = buttonHeight(o.size);
-    const caps = area.takeTop(h).center(@as(i32, @intCast(labels.len)) * radioCapW(ui, labels), h);
-    return segmentedEx(ui, caps, key, v, labels, false, o.led, o.label);
+    const sz = radioCaps(ui, labels, o);
+    const caps = area.takeTop(sz[1]).center(sz[0], sz[1]);
+    return segmentedEx(ui, caps, key, v, labels, .{ .vertical = o.vertical, .led = o.led, .name = o.label });
 }
 
 // ── Selectors ────────────────────────────────────────────────────────

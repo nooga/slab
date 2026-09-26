@@ -67,6 +67,7 @@ pub const Widget = enum {
     radio,
     button,
     display,
+    vradio,
 };
 
 pub const Control = struct {
@@ -143,7 +144,7 @@ pub const Control = struct {
             .auto, .knob => true,
             .fader => self.kind == .direct_f64,
             .button, .lever => self.kind == .switch_sel and self.option_count == 2,
-            .slide, .list, .radio => self.kind == .switch_sel,
+            .slide, .list, .radio, .vradio => self.kind == .switch_sel,
             .display => self.kind == .switch_sel or
                 (self.kind == .int_range and self.max - self.min < MAX_DISPLAY_STEPS),
         };

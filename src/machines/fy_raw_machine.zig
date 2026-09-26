@@ -1495,7 +1495,7 @@ fn controlCell(ui: *const Ui, ctl: *const Control, tier: ui_ctl.Size) [2]i32 {
         .lever => ui_ctl.toggleCell(ui, .{ .positions = @intCast(opts.len), .label = label, .marks = opts }),
         .slide => ui_ctl.slideCell(ui, .{ .positions = @intCast(opts.len), .label = label, .marks = opts }),
         .list => ui_ctl.listCell(ui, opts),
-        .radio => ui_ctl.radioCell(ui, opts, .{ .size = tier, .label = label }),
+        .radio, .vradio => |w| ui_ctl.radioCell(ui, opts, .{ .size = tier, .label = label, .vertical = w == .vradio }),
         .button => ui_ctl.latchCell(ui, .{ .size = tier, .label = label }),
         .display => blk: {
             var il: IntLabels = .{};
@@ -1541,14 +1541,14 @@ fn drawControl(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Co
                 if (ui_ctl.displayField(ui, kr, gi, &idx, opts, label)) self.setControlRaw(gi, @floatFromInt(idx));
             }
         },
-        .lever, .slide, .list, .radio => |w| {
+        .lever, .slide, .list, .radio, .vradio => |w| {
             var idx: u8 = @intCast(switchIndex(ctl.*, self.controlNorm(gi)));
             const n: u8 = @intCast(opts.len);
             const changed = switch (w) {
                 .lever => ui_ctl.toggle(ui, kr, gi, &idx, .{ .positions = n, .label = label, .marks = opts }),
                 .slide => ui_ctl.slide(ui, kr, gi, &idx, .{ .positions = n, .label = label, .marks = opts }),
                 .list => ui_ctl.list(ui, kr, gi, &idx, opts, label),
-                else => ui_ctl.radio(ui, kr, gi, &idx, opts, .{ .size = tier, .label = label }),
+                else => ui_ctl.radio(ui, kr, gi, &idx, opts, .{ .size = tier, .label = label, .vertical = w == .vradio }),
             };
             if (changed) self.setControlRaw(gi, @floatFromInt(idx));
         },
