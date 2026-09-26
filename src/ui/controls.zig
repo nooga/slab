@@ -705,6 +705,24 @@ pub fn list(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const []const u8,
 
 /// Value in a display with ‹ › steppers. Drag vertically to step too.
 pub fn displaySelect(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const []const u8) bool {
+    return displaySelectEx(ui, r, key, v, options, "");
+}
+
+/// Panel form: legend over a display select sized to its longest option.
+pub fn displayFieldCell(ui: *const Ui, options: []const []const u8) [2]i32 {
+    var w: i32 = 0;
+    for (options) |o| w = @max(w, ui.fonts.legend.measure(o));
+    // ‹ › caps, well bevel + margin, one spare cell.
+    return .{ 20 + w + CELL_W + 4, LEGEND_H + displayHeight(false) };
+}
+
+pub fn displayField(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const []const u8, label: []const u8) bool {
+    var area = r;
+    ui.textIn(&ui.fonts.legend, area.cutTop(LEGEND_H), label, style.text_dim, .center, true);
+    return displaySelectEx(ui, area.takeTop(displayHeight(false)), key, v, options, label);
+}
+
+fn displaySelectEx(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const []const u8, label: []const u8) bool {
     const wid = ui.id(key);
     const before = v.*;
     const n: i32 = @intCast(options.len);
@@ -734,7 +752,7 @@ pub fn displaySelect(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const []
     ledShape(ui, right.x + 4, right.y + @divFloor(right.h - 7, 2), .tri_right, if (br.held) style.text else style.text_dim);
     if (v.* < options.len) {
         display(ui, area.insetXY(-1, 0), options[v.*], .{ .color = if (ui.isHot(wid)) style.vfd else style.vfd.mix(style.well, 0.15) });
-        if (ui.isHot(wid)) ui.setTouch("", options[v.*]);
+        if (ui.isHot(wid)) ui.setTouch(label, options[v.*]);
     }
     focusRing(ui, wid, area);
     return v.* != before;

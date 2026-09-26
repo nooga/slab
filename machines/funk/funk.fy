@@ -15,7 +15,7 @@ include "../lib/manifest.fy"
   "funk-block-prepare" block-prepare!
   FunkState.size  state-size!
   FunkParams.size params-size!
-  230.0 panel-w!
+  250.0 panel-w!
 
   "FUNK" "OVERLOAD" "funk-macro" FunkParams.funk 0.0 1.0 0.35 curve-lin knob
   "TONE" "FREQ"  "funk-freq"  FunkParams.freq  150.0 2000.0 420.0 curve-exp knob
@@ -23,7 +23,7 @@ include "../lib/manifest.fy"
   "TONE" "MIX"   "funk-mix"   FunkParams.mix   0.0   1.0    1.0   curve-pow knob
 
   "FUNK" 1 strip
-  "TONE" 1 strip
+  "TONE" 3 strip
   1.0 row
     1.3 cell  "FUNK" 1.0 item
     1.0 cell  "TONE" 1.0 item

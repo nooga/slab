@@ -15,19 +15,19 @@ include "../lib/manifest.fy"
   "chorus-block-prepare" block-prepare!
   ChorusState.size  state-size!
   ChorusParams.size params-size!
-  170.0 panel-w!
+  380.0 panel-w!
 
   ( 12 ms BBD line per channel )
   "bbd" ChorusState.buf ChorusState.buf-len 0.012 buffer
 
   "CHORUS" "MODE" "chorus-mode" ChorusParams.mode 0.0 switch
-    "I" 0.0 opt  "II" 1.0 opt  "I+II" 2.0 opt
+    "I" 0.0 opt  "II" 1.0 opt  "I+II" 2.0 opt  as-radio
   "CHORUS" "RATE"   "chorus-rate"   ChorusParams.rate-mul  0.25  4.0   1.0  curve-exp knob
   "CHORUS" "DEPTH"  "chorus-depth"  ChorusParams.depth-mul 0.0   3.0   1.0  curve-lin knob
   "CHORUS" "TONE"   "chorus-tone"   ChorusParams.tone-hz   2000.0 16000.0 8000.0 curve-exp knob
   "CHORUS" "SPREAD" "chorus-spread" ChorusParams.spread    0.0   1.0   1.0  curve-lin knob
   "CHORUS" "MIX"    "chorus-mix"    ChorusParams.mix       0.0   1.0   0.5  curve-pow knob
-  "CHORUS" 2 strip
+  "CHORUS" 6 strip
 
   machine-desc
 ;

@@ -346,7 +346,8 @@ Machine manifests (docs/15) use the same catalogue: a control names its
 widget (`as-fader`, `as-radio`, …) or takes the default for its kind, and
 the panel draws it at the panel's tier. Panels use the **panel forms**:
 legend-topped cells sized by the tier — `faderCell`/`faderKind`, `latch`
-(legend over an LED cap), `radio` (legend over joined LED caps), plus
+(legend over an LED cap), `radio` (legend over joined LED caps),
+`displayField` (legend over a display select), plus
 `toggleCell`, `slideCell` and `listCell`, which size themselves from their
 marks and options. Authors never draw controls.
 

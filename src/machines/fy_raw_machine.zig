@@ -1468,6 +1468,19 @@ fn optionSlices(ctl: *const Control, buf: *[MAX_OPTS][]const u8) []const []const
     return buf[0..ctl.option_count];
 }
 
+/// Integer-range labels for a display select, "min".."max".
+const IntLabels = struct {
+    text: [machine_desc.MAX_DISPLAY_STEPS][6]u8 = undefined,
+    slices: [machine_desc.MAX_DISPLAY_STEPS][]const u8 = undefined,
+
+    fn fill(l: *IntLabels, ctl: *const Control) []const []const u8 {
+        const lo: i64 = @intFromFloat(@round(ctl.min));
+        const n = @min(intRangeCount(ctl.*), machine_desc.MAX_DISPLAY_STEPS);
+        for (0..n) |i| l.slices[i] = std.fmt.bufPrint(&l.text[i], "{d}", .{lo + @as(i64, @intCast(i))}) catch "?";
+        return l.slices[0..n];
+    }
+};
+
 /// Natural cell of a control's widget at a tier.
 fn controlCell(ui: *const Ui, ctl: *const Control, tier: ui_ctl.Size) [2]i32 {
     var ob: [MAX_OPTS][]const u8 = undefined;
@@ -1481,6 +1494,10 @@ fn controlCell(ui: *const Ui, ctl: *const Control, tier: ui_ctl.Size) [2]i32 {
         .list => ui_ctl.listCell(ui, opts),
         .radio => ui_ctl.radioCell(ui, opts, .{ .size = tier, .label = label }),
         .button => ui_ctl.latchCell(ui, .{ .size = tier, .label = label }),
+        .display => blk: {
+            var il: IntLabels = .{};
+            break :blk ui_ctl.displayFieldCell(ui, if (ctl.kind == .int_range) il.fill(ctl) else opts);
+        },
     };
 }
 
@@ -1507,6 +1524,19 @@ fn drawControl(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Co
         .button => {
             var on = switchIndex(ctl.*, self.controlNorm(gi)) == 1;
             if (ui_ctl.latch(ui, kr, gi, &on, .{ .size = tier, .label = label })) self.setControlRaw(gi, if (on) 1 else 0);
+        },
+        .display => {
+            var il: IntLabels = .{};
+            if (ctl.kind == .int_range) {
+                const labels = il.fill(ctl);
+                const lo: i64 = @intFromFloat(@round(ctl.min));
+                const cur: i64 = @intFromFloat(intRangeValue(ctl.*, self.controlNorm(gi)));
+                var idx: u8 = @intCast(std.math.clamp(cur - lo, 0, @as(i64, @intCast(labels.len - 1))));
+                if (ui_ctl.displayField(ui, kr, gi, &idx, labels, label)) self.setControlRaw(gi, @floatFromInt(lo + idx));
+            } else {
+                var idx: u8 = @intCast(switchIndex(ctl.*, self.controlNorm(gi)));
+                if (ui_ctl.displayField(ui, kr, gi, &idx, opts, label)) self.setControlRaw(gi, @floatFromInt(idx));
+            }
         },
         .lever, .slide, .list, .radio => |w| {
             var idx: u8 = @intCast(switchIndex(ctl.*, self.controlNorm(gi)));

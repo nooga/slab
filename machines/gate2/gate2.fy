@@ -19,7 +19,7 @@ include "../lib/manifest.fy"
   "gate-block-prepare" block-prepare!
   GateState.size  state-size!
   GateParams.size params-size!
-  170.0 panel-w!
+  260.0 panel-w!
 
 
   "GATE" "THRESH" "gate-thresh" GateParams.thresh-db -60.0  0.0  -40.0 curve-lin knob
@@ -27,7 +27,7 @@ include "../lib/manifest.fy"
   "GATE" "ATK"    "gate-atk"    GateParams.atk-s     0.0002 0.05 0.001 curve-exp knob
   "GATE" "HOLD"   "gate-hold"   GateParams.hold-s    0.0    0.5  0.05  curve-lin knob
   "GATE" "REL"    "gate-rel"    GateParams.rel-s     0.005  1.0  0.12  curve-exp knob
-  "GATE" 3 strip
+  "GATE" 5 strip
 
   machine-desc
 ;

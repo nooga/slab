@@ -16,7 +16,7 @@ include "../lib/manifest.fy"
   "delay-block-prepare" block-prepare!
   DelayState.size  state-size!
   DelayParams.size params-size!
-  190.0 panel-w!
+  330.0 panel-w!
 
 
   ( 1.6 s ring per channel; TIME tops out at 1.5 s with headroom )
@@ -26,7 +26,7 @@ include "../lib/manifest.fy"
   "DELAY" "FB"   "delay-fb"   DelayParams.feedback 0.0   0.92   0.45   curve-pow knob
   "DELAY" "DAMP" "delay-damp" DelayParams.damp-hz  500.0 16000.0 5500.0 curve-exp knob
   "DELAY" "MIX"  "delay-mix"  DelayParams.mix      0.0   1.0    0.35   curve-pow knob
-  "DELAY" 2 strip
+  "DELAY" 4 strip
 
   ( SYNC off → TIME knob in seconds; on → 60/bpm * DIV.  DIV option values
     are beat multipliers, quarter-note = 1.0. )
@@ -34,8 +34,11 @@ include "../lib/manifest.fy"
     "FREE" 0.0 opt  "SYNC" 1.0 opt
   "SYNC" "DIV"  "delay-div"  DelayParams.div  2.0 switch
     "1/16" 0.25 opt  "1/8T" 0.33333 opt  "1/8" 0.5 opt  "1/8." 0.75 opt
-    "1/4" 1.0 opt  "1/4." 1.5 opt  "1/2" 2.0 opt
+    "1/4" 1.0 opt  "1/4." 1.5 opt  "1/2" 2.0 opt  as-display
   "SYNC" 2 strip
+  1.0 row
+    1.0 cell  "DELAY" 1.0 item
+    1.0 cell  "SYNC" 1.0 item
 
   machine-desc
 ;

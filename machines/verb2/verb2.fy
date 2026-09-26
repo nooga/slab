@@ -15,7 +15,7 @@ include "../lib/manifest.fy"
   "verb-block-prepare" block-prepare!
   VerbState.size  state-size!
   VerbParams.size params-size!
-  170.0 panel-w!
+  310.0 panel-w!
 
   ( one packed tank ring per channel; region table in reverb.fy )
   "tank" VerbState.buf VerbState.buf-len 0.9 buffer
@@ -26,7 +26,7 @@ include "../lib/manifest.fy"
   "PLATE" "TONE"   "verb-tone"     VerbParams.bw-hz      1000.0 18000.0 9000.0 curve-exp knob
   "PLATE" "MIX"    "verb-mix"      VerbParams.mix        0.0   1.0   0.30 curve-pow knob
   "PLATE" "MOD"    "verb-mod"      VerbParams.mod-depth  0.0   24.0  10.0 curve-lin knob
-  "PLATE" 2 strip
+  "PLATE" 6 strip
 
   ( fixed modulation rate; depth is the MOD knob )
   VerbParams.mod-rate 1.2 const-f64

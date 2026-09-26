@@ -22,26 +22,31 @@ include "../lib/manifest.fy"
   8 voices!
   RhodesState.size  state-size!
   RhodesParams.size params-size!
-  360.0 panel-w!
+  520.0 panel-w!
 
 
   "TINE" "BELL"  "rd-tine-q"     RhodesParams.tine-q     0.0 1.0 0.7 curve-lin knob
   "TINE" "BARK"  "rd-bark"       RhodesParams.bark        0.0 1.0 0.3 curve-lin knob
   "TINE" "SNAP"  "rd-bark-decay" RhodesParams.bark-decay  0.0 1.0 0.2 curve-lin knob
-  "TINE" 1 strip
+  "TINE" 3 strip
 
   "BODY" "DECAY"  "rd-bar-q"      RhodesParams.bar-q       0.0 1.0 0.4 curve-lin knob
   "BODY" "CHORUS" "rd-bar-detune" RhodesParams.bar-detune  0.0 1.0 0.3 curve-lin knob
-  "BODY" 1 strip
+  "BODY" 2 strip
 
   "PICKUP" "DRIVE" "rd-pickup-drive" RhodesParams.pickup-drive 0.0 1.0 0.3 curve-lin knob
   "PICKUP" "VOICE" "rd-voicing"      RhodesParams.voicing      0.0 1.0 0.4 curve-lin knob
-  "PICKUP" 1 strip
+  "PICKUP" 2 strip
 
   "AMP" "TONE"    "rd-warmth" RhodesParams.warmth 0.0 1.0 0.5 curve-lin knob
   "AMP" "RELEASE" "rd-damper" RhodesParams.damper 0.0 1.0 0.7 curve-lin knob
   "AMP" "LEVEL"   "rd-level"  RhodesParams.level  0.0 1.0 0.8 curve-pow knob
-  "AMP" 1 strip
+  "AMP" 3 strip
+  1.0 row
+    1.0 cell  "TINE" 1.0 item
+    1.0 cell  "BODY" 1.0 item
+    1.0 cell  "PICKUP" 1.0 item
+    1.0 cell  "AMP" 1.0 item
 
   machine-desc
 ;

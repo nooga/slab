@@ -234,6 +234,7 @@ panel draws:
 | `as-list` | LED option column | options |
 | `as-radio` | joined LED caps, one down | options |
 | `as-button` | LED latch: option 0 off, 1 on | two options |
+| `as-display` | VFD value with ‹ › steppers | options, integer ranges ≤ 128 |
 
 Without one the panel picks from the kind (`Control.widgetFor`): knobs
 for values and integer ranges, an LED latch for an `OFF`/`ON` pair, a

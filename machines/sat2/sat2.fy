@@ -18,7 +18,7 @@ include "../lib/manifest.fy"
   "sat-block-prepare" block-prepare!
   SatState.size  state-size!
   SatParams.size params-size!
-  170.0 panel-w!
+  270.0 panel-w!
 
   "SAT" "DRIVE" "sat-drive" SatParams.drive-db 0.0   36.0   6.0    curve-lin knob
   "SAT" "MODE"  "sat-mode"  SatParams.mode 0.0 switch
@@ -26,7 +26,7 @@ include "../lib/manifest.fy"
   "SAT" "TONE"  "sat-tone"  SatParams.tone-hz 800.0 18000.0 18000.0 curve-exp knob
   "SAT" "MIX"   "sat-mix"   SatParams.mix      0.0   1.0    1.0    curve-pow knob
   "SAT" "OUT"   "sat-out"   SatParams.out-db   -24.0 24.0   0.0    curve-lin knob
-  "SAT" 3 strip
+  "SAT" 5 strip
 
   machine-desc
 ;

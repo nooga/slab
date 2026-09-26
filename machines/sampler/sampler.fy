@@ -22,7 +22,7 @@ include "../lib/manifest.fy"
   8 voices!
   SamplerState.size  state-size!
   SamplerParams.size params-size!
-  440.0 panel-w!
+  560.0 panel-w!
 
   "smp" SamplerParams.smp-ptr SamplerParams.smp-len SamplerParams.smp-sr "assets/default.wav" asset
 
@@ -35,27 +35,27 @@ include "../lib/manifest.fy"
   "LOOP" "BEG" "smp-loop-start" SamplerParams.loop-start 0.0 1.0 0.0 curve-lin knob
   "LOOP" "END" "smp-loop-end" SamplerParams.loop-end 0.0 1.0 1.0 curve-lin knob
 
-  "ENV" "ATK" "smp-atk" SamplerParams.atk 0.001 3.0 0.002 curve-exp knob
-  "ENV" "DEC" "smp-dec" SamplerParams.dec 0.01 4.0 0.6 curve-exp knob
-  "ENV" "SUS" "smp-sus" SamplerParams.sus 0.0 1.0 1.0 curve-lin knob
-  "ENV" "REL" "smp-rel" SamplerParams.rel 0.01 5.0 0.3 curve-exp knob
+  "ENV" "ATK" "smp-atk" SamplerParams.atk 0.001 3.0 0.002 curve-exp knob as-fader
+  "ENV" "DEC" "smp-dec" SamplerParams.dec 0.01 4.0 0.6 curve-exp knob as-fader
+  "ENV" "SUS" "smp-sus" SamplerParams.sus 0.0 1.0 1.0 curve-lin knob as-fader
+  "ENV" "REL" "smp-rel" SamplerParams.rel 0.01 5.0 0.3 curve-exp knob as-fader
 
-  "AMP" "LEVEL" "smp-level" SamplerParams.level 0.0 1.0 0.7 curve-pow knob
+  "AMP" "LEVEL" "smp-level" SamplerParams.level 0.0 1.0 0.7 curve-pow knob as-fader
 
   "WAVE" "smp" waveform-display
-  "PITCH" 1 strip
-  "LOOP" 1 strip
-  "ENV" 1 strip
+  "PITCH" 3 strip
+  "LOOP" 3 strip
+  "ENV" 4 strip
   "AMP" 1 strip
 
-  ( oscillogram across the top, control strips below )
-  1.5 row
+  ( oscillogram across the top, taking the spare height; one row of
+    control strips below )
+  1.0 row
     1.0 cell  "WAVE" 1.0 item
-  2.5 row
-    1.1 cell  "PITCH" 1.0 item
-    1.1 cell  "LOOP" 1.0 item
-    1.3 cell  "ENV" 1.0 item
-    0.6 cell  "AMP" 1.0 item
-
+  0.0 row
+    1.0 cell  "PITCH" 1.0 item
+    1.0 cell  "LOOP" 1.0 item
+    1.0 cell  "ENV" 1.0 item
+    1.0 cell  "AMP" 1.0 item
   machine-desc
 ;

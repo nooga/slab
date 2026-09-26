@@ -248,6 +248,9 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
 : as-radio   6 _mf-widget ;  ( joined LED buttons, one down )
 : as-button  7 _mf-widget ;  ( LED latch, 2 options: off / on )
 
+( VFD value with steppers: options, or an integer range of up to 128 )
+: as-display 8 _mf-widget ;
+
 ( --- panel: strips, displays, weighted layout --------------------- )
 : strip  ( module knob-cols -- )
   StripDesc.alloc

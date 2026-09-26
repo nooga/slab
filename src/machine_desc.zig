@@ -31,6 +31,8 @@ pub const MAX_NOTE_LABELS = 32;
 pub const MAX_BUFFERS = 8;
 pub const MAX_ASSETS = 4;
 pub const MAX_PATH = 128;
+/// Largest integer range a display select steps through.
+pub const MAX_DISPLAY_STEPS = 128;
 
 pub const Mode = enum {
     voice_sample,
@@ -64,6 +66,7 @@ pub const Widget = enum {
     list,
     radio,
     button,
+    display,
 };
 
 pub const Control = struct {
@@ -141,6 +144,8 @@ pub const Control = struct {
             .fader => self.kind == .direct_f64,
             .button, .lever => self.kind == .switch_sel and self.option_count == 2,
             .slide, .list, .radio => self.kind == .switch_sel,
+            .display => self.kind == .switch_sel or
+                (self.kind == .int_range and self.max - self.min < MAX_DISPLAY_STEPS),
         };
     }
 };
@@ -706,8 +711,8 @@ test "descriptor walker reads the FM-86 manifest (7 tabs, 63 controls)" {
     try testing.expectEqual(@as(usize, 63), d.control_count);
     try testing.expectEqual(@as(usize, 7), d.page_count);
     try testing.expectEqual(@as(usize, 0), d.row_count);
-    try testing.expectEqualStrings("GLOBAL", d.pages[0].nameSlice());
-    try testing.expectEqualStrings("OP 6", d.pages[6].nameSlice());
+    try testing.expectEqualStrings("VOICE", d.pages[0].nameSlice());
+    try testing.expectEqualStrings("EG 6", d.pages[6].nameSlice());
     try testing.expectEqual(@as(usize, 6), d.const_count); // 6 rate-scale consts
 
     // The ALGO control is an int_range selector over the 32 algorithms; its
@@ -718,6 +723,7 @@ test "descriptor walker reads the FM-86 manifest (7 tabs, 63 controls)" {
             try testing.expectEqual(ParamKind.int_range, ctl.kind);
             try testing.expectEqual(@as(f64, 1), ctl.min);
             try testing.expectEqual(@as(f64, 32), ctl.max);
+            try testing.expectEqual(Widget.display, ctl.widgetFor());
             try testing.expect(ctl.offset + 8 <= d.params_size);
             found_algo = true;
         }
