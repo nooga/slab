@@ -249,9 +249,9 @@ test "fy manifest loads the limiter machine (kernel + meter display)" {
 test "fy manifest loads the EQ machine (biquad kernel + response display)" {
     var reg = Registry.init(std.testing.allocator);
     defer reg.deinit();
-    // Compiles kernels/07-effects/eq.fy (trig + pow2 + the biquad stages and
-    // the call: compositions) and reads the manifest — a stack-effect or
-    // syntax error in any coefficient/tick word surfaces here.
+    // Compiles kernels/07-effects/eq.fy (trig + pow2 + the biquad stages)
+    // and reads the manifest — a stack-effect or syntax error in any
+    // coefficient/tick word surfaces here.
     try reg.loadFyMachine("machines/eq2/eq2.fy");
     try std.testing.expectEqual(@as(usize, 1), reg.count);
     const e = &reg.entries[0];
@@ -261,12 +261,10 @@ test "fy manifest loads the EQ machine (biquad kernel + response display)" {
     try std.testing.expect(!e.in_notes);
 }
 
-test "EQ machine instantiates (staged derive uses the composition caller)" {
+test "EQ machine instantiates (per-block callers wire up)" {
     // loadFyMachine only reads the descriptor header; instantiate() runs
-    // FyRawMachine.create, which wires the per-block callers. eq-derive is a
-    // `call:` composition (one stage per band), so it must go through the
-    // composition caller — the plain raw caller fails it with UnsupportedWord,
-    // which silently aborted "add effect" (the machine never displayed).
+    // FyRawMachine.create, which compiles every per-block caller. A caller
+    // failure here once silently aborted "add effect".
     var reg = Registry.init(std.testing.allocator);
     defer reg.deinit();
     try reg.loadFyMachine("machines/eq2/eq2.fy");

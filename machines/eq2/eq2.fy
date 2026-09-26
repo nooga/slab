@@ -3,9 +3,8 @@
   DSP lives in the kernels rig [kernels/07-effects/eq.fy]; this file
   declares the machine.  The host runs the render word once per channel
   against per-channel state (independent biquad state per L/R), shares
-  one params block, runs `eq-derive` each block to fill the biquad
-  coefficients from the controls, and `eq-block-prepare` to stash the
-  sample-rate the derive stages read.
+  one params block, and runs `eq-block-prepare` each block to fill the
+  biquad coefficients from the controls.
 
   The panel shows a live frequency-response curve [the `.response`
   display recomputes the composite magnitude from the controls] above
@@ -19,7 +18,6 @@ include "../lib/manifest.fy"
   "EQ" effect-block machine*
   "k-eq-tick"        render!
   "eq-block-prepare" block-prepare!
-  "eq-derive"        derive!
   EqState.size  state-size!
   EqParams.size params-size!
   420.0 panel-w!

@@ -9,15 +9,9 @@
   Coefficients are computed per block in fy from the raw controls, with
   no libm: sin/cos come from kernels/00-primitives/trig.fy (range-reduced
   Taylor) and A = 10^(dB/40) from exp2-approx (kernels/00-primitives/
-  pow2.fy).  Because each band's coefficient math is heavy (two
-  transcendentals + several products) the five bands are split into
-  separate `call:` stages so each gets a fresh 32-register budget - the
-  same discipline that fixed the FM-86 matrix.  `call:` can only pass
-  pointer args, so the coefficient fill lives in the `derive` hook
-  (params derive-data --, all pointers); the sample-rate it needs is
-  stashed into params by eq-block-prepare, which the host runs right
-  after derive every block (sr is constant, so derive reads the value
-  block-prepare wrote last time - correct from the first audio block on).
+  pow2.fy), in eq-block-prepare every block.  Each band's coefficient
+  math is its own word, inlined into block-prepare [the compiler spills
+  what does not fit the register file].
 
   Per stage, transposed DF2 with a0 normalized out in the coeff fill:
     y   = b0*x + z1
@@ -47,8 +41,6 @@ ustruct: EqParams
   f64 p1-hz   f64 p1-db  f64 p1-q
   f64 p2-hz   f64 p2-db  f64 p2-q
   f64 hs-hz   f64 hs-db
-  ( stashed by eq-block-prepare for the derive stages )
-  f64 sr
   ( derived coeffs: 5 stages x {b0,b1,b2,a1,a2}, a0 normalized to 1 )
   f64 hpf-b0  f64 hpf-b1  f64 hpf-b2  f64 hpf-a1  f64 hpf-a2
   f64 ls-b0   f64 ls-b1   f64 ls-b2   f64 ls-a1   f64 ls-a2
@@ -57,15 +49,14 @@ ustruct: EqParams
   f64 hs-b0   f64 hs-b1   f64 hs-b2   f64 hs-a1   f64 hs-a2
 ;
 
-( ---- coefficient fill (one band per call: stage, fresh budget) ------ )
+( ---- coefficient fill (one word per band, inlined into block-prepare) - )
 
-( params -- : high-pass, RBJ, fixed Q=1/sqrt2.  When hpf-on < 0.5 the
+( params sr -- : high-pass, RBJ, fixed Q=1/sqrt2.  When hpf-on < 0.5 the
   stage is forced to passthrough (b0=1, rest 0) with a per-coeff fsel so
   the audio path never branches. )
-dsp: eq-coef-hpf
-  | params:EqParams |
+dsp: eq-coef-hpf | params:EqParams sr -- |
   params.hpf-hz 10.0 20000.0 fclamp 6.283185307179586 f*
-  params.sr f/ 0.0 3.0 fclamp | w |
+  sr f/ 0.0 3.0 fclamp | w |
   w cos-approx | cw |
   w sin-approx 0.7071067811865476 f* | alpha |   ( sw/(2Q), Q=1/sqrt2 )
   1.0 alpha f+ | a0 |
@@ -85,11 +76,10 @@ dsp: eq-coef-hpf
   ( locals: params w cw alpha a0 inv omc on = 8 )
 ;
 
-( params -- : peaking EQ for band 1 (low-mid). )
-dsp: eq-coef-p1
-  | params:EqParams |
+( params sr -- : peaking EQ for band 1 (low-mid). )
+dsp: eq-coef-p1 | params:EqParams sr -- |
   params.p1-hz 10.0 20000.0 fclamp 6.283185307179586 f*
-  params.sr f/ 0.0 3.0 fclamp | w |
+  sr f/ 0.0 3.0 fclamp | w |
   w cos-approx | cw |
   params.p1-db 0.08304820237218405 f* exp2-approx | a |
   w sin-approx  params.p1-q 0.05 24.0 fclamp 2.0 f* f/ | alpha |
@@ -103,11 +93,10 @@ dsp: eq-coef-p1
   ( locals: params w cw a alpha a0 inv = 7 )
 ;
 
-( params -- : peaking EQ for band 2 (high-mid). )
-dsp: eq-coef-p2
-  | params:EqParams |
+( params sr -- : peaking EQ for band 2 (high-mid). )
+dsp: eq-coef-p2 | params:EqParams sr -- |
   params.p2-hz 10.0 20000.0 fclamp 6.283185307179586 f*
-  params.sr f/ 0.0 3.0 fclamp | w |
+  sr f/ 0.0 3.0 fclamp | w |
   w cos-approx | cw |
   params.p2-db 0.08304820237218405 f* exp2-approx | a |
   w sin-approx  params.p2-q 0.05 24.0 fclamp 2.0 f* f/ | alpha |
@@ -121,12 +110,11 @@ dsp: eq-coef-p2
   ( locals: params w cw a alpha a0 inv = 7 )
 ;
 
-( params -- : low shelf, RBJ, slope S=1 so the shelf alpha term reduces
+( params sr -- : low shelf, RBJ, slope S=1 so the shelf alpha term reduces
   to 2*sqrt(A)*alpha = sqrt(A)*sw*sqrt(2). )
-dsp: eq-coef-ls
-  | params:EqParams |
+dsp: eq-coef-ls | params:EqParams sr -- |
   params.ls-hz 10.0 20000.0 fclamp 6.283185307179586 f*
-  params.sr f/ 0.0 3.0 fclamp | w |
+  sr f/ 0.0 3.0 fclamp | w |
   w cos-approx | cw |
   params.ls-db 0.08304820237218405 f* exp2-approx | a |
   params.ls-db 0.04152410118609203 f* exp2-approx | sqa |
@@ -144,11 +132,10 @@ dsp: eq-coef-ls
   ( locals: params w cw a sqa beta ap1 am1 a0 inv = 10 )
 ;
 
-( params -- : high shelf, RBJ, slope S=1. )
-dsp: eq-coef-hs
-  | params:EqParams |
+( params sr -- : high shelf, RBJ, slope S=1. )
+dsp: eq-coef-hs | params:EqParams sr -- |
   params.hs-hz 10.0 20000.0 fclamp 6.283185307179586 f*
-  params.sr f/ 0.0 3.0 fclamp | w |
+  sr f/ 0.0 3.0 fclamp | w |
   w cos-approx | cw |
   params.hs-db 0.08304820237218405 f* exp2-approx | a |
   params.hs-db 0.04152410118609203 f* exp2-approx | sqa |
@@ -166,22 +153,15 @@ dsp: eq-coef-hs
   ( locals: params w cw a sqa beta ap1 am1 a0 inv = 10 )
 ;
 
-( ctx state params -- : fill every band's coefficients.  derive-data is
-  unused; each stage gets its own register budget. )
-dsp: eq-derive | ctx state params -- |
-  params eq-coef-hpf
-  params eq-coef-ls
-  params eq-coef-p1
-  params eq-coef-p2
-  params eq-coef-hs
-;
-
-( ctx state params -- : stash sr for the derive stages.  No coefficient
-  math here - derive owns that. )
-dsp: eq-block-prepare
-  | ctx:Ctx state params:EqParams |
+( ctx state params -- : fill every band's coefficients from the raw
+  controls, once per block. )
+dsp: eq-block-prepare | ctx:Ctx state params -- |
   ctx.sr | sr |
-  sr -> params.sr
+  params sr eq-coef-hpf
+  params sr eq-coef-ls
+  params sr eq-coef-p1
+  params sr eq-coef-p2
+  params sr eq-coef-hs
 ;
 
 ( ---- per-sample biquad stages ---------------------------------------- )

@@ -7,7 +7,7 @@
 
   g = tan[pi fc / fs] [svf-g in coeffs.fy gives it at small angles], d =
   damping [0.707 Butterworth, -> 0 resonant].  Callers wanting oversampling
-  run the step several times per sample [call: stages]. )
+  run the step several times per sample [input held]. )
 
 include "../02-shapers/tanh_table.fy"   ( k-tanh-rational-shape-dsp2 )
 

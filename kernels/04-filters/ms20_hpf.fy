@@ -6,8 +6,7 @@
   blowing up. Ear-tuned (no oracle): unlike the g-wet low-pass this has no
   Python reference, so it is judged by listening, per docs/14.
 
-  Lives in its own voice stage on the dsp2 call: spine, so it gets a fresh
-  32-register budget and does not need to be a fused Zig op.
+  Plain fy, inlined into the voice word [no fused Zig op needed].
 
   coeffs: f = 2*tan(pi*fc/fs) ~ 2*svf-g(fc, fs) ; q = svf-damping(res).
   per sample (state lp,bp):
