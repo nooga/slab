@@ -13,8 +13,7 @@ include "../02-shapers/tanh_table.fy"   ( k-tanh-rational-shape-dsp2 )
 
 ( s1p s2p x g d -- lp : one lowpass step; s1p / s2p point at the two
   integrator states. )
-dsp: tpt-svf-lp-step ( s1p s2p x g d -- lp )
-  | s1p s2p x g d |
+dsp: tpt-svf-lp-step | s1p s2p x g d -- lp |
   s1p f@64 | s1 |
   s2p f@64 | s2 |
   2.0 d f* | d2 |
@@ -30,8 +29,7 @@ dsp: tpt-svf-lp-step ( s1p s2p x g d -- lp )
 ( s1p s2p x g d -- lp : the same step with both integrator states written
   back through a soft clip, tanh[1.05*s] - the saturating "lpf4" voicing
   Funk Overload uses. )
-dsp: tpt-svf-lp-sat-step ( s1p s2p x g d -- lp )
-  | s1p s2p x g d |
+dsp: tpt-svf-lp-sat-step | s1p s2p x g d -- lp |
   s1p f@64 | s1 |
   s2p f@64 | s2 |
   2.0 d f* g f+ | a |

@@ -53,74 +53,74 @@ ustruct: CompParams
 ( ctx state params -- : dB -> log2 units [1 dB = 0.16609640474 log2],
   envelope coefficients, linear makeup. )
 dsp: comp-block-prepare
-  | ctx state params |
-  ctx Ctx.sr@ | sr |
-  params CompParams.thresh-db@ 0.16609640474436813 f*
-  params CompParams.thresh-l2-p f!64
+  | ctx:Ctx state params:CompParams |
+  ctx.sr | sr |
+  params.thresh-db 0.16609640474436813 f*
+  -> params.thresh-l2
   ( bind the knee width - stores flush at word END, so reading the
     just-stored param back here would see the old value )
-  params CompParams.knee-db@ 0.16609640474436813 f* 0.000001 4.0 fclamp | kw |
-  kw params CompParams.knee-l2-p f!64
+  params.knee-db 0.16609640474436813 f* 0.000001 4.0 fclamp | kw |
+  kw -> params.knee-l2
   1.0  kw 2.0 f*  f/
-  params CompParams.inv-knee2-p f!64
-  1.0 params CompParams.ratio@ f/ 1.0 f-
-  params CompParams.slope-p f!64
-  params CompParams.atk-s@ sr decay-exp-coeff
-  params CompParams.atk-c-p f!64
-  params CompParams.rel-s@ sr decay-exp-coeff
-  params CompParams.rel-c-p f!64
-  params CompParams.makeup-db@ 0.16609640474436813 f* exp2-approx
-  params CompParams.makeup-lin-p f!64
+  -> params.inv-knee2
+  1.0 params.ratio f/ 1.0 f-
+  -> params.slope
+  params.atk-s sr decay-exp-coeff
+  -> params.atk-c
+  params.rel-s sr decay-exp-coeff
+  -> params.rel-c
+  params.makeup-db 0.16609640474436813 f* exp2-approx
+  -> params.makeup-lin
 ;
 
 
 ( state params -- : envelope follower on the shared detector trace.
   Rising signal takes the attack coefficient, falling the release. )
 dsp: comp-detect
-  | io state params |
-  io Io.det@ | d |
-  state CompState.env@ | e |
-  e d  params CompParams.atk-c@  params CompParams.rel-c@  fsel-lt | c |
+  | io:Io state:CompState params:CompParams |
+  io.det | d |
+  state.env | e |
+  e d  params.atk-c  params.rel-c  fsel-lt | c |
   d  e d f-  c f*  f+
-  state CompState.env-p f!64
+  -> state.env
 ;
 
 ( state params -- : envelope into log2 units. )
 dsp: comp-level
-  | state params |
-  state CompState.env@ 0.000001 1000000.0 fclamp log2-approx
-  state CompState.lvl-l2-p f!64
+  | state:CompState params |
+  state.env 0.000001 1000000.0 fclamp log2-approx
+  -> state.lvl-l2
 ;
 
 ( state params -- : soft-knee overshoot and log2 gain. )
 dsp: comp-knee
-  | state params |
-  state CompState.lvl-l2@ params CompParams.thresh-l2@ f- | l |
-  params CompParams.knee-l2@ 0.5 f* | half |
+  | state:CompState params:CompParams |
+  state.lvl-l2 params.thresh-l2 f- | l |
+  params.knee-l2 0.5 f* | half |
   l half f+ | lh |
-  lh lh f* params CompParams.inv-knee2@ f* | qk |
+  lh lh f* params.inv-knee2 f* | qk |
   l half  qk  l  fsel-lt | sel |
   l  0.0 half f-  0.0  sel  fsel-lt
-  params CompParams.slope@ f*
-  state CompState.grl2-p f!64
+  params.slope f*
+  -> state.grl2
 ;
 
 ( state params -- : back to linear, plus the dB meter cell. )
 dsp: comp-gain
-  | state params |
-  state CompState.grl2@ exp2-approx
-  state CompState.gain-p f!64
-  state CompState.grl2@ -6.0205999132796239 f*
-  state CompState.gr-db-p f!64
+  | state:CompState params |
+  state.grl2 exp2-approx
+  -> state.gain
+  state.grl2 -6.0205999132796239 f*
+  -> state.gr-db
 ;
 
 ( out state params in -- : apply gain + makeup, parallel mix. )
 dsp: comp-apply
-  | out state params in |
-  in Io.in-l@ | x |
-  x state CompState.gain@ f* params CompParams.makeup-lin@ f* | wet |
-  x  1.0 params CompParams.mix@ f-  f*
-  wet params CompParams.mix@ f*  f+
+  | out state:CompState params:CompParams in:Io |
+  in.in-l | x |
+  x state.gain f* params.makeup-lin f* | wet |
+  x  1.0 params.mix f-  f*
+  wet params.mix f*  f+
   out f!64
 ;
 

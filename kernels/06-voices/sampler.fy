@@ -57,37 +57,37 @@ ustruct: SamplerParams
 
 ( ctx state params -- : resampling ratio, tune, loop/start in samples. )
 dsp: sampler-block-prepare
-  | ctx state params |
-  ctx Ctx.sr@ | sr |
-  1.0 sr f/ params SamplerParams.inv-sr-p f!64
-  params SamplerParams.smp-sr@ sr f/ params SamplerParams.sr-ratio-p f!64
-  params SamplerParams.tune@ 0.083333333333 f* exp2-approx params SamplerParams.tune-mult-p f!64
-  params SamplerParams.smp-len@ | len |
-  params SamplerParams.start@ len f* params SamplerParams.start-spl-p f!64
-  params SamplerParams.loop-start@ len f* | ls |
-  ls params SamplerParams.loop-start-spl-p f!64
-  params SamplerParams.loop-end@ len f*  ls 1.0 f+  len  fclamp | le |
-  le params SamplerParams.loop-end-spl-p f!64
-  le ls f- params SamplerParams.loop-len-spl-p f!64
+  | ctx:Ctx state params:SamplerParams |
+  ctx.sr | sr |
+  1.0 sr f/ -> params.inv-sr
+  params.smp-sr sr f/ -> params.sr-ratio
+  params.tune 0.083333333333 f* exp2-approx -> params.tune-mult
+  params.smp-len | len |
+  params.start len f* -> params.start-spl
+  params.loop-start len f* | ls |
+  ls -> params.loop-start-spl
+  params.loop-end len f*  ls 1.0 f+  len  fclamp | le |
+  le -> params.loop-end-spl
+  le ls f- -> params.loop-len-spl
 ;
 
 ( ctx state params -- : trigger playback from the start point. )
 dsp: sampler-note-on
-  | ctx state params |
-  ctx Ctx.hz@ ctx Ctx.vel@ | hz velocity |
-  params SamplerParams.sr-ratio@ params SamplerParams.tune-mult@ f*
-  hz f* params SamplerParams.root-hz@ f/
-  state SamplerState.inc-p f!64
-  params SamplerParams.start-spl@ state SamplerState.phase-p f!64
-  0.0 state SamplerState.age-p f!64
-  1000000000.0 state SamplerState.gate-time-p f!64
-  velocity state SamplerState.vel-p f!64
+  | ctx:Ctx state:SamplerState params:SamplerParams |
+  ctx.hz ctx.vel | hz velocity |
+  params.sr-ratio params.tune-mult f*
+  hz f* params.root-hz f/
+  -> state.inc
+  params.start-spl -> state.phase
+  0.0 -> state.age
+  1000000000.0 -> state.gate-time
+  velocity -> state.vel
 ;
 
 ( ctx state params -- : release the amp envelope. )
 dsp: sampler-note-off
-  | ctx state params |
-  state SamplerState.age@ state SamplerState.gate-time-p f!64
+  | ctx state:SamplerState params |
+  state.age -> state.gate-time
 ;
 
 ( state params -- : interpolated read at phase, then advance with loop
@@ -95,35 +95,35 @@ dsp: sampler-note-off
   the output gated past the sample end, so an empty/exhausted asset is
   silent rather than an out-of-bounds dereference. )
 dsp: smp-read
-  | state params |
-  params SamplerParams.smp-ptr-p p@64 | buf |
-  params SamplerParams.smp-len@ | len |
+  | state:SamplerState params:SamplerParams |
+  params.smp-ptr& p@64 | buf |
+  params.smp-len | len |
   len 2.0 f- 0.0 268435456.0 fclamp | hi |
-  state SamplerState.phase@ | ph |
+  state.phase | ph |
   ph 0.0 hi fclamp | rp |
   buf rp f@i | s0 |
   buf rp 1.0 f+ f@i | s1 |
   s0  s1 s0 f-  rp ffrac f*  f+ | smp |
   smp  ph len 1.0 0.0 fsel-lt  f*
-  state SamplerState.samp-p f!64
-  ph state SamplerState.inc@ f+ | ph2 |
-  ph2 params SamplerParams.loop-end-spl@  ph2  ph2 params SamplerParams.loop-len-spl@ f-  fsel-lt | ph-loop |
+  -> state.samp
+  ph state.inc f+ | ph2 |
+  ph2 params.loop-end-spl  ph2  ph2 params.loop-len-spl f-  fsel-lt | ph-loop |
   ph2 len  ph2  len  fsel-lt | ph-shot |
-  params SamplerParams.loop-on@ 0.5  ph-shot  ph-loop  fsel-lt
-  state SamplerState.phase-p f!64
+  params.loop-on 0.5  ph-shot  ph-loop  fsel-lt
+  -> state.phase
 ;
 
 ( out state params -- : cap-ADSR amp, accumulate into out. )
 dsp: smp-amp
-  | out state params |
-  state SamplerState.age@ params SamplerParams.inv-sr@ f+ | age |
-  age state SamplerState.age-p f!64
+  | out state:SamplerState params:SamplerParams |
+  state.age params.inv-sr f+ | age |
+  age -> state.age
   age
-  params SamplerParams.atk@ params SamplerParams.dec@ params SamplerParams.sus@
-  state SamplerState.gate-time@ params SamplerParams.rel@
+  params.atk params.dec params.sus
+  state.gate-time params.rel
   adsr-cap | env |
   out f@64
-  state SamplerState.samp@ env f*  state SamplerState.vel@ f*  params SamplerParams.level@ f*
+  state.samp env f*  state.vel f*  params.level f*
   f+
   out f!64
 ;

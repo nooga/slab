@@ -47,83 +47,83 @@ ustruct: SnareParams
 
 ( state params sample-rate -- : block-rate coefficient fill. )
 dsp: snare-prepare
-  | state params sr |
+  | state params:SnareParams sr |
   1.0 sr f/
-  params SnareParams.inv-sample-rate-p f!64
-  params SnareParams.body-decay@ sr decay-exp-coeff
-  params SnareParams.body-coeff-p f!64
-  params SnareParams.snap-decay@ sr decay-exp-coeff
-  params SnareParams.snap-coeff-p f!64
-  params SnareParams.snap-hz@ sr svf2-coeff
-  params SnareParams.svf-f-p f!64
+  -> params.inv-sample-rate
+  params.body-decay sr decay-exp-coeff
+  -> params.body-coeff
+  params.snap-decay sr decay-exp-coeff
+  -> params.snap-coeff
+  params.snap-hz sr svf2-coeff
+  -> params.svf-f
   0.02 sr decay-exp-coeff
-  params SnareParams.pitch-coeff-p f!64
+  -> params.pitch-coeff
 ;
 
 ( state params gate velocity -- : fire the snare when gate is 1. )
 dsp: snare-trigger
-  | state params gate velocity |
-  0.5 gate  velocity 0.0 1.0 fclamp  state SnareState.vel@  fsel-lt
-  state SnareState.vel-p f!64
-  0.5 gate 1.0 state SnareState.body-env@ fsel-lt state SnareState.body-env-p f!64
-  0.5 gate 1.0 state SnareState.snap-env@ fsel-lt state SnareState.snap-env-p f!64
-  0.5 gate 0.0  state SnareState.phase1@ fsel-lt state SnareState.phase1-p f!64
-  0.5 gate 0.31 state SnareState.phase2@ fsel-lt state SnareState.phase2-p f!64
-  0.5 gate 0.7654321 state SnareState.noise-rng@ fsel-lt state SnareState.noise-rng-p f!64
-  0.5 gate 1.0 state SnareState.pitch-env@ fsel-lt state SnareState.pitch-env-p f!64
+  | state:SnareState params gate velocity |
+  0.5 gate  velocity 0.0 1.0 fclamp  state.vel  fsel-lt
+  -> state.vel
+  0.5 gate 1.0 state.body-env fsel-lt -> state.body-env
+  0.5 gate 1.0 state.snap-env fsel-lt -> state.snap-env
+  0.5 gate 0.0  state.phase1 fsel-lt -> state.phase1
+  0.5 gate 0.31 state.phase2 fsel-lt -> state.phase2
+  0.5 gate 0.7654321 state.noise-rng fsel-lt -> state.noise-rng
+  0.5 gate 1.0 state.pitch-env fsel-lt -> state.pitch-env
 ;
 
 ( state params -- : shell - two pitch-pulsed sine modes -> mix. The
   upper mode rides the body env SQUARED - half the decay time - so the
   pair thumps instead of ringing like a bell. )
 dsp: snare-shell-write
-  | state params |
-  state SnareState.pitch-env-p params SnareParams.pitch-coeff@ decay-exp-step
+  | state:SnareState params:SnareParams |
+  state.pitch-env& params.pitch-coeff decay-exp-step
   | penv |
-  params SnareParams.tune-hz@  1.0 1.4 penv f* f+  f*
-  params SnareParams.inv-sample-rate@ f*
+  params.tune-hz  1.0 1.4 penv f* f+  f*
+  params.inv-sample-rate f*
   | dt |
-  state SnareState.phase1@ dt f+ ffrac
-  dup state SnareState.phase1-p f!64
+  state.phase1 dt f+ ffrac
+  dup -> state.phase1
   sine-shape
   | p1 |
-  state SnareState.phase2@ dt 1.83 f* f+ ffrac
-  dup state SnareState.phase2-p f!64
+  state.phase2 dt 1.83 f* f+ ffrac
+  dup -> state.phase2
   sine-shape
   | p2 |
-  state SnareState.body-env-p params SnareParams.body-coeff@ decay-exp-step
+  state.body-env& params.body-coeff decay-exp-step
   | benv |
   p1 benv f*
   p2 benv benv f* f* 0.5 f*
   f+ 0.85 f*
-  state SnareState.mix-p f!64
+  -> state.mix
 ;
 
 ( state params -- : wires - high-passed noise * snap env, added to mix. )
 dsp: snare-snap-write
-  | state params |
-  state SnareState.mix@
-  state SnareState.svf-lp-p
-  state SnareState.noise-rng-p noise-step
-  params SnareParams.svf-f@
+  | state:SnareState params:SnareParams |
+  state.mix
+  state.svf-lp&
+  state.noise-rng& noise-step
+  params.svf-f
   1.3
   svf2-hp-step
-  state SnareState.snap-env-p params SnareParams.snap-coeff@ decay-exp-step
+  state.snap-env& params.snap-coeff decay-exp-step
   f*
-  params SnareParams.snap-level@ f*
+  params.snap-level f*
   f+
-  state SnareState.mix-p f!64
+  -> state.mix
 ;
 
 ( out state params -- : drive the mix and accumulate into out. )
 dsp: snare-accum
-  | out state params |
+  | out state:SnareState params:SnareParams |
   out f@64
-  state SnareState.mix@
-  state SnareState.vel@ f*
+  state.mix
+  state.vel f*
   1.4 f*
   k-tanh-rational-shape-dsp2
-  params SnareParams.level@ f*
+  params.level f*
   f+
   out f!64
 ;

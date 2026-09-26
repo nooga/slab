@@ -40,61 +40,61 @@ ustruct: KickParams
 
 ( state params sample-rate -- : block-rate coefficient fill. )
 dsp: kick-prepare
-  | state params sr |
+  | state params:KickParams sr |
   1.0 sr f/
-  params KickParams.inv-sample-rate-p f!64
-  params KickParams.decay-s@ sr decay-exp-coeff
-  params KickParams.amp-coeff-p f!64
-  params KickParams.sweep-time@ sr decay-exp-coeff
-  params KickParams.pitch-coeff-p f!64
+  -> params.inv-sample-rate
+  params.decay-s sr decay-exp-coeff
+  -> params.amp-coeff
+  params.sweep-time sr decay-exp-coeff
+  -> params.pitch-coeff
   0.0015 sr decay-exp-coeff
-  params KickParams.click-coeff-p f!64
+  -> params.click-coeff
 ;
 
 ( state params gate velocity -- : fire the kick when gate is 1; gate 0
   leaves the voice untouched. Branchless so a multi-slot note-on can call
   every slot's trigger with per-slot gates. )
 dsp: kick-trigger
-  | state params gate velocity |
-  0.5 gate  velocity 0.0 1.0 fclamp  state KickState.vel@  fsel-lt
-  state KickState.vel-p f!64
-  0.5 gate 1.0 state KickState.amp-env@   fsel-lt state KickState.amp-env-p f!64
-  0.5 gate 1.0 state KickState.pitch-env@ fsel-lt state KickState.pitch-env-p f!64
-  0.5 gate 1.0 state KickState.click-env@ fsel-lt state KickState.click-env-p f!64
-  0.5 gate 0.0 state KickState.phase@     fsel-lt state KickState.phase-p f!64
-  0.5 gate 0.1234567 state KickState.noise-rng@ fsel-lt state KickState.noise-rng-p f!64
+  | state:KickState params gate velocity |
+  0.5 gate  velocity 0.0 1.0 fclamp  state.vel  fsel-lt
+  -> state.vel
+  0.5 gate 1.0 state.amp-env   fsel-lt -> state.amp-env
+  0.5 gate 1.0 state.pitch-env fsel-lt -> state.pitch-env
+  0.5 gate 1.0 state.click-env fsel-lt -> state.click-env
+  0.5 gate 0.0 state.phase     fsel-lt -> state.phase
+  0.5 gate 0.1234567 state.noise-rng fsel-lt -> state.noise-rng
 ;
 
 ( state params -- : swept sine body -> mix scratch. )
 dsp: kick-osc-write
-  | state params |
+  | state:KickState params:KickParams |
   ( pitch envelope -> instantaneous frequency -> phase advance )
-  state KickState.pitch-env-p params KickParams.pitch-coeff@ decay-exp-step
+  state.pitch-env& params.pitch-coeff decay-exp-step
   | penv |
-  params KickParams.tune-hz@
-  1.0  params KickParams.sweep-amount@ penv f*  f+
+  params.tune-hz
+  1.0  params.sweep-amount penv f*  f+
   f*
-  params KickParams.inv-sample-rate@ f*
-  state KickState.phase@ f+ ffrac
-  dup state KickState.phase-p f!64
+  params.inv-sample-rate f*
+  state.phase f+ ffrac
+  dup -> state.phase
   sine-shape
-  state KickState.mix-p f!64
+  -> state.mix
 ;
 
 ( out state params -- : body * amp env + click, driven, into out. )
 dsp: kick-accum
-  | out state params |
+  | out state:KickState params:KickParams |
   out f@64
-  state KickState.mix@
-  state KickState.amp-env-p params KickParams.amp-coeff@ decay-exp-step
+  state.mix
+  state.amp-env& params.amp-coeff decay-exp-step
   f*
-  state KickState.click-env-p params KickParams.click-coeff@ decay-exp-step
-  state KickState.noise-rng-p noise-step f*
-  params KickParams.click-level@ f* f+
-  state KickState.vel@ f*
-  params KickParams.drive@ f*
+  state.click-env& params.click-coeff decay-exp-step
+  state.noise-rng& noise-step f*
+  params.click-level f* f+
+  state.vel f*
+  params.drive f*
   k-tanh-rational-shape-dsp2
-  params KickParams.level@ f*
+  params.level f*
   f+
   out f!64
 ;

@@ -64,106 +64,106 @@ ustruct: EqParams
   stage is forced to passthrough (b0=1, rest 0) with a per-coeff fsel so
   the audio path never branches. )
 dsp: eq-coef-hpf
-  | params |
-  params EqParams.hpf-hz@ 10.0 20000.0 fclamp 6.283185307179586 f*
-  params EqParams.sr@ f/ 0.0 3.0 fclamp | w |
+  | params:EqParams |
+  params.hpf-hz 10.0 20000.0 fclamp 6.283185307179586 f*
+  params.sr f/ 0.0 3.0 fclamp | w |
   w cos-approx | cw |
   w sin-approx 0.7071067811865476 f* | alpha |   ( sw/(2Q), Q=1/sqrt2 )
   1.0 alpha f+ | a0 |
   1.0 a0 f/ | inv |
   1.0 cw f+ | omc |                              ( 1 + cos w )
-  params EqParams.hpf-on@ | on |
+  params.hpf-on | on |
   ( b0 = (1+cw)/2 * inv, else 1 )
-  0.5 on  omc 0.5 f* inv f*  1.0  fsel-lt params EqParams.hpf-b0-p f!64
+  0.5 on  omc 0.5 f* inv f*  1.0  fsel-lt -> params.hpf-b0
   ( b1 = -(1+cw) * inv, else 0 )
-  0.5 on  0.0 omc f- inv f*  0.0  fsel-lt params EqParams.hpf-b1-p f!64
+  0.5 on  0.0 omc f- inv f*  0.0  fsel-lt -> params.hpf-b1
   ( b2 = (1+cw)/2 * inv, else 0 )
-  0.5 on  omc 0.5 f* inv f*  0.0  fsel-lt params EqParams.hpf-b2-p f!64
+  0.5 on  omc 0.5 f* inv f*  0.0  fsel-lt -> params.hpf-b2
   ( a1 = -2 cw * inv, else 0 )
-  0.5 on  -2.0 cw f* inv f*  0.0  fsel-lt params EqParams.hpf-a1-p f!64
+  0.5 on  -2.0 cw f* inv f*  0.0  fsel-lt -> params.hpf-a1
   ( a2 = (1-alpha) * inv, else 0 )
-  0.5 on  1.0 alpha f- inv f*  0.0  fsel-lt params EqParams.hpf-a2-p f!64
+  0.5 on  1.0 alpha f- inv f*  0.0  fsel-lt -> params.hpf-a2
   ( locals: params w cw alpha a0 inv omc on = 8 )
 ;
 
 ( params -- : peaking EQ for band 1 (low-mid). )
 dsp: eq-coef-p1
-  | params |
-  params EqParams.p1-hz@ 10.0 20000.0 fclamp 6.283185307179586 f*
-  params EqParams.sr@ f/ 0.0 3.0 fclamp | w |
+  | params:EqParams |
+  params.p1-hz 10.0 20000.0 fclamp 6.283185307179586 f*
+  params.sr f/ 0.0 3.0 fclamp | w |
   w cos-approx | cw |
-  params EqParams.p1-db@ 0.08304820237218405 f* exp2-approx | a |
-  w sin-approx  params EqParams.p1-q@ 0.05 24.0 fclamp 2.0 f* f/ | alpha |
+  params.p1-db 0.08304820237218405 f* exp2-approx | a |
+  w sin-approx  params.p1-q 0.05 24.0 fclamp 2.0 f* f/ | alpha |
   1.0 alpha a f/ f+ | a0 |
   1.0 a0 f/ | inv |
-  1.0 alpha a f* f+ inv f* params EqParams.p1-b0-p f!64
-  -2.0 cw f* inv f* params EqParams.p1-b1-p f!64
-  1.0 alpha a f* f- inv f* params EqParams.p1-b2-p f!64
-  -2.0 cw f* inv f* params EqParams.p1-a1-p f!64
-  1.0 alpha a f/ f- inv f* params EqParams.p1-a2-p f!64
+  1.0 alpha a f* f+ inv f* -> params.p1-b0
+  -2.0 cw f* inv f* -> params.p1-b1
+  1.0 alpha a f* f- inv f* -> params.p1-b2
+  -2.0 cw f* inv f* -> params.p1-a1
+  1.0 alpha a f/ f- inv f* -> params.p1-a2
   ( locals: params w cw a alpha a0 inv = 7 )
 ;
 
 ( params -- : peaking EQ for band 2 (high-mid). )
 dsp: eq-coef-p2
-  | params |
-  params EqParams.p2-hz@ 10.0 20000.0 fclamp 6.283185307179586 f*
-  params EqParams.sr@ f/ 0.0 3.0 fclamp | w |
+  | params:EqParams |
+  params.p2-hz 10.0 20000.0 fclamp 6.283185307179586 f*
+  params.sr f/ 0.0 3.0 fclamp | w |
   w cos-approx | cw |
-  params EqParams.p2-db@ 0.08304820237218405 f* exp2-approx | a |
-  w sin-approx  params EqParams.p2-q@ 0.05 24.0 fclamp 2.0 f* f/ | alpha |
+  params.p2-db 0.08304820237218405 f* exp2-approx | a |
+  w sin-approx  params.p2-q 0.05 24.0 fclamp 2.0 f* f/ | alpha |
   1.0 alpha a f/ f+ | a0 |
   1.0 a0 f/ | inv |
-  1.0 alpha a f* f+ inv f* params EqParams.p2-b0-p f!64
-  -2.0 cw f* inv f* params EqParams.p2-b1-p f!64
-  1.0 alpha a f* f- inv f* params EqParams.p2-b2-p f!64
-  -2.0 cw f* inv f* params EqParams.p2-a1-p f!64
-  1.0 alpha a f/ f- inv f* params EqParams.p2-a2-p f!64
+  1.0 alpha a f* f+ inv f* -> params.p2-b0
+  -2.0 cw f* inv f* -> params.p2-b1
+  1.0 alpha a f* f- inv f* -> params.p2-b2
+  -2.0 cw f* inv f* -> params.p2-a1
+  1.0 alpha a f/ f- inv f* -> params.p2-a2
   ( locals: params w cw a alpha a0 inv = 7 )
 ;
 
 ( params -- : low shelf, RBJ, slope S=1 so the shelf alpha term reduces
   to 2*sqrt(A)*alpha = sqrt(A)*sw*sqrt(2). )
 dsp: eq-coef-ls
-  | params |
-  params EqParams.ls-hz@ 10.0 20000.0 fclamp 6.283185307179586 f*
-  params EqParams.sr@ f/ 0.0 3.0 fclamp | w |
+  | params:EqParams |
+  params.ls-hz 10.0 20000.0 fclamp 6.283185307179586 f*
+  params.sr f/ 0.0 3.0 fclamp | w |
   w cos-approx | cw |
-  params EqParams.ls-db@ 0.08304820237218405 f* exp2-approx | a |
-  params EqParams.ls-db@ 0.04152410118609203 f* exp2-approx | sqa |
+  params.ls-db 0.08304820237218405 f* exp2-approx | a |
+  params.ls-db 0.04152410118609203 f* exp2-approx | sqa |
   w sin-approx sqa f* 1.4142135623730951 f* | beta |   ( 2*sqrt(A)*alpha )
   a 1.0 f+ | ap1 |
   a 1.0 f- | am1 |
   ( a0 = ap1 + am1*cw + beta )
   ap1 am1 cw f* f+ beta f+ | a0 |
   1.0 a0 f/ | inv |
-  a  ap1 am1 cw f* f- beta f+  f* inv f* params EqParams.ls-b0-p f!64
-  2.0 a f*  am1 ap1 cw f* f-  f* inv f* params EqParams.ls-b1-p f!64
-  a  ap1 am1 cw f* f- beta f-  f* inv f* params EqParams.ls-b2-p f!64
-  -2.0  am1 ap1 cw f* f+  f* inv f* params EqParams.ls-a1-p f!64
-  ap1 am1 cw f* f+ beta f-  inv f* params EqParams.ls-a2-p f!64
+  a  ap1 am1 cw f* f- beta f+  f* inv f* -> params.ls-b0
+  2.0 a f*  am1 ap1 cw f* f-  f* inv f* -> params.ls-b1
+  a  ap1 am1 cw f* f- beta f-  f* inv f* -> params.ls-b2
+  -2.0  am1 ap1 cw f* f+  f* inv f* -> params.ls-a1
+  ap1 am1 cw f* f+ beta f-  inv f* -> params.ls-a2
   ( locals: params w cw a sqa beta ap1 am1 a0 inv = 10 )
 ;
 
 ( params -- : high shelf, RBJ, slope S=1. )
 dsp: eq-coef-hs
-  | params |
-  params EqParams.hs-hz@ 10.0 20000.0 fclamp 6.283185307179586 f*
-  params EqParams.sr@ f/ 0.0 3.0 fclamp | w |
+  | params:EqParams |
+  params.hs-hz 10.0 20000.0 fclamp 6.283185307179586 f*
+  params.sr f/ 0.0 3.0 fclamp | w |
   w cos-approx | cw |
-  params EqParams.hs-db@ 0.08304820237218405 f* exp2-approx | a |
-  params EqParams.hs-db@ 0.04152410118609203 f* exp2-approx | sqa |
+  params.hs-db 0.08304820237218405 f* exp2-approx | a |
+  params.hs-db 0.04152410118609203 f* exp2-approx | sqa |
   w sin-approx sqa f* 1.4142135623730951 f* | beta |
   a 1.0 f+ | ap1 |
   a 1.0 f- | am1 |
   ( a0 = ap1 - am1*cw + beta )
   ap1 am1 cw f* f- beta f+ | a0 |
   1.0 a0 f/ | inv |
-  a  ap1 am1 cw f* f+ beta f+  f* inv f* params EqParams.hs-b0-p f!64
-  -2.0 a f*  am1 ap1 cw f* f+  f* inv f* params EqParams.hs-b1-p f!64
-  a  ap1 am1 cw f* f+ beta f-  f* inv f* params EqParams.hs-b2-p f!64
-  2.0  am1 ap1 cw f* f-  f* inv f* params EqParams.hs-a1-p f!64
-  ap1 am1 cw f* f- beta f-  inv f* params EqParams.hs-a2-p f!64
+  a  ap1 am1 cw f* f+ beta f+  f* inv f* -> params.hs-b0
+  -2.0 a f*  am1 ap1 cw f* f+  f* inv f* -> params.hs-b1
+  a  ap1 am1 cw f* f+ beta f-  f* inv f* -> params.hs-b2
+  2.0  am1 ap1 cw f* f-  f* inv f* -> params.hs-a1
+  ap1 am1 cw f* f- beta f-  inv f* -> params.hs-a2
   ( locals: params w cw a sqa beta ap1 am1 a0 inv = 10 )
 ;
 
@@ -181,70 +181,70 @@ dsp: eq-derive
 ( ctx state params -- : stash sr for the derive stages.  No coefficient
   math here - derive owns that. )
 dsp: eq-block-prepare
-  | ctx state params |
-  ctx Ctx.sr@ | sr |
-  sr params EqParams.sr-p f!64
+  | ctx:Ctx state params:EqParams |
+  ctx.sr | sr |
+  sr -> params.sr
 ;
 
 ( ---- per-sample biquad stages (one call: stage per band) ------------ )
 
 ( in state params -- : high-pass reads the input cell, writes state.sig. )
 dsp: eq-tick-hpf
-  | in state params |
-  in Io.in-l@ | x |
-  params EqParams.hpf-b0@ x f* state EqState.hpf-z1@ f+ | y |
-  params EqParams.hpf-b1@ x f*  params EqParams.hpf-a1@ y f* f-  state EqState.hpf-z2@ f+
-  state EqState.hpf-z1-p f!64
-  params EqParams.hpf-b2@ x f*  params EqParams.hpf-a2@ y f* f-
-  state EqState.hpf-z2-p f!64
-  y state EqState.sig-p f!64
+  | in:Io state:EqState params:EqParams |
+  in.in-l | x |
+  params.hpf-b0 x f* state.hpf-z1 f+ | y |
+  params.hpf-b1 x f*  params.hpf-a1 y f* f-  state.hpf-z2 f+
+  -> state.hpf-z1
+  params.hpf-b2 x f*  params.hpf-a2 y f* f-
+  -> state.hpf-z2
+  y -> state.sig
 ;
 
 ( state params -- : low shelf, reads/writes state.sig. )
 dsp: eq-tick-ls
-  | state params |
-  state EqState.sig@ | x |
-  params EqParams.ls-b0@ x f* state EqState.ls-z1@ f+ | y |
-  params EqParams.ls-b1@ x f*  params EqParams.ls-a1@ y f* f-  state EqState.ls-z2@ f+
-  state EqState.ls-z1-p f!64
-  params EqParams.ls-b2@ x f*  params EqParams.ls-a2@ y f* f-
-  state EqState.ls-z2-p f!64
-  y state EqState.sig-p f!64
+  | state:EqState params:EqParams |
+  state.sig | x |
+  params.ls-b0 x f* state.ls-z1 f+ | y |
+  params.ls-b1 x f*  params.ls-a1 y f* f-  state.ls-z2 f+
+  -> state.ls-z1
+  params.ls-b2 x f*  params.ls-a2 y f* f-
+  -> state.ls-z2
+  y -> state.sig
 ;
 
 ( state params -- : low-mid peak. )
 dsp: eq-tick-p1
-  | state params |
-  state EqState.sig@ | x |
-  params EqParams.p1-b0@ x f* state EqState.p1-z1@ f+ | y |
-  params EqParams.p1-b1@ x f*  params EqParams.p1-a1@ y f* f-  state EqState.p1-z2@ f+
-  state EqState.p1-z1-p f!64
-  params EqParams.p1-b2@ x f*  params EqParams.p1-a2@ y f* f-
-  state EqState.p1-z2-p f!64
-  y state EqState.sig-p f!64
+  | state:EqState params:EqParams |
+  state.sig | x |
+  params.p1-b0 x f* state.p1-z1 f+ | y |
+  params.p1-b1 x f*  params.p1-a1 y f* f-  state.p1-z2 f+
+  -> state.p1-z1
+  params.p1-b2 x f*  params.p1-a2 y f* f-
+  -> state.p1-z2
+  y -> state.sig
 ;
 
 ( state params -- : high-mid peak. )
 dsp: eq-tick-p2
-  | state params |
-  state EqState.sig@ | x |
-  params EqParams.p2-b0@ x f* state EqState.p2-z1@ f+ | y |
-  params EqParams.p2-b1@ x f*  params EqParams.p2-a1@ y f* f-  state EqState.p2-z2@ f+
-  state EqState.p2-z1-p f!64
-  params EqParams.p2-b2@ x f*  params EqParams.p2-a2@ y f* f-
-  state EqState.p2-z2-p f!64
-  y state EqState.sig-p f!64
+  | state:EqState params:EqParams |
+  state.sig | x |
+  params.p2-b0 x f* state.p2-z1 f+ | y |
+  params.p2-b1 x f*  params.p2-a1 y f* f-  state.p2-z2 f+
+  -> state.p2-z1
+  params.p2-b2 x f*  params.p2-a2 y f* f-
+  -> state.p2-z2
+  y -> state.sig
 ;
 
 ( out state params -- : high shelf, reads state.sig, writes out. )
 dsp: eq-tick-hs
-  | out state params |
-  state EqState.sig@ | x |
-  params EqParams.hs-b0@ x f* state EqState.hs-z1@ f+ | y |
-  params EqParams.hs-b1@ x f*  params EqParams.hs-a1@ y f* f-  state EqState.hs-z2@ f+
-  state EqState.hs-z1-p f!64
-  params EqParams.hs-b2@ x f*  params EqParams.hs-a2@ y f* f-
-  state EqState.hs-z2-p f!64
+  | out state:EqState params:EqParams |
+  state.sig | x |
+  params.hs-b0 x f* state.hs-z1 f+ | y |
+  params.hs-b1 x f*  params.hs-a1 y f* f-  state.hs-z2 f+
+  -> state.hs-z1
+  params.hs-b2 x f*  params.hs-a2 y f* f-
+  -> state.hs-z2
   y out f!64
 ;
 

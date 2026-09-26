@@ -22,27 +22,27 @@ dsp: svf2-coeff
 
 ( state in f q -- band : one band-pass step, state advanced in place. )
 dsp: svf2-bp-step
-  | state in f q |
-  state Svf2State.lp@  f state Svf2State.bp@ f*  f+
+  | state:Svf2State in f q |
+  state.lp  f state.bp f*  f+
   | lp |
-  in lp f-  q state Svf2State.bp@ f*  f-
+  in lp f-  q state.bp f*  f-
   | hp |
-  state Svf2State.bp@  f hp f*  f+
+  state.bp  f hp f*  f+
   | bp |
-  lp state Svf2State.lp-p f!64
-  bp state Svf2State.bp-p f!64
+  lp -> state.lp
+  bp -> state.bp
   bp
 ;
 
 ( state in f q -- high : one high-pass step, state advanced in place. )
 dsp: svf2-hp-step
-  | state in f q |
-  state Svf2State.lp@  f state Svf2State.bp@ f*  f+
+  | state:Svf2State in f q |
+  state.lp  f state.bp f*  f+
   | lp |
-  in lp f-  q state Svf2State.bp@ f*  f-
+  in lp f-  q state.bp f*  f-
   | hp |
-  state Svf2State.bp@  f hp f*  f+
-  state Svf2State.bp-p f!64
-  lp state Svf2State.lp-p f!64
+  state.bp  f hp f*  f+
+  -> state.bp
+  lp -> state.lp
   hp
 ;

@@ -13,57 +13,51 @@ ustruct: RawOscParams
 
 ( ctx state params -- : update block-rate derived params. )
 dsp: raw-osc-prepare
-  | ctx state params |
-  ctx Ctx.sr@ | sample-rate |
+  | ctx:Ctx state params:RawOscParams |
+  ctx.sr | sample-rate |
   1.0
   sample-rate
   f/
-  params RawOscParams.inv-sample-rate-p
-  f!64
+  -> params.inv-sample-rate
 ;
 
 ( ctx state params -- : start a note and reset phase. )
 dsp: raw-osc-note-on
-  | ctx state params |
-  ctx Ctx.hz@ ctx Ctx.vel@ | hz velocity |
+  | ctx:Ctx state:RawOscState params:RawOscParams |
+  ctx.hz ctx.vel | hz velocity |
   hz
-  params RawOscParams.note-hz-p
-  f!64
+  -> params.note-hz
   velocity
-  params RawOscParams.amp-p
-  f!64
+  -> params.amp
   0.0
-  state RawOscState.phase-p
-  f!64
+  -> state.phase
 ;
 
 ( ctx state params -- : stop the note immediately. )
 dsp: raw-osc-note-off
-  | ctx state params |
+  | ctx state params:RawOscParams |
   0.0
-  params RawOscParams.amp-p
-  f!64
+  -> params.amp
 ;
 
 ( io ctx state params -- : render one mono saw sample. )
 dsp: raw-osc-render
-  | out ctx state params |
-  state RawOscState.phase@
-  params RawOscParams.note-hz@
-  params RawOscParams.inv-sample-rate@
+  | out ctx state:RawOscState params:RawOscParams |
+  state.phase
+  params.note-hz
+  params.inv-sample-rate
   f*
   f+
   fwrap01
   | phase |
   phase
-  state RawOscState.phase-p
-  f!64
+  -> state.phase
   phase
   2.0
   f*
   1.0
   f-
-  params RawOscParams.amp@
+  params.amp
   f*
   out
   f!64

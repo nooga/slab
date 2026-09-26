@@ -32,8 +32,8 @@ ustruct: Drum2Master
 
 ( ctx state params -- : fill every slot's derived coefficients. )
 dsp: drum2-prepare
-  | ctx state params |
-  ctx Ctx.sr@ | sr |
+  | ctx:Ctx state params |
+  ctx.sr | sr |
   state params sr kick-prepare
   state KickState.size ptr+
   params KickParams.size ptr+
@@ -52,8 +52,8 @@ dsp: drum2-prepare
 ( ctx state params -- : gate each slot's trigger by the
   note's pitch class - C kick, D snare, D# clap, F# CH, A tom, A# OH. )
 dsp: drum2-note-on
-  | ctx state params |
-  ctx Ctx.hz@ ctx Ctx.vel@ | pitch velocity |
+  | ctx:Ctx state params |
+  ctx.hz ctx.vel | pitch velocity |
   pitch 12.0 f/ ffrac 12.0 f*
   | pc |
   ( accent: blend the incoming velocity toward full force )
@@ -161,11 +161,11 @@ dsp: d2-tom-accum
 dsp: d2-master
   | out state params |
   params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+ HatParams.size ptr+ KickParams.size ptr+
-  | master |
+  | master:Drum2Master |
   out f@64
-  master Drum2Master.drive@ f*
+  master.drive f*
   k-tanh-rational-shape-dsp2
-  master Drum2Master.level@ f*
+  master.level f*
   out f!64
 ;
 

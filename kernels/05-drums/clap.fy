@@ -38,36 +38,36 @@ ustruct: ClapParams
 
 ( state params sample-rate -- : block-rate coefficient fill. )
 dsp: clap-prepare
-  | state params sr |
+  | state params:ClapParams sr |
   1.0 sr f/
-  params ClapParams.inv-sample-rate-p f!64
+  -> params.inv-sample-rate
   0.025 sr decay-exp-coeff
-  params ClapParams.burst-coeff-p f!64
-  params ClapParams.decay-s@ sr decay-exp-coeff
-  params ClapParams.tail-coeff-p f!64
-  params ClapParams.tone-hz@ sr svf2-coeff
-  params ClapParams.svf-f-p f!64
-  1.0  params ClapParams.spread-s@ 0.003 0.05 fclamp sr f*  f/
-  params ClapParams.spread-inc-p f!64
+  -> params.burst-coeff
+  params.decay-s sr decay-exp-coeff
+  -> params.tail-coeff
+  params.tone-hz sr svf2-coeff
+  -> params.svf-f
+  1.0  params.spread-s 0.003 0.05 fclamp sr f*  f/
+  -> params.spread-inc
 ;
 
 ( state params gate velocity -- : fire the clap when gate is 1. )
 dsp: clap-trigger
-  | state params gate velocity |
-  0.5 gate  velocity 0.0 1.0 fclamp  state ClapState.vel@  fsel-lt
-  state ClapState.vel-p f!64
-  0.5 gate 1.0 state ClapState.env@ fsel-lt state ClapState.env-p f!64
-  0.5 gate 0.0 state ClapState.repeat-phase@ fsel-lt state ClapState.repeat-phase-p f!64
-  0.5 gate 3.0 state ClapState.repeats-left@ fsel-lt state ClapState.repeats-left-p f!64
-  0.5 gate 0.5551212 state ClapState.noise-rng@ fsel-lt state ClapState.noise-rng-p f!64
+  | state:ClapState params gate velocity |
+  0.5 gate  velocity 0.0 1.0 fclamp  state.vel  fsel-lt
+  -> state.vel
+  0.5 gate 1.0 state.env fsel-lt -> state.env
+  0.5 gate 0.0 state.repeat-phase fsel-lt -> state.repeat-phase
+  0.5 gate 3.0 state.repeats-left fsel-lt -> state.repeats-left
+  0.5 gate 0.5551212 state.noise-rng fsel-lt -> state.noise-rng
 ;
 
 ( state params -- : advance the retrigger envelope machinery in place. )
 dsp: clap-env-write
-  | state params |
-  state ClapState.repeat-phase@ params ClapParams.spread-inc@ f+
+  | state:ClapState params:ClapParams |
+  state.repeat-phase params.spread-inc f+
   | rp |
-  state ClapState.repeats-left@
+  state.repeats-left
   | reps |
   ( retrig fires when the spread interval elapses and repeats remain )
   rp 1.0
@@ -76,28 +76,28 @@ dsp: clap-env-write
   fsel-lt
   | trig |
   ( burst decay while repeats remain, tail decay after )
-  0.5 reps params ClapParams.burst-coeff@ params ClapParams.tail-coeff@ fsel-lt
+  0.5 reps params.burst-coeff params.tail-coeff fsel-lt
   | coeff |
-  trig 0.5  state ClapState.env@ coeff f*  1.0  fsel-lt
-  state ClapState.env-p f!64
-  rp trig f- state ClapState.repeat-phase-p f!64
-  reps trig f- state ClapState.repeats-left-p f!64
+  trig 0.5  state.env coeff f*  1.0  fsel-lt
+  -> state.env
+  rp trig f- -> state.repeat-phase
+  reps trig f- -> state.repeats-left
 ;
 
 ( out state params -- : band-passed noise * env, driven into out. )
 dsp: clap-accum
-  | out state params |
+  | out state:ClapState params:ClapParams |
   out f@64
-  state ClapState.svf-lp-p
-  state ClapState.noise-rng-p noise-step
-  params ClapParams.svf-f@
+  state.svf-lp&
+  state.noise-rng& noise-step
+  params.svf-f
   0.7
   svf2-bp-step
-  state ClapState.env@ f*
+  state.env f*
   2.2 f*
-  state ClapState.vel@ f*
+  state.vel f*
   k-tanh-rational-shape-dsp2
-  params ClapParams.level@ f*
+  params.level f*
   f+
   out f!64
 ;

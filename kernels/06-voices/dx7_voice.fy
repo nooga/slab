@@ -35,42 +35,42 @@ ustruct: Dx7VoiceParams
 ( state params -- out : one voice sample. Each op modulated only by higher
   ops already computed; carriers summed. )
 dsp: dx7-voice-step
-  | state params |
+  | state:Dx7VoiceState params:Dx7VoiceParams |
   ( op5: no modulators )
-  state Dx7VoiceState.op5-phase-p params Dx7VoiceParams.inc5@ 0.0 params Dx7VoiceParams.lvl5@ params Dx7VoiceParams.fb5@ fm-op-step
+  state.op5-phase& params.inc5 0.0 params.lvl5 params.fb5 fm-op-step
   | out5 |
   ( op4: w45*out5 )
-  state Dx7VoiceState.op4-phase-p params Dx7VoiceParams.inc4@
-    params Dx7VoiceParams.w45@ out5 f*
-  params Dx7VoiceParams.lvl4@ params Dx7VoiceParams.fb4@ fm-op-step
+  state.op4-phase& params.inc4
+    params.w45 out5 f*
+  params.lvl4 params.fb4 fm-op-step
   | out4 |
   ( op3: w34*out4 + w35*out5 )
-  state Dx7VoiceState.op3-phase-p params Dx7VoiceParams.inc3@
-    params Dx7VoiceParams.w34@ out4 f* params Dx7VoiceParams.w35@ out5 f* f+
-  params Dx7VoiceParams.lvl3@ params Dx7VoiceParams.fb3@ fm-op-step
+  state.op3-phase& params.inc3
+    params.w34 out4 f* params.w35 out5 f* f+
+  params.lvl3 params.fb3 fm-op-step
   | out3 |
   ( op2: w23*out3 + w24*out4 + w25*out5 )
-  state Dx7VoiceState.op2-phase-p params Dx7VoiceParams.inc2@
-    params Dx7VoiceParams.w23@ out3 f* params Dx7VoiceParams.w24@ out4 f* f+ params Dx7VoiceParams.w25@ out5 f* f+
-  params Dx7VoiceParams.lvl2@ params Dx7VoiceParams.fb2@ fm-op-step
+  state.op2-phase& params.inc2
+    params.w23 out3 f* params.w24 out4 f* f+ params.w25 out5 f* f+
+  params.lvl2 params.fb2 fm-op-step
   | out2 |
   ( op1: w12*out2 + w13*out3 + w14*out4 + w15*out5 )
-  state Dx7VoiceState.op1-phase-p params Dx7VoiceParams.inc1@
-    params Dx7VoiceParams.w12@ out2 f* params Dx7VoiceParams.w13@ out3 f* f+ params Dx7VoiceParams.w14@ out4 f* f+ params Dx7VoiceParams.w15@ out5 f* f+
-  params Dx7VoiceParams.lvl1@ params Dx7VoiceParams.fb1@ fm-op-step
+  state.op1-phase& params.inc1
+    params.w12 out2 f* params.w13 out3 f* f+ params.w14 out4 f* f+ params.w15 out5 f* f+
+  params.lvl1 params.fb1 fm-op-step
   | out1 |
   ( op0: w01*out1 + w02*out2 + w03*out3 + w04*out4 + w05*out5 )
-  state Dx7VoiceState.op0-phase-p params Dx7VoiceParams.inc0@
-    params Dx7VoiceParams.w01@ out1 f* params Dx7VoiceParams.w02@ out2 f* f+ params Dx7VoiceParams.w03@ out3 f* f+ params Dx7VoiceParams.w04@ out4 f* f+ params Dx7VoiceParams.w05@ out5 f* f+
-  params Dx7VoiceParams.lvl0@ params Dx7VoiceParams.fb0@ fm-op-step
+  state.op0-phase& params.inc0
+    params.w01 out1 f* params.w02 out2 f* f+ params.w03 out3 f* f+ params.w04 out4 f* f+ params.w05 out5 f* f+
+  params.lvl0 params.fb0 fm-op-step
   | out0 |
   ( voice output = sum of carriers )
-  params Dx7VoiceParams.c0@ out0 f*
-  params Dx7VoiceParams.c1@ out1 f* f+
-  params Dx7VoiceParams.c2@ out2 f* f+
-  params Dx7VoiceParams.c3@ out3 f* f+
-  params Dx7VoiceParams.c4@ out4 f* f+
-  params Dx7VoiceParams.c5@ out5 f* f+
+  params.c0 out0 f*
+  params.c1 out1 f* f+
+  params.c2 out2 f* f+
+  params.c3 out3 f* f+
+  params.c4 out4 f* f+
+  params.c5 out5 f* f+
   ( out on top; drop the 8 named slots )
 ;
 

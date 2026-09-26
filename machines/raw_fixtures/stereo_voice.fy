@@ -6,16 +6,15 @@ include "../../kernels/00-primitives/ctx.fy"
 ustruct: StVState  f64 gate ;
 ustruct: StVParams f64 dummy ;
 
-dsp: st-voice-render ( io ctx state params -- )
-  | io ctx state params |
-  io Io.out-l@  state StVState.gate@ 0.25 f*  f+  io Io.out-l-p f!64
-  io Io.out-r@  state StVState.gate@ -0.25 f* f+  io Io.out-r-p f!64
+dsp: st-voice-render | io:Io ctx state:StVState params -- |
+  io.out-l  state.gate 0.25 f*  f+  -> io.out-l
+  io.out-r  state.gate -0.25 f* f+  -> io.out-r
 ;
 
-dsp: st-voice-on ( ctx state params -- )
-  | ctx state params |  1.0 state StVState.gate-p f!64 ;
-dsp: st-voice-off ( ctx state params -- )
-  | ctx state params |  0.0 state StVState.gate-p f!64 ;
+dsp: st-voice-on
+  | ctx state:StVState params -- |  1.0 -> state.gate ;
+dsp: st-voice-off
+  | ctx state:StVState params -- |  0.0 -> state.gate ;
 
 include "../lib/manifest.fy"
 

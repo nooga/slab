@@ -56,47 +56,47 @@ ustruct: SatParams
   mode-dependent shaper constants.  a/b/bias are kept as locals so bias-comp
   can use them (a freshly stored param reads back stale within the word). )
 dsp: sat-block-prepare
-  | ctx state params |
-  ctx Ctx.sr@ | sr |
-  params SatParams.drive-db@ 0.16609640474436813 f* exp2-approx
-  params SatParams.drive-lin-p f!64
-  params SatParams.out-db@ 0.16609640474436813 f* exp2-approx
-  params SatParams.out-lin-p f!64
-  params SatParams.tone-hz@ 6.283185307179586 f* sr f/ 0.0 1.0 fclamp
-  params SatParams.tone-g-p f!64
-  params SatParams.mode@ | mode |
+  | ctx:Ctx state params:SatParams |
+  ctx.sr | sr |
+  params.drive-db 0.16609640474436813 f* exp2-approx
+  -> params.drive-lin
+  params.out-db 0.16609640474436813 f* exp2-approx
+  -> params.out-lin
+  params.tone-hz 6.283185307179586 f* sr f/ 0.0 1.0 fclamp
+  -> params.tone-g
+  params.mode | mode |
   mode 0.5 27.0  mode 1.5 40.0  mode 2.5 27.0 18.0  fsel-lt fsel-lt fsel-lt | a |
   mode 0.5 9.0   mode 1.5 6.0   mode 2.5 9.0  14.0  fsel-lt fsel-lt fsel-lt | b |
   mode 0.5 0.18  mode 1.5 0.0   mode 2.5 0.10 0.0   fsel-lt fsel-lt fsel-lt | bias |
-  a    params SatParams.a-p f!64
-  b    params SatParams.b-p f!64
-  bias params SatParams.bias-p f!64
+  a    -> params.a
+  b    -> params.b
+  bias -> params.bias
   bias bias f* | bb |
   bias a bb f+ f*  a b bb f* f+  f/
-  params SatParams.bias-comp-p f!64
+  -> params.bias-comp
   ( locals: params sr mode a b bias bb = 7 )
 ;
 
 ( io ctx state params -- : one saturator sample. )
 dsp: k-sat-tick
-  | out ctx state params |
-  out Io.in-l@ | dry |
-  dry params SatParams.drive-lin@ f*  params SatParams.bias@ f+  -4.0 4.0 fclamp | s |
+  | out:Io ctx state:SatState params:SatParams |
+  out.in-l | dry |
+  dry params.drive-lin f*  params.bias f+  -4.0 4.0 fclamp | s |
   s s f* | s2 |
-  s  params SatParams.a@ s2 f+  f*
-  params SatParams.a@  params SatParams.b@ s2 f* f+  f/
+  s  params.a s2 f+  f*
+  params.a  params.b s2 f* f+  f/
   -1.0 1.0 fclamp
-  params SatParams.bias-comp@ f- | sh |
+  params.bias-comp f- | sh |
   ( DC blocker: dcy = sh - x1 + R*y1 )
-  sh state SatState.dc-x1@ f-  0.9995 state SatState.dc-y1@ f* f+ | dcy |
-  sh  state SatState.dc-x1-p f!64
-  dcy state SatState.dc-y1-p f!64
+  sh state.dc-x1 f-  0.9995 state.dc-y1 f* f+ | dcy |
+  sh  -> state.dc-x1
+  dcy -> state.dc-y1
   ( tone one-pole lowpass: lp += g*(dcy - lp) )
-  state SatState.lp@  dcy state SatState.lp@ f-  params SatParams.tone-g@ f*  f+ | toned |
-  toned state SatState.lp-p f!64
+  state.lp  dcy state.lp f-  params.tone-g f*  f+ | toned |
+  toned -> state.lp
   ( wet*mix + dry*(1-mix) )
-  toned params SatParams.out-lin@ f*  params SatParams.mix@ f*
-  dry  1.0 params SatParams.mix@ f-  f*  f+
+  toned params.out-lin f*  params.mix f*
+  dry  1.0 params.mix f-  f*  f+
   out f!64
   ( locals: out state params in dry s s2 sh dcy toned = 10 )
 ;

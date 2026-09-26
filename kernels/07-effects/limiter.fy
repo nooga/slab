@@ -68,106 +68,103 @@ ustruct: LimParams
 
 ( ctx state params -- : block-rate derived fill. )
 dsp: lim-block-prepare
-  | ctx state params |
-  ctx Ctx.sr@ | sr |
-  params LimParams.gain-db@ 0.16609640474436813 f* exp2-approx
-  params LimParams.gain-lin-p f!64
-  params LimParams.ceil-db@ 0.16609640474436813 f* exp2-approx
-  params LimParams.ceil-lin-p f!64
-  params LimParams.look-ms@ 0.001 f* sr f* 1.0 4800.0 fclamp | ls |
-  ls params LimParams.look-spl-p f!64
+  | ctx:Ctx state params:LimParams |
+  ctx.sr | sr |
+  params.gain-db 0.16609640474436813 f* exp2-approx
+  -> params.gain-lin
+  params.ceil-db 0.16609640474436813 f* exp2-approx
+  -> params.ceil-lin
+  params.look-ms 0.001 f* sr f* 1.0 4800.0 fclamp | ls |
+  ls -> params.look-spl
   3.0 ls f/ 0.0 1.0 fclamp
-  params LimParams.atk-c-p f!64
-  1.0 params LimParams.rel-s@ sr f* f/ 0.0 1.0 fclamp
-  params LimParams.rel-c-p f!64
+  -> params.atk-c
+  1.0 params.rel-s sr f* f/ 0.0 1.0 fclamp
+  -> params.rel-c
   1.0 0.4 sr f* f/
-  params LimParams.msm-c-p f!64
+  -> params.msm-c
   1.0 3.0 sr f* f/
-  params LimParams.mss-c-p f!64
+  -> params.mss-c
 ;
 
 ( ctx state params -- : per block - reset
   block meter accumulators, seed gain to unity on fresh [zeroed] state. )
 dsp: lim-prepare
-  | ctx state params |
-  ctx Ctx.sr@ | sr |
-  1.0 state LimState.gmin-p f!64
-  0.0 state LimState.ipk-p f!64
-  0.0 state LimState.opk-p f!64
-  state LimState.gain@ 0.001 1.0 state LimState.gain@ fsel-lt
-  state LimState.gain-p f!64
+  | ctx:Ctx state:LimState params |
+  ctx.sr | sr |
+  1.0 -> state.gmin
+  0.0 -> state.ipk
+  0.0 -> state.opk
+  state.gain 0.001 1.0 state.gain fsel-lt
+  -> state.gain
 ;
 
 ( state params -- : gain computer.  Reads the shared detector trace,
   applies input drive, derives the target gain and slews the envelope. )
 dsp: lim-gain
-  | io state params |
-  io Io.det@ params LimParams.gain-lin@ f* | d |
+  | io:Io state:LimState params:LimParams |
+  io.det params.gain-lin f* | d |
   ( dc = max(d, 1e-9) )
   d 0.000000001 0.000000001 d fsel-lt | dc |
   ( gt = min(1, ceil/dc) )
-  params LimParams.ceil-lin@ dc f/ | raw |
+  params.ceil-lin dc f/ | raw |
   raw 1.0 raw 1.0 fsel-lt | gt |
-  state LimState.gain@ | g0 |
+  state.gain | g0 |
   ( c = gt<g0 ? atk : rel )
-  gt g0 params LimParams.atk-c@ params LimParams.rel-c@ fsel-lt | c |
+  gt g0 params.atk-c params.rel-c fsel-lt | c |
   g0 gt g0 f- c f* f+ | g |
-  g state LimState.gain-p f!64
+  g -> state.gain
   ( gmin = min(gmin, g) )
-  state LimState.gmin@ g state LimState.gmin@ g fsel-lt
-  state LimState.gmin-p f!64
-  ( drop all 11 bound locals: state params det i d dc raw gt g0 c g )
+  state.gmin g state.gmin g fsel-lt
+  -> state.gmin
 ;
 
 ( out state params in -- : input drive, lookahead delay, gain + ceiling
   clamp, output, and the block input/output peak meters. )
 dsp: lim-io
-  | out state params in |
-  state LimState.dline-p p@64 | buf |
-  state LimState.dline-len@ | len |
-  in Io.in-l@ params LimParams.gain-lin@ f* | xg |
-  state LimState.wpos@ | w |
+  | out state:LimState params:LimParams in:Io |
+  state.dline& p@64 | buf |
+  state.dline-len | len |
+  in.in-l params.gain-lin f* | xg |
+  state.wpos | w |
   xg buf w f!i
   ( delayed read at w - look, wrapped into 0..len )
-  w params LimParams.look-spl@ f- | rp0 |
+  w params.look-spl f- | rp0 |
   rp0 0.0 rp0 len f+ rp0 fsel-lt | rp |
   buf rp f@i | xd |
   ( advance write head )
   w 1.0 f+ | w1 |
-  w1 len w1 w1 len f- fsel-lt state LimState.wpos-p f!64
+  w1 len w1 w1 len f- fsel-lt -> state.wpos
   ( apply gain, clamp to ceiling )
-  xd state LimState.gain@ f* | y0 |
-  y0 0.0 params LimParams.ceil-lin@ f- params LimParams.ceil-lin@ fclamp | y |
+  xd state.gain f* | y0 |
+  y0 0.0 params.ceil-lin f- params.ceil-lin fclamp | y |
   y out f!64
-  y state LimState.ylast-p f!64
+  y -> state.ylast
   ( meters: |xg| -> ipk, |y| -> opk [block max] )
   xg 0.0 0.0 xg f- xg fsel-lt | axg |
-  state LimState.ipk@ axg axg state LimState.ipk@ fsel-lt state LimState.ipk-p f!64
+  state.ipk axg axg state.ipk fsel-lt -> state.ipk
   y 0.0 0.0 y f- y fsel-lt | ay |
-  state LimState.opk@ ay ay state LimState.opk@ fsel-lt state LimState.opk-p f!64
-  ( drop all 16 bound locals )
+  state.opk ay ay state.opk fsel-lt -> state.opk
 ;
 
 ( state params -- : BS.1770 K-weighting on the output, mean-square
   accumulation [momentary / short-term one-poles + integrated sum]. )
 dsp: lim-lufs
-  | state params |
-  state LimState.ylast@ | x |
+  | state:LimState params:LimParams |
+  state.ylast | x |
   ( stage 1 - transposed direct form II )
-  params LimParams.k1b0@ x f* state LimState.k1z1@ f+ | y1 |
-  params LimParams.k1b1@ x f* params LimParams.k1a1@ y1 f* f- state LimState.k1z2@ f+ state LimState.k1z1-p f!64
-  params LimParams.k1b2@ x f* params LimParams.k1a2@ y1 f* f- state LimState.k1z2-p f!64
+  params.k1b0 x f* state.k1z1 f+ | y1 |
+  params.k1b1 x f* params.k1a1 y1 f* f- state.k1z2 f+ -> state.k1z1
+  params.k1b2 x f* params.k1a2 y1 f* f- -> state.k1z2
   ( stage 2 )
-  params LimParams.k2b0@ y1 f* state LimState.k2z1@ f+ | y2 |
-  params LimParams.k2b1@ y1 f* params LimParams.k2a1@ y2 f* f- state LimState.k2z2@ f+ state LimState.k2z1-p f!64
-  params LimParams.k2b2@ y1 f* params LimParams.k2a2@ y2 f* f- state LimState.k2z2-p f!64
+  params.k2b0 y1 f* state.k2z1 f+ | y2 |
+  params.k2b1 y1 f* params.k2a1 y2 f* f- state.k2z2 f+ -> state.k2z1
+  params.k2b2 y1 f* params.k2a2 y2 f* f- -> state.k2z2
   ( mean-square )
   y2 y2 f* | p |
-  state LimState.msm@ p state LimState.msm@ f- params LimParams.msm-c@ f* f+ state LimState.msm-p f!64
-  state LimState.mss@ p state LimState.mss@ f- params LimParams.mss-c@ f* f+ state LimState.mss-p f!64
-  state LimState.msum@ p f+ state LimState.msum-p f!64
-  state LimState.mn@ 1.0 f+ state LimState.mn-p f!64
-  ( drop all 6 bound locals: state params x y1 y2 p )
+  state.msm p state.msm f- params.msm-c f* f+ -> state.msm
+  state.mss p state.mss f- params.mss-c f* f+ -> state.mss
+  state.msum p f+ -> state.msum
+  state.mn 1.0 f+ -> state.mn
 ;
 
 ( io ctx state params -- : the full limiter tick, staged so no single

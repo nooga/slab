@@ -50,40 +50,40 @@ ustruct: HatParams
 
 ( state params sample-rate -- : block-rate coefficient fill. )
 dsp: hat-prepare
-  | state params sr |
+  | state params:HatParams sr |
   1.0 sr f/
   | isr |
-  205.3 params HatParams.tune@ f* isr f* params HatParams.dt1-p f!64
-  304.4 params HatParams.tune@ f* isr f* params HatParams.dt2-p f!64
-  369.6 params HatParams.tune@ f* isr f* params HatParams.dt3-p f!64
-  522.7 params HatParams.tune@ f* isr f* params HatParams.dt4-p f!64
-  540.0 params HatParams.tune@ f* isr f* params HatParams.dt5-p f!64
-  800.0 params HatParams.tune@ f* isr f* params HatParams.dt6-p f!64
-  params HatParams.ch-decay@ sr decay-exp-coeff
-  params HatParams.ch-coeff-p f!64
-  params HatParams.oh-decay@ sr decay-exp-coeff
-  params HatParams.oh-coeff-p f!64
-  3400.0 params HatParams.tone@ f* sr svf2-coeff
-  params HatParams.bp-f-p f!64
-  5200.0 params HatParams.tone@ f* sr svf2-coeff
-  params HatParams.hp-f-p f!64
+  205.3 params.tune f* isr f* -> params.dt1
+  304.4 params.tune f* isr f* -> params.dt2
+  369.6 params.tune f* isr f* -> params.dt3
+  522.7 params.tune f* isr f* -> params.dt4
+  540.0 params.tune f* isr f* -> params.dt5
+  800.0 params.tune f* isr f* -> params.dt6
+  params.ch-decay sr decay-exp-coeff
+  -> params.ch-coeff
+  params.oh-decay sr decay-exp-coeff
+  -> params.oh-coeff
+  3400.0 params.tone f* sr svf2-coeff
+  -> params.bp-f
+  5200.0 params.tone f* sr svf2-coeff
+  -> params.hp-f
 ;
 
 ( state params gate velocity -- : closed hat; chokes the open hat. )
 dsp: hat-ch-trigger
-  | state params gate velocity |
-  0.5 gate  velocity 0.0 1.0 fclamp  state HatState.ch-vel@  fsel-lt
-  state HatState.ch-vel-p f!64
-  0.5 gate 1.0 state HatState.ch-env@ fsel-lt state HatState.ch-env-p f!64
-  0.5 gate 0.0 state HatState.oh-env@ fsel-lt state HatState.oh-env-p f!64
+  | state:HatState params gate velocity |
+  0.5 gate  velocity 0.0 1.0 fclamp  state.ch-vel  fsel-lt
+  -> state.ch-vel
+  0.5 gate 1.0 state.ch-env fsel-lt -> state.ch-env
+  0.5 gate 0.0 state.oh-env fsel-lt -> state.oh-env
 ;
 
 ( state params gate velocity -- : open hat. )
 dsp: hat-oh-trigger
-  | state params gate velocity |
-  0.5 gate  velocity 0.0 1.0 fclamp  state HatState.oh-vel@  fsel-lt
-  state HatState.oh-vel-p f!64
-  0.5 gate 1.0 state HatState.oh-env@ fsel-lt state HatState.oh-env-p f!64
+  | state:HatState params gate velocity |
+  0.5 gate  velocity 0.0 1.0 fclamp  state.oh-vel  fsel-lt
+  -> state.oh-vel
+  0.5 gate 1.0 state.oh-env fsel-lt -> state.oh-env
 ;
 
 ( phase-ptr dt -- value : advance a naive square oscillator one sample. )
@@ -96,38 +96,38 @@ dsp: square-step
 
 ( state params -- : six-square inharmonic sum -> metal scratch. )
 dsp: hat-metal-write
-  | state params |
-  state HatState.ph1-p params HatParams.dt1@ square-step
-  state HatState.ph2-p params HatParams.dt2@ square-step f+
-  state HatState.ph3-p params HatParams.dt3@ square-step f+
-  state HatState.ph4-p params HatParams.dt4@ square-step f+
-  state HatState.ph5-p params HatParams.dt5@ square-step f+
-  state HatState.ph6-p params HatParams.dt6@ square-step f+
+  | state:HatState params:HatParams |
+  state.ph1& params.dt1 square-step
+  state.ph2& params.dt2 square-step f+
+  state.ph3& params.dt3 square-step f+
+  state.ph4& params.dt4 square-step f+
+  state.ph5& params.dt5 square-step f+
+  state.ph6& params.dt6 square-step f+
   0.1666666666666667 f*
-  state HatState.metal-p f!64
+  -> state.metal
 ;
 
 ( state params -- : band-pass then high-pass the core, in place. )
 dsp: hat-filter-write
-  | state params |
-  state HatState.bp-lp-p  state HatState.metal@  params HatParams.bp-f@  0.8  svf2-bp-step
+  | state:HatState params:HatParams |
+  state.bp-lp&  state.metal  params.bp-f  0.8  svf2-bp-step
   | bp |
-  state HatState.hp-lp-p  bp  params HatParams.hp-f@  1.0  svf2-hp-step
-  state HatState.metal-p f!64
+  state.hp-lp&  bp  params.hp-f  1.0  svf2-hp-step
+  -> state.metal
 ;
 
 ( out state params -- : core * [ch env + oh env], into out. )
 dsp: hat-accum
-  | out state params |
+  | out state:HatState params:HatParams |
   out f@64
-  state HatState.metal@
-  state HatState.ch-env-p params HatParams.ch-coeff@ decay-exp-step
-  state HatState.ch-vel@ f*
-  state HatState.oh-env-p params HatParams.oh-coeff@ decay-exp-step
-  state HatState.oh-vel@ f*
+  state.metal
+  state.ch-env& params.ch-coeff decay-exp-step
+  state.ch-vel f*
+  state.oh-env& params.oh-coeff decay-exp-step
+  state.oh-vel f*
   f+
   f*
-  params HatParams.level@ f*
+  params.level f*
   f+
   out f!64
 ;

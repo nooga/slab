@@ -42,37 +42,37 @@ ustruct: ChorusParams
 
 ( ctx state params -- : mode voicing times the musical multipliers. )
 dsp: chorus-block-prepare
-  | ctx state params |
-  ctx Ctx.sr@ | sr |
-  params ChorusParams.mode@ | mode |
+  | ctx:Ctx state params:ChorusParams |
+  ctx.sr | sr |
+  params.mode | mode |
   mode 0.5  0.513  mode 1.5  0.863  9.75  fsel-lt  fsel-lt
-  params ChorusParams.rate-mul@ f* sr f/
-  params ChorusParams.lfo-inc-p f!64
+  params.rate-mul f* sr f/
+  -> params.lfo-inc
   mode 1.5  3.35  3.20  fsel-lt  0.001 f* sr f*
-  params ChorusParams.center-spl-p f!64
+  -> params.center-spl
   mode 1.5  1.80  0.20  fsel-lt  0.001 f* sr f*
-  params ChorusParams.depth-mul@ f*
-  params ChorusParams.depth-spl-p f!64
-  params ChorusParams.tone-hz@ 6.2831853 f* sr f/ 0.0 1.0 fclamp
-  params ChorusParams.tone-a-p f!64
+  params.depth-mul f*
+  -> params.depth-spl
+  params.tone-hz 6.2831853 f* sr f/ 0.0 1.0 fclamp
+  -> params.tone-a
 ;
 
 ( io ctx state params -- : one BBD tick.  The triangle argument gets a
   chan * spread/2 offset - a half-period shift inverts a triangle, so
   spread 1 is the Juno's mirrored L/R modulation. )
 dsp: k-chorus-tick
-  | out ctx state params |
-  state ChorusState.buf-p p@64 | buf |
-  state ChorusState.buf-len@ | len |
-  state ChorusState.lfo-phase@ params ChorusParams.lfo-inc@ f+ ffrac | ph |
-  ph state ChorusState.lfo-phase-p f!64
-  ph  ctx Ctx.chan@ 0.5 f* params ChorusParams.spread@ f*  f+ ffrac
+  | out:Io ctx:Ctx state:ChorusState params:ChorusParams |
+  state.buf& p@64 | buf |
+  state.buf-len | len |
+  state.lfo-phase params.lfo-inc f+ ffrac | ph |
+  ph -> state.lfo-phase
+  ph  ctx.chan 0.5 f* params.spread f*  f+ ffrac
   0.5 f- | u |
   u 0.0  0.0 u f-  u  fsel-lt 4.0 f* 1.0 f- | tri |
-  params ChorusParams.center-spl@  params ChorusParams.depth-spl@ tri f*  f+
+  params.center-spl  params.depth-spl tri f*  f+
   1.0  len 4.0 f-  fclamp | d |
-  out Io.in-l@ | x |
-  state ChorusState.wpos@ | w |
+  out.in-l | x |
+  state.wpos | w |
   x buf w f!i
   w d f- | rp0 |
   rp0 0.0  rp0 len f+  rp0 fsel-lt | rp |
@@ -81,13 +81,13 @@ dsp: k-chorus-tick
   rp1 len  rp1  rp1 len f-  fsel-lt | rpw |
   buf rpw f@i | s1 |
   s0  s1 s0 f-  rp ffrac f*  f+ | v |
-  state ChorusState.lpf-z@ | z |
-  z  v z f-  params ChorusParams.tone-a@ f*  f+ | zn |
-  zn state ChorusState.lpf-z-p f!64
+  state.lpf-z | z |
+  z  v z f-  params.tone-a f*  f+ | zn |
+  zn -> state.lpf-z
   w 1.0 f+ | w1 |
   w1 len  w1  w1 len f-  fsel-lt
-  state ChorusState.wpos-p f!64
-  x  1.0 params ChorusParams.mix@ f-  f*
-  zn params ChorusParams.mix@ f*  f+
+  -> state.wpos
+  x  1.0 params.mix f-  f*
+  zn params.mix f*  f+
   out f!64
 ;

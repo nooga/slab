@@ -74,34 +74,34 @@ ustruct: Fm86Params
   by name (it needs an f64 gate arg, which `call:` can't pass), but each of
   these words is itself a `call:` boundary, so one EG fits the budget. )
 dsp: fm86-eg-op0
-  | state params |
-  state Fm86State.eg0-value-p  params Fm86Params.eg0-s1-p  state Fm86State.gate@  dx7-eg-step
-  params Fm86Params.ol0@ f*  params Fm86Params.lvl0-p f!64
+  | state:Fm86State params:Fm86Params |
+  state.eg0-value&  params.eg0-s1&  state.gate  dx7-eg-step
+  params.ol0 f*  -> params.lvl0
 ;
 dsp: fm86-eg-op1
-  | state params |
-  state Fm86State.eg1-value-p  params Fm86Params.eg1-s1-p  state Fm86State.gate@  dx7-eg-step
-  params Fm86Params.ol1@ f*  params Fm86Params.lvl1-p f!64
+  | state:Fm86State params:Fm86Params |
+  state.eg1-value&  params.eg1-s1&  state.gate  dx7-eg-step
+  params.ol1 f*  -> params.lvl1
 ;
 dsp: fm86-eg-op2
-  | state params |
-  state Fm86State.eg2-value-p  params Fm86Params.eg2-s1-p  state Fm86State.gate@  dx7-eg-step
-  params Fm86Params.ol2@ f*  params Fm86Params.lvl2-p f!64
+  | state:Fm86State params:Fm86Params |
+  state.eg2-value&  params.eg2-s1&  state.gate  dx7-eg-step
+  params.ol2 f*  -> params.lvl2
 ;
 dsp: fm86-eg-op3
-  | state params |
-  state Fm86State.eg3-value-p  params Fm86Params.eg3-s1-p  state Fm86State.gate@  dx7-eg-step
-  params Fm86Params.ol3@ f*  params Fm86Params.lvl3-p f!64
+  | state:Fm86State params:Fm86Params |
+  state.eg3-value&  params.eg3-s1&  state.gate  dx7-eg-step
+  params.ol3 f*  -> params.lvl3
 ;
 dsp: fm86-eg-op4
-  | state params |
-  state Fm86State.eg4-value-p  params Fm86Params.eg4-s1-p  state Fm86State.gate@  dx7-eg-step
-  params Fm86Params.ol4@ f*  params Fm86Params.lvl4-p f!64
+  | state:Fm86State params:Fm86Params |
+  state.eg4-value&  params.eg4-s1&  state.gate  dx7-eg-step
+  params.ol4 f*  -> params.lvl4
 ;
 dsp: fm86-eg-op5
-  | state params |
-  state Fm86State.eg5-value-p  params Fm86Params.eg5-s1-p  state Fm86State.gate@  dx7-eg-step
-  params Fm86Params.ol5@ f*  params Fm86Params.lvl5-p f!64
+  | state:Fm86State params:Fm86Params |
+  state.eg5-value&  params.eg5-s1&  state.gate  dx7-eg-step
+  params.ol5 f*  -> params.lvl5
 ;
 
 ( state params -- : fill the per-op phase increments from this voice's own
@@ -109,14 +109,14 @@ dsp: fm86-eg-op5
   pitch). inc = ratio * note-hz / sr, written into the params scratch the
   matrix reads — like the per-op levels. )
 dsp: fm86-inc-stage
-  | state params |
-  state Fm86State.note-hz@ params Fm86Params.inv-sample-rate@ f*   | base |
-  params Fm86Params.ratio0@ base f* params Fm86Params.inc0-p f!64
-  params Fm86Params.ratio1@ base f* params Fm86Params.inc1-p f!64
-  params Fm86Params.ratio2@ base f* params Fm86Params.inc2-p f!64
-  params Fm86Params.ratio3@ base f* params Fm86Params.inc3-p f!64
-  params Fm86Params.ratio4@ base f* params Fm86Params.inc4-p f!64
-  params Fm86Params.ratio5@ base f* params Fm86Params.inc5-p f!64
+  | state:Fm86State params:Fm86Params |
+  state.note-hz params.inv-sample-rate f*   | base |
+  params.ratio0 base f* -> params.inc0
+  params.ratio1 base f* -> params.inc1
+  params.ratio2 base f* -> params.inc2
+  params.ratio3 base f* -> params.inc3
+  params.ratio4 base f* -> params.inc4
+  params.ratio5 base f* -> params.inc5
 ;
 
 ( state params -- : run the validated 6-op matrix and store this voice's sample
@@ -124,17 +124,17 @@ dsp: fm86-inc-stage
   register budget (same as k-dx7-voice) — folding the accumulate in here too
   overflows it and corrupts the caller's pointers. )
 dsp: fm86-matrix-stage
-  | state params |
+  | state:Fm86State params |
   state params dx7-voice-step
-  state Fm86State.vout-p f!64
+  -> state.vout
 ;
 
 ( out state params -- : add this voice's sample to out. The host renders every
   voice into the same zeroed buffer, so voices must accumulate — a plain write
   would let the last/idle voice clobber the chord. Light, like Juno's VCA. )
 dsp: fm86-out-add
-  | out state params |
-  out f@64 state Fm86State.vout@ f+ out f!64
+  | out state:Fm86State params |
+  out f@64 state.vout f+ out f!64
 ;
 
 ( io ctx state params -- : one FM-86 voice sample. The inc stage sets per-voice
@@ -168,15 +168,15 @@ dsp: eg-idle-guard
 ( ctx state params -- : per-voice prepare (runs every block). Store
   1/sr for ratio->increment, and idle-init each operator envelope. )
 dsp: fm86-prepare
-  | ctx state params |
-  ctx Ctx.sr@ | sample-rate |
-  1.0 sample-rate f/ params Fm86Params.inv-sample-rate-p f!64
-  state Fm86State.eg0-stage@ eg-idle-guard state Fm86State.eg0-stage-p f!64
-  state Fm86State.eg1-stage@ eg-idle-guard state Fm86State.eg1-stage-p f!64
-  state Fm86State.eg2-stage@ eg-idle-guard state Fm86State.eg2-stage-p f!64
-  state Fm86State.eg3-stage@ eg-idle-guard state Fm86State.eg3-stage-p f!64
-  state Fm86State.eg4-stage@ eg-idle-guard state Fm86State.eg4-stage-p f!64
-  state Fm86State.eg5-stage@ eg-idle-guard state Fm86State.eg5-stage-p f!64
+  | ctx:Ctx state:Fm86State params:Fm86Params |
+  ctx.sr | sample-rate |
+  1.0 sample-rate f/ -> params.inv-sample-rate
+  state.eg0-stage eg-idle-guard -> state.eg0-stage
+  state.eg1-stage eg-idle-guard -> state.eg1-stage
+  state.eg2-stage eg-idle-guard -> state.eg2-stage
+  state.eg3-stage eg-idle-guard -> state.eg3-stage
+  state.eg4-stage eg-idle-guard -> state.eg4-stage
+  state.eg5-stage eg-idle-guard -> state.eg5-stage
 ;
 
 ( ctx state params -- : start a note. Store this voice's fundamental
@@ -185,21 +185,21 @@ dsp: fm86-prepare
   the next sample sees a note-on edge (retrigger from current value, no click).
   Velocity is unused in Phase-1 — the MASTER knob sets level. )
 dsp: fm86-note-on
-  | ctx state params |
-  ctx Ctx.hz@ ctx Ctx.vel@ | hz velocity |
-  hz   state Fm86State.note-hz-p f!64
-  1.0  state Fm86State.gate-p f!64
-  0.0  state Fm86State.eg0-pgate-p f!64
-  0.0  state Fm86State.eg1-pgate-p f!64
-  0.0  state Fm86State.eg2-pgate-p f!64
-  0.0  state Fm86State.eg3-pgate-p f!64
-  0.0  state Fm86State.eg4-pgate-p f!64
-  0.0  state Fm86State.eg5-pgate-p f!64
+  | ctx:Ctx state:Fm86State params |
+  ctx.hz ctx.vel | hz velocity |
+  hz   -> state.note-hz
+  1.0  -> state.gate
+  0.0  -> state.eg0-pgate
+  0.0  -> state.eg1-pgate
+  0.0  -> state.eg2-pgate
+  0.0  -> state.eg3-pgate
+  0.0  -> state.eg4-pgate
+  0.0  -> state.eg5-pgate
 ;
 
 ( ctx state params -- : release. Drop the gate; the next sample's note-off edge
   sends every envelope to stage 4 (release toward L4). )
 dsp: fm86-note-off
-  | ctx state params |
-  0.0 state Fm86State.gate-p f!64
+  | ctx state:Fm86State params |
+  0.0 -> state.gate
 ;

@@ -6,10 +6,9 @@ include "../../kernels/00-primitives/ctx.fy"
 ustruct: StSState  f64 dummy ;
 ustruct: StSParams f64 dummy ;
 
-dsp: st-swap-render ( io ctx state params -- )
-  | io ctx state params |
-  io Io.in-r@ io Io.out-l-p f!64
-  io Io.in-l@ io Io.out-r-p f!64
+dsp: st-swap-render | io:Io ctx state params -- |
+  io.in-r -> io.out-l
+  io.in-l -> io.out-r
 ;
 
 include "../lib/manifest.fy"

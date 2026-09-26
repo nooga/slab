@@ -78,36 +78,36 @@ include "../../kernels/00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
   15 upper-triangular weights, scales the 6 carrier flags by MASTER and the 6
   feedback flags by FEEDBACK. Flat (no call:) so the raw caller can build it. )
 dsp: fm86-derive
-  | ctx state params |
-  ctx Ctx.data-p p@64 | derive-data |
-  params Fm86Params.algo@ 1.0 f- 48.0 f*   | rb |
-  params Fm86Params.master@                | master |
-  params Fm86Params.feedback@              | feedback |
-  derive-data rb  1.0 f+ f@i params Fm86Params.w01-p f!64
-  derive-data rb  2.0 f+ f@i params Fm86Params.w02-p f!64
-  derive-data rb  3.0 f+ f@i params Fm86Params.w03-p f!64
-  derive-data rb  4.0 f+ f@i params Fm86Params.w04-p f!64
-  derive-data rb  5.0 f+ f@i params Fm86Params.w05-p f!64
-  derive-data rb  8.0 f+ f@i params Fm86Params.w12-p f!64
-  derive-data rb  9.0 f+ f@i params Fm86Params.w13-p f!64
-  derive-data rb 10.0 f+ f@i params Fm86Params.w14-p f!64
-  derive-data rb 11.0 f+ f@i params Fm86Params.w15-p f!64
-  derive-data rb 15.0 f+ f@i params Fm86Params.w23-p f!64
-  derive-data rb 16.0 f+ f@i params Fm86Params.w24-p f!64
-  derive-data rb 17.0 f+ f@i params Fm86Params.w25-p f!64
-  derive-data rb 22.0 f+ f@i params Fm86Params.w34-p f!64
-  derive-data rb 23.0 f+ f@i params Fm86Params.w35-p f!64
-  derive-data rb 29.0 f+ f@i params Fm86Params.w45-p f!64
-  derive-data rb 36.0 f+ f@i master f* params Fm86Params.c0-p f!64
-  derive-data rb 37.0 f+ f@i master f* params Fm86Params.c1-p f!64
-  derive-data rb 38.0 f+ f@i master f* params Fm86Params.c2-p f!64
-  derive-data rb 39.0 f+ f@i master f* params Fm86Params.c3-p f!64
-  derive-data rb 40.0 f+ f@i master f* params Fm86Params.c4-p f!64
-  derive-data rb 41.0 f+ f@i master f* params Fm86Params.c5-p f!64
-  derive-data rb 42.0 f+ f@i feedback f* params Fm86Params.fb0-p f!64
-  derive-data rb 43.0 f+ f@i feedback f* params Fm86Params.fb1-p f!64
-  derive-data rb 44.0 f+ f@i feedback f* params Fm86Params.fb2-p f!64
-  derive-data rb 45.0 f+ f@i feedback f* params Fm86Params.fb3-p f!64
-  derive-data rb 46.0 f+ f@i feedback f* params Fm86Params.fb4-p f!64
-  derive-data rb 47.0 f+ f@i feedback f* params Fm86Params.fb5-p f!64
+  | ctx:Ctx state params:Fm86Params |
+  ctx.data& p@64 | derive-data |
+  params.algo 1.0 f- 48.0 f*   | rb |
+  params.master                | master |
+  params.feedback              | feedback |
+  derive-data rb  1.0 f+ f@i -> params.w01
+  derive-data rb  2.0 f+ f@i -> params.w02
+  derive-data rb  3.0 f+ f@i -> params.w03
+  derive-data rb  4.0 f+ f@i -> params.w04
+  derive-data rb  5.0 f+ f@i -> params.w05
+  derive-data rb  8.0 f+ f@i -> params.w12
+  derive-data rb  9.0 f+ f@i -> params.w13
+  derive-data rb 10.0 f+ f@i -> params.w14
+  derive-data rb 11.0 f+ f@i -> params.w15
+  derive-data rb 15.0 f+ f@i -> params.w23
+  derive-data rb 16.0 f+ f@i -> params.w24
+  derive-data rb 17.0 f+ f@i -> params.w25
+  derive-data rb 22.0 f+ f@i -> params.w34
+  derive-data rb 23.0 f+ f@i -> params.w35
+  derive-data rb 29.0 f+ f@i -> params.w45
+  derive-data rb 36.0 f+ f@i master f* -> params.c0
+  derive-data rb 37.0 f+ f@i master f* -> params.c1
+  derive-data rb 38.0 f+ f@i master f* -> params.c2
+  derive-data rb 39.0 f+ f@i master f* -> params.c3
+  derive-data rb 40.0 f+ f@i master f* -> params.c4
+  derive-data rb 41.0 f+ f@i master f* -> params.c5
+  derive-data rb 42.0 f+ f@i feedback f* -> params.fb0
+  derive-data rb 43.0 f+ f@i feedback f* -> params.fb1
+  derive-data rb 44.0 f+ f@i feedback f* -> params.fb2
+  derive-data rb 45.0 f+ f@i feedback f* -> params.fb3
+  derive-data rb 46.0 f+ f@i feedback f* -> params.fb4
+  derive-data rb 47.0 f+ f@i feedback f* -> params.fb5
 ;

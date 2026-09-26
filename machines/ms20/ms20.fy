@@ -11,11 +11,10 @@ include "../lib/manifest.fy"
 
 ( ctx state params -- : per-block LPF coefficients.  RES 0..2 maps to
   loop gain 0..2.4, so self-oscillation [k = 2] starts at ~83% of the knob. )
-dsp: ms20-block-prepare ( ctx state params -- )
-  | ctx state params |
-  params Ms20VoiceParams.resonance@ 1.2 f*  params Ms20VoiceParams.ota-k-p f!64
-  params Ms20VoiceParams.drive@             params Ms20VoiceParams.ota-drive-p f!64
-  0.25 ctx Ctx.inv-sr@ f*                   params Ms20VoiceParams.os-inv-p f!64
+dsp: ms20-block-prepare | ctx:Ctx state params:Ms20VoiceParams -- |
+  params.resonance 1.2 f*  -> params.ota-k
+  params.drive             -> params.ota-drive
+  0.25 ctx.inv-sr f*                   -> params.os-inv
 ;
 
 : manifest

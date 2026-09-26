@@ -54,77 +54,75 @@ ustruct: FunkParams
 ;
 
 ( ctx state params -- : map the macro to the whole effect.  Every
-  derived value is bound or written once; reads use the live funk knob,
-  never a just-stored derived param [deferred stores flush at word end]. )
+  derived value is bound or written once and reads use the live funk
+  knob. )
 dsp: funk-block-prepare
-  | ctx state params |
-  ctx Ctx.sr@ | sr |
-  4.0 sr f* params FunkParams.osr-p f!64
-  params FunkParams.freq@ params FunkParams.base-hz-p f!64
-  params FunkParams.funk@ | f |
-  f 5000.0 f* params FunkParams.sweep-hz-p f!64
-  1.2  f 1.08 f* f-  0.1 2.0 fclamp params FunkParams.damp-p f!64
-  1.0  f dup f* 9.0 f*  f+ params FunkParams.drive-p f!64
-  1.0  f 0.55 f* f-  params FunkParams.wet-gain-p f!64
+  | ctx:Ctx state params:FunkParams |
+  ctx.sr | sr |
+  4.0 sr f* -> params.osr
+  params.freq -> params.base-hz
+  params.funk | f |
+  f 5000.0 f* -> params.sweep-hz
+  1.2  f 1.08 f* f-  0.1 2.0 fclamp -> params.damp
+  1.0  f dup f* 9.0 f*  f+ -> params.drive
+  1.0  f 0.55 f* f-  -> params.wet-gain
   f 0.6 f-  2.5 f*  0.0 1.0 fclamp | gz |
-  gz 0.22 f* params FunkParams.gate-thresh-p f!64
-  0.002 sr decay-exp-coeff params FunkParams.atk-c-p f!64
-  0.002 sr decay-exp-coeff params FunkParams.gate-c-p f!64
-  params FunkParams.speed@  1.0 gz 0.75 f* f-  f*  0.005 2.0 fclamp  sr decay-exp-coeff
-  params FunkParams.rel-c-p f!64
+  gz 0.22 f* -> params.gate-thresh
+  0.002 sr decay-exp-coeff -> params.atk-c
+  0.002 sr decay-exp-coeff -> params.gate-c
+  params.speed  1.0 gz 0.75 f* f-  f*  0.005 2.0 fclamp  sr decay-exp-coeff
+  -> params.rel-c
 ;
 
 ( state params in -- : envelope follower on the rectified input. )
 dsp: fo-env
-  | state params in |
-  in Io.in-l@ | x |
+  | state:FunkState params:FunkParams in:Io |
+  in.in-l | x |
   x 0.0  0.0 x f-  x  fsel-lt | tgt |
-  state FunkState.env@ | e |
-  e tgt  params FunkParams.atk-c@  params FunkParams.rel-c@  fsel-lt | c |
+  state.env | e |
+  e tgt  params.atk-c  params.rel-c  fsel-lt | c |
   tgt  e tgt f-  c f*  f+
-  state FunkState.env-p f!64
+  -> state.env
 ;
 
 ( state params in -- : drive + envelope-swept cutoff for this sample; the
   lowpass itself runs in the four fo-sub substeps [4x oversampled]. )
 dsp: fo-filt
-  | state params in |
-  state FunkState.env@ params FunkParams.sweep-hz@ f*
-  params FunkParams.base-hz@ f+ | cutoff |
-  cutoff params FunkParams.osr@ svf-g state FunkState.fg-p f!64
+  | state:FunkState params:FunkParams in:Io |
+  state.env params.sweep-hz f*
+  params.base-hz f+ | cutoff |
+  cutoff params.osr svf-g -> state.fg
   ( drive into tanh, then the filter's own unity input clip )
-  in Io.in-l@ params FunkParams.drive@ f* k-tanh-rational-shape-dsp2 k-tanh-rational-shape-dsp2
-  state FunkState.fx-p f!64
+  in.in-l params.drive f* k-tanh-rational-shape-dsp2 k-tanh-rational-shape-dsp2
+  -> state.fx
 ;
 
 ( state params -- : one of four saturating lowpass substeps per sample
   [input held]; the last one leaves its output in wet. )
-dsp: fo-sub ( state params -- )
-  | state params |
-  state FunkState.ic1-p state FunkState.ic2-p
-  state FunkState.fx@ state FunkState.fg@ params FunkParams.damp@
+dsp: fo-sub | state:FunkState params:FunkParams -- |
+  state.ic1& state.ic2&
+  state.fx state.fg params.damp
   tpt-svf-lp-sat-step
-  state FunkState.wet-p f!64
+  -> state.wet
 ;
 
 ( state params -- : output clip after the substeps, tanh[1.8*lp]. )
-dsp: fo-sat ( state params -- )
-  | state params |
-  state FunkState.wet@ 1.8 f* k-tanh-rational-shape-dsp2 state FunkState.wet-p f!64
+dsp: fo-sat | state:FunkState params -- |
+  state.wet 1.8 f* k-tanh-rational-shape-dsp2 -> state.wet
 ;
 
 ( out state params in -- : envelope gate on the wet path, dry/wet mix. )
 dsp: fo-out
-  | out state params in |
-  state FunkState.env@ | e |
-  params FunkParams.gate-thresh@ e  1.0 0.0  fsel-lt | gt |
-  state FunkState.gate-gain@ | gg0 |
-  gt  gg0 gt f-  params FunkParams.gate-c@ f*  f+ | gg |
-  gg state FunkState.gate-gain-p f!64
-  state FunkState.wet@ gg f* params FunkParams.wet-gain@ f* | wet |
-  in Io.in-l@ | x |
-  x  1.0 params FunkParams.mix@ f-  f*
-  wet params FunkParams.mix@ f*  f+
+  | out state:FunkState params:FunkParams in:Io |
+  state.env | e |
+  params.gate-thresh e  1.0 0.0  fsel-lt | gt |
+  state.gate-gain | gg0 |
+  gt  gg0 gt f-  params.gate-c f*  f+ | gg |
+  gg -> state.gate-gain
+  state.wet gg f* params.wet-gain f* | wet |
+  in.in-l | x |
+  x  1.0 params.mix f-  f*
+  wet params.mix f*  f+
   out f!64
 ;
 

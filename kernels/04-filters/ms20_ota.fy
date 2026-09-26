@@ -31,28 +31,25 @@ ustruct: Ms20OtaState
 
 ( v -- diode[v] : antiparallel diode pair as a soft clip, unity slope at 0,
   bounded at +-1/1.6. )
-dsp: ms20-diode ( v -- d )
-  | v |
+dsp: ms20-diode | v -- d |
   v 1.6 f* k-tanh-rational-shape-dsp2 0.625 f*
 ;
 
 ( fc os-inv -- g : explicit one-pole coefficient 1 - e^[-2 pi fc / fs_os],
   os-inv = 1/fs_os.  2 pi / ln 2 = 9.0647202. )
-dsp: ms20-ota-g ( fc os-inv -- g )
-  | fc os-inv |
+dsp: ms20-ota-g | fc os-inv -- g |
   1.0  fc 20.0 20000.0 fclamp os-inv f* -9.0647202 f* exp2-approx  f-
 ;
 
 ( fs x g k drive -- y : one substep; fs points at an Ms20OtaState. )
-dsp: ms20-ota-step ( fs x g k drive -- y )
-  | fs x g k drive |
-  x drive f*  fs Ms20OtaState.fb@ f+ | e |
-  fs Ms20OtaState.y1@ | y1 |
+dsp: ms20-ota-step | fs:Ms20OtaState x g k drive -- y |
+  x drive f*  fs.fb f+ | e |
+  fs.y1 | y1 |
   e y1 f- k-tanh-rational-shape-dsp2 g f*  y1 f+ | y1n |
-  fs Ms20OtaState.y2@ | y2 |
+  fs.y2 | y2 |
   y1n y2 f- k-tanh-rational-shape-dsp2 g f*  y2 f+ | y2n |
-  y1n y2n f- ms20-diode k f*  fs Ms20OtaState.fb-p f!64
-  y1n fs Ms20OtaState.y1-p f!64
-  y2n fs Ms20OtaState.y2-p f!64
+  y1n y2n f- ms20-diode k f*  -> fs.fb
+  y1n -> fs.y1
+  y2n -> fs.y2
   y2n
 ;

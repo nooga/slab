@@ -32,35 +32,34 @@ ustruct: LadderState
   points at four contiguous f64 integrator cells. Leaves y on the stack
   for inlining. )
 dsp: ladder4-core
-  | lstate input g k |
+  | lstate:LadderState input g k |
   1.0 g f+ | d |
   g d f/ | G |
   G G f* | G2 |
   G2 G f* | G3 |
   G3 G f* | G4 |
   1.0 d f/ | id |
-  lstate LadderState.s1@ id f* | S1 |
-  lstate LadderState.s2@ id f* | S2 |
-  lstate LadderState.s3@ id f* | S3 |
-  lstate LadderState.s4@ id f* | S4 |
+  lstate.s1 id f* | S1 |
+  lstate.s2 id f* | S2 |
+  lstate.s3 id f* | S3 |
+  lstate.s4 id f* | S4 |
   G3 S1 f* G2 S2 f* f+ G S3 f* f+ S4 f+ | sig |
   G4 input f* sig f+ 1.0 k G4 f* f+ f/ | y4 |
   input k y4 f* f- | x0 |
   ( forward TPT pass, updating s1..s4 )
-  x0 lstate LadderState.s1@ f- G f* | v1 |
-  v1 lstate LadderState.s1@ f+ | y1 |
-  y1 v1 f+ lstate LadderState.s1-p f!64
-  y1 lstate LadderState.s2@ f- G f* | v2 |
-  v2 lstate LadderState.s2@ f+ | y2 |
-  y2 v2 f+ lstate LadderState.s2-p f!64
-  y2 lstate LadderState.s3@ f- G f* | v3 |
-  v3 lstate LadderState.s3@ f+ | y3 |
-  y3 v3 f+ lstate LadderState.s3-p f!64
-  y3 lstate LadderState.s4@ f- G f* | v4 |
-  v4 lstate LadderState.s4@ f+ | y4f |
-  y4f v4 f+ lstate LadderState.s4-p f!64
+  x0 lstate.s1 f- G f* | v1 |
+  v1 lstate.s1 f+ | y1 |
+  y1 v1 f+ -> lstate.s1
+  y1 lstate.s2 f- G f* | v2 |
+  v2 lstate.s2 f+ | y2 |
+  y2 v2 f+ -> lstate.s2
+  y2 lstate.s3 f- G f* | v3 |
+  v3 lstate.s3 f+ | y3 |
+  y3 v3 f+ -> lstate.s3
+  y3 lstate.s4 f- G f* | v4 |
+  v4 lstate.s4 f+ | y4f |
+  y4f v4 f+ -> lstate.s4
   y4f
-  ( leave y4f; nip away the 25 bound locals beneath it )
 ;
 
 ( out lstate input g k -- : probe/raw entry - write one ladder sample. )

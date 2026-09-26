@@ -11,18 +11,17 @@ ustruct: RawSatParams
 
 ( ctx state params -- : initialize a visible drive amount. )
 dsp: raw-sat-prepare
-  | ctx state params |
-  ctx Ctx.sr@ | sample-rate |
+  | ctx:Ctx state params:RawSatParams |
+  ctx.sr | sample-rate |
   1.35
-  params RawSatParams.drive-p
-  f!64
+  -> params.drive
 ;
 
 ( io ctx state params -- : shape one mono sample from an input stream. )
 dsp: raw-sat-render
-  | out ctx state params |
-  out Io.in-l@
-  params RawSatParams.drive@
+  | out:Io ctx state params:RawSatParams |
+  out.in-l
+  params.drive
   f*
   -4.0
   4.0

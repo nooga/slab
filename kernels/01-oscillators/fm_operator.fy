@@ -17,17 +17,17 @@ ustruct: FmOpState
   and wraps, and the feedback history shifts. inc is cycles/sample, mod is in
   0..1 phase units, fb is the self-feedback amount. )
 dsp: fm-op-step
-  | state inc mod level fb |
+  | state:FmOpState inc mod level fb |
   ( feedback modulation = fb * 0.5 * (fb1 + fb2) — the DX two-sample average )
-  state FmOpState.fb1@ state FmOpState.fb2@ f+ 0.5 f* fb f*
+  state.fb1 state.fb2 f+ 0.5 f* fb f*
   | fbmod |
   ( out = level * sine-shape(phase + mod + fbmod) )
-  state FmOpState.phase@ mod f+ fbmod f+ sine-shape level f*
+  state.phase mod f+ fbmod f+ sine-shape level f*
   ( shift feedback: fb2 <- old fb1, then fb1 <- out (dup keeps out on top) )
-  state FmOpState.fb1@ state FmOpState.fb2-p f!64
-  dup state FmOpState.fb1-p f!64
+  state.fb1 -> state.fb2
+  dup -> state.fb1
   ( advance phase = frac(phase + inc) )
-  state FmOpState.phase@ inc f+ ffrac state FmOpState.phase-p f!64
+  state.phase inc f+ ffrac -> state.phase
   ( out remains on top; drop the six named slots below it )
 ;
 
