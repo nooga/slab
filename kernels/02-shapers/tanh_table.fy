@@ -13,7 +13,7 @@
   The fixture samples off-grid points and checks linear interpolation
   between adjacent table cells. )
 
-dsp: k-tanh-table
+dsp1: k-tanh-table
   3 pick f@64
   1 pick f*
   -4.0 4.0 fclamp
@@ -44,7 +44,7 @@ dsp: k-tanh-table
   This ignores the table/span slots but keeps the same ABI as
   k-tanh-table, so the probe can compare both kernels directly. )
 
-dsp: k-tanh-rational
+dsp1: k-tanh-rational
   3 pick f@64
   1 pick f*
   -4.0 4.0 fclamp
@@ -59,7 +59,7 @@ dsp: k-tanh-rational
   drop drop drop drop drop
 ;
 
-dsp2: k-tanh-rational-shape-dsp2
+dsp: k-tanh-rational-shape-dsp2
   -4.0 4.0 fclamp
   dup dup f*
   dup 27.0 f+
@@ -70,7 +70,7 @@ dsp2: k-tanh-rational-shape-dsp2
   swap drop swap drop
 ;
 
-dsp2: k-tanh-rational-core-dsp2
+dsp: k-tanh-rational-core-dsp2
   3 pick f@64
   1 pick f*
   k-tanh-rational-shape-dsp2
@@ -78,12 +78,12 @@ dsp2: k-tanh-rational-core-dsp2
   drop drop drop drop drop
 ;
 
-dsp2: k-tanh-rational-dsp2
+dsp: k-tanh-rational-dsp2
   k-tanh-rational-core-dsp2
 ;
 
 ( x -- tanh(x) : rational tanh, no extra stack leak. )
-dsp2: k-tanh-rational-clean
+dsp: k-tanh-rational-clean
   k-tanh-rational-shape-dsp2
   nip
 ;

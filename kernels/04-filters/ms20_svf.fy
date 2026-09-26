@@ -2,7 +2,7 @@
 
   This is the canonical filter: the exact topology that the Python listening
   oracle (tools/audio_probe/render_ms20_sweeps.py, profile g-wet) renders, now
-  living in fy as a fused `dsp2:` primitive `fms20-svf`. Both the kernel/voice
+  living in fy as a fused `dsp:` primitive `fms20-svf`. Both the kernel/voice
   rig and the DAW machine path call this same word, so authoring in the rig and
   using it in the DAW yield identical audio.
 
@@ -45,7 +45,7 @@ ustruct: SvfParams
 ( out state params input g damping -- : write one filtered sample to out.
   g and damping are the per-sample coefficients (so a voice can envelope-
   modulate cutoff); the static profile is read from params. )
-dsp2: k-ms20-svf
+dsp: k-ms20-svf
   4 pick 4 pick 4 pick 4 pick 4 pick fms20-svf
   6 pick f!64
   drop2 drop2 drop2
@@ -68,7 +68,7 @@ dsp2: k-ms20-svf
 
 ( cutoff os-rate -- g : g = th*(1 + p*(1/3 + p*(2/15 + p*17/315))),
   p = th^2, th = pi*clamp(cutoff,20,20160)/osr. Tiny-angle tan series. )
-dsp2: svf-g
+dsp: svf-g
   | cutoff osr |
   cutoff 20.0 20160.0 fclamp 3.141592653589793 f* osr f/
   | th |
@@ -81,14 +81,14 @@ dsp2: svf-g
 ;
 
 ( resonance -- damping : clamp(0.58/(1+resonance*6.2), 0.035, 100). )
-dsp2: svf-damping
+dsp: svf-damping
   | resonance |
   0.58  1.0 resonance 6.2 f* f+  f/  0.035 100.0 fclamp
   nip
 ;
 
 ( os-rate f -- coeff : 1 - exp(-2pi*f/osr) ~ a*(1 + a*(-1/2 + a/6)). )
-dsp2: svf-dc-coeff
+dsp: svf-dc-coeff
   | osr f |
   6.283185307179586 f f* osr f/
   | a |
@@ -99,7 +99,7 @@ dsp2: svf-dc-coeff
 ;
 
 ( params cutoff resonance os-rate -- : filter g and damping. )
-dsp2: k-svf-coeffs-tone
+dsp: k-svf-coeffs-tone
   | params cutoff resonance osr |
   cutoff osr svf-g       params SvfParams.g-p f!64
   resonance svf-damping  params SvfParams.damping-p f!64
@@ -107,7 +107,7 @@ dsp2: k-svf-coeffs-tone
 ;
 
 ( params os-rate -- : the two DC-block coefficients. )
-dsp2: k-svf-coeffs-dc
+dsp: k-svf-coeffs-dc
   | params osr |
   osr 18.0 svf-dc-coeff  params SvfParams.fb-dc-coeff-p f!64
   osr 10.0 svf-dc-coeff  params SvfParams.out-dc-coeff-p f!64
@@ -115,7 +115,7 @@ dsp2: k-svf-coeffs-dc
 ;
 
 ( params resonance -- : g-wet profile constants. )
-dsp2: k-svf-coeffs-profile
+dsp: k-svf-coeffs-profile
   | params resonance |
   1.90      params SvfParams.drive-p f!64
   resonance params SvfParams.resonance-p f!64

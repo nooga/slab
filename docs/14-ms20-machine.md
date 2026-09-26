@@ -48,7 +48,7 @@ Need: triangle VCO + analog character, waveshape/octave selects, an in-fy
 noise kernel, a saturating mixer, an MG/LFO kernel, a self-oscillating HPF,
 ring mod, and an EG1 (DAR) alongside the existing cap ADSR.
 
-## Kernels (pure-fy `dsp2:`, each ratcheted per docs/13)
+## Kernels (pure-fy `dsp:`, each ratcheted per docs/13)
 
 Every kernel is built and ratcheted standalone against an oracle before it
 enters the voice — same discipline as `fms20-svf`.
@@ -97,7 +97,7 @@ The fix is **composition in fy via a real (non-inlined) call** — a new
 fresh 32-register budget, and the voice composes them in fy (not in the host):
 
 ```
-dsp2: k-ms20-voice-sample
+dsp: k-ms20-voice-sample
   | out state params |
   state params       call: v-mod    ( advance phases/age; MG, EG1, EG2 → state scratch )
   state params       call: v-osc    ( VCO1, VCO2, ring, noise, PWM/FM → sat mixer → state.osc-out )

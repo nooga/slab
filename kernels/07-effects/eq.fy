@@ -62,7 +62,7 @@ ustruct: EqParams
 ( params -- : high-pass, RBJ, fixed Q=1/sqrt2.  When hpf-on < 0.5 the
   stage is forced to passthrough (b0=1, rest 0) with a per-coeff fsel so
   the audio path never branches. )
-dsp2: eq-coef-hpf
+dsp: eq-coef-hpf
   | params |
   params EqParams.hpf-hz@ 10.0 20000.0 fclamp 6.283185307179586 f*
   params EqParams.sr@ f/ 0.0 3.0 fclamp | w |
@@ -87,7 +87,7 @@ dsp2: eq-coef-hpf
 ;
 
 ( params -- : peaking EQ for band 1 (low-mid). )
-dsp2: eq-coef-p1
+dsp: eq-coef-p1
   | params |
   params EqParams.p1-hz@ 10.0 20000.0 fclamp 6.283185307179586 f*
   params EqParams.sr@ f/ 0.0 3.0 fclamp | w |
@@ -106,7 +106,7 @@ dsp2: eq-coef-p1
 ;
 
 ( params -- : peaking EQ for band 2 (high-mid). )
-dsp2: eq-coef-p2
+dsp: eq-coef-p2
   | params |
   params EqParams.p2-hz@ 10.0 20000.0 fclamp 6.283185307179586 f*
   params EqParams.sr@ f/ 0.0 3.0 fclamp | w |
@@ -126,7 +126,7 @@ dsp2: eq-coef-p2
 
 ( params -- : low shelf, RBJ, slope S=1 so the shelf alpha term reduces
   to 2*sqrt(A)*alpha = sqrt(A)*sw*sqrt(2). )
-dsp2: eq-coef-ls
+dsp: eq-coef-ls
   | params |
   params EqParams.ls-hz@ 10.0 20000.0 fclamp 6.283185307179586 f*
   params EqParams.sr@ f/ 0.0 3.0 fclamp | w |
@@ -149,7 +149,7 @@ dsp2: eq-coef-ls
 ;
 
 ( params -- : high shelf, RBJ, slope S=1. )
-dsp2: eq-coef-hs
+dsp: eq-coef-hs
   | params |
   params EqParams.hs-hz@ 10.0 20000.0 fclamp 6.283185307179586 f*
   params EqParams.sr@ f/ 0.0 3.0 fclamp | w |
@@ -173,7 +173,7 @@ dsp2: eq-coef-hs
 
 ( params derive-data -- : fill every band's coefficients.  derive-data is
   unused; each stage gets its own register budget. )
-dsp2: eq-derive
+dsp: eq-derive
   | params dd |
   params call: eq-coef-hpf
   params call: eq-coef-ls
@@ -184,7 +184,7 @@ dsp2: eq-derive
 
 ( params sample-rate -- : stash sr for the derive stages.  No coefficient
   math here - derive owns that. )
-dsp2: eq-block-prepare
+dsp: eq-block-prepare
   | params sr |
   sr params EqParams.sr-p f!64
   drop2
@@ -193,7 +193,7 @@ dsp2: eq-block-prepare
 ( ---- per-sample biquad stages (one call: stage per band) ------------ )
 
 ( in state params -- : high-pass reads the input cell, writes state.sig. )
-dsp2: eq-tick-hpf
+dsp: eq-tick-hpf
   | in state params |
   in f@64 | x |
   params EqParams.hpf-b0@ x f* state EqState.hpf-z1@ f+ | y |
@@ -206,7 +206,7 @@ dsp2: eq-tick-hpf
 ;
 
 ( state params -- : low shelf, reads/writes state.sig. )
-dsp2: eq-tick-ls
+dsp: eq-tick-ls
   | state params |
   state EqState.sig@ | x |
   params EqParams.ls-b0@ x f* state EqState.ls-z1@ f+ | y |
@@ -219,7 +219,7 @@ dsp2: eq-tick-ls
 ;
 
 ( state params -- : low-mid peak. )
-dsp2: eq-tick-p1
+dsp: eq-tick-p1
   | state params |
   state EqState.sig@ | x |
   params EqParams.p1-b0@ x f* state EqState.p1-z1@ f+ | y |
@@ -232,7 +232,7 @@ dsp2: eq-tick-p1
 ;
 
 ( state params -- : high-mid peak. )
-dsp2: eq-tick-p2
+dsp: eq-tick-p2
   | state params |
   state EqState.sig@ | x |
   params EqParams.p2-b0@ x f* state EqState.p2-z1@ f+ | y |
@@ -245,7 +245,7 @@ dsp2: eq-tick-p2
 ;
 
 ( out state params -- : high shelf, reads state.sig, writes out. )
-dsp2: eq-tick-hs
+dsp: eq-tick-hs
   | out state params |
   state EqState.sig@ | x |
   params EqParams.hs-b0@ x f* state EqState.hs-z1@ f+ | y |
@@ -258,7 +258,7 @@ dsp2: eq-tick-hs
 ;
 
 ( out state params in -- : the full EQ tick, five biquads in series. )
-dsp2: k-eq-tick
+dsp: k-eq-tick
   | out state params in |
   in  state params call: eq-tick-hpf
   state params     call: eq-tick-ls

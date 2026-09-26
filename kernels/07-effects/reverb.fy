@@ -84,7 +84,7 @@ ustruct: VerbParams
 
 ( buf off posp len x g -- y : one allpass ring tick.
   v = ring out, w = x - g*v written back, y = v + g*w. )
-dsp2: vb-ap
+dsp: vb-ap
   | buf off posp len x g |
   posp f@64 | p |
   off p f+ | idx |
@@ -101,7 +101,7 @@ dsp2: vb-ap
   read tap.  The oldest sample sits just ahead of the write head, so the
   tap reads at p+1+m for an effective delay of len-1-m - the chorusing
   inside the tank. )
-dsp2: vb-apm
+dsp: vb-apm
   | buf off posp len x g m |
   posp f@64 | p |
   p 1.0 f+ m f+ | r0 |
@@ -120,7 +120,7 @@ dsp2: vb-apm
 ;
 
 ( buf off posp len x -- y : plain delay ring tick. )
-dsp2: vb-dl
+dsp: vb-dl
   | buf off posp len x |
   posp f@64 | p |
   off p f+ | idx |
@@ -133,7 +133,7 @@ dsp2: vb-dl
 ;
 
 ( buf off pos len tap -- v : static read tap behind the write head. )
-dsp2: vb-tap
+dsp: vb-tap
   | buf off pos len tap |
   pos tap f- | i |
   i 0.0  i len f+  i fsel-lt | iw |
@@ -144,7 +144,7 @@ dsp2: vb-tap
 ( --- block-rate fills ----------------------------------------------- )
 
 ( params sample-rate -- : effective ring lengths + coefficients. )
-dsp2: verb-block-prepare
+dsp: verb-block-prepare
   | params sr |
   sr 0.000033601021471 f* | scale |
   scale params VerbParams.scale-p f!64
@@ -174,7 +174,7 @@ dsp2: verb-block-prepare
 ( state params sample-rate -- : per-channel decorrelation, runs every
   block.  Seeds the LFO phase once, picks the L or R output tap set, and
   detunes the modulation rate on the right channel. )
-dsp2: verb-prepare
+dsp: verb-prepare
   | state params sr |
   state VerbState.chan@ | chan |
   params VerbParams.scale@ | scale |
@@ -198,7 +198,7 @@ dsp2: verb-prepare
 ( --- per-sample stages ----------------------------------------------- )
 
 ( state params in -- : predelay ring + bandwidth lowpass -> diff. )
-dsp2: verb-pre
+dsp: verb-pre
   | state params in |
   state VerbState.buf-p p@64 | buf |
   in f@64 | x |
@@ -211,7 +211,7 @@ dsp2: verb-pre
 ;
 
 ( state params -- : input diffusion allpasses 1+2, g 0.75. )
-dsp2: verb-in-ap12
+dsp: verb-in-ap12
   | state params |
   state VerbState.buf-p p@64 | buf |
   buf 12288.0 state VerbState.inap1-pos-p params VerbParams.inap1-len@
@@ -223,7 +223,7 @@ dsp2: verb-in-ap12
 ;
 
 ( state params -- : input diffusion allpasses 3+4, g 0.625. )
-dsp2: verb-in-ap34
+dsp: verb-in-ap34
   | state params |
   state VerbState.buf-p p@64 | buf |
   buf 13128.0 state VerbState.inap3-pos-p params VerbParams.inap3-len@
@@ -235,7 +235,7 @@ dsp2: verb-in-ap34
 ;
 
 ( state params -- : advance the tank LFO, derive both mod offsets. )
-dsp2: verb-lfo
+dsp: verb-lfo
   | state params |
   state VerbState.lfo-phase@ state VerbState.mod-inc-ch@ f+ ffrac | ph |
   ph state VerbState.lfo-phase-p f!64
@@ -247,7 +247,7 @@ dsp2: verb-lfo
 
 ( state params -- : branch A front half - feedback from branch B's last
   delay, modulated decay-diffusion allpass, first long delay -> ta. )
-dsp2: verb-tank-a-in
+dsp: verb-tank-a-in
   | state params |
   state VerbState.buf-p p@64 | buf |
   buf 75128.0 state VerbState.b-d2-pos@ params VerbParams.b-d2-len@ 0.0 vb-tap
@@ -262,7 +262,7 @@ dsp2: verb-tank-a-in
 
 ( state params -- : branch A back half - damping, decay, second
   allpass, second delay. )
-dsp2: verb-tank-a-out
+dsp: verb-tank-a-out
   | state params |
   state VerbState.buf-p p@64 | buf |
   state VerbState.damp-a-z@ | z |
@@ -276,7 +276,7 @@ dsp2: verb-tank-a-out
 ;
 
 ( state params -- : branch B front half, fed from branch A's last delay. )
-dsp2: verb-tank-b-in
+dsp: verb-tank-b-in
   | state params |
   state VerbState.buf-p p@64 | buf |
   buf 37816.0 state VerbState.a-d2-pos@ params VerbParams.a-d2-len@ 0.0 vb-tap
@@ -290,7 +290,7 @@ dsp2: verb-tank-b-in
 ;
 
 ( state params -- : branch B back half. )
-dsp2: verb-tank-b-out
+dsp: verb-tank-b-out
   | state params |
   state VerbState.buf-p p@64 | buf |
   state VerbState.damp-b-z@ | z |
@@ -304,7 +304,7 @@ dsp2: verb-tank-b-out
 ;
 
 ( out state params in -- : seven output taps, dry/wet mix. )
-dsp2: verb-out
+dsp: verb-out
   | out state params in |
   state VerbState.buf-p p@64 | buf |
   buf 52920.0 state VerbState.b-d1-pos@ params VerbParams.b-d1-len@
@@ -330,7 +330,7 @@ dsp2: verb-out
 ;
 
 ( out state params in -- : the full plate tick, staged. )
-dsp2: k-verb-tick
+dsp: k-verb-tick
   | out state params in |
   state params in call: verb-pre
   state params call: verb-in-ap12

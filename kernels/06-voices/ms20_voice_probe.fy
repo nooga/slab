@@ -86,7 +86,7 @@ ustruct: Ms20VoiceParams
 ;
 
 ( state params sample-rate -- : update sample-rate derived params. )
-dsp2: ms20-voice-prepare
+dsp: ms20-voice-prepare
   | state params sample-rate |
   1.0
   sample-rate
@@ -97,7 +97,7 @@ dsp2: ms20-voice-prepare
 ;
 
 ( state params hz velocity -- : start a mono note and reset oscillator age. )
-dsp2: ms20-voice-note-on
+dsp: ms20-voice-note-on
   | state params hz velocity |
   hz
   params Ms20VoiceParams.note-hz-p
@@ -121,7 +121,7 @@ dsp2: ms20-voice-note-on
 ;
 
 ( state params -- : release the amp/filter envelopes from current age. )
-dsp2: ms20-voice-note-off
+dsp: ms20-voice-note-off
   | state params |
   state Ms20VoiceState.age@
   params Ms20VoiceParams.gate-time-p
@@ -130,7 +130,7 @@ dsp2: ms20-voice-note-off
 ;
 
 ( state params -- value : advance note age and return the new age in seconds. )
-dsp2: v-age-next
+dsp: v-age-next
   | state params |
   Ms20VoiceState@: age ;
   Ms20VoiceParams@: inv-sample-rate ;
@@ -143,7 +143,7 @@ dsp2: v-age-next
 ;
 
 ( state params -- value : capacitor ADSR amplitude multiplied by note velocity. )
-dsp2: v-amp-env
+dsp: v-amp-env
   | state params |
   Ms20VoiceState@: age ;
   Ms20VoiceParams@: amp-attack amp-decay amp-sustain gate-time amp-release ;
@@ -157,7 +157,7 @@ dsp2: v-amp-env
 ( state params -- value : VCO1 with waveform select (tri/saw/pulse), octave
   scaled, phase advanced. The three candidates are computed and fsel-picked —
   no branches in dsp2; the spine keeps the register budget per-stage. )
-dsp2: v-vco1
+dsp: v-vco1
   | state params |
   Ms20VoiceState@: phase1 ;
   Ms20VoiceParams@: note-hz vco-octave inv-sample-rate ;
@@ -182,7 +182,7 @@ dsp2: v-vco1
 ( state params -- value : render oscillator 2 pulse and advance phase. )
 ( state params -- value : VCO2 with waveform select (saw/square/pulse),
   detuned and octave-scaled. )
-dsp2: v-vco2
+dsp: v-vco2
   | state params |
   Ms20VoiceState@: phase2 ;
   Ms20VoiceParams@: note-hz detune vco2-octave inv-sample-rate ;
@@ -206,7 +206,7 @@ dsp2: v-vco2
 ;
 
 ( state -- value : float-LCG white-ish noise in -1..1, advancing rng state. )
-dsp2: v-noise-raw
+dsp: v-noise-raw
   | state |
   state Ms20VoiceState.noise-rng@
   1103515245.0 f*
@@ -220,7 +220,7 @@ dsp2: v-noise-raw
 ;
 
 ( state params -- value : VCO1*lvl + VCO2*lvl + noise*lvl, gently saturated. )
-dsp2: v-osc-mix
+dsp: v-osc-mix
   | state params |
   state params v-vco1
   params Ms20VoiceParams.saw-level@
@@ -243,7 +243,7 @@ dsp2: v-osc-mix
 
 ( state params -- g : envelope-modulated cutoff -> filter g, computed in fy.
   cutoff = base + (env-peak - base) * filter-adsr ; g = svf-g(cutoff, osr). )
-dsp2: v-filter-g
+dsp: v-filter-g
   | state params |
   state Ms20VoiceState.flt-env@
   params Ms20VoiceParams.env-peak@
@@ -268,7 +268,7 @@ dsp2: v-filter-g
 ( state params input -- value : run the g-wet svf filter. Filter state
   {ic1,ic2,fb_dc,out_dc} is the contiguous block at state+16; static profile
   at params+176; g per-sample (envelope-modulated); damping from resonance. )
-dsp2: v-filter
+dsp: v-filter
   | state params input |
   state 16 ptr+
   params 176 ptr+
@@ -282,7 +282,7 @@ dsp2: v-filter
 ;
 
 ( out state input -- : DC block input and write it to out. )
-dsp2: v-dc-out
+dsp: v-dc-out
   | out state input |
   input
   state Ms20VoiceState.dc-prev-x@
@@ -306,7 +306,7 @@ dsp2: v-dc-out
 ;
 
 ( out state params -- : probe only the oscillator mix. )
-dsp2: k-ms20-voice-osc-probe
+dsp: k-ms20-voice-osc-probe
   | out state params |
   state params v-osc-mix
   out
@@ -315,7 +315,7 @@ dsp2: k-ms20-voice-osc-probe
 ;
 
 ( out state params -- : probe oscillator mix through the voice filter. )
-dsp2: k-ms20-voice-filter-probe
+dsp: k-ms20-voice-filter-probe
   | out state params |
   state params v-age-next
   drop
@@ -329,7 +329,7 @@ dsp2: k-ms20-voice-filter-probe
 ;
 
 ( out state params -- : probe only the smoothed amp envelope. )
-dsp2: k-ms20-voice-amp-probe
+dsp: k-ms20-voice-amp-probe
   | out state params |
   state params v-age-next
   drop
@@ -340,7 +340,7 @@ dsp2: k-ms20-voice-amp-probe
 ;
 
 ( out state params -- : probe the fused voice before DC blocking. )
-dsp2: k-ms20-voice-vca-probe
+dsp: k-ms20-voice-vca-probe
   | out state params |
   state params v-age-next
   drop
@@ -361,7 +361,7 @@ dsp2: k-ms20-voice-vca-probe
 ;
 
 ( out state params -- : probe DC/output with a constant input. )
-dsp2: k-ms20-voice-dc-probe
+dsp: k-ms20-voice-dc-probe
   | out state params |
   out state 0.5 v-dc-out
   drop2 drop
@@ -374,7 +374,7 @@ dsp2: k-ms20-voice-dc-probe
   See docs/14 §register strategy. )
 
 ( state params -- : advance age, render the saturating VCO mix, store osc-out. )
-dsp2: v-osc-stage
+dsp: v-osc-stage
   | state params |
   state params v-osc-mix
   state Ms20VoiceState.osc-out-p
@@ -384,7 +384,7 @@ dsp2: v-osc-stage
 
 ( phase skew -- bipolar : variable-slope LFO shape. skew picks the peak
   position: ~0 falling ramp, 0.5 triangle, ~1 rising ramp. )
-dsp2: mg-shape
+dsp: mg-shape
   | phase skew |
   phase skew
   phase skew f/
@@ -399,7 +399,7 @@ dsp2: mg-shape
   MG/LFO, computes the filter envelope once, and derives the pitch (FM) and
   pulse-width (PWM) modulations the VCOs read. All written to state scratch
   so later stages (osc, filt) just read them. )
-dsp2: v-mod-stage
+dsp: v-mod-stage
   | state params |
   state params v-age-next
   drop
@@ -439,7 +439,7 @@ dsp2: v-mod-stage
 ( state params -- : self-oscillating series HPF on osc-out, in place.
   coeffs computed in fy: f = 2*svf-g(hpf-cutoff, fs), q = svf-damping(res).
   HPF state {lp,bp} lives at state+88. )
-dsp2: v-hpf-stage
+dsp: v-hpf-stage
   | state params |
   state 88 ptr+
   params Ms20VoiceParams.hpf-cutoff@
@@ -454,7 +454,7 @@ dsp2: v-hpf-stage
 ;
 
 ( state params -- : read osc-out, run the g-wet svf, store filt-out. )
-dsp2: v-filt-stage
+dsp: v-filt-stage
   | state params |
   state params
   state Ms20VoiceState.osc-out@
@@ -465,7 +465,7 @@ dsp2: v-filt-stage
 ;
 
 ( out state params -- : amp env * filt-out * level -> out. )
-dsp2: v-vca-stage
+dsp: v-vca-stage
   | out state params |
   state params v-amp-env
   state Ms20VoiceState.filt-out@
@@ -479,7 +479,7 @@ dsp2: v-vca-stage
 
 ( out state params -- : render one mono voice sample by composing the stages.
   A `call:` boundary gives each stage a fresh register budget. )
-dsp2: k-ms20-voice-sample
+dsp: k-ms20-voice-sample
   | out state params |
   state params       call: v-mod-stage
   state params       call: v-osc-stage

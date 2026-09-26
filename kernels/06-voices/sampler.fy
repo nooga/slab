@@ -55,7 +55,7 @@ ustruct: SamplerParams
 ;
 
 ( params sample-rate -- : resampling ratio, tune, loop/start in samples. )
-dsp2: sampler-block-prepare
+dsp: sampler-block-prepare
   | params sr |
   1.0 sr f/ params SamplerParams.inv-sr-p f!64
   params SamplerParams.smp-sr@ sr f/ params SamplerParams.sr-ratio-p f!64
@@ -71,7 +71,7 @@ dsp2: sampler-block-prepare
 ;
 
 ( state params hz velocity -- : trigger playback from the start point. )
-dsp2: sampler-note-on
+dsp: sampler-note-on
   | state params hz velocity |
   params SamplerParams.sr-ratio@ params SamplerParams.tune-mult@ f*
   hz f* params SamplerParams.root-hz@ f/
@@ -84,7 +84,7 @@ dsp2: sampler-note-on
 ;
 
 ( state params -- : release the amp envelope. )
-dsp2: sampler-note-off
+dsp: sampler-note-off
   | state params |
   state SamplerState.age@ state SamplerState.gate-time-p f!64
   drop2
@@ -94,7 +94,7 @@ dsp2: sampler-note-off
   wrap or one-shot park.  The read index is clamped to a valid range and
   the output gated past the sample end, so an empty/exhausted asset is
   silent rather than an out-of-bounds dereference. )
-dsp2: smp-read
+dsp: smp-read
   | state params |
   params SamplerParams.smp-ptr-p p@64 | buf |
   params SamplerParams.smp-len@ | len |
@@ -115,7 +115,7 @@ dsp2: smp-read
 ;
 
 ( out state params -- : cap-ADSR amp, accumulate into out. )
-dsp2: smp-amp
+dsp: smp-amp
   | out state params |
   state SamplerState.age@ params SamplerParams.inv-sr@ f+ | age |
   age state SamplerState.age-p f!64
@@ -131,7 +131,7 @@ dsp2: smp-amp
 ;
 
 ( out state params -- : one sampler voice tick, staged. )
-dsp2: k-sampler-voice
+dsp: k-sampler-voice
   | out state params |
   state params call: smp-read
   out state params call: smp-amp

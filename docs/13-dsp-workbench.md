@@ -225,7 +225,7 @@ The cases currently covered are `hz-step-render`,
 `slew-onepole-render`, `vca-render`, `osc-mix2-render`, and
 `dc-block-render`. Each writes metrics JSON, disassembly text, and lane
 CSV. The stateful words are intentionally not hidden behind a struct yet
-because the current raw `dsp2:` ABI has no pointer-offset primitive; the
+because the current raw `dsp:` ABI has no pointer-offset primitive; the
 eventual compiler IR should turn the explicit cells into a real voice
 state layout without changing the mathematical tests.
 
@@ -274,11 +274,11 @@ kernels/04-filters/ms20_lpf_probe.fy
 ```
 
 `k-ms20-lpf4` is the first real fy MS-20-style lowpass kernel. It wraps
-the low-level fy `dsp2:` primitive `fms20-lpf4`, which performs four
+the low-level fy `dsp:` primitive `fms20-lpf4`, which performs four
 nonlinear integrator substeps, clipped feedback/state update, and
 output clipping while updating two f64 state cells. Coefficients are
 passed in as `g` and `damping`; the host/probe still computes cutoff to
-coefficient because `dsp2:` does not yet have `tan`, exponential cutoff
+coefficient because `dsp:` does not yet have `tan`, exponential cutoff
 mapping, or a dedicated coefficient primitive.
 
 Run the fy kernel ratchet through:
@@ -873,7 +873,7 @@ The DSL should let them declare the important surfaces once and get
 safe host-visible layout, UI binding, smoothing, buffers, and tests.
 
 For raw DSP code, fy now has `ustruct:`. It records an untagged,
-host-compatible layout and lets `dsp2:` lower field access directly to
+host-compatible layout and lets `dsp:` lower field access directly to
 pointer-offset IR. Accessors are `Name.field@` for f64 loads,
 `Name.field!` for f64 stores, and `Name.field-p` when a kernel needs the
 field address. These are IR-expanded, so the generated code keeps the
@@ -890,10 +890,10 @@ The grouped form assumes the source struct pointer is one stack slot
 below the values being accumulated, which matches the common DSP pattern
 of preserving state/params pointers below derived arguments.
 
-`dsp2:` words can name their entry arguments with compile-time locals:
+`dsp:` words can name their entry arguments with compile-time locals:
 
 ```forth
-dsp2: voice-filter
+dsp: voice-filter
   | state params input |
   state Ms20VoiceState.ic1-p
   state Ms20VoiceState.ic2-p

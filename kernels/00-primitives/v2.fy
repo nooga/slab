@@ -8,6 +8,6 @@
   They are intentionally tiny. The Slab kernel probe exercises them as
   compiler/ABI fixtures before higher-level audio kernels depend on them. )
 
-dsp: k-v2-add v2f+ ;
-dsp: k-v2-mul v2f* ;
-dsp: k-v2-fmadd v2fmadd ;
+dsp1: k-v2-add v2f+ ;
+dsp1: k-v2-mul v2f* ;
+dsp1: k-v2-fmadd v2fmadd ;

@@ -46,7 +46,7 @@ ustruct: SnareParams
 ;
 
 ( state params sample-rate -- : block-rate coefficient fill. )
-dsp2: snare-prepare
+dsp: snare-prepare
   | state params sr |
   1.0 sr f/
   params SnareParams.inv-sample-rate-p f!64
@@ -62,7 +62,7 @@ dsp2: snare-prepare
 ;
 
 ( state params gate velocity -- : fire the snare when gate is 1. )
-dsp2: snare-trigger
+dsp: snare-trigger
   | state params gate velocity |
   0.5 gate  velocity 0.0 1.0 fclamp  state SnareState.vel@  fsel-lt
   state SnareState.vel-p f!64
@@ -78,7 +78,7 @@ dsp2: snare-trigger
 ( state params -- : shell - two pitch-pulsed sine modes -> mix. The
   upper mode rides the body env SQUARED - half the decay time - so the
   pair thumps instead of ringing like a bell. )
-dsp2: snare-shell-write
+dsp: snare-shell-write
   | state params |
   state SnareState.pitch-env-p params SnareParams.pitch-coeff@ decay-exp-step
   | penv |
@@ -103,7 +103,7 @@ dsp2: snare-shell-write
 ;
 
 ( state params -- : wires - high-passed noise * snap env, added to mix. )
-dsp2: snare-snap-write
+dsp: snare-snap-write
   | state params |
   state SnareState.mix@
   state SnareState.svf-lp-p
@@ -120,7 +120,7 @@ dsp2: snare-snap-write
 ;
 
 ( out state params -- : drive the mix and accumulate into out. )
-dsp2: snare-accum
+dsp: snare-accum
   | out state params |
   out f@64
   state SnareState.mix@
@@ -134,7 +134,7 @@ dsp2: snare-accum
 ;
 
 ( out state params -- : one mono snare sample, staged composition. )
-dsp2: k-snare-render
+dsp: k-snare-render
   | out state params |
   state params call: snare-shell-write
   state params call: snare-snap-write

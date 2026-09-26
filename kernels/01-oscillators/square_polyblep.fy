@@ -4,7 +4,7 @@ include "primitives/phase.fy"
 include "primitives/blep.fy"
 
 ( out phase freq inv-sample-rate -- : write one 50 percent duty polyBLEP pulse sample and advance phase. )
-dsp2: k-square-polyblep
+dsp: k-square-polyblep
   2 pick f@64
   2 pick 2 pick f*
   1 pick 1 pick 0.5 pulse-polyblep

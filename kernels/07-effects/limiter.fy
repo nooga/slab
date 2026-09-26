@@ -68,7 +68,7 @@ ustruct: LimParams
 ;
 
 ( params sample-rate -- : block-rate derived fill. )
-dsp2: lim-block-prepare
+dsp: lim-block-prepare
   | params sr |
   params LimParams.gain-db@ 0.16609640474436813 f* exp2-approx
   params LimParams.gain-lin-p f!64
@@ -89,7 +89,7 @@ dsp2: lim-block-prepare
 
 ( state params sample-rate -- : per block - rewind detector index, reset
   block meter accumulators, seed gain to unity on fresh [zeroed] state. )
-dsp2: lim-prepare
+dsp: lim-prepare
   | state params sr |
   0.0 state LimState.idx-p f!64
   1.0 state LimState.gmin-p f!64
@@ -102,7 +102,7 @@ dsp2: lim-prepare
 
 ( state params -- : gain computer.  Reads the shared detector trace,
   applies input drive, derives the target gain and slews the envelope. )
-dsp2: lim-gain
+dsp: lim-gain
   | state params |
   state LimState.det-p p@64 | det |
   state LimState.idx@ | i |
@@ -127,7 +127,7 @@ dsp2: lim-gain
 
 ( out state params in -- : input drive, lookahead delay, gain + ceiling
   clamp, output, and the block input/output peak meters. )
-dsp2: lim-io
+dsp: lim-io
   | out state params in |
   state LimState.dline-p p@64 | buf |
   state LimState.dline-len@ | len |
@@ -157,7 +157,7 @@ dsp2: lim-io
 
 ( state params -- : BS.1770 K-weighting on the output, mean-square
   accumulation [momentary / short-term one-poles + integrated sum]. )
-dsp2: lim-lufs
+dsp: lim-lufs
   | state params |
   state LimState.ylast@ | x |
   ( stage 1 - transposed direct form II )
@@ -180,7 +180,7 @@ dsp2: lim-lufs
 
 ( out state params in -- : the full limiter tick, staged so no single
   word blows the register budget. )
-dsp2: k-lim-tick
+dsp: k-lim-tick
   | out state params in |
   state params call: lim-gain
   out state params in call: lim-io

@@ -92,7 +92,7 @@ ustruct: RhodesParams
 ( params sr -- : derived fills, all idempotent. No libm: svf-dc-coeff is the
   1-exp(-2pi*f/sr) polynomial; decay multipliers are its complement.
   1/(2pi) = 0.15915494309189535 maps a time constant tau to its corner f. )
-dsp2: rhodes-block-prepare
+dsp: rhodes-block-prepare
   | params sr |
   1.0 sr f/ params RhodesParams.inv-sr-p f!64
   sr params RhodesParams.sr-p f!64
@@ -128,7 +128,7 @@ dsp2: rhodes-block-prepare
 
 ( state params hz velocity -- : strike this voice. Phases reset to 0 so
   sample 0 is silent (no click); envelopes seed for a fresh strike. )
-dsp2: rhodes-note-on
+dsp: rhodes-note-on
   | state params hz velocity |
   hz state RhodesState.note-hz-p f!64
   velocity state RhodesState.vel-p f!64
@@ -148,7 +148,7 @@ dsp2: rhodes-note-on
 ;
 
 ( state params -- : release this voice — the damper engages. )
-dsp2: rhodes-note-off
+dsp: rhodes-note-off
   | state params |
   state RhodesState.age@ state RhodesState.gate-time-p f!64
   drop2
@@ -156,7 +156,7 @@ dsp2: rhodes-note-off
 
 ( state params -- : advance age and all envelopes. The decay multipliers
   switch to the faster release coefficient once age >= gate-time. )
-dsp2: rhodes-env
+dsp: rhodes-env
   | state params |
   ( age += 1/sr )
   state RhodesState.age@ params RhodesParams.inv-sr@ f+ state RhodesState.age-p f!64
@@ -180,7 +180,7 @@ dsp2: rhodes-env
 
 ( state params -- : two fundamental modes (detuned), summed unequally so the
   pair never fully cancels, scaled by the decay and attack envelopes. )
-dsp2: rhodes-fund
+dsp: rhodes-fund
   | state params |
   state RhodesState.phaseA@ sine-shape 0.55 f*
   state RhodesState.phaseB@ sine-shape 0.45 f* f+
@@ -197,7 +197,7 @@ dsp2: rhodes-fund
 
 ( state params -- : the 6.267x clamped-free-bar tine overtone — the metallic
   ping — with its own faster decay. )
-dsp2: rhodes-tine
+dsp: rhodes-tine
   | state params |
   state RhodesState.tine-phase@ sine-shape
   state RhodesState.tine-env@ f* params RhodesParams.tine-lvl@ f* state RhodesState.amp-atk@ f*
@@ -212,7 +212,7 @@ dsp2: rhodes-tine
 ( state params -- : the nonlinear pickup. x = (fund + tine)*vel + hammer
   chiff; drive rises during the attack (bark-env); y = tanh(drive*(x+bias)).
   The asymmetric bias + amplitude-tracking saturation is the Rhodes growl. )
-dsp2: rhodes-pickup
+dsp: rhodes-pickup
   | state params |
   state RhodesState.s-fund@ state RhodesState.s-tine@ f+ state RhodesState.vel@ f*
   state RhodesState.noise-rng-p noise-step
@@ -230,7 +230,7 @@ dsp2: rhodes-pickup
 ( out state params -- : warmth one-pole lowpass + DC-block highpass, then
   accumulate.  The asymmetric pickup leaves a DC term the leaky-integrator
   highpass (dc += k*(lp-dc); hp = lp-dc) removes. )
-dsp2: rhodes-warmth
+dsp: rhodes-warmth
   | out state params |
   ( one-pole lowpass: lp += a * (pre - lp) )
   state RhodesState.s-pre@ state RhodesState.warm-lp@ f-
@@ -251,7 +251,7 @@ dsp2: rhodes-warmth
 
 ( out state params -- : one voice tick, staged. Output ACCUMULATES into out.
   Each call: boundary is a fresh register budget. )
-dsp2: k-rhodes-voice
+dsp: k-rhodes-voice
   | out state params |
   state params      call: rhodes-env
   state params      call: rhodes-fund

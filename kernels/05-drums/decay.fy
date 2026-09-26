@@ -8,7 +8,7 @@
   probe case. )
 
 ( decay-seconds sample-rate -- coeff : per-sample decay multiplier. )
-dsp2: decay-exp-coeff
+dsp: decay-exp-coeff
   | t sr |
   6.907755278982137  t 0.0005 10.0 fclamp sr f*  f/
   | x |
@@ -25,7 +25,7 @@ dsp2: decay-exp-coeff
 ;
 
 ( env-ptr coeff -- value : advance the decay state one sample, return it. )
-dsp2: decay-exp-step
+dsp: decay-exp-step
   | envp coeff |
   envp f@64 coeff f*
   dup envp f!64
@@ -33,7 +33,7 @@ dsp2: decay-exp-step
 ;
 
 ( out env-ptr coeff -- : raw probe entry, one decay step per call. )
-dsp2: k-decay-exp
+dsp: k-decay-exp
   | out envp coeff |
   envp coeff decay-exp-step
   out f!64
@@ -41,7 +41,7 @@ dsp2: k-decay-exp
 ;
 
 ( out t sr -- : raw probe entry for the coefficient itself. )
-dsp2: k-decay-exp-coeff
+dsp: k-decay-exp-coeff
   | out t sr |
   t sr decay-exp-coeff
   out f!64

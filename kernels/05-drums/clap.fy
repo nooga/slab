@@ -37,7 +37,7 @@ ustruct: ClapParams
 ;
 
 ( state params sample-rate -- : block-rate coefficient fill. )
-dsp2: clap-prepare
+dsp: clap-prepare
   | state params sr |
   1.0 sr f/
   params ClapParams.inv-sample-rate-p f!64
@@ -53,7 +53,7 @@ dsp2: clap-prepare
 ;
 
 ( state params gate velocity -- : fire the clap when gate is 1. )
-dsp2: clap-trigger
+dsp: clap-trigger
   | state params gate velocity |
   0.5 gate  velocity 0.0 1.0 fclamp  state ClapState.vel@  fsel-lt
   state ClapState.vel-p f!64
@@ -65,7 +65,7 @@ dsp2: clap-trigger
 ;
 
 ( state params -- : advance the retrigger envelope machinery in place. )
-dsp2: clap-env-write
+dsp: clap-env-write
   | state params |
   state ClapState.repeat-phase@ params ClapParams.spread-inc@ f+
   | rp |
@@ -88,7 +88,7 @@ dsp2: clap-env-write
 ;
 
 ( out state params -- : band-passed noise * env, driven into out. )
-dsp2: clap-accum
+dsp: clap-accum
   | out state params |
   out f@64
   state ClapState.svf-lp-p
@@ -107,7 +107,7 @@ dsp2: clap-accum
 ;
 
 ( out state params -- : one mono clap sample, staged composition. )
-dsp2: k-clap-render
+dsp: k-clap-render
   | out state params |
   state params call: clap-env-write
   out state params call: clap-accum

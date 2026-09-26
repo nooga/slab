@@ -27,7 +27,7 @@ ustruct: Dx7EgParams
 ;
 
 ( state params gate -- gain : advance one sample, return exponential gain. )
-dsp2: dx7-eg-step
+dsp: dx7-eg-step
   | state params gate |
   state Dx7EgState.value@     | value |
   state Dx7EgState.stage@     | stage |
@@ -66,7 +66,7 @@ dsp2: dx7-eg-step
 ;
 
 ( out state params gate -- : raw probe entry, one envelope sample to out. )
-dsp2: k-dx7-eg
+dsp: k-dx7-eg
   | out state params gate |
   state params gate dx7-eg-step
   out f!64

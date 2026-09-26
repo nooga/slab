@@ -3,12 +3,12 @@
 include "shapes.fy"
 
 ( phase dt -- correction : return the scalar phase-zero polyBLEP correction. )
-dsp2: polyblep
+dsp: polyblep
   fpolyblep
 ;
 
 ( phase dt -- sample : render a rising saw with phase-zero polyBLEP correction. )
-dsp2: saw-polyblep
+dsp: saw-polyblep
   1 pick saw-rising-raw
   2 pick 2 pick polyblep
   f-
@@ -16,7 +16,7 @@ dsp2: saw-polyblep
 ;
 
 ( phase dt -- sample : render a falling saw with phase-zero polyBLEP correction. )
-dsp2: saw-falling-polyblep
+dsp: saw-falling-polyblep
   1 pick saw-falling-raw
   2 pick 2 pick polyblep
   f+
@@ -24,7 +24,7 @@ dsp2: saw-falling-polyblep
 ;
 
 ( phase dt -- sample : render a capacitor-like saw with phase-zero polyBLEP correction. )
-dsp2: cap-saw-polyblep
+dsp: cap-saw-polyblep
   1 pick cap-ramp-raw
   2 pick 2 pick polyblep
   f-
@@ -32,6 +32,6 @@ dsp2: cap-saw-polyblep
 ;
 
 ( phase dt width -- sample : render a bipolar pulse with polyBLEP-corrected edges. )
-dsp2: pulse-polyblep
+dsp: pulse-polyblep
   fpulseblep
 ;

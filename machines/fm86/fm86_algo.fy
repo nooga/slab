@@ -71,12 +71,12 @@
   _fm86-t @64
 ;
 
-( --- routing derive word (dsp2: indexes the table, writes params) ----- )
+( --- routing derive word (dsp: indexes the table, writes params) ----- )
 
 ( params derive-data -- : fill the voice routing from the ALGO row. Copies the
   15 upper-triangular weights, scales the 6 carrier flags by MASTER and the 6
   feedback flags by FEEDBACK. Flat (no call:) so the raw caller can build it. )
-dsp2: fm86-derive
+dsp: fm86-derive
   | params derive-data |
   params Fm86Params.algo@ 1.0 f- 48.0 f*   | rb |
   params Fm86Params.master@                | master |

@@ -44,7 +44,7 @@ ustruct: GateParams
 ;
 
 ( params sample-rate -- : dB thresholds to linear, slew coefficients. )
-dsp2: gate-block-prepare
+dsp: gate-block-prepare
   | params sr |
   params GateParams.thresh-db@ 0.16609640474436813 f* exp2-approx
   params GateParams.thresh-lin-p f!64
@@ -62,7 +62,7 @@ dsp2: gate-block-prepare
 ;
 
 ( state params sample-rate -- : per block - rewind the detector index. )
-dsp2: gate-prepare
+dsp: gate-prepare
   | state params sr |
   0.0 state GateState.idx-p f!64
   drop2 drop
@@ -70,7 +70,7 @@ dsp2: gate-prepare
 
 ( state params -- : peak-follower on the shared detector trace.  Instant
   attack to a higher peak, exponential release otherwise. )
-dsp2: gate-detect
+dsp: gate-detect
   | state params |
   state GateState.det-p p@64 | det |
   state GateState.idx@ | i |
@@ -85,7 +85,7 @@ dsp2: gate-detect
 ( state params -- : open/hold/close decision -> target gain + hold counter.
   open  = thresh < level ; gateon = open OR hold-ctr > 0 ;
   target = floor + gateon*(1-floor) ; new hold = open ? hold-spl : max(hold-1,0). )
-dsp2: gate-decide
+dsp: gate-decide
   | state params |
   state GateState.level@ | lv |
   params GateParams.thresh-lin@ lv 1.0 0.0 fsel-lt | open |
@@ -100,7 +100,7 @@ dsp2: gate-decide
 
 ( state params -- : slew the gain toward the target [attack opening,
   release closing]. )
-dsp2: gate-slew
+dsp: gate-slew
   | state params |
   state GateState.gain@ | g |
   state GateState.tgt@ | target |
@@ -111,7 +111,7 @@ dsp2: gate-slew
 ;
 
 ( out state params in -- : apply the gate gain. )
-dsp2: gate-apply
+dsp: gate-apply
   | out state params in |
   in f@64 state GateState.gain@ f*
   out f!64
@@ -119,7 +119,7 @@ dsp2: gate-apply
 ;
 
 ( out state params in -- : the full gate tick, staged. )
-dsp2: k-gate-tick
+dsp: k-gate-tick
   | out state params in |
   state params     call: gate-detect
   state params     call: gate-decide

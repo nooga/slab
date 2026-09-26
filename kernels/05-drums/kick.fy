@@ -39,7 +39,7 @@ ustruct: KickParams
 ;
 
 ( state params sample-rate -- : block-rate coefficient fill. )
-dsp2: kick-prepare
+dsp: kick-prepare
   | state params sr |
   1.0 sr f/
   params KickParams.inv-sample-rate-p f!64
@@ -55,7 +55,7 @@ dsp2: kick-prepare
 ( state params gate velocity -- : fire the kick when gate is 1; gate 0
   leaves the voice untouched. Branchless so a multi-slot note-on can call
   every slot's trigger with per-slot gates. )
-dsp2: kick-trigger
+dsp: kick-trigger
   | state params gate velocity |
   0.5 gate  velocity 0.0 1.0 fclamp  state KickState.vel@  fsel-lt
   state KickState.vel-p f!64
@@ -68,7 +68,7 @@ dsp2: kick-trigger
 ;
 
 ( state params -- : swept sine body -> mix scratch. )
-dsp2: kick-osc-write
+dsp: kick-osc-write
   | state params |
   ( pitch envelope -> instantaneous frequency -> phase advance )
   state KickState.pitch-env-p params KickParams.pitch-coeff@ decay-exp-step
@@ -85,7 +85,7 @@ dsp2: kick-osc-write
 ;
 
 ( out state params -- : body * amp env + click, driven, into out. )
-dsp2: kick-accum
+dsp: kick-accum
   | out state params |
   out f@64
   state KickState.mix@
@@ -104,7 +104,7 @@ dsp2: kick-accum
 ;
 
 ( out state params -- : one mono kick sample, staged composition. )
-dsp2: k-kick-render
+dsp: k-kick-render
   | out state params |
   state params call: kick-osc-write
   out state params call: kick-accum

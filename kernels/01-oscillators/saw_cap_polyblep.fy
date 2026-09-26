@@ -4,7 +4,7 @@ include "primitives/phase.fy"
 include "primitives/blep.fy"
 
 ( out phase freq inv-sample-rate -- : write one capacitor-like polyBLEP saw sample and advance phase. )
-dsp2: k-saw-cap-polyblep
+dsp: k-saw-cap-polyblep
   2 pick f@64
   2 pick 2 pick f*
   1 pick 1 pick cap-saw-polyblep

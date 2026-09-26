@@ -13,7 +13,7 @@ ustruct: Svf2State
 ;
 
 ( fc sr -- f : filter coefficient at block rate. )
-dsp2: svf2-coeff
+dsp: svf2-coeff
   | fc sr |
   fc 20.0 7500.0 fclamp  2.0 sr f*  f/
   sine-shape
@@ -22,7 +22,7 @@ dsp2: svf2-coeff
 ;
 
 ( state in f q -- band : one band-pass step, state advanced in place. )
-dsp2: svf2-bp-step
+dsp: svf2-bp-step
   | state in f q |
   state Svf2State.lp@  f state Svf2State.bp@ f*  f+
   | lp |
@@ -37,7 +37,7 @@ dsp2: svf2-bp-step
 ;
 
 ( state in f q -- high : one high-pass step, state advanced in place. )
-dsp2: svf2-hp-step
+dsp: svf2-hp-step
   | state in f q |
   state Svf2State.lp@  f state Svf2State.bp@ f*  f+
   | lp |

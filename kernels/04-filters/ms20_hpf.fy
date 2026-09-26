@@ -23,7 +23,7 @@ ustruct: HpfState
 ;
 
 ( state f q input -- hp : one Chamberlin SVF sample, high-pass output. )
-dsp2: k-hpf
+dsp: k-hpf
   | st f q v0 |
   st HpfState.lp@
   | lp |

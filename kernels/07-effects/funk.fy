@@ -52,7 +52,7 @@ ustruct: FunkParams
 ( params sample-rate -- : map the macro to the whole effect.  Every
   derived value is bound or written once; reads use the live funk knob,
   never a just-stored derived param [deferred stores flush at word end]. )
-dsp2: funk-block-prepare
+dsp: funk-block-prepare
   | params sr |
   4.0 sr f* params FunkParams.osr-p f!64
   params FunkParams.freq@ params FunkParams.base-hz-p f!64
@@ -71,7 +71,7 @@ dsp2: funk-block-prepare
 ;
 
 ( state params in -- : envelope follower on the rectified input. )
-dsp2: fo-env
+dsp: fo-env
   | state params in |
   in f@64 | x |
   x 0.0  0.0 x f-  x  fsel-lt | tgt |
@@ -83,7 +83,7 @@ dsp2: fo-env
 ;
 
 ( state params in -- : drive -> envelope-swept 4-pole lowpass -> wet. )
-dsp2: fo-filt
+dsp: fo-filt
   | state params in |
   state FunkState.env@ params FunkParams.sweep-hz@ f*
   params FunkParams.base-hz@ f+ | cutoff |
@@ -98,7 +98,7 @@ dsp2: fo-filt
 ;
 
 ( out state params in -- : envelope gate on the wet path, dry/wet mix. )
-dsp2: fo-out
+dsp: fo-out
   | out state params in |
   state FunkState.env@ | e |
   params FunkParams.gate-thresh@ e  1.0 0.0  fsel-lt | gt |
@@ -114,7 +114,7 @@ dsp2: fo-out
 ;
 
 ( out state params in -- : one FUNK OVERLOAD tick, staged. )
-dsp2: k-funk-tick
+dsp: k-funk-tick
   | out state params in |
   state params in call: fo-env
   state params in call: fo-filt

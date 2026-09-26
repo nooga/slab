@@ -11,7 +11,7 @@ ustruct: RawOscParams
 ;
 
 ( state params sample-rate -- : update block-rate derived params. )
-dsp2: raw-osc-prepare
+dsp: raw-osc-prepare
   | state params sample-rate |
   1.0
   sample-rate
@@ -22,7 +22,7 @@ dsp2: raw-osc-prepare
 ;
 
 ( state params hz velocity -- : start a note and reset phase. )
-dsp2: raw-osc-note-on
+dsp: raw-osc-note-on
   | state params hz velocity |
   hz
   params RawOscParams.note-hz-p
@@ -37,7 +37,7 @@ dsp2: raw-osc-note-on
 ;
 
 ( state params -- : stop the note immediately. )
-dsp2: raw-osc-note-off
+dsp: raw-osc-note-off
   | state params |
   0.0
   params RawOscParams.amp-p
@@ -46,7 +46,7 @@ dsp2: raw-osc-note-off
 ;
 
 ( out state params -- : render one mono saw sample. )
-dsp2: raw-osc-render
+dsp: raw-osc-render
   | out state params |
   state RawOscState.phase@
   params RawOscParams.note-hz@

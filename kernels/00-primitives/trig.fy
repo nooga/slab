@@ -20,7 +20,7 @@
 ( fsel-lt convention: a b t f -- [a < b ? t : f]. )
 
 ( w -- sin w : valid for w in [0, pi]. )
-dsp2: sin-approx
+dsp: sin-approx
   | w |
   w 0.0 3.141592653589793 fclamp | x |
   ( fold to r in [0, pi/2]: r = x > pi/2 ? pi - x : x )
@@ -37,7 +37,7 @@ dsp2: sin-approx
 ;
 
 ( w -- cos w : valid for w in [0, pi]. )
-dsp2: cos-approx
+dsp: cos-approx
   | w |
   w 0.0 3.141592653589793 fclamp | x |
   1.5707963267948966 x  3.141592653589793 x f-  x  fsel-lt | r |
@@ -56,5 +56,5 @@ dsp2: cos-approx
 ;
 
 ( out w -- : raw probe entries for the sweep grids. )
-dsp2: k-sin | out w | w sin-approx out f!64 drop2 ;
-dsp2: k-cos | out w | w cos-approx out f!64 drop2 ;
+dsp: k-sin | out w | w sin-approx out f!64 drop2 ;
+dsp: k-cos | out w | w cos-approx out f!64 drop2 ;

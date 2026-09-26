@@ -49,7 +49,7 @@ ustruct: HatParams
 ;
 
 ( state params sample-rate -- : block-rate coefficient fill. )
-dsp2: hat-prepare
+dsp: hat-prepare
   | state params sr |
   1.0 sr f/
   | isr |
@@ -71,7 +71,7 @@ dsp2: hat-prepare
 ;
 
 ( state params gate velocity -- : closed hat; chokes the open hat. )
-dsp2: hat-ch-trigger
+dsp: hat-ch-trigger
   | state params gate velocity |
   0.5 gate  velocity 0.0 1.0 fclamp  state HatState.ch-vel@  fsel-lt
   state HatState.ch-vel-p f!64
@@ -81,7 +81,7 @@ dsp2: hat-ch-trigger
 ;
 
 ( state params gate velocity -- : open hat. )
-dsp2: hat-oh-trigger
+dsp: hat-oh-trigger
   | state params gate velocity |
   0.5 gate  velocity 0.0 1.0 fclamp  state HatState.oh-vel@  fsel-lt
   state HatState.oh-vel-p f!64
@@ -90,7 +90,7 @@ dsp2: hat-oh-trigger
 ;
 
 ( phase-ptr dt -- value : advance a naive square oscillator one sample. )
-dsp2: square-step
+dsp: square-step
   | php dt |
   php f@64 dt f+ ffrac
   dup php f!64
@@ -99,7 +99,7 @@ dsp2: square-step
 ;
 
 ( state params -- : six-square inharmonic sum -> metal scratch. )
-dsp2: hat-metal-write
+dsp: hat-metal-write
   | state params |
   state HatState.ph1-p params HatParams.dt1@ square-step
   state HatState.ph2-p params HatParams.dt2@ square-step f+
@@ -113,7 +113,7 @@ dsp2: hat-metal-write
 ;
 
 ( state params -- : band-pass then high-pass the core, in place. )
-dsp2: hat-filter-write
+dsp: hat-filter-write
   | state params |
   state HatState.bp-lp-p  state HatState.metal@  params HatParams.bp-f@  0.8  svf2-bp-step
   | bp |
@@ -123,7 +123,7 @@ dsp2: hat-filter-write
 ;
 
 ( out state params -- : core * [ch env + oh env], into out. )
-dsp2: hat-accum
+dsp: hat-accum
   | out state params |
   out f@64
   state HatState.metal@
@@ -140,7 +140,7 @@ dsp2: hat-accum
 ;
 
 ( out state params -- : one mono hat sample, staged composition. )
-dsp2: k-hat-render
+dsp: k-hat-render
   | out state params |
   state params call: hat-metal-write
   state params call: hat-filter-write

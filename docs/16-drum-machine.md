@@ -1,7 +1,7 @@
 # 16 — The drum machine
 
 A synthesized drum machine (`drum2`, working name) built the MS-20 way:
-every component is a pure-fy `dsp2:` kernel developed and ratcheted in the
+every component is a pure-fy `dsp:` kernel developed and ratcheted in the
 workbench (docs/13) — rendered, plotted, measured, and *listened to* —
 before it enters a voice; voices are assembled as `call:` stages; the
 machine is declared entirely in fy via the manifest descriptor
@@ -120,7 +120,7 @@ Have, ratcheted, in `kernels/`:
 - polyBLEP squares/pulses (01) — basis for the metallic bank.
 - in-fy white noise (from the MS-20 noise work, 06).
 
-Need, each a standalone `dsp2:` kernel with a kernel-probe case, plots,
+Need, each a standalone `dsp:` kernel with a kernel-probe case, plots,
 metrics ratchet, and an audition WAV **before** entering a voice
 (`kernels/05-drums/` — the spare layer number):
 

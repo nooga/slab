@@ -9,7 +9,7 @@ ustruct: RawSatParams
 ;
 
 ( state params sample-rate -- : initialize a visible drive amount. )
-dsp2: raw-sat-prepare
+dsp: raw-sat-prepare
   | state params sample-rate |
   1.35
   params RawSatParams.drive-p
@@ -18,7 +18,7 @@ dsp2: raw-sat-prepare
 ;
 
 ( out state params input-ptr -- : shape one mono sample from an input stream. )
-dsp2: raw-sat-render
+dsp: raw-sat-render
   | out state params input |
   input
   f@64

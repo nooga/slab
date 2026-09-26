@@ -11,7 +11,7 @@ ustruct: RawPagesParams
 ;
 
 ( out state params -- : write one silent mono sample. )
-dsp2: raw-pages-render
+dsp: raw-pages-render
   | out state params |
   0.0 out f!64
   drop2 drop

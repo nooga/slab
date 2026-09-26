@@ -40,7 +40,7 @@ ustruct: DelayParams
   the TIME knob when free, or 60/bpm * div when SYNC is on; selected
   branchlessly via the sync flag (dsp2 has no if/then).  bpm is clamped to
   20..999 first so a zero/garbage tempo can't produce inf*0 = NaN. )
-dsp2: delay-block-prepare
+dsp: delay-block-prepare
   | params sr |
   60.0 params DelayParams.tempo-bpm@ 20.0 999.0 fclamp f/
   params DelayParams.div@ f*
@@ -58,7 +58,7 @@ dsp2: delay-block-prepare
 ( state params sample-rate -- : runs every block.  Seeds the time slew at
   the target on the first run after reset - a live tz is always >= 2, so
   tz < 1 means fresh state and we skip the silent ramp-from-zero chirp. )
-dsp2: delay-prepare
+dsp: delay-prepare
   | state params sr |
   state DelayState.time-z@ 1.0
   params DelayParams.time-spl@
@@ -70,7 +70,7 @@ dsp2: delay-prepare
 
 ( out state params in -- : one delay tick.  Reads happen at wpos - time
   which is always at least one cell behind the deferred buf write. )
-dsp2: k-delay-tick
+dsp: k-delay-tick
   | out state params in |
   state DelayState.buf-p p@64 | buf |
   state DelayState.buf-len@ | len |

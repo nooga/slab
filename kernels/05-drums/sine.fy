@@ -7,7 +7,7 @@
   sine-shape-render kernel-probe case against libm sin. )
 
 ( phase -- value : sine of 2*pi*phase, phase wraps via frac. )
-dsp2: sine-shape
+dsp: sine-shape
   | phase |
   1.0  phase ffrac 2.0 f*  f-
   | u |
@@ -23,7 +23,7 @@ dsp2: sine-shape
 ;
 
 ( out phase -- : raw probe entry for the shape grid. )
-dsp2: k-sine-shape
+dsp: k-sine-shape
   | out phase |
   phase sine-shape
   out f!64

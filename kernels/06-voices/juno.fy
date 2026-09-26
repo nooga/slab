@@ -77,7 +77,7 @@ ustruct: JunoParams
 ;
 
 ( params sample-rate -- : derived fills, all idempotent. )
-dsp2: juno-block-prepare
+dsp: juno-block-prepare
   | params sr |
   1.0 sr f/ | inv |
   inv params JunoParams.inv-sr-p f!64
@@ -93,7 +93,7 @@ dsp2: juno-block-prepare
 ( state params hz velocity -- : start this voice.  DCO phases free-run -
   the digitally-controlled oscillators never reset, the envelope does
   the de-clicking, exactly like the hardware. )
-dsp2: juno-note-on
+dsp: juno-note-on
   | state params hz velocity |
   hz state JunoState.note-hz-p f!64
   velocity state JunoState.vel-p f!64
@@ -103,14 +103,14 @@ dsp2: juno-note-on
 ;
 
 ( state params -- : release this voice from its current age. )
-dsp2: juno-note-off
+dsp: juno-note-off
   | state params |
   state JunoState.age@ state JunoState.gate-time-p f!64
   drop2
 ;
 
 ( state params -- : advance age + LFO, evaluate the shared envelope. )
-dsp2: v-jn-mod
+dsp: v-jn-mod
   | state params |
   state JunoState.age@ params JunoParams.inv-sr@ f+ | age |
   age state JunoState.age-p f!64
@@ -128,7 +128,7 @@ dsp2: v-jn-mod
 ;
 
 ( state params -- : DCO - saw + PWM pulse + sub + noise into osc-mix. )
-dsp2: v-jn-dco
+dsp: v-jn-dco
   | state params |
   ( per-voice golden-ratio detune around center, +-0.4% at full knob )
   state JunoState.note-hz@ params JunoParams.range@ f*
@@ -167,7 +167,7 @@ dsp2: v-jn-dco
   the modulated cutoff into [20, 20160], so the sum can never push the
   filter past its stable range - the modulation is smooth edge to edge,
   unlike the old MS-20 lurch. )
-dsp2: v-jn-cutoff
+dsp: v-jn-cutoff
   | state params |
   params JunoParams.cutoff-hz@
   state JunoState.env-out@ params JunoParams.env-amt-hz@ f* f+
@@ -184,7 +184,7 @@ dsp2: v-jn-cutoff
 ( state params -- : the clean linear ZDF 4-pole ladder. Mild input gain
   compensation [1 + 0.2*k] keeps the low end from thinning as resonance
   rises, the way the Juno's IR3109 stays full. )
-dsp2: v-jn-ladder
+dsp: v-jn-ladder
   | state params |
   state JunoState.ic1-p
   state JunoState.osc-mix@  1.0 state JunoState.k-z@ 0.2 f* f+  f*
@@ -196,7 +196,7 @@ dsp2: v-jn-ladder
 ;
 
 ( state params -- : one-pole highpass on the ladder output: hp = x - lp. )
-dsp2: v-jn-hpf
+dsp: v-jn-hpf
   | state params |
   state JunoState.vcf-out@ | lp |
   state JunoState.hpf-lp@ | hz0 |
@@ -208,7 +208,7 @@ dsp2: v-jn-hpf
 ;
 
 ( out state params -- : VCA - env or gate mode - ACCUMULATE into out. )
-dsp2: v-jn-vca
+dsp: v-jn-vca
   | out state params |
   params JunoParams.vca-mode@ 0.5
     state JunoState.env-out@
@@ -222,7 +222,7 @@ dsp2: v-jn-vca
 ;
 
 ( out state params -- : one polyphonic voice tick, staged. )
-dsp2: k-juno-voice
+dsp: k-juno-voice
   | out state params |
   state params call: v-jn-mod
   state params call: v-jn-dco

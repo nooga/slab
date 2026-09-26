@@ -169,7 +169,7 @@ impulse case).
 
 | # | Decision | Why |
 |---|---|---|
-| D1 | Rename `dsp2:` → **`dsp:`**; delete the v1 `dsp:` compiler (`fy/src/dsp.zig`) and port its two users (`v2.fy`, `tanh_table.fy`). | The docs already say `dsp:`. "Kernel" is taken as a noun for a unit of DSP. |
+| D1 | Rename `dsp2:` → **`dsp:`**. The old v1 mode becomes **`dsp1:`**: legacy and probe-only, deleted once `dsp:` has NEON. *(Amended 2026-09-26: v1 holds fy's only NEON path (`v2f+`, `v2fmadd`) and its register-stack optimizer, so deleting it outright would lose the NEON work.)* Done in step 2. | The docs already say `dsp:`. "Kernel" is taken as a noun for a unit of DSP. |
 | D2 | `dsp:` syntax (typed locals, dotted fields, consuming locals, stack effects) lives **in the compiler**. | These are tokenizer and SSA concerns; doing them as macros would be fragile. |
 | D3 | Manifest/machine DSL lives **in fy**, built on new **parsing-word** macro primitives. | Keeps slab vocabulary out of the compiler; parsing words are generally useful to fy. |
 | D4 | One **ctx ABI**: every entry point is `( ctx s:State p:Params -- )`. | Removes special cells and per-hook signatures; it's what docs/04 intended. |

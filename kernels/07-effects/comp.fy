@@ -54,7 +54,7 @@ ustruct: CompParams
 
 ( params sample-rate -- : dB -> log2 units [1 dB = 0.16609640474 log2],
   envelope coefficients, linear makeup. )
-dsp2: comp-block-prepare
+dsp: comp-block-prepare
   | params sr |
   params CompParams.thresh-db@ 0.16609640474436813 f*
   params CompParams.thresh-l2-p f!64
@@ -76,7 +76,7 @@ dsp2: comp-block-prepare
 ;
 
 ( state params sample-rate -- : per block - rewind the detector index. )
-dsp2: comp-prepare
+dsp: comp-prepare
   | state params sr |
   0.0 state CompState.idx-p f!64
   drop2 drop
@@ -84,7 +84,7 @@ dsp2: comp-prepare
 
 ( state params -- : envelope follower on the shared detector trace.
   Rising signal takes the attack coefficient, falling the release. )
-dsp2: comp-detect
+dsp: comp-detect
   | state params |
   state CompState.det-p p@64 | det |
   state CompState.idx@ | i |
@@ -98,7 +98,7 @@ dsp2: comp-detect
 ;
 
 ( state params -- : envelope into log2 units. )
-dsp2: comp-level
+dsp: comp-level
   | state params |
   state CompState.env@ 0.000001 1000000.0 fclamp log2-approx
   state CompState.lvl-l2-p f!64
@@ -106,7 +106,7 @@ dsp2: comp-level
 ;
 
 ( state params -- : soft-knee overshoot and log2 gain. )
-dsp2: comp-knee
+dsp: comp-knee
   | state params |
   state CompState.lvl-l2@ params CompParams.thresh-l2@ f- | l |
   params CompParams.knee-l2@ 0.5 f* | half |
@@ -120,7 +120,7 @@ dsp2: comp-knee
 ;
 
 ( state params -- : back to linear, plus the dB meter cell. )
-dsp2: comp-gain
+dsp: comp-gain
   | state params |
   state CompState.grl2@ exp2-approx
   state CompState.gain-p f!64
@@ -130,7 +130,7 @@ dsp2: comp-gain
 ;
 
 ( out state params in -- : apply gain + makeup, parallel mix. )
-dsp2: comp-apply
+dsp: comp-apply
   | out state params in |
   in f@64 | x |
   x state CompState.gain@ f* params CompParams.makeup-lin@ f* | wet |
@@ -141,7 +141,7 @@ dsp2: comp-apply
 ;
 
 ( out state params in -- : the full compressor tick, staged. )
-dsp2: k-comp-tick
+dsp: k-comp-tick
   | out state params in |
   state params call: comp-detect
   state params call: comp-level

@@ -31,7 +31,7 @@ ustruct: LadderState
 ( lstate input g k -- y : one linear ZDF 4-pole ladder sample. lstate
   points at four contiguous f64 integrator cells. Leaves y on the stack
   for inlining. )
-dsp2: ladder4-core
+dsp: ladder4-core
   | lstate input g k |
   1.0 g f+ | d |
   g d f/ | G |
@@ -67,7 +67,7 @@ dsp2: ladder4-core
 ;
 
 ( out lstate input g k -- : probe/raw entry - write one ladder sample. )
-dsp2: k-ladder4
+dsp: k-ladder4
   | out lstate input g k |
   lstate input g k ladder4-core
   out f!64

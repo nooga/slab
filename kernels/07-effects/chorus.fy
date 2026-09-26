@@ -41,7 +41,7 @@ ustruct: ChorusParams
 ;
 
 ( params sample-rate -- : mode voicing times the musical multipliers. )
-dsp2: chorus-block-prepare
+dsp: chorus-block-prepare
   | params sr |
   params ChorusParams.mode@ | mode |
   mode 0.5  0.513  mode 1.5  0.863  9.75  fsel-lt  fsel-lt
@@ -60,7 +60,7 @@ dsp2: chorus-block-prepare
 ( out state params in -- : one BBD tick.  The triangle argument gets a
   chan * spread/2 offset - a half-period shift inverts a triangle, so
   spread 1 is the Juno's mirrored L/R modulation. )
-dsp2: k-chorus-tick
+dsp: k-chorus-tick
   | out state params in |
   state ChorusState.buf-p p@64 | buf |
   state ChorusState.buf-len@ | len |

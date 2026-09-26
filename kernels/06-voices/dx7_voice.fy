@@ -34,7 +34,7 @@ ustruct: Dx7VoiceParams
 
 ( state params -- out : one voice sample. Each op modulated only by higher
   ops already computed; carriers summed. )
-dsp2: dx7-voice-step
+dsp: dx7-voice-step
   | state params |
   ( op5: no modulators )
   state Dx7VoiceState.op5-phase-p params Dx7VoiceParams.inc5@ 0.0 params Dx7VoiceParams.lvl5@ params Dx7VoiceParams.fb5@ fm-op-step
@@ -76,7 +76,7 @@ dsp2: dx7-voice-step
 ;
 
 ( out state params -- : raw probe entry, one voice sample to out. )
-dsp2: k-dx7-voice
+dsp: k-dx7-voice
   | out state params |
   state params dx7-voice-step
   out f!64

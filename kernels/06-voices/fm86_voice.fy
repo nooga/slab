@@ -72,37 +72,37 @@ ustruct: Fm86Params
   matrix reads the envelope-scaled level this sample. dx7-eg-step is inlined
   by name (it needs an f64 gate arg, which `call:` can't pass), but each of
   these words is itself a `call:` boundary, so one EG fits the budget. )
-dsp2: fm86-eg-op0
+dsp: fm86-eg-op0
   | state params |
   state Fm86State.eg0-value-p  params Fm86Params.eg0-s1-p  state Fm86State.gate@  dx7-eg-step
   params Fm86Params.ol0@ f*  params Fm86Params.lvl0-p f!64
   drop2
 ;
-dsp2: fm86-eg-op1
+dsp: fm86-eg-op1
   | state params |
   state Fm86State.eg1-value-p  params Fm86Params.eg1-s1-p  state Fm86State.gate@  dx7-eg-step
   params Fm86Params.ol1@ f*  params Fm86Params.lvl1-p f!64
   drop2
 ;
-dsp2: fm86-eg-op2
+dsp: fm86-eg-op2
   | state params |
   state Fm86State.eg2-value-p  params Fm86Params.eg2-s1-p  state Fm86State.gate@  dx7-eg-step
   params Fm86Params.ol2@ f*  params Fm86Params.lvl2-p f!64
   drop2
 ;
-dsp2: fm86-eg-op3
+dsp: fm86-eg-op3
   | state params |
   state Fm86State.eg3-value-p  params Fm86Params.eg3-s1-p  state Fm86State.gate@  dx7-eg-step
   params Fm86Params.ol3@ f*  params Fm86Params.lvl3-p f!64
   drop2
 ;
-dsp2: fm86-eg-op4
+dsp: fm86-eg-op4
   | state params |
   state Fm86State.eg4-value-p  params Fm86Params.eg4-s1-p  state Fm86State.gate@  dx7-eg-step
   params Fm86Params.ol4@ f*  params Fm86Params.lvl4-p f!64
   drop2
 ;
-dsp2: fm86-eg-op5
+dsp: fm86-eg-op5
   | state params |
   state Fm86State.eg5-value-p  params Fm86Params.eg5-s1-p  state Fm86State.gate@  dx7-eg-step
   params Fm86Params.ol5@ f*  params Fm86Params.lvl5-p f!64
@@ -113,7 +113,7 @@ dsp2: fm86-eg-op5
   fundamental (note-hz lives in state, so each polyphonic voice plays its own
   pitch). inc = ratio * note-hz / sr, written into the params scratch the
   matrix reads — like the per-op levels. )
-dsp2: fm86-inc-stage
+dsp: fm86-inc-stage
   | state params |
   state Fm86State.note-hz@ params Fm86Params.inv-sample-rate@ f*   | base |
   params Fm86Params.ratio0@ base f* params Fm86Params.inc0-p f!64
@@ -129,7 +129,7 @@ dsp2: fm86-inc-stage
   in state scratch. Kept its own `call:` stage so the heavy matrix gets a full
   register budget (same as k-dx7-voice) — folding the accumulate in here too
   overflows it and corrupts the caller's pointers. )
-dsp2: fm86-matrix-stage
+dsp: fm86-matrix-stage
   | state params |
   state params dx7-voice-step
   state Fm86State.vout-p f!64
@@ -139,7 +139,7 @@ dsp2: fm86-matrix-stage
 ( out state params -- : add this voice's sample to out. The host renders every
   voice into the same zeroed buffer, so voices must accumulate — a plain write
   would let the last/idle voice clobber the chord. Light, like Juno's VCA. )
-dsp2: fm86-out-add
+dsp: fm86-out-add
   | out state params |
   out f@64 state Fm86State.vout@ f+ out f!64
   drop2 drop
@@ -149,7 +149,7 @@ dsp2: fm86-out-add
   pitch, six EG stages refresh the per-op levels, the matrix computes the
   sample into scratch, and a light stage accumulates it into out. Each `call:`
   is a fresh register budget. )
-dsp2: k-fm86-voice-sample
+dsp: k-fm86-voice-sample
   | out state params |
   state params       call: fm86-inc-stage
   state params       call: fm86-eg-op0
@@ -168,7 +168,7 @@ dsp2: k-fm86-voice-sample
   stage 0, which the EG would treat as "ramp toward L1" — a drone before any
   note. Map stage 0 -> 4 (idle, holding silent); once a note has played the
   stage is >=1 and this is the identity, so it is safe to run every block. )
-dsp2: eg-idle-guard
+dsp: eg-idle-guard
   | s |
   s 0.5 4.0 s fsel-lt
   nip
@@ -176,7 +176,7 @@ dsp2: eg-idle-guard
 
 ( state params sample-rate -- : per-voice prepare (runs every block). Store
   1/sr for ratio->increment, and idle-init each operator envelope. )
-dsp2: fm86-prepare
+dsp: fm86-prepare
   | state params sample-rate |
   1.0 sample-rate f/ params Fm86Params.inv-sample-rate-p f!64
   state Fm86State.eg0-stage@ eg-idle-guard state Fm86State.eg0-stage-p f!64
@@ -193,7 +193,7 @@ dsp2: fm86-prepare
   reads it each sample). Raise the gate and clear every envelope's prev-gate so
   the next sample sees a note-on edge (retrigger from current value, no click).
   Velocity is unused in Phase-1 — the MASTER knob sets level. )
-dsp2: fm86-note-on
+dsp: fm86-note-on
   | state params hz velocity |
   hz   state Fm86State.note-hz-p f!64
   1.0  state Fm86State.gate-p f!64
@@ -208,7 +208,7 @@ dsp2: fm86-note-on
 
 ( state params -- : release. Drop the gate; the next sample's note-off edge
   sends every envelope to stage 4 (release toward L4). )
-dsp2: fm86-note-off
+dsp: fm86-note-off
   | state params |
   0.0 state Fm86State.gate-p f!64
   drop2

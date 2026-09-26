@@ -2,7 +2,7 @@
   every drum voice gets an independent stream from its own state field. )
 
 ( rng-ptr -- value : -1..1 noise, advancing the rng state in place. )
-dsp2: noise-step
+dsp: noise-step
   | rngp |
   rngp f@64
   1103515245.0 f*

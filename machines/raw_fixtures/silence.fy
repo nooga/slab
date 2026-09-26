@@ -9,7 +9,7 @@ ustruct: RawSilenceParams
 ;
 
 ( out state params -- : write one silent mono sample. )
-dsp2: raw-silence-render
+dsp: raw-silence-render
   | out state params |
   0.0
   out

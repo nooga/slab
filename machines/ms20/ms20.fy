@@ -11,7 +11,7 @@ include "../lib/manifest.fy"
 ( params sample-rate -- : per-block coefficient fill.  The SvfParams-shaped
   profile region starts at Ms20VoiceParams.svf-g; the two coeff words drop
   their own args, so only ours remain. )
-dsp2: ms20-block-prepare
+dsp: ms20-block-prepare
   | params sr |
   params Ms20VoiceParams.svf-g-p  sr 4.0 f*  k-svf-coeffs-dc
   params Ms20VoiceParams.svf-g-p  params Ms20VoiceParams.resonance@  k-svf-coeffs-profile

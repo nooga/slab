@@ -22,7 +22,7 @@
   divide-down ladder into m in [1 .. 2], the atanh series
   log2 m = 2/ln2 * [u + u^3/3 + u^5/5 + u^7/7 + u^9/9] with
   u = [m-1]/[m+1], then the exponent terms summed on. )
-dsp2: log2-approx
+dsp: log2-approx
   | x |
   x 1.0  x 16777216.0 f*  x  fsel-lt | m0 |
   m0 65536.0  m0  m0 0.0000152587890625 f*  fsel-lt | m1 |
@@ -50,7 +50,7 @@ dsp2: log2-approx
 ( y -- 2^y : split integer/fraction with ffrac, Taylor of e^[f ln2] for
   the fractional part, conditional power factors off the |n| remainder
   chain for the integer part, reciprocal for negative exponents. )
-dsp2: exp2-approx
+dsp: exp2-approx
   | y |
   y -32.0 32.0 fclamp | yc |
   yc ffrac | f |
@@ -82,5 +82,5 @@ dsp2: exp2-approx
 ;
 
 ( out x -- : raw probe entries for the sweep grids. )
-dsp2: k-log2 | out x | x log2-approx out f!64 drop2 ;
-dsp2: k-exp2 | out x | x exp2-approx out f!64 drop2 ;
+dsp: k-log2 | out x | x log2-approx out f!64 drop2 ;
+dsp: k-exp2 | out x | x exp2-approx out f!64 drop2 ;

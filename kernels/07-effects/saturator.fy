@@ -54,7 +54,7 @@ ustruct: SatParams
 ( params sample-rate -- : derive drive/out gains, tone coefficient, and the
   mode-dependent shaper constants.  a/b/bias are kept as locals so bias-comp
   can use them (a freshly stored param reads back stale within the word). )
-dsp2: sat-block-prepare
+dsp: sat-block-prepare
   | params sr |
   params SatParams.drive-db@ 0.16609640474436813 f* exp2-approx
   params SatParams.drive-lin-p f!64
@@ -77,7 +77,7 @@ dsp2: sat-block-prepare
 ;
 
 ( out state params in -- : one saturator sample. )
-dsp2: k-sat-tick
+dsp: k-sat-tick
   | out state params in |
   in f@64 | dry |
   dry params SatParams.drive-lin@ f*  params SatParams.bias@ f+  -4.0 4.0 fclamp | s |
