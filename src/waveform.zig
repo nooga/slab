@@ -9,7 +9,6 @@
 
 const std = @import("std");
 const c = @import("c.zig");
-const theme = @import("ui/theme.zig");
 
 pub const Peak = struct { min: f32 = 0, max: f32 = 0 };
 
@@ -117,34 +116,6 @@ pub const PeakCache = struct {
     }
 };
 
-/// Draw the waveform for sample window [win_start, win_end) into `r`, one
-/// vertical min/max bar per pixel column. Brutalist: 1px, no AA, no fill
-/// gradient — a solid block between min and max plus a centre zero line.
-pub fn draw(r: c.rl.Rectangle, cache: *const PeakCache, win_start: f64, win_end: f64, col: c.rl.Color) void {
-    if (r.width < 1 or r.height < 1 or cache.sample_count == 0) return;
-    const span = @max(win_end - win_start, 1.0);
-    const cols: usize = @intFromFloat(r.width);
-    const spp = span / @as(f64, @floatFromInt(cols));
-    const mid = r.y + r.height * 0.5;
-    const half = r.height * 0.5;
-
-    // zero line
-    c.rl.DrawLineEx(.{ .x = r.x, .y = mid }, .{ .x = r.x + r.width, .y = mid }, 1.0, theme.slab_lo);
-
-    var px: usize = 0;
-    while (px < cols) : (px += 1) {
-        const s0 = win_start + @as(f64, @floatFromInt(px)) * spp;
-        const s1 = s0 + spp;
-        const p = cache.rangePeak(s0, s1, spp);
-        // map [-1,1] -> pixels (clamped), y grows downward
-        const ymax = mid - std.math.clamp(@as(f32, @floatCast(p.max)), -1.0, 1.0) * @as(f32, @floatCast(half));
-        const ymin = mid - std.math.clamp(@as(f32, @floatCast(p.min)), -1.0, 1.0) * @as(f32, @floatCast(half));
-        const x = r.x + @as(f32, @floatFromInt(px));
-        const top = @min(ymax, ymin);
-        const bot = @max(ymax, ymin);
-        c.rl.DrawLineEx(.{ .x = x, .y = top }, .{ .x = x, .y = bot + 1 }, 1.0, col);
-    }
-}
 
 const testing = std.testing;
 

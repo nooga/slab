@@ -618,16 +618,16 @@ the panel redraws and audio picks up the change next block (docs/09).
 
 ## Migration from the current UI
 
-1. **Core + gallery** alongside the existing UI: `ui/core.zig` (context,
-   ids, input), `ui/draw.zig` (draw list, atlas, renderer, scale),
-   `ui/font.zig` (BDF + vector path), `ui/sprites.zig` (procedural
-   controls, noise, matrix font). Exit: gallery approved at 1× and 2×,
-   under budget.
-2. **Panes one per commit:** top bar → track headers → machine bay and
-   panels (tiers, horizontal scroll) → arrangement → piano roll → menus and
-   tooltips. Each commit deletes the old helpers it replaced; the app
-   works after every commit.
-3. **Delete** `theme.ui_scale`/`font_scale`, rect-hash ids and direct
-   raylib calls outside `ui/draw.zig`. Collapse empty panes, pack the bay,
-   enable redraw-on-demand, verify pixel alignment with zoomed captures
-   at 1× and 2×.
+1. **Core + gallery** alongside the existing UI (done).
+2. **Panes one per commit:** top bar, track headers, machine bay and
+   panels, arrangement, piano roll and audio editor, menus and tooltips,
+   rename field and dialogs (done).
+3. **Delete the legacy toolkit** (done): `widgets.zig`, `theme.zig` (and
+   its `ui_scale`/`font_scale`), the raylib `fonts.zig`/`icons.zig`, rect-
+   hash ids, and raylib drawing outside `ui/draw.zig`. The working-surface
+   panes keep their float-rect interaction code on `ui/pane_input.zig`:
+   the pointer from `Ui.raw_in`, one pane drag at a time, cursor requests
+   forwarded to the Ui.
+4. **Next:** move that interaction onto Ui behaviours and i32 rects,
+   collapse empty panes, enable redraw-on-demand, verify pixel alignment
+   with zoomed captures at 1× and 2×.

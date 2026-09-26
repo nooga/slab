@@ -10,7 +10,7 @@
 
 const std = @import("std");
 const c = @import("../c.zig");
-const widgets = @import("widgets.zig");
+const pane = @import("pane_input.zig");
 const menu = @import("menu.zig");
 const bridge = @import("bridge.zig");
 const Track = @import("../track.zig").Track;
@@ -192,7 +192,7 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
                 }
             } else {
                 // A click, not a drag → the effect's replace menu.
-                const key = widgets.keyFromIds(REPLACE_MENU_KEY, @intFromPtr(fx.mach.state), 0);
+                const key = pane.keyFromIds(REPLACE_MENU_KEY, @intFromPtr(fx.mach.state), 0);
                 if (!menu.isOpen(key)) {
                     scanRegistryPresets(reg);
                     menu.openBelow(key, out.name_rect);
@@ -294,7 +294,7 @@ fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, active: bool,
 
     // × delete → confirm popup.
     const del = bar.cutLeft(18);
-    const confirm_key = widgets.keyFromIds(CONFIRM_MENU_KEY, @intFromPtr(mach.state), 0);
+    const confirm_key = pane.keyFromIds(CONFIRM_MENU_KEY, @intFromPtr(mach.state), 0);
     var confirm_open = menu.isOpen(confirm_key);
     if (ctl.button(ui, del, "del", &confirm_open, .{ .label = "\u{D7}", .flush = true }) and !menu.isOpen(confirm_key)) {
         menu.openBelow(confirm_key, del);
@@ -322,7 +322,7 @@ fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, active: bool,
     ui.textIn(&ui.fonts.body_bold, Rect.xywh(name_r.x + 6, name_r.y, name_r.w - 8 - led_w, name_r.h - 1), name, if (ui.isHot(nid)) ui_style.text else ui_style.text_dim, .left, true);
     if (glow) |g| ctl.led(ui, name_r.right() - led_w - 2, name_r.y + @divFloor(name_r.h - 1 - 5, 2), .round5, if (g > 0.2) .on else .off, ui_style.led_green);
     menu.tip(ui, name_r, if (is_inst) "Replace machine" else "Drag to reorder, click to replace");
-    const replace_key = widgets.keyFromIds(REPLACE_MENU_KEY, @intFromPtr(mach.state), 0);
+    const replace_key = pane.keyFromIds(REPLACE_MENU_KEY, @intFromPtr(mach.state), 0);
     if (is_inst and nb.clicked and !menu.isOpen(replace_key)) {
         scanRegistryPresets(reg);
         menu.openBelow(replace_key, name_r);
@@ -342,7 +342,7 @@ fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, active: bool,
         const disp = bar;
         const pid = ui.id("preset");
         const pb = ui.behaviorEx(pid, disp, .{ .focusable = false });
-        const key = widgets.keyFromIds(PRESET_MENU_KEY, @intFromPtr(mach.state), 1);
+        const key = pane.keyFromIds(PRESET_MENU_KEY, @intFromPtr(mach.state), 1);
         var popen = menu.isOpen(key);
         const caret_clicked = ctl.button(ui, caret, "preset-caret", &popen, .{ .glyph = .tri_down, .glyph_on = ui_style.text, .flush = true });
         titleDisplay(ui, disp, mach, preset, ui.isHot(pid));
@@ -557,7 +557,7 @@ fn presetMenu(preset_rect: Rect, clicked: bool, mach: *const Machine) PresetActi
     const can_rename = mach.rename_preset != null and cur_idx >= 0;
     if (count == 0 and !can_save) return .{};
 
-    const key = widgets.keyFromIds(PRESET_MENU_KEY, @intFromPtr(mach.state), 1);
+    const key = pane.keyFromIds(PRESET_MENU_KEY, @intFromPtr(mach.state), 1);
     if (clicked and !menu.isOpen(key)) menu.openBelow(key, preset_rect);
 
     // Deferred-draw menu: the backing list must outlive this call (a stack

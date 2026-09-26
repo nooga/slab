@@ -20,9 +20,8 @@ const history_mod = @import("history.zig");
 const recorder_mod = @import("recorder.zig");
 const native_dialog = @import("native_dialog.zig");
 
-const theme = @import("ui/theme.zig");
-const widgets = @import("ui/widgets.zig");
-const fonts = @import("ui/fonts.zig");
+const pane = @import("ui/pane_input.zig");
+const ui_style = @import("ui/style.zig");
 const ui_gallery = @import("ui/gallery.zig");
 const layout_mod = @import("ui/layout.zig");
 const transport_bar = @import("ui/transport_bar.zig");
@@ -420,8 +419,6 @@ pub fn main(init: std.process.Init) !void {
     c.rl.SetTargetFPS(120);
     c.rl.SetExitKey(c.rl.KEY_NULL);
 
-    fonts.init();
-    defer fonts.deinit();
     defer clip_editor.deinit(alloc);
 
     // New UI core (docs/06). Runs alongside the legacy widgets while panes
@@ -470,13 +467,13 @@ pub fn main(init: std.process.Init) !void {
 
     var tracks_buf: [MAX_TRACKS]track_mod.Track = undefined;
     var track_count: usize = 1;
-    tracks_buf[0] = try track_mod.Track.init(alloc, "Track 1", theme.track_colors[0], silent_machine);
+    tracks_buf[0] = try track_mod.Track.init(alloc, "Track 1", trackColor(0), silent_machine);
     defer for (tracks_buf[0..track_count]) |*t| t.deinit(alloc);
 
     // Master bus — a standalone Track (silent instrument, effects-only,
     // its volume() is the master fader and meter() the master meter). It
     // lives outside tracks_buf so no audio-track index ever shifts.
-    var master = try track_mod.Track.init(alloc, "Master", theme.slab_hi, silent_machine);
+    var master = try track_mod.Track.init(alloc, "Master", @bitCast(ui_style.face_hi), silent_machine);
     master.kind = .master;
     master.setVolume(1.0); // unity — Track defaults to 0.8, which would quiet the mix
     defer master.deinit(alloc);
@@ -562,16 +559,16 @@ pub fn main(init: std.process.Init) !void {
 
     splash.finishBoot();
     while (!c.rl.WindowShouldClose()) {
-        const m = widgets.Mouse.sample();
         const sw: f32 = @floatFromInt(c.rl.GetScreenWidth());
         const sh: f32 = @floatFromInt(c.rl.GetScreenHeight());
-        widgets.beginFrame();
         ui.beginFrame();
+        pane.beginFrame();
+        const m = pane.Mouse.fromInput(&ui.raw_in);
         menu.beginFrame(ui, @intFromFloat(sw), @intFromFloat(sh));
         // One owner of the pointer at a time: a legacy menu, modal or drag
         // hides input from the new Ui, and a new-Ui drag hides it from the
         // legacy panes.
-        if (menu.active() or render_dlg.active or widgets.hasActiveDrag()) ui.suppressInput();
+        if (menu.active() or render_dlg.active or pane.hasActiveDrag()) ui.suppressInput();
 
         // While a menu is open it's modal for the mouse: panes get a
         // neutralized mouse (no hover/clicks fall through), the menu keeps
@@ -579,7 +576,7 @@ pub fn main(init: std.process.Init) !void {
         // A new-Ui widget that owns or hovers the pointer (a seam, a toolbar
         // tile) hides it from the legacy panes, so one press never lands in
         // both UIs.
-        const pane_m = if (menu.active() or render_dlg.active or ui.active != 0 or ui.hot != 0) widgets.neutralMouse() else m;
+        const pane_m = if (menu.active() or render_dlg.active or ui.active != 0 or ui.hot != 0) pane.neutral() else m;
 
 
         layout.splitters(ui, sw, sh);
@@ -626,11 +623,10 @@ pub fn main(init: std.process.Init) !void {
             if (c.rl.IsKeyPressed(c.rl.KEY_SPACE)) transport.toggle();
             if (c.rl.IsKeyPressed(c.rl.KEY_HOME)) transport.rewind();
             if (c.rl.IsKeyPressed(c.rl.KEY_TAB)) layout.clip_editor_visible = !layout.clip_editor_visible;
-            handleUiScaleKeys();
         }
 
         c.rl.BeginDrawing();
-        c.rl.ClearBackground(theme.bg);
+        c.rl.ClearBackground(@bitCast(ui_style.chassis));
 
         const rec_busy = recorder.isRecording() or rec_finishing;
 
@@ -724,7 +720,7 @@ pub fn main(init: std.process.Init) !void {
             tracks_buf[track_count] = try track_mod.Track.init(
                 alloc,
                 name,
-                theme.track_colors[track_count % theme.track_colors.len],
+                trackColor(track_count),
                 silent_machine,
             );
             selected_track = track_count;
@@ -939,14 +935,14 @@ pub fn main(init: std.process.Init) !void {
         if (render_dlg.active) {
             const loop_available = transport.loopEnabled() and transport.loopEndBeats() > transport.loopStartBeats();
             const prog: ?render_dialog.Progress = if (render_job.active) renderProgress(&render_job) else null;
-            render_action = render_dialog.draw(ui, uiRect(widgets.rect(0, 0, sw, sh)), &render_dlg, loop_available, prog);
+            render_action = render_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &render_dlg, loop_available, prog);
         }
 
         splash.overlay(ui, screenRect());
         menu.draw(ui);
         ui.render();
 
-        widgets.applyCursor();
+        pane.applyCursor(ui);
         ui.endFrame();
 
         for (tracks) |*t| t.publishSnapshot(&audio_pool);
@@ -1450,6 +1446,11 @@ fn screenRect() ui_geom.Rect {
     return ui_geom.Rect.xywh(0, 0, c.rl.GetScreenWidth(), c.rl.GetScreenHeight());
 }
 
+/// Default colour for the n-th new track (the track palette, cycled).
+fn trackColor(n: usize) c.rl.Color {
+    return @bitCast(ui_style.track[n % ui_style.track.len]);
+}
+
 fn uiRect(r: c.rl.Rectangle) ui_geom.Rect {
     return ui_geom.Rect.xywh(@intFromFloat(@round(r.x)), @intFromFloat(@round(r.y)), @intFromFloat(@round(r.width)), @intFromFloat(@round(r.height)));
 }
@@ -1472,7 +1473,7 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, out: []const u8
 
     var transport: transport_mod.Transport = .{};
     transport.sample_rate = audio_mod.SAMPLE_RATE;
-    var master = try track_mod.Track.init(alloc, "Master", theme.slab_hi, silent_machine);
+    var master = try track_mod.Track.init(alloc, "Master", @bitCast(ui_style.face_hi), silent_machine);
     master.kind = .master;
     master.setVolume(1.0);
     defer master.deinit(alloc);
@@ -2112,23 +2113,23 @@ fn deletePressed() bool {
     return c.rl.IsKeyPressed(c.rl.KEY_DELETE) or c.rl.IsKeyPressed(c.rl.KEY_BACKSPACE);
 }
 
-fn shouldCaptureHistory(m: widgets.Mouse, rects: layout_mod.Rects, focus: FocusPane) bool {
+fn shouldCaptureHistory(m: pane.Mouse, rects: layout_mod.Rects, focus: FocusPane) bool {
     if (!m.left_pressed) return false;
     return switch (focus) {
-        .arrangement => widgets.contains(rects.arrangement, m.x, m.y),
-        .piano_roll => widgets.contains(rects.clip_editor, m.x, m.y),
-        .browser => widgets.contains(rects.browser, m.x, m.y),
-        .machine_bay => widgets.contains(rects.machine_bay, m.x, m.y),
+        .arrangement => pane.contains(rects.arrangement, m.x, m.y),
+        .piano_roll => pane.contains(rects.clip_editor, m.x, m.y),
+        .browser => pane.contains(rects.browser, m.x, m.y),
+        .machine_bay => pane.contains(rects.machine_bay, m.x, m.y),
         .top_bar => false,
     };
 }
 
-fn focusFromPoint(rects: layout_mod.Rects, m: widgets.Mouse, clip_editor_visible: bool) FocusPane {
-    if (widgets.contains(rects.top_bar, m.x, m.y)) return .top_bar;
-    if (widgets.contains(rects.browser, m.x, m.y)) return .browser;
-    if (clip_editor_visible and widgets.contains(rects.clip_editor, m.x, m.y)) return .piano_roll;
-    if (widgets.contains(rects.machine_bay, m.x, m.y)) return .machine_bay;
-    if (widgets.contains(rects.arrangement, m.x, m.y)) return .arrangement;
+fn focusFromPoint(rects: layout_mod.Rects, m: pane.Mouse, clip_editor_visible: bool) FocusPane {
+    if (pane.contains(rects.top_bar, m.x, m.y)) return .top_bar;
+    if (pane.contains(rects.browser, m.x, m.y)) return .browser;
+    if (clip_editor_visible and pane.contains(rects.clip_editor, m.x, m.y)) return .piano_roll;
+    if (pane.contains(rects.machine_bay, m.x, m.y)) return .machine_bay;
+    if (pane.contains(rects.arrangement, m.x, m.y)) return .arrangement;
     return .arrangement;
 }
 
@@ -2149,19 +2150,6 @@ fn plural(count: usize) []const u8 {
 fn commandModifierDown() bool {
     return c.rl.IsKeyDown(c.rl.KEY_LEFT_SUPER) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SUPER) or
         c.rl.IsKeyDown(c.rl.KEY_LEFT_CONTROL) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_CONTROL);
-}
-
-fn handleUiScaleKeys() void {
-    const mod = commandModifierDown();
-    if (!mod) return;
-
-    if (c.rl.IsKeyPressed(c.rl.KEY_EQUAL) or c.rl.IsKeyPressed(c.rl.KEY_KP_ADD)) {
-        theme.stepUiScale(0.05);
-    } else if (c.rl.IsKeyPressed(c.rl.KEY_MINUS) or c.rl.IsKeyPressed(c.rl.KEY_KP_SUBTRACT)) {
-        theme.stepUiScale(-0.05);
-    } else if (c.rl.IsKeyPressed(c.rl.KEY_ZERO) or c.rl.IsKeyPressed(c.rl.KEY_KP_0)) {
-        theme.resetScale();
-    }
 }
 
 fn handleSnapKeys(edit_snap: *snap_mod.Setting, status: *StatusMessage) void {
@@ -2189,138 +2177,9 @@ fn selectedClipIsAudio(tracks: []track_mod.Track, selected: ?clip_mod.ClipRef) b
     return t.clips.items[s.clip].isAudio();
 }
 
-fn drawStatusBar(
-    r: c.rl.Rectangle,
-    transport: *const transport_mod.Transport,
-    selected_track: ?usize,
-    selected_clip: ?clip_mod.ClipRef,
-    tracks: []track_mod.Track,
-    project_path: []const u8,
-    project_path_chosen: bool,
-    dirty: bool,
-    status_text: [*:0]const u8,
-    focus: FocusPane,
-    edit_snap: snap_mod.Setting,
-) void {
-    _ = selected_track;
-    _ = selected_clip;
-    _ = tracks;
-    _ = focus;
-
-    // Toolbar-style bar: flat dark background; chips fill the full bar height
-    // and abut (their raised bevels are the only edges — no inset, no gaps).
-    // Left group flush left, right group flush right, bare spacer between.
-    c.rl.DrawRectangleRec(r, theme.bg);
-
-    // ── Left group: transport position, snap, zoom ───────────────────
-    const playing = transport.isPlaying();
-    var pos_buf: [24:0]u8 = undefined;
-    const beats = transport.beats();
-    const bar = @as(u32, @intFromFloat(@floor(beats / 4))) + 1;
-    const beat_in_bar = @as(u32, @intFromFloat(@floor(@mod(beats, 4)))) + 1;
-    const sixteenth = @as(u32, @intFromFloat(@floor(@mod(beats, 1) * 4))) + 1;
-    const pos = std.fmt.bufPrintZ(&pos_buf, "{d}.{d}.{d}", .{ bar, beat_in_bar, sixteenth }) catch "?";
-    var zoom_buf: [12:0]u8 = undefined;
-    const zoom = std.fmt.bufPrintZ(&zoom_buf, "{d:.0}%", .{theme.ui_scale * 100}) catch "?";
-
-    var x = r.x;
-    x += statusChip(x, r.y, r.height, if (playing) .stop else .play, pos.ptr, if (playing) theme.accent_play else theme.text_fg);
-    x += statusChip(x, r.y, r.height, .metronome, edit_snap.label(), theme.text_dim);
-    x += statusChip(x, r.y, r.height, null, zoom.ptr, theme.text_dim);
-
-    // ── Right group: transient message, then project (flush right) ────
-    var path_buf: [128:0]u8 = undefined;
-    const path_label = if (project_path_chosen)
-        (std.fmt.bufPrintZ(&path_buf, "{s}{s}", .{ if (dirty) "*" else "", basename(project_path) }) catch "?")
-    else
-        (if (dirty) @as([:0]const u8, "*Untitled") else @as([:0]const u8, "Untitled"));
-    const has_msg = std.mem.len(status_text) > 0;
-    const msg_w: f32 = if (has_msg) statusChipWidth(.caret_right, status_text) else 0;
-    const proj_w = statusChipWidth(.file, path_label.ptr);
-    var rx = @max(x, r.x + r.width - msg_w - proj_w);
-    if (has_msg) rx += statusChip(rx, r.y, r.height, .caret_right, status_text, theme.accent_hi);
-    _ = statusChip(rx, r.y, r.height, .file, path_label.ptr, if (dirty) theme.accent_hi else theme.text_dim);
-}
-
-fn statusChipWidth(icon: ?widgets.Icon, value: [*:0]const u8) f32 {
-    const fs = theme.fsBody();
-    const pad = theme.size(6);
-    const icon_w: f32 = if (icon != null) fs + theme.size(3) else 0;
-    return pad * 2 + icon_w + widgets.measureTextF(value, fs);
-}
-
-fn statusChip(x: f32, y: f32, h: f32, icon: ?widgets.Icon, value: [*:0]const u8, col: c.rl.Color) f32 {
-    const fs = theme.fsBody();
-    const w = statusChipWidth(icon, value);
-    widgets.bevelRaised(widgets.rect(x, y, w, h), theme.slab_fill, theme.slab_hi, theme.slab_lo);
-    var tx = x + theme.size(6);
-    if (icon) |ic| {
-        widgets.drawIcon(ic, tx, y + (h - fs) / 2, fs, col);
-        tx += fs + theme.size(3);
-    }
-    widgets.drawLabelF(value, tx, y + (h - fs) / 2 - 1, fs, col);
-    return w;
-}
-
-fn drawStatusCell(r: c.rl.Rectangle, cap: [*:0]const u8, value: [*:0]const u8, value_color: c.rl.Color) void {
-    const inner = widgets.displayField(r);
-    const cap_size = theme.fsTiny();
-    const val_size = theme.fsBody();
-    widgets.drawLabelF(cap, inner.x + 4, inner.y + 1, cap_size, theme.text_mute);
-    const val_y = inner.y + inner.height - val_size - 1;
-    const max_w = inner.width - 8;
-    const val_w = widgets.measureTextF(value, val_size);
-    const text_x = if (val_w > max_w) inner.x + 4 - (val_w - max_w) else inner.x + 4;
-    c.rl.BeginScissorMode(@intFromFloat(inner.x + 4), @intFromFloat(inner.y), @intFromFloat(max_w), @intFromFloat(inner.height));
-    widgets.drawLabelF(value, text_x, val_y, val_size, value_color);
-    c.rl.EndScissorMode();
-}
-
-fn selectionDetails(buf: *[128:0]u8, selected_clip: ?clip_mod.ClipRef, tracks: []track_mod.Track) [*:0]const u8 {
-    if (selected_clip) |s| {
-        if (s.track >= tracks.len) return "(invalid)";
-        const t = &tracks[s.track];
-        if (s.clip >= t.clips.items.len) return "(invalid)";
-        const clip = &t.clips.items[s.clip];
-        const selected_notes = clip.selectedCount();
-        if (selected_notes > 0) {
-            var lo: u8 = 127;
-            var hi: u8 = 0;
-            var vel_lo: u8 = 127;
-            var vel_hi: u8 = 0;
-            for (clip.notes.items) |note| {
-                if (!note.selected) continue;
-                lo = @min(lo, note.pitch);
-                hi = @max(hi, note.pitch);
-                vel_lo = @min(vel_lo, note.velocity);
-                vel_hi = @max(vel_hi, note.velocity);
-            }
-            const s_detail = std.fmt.bufPrintZ(buf, "{d} notes  pitch {d}-{d}  vel {d}-{d}", .{ selected_notes, lo, hi, vel_lo, vel_hi }) catch return "?";
-            return s_detail.ptr;
-        }
-        const c_detail = std.fmt.bufPrintZ(buf, "start {d:.2}  len {d:.2}  notes {d}", .{ clip.start_beat, clip.length_beats, clip.notes.items.len }) catch return "?";
-        return c_detail.ptr;
-    }
-
-    var clip_count: usize = 0;
-    var selected_count: usize = 0;
-    for (tracks) |t| {
-        clip_count += t.clips.items.len;
-        for (t.clips.items) |clip| {
-            if (clip.selected) selected_count += 1;
-        }
-    }
-    if (selected_count > 0) {
-        const selected_detail = std.fmt.bufPrintZ(buf, "{d} clips selected", .{selected_count}) catch return "?";
-        return selected_detail.ptr;
-    }
-    const all_detail = std.fmt.bufPrintZ(buf, "{d} tracks  {d} clips", .{ tracks.len, clip_count }) catch return "?";
-    return all_detail.ptr;
-}
-
 test "synthpop demo notes fit a 4-bar loop and span bass to lead range" {
     const alloc = std.testing.allocator;
-    var t = try track_mod.Track.init(alloc, "test", theme.track_colors[0], silent_machine);
+    var t = try track_mod.Track.init(alloc, "test", trackColor(0), silent_machine);
     defer t.deinit(alloc);
 
     try addClipFromNotes(alloc, &t, "Bass", &bass_notes);

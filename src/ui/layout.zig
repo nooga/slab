@@ -16,8 +16,8 @@
 //! splitters put them. Rects are handed to the legacy panes as f32.
 
 const c = @import("../c.zig");
-const theme = @import("theme.zig");
-const widgets = @import("widgets.zig");
+const pane = @import("pane_input.zig");
+const transport_bar = @import("transport_bar.zig");
 const ui_core = @import("core.zig");
 const ui_style = @import("style.zig");
 const ctl = @import("controls.zig");
@@ -59,7 +59,7 @@ pub const State = struct {
 
     fn split(self: *const State, sw: i32, sh: i32) Split {
         var screen = Rect.xywh(0, 0, sw, sh);
-        const top = screen.cutTop(@intFromFloat(theme.topBarH()));
+        const top = screen.cutTop(transport_bar.HEIGHT);
         const main = screen;
         var rest = screen;
         const bay = rest.cutBottom(@min(self.effBayH(), @max(0, rest.h - MIN_ARRANGE)));
@@ -110,5 +110,5 @@ fn seam(ui: *ui_core.Ui, r: Rect) void {
 }
 
 fn rl(r: Rect) c.rl.Rectangle {
-    return widgets.rect(@floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h));
+    return pane.rect(@floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h));
 }

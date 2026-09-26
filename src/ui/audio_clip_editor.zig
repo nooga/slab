@@ -8,7 +8,7 @@
 
 const std = @import("std");
 const c = @import("../c.zig");
-const widgets = @import("widgets.zig");
+const pane = @import("pane_input.zig");
 const menu = @import("menu.zig");
 const bridge = @import("bridge.zig");
 const ui_core = @import("core.zig");
@@ -54,7 +54,7 @@ pub fn draw(
     pool: *const audio_pool_mod.AudioPool,
     selected: ?ClipRef,
     bpm: f64,
-    m: widgets.Mouse,
+    m: pane.Mouse,
 ) Result {
     ui.pushId("audio-editor");
     defer ui.popId();
@@ -88,10 +88,10 @@ pub fn draw(
     const source_beats: f64 = @max(0.001, source_sec / sec_per_beat);
 
     // ── Layout: overview · ruler · grid · control row ────────────────
-    const ov_rect = widgets.rect(body.x, body.y, body.width, overviewH());
-    const ruler_rect = widgets.rect(body.x, ov_rect.y + ov_rect.height, body.width, rulerH());
-    const ctrl_rect = widgets.rect(body.x, body.y + body.height - ctrlH(), body.width, ctrlH());
-    const grid = widgets.rect(body.x, ruler_rect.y + ruler_rect.height, body.width, @max(8, ctrl_rect.y - (ruler_rect.y + ruler_rect.height)));
+    const ov_rect = pane.rect(body.x, body.y, body.width, overviewH());
+    const ruler_rect = pane.rect(body.x, ov_rect.y + ov_rect.height, body.width, rulerH());
+    const ctrl_rect = pane.rect(body.x, body.y + body.height - ctrlH(), body.width, ctrlH());
+    const grid = pane.rect(body.x, ruler_rect.y + ruler_rect.height, body.width, @max(8, ctrl_rect.y - (ruler_rect.y + ruler_rect.height)));
 
     // Refit zoom/scroll when the edited clip (or its source) changes.
     const key = @intFromPtr(clip) ^ (@as(u64, clip.audio.source) << 1);
@@ -224,8 +224,8 @@ fn clampView(grid: c.rl.Rectangle, source_beats: f64) void {
     scroll_x = std.math.clamp(scroll_x, 0, max_sx);
 }
 
-fn handleWheel(grid: c.rl.Rectangle, source_beats: f64, m: widgets.Mouse) void {
-    if (!widgets.contains(grid, m.x, m.y)) return;
+fn handleWheel(grid: c.rl.Rectangle, source_beats: f64, m: pane.Mouse) void {
+    if (!pane.contains(grid, m.x, m.y)) return;
     if (m.wheel_x == 0 and m.wheel_y == 0) return;
     const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
     if (shift) {
@@ -313,7 +313,7 @@ fn shadeFade(ui: *Ui, grid: c.rl.Rectangle, x0: f32, x1: f32, fade_in: bool) voi
     }
 }
 
-fn drawOverview(ui: *Ui, strip: c.rl.Rectangle, grid: c.rl.Rectangle, src: *const audio_pool_mod.Source, track_color: ui_style.Color, source_beats: f64, m: widgets.Mouse) void {
+fn drawOverview(ui: *Ui, strip: c.rl.Rectangle, grid: c.rl.Rectangle, src: *const audio_pool_mod.Source, track_color: ui_style.Color, source_beats: f64, m: pane.Mouse) void {
     const inner_r = ui.well(bridge.fromRl(strip), ui_style.well);
     if (inner_r.w < 2 or inner_r.h < 2) return;
     const inner = bridge.toRl(inner_r);
@@ -329,7 +329,7 @@ fn drawOverview(ui: *Ui, strip: c.rl.Rectangle, grid: c.rl.Rectangle, src: *cons
     ui.bevel(vp, ui_style.accent, ui_style.accent);
 
     // Click / drag to centre the viewport on the cursor.
-    if (widgets.contains(strip, m.x, m.y) and m.left_down) {
+    if (pane.contains(strip, m.x, m.y) and m.left_down) {
         const frac = std.math.clamp((m.x - inner.x) / inner.width, 0, 1);
         scroll_x = frac * content_w - grid.width / 2;
     }
@@ -342,18 +342,18 @@ const FADE_STRIP: f32 = 9;
 const FADE_BOX: f32 = 7;
 
 /// Window edge: a full-height green line with a tab on top; 2px while hot.
-fn edgeHandle(ui: *Ui, clip: *clip_mod.Clip, area: c.rl.Rectangle, x: f32, salt: u64, id: u64, m: widgets.Mouse) ?f32 {
-    const key = widgets.keyFromIds(salt, @intFromPtr(clip), id);
-    const dragging = widgets.isDraggingKey(key);
+fn edgeHandle(ui: *Ui, clip: *clip_mod.Clip, area: c.rl.Rectangle, x: f32, salt: u64, id: u64, m: pane.Mouse) ?f32 {
+    const key = pane.keyFromIds(salt, @intFromPtr(clip), id);
+    const dragging = pane.isDraggingKey(key);
     // Reserve the top strip for fade handles sitting on the same x.
-    const hot = widgets.contains(area, m.x, m.y) and @abs(m.x - x) <= EDGE_GRAB and m.y > area.y + FADE_STRIP;
+    const hot = pane.contains(area, m.x, m.y) and @abs(m.x - x) <= EDGE_GRAB and m.y > area.y + FADE_STRIP;
     var out: ?f32 = null;
     if (dragging) {
-        if (m.left_down) out = std.math.clamp(m.x, area.x, area.x + area.width) else widgets.cancelDrag();
-    } else if (hot and m.left_pressed and !widgets.hasActiveDrag()) {
-        _ = widgets.tryStartDrag(key);
+        if (m.left_down) out = std.math.clamp(m.x, area.x, area.x + area.width) else pane.cancelDrag();
+    } else if (hot and m.left_pressed and !pane.hasActiveDrag()) {
+        _ = pane.tryStartDrag(key);
     }
-    if (hot or dragging) widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 2);
+    if (hot or dragging) pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 2);
     const lw: f32 = if (hot or dragging) 2 else 1;
     ui.rect(frect(x, area.y, lw, area.height), ui_style.play);
     ui.rect(frect(x - 3, area.y, 7, 4), ui_style.play);
@@ -361,18 +361,18 @@ fn edgeHandle(ui: *Ui, clip: *clip_mod.Clip, area: c.rl.Rectangle, x: f32, salt:
 }
 
 /// Fade handle: a small square on the fade's knee, in the top strip.
-fn fadeHandle(ui: *Ui, clip: *clip_mod.Clip, area: c.rl.Rectangle, x: f32, salt: u64, id: u64, m: widgets.Mouse) ?f32 {
-    const box = widgets.rect(x - @floor(FADE_BOX / 2), area.y, FADE_BOX, FADE_BOX);
-    const key = widgets.keyFromIds(salt, @intFromPtr(clip), id);
-    const dragging = widgets.isDraggingKey(key);
-    const hot = widgets.contains(box, m.x, m.y);
+fn fadeHandle(ui: *Ui, clip: *clip_mod.Clip, area: c.rl.Rectangle, x: f32, salt: u64, id: u64, m: pane.Mouse) ?f32 {
+    const box = pane.rect(x - @floor(FADE_BOX / 2), area.y, FADE_BOX, FADE_BOX);
+    const key = pane.keyFromIds(salt, @intFromPtr(clip), id);
+    const dragging = pane.isDraggingKey(key);
+    const hot = pane.contains(box, m.x, m.y);
     var out: ?f32 = null;
     if (dragging) {
-        if (m.left_down) out = std.math.clamp(m.x, area.x, area.x + area.width) else widgets.cancelDrag();
-    } else if (hot and m.left_pressed and !widgets.hasActiveDrag()) {
-        _ = widgets.tryStartDrag(key);
+        if (m.left_down) out = std.math.clamp(m.x, area.x, area.x + area.width) else pane.cancelDrag();
+    } else if (hot and m.left_pressed and !pane.hasActiveDrag()) {
+        _ = pane.tryStartDrag(key);
     }
-    if (hot or dragging) widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
+    if (hot or dragging) pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
     const br = frect(box.x, box.y, box.width, box.height);
     ui.rect(br, ui_style.edge);
     ui.rect(br.inset(1), if (hot or dragging) ui_style.text else ui_style.text_dim);

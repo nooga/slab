@@ -9,8 +9,7 @@
 
 const std = @import("std");
 const c = @import("../c.zig");
-const theme = @import("theme.zig");
-const widgets = @import("widgets.zig");
+const pane = @import("pane_input.zig");
 const menu = @import("menu.zig");
 const bridge = @import("bridge.zig");
 const ui_core = @import("core.zig");
@@ -33,14 +32,18 @@ const meter_mod = @import("../meter.zig");
 const meter_gen = @import("../meter_gen.zig");
 const recorder_mod = @import("../recorder.zig");
 
+/// Lane height and track-header width (logical px).
+pub const LANE_H: f32 = 52;
+const HEADER_W: f32 = 196;
+
 fn rulerH() f32 {
-    return theme.size(14);
+    return 16;
 }
 fn overviewH() f32 {
-    return theme.size(22);
+    return 24;
 }
 fn resizeEdgeW() f32 {
-    return theme.fine(4);
+    return 5;
 }
 const MIN_CLIP_BEATS: f64 = 0.25;
 const PX_PER_BEAT_MIN: f32 = 6;
@@ -107,7 +110,7 @@ var loop_end_drag: bool = false;
 
 // Vertical scrollbar (lazy) — mirrors clip_editor.
 fn scrollbarW() f32 {
-    return theme.fine(6);
+    return 7;
 }
 const SCROLLBAR_HOVER_RANGE: f32 = 28;
 const SCROLLBAR_FADE_VISIBLE: f64 = 0.9;
@@ -146,7 +149,7 @@ pub const DeviceSel = enum { audio, master };
 
 /// Height of the pinned master strip at the bottom of the track bay.
 fn masterStripH() f32 {
-    return theme.laneH();
+    return LANE_H;
 }
 
 const ContextTarget = struct {
@@ -165,7 +168,7 @@ pub fn cancelInteractions() bool {
     loop_start_drag = false;
     loop_end_drag = false;
     sbv_drag = false;
-    widgets.cancelDrag();
+    pane.cancelDrag();
     return had_active;
 }
 
@@ -493,7 +496,7 @@ pub fn draw(
     can_paste_clips: bool,
     rename_target: RenameTarget,
     recorder: ?*const recorder_mod.Recorder,
-    m: widgets.Mouse,
+    m: pane.Mouse,
 ) Result {
     var result: Result = .{};
     // The track a live recording is being written to (first armed audio
@@ -517,7 +520,7 @@ pub fn draw(
 
     var master_clicked = false;
 
-    const header_w = theme.trackHeaderW();
+    const header_w = HEADER_W;
     const timeline_x = r.x;
     const timeline_w = r.width - header_w;
     const header_x = r.x + timeline_w;
@@ -529,9 +532,9 @@ pub fn draw(
     const lanes_bottom = r.y + r.height - master_h;
 
     // ── Layout slices ────────────────────────────────────────────────
-    const overview_rect = widgets.rect(timeline_x, r.y, timeline_w, overviewH());
-    const ruler_rect = widgets.rect(timeline_x, r.y + overviewH(), timeline_w, rulerH());
-    const hdr_top = widgets.rect(header_x, r.y, header_w, overviewH() + rulerH());
+    const overview_rect = pane.rect(timeline_x, r.y, timeline_w, overviewH());
+    const ruler_rect = pane.rect(timeline_x, r.y + overviewH(), timeline_w, rulerH());
+    const hdr_top = pane.rect(header_x, r.y, header_w, overviewH() + rulerH());
 
     // Header column block over the overview + ruler rows: TRACKS + add.
     {
@@ -555,7 +558,7 @@ pub fn draw(
     const lanes_h = @max(0, lanes_bottom - lanes_top);
 
     // ── Wheel input (scroll / zoom) ──────────────────────────────────
-    handleWheel(widgets.rect(timeline_x, r.y, timeline_w, r.height), m);
+    handleWheel(pane.rect(timeline_x, r.y, timeline_w, r.height), m);
 
     // ── Continue an in-progress clip drag ─────────────────────────────
     continueDrag(tracks, alloc, selected_clip, edit_snap, m, lanes_top);
@@ -576,7 +579,7 @@ pub fn draw(
     if (!loop_start_drag and !loop_end_drag) handleRulerScrub(ruler_rect, timeline_x0, transport, m);
 
     // Right-click the ruler → meter-change menu at the bar under the cursor.
-    if (m.right_pressed and widgets.contains(ruler_rect, m.x, m.y) and !widgets.hasActiveDrag()) {
+    if (m.right_pressed and pane.contains(ruler_rect, m.x, m.y) and !pane.hasActiveDrag()) {
         const b = @max(0.0, beatAtX(timeline_x0, m.x));
         meter_menu_bar = cur_meter.beatToBarPos(b).bar;
         menu.openAt(METER_MENU_KEY, ipx(m.x), ipx(m.y));
@@ -588,22 +591,22 @@ pub fn draw(
 
     // Scissor-clip the timeline zone so clips don't bleed into the
     // header column or above/below the lanes.
-    ui.clip(bridge.fromRl(widgets.rect(timeline_x, lanes_top, timeline_w, lanes_bottom - lanes_top)));
+    ui.clip(bridge.fromRl(pane.rect(timeline_x, lanes_top, timeline_w, lanes_bottom - lanes_top)));
     // Lane backgrounds first, then the loop region, so the loop marquee sits
     // behind the clips (drawn below).
     for (tracks, 0..) |*t, ti| {
-        const ly = lanes_top + @as(f32, @floatFromInt(ti)) * theme.laneH() - scroll_y;
-        if (ly + theme.laneH() <= lanes_top) continue;
+        const ly = lanes_top + @as(f32, @floatFromInt(ti)) * LANE_H - scroll_y;
+        if (ly + LANE_H <= lanes_top) continue;
         if (ly >= lanes_bottom) break;
-        const lane_timeline = widgets.rect(timeline_x, ly, timeline_w, theme.laneH());
+        const lane_timeline = pane.rect(timeline_x, ly, timeline_w, LANE_H);
         const lane_is_sel = selected_track.* != null and selected_track.*.? == ti;
         drawTimelineLane(ui, lane_timeline, t.*, ti, lane_is_sel, timeline_x0, edit_snap);
     }
     for (tracks, 0..) |*t, ti| {
-        const ly = lanes_top + @as(f32, @floatFromInt(ti)) * theme.laneH() - scroll_y;
-        if (ly + theme.laneH() <= lanes_top) continue;
+        const ly = lanes_top + @as(f32, @floatFromInt(ti)) * LANE_H - scroll_y;
+        if (ly + LANE_H <= lanes_top) continue;
         if (ly >= lanes_bottom) break;
-        const lane_timeline = widgets.rect(timeline_x, ly, timeline_w, theme.laneH());
+        const lane_timeline = pane.rect(timeline_x, ly, timeline_w, LANE_H);
         const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
 
         // Hit-test pass (reverse order, topmost first).
@@ -612,10 +615,10 @@ pub fn draw(
             i -= 1;
             const clip = &t.clips.items[i];
             const clip_rect = clipRect(lane_timeline, clip.*, timeline_x0);
-            if (!press_consumed and widgets.contains(clip_rect, m.x, m.y)) {
+            if (!press_consumed and pane.contains(clip_rect, m.x, m.y)) {
                 // Audio fade handles live in the top corners (see drawClip);
                 // detect them first so they win over move/trim in that zone.
-                const fade_zone_h = @min(theme.size(10), clip_rect.height * 0.5);
+                const fade_zone_h = @min(12, clip_rect.height * 0.5);
                 var fade_in_hover = false;
                 var fade_out_hover = false;
                 if (clip.isAudio() and clip.audio.dur_sec > 0 and m.y <= clip_rect.y + fade_zone_h) {
@@ -624,7 +627,7 @@ pub fn draw(
                     const out_frac: f32 = @floatCast(std.math.clamp(clip.audio.fade_out_sec / dur, 0, 1));
                     const in_x = clip_rect.x + in_frac * clip_rect.width;
                     const out_x = clip_rect.x + clip_rect.width - out_frac * clip_rect.width;
-                    const hit = theme.size(6);
+                    const hit: f32 = 8;
                     fade_in_hover = @abs(m.x - in_x) <= hit;
                     fade_out_hover = !fade_in_hover and @abs(m.x - out_x) <= hit;
                 }
@@ -632,12 +635,12 @@ pub fn draw(
                 // Audio clips can be trimmed from the left edge (carving into
                 // the source window); note clips only resize on the right.
                 const left_edge_hover = clip.isAudio() and !fade_in_hover and m.x <= clip_rect.x + resizeEdgeW() and !edge_hover;
-                if (!widgets.hasActiveDrag()) {
-                    widgets.requestCursor(if (edge_hover or left_edge_hover or fade_in_hover or fade_out_hover) c.rl.MOUSE_CURSOR_RESIZE_EW else c.rl.MOUSE_CURSOR_POINTING_HAND, 1);
+                if (!pane.hasActiveDrag()) {
+                    pane.requestCursor(if (edge_hover or left_edge_hover or fade_in_hover or fade_out_hover) c.rl.MOUSE_CURSOR_RESIZE_EW else c.rl.MOUSE_CURSOR_POINTING_HAND, 1);
                     // Full clip name on hover-and-pause (the body label is truncated).
                     menu.tip(ui, bridge.fromRl(clip_rect), clip.name());
                 }
-                if (m.double_clicked and !widgets.hasActiveDrag()) {
+                if (m.double_clicked and !pane.hasActiveDrag()) {
                     const ref: ClipRef = .{ .track = @intCast(ti), .clip = @intCast(i) };
                     deselectAllClips(tracks);
                     clip.selected = true;
@@ -647,7 +650,7 @@ pub fn draw(
                     press_consumed = true;
                     break;
                 }
-                if (m.left_pressed and !widgets.hasActiveDrag()) {
+                if (m.left_pressed and !pane.hasActiveDrag()) {
                     const ref: ClipRef = .{ .track = @intCast(ti), .clip = @intCast(i) };
                     if (shift) {
                         clip.selected = !clip.selected;
@@ -667,7 +670,7 @@ pub fn draw(
                         if (fade_in_hover) .fade_in else if (fade_out_hover) .fade_out else if (edge_hover) .resize_r else if (left_edge_hover) .resize_l else .move;
                     beginDrag(tracks, ref, clip.*, m, mode);
                 }
-                if (m.right_pressed and !widgets.hasActiveDrag()) {
+                if (m.right_pressed and !pane.hasActiveDrag()) {
                     const ref: ClipRef = .{ .track = @intCast(ti), .clip = @intCast(i) };
                     if (!clip.selected) {
                         deselectAllClips(tracks);
@@ -696,7 +699,7 @@ pub fn draw(
         }
 
         // Double-click on empty timeline area → create clip.
-        if (!press_consumed and m.double_clicked and widgets.contains(lane_timeline, m.x, m.y)) {
+        if (!press_consumed and m.double_clicked and pane.contains(lane_timeline, m.x, m.y)) {
             const beat = snap_mod.snapDownPositive(edit_snap, @as(f64, (m.x - timeline_x0 + scroll_x) / px_per_beat), altBypassSnap());
             const start = if (beat < 0) 0 else beat;
             deselectAllClips(tracks);
@@ -706,12 +709,12 @@ pub fn draw(
         }
 
         // Single click on empty timeline area → track-only selection.
-        if (!press_consumed and m.left_pressed and widgets.contains(lane_timeline, m.x, m.y) and !widgets.hasActiveDrag()) {
+        if (!press_consumed and m.left_pressed and pane.contains(lane_timeline, m.x, m.y) and !pane.hasActiveDrag()) {
             beginBoxSelect(ti, m, shift);
             press_consumed = true;
         }
 
-        if (!press_consumed and m.right_pressed and widgets.contains(lane_timeline, m.x, m.y) and !widgets.hasActiveDrag()) {
+        if (!press_consumed and m.right_pressed and pane.contains(lane_timeline, m.x, m.y) and !pane.hasActiveDrag()) {
             selected_track.* = ti;
             selected_clip.* = null;
             deselectAllClips(tracks);
@@ -724,9 +727,9 @@ pub fn draw(
     // Empty area below the last track (still inside the timeline) → start a
     // box-select from "nowhere": a plain click clears the whole selection,
     // a drag marquees from blank space. Right-click clears + opens the menu.
-    if (!press_consumed and !widgets.hasActiveDrag()) {
-        const lanes_zone = widgets.rect(timeline_x, lanes_top, timeline_w, lanes_bottom - lanes_top);
-        if (widgets.contains(lanes_zone, m.x, m.y)) {
+    if (!press_consumed and !pane.hasActiveDrag()) {
+        const lanes_zone = pane.rect(timeline_x, lanes_top, timeline_w, lanes_bottom - lanes_top);
+        if (pane.contains(lanes_zone, m.x, m.y)) {
             const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
             if (m.left_pressed) {
                 beginBoxSelect(null, m, shift);
@@ -747,7 +750,7 @@ pub fn draw(
 
     // Playhead spans the ruler and all lanes (stops above the master strip).
     const playhead_top = r.y + overviewH();
-    ui.clip(bridge.fromRl(widgets.rect(timeline_x, playhead_top, timeline_w, lanes_bottom - playhead_top)));
+    ui.clip(bridge.fromRl(pane.rect(timeline_x, playhead_top, timeline_w, lanes_bottom - playhead_top)));
     const beats_pos: f32 = @floatCast(transport.beats());
     const playhead_x = timeline_x0 + beats_pos * px_per_beat - scroll_x;
     ui.rect(Rect.xywh(ipx(playhead_x), ipx(playhead_top), 1, ipx(lanes_bottom - playhead_top)), ui_style.accent);
@@ -756,12 +759,12 @@ pub fn draw(
     // Track headers — live in the right column but scroll vertically
     // with the lanes. Clipped to the lane band so they don't leak into
     // the overview strip or beyond the bottom.
-    ui.clip(bridge.fromRl(widgets.rect(header_x, lanes_top, header_w, lanes_bottom - lanes_top)));
+    ui.clip(bridge.fromRl(pane.rect(header_x, lanes_top, header_w, lanes_bottom - lanes_top)));
     for (tracks, 0..) |*t, ti| {
-        const ly = lanes_top + @as(f32, @floatFromInt(ti)) * theme.laneH() - scroll_y;
-        if (ly + theme.laneH() <= lanes_top) continue;
+        const ly = lanes_top + @as(f32, @floatFromInt(ti)) * LANE_H - scroll_y;
+        if (ly + LANE_H <= lanes_top) continue;
         if (ly >= lanes_bottom) break;
-        const lane_header = widgets.rect(header_x, ly, header_w, theme.laneH());
+        const lane_header = pane.rect(header_x, ly, header_w, LANE_H);
         const lane_is_sel = selected_track.* != null and selected_track.*.? == ti;
         const editing = rename_target.kind == .track and rename_target.track == ti;
         const hres = drawLaneHeader(ui, lane_header, t, ti, lane_is_sel, editing);
@@ -786,22 +789,22 @@ pub fn draw(
     // Below the last track the header column is a blank plate (nothing
     // shows bare chassis, docs/06 §Packing).
     {
-        const end_y = lanes_top + @as(f32, @floatFromInt(tracks.len)) * theme.laneH() - scroll_y;
-        if (end_y < lanes_bottom) _ = ui.plate(bridge.fromRl(widgets.rect(header_x, @max(end_y, lanes_top), header_w, lanes_bottom - @max(end_y, lanes_top))), .{});
+        const end_y = lanes_top + @as(f32, @floatFromInt(tracks.len)) * LANE_H - scroll_y;
+        if (end_y < lanes_bottom) _ = ui.plate(bridge.fromRl(pane.rect(header_x, @max(end_y, lanes_top), header_w, lanes_bottom - @max(end_y, lanes_top))), .{});
     }
     ui.unclip();
 
     // Lazy vertical scrollbar.
-    const lanes_rect = widgets.rect(r.x, lanes_top, r.width, lanes_bottom - lanes_top);
-    drawAndHandleScrollbar(ui, lanes_rect, @as(f32, @floatFromInt(tracks.len)) * theme.laneH(), m);
+    const lanes_rect = pane.rect(r.x, lanes_top, r.width, lanes_bottom - lanes_top);
+    drawAndHandleScrollbar(ui, lanes_rect, @as(f32, @floatFromInt(tracks.len)) * LANE_H, m);
 
     // Pinned master strip at the bottom of the track bay.
     {
         // Blank timeline (master has no clips) + top separator, then the
         // master header on the new Ui.
-        ui.rect(bridge.fromRl(widgets.rect(timeline_x, lanes_bottom, timeline_w, master_h)), ui_style.pane);
-        ui.rect(bridge.fromRl(widgets.rect(r.x, lanes_bottom, r.width, 1)), ui_style.edge);
-        if (drawMasterHeader(ui, widgets.rect(header_x, lanes_bottom, header_w, master_h), master, device_sel.* == .master)) {
+        ui.rect(bridge.fromRl(pane.rect(timeline_x, lanes_bottom, timeline_w, master_h)), ui_style.pane);
+        ui.rect(bridge.fromRl(pane.rect(r.x, lanes_bottom, r.width, 1)), ui_style.edge);
+        if (drawMasterHeader(ui, pane.rect(header_x, lanes_bottom, header_w, master_h), master, device_sel.* == .master)) {
             master_clicked = true;
         }
     }
@@ -811,14 +814,14 @@ pub fn draw(
     // audio selection (even re-clicking the already-selected track).
     if (master_clicked) {
         device_sel.* = .master;
-    } else if (m.left_pressed and widgets.contains(widgets.rect(r.x, lanes_top, r.width, lanes_h), m.x, m.y)) {
+    } else if (m.left_pressed and pane.contains(pane.rect(r.x, lanes_top, r.width, lanes_h), m.x, m.y)) {
         device_sel.* = .audio;
     }
 
     // Overview strip on top (rendered last so nothing scissor-clips it).
     drawOverview(ui, overview_rect, timeline_w, tracks, content_beats, transport, m);
     // The ruler owns right-click (meter menu); keep the arrangement menu off it.
-    const rclick_on_ruler = m.right_pressed and widgets.contains(ruler_rect, m.x, m.y);
+    const rclick_on_ruler = m.right_pressed and pane.contains(ruler_rect, m.x, m.y);
     if (!rclick_on_ruler and menu.openContext(ui, ARR_CONTEXT_KEY, bridge.fromRl(r))) {
         context_target = .{ .beat = beatAtX(timeline_x0, m.x), .track = selected_track.* };
     }
@@ -851,8 +854,8 @@ pub fn draw(
     return result;
 }
 
-fn handleWheel(zone: c.rl.Rectangle, m: widgets.Mouse) void {
-    if (!widgets.contains(zone, m.x, m.y)) return;
+fn handleWheel(zone: c.rl.Rectangle, m: pane.Mouse) void {
+    if (!pane.contains(zone, m.x, m.y)) return;
     if (m.wheel_x == 0 and m.wheel_y == 0) return;
     if (m.y < zone.y + overviewH()) return;
     const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
@@ -929,7 +932,7 @@ fn clampScroll(content_beats: f64, timeline_w: f32) void {
 }
 
 fn clampScrollY(n_tracks: usize, lanes_h: f32) void {
-    const content_h = @as(f32, @floatFromInt(n_tracks)) * theme.laneH();
+    const content_h = @as(f32, @floatFromInt(n_tracks)) * LANE_H;
     const max_sy = @max(0.0, content_h - lanes_h);
     if (scroll_y < 0) scroll_y = 0;
     if (scroll_y > max_sy) scroll_y = max_sy;
@@ -955,8 +958,8 @@ pub fn reflowAudioClips(tracks: []Track, bpm: f64) void {
     }
 }
 
-fn beginBoxSelect(track_idx: ?usize, m: widgets.Mouse, shift: bool) void {
-    if (!widgets.tryStartDrag(BOX_KEY)) return;
+fn beginBoxSelect(track_idx: ?usize, m: pane.Mouse, shift: bool) void {
+    if (!pane.tryStartDrag(BOX_KEY)) return;
     box_active = true;
     box_start_x = m.x;
     box_start_y = m.y;
@@ -968,14 +971,14 @@ fn updateBoxSelect(
     tracks: []Track,
     selected_track: *?usize,
     selected_clip: *?ClipRef,
-    m: widgets.Mouse,
+    m: pane.Mouse,
     timeline_x: f32,
     timeline_w: f32,
     timeline_x0: f32,
     lanes_top: f32,
 ) void {
     if (!box_active) return;
-    if (widgets.isDraggingKey(BOX_KEY) and m.left_down) return;
+    if (pane.isDraggingKey(BOX_KEY) and m.left_down) return;
 
     const dx = m.x - box_start_x;
     const dy = m.y - box_start_y;
@@ -988,8 +991,8 @@ fn updateBoxSelect(
         const box_r = normalizedRect(box_start_x, box_start_y, m.x, m.y);
         var primary: ?ClipRef = null;
         for (tracks, 0..) |*t, ti| {
-            const ly = lanes_top + @as(f32, @floatFromInt(ti)) * theme.laneH() - scroll_y;
-            const lane = widgets.rect(timeline_x, ly, timeline_w, theme.laneH());
+            const ly = lanes_top + @as(f32, @floatFromInt(ti)) * LANE_H - scroll_y;
+            const lane = pane.rect(timeline_x, ly, timeline_w, LANE_H);
             for (t.clips.items, 0..) |*clip, ci| {
                 const clip_r = clipRect(lane, clip.*, timeline_x0);
                 if (rectsOverlap(clip_r, box_r)) {
@@ -1003,7 +1006,7 @@ fn updateBoxSelect(
     }
     box_active = false;
     box_start_track = null;
-    widgets.cancelDrag();
+    pane.cancelDrag();
 }
 
 
@@ -1012,7 +1015,7 @@ fn normalizedRect(x0: f32, y0: f32, x1: f32, y1: f32) c.rl.Rectangle {
     const ny0 = @min(y0, y1);
     const nx1 = @max(x0, x1);
     const ny1 = @max(y0, y1);
-    return widgets.rect(nx0, ny0, nx1 - nx0, ny1 - ny0);
+    return pane.rect(nx0, ny0, nx1 - nx0, ny1 - ny0);
 }
 
 fn rectsOverlap(a: c.rl.Rectangle, b: c.rl.Rectangle) bool {
@@ -1026,14 +1029,14 @@ fn intersectRect(a: c.rl.Rectangle, b: c.rl.Rectangle) ?c.rl.Rectangle {
     const x1 = @min(a.x + a.width, b.x + b.width);
     const y1 = @min(a.y + a.height, b.y + b.height);
     if (x1 <= x0 or y1 <= y0) return null;
-    return widgets.rect(x0, y0, x1 - x0, y1 - y0);
+    return pane.rect(x0, y0, x1 - x0, y1 - y0);
 }
 
 // ── Clip drag ────────────────────────────────────────────────────────
 
-fn beginDrag(tracks: []Track, ref: ClipRef, clip: Clip, m: widgets.Mouse, mode: DragMode) void {
-    const key = widgets.keyFromIds(DRAG_SALT, ref.track, ref.clip);
-    if (!widgets.tryStartDrag(key)) return;
+fn beginDrag(tracks: []Track, ref: ClipRef, clip: Clip, m: pane.Mouse, mode: DragMode) void {
+    const key = pane.keyFromIds(DRAG_SALT, ref.track, ref.clip);
+    if (!pane.tryStartDrag(key)) return;
     drag_mode = mode;
     drag_ref = ref;
     drag_start_beat = clip.start_beat;
@@ -1053,29 +1056,29 @@ fn beginDrag(tracks: []Track, ref: ClipRef, clip: Clip, m: widgets.Mouse, mode: 
     }
 }
 
-fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?ClipRef, edit_snap: snap_mod.Setting, m: widgets.Mouse, lanes_top: f32) void {
+fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?ClipRef, edit_snap: snap_mod.Setting, m: pane.Mouse, lanes_top: f32) void {
     if (drag_mode == .none) return;
-    const key = widgets.keyFromIds(DRAG_SALT, drag_ref.track, drag_ref.clip);
-    if (!widgets.isDraggingKey(key)) {
+    const key = pane.keyFromIds(DRAG_SALT, drag_ref.track, drag_ref.clip);
+    if (!pane.isDraggingKey(key)) {
         drag_mode = .none;
         return;
     }
 
     if (!m.left_down) {
         finishClipDrag(tracks, alloc, selected_clip, m, lanes_top);
-        widgets.cancelDrag();
+        pane.cancelDrag();
         drag_mode = .none;
         return;
     }
 
     if (drag_ref.track >= tracks.len) {
-        widgets.cancelDrag();
+        pane.cancelDrag();
         drag_mode = .none;
         return;
     }
     const t = &tracks[drag_ref.track];
     if (drag_ref.clip >= t.clips.items.len) {
-        widgets.cancelDrag();
+        pane.cancelDrag();
         drag_mode = .none;
         return;
     }
@@ -1083,12 +1086,12 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
 
     const dx = m.x - drag_start_mouse_x;
     const d_beats = snap_mod.snapNearest(edit_snap, @as(f64, dx / px_per_beat), altBypassSnap());
-    drag_track_delta = @as(i32, @intFromFloat(@floor((m.y - lanes_top + scroll_y) / theme.laneH()))) - @as(i32, @intCast(drag_ref.track));
+    drag_track_delta = @as(i32, @intFromFloat(@floor((m.y - lanes_top + scroll_y) / LANE_H))) - @as(i32, @intCast(drag_ref.track));
 
     switch (drag_mode) {
         .none => {},
         .move => {
-            widgets.requestCursor(c.rl.MOUSE_CURSOR_POINTING_HAND, 3);
+            pane.requestCursor(c.rl.MOUSE_CURSOR_POINTING_HAND, 3);
             if (drag_snap_count > 0) {
                 for (drag_snaps[0..drag_snap_count]) |s| {
                     if (s.track >= tracks.len) continue;
@@ -1103,7 +1106,7 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
             }
         },
         .resize_r => {
-            widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
+            pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
             const new_len = drag_start_length + d_beats;
             clip.length_beats = if (new_len < minClipBeats(edit_snap)) minClipBeats(edit_snap) else new_len;
             // For audio, resizing trims the source window so reflow keeps it.
@@ -1111,7 +1114,7 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
         },
         .fade_in, .fade_out => {
             // Fades drag unsnapped in seconds, clamped to the window length.
-            widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
+            pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
             const raw_beats = @as(f64, dx / px_per_beat);
             const delta_sec = raw_beats * 60.0 / cur_bpm;
             const dur = clip.audio.dur_sec;
@@ -1124,7 +1127,7 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
         .resize_l => {
             // Audio only: move the left edge while the right edge stays fixed,
             // carving into (or back out of) the front of the source window.
-            widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
+            pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
             const min_len = minClipBeats(edit_snap);
             const right_beat = drag_start_beat + drag_start_length;
             // Clamp the move so the window stays within [0, source] and the
@@ -1145,7 +1148,7 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
     }
 }
 
-fn finishClipDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?ClipRef, m: widgets.Mouse, lanes_top: f32) void {
+fn finishClipDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?ClipRef, m: pane.Mouse, lanes_top: f32) void {
     if (drag_mode == .none) return;
     // Only a body move relocates between tracks; resizes stay on their lane.
     if (drag_mode != .move) return;
@@ -1153,7 +1156,7 @@ fn finishClipDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Cl
     const src_t = &tracks[drag_ref.track];
     if (drag_ref.clip >= src_t.clips.items.len) return;
 
-    const target_i_signed = @as(i32, @intFromFloat(@floor((m.y - lanes_top + scroll_y) / theme.laneH())));
+    const target_i_signed = @as(i32, @intFromFloat(@floor((m.y - lanes_top + scroll_y) / LANE_H)));
     if (target_i_signed < 0) return;
     const target_i: usize = @intCast(target_i_signed);
     if (target_i >= tracks.len or target_i == drag_ref.track) return;
@@ -1306,7 +1309,7 @@ fn meterMenuTick(meter_state: *meter_mod.MeterState) void {
 fn clipRect(lane: c.rl.Rectangle, clip: Clip, timeline_x0: f32) c.rl.Rectangle {
     const x = timeline_x0 + @as(f32, @floatCast(clip.start_beat)) * px_per_beat - scroll_x;
     const w = @as(f32, @floatCast(clip.length_beats)) * px_per_beat;
-    return widgets.rect(x, lane.y + 2, w, lane.height - 4);
+    return pane.rect(x, lane.y + 2, w, lane.height - 4);
 }
 
 
@@ -1412,7 +1415,7 @@ fn trackColor(col: c.rl.Color) ui_style.Color {
 }
 
 fn clipNameRect(r: c.rl.Rectangle) c.rl.Rectangle {
-    return widgets.rect(r.x + 2, r.y + 1, @max(8, r.width - 4), 12);
+    return pane.rect(r.x + 2, r.y + 1, @max(8, r.width - 4), 12);
 }
 
 fn createClipOnTrack(t: *Track, alloc: std.mem.Allocator, track_idx: usize, start_beat: f64, selected: *?ClipRef) void {
@@ -1441,20 +1444,20 @@ fn beatAtX(timeline_x0: f32, x: f32) f64 {
 
 // ── Ruler scrub ──────────────────────────────────────────────────────
 
-fn handleLoopBounds(ruler: c.rl.Rectangle, timeline_x0: f32, transport: *Transport, edit_snap: snap_mod.Setting, m: widgets.Mouse) void {
+fn handleLoopBounds(ruler: c.rl.Rectangle, timeline_x0: f32, transport: *Transport, edit_snap: snap_mod.Setting, m: pane.Mouse) void {
     if (!transport.loopEnabled()) return;
     const start_x = beatToX(timeline_x0, transport.loopStartBeats());
     const end_x = beatToX(timeline_x0, transport.loopEndBeats());
-    const start_hit = widgets.rect(start_x - 4, ruler.y, 8, ruler.height);
-    const end_hit = widgets.rect(end_x - 4, ruler.y, 8, ruler.height);
+    const start_hit = pane.rect(start_x - 4, ruler.y, 8, ruler.height);
+    const end_hit = pane.rect(end_x - 4, ruler.y, 8, ruler.height);
 
     if (loop_start_drag or loop_end_drag) {
-        widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
+        pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
         const key = if (loop_start_drag) LOOP_START_KEY else LOOP_END_KEY;
-        if (!widgets.isDraggingKey(key) or !m.left_down) {
+        if (!pane.isDraggingKey(key) or !m.left_down) {
             loop_start_drag = false;
             loop_end_drag = false;
-            widgets.cancelDrag();
+            pane.cancelDrag();
             return;
         }
         const beat = snap_mod.snapNearest(edit_snap, beatAtX(timeline_x0, m.x), altBypassSnap());
@@ -1468,22 +1471,22 @@ fn handleLoopBounds(ruler: c.rl.Rectangle, timeline_x0: f32, transport: *Transpo
         return;
     }
 
-    const over_start = widgets.contains(start_hit, m.x, m.y);
-    const over_end = widgets.contains(end_hit, m.x, m.y);
-    if (over_start or over_end) widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 2);
-    if (!m.left_pressed or widgets.hasActiveDrag()) return;
-    if (over_start and widgets.tryStartDrag(LOOP_START_KEY)) {
+    const over_start = pane.contains(start_hit, m.x, m.y);
+    const over_end = pane.contains(end_hit, m.x, m.y);
+    if (over_start or over_end) pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 2);
+    if (!m.left_pressed or pane.hasActiveDrag()) return;
+    if (over_start and pane.tryStartDrag(LOOP_START_KEY)) {
         loop_start_drag = true;
-    } else if (over_end and widgets.tryStartDrag(LOOP_END_KEY)) {
+    } else if (over_end and pane.tryStartDrag(LOOP_END_KEY)) {
         loop_end_drag = true;
     }
 }
 
-fn handleRulerScrub(ruler: c.rl.Rectangle, timeline_x0: f32, transport: *Transport, m: widgets.Mouse) void {
+fn handleRulerScrub(ruler: c.rl.Rectangle, timeline_x0: f32, transport: *Transport, m: pane.Mouse) void {
     if (ruler_drag) {
-        if (!widgets.isDraggingKey(RULER_KEY) or !m.left_down) {
+        if (!pane.isDraggingKey(RULER_KEY) or !m.left_down) {
             ruler_drag = false;
-            widgets.cancelDrag();
+            pane.cancelDrag();
             return;
         }
         const beat = beatAtX(timeline_x0, m.x);
@@ -1492,10 +1495,10 @@ fn handleRulerScrub(ruler: c.rl.Rectangle, timeline_x0: f32, transport: *Transpo
     }
 
     if (!m.left_pressed) return;
-    if (!widgets.contains(ruler, m.x, m.y)) return;
-    if (widgets.hasActiveDrag()) return;
+    if (!pane.contains(ruler, m.x, m.y)) return;
+    if (pane.hasActiveDrag()) return;
 
-    if (!widgets.tryStartDrag(RULER_KEY)) return;
+    if (!pane.tryStartDrag(RULER_KEY)) return;
     ruler_drag = true;
     const beat = beatAtX(timeline_x0, m.x);
     transport.seekToBeats(beat);
@@ -1503,7 +1506,7 @@ fn handleRulerScrub(ruler: c.rl.Rectangle, timeline_x0: f32, transport: *Transpo
 
 // ── Lazy vertical scrollbar ──────────────────────────────────────────
 
-fn drawAndHandleScrollbar(ui: *Ui, area: c.rl.Rectangle, content_h: f32, m: widgets.Mouse) void {
+fn drawAndHandleScrollbar(ui: *Ui, area: c.rl.Rectangle, content_h: f32, m: pane.Mouse) void {
     if (content_h <= area.height) return;
 
     const now = c.rl.GetTime();
@@ -1524,23 +1527,23 @@ fn drawAndHandleScrollbar(ui: *Ui, area: c.rl.Rectangle, content_h: f32, m: widg
     if (alpha <= 0 and !sbv_drag) return;
 
     const bar_x = area.x + area.width - scrollbarW();
-    const track = widgets.rect(bar_x, area.y, scrollbarW(), area.height);
+    const track = pane.rect(bar_x, area.y, scrollbarW(), area.height);
     ui.rect(bridge.fromRl(track), ui_style.chassis.alpha(@intFromFloat(alpha * 160)));
 
     const thumb_h = @max(16.0, (area.height / content_h) * area.height);
     const scroll_range = content_h - area.height;
     const track_range = area.height - thumb_h;
     const thumb_y = area.y + (scroll_y / scroll_range) * track_range;
-    const thumb = widgets.rect(bar_x + 1, thumb_y, scrollbarW() - 2, thumb_h);
+    const thumb = pane.rect(bar_x + 1, thumb_y, scrollbarW() - 2, thumb_h);
 
-    const hover_thumb = widgets.contains(thumb, m.x, m.y);
+    const hover_thumb = pane.contains(thumb, m.x, m.y);
     const thumb_color = if (sbv_drag or hover_thumb) ui_style.accent else ui_style.face_hi;
     ui.rect(bridge.fromRl(thumb), thumb_color.alpha(@intFromFloat(alpha * 255)));
 
     if (sbv_drag) {
-        if (!widgets.isDraggingKey(SBV_KEY) or !m.left_down) {
+        if (!pane.isDraggingKey(SBV_KEY) or !m.left_down) {
             sbv_drag = false;
-            widgets.cancelDrag();
+            pane.cancelDrag();
             return;
         }
         const dy = m.y - sbv_drag_start_mouse_y;
@@ -1550,14 +1553,14 @@ fn drawAndHandleScrollbar(ui: *Ui, area: c.rl.Rectangle, content_h: f32, m: widg
     }
 
     if (!m.left_pressed) return;
-    if (widgets.hasActiveDrag()) return;
+    if (pane.hasActiveDrag()) return;
 
     if (hover_thumb) {
-        if (!widgets.tryStartDrag(SBV_KEY)) return;
+        if (!pane.tryStartDrag(SBV_KEY)) return;
         sbv_drag = true;
         sbv_drag_start_mouse_y = m.y;
         sbv_drag_start_scroll_y = scroll_y;
-    } else if (widgets.contains(track, m.x, m.y)) {
+    } else if (pane.contains(track, m.x, m.y)) {
         const page: f32 = area.height * 0.8;
         if (m.y < thumb.y) {
             scroll_y -= page;
@@ -1577,11 +1580,11 @@ fn drawOverview(
     tracks: []Track,
     content_beats: f64,
     transport: *const Transport,
-    m: widgets.Mouse,
+    m: pane.Mouse,
 ) void {
     _ = timeline_w;
     _ = ui.well(bridge.fromRl(strip), ui_style.well);
-    const inner = widgets.rect(strip.x + 2, strip.y + 2, strip.width - 4, strip.height - 4);
+    const inner = pane.rect(strip.x + 2, strip.y + 2, strip.width - 4, strip.height - 4);
 
     const cb: f32 = @max(@as(f32, @floatCast(content_beats)), 1.0);
     const px_per_beat_ov = inner.width / cb;
@@ -1611,7 +1614,7 @@ fn drawOverview(
     const vp_w = @max(1.0, (view_beat_r - view_beat_l) * px_per_beat_ov);
     const vp_x_cl = std.math.clamp(vp_x, inner.x, inner.x + inner.width);
     const vp_right_cl = std.math.clamp(vp_x + vp_w, inner.x, inner.x + inner.width);
-    const vp = widgets.rect(vp_x_cl, inner.y, vp_right_cl - vp_x_cl, inner.height);
+    const vp = pane.rect(vp_x_cl, inner.y, vp_right_cl - vp_x_cl, inner.height);
     ui.rect(bridge.fromRl(vp), ui_style.accent.alpha(40));
     ui.bevel(bridge.fromRl(vp), ui_style.accent, ui_style.accent);
 
@@ -1629,9 +1632,9 @@ fn handleOverviewInput(
     px_per_beat_ov: f32,
     content_beats: f32,
     viewport_w: f32,
-    m: widgets.Mouse,
+    m: pane.Mouse,
 ) void {
-    if (widgets.contains(inner, m.x, m.y) and (m.wheel_x != 0 or m.wheel_y != 0)) {
+    if (pane.contains(inner, m.x, m.y) and (m.wheel_x != 0 or m.wheel_y != 0)) {
         const w: f32 = if (m.wheel_y != 0) m.wheel_y else m.wheel_x;
         const anchor_beat = (m.x - inner.x) / px_per_beat_ov;
         const factor: f32 = std.math.clamp(1.0 + w * 0.12, 0.5, 2.0);
@@ -1644,9 +1647,9 @@ fn handleOverviewInput(
     }
 
     if (ov_drag) {
-        if (!widgets.isDraggingKey(OVERVIEW_KEY) or !m.left_down) {
+        if (!pane.isDraggingKey(OVERVIEW_KEY) or !m.left_down) {
             ov_drag = false;
-            widgets.cancelDrag();
+            pane.cancelDrag();
             return;
         }
         const want_vp_x = m.x - ov_drag_offset;
@@ -1658,14 +1661,14 @@ fn handleOverviewInput(
     }
 
     if (!m.left_pressed) return;
-    if (!widgets.contains(inner, m.x, m.y)) return;
-    if (widgets.hasActiveDrag()) return;
+    if (!pane.contains(inner, m.x, m.y)) return;
+    if (pane.hasActiveDrag()) return;
 
     const view_beat_l = scroll_x / px_per_beat;
     const vp_x = inner.x + view_beat_l * px_per_beat_ov;
     const on_vp = m.x >= vp_x and m.x <= vp_x + vp_w;
 
-    if (!widgets.tryStartDrag(OVERVIEW_KEY)) return;
+    if (!pane.tryStartDrag(OVERVIEW_KEY)) return;
     ov_drag = true;
     if (on_vp) {
         ov_drag_offset = m.x - vp_x;
@@ -1936,11 +1939,11 @@ fn drawLoopRegion(ui: *Ui, r_: c.rl.Rectangle, timeline_x0: f32, transport: *con
     if (x1 >= r.x and x1 < r.right()) ui.rect(Rect.xywh(x1 - 1, r.bottom() - 6, 1, 5), ui_style.accent);
 }
 
-fn drawBoxSelectOverlay(ui: *Ui, timeline_x: f32, timeline_w: f32, lanes_top: f32, lanes_bottom: f32, m: widgets.Mouse) void {
+fn drawBoxSelectOverlay(ui: *Ui, timeline_x: f32, timeline_w: f32, lanes_top: f32, lanes_bottom: f32, m: pane.Mouse) void {
     if (!box_active) return;
     if (@abs(m.x - box_start_x) < BOX_MIN_DRAG and @abs(m.y - box_start_y) < BOX_MIN_DRAG) return;
     const rr = normalizedRect(box_start_x, box_start_y, m.x, m.y);
-    const clipped = intersectRect(rr, widgets.rect(timeline_x, lanes_top, timeline_w, lanes_bottom - lanes_top)) orelse return;
+    const clipped = intersectRect(rr, pane.rect(timeline_x, lanes_top, timeline_w, lanes_bottom - lanes_top)) orelse return;
     const b = bridge.fromRl(clipped);
     ui.rect(b, ui_style.accent.alpha(40));
     ui.bevel(b, ui_style.accent, ui_style.accent);

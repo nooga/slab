@@ -22,7 +22,7 @@
 
 const std = @import("std");
 const c = @import("../c.zig");
-const widgets = @import("widgets.zig");
+const pane = @import("pane_input.zig");
 const menu = @import("menu.zig");
 const bridge = @import("bridge.zig");
 const ui_core = @import("core.zig");
@@ -544,7 +544,7 @@ pub fn draw(
     meter_map: meter_mod.MeterMap,
     edit_snap: snap_mod.Setting,
     can_paste_notes: bool,
-    m: widgets.Mouse,
+    m: pane.Mouse,
 ) Result {
     cur_meter = meter_map;
     ui.pushId("clip-editor");
@@ -602,7 +602,7 @@ fn resolveClip(tracks: []track_mod.Track, selected: ?ClipRef) ?Resolved {
 }
 
 fn maybeResetOnClipChange(selected: ?ClipRef, clip: *Clip) void {
-    const key = if (selected) |s| widgets.keyFromIds(0xC11EC011, s.track, s.clip) else 0;
+    const key = if (selected) |s| pane.keyFromIds(0xC11EC011, s.track, s.clip) else 0;
     if (key != last_clip_key) {
         last_clip_key = key;
         clip.deselectAll();
@@ -621,7 +621,7 @@ fn cancelAllDrags() void {
     velocity_drag_mode = .none;
     overview_drag = false;
     sb_drag = false;
-    widgets.cancelDrag();
+    pane.cancelDrag();
 }
 
 
@@ -642,19 +642,19 @@ fn drawPianoRoll(
     alloc: std.mem.Allocator,
     edit_snap: snap_mod.Setting,
     can_paste_notes: bool,
-    m: widgets.Mouse,
+    m: pane.Mouse,
 ) PianoRollResult {
     const track_color = ui_style.nearestTrack(.{ .r = track_color_rl.r, .g = track_color_rl.g, .b = track_color_rl.b });
     // Overview strip, ruler, keyboard + grid, velocity lane — stacked.
-    const overview_rect = widgets.rect(r.x, r.y, r.width, overviewH());
-    const ruler_rect = widgets.rect(r.x, r.y + overviewH(), r.width, rulerH());
+    const overview_rect = pane.rect(r.x, r.y, r.width, overviewH());
+    const ruler_rect = pane.rect(r.x, r.y + overviewH(), r.width, rulerH());
 
     const grid_top = ruler_rect.y + rulerH();
     const vel_h = @round(@min(velocityLaneH(), @max(28, r.height * 0.22)));
     const grid_h = @max(48, r.height - overviewH() - rulerH() - vel_h);
-    const kbd_rect = widgets.rect(r.x, grid_top, keyboardW(), grid_h);
-    const grid_rect = widgets.rect(r.x + keyboardW(), grid_top, r.width - keyboardW(), grid_h);
-    const vel_rect = widgets.rect(grid_rect.x, grid_rect.y + grid_rect.height, grid_rect.width, vel_h);
+    const kbd_rect = pane.rect(r.x, grid_top, keyboardW(), grid_h);
+    const grid_rect = pane.rect(r.x + keyboardW(), grid_top, r.width - keyboardW(), grid_h);
+    const vel_rect = pane.rect(grid_rect.x, grid_rect.y + grid_rect.height, grid_rect.width, vel_h);
 
     cur_clip_start = clip.start_beat;
     initScrollIfNeeded(grid_rect, clip.*);
@@ -691,7 +691,7 @@ fn drawPianoRoll(
     // Lazy vertical scrollbar (over the grid).
     drawAndHandleScrollbar(ui, grid_rect, m);
     const velocity_consumed = handleVelocityLane(vel_rect, grid_rect, clip, m);
-    drawVelocityLane(ui, widgets.rect(r.x, vel_rect.y, keyboardW(), vel_h), vel_rect, grid_rect, clip.*, track_color);
+    drawVelocityLane(ui, pane.rect(r.x, vel_rect.y, keyboardW(), vel_h), vel_rect, grid_rect, clip.*, track_color);
 
     drawOverview(ui, overview_rect, grid_rect, clip.*, track_color, m);
 
@@ -799,8 +799,8 @@ fn clampScroll(grid: c.rl.Rectangle, clip: Clip) void {
     if (scroll_x > max_sx) scroll_x = max_sx;
 }
 
-fn handleWheel(grid: c.rl.Rectangle, clip: Clip, m: widgets.Mouse) void {
-    if (!widgets.contains(grid, m.x, m.y)) return;
+fn handleWheel(grid: c.rl.Rectangle, clip: Clip, m: pane.Mouse) void {
+    if (!pane.contains(grid, m.x, m.y)) return;
     if (m.wheel_x == 0 and m.wheel_y == 0) return;
 
     const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
@@ -1090,24 +1090,24 @@ fn velBottomPad() f32 {
     return 3;
 }
 
-fn handleVelocityLane(r: c.rl.Rectangle, grid: c.rl.Rectangle, clip: *Clip, m: widgets.Mouse) bool {
+fn handleVelocityLane(r: c.rl.Rectangle, grid: c.rl.Rectangle, clip: *Clip, m: pane.Mouse) bool {
     if (velocity_active) {
-        if (!widgets.isDraggingKey(VELOCITY_KEY) or !m.left_down) {
+        if (!pane.isDraggingKey(VELOCITY_KEY) or !m.left_down) {
             velocity_active = false;
             velocity_drag_mode = .none;
-            widgets.cancelDrag();
+            pane.cancelDrag();
             return true;
         }
         applyVelocityAt(r, clip, m.y);
-        widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 3);
+        pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 3);
         return true;
     }
 
-    if (!widgets.contains(r, m.x, m.y)) return false;
-    widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 1);
-    if (!m.left_pressed or widgets.hasActiveDrag()) return true;
+    if (!pane.contains(r, m.x, m.y)) return false;
+    pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 1);
+    if (!m.left_pressed or pane.hasActiveDrag()) return true;
     const idx = findVelocityBarAt(r, grid, clip.*, m.x) orelse return true;
-    if (!widgets.tryStartDrag(VELOCITY_KEY)) return true;
+    if (!pane.tryStartDrag(VELOCITY_KEY)) return true;
     velocity_active = true;
     velocity_drag_idx = idx;
     if (clip.notes.items[idx].selected) {
@@ -1142,13 +1142,13 @@ fn findVelocityBarAt(r: c.rl.Rectangle, grid: c.rl.Rectangle, clip: Clip, x: f32
     while (i > 0) {
         i -= 1;
         const nr = noteRect(grid, clip.notes.items[i]);
-        const bar = widgets.rect(nr.x, r.y, @max(nr.width, 3), r.height);
-        if (widgets.contains(bar, x, r.y + r.height / 2)) return i;
+        const bar = pane.rect(nr.x, r.y, @max(nr.width, 3), r.height);
+        if (pane.contains(bar, x, r.y + r.height / 2)) return i;
     }
     return null;
 }
 
-fn drawBoxSelect(ui: *Ui, grid: c.rl.Rectangle, m: widgets.Mouse) void {
+fn drawBoxSelect(ui: *Ui, grid: c.rl.Rectangle, m: pane.Mouse) void {
     const x0 = @min(box_start_x, m.x);
     const y0 = @min(box_start_y, m.y);
     const x1 = @max(box_start_x, m.x);
@@ -1172,7 +1172,7 @@ fn noteRect(grid: c.rl.Rectangle, note: Note) c.rl.Rectangle {
     const y = pitchTopY(grid, note.pitch);
     const x = grid.x + @as(f32, @floatCast(note.start_beat)) * px_per_beat - scroll_x;
     const w = @max(@as(f32, @floatCast(note.length_beats)) * px_per_beat, 2);
-    return widgets.rect(x, y + 1, w, row_h - 2);
+    return pane.rect(x, y + 1, w, row_h - 2);
 }
 
 // ── Input ────────────────────────────────────────────────────────────
@@ -1183,19 +1183,19 @@ fn handleInput(
     clip: *Clip,
     alloc: std.mem.Allocator,
     edit_snap: snap_mod.Setting,
-    m: widgets.Mouse,
+    m: pane.Mouse,
 ) ?u8 {
     if (updateInProgressDrag(grid, clip, alloc, edit_snap, m)) return null;
 
-    if (widgets.contains(grid, m.x, m.y) and !widgets.hasActiveDrag()) {
+    if (pane.contains(grid, m.x, m.y) and !pane.hasActiveDrag()) {
         if (findNoteAt(grid, clip.*, m.x, m.y)) |h| {
-            widgets.requestCursor(if (h.edge_resize) c.rl.MOUSE_CURSOR_RESIZE_EW else c.rl.MOUSE_CURSOR_POINTING_HAND, 1);
+            pane.requestCursor(if (h.edge_resize) c.rl.MOUSE_CURSOR_RESIZE_EW else c.rl.MOUSE_CURSOR_POINTING_HAND, 1);
         }
     }
 
     if (!m.left_pressed and !m.right_pressed) return null;
-    if (!widgets.contains(grid, m.x, m.y)) return null;
-    if (widgets.hasActiveDrag()) return null;
+    if (!pane.contains(grid, m.x, m.y)) return null;
+    if (pane.hasActiveDrag()) return null;
 
     if (m.right_pressed) {
         context_target = .{
@@ -1245,7 +1245,7 @@ fn handleInput(
     // Empty-grid click: the only behaviour that depends on mode.
     switch (mode) {
         .draw => {
-            if (!widgets.tryStartDrag(DRAW_KEY)) return null;
+            if (!pane.tryStartDrag(DRAW_KEY)) return null;
             draw_active = true;
             draw_pitch = snapPitchToScale(pitch);
             draw_start_beat = beat;
@@ -1254,7 +1254,7 @@ fn handleInput(
         },
         .select => {
             if (!shift) clip.deselectAll();
-            if (!widgets.tryStartDrag(BOX_KEY)) return null;
+            if (!pane.tryStartDrag(BOX_KEY)) return null;
             box_active = true;
             box_start_x = m.x;
             box_start_y = m.y;
@@ -1270,7 +1270,7 @@ fn findNoteAt(grid: c.rl.Rectangle, clip: Clip, x: f32, y: f32) ?Hit {
     while (i > 0) {
         i -= 1;
         const nr = noteRect(grid, clip.notes.items[i]);
-        if (!widgets.contains(nr, x, y)) continue;
+        if (!pane.contains(nr, x, y)) continue;
         const near_right = x >= nr.x + nr.width - resizeEdgeW();
         return .{ .idx = @intCast(i), .edge_resize = near_right };
     }
@@ -1282,7 +1282,7 @@ fn updateInProgressDrag(
     clip: *Clip,
     alloc: std.mem.Allocator,
     edit_snap: snap_mod.Setting,
-    m: widgets.Mouse,
+    m: pane.Mouse,
 ) bool {
     if (draw_active) {
         updateDraw(grid, clip, alloc, edit_snap, m);
@@ -1303,8 +1303,8 @@ fn updateInProgressDrag(
     return false;
 }
 
-fn updateDraw(grid: c.rl.Rectangle, clip: *Clip, alloc: std.mem.Allocator, edit_snap: snap_mod.Setting, m: widgets.Mouse) void {
-    if (!widgets.isDraggingKey(DRAW_KEY) or !m.left_down) {
+fn updateDraw(grid: c.rl.Rectangle, clip: *Clip, alloc: std.mem.Allocator, edit_snap: snap_mod.Setting, m: pane.Mouse) void {
+    if (!pane.isDraggingKey(DRAW_KEY) or !m.left_down) {
         const start = @min(draw_start_beat, draw_current_beat);
         const end = @max(draw_start_beat, draw_current_beat);
         const len = @max(end - start, minNoteBeats(edit_snap));
@@ -1315,7 +1315,7 @@ fn updateDraw(grid: c.rl.Rectangle, clip: *Clip, alloc: std.mem.Allocator, edit_
             .selected = false,
         }) catch |err| std.log.err("add note failed: {s}", .{@errorName(err)});
         draw_active = false;
-        widgets.cancelDrag();
+        pane.cancelDrag();
         return;
     }
     if (@abs(m.x - draw_start_x) >= BOX_MIN_DRAG) {
@@ -1323,8 +1323,8 @@ fn updateDraw(grid: c.rl.Rectangle, clip: *Clip, alloc: std.mem.Allocator, edit_
     }
 }
 
-fn updateBox(grid: c.rl.Rectangle, clip: *Clip, m: widgets.Mouse) void {
-    if (!widgets.isDraggingKey(BOX_KEY) or !m.left_down) {
+fn updateBox(grid: c.rl.Rectangle, clip: *Clip, m: pane.Mouse) void {
+    if (!pane.isDraggingKey(BOX_KEY) or !m.left_down) {
         // Apply selection if we actually dragged.
         const dx = m.x - box_start_x;
         const dy = m.y - box_start_y;
@@ -1333,19 +1333,19 @@ fn updateBox(grid: c.rl.Rectangle, clip: *Clip, m: widgets.Mouse) void {
             const y0 = @min(box_start_y, m.y);
             const x1 = @max(box_start_x, m.x);
             const y1 = @max(box_start_y, m.y);
-            const box_r = widgets.rect(x0, y0, x1 - x0, y1 - y0);
+            const box_r = pane.rect(x0, y0, x1 - x0, y1 - y0);
             for (clip.notes.items) |*n| {
                 const nr = noteRect(grid, n.*);
                 if (rectsOverlap(nr, box_r)) n.selected = true;
             }
         }
         box_active = false;
-        widgets.cancelDrag();
+        pane.cancelDrag();
     }
 }
 
-fn beginMove(alloc: std.mem.Allocator, clip: Clip, m: widgets.Mouse) !void {
-    if (!widgets.tryStartDrag(MOVE_KEY)) return;
+fn beginMove(alloc: std.mem.Allocator, clip: Clip, m: pane.Mouse) !void {
+    if (!pane.tryStartDrag(MOVE_KEY)) return;
     move_snaps.clearRetainingCapacity();
     for (clip.notes.items, 0..) |n, i| {
         if (n.selected) {
@@ -1357,7 +1357,7 @@ fn beginMove(alloc: std.mem.Allocator, clip: Clip, m: widgets.Mouse) !void {
         }
     }
     if (move_snaps.items.len == 0) {
-        widgets.cancelDrag();
+        pane.cancelDrag();
         return;
     }
     move_active = true;
@@ -1365,14 +1365,14 @@ fn beginMove(alloc: std.mem.Allocator, clip: Clip, m: widgets.Mouse) !void {
     move_start_mouse_y = m.y;
 }
 
-fn updateMove(grid: c.rl.Rectangle, clip: *Clip, edit_snap: snap_mod.Setting, m: widgets.Mouse) void {
+fn updateMove(grid: c.rl.Rectangle, clip: *Clip, edit_snap: snap_mod.Setting, m: pane.Mouse) void {
     _ = grid;
-    if (!widgets.isDraggingKey(MOVE_KEY) or !m.left_down) {
+    if (!pane.isDraggingKey(MOVE_KEY) or !m.left_down) {
         move_active = false;
-        widgets.cancelDrag();
+        pane.cancelDrag();
         return;
     }
-    widgets.requestCursor(c.rl.MOUSE_CURSOR_POINTING_HAND, 3);
+    pane.requestCursor(c.rl.MOUSE_CURSOR_POINTING_HAND, 3);
     const d_beats = snap_mod.snapNearest(edit_snap, @as(f64, (m.x - move_start_mouse_x) / px_per_beat), altBypassSnap());
     const d_rows = std.math.clamp(@as(i32, @intFromFloat(@round((m.y - move_start_mouse_y) / row_h))), -127, 127);
     for (move_snaps.items) |s| {
@@ -1385,8 +1385,8 @@ fn updateMove(grid: c.rl.Rectangle, clip: *Clip, edit_snap: snap_mod.Setting, m:
     }
 }
 
-fn beginResize(alloc: std.mem.Allocator, clip: Clip, m: widgets.Mouse) !void {
-    if (!widgets.tryStartDrag(RESIZE_KEY)) return;
+fn beginResize(alloc: std.mem.Allocator, clip: Clip, m: pane.Mouse) !void {
+    if (!pane.tryStartDrag(RESIZE_KEY)) return;
     resize_snaps.clearRetainingCapacity();
     for (clip.notes.items, 0..) |n, i| {
         if (n.selected) {
@@ -1397,21 +1397,21 @@ fn beginResize(alloc: std.mem.Allocator, clip: Clip, m: widgets.Mouse) !void {
         }
     }
     if (resize_snaps.items.len == 0) {
-        widgets.cancelDrag();
+        pane.cancelDrag();
         return;
     }
     resize_active = true;
     resize_start_mouse_x = m.x;
 }
 
-fn updateResize(grid: c.rl.Rectangle, clip: *Clip, edit_snap: snap_mod.Setting, m: widgets.Mouse) void {
+fn updateResize(grid: c.rl.Rectangle, clip: *Clip, edit_snap: snap_mod.Setting, m: pane.Mouse) void {
     _ = grid;
-    if (!widgets.isDraggingKey(RESIZE_KEY) or !m.left_down) {
+    if (!pane.isDraggingKey(RESIZE_KEY) or !m.left_down) {
         resize_active = false;
-        widgets.cancelDrag();
+        pane.cancelDrag();
         return;
     }
-    widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
+    pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
     const d_beats = snap_mod.snapNearest(edit_snap, @as(f64, (m.x - resize_start_mouse_x) / px_per_beat), altBypassSnap());
     const min_len = resizeMinNoteBeats(edit_snap, altBypassSnap());
     for (resize_snaps.items) |s| {
@@ -1424,7 +1424,7 @@ fn updateResize(grid: c.rl.Rectangle, clip: *Clip, edit_snap: snap_mod.Setting, 
 
 // ── Vertical scrollbar (lazy) ────────────────────────────────────────
 
-fn drawAndHandleScrollbar(ui: *Ui, grid: c.rl.Rectangle, m: widgets.Mouse) void {
+fn drawAndHandleScrollbar(ui: *Ui, grid: c.rl.Rectangle, m: pane.Mouse) void {
     const rows = @as(f32, @floatFromInt(@as(u32, KEY_HI) - @as(u32, KEY_LO) + 1));
     const content_h = rows * row_h;
     if (content_h <= grid.height) return; // nothing to scroll
@@ -1449,24 +1449,24 @@ fn drawAndHandleScrollbar(ui: *Ui, grid: c.rl.Rectangle, m: widgets.Mouse) void 
     if (alpha <= 0 and !sb_drag) return;
 
     const bar_x = grid.x + grid.width - scrollbarW();
-    const track = widgets.rect(bar_x, grid.y, scrollbarW(), grid.height);
+    const track = pane.rect(bar_x, grid.y, scrollbarW(), grid.height);
     ui.rect(frectRl(track), ui_style.chassis.alpha(@intFromFloat(alpha * 160)));
 
     const thumb_h = @max(16.0, (grid.height / content_h) * grid.height);
     const scroll_range = content_h - grid.height;
     const track_range = grid.height - thumb_h;
     const thumb_y = grid.y + (scroll_y / scroll_range) * track_range;
-    const thumb = widgets.rect(bar_x + 1, thumb_y, scrollbarW() - 2, thumb_h);
+    const thumb = pane.rect(bar_x + 1, thumb_y, scrollbarW() - 2, thumb_h);
 
-    const hover_thumb = widgets.contains(thumb, m.x, m.y);
+    const hover_thumb = pane.contains(thumb, m.x, m.y);
     const thumb_color = if (sb_drag or hover_thumb) ui_style.accent else ui_style.face_hi;
     ui.rect(frectRl(thumb), thumb_color.alpha(@intFromFloat(alpha * 255)));
 
     // ── Input ─────────────────────────────────────────────────────────
     if (sb_drag) {
-        if (!widgets.isDraggingKey(SB_KEY) or !m.left_down) {
+        if (!pane.isDraggingKey(SB_KEY) or !m.left_down) {
             sb_drag = false;
-            widgets.cancelDrag();
+            pane.cancelDrag();
             return;
         }
         const dy = m.y - sb_drag_start_mouse_y;
@@ -1476,14 +1476,14 @@ fn drawAndHandleScrollbar(ui: *Ui, grid: c.rl.Rectangle, m: widgets.Mouse) void 
     }
 
     if (!m.left_pressed) return;
-    if (widgets.hasActiveDrag()) return;
+    if (pane.hasActiveDrag()) return;
 
     if (hover_thumb) {
-        if (!widgets.tryStartDrag(SB_KEY)) return;
+        if (!pane.tryStartDrag(SB_KEY)) return;
         sb_drag = true;
         sb_drag_start_mouse_y = m.y;
         sb_drag_start_scroll_y = scroll_y;
-    } else if (widgets.contains(track, m.x, m.y)) {
+    } else if (pane.contains(track, m.x, m.y)) {
         // Click on track above/below thumb → page jump.
         const page: f32 = grid.height * 0.8;
         if (m.y < thumb.y) {
@@ -1503,12 +1503,12 @@ fn drawOverview(
     grid: c.rl.Rectangle,
     clip: Clip,
     track_color: ui_style.Color,
-    m: widgets.Mouse,
+    m: pane.Mouse,
 ) void {
     if (strip.width <= 4 or strip.height <= 4 or grid.width <= 0 or grid.height <= 0) return;
 
     _ = ui.well(bridge.fromRl(strip), ui_style.well);
-    const inner = widgets.rect(strip.x + 2, strip.y + 2, strip.width - 4, strip.height - 4);
+    const inner = pane.rect(strip.x + 2, strip.y + 2, strip.width - 4, strip.height - 4);
 
     // The strip represents the clip [0 .. length_beats] horizontally.
     // Pitch compresses into the strip's vertical span.
@@ -1533,7 +1533,7 @@ fn drawOverview(
     const vp_w = @max(1.0, (view_beat_r - view_beat_l) * px_per_beat_ov);
     const vp_x_clamped = std.math.clamp(vp_x, inner.x, inner.x + inner.width);
     const vp_right = std.math.clamp(vp_x + vp_w, inner.x, inner.x + inner.width);
-    const vp = widgets.rect(vp_x_clamped, inner.y, vp_right - vp_x_clamped, inner.height);
+    const vp = pane.rect(vp_x_clamped, inner.y, vp_right - vp_x_clamped, inner.height);
     ui.rect(frectRl(vp), ui_style.accent.alpha(40));
     ui.bevel(frectRl(vp), ui_style.accent, ui_style.accent);
 
@@ -1544,7 +1544,7 @@ fn handleOverviewInput(
     inner: c.rl.Rectangle,
     grid: c.rl.Rectangle,
     clip: Clip,
-    m: widgets.Mouse,
+    m: pane.Mouse,
 ) void {
     const clip_beats: f32 = @max(@as(f32, @floatCast(clip.length_beats)), 1.0);
     const px_per_beat_ov = inner.width / clip_beats;
@@ -1552,7 +1552,7 @@ fn handleOverviewInput(
     const vp_x = inner.x + view_beat_l * px_per_beat_ov;
     const vp_w = @max(1.0, (grid.width / px_per_beat) * px_per_beat_ov);
 
-    if (widgets.contains(inner, m.x, m.y) and (m.wheel_x != 0 or m.wheel_y != 0)) {
+    if (pane.contains(inner, m.x, m.y) and (m.wheel_x != 0 or m.wheel_y != 0)) {
         const w: f32 = if (m.wheel_y != 0) m.wheel_y else m.wheel_x;
         const anchor_beat = (m.x - inner.x) / px_per_beat_ov;
         const factor: f32 = std.math.clamp(1.0 + w * 0.12, 0.5, 2.0);
@@ -1564,9 +1564,9 @@ fn handleOverviewInput(
     }
 
     if (overview_drag) {
-        if (!widgets.isDraggingKey(OVERVIEW_KEY) or !m.left_down) {
+        if (!pane.isDraggingKey(OVERVIEW_KEY) or !m.left_down) {
             overview_drag = false;
-            widgets.cancelDrag();
+            pane.cancelDrag();
             return;
         }
         const want_vp_x = m.x - overview_drag_offset;
@@ -1577,11 +1577,11 @@ fn handleOverviewInput(
     }
 
     if (!m.left_pressed) return;
-    if (!widgets.contains(inner, m.x, m.y)) return;
-    if (widgets.hasActiveDrag()) return;
+    if (!pane.contains(inner, m.x, m.y)) return;
+    if (pane.hasActiveDrag()) return;
 
     const on_vp = m.x >= vp_x and m.x <= vp_x + vp_w;
-    if (!widgets.tryStartDrag(OVERVIEW_KEY)) return;
+    if (!pane.tryStartDrag(OVERVIEW_KEY)) return;
     overview_drag = true;
     if (on_vp) {
         overview_drag_offset = m.x - vp_x;
