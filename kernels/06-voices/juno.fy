@@ -218,7 +218,7 @@ dsp: v-jn-vca
   fsel-lt | amp |
   out f@64
   state JunoState.vcf-out@ amp f*
-  state JunoState.vel@ f* params JunoParams.level@ f* f+
+  state JunoState.vel@ f* params JunoParams.level@ f* 3.5 f* f+  ( +11 dB makeup )
   out f!64
   drop2 drop2
 ;

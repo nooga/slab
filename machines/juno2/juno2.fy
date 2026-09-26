@@ -60,7 +60,7 @@ include "../lib/manifest.fy"
 
   "VCA" "MODE" "jn-vca-mode" JunoParams.vca-mode 0.0 switch
     "ENV" 0.0 opt  "GATE" 1.0 opt
-  "VCA" "LEVEL" "jn-level" JunoParams.level 0.0 1.0 0.65 curve-pow knob
+  "VCA" "LEVEL" "jn-level" JunoParams.level 0.0 1.0 0.6 curve-pow knob
   "VCA" 1 strip
 
   "ENV ADSR" "ENV" adsr-display
