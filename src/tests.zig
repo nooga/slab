@@ -1582,3 +1582,45 @@ test "dsp: loads see earlier stores in program order" {
     try std.testing.expectEqual(@as(f64, 11.0), cell);
 }
 
+test "dsp: spilling keeps more live values than registers" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    // 40 loads, all live until a weighted sum at the end: more than the 32
+    // d registers, so the body must spill.
+    var buf: [8192]u8 = undefined;
+    var n: usize = 0;
+    n += (try std.fmt.bufPrint(buf[n..], "dsp: k-spill | out in -- |\n", .{})).len;
+    var i: usize = 0;
+    while (i < 40) : (i += 1) {
+        n += (try std.fmt.bufPrint(buf[n..], "  in {d} ptr+ f@64 | v{d} |\n", .{ i * 8, i })).len;
+    }
+    n += (try std.fmt.bufPrint(buf[n..], "  0.0\n", .{})).len;
+    i = 0;
+    while (i < 40) : (i += 1) {
+        n += (try std.fmt.bufPrint(buf[n..], "  v{d} {d}.0 f* f+\n", .{ i, i + 1 })).len;
+    }
+    // Second pass: every v is still live after the first.
+    i = 0;
+    while (i < 40) : (i += 1) {
+        n += (try std.fmt.bufPrint(buf[n..], "  v{d} f+\n", .{39 - i})).len;
+    }
+    n += (try std.fmt.bufPrint(buf[n..], "  out f!64 ;\n", .{})).len;
+    _ = try fy.run(buf[0..n]);
+
+    var in: [40]f64 = undefined;
+    for (&in, 0..) |*v, k| v.* = @as(f64, @floatFromInt(k)) * 0.5 + 1.0;
+    var want: f64 = 0.0;
+    for (0..40) |k| want = want + in[k] * @as(f64, @floatFromInt(k + 1));
+    for (0..40) |k| want = want + in[39 - k];
+    var out: f64 = 0;
+    const args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out) },
+        .{ .ptr = @intFromPtr(&in[0]) },
+    };
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("k-spill", 1, &args);
+    try std.testing.expectEqual(want, out);
+    const dis = try fy.disassembleDsp2RawWordAlloc(std.testing.allocator, "k-spill");
+    defer std.testing.allocator.free(dis);
+    // The body opens a spill frame: sub sp, sp, #n (0xd10003ff | n << 10).
+    try std.testing.expect(std.mem.startsWith(u8, dis, "0000: d1"));
+}

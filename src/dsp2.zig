@@ -417,18 +417,64 @@ pub const Builder = struct {
         return false;
     }
 
+    /// Emit the word body. A body that fits in registers compiles in one
+    /// plain pass. One that does not is compiled again with spilling: a dry
+    /// pass records the order values are requested in, then the real pass
+    /// evicts the live value whose next use is furthest away (Belady) to a
+    /// stack slot, or drops it when it is cheap to recompute (a constant or
+    /// an entry-stack arg).
     pub fn emitWithArgAbi(self: *Builder, out: *compat.ArrayList(u32), arg_abi: ArgAbi) Error!void {
+        const start = out.items.len;
+        self.emitMode(out, arg_abi, .plain, null) catch |err| {
+            if (err != Error.RegisterExhausted) return err;
+            out.shrinkRetainingCapacity(start);
+            var trace = compat.ArrayList(usize).init(self.allocator);
+            defer trace.deinit();
+            var scratch = compat.ArrayList(u32).init(self.allocator);
+            defer scratch.deinit();
+            try self.emitMode(&scratch, arg_abi, .dry, &trace);
+            try self.emitMode(out, arg_abi, .spill, &trace);
+        };
+    }
+
+    fn emitMode(self: *Builder, out: *compat.ArrayList(u32), arg_abi: ArgAbi, mode: Mode, trace: ?*compat.ArrayList(usize)) Error!void {
         const has_outputs = self.stack.items.len != 0;
         if (self.stores.items.len == 0 and !has_outputs) return Error.BadStackEffect;
+        const n_values = self.values.items.len;
 
-        const locs = self.allocator.alloc(Loc, self.values.items.len) catch return Error.OutOfMemory;
+        const locs = self.allocator.alloc(Loc, n_values) catch return Error.OutOfMemory;
         defer self.allocator.free(locs);
         @memset(locs, .none);
 
-        const remaining_uses = self.allocator.alloc(u32, self.values.items.len) catch return Error.OutOfMemory;
+        const remaining_uses = self.allocator.alloc(u32, n_values) catch return Error.OutOfMemory;
         defer self.allocator.free(remaining_uses);
         @memset(remaining_uses, 0);
         self.countUses(remaining_uses);
+
+        const spill_slot = self.allocator.alloc(?u16, n_values) catch return Error.OutOfMemory;
+        defer self.allocator.free(spill_slot);
+        @memset(spill_slot, null);
+
+        const cur_next = self.allocator.alloc(usize, n_values) catch return Error.OutOfMemory;
+        defer self.allocator.free(cur_next);
+        @memset(cur_next, std.math.maxInt(usize));
+
+        // next_pos[i]: the next trace position requesting the same value.
+        var next_pos: []usize = &.{};
+        defer if (next_pos.len > 0) self.allocator.free(next_pos);
+        if (mode == .spill) {
+            const t = trace.?.items;
+            next_pos = self.allocator.alloc(usize, t.len) catch return Error.OutOfMemory;
+            const last_seen = self.allocator.alloc(usize, n_values) catch return Error.OutOfMemory;
+            defer self.allocator.free(last_seen);
+            @memset(last_seen, std.math.maxInt(usize));
+            var i = t.len;
+            while (i > 0) {
+                i -= 1;
+                next_pos[i] = last_seen[t[i]];
+                last_seen[t[i]] = i;
+            }
+        }
 
         var cg = Codegen{
             .builder = self,
@@ -436,6 +482,11 @@ pub const Builder = struct {
             .locs = locs,
             .remaining_uses = remaining_uses,
             .arg_abi = arg_abi,
+            .mode = mode,
+            .trace = if (mode == .dry) trace else null,
+            .next_pos = next_pos,
+            .cur_next = cur_next,
+            .spill_slot = spill_slot,
         };
 
         // D-register pool. In raw_registers mode an f64 arg i lives in
@@ -470,24 +521,35 @@ pub const Builder = struct {
             cg.d_pool_len = n;
         }
 
+        // Stack frame: [0, stash) holds deferred stores (value, ptr) when
+        // there is more than one; spill slots follow. The spill pass sizes
+        // the frame once codegen is done and patches the `sub sp`.
         const spill_stores = self.stores.items.len > 1;
-        const spill_frame_bytes: u12 = @intCast(std.mem.alignForward(usize, self.stores.items.len * 16, 16));
+        const stash_bytes: usize = if (spill_stores) std.mem.alignForward(usize, self.stores.items.len * 16, 16) else 0;
+        cg.slot_base = stash_bytes;
+        const use_frame = spill_stores or mode == .spill;
+        const frame_at = out.items.len;
+        if (use_frame) try out.append(Asm.sub_sp_imm(@intCast(stash_bytes)));
+
         if (spill_stores) {
-            try out.append(Asm.sub_sp_imm(spill_frame_bytes));
             for (self.stores.items, 0..) |store, i| {
+                const mark = cg.pin_len;
                 const val_reg = try cg.valueD(store.value);
                 const ptr_reg = try cg.valueX(store.ptr);
                 const offset: u12 = @intCast(i * 16);
                 try out.append(Asm.str_d_imm(val_reg, 31, offset));
                 try out.append(Asm.str_x_imm(ptr_reg, 31, offset + 8));
+                cg.unpinTo(mark);
                 cg.consumeValue(store.value);
                 cg.consumeValue(store.ptr);
             }
         }
 
+        var output_locs: []Loc = &.{};
+        defer if (output_locs.len > 0) self.allocator.free(output_locs);
         if (has_outputs) {
-            const output_locs = self.allocator.alloc(Loc, self.stack.items.len) catch return Error.OutOfMemory;
-            defer self.allocator.free(output_locs);
+            // Output registers stay pinned until they are pushed.
+            output_locs = self.allocator.alloc(Loc, self.stack.items.len) catch return Error.OutOfMemory;
             for (self.stack.items, 0..) |value, i| {
                 const ty = self.values.items[value].ty;
                 output_locs[i] = if (ty == .f64)
@@ -497,73 +559,57 @@ pub const Builder = struct {
                 else
                     return Error.TypeMismatch;
             }
-            if (spill_stores) {
-                for (self.stores.items, 0..) |_, i| {
-                    const val_reg = try cg.allocD();
-                    const ptr_reg = try cg.allocX();
-                    const offset: u12 = @intCast(i * 16);
-                    try out.append(Asm.ldr_d_imm(val_reg, 31, offset));
-                    try out.append(Asm.ldr_x_imm(ptr_reg, 31, offset + 8));
-                    try out.append(Asm.str_d_imm(val_reg, ptr_reg, 0));
-                    cg.releaseD(val_reg);
-                    cg.releaseX(ptr_reg);
-                }
-                try out.append(Asm.add_sp_imm(spill_frame_bytes));
-            } else {
-                for (self.stores.items) |store| {
-                    const val_reg = try cg.valueD(store.value);
-                    const ptr_reg = try cg.valueX(store.ptr);
-                    try out.append(Asm.str_d_imm(val_reg, ptr_reg, 0));
-                    cg.consumeValue(store.value);
-                    cg.consumeValue(store.ptr);
-                }
+        }
+
+        if (spill_stores) {
+            for (self.stores.items, 0..) |_, i| {
+                const val_reg = try cg.allocD();
+                const ptr_reg = try cg.allocX();
+                const offset: u12 = @intCast(i * 16);
+                try out.append(Asm.ldr_d_imm(val_reg, 31, offset));
+                try out.append(Asm.ldr_x_imm(ptr_reg, 31, offset + 8));
+                try out.append(Asm.str_d_imm(val_reg, ptr_reg, 0));
+                cg.releaseD(val_reg);
+                cg.releaseX(ptr_reg);
             }
-            if (arg_abi != .raw_registers and self.initial_arity > 0) {
-                try out.append(Asm.add_imm(21, 21, @intCast(self.initial_arity * 8)));
-            }
-            for (output_locs) |loc| {
-                switch (loc) {
-                    .d => |reg| {
-                        try out.append(Asm.@"fmov Xd, Dn"(9, reg));
-                        try out.append(Asm.@"lsr Xn, Xn, #2"(9));
-                        try out.append(Asm.@"lsl Xn, Xn, #2"(9));
-                        try out.append(Asm.@"add Xn, Xn, #2"(9));
-                        try out.append(Asm.@".push Xn"(9));
-                    },
-                    .x => |reg| {
-                        try out.append(Asm.@"lsl Xn, Xn, #2"(reg));
-                        try out.append(Asm.@".push Xn"(reg));
-                    },
-                    .none => return Error.TypeMismatch,
-                }
-            }
-            for (self.stack.items) |value| cg.consumeValue(value);
         } else {
-            if (spill_stores) {
-                for (self.stores.items, 0..) |_, i| {
-                    const val_reg = try cg.allocD();
-                    const ptr_reg = try cg.allocX();
-                    const offset: u12 = @intCast(i * 16);
-                    try out.append(Asm.ldr_d_imm(val_reg, 31, offset));
-                    try out.append(Asm.ldr_x_imm(ptr_reg, 31, offset + 8));
-                    try out.append(Asm.str_d_imm(val_reg, ptr_reg, 0));
-                    cg.releaseD(val_reg);
-                    cg.releaseX(ptr_reg);
-                }
-                try out.append(Asm.add_sp_imm(spill_frame_bytes));
-            } else {
-                for (self.stores.items) |store| {
-                    const val_reg = try cg.valueD(store.value);
-                    const ptr_reg = try cg.valueX(store.ptr);
-                    try out.append(Asm.str_d_imm(val_reg, ptr_reg, 0));
-                    cg.consumeValue(store.value);
-                    cg.consumeValue(store.ptr);
-                }
-            }
-            if (arg_abi != .raw_registers and self.initial_arity > 0) {
-                try out.append(Asm.add_imm(21, 21, @intCast(self.initial_arity * 8)));
+            for (self.stores.items) |store| {
+                const mark = cg.pin_len;
+                const val_reg = try cg.valueD(store.value);
+                const ptr_reg = try cg.valueX(store.ptr);
+                try out.append(Asm.str_d_imm(val_reg, ptr_reg, 0));
+                cg.unpinTo(mark);
+                cg.consumeValue(store.value);
+                cg.consumeValue(store.ptr);
             }
         }
+        if (use_frame) {
+            const bytes = std.mem.alignForward(usize, cg.slot_base + @as(usize, cg.slot_count) * 8, 16);
+            if (bytes > 4080) return Error.RegisterExhausted;
+            out.items[frame_at] = Asm.sub_sp_imm(@intCast(bytes));
+            try out.append(Asm.add_sp_imm(@intCast(bytes)));
+        }
+        if (arg_abi != .raw_registers and self.initial_arity > 0) {
+            try out.append(Asm.add_imm(21, 21, @intCast(self.initial_arity * 8)));
+        }
+        for (output_locs) |loc| {
+            switch (loc) {
+                .d => |reg| {
+                    try out.append(Asm.@"fmov Xd, Dn"(9, reg));
+                    try out.append(Asm.@"lsr Xn, Xn, #2"(9));
+                    try out.append(Asm.@"lsl Xn, Xn, #2"(9));
+                    try out.append(Asm.@"add Xn, Xn, #2"(9));
+                    try out.append(Asm.@".push Xn"(9));
+                },
+                .x => |reg| {
+                    try out.append(Asm.@"lsl Xn, Xn, #2"(reg));
+                    try out.append(Asm.@".push Xn"(reg));
+                },
+                .none => return Error.TypeMismatch,
+            }
+        }
+        if (mode == .dry) return;
+        std.debug.assert(mode != .spill or cg.tpos == next_pos.len);
     }
 
     pub fn outputCount(self: *const Builder) usize {
@@ -893,12 +939,22 @@ pub fn freeTokens(allocator: std.mem.Allocator, tokens: []BodyToken) void {
     allocator.free(tokens);
 }
 
+const Mode = enum {
+    /// Registers only; RegisterExhausted when they run out.
+    plain,
+    /// Unlimited fake registers; records the request trace. Output discarded.
+    dry,
+    /// Registers plus spilling, guided by the dry pass's trace.
+    spill,
+};
+
 const Codegen = struct {
     builder: *Builder,
     out: *compat.ArrayList(u32),
     locs: []Loc,
     remaining_uses: []u32,
     arg_abi: ArgAbi,
+    mode: Mode = .plain,
     next_d: usize = 0,
     next_x: usize = 0,
     d_pool: [32]u5 = undefined,
@@ -908,37 +964,160 @@ const Codegen = struct {
     free_x: [RAW_X_SCRATCH_REGS.len]u5 = undefined,
     free_x_count: usize = 0,
 
+    // Spilling state. owner_*: the value living in a register, if any (only
+    // pool registers; raw arg registers are never owned). Pins protect a
+    // register from eviction while an instruction still needs it.
+    owner_d: [32]?usize = [_]?usize{null} ** 32,
+    owner_x: [32]?usize = [_]?usize{null} ** 32,
+    pin_d: [32]u16 = [_]u16{0} ** 32,
+    pin_x: [32]u16 = [_]u16{0} ** 32,
+    pin_log: [1024]u8 = undefined,
+    pin_len: usize = 0,
+    trace: ?*compat.ArrayList(usize) = null,
+    next_pos: []const usize = &.{},
+    tpos: usize = 0,
+    cur_next: []usize,
+    spill_slot: []?u16,
+    slot_base: usize = 0,
+    slot_count: u16 = 0,
+    free_slots: [64]u16 = undefined,
+    free_slot_count: usize = 0,
+
+    /// Every operand request goes through here, in the same order in the
+    /// dry and spill passes; that order is the clock for next-use distances.
+    fn request(self: *Codegen, id: usize) Error!void {
+        switch (self.mode) {
+            .plain => {},
+            .dry => try self.trace.?.append(id),
+            .spill => {
+                if (self.tpos < self.next_pos.len) {
+                    self.cur_next[id] = self.next_pos[self.tpos];
+                    self.tpos += 1;
+                }
+            },
+        }
+    }
+
+    fn pin(self: *Codegen, is_x: bool, reg: u5) Error!void {
+        if (self.mode != .spill) return;
+        if (self.pin_len >= self.pin_log.len) return Error.RegisterExhausted;
+        self.pin_log[self.pin_len] = @as(u8, reg) | (if (is_x) @as(u8, 0x80) else 0);
+        self.pin_len += 1;
+        if (is_x) self.pin_x[reg] += 1 else self.pin_d[reg] += 1;
+    }
+
+    fn unpinTo(self: *Codegen, mark: usize) void {
+        if (self.mode != .spill) return;
+        while (self.pin_len > mark) {
+            self.pin_len -= 1;
+            const e = self.pin_log[self.pin_len];
+            const reg: u5 = @intCast(e & 0x1f);
+            if (e & 0x80 != 0) self.pin_x[reg] -= 1 else self.pin_d[reg] -= 1;
+        }
+    }
+
+    /// Cheap to recompute from scratch, so eviction just forgets it.
+    fn isRemat(self: *const Codegen, id: usize) bool {
+        const v = self.builder.values.items[id];
+        return switch (v.op) {
+            .f64_const, .int_const => true,
+            .arg => self.arg_abi != .raw_registers,
+            else => false,
+        };
+    }
+
+    fn allocSlot(self: *Codegen) Error!u16 {
+        if (self.free_slot_count > 0) {
+            self.free_slot_count -= 1;
+            return self.free_slots[self.free_slot_count];
+        }
+        const slot = self.slot_count;
+        self.slot_count += 1;
+        return slot;
+    }
+
+    fn slotOffset(self: *const Codegen, slot: u16) Error!u12 {
+        const off = self.slot_base + @as(usize, slot) * 8;
+        if (off > 4088) return Error.RegisterExhausted;
+        return @intCast(off);
+    }
+
+    /// Free a register by spilling the unpinned value whose next use is
+    /// furthest away. The register is returned to the caller, unowned.
+    fn evict(self: *Codegen, is_x: bool) Error!u5 {
+        const owners = if (is_x) &self.owner_x else &self.owner_d;
+        const pins = if (is_x) &self.pin_x else &self.pin_d;
+        var best: ?u5 = null;
+        var best_next: usize = 0;
+        var best_remat = false;
+        for (owners, 0..) |o, r| {
+            const id = o orelse continue;
+            if (pins[r] != 0) continue;
+            const nxt = self.cur_next[id];
+            const remat = self.isRemat(id);
+            // Furthest next use wins; on a tie prefer what needs no store.
+            if (best == null or nxt > best_next or (nxt == best_next and remat and !best_remat)) {
+                best = @intCast(r);
+                best_next = nxt;
+                best_remat = remat;
+            }
+        }
+        const reg = best orelse return Error.RegisterExhausted;
+        const id = owners[reg].?;
+        if (!self.isRemat(id) and self.spill_slot[id] == null) {
+            const slot = try self.allocSlot();
+            self.spill_slot[id] = slot;
+            const off = try self.slotOffset(slot);
+            try self.out.append(if (is_x) Asm.str_x_imm(reg, 31, off) else Asm.str_d_imm(reg, 31, off));
+        }
+        owners[reg] = null;
+        self.locs[id] = .none;
+        return reg;
+    }
+
     fn allocD(self: *Codegen) Error!u5 {
+        if (self.mode == .dry) return 0;
         if (self.free_d_count > 0) {
             self.free_d_count -= 1;
             return self.free_d[self.free_d_count];
         }
-        if (self.next_d >= self.d_pool_len) return Error.RegisterExhausted;
+        if (self.next_d >= self.d_pool_len) {
+            if (self.mode == .spill) return self.evict(false);
+            return Error.RegisterExhausted;
+        }
         const reg = self.d_pool[self.next_d];
         self.next_d += 1;
         return reg;
     }
 
     fn allocX(self: *Codegen) Error!u5 {
+        if (self.mode == .dry) return 9;
         if (self.free_x_count > 0) {
             self.free_x_count -= 1;
             return self.free_x[self.free_x_count];
         }
         const regs = if (self.arg_abi == .raw_registers) RAW_X_SCRATCH_REGS[0..] else X_REGS[0..];
-        if (self.next_x >= regs.len) return Error.RegisterExhausted;
+        if (self.next_x >= regs.len) {
+            if (self.mode == .spill) return self.evict(true);
+            return Error.RegisterExhausted;
+        }
         const reg = regs[self.next_x];
         self.next_x += 1;
         return reg;
     }
 
     fn releaseD(self: *Codegen, reg: u5) void {
+        if (self.mode == .dry) return;
         std.debug.assert(self.free_d_count < self.free_d.len);
+        self.owner_d[reg] = null;
         self.free_d[self.free_d_count] = reg;
         self.free_d_count += 1;
     }
 
     fn releaseX(self: *Codegen, reg: u5) void {
+        if (self.mode == .dry) return;
         std.debug.assert(self.free_x_count < self.free_x.len);
+        self.owner_x[reg] = null;
         self.free_x[self.free_x_count] = reg;
         self.free_x_count += 1;
     }
@@ -956,10 +1135,31 @@ const Codegen = struct {
             .none => {},
         }
         self.locs[id] = .none;
+        if (self.spill_slot[id]) |slot| {
+            if (self.free_slot_count < self.free_slots.len) {
+                self.free_slots[self.free_slot_count] = slot;
+                self.free_slot_count += 1;
+            }
+            self.spill_slot[id] = null;
+        }
+    }
+
+    /// Record `reg` as holding `id` and pin it for the requesting instruction.
+    fn settle(self: *Codegen, id: usize, is_x: bool, reg: u5) Error!u5 {
+        self.locs[id] = if (is_x) .{ .x = reg } else .{ .d = reg };
+        if (self.mode == .spill) {
+            if (is_x) self.owner_x[reg] = id else self.owner_d[reg] = id;
+        }
+        try self.pin(is_x, reg);
+        return reg;
     }
 
     fn valueX(self: *Codegen, id: usize) Error!u5 {
-        if (self.locs[id] == .x) return self.locs[id].x;
+        try self.request(id);
+        if (self.locs[id] == .x) {
+            try self.pin(true, self.locs[id].x);
+            return self.locs[id].x;
+        }
         const value = self.builder.values.items[id];
         if (value.ty != .ptr and value.ty != .int) return Error.TypeMismatch;
 
@@ -969,47 +1169,66 @@ const Codegen = struct {
             self.locs[id] = .{ .x = reg };
             return reg;
         }
+        if (self.spill_slot[id]) |slot| {
+            const reg = try self.allocX();
+            try self.out.append(Asm.ldr_x_imm(reg, 31, try self.slotOffset(slot)));
+            return self.settle(id, true, reg);
+        }
 
-        const reg = try self.allocX();
-        switch (value.op) {
-            .arg => {
+        const mark = self.pin_len;
+        const reg: u5 = switch (value.op) {
+            .arg => blk: {
+                const reg = try self.allocX();
                 const offset = (self.builder.initial_arity - 1 - value.arg_index) * 8;
                 try self.out.append(Asm.ldr_x_imm(reg, 21, @intCast(offset)));
                 if (self.arg_abi == .tagged) {
                     try self.out.append(Asm.@"asr Xn, Xn, #2"(reg));
                 }
+                break :blk reg;
             },
-            .int_const => {
+            .int_const => blk: {
+                const reg = try self.allocX();
                 for (Asm.movImm64(reg, @as(u64, @bitCast(value.int_value)))) |instr| try self.out.append(instr);
+                break :blk reg;
             },
-            .ptr_add => {
+            .ptr_add => blk: {
                 const base = try self.valueX(value.a);
+                const reg = try self.allocX();
                 try self.out.append(Asm.add_imm(reg, base, @intCast(value.int_value)));
                 self.consumeValue(value.a);
+                break :blk reg;
             },
-            .load_ptr => {
+            .load_ptr => blk: {
                 const ptr = try self.valueX(value.a);
+                const reg = try self.allocX();
                 try self.out.append(Asm.ldr_x_imm(reg, ptr, 0));
                 self.consumeValue(value.a);
+                break :blk reg;
             },
-            .ptr_add_idx => {
+            .ptr_add_idx => blk: {
                 const base = try self.valueX(value.a);
                 const idx = try self.valueD(value.b);
+                const reg = try self.allocX();
                 const xi = try self.allocX();
                 try self.out.append(Asm.@"fcvtzs Xd, Dn"(xi, idx));
                 try self.out.append(Asm.@"add Xd, Xn, Xm, lsl #3"(reg, base, xi));
                 self.releaseX(xi);
                 self.consumeValue(value.a);
                 self.consumeValue(value.b);
+                break :blk reg;
             },
             else => return Error.TypeMismatch,
-        }
-        self.locs[id] = .{ .x = reg };
-        return reg;
+        };
+        self.unpinTo(mark);
+        return self.settle(id, true, reg);
     }
 
     fn valueD(self: *Codegen, id: usize) Error!u5 {
-        if (self.locs[id] == .d) return self.locs[id].d;
+        try self.request(id);
+        if (self.locs[id] == .d) {
+            try self.pin(false, self.locs[id].d);
+            return self.locs[id].d;
+        }
         const value = self.builder.values.items[id];
         if (value.ty != .f64) return Error.TypeMismatch;
 
@@ -1019,10 +1238,27 @@ const Codegen = struct {
             self.locs[id] = .{ .d = reg };
             return reg;
         }
+        if (self.spill_slot[id]) |slot| {
+            const reg = try self.allocD();
+            try self.out.append(Asm.ldr_d_imm(reg, 31, try self.slotOffset(slot)));
+            return self.settle(id, false, reg);
+        }
 
-        const reg = try self.allocD();
+        const mark = self.pin_len;
+        const reg = try self.computeD(value);
+        self.unpinTo(mark);
+        return self.settle(id, false, reg);
+    }
+
+    /// Materialize an f64 value. Operands are fetched (and pinned) first and
+    /// the destination is allocated after them, so a deep expression does not
+    /// hold one pending destination per level. Operands are consumed only
+    /// after the last instruction, so the destination never aliases a live
+    /// input of a multi-instruction sequence.
+    fn computeD(self: *Codegen, value: Value) Error!u5 {
         switch (value.op) {
             .arg => {
+                const reg = try self.allocD();
                 const offset = (self.builder.initial_arity - 1 - value.arg_index) * 8;
                 if (self.arg_abi == .raw) {
                     try self.out.append(Asm.ldr_d_imm(reg, 21, @intCast(offset)));
@@ -1034,16 +1270,24 @@ const Codegen = struct {
                     try self.out.append(Asm.@"fmov Dd, Xn"(reg, x));
                     self.releaseX(x);
                 }
+                return reg;
             },
-            .f64_const => try self.emitF64Const(reg, value.float_value),
+            .f64_const => {
+                const reg = try self.allocD();
+                try self.emitF64Const(reg, value.float_value);
+                return reg;
+            },
             .load_f64 => {
                 const ptr = try self.valueX(value.a);
+                const reg = try self.allocD();
                 try self.out.append(Asm.ldr_d_imm(reg, ptr, 0));
                 self.consumeValue(value.a);
+                return reg;
             },
             .fadd, .fsub, .fmul, .fdiv => {
                 const a = try self.valueD(value.a);
                 const b = try self.valueD(value.b);
+                const reg = try self.allocD();
                 const instr = switch (value.op) {
                     .fadd => Asm.@"fadd Dd, Dn, Dm"(reg, a, b),
                     .fsub => Asm.@"fsub Dd, Dn, Dm"(reg, a, b),
@@ -1054,28 +1298,34 @@ const Codegen = struct {
                 try self.out.append(instr);
                 self.consumeValue(value.a);
                 self.consumeValue(value.b);
+                return reg;
             },
             .fclamp => {
                 const x = try self.valueD(value.a);
                 const lo = try self.valueD(value.b);
                 const hi = try self.valueD(value.c);
+                const reg = try self.allocD();
                 try self.out.append(Asm.@"fmax Dd, Dn, Dm"(reg, x, lo));
                 try self.out.append(Asm.@"fmin Dd, Dn, Dm"(reg, reg, hi));
                 self.consumeValue(value.a);
                 self.consumeValue(value.b);
                 self.consumeValue(value.c);
+                return reg;
             },
             .ffrac => {
                 // frac(x) = x - floor(x)
                 const x = try self.valueD(value.a);
+                const reg = try self.allocD();
                 const fl = try self.allocD();
                 try self.out.append(Asm.@"frintm Dd, Dn"(fl, x));
                 try self.out.append(Asm.@"fsub Dd, Dn, Dm"(reg, x, fl));
                 self.releaseD(fl);
                 self.consumeValue(value.a);
+                return reg;
             },
             .fwrap01 => {
                 const x = try self.valueD(value.a);
+                const reg = try self.allocD();
                 const zero = try self.allocD();
                 try self.emitF64Const(zero, 0.0);
                 const one = try self.allocD();
@@ -1095,21 +1345,25 @@ const Codegen = struct {
                 self.releaseD(xm1);
                 self.releaseD(xp1);
                 self.consumeValue(value.a);
+                return reg;
             },
             .fsel_lt => {
                 const a = try self.valueD(value.a);
                 const b = try self.valueD(value.b);
                 const if_true = try self.valueD(value.c);
                 const if_false = try self.valueD(value.d);
+                const reg = try self.allocD();
                 try self.out.append(Asm.@"fcmp Dn, Dm"(a, b));
                 try self.out.append(Asm.@"fcsel Dd, Dn, Dm, cond"(reg, if_true, if_false, Asm.COND_LT));
                 self.consumeValue(value.a);
                 self.consumeValue(value.b);
                 self.consumeValue(value.c);
                 self.consumeValue(value.d);
+                return reg;
             },
             .fcapramp => {
                 const phase = try self.valueD(value.a);
+                const reg = try self.allocD();
                 const two = try self.allocD();
                 try self.emitF64Const(two, 2.0);
                 const one = try self.allocD();
@@ -1124,10 +1378,12 @@ const Codegen = struct {
                 self.releaseD(one);
                 self.releaseD(scratch);
                 self.consumeValue(value.a);
+                return reg;
             },
             .fpolyblep => {
                 const phase = try self.valueD(value.a);
                 const dt = try self.valueD(value.b);
+                const reg = try self.allocD();
                 const zero = try self.allocD();
                 try self.emitF64Const(zero, 0.0);
                 const one = try self.allocD();
@@ -1161,11 +1417,13 @@ const Codegen = struct {
                 self.releaseD(scratch_c);
                 self.consumeValue(value.a);
                 self.consumeValue(value.b);
+                return reg;
             },
             .fpulseblep => {
                 const phase = try self.valueD(value.a);
                 const dt = try self.valueD(value.b);
                 const width = try self.valueD(value.c);
+                const reg = try self.allocD();
                 const zero = try self.allocD();
                 try self.emitF64Const(zero, 0.0);
                 const one = try self.allocD();
@@ -1230,6 +1488,7 @@ const Codegen = struct {
                 self.consumeValue(value.a);
                 self.consumeValue(value.b);
                 self.consumeValue(value.c);
+                return reg;
             },
             .fadsr_linear => {
                 const time = try self.valueD(value.a);
@@ -1238,6 +1497,7 @@ const Codegen = struct {
                 const sustain = try self.valueD(value.d);
                 const gate = try self.valueD(value.e);
                 const release = try self.valueD(value.f);
+                const reg = try self.allocD();
                 const zero = try self.allocD();
                 try self.emitF64Const(zero, 0.0);
                 const one = try self.allocD();
@@ -1283,6 +1543,7 @@ const Codegen = struct {
                 self.consumeValue(value.d);
                 self.consumeValue(value.e);
                 self.consumeValue(value.f);
+                return reg;
             },
             .fadsr_cap => {
                 const time = try self.valueD(value.a);
@@ -1291,6 +1552,7 @@ const Codegen = struct {
                 const sustain = try self.valueD(value.d);
                 const gate = try self.valueD(value.e);
                 const release = try self.valueD(value.f);
+                const reg = try self.allocD();
                 const zero = try self.allocD();
                 try self.emitF64Const(zero, 0.0);
                 const one = try self.allocD();
@@ -1345,61 +1607,50 @@ const Codegen = struct {
                 self.consumeValue(value.d);
                 self.consumeValue(value.e);
                 self.consumeValue(value.f);
+                return reg;
             },
             else => return Error.TypeMismatch,
         }
-        self.locs[id] = .{ .d = reg };
-        return reg;
     }
-
-    fn emitTanhRationalInto(
-        self: *Codegen,
-        dst: u5,
-        x: u5,
-        amount: u5,
-        hi: u5,
-        c27: u5,
-        c9: u5,
-        neg_one: u5,
-        s0: u5,
-        s1: u5,
-        s2: u5,
-    ) Error!void {
-        try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s0, x, amount));
-        try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s1, s0, s0));
-        try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s2, c27, s1));
-        try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s2, s0, s2));
-        try self.out.append(Asm.@"fmul Dd, Dn, Dm"(s1, c9, s1));
-        try self.out.append(Asm.@"fadd Dd, Dn, Dm"(s1, c27, s1));
-        try self.out.append(Asm.@"fdiv Dd, Dn, Dm"(dst, s2, s1));
-        try self.out.append(Asm.@"fmax Dd, Dn, Dm"(dst, dst, neg_one));
-        try self.out.append(Asm.@"fmin Dd, Dn, Dm"(dst, dst, hi));
-    }
-
 
     fn emitF64Const(self: *Codegen, reg: u5, value: f64) Error!void {
         if (fmovF64Imm(reg, value)) |instr| {
             try self.out.append(instr);
             return;
         }
+        if (@as(u64, @bitCast(value)) == 0) {
+            try self.out.append(Asm.@"fmov Dd, Xn"(reg, 31)); // fmov d, xzr
+            return;
+        }
         const x = try self.allocX();
-        for (Asm.movImm64(x, @bitCast(value))) |instr| try self.out.append(instr);
+        // movz the first non-zero halfword, movk the rest; zero halves cost
+        // nothing (2.0 is one movz + fmov, not four moves + fmov).
+        const bits: u64 = @bitCast(value);
+        var first = true;
+        var hw: u6 = 0;
+        while (hw < 4) : (hw += 1) {
+            const half: u32 = @intCast((bits >> (@as(u6, hw) * 16)) & 0xffff);
+            if (half == 0 and !(first and hw == 3)) continue;
+            const base: u32 = if (first) 0xD2800000 else 0xF2800000;
+            try self.out.append(base | (@as(u32, hw) << 21) | (half << 5) | x);
+            first = false;
+        }
         try self.out.append(Asm.@"fmov Dd, Xn"(reg, x));
         self.releaseX(x);
     }
 };
 
+/// `fmov Dd, #imm` when `value` fits the 8-bit float immediate
+/// (±(16..31)/16 · 2^-3..2^4, e.g. 0.5, 1.0, 2.5, 27.0).
 fn fmovF64Imm(reg: u5, value: f64) ?u32 {
-    const base: u32 = switch (@as(u64, @bitCast(value))) {
-        @as(u64, @bitCast(@as(f64, 2.5))) => 0x1e609000,
-        @as(u64, @bitCast(@as(f64, 4.0))) => 0x1e621000,
-        @as(u64, @bitCast(@as(f64, -4.0))) => 0x1e721000,
-        @as(u64, @bitCast(@as(f64, 27.0))) => 0x1e677000,
-        @as(u64, @bitCast(@as(f64, 9.0))) => 0x1e645000,
-        @as(u64, @bitCast(@as(f64, 1.0))) => 0x1e6e1000,
-        @as(u64, @bitCast(@as(f64, -1.0))) => 0x1e7e1000,
-        @as(u64, @bitCast(@as(f64, 0.125))) => 0x1e681000,
-        else => return null,
-    };
-    return base | @as(u32, reg);
+    const bits: u64 = @bitCast(value);
+    var imm8: u32 = 0;
+    while (imm8 < 256) : (imm8 += 1) {
+        const sign: u64 = (imm8 >> 7) & 1;
+        const b6: u64 = (imm8 >> 6) & 1;
+        const exp: u64 = ((b6 ^ 1) << 10) | ((if (b6 == 1) @as(u64, 0xff) else 0) << 2) | ((imm8 >> 4) & 3);
+        const frac: u64 = @as(u64, imm8 & 0xf) << 48;
+        if ((sign << 63) | (exp << 52) | frac == bits) return 0x1E601000 | (imm8 << 13) | @as(u32, reg);
+    }
+    return null;
 }
