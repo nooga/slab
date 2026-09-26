@@ -17,7 +17,7 @@
   self-oscillation at a stable level.
 
   Explicit [Euler] OTA integrators want oversampling: the voice runs this
-  step 4x per sample [call: stages] and averages. g = 1 - e^[-2 pi fc/fs_os]
+  step 4x per sample and averages. g = 1 - e^[-2 pi fc/fs_os]
   [ms20-ota-g].  Output is y2.  State is caller-owned [Ms20OtaState]. )
 
 include "../02-shapers/tanh_table.fy"   ( k-tanh-rational-shape-dsp2 )
