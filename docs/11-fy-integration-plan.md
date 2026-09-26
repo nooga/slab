@@ -312,6 +312,11 @@ formal compiler mode for fast, inspectable DSP.
 
 ## Stage 6 — UI from fy
 
+> **Superseded.** Panels are declared in the manifest and drawn by the
+> host (docs/15); the `widget:*` / `slab:panel-*` builtins below were
+> removed with the legacy widgets. Machine-drawn graphics are planned as
+> the fy display escape hatch (docs/15 §Escape hatch).
+
 **Goal:** a fy word renders the machine's panel using Slab-provided
 widget builtins.
 

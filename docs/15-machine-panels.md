@@ -6,15 +6,17 @@ auto headers, knobs with value readouts, vertical selectors) **without
 hand-coding a draw routine**. The author declares strips and controls; a
 generic engine lays them out and renders them.
 
-This is the panel system for the **next-generation machines** — `raw-ms20`
-is the first and current focus. Existing callback machines (`mono1`, etc.)
-keep their bespoke fy UI words; we do **not** migrate them.
+This is the panel system for every fy machine. The old callback path, a
+fy UI word drawing through `widget:*` builtins at explicit coordinates,
+is gone: no machine used it any more, and it was removed with the legacy
+widgets. Machine-drawn graphics come back as the fy display escape hatch
+below, on the Ui draw list.
 
 ## Why declarative
 
-Today there are two panel paths:
+There used to be two panel paths:
 
-- **Callback machines** (`mono1`): a fy UI word draws the panel by calling
+- **Callback machines** (`mono1`, removed): a fy UI word drew the panel by calling
   the beveled widget builtins (`widget:bevel-raised`, `widget:knob`,
   `widget:switch3v`). Looks right, but every machine re-implements layout.
 - **Raw machines** (`raw-ms20`): `drawMs20Panel`/`drawMs20Module` in

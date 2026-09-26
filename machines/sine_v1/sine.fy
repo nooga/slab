@@ -15,9 +15,6 @@ noalloc: pow  _pow bind: dd:d ;
 :: pitch-cell 4 alloc ;  69.0 pitch-cell f!32
 :: gate-cell  4 alloc ;  0    gate-cell  !32
 
-:: _lbl_sine "SINE" cstr-new ;
-:: _lbl_gain "GAIN" cstr-new ;
-
 struct: SineState  f64 phase  f64 pitch  u32 gate ;
 struct: SineParams f64 gain ;
 
@@ -71,18 +68,8 @@ noalloc: sine-audio
   ifte
 ;
 
-: sine-ui
-  slab:panel-x slab:panel-y slab:panel-w 16.0 widget:bevel-raised
-  slab:panel-x 4.0 f+ slab:panel-y 2.0 f+ _lbl_sine widget:draw-label
-  slab:panel-x 2.0 f+
-  slab:panel-y 18.0 f+
-  52.0
-  slab:panel-h 20.0 f-
-  _lbl_gain
-  gain-cell f@32
-  widget:knob
-  gain-cell f!32
-;
+( The host draws the panel; there is no fy-drawn UI. )
+: sine-ui ;
 
 : manifest
   \sine-audio  \sine-ui

@@ -17,8 +17,6 @@ const Fy = @import("fy").Fy;
 const machine_mod = @import("machine.zig");
 const MachineCtx = machine_mod.MachineCtx;
 const c = @import("c.zig");
-const theme = @import("ui/theme.zig");
-const widgets = @import("ui/widgets.zig");
 
 /// fy currently exposes callback/runtime state through global variables
 /// (`Fy.Builtins.fyPtr` among them). Until that state is made thread-local
@@ -318,112 +316,6 @@ fn slab_debug_mode() callconv(.c) i64 {
     return Fy.makeInt(0);
 }
 
-// ── UI thread-locals ──────────────────────────────────────────────────
-// Set by drawPanelImpl before calling the fy UI word each frame.
-threadlocal var tl_ui_rect: c.rl.Rectangle = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
-threadlocal var tl_ui_mouse: ?widgets.Mouse = null;
-
-// ── UI panel rect builtins ────────────────────────────────────────────
-fn slab_panel_x() callconv(.c) f64 {
-    return tl_ui_rect.x;
-}
-fn slab_panel_y() callconv(.c) f64 {
-    return tl_ui_rect.y;
-}
-fn slab_panel_w() callconv(.c) f64 {
-    return tl_ui_rect.width;
-}
-fn slab_panel_h() callconv(.c) f64 {
-    return tl_ui_rect.height;
-}
-
-// ── Widget builtins (called from fy UI words) ─────────────────────────
-// Coordinates are fy-tagged f64; bind: strips the tag before calling.
-
-fn widgetBevelRaisedC(x: f64, y: f64, w: f64, h: f64) callconv(.c) void {
-    widgets.bevelRaised(
-        c.rl.Rectangle{ .x = @floatCast(x), .y = @floatCast(y), .width = @floatCast(w), .height = @floatCast(h) },
-        theme.slab_fill,
-        theme.slab_hi,
-        theme.slab_lo,
-    );
-}
-
-// Label builtins take the label as a raw tagged-int pointer (bind: i arg).
-// fy callers pass :: _lbl "TEXT" cstr-new ; constants so the C string is
-// malloc'd once at compile time.  Untag: ptr = label_val >> 2.
-fn labelPtr(label_val: i64) [*:0]const u8 {
-    return @ptrFromInt(@as(usize, @bitCast(label_val >> 2)));
-}
-
-fn widgetDrawLabelC(x: f64, y: f64, label_val: i64) callconv(.c) void {
-    widgets.drawLabelF(labelPtr(label_val), @floatCast(x), @floatCast(y), theme.fsTiny(), theme.text_fg);
-}
-
-fn widgetDrawLabelDimC(x: f64, y: f64, label_val: i64) callconv(.c) void {
-    widgets.drawLabelF(labelPtr(label_val), @floatCast(x), @floatCast(y), theme.fsTiny(), theme.text_dim);
-}
-
-// Full knob: reads tl_ui_mouse internally, returns the (possibly updated) value.
-fn widgetKnobC(x: f64, y: f64, w: f64, h: f64, label_val: i64, val: f64) callconv(.c) f64 {
-    const r = c.rl.Rectangle{
-        .x = @floatCast(x),
-        .y = @floatCast(y),
-        .width = @floatCast(w),
-        .height = @floatCast(h),
-    };
-    var v: f32 = @floatCast(val);
-    if (tl_ui_mouse) |m| _ = widgets.knob(r, labelPtr(label_val), &v, m);
-    return v;
-}
-
-fn widgetSwitch3C(x: f64, y: f64, w: f64, h: f64, label_val: i64, opt0_val: i64, opt1_val: i64, opt2_val: i64, val: f64) callconv(.c) f64 {
-    const r = c.rl.Rectangle{
-        .x = @floatCast(x),
-        .y = @floatCast(y),
-        .width = @floatCast(w),
-        .height = @floatCast(h),
-    };
-    var v: u8 = @intFromFloat(std.math.clamp(@round(val), 0.0, 2.0));
-    if (tl_ui_mouse) |m| _ = widgets.switch3(r, labelPtr(label_val), labelPtr(opt0_val), labelPtr(opt1_val), labelPtr(opt2_val), &v, m);
-    return @floatFromInt(v);
-}
-
-fn widgetSwitch3VerticalC(x: f64, y: f64, w: f64, h: f64, label_val: i64, opt0_val: i64, opt1_val: i64, opt2_val: i64, val: f64) callconv(.c) f64 {
-    const r = c.rl.Rectangle{
-        .x = @floatCast(x),
-        .y = @floatCast(y),
-        .width = @floatCast(w),
-        .height = @floatCast(h),
-    };
-    var v: u8 = @intFromFloat(std.math.clamp(@round(val), 0.0, 2.0));
-    if (tl_ui_mouse) |m| _ = widgets.switch3Vertical(r, labelPtr(label_val), labelPtr(opt0_val), labelPtr(opt1_val), labelPtr(opt2_val), &v, m);
-    return @floatFromInt(v);
-}
-
-fn widgetToggleC(x: f64, y: f64, w: f64, h: f64, label_val: i64, val: f64) callconv(.c) f64 {
-    const r = c.rl.Rectangle{
-        .x = @floatCast(x),
-        .y = @floatCast(y),
-        .width = @floatCast(w),
-        .height = @floatCast(h),
-    };
-    var on = val >= 0.5;
-    if (tl_ui_mouse) |m| _ = widgets.toggleCell(r, labelPtr(label_val), &on, m);
-    return if (on) 1.0 else 0.0;
-}
-
-// LED: on=nonzero int, colour = accent_play.
-fn widgetLedC(x: f64, y: f64, sz: f64, on: i64) callconv(.c) void {
-    const r = c.rl.Rectangle{
-        .x = @floatCast(x),
-        .y = @floatCast(y),
-        .width = @floatCast(sz),
-        .height = @floatCast(sz),
-    };
-    widgets.led(r, on != 0, theme.accent_play);
-}
-
 // ── FyHost ───────────────────────────────────────────────────────────
 
 pub const FyHost = struct {
@@ -510,24 +402,6 @@ pub const FyHost = struct {
             \\ noalloc: slab:write-r      _slab_wr          bind: di:v ;
             \\ noalloc: slab:noise        _slab_noise       bind: :d ;
             \\ noalloc: slab:debug-mark   _slab_mark        bind: i:v ;
-            \\ :: _slab_px  {d} ; :: _slab_py  {d} ;
-            \\ :: _slab_pw  {d} ; :: _slab_ph  {d} ;
-            \\ noalloc: slab:panel-x  _slab_px bind: :d ;
-            \\ noalloc: slab:panel-y  _slab_py bind: :d ;
-            \\ noalloc: slab:panel-w  _slab_pw bind: :d ;
-            \\ noalloc: slab:panel-h  _slab_ph bind: :d ;
-            \\ :: _w_bevel  {d} ;
-            \\ :: _w_label  {d} ; :: _w_labd   {d} ;
-            \\ :: _w_knob   {d} ; :: _w_led    {d} ;
-            \\ :: _w_sw3    {d} ; :: _w_sw3v   {d} ; :: _w_toggle {d} ;
-            \\ : widget:bevel-raised   _w_bevel bind: dddd:v ;
-            \\ : widget:draw-label     _w_label bind: ddi:v ;
-            \\ : widget:draw-label-dim _w_labd  bind: ddi:v ;
-            \\ : widget:knob           _w_knob  bind: ddddid:d ;
-            \\ : widget:led            _w_led   bind: dddi:v ;
-            \\ : widget:switch3        _w_sw3   bind: ddddiiiid:d ;
-            \\ : widget:switch3v       _w_sw3v  bind: ddddiiiid:d ;
-            \\ : widget:toggle         _w_toggle bind: ddddid:d ;
         , .{
             @intFromPtr(&slab_sr),
             @intFromPtr(&slab_block_size),
@@ -549,18 +423,6 @@ pub const FyHost = struct {
             @intFromPtr(&slab_write_r),
             @intFromPtr(&slab_noise),
             @intFromPtr(&slab_debug_mark),
-            @intFromPtr(&slab_panel_x),
-            @intFromPtr(&slab_panel_y),
-            @intFromPtr(&slab_panel_w),
-            @intFromPtr(&slab_panel_h),
-            @intFromPtr(&widgetBevelRaisedC),
-            @intFromPtr(&widgetDrawLabelC),
-            @intFromPtr(&widgetDrawLabelDimC),
-            @intFromPtr(&widgetKnobC),
-            @intFromPtr(&widgetLedC),
-            @intFromPtr(&widgetSwitch3C),
-            @intFromPtr(&widgetSwitch3VerticalC),
-            @intFromPtr(&widgetToggleC),
         });
         defer self.alloc.free(src);
         try self.compile(src);
@@ -600,15 +462,6 @@ pub const FyHost = struct {
     pub fn clearAudioBuffers() void {
         tl_l_buf = null;
         tl_r_buf = null;
-    }
-
-    pub fn setUiContext(r: c.rl.Rectangle, m: widgets.Mouse) void {
-        tl_ui_rect = r;
-        tl_ui_mouse = m;
-    }
-
-    pub fn clearUiContext() void {
-        tl_ui_mouse = null;
     }
 
     /// Create a C-callable trampoline for the named fy word.
