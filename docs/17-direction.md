@@ -170,6 +170,14 @@ defaults, and effects clip on the 0 dBFS ladder step. This is D5
 - The master soft clip is now the only thing catching these. They are
   default-level bugs in the machines, to fix with their presets (G5).
 
+**Idle voices were not silent.** Once idle voices were skipped (D6), the
+old Rhodes goldens turned out to contain a startup thump of about 1.3
+amplitude, decaying over roughly 50 ms, from its 7 never-played voices.
+The pickup bias feeds a constant into a DC blocker that starts at zero.
+The same transient likely fires on every note-on, because note-on resets
+the blocker. That is a G4 Rhodes fix: seed the blocker at its steady
+state.
+
 **Denormals.** delay2 emits denormal samples in its tails (186 in the
 impulse case).
 

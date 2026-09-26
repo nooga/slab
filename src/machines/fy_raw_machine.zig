@@ -68,6 +68,9 @@ pub const IoFrame = extern struct {
     det: f64 = 0,
 };
 const IO_STRIDE: u12 = @sizeOf(IoFrame);
+/// -120 dBFS: a released voice whose whole-block contribution stays below
+/// this stops rendering until its next note-on.
+const IDLE_FLOOR: f64 = 1e-6;
 const Control = machine_desc.Control;
 const Display = machine_desc.Display;
 
@@ -132,6 +135,14 @@ pub const FyRawMachine = struct {
     voice_gate: [MAX_REGIONS]bool = [_]bool{false} ** MAX_REGIONS,
     voice_age: [MAX_REGIONS]u64 = [_]u64{0} ** MAX_REGIONS,
     age_counter: u64 = 0,
+    // Idle voices are skipped entirely (docs/17 D6). A voice wakes on
+    // note-on and goes idle once released and its contribution stays under
+    // IDLE_FLOOR for a whole block. voice_peak is this block's max |delta|
+    // the voice added to the shared out lane.
+    voice_idle: [MAX_REGIONS]bool = [_]bool{true} ** MAX_REGIONS,
+    voice_peak: [MAX_REGIONS]f64 = [_]f64{0} ** MAX_REGIONS,
+    // out_l before a voice's pass, to measure what that voice added.
+    voice_snap: [MAX_BLOCK]f64 = [_]f64{0} ** MAX_BLOCK,
     // Per-frame meter ballistics (meter display kind). One per machine; a
     // limiter has a single meter. Updated on the UI thread from live state.
     meter_ui: MeterUi = .{},
@@ -757,6 +768,12 @@ fn renderVoiceSample(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
         }
     }
 
+    // Released voices that stayed under the floor all block go idle.
+    for (0..self.regionCount()) |v| {
+        if (!self.voice_idle[v] and !self.voice_gate[v] and self.voice_peak[v] < IDLE_FLOOR) self.voice_idle[v] = true;
+        self.voice_peak[v] = 0;
+    }
+
     // No clamp: machines have headroom (docs/17 D5); only the master bus
     // soft-clips.
     for (l, r, self.io[0..l.len]) |*sl, *sr, f| {
@@ -772,10 +789,17 @@ fn renderVoiceSegment(self: *FyRawMachine, start: usize, end: usize) !void {
     // Polyphonic machines render every voice every block (Juno-style — no
     // freeing, silent voices are cheap and predictable); kernels of
     // multi-voice machines ACCUMULATE into the host-zeroed out buffer.
+    const io = self.io[start..end];
     for (0..self.regionCount()) |voice| {
+        if (self.voice_idle[voice]) continue;
+        const snap = self.voice_snap[start..end];
+        for (snap, io) |*d, f| d.* = f.out_l;
         const e = self.entryArgs(voice);
-        const args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&self.io[start]) }, e[0], e[1], e[2] };
+        const args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&io[0]) }, e[0], e[1], e[2] };
         _ = try caller.call(@intCast(end - start), &args);
+        var pk = self.voice_peak[voice];
+        for (snap, io) |b, f| pk = @max(pk, @abs(f.out_l - b));
+        self.voice_peak[voice] = pk;
     }
 }
 
@@ -799,29 +823,28 @@ fn applyNoteEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
     }
 }
 
-// Pick a voice: oldest un-gated first, else steal the oldest gated.
+// Pick a voice: an idle one (oldest first), else the oldest released one
+// still ringing, else steal the oldest held one.
 fn allocVoice(self: *FyRawMachine) usize {
     const n = self.regionCount();
-    var best: usize = 0;
-    var best_age: u64 = std.math.maxInt(u64);
-    var found_free = false;
-    for (0..n) |v| {
-        if (self.voice_gate[v]) continue;
-        if (self.voice_age[v] < best_age) {
-            best = v;
-            best_age = self.voice_age[v];
-            found_free = true;
+    const Pass = enum { idle, released, any };
+    for ([_]Pass{ .idle, .released, .any }) |pass| {
+        var best: ?usize = null;
+        var best_age: u64 = std.math.maxInt(u64);
+        for (0..n) |v| {
+            const ok = switch (pass) {
+                .idle => self.voice_idle[v],
+                .released => !self.voice_gate[v],
+                .any => true,
+            };
+            if (ok and self.voice_age[v] < best_age) {
+                best = v;
+                best_age = self.voice_age[v];
+            }
         }
+        if (best) |b| return b;
     }
-    if (found_free) return best;
-    best_age = std.math.maxInt(u64);
-    for (0..n) |v| {
-        if (self.voice_age[v] < best_age) {
-            best = v;
-            best_age = self.voice_age[v];
-        }
-    }
-    return best;
+    return 0;
 }
 
 fn noteOnEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
@@ -830,6 +853,8 @@ fn noteOnEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
     self.voice_age[voice] = self.age_counter;
     self.voice_pitch[voice] = ev.pitch;
     self.voice_gate[voice] = true;
+    self.voice_idle[voice] = false;
+    self.voice_peak[voice] = 0;
     // note-pitch machines (drums) address slots by raw MIDI pitch.
     const note_arg = if (self.desc.note_pitch) @as(f64, ev.pitch) else midiToHz(ev.pitch);
     self.kctx.pitch = ev.pitch;
@@ -908,6 +933,7 @@ fn resetImpl(state: *anyopaque) void {
     }
     @memset(self.voice_gate[0..], false);
     @memset(self.voice_pitch[0..], -1);
+    @memset(self.voice_idle[0..], true);
     @memset(self.params_buf[0..self.desc.params_size], 0);
     for (self.buffer_mem[0..self.desc.buffer_count]) |pair| {
         for (pair) |mem| @memset(mem, 0);
@@ -2126,6 +2152,37 @@ test "kernel ABI: KernelCtx and IoFrame match ctx.fy's Ctx and Io" {
         const v = try host.callWord(f.name);
         try testing.expectEqual(Fy.makeInt(@intCast(f.off)), v);
     }
+}
+
+test "voice service: idle voices are skipped, wake on note-on, sleep after release" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/juno2/juno2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    for (inst.voice_idle[0..8]) |idle| try testing.expect(idle);
+
+    const block = 256;
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = block;
+    var l = [_]f32{0} ** block;
+    var r = [_]f32{0} ** block;
+    const on = [_]machine.NoteEvent{.{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = -1, .pitch = 60, .velocity = 0.8 }};
+    ctx.note_in = &on;
+    ctx.note_in_count = 1;
+    testRender(mach, &ctx, &l, &r);
+    try testing.expect(!inst.voice_idle[0]);
+    for (inst.voice_idle[1..8]) |idle| try testing.expect(idle);
+
+    const off = [_]machine.NoteEvent{.{ .sample_offset = 0, .kind = .note_off, .channel = 0, .note_id = -1, .pitch = 60, .velocity = 0 }};
+    ctx.note_in = &off;
+    testRender(mach, &ctx, &l, &r);
+    try testing.expect(!inst.voice_idle[0]); // still ringing out
+    ctx.note_in = null;
+    ctx.note_in_count = 0;
+    var blk: usize = 0;
+    while (blk < 1000 and !inst.voice_idle[0]) : (blk += 1) testRender(mach, &ctx, &l, &r);
+    try testing.expect(inst.voice_idle[0]); // release finished -> asleep
+    for (l) |x| try testing.expect(@abs(x) < 1e-5);
 }
 
 test "delay SYNC follows ctx.tempo: quarter-note echo lands on the beat" {

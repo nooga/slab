@@ -59,10 +59,23 @@ f64 converted to f32 (D5). Only the master bus soft-clips.
 - The per-sample `effect-sample` mode, which called from Zig into fy
   twice per sample.
 
+**Voice service (partial).**
+
+- Voices start idle and wake on note-on.
+- A released voice goes idle once its whole-block contribution to the
+  out lane stays under −120 dBFS. Idle voices are not rendered at all.
+- The host measures contribution by snapshotting `out-l` around each
+  voice's pass, so it works for any machine without kernel changes.
+- Allocation order: an idle voice, else the oldest released one, else
+  steal the oldest held one.
+
+Idle voices freeze their free-running state (oscillator phases, noise,
+LFOs) rather than advancing it.
+
 **Still to do (docs/17 step 3):**
 
 - stereo voices writing `out-r`
-- the voice service (D6)
+- the rest of the voice service (D6): mono/legato/glide/unison
 - per-control smoothing
 - host buffers and tables addressed through ctx instead of injected into
   state

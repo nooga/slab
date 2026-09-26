@@ -606,6 +606,16 @@ zig build bench -- juno2 --case=held --preset=NAME -p jn-cutoff=900
   - Verb: 134 ns
   - every other machine: under 100 ns
 
+- After idle-voice skipping (2026-09-26, ReleaseFast):
+  - FM-86: 1079 ns
+  - Juno: 160 ns
+  - Rhodes: 127 ns
+  - sampler: 24 ns
+
+**Goldens depend on the build mode.** The stimulus generators use `@sin`
+and `@exp`, which differ at the ~1e-8 level between Debug and ReleaseFast.
+Record and check goldens in the default (Debug) build.
+
 **Knob sweeps** (`--sweep=ID|all`).
 
 - 21 knob positions × 0.4 s. Voices get C3 retriggered per step;
