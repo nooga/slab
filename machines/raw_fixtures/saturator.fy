@@ -16,7 +16,6 @@ dsp: raw-sat-prepare
   1.35
   params RawSatParams.drive-p
   f!64
-  drop2 drop drop
 ;
 
 ( io ctx state params -- : shape one mono sample from an input stream. )
@@ -49,9 +48,6 @@ dsp: raw-sat-render
   fclamp
   out
   f!64
-  drop
-  drop
-  drop2 drop2
 ;
 
 include "../lib/manifest.fy"

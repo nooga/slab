@@ -91,7 +91,6 @@ dsp: ms20-voice-prepare
   f/
   params Ms20VoiceParams.inv-sample-rate-p
   f!64
-  drop2 drop drop
 ;
 
 ( ctx state params -- : start a mono note and reset oscillator age. )
@@ -116,7 +115,6 @@ dsp: ms20-voice-note-on
   0.0
   state Ms20VoiceState.age-p
   f!64
-  drop2 drop2 drop
 ;
 
 ( ctx state params -- : release the amp/filter envelopes from current age. )
@@ -125,32 +123,27 @@ dsp: ms20-voice-note-off
   state Ms20VoiceState.age@
   params Ms20VoiceParams.gate-time-p
   f!64
-  drop2 drop
 ;
 
 ( state params -- value : advance note age and return the new age in seconds. )
 dsp: v-age-next
   | state params |
-  Ms20VoiceState@: age ;
-  Ms20VoiceParams@: inv-sample-rate ;
+  state Ms20VoiceState.age@
+  params Ms20VoiceParams.inv-sample-rate@
   f+
   dup
   state Ms20VoiceState.age-p
   f!64
-  nip
-  nip
 ;
 
 ( state params -- value : capacitor ADSR amplitude multiplied by note velocity. )
 dsp: v-amp-env
   | state params |
-  Ms20VoiceState@: age ;
-  Ms20VoiceParams@: amp-attack amp-decay amp-sustain gate-time amp-release ;
+  state Ms20VoiceState.age@
+  params Ms20VoiceParams.amp-attack@  params Ms20VoiceParams.amp-decay@  params Ms20VoiceParams.amp-sustain@  params Ms20VoiceParams.gate-time@  params Ms20VoiceParams.amp-release@
   adsr-cap
   params Ms20VoiceParams.target-amp@
   f*
-  nip
-  nip
 ;
 
 ( state params -- value : VCO1 with waveform select (tri/saw/pulse), octave
@@ -158,8 +151,8 @@ dsp: v-amp-env
   no branches in dsp2; the spine keeps the register budget per-stage. )
 dsp: v-vco1
   | state params |
-  Ms20VoiceState@: phase1 ;
-  Ms20VoiceParams@: note-hz vco-octave inv-sample-rate ;
+  state Ms20VoiceState.phase1@
+  params Ms20VoiceParams.note-hz@  params Ms20VoiceParams.vco-octave@  params Ms20VoiceParams.inv-sample-rate@
   f*
   f*
   state Ms20VoiceState.pitch-mod@ f*
@@ -172,10 +165,6 @@ dsp: v-vco1
   phase dt saw-falling-polyblep
   phase dt state Ms20VoiceState.pw-eff@ pulse-polyblep
   wave-sel3
-  nip
-  nip
-  nip
-  nip
 ;
 
 ( state params -- value : render oscillator 2 pulse and advance phase. )
@@ -183,8 +172,8 @@ dsp: v-vco1
   detuned and octave-scaled. )
 dsp: v-vco2
   | state params |
-  Ms20VoiceState@: phase2 ;
-  Ms20VoiceParams@: note-hz detune vco2-octave inv-sample-rate ;
+  state Ms20VoiceState.phase2@
+  params Ms20VoiceParams.note-hz@  params Ms20VoiceParams.detune@  params Ms20VoiceParams.vco2-octave@  params Ms20VoiceParams.inv-sample-rate@
   f*
   f*
   f*
@@ -198,10 +187,6 @@ dsp: v-vco2
   phase dt 0.5 pulse-polyblep
   phase dt state Ms20VoiceState.pw-eff@ pulse-polyblep
   wave-sel3
-  nip
-  nip
-  nip
-  nip
 ;
 
 ( state -- value : float-LCG white-ish noise in -1..1, advancing rng state. )
@@ -215,7 +200,6 @@ dsp: v-noise-raw
   state Ms20VoiceState.noise-rng-p
   f!64
   2.0 f* 1.0 f-
-  nip
 ;
 
 ( state params -- value : VCO1*lvl + VCO2*lvl + noise*lvl, gently saturated. )
@@ -236,8 +220,6 @@ dsp: v-osc-mix
     so a hot sum rounds over instead of clipping hard. )
   1.3 f*
   k-tanh-rational-shape-dsp2
-  nip
-  nip
 ;
 
 ( state params -- g : modulated cutoff -> filter g.  Modulation sums in
@@ -252,7 +234,6 @@ dsp: v-filter-g ( state params -- g )
   exp2-approx
   params Ms20VoiceParams.cutoff@ f*
   params Ms20VoiceParams.os-inv@ ms20-ota-g
-  nip nip
 ;
 
 
@@ -273,11 +254,8 @@ dsp: v-dc-out
   dup
   state Ms20VoiceState.dc-prev-y-p
   f!64
-  dup
   out
   f!64
-
-  drop2 drop2
 ;
 
 ( out state params -- : probe only the oscillator mix. )
@@ -286,7 +264,6 @@ dsp: k-ms20-voice-osc-probe
   state params v-osc-mix
   out
   f!64
-  drop2 drop
 ;
 
 
@@ -298,7 +275,6 @@ dsp: k-ms20-voice-amp-probe
   state params v-amp-env
   out
   f!64
-  drop2 drop
 ;
 
 
@@ -306,7 +282,6 @@ dsp: k-ms20-voice-amp-probe
 dsp: k-ms20-voice-dc-probe
   | out state params |
   out state 0.5 v-dc-out
-  drop2 drop
 ;
 
 ( ── Voice stages (composed via dsp2 `call:`) ───────────────────────────
@@ -321,7 +296,6 @@ dsp: v-osc-stage
   state params v-osc-mix
   state Ms20VoiceState.osc-out-p
   f!64
-  drop2
 ;
 
 ( phase skew -- bipolar : variable-slope LFO shape. skew picks the peak
@@ -333,8 +307,6 @@ dsp: mg-shape
   1.0 phase f- 1.0 skew f- f/
   fsel-lt
   2.0 f* 1.0 f-
-  nip
-  nip
 ;
 
 ( state params -- : modulation hub. Runs first: advances note age and the
@@ -375,7 +347,6 @@ dsp: v-mod-stage
   mg params Ms20VoiceParams.mg-pw@ f* f+
   0.02 0.98 fclamp
   state Ms20VoiceState.pw-eff-p f!64
-  drop2 drop2
 ;
 
 ( state params -- : self-oscillating series HPF on osc-out, in place.
@@ -392,7 +363,6 @@ dsp: v-hpf-stage
   k-hpf
   state Ms20VoiceState.osc-out-p
   f!64
-  drop2
 ;
 
 ( state params -- : modulated cutoff -> filter g for this sample's LPF
@@ -401,7 +371,6 @@ dsp: v-cut-stage ( state params -- )
   | state params |
   state params v-filter-g state Ms20VoiceState.filt-g-p f!64
   0.0 state Ms20VoiceState.filt-out-p f!64
-  drop2
 ;
 
 ( state params -- : one of the four LPF substeps per sample.  Input is held
@@ -415,7 +384,6 @@ dsp: v-ota-sub ( state params -- )
   params Ms20VoiceParams.ota-drive@
   ms20-ota-step
   0.25 f*  state Ms20VoiceState.filt-out@ f+  state Ms20VoiceState.filt-out-p f!64
-  drop2
 ;
 
 
@@ -431,7 +399,6 @@ dsp: v-vca-stage
   x state Ms20VoiceState.dc-prev-x-p f!64
   y state Ms20VoiceState.dc-prev-y-p f!64
   y out f!64
-  drop2 drop2 drop
 ;
 
 ( io ctx state params -- : render one mono voice sample by composing the stages.

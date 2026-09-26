@@ -14,7 +14,6 @@ dsp: raw-silence-render
   0.0
   out
   f!64
-  drop2 drop drop
 ;
 
 include "../lib/manifest.fy"

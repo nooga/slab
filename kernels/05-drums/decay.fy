@@ -21,7 +21,6 @@ dsp: decay-exp-coeff
   1.0  x 0.5 f* h3 f*  f-
   | h2 |
   1.0  x h2 f*  f-
-  nip nip nip nip nip nip nip
 ;
 
 ( env-ptr coeff -- value : advance the decay state one sample, return it. )
@@ -29,7 +28,6 @@ dsp: decay-exp-step
   | envp coeff |
   envp f@64 coeff f*
   dup envp f!64
-  nip nip
 ;
 
 ( out env-ptr coeff -- : raw probe entry, one decay step per call. )
@@ -37,7 +35,6 @@ dsp: k-decay-exp
   | out envp coeff |
   envp coeff decay-exp-step
   out f!64
-  drop2 drop
 ;
 
 ( out t sr -- : raw probe entry for the coefficient itself. )
@@ -45,5 +42,4 @@ dsp: k-decay-exp-coeff
   | out t sr |
   t sr decay-exp-coeff
   out f!64
-  drop2 drop
 ;

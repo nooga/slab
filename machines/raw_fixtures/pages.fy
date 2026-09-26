@@ -14,7 +14,6 @@ ustruct: RawPagesParams
 dsp: raw-pages-render
   | out ctx state params |
   0.0 out f!64
-  drop2 drop drop
 ;
 
 include "../lib/manifest.fy"

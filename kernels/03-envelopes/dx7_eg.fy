@@ -62,7 +62,6 @@ dsp: dx7-eg-step
   gate state Dx7EgState.prev-gate-p f!64
   ( exponential gain: 2^((value-1)*16) -> 1.0 at 0 dB, ~1.5e-5 at -96 dB )
   newval 1.0 f- 16.0 f* exp2-approx
-  nip nip nip nip nip nip nip nip nip nip nip nip nip nip nip nip
 ;
 
 ( out state params gate -- : raw probe entry, one envelope sample to out. )
@@ -70,5 +69,4 @@ dsp: k-dx7-eg
   | out state params gate |
   state params gate dx7-eg-step
   out f!64
-  drop2 drop2
 ;

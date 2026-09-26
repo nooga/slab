@@ -72,7 +72,6 @@ dsp: dx7-voice-step
   params Dx7VoiceParams.c4@ out4 f* f+
   params Dx7VoiceParams.c5@ out5 f* f+
   ( out on top; drop the 8 named slots )
-  nip nip nip nip nip nip nip nip
 ;
 
 ( out state params -- : raw probe entry, one voice sample to out. )
@@ -80,5 +79,4 @@ dsp: k-dx7-voice
   | out state params |
   state params dx7-voice-step
   out f!64
-  drop2 drop
 ;

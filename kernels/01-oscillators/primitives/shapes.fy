@@ -23,7 +23,6 @@ dsp: tri-raw
   p 4.0 f* 1.0 f-          ( up   = 4p - 1 )
   3.0 p 4.0 f* f-          ( down = 3 - 4p )
   fsel-lt                  ( p < 0.5 ? up : down )
-  nip
 ;
 
 ( wave tri saw pul -- out : pick a waveform by index 0=tri 1=saw 2=pulse. )
@@ -32,7 +31,6 @@ dsp: wave-sel3
   wave 1.5 saw pul fsel-lt    ( wave < 1.5 ? saw : pul )
   | sawpul |
   wave 0.5 tri sawpul fsel-lt ( wave < 0.5 ? tri : sawpul )
-  nip nip nip nip nip
 ;
 
 ( sample -- sample' : apply an asymmetric hard top cut. )

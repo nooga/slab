@@ -10,7 +10,6 @@ dsp: st-swap-render ( io ctx state params -- )
   | io ctx state params |
   io Io.in-r@ io Io.out-l-p f!64
   io Io.in-l@ io Io.out-r-p f!64
-  drop2 drop2
 ;
 
 include "../lib/manifest.fy"

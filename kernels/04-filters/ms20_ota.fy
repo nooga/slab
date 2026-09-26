@@ -34,7 +34,6 @@ ustruct: Ms20OtaState
 dsp: ms20-diode ( v -- d )
   | v |
   v 1.6 f* k-tanh-rational-shape-dsp2 0.625 f*
-  nip
 ;
 
 ( fc os-inv -- g : explicit one-pole coefficient 1 - e^[-2 pi fc / fs_os],
@@ -42,7 +41,6 @@ dsp: ms20-diode ( v -- d )
 dsp: ms20-ota-g ( fc os-inv -- g )
   | fc os-inv |
   1.0  fc 20.0 20000.0 fclamp os-inv f* -9.0647202 f* exp2-approx  f-
-  nip nip
 ;
 
 ( fs x g k drive -- y : one substep; fs points at an Ms20OtaState. )
@@ -57,5 +55,4 @@ dsp: ms20-ota-step ( fs x g k drive -- y )
   y1n fs Ms20OtaState.y1-p f!64
   y2n fs Ms20OtaState.y2-p f!64
   y2n
-  nip nip nip nip nip nip nip nip nip nip
 ;

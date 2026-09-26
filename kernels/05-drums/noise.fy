@@ -10,5 +10,4 @@ dsp: noise-step
   ffrac
   dup rngp f!64
   2.0 f* 1.0 f-
-  nip
 ;

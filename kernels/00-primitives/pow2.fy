@@ -44,7 +44,6 @@ dsp: log2-approx
   m2 16.0  0.0  4.0  fsel-lt f+
   m3 4.0  0.0  2.0  fsel-lt f+
   m4 2.0  0.0  1.0  fsel-lt f+
-  nip nip nip nip nip nip nip nip nip
 ;
 
 ( y -- 2^y : split integer/fraction with ffrac, Taylor of e^[f ln2] for
@@ -78,9 +77,8 @@ dsp: exp2-approx
   m4 1.0  1.0  2.0  fsel-lt f* | gi |
   n 0.0  1.0 gi f/  gi  fsel-lt
   p f*
-  nip nip nip nip nip nip nip nip nip nip nip nip
 ;
 
 ( out x -- : raw probe entries for the sweep grids. )
-dsp: k-log2 | out x | x log2-approx out f!64 drop2 ;
-dsp: k-exp2 | out x | x exp2-approx out f!64 drop2 ;
+dsp: k-log2 | out x | x log2-approx out f!64 ;
+dsp: k-exp2 | out x | x exp2-approx out f!64 ;

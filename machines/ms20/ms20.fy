@@ -16,7 +16,6 @@ dsp: ms20-block-prepare ( ctx state params -- )
   params Ms20VoiceParams.resonance@ 1.2 f*  params Ms20VoiceParams.ota-k-p f!64
   params Ms20VoiceParams.drive@             params Ms20VoiceParams.ota-drive-p f!64
   0.25 ctx Ctx.inv-sr@ f*                   params Ms20VoiceParams.os-inv-p f!64
-  drop2 drop
 ;
 
 : manifest

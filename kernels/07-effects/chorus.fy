@@ -55,7 +55,6 @@ dsp: chorus-block-prepare
   params ChorusParams.depth-spl-p f!64
   params ChorusParams.tone-hz@ 6.2831853 f* sr f/ 0.0 1.0 fclamp
   params ChorusParams.tone-a-p f!64
-  drop2 drop drop2
 ;
 
 ( io ctx state params -- : one BBD tick.  The triangle argument gets a
@@ -91,5 +90,4 @@ dsp: k-chorus-tick
   x  1.0 params ChorusParams.mix@ f-  f*
   zn params ChorusParams.mix@ f*  f+
   out f!64
-  drop2 drop2 drop2 drop2 drop2 drop2 drop2 drop2 drop2 drop2 drop2
 ;

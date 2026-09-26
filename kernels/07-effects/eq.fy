@@ -84,7 +84,6 @@ dsp: eq-coef-hpf
   ( a2 = (1-alpha) * inv, else 0 )
   0.5 on  1.0 alpha f- inv f*  0.0  fsel-lt params EqParams.hpf-a2-p f!64
   ( locals: params w cw alpha a0 inv omc on = 8 )
-  drop drop drop drop drop drop drop drop
 ;
 
 ( params -- : peaking EQ for band 1 (low-mid). )
@@ -103,7 +102,6 @@ dsp: eq-coef-p1
   -2.0 cw f* inv f* params EqParams.p1-a1-p f!64
   1.0 alpha a f/ f- inv f* params EqParams.p1-a2-p f!64
   ( locals: params w cw a alpha a0 inv = 7 )
-  drop drop drop drop drop drop drop
 ;
 
 ( params -- : peaking EQ for band 2 (high-mid). )
@@ -122,7 +120,6 @@ dsp: eq-coef-p2
   -2.0 cw f* inv f* params EqParams.p2-a1-p f!64
   1.0 alpha a f/ f- inv f* params EqParams.p2-a2-p f!64
   ( locals: params w cw a alpha a0 inv = 7 )
-  drop drop drop drop drop drop drop
 ;
 
 ( params -- : low shelf, RBJ, slope S=1 so the shelf alpha term reduces
@@ -146,7 +143,6 @@ dsp: eq-coef-ls
   -2.0  am1 ap1 cw f* f+  f* inv f* params EqParams.ls-a1-p f!64
   ap1 am1 cw f* f+ beta f-  inv f* params EqParams.ls-a2-p f!64
   ( locals: params w cw a sqa beta ap1 am1 a0 inv = 10 )
-  drop drop drop drop drop drop drop drop drop drop
 ;
 
 ( params -- : high shelf, RBJ, slope S=1. )
@@ -169,7 +165,6 @@ dsp: eq-coef-hs
   2.0  am1 ap1 cw f* f-  f* inv f* params EqParams.hs-a1-p f!64
   ap1 am1 cw f* f- beta f-  inv f* params EqParams.hs-a2-p f!64
   ( locals: params w cw a sqa beta ap1 am1 a0 inv = 10 )
-  drop drop drop drop drop drop drop drop drop drop
 ;
 
 ( ctx state params -- : fill every band's coefficients.  derive-data is
@@ -189,7 +184,6 @@ dsp: eq-block-prepare
   | ctx state params |
   ctx Ctx.sr@ | sr |
   sr params EqParams.sr-p f!64
-  drop2 drop2
 ;
 
 ( ---- per-sample biquad stages (one call: stage per band) ------------ )
@@ -204,7 +198,6 @@ dsp: eq-tick-hpf
   params EqParams.hpf-b2@ x f*  params EqParams.hpf-a2@ y f* f-
   state EqState.hpf-z2-p f!64
   y state EqState.sig-p f!64
-  drop2 drop2 drop
 ;
 
 ( state params -- : low shelf, reads/writes state.sig. )
@@ -217,7 +210,6 @@ dsp: eq-tick-ls
   params EqParams.ls-b2@ x f*  params EqParams.ls-a2@ y f* f-
   state EqState.ls-z2-p f!64
   y state EqState.sig-p f!64
-  drop2 drop2
 ;
 
 ( state params -- : low-mid peak. )
@@ -230,7 +222,6 @@ dsp: eq-tick-p1
   params EqParams.p1-b2@ x f*  params EqParams.p1-a2@ y f* f-
   state EqState.p1-z2-p f!64
   y state EqState.sig-p f!64
-  drop2 drop2
 ;
 
 ( state params -- : high-mid peak. )
@@ -243,7 +234,6 @@ dsp: eq-tick-p2
   params EqParams.p2-b2@ x f*  params EqParams.p2-a2@ y f* f-
   state EqState.p2-z2-p f!64
   y state EqState.sig-p f!64
-  drop2 drop2
 ;
 
 ( out state params -- : high shelf, reads state.sig, writes out. )
@@ -256,7 +246,6 @@ dsp: eq-tick-hs
   params EqParams.hs-b2@ x f*  params EqParams.hs-a2@ y f* f-
   state EqState.hs-z2-p f!64
   y out f!64
-  drop2 drop2 drop
 ;
 
 ( io ctx state params -- : the full EQ tick, five biquads in series. )

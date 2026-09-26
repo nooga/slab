@@ -49,7 +49,6 @@ dsp: kick-prepare
   params KickParams.pitch-coeff-p f!64
   0.0015 sr decay-exp-coeff
   params KickParams.click-coeff-p f!64
-  drop2 drop
 ;
 
 ( state params gate velocity -- : fire the kick when gate is 1; gate 0
@@ -64,7 +63,6 @@ dsp: kick-trigger
   0.5 gate 1.0 state KickState.click-env@ fsel-lt state KickState.click-env-p f!64
   0.5 gate 0.0 state KickState.phase@     fsel-lt state KickState.phase-p f!64
   0.5 gate 0.1234567 state KickState.noise-rng@ fsel-lt state KickState.noise-rng-p f!64
-  drop2 drop2
 ;
 
 ( state params -- : swept sine body -> mix scratch. )
@@ -81,7 +79,6 @@ dsp: kick-osc-write
   dup state KickState.phase-p f!64
   sine-shape
   state KickState.mix-p f!64
-  drop2 drop
 ;
 
 ( out state params -- : body * amp env + click, driven, into out. )
@@ -100,7 +97,6 @@ dsp: kick-accum
   params KickParams.level@ f*
   f+
   out f!64
-  drop2 drop
 ;
 
 ( out state params -- : one mono kick sample, staged composition. )

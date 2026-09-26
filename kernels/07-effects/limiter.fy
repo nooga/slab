@@ -84,7 +84,6 @@ dsp: lim-block-prepare
   params LimParams.msm-c-p f!64
   1.0 3.0 sr f* f/
   params LimParams.mss-c-p f!64
-  drop2 drop drop2
 ;
 
 ( ctx state params -- : per block - reset
@@ -97,7 +96,6 @@ dsp: lim-prepare
   0.0 state LimState.opk-p f!64
   state LimState.gain@ 0.001 1.0 state LimState.gain@ fsel-lt
   state LimState.gain-p f!64
-  drop2 drop drop
 ;
 
 ( state params -- : gain computer.  Reads the shared detector trace,
@@ -119,7 +117,6 @@ dsp: lim-gain
   state LimState.gmin@ g state LimState.gmin@ g fsel-lt
   state LimState.gmin-p f!64
   ( drop all 11 bound locals: state params det i d dc raw gt g0 c g )
-  drop2 drop2 drop2 drop2 drop2
 ;
 
 ( out state params in -- : input drive, lookahead delay, gain + ceiling
@@ -149,7 +146,6 @@ dsp: lim-io
   y 0.0 0.0 y f- y fsel-lt | ay |
   state LimState.opk@ ay ay state LimState.opk@ fsel-lt state LimState.opk-p f!64
   ( drop all 16 bound locals )
-  drop2 drop2 drop2 drop2 drop2 drop2 drop2 drop2
 ;
 
 ( state params -- : BS.1770 K-weighting on the output, mean-square
@@ -172,7 +168,6 @@ dsp: lim-lufs
   state LimState.msum@ p f+ state LimState.msum-p f!64
   state LimState.mn@ 1.0 f+ state LimState.mn-p f!64
   ( drop all 6 bound locals: state params x y1 y2 p )
-  drop2 drop2 drop2
 ;
 
 ( io ctx state params -- : the full limiter tick, staged so no single

@@ -25,7 +25,6 @@ dsp: tpt-svf-lp-step ( s1p s2p x g d -- lp )
   g hp f* bp f+  s1p f!64
   g bp f* lp f+  s2p f!64
   lp
-  nip nip nip nip nip nip nip nip nip nip nip nip
 ;
 
 ( s1p s2p x g d -- lp : the same step with both integrator states written
@@ -44,5 +43,4 @@ dsp: tpt-svf-lp-sat-step ( s1p s2p x g d -- lp )
   g bp f*  s2 f+ | lp |
   g bp f* lp f+ 1.05 f* k-tanh-rational-shape-dsp2  s2p f!64
   lp
-  nip nip nip nip nip nip nip nip nip nip nip nip nip
 ;

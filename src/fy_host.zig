@@ -455,6 +455,9 @@ pub const FyHost = struct {
         const src = try readFilePosix(self.alloc, path);
         defer self.alloc.free(src);
         const base_dir = dirName(path);
+        const saved_file = self.fy.src_file;
+        self.fy.src_file = path;
+        defer self.fy.src_file = saved_file;
         _ = try self.fy.runWithBaseDir(src, base_dir);
     }
 

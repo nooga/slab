@@ -39,5 +39,4 @@ dsp: k-hpf
   lp2 st HpfState.lp-p f!64
   bp2 st HpfState.bp-p f!64
   hp
-  nip nip nip nip nip nip nip nip nip
 ;

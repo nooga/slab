@@ -77,37 +77,31 @@ dsp: fm86-eg-op0
   | state params |
   state Fm86State.eg0-value-p  params Fm86Params.eg0-s1-p  state Fm86State.gate@  dx7-eg-step
   params Fm86Params.ol0@ f*  params Fm86Params.lvl0-p f!64
-  drop2
 ;
 dsp: fm86-eg-op1
   | state params |
   state Fm86State.eg1-value-p  params Fm86Params.eg1-s1-p  state Fm86State.gate@  dx7-eg-step
   params Fm86Params.ol1@ f*  params Fm86Params.lvl1-p f!64
-  drop2
 ;
 dsp: fm86-eg-op2
   | state params |
   state Fm86State.eg2-value-p  params Fm86Params.eg2-s1-p  state Fm86State.gate@  dx7-eg-step
   params Fm86Params.ol2@ f*  params Fm86Params.lvl2-p f!64
-  drop2
 ;
 dsp: fm86-eg-op3
   | state params |
   state Fm86State.eg3-value-p  params Fm86Params.eg3-s1-p  state Fm86State.gate@  dx7-eg-step
   params Fm86Params.ol3@ f*  params Fm86Params.lvl3-p f!64
-  drop2
 ;
 dsp: fm86-eg-op4
   | state params |
   state Fm86State.eg4-value-p  params Fm86Params.eg4-s1-p  state Fm86State.gate@  dx7-eg-step
   params Fm86Params.ol4@ f*  params Fm86Params.lvl4-p f!64
-  drop2
 ;
 dsp: fm86-eg-op5
   | state params |
   state Fm86State.eg5-value-p  params Fm86Params.eg5-s1-p  state Fm86State.gate@  dx7-eg-step
   params Fm86Params.ol5@ f*  params Fm86Params.lvl5-p f!64
-  drop2
 ;
 
 ( state params -- : fill the per-op phase increments from this voice's own
@@ -123,7 +117,6 @@ dsp: fm86-inc-stage
   params Fm86Params.ratio3@ base f* params Fm86Params.inc3-p f!64
   params Fm86Params.ratio4@ base f* params Fm86Params.inc4-p f!64
   params Fm86Params.ratio5@ base f* params Fm86Params.inc5-p f!64
-  drop2 drop
 ;
 
 ( state params -- : run the validated 6-op matrix and store this voice's sample
@@ -134,7 +127,6 @@ dsp: fm86-matrix-stage
   | state params |
   state params dx7-voice-step
   state Fm86State.vout-p f!64
-  drop2
 ;
 
 ( out state params -- : add this voice's sample to out. The host renders every
@@ -143,7 +135,6 @@ dsp: fm86-matrix-stage
 dsp: fm86-out-add
   | out state params |
   out f@64 state Fm86State.vout@ f+ out f!64
-  drop2 drop
 ;
 
 ( io ctx state params -- : one FM-86 voice sample. The inc stage sets per-voice
@@ -172,7 +163,6 @@ dsp: k-fm86-voice-sample
 dsp: eg-idle-guard
   | s |
   s 0.5 4.0 s fsel-lt
-  nip
 ;
 
 ( ctx state params -- : per-voice prepare (runs every block). Store
@@ -187,7 +177,6 @@ dsp: fm86-prepare
   state Fm86State.eg3-stage@ eg-idle-guard state Fm86State.eg3-stage-p f!64
   state Fm86State.eg4-stage@ eg-idle-guard state Fm86State.eg4-stage-p f!64
   state Fm86State.eg5-stage@ eg-idle-guard state Fm86State.eg5-stage-p f!64
-  drop2 drop drop
 ;
 
 ( ctx state params -- : start a note. Store this voice's fundamental
@@ -206,7 +195,6 @@ dsp: fm86-note-on
   0.0  state Fm86State.eg3-pgate-p f!64
   0.0  state Fm86State.eg4-pgate-p f!64
   0.0  state Fm86State.eg5-pgate-p f!64
-  drop2 drop2 drop
 ;
 
 ( ctx state params -- : release. Drop the gate; the next sample's note-off edge
@@ -214,5 +202,4 @@ dsp: fm86-note-on
 dsp: fm86-note-off
   | ctx state params |
   0.0 state Fm86State.gate-p f!64
-  drop2 drop
 ;

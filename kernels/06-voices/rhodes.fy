@@ -128,7 +128,6 @@ dsp: rhodes-block-prepare
   0.6 params RhodesParams.bar-q@ 6.0 f* f+ params RhodesParams.fund-tau-p f!64
   ( warmth one-pole: corner 700 + warmth*5300 Hz )
   sr 700.0 params RhodesParams.warmth@ 5300.0 f* f+ svf-dc-coeff params RhodesParams.warm-a-p f!64
-  drop2 drop2
 ;
 
 ( ctx state params -- : reset this voice's strike state.  Phases reset
@@ -150,7 +149,6 @@ dsp: rn-reset ( ctx state params -- )
   0.0 state RhodesState.warm-lp-p f!64
   ( a strike from rest: flux starts at the tine's rest position )
   1.0  1.0 params RhodesParams.pickup-off@ dup f* f+  f/  state RhodesState.phi-prev-p f!64
-  drop2 drop
 ;
 
 ( ctx state params -- : log halves of the strike's two pow terms, one
@@ -158,17 +156,14 @@ dsp: rn-reset ( ctx state params -- )
 dsp: rn-log-vel ( ctx state params -- )
   | ctx state params |
   ctx Ctx.vel@ 0.0001 1.0 fclamp log2-approx 1.4 f*  state RhodesState.s-fund-p f!64
-  drop2 drop
 ;
 dsp: rn-ratio ( ctx state params -- )
   | ctx state params |
   130.81 ctx Ctx.hz@ 20.0 20000.0 fclamp f/  state RhodesState.s-tine-p f!64
-  drop2 drop
 ;
 dsp: rn-log-pitch ( ctx state params -- )
   | ctx state params |
   state RhodesState.s-tine@ log2-approx 0.5 f*  state RhodesState.s-tine-p f!64
-  drop2 drop
 ;
 
 ( ctx state params -- : displacement scale and pickup gain.  Displacement
@@ -180,7 +175,6 @@ dsp: rn-velamp ( ctx state params -- )
   state RhodesState.s-fund@ exp2-approx params RhodesParams.drive-amt@ f*
     state RhodesState.vel-amp-p f!64
   params RhodesParams.sr@ 6.283185307179586 ctx Ctx.hz@ f* f/  state RhodesState.emf-norm-p f!64
-  drop2 drop
 ;
 
 ( ctx state params -- : this note's decay.  tau ~ fund-tau * [C3/f]^0.5:
@@ -189,13 +183,11 @@ dsp: rn-tau ( ctx state params -- )
   | ctx state params |
   state RhodesState.s-tine@ exp2-approx params RhodesParams.fund-tau@ f*
     state RhodesState.s-tine-p f!64
-  drop2 drop
 ;
 dsp: rn-decay ( ctx state params -- )
   | ctx state params |
   params RhodesParams.sr@ 0.15915494309189535 state RhodesState.s-tine@ f/ svf-dc-coeff 1.0 swap f-
     state RhodesState.fund-dec-v-p f!64
-  drop2 drop
 ;
 
 ( ctx state params -- : strike this voice. )
@@ -214,7 +206,6 @@ dsp: rhodes-note-on ( ctx state params -- )
 dsp: rhodes-note-off
   | ctx state params |
   state RhodesState.age@ state RhodesState.gate-time-p f!64
-  drop2 drop
 ;
 
 ( state params -- : advance age and all envelopes. The decay multipliers
@@ -238,7 +229,6 @@ dsp: rhodes-env
   f* state RhodesState.tine-env-p f!64
   ( bark transient always decays fast )
   state RhodesState.bark-env@ params RhodesParams.bark-dec-coef@ f* state RhodesState.bark-env-p f!64
-  drop2 drop
 ;
 
 ( state params -- : two fundamental modes (detuned), summed unequally so the
@@ -255,7 +245,6 @@ dsp: rhodes-fund
   state RhodesState.phaseB@
     state RhodesState.note-hz@ params RhodesParams.inv-sr@ f* params RhodesParams.detune-mul@ f* f+ ffrac
     state RhodesState.phaseB-p f!64
-  drop2
 ;
 
 ( state params -- : the 6.267x clamped-free-bar tine overtone — the metallic
@@ -269,7 +258,6 @@ dsp: rhodes-tine
   state RhodesState.tine-phase@
     state RhodesState.note-hz@ params RhodesParams.inv-sr@ f* 6.267 f* f+ ffrac
     state RhodesState.tine-phase-p f!64
-  drop2
 ;
 
 ( state params -- : the electromagnetic pickup.  x is the tine's
@@ -293,7 +281,6 @@ dsp: rhodes-pickup
     params RhodesParams.chiff-amt@ f* state RhodesState.bark-env@ f* state RhodesState.vel@ f* f+
   state RhodesState.s-pre-p f!64
   phi state RhodesState.phi-prev-p f!64
-  drop2 drop2 drop
 ;
 
 ( out state params -- : warmth one-pole lowpass [the amp], then
@@ -305,7 +292,6 @@ dsp: rhodes-warmth
   lp0  state RhodesState.s-pre@ lp0 f-  params RhodesParams.warm-a@ f*  f+ | lp |
   lp state RhodesState.warm-lp-p f!64
   out f@64  lp params RhodesParams.level@ f* f+  out f!64
-  drop2 drop2 drop
 ;
 
 ( io ctx state params -- : one voice tick, staged. Output ACCUMULATES into out.

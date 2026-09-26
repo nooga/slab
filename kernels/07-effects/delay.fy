@@ -52,7 +52,6 @@ dsp: delay-block-prepare
   params DelayParams.time-spl-p f!64
   params DelayParams.damp-hz@ 6.2831853 f* sr f/ 0.0 1.0 fclamp
   params DelayParams.damp-a-p f!64
-  drop2 drop2
 ;
 
 ( ctx state params -- : runs every block.  Seeds the time slew at
@@ -66,7 +65,6 @@ dsp: delay-prepare
   state DelayState.time-z@
   fsel-lt
   state DelayState.time-z-p f!64
-  drop2 drop drop
 ;
 
 ( io ctx state params -- : one delay tick.  Reads happen at wpos - time
@@ -103,5 +101,4 @@ dsp: k-delay-tick
   x  1.0 params DelayParams.mix@ f-  f*
   rd params DelayParams.mix@ f*  f+
   out f!64
-  drop2 drop2 drop2 drop2 drop2 drop2 drop2 drop2 drop2 drop2 drop
 ;

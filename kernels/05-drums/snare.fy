@@ -58,7 +58,6 @@ dsp: snare-prepare
   params SnareParams.svf-f-p f!64
   0.02 sr decay-exp-coeff
   params SnareParams.pitch-coeff-p f!64
-  drop2 drop
 ;
 
 ( state params gate velocity -- : fire the snare when gate is 1. )
@@ -72,7 +71,6 @@ dsp: snare-trigger
   0.5 gate 0.31 state SnareState.phase2@ fsel-lt state SnareState.phase2-p f!64
   0.5 gate 0.7654321 state SnareState.noise-rng@ fsel-lt state SnareState.noise-rng-p f!64
   0.5 gate 1.0 state SnareState.pitch-env@ fsel-lt state SnareState.pitch-env-p f!64
-  drop2 drop2
 ;
 
 ( state params -- : shell - two pitch-pulsed sine modes -> mix. The
@@ -99,7 +97,6 @@ dsp: snare-shell-write
   p2 benv benv f* f* 0.5 f*
   f+ 0.85 f*
   state SnareState.mix-p f!64
-  drop2 drop2 drop2 drop
 ;
 
 ( state params -- : wires - high-passed noise * snap env, added to mix. )
@@ -116,7 +113,6 @@ dsp: snare-snap-write
   params SnareParams.snap-level@ f*
   f+
   state SnareState.mix-p f!64
-  drop2
 ;
 
 ( out state params -- : drive the mix and accumulate into out. )
@@ -130,7 +126,6 @@ dsp: snare-accum
   params SnareParams.level@ f*
   f+
   out f!64
-  drop2 drop
 ;
 
 ( out state params -- : one mono snare sample, staged composition. )

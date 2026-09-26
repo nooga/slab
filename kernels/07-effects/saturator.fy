@@ -75,7 +75,6 @@ dsp: sat-block-prepare
   bias a bb f+ f*  a b bb f* f+  f/
   params SatParams.bias-comp-p f!64
   ( locals: params sr mode a b bias bb = 7 )
-  drop2 drop2 drop2 drop drop2
 ;
 
 ( io ctx state params -- : one saturator sample. )
@@ -100,5 +99,4 @@ dsp: k-sat-tick
   dry  1.0 params SatParams.mix@ f-  f*  f+
   out f!64
   ( locals: out state params in dry s s2 sh dcy toned = 10 )
-  drop2 drop2 drop2 drop2 drop2
 ;

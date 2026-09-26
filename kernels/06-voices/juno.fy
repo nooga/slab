@@ -88,7 +88,6 @@ dsp: juno-block-prepare
   params JunoParams.env-amount@ 8000.0 f* params JunoParams.env-amt-hz-p f!64
   params JunoParams.lfo-vcf@ 3000.0 f* params JunoParams.lfo-vcf-hz-p f!64
   params JunoParams.vibrato@ 0.03 f* params JunoParams.vib-frac-p f!64
-  drop2 drop drop2
 ;
 
 ( ctx state params -- : start this voice.  DCO phases free-run -
@@ -101,14 +100,12 @@ dsp: juno-note-on
   velocity state JunoState.vel-p f!64
   0.0 state JunoState.age-p f!64
   1000000000.0 state JunoState.gate-time-p f!64
-  drop2 drop2 drop
 ;
 
 ( ctx state params -- : release this voice from its current age. )
 dsp: juno-note-off
   | ctx state params |
   state JunoState.age@ state JunoState.gate-time-p f!64
-  drop2 drop
 ;
 
 ( state params -- : advance age + LFO, evaluate the shared envelope. )
@@ -126,7 +123,6 @@ dsp: v-jn-mod
   state JunoState.gate-time@ params JunoParams.rel-s@
   adsr-cap
   state JunoState.env-out-p f!64
-  drop2 drop2 drop
 ;
 
 ( state params -- : DCO - saw + PWM pulse + sub + noise into osc-mix. )
@@ -161,7 +157,6 @@ dsp: v-jn-dco
   rng 2.0 f* 1.0 f-  params JunoParams.noise-level@ f* | osc-nz |
   osc-saw osc-pls f+ osc-sub f+ osc-nz f+ 0.32 f*
   state JunoState.osc-mix-p f!64
-  drop2 drop2 drop2 drop2 drop2 drop drop
 ;
 
 ( state params -- : envelope/LFO/keyboard-modulated cutoff -> ladder g
@@ -180,7 +175,6 @@ dsp: v-jn-cutoff
   ( resonance -> feedback, capped below the linear ladder's blow-up at 4 )
   params JunoParams.resonance@ 3.9 f*
   state JunoState.k-z-p f!64
-  drop2
 ;
 
 ( state params -- : the clean linear ZDF 4-pole ladder. Mild input gain
@@ -194,7 +188,6 @@ dsp: v-jn-ladder
   state JunoState.k-z@
   ladder4-core
   state JunoState.vcf-out-p f!64
-  drop2
 ;
 
 ( state params -- : one-pole highpass on the ladder output: hp = x - lp. )
@@ -206,7 +199,6 @@ dsp: v-jn-hpf
   hz1 state JunoState.hpf-lp-p f!64
   lp hz1 f-
   state JunoState.vcf-out-p f!64
-  drop2 drop2 drop
 ;
 
 ( out state params -- : VCA - env or gate mode - ACCUMULATE into out. )
@@ -220,7 +212,6 @@ dsp: v-jn-vca
   state JunoState.vcf-out@ amp f*
   state JunoState.vel@ f* params JunoParams.level@ f* 3.5 f* f+  ( +11 dB makeup )
   out f!64
-  drop2 drop2
 ;
 
 ( io ctx state params -- : one polyphonic voice tick, staged. )

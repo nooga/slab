@@ -94,7 +94,6 @@ dsp: vb-ap
   p 1.0 f+ | p1 |
   p1 len  p1  p1 len f-  fsel-lt posp f!64
   v g w f* f+
-  nip nip nip nip nip nip nip nip nip nip nip
 ;
 
 ( buf off posp len x g m -- y : allpass with a modulated fractional
@@ -116,7 +115,6 @@ dsp: vb-apm
   p 1.0 f+ | p1 |
   p1 len  p1  p1 len f-  fsel-lt posp f!64
   v g w f* f+
-  nip nip nip nip nip nip nip nip nip nip nip nip nip nip nip nip nip
 ;
 
 ( buf off posp len x -- y : plain delay ring tick. )
@@ -129,7 +127,6 @@ dsp: vb-dl
   p 1.0 f+ | p1 |
   p1 len  p1  p1 len f-  fsel-lt posp f!64
   v
-  nip nip nip nip nip nip nip nip nip
 ;
 
 ( buf off pos len tap -- v : static read tap behind the write head. )
@@ -138,7 +135,6 @@ dsp: vb-tap
   pos tap f- | i |
   i 0.0  i len f+  i fsel-lt | iw |
   buf  off iw f+  f@i
-  nip nip nip nip nip nip nip
 ;
 
 ( --- block-rate fills ----------------------------------------------- )
@@ -169,7 +165,6 @@ dsp: verb-block-prepare
   params VerbParams.damp-a-p f!64
   params VerbParams.mod-rate@ sr f/ params VerbParams.mod-inc-p f!64
   params VerbParams.mod-depth@ scale f* params VerbParams.mod-depth-spl-p f!64
-  drop2 drop drop2
 ;
 
 ( ctx state params -- : per-channel decorrelation, runs every
@@ -194,7 +189,6 @@ dsp: verb-prepare
   chan 0.5 1990.0 2111.0 fsel-lt scale f* state VerbState.tap-5-p f!64
   chan 0.5 187.0  335.0  fsel-lt scale f* state VerbState.tap-6-p f!64
   chan 0.5 1066.0 121.0  fsel-lt scale f* state VerbState.tap-7-p f!64
-  drop2 drop2 drop drop
 ;
 
 ( --- per-sample stages ----------------------------------------------- )
@@ -209,7 +203,6 @@ dsp: verb-pre
   z  v z f-  params VerbParams.bw-a@ f*  f+ | zn |
   zn state VerbState.in-lpf-p f!64
   zn state VerbState.diff-p f!64
-  drop2 drop2 drop2 drop2
 ;
 
 ( state params -- : input diffusion allpasses 1+2, g 0.75. )
@@ -221,7 +214,6 @@ dsp: verb-in-ap12
   buf 12768.0 state VerbState.inap2-pos-p params VerbParams.inap2-len@
     y1 0.75 vb-ap
   state VerbState.diff-p f!64
-  drop2 drop2
 ;
 
 ( state params -- : input diffusion allpasses 3+4, g 0.625. )
@@ -233,7 +225,6 @@ dsp: verb-in-ap34
   buf 14376.0 state VerbState.inap4-pos-p params VerbParams.inap4-len@
     y3 0.625 vb-ap
   state VerbState.diff-p f!64
-  drop2 drop2
 ;
 
 ( state params -- : advance the tank LFO, derive both mod offsets. )
@@ -244,7 +235,6 @@ dsp: verb-lfo
   params VerbParams.mod-depth-spl@ | dep |
   dep 0.5 0.5 ph sine-shape f* f+ f* state VerbState.mlfo-a-p f!64
   dep 0.5 0.5 ph 0.25 f+ sine-shape f* f+ f* state VerbState.mlfo-b-p f!64
-  drop2 drop2
 ;
 
 ( state params -- : branch A front half - feedback from branch B's last
@@ -259,7 +249,6 @@ dsp: verb-tank-a-in
     fba 0.70 state VerbState.mlfo-a@ vb-apm | y |
   buf 17592.0 state VerbState.a-d1-pos-p params VerbParams.a-d1-len@ y vb-dl
   state VerbState.ta-p f!64
-  drop2 drop2 drop
 ;
 
 ( state params -- : branch A back half - damping, decay, second
@@ -274,7 +263,6 @@ dsp: verb-tank-a-out
     zn params VerbParams.decay@ f* 0.50 vb-ap | y |
   buf 37816.0 state VerbState.a-d2-pos-p params VerbParams.a-d2-len@ y vb-dl
   drop
-  drop2 drop2 drop2
 ;
 
 ( state params -- : branch B front half, fed from branch A's last delay. )
@@ -288,7 +276,6 @@ dsp: verb-tank-b-in
     fbb 0.70 state VerbState.mlfo-b@ vb-apm | y |
   buf 52920.0 state VerbState.b-d1-pos-p params VerbParams.b-d1-len@ y vb-dl
   state VerbState.tb-p f!64
-  drop2 drop2 drop
 ;
 
 ( state params -- : branch B back half. )
@@ -302,7 +289,6 @@ dsp: verb-tank-b-out
     zn params VerbParams.decay@ f* 0.50 vb-ap | y |
   buf 75128.0 state VerbState.b-d2-pos-p params VerbParams.b-d2-len@ y vb-dl
   drop
-  drop2 drop2 drop2
 ;
 
 ( out state params in -- : seven output taps, dry/wet mix. )
@@ -328,7 +314,6 @@ dsp: verb-out
   x  1.0 params VerbParams.mix@ f-  f*
   wet params VerbParams.mix@ f*  f+
   out f!64
-  drop2 drop2 drop2 drop
 ;
 
 ( io ctx state params -- : the full plate tick, staged. )

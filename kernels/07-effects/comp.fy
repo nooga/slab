@@ -71,7 +71,6 @@ dsp: comp-block-prepare
   params CompParams.rel-c-p f!64
   params CompParams.makeup-db@ 0.16609640474436813 f* exp2-approx
   params CompParams.makeup-lin-p f!64
-  drop2 drop drop2
 ;
 
 
@@ -84,7 +83,6 @@ dsp: comp-detect
   e d  params CompParams.atk-c@  params CompParams.rel-c@  fsel-lt | c |
   d  e d f-  c f*  f+
   state CompState.env-p f!64
-  drop2 drop2 drop2
 ;
 
 ( state params -- : envelope into log2 units. )
@@ -92,7 +90,6 @@ dsp: comp-level
   | state params |
   state CompState.env@ 0.000001 1000000.0 fclamp log2-approx
   state CompState.lvl-l2-p f!64
-  drop2
 ;
 
 ( state params -- : soft-knee overshoot and log2 gain. )
@@ -106,7 +103,6 @@ dsp: comp-knee
   l  0.0 half f-  0.0  sel  fsel-lt
   params CompParams.slope@ f*
   state CompState.grl2-p f!64
-  drop2 drop2 drop2 drop
 ;
 
 ( state params -- : back to linear, plus the dB meter cell. )
@@ -116,7 +112,6 @@ dsp: comp-gain
   state CompState.gain-p f!64
   state CompState.grl2@ -6.0205999132796239 f*
   state CompState.gr-db-p f!64
-  drop2
 ;
 
 ( out state params in -- : apply gain + makeup, parallel mix. )
@@ -127,7 +122,6 @@ dsp: comp-apply
   x  1.0 params CompParams.mix@ f-  f*
   wet params CompParams.mix@ f*  f+
   out f!64
-  drop2 drop2 drop2
 ;
 
 ( io ctx state params -- : the full compressor tick, staged. )

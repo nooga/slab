@@ -29,7 +29,6 @@ dsp: fm-op-step
   ( advance phase = frac(phase + inc) )
   state FmOpState.phase@ inc f+ ffrac state FmOpState.phase-p f!64
   ( out remains on top; drop the six named slots below it )
-  nip nip nip nip nip nip
 ;
 
 ( out state inc mod level fb -- : raw probe entry, one operator sample to out.
@@ -39,5 +38,4 @@ dsp: k-fm-op
   | out state inc mod level fb |
   state inc mod level fb fm-op-step
   out f!64
-  drop2 drop2 drop2
 ;

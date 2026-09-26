@@ -69,7 +69,6 @@ dsp: sampler-block-prepare
   params SamplerParams.loop-end@ len f*  ls 1.0 f+  len  fclamp | le |
   le params SamplerParams.loop-end-spl-p f!64
   le ls f- params SamplerParams.loop-len-spl-p f!64
-  drop2 drop2 drop drop2
 ;
 
 ( ctx state params -- : trigger playback from the start point. )
@@ -83,14 +82,12 @@ dsp: sampler-note-on
   0.0 state SamplerState.age-p f!64
   1000000000.0 state SamplerState.gate-time-p f!64
   velocity state SamplerState.vel-p f!64
-  drop2 drop2 drop
 ;
 
 ( ctx state params -- : release the amp envelope. )
 dsp: sampler-note-off
   | ctx state params |
   state SamplerState.age@ state SamplerState.gate-time-p f!64
-  drop2 drop
 ;
 
 ( state params -- : interpolated read at phase, then advance with loop
@@ -114,7 +111,6 @@ dsp: smp-read
   ph2 len  ph2  len  fsel-lt | ph-shot |
   params SamplerParams.loop-on@ 0.5  ph-shot  ph-loop  fsel-lt
   state SamplerState.phase-p f!64
-  drop2 drop2 drop2 drop2 drop2 drop2 drop
 ;
 
 ( out state params -- : cap-ADSR amp, accumulate into out. )
@@ -130,7 +126,6 @@ dsp: smp-amp
   state SamplerState.samp@ env f*  state SamplerState.vel@ f*  params SamplerParams.level@ f*
   f+
   out f!64
-  drop2 drop2 drop
 ;
 
 ( io ctx state params -- : one sampler voice tick, staged. )

@@ -67,7 +67,6 @@ dsp: hat-prepare
   params HatParams.bp-f-p f!64
   5200.0 params HatParams.tone@ f* sr svf2-coeff
   params HatParams.hp-f-p f!64
-  drop2 drop2
 ;
 
 ( state params gate velocity -- : closed hat; chokes the open hat. )
@@ -77,7 +76,6 @@ dsp: hat-ch-trigger
   state HatState.ch-vel-p f!64
   0.5 gate 1.0 state HatState.ch-env@ fsel-lt state HatState.ch-env-p f!64
   0.5 gate 0.0 state HatState.oh-env@ fsel-lt state HatState.oh-env-p f!64
-  drop2 drop2
 ;
 
 ( state params gate velocity -- : open hat. )
@@ -86,7 +84,6 @@ dsp: hat-oh-trigger
   0.5 gate  velocity 0.0 1.0 fclamp  state HatState.oh-vel@  fsel-lt
   state HatState.oh-vel-p f!64
   0.5 gate 1.0 state HatState.oh-env@ fsel-lt state HatState.oh-env-p f!64
-  drop2 drop2
 ;
 
 ( phase-ptr dt -- value : advance a naive square oscillator one sample. )
@@ -95,7 +92,6 @@ dsp: square-step
   php f@64 dt f+ ffrac
   dup php f!64
   0.5 1.0 -1.0 fsel-lt
-  nip nip
 ;
 
 ( state params -- : six-square inharmonic sum -> metal scratch. )
@@ -109,7 +105,6 @@ dsp: hat-metal-write
   state HatState.ph6-p params HatParams.dt6@ square-step f+
   0.1666666666666667 f*
   state HatState.metal-p f!64
-  drop2
 ;
 
 ( state params -- : band-pass then high-pass the core, in place. )
@@ -119,7 +114,6 @@ dsp: hat-filter-write
   | bp |
   state HatState.hp-lp-p  bp  params HatParams.hp-f@  1.0  svf2-hp-step
   state HatState.metal-p f!64
-  drop2 drop
 ;
 
 ( out state params -- : core * [ch env + oh env], into out. )
@@ -136,7 +130,6 @@ dsp: hat-accum
   params HatParams.level@ f*
   f+
   out f!64
-  drop2 drop
 ;
 
 ( out state params -- : one mono hat sample, staged composition. )

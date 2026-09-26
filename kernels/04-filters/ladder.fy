@@ -61,9 +61,6 @@ dsp: ladder4-core
   y4f v4 f+ lstate LadderState.s4-p f!64
   y4f
   ( leave y4f; nip away the 25 bound locals beneath it )
-  nip nip nip nip nip nip nip nip nip nip
-  nip nip nip nip nip nip nip nip nip nip
-  nip nip nip nip nip
 ;
 
 ( out lstate input g k -- : probe/raw entry - write one ladder sample. )
@@ -71,5 +68,4 @@ dsp: k-ladder4
   | out lstate input g k |
   lstate input g k ladder4-core
   out f!64
-  drop2 drop2 drop
 ;

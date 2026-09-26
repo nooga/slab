@@ -110,5 +110,4 @@ dsp: fm86-derive
   derive-data rb 45.0 f+ f@i feedback f* params Fm86Params.fb3-p f!64
   derive-data rb 46.0 f+ f@i feedback f* params Fm86Params.fb4-p f!64
   derive-data rb 47.0 f+ f@i feedback f* params Fm86Params.fb5-p f!64
-  drop2 drop2 drop drop2
 ;

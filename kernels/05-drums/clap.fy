@@ -49,7 +49,6 @@ dsp: clap-prepare
   params ClapParams.svf-f-p f!64
   1.0  params ClapParams.spread-s@ 0.003 0.05 fclamp sr f*  f/
   params ClapParams.spread-inc-p f!64
-  drop2 drop
 ;
 
 ( state params gate velocity -- : fire the clap when gate is 1. )
@@ -61,7 +60,6 @@ dsp: clap-trigger
   0.5 gate 0.0 state ClapState.repeat-phase@ fsel-lt state ClapState.repeat-phase-p f!64
   0.5 gate 3.0 state ClapState.repeats-left@ fsel-lt state ClapState.repeats-left-p f!64
   0.5 gate 0.5551212 state ClapState.noise-rng@ fsel-lt state ClapState.noise-rng-p f!64
-  drop2 drop2
 ;
 
 ( state params -- : advance the retrigger envelope machinery in place. )
@@ -84,7 +82,6 @@ dsp: clap-env-write
   state ClapState.env-p f!64
   rp trig f- state ClapState.repeat-phase-p f!64
   reps trig f- state ClapState.repeats-left-p f!64
-  drop2 drop2 drop2
 ;
 
 ( out state params -- : band-passed noise * env, driven into out. )
@@ -103,7 +100,6 @@ dsp: clap-accum
   params ClapParams.level@ f*
   f+
   out f!64
-  drop2 drop
 ;
 
 ( out state params -- : one mono clap sample, staged composition. )

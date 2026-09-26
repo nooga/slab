@@ -33,7 +33,6 @@ dsp: sin-approx
   s2 f* 1.0 f+
   r f*
   ( bindings: w x r s2 = 4 )
-  nip nip nip nip
 ;
 
 ( w -- cos w : valid for w in [0, pi]. )
@@ -52,9 +51,8 @@ dsp: cos-approx
   s2 f* 1.0 f+
   sgn f*
   ( bindings: w x r sgn s2 = 5 )
-  nip nip nip nip nip
 ;
 
 ( out w -- : raw probe entries for the sweep grids. )
-dsp: k-sin | out w | w sin-approx out f!64 drop2 ;
-dsp: k-cos | out w | w cos-approx out f!64 drop2 ;
+dsp: k-sin | out w | w sin-approx out f!64 ;
+dsp: k-cos | out w | w cos-approx out f!64 ;

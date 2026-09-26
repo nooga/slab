@@ -18,14 +18,12 @@ dsp: svf-g
   p f* 0.3333333333333333 f+
   p f* 1.0 f+
   th f*
-  nip nip nip nip
 ;
 
 ( resonance -- damping : clamp(0.58/(1+resonance*6.2), 0.035, 100). )
 dsp: svf-damping
   | resonance |
   0.58  1.0 resonance 6.2 f* f+  f/  0.035 100.0 fclamp
-  nip
 ;
 
 ( os-rate f -- coeff : 1 - exp(-2pi*f/osr) ~ a*(1 + a*(-1/2 + a/6)). )
@@ -36,5 +34,4 @@ dsp: svf-dc-coeff
   -0.5  a 0.1666666666666667 f*  f+
   a f* 1.0 f+
   a f*
-  nip nip nip
 ;

@@ -20,7 +20,6 @@ dsp: raw-osc-prepare
   f/
   params RawOscParams.inv-sample-rate-p
   f!64
-  drop2 drop drop
 ;
 
 ( ctx state params -- : start a note and reset phase. )
@@ -36,7 +35,6 @@ dsp: raw-osc-note-on
   0.0
   state RawOscState.phase-p
   f!64
-  drop2 drop2 drop
 ;
 
 ( ctx state params -- : stop the note immediately. )
@@ -45,7 +43,6 @@ dsp: raw-osc-note-off
   0.0
   params RawOscParams.amp-p
   f!64
-  drop2 drop
 ;
 
 ( io ctx state params -- : render one mono saw sample. )
@@ -70,8 +67,6 @@ dsp: raw-osc-render
   f*
   out
   f!64
-  drop
-  drop2 drop drop
 ;
 
 include "../lib/manifest.fy"

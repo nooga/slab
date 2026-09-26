@@ -58,7 +58,6 @@ dsp: gate-block-prepare
   params GateParams.det-rel-c-p f!64
   params GateParams.hold-s@ sr f*
   params GateParams.hold-spl-p f!64
-  drop2 drop2
 ;
 
 
@@ -70,7 +69,6 @@ dsp: gate-detect
   state GateState.level@ | lv |
   lv d  d  d  lv d f- params GateParams.det-rel-c@ f* f+  fsel-lt
   state GateState.level-p f!64
-  drop2 drop2 drop
 ;
 
 ( state params -- : open/hold/close decision -> target gain + hold counter.
@@ -86,7 +84,6 @@ dsp: gate-decide
   state GateState.tgt-p f!64
   open 0.5  hold 1.0 f- 0.0 0.0 hold 1.0 f- fsel-lt  params GateParams.hold-spl@  fsel-lt
   state GateState.hold-ctr-p f!64
-  drop2 drop2 drop2
 ;
 
 ( state params -- : slew the gain toward the target [attack opening,
@@ -98,7 +95,6 @@ dsp: gate-slew
   g target params GateParams.atk-c@ params GateParams.rel-c@ fsel-lt | c |
   target  g target f-  c f*  f+
   state GateState.gain-p f!64
-  drop2 drop2 drop
 ;
 
 ( out state params in -- : apply the gate gain. )
@@ -106,7 +102,6 @@ dsp: gate-apply
   | out state params in |
   in Io.in-l@ state GateState.gain@ f*
   out f!64
-  drop2 drop2
 ;
 
 ( io ctx state params -- : the full gate tick, staged. )

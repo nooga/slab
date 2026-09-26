@@ -19,7 +19,6 @@ dsp: sine-shape
   u2 f* -5.1664017645052089 f+
   u2 f* 3.1415278977538725 f+
   u f*
-  nip nip nip
 ;
 
 ( out phase -- : raw probe entry for the shape grid. )
@@ -27,5 +26,4 @@ dsp: k-sine-shape
   | out phase |
   phase sine-shape
   out f!64
-  drop2
 ;

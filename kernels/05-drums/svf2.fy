@@ -18,7 +18,6 @@ dsp: svf2-coeff
   fc 20.0 7500.0 fclamp  2.0 sr f*  f/
   sine-shape
   2.0 f*
-  nip nip
 ;
 
 ( state in f q -- band : one band-pass step, state advanced in place. )
@@ -33,7 +32,6 @@ dsp: svf2-bp-step
   lp state Svf2State.lp-p f!64
   bp state Svf2State.bp-p f!64
   bp
-  nip nip nip nip nip nip nip
 ;
 
 ( state in f q -- high : one high-pass step, state advanced in place. )
@@ -47,5 +45,4 @@ dsp: svf2-hp-step
   state Svf2State.bp-p f!64
   lp state Svf2State.lp-p f!64
   hp
-  nip nip nip nip nip nip
 ;

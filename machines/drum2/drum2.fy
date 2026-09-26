@@ -47,7 +47,6 @@ dsp: drum2-prepare
   state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+ HatState.size ptr+
   params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+ HatParams.size ptr+
   sr kick-prepare
-  drop2 drop drop
 ;
 
 ( ctx state params -- : gate each slot's trigger by the
@@ -86,7 +85,6 @@ dsp: drum2-note-on
   params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+ HatParams.size ptr+
   pc 9.5  8.5 pc 1.0 0.0 fsel-lt  0.0  fsel-lt
   vel kick-trigger
-  drop2 drop2 drop2 drop drop
 ;
 
 ( --- render stages: region base + voice helper, accumulate into out.
@@ -95,19 +93,16 @@ dsp: drum2-note-on
 dsp: d2-snare-shell
   | state params |
   state KickState.size ptr+  params KickParams.size ptr+  snare-shell-write
-  drop2
 ;
 
 dsp: d2-snare-snap
   | state params |
   state KickState.size ptr+  params KickParams.size ptr+  snare-snap-write
-  drop2
 ;
 
 dsp: d2-snare-accum
   | out state params |
   out  state KickState.size ptr+  params KickParams.size ptr+  snare-accum
-  drop2 drop
 ;
 
 dsp: d2-clap-env
@@ -115,7 +110,6 @@ dsp: d2-clap-env
   state KickState.size ptr+ SnareState.size ptr+
   params KickParams.size ptr+ SnareParams.size ptr+
   clap-env-write
-  drop2
 ;
 
 dsp: d2-clap-accum
@@ -124,7 +118,6 @@ dsp: d2-clap-accum
   state KickState.size ptr+ SnareState.size ptr+
   params KickParams.size ptr+ SnareParams.size ptr+
   clap-accum
-  drop2 drop
 ;
 
 dsp: d2-hat-metal
@@ -132,7 +125,6 @@ dsp: d2-hat-metal
   state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+
   params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+
   hat-metal-write
-  drop2
 ;
 
 dsp: d2-hat-filter
@@ -140,7 +132,6 @@ dsp: d2-hat-filter
   state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+
   params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+
   hat-filter-write
-  drop2
 ;
 
 dsp: d2-hat-accum
@@ -149,7 +140,6 @@ dsp: d2-hat-accum
   state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+
   params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+
   hat-accum
-  drop2 drop
 ;
 
 dsp: d2-tom-osc
@@ -157,7 +147,6 @@ dsp: d2-tom-osc
   state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+ HatState.size ptr+
   params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+ HatParams.size ptr+
   kick-osc-write
-  drop2
 ;
 
 dsp: d2-tom-accum
@@ -166,7 +155,6 @@ dsp: d2-tom-accum
   state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+ HatState.size ptr+
   params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+ HatParams.size ptr+
   kick-accum
-  drop2 drop
 ;
 
 ( out state params -- : drive the summed kit and scale - overwrites out. )
@@ -179,7 +167,6 @@ dsp: d2-master
   k-tanh-rational-shape-dsp2
   master Drum2Master.level@ f*
   out f!64
-  drop2 drop2
 ;
 
 ( io ctx state params -- : one summed mono drum sample. )

@@ -72,7 +72,6 @@ dsp: funk-block-prepare
   0.002 sr decay-exp-coeff params FunkParams.gate-c-p f!64
   params FunkParams.speed@  1.0 gz 0.75 f* f-  f*  0.005 2.0 fclamp  sr decay-exp-coeff
   params FunkParams.rel-c-p f!64
-  drop2 drop2 drop2
 ;
 
 ( state params in -- : envelope follower on the rectified input. )
@@ -84,7 +83,6 @@ dsp: fo-env
   e tgt  params FunkParams.atk-c@  params FunkParams.rel-c@  fsel-lt | c |
   tgt  e tgt f-  c f*  f+
   state FunkState.env-p f!64
-  drop2 drop2 drop2 drop
 ;
 
 ( state params in -- : drive + envelope-swept cutoff for this sample; the
@@ -97,7 +95,6 @@ dsp: fo-filt
   ( drive into tanh, then the filter's own unity input clip )
   in Io.in-l@ params FunkParams.drive@ f* k-tanh-rational-shape-dsp2 k-tanh-rational-shape-dsp2
   state FunkState.fx-p f!64
-  drop2 drop2
 ;
 
 ( state params -- : one of four saturating lowpass substeps per sample
@@ -108,14 +105,12 @@ dsp: fo-sub ( state params -- )
   state FunkState.fx@ state FunkState.fg@ params FunkParams.damp@
   tpt-svf-lp-sat-step
   state FunkState.wet-p f!64
-  drop2
 ;
 
 ( state params -- : output clip after the substeps, tanh[1.8*lp]. )
 dsp: fo-sat ( state params -- )
   | state params |
   state FunkState.wet@ 1.8 f* k-tanh-rational-shape-dsp2 state FunkState.wet-p f!64
-  drop2
 ;
 
 ( out state params in -- : envelope gate on the wet path, dry/wet mix. )
@@ -131,7 +126,6 @@ dsp: fo-out
   x  1.0 params FunkParams.mix@ f-  f*
   wet params FunkParams.mix@ f*  f+
   out f!64
-  drop2 drop2 drop2 drop2 drop2
 ;
 
 ( io ctx state params -- : one FUNK OVERLOAD tick, staged. )
