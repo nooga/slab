@@ -18,6 +18,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     exe_mod.addImport("fy", fy_mod);
+    exe_mod.addImport("tamzen", b.createModule(.{ .root_source_file = b.path("vendor/tamzen/tamzen.zig") }));
 
     const exe = b.addExecutable(.{
         .name = "slab",
