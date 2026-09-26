@@ -3973,6 +3973,15 @@ pub const Fy = struct {
                         while (self.pos < self.code.len and isDigit(self.code[self.pos])) {
                             self.pos += 1;
                         }
+                        // Optional exponent: 1.5e-05, 2.2e308
+                        if (self.pos < self.code.len and (self.code[self.pos] == 'e' or self.code[self.pos] == 'E')) {
+                            var p = self.pos + 1;
+                            if (p < self.code.len and (self.code[p] == '-' or self.code[p] == '+')) p += 1;
+                            if (p < self.code.len and isDigit(self.code[p])) {
+                                while (p < self.code.len and isDigit(self.code[p])) p += 1;
+                                self.pos = p;
+                            }
+                        }
                         const fval = std.fmt.parseFloat(f64, self.code[start..self.pos]) catch 0.0;
                         return Token{ .Float = fval };
                     }

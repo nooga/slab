@@ -61,6 +61,8 @@ test "Basic expressions and built-in words" {
         .{ .input = "-0.5 fclamp01 0.0 f=", .expected = Fy.makeInt(1) },
         .{ .input = "1.5 fclamp01 1.0 f=", .expected = Fy.makeInt(1) },
         .{ .input = "5.0 2.0 4.0 fclamp 4.0 f=", .expected = Fy.makeInt(1) },
+        .{ .input = "1.5e-3 0.0015 f=", .expected = Fy.makeInt(1) },
+        .{ .input = "2.5E+2 250.0 f=", .expected = Fy.makeInt(1) },
         .{ .input = "1.25 fwrap01 0.25 f=", .expected = Fy.makeInt(1) },
         .{ .input = "-0.25 fwrap01 0.75 f=", .expected = Fy.makeInt(1) },
         .{ .input = "2.5 fneg -2.5 f=", .expected = Fy.makeInt(1) },
