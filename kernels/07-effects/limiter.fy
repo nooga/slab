@@ -2,7 +2,7 @@
   LUFS metering.
 
   Gain reduction is computed from the host detector trace [max abs of
-  both input channels, manifest detector-cell] so L and R always receive
+  both input channels, io.det] so L and R always receive
   identical gain and the stereo image stays put.  The audio is delayed
   through a host ring [manifest buffer] by the lookahead time, while the
   gain envelope is computed from the *un-delayed* detector with an attack
@@ -25,11 +25,10 @@
   All level/loudness logarithms live in the Zig panel; the kernel stays
   in linear units. )
 
+include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../00-primitives/pow2.fy"
 
 ustruct: LimState
-  f64 det       ( host detector buffer pointer - max abs both ch )
-  f64 idx       ( sample index into det, zeroed per block )
   f64 dline     ( host lookahead ring base pointer )
   f64 dline-len ( ring element count )
   f64 wpos      ( ring write head )
@@ -67,9 +66,10 @@ ustruct: LimParams
   f64 k2b0 f64 k2b1 f64 k2b2 f64 k2a1 f64 k2a2
 ;
 
-( params sample-rate -- : block-rate derived fill. )
+( ctx state params -- : block-rate derived fill. )
 dsp: lim-block-prepare
-  | params sr |
+  | ctx state params |
+  ctx Ctx.sr@ | sr |
   params LimParams.gain-db@ 0.16609640474436813 f* exp2-approx
   params LimParams.gain-lin-p f!64
   params LimParams.ceil-db@ 0.16609640474436813 f* exp2-approx
@@ -84,30 +84,27 @@ dsp: lim-block-prepare
   params LimParams.msm-c-p f!64
   1.0 3.0 sr f* f/
   params LimParams.mss-c-p f!64
-  drop2 drop
+  drop2 drop drop2
 ;
 
-( state params sample-rate -- : per block - rewind detector index, reset
+( ctx state params -- : per block - reset
   block meter accumulators, seed gain to unity on fresh [zeroed] state. )
 dsp: lim-prepare
-  | state params sr |
-  0.0 state LimState.idx-p f!64
+  | ctx state params |
+  ctx Ctx.sr@ | sr |
   1.0 state LimState.gmin-p f!64
   0.0 state LimState.ipk-p f!64
   0.0 state LimState.opk-p f!64
   state LimState.gain@ 0.001 1.0 state LimState.gain@ fsel-lt
   state LimState.gain-p f!64
-  drop2 drop
+  drop2 drop drop
 ;
 
 ( state params -- : gain computer.  Reads the shared detector trace,
   applies input drive, derives the target gain and slews the envelope. )
 dsp: lim-gain
-  | state params |
-  state LimState.det-p p@64 | det |
-  state LimState.idx@ | i |
-  det i f@i params LimParams.gain-lin@ f* | d |
-  i 1.0 f+ state LimState.idx-p f!64
+  | io state params |
+  io Io.det@ params LimParams.gain-lin@ f* | d |
   ( dc = max(d, 1e-9) )
   d 0.000000001 0.000000001 d fsel-lt | dc |
   ( gt = min(1, ceil/dc) )
@@ -122,7 +119,7 @@ dsp: lim-gain
   state LimState.gmin@ g state LimState.gmin@ g fsel-lt
   state LimState.gmin-p f!64
   ( drop all 11 bound locals: state params det i d dc raw gt g0 c g )
-  drop2 drop2 drop2 drop2 drop2 drop
+  drop2 drop2 drop2 drop2 drop2
 ;
 
 ( out state params in -- : input drive, lookahead delay, gain + ceiling
@@ -131,7 +128,7 @@ dsp: lim-io
   | out state params in |
   state LimState.dline-p p@64 | buf |
   state LimState.dline-len@ | len |
-  in f@64 params LimParams.gain-lin@ f* | xg |
+  in Io.in-l@ params LimParams.gain-lin@ f* | xg |
   state LimState.wpos@ | w |
   xg buf w f!i
   ( delayed read at w - look, wrapped into 0..len )
@@ -178,11 +175,11 @@ dsp: lim-lufs
   drop2 drop2 drop2
 ;
 
-( out state params in -- : the full limiter tick, staged so no single
+( io ctx state params -- : the full limiter tick, staged so no single
   word blows the register budget. )
 dsp: k-lim-tick
-  | out state params in |
-  state params call: lim-gain
-  out state params in call: lim-io
+  | io ctx state params |
+  io state params call: lim-gain
+  io state params io call: lim-io
   state params call: lim-lufs
 ;

@@ -18,8 +18,6 @@ include "../lib/manifest.fy"
   DelayParams.size params-size!
   190.0 panel-w!
 
-  ( host writes ctx tempo into params here each block, for SYNC mode )
-  DelayParams.tempo-bpm tempo-cell
 
   ( 1.6 s ring per channel; TIME tops out at 1.5 s with headroom )
   "dline" DelayState.buf DelayState.buf-len 1.6 buffer

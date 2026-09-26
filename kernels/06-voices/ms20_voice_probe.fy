@@ -4,6 +4,7 @@
   contiguous note-event segments. Zig updates note params at event boundaries;
   fy owns the per-sample oscillator/filter/VCA/DC composition. )
 
+include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../01-oscillators/primitives/phase.fy"
 include "../01-oscillators/primitives/blep.fy"
 include "../01-oscillators/primitives/shapes.fy"
@@ -85,20 +86,22 @@ ustruct: Ms20VoiceParams
   f64 eg-pitch         ( @352, filter EG -> VCO pitch intensity )
 ;
 
-( state params sample-rate -- : update sample-rate derived params. )
+( ctx state params -- : update sample-rate derived params. )
 dsp: ms20-voice-prepare
-  | state params sample-rate |
+  | ctx state params |
+  ctx Ctx.sr@ | sample-rate |
   1.0
   sample-rate
   f/
   params Ms20VoiceParams.inv-sample-rate-p
   f!64
-  drop2 drop
+  drop2 drop drop
 ;
 
-( state params hz velocity -- : start a mono note and reset oscillator age. )
+( ctx state params -- : start a mono note and reset oscillator age. )
 dsp: ms20-voice-note-on
-  | state params hz velocity |
+  | ctx state params |
+  ctx Ctx.hz@ ctx Ctx.vel@ | hz velocity |
   hz
   params Ms20VoiceParams.note-hz-p
   f!64
@@ -117,16 +120,16 @@ dsp: ms20-voice-note-on
   0.0
   state Ms20VoiceState.age-p
   f!64
-  drop2 drop2
+  drop2 drop2 drop
 ;
 
-( state params -- : release the amp/filter envelopes from current age. )
+( ctx state params -- : release the amp/filter envelopes from current age. )
 dsp: ms20-voice-note-off
-  | state params |
+  | ctx state params |
   state Ms20VoiceState.age@
   params Ms20VoiceParams.gate-time-p
   f!64
-  drop2
+  drop2 drop
 ;
 
 ( state params -- value : advance note age and return the new age in seconds. )
@@ -477,13 +480,13 @@ dsp: v-vca-stage
   drop2 drop
 ;
 
-( out state params -- : render one mono voice sample by composing the stages.
+( io ctx state params -- : render one mono voice sample by composing the stages.
   A `call:` boundary gives each stage a fresh register budget. )
 dsp: k-ms20-voice-sample
-  | out state params |
-  state params       call: v-mod-stage
-  state params       call: v-osc-stage
-  state params       call: v-hpf-stage
-  state params       call: v-filt-stage
-  out state params   call: v-vca-stage
+  | io ctx state params |
+  state params call: v-mod-stage
+  state params call: v-osc-stage
+  state params call: v-hpf-stage
+  state params call: v-filt-stage
+  io state params call: v-vca-stage
 ;

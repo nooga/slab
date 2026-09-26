@@ -14,6 +14,7 @@
   C = kick, D = snare, D# = clap, F# = closed hat, A = tom, A# = open
   hat. The note map advertises the canonical GM octave. )
 
+include "../../kernels/00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../../kernels/05-drums/kick.fy"
 include "../../kernels/05-drums/snare.fy"
 include "../../kernels/05-drums/clap.fy"
@@ -29,9 +30,10 @@ ustruct: Drum2Master
   f64 level
 ;
 
-( state params sample-rate -- : fill every slot's derived coefficients. )
+( ctx state params -- : fill every slot's derived coefficients. )
 dsp: drum2-prepare
-  | state params sr |
+  | ctx state params |
+  ctx Ctx.sr@ | sr |
   state params sr kick-prepare
   state KickState.size ptr+
   params KickParams.size ptr+
@@ -45,13 +47,14 @@ dsp: drum2-prepare
   state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+ HatState.size ptr+
   params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+ HatParams.size ptr+
   sr kick-prepare
-  drop2 drop
+  drop2 drop drop
 ;
 
-( state params pitch velocity -- : gate each slot's trigger by the
+( ctx state params -- : gate each slot's trigger by the
   note's pitch class - C kick, D snare, D# clap, F# CH, A tom, A# OH. )
 dsp: drum2-note-on
-  | state params pitch velocity |
+  | ctx state params |
+  ctx Ctx.hz@ ctx Ctx.vel@ | pitch velocity |
   pitch 12.0 f/ ffrac 12.0 f*
   | pc |
   ( accent: blend the incoming velocity toward full force )
@@ -83,7 +86,7 @@ dsp: drum2-note-on
   params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+ HatParams.size ptr+
   pc 9.5  8.5 pc 1.0 0.0 fsel-lt  0.0  fsel-lt
   vel kick-trigger
-  drop2 drop2 drop2 drop
+  drop2 drop2 drop2 drop drop
 ;
 
 ( --- render stages: region base + voice helper, accumulate into out.
@@ -179,22 +182,22 @@ dsp: d2-master
   drop2 drop2
 ;
 
-( out state params -- : one summed mono drum sample. )
+( io ctx state params -- : one summed mono drum sample. )
 dsp: k-drum2-render
-  | out state params |
+  | io ctx state params |
   state params call: kick-osc-write
-  out state params call: kick-accum
+  io state params call: kick-accum
   state params call: d2-snare-shell
   state params call: d2-snare-snap
-  out state params call: d2-snare-accum
+  io state params call: d2-snare-accum
   state params call: d2-clap-env
-  out state params call: d2-clap-accum
+  io state params call: d2-clap-accum
   state params call: d2-hat-metal
   state params call: d2-hat-filter
-  out state params call: d2-hat-accum
+  io state params call: d2-hat-accum
   state params call: d2-tom-osc
-  out state params call: d2-tom-accum
-  out state params call: d2-master
+  io state params call: d2-tom-accum
+  io state params call: d2-master
 ;
 
 : manifest

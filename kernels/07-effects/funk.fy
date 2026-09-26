@@ -18,6 +18,7 @@
   Per-channel effect [src/machines/fy_raw_machine.zig runs L and R
   through separate state regions].  Probe case: funk-render. )
 
+include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../05-drums/decay.fy"
 include "../04-filters/ms20_svf.fy"
 include "../02-shapers/tanh_table.fy"
@@ -49,11 +50,12 @@ ustruct: FunkParams
   f64 gate-c     ( gate smoothing retention coeff )
 ;
 
-( params sample-rate -- : map the macro to the whole effect.  Every
+( ctx state params -- : map the macro to the whole effect.  Every
   derived value is bound or written once; reads use the live funk knob,
   never a just-stored derived param [deferred stores flush at word end]. )
 dsp: funk-block-prepare
-  | params sr |
+  | ctx state params |
+  ctx Ctx.sr@ | sr |
   4.0 sr f* params FunkParams.osr-p f!64
   params FunkParams.freq@ params FunkParams.base-hz-p f!64
   params FunkParams.funk@ | f |
@@ -67,13 +69,13 @@ dsp: funk-block-prepare
   0.002 sr decay-exp-coeff params FunkParams.gate-c-p f!64
   params FunkParams.speed@  1.0 gz 0.75 f* f-  f*  0.005 2.0 fclamp  sr decay-exp-coeff
   params FunkParams.rel-c-p f!64
-  drop2 drop2
+  drop2 drop2 drop2
 ;
 
 ( state params in -- : envelope follower on the rectified input. )
 dsp: fo-env
   | state params in |
-  in f@64 | x |
+  in Io.in-l@ | x |
   x 0.0  0.0 x f-  x  fsel-lt | tgt |
   state FunkState.env@ | e |
   e tgt  params FunkParams.atk-c@  params FunkParams.rel-c@  fsel-lt | c |
@@ -88,7 +90,7 @@ dsp: fo-filt
   state FunkState.env@ params FunkParams.sweep-hz@ f*
   params FunkParams.base-hz@ f+ | cutoff |
   cutoff params FunkParams.osr@ svf-g | g |
-  in f@64 params FunkParams.drive@ f* k-tanh-rational-shape-dsp2 | xd |
+  in Io.in-l@ params FunkParams.drive@ f* k-tanh-rational-shape-dsp2 | xd |
   state FunkState.ic1-p state FunkState.ic2-p
   xd
   g params FunkParams.damp@ 1.0
@@ -106,17 +108,17 @@ dsp: fo-out
   gt  gg0 gt f-  params FunkParams.gate-c@ f*  f+ | gg |
   gg state FunkState.gate-gain-p f!64
   state FunkState.wet@ gg f* params FunkParams.wet-gain@ f* | wet |
-  in f@64 | x |
+  in Io.in-l@ | x |
   x  1.0 params FunkParams.mix@ f-  f*
   wet params FunkParams.mix@ f*  f+
   out f!64
   drop2 drop2 drop2 drop2 drop2
 ;
 
-( out state params in -- : one FUNK OVERLOAD tick, staged. )
+( io ctx state params -- : one FUNK OVERLOAD tick, staged. )
 dsp: k-funk-tick
-  | out state params in |
-  state params in call: fo-env
-  state params in call: fo-filt
-  out state params in call: fo-out
+  | io ctx state params |
+  state params io call: fo-env
+  state params io call: fo-filt
+  io state params io call: fo-out
 ;

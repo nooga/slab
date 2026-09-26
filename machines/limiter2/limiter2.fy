@@ -21,7 +21,6 @@ include "../lib/manifest.fy"
   "look" LimState.dline LimState.dline-len 0.012 buffer
 
   ( stereo-linked detector: host writes the max-abs-both-channels trace )
-  LimState.det detector-cell
 
   ( K-weighting [BS.1770-4 @ 48 kHz] - stage 1 high shelf )
   LimParams.k1b0  1.53512485958697   const-f64

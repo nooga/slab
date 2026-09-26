@@ -3,7 +3,7 @@
 
   Detection reads the host-filled detector buffer - per sample the max
   of abs of both input channels - so L and R always receive identical
-  gain and the stereo image never wobbles [manifest detector-cell].
+  gain and the stereo image never wobbles [io.det, kernel ABI].
   The envelope follower is a branchless attack/release one-pole in the
   linear domain; the gain computer works in log2 units via the pow2
   primitives:
@@ -15,17 +15,15 @@
     gain = exp2 [over * [1/ratio - 1]]
 
   Gain stages are split so the inlined log2/exp2 ladders never share one
-  word's register budget.  comp-prepare zeroes the detector index every
-  block - prepare runs once per block per channel.  Parallel MIX blends
+  word's register budget.  Parallel MIX blends
   the compressed signal with dry for New-York-style drum smash.
   Probe case: comp-render - static curve + timing vs a Zig reference. )
 
+include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../00-primitives/pow2.fy"
 include "../05-drums/decay.fy"
 
 ustruct: CompState
-  f64 det      ( host-injected detector buffer pointer )
-  f64 idx      ( sample index into det, zeroed per block )
   f64 env      ( linear envelope )
   f64 lvl-l2   ( log2 of envelope )
   f64 grl2     ( gain in log2 units, <= 0 )
@@ -52,10 +50,11 @@ ustruct: CompParams
   f64 makeup-lin
 ;
 
-( params sample-rate -- : dB -> log2 units [1 dB = 0.16609640474 log2],
+( ctx state params -- : dB -> log2 units [1 dB = 0.16609640474 log2],
   envelope coefficients, linear makeup. )
 dsp: comp-block-prepare
-  | params sr |
+  | ctx state params |
+  ctx Ctx.sr@ | sr |
   params CompParams.thresh-db@ 0.16609640474436813 f*
   params CompParams.thresh-l2-p f!64
   ( bind the knee width - stores flush at word END, so reading the
@@ -72,29 +71,20 @@ dsp: comp-block-prepare
   params CompParams.rel-c-p f!64
   params CompParams.makeup-db@ 0.16609640474436813 f* exp2-approx
   params CompParams.makeup-lin-p f!64
-  drop2 drop
+  drop2 drop drop2
 ;
 
-( state params sample-rate -- : per block - rewind the detector index. )
-dsp: comp-prepare
-  | state params sr |
-  0.0 state CompState.idx-p f!64
-  drop2 drop
-;
 
 ( state params -- : envelope follower on the shared detector trace.
   Rising signal takes the attack coefficient, falling the release. )
 dsp: comp-detect
-  | state params |
-  state CompState.det-p p@64 | det |
-  state CompState.idx@ | i |
-  det i f@i | d |
-  i 1.0 f+ state CompState.idx-p f!64
+  | io state params |
+  io Io.det@ | d |
   state CompState.env@ | e |
   e d  params CompParams.atk-c@  params CompParams.rel-c@  fsel-lt | c |
   d  e d f-  c f*  f+
   state CompState.env-p f!64
-  drop2 drop2 drop2 drop
+  drop2 drop2 drop2
 ;
 
 ( state params -- : envelope into log2 units. )
@@ -132,7 +122,7 @@ dsp: comp-gain
 ( out state params in -- : apply gain + makeup, parallel mix. )
 dsp: comp-apply
   | out state params in |
-  in f@64 | x |
+  in Io.in-l@ | x |
   x state CompState.gain@ f* params CompParams.makeup-lin@ f* | wet |
   x  1.0 params CompParams.mix@ f-  f*
   wet params CompParams.mix@ f*  f+
@@ -140,12 +130,12 @@ dsp: comp-apply
   drop2 drop2 drop2
 ;
 
-( out state params in -- : the full compressor tick, staged. )
+( io ctx state params -- : the full compressor tick, staged. )
 dsp: k-comp-tick
-  | out state params in |
-  state params call: comp-detect
+  | io ctx state params |
+  io state params call: comp-detect
   state params call: comp-level
   state params call: comp-knee
   state params call: comp-gain
-  out state params in call: comp-apply
+  io state params io call: comp-apply
 ;

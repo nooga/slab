@@ -26,6 +26,7 @@
 
   Probe case: sat-render - drive sweep, finite + monotonic-ish THD. )
 
+include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../00-primitives/pow2.fy"
 
 ustruct: SatState
@@ -51,11 +52,12 @@ ustruct: SatParams
   f64 bias-comp
 ;
 
-( params sample-rate -- : derive drive/out gains, tone coefficient, and the
+( ctx state params -- : derive drive/out gains, tone coefficient, and the
   mode-dependent shaper constants.  a/b/bias are kept as locals so bias-comp
   can use them (a freshly stored param reads back stale within the word). )
 dsp: sat-block-prepare
-  | params sr |
+  | ctx state params |
+  ctx Ctx.sr@ | sr |
   params SatParams.drive-db@ 0.16609640474436813 f* exp2-approx
   params SatParams.drive-lin-p f!64
   params SatParams.out-db@ 0.16609640474436813 f* exp2-approx
@@ -73,13 +75,13 @@ dsp: sat-block-prepare
   bias a bb f+ f*  a b bb f* f+  f/
   params SatParams.bias-comp-p f!64
   ( locals: params sr mode a b bias bb = 7 )
-  drop2 drop2 drop2 drop
+  drop2 drop2 drop2 drop drop2
 ;
 
-( out state params in -- : one saturator sample. )
+( io ctx state params -- : one saturator sample. )
 dsp: k-sat-tick
-  | out state params in |
-  in f@64 | dry |
+  | out ctx state params |
+  out Io.in-l@ | dry |
   dry params SatParams.drive-lin@ f*  params SatParams.bias@ f+  -4.0 4.0 fclamp | s |
   s s f* | s2 |
   s  params SatParams.a@ s2 f+  f*

@@ -4,7 +4,7 @@
   above it the gate opens to unity.  HOLD keeps it open for a while after
   the signal drops, ATK/REL set how fast it opens/closes.  Like the
   compressor it reads the host's shared detector trace [max abs of both
-  channels, manifest detector-cell] so L and R gate together and the
+  channels, io.det] so L and R gate together and the
   stereo image never wobbles - what makes it usable on a drum bus, not
   just a mono insert.  The DAW and rig share this kernel.
 
@@ -15,12 +15,11 @@
   fsel-lt.  Stages are split into call: words so each gets a fresh
   register budget [same discipline as comp.fy]. )
 
+include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../00-primitives/pow2.fy"
 include "../05-drums/decay.fy"
 
 ustruct: GateState
-  f64 det      ( host-injected detector buffer pointer )
-  f64 idx      ( sample index into det, zeroed per block )
   f64 level    ( detector peak-follower envelope )
   f64 gain     ( current gate gain, floor..1 )
   f64 hold-ctr ( samples left before the gate may start closing )
@@ -43,9 +42,10 @@ ustruct: GateParams
   f64 hold-spl
 ;
 
-( params sample-rate -- : dB thresholds to linear, slew coefficients. )
+( ctx state params -- : dB thresholds to linear, slew coefficients. )
 dsp: gate-block-prepare
-  | params sr |
+  | ctx state params |
+  ctx Ctx.sr@ | sr |
   params GateParams.thresh-db@ 0.16609640474436813 f* exp2-approx
   params GateParams.thresh-lin-p f!64
   params GateParams.range-db@ 0.16609640474436813 f* exp2-approx
@@ -58,28 +58,19 @@ dsp: gate-block-prepare
   params GateParams.det-rel-c-p f!64
   params GateParams.hold-s@ sr f*
   params GateParams.hold-spl-p f!64
-  drop2
+  drop2 drop2
 ;
 
-( state params sample-rate -- : per block - rewind the detector index. )
-dsp: gate-prepare
-  | state params sr |
-  0.0 state GateState.idx-p f!64
-  drop2 drop
-;
 
 ( state params -- : peak-follower on the shared detector trace.  Instant
   attack to a higher peak, exponential release otherwise. )
 dsp: gate-detect
-  | state params |
-  state GateState.det-p p@64 | det |
-  state GateState.idx@ | i |
-  det i f@i | d |
-  i 1.0 f+ state GateState.idx-p f!64
+  | io state params |
+  io Io.det@ | d |
   state GateState.level@ | lv |
   lv d  d  d  lv d f- params GateParams.det-rel-c@ f* f+  fsel-lt
   state GateState.level-p f!64
-  drop2 drop2 drop2
+  drop2 drop2 drop
 ;
 
 ( state params -- : open/hold/close decision -> target gain + hold counter.
@@ -113,16 +104,16 @@ dsp: gate-slew
 ( out state params in -- : apply the gate gain. )
 dsp: gate-apply
   | out state params in |
-  in f@64 state GateState.gain@ f*
+  in Io.in-l@ state GateState.gain@ f*
   out f!64
   drop2 drop2
 ;
 
-( out state params in -- : the full gate tick, staged. )
+( io ctx state params -- : the full gate tick, staged. )
 dsp: k-gate-tick
-  | out state params in |
-  state params     call: gate-detect
-  state params     call: gate-decide
-  state params     call: gate-slew
-  out state params in call: gate-apply
+  | io ctx state params |
+  io state params call: gate-detect
+  state params call: gate-decide
+  state params call: gate-slew
+  io state params io call: gate-apply
 ;

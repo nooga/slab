@@ -2,7 +2,7 @@
 
   The DSP lives in the kernels rig [kernels/07-effects/reverb.fy]; this
   file declares the machine.  One packed ring per channel; the host
-  channel-cell drives L/R decorrelation [tap sets, LFO phase + rate], so
+  ctx.chan drives L/R decorrelation [tap sets, LFO phase + rate], so
   the tail goes properly wide while staying dual-mono in structure. )
 
 include "../../kernels/07-effects/reverb.fy"
@@ -19,7 +19,6 @@ include "../lib/manifest.fy"
 
   ( one packed tank ring per channel; region table in reverb.fy )
   "tank" VerbState.buf VerbState.buf-len 0.9 buffer
-  VerbState.chan channel-cell
 
   "PLATE" "PREDLY" "verb-predelay" VerbParams.predelay-s 0.001 0.12  0.02 curve-exp knob
   "PLATE" "DECAY"  "verb-decay"    VerbParams.decay      0.30  0.97  0.75 curve-lin knob

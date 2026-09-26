@@ -34,13 +34,13 @@
 
   Probe case: rhodes-voice-render. )
 
+include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../04-filters/ms20_svf.fy"     ( svf-dc-coeff )
 include "../05-drums/noise.fy"          ( noise-step — hammer chiff )
 include "../02-shapers/tanh_table.fy"   ( k-tanh-rational-shape-dsp2 — pickup )
 include "../05-drums/sine.fy"           ( sine-shape — modal oscillators )
 
 ustruct: RhodesState
-  f64 voice-idx   ( host-injected region/voice index, unused in DSP )
   f64 age         ( seconds since note-on )
   f64 gate-time   ( age at release; huge while held )
   f64 note-hz
@@ -89,11 +89,12 @@ ustruct: RhodesParams
   f64 dc-coef          ( DC-block highpass coefficient ~12 Hz )
 ;
 
-( params sr -- : derived fills, all idempotent. No libm: svf-dc-coeff is the
+( ctx state params -- : derived fills, all idempotent. No libm: svf-dc-coeff is the
   1-exp(-2pi*f/sr) polynomial; decay multipliers are its complement.
   1/(2pi) = 0.15915494309189535 maps a time constant tau to its corner f. )
 dsp: rhodes-block-prepare
-  | params sr |
+  | ctx state params |
+  ctx Ctx.sr@ | sr |
   1.0 sr f/ params RhodesParams.inv-sr-p f!64
   sr params RhodesParams.sr-p f!64
   ( attack one-pole rise: tau ~ 2 ms -> corner 79.577 Hz, coef direct )
@@ -123,13 +124,14 @@ dsp: rhodes-block-prepare
   sr 700.0 params RhodesParams.warmth@ 5300.0 f* f+ svf-dc-coeff params RhodesParams.warm-a-p f!64
   ( DC-block highpass corner ~12 Hz )
   sr 12.0 svf-dc-coeff params RhodesParams.dc-coef-p f!64
-  drop2
+  drop2 drop2
 ;
 
-( state params hz velocity -- : strike this voice. Phases reset to 0 so
+( ctx state params -- : strike this voice. Phases reset to 0 so
   sample 0 is silent (no click); envelopes seed for a fresh strike. )
 dsp: rhodes-note-on
-  | state params hz velocity |
+  | ctx state params |
+  ctx Ctx.hz@ ctx Ctx.vel@ | hz velocity |
   hz state RhodesState.note-hz-p f!64
   velocity state RhodesState.vel-p f!64
   0.0 state RhodesState.age-p f!64
@@ -144,14 +146,14 @@ dsp: rhodes-note-on
   12345.0 state RhodesState.noise-rng-p f!64
   0.0 state RhodesState.warm-lp-p f!64
   0.0 state RhodesState.dc-p f!64
-  drop2 drop2
+  drop2 drop2 drop
 ;
 
-( state params -- : release this voice — the damper engages. )
+( ctx state params -- : release this voice — the damper engages. )
 dsp: rhodes-note-off
-  | state params |
+  | ctx state params |
   state RhodesState.age@ state RhodesState.gate-time-p f!64
-  drop2
+  drop2 drop
 ;
 
 ( state params -- : advance age and all envelopes. The decay multipliers
@@ -249,13 +251,13 @@ dsp: rhodes-warmth
   drop2 drop
 ;
 
-( out state params -- : one voice tick, staged. Output ACCUMULATES into out.
+( io ctx state params -- : one voice tick, staged. Output ACCUMULATES into out.
   Each call: boundary is a fresh register budget. )
 dsp: k-rhodes-voice
-  | out state params |
-  state params      call: rhodes-env
-  state params      call: rhodes-fund
-  state params      call: rhodes-tine
-  state params      call: rhodes-pickup
-  out state params  call: rhodes-warmth
+  | io ctx state params |
+  state params call: rhodes-env
+  state params call: rhodes-fund
+  state params call: rhodes-tine
+  state params call: rhodes-pickup
+  io state params call: rhodes-warmth
 ;

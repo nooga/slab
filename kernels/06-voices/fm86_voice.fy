@@ -15,6 +15,7 @@
   matrix then reads. Both building blocks (dx7-eg-step, dx7-voice-step) are
   pinned sample-exact in the rig; this file only wires them. )
 
+include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "dx7_voice.fy"
 include "../03-envelopes/dx7_eg.fy"
 
@@ -145,21 +146,21 @@ dsp: fm86-out-add
   drop2 drop
 ;
 
-( out state params -- : one FM-86 voice sample. The inc stage sets per-voice
+( io ctx state params -- : one FM-86 voice sample. The inc stage sets per-voice
   pitch, six EG stages refresh the per-op levels, the matrix computes the
   sample into scratch, and a light stage accumulates it into out. Each `call:`
   is a fresh register budget. )
 dsp: k-fm86-voice-sample
-  | out state params |
-  state params       call: fm86-inc-stage
-  state params       call: fm86-eg-op0
-  state params       call: fm86-eg-op1
-  state params       call: fm86-eg-op2
-  state params       call: fm86-eg-op3
-  state params       call: fm86-eg-op4
-  state params       call: fm86-eg-op5
-  state params       call: fm86-matrix-stage
-  out state params   call: fm86-out-add
+  | io ctx state params |
+  state params call: fm86-inc-stage
+  state params call: fm86-eg-op0
+  state params call: fm86-eg-op1
+  state params call: fm86-eg-op2
+  state params call: fm86-eg-op3
+  state params call: fm86-eg-op4
+  state params call: fm86-eg-op5
+  state params call: fm86-matrix-stage
+  io state params call: fm86-out-add
 ;
 
 ( ── machine wiring: prepare / note / block-prepare ───────────────────── )
@@ -174,10 +175,11 @@ dsp: eg-idle-guard
   nip
 ;
 
-( state params sample-rate -- : per-voice prepare (runs every block). Store
+( ctx state params -- : per-voice prepare (runs every block). Store
   1/sr for ratio->increment, and idle-init each operator envelope. )
 dsp: fm86-prepare
-  | state params sample-rate |
+  | ctx state params |
+  ctx Ctx.sr@ | sample-rate |
   1.0 sample-rate f/ params Fm86Params.inv-sample-rate-p f!64
   state Fm86State.eg0-stage@ eg-idle-guard state Fm86State.eg0-stage-p f!64
   state Fm86State.eg1-stage@ eg-idle-guard state Fm86State.eg1-stage-p f!64
@@ -185,16 +187,17 @@ dsp: fm86-prepare
   state Fm86State.eg3-stage@ eg-idle-guard state Fm86State.eg3-stage-p f!64
   state Fm86State.eg4-stage@ eg-idle-guard state Fm86State.eg4-stage-p f!64
   state Fm86State.eg5-stage@ eg-idle-guard state Fm86State.eg5-stage-p f!64
-  drop2 drop
+  drop2 drop drop
 ;
 
-( state params hz velocity -- : start a note. Store this voice's fundamental
+( ctx state params -- : start a note. Store this voice's fundamental
   (per-voice, in state, so polyphony plays distinct pitches — the inc stage
   reads it each sample). Raise the gate and clear every envelope's prev-gate so
   the next sample sees a note-on edge (retrigger from current value, no click).
   Velocity is unused in Phase-1 — the MASTER knob sets level. )
 dsp: fm86-note-on
-  | state params hz velocity |
+  | ctx state params |
+  ctx Ctx.hz@ ctx Ctx.vel@ | hz velocity |
   hz   state Fm86State.note-hz-p f!64
   1.0  state Fm86State.gate-p f!64
   0.0  state Fm86State.eg0-pgate-p f!64
@@ -203,13 +206,13 @@ dsp: fm86-note-on
   0.0  state Fm86State.eg3-pgate-p f!64
   0.0  state Fm86State.eg4-pgate-p f!64
   0.0  state Fm86State.eg5-pgate-p f!64
-  drop2 drop2
+  drop2 drop2 drop
 ;
 
-( state params -- : release. Drop the gate; the next sample's note-off edge
+( ctx state params -- : release. Drop the gate; the next sample's note-off edge
   sends every envelope to stage 4 (release toward L4). )
 dsp: fm86-note-off
-  | state params |
+  | ctx state params |
   0.0 state Fm86State.gate-p f!64
-  drop2
+  drop2 drop
 ;

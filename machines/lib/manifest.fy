@@ -22,17 +22,22 @@
       machine-desc
     ;
 
+  Entry words [render, prepare, note-on, note-off, block-prepare, derive]
+  all take ( ctx state params -- ); render takes a leading io pointer:
+  ( io ctx state params -- ).  Ctx/Io live in kernels/00-primitives/ctx.fy
+  [docs/04 §Kernel ABI].
+
   All fields are `ptr` so the Zig mirror is a flat array of tagged i64
   values: ints/pointers untag with >>2, floats mask the low tag bits. )
 
 struct: MachineDesc
   ptr name           ( cstr )
-  ptr mode           ( int: 0 voice-sample, 1 effect-sample, 2 effect-block )
+  ptr mode           ( int: 0 voice-sample, 2 effect-block )
   ptr render         ( cstr dsp2 word name )
   ptr prepare        ( cstr or 0 )
   ptr note-on        ( cstr or 0 )
   ptr note-off       ( cstr or 0 )
-  ptr block-prepare  ( cstr or 0 — dsp2 word: params sample-rate -- )
+  ptr block-prepare  ( cstr or 0 — dsp: word, once per block )
   ptr state-size     ( int bytes )
   ptr params-size    ( int bytes )
   ptr panel-w        ( float px )
@@ -44,19 +49,15 @@ struct: MachineDesc
   ptr note-pitch     ( int flag: note-on gets raw MIDI pitch, not Hz )
   ptr note-labels    ( NoteLabelDesc chain or 0 — drum-lane piano roll )
   ptr buffers        ( BufferDesc chain or 0 — host-allocated audio buffers )
-  ptr channel-cell   ( int state offset + 1, or 0 — host writes channel index )
-  ptr detector-cell  ( int state offset + 1, or 0 — host writes pointer to a
-                       per-block detector buffer: max abs of both inputs )
   ptr voices         ( int voice count for voice-sample machines, 0 = mono )
   ptr assets         ( AssetDesc chain or 0 — host-loaded read-only audio )
   ptr pages          ( PageDesc chain or 0 — tabbed panel; rows declared after
                        a `page` belong to it, and the panel shows a tab bar.
                        When 0, the top-level `rows` chain is the whole panel. )
-  ptr derive         ( cstr or 0 — dsp2 word: params derive-data -- . Called
-                       each block to compute derived params from controls. )
-  ptr derive-data    ( ptr or 0 — opaque machine-built data passed to derive. )
-  ptr tempo-cell     ( int params offset + 1, or 0 — host writes ctx tempo_bpm
-                       here each block, just before block-prepare. )
+  ptr derive         ( cstr or 0 — dsp: word called each block, before
+                       block-prepare, to compute derived params from controls. )
+  ptr derive-data    ( ptr or 0 — opaque machine-built data, handed to every
+                       entry word as ctx.data. )
 ;
 
 struct: ControlDesc
@@ -111,7 +112,6 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
 
 ( --- mode + curve constants --------------------------------------- )
 : voice-sample 0 ;
-: effect-sample 1 ;
 : effect-block 2 ;
 : curve-lin 0 ;
 : curve-exp 1 ;  ( log taper - frequencies, times; min must be > 0 )
@@ -374,31 +374,6 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   [ dup _mf-last-buf @64 BufferDesc.next! drop ]
   ifte
   _mf-last-buf !64
-;
-
-( The host writes the channel index — 0.0 left, 1.0 right — into STATE at
-  this introspected offset after buffer injection and after every reset.
-  Effect machines use it to decorrelate the two channels: LFO phase
-  offsets, slight delay detunes.  Stored as offset+1 so 0 means "none". )
-: channel-cell  ( offset -- )
-  1 + _mf-md@ MachineDesc.channel-cell! drop
-;
-
-( The host writes a pointer to a block-length detector buffer — per
-  sample the max of abs of both input channels — into STATE at this
-  introspected offset.  Both channels read the SAME buffer, which is
-  what makes a compressor stereo-linked.  Kernels index it with a
-  sample counter zeroed in their prepare word - prepare runs once per
-  block.  Stored as offset+1 so 0 means "none". )
-: detector-cell  ( offset -- )
-  1 + _mf-md@ MachineDesc.detector-cell! drop
-;
-
-( The host writes ctx.tempo_bpm into PARAMS at this introspected offset
-  each block, right before block-prepare runs, so a block-prepare word can
-  derive a tempo-synced value.  Stored as offset+1 so 0 means "none". )
-: tempo-cell  ( offset -- )
-  1 + _mf-md@ MachineDesc.tempo-cell! drop
 ;
 
 ( Request a read-only audio asset from the host.  At create the host

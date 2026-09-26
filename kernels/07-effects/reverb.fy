@@ -29,17 +29,17 @@
     b-d2          75128    10240   3163
     total         85368             -> 0.9 s buffer at 96 kHz
 
-  Dual mono with decorrelation: the host channel-cell drives a per
+  Dual mono with decorrelation: ctx.chan [0 L / 1 R] drives a per
   channel LFO phase and rate offset plus the L/R output tap sets, so the
   two tanks drift apart and the tail goes wide.  Probe case:
   reverb-render - impulse, RT60 + echo density ratchets, WAV. )
 
+include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../05-drums/sine.fy"
 
 ustruct: VerbState
   f64 buf        ( host-injected ring base pointer )
   f64 buf-len    ( host-injected element count )
-  f64 chan       ( host-injected channel index, 0 L / 1 R )
   f64 diff       ( stage scratch: diffused input )
   f64 ta         ( stage scratch: branch A first-delay output )
   f64 tb         ( stage scratch: branch B first-delay output )
@@ -143,9 +143,10 @@ dsp: vb-tap
 
 ( --- block-rate fills ----------------------------------------------- )
 
-( params sample-rate -- : effective ring lengths + coefficients. )
+( ctx state params -- : effective ring lengths + coefficients. )
 dsp: verb-block-prepare
-  | params sr |
+  | ctx state params |
+  ctx Ctx.sr@ | sr |
   sr 0.000033601021471 f* | scale |
   scale params VerbParams.scale-p f!64
   params VerbParams.predelay-s@ sr f* 1.0 12287.0 fclamp
@@ -168,15 +169,16 @@ dsp: verb-block-prepare
   params VerbParams.damp-a-p f!64
   params VerbParams.mod-rate@ sr f/ params VerbParams.mod-inc-p f!64
   params VerbParams.mod-depth@ scale f* params VerbParams.mod-depth-spl-p f!64
-  drop2 drop
+  drop2 drop drop2
 ;
 
-( state params sample-rate -- : per-channel decorrelation, runs every
+( ctx state params -- : per-channel decorrelation, runs every
   block.  Seeds the LFO phase once, picks the L or R output tap set, and
   detunes the modulation rate on the right channel. )
 dsp: verb-prepare
-  | state params sr |
-  state VerbState.chan@ | chan |
+  | ctx state params |
+  ctx Ctx.sr@ | sr |
+  ctx Ctx.chan@ | chan |
   params VerbParams.scale@ | scale |
   state VerbState.seeded@ 0.5
     0.123 chan 0.39 f* f+
@@ -192,7 +194,7 @@ dsp: verb-prepare
   chan 0.5 1990.0 2111.0 fsel-lt scale f* state VerbState.tap-5-p f!64
   chan 0.5 187.0  335.0  fsel-lt scale f* state VerbState.tap-6-p f!64
   chan 0.5 1066.0 121.0  fsel-lt scale f* state VerbState.tap-7-p f!64
-  drop2 drop2 drop
+  drop2 drop2 drop drop
 ;
 
 ( --- per-sample stages ----------------------------------------------- )
@@ -201,7 +203,7 @@ dsp: verb-prepare
 dsp: verb-pre
   | state params in |
   state VerbState.buf-p p@64 | buf |
-  in f@64 | x |
+  in Io.in-l@ | x |
   buf 0.0 state VerbState.pre-pos-p params VerbParams.pre-len@ x vb-dl | v |
   state VerbState.in-lpf@ | z |
   z  v z f-  params VerbParams.bw-a@ f*  f+ | zn |
@@ -322,17 +324,17 @@ dsp: verb-out
   buf 37816.0 state VerbState.a-d2-pos@ params VerbParams.a-d2-len@
     state VerbState.tap-7@ vb-tap f-
   0.6 f* | wet |
-  in f@64 | x |
+  in Io.in-l@ | x |
   x  1.0 params VerbParams.mix@ f-  f*
   wet params VerbParams.mix@ f*  f+
   out f!64
   drop2 drop2 drop2 drop
 ;
 
-( out state params in -- : the full plate tick, staged. )
+( io ctx state params -- : the full plate tick, staged. )
 dsp: k-verb-tick
-  | out state params in |
-  state params in call: verb-pre
+  | io ctx state params |
+  state params io call: verb-pre
   state params call: verb-in-ap12
   state params call: verb-in-ap34
   state params call: verb-lfo
@@ -340,5 +342,5 @@ dsp: k-verb-tick
   state params call: verb-tank-a-out
   state params call: verb-tank-b-in
   state params call: verb-tank-b-out
-  out state params in call: verb-out
+  io state params io call: verb-out
 ;

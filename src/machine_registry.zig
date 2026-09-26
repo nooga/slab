@@ -188,7 +188,7 @@ pub const Registry = struct {
             .params_size = desc.params_size,
             .panel_w = desc.panel_w,
             .in_notes = desc.mode == .voice_sample,
-            .in_audio = desc.mode == .effect_sample or desc.mode == .effect_block,
+            .in_audio = desc.mode == .effect_block,
             .out_audio = true,
         };
         try copyEntryString(e.name[0..], &e.name_len, desc.nameSlice());
@@ -303,12 +303,10 @@ test "fy manifest loads + instantiates the gate machine" {
     defer if (m.deinit) |d| d(m.state, std.testing.allocator);
 }
 
-// Exercises the tempo-cell path end to end: delay2 declares a tempo-cell, and
-// its block-prepare derives the delay time from ctx.tempo_bpm in SYNC mode.
-// Loading + instantiating compiles the rewritten delay-block-prepare and parses
-// the new descriptor field; a clean instantiate proves the fy and the
-// fy↔Zig MachineDesc layout (with tempo-cell appended) stayed in sync.
-test "fy manifest loads + instantiates the delay machine (tempo-cell)" {
+// Loading + instantiating compiles delay2's block-prepare, which reads
+// ctx.tempo for SYNC mode; the tempo -> echo-time behavior itself is tested
+// in fy_raw_machine.zig ("delay SYNC follows ctx.tempo").
+test "fy manifest loads + instantiates the delay machine" {
     var reg = Registry.init(std.testing.allocator);
     defer reg.deinit();
     try reg.loadFyMachine("machines/delay2/delay2.fy");

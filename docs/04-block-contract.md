@@ -1,5 +1,70 @@
 # 04 — Block contract
 
+## Kernel ABI (implemented, 2026-09-26)
+
+This is how the host calls a machine's fy entry words today; docs/17
+Track B. The `MachineCtx` below is the host-side `Machine` interface
+contract, and the Zig adapter (`src/machines/fy_raw_machine.zig`)
+translates it into this kernel ABI.
+
+**Signatures.** Every entry word takes the same three pointers. Render
+words take one more, leading:
+
+| hook | signature | called |
+|---|---|---|
+| `render` | `( io ctx state params -- )` | per sample, repeated; `io` advances by `Io.size` |
+| `note-on` / `note-off` | `( ctx state params -- )` | per event, on the allocated voice |
+| `prepare` | `( ctx state params -- )` | every block, once per state region |
+| `block-prepare` | `( ctx state params -- )` | every block, once (region 0) |
+| `derive` | `( ctx state params -- )` | every block, before block-prepare |
+
+**Structs.** Both are defined in `kernels/00-primitives/ctx.fy`, mirrored
+by `KernelCtx` / `IoFrame` in the adapter, and checked by the test
+"kernel ABI: KernelCtx and IoFrame match ctx.fy".
+
+- `Ctx` has one of each per machine instance, refreshed before each
+  call:
+
+  | field | meaning |
+  |---|---|
+  | `sr`, `inv-sr` | sample rate and its inverse |
+  | `tempo` | bpm |
+  | `beat` | quarter-note position at block start |
+  | `frames` | frames in this block |
+  | `chan` | region index: voice index for voice machines, 0 L / 1 R for effects |
+  | `hz`, `vel`, `pitch` | note-on data; `hz` is raw MIDI pitch for `note-pitch` machines |
+  | `data` | the derive-data pointer; read with `ctx Ctx.data-p p@64` |
+
+- `Io` holds one sample's lanes: `out-l`, `out-r`, `in-l`, `in-r`,
+  `det`. `out-l` is at offset 0, so a stage handed `io` can keep writing
+  `out f!64`.
+
+**Lanes.**
+
+- *Voices* accumulate into `io.out-l`; the host sums all voices and
+  copies L to R.
+- *Effects* run dual-mono: one pass per channel against that channel's
+  state region. Each pass sees its own input in `in-l` and writes
+  `out-l`. `det` is `max(|L|, |R|)` of the input, the stereo-linked
+  detector for dynamics.
+
+**Replaces.**
+
+- The `channel-cell`, `tempo-cell`, and `detector-cell` manifest words
+  (now `ctx.chan`, `ctx.tempo`, `io.det`).
+- The note-on `hz velocity` arguments.
+- The per-sample `effect-sample` mode, which called from Zig into fy
+  twice per sample.
+
+**Still to do (docs/17 step 3):**
+
+- remove the ±1 output clamp (D5)
+- stereo voices writing `out-r`
+- the voice service (D6)
+- per-control smoothing
+- host buffers and tables addressed through ctx instead of injected into
+  state
+
 Every machine's `process` word takes exactly one argument: a pointer
 to a `MachineCtx` struct. The host builds this struct once per
 machine per block, then calls the machine. The machine reads inputs,

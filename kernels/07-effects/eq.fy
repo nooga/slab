@@ -27,6 +27,7 @@
   Probe case: eq-render - a known curve over an impulse/sweep, peak/rms
   and a non-finite count. )
 
+include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../00-primitives/pow2.fy"
 include "../00-primitives/trig.fy"
 
@@ -171,10 +172,10 @@ dsp: eq-coef-hs
   drop drop drop drop drop drop drop drop drop drop
 ;
 
-( params derive-data -- : fill every band's coefficients.  derive-data is
+( ctx state params -- : fill every band's coefficients.  derive-data is
   unused; each stage gets its own register budget. )
 dsp: eq-derive
-  | params dd |
+  | ctx state params |
   params call: eq-coef-hpf
   params call: eq-coef-ls
   params call: eq-coef-p1
@@ -182,12 +183,13 @@ dsp: eq-derive
   params call: eq-coef-hs
 ;
 
-( params sample-rate -- : stash sr for the derive stages.  No coefficient
+( ctx state params -- : stash sr for the derive stages.  No coefficient
   math here - derive owns that. )
 dsp: eq-block-prepare
-  | params sr |
+  | ctx state params |
+  ctx Ctx.sr@ | sr |
   sr params EqParams.sr-p f!64
-  drop2
+  drop2 drop2
 ;
 
 ( ---- per-sample biquad stages (one call: stage per band) ------------ )
@@ -195,7 +197,7 @@ dsp: eq-block-prepare
 ( in state params -- : high-pass reads the input cell, writes state.sig. )
 dsp: eq-tick-hpf
   | in state params |
-  in f@64 | x |
+  in Io.in-l@ | x |
   params EqParams.hpf-b0@ x f* state EqState.hpf-z1@ f+ | y |
   params EqParams.hpf-b1@ x f*  params EqParams.hpf-a1@ y f* f-  state EqState.hpf-z2@ f+
   state EqState.hpf-z1-p f!64
@@ -257,12 +259,12 @@ dsp: eq-tick-hs
   drop2 drop2 drop
 ;
 
-( out state params in -- : the full EQ tick, five biquads in series. )
+( io ctx state params -- : the full EQ tick, five biquads in series. )
 dsp: k-eq-tick
-  | out state params in |
-  in  state params call: eq-tick-hpf
-  state params     call: eq-tick-ls
-  state params     call: eq-tick-p1
-  state params     call: eq-tick-p2
-  out state params call: eq-tick-hs
+  | io ctx state params |
+  io state params call: eq-tick-hpf
+  state params call: eq-tick-ls
+  state params call: eq-tick-p1
+  state params call: eq-tick-p2
+  io state params call: eq-tick-hs
 ;

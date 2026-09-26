@@ -25,7 +25,7 @@ const widgets = @import("../ui/widgets.zig");
 const MAX_STATE = 1024;
 const MAX_PARAMS = 1024;
 // State regions: polyphonic voice machines get one per voice, effect
-// machines use two (L/R). Region index is injected at channel_cell.
+// machines use two (L/R). The region index reaches kernels as ctx.chan.
 const MAX_REGIONS = 8;
 // Host-allocated buffers are sized in seconds at the highest sample rate we
 // run at; kernels read the element count back from state and clamp, so a
@@ -39,6 +39,35 @@ const RawCaller = Fy.Dsp2RawRepeatedCaller;
 const RawSlots = Fy.Dsp2RawRepeatedSlots;
 
 pub const Mode = machine_desc.Mode;
+
+/// Kernel ABI context (docs/04 §Kernel ABI), mirrored by `Ctx` in
+/// kernels/00-primitives/ctx.fy. Every entry word gets a pointer to this;
+/// the host refreshes it before each call. All cells are 8 bytes so the
+/// fy ustruct (f64 fields) lines up; `data` is a pointer read with p@64.
+pub const KernelCtx = extern struct {
+    sr: f64 = 48_000,
+    inv_sr: f64 = 1.0 / 48_000.0,
+    tempo: f64 = 120,
+    beat: f64 = 0,
+    frames: f64 = 0,
+    chan: f64 = 0,
+    hz: f64 = 0,
+    vel: f64 = 0,
+    pitch: f64 = 0,
+    data: usize = 0,
+};
+
+/// One sample's audio lanes, mirrored by `Io` in ctx.fy. Render words get a
+/// pointer that the repeated caller advances by @sizeOf(IoFrame) per sample.
+/// out_l is first so a stage handed io can store through it as `out`.
+pub const IoFrame = extern struct {
+    out_l: f64 = 0,
+    out_r: f64 = 0,
+    in_l: f64 = 0,
+    in_r: f64 = 0,
+    det: f64 = 0,
+};
+const IO_STRIDE: u12 = @sizeOf(IoFrame);
 const Control = machine_desc.Control;
 const Display = machine_desc.Display;
 
@@ -50,22 +79,17 @@ pub const FyRawMachine = struct {
     // machines get one region per voice.
     state_buf: [MAX_REGIONS * MAX_STATE]u8 align(8) = [_]u8{0} ** (MAX_REGIONS * MAX_STATE),
     params_buf: [MAX_PARAMS]u8 align(8) = [_]u8{0} ** MAX_PARAMS,
-    mono_buf: [MAX_BLOCK]f64 align(8) = [_]f64{0} ** MAX_BLOCK,
-    in_l_buf: [MAX_BLOCK]f64 align(8) = [_]f64{0} ** MAX_BLOCK,
-    in_r_buf: [MAX_BLOCK]f64 align(8) = [_]f64{0} ** MAX_BLOCK,
-    out_l_buf: [MAX_BLOCK]f64 align(8) = [_]f64{0} ** MAX_BLOCK,
-    out_r_buf: [MAX_BLOCK]f64 align(8) = [_]f64{0} ** MAX_BLOCK,
+    io: [MAX_BLOCK]IoFrame = [_]IoFrame{.{}} ** MAX_BLOCK,
+    kctx: KernelCtx = .{},
     prepare_slots: RawSlots = .{},
     note_on_slots: RawSlots = .{},
     note_off_slots: RawSlots = .{},
     render_slots: RawSlots = .{},
-    effect_slots: RawSlots = .{},
     block_prepare_slots: RawSlots = .{},
     prepare_caller: ?RawCaller = null,
     note_on_caller: ?RawCaller = null,
     note_off_caller: ?RawCaller = null,
     render_caller: ?RawCaller = null,
-    effect_caller: ?RawCaller = null,
     // Optional per-block dsp2 word (params sample-rate --): coefficient fills
     // that must not run per sample, e.g. the MS-20 svf profile region.
     block_prepare_caller: ?RawCaller = null,
@@ -100,9 +124,6 @@ pub const FyRawMachine = struct {
     asset_label_len: [machine_desc.MAX_ASSETS]usize = [_]usize{0} ** machine_desc.MAX_ASSETS,
     // Stored so runtime sample loads can (re)allocate without a passed alloc.
     alloc: std.mem.Allocator = undefined,
-    // Stereo-linked detector trace (manifest `detector-cell`): filled per
-    // block with max(|L|,|R|), read by both channels for linked dynamics.
-    det_buf: [MAX_BLOCK]f64 align(8) = [_]f64{0} ** MAX_BLOCK,
     // Voice allocator (voice machines with desc.voices > 1). Voices are
     // never freed — like the Juno-106, every voice always renders; note-on
     // takes the oldest un-gated voice, else steals the oldest gated one.
@@ -262,8 +283,7 @@ pub const FyRawMachine = struct {
     }
 
     // Write each buffer's base pointer + element count into both channel
-    // states, plus the channel index if requested. Must rerun after any
-    // state memset (reset).
+    // states. Must rerun after any state memset (reset).
     fn injectBuffers(self: *FyRawMachine) void {
         for (self.desc.buffers[0..self.desc.buffer_count], 0..) |*req, bi| {
             for (0..2) |ch| {
@@ -271,14 +291,6 @@ pub const FyRawMachine = struct {
                 self.writeStateUsize(ch, req.ptr_offset, @intFromPtr(mem.ptr));
                 self.writeStateF64(ch, req.len_offset, @floatFromInt(mem.len));
             }
-        }
-        if (self.desc.channel_cell) |off| {
-            // Region index: channel for effects, voice index for synths
-            // (per-voice detune spread reads this).
-            for (0..self.regionCount()) |reg| self.writeStateF64(reg, off, @floatFromInt(reg));
-        }
-        if (self.desc.detector_cell) |off| {
-            for (0..2) |ch| self.writeStateUsize(ch, off, @intFromPtr(&self.det_buf[0]));
         }
     }
 
@@ -351,97 +363,24 @@ pub const FyRawMachine = struct {
         return @intFromPtr(&self.params_buf[0]);
     }
 
+    // Every entry word is ( ctx state params -- ); render words take a
+    // leading io pointer ( io ctx state params -- ) advanced per sample.
+    // `call:` compositions go through the composition caller.
+    fn compileEntry(self: *FyRawMachine, word: []const u8, slots: *RawSlots, is_render: bool) !RawCaller {
+        const fy = &self.host.fy;
+        const stride: u12 = if (is_render) IO_STRIDE else 0;
+        if (fy.isCompositionWord(word)) return fy.compileDsp2CompositionCaller(word, slots, stride, false);
+        const kinds: []const Fy.Dsp2RawArgKind = if (is_render) &.{ .ptr, .ptr, .ptr, .ptr } else &.{ .ptr, .ptr, .ptr };
+        return fy.compileDsp2RawRepeatedCaller(word, slots, kinds, stride, false);
+    }
+
     fn compileCallers(self: *FyRawMachine) !void {
-        if (self.desc.prepareWord()) |word| {
-            self.prepare_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
-                word,
-                &self.prepare_slots,
-                &.{ .ptr, .ptr, .f64 },
-                0,
-                false,);
-        }
-        if (self.desc.noteOnWord()) |word| {
-            self.note_on_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
-                word,
-                &self.note_on_slots,
-                &.{ .ptr, .ptr, .f64, .f64 },
-                0,
-                false,);
-        }
-        if (self.desc.noteOffWord()) |word| {
-            self.note_off_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
-                word,
-                &self.note_off_slots,
-                &.{ .ptr, .ptr },
-                0,
-                false,);
-        }
-        if (self.desc.blockPrepareWord()) |word| {
-            self.block_prepare_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
-                word,
-                &self.block_prepare_slots,
-                &.{ .ptr, .f64 },
-                0,
-                false,);
-        }
-        if (self.desc.deriveWord()) |word| {
-            // A staged derive (`call:` composition, e.g. the EQ's per-band
-            // coefficient fill) goes through the composition caller; both
-            // args are pointers and nothing auto-advances.
-            if (self.host.fy.isCompositionWord(word)) {
-                self.derive_caller = try self.host.fy.compileDsp2CompositionCaller(
-                    word,
-                    &self.derive_slots,
-                    0,
-                    false,);
-            } else {
-                self.derive_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
-                    word,
-                    &self.derive_slots,
-                    &.{ .ptr, .ptr },
-                    0,
-                    false,);
-            }
-        }
-        switch (self.desc.mode) {
-            .voice_sample => {
-                // A `call:` composition voice is invoked through the dedicated
-                // composition caller (same out/state/params + auto-advance ABI).
-                if (self.host.fy.isCompositionWord(self.desc.renderWord())) {
-                    self.render_caller = try self.host.fy.compileDsp2CompositionCaller(
-                        self.desc.renderWord(),
-                        &self.render_slots,
-                        8,
-                        false,);
-                } else {
-                    self.render_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
-                        self.desc.renderWord(),
-                        &self.render_slots,
-                        &.{ .ptr, .ptr, .ptr },
-                        8,
-                        false,);
-                }
-            },
-            .effect_sample => {},
-            .effect_block => {
-                // Staged effects (`call:` compositions, e.g. the reverb tank)
-                // go through the composition caller; both advance out + in.
-                if (self.host.fy.isCompositionWord(self.desc.renderWord())) {
-                    self.effect_caller = try self.host.fy.compileDsp2CompositionCaller(
-                        self.desc.renderWord(),
-                        &self.effect_slots,
-                        8,
-                        true,);
-                } else {
-                    self.effect_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
-                        self.desc.renderWord(),
-                        &self.effect_slots,
-                        &.{ .ptr, .ptr, .ptr, .ptr },
-                        8,
-                        true,);
-                }
-            },
-        }
+        if (self.desc.prepareWord()) |w| self.prepare_caller = try self.compileEntry(w, &self.prepare_slots, false);
+        if (self.desc.noteOnWord()) |w| self.note_on_caller = try self.compileEntry(w, &self.note_on_slots, false);
+        if (self.desc.noteOffWord()) |w| self.note_off_caller = try self.compileEntry(w, &self.note_off_slots, false);
+        if (self.desc.blockPrepareWord()) |w| self.block_prepare_caller = try self.compileEntry(w, &self.block_prepare_slots, false);
+        if (self.desc.deriveWord()) |w| self.derive_caller = try self.compileEntry(w, &self.derive_slots, false);
+        self.render_caller = try self.compileEntry(self.desc.renderWord(), &self.render_slots, true);
     }
 
     fn initRawControls(self: *FyRawMachine) void {
@@ -493,21 +432,26 @@ pub const FyRawMachine = struct {
         // voice routing from its own fy table. Generic — the frame has no
         // machine-specific knowledge. Runs before block-prepare; both only touch
         // params, no ordering dependency.
-        if (self.derive_caller) |*dv| {
-            const args = [_]Fy.Dsp2RawArg{ .{ .ptr = self.paramsPtr() }, .{ .ptr = self.desc.derive_data } };
-            _ = dv.call(1, &args) catch {};
-        }
+        self.kctx.sr = sample_rate;
+        self.kctx.inv_sr = 1.0 / sample_rate;
+        self.kctx.tempo = tempo_bpm;
+        self.kctx.chan = 0;
+        self.kctx.data = self.desc.derive_data;
+        if (self.derive_caller) |*dv| _ = dv.call(1, &self.entryArgs(0)) catch {};
 
-        // Host-written tempo cell: deposit ctx.tempo_bpm into params so a
-        // tempo-syncing block-prepare can read it (e.g. delay2 SYNC mode).
-        if (self.desc.tempo_cell) |off| self.writeParamF64(off, tempo_bpm);
+        // Per-block coefficient fill in fy. Runs after controls/consts land
+        // so the word reads fresh raw values.
+        if (self.block_prepare_caller) |*bp| _ = bp.call(1, &self.entryArgs(0)) catch {};
+    }
 
-        // Per-block coefficient fill in fy (params sample-rate --). Runs after
-        // controls/consts land so the word reads fresh raw values.
-        if (self.block_prepare_caller) |*bp| {
-            const args = [_]Fy.Dsp2RawArg{ .{ .ptr = self.paramsPtr() }, .{ .f64 = sample_rate } };
-            _ = bp.call(1, &args) catch {};
-        }
+    /// ( ctx state params ) for region `reg`, with ctx.chan = reg.
+    fn entryArgs(self: *FyRawMachine, reg: usize) [3]Fy.Dsp2RawArg {
+        self.kctx.chan = @floatFromInt(reg);
+        return .{
+            .{ .ptr = @intFromPtr(&self.kctx) },
+            .{ .ptr = self.statePtrCh(reg) },
+            .{ .ptr = self.paramsPtr() },
+        };
     }
 
     fn writeParamF64(self: *FyRawMachine, offset: usize, value: f64) void {
@@ -759,6 +703,8 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
     defer fy_host_mod.unlockCallbacks();
     Fy.Builtins.fyPtr = @intFromPtr(&self.host.fy);
 
+    self.kctx.beat = ctx.ppq_position;
+    self.kctx.frames = @floatFromInt(frames);
     self.syncRawParams(ctx.sample_rate, ctx.tempo_bpm);
     callPrepare(self, ctx.sample_rate) catch {
         self.failed = true;
@@ -769,11 +715,6 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
 
     switch (self.desc.mode) {
         .voice_sample => renderVoiceSample(self, ctx, l[0..frames], r[0..frames]) catch {
-            self.failed = true;
-            @memset(l[0..frames], 0);
-            @memset(r[0..frames], 0);
-        },
-        .effect_sample => renderEffectSample(self, ctx, l[0..frames], r[0..frames]) catch {
             self.failed = true;
             @memset(l[0..frames], 0);
             @memset(r[0..frames], 0);
@@ -790,18 +731,12 @@ fn callPrepare(self: *FyRawMachine, sample_rate: f64) !void {
     const caller = if (self.prepare_caller) |*c_| c_ else return;
     // Prepare runs once per state region: per channel for effects, per
     // voice for polyphonic machines.
-    for (0..self.regionCount()) |reg| {
-        const args = [_]Fy.Dsp2RawArg{
-            .{ .ptr = self.statePtrCh(reg) },
-            .{ .ptr = self.paramsPtr() },
-            .{ .f64 = sample_rate },
-        };
-        _ = try caller.call(1, &args);
-    }
+    _ = sample_rate; // already in kctx.sr (syncRawParams)
+    for (0..self.regionCount()) |reg| _ = try caller.call(1, &self.entryArgs(reg));
 }
 
 fn renderVoiceSample(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f32, r: []f32) !void {
-    @memset(self.mono_buf[0..l.len], 0);
+    for (self.io[0..l.len]) |*f| f.out_l = 0;
 
     const events = if (ctx.note_in) |p| p[0..ctx.note_in_count] else &[_]machine.NoteEvent{};
     var cursor: usize = 0;
@@ -822,8 +757,8 @@ fn renderVoiceSample(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
         }
     }
 
-    for (l, r, self.mono_buf[0..l.len]) |*sl, *sr, x| {
-        const y: f32 = @floatCast(std.math.clamp(x, -1.0, 1.0));
+    for (l, r, self.io[0..l.len]) |*sl, *sr, f| {
+        const y: f32 = @floatCast(std.math.clamp(f.out_l, -1.0, 1.0));
         sl.* = y;
         sr.* = y;
     }
@@ -836,11 +771,8 @@ fn renderVoiceSegment(self: *FyRawMachine, start: usize, end: usize) !void {
     // freeing, silent voices are cheap and predictable); kernels of
     // multi-voice machines ACCUMULATE into the host-zeroed out buffer.
     for (0..self.regionCount()) |voice| {
-        const args = [_]Fy.Dsp2RawArg{
-            .{ .ptr = @intFromPtr(&self.mono_buf[start]) },
-            .{ .ptr = self.statePtrCh(voice) },
-            .{ .ptr = self.paramsPtr() },
-        };
+        const e = self.entryArgs(voice);
+        const args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&self.io[start]) }, e[0], e[1], e[2] };
         _ = try caller.call(@intCast(end - start), &args);
     }
 }
@@ -898,6 +830,7 @@ fn noteOnEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
     self.voice_gate[voice] = true;
     // note-pitch machines (drums) address slots by raw MIDI pitch.
     const note_arg = if (self.desc.note_pitch) @as(f64, ev.pitch) else midiToHz(ev.pitch);
+    self.kctx.pitch = ev.pitch;
     try callNoteOn(self, voice, note_arg, ev.velocity);
 }
 
@@ -928,83 +861,34 @@ fn noteOffEvent(self: *FyRawMachine, pitch: f32) !void {
 
 fn callNoteOn(self: *FyRawMachine, voice: usize, hz: f64, velocity: f64) !void {
     const caller = if (self.note_on_caller) |*c_| c_ else return;
-    const args = [_]Fy.Dsp2RawArg{
-        .{ .ptr = self.statePtrCh(voice) },
-        .{ .ptr = self.paramsPtr() },
-        .{ .f64 = hz },
-        .{ .f64 = velocity },
-    };
-    _ = try caller.call(1, &args);
+    self.kctx.hz = hz;
+    self.kctx.vel = velocity;
+    _ = try caller.call(1, &self.entryArgs(voice));
 }
 
 fn callNoteOff(self: *FyRawMachine, voice: usize) !void {
     const caller = if (self.note_off_caller) |*c_| c_ else return;
-    const args = [_]Fy.Dsp2RawArg{
-        .{ .ptr = self.statePtrCh(voice) },
-        .{ .ptr = self.paramsPtr() },
-    };
-    _ = try caller.call(1, &args);
-}
-
-fn renderEffectSample(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f32, r: []f32) !void {
-    const in_l, const in_r = inputChannels(ctx);
-    var out_sample: f64 = 0;
-    var i: usize = 0;
-    while (i < l.len) : (i += 1) {
-        const xl: f64 = if (in_l) |p| p[i] else 0;
-        const args_l = [_]Fy.Dsp2RawArg{
-            .{ .ptr = @intFromPtr(&out_sample) },
-            .{ .ptr = self.statePtrCh(0) },
-            .{ .ptr = self.paramsPtr() },
-            .{ .f64 = xl },
-        };
-        _ = try self.host.fy.callDsp2RawRepeatedWithArgsNoResult(self.desc.renderWord(), 1, &args_l);
-        l[i] = @floatCast(std.math.clamp(out_sample, -1.0, 1.0));
-
-        const xr: f64 = if (in_r) |p| p[i] else xl;
-        const args_r = [_]Fy.Dsp2RawArg{
-            .{ .ptr = @intFromPtr(&out_sample) },
-            .{ .ptr = self.statePtrCh(1) },
-            .{ .ptr = self.paramsPtr() },
-            .{ .f64 = xr },
-        };
-        _ = try self.host.fy.callDsp2RawRepeatedWithArgsNoResult(self.desc.renderWord(), 1, &args_r);
-        r[i] = @floatCast(std.math.clamp(out_sample, -1.0, 1.0));
-    }
+    _ = try caller.call(1, &self.entryArgs(voice));
 }
 
 fn renderEffectBlock(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f32, r: []f32) !void {
-    const caller = if (self.effect_caller) |*c_| c_ else return error.UnknownWord;
+    const caller = if (self.render_caller) |*c_| c_ else return error.UnknownWord;
     const in_l, const in_r = inputChannels(ctx);
-    for (self.in_l_buf[0..l.len], 0..) |*dst, i| dst.* = if (in_l) |p| p[i] else 0;
-    for (self.in_r_buf[0..r.len], 0..) |*dst, i| dst.* = if (in_r) |p| p[i] else self.in_l_buf[i];
-    if (self.desc.detector_cell != null) {
-        for (self.det_buf[0..l.len], self.in_l_buf[0..l.len], self.in_r_buf[0..l.len]) |*d, xl, xr| {
-            d.* = @max(@abs(xl), @abs(xr));
-        }
+    const io = self.io[0..l.len];
+    for (io, 0..) |*f, i| {
+        f.in_l = if (in_l) |p| p[i] else 0;
+        f.in_r = if (in_r) |p| p[i] else f.in_l;
+        f.det = @max(@abs(f.in_l), @abs(f.in_r));
     }
-
-    const args_l = [_]Fy.Dsp2RawArg{
-        .{ .ptr = @intFromPtr(&self.out_l_buf[0]) },
-        .{ .ptr = self.statePtrCh(0) },
-        .{ .ptr = self.paramsPtr() },
-        .{ .ptr = @intFromPtr(&self.in_l_buf[0]) },
-    };
-    _ = try caller.call(l.len, &args_l);
-
-    const args_r = [_]Fy.Dsp2RawArg{
-        .{ .ptr = @intFromPtr(&self.out_r_buf[0]) },
-        .{ .ptr = self.statePtrCh(1) },
-        .{ .ptr = self.paramsPtr() },
-        .{ .ptr = @intFromPtr(&self.in_r_buf[0]) },
-    };
-    _ = try caller.call(r.len, &args_r);
-
-    for (l, self.out_l_buf[0..l.len]) |*dst, sample| {
-        dst.* = @floatCast(std.math.clamp(sample, -1.0, 1.0));
-    }
-    for (r, self.out_r_buf[0..r.len]) |*dst, sample| {
-        dst.* = @floatCast(std.math.clamp(sample, -1.0, 1.0));
+    // Dual-mono lanes: each channel pass sees its input in in_l and writes
+    // out_l, against its own state region (ctx.chan = channel).
+    const outs = [2][]f32{ l, r };
+    for (outs, 0..) |dst, ch| {
+        if (ch == 1) for (io) |*f| std.mem.swap(f64, &f.in_l, &f.in_r);
+        const e = self.entryArgs(ch);
+        const args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&io[0]) }, e[0], e[1], e[2] };
+        _ = try caller.call(l.len, &args);
+        for (dst, io) |*d, f| d.* = @floatCast(std.math.clamp(f.out_l, -1.0, 1.0));
     }
 }
 
@@ -1061,7 +945,6 @@ fn drawPanelImpl(state: *anyopaque, rect: c.rl.Rectangle, mouse: widgets.Mouse) 
 fn drawFixtureInfo(self: *FyRawMachine, body: c.rl.Rectangle) void {
     const mode_text: [*:0]const u8 = switch (self.desc.mode) {
         .voice_sample => "raw voice/sample",
-        .effect_sample => "raw effect/sample",
         .effect_block => "raw effect/block",
     };
     widgets.drawLabelF(mode_text, body.x + 5, body.y + 6, theme.fsTiny(), theme.text_dim);
@@ -2213,18 +2096,81 @@ test "raw DSP2 delay machine: host buffer injection and echo" {
     try testing.expect(echo_r < 0.0001); // R state/ring independent of L
 }
 
-test "raw DSP2 reverb machine: channel cell, wide decorrelated tail" {
+test "kernel ABI: KernelCtx and IoFrame match ctx.fy's Ctx and Io" {
+    var host = FyHost.init(testing.allocator);
+    defer host.deinit();
+    try host.compileFile("kernels/00-primitives/ctx.fy");
+    const Check = struct { name: []const u8, off: usize };
+    const ctx_fields = [_]Check{
+        .{ .name = "Ctx.size", .off = @sizeOf(KernelCtx) },
+        .{ .name = "Ctx.sr", .off = @offsetOf(KernelCtx, "sr") },
+        .{ .name = "Ctx.inv-sr", .off = @offsetOf(KernelCtx, "inv_sr") },
+        .{ .name = "Ctx.tempo", .off = @offsetOf(KernelCtx, "tempo") },
+        .{ .name = "Ctx.beat", .off = @offsetOf(KernelCtx, "beat") },
+        .{ .name = "Ctx.frames", .off = @offsetOf(KernelCtx, "frames") },
+        .{ .name = "Ctx.chan", .off = @offsetOf(KernelCtx, "chan") },
+        .{ .name = "Ctx.hz", .off = @offsetOf(KernelCtx, "hz") },
+        .{ .name = "Ctx.vel", .off = @offsetOf(KernelCtx, "vel") },
+        .{ .name = "Ctx.pitch", .off = @offsetOf(KernelCtx, "pitch") },
+        .{ .name = "Ctx.data", .off = @offsetOf(KernelCtx, "data") },
+        .{ .name = "Io.size", .off = @sizeOf(IoFrame) },
+        .{ .name = "Io.out-l", .off = @offsetOf(IoFrame, "out_l") },
+        .{ .name = "Io.out-r", .off = @offsetOf(IoFrame, "out_r") },
+        .{ .name = "Io.in-l", .off = @offsetOf(IoFrame, "in_l") },
+        .{ .name = "Io.in-r", .off = @offsetOf(IoFrame, "in_r") },
+        .{ .name = "Io.det", .off = @offsetOf(IoFrame, "det") },
+    };
+    for (ctx_fields) |f| {
+        const v = try host.callWord(f.name);
+        try testing.expectEqual(Fy.makeInt(@intCast(f.off)), v);
+    }
+}
+
+test "delay SYNC follows ctx.tempo: quarter-note echo lands on the beat" {
+    const cases = [_]struct { bpm: f64, echo_at: usize }{
+        .{ .bpm = 120, .echo_at = 24_000 }, // 0.5 s
+        .{ .bpm = 90, .echo_at = 32_000 }, // 0.667 s
+    };
+    for (cases) |cs| {
+        const inst = try FyRawMachine.create(testing.allocator, "machines/delay2/delay2.fy");
+        const mach = inst.machineInterface();
+        defer mach.deinit.?(mach.state, testing.allocator);
+        mach.set_param.?(mach.state, "delay-sync", 1); // SYNC
+        mach.set_param.?(mach.state, "delay-div", 4); // 1/4
+        mach.set_param.?(mach.state, "delay-fb", 0);
+        mach.set_param.?(mach.state, "delay-mix", 1);
+
+        const block = 256;
+        var in_l = [_]f32{0} ** block;
+        const in_ports = [_][*]const f32{ &in_l, &in_l };
+        var ctx = std.mem.zeroes(machine.MachineCtx);
+        ctx.sample_rate = 48_000;
+        ctx.block_size = block;
+        ctx.tempo_bpm = cs.bpm;
+        ctx.audio_in = @ptrCast(&in_ports[0]);
+        ctx.audio_in_count = 2;
+        var l = [_]f32{0} ** block;
+        var r = [_]f32{0} ** block;
+        var best: f32 = 0;
+        var best_at: usize = 0;
+        var pos: usize = 0;
+        while (pos < cs.echo_at + 2 * block) : (pos += block) {
+            in_l[0] = if (pos == 0) 1.0 else 0.0;
+            testRender(mach, &ctx, &l, &r);
+            for (l, 0..) |x, i| if (pos + i > 16 and @abs(x) > best) {
+                best = @abs(x);
+                best_at = pos + i;
+            };
+        }
+        try testing.expect(best > 0.5);
+        try testing.expect(@abs(@as(i64, @intCast(best_at)) - @as(i64, @intCast(cs.echo_at))) <= 2);
+    }
+}
+
+test "raw DSP2 reverb machine: wide decorrelated tail" {
     const inst = try FyRawMachine.create(testing.allocator, "machines/verb2/verb2.fy");
     const mach = inst.machineInterface();
     defer mach.deinit.?(mach.state, testing.allocator);
-
-    // Channel index injected at the manifest's channel-cell offset (16:
-    // after buf ptr + len) — 0.0 left, 1.0 right.
-    const cell = inst.desc.channel_cell.?;
-    const l_chan: *align(8) const f64 = @ptrCast(@alignCast(&inst.state_buf[cell]));
-    const r_chan: *align(8) const f64 = @ptrCast(@alignCast(&inst.state_buf[MAX_STATE + cell]));
-    try testing.expectEqual(@as(f64, 0.0), l_chan.*);
-    try testing.expectEqual(@as(f64, 1.0), r_chan.*);
 
     // Centered impulse in: the tail must ring on both channels but differ
     // between them (decorrelated tap sets), and stay finite.

@@ -1,5 +1,6 @@
 ( oscillator.fy - raw DSP2 fixture machine with one note-controlled saw. )
 
+include "../../kernels/00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 ustruct: RawOscState
   f64 phase
 ;
@@ -10,20 +11,22 @@ ustruct: RawOscParams
   f64 inv-sample-rate
 ;
 
-( state params sample-rate -- : update block-rate derived params. )
+( ctx state params -- : update block-rate derived params. )
 dsp: raw-osc-prepare
-  | state params sample-rate |
+  | ctx state params |
+  ctx Ctx.sr@ | sample-rate |
   1.0
   sample-rate
   f/
   params RawOscParams.inv-sample-rate-p
   f!64
-  drop2 drop
+  drop2 drop drop
 ;
 
-( state params hz velocity -- : start a note and reset phase. )
+( ctx state params -- : start a note and reset phase. )
 dsp: raw-osc-note-on
-  | state params hz velocity |
+  | ctx state params |
+  ctx Ctx.hz@ ctx Ctx.vel@ | hz velocity |
   hz
   params RawOscParams.note-hz-p
   f!64
@@ -33,21 +36,21 @@ dsp: raw-osc-note-on
   0.0
   state RawOscState.phase-p
   f!64
-  drop2 drop2
+  drop2 drop2 drop
 ;
 
-( state params -- : stop the note immediately. )
+( ctx state params -- : stop the note immediately. )
 dsp: raw-osc-note-off
-  | state params |
+  | ctx state params |
   0.0
   params RawOscParams.amp-p
   f!64
-  drop2
+  drop2 drop
 ;
 
-( out state params -- : render one mono saw sample. )
+( io ctx state params -- : render one mono saw sample. )
 dsp: raw-osc-render
-  | out state params |
+  | out ctx state params |
   state RawOscState.phase@
   params RawOscParams.note-hz@
   params RawOscParams.inv-sample-rate@
@@ -68,7 +71,7 @@ dsp: raw-osc-render
   out
   f!64
   drop
-  drop2 drop
+  drop2 drop drop
 ;
 
 include "../lib/manifest.fy"

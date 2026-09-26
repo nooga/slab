@@ -16,10 +16,10 @@
   tap's delay trace is recovered per impulse and ratcheted against
   center/depth/rate. )
 
+include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 ustruct: ChorusState
   f64 buf        ( host-injected ring base pointer )
   f64 buf-len    ( host-injected element count )
-  f64 chan       ( host-injected channel index, 0 L / 1 R )
   f64 wpos
   f64 lfo-phase
   f64 lpf-z      ( BBD tone filter state )
@@ -40,9 +40,10 @@ ustruct: ChorusParams
   f64 tone-a
 ;
 
-( params sample-rate -- : mode voicing times the musical multipliers. )
+( ctx state params -- : mode voicing times the musical multipliers. )
 dsp: chorus-block-prepare
-  | params sr |
+  | ctx state params |
+  ctx Ctx.sr@ | sr |
   params ChorusParams.mode@ | mode |
   mode 0.5  0.513  mode 1.5  0.863  9.75  fsel-lt  fsel-lt
   params ChorusParams.rate-mul@ f* sr f/
@@ -54,24 +55,24 @@ dsp: chorus-block-prepare
   params ChorusParams.depth-spl-p f!64
   params ChorusParams.tone-hz@ 6.2831853 f* sr f/ 0.0 1.0 fclamp
   params ChorusParams.tone-a-p f!64
-  drop2 drop
+  drop2 drop drop2
 ;
 
-( out state params in -- : one BBD tick.  The triangle argument gets a
+( io ctx state params -- : one BBD tick.  The triangle argument gets a
   chan * spread/2 offset - a half-period shift inverts a triangle, so
   spread 1 is the Juno's mirrored L/R modulation. )
 dsp: k-chorus-tick
-  | out state params in |
+  | out ctx state params |
   state ChorusState.buf-p p@64 | buf |
   state ChorusState.buf-len@ | len |
   state ChorusState.lfo-phase@ params ChorusParams.lfo-inc@ f+ ffrac | ph |
   ph state ChorusState.lfo-phase-p f!64
-  ph  state ChorusState.chan@ 0.5 f* params ChorusParams.spread@ f*  f+ ffrac
+  ph  ctx Ctx.chan@ 0.5 f* params ChorusParams.spread@ f*  f+ ffrac
   0.5 f- | u |
   u 0.0  0.0 u f-  u  fsel-lt 4.0 f* 1.0 f- | tri |
   params ChorusParams.center-spl@  params ChorusParams.depth-spl@ tri f*  f+
   1.0  len 4.0 f-  fclamp | d |
-  in f@64 | x |
+  out Io.in-l@ | x |
   state ChorusState.wpos@ | w |
   x buf w f!i
   w d f- | rp0 |

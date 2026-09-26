@@ -8,12 +8,13 @@
   The VCA stage ACCUMULATES into the host-zeroed out buffer.  Voices are
   never freed; a fully released envelope renders silence.
 
-  voice-idx is the host-injected region index [channel-cell]; DETUNE
+  ctx.chan is the voice index [kernel ABI, ctx.fy]; DETUNE
   spreads voices a few cents apart off a per-voice golden-ratio offset -
   the analog-drift knob the real DCOs were too stable to need.
 
   Probe case: juno-voice-render. )
 
+include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../01-oscillators/primitives/phase.fy"
 include "../01-oscillators/primitives/blep.fy"
 include "../03-envelopes/primitives/segments.fy"
@@ -21,7 +22,6 @@ include "../04-filters/ms20_svf.fy"   ( svf-g: tiny-angle tan -> filter g )
 include "../04-filters/ladder.fy"     ( clean linear ZDF 4-pole ladder )
 
 ustruct: JunoState
-  f64 voice-idx   ( host-injected region/voice index )
   f64 phase       ( DCO phase, free-running )
   f64 sub-phase   ( sub oscillator phase, half rate )
   f64 lfo-phase
@@ -76,9 +76,10 @@ ustruct: JunoParams
   f64 vib-frac    ( vibrato * 0.03 - peak pitch deviation ratio )
 ;
 
-( params sample-rate -- : derived fills, all idempotent. )
+( ctx state params -- : derived fills, all idempotent. )
 dsp: juno-block-prepare
-  | params sr |
+  | ctx state params |
+  ctx Ctx.sr@ | sr |
   1.0 sr f/ | inv |
   inv params JunoParams.inv-sr-p f!64
   params JunoParams.lfo-rate@ inv f* params JunoParams.lfo-inc-p f!64
@@ -87,26 +88,27 @@ dsp: juno-block-prepare
   params JunoParams.env-amount@ 8000.0 f* params JunoParams.env-amt-hz-p f!64
   params JunoParams.lfo-vcf@ 3000.0 f* params JunoParams.lfo-vcf-hz-p f!64
   params JunoParams.vibrato@ 0.03 f* params JunoParams.vib-frac-p f!64
-  drop2 drop
+  drop2 drop drop2
 ;
 
-( state params hz velocity -- : start this voice.  DCO phases free-run -
+( ctx state params -- : start this voice.  DCO phases free-run -
   the digitally-controlled oscillators never reset, the envelope does
   the de-clicking, exactly like the hardware. )
 dsp: juno-note-on
-  | state params hz velocity |
+  | ctx state params |
+  ctx Ctx.hz@ ctx Ctx.vel@ | hz velocity |
   hz state JunoState.note-hz-p f!64
   velocity state JunoState.vel-p f!64
   0.0 state JunoState.age-p f!64
   1000000000.0 state JunoState.gate-time-p f!64
-  drop2 drop2
+  drop2 drop2 drop
 ;
 
-( state params -- : release this voice from its current age. )
+( ctx state params -- : release this voice from its current age. )
 dsp: juno-note-off
-  | state params |
+  | ctx state params |
   state JunoState.age@ state JunoState.gate-time-p f!64
-  drop2
+  drop2 drop
 ;
 
 ( state params -- : advance age + LFO, evaluate the shared envelope. )
@@ -129,11 +131,11 @@ dsp: v-jn-mod
 
 ( state params -- : DCO - saw + PWM pulse + sub + noise into osc-mix. )
 dsp: v-jn-dco
-  | state params |
+  | ctx state params |
   ( per-voice golden-ratio detune around center, +-0.4% at full knob )
   state JunoState.note-hz@ params JunoParams.range@ f*
   1.0
-    state JunoState.voice-idx@ 0.618034 f* ffrac 0.5 f-
+    ctx Ctx.chan@ 0.618034 f* ffrac 0.5 f-
     params JunoParams.detune@ f* 0.008 f*
   f+ f*
   1.0  state JunoState.lfo-out@ params JunoParams.vib-frac@ f*  f+ f*
@@ -159,7 +161,7 @@ dsp: v-jn-dco
   rng 2.0 f* 1.0 f-  params JunoParams.noise-level@ f* | osc-nz |
   osc-saw osc-pls f+ osc-sub f+ osc-nz f+ 0.32 f*
   state JunoState.osc-mix-p f!64
-  drop2 drop2 drop2 drop2 drop2 drop
+  drop2 drop2 drop2 drop2 drop2 drop drop
 ;
 
 ( state params -- : envelope/LFO/keyboard-modulated cutoff -> ladder g
@@ -221,13 +223,13 @@ dsp: v-jn-vca
   drop2 drop2
 ;
 
-( out state params -- : one polyphonic voice tick, staged. )
+( io ctx state params -- : one polyphonic voice tick, staged. )
 dsp: k-juno-voice
-  | out state params |
+  | io ctx state params |
   state params call: v-jn-mod
-  state params call: v-jn-dco
+  ctx state params call: v-jn-dco
   state params call: v-jn-cutoff
   state params call: v-jn-ladder
   state params call: v-jn-hpf
-  out state params call: v-jn-vca
+  io state params call: v-jn-vca
 ;

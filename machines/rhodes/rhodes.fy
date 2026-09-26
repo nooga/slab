@@ -3,7 +3,7 @@
   The voice lives in the kernels rig [kernels/06-voices/rhodes.fy];
   this file declares the machine.  The host voice pool calls the render
   composition once per voice per segment against per-voice state; all
-  note data is per-voice, params are shared.  channel-cell injects the
+  note data is per-voice, params are shared.  ctx.chan carries the
   voice index (unused in DSP but reserved for future per-voice detune).
 
   Panel: TINE | BAR | PICKUP | AMP.  The tine Q is the sustain knob -
@@ -24,7 +24,6 @@ include "../lib/manifest.fy"
   RhodesParams.size params-size!
   360.0 panel-w!
 
-  RhodesState.voice-idx channel-cell
 
   "TINE" "BELL"  "rd-tine-q"     RhodesParams.tine-q     0.0 1.0 0.7 curve-lin knob
   "TINE" "BARK"  "rd-bark"       RhodesParams.bark        0.0 1.0 0.3 curve-lin knob

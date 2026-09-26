@@ -13,6 +13,7 @@
   Probe case: delay-render - impulse train against a Zig reference
   mirror, WAV + CSV + ratcheted stats. )
 
+include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 ustruct: DelayState
   f64 buf       ( host-injected ring base pointer )
   f64 buf-len   ( host-injected element count )
@@ -29,20 +30,19 @@ ustruct: DelayParams
   f64 damp-hz   ( feedback lowpass cutoff )
   f64 sync      ( switch: 0 free / 1 tempo-synced )
   f64 div       ( switch option value: beat multiplier, quarter = 1.0 )
-  ( host-written each block via the manifest tempo-cell )
-  f64 tempo-bpm ( ctx.tempo_bpm; 0 until the host first writes it )
   ( derived - filled by delay-block-prepare )
   f64 time-spl  ( effective time * sr )
   f64 damp-a    ( one-pole coefficient, 0..1 )
 ;
 
-( params sample-rate -- : block-rate derived fill.  Effective delay time is
+( ctx state params -- : block-rate derived fill.  Effective delay time is
   the TIME knob when free, or 60/bpm * div when SYNC is on; selected
   branchlessly via the sync flag (dsp2 has no if/then).  bpm is clamped to
   20..999 first so a zero/garbage tempo can't produce inf*0 = NaN. )
 dsp: delay-block-prepare
-  | params sr |
-  60.0 params DelayParams.tempo-bpm@ 20.0 999.0 fclamp f/
+  | ctx state params |
+  ctx Ctx.sr@ | sr |
+  60.0 ctx Ctx.tempo@ 20.0 999.0 fclamp f/
   params DelayParams.div@ f*
   0.02 1.5 fclamp
   params DelayParams.sync@ f*
@@ -52,26 +52,27 @@ dsp: delay-block-prepare
   params DelayParams.time-spl-p f!64
   params DelayParams.damp-hz@ 6.2831853 f* sr f/ 0.0 1.0 fclamp
   params DelayParams.damp-a-p f!64
-  drop2
+  drop2 drop2
 ;
 
-( state params sample-rate -- : runs every block.  Seeds the time slew at
+( ctx state params -- : runs every block.  Seeds the time slew at
   the target on the first run after reset - a live tz is always >= 2, so
   tz < 1 means fresh state and we skip the silent ramp-from-zero chirp. )
 dsp: delay-prepare
-  | state params sr |
+  | ctx state params |
+  ctx Ctx.sr@ | sr |
   state DelayState.time-z@ 1.0
   params DelayParams.time-spl@
   state DelayState.time-z@
   fsel-lt
   state DelayState.time-z-p f!64
-  drop2 drop
+  drop2 drop drop
 ;
 
-( out state params in -- : one delay tick.  Reads happen at wpos - time
+( io ctx state params -- : one delay tick.  Reads happen at wpos - time
   which is always at least one cell behind the deferred buf write. )
 dsp: k-delay-tick
-  | out state params in |
+  | out ctx state params |
   state DelayState.buf-p p@64 | buf |
   state DelayState.buf-len@ | len |
   ( slew the delay time, clamped into the ring with headroom )
@@ -93,7 +94,7 @@ dsp: k-delay-tick
   dz0  rd dz0 f-  params DelayParams.damp-a@ f*  f+ | dz |
   dz state DelayState.damp-z-p f!64
   ( ring write and write-head advance )
-  in f@64 | x |
+  out Io.in-l@ | x |
   x  dz params DelayParams.feedback@ f*  f+  buf w f!i
   w 1.0 f+ | w1 |
   w1 len  w1  w1 len f-  fsel-lt

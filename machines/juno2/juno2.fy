@@ -3,7 +3,7 @@
   The voice lives in the kernels rig [kernels/06-voices/juno.fy]; this
   file declares the machine.  The host voice pool calls the render
   composition once per voice per segment against per-voice state; all
-  note data is per-voice, params are shared.  channel-cell injects the
+  note data is per-voice, params are shared.  ctx.chan carries the
   voice index, which DETUNE uses for the analog-spread cents offsets.
 
   Panel follows the 106: LFO | DCO | HPF | VCF | ENV | VCA.
@@ -23,7 +23,6 @@ include "../lib/manifest.fy"
   JunoParams.size params-size!
   560.0 panel-w!
 
-  JunoState.voice-idx channel-cell
 
   "LFO" "RATE" "jn-lfo-rate" JunoParams.lfo-rate 0.1 20.0 1.5 curve-exp knob
   "LFO" "VIB"  "jn-vib"      JunoParams.vibrato  0.0 1.0  0.0 curve-pow knob

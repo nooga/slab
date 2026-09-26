@@ -19,7 +19,6 @@ include "../lib/manifest.fy"
 
   ( 12 ms BBD line per channel )
   "bbd" ChorusState.buf ChorusState.buf-len 0.012 buffer
-  ChorusState.chan channel-cell
 
   "CHORUS" "MODE" "chorus-mode" ChorusParams.mode 0.0 switch
     "I" 0.0 opt  "II" 1.0 opt  "I+II" 2.0 opt

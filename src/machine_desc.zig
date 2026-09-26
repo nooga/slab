@@ -34,7 +34,6 @@ pub const MAX_PATH = 128;
 
 pub const Mode = enum {
     voice_sample,
-    effect_sample,
     effect_block,
 };
 
@@ -250,15 +249,6 @@ pub const Desc = struct {
     note_label_count: usize = 0,
     buffers: [MAX_BUFFERS]BufferReq = undefined,
     buffer_count: usize = 0,
-    // State offset where the host writes the channel index (0.0 L / 1.0 R)
-    // after buffer injection and reset; null = machine doesn't care.
-    channel_cell: ?usize = null,
-    // State offset where the host writes a pointer to the per-block
-    // stereo-linked detector buffer (max abs of both inputs per sample).
-    detector_cell: ?usize = null,
-    // Params offset where the host writes ctx.tempo_bpm each block, just
-    // before block-prepare runs; null = machine doesn't sync to tempo.
-    tempo_cell: ?usize = null,
     // Voice count for polyphonic voice-sample machines; 1 = mono.
     voices: usize = 1,
     assets: [MAX_ASSETS]AssetReq = undefined,
@@ -332,14 +322,11 @@ const MachineDescRaw = extern struct {
     note_pitch: Fy.Value,
     note_labels: Fy.Value,
     buffers: Fy.Value,
-    channel_cell: Fy.Value,
-    detector_cell: Fy.Value,
     voices: Fy.Value,
     assets: Fy.Value,
     pages: Fy.Value,
     derive: Fy.Value,
     derive_data: Fy.Value,
-    tempo_cell: Fy.Value,
 };
 
 const PageRaw = extern struct { next: Fy.Value, name: Fy.Value, rows: Fy.Value };
@@ -431,7 +418,6 @@ pub fn read(host: *FyHost) !Desc {
     if (d.name_len == 0) return error.InvalidMachineDesc;
     d.mode = switch (asInt(md.mode)) {
         0 => .voice_sample,
-        1 => .effect_sample,
         2 => .effect_block,
         else => return error.InvalidMachineDesc,
     };
@@ -557,24 +543,6 @@ pub fn read(host: *FyHost) !Desc {
         d.buffer_count += 1;
     }
 
-    const chan_cell = asInt(md.channel_cell);
-    if (chan_cell > 0) {
-        const off: usize = @intCast(chan_cell - 1); // stored +1 so 0 = none
-        if (off + 8 > d.state_size) return error.InvalidMachineDesc;
-        d.channel_cell = off;
-    }
-    const det_cell = asInt(md.detector_cell);
-    if (det_cell > 0) {
-        const off: usize = @intCast(det_cell - 1);
-        if (off + 8 > d.state_size) return error.InvalidMachineDesc;
-        d.detector_cell = off;
-    }
-    const tempo_cell = asInt(md.tempo_cell);
-    if (tempo_cell > 0) {
-        const off: usize = @intCast(tempo_cell - 1); // stored +1 so 0 = none
-        if (off + 8 > d.params_size) return error.InvalidMachineDesc; // params, not state
-        d.tempo_cell = off;
-    }
     const voices = asInt(md.voices);
     if (voices > 0) d.voices = @intCast(voices);
     if (d.voices > 1 and d.mode != .voice_sample) return error.InvalidMachineDesc;

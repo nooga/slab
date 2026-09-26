@@ -15,6 +15,7 @@
 
   Probe case: sampler-render. )
 
+include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../03-envelopes/primitives/segments.fy"
 include "../00-primitives/pow2.fy"
 
@@ -54,9 +55,10 @@ ustruct: SamplerParams
   f64 loop-len-spl
 ;
 
-( params sample-rate -- : resampling ratio, tune, loop/start in samples. )
+( ctx state params -- : resampling ratio, tune, loop/start in samples. )
 dsp: sampler-block-prepare
-  | params sr |
+  | ctx state params |
+  ctx Ctx.sr@ | sr |
   1.0 sr f/ params SamplerParams.inv-sr-p f!64
   params SamplerParams.smp-sr@ sr f/ params SamplerParams.sr-ratio-p f!64
   params SamplerParams.tune@ 0.083333333333 f* exp2-approx params SamplerParams.tune-mult-p f!64
@@ -67,12 +69,13 @@ dsp: sampler-block-prepare
   params SamplerParams.loop-end@ len f*  ls 1.0 f+  len  fclamp | le |
   le params SamplerParams.loop-end-spl-p f!64
   le ls f- params SamplerParams.loop-len-spl-p f!64
-  drop2 drop2 drop
+  drop2 drop2 drop drop2
 ;
 
-( state params hz velocity -- : trigger playback from the start point. )
+( ctx state params -- : trigger playback from the start point. )
 dsp: sampler-note-on
-  | state params hz velocity |
+  | ctx state params |
+  ctx Ctx.hz@ ctx Ctx.vel@ | hz velocity |
   params SamplerParams.sr-ratio@ params SamplerParams.tune-mult@ f*
   hz f* params SamplerParams.root-hz@ f/
   state SamplerState.inc-p f!64
@@ -80,14 +83,14 @@ dsp: sampler-note-on
   0.0 state SamplerState.age-p f!64
   1000000000.0 state SamplerState.gate-time-p f!64
   velocity state SamplerState.vel-p f!64
-  drop2 drop2
+  drop2 drop2 drop
 ;
 
-( state params -- : release the amp envelope. )
+( ctx state params -- : release the amp envelope. )
 dsp: sampler-note-off
-  | state params |
+  | ctx state params |
   state SamplerState.age@ state SamplerState.gate-time-p f!64
-  drop2
+  drop2 drop
 ;
 
 ( state params -- : interpolated read at phase, then advance with loop
@@ -130,9 +133,9 @@ dsp: smp-amp
   drop2 drop2 drop
 ;
 
-( out state params -- : one sampler voice tick, staged. )
+( io ctx state params -- : one sampler voice tick, staged. )
 dsp: k-sampler-voice
-  | out state params |
+  | io ctx state params |
   state params call: smp-read
-  out state params call: smp-amp
+  io state params call: smp-amp
 ;

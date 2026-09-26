@@ -19,6 +19,7 @@
 :: _fm86-r 8 alloc ;   ( current row )
 
 ( table elem -- : write 1.0 at table[elem] (f64 elements). )
+include "../../kernels/00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 : fm86-tset  ( table elem -- ) 8 * + 1.0 swap f!64 ;
 
 ( mod car -- : operator `mod` modulates carrier `car` in the current row.
@@ -73,11 +74,12 @@
 
 ( --- routing derive word (dsp: indexes the table, writes params) ----- )
 
-( params derive-data -- : fill the voice routing from the ALGO row. Copies the
+( ctx state params -- : fill the voice routing from the ALGO row. Copies the
   15 upper-triangular weights, scales the 6 carrier flags by MASTER and the 6
   feedback flags by FEEDBACK. Flat (no call:) so the raw caller can build it. )
 dsp: fm86-derive
-  | params derive-data |
+  | ctx state params |
+  ctx Ctx.data-p p@64 | derive-data |
   params Fm86Params.algo@ 1.0 f- 48.0 f*   | rb |
   params Fm86Params.master@                | master |
   params Fm86Params.feedback@              | feedback |
@@ -108,5 +110,5 @@ dsp: fm86-derive
   derive-data rb 45.0 f+ f@i feedback f* params Fm86Params.fb3-p f!64
   derive-data rb 46.0 f+ f@i feedback f* params Fm86Params.fb4-p f!64
   derive-data rb 47.0 f+ f@i feedback f* params Fm86Params.fb5-p f!64
-  drop2 drop2 drop
+  drop2 drop2 drop drop2
 ;

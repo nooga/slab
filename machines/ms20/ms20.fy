@@ -5,17 +5,19 @@
   ustruct introspection, controls, and the panel layout.  The host walks the
   descriptor returned by `manifest` [src/machine_desc.zig]. )
 
+include "../../kernels/00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../../kernels/06-voices/ms20_voice_probe.fy"
 include "../lib/manifest.fy"
 
-( params sample-rate -- : per-block coefficient fill.  The SvfParams-shaped
+( ctx state params -- : per-block coefficient fill.  The SvfParams-shaped
   profile region starts at Ms20VoiceParams.svf-g; the two coeff words drop
   their own args, so only ours remain. )
 dsp: ms20-block-prepare
-  | params sr |
+  | ctx state params |
+  ctx Ctx.sr@ | sr |
   params Ms20VoiceParams.svf-g-p  sr 4.0 f*  k-svf-coeffs-dc
   params Ms20VoiceParams.svf-g-p  params Ms20VoiceParams.resonance@  k-svf-coeffs-profile
-  drop2
+  drop2 drop2
 ;
 
 : manifest

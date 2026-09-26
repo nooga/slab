@@ -10,11 +10,11 @@ ustruct: RawPagesParams
   f64 b
 ;
 
-( out state params -- : write one silent mono sample. )
+( io ctx state params -- : write one silent mono sample. )
 dsp: raw-pages-render
-  | out state params |
+  | out ctx state params |
   0.0 out f!64
-  drop2 drop
+  drop2 drop drop
 ;
 
 include "../lib/manifest.fy"
