@@ -1442,16 +1442,20 @@ pub const Fy = struct {
             try code.append(Asm.str_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
         }
 
+        // Slots base lives in x16 (IP0). Never x18: it is the Apple arm64
+        // platform register and the kernel zeroes it on context switches, so
+        // a value parked there faults at random (seen as flaky EXC_BAD_ACCESS
+        // at slots+offset with a zero base).
         const slots_addr = @intFromPtr(slots);
-        for (Asm.movImm64(18, slots_addr)) |instr| try code.append(instr);
+        for (Asm.movImm64(16, slots_addr)) |instr| try code.append(instr);
         // counter = iterations (slots @0) -> frame[64]
-        try code.append(Asm.ldr_x_imm(9, 18, 0));
+        try code.append(Asm.ldr_x_imm(9, 16, 0));
         try code.append(Asm.str_x_imm(9, 31, 64));
         // stash pointer args from slots arg_bits[0..arity] (slots @8,16,24,32)
-        if (arity >= 1) try code.append(Asm.ldr_x_imm(21, 18, 8));
-        if (arity >= 2) try code.append(Asm.ldr_x_imm(22, 18, 16));
-        if (arity >= 3) try code.append(Asm.ldr_x_imm(23, 18, 24));
-        if (arity >= 4) try code.append(Asm.ldr_x_imm(24, 18, 32));
+        if (arity >= 1) try code.append(Asm.ldr_x_imm(21, 16, 8));
+        if (arity >= 2) try code.append(Asm.ldr_x_imm(22, 16, 16));
+        if (arity >= 3) try code.append(Asm.ldr_x_imm(23, 16, 24));
+        if (arity >= 4) try code.append(Asm.ldr_x_imm(24, 16, 32));
 
         const loop_pos = code.items.len;
         for (calls) |call| {
@@ -1865,12 +1869,13 @@ pub const Fy = struct {
         }
         try code.append(Asm.@".rpush Xn"(23));
 
+        // x16 (IP0), never x18 — see compileDsp2CompositionCaller.
         const slots_addr = @intFromPtr(slots);
-        for (Asm.movImm64(18, slots_addr)) |instr| try code.append(instr);
-        try code.append(Asm.ldr_x_imm(23, 18, 0));
+        for (Asm.movImm64(16, slots_addr)) |instr| try code.append(instr);
+        try code.append(Asm.ldr_x_imm(23, 16, 0));
         for (arg_kinds, 0..) |kind, i| {
             const x_reg = Dsp2.RAW_X_ARG_REGS[i];
-            try code.append(Asm.ldr_x_imm(x_reg, 18, @intCast(8 + i * 8)));
+            try code.append(Asm.ldr_x_imm(x_reg, 16, @intCast(8 + i * 8)));
             if (kind == .f64) {
                 try code.append(Asm.@"fmov Dd, Xn"(Dsp2.RAW_D_ARG_REGS[i], x_reg));
             }
