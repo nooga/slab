@@ -3,11 +3,11 @@
 
   DSP lives in the kernels rig [kernels/05-drums]. State and params are
   the voice structs laid out back to back - [Kick|Snare|Clap|Hat|Tom] -
-  where TOM reuses the kick voice on its own region. The stage wrappers
+  where TOM reuses the kick voice on its own region. The slot wrappers
   below compute each slot's region base with introspected sizes, never
-  hand-written offsets. The render word is a call: composition, one
-  fresh register budget per stage, every stage accumulating into the
-  host-zeroed out cell.
+  hand-written offsets. Every voice returns its sample; the render word
+  inlines them all, sums onto the host-zeroed out cell and runs the
+  master glue.
 
   note-pitch mode: note-on receives raw MIDI pitch and gates each slot's
   branchless trigger by PITCH CLASS, so the kit answers in every octave:
@@ -23,7 +23,7 @@ include "../lib/manifest.fy"
 
 ( master section - no per-sample state, just three params at the tail
   of the params block: accent shapes velocity at note-on, drive/level
-  shape the summed kit in the final render stage. )
+  shape the summed kit at the end of the render word. )
 ustruct: Drum2Master
   f64 accent        ( 0 = every hit full force, 1 = full velocity range )
   f64 drive         ( summed-kit gain into the rational-tanh glue )
@@ -87,104 +87,52 @@ dsp: drum2-note-on
   vel kick-trigger
 ;
 
-( --- render stages: region base + voice helper, accumulate into out.
-  Kick sits at region 0 so its stages are used directly. --- )
+( --- slot voices: region base + voice word, each returns its sample.
+  Kick sits at region 0 so its voice is used directly. --- )
 
-dsp: d2-snare-shell
-  | state params |
-  state KickState.size ptr+  params KickParams.size ptr+  snare-shell-write
+dsp: d2-snare | state params -- y |
+  state KickState.size ptr+  params KickParams.size ptr+  snare-voice
 ;
 
-dsp: d2-snare-snap
-  | state params |
-  state KickState.size ptr+  params KickParams.size ptr+  snare-snap-write
-;
-
-dsp: d2-snare-accum
-  | out state params |
-  out  state KickState.size ptr+  params KickParams.size ptr+  snare-accum
-;
-
-dsp: d2-clap-env
-  | state params |
+dsp: d2-clap | state params -- y |
   state KickState.size ptr+ SnareState.size ptr+
   params KickParams.size ptr+ SnareParams.size ptr+
-  clap-env-write
+  clap-voice
 ;
 
-dsp: d2-clap-accum
-  | out state params |
-  out
-  state KickState.size ptr+ SnareState.size ptr+
-  params KickParams.size ptr+ SnareParams.size ptr+
-  clap-accum
-;
-
-dsp: d2-hat-metal
-  | state params |
+dsp: d2-hat | state params -- y |
   state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+
   params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+
-  hat-metal-write
+  hat-voice
 ;
 
-dsp: d2-hat-filter
-  | state params |
-  state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+
-  params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+
-  hat-filter-write
-;
-
-dsp: d2-hat-accum
-  | out state params |
-  out
-  state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+
-  params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+
-  hat-accum
-;
-
-dsp: d2-tom-osc
-  | state params |
+dsp: d2-tom | state params -- y |
   state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+ HatState.size ptr+
   params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+ HatParams.size ptr+
-  kick-osc-write
+  kick-voice
 ;
 
-dsp: d2-tom-accum
-  | out state params |
-  out
-  state KickState.size ptr+ SnareState.size ptr+ ClapState.size ptr+ HatState.size ptr+
-  params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+ HatParams.size ptr+
-  kick-accum
-;
-
-( out state params -- : drive the summed kit and scale - overwrites out. )
-dsp: d2-master
-  | out state params |
+( Drive the summed kit into the glue clipper and scale. )
+dsp: d2-master | params kit -- y |
   params KickParams.size ptr+ SnareParams.size ptr+ ClapParams.size ptr+ HatParams.size ptr+ KickParams.size ptr+
   | master:Drum2Master |
-  out f@64
+  kit
   master.drive f*
   k-tanh-rational-shape-dsp2
   master.level f*
-  out f!64
 ;
 
 ( io ctx state params -- : one summed mono drum sample. )
-dsp: k-drum2-render
-  | io ctx state params |
-  state params call: kick-osc-write
-  io state params call: kick-accum
-  state params call: d2-snare-shell
-  state params call: d2-snare-snap
-  io state params call: d2-snare-accum
-  state params call: d2-clap-env
-  io state params call: d2-clap-accum
-  state params call: d2-hat-metal
-  state params call: d2-hat-filter
-  io state params call: d2-hat-accum
-  state params call: d2-tom-osc
-  io state params call: d2-tom-accum
-  io state params call: d2-master
+dsp: k-drum2-render | io ctx state params -- |
+  io f@64
+  state params kick-voice f+
+  state params d2-snare f+
+  state params d2-clap f+
+  state params d2-hat f+
+  state params d2-tom f+
+  | kit |
+  params kit d2-master
+  io f!64
 ;
 
 : manifest

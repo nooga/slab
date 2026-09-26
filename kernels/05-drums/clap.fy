@@ -3,8 +3,8 @@
   burst decaying quickly between restarts, then a longer tail. All
   branchless: the repeat machinery is fsel-selected state updates.
 
-  Staged like the snare: the envelope machinery writes ClapState.env,
-  the accum stage filters noise and drives into out. Probe case:
+  The envelope machinery advances ClapState.env and returns it; the body
+  filters noise under it and drives the clipper. Probe case:
   drum-clap-render. )
 
 include "decay.fy"
@@ -62,9 +62,8 @@ dsp: clap-trigger
   0.5 gate 0.5551212 state.noise-rng fsel-lt -> state.noise-rng
 ;
 
-( state params -- : advance the retrigger envelope machinery in place. )
-dsp: clap-env-write
-  | state:ClapState params:ClapParams |
+( Advance the retrigger envelope machinery; returns the new env. )
+dsp: clap-env | state:ClapState params:ClapParams -- env |
   state.repeat-phase params.spread-inc f+
   | rp |
   state.repeats-left
@@ -78,33 +77,35 @@ dsp: clap-env-write
   ( burst decay while repeats remain, tail decay after )
   0.5 reps params.burst-coeff params.tail-coeff fsel-lt
   | coeff |
-  trig 0.5  state.env coeff f*  1.0  fsel-lt
-  -> state.env
   rp trig f- -> state.repeat-phase
   reps trig f- -> state.repeats-left
+  trig 0.5  state.env coeff f*  1.0  fsel-lt
+  dup -> state.env
 ;
 
-( out state params -- : band-passed noise * env, driven into out. )
-dsp: clap-accum
-  | out state:ClapState params:ClapParams |
-  out f@64
+( Band-passed noise * env, driven through the clipper. )
+dsp: clap-body | state:ClapState params:ClapParams env -- y |
   state.svf-lp&
   state.noise-rng& noise-step
   params.svf-f
   0.7
   svf2-bp-step
-  state.env f*
+  env f*
   2.2 f*
   state.vel f*
   k-tanh-rational-shape-dsp2
   params.level f*
-  f+
-  out f!64
 ;
 
-( out state params -- : one mono clap sample, staged composition. )
-dsp: k-clap-render
-  | out state params |
-  state params call: clap-env-write
-  out state params call: clap-accum
+( One mono clap sample. )
+dsp: clap-voice | state params -- y |
+  state params  state params clap-env  clap-body
+;
+
+( out state params -- : one mono clap sample, accumulated into out. )
+dsp: k-clap-render | out state params -- |
+  out f@64
+  state params clap-voice
+  f+
+  out f!64
 ;

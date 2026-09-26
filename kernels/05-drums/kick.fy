@@ -19,7 +19,6 @@ ustruct: KickState
   f64 click-env
   f64 noise-rng
   f64 vel
-  f64 mix           ( stage scratch: swept sine body )
 ;
 
 ustruct: KickParams
@@ -65,10 +64,9 @@ dsp: kick-trigger
   0.5 gate 0.1234567 state.noise-rng fsel-lt -> state.noise-rng
 ;
 
-( state params -- : swept sine body -> mix scratch. )
-dsp: kick-osc-write
-  | state:KickState params:KickParams |
-  ( pitch envelope -> instantaneous frequency -> phase advance )
+( Swept sine body: pitch envelope -> instantaneous frequency -> phase
+  advance -> polynomial sine. )
+dsp: kick-osc | state:KickState params:KickParams -- body |
   state.pitch-env& params.pitch-coeff decay-exp-step
   | penv |
   params.tune-hz
@@ -78,14 +76,11 @@ dsp: kick-osc-write
   state.phase f+ ffrac
   dup -> state.phase
   sine-shape
-  -> state.mix
 ;
 
-( out state params -- : body * amp env + click, driven, into out. )
-dsp: kick-accum
-  | out state:KickState params:KickParams |
-  out f@64
-  state.mix
+( Body * amp env + click, velocity, driven through the clipper. )
+dsp: kick-amp | state:KickState params:KickParams body -- y |
+  body
   state.amp-env& params.amp-coeff decay-exp-step
   f*
   state.click-env& params.click-coeff decay-exp-step
@@ -95,13 +90,17 @@ dsp: kick-accum
   params.drive f*
   k-tanh-rational-shape-dsp2
   params.level f*
-  f+
-  out f!64
 ;
 
-( out state params -- : one mono kick sample, staged composition. )
-dsp: k-kick-render
-  | out state params |
-  state params call: kick-osc-write
-  out state params call: kick-accum
+( One mono kick sample. )
+dsp: kick-voice | state params -- y |
+  state params  state params kick-osc  kick-amp
+;
+
+( out state params -- : one mono kick sample, accumulated into out. )
+dsp: k-kick-render | out state params -- |
+  out f@64
+  state params kick-voice
+  f+
+  out f!64
 ;

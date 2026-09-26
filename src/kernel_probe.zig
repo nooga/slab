@@ -1924,7 +1924,7 @@ fn drumVoiceCase(name: []const u8) ?DrumVoiceConfig {
     if (std.mem.eql(u8, name, "drum-kick-render")) return .{
         .prepare_word = "kick-prepare",
         .trigger_word = "kick-trigger",
-        .state_f64s = 7,
+        .state_f64s = 6,
         // tune sweep bend decay click drive level
         .param_defaults = &.{ 50.0, 7.0, 0.055, 0.42, 0.35, 1.8, 0.9 },
         .params_f64s = 11,
@@ -1932,7 +1932,7 @@ fn drumVoiceCase(name: []const u8) ?DrumVoiceConfig {
     if (std.mem.eql(u8, name, "drum-snare-render")) return .{
         .prepare_word = "snare-prepare",
         .trigger_word = "snare-trigger",
-        .state_f64s = 10,
+        .state_f64s = 9,
         // tune body-decay snap-level snap-decay snap-hz level
         .param_defaults = &.{ 185.0, 0.18, 0.8, 0.10, 1800.0, 0.9 },
         .params_f64s = 11,
@@ -1948,7 +1948,7 @@ fn drumVoiceCase(name: []const u8) ?DrumVoiceConfig {
     if (std.mem.eql(u8, name, "drum-hat-render")) return .{
         .prepare_word = "hat-prepare",
         .trigger_word = "hat-ch-trigger",
-        .state_f64s = 15,
+        .state_f64s = 14,
         // tune tone ch-decay oh-decay level
         .param_defaults = &.{ 1.0, 1.0, 0.07, 0.6, 0.85 },
         .params_f64s = 15,
@@ -1956,7 +1956,7 @@ fn drumVoiceCase(name: []const u8) ?DrumVoiceConfig {
     if (std.mem.eql(u8, name, "drum-openhat-render")) return .{
         .prepare_word = "hat-prepare",
         .trigger_word = "hat-oh-trigger",
-        .state_f64s = 15,
+        .state_f64s = 14,
         .param_defaults = &.{ 1.0, 1.0, 0.07, 0.6, 0.85 },
         .params_f64s = 15,
     };

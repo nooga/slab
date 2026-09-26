@@ -25,7 +25,6 @@ ustruct: HatState
   f64 hp-bp
   f64 ch-vel
   f64 oh-vel
-  f64 metal         ( stage scratch: filtered core )
 ;
 
 ustruct: HatParams
@@ -94,9 +93,8 @@ dsp: square-step
   0.5 1.0 -1.0 fsel-lt
 ;
 
-( state params -- : six-square inharmonic sum -> metal scratch. )
-dsp: hat-metal-write
-  | state:HatState params:HatParams |
+( Six-square inharmonic sum, normalized. )
+dsp: hat-metal | state:HatState params:HatParams -- core |
   state.ph1& params.dt1 square-step
   state.ph2& params.dt2 square-step f+
   state.ph3& params.dt3 square-step f+
@@ -104,23 +102,18 @@ dsp: hat-metal-write
   state.ph5& params.dt5 square-step f+
   state.ph6& params.dt6 square-step f+
   0.1666666666666667 f*
-  -> state.metal
 ;
 
-( state params -- : band-pass then high-pass the core, in place. )
-dsp: hat-filter-write
-  | state:HatState params:HatParams |
-  state.bp-lp&  state.metal  params.bp-f  0.8  svf2-bp-step
+( Band-pass then high-pass the core. )
+dsp: hat-filter | state:HatState params:HatParams core -- y |
+  state.bp-lp&  core  params.bp-f  0.8  svf2-bp-step
   | bp |
   state.hp-lp&  bp  params.hp-f  1.0  svf2-hp-step
-  -> state.metal
 ;
 
-( out state params -- : core * [ch env + oh env], into out. )
-dsp: hat-accum
-  | out state:HatState params:HatParams |
-  out f@64
-  state.metal
+( Filtered core * [ch env + oh env], then level. )
+dsp: hat-amp | state:HatState params:HatParams x -- y |
+  x
   state.ch-env& params.ch-coeff decay-exp-step
   state.ch-vel f*
   state.oh-env& params.oh-coeff decay-exp-step
@@ -128,14 +121,17 @@ dsp: hat-accum
   f+
   f*
   params.level f*
-  f+
-  out f!64
 ;
 
-( out state params -- : one mono hat sample, staged composition. )
-dsp: k-hat-render
-  | out state params |
-  state params call: hat-metal-write
-  state params call: hat-filter-write
-  out state params call: hat-accum
+( One mono hat sample - closed and open share the core. )
+dsp: hat-voice | state params -- y |
+  state params  state params  state params hat-metal  hat-filter  hat-amp
+;
+
+( out state params -- : one mono hat sample, accumulated into out. )
+dsp: k-hat-render | out state params -- |
+  out f@64
+  state params hat-voice
+  f+
+  out f!64
 ;
