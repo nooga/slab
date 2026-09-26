@@ -52,6 +52,9 @@ pub const PolyMachine = struct {
             .write_params_json = writeParamsJsonImpl,
             .set_param = setParamImpl,
             .panel_w = self.panel_w,
+            // Voices are identical: the pool looks like its voice to the bay.
+            .host_titlebar = self.voice_count > 0 and self.voices[0].host_titlebar,
+            .note_labels = if (self.voice_count > 0) self.voices[0].note_labels else &.{},
         };
     }
 };
