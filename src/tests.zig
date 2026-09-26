@@ -1659,6 +1659,32 @@ test "dsp: :: constants and table: are visible to dsp words" {
     try std.testing.expectEqual(@as(i64, 3), Fy.getInt(try fy.run("TAPS")));
 }
 
+test "ustruct: counted and embedded fields" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run(
+        \\ustruct: Pair f64 a f64 b ;
+        \\ustruct: Box f64 x f64 taps 4 Pair p f64 y ;
+        \\dsp: t-box | s:Box -- |
+        \\  s.p& | q:Pair |  2.0 -> q.b
+        \\  s.taps& 3.0 f@i 10.0 f* -> s.y ;
+    );
+    try std.testing.expectEqual(@as(i64, 64), Fy.getInt(try fy.run("Box.size")));
+    try std.testing.expectEqual(@as(i64, 8), Fy.getInt(try fy.run("Box.taps")));
+    try std.testing.expectEqual(@as(i64, 32), Fy.getInt(try fy.run("Box.taps-size")));
+    try std.testing.expectEqual(@as(i64, 40), Fy.getInt(try fy.run("Box.p")));
+    try std.testing.expectEqual(@as(i64, 56), Fy.getInt(try fy.run("Box.y")));
+
+    var box = [_]f64{0} ** 8;
+    box[4] = 1.5; // taps[3]
+    const args = [_]Fy.Dsp2RawArg{.{ .ptr = @intFromPtr(&box) }};
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("t-box", 1, &args);
+    try std.testing.expectEqual(@as(f64, 2.0), box[6]); // p.b
+    try std.testing.expectEqual(@as(f64, 15.0), box[7]); // y
+}
+
 test "dsp: typed locals, dotted fields, -> stores and & addresses" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();

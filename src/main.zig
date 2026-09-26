@@ -448,6 +448,14 @@ pub const Fy = struct {
         name: []const u8,
         offset: u16,
         field_type: FieldType,
+        /// `f64 taps 16`: an inline array of `count` elements.
+        count: u16 = 1,
+        /// An embedded ustruct (bytes, 8-aligned): `Dec4 os`.
+        embed: bool = false,
+
+        fn bytes(self: FieldDef) u16 {
+            return self.field_type.size() * self.count;
+        }
     };
 
     const StructLayout = struct {
@@ -5553,7 +5561,7 @@ pub const Fy = struct {
                 if (std.mem.endsWith(u8, field_part, "-size")) {
                     const field_name = field_part[0 .. field_part.len - 5];
                     for (layout.fields) |field| {
-                        if (std.mem.eql(u8, field.name, field_name)) return @intCast(field.field_type.size());
+                        if (std.mem.eql(u8, field.name, field_name)) return @intCast(field.bytes());
                     }
                 }
                 for (layout.fields) |field| {
@@ -5724,6 +5732,10 @@ pub const Fy = struct {
                 self.setError("dsp: `{s}`: {s} has no field `{s}`", .{ word, ty, field_name });
                 return Error.UnknownWord;
             };
+            if (!addr and (field.count != 1 or field.embed)) {
+                self.setError("dsp: `{s}`: `{s}` is an array or embedded struct; take its address with `{s}&`", .{ word, field_name, word });
+                return Error.UnknownWord;
+            }
             program.addLocalArg(found.ref) catch return Error.OutOfMemory;
             program.addNumber(field.offset) catch return Error.OutOfMemory;
             program.addWord("ptr+") catch return Error.OutOfMemory;
@@ -6317,7 +6329,12 @@ pub const Fy = struct {
                 };
                 if (std.mem.eql(u8, type_word, ";")) break;
 
-                const field_type = parseFieldType(type_word) orelse {
+                // A field typed by an existing ustruct embeds it.
+                var embed_size: ?u16 = null;
+                for (self.fy.untagged_struct_layouts.items) |l| {
+                    if (std.mem.eql(u8, l.name, type_word)) embed_size = l.size;
+                }
+                const field_type = if (embed_size != null) FieldType.u8 else parseFieldType(type_word) orelse {
                     self.setError("unknown field type: {s}", .{type_word});
                     return Error.UnknownWord;
                 };
@@ -6328,7 +6345,21 @@ pub const Fy = struct {
                     else => return Error.ExpectedWord,
                 };
 
-                const align_val = field_type.alignment();
+                // Optional element count: `f64 taps 16`.
+                var count: u16 = embed_size orelse 1;
+                if (embed_size == null) {
+                    const saved_pos = self.parser.pos;
+                    const saved_line = self.parser.line;
+                    const next = try self.parser.nextToken();
+                    if (next != null and next.? == .Number and next.?.Number > 0 and next.?.Number < 4096) {
+                        count = @intCast(next.?.Number);
+                    } else {
+                        self.parser.pos = saved_pos;
+                        self.parser.line = saved_line;
+                    }
+                }
+
+                const align_val: u16 = if (embed_size != null) 8 else field_type.alignment();
                 if (align_val > max_align) max_align = align_val;
                 current_offset = std.mem.alignForward(u16, current_offset, align_val);
 
@@ -6336,9 +6367,11 @@ pub const Fy = struct {
                     .name = self.fy.fyalloc.dupe(u8, field_name) catch return Error.OutOfMemory,
                     .offset = current_offset,
                     .field_type = field_type,
+                    .count = count,
+                    .embed = embed_size != null,
                 }) catch return Error.OutOfMemory;
 
-                current_offset += field_type.size();
+                current_offset += field_type.size() * count;
             }
 
             const total_size: u16 = std.mem.alignForward(u16, current_offset, max_align);
@@ -6392,7 +6425,7 @@ pub const Fy = struct {
                 try self.generateConstIntWord(off_name, field.offset);
                 const fsz_name = std.fmt.allocPrint(self.fy.fyalloc, "{s}.{s}-size", .{ layout.name, field.name }) catch return Error.OutOfMemory;
                 defer self.fy.fyalloc.free(fsz_name);
-                try self.generateConstIntWord(fsz_name, field.field_type.size());
+                try self.generateConstIntWord(fsz_name, field.bytes());
             }
         }
 
