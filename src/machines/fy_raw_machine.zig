@@ -2204,7 +2204,7 @@ test "raw DSP2 MS-20 fixture renders a finite note through generic adapter" {
         peak = @max(peak, @abs(sl));
     }
     try testing.expect(peak > 0.001);
-    try testing.expect(peak <= 1.0);
+    try testing.expect(peak < 4.0); // headroom, not clamped (D5); sane bound ~+12 dBFS
 }
 
 /// Byte offset of a ustruct field by its fy introspection constant.

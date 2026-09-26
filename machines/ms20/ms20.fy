@@ -54,7 +54,7 @@ dsp: ms20-block-prepare ( ctx state params -- )
   "LPF" "DRV"  "drive"     Ms20VoiceParams.drive     0.4 2.2 1.25 curve-lin knob
   "LPF" "ENV"  "env-amount" Ms20VoiceParams.env-amount 0.0 8.0 4.8 curve-lin knob
 
-  "VCA" "LVL" "level" Ms20VoiceParams.level 0.0 1.0 0.72 curve-pow knob
+  "VCA" "LVL" "level" Ms20VoiceParams.level 0.0 1.0 0.44 curve-pow knob
 
   "AMP ENV" "ATK" "amp-attack"  Ms20VoiceParams.amp-attack  0.001 0.4 0.0055 curve-exp knob
   "AMP ENV" "DEC" "amp-decay"   Ms20VoiceParams.amp-decay   0.01 1.2 0.12 curve-exp knob

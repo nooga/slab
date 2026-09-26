@@ -426,7 +426,7 @@ dsp: v-vca-stage
   | out state params |
   state params v-amp-env
   state Ms20VoiceState.filt-out@ f*
-  params Ms20VoiceParams.level@ f* | x |
+  params Ms20VoiceParams.level@ f* 2.0 f* | x |  ( +6 dB makeup: LEVEL keeps headroom )
   x state Ms20VoiceState.dc-prev-x@ f-  state Ms20VoiceState.dc-prev-y@ 0.9974 f*  f+ | y |
   x state Ms20VoiceState.dc-prev-x-p f!64
   y state Ms20VoiceState.dc-prev-y-p f!64
