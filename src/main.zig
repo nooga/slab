@@ -656,6 +656,7 @@ pub fn main(init: std.process.Init) !void {
             .can_record = audio.capture_available,
             .input_names = input_name_ptrs[0..input_count],
             .current_input_idx = current_input_idx,
+            .master_peak = .{ master.meter().l, master.meter().r },
         });
         if (tres.render_audio) render_dlg.active = true;
         if (tres.input_pick) |pi| {

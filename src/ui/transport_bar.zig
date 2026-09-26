@@ -44,6 +44,8 @@ pub const Args = struct {
     can_record: bool,
     input_names: []const [*:0]const u8,
     current_input_idx: ?usize,
+    /// Master bus peak (linear, L/R) for the output meter.
+    master_peak: [2]f32 = .{ 0, 0 },
 };
 
 const FILE_MENU_KEY: u64 = 0x5346494c45; // "SFILE"
@@ -112,13 +114,28 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     menu.tip(ui, snap_r, std.mem.span(a.edit_snap.tooltip()));
     if (ctl.button(ui, bar.cutLeft(20), "snap+", null, .{ .label = "+", .flush = true })) a.edit_snap.* = a.edit_snap.finer();
 
-    // Logo plate on the right, blank plate between.
+    // Logo plate on the right, the master meter beside it, blank plate
+    // between.
     logoTile(ui, bar.cutRight(logoW(bar.h)));
+    if (bar.w >= MASTER_MIN_W) masterTile(ui, bar.cutRight(@min(MASTER_W, bar.w)), a.master_peak);
     _ = ui.plate(bar, .{});
     return res;
 }
 
 // ── Tiles ────────────────────────────────────────────────────────────
+
+const MASTER_W: i32 = 260;
+const MASTER_MIN_W: i32 = 140;
+
+/// Master output: a horizontal stereo bargraph pair around a shared dB
+/// scale, with clip LEDs (click to reset).
+fn masterTile(ui: *Ui, r: Rect, peak: [2]f32) void {
+    var body = ui.plate(r, .{});
+    ui.textIn(&ui.fonts.legend, body.cutLeft(34), "OUT", style.text_dim, .center, true);
+    _ = body.cutRight(4);
+    ctl.meterStereo(ui, body, "master-meter", peak, peak, .{ .horizontal = true });
+    menu.tip(ui, r, "Master output (peak, dBFS)");
+}
 
 fn fileLabel(buf: []u8, path: []const u8, chosen: bool, dirty: bool) []const u8 {
     if (!chosen) return if (dirty) "*Untitled" else "Untitled";
