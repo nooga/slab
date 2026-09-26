@@ -598,9 +598,9 @@ test "DSP NEON f64x2 words operate on raw f64 buffers and report vector code" {
         \\:: vc 16 alloc ;
         \\1.0 va f!64 2.0 va 8 + f!64
         \\3.0 vb f!64 4.0 vb 8 + f!64
-        \\dsp: neon-add v2f+ ;
-        \\dsp: neon-mul v2f* ;
-        \\dsp: neon-fmadd v2fmadd ;
+        \\dsp1: neon-add v2f+ ;
+        \\dsp1: neon-mul v2f* ;
+        \\dsp1: neon-fmadd v2fmadd ;
     );
 
     try std.testing.expectEqual(Fy.makeInt(1), try fy.run("vc va vb neon-add vc f@64 4.0 f= vc 8 + f@64 6.0 f= &"));
@@ -698,14 +698,14 @@ test "DSP scalar benchmark wrapper returns x0 without fy-stack result pop" {
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
-    _ = try fy.run("dsp: scalar-plus 1 2 + ;");
+    _ = try fy.run("dsp1: scalar-plus 1 2 + ;");
     try std.testing.expectEqual(Fy.makeInt(3), try fy.callDspScalarRepeated("scalar-plus", 1000));
     try std.testing.expectEqual(Fy.makeInt(0), try fy.callDspScalarRepeated("scalar-plus", 0));
     const scalar_report = try fy.reportDspScalarWord("scalar-plus");
     try std.testing.expectEqual(@as(usize, 0), scalar_report.push_count);
     try std.testing.expect(scalar_report.instruction_count <= 2);
 
-    _ = try fy.run("dsp: scalar-branch 5 dup 3 > [ 1 + ] [ 1 - ] ifte ;");
+    _ = try fy.run("dsp1: scalar-branch 5 dup 3 > [ 1 + ] [ 1 - ] ifte ;");
     try std.testing.expectError(error.UnsupportedDspScalar, fy.callDspScalarRepeated("scalar-branch", 1));
 }
 
@@ -714,7 +714,7 @@ test "DSP f64 scalar benchmark wrapper returns d0 without tagged-float publicati
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
-    _ = try fy.run("dsp: scalar-float 0.5 0.25 f* 0.125 f+ ;");
+    _ = try fy.run("dsp1: scalar-float 0.5 0.25 f* 0.125 f+ ;");
     try std.testing.expectEqual(@as(f64, 0.25), try fy.callDspF64ScalarRepeated("scalar-float", 1000));
     try std.testing.expectEqual(@as(f64, 0.0), try fy.callDspF64ScalarRepeated("scalar-float", 0));
     const scalar_report = try fy.reportDspF64ScalarWord("scalar-float");
@@ -722,7 +722,7 @@ test "DSP f64 scalar benchmark wrapper returns d0 without tagged-float publicati
     try std.testing.expectEqual(@as(usize, 0), scalar_report.float_alu_count);
     try std.testing.expect(scalar_report.instruction_count <= 6);
 
-    _ = try fy.run("dsp: scalar-int 1 2 + ;");
+    _ = try fy.run("dsp1: scalar-int 1 2 + ;");
     try std.testing.expectError(error.UnsupportedDspF64Scalar, fy.callDspF64ScalarRepeated("scalar-int", 1));
 }
 
@@ -766,12 +766,12 @@ test "inline-noalloc falls back to calls for branchy callees" {
     try std.testing.expectEqual(@as(usize, 1), caller_report.bl_count);
 }
 
-test "dsp: marks words and inlines straight-line dsp callees" {
+test "dsp1: marks words and inlines straight-line dsp callees" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
-    _ = try fy.run("dsp: dsp-inc 1 + ; dsp: dsp-call 41 dsp-inc ;");
+    _ = try fy.run("dsp1: dsp-inc 1 + ; dsp1: dsp-call 41 dsp-inc ;");
     try std.testing.expect(fy.isDspWord("dsp-inc"));
     try std.testing.expect(fy.isDspWord("dsp-call"));
     try std.testing.expectEqual(Fy.makeInt(42), try fy.run("dsp-call"));
@@ -783,12 +783,12 @@ test "dsp: marks words and inlines straight-line dsp callees" {
     try std.testing.expectEqual(@as(usize, 0), report.stack_round_trip_pairs);
 }
 
-test "dsp: register stack keeps straight-line arithmetic off the fy stack" {
+test "dsp1: register stack keeps straight-line arithmetic off the fy stack" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
-    _ = try fy.run("inline-noalloc: stack-add 1 2 + ; dsp: reg-add 1 2 + ;");
+    _ = try fy.run("inline-noalloc: stack-add 1 2 + ; dsp1: reg-add 1 2 + ;");
     try std.testing.expectEqual(Fy.makeInt(3), try fy.run("stack-add"));
     try std.testing.expectEqual(Fy.makeInt(3), try fy.run("reg-add"));
 
@@ -802,29 +802,29 @@ test "dsp: register stack keeps straight-line arithmetic off the fy stack" {
     try std.testing.expect(reg_report.push_count < stack_report.push_count);
     try std.testing.expect(reg_report.pop_count < stack_report.pop_count);
 
-    _ = try fy.run("dsp: reg-add-neg -5 6 + ;");
+    _ = try fy.run("dsp1: reg-add-neg -5 6 + ;");
     try std.testing.expectEqual(Fy.makeInt(1), try fy.run("reg-add-neg"));
 
-    _ = try fy.run("dsp: reg-over2 1 2 3 4 over2 + + + + + ;");
+    _ = try fy.run("dsp1: reg-over2 1 2 3 4 over2 + + + + + ;");
     try std.testing.expectEqual(Fy.makeInt(13), try fy.run("reg-over2"));
 }
 
-test "dsp: register stack flushes before stack-memory words" {
+test "dsp1: register stack flushes before stack-memory words" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
-    _ = try fy.run("dsp: reg-pick 10 20 30 1 pick + + + ;");
+    _ = try fy.run("dsp1: reg-pick 10 20 30 1 pick + + + ;");
     try std.testing.expectEqual(Fy.makeInt(80), try fy.run("reg-pick"));
 }
 
-test "dsp2: rational f64 shaper lowers stack code to typed register code" {
+test "dsp: rational f64 shaper lowers stack code to typed register code" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
     _ = try fy.run(
-        \\dsp2: rat
+        \\dsp: rat
         \\  3 pick f@64
         \\  1 pick f*
         \\  -4.0 4.0 fclamp
@@ -871,13 +871,13 @@ test "dsp2: rational f64 shaper lowers stack code to typed register code" {
     try expectContains(disasm, "fmin d");
 }
 
-test "dsp2: inlines called dsp2 word before typed codegen" {
+test "dsp: inlines called dsp2 word before typed codegen" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
     _ = try fy.run(
-        \\dsp2: rat-core
+        \\dsp: rat-core
         \\  3 pick f@64
         \\  1 pick f*
         \\  -4.0 4.0 fclamp
@@ -891,7 +891,7 @@ test "dsp2: inlines called dsp2 word before typed codegen" {
         \\  5 pick f!64
         \\  drop drop drop drop drop
         \\;
-        \\dsp2: rat-wrapper rat-core ;
+        \\dsp: rat-wrapper rat-core ;
     );
 
     var out: f64 = 0;
@@ -919,14 +919,14 @@ test "dsp2: inlines called dsp2 word before typed codegen" {
     try std.testing.expectEqual(@as(usize, 0), wrapper_report.pop_count);
 }
 
-test "dsp2: supports nip and drop2 stack cleanup" {
+test "dsp: supports nip and drop2 stack cleanup" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
     _ = try fy.run(
-        \\dsp2: keep-top 0.0 f+ nip ;
-        \\dsp2: cleanup
+        \\dsp: keep-top 0.0 f+ nip ;
+        \\dsp: cleanup
         \\  3 pick f@64
         \\  1 pick f*
         \\  5 pick f!64
@@ -951,13 +951,13 @@ test "dsp2: supports nip and drop2 stack cleanup" {
     try std.testing.expectApproxEqAbs(1.25, out, 0.000000000001);
 }
 
-test "dsp2: raw repeated wrapper can advance output and input streams" {
+test "dsp: raw repeated wrapper can advance output and input streams" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
     _ = try fy.run(
-        \\dsp2: stream-copy2
+        \\dsp: stream-copy2
         \\  | out state params input |
         \\  input f@64
         \\  2.0
@@ -986,13 +986,13 @@ test "dsp2: raw repeated wrapper can advance output and input streams" {
     try std.testing.expectApproxEqAbs(-2.0, out[3], 0.000000000001);
 }
 
-test "dsp2: cached raw repeated caller reuses wrapper with new slots" {
+test "dsp: cached raw repeated caller reuses wrapper with new slots" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
     _ = try fy.run(
-        \\dsp2: cached-copy2
+        \\dsp: cached-copy2
         \\  | out state params input |
         \\  input f@64
         \\  2.0
@@ -1040,14 +1040,14 @@ test "dsp2: cached raw repeated caller reuses wrapper with new slots" {
     try std.testing.expectApproxEqAbs(-3.0, out_b[2], 0.000000000001);
 }
 
-test "dsp2: ustruct accessors lower to raw IR" {
+test "dsp: ustruct accessors lower to raw IR" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
     _ = try fy.run("ustruct: U f64 x f64 y ;");
     _ = fy.run(
-        \\dsp2: sum-xy
+        \\dsp: sum-xy
         \\  dup U.x@
         \\  1 pick U.y@
         \\  f+
@@ -1059,7 +1059,7 @@ test "dsp2: ustruct accessors lower to raw IR" {
         return err;
     };
     _ = fy.run(
-        \\dsp2: write-y
+        \\dsp: write-y
         \\  2.5 swap U.y! drop
         \\;
     ) catch |err| {
@@ -1067,7 +1067,7 @@ test "dsp2: ustruct accessors lower to raw IR" {
         return err;
     };
     _ = fy.run(
-        \\dsp2: write-y-p
+        \\dsp: write-y-p
         \\  3.5 1 pick U.y-p f!64 drop
         \\;
     ) catch |err| {
@@ -1075,7 +1075,7 @@ test "dsp2: ustruct accessors lower to raw IR" {
         return err;
     };
     _ = fy.run(
-        \\dsp2: grouped-sum
+        \\dsp: grouped-sum
         \\  0.0
         \\  U@: x y ;
         \\  f+
@@ -1087,7 +1087,7 @@ test "dsp2: ustruct accessors lower to raw IR" {
         return err;
     };
     _ = fy.run(
-        \\dsp2: local-sum
+        \\dsp: local-sum
         \\  | out u |
         \\  u U.x@
         \\  u U.y@
@@ -1100,7 +1100,7 @@ test "dsp2: ustruct accessors lower to raw IR" {
         return err;
     };
     _ = fy.run(
-        \\dsp2: local-temp-sum
+        \\dsp: local-temp-sum
         \\  | out u |
         \\  u U.x@
         \\  u U.y@
@@ -1118,7 +1118,7 @@ test "dsp2: ustruct accessors lower to raw IR" {
         return err;
     };
     _ = fy.run(
-        \\dsp2: local-helper
+        \\dsp: local-helper
         \\  | u |
         \\  u U.x@
         \\  | x |
@@ -1128,7 +1128,7 @@ test "dsp2: ustruct accessors lower to raw IR" {
         \\  nip
         \\  nip
         \\;
-        \\dsp2: local-inline-sum
+        \\dsp: local-inline-sum
         \\  | out u |
         \\  u local-helper
         \\  out f!64
@@ -1176,13 +1176,13 @@ test "dsp2: ustruct accessors lower to raw IR" {
     try std.testing.expectEqual(@as(usize, 0), report.pop_count);
 }
 
-test "dsp2: pure f64 helper is callable and inlines into pointer adapter" {
+test "dsp: pure f64 helper is callable and inlines into pointer adapter" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
     _ = try fy.run(
-        \\dsp2: rat-shape
+        \\dsp: rat-shape
         \\  -4.0 4.0 fclamp
         \\  dup dup f*
         \\  dup 27.0 f+
@@ -1192,7 +1192,7 @@ test "dsp2: pure f64 helper is callable and inlines into pointer adapter" {
         \\  -1.0 1.0 fclamp
         \\  swap drop swap drop
         \\;
-        \\dsp2: rat-adapter
+        \\dsp: rat-adapter
         \\  3 pick f@64
         \\  1 pick f*
         \\  rat-shape
@@ -1232,13 +1232,13 @@ test "dsp2: pure f64 helper is callable and inlines into pointer adapter" {
     try std.testing.expectEqual(@as(usize, 0), adapter_report.pop_count);
 }
 
-test "dsp2: raw repeated call uses untagged pointer and f64 args" {
+test "dsp: raw repeated call uses untagged pointer and f64 args" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
     _ = try fy.run(
-        \\dsp2: rat-shape
+        \\dsp: rat-shape
         \\  -4.0 4.0 fclamp
         \\  dup dup f*
         \\  dup 27.0 f+
@@ -1248,7 +1248,7 @@ test "dsp2: raw repeated call uses untagged pointer and f64 args" {
         \\  -1.0 1.0 fclamp
         \\  swap drop swap drop
         \\;
-        \\dsp2: rat-adapter
+        \\dsp: rat-adapter
         \\  3 pick f@64
         \\  1 pick f*
         \\  rat-shape
@@ -1281,20 +1281,20 @@ test "dsp2: raw repeated call uses untagged pointer and f64 args" {
     try std.testing.expectEqual(@as(usize, 0), raw_report.pop_count);
 }
 
-test "dsp2: branchless float select and wrap support oscillator helpers" {
+test "dsp: branchless float select and wrap support oscillator helpers" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
     _ = try fy.run(
-        \\dsp2: choose-lt fsel-lt ;
-        \\dsp2: wrap fwrap01 ;
-        \\dsp2: phase-advance01 f+ fwrap01 ;
-        \\dsp2: cap fcapramp ;
-        \\dsp2: polyblep fpolyblep ;
-        \\dsp2: pulse fpulseblep ;
-        \\dsp2: adsr fadsr-linear ;
-        \\dsp2: adsr-cap fadsr-cap ;
+        \\dsp: choose-lt fsel-lt ;
+        \\dsp: wrap fwrap01 ;
+        \\dsp: phase-advance01 f+ fwrap01 ;
+        \\dsp: cap fcapramp ;
+        \\dsp: polyblep fpolyblep ;
+        \\dsp: pulse fpulseblep ;
+        \\dsp: adsr fadsr-linear ;
+        \\dsp: adsr-cap fadsr-cap ;
     );
 
     try std.testing.expectApproxEqAbs(10.0, getFyFloat(try fy.run("0.25 0.5 10.0 20.0 choose-lt")), 0.000000000001);
@@ -1326,23 +1326,23 @@ test "dsp2: branchless float select and wrap support oscillator helpers" {
     try std.testing.expectApproxEqAbs(0.0, getFyFloat(try fy.run("1.05 0.10 0.20 0.40 0.70 0.30 adsr-cap")), 0.000000000001);
 }
 
-test "dsp: rejects heap allocation" {
+test "dsp1: rejects heap allocation" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
-    const result = fy.run("dsp: bad alloc ; bad");
+    const result = fy.run("dsp1: bad alloc ; bad");
     try std.testing.expectError(error.UnknownWord, result);
 }
 
-test "dsp2: call: composition invokes a stage that writes via memory" {
+test "dsp: call: composition invokes a stage that writes via memory" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
     _ = try fy.run(
-        \\dsp2: t-stage | out | 2.5 out f!64 drop ;
-        \\dsp2: t-compose | out | out call: t-stage ;
+        \\dsp: t-stage | out | 2.5 out f!64 drop ;
+        \\dsp: t-compose | out | out call: t-stage ;
     );
 
     const addr = fy.userWords.get("t-compose").?.image_addr.?;
@@ -1352,15 +1352,15 @@ test "dsp2: call: composition invokes a stage that writes via memory" {
     try std.testing.expectApproxEqAbs(2.5, out, 0.000000000001);
 }
 
-test "dsp2: call: composition chains stages through state memory in order" {
+test "dsp: call: composition chains stages through state memory in order" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
     _ = try fy.run(
-        \\dsp2: t-a | state | 3.0 state f!64 drop ;
-        \\dsp2: t-b | out state | state f@64 2.0 f* out f!64 drop2 ;
-        \\dsp2: t-chain
+        \\dsp: t-a | state | 3.0 state f!64 drop ;
+        \\dsp: t-b | out state | state f@64 2.0 f* out f!64 drop2 ;
+        \\dsp: t-chain
         \\  | out state |
         \\  state call: t-a
         \\  out state call: t-b
@@ -1376,14 +1376,14 @@ test "dsp2: call: composition chains stages through state memory in order" {
     try std.testing.expectApproxEqAbs(6.0, out, 0.000000000001);
 }
 
-test "dsp2: composition repeated caller loops with auto-advanced output" {
+test "dsp: composition repeated caller loops with auto-advanced output" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
     _ = try fy.run(
-        \\dsp2: t-w | out | 1.5 out f!64 drop ;
-        \\dsp2: t-rep | out | out call: t-w ;
+        \\dsp: t-w | out | 1.5 out f!64 drop ;
+        \\dsp: t-rep | out | out call: t-w ;
     );
 
     try std.testing.expect(fy.isCompositionWord("t-rep"));
@@ -1396,7 +1396,7 @@ test "dsp2: composition repeated caller loops with auto-advanced output" {
     for (out) |v| try std.testing.expectApproxEqAbs(1.5, v, 0.000000000001);
 }
 
-test "dsp2: 4-arg composition caller with auto-advanced out and in" {
+test "dsp: 4-arg composition caller with auto-advanced out and in" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
@@ -1404,9 +1404,9 @@ test "dsp2: 4-arg composition caller with auto-advanced out and in" {
     // Effect ABI shape: out state params in. Stage 1 accumulates the input
     // into state, stage 2 writes state + params gain to out.
     _ = try fy.run(
-        \\dsp2: t-fx-acc | state in | state f@64 in f@64 f+ state f!64 drop2 ;
-        \\dsp2: t-fx-out | out state params | state f@64 params f@64 f* out f!64 drop2 drop ;
-        \\dsp2: t-fx
+        \\dsp: t-fx-acc | state in | state f@64 in f@64 f+ state f!64 drop2 ;
+        \\dsp: t-fx-out | out state params | state f@64 params f@64 f* out f!64 drop2 drop ;
+        \\dsp: t-fx
         \\  | out state params in |
         \\  state in call: t-fx-acc
         \\  out state params call: t-fx-out
@@ -1467,12 +1467,12 @@ test "struct/ustruct introspection: size, field offsets, field sizes" {
     });
 }
 
-test "dsp2: ustruct introspection constants resolve as int consts" {
+test "dsp: ustruct introspection constants resolve as int consts" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     _ = try fy.run(
         \\ustruct: IC f64 a f64 b f64 c ;
-        \\dsp2: k-ic-third | out base | base IC.c ptr+ f@64 out f!64 drop2 ;
+        \\dsp: k-ic-third | out base | base IC.c ptr+ f@64 out f!64 drop2 ;
     );
     var vals = [_]f64{ 1.5, 2.5, 3.5 };
     var out: f64 = 0;
@@ -1484,11 +1484,11 @@ test "dsp2: ustruct introspection constants resolve as int consts" {
     try std.testing.expectEqual(@as(f64, 3.5), out);
 }
 
-test "dsp2: f@i / f!i runtime-indexed f64 access" {
+test "dsp: f@i / f!i runtime-indexed f64 access" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     _ = try fy.run(
-        \\dsp2: k-ring-rot | out base idx | base idx f@i  base idx 1.0 f+ f@i f+  out f!64  base idx f@i  base 0.5 f!i  drop2 drop ;
+        \\dsp: k-ring-rot | out base idx | base idx f@i  base idx 1.0 f+ f@i f+  out f!64  base idx f@i  base 0.5 f!i  drop2 drop ;
     );
     var cells = [_]f64{ 10.0, 20.0, 30.0, 40.0 };
     var out: f64 = 0;
@@ -1503,12 +1503,12 @@ test "dsp2: f@i / f!i runtime-indexed f64 access" {
     try std.testing.expectEqual(@as(f64, 20.0), cells[1]);
 }
 
-test "dsp2: p@64 loads a pointer through state" {
+test "dsp: p@64 loads a pointer through state" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     // state cell 0 holds a pointer to a buffer; read element idx from it.
     _ = try fy.run(
-        \\dsp2: k-pload | out state idx | state p@64 idx f@i out f!64 drop2 drop ;
+        \\dsp: k-pload | out state idx | state p@64 idx f@i out f!64 drop2 drop ;
     );
     var buffer = [_]f64{ 7.0, 8.0, 9.0 };
     var state = [_]u64{@intFromPtr(&buffer[0])};

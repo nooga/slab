@@ -241,7 +241,7 @@ Floats are f64 values stored as bitcast i64. Use `i>f` / `f>i` to convert.
 
 ### Untagged DSP Structs
 
-`ustruct:` declares a raw host-compatible layout for `dsp2:` code:
+`ustruct:` declares a raw host-compatible layout for `dsp:` code:
 
 ```forth
 ustruct: VoiceState
@@ -250,7 +250,7 @@ ustruct: VoiceState
 ;
 ```
 
-Inside `dsp2:`, field accessors are expanded before IR construction:
+Inside `dsp:`, field accessors are expanded before IR construction:
 
 | Accessor | Stack Effect | Description |
 |----------|-------------|-------------|
@@ -258,10 +258,10 @@ Inside `dsp2:`, field accessors are expanded before IR construction:
 | `VoiceState.phase!` | `f ptr -- ptr` | Store an f64 field and keep the struct ptr |
 | `VoiceState.phase-p` | `ptr -- field-ptr` | Get the raw field pointer |
 
-Grouped f64 loads are available inside `dsp2:` with `Struct@:`:
+Grouped f64 loads are available inside `dsp:` with `Struct@:`:
 
 ```forth
-dsp2: env-args
+dsp: env-args
   VoiceParams@: attack decay sustain gate release ;
   adsr-cap
 ;
@@ -272,10 +272,10 @@ intended for the common DSP shape where the struct pointer is one stack
 slot below the values being accumulated; each subsequent load adjusts the
 pick depth automatically.
 
-`dsp2:` can also name its entry arguments with local aliases:
+`dsp:` can also name its entry arguments with local aliases:
 
 ```forth
-dsp2: sum-xy
+dsp: sum-xy
   | out state |
   state VoiceState.x@
   state VoiceState.y@
@@ -290,11 +290,11 @@ They do not allocate, create a runtime frame, or consume the original
 arguments; clean up the original stack entries with `drop`, `drop2`, or
 `nip` when the word should leave no stack outputs.
 
-The same syntax can be used later in a `dsp2:` word to name computed
+The same syntax can be used later in a `dsp:` word to name computed
 temporaries from the current stack:
 
 ```forth
-dsp2: pulse-step
+dsp: pulse-step
   | state params |
   VoiceState@: phase ;
   VoiceParams@: hz inv-sample-rate ;

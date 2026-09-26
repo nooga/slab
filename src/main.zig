@@ -685,8 +685,8 @@ pub const Fy = struct {
         immediate: bool = false, // compile-time word (macro): execute instead of compile
         noalloc: bool = false, // declared with noalloc: — must not call heap-allocating words
         inlineable: bool = false, // declared with inline-noalloc: — may be copied into opt-in callers
-        dsp: bool = false, // declared with dsp: — Slab audio-thread kernel mode
-        dsp2: bool = false, // declared with dsp2: — typed DSP compiler pipeline
+        dsp: bool = false, // declared with dsp1: (legacy NEON/register-stack mode; the new dsp: sets .dsp2)
+        dsp2: bool = false, // declared with dsp: — typed DSP compiler pipeline (was dsp2:)
 
         const DEFINE = ":";
         const END = ";";
@@ -4448,12 +4448,12 @@ pub const Fy = struct {
                         try self.compileNoalloc(true, false);
                         return;
                     }
-                    if (std.mem.eql(u8, w, "dsp:")) {
+                    if (std.mem.eql(u8, w, "dsp1:")) {
                         self.resetQuoteTracking();
                         try self.compileNoalloc(true, true);
                         return;
                     }
-                    if (std.mem.eql(u8, w, "dsp2:")) {
+                    if (std.mem.eql(u8, w, "dsp:")) {
                         self.resetQuoteTracking();
                         try self.compileDsp2();
                         return;
@@ -5425,7 +5425,7 @@ pub const Fy = struct {
                 },
                 .load => {
                     if (accessor.field.field_type != .f64) {
-                        self.setError("dsp2: ustruct load supports f64 fields for now", .{});
+                        self.setError("dsp: ustruct load supports f64 fields for now", .{});
                         return Error.UnknownWord;
                     }
                     program.addNumber(accessor.field.offset) catch return Error.OutOfMemory;
@@ -5434,7 +5434,7 @@ pub const Fy = struct {
                 },
                 .store => {
                     if (accessor.field.field_type != .f64) {
-                        self.setError("dsp2: ustruct store supports f64 fields for now", .{});
+                        self.setError("dsp: ustruct store supports f64 fields for now", .{});
                         return Error.UnknownWord;
                     }
                     program.addWord("dup") catch return Error.OutOfMemory;
@@ -5460,11 +5460,11 @@ pub const Fy = struct {
                 if (std.mem.eql(u8, field_name, Word.END)) break;
 
                 const field = self.findUstructField(struct_name, field_name) orelse {
-                    self.setError("dsp2: unknown ustruct field {s}.{s}", .{ struct_name, field_name });
+                    self.setError("dsp: unknown ustruct field {s}.{s}", .{ struct_name, field_name });
                     return Error.UnknownWord;
                 };
                 if (field.field_type != .f64) {
-                    self.setError("dsp2: ustruct grouped load supports f64 fields for now", .{});
+                    self.setError("dsp: ustruct grouped load supports f64 fields for now", .{});
                     return Error.UnknownWord;
                 }
 
@@ -5543,7 +5543,7 @@ pub const Fy = struct {
                             const callee = switch (callee_tok) {
                                 .Word => |n| n,
                                 else => {
-                                    self.setError("dsp2: call: expects a word name", .{});
+                                    self.setError("dsp: call: expects a word name", .{});
                                     return Error.ExpectedWord;
                                 },
                             };
@@ -5562,7 +5562,7 @@ pub const Fy = struct {
                         }
                         if (self.findDsp2Body(word)) |body| {
                             program.addTokens(body) catch |err| {
-                                self.setError("dsp2: cannot inline '{s}' ({s})", .{ word, @errorName(err) });
+                                self.setError("dsp: cannot inline '{s}' ({s})", .{ word, @errorName(err) });
                                 return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
                             };
                             continue;
@@ -5576,7 +5576,7 @@ pub const Fy = struct {
                             continue;
                         }
                         program.addWord(word) catch |err| {
-                            self.setError("dsp2: unsupported word or stack effect near '{s}' ({s})", .{ word, @errorName(err) });
+                            self.setError("dsp: unsupported word or stack effect near '{s}' ({s})", .{ word, @errorName(err) });
                             return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
                         };
                     },
@@ -5591,7 +5591,7 @@ pub const Fy = struct {
                         };
                     },
                     .String => {
-                        self.setError("dsp2: strings are not allowed", .{});
+                        self.setError("dsp: strings are not allowed", .{});
                         return Error.UnknownWord;
                     },
                 }
@@ -5608,7 +5608,7 @@ pub const Fy = struct {
             }
 
             var builder = program.build() catch |err| {
-                self.setError("dsp2: {s}", .{@errorName(err)});
+                self.setError("dsp: {s}", .{@errorName(err)});
                 return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
             };
             defer builder.deinit();
@@ -6478,7 +6478,7 @@ pub const Fy = struct {
                             try self.compileNoalloc(true, false);
                             continue;
                         }
-                        if (std.mem.eql(u8, w, "dsp2:")) {
+                        if (std.mem.eql(u8, w, "dsp:")) {
                             self.resetQuoteTracking();
                             try self.compileDsp2();
                             continue;
@@ -6488,7 +6488,7 @@ pub const Fy = struct {
                             try self.compileUstruct();
                             continue;
                         }
-                        if (std.mem.eql(u8, w, "dsp:")) {
+                        if (std.mem.eql(u8, w, "dsp1:")) {
                             self.resetQuoteTracking();
                             try self.compileNoalloc(true, true);
                             continue;
@@ -6678,12 +6678,12 @@ pub const Fy = struct {
                             try self.compileNoalloc(true, false);
                             continue;
                         }
-                        if (std.mem.eql(u8, w, "dsp:")) {
+                        if (std.mem.eql(u8, w, "dsp1:")) {
                             self.resetQuoteTracking();
                             try self.compileNoalloc(true, true);
                             continue;
                         }
-                        if (std.mem.eql(u8, w, "dsp2:")) {
+                        if (std.mem.eql(u8, w, "dsp:")) {
                             self.resetQuoteTracking();
                             try self.compileDsp2();
                             continue;
