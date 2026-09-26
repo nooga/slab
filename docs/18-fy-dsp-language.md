@@ -109,14 +109,70 @@ index).
 Memory: `f@64 f!64 p@64 ptr+` (constant offset), `f@i f!i` (base + floor
 of an f64 index × 8).
 
-Math: `f+ f- f* f/ fclamp ffrac fwrap01 fsel-lt` (`a b t f -- a<b ? t : f`).
+Arithmetic: `f+ f- f* f/ fmin fmax fabs fneg fsqrt floor`, and the
+exponent-bit primitives `fexp2i` (2^floor n), `flog2i` (floor log2 |x|)
+and `fmant` (|x| with the exponent cleared: 1 ≤ m < 2), which dsp-std
+builds `exp2`/`log2` on. Sugar: `fclamp` (`x lo hi`), `ffrac`
+(`x - floor x`).
 
-Fused (to be moved out to fy, docs/17 A5): `fcapramp fpolyblep
-fpulseblep fadsr-linear fadsr-cap`.
+Masks and select:
 
-Not yet (docs/17 A4): `fabs fmin fmax fsqrt floor`, compares and masks.
-Build them from `fsel-lt`: `fabs` = `x 0.0 0.0 x f- x fsel-lt`,
-`fmax a b` = `a b b a fsel-lt`.
+| Word | Effect |
+|---|---|
+| `f< f<= f> f>= f=` | `a b -- mask`: all ones where true, zero where false (NaN is false) |
+| `and or not` | combine masks |
+| `select` | `m t f -- m ? t : f` |
+| `mask>f` | `m -- 1.0 / 0.0` |
+| `fsel-lt` | `a b t f -- a < b ? t : f`, sugar for `f<` + `select` |
+
+A mask is a 64-bit pattern in a d-register, the shape NEON compares
+produce, so the same code vectorizes (docs/17 A9). A compare used once by
+a `select` compiles to `fcmp` + `fcsel`; a mask used more than once is
+materialized and selects with `bsl`.
+
+There are no DSP algorithms in the compiler. polyBLEP, pulse BLEP, the
+ADSRs, the cap ramp and phase wrap are fy words in
+`kernels/01-oscillators/primitives/` and `kernels/03-envelopes/primitives/`.
+
+## dsp-std
+
+`kernels/00-primitives/math.fy` is the math library. Every word is plain
+fy on the ops above; the polynomial fits come from `tools/fit/minimax.py`
+and pin the value at zero, so `0.0 db>lin` is exactly 1.0 and `0.0 tanh`
+exactly 0.0. `src/dsp_std_test.zig` checks each against libm.
+
+| Word | Max error |
+|---|---|
+| `exp2 exp pow db>lin` | 4.7e-11 relative |
+| `log2 ln lin>db` | 1.1e-12 absolute (log2) |
+| `sin cos sinpi cospi sin2pi` | 3e-11 absolute |
+| `tan` | 3e-11 relative |
+| `tan-warp` | 7e-9 relative, \|x\| < 1.45: the filter prewarp, half the cost of `tan` |
+| `tanh` | 2.3e-11 absolute |
+
+`tanh-rational` (`kernels/02-shapers/rational.fy`) is a soft-clip shaper
+with its own character, not an approximation of `tanh`.
+
+## Constants and tables
+
+`:: NAME value ;` constants are inlined by `dsp:` words: floats as f64
+literals (exact when the body is a single literal), integers as ints.
+
+`table: name len body ;` builds `len + 1` f64 when the file loads. The
+body is ordinary fy (heap, loops, libm through `bind:`), run for
+i = 0.0 … len, leaving one number. `name` is the table's address and
+`name-len` its length as a float; a `dsp:` word reads it with `f@i` or
+`tbl-lerp` from `kernels/00-primitives/table.fy`:
+
+```
+table: curve 256  256.0 f/ dup f* ;
+dsp: shape | x -- y |  curve  x curve-len f*  tbl-lerp ;
+```
+
+The extra cell at i = len keeps interpolation at the last index in bounds
+(and equals cell 0 for a periodic body). A table lives until the fy
+instance is torn down, so code compiled against an older definition stays
+valid across a hot reload.
 
 ## Errors
 

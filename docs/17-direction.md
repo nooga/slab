@@ -63,10 +63,10 @@ Across ~4.4k lines of kernels: 209 `dsp2:` words, **182 lines that only
 - The math set is `+ - * /`, clamp, frac, wrap, 4-arg `fsel-lt`. No
   abs, min, max, sqrt, negate, or compare, so tan, exp, and tanh are
   hand-rolled series scattered through the kernels, each valid on its
-  own range (`svf-g` only up to θ≈0.33).
+  own range (`svf-g` only up to θ≈0.33). *(Fixed in step 6.)*
 - DSP primitives are compiled in: `fms20-svf`, `fms20-lpf4`,
   `fadsr-cap`, and `fpolyblep` are Zig ops in `fy/src/dsp2.zig`, so
-  they can't be hot-reloaded.
+  they can't be hot-reloaded. *(Fixed in step 6.)*
 - Stores are collected and emitted after the value graph, so reading a
   cell back after storing it likely sees the old value (to confirm).
 - The macro system can only `peek-quote`, `emit-lit`, and `emit-word`.
@@ -241,7 +241,9 @@ dsp: juno-voice ( ctx s:JunoState p:JunoParams -- )
 ```
 `call:` remains as an explicit "outline this" choice for code size.
 
-**A4. Math.**
+**A4. Math.** *(Done 2026-09-26, docs/18 §Word set and §dsp-std.
+Block-rate libm is not needed: dsp-std is accurate enough for
+coefficients.)*
 
 - Native ops: `fabs fneg fmin fmax fsqrt floor`, plus compares
   producing masks and `select`, and an expression-form conditional.
@@ -251,10 +253,9 @@ dsp: juno-voice ( ctx s:JunoState p:JunoParams -- )
   series.
 - Block-rate words may call libm.
 
-**A5. Fused primitives out of the compiler.** *(Partly done 2026-09-26:
-`fms20-svf`, `fms20-lpf4`, and `fms20-lpf4-cubic` are deleted, with the
-MS-20 LPF and Funk's SVF rewritten in fy. `fadsr-*` and `fpolyblep`
-remain.)* Once A3 and A4 land,
+**A5. Fused primitives out of the compiler.** *(Done 2026-09-26: the
+MS-20 filters went first; `fadsr-*`, `fpolyblep`, `fpulseblep`,
+`fcapramp` and `fwrap01` followed as bit-exact fy words.)* Once A3 and A4 land,
 `fms20-svf`, `fms20-lpf4`, `fadsr-*`, and `fpolyblep` become fy
 kernels. Keep the old ops just long enough to compare speed.
 
@@ -269,7 +270,10 @@ kernels. Keep the old ops just long enough to compare speed.
 | `ustruct-begin` / `ustruct-field` / `ustruct-end` | Generate structs. |
 | Compile-time variables | State shared across macros. |
 
-**A7. `table:`.**
+**A7. `table:`.** *(Done 2026-09-26 as `table: name len body ;` with
+`name`/`name-len` and `tbl-lerp`, docs/18 §Constants and tables. Tables
+are addressed directly rather than through ctx; they outlive hot
+reloads. First users arrive with step 9.)*
 
 - `table: name len [ i -- x ]` runs in normal fy at load, and
   `dsp:` code reads it through ctx with interpolated-read helpers.
@@ -511,7 +515,7 @@ step says otherwise.
 | 3 ✅ | Track B: ctx ABI, stereo, no clamp, voice service, smoothing; the bench moves with it. | Goldens re-recorded after A/B review; special cells deleted. Done: ctx/io ABI (bit-exact), D5 no clamp, idle-voice skipping plus allocation, 20 ms knob glide, `stereo` flag, mono note stack with `ctx.legato`. Glide, unison, and ctx-addressed buffers/tables move to G4 and A7. |
 | 4 ✅ | A2: locals, typed bindings, dotted fields + migration. | Goldens match; drop/nip-only lines ≈ 0. Done: consuming frames, `\| ins -- outs \|` declarations, `s:T` / `s.f` / `s.f&` / `-> s.f`, program-order stores; 672 cleanup tokens and 1450 accessors migrated by tools/migrate/, all goldens bit-exact but one intended MS-20 change (docs/18 §Migrations). |
 | 5 ✅ | A3: spilling, multi-return. | Scratch fields gone from voice state; the juno voice no longer needs `call:` stages. Done: Belady spilling with a dry-pass trace, cheaper constants, `over`/`rot`; Juno, Rhodes and MS-20 are single voice words, faster than the staged versions (Juno 159→148, Rhodes 109→84, MS-20 200→188 ns/smp). |
-| 6 | A4 + A5 + A7: math, `dsp-std`, fused ops out, `table:`. | No DSP ops left in `dsp2.zig`'s op list; no hand-rolled series in kernels. |
+| 6 ✅ | A4 + A5 + A7: math, `dsp-std`, fused ops out, `table:`. | No DSP ops left in `dsp2.zig`'s op list; no hand-rolled series in kernels. Done: native `fabs fneg fsqrt floor fmin fmax`, compares to masks + `select`, exponent-bit primitives; the fused ops are fy words, bit-exact; `math.fy` (exp2/log2/sin/cos/tan/tanh…, 1e-12..5e-11) replaced pow2/trig/drum-sine/filter series; `::` constants in dsp; `table:`. Goldens moved by ≤ −60 dBFS except Funk's bistable latch. Juno +20 ns/smp for the accurate prewarp. FM-86 `derive-data` stays for now (its builder is imperative, not a function of i). |
 | 7 | A6 + D: parsing words, manifest DSL, curves, units. | All machines ported; `ms20.fy` shorter by half. |
 | 8 🔶 | G4 MS-20 fix + knob-response probes on every synth. | Knob-response curves roughly straight on the bench. MS-20 done 2026-09-26, ahead of steps 4–7 after the first listen: an OTA + diode LPF in fy, octave modulation, live DRV (docs/14 §LPF v2). The other synths are still to do. |
 | 9 | G1 + G2: oversampler, nonlinear filters, analog layer. | Aliasing and THD numbers on the ratchet. |

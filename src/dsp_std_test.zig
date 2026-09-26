@@ -97,3 +97,27 @@ test "dsp-std elementary functions match libm" {
     try std.testing.expectEqual(@as(f64, 1.0), try call(&host, "t-cos", 0.0));
     try std.testing.expectApproxEqRel(@as(f64, 8.0), try call(&host, "t-pow", 4.0), 1e-10);
 }
+
+test "table: data reads back through tbl-lerp" {
+    var host = FyHost.init(std.testing.allocator);
+    defer host.deinit();
+    try host.compileFile("kernels/00-primitives/table.fy");
+    try host.compile(
+        \\table: t-sq 16 dup f* ;
+        \\dsp: t-sq-at | out x | t-sq x tbl-lerp out f!64 ;
+        \\dsp: t-sq-n | out | t-sq-len out f!64 ;
+    );
+    Fy.Builtins.fyPtr = @intFromPtr(&host.fy);
+    try std.testing.expectEqual(@as(f64, 16.0), try call0(&host, "t-sq-n"));
+    try std.testing.expectEqual(@as(f64, 9.0), try call(&host, "t-sq-at", 3.0));
+    try std.testing.expectEqual(@as(f64, 12.5), try call(&host, "t-sq-at", 3.5));
+    // the extra cell: index 15.5 interpolates toward 16^2
+    try std.testing.expectEqual(@as(f64, 240.5), try call(&host, "t-sq-at", 15.5));
+}
+
+fn call0(host: *FyHost, word: []const u8) !f64 {
+    var out: f64 = 0;
+    const args = [_]Fy.Dsp2RawArg{.{ .ptr = @intFromPtr(&out) }};
+    _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult(word, 1, &args);
+    return out;
+}
