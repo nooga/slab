@@ -238,7 +238,7 @@ pub const Stats = struct {
     max_step: f64 = 0,
     nan: usize = 0,
     denormal: usize = 0,
-    clipped: usize = 0, // |x| >= 0.999 — the per-machine clamp at work
+    over: usize = 0, // |x| > 1.0: over 0 dBFS (machines have headroom; the master soft-clips)
 };
 
 pub fn stats(x: []const f32) Stats {
@@ -253,7 +253,7 @@ pub fn stats(x: []const f32) Stats {
         }
         const v: f64 = v32;
         if (v32 != 0 and @abs(v32) < std.math.floatMin(f32)) s.denormal += 1;
-        if (@abs(v) >= 0.999) s.clipped += 1;
+        if (@abs(v) > 1.0) s.over += 1;
         s.peak = @max(s.peak, @abs(v));
         sum += v;
         sq += v * v;

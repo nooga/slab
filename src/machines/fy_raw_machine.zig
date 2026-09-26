@@ -757,8 +757,10 @@ fn renderVoiceSample(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
         }
     }
 
+    // No clamp: machines have headroom (docs/17 D5); only the master bus
+    // soft-clips.
     for (l, r, self.io[0..l.len]) |*sl, *sr, f| {
-        const y: f32 = @floatCast(std.math.clamp(f.out_l, -1.0, 1.0));
+        const y: f32 = @floatCast(f.out_l);
         sl.* = y;
         sr.* = y;
     }
@@ -888,7 +890,7 @@ fn renderEffectBlock(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
         const e = self.entryArgs(ch);
         const args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&io[0]) }, e[0], e[1], e[2] };
         _ = try caller.call(l.len, &args);
-        for (dst, io) |*d, f| d.* = @floatCast(std.math.clamp(f.out_l, -1.0, 1.0));
+        for (dst, io) |*d, f| d.* = @floatCast(f.out_l); // no clamp (D5)
     }
 }
 

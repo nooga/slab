@@ -162,6 +162,14 @@ DSP work.
 defaults, and effects clip on the 0 dBFS ladder step. This is D5
 (remove the per-machine clamp) in practice.
 
+**Gain staging, measured after D5 removed the clamp.**
+
+- FM-86's default chord peaks at +12.8 dBFS, and single notes at +2 dBFS.
+- Rhodes peaks at +4 dBFS (chord +7.4 dBFS).
+- The sampler chord peaks at +3.3 dBFS.
+- The master soft clip is now the only thing catching these. They are
+  default-level bugs in the machines, to fix with their presets (G5).
+
 **Denormals.** delay2 emits denormal samples in its tails (186 in the
 impulse case).
 
@@ -173,7 +181,7 @@ impulse case).
 | D2 | `dsp:` syntax (typed locals, dotted fields, consuming locals, stack effects) lives **in the compiler**. | These are tokenizer and SSA concerns; doing them as macros would be fragile. |
 | D3 | Manifest/machine DSL lives **in fy**, built on new **parsing-word** macro primitives. | Keeps slab vocabulary out of the compiler; parsing words are generally useful to fy. |
 | D4 | One **ctx ABI**: every entry point is `( ctx s:State p:Params -- )`. | Removes special cells and per-hook signatures; it's what docs/04 intended. |
-| D5 | Remove the per-machine ±1 clamp. f64 inter-device; master soft-clip only. | Headroom. Changes existing renders on purpose; goldens get re-recorded after review. |
+| D5 ✅ | Remove the per-machine ±1 clamp. f64 inter-device; master soft-clip only. | Headroom. Changes existing renders on purpose; goldens get re-recorded after review. |
 | D6 | Voice allocation stays a **Zig host service** (poly, mono, legato, glide, unison), configured from the manifest and delivered as voice events in ctx. | It's control logic, not DSP, and nobody needs to livecode it. |
 | D7 | Tables are computed in **normal fy at load time** (`table:`) into the asset arena, swapped atomically on reload, and cached on disk by source hash. | Normal fy can allocate and call libm; the audio thread just reads. |
 | D8 | The workbench is **host-in-a-box**: same adapter, same ctx, scripted instead of a sound card. It outputs PNG contact sheets drawn with raylib; no Python. | One code path; cheap for agents to read. |

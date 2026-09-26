@@ -39,6 +39,9 @@ by `KernelCtx` / `IoFrame` in the adapter, and checked by the test
   `det`. `out-l` is at offset 0, so a stage handed `io` can keep writing
   `out f!64`.
 
+**Headroom.** The adapter hands kernel output to the host unclamped, as
+f64 converted to f32 (D5). Only the master bus soft-clips.
+
 **Lanes.**
 
 - *Voices* accumulate into `io.out-l`; the host sums all voices and
@@ -58,7 +61,6 @@ by `KernelCtx` / `IoFrame` in the adapter, and checked by the test
 
 **Still to do (docs/17 step 3):**
 
-- remove the ±1 output clamp (D5)
 - stereo voices writing `out-r`
 - the voice service (D6)
 - per-control smoothing

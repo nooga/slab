@@ -396,10 +396,10 @@ fn runCase(
     });
     const nan = st_l.nan + st_r.nan;
     const den = st_l.denormal + st_r.denormal;
-    const clip = st_l.clipped + st_r.clipped;
+    const over = st_l.over + st_r.over;
     if (nan > 0) try rep.print(alloc, "  NAN {d}", .{nan});
     if (den > 0) try rep.print(alloc, "  DENORMAL {d}", .{den});
-    if (clip > 0) try rep.print(alloc, "  CLIPPED {d} smp", .{clip});
+    if (over > 0) try rep.print(alloc, "  OVER 0dBFS {d} smp", .{over});
     try rep.print(alloc, "\n", .{});
 
     // Markers for the sheet.
@@ -617,8 +617,8 @@ fn runCase(
         var cv = try plot.Canvas.init(alloc, 1280, 940);
         defer cv.deinit(alloc);
         _ = cv.printf(8, 6, plot.amber, "{s} / {s}", .{ mname, cs.name });
-        _ = cv.printf(8, 18, plot.text, "peak {d:.1} dBFS  rms {d:.1}  {s}  {d:.2}s  cpu {d:.0} ns/smp  nan {d}  clipped {d}", .{
-            an.dbAmp(@max(st_l.peak, st_r.peak)), an.dbAmp(an.rms(out.l)), if (stereo) "stereo" else "mono", cs.seconds, out.ns_per_sample, nan, clip,
+        _ = cv.printf(8, 18, plot.text, "peak {d:.1} dBFS  rms {d:.1}  {s}  {d:.2}s  cpu {d:.0} ns/smp  nan {d}  over 0dBFS {d}", .{
+            an.dbAmp(@max(st_l.peak, st_r.peak)), an.dbAmp(an.rms(out.l)), if (stereo) "stereo" else "mono", cs.seconds, out.ns_per_sample, nan, over,
         });
         const rr: ?[]const f32 = if (stereo) out.r else null;
         sheet.waveform(&cv, .{ .x = 8, .y = 32, .w = 1264, .h = 150 }, "waveform L amber / R cyan", out.l, rr, SR, 0, cs.seconds, 1.0, markers[0..nm]);
