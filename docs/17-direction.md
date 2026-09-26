@@ -136,11 +136,16 @@ DSP work.
   address 0x18). About every other long bench run crashed.
 - The DAW's audio thread runs the same callers.
 
-**Rhodes is 40–59 cents sharp.**
+**Rhodes: tuning correct, tone wrong.**
 
-- C3 measures 135.3 Hz against 130.8 Hz.
-- Output has 0.005–0.009 DC.
-- It hits the ±1 clamp at default settings.
+- The "40–59 cents sharp" reading was wrong: it was the autocorrelation
+  pitch tracker locking onto the tine's inharmonic 6.267× partial. An
+  FFT shows the fundamental at +1.5 cents.
+- The real problems were a near-sine tone (2nd harmonic at −21.5 dB, 3rd
+  at −35 dB, no velocity-dependent bark), a DC offset, and a startup and
+  note-on thump.
+- Fixed 2026-09-26 with a flux-derivative pickup (docs/17 G4; see
+  `kernels/06-voices/rhodes.fy`).
 
 **FM-86 ignores velocity.**
 

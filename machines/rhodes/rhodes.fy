@@ -35,11 +35,12 @@ include "../lib/manifest.fy"
   "BODY" 1 strip
 
   "PICKUP" "DRIVE" "rd-pickup-drive" RhodesParams.pickup-drive 0.0 1.0 0.3 curve-lin knob
+  "PICKUP" "VOICE" "rd-voicing"      RhodesParams.voicing      0.0 1.0 0.4 curve-lin knob
   "PICKUP" 1 strip
 
   "AMP" "TONE"    "rd-warmth" RhodesParams.warmth 0.0 1.0 0.5 curve-lin knob
   "AMP" "RELEASE" "rd-damper" RhodesParams.damper 0.0 1.0 0.7 curve-lin knob
-  "AMP" "LEVEL"   "rd-level"  RhodesParams.level  0.0 1.0 0.5 curve-pow knob
+  "AMP" "LEVEL"   "rd-level"  RhodesParams.level  0.0 1.0 0.8 curve-pow knob
   "AMP" 1 strip
 
   machine-desc

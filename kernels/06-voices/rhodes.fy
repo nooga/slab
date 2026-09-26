@@ -1,44 +1,42 @@
-( rhodes.fy — Rhodes-type electric piano voice (modal + nonlinear pickup).
+( rhodes.fy — Rhodes-type electric piano voice: modal tine + magnetic pickup.
 
-  An FM Rhodes is just a DX patch — the FM-86 machine already covers that.
-  A real Rhodes makes its sound a different way, and modelling that mechanism
-  is what makes this machine sound organic rather than synthetic:
+  A Rhodes gets its sound from where the steel tine sits against its
+  electromagnetic pickup, not from the tine's spectrum alone:
 
-    * A struck steel TINE is a clamped-free bar.  Such a bar has INHARMONIC
-      overtones at 1, 6.267, 17.55, ... of its fundamental.  We render the
-      fundamental plus the 6.267x metallic "tine" overtone as two decaying
-      sinusoidal modes — the overtone decays faster, giving the bell-like
-      attack ping that fades to a warm body.
+    * The struck TINE [plus its tonebar] rings as a few modes: two close
+      fundamentals that beat slightly [CHORUS], and the clamped-free bar's
+      inharmonic 6.267x partial - a short metallic ping on the attack [BELL,
+      SNAP].  Decay follows pitch: bass notes ring, top notes die sooner.
 
-    * The ELECTROMAGNETIC PICKUP is nonlinear: the tine vibrates in a
-      position-dependent magnetic field, so the pickup voltage is an
-      ASYMMETRIC, saturating function of tine displacement.  Feeding the
-      clean modal sum through this nonlinearity is the heart of the sound:
-      it manufactures the harmonic series, and because a waveshaper's
-      harmonic content tracks its input amplitude, the tone is bright/barky
-      when struck hard and mellows automatically as the note decays.  No FM
-      sidebands, no glassy DX character.
+    * The PICKUP sees flux Phi = 1/[1 + [x - off]^2] of the tine displacement
+      x, and its coil outputs dPhi/dt.  Soft strikes keep x small, so the
+      output is a fundamental proportional to the offset plus a clean 2nd
+      harmonic - mellow.  Hard strikes [displacement ~ vel^1.4, DRIVE] swing
+      into the curved part of Phi and the harmonics bloom - bark.  VOICING
+      moves the tine off the pickup axis: toward the axis is bell-like [even
+      harmonics], away from it round and fundamental-heavy.  A derivative has
+      no DC, so there is no DC blocker and no thump.
 
-    modes -> *velocity -> pickup tanh(drive*(x+bias)) -> warmth LP
-          -> DC block -> *VCA(level) -> out
+    modes * vel-amp -> Phi -> d/dt * sr/[2 pi f0] -> + hammer chiff
+          -> warmth LP [TONE] -> * level -> out
 
-  A real attack+exponential-decay VCA (the modal envelopes) makes the note
-  die away while held, like a struck string; key-release switches to a
-  faster damper coefficient.  A short hammer-noise chiff and a hair of
-  detune between two fundamental modes add the suitcase realism.
+  Key release switches the decay to the damper [RELEASE].  Suitcase
+  tremolo / stereo pan are not modeled - chain chorus2 for motion.
 
   Polyphony contract [src/machines/fy_raw_machine.zig]: the host calls
   k-rhodes-voice once per voice per segment against that voice's state
   region, so ALL note data lives in per-voice STATE — params are shared.
   The warmth stage ACCUMULATES into the host-zeroed out buffer.
 
-  Probe case: rhodes-voice-render. )
+  Note-on is staged [rn-*] only because the pow2 ladders overflow one
+  register budget [docs/17 A3 removes that]. )
 
 include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../04-filters/coeffs.fy"   ( svf-g, svf-damping, svf-dc-coeff )
 include "../05-drums/noise.fy"          ( noise-step — hammer chiff )
 include "../02-shapers/tanh_table.fy"   ( k-tanh-rational-shape-dsp2 — pickup )
 include "../05-drums/sine.fy"           ( sine-shape — modal oscillators )
+include "../00-primitives/pow2.fy"      ( exp2/log2 — pitch-dependent decay )
 
 ustruct: RhodesState
   f64 age         ( seconds since note-on )
@@ -54,7 +52,10 @@ ustruct: RhodesState
   f64 tine-phase  ( 6.267x tine overtone phase )
   f64 noise-rng   ( LCG state for the hammer chiff )
   f64 warm-lp     ( warmth one-pole lowpass state )
-  f64 dc          ( DC-block highpass state )
+  f64 phi-prev    ( pickup flux last sample - the output is its derivative )
+  f64 vel-amp     ( tine displacement scale for this strike: vel^1.4 * drive )
+  f64 emf-norm    ( sr / [2 pi f0]: derivative gain that keeps level pitch-flat )
+  f64 fund-dec-v  ( this note's decay multiplier - lower notes ring longer )
   f64 s-fund      ( scratch: fundamental modal output )
   f64 s-tine      ( scratch: tine overtone output )
   f64 s-pre       ( scratch: post-pickup sample )
@@ -71,6 +72,7 @@ ustruct: RhodesParams
   f64 warmth        ( TONE: warmth lowpass 0..1 -> 700..6000 Hz )
   f64 damper        ( RELEASE damping 0..1 )
   f64 level         ( output level 0..1 )
+  f64 voicing       ( VOICING: tine offset from the pickup axis 0..1 )
   ( derived — filled by rhodes-block-prepare )
   f64 inv-sr
   f64 sr
@@ -81,12 +83,12 @@ ustruct: RhodesParams
   f64 bark-dec-coef
   f64 detune-mul       ( 1 + bar-detune*0.006 for fundamental mode B )
   f64 tine-lvl         ( tine overtone mix level )
-  f64 pickup-base      ( steady pickup drive )
-  f64 bark-drive-amt   ( extra pickup drive that decays with bark-env )
-  f64 pickup-bias      ( pickup asymmetry offset )
+  f64 drive-amt        ( tine displacement at full velocity )
+  f64 bark-drive-amt   ( extra displacement that decays with bark-env )
+  f64 pickup-off       ( voicing -> tine offset in pickup units )
   f64 chiff-amt        ( hammer-noise level )
   f64 warm-a           ( warmth one-pole coefficient )
-  f64 dc-coef          ( DC-block highpass coefficient ~12 Hz )
+  f64 fund-tau         ( fundamental decay time at C3, s )
 ;
 
 ( ctx state params -- : derived fills, all idempotent. No libm: svf-dc-coeff is the
@@ -102,38 +104,39 @@ dsp: rhodes-block-prepare
   ( fundamental decay: tau = 0.6 + bar-q*6.0 s )
   sr 0.15915494309189535 0.6 params RhodesParams.bar-q@ 6.0 f* f+ f/ svf-dc-coeff
   1.0 swap f- params RhodesParams.fund-dec-coef-p f!64
-  ( release: tau = 0.06 + (1-damper)*0.9 s )
-  sr 0.15915494309189535 0.06 1.0 params RhodesParams.damper@ f- 0.9 f* f+ f/ svf-dc-coeff
+  ( release: tau = 0.02 + (1-damper)*0.3 s - dampers stop a tine fast )
+  sr 0.15915494309189535 0.02 1.0 params RhodesParams.damper@ f- 0.3 f* f+ f/ svf-dc-coeff
   1.0 swap f- params RhodesParams.fund-rel-coef-p f!64
-  ( tine overtone decay: tau = 0.2 + tine-q*0.8 s )
-  sr 0.15915494309189535 0.2 params RhodesParams.tine-q@ 0.8 f* f+ f/ svf-dc-coeff
+  ( tine ping decay: tau = 0.03 + tine-q*0.25 s - a bright attack, not a drone )
+  sr 0.15915494309189535 0.03 params RhodesParams.tine-q@ 0.25 f* f+ f/ svf-dc-coeff
   1.0 swap f- params RhodesParams.tine-dec-coef-p f!64
   ( bark transient decay: tau = 0.02 + bark-decay*0.3 s )
   sr 0.15915494309189535 0.02 params RhodesParams.bark-decay@ 0.3 f* f+ f/ svf-dc-coeff
   1.0 swap f- params RhodesParams.bark-dec-coef-p f!64
   ( detune multiplier: 1 + bar-detune*0.006 (up to ~0.6%) )
   1.0 params RhodesParams.bar-detune@ 0.006 f* f+ params RhodesParams.detune-mul-p f!64
-  ( tine overtone level )
-  params RhodesParams.tine-q@ 0.5 f* params RhodesParams.tine-lvl-p f!64
-  ( pickup: steady drive, attack-extra drive, asymmetry bias, chiff level )
-  0.8 params RhodesParams.pickup-drive@ 1.6 f* f+ params RhodesParams.pickup-base-p f!64
-  params RhodesParams.bark@ 2.5 f* params RhodesParams.bark-drive-amt-p f!64
-  0.3 params RhodesParams.pickup-bias-p f!64
-  params RhodesParams.bark@ 0.12 f* params RhodesParams.chiff-amt-p f!64
+  ( tine ping level in DISPLACEMENT: the pickup's derivative lifts a partial
+    at 6.267 f0 by 6.267, so 1/6.267 keeps BELL 1.0 at about the fundamental )
+  params RhodesParams.tine-q@ 0.16 f* params RhodesParams.tine-lvl-p f!64
+  ( pickup: displacement at full velocity, attack-extra, voicing offset, chiff )
+  0.35 params RhodesParams.pickup-drive@ 1.25 f* f+ params RhodesParams.drive-amt-p f!64
+  params RhodesParams.bark@ 0.6 f* params RhodesParams.bark-drive-amt-p f!64
+  ( offset 0.15..0.75: a centered tine [0] gives no fundamental at all )
+  params RhodesParams.voicing@ 0.6 f* 0.15 f+ params RhodesParams.pickup-off-p f!64
+  params RhodesParams.bark@ 0.02 f* params RhodesParams.chiff-amt-p f!64
+  ( fundamental decay at C3; note-on scales it by pitch )
+  0.6 params RhodesParams.bar-q@ 6.0 f* f+ params RhodesParams.fund-tau-p f!64
   ( warmth one-pole: corner 700 + warmth*5300 Hz )
   sr 700.0 params RhodesParams.warmth@ 5300.0 f* f+ svf-dc-coeff params RhodesParams.warm-a-p f!64
-  ( DC-block highpass corner ~12 Hz )
-  sr 12.0 svf-dc-coeff params RhodesParams.dc-coef-p f!64
   drop2 drop2
 ;
 
-( ctx state params -- : strike this voice. Phases reset to 0 so
-  sample 0 is silent (no click); envelopes seed for a fresh strike. )
-dsp: rhodes-note-on
+( ctx state params -- : reset this voice's strike state.  Phases reset
+  to 0 so sample 0 is silent; envelopes seed for a fresh strike. )
+dsp: rn-reset ( ctx state params -- )
   | ctx state params |
-  ctx Ctx.hz@ ctx Ctx.vel@ | hz velocity |
-  hz state RhodesState.note-hz-p f!64
-  velocity state RhodesState.vel-p f!64
+  ctx Ctx.hz@ state RhodesState.note-hz-p f!64
+  ctx Ctx.vel@ state RhodesState.vel-p f!64
   0.0 state RhodesState.age-p f!64
   1000000000.0 state RhodesState.gate-time-p f!64
   0.0 state RhodesState.amp-atk-p f!64
@@ -145,8 +148,66 @@ dsp: rhodes-note-on
   0.0 state RhodesState.tine-phase-p f!64
   12345.0 state RhodesState.noise-rng-p f!64
   0.0 state RhodesState.warm-lp-p f!64
-  0.0 state RhodesState.dc-p f!64
-  drop2 drop2 drop
+  ( a strike from rest: flux starts at the tine's rest position )
+  1.0  1.0 params RhodesParams.pickup-off@ dup f* f+  f/  state RhodesState.phi-prev-p f!64
+  drop2 drop
+;
+
+( ctx state params -- : log halves of the strike's two pow terms, one
+  pow2 ladder per stage [each needs its own register budget]. )
+dsp: rn-log-vel ( ctx state params -- )
+  | ctx state params |
+  ctx Ctx.vel@ 0.0001 1.0 fclamp log2-approx 1.4 f*  state RhodesState.s-fund-p f!64
+  drop2 drop
+;
+dsp: rn-ratio ( ctx state params -- )
+  | ctx state params |
+  130.81 ctx Ctx.hz@ 20.0 20000.0 fclamp f/  state RhodesState.s-tine-p f!64
+  drop2 drop
+;
+dsp: rn-log-pitch ( ctx state params -- )
+  | ctx state params |
+  state RhodesState.s-tine@ log2-approx 0.5 f*  state RhodesState.s-tine-p f!64
+  drop2 drop
+;
+
+( ctx state params -- : displacement scale and pickup gain.  Displacement
+  grows faster than velocity [vel^1.4]: hard hits reach the pickup's curved
+  region and bark, soft ones stay near-linear and mellow.  dPhi/dt scales
+  with frequency; emf-norm divides it back out so level is pitch-flat. )
+dsp: rn-velamp ( ctx state params -- )
+  | ctx state params |
+  state RhodesState.s-fund@ exp2-approx params RhodesParams.drive-amt@ f*
+    state RhodesState.vel-amp-p f!64
+  params RhodesParams.sr@ 6.283185307179586 ctx Ctx.hz@ f* f/  state RhodesState.emf-norm-p f!64
+  drop2 drop
+;
+
+( ctx state params -- : this note's decay.  tau ~ fund-tau * [C3/f]^0.5:
+  bass notes ring, top notes die sooner, as tines shorten. )
+dsp: rn-tau ( ctx state params -- )
+  | ctx state params |
+  state RhodesState.s-tine@ exp2-approx params RhodesParams.fund-tau@ f*
+    state RhodesState.s-tine-p f!64
+  drop2 drop
+;
+dsp: rn-decay ( ctx state params -- )
+  | ctx state params |
+  params RhodesParams.sr@ 0.15915494309189535 state RhodesState.s-tine@ f/ svf-dc-coeff 1.0 swap f-
+    state RhodesState.fund-dec-v-p f!64
+  drop2 drop
+;
+
+( ctx state params -- : strike this voice. )
+dsp: rhodes-note-on ( ctx state params -- )
+  | ctx state params |
+  ctx state params call: rn-reset
+  ctx state params call: rn-log-vel
+  ctx state params call: rn-ratio
+  ctx state params call: rn-log-pitch
+  ctx state params call: rn-velamp
+  ctx state params call: rn-tau
+  ctx state params call: rn-decay
 ;
 
 ( ctx state params -- : release this voice — the damper engages. )
@@ -168,7 +229,7 @@ dsp: rhodes-env
   ( fundamental: held -> fund-dec, released -> fund-rel )
   state RhodesState.fund-env@
   state RhodesState.age@ state RhodesState.gate-time@
-    params RhodesParams.fund-dec-coef@ params RhodesParams.fund-rel-coef@ fsel-lt
+    state RhodesState.fund-dec-v@ params RhodesParams.fund-rel-coef@ fsel-lt
   f* state RhodesState.fund-env-p f!64
   ( tine: held -> tine-dec, released -> fund-rel (damper cuts the ring) )
   state RhodesState.tine-env@
@@ -211,44 +272,40 @@ dsp: rhodes-tine
   drop2
 ;
 
-( state params -- : the nonlinear pickup. x = (fund + tine)*vel + hammer
-  chiff; drive rises during the attack (bark-env); y = tanh(drive*(x+bias)).
-  The asymmetric bias + amplitude-tracking saturation is the Rhodes growl. )
+( state params -- : the electromagnetic pickup.  x is the tine's
+  displacement at the pickup [velocity-scaled modes plus a bark boost on
+  the attack]; the flux through the coil falls off with distance from the
+  pickup axis, Phi = 1 / [1 + [x - off]^2]; the coil voltage is dPhi/dt.
+  Small x: Phi ~ 1 - [x-off]^2, so a fundamental proportional to the
+  voicing offset plus a clean 2nd harmonic - mellow.  Large x reaches the
+  curved part of Phi and the harmonics bloom - bark.  A derivative has no
+  DC, so no DC blocker [the old tanh pickup needed one, and thumped]. )
 dsp: rhodes-pickup
   | state params |
-  state RhodesState.s-fund@ state RhodesState.s-tine@ f+ state RhodesState.vel@ f*
+  state RhodesState.s-fund@ state RhodesState.s-tine@ f+
+    state RhodesState.vel-amp@
+    params RhodesParams.bark-drive-amt@ state RhodesState.bark-env@ f* state RhodesState.vel@ f* f+
+  f* | x |
+  x params RhodesParams.pickup-off@ f- | d |
+  1.0  1.0 d d f* f+  f/ | phi |
+  phi state RhodesState.phi-prev@ f- state RhodesState.emf-norm@ f*
   state RhodesState.noise-rng-p noise-step
     params RhodesParams.chiff-amt@ f* state RhodesState.bark-env@ f* state RhodesState.vel@ f* f+
-  | x |
-  params RhodesParams.pickup-base@
-    params RhodesParams.bark-drive-amt@ state RhodesState.bark-env@ f* f+
-  | drv |
-  x params RhodesParams.pickup-bias@ f+ drv f*
-  k-tanh-rational-shape-dsp2
   state RhodesState.s-pre-p f!64
-  drop2 drop2
+  phi state RhodesState.phi-prev-p f!64
+  drop2 drop2 drop
 ;
 
-( out state params -- : warmth one-pole lowpass + DC-block highpass, then
-  accumulate.  The asymmetric pickup leaves a DC term the leaky-integrator
-  highpass (dc += k*(lp-dc); hp = lp-dc) removes. )
+( out state params -- : warmth one-pole lowpass [the amp], then
+  accumulate.  Reads its own new value from a local: stores land at the
+  end of the word. )
 dsp: rhodes-warmth
   | out state params |
-  ( one-pole lowpass: lp += a * (pre - lp) )
-  state RhodesState.s-pre@ state RhodesState.warm-lp@ f-
-  params RhodesParams.warm-a@ f*
-  state RhodesState.warm-lp@ f+
-  state RhodesState.warm-lp-p f!64
-  ( DC block: dc += k*(lp - dc) ; hp = lp - dc )
-  state RhodesState.warm-lp@ state RhodesState.dc@ f-
-  params RhodesParams.dc-coef@ f*
-  state RhodesState.dc@ f+
-  state RhodesState.dc-p f!64
-  ( accumulate: out += (lp - dc) * level )
-  out f@64
-  state RhodesState.warm-lp@ state RhodesState.dc@ f- params RhodesParams.level@ f* f+
-  out f!64
-  drop2 drop
+  state RhodesState.warm-lp@ | lp0 |
+  lp0  state RhodesState.s-pre@ lp0 f-  params RhodesParams.warm-a@ f*  f+ | lp |
+  lp state RhodesState.warm-lp-p f!64
+  out f@64  lp params RhodesParams.level@ f* f+  out f!64
+  drop2 drop2 drop
 ;
 
 ( io ctx state params -- : one voice tick, staged. Output ACCUMULATES into out.
