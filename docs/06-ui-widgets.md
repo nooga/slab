@@ -276,7 +276,7 @@ Vertical or horizontal; any of them can be `bipolar` (centre detent).
 
 | Variant | Behaviour |
 |---|---|
-| `toggle` | bat-handle lever, 2 or 3 positions |
+| `toggle` | bat-handle lever, 2 or 3 positions (panels: 2) |
 | `slide` | slide switch, 2 or 3 positions, very compact |
 | `latch` | square cap, stays down; LED above or lit cap |
 | `momentary` | same cap, no latch |
@@ -342,9 +342,13 @@ image assets, changing the look is a code change.
   Fractional scales regenerate them at the device size (not built yet:
   Phase 1 ships integer scales).
 
-Machine manifests (docs/15) use the same catalogue: control kinds are
-`knob | slider | switch | button | selector | led | display` plus variant
-and size. Authors never draw controls.
+Machine manifests (docs/15) use the same catalogue: a control names its
+widget (`as-fader`, `as-radio`, …) or takes the default for its kind, and
+the panel draws it at the panel's tier. Panels use the **panel forms**:
+legend-topped cells sized by the tier — `faderCell`/`faderKind`, `latch`
+(legend over an LED cap), `radio` (legend over joined LED caps), plus
+`toggleCell`, `slideCell` and `listCell`, which size themselves from their
+marks and options. Authors never draw controls.
 
 ## Interaction contract
 

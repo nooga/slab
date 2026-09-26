@@ -159,7 +159,7 @@ fn controlsPage(ui: *Ui, screen: Rect, st: *State) void {
     ledsPanel(ui, col_b, st);
 
     var mrow = col_c.cutTop(212);
-    machine(ui, mrow.cutLeft(@min(mrow.w, machineWidth(.m))), st);
+    machine(ui, mrow.cutLeft(@min(mrow.w, machineWidth(ui, .m))), st);
     if (mrow.w > 0) _ = ui.plate(mrow, .{});
     displaysPanel(ui, col_c.cutTop(232), st);
     typePanel(ui, col_c);
@@ -222,10 +222,11 @@ fn switchesPanel(ui: *Ui, r: Rect, st: *State) void {
     ui.pushId("switches");
     defer ui.popId();
     var body = ctl.strip(ui, r, "SWITCHES · LEVER SLIDE LATCH LIT SEGMENTED");
-    const tc = ctl.toggleCell();
-    var row = body.cutTop(tc[1]);
-    _ = ctl.toggle(ui, row.cutLeft(tc[0] + 12), "lv2", &st.lever2, .{ .label = "SYNC", .marks = &.{ "ON", "OFF" } });
-    _ = ctl.toggle(ui, row.cutLeft(tc[0] + 12), "lv3", &st.lever3, .{ .positions = 3, .label = "RANGE", .marks = &.{ "HI", "MID", "LO" } });
+    const t2 = ctl.ToggleOpts{ .label = "SYNC", .marks = &.{ "ON", "OFF" } };
+    const t3 = ctl.ToggleOpts{ .positions = 3, .label = "RANGE", .marks = &.{ "HI", "MID", "LO" } };
+    var row = body.cutTop(ctl.toggleCell(ui, t2)[1]);
+    _ = ctl.toggle(ui, row.cutLeft(ctl.toggleCell(ui, t2)[0] + 8), "lv2", &st.lever2, t2);
+    _ = ctl.toggle(ui, row.cutLeft(ctl.toggleCell(ui, t3)[0] + 8), "lv3", &st.lever3, t3);
     const o2 = ctl.SlideOpts{ .label = "KEY", .marks = &.{ "A", "B" } };
     const s2 = ctl.slideCell(ui, o2);
     _ = ctl.slide(ui, row.cutLeft(s2[0] + 8).takeTop(s2[1]), "sl2", &st.slide2, o2);
@@ -259,10 +260,9 @@ fn selectorsPanel(ui: *Ui, r: Rect, st: *State) void {
     defer ui.popId();
     var body = ctl.strip(ui, r, "SELECTORS · LIST DISPLAY");
     const waves = [_][]const u8{ "TRI", "SAW", "PULSE", "NOISE" };
-    const lc = ctl.listCell(waves.len);
-    _ = ctl.list(ui, body.cutLeft(lc[0] + 20), "wave", &st.wave, &waves, "WAVE");
+    _ = ctl.list(ui, body.cutLeft(ctl.listCell(ui, &waves)[0] + 20), "wave", &st.wave, &waves, "WAVE");
     const octs = [_][]const u8{ "32'", "16'", "8'", "4'" };
-    _ = ctl.list(ui, body.cutLeft(lc[0] + 20), "oct", &st.octave, &octs, "OCT");
+    _ = ctl.list(ui, body.cutLeft(ctl.listCell(ui, &octs)[0] + 20), "oct", &st.octave, &octs, "OCT");
     var col = body;
     ui.textIn(&ui.fonts.legend, col.cutTop(12), "PRESET", style.text_dim, .left, true);
     _ = ctl.displaySelect(ui, col.cutTop(ctl.displayHeight(false)).takeLeft(180), "preset", &st.preset, &presets);
@@ -383,12 +383,13 @@ fn typePanel(ui: *Ui, r: Rect) void {
 // ═════════════════════════════ MACHINES ═════════════════════════════
 
 const TITLE_H: i32 = 20;
+const SM24_OCTS = [_][]const u8{ "16'", "8'", "4'" };
 const STRIP_HEAD: i32 = 14;
 
 /// Natural width of the SM-24 faceplate at a tier: the sum of its strips.
-fn machineWidth(sz: ctl.Size) i32 {
+fn machineWidth(ui: *const Ui, sz: ctl.Size) i32 {
     const cw = ctl.knobCell(sz)[0] + 4;
-    return (ctl.listCell(3)[0] + cw + 6) + cw * 2 + (ctl.sliderWidth(.slider) * 4 + 4);
+    return (ctl.listCell(ui, &SM24_OCTS)[0] + cw + 6) + cw * 2 + (ctl.sliderWidth(.slider) * 4 + 4);
 }
 
 /// Natural height at a tier: title strip, strip header, two knob rows,
@@ -415,9 +416,8 @@ fn machine(ui: *Ui, r: Rect, st: *State) void {
     const cell = ctl.knobCell(sz);
     const cw = cell[0] + 4;
     // VCO
-    var vco = ctl.strip(ui, body.cutLeft(ctl.listCell(3)[0] + cw + 6), "VCO");
-    const octs = [_][]const u8{ "16'", "8'", "4'" };
-    _ = ctl.list(ui, vco.cutLeft(ctl.listCell(3)[0] + 6), "oct", &st.m_oct, &octs, "OCT");
+    var vco = ctl.strip(ui, body.cutLeft(ctl.listCell(ui, &SM24_OCTS)[0] + cw + 6), "VCO");
+    _ = ctl.list(ui, vco.cutLeft(ctl.listCell(ui, &SM24_OCTS)[0] + 6), "oct", &st.m_oct, &SM24_OCTS, "OCT");
     _ = ctl.knob(ui, vco.cutTop(cell[1]), "wave", &st.m_wave, .{ .size = sz, .label = "WAVE" });
     _ = ctl.knob(ui, vco.cutTop(cell[1]), "det", &st.m_det, .{ .size = sz, .label = "DETUNE", .variant = .bipolar, .default = 0.5 });
     // VCF
@@ -496,7 +496,7 @@ fn dawPage(ui: *Ui, screen: Rect, st: *State) void {
     pianoRoll(ui, h[1], st);
     var b = v[1];
     const sz = tierFor(b.h) orelse .s;
-    machine(ui, b.cutLeft(@min(b.w, machineWidth(sz))), st);
+    machine(ui, b.cutLeft(@min(b.w, machineWidth(ui, sz))), st);
     if (b.w > 0) delay(ui, b.cutLeft(@min(b.w, 176)), st);
     if (b.w > 0) _ = ui.plate(b, .{});
 }

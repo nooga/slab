@@ -349,8 +349,15 @@ pub const ToggleOpts = struct {
     disabled: bool = false,
 };
 
-pub fn toggleCell() [2]i32 {
-    return .{ 40, LEGEND_H + sprites.LEVER_H };
+/// Lever and its marks, side by side: the group the cell centres.
+fn toggleGroupW(ui: *const Ui, marks: []const []const u8) i32 {
+    var mw: i32 = 0;
+    for (marks) |m| mw = @max(mw, ui.fonts.legend.measure(m));
+    return sprites.LEVER_W + if (mw > 0) 2 + mw else 0;
+}
+
+pub fn toggleCell(ui: *const Ui, o: ToggleOpts) [2]i32 {
+    return .{ @max(40, toggleGroupW(ui, o.marks) + 4), LEGEND_H + sprites.LEVER_H };
 }
 
 /// `v` = position index, 0 = up.
@@ -360,7 +367,7 @@ pub fn toggle(ui: *Ui, r: Rect, key: anytype, v: *u8, o: ToggleOpts) bool {
     const n = @max(o.positions, 2);
     var area = r;
     const legend_r = if (o.label.len > 0) area.cutTop(LEGEND_H) else Rect{};
-    const lever = Rect.xywh(area.x + @divFloor(area.w - sprites.LEVER_W, 2) - (if (o.marks.len > 0) @as(i32, 5) else 0), area.y, sprites.LEVER_W, sprites.LEVER_H);
+    const lever = Rect.xywh(area.x + @divFloor(area.w - toggleGroupW(ui, o.marks), 2), area.y, sprites.LEVER_W, sprites.LEVER_H);
 
     const b = ui.behavior(wid, area, o.disabled);
     if (b.pressed) {
@@ -459,6 +466,9 @@ pub const ButtonOpts = struct {
     /// while the button is on.
     glyph: ?LedShape = null,
     glyph_on: Color = style.accent,
+    /// The cap shows only its LED; `label` names it (tooltip, title
+    /// display) and is printed above by the caller (panel latch).
+    led_only: bool = false,
     /// Toolbar tile: the cap is a section of the bar it sits in, full
     /// height, sharing the bar's 1px seams instead of floating inside it.
     flush: bool = false,
@@ -513,13 +523,14 @@ fn cap(ui: *Ui, r: Rect, down: bool, is_on: bool, hot: bool, o: ButtonOpts) void
         if (is_on and !o.flush) ui.rect(r.inset(-1), lc.alpha(40));
     }
     const shift: i32 = if (down) 1 else 0;
+    const label = if (o.led_only) "" else o.label;
     var content = body.insetXY(3, 0);
     content.y += shift;
     if (o.led) |lc| {
         // LED + label are one group, centred in the cap (LED_GAP apart),
         // so the LED never hugs the edge on wide caps.
         const LED_GAP = 4;
-        const group = 3 + LED_GAP + ui.fonts.legend.measure(o.label);
+        const group = if (label.len > 0) 3 + LED_GAP + ui.fonts.legend.measure(label) else 3;
         const lx = content.x + @max(1, @divFloor(content.w - group, 2));
         led(ui, lx, content.y + @divFloor(content.h - 3, 2), .round3, if (is_on) .on else .off, lc);
         content = Rect.xywh(lx + 3 + LED_GAP, content.y, content.right() - (lx + 3 + LED_GAP), content.h);
@@ -530,10 +541,10 @@ fn cap(ui: *Ui, r: Rect, down: bool, is_on: bool, hot: bool, o: ButtonOpts) void
         const gy = content.y + @divFloor(content.h - sz[1], 2);
         if (is_on) led(ui, gx, gy, shape, .on, o.glyph_on) else ledShape(ui, gx, gy, shape, if (hot) style.text else style.text_dim);
     }
-    if (o.label.len > 0) {
+    if (label.len > 0) {
         const f = &ui.fonts.legend;
         const col = if (o.disabled) style.text_mute else if (o.lit != null and is_on) style.text else style.text_dim;
-        ui.textIn(f, content, o.label, col, if (o.led != null) .left else .center, !down);
+        ui.textIn(f, content, label, col, if (o.led != null) .left else .center, !down);
     }
 }
 
@@ -554,15 +565,15 @@ pub fn stepper(ui: *Ui, r: Rect, key: anytype) i32 {
 }
 
 pub fn segmented(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8) bool {
-    return segmentedEx(ui, r, key, v, labels, false);
+    return segmentedEx(ui, r, key, v, labels, false, null);
 }
 
 /// Segmented group as toolbar tiles (see `ButtonOpts.flush`).
 pub fn segmentedFlush(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8) bool {
-    return segmentedEx(ui, r, key, v, labels, true);
+    return segmentedEx(ui, r, key, v, labels, true, null);
 }
 
-fn segmentedEx(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8, flush: bool) bool {
+fn segmentedEx(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8, flush: bool, led_col: ?Color) bool {
     const before = v.*;
     ui.pushId(key);
     defer ui.popId();
@@ -575,18 +586,92 @@ fn segmentedEx(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u
         const b = ui.behaviorEx(wid, cr, .{ .focusable = false });
         if (b.pressed) v.* = @intCast(i);
         const on = v.* == i;
-        cap(ui, cr, on, on, ui.isHot(wid), .{ .label = lab, .flush = flush });
+        cap(ui, cr, on, on, ui.isHot(wid), .{ .label = lab, .flush = flush, .led = led_col });
         if (ui.isHot(wid)) ui.setTouch("", lab);
     }
     return v.* != before;
+}
+
+// ── Panel forms ──────────────────────────────────────────────────────
+//
+// Machine panels lay controls out in legend-topped cells (docs/15). These
+// are the catalogue's faders and buttons in that form, sized by the
+// panel's tier.
+
+/// Panel fader: the slider kind and travel for a tier. No readout; the
+/// title display shows the value while it's touched.
+pub fn faderKind(size: Size) SliderKind {
+    return if (size == .s) .mini else .slider;
+}
+
+fn faderTravel(size: Size) i32 {
+    return switch (size) {
+        .l => 72,
+        .m => 56,
+        .s => 40,
+    };
+}
+
+pub fn faderCell(ui: *const Ui, size: Size, label: []const u8) [2]i32 {
+    const kind = faderKind(size);
+    return .{ @max(sliderWidth(kind), ui.fonts.legend.measure(label) + 4), LEGEND_H + sprites.sliderGeom(kind).cap_h + faderTravel(size) };
+}
+
+const LATCH_W: i32 = 24;
+
+pub const LatchOpts = struct {
+    size: Size = .m,
+    label: []const u8 = "",
+    led: Color = style.led_red,
+};
+
+pub fn latchCell(ui: *const Ui, o: LatchOpts) [2]i32 {
+    return .{ @max(LATCH_W, ui.fonts.legend.measure(o.label) + 4), LEGEND_H + buttonHeight(o.size) };
+}
+
+/// Latching panel button: legend over a cap whose LED shows the state.
+pub fn latch(ui: *Ui, r: Rect, key: anytype, on: *bool, o: LatchOpts) bool {
+    var area = r;
+    ui.textIn(&ui.fonts.legend, area.cutTop(LEGEND_H), o.label, style.text_dim, .center, true);
+    const h = buttonHeight(o.size);
+    const cap_r = area.takeTop(h).center(LATCH_W, h);
+    return button(ui, cap_r, key, on, .{ .kind = .latch, .label = o.label, .led = o.led, .led_only = true });
+}
+
+pub const RadioOpts = struct {
+    size: Size = .m,
+    label: []const u8 = "",
+    led: Color = style.led_red,
+};
+
+fn radioCapW(ui: *const Ui, labels: []const []const u8) i32 {
+    var w: i32 = 0;
+    for (labels) |l| w = @max(w, ui.fonts.legend.measure(l));
+    // LED, gap, label, cap padding.
+    return @max(LATCH_W, 3 + 4 + w + 8);
+}
+
+pub fn radioCell(ui: *const Ui, labels: []const []const u8, o: RadioOpts) [2]i32 {
+    return .{ @as(i32, @intCast(labels.len)) * radioCapW(ui, labels), LEGEND_H + buttonHeight(o.size) };
+}
+
+/// Radio buttons: legend over joined LED caps, exactly one down.
+pub fn radio(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8, o: RadioOpts) bool {
+    var area = r;
+    ui.textIn(&ui.fonts.legend, area.cutTop(LEGEND_H), o.label, style.text_dim, .center, true);
+    const h = buttonHeight(o.size);
+    const caps = area.takeTop(h).center(@as(i32, @intCast(labels.len)) * radioCapW(ui, labels), h);
+    return segmentedEx(ui, caps, key, v, labels, false, o.led);
 }
 
 // ── Selectors ────────────────────────────────────────────────────────
 
 const LIST_ROW: i32 = 14;
 
-pub fn listCell(options: usize) [2]i32 {
-    return .{ 40, LEGEND_H + @as(i32, @intCast(options)) * LIST_ROW };
+pub fn listCell(ui: *const Ui, options: []const []const u8) [2]i32 {
+    var w: i32 = 0;
+    for (options) |o| w = @max(w, ui.fonts.legend.measure(o));
+    return .{ @max(40, 8 + w + 4), LEGEND_H + @as(i32, @intCast(options.len)) * LIST_ROW };
 }
 
 /// Vertical option column (octave, waveform): click or drag through.
@@ -896,11 +981,11 @@ fn meterScale(ui: *Ui, r: Rect, axis: Rect, horizontal: bool, side: Ui.Align) vo
 
 /// Clip indicator: latches on any sample at or above 0 dBFS; click resets.
 fn clipLed(ui: *Ui, r: Rect, wid: core.Id, peak_db: f32) void {
-    const latch = ui.memo(wid +% 4, 0);
-    if (peak_db >= 0) latch.* = 1;
-    if (ui.behaviorEx(wid +% 5, r, .{ .focusable = false }).clicked) latch.* = 0;
+    const held = ui.memo(wid +% 4, 0);
+    if (peak_db >= 0) held.* = 1;
+    if (ui.behaviorEx(wid +% 5, r, .{ .focusable = false }).clicked) held.* = 0;
     const inner = ui.well(r, style.well);
-    const on = latch.* > 0;
+    const on = held.* > 0;
     ui.rect(inner, if (on) style.rec else style.rec.mix(style.well, 0.82));
     if (on) ui.rect(Rect.xywh(inner.x, inner.y, inner.w, 1), style.rec.mix(style.text, 0.4));
 }

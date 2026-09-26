@@ -52,6 +52,20 @@ pub const ParamKind = enum {
     int_range,
 };
 
+/// Which catalogue control a panel draws for a control (docs/15 §Controls).
+/// `auto` picks from the kind: knobs for values, an LED latch for OFF/ON,
+/// a lever for other pairs, a list for 3–6 options, a stepped knob beyond.
+pub const Widget = enum {
+    auto,
+    knob,
+    fader,
+    lever,
+    slide,
+    list,
+    radio,
+    button,
+};
+
 pub const Control = struct {
     module: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
     module_len: usize = 0,
@@ -65,6 +79,7 @@ pub const Control = struct {
     max: f64 = 1,
     default: f64 = 0,
     curve: ParamCurve = .linear,
+    widget: Widget = .auto,
     // switch_sel only: discrete options. The control stores the selected
     // index; sync writes option_values[index] to the param offset.
     option_count: usize = 0,
@@ -89,6 +104,44 @@ pub const Control = struct {
 
     pub fn idSlice(self: *const Control) []const u8 {
         return self.id[0..self.id_len];
+    }
+
+    /// Centred range (-x..x): drawn from the middle out.
+    pub fn bipolar(self: *const Control) bool {
+        return self.kind == .direct_f64 and self.min < 0 and self.min == -self.max;
+    }
+
+    fn isOnOff(self: *const Control) bool {
+        return self.option_count == 2 and
+            std.mem.eql(u8, std.mem.span(self.optionLabelZ(0)), "OFF") and
+            std.mem.eql(u8, std.mem.span(self.optionLabelZ(1)), "ON");
+    }
+
+    /// The widget the panel draws: the declared one, or the default for
+    /// the kind.
+    pub fn widgetFor(self: *const Control) Widget {
+        if (self.widget != .auto) return self.widget;
+        return switch (self.kind) {
+            .direct_f64, .int_range => .knob,
+            .switch_sel => if (self.isOnOff())
+                .button
+            else switch (self.option_count) {
+                2 => .lever,
+                3...6 => .list,
+                else => .knob,
+            },
+        };
+    }
+
+    /// Whether `w` can edit this control: faders take values, buttons and
+    /// levers two options, the selectors any option list.
+    fn widgetFits(self: *const Control, w: Widget) bool {
+        return switch (w) {
+            .auto, .knob => true,
+            .fader => self.kind == .direct_f64,
+            .button, .lever => self.kind == .switch_sel and self.option_count == 2,
+            .slide, .list, .radio => self.kind == .switch_sel,
+        };
     }
 };
 
@@ -346,6 +399,7 @@ const ControlRaw = extern struct {
     default: Fy.Value,
     curve: Fy.Value,
     options: Fy.Value,
+    widget: Fy.Value,
 };
 
 const OptionRaw = extern struct { next: Fy.Value, label: Fy.Value, value: Fy.Value };
@@ -473,6 +527,10 @@ pub fn read(host: *FyHost) !Desc {
         }
         if (out.kind == .switch_sel and out.option_count == 0) return error.InvalidMachineDesc;
         if (out.kind == .int_range and !(out.max > out.min)) return error.InvalidMachineDesc;
+        const widget = asInt(ctl.widget);
+        if (widget < 0 or widget >= std.meta.fields(Widget).len) return error.InvalidMachineDesc;
+        out.widget = @enumFromInt(widget);
+        if (!out.widgetFits(out.widget)) return error.InvalidMachineDesc;
         d.control_count += 1;
     }
 

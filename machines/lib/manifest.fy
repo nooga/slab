@@ -74,6 +74,7 @@ struct: ControlDesc
   ptr default        ( knob: value; switch: option index )
   ptr curve          ( int: 0 linear, 1 exp )
   ptr options        ( OptionDesc chain, switch only )
+  ptr widget         ( int: panel control, 0 auto [see `as-fader` & co] )
 ;
 
 struct: OptionDesc  ptr next  ptr label  ptr value ;
@@ -232,6 +233,20 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   ifte
   _mf-last-opt !64
 ;
+
+( --- panel controls -------------------------------------------------
+  Follow a control [after its `opt` lines] to pick the catalogue control
+  the panel draws for it.  Without one the panel picks from the kind:
+  knobs for values, an LED latch for OFF/ON, a lever for other pairs, a
+  list for 3-6 options.  A centred range [-x..x] draws from the middle out. )
+: _mf-widget  ( n -- ) _mf-last-ctl @64 ControlDesc.widget! drop ;
+: as-knob    1 _mf-widget ;  ( rotary; switches get a stepped one )
+: as-fader   2 _mf-widget ;  ( vertical fader, values only )
+: as-lever   3 _mf-widget ;  ( toggle lever, 2 options )
+: as-slide   4 _mf-widget ;  ( horizontal slide switch )
+: as-list    5 _mf-widget ;  ( LED option column )
+: as-radio   6 _mf-widget ;  ( joined LED buttons, one down )
+: as-button  7 _mf-widget ;  ( LED latch, 2 options: off / on )
 
 ( --- panel: strips, displays, weighted layout --------------------- )
 : strip  ( module knob-cols -- )

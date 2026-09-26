@@ -1134,7 +1134,7 @@ fn drawPanelImpl(state: *anyopaque, ui: *Ui, rect: Rect) void {
         drawFixtureInfo(self, ui, rect);
         return;
     }
-    const tier = chooseTier(self, rect);
+    const tier = chooseTier(self, ui, rect);
     _ = walkPanel(self, ui, rect, .{ .draw = tier });
 }
 
@@ -1228,23 +1228,24 @@ const PanelPass = union(enum) {
 
 const TAB_BAR_H: i32 = 20;
 const STRIP_HEAD: i32 = 14; // legend line + 2px, see ui_ctl.strip
+const STRIP_PAD: i32 = 4; // between the strip title and its controls
 
 /// Largest tier at which every strip's control grid fits its rect.
-fn chooseTier(self: *FyRawMachine, body: Rect) ui_ctl.Size {
+fn chooseTier(self: *FyRawMachine, ui: *Ui, body: Rect) ui_ctl.Size {
     for ([_]ui_ctl.Size{ .l, .m, .s }) |t| {
-        if (walkPanel(self, null, body, .{ .fit = t })) return t;
+        if (walkPanel(self, ui, body, .{ .fit = t })) return t;
     }
     return .s;
 }
 
 /// Pages → tab bar + that page's rows; a row tree → rows; else strips side
 /// by side. Returns false (fit pass) as soon as a strip doesn't fit.
-fn walkPanel(self: *FyRawMachine, ui: ?*Ui, body: Rect, pass: PanelPass) bool {
+fn walkPanel(self: *FyRawMachine, ui: *Ui, body: Rect, pass: PanelPass) bool {
     var area = body;
     if (self.desc.page_count > 0) {
         if (self.ui_tab >= self.desc.page_count) self.ui_tab = 0;
         const bar = area.cutTop(TAB_BAR_H);
-        if (pass == .draw) drawTabBar(self, ui.?, bar);
+        if (pass == .draw) drawTabBar(self, ui, bar);
         const pg = &self.desc.pages[self.ui_tab];
         return walkRows(self, ui, pg.rows[0..pg.row_count], area, pass);
     }
@@ -1257,14 +1258,14 @@ fn walkPanel(self: *FyRawMachine, ui: ?*Ui, body: Rect, pass: PanelPass) bool {
     const tier = pass.tier();
     var sum_w: i32 = 0;
     for (strips[0..n]) |sv| {
-        const nat = stripNatural(self, sv, tier);
+        const nat = stripNatural(self, ui, sv, tier);
         sum_w += nat[0];
         if (pass == .fit and nat[1] > area.h) return false;
     }
     if (pass == .fit) return sum_w <= area.w;
     var used: i32 = 0;
     for (strips[0..n], 0..) |sv, i| {
-        const w = portion(area.w, sum_w, stripNatural(self, sv, tier)[0], 1, @floatFromInt(n), i + 1 == n, used);
+        const w = portion(area.w, sum_w, stripNatural(self, ui, sv, tier)[0], 1, @floatFromInt(n), i + 1 == n, used);
         _ = walkStrip(self, ui, Rect.xywh(area.x + used, area.y, w, area.h), sv, pass);
         used += w;
     }
@@ -1280,25 +1281,22 @@ fn walkPanel(self: *FyRawMachine, ui: ?*Ui, body: Rect, pass: PanelPass) bool {
 /// floor that keeps a curve readable.
 const DISPLAY_MIN = [2]i32{ 40, 32 };
 
-fn stripNatural(self: *const FyRawMachine, view: StripView, tier: ui_ctl.Size) [2]i32 {
-    const count = stripControlCount(self, view.module);
-    if (count == 0) return .{ 0, STRIP_HEAD + 3 };
-    const cols: usize = @max(view.cols, 1);
-    const rows = (count + cols - 1) / cols;
-    const cell = ui_ctl.knobCell(tier);
+fn stripNatural(self: *const FyRawMachine, ui: *const Ui, view: StripView, tier: ui_ctl.Size) [2]i32 {
+    const t = stripTable(self, ui, view, tier);
+    if (t.rows == 0) return .{ 0, STRIP_HEAD + 3 };
     // Plate: right/bottom seam + 1px bevel all round, then the header.
-    return .{ @as(i32, @intCast(cols)) * cell[0] + 3, @as(i32, @intCast(rows)) * cell[1] + 3 + STRIP_HEAD };
+    return .{ t.width() + 3, t.height() + 3 + STRIP_HEAD + STRIP_PAD };
 }
 
-fn itemNatural(self: *const FyRawMachine, it: machine_desc.LayoutItem, tier: ui_ctl.Size) [2]i32 {
-    return if (it.is_display) DISPLAY_MIN else stripNatural(self, stripViewAt(self, it.index), tier);
+fn itemNatural(self: *const FyRawMachine, ui: *const Ui, it: machine_desc.LayoutItem, tier: ui_ctl.Size) [2]i32 {
+    return if (it.is_display) DISPLAY_MIN else stripNatural(self, ui, stripViewAt(self, it.index), tier);
 }
 
 /// A cell stacks its items: width = widest, height = sum.
-fn cellNatural(self: *const FyRawMachine, cc: *const machine_desc.LayoutCell, tier: ui_ctl.Size) [2]i32 {
+fn cellNatural(self: *const FyRawMachine, ui: *const Ui, cc: *const machine_desc.LayoutCell, tier: ui_ctl.Size) [2]i32 {
     var n = [2]i32{ 0, 0 };
     for (cc.items[0..cc.item_count]) |it| {
-        const s = itemNatural(self, it, tier);
+        const s = itemNatural(self, ui, it, tier);
         n[0] = @max(n[0], s[0]);
         n[1] += s[1];
     }
@@ -1306,10 +1304,10 @@ fn cellNatural(self: *const FyRawMachine, cc: *const machine_desc.LayoutCell, ti
 }
 
 /// A row places cells side by side: width = sum, height = tallest.
-fn rowNatural(self: *const FyRawMachine, r: *const machine_desc.LayoutRow, tier: ui_ctl.Size) [2]i32 {
+fn rowNatural(self: *const FyRawMachine, ui: *const Ui, r: *const machine_desc.LayoutRow, tier: ui_ctl.Size) [2]i32 {
     var n = [2]i32{ 0, 0 };
     for (r.cells[0..r.cell_count]) |*cc| {
-        const s = cellNatural(self, cc, tier);
+        const s = cellNatural(self, ui, cc, tier);
         n[0] += s[0];
         n[1] = @max(n[1], s[1]);
     }
@@ -1325,12 +1323,12 @@ fn portion(total: i32, sum_nat: i32, nat: i32, w: f32, sum_w: f32, last: bool, u
     return nat + extra;
 }
 
-fn walkRows(self: *FyRawMachine, ui: ?*Ui, rows: []const machine_desc.LayoutRow, body: Rect, pass: PanelPass) bool {
+fn walkRows(self: *FyRawMachine, ui: *Ui, rows: []const machine_desc.LayoutRow, body: Rect, pass: PanelPass) bool {
     const tier = pass.tier();
     var sum_h: i32 = 0;
     var sum_rw: f32 = 0;
     for (rows) |*r| {
-        const n = rowNatural(self, r, tier);
+        const n = rowNatural(self, ui, r, tier);
         if (pass == .fit and n[0] > body.w) return false;
         sum_h += n[1];
         sum_rw += r.weight;
@@ -1339,35 +1337,35 @@ fn walkRows(self: *FyRawMachine, ui: ?*Ui, rows: []const machine_desc.LayoutRow,
 
     var used_h: i32 = 0;
     for (rows, 0..) |*r, ri| {
-        const rh = portion(body.h, sum_h, rowNatural(self, r, tier)[1], r.weight, sum_rw, ri + 1 == rows.len, used_h);
+        const rh = portion(body.h, sum_h, rowNatural(self, ui, r, tier)[1], r.weight, sum_rw, ri + 1 == rows.len, used_h);
         const row = Rect.xywh(body.x, body.y + used_h, body.w, rh);
         used_h += rh;
 
         var sum_w: i32 = 0;
         var sum_cw: f32 = 0;
         for (r.cells[0..r.cell_count]) |*cc| {
-            sum_w += cellNatural(self, cc, tier)[0];
+            sum_w += cellNatural(self, ui, cc, tier)[0];
             sum_cw += cc.weight;
         }
         var used_w: i32 = 0;
         for (r.cells[0..r.cell_count], 0..) |*cc, ci| {
-            const cw = portion(row.w, sum_w, cellNatural(self, cc, tier)[0], cc.weight, sum_cw, ci + 1 == r.cell_count, used_w);
+            const cw = portion(row.w, sum_w, cellNatural(self, ui, cc, tier)[0], cc.weight, sum_cw, ci + 1 == r.cell_count, used_w);
             const col = Rect.xywh(row.x + used_w, row.y, cw, row.h);
             used_w += cw;
 
             var sum_ih: i32 = 0;
             var sum_iw: f32 = 0;
             for (cc.items[0..cc.item_count]) |it| {
-                sum_ih += itemNatural(self, it, tier)[1];
+                sum_ih += itemNatural(self, ui, it, tier)[1];
                 sum_iw += it.weight;
             }
             var used_s: i32 = 0;
             for (cc.items[0..cc.item_count], 0..) |it, ii| {
-                const sh = portion(col.h, sum_ih, itemNatural(self, it, tier)[1], it.weight, sum_iw, ii + 1 == cc.item_count, used_s);
+                const sh = portion(col.h, sum_ih, itemNatural(self, ui, it, tier)[1], it.weight, sum_iw, ii + 1 == cc.item_count, used_s);
                 const item = Rect.xywh(col.x, col.y + used_s, col.w, sh);
                 used_s += sh;
                 if (it.is_display) {
-                    drawDisplay(self, ui.?, item, &self.desc.displays[it.index]);
+                    drawDisplay(self, ui, item, &self.desc.displays[it.index]);
                 } else _ = walkStrip(self, ui, item, stripViewAt(self, it.index), pass);
             }
         }
@@ -1375,20 +1373,10 @@ fn walkRows(self: *FyRawMachine, ui: ?*Ui, rows: []const machine_desc.LayoutRow,
     return true;
 }
 
-fn stripControlCount(self: *const FyRawMachine, module: []const u8) usize {
-    var n: usize = 0;
-    for (self.desc.controls[0..self.desc.control_count]) |*ctl| {
-        if (std.mem.eql(u8, ctl.moduleSlice(), module)) n += 1;
-    }
-    return n;
-}
-
-fn walkStrip(self: *FyRawMachine, ui: ?*Ui, r: Rect, view: StripView, pass: PanelPass) bool {
+fn walkStrip(self: *FyRawMachine, ui: *Ui, r: Rect, view: StripView, pass: PanelPass) bool {
     // Fitting is decided on natural sizes (walkRows / walkPanel); here we
     // only draw.
-    const count = stripControlCount(self, view.module);
-    const cols: usize = @max(view.cols, 1);
-    if (pass == .draw) drawStrip(self, ui.?, r, view, pass.draw, cols, (count + cols - 1) / cols);
+    if (pass == .draw) drawStrip(self, ui, r, view, pass.draw);
     return true;
 }
 
@@ -1400,63 +1388,188 @@ fn drawTabBar(self: *FyRawMachine, ui: *Ui, bar: Rect) void {
     if (ui_ctl.segmentedFlush(ui, bar, "tabs", &tab, names[0..n])) self.ui_tab = tab;
 }
 
-fn drawStrip(self: *FyRawMachine, ui: *Ui, r: Rect, view: StripView, tier: ui_ctl.Size, cols: usize, rows: usize) void {
+fn drawStrip(self: *FyRawMachine, ui: *Ui, r: Rect, view: StripView, tier: ui_ctl.Size) void {
     const body = ui_ctl.strip(ui, r, view.title);
-    if (rows == 0 or body.empty()) return;
+    const t = stripTable(self, ui, view, tier);
+    if (t.rows == 0 or body.empty()) return;
     ui.clip(body);
     defer ui.unclip();
-    // Cells share the strip's space but never shrink below the tier's knob
-    // cell: below the smallest tier the strip clips instead of overlapping
-    // controls (docs/06 §Sizing).
-    const min_cell = ui_ctl.knobCell(tier);
-    const cw = @max(@divFloor(body.w, @as(i32, @intCast(cols))), min_cell[0]);
-    const ch = @max(@divFloor(body.h, @as(i32, @intCast(rows))), min_cell[1]);
+    var grid = body;
+    _ = grid.cutTop(STRIP_PAD);
+    // Slack beyond the natural size is shared evenly between columns and,
+    // as gaps below each row, between rows. A control keeps its natural
+    // size, centred across its column and at the top of its row, so
+    // legends line up along a row and across strips. Below the smallest
+    // tier the strip clips instead of overlapping controls (docs/06
+    // §Sizing).
+    const cols: i32 = @intCast(t.cols);
+    const rows: i32 = @intCast(t.rows);
+    const slack_w = @max(0, grid.w - t.width());
+    const slack_h = @max(0, grid.h - t.height());
+    var col_x: [MAX_CONTROLS + 1]i32 = undefined;
+    col_x[0] = grid.x;
+    for (0..t.cols) |ci| {
+        const k: i32 = @intCast(ci);
+        col_x[ci + 1] = col_x[ci] + t.col_w[ci] + @divFloor(slack_w * (k + 1), cols) - @divFloor(slack_w * k, cols);
+    }
+    var row_y: [MAX_CONTROLS + 1]i32 = undefined;
+    row_y[0] = grid.y;
+    for (0..t.rows) |ri| {
+        const rr: i32 = @intCast(ri);
+        row_y[ri + 1] = row_y[ri] + t.row_h[ri] + @divFloor(slack_h * (rr + 1), rows) - @divFloor(slack_h * rr, rows);
+    }
     var local_i: usize = 0;
     for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, gi| {
         if (!std.mem.eql(u8, ctl.moduleSlice(), view.module)) continue;
-        const col: i32 = @intCast(local_i % cols);
-        const row: i32 = @intCast(local_i / cols);
-        const kr = Rect.xywh(body.x + col * cw, body.y + row * ch, cw, ch);
+        const ci = local_i % t.cols;
+        const ri = local_i / t.cols;
         local_i += 1;
-        const label = ctl.label[0..ctl.label_len];
-        switch (ctl.kind) {
-            .switch_sel => {
-                const n = ctl.option_count;
-                if (n == 0) continue;
-                const idx = switchIndex(ctl.*, self.controlNorm(gi));
-                var v: f32 = if (n > 1) @as(f32, @floatFromInt(idx)) / @as(f32, @floatFromInt(n - 1)) else 0;
-                const readout = std.mem.span(ctl.optionLabelZ(idx));
-                if (ui_ctl.knob(ui, kr, gi, &v, .{ .size = tier, .variant = .stepped, .steps = @intCast(n), .label = label, .readout = readout })) {
-                    const ni: usize = @intFromFloat(@round(v * @as(f32, @floatFromInt(n - 1))));
-                    self.setControlRaw(gi, @floatFromInt(ni));
-                }
-            },
-            .int_range => {
-                const n_steps = @max(intRangeCount(ctl.*), 1);
-                const lo: i64 = @intFromFloat(@round(ctl.min));
-                const cur: i64 = @intFromFloat(intRangeValue(ctl.*, self.controlNorm(gi)));
-                const idx = std.math.clamp(cur - lo, 0, @as(i64, @intCast(n_steps - 1)));
-                const steps_f: f32 = @floatFromInt(@max(n_steps - 1, 1));
-                var v: f32 = @as(f32, @floatFromInt(idx)) / steps_f;
-                var nb: [12]u8 = undefined;
-                const readout = std.fmt.bufPrint(&nb, "{d}", .{cur}) catch "?";
-                // Detents only render for small counts; wide ranges are a
-                // plain knob that still snaps to integers.
-                const stepped = n_steps <= 24;
-                if (ui_ctl.knob(ui, kr, gi, &v, .{ .size = tier, .variant = if (stepped) .stepped else .plain, .steps = @intCast(@min(n_steps, 255)), .label = label, .readout = readout })) {
-                    const ni: i64 = @intFromFloat(@round(v * steps_f));
-                    self.setControlRaw(gi, @floatFromInt(lo + ni));
-                }
-            },
-            .direct_f64 => {
-                var value = self.controlNorm(gi);
-                var vbuf: [16:0]u8 = undefined;
-                const readout = std.mem.span(formatControlValue(&vbuf, normToValue(ctl.*, value)));
-                if (ui_ctl.knob(ui, kr, gi, &value, .{ .size = tier, .label = label, .readout = readout, .default = valueToNorm(ctl.*, ctl.default) })) {
-                    self.setControlNorm(gi, value);
-                }
-            },
-        }
+        const nat = controlCell(ui, ctl, tier);
+        const cell_w = col_x[ci + 1] - col_x[ci];
+        drawControl(self, ui, Rect.xywh(col_x[ci] + @divFloor(cell_w - nat[0], 2), row_y[ri], nat[0], nat[1]), gi, ctl, tier);
+    }
+}
+
+/// A strip's controls as a table: `cols` per row, each column as wide as
+/// its widest control and each row as tall as its tallest, at the tier's
+/// natural sizes.
+const StripTable = struct {
+    col_w: [MAX_CONTROLS]i32 = [_]i32{0} ** MAX_CONTROLS,
+    row_h: [MAX_CONTROLS]i32 = [_]i32{0} ** MAX_CONTROLS,
+    cols: usize = 0,
+    rows: usize = 0,
+
+    fn width(t: *const StripTable) i32 {
+        var w: i32 = 0;
+        for (t.col_w[0..t.cols]) |cw| w += cw;
+        return w;
+    }
+
+    fn height(t: *const StripTable) i32 {
+        var h: i32 = 0;
+        for (t.row_h[0..t.rows]) |rh| h += rh;
+        return h;
+    }
+};
+
+fn stripTable(self: *const FyRawMachine, ui: *const Ui, view: StripView, tier: ui_ctl.Size) StripTable {
+    var t = StripTable{};
+    const cols: usize = @max(view.cols, 1);
+    var n: usize = 0;
+    for (self.desc.controls[0..self.desc.control_count]) |*ctl| {
+        if (!std.mem.eql(u8, ctl.moduleSlice(), view.module)) continue;
+        const nat = controlCell(ui, ctl, tier);
+        t.col_w[n % cols] = @max(t.col_w[n % cols], nat[0]);
+        t.row_h[n / cols] = @max(t.row_h[n / cols], nat[1]);
+        n += 1;
+    }
+    t.cols = @min(n, cols);
+    t.rows = (n + cols - 1) / cols;
+    return t;
+}
+
+fn optionSlices(ctl: *const Control, buf: *[MAX_OPTS][]const u8) []const []const u8 {
+    for (0..ctl.option_count) |i| buf[i] = std.mem.span(ctl.optionLabelZ(i));
+    return buf[0..ctl.option_count];
+}
+
+/// Natural cell of a control's widget at a tier.
+fn controlCell(ui: *const Ui, ctl: *const Control, tier: ui_ctl.Size) [2]i32 {
+    var ob: [MAX_OPTS][]const u8 = undefined;
+    const opts = optionSlices(ctl, &ob);
+    const label = ctl.label[0..ctl.label_len];
+    return switch (ctl.widgetFor()) {
+        .auto, .knob => ui_ctl.knobCell(tier),
+        .fader => ui_ctl.faderCell(ui, tier, label),
+        .lever => ui_ctl.toggleCell(ui, .{ .positions = @intCast(opts.len), .label = label, .marks = opts }),
+        .slide => ui_ctl.slideCell(ui, .{ .positions = @intCast(opts.len), .label = label, .marks = opts }),
+        .list => ui_ctl.listCell(ui, opts),
+        .radio => ui_ctl.radioCell(ui, opts, .{ .size = tier, .label = label }),
+        .button => ui_ctl.latchCell(ui, .{ .size = tier, .label = label }),
+    };
+}
+
+/// One control in its natural rect, drawn as its widget.
+fn drawControl(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Control, tier: ui_ctl.Size) void {
+    const label = ctl.label[0..ctl.label_len];
+    var ob: [MAX_OPTS][]const u8 = undefined;
+    const opts = optionSlices(ctl, &ob);
+    switch (ctl.widgetFor()) {
+        .auto, .knob => drawKnob(self, ui, kr, gi, ctl, tier),
+        .fader => {
+            var value = self.controlNorm(gi);
+            var vbuf: [16:0]u8 = undefined;
+            const readout = std.mem.span(formatControlValue(&vbuf, normToValue(ctl.*, value)));
+            if (ui_ctl.slider(ui, kr, gi, &value, .{
+                .kind = ui_ctl.faderKind(tier),
+                .label = label,
+                .readout = readout,
+                .show_readout = false,
+                .bipolar = ctl.bipolar(),
+                .default = valueToNorm(ctl.*, ctl.default),
+            })) self.setControlNorm(gi, value);
+        },
+        .button => {
+            var on = switchIndex(ctl.*, self.controlNorm(gi)) == 1;
+            if (ui_ctl.latch(ui, kr, gi, &on, .{ .size = tier, .label = label })) self.setControlRaw(gi, if (on) 1 else 0);
+        },
+        .lever, .slide, .list, .radio => |w| {
+            var idx: u8 = @intCast(switchIndex(ctl.*, self.controlNorm(gi)));
+            const n: u8 = @intCast(opts.len);
+            const changed = switch (w) {
+                .lever => ui_ctl.toggle(ui, kr, gi, &idx, .{ .positions = n, .label = label, .marks = opts }),
+                .slide => ui_ctl.slide(ui, kr, gi, &idx, .{ .positions = n, .label = label, .marks = opts }),
+                .list => ui_ctl.list(ui, kr, gi, &idx, opts, label),
+                else => ui_ctl.radio(ui, kr, gi, &idx, opts, .{ .size = tier, .label = label }),
+            };
+            if (changed) self.setControlRaw(gi, @floatFromInt(idx));
+        },
+    }
+}
+
+fn drawKnob(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Control, tier: ui_ctl.Size) void {
+    const label = ctl.label[0..ctl.label_len];
+    switch (ctl.kind) {
+        .switch_sel => {
+            const n = ctl.option_count;
+            if (n == 0) return;
+            const idx = switchIndex(ctl.*, self.controlNorm(gi));
+            var v: f32 = if (n > 1) @as(f32, @floatFromInt(idx)) / @as(f32, @floatFromInt(n - 1)) else 0;
+            const readout = std.mem.span(ctl.optionLabelZ(idx));
+            if (ui_ctl.knob(ui, kr, gi, &v, .{ .size = tier, .variant = .stepped, .steps = @intCast(n), .label = label, .readout = readout })) {
+                const ni: usize = @intFromFloat(@round(v * @as(f32, @floatFromInt(n - 1))));
+                self.setControlRaw(gi, @floatFromInt(ni));
+            }
+        },
+        .int_range => {
+            const n_steps = @max(intRangeCount(ctl.*), 1);
+            const lo: i64 = @intFromFloat(@round(ctl.min));
+            const cur: i64 = @intFromFloat(intRangeValue(ctl.*, self.controlNorm(gi)));
+            const idx = std.math.clamp(cur - lo, 0, @as(i64, @intCast(n_steps - 1)));
+            const steps_f: f32 = @floatFromInt(@max(n_steps - 1, 1));
+            var v: f32 = @as(f32, @floatFromInt(idx)) / steps_f;
+            var nb: [12]u8 = undefined;
+            const readout = std.fmt.bufPrint(&nb, "{d}", .{cur}) catch "?";
+            // Detents only render for small counts; wide ranges are a
+            // plain knob that still snaps to integers.
+            const stepped = n_steps <= 24;
+            if (ui_ctl.knob(ui, kr, gi, &v, .{ .size = tier, .variant = if (stepped) .stepped else .plain, .steps = @intCast(@min(n_steps, 255)), .label = label, .readout = readout })) {
+                const ni: i64 = @intFromFloat(@round(v * steps_f));
+                self.setControlRaw(gi, @floatFromInt(lo + ni));
+            }
+        },
+        .direct_f64 => {
+            var value = self.controlNorm(gi);
+            var vbuf: [16:0]u8 = undefined;
+            const readout = std.mem.span(formatControlValue(&vbuf, normToValue(ctl.*, value)));
+            if (ui_ctl.knob(ui, kr, gi, &value, .{
+                .size = tier,
+                .variant = if (ctl.bipolar()) .bipolar else .plain,
+                .label = label,
+                .readout = readout,
+                .default = valueToNorm(ctl.*, ctl.default),
+            })) self.setControlNorm(gi, value);
+        },
     }
 }
 

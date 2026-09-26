@@ -150,21 +150,20 @@ engine. Optional `unit`/format can be added later for the readout text.
 
 ## The renderer
 
-A single generic routine (replacing `drawMs20Panel`):
+One generic routine (`drawPanelImpl` in `src/machines/fy_raw_machine.zig`):
 
 1. **Measure**: walk the layout tree — split body height across rows by
    weight, each row's width across cells by weight, each cell's height across
    its stacked strips by weight — yielding one rect per strip.
-2. **Draw strip**: `widgets.strip(rect, title)` — beveled frame + header.
-3. **Lay cells**: split the strip body into `cols` columns × `ceil(n/cols)`
-   rows; place each control's cell on the 4px grid.
-4. **Draw cell** by kind:
-   - `knob` → `widgets.knob` + label + value readout.
-   - `switchV` → `widgets.switchV` (octave/waveform vertical select).
-   - `custom` → call the machine's draw hook with the cell rect.
-
-`raw-ms20` (and any declarative machine) gets the `mono1` aesthetic for
-free; the flat `drawMs20Panel`/`drawMs20Module` are deleted.
+2. **Draw strip**: `ctl.strip(rect, title)` — faceplate + engraved title.
+3. **Lay the table**: the strip's controls fill `cols` per row. Each column
+   is as wide as its widest control and each row as tall as its tallest,
+   at the tier's natural sizes, so knobs, faders and switches pack without
+   a uniform grid. Slack is shared evenly between columns and, as gaps
+   below each row, between rows. A control sits at its natural size,
+   centred across its column and at the top of its row, so legends line
+   up along a row and across strips.
+4. **Draw the control** as its widget (§Controls and interaction).
 
 ## Displays (built-in visualizers)
 
@@ -220,12 +219,31 @@ The host (machine bay) owns the chrome; the machine owns the body.
 ## Controls and interaction
 
 Panels use the control catalogue and interaction contract in docs/06
-(§Control catalogue, §Interaction contract). Manifest control kinds map
-onto it: `knob | slider | switch | button | selector | led | display`,
-each with a variant and, optionally, a size override. `switch` in the
-examples above is the `selector`/`list` variant. The title strip carries
-the title display (docs/06 §Displays), which shows the touched parameter's
-value; per-knob readouts may be dropped at the S tier.
+(§Control catalogue, §Interaction contract). A control declares *what* it
+edits (`knob` for a value, `switch` + `opt`s for options, `int-step` for
+an integer range); a word after it picks *which* catalogue control the
+panel draws:
+
+| Word | Control | Edits |
+|---|---|---|
+| `as-knob` | rotary (stepped for options) | anything |
+| `as-fader` | panel fader, no readout | values |
+| `as-lever` | toggle lever with marks | two options |
+| `as-slide` | slide switch | options |
+| `as-list` | LED option column | options |
+| `as-radio` | joined LED caps, one down | options |
+| `as-button` | LED latch: option 0 off, 1 on | two options |
+
+Without one the panel picks from the kind (`Control.widgetFor`): knobs
+for values and integer ranges, an LED latch for an `OFF`/`ON` pair, a
+lever for other pairs, a list for 3–6 options, a stepped knob beyond. A
+centred range (`-x..x`) draws bipolar. A widget that can't edit its
+control (a fader on a switch) is a descriptor error.
+
+The title strip carries the title display (docs/06 §Displays), which
+shows the touched parameter's value — the only readout faders have.
+`machines/juno2/juno2.fy` is the reference: a Juno-106 face of faders,
+LED buttons and levers.
 
 ## Phasing
 
