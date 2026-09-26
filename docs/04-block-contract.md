@@ -72,11 +72,24 @@ f64 converted to f32 (D5). Only the master bus soft-clips.
 Idle voices freeze their free-running state (oscillator phases, noise,
 LFOs) rather than advancing it.
 
+**Knob smoothing.**
+
+- Each knob's *normalized* position glides to its target with a 20 ms
+  one-pole, so exp-curve knobs sweep perceptually evenly.
+- While any knob glides, the block renders in 32-sample sub-blocks, with
+  params (and derive/block-prepare coefficients) re-synced between them.
+  `prepare` still runs once per block. Steady knobs keep the single-pass
+  path.
+- UI drags glide (`setControlNorm`). Presets, project load, and host
+  param sets snap (`setControlNormSnap`, via an atomic request the audio
+  thread honors).
+- A per-control time from the manifest (`smooth 10ms`) comes with the
+  manifest DSL.
+
 **Still to do (docs/17 step 3):**
 
 - stereo voices writing `out-r`
 - the rest of the voice service (D6): mono/legato/glide/unison
-- per-control smoothing
 - host buffers and tables addressed through ctx instead of injected into
   state
 

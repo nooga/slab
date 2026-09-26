@@ -68,6 +68,14 @@ pub const IoFrame = extern struct {
     det: f64 = 0,
 };
 const IO_STRIDE: u12 = @sizeOf(IoFrame);
+/// Knob smoothing (docs/17 D, docs/08 §2): the normalized knob position
+/// glides to its target with this time constant, so exp-curve knobs sweep
+/// perceptually evenly. While any knob moves, the block renders in
+/// SMOOTH_CHUNK-sample sub-blocks with params re-synced between them.
+const SMOOTH_TAU_S: f64 = 0.02;
+const SMOOTH_CHUNK: usize = 32;
+const SMOOTH_EPS: f32 = 1e-5;
+
 /// -120 dBFS: a released voice whose whole-block contribution stays below
 /// this stops rendering until its next note-on.
 const IDLE_FLOOR: f64 = 1e-6;
@@ -97,6 +105,10 @@ pub const FyRawMachine = struct {
     // that must not run per sample, e.g. the MS-20 svf profile region.
     block_prepare_caller: ?RawCaller = null,
     raw_control_bits: [MAX_CONTROLS]std.atomic.Value(u32) = undefined,
+    // Audio-thread smoothed knob positions (direct_f64 controls only) and
+    // UI-thread snap requests: preset/project/param sets jump, drags glide.
+    smooth_norm: [MAX_CONTROLS]f32 = [_]f32{0} ** MAX_CONTROLS,
+    snap_req: [MAX_CONTROLS]std.atomic.Value(bool) = [_]std.atomic.Value(bool){std.atomic.Value(bool).init(true)} ** MAX_CONTROLS,
     panel_w: f32 = 128,
     failed: bool = false,
     // Active panel tab for paged machines (index into desc.pages). Per
@@ -407,12 +419,58 @@ pub const FyRawMachine = struct {
                 };
             } else 0;
             self.raw_control_bits[i] = std.atomic.Value(u32).init(@bitCast(value));
+            self.smooth_norm[i] = value;
         }
         self.syncRawParams(48_000.0, 120.0); // no transport yet at init; sane default
     }
 
     fn controlNorm(self: *const FyRawMachine, idx: usize) f32 {
         return @bitCast(self.raw_control_bits[idx].load(.monotonic));
+    }
+
+    /// Set a knob and jump straight there (no glide): presets, project load,
+    /// host param sets.
+    pub fn setControlNormSnap(self: *FyRawMachine, idx: usize, value: f32) void {
+        self.setControlNorm(idx, value);
+        self.snap_req[idx].store(true, .release);
+    }
+
+    /// Advance smoothed knobs by `n` samples (audio thread). Returns true
+    /// while any knob is still gliding.
+    fn advanceSmoothing(self: *FyRawMachine, n: usize) bool {
+        const a: f32 = @floatCast(1.0 - @exp(-@as(f64, @floatFromInt(n)) / (SMOOTH_TAU_S * self.kctx.sr)));
+        var moving = false;
+        for (self.desc.controls[0..self.desc.control_count], 0..) |ctl, i| {
+            if (ctl.kind != .direct_f64) continue;
+            const target = self.controlNorm(i);
+            if (self.snap_req[i].swap(false, .acq_rel)) self.smooth_norm[i] = target;
+            var cur = self.smooth_norm[i];
+            if (cur == target) continue;
+            cur += (target - cur) * a;
+            if (@abs(target - cur) < SMOOTH_EPS) cur = target;
+            self.smooth_norm[i] = cur;
+            if (cur != target) moving = true;
+        }
+        return moving;
+    }
+
+    /// Block end: released voices that stayed under the floor all block go
+    /// idle.
+    fn updateIdle(self: *FyRawMachine) void {
+        for (0..self.regionCount()) |v| {
+            if (!self.voice_idle[v] and !self.voice_gate[v] and self.voice_peak[v] < IDLE_FLOOR) self.voice_idle[v] = true;
+            self.voice_peak[v] = 0;
+        }
+    }
+
+    /// True if any knob's smoothed position differs from its target.
+    fn anyGliding(self: *FyRawMachine) bool {
+        for (self.desc.controls[0..self.desc.control_count], 0..) |ctl, i| {
+            if (ctl.kind != .direct_f64) continue;
+            if (self.snap_req[i].load(.acquire)) continue;
+            if (self.smooth_norm[i] != self.controlNorm(i)) return true;
+        }
+        return false;
     }
 
     pub fn setControlNorm(self: *FyRawMachine, idx: usize, value: f32) void {
@@ -428,7 +486,7 @@ pub const FyRawMachine = struct {
         const controls = self.desc.controls[0..self.desc.control_count];
         for (controls, 0..) |control, i| {
             switch (control.kind) {
-                .direct_f64 => self.writeParamF64(control.offset, normToValue(control, self.controlNorm(i))),
+                .direct_f64 => self.writeParamF64(control.offset, normToValue(control, self.smooth_norm[i])),
                 .switch_sel => self.writeParamF64(control.offset, control.option_values[switchIndex(control, self.controlNorm(i))]),
                 .int_range => self.writeParamF64(control.offset, intRangeValue(control, self.controlNorm(i))),
             }
@@ -510,7 +568,7 @@ fn applyControlValue(self: *FyRawMachine, id: []const u8, value: f64) void {
                 self.setControlRaw(i, @floatCast(std.math.clamp(value, 0, hi)));
             },
             .int_range => self.setControlRaw(i, @floatCast(intRangeValue(ctl.*, @floatCast(value)))),
-            .direct_f64 => self.setControlNorm(i, valueToNorm(ctl.*, value)),
+            .direct_f64 => self.setControlNormSnap(i, valueToNorm(ctl.*, value)),
         }
         return;
     }
@@ -716,26 +774,65 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
 
     self.kctx.beat = ctx.ppq_position;
     self.kctx.frames = @floatFromInt(frames);
-    self.syncRawParams(ctx.sample_rate, ctx.tempo_bpm);
-    callPrepare(self, ctx.sample_rate) catch {
-        self.failed = true;
-        @memset(l[0..frames], 0);
-        @memset(r[0..frames], 0);
-        return;
-    };
+    self.kctx.sr = ctx.sample_rate;
 
-    switch (self.desc.mode) {
-        .voice_sample => renderVoiceSample(self, ctx, l[0..frames], r[0..frames]) catch {
+    // Steady knobs: one pass. Gliding knobs: sub-blocks with params re-synced
+    // between them; prepare still runs once per block (it may reset per-block
+    // accumulators such as meters).
+    const gliding = self.anyGliding();
+    const chunk: usize = if (gliding) SMOOTH_CHUNK else frames;
+    var pos: usize = 0;
+    while (pos < frames) : (pos += chunk) {
+        const n = @min(chunk, frames - pos);
+        _ = self.advanceSmoothing(if (gliding) n else frames);
+        self.syncRawParams(ctx.sample_rate, ctx.tempo_bpm);
+        if (pos == 0) callPrepare(self, ctx.sample_rate) catch {
             self.failed = true;
             @memset(l[0..frames], 0);
             @memset(r[0..frames], 0);
-        },
-        .effect_block => renderEffectBlock(self, ctx, l[0..frames], r[0..frames]) catch {
+            return;
+        };
+        var ev_buf: [256]machine.NoteEvent = undefined;
+        var ports: [2][*]const f32 = undefined;
+        const sub = subCtx(ctx, pos, n, &ev_buf, &ports);
+        const ok = switch (self.desc.mode) {
+            .voice_sample => renderVoiceSample(self, &sub, l[pos .. pos + n], r[pos .. pos + n]),
+            .effect_block => renderEffectBlock(self, &sub, l[pos .. pos + n], r[pos .. pos + n]),
+        };
+        ok catch {
             self.failed = true;
             @memset(l[0..frames], 0);
             @memset(r[0..frames], 0);
-        },
+            return;
+        };
     }
+    if (self.desc.mode == .voice_sample) self.updateIdle();
+}
+
+/// A view of `ctx` covering frames [pos, pos+n): events re-based into the
+/// window, audio inputs offset. Whole-block calls get `ctx` back unchanged.
+fn subCtx(ctx: *const machine.MachineCtx, pos: usize, n: usize, ev_buf: *[256]machine.NoteEvent, ports: *[2][*]const f32) machine.MachineCtx {
+    var sub = ctx.*;
+    sub.block_size = @intCast(n);
+    if (pos == 0 and n == ctx.block_size) return sub;
+    var count: usize = 0;
+    if (ctx.note_in) |evs| for (evs[0..ctx.note_in_count]) |e| {
+        const at: usize = e.sample_offset;
+        const last = pos + n == ctx.block_size; // late offsets land in the final window
+        if ((at >= pos and at < pos + n) or (last and at >= pos + n)) {
+            if (count == ev_buf.len) break;
+            ev_buf[count] = e;
+            ev_buf[count].sample_offset = @intCast(@min(at, pos + n - 1) - pos);
+            count += 1;
+        }
+    };
+    sub.note_in = if (count > 0) ev_buf else null;
+    sub.note_in_count = @intCast(count);
+    if (ctx.audio_in_count >= 2) if (ctx.audio_in) |p| {
+        ports.* = .{ p[0] + pos, p[1] + pos };
+        sub.audio_in = ports;
+    };
+    return sub;
 }
 
 fn callPrepare(self: *FyRawMachine, sample_rate: f64) !void {
@@ -766,12 +863,6 @@ fn renderVoiceSample(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
         while (event_index < events.len and @min(@as(usize, @intCast(events[event_index].sample_offset)), l.len) == cursor) : (event_index += 1) {
             try applyNoteEvent(self, events[event_index]);
         }
-    }
-
-    // Released voices that stayed under the floor all block go idle.
-    for (0..self.regionCount()) |v| {
-        if (!self.voice_idle[v] and !self.voice_gate[v] and self.voice_peak[v] < IDLE_FLOOR) self.voice_idle[v] = true;
-        self.voice_peak[v] = 0;
     }
 
     // No clamp: machines have headroom (docs/17 D5); only the master bus
@@ -2152,6 +2243,39 @@ test "kernel ABI: KernelCtx and IoFrame match ctx.fy's Ctx and Io" {
         const v = try host.callWord(f.name);
         try testing.expectEqual(Fy.makeInt(@intCast(f.off)), v);
     }
+}
+
+test "knob smoothing: drags glide over ~20 ms, param sets snap" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/juno2/juno2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    var ci: usize = 0;
+    while (!std.mem.eql(u8, inst.desc.controls[ci].idSlice(), "jn-level")) ci += 1;
+
+    const block = 256;
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = block;
+    var l = [_]f32{0} ** block;
+    var r = [_]f32{0} ** block;
+    testRender(mach, &ctx, &l, &r); // settle
+
+    inst.setControlNormSnap(ci, 0.0);
+    testRender(mach, &ctx, &l, &r);
+    try testing.expectEqual(@as(f32, 0.0), inst.smooth_norm[ci]);
+
+    // A drag to 1.0 covers 1 - exp(-5.33 ms / 20 ms) ~ 23% in one block.
+    inst.setControlNorm(ci, 1.0);
+    testRender(mach, &ctx, &l, &r);
+    try testing.expect(inst.smooth_norm[ci] > 0.18 and inst.smooth_norm[ci] < 0.30);
+    var blk: usize = 0;
+    while (blk < 80) : (blk += 1) testRender(mach, &ctx, &l, &r); // ~430 ms
+    try testing.expectEqual(@as(f32, 1.0), inst.smooth_norm[ci]); // settles exactly
+
+    // Host param sets (presets, project load) jump.
+    mach.set_param.?(mach.state, "jn-level", 0.0);
+    testRender(mach, &ctx, &l, &r);
+    try testing.expectEqual(@as(f32, 0.0), inst.smooth_norm[ci]);
 }
 
 test "voice service: idle voices are skipped, wake on note-on, sleep after release" {
