@@ -255,6 +255,36 @@ kernels. Keep the old ops just long enough to compare speed.
   - wavetable mipmaps (needs one FFT builtin)
 - fm86's `derive-data` (fy mallocs, Zig frees) migrates to this.
 
+**A9. NEON across voices.** Polyphonic voices run the same straight-line
+kernel, with branches already turned into selects, on independent state.
+That is the ideal SIMD shape, so SIMD comes without rewriting kernels.
+
+- **Codegen.** Compile each `dsp:` word a second time in a 2-lane mode.
+  Every f64 op lowers to its `.2d` NEON twin:
+  - `fadd`/`fmul`/`fmla`
+  - `fmin`/`fmax`/`fabs`
+  - `fcmgt` + `bsl` for select
+  d-registers become q-registers (the same register file), so the
+  register allocator is unchanged.
+- **Memory.**
+  - The host interleaves voice pairs' state (field `k` of voices 2n and
+    2n+1 are adjacent), so state loads become `ldr q`.
+  - Shared params use `ld1r` (broadcast).
+  - Runtime-indexed reads (`f@i` into delay lines and samples) differ
+    per lane; they stay scalar per lane with a lane insert.
+- **Payoff.** 2× on voices in f64. f32 lanes (4-wide) would give 4× but
+  need a precision audit of IIR coefficients at low cutoffs, so that's a
+  later, opt-in choice per kernel.
+- **Prerequisites.** A3 (spilling), and A5, because the fused Zig ops
+  (`fms20-svf`, `fpolyblep`, …) would each need hand-written vector
+  twins otherwise.
+- **The cheaper win comes first.** D6's voice service stops rendering
+  idle voices. FM-86 renders all 8 voices always (10% of a core for one
+  note), so skipping silent voices is a 4–8× saving at typical
+  polyphony before any SIMD.
+- **Legacy.** `dsp1:` NEON (`v2f+`, `v2fmadd`) proves the asm encoders
+  work; it gets deleted once A9 lands (D1).
+
 **A8 (later). Loop combinators** (`frames-each`, `voice-each`,
 `oversample`) so a machine's entry can be a single `block` word that
 owns its loops.
@@ -460,6 +490,7 @@ step says otherwise.
 | 10 | G3: tape, gated verb, hall, ensemble, bus comp. | — |
 | 11 | E: sends, sidechain, racks, groups, channel strip. | The gated snare works end to end. |
 | 12 | G4 machines, F UI widgets and plots, G5 presets. | Interleaved; ongoing. |
+| 13 | A9: NEON 2-lane voices. | Juno and FM-86 ns/smp roughly halved on the bench cost table at unchanged goldens (within 1e-12). |
 
 ## Bets and risks
 

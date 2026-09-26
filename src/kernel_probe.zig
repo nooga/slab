@@ -2700,7 +2700,7 @@ fn runDrumVoiceCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost, cfg: Drum
     var comp_slots = Fy.Dsp2RawRepeatedSlots{};
     var comp_caller: ?Fy.Dsp2RawRepeatedCaller = null;
     if (host.fy.isCompositionWord(cli.word)) {
-        comp_caller = try host.fy.compileDsp2CompositionCaller(cli.word, &comp_slots, true, false);
+        comp_caller = try host.fy.compileDsp2CompositionCaller(cli.word, &comp_slots, 8, false);
     }
 
     const start = nowNs();
@@ -2805,9 +2805,8 @@ fn runDelayCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
         cli.word,
         &slots,
         &.{ .ptr, .ptr, .ptr, .ptr },
-        true,
-        true,
-    );
+        8,
+        true,);
     const render_args = [_]Fy.Dsp2RawArg{
         .{ .ptr = @intFromPtr(&out[0]) },
         .{ .ptr = @intFromPtr(&state) },
@@ -3022,7 +3021,7 @@ fn runSamplerCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
             };
             _ = try h.fy.callDsp2RawRepeatedWithArgsNoResult("sampler-note-on", 1, &on);
             var slots = Fy.Dsp2RawRepeatedSlots{};
-            var caller = try h.fy.compileDsp2CompositionCaller("k-sampler-voice", &slots, true, false);
+            var caller = try h.fy.compileDsp2CompositionCaller("k-sampler-voice", &slots, 8, false);
             const args = [_]Fy.Dsp2RawArg{
                 .{ .ptr = @intFromPtr(&o[0]) }, .{ .ptr = @intFromPtr(&state) }, .{ .ptr = @intFromPtr(&params) },
             };
@@ -3071,7 +3070,7 @@ fn runSamplerCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
         };
         _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("sampler-note-on", 1, &on);
         var slots = Fy.Dsp2RawRepeatedSlots{};
-        var caller = try host.fy.compileDsp2CompositionCaller("k-sampler-voice", &slots, true, false);
+        var caller = try host.fy.compileDsp2CompositionCaller("k-sampler-voice", &slots, 8, false);
         const args = [_]Fy.Dsp2RawArg{
             .{ .ptr = @intFromPtr(&out[0]) }, .{ .ptr = @intFromPtr(&loop_state) }, .{ .ptr = @intFromPtr(&params_loop) },
         };
@@ -3139,7 +3138,7 @@ fn funkRenderPass(
     _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("funk-block-prepare", 1, &bp);
 
     var slots = Fy.Dsp2RawRepeatedSlots{};
-    var caller = try host.fy.compileDsp2CompositionCaller("k-funk-tick", &slots, true, true);
+    var caller = try host.fy.compileDsp2CompositionCaller("k-funk-tick", &slots, 8, true);
     const args = [_]Fy.Dsp2RawArg{
         .{ .ptr = @intFromPtr(&out[0]) },
         .{ .ptr = @intFromPtr(&state) },
@@ -3283,7 +3282,7 @@ fn runJunoCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("juno-note-on", 1, &on_args);
 
     var slots = Fy.Dsp2RawRepeatedSlots{};
-    var caller = try host.fy.compileDsp2CompositionCaller(cli.word, &slots, true, false);
+    var caller = try host.fy.compileDsp2CompositionCaller(cli.word, &slots, 8, false);
     const held: usize = 3 * DRUM_SAMPLE_RATE / 2;
     const args_a = [_]Fy.Dsp2RawArg{
         .{ .ptr = @intFromPtr(&out[0]) },
@@ -3413,7 +3412,7 @@ fn runRhodesCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("rhodes-note-on", 1, &on_args);
 
     var slots = Fy.Dsp2RawRepeatedSlots{};
-    var caller = try host.fy.compileDsp2CompositionCaller(cli.word, &slots, true, false);
+    var caller = try host.fy.compileDsp2CompositionCaller(cli.word, &slots, 8, false);
     const held: usize = @intFromFloat(1.5 * @as(f64, @floatFromInt(VOICE_SAMPLE_RATE)));
     const args_a = [_]Fy.Dsp2RawArg{
         .{ .ptr = @intFromPtr(&out[0]) },
@@ -3571,9 +3570,8 @@ fn runChorusCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
         cli.word,
         &slots,
         &.{ .ptr, .ptr, .ptr, .ptr },
-        true,
-        true,
-    );
+        8,
+        true,);
     const render_args = [_]Fy.Dsp2RawArg{
         .{ .ptr = @intFromPtr(&out[0]) },
         .{ .ptr = @intFromPtr(&state) },
@@ -3702,7 +3700,7 @@ fn runCompCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("comp-block-prepare", 1, &bp_args);
 
     var slots = Fy.Dsp2RawRepeatedSlots{};
-    var caller = try host.fy.compileDsp2CompositionCaller(cli.word, &slots, true, true);
+    var caller = try host.fy.compileDsp2CompositionCaller(cli.word, &slots, 8, true);
     const render_args = [_]Fy.Dsp2RawArg{
         .{ .ptr = @intFromPtr(&out[0]) },
         .{ .ptr = @intFromPtr(&state) },
@@ -3893,7 +3891,7 @@ fn runEqCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     }
 
     var slots = Fy.Dsp2RawRepeatedSlots{};
-    var caller = try host.fy.compileDsp2CompositionCaller(cli.word, &slots, true, true);
+    var caller = try host.fy.compileDsp2CompositionCaller(cli.word, &slots, 8, true);
     const render_args = [_]Fy.Dsp2RawArg{
         .{ .ptr = @intFromPtr(&out[0]) },
         .{ .ptr = @intFromPtr(&state) },
@@ -3981,7 +3979,7 @@ fn runSatCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     var state align(8) = [_]f64{0} ** 8;
 
     var slots = Fy.Dsp2RawRepeatedSlots{};
-    var caller = try host.fy.compileDsp2RawRepeatedCaller(cli.word, &slots, &.{ .ptr, .ptr, .ptr, .ptr }, true, true);
+    var caller = try host.fy.compileDsp2RawRepeatedCaller(cli.word, &slots, &.{ .ptr, .ptr, .ptr, .ptr }, 8, true);
 
     const start = nowNs();
     for (drives_db, 0..) |ddb, seg| {
@@ -4083,7 +4081,7 @@ fn runGateCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("gate-block-prepare", 1, &bp_args);
 
     var slots = Fy.Dsp2RawRepeatedSlots{};
-    var caller = try host.fy.compileDsp2CompositionCaller(cli.word, &slots, true, true);
+    var caller = try host.fy.compileDsp2CompositionCaller(cli.word, &slots, 8, true);
     const render_args = [_]Fy.Dsp2RawArg{
         .{ .ptr = @intFromPtr(&out[0]) },
         .{ .ptr = @intFromPtr(&state) },
@@ -4187,7 +4185,7 @@ fn runReverbCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost) !void {
     _ = try host.fy.callDsp2RawRepeatedWithArgsNoResult("verb-prepare", 1, &prep_args);
 
     var slots = Fy.Dsp2RawRepeatedSlots{};
-    var caller = try host.fy.compileDsp2CompositionCaller(cli.word, &slots, true, true);
+    var caller = try host.fy.compileDsp2CompositionCaller(cli.word, &slots, 8, true);
     const render_args = [_]Fy.Dsp2RawArg{
         .{ .ptr = @intFromPtr(&out[0]) },
         .{ .ptr = @intFromPtr(&state) },

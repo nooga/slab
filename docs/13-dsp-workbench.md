@@ -589,6 +589,23 @@ zig build bench -- juno2 --case=held --preset=NAME -p jn-cutoff=900
   - the measurement table and a curve
 - `<case>.wav`: for listening.
 
+**CPU budget.**
+
+- Each case reports ns/sample and the percentage of one core at 48 kHz
+  (20.8 µs per sample).
+- The `## cost` section gives the worst case, the per-voice-slot cost,
+  and how many instances fit one core.
+- `--all` prints a cost table across machines.
+- The DSP itself is JIT'd, but the host adapter is Zig, so use
+  `zig build bench -Doptimize=ReleaseFast` for real numbers.
+- Baseline (ReleaseFast, 2026-09-26):
+  - FM-86: 2136 ns (10.3%), because all 8 voices always render
+  - Juno: 459 ns (2.2%)
+  - Rhodes: 252 ns
+  - MS-20: 175 ns
+  - Verb: 134 ns
+  - every other machine: under 100 ns
+
 **Knob sweeps** (`--sweep=ID|all`).
 
 - 21 knob positions × 0.4 s. Voices get C3 retriggered per step;

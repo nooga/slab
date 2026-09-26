@@ -357,36 +357,32 @@ pub const FyRawMachine = struct {
                 word,
                 &self.prepare_slots,
                 &.{ .ptr, .ptr, .f64 },
-                false,
-                false,
-            );
+                0,
+                false,);
         }
         if (self.desc.noteOnWord()) |word| {
             self.note_on_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
                 word,
                 &self.note_on_slots,
                 &.{ .ptr, .ptr, .f64, .f64 },
-                false,
-                false,
-            );
+                0,
+                false,);
         }
         if (self.desc.noteOffWord()) |word| {
             self.note_off_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
                 word,
                 &self.note_off_slots,
                 &.{ .ptr, .ptr },
-                false,
-                false,
-            );
+                0,
+                false,);
         }
         if (self.desc.blockPrepareWord()) |word| {
             self.block_prepare_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
                 word,
                 &self.block_prepare_slots,
                 &.{ .ptr, .f64 },
-                false,
-                false,
-            );
+                0,
+                false,);
         }
         if (self.desc.deriveWord()) |word| {
             // A staged derive (`call:` composition, e.g. the EQ's per-band
@@ -396,17 +392,15 @@ pub const FyRawMachine = struct {
                 self.derive_caller = try self.host.fy.compileDsp2CompositionCaller(
                     word,
                     &self.derive_slots,
-                    false,
-                    false,
-                );
+                    0,
+                    false,);
             } else {
                 self.derive_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
                     word,
                     &self.derive_slots,
                     &.{ .ptr, .ptr },
-                    false,
-                    false,
-                );
+                    0,
+                    false,);
             }
         }
         switch (self.desc.mode) {
@@ -417,17 +411,15 @@ pub const FyRawMachine = struct {
                     self.render_caller = try self.host.fy.compileDsp2CompositionCaller(
                         self.desc.renderWord(),
                         &self.render_slots,
-                        true,
-                        false,
-                    );
+                        8,
+                        false,);
                 } else {
                     self.render_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
                         self.desc.renderWord(),
                         &self.render_slots,
                         &.{ .ptr, .ptr, .ptr },
-                        true,
-                        false,
-                    );
+                        8,
+                        false,);
                 }
             },
             .effect_sample => {},
@@ -438,17 +430,15 @@ pub const FyRawMachine = struct {
                     self.effect_caller = try self.host.fy.compileDsp2CompositionCaller(
                         self.desc.renderWord(),
                         &self.effect_slots,
-                        true,
-                        true,
-                    );
+                        8,
+                        true,);
                 } else {
                     self.effect_caller = try self.host.fy.compileDsp2RawRepeatedCaller(
                         self.desc.renderWord(),
                         &self.effect_slots,
                         &.{ .ptr, .ptr, .ptr, .ptr },
-                        true,
-                        true,
-                    );
+                        8,
+                        true,);
                 }
             },
         }

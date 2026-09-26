@@ -31,9 +31,15 @@ test {
 }
 
 const SR: f64 = 48000;
+/// Real-time budget of one core per sample at SR, ns.
+const BUDGET_NS: f64 = 1e9 / SR;
 const BLOCK: usize = 256;
 
 const GoldenMode = enum { none, check, record };
+
+const CostRow = struct { name: []const u8, ns: f64, voices: usize };
+var cost_rows: [64]CostRow = undefined;
+var cost_count: usize = 0;
 
 const ParamSet = struct { id: []const u8, value: f64 };
 
@@ -111,6 +117,12 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("{s}: bench failed: {s}\n", .{ path, @errorName(err) });
             break :blk 1;
         };
+    }
+    if (cost_count > 1) {
+        std.debug.print("# cost summary ({s} build; one core at 48 kHz = {d:.0} ns/smp)\n", .{ @tagName(@import("builtin").mode), BUDGET_NS });
+        std.debug.print("machine      voices   ns/smp   % core\n", .{});
+        for (cost_rows[0..cost_count]) |row|
+            std.debug.print("{s:<12} {d:>6}  {d:>7.0}  {d:>7.2}\n", .{ row.name, row.voices, row.ns, 100 * row.ns / BUDGET_NS });
     }
     if (failures > 0) std.process.exit(1);
 }
@@ -242,6 +254,7 @@ fn isEffect(inst: *const FyRawMachine) bool {
 // ── Per-machine driver ──────────────────────────────────────────────────
 
 const CaseResult = struct {
+    ns_per_sample: f64 = 0,
     name: []const u8,
     hash: [64]u8,
     l: []f32,
@@ -260,7 +273,8 @@ fn runMachine(alloc: std.mem.Allocator, cli: *const Cli, path: []const u8) !usiz
     };
     const kind: []const u8 = if (isEffect(probe)) "effect" else if (isDrum(probe)) "drum voice" else "voice";
     try rep.print(alloc, "# bench: {s} ({s}, {s}, {d} voices)\n", .{ name, probe.desc.name[0..probe.desc.name_len], kind, probe.desc.voices });
-    try rep.print(alloc, "sr {d} block {d}", .{ @as(u32, @intFromFloat(SR)), BLOCK });
+    try rep.print(alloc, "sr {d} block {d} build {s}", .{ @as(u32, @intFromFloat(SR)), BLOCK, @tagName(@import("builtin").mode) });
+    if (@import("builtin").mode == .Debug) try rep.print(alloc, " (cpu numbers include Debug host overhead; use -Doptimize=ReleaseFast)", .{});
     if (cli.preset) |p| try rep.print(alloc, " preset {s}", .{p});
     for (cli.params[0..cli.param_count]) |ps| try rep.print(alloc, " {s}={d}", .{ ps.id, ps.value });
     try rep.print(alloc, "\n\n", .{});
@@ -317,6 +331,23 @@ fn runMachine(alloc: std.mem.Allocator, cli: *const Cli, path: []const u8) !usiz
         nres += 1;
     }
 
+    if (nres > 0) {
+        var worst: f64 = 0;
+        var worst_case: []const u8 = "";
+        for (results[0..nres]) |res| if (res.ns_per_sample > worst) {
+            worst = res.ns_per_sample;
+            worst_case = res.name;
+        };
+        const voices: f64 = @floatFromInt(@max(probe.desc.voices, 1));
+        try rep.print(alloc, "## cost\nworst {d:.0} ns/smp ({s}) = {d:.2}% of one core at 48 kHz; {d:.0} ns/smp per voice slot; {d:.0} instances fit one core\n\n", .{
+            worst, worst_case, 100 * worst / BUDGET_NS, worst / voices, BUDGET_NS / @max(worst, 1e-3),
+        });
+        if (cost_count < cost_rows.len) {
+            cost_rows[cost_count] = .{ .name = name, .ns = worst, .voices = probe.desc.voices };
+            cost_count += 1;
+        }
+    }
+
     var bad: usize = 0;
     switch (cli.golden) {
         .none => {},
@@ -360,8 +391,8 @@ fn runCase(
 
     var tbl: std.ArrayList(u8) = .empty;
     try rep.print(alloc, "## {s}\n", .{cs.name});
-    try rep.print(alloc, "peak {d:.1} dBFS  rms {d:.1}  dc {d:.4}  {s}  cpu {d:.0} ns/smp", .{
-        an.dbAmp(@max(st_l.peak, st_r.peak)), an.dbAmp(an.rms(out.l)), st_l.dc, if (stereo) "stereo" else "mono", out.ns_per_sample,
+    try rep.print(alloc, "peak {d:.1} dBFS  rms {d:.1}  dc {d:.4}  {s}  cpu {d:.0} ns/smp ({d:.2}% core)", .{
+        an.dbAmp(@max(st_l.peak, st_r.peak)), an.dbAmp(an.rms(out.l)), st_l.dc, if (stereo) "stereo" else "mono", out.ns_per_sample, 100 * out.ns_per_sample / BUDGET_NS,
     });
     const nan = st_l.nan + st_r.nan;
     const den = st_l.denormal + st_r.denormal;
@@ -618,7 +649,7 @@ fn runCase(
         }
         try cv.savePng(alloc, try std.fmt.allocPrint(alloc, "{s}.png", .{base}));
     }
-    return .{ .name = cs.name, .hash = h, .l = out.l, .r = out.r };
+    return .{ .name = cs.name, .hash = h, .l = out.l, .r = out.r, .ns_per_sample = out.ns_per_sample };
 }
 
 fn bandDb(s: an.Spectrum, f: f64) f64 {
