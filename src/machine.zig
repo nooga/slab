@@ -7,7 +7,7 @@
 
 const std = @import("std");
 const c = @import("c.zig");
-const widgets = @import("ui/widgets.zig");
+const ui_core = @import("ui/core.zig");
 
 // ── NoteEvent ────────────────────────────────────────────────────────
 
@@ -141,10 +141,12 @@ pub const RenderFn = *const fn (
     r: []f32,
 ) void;
 
+/// Draw the machine's panel body into `rect` with the new UI core
+/// (docs/06). Controls use ids scoped under the machine instance.
 pub const DrawPanelFn = *const fn (
     state: *anyopaque,
-    rect: c.rl.Rectangle,
-    mouse: widgets.Mouse,
+    ui: *ui_core.Ui,
+    rect: ui_core.Rect,
 ) void;
 
 /// Called when the transport stops or the host otherwise wants the

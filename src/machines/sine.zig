@@ -6,8 +6,9 @@
 const std = @import("std");
 const c = @import("../c.zig");
 const machine = @import("../machine.zig");
-const theme = @import("../ui/theme.zig");
-const widgets = @import("../ui/widgets.zig");
+const ui_core = @import("../ui/core.zig");
+const ui_ctl = @import("../ui/controls.zig");
+const ui_style = @import("../ui/style.zig");
 
 const TAU: f32 = std.math.tau;
 
@@ -137,71 +138,20 @@ const CELL_W: f32 = 52;
 // Total panel card width: 2 cells + 1px separator + 2px left/right borders.
 pub const PANEL_W: f32 = CELL_W * 2 + 1 + 2;
 
-fn drawPanelImpl(state: *anyopaque, r: c.rl.Rectangle, mouse: widgets.Mouse) void {
+fn drawPanelImpl(state: *anyopaque, ui: *ui_core.Ui, r: ui_core.Rect) void {
     const self: *Sine = @ptrCast(@alignCast(state));
-
-    // ── Background (no outer border — bay edge is the boundary) ──
-    c.rl.DrawRectangleRec(r, theme.pane_alt);
-
-    // ── Header strip ─────────────────────────────────────────────
-    const HDR_H: f32 = theme.paneHeaderH();
-    const hdr = widgets.rect(r.x, r.y, r.width, HDR_H);
-    widgets.bevelRaised(hdr, theme.slab_fill, theme.slab_hi, theme.slab_lo);
-    widgets.drawLabelF("SINE", hdr.x + 4, hdr.y + 2, theme.fsTiny(), theme.text_fg);
-
-    // Gate LED — lights up while a note is held.
-    const LED_SZ: f32 = 5;
-    const led_r = widgets.rect(
-        hdr.x + hdr.width - LED_SZ - 4,
-        hdr.y + (HDR_H - LED_SZ) / 2,
-        LED_SZ,
-        LED_SZ,
-    );
-    widgets.led(led_r, self.gate, theme.accent_play);
-
-    // ── Body: horizontal row of cells ────────────────────────────
-    const body = widgets.rect(r.x + 1, r.y + HDR_H + 1, r.width - 2, r.height - HDR_H - 2);
-
-    // Cell 0 — GAIN knob.
-    const gain_cell = widgets.rect(body.x, body.y, CELL_W, body.height);
+    ui.pushId(self);
+    defer ui.popId();
+    var body = ui_ctl.strip(ui, r, "SINE");
+    // Gate LED in the strip header, right-aligned.
+    ui_ctl.led(ui, r.right() - 10, r.y + 5, .round5, if (self.gate) .on else .off, ui_style.led_green);
     var g_norm: f32 = self.gain();
-    if (widgets.knob(gain_cell, "GAIN", &g_norm, mouse)) {
-        self.setGain(g_norm);
-    }
-
-    // Separator.
-    c.rl.DrawRectangle(
-        @intFromFloat(body.x + CELL_W),
-        @intFromFloat(body.y),
-        1,
-        @intFromFloat(body.height),
-        theme.slab_lo,
-    );
-
-    // Cell 1 — PITCH display.
-    const pitch_cell = widgets.rect(body.x + CELL_W + 1, body.y, CELL_W, body.height);
-    drawPitchCell(pitch_cell, self);
-}
-
-fn drawPitchCell(cell: c.rl.Rectangle, self: *const Sine) void {
-    const cx = cell.x + cell.width / 2;
-    const cy = cell.y + cell.height / 2;
-
-    // "PITCH" title directly above value.
-    const title_w = widgets.measureTextF("PITCH", theme.fsTiny());
-    widgets.drawLabelF("PITCH", cx - title_w / 2, cy - theme.fsTiny() - 2, theme.fsTiny(), theme.text_dim);
-
-    // Value: MIDI number when playing, dim dash when idle.
-    var buf: [8:0]u8 = undefined;
-    const s: [*:0]const u8 = if (self.gate) blk: {
-        break :blk (std.fmt.bufPrintZ(&buf, "{d:.0}", .{self.pitch}) catch @as([:0]const u8, "?")).ptr;
-    } else blk: {
-        buf[0] = '-';
-        buf[1] = '-';
-        buf[2] = 0;
-        break :blk @as([*:0]const u8, @ptrCast(&buf));
-    };
-    const col = if (self.gate) theme.accent_hi else theme.text_mute;
-    const sw = widgets.measureTextF(s, theme.fsTiny());
-    widgets.drawLabelF(s, cx - sw / 2, cy, theme.fsTiny(), col);
+    const cell = ui_ctl.knobCell(.m);
+    if (ui_ctl.knob(ui, body.cutLeft(cell[0] + 12), "gain", &g_norm, .{ .label = "GAIN" })) self.setGain(g_norm);
+    // Pitch readout: MIDI note while gated, dashes when idle.
+    var buf: [8]u8 = undefined;
+    const s = if (self.gate) (std.fmt.bufPrint(&buf, "{d:.0}", .{self.pitch}) catch "?") else "--";
+    const d = body.center(@min(body.w, 48), ui_ctl.displayHeight(true));
+    ui.textIn(&ui.fonts.legend, ui_core.Rect.xywh(d.x, d.y - 12, d.w, 12), "PITCH", ui_style.text_dim, .center, true);
+    ui_ctl.display(ui, d, s, .{ .align_ = .center, .large = true });
 }

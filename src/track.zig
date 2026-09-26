@@ -353,7 +353,7 @@ test "publishSnapshot round-trip" {
             fn f(_: *anyopaque, _: *const machine_mod.MachineCtx, _: []f32, _: []f32) void {}
         }.f,
         .draw_panel = struct {
-            fn f(_: *anyopaque, _: @import("c.zig").rl.Rectangle, _: @import("ui/widgets.zig").Mouse) void {}
+            fn f(_: *anyopaque, _: *@import("ui/core.zig").Ui, _: @import("ui/geom.zig").Rect) void {}
         }.f,
         .reset = struct {
             fn f(_: *anyopaque) void {}
@@ -388,7 +388,7 @@ fn testMachine() machine.Machine {
             fn f(_: *anyopaque, _: *const machine.MachineCtx, _: []f32, _: []f32) void {}
         }.f,
         .draw_panel = struct {
-            fn f(_: *anyopaque, _: c.rl.Rectangle, _: @import("ui/widgets.zig").Mouse) void {}
+            fn f(_: *anyopaque, _: *@import("ui/core.zig").Ui, _: @import("ui/geom.zig").Rect) void {}
         }.f,
         .reset = struct {
             fn f(_: *anyopaque) void {}

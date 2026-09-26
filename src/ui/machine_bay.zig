@@ -10,6 +10,13 @@ const Track = @import("../track.zig").Track;
 const registry_mod = @import("../machine_registry.zig");
 const Registry = registry_mod.Registry;
 const presets_mod = @import("../presets.zig");
+const ui_core = @import("core.zig");
+const ui_style = @import("style.zig");
+
+/// Legacy f32 rect → new-core logical rect (the app runs the Ui at zoom 1).
+fn uiRect(r: c.rl.Rectangle) ui_core.Rect {
+    return ui_core.Rect.xywh(@intFromFloat(@round(r.x)), @intFromFloat(@round(r.y)), @intFromFloat(@round(r.width)), @intFromFloat(@round(r.height)));
+}
 
 /// Which device on the selected track a titlebar action targets: the
 /// instrument slot, or effect `i` in the insert chain.
@@ -319,7 +326,7 @@ fn deleteConfirmMenu(key: u64, m: widgets.Mouse) bool {
     return false;
 }
 
-pub fn draw(r: c.rl.Rectangle, device: ?*Track, track_idx: ?usize, is_bus: bool, collapsed: bool, reg: *const Registry, m: widgets.Mouse) Result {
+pub fn draw(ui: *ui_core.Ui, r: c.rl.Rectangle, device: ?*Track, track_idx: ?usize, is_bus: bool, collapsed: bool, reg: *const Registry, m: widgets.Mouse) Result {
     c.rl.DrawRectangleRec(r, theme.pane_bg);
     var result = Result{};
 
@@ -369,6 +376,9 @@ pub fn draw(r: c.rl.Rectangle, device: ?*Track, track_idx: ?usize, is_bus: bool,
     bay_scroll_x = std.math.clamp(bay_scroll_x, 0, max_scroll);
 
     // ── Device chain ─────────────────────────────────────────────────
+    // Panels (new Ui) scroll with the chain: clip them to the bay.
+    ui.clip(uiRect(r));
+    defer ui.unclip();
     var x = r.x - bay_scroll_x;
 
     // Instrument slot — audio tracks with an instrument. Not draggable: the
@@ -387,7 +397,7 @@ pub fn draw(r: c.rl.Rectangle, device: ?*Track, track_idx: ?usize, is_bus: bool,
             }
         }
         const card = widgets.rect(x, r.y, inst_pw, dev_h);
-        const out = drawDevice(card, header_h, &t.machine, .instrument, t.isEnabled(), glow, true, reg, &result, m);
+        const out = drawDevice(ui, card, header_h, &t.machine, .instrument, t.isEnabled(), glow, true, reg, &result, m);
         if (out.toggle) t.toggleEnabled();
         x += inst_pw;
     }
@@ -415,7 +425,7 @@ pub fn draw(r: c.rl.Rectangle, device: ?*Track, track_idx: ?usize, is_bus: bool,
         const card = widgets.rect(x, r.y, fx_w, dev_h);
         // Effects never auto-open replace on press — the drag state machine
         // distinguishes a click from a drag and opens it on release.
-        const out = drawDevice(card, header_h, &fx.mach, .{ .effect = i }, !t.effectBypassed(i), null, false, reg, &result, m);
+        const out = drawDevice(ui, card, header_h, &fx.mach, .{ .effect = i }, !t.effectBypassed(i), null, false, reg, &result, m);
         if (out.toggle) t.toggleEffectBypass(i);
 
         // Arm a reorder drag when the name block is pressed (deferred: a
@@ -617,6 +627,7 @@ fn currentPresetLabel(buf: []u8, mach: *const Machine) [*:0]const u8 {
 // preset, and delete-confirm outcomes into `result`, scoped to `ref`.
 // Returns the mute/bypass toggle and whether the name block was pressed.
 fn drawDevice(
+    ui: *ui_core.Ui,
     card: c.rl.Rectangle,
     header_h: f32,
     mach: *Machine,
@@ -632,8 +643,8 @@ fn drawDevice(
     const body = widgets.rect(card.x, card.y + header_h, card.width, card.height - header_h);
 
     if (!mach.host_titlebar) {
-        mach.draw_panel(mach.state, card, m);
-        if (!active) c.rl.DrawRectangleRec(card, c.rl.ColorAlpha(theme.bg, 0.45));
+        mach.draw_panel(mach.state, ui, uiRect(card));
+        if (!active) ui.rect(uiRect(card), ui_style.chassis.alpha(115));
         return out;
     }
 
@@ -695,8 +706,9 @@ fn drawDevice(
         }
     }
 
-    mach.draw_panel(mach.state, body, m);
-    if (!active) c.rl.DrawRectangleRec(body, c.rl.ColorAlpha(theme.bg, 0.45));
+    mach.draw_panel(mach.state, ui, uiRect(body));
+    // Silenced/bypassed: the panel dims (drawn in the Ui list, over it).
+    if (!active) ui.rect(uiRect(body), ui_style.chassis.alpha(115));
     return out;
 }
 

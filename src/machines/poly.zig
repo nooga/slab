@@ -6,7 +6,7 @@
 const std = @import("std");
 const audio = @import("../audio.zig");
 const machine = @import("../machine.zig");
-const widgets = @import("../ui/widgets.zig");
+const ui_core = @import("../ui/core.zig");
 const c = @import("../c.zig");
 
 pub const MAX_VOICES = 16;
@@ -416,11 +416,12 @@ fn pushEvent(
     counts[vi] = n + 1;
 }
 
-fn drawPanelImpl(state: *anyopaque, r: c.rl.Rectangle, m: widgets.Mouse) void {
+fn drawPanelImpl(state: *anyopaque, ui: *ui_core.Ui, r: ui_core.Rect) void {
     const self: *PolyMachine = @ptrCast(@alignCast(state));
     if (self.voice_count == 0) return;
-    self.voices[0].draw_panel(self.voices[0].state, r, m);
-    if (m.left_pressed or m.left_down or m.left_released) syncChildParams(self);
+    self.voices[0].draw_panel(self.voices[0].state, ui, r);
+    // Voice 0 is the panel's source of truth; mirror edits to the others.
+    if (ui.active != 0 or ui.edit_ended) syncChildParams(self);
 }
 
 fn syncChildParams(self: *PolyMachine) void {
@@ -528,7 +529,7 @@ fn countingReset(state: *anyopaque) void {
     v.calls = 0;
 }
 
-fn countingDraw(_: *anyopaque, _: c.rl.Rectangle, _: widgets.Mouse) void {}
+fn countingDraw(_: *anyopaque, _: *ui_core.Ui, _: ui_core.Rect) void {}
 
 test "poly wrapper does not render inactive voices" {
     var states = [_]CountingVoice{

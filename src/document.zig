@@ -496,7 +496,7 @@ fn testRender(_: *anyopaque, _: *const machine_mod.MachineCtx, l: []f32, r: []f3
 }
 
 fn testReset(_: *anyopaque) void {}
-fn testDraw(_: *anyopaque, _: c.rl.Rectangle, _: @import("ui/widgets.zig").Mouse) void {}
+fn testDraw(_: *anyopaque, _: *@import("ui/core.zig").Ui, _: @import("ui/geom.zig").Rect) void {}
 
 var test_machine_state: u8 = 0;
 const test_machine = machine_mod.Machine{

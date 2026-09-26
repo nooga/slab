@@ -90,7 +90,7 @@ pub const PeakCache = struct {
 
     /// Min/max over [start_sample, end_sample) by reading the level whose
     /// bucket spans roughly `samples_per_px`. Cheap enough to call per pixel.
-    fn rangePeak(self: *const PeakCache, start_sample: f64, end_sample: f64, samples_per_px: f64) Peak {
+    pub fn rangePeak(self: *const PeakCache, start_sample: f64, end_sample: f64, samples_per_px: f64) Peak {
         if (self.level_count == 0) return .{};
         // Choose the level whose bucket (BASE * 2^lvl) is ≤ samples_per_px.
         var lvl: usize = 0;

@@ -19,8 +19,11 @@ const presets_mod = @import("../presets.zig");
 const wav = @import("../wav.zig");
 const waveform = @import("../waveform.zig");
 const native_dialog = @import("../native_dialog.zig");
-const theme = @import("../ui/theme.zig");
-const widgets = @import("../ui/widgets.zig");
+const ui_core = @import("../ui/core.zig");
+const ui_ctl = @import("../ui/controls.zig");
+const ui_style = @import("../ui/style.zig");
+const Ui = ui_core.Ui;
+const Rect = ui_core.Rect;
 
 const MAX_STATE = 1024;
 const MAX_PARAMS = 1024;
@@ -1118,47 +1121,46 @@ fn deinitImpl(state: *anyopaque, alloc: std.mem.Allocator) void {
     alloc.destroy(self);
 }
 
-// Generic machine panel body: beveled module strips laid out from the
-// descriptor controls. The bay draws the title bar (host_titlebar = true), so
-// `rect` here is the body below it. Control-less fixtures show an info readout.
-fn drawPanelImpl(state: *anyopaque, rect: c.rl.Rectangle, mouse: widgets.Mouse) void {
+// Generic machine panel body on the new UI core (docs/06, docs/15): packed
+// module strips laid out from the descriptor. The bay draws the title bar
+// (host_titlebar = true), so `rect` is the body below it. The whole panel
+// uses one knob size tier: the largest at which every strip fits.
+fn drawPanelImpl(state: *anyopaque, ui: *Ui, rect: Rect) void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
-    if (rect.width <= 0 or rect.height <= 0) return;
-
-    c.rl.DrawRectangleRec(rect, theme.pane_bg);
-
+    if (rect.empty()) return;
+    ui.pushId(self);
+    defer ui.popId();
     if (self.desc.control_count == 0) {
-        drawFixtureInfo(self, rect);
+        drawFixtureInfo(self, ui, rect);
         return;
     }
-    drawControlStrips(self, rect, mouse);
+    const tier = chooseTier(self, rect);
+    _ = walkPanel(self, ui, rect, .{ .draw = tier });
 }
 
-fn drawFixtureInfo(self: *FyRawMachine, body: c.rl.Rectangle) void {
-    const mode_text: [*:0]const u8 = switch (self.desc.mode) {
-        .voice_sample => "raw voice/sample",
-        .effect_block => "raw effect/block",
+fn drawFixtureInfo(self: *FyRawMachine, ui: *Ui, r: Rect) void {
+    var body = ui.plate(r, .{}).insetXY(4, 2);
+    const mode_text: []const u8 = switch (self.desc.mode) {
+        .voice_sample => "RAW VOICE/SAMPLE",
+        .effect_block => "RAW EFFECT/BLOCK",
     };
-    widgets.drawLabelF(mode_text, body.x + 5, body.y + 6, theme.fsTiny(), theme.text_dim);
-
-    const detail: [*:0]const u8 = if (std.mem.eql(u8, self.desc.nameSlice(), "raw-osc"))
+    _ = ui.engraved(&ui.fonts.legend, body.x, body.cutTop(14).y, mode_text, ui_style.text_dim);
+    const name = self.desc.nameSlice();
+    const detail: []const u8 = if (std.mem.eql(u8, name, "raw-osc"))
         "saw osc  note in"
-    else if (std.mem.eql(u8, self.desc.nameSlice(), "raw-sat"))
+    else if (std.mem.eql(u8, name, "raw-sat"))
         "rational tanh  drive 1.35"
-    else if (std.mem.eql(u8, self.desc.nameSlice(), "raw-silence"))
+    else if (std.mem.eql(u8, name, "raw-silence"))
         "zero output"
     else
-        "dsp2 fixture";
-    widgets.drawLabelF(detail, body.x + 5, body.y + 22, theme.fsTiny(), theme.text_fg);
-
-    const status: [*:0]const u8 = if (self.failed) "status: failed" else "status: live";
-    widgets.drawLabelF(status, body.x + 5, body.y + 38, theme.fsTiny(), if (self.failed) theme.accent_rec else theme.accent_play);
+        "dsp fixture";
+    _ = ui.text(&ui.fonts.body, body.x, body.cutTop(18).y, detail, ui_style.text);
+    ui_ctl.display(ui, body.cutTop(ui_ctl.displayHeight(false)).takeLeft(@min(body.w, 160)), if (self.failed) "FAILED" else "LIVE", .{ .color = if (self.failed) ui_style.rec else ui_style.phosphor });
 }
 
 const StripView = struct {
-    title: [*:0]const u8,
+    title: []const u8,
     module: []const u8,
-    width: f32,
     cols: usize,
 };
 
@@ -1167,7 +1169,7 @@ const StripView = struct {
 fn collectStrips(self: *FyRawMachine, out: *[MAX_STRIPS]StripView) usize {
     if (self.desc.strip_count > 0) {
         for (self.desc.strips[0..self.desc.strip_count], 0..) |*s, i| {
-            out[i] = .{ .title = s.moduleZ(), .module = s.moduleSlice(), .width = 1, .cols = s.cols };
+            out[i] = .{ .title = s.moduleSlice(), .module = s.moduleSlice(), .cols = s.cols };
         }
         return self.desc.strip_count;
     }
@@ -1182,7 +1184,7 @@ fn collectStrips(self: *FyRawMachine, out: *[MAX_STRIPS]StripView) usize {
             }
         }
         if (!found and n < MAX_STRIPS) {
-            out[n] = .{ .title = ctl.moduleZ(), .module = m, .width = 1, .cols = 1 };
+            out[n] = .{ .title = m, .module = m, .cols = 1 };
             n += 1;
         }
     }
@@ -1191,7 +1193,7 @@ fn collectStrips(self: *FyRawMachine, out: *[MAX_STRIPS]StripView) usize {
 
 fn stripViewAt(self: *const FyRawMachine, idx: usize) StripView {
     const s = &self.desc.strips[idx];
-    return .{ .title = s.moduleZ(), .module = s.moduleSlice(), .width = 1, .cols = s.cols };
+    return .{ .title = s.moduleSlice(), .module = s.moduleSlice(), .cols = s.cols };
 }
 
 fn controlNormByLabel(self: *const FyRawMachine, module: []const u8, label: []const u8) ?f32 {
@@ -1210,24 +1212,203 @@ fn capShape(t: f32) f32 {
     return (1.0 - @exp(-k * t)) / (1.0 - @exp(-k));
 }
 
-fn drawDisplay(self: *FyRawMachine, rect: c.rl.Rectangle, disp: *const Display, mouse: widgets.Mouse) void {
-    // One shared sunken-black field; comma-separated sources are drawn as small
-    // labeled graphs side-by-side inside it (compact, no per-graph header).
-    const field = widgets.displayField(rect);
+// ── Layout: one walk for fitting and drawing ─────────────────────────
+
+const PanelPass = union(enum) {
+    /// Check whether every strip fits at this tier; draws nothing.
+    fit: ui_ctl.Size,
+    draw: ui_ctl.Size,
+
+    fn tier(p: PanelPass) ui_ctl.Size {
+        return switch (p) {
+            inline else => |t| t,
+        };
+    }
+};
+
+const TAB_BAR_H: i32 = 20;
+const STRIP_HEAD: i32 = 14; // legend line + 2px, see ui_ctl.strip
+
+/// Largest tier at which every strip's control grid fits its rect.
+fn chooseTier(self: *FyRawMachine, body: Rect) ui_ctl.Size {
+    for ([_]ui_ctl.Size{ .l, .m, .s }) |t| {
+        if (walkPanel(self, null, body, .{ .fit = t })) return t;
+    }
+    return .s;
+}
+
+/// Pages → tab bar + that page's rows; a row tree → rows; else strips side
+/// by side. Returns false (fit pass) as soon as a strip doesn't fit.
+fn walkPanel(self: *FyRawMachine, ui: ?*Ui, body: Rect, pass: PanelPass) bool {
+    var area = body;
+    if (self.desc.page_count > 0) {
+        if (self.ui_tab >= self.desc.page_count) self.ui_tab = 0;
+        const bar = area.cutTop(TAB_BAR_H);
+        if (pass == .draw) drawTabBar(self, ui.?, bar);
+        const pg = &self.desc.pages[self.ui_tab];
+        return walkRows(self, ui, pg.rows[0..pg.row_count], area, pass);
+    }
+    if (self.desc.row_count > 0) return walkRows(self, ui, self.desc.rows[0..self.desc.row_count], area, pass);
+
+    var strips: [MAX_STRIPS]StripView = undefined;
+    const n = collectStrips(self, &strips);
+    for (strips[0..n], 0..) |s, i| {
+        const cell = area.cell(@intCast(n), 1, @intCast(i), 0);
+        if (!walkStrip(self, ui, cell, s, pass)) return false;
+    }
+    return true;
+}
+
+/// Split `total` by f32 weights; the last share takes the remainder so the
+/// shares tile exactly.
+fn share(total: i32, w: f32, sum: f32, last: bool, used: i32) i32 {
+    if (last) return total - used;
+    return @intFromFloat(@floor(@as(f32, @floatFromInt(total)) * w / sum));
+}
+
+// Weighted box layout (docs/15): split body height across rows, each row's
+// width across cells, each cell's height across its stacked strips.
+fn walkRows(self: *FyRawMachine, ui: ?*Ui, rows: []const machine_desc.LayoutRow, body: Rect, pass: PanelPass) bool {
+    var total_rw: f32 = 0;
+    for (rows) |*r| total_rw += r.weight;
+    if (total_rw <= 0) return true;
+    var used_h: i32 = 0;
+    for (rows, 0..) |*r, ri| {
+        const rh = share(body.h, r.weight, total_rw, ri + 1 == rows.len, used_h);
+        const row = Rect.xywh(body.x, body.y + used_h, body.w, rh);
+        used_h += rh;
+        var total_cw: f32 = 0;
+        for (r.cells[0..r.cell_count]) |*cc| total_cw += cc.weight;
+        if (total_cw <= 0) continue;
+        var used_w: i32 = 0;
+        for (r.cells[0..r.cell_count], 0..) |*cc, ci| {
+            const cw = share(row.w, cc.weight, total_cw, ci + 1 == r.cell_count, used_w);
+            const col = Rect.xywh(row.x + used_w, row.y, cw, row.h);
+            used_w += cw;
+            var total_sw: f32 = 0;
+            for (cc.items[0..cc.item_count]) |it| total_sw += it.weight;
+            if (total_sw <= 0) continue;
+            var used_s: i32 = 0;
+            for (cc.items[0..cc.item_count], 0..) |it, ii| {
+                const sh = share(col.h, it.weight, total_sw, ii + 1 == cc.item_count, used_s);
+                const item = Rect.xywh(col.x, col.y + used_s, col.w, sh);
+                used_s += sh;
+                if (it.is_display) {
+                    if (pass == .draw) drawDisplay(self, ui.?, item, &self.desc.displays[it.index]);
+                } else if (!walkStrip(self, ui, item, stripViewAt(self, it.index), pass)) return false;
+            }
+        }
+    }
+    return true;
+}
+
+fn stripControlCount(self: *const FyRawMachine, module: []const u8) usize {
+    var n: usize = 0;
+    for (self.desc.controls[0..self.desc.control_count]) |*ctl| {
+        if (std.mem.eql(u8, ctl.moduleSlice(), module)) n += 1;
+    }
+    return n;
+}
+
+fn walkStrip(self: *FyRawMachine, ui: ?*Ui, r: Rect, view: StripView, pass: PanelPass) bool {
+    const count = stripControlCount(self, view.module);
+    const cols: usize = @max(view.cols, 1);
+    const rows = (count + cols - 1) / cols;
+    const cell = ui_ctl.knobCell(pass.tier());
+    switch (pass) {
+        .fit => {
+            if (count == 0) return true;
+            // Plate: right/bottom seam + 1px bevel all round, then the header.
+            const bw = r.w - 3;
+            const bh = r.h - 3 - STRIP_HEAD;
+            return @as(i32, @intCast(cols)) * cell[0] <= bw and @as(i32, @intCast(rows)) * cell[1] <= bh;
+        },
+        .draw => |tier| drawStrip(self, ui.?, r, view, tier, cols, rows),
+    }
+    return true;
+}
+
+fn drawTabBar(self: *FyRawMachine, ui: *Ui, bar: Rect) void {
+    const n = @min(self.desc.page_count, 16);
+    var names: [16][]const u8 = undefined;
+    for (self.desc.pages[0..n], 0..) |*pg, i| names[i] = std.mem.span(pg.nameZ());
+    var tab: u8 = @intCast(self.ui_tab);
+    if (ui_ctl.segmentedFlush(ui, bar, "tabs", &tab, names[0..n])) self.ui_tab = tab;
+}
+
+fn drawStrip(self: *FyRawMachine, ui: *Ui, r: Rect, view: StripView, tier: ui_ctl.Size, cols: usize, rows: usize) void {
+    const body = ui_ctl.strip(ui, r, view.title);
+    if (rows == 0 or body.empty()) return;
+    ui.clip(body);
+    defer ui.unclip();
+    var local_i: usize = 0;
+    for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, gi| {
+        if (!std.mem.eql(u8, ctl.moduleSlice(), view.module)) continue;
+        const kr = body.cell(@intCast(cols), @intCast(rows), @intCast(local_i % cols), @intCast(local_i / cols));
+        local_i += 1;
+        const label = ctl.label[0..ctl.label_len];
+        switch (ctl.kind) {
+            .switch_sel => {
+                const n = ctl.option_count;
+                if (n == 0) continue;
+                const idx = switchIndex(ctl.*, self.controlNorm(gi));
+                var v: f32 = if (n > 1) @as(f32, @floatFromInt(idx)) / @as(f32, @floatFromInt(n - 1)) else 0;
+                const readout = std.mem.span(ctl.optionLabelZ(idx));
+                if (ui_ctl.knob(ui, kr, gi, &v, .{ .size = tier, .variant = .stepped, .steps = @intCast(n), .label = label, .readout = readout })) {
+                    const ni: usize = @intFromFloat(@round(v * @as(f32, @floatFromInt(n - 1))));
+                    self.setControlRaw(gi, @floatFromInt(ni));
+                }
+            },
+            .int_range => {
+                const n_steps = @max(intRangeCount(ctl.*), 1);
+                const lo: i64 = @intFromFloat(@round(ctl.min));
+                const cur: i64 = @intFromFloat(intRangeValue(ctl.*, self.controlNorm(gi)));
+                const idx = std.math.clamp(cur - lo, 0, @as(i64, @intCast(n_steps - 1)));
+                const steps_f: f32 = @floatFromInt(@max(n_steps - 1, 1));
+                var v: f32 = @as(f32, @floatFromInt(idx)) / steps_f;
+                var nb: [12]u8 = undefined;
+                const readout = std.fmt.bufPrint(&nb, "{d}", .{cur}) catch "?";
+                // Detents only render for small counts; wide ranges are a
+                // plain knob that still snaps to integers.
+                const stepped = n_steps <= 24;
+                if (ui_ctl.knob(ui, kr, gi, &v, .{ .size = tier, .variant = if (stepped) .stepped else .plain, .steps = @intCast(@min(n_steps, 255)), .label = label, .readout = readout })) {
+                    const ni: i64 = @intFromFloat(@round(v * steps_f));
+                    self.setControlRaw(gi, @floatFromInt(lo + ni));
+                }
+            },
+            .direct_f64 => {
+                var value = self.controlNorm(gi);
+                var vbuf: [16:0]u8 = undefined;
+                const readout = std.mem.span(formatControlValue(&vbuf, normToValue(ctl.*, value)));
+                if (ui_ctl.knob(ui, kr, gi, &value, .{ .size = tier, .label = label, .readout = readout, .default = valueToNorm(ctl.*, ctl.default) })) {
+                    self.setControlNorm(gi, value);
+                }
+            },
+        }
+    }
+}
+
+// ── Displays ─────────────────────────────────────────────────────────
+
+/// Display pens: mint phosphor, OLED white, periwinkle — never amber
+/// (reserved for "active").
+const PENS = [_]ui_style.Color{ ui_style.phosphor, ui_style.Color.hex(0xdcecff), ui_style.mod };
+
+fn drawDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void {
     switch (disp.kind) {
         .adsr => {
-            // Overlay every source curve in the same field, one pen each.
-            const pens = [_]c.rl.Color{ theme.accent_hi, theme.accent_play, theme.accent_rec };
+            const field = ui.well(r, ui_style.well);
+            ui.clip(field);
+            defer ui.unclip();
             var it = std.mem.splitScalar(u8, disp.sourceSlice(), ',');
             var idx: usize = 0;
             while (it.next()) |raw| : (idx += 1) {
-                const src = std.mem.trim(u8, raw, " ");
-                drawAdsrCurve(self, field, src, pens[idx % pens.len], idx);
+                drawAdsrCurve(self, ui, field, std.mem.trim(u8, raw, " "), PENS[idx % PENS.len], idx);
             }
         },
-        .waveform => drawWaveformDisplay(self, field, disp.sourceSlice(), mouse),
-        .meter => drawMeterDisplay(self, field, disp),
-        .response => drawResponseDisplay(self, field),
+        .waveform => drawWaveformDisplay(self, ui, r, disp.sourceSlice()),
+        .meter => drawMeterDisplay(self, ui, r, disp),
+        .response => drawResponseDisplay(self, ui, r),
     }
 }
 
@@ -1319,36 +1500,43 @@ fn controlValueById(self: *const FyRawMachine, id: []const u8) ?f64 {
     return null;
 }
 
-fn drawResponseDisplay(self: *FyRawMachine, field: c.rl.Rectangle) void {
+fn drawResponseDisplay(self: *FyRawMachine, ui: *Ui, r: Rect) void {
     const sr: f64 = 48000.0;
+    const field = ui.well(r, ui_style.well);
+    if (field.w < 4 or field.h < 4) return;
 
-    const hpf_on = (controlValueById(self,"eq-hpf-on") orelse 0.0) >= 0.5;
-    const hpf = rbjHpf(controlValueById(self,"eq-hpf-hz") orelse 20.0, std.math.sqrt1_2, sr);
-    const ls = rbjLowShelf(controlValueById(self,"eq-ls-hz") orelse 100.0, controlValueById(self,"eq-ls-db") orelse 0.0, sr);
-    const p1 = rbjPeak(controlValueById(self,"eq-p1-hz") orelse 500.0, controlValueById(self,"eq-p1-db") orelse 0.0, controlValueById(self,"eq-p1-q") orelse 0.9, sr);
-    const p2 = rbjPeak(controlValueById(self,"eq-p2-hz") orelse 3000.0, controlValueById(self,"eq-p2-db") orelse 0.0, controlValueById(self,"eq-p2-q") orelse 0.9, sr);
-    const hs = rbjHighShelf(controlValueById(self,"eq-hs-hz") orelse 8000.0, controlValueById(self,"eq-hs-db") orelse 0.0, sr);
+    const hpf_on = (controlValueById(self, "eq-hpf-on") orelse 0.0) >= 0.5;
+    const hpf = rbjHpf(controlValueById(self, "eq-hpf-hz") orelse 20.0, std.math.sqrt1_2, sr);
+    const ls = rbjLowShelf(controlValueById(self, "eq-ls-hz") orelse 100.0, controlValueById(self, "eq-ls-db") orelse 0.0, sr);
+    const p1 = rbjPeak(controlValueById(self, "eq-p1-hz") orelse 500.0, controlValueById(self, "eq-p1-db") orelse 0.0, controlValueById(self, "eq-p1-q") orelse 0.9, sr);
+    const p2 = rbjPeak(controlValueById(self, "eq-p2-hz") orelse 3000.0, controlValueById(self, "eq-p2-db") orelse 0.0, controlValueById(self, "eq-p2-q") orelse 0.9, sr);
+    const hs = rbjHighShelf(controlValueById(self, "eq-hs-hz") orelse 8000.0, controlValueById(self, "eq-hs-db") orelse 0.0, sr);
 
-    // Horizontal grid: 0 dB centre + ±9 dB lines.
-    const mid_y = field.y + field.height * 0.5;
-    c.rl.DrawLineEx(.{ .x = field.x, .y = mid_y }, .{ .x = field.x + field.width, .y = mid_y }, 1.0, theme.grid_beat);
+    ui.clip(field);
+    defer ui.unclip();
+    const grid = ui_style.phosphor.alpha(26);
+    // Horizontal grid: 0 dB centre (brighter) + ±9 dB lines.
+    const mid_y = field.y + @divFloor(field.h, 2);
+    ui.rect(Rect.xywh(field.x, mid_y, field.w, 1), ui_style.phosphor.alpha(48));
     inline for (.{ -9.0, 9.0 }) |g| {
-        const gy = field.y + @as(f32, @floatCast(0.5 - (@as(f64, g)) / (2.0 * EQ_DB_RANGE))) * field.height;
-        c.rl.DrawLineEx(.{ .x = field.x, .y = gy }, .{ .x = field.x + field.width, .y = gy }, 1.0, theme.grid_sub);
+        const gy = field.y + @as(i32, @intFromFloat(@as(f32, @floatCast(0.5 - @as(f64, g) / (2.0 * EQ_DB_RANGE))) * @as(f32, @floatFromInt(field.h))));
+        ui.rect(Rect.xywh(field.x, gy, field.w, 1), grid);
     }
     // Vertical decade lines at 100 / 1k / 10k Hz (log axis 20..20000).
     inline for (.{ 100.0, 1000.0, 10000.0 }) |fline| {
-        const tx = std.math.log10(@as(f64, fline) / 20.0) / 3.0; // 20..20000 spans 3 decades
-        const vx = field.x + @as(f32, @floatCast(tx)) * field.width;
-        c.rl.DrawLineEx(.{ .x = vx, .y = field.y }, .{ .x = vx, .y = field.y + field.height }, 1.0, theme.grid_sub);
+        const tx = std.math.log10(@as(f64, fline) / 20.0) / 3.0;
+        ui.rect(Rect.xywh(field.x + @as(i32, @intFromFloat(@as(f32, @floatCast(tx)) * @as(f32, @floatFromInt(field.w)))), field.y, 1, field.h), grid);
     }
 
     const N: usize = 160;
-    var prev = c.rl.Vector2{ .x = 0, .y = 0 };
-    var i: usize = 0;
-    while (i < N) : (i += 1) {
+    const fx: f32 = @floatFromInt(field.x);
+    const fy: f32 = @floatFromInt(field.y);
+    const fw: f32 = @floatFromInt(field.w);
+    const fh: f32 = @floatFromInt(field.h);
+    var prev: [2]f32 = .{ 0, 0 };
+    for (0..N) |i| {
         const t = @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(N - 1));
-        const f = 20.0 * std.math.pow(f64, 1000.0, t); // 20 → 20000 Hz, log-spaced
+        const f = 20.0 * std.math.pow(f64, 1000.0, t);
         var db: f64 = 0;
         if (hpf_on) db += biquadMagDb(hpf, f, sr);
         db += biquadMagDb(ls, f, sr);
@@ -1356,10 +1544,8 @@ fn drawResponseDisplay(self: *FyRawMachine, field: c.rl.Rectangle) void {
         db += biquadMagDb(p2, f, sr);
         db += biquadMagDb(hs, f, sr);
         const yn = std.math.clamp(0.5 - db / (2.0 * EQ_DB_RANGE), 0.0, 1.0);
-        const px = field.x + @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(N - 1)) * field.width;
-        const py = field.y + @as(f32, @floatCast(yn)) * field.height;
-        const p = c.rl.Vector2{ .x = px, .y = py };
-        if (i > 0) c.rl.DrawLineEx(prev, p, 1.5, theme.accent_hi);
+        const p = [2]f32{ fx + @as(f32, @floatCast(t)) * fw, fy + @as(f32, @floatCast(yn)) * fh };
+        if (i > 0) ui.line(prev[0], prev[1], p[0], p[1], ui_style.phosphor);
         prev = p;
     }
 }
@@ -1403,460 +1589,182 @@ fn dbToY(db: f32, top: f32, bottom: f32) f32 {
     return bottom - frac * (bottom - top);
 }
 
-fn drawMeterDisplay(self: *FyRawMachine, field: c.rl.Rectangle, disp: *const Display) void {
-    const D = machine_desc.MeterOffset;
+/// Compressor/limiter display: IN pair | GR band | OUT pair (pro meters,
+/// graduated on the output), then GR / output-peak / LUFS readouts.
+fn drawMeterDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void {
     const regions = self.regionCount();
     const r1: usize = if (regions > 1) 1 else 0;
 
-    // Pull live linear cells (region 0 = L, region 1 = R).
-    const gminL = self.readStateF64(0, disp.meterOffset(.gmin));
-    const gminR = self.readStateF64(r1, disp.meterOffset(.gmin));
-    const gmin = @min(gminL, gminR);
-    const gr_now: f32 = -lin2db(@max(gmin, 1e-7)); // gmin<=1 → reduction in dB ≥0
-    const in_now = [2]f32{ lin2db(self.readStateF64(0, disp.meterOffset(.ipk))), lin2db(self.readStateF64(r1, disp.meterOffset(.ipk))) };
-    const out_now = [2]f32{ lin2db(self.readStateF64(0, disp.meterOffset(.opk))), lin2db(self.readStateF64(r1, disp.meterOffset(.opk))) };
-
-    const msmL = self.readStateF64(0, disp.meterOffset(.msm));
-    const msmR = self.readStateF64(r1, disp.meterOffset(.msm));
-    const mssL = self.readStateF64(0, disp.meterOffset(.mss));
-    const mssR = self.readStateF64(r1, disp.meterOffset(.mss));
-    const msumL = self.readStateF64(0, disp.meterOffset(.msum));
-    const msumR = self.readStateF64(r1, disp.meterOffset(.msum));
+    // Live linear cells (region 0 = L, region 1 = R).
+    const gmin = @min(self.readStateF64(0, disp.meterOffset(.gmin)), self.readStateF64(r1, disp.meterOffset(.gmin)));
+    const gr_now: f32 = -lin2db(@max(gmin, 1e-7));
+    const in_lin = [2]f32{ @floatCast(self.readStateF64(0, disp.meterOffset(.ipk))), @floatCast(self.readStateF64(r1, disp.meterOffset(.ipk))) };
+    const out_lin = [2]f32{ @floatCast(self.readStateF64(0, disp.meterOffset(.opk))), @floatCast(self.readStateF64(r1, disp.meterOffset(.opk))) };
+    const msm = self.readStateF64(0, disp.meterOffset(.msm)) + self.readStateF64(r1, disp.meterOffset(.msm));
+    const mss = self.readStateF64(0, disp.meterOffset(.mss)) + self.readStateF64(r1, disp.meterOffset(.mss));
+    const msum = self.readStateF64(0, disp.meterOffset(.msum)) + self.readStateF64(r1, disp.meterOffset(.msum));
     const mn = @max(self.readStateF64(0, disp.meterOffset(.mn)), 1.0);
-    const lufs_m = ms2lufs(msmL + msmR);
-    const lufs_s = ms2lufs(mssL + mssR);
-    const lufs_i = ms2lufs((msumL + msumR) / mn);
 
-    _ = D;
-
-    // Ballistics.
-    var ui = &self.meter_ui;
-    const t = c.rl.GetTime();
-    var dt: f32 = if (ui.last_t > 0) @floatCast(t - ui.last_t) else 0.016;
-    ui.last_t = t;
-    dt = std.math.clamp(dt, 0.0, 0.1);
-    const rel_db_s: f32 = 36.0; // bar release rate dB/s
-    const hold_s: f32 = 1.5;
-    const hold_decay: f32 = 18.0;
-
-    var ch: usize = 0;
-    while (ch < 2) : (ch += 1) {
-        ui.in_db[ch] = ballistic(ui.in_db[ch], in_now[ch], rel_db_s, dt);
-        ui.out_db[ch] = ballistic(ui.out_db[ch], out_now[ch], rel_db_s, dt);
+    // GR ballistics + output-peak latch (the level bars use the Ui
+    // meters' own ballistics).
+    const st = &self.meter_ui;
+    const dt = ui.in.dt;
+    st.gr_db = if (gr_now >= st.gr_db) gr_now else @max(gr_now, st.gr_db - 60.0 * dt);
+    if (gr_now > st.gr_hold) {
+        st.gr_hold = gr_now;
+        st.hold_age = 0;
+    } else {
+        st.hold_age += dt;
+        if (st.hold_age > 1.5) st.gr_hold = @max(0, st.gr_hold - 18.0 * dt);
     }
-    ui.gr_db = ballisticGr(ui.gr_db, gr_now, 60.0, dt);
+    st.out_peak_db = @max(st.out_peak_db, @max(lin2db(out_lin[0]), lin2db(out_lin[1])));
+    ui.animate();
 
-    // Peak-hold: refresh on new max, else age & decay.
-    var any_new = false;
-    ch = 0;
-    while (ch < 2) : (ch += 1) {
-        if (in_now[ch] > ui.in_hold[ch]) {
-            ui.in_hold[ch] = in_now[ch];
-            any_new = true;
-        }
-        if (out_now[ch] > ui.out_hold[ch]) {
-            ui.out_hold[ch] = out_now[ch];
-            any_new = true;
-        }
-    }
-    if (gr_now > ui.gr_hold) {
-        ui.gr_hold = gr_now;
-        any_new = true;
-    }
-    if (out_now[0] > ui.out_peak_db) ui.out_peak_db = out_now[0];
-    if (out_now[1] > ui.out_peak_db) ui.out_peak_db = out_now[1];
-    if (any_new) ui.hold_age = 0 else ui.hold_age += dt;
-    if (ui.hold_age > hold_s) {
-        ch = 0;
-        while (ch < 2) : (ch += 1) {
-            ui.in_hold[ch] -= hold_decay * dt;
-            ui.out_hold[ch] -= hold_decay * dt;
-        }
-        ui.gr_hold -= hold_decay * dt;
-    }
+    var area = r;
+    const readouts = area.cutBottom(2 * ui_ctl.displayHeight(false));
+    var graph = ui.well(area, ui_style.well).inset(2);
+    // IN pair (bare) | 4 | GR 12 | 4 | OUT pair (with its 20px centre scale):
+    // four equal bars share what's left.
+    const in_w = @max(@divFloor(graph.w - 40, 2), 8);
+    ui_ctl.meterStereo(ui, graph.cutLeft(in_w), "in", in_lin, in_lin, .{ .scale = .none });
+    _ = graph.cutLeft(4);
+    grBand(ui, graph.cutLeft(12), st.gr_db, st.gr_hold);
+    _ = graph.cutLeft(4);
+    ui_ctl.meterStereo(ui, graph, "out", out_lin, out_lin, .{});
 
-    // Layout: a graph area on top, a readout strip at the bottom.
-    const read_h = theme.size(46);
-    const graph = widgets.rect(field.x, field.y, field.width, @max(1, field.height - read_h));
-    c.rl.DrawRectangleRec(graph, theme.slab_edge);
-    const top = graph.y + theme.size(4);
-    const bot = graph.y + graph.height - theme.size(4);
-
-    // dB scale ticks down the left.
-    const scale_x = graph.x + theme.size(2);
-    const ticks = [_]f32{ 0, -6, -12, -24, -36, -48, -60 };
-    for (ticks) |dbv| {
-        const y = dbToY(dbv, top, bot);
-        c.rl.DrawRectangle(@intFromFloat(graph.x), @intFromFloat(y), @intFromFloat(graph.width), 1, theme.grid_sub);
-        var lb: [8:0]u8 = undefined;
-        const s = std.fmt.bufPrintZ(&lb, "{d:.0}", .{dbv}) catch "";
-        widgets.drawLabelF(s, scale_x, y + 1, theme.fsTiny() - 1, theme.text_mute);
-    }
-
-    // Column geometry: [scale ~22px] IN-L IN-R | GR | OUT-L OUT-R
-    const col_x = graph.x + theme.size(22);
-    const col_w = graph.x + graph.width - theme.size(4) - col_x;
-    const bar_w = @max(2, (col_w - theme.size(8)) / 5.0);
-    var x = col_x;
-
-    drawLevelBar(widgets.rect(x, top, bar_w, bot - top), ui.in_db[0], ui.in_hold[0], theme.text_dim, top, bot);
-    x += bar_w + 1;
-    drawLevelBar(widgets.rect(x, top, bar_w, bot - top), ui.in_db[1], ui.in_hold[1], theme.text_dim, top, bot);
-    x += bar_w + theme.size(3);
-
-    // GR band: descends from the top, height ∝ reduction.
-    const gr_col = widgets.rect(x, top, bar_w, bot - top);
-    c.rl.DrawRectangleRec(gr_col, theme.pane_alt);
-    const gr_h = std.math.clamp(ui.gr_db / METER_GR_RANGE, 0.0, 1.0) * (bot - top);
-    if (gr_h > 0)
-        c.rl.DrawRectangleRec(widgets.rect(gr_col.x, top, bar_w, gr_h), theme.accent_rec);
-    if (ui.gr_hold > 0.05) {
-        const hy = top + std.math.clamp(ui.gr_hold / METER_GR_RANGE, 0.0, 1.0) * (bot - top);
-        c.rl.DrawRectangle(@intFromFloat(gr_col.x), @intFromFloat(hy), @intFromFloat(bar_w), 1, theme.text_fg);
-    }
-    x += bar_w + theme.size(3);
-
-    drawLevelBar(widgets.rect(x, top, bar_w, bot - top), ui.out_db[0], ui.out_hold[0], theme.accent_play, top, bot);
-    x += bar_w + 1;
-    drawLevelBar(widgets.rect(x, top, bar_w, bot - top), ui.out_db[1], ui.out_hold[1], theme.accent_play, top, bot);
-
-    // Readout strip.
-    var ry = graph.y + graph.height + theme.size(2);
-    const fs = theme.fsTiny();
-    const clip = ui.out_peak_db > -0.05;
-    var b: [40:0]u8 = undefined;
-    const grs = std.fmt.bufPrintZ(&b, "GR {d:.1} dB", .{ui.gr_db}) catch "";
-    widgets.drawLabelF(grs, field.x + theme.size(2), ry, fs, theme.accent_rec);
-    var b2: [40:0]u8 = undefined;
-    const ops = std.fmt.bufPrintZ(&b2, "OUT {d:.1} dB", .{ui.out_peak_db}) catch "";
-    widgets.drawLabelF(ops, field.x + field.width / 2, ry, fs, if (clip) theme.accent_rec else theme.text_dim);
-    ry += fs + theme.size(3);
-    var b3: [56:0]u8 = undefined;
-    const ls = std.fmt.bufPrintZ(&b3, "M {d:.1}  S {d:.1}  I {d:.1} LUFS", .{ lufs_m, lufs_s, lufs_i }) catch "";
-    widgets.drawLabelF(ls, field.x + theme.size(2), ry, fs, theme.text_fg);
+    var b1: [48]u8 = undefined;
+    const clip = st.out_peak_db > -0.05;
+    const l1 = std.fmt.bufPrint(&b1, "GR {d:.1}  OUT {d:.1}", .{ st.gr_db, st.out_peak_db }) catch "";
+    ui_ctl.display(ui, readouts.takeTop(ui_ctl.displayHeight(false)), l1, .{ .color = if (clip) ui_style.rec else ui_style.phosphor });
+    var b2: [56]u8 = undefined;
+    const l2 = std.fmt.bufPrint(&b2, "M {d:.1} S {d:.1} I {d:.1} LU", .{ ms2lufs(msm), ms2lufs(mss), ms2lufs(msum / mn) }) catch "";
+    var lr = readouts;
+    _ = lr.cutTop(ui_ctl.displayHeight(false));
+    ui_ctl.display(ui, lr, l2, .{});
 }
 
-fn ballistic(cur: f32, target: f32, rel_db_s: f32, dt: f32) f32 {
-    if (target >= cur) return target; // instant attack
-    return @max(target, cur - rel_db_s * dt);
-}
-
-fn ballisticGr(cur: f32, target: f32, rel_db_s: f32, dt: f32) f32 {
-    if (target >= cur) return target;
-    return @max(target, cur - rel_db_s * dt);
-}
-
-fn drawLevelBar(r: c.rl.Rectangle, db: f32, hold_db: f32, col: c.rl.Color, top: f32, bot: f32) void {
-    c.rl.DrawRectangleRec(r, theme.pane_alt);
-    const y = dbToY(db, top, bot);
-    if (bot - y > 0)
-        c.rl.DrawRectangleRec(widgets.rect(r.x, y, r.width, bot - y), col);
-    if (hold_db > METER_DB_FLOOR + 0.5) {
-        const hy = dbToY(hold_db, top, bot);
-        c.rl.DrawRectangle(@intFromFloat(r.x), @intFromFloat(hy), @intFromFloat(r.width), 1, theme.text_fg);
+/// Gain-reduction bargraph: red segments descend from the top, a bright
+/// hold segment marks the recent maximum (METER_GR_RANGE dB full scale).
+fn grBand(ui: *Ui, r: Rect, gr_db: f32, hold_db: f32) void {
+    const inner = ui.well(r, ui_style.well);
+    const n = @divFloor(inner.h, 3);
+    if (n <= 0) return;
+    const nf: f32 = @floatFromInt(n);
+    const lit: i32 = @intFromFloat(@round(std.math.clamp(gr_db / METER_GR_RANGE, 0, 1) * nf));
+    const hold_i = @as(i32, @intFromFloat(@round(std.math.clamp(hold_db / METER_GR_RANGE, 0, 1) * nf))) - 1;
+    var i: i32 = 0;
+    while (i < n) : (i += 1) {
+        const col = if (i < lit) ui_style.rec else if (i == hold_i and hold_db > 0.05) ui_style.rec.mix(ui_style.text, 0.3) else ui_style.rec.mix(ui_style.well, 0.86);
+        ui.rect(Rect.xywh(inner.x, inner.y + i * 3, inner.w, 2), col);
     }
 }
 
-// Oscillogram of a loaded asset: a top bar with the filename + a LOAD button
-// (opens the native audio picker and hot-swaps the sample), then the peak
-// waveform with read-only start/loop markers from the matching controls.
-fn drawWaveformDisplay(self: *FyRawMachine, field: c.rl.Rectangle, asset_name: []const u8, mouse: widgets.Mouse) void {
+// Oscillogram of a loaded asset: a title row with the filename + LOAD (the
+// native audio picker hot-swaps the sample), then the peak waveform with
+// draggable start / loop markers bound to the matching controls.
+fn drawWaveformDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []const u8) void {
     const ai = self.assetIndexByName(asset_name) orelse return;
-
-    const bar_h = theme.size(16);
-    const bar = widgets.rect(field.x, field.y, field.width, bar_h);
-    const wave = widgets.rect(field.x, field.y + bar_h, field.width, @max(1, field.height - bar_h));
-
-    // filename (or a hint) on the left.
-    var nbuf: [110:0]u8 = [_:0]u8{0} ** 110;
-    const label = self.asset_label[ai][0..self.asset_label_len[ai]];
-    const ln = @min(label.len, 109);
-    if (ln > 0) @memcpy(nbuf[0..ln], label[0..ln]) else @memcpy(nbuf[0..9], "no sample");
-    widgets.drawLabelF(@ptrCast(&nbuf[0]), bar.x + theme.size(4), bar.y + (bar_h - theme.fsTiny()) / 2 - 1, theme.fsTiny(), theme.text_dim);
-
-    const btn_w = theme.size(44);
-    const btn = widgets.rect(bar.x + bar.width - btn_w - 2, bar.y + 1, btn_w, bar_h - 2);
-    if (widgets.button(btn, "LOAD", mouse)) {
+    var area = r;
+    var bar = area.cutTop(20);
+    if (ui_ctl.button(ui, bar.cutRight(52), .{ "load", ai }, null, .{ .label = "LOAD", .flush = true })) {
         if (native_dialog.openAudioFile(self.alloc) catch null) |path| {
             defer self.alloc.free(path);
             _ = self.loadAssetRuntime(ai, path);
         }
     }
+    const label = self.asset_label[ai][0..self.asset_label_len[ai]];
+    ui_ctl.display(ui, bar, if (label.len > 0) label else "NO SAMPLE", .{ .flush = true });
 
-    c.rl.DrawRectangleRec(wave, theme.slab_edge);
-    const inner = widgets.rect(wave.x + 1, wave.y + 1, wave.width - 2, wave.height - 2);
+    const inner = ui.well(area, ui_style.well);
+    if (inner.w < 2 or inner.h < 2) return;
+    ui.clip(inner);
+    defer ui.unclip();
     const cache = &self.asset_cache[ai];
-    waveform.draw(inner, cache, 0, @floatFromInt(@max(cache.sample_count, 1)), theme.accent_hi);
-
-    // Draggable markers: START / LOOP BEG / LOOP END. Dragging writes the
-    // matching control's normalized value live (the audio thread reads it
-    // atomically) and the source knob follows.
-    drawMarker(self, inner, "smp-start", theme.accent_play, mouse);
-    drawMarker(self, inner, "smp-loop-start", theme.accent_hi, mouse);
-    drawMarker(self, inner, "smp-loop-end", theme.accent_hi, mouse);
-}
-
-const MARKER_SALT: u64 = 0x5A3B_0FF5_7A6C_0001;
-
-fn drawMarker(self: *FyRawMachine, area: c.rl.Rectangle, id: []const u8, col: c.rl.Color, mouse: widgets.Mouse) void {
-    var idx: usize = 0;
-    var found = false;
-    for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
-        if (std.mem.eql(u8, ctl.idSlice(), id)) {
-            idx = i;
-            found = true;
-            break;
+    const mid = inner.y + @divFloor(inner.h, 2);
+    ui.rect(Rect.xywh(inner.x, mid, inner.w, 1), ui_style.phosphor.alpha(40));
+    if (cache.sample_count > 0) {
+        const span: f64 = @floatFromInt(@max(cache.sample_count, 1));
+        const spp = span / @as(f64, @floatFromInt(inner.w));
+        const half: f32 = @as(f32, @floatFromInt(inner.h)) / 2;
+        var px: i32 = 0;
+        while (px < inner.w) : (px += 1) {
+            const s0 = @as(f64, @floatFromInt(px)) * spp;
+            const p = cache.rangePeak(s0, s0 + spp, spp);
+            const y0: i32 = @intFromFloat(@round(half - std.math.clamp(@as(f32, @floatCast(p.max)), -1, 1) * half));
+            const y1: i32 = @intFromFloat(@round(half - std.math.clamp(@as(f32, @floatCast(p.min)), -1, 1) * half));
+            ui.rect(Rect.xywh(inner.x + px, inner.y + @min(y0, y1), 1, @as(i32, @intCast(@abs(y1 - y0))) + 1), ui_style.phosphor);
         }
     }
-    if (!found) return;
+    drawMarker(self, ui, inner, "smp-start", ui_style.play);
+    drawMarker(self, ui, inner, "smp-loop-start", ui_style.mod);
+    drawMarker(self, ui, inner, "smp-loop-end", ui_style.mod);
+}
 
+/// Draggable marker bound to control `id`: dragging writes its normalized
+/// value live (the audio thread reads it atomically) and the knob follows.
+fn drawMarker(self: *FyRawMachine, ui: *Ui, area: Rect, id: []const u8, col: ui_style.Color) void {
+    const idx = for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
+        if (std.mem.eql(u8, ctl.idSlice(), id)) break i;
+    } else return;
     const frac = std.math.clamp(@as(f32, self.controlNorm(idx)), 0, 1);
-    const x = area.x + frac * area.width;
-    const key = widgets.keyFromIds(MARKER_SALT, @intFromPtr(self), idx);
-    const dragging = widgets.isDraggingKey(key);
-    const hot = widgets.contains(area, mouse.x, mouse.y) and @abs(mouse.x - x) <= theme.fine(4);
-
-    if (dragging) {
-        if (mouse.left_down) {
-            const nf = std.math.clamp((mouse.x - area.x) / area.width, 0, 1);
-            self.setControlNorm(idx, nf);
-        } else {
-            widgets.cancelDrag();
-        }
-    } else if (hot and mouse.left_pressed and !widgets.hasActiveDrag()) {
-        _ = widgets.tryStartDrag(key);
+    const x = area.x + @as(i32, @intFromFloat(@round(frac * @as(f32, @floatFromInt(area.w - 1)))));
+    const wid = ui.id(.{ "marker", idx });
+    const b = ui.behaviorEx(wid, Rect.xywh(x - 4, area.y, 9, area.h), .{ .prio = 1 });
+    if (b.held) {
+        const nf = std.math.clamp((ui.in.mx - @as(f32, @floatFromInt(area.x))) / @as(f32, @floatFromInt(area.w)), 0, 1);
+        self.setControlNorm(idx, nf);
     }
-    if (hot or dragging) widgets.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 2);
-
-    const lw: f32 = if (hot or dragging) 2.0 else 1.0;
-    c.rl.DrawLineEx(.{ .x = x, .y = area.y }, .{ .x = x, .y = area.y + area.height }, lw, col);
-    // A small grab tab at the top so the handle reads as draggable.
-    const tab = theme.fine(3);
-    c.rl.DrawRectangleRec(widgets.rect(x - tab, area.y, tab * 2 + 1, tab + 1), col);
+    const hot = ui.isHot(wid);
+    if (hot) ui.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 2);
+    ui.rect(Rect.xywh(x, area.y, if (hot) 2 else 1, area.h), col);
+    // Grab tab at the top so the handle reads as draggable.
+    ui.rect(Rect.xywh(x - 3, area.y, 7, 4), col);
 }
 
-// Draw the A/D/S/R envelope shape (segment widths from the knob norms, a fixed
-// sustain hold), reacting live to the source module's ATK/DEC/SUS/REL knobs.
-fn drawAdsrCurve(self: *FyRawMachine, area: c.rl.Rectangle, source: []const u8, col: c.rl.Color, label_idx: usize) void {
+// A/D/S/R shape (segment widths from the knob norms, a fixed sustain
+// hold), reacting live to the source module's ATK/DEC/SUS/REL knobs.
+fn drawAdsrCurve(self: *FyRawMachine, ui: *Ui, area: Rect, source: []const u8, col: ui_style.Color, label_idx: usize) void {
     const atk = controlNormByLabel(self, source, "ATK") orelse 0.3;
     const dec = controlNormByLabel(self, source, "DEC") orelse 0.3;
     const sus = controlNormByLabel(self, source, "SUS") orelse 0.5;
     const rel = controlNormByLabel(self, source, "REL") orelse 0.3;
 
-    const pad = theme.fine(2);
-    const x0 = area.x + pad;
-    const w = area.width - 2 * pad;
-    const top = area.y + pad;
-    const h = area.height - 2 * pad;
+    const x0: f32 = @as(f32, @floatFromInt(area.x)) + 2.5;
+    const w: f32 = @as(f32, @floatFromInt(area.w)) - 5;
+    const top: f32 = @as(f32, @floatFromInt(area.y)) + 12.5; // leave the label row
+    const h: f32 = @as(f32, @floatFromInt(area.h)) - 15;
     if (w <= 1 or h <= 1) return;
     const base = top + h;
 
     const hold: f32 = 0.5;
     const wsum = atk + dec + hold + rel + 0.0001;
-    const aw = w * atk / wsum;
-    const dw = w * dec / wsum;
-    const hw = w * hold / wsum;
-    const rw = w * rel / wsum;
+    const xa1 = x0 + w * atk / wsum;
+    const xd1 = xa1 + w * dec / wsum;
+    const xh1 = xd1 + w * hold / wsum;
+    const xr1 = xh1 + w * rel / wsum;
 
-    const xa1 = x0 + aw;
-    const xd1 = xa1 + dw;
-    const xh1 = xd1 + hw;
-    const xr1 = xh1 + rw;
+    capSeg(ui, x0, 0.0, xa1, 1.0, base, h, col);
+    capSeg(ui, xa1, 1.0, xd1, sus, base, h, col);
+    ui.line(xd1, base - sus * h, xh1, base - sus * h, col);
+    capSeg(ui, xh1, sus, xr1, 0.0, base, h, col);
 
-    if (label_idx == 0) c.rl.DrawLineEx(.{ .x = x0, .y = base }, .{ .x = x0 + w, .y = base }, 1.0, theme.slab_edge);
-
-    drawCapSeg(x0, 0.0, xa1, 1.0, base, h, col);
-    drawCapSeg(xa1, 1.0, xd1, sus, base, h, col);
-    c.rl.DrawLineEx(.{ .x = xd1, .y = base - sus * h }, .{ .x = xh1, .y = base - sus * h }, 1.5, col);
-    drawCapSeg(xh1, sus, xr1, 0.0, base, h, col);
-
-    // inline label: first token of the source, in the curve's colour, offset so
-    // overlaid sources' labels sit side by side.
-    var buf: [12:0]u8 = [_:0]u8{0} ** 12;
-    const tok_end = std.mem.indexOfScalar(u8, source, ' ') orelse source.len;
-    const tlen = @min(tok_end, 11);
-    @memcpy(buf[0..tlen], source[0..tlen]);
-    buf[tlen] = 0;
-    widgets.drawLabelF(@ptrCast(&buf[0]), area.x + 1 + @as(f32, @floatFromInt(label_idx)) * theme.size(22), top - 1, theme.fsTiny(), col);
+    // Inline label: the source's first token, in the curve's colour; labels
+    // of overlaid sources sit side by side.
+    const tok = source[0 .. std.mem.indexOfScalar(u8, source, ' ') orelse source.len];
+    _ = ui.text(&ui.fonts.legend, area.x + 2 + @as(i32, @intCast(label_idx)) * 40, area.y, tok[0..@min(tok.len, 11)], col);
 }
 
-fn drawCapSeg(xa: f32, la: f32, xb: f32, lb: f32, base: f32, h: f32, col: c.rl.Color) void {
+fn capSeg(ui: *Ui, xa: f32, la: f32, xb: f32, lb: f32, base: f32, h: f32, col: ui_style.Color) void {
     const N: usize = 14;
-    var prev = c.rl.Vector2{ .x = xa, .y = base - la * h };
-    var i: usize = 1;
-    while (i <= N) : (i += 1) {
+    var px = xa;
+    var py = base - la * h;
+    for (1..N + 1) |i| {
         const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(N));
-        const l = la + (lb - la) * capShape(t);
-        const p = c.rl.Vector2{ .x = xa + (xb - xa) * t, .y = base - l * h };
-        c.rl.DrawLineEx(prev, p, 1.5, col);
-        prev = p;
-    }
-}
-
-// Weighted box layout (docs/15): split body height across rows, each row's
-// width across cells, each cell's height across its stacked strips. Last
-// element in each axis takes the remainder so the block fills exactly.
-fn drawLayoutTree(self: *FyRawMachine, body: c.rl.Rectangle, mouse: widgets.Mouse) void {
-    drawRows(self, self.desc.rows[0..self.desc.row_count], body, mouse);
-}
-
-// Height of the panel's tab bar (paged machines).
-const TAB_BAR_H: f32 = 16;
-
-// Tab bar across the top of the body; clicking a tab swaps the active page.
-// Brutalist: 1px-separated beveled cells, the active one raised/lit.
-fn drawTabBar(self: *FyRawMachine, bar: c.rl.Rectangle, mouse: widgets.Mouse) void {
-    const n = self.desc.page_count;
-    if (n == 0) return;
-    c.rl.DrawRectangleRec(bar, theme.pane_alt);
-    const cw = bar.width / @as(f32, @floatFromInt(n));
-    var x = bar.x;
-    for (self.desc.pages[0..n], 0..) |*pg, i| {
-        const w = if (i + 1 == n) (bar.x + bar.width - x) else cw;
-        const cell = widgets.rect(x, bar.y, w, bar.height);
-        const active = i == self.ui_tab;
-        const hover = widgets.contains(cell, mouse.x, mouse.y) and !widgets.hasActiveDrag();
-        if (hover and mouse.left_released) self.ui_tab = i;
-        const fill = if (active) theme.slab_hi else if (hover) theme.slab_fill else theme.pane_alt;
-        c.rl.DrawRectangleRec(widgets.rect(cell.x + 1, cell.y + 1, cell.width - 2, cell.height - 2), fill);
-        if (i > 0) c.rl.DrawRectangle(@intFromFloat(cell.x), @intFromFloat(cell.y + 1), 1, @intFromFloat(cell.height - 2), theme.slab_edge);
-        const size = theme.fsTiny();
-        const tw = widgets.measureTextF(pg.nameZ(), size);
-        widgets.drawLabelF(pg.nameZ(), cell.x + (cell.width - tw) / 2, cell.y + (cell.height - size) / 2 - 1, size, if (active) theme.text_fg else theme.text_dim);
-        x += w;
-    }
-}
-
-fn drawRows(self: *FyRawMachine, rows: []const machine_desc.LayoutRow, body: c.rl.Rectangle, mouse: widgets.Mouse) void {
-    const row_count = rows.len;
-    var total_rw: f32 = 0;
-    for (rows) |*r| total_rw += r.weight;
-    if (total_rw <= 0) return;
-    var y = body.y;
-    for (rows, 0..) |*r, ri| {
-        const rh = if (ri + 1 == row_count) (body.y + body.height - y) else body.height * r.weight / total_rw;
-        var total_cw: f32 = 0;
-        for (r.cells[0..r.cell_count]) |*cc| total_cw += cc.weight;
-        if (total_cw > 0) {
-            var x = body.x;
-            for (r.cells[0..r.cell_count], 0..) |*cc, ci| {
-                const cw = if (ci + 1 == r.cell_count) (body.x + body.width - x) else body.width * cc.weight / total_cw;
-                var total_sw: f32 = 0;
-                for (cc.items[0..cc.item_count]) |it| total_sw += it.weight;
-                if (total_sw > 0) {
-                    var sy = y;
-                    for (cc.items[0..cc.item_count], 0..) |it, ii| {
-                        const sh = if (ii + 1 == cc.item_count) (y + rh - sy) else rh * it.weight / total_sw;
-                        const item_rect = widgets.rect(x, sy, cw, sh);
-                        if (it.is_display) {
-                            drawDisplay(self, item_rect, &self.desc.displays[it.index], mouse);
-                        } else {
-                            drawStrip(self, item_rect, stripViewAt(self, it.index), mouse);
-                        }
-                        sy += sh;
-                    }
-                }
-                x += cw;
-            }
-        }
-        y += rh;
-    }
-}
-
-fn drawControlStrips(self: *FyRawMachine, body: c.rl.Rectangle, mouse: widgets.Mouse) void {
-    if (self.desc.page_count > 0) {
-        if (self.ui_tab >= self.desc.page_count) self.ui_tab = 0;
-        const bar = widgets.rect(body.x, body.y, body.width, TAB_BAR_H);
-        drawTabBar(self, bar, mouse);
-        const page_body = widgets.rect(body.x, body.y + TAB_BAR_H, body.width, body.height - TAB_BAR_H);
-        const pg = &self.desc.pages[self.ui_tab];
-        drawRows(self, pg.rows[0..pg.row_count], page_body, mouse);
-        return;
-    }
-    if (self.desc.row_count > 0) {
-        drawLayoutTree(self, body, mouse);
-        return;
-    }
-    var strips: [MAX_STRIPS]StripView = undefined;
-    const n = collectStrips(self, &strips);
-    if (n == 0) return;
-
-    var total: f32 = 0;
-    for (strips[0..n]) |s| total += s.width;
-    if (total <= 0) return;
-    // Strips sit flush and fill the body exactly: each gets a fraction of the
-    // width proportional to its declared width, and the last takes the
-    // remainder. This avoids per-strip theme.size rounding so the strip block
-    // lines up precisely with the host title bar (no overhang).
-    var x = body.x;
-    for (strips[0..n], 0..) |s, i| {
-        const w = if (i + 1 == n) (body.x + body.width - x) else body.width * s.width / total;
-        if (w <= 0) break;
-        drawStrip(self, widgets.rect(x, body.y, w, body.height), s, mouse);
-        x += w;
-    }
-}
-
-fn drawStrip(self: *FyRawMachine, rect_: c.rl.Rectangle, view: StripView, mouse: widgets.Mouse) void {
-    const inner = widgets.strip(rect_, view.title);
-
-    var count: usize = 0;
-    for (self.desc.controls[0..self.desc.control_count]) |*ctl| {
-        if (std.mem.eql(u8, ctl.moduleSlice(), view.module)) count += 1;
-    }
-    if (count == 0) return;
-
-    const cols = view.cols;
-    const rows = (count + cols - 1) / cols;
-    const cell_w = inner.width / @as(f32, @floatFromInt(cols));
-    const cell_h = @max(theme.size(44), inner.height / @as(f32, @floatFromInt(rows)));
-    var local_i: usize = 0;
-    for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, gi| {
-        if (!std.mem.eql(u8, ctl.moduleSlice(), view.module)) continue;
-        const col = local_i % cols;
-        const row = local_i / cols;
-        const kr = widgets.rect(
-            inner.x + @as(f32, @floatFromInt(col)) * cell_w,
-            inner.y + @as(f32, @floatFromInt(row)) * cell_h,
-            cell_w,
-            @min(cell_h, inner.y + inner.height - (inner.y + @as(f32, @floatFromInt(row)) * cell_h)),
-        );
-        switch (ctl.kind) {
-            .switch_sel => {
-                var labels: [MAX_OPTS][*:0]const u8 = undefined;
-                for (0..ctl.option_count) |oi| labels[oi] = ctl.optionLabelZ(oi);
-                var idx: u8 = @intCast(switchIndex(ctl.*, self.controlNorm(gi)));
-                if (widgets.knobStepped(kr, ctl.labelZ(), labels[0..ctl.option_count], &idx, mouse)) {
-                    self.setControlRaw(gi, @floatFromInt(idx));
-                }
-            },
-            .int_range => {
-                // Detented rotary over [min, max] with generated number labels.
-                const INT_LABEL_CAP = 64;
-                const n_steps = @min(intRangeCount(ctl.*), INT_LABEL_CAP);
-                const lo: i64 = @intFromFloat(@round(ctl.min));
-                var numbuf: [INT_LABEL_CAP][8]u8 = undefined;
-                var labels: [INT_LABEL_CAP][*:0]const u8 = undefined;
-                for (0..n_steps) |s| {
-                    _ = std.fmt.bufPrintZ(numbuf[s][0..], "{d}", .{lo + @as(i64, @intCast(s))}) catch {};
-                    labels[s] = @ptrCast(&numbuf[s][0]);
-                }
-                const cur: i64 = @intFromFloat(intRangeValue(ctl.*, self.controlNorm(gi)));
-                var idx: u8 = @intCast(std.math.clamp(cur - lo, 0, @as(i64, @intCast(n_steps - 1))));
-                if (widgets.knobStepped(kr, ctl.labelZ(), labels[0..n_steps], &idx, mouse)) {
-                    self.setControlRaw(gi, @floatFromInt(lo + @as(i64, idx)));
-                }
-            },
-            .direct_f64 => {
-                var value = self.controlNorm(gi);
-                var vbuf: [16:0]u8 = undefined;
-                const display = formatControlValue(&vbuf, normToValue(ctl.*, value));
-                if (widgets.knobEx(kr, ctl.labelZ(), &value, mouse, display)) {
-                    self.setControlNorm(gi, value);
-                }
-            },
-        }
-        local_i += 1;
+        const nx = xa + (xb - xa) * t;
+        const ny = base - (la + (lb - la) * capShape(t)) * h;
+        ui.line(px, py, nx, ny, col);
+        px = nx;
+        py = ny;
     }
 }
 

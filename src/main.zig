@@ -165,7 +165,7 @@ fn silentRender(_: *anyopaque, _: *const @import("machine.zig").MachineCtx, l: [
     @memset(l, 0);
     @memset(r, 0);
 }
-fn silentPanel(_: *anyopaque, _: c.rl.Rectangle, _: widgets.Mouse) void {}
+fn silentPanel(_: *anyopaque, _: *ui_core.Ui, _: ui_geom.Rect) void {}
 fn silentReset(_: *anyopaque) void {}
 var silent_state: u8 = 0;
 const silent_machine = @import("machine.zig").Machine{
@@ -757,7 +757,7 @@ pub fn main(init: std.process.Init) !void {
             },
         }
 
-        const mbres = machine_bay.draw(rects.machine_bay, bay_dev, bay_idx, bay_is_bus, layout.machine_bay_collapsed, &reg, pane_m);
+        const mbres = machine_bay.draw(ui, rects.machine_bay, bay_dev, bay_idx, bay_is_bus, layout.machine_bay_collapsed, &reg, pane_m);
         if (mbres.minimize) layout.machine_bay_collapsed = !layout.machine_bay_collapsed;
         if (mbres.add_machine) |reg_idx| {
             if (bay_dev) |dev| {
