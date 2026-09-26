@@ -437,7 +437,11 @@ pub fn main(init: std.process.Init) !void {
     var reg = registry_mod.Registry.init(alloc);
     defer reg.deinit();
 
-    for (registry_mod.builtin_machines) |path| try reg.loadFyMachine(path);
+    // A machine whose fy doesn't compile is skipped, not fatal: machines are
+    // livecoded, so a broken one must never take the workbench down.
+    for (registry_mod.builtin_machines) |path| {
+        reg.loadFyMachine(path) catch |err| std.log.err("machine {s} failed to load: {s}", .{ path, @errorName(err) });
+    }
 
     // ── Audio pool — host-owned decoded audio backing arrangement clips.
     // Registered with the document layer (a process singleton) so save /
