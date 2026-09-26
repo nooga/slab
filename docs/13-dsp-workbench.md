@@ -1,5 +1,7 @@
 # 13 - DSP workbench and kernel ratchet
 
+> **Superseded ordering:** the active plan is [17-direction.md](17-direction.md).
+
 This is the current refocus: pause feature work on the DAW frame and
 build the tooling that lets us co-develop Fy DSP code, optimized kernel
 libraries, and complete machines with evidence.

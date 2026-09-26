@@ -4,6 +4,7 @@
 and fy-scripted machines. These design documents describe what we're
 building and what the current prototype has proven.
 
+**Current direction:** [17-direction.md](17-direction.md).
 **Current status:** see
 [10-roadmap.md § Current status](10-roadmap.md#current-status-2026-04-24),
 [sessions/session-01.md](sessions/session-01.md), and
@@ -50,6 +51,9 @@ self-contained but assumes the vocabulary established in earlier ones.
 17. [16-drum-machine.md](16-drum-machine.md) — the drum machine: x0x-family
     voices with modifiable character, drum kernels, slot triggering,
     vertical strip panel, drum1 decommission plan
+18. [17-direction.md](17-direction.md) — **active plan**: fy `dsp:`
+    language, one ctx ABI, workbench v2, machine DSL, routing, and the
+    road to the warm sound
 
 ## Terminology crib sheet
 

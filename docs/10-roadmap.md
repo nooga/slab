@@ -1,5 +1,7 @@
 # 10 — Roadmap
 
+> **Superseded ordering:** the active plan is [17-direction.md](17-direction.md).
+
 The product is years of work. The architecture is designed so that
 each milestone yields something usable and each subsequent
 milestone compounds on working foundations. This doc is a bet on
