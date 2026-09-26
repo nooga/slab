@@ -17,6 +17,8 @@ const ui_style = @import("style.zig");
 const ctl = @import("controls.zig");
 const Ui = ui_core.Ui;
 const Rect = ui_core.Rect;
+const geom = @import("geom.zig");
+const surf = @import("surfaces.zig");
 const snap_mod = @import("snap.zig");
 const track_mod = @import("../track.zig");
 const Track = track_mod.Track;
@@ -504,7 +506,7 @@ pub fn draw(
         break :blk null;
     };
     cur_meter = meter_state.liveMap();
-    c.rl.DrawRectangleRec(r, theme.pane_bg);
+    ui.rect(bridge.fromRl(r), ui_style.pane);
 
     // Audio clips are unwarped: their beat-length is derived from the source
     // window at the current tempo, so changing bpm rescales them against the
@@ -562,16 +564,11 @@ pub fn draw(
     clampScrollY(tracks.len, lanes_h);
 
     // ── Ruler ────────────────────────────────────────────────────────
-    widgets.bevelSunken(ruler_rect, theme.pane_alt, theme.slab_hi, theme.slab_lo);
-    c.rl.BeginScissorMode(
-        @intFromFloat(ruler_rect.x),
-        @intFromFloat(ruler_rect.y),
-        @intFromFloat(ruler_rect.width),
-        @intFromFloat(ruler_rect.height),
-    );
-    drawLoopRegion(ruler_rect, timeline_x0, transport);
-    drawBeatTicks(ruler_rect, timeline_x, timeline_w, timeline_x0, edit_snap);
-    c.rl.EndScissorMode();
+    ui.clip(bridge.fromRl(ruler_rect));
+    _ = ui.plate(bridge.fromRl(ruler_rect), .{});
+    drawLoopRegion(ui, ruler_rect, timeline_x0, transport);
+    drawBeatTicks(ui, ruler_rect, timeline_x, timeline_w, timeline_x0, edit_snap);
+    ui.unclip();
 
     handleLoopBounds(ruler_rect, timeline_x0, transport, edit_snap, m);
     // Click / drag the ruler to scrub the playhead.
@@ -590,12 +587,7 @@ pub fn draw(
 
     // Scissor-clip the timeline zone so clips don't bleed into the
     // header column or above/below the lanes.
-    c.rl.BeginScissorMode(
-        @intFromFloat(timeline_x),
-        @intFromFloat(lanes_top),
-        @intFromFloat(timeline_w),
-        @intFromFloat(lanes_bottom - lanes_top),
-    );
+    ui.clip(bridge.fromRl(widgets.rect(timeline_x, lanes_top, timeline_w, lanes_bottom - lanes_top)));
     // Lane backgrounds first, then the loop region, so the loop marquee sits
     // behind the clips (drawn below).
     for (tracks, 0..) |*t, ti| {
@@ -604,9 +596,8 @@ pub fn draw(
         if (ly >= lanes_bottom) break;
         const lane_timeline = widgets.rect(timeline_x, ly, timeline_w, theme.laneH());
         const lane_is_sel = selected_track.* != null and selected_track.*.? == ti;
-        drawTimelineLane(lane_timeline, t.*, ti, lane_is_sel, timeline_x0, edit_snap);
+        drawTimelineLane(ui, lane_timeline, t.*, ti, lane_is_sel, timeline_x0, edit_snap);
     }
-    drawLoopRegion(widgets.rect(timeline_x, lanes_top, timeline_w, lanes_bottom - lanes_top), timeline_x0, transport);
     for (tracks, 0..) |*t, ti| {
         const ly = lanes_top + @as(f32, @floatFromInt(ti)) * theme.laneH() - scroll_y;
         if (ly + theme.laneH() <= lanes_top) continue;
@@ -699,13 +690,13 @@ pub fn draw(
         for (t.clips.items, 0..) |*clip, ci| {
             const clip_rect = clipRect(lane_timeline, clip.*, timeline_x0);
             const editing = rename_target.kind == .clip and rename_target.track == ti and rename_target.clip == ci;
-            drawClip(clip_rect, clip.*, t.color, clip.selected, editing, pool);
+            drawClip(ui, clip_rect, clip.*, t.color, clip.selected, editing, pool);
             if (editing) result.rename_rect = clipNameRect(clip_rect);
         }
 
         // Live recording overlay — the take growing on the armed track.
         if (rec_track_idx == ti) {
-            if (recorder) |rec| drawLiveRecordClip(lane_timeline, rec, transport, timeline_x0);
+            if (recorder) |rec| drawLiveRecordClip(ui, lane_timeline, rec, transport, timeline_x0);
         }
 
         // Double-click on empty timeline area → create clip.
@@ -755,27 +746,16 @@ pub fn draw(
         }
     }
 
-    c.rl.EndScissorMode();
-    drawBoxSelectOverlay(timeline_x, timeline_w, lanes_top, lanes_bottom, m);
+    ui.unclip();
+    drawBoxSelectOverlay(ui, timeline_x, timeline_w, lanes_top, lanes_bottom, m);
 
     // Playhead spans the ruler and all lanes (stops above the master strip).
     const playhead_top = r.y + overviewH();
-    c.rl.BeginScissorMode(
-        @intFromFloat(timeline_x),
-        @intFromFloat(playhead_top),
-        @intFromFloat(timeline_w),
-        @intFromFloat(lanes_bottom - playhead_top),
-    );
+    ui.clip(bridge.fromRl(widgets.rect(timeline_x, playhead_top, timeline_w, lanes_bottom - playhead_top)));
     const beats_pos: f32 = @floatCast(transport.beats());
     const playhead_x = timeline_x0 + beats_pos * px_per_beat - scroll_x;
-    c.rl.DrawRectangle(
-        @intFromFloat(playhead_x),
-        @intFromFloat(playhead_top),
-        1,
-        @intFromFloat(lanes_bottom - playhead_top),
-        theme.accent_hi,
-    );
-    c.rl.EndScissorMode();
+    ui.rect(Rect.xywh(ipx(playhead_x), ipx(playhead_top), 1, ipx(lanes_bottom - playhead_top)), ui_style.accent);
+    ui.unclip();
 
     // Track headers — live in the right column but scroll vertically
     // with the lanes. Clipped to the lane band so they don't leak into
@@ -817,14 +797,14 @@ pub fn draw(
 
     // Lazy vertical scrollbar.
     const lanes_rect = widgets.rect(r.x, lanes_top, r.width, lanes_bottom - lanes_top);
-    drawAndHandleScrollbar(lanes_rect, @as(f32, @floatFromInt(tracks.len)) * theme.laneH(), m);
+    drawAndHandleScrollbar(ui, lanes_rect, @as(f32, @floatFromInt(tracks.len)) * theme.laneH(), m);
 
     // Pinned master strip at the bottom of the track bay.
     {
         // Blank timeline (master has no clips) + top separator, then the
         // master header on the new Ui.
-        c.rl.DrawRectangleRec(widgets.rect(timeline_x, lanes_bottom, timeline_w, master_h), theme.pane_bg);
-        c.rl.DrawRectangle(@intFromFloat(r.x), @intFromFloat(lanes_bottom), @intFromFloat(r.width), 1, theme.slab_edge);
+        ui.rect(bridge.fromRl(widgets.rect(timeline_x, lanes_bottom, timeline_w, master_h)), ui_style.pane);
+        ui.rect(bridge.fromRl(widgets.rect(r.x, lanes_bottom, r.width, 1)), ui_style.edge);
         if (drawMasterHeader(ui, widgets.rect(header_x, lanes_bottom, header_w, master_h), master, device_sel.* == .master, m)) {
             master_clicked = true;
         }
@@ -840,7 +820,7 @@ pub fn draw(
     }
 
     // Overview strip on top (rendered last so nothing scissor-clips it).
-    drawOverview(overview_rect, timeline_w, tracks, content_beats, transport, m);
+    drawOverview(ui, overview_rect, timeline_w, tracks, content_beats, transport, m);
     // The ruler owns right-click (meter menu); keep the arrangement menu off it.
     const rclick_on_ruler = m.right_pressed and widgets.contains(ruler_rect, m.x, m.y);
     if (!rclick_on_ruler and widgets.openContextMenu(ARR_CONTEXT_KEY, r, m)) {
@@ -1030,14 +1010,6 @@ fn updateBoxSelect(
     widgets.cancelDrag();
 }
 
-fn drawBoxSelectOverlay(timeline_x: f32, timeline_w: f32, lanes_top: f32, lanes_bottom: f32, m: widgets.Mouse) void {
-    if (!box_active) return;
-    if (@abs(m.x - box_start_x) < BOX_MIN_DRAG and @abs(m.y - box_start_y) < BOX_MIN_DRAG) return;
-    const rr = normalizedRect(box_start_x, box_start_y, m.x, m.y);
-    const clipped = intersectRect(rr, widgets.rect(timeline_x, lanes_top, timeline_w, lanes_bottom - lanes_top)) orelse return;
-    c.rl.DrawRectangleRec(clipped, c.rl.ColorAlpha(theme.accent_hi, 0.2));
-    c.rl.DrawRectangleLinesEx(clipped, 1, theme.accent_hi);
-}
 
 fn normalizedRect(x0: f32, y0: f32, x1: f32, y1: f32) c.rl.Rectangle {
     const nx0 = @min(x0, x1);
@@ -1333,108 +1305,7 @@ fn meterMenuTick(meter_state: *meter_mod.MeterState, m: widgets.Mouse) void {
     }
 }
 
-fn drawBeatTicks(ruler: c.rl.Rectangle, timeline_x: f32, timeline_w: f32, timeline_x0: f32, edit_snap: snap_mod.Setting) void {
-    const right = timeline_x + timeline_w - 2;
 
-    // Fine sub-grid (uniform snap guide), drawn under the meter lines.
-    const step = snap_mod.visualStep(edit_snap, px_per_beat);
-    var beat: f64 = 0;
-    while (true) {
-        const bx = beatToX(timeline_x0, beat);
-        if (bx > right) break;
-        if (bx >= timeline_x) {
-            c.rl.DrawRectangle(@intFromFloat(bx), @intFromFloat(ruler.y + rulerH() - 5), 1, 3, theme.grid_sub);
-        }
-        beat += step;
-    }
-
-    // Meter-driven bar lines + numbers and per-bar beat lines.
-    const first_beat = @max(0.0, beatAtX(timeline_x0, timeline_x));
-    var bar = cur_meter.beatToBarPos(first_beat).bar;
-    while (true) {
-        const bstart = cur_meter.barStartBeat(bar);
-        const bx = beatToX(timeline_x0, bstart);
-        if (bx > right) break;
-        const seg = cur_meter.segmentForBar(bar);
-        const unit = seg.unitBeats();
-        var k: u8 = 0;
-        while (k < seg.numerator) : (k += 1) {
-            const x = beatToX(timeline_x0, bstart + @as(f64, @floatFromInt(k)) * unit);
-            if (x > right) break;
-            if (x < timeline_x) continue;
-            const acc = seg.accentAt(k);
-            const tick_h: f32 = switch (acc) {
-                .downbeat => rulerH() - 4,
-                .group => @round((rulerH() - 4) * 0.55),
-                .weak => 5,
-            };
-            c.rl.DrawRectangle(
-                @intFromFloat(x),
-                @intFromFloat(ruler.y + rulerH() - tick_h - 2),
-                1,
-                @intFromFloat(tick_h),
-                if (acc == .weak) theme.grid_beat else theme.grid_bar,
-            );
-        }
-        if (bx >= timeline_x - 20) {
-            var buf: [8]u8 = undefined;
-            const s = std.fmt.bufPrintZ(&buf, "{d}", .{bar + 1}) catch "?";
-            widgets.drawLabelF(s.ptr, bx + 2, ruler.y + 1, theme.fsTiny(), theme.text_dim);
-            // Where the meter changes (a segment starts on this bar), label
-            // the new signature in accent, right of the bar number.
-            if (seg.start_bar == bar) {
-                const nw = widgets.measureTextF(s.ptr, theme.fsTiny());
-                var mbuf: [12]u8 = undefined;
-                const ms = std.fmt.bufPrintZ(&mbuf, "{d}/{d}", .{ seg.numerator, seg.denominator }) catch "?";
-                widgets.drawLabelF(ms.ptr, bx + 2 + nw + 3, ruler.y + 1, theme.fsTiny(), theme.accent_hi);
-            }
-        }
-        bar += 1;
-    }
-}
-
-fn drawTimelineLane(r: c.rl.Rectangle, t: Track, idx: usize, selected: bool, timeline_x0: f32, edit_snap: snap_mod.Setting) void {
-    const bg = if (selected) theme.pane_alt else if (idx % 2 == 0) theme.pane_bg else theme.pane_alt;
-    c.rl.DrawRectangleRec(r, bg);
-
-    const right = r.x + r.width - 1;
-
-    // Fine sub-grid (uniform), then meter-driven beat and bar lines on top.
-    const step = snap_mod.visualStep(edit_snap, px_per_beat);
-    var beat: f64 = 0;
-    while (true) {
-        const bx = beatToX(timeline_x0, beat);
-        if (bx > right) break;
-        if (bx >= r.x) c.rl.DrawRectangle(@intFromFloat(bx), @intFromFloat(r.y), 1, @intFromFloat(r.height), theme.grid_sub);
-        beat += step;
-    }
-
-    const first_beat = @max(0.0, beatAtX(timeline_x0, r.x));
-    var bar = cur_meter.beatToBarPos(first_beat).bar;
-    while (true) {
-        const bstart = cur_meter.barStartBeat(bar);
-        if (beatToX(timeline_x0, bstart) > right) break;
-        const seg = cur_meter.segmentForBar(bar);
-        const unit = seg.unitBeats();
-        var k: u8 = 0;
-        while (k < seg.numerator) : (k += 1) {
-            const x = beatToX(timeline_x0, bstart + @as(f64, @floatFromInt(k)) * unit);
-            if (x > right) break;
-            if (x < r.x) continue;
-            c.rl.DrawRectangle(@intFromFloat(x), @intFromFloat(r.y), 1, @intFromFloat(r.height), if (seg.accentAt(k) == .weak) theme.grid_beat else theme.grid_bar);
-        }
-        bar += 1;
-    }
-
-    c.rl.DrawRectangle(@intFromFloat(r.x), @intFromFloat(r.y), 2, @intFromFloat(r.height), t.color);
-    c.rl.DrawRectangle(
-        @intFromFloat(r.x),
-        @intFromFloat(r.y + r.height - 1),
-        @intFromFloat(r.width),
-        1,
-        theme.slab_edge,
-    );
-}
 
 fn clipRect(lane: c.rl.Rectangle, clip: Clip, timeline_x0: f32) c.rl.Rectangle {
     const x = timeline_x0 + @as(f32, @floatCast(clip.start_beat)) * px_per_beat - scroll_x;
@@ -1442,166 +1313,9 @@ fn clipRect(lane: c.rl.Rectangle, clip: Clip, timeline_x0: f32) c.rl.Rectangle {
     return widgets.rect(x, lane.y + 2, w, lane.height - 4);
 }
 
-/// Draw the in-progress take on the armed track: a red region from the take's
-/// start beat to the playhead, with a live waveform from the recorder's peak
-/// buckets. Replaced by the real clip when recording stops.
-fn drawLiveRecordClip(lane: c.rl.Rectangle, rec: *const recorder_mod.Recorder, transport: *Transport, timeline_x0: f32) void {
-    const start_b = transport.samplesToBeats(rec.startSampleValue());
-    const end_b = transport.beats();
-    if (end_b <= start_b) return;
 
-    const x = timeline_x0 + @as(f32, @floatCast(start_b)) * px_per_beat - scroll_x;
-    const w = @as(f32, @floatCast(end_b - start_b)) * px_per_beat;
-    if (w < 1) return;
-    const r = widgets.rect(x, lane.y + 2, w, lane.height - 4);
 
-    c.rl.DrawRectangleRec(r, c.rl.ColorAlpha(theme.accent_rec, 0.30));
-    const strip_h: f32 = 11;
-    c.rl.DrawRectangleRec(widgets.rect(r.x, r.y, r.width, strip_h), theme.accent_rec);
-    widgets.drawLabelF("\u{25CF} REC", r.x + 3, r.y, theme.fsTiny(), theme.bg);
-    c.rl.DrawRectangleLinesEx(r, 1, theme.accent_rec);
 
-    const peaks = rec.livePeaks();
-    const body_top = r.y + strip_h + 1;
-    const body_h = r.height - strip_h - 2;
-    if (peaks.len > 0 and body_h > 2) {
-        const mid = body_top + body_h * 0.5;
-        const cols: usize = @intFromFloat(@max(1.0, @min(w, 4096.0)));
-        var col: usize = 0;
-        while (col < cols) : (col += 1) {
-            const frac = @as(f32, @floatFromInt(col)) / @as(f32, @floatFromInt(cols));
-            const pi = @min(peaks.len - 1, @as(usize, @intFromFloat(frac * @as(f32, @floatFromInt(peaks.len)))));
-            const hh = peaks[pi] * body_h * 0.5;
-            const cx = r.x + @as(f32, @floatFromInt(col));
-            c.rl.DrawLineEx(.{ .x = cx, .y = mid - hh }, .{ .x = cx, .y = mid + hh }, 1.0, theme.accent_hi);
-        }
-    }
-}
-
-fn drawClip(r: c.rl.Rectangle, clip: Clip, color: c.rl.Color, selected: bool, editing_name: bool, pool: *const audio_pool_mod.AudioPool) void {
-    // Body — dimmed track color
-    const body = dim(color, 0.55);
-    c.rl.DrawRectangleRec(r, body);
-
-    // Top strip with brighter color carrying the clip name.
-    const strip_h: f32 = 11;
-    const strip = widgets.rect(r.x, r.y, r.width, strip_h);
-    c.rl.DrawRectangleRec(strip, color);
-
-    // Border
-    const edge = if (selected) theme.text_fg else theme.slab_edge;
-    c.rl.DrawRectangleLinesEx(r, 1, edge);
-
-    // Name — truncated with an ellipsis so a short clip's label never spills
-    // past its body (the full name is available via the hover tooltip).
-    if (!editing_name) {
-        var name_buf: [clip_mod.MAX_NAME + 5:0]u8 = undefined;
-        fitLabelZ(&name_buf, clip.name(), r.width - 6, theme.fsTiny());
-        widgets.drawLabelF(@ptrCast(&name_buf[0]), r.x + 3, r.y, theme.fsTiny(), theme.bg);
-    }
-
-    // Audio clip → draw its waveform across the body (the source mapped to
-    // the clip width). Zoomable for free via the peak pyramid.
-    if (clip.isAudio()) {
-        const body_top = r.y + strip_h + 1;
-        const body_h = r.height - strip_h - 2;
-        if (body_h > 2 and r.width > 1) {
-            if (pool.get(clip.audio.source)) |src| {
-                if (src.cache.sample_count > 0) {
-                    const wf_rect = widgets.rect(r.x + 1, body_top, r.width - 2, body_h);
-                    const wcol = if (selected) theme.text_fg else theme.accent_hi;
-                    // Draw only this clip's source window.
-                    const rate = src.sample.sample_rate;
-                    const win_start = clip.audio.start_sec * rate;
-                    const total: f64 = @floatFromInt(src.cache.sample_count);
-                    const win_end = @min(total, win_start + clip.audio.dur_sec * rate);
-                    waveform.draw(wf_rect, &src.cache, win_start, win_end, wcol);
-                }
-            }
-            // Fade ramp guides + grab handles in the top corners. The handle
-            // x's match the hit zone in the draw()-side hit-test.
-            const dur = clip.audio.dur_sec;
-            if (dur > 0) {
-                const top = r.y;
-                const bot = body_top + body_h;
-                const in_frac: f32 = @floatCast(std.math.clamp(clip.audio.fade_in_sec / dur, 0, 1));
-                const out_frac: f32 = @floatCast(std.math.clamp(clip.audio.fade_out_sec / dur, 0, 1));
-                const in_x = r.x + in_frac * r.width;
-                const out_x = r.x + r.width - out_frac * r.width;
-                if (clip.audio.fade_in_sec > 0) {
-                    shadeClipFade(r.x + 1, in_x, body_top, body_h, true);
-                    c.rl.DrawLineEx(.{ .x = r.x + 1, .y = bot }, .{ .x = in_x, .y = top }, 1.0, theme.bg);
-                }
-                if (clip.audio.fade_out_sec > 0) {
-                    shadeClipFade(out_x, r.x + r.width - 1, body_top, body_h, false);
-                    c.rl.DrawLineEx(.{ .x = out_x, .y = top }, .{ .x = r.x + r.width - 1, .y = bot }, 1.0, theme.bg);
-                }
-                // Handle dots (always shown so the affordance is discoverable).
-                const hs = theme.fine(3);
-                c.rl.DrawRectangleRec(widgets.rect(in_x - hs, top, hs * 2, hs + 1), theme.bg);
-                c.rl.DrawRectangleRec(widgets.rect(out_x - hs, top, hs * 2, hs + 1), theme.bg);
-            }
-        }
-        return;
-    }
-
-    // Tiny note ticks in the body to hint content (only if there are notes).
-    if (clip.notes.items.len > 0) {
-        const body_top = r.y + strip_h + 1;
-        const body_h = r.height - strip_h - 2;
-        const pitch_lo: f32 = 36; // C2
-        const pitch_hi: f32 = 84; // C6
-        for (clip.notes.items) |note| {
-            const nx = r.x + @as(f32, @floatCast(note.start_beat)) * px_per_beat;
-            const nw = @max(@as(f32, @floatCast(note.length_beats)) * px_per_beat, 1);
-            if (nx + nw < r.x or nx > r.x + r.width) continue;
-            const pitch_n = (@as(f32, @floatFromInt(note.pitch)) - pitch_lo) / (pitch_hi - pitch_lo);
-            const ny = body_top + (1 - std.math.clamp(pitch_n, 0, 1)) * body_h - 1;
-            const x0 = @max(nx, r.x + 1);
-            const x1 = @min(nx + nw, r.x + r.width - 1);
-            if (x1 > x0) {
-                c.rl.DrawRectangle(@intFromFloat(x0), @intFromFloat(ny), @intFromFloat(x1 - x0), 1, theme.text_fg);
-            }
-        }
-    }
-}
-
-/// Shade an audio clip's attenuated fade wedge as per-column bars (a filled
-/// triangle): tall at the silent edge, shrinking to nothing at full level.
-fn shadeClipFade(x0: f32, x1: f32, top: f32, h: f32, fade_in: bool) void {
-    const span = x1 - x0;
-    if (span < 1 or h < 1) return;
-    const col = c.rl.ColorAlpha(theme.bg, 0.5);
-    var x = @floor(x0);
-    while (x < x1) : (x += 1) {
-        const p = std.math.clamp((x - x0) / span, 0, 1);
-        const atten: f32 = if (fade_in) 1 - p else p;
-        const hh = h * atten;
-        if (hh >= 1) c.rl.DrawLineEx(.{ .x = x, .y = top }, .{ .x = x, .y = top + hh }, 1.0, col);
-    }
-}
-
-/// Copy `name` into `dst` (NUL-terminated), truncating with a trailing "…"
-/// until it fits within `max_w` pixels at `size`. Empties `dst` if nothing
-/// fits.
-fn fitLabelZ(dst: *[clip_mod.MAX_NAME + 5:0]u8, name: []const u8, max_w: f32, size: f32) void {
-    const ell = "\u{2026}"; // … (3 bytes)
-    var n = @min(name.len, clip_mod.MAX_NAME);
-    @memcpy(dst[0..n], name[0..n]);
-    dst[n] = 0;
-    if (max_w <= 0) {
-        dst[0] = 0;
-        return;
-    }
-    if (widgets.measureTextF(@ptrCast(&dst[0]), size) <= max_w) return;
-    while (n > 0) : (n -= 1) {
-        @memcpy(dst[0 .. n - 1], name[0 .. n - 1]);
-        @memcpy(dst[n - 1 ..][0..ell.len], ell);
-        dst[n - 1 + ell.len] = 0;
-        if (widgets.measureTextF(@ptrCast(&dst[0]), size) <= max_w) return;
-    }
-    dst[0] = 0;
-}
 
 const HeaderAction = enum { none, select, rename };
 const HeaderResult = struct {
@@ -1696,12 +1410,26 @@ fn drawMasterHeader(ui: *Ui, hdr_legacy: c.rl.Rectangle, master: *Track, selecte
     return ui.behaviorEx(ui.id("select"), Rect.xywh(r.x, r.y, r.w, 20), .{ .focusable = false }).pressed;
 }
 
+/// Track colour as drawn: project colours snap to the nearest colour of the
+/// track palette, so no track is ever amber/yellow (docs/06 §Palette).
 fn trackColor(col: c.rl.Color) ui_style.Color {
-    return .{ .r = col.r, .g = col.g, .b = col.b, .a = 255 };
+    var best = ui_style.track[0];
+    var best_d: i32 = std.math.maxInt(i32);
+    for (ui_style.track) |t| {
+        const dr = @as(i32, t.r) - col.r;
+        const dg = @as(i32, t.g) - col.g;
+        const db = @as(i32, t.b) - col.b;
+        const d = dr * dr * 3 + dg * dg * 4 + db * db * 2;
+        if (d < best_d) {
+            best_d = d;
+            best = t;
+        }
+    }
+    return best;
 }
 
 fn clipNameRect(r: c.rl.Rectangle) c.rl.Rectangle {
-    return widgets.rect(r.x + 2, r.y + 1, @max(8, r.width - 4), 11);
+    return widgets.rect(r.x + 2, r.y + 1, @max(8, r.width - 4), 12);
 }
 
 fn createClipOnTrack(t: *Track, alloc: std.mem.Allocator, track_idx: usize, start_beat: f64, selected: *?ClipRef) void {
@@ -1727,25 +1455,6 @@ fn beatAtX(timeline_x0: f32, x: f32) f64 {
     return @as(f64, (x - timeline_x0 + scroll_x) / px_per_beat);
 }
 
-fn drawLoopRegion(r: c.rl.Rectangle, timeline_x0: f32, transport: *const Transport) void {
-    if (!transport.loopEnabled()) return;
-    const s = transport.loopStartBeats();
-    const e = transport.loopEndBeats();
-    if (e <= s) return;
-    const x0 = beatToX(timeline_x0, s);
-    const x1 = beatToX(timeline_x0, e);
-    const lx0 = std.math.clamp(x0, r.x, r.x + r.width);
-    const lx1 = std.math.clamp(x1, r.x, r.x + r.width);
-    if (lx1 > lx0) {
-        c.rl.DrawRectangleRec(widgets.rect(lx0, r.y, lx1 - lx0, r.height), c.rl.ColorAlpha(theme.accent_hi, 0.14));
-    }
-    if (x0 >= r.x and x0 <= r.x + r.width) {
-        c.rl.DrawRectangle(@intFromFloat(x0), @intFromFloat(r.y), 2, @intFromFloat(r.height), theme.accent_hi);
-    }
-    if (x1 >= r.x and x1 <= r.x + r.width) {
-        c.rl.DrawRectangle(@intFromFloat(x1), @intFromFloat(r.y), 2, @intFromFloat(r.height), theme.accent_hi);
-    }
-}
 
 // ── Ruler scrub ──────────────────────────────────────────────────────
 
@@ -1811,7 +1520,7 @@ fn handleRulerScrub(ruler: c.rl.Rectangle, timeline_x0: f32, transport: *Transpo
 
 // ── Lazy vertical scrollbar ──────────────────────────────────────────
 
-fn drawAndHandleScrollbar(area: c.rl.Rectangle, content_h: f32, m: widgets.Mouse) void {
+fn drawAndHandleScrollbar(ui: *Ui, area: c.rl.Rectangle, content_h: f32, m: widgets.Mouse) void {
     if (content_h <= area.height) return;
 
     const now = c.rl.GetTime();
@@ -1833,7 +1542,7 @@ fn drawAndHandleScrollbar(area: c.rl.Rectangle, content_h: f32, m: widgets.Mouse
 
     const bar_x = area.x + area.width - scrollbarW();
     const track = widgets.rect(bar_x, area.y, scrollbarW(), area.height);
-    c.rl.DrawRectangleRec(track, c.rl.ColorAlpha(theme.slab_edge, alpha * 0.6));
+    ui.rect(bridge.fromRl(track), ui_style.chassis.alpha(@intFromFloat(alpha * 160)));
 
     const thumb_h = @max(16.0, (area.height / content_h) * area.height);
     const scroll_range = content_h - area.height;
@@ -1842,8 +1551,8 @@ fn drawAndHandleScrollbar(area: c.rl.Rectangle, content_h: f32, m: widgets.Mouse
     const thumb = widgets.rect(bar_x + 1, thumb_y, scrollbarW() - 2, thumb_h);
 
     const hover_thumb = widgets.contains(thumb, m.x, m.y);
-    const thumb_color = if (sbv_drag or hover_thumb) theme.accent_hi else theme.slab_hi;
-    c.rl.DrawRectangleRec(thumb, c.rl.ColorAlpha(thumb_color, alpha));
+    const thumb_color = if (sbv_drag or hover_thumb) ui_style.accent else ui_style.face_hi;
+    ui.rect(bridge.fromRl(thumb), thumb_color.alpha(@intFromFloat(alpha * 255)));
 
     if (sbv_drag) {
         if (!widgets.isDraggingKey(SBV_KEY) or !m.left_down) {
@@ -1879,6 +1588,7 @@ fn drawAndHandleScrollbar(area: c.rl.Rectangle, content_h: f32, m: widgets.Mouse
 // ── Overview / minimap strip ─────────────────────────────────────────
 
 fn drawOverview(
+    ui: *Ui,
     strip: c.rl.Rectangle,
     timeline_w: f32,
     tracks: []Track,
@@ -1887,9 +1597,8 @@ fn drawOverview(
     m: widgets.Mouse,
 ) void {
     _ = timeline_w;
-    widgets.bevelSunken(strip, theme.pane_bg, theme.slab_hi, theme.slab_lo);
+    _ = ui.well(bridge.fromRl(strip), ui_style.well);
     const inner = widgets.rect(strip.x + 2, strip.y + 2, strip.width - 4, strip.height - 4);
-    c.rl.DrawRectangleRec(inner, theme.pane_bg);
 
     const cb: f32 = @max(@as(f32, @floatCast(content_beats)), 1.0);
     const px_per_beat_ov = inner.width / cb;
@@ -1904,15 +1613,7 @@ fn drawOverview(
                 const cw = @max(@as(f32, @floatCast(clip.length_beats)) * px_per_beat_ov, 1.0);
                 const x0 = std.math.clamp(cx, inner.x, inner.x + inner.width);
                 const x1 = std.math.clamp(cx + cw, inner.x, inner.x + inner.width);
-                if (x1 > x0) {
-                    c.rl.DrawRectangle(
-                        @intFromFloat(x0),
-                        @intFromFloat(ly),
-                        @intFromFloat(x1 - x0),
-                        @intFromFloat(@max(1.0, lane_h - 1)),
-                        t.color,
-                    );
-                }
+                if (x1 > x0) ui.rect(frect(x0, ly, x1 - x0, @max(1.0, lane_h - 1)), uiColor(t.color));
             }
         }
     }
@@ -1928,15 +1629,13 @@ fn drawOverview(
     const vp_x_cl = std.math.clamp(vp_x, inner.x, inner.x + inner.width);
     const vp_right_cl = std.math.clamp(vp_x + vp_w, inner.x, inner.x + inner.width);
     const vp = widgets.rect(vp_x_cl, inner.y, vp_right_cl - vp_x_cl, inner.height);
-    c.rl.DrawRectangleRec(vp, c.rl.ColorAlpha(theme.accent_hi, 0.2));
-    c.rl.DrawRectangleLinesEx(vp, 1, theme.accent_hi);
+    ui.rect(bridge.fromRl(vp), ui_style.accent.alpha(40));
+    ui.bevel(bridge.fromRl(vp), ui_style.accent, ui_style.accent);
 
     // Playhead tick on the minimap.
     const beats_pos: f32 = @floatCast(transport.beats());
     const ph_x = inner.x + beats_pos * px_per_beat_ov;
-    if (ph_x >= inner.x and ph_x <= inner.x + inner.width) {
-        c.rl.DrawRectangle(@intFromFloat(ph_x), @intFromFloat(inner.y), 1, @intFromFloat(inner.height), theme.accent_hi);
-    }
+    if (ph_x >= inner.x and ph_x <= inner.x + inner.width) ui.rect(frect(ph_x, inner.y, 1, inner.height), ui_style.accent);
 
     handleOverviewInput(inner, vp_w, px_per_beat_ov, cb, strip.width - 4, m);
 }
@@ -2004,3 +1703,263 @@ fn dim(color: c.rl.Color, factor: f32) c.rl.Color {
         .a = color.a,
     };
 }
+
+// ── New-Ui drawing helpers (docs/06 §Working surfaces) ───────────────
+
+fn ipx(v: f32) i32 {
+    return @intFromFloat(@floor(v));
+}
+
+fn frect(x: f32, y: f32, w: f32, h: f32) Rect {
+    const x0 = ipx(x);
+    const y0 = ipx(y);
+    return Rect.xywh(x0, y0, ipx(x + w) - x0, ipx(y + h) - y0);
+}
+
+fn uiColor(col: c.rl.Color) ui_style.Color {
+    return trackColor(col);
+}
+
+fn drawBeatTicks(ui: *Ui, ruler: c.rl.Rectangle, timeline_x: f32, timeline_w: f32, timeline_x0: f32, edit_snap: snap_mod.Setting) void {
+    const right = timeline_x + timeline_w - 2;
+    const ry = ipx(ruler.y);
+    const rh = ipx(ruler.height);
+
+    // Fine sub-grid (uniform snap guide), under the meter lines.
+    const step = snap_mod.visualStep(edit_snap, px_per_beat);
+    var beat: f64 = 0;
+    while (true) {
+        const bx = beatToX(timeline_x0, beat);
+        if (bx > right) break;
+        if (bx >= timeline_x) ui.rect(Rect.xywh(ipx(bx), ry + rh - 4, 1, 2), ui_style.text_mute.alpha(120));
+        beat += step;
+    }
+
+    // Meter-driven bar lines + numbers and per-bar beat ticks.
+    const first_beat = @max(0.0, beatAtX(timeline_x0, timeline_x));
+    var bar = cur_meter.beatToBarPos(first_beat).bar;
+    while (true) {
+        const bstart = cur_meter.barStartBeat(bar);
+        const bx = beatToX(timeline_x0, bstart);
+        if (bx > right) break;
+        const seg = cur_meter.segmentForBar(bar);
+        const unit = seg.unitBeats();
+        var k: u8 = 0;
+        while (k < seg.numerator) : (k += 1) {
+            const x = beatToX(timeline_x0, bstart + @as(f64, @floatFromInt(k)) * unit);
+            if (x > right) break;
+            if (x < timeline_x) continue;
+            const acc = seg.accentAt(k);
+            const h: i32 = switch (acc) {
+                .downbeat => 8,
+                .group => 5,
+                .weak => 3,
+            };
+            ui.rect(Rect.xywh(ipx(x), ry + rh - 1 - h, 1, h), if (acc == .weak) ui_style.text_mute else ui_style.text_dim);
+        }
+        if (bx >= timeline_x - 20) {
+            var buf: [8]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d}", .{bar + 1}) catch "?";
+            const w = ui.engraved(&ui.fonts.legend, ipx(bx) + 3, ry + 1, s, ui_style.text_dim);
+            // Where the meter changes, label the new signature.
+            if (seg.start_bar == bar) {
+                var mbuf: [12]u8 = undefined;
+                const ms = std.fmt.bufPrint(&mbuf, "{d}/{d}", .{ seg.numerator, seg.denominator }) catch "?";
+                _ = ui.engraved(&ui.fonts.legend, ipx(bx) + 3 + w + 4, ry + 1, ms, ui_style.phosphor);
+            }
+        }
+        bar += 1;
+    }
+}
+
+fn drawTimelineLane(ui: *Ui, r_: c.rl.Rectangle, t: Track, idx: usize, selected: bool, timeline_x0: f32, edit_snap: snap_mod.Setting) void {
+    const r = bridge.fromRl(r_);
+    _ = idx;
+    ui.rect(r, if (selected) ui_style.pane_alt else ui_style.pane);
+    const right = r_.x + r_.width - 1;
+
+    // Fine sub-grid (uniform), then meter-driven beat and bar lines.
+    const step = snap_mod.visualStep(edit_snap, px_per_beat);
+    if (step * px_per_beat >= 6) {
+        var beat: f64 = 0;
+        while (true) {
+            const bx = beatToX(timeline_x0, beat);
+            if (bx > right) break;
+            if (bx >= r_.x) ui.rect(Rect.xywh(ipx(bx), r.y, 1, r.h), ui_style.grid_sub);
+            beat += step;
+        }
+    }
+    const first_beat = @max(0.0, beatAtX(timeline_x0, r_.x));
+    var bar = cur_meter.beatToBarPos(first_beat).bar;
+    while (true) {
+        const bstart = cur_meter.barStartBeat(bar);
+        if (beatToX(timeline_x0, bstart) > right) break;
+        const seg = cur_meter.segmentForBar(bar);
+        const unit = seg.unitBeats();
+        var k: u8 = 0;
+        while (k < seg.numerator) : (k += 1) {
+            const x = beatToX(timeline_x0, bstart + @as(f64, @floatFromInt(k)) * unit);
+            if (x > right) break;
+            if (x < r_.x) continue;
+            ui.rect(Rect.xywh(ipx(x), r.y, 1, r.h), if (seg.accentAt(k) == .weak) ui_style.grid_beat else ui_style.grid_bar);
+        }
+        bar += 1;
+    }
+    ui.rect(Rect.xywh(r.x, r.bottom() - 1, r.w, 1), ui_style.chassis);
+    _ = t;
+}
+
+/// The in-progress take on the armed track: a red region from the take's
+/// start to the playhead with a live waveform from the recorder's peaks.
+fn drawLiveRecordClip(ui: *Ui, lane: c.rl.Rectangle, rec: *const recorder_mod.Recorder, transport: *Transport, timeline_x0: f32) void {
+    const start_b = transport.samplesToBeats(rec.startSampleValue());
+    const end_b = transport.beats();
+    if (end_b <= start_b) return;
+    const x = timeline_x0 + @as(f32, @floatCast(start_b)) * px_per_beat - scroll_x;
+    const w = @as(f32, @floatCast(end_b - start_b)) * px_per_beat;
+    if (w < 1) return;
+    const r = frect(x, lane.y + 2, w, lane.height - 4);
+    ui.rect(r, ui_style.rec.mix(ui_style.pane, 0.7));
+    ui.rect(Rect.xywh(r.x, r.y, r.w, 12), ui_style.rec);
+    _ = ui.text(&ui.fonts.legend, r.x + 3, r.y, "REC", ui_style.chassis);
+    ui.bevel(r, ui_style.rec, ui_style.rec);
+    const peaks = rec.livePeaks();
+    const body_top = r.y + 13;
+    const body_h = r.h - 14;
+    if (peaks.len > 0 and body_h > 2) {
+        const mid = body_top + @divFloor(body_h, 2);
+        var col: i32 = 0;
+        while (col < r.w and col < 4096) : (col += 1) {
+            const frac = @as(f32, @floatFromInt(col)) / @as(f32, @floatFromInt(r.w));
+            const pi = @min(peaks.len - 1, @as(usize, @intFromFloat(frac * @as(f32, @floatFromInt(peaks.len)))));
+            const hh: i32 = @intFromFloat(peaks[pi] * @as(f32, @floatFromInt(body_h)) * 0.5);
+            ui.rect(Rect.xywh(r.x + col, mid - hh, 1, 2 * hh + 1), ui_style.rec.mix(ui_style.text, 0.3));
+        }
+    }
+}
+
+/// Clip: 1px edge in the darkened track colour, a 12px name band in full
+/// colour with dark legend text, a tinted body with the note / waveform
+/// preview; amber outline when selected.
+fn drawClip(ui: *Ui, r_: c.rl.Rectangle, clip: Clip, color_: c.rl.Color, selected: bool, editing_name: bool, pool: *const audio_pool_mod.AudioPool) void {
+    const r = bridge.fromRl(r_);
+    if (r.w < 1 or r.h < 1) return;
+    const color = uiColor(color_);
+    ui.rect(r, color.mix(ui_style.chassis, 0.6));
+    const inner = r.inset(1);
+    var body = inner;
+    const band = body.cutTop(12);
+    ui.rect(band, color);
+    ui.rect(body, color.mix(ui_style.pane, 0.72));
+    if (!editing_name) {
+        var buf: [clip_mod.MAX_NAME + 4]u8 = undefined;
+        ui.clip(band);
+        _ = ui.text(&ui.fonts.legend, band.x + 2, band.y, fitLabel(ui, &buf, clip.name(), band.w - 4), ui_style.chassis);
+        ui.unclip();
+    }
+    const preview = color.mix(ui_style.text, 0.35);
+
+    if (clip.isAudio()) {
+        if (body.h > 2 and body.w > 1) {
+            if (pool.get(clip.audio.source)) |src| {
+                if (src.cache.sample_count > 0) {
+                    const rate = src.sample.sample_rate;
+                    const win_start = clip.audio.start_sec * rate;
+                    const total: f64 = @floatFromInt(src.cache.sample_count);
+                    const win_end = @min(total, win_start + clip.audio.dur_sec * rate);
+                    surf.waveform(ui, body, &src.cache, win_start, win_end, preview);
+                }
+            }
+            // Fade wedges + grab handles in the top corners (hit zones
+            // match the draw()-side hit-test).
+            const dur = clip.audio.dur_sec;
+            if (dur > 0) {
+                const in_frac: f32 = @floatCast(std.math.clamp(clip.audio.fade_in_sec / dur, 0, 1));
+                const out_frac: f32 = @floatCast(std.math.clamp(clip.audio.fade_out_sec / dur, 0, 1));
+                const in_x = r.x + @as(i32, @intFromFloat(in_frac * @as(f32, @floatFromInt(r.w))));
+                const out_x = r.right() - @as(i32, @intFromFloat(out_frac * @as(f32, @floatFromInt(r.w))));
+                if (clip.audio.fade_in_sec > 0) shadeClipFade(ui, body.x, in_x, body.y, body.h, true);
+                if (clip.audio.fade_out_sec > 0) shadeClipFade(ui, out_x, body.right(), body.y, body.h, false);
+                ui.rect(Rect.xywh(in_x - 3, r.y, 6, 4), ui_style.chassis);
+                ui.rect(Rect.xywh(out_x - 3, r.y, 6, 4), ui_style.chassis);
+            }
+        }
+    } else if (clip.notes.items.len > 0 and body.h > 2) {
+        // Note ticks over C2..C6.
+        const pitch_lo: f32 = 36;
+        const pitch_hi: f32 = 84;
+        const bh: f32 = @floatFromInt(body.h);
+        for (clip.notes.items) |note| {
+            const nx = r_.x + @as(f32, @floatCast(note.start_beat)) * px_per_beat;
+            const nw = @max(@as(f32, @floatCast(note.length_beats)) * px_per_beat, 1);
+            const x0 = @max(ipx(nx), body.x);
+            const x1 = @min(ipx(nx + nw), body.right());
+            if (x1 <= x0) continue;
+            const pn = std.math.clamp((@as(f32, @floatFromInt(note.pitch)) - pitch_lo) / (pitch_hi - pitch_lo), 0, 1);
+            const ny = body.y + @as(i32, @intFromFloat((1 - pn) * (bh - 2)));
+            ui.rect(Rect.xywh(x0, ny, @max(1, x1 - x0 - 1), 1), preview);
+        }
+    }
+    if (selected) ui.bevel(r, ui_style.accent, ui_style.accent);
+}
+
+/// An audio clip's attenuated fade wedge, as per-column bars.
+fn shadeClipFade(ui: *Ui, x0: i32, x1: i32, top: i32, h: i32, fade_in: bool) void {
+    const span = x1 - x0;
+    if (span < 1 or h < 1) return;
+    var x = x0;
+    while (x < x1) : (x += 1) {
+        const p = @as(f32, @floatFromInt(x - x0)) / @as(f32, @floatFromInt(span));
+        const atten: f32 = if (fade_in) 1 - p else p;
+        const hh: i32 = @intFromFloat(@as(f32, @floatFromInt(h)) * atten);
+        if (hh >= 1) ui.rect(Rect.xywh(x, top, 1, hh), ui_style.chassis.alpha(128));
+    }
+}
+
+/// `name` truncated with "…" to fit `max_w` in the legend face.
+fn fitLabel(ui: *Ui, buf: []u8, name: []const u8, max_w: i32) []const u8 {
+    const f = &ui.fonts.legend;
+    if (max_w <= 0) return "";
+    if (f.measure(name) <= max_w) return name;
+    const ell = "\u{2026}";
+    var n = @min(name.len, buf.len - ell.len);
+    while (n > 0) : (n -= 1) {
+        @memcpy(buf[0..n], name[0..n]);
+        @memcpy(buf[n..][0..ell.len], ell);
+        const s = buf[0 .. n + ell.len];
+        if (f.measure(s) <= max_w) return s;
+    }
+    return "";
+}
+
+/// Loop bracket along the ruler's bottom edge (the loop lives in the ruler,
+/// not across the lanes; docs/06 §Working surfaces).
+fn drawLoopRegion(ui: *Ui, r_: c.rl.Rectangle, timeline_x0: f32, transport: *const Transport) void {
+    if (!transport.loopEnabled()) return;
+    const s = transport.loopStartBeats();
+    const e = transport.loopEndBeats();
+    if (e <= s) return;
+    const r = bridge.fromRl(r_);
+    const x0 = ipx(beatToX(timeline_x0, s));
+    const x1 = ipx(beatToX(timeline_x0, e));
+    const lx0 = geom.fit(x0, r.x, r.right());
+    const lx1 = geom.fit(x1, r.x, r.right());
+    const band = Rect.xywh(lx0, r.bottom() - 6, lx1 - lx0, 5);
+    if (band.w > 0) {
+        ui.rect(band, ui_style.accent.alpha(70));
+        ui.rect(Rect.xywh(band.x, band.y, band.w, 1), ui_style.accent);
+    }
+    if (x0 >= r.x and x0 < r.right()) ui.rect(Rect.xywh(x0, r.bottom() - 6, 1, 5), ui_style.accent);
+    if (x1 >= r.x and x1 < r.right()) ui.rect(Rect.xywh(x1 - 1, r.bottom() - 6, 1, 5), ui_style.accent);
+}
+
+fn drawBoxSelectOverlay(ui: *Ui, timeline_x: f32, timeline_w: f32, lanes_top: f32, lanes_bottom: f32, m: widgets.Mouse) void {
+    if (!box_active) return;
+    if (@abs(m.x - box_start_x) < BOX_MIN_DRAG and @abs(m.y - box_start_y) < BOX_MIN_DRAG) return;
+    const rr = normalizedRect(box_start_x, box_start_y, m.x, m.y);
+    const clipped = intersectRect(rr, widgets.rect(timeline_x, lanes_top, timeline_w, lanes_bottom - lanes_top)) orelse return;
+    const b = bridge.fromRl(clipped);
+    ui.rect(b, ui_style.accent.alpha(40));
+    ui.bevel(b, ui_style.accent, ui_style.accent);
+}
+

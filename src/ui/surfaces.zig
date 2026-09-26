@@ -298,3 +298,25 @@ pub fn velocityLane(ui: *Ui, r: Rect, v: TimeView, notes: []const MiniNote, col:
         ui.rect(Rect.xywh(xx, r.bottom() - vh, 3, 2), col);
     }
 }
+
+// ── Audio ────────────────────────────────────────────────────────────
+
+const waveform_mod = @import("../waveform.zig");
+
+/// Peak waveform of `cache[win_start..win_end)` (samples) across `r`: one
+/// 1px column per logical pixel, min..max of the source under it.
+pub fn waveform(ui: *Ui, r: Rect, cache: *const waveform_mod.PeakCache, win_start: f64, win_end: f64, col: Color) void {
+    if (r.w < 1 or r.h < 1 or cache.sample_count == 0) return;
+    const span = @max(win_end - win_start, 1.0);
+    const spp = span / @as(f64, @floatFromInt(r.w));
+    const half: f32 = @as(f32, @floatFromInt(r.h)) / 2;
+    ui.rect(Rect.xywh(r.x, r.y + @divFloor(r.h, 2), r.w, 1), col.alpha(60));
+    var px: i32 = 0;
+    while (px < r.w) : (px += 1) {
+        const s0 = win_start + @as(f64, @floatFromInt(px)) * spp;
+        const p = cache.rangePeak(s0, s0 + spp, spp);
+        const y0: i32 = @intFromFloat(@round(half - std.math.clamp(@as(f32, @floatCast(p.max)), -1, 1) * half));
+        const y1: i32 = @intFromFloat(@round(half - std.math.clamp(@as(f32, @floatCast(p.min)), -1, 1) * half));
+        ui.rect(Rect.xywh(r.x + px, r.y + @min(y0, y1), 1, @as(i32, @intCast(@abs(y1 - y0))) + 1), col);
+    }
+}
