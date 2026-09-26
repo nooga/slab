@@ -12,7 +12,8 @@ const std = @import("std");
 
 /// Mirrors `ustruct: Dx7VoiceParams` in kernels/06-voices/dx7_voice.fy — the
 /// per-sample voice routing the JIT reads. `lvl*` are per-sample operator
-/// levels (envelope × output level), written each sample by the render path.
+/// levels (envelope × output level). Fm86Params (fm86_voice.fy) carries only
+/// the fb/w/c routing block of this layout; FM-86 computes inc/lvl as values.
 pub const VoiceParams = extern struct {
     inc0: f64 = 0,
     inc1: f64 = 0,
