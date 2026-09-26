@@ -29,9 +29,9 @@ const transport_bar = @import("ui/transport_bar.zig");
 const ui_core = @import("ui/core.zig");
 const ui_geom = @import("ui/geom.zig");
 const snap_mod = @import("ui/snap.zig");
-const browser = @import("ui/browser.zig");
 const arrangement = @import("ui/arrangement.zig");
 const clip_editor = @import("ui/clip_editor.zig");
+const menu = @import("ui/menu.zig");
 const audio_clip_editor = @import("ui/audio_clip_editor.zig");
 const machine_bay = @import("ui/machine_bay.zig");
 const render_dialog = @import("ui/render_dialog.zig");
@@ -556,12 +556,13 @@ pub fn main(init: std.process.Init) !void {
         const m = widgets.Mouse.sample();
         const sw: f32 = @floatFromInt(c.rl.GetScreenWidth());
         const sh: f32 = @floatFromInt(c.rl.GetScreenHeight());
-        widgets.beginFrame(m);
+        widgets.beginFrame();
         ui.beginFrame();
+        menu.beginFrame(ui, @intFromFloat(sw), @intFromFloat(sh));
         // One owner of the pointer at a time: a legacy menu, modal or drag
         // hides input from the new Ui, and a new-Ui drag hides it from the
         // legacy panes.
-        if (widgets.menuActive() or render_dlg.active or widgets.hasActiveDrag()) ui.suppressInput();
+        if (menu.active() or render_dlg.active or widgets.hasActiveDrag()) ui.suppressInput();
 
         // While a menu is open it's modal for the mouse: panes get a
         // neutralized mouse (no hover/clicks fall through), the menu keeps
@@ -569,11 +570,8 @@ pub fn main(init: std.process.Init) !void {
         // A new-Ui widget that owns or hovers the pointer (a seam, a toolbar
         // tile) hides it from the legacy panes, so one press never lands in
         // both UIs.
-        const pane_m = if (widgets.menuActive() or render_dlg.active or ui.active != 0 or ui.hot != 0) widgets.neutralMouse() else m;
+        const pane_m = if (menu.active() or render_dlg.active or ui.active != 0 or ui.hot != 0) widgets.neutralMouse() else m;
 
-        // Legacy tooltips/menus driven from new-Ui tiles see the pointer
-        // unless a legacy menu or modal owns it.
-        const bridge_m = if (widgets.menuActive() or render_dlg.active) widgets.neutralMouse() else m;
 
         layout.splitters(ui, sw, sh);
 
@@ -584,6 +582,8 @@ pub fn main(init: std.process.Init) !void {
 
         if (render_dlg.active) {
             // Modal: only Esc/Enter act, handled after the dialog draws below.
+        } else if (menu.active()) {
+            // An open menu owns the keyboard (arrows, enter, esc).
         } else if (rename.active()) {
             try updateRename(alloc, &history, &rename, tracks, &transport, &dirty, &status, m);
         } else if (try handleProjectShortcuts(
@@ -651,7 +651,6 @@ pub fn main(init: std.process.Init) !void {
             .can_record = audio.capture_available,
             .input_names = input_name_ptrs[0..input_count],
             .current_input_idx = current_input_idx,
-            .m = bridge_m,
         });
         if (tres.render_audio) render_dlg.active = true;
         if (tres.input_pick) |pi| {
@@ -768,7 +767,7 @@ pub fn main(init: std.process.Init) !void {
             },
         }
 
-        const mbres = machine_bay.draw(ui, rects.machine_bay, bay_dev, bay_idx, bay_is_bus, layout.machine_bay_collapsed, &reg, bridge_m);
+        const mbres = machine_bay.draw(ui, rects.machine_bay, bay_dev, bay_idx, bay_is_bus, layout.machine_bay_collapsed, &reg);
         if (mbres.minimize) layout.machine_bay_collapsed = !layout.machine_bay_collapsed;
         if (mbres.add_machine) |reg_idx| {
             if (bay_dev) |dev| {
@@ -924,6 +923,7 @@ pub fn main(init: std.process.Init) !void {
             };
         }
 
+        menu.draw(ui);
         ui.render();
         if (rename.active()) drawInlineRename(&rename);
 
@@ -938,8 +938,6 @@ pub fn main(init: std.process.Init) !void {
                 render_action = .render;
         }
 
-        widgets.drawTooltip(sw, sh);
-        widgets.drawContextMenu();
         widgets.applyCursor();
         ui.endFrame();
 
@@ -2146,7 +2144,7 @@ fn executeEditCommand(
     status: *StatusMessage,
     focus: FocusPane,
     edit_snap: snap_mod.Setting,
-    command: widgets.EditCommand,
+    command: menu.EditCommand,
     target: EditTarget,
     tracks: []track_mod.Track,
     transport: *transport_mod.Transport,

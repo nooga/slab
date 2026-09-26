@@ -11,6 +11,7 @@
 const std = @import("std");
 const c = @import("../c.zig");
 const widgets = @import("widgets.zig");
+const menu = @import("menu.zig");
 const bridge = @import("bridge.zig");
 const Track = @import("../track.zig").Track;
 const registry_mod = @import("../machine_registry.zig");
@@ -100,7 +101,7 @@ fn panelW(mach: *const Machine) i32 {
     return if (mach.panel_w > 0) @intFromFloat(@round(mach.panel_w)) else DEFAULT_PANEL_W;
 }
 
-pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usize, is_bus: bool, collapsed: bool, reg: *const Registry, m: widgets.Mouse) Result {
+pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usize, is_bus: bool, collapsed: bool, reg: *const Registry) Result {
     var result = Result{};
     const r = bridge.fromRl(r_legacy);
     if (r.empty()) return result;
@@ -112,7 +113,7 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
     var fold_col = area.cutRight(TITLE_H);
     const fold = fold_col.cutTop(TITLE_H);
     if (ctl.button(ui, fold, "fold", null, .{ .glyph = if (collapsed) .tri_up else .tri_down, .flush = true })) result.minimize = true;
-    bridge.tip(fold, if (collapsed) "Show machine bay" else "Hide machine bay", m);
+    menu.tip(ui, fold, if (collapsed) "Show machine bay" else "Hide machine bay");
     if (!fold_col.empty()) _ = ui.plate(fold_col, .{});
 
     if (collapsed) {
@@ -154,7 +155,7 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
             glow = led_glow[ti];
             if (glow > 0) ui.animate();
         };
-        const out = drawDevice(ui, Rect.xywh(x, area.y, inst_w, area.h), &t.machine, .instrument, t.isEnabled(), glow, reg, &result, m);
+        const out = drawDevice(ui, Rect.xywh(x, area.y, inst_w, area.h), &t.machine, .instrument, t.isEnabled(), glow, reg, &result);
         if (out.toggle) t.toggleEnabled();
         x += inst_w;
     }
@@ -178,7 +179,7 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
     for (t.effects.items, 0..) |*fx, i| {
         const fw = panelW(&fx.mach);
         const card = Rect.xywh(x, area.y, fw, area.h);
-        const out = drawDevice(ui, card, &fx.mach, .{ .effect = i }, !t.effectBypassed(i), null, reg, &result, m);
+        const out = drawDevice(ui, card, &fx.mach, .{ .effect = i }, !t.effectBypassed(i), null, reg, &result);
         if (out.toggle) t.toggleEffectBypass(i);
         if (out.name_pressed and !fx_drag.armed) fx_drag = .{ .armed = true, .src = i, .press_x = ui.in.mx };
         if (out.name_released and fx_drag.armed and fx_drag.src == i) {
@@ -192,9 +193,9 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
             } else {
                 // A click, not a drag → the effect's replace menu.
                 const key = widgets.keyFromIds(REPLACE_MENU_KEY, @intFromPtr(fx.mach.state), 0);
-                if (!widgets.menuOpen(key)) {
+                if (!menu.isOpen(key)) {
                     scanRegistryPresets(reg);
-                    bridge.openMenuBelow(key, out.name_rect);
+                    menu.openBelow(key, out.name_rect);
                 }
             }
             fx_drag = .{};
@@ -209,16 +210,16 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
     // Trailing "+" tile, then blank plates to the bay's right edge.
     if (x < area.right()) {
         const plus = Rect.xywh(x, area.y, TITLE_H, TITLE_H);
-        var add_open = widgets.menuOpen(ADD_MENU_KEY);
-        if (ctl.button(ui, plus, "add", &add_open, .{ .label = "+", .flush = true }) and !widgets.menuOpen(ADD_MENU_KEY)) {
+        var add_open = menu.isOpen(ADD_MENU_KEY);
+        if (ctl.button(ui, plus, "add", &add_open, .{ .label = "+", .flush = true }) and !menu.isOpen(ADD_MENU_KEY)) {
             scanRegistryPresets(reg);
-            bridge.openMenuBelow(ADD_MENU_KEY, plus);
+            menu.openBelow(ADD_MENU_KEY, plus);
         }
-        bridge.tip(plus, "Add machine", m);
+        menu.tip(ui, plus, "Add machine");
         _ = ui.plate(Rect.xywh(x + TITLE_H, area.y, area.right() - x - TITLE_H, TITLE_H), .{});
         _ = ui.plate(Rect.xywh(x, area.y + TITLE_H, area.right() - x, area.h - TITLE_H), .{});
     }
-    if (machinePickerMenu(ADD_MENU_KEY, reg, m)) |pick| {
+    if (machinePickerMenu(ADD_MENU_KEY, reg)) |pick| {
         result.add_machine = pick.reg_idx;
         result.add_preset = pick.preset;
     }
@@ -278,7 +279,7 @@ fn isInstrument(ref: DeviceRef) bool {
 // Draw one device column: the title strip, its menus, and the machine's
 // panel body. Folds the name (replace), preset and delete-confirm outcomes
 // into `result`, scoped to `ref`.
-fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, active: bool, glow: ?f32, reg: *const Registry, result: *Result, m: widgets.Mouse) DeviceOut {
+fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, active: bool, glow: ?f32, reg: *const Registry, result: *Result) DeviceOut {
     var out = DeviceOut{};
     ui.pushId(mach.state);
     defer ui.popId();
@@ -294,18 +295,18 @@ fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, active: bool,
     // × delete → confirm popup.
     const del = bar.cutLeft(18);
     const confirm_key = widgets.keyFromIds(CONFIRM_MENU_KEY, @intFromPtr(mach.state), 0);
-    var confirm_open = widgets.menuOpen(confirm_key);
-    if (ctl.button(ui, del, "del", &confirm_open, .{ .label = "\u{D7}", .flush = true }) and !widgets.menuOpen(confirm_key)) {
-        bridge.openMenuBelow(confirm_key, del);
+    var confirm_open = menu.isOpen(confirm_key);
+    if (ctl.button(ui, del, "del", &confirm_open, .{ .label = "\u{D7}", .flush = true }) and !menu.isOpen(confirm_key)) {
+        menu.openBelow(confirm_key, del);
     }
-    bridge.tip(del, if (is_inst) "Remove machine" else "Remove effect", m);
-    if (deleteConfirmMenu(confirm_key, m)) result.remove_ref = ref;
+    menu.tip(ui, del, if (is_inst) "Remove machine" else "Remove effect");
+    if (deleteConfirmMenu(confirm_key)) result.remove_ref = ref;
 
     // Power / bypass on the right.
     const pwr = bar.cutRight(40);
     var on = active;
     if (ctl.button(ui, pwr, "power", &on, .{ .kind = .latch, .label = if (active) "ON" else if (is_inst) "OFF" else "BYP", .led = ui_style.led_green, .flush = true })) out.toggle = true;
-    bridge.tip(pwr, if (is_inst) (if (active) "Enabled: click to silence" else "Silenced: click to enable") else (if (active) "Active: click to bypass" else "Bypassed: click to enable"), m);
+    menu.tip(ui, pwr, if (is_inst) (if (active) "Enabled: click to silence" else "Silenced: click to enable") else (if (active) "Active: click to bypass" else "Bypassed: click to enable"));
 
     // Name tile: click → replace (instruments); press-drag → reorder (effects).
     const name = mach.name;
@@ -320,13 +321,13 @@ fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, active: bool,
     _ = ctl.button(ui, name_r, "name-cap", null, .{ .flush = true, .disabled = true });
     ui.textIn(&ui.fonts.body_bold, Rect.xywh(name_r.x + 6, name_r.y, name_r.w - 8 - led_w, name_r.h - 1), name, if (ui.isHot(nid)) ui_style.text else ui_style.text_dim, .left, true);
     if (glow) |g| ctl.led(ui, name_r.right() - led_w - 2, name_r.y + @divFloor(name_r.h - 1 - 5, 2), .round5, if (g > 0.2) .on else .off, ui_style.led_green);
-    bridge.tip(name_r, if (is_inst) "Replace machine" else "Drag to reorder, click to replace", m);
+    menu.tip(ui, name_r, if (is_inst) "Replace machine" else "Drag to reorder, click to replace");
     const replace_key = widgets.keyFromIds(REPLACE_MENU_KEY, @intFromPtr(mach.state), 0);
-    if (is_inst and nb.clicked and !widgets.menuOpen(replace_key)) {
+    if (is_inst and nb.clicked and !menu.isOpen(replace_key)) {
         scanRegistryPresets(reg);
-        bridge.openMenuBelow(replace_key, name_r);
+        menu.openBelow(replace_key, name_r);
     }
-    if (machinePickerMenu(replace_key, reg, m)) |pick| {
+    if (machinePickerMenu(replace_key, reg)) |pick| {
         result.replace_ref = ref;
         result.replace_machine = pick.reg_idx;
         result.replace_preset = pick.preset;
@@ -342,11 +343,11 @@ fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, active: bool,
         const pid = ui.id("preset");
         const pb = ui.behaviorEx(pid, disp, .{ .focusable = false });
         const key = widgets.keyFromIds(PRESET_MENU_KEY, @intFromPtr(mach.state), 1);
-        var popen = widgets.menuOpen(key);
+        var popen = menu.isOpen(key);
         const caret_clicked = ctl.button(ui, caret, "preset-caret", &popen, .{ .glyph = .tri_down, .glyph_on = ui_style.text, .flush = true });
         titleDisplay(ui, disp, mach, preset, ui.isHot(pid));
-        bridge.tip(disp, "Preset", m);
-        const pa = presetMenu(disp, pb.clicked or caret_clicked, mach, m);
+        menu.tip(ui, disp, "Preset");
+        const pa = presetMenu(disp, pb.clicked or caret_clicked, mach);
         if (pa.apply) |p| {
             result.preset_apply_ref = ref;
             result.preset_apply = p;
@@ -410,30 +411,30 @@ fn scanRegistryPresets(reg: *const Registry) void {
 // each machine with presets carrying a hover submenu (+ a deeper level for
 // preset subdirectories). Returns the pick when a row is chosen. Shared by
 // the trailing "+" (add) and the name block (replace).
-fn machinePickerMenu(menu_key: u64, reg: *const Registry, m: widgets.Mouse) ?AddPick {
-    if (!widgets.menuOpen(menu_key)) return null;
+fn machinePickerMenu(menu_key: u64, reg: *const Registry) ?AddPick {
+    if (!menu.isOpen(menu_key)) return null;
     const menu_count = @min(reg.count, registry_mod.MAX_MACHINES);
-    var items: [registry_mod.MAX_MACHINES]widgets.MenuItem = undefined;
+    var items: [registry_mod.MAX_MACHINES]menu.Item = undefined;
     var n: usize = 0;
     for (reg.entries[0..menu_count], 0..) |*e, i| {
-        items[n] = .{ .label = e.nameZ(), .id = @intCast(i), .submenu = add_scan_cache[i].count > 0 };
+        items[n] = .{ .label = std.mem.span(e.nameZ()), .id = @intCast(i), .submenu = add_scan_cache[i].count > 0 };
         n += 1;
     }
-    if (widgets.menuPickId(menu_key, items[0..n], m)) |id| return .{ .reg_idx = @intCast(id) };
+    if (menu.pick(menu_key, items[0..n])) |id| return .{ .reg_idx = @intCast(id) };
 
-    if (widgets.menuSubOpen(menu_key, 0)) |mach_id| {
+    if (menu.subOpen(menu_key, 0)) |mach_id| {
         const list = &add_scan_cache[mach_id];
-        var pitems: [presets_mod.MAX_PRESETS + 1]widgets.MenuItem = undefined;
+        var pitems: [presets_mod.MAX_PRESETS + 1]menu.Item = undefined;
         pitems[0] = .{ .label = "(default)", .id = DEFAULT_ITEM_ID };
         const pn = 1 + presetTopItems(list, pitems[1..]);
-        if (widgets.menuSubTick(menu_key, 1, pitems[0..pn], m)) |sel| {
+        if (menu.subPick(menu_key, 1, pitems[0..pn])) |sel| {
             return .{ .reg_idx = @intCast(mach_id), .preset = if (sel == DEFAULT_ITEM_ID) null else @intCast(sel) };
         }
-        if (widgets.menuSubOpen(menu_key, 1)) |dir_id| {
+        if (menu.subOpen(menu_key, 1)) |dir_id| {
             if (dir_id >= DIR_ID_BASE) {
-                var ditems: [presets_mod.MAX_PRESETS]widgets.MenuItem = undefined;
+                var ditems: [presets_mod.MAX_PRESETS]menu.Item = undefined;
                 const dn = presetDirItems(list, dir_id - DIR_ID_BASE, &ditems);
-                if (widgets.menuSubTick(menu_key, 2, ditems[0..dn], m)) |sel| {
+                if (menu.subPick(menu_key, 2, ditems[0..dn])) |sel| {
                     return .{ .reg_idx = @intCast(mach_id), .preset = @intCast(sel) };
                 }
             }
@@ -445,15 +446,15 @@ fn machinePickerMenu(menu_key: u64, reg: *const Registry, m: widgets.Mouse) ?Add
 // Beveled "Delete machine?" confirm popup, anchored under the "[-]" button.
 // Opened by the caller; returns true only when the user picks Delete.
 // Click-away closes via the deferred-menu's outside-click handling.
-fn deleteConfirmMenu(key: u64, m: widgets.Mouse) bool {
-    if (!widgets.menuOpen(key)) return false;
-    const items = [_]widgets.MenuItem{
+fn deleteConfirmMenu(key: u64) bool {
+    if (!menu.isOpen(key)) return false;
+    const items = [_]menu.Item{
         .{ .label = "Delete machine?", .enabled = false },
         .{ .separator = true },
         .{ .label = "Delete", .id = CONFIRM_DELETE_ID },
         .{ .label = "Cancel", .id = 2 },
     };
-    if (widgets.menuPickId(key, &items, m)) |id| return id == CONFIRM_DELETE_ID;
+    if (menu.pick(key, &items)) |id| return id == CONFIRM_DELETE_ID;
     return false;
 }
 
@@ -473,12 +474,12 @@ var preset_menu_list: presets_mod.List = .{};
 
 // Top-level menu rows for a sorted preset list: plain leaves (id = flat
 // list index), then one hover-submenu row per distinct subdirectory.
-fn presetTopItems(list: *const presets_mod.List, items: []widgets.MenuItem) usize {
+fn presetTopItems(list: *const presets_mod.List, items: []menu.Item) usize {
     var n: usize = 0;
     for (list.names[0..list.count], 0..) |*nm, i| {
         if (std.mem.indexOfScalar(u8, nm.slice(), '/') != null) continue;
         if (n >= items.len) return n;
-        items[n] = .{ .label = nm.z(), .id = @intCast(i) };
+        items[n] = .{ .label = std.mem.span(nm.z()), .id = @intCast(i) };
         n += 1;
     }
     var ord: usize = 0;
@@ -504,7 +505,7 @@ fn presetTopItems(list: *const presets_mod.List, items: []widgets.MenuItem) usiz
 
 // Rows of the ord-th distinct subdirectory: id = flat list index, label =
 // the name after the slash (NUL follows in Name storage, so no copy).
-fn presetDirItems(list: *const presets_mod.List, dir_ord: usize, items: []widgets.MenuItem) usize {
+fn presetDirItems(list: *const presets_mod.List, dir_ord: usize, items: []menu.Item) usize {
     var n: usize = 0;
     var ord: usize = 0;
     var last: []const u8 = "";
@@ -549,7 +550,7 @@ fn currentPresetLabel(buf: []u8, mach: *const Machine) [*:0]const u8 {
 // Clicking the preset block opens the preset menu: preset leaves, one hover
 // submenu per subdirectory, then Save…/Rename… rows. Save…/Rename… defer to
 // a host text-entry overlay (the caller routes them through RenameState).
-fn presetMenu(preset_rect: Rect, clicked: bool, mach: *const Machine, m: widgets.Mouse) PresetAction {
+fn presetMenu(preset_rect: Rect, clicked: bool, mach: *const Machine) PresetAction {
     const count: usize = if (mach.preset_count) |cf| cf(mach.state) else 0;
     const can_save = mach.save_preset != null or mach.save_preset_named != null;
     const cur_idx: i32 = if (mach.current_preset) |cf| cf(mach.state) else -1;
@@ -557,12 +558,12 @@ fn presetMenu(preset_rect: Rect, clicked: bool, mach: *const Machine, m: widgets
     if (count == 0 and !can_save) return .{};
 
     const key = widgets.keyFromIds(PRESET_MENU_KEY, @intFromPtr(mach.state), 1);
-    if (clicked and !widgets.menuOpen(key)) bridge.openMenuBelow(key, preset_rect);
+    if (clicked and !menu.isOpen(key)) menu.openBelow(key, preset_rect);
 
     // Deferred-draw menu: the backing list must outlive this call (a stack
     // local would dangle into drawContextMenu). Module-level, repopulated
     // only for the menu that is actually open.
-    if (widgets.menuOpen(key)) {
+    if (menu.isOpen(key)) {
         preset_menu_list = .{};
         if (mach.preset_name) |nf| {
             var i: usize = 0;
@@ -573,7 +574,7 @@ fn presetMenu(preset_rect: Rect, clicked: bool, mach: *const Machine, m: widgets
         }
     }
 
-    var items: [presets_mod.MAX_PRESETS + 3]widgets.MenuItem = undefined;
+    var items: [presets_mod.MAX_PRESETS + 3]menu.Item = undefined;
     var n = presetTopItems(&preset_menu_list, items[0..presets_mod.MAX_PRESETS]);
     if (can_save or can_rename) {
         if (n > 0) {
@@ -589,16 +590,16 @@ fn presetMenu(preset_rect: Rect, clicked: bool, mach: *const Machine, m: widgets
             n += 1;
         }
     }
-    if (widgets.menuPickId(key, items[0..n], m)) |id| {
+    if (menu.pick(key, items[0..n])) |id| {
         if (id == SAVE_ITEM_ID) return .{ .save = true };
         if (id == RENAME_ITEM_ID) return .{ .rename = @intCast(cur_idx) };
         return .{ .apply = @intCast(id) };
     }
-    if (widgets.menuSubOpen(key, 0)) |dir_id| {
+    if (menu.subOpen(key, 0)) |dir_id| {
         if (dir_id >= DIR_ID_BASE) {
-            var ditems: [presets_mod.MAX_PRESETS]widgets.MenuItem = undefined;
+            var ditems: [presets_mod.MAX_PRESETS]menu.Item = undefined;
             const dn = presetDirItems(&preset_menu_list, dir_id - DIR_ID_BASE, &ditems);
-            if (widgets.menuSubTick(key, 1, ditems[0..dn], m)) |id| {
+            if (menu.subPick(key, 1, ditems[0..dn])) |id| {
                 return .{ .apply = @intCast(id) };
             }
         }

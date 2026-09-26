@@ -415,7 +415,7 @@ pub const Ui = struct {
     hot: Id, active: Id, focus: Id,
     ids: IdStack,         // bounded scope stack
     dl: *DrawList,
-    // overlays (menus, tooltips) queue into a second list drawn last
+    // overlays (seam highlights) queue into a second list drawn last
 };
 
 // ui/controls.zig — each takes its cell rect; fixed-size controls centre
@@ -432,7 +432,16 @@ pub fn led(ui: *Ui, x: i32, y: i32, shape: LedShape, s: LedState, col: Color) vo
 pub fn ladder(ui: *Ui, r: Rect, key: anytype, level: f32, o: LadderOpts) void;
 pub fn display(ui: *Ui, r: Rect, text: []const u8, o: DisplayOpts) void;
 pub fn scope(ui: *Ui, r: Rect, key: anytype, pts: []const f32, col: Color) void;
-// planned: field (text entry, typed values), menus, tooltips
+// planned: field (text entry, typed values)
+
+// ui/menu.zig — one open menu at a time, explicit u64 key.
+pub fn openBelow(key: u64, r: Rect) void;              // drop-down under a tile
+pub fn openContext(ui: *Ui, key: u64, r: Rect) bool;   // right-click in r
+pub fn command(key: u64, items: []const Item) EditCommand; // root, per frame
+pub fn pick(key: u64, items: []const Item) ?u32;
+pub fn subOpen(key: u64, level: usize) ?u32;           // expanded row's id
+pub fn subPick(key: u64, level: usize, items: []const Item) ?u32;
+pub fn tip(ui: *Ui, r: Rect, text: []const u8) void;
 ```
 
 - **Rects are `i32`**, logical. `Rect` has RectCut-style helpers
@@ -463,6 +472,26 @@ pub fn scope(ui: *Ui, r: Rect, key: anytype, pts: []const f32, col: Color) void;
   screen at 120 fps.
 - **Budget:** the whole UI builds and draws in < 1 ms per frame at 1×
   with a full machine bay.
+
+## Menus and tooltips
+
+- **Menus** are floating faceplates: 1px hard edge, 18px rows in the body
+  face, shortcut hints right-aligned in the legend face (⌘ ⇧ ⌥ ⌫ ↩ ↑ ↓
+  are pixel glyphs synthesized into Tamzen), ▸ on submenu rows,
+  engraved separators. The selected row is an amber bar with chassis
+  text. Submenus open beside their row and flip left at the screen edge.
+- An open menu is **modal**: panes and Ui widgets see no pointer or keys
+  until it closes. Hover selects and expands; release picks; a press
+  outside closes. The opening press never picks (the menu arms on its
+  release) unless the pointer dragged away (press-drag-release).
+- **Keyboard:** ↑/↓ move, → or ↩ opens a submenu, ← backs out, ↩ picks,
+  Esc closes.
+- Callers tick the open menu every frame; items (labels included) are
+  copied, and the menu draws after every pane, before `Ui.render`.
+- **Tooltips** appear when the pointer rests over a rect for 0.45s:
+  legend text on a `face_hi` tag with a hard edge, below-right of the
+  pointer. No key: resting is the trigger. A press hides the tip until
+  the pointer moves; menus, modals and drags hide it.
 
 ## Escape hatch: push pixels
 

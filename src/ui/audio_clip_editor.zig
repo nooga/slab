@@ -9,6 +9,7 @@
 const std = @import("std");
 const c = @import("../c.zig");
 const widgets = @import("widgets.zig");
+const menu = @import("menu.zig");
 const bridge = @import("bridge.zig");
 const ui_core = @import("core.zig");
 const ui_style = @import("style.zig");
@@ -60,7 +61,7 @@ pub fn draw(
     const resolved_opt = resolveAudioClip(tracks, selected);
     const name = if (resolved_opt) |res| res.clip.name() else "";
     const color: ?ui_style.Color = if (resolved_opt) |res| ui_style.nearestTrack(.{ .r = res.color.r, .g = res.color.g, .b = res.color.b }) else null;
-    const head = clip_editor.paneHead(ui, bridge.fromRl(r), "AUDIO", name, color, null, 0, m);
+    const head = clip_editor.paneHead(ui, bridge.fromRl(r), "AUDIO", name, color, null, 0);
     const res = Result{ .minimize = head.minimize, .close = head.close, .rename_rect = bridge.toRl(head.title) };
     const body = bridge.toRl(head.body);
 
@@ -187,7 +188,7 @@ pub fn draw(
     if (ctl.slider(ui, gain_r, "gain", &g, .{ .kind = .mini, .horizontal = true, .show_readout = false, .ticks = 0, .default = @floatCast(1.0 / MAX_GAIN) })) {
         clip.audio.gain = @floatCast(g * MAX_GAIN);
     }
-    bridge.tip(gain_r, "Clip gain (double-click for unity)", m);
+    menu.tip(ui, gain_r, "Clip gain (double-click for unity)");
     _ = row.cutLeft(6);
     var buf: [96]u8 = undefined;
     const info = std.fmt.bufPrint(&buf, "START {d:.2}S  LEN {d:.2}S  FADE {d:.2}/{d:.2}S  GAIN {d:.2}X", .{

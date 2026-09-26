@@ -175,7 +175,41 @@ fn synthesize(a: *Atlas, f: *Font) Error!void {
         for (s.px) |p| a.put(g.src, p[0], p[1], .{ .r = 255, .g = 255, .b = 255 });
         f.glyphs[s.cp] = g;
     }
+    // Key-cap symbols for menu shortcut hints, as pixel art sitting on the
+    // baseline, centred in the cell.
+    for (KEY_GLYPHS) |k| {
+        if (f.glyphs[k.slot].present) continue;
+        var g = Glyph{ .advance = @intCast(w), .present = true };
+        g.src = try a.reserve(@intCast(w), @intCast(h));
+        const rows: i32 = @intCast(k.rows.len);
+        const y0 = base - rows + 1;
+        for (k.rows, 0..) |row, ry| {
+            const x0 = @divFloor(w - @as(i32, @intCast(row.len)), 2);
+            for (row, 0..) |ch, rx| {
+                if (ch != '#') continue;
+                const px = x0 + @as(i32, @intCast(rx));
+                const py = y0 + @as(i32, @intCast(ry));
+                if (px >= 0 and px < w and py >= 0 and py < h) a.put(g.src, px, py, .{ .r = 255, .g = 255, .b = 255 });
+            }
+        }
+        f.glyphs[k.slot] = g;
+    }
 }
+
+const KeyGlyph = struct { cp: u21, slot: u8, rows: []const []const u8 };
+
+/// Unicode key symbols mapped onto unused C1 slots.
+const KEY_GLYPHS = [_]KeyGlyph{
+    .{ .cp = 0x2318, .slot = 0x81, .rows = &.{ "##.##", "#####", ".#.#.", "#####", "##.##" } }, // ⌘
+    .{ .cp = 0x21E7, .slot = 0x82, .rows = &.{ "..#..", ".#.#.", "#...#", "##.##", ".#.#.", ".###." } }, // ⇧
+    .{ .cp = 0x2325, .slot = 0x83, .rows = &.{ "##.##", "..#..", "...#.", "....#" } }, // ⌥
+    .{ .cp = 0x232B, .slot = 0x84, .rows = &.{ "..#..", ".##..", "#####", ".##..", "..#.." } }, // ⌫
+    .{ .cp = 0x21A9, .slot = 0x86, .rows = &.{ "....#", "....#", ".#..#", "#####", ".#..." } }, // ↩
+    .{ .cp = 0x2191, .slot = 0x87, .rows = &.{ "..#..", ".###.", "#.#.#", "..#..", "..#..", "..#.." } }, // ↑
+    .{ .cp = 0x2193, .slot = 0x88, .rows = &.{ "..#..", "..#..", "..#..", "#.#.#", ".###.", "..#.." } }, // ↓
+    .{ .cp = 0x2303, .slot = 0x89, .rows = &.{ "..#..", ".#.#.", "#...#" } }, // ⌃
+    .{ .cp = 0x25B8, .slot = 0x8A, .rows = &.{ "#..", "##.", "###", "##.", "#.." } }, // ▸
+};
 
 /// Map a few common non-Latin-1 punctuation codepoints onto the
 /// synthesized slots.
@@ -183,7 +217,10 @@ fn remap(cp: u21) u21 {
     return switch (cp) {
         0x2026 => 0x85,
         0x2013, 0x2014, 0x2212 => 0x96,
-        else => cp,
+        else => {
+            for (KEY_GLYPHS) |k| if (k.cp == cp) return k.slot;
+            return cp;
+        },
     };
 }
 

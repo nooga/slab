@@ -12,8 +12,8 @@ const core = @import("core.zig");
 const style = @import("style.zig");
 const ctl = @import("controls.zig");
 const widgets = @import("widgets.zig");
+const menu = @import("menu.zig");
 const bridge = @import("bridge.zig");
-const tip = bridge.tip;
 const snap_mod = @import("snap.zig");
 const Transport = @import("../transport.zig").Transport;
 const meter_mod = @import("../meter.zig");
@@ -44,15 +44,13 @@ pub const Args = struct {
     can_record: bool,
     input_names: []const [*:0]const u8,
     current_input_idx: ?usize,
-    /// Legacy mouse, for the legacy menus and tooltips.
-    m: widgets.Mouse,
 };
 
 const FILE_MENU_KEY: u64 = 0x5346494c45; // "SFILE"
 const INPUT_MENU_KEY: u64 = 0x494e505544_4556; // "INPUDEV"
 const DENOM_MENU_KEY: u64 = 0x44_45_4e_4f_4d_4d_4e_55; // "DENOMMNU"
 
-const DENOM_ITEMS = [_]widgets.MenuItem{
+const DENOM_ITEMS = [_]menu.Item{
     .{ .label = "/1", .id = 1 },
     .{ .label = "/2", .id = 2 },
     .{ .label = "/3", .id = 3 },
@@ -78,24 +76,24 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     var playing = t.isPlaying();
     const play_r = bar.cutLeft(36);
     if (ctl.button(ui, play_r, "play", &playing, .{ .glyph = if (playing) .square6 else .tri_right, .glyph_on = style.play, .flush = true })) t.toggle();
-    tip(play_r, if (playing) "Stop  Space" else "Play  Space", a.m);
+    menu.tip(ui, play_r, if (playing) "Stop  Space" else "Play  Space");
     var rec_on = a.recording;
     const rec_r = bar.cutLeft(36);
     if (ctl.button(ui, rec_r, "rec", &rec_on, .{ .glyph = .round7, .glyph_on = style.rec, .flush = true, .disabled = !a.can_record })) res.record_toggle = true;
-    tip(rec_r, if (!a.can_record) "Record (no input device)" else if (a.recording) "Stop recording" else "Record  (arm a track first)", a.m);
+    menu.tip(ui, rec_r, if (!a.can_record) "Record (no input device)" else if (a.recording) "Stop recording" else "Record  (arm a track first)");
     inputTile(ui, bar.cutLeft(16), a, &res);
     var loop_on = t.loopEnabled();
     const loop_r = bar.cutLeft(36);
     if (ctl.button(ui, loop_r, "loop", &loop_on, .{ .label = "LOOP", .lit = style.accent, .flush = true })) t.toggleLoop();
-    tip(loop_r, "Loop on/off", a.m);
+    menu.tip(ui, loop_r, "Loop on/off");
 
     // Tempo: - [LED 124.0] +  TAP
     if (ctl.button(ui, bar.cutLeft(20), "bpm-", null, .{ .label = "-", .flush = true })) t.setBpm(@round(t.bpm()) - 1);
-    bpmTile(ui, bar.cutLeft(108), t, map, a.m);
+    bpmTile(ui, bar.cutLeft(108), t, map);
     if (ctl.button(ui, bar.cutLeft(20), "bpm+", null, .{ .label = "+", .flush = true })) t.setBpm(@round(t.bpm()) + 1);
     const tap_r = bar.cutLeft(48);
     if (ctl.button(ui, tap_r, "tap", null, .{ .label = "TAP", .flush = true })) handleTap(t, ui.in.time);
-    tip(tap_r, "Tap tempo", a.m);
+    menu.tip(ui, tap_r, "Tap tempo");
 
     // Position and meter.
     var pbuf: [32]u8 = undefined;
@@ -104,14 +102,14 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     const pos_s = std.fmt.bufPrint(&pbuf, "{d}.{d}.{d}", .{ pos.bar + 1, pos.beat + 1, sub }) catch "?";
     const pos_r = bar.cutLeft(120);
     ctl.display(ui, pos_r, pos_s, .{ .align_ = .right, .large = true, .flush = true });
-    tip(pos_r, "Position  bar.beat.sub", a.m);
-    meterTile(ui, bar.cutLeft(76), a.meter_state, a.m);
+    menu.tip(ui, pos_r, "Position  bar.beat.sub");
+    meterTile(ui, bar.cutLeft(76), a.meter_state);
 
     // Snap: - [1/16] +
     if (ctl.button(ui, bar.cutLeft(20), "snap-", null, .{ .label = "-", .flush = true })) a.edit_snap.* = a.edit_snap.coarser();
     const snap_r = bar.cutLeft(76);
     ctl.display(ui, snap_r, std.mem.span(a.edit_snap.label()), .{ .align_ = .center, .large = true, .flush = true });
-    tip(snap_r, a.edit_snap.tooltip(), a.m);
+    menu.tip(ui, snap_r, std.mem.span(a.edit_snap.tooltip()));
     if (ctl.button(ui, bar.cutLeft(20), "snap+", null, .{ .label = "+", .flush = true })) a.edit_snap.* = a.edit_snap.finer();
 
     // Logo plate on the right, blank plate between.
@@ -138,23 +136,23 @@ fn fileTileW(ui: *const Ui, a: Args) i32 {
 fn fileTile(ui: *Ui, r: Rect, a: Args, res: *Result) void {
     var buf: [80]u8 = undefined;
     const name = fileLabel(&buf, a.project_path, a.project_path_chosen, a.dirty);
-    const open = widgets.menuOpen(FILE_MENU_KEY);
+    const open = menu.isOpen(FILE_MENU_KEY);
     var shown = open;
     if (ctl.button(ui, r, "file", &shown, .{ .flush = true }) and !open) {
-        bridge.openMenuBelow(FILE_MENU_KEY, r);
+        menu.openBelow(FILE_MENU_KEY, r);
     }
     const inner = r.insetXY(8, 0);
     ui.textIn(&ui.fonts.body, inner, name, if (a.dirty) style.accent else style.text, .left, true);
     ctl.led(ui, inner.right() - 7, r.y + @divFloor(r.h - 4, 2), .tri_down, .off, style.text_dim);
-    tip(r, "Project file", a.m);
-    const items = [_]widgets.MenuItem{
+    menu.tip(ui, r, "Project file");
+    const items = [_]menu.Item{
         .{ .label = "Open\u{2026}", .command = .file_open },
         .{ .label = "Save", .command = .file_save },
         .{ .label = "Save As\u{2026}", .command = .file_save_as },
         .{ .separator = true },
         .{ .label = "Render Audio\u{2026}", .command = .render_audio },
     };
-    switch (widgets.contextMenu(FILE_MENU_KEY, &items, a.m)) {
+    switch (menu.command(FILE_MENU_KEY, &items)) {
         .file_open => res.open_project = true,
         .file_save => res.save_project = true,
         .file_save_as => res.save_project_as = true,
@@ -166,26 +164,26 @@ fn fileTile(ui: *Ui, r: Rect, a: Args, res: *Result) void {
 /// Input-device caret next to record: opens the (legacy) device menu.
 fn inputTile(ui: *Ui, r: Rect, a: Args, res: *Result) void {
     const have = a.input_names.len > 0;
-    var open = widgets.menuOpen(INPUT_MENU_KEY);
-    if (ctl.button(ui, r, "input", &open, .{ .glyph = .tri_down, .glyph_on = style.text, .flush = true, .disabled = !have }) and have and !widgets.menuOpen(INPUT_MENU_KEY)) {
-        bridge.openMenuBelow(INPUT_MENU_KEY, r);
+    var open = menu.isOpen(INPUT_MENU_KEY);
+    if (ctl.button(ui, r, "input", &open, .{ .glyph = .tri_down, .glyph_on = style.text, .flush = true, .disabled = !have }) and have and !menu.isOpen(INPUT_MENU_KEY)) {
+        menu.openBelow(INPUT_MENU_KEY, r);
     }
-    const cur_tip: [*:0]const u8 = if (!have)
+    const cur_tip: []const u8 = if (!have)
         "Input device (none found)"
-    else if (a.current_input_idx) |ci| a.input_names[@min(ci, a.input_names.len - 1)] else "Select input device";
-    tip(r, cur_tip, a.m);
-    if (widgets.menuOpen(INPUT_MENU_KEY) and have) {
-        var items: [34]widgets.MenuItem = undefined;
+    else if (a.current_input_idx) |ci| std.mem.span(a.input_names[@min(ci, a.input_names.len - 1)]) else "Select input device";
+    menu.tip(ui, r, cur_tip);
+    if (menu.isOpen(INPUT_MENU_KEY) and have) {
+        var items: [34]menu.Item = undefined;
         const n = @min(a.input_names.len, items.len);
-        for (0..n) |i| items[i] = .{ .label = a.input_names[i], .id = @intCast(i) };
-        if (widgets.menuPickId(INPUT_MENU_KEY, items[0..n], a.m)) |id| res.input_pick = @intCast(id);
+        for (0..n) |i| items[i] = .{ .label = std.mem.span(a.input_names[i]), .id = @intCast(i) };
+        if (menu.pick(INPUT_MENU_KEY, items[0..n])) |id| res.input_pick = @intCast(id);
     }
 }
 
 /// BPM readout that edits like a knob: vertical drag (Shift fine), ⌘-wheel
 /// steps, double-click resets to 120. The LED pulses on each meter-beat:
 /// red downbeat, amber group accent, green weak beat.
-fn bpmTile(ui: *Ui, r: Rect, t: *Transport, map: meter_mod.MeterMap, m: widgets.Mouse) void {
+fn bpmTile(ui: *Ui, r: Rect, t: *Transport, map: meter_mod.MeterMap) void {
     const wid = ui.id("bpm");
     const b = ui.behavior(wid, r, false);
     var bpm = t.bpm();
@@ -211,13 +209,13 @@ fn bpmTile(ui: *Ui, r: Rect, t: *Transport, map: meter_mod.MeterMap, m: widgets.
     };
     ctl.led(ui, r.x + 5, r.y + @divFloor(r.h - 1 - 5, 2), .round5, if (on) .on else .off, col);
     if (t.isPlaying()) ui.animate();
-    tip(r, "Tempo: drag, \u{2318}-scroll, double-click 120", m);
+    menu.tip(ui, r, "Tempo: drag, \u{2318}-scroll, double-click 120");
 }
 
 /// Time signature of bar 0: drag the numerator, right-click for the
 /// denominator menu. Edits stage through MeterState (adopted at the next
 /// bar boundary).
-fn meterTile(ui: *Ui, r: Rect, state: *meter_mod.MeterState, m: widgets.Mouse) void {
+fn meterTile(ui: *Ui, r: Rect, state: *meter_mod.MeterState) void {
     const wid = ui.id("meter");
     const base = state.liveMap().points[0];
     const b = ui.behavior(wid, r, false);
@@ -228,14 +226,14 @@ fn meterTile(ui: *Ui, r: Rect, state: *meter_mod.MeterState, m: widgets.Mouse) v
         if (num != base.numerator) state.editMeterAt(0, num, base.denominator);
     }
     if (ui.isHot(wid)) ui.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 1);
-    if (ui.in.right_pressed and r.contains(ui.in.ix(), ui.in.iy())) widgets.openMenuAt(DENOM_MENU_KEY, m.x, m.y);
-    if (widgets.menuOpen(DENOM_MENU_KEY)) {
-        if (widgets.menuPickId(DENOM_MENU_KEY, &DENOM_ITEMS, m)) |id| state.editMeterAt(0, base.numerator, @intCast(id));
+    if (ui.in.right_pressed and r.contains(ui.in.ix(), ui.in.iy())) menu.openAt(DENOM_MENU_KEY, ui.in.ix(), ui.in.iy());
+    if (menu.isOpen(DENOM_MENU_KEY)) {
+        if (menu.pick(DENOM_MENU_KEY, &DENOM_ITEMS)) |id| state.editMeterAt(0, base.numerator, @intCast(id));
     }
     var buf: [16]u8 = undefined;
     const s = std.fmt.bufPrint(&buf, "{d}/{d}", .{ base.numerator, base.denominator }) catch "?";
     ctl.display(ui, r, s, .{ .align_ = .center, .large = true, .flush = true, .color = if (ui.active == wid) style.accent else style.phosphor });
-    tip(r, "Meter: drag numerator, right-click denominator", m);
+    menu.tip(ui, r, "Meter: drag numerator, right-click denominator");
 }
 
 // ── Logo ─────────────────────────────────────────────────────────────

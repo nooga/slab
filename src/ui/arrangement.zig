@@ -11,6 +11,7 @@ const std = @import("std");
 const c = @import("../c.zig");
 const theme = @import("theme.zig");
 const widgets = @import("widgets.zig");
+const menu = @import("menu.zig");
 const bridge = @import("bridge.zig");
 const ui_core = @import("core.zig");
 const ui_style = @import("style.zig");
@@ -124,7 +125,7 @@ pub const CopiedClip = struct {
 
 pub const Result = struct {
     add_track: bool = false,
-    command: widgets.EditCommand = .none,
+    command: menu.EditCommand = .none,
     command_beat: ?f64 = null,
     command_track: ?usize = null,
     rename_clip: ?ClipRef = null,
@@ -539,7 +540,7 @@ pub fn draw(
         var head = bridge.fromRl(hdr_top);
         const add_r = head.cutRight(20).takeTop(20);
         if (ctl.button(ui, add_r, "add", null, .{ .label = "+", .flush = true })) result.add_track = true;
-        bridge.tip(add_r, "Add track", m);
+        menu.tip(ui, add_r, "Add track");
         const plate_r = Rect.xywh(head.x, head.y, head.w, head.h);
         const body = ui.plate(plate_r, .{});
         _ = ui.engraved(&ui.fonts.legend, body.x + 5, body.y + 3, "TRACKS", ui_style.text_dim);
@@ -578,9 +579,9 @@ pub fn draw(
     if (m.right_pressed and widgets.contains(ruler_rect, m.x, m.y) and !widgets.hasActiveDrag()) {
         const b = @max(0.0, beatAtX(timeline_x0, m.x));
         meter_menu_bar = cur_meter.beatToBarPos(b).bar;
-        widgets.openMenuAt(METER_MENU_KEY, m.x, m.y);
+        menu.openAt(METER_MENU_KEY, ipx(m.x), ipx(m.y));
     }
-    meterMenuTick(meter_state, m);
+    meterMenuTick(meter_state);
 
     // ── Per-track lane + clips ───────────────────────────────────────
     var press_consumed = false;
@@ -634,12 +635,7 @@ pub fn draw(
                 if (!widgets.hasActiveDrag()) {
                     widgets.requestCursor(if (edge_hover or left_edge_hover or fade_in_hover or fade_out_hover) c.rl.MOUSE_CURSOR_RESIZE_EW else c.rl.MOUSE_CURSOR_POINTING_HAND, 1);
                     // Full clip name on hover-and-pause (the body label is truncated).
-                    var tip_buf: [clip_mod.MAX_NAME + 1:0]u8 = undefined;
-                    const nm = clip.name();
-                    const cn = @min(nm.len, clip_mod.MAX_NAME);
-                    @memcpy(tip_buf[0..cn], nm[0..cn]);
-                    tip_buf[cn] = 0;
-                    widgets.tooltip(clip_rect, @ptrCast(&tip_buf[0]), m);
+                    menu.tip(ui, bridge.fromRl(clip_rect), clip.name());
                 }
                 if (m.double_clicked and !widgets.hasActiveDrag()) {
                     const ref: ClipRef = .{ .track = @intCast(ti), .clip = @intCast(i) };
@@ -680,7 +676,7 @@ pub fn draw(
                     selected_clip.* = ref;
                     selected_track.* = ti;
                     context_target = .{ .beat = beatAtX(timeline_x0, m.x), .track = ti };
-                    _ = widgets.openContextMenu(ARR_CONTEXT_KEY, r, m);
+                    _ = menu.openContext(ui, ARR_CONTEXT_KEY, bridge.fromRl(r));
                     press_consumed = true;
                 }
             }
@@ -720,7 +716,7 @@ pub fn draw(
             selected_clip.* = null;
             deselectAllClips(tracks);
             context_target = .{ .beat = beatAtX(timeline_x0, m.x), .track = ti };
-            _ = widgets.openContextMenu(ARR_CONTEXT_KEY, r, m);
+            _ = menu.openContext(ui, ARR_CONTEXT_KEY, bridge.fromRl(r));
             press_consumed = true;
         }
     }
@@ -740,7 +736,7 @@ pub fn draw(
                 selected_clip.* = null;
                 deselectAllClips(tracks);
                 context_target = .{ .beat = beatAtX(timeline_x0, m.x), .track = null };
-                _ = widgets.openContextMenu(ARR_CONTEXT_KEY, r, m);
+                _ = menu.openContext(ui, ARR_CONTEXT_KEY, bridge.fromRl(r));
                 press_consumed = true;
             }
         }
@@ -768,7 +764,7 @@ pub fn draw(
         const lane_header = widgets.rect(header_x, ly, header_w, theme.laneH());
         const lane_is_sel = selected_track.* != null and selected_track.*.? == ti;
         const editing = rename_target.kind == .track and rename_target.track == ti;
-        const hres = drawLaneHeader(ui, lane_header, t, ti, lane_is_sel, editing, m);
+        const hres = drawLaneHeader(ui, lane_header, t, ti, lane_is_sel, editing);
         if (editing) result.rename_rect = hres.name_rect;
         switch (hres.action) {
             .none => {},
@@ -805,7 +801,7 @@ pub fn draw(
         // master header on the new Ui.
         ui.rect(bridge.fromRl(widgets.rect(timeline_x, lanes_bottom, timeline_w, master_h)), ui_style.pane);
         ui.rect(bridge.fromRl(widgets.rect(r.x, lanes_bottom, r.width, 1)), ui_style.edge);
-        if (drawMasterHeader(ui, widgets.rect(header_x, lanes_bottom, header_w, master_h), master, device_sel.* == .master, m)) {
+        if (drawMasterHeader(ui, widgets.rect(header_x, lanes_bottom, header_w, master_h), master, device_sel.* == .master)) {
             master_clicked = true;
         }
     }
@@ -823,12 +819,12 @@ pub fn draw(
     drawOverview(ui, overview_rect, timeline_w, tracks, content_beats, transport, m);
     // The ruler owns right-click (meter menu); keep the arrangement menu off it.
     const rclick_on_ruler = m.right_pressed and widgets.contains(ruler_rect, m.x, m.y);
-    if (!rclick_on_ruler and widgets.openContextMenu(ARR_CONTEXT_KEY, r, m)) {
+    if (!rclick_on_ruler and menu.openContext(ui, ARR_CONTEXT_KEY, bridge.fromRl(r))) {
         context_target = .{ .beat = beatAtX(timeline_x0, m.x), .track = selected_track.* };
     }
     const has_selection = hasSelectedClips(tracks);
     const has_clips = hasAnyClips(tracks);
-    const arr_context_items = [_]widgets.MenuItem{
+    const arr_context_items = [_]menu.Item{
         .{ .label = "Import audio\u{2026}", .command = .import_audio, .enabled = tracks.len > 0 },
         .{ .separator = true },
         .{ .label = "Copy", .command = .copy, .enabled = has_selection },
@@ -847,7 +843,7 @@ pub fn draw(
         .{ .label = "Loop arrangement", .command = .loop_arrangement, .enabled = has_clips },
         .{ .label = "Clear loop", .command = .clear_loop, .enabled = true },
     };
-    result.command = widgets.contextMenu(ARR_CONTEXT_KEY, &arr_context_items, m);
+    result.command = menu.command(ARR_CONTEXT_KEY, &arr_context_items);
     if (result.command != .none) {
         result.command_beat = context_target.beat;
         result.command_track = context_target.track;
@@ -1245,7 +1241,7 @@ const METER_REMOVE_ID: u32 = 1000;
 // Bar the meter menu targets (set when opened on a ruler right-click).
 var meter_menu_bar: u32 = 0;
 
-const MeterChoice = struct { label: [*:0]const u8, num: u8, den: u8 };
+const MeterChoice = struct { label: []const u8, num: u8, den: u8 };
 const METER_CHOICES = [_]MeterChoice{
     .{ .label = "4/4", .num = 4, .den = 4 },
     .{ .label = "3/4", .num = 3, .den = 4 },
@@ -1262,7 +1258,7 @@ const METER_CHOICES = [_]MeterChoice{
 // whole meter map (materialize-on-run), so they ignore the target bar.
 const METER_GEN_BASE: u32 = 2000;
 const GenKind = enum { fib, euclid3, euclid5, additive223, additive332 };
-const MeterGen = struct { label: [*:0]const u8, kind: GenKind };
+const MeterGen = struct { label: []const u8, kind: GenKind };
 const METER_GENS = [_]MeterGen{
     .{ .label = "Generate: Fibonacci /8", .kind = .fib },
     .{ .label = "Generate: Euclid 3/8", .kind = .euclid3 },
@@ -1274,9 +1270,9 @@ const METER_GENS = [_]MeterGen{
 var gen_pts: [meter_mod.MAX_POINTS]meter_mod.MeterPoint = undefined;
 var gen_nums: [64]u8 = undefined;
 
-fn meterMenuTick(meter_state: *meter_mod.MeterState, m: widgets.Mouse) void {
-    if (!widgets.menuOpen(METER_MENU_KEY)) return;
-    var items: [METER_CHOICES.len + 1 + METER_GENS.len]widgets.MenuItem = undefined;
+fn meterMenuTick(meter_state: *meter_mod.MeterState) void {
+    if (!menu.isOpen(METER_MENU_KEY)) return;
+    var items: [METER_CHOICES.len + 1 + METER_GENS.len]menu.Item = undefined;
     inline for (METER_CHOICES, 0..) |ch, i| items[i] = .{ .label = ch.label, .id = @intCast(i) };
     // A change can be removed only if one starts exactly on the target bar
     // (and never bar 0, the base meter).
@@ -1285,7 +1281,7 @@ fn meterMenuTick(meter_state: *meter_mod.MeterState, m: widgets.Mouse) void {
     items[METER_CHOICES.len] = .{ .label = "Remove change here", .id = METER_REMOVE_ID, .enabled = can_remove };
     inline for (METER_GENS, 0..) |g, i| items[METER_CHOICES.len + 1 + i] = .{ .label = g.label, .id = METER_GEN_BASE + @as(u32, @intCast(i)) };
 
-    if (widgets.menuPickId(METER_MENU_KEY, &items, m)) |id| {
+    if (menu.pick(METER_MENU_KEY, &items)) |id| {
         if (id == METER_REMOVE_ID) {
             meter_state.removeChange(meter_menu_bar);
         } else if (id >= METER_GEN_BASE) {
@@ -1326,7 +1322,7 @@ const HeaderResult = struct {
 /// Track header on the new Ui (docs/06 §Working surfaces): faceplate with
 /// the track-colour spine (+ amber selection stripe), index and name, R/M/S
 /// lit latches, pan and volume mini sliders, and a bare stereo meter.
-fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, selected: bool, editing_name: bool, m: widgets.Mouse) HeaderResult {
+fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, selected: bool, editing_name: bool) HeaderResult {
     const r = bridge.fromRl(r_legacy);
     ui.pushId(t);
     defer ui.popId();
@@ -1346,15 +1342,15 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, sele
     var armed = t.isArmed();
     const arm_r = btns.cutLeft(17).insetXY(0, 2);
     if (ctl.button(ui, arm_r, "arm", &armed, .{ .kind = .latch, .label = "R", .lit = ui_style.rec, .disabled = !can_arm })) t.setArmed(armed);
-    bridge.tip(arm_r, if (t.isArmed()) "Disarm (record)" else "Arm for recording", m);
+    menu.tip(ui, arm_r, if (t.isArmed()) "Disarm (record)" else "Arm for recording");
     var muted = t.mute.load(.monotonic);
     const mute_r = btns.cutLeft(17).insetXY(0, 2);
     if (ctl.button(ui, mute_r, "mute", &muted, .{ .kind = .latch, .label = "M", .lit = ui_style.led_blue })) t.mute.store(muted, .monotonic);
-    bridge.tip(mute_r, if (muted) "Unmute track" else "Mute track", m);
+    menu.tip(ui, mute_r, if (muted) "Unmute track" else "Mute track");
     var solo = t.solo.load(.monotonic);
     const solo_r = btns.insetXY(0, 2);
     if (ctl.button(ui, solo_r, "solo", &solo, .{ .kind = .latch, .label = "S", .lit = ui_style.led_yellow })) t.solo.store(solo, .monotonic);
-    bridge.tip(solo_r, if (solo) "Unsolo track" else "Solo track", m);
+    menu.tip(ui, solo_r, if (solo) "Unsolo track" else "Solo track");
 
     // Index badge + name; the name row is also the select/rename target.
     var ibuf: [8]u8 = undefined;
@@ -1368,12 +1364,12 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, sele
     const vol_r = body.cutBottom(@min(body.h, 16));
     var v_norm: f32 = std.math.clamp(t.volume() / 1.25, 0.0, 1.0);
     if (ctl.slider(ui, vol_r, "vol", &v_norm, .{ .kind = .mini, .horizontal = true, .show_readout = false, .ticks = 5, .default = 1.0 / 1.25 })) t.setVolume(v_norm * 1.25);
-    bridge.tip(vol_r, "Track volume", m);
+    menu.tip(ui, vol_r, "Track volume");
     if (body.h >= 14) {
         const pan_r = body.cutBottom(14);
         var p: f32 = (t.pan() + 1) / 2;
         if (ctl.slider(ui, pan_r, "pan", &p, .{ .kind = .mini, .horizontal = true, .bipolar = true, .show_readout = false, .ticks = 3, .default = 0.5 })) t.setPan(p * 2 - 1);
-        bridge.tip(pan_r, "Pan (double-click to center)", m);
+        menu.tip(ui, pan_r, "Pan (double-click to center)");
     }
 
     const b = ui.behaviorEx(ui.id("name"), Rect.xywh(r.x, r.y, name_r.right() - r.x, 20), .{ .focusable = false });
@@ -1384,7 +1380,7 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, sele
 
 /// Pinned master header: spine, MASTER, pan and volume, stereo meter.
 /// Returns true when the header is clicked (select master for the bay).
-fn drawMasterHeader(ui: *Ui, hdr_legacy: c.rl.Rectangle, master: *Track, selected: bool, m: widgets.Mouse) bool {
+fn drawMasterHeader(ui: *Ui, hdr_legacy: c.rl.Rectangle, master: *Track, selected: bool) bool {
     const r = bridge.fromRl(hdr_legacy);
     ui.pushId("master");
     defer ui.popId();
@@ -1400,12 +1396,12 @@ fn drawMasterHeader(ui: *Ui, hdr_legacy: c.rl.Rectangle, master: *Track, selecte
     const vol_r = body.cutBottom(@min(body.h, 16));
     var v_norm: f32 = std.math.clamp(master.volume() / 1.25, 0.0, 1.0);
     if (ctl.slider(ui, vol_r, "vol", &v_norm, .{ .kind = .mini, .horizontal = true, .show_readout = false, .ticks = 5, .default = 1.0 / 1.25 })) master.setVolume(v_norm * 1.25);
-    bridge.tip(vol_r, "Master volume", m);
+    menu.tip(ui, vol_r, "Master volume");
     if (body.h >= 14) {
         const pan_r = body.cutBottom(14);
         var p: f32 = (master.pan() + 1) / 2;
         if (ctl.slider(ui, pan_r, "pan", &p, .{ .kind = .mini, .horizontal = true, .bipolar = true, .show_readout = false, .ticks = 3, .default = 0.5 })) master.setPan(p * 2 - 1);
-        bridge.tip(pan_r, "Master pan (double-click to center)", m);
+        menu.tip(ui, pan_r, "Master pan (double-click to center)");
     }
     return ui.behaviorEx(ui.id("select"), Rect.xywh(r.x, r.y, r.w, 20), .{ .focusable = false }).pressed;
 }

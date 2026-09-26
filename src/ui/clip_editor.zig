@@ -23,6 +23,7 @@
 const std = @import("std");
 const c = @import("../c.zig");
 const widgets = @import("widgets.zig");
+const menu = @import("menu.zig");
 const bridge = @import("bridge.zig");
 const ui_core = @import("core.zig");
 const ui_style = @import("style.zig");
@@ -227,7 +228,7 @@ pub const Result = struct {
     minimize: bool = false,
     close: bool = false,
     audition_pitch: ?u8 = null,
-    command: widgets.EditCommand = .none,
+    command: menu.EditCommand = .none,
     command_beat: ?f64 = null,
     command_pitch: ?u8 = null,
     rename_rect: ?c.rl.Rectangle = null,
@@ -447,20 +448,20 @@ pub const Head = struct {
 /// Editor pane head: one 20px toolbar of flush tiles — optional DRAW latch,
 /// the title (track-colour bar, engraved kind, clip name), the caller's
 /// tools, collapse and close.
-pub fn paneHead(ui: *Ui, r: Rect, kind: []const u8, name: []const u8, color: ?ui_style.Color, draw_mode: ?*bool, tools_w: i32, m: widgets.Mouse) Head {
+pub fn paneHead(ui: *Ui, r: Rect, kind: []const u8, name: []const u8, color: ?ui_style.Color, draw_mode: ?*bool, tools_w: i32) Head {
     var rest = r;
     var bar = rest.cutTop(HEAD_H);
     var out = Head{ .body = rest, .title = .{} };
     const close_r = bar.cutRight(18);
     out.close = ctl.button(ui, close_r, "close", null, .{ .label = "\u{D7}", .flush = true });
-    bridge.tip(close_r, "Close panel", m);
+    menu.tip(ui, close_r, "Close panel");
     const min_r = bar.cutRight(18);
     out.minimize = ctl.button(ui, min_r, "min", null, .{ .label = "-", .flush = true });
-    bridge.tip(min_r, "Collapse panel", m);
+    menu.tip(ui, min_r, "Collapse panel");
     if (draw_mode) |dm| {
         const dr = bar.cutLeft(52);
         _ = ctl.button(ui, dr, "draw", dm, .{ .kind = .latch, .label = "DRAW", .led = ui_style.accent, .flush = true });
-        bridge.tip(dr, if (dm.*) "Draw tool: click to switch to select" else "Select tool: click to switch to draw", m);
+        menu.tip(ui, dr, if (dm.*) "Draw tool: click to switch to select" else "Select tool: click to switch to draw");
     }
     if (tools_w > 0 and bar.w >= tools_w + 96) out.tools = bar.cutRight(tools_w);
     out.title = bar;
@@ -483,19 +484,19 @@ const KS_W: i32 = 92;
 
 // One combined "C Major" picker (root → scale submenu sets both) + a swing
 // fader, flush tiles at the right end of the head.
-fn drawHeaderTools(ui: *Ui, tools: Rect, m: widgets.Mouse) void {
+fn drawHeaderTools(ui: *Ui, tools: Rect) void {
     // Key/scale picker menu (modal) — ticked unconditionally so it stays live
     // even if the strip is hidden by a narrow header. Top level is the 12
     // roots (each a submenu); a root expanded shows the scales. Clicking a
     // root sets the root and keeps the scale; clicking a scale sets both.
-    if (widgets.menuOpen(KEYSCALE_MENU_KEY)) {
-        var roots: [12]widgets.MenuItem = undefined;
-        for (ROOT_NAMES, 0..) |nm, i| roots[i] = .{ .label = nm, .id = @intCast(i), .submenu = true };
-        if (widgets.menuPickId(KEYSCALE_MENU_KEY, &roots, m)) |rid| key_root = @intCast(rid);
-        if (widgets.menuSubOpen(KEYSCALE_MENU_KEY, 0)) |rid| {
-            var scales: [SCALES.len]widgets.MenuItem = undefined;
-            for (SCALES, 0..) |sc, i| scales[i] = .{ .label = sc.name, .id = @intCast(i) };
-            if (widgets.menuSubTick(KEYSCALE_MENU_KEY, 1, &scales, m)) |sid| {
+    if (menu.isOpen(KEYSCALE_MENU_KEY)) {
+        var roots: [12]menu.Item = undefined;
+        for (ROOT_NAMES, 0..) |nm, i| roots[i] = .{ .label = std.mem.span(nm), .id = @intCast(i), .submenu = true };
+        if (menu.pick(KEYSCALE_MENU_KEY, &roots)) |rid| key_root = @intCast(rid);
+        if (menu.subOpen(KEYSCALE_MENU_KEY, 0)) |rid| {
+            var scales: [SCALES.len]menu.Item = undefined;
+            for (SCALES, 0..) |sc, i| scales[i] = .{ .label = std.mem.span(sc.name), .id = @intCast(i) };
+            if (menu.subPick(KEYSCALE_MENU_KEY, 1, &scales)) |sid| {
                 key_root = @intCast(rid);
                 scale_idx = @intCast(sid);
             }
@@ -512,11 +513,11 @@ fn drawHeaderTools(ui: *Ui, tools: Rect, m: widgets.Mouse) void {
         else
             (std.fmt.bufPrint(&buf, "{s} {s}", .{ root, std.mem.span(SCALES[scale_idx].name) }) catch root);
         const ks_r = t.cutLeft(KS_W);
-        const open = widgets.menuOpen(KEYSCALE_MENU_KEY);
+        const open = menu.isOpen(KEYSCALE_MENU_KEY);
         if (ctl.button(ui, ks_r, "keyscale", null, .{ .label = label, .flush = true }) and !open) {
-            bridge.openMenuBelow(KEYSCALE_MENU_KEY, ks_r);
+            menu.openBelow(KEYSCALE_MENU_KEY, ks_r);
         }
-        bridge.tip(ks_r, "Key & scale: pick a root, then a scale", m);
+        menu.tip(ui, ks_r, "Key & scale: pick a root, then a scale");
     }
     {
         var body = ui.plate(t, .{});
@@ -530,7 +531,7 @@ fn drawHeaderTools(ui: *Ui, tools: Rect, m: widgets.Mouse) void {
         const fr = body.insetXY(0, @divFloor(body.h - 14, 2));
         var v: f32 = swing;
         if (ctl.slider(ui, fr, "swing", &v, .{ .kind = .mini, .horizontal = true, .show_readout = false, .ticks = 0 })) swing = v;
-        bridge.tip(fr, "Swing: shifts off-beats on the grid, draw, and Quantize", m);
+        menu.tip(ui, fr, "Swing: shifts off-beats on the grid, draw, and Quantize");
     }
 }
 
@@ -553,7 +554,7 @@ pub fn draw(
     var draw_on = mode == .draw;
     const name = if (clip_opt) |res| res.clip.name() else "";
     const color: ?ui_style.Color = if (clip_opt) |res| ui_style.nearestTrack(.{ .r = res.color.r, .g = res.color.g, .b = res.color.b }) else null;
-    const head = paneHead(ui, bridge.fromRl(r), "NOTES", name, color, if (clip_opt != null) &draw_on else null, if (clip_opt != null) TOOLS_W else 0, m);
+    const head = paneHead(ui, bridge.fromRl(r), "NOTES", name, color, if (clip_opt != null) &draw_on else null, if (clip_opt != null) TOOLS_W else 0);
     if (draw_on != (mode == .draw)) {
         mode = if (draw_on) .draw else .select;
         cancelAllDrags();
@@ -565,7 +566,7 @@ pub fn draw(
     };
 
     note_map = resolved.note_labels;
-    drawHeaderTools(ui, head.tools, m);
+    drawHeaderTools(ui, head.tools);
     maybeResetOnClipChange(selected, resolved.clip);
     const pres = drawPianoRoll(ui, bridge.toRl(head.body), resolved.clip, resolved.color, alloc, edit_snap, can_paste_notes, m);
 
@@ -628,7 +629,7 @@ fn cancelAllDrags() void {
 
 const PianoRollResult = struct {
     audition_pitch: ?u8 = null,
-    command: widgets.EditCommand = .none,
+    command: menu.EditCommand = .none,
     command_beat: ?f64 = null,
     command_pitch: ?u8 = null,
 };
@@ -694,11 +695,11 @@ fn drawPianoRoll(
 
     drawOverview(ui, overview_rect, grid_rect, clip.*, track_color, m);
 
-    var result = PianoRollResult{ .audition_pitch = if (velocity_consumed) null else handleInput(grid_rect, clip, alloc, edit_snap, m) };
-    _ = widgets.openContextMenu(PR_CONTEXT_KEY, grid_rect, m);
+    var result = PianoRollResult{ .audition_pitch = if (velocity_consumed) null else handleInput(ui, grid_rect, clip, alloc, edit_snap, m) };
+    _ = menu.openContext(ui, PR_CONTEXT_KEY, bridge.fromRl(grid_rect));
     const has_selection = clip.selectedCount() > 0;
     const has_notes = clip.notes.items.len > 0;
-    const pr_context_items = [_]widgets.MenuItem{
+    const pr_context_items = [_]menu.Item{
         .{ .label = "Copy", .command = .copy, .enabled = has_selection },
         .{ .label = "Cut", .command = .cut, .enabled = has_selection },
         .{ .label = "Paste", .command = .paste, .enabled = can_paste_notes },
@@ -715,7 +716,7 @@ fn drawPianoRoll(
         .{ .label = "Select all", .command = .select_all, .enabled = has_notes },
         .{ .label = "Clear selection", .command = .clear_selection, .enabled = has_selection },
     };
-    result.command = widgets.contextMenu(PR_CONTEXT_KEY, &pr_context_items, m);
+    result.command = menu.command(PR_CONTEXT_KEY, &pr_context_items);
     if (result.command != .none) {
         result.command_beat = context_target.beat + clip.start_beat;
         result.command_pitch = context_target.pitch;
@@ -1177,6 +1178,7 @@ fn noteRect(grid: c.rl.Rectangle, note: Note) c.rl.Rectangle {
 // ── Input ────────────────────────────────────────────────────────────
 
 fn handleInput(
+    ui: *Ui,
     grid: c.rl.Rectangle,
     clip: *Clip,
     alloc: std.mem.Allocator,
@@ -1206,7 +1208,7 @@ fn handleInput(
                 clip.notes.items[h.idx].selected = true;
             }
         }
-        _ = widgets.openContextMenu(PR_CONTEXT_KEY, grid, m);
+        _ = menu.openContext(ui, PR_CONTEXT_KEY, bridge.fromRl(grid));
         return null;
     }
 
