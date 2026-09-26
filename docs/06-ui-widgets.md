@@ -115,6 +115,12 @@ room comes from the controls' own fixed cells, never from padding.
 Leftover space in a row is filled with a blank plate, not left as
 chassis.
 
+**Toolbars** (the window header, the transport, pane title bars) are rows
+of flush tiles: every button, segmented group and display in a bar is a
+full-height section of it, sharing the bar's seams (`flush` on buttons
+and displays, `segmentedFlush`). Nothing floats inside a bar with a
+margin around it; the rest of the bar is a blank plate tile.
+
 ### Bevels
 
 Exactly 1 logical pixel. Raised: highlight top/left, shadow bottom/right.
@@ -290,9 +296,28 @@ the grid), **triangle** (direction). Mono or bicolour. States: off (ghost),
 dim, on; **blink is driven by the host clock** so every blinking LED is in
 phase. Composites:
 
-- **ladder** — segmented meter (with peak-hold via afterglow),
+- **ladder** — plain segmented bargraph (levels that aren't audio),
 - **ring** — around an encoder,
 - **step row** — sequencer steps.
+
+### Meters
+
+Audio level uses the pro bargraph (`meter`, `meterStereo`), not a ladder:
+
+- **dB scale, not linear:** -60…0 dBFS, piecewise so the top gets the
+  resolution (0 → 100%, -6 → 78%, -12 → 61%, -18 → 48%, -48 → 10%).
+- **Zones:** green below -12, yellow -12…-3, red above -3. Unlit
+  segments show their zone colour as dark ghost glass; segments are 2px
+  with 1px gaps (1px + 1 on bars under 6px wide).
+- **Peak over RMS:** the RMS body is full brightness, the peak above it a
+  step dimmer, so loudness and transients read at once.
+- **Ballistics:** display falls at 26 dB/s; a peak-hold segment holds
+  1.2 s then falls at 18 dB/s; a clip LED latches on any sample ≥ 0 dBFS
+  until clicked. State lives in widget memory keyed by the meter's id.
+- **Graduated when there's room:** tick + dB label at 0, 3, 6, 12, 18,
+  24, 36, 48. A stereo pair shares one centre scale between the bars
+  (SSL-style); a mono meter puts it beside the bar. Narrow meters (track
+  headers) drop the scale and keep the clip LED.
 
 ### Later
 

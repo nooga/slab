@@ -124,8 +124,8 @@ pub fn trackHeader(ui: *Ui, r: Rect, key: anytype, t: *TrackUi) void {
     ui.rect(Rect.xywh(body.x - 1, body.y - 1, 3, body.h + 1), t.color);
     _ = body.cutLeft(4);
     // Meter on the far right.
-    const meter = body.cutRight(5);
-    ctl.ladder(ui, meter, "meter", t.level, .{ .segs = 10 });
+    const meter = body.cutRight(6);
+    ctl.meter(ui, meter, "meter", t.level, t.level * 0.6, .{ .scale = .none });
     _ = body.cutRight(3);
     var row1 = body.cutTop(20);
     var buttons = row1.cutRight(3 * 17);

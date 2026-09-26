@@ -119,22 +119,22 @@ fn frame(ui: *Ui, st: *State, build_ms: f64) void {
 fn header(ui: *Ui, r: Rect, st: *State, build_ms: f64) void {
     ui.pushId("header");
     defer ui.popId();
-    var body = ui.plate(r, .{});
-    _ = body.cutLeft(4);
-    ui.textIn(&ui.fonts.body_bold, body.cutLeft(44), "SLAB", style.accent, .left, true);
-    _ = ctl.segmented(ui, body.cutLeft(160).insetXY(0, 1), "page", &st.page, &.{ "CONTROLS", "DAW" });
+    // A toolbar is a row of flush tiles: every button, group and display
+    // is a full-height section of the bar, split by the bar's own seams.
+    var bar = r;
+    const logo = ui.plate(bar.cutLeft(52), .{});
+    ui.textIn(&ui.fonts.body_bold, logo.insetXY(4, 0), "SLAB", style.accent, .left, true);
+    _ = ctl.segmentedFlush(ui, bar.cutLeft(176), "page", &st.page, &.{ "CONTROLS", "DAW" });
 
-    var right = body;
     var buf: [48]u8 = undefined;
     const s = std.fmt.bufPrint(&buf, "UI {d:.2}MS {d}CMD", .{ build_ms, ui.dl.len }) catch "";
-    ctl.display(ui, right.cutRight(160).insetXY(0, 1), s, .{ .align_ = .right });
-    _ = right.cutRight(4);
-    _ = ctl.button(ui, right.cutRight(52).insetXY(0, 1), "run", &st.running, .{ .kind = .latch, .label = "RUN", .led = style.led_green });
-    _ = right.cutRight(4);
-    _ = ctl.button(ui, right.cutRight(84).insetXY(0, 1), "materials", &st.materials_on, .{ .kind = .latch, .label = "MATERIAL", .led = style.led_amber });
-    _ = right.cutRight(4);
-    _ = ctl.segmented(ui, right.cutRight(96).insetXY(0, 1), "zoom", &st.zoom, &.{ "1X", "2X", "3X" });
-    ui.textIn(&ui.fonts.legend, right.cutRight(40), "SCALE", style.text_dim, .center, true);
+    ctl.display(ui, bar.cutRight(168), s, .{ .align_ = .right, .flush = true });
+    _ = ctl.button(ui, bar.cutRight(60), "run", &st.running, .{ .kind = .latch, .label = "RUN", .led = style.led_green, .flush = true });
+    _ = ctl.button(ui, bar.cutRight(92), "materials", &st.materials_on, .{ .kind = .latch, .label = "MATERIAL", .led = style.led_amber, .flush = true });
+    _ = ctl.segmentedFlush(ui, bar.cutRight(108), "zoom", &st.zoom, &.{ "1X", "2X", "3X" });
+    const lab = ui.plate(bar.cutRight(48), .{});
+    ui.textIn(&ui.fonts.legend, lab, "SCALE", style.text_dim, .center, true);
+    _ = ui.plate(bar, .{});
 }
 
 // ═════════════════════════════ CONTROLS ═════════════════════════════
@@ -270,12 +270,14 @@ fn ledsPanel(ui: *Ui, r: Rect, st: *State) void {
     const shapes = [_]ctl.LedShape{ .round3, .round5, .round7, .square4, .square6, .tri_up, .tri_right };
     const cols = [_]Color{ style.led_red, style.led_green, style.led_amber, style.led_blue, style.phosphor };
     const states = [_]ctl.LedState{ .off, .dim, .on, .blink };
-    // Stereo ladders on the right edge.
-    const l: f32 = if (st.running) @floatCast(0.55 + 0.4 * @sin(ui.in.time * 5.3) * @abs(@sin(ui.in.time * 1.3))) else 0.6;
-    const rr: f32 = if (st.running) @floatCast(0.5 + 0.45 * @sin(ui.in.time * 4.1 + 1) * @abs(@sin(ui.in.time * 1.1))) else 0.55;
-    const lad = body.cutRight(24).insetXY(4, 2).takeTop(120);
-    ctl.ladder(ui, lad.takeLeft(7), "vl", l, .{ .segs = 20 });
-    ctl.ladder(ui, Rect.xywh(lad.x + 9, lad.y, 7, lad.h), "vr", rr, .{ .segs = 20 });
+    // Pro meters on the right: a graduated stereo pair (centre scale)
+    // and a mono meter with its scale on the left.
+    const l: f32 = if (st.running) masterLevel(ui) else 0.5;
+    const rr: f32 = if (st.running) @floatCast(std.math.clamp(0.5 + 0.4 * @abs(@sin(ui.in.time * 2.3 + 1)), 0, 1)) else 0.45;
+    var meters = body.cutRight(96).takeTop(@min(body.h, 200));
+    ctl.meterStereo(ui, meters.cutRight(40), "stereo", .{ l, rr }, .{ l * 0.5, rr * 0.5 }, .{});
+    _ = meters.cutRight(8);
+    ctl.meter(ui, meters.cutRight(32), "mono", rr, rr * 0.6, .{});
 
     for (states, 0..) |s, si| {
         var row = body.cutTop(20);
@@ -479,32 +481,35 @@ fn beatNow(ui: *const Ui, st: *const State) f32 {
 fn transport(ui: *Ui, r: Rect, st: *State) void {
     ui.pushId("transport");
     defer ui.popId();
-    var body = ui.plate(r, .{ .chamfer = 0 });
-    const bh: i32 = 24;
-    var btns = body.cutLeft(4 * 32 + 8).insetXY(4, 2);
+    var bar = r;
     var stop_on = !st.playing;
-    if (ctl.button(ui, btns.cutLeft(32).takeTop(bh), "stop", &stop_on, .{ .glyph = .square6, .glyph_on = style.text })) st.playing = false;
-    if (ctl.button(ui, btns.cutLeft(32).takeTop(bh), "play", &st.playing, .{ .glyph = .tri_right, .glyph_on = style.play })) st.playing = true;
-    _ = ctl.button(ui, btns.cutLeft(32).takeTop(bh), "rec", &st.rec, .{ .kind = .latch, .glyph = .round7, .glyph_on = style.rec });
-    _ = ctl.button(ui, btns.cutLeft(32).takeTop(bh), "loop", &st.loop_on, .{ .kind = .latch, .label = "LOOP", .lit = style.accent });
+    if (ctl.button(ui, bar.cutLeft(36), "stop", &stop_on, .{ .glyph = .square6, .glyph_on = style.text, .flush = true })) st.playing = false;
+    if (ctl.button(ui, bar.cutLeft(36), "play", &st.playing, .{ .glyph = .tri_right, .glyph_on = style.play, .flush = true })) st.playing = true;
+    _ = ctl.button(ui, bar.cutLeft(36), "rec", &st.rec, .{ .kind = .latch, .glyph = .round7, .glyph_on = style.rec, .flush = true });
+    _ = ctl.button(ui, bar.cutLeft(52), "loop", &st.loop_on, .{ .kind = .latch, .label = "LOOP", .lit = style.accent, .flush = true });
     var buf: [32]u8 = undefined;
     const b = beatNow(ui, st);
-    const bar: u32 = @intFromFloat(@floor(b / 4));
+    const bar_n: u32 = @intFromFloat(@floor(b / 4));
     const beat: u32 = @intFromFloat(@mod(@floor(b), 4));
     const six: u32 = @intFromFloat(@mod(@floor(b * 4), 4));
-    const pos = std.fmt.bufPrint(&buf, "{d:0>3}.{d}.{d}", .{ bar + 1, beat + 1, six + 1 }) catch "";
-    var disp = body.insetXY(0, 1);
-    ctl.display(ui, disp.cutLeft(136), pos, .{ .align_ = .right, .large = true });
-    ctl.display(ui, disp.cutLeft(112), "118.00", .{ .align_ = .right, .large = true });
-    ctl.display(ui, disp.cutLeft(64), "4/4", .{ .align_ = .center, .large = true });
-    var right = disp;
-    _ = ctl.button(ui, right.cutLeft(72).insetXY(4, 2), "metro", &st.metro, .{ .kind = .latch, .label = "METRO", .led = style.led_amber });
-    _ = ctl.button(ui, right.cutLeft(56).insetXY(0, 2), "tap", null, .{ .label = "TAP" });
-    // Master meter at the far right of the transport.
-    const lvl: f32 = if (st.playing) @floatCast(0.6 + 0.3 * @sin(ui.in.time * 7) * @abs(@sin(ui.in.time * 1.7))) else 0;
-    const m = right.cutRight(160).insetXY(4, 7);
-    ctl.ladder(ui, m.takeTop(7), "ml", lvl, .{ .horizontal = true, .segs = 32 });
-    ctl.ladder(ui, Rect.xywh(m.x, m.y + 8, m.w, 7), "mr", lvl * 0.94, .{ .horizontal = true, .segs = 32 });
+    const pos = std.fmt.bufPrint(&buf, "{d:0>3}.{d}.{d}", .{ bar_n + 1, beat + 1, six + 1 }) catch "";
+    ctl.display(ui, bar.cutLeft(140), pos, .{ .align_ = .right, .large = true, .flush = true });
+    ctl.display(ui, bar.cutLeft(116), "118.00", .{ .align_ = .right, .large = true, .flush = true });
+    ctl.display(ui, bar.cutLeft(64), "4/4", .{ .align_ = .center, .large = true, .flush = true });
+    _ = ctl.button(ui, bar.cutLeft(80), "metro", &st.metro, .{ .kind = .latch, .label = "METRO", .led = style.led_amber, .flush = true });
+    _ = ctl.button(ui, bar.cutLeft(52), "tap", null, .{ .label = "TAP", .flush = true });
+    // Master meter tile at the far right: graduated stereo bargraph.
+    const lvl: f32 = if (st.playing) masterLevel(ui) else 0;
+    const mt = ui.plate(bar.cutRight(240), .{});
+    ctl.meterStereo(ui, mt, "master", .{ lvl, lvl * 0.93 }, .{ lvl * 0.55, lvl * 0.5 }, .{ .horizontal = true });
+    _ = ui.plate(bar, .{});
+}
+
+/// A plausible programme level: busy, occasionally kissing 0 dBFS.
+fn masterLevel(ui: *const Ui) f32 {
+    const t = ui.in.time;
+    const env = 0.55 + 0.35 * @abs(@sin(t * 1.7)) + 0.12 * @sin(t * 11.0);
+    return @floatCast(std.math.clamp(env, 0, 1.02));
 }
 
 fn arrangement(ui: *Ui, r: Rect, st: *State) void {

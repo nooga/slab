@@ -62,6 +62,13 @@ fn wheelSteps(ui: *const Ui, r: Rect) f32 {
     return ui.in.wheel_y;
 }
 
+/// Draw a tile's right/bottom seam and return the area inside it.
+fn seamed(ui: *Ui, r: Rect) Rect {
+    ui.rect(Rect.xywh(r.right() - 1, r.y, 1, r.h), style.edge);
+    ui.rect(Rect.xywh(r.x, r.bottom() - 1, r.w - 1, 1), style.edge);
+    return Rect.xywh(r.x, r.y, r.w - 1, r.h - 1);
+}
+
 fn focusRing(ui: *Ui, wid: core.Id, r: Rect) void {
     if (ui.focus != wid or ui.active == wid) return;
     ui.bevel(r, style.accent, style.accent);
@@ -450,6 +457,9 @@ pub const ButtonOpts = struct {
     /// while the button is on.
     glyph: ?LedShape = null,
     glyph_on: Color = style.accent,
+    /// Toolbar tile: the cap is a section of the bar it sits in, full
+    /// height, sharing the bar's 1px seams instead of floating inside it.
+    flush: bool = false,
     disabled: bool = false,
 };
 
@@ -479,8 +489,10 @@ pub fn button(ui: *Ui, r: Rect, key: anytype, on: ?*bool, o: ButtonOpts) bool {
 }
 
 fn cap(ui: *Ui, r: Rect, down: bool, is_on: bool, hot: bool, o: ButtonOpts) void {
-    ui.rect(r, style.edge);
-    const body = r.inset(1);
+    const body = if (o.flush) seamed(ui, r) else blk: {
+        ui.rect(r, style.edge);
+        break :blk r.inset(1);
+    };
     var fill = style.cap;
     if (o.lit) |lc| {
         if (is_on) fill = style.cap.mix(lc, 0.6);
@@ -494,8 +506,9 @@ fn cap(ui: *Ui, r: Rect, down: bool, is_on: bool, hot: bool, o: ButtonOpts) void
         ui.bevel(body, if (o.lit != null and is_on) fill.shade(40) else style.face_hi.shade(if (hot) 14 else 0), style.face_lo);
     }
     if (o.lit) |lc| {
-        // Lit cap throws a faint glow onto the plate around it.
-        if (is_on) ui.rect(r.inset(-1), lc.alpha(40));
+        // Lit cap throws a faint glow onto the plate around it (not on
+        // flush tiles: their neighbours are caps too).
+        if (is_on and !o.flush) ui.rect(r.inset(-1), lc.alpha(40));
     }
     const shift: i32 = if (down) 1 else 0;
     var content = body.insetXY(3, 0);
@@ -520,6 +533,15 @@ fn cap(ui: *Ui, r: Rect, down: bool, is_on: bool, hot: bool, o: ButtonOpts) void
 
 /// Joined caps, exactly one down.
 pub fn segmented(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8) bool {
+    return segmentedEx(ui, r, key, v, labels, false);
+}
+
+/// Segmented group as toolbar tiles (see `ButtonOpts.flush`).
+pub fn segmentedFlush(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8) bool {
+    return segmentedEx(ui, r, key, v, labels, true);
+}
+
+fn segmentedEx(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8, flush: bool) bool {
     const before = v.*;
     ui.pushId(key);
     defer ui.popId();
@@ -527,12 +549,12 @@ pub fn segmented(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const
     for (labels, 0..) |lab, i| {
         const cell = r.cell(n, 1, @intCast(i), 0);
         // Joined: neighbours share one outline column.
-        const cr = if (i > 0) Rect.xywh(cell.x - 1, cell.y, cell.w + 1, cell.h) else cell;
+        const cr = if (i > 0 and !flush) Rect.xywh(cell.x - 1, cell.y, cell.w + 1, cell.h) else cell;
         const wid = ui.id(i);
         const b = ui.behavior(wid, cr, false);
         if (b.pressed) v.* = @intCast(i);
         const on = v.* == i;
-        cap(ui, cr, on, on, ui.isHot(wid), .{ .label = lab });
+        cap(ui, cr, on, on, ui.isHot(wid), .{ .label = lab, .flush = flush });
         if (ui.isHot(wid)) ui.setTouch("", lab);
     }
     return v.* != before;
@@ -695,6 +717,231 @@ pub fn ladder(ui: *Ui, r: Rect, key: anytype, level: f32, o: LadderOpts) void {
     }
 }
 
+// ── Pro meter ────────────────────────────────────────────────────────
+
+pub const MeterScale = enum {
+    /// Graduate when there is room for labels, else bare.
+    auto,
+    none,
+    /// Labels left of (or above) the bar.
+    before,
+    /// Labels right of (or below) the bar.
+    after,
+};
+
+pub const MeterOpts = struct {
+    horizontal: bool = false,
+    scale: MeterScale = .auto,
+    /// Latching clip LED at the top (right) end; click to reset.
+    clip_led: bool = true,
+};
+
+const METER_MARKS = [_]f32{ 0, -3, -6, -12, -18, -24, -36, -48 };
+const METER_FLOOR: f32 = -60;
+/// Display fall rate (dB/s), peak-hold time (s) and hold fall (dB/s).
+const METER_FALL: f32 = 26;
+const PEAK_HOLD: f32 = 1.2;
+const PEAK_FALL: f32 = 18;
+const SCALE_W: i32 = 20;
+const CLIP_H: i32 = 5;
+
+/// dB → 0..1 position. Piecewise linear with more resolution near the
+/// top, where mixing decisions happen (like hardware bargraphs).
+pub fn meterPos(db: f32) f32 {
+    const pts = [_][2]f32{ .{ -60, 0 }, .{ -48, 0.1 }, .{ -36, 0.22 }, .{ -24, 0.38 }, .{ -18, 0.48 }, .{ -12, 0.61 }, .{ -6, 0.78 }, .{ -3, 0.88 }, .{ 0, 1 } };
+    if (db <= pts[0][0]) return 0;
+    for (1..pts.len) |i| {
+        if (db <= pts[i][0]) {
+            const a = pts[i - 1];
+            const b = pts[i];
+            return a[1] + (b[1] - a[1]) * (db - a[0]) / (b[0] - a[0]);
+        }
+    }
+    return 1;
+}
+
+/// Inverse of meterPos (bisection; exact enough for colour zoning).
+fn meterDb(t: f32) f32 {
+    var lo: f32 = METER_FLOOR;
+    var hi: f32 = 0;
+    for (0..14) |_| {
+        const mid = (lo + hi) / 2;
+        if (meterPos(mid) < t) lo = mid else hi = mid;
+    }
+    return (lo + hi) / 2;
+}
+
+pub fn linToDb(v: f32) f32 {
+    return if (v <= 0.000_001) -120 else 20 * std.math.log10(v);
+}
+
+fn zoneColor(db: f32) Color {
+    return if (db > -3) style.rec else if (db > -12) style.led_yellow else style.led_green;
+}
+
+const Ballistics = struct { peak: f32, rms: f32, hold: f32 };
+
+/// Per-bar state in widget memory: displayed peak and RMS fall at
+/// METER_FALL, the held peak holds PEAK_HOLD then falls at PEAK_FALL.
+fn ballistics(ui: *Ui, wid: core.Id, peak_db: f32, rms_db: f32) Ballistics {
+    const dt = ui.in.dt;
+    const peak = ui.memo(wid, METER_FLOOR);
+    const rms = ui.memo(wid +% 1, METER_FLOOR);
+    const hold = ui.memo(wid +% 2, METER_FLOOR);
+    const hold_t = ui.memo(wid +% 3, 0);
+    peak.* = @max(peak_db, peak.* - METER_FALL * dt);
+    rms.* = @max(rms_db, rms.* - METER_FALL * dt);
+    if (peak_db >= hold.*) {
+        hold.* = peak_db;
+        hold_t.* = PEAK_HOLD;
+    } else if (hold_t.* > 0) {
+        hold_t.* -= dt;
+    } else {
+        hold.* = @max(METER_FLOOR, hold.* - PEAK_FALL * dt);
+    }
+    if (peak.* > METER_FLOOR or hold.* > METER_FLOOR) ui.animate();
+    return .{ .peak = peak.*, .rms = rms.*, .hold = hold.* };
+}
+
+/// One bar: segments coloured by dB zone. RMS body at full brightness,
+/// peak above it a step dimmer, a bright peak-hold segment, unlit
+/// segments as dark ghost glass.
+fn meterBar(ui: *Ui, r: Rect, b: Ballistics, horizontal: bool) void {
+    const inner = ui.well(r, style.well);
+    const len = if (horizontal) inner.w else inner.h;
+    const across = if (horizontal) inner.h else inner.w;
+    const pitch: i32 = if (across >= 6) 3 else 2; // segment + 1px gap
+    const n = @divFloor(len, pitch);
+    if (n <= 0) return;
+    const nf: f32 = @floatFromInt(n);
+    const peak_p = meterPos(b.peak);
+    const rms_p = meterPos(b.rms);
+    const hold_i: i32 = @intFromFloat(@floor(meterPos(b.hold) * nf - 0.001));
+    var i: i32 = 0;
+    while (i < n) : (i += 1) {
+        const t = (@as(f32, @floatFromInt(i)) + 0.5) / nf;
+        const zc = zoneColor(meterDb(t));
+        const col = if (t <= rms_p)
+            zc
+        else if (t <= peak_p)
+            zc.mix(style.well, 0.35)
+        else if (i == hold_i and b.hold > METER_FLOOR)
+            zc.mix(style.text, 0.25)
+        else
+            zc.mix(style.well, 0.86);
+        const seg = if (horizontal)
+            Rect.xywh(inner.x + i * pitch, inner.y, pitch - 1, inner.h)
+        else
+            Rect.xywh(inner.x, inner.bottom() - (i + 1) * pitch + 1, inner.w, pitch - 1);
+        ui.rect(seg, col);
+    }
+}
+
+/// dB graduation in `r`, positioned against `axis` (the bar's long extent).
+fn meterScale(ui: *Ui, r: Rect, axis: Rect, horizontal: bool, side: Ui.Align) void {
+    const f = &ui.fonts.legend;
+    for (METER_MARKS) |db| {
+        const p = meterPos(db);
+        var buf: [4]u8 = undefined;
+        const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u32, @intFromFloat(@abs(db)))}) catch "";
+        const col = if (db == 0) style.text_dim else style.text_mute;
+        const w = f.measure(s);
+        if (horizontal) {
+            const x = axis.x + @as(i32, @intFromFloat(@round(p * @as(f32, @floatFromInt(axis.w - 1)))));
+            ui.rect(Rect.xywh(x, r.y, 1, 2), col);
+            _ = ui.text(f, std.math.clamp(x - @divFloor(w, 2), r.x, r.right() - w), r.y + 1, s, col);
+        } else {
+            const y = axis.bottom() - 1 - @as(i32, @intFromFloat(@round(p * @as(f32, @floatFromInt(axis.h - 1)))));
+            const ty = std.math.clamp(y - 6, r.y - 2, r.bottom() - 10);
+            switch (side) {
+                .left => {
+                    ui.rect(Rect.xywh(r.x, y, 2, 1), col);
+                    _ = ui.text(f, r.x + 3, ty, s, col);
+                },
+                .right => {
+                    ui.rect(Rect.xywh(r.right() - 2, y, 2, 1), col);
+                    _ = ui.text(f, r.right() - 3 - w, ty, s, col);
+                },
+                .center => {
+                    ui.rect(Rect.xywh(r.x, y, 2, 1), col);
+                    ui.rect(Rect.xywh(r.right() - 2, y, 2, 1), col);
+                    _ = ui.text(f, r.x + @divFloor(r.w - w, 2), ty, s, col);
+                },
+            }
+        }
+    }
+}
+
+/// Clip indicator: latches on any sample at or above 0 dBFS; click resets.
+fn clipLed(ui: *Ui, r: Rect, wid: core.Id, peak_db: f32) void {
+    const latch = ui.memo(wid +% 4, 0);
+    if (peak_db >= 0) latch.* = 1;
+    if (ui.behavior(wid +% 5, r, false).clicked) latch.* = 0;
+    const inner = ui.well(r, style.well);
+    const on = latch.* > 0;
+    ui.rect(inner, if (on) style.rec else style.rec.mix(style.well, 0.82));
+    if (on) ui.rect(Rect.xywh(inner.x, inner.y, inner.w, 1), style.rec.mix(style.text, 0.4));
+}
+
+/// Pro mono meter. `peak` and `rms` are linear amplitude (1.0 = 0 dBFS).
+pub fn meter(ui: *Ui, r: Rect, key: anytype, peak: f32, rms: f32, o: MeterOpts) void {
+    const wid = ui.id(key);
+    const pdb = linToDb(peak);
+    const b = ballistics(ui, wid, pdb, linToDb(rms));
+    var area = r;
+    const graduate = switch (o.scale) {
+        .none => false,
+        .auto => if (o.horizontal) area.h >= 20 else area.w >= SCALE_W + 6,
+        .before, .after => true,
+    };
+    // Scale first, so the clip LED sits over the bar only.
+    var sc = Rect{};
+    if (graduate) {
+        sc = if (o.horizontal)
+            (if (o.scale == .before) area.cutTop(12) else area.cutBottom(12))
+        else
+            (if (o.scale == .after) area.cutRight(SCALE_W) else area.cutLeft(SCALE_W));
+    }
+    const clip_r = if (!o.clip_led) Rect{} else if (o.horizontal) area.cutRight(CLIP_H + 1) else area.cutTop(CLIP_H);
+    meterBar(ui, area, b, o.horizontal);
+    if (graduate) {
+        const side: Ui.Align = if (o.horizontal or o.scale == .after) .left else .right;
+        meterScale(ui, if (o.horizontal) sc else Rect.xywh(sc.x, area.y, sc.w, area.h), area.inset(1), o.horizontal, side);
+    }
+    if (o.clip_led) clipLed(ui, clip_r, wid, pdb);
+}
+
+/// Stereo pair sharing one centre scale (SSL-style) when it fits.
+pub fn meterStereo(ui: *Ui, r: Rect, key: anytype, peak: [2]f32, rms: [2]f32, o: MeterOpts) void {
+    ui.pushId(key);
+    defer ui.popId();
+    const bare = MeterOpts{ .horizontal = o.horizontal, .scale = .none, .clip_led = o.clip_led };
+    const graduate = o.scale != .none and (if (o.horizontal) r.h >= 26 else r.w >= SCALE_W + 10);
+    var a = r;
+    if (!graduate) {
+        const first = if (o.horizontal) a.cutTop(@divFloor(r.h, 2)) else a.cutLeft(@divFloor(r.w, 2));
+        meter(ui, first, "l", peak[0], rms[0], bare);
+        meter(ui, a, "r", peak[1], rms[1], bare);
+        return;
+    }
+    const clip: i32 = if (o.clip_led) CLIP_H else 0;
+    if (o.horizontal) {
+        const bar_h = @divFloor(r.h - 12, 2);
+        meter(ui, a.cutTop(bar_h), "l", peak[0], rms[0], bare);
+        const sc = a.cutTop(12);
+        meter(ui, a, "r", peak[1], rms[1], bare);
+        const axis = Rect.xywh(r.x, sc.y, r.w - (if (o.clip_led) clip + 1 else 0), sc.h);
+        meterScale(ui, sc, axis.inset(1), true, .left);
+    } else {
+        const bar_w = @divFloor(r.w - SCALE_W, 2);
+        meter(ui, a.cutLeft(bar_w), "l", peak[0], rms[0], bare);
+        const sc = a.cutLeft(SCALE_W);
+        meter(ui, a, "r", peak[1], rms[1], bare);
+        const axis = Rect.xywh(sc.x, r.y + clip, sc.w, r.h - clip);
+        meterScale(ui, axis, axis.inset(1), false, .center);
+    }
+}
+
 /// Meter segments: no halo (they sit shoulder to shoulder).
 fn ledBarFlat(ui: *Ui, r: Rect, st: LedState, col: Color) void {
     ui.rect(r, switch (st) {
@@ -713,6 +960,9 @@ pub const DisplayOpts = struct {
     ghost: bool = true,
     /// Each matrix dot is 2×2 logical px (transport readouts).
     large: bool = false,
+    /// Toolbar tile: the well spans the full rect and ends in the bar's
+    /// right/bottom seam.
+    flush: bool = false,
 };
 
 pub const CELL_W: i32 = 6;
@@ -725,7 +975,7 @@ pub fn displayHeight(large: bool) i32 {
 /// Dot-matrix readout (docs/06 §Displays). Tamzen 6×12 is the matrix face:
 /// its caps are 5×7, the classic LCD cell.
 pub fn display(ui: *Ui, r: Rect, s: []const u8, o: DisplayOpts) void {
-    const inner = ui.well(r, style.well);
+    const inner = ui.well(if (o.flush) seamed(ui, r) else r, style.well);
     const m = style.materials;
     const f = &ui.fonts.legend;
     const k: i32 = if (o.large) 2 else 1;

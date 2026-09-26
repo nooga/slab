@@ -41,6 +41,8 @@ pub const Input = struct {
     keys: [MAX_KEYS]c_int = undefined,
     nkeys: usize = 0,
     time: f64 = 0,
+    /// Seconds since the previous frame (clamped; 0 on the first).
+    dt: f32 = 0,
 
     pub fn ix(in: *const Input) i32 {
         return @intFromFloat(@floor(in.mx));
@@ -104,7 +106,7 @@ pub const TOUCH_HOLD: f64 = 1.0;
 
 /// Small per-widget float state (peak hold, afterglow levels).
 const Memo = struct { id: Id = 0, v: f32 = 0, used: u64 = 0 };
-const MEMO_SLOTS = 128;
+const MEMO_SLOTS = 512;
 
 /// Afterglow history for scope-like displays: the last few frames.
 pub const TRAIL = 4;
@@ -159,6 +161,7 @@ pub const Ui = struct {
     last_click_y: f32 = 0,
     prev_mx: f32 = 0,
     prev_my: f32 = 0,
+    prev_time: f64 = -1,
 
     cmd_buf: []draw.Cmd,
     overlay_buf: []draw.Cmd,
@@ -219,6 +222,8 @@ pub const Ui = struct {
         const wv = c.rl.GetMouseWheelMoveV();
         in.wheel_x = wv.x;
         in.wheel_y = wv.y;
+        in.dt = if (ui.prev_time < 0) 0 else @floatCast(@min(0.1, in.time - ui.prev_time));
+        ui.prev_time = in.time;
         in.dx = in.mx - ui.prev_mx;
         in.dy = in.my - ui.prev_my;
         ui.prev_mx = in.mx;
