@@ -360,7 +360,11 @@ The same everywhere, so nothing surprises.
 - **Undo** covers every value change; one drag = one undo step.
 - **Hover** shows the value in the title-strip display and a tooltip after
   the delay (docs/12 §Tooltips).
-- **Focus ring:** 1px `accent` outline, keyboard focus only.
+- **Focus:** value controls (knobs, sliders, selectors) take focus on
+  click so the arrow keys step them afterwards; buttons, caps and
+  steppers never take focus on click (Enter must not re-fire the last
+  clicked button). The 1px `accent` focus ring only shows once the
+  keyboard is in use (focus-visible): any pointer press hides it again.
 - The cursor changes on hover for every draggable thing (resize for
   splitters, vertical arrows for value drags).
 

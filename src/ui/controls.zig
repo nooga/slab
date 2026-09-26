@@ -10,6 +10,7 @@
 const std = @import("std");
 const c = @import("../c.zig");
 const core = @import("core.zig");
+const geom = @import("geom.zig");
 const style = @import("style.zig");
 const sprites = @import("sprites.zig");
 const font_mod = @import("font.zig");
@@ -70,7 +71,7 @@ fn seamed(ui: *Ui, r: Rect) Rect {
 }
 
 fn focusRing(ui: *Ui, wid: core.Id, r: Rect) void {
-    if (ui.focus != wid or ui.active == wid) return;
+    if (!ui.focus_visible or ui.focus != wid or ui.active == wid) return;
     ui.bevel(r, style.accent, style.accent);
 }
 
@@ -474,7 +475,7 @@ pub fn buttonHeight(size: Size) i32 {
 /// Returns true on click. For `latch`, `on` is toggled on click.
 pub fn button(ui: *Ui, r: Rect, key: anytype, on: ?*bool, o: ButtonOpts) bool {
     const wid = ui.id(key);
-    const b = ui.behavior(wid, r, o.disabled);
+    const b = ui.behaviorEx(wid, r, .{ .disabled = o.disabled, .focusable = false });
     var clicked = b.clicked;
     if (arrowSteps(ui, wid) != 0 or (ui.focus == wid and ui.in.keyPressed(c.rl.KEY_ENTER))) clicked = true;
     if (clicked and o.kind == .latch) {
@@ -514,9 +515,13 @@ fn cap(ui: *Ui, r: Rect, down: bool, is_on: bool, hot: bool, o: ButtonOpts) void
     var content = body.insetXY(3, 0);
     content.y += shift;
     if (o.led) |lc| {
-        const lr = content.cutLeft(5);
-        led(ui, lr.x, lr.y + @divFloor(lr.h - 3, 2), .round3, if (is_on) .on else .off, lc);
-        _ = content.cutLeft(2);
+        // LED + label are one group, centred in the cap (LED_GAP apart),
+        // so the LED never hugs the edge on wide caps.
+        const LED_GAP = 4;
+        const group = 3 + LED_GAP + ui.fonts.legend.measure(o.label);
+        const lx = content.x + @max(1, @divFloor(content.w - group, 2));
+        led(ui, lx, content.y + @divFloor(content.h - 3, 2), .round3, if (is_on) .on else .off, lc);
+        content = Rect.xywh(lx + 3 + LED_GAP, content.y, content.right() - (lx + 3 + LED_GAP), content.h);
     }
     if (o.glyph) |shape| {
         const sz = sprites.ledSize(shape);
@@ -551,7 +556,7 @@ fn segmentedEx(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u
         // Joined: neighbours share one outline column.
         const cr = if (i > 0 and !flush) Rect.xywh(cell.x - 1, cell.y, cell.w + 1, cell.h) else cell;
         const wid = ui.id(i);
-        const b = ui.behavior(wid, cr, false);
+        const b = ui.behaviorEx(wid, cr, .{ .focusable = false });
         if (b.pressed) v.* = @intCast(i);
         const on = v.* == i;
         cap(ui, cr, on, on, ui.isHot(wid), .{ .label = lab, .flush = flush });
@@ -575,6 +580,7 @@ pub fn list(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const []const u8,
     var area = r;
     const legend_r = if (label.len > 0) area.cutTop(LEGEND_H) else Rect{};
     const rows = Rect.xywh(area.x, area.y, area.w, @as(i32, @intCast(options.len)) * LIST_ROW);
+    if (options.len == 0) return false;
     const b = ui.behavior(wid, rows, false);
     if (b.held) {
         const i = @divFloor(ui.in.iy() - rows.y, LIST_ROW);
@@ -605,8 +611,8 @@ pub fn displaySelect(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const []
     const left = area.cutLeft(10);
     const right = area.cutRight(10);
     ui.pushId(key);
-    const bl = ui.behavior(ui.id("prev"), left, false);
-    const br = ui.behavior(ui.id("next"), right, false);
+    const bl = ui.behaviorEx(ui.id("prev"), left, .{ .focusable = false });
+    const br = ui.behaviorEx(ui.id("next"), right, .{ .focusable = false });
     ui.popId();
     const bm = ui.behavior(wid, area, false);
     if (bl.clicked and v.* > 0) v.* -= 1;
@@ -849,10 +855,10 @@ fn meterScale(ui: *Ui, r: Rect, axis: Rect, horizontal: bool, side: Ui.Align) vo
         if (horizontal) {
             const x = axis.x + @as(i32, @intFromFloat(@round(p * @as(f32, @floatFromInt(axis.w - 1)))));
             ui.rect(Rect.xywh(x, r.y, 1, 2), col);
-            _ = ui.text(f, std.math.clamp(x - @divFloor(w, 2), r.x, r.right() - w), r.y + 1, s, col);
+            _ = ui.text(f, geom.fit(x - @divFloor(w, 2), r.x, r.right() - w), r.y + 1, s, col);
         } else {
             const y = axis.bottom() - 1 - @as(i32, @intFromFloat(@round(p * @as(f32, @floatFromInt(axis.h - 1)))));
-            const ty = std.math.clamp(y - 6, r.y - 2, r.bottom() - 10);
+            const ty = geom.fit(y - 6, r.y - 2, r.bottom() - 10);
             switch (side) {
                 .left => {
                     ui.rect(Rect.xywh(r.x, y, 2, 1), col);
@@ -876,7 +882,7 @@ fn meterScale(ui: *Ui, r: Rect, axis: Rect, horizontal: bool, side: Ui.Align) vo
 fn clipLed(ui: *Ui, r: Rect, wid: core.Id, peak_db: f32) void {
     const latch = ui.memo(wid +% 4, 0);
     if (peak_db >= 0) latch.* = 1;
-    if (ui.behavior(wid +% 5, r, false).clicked) latch.* = 0;
+    if (ui.behaviorEx(wid +% 5, r, .{ .focusable = false }).clicked) latch.* = 0;
     const inner = ui.well(r, style.well);
     const on = latch.* > 0;
     ui.rect(inner, if (on) style.rec else style.rec.mix(style.well, 0.82));
@@ -1143,7 +1149,7 @@ pub fn split(ui: *Ui, r: Rect, key: anytype, size: *i32, o: SplitOpts) [2]Rect {
     else
         Rect.xywh(line - SPLIT_GRAB, r.y, 2 * SPLIT_GRAB + 1, r.h);
 
-    const b = ui.behaviorPrio(wid, hit, false, 1);
+    const b = ui.behaviorEx(wid, hit, .{ .prio = 1, .focusable = false });
     const mouse = if (rows) ui.in.iy() else ui.in.ix();
     const grab = ui.memo(wid, 0);
     if (b.pressed) grab.* = @floatFromInt(mouse - line);

@@ -147,6 +147,9 @@ pub const Ui = struct {
     cursor_set: c_int = c.rl.MOUSE_CURSOR_DEFAULT,
     active: Id = 0,
     focus: Id = 0,
+    /// Draw the focus ring? Only once the keyboard is in use (like CSS
+    /// :focus-visible): a pointer press hides it, a key press shows it.
+    focus_visible: bool = false,
 
     ids: [ID_DEPTH]Id = undefined,
     id_depth: usize = 0,
@@ -269,6 +272,8 @@ pub const Ui = struct {
         ui.dl.reset();
         ui.overlay.reset();
         if (in.pressed and ui.hot == 0) ui.focus = 0;
+        if (in.pressed) ui.focus_visible = false;
+        if (in.nkeys > 0 and ui.focus != 0) ui.focus_visible = true;
     }
 
     pub fn endFrame(ui: *Ui) void {
@@ -364,16 +369,26 @@ pub const Ui = struct {
         double: bool = false,
     };
 
-    /// Standard pointer behaviour for a widget occupying `r`.
+    pub const BehaviorOpts = struct {
+        disabled: bool = false,
+        /// Hover priority (see `hot_next_prio`).
+        prio: u8 = 0,
+        /// Take keyboard focus on press. Value controls do (arrows then
+        /// step them); buttons don't, so Enter never re-fires the last
+        /// clicked button.
+        focusable: bool = true,
+    };
+
+    /// Standard pointer behaviour for a value control occupying `r`.
     pub fn behavior(ui: *Ui, wid: Id, r: Rect, disabled: bool) Behavior {
-        return ui.behaviorPrio(wid, r, disabled, 0);
+        return ui.behaviorEx(wid, r, .{ .disabled = disabled });
     }
 
-    /// `behavior` with a hover priority (see `hot_next_prio`).
-    pub fn behaviorPrio(ui: *Ui, wid: Id, r: Rect, disabled: bool, prio: u8) Behavior {
+    pub fn behaviorEx(ui: *Ui, wid: Id, r: Rect, o: BehaviorOpts) Behavior {
         var b = Behavior{};
         const over = r.contains(ui.in.ix(), ui.in.iy());
-        if (disabled) return b;
+        if (o.disabled) return b;
+        const prio = o.prio;
         if (over and (ui.active == 0 or ui.active == wid) and prio >= ui.hot_next_prio) {
             ui.hot_next = wid;
             ui.hot_next_prio = prio;
@@ -390,7 +405,7 @@ pub const Ui = struct {
             }
         } else if (b.hover and ui.in.pressed and ui.active == 0) {
             ui.active = wid;
-            ui.focus = wid;
+            if (o.focusable) ui.focus = wid;
             ui.drag_acc = 0;
             ui.edit_began = true;
             b.pressed = true;

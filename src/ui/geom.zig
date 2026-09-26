@@ -3,6 +3,12 @@
 
 const std = @import("std");
 
+/// Clamp that tolerates an inverted range (lo wins): layout bounds derived
+/// from rects can cross when a pane is squeezed, and that must never trap.
+pub fn fit(v: i32, lo: i32, hi: i32) i32 {
+    return if (hi < lo) lo else std.math.clamp(v, lo, hi);
+}
+
 pub const Rect = struct {
     x: i32 = 0,
     y: i32 = 0,
@@ -122,4 +128,9 @@ test "grid cells cover the rect with no gaps" {
     for (0..3) |c| sum += r.cell(3, 1, @intCast(c), 0).w;
     try std.testing.expectEqual(@as(i32, 101), sum);
     try std.testing.expectEqual(r.right(), r.cell(3, 2, 2, 1).right());
+}
+
+test "fit never traps on a crossed range" {
+    try std.testing.expectEqual(@as(i32, 5), fit(9, 0, 5));
+    try std.testing.expectEqual(@as(i32, 10), fit(3, 10, 4));
 }
