@@ -1,22 +1,28 @@
-//! Bottom pane — hosts the selected track's machine panel. In expanded
-//! mode the machine's own title strip is the strip title; unused space is
-//! filled by a packed placeholder cell with the collapse button.
+//! Machine bay — the selected track's device chain on the new Ui (docs/06,
+//! docs/15). Each device is a column: a flush title strip
+//!
+//!   [×][NAME ●][ title display: preset / touched param ][▾][ON]
+//!
+//! over the machine's own panel. The chain scrolls sideways (trackpad
+//! h-swipe or Shift+wheel) with a minimap when it overflows; effects
+//! reorder by dragging their name tile. Menus (add / replace / presets /
+//! delete confirm) are still the legacy widgets, anchored via `bridge`.
 
 const std = @import("std");
 const c = @import("../c.zig");
-const theme = @import("theme.zig");
 const widgets = @import("widgets.zig");
+const bridge = @import("bridge.zig");
 const Track = @import("../track.zig").Track;
 const registry_mod = @import("../machine_registry.zig");
 const Registry = registry_mod.Registry;
 const presets_mod = @import("../presets.zig");
 const ui_core = @import("core.zig");
 const ui_style = @import("style.zig");
+const ctl = @import("controls.zig");
+const Machine = @import("../machine.zig").Machine;
 
-/// Legacy f32 rect → new-core logical rect (the app runs the Ui at zoom 1).
-fn uiRect(r: c.rl.Rectangle) ui_core.Rect {
-    return ui_core.Rect.xywh(@intFromFloat(@round(r.x)), @intFromFloat(@round(r.y)), @intFromFloat(@round(r.width)), @intFromFloat(@round(r.height)));
-}
+const Ui = ui_core.Ui;
+const Rect = ui_core.Rect;
 
 /// Which device on the selected track a titlebar action targets: the
 /// instrument slot, or effect `i` in the insert chain.
@@ -33,26 +39,31 @@ pub const Result = struct {
     add_machine: ?usize = null, // registry index to add
     add_preset: ?u8 = null, // preset (by sorted index) to apply after add
 
-    // Name block — swap an existing device for another machine.
+    // Name tile — swap an existing device for another machine.
     replace_ref: ?DeviceRef = null,
     replace_machine: ?usize = null, // registry index to swap in
     replace_preset: ?u8 = null, // preset to apply after the swap
 
-    // Delete confirmed via the "[-]" popup.
+    // Delete confirmed via the × popup.
     remove_ref: ?DeviceRef = null,
 
-    // Preset block actions, scoped to a device.
+    // Preset actions, scoped to a device.
     preset_apply_ref: ?DeviceRef = null,
     preset_apply: ?u8 = null,
     preset_save_ref: ?DeviceRef = null, // open name entry to save a new preset
     preset_rename_ref: ?DeviceRef = null,
     preset_rename_index: ?u8 = null, // current preset to rename
-    preset_anchor: c.rl.Rectangle = zeroRect, // where to float the name-entry field
+    preset_anchor: c.rl.Rectangle = .{ .x = 0, .y = 0, .width = 0, .height = 0 }, // where to float the name-entry field
 
     // Drag-reorder: move effect `from` to slot `to` (effects only).
     reorder_from: ?usize = null,
     reorder_to: ?usize = null,
 };
+
+pub const TITLE_H: i32 = 20;
+const MINIMAP_H: i32 = 8;
+const DEFAULT_PANEL_W: i32 = 200;
+const DRAG_THRESHOLD: f32 = 6;
 
 const ADD_MENU_KEY: u64 = 0x4d414444; // "MADD"
 const REPLACE_MENU_KEY: u64 = 0x5245504c; // "REPL"
@@ -67,178 +78,313 @@ const CONFIRM_DELETE_ID: u32 = 1;
 // so hover drill-down doesn't hit the filesystem every frame.
 var add_scan_cache: [registry_mod.MAX_MACHINES]presets_mod.List = undefined;
 
-var poly_dropdown_track: ?usize = null;
-var bay_scroll_x: f32 = 0; // horizontal scroll of the device chain
+var bay_scroll_x: i32 = 0; // horizontal scroll of the device chain
 
-// Effect drag-reorder state. `active` is set once the pointer crosses the
-// drag threshold from the grab; `src` is the effect index being dragged and
-// `grab_x` the pointer x at press (to render the card following the cursor).
+// Effect drag-reorder: armed on a name-tile press, active once the pointer
+// travels past DRAG_THRESHOLD; a release without travel is a click (opens
+// the replace menu).
 const ReorderDrag = struct {
-    armed: bool = false, // pressed on an effect bar, not yet past threshold
+    armed: bool = false,
     active: bool = false,
     src: usize = 0,
     press_x: f32 = 0,
-    press_y: f32 = 0,
-    cur_x: f32 = 0,
 };
 var fx_drag: ReorderDrag = .{};
-const DRAG_THRESHOLD: f32 = 6;
 
 // Note-activity LED glow, keyed by track index. Bumped to 1.0 when the
 // engine's note sequence advances, decayed each frame for a soft pulse.
 var led_seen: [16]u32 = [_]u32{0} ** 16;
 var led_glow: [16]f32 = [_]f32{0} ** 16;
 
-fn lerpColor(a: c.rl.Color, b: c.rl.Color, t: f32) c.rl.Color {
-    const k = std.math.clamp(t, 0, 1);
-    return .{
-        .r = @intFromFloat(@as(f32, @floatFromInt(a.r)) + (@as(f32, @floatFromInt(b.r)) - @as(f32, @floatFromInt(a.r))) * k),
-        .g = @intFromFloat(@as(f32, @floatFromInt(a.g)) + (@as(f32, @floatFromInt(b.g)) - @as(f32, @floatFromInt(a.g))) * k),
-        .b = @intFromFloat(@as(f32, @floatFromInt(a.b)) + (@as(f32, @floatFromInt(b.b)) - @as(f32, @floatFromInt(a.b))) * k),
-        .a = 255,
+fn panelW(mach: *const Machine) i32 {
+    return if (mach.panel_w > 0) @intFromFloat(@round(mach.panel_w)) else DEFAULT_PANEL_W;
+}
+
+pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usize, is_bus: bool, collapsed: bool, reg: *const Registry, m: widgets.Mouse) Result {
+    var result = Result{};
+    const r = bridge.fromRl(r_legacy);
+    if (r.empty()) return result;
+    ui.pushId("bay");
+    defer ui.popId();
+
+    // Right column: the fold button over a blank plate, never scrolled.
+    var area = r;
+    var fold_col = area.cutRight(TITLE_H);
+    const fold = fold_col.cutTop(TITLE_H);
+    if (ctl.button(ui, fold, "fold", null, .{ .glyph = if (collapsed) .tri_up else .tri_down, .flush = true })) result.minimize = true;
+    bridge.tip(fold, if (collapsed) "Show machine bay" else "Hide machine bay", m);
+    if (!fold_col.empty()) _ = ui.plate(fold_col, .{});
+
+    if (collapsed) {
+        _ = ui.plate(area.takeTop(TITLE_H), .{});
+        return result;
+    }
+    const t = device orelse {
+        emptyBay(ui, area, "SELECT A TRACK");
+        return result;
+    };
+
+    // Measure the chain: (instrument) + effects + the trailing "+".
+    const has_instrument = !is_bus and t.machine_idx != null;
+    const inst_w: i32 = if (has_instrument) panelW(&t.machine) else 0;
+    var content_w: i32 = inst_w + TITLE_H;
+    for (t.effects.items) |*fx| content_w += panelW(&fx.mach);
+    const overflow = content_w > area.w;
+    const minimap = if (overflow) area.cutBottom(MINIMAP_H) else Rect{};
+    const max_scroll = @max(0, content_w - area.w);
+
+    // Horizontal scroll: trackpad h-swipe, or Shift+wheel.
+    if (area.contains(ui.in.ix(), ui.in.iy())) {
+        const wheel: f32 = if (ui.in.wheel_x != 0) ui.in.wheel_x else if (ui.in.shift) ui.in.wheel_y else 0;
+        bay_scroll_x -= @intFromFloat(@round(wheel * 40));
+    }
+    bay_scroll_x = std.math.clamp(bay_scroll_x, 0, max_scroll);
+
+    ui.clip(area);
+    var x = area.x - bay_scroll_x;
+
+    if (has_instrument) {
+        var glow: f32 = 0;
+        if (track_idx) |ti| if (ti < led_glow.len) {
+            const seq = t.noteSeq();
+            if (seq != led_seen[ti]) {
+                led_glow[ti] = 1.0;
+                led_seen[ti] = seq;
+            } else led_glow[ti] = @max(0, led_glow[ti] - 0.05);
+            glow = led_glow[ti];
+            if (glow > 0) ui.animate();
+        };
+        const out = drawDevice(ui, Rect.xywh(x, area.y, inst_w, area.h), &t.machine, .instrument, t.isEnabled(), glow, reg, &result, m);
+        if (out.toggle) t.toggleEnabled();
+        x += inst_w;
+    }
+
+    // Effects. The drop slot for an active drag is the first card whose
+    // midpoint lies right of the pointer.
+    var drop_idx: usize = t.effects.items.len;
+    var drop_x: i32 = x;
+    {
+        var ex = x;
+        for (t.effects.items, 0..) |*fx, i| {
+            const fw = panelW(&fx.mach);
+            if (fx_drag.active and ui.in.mx < @as(f32, @floatFromInt(ex + @divFloor(fw, 2))) and drop_idx == t.effects.items.len) {
+                drop_idx = i;
+                drop_x = ex;
+            }
+            ex += fw;
+        }
+        if (drop_idx == t.effects.items.len) drop_x = ex;
+    }
+    for (t.effects.items, 0..) |*fx, i| {
+        const fw = panelW(&fx.mach);
+        const card = Rect.xywh(x, area.y, fw, area.h);
+        const out = drawDevice(ui, card, &fx.mach, .{ .effect = i }, !t.effectBypassed(i), null, reg, &result, m);
+        if (out.toggle) t.toggleEffectBypass(i);
+        if (out.name_pressed and !fx_drag.armed) fx_drag = .{ .armed = true, .src = i, .press_x = ui.in.mx };
+        if (out.name_released and fx_drag.armed and fx_drag.src == i) {
+            if (fx_drag.active) {
+                var to = drop_idx;
+                if (to > fx_drag.src) to -= 1; // removing src shifts the tail left
+                if (to != fx_drag.src) {
+                    result.reorder_from = fx_drag.src;
+                    result.reorder_to = to;
+                }
+            } else {
+                // A click, not a drag → the effect's replace menu.
+                const key = widgets.keyFromIds(REPLACE_MENU_KEY, @intFromPtr(fx.mach.state), 0);
+                if (!widgets.menuOpen(key)) {
+                    scanRegistryPresets(reg);
+                    bridge.openMenuBelow(key, out.name_rect);
+                }
+            }
+            fx_drag = .{};
+        }
+        if (fx_drag.active and fx_drag.src == i) ui.overlayRect(card, ui_style.accent.alpha(40));
+        x += fw;
+    }
+    if (fx_drag.armed and ui.in.down and @abs(ui.in.mx - fx_drag.press_x) > DRAG_THRESHOLD) fx_drag.active = true;
+    if (fx_drag.armed and !ui.in.down and !ui.in.released) fx_drag = .{};
+    if (fx_drag.active) ui.overlayRect(Rect.xywh(drop_x - 1, area.y, 2, area.h), ui_style.accent);
+
+    // Trailing "+" tile, then blank plates to the bay's right edge.
+    if (x < area.right()) {
+        const plus = Rect.xywh(x, area.y, TITLE_H, TITLE_H);
+        var add_open = widgets.menuOpen(ADD_MENU_KEY);
+        if (ctl.button(ui, plus, "add", &add_open, .{ .label = "+", .flush = true }) and !widgets.menuOpen(ADD_MENU_KEY)) {
+            scanRegistryPresets(reg);
+            bridge.openMenuBelow(ADD_MENU_KEY, plus);
+        }
+        bridge.tip(plus, "Add machine", m);
+        _ = ui.plate(Rect.xywh(x + TITLE_H, area.y, area.right() - x - TITLE_H, TITLE_H), .{});
+        _ = ui.plate(Rect.xywh(x, area.y + TITLE_H, area.right() - x, area.h - TITLE_H), .{});
+    }
+    if (machinePickerMenu(ADD_MENU_KEY, reg, m)) |pick| {
+        result.add_machine = pick.reg_idx;
+        result.add_preset = pick.preset;
+    }
+    ui.unclip();
+
+    if (overflow) drawMinimap(ui, minimap, area.w, content_w, max_scroll, inst_w, t, is_bus);
+    return result;
+}
+
+fn emptyBay(ui: *Ui, r: Rect, hint: []const u8) void {
+    var a = r;
+    _ = ui.plate(a.cutTop(TITLE_H), .{});
+    const body = ui.plate(a, .{});
+    ui.textIn(&ui.fonts.legend, body, hint, ui_style.text_mute, .center, true);
+}
+
+/// Overview of the chain with the visible window; click or drag to jump.
+fn drawMinimap(ui: *Ui, r: Rect, view_w: i32, content_w: i32, max_scroll: i32, inst_w: i32, t: *Track, is_bus: bool) void {
+    const inner = ui.well(r, ui_style.well);
+    if (inner.w <= 0 or content_w <= 0) return;
+    const k = @as(f32, @floatFromInt(inner.w)) / @as(f32, @floatFromInt(content_w));
+    var bx: f32 = @floatFromInt(inner.x);
+    if (!is_bus and inst_w > 0) {
+        const w = @as(f32, @floatFromInt(inst_w)) * k;
+        ui.rect(Rect.xywh(@intFromFloat(bx), inner.y, @max(1, @as(i32, @intFromFloat(w)) - 1), inner.h), ui_style.face_hi);
+        bx += w;
+    }
+    for (t.effects.items) |*fx| {
+        const w = @as(f32, @floatFromInt(panelW(&fx.mach))) * k;
+        ui.rect(Rect.xywh(@intFromFloat(bx), inner.y, @max(1, @as(i32, @intFromFloat(w)) - 1), inner.h), ui_style.face);
+        bx += w;
+    }
+    const vp = Rect.xywh(inner.x + @as(i32, @intFromFloat(@as(f32, @floatFromInt(bay_scroll_x)) * k)), inner.y, @max(2, @as(i32, @intFromFloat(@as(f32, @floatFromInt(view_w)) * k))), inner.h);
+    ui.rect(vp, ui_style.accent.alpha(50));
+    ui.bevel(vp, ui_style.accent, ui_style.accent);
+    const b = ui.behaviorEx(ui.id("minimap"), r, .{ .focusable = false });
+    if (b.held) {
+        const cx = (ui.in.mx - @as(f32, @floatFromInt(inner.x))) / k - @as(f32, @floatFromInt(view_w)) / 2;
+        bay_scroll_x = std.math.clamp(@as(i32, @intFromFloat(cx)), 0, max_scroll);
+    }
+}
+
+const DeviceOut = struct {
+    toggle: bool = false, // mute / bypass clicked
+    name_pressed: bool = false, // name tile pressed (effects arm a drag)
+    name_released: bool = false,
+    name_rect: Rect = .{},
+};
+
+fn isInstrument(ref: DeviceRef) bool {
+    return switch (ref) {
+        .instrument => true,
+        .effect => false,
     };
 }
 
-// A small square titlebar button (enable toggle / delete). Returns true
-// on click. `lit` brightens the fill; `danger` tints red on hover.
-fn titlebarButton(btn: c.rl.Rectangle, icon: widgets.Icon, lit: bool, danger: bool, hint: [*:0]const u8, m: widgets.Mouse) bool {
-    const hover = widgets.contains(btn, m.x, m.y) and !widgets.hasActiveDrag();
-    const pressed = hover and m.left_down;
-    const fill = if (pressed)
-        theme.slab_lo
-    else if (hover and danger)
-        theme.accent_rec
-    else if (hover or lit)
-        theme.slab_hi
-    else
-        theme.slab_fill;
-    widgets.bevelRaised(btn, fill, theme.slab_hi, theme.slab_lo);
-    const icol = if (lit) theme.accent_hi else theme.text_dim;
-    const isz = theme.fsTiny();
-    widgets.drawIcon(icon, btn.x + (btn.width - isz) / 2, btn.y + (btn.height - isz) / 2, isz, if (hover and danger) theme.text_fg else icol);
-    widgets.tooltip(btn, hint, m);
-    return hover and m.left_pressed;
-}
+// Draw one device column: the title strip, its menus, and the machine's
+// panel body. Folds the name (replace), preset and delete-confirm outcomes
+// into `result`, scoped to `ref`.
+fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, active: bool, glow: ?f32, reg: *const Registry, result: *Result, m: widgets.Mouse) DeviceOut {
+    var out = DeviceOut{};
+    ui.pushId(mach.state);
+    defer ui.popId();
+    if (!mach.host_titlebar) {
+        mach.draw_panel(mach.state, ui, card);
+        if (!active) ui.rect(card, ui_style.chassis.alpha(115));
+        return out;
+    }
+    const is_inst = isInstrument(ref);
+    var bar = card.takeTop(TITLE_H);
+    const body = Rect.xywh(card.x, card.y + TITLE_H, card.w, card.h - TITLE_H);
 
-// Note-activity LED — a small filled indicator, not interactive.
-fn drawNoteLed(r: c.rl.Rectangle, glow: f32, m: widgets.Mouse) void {
-    const base = c.rl.Color{ .r = 28, .g = 52, .b = 34, .a = 255 };
-    const col = lerpColor(base, theme.accent_play, glow);
-    const d = theme.fine(7);
-    const cx = r.x + r.width / 2;
-    const cy = r.y + r.height / 2;
-    c.rl.DrawRectangle(@intFromFloat(cx - d / 2), @intFromFloat(cy - d / 2), @intFromFloat(d), @intFromFloat(d), col);
-    c.rl.DrawRectangleLinesEx(widgets.rect(cx - d / 2 - 1, cy - d / 2 - 1, d + 2, d + 2), 1, theme.slab_edge);
-    widgets.tooltip(r, "Note activity", m);
-}
+    // × delete → confirm popup.
+    const del = bar.cutLeft(18);
+    const confirm_key = widgets.keyFromIds(CONFIRM_MENU_KEY, @intFromPtr(mach.state), 0);
+    var confirm_open = widgets.menuOpen(confirm_key);
+    if (ctl.button(ui, del, "del", &confirm_open, .{ .label = "\u{D7}", .flush = true }) and !widgets.menuOpen(confirm_key)) {
+        bridge.openMenuBelow(confirm_key, del);
+    }
+    bridge.tip(del, if (is_inst) "Remove machine" else "Remove effect", m);
+    if (deleteConfirmMenu(confirm_key, m)) result.remove_ref = ref;
 
+    // Power / bypass on the right.
+    const pwr = bar.cutRight(40);
+    var on = active;
+    if (ctl.button(ui, pwr, "power", &on, .{ .kind = .latch, .label = if (active) "ON" else if (is_inst) "OFF" else "BYP", .led = ui_style.led_green, .flush = true })) out.toggle = true;
+    bridge.tip(pwr, if (is_inst) (if (active) "Enabled: click to silence" else "Silenced: click to enable") else (if (active) "Active: click to bypass" else "Bypassed: click to enable"), m);
 
-const DeviceCtrls = struct {
-    toggle: bool = false, // mute / bypass clicked
-    delete_clicked: bool = false, // "[-]" clicked → caller opens confirm popup
-    name_clicked: bool = false, // name block clicked → caller opens replace menu
-    preset_clicked: bool = false, // preset block clicked → caller opens preset menu
-    name_rect: c.rl.Rectangle = zeroRect,
-    preset_rect: c.rl.Rectangle = zeroRect,
-};
-
-const zeroRect = c.rl.Rectangle{ .x = 0, .y = 0, .width = 0, .height = 0 };
-
-// Subtle accent tint for the device-name block — a desaturated lean toward
-// the amber accent so the name reads as the focal, clickable identity block
-// without shouting (BeOS-tab flavored, kept brutalist).
-fn nameTint(hover: bool) c.rl.Color {
-    return lerpColor(theme.slab_fill, theme.accent_hi, if (hover) 0.30 else 0.16);
-}
-
-// A clickable titlebar text block: 1px raised bevel, centered-left label.
-// Returns true on press. `fill` lets the name block carry its accent tint.
-fn barBlock(r: c.rl.Rectangle, label: [*:0]const u8, fill: c.rl.Color, m: widgets.Mouse) bool {
-    if (r.width <= 0) return false;
-    widgets.bevelRaised(r, fill, theme.slab_hi, theme.slab_lo);
-    widgets.drawLabelF(label, r.x + theme.size(6), r.y + (r.height - theme.fsTiny()) / 2 - 1, theme.fsTiny(), theme.text_fg);
-    return widgets.contains(r, m.x, m.y) and !widgets.hasActiveDrag() and m.left_pressed;
-}
-
-// Host-drawn device titlebar, brutalist BeOS-rack flavored:
-//
-//   [ - ][  NAME ● ][ preset ]······spacer······[ mute ]
-//
-// Delete first, accent-tinted name (click → replace), optional preset block
-// (click → preset menu), a neutral spacer, and the mute/bypass toggle last.
-// The note-activity LED sits at the name block's right edge (instruments).
-fn drawDeviceBar(
-    bar: c.rl.Rectangle,
-    name: []const u8,
-    preset_label: ?[*:0]const u8,
-    active: bool,
-    glow: ?f32,
-    icon_on: widgets.Icon,
-    icon_off: widgets.Icon,
-    hint_on: [*:0]const u8,
-    hint_off: [*:0]const u8,
-    del_hint: [*:0]const u8,
-    m: widgets.Mouse,
-) DeviceCtrls {
-    var res = DeviceCtrls{};
-    const bw = theme.size(16);
-    const pad = theme.size(6);
-
-    // Fixed end buttons.
-    const del = widgets.rect(bar.x, bar.y, bw, bar.height);
-    const mute = widgets.rect(bar.x + bar.width - bw, bar.y, bw, bar.height);
-
-    if (titlebarButton(del, .minus, false, true, del_hint, m)) res.delete_clicked = true;
-    {
-        const icon = if (active) icon_on else icon_off;
-        const hint = if (active) hint_on else hint_off;
-        if (titlebarButton(mute, icon, active, false, hint, m)) res.toggle = true;
+    // Name tile: click → replace (instruments); press-drag → reorder (effects).
+    const name = mach.name;
+    const led_w: i32 = if (glow != null) 10 else 0;
+    const name_w = @min(ui.fonts.body_bold.measure(name) + 14 + led_w, @max(40, @divFloor(bar.w, 2)));
+    const name_r = bar.cutLeft(name_w);
+    out.name_rect = name_r;
+    const nid = ui.id("name");
+    const nb = ui.behaviorEx(nid, name_r, .{ .focusable = false });
+    out.name_pressed = nb.pressed;
+    out.name_released = nb.released;
+    _ = ctl.button(ui, name_r, "name-cap", null, .{ .flush = true, .disabled = true });
+    ui.textIn(&ui.fonts.body_bold, Rect.xywh(name_r.x + 6, name_r.y, name_r.w - 8 - led_w, name_r.h - 1), name, if (ui.isHot(nid)) ui_style.text else ui_style.text_dim, .left, true);
+    if (glow) |g| ctl.led(ui, name_r.right() - led_w - 2, name_r.y + @divFloor(name_r.h - 1 - 5, 2), .round5, if (g > 0.2) .on else .off, ui_style.led_green);
+    bridge.tip(name_r, if (is_inst) "Replace machine" else "Drag to reorder, click to replace", m);
+    const replace_key = widgets.keyFromIds(REPLACE_MENU_KEY, @intFromPtr(mach.state), 0);
+    if (is_inst and nb.clicked and !widgets.menuOpen(replace_key)) {
+        scanRegistryPresets(reg);
+        bridge.openMenuBelow(replace_key, name_r);
+    }
+    if (machinePickerMenu(replace_key, reg, m)) |pick| {
+        result.replace_ref = ref;
+        result.replace_machine = pick.reg_idx;
+        result.replace_preset = pick.preset;
     }
 
-    const chrome_left = del.x + bw;
-    const chrome_right = mute.x;
-    const avail = @max(0, chrome_right - chrome_left);
-
-    // Name block — fit to content (plus LED), capped so it leaves room for
-    // the preset block and spacer.
-    var nbuf: [64:0]u8 = [_:0]u8{0} ** 64;
-    const nlen = @min(name.len, 63);
-    @memcpy(nbuf[0..nlen], name[0..nlen]);
-    nbuf[nlen] = 0;
-    const led_w: f32 = if (glow != null) theme.size(14) else 0;
-    const name_text_w = widgets.measureTextF(@ptrCast(&nbuf[0]), theme.fsTiny());
-    const name_w = @min(pad * 2 + name_text_w + led_w, @max(theme.size(40), avail * 0.55));
-    const name_rect = widgets.rect(chrome_left, bar.y, name_w, bar.height);
-    res.name_rect = name_rect;
-    const name_hover = widgets.contains(name_rect, m.x, m.y) and !widgets.hasActiveDrag();
-    if (barBlock(name_rect, @ptrCast(&nbuf[0]), nameTint(name_hover), m)) res.name_clicked = true;
-    widgets.tooltip(name_rect, "Replace machine", m);
-    if (glow) |g| {
-        const led_r = widgets.rect(name_rect.x + name_rect.width - led_w, name_rect.y, led_w, name_rect.height);
-        drawNoteLed(led_r, g, m);
-    }
-
-    // Preset block — neutral bevel, current preset label.
-    var preset_right = chrome_left + name_w;
-    if (preset_label) |pl| {
-        const pt_w = widgets.measureTextF(pl, theme.fsTiny());
-        const preset_w = @min(pad * 2 + pt_w, @max(0, chrome_right - (chrome_left + name_w) - theme.size(8)));
-        if (preset_w > theme.size(12)) {
-            const preset_rect = widgets.rect(chrome_left + name_w, bar.y, preset_w, bar.height);
-            res.preset_rect = preset_rect;
-            const ph = widgets.contains(preset_rect, m.x, m.y) and !widgets.hasActiveDrag();
-            const pfill = if (ph) theme.slab_hi else theme.slab_fill;
-            if (barBlock(preset_rect, pl, pfill, m)) res.preset_clicked = true;
-            widgets.tooltip(preset_rect, "Preset", m);
-            preset_right = preset_rect.x + preset_rect.width;
+    // Title display (preset name, or the touched parameter) + preset caret.
+    // Clicking either opens the preset menu.
+    if (hasPresets(mach)) {
+        const caret = bar.cutRight(16);
+        var pbuf: [40]u8 = undefined;
+        const preset = std.mem.span(currentPresetLabel(&pbuf, mach));
+        const disp = bar;
+        const pid = ui.id("preset");
+        const pb = ui.behaviorEx(pid, disp, .{ .focusable = false });
+        const key = widgets.keyFromIds(PRESET_MENU_KEY, @intFromPtr(mach.state), 1);
+        var popen = widgets.menuOpen(key);
+        const caret_clicked = ctl.button(ui, caret, "preset-caret", &popen, .{ .glyph = .tri_down, .glyph_on = ui_style.text, .flush = true });
+        titleDisplay(ui, disp, mach, preset, ui.isHot(pid));
+        bridge.tip(disp, "Preset", m);
+        const pa = presetMenu(disp, pb.clicked or caret_clicked, mach, m);
+        if (pa.apply) |p| {
+            result.preset_apply_ref = ref;
+            result.preset_apply = p;
         }
+        if (pa.save) {
+            result.preset_save_ref = ref;
+            result.preset_anchor = bridge.toRl(disp);
+        }
+        if (pa.rename) |idx| {
+            result.preset_rename_ref = ref;
+            result.preset_rename_index = idx;
+            result.preset_anchor = bridge.toRl(disp);
+        }
+    } else {
+        titleDisplay(ui, bar, mach, "", false);
     }
 
-    // Spacer — flat neutral chrome filling the gap before the mute button.
-    if (chrome_right - preset_right > 0) {
-        widgets.bevelRaised(widgets.rect(preset_right, bar.y, chrome_right - preset_right, bar.height), theme.slab_fill, theme.slab_hi, theme.slab_lo);
-    }
-    return res;
+    mach.draw_panel(mach.state, ui, body);
+    // Silenced/bypassed: the panel dims (drawn in the Ui list, over it).
+    if (!active) ui.rect(body, ui_style.chassis.alpha(115));
+    return out;
+}
+
+/// The device's title display: the preset name, or `LABEL value` while a
+/// control in this machine's panel is being touched (docs/06 §Displays).
+fn titleDisplay(ui: *Ui, r: Rect, mach: *Machine, preset: []const u8, hot: bool) void {
+    // The panel pushes its instance pointer as a scope under ours, so its
+    // controls report touches with this id.
+    const panel_scope = ui.id(mach.state);
+    const t = &ui.touch;
+    var buf: [48]u8 = undefined;
+    const live = t.scope == panel_scope and ui.in.time - t.time < ui_core.TOUCH_HOLD;
+    const s = if (live)
+        std.fmt.bufPrint(&buf, "{s} {s}", .{ t.labelStr(), t.valueStr() }) catch preset
+    else
+        preset;
+    if (live) ui.animate();
+    ctl.display(ui, r, s, .{ .flush = true, .color = if (hot or live) ui_style.phosphor else ui_style.phosphor.mix(ui_style.well, 0.15) });
 }
 
 const AddPick = struct {
@@ -258,6 +404,7 @@ fn scanRegistryPresets(reg: *const Registry) void {
             presets_mod.List{};
     }
 }
+
 
 // Drive an already-open machine-picker menu (by key): a flat machine list,
 // each machine with presets carrying a hover submenu (+ a deeper level for
@@ -295,22 +442,6 @@ fn machinePickerMenu(menu_key: u64, reg: *const Registry, m: widgets.Mouse) ?Add
     return null;
 }
 
-// "+" button at the right end of the device chain → add a machine.
-fn drawAddButton(btn: c.rl.Rectangle, reg: *const Registry, m: widgets.Mouse) ?AddPick {
-    const open = widgets.menuOpen(ADD_MENU_KEY);
-    const hover = widgets.contains(btn, m.x, m.y) and !widgets.hasActiveDrag();
-    const fill = if (open or hover) theme.slab_hi else theme.slab_fill;
-    widgets.bevelRaised(btn, fill, theme.slab_hi, theme.slab_lo);
-    const isz = theme.fsBody();
-    widgets.drawIcon(.plus, btn.x + (btn.width - isz) / 2, btn.y + (btn.height - isz) / 2, isz, theme.text_fg);
-    widgets.tooltip(btn, "Add machine", m);
-    if (hover and m.left_pressed and !open) {
-        scanRegistryPresets(reg);
-        widgets.openMenuAt(ADD_MENU_KEY, btn.x, btn.y + btn.height);
-    }
-    return machinePickerMenu(ADD_MENU_KEY, reg, m);
-}
-
 // Beveled "Delete machine?" confirm popup, anchored under the "[-]" button.
 // Opened by the caller; returns true only when the user picks Delete.
 // Click-away closes via the deferred-menu's outside-click handling.
@@ -324,200 +455,6 @@ fn deleteConfirmMenu(key: u64, m: widgets.Mouse) bool {
     };
     if (widgets.menuPickId(key, &items, m)) |id| return id == CONFIRM_DELETE_ID;
     return false;
-}
-
-pub fn draw(ui: *ui_core.Ui, r: c.rl.Rectangle, device: ?*Track, track_idx: ?usize, is_bus: bool, collapsed: bool, reg: *const Registry, m: widgets.Mouse) Result {
-    c.rl.DrawRectangleRec(r, theme.pane_bg);
-    var result = Result{};
-
-    const header_h = @min(r.height, theme.paneHeaderH());
-
-    if (collapsed) {
-        const res = drawPlaceholder(r, header_h, true, null, m);
-        return .{ .minimize = res.minimize };
-    }
-
-    const t = device orelse {
-        // Nothing selected.
-        const res = drawPlaceholder(r, header_h, false, "select a track", m);
-        return .{ .minimize = res.minimize };
-    };
-
-    // Audio tracks with no instrument start the chain straight at the
-    // effects (no placeholder card); machines are added via the trailing
-    // "+". Buses (master/return) likewise have no instrument slot.
-    const DEFAULT_PANEL_W = theme.size(200);
-    const has_instrument = !is_bus and t.machine_idx != null;
-    const inst_pw: f32 = if (!has_instrument)
-        0
-    else if (t.machine.panel_w > 0)
-        theme.size(t.machine.panel_w)
-    else
-        DEFAULT_PANEL_W;
-
-    // Measure the chain ((instrument) + effects + trailing "+") to decide
-    // whether a horizontal minimap is needed at the bottom of the bay.
-    var content_w: f32 = inst_pw;
-    for (t.effects.items) |*fx| {
-        content_w += if (fx.mach.panel_w > 0) theme.size(fx.mach.panel_w) else DEFAULT_PANEL_W;
-    }
-    content_w += header_h;
-    const overflow = content_w > r.width;
-    const minimap_h: f32 = if (overflow) theme.size(11) else 0;
-    const dev_h = r.height - minimap_h;
-    const max_scroll = @max(0, content_w - r.width);
-
-    // Horizontal scroll (trackpad h-wheel / Shift+wheel).
-    {
-        const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
-        const wheel: f32 = if (m.wheel_x != 0) m.wheel_x else if (shift) m.wheel_y else 0;
-        if (wheel != 0 and widgets.contains(r, m.x, m.y)) bay_scroll_x -= wheel * theme.size(40);
-    }
-    bay_scroll_x = std.math.clamp(bay_scroll_x, 0, max_scroll);
-
-    // ── Device chain ─────────────────────────────────────────────────
-    // Panels (new Ui) scroll with the chain: clip them to the bay.
-    ui.clip(uiRect(r));
-    defer ui.unclip();
-    var x = r.x - bay_scroll_x;
-
-    // Instrument slot — audio tracks with an instrument. Not draggable: the
-    // instrument is always first in the signal path.
-    if (has_instrument) {
-        // Note-activity LED glow, keyed by the shown audio track index.
-        var glow: f32 = 0;
-        if (track_idx) |ti| {
-            if (ti < led_glow.len) {
-                const seq = t.noteSeq();
-                if (seq != led_seen[ti]) {
-                    led_glow[ti] = 1.0;
-                    led_seen[ti] = seq;
-                } else led_glow[ti] = @max(0, led_glow[ti] - 0.05);
-                glow = led_glow[ti];
-            }
-        }
-        const card = widgets.rect(x, r.y, inst_pw, dev_h);
-        const out = drawDevice(ui, card, header_h, &t.machine, .instrument, t.isEnabled(), glow, true, reg, &result, m);
-        if (out.toggle) t.toggleEnabled();
-        x += inst_pw;
-    }
-
-    // ── Effects (draggable to reorder) ───────────────────────────────
-    // Find the drop slot for an active drag and the x of its insertion bar.
-    var drop_idx: usize = t.effects.items.len;
-    var drop_x: f32 = x;
-    {
-        var ex = x;
-        for (t.effects.items, 0..) |*fx, i| {
-            const fw = if (fx.mach.panel_w > 0) theme.size(fx.mach.panel_w) else DEFAULT_PANEL_W;
-            if (fx_drag.active and fx_drag.cur_x < ex + fw / 2 and drop_idx == t.effects.items.len) {
-                drop_idx = i;
-                drop_x = ex;
-            }
-            ex += fw;
-        }
-        // Cursor past every effect → insertion bar at the chain tail.
-        if (drop_idx == t.effects.items.len) drop_x = ex;
-    }
-
-    for (t.effects.items, 0..) |*fx, i| {
-        const fx_w = if (fx.mach.panel_w > 0) theme.size(fx.mach.panel_w) else DEFAULT_PANEL_W;
-        const card = widgets.rect(x, r.y, fx_w, dev_h);
-        // Effects never auto-open replace on press — the drag state machine
-        // distinguishes a click from a drag and opens it on release.
-        const out = drawDevice(ui, card, header_h, &fx.mach, .{ .effect = i }, !t.effectBypassed(i), null, false, reg, &result, m);
-        if (out.toggle) t.toggleEffectBypass(i);
-
-        // Arm a reorder drag when the name block is pressed (deferred: a
-        // clean click without movement opens the replace menu on release).
-        if (out.name_pressed and !fx_drag.armed and !fx_drag.active and !widgets.menuActive()) {
-            fx_drag = .{ .armed = true, .src = i, .press_x = m.x, .press_y = m.y, .cur_x = m.x };
-        }
-
-        // The dragged card reads as grabbed: a 2px accent border.
-        if (fx_drag.active and fx_drag.src == i) {
-            c.rl.DrawRectangleLinesEx(card, 2, theme.accent_hi);
-        }
-        x += fx_w;
-    }
-
-    // Drag state machine: promote to active past the threshold, draw the
-    // insertion bar, and on release either reorder or open the replace menu.
-    if (fx_drag.armed or fx_drag.active) {
-        fx_drag.cur_x = m.x;
-        if (fx_drag.armed and !fx_drag.active and m.left_down) {
-            if (@abs(m.x - fx_drag.press_x) + @abs(m.y - fx_drag.press_y) > DRAG_THRESHOLD) fx_drag.active = true;
-        }
-        if (fx_drag.active) {
-            c.rl.DrawRectangle(@intFromFloat(drop_x - 1), @intFromFloat(r.y), 2, @intFromFloat(dev_h), theme.accent_hi);
-        }
-        if (!m.left_down) {
-            if (fx_drag.active and fx_drag.src < t.effects.items.len) {
-                // Convert the boundary slot into a destination index.
-                var to = drop_idx;
-                if (to > fx_drag.src) to -= 1; // removing src shifts the tail left
-                if (to != fx_drag.src) {
-                    result.reorder_from = fx_drag.src;
-                    result.reorder_to = to;
-                }
-            } else if (fx_drag.armed and fx_drag.src < t.effects.items.len) {
-                // A click, not a drag → open the effect's replace menu.
-                const fx = &t.effects.items[fx_drag.src];
-                const replace_key = widgets.keyFromIds(REPLACE_MENU_KEY, @intFromPtr(fx.mach.state), 0);
-                if (!widgets.menuOpen(replace_key)) {
-                    scanRegistryPresets(reg);
-                    widgets.openMenuAt(replace_key, m.x, r.y + header_h);
-                }
-            }
-            fx_drag = .{};
-        }
-    }
-
-    // Trailing placeholder + the "+" at the right end of the chain.
-    const plus_x = x;
-    if (x < r.x + r.width) {
-        const res = drawPlaceholder(widgets.rect(x, r.y, r.x + r.width - x, dev_h), header_h, false, null, m);
-        result.minimize = res.minimize;
-    }
-    if (plus_x + header_h <= r.x + r.width) {
-        if (drawAddButton(widgets.rect(plus_x, r.y, header_h, header_h), reg, m)) |pick| {
-            result.add_machine = pick.reg_idx;
-            result.add_preset = pick.preset;
-        }
-    }
-
-    // ── Minimap (only when the chain overflows the bay) ──────────────
-    if (overflow) {
-        const strip = widgets.rect(r.x, r.y + dev_h, r.width, minimap_h);
-        widgets.bevelSunken(strip, theme.pane_bg, theme.slab_hi, theme.slab_lo);
-        const inner = widgets.rect(strip.x + 2, strip.y + 2, strip.width - 4, strip.height - 4);
-        const scale = inner.width / content_w;
-        // Device blocks (instrument brighter than effects; buses have none).
-        var bx = inner.x;
-        if (!is_bus) {
-            c.rl.DrawRectangle(@intFromFloat(bx), @intFromFloat(inner.y), @intFromFloat(@max(1, inst_pw * scale - 1)), @intFromFloat(inner.height), theme.slab_hi);
-            bx += inst_pw * scale;
-        }
-        for (t.effects.items) |*fx| {
-            const fw = (if (fx.mach.panel_w > 0) theme.size(fx.mach.panel_w) else DEFAULT_PANEL_W) * scale;
-            c.rl.DrawRectangle(@intFromFloat(bx), @intFromFloat(inner.y), @intFromFloat(@max(1, fw - 1)), @intFromFloat(inner.height), theme.slab_fill);
-            bx += fw;
-        }
-        // Viewport window + drag/click to scroll (centres on the cursor).
-        const vp = widgets.rect(inner.x + bay_scroll_x * scale, inner.y, @max(2.0, r.width * scale), inner.height);
-        c.rl.DrawRectangleRec(vp, c.rl.ColorAlpha(theme.accent_hi, 0.25));
-        c.rl.DrawRectangleLinesEx(vp, 1, theme.accent_hi);
-        if (m.left_down and widgets.contains(strip, m.x, m.y)) {
-            bay_scroll_x = std.math.clamp((m.x - inner.x) / scale - r.width / 2, 0, max_scroll);
-        }
-    }
-    return result;
-}
-
-fn machineControlsRect(panel: c.rl.Rectangle, panel_w: f32) c.rl.Rectangle {
-    if (panel_w <= 0) return panel;
-    const visible_w = @min(panel.width, theme.size(panel_w));
-    return widgets.rect(panel.x, panel.y, visible_w, panel.height);
 }
 
 const PresetAction = struct {
@@ -564,6 +501,7 @@ fn presetTopItems(list: *const presets_mod.List, items: []widgets.MenuItem) usiz
     return n;
 }
 
+
 // Rows of the ord-th distinct subdirectory: id = flat list index, label =
 // the name after the slash (NUL follows in Name storage, so no copy).
 fn presetDirItems(list: *const presets_mod.List, dir_ord: usize, items: []widgets.MenuItem) usize {
@@ -583,20 +521,6 @@ fn presetDirItems(list: *const presets_mod.List, dir_ord: usize, items: []widget
         n += 1;
     }
     return n;
-}
-
-const Machine = @import("../machine.zig").Machine;
-
-const DeviceOut = struct {
-    toggle: bool = false, // mute / bypass clicked
-    name_pressed: bool = false, // name block pressed (caller may arm a drag)
-};
-
-fn isInstrument(ref: DeviceRef) bool {
-    return switch (ref) {
-        .instrument => true,
-        .effect => false,
-    };
 }
 
 // Whether a machine exposes a preset block (any preset facility at all).
@@ -622,100 +546,10 @@ fn currentPresetLabel(buf: []u8, mach: *const Machine) [*:0]const u8 {
     return "init";
 }
 
-// Draw one device card: the host titlebar (delete / name / preset / mute),
-// its menus, and the machine's own panel body. Folds the name (replace),
-// preset, and delete-confirm outcomes into `result`, scoped to `ref`.
-// Returns the mute/bypass toggle and whether the name block was pressed.
-fn drawDevice(
-    ui: *ui_core.Ui,
-    card: c.rl.Rectangle,
-    header_h: f32,
-    mach: *Machine,
-    ref: DeviceRef,
-    active: bool,
-    glow: ?f32,
-    auto_name_menu: bool,
-    reg: *const Registry,
-    result: *Result,
-    m: widgets.Mouse,
-) DeviceOut {
-    var out = DeviceOut{};
-    const body = widgets.rect(card.x, card.y + header_h, card.width, card.height - header_h);
-
-    if (!mach.host_titlebar) {
-        mach.draw_panel(mach.state, ui, uiRect(card));
-        if (!active) ui.rect(uiRect(card), ui_style.chassis.alpha(115));
-        return out;
-    }
-
-    const is_inst = isInstrument(ref);
-    var pbuf: [40]u8 = undefined;
-    const preset_label: ?[*:0]const u8 = if (hasPresets(mach)) currentPresetLabel(&pbuf, mach) else null;
-    const ctrls = drawDeviceBar(
-        widgets.rect(card.x, card.y, card.width, header_h),
-        mach.name,
-        preset_label,
-        active,
-        glow,
-        if (is_inst) .speaker_high else .plugs_connected,
-        if (is_inst) .speaker_slash else .plugs,
-        if (is_inst) "Enabled — click to silence" else "Active — click to bypass",
-        if (is_inst) "Silenced — click to enable" else "Bypassed — click to enable",
-        if (is_inst) "Remove machine" else "Remove effect",
-        m,
-    );
-    out.toggle = ctrls.toggle;
-    out.name_pressed = ctrls.name_clicked;
-
-    // Delete → confirm popup, keyed per device.
-    const confirm_key = widgets.keyFromIds(CONFIRM_MENU_KEY, @intFromPtr(mach.state), 0);
-    if (ctrls.delete_clicked and !widgets.menuOpen(confirm_key)) {
-        widgets.openMenuAt(confirm_key, card.x, card.y + header_h);
-    }
-    if (deleteConfirmMenu(confirm_key, m)) result.remove_ref = ref;
-
-    // Name → replace machine picker, keyed per device. Effects defer the
-    // open to the drag state machine (auto_name_menu = false), but the open
-    // menu is always driven here.
-    const replace_key = widgets.keyFromIds(REPLACE_MENU_KEY, @intFromPtr(mach.state), 0);
-    if (auto_name_menu and ctrls.name_clicked and !widgets.menuOpen(replace_key)) {
-        scanRegistryPresets(reg);
-        widgets.openMenuAt(replace_key, ctrls.name_rect.x, ctrls.name_rect.y + header_h);
-    }
-    if (machinePickerMenu(replace_key, reg, m)) |pick| {
-        result.replace_ref = ref;
-        result.replace_machine = pick.reg_idx;
-        result.replace_preset = pick.preset;
-    }
-
-    // Preset → preset menu (choose / save / rename).
-    if (preset_label != null) {
-        const pa = presetMenu(ctrls.preset_rect, ctrls.preset_clicked, mach, m);
-        if (pa.apply) |p| {
-            result.preset_apply_ref = ref;
-            result.preset_apply = p;
-        }
-        if (pa.save) {
-            result.preset_save_ref = ref;
-            result.preset_anchor = ctrls.preset_rect;
-        }
-        if (pa.rename) |idx| {
-            result.preset_rename_ref = ref;
-            result.preset_rename_index = idx;
-            result.preset_anchor = ctrls.preset_rect;
-        }
-    }
-
-    mach.draw_panel(mach.state, ui, uiRect(body));
-    // Silenced/bypassed: the panel dims (drawn in the Ui list, over it).
-    if (!active) ui.rect(uiRect(body), ui_style.chassis.alpha(115));
-    return out;
-}
-
 // Clicking the preset block opens the preset menu: preset leaves, one hover
 // submenu per subdirectory, then Save…/Rename… rows. Save…/Rename… defer to
 // a host text-entry overlay (the caller routes them through RenameState).
-fn presetMenu(preset_rect: c.rl.Rectangle, clicked: bool, mach: *const Machine, m: widgets.Mouse) PresetAction {
+fn presetMenu(preset_rect: Rect, clicked: bool, mach: *const Machine, m: widgets.Mouse) PresetAction {
     const count: usize = if (mach.preset_count) |cf| cf(mach.state) else 0;
     const can_save = mach.save_preset != null or mach.save_preset_named != null;
     const cur_idx: i32 = if (mach.current_preset) |cf| cf(mach.state) else -1;
@@ -723,7 +557,7 @@ fn presetMenu(preset_rect: c.rl.Rectangle, clicked: bool, mach: *const Machine, 
     if (count == 0 and !can_save) return .{};
 
     const key = widgets.keyFromIds(PRESET_MENU_KEY, @intFromPtr(mach.state), 1);
-    if (clicked and !widgets.menuOpen(key)) widgets.openMenuAt(key, preset_rect.x, preset_rect.y + preset_rect.height);
+    if (clicked and !widgets.menuOpen(key)) bridge.openMenuBelow(key, preset_rect);
 
     // Deferred-draw menu: the backing list must outlive this call (a stack
     // local would dangle into drawContextMenu). Module-level, repopulated
@@ -772,78 +606,3 @@ fn presetMenu(preset_rect: c.rl.Rectangle, clicked: bool, mach: *const Machine, 
     return .{};
 }
 
-fn drawPolyDropdown(panel: c.rl.Rectangle, track_idx: usize, voices: u8, header_h: f32, m: widgets.Mouse) ?u8 {
-    const w = theme.size(54);
-    const h = @min(header_h, panel.height);
-    const r = widgets.rect(panel.x + panel.width - w, panel.y, w, h);
-    const hover = widgets.contains(r, m.x, m.y) and !widgets.hasActiveDrag();
-    const pressed = hover and m.left_down;
-    const clicked = hover and m.left_released;
-    const fill = if (pressed) theme.slab_lo else if (hover or poly_dropdown_track == track_idx) theme.slab_hi else theme.slab_fill;
-    widgets.bevelRaised(r, fill, theme.slab_hi, theme.slab_lo);
-    widgets.drawLabelF(polyLabel(voices), r.x + 4, r.y + (r.height - theme.fsTiny()) / 2 - 1, theme.fsTiny(), theme.text_fg);
-    widgets.drawLabelF("v", r.x + r.width - 8, r.y + (r.height - theme.fsTiny()) / 2 - 1, theme.fsTiny(), theme.text_dim);
-    widgets.tooltip(r, "Polyphony mode", m);
-    if (clicked) {
-        poly_dropdown_track = if (poly_dropdown_track != null and poly_dropdown_track.? == track_idx) null else track_idx;
-    }
-
-    if (poly_dropdown_track != null and poly_dropdown_track.? == track_idx) {
-        const opts = [_]u8{ 1, 4, 8, 16 };
-        const row_h = theme.size(18);
-        const menu = widgets.rect(r.x, r.y + r.height + 1, r.width, row_h * opts.len + 2);
-        c.rl.DrawRectangleRec(menu, theme.slab_edge);
-        c.rl.DrawRectangleRec(widgets.rect(menu.x + 1, menu.y + 1, menu.width - 2, menu.height - 2), theme.pane_bg);
-        for (opts, 0..) |opt, i| {
-            const row = widgets.rect(menu.x + 1, menu.y + 1 + @as(f32, @floatFromInt(i)) * row_h, menu.width - 2, row_h);
-            const row_hover = widgets.contains(row, m.x, m.y);
-            if (row_hover) c.rl.DrawRectangleRec(row, theme.slab_hi);
-            const active = normalizeVoices(voices) == opt;
-            const col = if (active) theme.accent_hi else theme.text_fg;
-            widgets.drawLabelF(polyLabel(opt), row.x + 5, row.y + (row.height - theme.fsBody()) / 2 - 1, theme.fsBody(), col);
-            if (row_hover and m.left_released) {
-                poly_dropdown_track = null;
-                return opt;
-            }
-        }
-        if (m.left_pressed and !widgets.contains(menu, m.x, m.y) and !widgets.contains(r, m.x, m.y)) {
-            poly_dropdown_track = null;
-        }
-    }
-    return null;
-}
-
-fn normalizeVoices(v: u8) u8 {
-    if (v >= 16) return 16;
-    if (v >= 8) return 8;
-    if (v >= 4) return 4;
-    return 1;
-}
-
-fn polyLabel(v: u8) [*:0]const u8 {
-    return switch (normalizeVoices(v)) {
-        4 => "P4",
-        8 => "P8",
-        16 => "P16",
-        else => "MONO",
-    };
-}
-
-fn drawPlaceholder(r: c.rl.Rectangle, header_h: f32, collapsed: bool, hint: ?[*:0]const u8, m: widgets.Mouse) widgets.HeaderResult {
-    if (r.width <= 0 or r.height <= 0) return .{};
-    const header = widgets.rect(r.x, r.y, r.width, @min(header_h, r.height));
-    const res = widgets.paneHeader(header, .{ .title = "", .collapsed = collapsed }, m);
-    if (r.height > header.height) {
-        c.rl.DrawRectangleRec(widgets.rect(r.x, r.y + header.height, r.width, r.height - header.height), theme.pane_bg);
-        if (hint) |h| widgets.drawLabelF(h, r.x + theme.size(6), r.y + header.height + theme.size(6), theme.fsBody(), theme.text_mute);
-    }
-    return res;
-}
-
-fn drawEmptyPanel(r: c.rl.Rectangle, header_h: f32) void {
-    widgets.bevelRaised(widgets.rect(r.x, r.y, r.width, @min(header_h, r.height)), theme.slab_fill, theme.slab_hi, theme.slab_lo);
-    if (r.height > header_h) {
-        c.rl.DrawRectangleRec(widgets.rect(r.x, r.y + header_h, r.width, r.height - header_h), theme.pane_bg);
-        widgets.drawLabelF("select a track", r.x + 4, r.y + header_h + 6, theme.fsBody(), theme.text_mute);
-    }
-}

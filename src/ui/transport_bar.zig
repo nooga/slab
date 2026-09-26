@@ -12,6 +12,8 @@ const core = @import("core.zig");
 const style = @import("style.zig");
 const ctl = @import("controls.zig");
 const widgets = @import("widgets.zig");
+const bridge = @import("bridge.zig");
+const tip = bridge.tip;
 const snap_mod = @import("snap.zig");
 const Transport = @import("../transport.zig").Transport;
 const meter_mod = @import("../meter.zig");
@@ -139,7 +141,7 @@ fn fileTile(ui: *Ui, r: Rect, a: Args, res: *Result) void {
     const open = widgets.menuOpen(FILE_MENU_KEY);
     var shown = open;
     if (ctl.button(ui, r, "file", &shown, .{ .flush = true }) and !open) {
-        widgets.openMenuAt(FILE_MENU_KEY, @floatFromInt(r.x), @floatFromInt(r.bottom()));
+        bridge.openMenuBelow(FILE_MENU_KEY, r);
     }
     const inner = r.insetXY(8, 0);
     ui.textIn(&ui.fonts.body, inner, name, if (a.dirty) style.accent else style.text, .left, true);
@@ -166,7 +168,7 @@ fn inputTile(ui: *Ui, r: Rect, a: Args, res: *Result) void {
     const have = a.input_names.len > 0;
     var open = widgets.menuOpen(INPUT_MENU_KEY);
     if (ctl.button(ui, r, "input", &open, .{ .glyph = .tri_down, .glyph_on = style.text, .flush = true, .disabled = !have }) and have and !widgets.menuOpen(INPUT_MENU_KEY)) {
-        widgets.openMenuAt(INPUT_MENU_KEY, @floatFromInt(r.x), @floatFromInt(r.bottom()));
+        bridge.openMenuBelow(INPUT_MENU_KEY, r);
     }
     const cur_tip: [*:0]const u8 = if (!have)
         "Input device (none found)"
@@ -283,11 +285,6 @@ fn logoTile(ui: *Ui, r: Rect) void {
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-/// Legacy deferred tooltip over a new-core rect.
-fn tip(r: Rect, text: [*:0]const u8, m: widgets.Mouse) void {
-    if (r.empty()) return;
-    widgets.tooltip(widgets.rect(@floatFromInt(r.x), @floatFromInt(r.y), @floatFromInt(r.w), @floatFromInt(r.h)), text, m);
-}
 
 // Tap tempo: average of the last few intervals; a 2 s gap restarts.
 const TAP_MAX = 4;

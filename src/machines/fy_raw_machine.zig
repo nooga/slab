@@ -1341,10 +1341,18 @@ fn drawStrip(self: *FyRawMachine, ui: *Ui, r: Rect, view: StripView, tier: ui_ct
     if (rows == 0 or body.empty()) return;
     ui.clip(body);
     defer ui.unclip();
+    // Cells share the strip's space but never shrink below the tier's knob
+    // cell: below the smallest tier the strip clips instead of overlapping
+    // controls (docs/06 §Sizing).
+    const min_cell = ui_ctl.knobCell(tier);
+    const cw = @max(@divFloor(body.w, @as(i32, @intCast(cols))), min_cell[0]);
+    const ch = @max(@divFloor(body.h, @as(i32, @intCast(rows))), min_cell[1]);
     var local_i: usize = 0;
     for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, gi| {
         if (!std.mem.eql(u8, ctl.moduleSlice(), view.module)) continue;
-        const kr = body.cell(@intCast(cols), @intCast(rows), @intCast(local_i % cols), @intCast(local_i / cols));
+        const col: i32 = @intCast(local_i % cols);
+        const row: i32 = @intCast(local_i / cols);
+        const kr = Rect.xywh(body.x + col * cw, body.y + row * ch, cw, ch);
         local_i += 1;
         const label = ctl.label[0..ctl.label_len];
         switch (ctl.kind) {
