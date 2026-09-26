@@ -11,6 +11,12 @@ const std = @import("std");
 const c = @import("../c.zig");
 const theme = @import("theme.zig");
 const widgets = @import("widgets.zig");
+const bridge = @import("bridge.zig");
+const ui_core = @import("core.zig");
+const ui_style = @import("style.zig");
+const ctl = @import("controls.zig");
+const Ui = ui_core.Ui;
+const Rect = ui_core.Rect;
 const snap_mod = @import("snap.zig");
 const track_mod = @import("../track.zig");
 const Track = track_mod.Track;
@@ -469,6 +475,7 @@ fn nudgeSelectedClipsTracks(tracks: []Track, alloc: std.mem.Allocator, focused_c
 }
 
 pub fn draw(
+    ui: *Ui,
     r: c.rl.Rectangle,
     tracks: []Track,
     master: *Track,
@@ -523,14 +530,18 @@ pub fn draw(
     const ruler_rect = widgets.rect(timeline_x, r.y + overviewH(), timeline_w, rulerH());
     const hdr_top = widgets.rect(header_x, r.y, header_w, overviewH() + rulerH());
 
-    // Header column "ruler" block (spans overview + ruler rows).
-    widgets.bevelSunken(hdr_top, theme.pane_alt, theme.slab_hi, theme.slab_lo);
-    widgets.drawLabelF("TRACKS", header_x + 4, r.y + 4, theme.fsTiny(), theme.text_dim);
-    const add_sz = @min(hdr_top.height - 4, theme.size(18));
-    const tool_x = hdr_top.x + hdr_top.width - add_sz - 2;
-    const add_rect = widgets.rect(tool_x, hdr_top.y + 2, add_sz, add_sz);
-    if (widgets.iconButtonTip(add_rect, .plus, null, "Add track", m)) {
-        result.add_track = true;
+    // Header column block over the overview + ruler rows: TRACKS + add.
+    {
+        ui.pushId("tracks-head");
+        defer ui.popId();
+        var head = bridge.fromRl(hdr_top);
+        const add_r = head.cutRight(20).takeTop(20);
+        if (ctl.button(ui, add_r, "add", null, .{ .label = "+", .flush = true })) result.add_track = true;
+        bridge.tip(add_r, "Add track", m);
+        const plate_r = Rect.xywh(head.x, head.y, head.w, head.h);
+        const body = ui.plate(plate_r, .{});
+        _ = ui.engraved(&ui.fonts.legend, body.x + 5, body.y + 3, "TRACKS", ui_style.text_dim);
+        if (hdr_top.height > 20) _ = ui.plate(Rect.xywh(add_r.x, add_r.bottom(), add_r.w, head.bottom() - add_r.bottom()), .{});
     }
     // Loop controls moved off the track header — right-click the timeline for
     // Loop selection / Loop arrangement / Clear loop, plus ruler drag.
@@ -767,14 +778,9 @@ pub fn draw(
     c.rl.EndScissorMode();
 
     // Track headers — live in the right column but scroll vertically
-    // with the lanes. Scissor to the lane band so they don't leak
-    // into the overview strip or beyond the bottom.
-    c.rl.BeginScissorMode(
-        @intFromFloat(header_x),
-        @intFromFloat(lanes_top),
-        @intFromFloat(header_w),
-        @intFromFloat(lanes_bottom - lanes_top),
-    );
+    // with the lanes. Clipped to the lane band so they don't leak into
+    // the overview strip or beyond the bottom.
+    ui.clip(bridge.fromRl(widgets.rect(header_x, lanes_top, header_w, lanes_bottom - lanes_top)));
     for (tracks, 0..) |*t, ti| {
         const ly = lanes_top + @as(f32, @floatFromInt(ti)) * theme.laneH() - scroll_y;
         if (ly + theme.laneH() <= lanes_top) continue;
@@ -782,7 +788,7 @@ pub fn draw(
         const lane_header = widgets.rect(header_x, ly, header_w, theme.laneH());
         const lane_is_sel = selected_track.* != null and selected_track.*.? == ti;
         const editing = rename_target.kind == .track and rename_target.track == ti;
-        const hres = drawLaneHeader(lane_header, t, ti, lane_is_sel, editing, m);
+        const hres = drawLaneHeader(ui, lane_header, t, ti, lane_is_sel, editing, m);
         if (editing) result.rename_rect = hres.name_rect;
         switch (hres.action) {
             .none => {},
@@ -790,16 +796,24 @@ pub fn draw(
                 selected_track.* = ti;
                 deselectAllClips(tracks);
                 selected_clip.* = null;
+                device_sel.* = .audio;
             },
             .rename => {
                 selected_track.* = ti;
                 deselectAllClips(tracks);
                 selected_clip.* = null;
+                device_sel.* = .audio;
                 result.rename_track = ti;
             },
         }
     }
-    c.rl.EndScissorMode();
+    // Below the last track the header column is a blank plate (nothing
+    // shows bare chassis, docs/06 §Packing).
+    {
+        const end_y = lanes_top + @as(f32, @floatFromInt(tracks.len)) * theme.laneH() - scroll_y;
+        if (end_y < lanes_bottom) _ = ui.plate(bridge.fromRl(widgets.rect(header_x, @max(end_y, lanes_top), header_w, lanes_bottom - @max(end_y, lanes_top))), .{});
+    }
+    ui.unclip();
 
     // Lazy vertical scrollbar.
     const lanes_rect = widgets.rect(r.x, lanes_top, r.width, lanes_bottom - lanes_top);
@@ -807,8 +821,11 @@ pub fn draw(
 
     // Pinned master strip at the bottom of the track bay.
     {
-        const strip = widgets.rect(r.x, lanes_bottom, r.width, master_h);
-        if (drawMasterStrip(strip, header_x, header_w, timeline_x, timeline_w, master, device_sel.* == .master, m)) {
+        // Blank timeline (master has no clips) + top separator, then the
+        // master header on the new Ui.
+        c.rl.DrawRectangleRec(widgets.rect(timeline_x, lanes_bottom, timeline_w, master_h), theme.pane_bg);
+        c.rl.DrawRectangle(@intFromFloat(r.x), @intFromFloat(lanes_bottom), @intFromFloat(r.width), 1, theme.slab_edge);
+        if (drawMasterHeader(ui, widgets.rect(header_x, lanes_bottom, header_w, master_h), master, device_sel.* == .master, m)) {
             master_clicked = true;
         }
     }
@@ -1592,173 +1609,95 @@ const HeaderResult = struct {
     name_rect: c.rl.Rectangle,
 };
 
-fn drawLaneHeader(r: c.rl.Rectangle, t: *Track, idx: usize, selected: bool, editing_name: bool, m: widgets.Mouse) HeaderResult {
-    // Background mirrors the timeline lane striping; the selected row goes a
-    // step brighter. Flat fill in both states (no bevel inset) so content
-    // doesn't jitter 1px when selection toggles.
-    const bg = if (selected) theme.slab_fill else if (idx % 2 == 0) theme.pane_bg else theme.pane_alt;
-    c.rl.DrawRectangleRec(r, bg);
-    c.rl.DrawRectangle(
-        @intFromFloat(r.x),
-        @intFromFloat(r.y + r.height - 1),
-        @intFromFloat(r.width),
-        1,
-        theme.slab_edge,
-    );
+/// Track header on the new Ui (docs/06 §Working surfaces): faceplate with
+/// the track-colour spine (+ amber selection stripe), index and name, R/M/S
+/// lit latches, pan and volume mini sliders, and a bare stereo meter.
+fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, selected: bool, editing_name: bool, m: widgets.Mouse) HeaderResult {
+    const r = bridge.fromRl(r_legacy);
+    ui.pushId(t);
+    defer ui.popId();
+    var body = ui.plate(r, .{ .fill = if (selected) ui_style.face.shade(8) else ui_style.face });
+    // Spine: full-height track colour, amber stripe beside it when selected.
+    ui.rect(Rect.xywh(r.x, r.y, 3, r.h - 1), trackColor(t.color));
+    if (selected) ui.rect(Rect.xywh(r.x + 3, r.y, 2, r.h - 1), ui_style.accent);
+    _ = body.cutLeft(6);
 
-    // Track-colour spine, plus an amber accent stripe when selected. The
-    // accent column is always reserved so the content x stays fixed.
-    const spine_w = theme.fine(4);
-    const accent_w = theme.fine(2);
-    c.rl.DrawRectangle(@intFromFloat(r.x), @intFromFloat(r.y), @intFromFloat(spine_w), @intFromFloat(r.height), t.color);
-    if (selected) {
-        c.rl.DrawRectangle(@intFromFloat(r.x + spine_w), @intFromFloat(r.y), @intFromFloat(accent_w), @intFromFloat(r.height), theme.accent_hi);
-    }
-
-    const content_x = r.x + spine_w + accent_w + theme.size(5);
-
-    const meter_w = theme.fine(4);
-    const meter_gap: f32 = 1;
-    const meter_total = meter_w * 2 + meter_gap;
-    const meter_x = r.x + r.width - meter_total - 3;
-    const meter_y = r.y + 2;
-    const meter_h = r.height - 4;
     const peaks = t.meter();
-    widgets.meter(widgets.rect(meter_x, meter_y, meter_w, meter_h), peaks.l);
-    widgets.meter(widgets.rect(meter_x + meter_w + meter_gap, meter_y, meter_w, meter_h), peaks.r);
+    ctl.meterStereo(ui, body.cutRight(12).insetXY(0, 1), "meter", .{ peaks.l, peaks.r }, .{ peaks.l, peaks.r }, .{ .scale = .none });
+    _ = body.cutRight(4);
 
-    const content_w = meter_x - content_x - 4;
-
-    const row1_y = r.y + 2;
-    const btn_h = theme.size(12);
-    const btn_w = theme.size(14);
-    const solo_r = widgets.rect(content_x + content_w - btn_w, row1_y, btn_w, btn_h);
-    const mute_r = widgets.rect(solo_r.x - btn_w - 2, row1_y, btn_w, btn_h);
-    const arm_r = widgets.rect(mute_r.x - btn_w - 2, row1_y, btn_w, btn_h);
-
-    // Index badge then the name. The badge is dimmed; the name brightens
-    // on the selected row.
-    const idx_w = theme.size(12);
-    var idx_buf: [8:0]u8 = undefined;
-    const idx_s = std.fmt.bufPrintZ(&idx_buf, "{d}", .{idx + 1}) catch "?";
-    widgets.drawLabelF(idx_s.ptr, content_x, row1_y + 1, theme.fsTiny(), theme.text_mute);
-
-    const name_x = content_x + idx_w;
-    const name_w = @max(8.0, content_w - idx_w - btn_w * 3 - 6);
-    const name_rect = widgets.rect(name_x, row1_y, name_w, btn_h);
-    if (!editing_name) {
-        var name_buf: [track_mod.MAX_NAME + 1:0]u8 = undefined;
-        const n = t.name();
-        const copy_n = @min(n.len, track_mod.MAX_NAME);
-        @memcpy(name_buf[0..copy_n], n[0..copy_n]);
-        name_buf[copy_n] = 0;
-        widgets.drawLabelF(@ptrCast(&name_buf[0]), name_x, row1_y + 1, theme.fsBody(), if (selected) theme.text_fg else theme.text_dim);
-    }
-
-    // Record-arm. Only audio tracks can be armed (buses have no input).
+    var row1 = body.cutTop(20);
+    var btns = row1.cutRight(3 * 17);
     const can_arm = t.kind == .audio;
-    const is_armed = t.isArmed();
-    const arm_fill = if (is_armed) theme.accent_rec else theme.slab_fill;
-    widgets.bevelRaised(arm_r, arm_fill, theme.slab_hi, theme.slab_lo);
-    widgets.drawLabelF("R", arm_r.x + 4, arm_r.y, theme.fsTiny(), if (can_arm) theme.text_fg else theme.text_mute);
-    widgets.tooltip(arm_r, if (is_armed) "Disarm (record)" else "Arm for recording", m);
-    if (can_arm and widgets.contains(arm_r, m.x, m.y) and m.left_released and !widgets.hasActiveDrag()) {
-        t.setArmed(!is_armed);
-    }
+    var armed = t.isArmed();
+    const arm_r = btns.cutLeft(17).insetXY(0, 2);
+    if (ctl.button(ui, arm_r, "arm", &armed, .{ .kind = .latch, .label = "R", .lit = ui_style.rec, .disabled = !can_arm })) t.setArmed(armed);
+    bridge.tip(arm_r, if (t.isArmed()) "Disarm (record)" else "Arm for recording", m);
+    var muted = t.mute.load(.monotonic);
+    const mute_r = btns.cutLeft(17).insetXY(0, 2);
+    if (ctl.button(ui, mute_r, "mute", &muted, .{ .kind = .latch, .label = "M", .lit = ui_style.led_blue })) t.mute.store(muted, .monotonic);
+    bridge.tip(mute_r, if (muted) "Unmute track" else "Mute track", m);
+    var solo = t.solo.load(.monotonic);
+    const solo_r = btns.insetXY(0, 2);
+    if (ctl.button(ui, solo_r, "solo", &solo, .{ .kind = .latch, .label = "S", .lit = ui_style.led_yellow })) t.solo.store(solo, .monotonic);
+    bridge.tip(solo_r, if (solo) "Unsolo track" else "Solo track", m);
 
-    const is_muted = t.mute.load(.monotonic);
-    const mute_fill = if (is_muted) theme.accent_rec else theme.slab_fill;
-    widgets.bevelRaised(mute_r, mute_fill, theme.slab_hi, theme.slab_lo);
-    widgets.drawLabelF("M", mute_r.x + 3, mute_r.y, theme.fsTiny(), theme.text_fg);
-    widgets.tooltip(mute_r, if (is_muted) "Unmute track" else "Mute track", m);
-    if (widgets.contains(mute_r, m.x, m.y) and m.left_released and !widgets.hasActiveDrag()) {
-        t.mute.store(!is_muted, .monotonic);
-    }
+    // Index badge + name; the name row is also the select/rename target.
+    var ibuf: [8]u8 = undefined;
+    const idx_s = std.fmt.bufPrint(&ibuf, "{d}", .{idx + 1}) catch "?";
+    const idx_r = row1.cutLeft(14);
+    ui.textIn(&ui.fonts.legend, idx_r, idx_s, ui_style.text_mute, .left, true);
+    const name_r = row1;
+    if (!editing_name) ui.textIn(&ui.fonts.body, name_r, t.name(), if (selected) ui_style.text else ui_style.text_dim, .left, true);
 
-    const is_solo = t.solo.load(.monotonic);
-    const solo_fill = if (is_solo) theme.accent_hi else theme.slab_fill;
-    widgets.bevelRaised(solo_r, solo_fill, theme.slab_hi, theme.slab_lo);
-    widgets.drawLabelF("S", solo_r.x + 4, solo_r.y, theme.fsTiny(), theme.text_fg);
-    widgets.tooltip(solo_r, if (is_solo) "Unsolo track" else "Solo track", m);
-    if (widgets.contains(solo_r, m.x, m.y) and m.left_released and !widgets.hasActiveDrag()) {
-        t.solo.store(!is_solo, .monotonic);
-    }
-
-    const fader_h = theme.size(12);
-    const row2_y = r.y + r.height - fader_h - 3;
-    const vol_r = widgets.rect(content_x, row2_y, content_w, fader_h);
+    // Volume (bottom) and pan (above it, when the lane is tall enough).
+    const vol_r = body.cutBottom(@min(body.h, 16));
     var v_norm: f32 = std.math.clamp(t.volume() / 1.25, 0.0, 1.0);
-    if (widgets.hFader(vol_r, &v_norm, m)) {
-        t.setVolume(v_norm * 1.25);
-    }
-    widgets.tooltip(vol_r, "Track volume", m);
-
-    // Pan bar above the volume fader, when the row is tall enough to hold it.
-    const pan_h = theme.size(7);
-    const pan_y = row2_y - pan_h - 2;
-    if (pan_y > row1_y + btn_h + 2) {
-        const pan_r = widgets.rect(content_x, pan_y, content_w, pan_h);
-        var pan_v: f32 = t.pan();
-        if (widgets.panBar(pan_r, &pan_v, m)) t.setPan(pan_v);
-        widgets.tooltip(pan_r, "Pan (double-click to center)", m);
+    if (ctl.slider(ui, vol_r, "vol", &v_norm, .{ .kind = .mini, .horizontal = true, .show_readout = false, .ticks = 5, .default = 1.0 / 1.25 })) t.setVolume(v_norm * 1.25);
+    bridge.tip(vol_r, "Track volume", m);
+    if (body.h >= 14) {
+        const pan_r = body.cutBottom(14);
+        var p: f32 = (t.pan() + 1) / 2;
+        if (ctl.slider(ui, pan_r, "pan", &p, .{ .kind = .mini, .horizontal = true, .bipolar = true, .show_readout = false, .ticks = 3, .default = 0.5 })) t.setPan(p * 2 - 1);
+        bridge.tip(pan_r, "Pan (double-click to center)", m);
     }
 
-    const click_region = widgets.rect(content_x, r.y + 1, content_w - btn_w * 2 - 4, theme.size(14));
-    if (widgets.contains(click_region, m.x, m.y) and m.left_pressed and !widgets.hasActiveDrag()) {
-        return .{ .action = if (m.double_clicked) .rename else .select, .name_rect = name_rect };
-    }
-    return .{ .action = .none, .name_rect = name_rect };
+    const b = ui.behaviorEx(ui.id("name"), Rect.xywh(r.x, r.y, name_r.right() - r.x, 20), .{ .focusable = false });
+    const name_rl = bridge.toRl(name_r);
+    if (b.pressed) return .{ .action = if (b.double) .rename else .select, .name_rect = name_rl };
+    return .{ .action = .none, .name_rect = name_rl };
 }
 
-/// Pinned master strip: blank timeline (left) + a header (right) with the
-/// MASTER label, volume fader and stereo meter. Returns true when the strip
-/// is clicked (to select the master for the machine bay).
-fn drawMasterStrip(strip: c.rl.Rectangle, header_x: f32, header_w: f32, timeline_x: f32, timeline_w: f32, master: *Track, selected: bool, m: widgets.Mouse) bool {
-    // Blank timeline area — master has no clips.
-    c.rl.DrawRectangleRec(widgets.rect(timeline_x, strip.y, timeline_w, strip.height), theme.pane_bg);
-    // Top separator across the whole strip.
-    c.rl.DrawRectangle(@intFromFloat(strip.x), @intFromFloat(strip.y), @intFromFloat(strip.width), 1, theme.slab_edge);
-
-    const hdr = widgets.rect(header_x, strip.y, header_w, strip.height);
-    c.rl.DrawRectangleRec(hdr, if (selected) theme.slab_fill else theme.pane_alt);
-
-    const spine_w = theme.fine(4);
-    const accent_w = theme.fine(2);
-    c.rl.DrawRectangle(@intFromFloat(hdr.x), @intFromFloat(hdr.y), @intFromFloat(spine_w), @intFromFloat(hdr.height), theme.slab_hi);
-    if (selected) {
-        c.rl.DrawRectangle(@intFromFloat(hdr.x + spine_w), @intFromFloat(hdr.y), @intFromFloat(accent_w), @intFromFloat(hdr.height), theme.accent_hi);
-    }
-
-    const content_x = hdr.x + spine_w + accent_w + theme.size(5);
-    const meter_w = theme.fine(4);
-    const meter_gap: f32 = 1;
-    const meter_total = meter_w * 2 + meter_gap;
-    const meter_x = hdr.x + hdr.width - meter_total - 3;
+/// Pinned master header: spine, MASTER, pan and volume, stereo meter.
+/// Returns true when the header is clicked (select master for the bay).
+fn drawMasterHeader(ui: *Ui, hdr_legacy: c.rl.Rectangle, master: *Track, selected: bool, m: widgets.Mouse) bool {
+    const r = bridge.fromRl(hdr_legacy);
+    ui.pushId("master");
+    defer ui.popId();
+    var body = ui.plate(r, .{ .fill = if (selected) ui_style.face.shade(8) else ui_style.face.shade(-4) });
+    ui.rect(Rect.xywh(r.x, r.y, 3, r.h - 1), ui_style.face_hi);
+    if (selected) ui.rect(Rect.xywh(r.x + 3, r.y, 2, r.h - 1), ui_style.accent);
+    _ = body.cutLeft(6);
     const peaks = master.meter();
-    widgets.meter(widgets.rect(meter_x, hdr.y + 2, meter_w, hdr.height - 4), peaks.l);
-    widgets.meter(widgets.rect(meter_x + meter_w + meter_gap, hdr.y + 2, meter_w, hdr.height - 4), peaks.r);
-
-    const content_w = meter_x - content_x - 4;
-    widgets.drawLabelF("MASTER", content_x, hdr.y + 3, theme.fsBody(), if (selected) theme.text_fg else theme.text_dim);
-
-    const fader_h = theme.size(12);
-    const vol_r = widgets.rect(content_x, hdr.y + hdr.height - fader_h - 3, content_w, fader_h);
+    ctl.meterStereo(ui, body.cutRight(12).insetXY(0, 1), "meter", .{ peaks.l, peaks.r }, .{ peaks.l, peaks.r }, .{ .scale = .none });
+    _ = body.cutRight(4);
+    const title = body.cutTop(20);
+    ui.textIn(&ui.fonts.body_bold, title, "MASTER", if (selected) ui_style.text else ui_style.text_dim, .left, true);
+    const vol_r = body.cutBottom(@min(body.h, 16));
     var v_norm: f32 = std.math.clamp(master.volume() / 1.25, 0.0, 1.0);
-    if (widgets.hFader(vol_r, &v_norm, m)) master.setVolume(v_norm * 1.25);
-    widgets.tooltip(vol_r, "Master volume", m);
-
-    // Pan bar above the volume fader, when the strip is tall enough.
-    const pan_h = theme.size(7);
-    const pan_y = vol_r.y - pan_h - 2;
-    if (pan_y > hdr.y + 3 + theme.fsBody() + 1) {
-        const pan_r = widgets.rect(content_x, pan_y, content_w, pan_h);
-        var pan_v: f32 = master.pan();
-        if (widgets.panBar(pan_r, &pan_v, m)) master.setPan(pan_v);
-        widgets.tooltip(pan_r, "Master pan (double-click to center)", m);
+    if (ctl.slider(ui, vol_r, "vol", &v_norm, .{ .kind = .mini, .horizontal = true, .show_readout = false, .ticks = 5, .default = 1.0 / 1.25 })) master.setVolume(v_norm * 1.25);
+    bridge.tip(vol_r, "Master volume", m);
+    if (body.h >= 14) {
+        const pan_r = body.cutBottom(14);
+        var p: f32 = (master.pan() + 1) / 2;
+        if (ctl.slider(ui, pan_r, "pan", &p, .{ .kind = .mini, .horizontal = true, .bipolar = true, .show_readout = false, .ticks = 3, .default = 0.5 })) master.setPan(p * 2 - 1);
+        bridge.tip(pan_r, "Master pan (double-click to center)", m);
     }
+    return ui.behaviorEx(ui.id("select"), Rect.xywh(r.x, r.y, r.w, 20), .{ .focusable = false }).pressed;
+}
 
-    // Click anywhere on the strip (not consumed by the fader) → select master.
-    return m.left_pressed and widgets.contains(strip, m.x, m.y) and !widgets.hasActiveDrag();
+fn trackColor(col: c.rl.Color) ui_style.Color {
+    return .{ .r = col.r, .g = col.g, .b = col.b, .a = 255 };
 }
 
 fn clipNameRect(r: c.rl.Rectangle) c.rl.Rectangle {

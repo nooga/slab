@@ -692,7 +692,7 @@ pub fn main(init: std.process.Init) !void {
         // (Side browser removed — machines are added via the "+" in the
         // machine-bay titlebar; see mbres.add_machine below.)
 
-        const ares = arrangement.draw(rects.arrangement, tracks, &master, &device_sel, &audio_pool, alloc, &selected_track, &selected_clip, &transport, &meter_state, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), &recorder, pane_m);
+        const ares = arrangement.draw(ui, rects.arrangement, tracks, &master, &device_sel, &audio_pool, alloc, &selected_track, &selected_clip, &transport, &meter_state, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), &recorder, pane_m);
         if (ares.rename_clip) |ref| beginRenameClip(&rename, tracks, ref);
         if (ares.rename_track) |ti| beginRenameTrack(&rename, tracks, ti);
         if (ares.rename_rect) |rr| rename.rect = rr;
