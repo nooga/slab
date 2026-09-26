@@ -61,8 +61,24 @@ unchanged — the engine just feeds them rects.
 Weights default to 1, so simple panels stay terse; you add weights only
 where proportions matter (e.g. a tall ENV row vs. a short MOD row).
 
-The panel is a pure function of (control declaration, body rect). It owns
-no scroll state — see Client rect.
+The panel is a pure function of (control declaration, tier, body rect). It
+owns no scroll state — see Client rect.
+
+### Tiers and natural size
+
+Weights set **proportions**, not control sizes. Controls come in fixed
+sizes (docs/06 §Sizing), so layout runs in two steps:
+
+1. **Measure at a tier (L/M/S):** each strip's minimum size is its header
+   plus its control grid at that tier's cell size. Rows, cells and strips
+   take the maximum of their children's minimums; this is the panel's
+   **natural size** at the tier.
+2. **Place:** the container picks the largest tier whose natural size fits
+   the body, and applies it to the whole panel, so every knob matches.
+   Space beyond the natural size is shared out by weight between strips
+   (strips get roomier, controls stay the same size). Below the smallest
+   tier the container scrolls or clips; the panel never shrinks a control
+   to fit.
 
 ## Declaration (machine descriptor)
 
@@ -199,24 +215,15 @@ The host (machine bay) owns the chrome; the machine owns the body.
   reveal it (horizontal reveal for wide machines); we add that deliberately,
   not by having panels grab input.
 
-## Knob / switch interaction
+## Controls and interaction
 
-Keep the current knob feel (vertical drag to adjust, immediate response) and
-standardize the modern affordances:
-
-- Vertical drag = adjust; value readout under the knob.
-- **Shift = fine**; **double-click = reset to default**.
-- Knobs do **not** consume the scroll wheel (reserved for the viewport).
-- `switchV`: click an option, or click-drag through the column; snappy,
-  no animation.
-
-## Widget additions (companion: docs/06)
-
-- `strip(rect, title)` — beveled module box + header (the `mono1` frame).
-- `switchV(rect, label, options, *index, mouse)` — vertical enum selector
-  (generalizes `switch3Vertical` to N options).
-- `knob` — add fine (Shift) + reset (double-click) + the standard value
-  readout; tighten the response curve.
+Panels use the control catalogue and interaction contract in docs/06
+(§Control catalogue, §Interaction contract). Manifest control kinds map
+onto it: `knob | slider | switch | button | selector | led | display`,
+each with a variant and, optionally, a size override. `switch` in the
+examples above is the `selector`/`list` variant. The title strip carries
+the title display (docs/06 §Displays), which shows the touched parameter's
+value; per-knob readouts may be dropped at the S tier.
 
 ## Phasing
 
@@ -231,8 +238,8 @@ standardize the modern affordances:
 
 ## Companion doc edits
 
-- **docs/06-ui-widgets.md** — add `strip`, `switchV`, the knob interaction
-  spec.
+- **docs/06-ui-widgets.md** — done: the UI-system rewrite carries the
+  catalogue, interaction contract and tiered sizing.
 - **docs/02-machines.md** — note that a machine's panel is part of its
   declaration (strips + controls), with the manifest as the interim source
   and the fy descriptor as the target.

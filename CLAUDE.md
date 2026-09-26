@@ -143,14 +143,22 @@ the four-arena model (block, persistent, voice, asset).
 
 ### UI / widget style
 
-Brutalist grey, 1px bevels, bitmap fonts. Don't soften this. See
+2000s pro hardware, pixel-exact: 1px bevels, chamfered faceplates,
+Tamzen bitmap type, dot-matrix displays. Don't soften this. See
 [docs/06-ui-widgets.md](docs/06-ui-widgets.md). Concretely:
 
-- No anti-aliasing on rectangles or lines.
-- No gradients, drop shadows, or rounded corners.
-- Grid snap at 4px. Standard row height 16 or 20.
-- Palette is fixed: five greys + three accents (in the doc).
-- Bitmap fonts only — vector fonts at 11px look wrong.
+- UI rects are `i32` logical pixels on a 4px grid; the renderer owns the
+  logical → device scale. Integer scales are the reference look.
+- No rounded corners or drop shadows. Materials (noise, faint vertical
+  gradients, engraving) are token-limited and only on hardware
+  surfaces; data sits on flat dark wells.
+- Tamzen at integer scales; the vector face only for fractional scales,
+  rasterized at exact device size (never filtered down).
+- Palette is tokens (in the doc). Amber means "active", nothing else.
+- Controls come from the catalogue in fixed sizes; panels pick one tier,
+  never shrink controls to fit.
+- Widget ids are explicit keys, never rect hashes. Nothing outside the
+  renderer calls raylib.
 
 ### fy-side style (when we start writing fy)
 

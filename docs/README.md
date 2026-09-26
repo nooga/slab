@@ -25,8 +25,9 @@ self-contained but assumes the vocabulary established in earlier ones.
    passed to every machine's `process`; note events; port model
 6. [05-kernels.md](05-kernels.md) — `dsp:` mode, NEON assembler
    extension, combinator-based authoring, compile-time fusion
-7. [06-ui-widgets.md](06-ui-widgets.md) — brutalist UI, 1px bevel
-   primitives, widget library, panel protocol, pop-the-face gesture
+7. [06-ui-widgets.md](06-ui-widgets.md) — UI system: pixel grid, Tamzen
+   type, materials, OLED/VFD displays, control catalogue, tiered sizing,
+   the `Ui` core, pop-the-face gesture
 8. [07-transport.md](07-transport.md) — audio-clock-authoritative
    transport, block scheduling, graph model, plugin delay
    compensation
