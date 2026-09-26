@@ -610,7 +610,10 @@ the grid is quiet.
 - The clip editor opens when a clip is selected and collapses when empty.
 - The machine bay shows the selected track's chain; machines are added
   from its "+" menu. Each machine is a faceplate with a title strip
-  (name, title display, preset, bypass) and its declared panel.
+  (name, title display, preset, bypass) and its declared panel. Effect
+  cards end in an I/O column: IN and OUT stereo bargraphs around a shared
+  dB scale, fed by block peaks the engine writes per effect
+  (`Effect.io_peak`), so every effect meters without kernel support.
 - Mixer view (Tab, planned): channel strips per track + master, built
   entirely from the catalogue (fader, bipolar knob for pan, latch buttons
   for S/M/R, ladder meter, sends).

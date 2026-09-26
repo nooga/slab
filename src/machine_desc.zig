@@ -22,7 +22,7 @@ pub const MAX_CONTROLS = 128;
 pub const MAX_OPTS = 8;
 pub const MAX_CONSTS = 16;
 pub const MAX_STRIPS = 16;
-pub const MAX_DISPLAYS = 8;
+pub const MAX_DISPLAYS = 16;
 pub const MAX_ROWS = 8;
 pub const MAX_PAGES = 8;
 pub const MAX_ROW_CELLS = 16;
@@ -205,7 +205,14 @@ pub const Strip = struct {
     }
 };
 
-pub const DisplayKind = enum { adsr, waveform, meter, response };
+pub const DisplayKind = enum { adsr, waveform, meter, response, algo, eg4 };
+
+/// Algo display slots in `Display.offsets`, in the order `algo-display`
+/// pushes them: operator count, row stride, then the row offsets (all in
+/// f64 elements) of the modulation matrix m[carrier][modulator], the
+/// carrier flags and the feedback flags.
+pub const AlgoOffset = enum(usize) { ops = 0, stride, matrix, carriers, feedback };
+pub const MAX_ALGO_OPS = 8;
 
 /// Meter display state-offset slots (byte offsets into a region's state),
 /// in the order the manifest `meter-display` word pushes them.
@@ -230,6 +237,10 @@ pub const Display = struct {
     }
 
     pub fn meterOffset(self: *const Display, o: MeterOffset) usize {
+        return self.offsets[@intFromEnum(o)];
+    }
+
+    pub fn algoOffset(self: *const Display, o: AlgoOffset) usize {
         return self.offsets[@intFromEnum(o)];
     }
 };
@@ -467,6 +478,26 @@ fn copyText(dest: *[MAX_TEXT:0]u8, src: []const u8) !usize {
     return src.len;
 }
 
+// An algo display reads its routing from the machine's derive-data table,
+// one row per value of the selector control it names.
+fn readAlgoDisplay(d: *const Desc, out: *Display, disp: *const DisplayRaw) !void {
+    const raw = [_]Fy.Value{ disp.off0, disp.off1, disp.off2, disp.off3, disp.off4 };
+    for (out.offsets[0..raw.len], raw) |*o, v| o.* = @intCast(asInt(v));
+    const ops = out.algoOffset(.ops);
+    const stride = out.algoOffset(.stride);
+    if (d.derive_data == 0 or ops == 0 or ops > MAX_ALGO_OPS) return error.InvalidMachineDesc;
+    if (out.algoOffset(.matrix) + ops * ops > stride or
+        out.algoOffset(.carriers) + ops > stride or
+        out.algoOffset(.feedback) + ops > stride) return error.InvalidMachineDesc;
+    for (d.controls[0..d.control_count]) |*ctl| {
+        if (std.mem.eql(u8, ctl.idSlice(), out.sourceSlice())) {
+            if (ctl.kind != .int_range) return error.InvalidMachineDesc;
+            return;
+        }
+    }
+    return error.InvalidMachineDesc;
+}
+
 // ── walker ────────────────────────────────────────────────────────────
 
 /// Call `manifest` on an already-compiled host and copy the descriptor
@@ -567,9 +598,12 @@ pub fn read(host: *FyHost) !Desc {
             1 => .waveform,
             2 => .meter,
             3 => .response,
+            4 => .algo,
+            5 => .eg4,
             else => return error.InvalidMachineDesc,
         };
         out.source_len = try copyText(&out.source, cstrSlice(disp.sources));
+        if (out.kind == .algo) try readAlgoDisplay(&d, out, disp);
         if (out.kind == .meter) {
             const raw = [_]Fy.Value{ disp.off0, disp.off1, disp.off2, disp.off3, disp.off4, disp.off5, disp.off6 };
             for (&out.offsets, raw) |*o, v| {

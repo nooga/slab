@@ -117,17 +117,24 @@ include "fm86_algo.fy"
   "EG1" 4 strip  "EG2" 4 strip  "EG3" 4 strip
   "EG4" 4 strip  "EG5" 4 strip  "EG6" 4 strip
 
+  ( ── displays: the ALGO row of fm86-algo-table [6 ops, 48 f64 per row:
+     matrix at 0, carriers at 36, feedback at 42] and each operator's EG )
+  "ROUTING" "algo" 6 48 0 36 42 algo-display
+  "EG1 CURVE" "EG1" eg4-display  "EG2 CURVE" "EG2" eg4-display
+  "EG3 CURVE" "EG3" eg4-display  "EG4 CURVE" "EG4" eg4-display
+  "EG5 CURVE" "EG5" eg4-display  "EG6 CURVE" "EG6" eg4-display
+
   ( ── pages: the voice at a glance, then one envelope per operator ─── )
   "VOICE" page  1.0 row
-    1.0 cell  "GLOBAL" 1.0 item
+    1.0 cell  "GLOBAL" 0.0 item  "ROUTING" 1.0 item
     1.0 cell  "OP1" 1.0 item  1.0 cell  "OP2" 1.0 item  1.0 cell  "OP3" 1.0 item
     1.0 cell  "OP4" 1.0 item  1.0 cell  "OP5" 1.0 item  1.0 cell  "OP6" 1.0 item
-  "EG 1" page  1.0 row  1.0 cell  "EG1" 1.0 item
-  "EG 2" page  1.0 row  1.0 cell  "EG2" 1.0 item
-  "EG 3" page  1.0 row  1.0 cell  "EG3" 1.0 item
-  "EG 4" page  1.0 row  1.0 cell  "EG4" 1.0 item
-  "EG 5" page  1.0 row  1.0 cell  "EG5" 1.0 item
-  "EG 6" page  1.0 row  1.0 cell  "EG6" 1.0 item
+  "EG 1" page  1.0 row  1.0 cell  "EG1" 1.0 item  3.0 cell  "EG1 CURVE" 1.0 item
+  "EG 2" page  1.0 row  1.0 cell  "EG2" 1.0 item  3.0 cell  "EG2 CURVE" 1.0 item
+  "EG 3" page  1.0 row  1.0 cell  "EG3" 1.0 item  3.0 cell  "EG3 CURVE" 1.0 item
+  "EG 4" page  1.0 row  1.0 cell  "EG4" 1.0 item  3.0 cell  "EG4 CURVE" 1.0 item
+  "EG 5" page  1.0 row  1.0 cell  "EG5" 1.0 item  3.0 cell  "EG5 CURVE" 1.0 item
+  "EG 6" page  1.0 row  1.0 cell  "EG6" 1.0 item  3.0 cell  "EG6 CURVE" 1.0 item
 
   machine-desc
 ;

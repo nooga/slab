@@ -183,6 +183,17 @@ cell|1.6|HPF*4/EG*1                    # short display under a taller HPF
   are **overlaid** in the one field, one accent pen each, labelled inline.
 - `adsr` reads the source module's ATK/DEC/SUS/REL knob norms and draws the
   cap-discharge envelope shape, reacting live as the knobs move.
+- `eg4-display ( name module -- )` draws a DX-style four-rate / four-level
+  envelope from the module's R1..R4 (level per sample) and L1..L4 controls;
+  segment widths follow each segment's duration on a log scale.
+- `algo-display ( name selector ops stride matrix carriers feedback -- )`
+  draws an operator-routing graph from the machine's derive-data table: the
+  row is the `selector` int-step's value, and the row holds a modulation
+  matrix `m[carrier][modulator]`, carrier flags and feedback flags at the
+  given element offsets. Carriers sit lit on the output bus, each modulator
+  above the first operator it feeds (a tidy tree; extra targets draw as
+  diagonals), feedback as a loop over the box. The routing stays the
+  machine's data: FM-86's table lives in `fm86_algo.fy`.
 
 These visualizers are **drawn in Zig today** (selected by the manifest kind).
 They are the visual reference for the planned fy-drawn displays.

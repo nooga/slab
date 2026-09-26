@@ -728,7 +728,11 @@ fn renderEffects(
     var next_r = scratch_r;
 
     for (t.effects.items, 0..) |*fx, i| {
-        if (t.effectBypassed(i)) continue; // bypassed → pass through untouched
+        const in_peak = [2]f32{ blockPeak(cur_l), blockPeak(cur_r) };
+        if (t.effectBypassed(i)) {
+            fx.setIo(in_peak, in_peak); // bypassed → pass through untouched
+            continue;
+        }
         @memset(next_l, 0);
         @memset(next_r, 0);
         const in_ports = [_][*]const f32{ cur_l.ptr, cur_r.ptr };
@@ -738,6 +742,7 @@ fn renderEffects(
         ctx.audio_in = @ptrCast(&in_ports[0]);
         ctx.audio_in_count = 2;
         fx.mach.render(fx.mach.state, &ctx, next_l, next_r);
+        fx.setIo(in_peak, .{ blockPeak(next_l), blockPeak(next_r) });
 
         const old_l = cur_l;
         const old_r = cur_r;
@@ -748,6 +753,12 @@ fn renderEffects(
     }
 
     return .{ .l = cur_l, .r = cur_r };
+}
+
+fn blockPeak(buf: []const f32) f32 {
+    var p: f32 = 0;
+    for (buf) |x| p = @max(p, @abs(x));
+    return p;
 }
 
 /// Mix all audio clips overlapping this block into the planar L/R buffers.

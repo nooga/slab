@@ -1037,6 +1037,13 @@ pub fn meter(ui: *Ui, r: Rect, key: anytype, peak: f32, rms: f32, o: MeterOpts) 
 }
 
 /// Stereo pair sharing one centre scale (SSL-style) when it fits.
+/// A vertical dB scale in `r`, graduated against the bar `bar` (same top,
+/// same height, clip LED excluded) — for scales shared by separate meters.
+pub fn meterScaleBetween(ui: *Ui, r: Rect, bar: Rect) void {
+    const axis = Rect.xywh(r.x, bar.y + CLIP_H, r.w, bar.h - CLIP_H);
+    meterScale(ui, axis, axis.inset(1), false, .center);
+}
+
 pub fn meterStereo(ui: *Ui, r: Rect, key: anytype, peak: [2]f32, rms: [2]f32, o: MeterOpts) void {
     ui.pushId(key);
     defer ui.popId();

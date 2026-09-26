@@ -252,6 +252,14 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
 : as-display 8 _mf-widget ;
 
 ( --- panel: strips, displays, weighted layout --------------------- )
+: _mf-append-disp  ( disp -- )
+  _mf-last-disp @64 0 =
+  [ dup _mf-md@ MachineDesc.displays! drop ]
+  [ dup _mf-last-disp @64 DisplayDesc.next! drop ]
+  ifte
+  _mf-last-disp !64
+;
+
 : strip  ( module knob-cols -- )
   StripDesc.alloc
   StripDesc.cols!
@@ -303,6 +311,34 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   [ dup _mf-last-disp @64 DisplayDesc.next! drop ]
   ifte
   _mf-last-disp !64
+;
+
+( An operator-routing diagram [kind 4], read from the machine's
+  derive-data table: the row is the value of the int-step control `selector`
+  minus its min; `ops` operators; each row is `stride` f64s holding a
+  modulation matrix m[carrier][modulator] at `matrix`, carrier flags at
+  `carriers` and feedback flags at `feedback` [all element offsets]. )
+: algo-display  ( name selector ops stride matrix carriers feedback -- )
+  DisplayDesc.alloc
+  DisplayDesc.off4!
+  DisplayDesc.off3!
+  DisplayDesc.off2!
+  DisplayDesc.off1!
+  DisplayDesc.off0!
+  swap cstr-new swap DisplayDesc.sources!
+  swap cstr-new swap DisplayDesc.name!
+  4 swap DisplayDesc.kind!
+  _mf-append-disp
+;
+
+( A four-rate / four-level envelope [kind 5], DX style: reads the source
+  module's R1..R4 rates [level per sample] and L1..L4 levels. )
+: eg4-display  ( name module -- )
+  DisplayDesc.alloc
+  swap cstr-new swap DisplayDesc.sources!
+  swap cstr-new swap DisplayDesc.name!
+  5 swap DisplayDesc.kind!
+  _mf-append-disp
 ;
 
 ( A live level/loudness meter [kind 2].  The seven state byte offsets are

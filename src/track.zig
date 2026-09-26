@@ -20,6 +20,20 @@ pub const Effect = struct {
     mach: machine.Machine,
     idx: ?u8 = null,
     bypass: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// Block peaks the engine writes after each render and the bay's I/O
+    /// meters read: in L, in R, out L, out R, as f32 bits.
+    io_peak: [4]std.atomic.Value(u32) = [_]std.atomic.Value(u32){std.atomic.Value(u32).init(0)} ** 4,
+
+    pub fn setIo(self: *Effect, in: [2]f32, out: [2]f32) void {
+        const v = [4]f32{ in[0], in[1], out[0], out[1] };
+        for (&self.io_peak, v) |*a, x| a.store(@bitCast(x), .monotonic);
+    }
+
+    pub fn io(self: *const Effect) struct { in: [2]f32, out: [2]f32 } {
+        var v: [4]f32 = undefined;
+        for (&v, &self.io_peak) |*x, *a| x.* = @bitCast(a.load(.monotonic));
+        return .{ .in = .{ v[0], v[1] }, .out = .{ v[2], v[3] } };
+    }
 };
 
 /// What role a Track plays in the signal graph. Audio tracks have an

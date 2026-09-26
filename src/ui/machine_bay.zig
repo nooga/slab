@@ -13,7 +13,9 @@ const c = @import("../c.zig");
 const pane = @import("pane_input.zig");
 const menu = @import("menu.zig");
 const bridge = @import("bridge.zig");
-const Track = @import("../track.zig").Track;
+const track_mod = @import("../track.zig");
+const Track = track_mod.Track;
+const Effect = track_mod.Effect;
 const registry_mod = @import("../machine_registry.zig");
 const Registry = registry_mod.Registry;
 const presets_mod = @import("../presets.zig");
@@ -100,6 +102,32 @@ fn panelW(mach: *const Machine) i32 {
     return if (mach.panel_w > 0) @intFromFloat(@round(mach.panel_w)) else DEFAULT_PANEL_W;
 }
 
+/// An effect card: its panel plus the I/O meter column.
+fn effectW(fx: *const Effect) i32 {
+    return panelW(&fx.mach) + IO_W;
+}
+
+/// IN | scale | OUT: two stereo bars sharing one graduated scale.
+const IO_W: i32 = 48;
+const IO_BAR_W: i32 = 10;
+
+fn ioMeters(ui: *Ui, r: Rect, fx: *const Effect) void {
+    ui.pushId("io");
+    defer ui.popId();
+    var body = ctl.strip(ui, r, "");
+    const legend = body.cutTop(12);
+    const pk = fx.io();
+    var bars = body.insetXY(3, 2);
+    const in_r = bars.cutLeft(IO_BAR_W);
+    const out_r = bars.cutRight(IO_BAR_W);
+    ui.textIn(&ui.fonts.legend, Rect.xywh(in_r.x - 3, legend.y, in_r.w + 6, 12), "IN", ui_style.text_dim, .center, true);
+    ui.textIn(&ui.fonts.legend, Rect.xywh(out_r.x - 3, legend.y, out_r.w + 6, 12), "OUT", ui_style.text_dim, .center, true);
+    ctl.meterStereo(ui, in_r, "in", pk.in, pk.in, .{ .scale = .none });
+    ctl.meterStereo(ui, out_r, "out", pk.out, pk.out, .{ .scale = .none });
+    ctl.meterScaleBetween(ui, bars, in_r);
+    ui.animate();
+}
+
 pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usize, is_bus: bool, collapsed: bool, reg: *const Registry) Result {
     var result = Result{};
     const r = bridge.fromRl(r_legacy);
@@ -128,7 +156,7 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
     const has_instrument = !is_bus and t.machine_idx != null;
     const inst_w: i32 = if (has_instrument) panelW(&t.machine) else 0;
     var content_w: i32 = inst_w + TITLE_H;
-    for (t.effects.items) |*fx| content_w += panelW(&fx.mach);
+    for (t.effects.items) |*fx| content_w += effectW(fx);
     const overflow = content_w > area.w;
     const minimap = if (overflow) area.cutBottom(MINIMAP_H) else Rect{};
     const max_scroll = @max(0, content_w - area.w);
@@ -154,7 +182,7 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
             glow = led_glow[ti];
             if (glow > 0) ui.animate();
         };
-        const out = drawDevice(ui, Rect.xywh(x, area.y, inst_w, area.h), &t.machine, .instrument, t.isEnabled(), glow, reg, &result);
+        const out = drawDevice(ui, Rect.xywh(x, area.y, inst_w, area.h), &t.machine, .instrument, null, t.isEnabled(), glow, reg, &result);
         if (out.toggle) t.toggleEnabled();
         x += inst_w;
     }
@@ -166,7 +194,7 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
     {
         var ex = x;
         for (t.effects.items, 0..) |*fx, i| {
-            const fw = panelW(&fx.mach);
+            const fw = effectW(fx);
             if (fx_drag.active and ui.in.mx < @as(f32, @floatFromInt(ex + @divFloor(fw, 2))) and drop_idx == t.effects.items.len) {
                 drop_idx = i;
                 drop_x = ex;
@@ -176,9 +204,9 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
         if (drop_idx == t.effects.items.len) drop_x = ex;
     }
     for (t.effects.items, 0..) |*fx, i| {
-        const fw = panelW(&fx.mach);
+        const fw = effectW(fx);
         const card = Rect.xywh(x, area.y, fw, area.h);
-        const out = drawDevice(ui, card, &fx.mach, .{ .effect = i }, !t.effectBypassed(i), null, reg, &result);
+        const out = drawDevice(ui, card, &fx.mach, .{ .effect = i }, fx, !t.effectBypassed(i), null, reg, &result);
         if (out.toggle) t.toggleEffectBypass(i);
         if (out.name_pressed and !fx_drag.armed) fx_drag = .{ .armed = true, .src = i, .press_x = ui.in.mx };
         if (out.name_released and fx_drag.armed and fx_drag.src == i) {
@@ -247,7 +275,7 @@ fn drawMinimap(ui: *Ui, r: Rect, view_w: i32, content_w: i32, max_scroll: i32, i
         bx += w;
     }
     for (t.effects.items) |*fx| {
-        const w = @as(f32, @floatFromInt(panelW(&fx.mach))) * k;
+        const w = @as(f32, @floatFromInt(effectW(fx))) * k;
         ui.rect(Rect.xywh(@intFromFloat(bx), inner.y, @max(1, @as(i32, @intFromFloat(w)) - 1), inner.h), ui_style.face);
         bx += w;
     }
@@ -278,7 +306,7 @@ fn isInstrument(ref: DeviceRef) bool {
 // Draw one device column: the title strip, its menus, and the machine's
 // panel body. Folds the name (replace), preset and delete-confirm outcomes
 // into `result`, scoped to `ref`.
-fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, active: bool, glow: ?f32, reg: *const Registry, result: *Result) DeviceOut {
+fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, fx: ?*const Effect, active: bool, glow: ?f32, reg: *const Registry, result: *Result) DeviceOut {
     var out = DeviceOut{};
     ui.pushId(mach.state);
     defer ui.popId();
@@ -290,7 +318,8 @@ fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, active: bool,
     }
     const is_inst = isInstrument(ref);
     var bar = card.takeTop(TITLE_H);
-    const body = Rect.xywh(card.x, card.y + TITLE_H, card.w, card.h - TITLE_H);
+    var body = Rect.xywh(card.x, card.y + TITLE_H, card.w, card.h - TITLE_H);
+    if (fx) |e| ioMeters(ui, body.cutRight(IO_W), e);
 
     // × delete → confirm popup.
     const del = bar.cutLeft(18);
@@ -371,8 +400,6 @@ fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, active: bool,
     return out;
 }
 
-/// The device's title display: the preset name, or `LABEL value` while a
-/// control in this machine's panel is being touched (docs/06 §Displays).
 /// The machine's panel, with every touch in it reported under the device's
 /// scope (a voice pool draws its first voice's panel, a panel scopes its
 /// own controls; neither changes whose title display they feed).
@@ -382,6 +409,8 @@ fn drawPanel(ui: *Ui, mach: *Machine, r: Rect, scope: ui_core.Id) void {
     mach.draw_panel(mach.state, ui, r);
 }
 
+/// The device's title display: the preset name, or `LABEL value` while a
+/// control in this machine's panel is being touched (docs/06 §Displays).
 fn titleDisplay(ui: *Ui, r: Rect, panel_scope: ui_core.Id, preset: []const u8, hot: bool) void {
     const t = &ui.touch;
     var buf: [48]u8 = undefined;

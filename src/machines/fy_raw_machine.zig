@@ -1281,6 +1281,8 @@ fn walkPanel(self: *FyRawMachine, ui: *Ui, body: Rect, pass: PanelPass) bool {
 /// Displays have no intrinsic size; they take weight-shared space above a
 /// floor that keeps a curve readable.
 const DISPLAY_MIN = [2]i32{ 40, 32 };
+/// An operator graph needs room for its widest and tallest algorithm.
+const ALGO_MIN = [2]i32{ 112, 96 };
 
 fn stripNatural(self: *const FyRawMachine, ui: *const Ui, view: StripView, tier: ui_ctl.Size) [2]i32 {
     const t = stripTable(self, ui, view, tier);
@@ -1290,7 +1292,8 @@ fn stripNatural(self: *const FyRawMachine, ui: *const Ui, view: StripView, tier:
 }
 
 fn itemNatural(self: *const FyRawMachine, ui: *const Ui, it: machine_desc.LayoutItem, tier: ui_ctl.Size) [2]i32 {
-    return if (it.is_display) DISPLAY_MIN else stripNatural(self, ui, stripViewAt(self, it.index), tier);
+    if (!it.is_display) return stripNatural(self, ui, stripViewAt(self, it.index), tier);
+    return if (self.desc.displays[it.index].kind == .algo) ALGO_MIN else DISPLAY_MIN;
 }
 
 /// A cell stacks its items: width = widest, height = sum.
@@ -1619,7 +1622,216 @@ fn drawDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void
         .waveform => drawWaveformDisplay(self, ui, r, disp.sourceSlice()),
         .meter => drawMeterDisplay(self, ui, r, disp),
         .response => drawResponseDisplay(self, ui, r),
+        .algo => drawAlgoDisplay(self, ui, r, disp),
+        .eg4 => drawEg4Display(self, ui, r, disp.sourceSlice()),
     }
+}
+
+// ── Operator routing graph (FM algorithms) ────────────────────────────
+//
+// Reads the selected row of the machine's derive-data routing table and
+// lays it out as a tidy tree: carriers on the bottom row feeding the output
+// bus, each modulator above the operator it feeds first. Leaves take
+// successive columns; a parent sits over the mean of its children.
+// Modulators feeding more than one operator draw their extra edges as
+// diagonals, feedback as a loop over the box.
+
+const AlgoGraph = struct {
+    n: usize = 0,
+    edge: [machine_desc.MAX_ALGO_OPS][machine_desc.MAX_ALGO_OPS]bool = undefined, // [mod][car]
+    carrier: [machine_desc.MAX_ALGO_OPS]bool = undefined,
+    feedback: [machine_desc.MAX_ALGO_OPS]bool = undefined,
+    parent: [machine_desc.MAX_ALGO_OPS]?usize = undefined,
+    placed: [machine_desc.MAX_ALGO_OPS]bool = undefined,
+    x: [machine_desc.MAX_ALGO_OPS]f32 = undefined,
+    depth: [machine_desc.MAX_ALGO_OPS]usize = undefined,
+    slots: usize = 0,
+    max_depth: usize = 0,
+
+    fn place(g: *AlgoGraph, node: usize, depth: usize) void {
+        g.placed[node] = true;
+        g.depth[node] = depth;
+        g.max_depth = @max(g.max_depth, depth);
+        var sum: f32 = 0;
+        var kids: f32 = 0;
+        for (0..g.n) |ch| {
+            if (g.parent[ch] != node or g.placed[ch] or depth >= g.n) continue;
+            g.place(ch, depth + 1);
+            sum += g.x[ch];
+            kids += 1;
+        }
+        if (kids > 0) {
+            g.x[node] = sum / kids;
+        } else {
+            g.x[node] = @floatFromInt(g.slots);
+            g.slots += 1;
+        }
+    }
+};
+
+fn algoGraph(self: *const FyRawMachine, disp: *const Display) ?AlgoGraph {
+    const base = self.desc.derive_data;
+    if (base == 0) return null;
+    const sel = controlIndexById(self, disp.sourceSlice()) orelse return null;
+    const ctl = &self.desc.controls[sel];
+    const row: usize = @intFromFloat(intRangeValue(ctl.*, self.controlNorm(sel)) - ctl.min);
+    const cells: [*]const f64 = @ptrFromInt(base);
+    const r = cells + row * disp.algoOffset(.stride);
+    var g = AlgoGraph{ .n = disp.algoOffset(.ops) };
+    for (0..g.n) |i| {
+        g.carrier[i] = r[disp.algoOffset(.carriers) + i] > 0.5;
+        g.feedback[i] = r[disp.algoOffset(.feedback) + i] > 0.5;
+        g.placed[i] = false;
+        g.parent[i] = null;
+        for (0..g.n) |car| g.edge[i][car] = r[disp.algoOffset(.matrix) + car * g.n + i] > 0.5;
+    }
+    // Tree parent: the first operator a modulator feeds.
+    for (0..g.n) |m| {
+        if (g.carrier[m]) continue;
+        for (0..g.n) |car| if (g.edge[m][car] and car != m) {
+            g.parent[m] = car;
+            break;
+        };
+    }
+    for (0..g.n) |ci| if (g.carrier[ci]) g.place(ci, 0);
+    return g;
+}
+
+fn controlIndexById(self: *const FyRawMachine, id: []const u8) ?usize {
+    for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
+        if (std.mem.eql(u8, ctl.idSlice(), id)) return i;
+    }
+    return null;
+}
+
+fn drawAlgoDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void {
+    const field = ui.well(r, ui_style.well);
+    const g = algoGraph(self, disp) orelse return;
+    if (g.slots == 0) return;
+    ui.clip(field);
+    defer ui.unclip();
+    const BOX: i32 = 13;
+    const pitch_x: i32 = @min(24, @divFloor(field.w - 8, @as(i32, @intCast(g.slots))));
+    const rows: i32 = @intCast(g.max_depth + 1);
+    const pitch_y: i32 = @min(22, @divFloor(field.h - 14, rows));
+    const graph_w = pitch_x * @as(i32, @intCast(g.slots));
+    const x0 = field.x + @divFloor(field.w - graph_w, 2) + @divFloor(pitch_x - BOX, 2);
+    const bus_y = field.y + @divFloor(field.h + rows * pitch_y, 2) - 2;
+    const col = ui_style.vfd;
+    const dim = ui_style.vfd.alpha(150);
+
+    const Box = struct { x: i32, y: i32 };
+    var boxes: [machine_desc.MAX_ALGO_OPS]Box = undefined;
+    for (0..g.n) |i| {
+        if (!g.placed[i]) continue;
+        boxes[i] = .{
+            .x = x0 + @as(i32, @intFromFloat(@round(g.x[i] * @as(f32, @floatFromInt(pitch_x))))),
+            .y = bus_y - 4 - (@as(i32, @intCast(g.depth[i])) + 1) * pitch_y + (pitch_y - BOX),
+        };
+    }
+    // Output bus under the carriers.
+    var bus_l: i32 = std.math.maxInt(i32);
+    var bus_r: i32 = std.math.minInt(i32);
+    for (0..g.n) |i| if (g.placed[i] and g.carrier[i]) {
+        const cx = boxes[i].x + @divFloor(BOX, 2);
+        ui.rect(Rect.xywh(cx, boxes[i].y + BOX, 1, bus_y - boxes[i].y - BOX), dim);
+        bus_l = @min(bus_l, cx);
+        bus_r = @max(bus_r, cx);
+    };
+    if (bus_r >= bus_l) ui.rect(Rect.xywh(bus_l, bus_y, bus_r - bus_l + 1, 1), dim);
+    // Modulation edges: modulator's bottom to the fed operator's top.
+    for (0..g.n) |m| for (0..g.n) |car| {
+        if (!g.edge[m][car] or m == car or !g.placed[m] or !g.placed[car]) continue;
+        const ax: f32 = @floatFromInt(boxes[m].x + @divFloor(BOX, 2));
+        const bx: f32 = @floatFromInt(boxes[car].x + @divFloor(BOX, 2));
+        ui.line(ax + 0.5, @as(f32, @floatFromInt(boxes[m].y + BOX)) + 0.5, bx + 0.5, @as(f32, @floatFromInt(boxes[car].y)) + 0.5, dim);
+    };
+    // Operators: carriers lit, modulators outlined; feedback loops over.
+    for (0..g.n) |i| {
+        if (!g.placed[i]) continue;
+        const b = Rect.xywh(boxes[i].x, boxes[i].y, BOX, BOX);
+        var nb: [2]u8 = undefined;
+        const label = std.fmt.bufPrint(&nb, "{d}", .{i + 1}) catch "?";
+        if (g.carrier[i]) {
+            ui.rect(b, col);
+            ui.textIn(&ui.fonts.legend, b, label, ui_style.well, .center, false);
+        } else {
+            ui.rect(b, ui_style.well);
+            ui.bevel(b, col, col);
+            ui.textIn(&ui.fonts.legend, b, label, col, .center, false);
+        }
+        if (g.feedback[i]) {
+            const rx = b.right() + 2;
+            const cx = b.x + @divFloor(BOX, 2);
+            ui.rect(Rect.xywh(b.right(), b.y + @divFloor(BOX, 2), 3, 1), col);
+            ui.rect(Rect.xywh(rx, b.y - 3, 1, @divFloor(BOX, 2) + 4), col);
+            ui.rect(Rect.xywh(cx, b.y - 3, rx - cx, 1), col);
+            ui.rect(Rect.xywh(cx, b.y - 3, 1, 3), col);
+        }
+    }
+    _ = ui.text(&ui.fonts.legend, field.x + 2, field.y, disp.nameSlice(), dim);
+}
+
+// ── Four-rate / four-level envelope (DX style) ────────────────────────
+//
+// Levels L1..L4, rates R1..R4 in level-per-sample. Attack runs from L4 to
+// L1 at R1, then L2 at R2, L3 at R3 (held while the key is down), release
+// back to L4 at R4. Segment widths follow each segment's duration on a
+// compressed (log) scale so fast and slow segments both stay readable.
+
+fn drawEg4Display(self: *FyRawMachine, ui: *Ui, r: Rect, module: []const u8) void {
+    const field = ui.well(r, ui_style.well);
+    var rate: [4]f64 = undefined;
+    var level: [4]f64 = undefined;
+    inline for (0..4) |k| {
+        var lb: [2]u8 = undefined;
+        lb = .{ 'R', '1' + k };
+        rate[k] = controlValueByLabel(self, module, &lb) orelse 0.01;
+        lb = .{ 'L', '1' + k };
+        level[k] = controlValueByLabel(self, module, &lb) orelse 0.5;
+    }
+    ui.clip(field);
+    defer ui.unclip();
+    const x0: f32 = @as(f32, @floatFromInt(field.x)) + 2.5;
+    const w: f32 = @as(f32, @floatFromInt(field.w)) - 5;
+    const top: f32 = @as(f32, @floatFromInt(field.y)) + 12.5;
+    const h: f32 = @as(f32, @floatFromInt(field.h)) - 15;
+    if (w <= 1 or h <= 1) return;
+    const base = top + h;
+    const sr: f64 = 48000.0;
+    // Segment starts/ends: L4→L1, L1→L2, L2→L3, [hold L3], L3→L4.
+    const from = [4]f64{ level[3], level[0], level[1], level[2] };
+    const to = [4]f64{ level[0], level[1], level[2], level[3] };
+    var seg_w: [4]f32 = undefined;
+    for (0..4) |k| {
+        const secs = @abs(to[k] - from[k]) / @max(rate[k], 1e-9) / sr;
+        seg_w[k] = @floatCast(@log(1.0 + secs / 0.01) + 0.15);
+    }
+    const hold: f32 = 1.2;
+    const total = seg_w[0] + seg_w[1] + seg_w[2] + hold + seg_w[3];
+    const col = ui_style.vfd;
+    var x = x0;
+    for (0..4) |k| {
+        if (k == 3) {
+            // Sustain hold at L3, then release.
+            const hx = x + w * hold / total;
+            const ly = base - @as(f32, @floatCast(level[2])) * h;
+            ui.line(x, ly, hx, ly, col.alpha(150));
+            x = hx;
+        }
+        const nx = x + w * seg_w[k] / total;
+        ui.line(x, base - @as(f32, @floatCast(from[k])) * h, nx, base - @as(f32, @floatCast(to[k])) * h, col);
+        x = nx;
+    }
+    _ = ui.text(&ui.fonts.legend, field.x + 2, field.y, module, col.alpha(150));
+}
+
+fn controlValueByLabel(self: *const FyRawMachine, module: []const u8, label: []const u8) ?f64 {
+    for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
+        if (std.mem.eql(u8, ctl.moduleSlice(), module) and std.mem.eql(u8, ctl.label[0..ctl.label_len], label))
+            return normToValue(ctl.*, self.controlNorm(i));
+    }
+    return null;
 }
 
 // ── Frequency-response curve (parametric EQ) ──────────────────────────
@@ -2133,6 +2345,23 @@ test "FM-86 fy derive routing matches the dx7_algorithms oracle (all 32)" {
     }
 }
 
+test "FM-86 routing display lays out all 32 algorithms" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/fm86/fm86.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    const disp = for (inst.desc.displays[0..inst.desc.display_count]) |*d| {
+        if (d.kind == .algo) break d;
+    } else return error.TestUnexpectedResult;
+
+    for (1..33) |n| {
+        mach.set_param.?(mach.state, "algo", @floatFromInt(n));
+        const g = algoGraph(inst, disp) orelse return error.TestUnexpectedResult;
+        // Every operator is drawn, within six columns and six levels.
+        for (0..g.n) |i| try testing.expect(g.placed[i]);
+        try testing.expect(g.slots >= 1 and g.slots <= 6);
+        try testing.expect(g.max_depth <= 5);
+    }
+}
 test "FM-86 plays an imported DX7 preset (E.PIANO 1)" {
     const inst = try FyRawMachine.create(testing.allocator, "machines/fm86/fm86.fy");
     const mach = inst.machineInterface();
