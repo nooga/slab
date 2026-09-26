@@ -633,7 +633,7 @@ pub fn displaySelect(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const []
     ledShape(ui, left.x + 2, left.y + @divFloor(left.h - 7, 2), .tri_left, if (bl.held) style.text else style.text_dim);
     ledShape(ui, right.x + 4, right.y + @divFloor(right.h - 7, 2), .tri_right, if (br.held) style.text else style.text_dim);
     if (v.* < options.len) {
-        display(ui, area.insetXY(-1, 0), options[v.*], .{ .color = if (ui.isHot(wid)) style.phosphor else style.phosphor.mix(style.well, 0.15) });
+        display(ui, area.insetXY(-1, 0), options[v.*], .{ .color = if (ui.isHot(wid)) style.vfd else style.vfd.mix(style.well, 0.15) });
         if (ui.isHot(wid)) ui.setTouch("", options[v.*]);
     }
     focusRing(ui, wid, area);
@@ -961,7 +961,7 @@ fn ledBarFlat(ui: *Ui, r: Rect, st: LedState, col: Color) void {
 // ── Displays ─────────────────────────────────────────────────────────
 
 pub const DisplayOpts = struct {
-    color: Color = style.phosphor,
+    color: Color = style.vfd,
     align_: Ui.Align = .left,
     /// Draw the unlit cell grid.
     ghost: bool = true,

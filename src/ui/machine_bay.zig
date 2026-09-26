@@ -385,7 +385,7 @@ fn titleDisplay(ui: *Ui, r: Rect, mach: *Machine, preset: []const u8, hot: bool)
     else
         preset;
     if (live) ui.animate();
-    ctl.display(ui, r, s, .{ .flush = true, .color = if (hot or live) ui_style.phosphor else ui_style.phosphor.mix(ui_style.well, 0.15) });
+    ctl.display(ui, r, s, .{ .flush = true, .color = if (hot or live) ui_style.vfd else ui_style.vfd.mix(ui_style.well, 0.15) });
 }
 
 const AddPick = struct {

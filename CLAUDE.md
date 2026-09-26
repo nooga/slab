@@ -154,7 +154,8 @@ Tamzen bitmap type, dot-matrix displays. Don't soften this. See
   surfaces; data sits on flat dark wells.
 - Tamzen at integer scales; the vector face only for fractional scales,
   rasterized at exact device size (never filtered down).
-- Palette is tokens (in the doc). Amber means "active", nothing else.
+- Palette is tokens (in the doc). Accent amber means "active", nothing
+  else; displays glow the deeper `vfd` orange behind glass.
 - Controls come from the catalogue in fixed sizes; panels pick one tier,
   never shrink controls to fit.
 - Widget ids are explicit keys, never rect hashes. Nothing outside the

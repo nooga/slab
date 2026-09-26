@@ -1155,7 +1155,7 @@ fn drawFixtureInfo(self: *FyRawMachine, ui: *Ui, r: Rect) void {
     else
         "dsp fixture";
     _ = ui.text(&ui.fonts.body, body.x, body.cutTop(18).y, detail, ui_style.text);
-    ui_ctl.display(ui, body.cutTop(ui_ctl.displayHeight(false)).takeLeft(@min(body.w, 160)), if (self.failed) "FAILED" else "LIVE", .{ .color = if (self.failed) ui_style.rec else ui_style.phosphor });
+    ui_ctl.display(ui, body.cutTop(ui_ctl.displayHeight(false)).takeLeft(@min(body.w, 160)), if (self.failed) "FAILED" else "LIVE", .{ .color = if (self.failed) ui_style.rec else ui_style.vfd });
 }
 
 const StripView = struct {
@@ -1462,9 +1462,8 @@ fn drawStrip(self: *FyRawMachine, ui: *Ui, r: Rect, view: StripView, tier: ui_ct
 
 // ── Displays ─────────────────────────────────────────────────────────
 
-/// Display pens: mint phosphor, OLED white, periwinkle — never amber
-/// (reserved for "active").
-const PENS = [_]ui_style.Color{ ui_style.phosphor, ui_style.Color.hex(0xdcecff), ui_style.mod };
+/// Display pens: VFD amber-orange, OLED white, periwinkle.
+const PENS = [_]ui_style.Color{ ui_style.vfd, ui_style.Color.hex(0xdcecff), ui_style.mod };
 
 fn drawDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void {
     switch (disp.kind) {
@@ -1586,10 +1585,10 @@ fn drawResponseDisplay(self: *FyRawMachine, ui: *Ui, r: Rect) void {
 
     ui.clip(field);
     defer ui.unclip();
-    const grid = ui_style.phosphor.alpha(26);
+    const grid = ui_style.vfd.alpha(26);
     // Horizontal grid: 0 dB centre (brighter) + ±9 dB lines.
     const mid_y = field.y + @divFloor(field.h, 2);
-    ui.rect(Rect.xywh(field.x, mid_y, field.w, 1), ui_style.phosphor.alpha(48));
+    ui.rect(Rect.xywh(field.x, mid_y, field.w, 1), ui_style.vfd.alpha(48));
     inline for (.{ -9.0, 9.0 }) |g| {
         const gy = field.y + @as(i32, @intFromFloat(@as(f32, @floatCast(0.5 - @as(f64, g) / (2.0 * EQ_DB_RANGE))) * @as(f32, @floatFromInt(field.h))));
         ui.rect(Rect.xywh(field.x, gy, field.w, 1), grid);
@@ -1617,7 +1616,7 @@ fn drawResponseDisplay(self: *FyRawMachine, ui: *Ui, r: Rect) void {
         db += biquadMagDb(hs, f, sr);
         const yn = std.math.clamp(0.5 - db / (2.0 * EQ_DB_RANGE), 0.0, 1.0);
         const p = [2]f32{ fx + @as(f32, @floatCast(t)) * fw, fy + @as(f32, @floatCast(yn)) * fh };
-        if (i > 0) ui.line(prev[0], prev[1], p[0], p[1], ui_style.phosphor);
+        if (i > 0) ui.line(prev[0], prev[1], p[0], p[1], ui_style.vfd);
         prev = p;
     }
 }
@@ -1707,7 +1706,7 @@ fn drawMeterDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display)
     var b1: [48]u8 = undefined;
     const clip = st.out_peak_db > -0.05;
     const l1 = std.fmt.bufPrint(&b1, "GR {d:.1}  OUT {d:.1}", .{ st.gr_db, st.out_peak_db }) catch "";
-    ui_ctl.display(ui, readouts.takeTop(ui_ctl.displayHeight(false)), l1, .{ .color = if (clip) ui_style.rec else ui_style.phosphor });
+    ui_ctl.display(ui, readouts.takeTop(ui_ctl.displayHeight(false)), l1, .{ .color = if (clip) ui_style.rec else ui_style.vfd });
     var b2: [56]u8 = undefined;
     const l2 = std.fmt.bufPrint(&b2, "M {d:.1} S {d:.1} I {d:.1} LU", .{ ms2lufs(msm), ms2lufs(mss), ms2lufs(msum / mn) }) catch "";
     var lr = readouts;
@@ -1753,7 +1752,7 @@ fn drawWaveformDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []cons
     defer ui.unclip();
     const cache = &self.asset_cache[ai];
     const mid = inner.y + @divFloor(inner.h, 2);
-    ui.rect(Rect.xywh(inner.x, mid, inner.w, 1), ui_style.phosphor.alpha(40));
+    ui.rect(Rect.xywh(inner.x, mid, inner.w, 1), ui_style.vfd.alpha(40));
     if (cache.sample_count > 0) {
         const span: f64 = @floatFromInt(@max(cache.sample_count, 1));
         const spp = span / @as(f64, @floatFromInt(inner.w));
@@ -1764,7 +1763,7 @@ fn drawWaveformDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []cons
             const p = cache.rangePeak(s0, s0 + spp, spp);
             const y0: i32 = @intFromFloat(@round(half - std.math.clamp(@as(f32, @floatCast(p.max)), -1, 1) * half));
             const y1: i32 = @intFromFloat(@round(half - std.math.clamp(@as(f32, @floatCast(p.min)), -1, 1) * half));
-            ui.rect(Rect.xywh(inner.x + px, inner.y + @min(y0, y1), 1, @as(i32, @intCast(@abs(y1 - y0))) + 1), ui_style.phosphor);
+            ui.rect(Rect.xywh(inner.x + px, inner.y + @min(y0, y1), 1, @as(i32, @intCast(@abs(y1 - y0))) + 1), ui_style.vfd);
         }
     }
     drawMarker(self, ui, inner, "smp-start", ui_style.play);

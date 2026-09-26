@@ -191,15 +191,17 @@ without gaps; accents are saturated but few. Values live in
 | `play` | `#3ddc84` | transport play |
 | `rec` | `#ff4d4d` | record, arm, clip warnings |
 | `mod` | `#6b8cff` | modulation, CV |
-| `phosphor` | `#5ef2d6` | display segments (mint VFD) |
+| `vfd` | `#ff9a2e` | display segments (amber-orange VFD) |
+| `vfd_hi` | `#ffd49a` | a readout being dragged |
 
-- **Amber means "active" and nothing else.** Selection, playhead, focus
-  ring, lit latch LEDs. Track colours never use amber/yellow hues;
+- **Accent amber means "active" and nothing else.** Selection, playhead,
+  focus ring, lit latch LEDs. Displays glow `vfd`, a deeper orange that
+  only ever appears behind glass, so the two never read alike. Track colours never use amber/yellow hues;
   project colours outside the track set are snapped to the nearest one.
 - **Track colours** are the fixed set `style.track`: rose, lime, green,
   teal, sky, indigo, violet, pink. Saturated but controlled; none of them
   amber or yellow.
-- Machines may override `phosphor` and LED colours for their own panel.
+- Machines may override `vfd` and LED colours for their own panel.
   That is their personality inside the frame's rules.
 
 ## Displays
@@ -213,7 +215,7 @@ are the only things that emit light.
   1-device-px mesh in the well colour on every logical pixel boundary
   turns the solid glyphs into dots: the matrix comes from the grid, not a
   filter.
-- **Ghost cells:** every cell's unlit 5×7 box shows at ~5% of `phosphor`.
+- **Ghost cells:** every cell's unlit 5×7 box shows at ~5% of `vfd`.
 - **Glow:** each display glyph has a pre-dilated halo variant in the atlas,
   drawn under it at low alpha. Edges stay sharp; nothing blurs at runtime.
 - **Afterglow:** scopes and meters decay over a few frames instead of

@@ -199,7 +199,7 @@ fn bpmTile(ui: *Ui, r: Rect, t: *Transport, map: meter_mod.MeterMap) void {
 
     var buf: [16]u8 = undefined;
     const s = std.fmt.bufPrint(&buf, "{d:.1}", .{t.bpm()}) catch "?";
-    ctl.display(ui, r, s, .{ .align_ = .right, .large = true, .flush = true, .color = if (ui.active == wid) style.accent else style.phosphor });
+    ctl.display(ui, r, s, .{ .align_ = .right, .large = true, .flush = true, .color = if (ui.active == wid) style.vfd_hi else style.vfd });
     const mb = map.meterBeat(t.beats());
     const on = t.isPlaying() and mb.phase < 0.12;
     const col = switch (mb.accent) {
@@ -232,7 +232,7 @@ fn meterTile(ui: *Ui, r: Rect, state: *meter_mod.MeterState) void {
     }
     var buf: [16]u8 = undefined;
     const s = std.fmt.bufPrint(&buf, "{d}/{d}", .{ base.numerator, base.denominator }) catch "?";
-    ctl.display(ui, r, s, .{ .align_ = .center, .large = true, .flush = true, .color = if (ui.active == wid) style.accent else style.phosphor });
+    ctl.display(ui, r, s, .{ .align_ = .center, .large = true, .flush = true, .color = if (ui.active == wid) style.vfd_hi else style.vfd });
     menu.tip(ui, r, "Meter: drag numerator, right-click denominator");
 }
 

@@ -72,8 +72,11 @@ pub const accent = Color.hex(0xffb23e);
 pub const play = Color.hex(0x3ddc84);
 pub const rec = Color.hex(0xff4d4d);
 pub const mod = Color.hex(0x6b8cff);
-/// Display segments (mint VFD). Machines may override per panel.
-pub const phosphor = Color.hex(0x5ef2d6);
+/// Display glass: amber-orange VFD segments, deeper than `accent` so a
+/// lit readout never reads as "active". Machines may override per panel.
+pub const vfd = Color.hex(0xff9a2e);
+/// A readout being dragged: the filament runs hotter.
+pub const vfd_hi = Color.hex(0xffd49a);
 
 // ── Controls ─────────────────────────────────────────────────────────
 /// Knob value arc at rest; turns `accent` while hot/active.
@@ -129,7 +132,7 @@ pub const Materials = struct {
     gradient: u8 = 6,
     /// Engraved legends on faceplates.
     engrave: bool = true,
-    /// Display ghost cells, as alpha of the phosphor colour.
+    /// Display ghost cells, as alpha of the display colour.
     ghost_alpha: u8 = 13,
     /// Display glyph halo alpha.
     halo_alpha: u8 = 60,

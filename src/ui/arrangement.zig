@@ -1748,7 +1748,7 @@ fn drawBeatTicks(ui: *Ui, ruler: c.rl.Rectangle, timeline_x: f32, timeline_w: f3
             if (seg.start_bar == bar) {
                 var mbuf: [12]u8 = undefined;
                 const ms = std.fmt.bufPrint(&mbuf, "{d}/{d}", .{ seg.numerator, seg.denominator }) catch "?";
-                _ = ui.engraved(&ui.fonts.legend, ipx(bx) + 3 + w + 4, ry + 1, ms, ui_style.phosphor);
+                _ = ui.engraved(&ui.fonts.legend, ipx(bx) + 3 + w + 4, ry + 1, ms, ui_style.vfd);
             }
         }
         bar += 1;

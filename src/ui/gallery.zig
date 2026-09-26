@@ -273,7 +273,7 @@ fn ledsPanel(ui: *Ui, r: Rect, st: *State) void {
     defer ui.popId();
     var body = ctl.strip(ui, r, "LEDS · SHAPES STATES LADDERS");
     const shapes = [_]ctl.LedShape{ .round3, .round5, .round7, .square4, .square6, .tri_up, .tri_right };
-    const cols = [_]Color{ style.led_red, style.led_green, style.led_amber, style.led_blue, style.phosphor };
+    const cols = [_]Color{ style.led_red, style.led_green, style.led_amber, style.led_blue, style.vfd };
     const states = [_]ctl.LedState{ .off, .dim, .on, .blink };
     // Pro meters on the right: a graduated stereo pair (centre scale)
     // and a mono meter with its scale on the left.
@@ -319,10 +319,10 @@ fn displaysPanel(ui: *Ui, r: Rect, st: *State) void {
         p.* = 0.5 + 0.38 * @sin(x * std.math.tau * 2 + ph) * (0.6 + 0.4 * @sin(ph * 0.37));
     }
     const half = scopes.cutLeft(@divFloor(scopes.w, 2));
-    if (st.running) ctl.scope(ui, half, "scope", &pts, style.phosphor) else ctl.curve(ui, half, &pts, style.phosphor);
+    if (st.running) ctl.scope(ui, half, "scope", &pts, style.vfd) else ctl.curve(ui, half, &pts, style.vfd);
     var env: [64]f32 = undefined;
     adsrCurve(&env, st.adsr);
-    ctl.curve(ui, scopes, &env, style.phosphor);
+    ctl.curve(ui, scopes, &env, style.vfd);
 }
 
 fn position(buf: []u8, t: f64) []const u8 {
@@ -351,7 +351,7 @@ fn palettePanel(ui: *Ui, r: Rect) void {
         .{ .n = "CHASSIS", .c = style.chassis }, .{ .n = "PANE", .c = style.pane },     .{ .n = "FACE", .c = style.face },
         .{ .n = "FACE HI", .c = style.face_hi }, .{ .n = "WELL", .c = style.well },     .{ .n = "TEXT", .c = style.text },
         .{ .n = "DIM", .c = style.text_dim },    .{ .n = "ACCENT", .c = style.accent }, .{ .n = "PLAY", .c = style.play },
-        .{ .n = "REC", .c = style.rec },         .{ .n = "MOD", .c = style.mod },       .{ .n = "PHOSPHOR", .c = style.phosphor },
+        .{ .n = "REC", .c = style.rec },         .{ .n = "MOD", .c = style.mod },       .{ .n = "VFD", .c = style.vfd },
     };
     var top = body.cutTop(@divFloor(body.h * 2, 3));
     const cols: i32 = 6;
@@ -435,7 +435,7 @@ fn machine(ui: *Ui, r: Rect, st: *State) void {
     var eg = ctl.strip(ui, body.cutLeft(ctl.sliderWidth(.slider) * 4 + 4), "ENV");
     var env_pts: [64]f32 = undefined;
     adsrCurve(&env_pts, st.m_adsr);
-    ctl.curve(ui, eg.cutTop(36), &env_pts, style.phosphor);
+    ctl.curve(ui, eg.cutTop(36), &env_pts, style.vfd);
     const lab = [_][]const u8{ "A", "D", "S", "R" };
     for (0..4) |i| _ = ctl.slider(ui, eg.cutLeft(ctl.sliderWidth(.slider)), .{ "eg", i }, &st.m_adsr[i], .{ .label = lab[i], .show_readout = false });
     // Remaining width: an empty blank plate (nothing floats on chassis).
