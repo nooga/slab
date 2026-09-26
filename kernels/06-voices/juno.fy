@@ -18,7 +18,7 @@ include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../01-oscillators/primitives/phase.fy"
 include "../01-oscillators/primitives/blep.fy"
 include "../03-envelopes/primitives/segments.fy"
-include "../04-filters/ms20_svf.fy"   ( svf-g: tiny-angle tan -> filter g )
+include "../04-filters/coeffs.fy"   ( svf-g, svf-damping, svf-dc-coeff )
 include "../04-filters/ladder.fy"     ( clean linear ZDF 4-pole ladder )
 
 ustruct: JunoState

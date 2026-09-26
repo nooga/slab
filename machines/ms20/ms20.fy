@@ -9,15 +9,14 @@ include "../../kernels/00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../../kernels/06-voices/ms20_voice_probe.fy"
 include "../lib/manifest.fy"
 
-( ctx state params -- : per-block coefficient fill.  The SvfParams-shaped
-  profile region starts at Ms20VoiceParams.svf-g; the two coeff words drop
-  their own args, so only ours remain. )
-dsp: ms20-block-prepare
+( ctx state params -- : per-block LPF coefficients.  RES 0..2 maps to
+  loop gain 0..2.4, so self-oscillation [k = 2] starts at ~83% of the knob. )
+dsp: ms20-block-prepare ( ctx state params -- )
   | ctx state params |
-  ctx Ctx.sr@ | sr |
-  params Ms20VoiceParams.svf-g-p  sr 4.0 f*  k-svf-coeffs-dc
-  params Ms20VoiceParams.svf-g-p  params Ms20VoiceParams.resonance@  k-svf-coeffs-profile
-  drop2 drop2
+  params Ms20VoiceParams.resonance@ 1.2 f*  params Ms20VoiceParams.ota-k-p f!64
+  params Ms20VoiceParams.drive@             params Ms20VoiceParams.ota-drive-p f!64
+  0.25 ctx Ctx.inv-sr@ f*                   params Ms20VoiceParams.os-inv-p f!64
+  drop2 drop
 ;
 
 : manifest
@@ -41,19 +40,19 @@ dsp: ms20-block-prepare
   "VCO2" "SCALE" "vco2-octave" Ms20VoiceParams.vco2-octave 2 switch
     "32" 0.25 opt  "16" 0.5 opt  "8" 1.0 opt  "4" 2.0 opt
   "VCO2" "DET"   "detune"      Ms20VoiceParams.detune      0.995 1.018 1.0058 curve-lin knob
-  "VCO2" "PW"    "pulse-width" Ms20VoiceParams.pulse-width 0.05 0.95 0.44 curve-lin knob
+  "VCO2" "PW"    "pulse-width" Ms20VoiceParams.pulse-width 0.5 0.95 0.56 curve-lin knob
 
   "MIX" "V1"    "saw-level"   Ms20VoiceParams.saw-level   0.0 1.0 0.62 curve-pow knob
   "MIX" "V2"    "pulse-level" Ms20VoiceParams.pulse-level 0.0 1.0 0.38 curve-pow knob
   "MIX" "NOISE" "noise-level" Ms20VoiceParams.noise-level 0.0 1.0 0.0  curve-pow knob
 
-  "HPF" "CUT"  "hpf-cutoff"    Ms20VoiceParams.hpf-cutoff    20.0 2000.0 20.0 curve-exp knob
+  "HPF" "CUT"  "hpf-cutoff"    Ms20VoiceParams.hpf-cutoff    20.0 8000.0 20.0 curve-exp knob
   "HPF" "PEAK" "hpf-resonance" Ms20VoiceParams.hpf-resonance 0.0 2.0 0.0 curve-lin knob
 
-  "LPF" "CUT"  "cutoff"    Ms20VoiceParams.cutoff    60.0 5000.0 180.0 curve-exp knob
+  "LPF" "CUT"  "cutoff"    Ms20VoiceParams.cutoff    20.0 18000.0 180.0 curve-exp knob
   "LPF" "PEAK" "resonance" Ms20VoiceParams.resonance 0.0 2.0 1.25 curve-lin knob
   "LPF" "DRV"  "drive"     Ms20VoiceParams.drive     0.4 2.2 1.25 curve-lin knob
-  "LPF" "ENV"  "env-peak"  Ms20VoiceParams.env-peak  250.0 8000.0 5000.0 curve-exp knob
+  "LPF" "ENV"  "env-amount" Ms20VoiceParams.env-amount 0.0 8.0 4.8 curve-lin knob
 
   "VCA" "LVL" "level" Ms20VoiceParams.level 0.0 1.0 0.72 curve-pow knob
 
@@ -72,7 +71,7 @@ dsp: ms20-block-prepare
 
   "MOD" "MG>PIT" "mg-pitch"  Ms20VoiceParams.mg-pitch  0.0 0.12 0.0 curve-pow knob
   "MOD" "MG>PW"  "mg-pw"     Ms20VoiceParams.mg-pw     0.0 0.45 0.0 curve-pow knob
-  "MOD" "MG>CUT" "mg-cutoff" Ms20VoiceParams.mg-cutoff 0.0 3000.0 0.0 curve-pow knob
+  "MOD" "MG>CUT" "mg-cutoff" Ms20VoiceParams.mg-cutoff 0.0 4.0 0.0 curve-pow knob
   "MOD" "EG>PIT" "eg-pitch"  Ms20VoiceParams.eg-pitch  0.0 1.0 0.0 curve-pow knob
 
   ( module knob-cols — module strip + its internal knob-grid columns )

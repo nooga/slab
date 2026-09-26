@@ -10,6 +10,67 @@ Scope call: **no full semi-modular patch bay.** We implement the MS-20's
 *hardwired* routing (MG/EG→pitch, MG→cutoff, EG→cutoff/VCA, PWM, ring) with
 fixed intensity controls. A general routing matrix can come later.
 
+## LPF v2: OTA cascade in fy (2026-09-26)
+
+The low-pass filter is now `kernels/04-filters/ms20_ota.fy`, written in fy.
+The fused Zig primitives (`fms20-svf`, `fms20-lpf4`) are deleted from the
+fy compiler, which removes the main reason the MS-20 couldn't be
+livecoded. It follows the mk2 board: OTA → op-amp → OTA → op-amp, with the
+resonance returned through an op-amp whose feedback holds a diode clipper.
+
+```
+e   = drive·x + fb
+y1 += g·tanh(e − y1)            OTA1 → op-amp
+y2 += g·tanh(y1 − y2)           OTA2 → op-amp      (output)
+fb  = k·diode(y1 − y2)          resonance op-amp, diode-clipped
+```
+
+**Linear check.** The loop gain is `k·G·(1−G)`, with `G = 1/(1+s/ωc)`.
+
+- At ω = ωc it equals exactly `k/2`, so the peak sits on the cutoff and
+  self-oscillation starts at k = 2.
+- At DC it is 0, so resonance costs no bass.
+- The diodes clip the resonance signal, not the audio path, and hold the
+  oscillation at a stable level.
+
+**Running it.**
+
+- The step runs 4× per sample as four `call:` stages (`v-ota-sub`). The
+  input is held across the substeps and the output is their mean.
+- `g = 1 − e^(−2π·fc/fs_os)`.
+- RES 0..2 maps to k = 1.2·RES, so oscillation starts at about 83% of the
+  knob.
+
+**What it fixed.** Measured with the bench, docs/13:
+
+| | old `fms20-svf` (g-wet) | new |
+|---|---|---|
+| resonance | fed the *lowpass* back negatively | band feedback through diodes |
+| resonant pitch at RES max, cutoff 1 kHz | 2.65 kHz (moved up by √(1+k)) | 0.89–0.98 kHz |
+| self-oscillation | never (damping clamped, Q ≈ 14) | from RES ≈ 1.6, stable at −15 dB RMS |
+| bass (C2 saw, cutoff 300 Hz), RES 0 → 2 | −4.0 → −10.4 dB | −8.9 → −5.3 dB |
+| resonance knob sweep | 40% dead, uneven 0.55 | 0% dead, uneven 0.11 |
+| DRV | dead (drive hardcoded 1.9) | the OTA input drive |
+
+**Voice changes that went with it.**
+
+- Cutoff modulation sums in octaves: `cutoff·2^(env·env-amount +
+  mg·mg-cutoff)`.
+- `env-amount` (0..8 oct) replaces the absolute `env-peak` Hz, and
+  `mg-cutoff` is now 0..4 oct.
+- Ranges: cutoff 20 Hz–18 kHz, HPF 20 Hz–8 kHz.
+- PW runs square → thin (0.5–0.95) instead of mirroring around 50%.
+- A 20 Hz DC blocker sits after the VCA. The old SVF blocked DC
+  internally.
+- The 16 presets were converted to the new units, and their resonance was
+  scaled by 0.85 so the old high-Q settings land at or just below
+  oscillation.
+
+Funk Overload's saturating SVF moved to fy in the same change
+(`tpt-svf-lp-sat-step` in `tpt_svf.fy`), bit-exact with the primitive it
+replaces. `svf-g`, `svf-damping`, and `svf-dc-coeff` now live in
+`coeffs.fy`.
+
 ## Reference architecture
 
 ```

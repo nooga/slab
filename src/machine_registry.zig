@@ -18,7 +18,6 @@ test {
     _ = @import("wav.zig");
     _ = @import("waveform.zig");
     _ = @import("audio_pool.zig");
-    _ = @import("ms20_svf_test.zig");
     _ = @import("fm_operator_test.zig");
     _ = @import("dx7_eg_test.zig");
     _ = @import("dx7_voice_test.zig");
@@ -228,8 +227,8 @@ test "fy manifest loads MS-20 machine entry" {
     try std.testing.expectEqual(@as(?usize, null), reg.findById("nope"));
     try std.testing.expect(e.in_notes);
     try std.testing.expect(!e.in_audio);
-    try std.testing.expectEqual(@as(usize, 144), e.raw_state_size);
-    try std.testing.expectEqual(@as(usize, 360), e.params_size);
+    try std.testing.expectEqual(@as(usize, 176), e.raw_state_size);
+    try std.testing.expectEqual(@as(usize, 304), e.params_size);
     try std.testing.expectEqual(@as(f32, 420.0), e.panel_w);
 }
 

@@ -35,7 +35,7 @@
   Probe case: rhodes-voice-render. )
 
 include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
-include "../04-filters/ms20_svf.fy"     ( svf-dc-coeff )
+include "../04-filters/coeffs.fy"   ( svf-g, svf-damping, svf-dc-coeff )
 include "../05-drums/noise.fy"          ( noise-step — hammer chiff )
 include "../02-shapers/tanh_table.fy"   ( k-tanh-rational-shape-dsp2 — pickup )
 include "../05-drums/sine.fy"           ( sine-shape — modal oscillators )

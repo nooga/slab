@@ -242,7 +242,10 @@ dsp: juno-voice ( ctx s:JunoState p:JunoParams -- )
   series.
 - Block-rate words may call libm.
 
-**A5. Fused primitives out of the compiler.** Once A3 and A4 land,
+**A5. Fused primitives out of the compiler.** *(Partly done 2026-09-26:
+`fms20-svf`, `fms20-lpf4`, and `fms20-lpf4-cubic` are deleted, with the
+MS-20 LPF and Funk's SVF rewritten in fy. `fadsr-*` and `fpolyblep`
+remain.)* Once A3 and A4 land,
 `fms20-svf`, `fms20-lpf4`, `fadsr-*`, and `fpolyblep` become fy
 kernels. Keep the old ops just long enough to compare speed.
 
@@ -501,7 +504,7 @@ step says otherwise.
 | 5 | A3: spilling, multi-return. | Scratch fields gone from voice state; the juno voice no longer needs `call:` stages. |
 | 6 | A4 + A5 + A7: math, `dsp-std`, fused ops out, `table:`. | No DSP ops left in `dsp2.zig`'s op list; no hand-rolled series in kernels. |
 | 7 | A6 + D: parsing words, manifest DSL, curves, units. | All machines ported; `ms20.fy` shorter by half. |
-| 8 | G4 MS-20 fix + knob-response probes on every synth. | Knob-response curves roughly straight on the bench. |
+| 8 🔶 | G4 MS-20 fix + knob-response probes on every synth. | Knob-response curves roughly straight on the bench. MS-20 done 2026-09-26, ahead of steps 4–7 after the first listen: an OTA + diode LPF in fy, octave modulation, live DRV (docs/14 §LPF v2). The other synths are still to do. |
 | 9 | G1 + G2: oversampler, nonlinear filters, analog layer. | Aliasing and THD numbers on the ratchet. |
 | 10 | G3: tape, gated verb, hall, ensemble, bus comp. | — |
 | 11 | E: sends, sidechain, racks, groups, channel strip. | The gated snare works end to end. |

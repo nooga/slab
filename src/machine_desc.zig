@@ -732,8 +732,8 @@ test "descriptor walker reads the MS-20 manifest from fy" {
     try testing.expectEqualStrings("k-ms20-voice-sample", d.renderWord());
     try testing.expectEqualStrings("ms20-voice-prepare", d.prepareWord().?);
     try testing.expectEqualStrings("ms20-block-prepare", d.blockPrepareWord().?);
-    try testing.expectEqual(@as(usize, 144), d.state_size);
-    try testing.expectEqual(@as(usize, 360), d.params_size);
+    try testing.expectEqual(@as(usize, 176), d.state_size);
+    try testing.expectEqual(@as(usize, 304), d.params_size);
     try testing.expectEqual(@as(f32, 420.0), d.panel_w);
     try testing.expectEqual(@as(usize, 30), d.control_count);
     try testing.expectEqual(@as(usize, 10), d.strip_count);
@@ -748,7 +748,7 @@ test "descriptor walker reads the MS-20 manifest from fy" {
     const c0 = &d.controls[0];
     try testing.expectEqualStrings("VCO1", c0.moduleSlice());
     try testing.expectEqual(ParamKind.switch_sel, c0.kind);
-    try testing.expectEqual(@as(usize, 272), c0.offset);
+    try testing.expectEqual(@as(usize, 216), c0.offset); // Ms20VoiceParams.vco1-wave
     try testing.expectEqual(@as(usize, 3), c0.option_count);
     try testing.expectApproxEqAbs(@as(f64, 1.0), c0.option_values[1], 1e-12);
 

@@ -3,7 +3,7 @@
   The Roland-ish voice filter: a zero-delay-feedback cascade of four
   one-pole TPT lowpasses with a global resonance feedback, solved
   implicitly each sample (no unit-delay in the loop). Unlike the MS-20
-  nonlinear filter [ms20_svf.fy] this one is LINEAR - no internal
+  nonlinear MS-20 filter [ms20_ota.fy] this one is LINEAR - no internal
   saturation - so cutoff sweeps are perfectly smooth and there is no
   aliasing. Resonance runs up to just under self-oscillation; it stays
   stable because the feedback k is capped below 4 (the linear ladder's

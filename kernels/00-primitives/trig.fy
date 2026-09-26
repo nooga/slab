@@ -4,7 +4,7 @@
   RBJ-cookbook biquad coefficients (kernels/07-effects/eq.fy) need
   sin/cos of omega = 2*pi*fc/sr, which reaches ~2.56 rad at 18 kHz -
   far outside the tiny-angle range svf-g relies on (kernels/04-filters/
-  ms20_svf.fy), so the EQ needs real range-reduced trig.
+  coeffs.fy), so the EQ needs real range-reduced trig.
 
   dsp2 has no libm.  Both words assume the argument is already in
   [0, pi] (omega < pi whenever fc < sr/2; the caller clamps).  A single

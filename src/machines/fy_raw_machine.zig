@@ -2207,32 +2207,26 @@ test "raw DSP2 MS-20 fixture renders a finite note through generic adapter" {
     try testing.expect(peak <= 1.0);
 }
 
-test "raw DSP2 MS-20 fills the svf profile region in fy (no Zig derive)" {
-    const cutoff_off: usize = 32;
-    const env_peak_off: usize = 112;
-    const svf_drive: usize = 192;
-    const svf_resonance: usize = 200;
-    const svf_fb_gain: usize = 208;
-    const svf_fb_dc: usize = 240;
-    const svf_out_dc: usize = 248;
+/// Byte offset of a ustruct field by its fy introspection constant.
+fn fyFieldOffset(inst: *FyRawMachine, name: []const u8) !usize {
+    const v = try inst.host.callWord(name);
+    return @intCast(@divExact(v, Fy.makeInt(1))); // untag (ints are n << TAG_BITS)
+}
 
+test "MS-20 block-prepare derives the OTA filter coefficients in fy" {
     const inst = try FyRawMachine.create(testing.allocator, "machines/ms20/ms20.fy");
     defer inst.machineInterface().deinit.?(inst, testing.allocator);
-
     inst.syncRawParams(48_000, 120.0);
 
-    // Controls land at their declared offsets as raw values (defaults).
-    try testing.expect(inst.readParamF64(cutoff_off) > 60.0);
-    try testing.expect(inst.readParamF64(env_peak_off) > 1000.0);
-
-    // Profile region computed in fy by ms20-block-prepare (k-svf-coeffs-*).
-    try testing.expectApproxEqAbs(@as(f64, 1.90), inst.readParamF64(svf_drive), 1e-6);
-    try testing.expectApproxEqAbs(@as(f64, 5.4), inst.readParamF64(svf_fb_gain), 1e-6);
-    try testing.expect(inst.readParamF64(svf_resonance) > 0.0);
-    try testing.expect(inst.readParamF64(svf_fb_dc) > 0.0);
-    try testing.expect(inst.readParamF64(svf_fb_dc) < 0.01);
-    try testing.expect(inst.readParamF64(svf_out_dc) > 0.0);
-    try testing.expect(inst.readParamF64(svf_out_dc) < inst.readParamF64(svf_fb_dc));
+    const res = inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.resonance"));
+    const drive = inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.drive"));
+    // Defaults land raw: env amount in octaves, resonance and drive knobs.
+    try testing.expectApproxEqAbs(@as(f64, 4.8), inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.env-amount")), 1e-6); // knobs store f32 positions
+    // Loop gain 1.2 * RES (self-oscillation at 2), drive passes through,
+    // and the LPF runs at 4x the sample rate.
+    try testing.expectApproxEqAbs(1.2 * res, inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.ota-k")), 1e-12);
+    try testing.expectApproxEqAbs(drive, inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.ota-drive")), 1e-12);
+    try testing.expectApproxEqAbs(1.0 / (4.0 * 48_000.0), inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.os-inv")), 1e-15);
 }
 
 test "raw DSP2 delay machine: host buffer injection and echo" {

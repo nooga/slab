@@ -20,7 +20,8 @@
 
 include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../05-drums/decay.fy"
-include "../04-filters/ms20_svf.fy"
+include "../04-filters/coeffs.fy"   ( svf-g, svf-damping, svf-dc-coeff )
+include "../04-filters/tpt_svf.fy"
 include "../02-shapers/tanh_table.fy"
 
 ustruct: FunkState
@@ -29,6 +30,8 @@ ustruct: FunkState
   f64 ic2
   f64 gate-gain  ( smoothed gate )
   f64 wet        ( stage scratch )
+  f64 fg         ( stage scratch: filter g for this sample's substeps )
+  f64 fx         ( stage scratch: driven filter input, held over the substeps )
 ;
 
 ustruct: FunkParams
@@ -84,19 +87,35 @@ dsp: fo-env
   drop2 drop2 drop2 drop
 ;
 
-( state params in -- : drive -> envelope-swept 4-pole lowpass -> wet. )
+( state params in -- : drive + envelope-swept cutoff for this sample; the
+  lowpass itself runs in the four fo-sub substeps [4x oversampled]. )
 dsp: fo-filt
   | state params in |
   state FunkState.env@ params FunkParams.sweep-hz@ f*
   params FunkParams.base-hz@ f+ | cutoff |
-  cutoff params FunkParams.osr@ svf-g | g |
-  in Io.in-l@ params FunkParams.drive@ f* k-tanh-rational-shape-dsp2 | xd |
+  cutoff params FunkParams.osr@ svf-g state FunkState.fg-p f!64
+  ( drive into tanh, then the filter's own unity input clip )
+  in Io.in-l@ params FunkParams.drive@ f* k-tanh-rational-shape-dsp2 k-tanh-rational-shape-dsp2
+  state FunkState.fx-p f!64
+  drop2 drop2
+;
+
+( state params -- : one of four saturating lowpass substeps per sample
+  [input held]; the last one leaves its output in wet. )
+dsp: fo-sub ( state params -- )
+  | state params |
   state FunkState.ic1-p state FunkState.ic2-p
-  xd
-  g params FunkParams.damp@ 1.0
-  fms20-lpf4
+  state FunkState.fx@ state FunkState.fg@ params FunkParams.damp@
+  tpt-svf-lp-sat-step
   state FunkState.wet-p f!64
-  drop2 drop2 drop2
+  drop2
+;
+
+( state params -- : output clip after the substeps, tanh[1.8*lp]. )
+dsp: fo-sat ( state params -- )
+  | state params |
+  state FunkState.wet@ 1.8 f* k-tanh-rational-shape-dsp2 state FunkState.wet-p f!64
+  drop2
 ;
 
 ( out state params in -- : envelope gate on the wet path, dry/wet mix. )
@@ -120,5 +139,10 @@ dsp: k-funk-tick
   | io ctx state params |
   state params io call: fo-env
   state params io call: fo-filt
+  state params call: fo-sub
+  state params call: fo-sub
+  state params call: fo-sub
+  state params call: fo-sub
+  state params call: fo-sat
   io state params io call: fo-out
 ;

@@ -19,6 +19,7 @@ ustruct: Ctx
   f64 vel      ( note-on: velocity 0..1 )
   f64 pitch    ( note-on: MIDI pitch )
   f64 data     ( pointer: the machine's derive data; read with Ctx.data-p p@64 )
+  f64 legato   ( note-on: 1 when the voice was still held [mono slide], else 0 )
 ;
 
 ustruct: Io
