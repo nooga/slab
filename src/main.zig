@@ -102,6 +102,9 @@ pub const Fy = struct {
     // bumped whenever a word is (re)defined.
     dsp2_caller_cache: std.StringHashMap(CachedRawCaller) = undefined,
     dsp2_caller_gen: u64 = 0,
+    // Path of the source file being compiled, when known (include/import
+    // set it; hosts may set it around a top-level run).
+    src_file: ?[]const u8 = null,
 
     const version = "v0.0.1";
     const DATA_STACK_PAGES = 8; // 32KB usable = 4096 values
@@ -5065,6 +5068,10 @@ pub const Fy = struct {
                 clean_src = src[i..];
             }
 
+            const saved_file = self.fy.src_file;
+            self.fy.src_file = key;
+            defer self.fy.src_file = saved_file;
+
             // Compile with a sub-compiler sharing the same Fy
             var parser = Parser.init(clean_src);
             var compiler = Compiler.init(self.fy, &parser);
@@ -5457,37 +5464,18 @@ pub const Fy = struct {
             }
         }
 
-        fn appendUstructGroupedLoadTokens(self: *Compiler, program: *Dsp2.Program, struct_name: []const u8) Error!void {
-            var field_index: i64 = 0;
-            while (true) : (field_index += 1) {
-                const tok = try self.parser.nextToken() orelse return Error.UnexpectedEndOfInput;
-                const field_name = switch (tok) {
-                    .Word => |w| w,
-                    else => return Error.ExpectedWord,
-                };
-                if (std.mem.eql(u8, field_name, Word.END)) break;
-
-                const field = self.findUstructField(struct_name, field_name) orelse {
-                    self.setError("dsp: unknown ustruct field {s}.{s}", .{ struct_name, field_name });
-                    return Error.UnknownWord;
-                };
-                if (field.field_type != .f64) {
-                    self.setError("dsp: ustruct grouped load supports f64 fields for now", .{});
-                    return Error.UnknownWord;
-                }
-
-                program.addNumber(field_index + 1) catch return Error.OutOfMemory;
-                program.addWord("pick") catch return Error.OutOfMemory;
-                program.addNumber(field.offset) catch return Error.OutOfMemory;
-                program.addWord("ptr+") catch return Error.OutOfMemory;
-                program.addWord("f@64") catch return Error.OutOfMemory;
-            }
-        }
-
         const Dsp2LocalFrame = struct {
             start: usize,
             len: usize,
         };
+
+        const TypedLocal = struct { ref: Dsp2.LocalRef, ty: ?[]const u8 };
+
+        fn findDsp2LocalTyped(names: []const []const u8, types: []const ?[]const u8, frames: []const Dsp2LocalFrame, word: []const u8) ?TypedLocal {
+            const ref = findDsp2Local(names, frames, word) orelse return null;
+            const frame = frames[frames.len - 1 - ref.depth];
+            return .{ .ref = ref, .ty = types[frame.start + ref.index] };
+        }
 
         fn findDsp2Local(names: []const []const u8, frames: []const Dsp2LocalFrame, word: []const u8) ?Dsp2.LocalRef {
             var frame_i = frames.len;
@@ -5507,7 +5495,11 @@ pub const Fy = struct {
             return null;
         }
 
-        fn parseDsp2Locals(self: *Compiler, names: *compat.ArrayList([]const u8)) Error!void {
+        /// Parse the rest of a `| … |` frame. Names may carry a struct type
+        /// (`s:JunoState`); a `--` ends the bindings and declares the word's
+        /// outputs (leading frame only), e.g. `| s:State x -- y |`.
+        fn parseDsp2Locals(self: *Compiler, names: *compat.ArrayList([]const u8), types: *compat.ArrayList(?[]const u8)) Error!?usize {
+            var outs: ?usize = null;
             while (true) {
                 const tok = try self.parser.nextToken() orelse return Error.UnexpectedEndOfInput;
                 const word = switch (tok) {
@@ -5515,8 +5507,85 @@ pub const Fy = struct {
                     else => return Error.ExpectedWord,
                 };
                 if (std.mem.eql(u8, word, "|")) break;
-                names.append(word) catch return Error.OutOfMemory;
+                if (outs) |*n| {
+                    n.* += 1;
+                    continue;
+                }
+                if (std.mem.eql(u8, word, "--")) {
+                    outs = 0;
+                    continue;
+                }
+                if (std.mem.indexOfScalar(u8, word, ':')) |colon| {
+                    const ty = word[colon + 1 ..];
+                    if (colon == 0 or ty.len == 0 or self.findUstructLayout(ty) == null) {
+                        self.setError("dsp: `{s}`: unknown struct type in binding", .{word});
+                        return Error.UnknownWord;
+                    }
+                    names.append(word[0..colon]) catch return Error.OutOfMemory;
+                    types.append(ty) catch return Error.OutOfMemory;
+                } else {
+                    names.append(word) catch return Error.OutOfMemory;
+                    types.append(null) catch return Error.OutOfMemory;
+                }
             }
+            return outs;
+        }
+
+        fn findUstructLayout(self: *Compiler, name: []const u8) ?StructLayout {
+            for (self.fy.untagged_struct_layouts.items) |layout| {
+                if (std.mem.eql(u8, layout.name, name)) return layout;
+            }
+            return null;
+        }
+
+        /// `s.field` / `s.field&` / (after `->`) a store target, for a local
+        /// bound with a struct type. Returns false if `word` is not of that
+        /// form (so other lookups continue).
+        fn appendDottedLocal(
+            self: *Compiler,
+            program: *Dsp2.Program,
+            names: []const []const u8,
+            types: []const ?[]const u8,
+            frames: []const Dsp2LocalFrame,
+            word: []const u8,
+            store: bool,
+        ) Error!bool {
+            const dot = std.mem.indexOfScalar(u8, word, '.') orelse return false;
+            if (dot == 0 or dot + 1 >= word.len) return false;
+            const local = word[0..dot];
+            const found = findDsp2LocalTyped(names, types, frames, local) orelse return false;
+            const ty = found.ty orelse {
+                self.setError("dsp: `{s}`: local `{s}` has no struct type (bind it as {s}:Type)", .{ word, local, local });
+                return Error.UnknownWord;
+            };
+            var field_name = word[dot + 1 ..];
+            const addr = std.mem.endsWith(u8, field_name, "&");
+            if (addr) field_name = field_name[0 .. field_name.len - 1];
+            if (addr and store) {
+                self.setError("dsp: `-> {s}`: store target cannot take `&`", .{word});
+                return Error.UnknownWord;
+            }
+            const field = self.findUstructField(ty, field_name) orelse {
+                self.setError("dsp: `{s}`: {s} has no field `{s}`", .{ word, ty, field_name });
+                return Error.UnknownWord;
+            };
+            program.addLocalArg(found.ref) catch return Error.OutOfMemory;
+            program.addNumber(field.offset) catch return Error.OutOfMemory;
+            program.addWord("ptr+") catch return Error.OutOfMemory;
+            if (addr) return true;
+            const op: []const u8 = switch (field.field_type) {
+                .f64 => if (store) "f!64" else "f@64",
+                .ptr => if (store) {
+                    self.setError("dsp: `-> {s}`: pointer fields are read-only in dsp:", .{word});
+                    return Error.UnknownWord;
+                } else "p@64",
+                else => {
+                    self.setError("dsp: `{s}`: only f64 and ptr fields are supported", .{word});
+                    return Error.UnknownWord;
+                },
+            };
+            program.addWord(op) catch return Error.OutOfMemory;
+            return true;
         }
 
         /// A declared `( a b -- c )` right after a dsp: word's name. Only a
@@ -5615,27 +5684,41 @@ pub const Fy = struct {
                 else => return Error.ExpectedWord,
             };
 
-            const effect = try self.parseDsp2Effect();
+            var effect = try self.parseDsp2Effect();
 
             var program = Dsp2.Program.init(self.fy.fyalloc);
             defer program.deinit();
             var local_names = compat.ArrayList([]const u8).init(self.fy.fyalloc);
             defer local_names.deinit();
+            var local_types = compat.ArrayList(?[]const u8).init(self.fy.fyalloc);
+            defer local_types.deinit();
             var local_frames = compat.ArrayList(Dsp2LocalFrame).init(self.fy.fyalloc);
             defer local_frames.deinit();
+            var frame_outs: ?usize = null;
+            var first_token = true;
 
             while (true) {
                 const tok = try self.parser.nextToken() orelse return Error.UnexpectedEndOfInput;
                 program.cur = .{ .line = self.parser.line, .word = switch (tok) {
                     .Word => |tw| tw,
                     else => "",
-                } };
+                }, .pos = switch (tok) {
+                    .Word => |tw| @intFromPtr(tw.ptr) -| @intFromPtr(self.parser.code.ptr),
+                    else => 0,
+                }, .file = self.fy.src_file orelse "" };
                 switch (tok) {
                     .Word => |word| {
                         if (std.mem.eql(u8, word, Word.END)) break;
+                        const leading = first_token;
+                        first_token = false;
                         if (std.mem.eql(u8, word, "|")) {
                             const frame_start = local_names.items.len;
-                            try self.parseDsp2Locals(&local_names);
+                            const outs = try self.parseDsp2Locals(&local_names, &local_types);
+                            if (outs != null and !leading) {
+                                self.setError("dsp: {s}: `--` is only allowed in the leading | … | frame", .{w});
+                                return Error.UnknownWord;
+                            }
+                            if (outs != null) frame_outs = outs;
                             const frame_len = local_names.items.len - frame_start;
                             local_frames.append(.{ .start = frame_start, .len = frame_len }) catch return Error.OutOfMemory;
                             program.beginLocalFrame(frame_len) catch return Error.OutOfMemory;
@@ -5659,10 +5742,19 @@ pub const Fy = struct {
                             };
                             continue;
                         }
-                        if (std.mem.endsWith(u8, word, "@:") and word.len > 2) {
-                            try self.appendUstructGroupedLoadTokens(&program, word[0 .. word.len - 2]);
+                        if (std.mem.eql(u8, word, "->")) {
+                            const target_tok = try self.parser.nextToken() orelse return Error.UnexpectedEndOfInput;
+                            const target = switch (target_tok) {
+                                .Word => |t| t,
+                                else => return Error.ExpectedWord,
+                            };
+                            if (!try self.appendDottedLocal(&program, local_names.items, local_types.items, local_frames.items, target, true)) {
+                                self.setError("dsp: {s}: `-> {s}`: expected a typed local's field, like `-> s.cutoff`", .{ w, target });
+                                return Error.UnknownWord;
+                            }
                             continue;
                         }
+                        if (try self.appendDottedLocal(&program, local_names.items, local_types.items, local_frames.items, word, false)) continue;
                         if (self.findDsp2Body(word)) |body| {
                             program.addTokens(body) catch |err| {
                                 self.setError("dsp: cannot inline '{s}' ({s})", .{ word, @errorName(err) });
@@ -5684,11 +5776,13 @@ pub const Fy = struct {
                         };
                     },
                     .Number => |n| {
+                        first_token = false;
                         program.addNumber(n) catch |err| {
                             return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
                         };
                     },
                     .Float => |f| {
+                        first_token = false;
                         program.addFloat(f) catch |err| {
                             return if (err == error.OutOfMemory) Error.OutOfMemory else Error.UnknownWord;
                         };
@@ -5702,6 +5796,16 @@ pub const Fy = struct {
             var frame_i = local_frames.items.len;
             while (frame_i > 0) : (frame_i -= 1) {
                 program.endLocalFrame() catch return Error.OutOfMemory;
+            }
+
+            // A leading `| ins -- outs |` frame is the declaration.
+            if (frame_outs) |outs| {
+                const ins = local_frames.items[0].len;
+                if (effect) |e| if (e.in != ins or e.out != outs) {
+                    self.setError("dsp: {s}: ( {d} -- {d} ) disagrees with its | {d} -- {d} | frame", .{ w, e.in, e.out, ins, outs });
+                    return Error.UnknownWord;
+                };
+                effect = .{ .in = ins, .out = outs };
             }
 
             // Composition word (contains `call:`) — emit a call-sequencing

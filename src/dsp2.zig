@@ -137,6 +137,7 @@ pub const Builder = struct {
         try self.stack.append(frame.args[ref.index]);
     }
 
+    /// `| a b |` pops the top `arity` values and binds them, in order.
     pub fn beginLocalFrame(self: *Builder, arity: usize) Error!void {
         if (arity > 16) return Error.RegisterExhausted;
         if (self.stack.items.len < arity) return Error.StackUnderflow;
@@ -146,6 +147,7 @@ pub const Builder = struct {
         while (i < arity) : (i += 1) {
             frame.args[i] = self.stack.items[base + i];
         }
+        self.stack.shrinkRetainingCapacity(base);
         try self.local_frames.append(frame);
     }
 
@@ -194,6 +196,12 @@ pub const Builder = struct {
         if (std.mem.eql(u8, word, "f@64")) {
             const ptr = try self.pop();
             try self.expectTy(ptr, .ptr);
+            // Program order: a load sees this word's earlier store to the
+            // same field (same root pointer + constant offset).
+            if (self.findStore(ptr)) |si| {
+                try self.stack.append(self.stores.items[si].value);
+                return;
+            }
             const id = try self.addValue(.{ .op = .load_f64, .ty = .f64, .a = ptr });
             try self.stack.append(id);
             return;
@@ -225,6 +233,11 @@ pub const Builder = struct {
             const value = try self.pop();
             try self.expectTy(ptr, .ptr);
             try self.expectTy(value, .f64);
+            // A later store to the same field replaces the earlier one.
+            if (self.findStore(ptr)) |si| {
+                self.stores.items[si].value = value;
+                return;
+            }
             try self.stores.append(.{ .ptr = ptr, .value = value });
             return;
         }
@@ -605,6 +618,32 @@ pub const Builder = struct {
         for (self.stack.items) |value| remaining_uses[value] += 1;
     }
 
+    const AddrKey = struct { root: usize, off: i64 };
+
+    /// Canonical address of a pointer value: its root (an arg or a loaded
+    /// pointer) plus the constant offset of any ptr+ chain on top.
+    fn addrKey(self: *const Builder, id: usize) AddrKey {
+        var cur = id;
+        var off: i64 = 0;
+        while (self.values.items[cur].op == .ptr_add) {
+            off += self.values.items[cur].int_value;
+            cur = self.values.items[cur].a;
+        }
+        return .{ .root = cur, .off = off };
+    }
+
+    /// The pending store to the same canonical address, if any. Indexed
+    /// stores (f!i) have no constant address and never match.
+    fn findStore(self: *const Builder, ptr: usize) ?usize {
+        const k = self.addrKey(ptr);
+        if (self.values.items[k.root].op == .ptr_add_idx) return null;
+        for (self.stores.items, 0..) |st, i| {
+            const sk = self.addrKey(st.ptr);
+            if (sk.root == k.root and sk.off == k.off) return i;
+        }
+        return null;
+    }
+
     fn pop(self: *Builder) Error!usize {
         if (self.stack.items.len == 0) return Error.StackUnderflow;
         return self.stack.pop().?;
@@ -664,6 +703,9 @@ pub const Origin = struct {
     word: []const u8 = "",
     line: usize = 0,
     via: ?[]const u8 = null,
+    /// Byte offset of the token in `file`'s source (words only).
+    pos: usize = 0,
+    file: []const u8 = "",
 };
 
 /// Why a build failed: the error, the token it failed at (index into

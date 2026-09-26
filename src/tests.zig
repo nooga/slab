@@ -964,7 +964,6 @@ test "dsp: raw repeated wrapper can advance output and input streams" {
         \\  f*
         \\  out
         \\  f!64
-        \\  drop2 drop2
         \\;
     );
 
@@ -999,7 +998,6 @@ test "dsp: cached raw repeated caller reuses wrapper with new slots" {
         \\  f*
         \\  out
         \\  f!64
-        \\  drop2 drop2
         \\;
     );
 
@@ -1075,11 +1073,9 @@ test "dsp: ustruct accessors lower to raw IR" {
     };
     _ = fy.run(
         \\dsp: grouped-sum
-        \\  0.0
-        \\  U@: x y ;
-        \\  f+
-        \\  3 pick f!64
-        \\  drop2 drop
+        \\  | out u:U |
+        \\  0.0 u.x u.y f+ f+
+        \\  out f!64
         \\;
     ) catch |err| {
         std.debug.print("grouped-sum failed: {}\n", .{err});
@@ -1092,7 +1088,6 @@ test "dsp: ustruct accessors lower to raw IR" {
         \\  u U.y@
         \\  f+
         \\  out f!64
-        \\  drop2
         \\;
     ) catch |err| {
         std.debug.print("local-sum failed: {}\n", .{err});
@@ -1109,8 +1104,6 @@ test "dsp: ustruct accessors lower to raw IR" {
         \\  sum
         \\  f+
         \\  out f!64
-        \\  drop
-        \\  drop2
         \\;
     ) catch |err| {
         std.debug.print("local-temp-sum failed: {}\n", .{err});
@@ -1124,14 +1117,11 @@ test "dsp: ustruct accessors lower to raw IR" {
         \\  x
         \\  x
         \\  f+
-        \\  nip
-        \\  nip
         \\;
         \\dsp: local-inline-sum
         \\  | out u |
         \\  u local-helper
         \\  out f!64
-        \\  drop2
         \\;
     ) catch |err| {
         std.debug.print("local-inline-sum failed: {}\n", .{err});
@@ -1340,7 +1330,7 @@ test "dsp: call: composition invokes a stage that writes via memory" {
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
     _ = try fy.run(
-        \\dsp: t-stage | out | 2.5 out f!64 drop ;
+        \\dsp: t-stage | out | 2.5 out f!64 ;
         \\dsp: t-compose | out | out call: t-stage ;
     );
 
@@ -1357,8 +1347,8 @@ test "dsp: call: composition chains stages through state memory in order" {
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
     _ = try fy.run(
-        \\dsp: t-a | state | 3.0 state f!64 drop ;
-        \\dsp: t-b | out state | state f@64 2.0 f* out f!64 drop2 ;
+        \\dsp: t-a | state | 3.0 state f!64 ;
+        \\dsp: t-b | out state | state f@64 2.0 f* out f!64 ;
         \\dsp: t-chain
         \\  | out state |
         \\  state call: t-a
@@ -1381,7 +1371,7 @@ test "dsp: composition repeated caller loops with auto-advanced output" {
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
 
     _ = try fy.run(
-        \\dsp: t-w | out | 1.5 out f!64 drop ;
+        \\dsp: t-w | out | 1.5 out f!64 ;
         \\dsp: t-rep | out | out call: t-w ;
     );
 
@@ -1403,8 +1393,8 @@ test "dsp: 4-arg composition caller with auto-advanced out and in" {
     // Effect ABI shape: out state params in. Stage 1 accumulates the input
     // into state, stage 2 writes state + params gain to out.
     _ = try fy.run(
-        \\dsp: t-fx-acc | state in | state f@64 in f@64 f+ state f!64 drop2 ;
-        \\dsp: t-fx-out | out state params | state f@64 params f@64 f* out f!64 drop2 drop ;
+        \\dsp: t-fx-acc | state in | state f@64 in f@64 f+ state f!64 ;
+        \\dsp: t-fx-out | out state params | state f@64 params f@64 f* out f!64 ;
         \\dsp: t-fx
         \\  | out state params in |
         \\  state in call: t-fx-acc
@@ -1471,7 +1461,7 @@ test "dsp: ustruct introspection constants resolve as int consts" {
     defer fy.deinit();
     _ = try fy.run(
         \\ustruct: IC f64 a f64 b f64 c ;
-        \\dsp: k-ic-third | out base | base IC.c ptr+ f@64 out f!64 drop2 ;
+        \\dsp: k-ic-third | out base | base IC.c ptr+ f@64 out f!64 ;
     );
     var vals = [_]f64{ 1.5, 2.5, 3.5 };
     var out: f64 = 0;
@@ -1487,7 +1477,7 @@ test "dsp: f@i / f!i runtime-indexed f64 access" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     _ = try fy.run(
-        \\dsp: k-ring-rot | out base idx | base idx f@i  base idx 1.0 f+ f@i f+  out f!64  base idx f@i  base 0.5 f!i  drop2 drop ;
+        \\dsp: k-ring-rot | out base idx | base idx f@i  base idx 1.0 f+ f@i f+  out f!64  base idx f@i  base 0.5 f!i ;
     );
     var cells = [_]f64{ 10.0, 20.0, 30.0, 40.0 };
     var out: f64 = 0;
@@ -1507,7 +1497,7 @@ test "dsp: p@64 loads a pointer through state" {
     defer fy.deinit();
     // state cell 0 holds a pointer to a buffer; read element idx from it.
     _ = try fy.run(
-        \\dsp: k-pload | out state idx | state p@64 idx f@i out f!64 drop2 drop ;
+        \\dsp: k-pload | out state idx | state p@64 idx f@i out f!64 ;
     );
     var buffer = [_]f64{ 7.0, 8.0, 9.0 };
     var state = [_]u64{@intFromPtr(&buffer[0])};
@@ -1525,7 +1515,7 @@ test "dsp: declared stack effect sets arity and checks outputs" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     _ = try fy.run(
-        \\dsp: k-eff-add ( out a b -- ) | out a b | a b f+ out f!64 drop2 drop ;
+        \\dsp: k-eff-add ( out a b -- ) | out a b | a b f+ out f!64 ;
     );
     var out: f64 = 0;
     const args = [_]Fy.Dsp2RawArg{
@@ -1536,14 +1526,59 @@ test "dsp: declared stack effect sets arity and checks outputs" {
     _ = try fy.callDsp2RawRepeatedWithArgsNoResult("k-eff-add", 1, &args);
     try std.testing.expectEqual(@as(f64, 3.75), out);
     // Declared one output, body leaves two.
-    try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-eff-bad ( a b -- c ) | a b | a b f+ a nip nip ;"));
+    try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-eff-bad ( a b -- c ) | a b | a b f+ a ;"));
     // A comment without `--` after the name is still just a comment.
-    _ = try fy.run("dsp: k-eff-comment ( plain note ) | out a | a out f!64 drop2 ;");
+    _ = try fy.run("dsp: k-eff-comment ( plain note ) | out a | a out f!64 ;");
 }
 
 test "dsp: build errors are reported, not swallowed" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
-    try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-err-typo | p | 1.0 2.0 fplus p f!64 drop ;"));
-    try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-err-under | x | x f+ nip ;"));
+    try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-err-typo | p | 1.0 2.0 fplus p f!64 ;"));
+    try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-err-under | x | x f+ ;"));
 }
+
+test "dsp: typed locals, dotted fields, -> stores and & addresses" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    _ = try fy.run(
+        \\ustruct: TS f64 a f64 b f64 c ;
+        \\dsp: ts-bump | p -- | p f@64 1.0 f+ p f!64 ;
+        \\dsp: k-ts | out s:TS x -- |
+        \\  s.a x f* -> s.b
+        \\  s.c& ts-bump
+        \\  s.a s.b f+ out f!64 ;
+    );
+    var st = [_]f64{ 2.0, 0.0, 10.0 };
+    var out: f64 = 0;
+    const args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&out) },
+        .{ .ptr = @intFromPtr(&st[0]) },
+        .{ .f64 = 3.0 },
+    };
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("k-ts", 1, &args);
+    try std.testing.expectEqual(@as(f64, 6.0), st[1]);
+    try std.testing.expectEqual(@as(f64, 11.0), st[2]);
+    // s.b reads back the value stored earlier in the same word.
+    try std.testing.expectEqual(@as(f64, 8.0), out);
+    // Untyped local with a dotted field, unknown field, bad frame outputs.
+    try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-ts-bad1 | s | s.a ;"));
+    try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-ts-bad2 | s:TS | s.zz ;"));
+    try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-ts-bad3 | a b -- c d | a b f+ ;"));
+    try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-ts-bad4 | a | a | b -- c | b ;"));
+}
+
+test "dsp: loads see earlier stores in program order" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    _ = try fy.run(
+        \\dsp: k-po | p -- |
+        \\  p f@64 2.0 f* p f!64
+        \\  p f@64 1.0 f+ p f!64 ;
+    );
+    var cell: f64 = 5.0;
+    const args = [_]Fy.Dsp2RawArg{.{ .ptr = @intFromPtr(&cell) }};
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("k-po", 1, &args);
+    try std.testing.expectEqual(@as(f64, 11.0), cell);
+}
+
