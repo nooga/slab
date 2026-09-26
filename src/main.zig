@@ -1418,7 +1418,9 @@ pub const Fy = struct {
         self: *Fy,
         name: []const u8,
         slots: *Dsp2RawRepeatedSlots,
-        auto_advance_out: bool,
+        // Bytes arg0 advances per iteration (0 = fixed). 8 walks an f64
+        // buffer; larger strides walk a frame struct (e.g. slab's IoFrame).
+        out_stride: u12,
         auto_advance_arg3: bool,
     ) !Dsp2RawRepeatedCaller {
         const word = self.userWords.get(name) orelse return error.UnknownWord;
@@ -1467,8 +1469,8 @@ pub const Fy = struct {
             for (Asm.movImm64(9, call.addr)) |instr| try code.append(instr);
             try code.append(Asm.@"blr Xn"(9));
         }
-        if (auto_advance_out) {
-            try code.append(Asm.add_imm(21, 21, 8));
+        if (out_stride != 0) {
+            try code.append(Asm.add_imm(21, 21, out_stride));
         }
         if (auto_advance_arg3) {
             try code.append(Asm.add_imm(24, 24, 8));
@@ -1836,7 +1838,9 @@ pub const Fy = struct {
         name: []const u8,
         slots: *Dsp2RawRepeatedSlots,
         arg_kinds: []const Dsp2RawArgKind,
-        auto_advance_out: bool,
+        // Bytes arg0 advances per iteration (0 = fixed). 8 walks an f64
+        // buffer; larger strides walk a frame struct (e.g. slab's IoFrame).
+        out_stride: u12,
         auto_advance_arg3: bool,
     ) !Dsp2RawRepeatedCaller {
         if (arg_kinds.len > Dsp2.RAW_X_ARG_REGS.len) return error.RegisterExhausted;
@@ -1883,8 +1887,8 @@ pub const Fy = struct {
 
         const loop_pos = code.items.len;
         try code.appendSlice(raw_body);
-        if (auto_advance_out) {
-            try code.append(Asm.add_imm(Dsp2.RAW_X_ARG_REGS[0], Dsp2.RAW_X_ARG_REGS[0], 8));
+        if (out_stride != 0) {
+            try code.append(Asm.add_imm(Dsp2.RAW_X_ARG_REGS[0], Dsp2.RAW_X_ARG_REGS[0], out_stride));
         }
         if (auto_advance_arg3) {
             try code.append(Asm.add_imm(Dsp2.RAW_X_ARG_REGS[3], Dsp2.RAW_X_ARG_REGS[3], 8));
@@ -1940,7 +1944,7 @@ pub const Fy = struct {
             .int => .int,
             .f64 => .f64,
         };
-        const caller = self.compileDsp2RawRepeatedCaller(name, slots, kinds[0..args.len], auto_advance_out, auto_advance_arg3) catch |e| {
+        const caller = self.compileDsp2RawRepeatedCaller(name, slots, kinds[0..args.len], if (auto_advance_out) 8 else 0, auto_advance_arg3) catch |e| {
             self.fyalloc.destroy(slots);
             return e;
         };

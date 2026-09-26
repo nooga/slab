@@ -1008,9 +1008,8 @@ test "dsp: cached raw repeated caller reuses wrapper with new slots" {
         "cached-copy2",
         &slots,
         &.{ .ptr, .ptr, .ptr, .ptr },
-        true,
-        true,
-    );
+        8,
+        true,);
 
     var state: f64 = 0;
     var params: f64 = 0;
@@ -1389,7 +1388,7 @@ test "dsp: composition repeated caller loops with auto-advanced output" {
     try std.testing.expect(fy.isCompositionWord("t-rep"));
 
     var slots: Fy.Dsp2RawRepeatedSlots = .{};
-    var caller = try fy.compileDsp2CompositionCaller("t-rep", &slots, true, false);
+    var caller = try fy.compileDsp2CompositionCaller("t-rep", &slots, 8, false);
     var out = [_]f64{0} ** 4;
     const args = [_]Fy.Dsp2RawArg{.{ .ptr = @intFromPtr(&out[0]) }};
     _ = try caller.call(4, &args);
@@ -1416,7 +1415,7 @@ test "dsp: 4-arg composition caller with auto-advanced out and in" {
     try std.testing.expect(fy.isCompositionWord("t-fx"));
 
     var slots: Fy.Dsp2RawRepeatedSlots = .{};
-    var caller = try fy.compileDsp2CompositionCaller("t-fx", &slots, true, true);
+    var caller = try fy.compileDsp2CompositionCaller("t-fx", &slots, 8, true);
     var out = [_]f64{0} ** 4;
     const in = [_]f64{ 1.0, 2.0, 3.0, 4.0 };
     var state: f64 = 0;
