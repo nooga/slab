@@ -37,6 +37,7 @@ const render_dialog = @import("ui/render_dialog.zig");
 test {
     _ = @import("ui/sprites.zig");
     _ = @import("ui/core.zig");
+    _ = @import("ui/controls.zig");
     _ = @import("ui/geom.zig");
     _ = @import("ui/atlas.zig");
     _ = @import("ui/font.zig");

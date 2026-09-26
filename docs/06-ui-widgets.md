@@ -381,6 +381,24 @@ Controls have fixed sizes; containers adapt, controls don't stretch.
 - Empty panes collapse. An empty clip editor does not keep 160px of
   "no clip selected".
 
+### Splitters
+
+`ctl.split(ui, r, key, &size, opts)` divides a region at a draggable
+seam and returns the two rects; the caller owns the size (logical px, so
+it persists with the project or window state).
+
+- **The seam is the splitter.** No divider bar: the first pane's own 1px
+  seam, with a ±3px grab zone. Hover and drag show the resize cursor and
+  light the seam amber (drawn on the overlay list, above the panes).
+- **Grab zones win.** Splitters use hover priority 1, so a control drawn
+  later under the grab zone doesn't steal it.
+- **Moves in whole logical pixels**; minimums keep both panes usable.
+- **Tier snapping:** panes with fixed-size content (the machine bay) pass
+  their natural-size tiers and jump between them as the seam passes each
+  midpoint. Continuous panes (arrangement, piano roll) track the pointer.
+- **Double-click** folds a pane to its title strip and back (the size is
+  remembered).
+
 ## The `Ui` core
 
 Widgets are functions; state lives in one context. Nothing outside the

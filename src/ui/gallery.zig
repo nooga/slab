@@ -70,6 +70,10 @@ const State = struct {
         .{ .name = "VOX", .color = style.track[6], .arm = true, .mute = true },
     },
     master_vol: f32 = 0.8,
+    // Splitter-owned pane sizes (logical px).
+    bay_h: i32 = 0, // 0 = pick the M tier on first frame
+    roll_h: i32 = 320,
+    headers_w: i32 = 208,
 };
 
 const ZOOMS = [_]f32{ 1, 2, 3 };
@@ -154,7 +158,7 @@ fn controlsPage(ui: *Ui, screen: Rect, st: *State) void {
     ledsPanel(ui, col_b, st);
 
     var mrow = col_c.cutTop(212);
-    machine(ui, mrow.cutLeft(@min(mrow.w, machineWidth())), st);
+    machine(ui, mrow.cutLeft(@min(mrow.w, machineWidth(.m))), st);
     if (mrow.w > 0) _ = ui.plate(mrow, .{});
     displaysPanel(ui, col_c.cutTop(232), st);
     typePanel(ui, col_c);
@@ -377,38 +381,55 @@ fn typePanel(ui: *Ui, r: Rect) void {
 
 // ═════════════════════════════ MACHINES ═════════════════════════════
 
-/// Natural width of the SM-24 faceplate: the sum of its strips.
-fn machineWidth() i32 {
-    const cw = ctl.knobCell(.m)[0] + 4;
+const TITLE_H: i32 = 20;
+const STRIP_HEAD: i32 = 14;
+
+/// Natural width of the SM-24 faceplate at a tier: the sum of its strips.
+fn machineWidth(sz: ctl.Size) i32 {
+    const cw = ctl.knobCell(sz)[0] + 4;
     return (ctl.listCell(3)[0] + cw + 6) + cw * 2 + (ctl.sliderWidth(.slider) * 4 + 4);
 }
 
+/// Natural height at a tier: title strip, strip header, two knob rows,
+/// the bottom seam.
+fn machineHeight(sz: ctl.Size) i32 {
+    return TITLE_H + STRIP_HEAD + 2 * ctl.knobCell(sz)[1] + 1;
+}
+
+/// Largest tier whose natural height fits `h`, or null (collapsed).
+fn tierFor(h: i32) ?ctl.Size {
+    for ([_]ctl.Size{ .l, .m, .s }) |sz| if (machineHeight(sz) <= h) return sz;
+    return null;
+}
+
 /// A machine faceplate at its natural size: title strip + packed strips.
+/// Collapsed (no tier fits) it shows only the title strip.
 fn machine(ui: *Ui, r: Rect, st: *State) void {
     ui.pushId("sm24");
     defer ui.popId();
     var plate = r;
-    ctl.titleStrip(ui, plate.cutTop(20), "SM-24 MONO", presets[st.preset]);
+    ctl.titleStrip(ui, plate.cutTop(TITLE_H), "SM-24 MONO", presets[st.preset]);
+    const sz = tierFor(r.h) orelse return;
     var body = plate;
-    const cell = ctl.knobCell(.m);
+    const cell = ctl.knobCell(sz);
     const cw = cell[0] + 4;
     // VCO
     var vco = ctl.strip(ui, body.cutLeft(ctl.listCell(3)[0] + cw + 6), "VCO");
     const octs = [_][]const u8{ "16'", "8'", "4'" };
     _ = ctl.list(ui, vco.cutLeft(ctl.listCell(3)[0] + 6), "oct", &st.m_oct, &octs, "OCT");
-    _ = ctl.knob(ui, vco.cutTop(cell[1]), "wave", &st.m_wave, .{ .label = "WAVE" });
-    _ = ctl.knob(ui, vco.cutTop(cell[1]), "det", &st.m_det, .{ .label = "DETUNE", .variant = .bipolar, .default = 0.5 });
+    _ = ctl.knob(ui, vco.cutTop(cell[1]), "wave", &st.m_wave, .{ .size = sz, .label = "WAVE" });
+    _ = ctl.knob(ui, vco.cutTop(cell[1]), "det", &st.m_det, .{ .size = sz, .label = "DETUNE", .variant = .bipolar, .default = 0.5 });
     // VCF
     var vcf = ctl.strip(ui, body.cutLeft(cw * 2), "VCF");
     var fr1 = vcf.cutTop(cell[1]);
     var cbuf: [16]u8 = undefined;
     const hz = 20 * std.math.pow(f32, 1000, st.m_cut);
     const cut_s = if (hz >= 1000) std.fmt.bufPrint(&cbuf, "{d:.2}k", .{hz / 1000}) catch "" else std.fmt.bufPrint(&cbuf, "{d:.0}", .{hz}) catch "";
-    _ = ctl.knob(ui, fr1.cutLeft(cw), "cut", &st.m_cut, .{ .label = "CUTOFF", .readout = cut_s, .mod = st.m_cut + st.m_env * 0.2 });
-    _ = ctl.knob(ui, fr1, "res", &st.m_res, .{ .label = "PEAK" });
+    _ = ctl.knob(ui, fr1.cutLeft(cw), "cut", &st.m_cut, .{ .size = sz, .label = "CUTOFF", .readout = cut_s, .mod = st.m_cut + st.m_env * 0.2 });
+    _ = ctl.knob(ui, fr1, "res", &st.m_res, .{ .size = sz, .label = "PEAK" });
     var fr2 = vcf.cutTop(cell[1]);
-    _ = ctl.knob(ui, fr2.cutLeft(cw), "env", &st.m_env, .{ .label = "EG AMT" });
-    _ = ctl.knob(ui, fr2, "drv", &st.m_drv, .{ .label = "DRIVE" });
+    _ = ctl.knob(ui, fr2.cutLeft(cw), "env", &st.m_env, .{ .size = sz, .label = "EG AMT" });
+    _ = ctl.knob(ui, fr2, "drv", &st.m_drv, .{ .size = sz, .label = "DRIVE" });
     // ENV
     var eg = ctl.strip(ui, body.cutLeft(ctl.sliderWidth(.slider) * 4 + 4), "ENV");
     var env_pts: [64]f32 = undefined;
@@ -424,7 +445,8 @@ fn delay(ui: *Ui, r: Rect, st: *State) void {
     ui.pushId("delay");
     defer ui.popId();
     var plate = r;
-    ctl.titleStrip(ui, plate.cutTop(20), "DELAY", "TAPE ECHO");
+    ctl.titleStrip(ui, plate.cutTop(TITLE_H), "DELAY", "TAPE ECHO");
+    if (tierFor(r.h) == null) return;
     var body = ctl.strip(ui, plate, "");
     const cell = ctl.knobCell(.m);
     var row = body.cutTop(cell[1]);
@@ -462,13 +484,18 @@ fn genNotes() void {
 fn dawPage(ui: *Ui, screen: Rect, st: *State) void {
     var s = screen;
     transport(ui, s.cutTop(32), st);
-    const bay_h = 212;
-    const bay = s.cutBottom(bay_h);
-    const roll = s.cutBottom(@divFloor(s.h * 11, 20));
-    arrangement(ui, s, st);
-    pianoRoll(ui, roll, st);
-    var b = bay;
-    machine(ui, b.cutLeft(@min(b.w, machineWidth())), st);
+    // Machine bay: snaps between the machines' natural-size tiers;
+    // double-click the seam to fold it to its title strips.
+    const tiers = [_]i32{ machineHeight(.s), machineHeight(.m), machineHeight(.l) };
+    if (st.bay_h == 0) st.bay_h = tiers[1];
+    const v = ctl.split(ui, s, "bay", &st.bay_h, .{ .from_end = true, .min = tiers[0], .min_other = 140, .snap = &tiers, .collapsed = TITLE_H });
+    // Piano roll: continuous; double-click folds it to its title strip.
+    const h = ctl.split(ui, v[0], "roll", &st.roll_h, .{ .from_end = true, .min = 96, .min_other = 100, .collapsed = TITLE_H });
+    arrangement(ui, h[0], st);
+    pianoRoll(ui, h[1], st);
+    var b = v[1];
+    const sz = tierFor(b.h) orelse .s;
+    machine(ui, b.cutLeft(@min(b.w, machineWidth(sz))), st);
     if (b.w > 0) delay(ui, b.cutLeft(@min(b.w, 176)), st);
     if (b.w > 0) _ = ui.plate(b, .{});
 }
@@ -515,8 +542,9 @@ fn masterLevel(ui: *const Ui) f32 {
 fn arrangement(ui: *Ui, r: Rect, st: *State) void {
     ui.pushId("arrange");
     defer ui.popId();
-    var area = r;
-    var headers = area.cutRight(208);
+    const cols = ctl.split(ui, r, "headers", &st.headers_w, .{ .axis = .cols, .from_end = true, .min = 150, .min_other = 240 });
+    var area = cols[0];
+    var headers = cols[1];
     const v = surf.TimeView{ .start = 0, .ppb = @as(f32, @floatFromInt(area.w)) / 40.0 };
     const head = beatNow(ui, st);
     surf.ruler(ui, area.cutTop(20), v, if (st.loop_on) .{ 0, 32 } else null, head);
@@ -579,6 +607,10 @@ fn pianoRoll(ui: *Ui, r: Rect, st: *State) void {
     _ = title.cutLeft(6);
     ui.textIn(&ui.fonts.body_bold, title.cutLeft(200), "Punch Bass", style.text, .left, true);
     ui.textIn(&ui.fonts.legend, title.cutLeft(120), "BASS · 16 BEATS", style.text_mute, .left, true);
+    if (area.h < 60) {
+        if (area.h > 0) _ = ui.plate(area, .{});
+        return;
+    }
 
     const keys_w: i32 = 44;
     const vel_h: i32 = 44;

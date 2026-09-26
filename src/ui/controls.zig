@@ -1101,3 +1101,115 @@ pub fn titleStrip(ui: *Ui, r: Rect, name: []const u8, preset: []const u8) void {
         preset;
     display(ui, disp_r, s, .{});
 }
+
+// ── Splitters ────────────────────────────────────────────────────────
+
+pub const SplitAxis = enum {
+    /// Panes stacked top/bottom; the seam is horizontal.
+    rows,
+    /// Panes side by side; the seam is vertical.
+    cols,
+};
+
+pub const SplitOpts = struct {
+    axis: SplitAxis = .rows,
+    /// `size` measures the last pane (bottom/right) instead of the first.
+    from_end: bool = false,
+    /// Minimum of the sized pane and of the other one.
+    min: i32 = 40,
+    min_other: i32 = 40,
+    /// Sizes the pane snaps to while dragged (natural-size tiers); empty
+    /// means continuous.
+    snap: []const i32 = &.{},
+    /// Double-click collapses to this size and back (0 = no collapse).
+    collapsed: i32 = 0,
+};
+
+const SPLIT_GRAB: i32 = 3;
+
+/// Split `r` in two at a draggable seam. `size` is the persistent size of
+/// the sized pane (logical px); the caller owns it. The seam is the first
+/// pane's own right/bottom seam line: there is no separate divider.
+pub fn split(ui: *Ui, r: Rect, key: anytype, size: *i32, o: SplitOpts) [2]Rect {
+    const wid = ui.id(key);
+    const rows = o.axis == .rows;
+    const start = if (rows) r.y else r.x;
+    const extent = if (rows) r.h else r.w;
+
+    const first_len = if (o.from_end) extent - size.* else size.*;
+    const line = start + first_len - 1;
+    const hit = if (rows)
+        Rect.xywh(r.x, line - SPLIT_GRAB, r.w, 2 * SPLIT_GRAB + 1)
+    else
+        Rect.xywh(line - SPLIT_GRAB, r.y, 2 * SPLIT_GRAB + 1, r.h);
+
+    const b = ui.behaviorPrio(wid, hit, false, 1);
+    const mouse = if (rows) ui.in.iy() else ui.in.ix();
+    const grab = ui.memo(wid, 0);
+    if (b.pressed) grab.* = @floatFromInt(mouse - line);
+    if (b.double and o.collapsed > 0) {
+        const restore = ui.memo(wid +% 1, @floatFromInt(size.*));
+        if (size.* == o.collapsed) {
+            size.* = @intFromFloat(restore.*);
+        } else {
+            restore.* = @floatFromInt(size.*);
+            size.* = o.collapsed;
+        }
+    } else if (b.held) {
+        size.* = dragSize(o, extent, mouse - @as(i32, @intFromFloat(grab.*)) - start);
+    }
+    size.* = clampSize(o, extent, size.*);
+
+    if (ui.isHot(wid)) {
+        ui.requestCursor(if (rows) c.rl.MOUSE_CURSOR_RESIZE_NS else c.rl.MOUSE_CURSOR_RESIZE_EW, 2);
+    }
+    const final_first = if (o.from_end) extent - size.* else size.*;
+    const seam = start + final_first - 1;
+    if (ui.isHot(wid)) {
+        ui.overlayRect(if (rows) Rect.xywh(r.x, seam, r.w, 1) else Rect.xywh(seam, r.y, 1, r.h), style.accent);
+    }
+    var a = r;
+    const first = if (rows) a.cutTop(final_first) else a.cutLeft(final_first);
+    return .{ first, a };
+}
+
+/// Pane size for a seam dragged to `line` (offset from the split's start):
+/// the first pane then spans line + 1 px. Snaps to tiers when given.
+fn dragSize(o: SplitOpts, extent: i32, line: i32) i32 {
+    const first = line + 1;
+    const want = if (o.from_end) extent - first else first;
+    return if (o.snap.len > 0) nearestSize(o.snap, want, o.collapsed) else want;
+}
+
+fn clampSize(o: SplitOpts, extent: i32, size: i32) i32 {
+    const lo = if (o.collapsed > 0) @min(o.collapsed, o.min) else o.min;
+    const hi = @max(lo, extent - o.min_other);
+    return std.math.clamp(size, lo, hi);
+}
+
+fn nearestSize(snap: []const i32, want: i32, collapsed: i32) i32 {
+    var best = snap[0];
+    for (snap) |t| if (@abs(t - want) < @abs(best - want)) {
+        best = t;
+    };
+    if (collapsed > 0 and @abs(collapsed - want) < @abs(best - want)) best = collapsed;
+    return best;
+}
+
+test "splitter drag math: continuous, from_end, tiers, collapse, clamps" {
+    const t = std.testing;
+    // Continuous, first pane sized: seam at offset 99 → 100 px.
+    try t.expectEqual(@as(i32, 100), dragSize(.{}, 500, 99));
+    // from_end: the bottom pane gets what's below the seam.
+    try t.expectEqual(@as(i32, 400), dragSize(.{ .from_end = true }, 500, 99));
+    // Tiers: snap to the nearest; collapse is a tier too.
+    const tiers = [_]i32{ 131, 147, 163 };
+    const o = SplitOpts{ .from_end = true, .min = 131, .snap = &tiers, .collapsed = 20 };
+    try t.expectEqual(@as(i32, 163), dragSize(o, 800, 800 - 200 - 1));
+    try t.expectEqual(@as(i32, 147), dragSize(o, 800, 800 - 150 - 1));
+    try t.expectEqual(@as(i32, 20), dragSize(o, 800, 800 - 30 - 1));
+    // Clamps: never below min (collapse excepted), never squeezing the other pane.
+    try t.expectEqual(@as(i32, 20), clampSize(o, 800, 20));
+    try t.expectEqual(@as(i32, 40), clampSize(.{ .min = 40, .min_other = 40 }, 500, 5));
+    try t.expectEqual(@as(i32, 460), clampSize(.{ .min = 40, .min_other = 40 }, 500, 490));
+}

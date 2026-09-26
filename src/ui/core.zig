@@ -137,6 +137,14 @@ pub const Ui = struct {
     /// Hot candidate for the next frame (the last widget under the pointer
     /// wins, so later-drawn widgets on top take precedence).
     hot_next: Id = 0,
+    /// Priority of `hot_next`: a higher-priority widget (a splitter's grab
+    /// zone) stays hot over lower ones drawn later on top of it.
+    hot_next_prio: u8 = 0,
+    /// Cursor requested this frame (highest priority wins), applied at
+    /// the end of the frame.
+    cursor: c_int = c.rl.MOUSE_CURSOR_DEFAULT,
+    cursor_prio: u8 = 0,
+    cursor_set: c_int = c.rl.MOUSE_CURSOR_DEFAULT,
     active: Id = 0,
     focus: Id = 0,
 
@@ -251,6 +259,9 @@ pub const Ui = struct {
         ui.frame += 1;
         ui.hot = ui.hot_next;
         ui.hot_next = 0;
+        ui.hot_next_prio = 0;
+        ui.cursor = c.rl.MOUSE_CURSOR_DEFAULT;
+        ui.cursor_prio = 0;
         ui.edit_began = false;
         ui.edit_ended = false;
         ui.wants_frame = in.any() or ui.active != 0;
@@ -268,6 +279,10 @@ pub const Ui = struct {
             ui.edit_ended = true;
         }
         if (ui.in.time - ui.touch.time < TOUCH_HOLD + 0.1) ui.wants_frame = true;
+        if (ui.cursor != ui.cursor_set) {
+            c.rl.SetMouseCursor(ui.cursor);
+            ui.cursor_set = ui.cursor;
+        }
         c.rl.BeginDrawing();
         c.rl.ClearBackground(@bitCast(style.chassis));
         ui.renderer.flush(&.{ &ui.dl, &ui.overlay });
@@ -351,10 +366,18 @@ pub const Ui = struct {
 
     /// Standard pointer behaviour for a widget occupying `r`.
     pub fn behavior(ui: *Ui, wid: Id, r: Rect, disabled: bool) Behavior {
+        return ui.behaviorPrio(wid, r, disabled, 0);
+    }
+
+    /// `behavior` with a hover priority (see `hot_next_prio`).
+    pub fn behaviorPrio(ui: *Ui, wid: Id, r: Rect, disabled: bool, prio: u8) Behavior {
         var b = Behavior{};
         const over = r.contains(ui.in.ix(), ui.in.iy());
         if (disabled) return b;
-        if (over and (ui.active == 0 or ui.active == wid)) ui.hot_next = wid;
+        if (over and (ui.active == 0 or ui.active == wid) and prio >= ui.hot_next_prio) {
+            ui.hot_next = wid;
+            ui.hot_next_prio = prio;
+        }
         b.hover = ui.hot == wid and over;
         if (ui.active == wid) {
             b.held = true;
@@ -375,6 +398,14 @@ pub const Ui = struct {
             b.double = ui.in.double;
         }
         return b;
+    }
+
+    /// Request a pointer cursor for this frame; the highest priority wins.
+    pub fn requestCursor(ui: *Ui, cursor: c_int, prio: u8) void {
+        if (prio >= ui.cursor_prio) {
+            ui.cursor = cursor;
+            ui.cursor_prio = prio;
+        }
     }
 
     pub fn isHot(ui: *const Ui, wid: Id) bool {
@@ -439,6 +470,12 @@ pub const Ui = struct {
 
     pub fn line(ui: *Ui, x0: f32, y0: f32, x1: f32, y1: f32, col: Color) void {
         ui.dl.push(.{ .line = .{ .x0 = x0, .y0 = y0, .x1 = x1, .y1 = y1, .c = col } });
+    }
+
+    /// A rect on the overlay list (drawn after everything else).
+    pub fn overlayRect(ui: *Ui, r: Rect, col: Color) void {
+        if (r.empty()) return;
+        ui.overlay.push(.{ .rect = .{ .r = r, .c = col } });
     }
 
     pub fn clip(ui: *Ui, r: Rect) void {
