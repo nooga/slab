@@ -51,6 +51,7 @@ ustruct: CreamParams
   f64 wave1   f64 wave2   f64 wave3       ( 0 tri 1 saw 2 square 3 wide 4 narrow )
   f64 detune2 f64 detune3                 ( semitones, -7 .. 7 )
   f64 sync2                               ( OSC 2 hard sync to OSC 1 - switch 0/1 )
+  f64 env-osc2                            ( filter contour -> OSC 2 pitch, semitones: the sync sweep )
   f64 osc3-mode                           ( 0 SUB 1 OSC - switch )
   f64 sub-oct                             ( SUB frequency: 0.5 or 0.25 of OSC 1 )
   ( mixer )
@@ -174,13 +175,14 @@ dsp: k-cream-voice | io ctx state:CreamState params:CreamParams -- |
   state.dr1& params.drift-c drift-step dscale f* 1.0 f+ | d1 |
   state.dr2& params.drift-c drift-step dscale f* 1.0 f+ | d2 |
   state.dr3& params.drift-c drift-step dscale f* 1.0 f+ | d3 |
-  hz params.inv-osr f* | base |
-  base params.range1 f* d1 f* | dt1 |
-  base params.range2 f* params.ratio2 f* d2 f* | dt2 |
-  params.osc3-mode 0.5  dt1 params.sub-oct f*  base params.range3 f* params.ratio3 f* d3 f*  fsel-lt | dt3 |
   ( contours )
   age params.f-atk params.f-dec params.f-sus state.gate-time params.f-rel adsr-cap | fenv |
   age params.a-atk params.a-dec params.a-sus state.gate-time params.a-rel adsr-cap | aenv |
+  hz params.inv-osr f* | base |
+  base params.range1 f* d1 f* | dt1 |
+  base params.range2 f* params.ratio2 f* d2 f*
+    fenv params.env-osc2 f* 0.08333333333333333 f* exp2 f* | dt2 |
+  params.osc3-mode 0.5  dt1 params.sub-oct f*  base params.range3 f* params.ratio3 f* d3 f*  fsel-lt | dt3 |
   ( cutoff in octaves: contour, keyboard from middle C, drift )
   fenv params.contour f*
   oct 8.031359713524661 f-  params.kbd f*  f+

@@ -455,7 +455,10 @@ kernel profiles, not separate code. There is optionally a fixed
 
 ## Track G — the sound
 
-**G1. Primitives.**
+**G1. Primitives.** *(2026-09-26: oversampler, Moog ladder, the
+saturating ZDF ladder and the parametric shaper are in; SEM SVF and the
+diode ladder are not. ADAA waits: 4x oversampling already holds the
+shaper's aliasing at -70 dB.)*
 
 - A block-rate 2×/4× polyphase halfband oversampler.
 - Nonlinear filters:
@@ -466,7 +469,10 @@ kernel profiles, not separate code. There is optionally a fixed
 - A shaper library (tube, transformer, tape, diode), with ADAA from
   `table:`.
 
-**G2. Analog layer.**
+**G2. Analog layer.** *(2026-09-26: `kernels/08-analog/analog.fy` —
+drift and spread — with an AGE knob on Juno and Cream Mono. Oscillators
+already free-run, so note-start phase is naturally random. Noise floor
+and the project default are open.)*
 
 - `kernels/08-analog/`:
   - drift (filtered noise on pitch and cutoff)
@@ -518,7 +524,7 @@ step says otherwise.
 | 6 ✅ | A4 + A5 + A7: math, `dsp-std`, fused ops out, `table:`. | No DSP ops left in `dsp2.zig`'s op list; no hand-rolled series in kernels. Done: native `fabs fneg fsqrt floor fmin fmax`, compares to masks + `select`, exponent-bit primitives; the fused ops are fy words, bit-exact; `math.fy` (exp2/log2/sin/cos/tan/tanh…, 1e-12..5e-11) replaced pow2/trig/drum-sine/filter series; `::` constants in dsp; `table:`. Goldens moved by ≤ −60 dBFS except Funk's bistable latch. Juno +20 ns/smp for the accurate prewarp. FM-86 `derive-data` stays for now (its builder is imperative, not a function of i). |
 | 7 | A6 + D: parsing words, manifest DSL, curves, units. | All machines ported; `ms20.fy` shorter by half. |
 | 8 🔶 | G4 MS-20 fix + knob-response probes on every synth. | Knob-response curves roughly straight on the bench. MS-20 done 2026-09-26, ahead of steps 4–7 after the first listen: an OTA + diode LPF in fy, octave modulation, live DRV (docs/14 §LPF v2). The other synths are still to do. |
-| 9 | G1 + G2: oversampler, nonlinear filters, analog layer. | Aliasing and THD numbers on the ratchet. |
+| 9 🔶 | G1 + G2: oversampler, nonlinear filters, analog layer. | Aliasing and THD numbers on the ratchet. Done: 4x halfband oversampler, Moog ladder at 4x (self-osc within ~1 cent), saturating Juno ladder, `analog.fy` drift/spread with AGE on Juno and the new Cream Mono (Prodigy/Messenger: sync, SUB/OSC 3, sync sweep), sat2 as a 4x five-mode shaper; goldens carry nonharm/THD and flag a dirtier render. Open: SEM SVF and diode ladder, ADAA (4x covers it for now), noise floor, a project-wide AGE default. |
 | 10 | G3: tape, gated verb, hall, ensemble, bus comp. | — |
 | 11 | E: sends, sidechain, racks, groups, channel strip. | The gated snare works end to end. |
 | 12 | G4 machines, F UI widgets and plots, G5 presets. | Interleaved; ongoing. |

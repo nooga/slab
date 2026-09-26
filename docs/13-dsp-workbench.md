@@ -638,8 +638,15 @@ Record and check goldens in the default (Debug) build.
 - Local golden audio in `scratch/bench-golden/` backs a
   `<case>-diff.png` (new − golden waveform and spectrogram) with
   max/rms difference in dBFS.
-- A fresh machine instance per case makes renders deterministic; all 70
+- A fresh machine instance per case makes renders deterministic; all 74
   default cases reproduce bit-exactly run to run.
+- **Ratchet.** Cases with a steady tone (held, high, sine) store their
+  non-harmonic energy and THD after the hash. When such a case changes,
+  `--check` prints old → new and flags `NONHARM WORSE` past 3 dB: a
+  change that makes a render dirtier (aliasing, noise) is visible before
+  it is re-recorded.
+- Spectra use a 4-term Blackman-Harris window (−92 dB sidelobes), so a
+  saw's strong upper harmonics don't read as aliasing.
 
 **Implementation.**
 

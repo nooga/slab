@@ -32,6 +32,7 @@ include "../lib/manifest.fy"
   "OSC 2" "FREQ" "cr-detune2" CreamParams.detune2 -7.0 7.0 0.07 curve-lin knob
   "OSC 2" "SYNC" "cr-sync2" CreamParams.sync2 0 switch
     "OFF" 0.0 opt  "ON" 1.0 opt
+  "OSC 2" "SWEEP" "cr-env-osc2" CreamParams.env-osc2 0.0 24.0 0.0 curve-pow knob
 
   "OSC 3" "MODE" "cr-osc3-mode" CreamParams.osc3-mode 0 switch
     "SUB" 0.0 opt  "OSC" 1.0 opt

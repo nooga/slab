@@ -48,6 +48,10 @@ dsp: ms20-ota-step | fs:Ms20OtaState x g k drive -- y |
 | `s.field&` | the field's address (pass it to a stateful helper) |
 | `value -> s.field` | store (f64 fields) |
 
+A field can be an inline array, `f64 taps 16`, or another ustruct,
+`Dec4 dec`; both are passed by address (`s.dec&`), and `s.dec` alone is
+an error. `S.field-size` is the whole extent.
+
 Untyped pointers still use the struct accessors `ptr Struct.field@`,
 `ptr Struct.field-p`, and the constants `Struct.size`, `Struct.field`
 (offset), `Struct.field-size`.
@@ -149,6 +153,13 @@ exactly 0.0. `src/dsp_std_test.zig` checks each against libm.
 | `tan` | 3e-11 relative |
 | `tan-warp` | 7e-9 relative, \|x\| < 1.45: the filter prewarp, half the cost of `tan` |
 | `tanh` | 2.3e-11 absolute |
+| `tanh-fast` | 1e-6 below \|x\| = 3, 1e-4 near 5: the tanh inside filter loops |
+
+Oversampling is `kernels/00-primitives/oversample.fy`: `up2`/`dec2` and
+`up4`/`dec4`, polyphase IIR halfbands (one multiply per allpass section,
+17 per sample for 4x), flat to 20 kHz with aliases at −111 dB. A voice
+renders four substeps inline and hands them to `dec4`; an effect runs
+`up4` on its input first.
 
 `tanh-rational` (`kernels/02-shapers/rational.fy`) is a soft-clip shaper
 with its own character, not an approximation of `tanh`.
