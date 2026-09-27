@@ -820,15 +820,15 @@ fn isDir(path: []const u8) bool {
 /// VC_RAM, then 128 more. (On disk each file follows a 128-byte header
 /// sector, which is why disk tools read the RAM at 0x1580.) The loop is whole segments. The file stores no sample rate:
 /// the sample's rate is -1, which makes a zone of rate 0, played at the
-/// machine's RATE.
+/// machine's RATE. Page 7's other settings (filter, envelope, vibrato) live
+/// in the voice's control file, NAME.CO, which tools/library/cmi.py reads.
 pub const VC_SIZE = 21_888;
 pub const VC_RAM = 0x1500;
 pub const VC_LOOP_START = 0x1332; // first loop segment
 pub const VC_LOOP_END = 0x1333; // last loop segment, inclusive
 pub const VC_LOOP_ON = 0x133B; // nonzero: loop
-pub const VC_FILTER = 0x141C; // the filter latch
 
-pub const VcParams = struct { loop_on: bool, loop_start: u8, loop_end: u8, filter: u8 };
+pub const VcParams = struct { loop_on: bool, loop_start: u8, loop_end: u8 };
 
 pub fn vcParams(bytes: []const u8) ?VcParams {
     if (bytes.len < VC_RAM + 16_384) return null;
@@ -836,7 +836,6 @@ pub fn vcParams(bytes: []const u8) ?VcParams {
         .loop_on = bytes[VC_LOOP_ON] != 0,
         .loop_start = bytes[VC_LOOP_START] & 0x7f,
         .loop_end = bytes[VC_LOOP_END] & 0x7f,
-        .filter = bytes[VC_FILTER],
     };
 }
 

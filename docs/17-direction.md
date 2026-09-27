@@ -582,12 +582,26 @@ first filter stage only; this runs both. Eight voices; the zone list's
 edits and chokes work as on the sampler. `.VC` files load as voice RAM:
 data at 0x1500 (checked against 843 real voices; disk tools read 0x1580
 because each file follows a 128-byte header sector on disk). The loop at
-0x1332/0x1333/0x133B checks out; the filter byte at 0x141C reads as an
-amount of filtering (latch = 255 - 2 x byte, inferred). The file has no
-rate: tools/library/cmi.py measures tonal voices and sets ROOT, and
-imports disk images, `.VC` files and WAV RAM dumps into lib:cmi with a
-catalog and a preset per voice (tools/library/README.md). Attack and
-damping in the header aren't found yet. Still open for the CMI machine:
+0x1332/0x1333/0x133B checks out (0-based segments). There is no filter
+or envelope in a `.VC`: Page 7 (filter, attack, damping, level,
+vibrato, loop, start segment) lives in the voice's control file,
+NAME.CO, 1,920 bytes of 8-byte records from 0x80 [pos, id, source,
+value be16, 0 0 0], decoded against the tour disks' Page 7 screen dumps
+(tools/library/cmi.py has the ids). Attack and damping are in ms;
+FILTER is a small number (8 the usual; our latch = 96 + 8 x FILTER is a
+guess), vibrato depth/64 semitones and speed/16 Hz likewise. Only 51 of
+the factory library's voices have one; the rest get the library's most
+common settings (ATTACK 10, DAMPING 50, FILTER 8). Instruments (`.IN`,
+2,944 bytes) hold Page 3: per register A-H a channel mask, polyphony and
+the voice slots layered on a note (0x80-0xCF), the eight voice names at
+0x200 (26-byte slots), and from 0x300 eight 240-byte key tables, 80
+entries of [register letter, octave<<10 | pitch]. Table 0 is the
+keyboard: its register letters are the splits. The default table puts
+a 128-sample cycle at A440 on key 52, so MIDI = key + 17 and a voice at
+RATE 24000 roots at 54.232; presets use that, or the measured pitch
+when a voice was sampled off the CMI's semitones. cmi.py imports disk
+images, `.VC`/`.CO`/`.IN` files and WAV RAM dumps into lib:cmi with a
+catalog and a preset per voice (tools/library/README.md). Still open for the CMI machine:
 the Series II additive page, the per-voice filter
 curve from `cmi01a.cpp`. Still open for D3: per-pad tune/decay and outputs, round-robin, the
 SSM filter channels.

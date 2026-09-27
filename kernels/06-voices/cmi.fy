@@ -16,6 +16,8 @@
               it moves in whole octaves while the pitch moves in notes.
   Envelope    an 8-bit counter up at attack, down at damping, times the
               8-bit volume.
+  Vibrato     Page 7's VIB DEPTH and SPEED, a sine on the pitch.
+  Start       Page 7's START SEG: the note starts that many segments in.
 
   MAME's stream takes the first filter stage only; the card has both, and
   this voice runs both.  Steps onto new stored samples are polyBLEPed at
@@ -34,6 +36,8 @@ ustruct: CmiState
   ( envelope )
   f64 age  f64 gate-time  f64 egate  f64 vel
   f64 fade  f64 fade-k
+  ( vibrato phase, cycles )
+  f64 vph
 ;
 
 ustruct: CmiParams
@@ -51,6 +55,9 @@ ustruct: CmiParams
   f64 damp       ( seconds, full -> 0 )
   f64 vol        ( 0..1, the volume latch )
   f64 vel-amt
+  f64 vib-depth  ( semitones, peak )
+  f64 vib-rate   ( Hz )
+  f64 start-seg  ( segment 0..127 the note starts at )
   ( shared )
   f64 inv-sr
   f64 note-seq
@@ -119,7 +126,8 @@ dsp: cmi-note-on | ctx:Ctx state:CmiState params:CmiParams |
   key params.tune f+  ed.tune& k0 f@i f+  root f- 0.08333333333333333 f* exp2 | ratio |
   srate ratio f* cmi-quantize-rate | rq n |
   rq ctx.sr f/ kr f/ 16.0 fmin -> state.inc
-  start -> state.ph
+  params.start-seg 128.0 f* slen 128.0 f- 0.0 fmax fmin floor kr f/ start f+ -> state.ph
+  0.0 -> state.vph
   0.0 -> state.held  0.0 -> state.pend  -1.0 -> state.i-prev
   ( the filter follows the octave register: [8 - n] 32 steps )
   8.0 n f- 32.0 f*  params.filter f+  ed.tone& k0 f@i 32.0 f* f+  256.0 f-  CMI-FSTEP f* exp2  6410.0 f*
@@ -191,7 +199,10 @@ dsp: k-cmi-voice | out:Io ctx state:CmiState params:CmiParams -- |
   state.f1& state.f2& x state.g1 CMI-DA tpt-svf-lp-step | a |
   state.f3& state.f4& a state.g2 CMI-DB tpt-svf-lp-step | y |
   ( advance: segment loop, else park at the end )
-  ph state.inc f+ | p2 |
+  state.vph params.vib-rate params.inv-sr f* f+ ffrac | vp |
+  vp -> state.vph
+  vp sin2pi params.vib-depth f* 0.08333333333333333 f* exp2 | vm |
+  ph state.inc vm f* f+ | p2 |
   state.loop-on 0.5 f>  p2 state.le f>=  and | wrap |
   wrap  p2 state.le state.ls f- f-  p2  select  state.end fmin -> state.ph
   ( envelope: attack while held, damping down from where it stood; a

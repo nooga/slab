@@ -48,8 +48,8 @@ Measurements are cached in `vcsl/analysis.json`.
 Unfairlight CIA preset per voice into
 `machines/unfairlight/presets/cmi-<collection>/<disk>/` (gitignored; the
 preset menu nests collection → disk → voice). It reads ImageDisk `.IMD`
-and raw 512,512-byte `.IMG` floppy images, loose `.VC` files, and 8-bit
-WAV dumps of voice RAM. Slab ships no Fairlight sounds; bring your own.
+and raw 512,512-byte `.IMG` floppy images, loose `.VC` files with their
+`.CO` control files, and 8-bit WAV dumps of voice RAM. Slab ships no Fairlight sounds; bring your own.
 
 ```sh
 tools/library/cmi.py --list DISK.IMG                  # what's on a disk
@@ -61,7 +61,7 @@ Each voice is stored once, by the hash of its RAM: a disk that repeats a
 voice another collection already brought points its preset at the first
 copy, so import the set with the most complete files (`.VC` with its
 header) first. `index.json` records every import and `CATALOG.md` lists
-the collections, disks and voices with their segments, loop, filter and
+the collections, disks and voices with their segments, loop, Page 7 and
 measured root. Files named `DELETED - …` (recovered from a disk's free
 space, often partial) are skipped unless `--deleted`.
 
@@ -72,11 +72,16 @@ What the tool takes from a voice, and how sure it is:
   match from there).
 - **Loop** start/end segment at 0x1332/0x1333, on at 0x133B (plausible on
   831 of 843 voices).
-- **Filter** byte at 0x141C: 0 on hats and rims, 100-127 on kicks, so it
-  reads as an amount of filtering; the preset's FILTER latch is
-  255 - 2 x byte. Inferred, not documented.
-- **Pitch**: the file stores no rate. Tonal voices are measured (YIN,
-  numpy) and ROOT set so they play in tune at RATE 24 kHz. The factory
-  voices come out at octave steps plus about 30 cents, periods of a
-  power of two samples.
-- Attack and damping are not read yet: presets use 2 ms and 300 ms.
+- **Page 7** (filter, attack, damping, level, vibrato, loop, start
+  segment) from the voice's control file `NAME.CO` on the same disk,
+  when there is one (51 factory voices and the tour disks' patches):
+  decoded against the Page 7 screen dumps that come with the tour disks.
+  Attack and damping are milliseconds. FILTER → the card's latch as
+  96 + 8 x FILTER, vibrato depth/64 semitones and speed/16 Hz: those
+  scalings are guesses. Voices without one get the library's usual
+  settings: ATTACK 10, DAMPING 50, FILTER 8.
+- **Pitch**: the file stores no rate. The CMI's keyboard plays every voice
+  from one key table, a 128-sample cycle at A440 on key 52 (MIDI = key +
+  17), so ROOT is 54.232 at RATE 24 kHz. Tonal voices are also measured
+  (YIN, numpy); one sampled off the CMI's semitones by more than half of
+  one gets its measured pitch instead, in the octave nearest 54.232.

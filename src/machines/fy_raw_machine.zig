@@ -4160,6 +4160,31 @@ test "unfairlight: 16 KB of voice RAM at RATE, segment loops, in tune on the car
     T.play(inst, &ev, 150, &out);
     try testing.expect(T.rms(out[512 * 100 ..]) > 0.05);
     for (out) |x| try testing.expect(std.math.isFinite(x));
+    T.play(inst, &off, 40, &tail);
+
+    // START: 96 segments in, unlooped, the note runs out after the last 32
+    applyControlValue(inst, "cmi-loop", 0);
+    applyControlValue(inst, "cmi-start", 96);
+    var at_root = [_]machine.NoteEvent{T.on(57, 1)};
+    T.play(inst, &at_root, 150, &out);
+    try testing.expect(T.rms(out[512 * 2 .. 512 * 20]) > 0.05);
+    try testing.expect(T.rms(out[512 * 40 ..]) < 1e-4);
+    var off57 = [_]machine.NoteEvent{T.off(57)};
+    T.play(inst, &off57, 40, &tail);
+
+    // VIB: a semitone of vibrato at 2 Hz sweeps the pitch around the root
+    applyControlValue(inst, "cmi-start", 0);
+    applyControlValue(inst, "cmi-loop", 1);
+    applyControlValue(inst, "cmi-vib-depth", 1);
+    applyControlValue(inst, "cmi-vib-rate", 2);
+    T.play(inst, &at_root, 150, &out);
+    // a quarter cycle in (125 ms) the pitch is near its top, at 3/4 near its bottom
+    const top = T.freq(out[512 * 10 .. 512 * 14]);
+    const bottom = T.freq(out[512 * 33 .. 512 * 37]);
+    try testing.expect(top > 220.0 * 1.03);
+    try testing.expect(bottom < 220.0 / 1.03);
+    // over whole cycles it centres on the root
+    try testing.expectApproxEqRel(@as(f64, 220), T.freq(out[0 .. 512 * 94]), 0.01);
 }
 
 test "sampler keymap: sfz velocity layers and ranges" {

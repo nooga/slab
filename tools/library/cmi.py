@@ -7,8 +7,10 @@ bytes) images of CMI 8" floppies, and loose .VC voice files, and
   1. copies every voice into the Slab sample library,
      $SLAB_LIBRARY or ~/Music/Slab/Library, as cmi/<disk>/<VOICE>.vc;
   2. writes an Unfairlight CIA preset per voice into
-     machines/unfairlight/presets/cmi-<disk>/, with the voice's own loop
-     and filter, pointing at "lib:cmi/<disk>/<VOICE>.vc".
+     machines/unfairlight/presets/cmi-<disk>/, pointing at
+     "lib:cmi/<disk>/<VOICE>.vc", with the voice's Page 7 settings when its
+     disk carries its control file (NAME.CO: filter, attack, damping,
+     level, vibrato, loop, start segment), else the voice's own loop.
 
 Usage:
   tools/library/cmi.py --collection NAME DISK.IMD [MORE ...]
@@ -28,8 +30,25 @@ The disk: 77 tracks x 2 sides x 26 sectors of 128 bytes, tracks in the
 image in cylinder-then-head order; a QDOS filesystem with its directory
 at sector 3, 160 entries of 16 bytes: name (8), type (2), first block
 (2, big-endian), attributes (2, 0 = free).  The block is the file's
-header sector; its data runs contiguously from the next one.  The loop and filter offsets come from the
-nattvard.com IIx notes; --list prints them per voice to check.
+header sector; its data runs contiguously from the next one.
+
+A .VC keeps its loop at 0x1332 (first segment, 0-based), 0x1333 (last) and
+0x133B (on).  Page 7 lives in the .CO, 1,920 bytes: from 0x80 a list of
+8-byte records [screen pos, param id, source, value (2, big-endian), 0 0
+0], ended by id 0.  Source 0xB1 is a fixed value, 0xA0-0xA7 one patched to
+a real-time controller (the value still set), 0xD0 key velocity; switches are 0xC0 on, 0xC1 off.  Ids, as the
+IIx Page 7 screen names them: 1 MAIN LEVEL, 2 FILTER, 3 DAMPING-1, 4 VIB
+DEPTH, 5 VIB SPEED, 6 MODE, 8 ATTACK (ms), 0x0F LOOP CNTRL, 0x10 LOOP START
+(1-based), 0x11 LOOP LNGTH, 0x12 START SEG (1-based); later OS versions add
+0x14-0x1B (pitch bend, aux level, damp mode, damping-2).
+
+Pitch: the CMI's keyboard plays a voice at its own key table [the .IN
+files' tables: per key an octave and a 10-bit pitch, the card's clock
+registers], equal-tempered with a 128-sample waveform cycle at A440 on key
+52, so MIDI = key + 17 and a voice at RATE 24000 has its root at 54.232.
+Presets use that root, unless the voice is tonal and its measured pitch
+sits off the CMI's semitones by more than half of one [sampled at another
+key], when they take the measured pitch in the octave nearest it.
 """
 
 import argparse
@@ -45,7 +64,7 @@ TRACKS, SIDES, SECTORS, SECTOR = 77, 2, 26, 128
 IMG_SIZE = TRACKS * SIDES * SECTORS * SECTOR  # 512,512
 VC_SIZE = 21888
 VC_RAM = 0x1500
-VC_LOOP_START, VC_LOOP_END, VC_LOOP_ON, VC_FILTER = 0x1332, 0x1333, 0x133B, 0x141C  # src/keymap.zig
+VC_LOOP_START, VC_LOOP_END, VC_LOOP_ON = 0x1332, 0x1333, 0x133B  # src/keymap.zig
 
 
 def library_root():
@@ -121,25 +140,81 @@ def directory(img):
     return out
 
 
-def voices_on(img):
+FILE_SIZES = {"VC": VC_SIZE, "CO": 1920, "IN": 2944}
+
+
+def files_on(img, kinds=("VC", "CO", "IN")):
+    """(name, type, bytes) of the disk's voices, control and instrument files."""
     for name, kind, block in directory(img):
-        if kind.upper() != "VC":
+        kind = kind.upper()
+        if kind not in kinds:
             continue
         # the block is the file's header sector; its data follows
         at = (block + 1) * SECTOR
-        vc = img[at:at + VC_SIZE]
-        if len(vc) == VC_SIZE:
-            yield name, vc
+        data = img[at:at + FILE_SIZES[kind]]
+        if len(data) == FILE_SIZES[kind]:
+            yield name, kind, data
+
+
+def voices_on(img):
+    for name, _kind, vc in files_on(img, ("VC",)):
+        yield name, vc
 
 
 # ── voices ───────────────────────────────────────────────────────────────
 
 RATE = 24000  # the Unfairlight's RATE the presets use; roots are measured at it
+CMI_ROOT = 54.232  # MIDI note a voice plays at RATE on the CMI's own key table
+
+
+def cmi_root(v):
+    """ROOT for a voice index entry: the CMI's tuning, or the measured pitch
+    near it when the voice was sampled off the CMI's semitones."""
+    if not v.get("tonal"):
+        return CMI_ROOT
+    m = v["root"]
+    m += 12 * round((CMI_ROOT - m) / 12)
+    return CMI_ROOT if abs(m - CMI_ROOT) <= 0.5 else round(m, 2)
 
 
 def vc_params(vc):
     return {"loop_on": vc[VC_LOOP_ON] != 0, "loop_start": vc[VC_LOOP_START] & 0x7F,
-            "loop_end": vc[VC_LOOP_END] & 0x7F, "filter": vc[VC_FILTER]}
+            "loop_end": vc[VC_LOOP_END] & 0x7F}
+
+
+CO_SIZE = 1920
+CO_FIELDS = {1: "level", 2: "filter", 3: "damping", 4: "vib_depth", 5: "vib_speed", 6: "mode",
+             8: "attack", 0x0F: "loop", 0x10: "loop_start", 0x11: "loop_len", 0x12: "start_seg"}
+
+
+def co_params(co):
+    """Page 7 from a .CO control file as {field: value}, None if it isn't one.
+    Switches read True/False; a level or attack under key velocity reads
+    "keyvel"; one patched to a real-time controller reads its set value."""
+    if len(co) < CO_SIZE:
+        return None
+    out, o = {}, 0x80
+    while o + 5 <= len(co) and co[o + 1] != 0:
+        pid, src, val = co[o + 1], co[o + 2], (co[o + 3] << 8) | co[o + 4]
+        name = CO_FIELDS.get(pid)
+        if name:
+            if src in (0xC0, 0xC1):
+                out[name] = src == 0xC0
+            elif src == 0xD0:
+                out[name] = "keyvel"
+            else:
+                out[name] = val
+                if src & 0xF0 in (0x90, 0xA0):
+                    out.setdefault("patched", []).append(name)
+        o += 8
+        if o > 0x80 + 8 * 40:
+            return None
+    if out.get("mode") not in (1, 4):  # the first record is always MODE: else not a .CO
+        return None
+    for k in ("filter", "damping", "attack", "loop_start", "loop_len", "start_seg"):
+        if isinstance(out.get(k), int) and out[k] > 65535 // 2:
+            return None
+    return out
 
 
 def ram_of(vc):
@@ -237,25 +312,72 @@ def disk_slug(name):
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "disk"
 
 
-def preset(vc, lib_path, note, root):
-    p = vc_params(vc)
-    loop = p["loop_on"] and p["loop_end"] >= p["loop_start"]
-    # the file's filter byte reads as an amount of filtering: 0 on hats and
-    # rims, 100-127 on kicks; the card's latch runs the other way
-    latch = max(0, min(255, 255 - 2 * p["filter"]))
+def filter_latch(f):
+    """Page 7 FILTER (0 dark .. ~25 open; 8 the usual) → the card's latch.
+    The mapping is ours: the IIx software's scaling isn't documented, so
+    FILTER 8 lands on the latch the hand-made presets use."""
+    return max(0, min(255, 96 + 8 * f))
+
+
+def page7(vc, co):
+    """The Unfairlight params a voice's Page 7 sets: its .CO's when there is
+    one, else the IIx defaults (ATTACK 10, DAMPING 50, FILTER 8) and the
+    voice's own loop."""
+    v = vc_params(vc)
+    loop, ls, le = v["loop_on"] and v["loop_end"] >= v["loop_start"], v["loop_start"], v["loop_end"]
+    co = co or {}
+    num = lambda k, d: co[k] if isinstance(co.get(k), int) and not isinstance(co.get(k), bool) else d
+    if "loop" in co:
+        loop = bool(co["loop"])
+        # points patched to a real-time controller were being played live:
+        # the voice's saved loop is the better guess
+        if not {"loop_start", "loop_len"} & set(co.get("patched", ())):
+            ls = max(0, min(127, num("loop_start", 1) - 1))
+            le = max(ls, min(127, ls + max(1, num("loop_len", 128)) - 1))
+    level = co.get("level", 255)
+    return {"cmi-loop": 1 if loop else 0,
+            "cmi-loop-start": ls if loop else 0,
+            "cmi-loop-end": le if loop else 127,
+            "cmi-start": max(0, min(127, num("start_seg", 1) - 1)),
+            "cmi-filter": filter_latch(num("filter", 8)),
+            "cmi-atk": min(16.0, num("attack", 10) / 1000),
+            "cmi-damp": max(0.005, min(60.0, num("damping", 50) / 1000)),
+            "cmi-vib-depth": round(num("vib_depth", 0) / 64, 4),
+            "cmi-vib-rate": round(num("vib_speed", 88) / 16, 3),
+            "cmi-vel": 1 if level == "keyvel" else 0,
+            "cmi-vol": round(0.6 * (level / 255 if isinstance(level, int) else 1.0), 4)}
+
+
+def preset(vc, lib_path, note, root, co=None):
+    params = {"cmi-rate": RATE, "cmi-root": round(root, 3), "cmi-tune": 0}
+    params.update(page7(vc, co))
     return {"schema": 1, "machine": "unfairlight", "note": note,
-            "params": {"cmi-rate": RATE, "cmi-root": round(root, 2), "cmi-tune": 0,
-                       "cmi-loop": 1 if loop else 0,
-                       "cmi-loop-start": p["loop_start"] if loop else 0,
-                       "cmi-loop-end": p["loop_end"] if loop else 127,
-                       "cmi-filter": latch,
-                       "cmi-atk": 0.002, "cmi-damp": 0.3, "cmi-vel": 0, "cmi-vol": 0.6},
-            "assets": {"voice": lib_path}}
+            "params": params, "assets": {"voice": lib_path}}
+
+
+class Disk:
+    """One disk image or folder: its voices [(name, .VC bytes)], control
+    files {NAME: .CO bytes} and instruments [(name, .IN bytes)]."""
+
+    def __init__(self, name):
+        self.name, self.voices, self.controls, self.instruments = name, [], {}, []
+
+    def add(self, name, kind, data):
+        if kind == "VC":
+            self.voices.append((name, data))
+        elif kind == "CO":
+            self.controls[name.upper()] = data
+        elif kind == "IN":
+            self.instruments.append((name, data))
+
+    def control(self, voice):
+        co = self.controls.get(voice.upper())
+        return co_params(co) if co else None
 
 
 def sources(paths, deleted=False):
-    """(disk name, [(voice name, .VC bytes)]): one per disk image, one per
-    folder of loose .VC files or 8-bit WAV voice dumps."""
+    """A Disk per disk image, and per folder of loose .VC / .CO / .IN files
+    or 8-bit WAV voice dumps."""
     for path in paths:
         if not os.path.exists(path):
             print(f"  {path}: no such file or folder", file=sys.stderr)
@@ -263,33 +385,39 @@ def sources(paths, deleted=False):
         if os.path.isdir(path):
             for dirpath, dirs, files in os.walk(path):
                 dirs.sort()
-                loose = []
+                disk = Disk(disk_slug(os.path.basename(dirpath)))
                 for f in sorted(files):
                     full = os.path.join(dirpath, f)
                     low = f.lower()
                     if low.startswith("deleted") and not deleted:
                         continue
+                    stem, ext = os.path.splitext(f)
                     if low.endswith((".imd", ".img")):
                         yield from sources([full])
-                    elif low.endswith(".vc"):
+                    elif ext.lower() in (".vc", ".co", ".in"):
                         with open(full, "rb") as fh:
-                            loose.append((os.path.splitext(f)[0], fh.read()))
+                            disk.add(stem, ext[1:].upper(), fh.read())
                     elif low.endswith(".wav") and not low.endswith(".vc.wav"):
                         ram = wav_ram(full)
                         if ram is not None:
-                            loose.append((os.path.splitext(f)[0], vc_from_ram(ram)))
-                if loose:
-                    yield disk_slug(os.path.basename(dirpath)), loose
+                            disk.add(stem, "VC", vc_from_ram(ram))
+                if disk.voices:
+                    yield disk
         elif path.lower().endswith(".vc"):
+            disk = Disk("loose")
             with open(path, "rb") as fh:
-                yield "loose", [(os.path.splitext(os.path.basename(path))[0], fh.read())]
+                disk.add(os.path.splitext(os.path.basename(path))[0], "VC", fh.read())
+            yield disk
         else:
             try:
                 img = read_image(path)
             except (ValueError, OSError) as e:
                 print(f"  skipping {path}: {e}", file=sys.stderr)
                 continue
-            yield disk_slug(os.path.splitext(os.path.basename(path))[0]), list(voices_on(img))
+            disk = Disk(disk_slug(os.path.splitext(os.path.basename(path))[0]))
+            for name, kind, data in files_on(img):
+                disk.add(name, kind, data)
+            yield disk
 
 
 # ── the library index and catalog ───────────────────────────────────────
@@ -322,13 +450,17 @@ def write_catalog(root, index):
         for (cc, disk), vs in sorted(by.items()):
             if cc != c:
                 continue
-            lines += [f"### {disk}", "", "| voice | segs | loop | filter | root | also on |", "|---|---|---|---|---|---|"]
+            lines += [f"### {disk}", "", "| voice | segs | loop | page 7 | root | also on |", "|---|---|---|---|---|---|"]
             for name, h, v in sorted(vs):
                 others = [f"{r['collection']}/{r['disk']}/{r['name']}" for r in v["refs"]
                           if (r["collection"], r["disk"], r["name"]) != (c, disk, name)]
                 loop = f"{v['loop'][0]}-{v['loop'][1]}" if v["loop"] else "-"
                 root_s = f"{v['root']:.1f}" if v.get("tonal") else "-"
-                lines.append(f"| {name} | {v['segments']} | {loop} | {v['filter']} | {root_s} | {', '.join(others[:3])} |")
+                ref = next(r for r in v["refs"] if (r["collection"], r["disk"], r["name"]) == (c, disk, name))
+                co = ref.get("co")
+                p7 = (f"atk {co.get('attack')} dmp {co.get('damping')} flt {co.get('filter')}"
+                      + (f" vib {co['vib_depth']}/{co.get('vib_speed')}" if co.get("vib_depth") else "")) if co else "-"
+                lines.append(f"| {name} | {v['segments']} | {loop} | {p7} | {root_s} | {', '.join(others[:3])} |")
             lines.append("")
     with open(os.path.join(root, "CATALOG.md"), "w") as f:
         f.write("\n".join(lines) + "\n")
@@ -336,10 +468,13 @@ def write_catalog(root, index):
 
 def import_collection(root, index, collection, paths, title, note, deleted, presets):
     import hashlib
-    index["collections"][collection] = {"title": title or collection, "note": note or ""}
+    old = index["collections"].get(collection, {})
+    index["collections"][collection] = {"title": title or old.get("title") or collection,
+                                        "note": note or old.get("note", "")}
     count = new = 0
-    for disk, voices in sources(paths, deleted):
-        for name, vc in voices:
+    for d in sources(paths, deleted):
+        disk = d.name
+        for name, vc in d.voices:
             if len(vc) < VC_RAM + 16384:
                 continue
             h = hashlib.sha1(ram_of(vc)).hexdigest()[:16]
@@ -354,22 +489,25 @@ def import_collection(root, index, collection, paths, title, note, deleted, pres
                 pr = pitch(vc)
                 p = vc_params(vc)
                 v = index["voices"][h] = {
-                    "path": rel, "segments": used_segments(vc), "filter": p["filter"],
+                    "path": rel, "segments": used_segments(vc),
                     "loop": [p["loop_start"], p["loop_end"]] if p["loop_on"] else None,
                     "root": pr[0] if pr else 57.0, "tonal": pr is not None, "refs": []}
                 new += 1
+            co = d.control(name)
             ref = {"collection": collection, "disk": disk, "name": name}
-            if ref not in v["refs"]:
-                v["refs"].append(ref)
+            v["refs"] = [r for r in v["refs"] if (r["collection"], r["disk"], r["name"]) != (collection, disk, name)]
+            if co:
+                ref["co"] = co
+            v["refs"].append(ref)
             if presets:
                 with open(os.path.join(root, v["path"]), "rb") as fh:
                     stored = fh.read()
-                root_note = min(96.0, max(24.0, v["root"]))
+                root_note = cmi_root(v)
                 pdir = os.path.join(PRESETS, f"cmi-{collection}", disk)
                 os.makedirs(pdir, exist_ok=True)
                 with open(os.path.join(pdir, safe(name).lower() + ".preset"), "w") as fh:
                     fh.write(json.dumps(preset(stored, f"lib:cmi/{v['path']}",
-                                               f"CMI {collection} / {disk} / {name}", root_note)) + "\n")
+                                               f"CMI {collection} / {disk} / {name}", root_note, co)) + "\n")
             count += 1
     return count, new
 
@@ -388,14 +526,16 @@ def main():
 
     root = os.path.join(library_root(), "cmi")
     if args.list:
-        for disk, voices in sources(args.paths, args.deleted):
-            print(f"{disk}: {len(voices)} voices")
-            for name, vc in voices:
+        for d in sources(args.paths, args.deleted):
+            print(f"{d.name}: {len(d.voices)} voices, {len(d.controls)} control files, {len(d.instruments)} instruments")
+            for name, vc in d.voices:
                 p = vc_params(vc)
                 pr = pitch(vc)
+                co = d.control(name)
                 print(f"  {name:8s}  {used_segments(vc):3d} segments  loop {'on ' if p['loop_on'] else 'off'} "
-                      f"{p['loop_start']:3d}-{p['loop_end']:3d}  filter {p['filter']:3d}"
-                      + (f"  root {pr[0]:5.1f}" if pr else ""))
+                      f"{p['loop_start']:3d}-{p['loop_end']:3d}"
+                      + (f"  root {pr[0]:5.1f}" if pr else "")
+                      + (f"  page 7 {co}" if co else ""))
         return
     os.makedirs(root, exist_ok=True)
     index = load_index(root)
