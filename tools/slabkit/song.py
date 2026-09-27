@@ -133,6 +133,38 @@ class Clip:
             t += length
         return self
 
+    def seq(self, text, at=0.0, step=0.25, bars=None, vel=96, accent=124, gate=0.5):
+        """A step sequencer line, one token per step, repeated to fill the
+        clip (or `bars`): "F2 . F3! Ab2~ Gb2 - . C3". Tokens: a pitch
+        plays a note; `.` rest; `-` extends the previous note a step;
+        suffix `!` accents, `~` slides into the next note (overlaps it,
+        so mono synths glide instead of retriggering). '|' is ignored.
+        The 303 idiom: accents and slides make the line, not the notes."""
+        toks = text.replace("|", " ").split()
+        plen = len(toks) * step
+        span = (bars * self.bar) if bars else self.length - at
+        reps = max(1, int(round(span / plen)))
+        parsed = []  # (step_index, pitch, steps_long, accent, slide)
+        for i, tok in enumerate(toks):
+            if tok == ".":
+                continue
+            if tok == "-":
+                if parsed and parsed[-1][0] + parsed[-1][2] == i:
+                    j, p, n, a, sl = parsed[-1]
+                    parsed[-1] = (j, p, n + 1, a, sl)
+                continue
+            m = re.fullmatch(r"([A-Ga-g][#b]?-?\d+)([!~]*)", tok)
+            if not m:
+                raise SlabError(f"bad seq token {tok!r} (want e.g. F2, C3!, Ab2~, ., -)")
+            parsed.append((i, note(m.group(1)), 1, "!" in m.group(2), "~" in m.group(2)))
+        for r in range(reps):
+            for i, p, n, a, sl in parsed:
+                t = at + r * plen + i * step
+                if t < at + span - 1e-9:
+                    ln = n * step + (step * 0.1 if sl else -(1 - gate) * step)
+                    self.note(p, t, ln, accent if a else vel)
+        return self
+
     def drums(self, lanes, at=0.0, step=0.25, bars=None, length=0.1, vel=None):
         """Drum lanes as step strings, repeated to fill the clip (or
         `bars`): {"kick": "x...x...", "snare": "....x...", "ch": "x.x.x.x."}.

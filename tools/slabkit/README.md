@@ -45,6 +45,7 @@ song.render(stems=True)        # bounce + mix report
 | `chord(pitches, at, len, vel, strum)` | notes together |
 | `melody("E5:1.5 D5:.5 r:1 C5:1@110 A4~")` | pitch:beats, `r` rest, `@vel`, `~` tie/slide; length carries over |
 | `drums({lane: steps}, at, bars, step)` | lanes kick/snare/clap/ch/oh/tom or aliases; X x o . - |
+| `seq("F2 . F3! Ab2~ Gb2 - .", step, bars, vel, accent, gate)` | step sequencer: one token per step, `!` accent, `~` slide, `-` tie |
 | `chords(prog, rhythm, near, voices, spread, vel, gate, strum)` | voice-led; prog is roman or symbols, `:beats` per chord |
 | `bass(prog, pattern, octave)` | x/X root, o/O octave, 3 5 7 chord tones, b approach, - tie |
 | `arp(prog, "up"/"down"/"updown"/"random"/[indices], rate, octave)` | arpeggio per chord |

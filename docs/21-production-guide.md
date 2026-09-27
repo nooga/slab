@@ -277,6 +277,25 @@ stem report.
   added once on the master than on every track.
 - **Carve**: if two parts share a range, cut one where the other lives.
 
+### Low end you can feel
+
+Weight comes from **50–120 Hz**, not from the lowest octave. Ears are
+insensitive below about 50 Hz, and laptops, earbuds and many monitors
+barely play it. A mix whose low end sits at 40–45 Hz measures heavy and
+sounds thin.
+- Tune kicks to about 50–60 Hz (`kick-tune`) with enough sweep and drive
+  that the body and harmonics reach 80–120 Hz. A 90 Hz low shelf helps.
+- Keep the bass line out of the kick's fundamental. Put it an octave
+  above, or put its notes between the kicks (rolling bass).
+- Bass needs harmonics to be heard on small speakers: some filter
+  opening, saturation (`sat2` XFMR or TAPE), and movement (chord roots,
+  octave and fifth jumps) so it reads as a line, not a hum.
+- Heavy resonance and fuzz on acid lines and stabs pull the whole mix
+  up into the mids. When a mix "sits high", tame those before touching
+  the EQ.
+
+The report flags sub energy that dwarfs the 60–250 Hz band.
+
 ### Compression (`comp2`)
 
 | Param | What it does | Typical |

@@ -167,7 +167,11 @@ def advice(s):
     if s["crest_db"] < 8:
         out.append(f"crest factor {s['crest_db']:.1f} dB: dense/over-compressed; transients are flattened")
     b = s["bands"]
-    if b["sub"] + b["low"] > 0.72:
+    if b["sub"] > 0.4 and b["sub"] > 1.8 * b["low"]:
+        out.append(f"sub (<60 Hz) is {100 * b['sub']:.0f}% but low (60-250 Hz) only {100 * b['low']:.0f}%: "
+                   "the energy sits below what most speakers play and ears weigh; it measures heavy and "
+                   "sounds thin. Tune the kick to 50-60 Hz with body up to 120 Hz; keep bass lines above the kick")
+    elif b["sub"] + b["low"] > 0.72:
         out.append(f"low end is {100 * (b['sub'] + b['low']):.0f}% of the energy: bass/kick too loud or pads not high-passed")
     if b["sub"] + b["low"] < 0.35:
         out.append(f"low end only {100 * (b['sub'] + b['low']):.0f}% of the energy: thin — more bass/kick or less top")
