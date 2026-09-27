@@ -495,15 +495,52 @@ and the project default are open.)*
 
 **G4. Machines.**
 
-| Target | Machine |
-|---|---|
-| Gap Band bass, creamy Moog | new Mini-style mono: 3 VCOs, overdriven mixer, nonlinear ladder at 4×, legato glide |
-| Juno/Alpha, cinematic pads | juno2 upgrade (OTA filter, drift, 16 voices, unison/stereo spread) + 2-VCO poly (Jupiter/OB) |
-| Wavetable | PPG-style: mipmapped tables from `table:`, stepped/smooth morph, analog filter |
-| Rhodes | more tine modes, tine/tonebar beating, velocity-dependent strike position, suitcase tremolo/pan |
-| FGTH/JHJ drums | sampler era modes (Fairlight, Emulator II, SP-1200, LinnDrum: fixed-rate playback, bit depth, post filter) + kit mapping |
-| 808/909 | drum2: oversampled drive, transient shaping |
-| MS-20 | scaling fix: exponential modulation, ENV as an amount in octaves, full cutoff range, live DRV, resonance re-curved |
+What we have (2026-09-27):
+- two aggressive monos (MS-20, Cream);
+- a one-oscillator poly (Juno);
+- FM (FM-86);
+- an electric piano (Rhodes);
+- a sampler, and a primitive drum kit (DS-404).
+
+The gaps are big stacked polys, digital instruments with character
+(wavetables, 8-bit sampling), and real drum machines.
+
+The test for a new machine: its sound comes from one idea you can see
+and edit in fy while it plays. The supersaw's detune curve, the
+Prophet's poly-mod routing, a CMI voice's sample clock, a wavetable's
+frame stepping, the 808's bridged-T resonator. Each machine is judged
+against a named reference, as the MS-20 was against its June probe
+(docs/14).
+
+Synths, in build order:
+
+| # | Machine | What makes it that instrument | Reference to measure against |
+|---|---|---|---|
+| 1 | **Supersaw VA** (JP-8000 style) | 7 detuned saws with the JP's nonlinear DETUNE and MIX curves and a highpass tracking the note; free-running phases; feedback osc, cross-mod, ring; JP ladder (the existing ZDF ladder); 2 ADSR; unison, stereo spread | Adam Szabo's JP-8000 supersaw analysis (measured detune and mix curves); spectra of the published measurements |
+| 2 | **2-VCO analog poly** (Prophet-5 / OB-Xa, one machine, filter switch) | poly-mod (filter env and osc B → osc A pitch, PW, cutoff), osc sync, unison for leads; Curtis-style 4-pole (existing ladder) or SEM 12 dB SVF (open item from step 9) | Prophet-5 and OB-Xa owner's-manual ranges; SEM SVF behaviour from circuit analyses |
+| 3 | **Fairlight CMI** (Series II / IIx) | 8-bit voices; pitch by changing each voice's sample clock, not by interpolation (the grain and aliasing are the sound); per-voice analog filter; Series II additive pages (draw 32 harmonics per segment) | user-supplied `.VC` voice files (8-bit PCM in segments; CMIOS9 exports them to WAV for cross-checks), later QDOS disk images; MAME's CMI driver for the hardware. We ship the loader, never Fairlight sounds. The `.VC` header layout still needs a spec or a real file to work from. |
+| 4 | **Wavetable** (PPG Wave style) | 64-frame tables stepped (PPG) or morphed; 8-bit mode; analog filter after; tables mipmapped from `table:` | our own tables, plus loadable WAV wavetables at 2048 samples per frame (the Serum/Vital format, plenty of free sets). No PPG ROM tables. |
+| 5 | **Alpha Juno** (a sibling of the Juno) | the Alpha's DCO variants (PWM saw, the Hoover), sub-oscillator modes, the four-segment T1–T4/L1–L3 envelope; shares the Juno filter, and chorus2 | Alpha Juno manual ranges; the Hoover patch as the target sound |
+
+Drums: DS-404 is one kit of single voices with no circuit models,
+un-oversampled aliasing hats and no sample playback. It gets replaced
+by three machines:
+
+| # | Machine | What makes it that instrument | Reference |
+|---|---|---|---|
+| D1 | **808** | circuit models, 4× where it matters: the bass drum as a pinged bridged-T resonator with the accent-dependent pitch dip and decay; toms and congas as bridged-Ts; the snare as two bridged-Ts plus filtered noise with SNAPPY; the cymbal/hat metal as six Schmitt squares through the two bandpasses and shaped VCAs; the clap's saw-retriggered noise; cowbell; ACCENT | the DAFx circuit papers on the TR-808 bass drum and cymbal (Werner, Abel, Smith); the service notes' schematic values |
+| D2 | **909 (analog half)** | kick as a swept triangle VCO waveshaped toward a sine, plus the noise click; the analog snare, toms, clap; ACCENT. The 909's hats and cymbals are 6-bit samples, so they go through D3 with user-supplied samples | TR-909 service-notes circuits; recordings for spectra |
+| D3 | **Sample-era drum machine** (LinnDrum, DMX, SP-1200, Emulator II) | one playback engine shared with the CMI: fixed-rate or clock-varied playback, bit depth, companding (DMX-style), the era's post filters (the SP-1200's SSM filter channels), per-pad tune/decay, choke groups, velocity layers; kits are folders of WAVs the user brings | published sample rates and bit depths per machine; recordings through each for the filters |
+
+The 808 and 909 get per-pad outputs and choke groups; the gated snare
+and sidechain need Track E.
+
+Existing machines, still open:
+- Rhodes: more tine modes, tine/tonebar beating, velocity-dependent
+  strike position, suitcase tremolo/pan.
+- Juno: 16 voices, unison/stereo spread, AGE's per-voice envelope-time
+  spread (lost in the RC move).
+- MS-20: master tune ±100 cents.
 
 **G5. Presets.** 10–20 per machine, made against references with
 hot-reload, alongside the DSP work.
@@ -527,7 +564,7 @@ step says otherwise.
 | 9 🔶 | G1 + G2: oversampler, nonlinear filters, analog layer. | Aliasing and THD numbers on the ratchet. Done: 4x halfband oversampler, Moog ladder at 4x (self-osc within ~1 cent), saturating Juno ladder, `analog.fy` drift/spread with AGE on Juno and the new Cream Mono (Prodigy/Messenger: sync, SUB/OSC 3, sync sweep), sat2 as a 4x five-mode shaper; goldens carry nonharm/THD and flag a dirtier render. Gain staging: Cream's ladder runs its core quiet (drive-g/8) with makeup, so resonance survives real oscillator levels. The MS-20 went back to the June probe's driven SVF (f-hot/g-wet as a MODE switch), with a clean mixer, RC envelopes, free-running VCOs and a resonant HPF (docs/14 v3). Checked against the originals: Cream gained the Prodigy/Messenger LFO (TRI/SQR/SAW/S&H to pitch and cutoff), Messenger pole-mix filter modes (LP24/LP12/BP12/HP24) and its BASS COMP switch, RC contours and 10 s times. The Juno moved its ENV/LFO/KYBD cutoff modulation from Hz to octaves, got an RC envelope with the real 12 s decay and release, the 60's LFO DELAY, PWM from ENV, and the 106's four-step HPF (bass boost, flat, 225 Hz, 720 Hz); presets were converted and level-matched. Cream's ladder input also gets 1 + k/2 of bass compensation (fundamental −3 dB at half emphasis instead of −9). Open: SEM SVF and diode ladder, ADAA (4x covers it for now), noise floor, a project-wide AGE default. |
 | 10 | G3: tape, gated verb, hall, ensemble, bus comp. | — |
 | 11 | E: sends, sidechain, racks, groups, channel strip. | The gated snare works end to end. |
-| 12 | G4 machines, F UI widgets and plots, G5 presets. | Interleaved; ongoing. |
+| 12 | G4 machines, F UI widgets and plots, G5 presets. | Interleaved; ongoing. Machine order: supersaw VA, 2-VCO poly (with the SEM SVF), 808, CMI with the sample-era drum machine (one playback engine), 909, wavetable, Alpha Juno. Each is done when it matches its reference on the bench. |
 | 13 | A9: NEON 2-lane voices. | Juno and FM-86 ns/smp roughly halved on the bench cost table at unchanged goldens (within 1e-12). |
 
 ## Bets and risks
