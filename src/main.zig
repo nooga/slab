@@ -1462,6 +1462,9 @@ pub const Fy = struct {
         try code.append(Asm.@"stp x21, x22, [sp, #0x10]!");
         try code.append(Asm.@".rpush Xn"(23));
         try code.append(Asm.@".rpush Xn"(24));
+        // Raw bodies allocate scratch from x19/x20/x25..x28 (callee-saved in
+        // AAPCS64); preserve them for the caller.
+        inline for (Dsp2.RAW_CALLEE_SAVED_X) |r| try code.append(Asm.@".rpush Xn"(r));
         try code.append(Asm.sub_sp_imm(80));
         inline for (0..8) |i| {
             try code.append(Asm.str_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
@@ -1510,6 +1513,8 @@ pub const Fy = struct {
             try code.append(Asm.ldr_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
         }
         try code.append(Asm.add_sp_imm(80));
+        comptime var k = Dsp2.RAW_CALLEE_SAVED_X.len;
+        inline while (k > 0) : (k -= 1) try code.append(Asm.@".rpop Xn"(Dsp2.RAW_CALLEE_SAVED_X[k - 1]));
         try code.append(Asm.@".rpop Xn"(24));
         try code.append(Asm.@".rpop Xn"(23));
         try code.append(Asm.@"ldp x21, x22, [sp], #0x10");
@@ -1938,6 +1943,9 @@ pub const Fy = struct {
             try code.append(Asm.str_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
         }
         try code.append(Asm.@".rpush Xn"(23));
+        // The body allocates scratch from x19/x20/x25..x28 (callee-saved in
+        // AAPCS64); preserve them for the caller.
+        inline for (Dsp2.RAW_CALLEE_SAVED_X) |r| try code.append(Asm.@".rpush Xn"(r));
 
         // x16 (IP0), never x18 — see compileDsp2CompositionCaller.
         const slots_addr = @intFromPtr(slots);
@@ -1963,6 +1971,8 @@ pub const Fy = struct {
         const bne_pos = code.items.len;
         try code.append(Asm.@"b.cond offset"(Asm.COND_NE, @intCast(@as(isize, @intCast(loop_pos)) - @as(isize, @intCast(bne_pos)))));
 
+        comptime var k = Dsp2.RAW_CALLEE_SAVED_X.len;
+        inline while (k > 0) : (k -= 1) try code.append(Asm.@".rpop Xn"(Dsp2.RAW_CALLEE_SAVED_X[k - 1]));
         try code.append(Asm.@".rpop Xn"(23));
         inline for (0..8) |i| {
             try code.append(Asm.ldr_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));

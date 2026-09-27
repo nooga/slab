@@ -98,6 +98,10 @@ const X_REGS = [_]u5{ 9, 10, 11, 12, 13, 14, 15, 16, 17 };
 // x24 is reserved: composition wrappers stash a 4th pointer arg there
 // across stage calls (x21..x23 hold args 0..2).
 const RAW_X_SCRATCH_REGS = [_]u5{ 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20, 25, 26, 27, 28 };
+/// The callee-saved (AAPCS64) registers in RAW_X_SCRATCH_REGS: every raw
+/// wrapper saves and restores these, or a raw body leaks its scratch values
+/// into the caller's callee-saved registers.
+pub const RAW_CALLEE_SAVED_X = [_]u5{ 19, 20, 25, 26, 27, 28 };
 pub const RAW_X_ARG_REGS = [_]u5{ 0, 1, 2, 3, 4, 5, 6, 7 };
 pub const RAW_D_ARG_REGS = [_]u5{ 8, 9, 10, 11, 12, 13, 14, 15 };
 
