@@ -43,7 +43,7 @@ const Dirent = extern struct {
 // to live in bank subdirectories (presets/<bank>/<name>) so the picker groups
 // them into submenus instead of one flat list — see machine_bay presetTopItems.
 pub const MAX_PRESETS = 256;
-pub const MAX_NAME = 31;
+pub const MAX_NAME = 63;
 pub const MAX_FILE = 8192;
 
 pub const Name = struct {
