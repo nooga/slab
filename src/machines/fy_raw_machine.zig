@@ -2463,6 +2463,51 @@ test "FM-86 is polyphonic — a chord sounds all three notes" {
     }
 }
 
+test "DS-404 stays finite and bounded under live-style blocks" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/drum2/drum2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    // Night Drive's kit settings.
+    inline for (.{ .{ "kick-tune", 52 }, .{ "kick-sweep", 8 }, .{ "kick-decay", 0.42 }, .{ "kick-drive", 2.4 }, .{ "kick-level", 0.8 }, .{ "snare-tune", 190 }, .{ "snare-decay", 0.22 }, .{ "snare-snap", 0.85 }, .{ "snare-tone", 2200 }, .{ "clap-decay", 0.35 }, .{ "hat-level", 1.0 }, .{ "hat-tone", 1.25 }, .{ "hat-chdec", 0.05 }, .{ "hat-ohdec", 0.35 }, .{ "tom-tune", 120 }, .{ "tom-decay", 0.35 }, .{ "master-drive", 1.3 } }) |kv| {
+        mach.set_param.?(mach.state, kv[0], kv[1]);
+    }
+    const sizes = [_]usize{ 512, 471, 64, 256, 1, 333, 128, 512 };
+    const pitches = [_]f32{ 36, 38, 39, 42, 45, 46, 60, 64, 0, 127 };
+    var l = [_]f32{0} ** 512;
+    var r = [_]f32{0} ** 512;
+    for ([_]f64{ 44_100, 48_000 }) |sr| {
+        var ctx = std.mem.zeroes(machine.MachineCtx);
+        ctx.sample_rate = sr;
+        var peak: f32 = 0;
+        var blk: usize = 0;
+        while (blk < 600) : (blk += 1) {
+            const n = sizes[blk % sizes.len];
+            ctx.block_size = @intCast(n);
+            var evs: [2]machine.NoteEvent = undefined;
+            var ne: usize = 0;
+            if (blk % 3 == 0) {
+                evs[ne] = .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = @intCast(blk), .pitch = pitches[(blk / 3) % pitches.len], .velocity = 0.9 };
+                ne += 1;
+            }
+            if (blk % 3 == 1) {
+                evs[ne] = .{ .sample_offset = 0, .kind = .note_off, .channel = 0, .note_id = @intCast(blk - 1), .pitch = pitches[(blk / 3) % pitches.len], .velocity = 0 };
+                ne += 1;
+            }
+            ctx.note_in = if (ne > 0) @ptrCast(evs[0..].ptr) else null;
+            ctx.note_in_count = @intCast(ne);
+            testRender(mach, &ctx, l[0..n], r[0..n]);
+            for (l[0..n], r[0..n]) |a, b| {
+                if (!std.math.isFinite(a) or !std.math.isFinite(b) or @abs(a) > 4 or @abs(b) > 4) {
+                    std.debug.print("sr {d} block {d} (n {d}): {d} {d}\n", .{ sr, blk, n, a, b });
+                    return error.TestUnexpectedResult;
+                }
+                peak = @max(peak, @abs(a));
+            }
+        }
+        try testing.expect(peak > 0.01);
+    }
+}
+
 test "FM-86 survives many small live-style blocks with note churn" {
     const inst = try FyRawMachine.create(testing.allocator, "machines/fm86/fm86.fy");
     const mach = inst.machineInterface();
