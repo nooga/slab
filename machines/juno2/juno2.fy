@@ -13,7 +13,7 @@ include "../../kernels/06-voices/juno.fy"
 include "../lib/manifest.fy"
 
 : manifest
-  "Jello-6 Poly" voice-sample machine*
+  "Ju-Know" voice-sample machine*
   "k-juno-voice"       render!
   "juno-note-on"       note-on!
   "juno-note-off"      note-off!

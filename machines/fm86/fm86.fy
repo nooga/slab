@@ -1,4 +1,4 @@
-( fm86.fy — FM-86, a DX7-architecture 6-operator FM voice.
+( fm86.fy — FM-7.11 [codename FM-86], a DX7-architecture 6-operator FM voice.
 
   The DSP is the validated rig stack: each operator is a phase-mod sine with
   two-sample feedback (fm_operator.fy), each has a 4-rate/4-level dB-domain
@@ -16,7 +16,7 @@ include "../lib/manifest.fy"
 include "fm86_algo.fy"
 
 : manifest
-  "FM-86" voice-sample machine*
+  "FM-7.11" voice-sample machine*
   "k-fm86-voice-sample" render!
   "fm86-prepare"        prepare!
   "fm86-note-on"        note-on!

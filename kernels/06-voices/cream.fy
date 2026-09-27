@@ -1,4 +1,4 @@
-( cream.fy - Cream Mono: a Prodigy / Messenger style mono voice.
+( cream.fy - Mog Passenger: a Prodigy / Messenger style mono voice.
 
   Two VCOs and a third that is either a locked SUB or a free OSC, a mixer
   the player drives hot into a transistor ladder, filter and loudness

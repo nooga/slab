@@ -1,7 +1,7 @@
 """Generate demos/night_drive.slab — a 32-bar synthwave demo for Slab.
 
-104 BPM, A minor, Am–F–C–G. Tracks: drum2, Cream Mono bass, Juno pad,
-Juno arp, Cream Mono lead; per-track effects and a master bus.
+104 BPM, A minor, Am–F–C–G. Tracks: drum2, Mog Passenger bass, Ju-Know pad,
+Ju-Know arp, Mog Passenger lead; per-track effects and a master bus.
 Run: python3 tools/demos/night_drive.py  (then: zig-out/bin/slab demos/night_drive.slab)
 """
 import json

@@ -733,7 +733,7 @@ test "descriptor walker reads the FM-86 manifest (7 tabs, 63 controls)" {
     try host.compileFile("machines/fm86/fm86.fy");
     const d = try read(&host);
 
-    try testing.expectEqualStrings("FM-86", d.nameSlice());
+    try testing.expectEqualStrings("FM-7.11", d.nameSlice());
     try testing.expectEqual(Mode.voice_sample, d.mode);
     try testing.expectEqualStrings("k-fm86-voice-sample", d.renderWord());
     try testing.expectEqualStrings("fm86-prepare", d.prepareWord().?);
@@ -788,7 +788,7 @@ test "descriptor walker reads a tabbed (paged) panel" {
     try testing.expectEqualStrings("BTWO", d.strips[item_b.index].moduleSlice());
 }
 
-test "descriptor walker reads panel widgets (Jello-6)" {
+test "descriptor walker reads panel widgets (Ju-Know)" {
     var host = FyHost.init(testing.allocator);
     defer host.deinit();
     try host.compileFile("machines/juno2/juno2.fy");

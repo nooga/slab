@@ -1,4 +1,4 @@
-( cream.fy - Cream Mono: a Prodigy / Messenger style mono synth.
+( cream.fy - Mog Passenger: a Prodigy / Messenger style mono synth.
 
   The voice is kernels/06-voices/cream.fy: OSC 1, OSC 2 with hard sync,
   OSC 3 as a locked SUB or a free oscillator, into a driven ladder.  Mono with a note stack:
@@ -10,7 +10,7 @@ include "../../kernels/06-voices/cream.fy"
 include "../lib/manifest.fy"
 
 : manifest
-  "Cream Mono" voice-sample machine*
+  "Mog Passenger" voice-sample machine*
   "k-cream-voice"       render!
   "cream-note-on"       note-on!
   "cream-note-off"      note-off!

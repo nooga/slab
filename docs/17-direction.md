@@ -389,7 +389,7 @@ Rewrite of [13-dsp-workbench.md](13-dsp-workbench.md)'s harness section.
 
 - **Manifest DSL** (built on A6):
 ```
-machine: "Jello-6 Poly"  voice 8 voices  prefix: juno
+machine: "Ju-Know"  voice 8 voices  prefix: juno
 module: VCF
   knob cutoff "FREQ" 30 .. 16k =1.8k oct smooth 10ms
   knob res    "RES"  0 .. 1    =0.1
@@ -470,7 +470,7 @@ shaper's aliasing at -70 dB.)*
   `table:`.
 
 **G2. Analog layer.** *(2026-09-26: `kernels/08-analog/analog.fy` —
-drift and spread — with an AGE knob on Juno and Cream Mono. Oscillators
+drift and spread — with an AGE knob on Ju-Know and Mog Passenger. Oscillators
 already free-run, so note-start phase is naturally random. Noise floor
 and the project default are open.)*
 
