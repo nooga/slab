@@ -80,6 +80,11 @@ What the tool takes from a voice, and how sure it is:
   96 + 8 x FILTER, vibrato depth/64 semitones and speed/16 Hz: those
   scalings are guesses. Voices without one get the library's usual
   settings: ATTACK 10, DAMPING 50, FILTER 8.
+- **Instruments** (`NAME.IN`, Page 3) become Rack presets in
+  `machines/rack/presets/cmi-<collection>/<disk>/` (gitignored): each run
+  of keys the keyboard's key table gives a register becomes a part per
+  voice that register layers, capped at its polyphony and tuned by the
+  table. The outermost parts reach to MIDI 0 and 127.
 - **Pitch**: the file stores no rate. The CMI's keyboard plays every voice
   from one key table, a 128-sample cycle at A440 on key 52 (MIDI = key +
   17), so ROOT is 54.232 at RATE 24 kHz. Tonal voices are also measured

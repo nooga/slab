@@ -606,6 +606,20 @@ the Series II additive page, the per-voice filter
 curve from `cmi01a.cpp`. Still open for D3: per-pad tune/decay and outputs, round-robin, the
 SSM filter channels.
 
+Rack (2026-09-27, src/machines/rack.zig): splits and layers of any
+instrument machines as one instrument, up to 8 parts, each with a key and
+velocity range, transpose, level, pan and a polyphony cap that releases
+the oldest note (the CMI's NPHONY). It's a native machine in the registry
+(id `rack`); parts persist as their machines' own params/assets/zones
+(docs/19), so every machine works in a rack with nothing added. The
+panel shows the parts, a key map of their ranges and the selected part's
+settings beside that part's own panel. cmi.py writes the CMI
+instruments (`.IN`) as rack presets: a part per layered voice per
+register run on the keyboard's key table, tuned from the table (whole
+semitones to the part, the rest to `cmi-tune`). Still open: per-key
+tuning tables (REJONG's gamelan scale averages out), registers played
+from the other keyboards/MIDI channels, dragging ranges on the key map.
+
 Existing machines, still open:
 - Rhodes: more tine modes, tine/tonebar beating, velocity-dependent
   strike position, suitcase tremolo/pan.

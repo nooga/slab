@@ -99,6 +99,7 @@ var led_seen: [16]u32 = [_]u32{0} ** 16;
 var led_glow: [16]f32 = [_]f32{0} ** 16;
 
 fn panelW(mach: *const Machine) i32 {
+    if (mach.panel_w_fn) |f| return @intFromFloat(@round(f(mach.state)));
     return if (mach.panel_w > 0) @intFromFloat(@round(mach.panel_w)) else DEFAULT_PANEL_W;
 }
 
@@ -423,14 +424,14 @@ fn titleDisplay(ui: *Ui, r: Rect, panel_scope: ui_core.Id, preset: []const u8, h
     ctl.display(ui, r, s, .{ .flush = true, .color = if (hot or live) ui_style.vfd else ui_style.vfd.mix(ui_style.well, 0.15) });
 }
 
-const AddPick = struct {
+pub const AddPick = struct {
     reg_idx: usize,
     preset: ?u16 = null,
 };
 
 // Scan every registry machine's preset directory into add_scan_cache, so the
 // picker's hover drill-down doesn't hit the filesystem each frame.
-fn scanRegistryPresets(reg: *const Registry) void {
+pub fn scanRegistryPresets(reg: *const Registry) void {
     const menu_count = @min(reg.count, registry_mod.MAX_MACHINES);
     for (reg.entries[0..menu_count], 0..) |*e, i| {
         var dbuf: [512]u8 = undefined;
@@ -447,11 +448,20 @@ fn scanRegistryPresets(reg: *const Registry) void {
 // preset subdirectories). Returns the pick when a row is chosen. Shared by
 // the trailing "+" (add) and the name block (replace).
 fn machinePickerMenu(menu_key: u64, reg: *const Registry) ?AddPick {
+    return machinePickerMenuFor(menu_key, reg, .all);
+}
+
+/// Which machines a picker offers: all, or the fy instruments a rack's
+/// parts can be.
+pub const PickerFilter = enum { all, instruments };
+
+pub fn machinePickerMenuFor(menu_key: u64, reg: *const Registry, filter: PickerFilter) ?AddPick {
     if (!menu.isOpen(menu_key)) return null;
     const menu_count = @min(reg.count, registry_mod.MAX_MACHINES);
     var items: [registry_mod.MAX_MACHINES]menu.Item = undefined;
     var n: usize = 0;
     for (reg.entries[0..menu_count], 0..) |*e, i| {
+        if (filter == .instruments and (e.native != .none or !e.in_notes)) continue;
         items[n] = .{ .label = std.mem.span(e.nameZ()), .id = @intCast(i), .submenu = add_scan_cache[i].count > 0 };
         n += 1;
     }

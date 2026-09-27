@@ -9,9 +9,11 @@ const fy_host_mod = @import("fy_host.zig");
 const FyHost = fy_host_mod.FyHost;
 const fy_raw_machine_mod = @import("machines/fy_raw_machine.zig");
 const machine_desc = @import("machine_desc.zig");
+const rack_mod = @import("machines/rack.zig");
 
 test {
     _ = fy_raw_machine_mod.FyRawMachine;
+    _ = rack_mod;
     _ = machine_desc;
     _ = @import("presets.zig");
     _ = @import("wav.zig");
@@ -59,7 +61,11 @@ pub const MAX_MACHINES = 64;
 pub const MAX_NAME = 32;
 pub const MAX_PATH = 256;
 
+/// Machines built in Zig rather than fy.
+pub const Native = enum(u8) { none, rack };
+
 pub const Entry = struct {
+    native: Native = .none,
     name: [MAX_NAME]u8 = [_]u8{0} ** MAX_NAME,
     name_len: u8 = 0,
     path: [MAX_PATH]u8 = [_]u8{0} ** MAX_PATH,
@@ -122,6 +128,10 @@ pub const Registry = struct {
     pub fn instantiate(self: *Registry, idx: usize) !machine.Machine {
         if (idx >= self.count) return error.InvalidMachineIndex;
         const e = &self.entries[idx];
+        switch (e.native) {
+            .rack => return (try rack_mod.Rack.create(self.alloc, self)).machineInterface(),
+            .none => {},
+        }
         const raw = try fy_raw_machine_mod.FyRawMachine.create(self.alloc, e.pathSlice());
         return raw.machineInterface();
     }
@@ -138,6 +148,17 @@ pub const Registry = struct {
         // Raw entries hold no live host (loadFyMachine compiles in a throwaway
         // host and keeps only the descriptor header); just free the slice.
         if (self.cap != 0) self.alloc.free(self.entries);
+    }
+
+    /// Register the native machines (after the fy ones: a rack's parts are
+    /// fy machines by registry index).
+    pub fn loadNative(self: *Registry) !void {
+        try self.ensureRoom();
+        var e = Entry{ .native = .rack, .in_notes = true, .out_audio = true, .panel_w = rack_mod.SIDE_W + 200 };
+        try copyEntryString(e.name[0..], &e.name_len, "Rack");
+        try copyEntryString16(e.path[0..], &e.path_len, rack_mod.PATH);
+        self.entries[self.count] = e;
+        self.count += 1;
     }
 
     /// Register a manifest-driven raw machine: compile its .fy file in a

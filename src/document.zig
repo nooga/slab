@@ -160,6 +160,10 @@ pub fn serialize(
             try appendParams(alloc, &out, t.machine);
             try appendAssets(alloc, &out, t.machine);
             try appendZones(alloc, &out, t.machine);
+            if (t.machine.write_state_json) |f| {
+                try out.appendSlice(alloc, ",\"state\":");
+                try f(t.machine.state, &out, alloc);
+            }
             try out.append(alloc, '}');
         } else try out.appendSlice(alloc, "null");
 
@@ -335,6 +339,7 @@ pub fn apply(
                     if (objGet(iv.object, "params")) |pv| applyParams(mach, pv);
                     if (objGet(iv.object, "assets")) |av| applyAssets(mach, av);
                     if (objGet(iv.object, "zones")) |zv| if (mach.apply_zones_json) |f| f(mach.state, zv);
+                    if (objGet(iv.object, "state")) |sv| if (mach.apply_state_json) |f| f(mach.state, sv);
                 }
             }
         };

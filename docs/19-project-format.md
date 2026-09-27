@@ -41,6 +41,30 @@ for a bank (the panel shows banks as submenus):
 A track's `instrument.params` and an effect's `params` in a project use
 exactly the same map.
 
+A **Rack** preset (`machines/rack/presets/`) holds parts instead of
+params, each part a machine with its settings in that machine's own
+form:
+
+```json
+{"schema": 1, "machine": "rack", "note": "CMI tour / gabriel2 / FISHINET",
+ "parts": [{"machine": "unfairlight", "name": "VOC1", "lo": 0, "hi": 40,
+            "vlo": 1, "vhi": 127, "transpose": 12, "level": 0, "pan": 0,
+            "poly": 2, "mute": false,
+            "params": {"cmi-filter": 144, "cmi-atk": 0.47},
+            "assets": {"voice": "lib:cmi/tour/gabriel2/VOC1.vc"},
+            "zones": {}}]}
+```
+
+- A note goes to every part whose key range (`lo`–`hi`) and velocity
+  range (`vlo`–`vhi`, 1–127) hold it, `transpose` semitones away, so
+  splits and layers are ranges that don't or do overlap.
+- `poly` caps a part's notes at once (0 = the machine's own voices): at
+  the cap its oldest note is released first.
+- `level` is dB (−60..+12), `pan` −1..1 (a balance).
+- `params`, `assets` and `zones` are what the part's machine would take
+  as a track's instrument. Parts naming an unknown machine are dropped;
+  racks don't nest.
+
 ## Project
 
 JSON. Top level:
@@ -83,6 +107,7 @@ JSON. Top level:
 | `instrument.machine` | machine **id**: the folder name under `machines/` (`juno2`, not "Ju-Know"). Display names change; ids don't. |
 | `instrument.assets` | files the machine has loaded, by asset name. Only the sampler has one: `{"smp": "path"}`, where the path is a `.wav`, an `.sfz` or a folder of WAVs (relative to the working directory, or absolute). A path under the sample library is written `lib:<path>`, relative to `$SLAB_LIBRARY` (default `~/Music/Slab/Library`), so projects and shipped presets find library samples on any machine. Missing: the machine keeps its bundled sample. |
 | `instrument.zones` | the sampler's per-zone edits, by zone name (the sample's file stem): `{"clap": {"level": -6, "tune": 0, "decay": 0, "tone": 0, "cut": 0}}`. level in dB, tune in semitones, decay in seconds to −60 dB (0 = off), tone in octaves of filter offset, cut the choke: 0 the pack's (`group`/`off_by`), 1 none, n+1 choke group n (the zone joins it and is cut by it). Zones sharing a name (an SFZ label, a sample's layers and round robins) take the same edits. Only edited zones are written; names that don't match the loaded keymap are ignored. |
+| `instrument.state` | settings a machine keeps beyond flat params: a Rack's `{"parts": […]}`, the same form as its presets. |
 | `effects` | insert chain, run in order, stereo. `bypass: true` passes audio through untouched. |
 
 Signal flow per track: instrument → audio clips summed in → effects in

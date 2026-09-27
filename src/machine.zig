@@ -189,6 +189,13 @@ pub const LoadAssetFn = *const fn (state: *anyopaque, name: []const u8, path: []
 pub const WriteZonesJsonFn = *const fn (state: *anyopaque, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void;
 /// Restore per-zone edits from such an object. Unknown zones are ignored.
 pub const ApplyZonesJsonFn = *const fn (state: *anyopaque, zones: std.json.Value) void;
+/// Settings beyond flat params (a rack's parts) as one JSON value; the
+/// project stores it under "state".
+pub const WriteStateJsonFn = *const fn (state: *anyopaque, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void;
+pub const ApplyStateJsonFn = *const fn (state: *anyopaque, v: std.json.Value) void;
+/// A panel width that follows the machine's state (a rack shows its
+/// selected part's panel).
+pub const PanelWFn = *const fn (state: *anyopaque) f32;
 /// The machine's current note map, when it can change at runtime (a
 /// sampler that loads a kit). Valid until the machine next loads.
 pub const NoteLabelsFn = *const fn (state: *anyopaque) []const NoteLabel;
@@ -234,9 +241,13 @@ pub const Machine = struct {
     load_asset: ?LoadAssetFn = null,
     write_zones_json: ?WriteZonesJsonFn = null,
     apply_zones_json: ?ApplyZonesJsonFn = null,
+    write_state_json: ?WriteStateJsonFn = null,
+    apply_state_json: ?ApplyStateJsonFn = null,
     /// Preferred panel card width in pixels. The bay uses this to size
     /// the rect passed to draw_panel. 0 = bay chooses a default.
     panel_w: f32 = 0,
+    /// Overrides panel_w when set.
+    panel_w_fn: ?PanelWFn = null,
     /// When true, the bay draws the title bar (name + preset) and passes
     /// draw_panel only the body rect below it. When false (legacy callback
     /// machines like mono1) the machine draws its own title bar.

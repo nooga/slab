@@ -432,6 +432,7 @@ pub fn main(init: std.process.Init) !void {
         splash.bootFrame(ui, screenRect(), msg, frac);
         reg.loadFyMachine(path) catch |err| std.log.err("machine {s} failed to load: {s}", .{ path, @errorName(err) });
     }
+    reg.loadNative() catch |err| std.log.err("native machines failed to load: {s}", .{@errorName(err)});
     splash.bootFrame(ui, screenRect(), "STARTING AUDIO", 1);
 
     // ── Audio pool — host-owned decoded audio backing arrangement clips.

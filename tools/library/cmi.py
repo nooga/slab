@@ -10,7 +10,11 @@ bytes) images of CMI 8" floppies, and loose .VC voice files, and
      machines/unfairlight/presets/cmi-<disk>/, pointing at
      "lib:cmi/<disk>/<VOICE>.vc", with the voice's Page 7 settings when its
      disk carries its control file (NAME.CO: filter, attack, damping,
-     level, vibrato, loop, start segment), else the voice's own loop.
+     level, vibrato, loop, start segment), else the voice's own loop;
+  3. turns each instrument (NAME.IN: Page 3's registers, splits and
+     layers) into a Rack preset in machines/rack/presets/cmi-<disk>/: a
+     part per layered voice over its register's keys, tuned and capped at
+     the register's polyphony.
 
 Usage:
   tools/library/cmi.py --collection NAME DISK.IMD [MORE ...]
@@ -59,6 +63,7 @@ import sys
 
 SLAB = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PRESETS = os.path.join(SLAB, "machines", "unfairlight", "presets")
+RACK_PRESETS = os.path.join(SLAB, "machines", "rack", "presets")
 
 TRACKS, SIDES, SECTORS, SECTOR = 77, 2, 26, 128
 IMG_SIZE = TRACKS * SIDES * SECTORS * SECTOR  # 512,512
@@ -420,6 +425,74 @@ def sources(paths, deleted=False):
             yield disk
 
 
+# ── instruments ──────────────────────────────────────────────────────
+
+IN_SIZE = 2944
+CARD_BASE = 253.451904296875  # the voice card's undivided clock per pitch step, Hz
+
+
+def key_rate(word):
+    """A key table entry's word (octave << 10 | 10-bit pitch) → the card's
+    sample clock, Hz."""
+    return (2048 + 2 * (word & 0x3FF)) * CARD_BASE * 2 ** ((word >> 10) - 8)
+
+
+def default_rate(key):
+    """The CMI's own table: a 128-sample cycle at A440 on key 52."""
+    return 440 * 128 * 2 ** ((key - 52) / 12)
+
+
+def in_params(data):
+    """An instrument's registers as [(register 0-7, first key, last key,
+    [voice names layered], polyphony, tuning in semitones)], one per run of
+    keys on the keyboard's table; None if it isn't an instrument."""
+    import math
+    if len(data) < IN_SIZE:
+        return None
+    names = [data[0x200 + 26 * i + 1:0x200 + 26 * i + 9].decode("latin-1").strip(" \0") for i in range(8)]
+    table = data[0x300:0x300 + 240]
+    runs = []
+    for key in range(73):
+        tag, word = table[3 * key], (table[3 * key + 1] << 8) | table[3 * key + 2]
+        if not 0x41 <= tag <= 0x48 or word == 0:
+            return None
+        off = 12 * math.log2(key_rate(word) / default_rate(key))
+        if runs and runs[-1][0] == tag - 0x41:
+            runs[-1][2] = key
+            runs[-1][3].append(off)
+        else:
+            runs.append([tag - 0x41, key, key, [off]])
+    out = []
+    for reg, a, z, offs in runs:
+        mask = data[0xB0 + 2 * reg]
+        layers = [names[i] for i in range(8) if mask >> i & 1 and names[i] and "\xe5" not in names[i]]
+        offs.sort()
+        out.append((reg, a, z, layers, data[0xC0 + 2 * reg] or 1, offs[len(offs) // 2]))
+    return out
+
+
+def rack_preset(disk, collection, inst, regs, voice_preset):
+    """A Rack preset for instrument `inst`: `voice_preset(name)` gives a
+    layered voice's Unfairlight preset (or None if the disk lacks it)."""
+    parts = []
+    for i, (reg, a, z, layers, poly, tune) in enumerate(regs):
+        lo = 0 if i == 0 else a + 17  # the ends reach past the CMI's 73 keys
+        hi = 127 if i == len(regs) - 1 else z + 17
+        semis = round(tune)
+        for name in layers:
+            vp = voice_preset(name)
+            if vp is None:
+                continue
+            params = dict(vp["params"])
+            params["cmi-tune"] = round(params.get("cmi-tune", 0) + tune - semis, 3)
+            parts.append({"machine": "unfairlight", "name": name, "lo": lo, "hi": hi, "vlo": 1, "vhi": 127,
+                          "transpose": semis, "level": 0, "pan": 0, "poly": poly, "mute": False,
+                          "params": params, "assets": vp["assets"]})
+    if not parts:
+        return None
+    return {"schema": 1, "machine": "rack", "note": f"CMI {collection} / {disk} / {inst}", "parts": parts}
+
+
 # ── the library index and catalog ───────────────────────────────────────
 
 
@@ -471,7 +544,7 @@ def import_collection(root, index, collection, paths, title, note, deleted, pres
     old = index["collections"].get(collection, {})
     index["collections"][collection] = {"title": title or old.get("title") or collection,
                                         "note": note or old.get("note", "")}
-    count = new = 0
+    count = new = instruments = 0
     for d in sources(paths, deleted):
         disk = d.name
         for name, vc in d.voices:
@@ -509,7 +582,31 @@ def import_collection(root, index, collection, paths, title, note, deleted, pres
                     fh.write(json.dumps(preset(stored, f"lib:cmi/{v['path']}",
                                                f"CMI {collection} / {disk} / {name}", root_note, co)) + "\n")
             count += 1
-    return count, new
+        if presets:
+            by_name = {n.upper(): vc for n, vc in d.voices}
+
+            def voice_preset(name, d=d, by_name=by_name):
+                vc = by_name.get(name.upper())
+                if vc is None:
+                    return None
+                v = index["voices"].get(hashlib.sha1(ram_of(vc)).hexdigest()[:16])
+                if v is None:
+                    return None
+                with open(os.path.join(root, v["path"]), "rb") as fh:
+                    stored = fh.read()
+                return preset(stored, f"lib:cmi/{v['path']}", name, cmi_root(v), d.control(name))
+
+            for inst, data in d.instruments:
+                regs = in_params(data)
+                rp = rack_preset(disk, collection, inst, regs, voice_preset) if regs else None
+                if rp is None:
+                    continue
+                pdir = os.path.join(RACK_PRESETS, f"cmi-{collection}", disk)
+                os.makedirs(pdir, exist_ok=True)
+                with open(os.path.join(pdir, safe(inst).lower() + ".preset"), "w") as fh:
+                    fh.write(json.dumps(rp) + "\n")
+                instruments += 1
+    return count, new, instruments
 
 
 def main():
@@ -536,15 +633,21 @@ def main():
                       f"{p['loop_start']:3d}-{p['loop_end']:3d}"
                       + (f"  root {pr[0]:5.1f}" if pr else "")
                       + (f"  page 7 {co}" if co else ""))
+            for inst, data in d.instruments:
+                regs = in_params(data)
+                if regs:
+                    print(f"  {inst}.IN  " + "  ".join(
+                        f"{chr(65 + r)} keys {a + 17}-{z + 17} {'+'.join(l) or '-'} x{p} {t:+.2f}"
+                        for r, a, z, l, p, t in regs))
         return
     os.makedirs(root, exist_ok=True)
     index = load_index(root)
     if not args.catalog:
         if not args.paths:
             ap.error("nothing to import")
-        count, new = import_collection(root, index, disk_slug(args.collection), args.paths, args.title,
-                                       args.note, args.deleted, not args.no_presets)
-        print(f"{args.collection}: {count} voices, {new} new to the library")
+        count, new, insts = import_collection(root, index, disk_slug(args.collection), args.paths, args.title,
+                                              args.note, args.deleted, not args.no_presets)
+        print(f"{args.collection}: {count} voices, {new} new to the library, {insts} instruments")
         save_index(root, index)
     write_catalog(root, index)
     print(f"{len(index['voices'])} voices in {root} (CATALOG.md)")
