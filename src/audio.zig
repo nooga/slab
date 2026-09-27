@@ -34,6 +34,11 @@ pub const Audio = struct {
     initialized: bool = false,
     /// True when the device opened in duplex mode (capture is available).
     capture_available: bool = false,
+    /// Whether the mic is wanted (a track is armed or a take is recording).
+    /// The device is playback-only otherwise: opening the mic switches
+    /// Bluetooth headsets (AirPods) into their call profile, whose narrow
+    /// band and noise suppression wreck the output.
+    want_capture: bool = false,
     /// Explicit capture device chosen by the user (else system default).
     capture_id: c.ma.ma_device_id = undefined,
     has_capture_id: bool = false,
@@ -53,6 +58,7 @@ pub const Audio = struct {
         self.probe_overruns = 0;
         self.initialized = false;
         self.capture_available = false;
+        self.want_capture = false;
         self.has_capture_id = false;
 
         // A persistent context backs both device init and enumeration.
@@ -62,11 +68,13 @@ pub const Audio = struct {
         try self.openDevice();
     }
 
-    /// Open (or re-open) the device from the current `capture_id` selection.
-    /// Assumes no device is initialized. Prefers duplex (playback + mono
-    /// capture); on failure falls back to playback-only so the app runs.
+    /// Open (or re-open) the device: duplex (playback + mono capture from the
+    /// `capture_id` selection) when capture is wanted, else playback-only.
+    /// Assumes no device is initialized. A duplex device that won't open
+    /// falls back to playback-only so the app runs.
     fn openDevice(self: *Audio) !void {
         self.capture_available = false;
+        if (!self.want_capture) return self.openPlayback();
 
         var duplex = c.ma.ma_device_config_init(c.ma.ma_device_type_duplex);
         duplex.playback.format = c.ma.ma_format_f32;
@@ -79,28 +87,53 @@ pub const Audio = struct {
         duplex.dataCallback = audioCallback;
         duplex.pUserData = self;
 
-        if (c.ma.ma_device_init(&self.context, &duplex, &self.device) == c.ma.MA_SUCCESS) {
-            self.capture_available = true;
-        } else {
+        if (c.ma.ma_device_init(&self.context, &duplex, &self.device) != c.ma.MA_SUCCESS) {
             // A chosen device that won't open shouldn't strand the app —
             // drop the selection and fall back to playback-only.
             self.has_capture_id = false;
-            var play = c.ma.ma_device_config_init(c.ma.ma_device_type_playback);
-            play.playback.format = c.ma.ma_format_f32;
-            play.playback.channels = CHANNELS;
-            play.sampleRate = SAMPLE_RATE;
-            play.periodSizeInFrames = requestedBlockFrames();
-            play.dataCallback = audioCallback;
-            play.pUserData = self;
-            if (c.ma.ma_device_init(&self.context, &play, &self.device) != c.ma.MA_SUCCESS)
-                return error.AudioInitFailed;
             std.log.warn("audio: capture unavailable; recording disabled (playback-only device)", .{});
+            return self.openPlayback();
         }
+        self.capture_available = true;
+        try self.startDevice();
+    }
+
+    fn openPlayback(self: *Audio) !void {
+        var play = c.ma.ma_device_config_init(c.ma.ma_device_type_playback);
+        play.playback.format = c.ma.ma_format_f32;
+        play.playback.channels = CHANNELS;
+        play.sampleRate = SAMPLE_RATE;
+        play.periodSizeInFrames = requestedBlockFrames();
+        play.dataCallback = audioCallback;
+        play.pUserData = self;
+        if (c.ma.ma_device_init(&self.context, &play, &self.device) != c.ma.MA_SUCCESS)
+            return error.AudioInitFailed;
+        try self.startDevice();
+    }
+
+    fn startDevice(self: *Audio) !void {
         if (c.ma.ma_device_start(&self.device) != c.ma.MA_SUCCESS) {
             c.ma.ma_device_uninit(&self.device);
             return error.AudioStartFailed;
         }
         self.initialized = true;
+    }
+
+    fn reopen(self: *Audio) !void {
+        if (self.initialized) {
+            _ = c.ma.ma_device_stop(&self.device);
+            c.ma.ma_device_uninit(&self.device);
+            self.initialized = false;
+        }
+        try self.openDevice();
+    }
+
+    /// Open the mic (duplex) or release it (playback-only). Re-opens the
+    /// device only on a change; the render/capture hooks persist.
+    pub fn setWantCapture(self: *Audio, want: bool) !void {
+        if (want == self.want_capture) return;
+        self.want_capture = want;
+        try self.reopen();
     }
 
     /// Enumerate capture (input) devices into `out`; returns the count
@@ -126,18 +159,14 @@ pub const Audio = struct {
     /// Switch the capture device (null = system default). Stops, re-opens, and
     /// restarts; the render/capture hooks persist across the swap.
     pub fn useInputDevice(self: *Audio, id: ?*const c.ma.ma_device_id) !void {
-        if (self.initialized) {
-            _ = c.ma.ma_device_stop(&self.device);
-            c.ma.ma_device_uninit(&self.device);
-            self.initialized = false;
-        }
         if (id) |p| {
             self.capture_id = p.*;
             self.has_capture_id = true;
         } else {
             self.has_capture_id = false;
         }
-        try self.openDevice();
+        // Takes effect now if the mic is open, else when it next opens.
+        if (self.want_capture) try self.reopen();
     }
 
     /// Name of the active capture device (empty when capture is unavailable).

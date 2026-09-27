@@ -489,7 +489,9 @@ pub fn main(init: std.process.Init) !void {
     // capture half (duplex).
     var recorder = try recorder_mod.Recorder.init(alloc, &transport);
     defer recorder.deinit();
-    if (audio.capture_available) audio.setCapture(&recorder, recorder_mod.Recorder.captureFn);
+    // Installed for good: the hook gets no input while the device is
+    // playback-only (no track armed).
+    audio.setCapture(&recorder, recorder_mod.Recorder.captureFn);
     var rec_finishing = false;
     var rec_track: ?usize = null;
 
@@ -610,6 +612,12 @@ pub fn main(init: std.process.Init) !void {
         c.rl.ClearBackground(@bitCast(ui_style.chassis));
 
         const rec_busy = recorder.isRecording() or rec_finishing;
+        // The mic opens only while it can be used: an armed track or a take
+        // in flight. Idle, the device is playback-only (see Audio.want_capture).
+        audio.setWantCapture(rec_busy or firstArmedAudioTrack(tracks) != null) catch |err| {
+            std.log.err("audio device switch failed: {s}", .{@errorName(err)});
+            status.set("Audio device failed", .{});
+        };
 
         // Refresh the input-device list ~once/sec and resolve the active one.
         if (input_refresh % 60 == 0) {

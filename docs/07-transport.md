@@ -420,12 +420,17 @@ document; edited on the ruler per
 
 ### Audio input capture (implemented — v1)
 
-The device opens in **duplex** mode (`ma_device_type_duplex`): stereo
-f32 playback plus a **mono f32 capture** half, both at 48 kHz in one
-callback. If duplex init fails — no input device, denied mic
-permission — the device falls back to playback-only and recording is
-disabled (`Audio.capture_available == false`); the app still runs.
-See `src/audio.zig`.
+The device is **playback-only** until the mic is needed: while a track
+is armed or a take is recording it re-opens in **duplex** mode
+(`ma_device_type_duplex`): stereo f32 playback plus a **mono f32
+capture** half, both at 48 kHz in one callback. Opening the mic at
+startup would switch Bluetooth headsets (AirPods) into their call
+profile for the whole session, whose narrow band and noise suppression
+mangle the output (drums vanish into clicks). If duplex init fails — no
+input device, denied mic permission — the device falls back to
+playback-only and recording is disabled (`Audio.capture_available ==
+false`); the app still runs. See `src/audio.zig`
+(`Audio.setWantCapture`).
 
 The pipeline (`src/recorder.zig`):
 
