@@ -41,6 +41,7 @@ pub const builtin_machines = [_][]const u8{
     "machines/comp2/comp2.fy",
     "machines/eq2/eq2.fy",
     "machines/sat2/sat2.fy",
+    "machines/era/era.fy",
     "machines/gate2/gate2.fy",
     "machines/limiter2/limiter2.fy",
     "machines/chorus2/chorus2.fy",
@@ -251,6 +252,20 @@ test "fy manifest loads + instantiates the saturator machine" {
     const e = &reg.entries[0];
     try std.testing.expectEqualStrings("Saturator", e.nameSlice());
     try std.testing.expectEqualStrings("sat2", e.idSlice());
+    try std.testing.expect(e.in_audio);
+    try std.testing.expect(!e.in_notes);
+    const m = try reg.instantiate(0);
+    defer if (m.deinit) |d| d(m.state, std.testing.allocator);
+}
+
+test "fy manifest loads + instantiates the era converter machine" {
+    var reg = Registry.init(std.testing.allocator);
+    defer reg.deinit();
+    try reg.loadFyMachine("machines/era/era.fy");
+    try std.testing.expectEqual(@as(usize, 1), reg.count);
+    const e = &reg.entries[0];
+    try std.testing.expectEqualStrings("Era", e.nameSlice());
+    try std.testing.expectEqualStrings("era", e.idSlice());
     try std.testing.expect(e.in_audio);
     try std.testing.expect(!e.in_notes);
     const m = try reg.instantiate(0);

@@ -19,6 +19,7 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`comp2`](#comp2) | Comp | effect | — | `comp-` |
 | [`delay2`](#delay2) | Delay | effect | — | `delay-` |
 | [`eq2`](#eq2) | EQ | effect | — | `eq-` |
+| [`era`](#era) | Era | effect | — | `era-` |
 | [`funk`](#funk) | Funk Overload | effect | — | `funk-` |
 | [`gate2`](#gate2) | Gate | effect | — | `gate-` |
 | [`limiter2`](#limiter2) | Limiter | effect | — | `lim-` |
@@ -701,6 +702,40 @@ Presets:
 | `eq-p2-q` | HI-MID | Q | 0.3 … 4 | 0.9 | exp |
 | `eq-hs-hz` | HI | FREQ | 1500 … 18000 | 8000 | exp |
 | `eq-hs-db` | HI | GAIN | -18 … 18 | 0 | linear |
+
+## era
+
+**Era**, stereo insert effect.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `era-in` | ADC | IN | -12 … 24 | 0 | linear |
+| `era-aa` | ADC | AA | 0 OFF / 1 ON | 0 | switch |
+| `era-rate` | ADC | RATE | 1000 … 48000 | 26040 | exp |
+| `era-bits` | ADC | BITS | 1 … 16 | 12 | linear |
+| `era-mode` | ADC | MODE | 0 ROUND / 1 TRUNC / 2 MULAW | 0 | switch |
+| `era-filter` | DAC | FILTER | 1000 … 20000 | 12000 | exp |
+| `era-res` | DAC | RES | 0 … 1 | 0 | linear |
+| `era-mix` | DAC | MIX | 0 … 1 | 1 | pow |
+| `era-out` | DAC | OUT | -24 … 24 | 0 | linear |
+
+Presets:
+
+- `bits-4` — 4-bit, 48 kHz: quantization alone
+- `cmi-i` — Fairlight CMI Series I: 8-bit linear, ~16 kHz, darker filter
+- `cmi-ii` — Fairlight CMI Series II: 8-bit linear, ~24 kHz, SSM2045 output filter
+- `crunch` — Aliasing grit: 11 kHz, 8-bit truncated, no filters
+- `dmx` — Oberheim DMX: ~25 kHz, 8-bit mu-law [AM6070]
+- `emulator-ii` — E-mu Emulator II: 27.7 kHz, 8-bit companded, resonant SSM lowpass
+- `linndrum` — LM-1 / LinnDrum: ~28 kHz, 8-bit mu-law [AM6070]
+- `lofi-12` — Soft 12-bit 22 kHz, parallel for drum buses
+- `mirage` — Ensoniq Mirage: 8-bit, ~30 kHz, resonant 4-pole
+- `mpc60` — Akai MPC60: 12-bit, 40 kHz
+- `s612` — Akai S612: 12-bit, 32 kHz
+- `s900` — Akai S900: 12-bit, 40 kHz
+- `sk1` — Casio SK-1: 9.38 kHz, 8-bit, no input filter, harsh
+- `sp1200` — E-mu SP-1200, channels 3-6: 26.04 kHz, 12-bit, fixed output lowpass
+- `sp1200-open` — E-mu SP-1200, channels 7-8: 26.04 kHz, 12-bit, unfiltered
 
 ## funk
 

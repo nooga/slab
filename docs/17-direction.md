@@ -518,7 +518,7 @@ Synths, in build order:
 |---|---|---|---|
 | 1 | **Supersaw VA** (JP-8000 style) | 7 detuned saws with the JP's nonlinear DETUNE and MIX curves and a highpass tracking the note; free-running phases; feedback osc, cross-mod, ring; JP ladder (the existing ZDF ladder); 2 ADSR; unison, stereo spread | Adam Szabo's JP-8000 supersaw analysis (measured detune and mix curves); spectra of the published measurements |
 | 2 | **2-VCO analog poly** (Prophet-5 / OB-Xa, one machine, filter switch) | poly-mod (filter env and osc B → osc A pitch, PW, cutoff), osc sync, unison for leads; Curtis-style 4-pole (existing ladder) or SEM 12 dB SVF (open item from step 9) | Prophet-5 and OB-Xa owner's-manual ranges; SEM SVF behaviour from circuit analyses |
-| 3 | **Fairlight CMI** (Series II / IIx) | 8-bit voices; pitch by changing each voice's sample clock, not by interpolation (the grain and aliasing are the sound); per-voice analog filter; Series II additive pages (draw 32 harmonics per segment) | user-supplied `.VC` voice files (8-bit PCM in segments; CMIOS9 exports them to WAV for cross-checks), later QDOS disk images; MAME's CMI driver for the hardware. We ship the loader, never Fairlight sounds. The `.VC` header layout still needs a spec or a real file to work from. |
+| 3 | **Fairlight CMI** (Series II / IIx) | 8-bit voices; pitch by changing each voice's sample clock, not by interpolation (the grain and aliasing are the sound); per-voice analog filter; Series II additive pages (draw 32 harmonics per segment) | user-supplied `.VC` voice files and IIx disk images (ImageDisk `.IMD` dumps circulate on preservation sites); MAME's `cmi01a.cpp` for the voice card: per-voice clock `((0x800 \| pitch<<1) * mosc) / 4096` then octave divide, no interpolation, unsigned 8-bit, no companding, and an SSM2045 pair of 2-pole lowpasses whose corner tracks the octave. We ship the loader, never Fairlight sounds. `.VC` layout (nattvard spec): 21,888 bytes; loop start/end segments at 0x1332/0x1333, loop on at 0x133B, filter at 0x141C, 16,384 samples at 0x1500 (128 segments of 128); confirm the 0x1500 offset against a real file, a second source says 0x1580. |
 | 4 | **Wavetable** (PPG Wave style) | 64-frame tables stepped (PPG) or morphed; 8-bit mode; analog filter after; tables mipmapped from `table:` | our own tables, plus loadable WAV wavetables at 2048 samples per frame (the Serum/Vital format, plenty of free sets). No PPG ROM tables. |
 | 5 | **Alpha Juno** (a sibling of the Juno) | the Alpha's DCO variants (PWM saw, the Hoover), sub-oscillator modes, the four-segment T1–T4/L1–L3 envelope; shares the Juno filter, and chorus2 | Alpha Juno manual ranges; the Hoover patch as the target sound |
 
@@ -534,6 +534,17 @@ by three machines:
 
 The 808 and 909 get per-pad outputs and choke groups; the gated snare
 and sidechain need Track E.
+
+Converter kernels (2026-09-27): `kernels/09-digital/digital.fy` has the
+shared parts: round/truncate/mu-law quantizers with fractional BITS, and
+`zoh-tick`, a sample-and-hold at any rate below the host's that samples
+between host samples (Hermite) and polyBLEPs its steps onto their true
+times. On a 1 kHz sine at a 26 kHz clock, the first image folded past the host
+Nyquist measures -49 dB. The hold's sinc alone would leave it near -30. The `era` effect strings them
+together (IN, AA, RATE, BITS, MODE, FILTER, RES) with presets for the
+SP-1200, Emulator II, CMI I/II, DMX, LinnDrum, Mirage, S612/S900, MPC60
+and SK-1. The CMI and D3 voices reuse the quantizers. Their playback is
+a different step: a per-voice clock reading stored samples.
 
 Existing machines, still open:
 - Rhodes: more tine modes, tine/tonebar beating, velocity-dependent
