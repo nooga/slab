@@ -67,10 +67,15 @@ fn collapsed() bool {
     return collapse_unused and collapsed_count > 0;
 }
 
-fn setNoteMap(map: []const machine_mod.NoteLabel) void {
+/// USED KEYS keeps the mapped keys plus any key the clip has notes on, so
+/// notes on a key the kit doesn't map stay visible and editable.
+fn setNoteMap(map: []const machine_mod.NoteLabel, clip: ?*const Clip) void {
     note_map = map;
     var seen = [_]bool{false} ** 128;
     for (map) |*nl| seen[nl.pitch & 127] = true;
+    if (map.len > 0) if (clip) |cl| for (cl.notes.items) |n| {
+        seen[n.pitch & 127] = true;
+    };
     collapsed_count = 0;
     var p: usize = 128;
     while (p > 0) {
@@ -618,7 +623,7 @@ pub fn draw(
         return .{ .minimize = head.minimize, .close = head.close };
     };
 
-    setNoteMap(resolved.note_labels);
+    setNoteMap(resolved.note_labels, resolved.clip);
     drawHeaderTools(ui, head.tools);
     maybeResetOnClipChange(selected, resolved.clip);
     const pres = drawPianoRoll(ui, bridge.toRl(head.body), resolved.clip, resolved.color, alloc, edit_snap, can_paste_notes, m);
@@ -999,13 +1004,20 @@ fn drawKeyboard(ui: *Ui, r: c.rl.Rectangle) void {
             const y = ipx(fy);
             const h = ipx(fy + row_h) - y;
             if (drum) {
+                // Every lane names its key on the right, so an unmapped row
+                // still says where it is; mapped lanes add the sound's name.
+                const row = Rect.xywh(kr.x, y, kr.w, h);
+                var kb: [8]u8 = undefined;
+                const kname = keyName(&kb, pitch);
                 if (mapLabel(pitch)) |label| {
-                    const row = Rect.xywh(kr.x, y, kr.w, h);
                     ui.rect(row, ui_style.face);
                     ui.rect(Rect.xywh(kr.x, y + h - 1, kr.w, 1), ui_style.edge);
-                    ui.textIn(&ui.fonts.legend, row.insetXY(3, 0), std.mem.span(label), ui_style.text_dim, .left, true);
+                    if (h >= 8) ui.textIn(&ui.fonts.legend, row.insetXY(2, 0), kname, ui_style.text_mute, .right, false);
+                    const name_w = if (h >= 8) kr.w - 26 else kr.w;
+                    ui.textIn(&ui.fonts.legend, Rect.xywh(kr.x + 3, y, name_w - 3, h), std.mem.span(label), ui_style.text_dim, .left, true);
                 } else {
-                    ui.rect(Rect.xywh(kr.x, y + h - 1, kr.w, 1), ui_style.edge);
+                    ui.rect(Rect.xywh(kr.x, y + h - 1, kr.w, 1), if (pitch % 12 == 0) ui_style.edge.shade(20) else ui_style.edge);
+                    if (h >= 8) ui.textIn(&ui.fonts.legend, row.insetXY(2, 0), kname, ui_style.text_mute.shade(-30), .right, false);
                 }
             } else if (isBlackKey(pitch)) {
                 ui.rect(Rect.xywh(kr.x, y, bw, h), ui_style.key_black);
@@ -1692,6 +1704,12 @@ fn resizeMinNoteBeats(edit_snap: snap_mod.Setting, snap_bypassed: bool) f64 {
 
 fn defaultNoteBeats(edit_snap: snap_mod.Setting) f64 {
     return @max(edit_snap.beats() orelse DEFAULT_NOTE_BEATS, MIN_NOTE_BEATS);
+}
+
+fn keyName(buf: []u8, pitch: u8) []const u8 {
+    const names = [_][]const u8{ "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    const octave = @as(i32, @intCast(pitch / 12)) - 1;
+    return std.fmt.bufPrint(buf, "{s}{d}", .{ names[pitch % 12], octave }) catch "";
 }
 
 fn isBlackKey(pitch: u8) bool {
