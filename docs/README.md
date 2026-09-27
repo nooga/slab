@@ -58,6 +58,14 @@ self-contained but assumes the vocabulary established in earlier ones.
 19. [18-fy-dsp-language.md](18-fy-dsp-language.md) — the `dsp:` language
     as implemented: consuming and typed locals, dotted fields, memory
     order, composition, spilling, word set
+20. [19-project-format.md](19-project-format.md) — `.slab` project and
+    `.preset` files, how the loader interprets them, `--render` and
+    `--describe`
+21. [20-machine-reference.md](20-machine-reference.md) — every machine's
+    params, ranges, switch options and presets (generated)
+22. [21-production-guide.md](21-production-guide.md) — writing and
+    mixing a song: research, form, harmony, groove, sound choice,
+    channel setup, compression, master, the stem report; `tools/slabkit`
 
 ## Terminology crib sheet
 
