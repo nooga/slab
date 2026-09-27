@@ -42,7 +42,7 @@ dsp: ms20-block-prepare | ctx:Ctx state params:Ms20VoiceParams -- |
   "ms20-block-prepare"  block-prepare!
   Ms20VoiceState.size  state-size!
   Ms20VoiceParams.size params-size!
-  420.0 panel-w!
+  940.0 panel-w!
 
   ( module label id offset min max default curve )
   "VCO1" "WAVE"  "vco1-wave"   Ms20VoiceParams.vco1-wave   1 switch
@@ -93,32 +93,35 @@ dsp: ms20-block-prepare | ctx:Ctx state params:Ms20VoiceParams -- |
   "MOD" "EG>PIT" "eg-pitch"  Ms20VoiceParams.eg-pitch  0.0 1.0 0.0 curve-pow knob
   "MOD" "PORTA"  "portamento" Ms20VoiceParams.portamento 0.0 10.0 0.0 curve-pow knob
 
-  ( module knob-cols — module strip + its internal knob-grid columns )
-  "VCO1" 1 strip
-  "VCO2" 1 strip
-  "MIX" 1 strip
-  "HPF" 1 strip
-  "LPF" 1 strip
+  ( The MS-20 face in two rows: the signal path left to right over the
+    modulation section.  Waves and scales are LED lists. )
+  "VCO1" 2 strip
+  "VCO2" 4 strip
+  "MIX" 3 strip
+  "HPF" 2 strip
+  "LPF" 5 strip
   "VCA" 1 strip
-  "AMP ENV" 1 strip
-  "FLT ENV" 1 strip
-  "MG" 1 strip
+  "MG" 2 strip
   "MOD" 5 strip
+  "FLT ENV" 5 strip
+  "AMP ENV" 5 strip
 
   ( built-in visualizer cell [docs/15]; comma-separated sources overlay )
   "EG" "FLT ENV,AMP ENV" adsr-display
 
-  ( weighted box layout [docs/15]: row then cells; items stack in a cell )
-  4.0 row
-    1.0 cell  "VCO1" 1.0 item  "MG" 1.0 item
-    1.0 cell  "VCO2" 1.0 item
-    1.0 cell  "MIX" 3.0 item  "VCA" 1.0 item
-    1.6 cell  "HPF" 4.0 item  "EG" 1.0 item
-    1.0 cell  "LPF" 1.0 item
-    1.0 cell  "AMP ENV" 1.0 item
-    1.0 cell  "FLT ENV" 1.0 item
   1.0 row
+    1.0 cell  "VCO1" 1.0 item
+    1.0 cell  "VCO2" 1.0 item
+    1.0 cell  "MIX" 1.0 item
+    1.0 cell  "HPF" 1.0 item
+    1.0 cell  "LPF" 1.0 item
+    1.0 cell  "VCA" 1.0 item
+  1.0 row
+    1.0 cell  "MG" 1.0 item
     1.0 cell  "MOD" 1.0 item
+    1.0 cell  "FLT ENV" 1.0 item
+    1.0 cell  "AMP ENV" 1.0 item
+    4.0 cell  "EG" 1.0 item
 
   machine-desc
 ;

@@ -788,6 +788,32 @@ test "descriptor walker reads a tabbed (paged) panel" {
     try testing.expectEqualStrings("BTWO", d.strips[item_b.index].moduleSlice());
 }
 
+test "descriptor walker reads panel widgets (Jello-6)" {
+    var host = FyHost.init(testing.allocator);
+    defer host.deinit();
+    try host.compileFile("machines/juno2/juno2.fy");
+    const d = try read(&host);
+
+    const Case = struct { id: []const u8, widget: Widget };
+    const cases = [_]Case{
+        .{ .id = "jn-range", .widget = .vradio }, // declared
+        .{ .id = "jn-cutoff", .widget = .fader }, // declared
+        .{ .id = "jn-saw", .widget = .button }, // OFF/ON pair
+        .{ .id = "jn-vca-mode", .widget = .lever }, // other pair
+        .{ .id = "jn-pwmod", .widget = .list }, // declared
+    };
+    for (cases) |cs| {
+        const ctl = for (d.controls[0..d.control_count]) |*ctl| {
+            if (std.mem.eql(u8, ctl.idSlice(), cs.id)) break ctl;
+        } else return error.TestUnexpectedResult;
+        try testing.expectEqual(cs.widget, ctl.widgetFor());
+    }
+    // A centred range draws bipolar.
+    for (d.controls[0..d.control_count]) |*ctl| {
+        if (std.mem.eql(u8, ctl.idSlice(), "jn-env")) try testing.expect(ctl.bipolar());
+    }
+}
+
 test "descriptor walker reads the drum2 note map" {
     var host = FyHost.init(testing.allocator);
     defer host.deinit();
@@ -833,12 +859,12 @@ test "descriptor walker reads the MS-20 manifest from fy" {
     try testing.expectEqualStrings("ms20-block-prepare", d.blockPrepareWord().?);
     try testing.expectEqual(@as(usize, 392), d.state_size);
     try testing.expectEqual(@as(usize, 496), d.params_size);
-    try testing.expectEqual(@as(f32, 420.0), d.panel_w);
+    try testing.expectEqual(@as(f32, 940.0), d.panel_w);
     try testing.expectEqual(@as(usize, 34), d.control_count);
     try testing.expectEqual(@as(usize, 10), d.strip_count);
     try testing.expectEqual(@as(usize, 1), d.display_count);
     try testing.expectEqual(@as(usize, 2), d.row_count);
-    try testing.expectEqual(@as(usize, 7), d.rows[0].cell_count);
+    try testing.expectEqual(@as(usize, 6), d.rows[0].cell_count);
     try testing.expectEqual(@as(usize, 0), d.const_count);
 
     // First control: VCO1 WAVE switch at the introspected vco1-wave offset.

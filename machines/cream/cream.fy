@@ -17,21 +17,21 @@ include "../lib/manifest.fy"
   "cream-block-prepare" block-prepare!
   CreamState.size  state-size!
   CreamParams.size params-size!
-  600.0 panel-w!
+  780.0 panel-w!
 
   ( module label id offset default switch / min max default curve knob )
   "OSC 1" "RANGE" "cr-range1" CreamParams.range1 2 switch
-    "32" 0.25 opt  "16" 0.5 opt  "8" 1.0 opt  "4" 2.0 opt  "2" 4.0 opt
+    "32" 0.25 opt  "16" 0.5 opt  "8" 1.0 opt  "4" 2.0 opt  "2" 4.0 opt  as-knob
   "OSC 1" "WAVE" "cr-wave1" CreamParams.wave1 1 switch
-    "TRI" 0.0 opt  "SAW" 1.0 opt  "SQR" 2.0 opt  "WIDE" 3.0 opt  "NARR" 4.0 opt
+    "TRI" 0.0 opt  "SAW" 1.0 opt  "SQR" 2.0 opt  "WIDE" 3.0 opt  "NARR" 4.0 opt  as-knob
 
   "OSC 2" "RANGE" "cr-range2" CreamParams.range2 2 switch
-    "32" 0.25 opt  "16" 0.5 opt  "8" 1.0 opt  "4" 2.0 opt  "2" 4.0 opt
+    "32" 0.25 opt  "16" 0.5 opt  "8" 1.0 opt  "4" 2.0 opt  "2" 4.0 opt  as-knob
   "OSC 2" "WAVE" "cr-wave2" CreamParams.wave2 1 switch
-    "TRI" 0.0 opt  "SAW" 1.0 opt  "SQR" 2.0 opt  "WIDE" 3.0 opt  "NARR" 4.0 opt
+    "TRI" 0.0 opt  "SAW" 1.0 opt  "SQR" 2.0 opt  "WIDE" 3.0 opt  "NARR" 4.0 opt  as-knob
   "OSC 2" "FREQ" "cr-detune2" CreamParams.detune2 -7.0 7.0 0.07 curve-lin knob
   "OSC 2" "SYNC" "cr-sync2" CreamParams.sync2 0 switch
-    "OFF" 0.0 opt  "ON" 1.0 opt
+    "OFF" 0.0 opt  "ON" 1.0 opt  as-lever
   "OSC 2" "SWEEP" "cr-env-osc2" CreamParams.env-osc2 0.0 24.0 0.0 curve-pow knob
 
   "OSC 3" "MODE" "cr-osc3-mode" CreamParams.osc3-mode 0 switch
@@ -39,9 +39,9 @@ include "../lib/manifest.fy"
   "OSC 3" "SUB" "cr-sub-oct" CreamParams.sub-oct 0 switch
     "-1" 0.5 opt  "-2" 0.25 opt
   "OSC 3" "RANGE" "cr-range3" CreamParams.range3 1 switch
-    "32" 0.25 opt  "16" 0.5 opt  "8" 1.0 opt  "4" 2.0 opt  "2" 4.0 opt
+    "32" 0.25 opt  "16" 0.5 opt  "8" 1.0 opt  "4" 2.0 opt  "2" 4.0 opt  as-knob
   "OSC 3" "WAVE" "cr-wave3" CreamParams.wave3 2 switch
-    "TRI" 0.0 opt  "SAW" 1.0 opt  "SQR" 2.0 opt  "WIDE" 3.0 opt  "NARR" 4.0 opt
+    "TRI" 0.0 opt  "SAW" 1.0 opt  "SQR" 2.0 opt  "WIDE" 3.0 opt  "NARR" 4.0 opt  as-knob
   "OSC 3" "FREQ" "cr-detune3" CreamParams.detune3 -7.0 7.0 -0.05 curve-lin knob
 
   "MIXER" "OSC1"  "cr-lvl1"  CreamParams.lvl1  0.0 1.0 1.0  curve-pow knob
@@ -55,7 +55,7 @@ include "../lib/manifest.fy"
   "FILTER" "AMOUNT" "cr-contour"  CreamParams.contour  0.0 6.0 3.0 curve-lin knob
   "FILTER" "KBD"    "cr-kbd"      CreamParams.kbd      0.0 1.0 0.33 curve-lin knob
   "FILTER" "MODE"   "cr-flt-mode" CreamParams.flt-mode 0 switch
-    "LP24" 0.0 opt  "LP12" 1.0 opt  "BP12" 2.0 opt  "HP24" 3.0 opt
+    "LP24" 0.0 opt  "LP12" 1.0 opt  "BP12" 2.0 opt  "HP24" 3.0 opt  as-knob
   "FILTER" "BASS"   "cr-bass-comp" CreamParams.bass-comp 1 switch
     "OFF" 0.0 opt  "ON" 1.0 opt
 
@@ -71,7 +71,7 @@ include "../lib/manifest.fy"
 
   "LFO" "RATE"  "cr-lfo-rate"  CreamParams.lfo-rate  0.1 20.0 5.0 curve-exp knob
   "LFO" "WAVE"  "cr-lfo-wave"  CreamParams.lfo-wave  0 switch
-    "TRI" 0.0 opt  "SQR" 1.0 opt  "SAW" 2.0 opt  "S&H" 3.0 opt
+    "TRI" 0.0 opt  "SQR" 1.0 opt  "SAW" 2.0 opt  "S&H" 3.0 opt  as-knob
   "LFO" "PITCH" "cr-lfo-pitch" CreamParams.lfo-pitch 0.0 12.0 0.0 curve-pow knob
   "LFO" "CUT"   "cr-lfo-cut"   CreamParams.lfo-cut   0.0 4.0 0.0 curve-pow knob
 
@@ -79,26 +79,27 @@ include "../lib/manifest.fy"
   "OUT" "AGE"   "cr-age"   CreamParams.age-amt 0.0 1.0 0.4 curve-lin knob
   "OUT" "LEVEL" "cr-level" CreamParams.level   0.0 1.0 0.6 curve-pow knob
 
-  "OSC 1" 1 strip
-  "OSC 2" 1 strip
-  "OSC 3" 1 strip
-  "MIXER" 1 strip
-  "FILTER" 1 strip
-  "F CONTOUR" 1 strip
-  "L CONTOUR" 1 strip
-  "LFO" 1 strip
-  "OUT" 1 strip
+  ( The Moog face: the oscillator bank as three rows, the mixer, the
+    modifiers [filter over its contour over the loudness contour], then
+    the LFO and output over the contours.  Range, waveform and filter
+    mode are rotary selectors. )
+  "OSC 1" 2 strip
+  "OSC 2" 5 strip
+  "OSC 3" 5 strip
+  "MIXER" 2 strip
+  "FILTER" 6 strip
+  "F CONTOUR" 4 strip
+  "L CONTOUR" 4 strip
+  "LFO" 2 strip
+  "OUT" 3 strip
 
   "CONTOURS" "F CONTOUR,L CONTOUR" adsr-display
 
-  4.0 row
-    1.0 cell  "OSC 1" 1.0 item  "OSC 2" 1.0 item  "OSC 3" 1.0 item
+  1.0 row
+    1.0 cell  "OSC 1" 0.0 item  "OSC 2" 0.0 item  "OSC 3" 1.0 item
     1.0 cell  "MIXER" 1.0 item
-    1.0 cell  "FILTER" 1.0 item
-    1.0 cell  "F CONTOUR" 1.0 item
-    1.0 cell  "L CONTOUR" 1.0 item
-    1.0 cell  "LFO" 1.0 item
-    1.0 cell  "OUT" 1.0 item  "CONTOURS" 1.0 item
+    1.0 cell  "FILTER" 0.0 item  "F CONTOUR" 0.0 item  "L CONTOUR" 1.0 item
+    1.0 cell  "LFO" 0.0 item  "OUT" 0.0 item  "CONTOURS" 1.0 item
 
   machine-desc
 ;
