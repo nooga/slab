@@ -18,6 +18,7 @@ const dx7_algorithms = @import("../dx7_algorithms.zig");
 const presets_mod = @import("../presets.zig");
 const wav = @import("../wav.zig");
 const waveform = @import("../waveform.zig");
+const keymap = @import("../keymap.zig");
 const native_dialog = @import("../native_dialog.zig");
 const ui_core = @import("../ui/core.zig");
 const ui_ctl = @import("../ui/controls.zig");
@@ -133,9 +134,18 @@ pub const FyRawMachine = struct {
     // Read-only audio assets loaded from disk at create (manifest `asset`),
     // shared across voices via params.
     asset_mem: [machine_desc.MAX_ASSETS]wav.Sample = [_]wav.Sample{.{ .data = &.{}, .sample_rate = 0 }} ** machine_desc.MAX_ASSETS,
+    // Keymap assets (manifest `keymap`): the loaded pool + zone table.
+    asset_keymap: [machine_desc.MAX_ASSETS]keymap.Keymap = [_]keymap.Keymap{.{}} ** machine_desc.MAX_ASSETS,
     // A valid silent target for assets that failed to load, so a kernel's
     // clamped read hits real zeroed memory instead of an empty slice's ptr.
-    asset_silence: [2]f64 align(8) = .{ 0, 0 },
+    // Long enough for an interpolator reading around the guard index.
+    asset_silence: [16]f64 align(8) = [_]f64{0} ** 16,
+    // The zone table an empty keymap points at: every slot unused.
+    empty_zones: [keymap.MAX_ZONES]keymap.Zone = [_]keymap.Zone{keymap.unused_zone} ** keymap.MAX_ZONES,
+    // Each asset's current source path (the manifest default, or what LOAD
+    // picked), for the project file.
+    asset_path: [machine_desc.MAX_ASSETS][512]u8 = undefined,
+    asset_path_len: [machine_desc.MAX_ASSETS]usize = [_]usize{0} ** machine_desc.MAX_ASSETS,
     // Peak pyramid per asset for oscillogram drawing (UI thread only).
     asset_cache: [machine_desc.MAX_ASSETS]waveform.PeakCache = [_]waveform.PeakCache{.{}} ** machine_desc.MAX_ASSETS,
     // Display name (basename) of each asset's currently loaded file.
@@ -218,24 +228,46 @@ pub const FyRawMachine = struct {
         for (self.desc.assets[0..self.desc.asset_count], 0..) |*req, ai| {
             var pbuf: [768]u8 = undefined;
             const full = std.fmt.bufPrint(&pbuf, "{s}/{s}", .{ dir, req.fileSlice() }) catch continue;
-            self.asset_mem[ai] = wav.load(alloc, full) catch wav.Sample{ .data = &.{}, .sample_rate = 0 };
-            self.asset_cache[ai].build(alloc, self.asset_mem[ai].data) catch {};
-            self.setAssetLabel(ai, req.fileSlice());
+            if (req.keymap) {
+                self.asset_keymap[ai] = keymap.load(alloc, full) catch keymap.Keymap{};
+                if (self.asset_keymap[ai].count > 0)
+                    self.asset_cache[ai].build(alloc, self.asset_keymap[ai].samples(self.asset_keymap[ai].zones[0])) catch {};
+            } else {
+                self.asset_mem[ai] = wav.load(alloc, full) catch wav.Sample{ .data = &.{}, .sample_rate = 0 };
+                self.asset_cache[ai].build(alloc, self.asset_mem[ai].data) catch {};
+            }
+            self.setAssetSource(ai, full);
         }
         self.injectAssets();
     }
 
-    fn setAssetLabel(self: *FyRawMachine, ai: usize, path: []const u8) void {
+    /// Remember where an asset came from, and label it: the file name,
+    /// plus the zone count for a keymap of more than one.
+    fn setAssetSource(self: *FyRawMachine, ai: usize, path: []const u8) void {
+        const np = @min(path.len, self.asset_path[ai].len);
+        @memcpy(self.asset_path[ai][0..np], path[0..np]);
+        self.asset_path_len[ai] = np;
         const base = std.fs.path.basename(path);
-        const n = @min(base.len, self.asset_label[ai].len);
-        @memcpy(self.asset_label[ai][0..n], base[0..n]);
+        const zones = self.asset_keymap[ai].count;
+        const label = if (self.desc.assets[ai].keymap and zones > 1)
+            std.fmt.bufPrint(&self.asset_label[ai], "{s} / {d} ZONES", .{ base, zones }) catch base
+        else
+            base;
+        const n = @min(label.len, self.asset_label[ai].len);
+        std.mem.copyForwards(u8, self.asset_label[ai][0..n], label[0..n]);
         self.asset_label_len[ai] = n;
+    }
+
+    /// The asset's current source path ("" if none): what a project saves.
+    pub fn assetPath(self: *const FyRawMachine, ai: usize) []const u8 {
+        return self.asset_path[ai][0..self.asset_path_len[ai]];
     }
 
     fn freeAssets(self: *FyRawMachine, alloc: std.mem.Allocator) void {
         for (self.asset_mem[0..self.desc.asset_count], 0..) |*s, ai| {
             if (s.data.len > 0) alloc.free(s.data);
             s.* = .{ .data = &.{}, .sample_rate = 0 };
+            self.asset_keymap[ai].deinit(alloc);
             self.asset_cache[ai].deinit(alloc);
         }
     }
@@ -244,8 +276,9 @@ pub const FyRawMachine = struct {
     // render path so the audio thread can't be mid-read of the old buffer
     // while we free it and repoint params. The peak cache is UI-only and
     // needs no fence. On failure the old sample is kept.
-    fn loadAssetRuntime(self: *FyRawMachine, ai: usize, path: []const u8) bool {
+    pub fn loadAssetRuntime(self: *FyRawMachine, ai: usize, path: []const u8) bool {
         if (ai >= self.desc.asset_count) return false;
+        if (self.desc.assets[ai].keymap) return self.loadKeymapRuntime(ai, path);
         var loaded = wav.load(self.alloc, path) catch return false;
         var new_cache = waveform.PeakCache{};
         new_cache.build(self.alloc, loaded.data) catch {
@@ -262,7 +295,31 @@ pub const FyRawMachine = struct {
         if (old.data.len > 0) self.alloc.free(old.data);
         self.asset_cache[ai].deinit(self.alloc);
         self.asset_cache[ai] = new_cache;
-        self.setAssetLabel(ai, path);
+        self.setAssetSource(ai, path);
+        return true;
+    }
+
+    /// The keymap flavour of loadAssetRuntime: load and map off the audio
+    /// thread, swap the pool and zone pointers inside the fence, free the
+    /// old map after.
+    fn loadKeymapRuntime(self: *FyRawMachine, ai: usize, path: []const u8) bool {
+        var loaded = keymap.load(self.alloc, path) catch return false;
+        var new_cache = waveform.PeakCache{};
+        new_cache.build(self.alloc, loaded.samples(loaded.zones[0])) catch {
+            loaded.deinit(self.alloc);
+            return false;
+        };
+
+        fy_host_mod.lockCallbacks();
+        var old = self.asset_keymap[ai];
+        self.asset_keymap[ai] = loaded;
+        self.injectAssets();
+        fy_host_mod.unlockCallbacks();
+
+        old.deinit(self.alloc);
+        self.asset_cache[ai].deinit(self.alloc);
+        self.asset_cache[ai] = new_cache;
+        self.setAssetSource(ai, path);
         return true;
     }
 
@@ -278,6 +335,14 @@ pub const FyRawMachine = struct {
     // blocks; only reset (which memsets params) needs a re-inject.
     fn injectAssets(self: *FyRawMachine) void {
         for (self.desc.assets[0..self.desc.asset_count], 0..) |*req, ai| {
+            if (req.keymap) {
+                const km = &self.asset_keymap[ai];
+                const has = km.count > 0;
+                self.writeParamUsize(req.ptr_offset, if (has) @intFromPtr(km.pool.ptr) else @intFromPtr(&self.asset_silence[0]));
+                self.writeParamUsize(req.len_offset, if (has) @intFromPtr(km.zones.ptr) else @intFromPtr(&self.empty_zones[0]));
+                self.writeParamF64(req.sr_offset, @floatFromInt(km.count));
+                continue;
+            }
             const s = self.asset_mem[ai];
             const ptr: usize = if (s.data.len > 0) @intFromPtr(s.data.ptr) else @intFromPtr(&self.asset_silence[0]);
             self.writeParamUsize(req.ptr_offset, ptr);
@@ -364,6 +429,8 @@ pub const FyRawMachine = struct {
             .current_preset = currentPresetImpl,
             .write_params_json = writeParamsJsonImpl,
             .set_param = setParamImpl,
+            .write_assets_json = writeAssetsJsonImpl,
+            .load_asset = loadAssetImpl,
         };
     }
 
@@ -610,6 +677,36 @@ fn jsonF64(v: std.json.Value) f64 {
 
 // Host param-set (project load): apply one id→value pair. Same real-value
 // convention as presets.
+// {"smp": "path/to/kit"}: every asset with a source path. Asset names are
+// manifest identifiers; paths are JSON-escaped.
+fn writeAssetsJsonImpl(state: *anyopaque, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    var first = true;
+    for (self.desc.assets[0..self.desc.asset_count], 0..) |*req, ai| {
+        const path = self.assetPath(ai);
+        if (path.len == 0) continue;
+        try out.appendSlice(alloc, if (first) "{\"" else ",\"");
+        first = false;
+        try out.appendSlice(alloc, req.nameSlice());
+        try out.appendSlice(alloc, "\":\"");
+        for (path) |ch| switch (ch) {
+            '"' => try out.appendSlice(alloc, "\\\""),
+            '\\' => try out.appendSlice(alloc, "\\\\"),
+            0...0x1f => {},
+            else => try out.append(alloc, ch),
+        };
+        try out.append(alloc, '"');
+    }
+    if (!first) try out.append(alloc, '}');
+}
+
+fn loadAssetImpl(state: *anyopaque, name: []const u8, path: []const u8) bool {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    const ai = self.assetIndexByName(name) orelse return false;
+    if (std.mem.eql(u8, self.assetPath(ai), path)) return true;
+    return self.loadAssetRuntime(ai, path);
+}
+
 fn setParamImpl(state: *anyopaque, id: []const u8, value: f64) void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     applyControlValue(self, id, value);
@@ -2089,7 +2186,8 @@ fn drawWaveformDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []cons
     var area = r;
     var bar = area.cutTop(20);
     if (ui_ctl.button(ui, bar.cutRight(52), .{ "load", ai }, null, .{ .label = "LOAD", .flush = true })) {
-        if (native_dialog.openAudioFile(self.alloc) catch null) |path| {
+        const picked = if (self.desc.assets[ai].keymap) native_dialog.openKeymap(self.alloc) else native_dialog.openAudioFile(self.alloc);
+        if (picked catch null) |path| {
             defer self.alloc.free(path);
             _ = self.loadAssetRuntime(ai, path);
         }
@@ -3161,12 +3259,14 @@ test "raw DSP2 sampler machine: asset loads and polyphonic notes sound" {
     const mach = inst.machineInterface();
     defer mach.deinit.?(mach.state, testing.allocator);
 
-    // The bundled asset loaded into the arena and got injected into params.
+    // The bundled keymap loaded into the arena and got injected into params.
     try testing.expectEqual(@as(usize, 1), inst.desc.asset_count);
-    try testing.expect(inst.asset_mem[0].data.len > 1000);
+    try testing.expect(inst.desc.assets[0].keymap);
+    try testing.expectEqual(@as(usize, 1), inst.asset_keymap[0].count);
+    try testing.expect(inst.asset_keymap[0].pool.len > 1000);
     const off = inst.desc.assets[0].ptr_offset;
     const ptr_bits: *align(8) const usize = @ptrCast(@alignCast(&inst.params_buf[off]));
-    try testing.expectEqual(@intFromPtr(inst.asset_mem[0].data.ptr), ptr_bits.*);
+    try testing.expectEqual(@intFromPtr(inst.asset_keymap[0].pool.ptr), ptr_bits.*);
     try testing.expectEqual(@as(usize, 8), inst.desc.voices);
 
     // Two-note chord through the voice pool produces sound; reset silences.
@@ -3197,13 +3297,267 @@ test "raw DSP2 sampler machine: asset loads and polyphonic notes sound" {
     // Runtime hot-swap (the path the LOAD button drives, minus the dialog):
     // the params pointer must follow the new buffer, the peak cache rebuild,
     // and the old buffer free without leaking (testing allocator enforces).
-    const old_ptr = @intFromPtr(inst.asset_mem[0].data.ptr);
+    const old_ptr = @intFromPtr(inst.asset_keymap[0].pool.ptr);
     try testing.expect(inst.loadAssetRuntime(0, "machines/sampler/assets/default.wav"));
-    const new_ptr = @intFromPtr(inst.asset_mem[0].data.ptr);
+    const new_ptr = @intFromPtr(inst.asset_keymap[0].pool.ptr);
     try testing.expect(new_ptr != old_ptr); // a fresh allocation
     const pbits: *align(8) const usize = @ptrCast(@alignCast(&inst.params_buf[off]));
     try testing.expectEqual(new_ptr, pbits.*);
     try testing.expect(inst.asset_cache[0].sample_count > 1000);
+}
+
+const keymap_test = struct {
+    extern fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
+    extern fn close(fd: c_int) c_int;
+    extern fn write(fd: c_int, buf: [*]const u8, count: usize) isize;
+    extern fn mkdir(path: [*:0]const u8, mode: c_uint) c_int;
+    const O_WRONLY: c_int = 1;
+    const O_CREAT: c_int = 0x200;
+    const O_TRUNC: c_int = 0x400;
+    const dir = ".zig-cache/tmp/keymap-test";
+
+    fn z(buf: []u8, path: []const u8) [*:0]const u8 {
+        @memcpy(buf[0..path.len], path);
+        buf[path.len] = 0;
+        return @ptrCast(buf.ptr);
+    }
+
+    fn mkdirs(sub: []const u8) void {
+        var b: [256]u8 = undefined;
+        _ = mkdir(z(&b, ".zig-cache/tmp"), 0o755);
+        _ = mkdir(z(&b, dir), 0o755);
+        var p: [256]u8 = undefined;
+        const full = std.fmt.bufPrint(&p, "{s}/{s}", .{ dir, sub }) catch return;
+        _ = mkdir(z(&b, full), 0o755);
+    }
+
+    fn put(buf: []u8, at: *usize, bytes: []const u8) void {
+        @memcpy(buf[at.*..][0..bytes.len], bytes);
+        at.* += bytes.len;
+    }
+
+    fn le32(v: u32) [4]u8 {
+        return .{ @truncate(v), @truncate(v >> 8), @truncate(v >> 16), @truncate(v >> 24) };
+    }
+
+    /// 16-bit mono WAV of a sine at hz for secs, with a smpl chunk when
+    /// root or loop is given.
+    fn sine(alloc: std.mem.Allocator, path: []const u8, hz: f64, secs: f64, root: ?u32, loop: ?[2]u32) !void {
+        const sr: u32 = 48_000;
+        const n: usize = @intFromFloat(secs * sr);
+        const smpl_len: u32 = if (root != null or loop != null) 36 + (if (loop != null) @as(u32, 24) else 0) else 0;
+        const total = 12 + 24 + (if (smpl_len > 0) 8 + smpl_len else 0) + 8 + n * 2;
+        const buf = try alloc.alloc(u8, total);
+        defer alloc.free(buf);
+        @memset(buf, 0);
+        var at: usize = 0;
+        put(buf, &at, "RIFF");
+        put(buf, &at, &le32(@intCast(total - 8)));
+        put(buf, &at, "WAVEfmt ");
+        put(buf, &at, &le32(16));
+        put(buf, &at, &.{ 1, 0, 1, 0 });
+        put(buf, &at, &le32(sr));
+        put(buf, &at, &le32(sr * 2));
+        put(buf, &at, &.{ 2, 0, 16, 0 });
+        if (smpl_len > 0) {
+            put(buf, &at, "smpl");
+            put(buf, &at, &le32(smpl_len));
+            const base = at;
+            at += smpl_len;
+            @memcpy(buf[base + 12 ..][0..4], &le32(root orelse 60));
+            if (loop) |lp| {
+                @memcpy(buf[base + 28 ..][0..4], &le32(1));
+                @memcpy(buf[base + 44 ..][0..4], &le32(lp[0]));
+                @memcpy(buf[base + 48 ..][0..4], &le32(lp[1] - 1));
+            }
+        }
+        put(buf, &at, "data");
+        put(buf, &at, &le32(@intCast(n * 2)));
+        for (0..n) |i| {
+            const t: f64 = @as(f64, @floatFromInt(i)) / sr;
+            const v: i16 = @intFromFloat(@round(0.5 * 32767 * @sin(2 * std.math.pi * hz * t)));
+            const u: u16 = @bitCast(v);
+            put(buf, &at, &.{ @truncate(u), @truncate(u >> 8) });
+        }
+        try writeAll(path, buf);
+    }
+
+    fn writeAll(path: []const u8, bytes: []const u8) !void {
+        var b: [512]u8 = undefined;
+        const fd = open(z(&b, path), O_WRONLY | O_CREAT | O_TRUNC, @as(c_int, 0o644));
+        if (fd < 0) return error.OpenFailed;
+        defer _ = close(fd);
+        if (write(fd, bytes.ptr, bytes.len) != @as(isize, @intCast(bytes.len))) return error.WriteFailed;
+    }
+
+    /// Play `events` into the first block, render `blocks`, return L.
+    fn play(inst: *FyRawMachine, events: []machine.NoteEvent, blocks: usize, out: []f32) void {
+        const mach = inst.machineInterface();
+        var ctx = std.mem.zeroes(machine.MachineCtx);
+        ctx.sample_rate = 48_000;
+        ctx.block_size = 512;
+        ctx.note_in = @ptrCast(events.ptr);
+        ctx.note_in_count = @intCast(events.len);
+        var r = [_]f32{0} ** 512;
+        for (0..blocks) |bi| {
+            testRender(mach, &ctx, out[bi * 512 ..][0..512], &r);
+            ctx.note_in_count = 0;
+        }
+    }
+
+    /// Rising zero crossings per second over x.
+    fn freq(x: []const f32) f64 {
+        var n: usize = 0;
+        var first: ?usize = null;
+        var last: usize = 0;
+        for (1..x.len) |i| if (x[i - 1] <= 0 and x[i] > 0) {
+            if (first == null) first = i;
+            last = i;
+            n += 1;
+        };
+        if (n < 2) return 0;
+        return @as(f64, @floatFromInt(n - 1)) * 48_000 / @as(f64, @floatFromInt(last - first.?));
+    }
+
+    fn rms(x: []const f32) f64 {
+        var acc: f64 = 0;
+        for (x) |v| acc += @as(f64, v) * v;
+        return @sqrt(acc / @as(f64, @floatFromInt(@max(x.len, 1))));
+    }
+
+    fn on(pitch: f32, vel: f32) machine.NoteEvent {
+        return .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = -1, .pitch = pitch, .velocity = vel };
+    }
+    fn off(pitch: f32) machine.NoteEvent {
+        return .{ .sample_offset = 0, .kind = .note_off, .channel = 0, .note_id = -1, .pitch = pitch, .velocity = 0 };
+    }
+};
+
+test "sampler keymap: a folder of note-named samples maps by key, pitch follows the root" {
+    const T = keymap_test;
+    const a = testing.allocator;
+    T.mkdirs("tones");
+    try T.sine(a, T.dir ++ "/tones/tone_C3.wav", 130.8128, 1.0, null, null);
+    try T.sine(a, T.dir ++ "/tones/tone_C5.wav", 523.2511, 1.0, null, null);
+    const inst = try FyRawMachine.create(a, "machines/sampler/sampler.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, a);
+    try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/tones"));
+    try testing.expectEqual(@as(usize, 2), inst.asset_keymap[0].count);
+
+    var out = [_]f32{0} ** (512 * 16);
+    // E3 falls in C3's half (0..60): 130.81 * 2^(4/12)
+    var e1 = [_]machine.NoteEvent{T.on(52, 1)};
+    T.play(inst, &e1, 16, &out);
+    try testing.expectApproxEqRel(@as(f64, 164.81), T.freq(out[2048..]), 0.01);
+    var e1o = [_]machine.NoteEvent{T.off(52)};
+    T.play(inst, &e1o, 16, &out);
+    // A4 falls in C5's half: 523.25 * 2^(-3/12)
+    var e2 = [_]machine.NoteEvent{T.on(69, 1)};
+    T.play(inst, &e2, 16, &out);
+    try testing.expectApproxEqRel(@as(f64, 440.0), T.freq(out[2048..]), 0.01);
+}
+
+test "sampler keymap: smpl root and loop hold a note past the sample's end" {
+    const T = keymap_test;
+    const a = testing.allocator;
+    T.mkdirs("");
+    // 0.1 s of 480 Hz recorded as B4 (71), looped over its second half
+    try T.sine(a, T.dir ++ "/loop.wav", 480, 0.1, 71, .{ 2400, 4800 });
+    const inst = try FyRawMachine.create(a, "machines/sampler/sampler.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, a);
+    try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/loop.wav"));
+    const z = inst.asset_keymap[0].zones[0];
+    try testing.expectEqual(@as(f64, 71), z.root);
+    try testing.expectEqual(keymap.LOOP_ON, z.loop_mode);
+    var out = [_]f32{0} ** (512 * 24);
+    var ev = [_]machine.NoteEvent{T.on(71, 1)};
+    T.play(inst, &ev, 24, &out);
+    // 0.25 s in, long past the 0.1 s sample, still sounding at pitch
+    const tail = out[512 * 20 ..];
+    try testing.expect(T.rms(tail) > 0.1);
+    try testing.expectApproxEqRel(@as(f64, 480), T.freq(tail), 0.01);
+}
+
+test "sampler keymap: drum folder, one-shots ignore note-off, closed hat chokes open" {
+    const T = keymap_test;
+    const a = testing.allocator;
+    T.mkdirs("kit");
+    try T.sine(a, T.dir ++ "/kit/kick.wav", 60, 0.5, null, null);
+    try T.sine(a, T.dir ++ "/kit/open hat.wav", 3000, 1.0, null, null);
+    try T.sine(a, T.dir ++ "/kit/closed hat.wav", 5000, 0.01, null, null);
+    const inst = try FyRawMachine.create(a, "machines/sampler/sampler.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, a);
+    try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/kit"));
+    try testing.expectEqual(@as(usize, 3), inst.asset_keymap[0].count);
+
+    var out = [_]f32{0} ** (512 * 8);
+    // kick on and straight off: a one-shot keeps playing
+    var k = [_]machine.NoteEvent{ T.on(36, 1), T.off(36) };
+    T.play(inst, &k, 8, &out);
+    try testing.expect(T.rms(out[512 * 6 ..]) > 0.05);
+    try testing.expectApproxEqRel(@as(f64, 60), T.freq(out[512..]), 0.02);
+    // let the kick finish
+    var none = [_]machine.NoteEvent{};
+    var long = [_]f32{0} ** (512 * 48);
+    T.play(inst, &none, 48, &long);
+
+    // open hat rings; a closed hat silences it within a few ms
+    var oh = [_]machine.NoteEvent{T.on(46, 1)};
+    T.play(inst, &oh, 4, &out);
+    try testing.expect(T.rms(out[512 * 2 .. 512 * 4]) > 0.1);
+    var ch = [_]machine.NoteEvent{T.on(42, 1)};
+    T.play(inst, &ch, 8, &out);
+    // the 10 ms closed hat is over and the open hat is gone
+    try testing.expect(T.rms(out[512 * 3 ..]) < 0.001);
+}
+
+test "sampler keymap: sfz velocity layers and ranges" {
+    const T = keymap_test;
+    const a = testing.allocator;
+    T.mkdirs("sfz");
+    try T.sine(a, T.dir ++ "/sfz/soft.wav", 220, 0.5, null, null);
+    try T.sine(a, T.dir ++ "/sfz/hard.wav", 330, 0.5, null, null);
+    try T.writeAll(T.dir ++ "/sfz/test.sfz",
+        \\<group> lokey=0 hikey=127 pitch_keycenter=a3
+        \\<region> sample=soft.wav hivel=63
+        \\<region> sample=hard.wav lovel=64
+    );
+    const inst = try FyRawMachine.create(a, "machines/sampler/sampler.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, a);
+    try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/sfz/test.sfz"));
+    try testing.expectEqual(@as(usize, 2), inst.asset_keymap[0].count);
+    var out = [_]f32{0} ** (512 * 12);
+    var soft = [_]machine.NoteEvent{T.on(57, 0.3)};
+    T.play(inst, &soft, 12, &out);
+    try testing.expectApproxEqRel(@as(f64, 220), T.freq(out[1024..]), 0.01);
+    var so = [_]machine.NoteEvent{T.off(57)};
+    T.play(inst, &so, 12, &out);
+    var hard = [_]machine.NoteEvent{T.on(57, 0.9)};
+    T.play(inst, &hard, 12, &out);
+    try testing.expectApproxEqRel(@as(f64, 330), T.freq(out[1024..]), 0.01);
+}
+
+test "sampler CLOCK engine: drop-sample playback at BITS stays in tune" {
+    const T = keymap_test;
+    const a = testing.allocator;
+    const inst = try FyRawMachine.create(a, "machines/sampler/sampler.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, a);
+    applyControlValue(inst, "smp-engine", 1);
+    applyControlValue(inst, "smp-bits", 8);
+    applyControlValue(inst, "smp-filter", 8000);
+    applyControlValue(inst, "smp-trk", 1);
+    var out = [_]f32{0} ** (512 * 8);
+    // the bundled pluck is A3 = 220 Hz; an octave up
+    var ev = [_]machine.NoteEvent{T.on(69, 1)};
+    T.play(inst, &ev, 8, &out);
+    for (out) |x| try testing.expect(std.math.isFinite(x));
+    try testing.expect(T.rms(out[512..]) > 0.01);
+    try testing.expectApproxEqRel(@as(f64, 440), T.freq(out[512 .. 512 * 5]), 0.02);
 }
 
 test "raw machine presets: scan factory, save round-trip, apply restores" {

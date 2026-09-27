@@ -81,6 +81,7 @@ JSON. Top level:
 | `pan` | −1 to 1, equal-power: centre is −3 dB per side, hard left/right is unity on one side |
 | `mute` / `solo` | any soloed track mutes all unsoloed ones |
 | `instrument.machine` | machine **id**: the folder name under `machines/` (`juno2`, not "Ju-Know"). Display names change; ids don't. |
+| `instrument.assets` | files the machine has loaded, by asset name. Only the sampler has one: `{"smp": "path"}`, where the path is a `.wav`, an `.sfz` or a folder of WAVs (relative to the working directory, or absolute). Missing: the machine keeps its bundled sample. |
 | `effects` | insert chain, run in order, stereo. `bypass: true` passes audio through untouched. |
 
 Signal flow per track: instrument → audio clips summed in → effects in
@@ -139,9 +140,26 @@ the clip, which then plays silent.
   D snare, D# clap, F# closed hat, A tom, A# open hat (canonically
   36, 38, 39, 42, 45, 46). The open and closed hats share a voice, so
   one chokes the other. Velocity feeds the kit's ACCENT param.
-- The **sampler** plays the single bundled sample
-  (`machines/sampler/assets/default.wav`) and can't pick a sample per
-  project yet.
+- The **sampler** plays its keymap, `instrument.assets.smp`, or the
+  bundled pluck without one. The keymap comes from one of three sources:
+  - **a WAV:** one zone over the whole keyboard. Its root and loop come
+    from the file's `smpl` chunk; without one, ROOT (`smp-root`, a MIDI
+    note) sets the root.
+  - **an SFZ file:** regions with `sample`, `key`/`lokey`/`hikey`,
+    `pitch_keycenter`, `lovel`/`hivel`, `tune`, `transpose`, `volume`,
+    `pan`, `loop_mode`, `loop_start`/`loop_end`, `group`/`off_by`, and
+    `<control> default_path`. Release triggers and generators are
+    skipped.
+  - **a folder:** if the file names contain notes (`Piano_C4.wav`,
+    `A#3`, C4 = 60), each sample covers the keys half way to its
+    neighbours, and several files at one root split the velocity range.
+    If none do, the folder is a drum kit: one one-shot per key, placed
+    by General MIDI keywords (kick 36, snare 38, clap 39, closed hat 42,
+    open hat 46, …) and then on free keys from 36. The hats share a
+    choke group.
+
+  Up to 128 zones. Stereo files are folded to mono. One-shot zones
+  ignore note-off.
 
 ## Where loading fails silently
 
@@ -163,5 +181,5 @@ writing a file.
 
 ## Not in the format yet
 
-Automation, tempo changes, sends and returns, sidechain, a per-project
-sampler sample, and the meter map's accent groups.
+Automation, tempo changes, sends and returns, sidechain, and the meter
+map's accent groups.

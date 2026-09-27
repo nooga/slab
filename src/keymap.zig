@@ -1,0 +1,805 @@
+//! Keymaps for the sampler: which sample plays for which key and velocity.
+//!
+//! A keymap loads from one of three sources:
+//!   - a single WAV: one zone over the whole keyboard, root and loop from
+//!     its `smpl` chunk when it has one;
+//!   - an SFZ file: <global>/<master>/<group>/<region> opcodes (the subset
+//!     below), sample paths relative to the file and its default_path;
+//!   - a folder of WAVs: note names in the file names (Piano_C4.wav,
+//!     "Str A#3 v2.wav") make a melodic multisample, each sample covering
+//!     the keys half way to its neighbours, several at one root splitting
+//!     the velocity range; a folder without note names is a drum kit, one
+//!     one-shot per key, placed by General MIDI keywords (kick 36, snare
+//!     38, closed hat 42, …) with the hats in one choke group.
+//!
+//! Every sample lands in one f64 pool with GUARD zeros around each, and a
+//! zone addresses its sample by offset, so the fy voice reads everything
+//! through one pointer (`Zone` in kernels/06-voices/sampler.fy mirrors the
+//! struct below). Loading runs on the UI thread; the machine swaps the
+//! finished keymap in under the callback fence.
+
+const std = @import("std");
+const wav = @import("wav.zig");
+
+extern fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
+extern fn close(fd: c_int) c_int;
+extern fn read(fd: c_int, buf: [*]u8, count: usize) isize;
+const O_RDONLY: c_int = 0;
+
+const DIR = opaque {};
+extern fn opendir(path: [*:0]const u8) ?*DIR;
+extern fn readdir(dir: *DIR) ?*Dirent;
+extern fn closedir(dir: *DIR) c_int;
+// macOS arm64 dirent (see presets.zig).
+const Dirent = extern struct {
+    d_ino: u64,
+    d_seekoff: u64,
+    d_reclen: u16,
+    d_namlen: u16,
+    d_type: u8,
+    d_name: [1024]u8,
+};
+const DT_DIR: u8 = 4;
+
+pub const MAX_ZONES = 128;
+/// Zero samples before and after each sample in the pool, so a 4-point
+/// interpolator at either end reads silence, never a neighbour.
+pub const GUARD = 4;
+const MAX_FILES = 256;
+const MAX_SFZ_BYTES = 1 << 20;
+
+pub const LOOP_NONE: f64 = 0;
+pub const LOOP_ON: f64 = 1;
+/// Plays to the end whatever note-off does (drums).
+pub const LOOP_ONESHOT: f64 = 2;
+
+/// One zone: 16 f64 cells, mirrored by `Zone` in kernels/06-voices/sampler.fy.
+pub const Zone = extern struct {
+    start: f64 = 0, // the sample's first cell in the pool
+    len: f64 = 0, // samples
+    sr: f64 = 48_000, // the sample's native rate
+    lo_key: f64 = 0,
+    hi_key: f64 = 127,
+    lo_vel: f64 = 0, // 0..127
+    hi_vel: f64 = 127,
+    root: f64 = -1, // MIDI note it sounds at unshifted; < 0: the machine's ROOT
+    gain: f64 = 1,
+    loop_mode: f64 = LOOP_NONE,
+    loop_start: f64 = 0, // samples from start
+    loop_end: f64 = 0, // exclusive; <= loop_start means no loop points
+    group: f64 = 0, // choke: a note here silences zones with off_by == group
+    off_by: f64 = 0,
+    pan: f64 = 0, // -1..1
+    _pad: f64 = 0,
+};
+
+comptime {
+    std.debug.assert(@sizeOf(Zone) == 16 * 8);
+}
+
+/// What fills a table's unused slots: a key range nothing falls in.
+pub const unused_zone = Zone{ .lo_key = 1000, .hi_key = -1 };
+
+pub const Keymap = struct {
+    pool: []f64 = &.{},
+    /// Always MAX_ZONES long (the voice's scan reads every slot); the
+    /// first `count` are real, the rest `unused_zone`.
+    zones: []Zone = &.{},
+    count: usize = 0,
+
+    pub fn deinit(self: *Keymap, alloc: std.mem.Allocator) void {
+        if (self.pool.len > 0) alloc.free(self.pool);
+        if (self.zones.len > 0) alloc.free(self.zones);
+        self.* = .{};
+    }
+
+    /// The zone's samples, without guards.
+    pub fn samples(self: *const Keymap, z: Zone) []const f64 {
+        const s: usize = @intFromFloat(z.start);
+        const n: usize = @intFromFloat(z.len);
+        return self.pool[s .. s + n];
+    }
+};
+
+pub const Error = error{
+    OpenFailed,
+    ReadFailed,
+    NoZones,
+    TooManyZones,
+    PathTooLong,
+    OutOfMemory,
+} || wav.Error;
+
+/// Load a keymap from a .wav, a .sfz or a folder.
+pub fn load(alloc: std.mem.Allocator, path: []const u8) Error!Keymap {
+    var b = Builder.init(alloc);
+    defer b.deinit();
+    if (endsWithIgnoreCase(path, ".sfz")) {
+        try loadSfz(&b, path);
+    } else if (isDir(path)) {
+        try loadFolder(&b, path);
+    } else {
+        const si = try b.sample(path);
+        const s = b.files.items[si].s;
+        var z = Zone{ .root = s.root_key };
+        if (s.loop_end > s.loop_start) {
+            z.loop_mode = LOOP_ON;
+            z.loop_start = @floatFromInt(s.loop_start);
+            z.loop_end = @floatFromInt(s.loop_end);
+        }
+        try b.zone(si, z);
+    }
+    return b.finish();
+}
+
+// ── builder: samples loaded once, zones referring to them ───────────────
+
+const File = struct { path: []u8, s: wav.Sample };
+
+const Builder = struct {
+    alloc: std.mem.Allocator,
+    files: std.ArrayList(File) = .empty,
+    zones: std.ArrayList(Zone) = .empty,
+    zone_file: std.ArrayList(usize) = .empty,
+
+    fn init(alloc: std.mem.Allocator) Builder {
+        return .{ .alloc = alloc };
+    }
+
+    fn deinit(self: *Builder) void {
+        for (self.files.items) |*f| {
+            self.alloc.free(f.path);
+            f.s.deinit(self.alloc);
+        }
+        self.files.deinit(self.alloc);
+        self.zones.deinit(self.alloc);
+        self.zone_file.deinit(self.alloc);
+    }
+
+    /// Index of the loaded sample at `path`, loading it the first time.
+    fn sample(self: *Builder, path: []const u8) Error!usize {
+        for (self.files.items, 0..) |f, i| if (std.mem.eql(u8, f.path, path)) return i;
+        var s = try wav.load(self.alloc, path);
+        errdefer s.deinit(self.alloc);
+        const owned = self.alloc.dupe(u8, path) catch return Error.OutOfMemory;
+        errdefer self.alloc.free(owned);
+        self.files.append(self.alloc, .{ .path = owned, .s = s }) catch return Error.OutOfMemory;
+        return self.files.items.len - 1;
+    }
+
+    fn zone(self: *Builder, file: usize, z: Zone) Error!void {
+        if (self.zones.items.len >= MAX_ZONES) return Error.TooManyZones;
+        var zz = z;
+        const s = self.files.items[file].s;
+        zz.len = @floatFromInt(s.data.len);
+        zz.sr = if (s.sample_rate > 0) s.sample_rate else 48_000;
+        zz.loop_start = std.math.clamp(zz.loop_start, 0, zz.len);
+        zz.loop_end = std.math.clamp(zz.loop_end, 0, zz.len);
+        self.zones.append(self.alloc, zz) catch return Error.OutOfMemory;
+        self.zone_file.append(self.alloc, file) catch return Error.OutOfMemory;
+    }
+
+    /// Lay the samples into one pool and point each zone at its sample.
+    fn finish(self: *Builder) Error!Keymap {
+        if (self.zones.items.len == 0) return Error.NoZones;
+        var total: usize = GUARD;
+        for (self.files.items) |f| total += f.s.data.len + GUARD;
+        const pool = self.alloc.alloc(f64, total) catch return Error.OutOfMemory;
+        errdefer self.alloc.free(pool);
+        @memset(pool, 0);
+        const starts = self.alloc.alloc(usize, self.files.items.len) catch return Error.OutOfMemory;
+        defer self.alloc.free(starts);
+        var at: usize = GUARD;
+        for (self.files.items, 0..) |f, i| {
+            starts[i] = at;
+            @memcpy(pool[at .. at + f.s.data.len], f.s.data);
+            at += f.s.data.len + GUARD;
+        }
+        const zones = self.alloc.alloc(Zone, MAX_ZONES) catch return Error.OutOfMemory;
+        @memset(zones, unused_zone);
+        const n = self.zones.items.len;
+        @memcpy(zones[0..n], self.zones.items);
+        for (zones[0..n], self.zone_file.items) |*z, fi| z.start = @floatFromInt(starts[fi]);
+        return .{ .pool = pool, .zones = zones, .count = n };
+    }
+};
+
+// ── folders ──────────────────────────────────────────────────────────────
+
+fn loadFolder(b: *Builder, dir: []const u8) Error!void {
+    var names_buf: [MAX_FILES][256]u8 = undefined;
+    var names_len: [MAX_FILES]usize = undefined;
+    var n: usize = 0;
+    {
+        var zbuf: [1024:0]u8 = undefined;
+        if (dir.len >= zbuf.len) return Error.PathTooLong;
+        @memcpy(zbuf[0..dir.len], dir);
+        zbuf[dir.len] = 0;
+        const d = opendir(@ptrCast(&zbuf[0])) orelse return Error.OpenFailed;
+        defer _ = closedir(d);
+        while (readdir(d)) |e| {
+            const name = e.d_name[0..e.d_namlen];
+            if (name.len == 0 or name[0] == '.' or e.d_type == DT_DIR) continue;
+            if (!endsWithIgnoreCase(name, ".wav") or name.len > 255) continue;
+            if (n == MAX_FILES) break;
+            @memcpy(names_buf[n][0..name.len], name);
+            names_len[n] = name.len;
+            n += 1;
+        }
+    }
+    if (n == 0) return Error.NoZones;
+    var names: [MAX_FILES][]const u8 = undefined;
+    for (0..n) |i| names[i] = names_buf[i][0..names_len[i]];
+    std.mem.sort([]const u8, names[0..n], {}, lessName);
+
+    var specs: [MAX_FILES]Spec = undefined;
+    for (names[0..n], 0..) |name, i| specs[i] = .{ .name = name, .root = noteFromName(stem(name)) };
+    const melodic = for (specs[0..n]) |sp| {
+        if (sp.root != null) break true;
+    } else false;
+    // A melodic folder drops the files without a note in their name.
+    var used = n;
+    if (melodic) {
+        used = 0;
+        for (specs[0..n]) |sp| if (sp.root != null) {
+            specs[used] = sp;
+            used += 1;
+        };
+        mapMelodic(specs[0..used]);
+    } else mapDrums(specs[0..n]);
+
+    for (specs[0..used]) |sp| {
+        var pbuf: [1024]u8 = undefined;
+        const full = std.fmt.bufPrint(&pbuf, "{s}/{s}", .{ dir, sp.name }) catch return Error.PathTooLong;
+        const si = try b.sample(full);
+        const s = b.files.items[si].s;
+        var z = sp.zone;
+        if (!melodic) {
+            z.loop_mode = LOOP_ONESHOT;
+        } else if (s.loop_end > s.loop_start) {
+            z.loop_mode = LOOP_ON;
+            z.loop_start = @floatFromInt(s.loop_start);
+            z.loop_end = @floatFromInt(s.loop_end);
+        }
+        try b.zone(si, z);
+    }
+}
+
+const Spec = struct {
+    name: []const u8,
+    root: ?f64,
+    zone: Zone = .{},
+};
+
+fn lessName(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.order(u8, a, b) == .lt;
+}
+
+fn lessRoot(_: void, a: Spec, b: Spec) bool {
+    if (a.root.? != b.root.?) return a.root.? < b.root.?;
+    return std.mem.order(u8, a.name, b.name) == .lt;
+}
+
+/// Each root covers the keys half way to its neighbours; several files at
+/// one root split 0..127 velocity evenly, in name order.
+fn mapMelodic(specs: []Spec) void {
+    std.mem.sort(Spec, specs, {}, lessRoot);
+    var i: usize = 0;
+    var prev_root: ?f64 = null;
+    while (i < specs.len) {
+        const root = specs[i].root.?;
+        var j = i;
+        while (j < specs.len and specs[j].root.? == root) j += 1;
+        const next_root: ?f64 = if (j < specs.len) specs[j].root.? else null;
+        const lo: f64 = if (prev_root) |p| @floor((p + root) / 2) + 1 else 0;
+        const hi: f64 = if (next_root) |q| @floor((root + q) / 2) else 127;
+        const layers: f64 = @floatFromInt(j - i);
+        for (specs[i..j], 0..) |*sp, li| {
+            const l: f64 = @floatFromInt(li);
+            sp.zone = .{
+                .lo_key = @max(lo, 0),
+                .hi_key = @min(hi, 127),
+                .root = root,
+                .lo_vel = @floor(128 * l / layers),
+                .hi_vel = @floor(128 * (l + 1) / layers) - 1,
+            };
+        }
+        prev_root = root;
+        i = j;
+    }
+}
+
+/// General MIDI placement by keyword; the rest fill free keys from 36 up.
+fn mapDrums(specs: []Spec) void {
+    var used = [_]bool{false} ** 128;
+    for (specs) |*sp| {
+        const key = gmKey(stem(sp.name));
+        if (key) |k| if (!used[k]) {
+            used[k] = true;
+            sp.zone = drumZone(k);
+            continue;
+        };
+        sp.zone.lo_key = -1; // placed below
+    }
+    var next: usize = 36;
+    for (specs) |*sp| {
+        if (sp.zone.lo_key >= 0) continue;
+        while (next < 127 and used[next]) next += 1;
+        used[next] = true;
+        sp.zone = drumZone(next);
+    }
+}
+
+fn drumZone(key: usize) Zone {
+    const k: f64 = @floatFromInt(key);
+    // closed, pedal and open hats choke each other
+    const hat = key == 42 or key == 44 or key == 46;
+    return .{
+        .lo_key = k,
+        .hi_key = k,
+        .root = k,
+        .group = if (hat) 1 else 0,
+        .off_by = if (hat) 1 else 0,
+    };
+}
+
+fn gmKey(name: []const u8) ?usize {
+    var words: [16][]const u8 = undefined;
+    var nw: usize = 0;
+    var it = std.mem.tokenizeAny(u8, name, " _-.()[]");
+    while (it.next()) |w| {
+        if (nw == words.len) break;
+        words[nw] = w;
+        nw += 1;
+    }
+    const has = struct {
+        fn f(ws: []const []const u8, keys: []const []const u8) bool {
+            for (ws) |w| for (keys) |k| {
+                if (std.ascii.startsWithIgnoreCase(w, k)) return true;
+            };
+            return false;
+        }
+    }.f;
+    const ws = words[0..nw];
+    if (has(ws, &.{ "kick", "bd", "bassdrum" })) return 36;
+    if (has(ws, &.{ "rim", "rs", "sidestick" })) return 37;
+    if (has(ws, &.{ "snare", "sd", "snr" })) return 38;
+    if (has(ws, &.{ "clap", "cp", "handclap" })) return 39;
+    if (has(ws, &.{ "ohh", "oh", "openhat" }) or (has(ws, &.{ "hat", "hh", "hihat" }) and has(ws, &.{"open"}))) return 46;
+    if (has(ws, &.{ "phh", "pedal" })) return 44;
+    if (has(ws, &.{ "hat", "hh", "hihat", "chh", "ch" })) return 42;
+    if (has(ws, &.{"tom"})) {
+        if (has(ws, &.{ "lo", "low", "floor" })) return 41;
+        if (has(ws, &.{ "hi", "high" })) return 48;
+        return 45;
+    }
+    if (has(ws, &.{ "crash", "cy", "cymbal" })) return 49;
+    if (has(ws, &.{"ride"})) return 51;
+    if (has(ws, &.{"tamb"})) return 54;
+    if (has(ws, &.{ "cowbell", "cb", "bell" })) return 56;
+    if (has(ws, &.{"conga"})) return 63;
+    if (has(ws, &.{ "shaker", "shk", "maraca" })) return 70;
+    if (has(ws, &.{"clave"})) return 75;
+    return null;
+}
+
+/// The note named in a file name (C4 = 60; C#4 Db4 Cs4 c4; the last one
+/// wins), or a stem that is only digits 0..127 (a MIDI number).
+pub fn noteFromName(name: []const u8) ?f64 {
+    if (name.len > 0 and name.len <= 3) {
+        if (std.fmt.parseInt(u8, name, 10)) |v| {
+            if (v < 128) return @floatFromInt(v);
+        } else |_| {}
+    }
+    var found: ?f64 = null;
+    var i: usize = 0;
+    while (i < name.len) : (i += 1) {
+        if (i > 0 and std.ascii.isAlphabetic(name[i - 1])) continue;
+        if (parseNoteAt(name, i)) |r| {
+            const end = i + r.len;
+            if (end < name.len and std.ascii.isAlphanumeric(name[end])) continue;
+            found = r.note;
+        }
+    }
+    return found;
+}
+
+const NoteParse = struct { note: f64, len: usize };
+
+/// A note name at name[i..]: letter, optional #/b/s, optional -, one digit.
+fn parseNoteAt(name: []const u8, i: usize) ?NoteParse {
+    const pcs = [_]i32{ 9, 11, 0, 2, 4, 5, 7 }; // a b c d e f g
+    const c = std.ascii.toLower(name[i]);
+    if (c < 'a' or c > 'g') return null;
+    var pc = pcs[c - 'a'];
+    var j = i + 1;
+    if (j < name.len and (name[j] == '#' or name[j] == 's')) {
+        pc += 1;
+        j += 1;
+    } else if (j < name.len and name[j] == 'b' and j + 1 < name.len and (std.ascii.isDigit(name[j + 1]) or name[j + 1] == '-')) {
+        pc -= 1;
+        j += 1;
+    }
+    var neg = false;
+    if (j < name.len and name[j] == '-') {
+        neg = true;
+        j += 1;
+    }
+    if (j >= name.len or !std.ascii.isDigit(name[j])) return null;
+    var oct: i32 = name[j] - '0';
+    j += 1;
+    if (neg) oct = -oct;
+    const note = (oct + 1) * 12 + pc;
+    if (note < 0 or note > 127) return null;
+    return .{ .note = @floatFromInt(note), .len = j - i };
+}
+
+// ── SFZ ──────────────────────────────────────────────────────────────────
+
+const MAX_OPS = 48;
+const Op = struct { key: []const u8, val: []const u8 };
+const Level = struct {
+    ops: [MAX_OPS]Op = undefined,
+    n: usize = 0,
+    fn set(self: *Level, key: []const u8, val: []const u8) void {
+        for (self.ops[0..self.n]) |*o| if (std.mem.eql(u8, o.key, key)) {
+            o.val = val;
+            return;
+        };
+        if (self.n < MAX_OPS) {
+            self.ops[self.n] = .{ .key = key, .val = val };
+            self.n += 1;
+        }
+    }
+    fn get(self: *const Level, key: []const u8) ?[]const u8 {
+        for (self.ops[0..self.n]) |o| if (std.mem.eql(u8, o.key, key)) return o.val;
+        return null;
+    }
+};
+
+/// A region with its inherited opcodes resolved, before its sample loads.
+pub const SfzRegion = struct {
+    sample: []const u8,
+    zone: Zone,
+    // Loop points given by opcodes; otherwise the file's.
+    has_loop_mode: bool = false,
+    has_loop_points: bool = false,
+};
+
+fn loadSfz(b: *Builder, path: []const u8) Error!void {
+    const text = try readFile(b.alloc, path);
+    defer b.alloc.free(text);
+    var regions: [MAX_ZONES]SfzRegion = undefined;
+    var dpath_buf: [512]u8 = undefined;
+    const r = parseSfz(text, &regions, &dpath_buf);
+    const dir = std.fs.path.dirname(path) orelse ".";
+    for (regions[0..r.count]) |reg| {
+        var pbuf: [1024]u8 = undefined;
+        const full = std.fmt.bufPrint(&pbuf, "{s}/{s}{s}", .{ dir, r.default_path, reg.sample }) catch return Error.PathTooLong;
+        for (full) |*ch| if (ch.* == '\\') {
+            ch.* = '/';
+        };
+        const si = b.sample(full) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue, // a missing sample drops its region, not the map
+        };
+        const s = b.files.items[si].s;
+        var z = reg.zone;
+        if (!reg.has_loop_points and s.loop_end > s.loop_start) {
+            z.loop_start = @floatFromInt(s.loop_start);
+            z.loop_end = @floatFromInt(s.loop_end);
+            // SFZ: a sample with loop points loops unless told otherwise.
+            if (!reg.has_loop_mode) z.loop_mode = LOOP_ON;
+        }
+        try b.zone(si, z);
+    }
+}
+
+pub const SfzResult = struct { count: usize, default_path: []const u8 };
+
+/// Parse SFZ text into regions (up to out.len). Supported opcodes: sample,
+/// key, lokey, hikey, pitch_keycenter, lovel, hivel, tune, transpose,
+/// volume, pan, loop_mode, loop_start, loop_end, group, off_by, trigger
+/// (release regions are skipped), and <control> default_path. Unknown
+/// opcodes are ignored.
+pub fn parseSfz(text: []const u8, out: []SfzRegion, dpath_buf: []u8) SfzResult {
+    var control = Level{};
+    var global = Level{};
+    var master = Level{};
+    var group = Level{};
+    var region = Level{};
+    const Hdr = enum { none, control, global, master, group, region };
+    var cur: Hdr = .none;
+    var count: usize = 0;
+
+    var i: usize = 0;
+    while (true) {
+        // skip whitespace and comments
+        while (i < text.len) {
+            if (std.ascii.isWhitespace(text[i])) {
+                i += 1;
+            } else if (i + 1 < text.len and text[i] == '/' and text[i + 1] == '/') {
+                while (i < text.len and text[i] != '\n') i += 1;
+            } else if (i + 1 < text.len and text[i] == '/' and text[i + 1] == '*') {
+                i += 2;
+                while (i + 1 < text.len and !(text[i] == '*' and text[i + 1] == '/')) i += 1;
+                i += 2;
+            } else break;
+        }
+        const at_end = i >= text.len;
+        const at_header = !at_end and text[i] == '<';
+        if (at_end or at_header) {
+            if (cur == .region and count < out.len) {
+                if (resolveRegion(&region, &group, &master, &global)) |reg| {
+                    out[count] = reg;
+                    count += 1;
+                }
+            }
+            if (at_end) break;
+            const close_i = std.mem.indexOfScalarPos(u8, text, i, '>') orelse break;
+            const name = text[i + 1 .. close_i];
+            i = close_i + 1;
+            region = .{};
+            if (std.mem.eql(u8, name, "region")) {
+                cur = .region;
+            } else if (std.mem.eql(u8, name, "group")) {
+                cur = .group;
+                group = .{};
+            } else if (std.mem.eql(u8, name, "master")) {
+                cur = .master;
+                master = .{};
+                group = .{};
+            } else if (std.mem.eql(u8, name, "global")) {
+                cur = .global;
+                global = .{};
+                master = .{};
+                group = .{};
+            } else if (std.mem.eql(u8, name, "control")) {
+                cur = .control;
+            } else cur = .none;
+            continue;
+        }
+        // opcode=value; a value runs to the next opcode, header or line end
+        const eq = std.mem.indexOfScalarPos(u8, text, i, '=') orelse break;
+        const key = std.mem.trim(u8, text[i..eq], " \t\r");
+        var j = eq + 1;
+        const vstart = j;
+        var vend = j;
+        while (j < text.len and text[j] != '\n' and text[j] != '<') {
+            if (std.ascii.isWhitespace(text[j]) and nextIsOpcode(text, j)) break;
+            if (j + 1 < text.len and text[j] == '/' and text[j + 1] == '/') break;
+            j += 1;
+            vend = j;
+        }
+        const val = std.mem.trim(u8, text[vstart..vend], " \t\r");
+        i = j;
+        switch (cur) {
+            .control => control.set(key, val),
+            .global => global.set(key, val),
+            .master => master.set(key, val),
+            .group => group.set(key, val),
+            .region => region.set(key, val),
+            .none => {},
+        }
+    }
+    var dp: []const u8 = "";
+    if (control.get("default_path")) |p| if (p.len <= dpath_buf.len) {
+        @memcpy(dpath_buf[0..p.len], p);
+        for (dpath_buf[0..p.len]) |*ch| if (ch.* == '\\') {
+            ch.* = '/';
+        };
+        dp = dpath_buf[0..p.len];
+    };
+    return .{ .count = count, .default_path = dp };
+}
+
+fn nextIsOpcode(text: []const u8, ws: usize) bool {
+    var k = ws;
+    while (k < text.len and (text[k] == ' ' or text[k] == '\t')) k += 1;
+    const s = k;
+    while (k < text.len and (std.ascii.isAlphanumeric(text[k]) or text[k] == '_')) k += 1;
+    return k > s and k < text.len and text[k] == '=';
+}
+
+fn resolveRegion(region: *const Level, group: *const Level, master: *const Level, global: *const Level) ?SfzRegion {
+    const levels = [_]*const Level{ region, group, master, global };
+    const get = struct {
+        fn f(ls: []const *const Level, key: []const u8) ?[]const u8 {
+            for (ls) |l| if (l.get(key)) |v| return v;
+            return null;
+        }
+    }.f;
+    const sample = get(&levels, "sample") orelse return null;
+    if (sample.len == 0 or sample[0] == '*') return null; // generators
+    if (get(&levels, "trigger")) |t| if (!std.mem.eql(u8, t, "attack")) return null;
+
+    var z = Zone{ .root = 60 };
+    if (get(&levels, "key")) |v| if (parseSfzNote(v)) |k| {
+        z.lo_key = k;
+        z.hi_key = k;
+        z.root = k;
+    };
+    if (get(&levels, "lokey")) |v| if (parseSfzNote(v)) |k| {
+        z.lo_key = k;
+    };
+    if (get(&levels, "hikey")) |v| if (parseSfzNote(v)) |k| {
+        z.hi_key = k;
+    };
+    if (get(&levels, "pitch_keycenter")) |v| if (parseSfzNote(v)) |k| {
+        z.root = k;
+    };
+    if (num(get(&levels, "lovel"))) |v| z.lo_vel = v;
+    if (num(get(&levels, "hivel"))) |v| z.hi_vel = v;
+    // The root moves opposite to tuning: +100 cents sounds a semitone up.
+    if (num(get(&levels, "tune"))) |v| z.root -= v / 100;
+    if (num(get(&levels, "transpose"))) |v| z.root -= v;
+    if (num(get(&levels, "volume"))) |v| z.gain = std.math.pow(f64, 10, v / 20);
+    if (num(get(&levels, "pan"))) |v| z.pan = std.math.clamp(v / 100, -1, 1);
+    if (num(get(&levels, "group"))) |v| z.group = v;
+    if (num(get(&levels, "off_by"))) |v| z.off_by = v;
+    var reg = SfzRegion{ .sample = sample, .zone = z };
+    const lm = get(&levels, "loop_mode") orelse get(&levels, "loopmode");
+    if (lm) |m| {
+        reg.has_loop_mode = true;
+        reg.zone.loop_mode = if (std.mem.startsWith(u8, m, "loop_")) LOOP_ON else if (std.mem.eql(u8, m, "one_shot")) LOOP_ONESHOT else LOOP_NONE;
+    }
+    const ls = num(get(&levels, "loop_start") orelse get(&levels, "loopstart"));
+    const le = num(get(&levels, "loop_end") orelse get(&levels, "loopend"));
+    if (ls != null and le != null) {
+        reg.has_loop_points = true;
+        reg.zone.loop_start = ls.?;
+        reg.zone.loop_end = le.? + 1; // SFZ loop_end is inclusive
+    }
+    return reg;
+}
+
+fn num(v: ?[]const u8) ?f64 {
+    const s = v orelse return null;
+    return std.fmt.parseFloat(f64, s) catch null;
+}
+
+/// An SFZ key: a MIDI number or a note name (c4 = 60, c#4, db4).
+pub fn parseSfzNote(v: []const u8) ?f64 {
+    if (std.fmt.parseFloat(f64, v)) |n| return n else |_| {}
+    if (v.len == 0) return null;
+    const r = parseNoteAt(v, 0) orelse return null;
+    return if (r.len == v.len) r.note else null;
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────
+
+fn stem(name: []const u8) []const u8 {
+    const dot = std.mem.lastIndexOfScalar(u8, name, '.') orelse return name;
+    return name[0..dot];
+}
+
+fn endsWithIgnoreCase(s: []const u8, suffix: []const u8) bool {
+    return s.len >= suffix.len and std.ascii.eqlIgnoreCase(s[s.len - suffix.len ..], suffix);
+}
+
+fn isDir(path: []const u8) bool {
+    var zbuf: [1024:0]u8 = undefined;
+    if (path.len >= zbuf.len) return false;
+    @memcpy(zbuf[0..path.len], path);
+    zbuf[path.len] = 0;
+    const d = opendir(@ptrCast(&zbuf[0])) orelse return false;
+    _ = closedir(d);
+    return true;
+}
+
+fn readFile(alloc: std.mem.Allocator, path: []const u8) Error![]u8 {
+    var zbuf: [1024:0]u8 = undefined;
+    if (path.len >= zbuf.len) return Error.PathTooLong;
+    @memcpy(zbuf[0..path.len], path);
+    zbuf[path.len] = 0;
+    const fd = open(@ptrCast(&zbuf[0]), O_RDONLY);
+    if (fd < 0) return Error.OpenFailed;
+    defer _ = close(fd);
+    var list: std.ArrayList(u8) = .empty;
+    errdefer list.deinit(alloc);
+    var chunk: [8192]u8 = undefined;
+    while (true) {
+        const n = read(fd, &chunk, chunk.len);
+        if (n < 0) return Error.ReadFailed;
+        if (n == 0) break;
+        list.appendSlice(alloc, chunk[0..@intCast(n)]) catch return Error.OutOfMemory;
+        if (list.items.len > MAX_SFZ_BYTES) return Error.TooLarge;
+    }
+    return list.toOwnedSlice(alloc) catch Error.OutOfMemory;
+}
+
+// ── tests ────────────────────────────────────────────────────────────────
+
+const testing = std.testing;
+
+test "note names in file names" {
+    try testing.expectEqual(@as(?f64, 60), noteFromName("Piano_C4"));
+    try testing.expectEqual(@as(?f64, 58), noteFromName("Str A#3 v2"));
+    try testing.expectEqual(@as(?f64, 61), noteFromName("db4"));
+    try testing.expectEqual(@as(?f64, 58), noteFromName("BRASS-Bb3"));
+    try testing.expectEqual(@as(?f64, 0), noteFromName("C-1"));
+    try testing.expectEqual(@as(?f64, 64), noteFromName("064"));
+    try testing.expectEqual(@as(?f64, null), noteFromName("Kick 808"));
+    try testing.expectEqual(@as(?f64, null), noteFromName("Bass"));
+    try testing.expectEqual(@as(?f64, null), noteFromName("Chord1"));
+}
+
+test "folder of roots splits keys half way and velocity by layer" {
+    var specs = [_]Spec{
+        .{ .name = "p_C4_v2", .root = 60 },
+        .{ .name = "p_C3", .root = 48 },
+        .{ .name = "p_C4_v1", .root = 60 },
+        .{ .name = "p_G4", .root = 67 },
+    };
+    mapMelodic(&specs);
+    try testing.expectEqualStrings("p_C3", specs[0].name);
+    try testing.expectEqual(@as(f64, 0), specs[0].zone.lo_key);
+    try testing.expectEqual(@as(f64, 54), specs[0].zone.hi_key);
+    try testing.expectEqualStrings("p_C4_v1", specs[1].name);
+    try testing.expectEqual(@as(f64, 55), specs[1].zone.lo_key);
+    try testing.expectEqual(@as(f64, 63), specs[1].zone.hi_key);
+    try testing.expectEqual(@as(f64, 0), specs[1].zone.lo_vel);
+    try testing.expectEqual(@as(f64, 63), specs[1].zone.hi_vel);
+    try testing.expectEqual(@as(f64, 64), specs[2].zone.lo_vel);
+    try testing.expectEqual(@as(f64, 127), specs[2].zone.hi_vel);
+    try testing.expectEqual(@as(f64, 64), specs[3].zone.lo_key);
+    try testing.expectEqual(@as(f64, 127), specs[3].zone.hi_key);
+}
+
+test "drum folder: GM keywords, then free keys; hats choke" {
+    var specs = [_]Spec{
+        .{ .name = "808 Kick.wav", .root = null },
+        .{ .name = "Snare_02.wav", .root = null },
+        .{ .name = "Open Hat.wav", .root = null },
+        .{ .name = "HH closed.wav", .root = null },
+        .{ .name = "Zap.wav", .root = null },
+        .{ .name = "Kick B.wav", .root = null },
+    };
+    mapDrums(&specs);
+    try testing.expectEqual(@as(f64, 36), specs[0].zone.lo_key);
+    try testing.expectEqual(@as(f64, 38), specs[1].zone.lo_key);
+    try testing.expectEqual(@as(f64, 46), specs[2].zone.lo_key);
+    try testing.expectEqual(@as(f64, 42), specs[3].zone.lo_key);
+    try testing.expectEqual(@as(f64, 1), specs[2].zone.group);
+    try testing.expectEqual(@as(f64, 1), specs[3].zone.off_by);
+    try testing.expectEqual(@as(f64, 37), specs[4].zone.lo_key); // first free key
+    try testing.expectEqual(@as(f64, 39), specs[5].zone.lo_key); // 36 taken
+}
+
+test "sfz: inheritance, note names, spaces in paths, loops, release skipped" {
+    const text =
+        \\// a comment
+        \\<control> default_path=samples\
+        \\<global> volume=-6
+        \\<group> lovel=0 hivel=63 loop_mode=loop_continuous
+        \\<region> sample=Piano C4 soft.wav lokey=c4 hikey=e4 pitch_keycenter=c4 tune=50
+        \\<region> sample=Piano G4 soft.wav key=67 loop_start=100 loop_end=199
+        \\<group> lovel=64 trigger=release
+        \\<region> sample=rel.wav key=60
+        \\<group> group=1 off_by=1 loop_mode=one_shot
+        \\<region> sample=hat.wav key=42 /* inline */ pan=-50
+    ;
+    var regions: [8]SfzRegion = undefined;
+    var dp: [64]u8 = undefined;
+    const r = parseSfz(text, &regions, &dp);
+    try testing.expectEqual(@as(usize, 3), r.count);
+    try testing.expectEqualStrings("samples/", r.default_path);
+    const a = regions[0];
+    try testing.expectEqualStrings("Piano C4 soft.wav", a.sample);
+    try testing.expectEqual(@as(f64, 60), a.zone.lo_key);
+    try testing.expectEqual(@as(f64, 64), a.zone.hi_key);
+    try testing.expectApproxEqAbs(@as(f64, 59.5), a.zone.root, 1e-9);
+    try testing.expectEqual(@as(f64, 63), a.zone.hi_vel);
+    try testing.expectApproxEqAbs(@as(f64, 0.501), a.zone.gain, 1e-3);
+    try testing.expectEqual(LOOP_ON, a.zone.loop_mode);
+    try testing.expect(!a.has_loop_points);
+    const b = regions[1];
+    try testing.expectEqual(@as(f64, 67), b.zone.root);
+    try testing.expect(b.has_loop_points);
+    try testing.expectEqual(@as(f64, 200), b.zone.loop_end);
+    const h = regions[2];
+    try testing.expectEqualStrings("hat.wav", h.sample);
+    try testing.expectEqual(LOOP_ONESHOT, h.zone.loop_mode);
+    try testing.expectEqual(@as(f64, 1), h.zone.off_by);
+    try testing.expectEqual(@as(f64, -0.5), h.zone.pan);
+}

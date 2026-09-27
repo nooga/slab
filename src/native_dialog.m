@@ -50,6 +50,19 @@ char *slab_open_audio_dialog(void) {
     }
 }
 
+char *slab_open_keymap_dialog(void) {
+    @autoreleasepool {
+        NSOpenPanel *panel = [NSOpenPanel openPanel];
+        [panel setCanChooseFiles:YES];
+        [panel setCanChooseDirectories:YES];
+        [panel setAllowsMultipleSelection:NO];
+        [panel setAllowedFileTypes:@[@"wav", @"wave", @"sfz"]];
+        [panel setTitle:@"Load Sample, SFZ or Folder of Samples"];
+        if ([panel runModal] != NSModalResponseOK) return NULL;
+        return copy_path([[panel URL] path]);
+    }
+}
+
 char *slab_save_audio_dialog(const char *default_name) {
     @autoreleasepool {
         NSSavePanel *panel = [NSSavePanel savePanel];

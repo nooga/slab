@@ -5,6 +5,7 @@ const std = @import("std");
 extern fn slab_open_project_dialog() ?[*:0]u8;
 extern fn slab_save_project_dialog(default_name: [*:0]const u8) ?[*:0]u8;
 extern fn slab_open_audio_dialog() ?[*:0]u8;
+extern fn slab_open_keymap_dialog() ?[*:0]u8;
 extern fn slab_save_audio_dialog(default_name: [*:0]const u8) ?[*:0]u8;
 extern fn slab_free_dialog_path(path: ?[*:0]u8) void;
 
@@ -26,6 +27,13 @@ pub fn saveProject(alloc: std.mem.Allocator, default_name: []const u8) !?[]u8 {
 /// null if the user cancelled. Caller owns the returned slice.
 pub fn openAudioFile(alloc: std.mem.Allocator) !?[]u8 {
     const raw = slab_open_audio_dialog() orelse return null;
+    defer slab_free_dialog_path(raw);
+    return try alloc.dupe(u8, std.mem.sliceTo(raw, 0));
+}
+
+/// Native open panel for a sampler keymap: a .wav, an .sfz or a folder.
+pub fn openKeymap(alloc: std.mem.Allocator) !?[]u8 {
+    const raw = slab_open_keymap_dialog() orelse return null;
     defer slab_free_dialog_path(raw);
     return try alloc.dupe(u8, std.mem.sliceTo(raw, 0));
 }

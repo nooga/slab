@@ -34,6 +34,9 @@ keys.clip(chorus).chords("Gmaj7 A F#m7 Bm7 Em7 A Dmaj7 A7sus4:2 A7:2",
                          "x..x..x...x..x..", near=64)
 song.track("BASS", "cream", "synthwave-bass").clip(chorus).bass("I V vi IV", "x.xo..x.x.xo.5x.")
 song.track("LEAD", "cream", "cream-lead").clip(chorus).melody("F#5:1.5 E5:.5 D5:1 E5 | r:.5 A4:.5 C#5 E5")
+# the sampler takes a keymap: a .wav, an .sfz, or a folder (a drum kit when
+# the file names carry no notes; kick = C2 = 36)
+song.track("HITS", "sampler", "sp1200-kit", samples="/path/to/kit")
 
 song.save()                    # songs/title.slab, prints warnings
 song.render(stems=True)        # bounce + mix report

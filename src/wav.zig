@@ -26,6 +26,12 @@ const MAX_FILE_BYTES: usize = 512 * 1024 * 1024;
 pub const Sample = struct {
     data: []f64,
     sample_rate: f64,
+    // From the `smpl` chunk when there is one: the recorded pitch as a MIDI
+    // note (with its fraction), and the first loop in samples, end
+    // exclusive. root_key < 0 and loop_end == 0 mean the file doesn't say.
+    root_key: f64 = -1,
+    loop_start: usize = 0,
+    loop_end: usize = 0,
 
     pub fn deinit(self: *Sample, alloc: std.mem.Allocator) void {
         alloc.free(self.data);
@@ -96,6 +102,9 @@ pub fn parse(alloc: std.mem.Allocator, buf: []const u8) Error!Sample {
     var have_fmt = false;
     var data_off: usize = 0;
     var data_len: usize = 0;
+    var root_key: f64 = -1;
+    var loop_start: usize = 0;
+    var loop_end: usize = 0;
 
     var pos: usize = 12;
     while (pos + 8 <= buf.len) {
@@ -113,6 +122,21 @@ pub fn parse(alloc: std.mem.Allocator, buf: []const u8) Error!Sample {
                 audio_format = rdU16(buf, body + 24);
             }
             have_fmt = true;
+        } else if (std.mem.eql(u8, id, "smpl") and body + 36 <= buf.len) {
+            // dwMIDIUnityNote @12, dwMIDIPitchFraction @16 (2^32 = one
+            // semitone up), cSampleLoops @28, loops of 24 bytes from @36:
+            // id, type, start, end [inclusive], fraction, play count.
+            const unity = rdU32(buf, body + 12);
+            const frac: f64 = @as(f64, @floatFromInt(rdU32(buf, body + 16))) / 4294967296.0;
+            if (unity < 128) root_key = @as(f64, @floatFromInt(unity)) + frac;
+            if (rdU32(buf, body + 28) > 0 and body + 60 <= buf.len) {
+                const ls = rdU32(buf, body + 44);
+                const le = rdU32(buf, body + 48);
+                if (le > ls) {
+                    loop_start = ls;
+                    loop_end = @as(usize, le) + 1;
+                }
+            }
         } else if (std.mem.eql(u8, id, "data")) {
             data_off = body;
             if (size == 0 or body + size > buf.len) {
@@ -154,7 +178,13 @@ pub fn parse(alloc: std.mem.Allocator, buf: []const u8) Error!Sample {
         out[fi] = acc / @as(f64, @floatFromInt(channels));
     }
 
-    return .{ .data = out, .sample_rate = @floatFromInt(sample_rate) };
+    return .{
+        .data = out,
+        .sample_rate = @floatFromInt(sample_rate),
+        .root_key = root_key,
+        .loop_start = @min(loop_start, frames),
+        .loop_end = @min(loop_end, frames),
+    };
 }
 
 fn decodeSample(d: []const u8, o: usize, fmt: u16, bits: u16) Error!f64 {

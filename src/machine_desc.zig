@@ -182,6 +182,9 @@ pub const AssetReq = struct {
     sr_offset: usize = 0,
     file: [MAX_PATH:0]u8 = [_:0]u8{0} ** MAX_PATH,
     file_len: usize = 0,
+    /// `keymap` instead of `asset`: the three offsets take the sample
+    /// pool's pointer, the zone table's pointer and the zone count.
+    keymap: bool = false,
 
     pub fn fileSlice(self: *const AssetReq) []const u8 {
         return self.file[0..self.file_len];
@@ -440,7 +443,7 @@ const ItemRaw = extern struct { next: Fy.Value, name: Fy.Value, weight: Fy.Value
 const ConstRaw = extern struct { next: Fy.Value, offset: Fy.Value, value: Fy.Value };
 const NoteLabelRaw = extern struct { next: Fy.Value, pitch: Fy.Value, label: Fy.Value };
 const BufferRaw = extern struct { next: Fy.Value, name: Fy.Value, ptr_offset: Fy.Value, len_offset: Fy.Value, seconds: Fy.Value };
-const AssetRaw = extern struct { next: Fy.Value, name: Fy.Value, ptr_offset: Fy.Value, len_offset: Fy.Value, sr_offset: Fy.Value, file: Fy.Value };
+const AssetRaw = extern struct { next: Fy.Value, name: Fy.Value, ptr_offset: Fy.Value, len_offset: Fy.Value, sr_offset: Fy.Value, file: Fy.Value, kind: Fy.Value };
 
 // ── tagged-value decode ───────────────────────────────────────────────
 
@@ -658,6 +661,7 @@ pub fn read(host: *FyHost) !Desc {
         out.ptr_offset = @intCast(asInt(as.ptr_offset));
         out.len_offset = @intCast(asInt(as.len_offset));
         out.sr_offset = @intCast(asInt(as.sr_offset));
+        out.keymap = asInt(as.kind) == 1;
         const file = cstrSlice(as.file);
         if (file.len == 0 or file.len >= MAX_PATH) return error.InvalidMachineDesc;
         @memcpy(out.file[0..file.len], file);

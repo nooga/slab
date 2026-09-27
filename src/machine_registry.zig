@@ -15,6 +15,7 @@ test {
     _ = machine_desc;
     _ = @import("presets.zig");
     _ = @import("wav.zig");
+    _ = @import("keymap.zig");
     _ = @import("waveform.zig");
     _ = @import("audio_pool.zig");
     _ = @import("fm_operator_test.zig");

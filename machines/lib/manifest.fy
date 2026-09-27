@@ -93,7 +93,7 @@ struct: ItemDesc    ptr next  ptr name  ptr weight ;
 struct: ConstDesc   ptr next  ptr offset  ptr value ;
 struct: NoteLabelDesc ptr next  ptr pitch  ptr label ;
 struct: BufferDesc  ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr seconds ;
-struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-offset  ptr file ;
+struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-offset  ptr file  ptr kind ;
 
 ( --- builder state ------------------------------------------------ )
 :: _mf-md         8 alloc ;
@@ -444,6 +444,7 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   with p@64 / f@64 and index with f@i.  Re-injected after reset. )
 : asset  ( name ptr-offset len-offset sr-offset file -- )
   AssetDesc.alloc
+  0 swap AssetDesc.kind!
   swap cstr-new swap AssetDesc.file!
   AssetDesc.sr-offset!
   AssetDesc.len-offset!
@@ -454,6 +455,17 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   [ dup _mf-last-asset @64 AssetDesc.next! drop ]
   ifte
   _mf-last-asset !64
+;
+
+( Request a keymap: a .wav, a .sfz or a folder of WAVs [relative to the
+  machine's directory; src/keymap.zig says how each maps], loaded into
+  one sample pool and a table of 128 zones.  The host writes the pool's
+  pointer at pool-offset, the zone table's pointer at zones-offset and
+  the zone count at count-offset, all in PARAMS.  LOAD on the panel's
+  waveform display swaps it at runtime. )
+: keymap  ( name pool-offset zones-offset count-offset file -- )
+  asset
+  1 _mf-last-asset @64 AssetDesc.kind! drop
 ;
 
 ( --- params constants ---------------------------------------------- )

@@ -546,6 +546,21 @@ SP-1200, Emulator II, CMI I/II, DMX, LinnDrum, Mirage, S612/S900, MPC60
 and SK-1. The CMI and D3 voices reuse the quantizers. Their playback is
 a different step: a per-voice clock reading stored samples.
 
+Sampler (2026-09-27): the sampler plays keymaps (src/keymap.zig): one
+WAV with its `smpl` root and loop, an SFZ, or a folder, which maps as a
+multisample when the file names carry notes and as a General MIDI drum
+kit when they don't. Up to 128 zones, velocity layers, choke groups,
+one-shots. The zone search is fy at note-on, a `times` scan (docs/18),
+which needed the dsp compiler to evaluate the deeper operand first. Its
+CLOCK engine is the shared playback engine this plan calls for:
+drop-sample reads on the voice's own clock at BITS, steps polyBLEPed
+onto their true times, then a 4-pole lowpass that follows the pitch
+(TRK). Presets cmi-voice, cmi-grit, emulator, sp1200-kit. The project
+file saves the keymap path (docs/19). Still open for the CMI machine:
+the `.VC`/IMD loader, the Series II additive page, the per-voice filter
+curve from `cmi01a.cpp`. Still open for D3: per-pad tune/decay and outputs, round-robin, the
+SSM filter channels.
+
 Existing machines, still open:
 - Rhodes: more tine modes, tine/tonebar beating, velocity-dependent
   strike position, suitcase tremolo/pan.

@@ -176,6 +176,12 @@ pub const WriteParamsJsonFn = *const fn (state: *anyopaque, out: *std.ArrayList(
 /// Apply one control `id` → `value` pair when restoring a machine's settings
 /// from a project. Unknown ids are ignored.
 pub const SetParamFn = *const fn (state: *anyopaque, id: []const u8, value: f64) void;
+/// The files a machine has loaded (a sampler's keymap), as a JSON object
+/// {"asset-name": "path", ...}; write nothing when there are none.
+pub const WriteAssetsJsonFn = *const fn (state: *anyopaque, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void;
+/// Load one named asset from `path` when restoring a project. False on a
+/// missing or bad file; the machine keeps what it had.
+pub const LoadAssetFn = *const fn (state: *anyopaque, name: []const u8, path: []const u8) bool;
 
 pub const NOTE_LABEL_TEXT = 23;
 
@@ -214,6 +220,8 @@ pub const Machine = struct {
     /// Project persistence: dump/restore the machine's settings as JSON.
     write_params_json: ?WriteParamsJsonFn = null,
     set_param: ?SetParamFn = null,
+    write_assets_json: ?WriteAssetsJsonFn = null,
+    load_asset: ?LoadAssetFn = null,
     /// Preferred panel card width in pixels. The bay uses this to size
     /// the rect passed to draw_panel. 0 = bay chooses a default.
     panel_w: f32 = 0,

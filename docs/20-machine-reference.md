@@ -578,22 +578,34 @@ Presets:
 | param | section | label | range | default | notes |
 |---|---|---|---|---|---|
 | `smp-tune` | PITCH | TUNE | -24 … 24 | 0 | linear |
-| `smp-root` | PITCH | ROOT | 55 … 880 | 220 | exp |
+| `smp-root` | PITCH | ROOT | 24 … 96 | 57 | linear |
 | `smp-start` | PITCH | START | 0 … 1 | 0 | linear |
-| `smp-loop` | LOOP | MODE | 0 1SHOT / 1 LOOP | 0 | switch |
+| `smp-loop` | LOOP | MODE | 0 AUTO / 1 OFF / 2 ON | 0 | switch |
 | `smp-loop-start` | LOOP | BEG | 0 … 1 | 0 | linear |
 | `smp-loop-end` | LOOP | END | 0 … 1 | 1 | linear |
+| `smp-engine` | ENGINE | MODE | 0 CLEAN / 1 CLOCK | 0 | switch |
+| `smp-bits` | ENGINE | BITS | 1 … 16 | 16 | linear |
+| `smp-filter` | ENGINE | FILTER | 200 … 20000 | 20000 | exp |
+| `smp-trk` | ENGINE | TRK | 0 … 1 | 0 | linear |
+| `smp-res` | ENGINE | RES | 0 … 1 | 0 | linear |
 | `smp-atk` | ENV | ATK | 0.001 … 3 | 0.002 | exp |
 | `smp-dec` | ENV | DEC | 0.01 … 4 | 0.6 | exp |
 | `smp-sus` | ENV | SUS | 0 … 1 | 1 | linear |
 | `smp-rel` | ENV | REL | 0.01 … 5 | 0.3 | exp |
+| `smp-vel` | AMP | VEL | 0 … 1 | 1 | linear |
 | `smp-level` | AMP | LEVEL | 0 … 1 | 0.7 | pow |
 
 Presets:
 
+- `cmi-grit` — CMI I: 8-bit, dark and gritty, the filter shut down with the pitch
+- `cmi-voice` — Fairlight CMI II voice: 8-bit on the voice clock, filter tracks the pitch
+- `drum-kit` — Clean one-shot drum kit (load a folder of drum WAVs)
+- `emulator` — Emulator II-style: 8-bit clock playback, resonant SSM lowpass
 - `long-pad` — Looped, slow-attack pad
+- `multisample` — Clean multisample instrument: file loops, velocity to level
 - `octave-down` — Pitched an octave down, longer tail
 - `raw` — Clean one-shot, no loop
+- `sp1200-kit` — SP-1200 drums: 12-bit drop-sample, pitched-down grit, fixed filter
 
 ## chorus2
 

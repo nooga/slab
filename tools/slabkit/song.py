@@ -339,7 +339,7 @@ class Clip:
 
 class Track:
     def __init__(self, song, name, machine_id, preset=None, params=None, volume=0.8, pan=0.0,
-                 fx=(), color=None, mute=False):
+                 fx=(), color=None, mute=False, samples=None):
         self.song = song
         self.name = name
         self.machine = machine(machine_id)
@@ -354,6 +354,13 @@ class Track:
         self.color = color or PALETTE[len(song.tracks) % len(PALETTE)]
         self.mute = mute
         self.clips = []
+        # The sampler's keymap: a .wav, an .sfz, or a folder of WAVs.
+        self.samples = samples
+        if samples is not None:
+            if self.machine.id != "sampler":
+                raise SlabError(f"track {name}: samples= is for the sampler, not {self.machine.id}")
+            if not os.path.exists(samples):
+                song.warn(f"track {name}: samples {samples!r} not found; the track keeps the bundled pluck")
 
     def __repr__(self):
         return f"Track({self.name}: {self.machine.id}, {len(self.clips)} clips)"
@@ -415,7 +422,8 @@ class Track:
         return {
             "name": self.name, "color": self.color, "volume": self.volume, "pan": self.pan,
             "mute": self.mute, "solo": False,
-            "instrument": {"machine": self.machine.id, "params": self.params},
+            "instrument": {"machine": self.machine.id, "params": self.params,
+                           **({"assets": {"smp": self.samples}} if self.samples else {})},
             "effects": [f.build(f"{where} fx {i}") for i, f in enumerate(self.fx)],
             "clips": [c.to_json() for c in sorted(self.clips, key=lambda c: c.start)],
         }
@@ -454,10 +462,11 @@ class Song:
         self.sections.append(s)
         return s
 
-    def track(self, name, machine_id, preset=None, params=None, volume=0.8, pan=0.0, fx=(), color=None, mute=False):
+    def track(self, name, machine_id, preset=None, params=None, volume=0.8, pan=0.0, fx=(), color=None, mute=False,
+              samples=None):
         if len(self.tracks) >= MAX_TRACKS:
             raise SlabError(f"max {MAX_TRACKS} tracks")
-        t = Track(self, name, machine_id, preset, params, volume, pan, fx, color, mute)
+        t = Track(self, name, machine_id, preset, params, volume, pan, fx, color, mute, samples)
         self.tracks.append(t)
         return t
 
