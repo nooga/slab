@@ -11,12 +11,12 @@
   file didn't say].  Two engines:
 
     CLEAN  4-point Hermite interpolation between stored samples
-    CLOCK  drop-sample playback: the voice's own sample clock steps
-           through the stored samples with no interpolation, quantized
-           to BITS - the Fairlight / Emulator / SP-1200 way, where the
-           grain and the aliasing move with the note.  Steps are
-           polyBLEPed onto their true times, so the host's grid adds no
-           aliasing of its own.
+    VARI   drop-sample playback: the voice's own sample clock steps
+    FIXED  through the sample stored at RATE with no interpolation,
+           quantized to BITS [see smp-clock] - the Fairlight /
+           Emulator / SP-1200 way, where the grain and the aliasing are
+           the machine's.  Steps are polyBLEPed onto their true times,
+           so the host's grid adds no aliasing of its own.
 
   Then a 4-pole lowpass whose corner can follow the pitch [TRK: 1 moves
   it with the voice's clock like the CMI's output filter], the cap-ADSR,
@@ -34,25 +34,27 @@ include "../04-filters/coeffs.fy"
 include "../04-filters/tpt_svf.fy"
 include "../09-digital/digital.fy"
 
-( One keymap zone: 16 f64 cells, mirrored by Zone in src/keymap.zig. )
+( One keymap zone: 17 f64 cells, mirrored by Zone in src/keymap.zig.
+  The zone plays on the rr-pos-th of every rr-len notes on its key. )
 ustruct: Zone
   f64 start  f64 len  f64 sr
   f64 lo-key  f64 hi-key  f64 lo-vel  f64 hi-vel
   f64 root  f64 gain  f64 loop-mode  f64 loop-start  f64 loop-end
-  f64 group  f64 off-by  f64 pan  f64 pad
+  f64 group  f64 off-by  f64 pan  f64 rr-len  f64 rr-pos
 ;
 
-:: MAX-ZONES 128 ;
+:: MAX-ZONES 256 ;
 
 ( Per-zone edits over the knobs, host-owned: src/keymap.zig ZoneEdits.
   The voice reads its zone's cells at note-on and writes hit / last,
   which the panel's zone list reads to light the zone that played. )
 ustruct: ZoneEdits
-  f64 level 128   ( dB )
-  f64 tune 128    ( semitones )
-  f64 decay 128   ( seconds to -60 dB; 0 = off )
-  f64 tone 128    ( filter offset, octaves )
-  f64 hit 128     ( sequence number of the zone's newest note )
+  f64 level 256   ( dB )
+  f64 tune 256    ( semitones )
+  f64 decay 256   ( seconds to -60 dB; 0 = off )
+  f64 tone 256    ( filter offset, octaves )
+  f64 cut 256     ( choke: 0 the pack's group/off-by, 1 none, n+1 group n )
+  f64 hit 256     ( sequence number of the zone's newest note )
   f64 last        ( the zone of the newest note )
 ;
 
@@ -74,6 +76,8 @@ ustruct: SamplerState
   f64 held       ( CLOCK: the value on the output, before its BLEP )
   f64 pend       ( CLOCK: next output, naive + after-step correction )
   f64 i-prev     ( CLOCK: the stored sample index last read )
+  f64 kr         ( CLOCK: stored samples per pool sample, RATE / the file's )
+  f64 oc         ( FIXED: output clock phase, a tick per 1.0 )
   f64 fg         ( filter coefficient for this note )
   f64 fade       ( per-zone DECAY: the level it has faded to )
   f64 fade-k     ( and its per-sample factor, 1 = none )
@@ -97,8 +101,11 @@ ustruct: SamplerParams
   f64 loop-mode  ( 0 AUTO [the file's] / 1 OFF / 2 ON [BEG..END] )
   f64 loop-start ( 0..1 )
   f64 loop-end   ( 0..1 )
-  f64 engine     ( 0 CLEAN / 1 CLOCK )
+  f64 model      ( MODEL: the panel's last pick; the knobs it set carry it )
+  f64 engine     ( 0 CLEAN / 1 VARI / 2 FIXED )
+  f64 rate       ( CLOCK: the rate the sample is stored at, Hz )
   f64 bits       ( CLOCK quantizer, 1..16 )
+  f64 qmode      ( 0 linear round / 1 truncate / 2 mu-law )
   f64 filter-hz  ( lowpass corner at the zone's root )
   f64 trk        ( 0..1: how far the corner follows the pitch )
   f64 res        ( 0..1 )
@@ -111,9 +118,11 @@ ustruct: SamplerParams
   ( derived / shared - block-prepare and note-on )
   f64 inv-sr
   f64 step       ( CLOCK quantizer step )
+  f64 oc-inc     ( FIXED: output clock ticks per host sample, <= 1 )
   f64 fd2        ( second filter stage's damping )
   f64 note-seq   ( note-ons so far )
   f64 choke 16  ( per group 0..15: the sequence number of its newest note )
+  f64 rr-count 128  ( per key: note-ons so far, for round robin )
 ;
 
 :: BW-D1 0.9238795325112867 ;
@@ -122,16 +131,20 @@ ustruct: SamplerParams
 dsp: sampler-block-prepare | ctx:Ctx state params:SamplerParams |
   1.0 ctx.sr f/ -> params.inv-sr
   1.0 params.bits 1.0 16.0 fclamp f- exp2 -> params.step
+  params.rate params.inv-sr f* 1.0 fmin -> params.oc-inc
   0.3826834323650898  1.0 params.res 0.0 1.0 fclamp 0.92 f* f-  f* -> params.fd2
 ;
 
-( zt key vel -- k : the first zone holding key and vel [0..127], or -1.
+( zt key vel cnt -- k : the first zone holding key and vel [0..127]
+  whose round-robin slot is cnt [the key's note count] mod rr-len, or -1.
   Unrolled over every zone; `best 0.0 f<` keeps the first match. )
-dsp: zone-find | zt key vel -- k |
+dsp: zone-find | zt key vel cnt -- k |
   -1.0 0.0 MAX-ZONES [ | best i |
-    i 16.0 f* | c |
+    i 17.0 f* | c |
     zt c 3.0 f+ f@i key f<=   key zt c 4.0 f+ f@i f<=  and
     zt c 5.0 f+ f@i vel f<=  and   vel zt c 6.0 f+ f@i f<=  and
+    zt c 15.0 f+ f@i | n |
+    cnt  cnt n f/ floor n f*  f-  zt c 16.0 f+ f@i  f- fabs 0.5 f<  and
     best 0.0 f<  and
     i best select
     i 1.0 f+ ] times
@@ -143,9 +156,13 @@ dsp: zone-find | zt key vel -- k |
 dsp: sampler-note-on | ctx:Ctx state:SamplerState params:SamplerParams |
   params.zones& p@64 | zt |
   ctx.pitch | key |
-  zt key ctx.vel 127.0 f* zone-find | k |
+  ( round robin: this key's note count picks among its rr zones )
+  key 0.0 127.0 fclamp floor | kk |
+  params.rr-count& kk f@i | cnt |
+  cnt 1.0 f+  params.rr-count& kk f!i
+  zt key ctx.vel 127.0 f* cnt zone-find | k |
   k 0.0 f>= | hit |
-  k 0.0 fmax 16.0 f* | c |
+  k 0.0 fmax 17.0 f* | c |
   ( a miss plays an empty zone at pool index 4: guard zeros )
   hit  zt c f@i  4.0  select | start |
   hit  zt c 1.0 f+ f@i  0.0  select | len |
@@ -154,13 +171,16 @@ dsp: sampler-note-on | ctx:Ctx state:SamplerState params:SamplerParams |
   zt c 9.0 f+ f@i | zmode |
   zt c 10.0 f+ f@i | zls |
   zt c 11.0 f+ f@i | zle |
-  zt c 12.0 f+ f@i | group |
   start -> state.start
   start len f+ -> state.end
   params.edits& p@64 | ed:ZoneEdits |
   k 0.0 fmax | k0 |
   zt c 8.0 f+ f@i  ed.level& k0 f@i db>lin  f* -> state.gain
-  zt c 13.0 f+ f@i -> state.off-by
+  ( CUT overrides the pack: group n both joins and is cut by n )
+  ed.cut& k0 f@i | cut |
+  cut 0.5 f> | own |
+  own  cut 1.0 f-  zt c 12.0 f+ f@i  select | cg |
+  own  cut 1.0 f-  zt c 13.0 f+ f@i  select -> state.off-by
   ( loop: AUTO takes the file's mode and points, ON forces a loop,
     one-shot zones never loop )
   zmode 1.5 f> | oneshot |
@@ -181,6 +201,8 @@ dsp: sampler-note-on | ctx:Ctx state:SamplerState params:SamplerParams |
   0.0 -> state.held
   0.0 -> state.pend
   -1.0 -> state.i-prev
+  params.rate zsr f/ 0.001 1.0 fclamp -> state.kr
+  1.0 -> state.oc
   ( filter corner follows the pitch by TRK octaves per octave )
   ratio log2 params.trk f*  ed.tone& k0 f@i f+  exp2 params.filter-hz f* ctx.sr svf-g -> state.fg
   ( DECAY: -60 dB over the zone's decay time, on top of the envelope )
@@ -195,9 +217,9 @@ dsp: sampler-note-on | ctx:Ctx state:SamplerState params:SamplerParams |
   params.note-seq 1.0 f+ | seq |
   seq -> params.note-seq
   seq -> state.seq
-  group 0.0 15.0 fclamp | g |
+  cg 0.0 15.0 fclamp | g |
   params.choke& g f@i | old |
-  group 0.5 f>  seq  old  select  params.choke& g f!i
+  cg 0.5 f>  seq  old  select  params.choke& g f!i
   ( the panel's hit lights )
   ed.hit& k0 f@i | oldhit |
   hit  seq  oldhit  select  ed.hit& k0 f!i
@@ -223,17 +245,39 @@ dsp: smp-hermite | buf ph -- y |
   c3 u f* c2 f+ u f* c1 f+ u f* x0 f+
 ;
 
-( state buf params -- y : drop-sample read, quantized, with the step onto
-  a new stored sample polyBLEPed at its true time: the crossing was
-  frac[ph]/inc host samples ago.  Above the host rate [inc > 1] several
-  crossings share one sample; the BLEP covers the last. )
+( state buf params -- y : the stored sample on a held output, quantized.
+  The sample is stored at RATE [below the file's rate the read position
+  kr = RATE / file-rate steps through a coarser grid, the original read
+  at each stored instant].  Two clocks put it on the output:
+
+    VARI   a new stored sample each time the voice's own clock reaches
+           one: the rate moves with the note [Fairlight, Emulator,
+           Mirage, the LinnDrum's tuning]
+    FIXED  the output ticks at RATE whatever the pitch, and each tick
+           takes the stored sample under the read position: pitch by
+           skipping and repeating [SP-1200, S900, MPC60]
+
+  The step onto a new value is polyBLEPed at its true time: t host
+  samples ago.  Above the host rate several steps share one sample; the
+  BLEP covers the last. )
 dsp: smp-clock | state:SamplerState buf params:SamplerParams -- y |
-  state.ph | ph |
-  ph floor | i0 |
-  buf i0 f@i params.step quantize-round | q |
-  i0 state.i-prev f= not | ev |
-  i0 -> state.i-prev
-  ph i0 f- state.inc f/ 0.0 1.0 fclamp | t |
+  ( the stored grid counts from the zone's start, so a read never lands
+    before it )
+  state.ph state.start f-  state.kr f* | sp |
+  sp floor | j |
+  buf  j state.kr f/ state.start f+  smp-hermite  params.step params.qmode quantize-mode | q |
+  ( VARI: the read crossed stored sample j, frac[sp]/[inc kr] ago )
+  j state.i-prev f= not | ev-v |
+  j -> state.i-prev
+  sp j f-  state.inc state.kr f* f/ | t-v |
+  ( FIXED: the output clock ticked, frac[oc]/oc-inc ago )
+  state.oc params.oc-inc f+ | oc |
+  oc 1.0 f>= | ev-f |
+  ev-f  oc 1.0 f-  oc  select | oc2 |
+  oc2 -> state.oc
+  params.engine 1.5 f> | fixed |
+  fixed ev-f and  fixed not ev-v and  or | ev |
+  fixed  oc2 params.oc-inc f/  t-v  select  0.0 1.0 fclamp | t |
   state.held | h |
   ev  q h f-  0.0  select | delta |
   ev  q  h  select | h2 |

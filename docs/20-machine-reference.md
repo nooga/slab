@@ -583,8 +583,11 @@ Presets:
 | `smp-loop` | LOOP | MODE | 0 AUTO / 1 OFF / 2 ON | 0 | switch |
 | `smp-loop-start` | LOOP | BEG | 0 … 1 | 0 | linear |
 | `smp-loop-end` | LOOP | END | 0 … 1 | 1 | linear |
-| `smp-engine` | ENGINE | MODE | 0 CLEAN / 1 CLOCK | 0 | switch |
+| `smp-model` | ENGINE | MODEL | 0 CLEAN / 1 CMI I / 2 CMI II / 3 EMU II / 4 MIRAGE / 5 LINNDRM / 6 DMX / 7 S612 / 8 S900 / 9 SP-1200 / 10 SP OPEN / 11 MPC60 / 12 SK-1 | 0 | switch |
+| `smp-engine` | ENGINE | CLOCK | 0 CLEAN / 1 VARI / 2 FIXED | 0 | switch |
+| `smp-rate` | ENGINE | RATE | 4000 … 48000 | 48000 | exp |
 | `smp-bits` | ENGINE | BITS | 1 … 16 | 16 | linear |
+| `smp-quant` | ENGINE | QUANT | 0 LIN / 1 TRUNC / 2 MU | 0 | switch |
 | `smp-filter` | ENGINE | FILTER | 200 … 20000 | 20000 | exp |
 | `smp-trk` | ENGINE | TRK | 0 … 1 | 0 | linear |
 | `smp-res` | ENGINE | RES | 0 … 1 | 0 | linear |
@@ -606,6 +609,12 @@ Presets:
 - `octave-down` — Pitched an octave down, longer tail
 - `raw` — Clean one-shot, no loop
 - `sp1200-kit` — SP-1200 drums: 12-bit drop-sample, pitched-down grit, fixed filter
+- `vcsl-keys/fm-piano` — VCSL FM Piano
+- `vcsl-kits/acoustic-kit` — VCSL acoustic kit on GM keys
+- `vcsl-kits/latin-kit` — VCSL hand percussion on GM keys
+- `vcsl-mallets/kalimba-kenya` — VCSL Kalimba, Kenya
+- `vcsl-mallets/marimba` — VCSL Marimba
+- `vcsl-perc/hi-hat-cymbal` — VCSL Hi-Hat Cymbal
 
 ## chorus2
 

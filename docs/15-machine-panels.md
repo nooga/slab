@@ -254,6 +254,13 @@ lever for other pairs, a list for 3–6 options, a stepped knob beyond. A
 centred range (`-x..x`) draws bipolar. A widget that can't edit its
 control (a fader on a switch) is a descriptor error.
 
+An option can carry settings: `"id" value sets` after an `opt` moves
+control `id` to `value` (preset units; an option index for a switch)
+when that option is picked on the panel. A MODEL switch uses it to set
+several knobs at once (the sampler's engine models). Presets, projects
+and automation set only the switch itself, so a saved patch keeps its
+edited knobs. A switch has up to 16 options.
+
 Values are not labels: panel controls print no readouts. The title
 strip's display (docs/06 §Displays) shows `LABEL VALUE` for whichever
 control is hovered or dragged, as a hardware unit's display does. The bay

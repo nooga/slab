@@ -12,9 +12,11 @@
   playing; the bundled pluck is the default.
 
   ROOT is the pitch of a sample whose file doesn't say [the pluck is
-  220 Hz, A3 = 57].  ENGINE CLOCK plays each stored sample on the
-  voice's own clock at BITS, the way the Fairlight and the SP-1200 did;
-  TRK 1 moves the filter with the pitch like the CMI's output filter. )
+  220 Hz, A3 = 57].  ENGINE MODEL sets the converter knobs to a classic
+  machine; CLOCK VARI plays the sample stored at RATE on the voice's own
+  clock [Fairlight, Emulator], FIXED on a clock that doesn't follow the
+  note [SP-1200, S900]; BITS and QUANT quantize it.  TRK 1 moves the
+  filter with the pitch like the CMI's output filter. )
 
 include "../../kernels/06-voices/sampler.fy"
 include "../lib/manifest.fy"
@@ -41,9 +43,43 @@ include "../lib/manifest.fy"
   "LOOP" "BEG" "smp-loop-start" SamplerParams.loop-start 0.0 1.0 0.0 curve-lin knob
   "LOOP" "END" "smp-loop-end" SamplerParams.loop-end 0.0 1.0 1.0 curve-lin knob
 
-  "ENGINE" "MODE" "smp-engine" SamplerParams.engine 0.0 switch
-    "CLEAN" 0.0 opt  "CLOCK" 1.0 opt
+  ( MODEL moves the engine knobs to a classic machine's converter:
+    stored rate, bits, companding, clock, output filter.  Published
+    figures where there are some, by ear where not; the knobs stay free. )
+  "ENGINE" "MODEL" "smp-model" SamplerParams.model 0.0 switch
+    "CLEAN" 0.0 opt  "smp-engine" 0.0 sets  "smp-rate" 48000.0 sets  "smp-bits" 16.0 sets  "smp-quant" 0.0 sets
+      "smp-filter" 20000.0 sets  "smp-trk" 0.0 sets  "smp-res" 0.0 sets
+    "CMI I" 1.0 opt  "smp-engine" 1.0 sets  "smp-rate" 16000.0 sets  "smp-bits" 8.0 sets  "smp-quant" 0.0 sets
+      "smp-filter" 6000.0 sets  "smp-trk" 1.0 sets  "smp-res" 0.15 sets
+    "CMI II" 2.0 opt  "smp-engine" 1.0 sets  "smp-rate" 24000.0 sets  "smp-bits" 8.0 sets  "smp-quant" 0.0 sets
+      "smp-filter" 8000.0 sets  "smp-trk" 1.0 sets  "smp-res" 0.15 sets
+    "EMU II" 3.0 opt  "smp-engine" 1.0 sets  "smp-rate" 27700.0 sets  "smp-bits" 8.0 sets  "smp-quant" 2.0 sets
+      "smp-filter" 12000.0 sets  "smp-trk" 0.5 sets  "smp-res" 0.35 sets
+    "MIRAGE" 4.0 opt  "smp-engine" 1.0 sets  "smp-rate" 30000.0 sets  "smp-bits" 8.0 sets  "smp-quant" 0.0 sets
+      "smp-filter" 11000.0 sets  "smp-trk" 0.5 sets  "smp-res" 0.3 sets
+    "LINNDRM" 5.0 opt  "smp-engine" 1.0 sets  "smp-rate" 28000.0 sets  "smp-bits" 8.0 sets  "smp-quant" 2.0 sets
+      "smp-filter" 13000.0 sets  "smp-trk" 0.0 sets  "smp-res" 0.0 sets
+    "DMX" 6.0 opt  "smp-engine" 1.0 sets  "smp-rate" 25000.0 sets  "smp-bits" 8.0 sets  "smp-quant" 2.0 sets
+      "smp-filter" 12000.0 sets  "smp-trk" 0.0 sets  "smp-res" 0.0 sets
+    "S612" 7.0 opt  "smp-engine" 1.0 sets  "smp-rate" 32000.0 sets  "smp-bits" 12.0 sets  "smp-quant" 0.0 sets
+      "smp-filter" 14000.0 sets  "smp-trk" 0.0 sets  "smp-res" 0.0 sets
+    "S900" 8.0 opt  "smp-engine" 2.0 sets  "smp-rate" 40000.0 sets  "smp-bits" 12.0 sets  "smp-quant" 0.0 sets
+      "smp-filter" 16000.0 sets  "smp-trk" 0.0 sets  "smp-res" 0.0 sets
+    "SP-1200" 9.0 opt  "smp-engine" 2.0 sets  "smp-rate" 26040.0 sets  "smp-bits" 12.0 sets  "smp-quant" 0.0 sets
+      "smp-filter" 11000.0 sets  "smp-trk" 0.0 sets  "smp-res" 0.1 sets
+    "SP OPEN" 10.0 opt  "smp-engine" 2.0 sets  "smp-rate" 26040.0 sets  "smp-bits" 12.0 sets  "smp-quant" 0.0 sets
+      "smp-filter" 20000.0 sets  "smp-trk" 0.0 sets  "smp-res" 0.0 sets
+    "MPC60" 11.0 opt  "smp-engine" 2.0 sets  "smp-rate" 40000.0 sets  "smp-bits" 12.0 sets  "smp-quant" 0.0 sets
+      "smp-filter" 18000.0 sets  "smp-trk" 0.0 sets  "smp-res" 0.0 sets
+    "SK-1" 12.0 opt  "smp-engine" 1.0 sets  "smp-rate" 9380.0 sets  "smp-bits" 8.0 sets  "smp-quant" 1.0 sets
+      "smp-filter" 9000.0 sets  "smp-trk" 0.0 sets  "smp-res" 0.0 sets
+    as-display
+  "ENGINE" "CLOCK" "smp-engine" SamplerParams.engine 0.0 switch
+    "CLEAN" 0.0 opt  "VARI" 1.0 opt  "FIXED" 2.0 opt
+  "ENGINE" "RATE" "smp-rate" SamplerParams.rate 4000.0 48000.0 48000.0 curve-exp knob
   "ENGINE" "BITS" "smp-bits" SamplerParams.bits 1.0 16.0 16.0 curve-lin knob
+  "ENGINE" "QUANT" "smp-quant" SamplerParams.qmode 0.0 switch
+    "LIN" 0.0 opt  "TRUNC" 1.0 opt  "MU" 2.0 opt
   "ENGINE" "FILTER" "smp-filter" SamplerParams.filter-hz 200.0 20000.0 20000.0 curve-exp knob
   "ENGINE" "TRK" "smp-trk" SamplerParams.trk 0.0 1.0 0.0 curve-lin knob
   "ENGINE" "RES" "smp-res" SamplerParams.res 0.0 1.0 0.0 curve-lin knob
@@ -60,7 +96,7 @@ include "../lib/manifest.fy"
   "ZONES" "smp" zone-display
   "PITCH" 3 strip
   "LOOP" 3 strip
-  "ENGINE" 5 strip
+  "ENGINE" 4 strip
   "ENV" 4 strip
   "AMP" 2 strip
 

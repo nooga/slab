@@ -549,13 +549,21 @@ a different step: a per-voice clock reading stored samples.
 Sampler (2026-09-27): the sampler plays keymaps (src/keymap.zig): one
 WAV with its `smpl` root and loop, an SFZ, or a folder, which maps as a
 multisample when the file names carry notes and as a General MIDI drum
-kit when they don't. Up to 128 zones, velocity layers, choke groups,
-one-shots. The zone search is fy at note-on, a `times` scan (docs/18),
+kit when they don't. Up to 256 zones, velocity layers, round robins,
+choke groups (the pack's, or per zone with CUT), one-shots. The zone search is fy at note-on, a `times` scan (docs/18),
 which needed the dsp compiler to evaluate the deeper operand first. Its
 CLOCK engine is the shared playback engine this plan calls for:
 drop-sample reads on the voice's own clock at BITS, steps polyBLEPed
 onto their true times, then a 4-pole lowpass that follows the pitch
-(TRK). Presets cmi-voice, cmi-grit, emulator, sp1200-kit. The project
+(TRK). The sample is read as stored at RATE, on a VARI clock that
+follows the note (CMI, Emulator, Mirage) or a FIXED one that doesn't
+(SP-1200, S900, MPC60); QUANT picks linear, truncating or mu-law. MODEL
+sets all of these to one of 13 machines through the manifest's `sets`
+(the era values). The input has no anti-alias filter yet: content above
+RATE/2 folds, which the originals' input filters would have stopped.
+Presets cmi-voice, cmi-grit, emulator, sp1200-kit, and the VCSL library
+(tools/library/vcsl.py: ~170 instruments and two GM kits as generated
+SFZs, `lib:` presets in vcsl-* banks). The project
 file saves the keymap path (docs/19). Still open for the CMI machine:
 the `.VC`/IMD loader, the Series II additive page, the per-voice filter
 curve from `cmi01a.cpp`. Still open for D3: per-pad tune/decay and outputs, round-robin, the

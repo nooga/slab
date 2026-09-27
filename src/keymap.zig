@@ -41,7 +41,7 @@ const Dirent = extern struct {
 };
 const DT_DIR: u8 = 4;
 
-pub const MAX_ZONES = 128;
+pub const MAX_ZONES = 256;
 /// Zero samples before and after each sample in the pool, so a 4-point
 /// interpolator at either end reads silence, never a neighbour.
 pub const GUARD = 4;
@@ -53,7 +53,7 @@ pub const LOOP_ON: f64 = 1;
 /// Plays to the end whatever note-off does (drums).
 pub const LOOP_ONESHOT: f64 = 2;
 
-/// One zone: 16 f64 cells, mirrored by `Zone` in kernels/06-voices/sampler.fy.
+/// One zone: ZONE_CELLS f64 cells, mirrored by `Zone` in kernels/06-voices/sampler.fy.
 pub const Zone = extern struct {
     start: f64 = 0, // the sample's first cell in the pool
     len: f64 = 0, // samples
@@ -70,11 +70,15 @@ pub const Zone = extern struct {
     group: f64 = 0, // choke: a note here silences zones with off_by == group
     off_by: f64 = 0,
     pan: f64 = 0, // -1..1
-    _pad: f64 = 0,
+    // round robin: the zone plays on the rr_pos-th of every rr_len notes
+    // on its key (SFZ seq_length / seq_position, rr_pos from 0)
+    rr_len: f64 = 1,
+    rr_pos: f64 = 0,
 };
 
+pub const ZONE_CELLS = 17;
 comptime {
-    std.debug.assert(@sizeOf(Zone) == 16 * 8);
+    std.debug.assert(@sizeOf(Zone) == ZONE_CELLS * 8);
 }
 
 /// Per-zone adjustments on top of the machine's knobs, mirrored by
@@ -86,6 +90,7 @@ pub const ZoneEdits = extern struct {
     tune: [MAX_ZONES]f64 = [_]f64{0} ** MAX_ZONES, // semitones
     decay: [MAX_ZONES]f64 = [_]f64{0} ** MAX_ZONES, // seconds to -60 dB; 0 = off
     tone: [MAX_ZONES]f64 = [_]f64{0} ** MAX_ZONES, // filter offset, octaves
+    cut: [MAX_ZONES]f64 = [_]f64{0} ** MAX_ZONES, // choke: 0 the pack's, 1 none, n+1 group n
     hit: [MAX_ZONES]f64 = [_]f64{0} ** MAX_ZONES, // sequence number of the zone's newest note
     last: f64 = -1, // the zone of the newest note
 };
@@ -171,6 +176,55 @@ pub fn load(alloc: std.mem.Allocator, path: []const u8) Error!Keymap {
     return b.finish();
 }
 
+// ── the sample library ─────────────────────────────────────────────────
+
+/// Presets and projects name library samples "lib:<path>", relative to the
+/// library root: $SLAB_LIBRARY, else ~/Music/Slab/Library. A preset that
+/// ships with Slab then finds its samples on any machine that fetched the
+/// library (tools/library/vcsl.py).
+pub const LIB_PREFIX = "lib:";
+
+pub fn libraryRoot(buf: []u8) []const u8 {
+    if (std.c.getenv("SLAB_LIBRARY")) |p| {
+        const s = std.mem.span(p);
+        if (s.len > 0 and s.len <= buf.len) {
+            @memcpy(buf[0..s.len], s);
+            return std.mem.trimEnd(u8, buf[0..s.len], "/");
+        }
+    }
+    const home = if (std.c.getenv("HOME")) |h| std.mem.span(h) else "";
+    return std.fmt.bufPrint(buf, "{s}/Music/Slab/Library", .{home}) catch "";
+}
+
+/// A "lib:" path as a file path; anything else unchanged.
+pub fn resolvePath(buf: []u8, path: []const u8) []const u8 {
+    if (!std.mem.startsWith(u8, path, LIB_PREFIX)) return path;
+    var rb: [512]u8 = undefined;
+    const root = libraryRoot(&rb);
+    return std.fmt.bufPrint(buf, "{s}/{s}", .{ root, path[LIB_PREFIX.len..] }) catch path;
+}
+
+/// A file under the library root as a "lib:" path; anything else unchanged.
+pub fn portablePath(buf: []u8, path: []const u8) []const u8 {
+    var rb: [512]u8 = undefined;
+    const root = libraryRoot(&rb);
+    if (root.len == 0 or path.len <= root.len + 1) return path;
+    if (!std.mem.startsWith(u8, path, root) or path[root.len] != '/') return path;
+    return std.fmt.bufPrint(buf, "{s}{s}", .{ LIB_PREFIX, path[root.len + 1 ..] }) catch path;
+}
+
+test "library paths round-trip through lib:" {
+    var rb: [512]u8 = undefined;
+    const root = libraryRoot(&rb);
+    var a: [1024]u8 = undefined;
+    var b: [1024]u8 = undefined;
+    const full = resolvePath(&a, "lib:vcsl/Marimba/marimba.sfz");
+    try std.testing.expect(std.mem.startsWith(u8, full, root));
+    try std.testing.expectEqualStrings("lib:vcsl/Marimba/marimba.sfz", portablePath(&b, full));
+    try std.testing.expectEqualStrings("/tmp/x.wav", resolvePath(&a, "/tmp/x.wav"));
+    try std.testing.expectEqualStrings("/tmp/x.wav", portablePath(&b, "/tmp/x.wav"));
+}
+
 // ── builder: samples loaded once, zones referring to them ───────────────
 
 const File = struct { path: []u8, s: wav.Sample };
@@ -180,6 +234,8 @@ const Builder = struct {
     files: std.ArrayList(File) = .empty,
     zones: std.ArrayList(Zone) = .empty,
     zone_file: std.ArrayList(usize) = .empty,
+    // a zone's display name when its source gives one (SFZ labels)
+    zone_label: std.ArrayList(?Name) = .empty,
 
     fn init(alloc: std.mem.Allocator) Builder {
         return .{ .alloc = alloc };
@@ -193,6 +249,7 @@ const Builder = struct {
         self.files.deinit(self.alloc);
         self.zones.deinit(self.alloc);
         self.zone_file.deinit(self.alloc);
+        self.zone_label.deinit(self.alloc);
     }
 
     /// Index of the loaded sample at `path`, loading it the first time.
@@ -207,7 +264,12 @@ const Builder = struct {
     }
 
     fn zone(self: *Builder, file: usize, z: Zone) Error!void {
+        return self.zoneNamed(file, z, null);
+    }
+
+    fn zoneNamed(self: *Builder, file: usize, z: Zone, label: ?[]const u8) Error!void {
         if (self.zones.items.len >= MAX_ZONES) return Error.TooManyZones;
+        self.zone_label.append(self.alloc, if (label) |l| Name.set(l) else null) catch return Error.OutOfMemory;
         var zz = z;
         const s = self.files.items[file].s;
         zz.len = @floatFromInt(s.data.len);
@@ -243,7 +305,7 @@ const Builder = struct {
             self.alloc.free(zones);
             return Error.OutOfMemory;
         };
-        for (names, self.zone_file.items) |*nm, fi| nm.* = Name.set(stem(std.fs.path.basename(self.files.items[fi].path)));
+        for (names, self.zone_file.items, self.zone_label.items) |*nm, fi, lb| nm.* = lb orelse Name.set(stem(std.fs.path.basename(self.files.items[fi].path)));
         return .{ .pool = pool, .zones = zones, .count = n, .names = names };
     }
 };
@@ -508,6 +570,9 @@ pub const SfzRegion = struct {
     // Loop points given by opcodes; otherwise the file's.
     has_loop_mode: bool = false,
     has_loop_points: bool = false,
+    // region_label, else group_label: the zone's name in the zone list and
+    // the piano roll; zones sharing one edit as one sound
+    label: ?[]const u8 = null,
 };
 
 fn loadSfz(b: *Builder, path: []const u8) Error!void {
@@ -535,7 +600,7 @@ fn loadSfz(b: *Builder, path: []const u8) Error!void {
             // SFZ: a sample with loop points loops unless told otherwise.
             if (!reg.has_loop_mode) z.loop_mode = LOOP_ON;
         }
-        try b.zone(si, z);
+        try b.zoneNamed(si, z, reg.label);
     }
 }
 
@@ -543,7 +608,8 @@ pub const SfzResult = struct { count: usize, default_path: []const u8 };
 
 /// Parse SFZ text into regions (up to out.len). Supported opcodes: sample,
 /// key, lokey, hikey, pitch_keycenter, lovel, hivel, tune, transpose,
-/// volume, pan, loop_mode, loop_start, loop_end, group, off_by, trigger
+/// volume, pan, loop_mode, loop_start, loop_end, group, off_by,
+/// seq_length, seq_position, region_label, group_label, trigger
 /// (release regions are skipped), and <control> default_path. Unknown
 /// opcodes are ignored.
 pub fn parseSfz(text: []const u8, out: []SfzRegion, dpath_buf: []u8) SfzResult {
@@ -681,7 +747,10 @@ fn resolveRegion(region: *const Level, group: *const Level, master: *const Level
     if (num(get(&levels, "pan"))) |v| z.pan = std.math.clamp(v / 100, -1, 1);
     if (num(get(&levels, "group"))) |v| z.group = v;
     if (num(get(&levels, "off_by"))) |v| z.off_by = v;
+    if (num(get(&levels, "seq_length"))) |v| z.rr_len = @max(@round(v), 1);
+    if (num(get(&levels, "seq_position"))) |v| z.rr_pos = std.math.clamp(@round(v) - 1, 0, z.rr_len - 1);
     var reg = SfzRegion{ .sample = sample, .zone = z };
+    reg.label = region.get("region_label") orelse get(&levels, "group_label") orelse get(&levels, "region_label");
     const lm = get(&levels, "loop_mode") orelse get(&levels, "loopmode");
     if (lm) |m| {
         reg.has_loop_mode = true;

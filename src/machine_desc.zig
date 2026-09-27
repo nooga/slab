@@ -19,7 +19,9 @@ pub const MAX_NAME = 64;
 pub const MAX_WORD = 64;
 pub const MAX_TEXT = 24;
 pub const MAX_CONTROLS = 128;
-pub const MAX_OPTS = 8;
+pub const MAX_OPTS = 16;
+/// `sets` entries across a machine's switch options.
+pub const MAX_OPT_SETS = 256;
 pub const MAX_CONSTS = 16;
 pub const MAX_STRIPS = 16;
 pub const MAX_DISPLAYS = 16;
@@ -68,6 +70,21 @@ pub const Widget = enum {
     button,
     display,
     vradio,
+};
+
+/// Picking option `opt` of control `ctl` on the panel also sets control
+/// `id` to `value` (manifest `sets`): value units as in a preset, an option
+/// index for a switch.
+pub const OptSet = struct {
+    ctl: u16 = 0,
+    opt: u8 = 0,
+    id: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
+    id_len: usize = 0,
+    value: f64 = 0,
+
+    pub fn idSlice(self: *const OptSet) []const u8 {
+        return self.id[0..self.id_len];
+    }
 };
 
 pub const Control = struct {
@@ -306,6 +323,8 @@ pub const Desc = struct {
     panel_w: f32 = 128,
     controls: [MAX_CONTROLS]Control = undefined,
     control_count: usize = 0,
+    opt_sets: [MAX_OPT_SETS]OptSet = undefined,
+    opt_set_count: usize = 0,
     consts: [MAX_CONSTS]ConstF64 = undefined,
     const_count: usize = 0,
     strips: [MAX_STRIPS]Strip = undefined,
@@ -424,7 +443,8 @@ const ControlRaw = extern struct {
     widget: Fy.Value,
 };
 
-const OptionRaw = extern struct { next: Fy.Value, label: Fy.Value, value: Fy.Value };
+const OptionRaw = extern struct { next: Fy.Value, label: Fy.Value, value: Fy.Value, sets: Fy.Value };
+const SetRaw = extern struct { next: Fy.Value, id: Fy.Value, value: Fy.Value };
 const StripRaw = extern struct { next: Fy.Value, module: Fy.Value, cols: Fy.Value };
 const DisplayRaw = extern struct {
     next: Fy.Value,
@@ -565,6 +585,14 @@ pub fn read(host: *FyHost) !Desc {
             if (out.option_count >= MAX_OPTS) return error.TooManyOptions;
             _ = try copyText(&out.option_labels[out.option_count], cstrSlice(opt.label));
             out.option_values[out.option_count] = asF64(opt.value);
+            var set_it = rawPtr(SetRaw, opt.sets);
+            while (set_it) |st| : (set_it = rawPtr(SetRaw, st.next)) {
+                if (d.opt_set_count >= MAX_OPT_SETS) return error.TooManyOptions;
+                const os = &d.opt_sets[d.opt_set_count];
+                os.* = .{ .ctl = @intCast(d.control_count), .opt = @intCast(out.option_count), .value = asF64(st.value) };
+                os.id_len = try copyText(&os.id, cstrSlice(st.id));
+                d.opt_set_count += 1;
+            }
             out.option_count += 1;
         }
         if (out.kind == .switch_sel and out.option_count == 0) return error.InvalidMachineDesc;
@@ -574,6 +602,13 @@ pub fn read(host: *FyHost) !Desc {
         out.widget = @enumFromInt(widget);
         if (!out.widgetFits(out.widget)) return error.InvalidMachineDesc;
         d.control_count += 1;
+    }
+
+    // every `sets` names a control of this machine
+    for (d.opt_sets[0..d.opt_set_count]) |*os| {
+        for (d.controls[0..d.control_count]) |*ctl| {
+            if (std.mem.eql(u8, ctl.idSlice(), os.idSlice())) break;
+        } else return error.InvalidMachineDesc;
     }
 
     var const_it = rawPtr(ConstRaw, md.consts);

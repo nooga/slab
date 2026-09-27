@@ -77,7 +77,9 @@ struct: ControlDesc
   ptr widget         ( int: panel control, 0 auto [see `as-fader` & co] )
 ;
 
-struct: OptionDesc  ptr next  ptr label  ptr value ;
+struct: OptionDesc  ptr next  ptr label  ptr value  ptr sets ;
+( picking the option from the panel also sets these controls )
+struct: SetDesc  ptr next  ptr id  ptr value ;
 struct: StripDesc   ptr next  ptr module  ptr cols ;
 ( kind 0 adsr, 1 waveform, 2 meter.  off0..off6 are state byte offsets used
   only by the meter kind, in order: gain-min, in-peak, out-peak,
@@ -232,6 +234,17 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   [ dup _mf-last-opt @64 OptionDesc.next! drop ]
   ifte
   _mf-last-opt !64
+;
+
+( After an `opt`: choosing that option on the panel also moves control
+  `id` to `value` [in its own units] - a switch of models that each set
+  several knobs.  Presets and automation set only the switch. )
+: sets  ( id value -- )
+  SetDesc.alloc
+  SetDesc.value!
+  swap cstr-new swap SetDesc.id!
+  _mf-last-opt @64 OptionDesc.sets@ nip over SetDesc.next! drop
+  _mf-last-opt @64 OptionDesc.sets! drop
 ;
 
 ( --- panel controls -------------------------------------------------

@@ -27,7 +27,7 @@ const Ui = ui_core.Ui;
 const Rect = ui_core.Rect;
 
 const MAX_STATE = 1024;
-const MAX_PARAMS = 1024;
+const MAX_PARAMS = 4096;
 // State regions: polyphonic voice machines get one per voice, effect
 // machines use two (L/R). The region index reaches kernels as ctx.chan.
 const MAX_REGIONS = 8;
@@ -152,6 +152,12 @@ pub const FyRawMachine = struct {
     // hit lights (the voice writes zone_edits.hit / .last).
     zone_edits: keymap.ZoneEdits = .{},
     zone_sel: usize = 0,
+    // The zone list shows one row per zone name: velocity layers and round
+    // robins of one sound (an SFZ label, a repeated file) edit together.
+    zone_row_first: [keymap.MAX_ZONES]u16 = undefined,
+    zone_row_of: [keymap.MAX_ZONES]u16 = undefined,
+    zone_row_count: usize = 0,
+    zone_follow_moved: bool = false,
     zone_follow: bool = false,
     zone_scroll: usize = 0,
     zone_last_seen: f64 = -1,
@@ -297,7 +303,10 @@ pub const FyRawMachine = struct {
     pub fn loadAssetRuntime(self: *FyRawMachine, ai: usize, path: []const u8) bool {
         if (ai >= self.desc.asset_count) return false;
         if (self.desc.assets[ai].keymap) return self.loadKeymapRuntime(ai, path);
-        var loaded = wav.load(self.alloc, path) catch return false;
+        var rb: [1024]u8 = undefined;
+        var pb: [1024]u8 = undefined;
+        const src = keymap.portablePath(&pb, path);
+        var loaded = wav.load(self.alloc, keymap.resolvePath(&rb, src)) catch return false;
         var new_cache = waveform.PeakCache{};
         new_cache.build(self.alloc, loaded.data) catch {
             loaded.deinit(self.alloc);
@@ -313,7 +322,7 @@ pub const FyRawMachine = struct {
         if (old.data.len > 0) self.alloc.free(old.data);
         self.asset_cache[ai].deinit(self.alloc);
         self.asset_cache[ai] = new_cache;
-        self.setAssetSource(ai, path);
+        self.setAssetSource(ai, src);
         self.asset_loaded[ai] = true;
         return true;
     }
@@ -322,7 +331,12 @@ pub const FyRawMachine = struct {
     /// thread, swap the pool and zone pointers inside the fence, free the
     /// old map after.
     fn loadKeymapRuntime(self: *FyRawMachine, ai: usize, path: []const u8) bool {
-        var loaded = keymap.load(self.alloc, path) catch return false;
+        // Library files are kept as "lib:" paths, so a saved project finds
+        // them wherever the library lives.
+        var rb: [1024]u8 = undefined;
+        var pb: [1024]u8 = undefined;
+        const src = keymap.portablePath(&pb, path);
+        var loaded = keymap.load(self.alloc, keymap.resolvePath(&rb, src)) catch return false;
         // Edits follow zones by name: a reloaded or swapped kit keeps the
         // clap you turned down.
         const edits = remapEdits(&self.zone_edits, &self.asset_keymap[ai], &loaded);
@@ -335,7 +349,7 @@ pub const FyRawMachine = struct {
         fy_host_mod.unlockCallbacks();
 
         old.deinit(self.alloc);
-        self.setAssetSource(ai, path);
+        self.setAssetSource(ai, src);
         self.asset_loaded[ai] = true;
         self.keymapChanged(ai);
         return true;
@@ -351,6 +365,22 @@ pub const FyRawMachine = struct {
         self.zone_hit_seen = self.zone_edits.hit;
         @memset(&self.zone_flash, 0);
         self.rebuildLabels(ai);
+        self.rebuildRows(ai);
+    }
+
+    fn rebuildRows(self: *FyRawMachine, ai: usize) void {
+        const km = &self.asset_keymap[ai];
+        self.zone_row_count = 0;
+        for (0..km.count) |z| {
+            const row = for (self.zone_row_first[0..self.zone_row_count], 0..) |f, r| {
+                if (std.mem.eql(u8, km.names[f].slice(), km.names[z].slice())) break r;
+            } else blk: {
+                self.zone_row_first[self.zone_row_count] = @intCast(z);
+                self.zone_row_count += 1;
+                break :blk self.zone_row_count - 1;
+            };
+            self.zone_row_of[z] = @intCast(row);
+        }
     }
 
     /// A kit's keys get their zones' names in the piano roll (KICK, SNARE);
@@ -697,6 +727,15 @@ fn currentPresetImpl(state: *anyopaque) i32 {
     return self.current_preset_idx;
 }
 
+/// A switch moved on the panel: store the option, then whatever that
+/// option `sets` (a MODEL switch moving the knobs it models).
+fn pickOption(self: *FyRawMachine, gi: usize, idx: usize) void {
+    self.setControlRaw(gi, @floatFromInt(idx));
+    for (self.desc.opt_sets[0..self.desc.opt_set_count]) |*os| {
+        if (os.ctl == gi and os.opt == idx) applyControlValue(self, os.idSlice(), os.value);
+    }
+}
+
 // Store one real-valued control by its stable id. Shared by preset apply,
 // the host param-set path (project load), and anything that restores a
 // machine's settings from an id→value map. Switches clamp to the option
@@ -726,6 +765,7 @@ fn remapEdits(edits: *const keymap.ZoneEdits, old: *const keymap.Keymap, new: *c
             out.tune[i] = edits.tune[j];
             out.decay[i] = edits.decay[j];
             out.tone[i] = edits.tone[j];
+            out.cut[i] = edits.cut[j];
             break;
         };
     }
@@ -808,11 +848,11 @@ fn writeZonesJsonImpl(state: *anyopaque, out: *std.ArrayList(u8), alloc: std.mem
     var first = true;
     var buf: [160]u8 = undefined;
     for (km.names, 0..) |nm, i| {
-        if (e.level[i] == 0 and e.tune[i] == 0 and e.decay[i] == 0 and e.tone[i] == 0) continue;
+        if (e.level[i] == 0 and e.tune[i] == 0 and e.decay[i] == 0 and e.tone[i] == 0 and e.cut[i] == 0) continue;
         try out.appendSlice(alloc, if (first) "{\"" else ",\"");
         first = false;
         for (nm.slice()) |ch| if (ch != '"' and ch != '\\' and ch >= 0x20) try out.append(alloc, ch);
-        const frag = try std.fmt.bufPrint(&buf, "\":{{\"level\":{d},\"tune\":{d},\"decay\":{d},\"tone\":{d}}}", .{ e.level[i], e.tune[i], e.decay[i], e.tone[i] });
+        const frag = try std.fmt.bufPrint(&buf, "\":{{\"level\":{d},\"tune\":{d},\"decay\":{d},\"tone\":{d},\"cut\":{d}}}", .{ e.level[i], e.tune[i], e.decay[i], e.tone[i], e.cut[i] });
         try out.appendSlice(alloc, frag);
     }
     if (!first) try out.append(alloc, '}');
@@ -838,6 +878,7 @@ fn applyZonesJsonImpl(state: *anyopaque, zones: std.json.Value) void {
             if (o.get("tune")) |v| e.tune[i] = std.math.clamp(jsonF64(v), -48, 48);
             if (o.get("decay")) |v| e.decay[i] = std.math.clamp(jsonF64(v), 0, 30);
             if (o.get("tone")) |v| e.tone[i] = std.math.clamp(jsonF64(v), -6, 6);
+            if (o.get("cut")) |v| e.cut[i] = @round(std.math.clamp(jsonF64(v), 0, CUT_MAX));
         }
     }
     // Cell-wise stores the audio thread may read mid-update: a note-on
@@ -846,6 +887,7 @@ fn applyZonesJsonImpl(state: *anyopaque, zones: std.json.Value) void {
     self.zone_edits.tune = e.tune;
     self.zone_edits.decay = e.decay;
     self.zone_edits.tone = e.tone;
+    self.zone_edits.cut = e.cut;
 }
 
 fn resetZoneEdits(self: *FyRawMachine) void {
@@ -854,6 +896,7 @@ fn resetZoneEdits(self: *FyRawMachine) void {
     self.zone_edits.tune = flat.tune;
     self.zone_edits.decay = flat.decay;
     self.zone_edits.tone = flat.tone;
+    self.zone_edits.cut = flat.cut;
 }
 
 fn loadAssetImpl(state: *anyopaque, name: []const u8, path: []const u8) bool {
@@ -1818,7 +1861,7 @@ fn drawControl(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Co
                 if (ui_ctl.displayField(ui, kr, gi, &idx, labels, label)) self.setControlRaw(gi, @floatFromInt(lo + idx));
             } else {
                 var idx: u8 = @intCast(switchIndex(ctl.*, self.controlNorm(gi)));
-                if (ui_ctl.displayField(ui, kr, gi, &idx, opts, label)) self.setControlRaw(gi, @floatFromInt(idx));
+                if (ui_ctl.displayField(ui, kr, gi, &idx, opts, label)) pickOption(self, gi, idx);
             }
         },
         .lever, .slide, .list, .radio, .vradio => |w| {
@@ -1830,7 +1873,7 @@ fn drawControl(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Co
                 .list => ui_ctl.list(ui, kr, gi, &idx, opts, label),
                 else => ui_ctl.radio(ui, kr, gi, &idx, opts, .{ .size = tier, .label = label, .vertical = w == .vradio }),
             };
-            if (changed) self.setControlRaw(gi, @floatFromInt(idx));
+            if (changed) pickOption(self, gi, idx);
         },
     }
 }
@@ -1846,7 +1889,7 @@ fn drawKnob(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Contr
             const readout = std.mem.span(ctl.optionLabelZ(idx));
             if (ui_ctl.knob(ui, kr, gi, &v, .{ .size = tier, .variant = .stepped, .steps = @intCast(n), .label = label, .readout = readout, .show_readout = false })) {
                 const ni: usize = @intFromFloat(@round(v * @as(f32, @floatFromInt(n - 1))));
-                self.setControlRaw(gi, @floatFromInt(ni));
+                if (ni != idx) pickOption(self, gi, ni);
             }
         },
         .int_range => {
@@ -2448,7 +2491,10 @@ fn drawZoneDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []const u8
     }
     if (e.last != self.zone_last_seen) {
         self.zone_last_seen = e.last;
-        if (self.zone_follow and e.last >= 0 and e.last < @as(f64, @floatFromInt(n))) self.zone_sel = @intFromFloat(e.last);
+        if (self.zone_follow and e.last >= 0 and e.last < @as(f64, @floatFromInt(n))) {
+            self.zone_sel = @intFromFloat(e.last);
+            self.zone_follow_moved = true;
+        }
     }
 
     var area = r;
@@ -2456,7 +2502,13 @@ fn drawZoneDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []const u8
     var follow = self.zone_follow;
     if (ui_ctl.button(ui, bar.cutRight(60), .{ "zfollow", ai }, &follow, .{ .label = "FOLLOW", .flush = true })) self.zone_follow = follow;
     var tbuf: [32]u8 = undefined;
-    ui_ctl.display(ui, bar, std.fmt.bufPrint(&tbuf, "{d} ZONES", .{n}) catch "", .{ .flush = true });
+    const nrows = self.zone_row_count;
+    if (nrows == 0) return;
+    const sel_row: usize = self.zone_row_of[self.zone_sel];
+    ui_ctl.display(ui, bar, if (nrows == n)
+        std.fmt.bufPrint(&tbuf, "{d} ZONES", .{n}) catch ""
+    else
+        std.fmt.bufPrint(&tbuf, "{d} SOUNDS / {d}", .{ nrows, n }) catch "", .{ .flush = true });
 
     // Knob row for the selected zone.
     const cell = ui_ctl.knobCell(.s, true);
@@ -2469,33 +2521,51 @@ fn drawZoneDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []const u8
     if (list.contains(ui.in.ix(), ui.in.iy()) and ui.in.wheel_y != 0) {
         const d: i32 = if (ui.in.wheel_y > 0) -1 else 1;
         const top: i32 = @as(i32, @intCast(self.zone_scroll)) + d;
-        self.zone_scroll = @intCast(std.math.clamp(top, 0, @as(i32, @intCast(n -| rows))));
+        self.zone_scroll = @intCast(std.math.clamp(top, 0, @as(i32, @intCast(nrows -| rows))));
     }
-    if (self.zone_sel < self.zone_scroll) self.zone_scroll = self.zone_sel;
-    if (self.zone_sel >= self.zone_scroll + rows) self.zone_scroll = self.zone_sel + 1 - rows;
+    if (self.zone_follow_moved) {
+        // keep a row picked by FOLLOW in view
+        if (sel_row < self.zone_scroll) self.zone_scroll = sel_row;
+        if (sel_row >= self.zone_scroll + rows) self.zone_scroll = sel_row + 1 - rows;
+        self.zone_follow_moved = false;
+    }
     ui.clip(list);
-    var i = self.zone_scroll;
-    while (i < n and i < self.zone_scroll + rows) : (i += 1) {
-        const y = list.y + @as(i32, @intCast(i - self.zone_scroll)) * ROW;
+    var r_i = self.zone_scroll;
+    while (r_i < nrows and r_i < self.zone_scroll + rows) : (r_i += 1) {
+        const i: usize = self.zone_row_first[r_i];
+        const y = list.y + @as(i32, @intCast(r_i - self.zone_scroll)) * ROW;
         const row = Rect.xywh(list.x, y, list.w, ROW);
-        const b = ui.behavior(ui.id(.{ "zrow", ai, i }), row, false);
+        const b = ui.behavior(ui.id(.{ "zrow", ai, r_i }), row, false);
         if (b.pressed) self.zone_sel = i;
-        const sel = i == self.zone_sel;
+        const sel = r_i == sel_row;
         if (sel) ui.rect(row, ui_style.vfd.alpha(36));
-        const fl = self.zone_flash[i];
+        // the row's light and key span cover all its zones
+        var fl: f32 = 0;
+        var lo_k: f64 = 127;
+        var hi_k: f64 = 0;
+        for (0..n) |zz| if (self.zone_row_of[zz] == r_i) {
+            fl = @max(fl, self.zone_flash[zz]);
+            lo_k = @min(lo_k, km.zones[zz].lo_key);
+            hi_k = @max(hi_k, km.zones[zz].hi_key);
+        };
         ui.rect(Rect.xywh(row.x + 3, y + 4, 4, 4), if (fl > 0.05) ui_style.vfd.alpha(@intFromFloat(60 + 195 * fl)) else ui_style.vfd.alpha(30));
         const z = km.zones[i];
         var kb: [16]u8 = undefined;
         var ka: [4]u8 = undefined;
         var kz: [4]u8 = undefined;
-        const keys = if (z.lo_key == z.hi_key)
-            keyName(&ka, z.lo_key)
+        const keys = if (lo_k == hi_k)
+            keyName(&ka, lo_k)
         else
-            std.fmt.bufPrint(&kb, "{s}-{s}", .{ keyName(&ka, z.lo_key), keyName(&kz, z.hi_key) }) catch "";
+            std.fmt.bufPrint(&kb, "{s}-{s}", .{ keyName(&ka, lo_k), keyName(&kz, hi_k) }) catch "";
         const col = if (sel) ui_style.vfd else ui_style.vfd.alpha(170);
         ui.textIn(&ui.fonts.legend, Rect.xywh(row.x + 10, y, 48, ROW), keys, col, .left, true);
         ui.textIn(&ui.fonts.legend, Rect.xywh(row.x + 60, y, row.w - 62, ROW), km.names[i].slice(), col, .left, true);
-        // an edited zone shows its level change
+        // choke group tag, then an edited zone's level change
+        const cg = cutGroup(e.cut[i], z);
+        if (cg > 0) {
+            var gb: [8]u8 = undefined;
+            ui.textIn(&ui.fonts.legend, Rect.xywh(row.right() - 62, y, 20, ROW), std.fmt.bufPrint(&gb, "G{d}", .{@as(i32, @intFromFloat(cg))}) catch "", col, .right, true);
+        }
         if (e.level[i] != 0) {
             var lb: [12]u8 = undefined;
             ui.textIn(&ui.fonts.legend, Rect.xywh(row.right() - 40, y, 38, ROW), std.fmt.bufPrint(&lb, "{d:.1}", .{e.level[i]}) catch "", col, .right, true);
@@ -2503,9 +2573,10 @@ fn drawZoneDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []const u8
     }
     ui.unclip();
 
-    // LEVEL -24..+12 dB · TUNE ±24 st · DECAY off..8 s · TONE ±4 oct
+    // LEVEL -24..+12 dB · TUNE ±24 st · DECAY off..8 s · TONE ±4 oct · CUT
     const zi = self.zone_sel;
-    const kw = @divFloor(knobs.w, 4);
+    const kw = @divFloor(knobs.w, 5);
+    var edited = false;
     const Spec = struct { label: []const u8, lo: f64, hi: f64, v: *f64, exp: bool };
     const specs = [_]Spec{
         .{ .label = "LEVEL", .lo = -24, .hi = 12, .v = &e.level[zi], .exp = false },
@@ -2532,8 +2603,48 @@ fn drawZoneDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []const u8
                 (if (norm < 0.05) 0 else 0.02 * std.math.pow(f64, sp.hi / 0.02, (norm - 0.05) / 0.95))
             else
                 sp.lo + span * norm;
+            edited = true;
         }
     }
+    // CUT: the pack's choke (SFZ group/off_by, the kit's hats), none, or a
+    // group 1..8 that the zone both joins and is cut by.
+    {
+        const kr = Rect.xywh(knobs.x + 4 * kw, knobs.y, knobs.w - 4 * kw, knobs.h);
+        const steps: f32 = CUT_MAX;
+        var norm: f32 = @floatCast(e.cut[zi] / CUT_MAX);
+        var rb: [16]u8 = undefined;
+        const readout = cutName(&rb, e.cut[zi], km.zones[zi]);
+        if (ui_ctl.knob(ui, kr, .{ "zknob", ai, @as(usize, 4) }, &norm, .{ .size = .s, .label = "CUT", .variant = .stepped, .steps = CUT_MAX + 1, .readout = readout })) {
+            e.cut[zi] = @round(norm * steps);
+            edited = true;
+        }
+    }
+    // the row is one sound: its layers and round robins take the edit
+    if (edited) for (0..n) |zz| if (zz != zi and self.zone_row_of[zz] == self.zone_row_of[zi]) {
+        e.level[zz] = e.level[zi];
+        e.tune[zz] = e.tune[zi];
+        e.decay[zz] = e.decay[zi];
+        e.tone[zz] = e.tone[zi];
+        e.cut[zz] = e.cut[zi];
+    };
+}
+
+/// CUT edit steps: 0 the pack's choke, 1 none, n+1 group n.
+const CUT_MAX = 9;
+
+/// The zone's choke group as the pack or the CUT edit sets it (0 = none).
+fn cutGroup(cut: f64, z: keymap.Zone) f64 {
+    return if (cut > 0.5) cut - 1 else z.group;
+}
+
+fn cutName(buf: []u8, cut: f64, z: keymap.Zone) []const u8 {
+    if (cut > 0.5 and cut < 1.5) return "OFF";
+    const g = cutGroup(cut, z);
+    if (cut < 0.5) {
+        if (g <= 0 and z.off_by <= 0) return "PACK";
+        return std.fmt.bufPrint(buf, "PK {d}", .{@as(i32, @intFromFloat(if (g > 0) g else z.off_by))}) catch "";
+    }
+    return std.fmt.bufPrint(buf, "G{d}", .{@as(i32, @intFromFloat(g))}) catch "";
 }
 
 fn keyName(buf: []u8, key: f64) []const u8 {
@@ -3834,6 +3945,119 @@ test "sampler keymap: drum folder, one-shots ignore note-off, closed hat chokes 
     T.play(inst, &ch, 8, &out);
     // the 10 ms closed hat is over and the open hat is gone
     try testing.expect(T.rms(out[512 * 3 ..]) < 0.001);
+}
+
+test "sampler MODEL sets the engine knobs; VARI and FIXED at a low RATE stay in tune" {
+    const T = keymap_test;
+    const a = testing.allocator;
+    T.mkdirs("clk");
+    try T.sine(a, T.dir ++ "/clk/tone_A4.wav", 440, 1.0, null, null);
+    const inst = try FyRawMachine.create(a, "machines/sampler/sampler.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, a);
+    try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/clk"));
+    const find = struct {
+        fn of(m: *FyRawMachine, id: []const u8) usize {
+            for (m.desc.controls[0..m.desc.control_count], 0..) |*ctl, i| if (std.mem.eql(u8, ctl.idSlice(), id)) return i;
+            unreachable;
+        }
+    }.of;
+
+    // SP-1200: FIXED clock, 26.04 kHz, 12 bits
+    const model = find(inst, "smp-model");
+    const sp = for (0..inst.desc.controls[model].option_count) |i| {
+        if (std.mem.eql(u8, std.mem.span(inst.desc.controls[model].optionLabelZ(i)), "SP-1200")) break i;
+    } else unreachable;
+    pickOption(inst, model, sp);
+    const rate = find(inst, "smp-rate");
+    try testing.expectApproxEqRel(@as(f64, 26040), normToValue(inst.desc.controls[rate], inst.controlNorm(rate)), 1e-3);
+    try testing.expectEqual(@as(usize, 2), switchIndex(inst.desc.controls[find(inst, "smp-engine")], inst.controlNorm(find(inst, "smp-engine"))));
+
+    var vari = [_]f32{0} ** (512 * 8);
+    var fixed = [_]f32{0} ** (512 * 8);
+    var none = [_]machine.NoteEvent{};
+    var tail = [_]f32{0} ** (512 * 64);
+    // the filter keeps the images out of the zero-crossing count
+    applyControlValue(inst, "smp-filter", 2000);
+    applyControlValue(inst, "smp-rate", 8000);
+    // a fifth up: 659 Hz off an 8 kHz store
+    var ev = [_]machine.NoteEvent{T.on(76, 1)};
+    applyControlValue(inst, "smp-engine", 2);
+    T.play(inst, &ev, 8, &fixed);
+    T.play(inst, &none, 64, &tail);
+    applyControlValue(inst, "smp-engine", 1);
+    T.play(inst, &ev, 8, &vari);
+    for (fixed, vari) |x, y| try testing.expect(std.math.isFinite(x) and std.math.isFinite(y));
+    try testing.expectApproxEqRel(@as(f64, 659.26), T.freq(vari[512 .. 512 * 6]), 0.02);
+    try testing.expectApproxEqRel(@as(f64, 659.26), T.freq(fixed[512 .. 512 * 6]), 0.02);
+    // the two clocks put different steps on the output
+    var diff: f64 = 0;
+    for (fixed[512..], vari[512..]) |x, y| diff += @abs(@as(f64, x) - y);
+    try testing.expect(diff / @as(f64, @floatFromInt(fixed.len - 512)) > 1e-3);
+}
+
+test "sampler zones: CUT overrides the pack's choke per zone" {
+    const T = keymap_test;
+    const a = testing.allocator;
+    T.mkdirs("cutkit");
+    try T.sine(a, T.dir ++ "/cutkit/snare.wav", 200, 0.01, null, null);
+    try T.sine(a, T.dir ++ "/cutkit/open hat.wav", 3000, 1.0, null, null);
+    try T.sine(a, T.dir ++ "/cutkit/closed hat.wav", 5000, 0.01, null, null);
+    const inst = try FyRawMachine.create(a, "machines/sampler/sampler.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, a);
+    try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/cutkit"));
+    const km = &inst.asset_keymap[0];
+    const idx = struct {
+        fn of(k: *const keymap.Keymap, name: []const u8) usize {
+            for (k.names[0..k.count], 0..) |nm, i| if (std.mem.eql(u8, nm.slice(), name)) return i;
+            unreachable;
+        }
+    }.of;
+    var out = [_]f32{0} ** (512 * 8);
+    var none = [_]machine.NoteEvent{};
+    var long = [_]f32{0} ** (512 * 96);
+
+    // OFF on the open hat: the closed hat no longer cuts it
+    inst.zone_edits.cut[idx(km, "open hat")] = 1;
+    var oh = [_]machine.NoteEvent{T.on(46, 1)};
+    T.play(inst, &oh, 2, &out);
+    var ch = [_]machine.NoteEvent{T.on(42, 1)};
+    T.play(inst, &ch, 8, &out);
+    try testing.expect(T.rms(out[512 * 3 ..]) > 0.1);
+    T.play(inst, &none, 96, &long);
+
+    // snare and open hat in group 1: the snare cuts the hat
+    inst.zone_edits.cut[idx(km, "open hat")] = 2;
+    inst.zone_edits.cut[idx(km, "snare")] = 2;
+    T.play(inst, &oh, 2, &out);
+    var sn = [_]machine.NoteEvent{T.on(38, 1)};
+    T.play(inst, &sn, 8, &out);
+    try testing.expect(T.rms(out[512 * 3 ..]) < 0.001);
+}
+
+test "sampler keymap: sfz round robin alternates per key" {
+    const T = keymap_test;
+    const a = testing.allocator;
+    T.mkdirs("rr");
+    try T.sine(a, T.dir ++ "/rr/one.wav", 220, 0.2, null, null);
+    try T.sine(a, T.dir ++ "/rr/two.wav", 330, 0.2, null, null);
+    try T.writeAll(T.dir ++ "/rr/test.sfz",
+        \\<group> key=57 seq_length=2 loop_mode=one_shot
+        \\<region> sample=one.wav seq_position=1
+        \\<region> sample=two.wav seq_position=2
+    );
+    const inst = try FyRawMachine.create(a, "machines/sampler/sampler.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, a);
+    try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/rr/test.sfz"));
+    var out = [_]f32{0} ** (512 * 24);
+    var ev = [_]machine.NoteEvent{T.on(57, 1)};
+    for ([_]f64{ 220, 330, 220, 330 }) |want| {
+        // 24 blocks outlast the 0.2 s one-shot, so notes don't overlap
+        T.play(inst, &ev, 24, &out);
+        try testing.expectApproxEqRel(want, T.freq(out[512 .. 512 * 12]), 0.01);
+    }
 }
 
 test "sampler keymap: sfz velocity layers and ranges" {

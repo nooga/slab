@@ -81,8 +81,8 @@ JSON. Top level:
 | `pan` | −1 to 1, equal-power: centre is −3 dB per side, hard left/right is unity on one side |
 | `mute` / `solo` | any soloed track mutes all unsoloed ones |
 | `instrument.machine` | machine **id**: the folder name under `machines/` (`juno2`, not "Ju-Know"). Display names change; ids don't. |
-| `instrument.assets` | files the machine has loaded, by asset name. Only the sampler has one: `{"smp": "path"}`, where the path is a `.wav`, an `.sfz` or a folder of WAVs (relative to the working directory, or absolute). Missing: the machine keeps its bundled sample. |
-| `instrument.zones` | the sampler's per-zone edits, by zone name (the sample's file stem): `{"clap": {"level": -6, "tune": 0, "decay": 0, "tone": 0}}`. level in dB, tune in semitones, decay in seconds to −60 dB (0 = off), tone in octaves of filter offset. Only edited zones are written; names that don't match the loaded keymap are ignored. |
+| `instrument.assets` | files the machine has loaded, by asset name. Only the sampler has one: `{"smp": "path"}`, where the path is a `.wav`, an `.sfz` or a folder of WAVs (relative to the working directory, or absolute). A path under the sample library is written `lib:<path>`, relative to `$SLAB_LIBRARY` (default `~/Music/Slab/Library`), so projects and shipped presets find library samples on any machine. Missing: the machine keeps its bundled sample. |
+| `instrument.zones` | the sampler's per-zone edits, by zone name (the sample's file stem): `{"clap": {"level": -6, "tune": 0, "decay": 0, "tone": 0, "cut": 0}}`. level in dB, tune in semitones, decay in seconds to −60 dB (0 = off), tone in octaves of filter offset, cut the choke: 0 the pack's (`group`/`off_by`), 1 none, n+1 choke group n (the zone joins it and is cut by it). Zones sharing a name (an SFZ label, a sample's layers and round robins) take the same edits. Only edited zones are written; names that don't match the loaded keymap are ignored. |
 | `effects` | insert chain, run in order, stereo. `bypass: true` passes audio through untouched. |
 
 Signal flow per track: instrument → audio clips summed in → effects in
@@ -148,9 +148,10 @@ the clip, which then plays silent.
     note) sets the root.
   - **an SFZ file:** regions with `sample`, `key`/`lokey`/`hikey`,
     `pitch_keycenter`, `lovel`/`hivel`, `tune`, `transpose`, `volume`,
-    `pan`, `loop_mode`, `loop_start`/`loop_end`, `group`/`off_by`, and
-    `<control> default_path`. Release triggers and generators are
-    skipped.
+    `pan`, `loop_mode`, `loop_start`/`loop_end`, `group`/`off_by`,
+    `seq_length`/`seq_position` (round robin, counted per key),
+    `region_label`/`group_label` (the zone's name) and `<control>
+    default_path`. Release triggers and generators are skipped.
   - **a folder:** if the file names contain notes (`Piano_C4.wav`,
     `A#3`, C4 = 60), each sample covers the keys half way to its
     neighbours, and several files at one root split the velocity range.
@@ -159,7 +160,7 @@ the clip, which then plays silent.
     open hat 46, …) and then on free keys from 36. The hats share a
     choke group.
 
-  Up to 128 zones. Stereo files are folded to mono. One-shot zones
+  Up to 256 zones. Stereo files are folded to mono. One-shot zones
   ignore note-off. A kit's keys are named after its zones in the piano
   roll; a preset that carries `assets` can carry `zones` too.
 
