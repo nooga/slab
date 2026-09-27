@@ -22,6 +22,12 @@ spectrum agree on) also get a Rack in machines/rack/presets/multi-
 <collection>/<disk>/: our guess at a split, each voice over the keys
 nearest its pitch.  These aren't the CMI's own instruments.
 
+Drum kits: KITS below picks voices from the drum and percussion disks
+and places them on General MIDI keys, as SFZ files in lib:cmi/kits/ (one
+shot, the hats choking each other, toms ordered by measured pitch) with an
+Unfairlight preset each in cmi-kits/.  A kit whose voices you don't have
+is skipped; one missing a few is written without them.
+
 Usage:
   tools/library/cmi.py --collection NAME DISK.IMD [MORE ...]
   tools/library/cmi.py --collection NAME FOLDER/   images, .VC files and
@@ -29,6 +35,7 @@ Usage:
   tools/library/cmi.py --list DISK.IMD            what's on it, nothing written
   tools/library/cmi.py --catalog                  rewrite CATALOG.md
   tools/library/cmi.py --multisample              rewrite the multi-* racks
+  tools/library/cmi.py --kits                     rewrite the drum kits
 
 Each voice is stored once, by the hash of its RAM, under
 lib:cmi/<collection>/<disk>/; a voice that another disk already carries
@@ -404,6 +411,97 @@ def multisample_racks(root, index, collections=None):
     return done
 
 
+# GM keys: kick 35/36, rim 37, snare 38/40, clap 39, hats 42/44/46, toms
+# 41 43 45 47 48 50 (low to high), crash 49/57, ride 51, ride bell 53,
+# tambourine 54, splash 55, cowbell 56, vibraslap 58, bongos 60/61,
+# congas 62-64, timbales 65/66, cabasa 69, shaker 70, guiro 73, claves 75,
+# wood blocks 76/77, triangle 81; "TOMS" is filled low to high.
+TOM_KEYS = [41, 43, 45, 47, 48, 50]
+HAT_KEYS = (42, 44, 46)
+KITS = {
+    "iix-acoustic": ("IIx acoustic kit", {
+        36: "iix/01-drums-1-kick/KICK05", 35: "iix/01-drums-1-kick/KICK07",
+        38: "iix/02-drums-2-snare/SNARE10", 40: "iix/02-drums-2-snare/SNARE12", 37: "iix/03-drums-3-toms/RIM01",
+        39: "iix/06-percussion-1/CLAP05",
+        42: "iix/05-cymbals-1/HHCLOS02", 44: "iix/05-cymbals-1/HHCLOS06", 46: "iix/05-cymbals-1/HHOPEN01",
+        "TOMS": ["iix/03-drums-3-toms/TOM09", "iix/03-drums-3-toms/TOM10", "iix/03-drums-3-toms/TOM01", "iix/03-drums-3-toms/TOM03"],
+        49: "iix/05-cymbals-1/CYMBAL02", 57: "iix/05-cymbals-1/CYMBAL04", 51: "iix/05-cymbals-1/RIDE01",
+        53: "iix/05-cymbals-1/RIDE03", 55: "iix/05-cymbals-1/PANG01", 52: "iix/05-cymbals-1/GONG01",
+        54: "iix/06-percussion-1/TMBOUR02", 69: "iix/06-percussion-1/CABASA01", 75: "iix/06-percussion-1/CLAVES03",
+        76: "iix/06-percussion-1/WBLOCK01", 58: "iix/06-percussion-1/VIBSLP01"}),
+    "iix-drum-machines": ("IIx drum machines: Emulator and LinnDrum", {
+        36: "iix/01-drums-1-kick/EMUBASS1", 35: "iix/01-drums-1-kick/LINNBASS",
+        38: "iix/02-drums-2-snare/EMUSNRE1", 40: "iix/02-drums-2-snare/EMUSNRE3", 39: "iix/06-percussion-1/CLAP06",
+        42: "iix/05-cymbals-1/HHCLOS09", 44: "iix/05-cymbals-1/HHCLOS10", 46: "iix/05-cymbals-1/HHOPEN03",
+        "TOMS": ["iix/03-drums-3-toms/EMUTOMS1", "iix/03-drums-3-toms/EMUTOMS2"],
+        49: "iix/05-cymbals-1/CYMBEMU1", 51: "iix/05-cymbals-1/CYMBEMU2", 37: "iix/03-drums-3-toms/RIM02"}),
+    "iix-electronic": ("IIx electronic: synth drums and Simmons", {
+        36: "iix/01-drums-1-kick/KIKSYN01", 35: "iix/01-drums-1-kick/DIGBDRUM",
+        38: "iix/02-drums-2-snare/SNRSYN01", 40: "iix/02-drums-2-snare/SNRSYN02", 39: "iix/06-percussion-1/CLAP07",
+        42: "iix/05-cymbals-1/HHCLOS10", 46: "iix/05-cymbals-1/HHOPEN05",
+        "TOMS": ["iix/04-drums-4-toms/SIMTOM1", "iix/04-drums-4-toms/SIMTOM2", "iix/04-drums-4-toms/SIMTOM4",
+                 "iix/04-drums-4-toms/SIMTOM5", "iix/03-drums-3-toms/TOMSYN04", "iix/03-drums-3-toms/TOMSYN09"],
+        49: "iix/05-cymbals-1/CYMBAL05", 51: "iix/05-cymbals-1/RIDE07"}),
+    "iix-latin": ("IIx Latin percussion", {
+        36: "iix/08-percussion-3/ALBIGDRM", 38: "iix/08-percussion-3/LTIMSLAP",
+        60: "iix/06-percussion-1/BONGO01", 62: "iix/08-percussion-3/LCONSLAP", 63: "iix/08-percussion-3/LHCONGA",
+        64: "iix/08-percussion-3/LLCONGA", 65: "iix/08-percussion-3/LHTIMB", 66: "iix/08-percussion-3/LLOTIMB",
+        56: "iix/08-percussion-3/LCOWBELL", 54: "iix/08-percussion-3/LTAMBRIN", 70: "iix/08-percussion-3/LSHAKER",
+        69: "iix/06-percussion-1/CABASA01", 73: "iix/06-percussion-1/GUIRO01", 75: "iix/06-percussion-1/CLAVES04",
+        76: "iix/08-percussion-3/LHIBLOCK", 77: "iix/08-percussion-3/LLOBLOCK", 81: "iix/08-percussion-3/ATRIANGL",
+        58: "iix/07-percussion-2/VIBSLP", 78: "iix/06-percussion-1/CSTNET01", 67: "iix/08-percussion-3/AHIDRUM",
+        68: "iix/08-percussion-3/ALODRUM"}),
+    "classic-kit": ("Series II factory drums", {
+        36: "classic/drums/BDRUM", 35: "classic/drums/KICK1",
+        38: "classic/drums/SNARE", 40: "classic/drums/MEDSNARE", 37: "classic/drums/RRIM", 39: "classic/percusn1/CLAP",
+        42: "classic/cymbals/HHCLOSD", 44: "classic/cymbals/HIHAT1", 46: "classic/cymbals/HHOPEN1",
+        "TOMS": ["classic/drums/FLOORTOM", "classic/drums/TOMNEW", "classic/drums/TTOM"],
+        49: "classic/cymbals/CYMB0", 55: "classic/cymbals/CYMSPLS1", 53: "classic/cymbals/CYMBELL1",
+        54: "classic/percusn1/TAMBHIT", 56: "classic/percusn1/COWBELL1", 69: "classic/percusn1/CABASA",
+        81: "classic/percusn1/TRIANGLE", 76: "classic/percusn2/WOOD", 58: "classic/percusn2/VIBSLP",
+        65: "classic/drums/TIMBALI"}),
+}
+
+
+def drum_kits(root, index):
+    """Write KITS as SFZ files in lib:cmi/kits/ and Unfairlight presets in
+    cmi-kits/. Returns how many."""
+    import shutil
+    where = {}
+    for v in index["voices"].values():
+        for r in v["refs"]:
+            where[f"{r['collection']}/{r['disk']}/{r['name']}".upper()] = v
+    kdir = os.path.join(root, "kits")
+    pdir = os.path.join(PRESETS, "cmi-kits")
+    shutil.rmtree(pdir, ignore_errors=True)
+    os.makedirs(kdir, exist_ok=True)
+    done = 0
+    for kit, (title, spec) in KITS.items():
+        slots = [(k, n) for k, n in spec.items() if k != "TOMS"]
+        toms = [(where[n.upper()]["root"] if where[n.upper()].get("tonal") else 60, n)
+                for n in spec.get("TOMS", []) if n.upper() in where]
+        slots += [(key, n) for key, (_, n) in zip(TOM_KEYS, sorted(toms))]
+        slots = [(k, n, where[n.upper()]) for k, n in sorted(slots) if n.upper() in where]
+        if len(slots) < 4:
+            continue
+        lines = [f"// {title}: CMI voices on General MIDI keys, by tools/library/cmi.py",
+                 "<control> default_path=../", "<group> loop_mode=one_shot"]
+        for k, n, v in slots:
+            hat = " group=1 off_by=1" if k in HAT_KEYS else ""
+            lines.append(f"<region> key={k} pitch_keycenter={k} region_label={n.split('/')[-1].lower()}{hat} sample={v['path']}")
+        with open(os.path.join(kdir, kit + ".sfz"), "w") as fh:
+            fh.write("\n".join(lines) + "\n")
+        os.makedirs(pdir, exist_ok=True)
+        params = {"cmi-rate": RATE, "cmi-root": CMI_ROOT, "cmi-tune": 0, "cmi-loop": 0, "cmi-loop-start": 0,
+                  "cmi-loop-end": 127, "cmi-start": 0, "cmi-filter": 255, "cmi-atk": 0, "cmi-damp": 0.05,
+                  "cmi-vib-depth": 0, "cmi-vib-rate": 5.5, "cmi-vel": 1, "cmi-vol": 0.6}
+        with open(os.path.join(pdir, kit + ".preset"), "w") as fh:
+            fh.write(json.dumps({"schema": 1, "machine": "unfairlight", "note": f"CMI kit: {title}",
+                                 "params": params, "assets": {"voice": f"lib:cmi/kits/{kit}.sfz"}}) + "\n")
+        done += 1
+    return done
+
+
 def safe(name):
     return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_") or "voice"
 
@@ -715,6 +813,7 @@ def main():
     ap.add_argument("--no-presets", action="store_true", help="copy the voices only")
     ap.add_argument("--catalog", action="store_true", help="rewrite CATALOG.md from the index only")
     ap.add_argument("--multisample", action="store_true", help="rewrite the multi-* racks from the index only")
+    ap.add_argument("--kits", action="store_true", help="rewrite the drum kits from the index only")
     args = ap.parse_args()
 
     root = os.path.join(library_root(), "cmi")
@@ -738,8 +837,11 @@ def main():
         return
     os.makedirs(root, exist_ok=True)
     index = load_index(root)
-    if args.multisample:
-        print(f"{multisample_racks(root, index)} multisample racks")
+    if args.multisample or args.kits:
+        if args.multisample:
+            print(f"{multisample_racks(root, index)} multisample racks")
+        if args.kits:
+            print(f"{drum_kits(root, index)} drum kits")
         return
     if not args.catalog:
         if not args.paths:
@@ -749,6 +851,7 @@ def main():
         print(f"{args.collection}: {count} voices, {new} new to the library, {insts} instruments")
         if not args.no_presets:
             print(f"{multisample_racks(root, index, [disk_slug(args.collection)])} multisample racks")
+            print(f"{drum_kits(root, index)} drum kits")
         save_index(root, index)
     write_catalog(root, index)
     print(f"{len(index['voices'])} voices in {root} (CATALOG.md)")

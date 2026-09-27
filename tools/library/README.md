@@ -92,6 +92,13 @@ What the tool takes from a voice, and how sure it is:
   `machines/rack/presets/multi-<collection>/<disk>/`, each voice over the
   keys nearest its pitch. Same-pitch families are variants and skipped.
   `--multisample` rewrites them from the index; an import does it too.
+- **Drum kits**: `KITS` in cmi.py picks voices from the drum and
+  percussion disks onto General MIDI keys (kick 36, snare 38, hats
+  42/44/46 choking each other, toms low to high by measured pitch, …) as
+  SFZ files in `lib:cmi/kits/`, one-shot, with an Unfairlight preset each
+  in `cmi-kits/`: IIx acoustic, IIx drum machines (Emulator/Linn), IIx
+  electronic (synth drums, Simmons), IIx Latin, Series II factory.
+  `--kits` rewrites them; edit `KITS` to make your own.
 - **Pitch**: the file stores no rate. The CMI's keyboard plays every voice
   from one key table, a 128-sample cycle at A440 on key 52 (MIDI = key +
   17), so ROOT is 54.232 at RATE 24 kHz. Tonal voices are also measured
