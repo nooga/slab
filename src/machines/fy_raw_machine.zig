@@ -317,6 +317,7 @@ pub const FyRawMachine = struct {
         const old = self.asset_mem[ai];
         self.asset_mem[ai] = loaded;
         self.injectAssets();
+        self.silenceVoices();
         fy_host_mod.unlockCallbacks();
 
         if (old.data.len > 0) self.alloc.free(old.data);
@@ -346,6 +347,7 @@ pub const FyRawMachine = struct {
         self.asset_keymap[ai] = loaded;
         self.zone_edits = edits;
         self.injectAssets();
+        self.silenceVoices();
         fy_host_mod.unlockCallbacks();
 
         old.deinit(self.alloc);
@@ -353,6 +355,15 @@ pub const FyRawMachine = struct {
         self.asset_loaded[ai] = true;
         self.keymapChanged(ai);
         return true;
+    }
+
+    /// Inside the fence, after a sample swap: sounding voices hold read
+    /// positions into the old pool, which may be shorter than theirs, so
+    /// they stop here; the next note-on sets a voice up from scratch.
+    fn silenceVoices(self: *FyRawMachine) void {
+        @memset(self.voice_idle[0..], true);
+        @memset(self.voice_gate[0..], false);
+        self.mono_held_n = 0;
     }
 
     /// After a keymap load: select the first zone, drop the waveform cache,
@@ -4096,6 +4107,30 @@ test "sampler keymap: a release zone plays at note-off, in the same voice" {
     var again = [_]f32{0} ** (512 * 8);
     T.play(inst, &off, 8, &again);
     try testing.expect(T.rms(&again) < 1e-4);
+}
+
+test "sampler keymap: swapping to a smaller keymap mid-note doesn't read the old pool" {
+    const T = keymap_test;
+    const a = testing.allocator;
+    T.mkdirs("swap");
+    try T.sine(a, T.dir ++ "/swap/long_A3.wav", 220, 3.0, null, null);
+    try T.sine(a, T.dir ++ "/swap/short_A3.wav", 220, 0.05, null, null);
+    const inst = try FyRawMachine.create(a, "machines/sampler/sampler.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, a);
+    try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/swap/long_A3.wav"));
+    var out = [_]f32{0} ** (512 * 200);
+    // a note deep into the 3 s sample, far past the short one's end
+    var ev = [_]machine.NoteEvent{T.on(57, 1)};
+    T.play(inst, &ev, 200, &out);
+    try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/swap/short_A3.wav"));
+    var none = [_]machine.NoteEvent{};
+    var after = [_]f32{0} ** (512 * 4);
+    T.play(inst, &none, 4, &after);
+    for (after) |x| try testing.expectEqual(@as(f32, 0), x);
+    // and the new map plays
+    T.play(inst, &ev, 4, &after);
+    try testing.expect(T.rms(&after) > 0.01);
 }
 
 test "sampler keymap: sfz velocity layers and ranges" {
