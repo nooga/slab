@@ -15,3 +15,4 @@ songs/*.wav
 machines/sampler/presets/vcsl-*/
 machines/unfairlight/presets/cmi-*/
 machines/rack/presets/cmi-*/
+machines/rack/presets/multi-*/

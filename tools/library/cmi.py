@@ -16,12 +16,19 @@ bytes) images of CMI 8" floppies, and loose .VC voice files, and
      part per layered voice over its register's keys, tuned and capped at
      the register's polyphony.
 
+Voices that form a multisample (same name but for a number, same disk,
+tonal, at clearly different pitches that YIN and a harmonic product
+spectrum agree on) also get a Rack in machines/rack/presets/multi-
+<collection>/<disk>/: our guess at a split, each voice over the keys
+nearest its pitch.  These aren't the CMI's own instruments.
+
 Usage:
   tools/library/cmi.py --collection NAME DISK.IMD [MORE ...]
   tools/library/cmi.py --collection NAME FOLDER/   images, .VC files and
                                                   8-bit WAV voice dumps under it
   tools/library/cmi.py --list DISK.IMD            what's on it, nothing written
   tools/library/cmi.py --catalog                  rewrite CATALOG.md
+  tools/library/cmi.py --multisample              rewrite the multi-* racks
 
 Each voice is stored once, by the hash of its RAM, under
 lib:cmi/<collection>/<disk>/; a voice that another disk already carries
@@ -307,6 +314,94 @@ def pitch(vc):
         t = t + (0.5 * (a - c) / den if den != 0 else 0)
     root = 69 + 12 * np.log2(RATE / t / 440)
     return float(root), float(1 - cm[int(round(t))])
+
+
+def pitch_hps(vc):
+    """Root at RATE by harmonic product spectrum: a second opinion on
+    pitch() that errs by octaves differently."""
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+    x = (np.frombuffer(ram_of(vc), dtype=np.uint8).astype(np.float64) - 128) / 128
+    p, used = vc_params(vc), used_segments(vc)
+    if p["loop_on"] and p["loop_end"] - p["loop_start"] >= 3:
+        seg = x[p["loop_start"] * 128:(p["loop_end"] + 1) * 128]
+    else:
+        a = min(4, used // 4) * 128
+        seg = x[a:min(a + 64 * 128, used * 128)]
+    if len(seg) < 512:
+        return None
+    seg = seg - seg.mean()
+    n = 1 << 16
+    spec = np.abs(np.fft.rfft(seg * np.hanning(len(seg)), n))
+    f = np.fft.rfftfreq(n, 1 / RATE)
+    h = spec.copy()
+    for k in (2, 3, 4):
+        dec = spec[::k]
+        h[:len(dec)] *= dec
+        h[len(dec):] = 0
+    lo, hi = np.searchsorted(f, 30), np.searchsorted(f, 3000)
+    i = lo + int(np.argmax(h[lo:hi]))
+    return float(69 + 12 * np.log2(f[i] / 440))
+
+
+NON_MELODIC = re.compile(r"drum|percus|cymbal|kick|snare|tom|transport|fx|sfx|enviro|animal|weather|construct")
+
+
+def multisample_racks(root, index, collections=None):
+    """Write a Rack per multisample family (see the module notes) into
+    machines/rack/presets/multi-<collection>/<disk>/. Returns how many."""
+    import shutil
+    fams = {}
+    for h, v in index["voices"].items():
+        for r in v["refs"]:
+            m = re.match(r"^(.*?[A-Z])[-_ ]?(\d+)$", r["name"].upper())
+            if not m or len(m.group(1)) < 2 or not v.get("tonal"):
+                continue
+            if collections and r["collection"] not in collections:
+                continue
+            fams.setdefault((r["collection"], r["disk"], m.group(1)), []).append((r, v))
+    done, seen = 0, set()
+    for c in collections or index["collections"]:
+        shutil.rmtree(os.path.join(RACK_PRESETS, f"multi-{c}"), ignore_errors=True)
+    for (c, disk, stem), mem in sorted(fams.items()):
+        if len(mem) < 2 or NON_MELODIC.search(disk):
+            continue
+        key = frozenset(v["path"] for _, v in mem)
+        if key in seen:
+            continue
+        seen.add(key)
+        mem.sort(key=lambda rv: rv[1]["root"])
+        roots = [v["root"] for _, v in mem]
+        if min(b - a for a, b in zip(roots, roots[1:])) < 2:
+            continue  # same pitch: variants, not a multisample
+        stored = []
+        for r, v in mem:
+            with open(os.path.join(root, v["path"]), "rb") as fh:
+                vc = fh.read()
+            second = pitch_hps(vc)
+            if second is None or abs(second - v["root"]) > 0.7:
+                break  # the two pitch methods disagree: no split on a guess
+            stored.append(vc)
+        else:
+            parts = []
+            for i, ((r, v), vc) in enumerate(zip(mem, stored)):
+                lo = 0 if i == 0 else int(round((roots[i - 1] + roots[i]) / 2))
+                hi = 127 if i == len(mem) - 1 else int(round((roots[i] + roots[i + 1]) / 2)) - 1
+                vp = preset(vc, f"lib:cmi/{v['path']}", r["name"], min(96.0, max(24.0, v["root"])), r.get("co"))
+                parts.append({"machine": "unfairlight", "name": r["name"], "lo": lo, "hi": hi, "vlo": 1, "vhi": 127,
+                              "transpose": 0, "level": 0, "pan": 0, "poly": 0, "mute": False,
+                              "params": vp["params"], "assets": vp["assets"]})
+            pdir = os.path.join(RACK_PRESETS, f"multi-{c}", disk)
+            os.makedirs(pdir, exist_ok=True)
+            names = ", ".join(f"{r['name']} {v['root']:.1f}" for r, v in mem)
+            with open(os.path.join(pdir, safe(stem).lower() + ".preset"), "w") as fh:
+                fh.write(json.dumps({"schema": 1, "machine": "rack",
+                                     "note": f"Multisample guessed by cmi.py, not a CMI instrument: {names}",
+                                     "parts": parts}) + "\n")
+            done += 1
+    return done
 
 
 def safe(name):
@@ -619,6 +714,7 @@ def main():
     ap.add_argument("--deleted", action="store_true", help="include DELETED- files recovered from disk free space")
     ap.add_argument("--no-presets", action="store_true", help="copy the voices only")
     ap.add_argument("--catalog", action="store_true", help="rewrite CATALOG.md from the index only")
+    ap.add_argument("--multisample", action="store_true", help="rewrite the multi-* racks from the index only")
     args = ap.parse_args()
 
     root = os.path.join(library_root(), "cmi")
@@ -642,12 +738,17 @@ def main():
         return
     os.makedirs(root, exist_ok=True)
     index = load_index(root)
+    if args.multisample:
+        print(f"{multisample_racks(root, index)} multisample racks")
+        return
     if not args.catalog:
         if not args.paths:
             ap.error("nothing to import")
         count, new, insts = import_collection(root, index, disk_slug(args.collection), args.paths, args.title,
                                               args.note, args.deleted, not args.no_presets)
         print(f"{args.collection}: {count} voices, {new} new to the library, {insts} instruments")
+        if not args.no_presets:
+            print(f"{multisample_racks(root, index, [disk_slug(args.collection)])} multisample racks")
         save_index(root, index)
     write_catalog(root, index)
     print(f"{len(index['voices'])} voices in {root} (CATALOG.md)")

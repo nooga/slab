@@ -85,6 +85,13 @@ What the tool takes from a voice, and how sure it is:
   of keys the keyboard's key table gives a register becomes a part per
   voice that register layers, capped at its polyphony and tuned by the
   table. The outermost parts reach to MIDI 0 and 127.
+- **Multisamples** (our guess, not Fairlight's): voices on one disk named
+  alike but for a number (GUITAR1-3), tonal, at pitches at least two
+  semitones apart that YIN and a harmonic product spectrum agree on, and
+  not on a drum/percussion/FX disk, get a Rack in
+  `machines/rack/presets/multi-<collection>/<disk>/`, each voice over the
+  keys nearest its pitch. Same-pitch families are variants and skipped.
+  `--multisample` rewrites them from the index; an import does it too.
 - **Pitch**: the file stores no rate. The CMI's keyboard plays every voice
   from one key table, a 128-sample cycle at A440 on key 52 (MIDI = key +
   17), so ROOT is 54.232 at RATE 24 kHz. Tonal voices are also measured
