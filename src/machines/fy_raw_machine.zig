@@ -4060,6 +4060,44 @@ test "sampler keymap: sfz round robin alternates per key" {
     }
 }
 
+test "sampler keymap: a release zone plays at note-off, in the same voice" {
+    const T = keymap_test;
+    const a = testing.allocator;
+    T.mkdirs("relz");
+    try T.sine(a, T.dir ++ "/relz/body.wav", 220, 2.0, null, null);
+    try T.sine(a, T.dir ++ "/relz/thump.wav", 330, 0.3, null, null);
+    try T.writeAll(T.dir ++ "/relz/test.sfz",
+        \\<region> sample=body.wav key=57
+        \\<region> sample=thump.wav key=57 trigger=release rt_decay=20
+    );
+    const inst = try FyRawMachine.create(a, "machines/sampler/sampler.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, a);
+    try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/relz/test.sfz"));
+    applyControlValue(inst, "smp-rel", 0.01);
+    var out = [_]f32{0} ** (512 * 12);
+    // held: only the body, at pitch
+    var on = [_]machine.NoteEvent{T.on(57, 1)};
+    T.play(inst, &on, 12, &out);
+    try testing.expectApproxEqRel(@as(f64, 220), T.freq(out[1024..]), 0.01);
+    const held_s: f64 = 12.0 * 512.0 / 48000.0;
+    // released: the body's 10 ms release is over, the thump rings
+    var off = [_]machine.NoteEvent{T.off(57)};
+    T.play(inst, &off, 12, &out);
+    try testing.expectApproxEqRel(@as(f64, 330), T.freq(out[2048 .. 512 * 8]), 0.01);
+    try testing.expect(!inst.voice_idle[0]);
+    // rt_decay: 20 dB per second held
+    const want = 0.5 * std.math.pow(f64, 10, -20 * held_s / 20) * 0.7 / std.math.sqrt2;
+    try testing.expectApproxEqRel(want, T.rms(out[2048 .. 512 * 8]), 0.1);
+    // a second note-off starts nothing
+    var none = [_]machine.NoteEvent{};
+    var tail = [_]f32{0} ** (512 * 32);
+    T.play(inst, &none, 32, &tail);
+    var again = [_]f32{0} ** (512 * 8);
+    T.play(inst, &off, 8, &again);
+    try testing.expect(T.rms(&again) < 1e-4);
+}
+
 test "sampler keymap: sfz velocity layers and ranges" {
     const T = keymap_test;
     const a = testing.allocator;

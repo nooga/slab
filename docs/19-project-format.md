@@ -151,7 +151,11 @@ the clip, which then plays silent.
     `pan`, `loop_mode`, `loop_start`/`loop_end`, `group`/`off_by`,
     `seq_length`/`seq_position` (round robin, counted per key),
     `region_label`/`group_label` (the zone's name) and `<control>
-    default_path`. Release triggers and generators are skipped.
+    default_path`. `trigger=release` regions play at note-off, in the
+    same voice as the note, from a second playhead beside the body's
+    release: same key, velocity and round robin, pitched with the note,
+    `rt_decay` dB quieter per second held, unfiltered. Other triggers
+    and generators are skipped.
   - **a folder:** if the file names contain notes (`Piano_C4.wav`,
     `A#3`, C4 = 60), each sample covers the keys half way to its
     neighbours, and several files at one root split the velocity range.

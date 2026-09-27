@@ -74,9 +74,13 @@ pub const Zone = extern struct {
     // on its key (SFZ seq_length / seq_position, rr_pos from 0)
     rr_len: f64 = 1,
     rr_pos: f64 = 0,
+    // 1: a release zone, played at note-off (SFZ trigger=release), rt_decay
+    // dB quieter for each second the note was held
+    trigger: f64 = 0,
+    rt_decay: f64 = 0,
 };
 
-pub const ZONE_CELLS = 17;
+pub const ZONE_CELLS = 19;
 comptime {
     std.debug.assert(@sizeOf(Zone) == ZONE_CELLS * 8);
 }
@@ -610,7 +614,8 @@ pub const SfzResult = struct { count: usize, default_path: []const u8 };
 /// key, lokey, hikey, pitch_keycenter, lovel, hivel, tune, transpose,
 /// volume, pan, loop_mode, loop_start, loop_end, group, off_by,
 /// seq_length, seq_position, region_label, group_label, trigger
-/// (release regions are skipped), and <control> default_path. Unknown
+/// (attack, or release: played at note-off), rt_decay
+/// and <control> default_path. Unknown
 /// opcodes are ignored.
 pub fn parseSfz(text: []const u8, out: []SfzRegion, dpath_buf: []u8) SfzResult {
     var control = Level{};
@@ -721,7 +726,10 @@ fn resolveRegion(region: *const Level, group: *const Level, master: *const Level
     }.f;
     const sample = get(&levels, "sample") orelse return null;
     if (sample.len == 0 or sample[0] == '*') return null; // generators
-    if (get(&levels, "trigger")) |t| if (!std.mem.eql(u8, t, "attack")) return null;
+    var release = false;
+    if (get(&levels, "trigger")) |t| {
+        if (std.mem.eql(u8, t, "release")) release = true else if (!std.mem.eql(u8, t, "attack")) return null;
+    }
 
     var z = Zone{ .root = 60 };
     if (get(&levels, "key")) |v| if (parseSfzNote(v)) |k| {
@@ -747,6 +755,8 @@ fn resolveRegion(region: *const Level, group: *const Level, master: *const Level
     if (num(get(&levels, "pan"))) |v| z.pan = std.math.clamp(v / 100, -1, 1);
     if (num(get(&levels, "group"))) |v| z.group = v;
     if (num(get(&levels, "off_by"))) |v| z.off_by = v;
+    if (release) z.trigger = 1;
+    if (num(get(&levels, "rt_decay"))) |v| z.rt_decay = @max(v, 0);
     if (num(get(&levels, "seq_length"))) |v| z.rr_len = @max(@round(v), 1);
     if (num(get(&levels, "seq_position"))) |v| z.rr_pos = std.math.clamp(@round(v) - 1, 0, z.rr_len - 1);
     var reg = SfzRegion{ .sample = sample, .zone = z };
@@ -879,7 +889,7 @@ test "drum folder: GM keywords, then free keys; hats choke" {
     try testing.expectEqual(@as(f64, 39), specs[5].zone.lo_key); // 36 taken
 }
 
-test "sfz: inheritance, note names, spaces in paths, loops, release skipped" {
+test "sfz: inheritance, note names, spaces in paths, loops, release zones" {
     const text =
         \\// a comment
         \\<control> default_path=samples\
@@ -887,16 +897,21 @@ test "sfz: inheritance, note names, spaces in paths, loops, release skipped" {
         \\<group> lovel=0 hivel=63 loop_mode=loop_continuous
         \\<region> sample=Piano C4 soft.wav lokey=c4 hikey=e4 pitch_keycenter=c4 tune=50
         \\<region> sample=Piano G4 soft.wav key=67 loop_start=100 loop_end=199
-        \\<group> lovel=64 trigger=release
+        \\<group> lovel=64 trigger=release rt_decay=6
         \\<region> sample=rel.wav key=60
+        \\<region> sample=legato.wav key=61 trigger=legato
         \\<group> group=1 off_by=1 loop_mode=one_shot
         \\<region> sample=hat.wav key=42 /* inline */ pan=-50
     ;
     var regions: [8]SfzRegion = undefined;
     var dp: [64]u8 = undefined;
     const r = parseSfz(text, &regions, &dp);
-    try testing.expectEqual(@as(usize, 3), r.count);
+    try testing.expectEqual(@as(usize, 4), r.count);
     try testing.expectEqualStrings("samples/", r.default_path);
+    const rel = regions[2];
+    try testing.expectEqualStrings("rel.wav", rel.sample);
+    try testing.expectEqual(@as(f64, 1), rel.zone.trigger);
+    try testing.expectEqual(@as(f64, 6), rel.zone.rt_decay);
     const a = regions[0];
     try testing.expectEqualStrings("Piano C4 soft.wav", a.sample);
     try testing.expectEqual(@as(f64, 60), a.zone.lo_key);
@@ -910,7 +925,7 @@ test "sfz: inheritance, note names, spaces in paths, loops, release skipped" {
     try testing.expectEqual(@as(f64, 67), b.zone.root);
     try testing.expect(b.has_loop_points);
     try testing.expectEqual(@as(f64, 200), b.zone.loop_end);
-    const h = regions[2];
+    const h = regions[3];
     try testing.expectEqualStrings("hat.wav", h.sample);
     try testing.expectEqual(LOOP_ONESHOT, h.zone.loop_mode);
     try testing.expectEqual(@as(f64, 1), h.zone.off_by);

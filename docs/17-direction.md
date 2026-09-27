@@ -561,7 +561,11 @@ follows the note (CMI, Emulator, Mirage) or a FIXED one that doesn't
 sets all of these to one of 13 machines through the manifest's `sets`
 (the era values). The input has no anti-alias filter yet: content above
 RATE/2 folds, which the originals' input filters would have stopped.
-Presets cmi-voice, cmi-grit, emulator, sp1200-kit, and the VCSL library
+Release zones (SFZ `trigger=release`, `rt_decay`) play at note-off from a
+second playhead in the same voice, clean and after the filter, so a
+piano's damper lands over its dying note without taking a voice; the
+host keeps the voice while it sounds (idle is output-based). Presets
+cmi-voice, cmi-grit, emulator, sp1200-kit, and the VCSL library
 (tools/library/vcsl.py: ~170 instruments and two GM kits as generated
 SFZs, `lib:` presets in vcsl-* banks). The project
 file saves the keymap path (docs/19). Still open for the CMI machine:

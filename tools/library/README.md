@@ -35,5 +35,8 @@ instrument into `vcsl/<bank>/`:
 
 Every instrument is levelled to a -6 dBFS peak. Presets go into
 `machines/sampler/presets/vcsl-{keys,strings,winds,mallets,perc,kits}/`.
-Release samples are skipped (the sampler has no release trigger).
+Release samples (pianos, harpsichords, harmonicas, ocarinas, wine
+glasses) become `trigger=release` regions of their instrument: the
+sampler starts them at note-off in the same voice, beside the body's
+release, and a piano's gets 3 dB quieter per second held.
 Measurements are cached in `vcsl/analysis.json`.

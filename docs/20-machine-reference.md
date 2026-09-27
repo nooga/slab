@@ -610,11 +610,14 @@ Presets:
 - `raw` — Clean one-shot, no loop
 - `sp1200-kit` — SP-1200 drums: 12-bit drop-sample, pitched-down grit, fixed filter
 - `vcsl-keys/fm-piano` — VCSL FM Piano
+- `vcsl-keys/harpsichord-french` — VCSL Harpsichord, French / Sustains, with release samples
 - `vcsl-kits/acoustic-kit` — VCSL acoustic kit on GM keys
 - `vcsl-kits/latin-kit` — VCSL hand percussion on GM keys
 - `vcsl-mallets/kalimba-kenya` — VCSL Kalimba, Kenya
 - `vcsl-mallets/marimba` — VCSL Marimba
 - `vcsl-perc/hi-hat-cymbal` — VCSL Hi-Hat Cymbal
+- `vcsl-winds/ocarina-typical-sus` — VCSL Ocarina, Typical / Sustains / Sus, with release samples
+- `vcsl-winds/ocarina-typical-susvib` — VCSL Ocarina, Typical / Sustains / SusVib, with release samples
 
 ## chorus2
 

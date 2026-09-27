@@ -23,8 +23,8 @@ Usage:
                                          of these (case-insensitive)
   tools/library/vcsl.py --no-fetch       regenerate from what's on disk
 
-Release-trigger samples (Releases/, Rel/) are skipped: the sampler has no
-release trigger.  Pitch and level measurement needs numpy; without it the
+Release samples (Releases/, Rel/) become trigger=release regions of the
+instrument they belong to: the sampler plays them at note-off.  Pitch and level measurement needs numpy; without it the
 names are trusted and nothing is levelled.  Measurements are cached in
 vcsl/analysis.json, so a rerun is quick.
 """
@@ -68,9 +68,17 @@ def library_root():
     return os.path.join(os.path.expanduser("~"), "Music", "Slab", "Library")
 
 
-def skipped(path):
-    parts = path.split("/")
-    return any(p.lower() in ("releases", "rel") for p in parts[:-1])
+def release_of(folder):
+    """The sustain folder a release folder belongs to, or None.
+    VCSL keeps them side by side: .../Releases/x beside .../Sustains/x, and
+    the Steinway's Rel beside NoSus (the pedal-down Sus needs none)."""
+    parts = folder.split("/")
+    for i, p in enumerate(parts):
+        if p.lower() == "releases":
+            return "/".join(parts[:i] + ["Sustains"] + parts[i + 1:])
+        if p.lower() == "rel":
+            return "/".join(parts[:i] + ["NoSus"] + parts[i + 1:])
+    return None
 
 
 # ── the tree ─────────────────────────────────────────────────────────────
@@ -93,18 +101,26 @@ def fetch_tree(cache):
 
 
 def instruments(tree):
-    """{folder: [(file name, size)]}: every folder holding WAVs is one."""
-    out = {}
+    """(instruments, releases, files): every folder holding WAVs is an
+    instrument, {folder: [(file name, size)]}, except release folders,
+    which play at note-off on the instrument they belong to: releases maps
+    an instrument to its release folder, files holds both kinds."""
+    out, rel = {}, {}
     for b in tree["tree"]:
         if b["type"] != "blob" or not b["path"].lower().endswith(".wav"):
-            continue
-        if skipped(b["path"]):
             continue
         folder, name = b["path"].rsplit("/", 1)
         out.setdefault(folder, []).append((name, b["size"]))
     for v in out.values():
         v.sort()
-    return out
+    for f in list(out):
+        sus = release_of(f)
+        if sus is not None:
+            if sus in out:
+                rel[sus] = f
+            else:
+                del out[f]
+    return {f: v for f, v in out.items() if release_of(f) is None}, rel, out
 
 
 # ── download ─────────────────────────────────────────────────────────────
@@ -337,7 +353,8 @@ def cap(groups_per_key):
     return groups_per_key
 
 
-def regions_for(layers, lokey, hikey, root, label, oneshot, group=0, analysis=None, tune_of=None, gain_db=0.0):
+def regions_for(layers, lokey, hikey, root, label, oneshot, group=0, analysis=None, tune_of=None, gain_db=0.0,
+                release=None):
     out = []
     n = len(layers)
     for li, rr in enumerate(layers):
@@ -357,6 +374,8 @@ def regions_for(layers, lokey, hikey, root, label, oneshot, group=0, analysis=No
                 op.append("loop_mode=one_shot")
             if group:
                 op += [f"group={group}", f"off_by={group}"]
+            if release is not None:
+                op += ["trigger=release"] + ([f"rt_decay={release:g}"] if release else [])
             op.append(f"region_label={label}")
             out.append((op, s))
     return out
@@ -383,7 +402,7 @@ def level_for(samples, analysis):
     return round(TARGET_PEAK_DB - db, 1) if db is not None else 0.0
 
 
-def map_melodic(folder, samples, analysis):
+def map_melodic(folder, samples, analysis, releases=()):
     # octave: an instrument-wide vote, so a weak piano fundamental can't move one note
     votes = [analysis.get(s.rel, {}).get("oct", 0) for s in samples]
     shift = 0
@@ -406,7 +425,39 @@ def map_melodic(folder, samples, analysis):
         hi = 127 if i == len(roots) - 1 else (r + roots[i + 1]) // 2
         regions += regions_for(per_key[i], max(lo, 0), min(hi, 127), r, note_name(r), False,
                                tune_of=tune_of, gain_db=gain)
+    rel = [s for s in releases if s.midi is not None]
+    if rel:
+        regions += map_releases(folder, rel, shift, roots, gain, MAX_ZONES - len(regions))
     return regions
+
+
+def map_releases(folder, rel, shift, roots, gain, budget):
+    """Release samples on their own key split, velocity layers and round
+    robins, labelled like the sustain root that owns their key so the
+    zone list edits them with it. The instrument's level and octave; no
+    fine tuning (a damper thump has no pitch to speak of). A piano's
+    release gets quieter the longer the key was held, 3 dB a second."""
+    rroots = sorted({s.midi + shift for s in rel})
+    per_key = [layers_by_vel([s for s in rel if s.midi + shift == r]) for r in rroots]
+    while sum(len(rr) for layers in per_key for rr in layers) > budget:
+        before = sum(len(rr) for layers in per_key for rr in layers)
+        per_key = [[rr[:max(1, len(rr) - 1)] for rr in layers] for layers in per_key]
+        per_key = [layers[1::2] if len(layers) > 1 and sum(len(rr) for rr in layers) == len(layers) else layers
+                   for layers in per_key]
+        if sum(len(rr) for layers in per_key for rr in layers) == before:
+            return []
+    rt = 3 if re.search(r"piano", folder, re.I) else 0
+
+    def owner(k):
+        return min(roots, key=lambda r: (abs(r - k), r))
+
+    out = []
+    for i, r in enumerate(rroots):
+        lo = 0 if i == 0 else (rroots[i - 1] + r) // 2 + 1
+        hi = 127 if i == len(rroots) - 1 else (r + rroots[i + 1]) // 2
+        out += regions_for(per_key[i], max(lo, 0), min(hi, 127), r, note_name(owner(r)), False,
+                           gain_db=gain, release=rt)
+    return out
 
 
 def art_label(art):
@@ -545,7 +596,7 @@ BASE = {"smp-tune": 0, "smp-root": 60, "smp-start": 0, "smp-loop": 0, "smp-loop-
         "smp-dec": 1.0, "smp-sus": 1, "smp-rel": 0.5, "smp-vel": 0.7, "smp-level": 0.8}
 
 
-def preset_params(folder, kind, layered):
+def preset_params(folder, kind, layered, has_rel=False):
     p = dict(BASE)
     if kind == "perc":
         p.update({"smp-atk": 0.001, "smp-rel": 0.3, "smp-vel": 0.5 if layered else 0.8})
@@ -557,6 +608,10 @@ def preset_params(folder, kind, layered):
         p.update({"smp-atk": 0.001, "smp-rel": 0.6})
     if kind != "perc":
         p["smp-vel"] = 0.4 if layered else 0.8
+    if has_rel:
+        # the release sample carries the note's end: the body gets out of
+        # its way (a damped piano string stops fast, a breath ends in its tail)
+        p["smp-rel"] = 0.15 if re.search(r"piano|harpsichord", folder, re.I) else 0.06
     return p
 
 
@@ -582,26 +637,29 @@ def main():
 
     root = os.path.join(library_root(), "vcsl")
     tree = fetch_tree(os.path.join(root, "tree.json"))
-    insts = instruments(tree)
+    insts, releases, files = instruments(tree)
 
     only = [o.lower() for o in args.only]
     chosen = sorted(f for f in insts if not only or any(o in f.lower() for o in only))
     if args.list:
+        def size(f):
+            return sum(s for _, s in files[f]) + (sum(s for _, s in files[releases[f]]) if f in releases else 0)
         for f in chosen:
-            print(f"{sum(s for _, s in insts[f]) / 1e6:8.1f} MB {len(insts[f]):4d}  {f}")
-        print(f"{sum(sum(s for _, s in insts[f]) for f in chosen) / 1e9:.2f} GB in {len(chosen)} instruments")
+            print(f"{size(f) / 1e6:8.1f} MB {len(insts[f]):4d}{' +rel' if f in releases else '     '}  {f}")
+        print(f"{sum(size(f) for f in chosen) / 1e9:.2f} GB in {len(chosen)} instruments")
         return
     # kits draw on their folders: fetch those too when every kit piece is wanted
     want_kits = not only or any(o in "kits" for o in only)
     fetch = set(chosen) | (kit_folders() & set(insts) if want_kits else set())
+    fetch |= {releases[f] for f in fetch if f in releases}
 
     if not args.no_fetch:
         jobs = [(RAW + urllib.request.quote(f"{f}/{n}"), os.path.join(root, "samples", f, n), sz)
-                for f in sorted(fetch) for n, sz in insts[f]]
+                for f in sorted(fetch) for n, sz in files[f]]
         download(jobs, args.jobs)
 
     def on_disk(f):
-        return [n for n, _ in insts[f] if os.path.exists(os.path.join(root, "samples", f, n))]
+        return [n for n, _ in files[f] if os.path.exists(os.path.join(root, "samples", f, n))]
 
     # measure what's new
     cache_path = os.path.join(root, "analysis.json")
@@ -630,7 +688,8 @@ def main():
         samples = [Sample(f, n) for n in names]
         noted = [s for s in samples if s.midi is not None]
         melodic = len(noted) >= 0.8 * len(samples) and len({s.midi for s in noted}) >= 3
-        regions = map_melodic(f, noted, analysis) if melodic else map_percussion(f, samples, analysis)
+        rel = [Sample(releases[f], n) for n in on_disk(releases[f])] if f in releases else []
+        regions = map_melodic(f, noted, analysis, rel) if melodic else map_percussion(f, samples, analysis)
         if not regions:
             continue
         b, s = bank(f, melodic), slug(f)
@@ -638,10 +697,13 @@ def main():
         title = f.replace("/", " / ")
         write_sfz(sfz, title, regions, root)
         layered = len({r[1].vel for r in regions}) > 1
+        has_rel = any("trigger=release" in r[0] for r in regions)
         if not args.no_presets:
             note = "VCSL " + " / ".join(f.split("/")[2:] or f.split("/")[-1:])
+            if has_rel:
+                note += ", with release samples"
             write_preset(b, s, note, f"lib:vcsl/{b}/{s}.sfz",
-                         preset_params(f, "melodic" if melodic else "perc", layered))
+                         preset_params(f, "melodic" if melodic else "perc", layered, has_rel))
         made.append((b, s, len(regions)))
 
     if want_kits:

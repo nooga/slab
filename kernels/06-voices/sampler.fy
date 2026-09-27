@@ -34,13 +34,16 @@ include "../04-filters/coeffs.fy"
 include "../04-filters/tpt_svf.fy"
 include "../09-digital/digital.fy"
 
-( One keymap zone: 17 f64 cells, mirrored by Zone in src/keymap.zig.
-  The zone plays on the rr-pos-th of every rr-len notes on its key. )
+( One keymap zone: 19 f64 cells, mirrored by Zone in src/keymap.zig.
+  The zone plays on the rr-pos-th of every rr-len notes on its key.
+  trigger 1 is a release zone: it plays at note-off, rt-decay dB
+  quieter per second the note was held. )
 ustruct: Zone
   f64 start  f64 len  f64 sr
   f64 lo-key  f64 hi-key  f64 lo-vel  f64 hi-vel
   f64 root  f64 gain  f64 loop-mode  f64 loop-start  f64 loop-end
   f64 group  f64 off-by  f64 pan  f64 rr-len  f64 rr-pos
+  f64 trigger  f64 rt-decay
 ;
 
 :: MAX-ZONES 256 ;
@@ -70,6 +73,14 @@ ustruct: SamplerState
   f64 gain
   f64 off-by
   f64 seq        ( this note's sequence number, for choke )
+  f64 key        ( the note, for the release zone search )
+  f64 velk       ( its velocity, 0..127 )
+  f64 cnt        ( its round-robin count )
+  ( release sample: a second playhead started at note-off )
+  f64 r-ph
+  f64 r-end
+  f64 r-inc
+  f64 r-gain
   ( playback )
   f64 ph         ( read position in the pool )
   f64 inc        ( advance per host sample )
@@ -135,16 +146,18 @@ dsp: sampler-block-prepare | ctx:Ctx state params:SamplerParams |
   0.3826834323650898  1.0 params.res 0.0 1.0 fclamp 0.92 f* f-  f* -> params.fd2
 ;
 
-( zt key vel cnt -- k : the first zone holding key and vel [0..127]
-  whose round-robin slot is cnt [the key's note count] mod rr-len, or -1.
+( zt key vel cnt trig -- k : the first zone of trigger trig [0 attack,
+  1 release] holding key and vel [0..127] whose round-robin slot is cnt
+  [the key's note count] mod rr-len, or -1.
   Unrolled over every zone; `best 0.0 f<` keeps the first match. )
-dsp: zone-find | zt key vel cnt -- k |
+dsp: zone-find | zt key vel cnt trig -- k |
   -1.0 0.0 MAX-ZONES [ | best i |
-    i 17.0 f* | c |
+    i 19.0 f* | c |
     zt c 3.0 f+ f@i key f<=   key zt c 4.0 f+ f@i f<=  and
     zt c 5.0 f+ f@i vel f<=  and   vel zt c 6.0 f+ f@i f<=  and
     zt c 15.0 f+ f@i | n |
     cnt  cnt n f/ floor n f*  f-  zt c 16.0 f+ f@i  f- fabs 0.5 f<  and
+    zt c 17.0 f+ f@i trig f- fabs 0.5 f<  and
     best 0.0 f<  and
     i best select
     i 1.0 f+ ] times
@@ -160,9 +173,17 @@ dsp: sampler-note-on | ctx:Ctx state:SamplerState params:SamplerParams |
   key 0.0 127.0 fclamp floor | kk |
   params.rr-count& kk f@i | cnt |
   cnt 1.0 f+  params.rr-count& kk f!i
-  zt key ctx.vel 127.0 f* cnt zone-find | k |
+  zt key ctx.vel 127.0 f* cnt 0.0 zone-find | k |
+  key -> state.key
+  ctx.vel 127.0 f* -> state.velk
+  cnt -> state.cnt
+  ( no release playing until note-off; the guard zeros read as silence )
+  4.0 -> state.r-ph
+  4.0 -> state.r-end
+  0.0 -> state.r-inc
+  0.0 -> state.r-gain
   k 0.0 f>= | hit |
-  k 0.0 fmax 17.0 f* | c |
+  k 0.0 fmax 19.0 f* | c |
   ( a miss plays an empty zone at pool index 4: guard zeros )
   hit  zt c f@i  4.0  select | start |
   hit  zt c 1.0 f+ f@i  0.0  select | len |
@@ -227,8 +248,31 @@ dsp: sampler-note-on | ctx:Ctx state:SamplerState params:SamplerParams |
 ;
 
 ( ctx state params -- : release, unless the zone is a one-shot. )
-dsp: sampler-note-off | ctx state:SamplerState params |
+( ctx state params -- : release, unless the zone is a one-shot, and
+  start the note's release zone if the keymap has one: same key,
+  velocity and round robin, pitched like the note, quieter by rt-decay
+  for each second held.  It plays alongside the body's release. )
+dsp: sampler-note-off | ctx:Ctx state:SamplerState params:SamplerParams |
+  ( only a held note releases: a second note-off, or one after a choke,
+    starts nothing )
+  state.gate-time 100000000.0 f> | held |
   state.oneshot 0.5  state.age  state.gate-time  fsel-lt -> state.gate-time
+  params.zones& p@64 | zt |
+  zt state.key state.velk state.cnt 1.0 zone-find | k |
+  k 0.0 f>=  held and | hit |
+  k 0.0 fmax 19.0 f* | c |
+  hit  zt c f@i  4.0  select | start |
+  hit  zt c 1.0 f+ f@i  0.0  select | len |
+  zt c 7.0 f+ f@i | zroot |
+  zroot 0.0  params.root zroot fsel-lt | root |
+  params.edits& p@64 | ed:ZoneEdits |
+  k 0.0 fmax | k0 |
+  state.key params.tune f+  ed.tune& k0 f@i f+  root f- 0.08333333333333333 f* exp2 | ratio |
+  zt c 2.0 f+ f@i ctx.sr f/ ratio f* 16.0 fmin -> state.r-inc
+  start -> state.r-ph
+  start len f+ -> state.r-end
+  0.0  zt c 18.0 f+ f@i state.age f*  f- db>lin | fall |
+  zt c 8.0 f+ f@i  ed.level& k0 f@i db>lin f*  fall f*  hit mask>f f* -> state.r-gain
 ;
 
 ( buf ph -- y : 4-point Hermite at ph between the stored samples. )
@@ -311,7 +355,14 @@ dsp: k-sampler-voice | out:Io ctx state:SamplerState params:SamplerParams -- |
   state.fade | fade |
   fade state.fade-k f* -> state.fade
   out f@64
+  ( the release sample, if note-off started one: clean playback,
+    after the filter )
+  state.r-ph | rp |
+  rp state.r-end f< mask>f | ralive |
+  rp state.r-inc f+ state.r-end fmin -> state.r-ph
+  buf rp smp-hermite  state.r-gain f*  va f*  params.level f*  ralive f* | rx |
   y env f*  va f*  state.gain f*  fade f*  params.level f*  alive f*
+  rx f+
   f+
   out f!64
 ;
