@@ -162,6 +162,9 @@ def preset(vc, lib_path, note):
 def sources(paths):
     """(disk name, [(voice name, bytes)]) per image or folder of .VC files."""
     for path in paths:
+        if not os.path.exists(path):
+            print(f"  {path}: no such file or folder", file=sys.stderr)
+            continue
         if os.path.isdir(path):
             loose = []
             for dirpath, _, files in os.walk(path):
