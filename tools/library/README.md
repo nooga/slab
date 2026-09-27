@@ -40,3 +40,20 @@ glasses) become `trigger=release` regions of their instrument: the
 sampler starts them at note-off in the same voice, beside the body's
 release, and a piano's gets 3 dB quieter per second held.
 Measurements are cached in `vcsl/analysis.json`.
+
+## Fairlight CMI disks
+
+`tools/library/cmi.py` unpacks CMI Series II / IIx floppy images (`.IMD`
+ImageDisk or 512,512-byte raw `.IMG`) and loose `.VC` voice files into
+`cmi/<disk>/<VOICE>.vc`, and writes an Unfairlight CIA preset per voice
+(its own loop and filter) into `machines/unfairlight/presets/cmi-<disk>/`
+(gitignored). Slab ships no Fairlight sounds; bring your own disks.
+
+```sh
+tools/library/cmi.py --list VOICES.IMD     # what's on a disk
+tools/library/cmi.py ~/cmi-disks/          # every image and .VC under it
+```
+
+A `.VC` also loads directly on the Unfairlight or the sampler (LOAD on
+the waveform). The file stores no sample rate: the Unfairlight plays it
+at RATE, the sampler as 24 kHz; set ROOT or TUNE by ear.

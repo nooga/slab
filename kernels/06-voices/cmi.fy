@@ -93,7 +93,9 @@ dsp: cmi-note-on | ctx:Ctx state:CmiState params:CmiParams |
   k 0.0 fmax 19.0 f* | c |
   hit  zt c f@i  4.0  select | start |
   hit  zt c 1.0 f+ f@i  0.0  select | len |
-  zt c 2.0 f+ f@i | zsr |
+  ( a zone of rate 0 is voice RAM from a .VC file: it plays at RATE )
+  zt c 2.0 f+ f@i | zsr0 |
+  zsr0 0.5 f<  params.rate  zsr0  select | zsr |
   zt c 7.0 f+ f@i | zroot |
   params.edits& p@64 | ed:ZoneEdits |
   k 0.0 fmax | k0 |

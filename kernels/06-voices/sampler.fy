@@ -187,7 +187,10 @@ dsp: sampler-note-on | ctx:Ctx state:SamplerState params:SamplerParams |
   ( a miss plays an empty zone at pool index 4: guard zeros )
   hit  zt c f@i  4.0  select | start |
   hit  zt c 1.0 f+ f@i  0.0  select | len |
-  zt c 2.0 f+ f@i | zsr |
+  ( a zone of rate 0 is CMI voice RAM [.VC]: the sampler plays it as
+    24 kHz; the Unfairlight plays it at its RATE )
+  zt c 2.0 f+ f@i | zsr0 |
+  zsr0 0.5 f<  24000.0  zsr0  select | zsr |
   zt c 7.0 f+ f@i | zroot |
   zt c 9.0 f+ f@i | zmode |
   zt c 10.0 f+ f@i | zls |
@@ -268,7 +271,8 @@ dsp: sampler-note-off | ctx:Ctx state:SamplerState params:SamplerParams |
   params.edits& p@64 | ed:ZoneEdits |
   k 0.0 fmax | k0 |
   state.key params.tune f+  ed.tune& k0 f@i f+  root f- 0.08333333333333333 f* exp2 | ratio |
-  zt c 2.0 f+ f@i ctx.sr f/ ratio f* 16.0 fmin -> state.r-inc
+  zt c 2.0 f+ f@i | rsr0 |
+  rsr0 0.5 f<  24000.0  rsr0  select  ctx.sr f/ ratio f* 16.0 fmin -> state.r-inc
   start -> state.r-ph
   start len f+ -> state.r-end
   0.0  zt c 18.0 f+ f@i state.age f*  f- db>lin | fall |

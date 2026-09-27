@@ -24,6 +24,7 @@ const wav = @import("wav.zig");
 extern fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
 extern fn close(fd: c_int) c_int;
 extern fn read(fd: c_int, buf: [*]u8, count: usize) isize;
+extern fn write(fd: c_int, buf: [*]const u8, count: usize) isize;
 const O_RDONLY: c_int = 0;
 
 const DIR = opaque {};
@@ -156,6 +157,7 @@ pub const Error = error{
     TooManyZones,
     PathTooLong,
     OutOfMemory,
+    BadVoiceFile,
 } || wav.Error;
 
 /// Load a keymap from a .wav, a .sfz or a folder.
@@ -259,7 +261,7 @@ const Builder = struct {
     /// Index of the loaded sample at `path`, loading it the first time.
     fn sample(self: *Builder, path: []const u8) Error!usize {
         for (self.files.items, 0..) |f, i| if (std.mem.eql(u8, f.path, path)) return i;
-        var s = try wav.load(self.alloc, path);
+        var s = if (endsWithIgnoreCase(path, ".vc")) try loadVc(self.alloc, path) else try wav.load(self.alloc, path);
         errdefer s.deinit(self.alloc);
         const owned = self.alloc.dupe(u8, path) catch return Error.OutOfMemory;
         errdefer self.alloc.free(owned);
@@ -277,7 +279,8 @@ const Builder = struct {
         var zz = z;
         const s = self.files.items[file].s;
         zz.len = @floatFromInt(s.data.len);
-        zz.sr = if (s.sample_rate > 0) s.sample_rate else 48_000;
+        // voice RAM has no rate of its own: 0, the playing machine's RATE
+        zz.sr = if (s.sample_rate > 0) s.sample_rate else if (s.sample_rate < 0) 0 else 48_000;
         zz.loop_start = std.math.clamp(zz.loop_start, 0, zz.len);
         zz.loop_end = std.math.clamp(zz.loop_end, 0, zz.len);
         self.zones.append(self.alloc, zz) catch return Error.OutOfMemory;
@@ -330,7 +333,7 @@ fn loadFolder(b: *Builder, dir: []const u8) Error!void {
         while (readdir(d)) |e| {
             const name = e.d_name[0..e.d_namlen];
             if (name.len == 0 or name[0] == '.' or e.d_type == DT_DIR) continue;
-            if (!endsWithIgnoreCase(name, ".wav") or name.len > 255) continue;
+            if (!(endsWithIgnoreCase(name, ".wav") or endsWithIgnoreCase(name, ".vc")) or name.len > 255) continue;
             if (n == MAX_FILES) break;
             @memcpy(names_buf[n][0..name.len], name);
             names_len[n] = name.len;
@@ -808,6 +811,76 @@ fn isDir(path: []const u8) bool {
     const d = opendir(@ptrCast(&zbuf[0])) orelse return false;
     _ = closedir(d);
     return true;
+}
+
+// ── Fairlight CMI voice files ───────────────────────────────────────────
+
+/// A Series II / IIx `.VC` file: 21,888 bytes, the voice parameters then
+/// the 16,384-byte waveform RAM (unsigned 8-bit, 128 segments of 128) at
+/// VC_RAM. The loop is whole segments. The file stores no sample rate:
+/// the sample's rate is -1, which makes a zone of rate 0, played at the
+/// machine's RATE.
+pub const VC_SIZE = 21_888;
+pub const VC_RAM = 0x1580;
+pub const VC_LOOP_START = 0x1332; // first loop segment
+pub const VC_LOOP_END = 0x1333; // last loop segment, inclusive
+pub const VC_LOOP_ON = 0x133B; // nonzero: loop
+pub const VC_FILTER = 0x141C; // the filter latch
+
+pub const VcParams = struct { loop_on: bool, loop_start: u8, loop_end: u8, filter: u8 };
+
+pub fn vcParams(bytes: []const u8) ?VcParams {
+    if (bytes.len < VC_RAM + 16_384) return null;
+    return .{
+        .loop_on = bytes[VC_LOOP_ON] != 0,
+        .loop_start = bytes[VC_LOOP_START] & 0x7f,
+        .loop_end = bytes[VC_LOOP_END] & 0x7f,
+        .filter = bytes[VC_FILTER],
+    };
+}
+
+fn loadVc(alloc: std.mem.Allocator, path: []const u8) Error!wav.Sample {
+    const bytes = try readFile(alloc, path);
+    defer alloc.free(bytes);
+    const p = vcParams(bytes) orelse return Error.BadVoiceFile;
+    const data = alloc.alloc(f64, 16_384) catch return Error.OutOfMemory;
+    for (bytes[VC_RAM..][0..16_384], data) |b, *d| d.* = (@as(f64, @floatFromInt(b)) - 128) / 128;
+    var s = wav.Sample{ .data = data, .sample_rate = -1 };
+    if (p.loop_on and p.loop_end >= p.loop_start) {
+        s.loop_start = @as(usize, p.loop_start) * 128;
+        s.loop_end = (@as(usize, p.loop_end) + 1) * 128;
+    }
+    return s;
+}
+
+test "a .VC file loads its 8-bit RAM and segment loop" {
+    var bytes = [_]u8{0} ** VC_SIZE;
+    for (bytes[VC_RAM..][0..16_384], 0..) |*b, i| b.* = if (i % 128 < 64) 0xC0 else 0x40;
+    bytes[VC_LOOP_ON] = 1;
+    bytes[VC_LOOP_START] = 2;
+    bytes[VC_LOOP_END] = 5;
+    const path = "/tmp/slab-keymap-test.vc";
+    {
+        var zb: [64:0]u8 = undefined;
+        @memcpy(zb[0..path.len], path);
+        zb[path.len] = 0;
+        const fd = open(@ptrCast(&zb[0]), 0x0601, @as(c_int, 0o644)); // O_WRONLY|O_CREAT|O_TRUNC
+        try std.testing.expect(fd >= 0);
+        defer _ = close(fd);
+        try std.testing.expectEqual(@as(isize, VC_SIZE), write(fd, &bytes, bytes.len));
+    }
+    var km = try load(std.testing.allocator, path);
+    defer km.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), km.count);
+    const z = km.zones[0];
+    try std.testing.expectEqual(@as(f64, 0), z.sr);
+    try std.testing.expectEqual(@as(f64, 16_384), z.len);
+    try std.testing.expectEqual(LOOP_ON, z.loop_mode);
+    try std.testing.expectEqual(@as(f64, 256), z.loop_start);
+    try std.testing.expectEqual(@as(f64, 768), z.loop_end);
+    const at: usize = @intFromFloat(z.start);
+    try std.testing.expectEqual(@as(f64, 0.5), km.pool[at]);
+    try std.testing.expectEqual(@as(f64, -0.5), km.pool[at + 64]);
 }
 
 fn readFile(alloc: std.mem.Allocator, path: []const u8) Error![]u8 {

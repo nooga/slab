@@ -156,6 +156,9 @@ the clip, which then plays silent.
     release: same key, velocity and round robin, pitched with the note,
     `rt_decay` dB quieter per second held, unfiltered. Other triggers
     and generators are skipped.
+  - **a Fairlight `.VC` voice:** its 16,384-byte 8-bit RAM (at 0x1580)
+    and its segment loop, as one zone of rate 0: the Unfairlight plays
+    it at RATE, the sampler as 24 kHz.
   - **a folder:** if the file names contain notes (`Piano_C4.wav`,
     `A#3`, C4 = 60), each sample covers the keys half way to its
     neighbours, and several files at one root split the velocity range.
