@@ -56,6 +56,50 @@ fn mapLabel(pitch: u8) ?[*:0]const u8 {
 const KEY_LO: u8 = 12; // C0 (bottom row)
 const KEY_HI: u8 = 119; // B8 (top row; inclusive)
 
+// Drum rolls can fold down to the mapped keys only (USED KEYS): row r is
+// then the r-th mapped pitch from the top. collapsed_pitches is rebuilt
+// from note_map each frame, highest first.
+pub var collapse_unused: bool = false;
+var collapsed_pitches: [128]u8 = undefined;
+var collapsed_count: usize = 0;
+
+fn collapsed() bool {
+    return collapse_unused and collapsed_count > 0;
+}
+
+fn setNoteMap(map: []const machine_mod.NoteLabel) void {
+    note_map = map;
+    var seen = [_]bool{false} ** 128;
+    for (map) |*nl| seen[nl.pitch & 127] = true;
+    collapsed_count = 0;
+    var p: usize = 128;
+    while (p > 0) {
+        p -= 1;
+        if (seen[p]) {
+            collapsed_pitches[collapsed_count] = @intCast(p);
+            collapsed_count += 1;
+        }
+    }
+}
+
+fn rowCount() u32 {
+    return if (collapsed()) @intCast(collapsed_count) else @as(u32, KEY_HI) - KEY_LO + 1;
+}
+
+/// The row a pitch sits on (0 = top), or null when it's folded away.
+fn rowOf(pitch: u8) ?i32 {
+    if (!collapsed()) return @as(i32, KEY_HI) - @as(i32, pitch);
+    for (collapsed_pitches[0..collapsed_count], 0..) |cp, i| if (cp == pitch) return @intCast(i);
+    return null;
+}
+
+fn pitchOfRow(row: i32) ?u8 {
+    if (row < 0) return null;
+    if (collapsed()) return if (row < collapsed_count) collapsed_pitches[@intCast(row)] else null;
+    const p = @as(i32, KEY_HI) - row;
+    return if (p < KEY_LO) null else @intCast(p);
+}
+
 // ── Feel & key state (persistent across the session) ─────────────────
 //
 // swing delays odd grid steps on quantize (0 = straight); key_root + scale
@@ -505,7 +549,16 @@ fn drawHeaderTools(ui: *Ui, tools: Rect) void {
     if (tools.empty()) return;
 
     var t = tools;
-    {
+    if (note_map.len > 0) {
+        // Drum lanes have no key; the slot folds the roll to the mapped keys.
+        const fr = t.cutLeft(KS_W);
+        var on = collapse_unused;
+        if (ctl.button(ui, fr, "foldkeys", &on, .{ .label = if (collapse_unused) "USED KEYS" else "ALL KEYS", .flush = true })) {
+            collapse_unused = on;
+            initialized_scroll = false;
+        }
+        menu.tip(ui, fr, "Show only the keys that have sounds, or every key");
+    } else {
         var buf: [24]u8 = undefined;
         const root = std.mem.span(ROOT_NAMES[key_root % 12]);
         const label = if (scale_idx == 0)
@@ -565,7 +618,7 @@ pub fn draw(
         return .{ .minimize = head.minimize, .close = head.close };
     };
 
-    note_map = resolved.note_labels;
+    setNoteMap(resolved.note_labels);
     drawHeaderTools(ui, head.tools);
     maybeResetOnClipChange(selected, resolved.clip);
     const pres = drawPianoRoll(ui, bridge.toRl(head.body), resolved.clip, resolved.color, alloc, edit_snap, can_paste_notes, m);
@@ -597,7 +650,7 @@ fn resolveClip(tracks: []track_mod.Track, selected: ?ClipRef) ?Resolved {
     return .{
         .clip = &t.clips.items[s.clip],
         .color = t.color,
-        .note_labels = t.machine.note_labels,
+        .note_labels = t.machine.noteLabels(),
     };
 }
 
@@ -726,8 +779,16 @@ fn drawPianoRoll(
 
 fn initScrollIfNeeded(grid: c.rl.Rectangle, clip: Clip) void {
     if (initialized_scroll) return;
-    const rows = @as(f32, @floatFromInt(@as(u32, KEY_HI) - @as(u32, KEY_LO) + 1));
+    const rows = @as(f32, @floatFromInt(rowCount()));
     px_per_beat = minPxPerBeat(grid, clip);
+    if (collapsed()) {
+        // Folded drum lanes: fit them all, top down.
+        row_h = std.math.clamp(grid.height / rows, ROW_H_MIN, ROW_H_MAX);
+        scroll_y = 0;
+        initialized_scroll = true;
+        clampScroll(grid, clip);
+        return;
+    }
 
     var lo_pitch: u8 = 60;
     var hi_pitch: u8 = 60;
@@ -787,7 +848,7 @@ fn clampPxPerBeat(v: f32, grid: c.rl.Rectangle, clip: Clip) f32 {
 }
 
 fn clampScroll(grid: c.rl.Rectangle, clip: Clip) void {
-    const rows = @as(f32, @floatFromInt(@as(u32, KEY_HI) - @as(u32, KEY_LO) + 1));
+    const rows = @as(f32, @floatFromInt(rowCount()));
     const total_h = rows * row_h;
     const max_sy = @max(0, total_h - grid.height);
     if (scroll_y < 0) scroll_y = 0;
@@ -931,8 +992,8 @@ fn drawKeyboard(ui: *Ui, r: c.rl.Rectangle) void {
     const bw = @divFloor(kr.w * 62, 100);
     const seam = ui_style.key_white.shade(-50);
 
-    var pitch: u8 = KEY_HI;
-    while (true) : (pitch -%= 1) {
+    var ri: i32 = 0;
+    while (pitchOfRow(ri)) |pitch| : (ri += 1) {
         const fy = pitchTopY(r, pitch);
         if (fy + row_h >= r.y and fy <= r.y + r.height) {
             const y = ipx(fy);
@@ -966,7 +1027,6 @@ fn drawKeyboard(ui: *Ui, r: c.rl.Rectangle) void {
                 }
             }
         }
-        if (pitch == KEY_LO) break;
     }
     // Seam against the grid.
     ui.rect(Rect.xywh(kr.right() - 1, kr.y, 1, kr.h), ui_style.edge);
@@ -979,8 +1039,8 @@ fn drawGrid(ui: *Ui, r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
     const gr = bridge.fromRl(r);
     ui.rect(gr, ui_style.pane);
 
-    var pitch: u8 = KEY_HI;
-    while (true) : (pitch -%= 1) {
+    var ri: i32 = 0;
+    while (pitchOfRow(ri)) |pitch| : (ri += 1) {
         const fy = pitchTopY(r, pitch);
         if (fy + row_h >= r.y and fy <= r.y + r.height) {
             const y = ipx(fy);
@@ -992,9 +1052,9 @@ fn drawGrid(ui: *Ui, r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
             else
                 !isBlackKey(pitch);
             if (lit) ui.rect(Rect.xywh(gr.x, y, gr.w, h), if (isRootPitch(pitch)) ui_style.pane_alt.shade(8) else ui_style.pane_alt);
-            if (pitch % 12 == 0) ui.rect(Rect.xywh(gr.x, y + h - 1, gr.w, 1), ui_style.grid_beat);
+            if (pitch % 12 == 0 and !collapsed()) ui.rect(Rect.xywh(gr.x, y + h - 1, gr.w, 1), ui_style.grid_beat);
+            if (collapsed()) ui.rect(Rect.xywh(gr.x, y + h - 1, gr.w, 1), ui_style.edge);
         }
-        if (pitch == KEY_LO) break;
     }
 
     const right = r.x + r.width - 1;
@@ -1163,8 +1223,10 @@ fn drawBoxSelect(ui: *Ui, grid: c.rl.Rectangle, m: pane.Mouse) void {
     ui.bevel(rr, ui_style.accent, ui_style.accent);
 }
 
+/// A folded-away pitch lands far above the grid, so its notes neither draw
+/// nor take clicks.
 fn pitchTopY(r: c.rl.Rectangle, pitch: u8) f32 {
-    const pitch_row: i32 = @as(i32, @intCast(KEY_HI)) - @as(i32, @intCast(pitch));
+    const pitch_row = rowOf(pitch) orelse return r.y - 1.0e7;
     return r.y + @as(f32, @floatFromInt(pitch_row)) * row_h - scroll_y;
 }
 
@@ -1380,6 +1442,13 @@ fn updateMove(grid: c.rl.Rectangle, clip: *Clip, edit_snap: snap_mod.Setting, m:
         const n = &clip.notes.items[s.idx];
         const new_start = s.start_beat + d_beats;
         n.start_beat = if (new_start < 0) 0 else new_start;
+        if (collapsed()) {
+            // Folded: step through the lanes, not the semitones.
+            const from = rowOf(s.pitch) orelse continue;
+            const to = std.math.clamp(from + d_rows, 0, @as(i32, @intCast(collapsed_count)) - 1);
+            n.pitch = pitchOfRow(to) orelse s.pitch;
+            continue;
+        }
         const new_pitch: i32 = @as(i32, @intCast(s.pitch)) - d_rows; // up = higher pitch
         n.pitch = snapPitchToScale(@intCast(std.math.clamp(new_pitch, 0, 127)));
     }
@@ -1425,7 +1494,7 @@ fn updateResize(grid: c.rl.Rectangle, clip: *Clip, edit_snap: snap_mod.Setting, 
 // ── Vertical scrollbar (lazy) ────────────────────────────────────────
 
 fn drawAndHandleScrollbar(ui: *Ui, grid: c.rl.Rectangle, m: pane.Mouse) void {
-    const rows = @as(f32, @floatFromInt(@as(u32, KEY_HI) - @as(u32, KEY_LO) + 1));
+    const rows = @as(f32, @floatFromInt(rowCount()));
     const content_h = rows * row_h;
     if (content_h <= grid.height) return; // nothing to scroll
 
@@ -1514,14 +1583,14 @@ fn drawOverview(
     // Pitch compresses into the strip's vertical span.
     const clip_beats: f32 = @max(@as(f32, @floatCast(clip.length_beats)), 1.0);
     const px_per_beat_ov = inner.width / clip_beats;
-    const rows: f32 = @floatFromInt(@as(u32, KEY_HI) - @as(u32, KEY_LO));
+    const rows: f32 = @floatFromInt(rowCount() - 1);
     const px_per_row_ov = inner.height / (rows + 1);
 
     // Notes as short horizontal dashes.
     for (clip.notes.items) |note| {
         const n_x = inner.x + @as(f32, @floatCast(note.start_beat)) * px_per_beat_ov;
         const n_w = @max(@as(f32, @floatCast(note.length_beats)) * px_per_beat_ov, 1.0);
-        const pitch_idx: f32 = @as(f32, @floatFromInt(@as(u32, KEY_HI) - @as(u32, note.pitch)));
+        const pitch_idx: f32 = @floatFromInt(rowOf(note.pitch) orelse continue);
         const n_y = inner.y + pitch_idx * px_per_row_ov;
         ui.rect(frect(@max(n_x, inner.x), std.math.clamp(n_y, inner.y, inner.y + inner.height - 1), @min(n_w, inner.x + inner.width - n_x), 1), track_color);
     }
@@ -1605,9 +1674,7 @@ fn beatAtX(grid: c.rl.Rectangle, x: f32) f64 {
 fn pitchAtY(grid: c.rl.Rectangle, y: f32) ?u8 {
     if (y < grid.y or y >= grid.y + grid.height) return null;
     const row = @as(i32, @intFromFloat((y - grid.y + scroll_y) / row_h));
-    const pitch = @as(i32, @intCast(KEY_HI)) - row;
-    if (pitch < @as(i32, @intCast(KEY_LO)) or pitch > @as(i32, @intCast(KEY_HI))) return null;
-    return @intCast(pitch);
+    return pitchOfRow(row);
 }
 
 fn altBypassSnap() bool {

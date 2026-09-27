@@ -185,6 +185,8 @@ pub const AssetReq = struct {
     /// `keymap` instead of `asset`: the three offsets take the sample
     /// pool's pointer, the zone table's pointer and the zone count.
     keymap: bool = false,
+    /// Keymaps: where the per-zone edits pointer goes in PARAMS.
+    edits_offset: usize = 0,
 
     pub fn fileSlice(self: *const AssetReq) []const u8 {
         return self.file[0..self.file_len];
@@ -209,7 +211,7 @@ pub const Strip = struct {
     }
 };
 
-pub const DisplayKind = enum { adsr, waveform, meter, response, algo, eg4 };
+pub const DisplayKind = enum { adsr, waveform, meter, response, algo, eg4, zones };
 
 /// Algo display slots in `Display.offsets`, in the order `algo-display`
 /// pushes them: operator count, row stride, then the row offsets (all in
@@ -443,7 +445,7 @@ const ItemRaw = extern struct { next: Fy.Value, name: Fy.Value, weight: Fy.Value
 const ConstRaw = extern struct { next: Fy.Value, offset: Fy.Value, value: Fy.Value };
 const NoteLabelRaw = extern struct { next: Fy.Value, pitch: Fy.Value, label: Fy.Value };
 const BufferRaw = extern struct { next: Fy.Value, name: Fy.Value, ptr_offset: Fy.Value, len_offset: Fy.Value, seconds: Fy.Value };
-const AssetRaw = extern struct { next: Fy.Value, name: Fy.Value, ptr_offset: Fy.Value, len_offset: Fy.Value, sr_offset: Fy.Value, file: Fy.Value, kind: Fy.Value };
+const AssetRaw = extern struct { next: Fy.Value, name: Fy.Value, ptr_offset: Fy.Value, len_offset: Fy.Value, sr_offset: Fy.Value, file: Fy.Value, kind: Fy.Value, edits_offset: Fy.Value };
 
 // ── tagged-value decode ───────────────────────────────────────────────
 
@@ -604,6 +606,7 @@ pub fn read(host: *FyHost) !Desc {
             3 => .response,
             4 => .algo,
             5 => .eg4,
+            6 => .zones,
             else => return error.InvalidMachineDesc,
         };
         out.source_len = try copyText(&out.source, cstrSlice(disp.sources));
@@ -662,6 +665,10 @@ pub fn read(host: *FyHost) !Desc {
         out.len_offset = @intCast(asInt(as.len_offset));
         out.sr_offset = @intCast(asInt(as.sr_offset));
         out.keymap = asInt(as.kind) == 1;
+        if (out.keymap) {
+            out.edits_offset = @intCast(asInt(as.edits_offset));
+            if (out.edits_offset + 8 > d.params_size) return error.InvalidMachineDesc;
+        }
         const file = cstrSlice(as.file);
         if (file.len == 0 or file.len >= MAX_PATH) return error.InvalidMachineDesc;
         @memcpy(out.file[0..file.len], file);

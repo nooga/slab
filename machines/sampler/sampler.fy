@@ -1,6 +1,10 @@
 ( sampler.fy - polyphonic multisample machine.
 
   The voice lives in the kernels rig [kernels/06-voices/sampler.fy].
+  The zone list edits each zone over the knobs [LEVEL, TUNE, DECAY,
+  TONE, kept by zone name in presets and projects], and a kit's keys
+  get its zones' names in the piano roll.
+
   The host loads a keymap - one WAV, an SFZ, or a folder of WAVs [note
   names in the file names make a multisample, a folder without them a
   drum kit] - and injects the sample pool and zone table [manifest
@@ -26,7 +30,7 @@ include "../lib/manifest.fy"
   SamplerParams.size params-size!
   760.0 panel-w!
 
-  "smp" SamplerParams.pool SamplerParams.zones SamplerParams.zone-count "assets/default.wav" keymap
+  "smp" SamplerParams.pool SamplerParams.zones SamplerParams.zone-count SamplerParams.edits "assets/default.wav" keymap
 
   "PITCH" "TUNE" "smp-tune" SamplerParams.tune -24.0 24.0 0.0 curve-lin knob
   "PITCH" "ROOT" "smp-root" SamplerParams.root 24.0 96.0 57.0 curve-lin knob
@@ -53,16 +57,18 @@ include "../lib/manifest.fy"
   "AMP" "LEVEL" "smp-level" SamplerParams.level 0.0 1.0 0.7 curve-pow knob as-fader
 
   "WAVE" "smp" waveform-display
+  "ZONES" "smp" zone-display
   "PITCH" 3 strip
   "LOOP" 3 strip
   "ENGINE" 5 strip
   "ENV" 4 strip
   "AMP" 2 strip
 
-  ( oscillogram across the top, taking the spare height; one row of
-    control strips below )
+  ( the selected zone's oscillogram and the zone list across the top,
+    taking the spare height; one row of control strips below )
   1.0 row
-    1.0 cell  "WAVE" 1.0 item
+    2.0 cell  "WAVE" 1.0 item
+    1.0 cell  "ZONES" 1.0 item
   0.0 row
     3.0 cell  "PITCH" 1.0 item
     3.0 cell  "LOOP" 1.0 item

@@ -146,6 +146,23 @@ pub const FyRawMachine = struct {
     // picked), for the project file.
     asset_path: [machine_desc.MAX_ASSETS][512]u8 = undefined,
     asset_path_len: [machine_desc.MAX_ASSETS]usize = [_]usize{0} ** machine_desc.MAX_ASSETS,
+    // Sampler zone editing, for the keymap asset: the per-zone edits the
+    // voice reads through a params pointer, the zone the panel has
+    // selected, the piano roll's key names for a kit, and the zone list's
+    // hit lights (the voice writes zone_edits.hit / .last).
+    zone_edits: keymap.ZoneEdits = .{},
+    zone_sel: usize = 0,
+    zone_follow: bool = false,
+    zone_scroll: usize = 0,
+    zone_last_seen: f64 = -1,
+    zone_hit_seen: [keymap.MAX_ZONES]f64 = [_]f64{0} ** keymap.MAX_ZONES,
+    zone_flash: [keymap.MAX_ZONES]f32 = [_]f32{0} ** keymap.MAX_ZONES,
+    // The zone the waveform's peak cache holds (maxInt: rebuild), and its
+    // sample's peak, for the normalized drawing and the readout.
+    wave_zone: usize = std.math.maxInt(usize),
+    wave_peak: f64 = 0,
+    km_labels: [keymap.MAX_ZONES]machine.NoteLabel = undefined,
+    km_label_count: usize = 0,
     // True once LOAD, a preset or a project replaced the manifest default.
     asset_loaded: [machine_desc.MAX_ASSETS]bool = [_]bool{false} ** machine_desc.MAX_ASSETS,
     // Peak pyramid per asset for oscillogram drawing (UI thread only).
@@ -232,8 +249,7 @@ pub const FyRawMachine = struct {
             const full = std.fmt.bufPrint(&pbuf, "{s}/{s}", .{ dir, req.fileSlice() }) catch continue;
             if (req.keymap) {
                 self.asset_keymap[ai] = keymap.load(alloc, full) catch keymap.Keymap{};
-                if (self.asset_keymap[ai].count > 0)
-                    self.asset_cache[ai].build(alloc, self.asset_keymap[ai].samples(self.asset_keymap[ai].zones[0])) catch {};
+                self.keymapChanged(ai);
             } else {
                 self.asset_mem[ai] = wav.load(alloc, full) catch wav.Sample{ .data = &.{}, .sample_rate = 0 };
                 self.asset_cache[ai].build(alloc, self.asset_mem[ai].data) catch {};
@@ -307,24 +323,66 @@ pub const FyRawMachine = struct {
     /// old map after.
     fn loadKeymapRuntime(self: *FyRawMachine, ai: usize, path: []const u8) bool {
         var loaded = keymap.load(self.alloc, path) catch return false;
-        var new_cache = waveform.PeakCache{};
-        new_cache.build(self.alloc, loaded.samples(loaded.zones[0])) catch {
-            loaded.deinit(self.alloc);
-            return false;
-        };
+        // Edits follow zones by name: a reloaded or swapped kit keeps the
+        // clap you turned down.
+        const edits = remapEdits(&self.zone_edits, &self.asset_keymap[ai], &loaded);
 
         fy_host_mod.lockCallbacks();
         var old = self.asset_keymap[ai];
         self.asset_keymap[ai] = loaded;
+        self.zone_edits = edits;
         self.injectAssets();
         fy_host_mod.unlockCallbacks();
 
         old.deinit(self.alloc);
-        self.asset_cache[ai].deinit(self.alloc);
-        self.asset_cache[ai] = new_cache;
         self.setAssetSource(ai, path);
         self.asset_loaded[ai] = true;
+        self.keymapChanged(ai);
         return true;
+    }
+
+    /// After a keymap load: select the first zone, drop the waveform cache,
+    /// relabel the piano roll, reset the hit lights.
+    fn keymapChanged(self: *FyRawMachine, ai: usize) void {
+        self.zone_sel = 0;
+        self.zone_scroll = 0;
+        self.wave_zone = std.math.maxInt(usize);
+        self.zone_last_seen = self.zone_edits.last;
+        self.zone_hit_seen = self.zone_edits.hit;
+        @memset(&self.zone_flash, 0);
+        self.rebuildLabels(ai);
+    }
+
+    /// A kit's keys get their zones' names in the piano roll (KICK, SNARE);
+    /// a melodic keymap keeps the plain chromatic roll.
+    fn rebuildLabels(self: *FyRawMachine, ai: usize) void {
+        self.km_label_count = 0;
+        const km = &self.asset_keymap[ai];
+        if (!km.isKit()) return;
+        var seen = [_]bool{false} ** 128;
+        for (km.zones[0..km.count], km.names) |z, nm| {
+            const key: usize = @intFromFloat(std.math.clamp(z.lo_key, 0, 127));
+            if (seen[key]) continue;
+            seen[key] = true;
+            var nl = machine.NoteLabel{ .pitch = @intCast(key) };
+            const text = nm.slice();
+            const n = @min(text.len, machine.NOTE_LABEL_TEXT);
+            for (text[0..n], 0..) |ch, i| nl.label[i] = if (ch == '_') ' ' else std.ascii.toUpper(ch);
+            nl.label_len = @intCast(n);
+            self.km_labels[self.km_label_count] = nl;
+            self.km_label_count += 1;
+        }
+        std.mem.sort(machine.NoteLabel, self.km_labels[0..self.km_label_count], {}, struct {
+            fn lt(_: void, a: machine.NoteLabel, b: machine.NoteLabel) bool {
+                return a.pitch < b.pitch;
+            }
+        }.lt);
+    }
+
+    /// The first keymap asset: the one the zone list edits.
+    fn keymapAsset(self: *const FyRawMachine) ?usize {
+        for (self.desc.assets[0..self.desc.asset_count], 0..) |*a, i| if (a.keymap) return i;
+        return null;
     }
 
     fn assetIndexByName(self: *const FyRawMachine, name: []const u8) ?usize {
@@ -345,6 +403,7 @@ pub const FyRawMachine = struct {
                 self.writeParamUsize(req.ptr_offset, if (has) @intFromPtr(km.pool.ptr) else @intFromPtr(&self.asset_silence[0]));
                 self.writeParamUsize(req.len_offset, if (has) @intFromPtr(km.zones.ptr) else @intFromPtr(&self.empty_zones[0]));
                 self.writeParamF64(req.sr_offset, @floatFromInt(km.count));
+                self.writeParamUsize(req.edits_offset, @intFromPtr(&self.zone_edits));
                 continue;
             }
             const s = self.asset_mem[ai];
@@ -435,6 +494,9 @@ pub const FyRawMachine = struct {
             .set_param = setParamImpl,
             .write_assets_json = writeAssetsJsonImpl,
             .load_asset = loadAssetImpl,
+            .write_zones_json = writeZonesJsonImpl,
+            .apply_zones_json = applyZonesJsonImpl,
+            .note_labels_fn = noteLabelsImpl,
         };
     }
 
@@ -654,6 +716,22 @@ fn applyControlValue(self: *FyRawMachine, id: []const u8, value: f64) void {
     }
 }
 
+/// Edits for `new`, carried from `old` by zone name; unmatched zones start
+/// flat. The hit lights restart.
+fn remapEdits(edits: *const keymap.ZoneEdits, old: *const keymap.Keymap, new: *const keymap.Keymap) keymap.ZoneEdits {
+    var out = keymap.ZoneEdits{};
+    for (new.names, 0..) |nn, i| {
+        for (old.names, 0..) |on, j| if (std.mem.eql(u8, nn.slice(), on.slice())) {
+            out.level[i] = edits.level[j];
+            out.tune[i] = edits.tune[j];
+            out.decay[i] = edits.decay[j];
+            out.tone[i] = edits.tone[j];
+            break;
+        };
+    }
+    return out;
+}
+
 fn applyPresetImpl(state: *anyopaque, index: u8) void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     if (index >= self.presets.count) return;
@@ -671,7 +749,10 @@ fn applyPresetImpl(state: *anyopaque, index: u8) void {
         while (ait.next()) |kv| if (kv.value_ptr.* == .string) {
             _ = loadAssetImpl(self, kv.key_ptr.*, kv.value_ptr.string);
         };
+        // A preset that brings its samples brings their balance too.
+        if (parsed.value.object.get("zones")) |zv| applyZonesJsonImpl(self, zv) else resetZoneEdits(self);
     };
+    if (parsed.value.object.get("assets") == null) if (parsed.value.object.get("zones")) |zv| applyZonesJsonImpl(self, zv);
     const params = parsed.value.object.get("params") orelse return;
     if (params != .object) return;
     var it = params.object.iterator();
@@ -708,6 +789,71 @@ fn writeAssetsJsonImpl(state: *anyopaque, out: *std.ArrayList(u8), alloc: std.me
         try out.append(alloc, '"');
     }
     if (!first) try out.append(alloc, '}');
+}
+
+fn noteLabelsImpl(state: *anyopaque) []const machine.NoteLabel {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    if (self.km_label_count > 0) return self.km_labels[0..self.km_label_count];
+    return self.desc.noteLabels();
+}
+
+// {"clap":{"level":-6},"kick":{"tune":-2,"decay":0.4}}: zones whose edits
+// aren't flat, by name (names are file stems; quotes and backslashes are
+// dropped rather than escaped).
+fn writeZonesJsonImpl(state: *anyopaque, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    const ai = self.keymapAsset() orelse return;
+    const km = &self.asset_keymap[ai];
+    const e = &self.zone_edits;
+    var first = true;
+    var buf: [160]u8 = undefined;
+    for (km.names, 0..) |nm, i| {
+        if (e.level[i] == 0 and e.tune[i] == 0 and e.decay[i] == 0 and e.tone[i] == 0) continue;
+        try out.appendSlice(alloc, if (first) "{\"" else ",\"");
+        first = false;
+        for (nm.slice()) |ch| if (ch != '"' and ch != '\\' and ch >= 0x20) try out.append(alloc, ch);
+        const frag = try std.fmt.bufPrint(&buf, "\":{{\"level\":{d},\"tune\":{d},\"decay\":{d},\"tone\":{d}}}", .{ e.level[i], e.tune[i], e.decay[i], e.tone[i] });
+        try out.appendSlice(alloc, frag);
+    }
+    if (!first) try out.append(alloc, '}');
+}
+
+/// Set edits by zone name; every zone of that name (an SFZ can reuse a
+/// sample) takes them. Zones not named start flat.
+fn applyZonesJsonImpl(state: *anyopaque, zones: std.json.Value) void {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    if (zones != .object) return;
+    const ai = self.keymapAsset() orelse return;
+    const km = &self.asset_keymap[ai];
+    var e = keymap.ZoneEdits{};
+    e.hit = self.zone_edits.hit;
+    e.last = self.zone_edits.last;
+    var it = zones.object.iterator();
+    while (it.next()) |kv| {
+        if (kv.value_ptr.* != .object) continue;
+        const o = kv.value_ptr.object;
+        for (km.names, 0..) |nm, i| {
+            if (!std.mem.eql(u8, nm.slice(), kv.key_ptr.*)) continue;
+            if (o.get("level")) |v| e.level[i] = std.math.clamp(jsonF64(v), -48, 24);
+            if (o.get("tune")) |v| e.tune[i] = std.math.clamp(jsonF64(v), -48, 48);
+            if (o.get("decay")) |v| e.decay[i] = std.math.clamp(jsonF64(v), 0, 30);
+            if (o.get("tone")) |v| e.tone[i] = std.math.clamp(jsonF64(v), -6, 6);
+        }
+    }
+    // Cell-wise stores the audio thread may read mid-update: a note-on
+    // sees a zone's old or new value, both valid.
+    self.zone_edits.level = e.level;
+    self.zone_edits.tune = e.tune;
+    self.zone_edits.decay = e.decay;
+    self.zone_edits.tone = e.tone;
+}
+
+fn resetZoneEdits(self: *FyRawMachine) void {
+    const flat = keymap.ZoneEdits{};
+    self.zone_edits.level = flat.level;
+    self.zone_edits.tune = flat.tune;
+    self.zone_edits.decay = flat.decay;
+    self.zone_edits.tone = flat.tone;
 }
 
 fn loadAssetImpl(state: *anyopaque, name: []const u8, path: []const u8) bool {
@@ -779,6 +925,15 @@ fn buildPresetContent(self: *FyRawMachine, content: []u8) ?usize {
     if (!first) {
         const c2 = std.fmt.bufPrint(content[used..], "}}", .{}) catch return null;
         used += c2.len;
+    }
+    {
+        var zl: std.ArrayList(u8) = .empty;
+        defer zl.deinit(self.alloc);
+        writeZonesJsonImpl(self, &zl, self.alloc) catch return null;
+        if (zl.items.len > 0) {
+            const zf = std.fmt.bufPrint(content[used..], ",\"zones\":{s}", .{zl.items}) catch return null;
+            used += zf.len;
+        }
     }
     const tail = std.fmt.bufPrint(content[used..], "}}\n", .{}) catch return null;
     used += tail.len;
@@ -1749,6 +1904,7 @@ fn drawDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void
         .response => drawResponseDisplay(self, ui, r),
         .algo => drawAlgoDisplay(self, ui, r, disp),
         .eg4 => drawEg4Display(self, ui, r, disp.sourceSlice()),
+        .zones => drawZoneDisplay(self, ui, r, disp.sourceSlice()),
     }
 }
 
@@ -2220,7 +2376,28 @@ fn drawWaveformDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []cons
             _ = self.loadAssetRuntime(ai, path);
         }
     }
-    const label = self.asset_label[ai][0..self.asset_label_len[ai]];
+    const is_km = self.desc.assets[ai].keymap;
+    const km = &self.asset_keymap[ai];
+    // A keymap shows its selected zone: name, peak and length in the bar,
+    // the shape drawn to its own peak so quiet samples still read.
+    if (is_km and km.count > 0 and self.wave_zone != self.zone_sel) {
+        const zi = @min(self.zone_sel, km.count - 1);
+        const smp = km.samples(km.zones[zi]);
+        self.asset_cache[ai].deinit(self.alloc);
+        self.asset_cache[ai] = .{};
+        self.asset_cache[ai].build(self.alloc, smp) catch {};
+        var pk: f64 = 0;
+        for (smp) |x| pk = @max(pk, @abs(x));
+        self.wave_peak = pk;
+        self.wave_zone = self.zone_sel;
+    }
+    var lbuf: [96]u8 = undefined;
+    const label = if (is_km and km.count > 0) blk: {
+        const zi = @min(self.zone_sel, km.count - 1);
+        const z = km.zones[zi];
+        const pk_db = if (self.wave_peak > 0) 20 * std.math.log10(self.wave_peak) else -120;
+        break :blk std.fmt.bufPrint(&lbuf, "{s}  PK {d:.1} DB  {d:.2} S", .{ km.names[zi].slice(), pk_db, z.len / z.sr }) catch "";
+    } else self.asset_label[ai][0..self.asset_label_len[ai]];
     ui_ctl.display(ui, bar, if (label.len > 0) label else "NO SAMPLE", .{ .flush = true });
 
     const inner = ui.well(area, ui_style.well);
@@ -2233,19 +2410,136 @@ fn drawWaveformDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []cons
     if (cache.sample_count > 0) {
         const span: f64 = @floatFromInt(@max(cache.sample_count, 1));
         const spp = span / @as(f64, @floatFromInt(inner.w));
-        const half: f32 = @as(f32, @floatFromInt(inner.h)) / 2;
+        const norm: f32 = if (is_km and self.wave_peak > 1e-6) @floatCast(1 / self.wave_peak) else 1;
+        const half: f32 = @as(f32, @floatFromInt(inner.h)) / 2 * norm * 0.95;
+        const hh: f32 = @as(f32, @floatFromInt(inner.h)) / 2;
         var px: i32 = 0;
         while (px < inner.w) : (px += 1) {
             const s0 = @as(f64, @floatFromInt(px)) * spp;
             const p = cache.rangePeak(s0, s0 + spp, spp);
-            const y0: i32 = @intFromFloat(@round(half - std.math.clamp(@as(f32, @floatCast(p.max)), -1, 1) * half));
-            const y1: i32 = @intFromFloat(@round(half - std.math.clamp(@as(f32, @floatCast(p.min)), -1, 1) * half));
+            const y0: i32 = @intFromFloat(@round(hh - std.math.clamp(@as(f32, @floatCast(p.max)) * half, -hh, hh)));
+            const y1: i32 = @intFromFloat(@round(hh - std.math.clamp(@as(f32, @floatCast(p.min)) * half, -hh, hh)));
             ui.rect(Rect.xywh(inner.x + px, inner.y + @min(y0, y1), 1, @as(i32, @intCast(@abs(y1 - y0))) + 1), ui_style.vfd);
         }
     }
     drawMarker(self, ui, inner, "smp-start", ui_style.play);
     drawMarker(self, ui, inner, "smp-loop-start", ui_style.mod);
     drawMarker(self, ui, inner, "smp-loop-end", ui_style.mod);
+}
+
+/// Zone list of a keymap: one row per zone (a light that flashes when it
+/// plays, its key or key range, its name), click to select, wheel to
+/// scroll; the selected zone's LEVEL / TUNE / DECAY / TONE knobs below,
+/// FOLLOW to select whatever plays.
+fn drawZoneDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []const u8) void {
+    const ai = self.assetIndexByName(asset_name) orelse return;
+    const km = &self.asset_keymap[ai];
+    const n = km.count;
+    if (n == 0) return;
+    if (self.zone_sel >= n) self.zone_sel = 0;
+    const e = &self.zone_edits;
+
+    // Hit lights and FOLLOW, from what the voices wrote.
+    for (0..n) |i| {
+        if (e.hit[i] != self.zone_hit_seen[i]) {
+            self.zone_hit_seen[i] = e.hit[i];
+            self.zone_flash[i] = 1;
+        } else self.zone_flash[i] *= 0.88;
+    }
+    if (e.last != self.zone_last_seen) {
+        self.zone_last_seen = e.last;
+        if (self.zone_follow and e.last >= 0 and e.last < @as(f64, @floatFromInt(n))) self.zone_sel = @intFromFloat(e.last);
+    }
+
+    var area = r;
+    var bar = area.cutTop(20);
+    var follow = self.zone_follow;
+    if (ui_ctl.button(ui, bar.cutRight(60), .{ "zfollow", ai }, &follow, .{ .label = "FOLLOW", .flush = true })) self.zone_follow = follow;
+    var tbuf: [32]u8 = undefined;
+    ui_ctl.display(ui, bar, std.fmt.bufPrint(&tbuf, "{d} ZONES", .{n}) catch "", .{ .flush = true });
+
+    // Knob row for the selected zone.
+    const cell = ui_ctl.knobCell(.s, true);
+    const knobs = area.cutBottom(cell[1] + 2);
+    const list = ui.well(area, ui_style.well);
+    if (list.h < 4) return;
+
+    const ROW: i32 = 12;
+    const rows: usize = @intCast(@max(@divFloor(list.h, ROW), 1));
+    if (list.contains(ui.in.ix(), ui.in.iy()) and ui.in.wheel_y != 0) {
+        const d: i32 = if (ui.in.wheel_y > 0) -1 else 1;
+        const top: i32 = @as(i32, @intCast(self.zone_scroll)) + d;
+        self.zone_scroll = @intCast(std.math.clamp(top, 0, @as(i32, @intCast(n -| rows))));
+    }
+    if (self.zone_sel < self.zone_scroll) self.zone_scroll = self.zone_sel;
+    if (self.zone_sel >= self.zone_scroll + rows) self.zone_scroll = self.zone_sel + 1 - rows;
+    ui.clip(list);
+    var i = self.zone_scroll;
+    while (i < n and i < self.zone_scroll + rows) : (i += 1) {
+        const y = list.y + @as(i32, @intCast(i - self.zone_scroll)) * ROW;
+        const row = Rect.xywh(list.x, y, list.w, ROW);
+        const b = ui.behavior(ui.id(.{ "zrow", ai, i }), row, false);
+        if (b.pressed) self.zone_sel = i;
+        const sel = i == self.zone_sel;
+        if (sel) ui.rect(row, ui_style.vfd.alpha(36));
+        const fl = self.zone_flash[i];
+        ui.rect(Rect.xywh(row.x + 3, y + 4, 4, 4), if (fl > 0.05) ui_style.vfd.alpha(@intFromFloat(60 + 195 * fl)) else ui_style.vfd.alpha(30));
+        const z = km.zones[i];
+        var kb: [16]u8 = undefined;
+        var ka: [4]u8 = undefined;
+        var kz: [4]u8 = undefined;
+        const keys = if (z.lo_key == z.hi_key)
+            keyName(&ka, z.lo_key)
+        else
+            std.fmt.bufPrint(&kb, "{s}-{s}", .{ keyName(&ka, z.lo_key), keyName(&kz, z.hi_key) }) catch "";
+        const col = if (sel) ui_style.vfd else ui_style.vfd.alpha(170);
+        ui.textIn(&ui.fonts.legend, Rect.xywh(row.x + 10, y, 48, ROW), keys, col, .left, true);
+        ui.textIn(&ui.fonts.legend, Rect.xywh(row.x + 60, y, row.w - 62, ROW), km.names[i].slice(), col, .left, true);
+        // an edited zone shows its level change
+        if (e.level[i] != 0) {
+            var lb: [12]u8 = undefined;
+            ui.textIn(&ui.fonts.legend, Rect.xywh(row.right() - 40, y, 38, ROW), std.fmt.bufPrint(&lb, "{d:.1}", .{e.level[i]}) catch "", col, .right, true);
+        }
+    }
+    ui.unclip();
+
+    // LEVEL -24..+12 dB · TUNE ±24 st · DECAY off..8 s · TONE ±4 oct
+    const zi = self.zone_sel;
+    const kw = @divFloor(knobs.w, 4);
+    const Spec = struct { label: []const u8, lo: f64, hi: f64, v: *f64, exp: bool };
+    const specs = [_]Spec{
+        .{ .label = "LEVEL", .lo = -24, .hi = 12, .v = &e.level[zi], .exp = false },
+        .{ .label = "TUNE", .lo = -24, .hi = 24, .v = &e.tune[zi], .exp = false },
+        .{ .label = "DECAY", .lo = 0, .hi = 8, .v = &e.decay[zi], .exp = true },
+        .{ .label = "TONE", .lo = -4, .hi = 4, .v = &e.tone[zi], .exp = false },
+    };
+    for (specs, 0..) |sp, k| {
+        const kr = Rect.xywh(knobs.x + @as(i32, @intCast(k)) * kw, knobs.y, kw, knobs.h);
+        const span = sp.hi - sp.lo;
+        // DECAY: 0 is off; the rest of the travel is 20 ms..8 s, exponential.
+        var norm: f32 = if (sp.exp)
+            (if (sp.v.* <= 0) 0 else @floatCast(0.05 + 0.95 * std.math.log2(sp.v.* / 0.02) / std.math.log2(sp.hi / 0.02)))
+        else
+            @floatCast((sp.v.* - sp.lo) / span);
+        const def: f32 = if (sp.exp) 0 else @floatCast(-sp.lo / span);
+        var rb: [16]u8 = undefined;
+        const readout = if (sp.exp and sp.v.* <= 0)
+            "OFF"
+        else
+            std.fmt.bufPrint(&rb, "{d:.1}", .{sp.v.*}) catch "";
+        if (ui_ctl.knob(ui, kr, .{ "zknob", ai, k }, &norm, .{ .size = .s, .label = sp.label, .default = def, .readout = readout, .variant = if (sp.exp) .plain else .bipolar })) {
+            sp.v.* = if (sp.exp)
+                (if (norm < 0.05) 0 else 0.02 * std.math.pow(f64, sp.hi / 0.02, (norm - 0.05) / 0.95))
+            else
+                sp.lo + span * norm;
+        }
+    }
+}
+
+fn keyName(buf: []u8, key: f64) []const u8 {
+    const names = [_][]const u8{ "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    const k: i32 = @intFromFloat(std.math.clamp(key, 0, 127));
+    return std.fmt.bufPrint(buf, "{s}{d}", .{ names[@intCast(@mod(k, 12))], @divFloor(k, 12) - 1 }) catch "";
 }
 
 /// Draggable marker bound to control `id`: dragging writes its normalized
@@ -3331,7 +3625,7 @@ test "raw DSP2 sampler machine: asset loads and polyphonic notes sound" {
     try testing.expect(new_ptr != old_ptr); // a fresh allocation
     const pbits: *align(8) const usize = @ptrCast(@alignCast(&inst.params_buf[off]));
     try testing.expectEqual(new_ptr, pbits.*);
-    try testing.expect(inst.asset_cache[0].sample_count > 1000);
+    try testing.expectEqual(@as(usize, 1), inst.asset_keymap[0].count);
 }
 
 const keymap_test = struct {
@@ -3586,6 +3880,71 @@ test "sampler CLOCK engine: drop-sample playback at BITS stays in tune" {
     for (out) |x| try testing.expect(std.math.isFinite(x));
     try testing.expect(T.rms(out[512..]) > 0.01);
     try testing.expectApproxEqRel(@as(f64, 440), T.freq(out[512 .. 512 * 5]), 0.02);
+}
+
+test "sampler zones: per-zone level, tune and decay; kit labels; edits follow names" {
+    const T = keymap_test;
+    const a = testing.allocator;
+    T.mkdirs("kit2");
+    try T.sine(a, T.dir ++ "/kit2/kick.wav", 100, 1.0, null, null);
+    try T.sine(a, T.dir ++ "/kit2/clap.wav", 400, 1.0, null, null);
+    const inst = try FyRawMachine.create(a, "machines/sampler/sampler.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, a);
+    try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/kit2"));
+    const km = &inst.asset_keymap[0];
+    // clap sorts first: zone 0 = clap on 39, zone 1 = kick on 36
+    try testing.expectEqualStrings("clap", km.names[0].slice());
+
+    // The piano roll gets the kit's names, sorted by key.
+    const labels = mach.noteLabels();
+    try testing.expectEqual(@as(usize, 2), labels.len);
+    try testing.expectEqual(@as(u8, 36), labels[0].pitch);
+    try testing.expectEqualStrings("KICK", labels[0].labelSlice());
+    try testing.expectEqualStrings("CLAP", labels[1].labelSlice());
+
+    var out = [_]f32{0} ** (512 * 8);
+    var ev = [_]machine.NoteEvent{T.on(39, 1)};
+    T.play(inst, &ev, 8, &out);
+    const flat = T.rms(out[512 * 2 ..]);
+    var none = [_]machine.NoteEvent{};
+    var long = [_]f32{0} ** (512 * 96);
+    T.play(inst, &none, 96, &long);
+
+    // LEVEL -12 dB on the clap only, +12 st TUNE on it
+    inst.zone_edits.level[0] = -12;
+    inst.zone_edits.tune[0] = 12;
+    T.play(inst, &ev, 8, &out);
+    try testing.expectApproxEqRel(flat * 0.2512, T.rms(out[512 * 2 ..]), 0.03);
+    try testing.expectApproxEqRel(@as(f64, 800), T.freq(out[512 * 2 ..]), 0.01);
+    try testing.expectEqual(@as(f64, 0), inst.zone_edits.last); // the panel sees which zone played
+    T.play(inst, &none, 96, &long);
+
+    // DECAY 50 ms on the kick: gone 0.2 s in
+    inst.zone_edits.decay[1] = 0.05;
+    var k = [_]machine.NoteEvent{T.on(36, 1)};
+    var kout = [_]f32{0} ** (512 * 24);
+    T.play(inst, &k, 24, &kout);
+    try testing.expect(T.rms(kout[512 * 20 ..]) < 1e-4);
+    try testing.expect(T.rms(kout[0..1024]) > 0.05);
+
+    // Edits by name: JSON out, reload the kit, they come back.
+    var js: std.ArrayList(u8) = .empty;
+    defer js.deinit(a);
+    try writeZonesJsonImpl(inst, &js, a);
+    try testing.expect(std.mem.indexOf(u8, js.items, "\"clap\":{\"level\":-12") != null);
+    try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/kit2"));
+    try testing.expectEqual(@as(f64, -12), inst.zone_edits.level[0]);
+    try testing.expectEqual(@as(f64, 0.05), inst.zone_edits.decay[1]);
+    resetZoneEdits(inst);
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, js.items, .{});
+    defer parsed.deinit();
+    applyZonesJsonImpl(inst, parsed.value);
+    try testing.expectEqual(@as(f64, 12), inst.zone_edits.tune[0]);
+
+    // A melodic keymap keeps the chromatic roll.
+    try testing.expect(inst.loadAssetRuntime(0, "machines/sampler/assets/default.wav"));
+    try testing.expectEqual(@as(usize, 0), mach.noteLabels().len);
 }
 
 test "raw machine presets: scan factory, save round-trip, apply restores" {

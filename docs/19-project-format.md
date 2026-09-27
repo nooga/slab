@@ -82,6 +82,7 @@ JSON. Top level:
 | `mute` / `solo` | any soloed track mutes all unsoloed ones |
 | `instrument.machine` | machine **id**: the folder name under `machines/` (`juno2`, not "Ju-Know"). Display names change; ids don't. |
 | `instrument.assets` | files the machine has loaded, by asset name. Only the sampler has one: `{"smp": "path"}`, where the path is a `.wav`, an `.sfz` or a folder of WAVs (relative to the working directory, or absolute). Missing: the machine keeps its bundled sample. |
+| `instrument.zones` | the sampler's per-zone edits, by zone name (the sample's file stem): `{"clap": {"level": -6, "tune": 0, "decay": 0, "tone": 0}}`. level in dB, tune in semitones, decay in seconds to −60 dB (0 = off), tone in octaves of filter offset. Only edited zones are written; names that don't match the loaded keymap are ignored. |
 | `effects` | insert chain, run in order, stereo. `bypass: true` passes audio through untouched. |
 
 Signal flow per track: instrument → audio clips summed in → effects in
@@ -159,7 +160,8 @@ the clip, which then plays silent.
     choke group.
 
   Up to 128 zones. Stereo files are folded to mono. One-shot zones
-  ignore note-off.
+  ignore note-off. A kit's keys are named after its zones in the piano
+  roll; a preset that carries `assets` can carry `zones` too.
 
 ## Where loading fails silently
 

@@ -77,6 +77,35 @@ comptime {
     std.debug.assert(@sizeOf(Zone) == 16 * 8);
 }
 
+/// Per-zone adjustments on top of the machine's knobs, mirrored by
+/// `ZoneEdits` in kernels/06-voices/sampler.fy. The host owns it and
+/// injects a pointer; the voice reads its zone's cells at note-on and
+/// writes `hit` / `last` for the panel.
+pub const ZoneEdits = extern struct {
+    level: [MAX_ZONES]f64 = [_]f64{0} ** MAX_ZONES, // dB
+    tune: [MAX_ZONES]f64 = [_]f64{0} ** MAX_ZONES, // semitones
+    decay: [MAX_ZONES]f64 = [_]f64{0} ** MAX_ZONES, // seconds to -60 dB; 0 = off
+    tone: [MAX_ZONES]f64 = [_]f64{0} ** MAX_ZONES, // filter offset, octaves
+    hit: [MAX_ZONES]f64 = [_]f64{0} ** MAX_ZONES, // sequence number of the zone's newest note
+    last: f64 = -1, // the zone of the newest note
+};
+
+pub const NAME_MAX = 31;
+pub const Name = struct {
+    buf: [NAME_MAX]u8 = undefined,
+    len: u8 = 0,
+    pub fn slice(self: *const Name) []const u8 {
+        return self.buf[0..self.len];
+    }
+    pub fn set(text: []const u8) Name {
+        var n = Name{};
+        const k = @min(text.len, NAME_MAX);
+        @memcpy(n.buf[0..k], text[0..k]);
+        n.len = @intCast(k);
+        return n;
+    }
+};
+
 /// What fills a table's unused slots: a key range nothing falls in.
 pub const unused_zone = Zone{ .lo_key = 1000, .hi_key = -1 };
 
@@ -86,11 +115,21 @@ pub const Keymap = struct {
     /// first `count` are real, the rest `unused_zone`.
     zones: []Zone = &.{},
     count: usize = 0,
+    /// Each zone's name: its sample's file stem.
+    names: []Name = &.{},
 
     pub fn deinit(self: *Keymap, alloc: std.mem.Allocator) void {
         if (self.pool.len > 0) alloc.free(self.pool);
         if (self.zones.len > 0) alloc.free(self.zones);
+        if (self.names.len > 0) alloc.free(self.names);
         self.* = .{};
+    }
+
+    /// Whether every zone sits on one key: a kit, whose keys get names.
+    pub fn isKit(self: *const Keymap) bool {
+        if (self.count == 0) return false;
+        for (self.zones[0..self.count]) |z| if (z.lo_key != z.hi_key) return false;
+        return true;
     }
 
     /// The zone's samples, without guards.
@@ -200,7 +239,12 @@ const Builder = struct {
         const n = self.zones.items.len;
         @memcpy(zones[0..n], self.zones.items);
         for (zones[0..n], self.zone_file.items) |*z, fi| z.start = @floatFromInt(starts[fi]);
-        return .{ .pool = pool, .zones = zones, .count = n };
+        const names = self.alloc.alloc(Name, n) catch {
+            self.alloc.free(zones);
+            return Error.OutOfMemory;
+        };
+        for (names, self.zone_file.items) |*nm, fi| nm.* = Name.set(stem(std.fs.path.basename(self.files.items[fi].path)));
+        return .{ .pool = pool, .zones = zones, .count = n, .names = names };
     }
 };
 

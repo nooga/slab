@@ -159,6 +159,7 @@ pub fn serialize(
             try out.appendSlice(alloc, ",\"params\":");
             try appendParams(alloc, &out, t.machine);
             try appendAssets(alloc, &out, t.machine);
+            try appendZones(alloc, &out, t.machine);
             try out.append(alloc, '}');
         } else try out.appendSlice(alloc, "null");
 
@@ -333,6 +334,7 @@ pub fn apply(
                     machine_idx = @intCast(idx);
                     if (objGet(iv.object, "params")) |pv| applyParams(mach, pv);
                     if (objGet(iv.object, "assets")) |av| applyAssets(mach, av);
+                    if (objGet(iv.object, "zones")) |zv| if (mach.apply_zones_json) |f| f(mach.state, zv);
                 }
             }
         };
@@ -435,6 +437,17 @@ fn appendAssets(alloc: std.mem.Allocator, out: *std.ArrayList(u8), mach: machine
     try f(mach.state, &body, alloc);
     if (body.items.len == 0) return;
     try out.appendSlice(alloc, ",\"assets\":");
+    try out.appendSlice(alloc, body.items);
+}
+
+// `,"zones":{...}` when a sampler has per-zone edits.
+fn appendZones(alloc: std.mem.Allocator, out: *std.ArrayList(u8), mach: machine_mod.Machine) !void {
+    const f = mach.write_zones_json orelse return;
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(alloc);
+    try f(mach.state, &body, alloc);
+    if (body.items.len == 0) return;
+    try out.appendSlice(alloc, ",\"zones\":");
     try out.appendSlice(alloc, body.items);
 }
 

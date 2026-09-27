@@ -44,6 +44,18 @@ ustruct: Zone
 
 :: MAX-ZONES 128 ;
 
+( Per-zone edits over the knobs, host-owned: src/keymap.zig ZoneEdits.
+  The voice reads its zone's cells at note-on and writes hit / last,
+  which the panel's zone list reads to light the zone that played. )
+ustruct: ZoneEdits
+  f64 level 128   ( dB )
+  f64 tune 128    ( semitones )
+  f64 decay 128   ( seconds to -60 dB; 0 = off )
+  f64 tone 128    ( filter offset, octaves )
+  f64 hit 128     ( sequence number of the zone's newest note )
+  f64 last        ( the zone of the newest note )
+;
+
 
 ustruct: SamplerState
   ( the zone, copied at note-on; positions are pool indices )
@@ -63,6 +75,8 @@ ustruct: SamplerState
   f64 pend       ( CLOCK: next output, naive + after-step correction )
   f64 i-prev     ( CLOCK: the stored sample index last read )
   f64 fg         ( filter coefficient for this note )
+  f64 fade       ( per-zone DECAY: the level it has faded to )
+  f64 fade-k     ( and its per-sample factor, 1 = none )
   f64 f1  f64 f2  f64 f3  f64 f4
   ( envelope )
   f64 age
@@ -75,6 +89,7 @@ ustruct: SamplerParams
   f64 pool       ( pointer to the sample pool )
   f64 zones      ( pointer to MAX-ZONES zones )
   f64 zone-count
+  f64 edits      ( pointer to ZoneEdits )
   ( user-facing )
   f64 tune       ( semitones )
   f64 root       ( MIDI note for zones whose files carry no root )
@@ -142,7 +157,9 @@ dsp: sampler-note-on | ctx:Ctx state:SamplerState params:SamplerParams |
   zt c 12.0 f+ f@i | group |
   start -> state.start
   start len f+ -> state.end
-  zt c 8.0 f+ f@i -> state.gain
+  params.edits& p@64 | ed:ZoneEdits |
+  k 0.0 fmax | k0 |
+  zt c 8.0 f+ f@i  ed.level& k0 f@i db>lin  f* -> state.gain
   zt c 13.0 f+ f@i -> state.off-by
   ( loop: AUTO takes the file's mode and points, ON forces a loop,
     one-shot zones never loop )
@@ -158,14 +175,18 @@ dsp: sampler-note-on | ctx:Ctx state:SamplerState params:SamplerParams |
   le -> state.le
   ( pitch: semitones from the root; the clock ratio includes the rates )
   zroot 0.0  params.root zroot fsel-lt | root |
-  key params.tune f+ root f- 0.08333333333333333 f* exp2 | ratio |
+  key params.tune f+  ed.tune& k0 f@i f+  root f- 0.08333333333333333 f* exp2 | ratio |
   zsr ctx.sr f/ ratio f* 16.0 fmin -> state.inc
   start  params.start len f* f+ -> state.ph
   0.0 -> state.held
   0.0 -> state.pend
   -1.0 -> state.i-prev
   ( filter corner follows the pitch by TRK octaves per octave )
-  ratio log2 params.trk f* exp2 params.filter-hz f* ctx.sr svf-g -> state.fg
+  ratio log2 params.trk f*  ed.tone& k0 f@i f+  exp2 params.filter-hz f* ctx.sr svf-g -> state.fg
+  ( DECAY: -60 dB over the zone's decay time, on top of the envelope )
+  ed.decay& k0 f@i | dcy |
+  1.0 -> state.fade
+  dcy 0.0 f>  -6.907755278982137 dcy ctx.sr f* 0.000000001 fmax f/ exp  1.0  select -> state.fade-k
   0.0 -> state.f1  0.0 -> state.f2  0.0 -> state.f3  0.0 -> state.f4
   0.0 -> state.age
   1000000000.0 -> state.gate-time
@@ -177,6 +198,10 @@ dsp: sampler-note-on | ctx:Ctx state:SamplerState params:SamplerParams |
   group 0.0 15.0 fclamp | g |
   params.choke& g f@i | old |
   group 0.5 f>  seq  old  select  params.choke& g f!i
+  ( the panel's hit lights )
+  ed.hit& k0 f@i | oldhit |
+  hit  seq  oldhit  select  ed.hit& k0 f!i
+  hit  k0  ed.last  select -> ed.last
 ;
 
 ( ctx state params -- : release, unless the zone is a one-shot. )
@@ -239,8 +264,10 @@ dsp: k-sampler-voice | out:Io ctx state:SamplerState params:SamplerParams -- |
   gt -> state.gate-time
   age params.atk params.dec params.sus gt  choked 0.004 params.rel select  adsr-cap | env |
   1.0 params.vel-amt f-  state.vel params.vel-amt f*  f+ | va |
+  state.fade | fade |
+  fade state.fade-k f* -> state.fade
   out f@64
-  y env f*  va f*  state.gain f*  params.level f*  alive f*
+  y env f*  va f*  state.gain f*  fade f*  params.level f*  alive f*
   f+
   out f!64
 ;

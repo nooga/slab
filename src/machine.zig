@@ -182,6 +182,14 @@ pub const WriteAssetsJsonFn = *const fn (state: *anyopaque, out: *std.ArrayList(
 /// Load one named asset from `path` when restoring a project. False on a
 /// missing or bad file; the machine keeps what it had.
 pub const LoadAssetFn = *const fn (state: *anyopaque, name: []const u8, path: []const u8) bool;
+/// Per-zone edits (a sampler's level/tune/decay/tone), keyed by zone name,
+/// as a JSON object; write nothing when every zone is flat.
+pub const WriteZonesJsonFn = *const fn (state: *anyopaque, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void;
+/// Restore per-zone edits from such an object. Unknown zones are ignored.
+pub const ApplyZonesJsonFn = *const fn (state: *anyopaque, zones: std.json.Value) void;
+/// The machine's current note map, when it can change at runtime (a
+/// sampler that loads a kit). Valid until the machine next loads.
+pub const NoteLabelsFn = *const fn (state: *anyopaque) []const NoteLabel;
 
 pub const NOTE_LABEL_TEXT = 23;
 
@@ -222,6 +230,8 @@ pub const Machine = struct {
     set_param: ?SetParamFn = null,
     write_assets_json: ?WriteAssetsJsonFn = null,
     load_asset: ?LoadAssetFn = null,
+    write_zones_json: ?WriteZonesJsonFn = null,
+    apply_zones_json: ?ApplyZonesJsonFn = null,
     /// Preferred panel card width in pixels. The bay uses this to size
     /// the rect passed to draw_panel. 0 = bay chooses a default.
     panel_w: f32 = 0,
@@ -232,4 +242,12 @@ pub const Machine = struct {
     /// Advisory note map (drum machines); empty = chromatic machine.
     /// Points into instance-owned storage, valid for the machine's lifetime.
     note_labels: []const NoteLabel = &.{},
+    /// Overrides note_labels when set: the map as of now.
+    note_labels_fn: ?NoteLabelsFn = null,
+
+    /// The note map to draw: the live one if the machine has it.
+    pub fn noteLabels(self: *const Machine) []const NoteLabel {
+        if (self.note_labels_fn) |f| return f(self.state);
+        return self.note_labels;
+    }
 };
