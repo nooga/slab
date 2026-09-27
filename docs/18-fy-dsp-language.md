@@ -65,9 +65,12 @@ Untyped pointers still use the struct accessors `ptr Struct.field@`,
 - A later store to a field replaces an earlier one.
 - Stores are written to memory at the end of the word, so a load never
   observes a store from later in the program.
-- **Indexed stores (`f!i`) have no constant address**: a later `f@i` in
-  the same word reads memory as it was at word entry. Delay lines write
-  one cell and read another, so this is what they want.
+- **Indexed stores (`f!i`) with a runtime index have no constant
+  address**: a later `f@i` in the same word reads memory as it was at
+  word entry. Delay lines write one cell and read another, so this is
+  what they want. An index that is a compile-time constant (a literal,
+  or a `times` counter) makes `f@i`/`f!i` a plain field access, which
+  follows the rules above.
 
 ## Composition
 
@@ -184,6 +187,42 @@ The extra cell at i = len keeps interpolation at the last index in bounds
 (and equals cell 0 for a periodic body). A table lives until the fy
 instance is torn down, so code compiled against an older definition stays
 valid across a hot reload.
+
+## Repetition: `times`
+
+`n [ body ] times` is fy's `times` (`n q --`), and `dsp:` unrolls it:
+the builder replays the quote's tokens n times into the same
+straight-line value graph. The emitted code has no branch or loop
+counter, so everything above still holds (registers and spilling, memory
+order, masks, NEON lanes later). The cost is code size, n copies of the
+body.
+
+- n is a compile-time integer, 0 … 1024: a literal or a `::` constant.
+- Each copy must leave the stack as deep as it found it, so the copies
+  line up. Anything a copy hands to the next rides the stack.
+- `times` doesn't push an index; carry a counter. Constant operands of
+  `f+ f- f* f/` fold, so a counter that starts at a literal stays a
+  literal in every copy, and `tbl i f@i` becomes a constant offset.
+- There's no early exit. "Stop at the first match" is a mask that
+  keeps the first result, as in the sampler's zone search.
+- Frames bound inside the quote (`| i acc |`) end at its `]`.
+- A quote anywhere except directly before `times` is an error.
+
+```
+( sum of the first four cells: the counter i and the sum ride the stack )
+dsp: sum4 | tbl -- s |  0.0 0.0 4 [ | i acc | i 1.0 f+  acc tbl i f@i f+ ] times  nip ;
+
+( index of the first [lo, hi] pair holding x, else -1 )
+dsp: find | zt x -- k |
+  -1.0 0.0 4 [ | best i |
+    zt i 2.0 f* f@i x f<=  x zt i 2.0 f* 1.0 f+ f@i f<=  and  best -1.0 f=  and
+    i best select  i 1.0 f+ ] times
+  drop ;
+```
+
+Use it for fixed banks (additive partials, a supersaw's seven
+oscillators, FIR taps, a keymap scan at note-on), not for work whose
+size is only known at run time.
 
 ## Errors
 
