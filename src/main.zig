@@ -16,6 +16,7 @@ const wav_mod = @import("wav.zig");
 const registry_mod = @import("machine_registry.zig");
 const fy_host_mod = @import("fy_host.zig");
 const document_mod = @import("document.zig");
+const describe_mod = @import("describe.zig");
 const history_mod = @import("history.zig");
 const recorder_mod = @import("recorder.zig");
 const native_dialog = @import("native_dialog.zig");
@@ -359,10 +360,12 @@ fn applyPresetTo(t: *track_mod.Track, preset_idx: u8) void {
 
 /// `slab [project.slab] [--render out.wav]`: open a project at startup, or
 /// bounce it headless (no window, no audio device) and exit. `slab
-/// --gallery` opens the UI gallery (docs/06), no engine.
+/// --gallery` opens the UI gallery (docs/06), no engine. `slab --describe
+/// out.json` dumps every machine's params (docs/19).
 const Cli = struct {
     project: ?[]const u8 = null,
     render: ?[]const u8 = null,
+    describe: ?[]const u8 = null,
     gallery: bool = false,
 };
 
@@ -375,6 +378,8 @@ pub fn main(init: std.process.Init) !void {
             const a: []const u8 = a_z;
             if (std.mem.eql(u8, a, "--render")) {
                 cli.render = args.next() orelse return error.MissingRenderPath;
+            } else if (std.mem.eql(u8, a, "--describe")) {
+                cli.describe = args.next() orelse return error.MissingDescribePath;
             } else if (std.mem.eql(u8, a, "--gallery")) {
                 cli.gallery = true;
             } else cli.project = a;
@@ -392,6 +397,7 @@ pub fn main(init: std.process.Init) !void {
     const alloc = gpa.allocator();
 
     if (cli.gallery) return ui_gallery.run(alloc);
+    if (cli.describe) |out| return describe_mod.run(alloc, out);
     if (cli.render) |out| return renderHeadless(alloc, cli.project orelse return error.MissingProject, out);
 
     c.rl.SetConfigFlags(c.rl.FLAG_WINDOW_RESIZABLE | c.rl.FLAG_VSYNC_HINT | c.rl.FLAG_WINDOW_HIGHDPI);

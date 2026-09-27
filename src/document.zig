@@ -233,7 +233,7 @@ fn appendParams(alloc: std.mem.Allocator, out: *std.ArrayList(u8), mach: machine
     } else try out.appendSlice(alloc, "{}");
 }
 
-fn appendJsonString(alloc: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) !void {
+pub fn appendJsonString(alloc: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) !void {
     try out.append(alloc, '"');
     for (s) |ch| switch (ch) {
         '"' => try out.appendSlice(alloc, "\\\""),
