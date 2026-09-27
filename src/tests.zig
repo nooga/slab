@@ -1659,6 +1659,76 @@ test "dsp: :: constants and table: are visible to dsp words" {
     try std.testing.expectEqual(@as(i64, 3), Fy.getInt(try fy.run("TAPS")));
 }
 
+test "dsp: n [ ... ] times unrolls into straight-line code" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    _ = try fy.run(
+        \\:: N 4 ;
+        \\( sum of tbl[0..4]: the counter i and the sum ride the stack )
+        \\dsp: t-sum | out tbl |
+        \\  0.0 0.0 N [ | i acc | i 1.0 f+  acc tbl i f@i f+ ] times
+        \\  nip out f!64 ;
+        \\( index of the first [lo, hi] pair holding x, else -1 )
+        \\dsp: t-find | out zt x |
+        \\  -1.0 0.0 4 [ | best i |
+        \\    zt i 2.0 f* f@i x f<=  x zt i 2.0 f* 1.0 f+ f@i f<=  and  best -1.0 f=  and
+        \\    i best select  i 1.0 f+ ] times
+        \\  drop out f!64 ;
+        \\dsp: t-nest | out | 0.0 2 [ 3 [ 1.0 f+ ] times ] times out f!64 ;
+        \\dsp: t-zero | out | 7.0 0 [ 1.0 f+ ] times out f!64 ;
+        \\( a constant-index store is a plain field: the load sees it )
+        \\dsp: t-fwd | out buf | 5.0 buf 2.0 f!i  buf 1.0 1.0 f+ f@i out f!64 ;
+    );
+
+    var out: f64 = 0;
+    var tbl = [_]f64{ 1.5, 2.0, 4.0, 8.0, 100.0 };
+    const sum_args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&out) }, .{ .ptr = @intFromPtr(&tbl) } };
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("t-sum", 1, &sum_args);
+    try std.testing.expectEqual(@as(f64, 15.5), out);
+
+    var zones = [_]f64{ 0, 10, 20, 30, 25, 40, 50, 60 };
+    const find = struct {
+        fn f(fy_: *Fy, o: *f64, zt: []f64, x: f64) !f64 {
+            const args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(o) }, .{ .ptr = @intFromPtr(zt.ptr) }, .{ .f64 = x } };
+            _ = try fy_.callDsp2RawRepeatedWithArgsNoResult("t-find", 1, &args);
+            return o.*;
+        }
+    }.f;
+    try std.testing.expectEqual(@as(f64, 0), try find(&fy, &out, &zones, 5));
+    try std.testing.expectEqual(@as(f64, 1), try find(&fy, &out, &zones, 27)); // first match wins over zone 2
+    try std.testing.expectEqual(@as(f64, 2), try find(&fy, &out, &zones, 35));
+    try std.testing.expectEqual(@as(f64, 3), try find(&fy, &out, &zones, 60));
+    try std.testing.expectEqual(@as(f64, -1), try find(&fy, &out, &zones, 45));
+
+    const one = [_]Fy.Dsp2RawArg{.{ .ptr = @intFromPtr(&out) }};
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("t-nest", 1, &one);
+    try std.testing.expectEqual(@as(f64, 6), out);
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("t-zero", 1, &one);
+    try std.testing.expectEqual(@as(f64, 7), out);
+    var buf = [_]f64{ 0, 0, 0, 0 };
+    const fwd_args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&out) }, .{ .ptr = @intFromPtr(&buf) } };
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("t-fwd", 1, &fwd_args);
+    try std.testing.expectEqual(@as(f64, 5), out);
+    try std.testing.expectEqual(@as(f64, 5), buf[2]);
+}
+
+test "dsp: times rejects a runtime count, an unbalanced body and a bare quote" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    const bad = [_][]const u8{
+        "dsp: t-rt | out n | 0.0 n [ 1.0 f+ ] times out f!64 ;",
+        "dsp: t-grow | out | 0.0 4 [ 1.0 ] times out f!64 ;",
+        "dsp: t-bare | out | 0.0 [ 1.0 f+ ] out f!64 ;",
+        "dsp: t-big | out | 0.0 2000 [ 1.0 f+ ] times out f!64 ;",
+        "dsp: t-open | out | 0.0 4 [ 1.0 f+ out f!64 ;",
+    };
+    for (bad) |src| try std.testing.expectError(error.UnknownWord, fy.run(src));
+}
+
 test "ustruct: counted and embedded fields" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();

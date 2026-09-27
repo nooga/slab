@@ -5820,6 +5820,8 @@ pub const Fy = struct {
                 .local_arg => origin.word,
                 .local_frame_begin => "| … |",
                 .local_frame_end => "end of frame",
+                .quote_begin => "[",
+                .quote_end => "]",
             };
         }
 
@@ -5837,6 +5839,8 @@ pub const Fy = struct {
                 error.RegisterExhausted => "out of registers",
                 error.BadStackEffect => "body leaves nothing on the stack and stores nothing",
                 error.UnsupportedWord => "unsupported word in dsp:",
+                error.BadTimesCount => "`times` needs a constant count 0..1024 (a literal or `::`)",
+                error.UnbalancedTimes => "each `times` copy must leave the stack as deep as it found it",
                 else => @errorName(f.err),
             };
             if (f.token >= program.tokens.items.len) {
@@ -5873,6 +5877,10 @@ pub const Fy = struct {
             defer local_frames.deinit();
             var frame_outs: ?usize = null;
             var first_token = true;
+            // Open `[`s: the local frame count and name count at each, so
+            // `]` ends the frames bound inside the quote.
+            var quote_marks: [16][2]usize = undefined;
+            var quote_depth: usize = 0;
 
             while (true) {
                 const tok = try self.parser.nextToken() orelse return Error.UnexpectedEndOfInput;
@@ -5885,9 +5893,41 @@ pub const Fy = struct {
                 }, .file = self.fy.src_file orelse "" };
                 switch (tok) {
                     .Word => |word| {
-                        if (std.mem.eql(u8, word, Word.END)) break;
+                        if (std.mem.eql(u8, word, Word.END)) {
+                            if (quote_depth > 0) {
+                                self.setError("dsp: {s}: `[` without a matching `]`", .{w});
+                                return Error.UnknownWord;
+                            }
+                            break;
+                        }
                         const leading = first_token;
                         first_token = false;
+                        if (std.mem.eql(u8, word, Word.QUOTE_OPEN)) {
+                            if (quote_depth == quote_marks.len) {
+                                self.setError("dsp: {s}: quotes nested too deep", .{w});
+                                return Error.UnknownWord;
+                            }
+                            quote_marks[quote_depth] = .{ local_frames.items.len, local_names.items.len };
+                            quote_depth += 1;
+                            program.push(.quote_begin) catch return Error.OutOfMemory;
+                            continue;
+                        }
+                        if (std.mem.eql(u8, word, Word.QUOTE_END)) {
+                            if (quote_depth == 0) {
+                                self.setError("dsp: {s}: `]` without a matching `[`", .{w});
+                                return Error.UnknownWord;
+                            }
+                            quote_depth -= 1;
+                            const mark = quote_marks[quote_depth];
+                            while (local_frames.items.len > mark[0]) {
+                                program.endLocalFrame() catch return Error.OutOfMemory;
+                                _ = local_frames.pop();
+                            }
+                            local_names.shrinkRetainingCapacity(mark[1]);
+                            local_types.shrinkRetainingCapacity(mark[1]);
+                            program.push(.quote_end) catch return Error.OutOfMemory;
+                            continue;
+                        }
                         if (std.mem.eql(u8, word, "|")) {
                             const frame_start = local_names.items.len;
                             const outs = try self.parseDsp2Locals(&local_names, &local_types);

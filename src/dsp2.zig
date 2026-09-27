@@ -4,6 +4,8 @@ const compat = @import("compat.zig");
 
 pub const Error = error{
     BadStackEffect,
+    BadTimesCount,
+    UnbalancedTimes,
     NonConstantPick,
     OutOfMemory,
     RegisterExhausted,
@@ -275,7 +277,11 @@ pub const Builder = struct {
             const base = try self.pop();
             try self.expectTy(base, .ptr);
             try self.expectTy(idx, .f64);
-            const pa = try self.addValue(.{ .op = .ptr_add_idx, .ty = .ptr, .a = base, .b = idx });
+            const pa = try self.indexAddr(base, idx);
+            if (self.findStore(pa)) |si| {
+                try self.stack.append(self.stores.items[si].value);
+                return;
+            }
             const id = try self.addValue(.{ .op = .load_f64, .ty = .f64, .a = pa });
             try self.stack.append(id);
             return;
@@ -287,7 +293,11 @@ pub const Builder = struct {
             try self.expectTy(base, .ptr);
             try self.expectTy(idx, .f64);
             try self.expectTy(v, .f64);
-            const pa = try self.addValue(.{ .op = .ptr_add_idx, .ty = .ptr, .a = base, .b = idx });
+            const pa = try self.indexAddr(base, idx);
+            if (self.findStore(pa)) |si| {
+                self.stores.items[si].value = v;
+                return;
+            }
             try self.stores.append(.{ .ptr = pa, .value = v });
             return;
         }
@@ -671,6 +681,25 @@ pub const Builder = struct {
         if (old != ty) return Error.TypeMismatch;
     }
 
+    /// The count for `times`: an integer constant (or an integral f64
+    /// constant) in 0..MAX_TIMES, popped.
+    fn popCount(self: *Builder) Error!usize {
+        const id = try self.pop();
+        const v = self.values.items[id];
+        const n: f64 = switch (v.op) {
+            .int_const => @floatFromInt(v.int_value),
+            .f64_const => v.float_value,
+            else => return Error.BadTimesCount,
+        };
+        if (!(n >= 0 and n <= MAX_TIMES) or @floor(n) != n) return Error.BadTimesCount;
+        return @intFromFloat(n);
+    }
+
+    fn constF64(self: *const Builder, id: usize) ?f64 {
+        const v = self.values.items[id];
+        return if (v.op == .f64_const) v.float_value else null;
+    }
+
     fn floatBin(self: *Builder, op: Op) Error!void {
         const b = try self.pop();
         const a = try self.pop();
@@ -680,7 +709,34 @@ pub const Builder = struct {
     fn binValue(self: *Builder, op: Op, a: usize, b: usize) Error!usize {
         try self.expectTy(a, .f64);
         try self.expectTy(b, .f64);
+        // Constant operands fold, so an unrolled `times` counter stays a
+        // literal in every copy. IEEE results are the same as at run time.
+        if (self.constF64(a)) |x| if (self.constF64(b)) |y| {
+            const r: ?f64 = switch (op) {
+                .fadd => x + y,
+                .fsub => x - y,
+                .fmul => x * y,
+                .fdiv => x / y,
+                else => null,
+            };
+            if (r) |val| return self.addValue(.{ .op = .f64_const, .ty = .f64, .float_value = val });
+        };
         return self.addValue(.{ .op = op, .ty = .f64, .a = a, .b = b });
+    }
+
+    /// base + floor(idx) * 8. A constant index becomes a constant offset,
+    /// so the access is a plain field: loads see earlier stores to it.
+    fn indexAddr(self: *Builder, base: usize, idx: usize) Error!usize {
+        if (self.constF64(idx)) |x| {
+            const e = @floor(x);
+            if (e >= 0 and e < 1 << 24) return self.addValue(.{
+                .op = .ptr_add,
+                .ty = .ptr,
+                .a = base,
+                .int_value = @as(i64, @intFromFloat(e)) * 8,
+            });
+        }
+        return self.addValue(.{ .op = .ptr_add_idx, .ty = .ptr, .a = base, .b = idx });
     }
 
     fn unary(self: *Builder, op: Op, a: usize) Error!usize {
@@ -713,7 +769,16 @@ pub const BodyToken = union(enum) {
     // in a pure-composition word; compiled via the composition emitter, not the
     // value-graph Builder.
     call_word: []const u8,
+    // `[` … `]`: a quote. The only consumer is a directly following
+    // `times`, which the builder unrolls (see Program.run).
+    quote_begin,
+    quote_end,
 };
+
+/// Most copies `n [ … ] times` may unroll: a guard against a typo'd count
+/// building a huge body, not a real-time limit (every copy is straight-line
+/// code with a known cost).
+pub const MAX_TIMES = 1024;
 
 /// True if the token stream contains any `call:` — i.e. this is a composition
 /// word that must be emitted via the dedicated call-sequencing path rather than
@@ -768,7 +833,7 @@ pub const Program = struct {
         self.origins.deinit();
     }
 
-    fn push(self: *Program, tok: BodyToken) Error!void {
+    pub fn push(self: *Program, tok: BodyToken) Error!void {
         try self.tokens.append(tok);
         try self.origins.append(self.cur);
     }
@@ -839,27 +904,7 @@ pub const Program = struct {
                 try b.stack.append(id);
                 try b.args.append(id);
             }
-            var failed: ?Failure = null;
-            for (self.tokens.items, 0..) |tok, ti| {
-                const r: Error!void = switch (tok) {
-                    .number => |n| b.addNumber(n),
-                    .float => |f| b.addFloat(f),
-                    .local_arg => |ref| b.addLocalArg(ref),
-                    .local_frame_begin => |frame_arity| b.beginLocalFrame(frame_arity),
-                    .local_frame_end => b.endLocalFrame(),
-                    .word => |w| b.addWord(w),
-                    // call_word never belongs in a value-graph build — composition
-                    // words are routed to the dedicated emitter before build().
-                    .call_word => return Error.UnsupportedWord,
-                };
-                r catch |err| switch (err) {
-                    error.OutOfMemory => return err,
-                    else => {
-                        failed = .{ .err = err, .token = ti, .depth = b.stack.items.len, .arity = arity };
-                        break;
-                    },
-                };
-            }
+            var failed = try self.run(&b, 0, self.tokens.items.len, arity);
             if (failed == null and b.stores.items.len == 0 and b.stack.items.len == 0)
                 failed = .{ .err = Error.BadStackEffect, .token = self.tokens.items.len, .depth = 0, .arity = arity };
             if (failed) |f| {
@@ -874,6 +919,77 @@ pub const Program = struct {
             return b;
         }
         return if (self.fail) |f| f.err else Error.BadStackEffect;
+    }
+
+    /// Feed tokens[start..end] to the builder. `n [ … ] times` replays the
+    /// quote's tokens n times into the same value graph, so the loop leaves
+    /// no trace in the emitted code: each copy is ordinary straight-line
+    /// dsp, and each copy must leave the stack as deep as it found it so
+    /// the copies line up. n must be a compile-time integer (a literal or
+    /// `::`). Returns the failure, if any; only OutOfMemory is raised.
+    fn run(self: *Program, b: *Builder, start: usize, end: usize, arity: usize) Error!?Failure {
+        var ti = start;
+        while (ti < end) {
+            const tok = self.tokens.items[ti];
+            const r: Error!void = switch (tok) {
+                .number => |n| b.addNumber(n),
+                .float => |f| b.addFloat(f),
+                .local_arg => |ref| b.addLocalArg(ref),
+                .local_frame_begin => |frame_arity| b.beginLocalFrame(frame_arity),
+                .local_frame_end => b.endLocalFrame(),
+                .word => |w| b.addWord(w),
+                // call_word never belongs in a value-graph build — composition
+                // words are routed to the dedicated emitter before build().
+                .call_word => return Error.UnsupportedWord,
+                .quote_end => Error.UnsupportedWord,
+                .quote_begin => {
+                    const close = self.matchQuote(ti, end) orelse
+                        return .{ .err = Error.UnsupportedWord, .token = ti, .depth = b.stack.items.len, .arity = arity };
+                    const after = close + 1;
+                    const is_times = after < end and switch (self.tokens.items[after]) {
+                        .word => |w| std.mem.eql(u8, w, "times"),
+                        else => false,
+                    };
+                    if (!is_times)
+                        return .{ .err = Error.UnsupportedWord, .token = ti, .depth = b.stack.items.len, .arity = arity };
+                    const n = b.popCount() catch |err| {
+                        if (err == error.OutOfMemory) return err;
+                        return .{ .err = err, .token = after, .depth = b.stack.items.len, .arity = arity };
+                    };
+                    var k: usize = 0;
+                    while (k < n) : (k += 1) {
+                        const depth = b.stack.items.len;
+                        const frames = b.local_frames.items.len;
+                        if (try self.run(b, ti + 1, close, arity)) |f| return f;
+                        if (b.stack.items.len != depth or b.local_frames.items.len != frames)
+                            return .{ .err = Error.UnbalancedTimes, .token = close, .depth = b.stack.items.len, .arity = arity };
+                    }
+                    ti = after + 1;
+                    continue;
+                },
+            };
+            r catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => return .{ .err = err, .token = ti, .depth = b.stack.items.len, .arity = arity },
+            };
+            ti += 1;
+        }
+        return null;
+    }
+
+    /// Index of the quote_end matching the quote_begin at `open`.
+    fn matchQuote(self: *const Program, open: usize, end: usize) ?usize {
+        var depth: usize = 0;
+        var i = open;
+        while (i < end) : (i += 1) switch (self.tokens.items[i]) {
+            .quote_begin => depth += 1,
+            .quote_end => {
+                depth -= 1;
+                if (depth == 0) return i;
+            },
+            else => {},
+        };
+        return null;
     }
 };
 
@@ -898,6 +1014,8 @@ pub fn cloneTokens(allocator: std.mem.Allocator, tokens: []const BodyToken) Erro
             .float => |f| .{ .float = f },
             .local_frame_begin => |arity| .{ .local_frame_begin = arity },
             .local_frame_end => .local_frame_end,
+            .quote_begin => .quote_begin,
+            .quote_end => .quote_end,
             .local_arg => |ref| .{ .local_arg = ref },
             .word => |w| blk: {
                 const owned = allocator.dupe(u8, w) catch return Error.OutOfMemory;
