@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "unfairlight", "note": "The bundled pluck as CMI voice RAM: 24 kHz, 8-bit", "params": {"cmi-rate": 24000, "cmi-root": 57, "cmi-tune": 0, "cmi-loop": 0, "cmi-loop-start": 0, "cmi-loop-end": 127, "cmi-filter": 160, "cmi-atk": 0.002, "cmi-damp": 0.3, "cmi-vel": 0, "cmi-vol": 0.6}}

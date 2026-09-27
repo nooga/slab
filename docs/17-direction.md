@@ -568,7 +568,18 @@ host keeps the voice while it sounds (idle is output-based). Presets
 cmi-voice, cmi-grit, emulator, sp1200-kit, and the VCSL library
 (tools/library/vcsl.py: ~170 instruments and two GM kits as generated
 SFZs, `lib:` presets in vcsl-* banks). The project
-file saves the keymap path (docs/19). Still open for the CMI machine:
+file saves the keymap path (docs/19).
+
+Unfairlight CIA (2026-09-27, machines/unfairlight): the CMI machine's
+voice card, kernels/06-voices/cmi.fy after MAME's cmi01a.cpp. Any keymap
+becomes voice RAM: sampled at RATE, 8-bit, cut at 16,384 bytes. Notes
+play on the card's clock grid ((0x800 | pitch<<1) * mosc / 4096 / 16 over
+an octave divide) with no interpolation; loops are whole 128-sample
+segments; the SSM pair (two fixed-Q 2-pole stages, 1.22x apart) follows
+the octave register in whole octaves, FILTER being the card's latch;
+8-bit linear attack/damping times the volume. MAME's stream uses the
+first filter stage only; this runs both. Eight voices; the zone list's
+edits and chokes work as on the sampler. Still open for the CMI machine:
 the `.VC`/IMD loader, the Series II additive page, the per-voice filter
 curve from `cmi01a.cpp`. Still open for D3: per-pad tune/decay and outputs, round-robin, the
 SSM filter channels.

@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "unfairlight", "note": "VCSL marimba at 20 kHz, 8-bit", "params": {"cmi-rate": 20000, "cmi-root": 57, "cmi-tune": 0, "cmi-loop": 0, "cmi-loop-start": 0, "cmi-loop-end": 127, "cmi-filter": 170, "cmi-atk": 0.002, "cmi-damp": 0.5, "cmi-vel": 0.5, "cmi-vol": 0.6}, "assets": {"voice": "lib:vcsl/vcsl-mallets/marimba.sfz"}}

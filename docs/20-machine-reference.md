@@ -15,6 +15,7 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`ms20`](#ms20) | SM-24 Mono | instrument | mono | `—` |
 | [`rhodes`](#rhodes) | Rhodes E-Piano | instrument | 8 | `rd-` |
 | [`sampler`](#sampler) | Sampler | instrument | 8 | `smp-` |
+| [`unfairlight`](#unfairlight) | Unfairlight CIA | instrument | 8 | `cmi-` |
 | [`chorus2`](#chorus2) | Chorus | effect | — | `chorus-` |
 | [`comp2`](#comp2) | Comp | effect | — | `comp-` |
 | [`delay2`](#delay2) | Delay | effect | — | `delay-` |
@@ -618,6 +619,36 @@ Presets:
 - `vcsl-perc/hi-hat-cymbal` — VCSL Hi-Hat Cymbal
 - `vcsl-winds/ocarina-typical-sus` — VCSL Ocarina, Typical / Sustains / Sus, with release samples
 - `vcsl-winds/ocarina-typical-susvib` — VCSL Ocarina, Typical / Sustains / SusVib, with release samples
+
+## unfairlight
+
+**Unfairlight CIA**, instrument, 8 voices.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `cmi-rate` | VOICE | RATE | 4000 … 32000 | 24000 | exp |
+| `cmi-root` | VOICE | ROOT | 24 … 96 | 57 | linear |
+| `cmi-tune` | VOICE | TUNE | -24 … 24 | 0 | linear |
+| `cmi-loop` | LOOP | MODE | 0 OFF / 1 ON | 0 | switch |
+| `cmi-loop-start` | LOOP | BEG | 0 … 127 | 0 | integer |
+| `cmi-loop-end` | LOOP | END | 0 … 127 | 127 | integer |
+| `cmi-filter` | FILTER | FILTER | 0 … 255 | 160 | integer |
+| `cmi-atk` | ENV | ATTACK | 0 … 2 | 0.002 | pow |
+| `cmi-damp` | ENV | DAMP | 0.005 … 6 | 0.3 | exp |
+| `cmi-vel` | OUT | VEL | 0 … 1 | 0 | linear |
+| `cmi-vol` | OUT | VOL | 0 … 1 | 0.8 | pow |
+
+Presets:
+
+- `fm-piano` — TX81Z FM piano through the voice card
+- `harpsichord` — VCSL French harpsichord in 16 KB of 8-bit RAM, with its releases
+- `kalimba` — VCSL kalimba, 8-bit, dark filter
+- `kit` — VCSL acoustic kit at 16 kHz, 8-bit
+- `latin-kit` — VCSL hand percussion at 16 kHz, 8-bit
+- `marimba` — VCSL marimba at 20 kHz, 8-bit
+- `ocarina-loop` — VCSL ocarina with a segment loop in the sustain, the CMI way
+- `pluck` — The bundled pluck as CMI voice RAM: 24 kHz, 8-bit
+- `pluck-grit` — Pluck sampled at 10 kHz: the card's clock grain up front
 
 ## chorus2
 

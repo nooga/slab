@@ -50,6 +50,7 @@ pub const builtin_machines = [_][]const u8{
     "machines/rhodes/rhodes.fy",
     "machines/funk/funk.fy",
     "machines/sampler/sampler.fy",
+    "machines/unfairlight/unfairlight.fy",
 };
 
 // Soft cap used to size UI-side menu arrays; the registry itself is a

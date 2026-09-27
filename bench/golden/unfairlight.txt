@@ -1,0 +1,6 @@
+# bench goldens for unfairlight: case sha256(f32 L ++ f32 R) [nonharm_db thd_db]
+notes f27570fc4761d4b5467a6d7b860067815fb53c706ef35ed7ae3d994584188e70
+velocity ca415e7883f85455d9ba55ef65ee971a5bea8b184b5c4b081cf5446f2def8094
+held 71f632a90a9dec2666afa2ceac15e8a6accb707cac7c708d356acfdb4a306212 -9.1 -4.0
+high 60deace763fe948104bcfd6aab10ea2004545f0256284545120115ef308eb2ad -300.0 -300.0
+chord 5a0f1dded32626c88db19bc0d897adfb1b83289f4d6f772eb04ee675dc5f00e2 -9.1 -4.0

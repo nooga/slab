@@ -4133,6 +4133,35 @@ test "sampler keymap: swapping to a smaller keymap mid-note doesn't read the old
     try testing.expect(T.rms(&after) > 0.01);
 }
 
+test "unfairlight: 16 KB of voice RAM at RATE, segment loops, in tune on the card's clock" {
+    const T = keymap_test;
+    const a = testing.allocator;
+    T.mkdirs("cmi");
+    try T.sine(a, T.dir ++ "/cmi/tone_A3.wav", 220, 3.0, null, null);
+    const inst = try FyRawMachine.create(a, "machines/unfairlight/unfairlight.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, a);
+    try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/cmi/tone_A3.wav"));
+    applyControlValue(inst, "cmi-rate", 16384);
+    applyControlValue(inst, "cmi-filter", 255);
+    var out = [_]f32{0} ** (512 * 150);
+    var tail = [_]f32{0} ** (512 * 40);
+    // a fifth up, held: in tune, and the RAM (16384 samples at 16384 Hz,
+    // 1 s at the root, 2/3 s a fifth up) runs out
+    var ev = [_]machine.NoteEvent{T.on(64, 1)};
+    T.play(inst, &ev, 150, &out);
+    try testing.expectApproxEqRel(@as(f64, 329.63), T.freq(out[512 .. 512 * 50]), 0.003);
+    try testing.expect(T.rms(out[512 * 20 .. 512 * 55]) > 0.05);
+    try testing.expect(T.rms(out[512 * 66 ..]) < 1e-4);
+    var off = [_]machine.NoteEvent{T.off(64)};
+    T.play(inst, &off, 40, &tail);
+    // looped on segments 0..127: still sounding past the RAM's end
+    applyControlValue(inst, "cmi-loop", 1);
+    T.play(inst, &ev, 150, &out);
+    try testing.expect(T.rms(out[512 * 100 ..]) > 0.05);
+    for (out) |x| try testing.expect(std.math.isFinite(x));
+}
+
 test "sampler keymap: sfz velocity layers and ranges" {
     const T = keymap_test;
     const a = testing.allocator;
