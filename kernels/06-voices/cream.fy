@@ -12,6 +12,25 @@
            under OSC 1, phase-locked]    |     -> VCA -> DC block -> out
         or OSC [range, wave, detune] ----'
 
+  Ladder level: DRIVE sets how hard the mix feeds the ladder [an eighth
+  of the mix per unit drive-g, so the default sits at the transistors'
+  knee]; lad-out undoes that gain, so DRIVE trades clean for fat without
+  changing the level.  Fed hot, the pairs squash the resonance loop and
+  EMPHASIS stops doing anything.  The input also gets 1 + k/2 of bass
+  compensation: a bare ladder loses 9 dB of fundamental at half emphasis,
+  this one about 3, so resonant basses stay deep.  Applied at the input,
+  not the output, it leaves the self-oscillation level alone - the loop's
+  tanh sets that - and pushes the pairs a little harder as EMPHASIS rises.
+
+  After the ladder, MODE picks a response by pole mixing its taps, as on
+  the Messenger: LP24, LP12, BP12, HP24 [moog-mix].  BASS COMP is the
+  Messenger's switch of the same name: off, the ladder thins as EMPHASIS
+  rises, like a Minimoog or Prodigy.
+
+  The LFO [TRI SQR SAW S&H, 0.1-20 Hz] bends the pitch by up to an octave
+  and the cutoff by up to four; both originals have one.  The contours
+  are RC [env_rc.fy]: a retrigger attacks from the current level.
+
   AGE [0..1] is the analog layer: each oscillator wanders on its own slow
   drift [~6 cents RMS at 1], the cutoff wanders, and OSC 2/3 sit a few
   cents off their dials.  SYNC reset has no BLEP; at 4x the edge's
@@ -26,20 +45,22 @@ include "../00-primitives/oversample.fy"
 include "../01-oscillators/primitives/phase.fy"
 include "../01-oscillators/primitives/blep.fy"
 include "../01-oscillators/primitives/shapes.fy"
-include "../03-envelopes/primitives/segments.fy"
+include "../03-envelopes/primitives/env_rc.fy"
 include "../04-filters/moog_ladder.fy"
 include "../08-analog/analog.fy"
 
 ustruct: CreamState
   f64 ph1  f64 ph2  f64 ph3
   f64 sub-count    ( OSC 1 cycles counted for the SUB, 0 .. 1/sub-oct - 1 )
-  f64 age
-  f64 gate-time
   f64 vel
   f64 oct          ( current pitch, log2 Hz - glides toward target-oct )
   f64 target-oct
   f64 noise-rng
+  f64 lfo-ph
+  f64 lfo-sh       ( S&H value, redrawn on each LFO wrap )
   f64 dc-x  f64 dc-y
+  EnvRc f-env
+  EnvRc a-env
   MoogLadder lad
   Dec4 dec
   Drift dr1  Drift dr2  Drift dr3  Drift drc
@@ -62,12 +83,19 @@ ustruct: CreamParams
   f64 emphasis                            ( 0..1.1; 1 sustains a sine )
   f64 contour                             ( filter EG, octaves )
   f64 kbd                                 ( keyboard tracking 0..1 )
+  f64 flt-mode                            ( 0 LP24 1 LP12 2 BP12 3 HP24 - switch )
+  f64 bass-comp                           ( 0 off 1 on - switch )
   f64 f-atk f64 f-dec f64 f-sus f64 f-rel
   ( loudness )
   f64 a-atk f64 a-dec f64 a-sus f64 a-rel
   f64 glide                               ( seconds to cover most of an interval )
   f64 age-amt                             ( AGE 0..1 )
   f64 level
+  ( modulation )
+  f64 lfo-rate                            ( Hz )
+  f64 lfo-wave                            ( 0 tri 1 square 2 saw 3 S&H - switch )
+  f64 lfo-pitch                           ( LFO -> pitch, semitones )
+  f64 lfo-cut                             ( LFO -> cutoff, octaves )
   ( derived by cream-block-prepare )
   f64 inv-sr
   f64 inv-osr
@@ -75,8 +103,14 @@ ustruct: CreamParams
   f64 glide-c
   f64 ratio2 f64 ratio3                   ( detune + AGE spread, as ratios )
   f64 drive-g
+  f64 lad-in                              ( mix -> ladder input: drive-g / 8 )
+  f64 lad-out                             ( ladder makeup at this drive )
   f64 drift-c
   f64 cut-drift-c
+  f64 comp                                ( bass compensation: 0.5 or 0 )
+  f64 mix-a f64 mix-b f64 mix-c f64 mix-d f64 mix-e   ( pole-mix taps )
+  EnvRcCoefs f-co
+  EnvRcCoefs a-co
 ;
 
 ( ctx state params -- )
@@ -95,14 +129,30 @@ dsp: cream-block-prepare | ctx:Ctx state params:CreamParams -- |
   params.detune3  0.0 3.0 spread params.age-amt f* 0.04 f*  f+  0.08333333333333333 f* exp2
     -> params.ratio3
   ( DRIVE 0..1 -> 0.5x .. 8x, equal steps in dB )
-  params.drive 4.0 f* 1.0 f- exp2 -> params.drive-g
+  params.drive 4.0 f* 1.0 f- exp2 | dg |
+  dg -> params.drive-g
+  dg 0.125 f* | a |
+  a -> params.lad-in
+  ( 1 / the ladder's large-signal gain, ~0.62 tanh[a / 0.62]; held from
+    DRIVE 0.25 down, where the output just gets quieter )
+  0.5  a 0.125 fmax 1.6129032258064515 f* tanh 0.62 f*  f/ -> params.lad-out
   0.35 ctx.inv-sr drift-coef -> params.drift-c
   0.15 ctx.inv-sr drift-coef -> params.cut-drift-c
+  params.bass-comp 0.5 f* -> params.comp
+  ( pole-mix taps for MODE )
+  params.flt-mode | m |
+  m 2.5  0.0 1.0  fsel-lt -> params.mix-a
+  m 1.5  0.0  m 2.5 2.0 -4.0 fsel-lt  fsel-lt -> params.mix-b
+  m 0.5  0.0  m 1.5 1.0  m 2.5 -2.0 6.0 fsel-lt  fsel-lt  fsel-lt -> params.mix-c
+  m 2.5  0.0 -4.0  fsel-lt -> params.mix-d
+  m 0.5  1.0  m 2.5 0.0 1.0 fsel-lt  fsel-lt -> params.mix-e
+  params.f-co&  params.f-atk params.f-dec params.f-sus params.f-rel  0.0 0.0  ctx.inv-sr env-rc-coefs
+  params.a-co&  params.a-atk params.a-dec params.a-sus params.a-rel  0.0 0.0  ctx.inv-sr env-rc-coefs
 ;
 
 ( ctx state params -- : legato notes only move the pitch target.  The
   very first note starts on pitch instead of gliding up from nothing. )
-dsp: cream-note-on | ctx:Ctx state:CreamState params -- |
+dsp: cream-note-on | ctx:Ctx state:CreamState params:CreamParams -- |
   ctx.hz 1.0 fmax log2 | o |
   o -> state.target-oct
   state.oct 1.0  o  state.oct  fsel-lt -> state.oct
@@ -111,14 +161,15 @@ dsp: cream-note-on | ctx:Ctx state:CreamState params -- |
   state.dr2& 2.0 drift-seed-once
   state.dr3& 3.0 drift-seed-once
   state.drc& 4.0 drift-seed-once
-  ctx.legato 0.5  0.0 state.age  fsel-lt -> state.age
+  state.f-env& params.f-co& ctx.legato env-rc-trigger
+  state.a-env& params.a-co& ctx.legato env-rc-trigger
   ctx.legato 0.5  ctx.vel state.vel  fsel-lt -> state.vel
-  1000000000.0 -> state.gate-time
 ;
 
 ( ctx state params -- )
-dsp: cream-note-off | ctx state:CreamState params -- |
-  state.age -> state.gate-time
+dsp: cream-note-off | ctx state:CreamState params:CreamParams -- |
+  state.f-env& params.f-co& env-rc-release
+  state.a-env& params.a-co& env-rc-release
 ;
 
 ( wave phase dt -- y : 0 tri 1 saw 2 square 3 wide 4 narrow pulse. )
@@ -158,26 +209,38 @@ dsp: cr-sub | state:CreamState params:CreamParams dt1 dt2 dt3 nz g k -- y |
   params.osc3-mode 0.5  p3 dt3 0.5 pulse-polyblep  params.wave3 p3 dt3 cr-wave  fsel-lt
     params.lvl3 f* f+
   nz params.noise f* f+
-  0.5 f* params.drive-g f* | x |
-  state.lad& x g k moog-step
+  params.lad-in f*  k params.comp f* 1.0 f+ f* | x |
+  state.lad& x g k moog-step drop
+  state.lad&  params.mix-a params.mix-b params.mix-c params.mix-d params.mix-e  moog-mix
 ;
 
 ( io ctx state params -- : one output sample. )
 dsp: k-cream-voice | io ctx state:CreamState params:CreamParams -- |
-  state.age params.inv-sr f+ | age |
-  age -> state.age
+  ( LFO: TRI SQR SAW S&H, bipolar )
+  state.lfo-ph params.lfo-rate params.inv-sr f* f+ | lq |
+  lq wrap01 | lp |
+  lp -> state.lfo-ph
+  1.0 lq f<=  state.noise-rng 2.0 f* 1.0 f-  state.lfo-sh  select | sh |
+  sh -> state.lfo-sh
+  params.lfo-wave 1.5
+    params.lfo-wave 0.5
+      lp 0.5 f- fabs 4.0 f* 1.0 f-
+      lp 0.5  1.0 -1.0  fsel-lt
+    fsel-lt
+    params.lfo-wave 2.5  lp 2.0 f* 1.0 f-  sh  fsel-lt
+  fsel-lt | lfo |
   ( glide in octaves )
   state.oct  state.target-oct state.oct f-  params.glide-c f*  f+ | oct |
   oct -> state.oct
-  oct exp2 | hz |
+  oct  lfo params.lfo-pitch f* 0.08333333333333333 f*  f+  exp2 | hz |
   ( drift: cents -> ratio, small enough for 1 + x ln2 )
   params.age-amt 0.0035 f* | dscale |
   state.dr1& params.drift-c drift-step dscale f* 1.0 f+ | d1 |
   state.dr2& params.drift-c drift-step dscale f* 1.0 f+ | d2 |
   state.dr3& params.drift-c drift-step dscale f* 1.0 f+ | d3 |
   ( contours )
-  age params.f-atk params.f-dec params.f-sus state.gate-time params.f-rel adsr-cap | fenv |
-  age params.a-atk params.a-dec params.a-sus state.gate-time params.a-rel adsr-cap | aenv |
+  state.f-env& params.f-co& env-rc-step | fenv |
+  state.a-env& params.a-co& env-rc-step | aenv |
   hz params.inv-osr f* | base |
   base params.range1 f* d1 f* | dt1 |
   base params.range2 f* params.ratio2 f* d2 f*
@@ -187,6 +250,7 @@ dsp: k-cream-voice | io ctx state:CreamState params:CreamParams -- |
   fenv params.contour f*
   oct 8.031359713524661 f-  params.kbd f*  f+
   state.drc& params.cut-drift-c drift-step  params.age-amt 0.07 f* f*  f+
+  lfo params.lfo-cut f*  f+
   exp2 params.cutoff f*
   params.osr params.emphasis moog-coeffs | g k |
   ( one noise sample, held across the substeps )
@@ -198,7 +262,7 @@ dsp: k-cream-voice | io ctx state:CreamState params:CreamParams -- |
     state params dt1 dt2 dt3 nz g k cr-sub
     state params dt1 dt2 dt3 nz g k cr-sub
     state params dt1 dt2 dt3 nz g k cr-sub
-  dec4 | y |
+  dec4  params.lad-out f* | y |
   ( VCA, velocity a gentle 6 dB, then a ~10 Hz DC block )
   y aenv f*  0.5 state.vel 0.5 f* f+ f*  params.level f*  2.0 f* | x |
   x state.dc-x f-  state.dc-y 0.9987 f*  f+ | o |

@@ -24,6 +24,7 @@ ustruct: MoogLadder
   f64 t0  f64 t1  f64 t2  f64 t3     ( tanh of each, cached for the next stage )
   f64 y-prev                         ( last s3, for the half-sample feedback )
   f64 fb                             ( averaged feedback )
+  f64 in                             ( this substep's stage input, x - k fb )
 ;
 
 :: MOOG-THERMAL 1.6025641025641026 ;
@@ -42,7 +43,9 @@ dsp: moog-coeffs | cutoff osr res -- g k |
 
 ( m x g k -- y : one substep. )
 dsp: moog-step | m:MoogLadder x g k -- y |
-  x k m.fb f* f-  MOOG-THERMAL f* tanh-fast | u |
+  x k m.fb f* f- | v |
+  v -> m.in
+  v MOOG-THERMAL f* tanh-fast | u |
   m.s0  u m.t0 f- g f* f+ | s0 |
   s0 MOOG-THERMAL f* tanh-fast | t0 |
   m.s1  t0 m.t1 f- g f* f+ | s1 |
@@ -56,4 +59,17 @@ dsp: moog-step | m:MoogLadder x g k -- y |
   s3 m.y-prev f+ 0.5 f* -> m.fb
   s3 -> m.y-prev
   s3
+;
+
+( m a b c d e -- y : pole mixing after a moog-step, the Xpander / Messenger
+  trick - one ladder, several responses from its taps:
+
+    y = a in + b s0 + c s1 + d s2 + e s3
+
+    LP24  0  0  0  0  1        LP12  0  0  1  0  0
+    BP12  0  2 -2  0  0        HP24  1 -4  6 -4  1
+
+  The resonance loop still closes around s3, so every mode resonates. )
+dsp: moog-mix | m:MoogLadder a b c d e -- y |
+  m.in a f*  m.s0 b f* f+  m.s1 c f* f+  m.s2 d f* f+  m.s3 e f* f+
 ;

@@ -17,7 +17,7 @@ include "../lib/manifest.fy"
   "cream-block-prepare" block-prepare!
   CreamState.size  state-size!
   CreamParams.size params-size!
-  520.0 panel-w!
+  600.0 panel-w!
 
   ( module label id offset default switch / min max default curve knob )
   "OSC 1" "RANGE" "cr-range1" CreamParams.range1 2 switch
@@ -50,22 +50,32 @@ include "../lib/manifest.fy"
   "MIXER" "NOISE" "cr-noise" CreamParams.noise 0.0 1.0 0.0  curve-pow knob
   "MIXER" "DRIVE" "cr-drive" CreamParams.drive 0.0 1.0 0.45 curve-lin knob
 
-  "FILTER" "CUTOFF" "cr-cutoff"   CreamParams.cutoff   20.0 18000.0 380.0 curve-exp knob
+  "FILTER" "CUTOFF" "cr-cutoff"   CreamParams.cutoff   20.0 18000.0 700.0 curve-exp knob
   "FILTER" "EMPH"   "cr-emphasis" CreamParams.emphasis 0.0 1.1 0.35 curve-lin knob
   "FILTER" "AMOUNT" "cr-contour"  CreamParams.contour  0.0 6.0 3.0 curve-lin knob
   "FILTER" "KBD"    "cr-kbd"      CreamParams.kbd      0.0 1.0 0.33 curve-lin knob
+  "FILTER" "MODE"   "cr-flt-mode" CreamParams.flt-mode 0 switch
+    "LP24" 0.0 opt  "LP12" 1.0 opt  "BP12" 2.0 opt  "HP24" 3.0 opt
+  "FILTER" "BASS"   "cr-bass-comp" CreamParams.bass-comp 1 switch
+    "OFF" 0.0 opt  "ON" 1.0 opt
 
-  "F CONTOUR" "ATK" "cr-f-atk" CreamParams.f-atk 0.001 4.0 0.003 curve-exp knob
-  "F CONTOUR" "DEC" "cr-f-dec" CreamParams.f-dec 0.005 6.0 0.35 curve-exp knob
+  "F CONTOUR" "ATK" "cr-f-atk" CreamParams.f-atk 0.001 10.0 0.003 curve-exp knob
+  "F CONTOUR" "DEC" "cr-f-dec" CreamParams.f-dec 0.005 10.0 0.35 curve-exp knob
   "F CONTOUR" "SUS" "cr-f-sus" CreamParams.f-sus 0.0 1.0 0.25 curve-lin knob
-  "F CONTOUR" "REL" "cr-f-rel" CreamParams.f-rel 0.005 6.0 0.25 curve-exp knob
+  "F CONTOUR" "REL" "cr-f-rel" CreamParams.f-rel 0.005 10.0 0.25 curve-exp knob
 
-  "L CONTOUR" "ATK" "cr-a-atk" CreamParams.a-atk 0.001 4.0 0.002 curve-exp knob
-  "L CONTOUR" "DEC" "cr-a-dec" CreamParams.a-dec 0.005 6.0 0.6 curve-exp knob
+  "L CONTOUR" "ATK" "cr-a-atk" CreamParams.a-atk 0.001 10.0 0.002 curve-exp knob
+  "L CONTOUR" "DEC" "cr-a-dec" CreamParams.a-dec 0.005 10.0 0.6 curve-exp knob
   "L CONTOUR" "SUS" "cr-a-sus" CreamParams.a-sus 0.0 1.0 0.8 curve-lin knob
-  "L CONTOUR" "REL" "cr-a-rel" CreamParams.a-rel 0.005 6.0 0.15 curve-exp knob
+  "L CONTOUR" "REL" "cr-a-rel" CreamParams.a-rel 0.005 10.0 0.15 curve-exp knob
 
-  "OUT" "GLIDE" "cr-glide" CreamParams.glide   0.0 2.0 0.0 curve-pow knob
+  "LFO" "RATE"  "cr-lfo-rate"  CreamParams.lfo-rate  0.1 20.0 5.0 curve-exp knob
+  "LFO" "WAVE"  "cr-lfo-wave"  CreamParams.lfo-wave  0 switch
+    "TRI" 0.0 opt  "SQR" 1.0 opt  "SAW" 2.0 opt  "S&H" 3.0 opt
+  "LFO" "PITCH" "cr-lfo-pitch" CreamParams.lfo-pitch 0.0 12.0 0.0 curve-pow knob
+  "LFO" "CUT"   "cr-lfo-cut"   CreamParams.lfo-cut   0.0 4.0 0.0 curve-pow knob
+
+  "OUT" "GLIDE" "cr-glide" CreamParams.glide   0.0 5.0 0.0 curve-pow knob
   "OUT" "AGE"   "cr-age"   CreamParams.age-amt 0.0 1.0 0.4 curve-lin knob
   "OUT" "LEVEL" "cr-level" CreamParams.level   0.0 1.0 0.6 curve-pow knob
 
@@ -76,6 +86,7 @@ include "../lib/manifest.fy"
   "FILTER" 1 strip
   "F CONTOUR" 1 strip
   "L CONTOUR" 1 strip
+  "LFO" 1 strip
   "OUT" 1 strip
 
   "CONTOURS" "F CONTOUR,L CONTOUR" adsr-display
@@ -86,6 +97,7 @@ include "../lib/manifest.fy"
     1.0 cell  "FILTER" 1.0 item
     1.0 cell  "F CONTOUR" 1.0 item
     1.0 cell  "L CONTOUR" 1.0 item
+    1.0 cell  "LFO" 1.0 item
     1.0 cell  "OUT" 1.0 item  "CONTOURS" 1.0 item
 
   machine-desc
