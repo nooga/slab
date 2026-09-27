@@ -730,25 +730,23 @@ test "descriptor walker reads the MS-20 manifest from fy" {
     try testing.expectEqualStrings("SM-24 Mono", d.nameSlice());
     try testing.expectEqual(Mode.voice_sample, d.mode);
     try testing.expectEqualStrings("k-ms20-voice-sample", d.renderWord());
-    try testing.expectEqualStrings("ms20-voice-prepare", d.prepareWord().?);
+    try testing.expect(d.prepareWord() == null);
     try testing.expectEqualStrings("ms20-block-prepare", d.blockPrepareWord().?);
-    try testing.expectEqual(@as(usize, 96), d.state_size);
-    try testing.expectEqual(@as(usize, 304), d.params_size);
+    try testing.expectEqual(@as(usize, 392), d.state_size);
+    try testing.expectEqual(@as(usize, 496), d.params_size);
     try testing.expectEqual(@as(f32, 420.0), d.panel_w);
-    try testing.expectEqual(@as(usize, 30), d.control_count);
+    try testing.expectEqual(@as(usize, 34), d.control_count);
     try testing.expectEqual(@as(usize, 10), d.strip_count);
     try testing.expectEqual(@as(usize, 1), d.display_count);
     try testing.expectEqual(@as(usize, 2), d.row_count);
     try testing.expectEqual(@as(usize, 7), d.rows[0].cell_count);
-    try testing.expectEqual(@as(usize, 1), d.const_count);
-    try testing.expectEqual(@as(usize, 64), d.consts[0].offset);
-    try testing.expectApproxEqAbs(@as(f64, 0.0035), d.consts[0].value, 1e-12);
+    try testing.expectEqual(@as(usize, 0), d.const_count);
 
     // First control: VCO1 WAVE switch at the introspected vco1-wave offset.
     const c0 = &d.controls[0];
     try testing.expectEqualStrings("VCO1", c0.moduleSlice());
     try testing.expectEqual(ParamKind.switch_sel, c0.kind);
-    try testing.expectEqual(@as(usize, 216), c0.offset); // Ms20VoiceParams.vco1-wave
+    try testing.expectEqual(@as(usize, 184), c0.offset); // Ms20VoiceParams.vco1-wave
     try testing.expectEqual(@as(usize, 3), c0.option_count);
     try testing.expectApproxEqAbs(@as(f64, 1.0), c0.option_values[1], 1e-12);
 
@@ -758,7 +756,7 @@ test "descriptor walker reads the MS-20 manifest from fy" {
         if (std.mem.eql(u8, ctl.idSlice(), "cutoff")) {
             try testing.expectEqual(@as(usize, 32), ctl.offset);
             try testing.expectEqual(ParamCurve.exp, ctl.curve);
-            try testing.expectApproxEqAbs(@as(f64, 180.0), ctl.default, 1e-12);
+            try testing.expectApproxEqAbs(@as(f64, 700.0), ctl.default, 1e-12);
             found = true;
         }
     }

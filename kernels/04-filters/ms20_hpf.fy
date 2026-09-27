@@ -12,7 +12,11 @@
   per sample (state lp,bp):
     lp' = lp + f*bp
     hp  = in - lp' - q*bp
-    bp' = clip(bp + f*hp)        ( clip bounds self-oscillation ) )
+    bp' = clip(bp + f*hp)        ( clip bounds self-oscillation )
+
+  The clip is 2.5 tanh[x/2.5]: unity slope, headroom over the ~0.6 the
+  mixer delivers.  Bounded at 1 it squashed the ringing of any real
+  input and PEAK did nothing. )
 
 include "../02-shapers/rational.fy"   ( tanh-rational )
 
@@ -33,7 +37,7 @@ dsp: k-hpf
   v0 lp2 f- q bp f* f-
   | hp |
   bp f hp f* f+
-  tanh-rational
+  0.4 f* tanh-rational 2.5 f*
   | bp2 |
   lp2 -> st.lp
   bp2 -> st.bp

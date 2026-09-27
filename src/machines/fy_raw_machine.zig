@@ -2214,20 +2214,30 @@ fn fyFieldOffset(inst: *FyRawMachine, name: []const u8) !usize {
     return @intCast(@divExact(v, Fy.makeInt(1))); // untag (ints are n << TAG_BITS)
 }
 
-test "MS-20 block-prepare derives the OTA filter coefficients in fy" {
+test "MS-20 block-prepare derives the LPF, HPF and envelope coefficients in fy" {
     const inst = try FyRawMachine.create(testing.allocator, "machines/ms20/ms20.fy");
     defer inst.machineInterface().deinit.?(inst, testing.allocator);
     inst.syncRawParams(48_000, 120.0);
 
     const res = inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.resonance"));
     const drive = inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.drive"));
+    const hres = inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.hpf-resonance"));
     // Defaults land raw: env amount in octaves, resonance and drive knobs.
     try testing.expectApproxEqAbs(@as(f64, 4.8), inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.env-amount")), 1e-6); // knobs store f32 positions
-    // Loop gain 1.2 * RES (self-oscillation at 2), drive passes through,
-    // and the LPF runs at 4x the sample rate.
-    try testing.expectApproxEqAbs(1.2 * res, inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.ota-k")), 1e-12);
-    try testing.expectApproxEqAbs(drive, inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.ota-drive")), 1e-12);
-    try testing.expectApproxEqAbs(1.0 / (4.0 * 48_000.0), inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.os-inv")), 1e-15);
+    // LPF profile, HOT mode: drive 2.1 x DRV, feedback 10.125 x 0.8 RES,
+    // damping 0.62 / (1 + 5.2 x 0.8 RES); the LPF runs at 4x.
+    const pr = try fyFieldOffset(inst, "Ms20VoiceParams.lpf-pr");
+    try testing.expectApproxEqAbs(2.1 * drive, inst.readParamF64(pr + try fyFieldOffset(inst, "Ms20LpfProfile.drive")), 1e-12);
+    try testing.expectApproxEqAbs(10.125 * 0.8 * res, inst.readParamF64(pr + try fyFieldOffset(inst, "Ms20LpfProfile.fb-amt")), 1e-12);
+    try testing.expectApproxEqAbs(@max(0.035, 0.62 / (1.0 + 5.2 * 0.8 * res)), inst.readParamF64(pr + try fyFieldOffset(inst, "Ms20LpfProfile.damping")), 1e-12);
+    try testing.expectApproxEqAbs(4.0 * 48_000.0, inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.osr")), 1e-9);
+    // HPF damping 1.4 (1 - RES/2)^2.
+    const u = @max(0.0, 1.0 - 0.5 * hres);
+    try testing.expectApproxEqAbs(1.4 * u * u, inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.hpf-q")), 1e-12);
+    // Envelope sustain passes through to the coefficient block.
+    const sus = inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.amp-sustain"));
+    const co = try fyFieldOffset(inst, "Ms20VoiceParams.amp-co");
+    try testing.expectApproxEqAbs(sus, inst.readParamF64(co + try fyFieldOffset(inst, "EnvRcCoefs.sus")), 1e-12);
 }
 
 test "raw DSP2 delay machine: host buffer injection and echo" {

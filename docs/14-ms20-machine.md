@@ -10,66 +10,80 @@ Scope call: **no full semi-modular patch bay.** We implement the MS-20's
 *hardwired* routing (MG/EG→pitch, MG→cutoff, EG→cutoff/VCA, PWM, ring) with
 fixed intensity controls. A general routing matrix can come later.
 
-## LPF v2: OTA cascade in fy (2026-09-26)
+## LPF v3: the June probe's driven SVF, in fy (2026-09-27)
 
-The low-pass filter is now `kernels/04-filters/ms20_ota.fy`, written in fy.
-The fused Zig primitives (`fms20-svf`, `fms20-lpf4`) are deleted from the
-fy compiler, which removes the main reason the MS-20 couldn't be
-livecoded. It follows the mk2 board: OTA → op-amp → OTA → op-amp, with the
-resonance returned through an op-amp whose feedback holds a diode clipper.
+The reference is `scratch/ms20_saw_filter_sweeps_f-hot.wav`, rendered by
+`tools/audio_probe/render_ms20_sweeps.py` (profile `f-hot`; its sibling
+`g-wet` drove the June machine). The OTA cascade that replaced it on
+2026-09-26 was "correct" on paper (peak on the cutoff, no bass cost, clean
+self-oscillation). In use it was dark, polite and samey. Swept with the
+same stimulus, its resonance was invisible until the top setting and thin
+there, while the reference keeps a dense harmonic fan and a broad,
+snarling ridge from res 0.45 up. So the probe's topology is back, as
+`kernels/04-filters/ms20_lpf.fy`:
 
 ```
-e   = drive·x + fb
-y1 += g·tanh(e − y1)            OTA1 → op-amp
-y2 += g·tanh(y1 − y2)           OTA2 → op-amp      (output)
-fb  = k·diode(y1 − y2)          resonance op-amp, diode-clipped
+fbdc   += cdc·(ic2 − fbdc)                    feedback DC tracker
+fb      = tanh(fb-amt·(ic2 − fbdc))           lowpass back, clipped: near-square
+driven  = tanh(drive·x − fb)                  hot input stage
+TPT SVF (g, damping) → hp bp lp; both integrators leak
+colored = tanh(out-clip·(lp + 0.2·bp))        a fifth of the bandpass: bark
+out     = colored − DC
 ```
 
-**Linear check.** The loop gain is `k·G·(1−G)`, with `G = 1/(1+s/ωc)`.
+- The integrators stay linear. All the grit is in the input stage and
+  the output shaper.
+- The SVF's own damping makes the peak.
+- The clipped negative feedback thickens the ridge and costs some bass.
+  That's the June sound, and the old commit's objection to it.
 
-- At ω = ωc it equals exactly `k/2`, so the peak sits on the cutoff and
-  self-oscillation starts at k = 2.
-- At DC it is 0, so resonance costs no bass.
-- The diodes clip the resonance signal, not the audio path, and hold the
-  oscillation at a stable level.
+- **MODE:** HOT is `f-hot` (drive 2.10, fb 4.5·2.25, out 1.85, damping
+  0.62/(1 + 5.2 r)). WET is `g-wet` (1.90, 5.4·2.70, 2.10, 0.58/(1 + 6.2 r)).
+- **Knobs:** DRV scales the mode's drive (0.25–4). PEAK sets
+  `r = 0.8·RES`, so the probe's range (0.45–1.38) is most of the knob.
+  From r ≈ 1 the loop turns partly chaotic, as the reference does (−5 to
+  −15 dB non-harmonic at a steady cutoff): the snarl lives at the top of
+  PEAK.
+- **Rate:** 4× with the input held, then `dec4`.
+- **Parity:** a C3 saw at 0.62, cutoff 700 Hz, matches the Python probe
+  within about 1 dB per harmonic for H1–H12 (r 0.45 and 1.38).
 
-**Running it.**
+## Voice v3 (2026-09-27)
 
-- The step runs 4× per sample as four `call:` stages (`v-ota-sub`). The
-  input is held across the substeps and the output is their mean.
-- `g = 1 − e^(−2π·fc/fs_os)`.
-- RES 0..2 maps to k = 1.2·RES, so oscillation starts at about 83% of the
-  knob.
+What was wrong, from listening, and the fix:
 
-**What it fixed.** Measured with the bench, docs/13:
-
-| | old `fms20-svf` (g-wet) | new |
+| complaint | cause | fix |
 |---|---|---|
-| resonance | fed the *lowpass* back negatively | band feedback through diodes |
-| resonant pitch at RES max, cutoff 1 kHz | 2.65 kHz (moved up by √(1+k)) | 0.89–0.98 kHz |
-| self-oscillation | never (damping clamped, Q ≈ 14) | from RES ≈ 1.6, stable at −15 dB RMS |
-| bass (C2 saw, cutoff 300 Hz), RES 0 → 2 | −4.0 → −10.4 dB | −8.9 → −5.3 dB |
-| resonance knob sweep | 40% dead, uneven 0.55 | 0% dead, uneven 0.11 |
-| DRV | dead (drive hardcoded 1.9) | the OTA input drive |
+| "overdriven, unpleasantly"; low notes clash | mixer `tanh(1.3·sum)` clipped two detuned saws into IMD before the filter | clean mixer, 0.62 per unit level; the LPF input stage is the only drive |
+| zero-crossing clicks | note-on reset both VCO phases and restarted the age-based ADSR from 0; an early release snapped to the sustain level | free-running VCOs; RC envelopes (`env_rc.fy`) that keep their level, retrigger from it, release from it |
+| envelopes weird | `adsr-cap` segments were functions of note age | RC: attack chases 1.2 until it crosses 1, decay/release cover 99% in their time |
+| HPF not resonant | its bandpass state was clipped at ±1, under the input level | clip `2.5·tanh(x/2.5)`; damping `1.4·(1 − RES/2)²`: flat at 0, Q 3 at 1, Q 18 at 1.6 |
+| octave ranges borked | the bass presets sat both VCOs at 16', so a bass line at A1 played 27.5 Hz | presets rebuilt with the lowest VCO at 8' |
+| every preset the same | the dark filter, plus presets converted from the old one | 16 presets voiced for v3 across both modes, HPF and MG; centroids 250 Hz–4 kHz; each at −16 dBFS RMS (bench notes case) |
 
-**Voice changes that went with it.**
-
-- Cutoff modulation sums in octaves: `cutoff·2^(env·env-amount +
-  mg·mg-cutoff)`.
-- `env-amount` (0..8 oct) replaces the absolute `env-peak` Hz, and
-  `mg-cutoff` is now 0..4 oct.
-- Ranges: cutoff 20 Hz–18 kHz, HPF 20 Hz–8 kHz.
-- PW runs square → thin (0.5–0.95) instead of mirroring around 50%.
-- A 20 Hz DC blocker sits after the VCA. The old SVF blocked DC
-  internally.
-- The 16 presets were converted to the new units, and their resonance was
-  scaled by 0.85 so the old high-Q settings land at or just below
-  oscillation.
-
-Funk Overload's saturating SVF moved to fy in the same change
-(`tpt-svf-lp-sat-step` in `tpt_svf.fy`), bit-exact with the primitive it
-replaces. `svf-g`, `svf-damping`, and `svf-dc-coeff` now live in
-`coeffs.fy`.
+- Legato notes (`ctx.legato`) move the pitch without retriggering.
+- Ranges from the MS-20 spec (Korg's MS-20 mini sheet reproduces the
+  original):
+  - VCO2 PITCH is ±12 semitones; it was −9…+31 cents.
+  - VCO2 SCALE is 16'–2'; VCO1 stays 32'–4'.
+  - MG runs 0.1–20 Hz.
+  - HPF runs 20 Hz–15 kHz.
+  - Envelope times go up to 10 s.
+  - The LPF keeps 20 Hz–18 kHz, wider than the real 50 Hz–15 kHz.
+- **PORTA** (0–10 s) glides every note in octaves, as the MS-20's does.
+  The first note starts on pitch.
+- **VCO2 RING** is the MS-20's: an XOR of VCO1's pulse (at PW) and VCO2's
+  square, i.e. minus their product for ±1 pulses. It keeps both pitches
+  and follows PW; a fifth gives the sum and difference series
+  (65, 196, 327 Hz … for C3).
+- **FLT ENV DLY** (EG1's DELAY, 0–10 s) and **AMP ENV HOLD** (EG2's HOLD,
+  0–20 s) are a timed gate in front of the RC stages (`env_rc.fy`). A
+  key-down reaches the stages after the delay, and a key-up after the
+  hold. Measured: HOLD 0.5 s moves the −60 dB release point from 0.195 s
+  to 0.70 s.
+- The default PEAK is 0.7, below the chaotic zone, so the init patch
+  tracks C2.
+- The VCA makeup is ×1.6.
 
 ## Reference architecture
 
