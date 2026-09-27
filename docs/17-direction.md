@@ -579,12 +579,15 @@ segments; the SSM pair (two fixed-Q 2-pole stages, 1.22x apart) follows
 the octave register in whole octaves, FILTER being the card's latch;
 8-bit linear attack/damping times the volume. MAME's stream uses the
 first filter stage only; this runs both. Eight voices; the zone list's
-edits and chokes work as on the sampler. `.VC` files load as voice RAM
-(data at 0x1580: 0x1580 + 16,384 = the 21,888-byte file, and cmidisk
-reads there); tools/library/cmi.py unpacks IMD/raw disk images (QDOS,
-directory at sector 3) into lib:cmi/ with a preset per voice. The loop
-and filter offsets (0x1332/0x1333/0x133B, 0x141C) are the nattvard
-notes', not yet checked against a real disk. Still open for the CMI machine:
+edits and chokes work as on the sampler. `.VC` files load as voice RAM:
+data at 0x1500 (checked against 843 real voices; disk tools read 0x1580
+because each file follows a 128-byte header sector on disk). The loop at
+0x1332/0x1333/0x133B checks out; the filter byte at 0x141C reads as an
+amount of filtering (latch = 255 - 2 x byte, inferred). The file has no
+rate: tools/library/cmi.py measures tonal voices and sets ROOT, and
+imports disk images, `.VC` files and WAV RAM dumps into lib:cmi with a
+catalog and a preset per voice (tools/library/README.md). Attack and
+damping in the header aren't found yet. Still open for the CMI machine:
 the Series II additive page, the per-voice filter
 curve from `cmi01a.cpp`. Still open for D3: per-pad tune/decay and outputs, round-robin, the
 SSM filter channels.

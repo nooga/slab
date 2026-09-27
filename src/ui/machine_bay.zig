@@ -39,22 +39,22 @@ pub const Result = struct {
 
     // Trailing "+" — add a brand-new device to the chain.
     add_machine: ?usize = null, // registry index to add
-    add_preset: ?u8 = null, // preset (by sorted index) to apply after add
+    add_preset: ?u16 = null, // preset (by sorted index) to apply after add
 
     // Name tile — swap an existing device for another machine.
     replace_ref: ?DeviceRef = null,
     replace_machine: ?usize = null, // registry index to swap in
-    replace_preset: ?u8 = null, // preset to apply after the swap
+    replace_preset: ?u16 = null, // preset to apply after the swap
 
     // Delete confirmed via the × popup.
     remove_ref: ?DeviceRef = null,
 
     // Preset actions, scoped to a device.
     preset_apply_ref: ?DeviceRef = null,
-    preset_apply: ?u8 = null,
+    preset_apply: ?u16 = null,
     preset_save_ref: ?DeviceRef = null, // open name entry to save a new preset
     preset_rename_ref: ?DeviceRef = null,
-    preset_rename_index: ?u8 = null, // current preset to rename
+    preset_rename_index: ?u16 = null, // current preset to rename
     preset_anchor: c.rl.Rectangle = .{ .x = 0, .y = 0, .width = 0, .height = 0 }, // where to float the name-entry field
 
     // Drag-reorder: move effect `from` to slot `to` (effects only).
@@ -425,7 +425,7 @@ fn titleDisplay(ui: *Ui, r: Rect, panel_scope: ui_core.Id, preset: []const u8, h
 
 const AddPick = struct {
     reg_idx: usize,
-    preset: ?u8 = null,
+    preset: ?u16 = null,
 };
 
 // Scan every registry machine's preset directory into add_scan_cache, so the
@@ -470,7 +470,16 @@ fn machinePickerMenu(menu_key: u64, reg: *const Registry) ?AddPick {
                 var ditems: [presets_mod.MAX_PRESETS]menu.Item = undefined;
                 const dn = presetDirItems(list, dir_id - DIR_ID_BASE, &ditems);
                 if (menu.subPick(menu_key, 2, ditems[0..dn])) |sel| {
-                    return .{ .reg_idx = @intCast(mach_id), .preset = @intCast(sel) };
+                    if (sel < DIR2_ID_BASE) return .{ .reg_idx = @intCast(mach_id), .preset = @intCast(sel) };
+                }
+                if (menu.subOpen(menu_key, 2)) |sub_id| {
+                    if (sub_id >= DIR2_ID_BASE) {
+                        var sitems: [presets_mod.MAX_PRESETS]menu.Item = undefined;
+                        const sn = presetSubDirItems(list, dir_id - DIR_ID_BASE, sub_id - DIR2_ID_BASE, &sitems);
+                        if (menu.subPick(menu_key, 3, sitems[0..sn])) |sel| {
+                            return .{ .reg_idx = @intCast(mach_id), .preset = @intCast(sel) };
+                        }
+                    }
                 }
             }
         }
@@ -494,15 +503,19 @@ fn deleteConfirmMenu(key: u64) bool {
 }
 
 const PresetAction = struct {
-    apply: ?u8 = null,
+    apply: ?u16 = null,
     save: bool = false,
-    rename: ?u8 = null, // index of the preset to rename (the current one)
+    rename: ?u16 = null, // index of the preset to rename (the current one)
 };
 
 const DIR_ID_BASE: u32 = 10000;
+// Second-level bank rows (a collection's disks): DIR2_ID_BASE + their order
+// inside the open bank.
+const DIR2_ID_BASE: u32 = 20000;
 // Backing for bank-submenu row labels: one slot per distinct preset
 // subdirectory. Capped — banks beyond this just don't get a submenu row.
-var dir_label_bufs: [16][presets_mod.MAX_NAME + 1:0]u8 = undefined;
+var dir_label_bufs: [64][presets_mod.MAX_NAME + 1:0]u8 = undefined;
+var dir2_label_bufs: [128][presets_mod.MAX_NAME + 1:0]u8 = undefined;
 // Persistent backing for the open preset menu's item labels (see
 // presetMenu — the menu draws deferred, so a stack list would dangle).
 var preset_menu_list: presets_mod.List = .{};
@@ -540,23 +553,84 @@ fn presetTopItems(list: *const presets_mod.List, items: []menu.Item) usize {
 // Rows of the ord-th distinct subdirectory: id = flat list index, label =
 // the name after the slash.
 fn presetDirItems(list: *const presets_mod.List, dir_ord: usize, items: []menu.Item) usize {
+    // leaves first, then one submenu row per distinct second-level folder
+    var n: usize = 0;
+    var it = BankIter{ .list = list, .dir_ord = dir_ord };
+    while (it.next()) |e| {
+        if (std.mem.indexOfScalar(u8, e.rest, '/') != null) continue;
+        if (n >= items.len) return n;
+        items[n] = .{ .label = e.rest, .id = @intCast(e.index) };
+        n += 1;
+    }
+    var ord: usize = 0;
+    var last: []const u8 = "";
+    it = BankIter{ .list = list, .dir_ord = dir_ord };
+    while (it.next()) |e| {
+        const sl = std.mem.indexOfScalar(u8, e.rest, '/') orelse continue;
+        const sub = e.rest[0..sl];
+        if (std.mem.eql(u8, sub, last)) continue;
+        last = sub;
+        if (ord < dir2_label_bufs.len and n < items.len) {
+            const buf = &dir2_label_bufs[ord];
+            const l = @min(sub.len, presets_mod.MAX_NAME);
+            @memcpy(buf[0..l], sub[0..l]);
+            items[n] = .{ .label = buf[0..l], .id = @intCast(DIR2_ID_BASE + ord), .submenu = true };
+            n += 1;
+        }
+        ord += 1;
+    }
+    return n;
+}
+
+// Rows of the sub_ord-th second-level folder inside bank dir_ord.
+fn presetSubDirItems(list: *const presets_mod.List, dir_ord: usize, sub_ord: usize, items: []menu.Item) usize {
     var n: usize = 0;
     var ord: usize = 0;
     var last: []const u8 = "";
-    for (list.names[0..list.count], 0..) |*nm, i| {
-        const sl = std.mem.indexOfScalar(u8, nm.slice(), '/') orelse continue;
-        const dirn = nm.slice()[0..sl];
-        if (!std.mem.eql(u8, dirn, last)) {
-            last = dirn;
+    var it = BankIter{ .list = list, .dir_ord = dir_ord };
+    while (it.next()) |e| {
+        const sl = std.mem.indexOfScalar(u8, e.rest, '/') orelse continue;
+        const sub = e.rest[0..sl];
+        if (!std.mem.eql(u8, sub, last)) {
+            last = sub;
             ord += 1;
         }
-        if (ord - 1 != dir_ord) continue;
+        if (ord - 1 != sub_ord) continue;
         if (n >= items.len) return n;
-        items[n] = .{ .label = nm.slice()[sl + 1 ..], .id = @intCast(i) };
+        items[n] = .{ .label = e.rest[sl + 1 ..], .id = @intCast(e.index) };
         n += 1;
     }
     return n;
 }
+
+// The entries of the dir_ord-th distinct top-level bank, in list order:
+// the flat index and the name after the bank's slash.
+const BankIter = struct {
+    list: *const presets_mod.List,
+    dir_ord: usize,
+    i: usize = 0,
+    ord: usize = 0,
+    last: []const u8 = "",
+
+    const Entry = struct { index: usize, rest: []const u8 };
+
+    fn next(self: *BankIter) ?Entry {
+        while (self.i < self.list.count) {
+            const idx = self.i;
+            self.i += 1;
+            const nm = self.list.names[idx].slice();
+            const sl = std.mem.indexOfScalar(u8, nm, '/') orelse continue;
+            const dirn = nm[0..sl];
+            if (!std.mem.eql(u8, dirn, self.last)) {
+                self.last = dirn;
+                self.ord += 1;
+            }
+            if (self.ord - 1 != self.dir_ord) continue;
+            return .{ .index = idx, .rest = nm[sl + 1 ..] };
+        }
+        return null;
+    }
+};
 
 // Whether a machine exposes a preset block (any preset facility at all).
 fn hasPresets(mach: *const Machine) bool {
@@ -634,7 +708,16 @@ fn presetMenu(preset_rect: Rect, clicked: bool, mach: *const Machine) PresetActi
             var ditems: [presets_mod.MAX_PRESETS]menu.Item = undefined;
             const dn = presetDirItems(&preset_menu_list, dir_id - DIR_ID_BASE, &ditems);
             if (menu.subPick(key, 1, ditems[0..dn])) |id| {
-                return .{ .apply = @intCast(id) };
+                if (id < DIR2_ID_BASE) return .{ .apply = @intCast(id) };
+            }
+            if (menu.subOpen(key, 1)) |sub_id| {
+                if (sub_id >= DIR2_ID_BASE) {
+                    var sitems: [presets_mod.MAX_PRESETS]menu.Item = undefined;
+                    const sn = presetSubDirItems(&preset_menu_list, dir_id - DIR_ID_BASE, sub_id - DIR2_ID_BASE, &sitems);
+                    if (menu.subPick(key, 2, sitems[0..sn])) |id| {
+                        return .{ .apply = @intCast(id) };
+                    }
+                }
             }
         }
     }

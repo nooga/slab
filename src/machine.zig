@@ -154,19 +154,21 @@ pub const DrawPanelFn = *const fn (
 pub const ResetFn = *const fn (state: *anyopaque) void;
 pub const DeinitFn = *const fn (state: *anyopaque, alloc: std.mem.Allocator) void;
 pub const SyncParamsFn = *const fn (dst: *anyopaque, src: *anyopaque) void;
-pub const PresetCountFn = *const fn (state: *anyopaque) u8;
-pub const PresetNameFn = *const fn (state: *anyopaque, index: u8) [*:0]const u8;
-pub const ApplyPresetFn = *const fn (state: *anyopaque, index: u8) void;
+/// Preset indices are u16: a machine can carry a disk library's worth.
+pub const PresetIndex = u16;
+pub const PresetCountFn = *const fn (state: *anyopaque) PresetIndex;
+pub const PresetNameFn = *const fn (state: *anyopaque, index: PresetIndex) [*:0]const u8;
+pub const ApplyPresetFn = *const fn (state: *anyopaque, index: PresetIndex) void;
 /// Save the machine's current control values as a new preset (the machine
 /// picks the name). Returns the new preset's index, or null on failure.
-pub const SavePresetFn = *const fn (state: *anyopaque) ?u8;
+pub const SavePresetFn = *const fn (state: *anyopaque) ?PresetIndex;
 /// Save the current control values under a host-supplied name. The machine
 /// sanitizes the name and overwrites any same-named preset. Returns the new
 /// sorted index, or null on failure (empty/invalid name, IO error).
-pub const SavePresetNamedFn = *const fn (state: *anyopaque, name: [*:0]const u8) ?u8;
+pub const SavePresetNamedFn = *const fn (state: *anyopaque, name: [*:0]const u8) ?PresetIndex;
 /// Rename preset `index` to `new_name` on disk and rescan. Returns the
 /// renamed preset's new sorted index, or null on failure.
-pub const RenamePresetFn = *const fn (state: *anyopaque, index: u8, new_name: [*:0]const u8) ?u8;
+pub const RenamePresetFn = *const fn (state: *anyopaque, index: PresetIndex, new_name: [*:0]const u8) ?PresetIndex;
 /// Index of the last applied/saved preset, or -1 — drives the
 /// "name -> preset" titlebar label.
 pub const CurrentPresetFn = *const fn (state: *anyopaque) i32;

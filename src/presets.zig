@@ -38,11 +38,11 @@ const Dirent = extern struct {
 };
 
 // Per-machine preset ceiling. Bounded (codebase idiom) rather than heap-backed;
-// 256 is the natural cap since the machine vtable indexes presets with a u8
-// (presetCount/presetName), and `count` clamps to 255. Many presets are meant
+// The vtable indexes presets with a u16 (machine.PresetIndex); 2048 holds a
+// whole CMI disk library in banks. Many presets are meant
 // to live in bank subdirectories (presets/<bank>/<name>) so the picker groups
 // them into submenus instead of one flat list — see machine_bay presetTopItems.
-pub const MAX_PRESETS = 256;
+pub const MAX_PRESETS = 2048;
 pub const MAX_NAME = 63;
 pub const MAX_FILE = 8192;
 
@@ -91,7 +91,7 @@ pub fn dirFromMachinePath(buf: []u8, machine_path: []const u8) ?[]const u8 {
 
 const DT_DIR: u8 = 4;
 
-fn scanInto(list: *List, dir_path: []const u8, prefix: []const u8, recurse: bool) void {
+fn scanInto(list: *List, dir_path: []const u8, prefix: []const u8, depth: u8) void {
     var zbuf: [512:0]u8 = undefined;
     if (dir_path.len >= zbuf.len) return;
     @memcpy(zbuf[0..dir_path.len], dir_path);
@@ -102,11 +102,17 @@ fn scanInto(list: *List, dir_path: []const u8, prefix: []const u8, recurse: bool
         const name_full = entry.d_name[0..entry.d_namlen];
         if (name_full.len == 0 or name_full[0] == '.') continue;
         if (entry.d_type == DT_DIR) {
-            // One level of grouping subdirectories: "dir/name".
-            if (!recurse) continue;
+            // Two levels of grouping subdirectories: "bank/name" and
+            // "bank/sub/name" (a collection's disks).
+            if (depth >= 2) continue;
             var sub_buf: [512]u8 = undefined;
             const sub = std.fmt.bufPrint(&sub_buf, "{s}/{s}", .{ dir_path, name_full }) catch continue;
-            scanInto(list, sub, name_full, false);
+            var pre_buf: [128]u8 = undefined;
+            const pre = if (prefix.len > 0)
+                std.fmt.bufPrint(&pre_buf, "{s}/{s}", .{ prefix, name_full }) catch continue
+            else
+                name_full;
+            scanInto(list, sub, pre, depth + 1);
             continue;
         }
         if (!std.mem.endsWith(u8, name_full, ".preset")) continue;
@@ -126,11 +132,11 @@ fn scanInto(list: *List, dir_path: []const u8, prefix: []const u8, recurse: bool
     }
 }
 
-/// Scan a preset directory (plus one level of subdirectories — entries
-/// named "dir/name") into a sorted List. Missing directory = empty.
+/// Scan a preset directory (plus two levels of subdirectories — entries
+/// named "dir/name" and "dir/sub/name") into a sorted List. Missing directory = empty.
 pub fn scan(dir_path: []const u8) List {
     var list = List{};
-    scanInto(&list, dir_path, "", true);
+    scanInto(&list, dir_path, "", 0);
     // Insertion sort — stable, allocation-free, and tiny n. Sorted order is
     // the index contract between the picker menus and apply-by-index.
     var i: usize = 1;

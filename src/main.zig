@@ -146,7 +146,7 @@ const RenameState = struct {
     device_track: ?*track_mod.Track = null,
     device_effect: ?usize = null,
     /// For preset_rename: the preset index being renamed.
-    preset_index: u8 = 0,
+    preset_index: u16 = 0,
     tb: text_field.TextBuf = .{ .limit = track_mod.MAX_NAME },
     /// Anchor for the field, reported by the pane that owns the name.
     rect: c.rl.Rectangle = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
@@ -354,7 +354,7 @@ fn addClipFromNotes(
     try track.addClip(alloc, clip);
 }
 
-fn applyPresetTo(t: *track_mod.Track, preset_idx: u8) void {
+fn applyPresetTo(t: *track_mod.Track, preset_idx: u16) void {
     if (t.machine.apply_preset) |apply| apply(t.machine.state, preset_idx);
 }
 
@@ -1599,7 +1599,7 @@ fn beginPresetSave(rename: *RenameState, dev: *track_mod.Track, effect: ?usize, 
     anchorRenameRect(rename, anchor);
 }
 
-fn beginPresetRename(rename: *RenameState, dev: *track_mod.Track, effect: ?usize, index: u8, current: []const u8, anchor: c.rl.Rectangle) void {
+fn beginPresetRename(rename: *RenameState, dev: *track_mod.Track, effect: ?usize, index: u16, current: []const u8, anchor: c.rl.Rectangle) void {
     rename.* = .{ .kind = .preset_rename, .device_track = dev, .device_effect = effect, .preset_index = index };
     renameSetText(rename, current);
     anchorRenameRect(rename, anchor);

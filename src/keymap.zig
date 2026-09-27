@@ -815,13 +815,14 @@ fn isDir(path: []const u8) bool {
 
 // ── Fairlight CMI voice files ───────────────────────────────────────────
 
-/// A Series II / IIx `.VC` file: 21,888 bytes, the voice parameters then
+/// A Series II / IIx `.VC` file: 21,888 bytes, 5,376 of voice parameters,
 /// the 16,384-byte waveform RAM (unsigned 8-bit, 128 segments of 128) at
-/// VC_RAM. The loop is whole segments. The file stores no sample rate:
+/// VC_RAM, then 128 more. (On disk each file follows a 128-byte header
+/// sector, which is why disk tools read the RAM at 0x1580.) The loop is whole segments. The file stores no sample rate:
 /// the sample's rate is -1, which makes a zone of rate 0, played at the
 /// machine's RATE.
 pub const VC_SIZE = 21_888;
-pub const VC_RAM = 0x1580;
+pub const VC_RAM = 0x1500;
 pub const VC_LOOP_START = 0x1332; // first loop segment
 pub const VC_LOOP_END = 0x1333; // last loop segment, inclusive
 pub const VC_LOOP_ON = 0x133B; // nonzero: loop

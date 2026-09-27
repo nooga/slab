@@ -719,12 +719,12 @@ pub const FyRawMachine = struct {
     }
 };
 
-fn presetCountImpl(state: *anyopaque) u8 {
+fn presetCountImpl(state: *anyopaque) machine.PresetIndex {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
-    return @intCast(@min(self.presets.count, 255));
+    return @intCast(self.presets.count);
 }
 
-fn presetNameImpl(state: *anyopaque, index: u8) [*:0]const u8 {
+fn presetNameImpl(state: *anyopaque, index: machine.PresetIndex) [*:0]const u8 {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     if (index >= self.presets.count) return "";
     return self.presets.names[index].z();
@@ -783,7 +783,7 @@ fn remapEdits(edits: *const keymap.ZoneEdits, old: *const keymap.Keymap, new: *c
     return out;
 }
 
-fn applyPresetImpl(state: *anyopaque, index: u8) void {
+fn applyPresetImpl(state: *anyopaque, index: machine.PresetIndex) void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     if (index >= self.presets.count) return;
     self.current_preset_idx = index;
@@ -996,7 +996,7 @@ fn buildPresetContent(self: *FyRawMachine, content: []u8) ?usize {
 
 // Rescan the preset directory and re-find `name` as the current preset.
 // Returns its sorted index, or null if it didn't reappear.
-fn rescanAndSelect(self: *FyRawMachine, name: []const u8) ?u8 {
+fn rescanAndSelect(self: *FyRawMachine, name: []const u8) ?machine.PresetIndex {
     self.presets = presets_mod.scan(self.presetDir());
     for (self.presets.names[0..self.presets.count], 0..) |*pn, i| {
         if (std.mem.eql(u8, pn.slice(), name)) {
@@ -1009,7 +1009,7 @@ fn rescanAndSelect(self: *FyRawMachine, name: []const u8) ?u8 {
 
 // Write the current control values to `<name>.preset`, rescan, and select
 // it. Returns the new sorted index. Shared by auto- and named-save paths.
-fn writePreset(self: *FyRawMachine, name: []const u8) ?u8 {
+fn writePreset(self: *FyRawMachine, name: []const u8) ?machine.PresetIndex {
     if (self.preset_dir_len == 0) return null;
     var content: [presets_mod.MAX_FILE]u8 = undefined;
     const used = buildPresetContent(self, &content) orelse return null;
@@ -1019,7 +1019,7 @@ fn writePreset(self: *FyRawMachine, name: []const u8) ?u8 {
 
 // Save the current control values as `user-N.preset` (first free N) and
 // rescan so the new preset shows up immediately.
-fn savePresetImpl(state: *anyopaque) ?u8 {
+fn savePresetImpl(state: *anyopaque) ?machine.PresetIndex {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     if (self.preset_dir_len == 0) return null;
     var name_buf: [presets_mod.MAX_NAME]u8 = undefined;
@@ -1034,7 +1034,7 @@ fn savePresetImpl(state: *anyopaque) ?u8 {
 // Save under a caller-supplied name. Sanitizes to the preset name limits;
 // an empty/oversized name fails. Overwrites an existing preset of the same
 // name (the rescan picks up the single file either way).
-fn savePresetNamedImpl(state: *anyopaque, name_z: [*:0]const u8) ?u8 {
+fn savePresetNamedImpl(state: *anyopaque, name_z: [*:0]const u8) ?machine.PresetIndex {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     const name = presetSanitize(std.mem.span(name_z)) orelse return null;
     return writePreset(self, name);
@@ -1042,7 +1042,7 @@ fn savePresetNamedImpl(state: *anyopaque, name_z: [*:0]const u8) ?u8 {
 
 // Rename preset `index` to `new_name`: rename the file on disk, rescan, and
 // keep it selected. Returns the new sorted index.
-fn renamePresetImpl(state: *anyopaque, index: u8, new_name_z: [*:0]const u8) ?u8 {
+fn renamePresetImpl(state: *anyopaque, index: machine.PresetIndex, new_name_z: [*:0]const u8) ?machine.PresetIndex {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     if (self.preset_dir_len == 0 or index >= self.presets.count) return null;
     const new_name = presetSanitize(std.mem.span(new_name_z)) orelse return null;
@@ -4310,8 +4310,8 @@ test "raw machine presets: named save + rename round-trip" {
     try testing.expectEqualStrings("zz-test-named", inst.presets.names[idx].slice());
 
     // Invalid names are refused.
-    try testing.expectEqual(@as(?u8, null), savePresetNamedImpl(inst, "   "));
-    try testing.expectEqual(@as(?u8, null), savePresetNamedImpl(inst, "has/slash"));
+    try testing.expectEqual(@as(?machine.PresetIndex, null), savePresetNamedImpl(inst, "   "));
+    try testing.expectEqual(@as(?machine.PresetIndex, null), savePresetNamedImpl(inst, "has/slash"));
 
     // Rename moves the file; the value survives an apply afterwards.
     const ridx = renamePresetImpl(inst, idx, "zz-test-renamed") orelse return error.PresetRenameFailed;
