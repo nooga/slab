@@ -157,10 +157,10 @@ drums_params = {
 }
 
 bass = preset("cream", "synthwave-bass")
-bass.update({"cr-cutoff": 560, "cr-contour": 3.4, "cr-emphasis": 0.45, "cr-level": 0.55, "cr-age": 0.3})
+bass.update({"cr-contour": 3.4, "cr-level": 0.45, "cr-age": 0.3})
 
 lead = preset("cream", "cream-lead")
-lead.update({"cr-glide": 0.07, "cr-level": 0.42, "cr-age": 0.5, "cr-cutoff": 1100})
+lead.update({"cr-glide": 0.07, "cr-level": 0.46, "cr-age": 0.5, "cr-cutoff": 1100})
 
 pad = preset("juno2", "lush-pad")
 pad.update({"jn-age": 0.5, "jn-level": 0.42, "jn-cutoff": 1400})
@@ -180,11 +180,15 @@ project = {
         track("BASS", [64, 206, 174], "cream", bass, clip("Pulse Bass", bass_notes()), 0.72, effects=[
             fx("comp2", comp_thresh=-14, comp_ratio=3, comp_atk=0.004, comp_rel=0.09, comp_makeup=2),
         ]),
-        track("PAD", [150, 110, 230], "juno2", pad, clip("Night Pad", pad_notes()), 0.6, poly=8, effects=[
+        # the pad and arp step out of the bass's way: highpassed above its
+        # harmonics, the pad's low-mids dipped where the bass growls
+        track("PAD", [150, 110, 230], "juno2", pad, clip("Night Pad", pad_notes()), 0.52, poly=8, effects=[
+            fx("eq2", eq_hpf_on=1, eq_hpf_hz=240, eq_p1_hz=450, eq_p1_db=-3, eq_p1_q=0.8),
             fx("chorus2", chorus_mode=0, chorus_mix=0.55),
             fx("verb2", verb_decay=0.88, verb_predelay=0.03, verb_mix=0.34, verb_damp=4500),
         ]),
         track("ARP", [250, 190, 80], "juno2", arp, clip("Glass Arp", arp_notes()), 0.5, poly=8, pan=0.15, effects=[
+            fx("eq2", eq_hpf_on=1, eq_hpf_hz=320),
             fx("delay2", delay_sync=1, delay_div=3, delay_fb=0.42, delay_damp=3800, delay_mix=0.3),
             fx("chorus2", chorus_mode=1, chorus_mix=0.4),
         ]),

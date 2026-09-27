@@ -3101,8 +3101,8 @@
      "cr-lvl3": 0.4,
      "cr-noise": 0,
      "cr-drive": 0.5,
-     "cr-cutoff": 560,
-     "cr-emphasis": 0.45,
+     "cr-cutoff": 900,
+     "cr-emphasis": 0.6,
      "cr-contour": 3.4,
      "cr-kbd": 0.33,
      "cr-f-atk": 0.003,
@@ -3115,7 +3115,7 @@
      "cr-a-rel": 0.08,
      "cr-glide": 0,
      "cr-age": 0.3,
-     "cr-level": 0.55
+     "cr-level": 0.45
     }
    },
    "effects": [
@@ -4205,7 +4205,7 @@
     110,
     230
    ],
-   "volume": 0.6,
+   "volume": 0.52,
    "pan": 0.0,
    "mute": false,
    "solo": false,
@@ -4239,6 +4239,17 @@
     }
    },
    "effects": [
+    {
+     "machine": "eq2",
+     "params": {
+      "eq-hpf-on": 1,
+      "eq-hpf-hz": 240,
+      "eq-p1-hz": 450,
+      "eq-p1-db": -3,
+      "eq-p1-q": 0.8
+     },
+     "bypass": false
+    },
     {
      "machine": "chorus2",
      "params": {
@@ -5078,6 +5089,14 @@
     }
    },
    "effects": [
+    {
+     "machine": "eq2",
+     "params": {
+      "eq-hpf-on": 1,
+      "eq-hpf-hz": 320
+     },
+     "bypass": false
+    },
     {
      "machine": "delay2",
      "params": {
@@ -7843,7 +7862,7 @@
      "cr-a-rel": 0.3,
      "cr-glide": 0.07,
      "cr-age": 0.5,
-     "cr-level": 0.42
+     "cr-level": 0.46
     }
    },
    "effects": [
