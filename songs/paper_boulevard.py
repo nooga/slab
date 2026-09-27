@@ -3,7 +3,9 @@ Killed the Cat, Living in a Box territory). Original material.
 
 106 BPM, D major, up a tone to E for the last chorus. Gated snare into a
 plate, DX e-piano on the offbeats, Juno pad, brass stabs, a syncopated
-Moog-ish bass, and a synth lead singing the vocal line.
+Moog-ish bass. The hook is a short syncopated riff on a DX lead doubled
+by a Juno pluck an octave up; it only plays in the intro, choruses and
+outro, and leaves the verses to the keys and vibes.
 
     PYTHONPATH=tools python3 songs/paper_boulevard.py
     zig-out/bin/slab songs/paper_boulevard.slab
@@ -32,21 +34,17 @@ BRIDGE = "Bbmaj7 C Am7 Dm7 Gm7 C Fmaj7 A7sus4:2 A7:2"
 UP = 2  # the last-chorus key change, in semitones
 LIFT = (chorus3, outro, end)
 
-# ── melodies (the "vocal") ─────────────────────────────────────────────
-VERSE_MEL = """
-r:.5 A4:.5 F#4 A4 B4:1 A4 | F#4:1.5 E4:.5 D4:1 r | r:.5 B4:.5 B4 C#5 D5:1 B4 | A4:1.5 G4:.5 E4:1 r
-r:.5 A4:.5 F#4 A4 D5:1 C#5 | B4:1.5 A4:.5 F#4:1 r | r:.5 G4:.5 G4 A4 B4:.75 A4 G4:.5 | A4:3 r:1
+# ── the hook ───────────────────────────────────────────────────────────
+# A one-bar figure answered by a two-note tag and three beats of space
+# (where the brass stabs answer it), stated over the chorus chords. The
+# last bar is left empty for the turnaround.
+HOOK = """
+r:.5 B4:.25 D5 F#5:.75 E5:.25 D5:.5 E5:1 r:.5 | C#5:.75 A4:.25 r:3
+r:.5 A4:.25 C#5 E5:.75 D5:.25 C#5:.5 D5:1 r:.5 | B4:.75 F#4:.25 r:3
+r:.5 B4:.25 E5 G5:.75 F#5:.25 E5:.5 F#5:1 r:.5 | E5:.75 C#5:.25 r:3
+r:.5 F#5:.25 E5 D5:.75 C#5:.25 A4:.5 D5:1.5 | r:4
 """
-PRE_MEL = """
-r:.5 E4:.5 G4 B4 B4:1 A4 | r:.5 F#4:.5 A4 C#5 C#5:1 B4 | r:.5 G4:.5 B4 D5 E5:1 D5 | E5:2 F#5:1 E5
-"""
-HOOK_A = "F#5:1.5 E5:.5 D5:1 E5 | E5:1.5 C#5:.5 A4:2 | r:.5 A4:.5 C#5 E5 E5:1 D5 | D5:1.5 C#5:.5 B4:2"
-HOOK_B = "r:.5 B4:.5 D5 E5 G5:1 F#5 | E5:1.5 D5:.5 C#5:1 E5 | F#5:1.5 E5:.5 D5:2 | r:1 A4:.5 B4 C#5 D5 E5:1"
-HOOK = HOOK_A + " | " + HOOK_B
-BRIDGE_MEL = """
-D5:2 C5:1 A4 | G4:3 r:1 | E5:2 D5:1 C5 | A4:3 r:1
-Bb4:2 A4:1 G4 | E4:2 G4 | A4:2 C5:1 E5 | E5:2 C#5
-"""
+HOOK_B = HOOK.strip().split("\n")[2] + " | " + HOOK.strip().split("\n")[3]
 
 # ── tracks ─────────────────────────────────────────────────────────────
 kit = song.track("KIT", "drum2", "gated-snare-kit", volume=1.0, params=dict(
@@ -84,11 +82,16 @@ bells = song.track("VIBES", "fm86", "vibe-1", volume=0.27, pan=0.35, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=400),
     fx("delay2", sync="SYNC", div="1/8.", fb=0.3, damp=4000, mix=0.22),
 ])
-lead = song.track("LEAD", "cream", "cream-lead", volume=0.35, params=dict(
-    cutoff=1500, glide=0.035, age=0.5, emphasis=0.2), fx=[
-    fx("eq2", hpf_on="ON", hpf_hz=200, p2_hz=3000, p2_db=1.5),
-    fx("delay2", sync="SYNC", div="1/4", fb=0.28, damp=3500, mix=0.18),
-    fx("verb2", "plate", mix=0.22),
+hook = song.track("HOOK", "fm86", "syn-lead-1", volume=0.45, fx=[
+    fx("eq2", hpf_on="ON", hpf_hz=250, p2_hz=3000, p2_db=1.5),
+    fx("delay2", sync="SYNC", div="1/8.", fb=0.32, damp=3800, mix=0.24),
+    fx("verb2", "plate", mix=0.2),
+])
+# the gloss: a short pluck an octave up, low in the mix, spread by chorus
+hook_hi = song.track("HOOK+", "juno2", "pluck-keys", volume=0.4, pan=-0.1, fx=[
+    fx("eq2", hpf_on="ON", hpf_hz=600),
+    fx("chorus2", "wide-keys"),
+    fx("verb2", "plate", mix=0.25),
 ])
 
 # ── drums ──────────────────────────────────────────────────────────────
@@ -177,23 +180,22 @@ for sec in (pre1, pre2):
     brass.clip(sec, at_bar=3, bars=1).chords("A7sus4", "x.x.x.x.x-x-x---", near=67, vel=96, gate=0.5)
 brass.clip(end, bars=1).chords("Dmaj7", "x", near=67, vel=110, gate=0.9).transpose(UP)
 
-for sec in (chorus1, chorus2, chorus3, outro):
-    v = bells.clip(sec).arp(CHORUS, [0, 2, 3, 1, 2, 4], rate=0.5, octave=5, vel=74, gate=0.6)
-    if sec in LIFT:
-        v.transpose(UP)
+# vibes answer in the verse-2 and bridge space the hook leaves
+bells.clip(verse2).arp(VERSE, [0, 2, 3, 1, 2, 4], rate=0.5, octave=5, vel=70, gate=0.6)
+bells.clip(bridge).arp(BRIDGE, [0, 2, 4, 2], rate=0.5, octave=5, vel=74, gate=0.6)
 
-# ── lead ───────────────────────────────────────────────────────────────
-lead.clip(intro, at_bar=4).melody(HOOK_B, vel=96)
-for sec in (verse1, verse2):
-    lead.clip(sec).melody(VERSE_MEL, vel=100)
-for sec in (pre1, pre2):
-    lead.clip(sec).melody(PRE_MEL, vel=104)
+# ── hook ───────────────────────────────────────────────────────────────
+def hook_clip(sec, text, at_bar=0, bars=None):
+    for trk, octave, vel in ((hook, 0, 104), (hook_hi, 12, 92)):
+        c = trk.clip(sec, at_bar=at_bar, bars=bars).melody(text, vel=vel, gate=0.9).transpose(octave)
+        if sec in LIFT:
+            c.transpose(UP)
+
+
+hook_clip(intro, HOOK_B, at_bar=4)
 for sec in (chorus1, chorus2, chorus3, outro):
-    m = lead.clip(sec).melody(HOOK, vel=108)
-    if sec in LIFT:
-        m.transpose(UP)
-lead.clip(bridge).melody(BRIDGE_MEL, vel=98)
-lead.clip(end, bars=1).melody("F#5:3.5", vel=100).transpose(UP)
+    hook_clip(sec, HOOK)
+hook_clip(end, "F#5:.75 D5:.25 r:3", bars=1)
 
 # ── master ─────────────────────────────────────────────────────────────
 song.master(fx=[
