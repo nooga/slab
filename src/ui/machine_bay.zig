@@ -23,6 +23,7 @@ const ui_core = @import("core.zig");
 const ui_style = @import("style.zig");
 const ctl = @import("controls.zig");
 const Machine = @import("../machine.zig").Machine;
+const preset_browser = @import("preset_browser.zig");
 
 const Ui = ui_core.Ui;
 const Rect = ui_core.Rect;
@@ -74,6 +75,7 @@ const CONFIRM_MENU_KEY: u64 = 0x434f4e46; // "CONF"
 const SAVE_ITEM_ID: u32 = 9001;
 const RENAME_ITEM_ID: u32 = 9002;
 const DEFAULT_ITEM_ID: u32 = 9000;
+const BROWSE_ITEM_ID: u32 = 9003;
 const CONFIRM_DELETE_ID: u32 = 1;
 
 // Preset lists per registry machine, scanned when the add/replace menu opens
@@ -382,6 +384,7 @@ fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, fx: ?*const E
             result.preset_apply_ref = ref;
             result.preset_apply = p;
         }
+        if (pa.browse) preset_browser.open(mach.state, if (mach.current_preset) |cf| cf(mach.state) else -1);
         if (pa.save) {
             result.preset_save_ref = ref;
             result.preset_anchor = bridge.toRl(disp);
@@ -395,7 +398,13 @@ fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, fx: ?*const E
         titleDisplay(ui, bar, scope, "", false);
     }
 
-    drawPanel(ui, mach, body, scope);
+    if (preset_browser.isOpenFor(mach.state)) {
+        const ba = preset_browser.draw(ui, body, mach);
+        if (ba.apply) |p| {
+            result.preset_apply_ref = ref;
+            result.preset_apply = p;
+        }
+    } else drawPanel(ui, mach, body, scope);
     // Silenced/bypassed: the panel dims (drawn in the Ui list, over it).
     if (!active) ui.rect(body, ui_style.chassis.alpha(115));
     return out;
@@ -514,6 +523,7 @@ fn deleteConfirmMenu(key: u64) bool {
 
 const PresetAction = struct {
     apply: ?u16 = null,
+    browse: bool = false,
     save: bool = false,
     rename: ?u16 = null, // index of the preset to rename (the current one)
 };
@@ -692,8 +702,14 @@ fn presetMenu(preset_rect: Rect, clicked: bool, mach: *const Machine) PresetActi
         }
     }
 
-    var items: [presets_mod.MAX_PRESETS + 3]menu.Item = undefined;
-    var n = presetTopItems(&preset_menu_list, items[0..presets_mod.MAX_PRESETS]);
+    var items: [presets_mod.MAX_PRESETS + 5]menu.Item = undefined;
+    var n: usize = 0;
+    if (count > 0) {
+        items[0] = .{ .label = "Browse\u{2026}", .id = BROWSE_ITEM_ID };
+        items[1] = .{ .separator = true };
+        n = 2;
+    }
+    n += presetTopItems(&preset_menu_list, items[n .. n + presets_mod.MAX_PRESETS]);
     if (can_save or can_rename) {
         if (n > 0) {
             items[n] = .{ .separator = true };
@@ -710,6 +726,7 @@ fn presetMenu(preset_rect: Rect, clicked: bool, mach: *const Machine) PresetActi
     }
     if (menu.pick(key, items[0..n])) |id| {
         if (id == SAVE_ITEM_ID) return .{ .save = true };
+        if (id == BROWSE_ITEM_ID) return .{ .browse = true };
         if (id == RENAME_ITEM_ID) return .{ .rename = @intCast(cur_idx) };
         return .{ .apply = @intCast(id) };
     }

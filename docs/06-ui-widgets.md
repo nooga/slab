@@ -512,6 +512,18 @@ cancels. Editing keys auto-repeat. The body face at ≥ 18px, the legend
 face below (clip name bands). Inline renames open focused with the name
 selected and commit on a press elsewhere.
 
+## Preset browser
+
+A machine's preset menu opens with **Browse…**: the browser takes the
+device's panel area until closed (src/ui/preset_browser.zig). A search
+field on top (every typed word must appear in the preset's name, any
+case), banks down the left (the name's first folder, plus ALL), the
+matches in a well on the right with `bank / sub / name` paths and a
+count. Up/Down (and Page keys) move and load, a click loads, a
+double-click or Enter loads and closes, Esc or × closes. The selection
+is amber; the loaded preset reads in `vfd`. It only asks the machine for
+preset names by index, so it serves every machine, a rack included.
+
 ## Dialogs
 
 `ui/dialog.zig`: `begin(ui, screen, key, title, w, h)` dims the screen and

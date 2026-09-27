@@ -14,6 +14,7 @@ const rack_mod = @import("machines/rack.zig");
 test {
     _ = fy_raw_machine_mod.FyRawMachine;
     _ = rack_mod;
+    _ = @import("ui/preset_browser.zig");
     _ = machine_desc;
     _ = @import("presets.zig");
     _ = @import("wav.zig");
