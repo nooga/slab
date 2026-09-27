@@ -24,7 +24,8 @@ include "../lib/manifest.fy"
   560.0 panel-w!
 
 
-  "LFO" "RATE" "jn-lfo-rate" JunoParams.lfo-rate 0.1 20.0 1.5 curve-exp knob
+  "LFO" "RATE" "jn-lfo-rate" JunoParams.lfo-rate 0.3 20.0 1.5 curve-exp knob
+  "LFO" "DELAY" "jn-lfo-delay" JunoParams.lfo-delay 0.0 2.0 0.0 curve-pow knob
   "LFO" "VIB"  "jn-vib"      JunoParams.vibrato  0.0 1.0  0.0 curve-pow knob
   "LFO" 1 strip
 
@@ -36,26 +37,27 @@ include "../lib/manifest.fy"
     "OFF" 0.0 opt  "ON" 1.0 opt
   "DCO" "PWM"   "jn-pwm"    JunoParams.pwm        0.0 1.0 0.0  curve-lin knob
   "DCO" "PWMOD" "jn-pwmod" JunoParams.pwm-mode 0.0 switch
-    "MAN" 0.0 opt  "LFO" 1.0 opt
+    "MAN" 0.0 opt  "LFO" 1.0 opt  "ENV" 2.0 opt
   "DCO" "SUB"    "jn-sub"    JunoParams.sub-level   0.0 1.0 0.0 curve-pow knob
   "DCO" "NOISE"  "jn-noise"  JunoParams.noise-level 0.0 1.0 0.0 curve-pow knob
   "DCO" "DETUNE" "jn-detune" JunoParams.detune      0.0 1.0 0.0 curve-lin knob
   "DCO" 2 strip
 
-  "HPF" "FREQ" "jn-hpf" JunoParams.hpf-hz 10.0 800.0 20.0 curve-exp knob
+  "HPF" "FREQ" "jn-hpf" JunoParams.hpf-pos 1 switch
+    "0" 0.0 opt  "1" 1.0 opt  "2" 2.0 opt  "3" 3.0 opt
   "HPF" 1 strip
 
   "VCF" "FREQ" "jn-cutoff" JunoParams.cutoff-hz 30.0 16000.0 1800.0 curve-exp knob
   "VCF" "RES"  "jn-res"    JunoParams.resonance 0.0  1.0     0.10   curve-lin knob
-  "VCF" "ENV"  "jn-env"    JunoParams.env-amount -1.0 1.0    0.35   curve-lin knob
+  "VCF" "ENV"  "jn-env"    JunoParams.env-amount -1.0 1.0    0.17   curve-lin knob
   "VCF" "LFO"  "jn-lfovcf" JunoParams.lfo-vcf   0.0  1.0     0.0    curve-pow knob
   "VCF" "KYBD" "jn-kybd"   JunoParams.kybd      0.0  1.0     0.5    curve-lin knob
   "VCF" 1 strip
 
   "ENV" "ATK" "jn-atk" JunoParams.atk-s 0.001 3.0 0.01 curve-exp knob
-  "ENV" "DEC" "jn-dec" JunoParams.dec-s 0.01  3.0 0.30 curve-exp knob
+  "ENV" "DEC" "jn-dec" JunoParams.dec-s 0.002 12.0 0.30 curve-exp knob
   "ENV" "SUS" "jn-sus" JunoParams.sus   0.0   1.0 0.60 curve-lin knob
-  "ENV" "REL" "jn-rel" JunoParams.rel-s 0.01  6.0 0.40 curve-exp knob
+  "ENV" "REL" "jn-rel" JunoParams.rel-s 0.002 12.0 0.40 curve-exp knob
   "ENV" 1 strip
 
   "VCA" "MODE" "jn-vca-mode" JunoParams.vca-mode 0.0 switch
