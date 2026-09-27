@@ -228,7 +228,7 @@ pub const Strip = struct {
     }
 };
 
-pub const DisplayKind = enum { adsr, waveform, meter, response, algo, eg4, zones };
+pub const DisplayKind = enum { adsr, waveform, meter, response, algo, eg4, zones, segments };
 
 /// Algo display slots in `Display.offsets`, in the order `algo-display`
 /// pushes them: operator count, row stride, then the row offsets (all in
@@ -642,6 +642,7 @@ pub fn read(host: *FyHost) !Desc {
             4 => .algo,
             5 => .eg4,
             6 => .zones,
+            7 => .segments,
             else => return error.InvalidMachineDesc,
         };
         out.source_len = try copyText(&out.source, cstrSlice(disp.sources));

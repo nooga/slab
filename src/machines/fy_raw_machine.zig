@@ -1954,6 +1954,7 @@ fn drawDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void
             }
         },
         .waveform => drawWaveformDisplay(self, ui, r, disp.sourceSlice()),
+        .segments => drawSegmentDisplay(self, ui, r, disp.sourceSlice()),
         .meter => drawMeterDisplay(self, ui, r, disp),
         .response => drawResponseDisplay(self, ui, r),
         .algo => drawAlgoDisplay(self, ui, r, disp),
@@ -2416,11 +2417,10 @@ fn grBand(ui: *Ui, r: Rect, gr_db: f32, hold_db: f32) void {
     }
 }
 
-// Oscillogram of a loaded asset: a title row with the filename + LOAD (the
-// native audio picker hot-swaps the sample), then the peak waveform with
-// draggable start / loop markers bound to the matching controls.
-fn drawWaveformDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []const u8) void {
-    const ai = self.assetIndexByName(asset_name) orelse return;
+/// The sample displays' title row: LOAD (the native picker hot-swaps the
+/// sample) beside the file or selected zone's name, peak and length.
+/// Returns the area below it.
+fn waveHeader(self: *FyRawMachine, ui: *Ui, r: Rect, ai: usize) Rect {
     var area = r;
     var bar = area.cutTop(20);
     if (ui_ctl.button(ui, bar.cutRight(52), .{ "load", ai }, null, .{ .label = "LOAD", .flush = true })) {
@@ -2450,10 +2450,22 @@ fn drawWaveformDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []cons
         const zi = @min(self.zone_sel, km.count - 1);
         const z = km.zones[zi];
         const pk_db = if (self.wave_peak > 0) 20 * std.math.log10(self.wave_peak) else -120;
-        break :blk std.fmt.bufPrint(&lbuf, "{s}  PK {d:.1} DB  {d:.2} S", .{ km.names[zi].slice(), pk_db, z.len / z.sr }) catch "";
+        // a .VC zone has no rate of its own: it plays at the machine's
+        break :blk if (z.sr > 0.5)
+            std.fmt.bufPrint(&lbuf, "{s}  PK {d:.1} DB  {d:.2} S", .{ km.names[zi].slice(), pk_db, z.len / z.sr }) catch ""
+        else
+            std.fmt.bufPrint(&lbuf, "{s}  PK {d:.1} DB  {d} SMP", .{ km.names[zi].slice(), pk_db, @as(u64, @intFromFloat(z.len)) }) catch "";
     } else self.asset_label[ai][0..self.asset_label_len[ai]];
     ui_ctl.display(ui, bar, if (label.len > 0) label else "NO SAMPLE", .{ .flush = true });
+    return area;
+}
 
+// Oscillogram of a loaded asset: the title row, then the peak waveform
+// with draggable start / loop markers bound to the matching controls.
+fn drawWaveformDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []const u8) void {
+    const ai = self.assetIndexByName(asset_name) orelse return;
+    const area = waveHeader(self, ui, r, ai);
+    const is_km = self.desc.assets[ai].keymap;
     const inner = ui.well(area, ui_style.well);
     if (inner.w < 2 or inner.h < 2) return;
     ui.clip(inner);
@@ -2479,6 +2491,102 @@ fn drawWaveformDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []cons
     drawMarker(self, ui, inner, "smp-start", ui_style.play);
     drawMarker(self, ui, inner, "smp-loop-start", ui_style.mod);
     drawMarker(self, ui, inner, "smp-loop-end", ui_style.mod);
+}
+
+/// A CMI voice's RAM as the machine holds it (docs/17): the selected zone
+/// at RATE (`cmi-rate`), 16,384 samples, drawn as 128 segments, with the
+/// loop span (`cmi-loop-start` .. `cmi-loop-end`, lit while `cmi-loop` is
+/// on) and the START segment (`cmi-start`). The three markers drag, in
+/// whole segments.
+fn drawSegmentDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []const u8) void {
+    const ai = self.assetIndexByName(asset_name) orelse return;
+    const area = waveHeader(self, ui, r, ai);
+    const inner = ui.well(area, ui_style.well);
+    if (inner.w < 2 or inner.h < 2) return;
+    ui.clip(inner);
+    defer ui.unclip();
+    const km = &self.asset_keymap[ai];
+    const rate = controlValueById(self, "cmi-rate") orelse 24000;
+    const ls: i32 = @intFromFloat(controlValueById(self, "cmi-loop-start") orelse 0);
+    const le: i32 = @intFromFloat(controlValueById(self, "cmi-loop-end") orelse 127);
+    const st: i32 = @intFromFloat(controlValueById(self, "cmi-start") orelse 0);
+    const loop_on = (controlValueById(self, "cmi-loop") orelse 0) > 0.5;
+
+    // The RAM: source samples per stored one, and how many segments hold sound.
+    var kr: f64 = 1;
+    var used: i32 = 0;
+    if (km.count > 0) {
+        const z = km.zones[@min(self.zone_sel, km.count - 1)];
+        const zsr = if (z.sr > 0.5) z.sr else rate;
+        kr = std.math.clamp(@min(rate, zsr) / zsr, 0.001, 1);
+        used = @intFromFloat(@ceil(@min(z.len * kr, 16384) / 128));
+    }
+    const segX = struct {
+        fn at(in: Rect, seg: i32) i32 {
+            return in.x + @divFloor(in.w * seg, 128);
+        }
+    }.at;
+
+    // loop span, grid
+    ui.rect(Rect.xywh(segX(inner, ls), inner.y, @max(1, segX(inner, le + 1) - segX(inner, ls)), inner.h), ui_style.mod.alpha(if (loop_on) 46 else 14));
+    if (used < 128) ui.rect(Rect.xywh(segX(inner, used), inner.y, inner.right() - segX(inner, used), inner.h), ui_style.chassis.alpha(90));
+    var g: i32 = 0;
+    while (g <= 128) : (g += 1) {
+        const x = segX(inner, g);
+        if (@mod(g, 16) == 0) ui.rect(Rect.xywh(x, inner.y, 1, inner.h), ui_style.text_mute.alpha(50)) else ui.rect(Rect.xywh(x, inner.bottom() - 2, 1, 2), ui_style.text_mute.alpha(70));
+    }
+    const mid = inner.y + @divFloor(inner.h, 2);
+    ui.rect(Rect.xywh(inner.x, mid, inner.w, 1), ui_style.vfd.alpha(40));
+
+    // the stored waveform: pixel px covers RAM samples px/w * 16384 on
+    const cache = &self.asset_cache[ai];
+    if (cache.sample_count > 0) {
+        const ram_src: f64 = 16384 / kr;
+        const spp = ram_src / @as(f64, @floatFromInt(inner.w));
+        const norm: f32 = if (self.wave_peak > 1e-6) @floatCast(1 / self.wave_peak) else 1;
+        const hh: f32 = @as(f32, @floatFromInt(inner.h)) / 2;
+        const half = hh * norm * 0.95;
+        const end: f64 = @floatFromInt(cache.sample_count);
+        var px: i32 = 0;
+        while (px < inner.w) : (px += 1) {
+            const s0 = @as(f64, @floatFromInt(px)) * spp;
+            if (s0 >= end) break;
+            const p = cache.rangePeak(s0, @min(s0 + spp, end), spp);
+            const y0: i32 = @intFromFloat(@round(hh - std.math.clamp(@as(f32, @floatCast(p.max)) * half, -hh, hh)));
+            const y1: i32 = @intFromFloat(@round(hh - std.math.clamp(@as(f32, @floatCast(p.min)) * half, -hh, hh)));
+            ui.rect(Rect.xywh(inner.x + px, inner.y + @min(y0, y1), 1, @as(i32, @intCast(@abs(y1 - y0))) + 1), ui_style.vfd);
+        }
+    }
+
+    // markers: drag in whole segments
+    const Mk = struct { id: []const u8, seg: i32, edge: i32, col: ui_style.Color };
+    const marks = [_]Mk{
+        .{ .id = "cmi-loop-start", .seg = ls, .edge = 0, .col = ui_style.mod },
+        .{ .id = "cmi-loop-end", .seg = le, .edge = 1, .col = ui_style.mod },
+        .{ .id = "cmi-start", .seg = st, .edge = 0, .col = ui_style.play },
+    };
+    for (marks, 0..) |m, mi| {
+        const x = segX(inner, m.seg + m.edge);
+        const wid = ui.id(.{ "segmark", mi });
+        const b = ui.behaviorEx(wid, Rect.xywh(x - 4, inner.y, 9, inner.h), .{ .prio = @intCast(1 + mi) });
+        if (b.held) {
+            const f = (ui.in.mx - @as(f32, @floatFromInt(inner.x))) / @as(f32, @floatFromInt(inner.w));
+            const seg: i32 = @intFromFloat(std.math.clamp(@round(f * 128), 0, 128));
+            const v: i32 = switch (mi) {
+                0 => @min(seg, le),
+                1 => @max(seg - 1, ls),
+                else => @min(seg, 127),
+            };
+            applyControlValue(self, m.id, @floatFromInt(@min(v, 127)));
+        }
+        const hot = ui.isHot(wid) or b.held;
+        if (hot) ui.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 2);
+        ui.rect(Rect.xywh(x, inner.y, if (hot) 2 else 1, inner.h), m.col);
+        if (mi == 2) ui.rect(Rect.xywh(x - 3, inner.bottom() - 4, 7, 4), m.col) else ui.rect(Rect.xywh(x - 3, inner.y, 7, 4), m.col);
+    }
+    var buf: [64]u8 = undefined;
+    const info = std.fmt.bufPrint(&buf, "LOOP {s} {d}-{d}  START {d}  {d}/128 SEGS", .{ if (loop_on) "ON" else "OFF", ls, le, st, used }) catch "";
+    ui.textIn(&ui.fonts.legend, Rect.xywh(inner.x + 6, inner.y + 5, inner.w - 12, 10), info, ui_style.text_dim, .left, false);
 }
 
 /// Zone list of a keymap: one row per zone (a light that flashes when it

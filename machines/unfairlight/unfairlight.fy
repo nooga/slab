@@ -45,7 +45,7 @@ include "../lib/manifest.fy"
   "OUT" "VEL" "cmi-vel" CmiParams.vel-amt 0.0 1.0 0.0 curve-lin knob
   "OUT" "VOL" "cmi-vol" CmiParams.vol 0.0 1.0 0.8 curve-pow knob as-fader
 
-  "WAVE" "voice" waveform-display
+  "WAVE" "voice" segment-display
   "ZONES" "voice" zone-display
   "VOICE" 4 strip
   "LOOP" 3 strip

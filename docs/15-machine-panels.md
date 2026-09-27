@@ -195,6 +195,13 @@ cell|1.6|HPF*4/EG*1                    # short display under a taller HPF
   diagonals), feedback as a loop over the box. The routing stays the
   machine's data: FM-86's table lives in `fm86_algo.fy`.
 
+- `segment-display ( name asset -- )` draws a CMI voice's RAM: the
+  selected zone as the Unfairlight stores it (16,384 samples at
+  `cmi-rate`) across 128 segments, a grid every 16, the unused tail
+  dimmed, the loop span (`cmi-loop-start`..`cmi-loop-end`, lit while
+  `cmi-loop` is on) and the START segment (`cmi-start`). The three
+  markers drag in whole segments; the title row is a waveform-display's.
+
 These visualizers are **drawn in Zig today** (selected by the manifest kind).
 They are the visual reference for the planned fy-drawn displays.
 

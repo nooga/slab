@@ -300,6 +300,21 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   _mf-last-disp !64
 ;
 
+( a CMI voice's RAM as 128 segments with its loop and start markers,
+  bound to cmi-rate / cmi-loop / cmi-loop-start / cmi-loop-end /
+  cmi-start; LOAD as on a waveform-display. )
+: segment-display  ( name asset-name -- )
+  DisplayDesc.alloc
+  swap cstr-new swap DisplayDesc.sources!
+  swap cstr-new swap DisplayDesc.name!
+  7 swap DisplayDesc.kind!
+  _mf-last-disp @64 0 =
+  [ dup _mf-md@ MachineDesc.displays! drop ]
+  [ dup _mf-last-disp @64 DisplayDesc.next! drop ]
+  ifte
+  _mf-last-disp !64
+;
+
 ( sources: comma-separated module names overlaid in one field. )
 : adsr-display  ( name sources -- )
   DisplayDesc.alloc
