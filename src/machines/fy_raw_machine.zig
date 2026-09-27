@@ -146,6 +146,8 @@ pub const FyRawMachine = struct {
     // picked), for the project file.
     asset_path: [machine_desc.MAX_ASSETS][512]u8 = undefined,
     asset_path_len: [machine_desc.MAX_ASSETS]usize = [_]usize{0} ** machine_desc.MAX_ASSETS,
+    // True once LOAD, a preset or a project replaced the manifest default.
+    asset_loaded: [machine_desc.MAX_ASSETS]bool = [_]bool{false} ** machine_desc.MAX_ASSETS,
     // Peak pyramid per asset for oscillogram drawing (UI thread only).
     asset_cache: [machine_desc.MAX_ASSETS]waveform.PeakCache = [_]waveform.PeakCache{.{}} ** machine_desc.MAX_ASSETS,
     // Display name (basename) of each asset's currently loaded file.
@@ -296,6 +298,7 @@ pub const FyRawMachine = struct {
         self.asset_cache[ai].deinit(self.alloc);
         self.asset_cache[ai] = new_cache;
         self.setAssetSource(ai, path);
+        self.asset_loaded[ai] = true;
         return true;
     }
 
@@ -320,6 +323,7 @@ pub const FyRawMachine = struct {
         self.asset_cache[ai].deinit(self.alloc);
         self.asset_cache[ai] = new_cache;
         self.setAssetSource(ai, path);
+        self.asset_loaded[ai] = true;
         return true;
     }
 
@@ -660,6 +664,14 @@ fn applyPresetImpl(state: *anyopaque, index: u8) void {
     var parsed = std.json.parseFromSlice(std.json.Value, self.alloc, data, .{}) catch return;
     defer parsed.deinit();
     if (parsed.value != .object) return;
+    // A preset may name files to load (a sampler's keymap: "assets":
+    // {"smp": "path"}); without them the loaded files stay.
+    if (parsed.value.object.get("assets")) |av| if (av == .object) {
+        var ait = av.object.iterator();
+        while (ait.next()) |kv| if (kv.value_ptr.* == .string) {
+            _ = loadAssetImpl(self, kv.key_ptr.*, kv.value_ptr.string);
+        };
+    };
     const params = parsed.value.object.get("params") orelse return;
     if (params != .object) return;
     var it = params.object.iterator();
@@ -675,8 +687,6 @@ fn jsonF64(v: std.json.Value) f64 {
     };
 }
 
-// Host param-set (project load): apply one id→value pair. Same real-value
-// convention as presets.
 // {"smp": "path/to/kit"}: every asset with a source path. Asset names are
 // manifest identifiers; paths are JSON-escaped.
 fn writeAssetsJsonImpl(state: *anyopaque, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
@@ -707,6 +717,8 @@ fn loadAssetImpl(state: *anyopaque, name: []const u8, path: []const u8) bool {
     return self.loadAssetRuntime(ai, path);
 }
 
+// Host param-set (project load): apply one id→value pair. Same real-value
+// convention as presets.
 fn setParamImpl(state: *anyopaque, id: []const u8, value: f64) void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     applyControlValue(self, id, value);
@@ -752,7 +764,23 @@ fn buildPresetContent(self: *FyRawMachine, content: []u8) ?usize {
         const frag = std.fmt.bufPrint(content[used..], "{s}\"{s}\":{d}", .{ sep, ctl.idSlice(), value }) catch return null;
         used += frag.len;
     }
-    const tail = std.fmt.bufPrint(content[used..], "}}}}\n", .{}) catch return null;
+    const close = std.fmt.bufPrint(content[used..], "}}", .{}) catch return null;
+    used += close.len;
+    // Files loaded over the manifest's default go with the preset.
+    var first = true;
+    for (self.desc.assets[0..self.desc.asset_count], 0..) |*req, ai| {
+        if (!self.asset_loaded[ai]) continue;
+        const path = self.assetPath(ai);
+        if (path.len == 0 or std.mem.indexOfAny(u8, path, "\"\\") != null) continue;
+        const frag = std.fmt.bufPrint(content[used..], "{s}\"{s}\":\"{s}\"", .{ if (first) ",\"assets\":{" else ",", req.nameSlice(), path }) catch return null;
+        used += frag.len;
+        first = false;
+    }
+    if (!first) {
+        const c2 = std.fmt.bufPrint(content[used..], "}}", .{}) catch return null;
+        used += c2.len;
+    }
+    const tail = std.fmt.bufPrint(content[used..], "}}\n", .{}) catch return null;
     used += tail.len;
     return used;
 }
