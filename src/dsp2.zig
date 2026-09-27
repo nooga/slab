@@ -442,6 +442,10 @@ pub const Builder = struct {
 
         const cur_next = self.allocator.alloc(usize, n_values) catch return Error.OutOfMemory;
         defer self.allocator.free(cur_next);
+
+        const depth = self.allocator.alloc(u32, n_values) catch return Error.OutOfMemory;
+        defer self.allocator.free(depth);
+        self.computeDepths(depth);
         @memset(cur_next, std.math.maxInt(usize));
 
         // next_pos[i]: the next trace position requesting the same value.
@@ -472,6 +476,7 @@ pub const Builder = struct {
             .next_pos = next_pos,
             .cur_next = cur_next,
             .spill_slot = spill_slot,
+            .depth = depth,
         };
 
         // D-register pool. In raw_registers mode an f64 arg i lives in
@@ -630,6 +635,26 @@ pub const Builder = struct {
         for (self.stack.items) |value| remaining_uses[value] += 1;
     }
 
+    /// Longest operand chain under each value (values are in topological
+    /// order: operands always have smaller ids). The codegen evaluates the
+    /// deeper operand first, so a long chain, like an unrolled `times`
+    /// accumulator, holds no registers of the levels above it.
+    fn computeDepths(self: *const Builder, depth: []u32) void {
+        for (self.values.items, 0..) |v, i| {
+            const ops: [3]?usize = switch (v.op) {
+                .arg, .int_const, .f64_const => .{ null, null, null },
+                .ptr_add, .load_f64, .load_ptr, .fabs, .fneg, .fsqrt, .ffloor, .fexp2i, .flog2i, .fmant, .mnot, .mask_to_f => .{ v.a, null, null },
+                .ptr_add_idx, .fadd, .fsub, .fmul, .fdiv, .fmin, .fmax, .fcmp, .mand, .mor => .{ v.a, v.b, null },
+                .select => .{ v.a, v.b, v.c },
+            };
+            var d: u32 = 0;
+            for (ops) |o| if (o) |id| {
+                d = @max(d, depth[id]);
+            };
+            depth[i] = d + 1;
+        }
+    }
+
     const AddrKey = struct { root: usize, off: i64 };
 
     /// Canonical address of a pointer value: its root (an arg or a loaded
@@ -729,7 +754,7 @@ pub const Builder = struct {
     fn indexAddr(self: *Builder, base: usize, idx: usize) Error!usize {
         if (self.constF64(idx)) |x| {
             const e = @floor(x);
-            if (e >= 0 and e < 1 << 24) return self.addValue(.{
+            if (e >= 0 and e < 1 << 21) return self.addValue(.{
                 .op = .ptr_add,
                 .ty = .ptr,
                 .a = base,
@@ -1079,6 +1104,7 @@ const Codegen = struct {
     tpos: usize = 0,
     cur_next: []usize,
     spill_slot: []?u16,
+    depth: []const u32,
     slot_base: usize = 0,
     slot_count: u16 = 0,
     free_slots: [64]u16 = undefined,
@@ -1295,7 +1321,16 @@ const Codegen = struct {
             .ptr_add => blk: {
                 const base = try self.valueX(value.a);
                 const reg = try self.allocX();
-                try self.out.append(Asm.add_imm(reg, base, @intCast(value.int_value)));
+                // Offsets up to 16 MB: the low 12 bits, then the next 12
+                // shifted (a zone table or a long tap line is past 4 KB).
+                const off: u64 = @intCast(value.int_value);
+                if (off >= 1 << 24) return Error.NonConstantPick;
+                if (off < 1 << 12) {
+                    try self.out.append(Asm.add_imm(reg, base, @intCast(off)));
+                } else {
+                    try self.out.append(Asm.add_imm(reg, base, @intCast(off & 0xfff)));
+                    try self.out.append(Asm.add_imm_lsl12(reg, reg, @intCast(off >> 12)));
+                }
                 self.consumeValue(value.a);
                 break :blk reg;
             },
@@ -1322,6 +1357,23 @@ const Codegen = struct {
         };
         self.unpinTo(mark);
         return self.settle(id, true, reg);
+    }
+
+    /// valueD for several operands, deepest first (ties in order). The
+    /// operands are pure, so the order changes registers, not results.
+    fn valuesD(self: *Codegen, comptime n: usize, ids: [n]usize) Error![n]u5 {
+        var order: [n]usize = undefined;
+        for (0..n) |i| order[i] = i;
+        var i: usize = 1;
+        while (i < n) : (i += 1) {
+            var j = i;
+            while (j > 0 and self.depth[ids[order[j]]] > self.depth[ids[order[j - 1]]]) : (j -= 1) {
+                std.mem.swap(usize, &order[j], &order[j - 1]);
+            }
+        }
+        var regs: [n]u5 = undefined;
+        for (order) |k| regs[k] = try self.valueD(ids[k]);
+        return regs;
     }
 
     fn valueD(self: *Codegen, id: usize) Error!u5 {
@@ -1386,8 +1438,9 @@ const Codegen = struct {
                 return reg;
             },
             .fadd, .fsub, .fmul, .fdiv, .fmin, .fmax, .mand, .mor => {
-                const a = try self.valueD(value.a);
-                const b = try self.valueD(value.b);
+                const r = try self.valuesD(2, .{ value.a, value.b });
+                const a = r[0];
+                const b = r[1];
                 const reg = try self.allocD();
                 const instr = switch (value.op) {
                     .fadd => Asm.@"fadd Dd, Dn, Dm"(reg, a, b),
@@ -1451,8 +1504,9 @@ const Codegen = struct {
             },
             .fcmp => {
                 // Materialized mask. a<b is b>a; NaN compares false.
-                const a = try self.valueD(value.a);
-                const b = try self.valueD(value.b);
+                const r = try self.valuesD(2, .{ value.a, value.b });
+                const a = r[0];
+                const b = r[1];
                 const reg = try self.allocD();
                 try self.out.append(switch (@as(Cmp, @enumFromInt(value.int_value))) {
                     .lt => Asm.@"fcmgt Dd, Dn, Dm"(reg, b, a),
@@ -1482,10 +1536,11 @@ const Codegen = struct {
                     // The compare's only use: fcmp + fcsel, no mask register.
                     // The conditions are the ordered ones, so NaN selects
                     // the false arm exactly like the materialized mask.
-                    const a = try self.valueD(mv.a);
-                    const b = try self.valueD(mv.b);
-                    const t = try self.valueD(value.b);
-                    const f = try self.valueD(value.c);
+                    const r = try self.valuesD(4, .{ mv.a, mv.b, value.b, value.c });
+                    const a = r[0];
+                    const b = r[1];
+                    const t = r[2];
+                    const f = r[3];
                     const reg = try self.allocD();
                     const cond: u4 = switch (@as(Cmp, @enumFromInt(mv.int_value))) {
                         .lt => Asm.COND_MI,
@@ -1503,9 +1558,10 @@ const Codegen = struct {
                     self.consumeValue(value.c);
                     return reg;
                 }
-                const m = try self.valueD(value.a);
-                const t = try self.valueD(value.b);
-                const f = try self.valueD(value.c);
+                const r = try self.valuesD(3, .{ value.a, value.b, value.c });
+                const m = r[0];
+                const t = r[1];
+                const f = r[2];
                 const reg = try self.allocD();
                 try self.out.append(Asm.@"fmov Dd, Dn"(reg, m));
                 try self.out.append(Asm.@"bsl Vd.8B, Vn.8B, Vm.8B"(reg, t, f));

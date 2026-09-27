@@ -233,6 +233,11 @@ pub fn add_imm(d: u5, n: u5, imm: u12) u32 {
     return 0x91000000 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, imm) << 10);
 }
 
+/// ADD Xd, Xn, #imm, LSL #12 — adds imm * 4096.
+pub fn add_imm_lsl12(d: u5, n: u5, imm: u12) u32 {
+    return 0x91400000 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, imm) << 10);
+}
+
 // SP-relative helpers for locals frames
 // Reserve a stack frame: sub sp, sp, #imm (imm must be a multiple of 16, imm <= 4095)
 pub fn sub_sp_imm(imm: u12) u32 {

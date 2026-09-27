@@ -1680,6 +1680,8 @@ test "dsp: n [ ... ] times unrolls into straight-line code" {
         \\dsp: t-zero | out | 7.0 0 [ 1.0 f+ ] times out f!64 ;
         \\( a constant-index store is a plain field: the load sees it )
         \\dsp: t-fwd | out buf | 5.0 buf 2.0 f!i  buf 1.0 1.0 f+ f@i out f!64 ;
+        \\( a constant offset past add's 12-bit immediate )
+        \\dsp: t-far | out buf | buf 1000.0 f@i buf 3.0 f@i f+ out f!64 ;
     );
 
     var out: f64 = 0;
@@ -1712,6 +1714,12 @@ test "dsp: n [ ... ] times unrolls into straight-line code" {
     _ = try fy.callDsp2RawRepeatedWithArgsNoResult("t-fwd", 1, &fwd_args);
     try std.testing.expectEqual(@as(f64, 5), out);
     try std.testing.expectEqual(@as(f64, 5), buf[2]);
+    var far = [_]f64{0} ** 1001;
+    far[1000] = 2.5;
+    far[3] = 0.25;
+    const far_args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&out) }, .{ .ptr = @intFromPtr(&far) } };
+    _ = try fy.callDsp2RawRepeatedWithArgsNoResult("t-far", 1, &far_args);
+    try std.testing.expectEqual(@as(f64, 2.75), out);
 }
 
 test "dsp: times rejects a runtime count, an unbalanced body and a bare quote" {
