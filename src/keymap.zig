@@ -813,6 +813,82 @@ fn isDir(path: []const u8) bool {
     return true;
 }
 
+// ── Anti-aliasing ahead of a stored rate ────────────────────────────────
+
+/// A copy of `km`'s pool with each zone low-passed at `fc` Hz, as a
+/// sampler's input filter does before it samples at `rate`: an 8-pole
+/// Butterworth, causal like the hardware's. A zone whose rate is 0 (a .VC,
+/// already voice RAM) or already below 2.2 x fc stays as it is. With `cap`,
+/// only the first `cap` stored samples' worth (at `rate`) of each zone is
+/// filtered, which is all a machine that stores that many ever plays.
+pub fn antialias(alloc: std.mem.Allocator, km: *const Keymap, fc: f64, rate: f64, cap: usize) ![]f64 {
+    const out = try alloc.alloc(f64, km.pool.len);
+    @memcpy(out, km.pool);
+    // the four sections' Q of an 8th-order Butterworth
+    const qs = [_]f64{ 0.5097955791041592, 0.6013448869350453, 0.8999762231364156, 2.5629154477415055 };
+    for (km.zones[0..km.count]) |z| {
+        if (z.sr < 0.5 or fc * 2.2 >= z.sr) continue;
+        const start: usize = @intFromFloat(z.start);
+        var n: usize = @intFromFloat(z.len);
+        if (cap > 0 and rate > 0) n = @min(n, @as(usize, @intFromFloat(@ceil(@as(f64, @floatFromInt(cap)) * z.sr / rate))) + 64);
+        const x = out[start .. start + n];
+        const w = @tan(std.math.pi * fc / z.sr);
+        for (qs) |q| {
+            // bilinear 2-pole lowpass, direct form I
+            const k = 1 + w / q + w * w;
+            const b0 = w * w / k;
+            const a1 = 2 * (w * w - 1) / k;
+            const a2 = (1 - w / q + w * w) / k;
+            var x1: f64 = 0;
+            var x2: f64 = 0;
+            var y1: f64 = 0;
+            var y2: f64 = 0;
+            for (x) |*v| {
+                const y = b0 * (v.* + 2 * x1 + x2) - a1 * y1 - a2 * y2;
+                x2 = x1;
+                x1 = v.*;
+                y2 = y1;
+                y1 = y;
+                v.* = y;
+            }
+        }
+    }
+    return out;
+}
+
+test "antialias passes the band and stops what would fold" {
+    const a = std.testing.allocator;
+    const n = 48_000;
+    var pool = try a.alloc(f64, n);
+    defer a.free(pool);
+    var zones = [_]Zone{.{}} ** 1;
+    zones[0].start = 0;
+    zones[0].len = n;
+    zones[0].sr = 48_000;
+    var km = Keymap{ .pool = pool, .zones = &zones, .count = 1 };
+    const rms = struct {
+        fn of(x: []const f64) f64 {
+            var s: f64 = 0;
+            for (x) |v| s += v * v;
+            return @sqrt(s / @as(f64, @floatFromInt(x.len)));
+        }
+    }.of;
+    // stored at 16 kHz, filtered at 0.45 x: 1 kHz passes, 12 kHz (which
+    // would fold to 4 kHz) is 30 dB down (48 dB/oct, 0.74 oct over)
+    for ([_]f64{ 1000, 12000 }, [_]bool{ true, false }) |f, pass| {
+        for (pool, 0..) |*v, i| v.* = @sin(2 * std.math.pi * f * @as(f64, @floatFromInt(i)) / 48_000);
+        const o = try antialias(a, &km, 0.45 * 16_000, 16_000, 0);
+        defer a.free(o);
+        const r = rms(o[4800..]) / rms(pool[4800..]);
+        if (pass) try std.testing.expect(r > 0.97) else try std.testing.expect(r < 0.032);
+    }
+    // a zone already at or under the rate isn't touched
+    zones[0].sr = 12_000;
+    const o = try antialias(a, &km, 0.45 * 16_000, 16_000, 0);
+    defer a.free(o);
+    try std.testing.expectEqualSlices(f64, pool, o);
+}
+
 // ── Fairlight CMI voice files ───────────────────────────────────────────
 
 /// A Series II / IIx `.VC` file: 21,888 bytes, 5,376 of voice parameters,

@@ -95,7 +95,7 @@ struct: ItemDesc    ptr next  ptr name  ptr weight ;
 struct: ConstDesc   ptr next  ptr offset  ptr value ;
 struct: NoteLabelDesc ptr next  ptr pitch  ptr label ;
 struct: BufferDesc  ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr seconds ;
-struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-offset  ptr file  ptr kind  ptr edits-offset ;
+struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-offset  ptr file  ptr kind  ptr edits-offset  ptr aa-control  ptr aa-ratio  ptr aa-cap ;
 
 ( --- builder state ------------------------------------------------ )
 :: _mf-md         8 alloc ;
@@ -474,6 +474,9 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   AssetDesc.alloc
   0 swap AssetDesc.kind!
   0 swap AssetDesc.edits-offset!
+  0 swap AssetDesc.aa-control!
+  0 swap AssetDesc.aa-ratio!
+  0 swap AssetDesc.aa-cap!
   swap cstr-new swap AssetDesc.file!
   AssetDesc.sr-offset!
   AssetDesc.len-offset!
@@ -498,6 +501,17 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   swap >r asset
   1 _mf-last-asset @64 AssetDesc.kind! drop
   r> _mf-last-asset @64 AssetDesc.edits-offset! drop
+;
+
+( Low-pass the last keymap's samples ahead of the rate the machine
+  stores them at, as a sampler's input filter did: the host filters each
+  zone at ratio x the value of control `id` [an 8-pole Butterworth],
+  when the keymap loads and whenever that control settles; `cap` stored
+  samples' worth of each zone [0 = all of it]. )
+: keymap-antialias  ( control-id ratio cap -- )
+  _mf-last-asset @64 AssetDesc.aa-cap! drop
+  _mf-last-asset @64 AssetDesc.aa-ratio! drop
+  cstr-new _mf-last-asset @64 AssetDesc.aa-control! drop
 ;
 
 ( the zone list of a keymap asset: select a zone, edit its level, tune,

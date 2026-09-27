@@ -599,7 +599,11 @@ entries of [register letter, octave<<10 | pitch]. Table 0 is the
 keyboard: its register letters are the splits. The default table puts
 a 128-sample cycle at A440 on key 52, so MIDI = key + 17 and a voice at
 RATE 24000 roots at 54.232; presets use that, or the measured pitch
-when a voice was sampled off the CMI's semitones. cmi.py imports disk
+when a voice was sampled off the CMI's semitones. A WAV or SFZ is
+low-passed at 0.45 x RATE before it becomes voice RAM (an 8-pole
+Butterworth, the CMI's sampling filter; `keymap-antialias` in the
+manifest, rebuilt by the host when RATE settles); a `.VC` is RAM
+already. cmi.py imports disk
 images, `.VC`/`.CO`/`.IN` files and WAV RAM dumps into lib:cmi with a
 catalog and a preset per voice (tools/library/README.md). Still open for the CMI machine:
 the Series II additive page, the per-voice filter

@@ -762,12 +762,39 @@ fn play(m: Machine, evs: []const NoteEvent, out: []f32) void {
     }
 }
 
-fn zeroCrossHz(x: []const f32) f64 {
-    var n: usize = 0;
-    for (x[1..], x[0 .. x.len - 1]) |b, a| {
-        if (a <= 0 and b > 0) n += 1;
+/// Pitch by autocorrelation: the lag (50..800 Hz) where the signal best
+/// matches itself, refined by a parabola.
+fn acHz(x: []const f32) f64 {
+    const lo: usize = 48000 / 800;
+    const hi: usize = 48000 / 50;
+    const n = x.len - hi;
+    var best: usize = lo;
+    var best_v: f64 = -1e300;
+    var vals: [hi + 2]f64 = undefined;
+    var lag: usize = lo;
+    while (lag <= hi) : (lag += 1) {
+        var acc: f64 = 0;
+        for (x[0..n], x[lag..][0..n]) |a, b| acc += a * b;
+        vals[lag] = acc;
+        if (acc > best_v) {
+            best_v = acc;
+            best = lag;
+        }
     }
-    return @as(f64, @floatFromInt(n)) * 48000 / @as(f64, @floatFromInt(x.len));
+    // prefer the shortest lag almost as good (not an octave down)
+    lag = lo;
+    while (lag < best) : (lag += 1) {
+        if (vals[lag] > 0.9 * best_v and vals[lag] >= vals[lag - 1] and vals[lag] >= vals[lag + 1]) {
+            best = lag;
+            break;
+        }
+    }
+    const a = vals[best - 1];
+    const b = vals[best];
+    const c = vals[best + 1];
+    const den = a - 2 * b + c;
+    const t = @as(f64, @floatFromInt(best)) + (if (den != 0) 0.5 * (a - c) / den else 0);
+    return 48000 / t;
 }
 
 fn rms(x: []const f32) f64 {
@@ -801,7 +828,7 @@ test "rack: a split sends each key to its part, transposed; POLY releases the ol
     var out = [_]f32{0} ** (512 * 24);
     // A2 on the lower part: the bundled pluck (A3) an octave down
     play(m, &.{noteOn(45, 1)}, &out);
-    try testing.expectApproxEqRel(@as(f64, 110), zeroCrossHz(out[512 * 2 ..]), 0.03);
+    try testing.expectApproxEqRel(@as(f64, 110), acHz(out[512 * 4 ..]), 0.01);
     try testing.expectEqual(@as(u8, 1), rack.parts[0].held_n);
     try testing.expectEqual(@as(u8, 0), rack.parts[1].held_n);
     play(m, &.{noteOff(45, 1)}, &out);
@@ -809,7 +836,7 @@ test "rack: a split sends each key to its part, transposed; POLY releases the ol
     // A4 on the upper part, down an octave: A3
     m.reset(m.state);
     play(m, &.{noteOn(69, 2)}, &out);
-    try testing.expectApproxEqRel(@as(f64, 220), zeroCrossHz(out[512 * 2 ..]), 0.03);
+    try testing.expectApproxEqRel(@as(f64, 220), acHz(out[512 * 4 ..]), 0.01);
     try testing.expectEqual(@as(u8, 1), rack.parts[1].held_n);
     try testing.expectEqual(@as(f32, 57), rack.parts[1].held[0].pitch);
     m.reset(m.state);

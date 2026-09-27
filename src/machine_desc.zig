@@ -204,6 +204,16 @@ pub const AssetReq = struct {
     keymap: bool = false,
     /// Keymaps: where the per-zone edits pointer goes in PARAMS.
     edits_offset: usize = 0,
+    /// Keymaps: low-pass the pool at `aa_ratio` x this control's value
+    /// (`keymap-antialias`); empty = never.
+    aa_control: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
+    aa_control_len: usize = 0,
+    aa_ratio: f64 = 0,
+    aa_cap: usize = 0,
+
+    pub fn aaControl(self: *const AssetReq) []const u8 {
+        return self.aa_control[0..self.aa_control_len];
+    }
 
     pub fn fileSlice(self: *const AssetReq) []const u8 {
         return self.file[0..self.file_len];
@@ -465,7 +475,7 @@ const ItemRaw = extern struct { next: Fy.Value, name: Fy.Value, weight: Fy.Value
 const ConstRaw = extern struct { next: Fy.Value, offset: Fy.Value, value: Fy.Value };
 const NoteLabelRaw = extern struct { next: Fy.Value, pitch: Fy.Value, label: Fy.Value };
 const BufferRaw = extern struct { next: Fy.Value, name: Fy.Value, ptr_offset: Fy.Value, len_offset: Fy.Value, seconds: Fy.Value };
-const AssetRaw = extern struct { next: Fy.Value, name: Fy.Value, ptr_offset: Fy.Value, len_offset: Fy.Value, sr_offset: Fy.Value, file: Fy.Value, kind: Fy.Value, edits_offset: Fy.Value };
+const AssetRaw = extern struct { next: Fy.Value, name: Fy.Value, ptr_offset: Fy.Value, len_offset: Fy.Value, sr_offset: Fy.Value, file: Fy.Value, kind: Fy.Value, edits_offset: Fy.Value, aa_control: Fy.Value, aa_ratio: Fy.Value, aa_cap: Fy.Value };
 
 // ── tagged-value decode ───────────────────────────────────────────────
 
@@ -704,6 +714,11 @@ pub fn read(host: *FyHost) !Desc {
         if (out.keymap) {
             out.edits_offset = @intCast(asInt(as.edits_offset));
             if (out.edits_offset + 8 > d.params_size) return error.InvalidMachineDesc;
+            if (as.aa_control != 0 and asInt(as.aa_control) != 0) {
+                out.aa_control_len = try copyText(&out.aa_control, cstrSlice(as.aa_control));
+                out.aa_ratio = asF64(as.aa_ratio);
+                out.aa_cap = @intCast(@max(0, asInt(as.aa_cap)));
+            }
         }
         const file = cstrSlice(as.file);
         if (file.len == 0 or file.len >= MAX_PATH) return error.InvalidMachineDesc;

@@ -136,6 +136,11 @@ pub const FyRawMachine = struct {
     asset_mem: [machine_desc.MAX_ASSETS]wav.Sample = [_]wav.Sample{.{ .data = &.{}, .sample_rate = 0 }} ** machine_desc.MAX_ASSETS,
     // Keymap assets (manifest `keymap`): the loaded pool + zone table.
     asset_keymap: [machine_desc.MAX_ASSETS]keymap.Keymap = [_]keymap.Keymap{.{}} ** machine_desc.MAX_ASSETS,
+    /// A keymap's pool low-passed ahead of its stored rate
+    /// (`keymap-antialias`), what the kernel reads when present, and the
+    /// control value it was built for.
+    aa_pool: [machine_desc.MAX_ASSETS][]f64 = [_][]f64{&.{}} ** machine_desc.MAX_ASSETS,
+    aa_built: [machine_desc.MAX_ASSETS]f64 = [_]f64{-1} ** machine_desc.MAX_ASSETS,
     // A valid silent target for assets that failed to load, so a kernel's
     // clamped read hits real zeroed memory instead of an empty slice's ptr.
     // Long enough for an interpolator reading around the guard index.
@@ -255,6 +260,7 @@ pub const FyRawMachine = struct {
             const full = std.fmt.bufPrint(&pbuf, "{s}/{s}", .{ dir, req.fileSlice() }) catch continue;
             if (req.keymap) {
                 self.asset_keymap[ai] = keymap.load(alloc, full) catch keymap.Keymap{};
+                self.aa_pool[ai] = self.buildAntialias(ai, &self.asset_keymap[ai]) orelse &.{};
                 self.keymapChanged(ai);
             } else {
                 self.asset_mem[ai] = wav.load(alloc, full) catch wav.Sample{ .data = &.{}, .sample_rate = 0 };
@@ -292,7 +298,39 @@ pub const FyRawMachine = struct {
             if (s.data.len > 0) alloc.free(s.data);
             s.* = .{ .data = &.{}, .sample_rate = 0 };
             self.asset_keymap[ai].deinit(alloc);
+            if (self.aa_pool[ai].len > 0) alloc.free(self.aa_pool[ai]);
+            self.aa_pool[ai] = &.{};
             self.asset_cache[ai].deinit(alloc);
+        }
+    }
+
+    /// The anti-aliased pool for keymap `ai` as `km`, at its control's
+    /// current value; null when the asset has none or it can't be built.
+    fn buildAntialias(self: *FyRawMachine, ai: usize, km: *const keymap.Keymap) ?[]f64 {
+        const req = &self.desc.assets[ai];
+        if (req.aa_control_len == 0 or km.count == 0) return null;
+        const rate = controlValueById(self, req.aaControl()) orelse return null;
+        if (!(rate > 0)) return null;
+        const pool = keymap.antialias(self.alloc, km, rate * req.aa_ratio, rate, req.aa_cap) catch return null;
+        self.aa_built[ai] = rate;
+        return pool;
+    }
+
+    /// Rebuild every anti-aliased pool whose control moved since it was
+    /// built. UI thread; the swap is fenced, and the pool keeps its layout,
+    /// so sounding voices carry on.
+    fn refreshAntialias(self: *FyRawMachine) void {
+        for (self.desc.assets[0..self.desc.asset_count], 0..) |*req, ai| {
+            if (!req.keymap or req.aa_control_len == 0) continue;
+            const rate = controlValueById(self, req.aaControl()) orelse continue;
+            if (rate == self.aa_built[ai] and self.aa_pool[ai].len == self.asset_keymap[ai].pool.len) continue;
+            const pool = self.buildAntialias(ai, &self.asset_keymap[ai]) orelse continue;
+            fy_host_mod.lockCallbacks();
+            const old = self.aa_pool[ai];
+            self.aa_pool[ai] = pool;
+            self.injectAssets();
+            fy_host_mod.unlockCallbacks();
+            if (old.len > 0) self.alloc.free(old);
         }
     }
 
@@ -341,16 +379,20 @@ pub const FyRawMachine = struct {
         // Edits follow zones by name: a reloaded or swapped kit keeps the
         // clap you turned down.
         const edits = remapEdits(&self.zone_edits, &self.asset_keymap[ai], &loaded);
+        const aa: []f64 = self.buildAntialias(ai, &loaded) orelse &.{};
 
         fy_host_mod.lockCallbacks();
         var old = self.asset_keymap[ai];
+        const old_aa = self.aa_pool[ai];
         self.asset_keymap[ai] = loaded;
+        self.aa_pool[ai] = aa;
         self.zone_edits = edits;
         self.injectAssets();
         self.silenceVoices();
         fy_host_mod.unlockCallbacks();
 
         old.deinit(self.alloc);
+        if (old_aa.len > 0) self.alloc.free(old_aa);
         self.setAssetSource(ai, src);
         self.asset_loaded[ai] = true;
         self.keymapChanged(ai);
@@ -441,7 +483,8 @@ pub const FyRawMachine = struct {
             if (req.keymap) {
                 const km = &self.asset_keymap[ai];
                 const has = km.count > 0;
-                self.writeParamUsize(req.ptr_offset, if (has) @intFromPtr(km.pool.ptr) else @intFromPtr(&self.asset_silence[0]));
+                const pool = if (self.aa_pool[ai].len == km.pool.len and km.pool.len > 0) self.aa_pool[ai] else km.pool;
+                self.writeParamUsize(req.ptr_offset, if (has) @intFromPtr(pool.ptr) else @intFromPtr(&self.asset_silence[0]));
                 self.writeParamUsize(req.len_offset, if (has) @intFromPtr(km.zones.ptr) else @intFromPtr(&self.empty_zones[0]));
                 self.writeParamF64(req.sr_offset, @floatFromInt(km.count));
                 self.writeParamUsize(req.edits_offset, @intFromPtr(&self.zone_edits));
@@ -808,6 +851,7 @@ fn applyPresetImpl(state: *anyopaque, index: machine.PresetIndex) void {
     if (params != .object) return;
     var it = params.object.iterator();
     while (it.next()) |kv| applyControlValue(self, kv.key_ptr.*, jsonF64(kv.value_ptr.*));
+    self.refreshAntialias();
 }
 
 fn jsonF64(v: std.json.Value) f64 {
@@ -922,6 +966,7 @@ fn loadAssetImpl(state: *anyopaque, name: []const u8, path: []const u8) bool {
 fn setParamImpl(state: *anyopaque, id: []const u8, value: f64) void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     applyControlValue(self, id, value);
+    self.refreshAntialias();
 }
 
 // Dump current control values as a JSON object {"id": realValue, ...} into
@@ -1470,6 +1515,8 @@ fn drawPanelImpl(state: *anyopaque, ui: *Ui, rect: Rect) void {
     }
     const tier = chooseTier(self, ui, rect);
     _ = walkPanel(self, ui, rect, .{ .draw = tier });
+    // a stored rate moved: re-filter once the knob is let go
+    if (ui.active == 0) self.refreshAntialias();
 }
 
 fn drawFixtureInfo(self: *FyRawMachine, ui: *Ui, r: Rect) void {

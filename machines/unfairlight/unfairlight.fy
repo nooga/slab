@@ -6,7 +6,9 @@
   was.  Each note plays on the card's own clock with no interpolation,
   the loop is whole 128-sample segments, and the SSM filter follows the
   octave register in whole-octave steps.  FILTER is the card's filter
-  latch [0..255, 32 steps an octave]. )
+  latch [0..255, 32 steps an octave].  A sample is low-passed at 0.45 x
+  RATE before it becomes voice RAM, as the CMI's sampling filter did;
+  a .VC is voice RAM already. )
 
 include "../../kernels/06-voices/cmi.fy"
 include "../lib/manifest.fy"
@@ -23,6 +25,8 @@ include "../lib/manifest.fy"
   880.0 panel-w!
 
   "voice" CmiParams.pool CmiParams.zones CmiParams.zone-count CmiParams.edits "../sampler/assets/default.wav" keymap
+  ( the sampling filter: 0.45 x RATE ahead of the voice RAM's 16,384 samples )
+  "cmi-rate" 0.45 16384 keymap-antialias
 
   "VOICE" "RATE" "cmi-rate" CmiParams.rate 4000.0 32000.0 24000.0 curve-exp knob
   "VOICE" "ROOT" "cmi-root" CmiParams.root 24.0 96.0 57.0 curve-lin knob
