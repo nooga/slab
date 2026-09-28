@@ -12,6 +12,7 @@ import random
 import re
 import subprocess
 import wave
+import zlib
 
 from . import rhythm
 from .machines import ROOT, SLAB, SlabError, library_path, machine, preset as load_preset, preset_assets
@@ -395,7 +396,11 @@ class Clip:
     def humanize(self, time=0.006, vel=6, seed=None):
         """Small random timing (± beats) and velocity (±) offsets. Keep
         time tiny — 0.006 beats is ~3 ms at 120 BPM."""
-        rng = random.Random(seed if seed is not None else hash((self.track.name, self.name)) & 0xffff)
+        # crc32, not hash(): str hashes are salted per process, which made
+        # every regeneration of a song rewrite its whole .slab.
+        if seed is None:
+            seed = zlib.crc32(f"{self.track.name}/{self.name}".encode())
+        rng = random.Random(seed)
         for n in self.notes:
             n["start"] = max(0.0, n["start"] + rng.uniform(-time, time))
             n["vel"] = max(1, min(127, n["vel"] + rng.randint(-vel, vel)))
