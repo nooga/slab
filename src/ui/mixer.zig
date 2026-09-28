@@ -165,7 +165,7 @@ fn drawStrip(
         var ibuf: [8]u8 = undefined;
         const tag = if (t.isBus()) std.fmt.bufPrint(&ibuf, "{c}", .{letterOf(tracks, ti)}) catch "?" else std.fmt.bufPrint(&ibuf, "{d}", .{numberOf(tracks, ti)}) catch "?";
         var line = Rect.xywh(tr.x + 3, tr.y + 5, tr.w - 6, tr.h - 5);
-        ui.textIn(&ui.fonts.legend, line.cutLeft(12), tag, ui_style.text_mute, .left, true);
+        ui.textIn(&ui.fonts.legend, line.cutLeft(ui.fonts.legend.measure(tag) + 5), tag, ui_style.text_mute, .left, true);
         ui.textIn(&ui.fonts.body, line, t.name(), if (selected) ui_style.text else ui_style.text_dim, .left, true);
         const b = ui.behaviorEx(ui.id("title"), tr, .{ .focusable = false });
         if (b.pressed) select(device_sel, selected_track, ti);
