@@ -35,6 +35,8 @@ pub const Result = struct {
     master_volume: ?f32 = null,
     /// KILL: stop and silence everything.
     panic: bool = false,
+    /// AUTO: arm/disarm automation recording.
+    auto_arm_toggle: bool = false,
 };
 
 pub const Args = struct {
@@ -52,6 +54,8 @@ pub const Args = struct {
     master_peak: [2]f32 = .{ 0, 0 },
     /// Master fader gain (linear).
     master_volume: f32 = 1,
+    /// Automation recording armed (docs/22 §Manual changes).
+    auto_arm: bool = false,
 };
 
 const FILE_MENU_KEY: u64 = 0x5346494c45; // "SFILE"
@@ -94,6 +98,10 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     const loop_r = bar.cutLeft(36);
     if (ctl.button(ui, loop_r, "loop", &loop_on, .{ .label = "LOOP", .lit = style.accent, .flush = true })) t.toggleLoop();
     menu.tip(ui, loop_r, "Loop on/off");
+    var arm = a.auto_arm;
+    const arm_r = bar.cutLeft(40);
+    if (ctl.button(ui, arm_r, "autoarm", &arm, .{ .label = "AUTO", .lit = style.rec, .flush = true })) res.auto_arm_toggle = true;
+    menu.tip(ui, arm_r, if (a.auto_arm) "Automation recording armed: drags while playing write lanes" else "Arm automation recording");
 
     // Tempo: [LED 124.0][▲▼]  TAP
     bpmTile(ui, bar.cutLeft(108), t, map);

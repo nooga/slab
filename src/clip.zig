@@ -55,6 +55,23 @@ pub const Note = struct {
     /// Inline so a Note stays a plain value that copies with clipboards.
     bend: [MAX_BEND]automation.Point = undefined,
     bend_n: u8 = 0,
+    /// Pressure, slide and gain curves (ExprDim order).
+    dims: [EXPR_DIMS]Curve = [_]Curve{.{}} ** EXPR_DIMS,
+
+    pub fn dim(self: *Note, d: ExprDim) *Curve {
+        return &self.dims[@intFromEnum(d)];
+    }
+
+    pub fn dimConst(self: *const Note, d: ExprDim) *const Curve {
+        return &self.dims[@intFromEnum(d)];
+    }
+
+    /// Whether the note carries any expression at all.
+    pub fn hasExpression(self: *const Note) bool {
+        if (self.bend_n > 0) return true;
+        for (self.dims) |cv| if (cv.n > 0) return true;
+        return false;
+    }
 
     pub fn bendPoints(self: *const Note) []const automation.Point {
         return self.bend[0..self.bend_n];
@@ -96,6 +113,55 @@ pub const Note = struct {
 };
 
 pub const MAX_BEND = 8;
+
+/// Per-note expression beyond pitch (docs/22): pressure and slide 0..1,
+/// gain in dB.
+pub const ExprDim = enum(u8) { pressure, slide, gain };
+pub const EXPR_DIMS = 3;
+
+pub const DimRange = struct { lo: f32, hi: f32, rest: f32 };
+
+pub fn dimRange(d: ExprDim) DimRange {
+    return switch (d) {
+        .pressure => .{ .lo = 0, .hi = 1, .rest = 0.5 },
+        .slide => .{ .lo = 0, .hi = 1, .rest = 0 },
+        .gain => .{ .lo = -48, .hi = 12, .rest = 0 },
+    };
+}
+
+/// One expression curve: up to MAX_BEND points, beats from the note's
+/// start, inline so notes stay plain values.
+pub const Curve = struct {
+    pts: [MAX_BEND]automation.Point = undefined,
+    n: u8 = 0,
+
+    pub fn points(self: *const Curve) []const automation.Point {
+        return self.pts[0..self.n];
+    }
+
+    pub fn slice(self: *Curve) []automation.Point {
+        return self.pts[0..self.n];
+    }
+
+    /// The curve at `beat`, or `rest` without points.
+    pub fn at(self: *const Curve, beat: f64, rest: f32) f32 {
+        if (self.n == 0) return rest;
+        return automation.eval(self.points(), beat);
+    }
+
+    /// Add a point in order, clamped to [lo, hi]. False when full.
+    pub fn add(self: *Curve, p: automation.Point, lo: f32, hi: f32) bool {
+        if (self.n >= MAX_BEND) return false;
+        var q = p;
+        q.value = std.math.clamp(q.value, lo, hi);
+        const at_i = if (automation.segmentIndex(self.points(), q.beat)) |i| i + 1 else 0;
+        var i: usize = self.n;
+        while (i > at_i) : (i -= 1) self.pts[i] = self.pts[i - 1];
+        self.pts[at_i] = q;
+        self.n += 1;
+        return true;
+    }
+};
 /// Bend range, fixed (docs/22): enough to fold a wide chord onto one note.
 pub const MAX_BEND_SEMIS: f32 = 48;
 

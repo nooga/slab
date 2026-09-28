@@ -39,6 +39,58 @@ pub fn formatLane(ctx: *const anyopaque, knob: f32, buf: []u8) []const u8 {
     }
 }
 
+/// Typed text → knob space, the inverse of `formatLane`: dB for volume,
+/// `L 40` / `R 40` / `C` / -1..1 for pan, a control's own units (a `k`
+/// suffix multiplies by 1000; switches take an option label or index).
+pub fn parseLane(ctx: *const anyopaque, text: []const u8) ?f32 {
+    const f: *const LaneFmt = @ptrCast(@alignCast(ctx));
+    const t = std.mem.trim(u8, text, " \t");
+    if (t.len == 0) return null;
+    switch (f.kind) {
+        .volume => {
+            var num = t;
+            if (std.ascii.endsWithIgnoreCase(num, "db")) num = std.mem.trim(u8, num[0 .. num.len - 2], " ");
+            if (std.ascii.eqlIgnoreCase(num, "-inf")) return 0;
+            const db = std.fmt.parseFloat(f32, num) catch return null;
+            return std.math.pow(f32, 10, db / 20) / 1.25;
+        },
+        .pan => {
+            if (std.ascii.eqlIgnoreCase(t, "c")) return 0.5;
+            const side = std.ascii.toUpper(t[0]);
+            if (side == 'L' or side == 'R') {
+                const amt = std.fmt.parseFloat(f32, std.mem.trim(u8, t[1..], " ")) catch return null;
+                const p = (if (side == 'L') -amt else amt) / 100;
+                return (std.math.clamp(p, -1, 1) + 1) / 2;
+            }
+            const p = std.fmt.parseFloat(f32, t) catch return null;
+            return (std.math.clamp(p, -1, 1) + 1) / 2;
+        },
+        .inst, .fx => {
+            const m = f.mach orelse return null;
+            const to_knob = m.control_knob orelse return null;
+            if (m.control_info) |info_fn| if (info_fn(m.state, f.ci).stepped) {
+                // An option label, matched against the formatter's names.
+                if (m.format_control) |fc| {
+                    const info = info_fn(m.state, f.ci);
+                    var k: f32 = info.lo;
+                    while (k <= info.hi) : (k += 1) {
+                        var buf: [32]u8 = undefined;
+                        if (std.ascii.eqlIgnoreCase(fc(m.state, f.ci, k, &buf), t)) return k;
+                    }
+                }
+            };
+            var num = t;
+            var mul: f64 = 1;
+            if (num.len > 1 and (num[num.len - 1] == 'k' or num[num.len - 1] == 'K')) {
+                num = num[0 .. num.len - 1];
+                mul = 1000;
+            }
+            const v = std.fmt.parseFloat(f64, num) catch return null;
+            return to_knob(m.state, f.ci, v * mul);
+        },
+    }
+}
+
 /// A lane's legend, value range and formatter context.
 pub const LaneInfo = struct {
     name: []const u8,
@@ -201,4 +253,19 @@ pub fn retarget(lane: *automation.Lane, pick: Pick) void {
         pt.shape = .hold;
         pt.value = @round(pt.value);
     };
+}
+
+test "typed lane values parse in the lane's units" {
+    const t = std.testing;
+    const vol = LaneFmt{ .mach = null, .kind = .volume };
+    try t.expectApproxEqAbs(@as(f32, 0.5012 / 1.25), parseLane(&vol, "-6 dB").?, 1e-3);
+    try t.expectEqual(@as(f32, 0), parseLane(&vol, "-inf").?);
+    const pan = LaneFmt{ .mach = null, .kind = .pan };
+    try t.expectEqual(@as(f32, 0.5), parseLane(&pan, "c").?);
+    try t.expectApproxEqAbs(@as(f32, 0.3), parseLane(&pan, "L 40").?, 1e-6);
+    try t.expectApproxEqAbs(@as(f32, 0.75), parseLane(&pan, "0.5").?, 1e-6);
+    try t.expect(parseLane(&vol, "loud") == null);
+    // Round trip through the formatter.
+    var buf: [32]u8 = undefined;
+    try t.expectApproxEqAbs(@as(f32, 0.3), parseLane(&pan, formatLane(&pan, 0.3, &buf)).?, 1e-2);
 }

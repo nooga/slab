@@ -117,22 +117,29 @@ class Clip:
         pitches = {note(w) for w in (which if isinstance(which, (list, tuple, set)) else [which])}
         return [n for n in self.notes if n["pitch"] in pitches]
 
-    def bend(self, points, notes=None):
-        """Pitch-bend notes: points are (beat from the note's start,
-        semitones[, shape[, tension]]), at most 8. `notes` picks which:
-        None = all, a pitch or list of pitches, or a function of the note
-        dict. The machine must take pitch expression (sampler, Unfairlight)."""
-        where = f"clip {self.track.name}/{self.name} bend"
-        pts = []
-        _add_points({"b": pts}, ("b", lambda v: v, False), where, points)
-        pts = pts  # _add_points filled the list in place
+    EXPR_RANGES = {"pitch": (-48, 48), "pressure": (0, 1), "slide": (0, 1), "gain": (-48, 12)}
+
+    def bend(self, points, notes=None, dim="pitch"):
+        """Per-note expression: points are (beat from the note's start,
+        value[, shape[, tension]]), at most 8. dim "pitch" (semitones,
+        ±48, the default), "pressure" / "slide" (0..1) or "gain" (dB,
+        -48..12). `notes` picks which: None = all, a pitch or list of
+        pitches, or a function of the note dict. Pitch plays on every
+        pitched machine; gain on the sampler and Unfairlight."""
+        where = f"clip {self.track.name}/{self.name} {dim}"
+        if dim not in self.EXPR_RANGES:
+            raise SlabError(f"{where}: dim is one of {', '.join(self.EXPR_RANGES)}")
+        lo, hi = self.EXPR_RANGES[dim]
+        lanes = {}
+        _add_points(lanes, ("e", lambda v: v, False), where, points)
+        pts = lanes["e"]
         if len(pts) > 8:
             raise SlabError(f"{where}: {len(pts)} points (a note holds at most 8)")
         for _, v, _, _ in pts:
-            if not -48 <= v <= 48:
-                raise SlabError(f"{where}: {v} semitones is outside ±48")
+            if not lo <= v <= hi:
+                raise SlabError(f"{where}: {v} is outside [{lo}, {hi}]")
         for n in self._pick(notes):
-            n["expr"] = list(pts)
+            n.setdefault("expr", {})[dim] = list(pts)
         return self
 
     def converge(self, to, start, end, tension=-0.3, notes=None):
@@ -152,7 +159,7 @@ class Clip:
             if not -48 <= semis <= 48:
                 raise SlabError(f"{where}: {n['pitch']} -> {target} is more than 48 semitones")
             s0 = max(start - n0, 0.0)
-            n["expr"] = [(s0, 0.0, "curve" if tension else "linear", tension), (end - n0, float(semis), "linear", 0.0)]
+            n.setdefault("expr", {})["pitch"] = [(s0, 0.0, "curve" if tension else "linear", tension), (end - n0, float(semis), "linear", 0.0)]
             hit += 1
         if hit == 0:
             self.song.warn(f"{where}: no note sounds over beats {start:g}..{end:g}")
@@ -395,7 +402,7 @@ class Clip:
         start = section.start if section else at_beat
         c = self.track._new_clip(name or (section.name if section else self.name), start,
                                  section.length if section else self.length)
-        c.notes = [dict(n) for n in self.notes]
+        c.notes = [{**n, **({"expr": {k: list(v) for k, v in n["expr"].items()}} if n.get("expr") else {})} for n in self.notes]
         c.lanes = {k: list(v) for k, v in self.lanes.items()}
         return c
 
@@ -404,8 +411,9 @@ class Clip:
         return {"type": "note", "name": self.name, "start": round(self.start, 6), "len": round(self.length, 6),
                 "notes": [{"pitch": n["pitch"], "start": round(n["start"], 5), "len": round(max(n["len"], 0.01), 5),
                            "vel": n["vel"],
-                           **({"expr": {"pitch": [[b, v] if sh == "linear" and te == 0 else [b, v, sh, te]
-                                                  for b, v, sh, te in n["expr"]]}} if n.get("expr") else {})}
+                           **({"expr": {d: [[b, v] if sh == "linear" and te == 0 else [b, v, sh, te]
+                                            for b, v, sh, te in pts]
+                                        for d, pts in n["expr"].items()}} if n.get("expr") else {})}
                           for n in notes],
                 **({"automation": _lanes_json(self.lanes)} if self.lanes else {})}
 

@@ -76,6 +76,10 @@ pub const Track = struct {
     /// 0 none, 1 held (touch), 2 sticky until the transport starts.
     vol_override: std.atomic.Value(u8) = std.atomic.Value(u8).init(0),
     pan_override: std.atomic.Value(u8) = std.atomic.Value(u8).init(0),
+    /// UI thread: the header's volume/pan slider is held this frame
+    /// (automation recording reads and clears these).
+    touch_vol: bool = false,
+    touch_pan: bool = false,
 
     /// Double-buffered clip/note snapshot for lock-free audio access.
     /// UI writes to the non-published slot then flips snap_published.
@@ -386,6 +390,17 @@ pub const Track = struct {
                     dst.notes[dst.note_count].expr_count = note.bend_n;
                     @memcpy(dst.expr_points[dst.expr_point_count..][0..note.bend_n], note.bendPoints());
                     dst.expr_point_count += note.bend_n;
+                }
+                var dim_total: u32 = 0;
+                for (note.dims) |cv| dim_total += cv.n;
+                if (dim_total > 0 and dst.expr_point_count + dim_total <= snap_mod.MAX_EXPR_POINTS_PER_TRACK) {
+                    const ns = &dst.notes[dst.note_count];
+                    ns.dim_start = dst.expr_point_count;
+                    for (&note.dims, 0..) |*cv, d| {
+                        ns.dim_count[d] = cv.n;
+                        @memcpy(dst.expr_points[dst.expr_point_count..][0..cv.n], cv.points());
+                        dst.expr_point_count += cv.n;
+                    }
                 }
                 dst.note_count += 1;
                 notes_added += 1;

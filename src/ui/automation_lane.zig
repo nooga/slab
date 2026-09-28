@@ -12,6 +12,7 @@ const ui_core = @import("core.zig");
 const ui_style = @import("style.zig");
 const snap_mod = @import("snap.zig");
 const automation = @import("../automation.zig");
+const text_field = @import("text_field.zig");
 
 const Ui = ui_core.Ui;
 const Rect = ui_core.Rect;
@@ -23,6 +24,8 @@ const Point = automation.Point;
 pub const Formatter = struct {
     ctx: *const anyopaque,
     f: *const fn (ctx: *const anyopaque, knob: f32, buf: []u8) []const u8,
+    /// The inverse, for Enter value…: typed text in the same units → knob.
+    parse: ?*const fn (ctx: *const anyopaque, text: []const u8) ?f32 = null,
 
     fn format(self: Formatter, knob: f32, buf: []u8) []const u8 {
         return self.f(self.ctx, knob, buf);
@@ -74,6 +77,16 @@ var draw_ys: [MAX_DRAW]f32 = undefined;
 var draw_n: usize = 0;
 /// The point a context menu acts on.
 var menu_point: usize = 0;
+/// Enter value…: a typed value for one point.
+var entry_lane: u64 = 0;
+var entry_point: usize = 0;
+var entry_focus = false;
+var entry_tb: text_field.TextBuf = .{ .limit = 24 };
+
+/// A typed value is being entered (the host holds its key shortcuts).
+pub fn entryActive() bool {
+    return entry_lane != 0;
+}
 
 // ── Mapping ──────────────────────────────────────────────────────────
 
@@ -279,6 +292,7 @@ const M_LINEAR: u32 = 2;
 const M_CURVE: u32 = 3;
 const M_RESET: u32 = 4;
 const M_DELETE: u32 = 5;
+const M_ENTER: u32 = 6;
 
 fn menuKey(v: *const View) u64 {
     return v.key ^ 0x3E7A_0000_0000_0001;
@@ -298,6 +312,7 @@ fn menuTick(v: *const View, lane: *Lane) bool {
         .{ .label = "Curve", .id = M_CURVE, .enabled = !lane.stepped },
         .{ .label = "Reset tension", .id = M_RESET, .enabled = p.tension != 0 },
         .{ .separator = true },
+        .{ .label = "Enter value\u{2026}", .id = M_ENTER, .enabled = v.fmt != null and v.fmt.?.parse != null },
         .{ .label = "Delete point", .id = M_DELETE },
     };
     const picked = menu.pick(k, &items) orelse return false;
@@ -307,6 +322,15 @@ fn menuTick(v: *const View, lane: *Lane) bool {
         M_CURVE => p.shape = .curve,
         M_RESET => p.tension = 0,
         M_DELETE => _ = lane.points.orderedRemove(menu_point),
+        M_ENTER => {
+            var buf: [32]u8 = undefined;
+            entry_tb = text_field.TextBuf.init(v.fmt.?.format(p.value, &buf), 24);
+            entry_tb.selectAll();
+            entry_lane = v.key;
+            entry_point = menu_point;
+            entry_focus = true;
+            return false;
+        },
         else => return false,
     }
     return true;
@@ -449,6 +473,9 @@ pub fn draw(ui: *Ui, alloc: std.mem.Allocator, lane: *Lane, v: View, m: pane.Mou
         }
     }
     if (menuTick(&v, lane)) res.edited = true;
+    if (entry_lane == v.key) if (entryTick(ui, &v, lane)) {
+        res.edited = true;
+    };
 
     // ── Draw ──
     ui.clip(ri);
@@ -508,6 +535,35 @@ pub fn drawOverlay(ui: *Ui, v: View, points: []const Point, from: f64, to: f64) 
     var sv = v;
     sv.timeline_x0 += @as(f32, @floatCast(from)) * v.px_per_beat;
     drawCurve(ui, &sv, points, v.color.mix(ui_style.text, 0.35));
+}
+
+/// The Enter value… field over its point: Enter sets the point, Esc
+/// cancels, a press elsewhere commits.
+fn entryTick(ui: *Ui, v: *const View, lane: *Lane) bool {
+    if (entry_point >= lane.points.items.len) {
+        entry_lane = 0;
+        return false;
+    }
+    const p = lane.points.items[entry_point];
+    const x: i32 = @intFromFloat(xOf(v, p.beat) + 6);
+    const y: i32 = @intFromFloat(@max(v.rect.y, yOf(v, p.value) - 8));
+    const ev = text_field.field(ui, Rect.xywh(x, y, 72, 16), .{ "lane-entry", v.key }, &entry_tb, .{ .focus = entry_focus, .commit_on_blur = true });
+    entry_focus = false;
+    switch (ev) {
+        .commit => {
+            entry_lane = 0;
+            const f = v.fmt orelse return false;
+            const parse = f.parse orelse return false;
+            var knob = parse(f.ctx, entry_tb.text()) orelse return false;
+            knob = std.math.clamp(knob, v.lo, v.hi);
+            if (lane.stepped) knob = @round(knob);
+            lane.points.items[entry_point].value = knob;
+            return true;
+        },
+        .cancel => entry_lane = 0,
+        .none, .changed => {},
+    }
+    return false;
 }
 
 fn firstSelected(lane: *const Lane) ?usize {

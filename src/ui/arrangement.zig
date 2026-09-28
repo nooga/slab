@@ -870,6 +870,7 @@ pub fn draw(
     }
 
     targetMenuTick(tracks, alloc);
+    headerAutoMenuTick(tracks, alloc);
 
     // Overview strip on top (rendered last so nothing scissor-clips it).
     drawOverview(ui, overview_rect, timeline_w, tracks, content_beats, transport, m);
@@ -1431,6 +1432,8 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, sele
     const vol_base = t.volume();
     const pressed_now = ui.in.pressed;
     if (ctl.slider(ui, vol_r, "vol", &v_norm, .{ .kind = .mini, .horizontal = true, .show_readout = false, .ticks = 5, .default = 1.0 / 1.25 })) t.setVolume(v_norm * 1.25);
+    if (ui.active == ui.id("vol")) t.touch_vol = true;
+    if (ui.in.right_pressed and vol_r.contains(ui.in.ix(), ui.in.iy())) openHeaderAutoMenu(idx, .volume, ui.in.ix(), ui.in.iy());
     if (vol_auto) headerOverride(ui, &t.vol_override, "vol", t.volume() != vol_base, pressed_now, Rect.xywh(vol_r.right(), vol_r.y, 8, vol_r.h));
     menu.tip(ui, vol_r, "Track volume");
     if (body.h >= 14) {
@@ -1440,6 +1443,8 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, sele
         var p: f32 = (t.panAt(beat) + 1) / 2;
         const pan_base = t.pan();
         if (ctl.slider(ui, pan_r, "pan", &p, .{ .kind = .mini, .horizontal = true, .bipolar = true, .show_readout = false, .ticks = 3, .default = 0.5 })) t.setPan(p * 2 - 1);
+        if (ui.active == ui.id("pan")) t.touch_pan = true;
+        if (ui.in.right_pressed and pan_r.contains(ui.in.ix(), ui.in.iy())) openHeaderAutoMenu(idx, .pan, ui.in.ix(), ui.in.iy());
         if (pan_auto) headerOverride(ui, &t.pan_override, "pan", t.pan() != pan_base, pressed_now, Rect.xywh(pan_r.right(), pan_r.y, 8, pan_r.h));
         menu.tip(ui, pan_r, "Pan (double-click to center)");
     }
@@ -1448,6 +1453,45 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, sele
     const name_rl = bridge.toRl(name_r);
     if (b.pressed) return .{ .action = if (b.double) .rename else .select, .name_rect = name_rl };
     return .{ .action = .none, .name_rect = name_rl };
+}
+
+const HEADER_AUTO_MENU_KEY: u64 = 0xA070_4EAD_E700_0001;
+var header_menu_track: usize = 0;
+var header_menu_kind: automation.TargetKind = .volume;
+
+fn openHeaderAutoMenu(ti: usize, kind: automation.TargetKind, x: i32, y: i32) void {
+    header_menu_track = ti;
+    header_menu_kind = kind;
+    menu.openAt(HEADER_AUTO_MENU_KEY, x, y);
+}
+
+/// Show / Clear / Re-enable automation for a header volume or pan mini.
+fn headerAutoMenuTick(tracks: []Track, alloc: std.mem.Allocator) void {
+    if (!menu.isOpen(HEADER_AUTO_MENU_KEY)) return;
+    if (header_menu_track >= tracks.len) {
+        menu.close();
+        return;
+    }
+    const t = &tracks[header_menu_track];
+    const target: automation.Target = if (header_menu_kind == .volume) automation.Target.volume() else automation.Target.pan();
+    const ov = if (header_menu_kind == .volume) &t.vol_override else &t.pan_override;
+    const items = [_]menu.Item{
+        .{ .label = "Show automation", .id = 1 },
+        .{ .label = "Clear automation", .id = 2, .enabled = t.findLane(target) != null },
+        .{ .label = "Re-enable automation", .id = 3, .enabled = ov.load(.monotonic) != 0 },
+    };
+    switch (menu.pick(HEADER_AUTO_MENU_KEY, &items) orelse return) {
+        1 => {
+            t.lanes_shown = true;
+            _ = t.laneFor(alloc, target, false) catch {};
+        },
+        2 => for (t.lanes.items, 0..) |*l, li| if (l.target.eql(target)) {
+            t.removeLane(alloc, li);
+            break;
+        },
+        3 => ov.store(0, .monotonic),
+        else => {},
+    }
 }
 
 /// Override bookkeeping and LED for an automated header slider: a held drag
@@ -1465,6 +1509,12 @@ fn headerOverride(ui: *Ui, ov: *std.atomic.Value(u8), key: []const u8, changed: 
 }
 
 // ── Automation lanes (docs/22) ───────────────────────────────────────
+
+/// Beat ↔ pixel scale of the arrangement (automation recording thins its
+/// strokes to 1 px at this zoom).
+pub fn pxPerBeat() f32 {
+    return px_per_beat;
+}
 
 pub fn deselectAllPoints(tracks: []Track) void {
     for (tracks) |*t| for (t.lanes.items) |*l| l.deselectAll();
@@ -1532,7 +1582,7 @@ fn drawAutomationRows(
             .hi = info.hi,
             .key = pane.keyFromIds(0xA070_1A4E_0000_0001, @intFromPtr(t), li),
             .name = info.name,
-            .fmt = .{ .ctx = &info.fmt, .f = lane_targets.formatLane },
+            .fmt = .{ .ctx = &info.fmt, .f = lane_targets.formatLane, .parse = lane_targets.parseLane },
             .selected = selected,
         }, if (press_consumed) pane.neutral() else m);
         // Clips holding a lane for the same target play theirs.

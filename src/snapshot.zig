@@ -28,6 +28,20 @@ pub const NoteSnap = struct {
     /// semitones), docs/22 §Note expression.
     expr_count: u8 = 0,
     expr_start: u32 = 0,
+    /// Pressure, slide, gain curves, laid out in `expr_points` after the
+    /// pitch points: dim i starts at dim_start + the counts before it.
+    dim_count: [3]u8 = .{ 0, 0, 0 },
+    dim_start: u32 = 0,
+
+    pub fn hasExpression(self: NoteSnap) bool {
+        return self.expr_count > 0 or self.dim_count[0] > 0 or self.dim_count[1] > 0 or self.dim_count[2] > 0;
+    }
+
+    pub fn dimPoints(self: NoteSnap, snap: *const TrackSnapshot, d: usize) []const automation.Point {
+        var start = self.dim_start;
+        for (self.dim_count[0..d]) |cnt| start += cnt;
+        return snap.expr_points[start..][0..self.dim_count[d]];
+    }
 };
 
 pub const ClipHeader = struct {

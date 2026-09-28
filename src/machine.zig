@@ -245,6 +245,11 @@ pub const AutoRequest = struct {
 };
 pub const TakeAutoRequestFn = *const fn (state: *anyopaque) ?AutoRequest;
 
+/// The control a hand holds this frame and its hand-set value (knob
+/// space), for automation recording. Taking it clears it.
+pub const Touch = struct { control: u16, knob: f32 };
+pub const TakeTouchFn = *const fn (state: *anyopaque) ?Touch;
+
 pub const NOTE_LABEL_TEXT = 23;
 
 /// One entry of a machine's note map: a MIDI pitch it answers to plus a
@@ -302,6 +307,9 @@ pub const Machine = struct {
     note_labels: []const NoteLabel = &.{},
     /// Overrides note_labels when set: the map as of now.
     note_labels_fn: ?NoteLabelsFn = null,
+    /// Plays per-note pitch expression (a `note-expr` word, docs/22);
+    /// others play bends flat and the piano roll mutes their curves.
+    takes_expression: bool = false,
     /// Automation (docs/22). A machine without these has no automatable
     /// controls.
     control_count: ?ControlCountFn = null,
@@ -313,6 +321,7 @@ pub const Machine = struct {
     set_auto_ui: ?SetAutoUiFn = null,
     clear_overrides: ?ClearOverridesFn = null,
     take_auto_request: ?TakeAutoRequestFn = null,
+    take_touch: ?TakeTouchFn = null,
 
     pub fn controlCount(self: *const Machine) usize {
         const f = self.control_count orelse return 0;

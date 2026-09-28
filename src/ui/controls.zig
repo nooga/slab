@@ -1281,7 +1281,7 @@ pub fn titleStrip(ui: *Ui, r: Rect, name: []const u8, preset: []const u8) void {
     var buf: [48]u8 = undefined;
     const live = t.scope == ui.scopeId() and ui.in.time - t.time < core.TOUCH_HOLD;
     const s = if (live)
-        std.fmt.bufPrint(&buf, "{s} {s}", .{ t.labelStr(), t.valueStr() }) catch preset
+        std.fmt.bufPrint(&buf, "{s} {s}{s}", .{ t.labelStr(), t.valueStr(), if (t.automated) " A" else "" }) catch preset
     else
         preset;
     display(ui, disp_r, s, .{});

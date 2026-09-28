@@ -16,6 +16,7 @@ include "../lib/manifest.fy"
   "Ju-Know" voice-sample machine*
   "k-juno-voice"       render!
   "juno-note-on"       note-on!
+  "juno-note-expr"     note-expr!
   "juno-note-off"      note-off!
   "juno-block-prepare" block-prepare!
   8 voices!

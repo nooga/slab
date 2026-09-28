@@ -156,6 +156,13 @@ dsp: rhodes-note-on | ctx:Ctx state:RhodesState params:RhodesParams -- |
     -> state.fund-dec-v
 ;
 
+( ctx state params -- : per-note expression [docs/22]: retune the
+  sounding voice to ctx.hz. )
+dsp: rhodes-note-expr | ctx:Ctx state:RhodesState params:RhodesParams -- |
+  ctx.hz -> state.note-hz
+  params.sr 6.283185307179586 ctx.hz f* f/  -> state.emf-norm
+;
+
 ( ctx state params -- : release this voice — the damper engages. )
 dsp: rhodes-note-off
   | ctx state:RhodesState params |

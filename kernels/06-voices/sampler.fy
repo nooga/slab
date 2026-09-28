@@ -86,6 +86,8 @@ ustruct: SamplerState
   f64 inc        ( advance per host sample )
   f64 inc0       ( the note's own advance, before any bend )
   f64 bend       ( per-note pitch expression, semitones from key )
+  f64 f-oct      ( filter corner at note-on, octaves over FILTER: TRK and TONE )
+  f64 gain0      ( the zone's level at note-on; per-note gain scales it )
   f64 held       ( CLOCK: the value on the output, before its BLEP )
   f64 pend       ( CLOCK: next output, naive + after-step correction )
   f64 i-prev     ( CLOCK: the stored sample index last read )
@@ -202,6 +204,7 @@ dsp: sampler-note-on | ctx:Ctx state:SamplerState params:SamplerParams |
   params.edits& p@64 | ed:ZoneEdits |
   k 0.0 fmax | k0 |
   zt c 8.0 f+ f@i  ed.level& k0 f@i db>lin  f* -> state.gain
+  state.gain -> state.gain0
   ( CUT overrides the pack: group n both joins and is cut by n )
   ed.cut& k0 f@i | cut |
   cut 0.5 f> | own |
@@ -232,7 +235,9 @@ dsp: sampler-note-on | ctx:Ctx state:SamplerState params:SamplerParams |
   params.rate zsr f/ 0.001 1.0 fclamp -> state.kr
   1.0 -> state.oc
   ( filter corner follows the pitch by TRK octaves per octave )
-  ratio log2 params.trk f*  ed.tone& k0 f@i f+  exp2 params.filter-hz f* ctx.sr svf-g -> state.fg
+  ratio log2 params.trk f*  ed.tone& k0 f@i f+ | f-oct |
+  f-oct -> state.f-oct
+  f-oct exp2 params.filter-hz f* ctx.sr svf-g -> state.fg
   ( DECAY: -60 dB over the zone's decay time, on top of the envelope )
   ed.decay& k0 f@i | dcy |
   1.0 -> state.fade
@@ -285,10 +290,14 @@ dsp: sampler-note-off | ctx:Ctx state:SamplerState params:SamplerParams |
 
 ( ctx state params -- : per-note expression [docs/22]: retune the voice
   to ctx.pitch, a bend of ctx.pitch - key semitones on the note's own
-  advance.  The filter keeps the note's tracking. )
+  advance; the filter tracks the bend by TRK like a note.  Per-note
+  gain scales the zone's level. )
 dsp: sampler-note-expr | ctx:Ctx state:SamplerState params:SamplerParams |
+  state.gain0 ctx.gain f* -> state.gain
   ctx.pitch state.key f- -> state.bend
-  state.inc0  state.bend 0.08333333333333333 f* exp2 f*  16.0 fmin -> state.inc
+  state.bend 0.08333333333333333 f* | boct |
+  state.inc0  boct exp2 f*  16.0 fmin -> state.inc
+  state.f-oct  boct params.trk f*  f+  exp2 params.filter-hz f* ctx.sr svf-g -> state.fg
 ;
 
 ( buf ph -- y : 4-point Hermite at ph between the stored samples. )

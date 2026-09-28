@@ -98,6 +98,8 @@ pub const Touch = struct {
     /// Scope id of the panel the touched control belongs to.
     scope: Id = 0,
     time: f64 = -10,
+    /// A lane drives the touched control (the display adds an `A` cell).
+    automated: bool = false,
 
     pub fn labelStr(t: *const Touch) []const u8 {
         return t.label[0..t.label_len];
@@ -519,6 +521,7 @@ pub const Ui = struct {
         @memcpy(t.value[0..t.value_len], value[0..t.value_len]);
         t.scope = ui.touch_scope orelse ui.scopeId();
         t.time = ui.in.time;
+        t.automated = false;
     }
 
     // ── Primitive emitters ───────────────────────────────────────────

@@ -203,9 +203,21 @@ pub fn serialize(
                 try appendFmt(alloc, &out, "{{\"pitch\":{d},\"start\":{d},\"len\":{d},\"vel\":{d}", .{
                     note.pitch, note.start_beat, note.length_beats, note.velocity,
                 });
-                if (note.bend_n > 0) {
-                    try out.appendSlice(alloc, ",\"expr\":{\"pitch\":");
-                    try appendPoints(alloc, &out, note.bendPoints());
+                if (note.hasExpression()) {
+                    try out.appendSlice(alloc, ",\"expr\":{");
+                    var first_dim = true;
+                    if (note.bend_n > 0) {
+                        try out.appendSlice(alloc, "\"pitch\":");
+                        try appendPoints(alloc, &out, note.bendPoints());
+                        first_dim = false;
+                    }
+                    for (note.dims, 0..) |cv, d| {
+                        if (cv.n == 0) continue;
+                        if (!first_dim) try out.append(alloc, ',');
+                        first_dim = false;
+                        try appendFmt(alloc, &out, "\"{s}\":", .{@tagName(@as(clip_mod.ExprDim, @enumFromInt(d)))});
+                        try appendPoints(alloc, &out, cv.points());
+                    }
                     try out.append(alloc, '}');
                 }
                 try out.append(alloc, '}');
@@ -687,10 +699,22 @@ fn applyClip(alloc: std.mem.Allocator, t: *track_mod.Track, co: std.json.ObjectM
                 .length_beats = if (objGet(no, "len")) |x| asF64(x) else 0,
                 .velocity = asU8(objGet(no, "vel") orelse continue),
             };
-            if (objGet(no, "expr")) |ev| if (ev == .object) if (objGet(ev.object, "pitch")) |pv| if (pv == .array) {
-                for (pv.array.items) |ptv| {
-                    const pt = parsePoint(ptv) orelse continue;
-                    _ = note.addBend(pt);
+            if (objGet(no, "expr")) |ev| if (ev == .object) {
+                if (objGet(ev.object, "pitch")) |pv| if (pv == .array) {
+                    for (pv.array.items) |ptv| {
+                        const pt = parsePoint(ptv) orelse continue;
+                        _ = note.addBend(pt);
+                    }
+                };
+                inline for (std.meta.fields(clip_mod.ExprDim)) |fd| {
+                    const d: clip_mod.ExprDim = @enumFromInt(fd.value);
+                    const rg = clip_mod.dimRange(d);
+                    if (objGet(ev.object, fd.name)) |pv| if (pv == .array) {
+                        for (pv.array.items) |ptv| {
+                            const pt = parsePoint(ptv) orelse continue;
+                            _ = note.dim(d).add(pt, rg.lo, rg.hi);
+                        }
+                    };
                 }
             };
             try clip.addNote(alloc, note);
@@ -946,6 +970,7 @@ test "automation lanes round-trip in real units, effects by chain position" {
     var bent = clip_mod.Note{ .pitch = 60, .start_beat = 0, .length_beats = 4, .velocity = 90 };
     _ = bent.addBend(.{ .beat = 1, .value = 0 });
     _ = bent.addBend(.{ .beat = 3.5, .value = -7, .shape = .curve, .tension = -0.4 });
+    _ = bent.dim(.gain).add(.{ .beat = 2, .value = -12 }, -48, 12);
     try clip.addNote(alloc, bent);
     try t0.addClip(alloc, clip);
     // Lanes aimed at nothing are dropped on save.
@@ -986,6 +1011,8 @@ test "automation lanes round-trip in real units, effects by chain position" {
     try std.testing.expectEqual(@as(f32, -7), ln.bend[1].value);
     try std.testing.expectEqual(automation.Shape.curve, ln.bend[1].shape);
     try std.testing.expectEqual(@as(f32, -0.4), ln.bend[1].tension);
+    try std.testing.expectEqual(@as(f32, -12), ln.dimConst(.gain).points()[0].value);
+    try std.testing.expectEqual(@as(u8, 0), ln.dimConst(.pressure).n);
 }
 
 test "audio clips round-trip through the pool by path" {

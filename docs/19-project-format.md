@@ -165,12 +165,15 @@ A **note clip**:
   A note plays at `clip.start + note.start`. Only notes inside
   `[0, len)` play.
 - `pitch` is MIDI (C4 = 60) and `vel` is 1–127.
-- `expr` (optional): per-note expression. `{"pitch": [[0, 0], [1, 0],
-  [3.5, -7, "curve", -0.4]]}` bends the note: beats from the note's
-  start, values in semitones from `pitch` (±48), point shapes as in
-  automation, at most 8 points. After the note ends it holds its last
-  value. Machines without a `note-expr` hook (the synths, for now) play
-  it unbent.
+- `expr` (optional): per-note expression, one point list per
+  dimension, at most 8 points each, beats from the note's start, point
+  shapes as in automation. After the note ends each holds its last
+  value.
+  - `pitch`: semitones from `pitch` (±48): `{"pitch": [[0, 0], [1, 0],
+    [3.5, -7, "curve", -0.4]]}`. Every pitched machine plays it.
+  - `gain`: dB (−48..+12, rest 0); the sampler and Unfairlight play it.
+  - `pressure`, `slide`: 0..1 (rest 0.5 and 0); carried to machines,
+    none uses them yet.
 - `automation` (optional): clip lanes, the same form as a track's but
   with beats from the clip's start. While the clip plays they override
   the track's lane for the same target; where clips overlap, the one
@@ -258,5 +261,5 @@ writing a file.
 
 ## Not in the format yet
 
-Pressure, slide and gain expression ([22-automation.md](22-automation.md)), tempo changes, sends and returns, sidechain, and the meter
+Tempo changes, sends and returns, sidechain, and the meter
 map's accent groups.

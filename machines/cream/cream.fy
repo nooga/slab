@@ -13,6 +13,7 @@ include "../lib/manifest.fy"
   "Mog Passenger" voice-sample machine*
   "k-cream-voice"       render!
   "cream-note-on"       note-on!
+  "cream-note-expr"     note-expr!
   "cream-note-off"      note-off!
   "cream-block-prepare" block-prepare!
   CreamState.size  state-size!

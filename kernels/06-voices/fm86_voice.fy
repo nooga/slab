@@ -158,6 +158,12 @@ dsp: fm86-note-on
   0.0  -> state.eg5-pgate
 ;
 
+( ctx state params -- : per-note expression [docs/22]: retune the
+  sounding voice to ctx.hz. )
+dsp: fm86-note-expr | ctx:Ctx state:Fm86State params |
+  ctx.hz -> state.note-hz
+;
+
 ( ctx state params -- : release. Drop the gate; the next sample's note-off edge
   sends every envelope to stage 4 (release toward L4). )
 dsp: fm86-note-off

@@ -273,6 +273,7 @@ const SB_KEY: u64 = 0x5CB0_1111_2222_3333;
 const PR_CONTEXT_KEY: u64 = 0xC077_7E17_BBBB_0001;
 
 pub fn deinit(alloc: std.mem.Allocator) void {
+    dim_lane.deinit(alloc);
     move_snaps.deinit(alloc);
     resize_snaps.deinit(alloc);
 }
@@ -755,7 +756,7 @@ fn drawPianoRoll(
     ui.clip(bridge.fromRl(grid_rect));
     drawGrid(ui, grid_rect, edit_snap);
     drawExistingNotes(ui, grid_rect, clip.*, track_color);
-    drawBends(ui, grid_rect, clip.*, track_color, m);
+    drawBends(ui, grid_rect, clip.*, track_color, track.machine.takes_expression, m);
     drawClipEndOverlay(ui, grid_rect, clip.*);
 
     if (draw_active) {
@@ -1204,6 +1205,12 @@ fn drawEnvelopeStrip(
 ) void {
     ui.pushId("env");
     defer ui.popId();
+    // Expression mode with notes selected: the strip edits their pressure,
+    // slide or gain curve instead (docs/22 §Note expression).
+    if (expr_mode and !collapsed() and clip.selectedCount() > 0) {
+        drawNoteDimStrip(ui, alloc, label_r, r, clip, edit_snap, col, m);
+        return;
+    }
     const has_lane = clip.lanes.items.len > 0;
     if (env_lane >= clip.lanes.items.len) env_lane = 0;
     const label = bridge.fromRl(label_r);
@@ -1231,7 +1238,7 @@ fn drawEnvelopeStrip(
             .hi = info.hi,
             .key = pane.keyFromIds(0xE7E1_1A4E_0000_0001, @intFromPtr(clip), env_lane),
             .name = info.name,
-            .fmt = .{ .ctx = &info.fmt, .f = lane_targets.formatLane },
+            .fmt = .{ .ctx = &info.fmt, .f = lane_targets.formatLane, .parse = lane_targets.parseLane },
         }, m);
         if (res.pressed) clip.deselectAll();
         // Past the clip's end nothing plays.
@@ -1259,6 +1266,114 @@ fn drawEnvelopeStrip(
     }
 }
 
+var env_dim: clip_mod.ExprDim = .gain;
+const DIM_MENU_KEY: u64 = 0xE7E1_D1E5_0000_0001;
+/// A scratch lane the note curve is edited through, copied from the note
+/// every frame and written back to every selected note.
+var dim_lane: automation.Lane = .{ .target = automation.Target.volume() };
+
+const DimFmt = struct { dim: clip_mod.ExprDim };
+
+fn formatDim(ctx: *const anyopaque, v: f32, buf: []u8) []const u8 {
+    const f: *const DimFmt = @ptrCast(@alignCast(ctx));
+    return switch (f.dim) {
+        .gain => std.fmt.bufPrint(buf, "{d:.1} DB", .{v}) catch "?",
+        .pressure, .slide => std.fmt.bufPrint(buf, "{d:.2}", .{v}) catch "?",
+    };
+}
+
+fn parseDim(ctx: *const anyopaque, text: []const u8) ?f32 {
+    const f: *const DimFmt = @ptrCast(@alignCast(ctx));
+    var t = std.mem.trim(u8, text, " \t");
+    if (f.dim == .gain and std.ascii.endsWithIgnoreCase(t, "db")) t = std.mem.trim(u8, t[0 .. t.len - 2], " ");
+    return std.fmt.parseFloat(f32, t) catch null;
+}
+
+fn dimName(d: clip_mod.ExprDim) []const u8 {
+    return switch (d) {
+        .pressure => "PRESSURE",
+        .slide => "SLIDE",
+        .gain => "GAIN",
+    };
+}
+
+/// The selected notes' pressure/slide/gain curve, timed from the first
+/// selected note's start. Edits apply to every selected note.
+fn drawNoteDimStrip(
+    ui: *Ui,
+    alloc: std.mem.Allocator,
+    label_r: c.rl.Rectangle,
+    r: c.rl.Rectangle,
+    clip: *Clip,
+    edit_snap: snap_mod.Setting,
+    col: ui_style.Color,
+    m: pane.Mouse,
+) void {
+    const label = bridge.fromRl(label_r);
+    if (ctl.button(ui, label, "dim", null, .{ .label = switch (env_dim) {
+        .pressure => "PRES",
+        .slide => "SLID",
+        .gain => "GAIN",
+    }, .flush = true })) menu.openBelow(DIM_MENU_KEY, label);
+    menu.tip(ui, label, "Which per-note curve to edit: pressure, slide or gain");
+    if (menu.isOpen(DIM_MENU_KEY)) {
+        const items = [_]menu.Item{
+            .{ .label = "Pressure", .id = 0 },
+            .{ .label = "Slide", .id = 1 },
+            .{ .label = "Gain", .id = 2 },
+        };
+        if (menu.pick(DIM_MENU_KEY, &items)) |id| env_dim = @enumFromInt(id);
+    }
+    var first: ?usize = null;
+    for (clip.notes.items, 0..) |n, i| if (n.selected) {
+        first = i;
+        break;
+    };
+    const ni = first orelse return;
+    const note = &clip.notes.items[ni];
+    const cv = note.dim(env_dim);
+    const rg = clip_mod.dimRange(env_dim);
+    dim_lane.points.clearRetainingCapacity();
+    dim_lane.points.appendSlice(alloc, cv.points()) catch return;
+    var name_buf: [48]u8 = undefined;
+    const name = std.fmt.bufPrint(&name_buf, "NOTE {s}{s}", .{ dimName(env_dim), if (clip.selectedCount() > 1) " (ALL SELECTED)" else "" }) catch "NOTE";
+    const fmt_ctx = DimFmt{ .dim = env_dim };
+    const res = auto_lane.draw(ui, alloc, &dim_lane, .{
+        .rect = r,
+        .timeline_x0 = r.x + @as(f32, @floatCast(note.start_beat)) * px_per_beat,
+        .scroll_x = scroll_x,
+        .px_per_beat = px_per_beat,
+        .edit_snap = edit_snap,
+        .color = col,
+        .lo = rg.lo,
+        .hi = rg.hi,
+        .key = pane.keyFromIds(0xD1E5_1A4E_0000_0001, @intFromPtr(clip), ni),
+        .name = name,
+        .fmt = .{ .ctx = &fmt_ctx, .f = formatDim, .parse = parseDim },
+    }, m);
+    // Outside the note nothing plays.
+    const x0 = ceBeatToX(r.x, note.start_beat);
+    const x1 = ceBeatToX(r.x, note.start_beat + note.length_beats);
+    if (x0 > r.x) ui.rect(frect(r.x, r.y, x0 - r.x, r.height), ui_style.chassis.alpha(150));
+    if (x1 < r.x + r.width) ui.rect(frect(@max(x1, r.x), r.y, r.x + r.width - @max(x1, r.x), r.height), ui_style.chassis.alpha(150));
+    if (!res.edited) {
+        // Keep point selection across frames.
+        const n = @min(dim_lane.points.items.len, clip_mod.MAX_BEND);
+        for (dim_lane.points.items[0..n], 0..) |pt, i| if (i < cv.n) {
+            cv.pts[i].selected = pt.selected;
+        };
+        return;
+    }
+    const n: u8 = @intCast(@min(dim_lane.points.items.len, clip_mod.MAX_BEND));
+    for (clip.notes.items) |*other| {
+        if (!other.selected) continue;
+        const oc = other.dim(env_dim);
+        @memcpy(oc.pts[0..n], dim_lane.points.items[0..n]);
+        oc.n = n;
+        for (oc.slice()) |*pt| pt.value = std.math.clamp(pt.value, rg.lo, rg.hi);
+    }
+}
+
 /// Delete key in the piano roll: the selected envelope points win over
 /// notes.
 pub fn deleteSelectedPoints(tracks: []track_mod.Track, selected: ?ClipRef) bool {
@@ -1267,6 +1382,27 @@ pub fn deleteSelectedPoints(tracks: []track_mod.Track, selected: ?ClipRef) bool 
     for (res.clip.lanes.items) |*l| if (l.selectedCount() > 0) {
         l.removeSelected();
         any = true;
+    };
+    // Selected pitch and pressure/slide/gain points on notes.
+    if (expr_mode) for (res.clip.notes.items) |*n| {
+        var i: usize = n.bend_n;
+        while (i > 0) {
+            i -= 1;
+            if (n.bend[i].selected) {
+                n.removeBend(i);
+                any = true;
+            }
+        }
+        for (&n.dims) |*cv| {
+            var w: u8 = 0;
+            for (cv.points()) |pt| {
+                if (pt.selected) continue;
+                cv.pts[w] = pt;
+                w += 1;
+            }
+            if (w != cv.n) any = true;
+            cv.n = w;
+        }
     };
     return any;
 }
@@ -1839,9 +1975,11 @@ fn bendValueAt(grid: c.rl.Rectangle, note: Note, y: f32) f32 {
 
 /// Pitch curves: drawn from each note's own row across the pitch rows.
 /// Faint outside expression mode; in it, selected notes get handles.
-fn drawBends(ui: *Ui, grid: c.rl.Rectangle, clip: Clip, col: ui_style.Color, m: pane.Mouse) void {
+fn drawBends(ui: *Ui, grid: c.rl.Rectangle, clip: Clip, track_col: ui_style.Color, takes: bool, m: pane.Mouse) void {
     if (collapsed()) return;
     const in_expr = expr_mode;
+    // A machine without a note-expr word plays bends flat: mute them.
+    const col = if (takes) track_col else ui_style.text_mute;
     for (clip.notes.items) |note| {
         if (note.bend_n == 0 and !(in_expr and note.selected)) continue;
         const x0 = bendX(grid, note, 0);
@@ -1858,6 +1996,10 @@ fn drawBends(ui: *Ui, grid: c.rl.Rectangle, clip: Clip, col: ui_style.Color, m: 
             ui.line(px, py, nx, ny, line_col);
             px = nx;
             py = ny;
+        }
+        if (!takes and note.bend_n > 0) {
+            const tr = frect(x0, pitchY(grid, base) - row_h, @max(x1 - x0, 4), row_h * 2);
+            menu.tip(ui, tr, "This machine takes no pitch expression: it plays the note unbent");
         }
         if (!(in_expr and note.selected)) continue;
         for (note.bendPoints()) |pt| {
@@ -1883,7 +2025,8 @@ fn drawBends(ui: *Ui, grid: c.rl.Rectangle, clip: Clip, col: ui_style.Color, m: 
     }
     if (in_expr) {
         const gr = frectRl(grid);
-        _ = ui.text(&ui.fonts.legend, gr.x + 4, gr.y + 2, "EXPRESSION: DRAG NOTES TO BEND, DOUBLE-CLICK A CURVE TO ADD A POINT", ui_style.auto.mix(ui_style.pane, 0.3));
+        const hint = if (takes) "EXPRESSION: DRAG NOTES TO BEND, DOUBLE-CLICK A CURVE TO ADD A POINT" else "EXPRESSION: THIS MACHINE TAKES NO PITCH EXPRESSION (BENDS PLAY FLAT)";
+        _ = ui.text(&ui.fonts.legend, gr.x + 4, gr.y + 2, hint, if (takes) ui_style.auto.mix(ui_style.pane, 0.3) else ui_style.text_mute);
     }
 }
 
@@ -1902,11 +2045,13 @@ fn bendPointAt(grid: c.rl.Rectangle, clip: *const Clip, x: f32, y: f32) ?BendHit
     return null;
 }
 
-/// A selected note whose curve passes near (x, y), and the bend segment
-/// there (null before its first point or past its last).
+/// A note whose curve passes near (x, y), and the bend segment there (null
+/// before its first point or past its last). Selected notes win; any
+/// note's curve is clickable, so a click on it selects that note.
 fn bendCurveAt(grid: c.rl.Rectangle, clip: *const Clip, x: f32, y: f32) ?struct { note: usize, seg: ?usize } {
-    for (clip.notes.items, 0..) |note, ni| {
-        if (!note.selected) continue;
+    for ([_]bool{ true, false }) |want_sel| for (clip.notes.items, 0..) |note, ni| {
+        if (note.selected != want_sel) continue;
+        if (note.bend_n == 0 and !note.selected) continue;
         const beat = @as(f64, (x - bendX(grid, note, 0)) / px_per_beat);
         if (beat < 0 or beat > note.length_beats) continue;
         const cy = pitchY(grid, @as(f32, @floatFromInt(note.pitch)) + note.bendAt(beat));
@@ -1916,7 +2061,7 @@ fn bendCurveAt(grid: c.rl.Rectangle, clip: *const Clip, x: f32, y: f32) ?struct 
             if (i + 1 < note.bend_n) seg = i;
         }
         return .{ .note = ni, .seg = seg };
-    }
+    };
     return null;
 }
 
@@ -2004,6 +2149,10 @@ fn handleExpression(ui: *Ui, grid: c.rl.Rectangle, clip: *Clip, edit_snap: snap_
             clip.notes.items[h.note].removeBend(h.point);
         } else if (hot_curve) |h| {
             const note = &clip.notes.items[h.note];
+            if (!note.selected) {
+                if (!shift) clip.deselectAll();
+                note.selected = true;
+            }
             // A note's first point pins its own pitch at its start.
             if (note.bend_n == 0) _ = note.addBend(.{ .beat = 0, .value = 0 });
             const b = std.math.clamp(snap_mod.snapNearest(edit_snap, beatAtX(grid, m.x) - note.start_beat, altBypassSnap()), 0, note.length_beats);
@@ -2025,13 +2174,30 @@ fn handleExpression(ui: *Ui, grid: c.rl.Rectangle, clip: *Clip, edit_snap: snap_
         expr_drag = .point;
         return;
     }
-    if (hot_curve) |h| if (alt) if (h.seg) |sg| {
-        if (!pane.tryStartDrag(EXPR_KEY)) return;
-        expr_note = h.note;
-        expr_point = sg;
-        expr_drag = .bend;
-        return;
-    };
+    if (hot_curve) |h| {
+        const n = &clip.notes.items[h.note];
+        if (alt) if (h.seg) |sg| {
+            if (!n.selected) {
+                if (!shift) clip.deselectAll();
+                n.selected = true;
+            }
+            if (!pane.tryStartDrag(EXPR_KEY)) return;
+            expr_note = h.note;
+            expr_point = sg;
+            expr_drag = .bend;
+            return;
+        };
+        // Off the note's own row (its bent part): a click selects it.
+        if (findNoteAt(grid, clip.*, m.x, m.y) == null) {
+            if (shift) {
+                n.selected = !n.selected;
+            } else if (!n.selected) {
+                clip.deselectAll();
+                n.selected = true;
+            }
+            return;
+        }
+    }
     if (findNoteAt(grid, clip.*, m.x, m.y)) |h| {
         const n = &clip.notes.items[h.idx];
         if (shift) {

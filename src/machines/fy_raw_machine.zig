@@ -63,6 +63,10 @@ pub const KernelCtx = extern struct {
     pitch: f64 = 0,
     data: usize = 0,
     legato: f64 = 0,
+    // Per-note expression (docs/22), for note-expr words.
+    pressure: f64 = 0.5,
+    slide: f64 = 0,
+    gain: f64 = 1,
 };
 
 /// One sample's audio lanes, mirrored by `Io` in ctx.fy. Render words get a
@@ -136,6 +140,8 @@ pub const FyRawMachine = struct {
     // set by the host every frame, and a pending request for the host.
     ui_auto: [MAX_CONTROLS]?f32 = [_]?f32{null} ** MAX_CONTROLS,
     auto_request: ?machine.AutoRequest = null,
+    // The control a drag holds this frame (automation recording).
+    touch: ?machine.Touch = null,
     ctx_control: usize = 0,
     panel_w: f32 = 128,
     failed: bool = false,
@@ -608,6 +614,7 @@ pub const FyRawMachine = struct {
             .write_zones_json = writeZonesJsonImpl,
             .apply_zones_json = applyZonesJsonImpl,
             .note_labels_fn = noteLabelsImpl,
+            .takes_expression = self.note_expr_caller != null,
             .control_count = controlCountImpl,
             .control_info = controlInfoImpl,
             .control_value = controlValueImpl,
@@ -617,6 +624,7 @@ pub const FyRawMachine = struct {
             .set_auto_ui = setAutoUiImpl,
             .clear_overrides = clearOverridesImpl,
             .take_auto_request = takeAutoRequestImpl,
+            .take_touch = takeTouchImpl,
         };
     }
 
@@ -1127,6 +1135,13 @@ fn clearOverridesImpl(state: *anyopaque) void {
     for (&self.auto_override) |*o| o.store(0, .monotonic);
 }
 
+fn takeTouchImpl(state: *anyopaque) ?machine.Touch {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    const t = self.touch;
+    self.touch = null;
+    return t;
+}
+
 fn takeAutoRequestImpl(state: *anyopaque) ?machine.AutoRequest {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     const r = self.auto_request;
@@ -1621,6 +1636,9 @@ fn noteExprEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
         if (self.voice_note_id[v] != ev.note_id) continue;
         self.kctx.pitch = ev.pitch;
         self.kctx.hz = midiToHz(ev.pitch);
+        self.kctx.pressure = ev.pressure;
+        self.kctx.slide = ev.slide;
+        self.kctx.gain = std.math.pow(f64, 10, @as(f64, ev.value) / 20);
         _ = try caller.call(1, &self.entryArgs(v));
     }
 }
@@ -2101,12 +2119,16 @@ fn drawAutomatable(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *cons
     const was_pressed = ui.in.pressed;
     drawControl(self, ui, kr, gi, ctl, tier);
     const wid = ui.id(gi);
-    // Right-click a control: the automation menu (drawn in drawPanelImpl).
-    if (ui.in.right_pressed and ui.hot == wid) {
+    if (ui.active == wid) self.touch = .{ .control = @intCast(gi), .knob = self.controlNorm(gi) };
+    // Right-click a control (any widget: the whole cell): the automation
+    // menu, ticked in drawPanelImpl.
+    if (ui.in.right_pressed and kr.contains(ui.in.ix(), ui.in.iy()) and !ui_menu.active()) {
         self.ctx_control = gi;
         ui_menu.openAt(autoMenuKey(self), ui.in.ix(), ui.in.iy());
     }
     if (self.ui_auto[gi] == null) return;
+    // The title display's value channel says the value isn't all yours.
+    if (ui.isHot(wid) and ui.touch.time == ui.in.time) ui.touch.automated = true;
     const ov = &self.auto_override[gi];
     const held = ui.active == wid;
     if (self.controlNorm(gi) != base_before) {
@@ -4872,4 +4894,131 @@ test "note ids: a note-off finds its voice by id after the voice was bent" {
     var still: usize = 0;
     for (0..inst.regionCount()) |v| still += @intFromBool(inst.voice_gate[v] and inst.voice_note_id[v] == 2);
     try testing.expectEqual(@as(usize, 1), still);
+}
+
+test "every pitched voice machine takes note expression" {
+    const files = [_][]const u8{
+        "machines/sampler/sampler.fy",   "machines/unfairlight/unfairlight.fy",
+        "machines/juno2/juno2.fy",       "machines/fm86/fm86.fy",
+        "machines/rhodes/rhodes.fy",     "machines/ms20/ms20.fy",
+        "machines/cream/cream.fy",
+    };
+    for (files) |f| {
+        const inst = try FyRawMachine.create(testing.allocator, f);
+        const mach = inst.machineInterface();
+        defer mach.deinit.?(mach.state, testing.allocator);
+        testing.expect(inst.note_expr_caller != null) catch |err| {
+            std.debug.print("{s}: no note-expr word\n", .{f});
+            return err;
+        };
+        // A note, bent an octave up, renders finite.
+        var ctx = std.mem.zeroes(machine.MachineCtx);
+        ctx.sample_rate = 48_000;
+        ctx.tempo_bpm = 120;
+        ctx.block_size = 256;
+        var l = [_]f32{0} ** 256;
+        var r = [_]f32{0} ** 256;
+        var evs = [_]machine.NoteEvent{
+            .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 3, .pitch = 48, .velocity = 0.9 },
+            .{ .sample_offset = 128, .kind = .expression, .channel = 0, .note_id = 3, .pitch = 60, .velocity = 0 },
+        };
+        ctx.note_in = &evs;
+        ctx.note_in_count = evs.len;
+        testRender(mach, &ctx, &l, &r);
+        for (l) |x| try testing.expect(std.math.isFinite(x));
+    }
+}
+
+test "an automated cutoff sweep renders like the knob set by hand at each chunk" {
+    const a = try FyRawMachine.create(testing.allocator, "machines/juno2/juno2.fy");
+    const ma = a.machineInterface();
+    defer ma.deinit.?(ma.state, testing.allocator);
+    const b = try FyRawMachine.create(testing.allocator, "machines/juno2/juno2.fy");
+    const mb = b.machineInterface();
+    defer mb.deinit.?(mb.state, testing.allocator);
+    var ci: usize = 0;
+    while (!std.mem.eql(u8, a.desc.controls[ci].idSlice(), "jn-cutoff")) ci += 1;
+
+    // Lane: cutoff knob 0.2 → 0.8 over two beats. Gentle enough that each
+    // 32-sample chunk moves well under AUTO_JUMP: a steep start would
+    // (rightly) glide instead of following, and then the two differ.
+    var snap = std.mem.zeroes(snapshot.TrackSnapshot);
+    snap.auto_points[0] = .{ .beat = 0, .value = 0.2, .shape = .curve, .tension = -0.3 };
+    snap.auto_points[1] = .{ .beat = 2, .value = 0.8 };
+    snap.auto_point_count = 2;
+    snap.lanes[0] = .{ .kind = .inst, .control = @intCast(ci), .points_start = 0, .points_count = 2 };
+    snap.lane_count = 1;
+    var cursors = [_]u32{0} ** snapshot.MAX_LANES_PER_TRACK;
+    const view = snapshot.AutoView{ .snap = &snap, .cursors = &cursors, .kind = .inst };
+    a.setControlNormSnap(ci, 0.2);
+    b.setControlNormSnap(ci, 0.2);
+
+    const sr = 48_000.0;
+    const bps = 120.0 / (60.0 * sr);
+    const block = 256;
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = sr;
+    ctx.tempo_bpm = 120;
+    var on = [_]machine.NoteEvent{.{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 1, .pitch = 48, .velocity = 0.9 }};
+    var la = [_]f32{0} ** block;
+    var ra = [_]f32{0} ** block;
+    var lb = [_]f32{0} ** 32;
+    var rb = [_]f32{0} ** 32;
+    var max_diff: f32 = 0;
+    var energy: f32 = 0;
+    var pos: usize = 0;
+    while (pos < 48_000) : (pos += block) {
+        // A: the lane, one 256-sample block at a time.
+        ctx.block_size = block;
+        ctx.ppq_position = @as(f64, @floatFromInt(pos)) * bps;
+        ctx.automation = &view;
+        ctx.note_in = if (pos == 0) &on else null;
+        ctx.note_in_count = if (pos == 0) 1 else 0;
+        testRender(ma, &ctx, &la, &ra);
+        // B: the same values set by hand before each 32-sample chunk.
+        var k: usize = 0;
+        while (k < block) : (k += 32) {
+            const beat = @as(f64, @floatFromInt(pos + k)) * bps;
+            b.setControlNormSnap(ci, automation.eval(snap.auto_points[0..2], beat));
+            ctx.block_size = 32;
+            ctx.ppq_position = beat;
+            ctx.automation = null;
+            ctx.note_in = if (pos == 0 and k == 0) &on else null;
+            ctx.note_in_count = if (pos == 0 and k == 0) 1 else 0;
+            testRender(mb, &ctx, &lb, &rb);
+            for (la[k .. k + 32], lb) |x, y| {
+                max_diff = @max(max_diff, @abs(x - y));
+                energy = @max(energy, @abs(x));
+            }
+        }
+    }
+    if (max_diff >= 1e-4) std.debug.print("sweep: max diff {d} (energy {d})\n", .{ max_diff, energy });
+    try testing.expect(energy > 0.01);
+    try testing.expect(max_diff < 1e-4);
+}
+
+test "per-note gain scales the sampler voice from its onset" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/sampler/sampler.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.tempo_bpm = 120;
+    ctx.block_size = 64;
+    var l = [_]f32{0} ** 64;
+    var r = [_]f32{0} ** 64;
+    var evs = [_]machine.NoteEvent{
+        .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 1, .pitch = 60, .velocity = 0.9 },
+        .{ .sample_offset = 0, .kind = .expression, .channel = 0, .note_id = 1, .pitch = 60, .velocity = 0, .value = -30 },
+    };
+    ctx.note_in = &evs;
+    ctx.note_in_count = evs.len;
+    testRender(mach, &ctx, &l, &r);
+    for (0..inst.regionCount()) |v| if (inst.voice_note_id[v] == 1) {
+        // SamplerState: gain is field 7, gain0 field 22.
+        const g = inst.readStateF64(v, 6 * 8);
+        const g0 = inst.readStateF64(v, 21 * 8);
+        try testing.expect(g0 > 0);
+        try testing.expectApproxEqRel(g0 * std.math.pow(f64, 10, -1.5), g, 1e-6);
+    };
 }

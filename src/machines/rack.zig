@@ -132,6 +132,8 @@ pub const Rack = struct {
             .apply_state_json = applyStateJsonImpl,
             .panel_w_fn = panelWImpl,
             .host_titlebar = true,
+            // Parts get the notes, bends included; most of them play it.
+            .takes_expression = true,
             .panel_w = SIDE_W + 200,
         };
     }

@@ -885,7 +885,7 @@ fn gatherEvents(
             // The note's index in the snapshot is its id: note-offs and
             // expression find their voice by it, bent or not.
             const note_id: i32 = @intCast(clip.notes_start + j);
-            if (note.expr_count > 0 and abs_on < beat_end and abs_off > beat_start and note.start_beat < clip.length_beats) {
+            if (note.hasExpression() and abs_on < beat_end and abs_off > beat_start and note.start_beat < clip.length_beats) {
                 count = gatherExpression(snap, note, note_id, abs_on, abs_off, beat_start, samples_per_beat, frames, out, count);
             }
 
@@ -961,7 +961,13 @@ fn gatherExpression(
         const beat = beat_start + @as(f64, @floatFromInt(k)) / samples_per_beat;
         if (beat >= abs_off) break;
         if (beat >= abs_on - 1e-9) {
-            const bend = std.math.clamp(automation.eval(pts, @max(0, beat - abs_on)), -48, 48);
+            const nb = @max(0, beat - abs_on);
+            const bend: f32 = if (pts.len > 0) std.math.clamp(automation.eval(pts, nb), -48, 48) else 0;
+            var dv = [3]f32{ 0.5, 0, 0 }; // pressure, slide, gain dB at rest
+            for (0..3) |d| {
+                const dp = note.dimPoints(snap, d);
+                if (dp.len > 0) dv[d] = automation.eval(dp, nb);
+            }
             out[count] = .{
                 .sample_offset = k,
                 .kind = .expression,
@@ -969,6 +975,9 @@ fn gatherExpression(
                 .note_id = note_id,
                 .pitch = base + bend,
                 .velocity = 0,
+                .pressure = dv[0],
+                .slide = dv[1],
+                .value = dv[2],
             };
             count += 1;
         }
@@ -1349,4 +1358,42 @@ test "gatherEvents: note ids, and expression every EXPR_STEP samples for a bent 
         exprs += 1;
     }
     try testing.expectEqual(@as(usize, frames / EXPR_STEP), exprs);
+}
+
+test "gatherEvents: pressure, slide and gain ride the expression event" {
+    const alloc = testing.allocator;
+    var t = try Track.init(alloc, "t", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, .{
+        .name = "x",
+        .state = undefined,
+        .render = struct {
+            fn f(_: *anyopaque, _: *const machine.MachineCtx, _: []f32, _: []f32) void {}
+        }.f,
+        .draw_panel = struct {
+            fn f(_: *anyopaque, _: *@import("ui/core.zig").Ui, _: @import("ui/geom.zig").Rect) void {}
+        }.f,
+        .reset = struct {
+            fn f(_: *anyopaque) void {}
+        }.f,
+    });
+    defer t.deinit(alloc);
+    var clip = @import("clip.zig").Clip.init("A", 0, 8);
+    var n = @import("clip.zig").Note{ .pitch = 60, .start_beat = 0, .length_beats = 4 };
+    _ = n.dim(.gain).add(.{ .beat = 0, .value = -30 }, -48, 12);
+    _ = n.dim(.gain).add(.{ .beat = 2, .value = 0 }, -48, 12);
+    try clip.addNote(alloc, n);
+    try t.addClip(alloc, clip);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    t.publishSnapshot(&pool);
+    const snap = t.currentSnapshot();
+    var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
+    const cnt = gatherEvents(snap, 0, 2048.0 / 48_000.0, 48_000, 2048, &events);
+    var first: ?machine.NoteEvent = null;
+    for (events[0..cnt]) |ev| if (ev.kind == .expression and first == null) {
+        first = ev;
+    };
+    try testing.expectEqual(@as(u32, 0), first.?.sample_offset);
+    try testing.expectApproxEqAbs(@as(f32, -30), first.?.value, 0.1);
+    try testing.expectEqual(@as(f32, 0.5), first.?.pressure);
+    try testing.expectEqual(@as(f32, 60), first.?.pitch);
 }

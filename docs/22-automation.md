@@ -2,10 +2,9 @@
 
 Values that change over time on their own: a fader ride into the
 chorus, a filter opening over 16 bars, a chord whose notes bend onto
-one pitch. **Status: phases 1 and 2 (curves, track lanes, automated
-controls, clip lanes) and the pitch half of phase 3 (note bends,
-expression mode, the converge drag) are built; pressure, slide and gain
-expression, and recording, are design.**
+one pitch. **Status: built** — curves, track lanes, automated controls,
+clip lanes, per-note pitch/pressure/slide/gain expression with the
+converge drag, and recording. Open ends are listed under §Phasing.
 Code: `src/automation.zig` (curve, lanes), `src/ui/automation_lane.zig`
 (the lane editor), the `automation` fields in `track.zig`,
 `snapshot.zig`, `engine.zig` and `machines/fy_raw_machine.zig`.
@@ -139,17 +138,23 @@ While a control is overridden, its LED shows hollow (§Automated
 controls). During an override, drags and edits also change the base
 value (precedence step 4).
 
-**Recording** (phase 4). An `AUTO` arm latch on the transport, drawn in
-`rec`. While it's armed and the transport is playing:
+**Recording** (phase 4, built: `AutoRecorder` in main.zig). An `AUTO`
+arm latch on the transport, lit `rec` when armed. While it's armed and
+the transport is playing:
 
 - A drag on any control writes into that target's **track lane** for
   as long as the drag is held (touch-write). Points under the written
   span are replaced.
 - A drag on a control that has no lane yet creates the lane.
 - Written points are thinned with Ramer–Douglas–Peucker (1 logical px
-  tolerance at the current zoom) into `linear` points.
-- One pass is one undo step.
-- The arm latch lights `accent` while it's on, like any latch.
+  tolerance at the arrangement's zoom) into `linear` points, and the
+  lane is rewritten every frame, so the curve draws as you ride it.
+- One pass is one undo step. A loop wrap while holding starts a new
+  pass.
+- Machines report the held control through `Machine.take_touch`; the
+  track header flags its volume/pan minis (`Track.touch_vol/pan`).
+- The blinking `rec` LED while writing is not built; the lane drawing
+  itself shows the write.
 
 Recording into clip lanes and note expression isn't planned. Draw
 those.
@@ -197,13 +202,13 @@ The LED sits just after the control's centred legend
 (`controls.autoLedPos`); on the track header's minis it takes an 8 px
 cell at the slider's right end.
 
-**Title-strip display** (not built yet). Hovering an automated control
-shows `CUTOFF 1.25 kHz` followed by an `A` cell, so the value channel
-also says the value isn't fully yours.
+**Title-strip display.** Hovering an automated control shows
+`CUTOFF 1.25 kHz A` (`Ui.touch.automated`), so the value channel also
+says the value isn't fully yours.
 
-**Context menu** on any automatable control (built for knobs and
-faders, whose widget id is the control's own key; switch and radio
-widgets don't open it yet, nor do the header minis):
+**Context menu** on any automatable control (a right-click anywhere in
+the control's cell, so every widget kind has it) and on the header
+volume and pan minis:
 
 - **Show automation**: reveals the track lane, creating an empty one
   if needed, and scrolls the arrangement to it.
@@ -232,7 +237,7 @@ all of them. They follow the piano roll's conventions (docs/12
 | drag empty lane | box-select points |
 | drag a selected point | move the whole selection (time and value together) |
 | Delete / Backspace | delete selected points |
-| right-click a point | menu: Hold / Linear / Curve, Reset tension, Delete point (Enter value… is not built yet) |
+| right-click a point | menu: Hold / Linear / Curve, Reset tension, Enter value…, Delete point. Enter value… takes the lane's units: `-6 dB`, `L 40` / `C`, `1.2k`, a switch's option name (`lane_targets.parseLane`) |
 | ⌘-drag empty lane | freehand: writes points along the drag, thinned to 1 px (Ramer–Douglas–Peucker), replacing points in the dragged span |
 
 - A point can't be dragged past its neighbours in time. Stopping at a
@@ -325,10 +330,17 @@ exactly where it lands:
   One drag makes a chord fold onto one note or spread from a unison.
   Alt-dragging one note's segment afterwards bends that segment on
   every selected note together.
-- **Pressure, slide and gain** (not built yet) edit in the envelope
-  strip, which switches to per-note mode for the selected note. With
-  several notes selected, it draws all their curves and edits them
-  together.
+- **Pressure, slide and gain** edit in the ENV strip: in expression
+  mode with notes selected, it switches to per-note mode and shows the
+  first selected note's curve for the dimension picked on its label
+  (PRES / SLID / GAIN), timed from that note's start and shaded outside
+  it. Edits apply to every selected note. Pressure and slide run 0..1
+  (rest 0.5 and 0), gain −48..+12 dB (rest 0).
+- **Machines without a `note-expr` word** draw their curves in
+  `text_mute`, and hovering one says "This machine takes no pitch
+  expression"; the expression hint says so too.
+- Clicking any note's curve (its bent part, off the note's row) selects
+  that note, so a double-click on a curve always lands a point.
 - A note holds at most 8 bend points (`clip.MAX_BEND`), inline in the
   `Note`, so notes stay plain values that copy through clipboards,
   duplicates and splits.
@@ -430,26 +442,32 @@ Three pieces, as built:
    can't meet its own tail: a loop wrap resets the machines. The Rack
    matched by id already and now transposes expression per part.
 2. **An expression event.** `NoteKind.expression` carries, for one
-   `note_id`, `pitch`: the note's current pitch (base + bend, MIDI
-   float). While a bent note sounds, the sequencer sends one at its
-   onset and every `EXPR_STEP` (32) samples; after note-off the voice
-   keeps the last value. Voice machines apply events sample-accurately,
-   so there is no extra chunking. `pressure`, `slide` and gain join the
-   event with their phase.
+   `note_id`: `pitch` (base + bend, MIDI float), `pressure`, `slide`,
+   and `value` = gain in dB. While a note with any expression sounds,
+   the sequencer sends one at its onset and every `EXPR_STEP` (32)
+   samples; after note-off the voice keeps the last value. Voice
+   machines apply events sample-accurately, so there is no extra
+   chunking.
 3. **A machine hook.** The optional manifest entry `note-expr`
    (`( ctx state params -- )`, like `note-on`; `note-expr!` in
    manifest.fy). The host finds the voice holding the id, sets
-   `ctx.pitch` and `ctx.hz`, and calls the word for that voice's region.
-   Machines without it ignore expression. Built:
+   `ctx.pitch`, `ctx.hz`, `ctx.pressure`, `ctx.slide` and `ctx.gain`
+   (linear; new fields at the end of `Ctx`/`KernelCtx`), and calls the
+   word for that voice's region. Machines without it ignore expression
+   (`Machine.takes_expression` is false). Built:
    - **sampler** (`sampler-note-expr`): the note-on keeps its unbent
-     advance (`inc0`); the bend rescales it, and the release zone plays
-     at the bent pitch. The filter keeps the note's tracking.
+     advance (`inc0`); the bend rescales it, the release zone plays at
+     the bent pitch, the filter follows the bend by TRK, and gain
+     scales the zone's level.
    - **Unfairlight** (`cmi-note-expr`): the bent clock lands on the
-     card's pitch grid like any note (1024 steps an octave); the filter
-     keeps the note's octave.
-   - Not yet: the synths (oscillator increments), and the piano roll's
-     `text_mute` curves plus "machine takes no pitch expression" tooltip
-     for machines without the hook.
+     card's pitch grid like any note (1024 steps an octave), the filter
+     follows the octave register in whole octaves, gain scales the
+     level.
+   - **Juno, FM-86, Rhodes**: retune `note-hz` (Juno's KYBD filter
+     tracking follows, it reads note-hz every sample).
+   - **MS-20, Cream** (mono): set the pitch directly, past the
+     portamento, since the bend is already the glide.
+   - No machine reads pressure or slide yet; gain only the two samplers.
 
 Mono machines apply expression to the sounding note. A 32-sample step
 on a slow bend is inaudible. If fast bends step audibly, the expression
@@ -524,20 +542,25 @@ renders exactly as it plays.
    - The arrangement lane UI and the editing gestures.
    - The automated-control LED and movement.
    - Project format and slabkit `automate`/`ramp`.
-   - Left over: the title-strip `A` cell, Enter value…, the context
-     menu on switch/radio widgets and the header minis, a bench case
-     (a cutoff sweep matching a knob-drag render).
+   - Since added: the title-strip `A`, Enter value…, the context menu
+     on every widget and the header minis.
 2. **Clip lanes.** Built: `Clip.lanes`, precedence in the snapshot
    (track lanes first, clip lanes by clip start, the last lane that
    applies wins, the same rule as `Track.autoValue` on the UI side),
    copy/move/split with clips, the ENV strip, the overlay on track
    lanes, the format, slabkit `clip.automate`/`clip.ramp`.
-3. **Note expression.** Built for pitch: note ids and voice matching by
-   id, the `expression` event, the `note-expr` hook on the sampler and
-   Unfairlight, `Note.bend` in the snapshot and format, the piano-roll
-   expression mode and converge drag, slabkit `bend`/`converge`. Left:
-   the synths' hooks, the no-hook indication, pressure/slide/gain.
-4. **Recording.** The `AUTO` arm, touch-write, and RDP thinning.
+3. **Note expression.** Built: note ids and voice matching by id, the
+   `expression` event with all four dimensions, `note-expr` on every
+   pitched machine, `Note.bend` and `Note.dims` in the snapshot and
+   format, the piano-roll expression mode, converge drag and per-note
+   ENV strip, the no-hook indication, slabkit `bend`/`converge`.
+   Left: machines reading pressure and slide, gain on the synths.
+4. **Recording.** Built: the `AUTO` arm, touch-write into track lanes
+   with live RDP thinning, one undo per pass. Left: the blinking LED.
+
+The bench suite has no knob-over-time stimulus yet; the sweep check is a
+machine test instead ("an automated cutoff sweep renders like the knob
+set by hand at each chunk", `fy_raw_machine.zig`), exact to 1e-4.
 
 ## Not planned yet
 
