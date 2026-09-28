@@ -32,7 +32,15 @@
   Dual mono with decorrelation: ctx.chan [0 L / 1 R] drives a per
   channel LFO phase and rate offset plus the L/R output tap sets, so the
   two tanks drift apart and the tail goes wide.  Probe case:
-  reverb-render - impulse, RT60 + echo density ratchets, WAV. )
+  reverb-render - impulse, RT60 + echo density ratchets, WAV.
+
+  GATED mode is the 80s non-linear program [AMS RMX16 NonLin2, the SSL
+  gated room]: the dry input keys a gate on the wet signal.  A hit over
+  THRESH opens it; it stays open HOLD seconds after the last such
+  sample, shaped over that window by SHAPE [-1 decaying, 0 flat, +1
+  rising - the 'reverse' program], then shuts in about 10 ms.  Run
+  DECAY high so the tank is still full when the gate cuts.  PLATE mode
+  never touches the wet path. )
 
 include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../00-primitives/math.fy"
@@ -52,6 +60,8 @@ ustruct: VerbState
   f64 b-ap1-pos  f64 b-d1-pos   f64 b-ap2-pos  f64 b-d2-pos
   f64 tap-1  f64 tap-2  f64 tap-3  f64 tap-4
   f64 tap-5  f64 tap-6  f64 tap-7
+  f64 gate-t     ( samples since the last sample over the threshold )
+  f64 gate-g     ( smoothed wet gain in GATED mode )
 ;
 
 ustruct: VerbParams
@@ -63,6 +73,10 @@ ustruct: VerbParams
   f64 mix
   f64 mod-depth  ( excursion in reference samples, const ~10 )
   f64 mod-rate   ( Hz, const ~1.2 )
+  f64 mode       ( 0 plate, 1 gated )
+  f64 gate-thr-db
+  f64 gate-hold-s
+  f64 gate-shape ( -1 decaying .. 0 flat .. +1 rising )
   ( derived - filled by verb-block-prepare )
   f64 scale      ( sr / 29761 )
   f64 pre-len
@@ -73,6 +87,10 @@ ustruct: VerbParams
   f64 damp-a
   f64 mod-inc
   f64 mod-depth-spl
+  f64 gate-thr   ( linear )
+  f64 gate-hold  ( samples )
+  f64 gate-atk   ( one-pole coefficients )
+  f64 gate-rel
 ;
 
 ( --- ring helpers: inlined into the tick ------------------------- )
@@ -160,6 +178,11 @@ dsp: verb-block-prepare
   -> params.damp-a
   params.mod-rate sr f/ -> params.mod-inc
   params.mod-depth scale f* -> params.mod-depth-spl
+  params.gate-thr-db db>lin -> params.gate-thr
+  params.gate-hold-s sr f* 1.0 fmax -> params.gate-hold
+  ( ~1 ms open, ~10 ms shut: 1 - e^[-1/tau] ~ 1/tau at these rates )
+  1.0 sr 0.001 f* f/ -> params.gate-atk
+  1.0 sr 0.01 f* f/ -> params.gate-rel
 ;
 
 ( ctx state params -- : per-channel decorrelation, runs every
@@ -174,6 +197,8 @@ dsp: verb-prepare
     0.123 chan 0.39 f* f+
     state.lfo-phase
   fsel-lt -> state.lfo-phase
+  ( a fresh gate starts shut, not as if hit at sample 0 )
+  state.seeded 0.5 1.0e9 state.gate-t fsel-lt -> state.gate-t
   1.0 -> state.seeded
   params.mod-inc 1.0 chan 0.17 f* f+ f*
   -> state.mod-inc-ch
@@ -265,6 +290,23 @@ dsp: verb-tank-b-out | state:VerbState params:VerbParams buf tb -- |
   drop
 ;
 
+( The GATED mode's wet gain for this sample, keyed by the dry input. )
+dsp: verb-gate | state:VerbState params:VerbParams x -- g |
+  x fabs params.gate-thr  state.gate-t 1.0 f+  0.0  fsel-lt | t |
+  t -> state.gate-t
+  t params.gate-hold f/ | u |
+  params.gate-shape | sh |
+  ( ramp over the window: 1 - u decaying, u rising )
+  sh 0.0  1.0 u f-  u  fsel-lt | r |
+  1.0  sh fabs  r 1.0 f-  f*  f+ | w |
+  u 1.0 w 0.0 fsel-lt | target |
+  state.gate-g | g |
+  g target params.gate-atk params.gate-rel fsel-lt | k |
+  g  target g f-  k f*  f+ | gn |
+  gn -> state.gate-g
+  gn
+;
+
 ( Seven output taps, dry/wet mix. )
 dsp: verb-out | out state:VerbState params:VerbParams buf x -- |
   buf 52920.0 state.b-d1-pos params.b-d1-len
@@ -281,7 +323,10 @@ dsp: verb-out | out state:VerbState params:VerbParams buf x -- |
     state.tap-6 vb-tap f-
   buf 37816.0 state.a-d2-pos params.a-d2-len
     state.tap-7 vb-tap f-
-  0.6 f* | wet |
+  0.6 f* | wet0 |
+  state params x verb-gate | gg |
+  ( plate mode leaves the wet path untouched, bit for bit )
+  params.mode 0.5 wet0 wet0 gg f* fsel-lt | wet |
   x  1.0 params.mix f-  f*
   wet params.mix f*  f+
   out f!64

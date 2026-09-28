@@ -28,6 +28,18 @@ include "../lib/manifest.fy"
   "PLATE" "MOD"    "verb-mod"      VerbParams.mod-depth  0.0   24.0  10.0 curve-lin knob
   "PLATE" 6 strip
 
+  ( GATED: the dry input keys a gate on the wet tail - the 80s
+    non-linear drum room [reverb.fy header] )
+  "GATE" "MODE"   "verb-mode"       VerbParams.mode        0.0 switch
+    "PLATE" 0.0 opt  "GATED" 1.0 opt
+  "GATE" "THRESH" "verb-gate-thr"   VerbParams.gate-thr-db -60.0 0.0 -30.0 curve-lin knob
+  "GATE" "HOLD"   "verb-gate-hold"  VerbParams.gate-hold-s 0.05 1.0 0.35 curve-exp knob
+  "GATE" "SHAPE"  "verb-gate-shape" VerbParams.gate-shape  -1.0 1.0 0.0 curve-lin knob
+  "GATE" 4 strip
+
+  1.0 row
+    1.0 cell  "PLATE" 0.0 item  "GATE" 1.0 item
+
   ( fixed modulation rate; depth is the MOD knob )
   VerbParams.mod-rate 1.2 const-f64
 

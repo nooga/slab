@@ -73,7 +73,7 @@ plays on 42.
 
 `tools/library/cmi.py` imports CMI Series II / IIx voices into
 `$SLAB_LIBRARY/cmi/<collection>/<disk>/<VOICE>.vc` and writes an
-Unfairlight CIA preset per voice into
+Unfairlight TMI preset per voice into
 `machines/unfairlight/presets/cmi-<collection>/<disk>/` (gitignored; the
 preset menu nests collection → disk → voice). It reads ImageDisk `.IMD`
 and raw 512,512-byte `.IMG` floppy images, loose `.VC` files with their

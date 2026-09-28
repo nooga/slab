@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "verb2", "note": "The 'reverse' non-linear program: the room swells up behind each hit and stops", "params": {"verb-predelay": 0.005, "verb-decay": 0.94, "verb-damp": 8000, "verb-tone": 13000, "verb-mix": 0.55, "verb-mod": 6, "verb-mode": 1, "verb-gate-thr": -30, "verb-gate-hold": 0.28, "verb-gate-shape": 1}}

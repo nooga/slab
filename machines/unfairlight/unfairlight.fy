@@ -1,4 +1,4 @@
-( unfairlight.fy - Unfairlight CIA: a Fairlight CMI Series II / IIx voice.
+( unfairlight.fy - Unfairlight TMI: a Fairlight CMI Series II / IIx voice.
 
   Eight voice cards [kernels/06-voices/cmi.fy]: any WAV, SFZ or folder
   of samples becomes CMI voice RAM - sampled at RATE, 8-bit, 16,384
@@ -14,7 +14,7 @@ include "../../kernels/06-voices/cmi.fy"
 include "../lib/manifest.fy"
 
 : manifest
-  "Unfairlight CIA" voice-sample machine*
+  "Unfairlight TMI" voice-sample machine*
   "k-cmi-voice"       render!
   "cmi-note-on"       note-on!
   "cmi-note-off"      note-off!

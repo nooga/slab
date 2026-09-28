@@ -37,6 +37,9 @@ song.track("LEAD", "cream", "cream-lead").clip(chorus).melody("F#5:1.5 E5:.5 D5:
 # the sampler takes a keymap: a .wav, an .sfz, or a folder (a drum kit when
 # the file names carry no notes; kick = C2 = 36)
 song.track("HITS", "sampler", "sp1200-kit", samples="/path/to/kit")
+# a preset that names its samples brings them: a library kit, a CMI voice
+song.track("CR-78", "sampler", "drums/roland-cr-78/kit")
+song.track("VOICE", "unfairlight", "sararr")
 
 song.save()                    # songs/title.slab, prints warnings
 song.render(stems=True)        # bounce + mix report
