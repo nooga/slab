@@ -43,9 +43,8 @@ takes both. `Track.Kind.ret` is renamed `bus`.
   (nested groups, or a reverb return feeding a drum group).
 - The UI names a bus by use: GROUP when outputs feed it, RETURN when
   only sends do. This is a label; nothing else changes.
-- Folding a group's members under it in the arrangement needs track
-  reordering, which doesn't exist yet. Until it does, buses sit in a
-  section of their own under the tracks, above the master (§Arrangement).
+- Groups are drawn above their members in the arrangement and fold;
+  returns sit in a section of their own under the tracks (§Arrangement).
 
 ### Taps
 
@@ -167,9 +166,10 @@ On `Track`, UI-owned, persisted:
 | `sends[MAX_SENDS]` | `{ bus: u8, pre: bool, level: atomic f32 }`, `send_count`. `MAX_SENDS` = 8. |
 | `Effect.key` | `null`, or a track index; only on effects with `sidechain` |
 
-Track indices are stable: tracks are appended and never deleted or
-reordered yet. When deleting or reordering lands, it remaps every
-`output`, `sends[].bus` and `key`, as automation remaps effect uids.
+Track indices only move on a delete or a duplicate, and those remap
+every `output`, `sends[].bus` and `key` (`Track.forgetTrack`,
+`Track.makeRoomAt`), as automation remaps effect uids. Reordering, when
+it lands, will do the same.
 
 `MAX_TRACKS` goes from 16 to 32, counting buses. The cost is the
 snapshots: a `TrackSnapshot` is ~400 KB (note and point arrays), two per
@@ -232,6 +232,7 @@ loads as today):
 | Field | Meaning |
 |---|---|
 | `kind` | `"bus"`; missing = an audio track |
+| `folded` | on a bus: its members are hidden in the arrangement and mixer (UI only) |
 | `output` | index into `tracks` of a bus; missing = master |
 | `sends` | `to` a bus's index, `level` linear gain (0..2, 1 = 0 dB), `pre` true for pre-fader |
 | `effects[].key` | index into `tracks` whose pre tap keys this effect |
@@ -253,6 +254,7 @@ bass.fx[1].key(kick)            # or key=kick in fx(...)
 ```
 
 `output=` and `send` take a bus object; the builder writes indices.
+`song.bus(..., folded=True)` saves a group folded.
 
 ## UI
 
@@ -261,8 +263,11 @@ bass.fx[1].key(kick)            # or key=kick in fx(...)
 *Built* (`src/ui/mixer.zig`). **M** or the MIX latch (beside the
 arrangement's `+`) swaps the arrangement for the mixer; the mixer also
 takes the clip editor's room, and Tab still toggles the clip editor.
-Strips for the audio tracks on the left; on the right, pinned like a
-console's return section, the buses and then the master. Only the track
+Strips for the tracks and groups on the left, in the arrangement's
+display order (a group's strip before its members', each member with a
+rail in the group's colour; folding a group from its title's triangle
+hides its members here too); on the right, pinned like a console's
+return section, the returns and then the master. Only the left
 strips scroll: sideways with the wheel, or a thin bar under them once
 they overflow. Every strip has the same rows, so they line up:
 
@@ -270,7 +275,7 @@ they overflow. Every strip has the same rows, so they line up:
 |---|---|
 | title | colour bar, number or bus letter, name (scrolls while hovered when it doesn't fit). Click edits the strip in the bay; right-click is the routing menu |
 | inserts | the chain's machine names, bypassed ones dimmed, `+N more` past four; a name too long for the display scrolls |
-| sends | a small knob per bus, lettered (A, B, …), two to a row. Half travel is 0 dB, full +6 dB. Turning one up from nothing creates the send (an undo step); right-click an existing one for pre/post and remove. A bus that would feed back is disabled |
+| sends | a small knob per return, lettered (A, B, …), two to a row (sends to a group are made from the menu). Half travel is 0 dB, full +6 dB. Turning one up from nothing creates the send (an undo step); right-click an existing one for pre/post and remove. A bus that would feed back is disabled |
 | output | `→ MASTER` or a bus; click for the output list |
 | pan | bipolar knob at full size; BAL on the master |
 | fader | volume with the stereo meter and its scale beside it, dB readout below |
@@ -314,21 +319,48 @@ connected, not a second model, and it doesn't draw a free graph.
 
 ### Arrangement
 
-*Built.* Rows are drawn in a display order, not index order: audio
-tracks, then a BUSES divider, then the buses, all above the pinned
-master strip. Indices never move, so routing references stay valid.
+*Built.* Rows are drawn in a display order, not index order. Indices
+never move, so routing references stay valid; only where a row is
+drawn does.
 
-- Audio tracks are numbered 1, 2, … among themselves; buses are lettered
-  A, B, … as Live letters its returns.
+- **Groups** sit among the tracks. A bus is a *group* when some
+  track's output goes to it (a *return* when only sends feed it, as
+  §One bus kind names them). A group is drawn above its members, at
+  the place of its first member, and its members follow it in index
+  order, each with a rail in the group's colour. A group whose output is
+  another group nests inside it, one rail per level.
+- **Returns** follow in a section of their own under a RETURNS divider,
+  above the pinned master strip.
+- **Folding.** A group's header has a fold triangle. A folded group
+  hides its members' rows (in the mixer too) but keeps playing them;
+  its lane shows every member's clips as silhouettes in their
+  colours, folded or not. The fold state is saved (`"folded": true`).
+- Audio tracks are numbered 1, 2, … in display order, folded ones
+  included, so the numbers don't jump as groups fold; buses are
+  lettered A, B, … in index order, as Live letters its returns.
 - A bus header has the same minis as a track (volume, pan, M/S, meter,
   A for lanes) and no arm latch.
 - A bus lane is a flat dark well with bar lines (for its automation
   lanes) and names what feeds it: `← KIT · BASS (send)`.
 - Clips never land on a bus: creation, import and paste refuse, and
-  clip drags and pastes move by audio row, skipping the bus section.
-- The overview strip shows audio tracks only.
+  clip drags and pastes move by the visible audio rows, skipping group
+  and return rows.
+- The overview strip shows audio tracks only, folded ones included.
+- *Output ▸ New bus* on a track names the new bus GROUP 1, 2, …; the
+  mixer's and the arrangement's `+ BUS` make BUS 1, 2, ….
 
-Group folding waits for track reordering.
+Routing a track into a bus is what makes the group, so grouping needs
+no track reordering. Reordering by drag is still to come.
+
+### Duplicating a track
+
+*Duplicate track* / *Duplicate bus* in the name menu puts a copy right
+under the original: clips, instrument, effects, automation, output and
+sends, named `KIT 2` (the next free number). The tracks above move up
+one and every reference is renumbered, so nothing else's routing
+changes; keys that listened to the original keep listening to it. A
+bus is copied alone (a copied group gets no members, so it shows as a
+return until something is routed into it). One undo step.
 
 ## Phasing
 
@@ -348,6 +380,5 @@ Group folding waits for track reordering.
    strip, the patch bay page. **Exit: the gated snare works end to
    end** in Glass Horizon. *Built but the patch bay; the exit holds.*
 4. **PDC.** Latency in manifests, measured on the bench, delay at sums.
-5. **Later.** Send-level automation, group folding with track
-   reordering and deletion, note keys, a channel-strip machine
+5. **Later.** Send-level automation, track reordering by drag, note keys, a channel-strip machine
    (HPF → gate → EQ → comp → sat, docs/17 Track E), feedback sends.

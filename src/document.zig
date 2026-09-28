@@ -177,6 +177,7 @@ pub fn serialize(
         // Automation lanes (docs/22 §Project format).
         try appendLanes(alloc, &out, t);
         if (t.lanes_shown) try out.appendSlice(alloc, ",\"show_automation\":true");
+        if (t.folded and t.isBus()) try out.appendSlice(alloc, ",\"folded\":true");
 
         // Clips.
         try out.appendSlice(alloc, ",\"clips\":[");
@@ -520,70 +521,7 @@ pub fn apply(
 
     for (tracks_v.array.items) |trk_v| {
         if (trk_v != .object) return error.InvalidProject;
-        const to = trk_v.object;
-
-        const name = strOf(objGet(to, "name")) orelse "";
-        var color = c.rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
-        if (objGet(to, "color")) |cv| if (cv == .array and cv.array.items.len >= 3) {
-            color.r = asU8(cv.array.items[0]);
-            color.g = asU8(cv.array.items[1]);
-            color.b = asU8(cv.array.items[2]);
-        };
-        const volume: f32 = @floatCast(if (objGet(to, "volume")) |x| asF64(x) else 0.8);
-        const pan_v: f32 = @floatCast(if (objGet(to, "pan")) |x| asF64(x) else 0.0);
-        const mute = if (objGet(to, "mute")) |x| asBool(x) else false;
-        const solo = if (objGet(to, "solo")) |x| asBool(x) else false;
-
-        // Instrument — resolve by stable id, instantiate, restore settings.
-        var mach = silent_machine;
-        var machine_idx: ?u8 = null;
-        if (objGet(to, "instrument")) |iv| if (iv == .object) {
-            if (strOf(objGet(iv.object, "machine"))) |mid| {
-                if (reg.findById(mid)) |idx| {
-                    mach = try reg.instantiate(idx);
-                    machine_idx = @intCast(idx);
-                    if (objGet(iv.object, "params")) |pv| applyParams(mach, pv);
-                    if (objGet(iv.object, "assets")) |av| applyAssets(mach, av);
-                    if (objGet(iv.object, "zones")) |zv| if (mach.apply_zones_json) |f| f(mach.state, zv);
-                    if (objGet(iv.object, "state")) |sv| if (mach.apply_state_json) |f| f(mach.state, sv);
-                }
-            }
-        };
-
-        var t = try track_mod.Track.init(alloc, name, color, mach);
-        errdefer t.deinit(alloc);
-        t.machine_idx = machine_idx;
-        t.setVolume(volume);
-        t.setPan(pan_v);
-        t.mute.store(mute, .monotonic);
-        t.solo.store(solo, .monotonic);
-        if (strOf(objGet(to, "kind"))) |k| if (std.mem.eql(u8, k, "bus")) {
-            t.kind = .bus;
-        };
-        if (objGet(to, "output")) |x| t.output = asTrackRef(x);
-        if (objGet(to, "sends")) |sv| if (sv == .array) for (sv.array.items) |snd| {
-            if (snd != .object) continue;
-            const bus = asTrackRef(objGet(snd.object, "to") orelse continue);
-            const lvl: f32 = @floatCast(if (objGet(snd.object, "level")) |x| asF64(x) else 1.0);
-            const pre = if (objGet(snd.object, "pre")) |x| asBool(x) else false;
-            t.addSend(bus, pre, lvl) catch break;
-        };
-
-        // Effect chain — instantiate by id, restore params + bypass.
-        if (objGet(to, "effects")) |ev| try applyEffects(alloc, reg, &t, ev);
-
-        if (objGet(to, "automation")) |av| try applyLanes(alloc, &t, av);
-        if (objGet(to, "show_automation")) |x| t.lanes_shown = asBool(x);
-
-        // Clips.
-        if (objGet(to, "clips")) |cv| if (cv == .array) {
-            for (cv.array.items) |clv| {
-                if (clv != .object) continue;
-                try applyClip(alloc, &t, clv.object);
-            }
-        };
-
-        tracks_buf[track_count.*] = t;
+        tracks_buf[track_count.*] = try parseTrack(alloc, reg, trk_v.object, silent_machine);
         track_count.* += 1;
     }
     sanitizeRouting(tracks_buf[0..track_count.*]);
@@ -597,6 +535,94 @@ pub fn apply(
         m.effects.clearRetainingCapacity();
         if (objGet(mo, "effects")) |ev| try applyEffects(alloc, reg, m, ev);
     };
+}
+
+/// One track from its project object: machines instantiated, settings,
+/// routing (unchecked: `sanitizeRouting` runs over the whole project),
+/// automation and clips restored.
+fn parseTrack(alloc: std.mem.Allocator, reg: *registry_mod.Registry, to: std.json.ObjectMap, silent_machine: machine_mod.Machine) !track_mod.Track {
+    const name = strOf(objGet(to, "name")) orelse "";
+    var color = c.rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    if (objGet(to, "color")) |cv| if (cv == .array and cv.array.items.len >= 3) {
+        color.r = asU8(cv.array.items[0]);
+        color.g = asU8(cv.array.items[1]);
+        color.b = asU8(cv.array.items[2]);
+    };
+    const volume: f32 = @floatCast(if (objGet(to, "volume")) |x| asF64(x) else 0.8);
+    const pan_v: f32 = @floatCast(if (objGet(to, "pan")) |x| asF64(x) else 0.0);
+    const mute = if (objGet(to, "mute")) |x| asBool(x) else false;
+    const solo = if (objGet(to, "solo")) |x| asBool(x) else false;
+
+    // Instrument — resolve by stable id, instantiate, restore settings.
+    var mach = silent_machine;
+    var machine_idx: ?u8 = null;
+    if (objGet(to, "instrument")) |iv| if (iv == .object) {
+        if (strOf(objGet(iv.object, "machine"))) |mid| {
+            if (reg.findById(mid)) |idx| {
+                mach = try reg.instantiate(idx);
+                machine_idx = @intCast(idx);
+                if (objGet(iv.object, "params")) |pv| applyParams(mach, pv);
+                if (objGet(iv.object, "assets")) |av| applyAssets(mach, av);
+                if (objGet(iv.object, "zones")) |zv| if (mach.apply_zones_json) |f| f(mach.state, zv);
+                if (objGet(iv.object, "state")) |sv| if (mach.apply_state_json) |f| f(mach.state, sv);
+            }
+        }
+    };
+
+    var t = try track_mod.Track.init(alloc, name, color, mach);
+    errdefer t.deinit(alloc);
+    t.machine_idx = machine_idx;
+    t.setVolume(volume);
+    t.setPan(pan_v);
+    t.mute.store(mute, .monotonic);
+    t.solo.store(solo, .monotonic);
+    if (strOf(objGet(to, "kind"))) |k| if (std.mem.eql(u8, k, "bus")) {
+        t.kind = .bus;
+    };
+    if (objGet(to, "output")) |x| t.output = asTrackRef(x);
+    if (objGet(to, "sends")) |sv| if (sv == .array) for (sv.array.items) |snd| {
+        if (snd != .object) continue;
+        const bus = asTrackRef(objGet(snd.object, "to") orelse continue);
+        const lvl: f32 = @floatCast(if (objGet(snd.object, "level")) |x| asF64(x) else 1.0);
+        const pre = if (objGet(snd.object, "pre")) |x| asBool(x) else false;
+        t.addSend(bus, pre, lvl) catch break;
+    };
+
+    // Effect chain — instantiate by id, restore params + bypass.
+    if (objGet(to, "effects")) |ev| try applyEffects(alloc, reg, &t, ev);
+
+    if (objGet(to, "automation")) |av| try applyLanes(alloc, &t, av);
+    if (objGet(to, "show_automation")) |x| t.lanes_shown = asBool(x);
+
+    // Clips.
+    if (objGet(to, "clips")) |cv| if (cv == .array) {
+        for (cv.array.items) |clv| {
+            if (clv != .object) continue;
+            try applyClip(alloc, &t, clv.object);
+        }
+    };
+    if (objGet(to, "folded")) |x| t.folded = asBool(x);
+    return t;
+}
+
+/// A copy of `tracks[ti]` with fresh machines, made by writing the
+/// project out and reading that one track back. Its routing references
+/// are the original's, unchecked.
+pub fn cloneTrack(
+    alloc: std.mem.Allocator,
+    tracks: []track_mod.Track,
+    ti: usize,
+    transport: *const transport_mod.Transport,
+    reg: *registry_mod.Registry,
+    silent_machine: machine_mod.Machine,
+) !track_mod.Track {
+    const data = try serialize(alloc, tracks, transport);
+    defer alloc.free(data);
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, data, .{}) catch return error.InvalidProject;
+    defer parsed.deinit();
+    const tracks_v = objGet(parsed.value.object, "tracks") orelse return error.InvalidProject;
+    if (tracks_v != .array or ti >= tracks_v.array.items.len or tracks_v.array.items[ti] != .object) return error.InvalidProject;
+    return parseTrack(alloc, reg, tracks_v.array.items[ti].object, silent_machine);
 }
 
 // Restore an effect chain (instantiate by id, restore params + bypass) onto a

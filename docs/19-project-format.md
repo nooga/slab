@@ -110,6 +110,7 @@ JSON. Top level:
 | `instrument.state` | settings a machine keeps beyond flat params: a Rack's `{"parts": […]}`, the same form as its presets. |
 | `effects` | insert chain, run in order, stereo. `bypass: true` passes audio through untouched. `key` (an index into `tracks`) sidechains the effect's detector from that track's pre-fader signal ([23-routing.md](23-routing.md)). |
 | `kind` | `"bus"` for a bus (a group or a return: no instrument, no clips; its input is what's routed to it). Missing = an audio track. |
+| `folded` | On a bus: `true` hides a group's members in the arrangement and mixer. UI state only; missing = unfolded. |
 | `output` | index into `tracks` of the bus the post-fader signal goes to. Missing = the master. |
 | `sends` | `[{"to": 10, "level": 0.5, "pre": false}]`: copies into buses, `level` linear gain 0–2 (1 = 0 dB), `pre` true taps before the fader. |
 | `automation` | track automation lanes, see below. Optional. |

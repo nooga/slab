@@ -13,6 +13,7 @@ const pane = @import("pane_input.zig");
 const menu = @import("menu.zig");
 const routing = @import("../routing.zig");
 const route_menu = @import("route_menu.zig");
+const track_order = @import("track_order.zig");
 const bridge = @import("bridge.zig");
 const ui_core = @import("core.zig");
 const ui_style = @import("style.zig");
@@ -55,82 +56,94 @@ fn rowH(t: *const Track) f32 {
     return LANE_H + AUTO_H * @as(f32, @floatFromInt(autoRows(t)));
 }
 
-// Display order (docs/23 §Arrangement): audio tracks in index order, then
-// a BUSES divider, then the buses in index order. Track indices never
-// change; only where a row is drawn does.
+// Display order (docs/23 §Arrangement, ui/track_order.zig): tracks with
+// their groups above them, then a RETURNS divider and the returns. Members
+// of a folded group aren't shown. Track indices never change; only where
+// a row is drawn does. Cheap enough (32 tracks) to rebuild on every call.
 
-/// Height of the strip that opens the bus section.
+/// Height of the strip that opens the returns section.
 const BUS_DIV_H: f32 = 16;
 
-fn hasBuses(tracks: []const Track) bool {
-    for (tracks) |*t| if (t.isBus()) return true;
-    return false;
+fn order(tracks: []const Track) track_order.Order {
+    return track_order.Order.of(tracks);
 }
 
-/// Top of track `ti`'s row, from the top of the lane content.
+fn isShown(tracks: []const Track, ti: usize) bool {
+    return ti < tracks.len and order(tracks).shown[ti];
+}
+
+fn hasBuses(tracks: []const Track) bool {
+    return order(tracks).hasReturns();
+}
+
+/// Top of track `ti`'s row, from the top of the lane content (past the
+/// end for a hidden one).
 fn rowTop(tracks: []const Track, ti: usize) f32 {
-    const bus = ti < tracks.len and tracks[ti].isBus();
+    const o = order(tracks);
     var y: f32 = 0;
-    for (tracks, 0..) |*t, j| {
-        if (!t.isBus() and (bus or j < ti)) y += rowH(t);
+    for (o.rows[0..o.n], 0..) |row, k| {
+        if (k == o.main_n) y += BUS_DIV_H;
+        if (row.ti == ti) return y;
+        y += rowH(&tracks[row.ti]);
     }
-    if (!bus) return y;
-    y += BUS_DIV_H;
-    for (tracks[0..ti]) |*t| if (t.isBus()) {
-        y += rowH(t);
-    };
     return y;
 }
 
-/// Top of the BUSES divider (valid when there are buses).
+/// Top of the RETURNS divider (valid when there are returns).
 fn busDividerTop(tracks: []const Track) f32 {
+    const o = order(tracks);
     var y: f32 = 0;
-    for (tracks) |*t| if (!t.isBus()) {
-        y += rowH(t);
-    };
+    for (o.main()) |row| y += rowH(&tracks[row.ti]);
     return y;
 }
 
 fn contentH(tracks: []const Track) f32 {
-    var y: f32 = if (hasBuses(tracks)) BUS_DIV_H else 0;
-    for (tracks) |*t| y += rowH(t);
+    const o = order(tracks);
+    var y: f32 = if (o.hasReturns()) BUS_DIV_H else 0;
+    for (o.rows[0..o.n]) |row| y += rowH(&tracks[row.ti]);
     return y;
 }
 
-/// Audio track `ti`'s position among the audio tracks.
+/// Audio track `ti`'s position among the shown audio rows (clip rows);
+/// far out of range for a hidden one, so moves onto it find no target.
 fn audioRank(tracks: []const Track, ti: usize) i32 {
+    const o = order(tracks);
     var k: i32 = 0;
-    for (tracks[0..@min(ti, tracks.len)]) |*t| if (!t.isBus()) {
-        k += 1;
-    };
-    return k;
+    for (o.main()) |row| {
+        if (row.ti == ti) return k;
+        if (!tracks[row.ti].isBus()) k += 1;
+    }
+    return if (ti >= tracks.len) k else -10_000;
 }
 
-/// The audio track at `rank`, if there is one.
+/// The shown audio track at clip-row `rank`, if there is one.
 fn audioAt(tracks: []const Track, rank: i32) ?usize {
     if (rank < 0) return null;
+    const o = order(tracks);
     var k: i32 = 0;
-    for (tracks, 0..) |*t, i| {
-        if (t.isBus()) continue;
-        if (k == rank) return i;
+    for (o.main()) |row| {
+        if (tracks[row.ti].isBus()) continue;
+        if (k == rank) return row.ti;
         k += 1;
     }
     return null;
 }
 
-/// The audio rank whose row holds content-relative `y`: -1 above the
-/// first, and past the last audio track (the bus section, or below) it
-/// counts on in LANE_H steps, so a drag there finds no target.
+/// The clip-row rank whose row holds content-relative `y`: -1 above the
+/// first; a group row counts as the audio row after it; past the last
+/// audio row (the returns, or below) it counts on in LANE_H steps, so a
+/// drag there finds no target.
 fn audioRankAtY(tracks: []const Track, y: f32) i32 {
     if (y < 0) return -1;
+    const o = order(tracks);
     var top: f32 = 0;
     var k: i32 = 0;
-    for (tracks) |*t| {
-        if (t.isBus()) continue;
+    for (o.main()) |row| {
+        const t = &tracks[row.ti];
         const h = rowH(t);
         if (y < top + h) return k;
         top += h;
-        k += 1;
+        if (!t.isBus()) k += 1;
     }
     return k + @as(i32, @intFromFloat(@floor((y - top) / LANE_H)));
 }
@@ -750,19 +763,24 @@ pub fn draw(
     // Lane backgrounds first, then the loop region, so the loop marquee sits
     // behind the clips (drawn below).
     for (tracks, 0..) |*t, ti| {
+        if (!isShown(tracks, ti)) continue;
         const ly = lanes_top + rowTop(tracks, ti) - scroll_y;
         if (ly + LANE_H <= lanes_top) continue;
         if (ly >= lanes_bottom) continue; // display order isn't index order
         const lane_timeline = pane.rect(timeline_x, ly, timeline_w, LANE_H);
         const lane_is_sel = selected_track.* != null and selected_track.*.? == ti;
         drawTimelineLane(ui, lane_timeline, t.*, ti, lane_is_sel, timeline_x0, edit_snap);
-        if (t.isBus()) drawBusFeeds(ui, lane_timeline, tracks, ti);
+        if (t.isBus()) {
+            drawGroupClips(ui, lane_timeline, tracks, ti, timeline_x0);
+            drawBusFeeds(ui, lane_timeline, tracks, ti);
+        }
     }
     if (hasBuses(tracks)) {
         const dy = lanes_top + busDividerTop(tracks) - scroll_y;
         if (dy + BUS_DIV_H > lanes_top and dy < lanes_bottom) drawBusDivider(ui, pane.rect(timeline_x, dy, timeline_w, BUS_DIV_H));
     }
     for (tracks, 0..) |*t, ti| {
+        if (!isShown(tracks, ti)) continue;
         const ly = lanes_top + rowTop(tracks, ti) - scroll_y;
         if (ly + rowH(t) <= lanes_top) continue;
         if (ly >= lanes_bottom) continue; // display order isn't index order
@@ -929,6 +947,7 @@ pub fn draw(
     ui.clip(bridge.fromRl(pane.rect(header_x, lanes_top, header_w, lanes_bottom - lanes_top)));
     const play_beat = transport.beats();
     for (tracks, 0..) |*t, ti| {
+        if (!isShown(tracks, ti)) continue;
         const ly = lanes_top + rowTop(tracks, ti) - scroll_y;
         if (ly + rowH(t) <= lanes_top) continue;
         if (ly >= lanes_bottom) continue; // display order isn't index order
@@ -936,7 +955,20 @@ pub fn draw(
         const lane_header = pane.rect(header_x, ly, header_w, LANE_H);
         const lane_is_sel = selected_track.* != null and selected_track.*.? == ti;
         const editing = rename_target.kind == .track and rename_target.track == ti;
-        const hres = drawLaneHeader(ui, lane_header, t, ti, @as(usize, @intCast(audioRank(tracks, ti))) + 1, if (t.isBus()) busLetter(tracks, ti) else null, lane_is_sel, editing, play_beat);
+        const o = order(tracks);
+        var rails: [routing.MAX_TRACKS]ui_style.Color = undefined;
+        var n_rails: usize = o.depth[ti];
+        {
+            var a = o.parent[ti];
+            var k = n_rails;
+            while (a != routing.NONE and k > 0) : (a = o.parent[a]) {
+                k -= 1;
+                rails[k] = trackColor(tracks[a].color);
+            }
+            n_rails -= k;
+            if (k > 0) std.mem.copyForwards(ui_style.Color, rails[0..n_rails], rails[k .. k + n_rails]);
+        }
+        const hres = drawLaneHeader(ui, lane_header, t, ti, o.number[ti], if (t.isBus()) busLetter(tracks, ti) else null, lane_is_sel, editing, play_beat, .{ .rails = rails[0..n_rails], .group = o.is_group[ti] });
         if (editing) result.rename_rect = hres.name_rect;
         switch (hres.action) {
             .none => {},
@@ -959,7 +991,7 @@ pub fn draw(
         const dy = lanes_top + busDividerTop(tracks) - scroll_y;
         if (dy + BUS_DIV_H > lanes_top and dy < lanes_bottom) {
             const hr = ui.plate(bridge.fromRl(pane.rect(header_x, dy, header_w, BUS_DIV_H)), .{ .fill = ui_style.face.shade(-4) });
-            _ = ui.engraved(&ui.fonts.legend, hr.x + 5, hr.y + 3, "BUSES", ui_style.text_dim);
+            _ = ui.engraved(&ui.fonts.legend, hr.x + 5, hr.y + 3, "RETURNS", ui_style.text_dim);
         }
     }
     // Below the last track the header column is a blank plate (nothing
@@ -1173,6 +1205,7 @@ fn updateBoxSelect(
         const box_r = normalizedRect(box_start_x, box_start_y, m.x, m.y);
         var primary: ?ClipRef = null;
         for (tracks, 0..) |*t, ti| {
+            if (!isShown(tracks, ti)) continue;
             const ly = lanes_top + rowTop(tracks, ti) - scroll_y;
             const lane = pane.rect(timeline_x, ly, timeline_w, LANE_H);
             for (t.clips.items, 0..) |*clip, ci| {
@@ -1522,15 +1555,30 @@ const HeaderResult = struct {
 /// lit latches, pan and volume mini sliders, and a bare stereo meter.
 /// `number` is the track's place among the audio tracks (1-based); a bus
 /// shows its `bus_letter` instead.
-fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, number: usize, bus_letter: ?u8, selected: bool, editing_name: bool, beat: f64) HeaderResult {
+/// Where a header sits among groups: its enclosing groups' colours,
+/// outermost first, and whether it heads a group itself.
+const Nest = struct {
+    rails: []const ui_style.Color = &.{},
+    group: bool = false,
+};
+
+const RAIL_W: i32 = 4;
+
+fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, number: usize, bus_letter: ?u8, selected: bool, editing_name: bool, beat: f64, nest: Nest) HeaderResult {
     const r = bridge.fromRl(r_legacy);
     ui.pushId(t);
     defer ui.popId();
     var body = ui.plate(r, .{ .fill = if (selected) ui_style.face.shade(8) else ui_style.face });
-    // Spine: full-height track colour, amber stripe beside it when selected.
-    ui.rect(Rect.xywh(r.x, r.y, 3, r.h - 1), trackColor(t.color));
-    if (selected) ui.rect(Rect.xywh(r.x + 3, r.y, 2, r.h - 1), ui_style.accent);
-    _ = body.cutLeft(6);
+    // Rails: one per enclosing group, in its colour, then this row's spine
+    // (full-height track colour) and an amber stripe when selected.
+    var sx = r.x;
+    for (nest.rails) |col| {
+        ui.rect(Rect.xywh(sx, r.y, RAIL_W - 1, r.h - 1), col.mix(ui_style.face, 0.35));
+        sx += RAIL_W;
+    }
+    ui.rect(Rect.xywh(sx, r.y, 3, r.h - 1), trackColor(t.color));
+    if (selected) ui.rect(Rect.xywh(sx + 3, r.y, 2, r.h - 1), ui_style.accent);
+    _ = body.cutLeft(6 + sx - r.x);
 
     const peaks = t.meter();
     ctl.meterStereo(ui, body.cutRight(12).insetXY(0, 1), "meter", .{ peaks.l, peaks.r }, .{ peaks.l, peaks.r }, .{ .scale = .none });
@@ -1560,6 +1608,14 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, numb
     // Index badge + name; the name row is also the select/rename target.
     var ibuf: [8]u8 = undefined;
     const idx_s = if (bus_letter) |l| std.fmt.bufPrint(&ibuf, "{c}", .{l}) catch "?" else std.fmt.bufPrint(&ibuf, "{d}", .{number}) catch "?";
+    var fold_r: Rect = .{};
+    if (nest.group) {
+        fold_r = row1.cutLeft(12);
+        const fb = ui.behaviorEx(ui.id("fold"), fold_r, .{ .focusable = false });
+        if (fb.pressed) t.folded = !t.folded;
+        ui.textIn(&ui.fonts.legend, fold_r, if (t.folded) "\u{25B8}" else "\u{25BE}", if (fb.hover) ui_style.text else ui_style.text_dim, .left, true);
+        menu.tip(ui, fold_r, if (t.folded) "Unfold group" else "Fold group");
+    }
     const idx_r = row1.cutLeft(14);
     ui.textIn(&ui.fonts.legend, idx_r, idx_s, ui_style.text_mute, .left, true);
     const name_r = row1;
@@ -1594,11 +1650,12 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, numb
         menu.tip(ui, pan_r, "Pan (double-click to center)");
     }
 
-    const name_hit = Rect.xywh(r.x, r.y, name_r.right() - r.x, 20);
+    const hit_x = if (nest.group) fold_r.right() else r.x;
+    const name_hit = Rect.xywh(hit_x, r.y, name_r.right() - hit_x, 20);
     if (ui.in.right_pressed and name_hit.contains(ui.in.ix(), ui.in.iy())) {
         route_menu.open(idx, .all, ui.in.ix(), ui.in.iy());
     }
-    menu.tip(ui, name_hit, if (t.isBus()) "Bus: right-click to route" else "Right-click to route");
+    menu.tip(ui, name_hit, if (nest.group) "Group: right-click to route" else if (t.isBus()) "Return: right-click to route" else "Right-click to route");
     const b = ui.behaviorEx(ui.id("name"), name_hit, .{ .focusable = false });
     const name_rl = bridge.toRl(name_r);
     if (b.pressed) return .{ .action = if (b.double) .rename else .select, .name_rect = name_rl };
@@ -2052,12 +2109,13 @@ fn drawOverview(
     const px_per_beat_ov = inner.width / cb;
 
     // Each track gets a thin horizontal slice.
-    const n_audio = audioRank(tracks, tracks.len);
+    const ord = order(tracks);
+    const n_audio = ord.audio_count;
     if (n_audio > 0) {
         const lane_h = @max(1.0, inner.height / @as(f32, @floatFromInt(n_audio)));
         for (tracks, 0..) |*t, i| {
             if (t.isBus()) continue; // no clips
-            const ly = inner.y + @as(f32, @floatFromInt(audioRank(tracks, i))) * lane_h;
+            const ly = inner.y + @as(f32, @floatFromInt(ord.number[i] - 1)) * lane_h;
             for (t.clips.items) |clip| {
                 const cx = inner.x + @as(f32, @floatCast(clip.start_beat)) * px_per_beat_ov;
                 const cw = @max(@as(f32, @floatCast(clip.length_beats)) * px_per_beat_ov, 1.0);
@@ -2247,6 +2305,39 @@ fn drawBusFeeds(ui: *Ui, r_: c.rl.Rectangle, tracks: []Track, ti: usize) void {
     const r = bridge.fromRl(r_);
     const text = if (w == 0) "nothing routed here: right-click a track's name, Output or Sends" else buf[0..w];
     ui.textIn(&ui.fonts.legend, Rect.xywh(r.x + 6, r.y + 4, r.w - 12, 12), text, ui_style.text_mute, .left, true);
+}
+
+/// A group's lane: every member's clips (nested ones too) as silhouettes
+/// in their track colours under the feeds line, one thin band per member
+/// in display order, folded or not.
+fn drawGroupClips(ui: *Ui, lane: c.rl.Rectangle, tracks: []Track, ti: usize, timeline_x0: f32) void {
+    const o = order(tracks);
+    if (!o.is_group[ti]) return;
+    var members: [routing.MAX_TRACKS]u8 = undefined;
+    var n: usize = 0;
+    // Display order, hidden rows included: walk the full order by number.
+    for (1..o.audio_count + 1) |num| {
+        for (tracks, 0..) |*u, j| {
+            if (u.isBus() or o.number[j] != num or !o.within(j, ti)) continue;
+            members[n] = @intCast(j);
+            n += 1;
+        }
+    }
+    if (n == 0) return;
+    const top: i32 = ipx(lane.y) + 18;
+    const avail: i32 = ipx(lane.height) - 18 - 3;
+    const band = @max(2, @divFloor(avail, @as(i32, @intCast(n))));
+    for (members[0..n], 0..) |j, k| {
+        const u = &tracks[j];
+        const col = trackColor(u.color);
+        const y = top + @as(i32, @intCast(k)) * band;
+        if (y + band > top + avail + 1) break;
+        for (u.clips.items) |*clip| {
+            const cr = clipRect(lane, clip.*, timeline_x0);
+            if (cr.x + cr.width < lane.x or cr.x > lane.x + lane.width) continue;
+            ui.rect(Rect.xywh(ipx(cr.x), y, @max(1, ipx(cr.width) - 1), @max(1, band - 1)), col.mix(ui_style.well, 0.35));
+        }
+    }
 }
 
 fn drawTimelineLane(ui: *Ui, r_: c.rl.Rectangle, t: Track, idx: usize, selected: bool, timeline_x0: f32, edit_snap: snap_mod.Setting) void {

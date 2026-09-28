@@ -95,6 +95,8 @@ pub const Track = struct {
     lanes: std.ArrayList(automation.Lane) = .empty,
     /// Arrangement: lanes shown under the track row.
     lanes_shown: bool = false,
+    /// A group's members are hidden in the arrangement and mixer (UI only).
+    folded: bool = false,
     next_fx_uid: u16 = 1,
     /// Audio-thread-owned per-lane segment cursors (automation.evalCursor).
     auto_cursors: [snap_mod.MAX_LANES_PER_TRACK]u32 = [_]u32{0} ** snap_mod.MAX_LANES_PER_TRACK,
@@ -296,6 +298,18 @@ pub const Track = struct {
         }
         for (self.effects.items) |*fx| {
             if (fx.key == gone) fx.key = routing.NONE else if (fx.key != routing.NONE and fx.key > gone) fx.key -= 1;
+        }
+    }
+
+    /// A track is being inserted at `pos` and every track from there on
+    /// moves up one: renumber this track's output, sends and keys.
+    pub fn makeRoomAt(self: *Track, pos: u8) void {
+        if (self.output != routing.NONE and self.output >= pos) self.output += 1;
+        for (self.sendSlots()) |*snd| {
+            if (snd.bus >= pos) snd.bus += 1;
+        }
+        for (self.effects.items) |*fx| {
+            if (fx.key != routing.NONE and fx.key >= pos) fx.key += 1;
         }
     }
 
@@ -706,6 +720,10 @@ test "forgetTrack drops references to the deleted track and renumbers the rest" 
     try std.testing.expectEqual(@as(u8, 1), t.sends[1].bus);
     t.forgetTrack(2);
     try std.testing.expectEqual(routing.NONE, t.output);
+    t.makeRoomAt(2); // sends are 2, 1 after the second forget
+    try std.testing.expectEqual(routing.NONE, t.output);
+    try std.testing.expectEqual(@as(u8, 3), t.sends[0].bus);
+    try std.testing.expectEqual(@as(u8, 1), t.sends[1].bus);
 }
 
 test "removeEffect shifts chain and bypass travels with the slot" {

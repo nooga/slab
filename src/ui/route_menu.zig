@@ -24,6 +24,8 @@ pub const RouteEdit = struct {
         key: struct { fx_uid: u16, src: u8 },
         /// Delete the track (main asks first when it isn't empty).
         delete,
+        /// Copy the track in right under itself.
+        duplicate,
     },
 };
 
@@ -37,6 +39,7 @@ const PRE: u32 = 0x201;
 const POST: u32 = 0x202;
 const REMOVE: u32 = 0x203;
 const DELETE: u32 = 0x204;
+const DUPLICATE: u32 = 0x205;
 
 var track_idx: usize = 0;
 var mode: Mode = .all;
@@ -75,9 +78,14 @@ pub fn tick(tracks: []Track) ?RouteEdit {
                 .{ .label = "Output", .id = 1, .submenu = true },
                 .{ .label = "Sends", .id = 2, .submenu = true },
                 .{ .separator = true },
+                .{ .label = if (tracks[ti].isBus()) "Duplicate bus" else "Duplicate track", .id = DUPLICATE, .enabled = tracks.len < routing.MAX_TRACKS },
                 .{ .label = if (tracks[ti].isBus()) "Delete bus" else "Delete track", .id = DELETE },
             };
-            if (menu.pick(KEY, &top) == DELETE) return .{ .track = ti, .what = .delete };
+            switch (menu.pick(KEY, &top) orelse 0) {
+                DELETE => return .{ .track = ti, .what = .delete },
+                DUPLICATE => return .{ .track = ti, .what = .duplicate },
+                else => {},
+            }
             const which = menu.subOpen(KEY, 0) orelse return null;
             return list(tracks, ti, which == 1, 1);
         },
@@ -131,7 +139,7 @@ fn list(tracks: []Track, ti: usize, outputs: bool, level: usize) ?RouteEdit {
     }
     items[k] = .{ .separator = true };
     k += 1;
-    items[k] = .{ .label = "New bus", .id = NEW_BUS, .enabled = tracks.len < routing.MAX_TRACKS };
+    items[k] = .{ .label = if (outputs) "New group" else "New return", .id = NEW_BUS, .enabled = tracks.len < routing.MAX_TRACKS };
     k += 1;
     const id = (if (level == 0) menu.pick(KEY, items[0..k]) else menu.subPick(KEY, level, items[0..k])) orelse return null;
     if (outputs) {

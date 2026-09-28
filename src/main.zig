@@ -53,6 +53,7 @@ test {
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
     _ = @import("routing.zig");
+    _ = @import("ui/track_order.zig");
     _ = @import("engine.zig");
     _ = @import("track.zig");
     _ = @import("document.zig");
@@ -773,7 +774,11 @@ pub fn main(init: std.process.Init) !void {
                 status.set("Added {s}", .{tracks[ti].name()});
             } else |err| status.set("Can't add: {s}", .{@errorName(err)});
         }
-        if (ares.route) |edit| if (edit.what == .delete) {
+        if (ares.route) |edit| if (edit.what == .duplicate) {
+            duplicateTrack(alloc, &history, &status, &audio, &engine, &reg, &tracks_buf, &track_count, &transport, edit.track, &selected_track, &selected_clip, &prev_selected_clip) catch |err| status.set("Duplicate failed: {s}", .{@errorName(err)});
+            tracks = tracks_buf[0..track_count];
+            dirty = true;
+        } else if (edit.what == .delete) {
             if (recorder.isRecording() or rec_finishing) {
                 status.set("Stop recording before deleting a track", .{});
             } else if (edit.track < track_count) {
@@ -1565,7 +1570,7 @@ fn applyRouteEdit(
     transport: *const transport_mod.Transport,
 ) !void {
     const routing = @import("routing.zig");
-    if (edit.track >= track_count.* or edit.what == .delete) return;
+    if (edit.track >= track_count.* or edit.what == .delete or edit.what == .duplicate) return;
     const before = try document_mod.serialize(alloc, tracks_buf[0..track_count.*], transport);
     errdefer alloc.free(before);
 
@@ -1579,9 +1584,9 @@ fn applyRouteEdit(
         .output_new_bus, .send_new_bus => {
             audio.stop();
             defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
-            target = @intCast(try newTrack(alloc, tracks_buf, track_count, true));
+            target = @intCast(try newTrack(alloc, tracks_buf, track_count, true, if (edit.what == .output_new_bus) "Group" else "Return"));
         },
-        .delete => unreachable,
+        .delete, .duplicate => unreachable,
     }
     const t = &tracks_buf[edit.track];
     switch (edit.what) {
@@ -1628,21 +1633,17 @@ fn applyRouteEdit(
             snd.pre = p.pre;
             status.set("{s}: send to {s} {s}-fader", .{ t.name(), tracks_buf[target].name(), if (p.pre) "pre" else "post" });
         },
-        .delete => unreachable,
+        .delete, .duplicate => unreachable,
     }
     try history.pushUndo(alloc, before);
 }
 
-/// Append an empty track or bus, named by its count ("Track 5", "Bus 2").
-/// Audio-stopped. Returns its index.
-fn newTrack(alloc: std.mem.Allocator, tracks_buf: *[MAX_TRACKS]track_mod.Track, track_count: *usize, bus: bool) !usize {
+/// Append an empty track or bus named `prefix` and the next free number
+/// ("Track 5", "Group 2"). Audio-stopped. Returns its index.
+fn newTrack(alloc: std.mem.Allocator, tracks_buf: *[MAX_TRACKS]track_mod.Track, track_count: *usize, bus: bool, prefix: []const u8) !usize {
     if (track_count.* >= MAX_TRACKS) return error.TooManyTracks;
-    var n: usize = 0;
-    for (tracks_buf[0..track_count.*]) |*t| {
-        if (t.isBus() == bus) n += 1;
-    }
-    var name_buf: [32]u8 = undefined;
-    const name = std.fmt.bufPrint(&name_buf, "{s} {d}", .{ if (bus) "Bus" else "Track", n + 1 }) catch "Track";
+    var name_buf: [track_mod.MAX_NAME]u8 = undefined;
+    const name = freeName(&name_buf, tracks_buf[0..track_count.*], prefix, 1);
     var t = try track_mod.Track.init(alloc, name, trackColor(track_count.*), silent_machine);
     if (bus) {
         t.kind = .bus;
@@ -1651,6 +1652,18 @@ fn newTrack(alloc: std.mem.Allocator, tracks_buf: *[MAX_TRACKS]track_mod.Track, 
     tracks_buf[track_count.*] = t;
     track_count.* += 1;
     return track_count.* - 1;
+}
+
+/// "`base` N" for the lowest N from `from` that no track is named yet.
+fn freeName(buf: []u8, tracks: []const track_mod.Track, base: []const u8, from: usize) []const u8 {
+    var k = from;
+    while (k < 1000) : (k += 1) {
+        const name = std.fmt.bufPrint(buf, "{s} {d}", .{ base, k }) catch return base;
+        var taken = false;
+        for (tracks) |*t| taken = taken or std.mem.eql(u8, t.name(), name);
+        if (!taken) return name;
+    }
+    return base;
 }
 
 /// "+" / "+ BUS": `newTrack` as one undo step.
@@ -1669,7 +1682,7 @@ fn appendTrack(
     const ti = blk: {
         audio.stop();
         defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
-        break :blk try newTrack(alloc, tracks_buf, track_count, bus);
+        break :blk try newTrack(alloc, tracks_buf, track_count, bus, if (bus) "Bus" else "Track");
     };
     try history.pushUndo(alloc, before);
     return ti;
@@ -1741,6 +1754,65 @@ fn trackContents(tracks: []track_mod.Track, ti: usize, msg: *DeleteMsg) bool {
     if (feeds > 0) msg.add("{d} track{s} route{s} into it.", .{ feeds, if (feeds == 1) "" else "s", if (feeds == 1) "s" else "" });
     msg.add("Undo brings it back.", .{});
     return true;
+}
+
+/// Copy track `ti` in right under itself (docs/23 §Duplicating a track):
+/// the tracks after it move up one and every reference is renumbered.
+/// The copy is selected. One undo step.
+fn duplicateTrack(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    status: anytype,
+    audio: *audio_mod.Audio,
+    engine: *engine_mod.Engine,
+    reg: *registry_mod.Registry,
+    tracks_buf: *[MAX_TRACKS]track_mod.Track,
+    track_count: *usize,
+    transport: *const transport_mod.Transport,
+    ti: usize,
+    selected_track: *?usize,
+    selected_clip: *?clip_mod.ClipRef,
+    prev_selected_clip: *?clip_mod.ClipRef,
+) !void {
+    if (ti >= track_count.*) return;
+    if (track_count.* >= MAX_TRACKS) return error.TooManyTracks;
+    const tracks = tracks_buf[0..track_count.*];
+    const before = try document_mod.serialize(alloc, tracks, transport);
+    errdefer alloc.free(before);
+    var copy = try document_mod.cloneTrack(alloc, tracks, ti, transport, reg, silent_machine);
+    // "KIT" → "KIT 2"; "Track 3" → the next free "Track N".
+    {
+        const orig = tracks[ti].name();
+        var base = orig;
+        if (std.mem.lastIndexOfScalar(u8, orig, ' ')) |sp| {
+            if (sp + 1 < orig.len and std.fmt.parseInt(u32, orig[sp + 1 ..], 10) catch null != null) base = orig[0..sp];
+        }
+        var name_buf: [track_mod.MAX_NAME]u8 = undefined;
+        copy.setName(freeName(&name_buf, tracks, base, 2));
+    }
+    const pos: u8 = @intCast(ti + 1);
+    {
+        audio.stop();
+        defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+        var i = track_count.*;
+        while (i > pos) : (i -= 1) tracks_buf[i] = tracks_buf[i - 1];
+        track_count.* += 1;
+        for (tracks_buf[0..track_count.*], 0..) |*t, j| {
+            if (j != pos) t.makeRoomAt(pos);
+        }
+        copy.makeRoomAt(pos);
+        tracks_buf[pos] = copy;
+        engine.tracks = tracks_buf[0..track_count.*];
+        engine.send_prev = @splat(@splat(-1));
+        engine.publishRouting();
+    }
+    try history.pushUndo(alloc, before);
+
+    inline for (.{ selected_clip, prev_selected_clip }) |ref| if (ref.*) |r| {
+        if (r.track >= pos) ref.*.?.track = r.track + 1;
+    };
+    selected_track.* = pos;
+    status.set("Duplicated as {s}", .{tracks_buf[pos].name()});
 }
 
 /// Remove track `ti`: the tracks above it move down one, and every

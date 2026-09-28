@@ -18,6 +18,7 @@ const ui_style = @import("style.zig");
 const ctl = @import("controls.zig");
 const menu = @import("menu.zig");
 const route_menu = @import("route_menu.zig");
+const track_order = @import("track_order.zig");
 const routing = @import("../routing.zig");
 const automation = @import("../automation.zig");
 const arrangement = @import("arrangement.zig");
@@ -79,15 +80,15 @@ pub fn draw(
         _ = ui.engraved(&ui.fonts.legend, body.x + 5, body.y + 3, "MIXER", ui_style.text_dim);
     }
 
-    var n_audio: i32 = 0;
-    var n_bus: i32 = 0;
-    for (tracks) |*t| {
-        if (t.isBus()) n_bus += 1 else n_audio += 1;
-    }
+    // Tracks and groups (members of folded groups hidden) scroll; the
+    // returns are pinned beside the master (docs/23 §Arrangement).
+    const o = track_order.Order.of(tracks);
+    const n_main: i32 = @intCast(o.main_n);
+    const n_bus: i32 = @intCast(o.n - o.main_n);
     const send_rows: i32 = @divFloor(n_bus + 1, 2);
 
-    // Right to left: the master, then the buses beside it (pinned, like a
-    // console's return section), then the tracks, which scroll sideways
+    // Right to left: the master, then the returns beside it (pinned, like
+    // a console's return section), then the tracks, which scroll sideways
     // when they don't fit.
     const master_r = area.cutRight(STRIP_W);
     const bus_w = @min(n_bus * STRIP_W, @max(0, area.w - STRIP_W - BUS_GAP));
@@ -97,7 +98,7 @@ pub fn draw(
 
     // Tracks: horizontal scroll by the wheel (either axis) or the bar.
     const bar_h: i32 = 8;
-    const content_w = n_audio * STRIP_W;
+    const content_w = n_main * STRIP_W;
     const overflow = content_w > tracks_area.w;
     var strips_r = tracks_area;
     const bar_r = if (overflow) strips_r.cutBottom(bar_h) else Rect{};
@@ -111,9 +112,8 @@ pub fn draw(
 
     ui.clip(strips_r);
     var x = strips_r.x - scroll_x;
-    for (tracks, 0..) |*t, ti| {
-        if (t.isBus()) continue;
-        drawStrip(ui, Rect.xywh(x, strips_r.y, STRIP_W, strips_r.h), tracks, ti, send_rows, device_sel, selected_track, beat, &res);
+    for (o.main()) |row| {
+        drawStrip(ui, Rect.xywh(x, strips_r.y, STRIP_W, strips_r.h), tracks, &o, row.ti, send_rows, device_sel, selected_track, beat, &res);
         x += STRIP_W;
     }
     // Nothing shows bare chassis (docs/06 §Packing).
@@ -121,9 +121,8 @@ pub fn draw(
     ui.unclip();
 
     ui.clip(bus_area);
-    for (tracks, 0..) |*t, ti| {
-        if (!t.isBus()) continue;
-        drawStrip(ui, bus_area.cutLeft(STRIP_W), tracks, ti, send_rows, device_sel, selected_track, beat, &res);
+    for (o.returns()) |row| {
+        drawStrip(ui, bus_area.cutLeft(STRIP_W), tracks, &o, row.ti, send_rows, device_sel, selected_track, beat, &res);
     }
     ui.unclip();
 
@@ -163,6 +162,7 @@ fn drawStrip(
     ui: *Ui,
     r: Rect,
     tracks: []Track,
+    o: *const track_order.Order,
     ti: usize,
     send_rows: i32,
     device_sel: *arrangement.DeviceSel,
@@ -174,7 +174,17 @@ fn drawStrip(
     ui.pushId(t);
     defer ui.popId();
     const selected = device_sel.* == .audio and selected_track.* != null and selected_track.*.? == ti;
-    const body = ui.plate(r, .{ .fill = if (selected) ui_style.face.shade(8) else if (t.isBus()) ui_style.face.shade(-4) else ui_style.face });
+    const body = ui.plate(r, .{ .fill = if (selected) ui_style.face.shade(8) else if (t.isBus() and !o.is_group[ti]) ui_style.face.shade(-4) else ui_style.face });
+    // Inside a group: a rail per enclosing group down the strip's left
+    // edge, in the group's colour, as the arrangement headers draw them.
+    {
+        var a = o.parent[ti];
+        var k: i32 = @as(i32, o.depth[ti]) - 1;
+        while (a != routing.NONE and k >= 0) : ({
+            a = o.parent[a];
+            k -= 1;
+        }) ui.rect(Rect.xywh(r.x + k * 3, r.y, 2, r.h - 1), arrangement.trackColor(tracks[a].color).mix(ui_style.face, 0.35));
+    }
     const rows = Rows.of(body, send_rows);
 
     // Title: colour bar, number or bus letter, name. Click selects (the
@@ -184,11 +194,20 @@ fn drawStrip(
         ui.rect(Rect.xywh(tr.x, tr.y, tr.w, 3), arrangement.trackColor(t.color));
         if (selected) ui.rect(Rect.xywh(tr.x, tr.y + 3, tr.w, 2), ui_style.accent);
         var ibuf: [8]u8 = undefined;
-        const tag = if (t.isBus()) std.fmt.bufPrint(&ibuf, "{c}", .{letterOf(tracks, ti)}) catch "?" else std.fmt.bufPrint(&ibuf, "{d}", .{numberOf(tracks, ti)}) catch "?";
+        const tag = if (t.isBus()) std.fmt.bufPrint(&ibuf, "{c}", .{letterOf(tracks, ti)}) catch "?" else std.fmt.bufPrint(&ibuf, "{d}", .{o.number[ti]}) catch "?";
         var line = Rect.xywh(tr.x + 3, tr.y + 5, tr.w - 6, tr.h - 5);
+        var fold_r: Rect = .{};
+        if (o.is_group[ti]) {
+            fold_r = line.cutLeft(10);
+            const fb = ui.behaviorEx(ui.id("fold"), fold_r, .{ .focusable = false });
+            if (fb.pressed) t.folded = !t.folded;
+            ui.textIn(&ui.fonts.legend, fold_r, if (t.folded) "\u{25B8}" else "\u{25BE}", if (fb.hover) ui_style.text else ui_style.text_dim, .left, true);
+            menu.tip(ui, fold_r, if (t.folded) "Unfold group" else "Fold group");
+        }
         ui.textIn(&ui.fonts.legend, line.cutLeft(ui.fonts.legend.measure(tag) + 5), tag, ui_style.text_mute, .left, true);
         ui.marquee(&ui.fonts.body, line, t.name(), if (selected) ui_style.text else ui_style.text_dim, .left, true, tr.contains(ui.in.ix(), ui.in.iy()));
-        const b = ui.behaviorEx(ui.id("title"), tr, .{ .focusable = false });
+        const title_hit = if (o.is_group[ti]) Rect.xywh(fold_r.right(), tr.y, tr.right() - fold_r.right(), tr.h) else tr;
+        const b = ui.behaviorEx(ui.id("title"), title_hit, .{ .focusable = false });
         if (b.pressed) select(device_sel, selected_track, ti);
         if (ui.in.right_pressed and tr.contains(ui.in.ix(), ui.in.iy())) route_menu.open(ti, .all, ui.in.ix(), ui.in.iy());
         menu.tip(ui, tr, "Click to edit in the bay, right-click to route");
@@ -201,8 +220,8 @@ fn drawStrip(
     {
         const cell = ctl.knobCell(.s, false);
         var k: i32 = 0;
-        for (tracks, 0..) |*u, j| {
-            if (!u.isBus()) continue;
+        for (o.returns()) |ret| {
+            const j = ret.ti;
             const col = @mod(k, 2);
             const row = @divFloor(k, 2);
             k += 1;
@@ -363,14 +382,6 @@ fn scrollBar(ui: *Ui, r: Rect, content_w: i32, scroll: *i32) void {
 fn select(device_sel: *arrangement.DeviceSel, selected_track: *?usize, ti: usize) void {
     selected_track.* = ti;
     device_sel.* = .audio;
-}
-
-fn numberOf(tracks: []const Track, ti: usize) usize {
-    var k: usize = 1;
-    for (tracks[0..ti]) |*t| {
-        if (!t.isBus()) k += 1;
-    }
-    return k;
 }
 
 fn letterOf(tracks: []const Track, ti: usize) u8 {

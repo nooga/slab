@@ -744,8 +744,9 @@ class Bus(Track):
     and sends route to it. A group when tracks output to it, a return when
     they send to it. Volume and pan and fx automate as on a track."""
 
-    def __init__(self, song, name, fx=(), volume=1.0, pan=0.0, color=None, mute=False, output=None):
+    def __init__(self, song, name, fx=(), volume=1.0, pan=0.0, color=None, mute=False, output=None, folded=False):
         self.song = song
+        self.folded = folded
         self.name = name
         self.output = output
         self.sends = []
@@ -789,6 +790,7 @@ class Bus(Track):
             "effects": [f.build(f"bus {self.name} fx {i}", index) for i, f in enumerate(self.fx)],
             "clips": [],
             **({"automation": _lanes_json(self.lanes)} if self.lanes else {}),
+            **({"folded": True} if self.folded else {}),
             **self._routing_json(index or {}),
         }
 
@@ -834,12 +836,13 @@ class Song:
         self.tracks.append(t)
         return t
 
-    def bus(self, name, fx=(), volume=1.0, pan=0.0, color=None, mute=False, output=None):
-        """A bus (docs/23): route tracks into it with output=bus (a group)
-        or track.send(bus, db) (a return). Counts against MAX_TRACKS."""
+    def bus(self, name, fx=(), volume=1.0, pan=0.0, color=None, mute=False, output=None, folded=False):
+        """A bus (docs/23): route tracks into it with output=bus (a group,
+        drawn above its members; folded=True hides them in the app) or
+        track.send(bus, db) (a return). Counts against MAX_TRACKS."""
         if len(self.tracks) >= MAX_TRACKS:
             raise SlabError(f"max {MAX_TRACKS} tracks (buses count)")
-        b = Bus(self, name, fx, volume, pan, color, mute, output)
+        b = Bus(self, name, fx, volume, pan, color, mute, output, folded)
         self.tracks.append(b)
         return b
 
