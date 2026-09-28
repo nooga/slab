@@ -179,6 +179,9 @@ pub const RenamePresetFn = *const fn (state: *anyopaque, index: PresetIndex, new
 /// Index of the last applied/saved preset, or -1 — drives the
 /// "name -> preset" titlebar label.
 pub const CurrentPresetFn = *const fn (state: *anyopaque) i32;
+/// Mark preset `index` (or -1) as the current one without applying it —
+/// a project load restoring the label its saved settings came from.
+pub const MarkPresetFn = *const fn (state: *anyopaque, index: i32) void;
 /// Append the machine's current settings as a JSON object `{"id":value,…}`
 /// (real values, same convention as presets) for embedding in a project.
 pub const WriteParamsJsonFn = *const fn (state: *anyopaque, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void;
@@ -284,6 +287,7 @@ pub const Machine = struct {
     save_preset_named: ?SavePresetNamedFn = null,
     rename_preset: ?RenamePresetFn = null,
     current_preset: ?CurrentPresetFn = null,
+    mark_preset: ?MarkPresetFn = null,
     /// Project persistence: dump/restore the machine's settings as JSON.
     write_params_json: ?WriteParamsJsonFn = null,
     set_param: ?SetParamFn = null,

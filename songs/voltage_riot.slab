@@ -60,7 +60,8 @@
      "master-accent": 0.8,
      "master-drive": 1.6,
      "master-level": 0.9
-    }
+    },
+    "preset": "909-punch"
    },
    "effects": [
     {
@@ -2153,7 +2154,8 @@
      "cr-glide": 0,
      "cr-age": 0.4,
      "cr-level": 0.8
-    }
+    },
+    "preset": "deep-sub-bass"
    },
    "effects": [
     {
@@ -2188,7 +2190,8 @@
       "comp-makeup": 3.8,
       "comp-mix": 1
      },
-     "bypass": false
+     "bypass": false,
+     "preset": "bass-leveler"
     }
    ],
    "clips": [
@@ -6330,7 +6333,8 @@
      "mg-pw": 0,
      "mg-cutoff": 0,
      "eg-pitch": 0
-    }
+    },
+    "preset": "acid-bass"
    },
    "effects": [
     {
@@ -10739,7 +10743,8 @@
      "mg-pw": 0,
      "mg-cutoff": 0,
      "eg-pitch": 0
-    }
+    },
+    "preset": "acid-bass"
    },
    "effects": [
     {
@@ -12173,7 +12178,8 @@
      "master-accent": 0.6,
      "master-drive": 2.2,
      "master-level": 0.9
-    }
+    },
+    "preset": "clap-forward-kit"
    },
    "effects": [
     {
@@ -12196,7 +12202,8 @@
       "verb-mix": 0.22,
       "verb-mod": 6
      },
-     "bypass": false
+     "bypass": false,
+     "preset": "short-plate-room"
     }
    ],
    "clips": [
@@ -13774,7 +13781,8 @@
      "master-accent": 0.55,
      "master-drive": 1.8,
      "master-level": 0.9
-    }
+    },
+    "preset": "crisp-hat-kit"
    },
    "effects": [
     {
@@ -20614,7 +20622,8 @@
      "master-accent": 0.65,
      "master-drive": 1.4,
      "master-level": 0.9
-    }
+    },
+    "preset": "synthetic-tom-kit"
    },
    "effects": [
     {
@@ -22228,7 +22237,8 @@
      "jn-rel": 0.18,
      "jn-vca-mode": 0,
      "jn-level": 0.527
-    }
+    },
+    "preset": "party-chord-stab"
    },
    "effects": [
     {
@@ -22270,7 +22280,8 @@
       "verb-mix": 0.2,
       "verb-mod": 12
      },
-     "bypass": false
+     "bypass": false,
+     "preset": "big-hall"
     }
    ],
    "clips": [
@@ -26568,7 +26579,8 @@
      "jn-rel": 2.0,
      "jn-vca-mode": 0,
      "jn-level": 0.197
-    }
+    },
+    "preset": "hazy-slow-attack-pad"
    },
    "effects": [
     {
@@ -26591,7 +26603,8 @@
       "chorus-spread": 1,
       "chorus-mix": 0.5
      },
-     "bypass": false
+     "bypass": false,
+     "preset": "juno-ii"
     },
     {
      "machine": "verb2",
@@ -26603,7 +26616,8 @@
       "verb-mix": 0.4,
       "verb-mod": 18
      },
-     "bypass": false
+     "bypass": false,
+     "preset": "cathedral"
     }
    ],
    "clips": [
@@ -27290,7 +27304,8 @@
      "mg-cutoff": 0,
      "eg-pitch": 0,
      "portamento": 0.4
-    }
+    },
+    "preset": "scream-lead"
    },
    "effects": [
     {
@@ -27322,7 +27337,8 @@
       "verb-mix": 0.3,
       "verb-mod": 12
      },
-     "bypass": false
+     "bypass": false,
+     "preset": "big-plate-hall"
     }
    ],
    "clips": [
@@ -27701,7 +27717,8 @@
      "mg-pw": 0,
      "mg-cutoff": 0.5,
      "eg-pitch": 0
-    }
+    },
+    "preset": "rising-filter-fx"
    },
    "effects": [
     {
@@ -27722,7 +27739,8 @@
       "verb-mix": 0.35,
       "verb-mod": 12
      },
-     "bypass": false
+     "bypass": false,
+     "preset": "big-hall"
     }
    ],
    "clips": [
@@ -28064,7 +28082,8 @@
      "master-accent": 0.7,
      "master-drive": 1.4,
      "master-level": 0.9
-    }
+    },
+    "preset": "gated-snare-kit"
    },
    "effects": [
     {
@@ -28085,7 +28104,8 @@
       "verb-mix": 0.3,
       "verb-mod": 12
      },
-     "bypass": false
+     "bypass": false,
+     "preset": "big-hall"
     }
    ],
    "clips": [
@@ -29097,7 +29117,8 @@
      "comp-makeup": 1.9,
      "comp-mix": 1
     },
-    "bypass": false
+    "bypass": false,
+    "preset": "bus-glue"
    },
    {
     "machine": "limiter2",

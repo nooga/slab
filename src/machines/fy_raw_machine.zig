@@ -639,6 +639,7 @@ pub const FyRawMachine = struct {
             .save_preset_named = savePresetNamedImpl,
             .rename_preset = renamePresetImpl,
             .current_preset = currentPresetImpl,
+            .mark_preset = markPresetImpl,
             .write_params_json = writeParamsJsonImpl,
             .set_param = setParamImpl,
             .write_assets_json = writeAssetsJsonImpl,
@@ -908,6 +909,11 @@ fn presetNameImpl(state: *anyopaque, index: machine.PresetIndex) [*:0]const u8 {
 fn currentPresetImpl(state: *anyopaque) i32 {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     return self.current_preset_idx;
+}
+
+fn markPresetImpl(state: *anyopaque, index: i32) void {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    self.current_preset_idx = if (index >= 0 and index < self.presets.count) index else -1;
 }
 
 /// A switch moved on the panel: store the option, then whatever that

@@ -15,7 +15,7 @@ import wave
 import zlib
 
 from . import rhythm
-from .machines import ROOT, SLAB, SlabError, library_path, machine, preset as load_preset, preset_assets
+from .machines import ROOT, SLAB, SlabError, library_path, machine, preset as load_preset, preset_assets, preset_name
 from .theory import Chord, Key, note, voice_lead
 
 MAX_TRACKS = 32  # buses count (docs/23)
@@ -73,6 +73,8 @@ class FX:
         values = dict(load_preset(m.id, self.preset)) if self.preset else {}
         values.update(m.params_from(self.params, where))
         out = {"machine": m.id, "params": values, "bypass": self.bypass}
+        if self.preset:
+            out["preset"] = preset_name(m.id, self.preset)
         if self.key is not None:
             if not m.sidechain:
                 raise SlabError(f"{where}: {m.id} takes no sidechain key (comp2, gate2 and verb2 do)")
@@ -514,6 +516,7 @@ class Track:
         self.machine = machine(machine_id)
         if self.machine.kind != "instrument":
             raise SlabError(f"track {name}: {machine_id} is an effect; put it in fx=[…]")
+        self.preset = preset_name(machine_id, preset) if preset else None
         self.params = dict(load_preset(machine_id, preset)) if preset else {}
         if params:
             self.set(**params)
@@ -760,6 +763,7 @@ class Track:
             "name": self.name, "color": self.color, "volume": self.volume, "pan": self.pan,
             "mute": self.mute, "solo": False,
             "instrument": {"machine": self.machine.id, "params": self.params,
+                           **({"preset": self.preset} if self.preset else {}),
                            **({"assets": self.assets} if self.assets else {}),
                            **({"zones": self.zones} if self.zones else {})},
             "effects": [f.build(f"{where} fx {i}", index) for i, f in enumerate(self.fx)],

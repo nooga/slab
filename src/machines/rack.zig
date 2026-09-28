@@ -128,6 +128,7 @@ pub const Rack = struct {
             .apply_preset = applyPresetImpl,
             .save_preset_named = savePresetNamedImpl,
             .current_preset = currentPresetImpl,
+            .mark_preset = markPresetImpl,
             .write_state_json = writeStateJsonImpl,
             .apply_state_json = applyStateJsonImpl,
             .panel_w_fn = panelWImpl,
@@ -448,6 +449,11 @@ fn presetNameImpl(state: *anyopaque, index: machine.PresetIndex) [*:0]const u8 {
 fn currentPresetImpl(state: *anyopaque) i32 {
     const self: *Rack = @ptrCast(@alignCast(state));
     return self.current_preset;
+}
+
+fn markPresetImpl(state: *anyopaque, index: i32) void {
+    const self: *Rack = @ptrCast(@alignCast(state));
+    self.current_preset = if (index >= 0 and index < self.presets.count) index else -1;
 }
 
 fn applyPresetImpl(state: *anyopaque, index: machine.PresetIndex) void {

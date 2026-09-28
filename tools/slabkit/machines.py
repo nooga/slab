@@ -156,7 +156,8 @@ def presets(mid):
     return sorted(out, key=lambda n: (n.count("/"), n))
 
 
-def _preset_file(mid, name):
+def preset_name(mid, name):
+    """The preset's full name as the host lists it ("rom1a/dx-bass")."""
     names = presets(mid)
     hits = [n for n in names if n == name] or [n for n in names if n.split("/")[-1] == name]
     if len(hits) != 1:
@@ -164,7 +165,11 @@ def _preset_file(mid, name):
             raise SlabError(f"{mid} preset {name!r} is ambiguous: {', '.join(hits)}")
         close = difflib.get_close_matches(name, names, n=4)
         raise SlabError(f"{mid} has no preset {name!r}" + (f"; close: {', '.join(close)}" if close else ""))
-    with open(os.path.join(MACHINES_DIR, mid, "presets", hits[0] + ".preset")) as f:
+    return hits[0]
+
+
+def _preset_file(mid, name):
+    with open(os.path.join(MACHINES_DIR, mid, "presets", preset_name(mid, name) + ".preset")) as f:
         return json.load(f)
 
 

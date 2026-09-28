@@ -161,6 +161,7 @@ pub fn serialize(
             try appendJsonString(alloc, &out, machineId(idx));
             try out.appendSlice(alloc, ",\"params\":");
             try appendParams(alloc, &out, t.machine);
+            try appendPreset(alloc, &out, t.machine);
             try appendAssets(alloc, &out, t.machine);
             try appendZones(alloc, &out, t.machine);
             if (t.machine.write_state_json) |f| {
@@ -272,6 +273,7 @@ fn appendEffects(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const tr
         try appendJsonString(alloc, out, if (fx.idx) |fi| machineId(fi) else "");
         try appendFmt(alloc, out, ",\"bypass\":{s},\"params\":", .{boolStr(t.effectBypassed(ei))});
         try appendParams(alloc, out, fx.mach);
+        try appendPreset(alloc, out, fx.mach);
         if (fx.key != routing.NONE) try appendFmt(alloc, out, ",\"key\":{d}", .{fx.key});
         try out.append(alloc, '}');
     }
@@ -440,6 +442,27 @@ fn parsePoint(v: std.json.Value) ?automation.Point {
     return pt;
 }
 
+/// `,"preset":"name"` — the preset the settings started from, for the
+/// label; the params stay authoritative.
+fn appendPreset(alloc: std.mem.Allocator, out: *std.ArrayList(u8), mach: machine_mod.Machine) !void {
+    const cur = if (mach.current_preset) |f| f(mach.state) else -1;
+    const name_of = mach.preset_name orelse return;
+    if (cur < 0) return;
+    try out.appendSlice(alloc, ",\"preset\":");
+    try appendJsonString(alloc, out, std.mem.span(name_of(mach.state, @intCast(cur))));
+}
+
+/// Mark the named preset current without applying it (the label only).
+fn markPreset(mach: machine_mod.Machine, v: ?std.json.Value) void {
+    const name = strOf(v) orelse return;
+    const mark = mach.mark_preset orelse return;
+    const count = if (mach.preset_count) |f| f(mach.state) else return;
+    const name_of = mach.preset_name orelse return;
+    for (0..count) |i| {
+        if (std.mem.eql(u8, std.mem.span(name_of(mach.state, @intCast(i))), name)) return mark(mach.state, @intCast(i));
+    }
+}
+
 fn appendParams(alloc: std.mem.Allocator, out: *std.ArrayList(u8), mach: machine_mod.Machine) !void {
     if (mach.write_params_json) |f| {
         try f(mach.state, out, alloc);
@@ -565,6 +588,7 @@ fn parseTrack(alloc: std.mem.Allocator, reg: *registry_mod.Registry, to: std.jso
                 if (objGet(iv.object, "assets")) |av| applyAssets(mach, av);
                 if (objGet(iv.object, "zones")) |zv| if (mach.apply_zones_json) |f| f(mach.state, zv);
                 if (objGet(iv.object, "state")) |sv| if (mach.apply_state_json) |f| f(mach.state, sv);
+                markPreset(mach, objGet(iv.object, "preset"));
             }
         }
     };
@@ -638,6 +662,7 @@ fn applyEffects(alloc: std.mem.Allocator, reg: *registry_mod.Registry, t: *track
         fxmach.reset(fxmach.state);
         try t.addEffect(alloc, fxmach, @intCast(idx));
         if (objGet(fo, "params")) |pv| applyParams(fxmach, pv);
+        markPreset(fxmach, objGet(fo, "preset"));
         if (objGet(fo, "bypass")) |bv| if (asBool(bv)) t.toggleEffectBypass(t.effects.items.len - 1);
         if (objGet(fo, "key")) |kv| t.effects.items[t.effects.items.len - 1].key = asTrackRef(kv);
     }
@@ -990,6 +1015,8 @@ test "JSON project round-trips instrument-by-id, settings, and effect chain" {
     const delay_idx = reg.findById("delay2").?;
     const fx = try reg.instantiate(delay_idx);
     fx.reset(fx.state);
+    fx.apply_preset.?(fx.state, 1);
+    const fx_preset = fx.current_preset.?(fx.state);
     try tracks[0].addEffect(alloc, fx, @intCast(delay_idx));
     tracks[0].toggleEffectBypass(0); // bypassed
 
@@ -1027,6 +1054,10 @@ test "JSON project round-trips instrument-by-id, settings, and effect chain" {
     // Effect chain restored, with bypass.
     try std.testing.expectEqual(@as(usize, 1), lt0.effects.items.len);
     try std.testing.expect(lt0.effectBypassed(0));
+    // The preset label comes back; the untouched instrument has none.
+    const lfx = lt0.effects.items[0].mach;
+    try std.testing.expectEqual(fx_preset, lfx.current_preset.?(lfx.state));
+    try std.testing.expectEqual(@as(i32, -1), lt0.machine.current_preset.?(lt0.machine.state));
     // Instrument settings round-tripped exactly (same dump on both sides).
     var ld_params: std.ArrayList(u8) = .empty;
     defer ld_params.deinit(alloc);
