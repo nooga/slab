@@ -619,6 +619,92 @@ Presets:
 - `vcsl-perc/hi-hat-cymbal` — VCSL Hi-Hat Cymbal
 - `vcsl-winds/ocarina-typical-sus` — VCSL Ocarina, Typical / Sustains / Sus, with release samples
 - `vcsl-winds/ocarina-typical-susvib` — VCSL Ocarina, Typical / Sustains / SusVib, with release samples
+- `drums/ace-tone-rhythm-ace/kit` — Ace Tone Rhythm Ace: kit on GM keys
+- `drums/ace-tone-rhythm-ace/percussion` — Ace Tone Rhythm Ace: every percussio from C2
+- `drums/ace-tone-rhythm-fever/kit` — Ace Tone Rhythm Fever: kit on GM keys
+- `drums/ace-tone-rhythm-fever/percussion` — Ace Tone Rhythm Fever: every percussio from C2
+- `drums/boss-dr-pad/kit` — Boss Dr Pad: kit on GM keys
+- `drums/boss-dr-pad/percussion` — Boss Dr Pad: every percussio from C2
+- `drums/conn-min-o-matic-rhythm/kit` — Conn Min-O-Matic Rhythm: kit on GM keys
+- `drums/e-mu-drumulator/kit` — E-mu Drumulator: kit on GM keys
+- `drums/funky-fever-disco-drum/kit` — Funky Fever Disco Drum: kit on GM keys
+- `drums/guild-mg10c-1/kit` — Guild MG10C-1: kit on GM keys
+- `drums/guild-mg10c-1/percussion` — Guild MG10C-1: every percussio from C2
+- `drums/hammon-auto-vari-64/kit` — Hammon Auto-Vari 64: kit on GM keys
+- `drums/kay-r-12-rhythmer/kit` — Kay R-12 Rhythmer: kit on GM keys
+- `drums/keynote-mr-101-auto-rhythm/kit` — Keynote MR-101 Auto Rhythm: kit on GM keys
+- `drums/keynote-mr-101-auto-rhythm/percussion` — Keynote MR-101 Auto Rhythm: every percussio from C2
+- `drums/korg-rhythm-55/kit` — Korg Rhythm 55: kit on GM keys
+- `drums/korg-rhythm-55/toms` — Korg Rhythm 55: every tom from C2
+- `drums/korg-univox-sr-120/kit` — Korg Univox SR-120: kit on GM keys
+- `drums/linndrum/kit` — LinnDrum: kit on GM keys
+- `drums/maestro-rhythm-king/kit` — Maestro Rhythm King: kit on GM keys
+- `drums/mfb-503-drumcomputer/kit` — MFB 503 Drumcomputer: kit on GM keys
+- `drums/modded-roland-tr-909/claps` — Modded Roland TR-909: every clap from C2
+- `drums/modded-roland-tr-909/closed-hats` — Modded Roland TR-909: every closed-hat from C2
+- `drums/modded-roland-tr-909/cymbals` — Modded Roland TR-909: every cymbal from C2
+- `drums/modded-roland-tr-909/kicks` — Modded Roland TR-909: every kick from C2
+- `drums/modded-roland-tr-909/kit` — Modded Roland TR-909: kit on GM keys
+- `drums/modded-roland-tr-909/open-hats` — Modded Roland TR-909: every open-hat from C2
+- `drums/modded-roland-tr-909/rides` — Modded Roland TR-909: every ride from C2
+- `drums/modded-roland-tr-909/snares` — Modded Roland TR-909: every snare from C2
+- `drums/modded-roland-tr-909/toms` — Modded Roland TR-909: every tom from C2
+- `drums/mridanga-talam/kit` — Mridanga Talam: kit on GM keys
+- `drums/mxr-drum-computer/kit` — MXR Drum Computer: kit on GM keys
+- `drums/nomad-time-turner/kit` — Nomad Time Turner: kit on GM keys
+- `drums/nomad-time-turner/percussion` — Nomad Time Turner: every percussio from C2
+- `drums/oberheim-dmx/kit` — Oberheim DMX: kit on GM keys
+- `drums/oberheim-dmx/toms` — Oberheim DMX: every tom from C2
+- `drums/oberheim-dx/kit` — Oberheim DX: kit on GM keys
+- `drums/oberheim-dx/toms` — Oberheim DX: every tom from C2
+- `drums/olson-rhythm-instrument/kit` — Olson Rhythm Instrument: kit on GM keys
+- `drums/panasonic-rd-9844/kit` — Panasonic RD-9844: kit on GM keys
+- `drums/radel-ct-24-taalmala/kit` — Radel CT-24 Taalmala: kit on GM keys
+- `drums/radel-ct-24-taalmala/percussion` — Radel CT-24 Taalmala: every percussio from C2
+- `drums/realistic-concertmate/kit` — Realistic Concertmate: kit on GM keys
+- `drums/roland-cr-78/closed-hats` — Roland CR-78: every closed-hat from C2
+- `drums/roland-cr-78/kicks` — Roland CR-78: every kick from C2
+- `drums/roland-cr-78/kit` — Roland CR-78: kit on GM keys
+- `drums/roland-cr-78/snares` — Roland CR-78: every snare from C2
+- `drums/roland-cr-78/tambourines` — Roland CR-78: every tambourine from C2
+- `drums/roland-modded-tr-707/claps` — Roland Modded TR-707: every clap from C2
+- `drums/roland-modded-tr-707/closed-hats` — Roland Modded TR-707: every closed-hat from C2
+- `drums/roland-modded-tr-707/cowbells` — Roland Modded TR-707: every cowbell from C2
+- `drums/roland-modded-tr-707/cymbals` — Roland Modded TR-707: every cymbal from C2
+- `drums/roland-modded-tr-707/kicks` — Roland Modded TR-707: every kick from C2
+- `drums/roland-modded-tr-707/kit` — Roland Modded TR-707: kit on GM keys
+- `drums/roland-modded-tr-707/rides` — Roland Modded TR-707: every ride from C2
+- `drums/roland-modded-tr-707/rims` — Roland Modded TR-707: every rim from C2
+- `drums/roland-modded-tr-707/snares` — Roland Modded TR-707: every snare from C2
+- `drums/roland-modded-tr-707/tambourines` — Roland Modded TR-707: every tambourine from C2
+- `drums/roland-modded-tr-707/toms` — Roland Modded TR-707: every tom from C2
+- `drums/roland-rhythm-330/kit` — Roland Rhythm 330: kit on GM keys
+- `drums/roland-rhythm-330/percussion` — Roland Rhythm 330: every percussio from C2
+- `drums/roland-rhythm-77/kit` — Roland Rhythm 77: kit on GM keys
+- `drums/roland-rhythm-arranger/kit` — Roland Rhythm Arranger: kit on GM keys
+- `drums/roland-rhythm-arranger/percussion` — Roland Rhythm Arranger: every percussio from C2
+- `drums/roland-tr-505/kit` — Roland TR 505: kit on GM keys
+- `drums/roland-tr-606-drumatix/kit` — Roland TR-606 Drumatix: kit on GM keys
+- `drums/roland-tr-606-drumatix/toms` — Roland TR-606 Drumatix: every tom from C2
+- `drums/roland-tr-808/congas` — Roland TR-808: every conga from C2
+- `drums/roland-tr-808/kicks` — Roland TR-808: every kick from C2
+- `drums/roland-tr-808/kit` — Roland TR-808: kit on GM keys
+- `drums/roland-tr-808/open-hats` — Roland TR-808: every open-hat from C2
+- `drums/roland-tr-808/snares` — Roland TR-808: every snare from C2
+- `drums/roland-tr-808/toms` — Roland TR-808: every tom from C2
+- `drums/roland-tr-909/cymbals` — Roland TR-909: every cymbal from C2
+- `drums/roland-tr-909/kicks` — Roland TR-909: every kick from C2
+- `drums/roland-tr-909/kit` — Roland TR-909: kit on GM keys
+- `drums/roland-tr-909/snares` — Roland TR-909: every snare from C2
+- `drums/roland-tr-909/toms` — Roland TR-909: every tom from C2
+- `drums/sequential-circuits-drumtraks/kit` — Sequential Circuits DrumTraks: kit on GM keys
+- `drums/suzuki-rpm-40/kit` — Suzuki RPM-40: kit on GM keys
+- `drums/the-kit/kit` — The KIT: kit on GM keys
+- `drums/tronix-rhythm-rb-1/kit` — Tronix Rhythm RB-1: kit on GM keys
+- `drums/univox-rhythm-machine/kit` — Univox Rhythm Machine: kit on GM keys
+- `drums/univox-rhythm-machine/percussion` — Univox Rhythm Machine: every percussio from C2
+- `drums/univox-sr-95/kit` — Univox SR-95: kit on GM keys
+- `drums/wurlitzer-swingin-rhythm/kit` — Wurlitzer Swingin Rhythm: kit on GM keys
 
 ## unfairlight
 
@@ -652,6 +738,11 @@ Presets:
 - `ocarina-loop` — VCSL ocarina with a segment loop in the sustain, the CMI way
 - `pluck` — The bundled pluck as CMI voice RAM: 24 kHz, 8-bit
 - `pluck-grit` — Pluck sampled at 10 kHz: the card's clock grain up front
+- `cmi-kits/classic-kit` — CMI kit: Series II factory drums
+- `cmi-kits/iix-acoustic` — CMI kit: IIx acoustic kit
+- `cmi-kits/iix-drum-machines` — CMI kit: IIx drum machines: Emulator and LinnDrum
+- `cmi-kits/iix-electronic` — CMI kit: IIx electronic: synth drums and Simmons
+- `cmi-kits/iix-latin` — CMI kit: IIx Latin percussion
 - `cmi-classic/analog/bassynt` — CMI classic / analog / BASSYNT
 - `cmi-classic/analog/basszow` — CMI classic / analog / BASSZOW
 - `cmi-classic/analog/ensemble` — CMI classic / analog / ENSEMBLE
@@ -2273,6 +2364,10 @@ Presets:
 | `verb-tone` | PLATE | TONE | 1000 … 18000 | 9000 | exp |
 | `verb-mix` | PLATE | MIX | 0 … 1 | 0.3 | pow |
 | `verb-mod` | PLATE | MOD | 0 … 24 | 10 | linear |
+| `verb-mode` | GATE | MODE | 0 PLATE / 1 GATED | 0 | switch |
+| `verb-gate-thr` | GATE | THRESH | -60 … 0 | -30 | linear |
+| `verb-gate-hold` | GATE | HOLD | 0.05 … 1 | 0.35 | exp |
+| `verb-gate-shape` | GATE | SHAPE | -1 … 1 | 0 | linear |
 
 Presets:
 
@@ -2282,10 +2377,13 @@ Presets:
 - `bright-plate` — Bright 80s plate
 - `cathedral` — Long, dark, modulated cathedral
 - `dreamy-wash` — String-lights dreamy background wash
+- `gated-drum-room` — 80s non-linear drum room: a full burst for 0.3 s after each hit, then cut dead
+- `gated-snare-slam` — Long bright gated snare: burst held 0.45 s, slight fade inside the window
 - `long-melancholy-verb` — Summer ending: long melancholic pad verb
 - `medium-plate` — Hotel lobby: classy medium verb
 - `plate` — Bright, short plate
 - `reflective-small-room` — Marble bar: reflective small room
+- `reverse-nonlin` — The 'reverse' non-linear program: the room swells up behind each hit and stops
 - `short-plate-room` — Lido: short beach-club room
 - `small-room` — Tight, natural small room
 - `ugly-tiny-room` — Autogrill bathroom — ugly/funny small verb
