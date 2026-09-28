@@ -620,6 +620,7 @@ pub fn draw(
     meter_map: meter_mod.MeterMap,
     edit_snap: snap_mod.Setting,
     can_paste_notes: bool,
+    play_beat: ?f64,
     m: pane.Mouse,
 ) Result {
     cur_meter = meter_map;
@@ -644,7 +645,7 @@ pub fn draw(
     setNoteMap(resolved.note_labels, resolved.clip);
     drawHeaderTools(ui, head.tools);
     maybeResetOnClipChange(selected, resolved.clip);
-    const pres = drawPianoRoll(ui, bridge.toRl(head.body), resolved.clip, resolved.track, resolved.color, alloc, edit_snap, can_paste_notes, m);
+    const pres = drawPianoRoll(ui, bridge.toRl(head.body), resolved.clip, resolved.track, resolved.color, alloc, edit_snap, can_paste_notes, play_beat, m);
 
     return .{
         .minimize = head.minimize,
@@ -723,6 +724,7 @@ fn drawPianoRoll(
     alloc: std.mem.Allocator,
     edit_snap: snap_mod.Setting,
     can_paste_notes: bool,
+    play_beat: ?f64,
     m: pane.Mouse,
 ) PianoRollResult {
     const track_color = ui_style.nearestTrack(.{ .r = track_color_rl.r, .g = track_color_rl.g, .b = track_color_rl.b });
@@ -783,6 +785,7 @@ fn drawPianoRoll(
     drawEnvelopeStrip(ui, alloc, pane.rect(r.x, env_rect.y, keyboardW(), env_h), env_rect, clip, track, edit_snap, track_color, m);
 
     drawOverview(ui, overview_rect, grid_rect, clip.*, track_color, m);
+    if (play_beat) |b| drawPlayhead(ui, grid_rect, ruler_rect.y, env_rect.y + env_h, b - clip.start_beat, clip.length_beats);
 
     const in_expr = expr_mode and !collapsed();
     if (in_expr and !velocity_consumed) handleExpression(ui, grid_rect, clip, edit_snap, m);
@@ -1133,6 +1136,15 @@ fn drawGrid(ui: *Ui, r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
         }
         bar += 1;
     }
+}
+
+/// The transport's position while it plays inside the clip: one amber
+/// line from the ruler down through the lanes, like the arrangement's.
+fn drawPlayhead(ui: *Ui, grid: c.rl.Rectangle, top: f32, bottom: f32, local_beat: f64, length: f64) void {
+    if (local_beat < 0 or local_beat >= length) return;
+    const x = ceBeatToX(grid.x, local_beat);
+    if (x < grid.x or x >= grid.x + grid.width) return;
+    ui.rect(Rect.xywh(ipx(x), ipx(top), 1, ipx(bottom - top)), ui_style.accent);
 }
 
 /// Past the clip end the glass goes to chassis; the end itself is a red line.

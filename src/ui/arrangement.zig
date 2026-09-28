@@ -238,6 +238,7 @@ pub const RouteEdit = route_menu.RouteEdit;
 
 pub const Result = struct {
     add_track: bool = false,
+    add_bus: bool = false,
     /// The MIX latch: show the mixer page (docs/23 §Mixer page).
     toggle_mixer: bool = false,
     route: ?RouteEdit = null,
@@ -696,7 +697,12 @@ pub fn draw(
         const plate_r = Rect.xywh(head.x, head.y, head.w, head.h);
         const body = ui.plate(plate_r, .{});
         _ = ui.engraved(&ui.fonts.legend, body.x + 5, body.y + 3, "TRACKS", ui_style.text_dim);
-        if (hdr_top.height > 20) _ = ui.plate(Rect.xywh(add_r.x, add_r.bottom(), add_r.w, head.bottom() - add_r.bottom()), .{});
+        // Under MIX and +: add a bus.
+        const bus_r = Rect.xywh(mix_r.x, add_r.bottom(), add_r.right() - mix_r.x, head.bottom() - add_r.bottom());
+        if (bus_r.h >= 16) {
+            if (ctl.button(ui, bus_r, "add-bus", null, .{ .label = "+ BUS", .flush = true })) result.add_bus = true;
+            menu.tip(ui, bus_r, "Add bus");
+        }
     }
     // Loop controls moved off the track header — right-click the timeline for
     // Loop selection / Loop arrangement / Clear loop, plus ruler drag.

@@ -279,6 +279,26 @@ pub const Track = struct {
         return null;
     }
 
+    /// Track `gone` was deleted and every track above it moved down one:
+    /// drop this track's output, sends and keys into it and renumber the
+    /// rest. An output into it falls back to the master.
+    pub fn forgetTrack(self: *Track, gone: u8) void {
+        if (self.output == gone) self.output = routing.NONE else if (self.output != routing.NONE and self.output > gone) self.output -= 1;
+        var i: usize = 0;
+        while (i < self.send_count) {
+            const b = self.sends[i].bus;
+            if (b == gone) {
+                self.removeSend(i);
+                continue;
+            }
+            if (b > gone) self.sends[i].bus = b - 1;
+            i += 1;
+        }
+        for (self.effects.items) |*fx| {
+            if (fx.key == gone) fx.key = routing.NONE else if (fx.key != routing.NONE and fx.key > gone) fx.key -= 1;
+        }
+    }
+
     /// This track as the routing graph sees it.
     pub fn routingNode(self: *const Track) routing.Node {
         var nd = routing.Node{ .is_bus = self.isBus(), .output = self.output };
@@ -655,6 +675,37 @@ pub fn testMachine() machine.Machine {
             fn f(_: *anyopaque) void {}
         }.f,
     };
+}
+
+test "forgetTrack drops references to the deleted track and renumbers the rest" {
+    const machine_mod = @import("machine.zig");
+    var t = try Track.init(std.testing.allocator, "T", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, machine_mod.Machine{
+        .name = "test",
+        .state = undefined,
+        .render = struct {
+            fn f(_: *anyopaque, _: *const machine_mod.MachineCtx, _: []f32, _: []f32) void {}
+        }.f,
+        .draw_panel = struct {
+            fn f(_: *anyopaque, _: *@import("ui/core.zig").Ui, _: @import("ui/geom.zig").Rect) void {}
+        }.f,
+        .reset = struct {
+            fn f(_: *anyopaque) void {}
+        }.f,
+    });
+    defer t.deinit(std.testing.allocator);
+    t.output = 3;
+    try t.addSend(2, false, 0.5);
+    try t.addSend(4, true, 0.25);
+    try t.addSend(1, false, 1.0);
+    t.forgetTrack(2);
+    try std.testing.expectEqual(@as(u8, 2), t.output);
+    try std.testing.expectEqual(@as(u8, 2), t.send_count);
+    try std.testing.expectEqual(@as(u8, 3), t.sends[0].bus);
+    try std.testing.expect(t.sends[0].pre);
+    try std.testing.expectEqual(@as(f32, 0.25), t.sends[0].level());
+    try std.testing.expectEqual(@as(u8, 1), t.sends[1].bus);
+    t.forgetTrack(2);
+    try std.testing.expectEqual(routing.NONE, t.output);
 }
 
 test "removeEffect shifts chain and bypass travels with the slot" {

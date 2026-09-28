@@ -277,7 +277,18 @@ they overflow. Every strip has the same rows, so they line up:
 | buttons | M, S, and R on audio tracks |
 
 Strips are fixed width (84 px). The machine bay below follows the
-selected strip.
+selected strip. `+ TRACK` and `+ BUS` in the mixer's header add strips;
+the arrangement has `+` and, under it and MIX, `+ BUS`.
+
+### Deleting a track
+
+The name's right-click menu (a header or a strip title) ends with
+*Delete track* / *Delete bus*. An empty one goes at once; one with
+clips, machines, automation lanes, or anything routed into it asks
+first, saying what it holds. Every output, send and key that pointed
+at it goes (an output falls back to the master), the tracks above it
+move down one, and the whole thing is one undo step. Refused while
+recording.
 Level, pan, mute and solo moves aren't undo steps, as in the arrangement
 headers; creating, removing or retapping a send is.
 

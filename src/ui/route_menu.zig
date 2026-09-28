@@ -1,7 +1,7 @@
-//! The routing menu (docs/23 §UI): a track's output and sends, opened from
-//! an arrangement header or a mixer strip. It edits nothing itself: `tick`
-//! returns a `RouteEdit` that main applies with one undo step. Choices that
-//! would close a loop are disabled.
+//! The track menu (docs/23 §UI): a track's output and sends, and Delete,
+//! opened from an arrangement header or a mixer strip. It edits nothing
+//! itself: `tick` returns a `RouteEdit` that main applies with one undo
+//! step. Choices that would close a loop are disabled.
 
 const std = @import("std");
 const menu = @import("menu.zig");
@@ -22,6 +22,8 @@ pub const RouteEdit = struct {
         send_pre: struct { bus: u8, pre: bool },
         /// Set (or clear, routing.NONE) effect `fx_uid`'s sidechain key.
         key: struct { fx_uid: u16, src: u8 },
+        /// Delete the track (main asks first when it isn't empty).
+        delete,
     },
 };
 
@@ -34,6 +36,7 @@ const NEW_BUS: u32 = 0x100;
 const PRE: u32 = 0x201;
 const POST: u32 = 0x202;
 const REMOVE: u32 = 0x203;
+const DELETE: u32 = 0x204;
 
 var track_idx: usize = 0;
 var mode: Mode = .all;
@@ -71,8 +74,10 @@ pub fn tick(tracks: []Track) ?RouteEdit {
             const top = [_]menu.Item{
                 .{ .label = "Output", .id = 1, .submenu = true },
                 .{ .label = "Sends", .id = 2, .submenu = true },
+                .{ .separator = true },
+                .{ .label = if (tracks[ti].isBus()) "Delete bus" else "Delete track", .id = DELETE },
             };
-            _ = menu.pick(KEY, &top);
+            if (menu.pick(KEY, &top) == DELETE) return .{ .track = ti, .what = .delete };
             const which = menu.subOpen(KEY, 0) orelse return null;
             return list(tracks, ti, which == 1, 1);
         },

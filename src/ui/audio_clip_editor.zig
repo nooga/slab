@@ -54,6 +54,7 @@ pub fn draw(
     pool: *const audio_pool_mod.AudioPool,
     selected: ?ClipRef,
     bpm: f64,
+    play_beat: ?f64,
     m: pane.Mouse,
 ) Result {
     ui.pushId("audio-editor");
@@ -181,6 +182,17 @@ pub fn draw(
         clip.audio.fade_out_sec = std.math.clamp(v, 0, dur);
     }
     ui.unclip();
+
+    // The transport's position while it plays inside the clip, mapped
+    // into the played window (ruler through grid).
+    if (play_beat) |b| {
+        const local = b - clip.start_beat;
+        if (local >= 0 and local < clip.length_beats) {
+            const px = beatToX(grid, ws_b + (we_b - ws_b) * local / @max(0.001, clip.length_beats));
+            if (px >= grid.x and px < grid.x + grid.width)
+                ui.rect(frect(@floor(px), ruler_rect.y, 1, grid.y + grid.height - ruler_rect.y), ui_style.accent);
+        }
+    }
 
     // ── Minimap overview ─────────────────────────────────────────────
     drawOverview(ui, ov_rect, grid, src, track_color, source_beats, rev, m);

@@ -42,6 +42,8 @@ pub const Result = struct {
     route: ?route_menu.RouteEdit = null,
     /// The MIX latch was clicked: back to the arrangement.
     toggle: bool = false,
+    add_track: bool = false,
+    add_bus: bool = false,
 };
 
 pub fn draw(
@@ -67,6 +69,12 @@ pub fn draw(
         const mix_r = head.cutRight(40);
         if (ctl.button(ui, mix_r, "mix", &on, .{ .kind = .latch, .label = "MIX", .lit = ui_style.accent, .flush = true })) res.toggle = true;
         menu.tip(ui, mix_r, "Back to the arrangement (M)");
+        const bus_r = head.cutRight(48);
+        if (ctl.button(ui, bus_r, "add-bus", null, .{ .label = "+ BUS", .flush = true })) res.add_bus = true;
+        menu.tip(ui, bus_r, "Add bus");
+        const trk_r = head.cutRight(64);
+        if (ctl.button(ui, trk_r, "add-track", null, .{ .label = "+ TRACK", .flush = true })) res.add_track = true;
+        menu.tip(ui, trk_r, "Add track");
         const body = ui.plate(head, .{});
         _ = ui.engraved(&ui.fonts.legend, body.x + 5, body.y + 3, "MIXER", ui_style.text_dim);
     }
