@@ -489,9 +489,13 @@ def _lanes_json(lanes):
 
 class Track:
     def __init__(self, song, name, machine_id, preset=None, params=None, volume=0.8, pan=0.0,
-                 fx=(), color=None, mute=False, samples=None):
+                 fx=(), color=None, mute=False, samples=None, output=None):
         self.song = song
         self.name = name
+        # Routing (docs/23): a Bus for the post-fader signal (None = master),
+        # and sends as (bus, linear level, pre).
+        self.output = output
+        self.sends = []
         self.machine = machine(machine_id)
         if self.machine.kind != "instrument":
             raise SlabError(f"track {name}: {machine_id} is an effect; put it in fx=[…]")
@@ -529,6 +533,29 @@ class Track:
         """Tweak instrument params after the preset: set(cutoff=900)."""
         self.params.update(self.machine.params_from(params, f"track {self.name}"))
         return self
+
+    def send(self, bus, db=0.0, pre=False):
+        """Send a copy into `bus` at `db` (-inf..+6), post-fader unless pre."""
+        if not isinstance(bus, Bus):
+            raise SlabError(f"track {self.name}: send target {bus!r} is not a bus")
+        if bus is self:
+            raise SlabError(f"track {self.name}: a bus can't send to itself")
+        if any(b is bus for b, _, _ in self.sends):
+            raise SlabError(f"track {self.name}: already sends to {bus.name}")
+        if db > 6:
+            raise SlabError(f"track {self.name}: send level {db} dB is above +6")
+        self.sends.append((bus, 0.0 if db == float("-inf") else 10 ** (db / 20), pre))
+        return self
+
+    def _routing_json(self, index):
+        out = {}
+        if self.output is not None:
+            if not isinstance(self.output, Bus):
+                raise SlabError(f"track {self.name}: output {self.output!r} is not a bus")
+            out["output"] = index[id(self.output)]
+        if self.sends:
+            out["sends"] = [{"to": index[id(b)], "level": lvl, "pre": pre} for b, lvl, pre in self.sends]
+        return out
 
     def _auto_target(self, target):
         """File target name and a value checker for an automation target:
@@ -660,7 +687,7 @@ class Track:
         n = bars if bars is not None else section.bars - at_bar
         return self._new_clip(name or section.name, section.start + at_bar * bb, n * bb)
 
-    def build(self):
+    def build(self, index=None):
         where = f"track {self.name}"
         if len(self.clips) > MAX_CLIPS:
             raise SlabError(f"{where}: {len(self.clips)} clips (max {MAX_CLIPS})")
@@ -693,6 +720,61 @@ class Track:
             "effects": [f.build(f"{where} fx {i}") for i, f in enumerate(self.fx)],
             "clips": [c.to_json() for c in sorted(self.clips, key=lambda c: c.start)],
             **({"automation": _lanes_json(self.lanes)} if self.lanes else {}),
+            **self._routing_json(index or {}),
+        }
+
+
+class Bus(Track):
+    """A bus (docs/23): no instrument or clips; its input is what outputs
+    and sends route to it. A group when tracks output to it, a return when
+    they send to it. Volume and pan and fx automate as on a track."""
+
+    def __init__(self, song, name, fx=(), volume=1.0, pan=0.0, color=None, mute=False, output=None):
+        self.song = song
+        self.name = name
+        self.output = output
+        self.sends = []
+        self.machine = None
+        self.params = {}
+        self.volume = volume
+        self.pan = pan
+        self.fx = list(fx)
+        self.color = color or PALETTE[len(song.tracks) % len(PALETTE)]
+        self.mute = mute
+        self.clips = []
+        self.lanes = {}
+        self.samples = None
+        self.assets = {}
+        self.zones = {}
+
+    def __repr__(self):
+        return f"Bus({self.name})"
+
+    def _no(self, what):
+        raise SlabError(f"bus {self.name}: a bus has no {what}")
+
+    def set(self, **params):
+        self._no("instrument")
+
+    def clip(self, *a, **k):
+        self._no("clips")
+
+    def audio(self, *a, **k):
+        self._no("clips")
+
+    def _auto_target(self, target):
+        if target not in ("volume", "pan") and not re.fullmatch(r"fx\d+:.+", target):
+            self._no(f"instrument param {target!r} to automate")
+        return super()._auto_target(target)
+
+    def build(self, index=None):
+        return {
+            "name": self.name, "kind": "bus", "color": self.color, "volume": self.volume, "pan": self.pan,
+            "mute": self.mute, "solo": False, "instrument": None,
+            "effects": [f.build(f"bus {self.name} fx {i}") for i, f in enumerate(self.fx)],
+            "clips": [],
+            **({"automation": _lanes_json(self.lanes)} if self.lanes else {}),
+            **self._routing_json(index or {}),
         }
 
 
@@ -730,12 +812,42 @@ class Song:
         return s
 
     def track(self, name, machine_id, preset=None, params=None, volume=0.8, pan=0.0, fx=(), color=None, mute=False,
-              samples=None):
+              samples=None, output=None):
         if len(self.tracks) >= MAX_TRACKS:
-            raise SlabError(f"max {MAX_TRACKS} tracks")
-        t = Track(self, name, machine_id, preset, params, volume, pan, fx, color, mute, samples)
+            raise SlabError(f"max {MAX_TRACKS} tracks (buses count)")
+        t = Track(self, name, machine_id, preset, params, volume, pan, fx, color, mute, samples, output)
         self.tracks.append(t)
         return t
+
+    def bus(self, name, fx=(), volume=1.0, pan=0.0, color=None, mute=False, output=None):
+        """A bus (docs/23): route tracks into it with output=bus (a group)
+        or track.send(bus, db) (a return). Counts against MAX_TRACKS."""
+        if len(self.tracks) >= MAX_TRACKS:
+            raise SlabError(f"max {MAX_TRACKS} tracks (buses count)")
+        b = Bus(self, name, fx, volume, pan, color, mute, output)
+        self.tracks.append(b)
+        return b
+
+    def _check_routing(self):
+        """Refuse a loop through outputs and sends (the app would drop it)."""
+        succ = {id(t): [x for x in [t.output] + [b for b, _, _ in t.sends] if x is not None] for t in self.tracks}
+        state = {}
+
+        def visit(t, path):
+            state[id(t)] = 1
+            for n in succ[id(t)]:
+                if state.get(id(n)) == 1:
+                    raise SlabError("routing loop: " + " -> ".join(x.name for x in path + [t, n]))
+                if not state.get(id(n)):
+                    visit(n, path + [t])
+            state[id(t)] = 2
+
+        for t in self.tracks:
+            for n in succ[id(t)]:
+                if all(n is not x for x in self.tracks):
+                    raise SlabError(f"track {t.name}: routes to {n.name}, which isn't in this song")
+            if not state.get(id(t)):
+                visit(t, [])
 
     def master(self, volume=1.0, fx=(), pan=0.0):
         self.master_volume = volume
@@ -745,13 +857,15 @@ class Song:
 
     def build(self):
         self.warnings = []
+        self._check_routing()
+        index = {id(t): i for i, t in enumerate(self.tracks)}
         end = max([self.bars * self.bar_beats] + [c.start + c.length for t in self.tracks for c in t.clips])
         num, den = self.meter
         return {
             "schema": 1,
             "transport": {"bpm": float(self.bpm), "loop": {"on": self.loop, "start": 0.0, "end": float(end)}},
             "meter": [{"bar": 0, "num": num, "den": den}],
-            "tracks": [t.build() for t in self.tracks],
+            "tracks": [t.build(index) for t in self.tracks],
             "master": {"volume": self.master_volume, "pan": self.master_pan,
                        "effects": [f.build(f"master fx {i}") for i, f in enumerate(self.master_fx)]},
         }
@@ -791,8 +905,10 @@ class Song:
             base = self.build()
             tmp = os.path.splitext(path)[0] + ".stem.slab"
             twav = os.path.splitext(path)[0] + ".stem.wav"
+            # A stem is the track soloed in the whole project: itself, and
+            # the buses it feeds (docs/23 §Semantics), without the master chain.
             for i, t in enumerate(base["tracks"]):
-                one = dict(base, tracks=[dict(t, mute=False, solo=False)],
+                one = dict(base, tracks=[dict(u, mute=False, solo=(j == i)) for j, u in enumerate(base["tracks"])],
                            master={"volume": 1.0, "pan": 0.0, "effects": []})
                 with open(tmp, "w") as f:
                     json.dump(one, f)

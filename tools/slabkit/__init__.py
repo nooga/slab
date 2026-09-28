@@ -13,7 +13,7 @@ to write and mix a song with them).
 from .theory import Key, Chord, note, note_name, SCALES
 from .rhythm import steps, euclid
 from .machines import machines, machine, presets, preset
-from .song import Song, Section, Track, Clip, fx
+from .song import Song, Section, Track, Bus, Clip, fx
 from .analyze import analyze_wav
 
 __all__ = [
