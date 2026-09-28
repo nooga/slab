@@ -73,7 +73,7 @@ KICK, SNARE, CRASH = 36, 38, 49
 TOMS = [50, 48, 45, 43, 41]  # high to low
 
 pad = song.track("PAD", "juno2", "bittersweet-minor-pad", volume=0.21, params=dict(level=0.55), fx=[
-    fx("eq2", hpf_on="ON", hpf_hz=180, p1_hz=520, p1_db=-2.5, hs_hz=7000, hs_db=-2),
+    fx("eq2", hpf_on="ON", hpf_hz=260, p1_hz=400, p1_db=-4, p1_q=0.8, hs_hz=7000, hs_db=-1),
     fx("chorus2", "juno-ii"),
     fx("verb2", "big-plate-hall", mix=0.32),
 ])
@@ -84,12 +84,16 @@ voice = song.track("VOICE", "unfairlight", "sararr", volume=1.0, params=dict(vib
     fx("verb2", "vocal-plate", mix=0.26),
 ])
 choir = song.track("CHOIR", "unfairlight", "choir05", volume=0.17, pan=-0.15, fx=[
-    fx("eq2", hpf_on="ON", hpf_hz=250),
+    fx("eq2", hpf_on="ON", hpf_hz=320, p1_hz=500, p1_db=-3),
     fx("chorus2", "string-ensemble"),
     fx("verb2", "big-hall", mix=0.35),
 ])
-bass = song.track("BASS", "cream", "deep-sub-bass", volume=1.25, params=dict(glide=0.07), fx=[
-    fx("eq2", hpf_on="ON", hpf_hz=32, p2_hz=900, p2_db=2),
+# Fretless-ish: triangle + a little saw at 8' (the preset's 16' sat an
+# octave under the notes), no sub, the filter open enough
+# for the notes to speak, and glide between tied notes.
+bass = song.track("BASS", "cream", "deep-sub-bass", volume=0.85, params=dict(
+    range1="8", range2="8", glide=0.07, lvl3=0.0, lvl2=0.35, cutoff=750, emphasis=0.25, contour=2.2, f_dec=0.45, f_sus=0.35), fx=[
+    fx("eq2", hpf_on="ON", hpf_hz=38, p1_hz=260, p1_db=-2, p2_hz=800, p2_db=3, p2_q=0.9),
     fx("comp2", "bass-leveler"),
 ])
 keys = song.track("RHODES", "rhodes", "mellow", volume=0.35, pan=0.2, fx=[
@@ -135,27 +139,54 @@ cr_section(brk, vel=86)
 cr_section(chorus3, BUSY, BUSY, vel=100)
 cr_section(outro, BUSY, BUSY, vel=100)
 
-# ── the kit: fill, then the gated room ─────────────────────────────────
+# ── the kit: fills, then the gated room ────────────────────────────────
+def roll(c, at, beats, rate=0.25, toms=TOMS, vel=(92, 118)):
+    """Down the toms from `at` for `beats`, one hit per `rate` beats,
+    each tom taking an equal share, getting louder."""
+    n = round(beats / rate)
+    for i in range(n):
+        tom = toms[min(len(toms) - 1, i * len(toms) // n)]
+        c.note(tom, at + i * rate, 0.2, round(vel[0] + (vel[1] - vel[0]) * i / max(1, n - 1)))
+
+
+def clear(c, at, beats):
+    c.notes = [n for n in c.notes if not at <= n["start"] < at + beats]
+
+
+# the break's fill: a snare pickup, then two beats down the toms
 fill = kit.clip(brk, at_bar=1, bars=1)
-for i, tom in enumerate([TOMS[0], TOMS[0], TOMS[1], TOMS[1], TOMS[2], TOMS[2], TOMS[3], TOMS[4]]):
-    fill.note(tom, 2 + i * 0.25, 0.2, 96 + i * 4)
 fill.note(SNARE, 1.5, 0.2, 90).note(SNARE, 1.75, 0.2, 100)
+roll(fill, 2, 2)
 
 GROOVE = {KICK: "x.......x.x.....", SNARE: "....x.......x..."}
-TURN = {KICK: "x.......x.x.....", SNARE: "....x.......x.x.", 45: "..............x.", 41: "...............x"}
-for sec in (chorus3, outro):
-    c = kit.clip(sec)
-    for bar in range(sec.bars):
-        last = bar == sec.bars - 1
-        c.drums(TURN if bar % 4 == 3 and not last else GROOVE, at=bar * 4, bars=1)
-    if sec is chorus3:
-        c.note(CRASH, 0, 1, 118)
-    c.humanize(time=0.004, vel=6)
-# the last bar of the outro: a tom run into the final hit
-c = kit.clips[-1]
-c.notes = [n for n in c.notes if n["start"] < 28]
-for i in range(10):
-    c.note(TOMS[i % 5], 28 + i * 0.4, 0.2, 100 + i * 2)
+PUSH = {KICK: "x.......x.x.....", SNARE: "....x.......x...", 45: ".............x..", 41: "...............x"}
+# the outro goes tribal: floor toms answer the backbeat ("Intruder", "Mama")
+TRIBE = {KICK: "x.......x.x.....", SNARE: "....x.......x...", 41: "x..x..x.........", 43: "..........x..x.x"}
+
+c3 = kit.clip(chorus3)
+for bar in range(8):
+    c3.drums(PUSH if bar in (1, 5) else GROOVE, at=bar * 4, bars=1)
+c3.note(CRASH, 0, 1, 118)
+clear(c3, 14, 2)
+roll(c3, 14, 2, vel=(90, 110))            # end of the first phrase: two beats of 16ths
+clear(c3, 21, 3)
+roll(c3, 21, 3, rate=1 / 3, vel=(88, 108))  # bar 6: triplets, the long way down
+clear(c3, 29, 3)
+c3.note(SNARE, 29, 0.2, 104)
+roll(c3, 29.5, 2.5, rate=0.25, vel=(96, 124))  # into the outro
+c3.humanize(time=0.004, vel=6)
+
+out = kit.clip(outro)
+for bar in range(8):
+    out.drums(TRIBE, at=bar * 4, bars=1)
+out.note(CRASH, 0, 1, 112)
+clear(out, 14, 2)
+roll(out, 14, 2, rate=1 / 3, toms=TOMS[2:], vel=(94, 112))  # low-tom triplets
+clear(out, 26, 2)
+roll(out, 26, 2, toms=TOMS[:3], vel=(90, 104))               # up top, then...
+clear(out, 28, 4)
+roll(out, 28, 4, vel=(98, 126))                              # ...all five, into the last hit
+out.humanize(time=0.004, vel=6)
 kit.clip(end, bars=1).note(KICK, 0, 0.5, 120).note(SNARE, 0, 0.5, 118).note(CRASH, 0, 2, 120)
 
 # the kick moves to its own track, clip for clip
@@ -199,9 +230,9 @@ for sec in (chorus3, outro):
 for sec, prog, pat in [(chorus1, CHORUS, "x-------x-----o-"), (verse2, VERSE, "x-----------x---"),
                        (chorus2, CHORUS, "x-------x-----o-"), (bridge, BRIDGE, "x-------x-x-----"),
                        (chorus3, CHORUS, "x.......x.x...o."), (outro, CHORUS, "x.......x.x...o.")]:
-    bass.clip(sec).bass(prog, pat, octave=1, vel=96)
-bass.clip(brk).note("E1", 0, 3.5, 90)
-bass.clip(end, bars=1).note("E1", 0, 3.5, 110)
+    bass.clip(sec).bass(prog, pat, octave=2, vel=96)
+bass.clip(brk).note("E2", 0, 3.5, 90)
+bass.clip(end, bars=1).note("E2", 0, 3.5, 110)
 
 # ── rhodes and echo ────────────────────────────────────────────────────
 for sec in (verse1, verse2):
