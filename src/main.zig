@@ -50,6 +50,10 @@ test {
     _ = @import("ui/text_field.zig");
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
+    _ = @import("routing.zig");
+    _ = @import("engine.zig");
+    _ = @import("track.zig");
+    _ = @import("document.zig");
     _ = @import("meter_gen.zig");
     _ = @import("automation.zig");
     _ = @import("ui/automation_lane.zig");
@@ -964,6 +968,7 @@ pub fn main(init: std.process.Init) !void {
         ui.endFrame();
 
         for (tracks) |*t| t.publishSnapshot(&audio_pool);
+        engine.publishRouting();
 
         if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_PLAY") != null) transport.play();
         if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_EXPR") != null) clip_editor.toggleExpressionMode();
@@ -1535,6 +1540,7 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, out: []const u8
         .master = &master,
         .meter_state = &meter_state,
     };
+    engine.publishRouting();
     var last_beat: f64 = 0;
     for (tracks) |*t| for (t.clips.items) |*clip| {
         last_beat = @max(last_beat, clip.endBeat());
@@ -1595,6 +1601,7 @@ fn applyProjectBytes(
     track_count.* = next_count;
     tracks.* = tracks_buf[0..next_count];
     engine.tracks = tracks.*;
+    engine.publishRouting();
     selected_track.* = if (track_count.* > 0) 0 else null;
     selected_clip.* = null;
     prev_selected_clip.* = null;
