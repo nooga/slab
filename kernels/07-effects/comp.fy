@@ -38,6 +38,7 @@ ustruct: CompState
   f64 hr1      ( and right )
   f64 hr2
   f64 gr-db    ( gain reduction in dB, >= 0 - meter feed )
+  f64 lvl      ( detector level, linear - display feed )
 ;
 
 ustruct: CompParams
@@ -137,7 +138,9 @@ dsp: comp-detect | io:Io state:CompState params:CompParams -- lvl |
   p2  state.ms p2 f-  params.rms-c f*  f+ | ms |
   ms -> state.ms
   ms 2.0 f* fsqrt | rms |
-  params.det 0.5 pk rms fsel-lt
+  params.det 0.5 pk rms fsel-lt | lvl |
+  lvl -> state.lvl
+  lvl
 ;
 
 ( Level into log2 units. )

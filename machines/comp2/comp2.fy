@@ -17,7 +17,7 @@ include "../lib/manifest.fy"
   "comp-block-prepare" block-prepare!
   CompState.size  state-size!
   CompParams.size params-size!
-  440.0 panel-w!
+  300.0 panel-w!
   stereo
   sidechain
 
@@ -32,12 +32,18 @@ include "../lib/manifest.fy"
     "PEAK" 0.0 opt  "RMS" 1.0 opt
   "OUT" "GAIN"   "comp-makeup" CompParams.makeup-db 0.0   24.0 0.0   curve-lin knob
   "OUT" "MIX"    "comp-mix"    CompParams.mix       0.0   1.0  1.0   curve-pow knob
-  "COMP" 3 strip
+  "COMP" 1 strip
   "TIME" 2 strip
   "SC" 2 strip
   "OUT" 2 strip
+  "CURVE" "comp" CompState.gr-db CompState.lvl dyn-display
+
+  ( the curve beside THRESH / RATIO / KNEE; the timing, sidechain and
+    output pairs under them )
   1.0 row
+    1.3 cell  "CURVE" 1.0 item
     1.0 cell  "COMP" 1.0 item
+  1.0 row
     1.0 cell  "TIME" 1.0 item
     1.0 cell  "SC" 1.0 item
     1.0 cell  "OUT" 1.0 item

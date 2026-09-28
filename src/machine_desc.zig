@@ -238,7 +238,7 @@ pub const Strip = struct {
     }
 };
 
-pub const DisplayKind = enum { adsr, waveform, meter, response, algo, eg4, zones, segments };
+pub const DisplayKind = enum { adsr, waveform, meter, response, algo, eg4, zones, segments, dynamics };
 
 /// Algo display slots in `Display.offsets`, in the order `algo-display`
 /// pushes them: operator count, row stride, then the row offsets (all in
@@ -251,6 +251,9 @@ pub const MAX_ALGO_OPS = 8;
 /// in the order the manifest `meter-display` word pushes them.
 pub const METER_OFFSETS = 7;
 pub const MeterOffset = enum(usize) { gmin = 0, ipk, opk, msm, mss, msum, mn };
+
+/// Dynamics display state-offset slots, in `dyn-display`'s order.
+pub const DynOffset = enum(usize) { gr = 0, lvl };
 
 pub const Display = struct {
     name: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
@@ -270,6 +273,10 @@ pub const Display = struct {
     }
 
     pub fn meterOffset(self: *const Display, o: MeterOffset) usize {
+        return self.offsets[@intFromEnum(o)];
+    }
+
+    pub fn dynOffset(self: *const Display, o: DynOffset) usize {
         return self.offsets[@intFromEnum(o)];
     }
 
@@ -665,10 +672,19 @@ pub fn read(host: *FyHost) !Desc {
             5 => .eg4,
             6 => .zones,
             7 => .segments,
+            8 => .dynamics,
             else => return error.InvalidMachineDesc,
         };
         out.source_len = try copyText(&out.source, cstrSlice(disp.sources));
         if (out.kind == .algo) try readAlgoDisplay(&d, out, disp);
+        if (out.kind == .dynamics) {
+            const raw = [_]Fy.Value{ disp.off0, disp.off1 };
+            for (out.offsets[0..2], raw) |*o, v| {
+                const off: usize = @intCast(asInt(v));
+                if (off + 8 > d.state_size) return error.InvalidMachineDesc;
+                o.* = off;
+            }
+        }
         if (out.kind == .meter) {
             const raw = [_]Fy.Value{ disp.off0, disp.off1, disp.off2, disp.off3, disp.off4, disp.off5, disp.off6 };
             for (&out.offsets, raw) |*o, v| {

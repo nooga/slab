@@ -2403,6 +2403,7 @@ fn drawDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void
         .segments => drawSegmentDisplay(self, ui, r, disp.sourceSlice()),
         .meter => drawMeterDisplay(self, ui, r, disp),
         .response => drawResponseDisplay(self, ui, r),
+        .dynamics => drawDynamicsDisplay(self, ui, r, disp),
         .algo => drawAlgoDisplay(self, ui, r, disp),
         .eg4 => drawEg4Display(self, ui, r, disp.sourceSlice()),
         .zones => drawZoneDisplay(self, ui, r, disp.sourceSlice()),
@@ -2702,6 +2703,94 @@ fn controlValueById(self: *const FyRawMachine, id: []const u8) ?f64 {
         }
     }
     return null;
+}
+
+const DYN_LO_DB: f64 = -48.0; // the curve's axes run DYN_LO_DB .. 0 dBFS
+const DYN_GR_RANGE: f64 = 24.0;
+
+/// The value of control `<prefix><suffix>` ("comp" ++ "-thresh"), or `def`.
+fn prefixedValue(self: *const FyRawMachine, prefix: []const u8, suffix: []const u8, def: f64) f64 {
+    var buf: [64]u8 = undefined;
+    const id = std.fmt.bufPrint(&buf, "{s}{s}", .{ prefix, suffix }) catch return def;
+    return controlValueById(self, id) orelse def;
+}
+
+/// A compressor's static gain (dB, <= 0) at input level `in` (dB): soft
+/// knee of width `knee` around `thr` (the kernel's gain computer).
+fn dynGainDb(in: f64, thr: f64, ratio: f64, knee: f64) f64 {
+    const l = in - thr;
+    const w = @max(knee, 1e-6);
+    const slope = 1.0 / @max(ratio, 1.0) - 1.0;
+    if (2 * l < -w) return 0;
+    if (2 * @abs(l) <= w) return slope * (l + w / 2) * (l + w / 2) / (2 * w);
+    return slope * l;
+}
+
+/// Transfer curve (docs/24): input dB across, output dB up, both
+/// DYN_LO_DB..0; unity dim, the curve in the display pen, THRESH marked,
+/// the detector level as a dot at the gain now applied (so attack and
+/// release show as the dot leaving and rejoining the curve), and a GR
+/// bar down the right edge.
+fn drawDynamicsDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void {
+    const field = ui.well(r, ui_style.well);
+    if (field.w < 24 or field.h < 16) return;
+    const pre = disp.sourceSlice();
+    const thr = prefixedValue(self, pre, "-thresh", -18);
+    const ratio = prefixedValue(self, pre, "-ratio", 4);
+    const knee = prefixedValue(self, pre, "-knee", 6);
+    const gr = @max(0, self.readStateF64(0, disp.dynOffset(.gr)));
+    const lvl = self.readStateF64(0, disp.dynOffset(.lvl));
+    ui.animate();
+
+    var area = field.inset(2);
+    const bar = area.cutRight(5);
+    _ = area.cutRight(3);
+    // Square plot, left-aligned: both axes in dB at the same scale.
+    const side = @min(area.w, area.h);
+    const plot_r = Rect.xywh(area.x, area.y + @divFloor(area.h - side, 2), side, side);
+    const px: f32 = @floatFromInt(plot_r.x);
+    const py: f32 = @floatFromInt(plot_r.y);
+    const ps: f32 = @floatFromInt(plot_r.w);
+    const X = struct {
+        fn of(db: f64, o: f32, s: f32) f32 {
+            return o + @as(f32, @floatCast(std.math.clamp((db - DYN_LO_DB) / -DYN_LO_DB, 0, 1))) * s;
+        }
+    };
+    const grid = ui_style.vfd.alpha(26);
+    ui.clip(field);
+    defer ui.unclip();
+    inline for (.{ -36.0, -24.0, -12.0 }) |g| {
+        const gx: i32 = @intFromFloat(X.of(g, px, ps));
+        const gy: i32 = @intFromFloat(py + ps - (X.of(g, px, ps) - px));
+        ui.rect(Rect.xywh(gx, plot_r.y, 1, plot_r.h), grid);
+        ui.rect(Rect.xywh(plot_r.x, gy, plot_r.w, 1), grid);
+    }
+    ui.line(px, py + ps, px + ps, py, ui_style.vfd.alpha(48)); // unity
+    // THRESH: a dim tick up the plot.
+    ui.rect(Rect.xywh(@intFromFloat(X.of(thr, px, ps)), plot_r.y, 1, plot_r.h), ui_style.vfd.alpha(60));
+    const N: usize = 96;
+    var prev: [2]f32 = .{ 0, 0 };
+    for (0..N) |i| {
+        const in = DYN_LO_DB * (1 - @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(N - 1)));
+        const out = in + dynGainDb(in, thr, ratio, knee);
+        const p = [2]f32{ X.of(in, px, ps), py + ps - (X.of(out, px, ps) - px) };
+        if (i > 0) ui.line(prev[0], prev[1], p[0], p[1], ui_style.vfd);
+        prev = p;
+    }
+    // The detector level at the gain now applied.
+    const lvl_db = 20 * std.math.log10(@max(lvl, 1e-6));
+    if (lvl_db > DYN_LO_DB) {
+        const dx: i32 = @intFromFloat(X.of(lvl_db, px, ps));
+        const dy: i32 = @intFromFloat(py + ps - (X.of(lvl_db - gr, px, ps) - px));
+        ui.rect(Rect.xywh(dx - 1, dy - 1, 3, 3), ui_style.text);
+    }
+    // GR bar, from the top down.
+    ui.rect(bar, ui_style.vfd.alpha(18));
+    const gh: i32 = @intFromFloat(@round(std.math.clamp(gr / DYN_GR_RANGE, 0, 1) * @as(f64, @floatFromInt(bar.h))));
+    if (gh > 0) ui.rect(Rect.xywh(bar.x, bar.y, bar.w, gh), ui_style.vfd);
+    var tb: [16]u8 = undefined;
+    const txt = std.fmt.bufPrint(&tb, "GR {d:.1}", .{gr}) catch "";
+    ui.textIn(&ui.fonts.legend, Rect.xywh(plot_r.x + 3, plot_r.y + 2, plot_r.w, 10), txt, ui_style.vfd, .left, false);
 }
 
 fn drawResponseDisplay(self: *FyRawMachine, ui: *Ui, r: Rect) void {

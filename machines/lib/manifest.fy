@@ -352,6 +352,25 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   _mf-last-disp !64
 ;
 
+( A compressor's transfer curve [kind 8]: the static curve of the
+  machine's `prefix`-thresh / -ratio / -knee controls [e.g. "comp"],
+  the live detector level [state f64 at `lvl`, linear] as a dot at the
+  gain actually applied, and a gain-reduction bar [state f64 at `gr`,
+  dB >= 0]. )
+: dyn-display  ( name prefix gr lvl -- )
+  DisplayDesc.alloc
+  DisplayDesc.off1!
+  DisplayDesc.off0!
+  swap cstr-new swap DisplayDesc.sources!
+  swap cstr-new swap DisplayDesc.name!
+  8 swap DisplayDesc.kind!
+  _mf-last-disp @64 0 =
+  [ dup _mf-md@ MachineDesc.displays! drop ]
+  [ dup _mf-last-disp @64 DisplayDesc.next! drop ]
+  ifte
+  _mf-last-disp !64
+;
+
 ( An operator-routing diagram [kind 4], read from the machine's
   derive-data table: the row is the value of the int-step control `selector`
   minus its min; `ops` operators; each row is `stride` f64s holding a
