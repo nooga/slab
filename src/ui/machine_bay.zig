@@ -345,7 +345,8 @@ fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, fx: ?*const E
     if (deleteConfirmMenu(confirm_key)) result.remove_ref = ref;
 
     // Power / bypass on the right.
-    const pwr = bar.cutRight(40);
+    // As wide as the I/O meter column below it, so the two read as one.
+    const pwr = bar.cutRight(IO_W);
     // KEY: the sidechain source of an effect whose detector takes one.
     if (fx) |e| if (mach.takes_key and bay_track_idx != null) {
         const keyed = e.key < bay_tracks.len;
@@ -354,14 +355,22 @@ fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, fx: ?*const E
         const klabel = if (keyed) std.fmt.bufPrint(&kbuf, "KEY {s}", .{src_name}) catch "KEY" else "KEY";
         const key_r = bar.cutRight(@min(@max(40, ui.fonts.legend.measure(klabel) + 24), 96));
         var key_on = keyed;
-        if (ctl.button(ui, key_r, "key", &key_on, .{ .kind = .latch, .label = klabel, .led = ui_style.accent, .flush = true })) {
+        if (ctl.button(ui, key_r, "key", &key_on, .{ .kind = .latch, .label = klabel, .led = ui_style.accent, .flush = true, .marquee = true, .touch_name = "KEY", .touch_value = if (keyed) src_name else "NONE" })) {
             result.key_menu_fx = e.uid;
             result.key_menu_at = .{ key_r.x, key_r.bottom() };
         }
         menu.tip(ui, key_r, if (keyed) "Sidechain key: this track's signal drives the detector" else "Sidechain: key the detector from another track");
     };
     var on = active;
-    if (ctl.button(ui, pwr, "power", &on, .{ .kind = .latch, .label = if (active) "ON" else if (is_inst) "OFF" else "BYP", .led = ui_style.led_green, .flush = true })) out.toggle = true;
+    if (ctl.button(ui, pwr, "power", &on, .{
+        .kind = .latch,
+        .label = if (active) "ON" else if (is_inst) "OFF" else "BYP",
+        .led = ui_style.led_green,
+        .led_off = if (is_inst) null else ui_style.led_red,
+        .flush = true,
+        .touch_name = if (is_inst) "POWER" else "BYPASS",
+        .touch_value = if (is_inst) (if (active) "ON" else "OFF") else (if (active) "OFF" else "ON"),
+    })) out.toggle = true;
     menu.tip(ui, pwr, if (is_inst) (if (active) "Enabled: click to silence" else "Silenced: click to enable") else (if (active) "Active: click to bypass" else "Bypassed: click to enable"));
 
     // Name tile: click → replace (instruments); press-drag → reorder (effects).

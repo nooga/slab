@@ -292,6 +292,10 @@ Vertical or horizontal; any of them can be `bipolar` (centre detent).
 | `momentary` | same cap, no latch |
 | `segmented` | row of joined caps, exactly one down (range, mode) |
 
+A bypass latch's LED is never dark: green while the device runs, red
+while bypassed (`led_off`). The touch display names what a latch does,
+not its cap text: `BYPASS OFF`, `POWER ON`, `KEY KICK`.
+
 ### Selectors
 
 | Variant | Behaviour |
