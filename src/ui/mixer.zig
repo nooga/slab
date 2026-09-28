@@ -78,32 +78,45 @@ pub fn draw(
     }
     const send_rows: i32 = @divFloor(n_bus + 1, 2);
 
+    // Right to left: the master, then the buses beside it (pinned, like a
+    // console's return section), then the tracks, which scroll sideways
+    // when they don't fit.
     const master_r = area.cutRight(STRIP_W);
-    const content_w = (n_audio + n_bus) * STRIP_W + (if (n_bus > 0) BUS_GAP else @as(i32, 0));
-    if (area.contains(ui.in.ix(), ui.in.iy()) and !ui.in.cmd) {
+    const bus_w = @min(n_bus * STRIP_W, @max(0, area.w - STRIP_W - BUS_GAP));
+    var bus_area = area.cutRight(bus_w);
+    if (n_bus > 0) _ = ui.plate(area.cutRight(BUS_GAP), .{ .fill = ui_style.face.shade(-8) });
+    const tracks_area = area;
+
+    // Tracks: horizontal scroll by the wheel (either axis) or the bar.
+    const bar_h: i32 = 8;
+    const content_w = n_audio * STRIP_W;
+    const overflow = content_w > tracks_area.w;
+    var strips_r = tracks_area;
+    const bar_r = if (overflow) strips_r.cutBottom(bar_h) else Rect{};
+    if (tracks_area.contains(ui.in.ix(), ui.in.iy()) and !ui.in.cmd) {
         const wheel = if (ui.in.wheel_x != 0) ui.in.wheel_x else ui.in.wheel_y;
         scroll_x -= @intFromFloat(@round(wheel * 24));
     }
-    scroll_x = std.math.clamp(scroll_x, 0, @max(0, content_w - area.w));
+    const max_scroll = @max(0, content_w - strips_r.w);
+    if (overflow) scrollBar(ui, bar_r, content_w, &scroll_x);
+    scroll_x = std.math.clamp(scroll_x, 0, max_scroll);
 
-    ui.clip(area);
-    var x = area.x - scroll_x;
+    ui.clip(strips_r);
+    var x = strips_r.x - scroll_x;
     for (tracks, 0..) |*t, ti| {
         if (t.isBus()) continue;
-        drawStrip(ui, Rect.xywh(x, area.y, STRIP_W, area.h), tracks, ti, send_rows, device_sel, selected_track, beat, &res);
+        drawStrip(ui, Rect.xywh(x, strips_r.y, STRIP_W, strips_r.h), tracks, ti, send_rows, device_sel, selected_track, beat, &res);
         x += STRIP_W;
     }
-    if (n_bus > 0) {
-        _ = ui.plate(Rect.xywh(x, area.y, BUS_GAP, area.h), .{ .fill = ui_style.face.shade(-8) });
-        x += BUS_GAP;
-        for (tracks, 0..) |*t, ti| {
-            if (!t.isBus()) continue;
-            drawStrip(ui, Rect.xywh(x, area.y, STRIP_W, area.h), tracks, ti, send_rows, device_sel, selected_track, beat, &res);
-            x += STRIP_W;
-        }
-    }
     // Nothing shows bare chassis (docs/06 §Packing).
-    if (x < area.right()) _ = ui.plate(Rect.xywh(x, area.y, area.right() - x, area.h), .{ .fill = ui_style.face.shade(-4) });
+    if (x < strips_r.right()) _ = ui.plate(Rect.xywh(x, strips_r.y, strips_r.right() - x, strips_r.h), .{ .fill = ui_style.face.shade(-4) });
+    ui.unclip();
+
+    ui.clip(bus_area);
+    for (tracks, 0..) |*t, ti| {
+        if (!t.isBus()) continue;
+        drawStrip(ui, bus_area.cutLeft(STRIP_W), tracks, ti, send_rows, device_sel, selected_track, beat, &res);
+    }
     ui.unclip();
 
     drawMasterStrip(ui, master_r, master, send_rows, device_sel);
@@ -130,7 +143,7 @@ const Rows = struct {
             .inserts = a.cutTop(INSERT_ROWS * INSERT_ROW_H + 4),
             .sends = a.cutTop(send_rows * knob[1] + (if (send_rows > 0) @as(i32, 4) else 0)),
             .output = a.cutTop(OUT_H + 4),
-            .pan = a.cutTop(knob[1] + 2),
+            .pan = a.cutTop(ctl.knobCell(.m, false)[1] + 2),
             .buttons = a.cutBottom(BTN_H),
             .readout = a.cutBottom(READOUT_H),
             .fader = a,
@@ -166,7 +179,7 @@ fn drawStrip(
         const tag = if (t.isBus()) std.fmt.bufPrint(&ibuf, "{c}", .{letterOf(tracks, ti)}) catch "?" else std.fmt.bufPrint(&ibuf, "{d}", .{numberOf(tracks, ti)}) catch "?";
         var line = Rect.xywh(tr.x + 3, tr.y + 5, tr.w - 6, tr.h - 5);
         ui.textIn(&ui.fonts.legend, line.cutLeft(ui.fonts.legend.measure(tag) + 5), tag, ui_style.text_mute, .left, true);
-        ui.textIn(&ui.fonts.body, line, t.name(), if (selected) ui_style.text else ui_style.text_dim, .left, true);
+        ui.marquee(&ui.fonts.body, line, t.name(), if (selected) ui_style.text else ui_style.text_dim, .left, true, tr.contains(ui.in.ix(), ui.in.iy()));
         const b = ui.behaviorEx(ui.id("title"), tr, .{ .focusable = false });
         if (b.pressed) select(device_sel, selected_track, ti);
         if (ui.in.right_pressed and tr.contains(ui.in.ix(), ui.in.iy())) route_menu.open(ti, .all, ui.in.ix(), ui.in.iy());
@@ -207,7 +220,7 @@ fn drawStrip(
         var p: f32 = (t.panAt(beat) + 1) / 2;
         var pbuf: [16]u8 = undefined;
         const readout = fmtPan(&pbuf, p * 2 - 1);
-        if (ctl.knob(ui, rows.pan, "pan", &p, .{ .size = .s, .variant = .bipolar, .label = "PAN", .default = 0.5, .show_readout = false, .readout = readout })) {
+        if (ctl.knob(ui, rows.pan, "pan", &p, .{ .size = .m, .variant = .bipolar, .label = "PAN", .default = 0.5, .show_readout = false, .readout = readout })) {
             t.setPan(p * 2 - 1);
             if (t.isAutomated(automation.Target.pan())) t.pan_override.store(if (ui.active == ui.id("pan")) 1 else 2, .monotonic);
         }
@@ -279,7 +292,7 @@ fn drawInserts(ui: *Ui, r: Rect, t: *const Track, tracks: []const Track) void {
             std.fmt.bufPrint(&nbuf, "{s} \u{2190} {s}", .{ fx.mach.name, tracks[fx.key].name() }) catch fx.mach.name
         else
             fx.mach.name;
-        ui.textIn(&ui.fonts.legend, row, label, if (off) ui_style.text_mute else ui_style.text_dim, .left, false);
+        ui.marquee(&ui.fonts.legend, row, label, if (off) ui_style.text_mute else ui_style.text_dim, .left, false, true);
     }
     if (n > shown) {
         var buf: [16]u8 = undefined;
@@ -308,7 +321,7 @@ fn drawMasterStrip(ui: *Ui, r: Rect, master: *Track, send_rows: i32, device_sel:
     {
         var p: f32 = (master.pan() + 1) / 2;
         var pbuf: [16]u8 = undefined;
-        if (ctl.knob(ui, rows.pan, "bal", &p, .{ .size = .s, .variant = .bipolar, .label = "BAL", .default = 0.5, .show_readout = false, .readout = fmtPan(&pbuf, p * 2 - 1) })) master.setPan(p * 2 - 1);
+        if (ctl.knob(ui, rows.pan, "bal", &p, .{ .size = .m, .variant = .bipolar, .label = "BAL", .default = 0.5, .show_readout = false, .readout = fmtPan(&pbuf, p * 2 - 1) })) master.setPan(p * 2 - 1);
     }
     {
         var fr = rows.fader.insetXY(4, 2);
@@ -321,6 +334,22 @@ fn drawMasterStrip(ui: *Ui, r: Rect, master: *Track, send_rows: i32, device_sel:
         ctl.meterStereo(ui, meter_r.insetXY(2, 0), "meter", .{ peaks.l, peaks.r }, .{ peaks.l, peaks.r }, .{ .scale = .auto, .clip_led = true });
         ui.textIn(&ui.fonts.legend, rows.readout, db_s, ui_style.text_mute, .center, false);
     }
+}
+
+/// A thin horizontal scroll bar: drag the thumb, or click the track to jump.
+fn scrollBar(ui: *Ui, r: Rect, content_w: i32, scroll: *i32) void {
+    const inner = ui.well(r, ui_style.well);
+    const view = r.w;
+    const thumb_w = @max(16, @divFloor(inner.w * view, content_w));
+    const max_scroll = content_w - view;
+    const travel = @max(1, inner.w - thumb_w);
+    const b = ui.behaviorEx(ui.id("mixer-hscroll"), r, .{ .focusable = false });
+    if (b.held) {
+        const mx = ui.in.ix() - inner.x - @divFloor(thumb_w, 2);
+        scroll.* = @divFloor(std.math.clamp(mx, 0, travel) * max_scroll, travel);
+    }
+    const tx = inner.x + @divFloor(std.math.clamp(scroll.*, 0, max_scroll) * travel, @max(1, max_scroll));
+    ui.rect(Rect.xywh(tx, inner.y, thumb_w, inner.h), if (b.held) ui_style.accent else ui_style.text_mute);
 }
 
 fn select(device_sel: *arrangement.DeviceSel, selected_track: *?usize, ti: usize) void {

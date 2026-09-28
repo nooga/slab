@@ -82,7 +82,13 @@ Two modes, one layout.
   unit ("124.0 BPM") sit on the same line even when the unit is the
   legend face.
 - **Coverage:** ASCII + Latin-1 + the punctuation and ⌘⇧⌥⌃ set already
-  used for menus. Missing glyphs fall back to the vector face.
+  used for menus, plus • ← → synthesized like the key symbols. Missing
+  glyphs fall back to the vector face.
+- **Text that doesn't fit** is clipped to its box, never drawn past it,
+  and never shrunk. `Ui.marquee` slides it back and forth in whole
+  pixels (18 px/s, a 1.2 s pause at each end) to show the rest: labels
+  such as track names only while hovered, displays (a mixer strip's
+  insert list) whenever they're truncated.
 
 ## Materials
 

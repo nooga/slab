@@ -261,21 +261,23 @@ bass.fx[1].key(kick)            # or key=kick in fx(...)
 *Built* (`src/ui/mixer.zig`). **M** or the MIX latch (beside the
 arrangement's `+`) swaps the arrangement for the mixer; the mixer also
 takes the clip editor's room, and Tab still toggles the clip editor.
-Strips for the audio tracks, a gap, the buses, then the master pinned at
-the right edge. Every strip has the same rows, so they line up:
+Strips for the audio tracks on the left; on the right, pinned like a
+console's return section, the buses and then the master. Only the track
+strips scroll: sideways with the wheel, or a thin bar under them once
+they overflow. Every strip has the same rows, so they line up:
 
 | Row | Control |
 |---|---|
-| title | colour bar, number or bus letter, name. Click edits the strip in the bay; right-click is the routing menu |
-| inserts | the chain's machine names, bypassed ones dimmed, `+N more` past four |
+| title | colour bar, number or bus letter, name (scrolls while hovered when it doesn't fit). Click edits the strip in the bay; right-click is the routing menu |
+| inserts | the chain's machine names, bypassed ones dimmed, `+N more` past four; a name too long for the display scrolls |
 | sends | a small knob per bus, lettered (A, B, …), two to a row. Half travel is 0 dB, full +6 dB. Turning one up from nothing creates the send (an undo step); right-click an existing one for pre/post and remove. A bus that would feed back is disabled |
 | output | `→ MASTER` or a bus; click for the output list |
-| pan | bipolar knob; BAL on the master |
+| pan | bipolar knob at full size; BAL on the master |
 | fader | volume with the stereo meter and its scale beside it, dB readout below |
 | buttons | M, S, and R on audio tracks |
 
-Strips are fixed width (84 px); the page scrolls sideways with the wheel
-when they don't fit. The machine bay below follows the selected strip.
+Strips are fixed width (84 px). The machine bay below follows the
+selected strip.
 Level, pan, mute and solo moves aren't undo steps, as in the arrangement
 headers; creating, removing or retapping a send is.
 
