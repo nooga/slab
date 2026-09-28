@@ -56,6 +56,11 @@ song.render(stems=True)        # bounce + mix report
 | `transpose(n)`, `swing(amount, grid)`, `humanize(time, vel)`, `velocities(fn)` | transforms |
 | `copy(section)` | same notes on another section |
 
+| Track method | Does |
+|---|---|
+| `automate(target, (beat, value[, shape[, tension]]), …)` | an automation lane (docs/22): target `"volume"`, `"pan"`, an instrument param (`"cutoff"`) or `"fx1:mix"`; values in the param's units; shape `linear`/`curve`/`hold` shapes the segment to the next point |
+| `ramp(target, frm, to, v0, v1, tension=0)` | one sweep from `v0` to `v1` between two beats; tension + = fast start |
+
 Discovery: `print(machine("juno2").help())`, `presets("fm86")`,
 `python3 tools/slabkit/gen_reference.py` (regenerates docs/20).
 

@@ -10,6 +10,7 @@ const Transport = @import("transport.zig").Transport;
 const Track = @import("track.zig").Track;
 const snap_mod = @import("snapshot.zig");
 const meter = @import("meter.zig");
+const automation = @import("automation.zig");
 
 pub const MAX_BLOCK = audio.BLOCK_FRAMES * 4;
 pub const MAX_EVENTS_PER_TRACK = 128;
@@ -310,27 +311,31 @@ pub const Engine = struct {
             event_count += 1;
         }
 
+        // Stopped: automation holds its value at the playhead.
+        const t = &self.tracks[self.audition_track_local];
+        const snap = t.currentSnapshot();
+        const beat = self.transport.beats();
+        const inst_view = snap_mod.AutoView{ .snap = snap, .cursors = &t.auto_cursors, .kind = .inst };
         const ctx = machine.MachineCtx{
             .sample_rate = @floatFromInt(self.transport.sample_rate),
             .block_size = @intCast(n),
             .block_start = 0,
             .tempo_bpm = @floatCast(self.transport.bpm()),
-            .ppq_position = 0,
+            .ppq_position = beat,
             .transport_state = .stopped,
             .note_in = if (event_count > 0) @ptrCast(&events[0]) else null,
             .note_in_count = @intCast(event_count),
+            .automation = if (snap.lane_count > 0) &inst_view else null,
         };
 
-        const t = &self.tracks[self.audition_track_local];
         if (send_on) t.pulseNote();
         t.machine.render(t.machine.state, &ctx, l, r);
         const rendered = renderEffects(t, ctx, l, r, fx_l_buf[0..n], fx_r_buf[0..n]);
         const final_l = rendered.l;
         const final_r = rendered.r;
-        const v = t.volume();
-        const pg = t.panGains();
-        const vl = v * pg.l;
-        const vr = v * pg.r;
+        const g = faderGains(t, snap, beat);
+        const vl = g.l;
+        const vr = g.r;
         var peak_l: f32 = 0;
         var peak_r: f32 = 0;
         var i: usize = 0;
@@ -412,6 +417,7 @@ pub const Engine = struct {
             const snap = t.currentSnapshot();
             const n_events = gatherEvents(snap, beat_start, beat_end, spb, frames, &events);
 
+            const inst_view = snap_mod.AutoView{ .snap = snap, .cursors = &t.auto_cursors, .kind = .inst };
             const ctx = machine.MachineCtx{
                 .sample_rate = @floatFromInt(sr),
                 .block_size = frames,
@@ -424,6 +430,7 @@ pub const Engine = struct {
                 .bar = bar_info.bar,
                 .beat_in_bar = beat_start - bar_info.bar_start_beat,
                 .bar_len_beats = bar_info.bar_len_beats,
+                .automation = if (snap.lane_count > 0) &inst_view else null,
             };
 
             // Note-activity LED: pulse when a note-on is dispatched this block.
@@ -448,14 +455,19 @@ pub const Engine = struct {
             const final_l = rendered.l;
             const final_r = rendered.r;
 
-            const v = t.volume();
-            const pg = t.panGains();
-            const vl = v * pg.l;
-            const vr = v * pg.r;
+            // Fader gains at the block's ends; automated volume/pan ramp
+            // between them per sample (docs/22 §Track volume and pan).
+            const g0 = faderGains(t, snap, beat_start);
+            const g1 = faderGains(t, snap, beat_end);
+            const v = g0.v;
+            const inv_n: f32 = 1.0 / @as(f32, @floatFromInt(frames));
             var peak_l: f32 = 0;
             var peak_r: f32 = 0;
             var i: usize = 0;
             while (i < frames) : (i += 1) {
+                const f = @as(f32, @floatFromInt(i)) * inv_n;
+                const vl = g0.l + (g1.l - g0.l) * f;
+                const vr = g0.r + (g1.r - g0.r) * f;
                 const sl = final_l[i] * vl;
                 const sr2 = final_r[i] * vr;
                 self.master_l[i] += sl;
@@ -741,6 +753,15 @@ fn renderEffects(
         ctx.note_in_count = 0;
         ctx.audio_in = @ptrCast(&in_ports[0]);
         ctx.audio_in_count = 2;
+        // Retarget the instrument's lane view at this effect.
+        var fx_view: snap_mod.AutoView = undefined;
+        if (base_ctx.automation) |p| {
+            const inst: *const snap_mod.AutoView = @ptrCast(@alignCast(p));
+            fx_view = inst.*;
+            fx_view.kind = .fx;
+            fx_view.fx_uid = fx.uid;
+            ctx.automation = &fx_view;
+        }
         fx.mach.render(fx.mach.state, &ctx, next_l, next_r);
         fx.setIo(in_peak, .{ blockPeak(next_l), blockPeak(next_r) });
 
@@ -753,6 +774,27 @@ fn renderEffects(
     }
 
     return .{ .l = cur_l, .r = cur_r };
+}
+
+const FaderGains = struct { v: f32, l: f32, r: f32 };
+
+/// Track volume × equal-power pan at `beat`, from the lanes unless the
+/// hand overrides them (docs/22 §Precedence).
+fn faderGains(t: *Track, snap: *const snap_mod.TrackSnapshot, beat: f64) FaderGains {
+    var v = t.volume();
+    var p = t.pan();
+    if (t.vol_override.load(.monotonic) == 0) if (snap.trackLane(.volume)) |li| {
+        const lane = snap.lanes[li];
+        const pts = snap.auto_points[lane.points_start..][0..lane.points_count];
+        v = std.math.clamp(automation.evalCursor(pts, beat, &t.auto_cursors[li]) * 1.25, 0, 1.25);
+    };
+    if (t.pan_override.load(.monotonic) == 0) if (snap.trackLane(.pan)) |li| {
+        const lane = snap.lanes[li];
+        const pts = snap.auto_points[lane.points_start..][0..lane.points_count];
+        p = std.math.clamp(automation.evalCursor(pts, beat, &t.auto_cursors[li]) * 2 - 1, -1, 1);
+    };
+    const angle = (p + 1.0) * (std.math.pi / 4.0);
+    return .{ .v = v, .l = v * @cos(angle), .r = v * @sin(angle) };
 }
 
 fn blockPeak(buf: []const f32) f32 {
@@ -1191,4 +1233,45 @@ test "softClip: monotonic" {
         try testing.expect(y >= prev);
         prev = y;
     }
+}
+
+test "faderGains follows volume and pan lanes unless overridden" {
+    const alloc = testing.allocator;
+    var t = try Track.init(alloc, "t", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, .{
+        .name = "x",
+        .state = undefined,
+        .render = struct {
+            fn f(_: *anyopaque, _: *const machine.MachineCtx, _: []f32, _: []f32) void {}
+        }.f,
+        .draw_panel = struct {
+            fn f(_: *anyopaque, _: *@import("ui/core.zig").Ui, _: @import("ui/geom.zig").Rect) void {}
+        }.f,
+        .reset = struct {
+            fn f(_: *anyopaque) void {}
+        }.f,
+    });
+    defer t.deinit(alloc);
+    t.setVolume(1.0);
+    const vol = try t.laneFor(alloc, automation.Target.volume(), false);
+    _ = try vol.insert(alloc, .{ .beat = 0, .value = 0 });
+    _ = try vol.insert(alloc, .{ .beat = 4, .value = 0.8 }); // 1.0 gain
+    const pan = try t.laneFor(alloc, automation.Target.pan(), false);
+    _ = try pan.insert(alloc, .{ .beat = 0, .value = 1 }); // hard right
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    t.publishSnapshot(&pool);
+    const snap = t.currentSnapshot();
+
+    const g0 = faderGains(&t, snap, 0);
+    try testing.expectApproxEqAbs(@as(f32, 0), g0.v, 1e-6);
+    const g2 = faderGains(&t, snap, 2);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), g2.v, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0), g2.l, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), g2.r, 1e-6);
+
+    t.vol_override.store(2, .monotonic);
+    t.pan_override.store(2, .monotonic);
+    const go = faderGains(&t, snap, 2);
+    try testing.expectApproxEqAbs(@as(f32, 1.0), go.v, 1e-6);
+    try testing.expectApproxEqAbs(go.l, go.r, 1e-6);
 }

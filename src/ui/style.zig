@@ -72,6 +72,8 @@ pub const accent = Color.hex(0xffb23e);
 pub const play = Color.hex(0x3ddc84);
 pub const rec = Color.hex(0xff4d4d);
 pub const mod = Color.hex(0x6b8cff);
+/// Automation: the automated-control LED and lane accents (docs/22).
+pub const auto = Color.hex(0xd65cff);
 /// Display glass: amber-orange VFD segments, deeper than `accent` so a
 /// lit readout never reads as "active". Machines may override per panel.
 pub const vfd = Color.hex(0xff9a2e);

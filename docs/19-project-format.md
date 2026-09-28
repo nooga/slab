@@ -109,6 +109,8 @@ JSON. Top level:
 | `instrument.zones` | the sampler's per-zone edits, by zone name (the sample's file stem): `{"clap": {"level": -6, "tune": 0, "decay": 0, "tone": 0, "cut": 0}}`. level in dB, tune in semitones, decay in seconds to −60 dB (0 = off), tone in octaves of filter offset, cut the choke: 0 the pack's (`group`/`off_by`), 1 none, n+1 choke group n (the zone joins it and is cut by it). Zones sharing a name (an SFZ label, a sample's layers and round robins) take the same edits. Only edited zones are written; names that don't match the loaded keymap are ignored. |
 | `instrument.state` | settings a machine keeps beyond flat params: a Rack's `{"parts": […]}`, the same form as its presets. |
 | `effects` | insert chain, run in order, stereo. `bypass: true` passes audio through untouched. |
+| `automation` | track automation lanes, see below. Optional. |
+| `show_automation` | `true` shows the lanes under the track in the arrangement. |
 
 Signal flow per track: instrument → audio clips summed in → effects in
 order → volume → pan → master sum → master effects → master volume and
@@ -120,6 +122,34 @@ Nothing clips hard, but anything peaking above −3.1 dBFS is being
 saturated. A limiter on the master with its ceiling at −3.2 dB keeps
 the output clean. There are no sends, groups or sidechains yet, so
 reverb and delay are inserts with a `mix` control.
+
+### Automation
+
+A track's `automation` is a list of lanes ([22-automation.md](22-automation.md)):
+
+```json
+"automation": [
+  {"target": "inst:jn-cutoff", "points": [[0, 200, "curve", -0.5], [16, 6000], [24, 800]]},
+  {"target": "volume", "points": [[24, 0.7], [32, 0.0]]},
+  {"target": "fx0:delay-mix", "points": [[0, 0, "hold"], [16, 0.5]]}
+]
+```
+
+- `target`: `volume` (linear gain, 0–1.25), `pan` (−1..1),
+  `inst:<param id>`, or `fx<N>:<param id>` with `N` the effect's
+  0-based position in `effects`.
+- A point is `[beat, value]` or `[beat, value, shape, tension]`. Beats
+  are song beats. Values are real units like `params` (switches: the
+  option index). `shape` is `linear` (default), `curve` or `hold`, and
+  shapes the segment to the next point; `tension` (−1..1, default 0)
+  bends a `curve`, + = most of the change early.
+- Points at the same beat make an instant jump. Before the first point
+  the lane holds the first value, after the last the last.
+- Interpolation runs in knob space, so a `linear` segment on an
+  exponential knob sweeps evenly in pitch, as a drag does.
+- Switch and integer lanes step (`hold`) whatever shape is written.
+- One lane per target; a later duplicate, an unknown target or param id,
+  and an `fx` index past the chain are dropped. Values are clamped.
 
 ### Clips
 
@@ -217,6 +247,5 @@ writing a file.
 
 ## Not in the format yet
 
-Automation (designed in [22-automation.md](22-automation.md) §Project
-format), tempo changes, sends and returns, sidechain, and the meter
+Clip automation and note expression ([22-automation.md](22-automation.md)), tempo changes, sends and returns, sidechain, and the meter
 map's accent groups.

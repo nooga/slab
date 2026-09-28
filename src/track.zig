@@ -8,6 +8,7 @@ const machine = @import("machine.zig");
 const clip_mod = @import("clip.zig");
 const snap_mod = @import("snapshot.zig");
 const audio_pool_mod = @import("audio_pool.zig");
+const automation = @import("automation.zig");
 
 pub const MAX_NAME = 32;
 
@@ -19,6 +20,9 @@ pub const MAX_NAME = 32;
 pub const Effect = struct {
     mach: machine.Machine,
     idx: ?u8 = null,
+    /// Stable per-track id that automation lanes address (docs/22 §Targets):
+    /// it survives reordering the chain.
+    uid: u16 = 0,
     bypass: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// Block peaks the engine writes after each render and the bay's I/O
     /// meters read: in L, in R, out L, out R, as f32 bits.
@@ -59,6 +63,19 @@ pub const Track = struct {
 
     /// Clip list — UI-thread-owned. Audio thread reads via snapshot only.
     clips: std.ArrayList(clip_mod.Clip) = .empty,
+
+    /// Track automation lanes (docs/22) — UI-thread-owned, published to the
+    /// audio thread through the snapshot.
+    lanes: std.ArrayList(automation.Lane) = .empty,
+    /// Arrangement: lanes shown under the track row.
+    lanes_shown: bool = false,
+    next_fx_uid: u16 = 1,
+    /// Audio-thread-owned per-lane segment cursors (automation.evalCursor).
+    auto_cursors: [snap_mod.MAX_LANES_PER_TRACK]u32 = [_]u32{0} ** snap_mod.MAX_LANES_PER_TRACK,
+    /// Manual overrides of automated volume/pan (docs/22 §Manual changes):
+    /// 0 none, 1 held (touch), 2 sticky until the transport starts.
+    vol_override: std.atomic.Value(u8) = std.atomic.Value(u8).init(0),
+    pan_override: std.atomic.Value(u8) = std.atomic.Value(u8).init(0),
 
     /// Double-buffered clip/note snapshot for lock-free audio access.
     /// UI writes to the non-published slot then flips snap_published.
@@ -119,6 +136,8 @@ pub const Track = struct {
         self.effects.deinit(alloc);
         for (self.clips.items) |*clip| clip.deinit(alloc);
         self.clips.deinit(alloc);
+        for (self.lanes.items) |*lane| lane.deinit(alloc);
+        self.lanes.deinit(alloc);
         alloc.destroy(self.snap[0]);
         alloc.destroy(self.snap[1]);
     }
@@ -131,7 +150,41 @@ pub const Track = struct {
     }
 
     pub fn addEffect(self: *Track, alloc: std.mem.Allocator, mach: machine.Machine, idx: u8) !void {
-        try self.effects.append(alloc, .{ .mach = mach, .idx = idx });
+        try self.effects.append(alloc, .{ .mach = mach, .idx = idx, .uid = self.next_fx_uid });
+        self.next_fx_uid +%= 1;
+    }
+
+    pub fn effectByUid(self: *const Track, uid: u16) ?*Effect {
+        for (self.effects.items) |*fx| if (fx.uid == uid) return fx;
+        return null;
+    }
+
+    /// The lane driving `target`, if the track has one.
+    pub fn findLane(self: *Track, target: automation.Target) ?*automation.Lane {
+        for (self.lanes.items) |*l| if (l.target.eql(target)) return l;
+        return null;
+    }
+
+    /// The lane driving `target`, created empty if missing.
+    pub fn laneFor(self: *Track, alloc: std.mem.Allocator, target: automation.Target, stepped: bool) !*automation.Lane {
+        if (self.findLane(target)) |l| return l;
+        try self.lanes.append(alloc, .{ .target = target, .stepped = stepped });
+        return &self.lanes.items[self.lanes.items.len - 1];
+    }
+
+    pub fn removeLane(self: *Track, alloc: std.mem.Allocator, i: usize) void {
+        if (i >= self.lanes.items.len) return;
+        self.lanes.items[i].deinit(alloc);
+        _ = self.lanes.orderedRemove(i);
+    }
+
+    /// The machine a control target lives on, if it still exists.
+    pub fn targetMachine(self: *const Track, target: automation.Target) ?*const machine.Machine {
+        return switch (target.kind) {
+            .volume, .pan => null,
+            .inst => &self.machine,
+            .fx => if (self.effectByUid(target.fx_uid)) |fx| &fx.mach else null,
+        };
     }
 
     /// Remove effect `i`, deinit it, and shift the tail down. Caller must
@@ -283,6 +336,7 @@ pub const Track = struct {
         dst.clip_count = 0;
         dst.note_count = 0;
         dst.audio_clip_count = 0;
+        self.publishLanes(dst);
 
         for (self.clips.items) |*clip| {
             if (clip.isAudio()) {
@@ -339,6 +393,49 @@ pub const Track = struct {
         }
 
         self.snap_published.store(write_idx, .release);
+    }
+
+    /// Resolve lanes to (slot, control index) and copy their points. Lanes
+    /// that are empty or whose control no longer exists are left out.
+    fn publishLanes(self: *const Track, dst: *snap_mod.TrackSnapshot) void {
+        dst.lane_count = 0;
+        dst.auto_point_count = 0;
+        for (self.lanes.items) |*lane| {
+            const pts = lane.points.items;
+            if (pts.len == 0) continue;
+            if (dst.lane_count >= snap_mod.MAX_LANES_PER_TRACK) break;
+            if (dst.auto_point_count + pts.len > snap_mod.MAX_AUTO_POINTS_PER_TRACK) break;
+            var ls = snap_mod.LaneSnap{
+                .kind = lane.target.kind,
+                .fx_uid = lane.target.fx_uid,
+                .points_start = dst.auto_point_count,
+                .points_count = @intCast(pts.len),
+            };
+            if (self.targetMachine(lane.target)) |m| {
+                const ci = m.controlIndex(lane.target.param()) orelse continue;
+                ls.control = @intCast(ci);
+            } else if (lane.target.kind == .inst or lane.target.kind == .fx) continue;
+            @memcpy(dst.auto_points[dst.auto_point_count..][0..pts.len], pts);
+            dst.auto_point_count += @intCast(pts.len);
+            dst.lanes[dst.lane_count] = ls;
+            dst.lane_count += 1;
+        }
+    }
+
+    /// Volume in effect at `beat` for the UI (the audio thread ramps the
+    /// same lane per block): the lane unless overridden, else the fader.
+    pub fn volumeAt(self: *Track, beat: f64) f32 {
+        if (self.vol_override.load(.monotonic) == 0) {
+            if (self.findLane(automation.Target.volume())) |l| if (l.value(beat)) |k| return k * 1.25;
+        }
+        return self.volume();
+    }
+
+    pub fn panAt(self: *Track, beat: f64) f32 {
+        if (self.pan_override.load(.monotonic) == 0) {
+            if (self.findLane(automation.Target.pan())) |l| if (l.value(beat)) |k| return k * 2 - 1;
+        }
+        return self.pan();
     }
 
     /// Called by the audio thread. Returns a pointer to the currently

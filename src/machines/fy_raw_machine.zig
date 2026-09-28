@@ -23,6 +23,9 @@ const native_dialog = @import("../native_dialog.zig");
 const ui_core = @import("../ui/core.zig");
 const ui_ctl = @import("../ui/controls.zig");
 const ui_style = @import("../ui/style.zig");
+const ui_menu = @import("../ui/menu.zig");
+const automation = @import("../automation.zig");
+const snapshot = @import("../snapshot.zig");
 const Ui = ui_core.Ui;
 const Rect = ui_core.Rect;
 
@@ -80,6 +83,10 @@ const IO_STRIDE: u12 = @sizeOf(IoFrame);
 const SMOOTH_TAU_S: f64 = 0.02;
 const SMOOTH_CHUNK: usize = 32;
 const SMOOTH_EPS: f32 = 1e-5;
+/// An automated knob within this of its curve stops gliding and follows it;
+/// a lane jump bigger than AUTO_JUMP in one chunk glides instead.
+const AUTO_CATCH: f32 = 1e-3;
+const AUTO_JUMP: f32 = 0.05;
 
 /// -120 dBFS: a released voice whose whole-block contribution stays below
 /// this stops rendering until its next note-on.
@@ -114,6 +121,20 @@ pub const FyRawMachine = struct {
     // UI-thread snap requests: preset/project/param sets jump, drags glide.
     smooth_norm: [MAX_CONTROLS]f32 = [_]f32{0} ** MAX_CONTROLS,
     snap_req: [MAX_CONTROLS]std.atomic.Value(bool) = [_]std.atomic.Value(bool){std.atomic.Value(bool).init(true)} ** MAX_CONTROLS,
+    // Automation (docs/22). Audio thread: this chunk's lane value per
+    // control, and whether a gliding control has caught up with its curve
+    // (then it follows exactly instead of lagging the 20 ms smoother).
+    auto_on: [MAX_CONTROLS]bool = [_]bool{false} ** MAX_CONTROLS,
+    auto_val: [MAX_CONTROLS]f32 = [_]f32{0} ** MAX_CONTROLS,
+    auto_locked: [MAX_CONTROLS]bool = [_]bool{false} ** MAX_CONTROLS,
+    // UI writes, audio reads: a manual override of an automated control,
+    // 0 none, 1 held (touch), 2 sticky until the transport starts.
+    auto_override: [MAX_CONTROLS]std.atomic.Value(u8) = [_]std.atomic.Value(u8){std.atomic.Value(u8).init(0)} ** MAX_CONTROLS,
+    // UI thread: the automated value each control shows (null = no lane),
+    // set by the host every frame, and a pending request for the host.
+    ui_auto: [MAX_CONTROLS]?f32 = [_]?f32{null} ** MAX_CONTROLS,
+    auto_request: ?machine.AutoRequest = null,
+    ctx_control: usize = 0,
     panel_w: f32 = 128,
     failed: bool = false,
     // Active panel tab for paged machines (index into desc.pages). Per
@@ -581,6 +602,15 @@ pub const FyRawMachine = struct {
             .write_zones_json = writeZonesJsonImpl,
             .apply_zones_json = applyZonesJsonImpl,
             .note_labels_fn = noteLabelsImpl,
+            .control_count = controlCountImpl,
+            .control_info = controlInfoImpl,
+            .control_value = controlValueImpl,
+            .control_knob = controlKnobImpl,
+            .control_base = controlBaseImpl,
+            .format_control = formatControlImpl,
+            .set_auto_ui = setAutoUiImpl,
+            .clear_overrides = clearOverridesImpl,
+            .take_auto_request = takeAutoRequestImpl,
         };
     }
 
@@ -668,12 +698,30 @@ pub const FyRawMachine = struct {
         var moving = false;
         for (self.desc.controls[0..self.desc.control_count], 0..) |ctl, i| {
             if (ctl.kind != .direct_f64) continue;
-            const target = self.controlNorm(i);
+            const auto = self.automated(i);
+            const target = if (auto) self.auto_val[i] else self.controlNorm(i);
             if (self.snap_req[i].swap(false, .acq_rel)) self.smooth_norm[i] = target;
             var cur = self.smooth_norm[i];
-            if (cur == target) continue;
+            if (!auto) {
+                self.auto_locked[i] = false;
+            } else if (self.auto_locked[i]) {
+                // A curve is already continuous: follow it exactly. A big
+                // jump (a seek, a loop wrap, a step in the lane) glides.
+                if (@abs(target - cur) <= AUTO_JUMP) {
+                    self.smooth_norm[i] = target;
+                    continue;
+                }
+                self.auto_locked[i] = false;
+            }
+            if (cur == target) {
+                if (auto) self.auto_locked[i] = true;
+                continue;
+            }
             cur += (target - cur) * a;
-            if (@abs(target - cur) < SMOOTH_EPS) cur = target;
+            if (@abs(target - cur) < SMOOTH_EPS or (auto and @abs(target - cur) < AUTO_CATCH)) {
+                cur = target;
+                if (auto) self.auto_locked[i] = true;
+            }
             self.smooth_norm[i] = cur;
             if (cur != target) moving = true;
         }
@@ -694,9 +742,39 @@ pub const FyRawMachine = struct {
         for (self.desc.controls[0..self.desc.control_count], 0..) |ctl, i| {
             if (ctl.kind != .direct_f64) continue;
             if (self.snap_req[i].load(.acquire)) continue;
+            if (self.auto_on[i]) continue; // chunked anyway while automated
             if (self.smooth_norm[i] != self.controlNorm(i)) return true;
         }
         return false;
+    }
+
+    /// Audio thread: a lane drives control `i` this chunk and no hand
+    /// override holds it.
+    fn automated(self: *const FyRawMachine, i: usize) bool {
+        return self.auto_on[i] and self.auto_override[i].load(.monotonic) == 0;
+    }
+
+    /// Audio thread: the raw value a stepped control plays this chunk.
+    fn effRaw(self: *const FyRawMachine, i: usize) f32 {
+        return if (self.automated(i)) self.auto_val[i] else self.controlNorm(i);
+    }
+
+    /// Audio thread: evaluate every lane on this machine at `beat`.
+    fn evalAutomation(self: *FyRawMachine, view: *const snapshot.AutoView, beat: f64) void {
+        @memset(self.auto_on[0..], false);
+        const snap = view.snap;
+        for (snap.lanes[0..snap.lane_count], 0..) |lane, li| {
+            if (!view.matches(lane) or lane.control >= self.desc.control_count) continue;
+            self.auto_on[lane.control] = true;
+            self.auto_val[lane.control] = automation.evalCursor(view.points(lane), beat, &view.cursors[li]);
+        }
+    }
+
+    /// UI thread: the value a control shows — its automated value unless
+    /// the hand overrides it.
+    fn shownNorm(self: *const FyRawMachine, i: usize) f32 {
+        if (self.ui_auto[i]) |v| if (self.auto_override[i].load(.monotonic) == 0) return v;
+        return self.controlNorm(i);
     }
 
     pub fn setControlNorm(self: *FyRawMachine, idx: usize, value: f32) void {
@@ -713,8 +791,8 @@ pub const FyRawMachine = struct {
         for (controls, 0..) |control, i| {
             switch (control.kind) {
                 .direct_f64 => self.writeParamF64(control.offset, normToValue(control, self.smooth_norm[i])),
-                .switch_sel => self.writeParamF64(control.offset, control.option_values[switchIndex(control, self.controlNorm(i))]),
-                .int_range => self.writeParamF64(control.offset, intRangeValue(control, self.controlNorm(i))),
+                .switch_sel => self.writeParamF64(control.offset, control.option_values[switchIndex(control, self.effRaw(i))]),
+                .int_range => self.writeParamF64(control.offset, intRangeValue(control, self.effRaw(i))),
             }
         }
 
@@ -961,6 +1039,91 @@ fn loadAssetImpl(state: *anyopaque, name: []const u8, path: []const u8) bool {
     return self.loadAssetRuntime(ai, path);
 }
 
+// ── Automation hooks (docs/22) ───────────────────────────────────────
+
+fn controlCountImpl(state: *anyopaque) usize {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    return self.desc.control_count;
+}
+
+fn controlInfoImpl(state: *anyopaque, i: usize) machine.ControlInfo {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    const ctl = &self.desc.controls[i];
+    var info = machine.ControlInfo{ .id = ctl.idSlice(), .label = ctl.label[0..ctl.label_len], .module = ctl.moduleSlice() };
+    switch (ctl.kind) {
+        .direct_f64 => {},
+        .switch_sel => {
+            info.stepped = true;
+            info.hi = @floatFromInt(@max(ctl.option_count, 1) - 1);
+        },
+        .int_range => {
+            info.stepped = true;
+            info.lo = @floatCast(ctl.min);
+            info.hi = @floatCast(ctl.max);
+        },
+    }
+    return info;
+}
+
+/// Knob space → real units, the preset convention (switches: option index).
+fn controlValueImpl(state: *anyopaque, i: usize, knob: f32) f64 {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    const ctl = self.desc.controls[i];
+    return switch (ctl.kind) {
+        .switch_sel => @floatFromInt(switchIndex(ctl, knob)),
+        .int_range => intRangeValue(ctl, knob),
+        .direct_f64 => normToValue(ctl, knob),
+    };
+}
+
+fn controlKnobImpl(state: *anyopaque, i: usize, value: f64) f32 {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    const ctl = self.desc.controls[i];
+    return switch (ctl.kind) {
+        .switch_sel => @floatFromInt(switchIndex(ctl, @floatCast(value))),
+        .int_range => @floatCast(intRangeValue(ctl, @floatCast(value))),
+        .direct_f64 => valueToNorm(ctl, value),
+    };
+}
+
+fn controlBaseImpl(state: *anyopaque, i: usize) f32 {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    return self.controlNorm(i);
+}
+
+fn formatControlImpl(state: *anyopaque, i: usize, knob: f32, buf: []u8) []const u8 {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    const ctl = &self.desc.controls[i];
+    return switch (ctl.kind) {
+        .switch_sel => std.fmt.bufPrint(buf, "{s}", .{std.mem.span(ctl.optionLabelZ(switchIndex(ctl.*, knob)))}) catch "?",
+        .int_range => std.fmt.bufPrint(buf, "{d}", .{@as(i64, @intFromFloat(intRangeValue(ctl.*, knob)))}) catch "?",
+        .direct_f64 => blk: {
+            var vb: [16:0]u8 = undefined;
+            break :blk std.fmt.bufPrint(buf, "{s}", .{std.mem.span(formatControlValue(&vb, normToValue(ctl.*, knob)))}) catch "?";
+        },
+    };
+}
+
+fn setAutoUiImpl(state: *anyopaque, i: usize, knob: ?f32) void {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    if (i >= MAX_CONTROLS) return;
+    self.ui_auto[i] = knob;
+    // Nothing left to override once the lane is gone.
+    if (knob == null) self.auto_override[i].store(0, .monotonic);
+}
+
+fn clearOverridesImpl(state: *anyopaque) void {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    for (&self.auto_override) |*o| o.store(0, .monotonic);
+}
+
+fn takeAutoRequestImpl(state: *anyopaque) ?machine.AutoRequest {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    const r = self.auto_request;
+    self.auto_request = null;
+    return r;
+}
+
 // Host param-set (project load): apply one id→value pair. Same real-value
 // convention as presets.
 fn setParamImpl(state: *anyopaque, id: []const u8, value: f64) void {
@@ -1164,14 +1327,19 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
     self.kctx.frames = @floatFromInt(frames);
     self.kctx.sr = ctx.sample_rate;
 
-    // Steady knobs: one pass. Gliding knobs: sub-blocks with params re-synced
-    // between them; prepare still runs once per block (it may reset per-block
-    // accumulators such as meters).
-    const gliding = self.anyGliding();
+    // Steady knobs: one pass. Gliding or automated knobs: sub-blocks with
+    // params re-synced between them; prepare still runs once per block (it
+    // may reset per-block accumulators such as meters).
+    const view: ?*const snapshot.AutoView = if (ctx.automation) |p| @ptrCast(@alignCast(p)) else null;
+    const auto = if (view) |v| v.any() else false;
+    if (!auto) @memset(self.auto_on[0..], false);
+    const gliding = auto or self.anyGliding();
     const chunk: usize = if (gliding) SMOOTH_CHUNK else frames;
+    const beats_per_sample = ctx.tempo_bpm / (60.0 * ctx.sample_rate);
     var pos: usize = 0;
     while (pos < frames) : (pos += chunk) {
         const n = @min(chunk, frames - pos);
+        if (auto) self.evalAutomation(view.?, ctx.ppq_position + @as(f64, @floatFromInt(pos)) * beats_per_sample);
         _ = self.advanceSmoothing(if (gliding) n else frames);
         self.syncRawParams(ctx.sample_rate, ctx.tempo_bpm);
         if (pos == 0) callPrepare(self, ctx.sample_rate) catch {
@@ -1515,6 +1683,7 @@ fn drawPanelImpl(state: *anyopaque, ui: *Ui, rect: Rect) void {
     }
     const tier = chooseTier(self, ui, rect);
     _ = walkPanel(self, ui, rect, .{ .draw = tier });
+    autoMenuTick(self);
     // a stored rate moved: re-filter once the knob is let go
     if (ui.active == 0) self.refreshAntialias();
 }
@@ -1581,7 +1750,7 @@ fn controlNormByLabel(self: *const FyRawMachine, module: []const u8, label: []co
     for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
         if (std.mem.eql(u8, ctl.moduleSlice(), module) and
             std.mem.eql(u8, ctl.label[0..ctl.label_len], label))
-            return self.controlNorm(i);
+            return self.shownNorm(i);
     }
     return null;
 }
@@ -1805,7 +1974,7 @@ fn drawStrip(self: *FyRawMachine, ui: *Ui, r: Rect, view: StripView, tier: ui_ct
         local_i += 1;
         const nat = controlCell(ui, ctl, tier);
         const cell_w = col_x[ci + 1] - col_x[ci];
-        drawControl(self, ui, Rect.xywh(col_x[ci] + @divFloor(cell_w - nat[0], 2), row_y[ri], nat[0], nat[1]), gi, ctl, tier);
+        drawAutomatable(self, ui, Rect.xywh(col_x[ci] + @divFloor(cell_w - nat[0], 2), row_y[ri], nat[0], nat[1]), gi, ctl, tier);
     }
 }
 
@@ -1885,6 +2054,64 @@ fn controlCell(ui: *const Ui, ctl: *const Control, tier: ui_ctl.Size) [2]i32 {
     };
 }
 
+/// One control plus its automation state (docs/22 §Automated controls): it
+/// draws the automated value, a hand change overrides the lane (held drags
+/// until release, other edits until the transport starts), and the LED at
+/// the end of its legend shows the state; clicking a hollow LED re-enables.
+fn drawAutomatable(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Control, tier: ui_ctl.Size) void {
+    const base_before = self.controlNorm(gi);
+    const was_pressed = ui.in.pressed;
+    drawControl(self, ui, kr, gi, ctl, tier);
+    const wid = ui.id(gi);
+    // Right-click a control: the automation menu (drawn in drawPanelImpl).
+    if (ui.in.right_pressed and ui.hot == wid) {
+        self.ctx_control = gi;
+        ui_menu.openAt(autoMenuKey(self), ui.in.ix(), ui.in.iy());
+    }
+    if (self.ui_auto[gi] == null) return;
+    const ov = &self.auto_override[gi];
+    const held = ui.active == wid;
+    if (self.controlNorm(gi) != base_before) {
+        ov.store(if (held and !was_pressed) 1 else 2, .monotonic);
+    } else if (ov.load(.monotonic) == 1 and !held) {
+        ov.store(0, .monotonic);
+    }
+    const overridden = ov.load(.monotonic) != 0;
+    const led_at = ui_ctl.autoLedPos(ui, kr, ctl.label[0..ctl.label_len]);
+    if (ui_ctl.autoLed(ui, led_at[0], led_at[1], .{ "auto", gi }, overridden)) {
+        if (overridden) ov.store(0, .monotonic) else self.auto_request = .{ .control = @intCast(gi), .action = .show };
+    }
+}
+
+fn autoMenuKey(self: *const FyRawMachine) u64 {
+    return @as(u64, @intFromPtr(self)) ^ 0xA070_A070_0000_0001;
+}
+
+const AUTO_SHOW: u32 = 1;
+const AUTO_CLEAR: u32 = 2;
+const AUTO_REENABLE: u32 = 3;
+
+/// The per-control automation context menu.
+fn autoMenuTick(self: *FyRawMachine) void {
+    const key = autoMenuKey(self);
+    if (!ui_menu.isOpen(key)) return;
+    const gi = self.ctx_control;
+    const automated = self.ui_auto[gi] != null;
+    const overridden = self.auto_override[gi].load(.monotonic) != 0;
+    const items = [_]ui_menu.Item{
+        .{ .label = "Show automation", .id = AUTO_SHOW },
+        .{ .label = "Clear automation", .id = AUTO_CLEAR, .enabled = automated },
+        .{ .label = "Re-enable automation", .id = AUTO_REENABLE, .enabled = overridden },
+    };
+    const picked = ui_menu.pick(key, &items) orelse return;
+    switch (picked) {
+        AUTO_SHOW => self.auto_request = .{ .control = @intCast(gi), .action = .show },
+        AUTO_CLEAR => self.auto_request = .{ .control = @intCast(gi), .action = .clear },
+        AUTO_REENABLE => self.auto_override[gi].store(0, .monotonic),
+        else => {},
+    }
+}
+
 /// One control in its natural rect, drawn as its widget.
 fn drawControl(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Control, tier: ui_ctl.Size) void {
     const label = ctl.label[0..ctl.label_len];
@@ -1893,7 +2120,7 @@ fn drawControl(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Co
     switch (ctl.widgetFor()) {
         .auto, .knob => drawKnob(self, ui, kr, gi, ctl, tier),
         .fader => {
-            var value = self.controlNorm(gi);
+            var value = self.shownNorm(gi);
             var vbuf: [16:0]u8 = undefined;
             const readout = std.mem.span(formatControlValue(&vbuf, normToValue(ctl.*, value)));
             if (ui_ctl.slider(ui, kr, gi, &value, .{
@@ -1906,7 +2133,7 @@ fn drawControl(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Co
             })) self.setControlNorm(gi, value);
         },
         .button => {
-            var on = switchIndex(ctl.*, self.controlNorm(gi)) == 1;
+            var on = switchIndex(ctl.*, self.shownNorm(gi)) == 1;
             if (ui_ctl.latch(ui, kr, gi, &on, .{ .size = tier, .label = label })) self.setControlRaw(gi, if (on) 1 else 0);
         },
         .display => {
@@ -1914,16 +2141,16 @@ fn drawControl(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Co
             if (ctl.kind == .int_range) {
                 const labels = il.fill(ctl);
                 const lo: i64 = @intFromFloat(@round(ctl.min));
-                const cur: i64 = @intFromFloat(intRangeValue(ctl.*, self.controlNorm(gi)));
+                const cur: i64 = @intFromFloat(intRangeValue(ctl.*, self.shownNorm(gi)));
                 var idx: u8 = @intCast(std.math.clamp(cur - lo, 0, @as(i64, @intCast(labels.len - 1))));
                 if (ui_ctl.displayField(ui, kr, gi, &idx, labels, label)) self.setControlRaw(gi, @floatFromInt(lo + idx));
             } else {
-                var idx: u8 = @intCast(switchIndex(ctl.*, self.controlNorm(gi)));
+                var idx: u8 = @intCast(switchIndex(ctl.*, self.shownNorm(gi)));
                 if (ui_ctl.displayField(ui, kr, gi, &idx, opts, label)) pickOption(self, gi, idx);
             }
         },
         .lever, .slide, .list, .radio, .vradio => |w| {
-            var idx: u8 = @intCast(switchIndex(ctl.*, self.controlNorm(gi)));
+            var idx: u8 = @intCast(switchIndex(ctl.*, self.shownNorm(gi)));
             const n: u8 = @intCast(opts.len);
             const changed = switch (w) {
                 .lever => ui_ctl.toggle(ui, kr, gi, &idx, .{ .positions = n, .label = label, .marks = opts }),
@@ -1942,7 +2169,7 @@ fn drawKnob(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Contr
         .switch_sel => {
             const n = ctl.option_count;
             if (n == 0) return;
-            const idx = switchIndex(ctl.*, self.controlNorm(gi));
+            const idx = switchIndex(ctl.*, self.shownNorm(gi));
             var v: f32 = if (n > 1) @as(f32, @floatFromInt(idx)) / @as(f32, @floatFromInt(n - 1)) else 0;
             const readout = std.mem.span(ctl.optionLabelZ(idx));
             if (ui_ctl.knob(ui, kr, gi, &v, .{ .size = tier, .variant = .stepped, .steps = @intCast(n), .label = label, .readout = readout, .show_readout = false })) {
@@ -1953,7 +2180,7 @@ fn drawKnob(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Contr
         .int_range => {
             const n_steps = @max(intRangeCount(ctl.*), 1);
             const lo: i64 = @intFromFloat(@round(ctl.min));
-            const cur: i64 = @intFromFloat(intRangeValue(ctl.*, self.controlNorm(gi)));
+            const cur: i64 = @intFromFloat(intRangeValue(ctl.*, self.shownNorm(gi)));
             const idx = std.math.clamp(cur - lo, 0, @as(i64, @intCast(n_steps - 1)));
             const steps_f: f32 = @floatFromInt(@max(n_steps - 1, 1));
             var v: f32 = @as(f32, @floatFromInt(idx)) / steps_f;
@@ -1968,7 +2195,7 @@ fn drawKnob(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Contr
             }
         },
         .direct_f64 => {
-            var value = self.controlNorm(gi);
+            var value = self.shownNorm(gi);
             var vbuf: [16:0]u8 = undefined;
             const readout = std.mem.span(formatControlValue(&vbuf, normToValue(ctl.*, value)));
             if (ui_ctl.knob(ui, kr, gi, &value, .{
@@ -4504,4 +4731,59 @@ test "raw machine presets: named save + rename round-trip" {
     var path_buf: [512]u8 = undefined;
     const path = try std.fmt.bufPrint(&path_buf, "{s}/zz-test-renamed.preset", .{inst.presetDir()});
     fy_host_mod.deleteFilePosix(path);
+}
+
+test "automation drives a knob per chunk, follows the curve, and yields to a hand override" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/juno2/juno2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    var ci: usize = 0;
+    while (!std.mem.eql(u8, inst.desc.controls[ci].idSlice(), "jn-level")) ci += 1;
+
+    // One lane on jn-level: 0 at beat 0 up to 1 at beat 4.
+    var snap = std.mem.zeroes(snapshot.TrackSnapshot);
+    snap.auto_points[0] = .{ .beat = 0, .value = 0 };
+    snap.auto_points[1] = .{ .beat = 4, .value = 1 };
+    snap.auto_point_count = 2;
+    snap.lanes[0] = .{ .kind = .inst, .control = @intCast(ci), .points_start = 0, .points_count = 2 };
+    snap.lane_count = 1;
+    var cursors = [_]u32{0} ** snapshot.MAX_LANES_PER_TRACK;
+    const view = snapshot.AutoView{ .snap = &snap, .cursors = &cursors, .kind = .inst };
+
+    const block = 256;
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.tempo_bpm = 120;
+    ctx.block_size = block;
+    ctx.automation = &view;
+    var l = [_]f32{0} ** block;
+    var r = [_]f32{0} ** block;
+    inst.setControlNormSnap(ci, 0.9);
+
+    // Playing forward from beat 2: it glides onto the curve, then follows it
+    // exactly at each 32-sample chunk.
+    const bps = 120.0 / (60.0 * 48_000.0);
+    var beat: f64 = 2.0;
+    for (0..20) |_| {
+        ctx.ppq_position = beat;
+        testRender(mach, &ctx, &l, &r);
+        beat += block * bps;
+    }
+    const last_chunk = beat - 32 * bps;
+    try testing.expect(inst.auto_locked[ci]);
+    try testing.expectApproxEqAbs(@as(f32, @floatCast(last_chunk / 4)), inst.smooth_norm[ci], 1e-5);
+
+    // A held override: the knob goes back to its hand-set base.
+    inst.auto_override[ci].store(1, .monotonic);
+    for (0..80) |_| {
+        ctx.ppq_position = beat;
+        testRender(mach, &ctx, &l, &r);
+        beat += block * bps;
+    }
+    try testing.expectApproxEqAbs(@as(f32, 0.9), inst.smooth_norm[ci], 1e-3);
+    try testing.expect(!inst.auto_locked[ci]);
+
+    // A machine without its lane in the view ignores it.
+    const other = snapshot.AutoView{ .snap = &snap, .cursors = &cursors, .kind = .fx, .fx_uid = 7 };
+    try testing.expect(!other.any());
 }

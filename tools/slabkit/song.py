@@ -354,6 +354,8 @@ class Track:
         self.color = color or PALETTE[len(song.tracks) % len(PALETTE)]
         self.mute = mute
         self.clips = []
+        # Automation lanes (docs/22): file target name -> [(beat, value, shape, tension)]
+        self.lanes = {}
         # The sampler's keymap: a .wav, an .sfz, or a folder of WAVs.
         self.samples = samples
         if samples is not None:
@@ -369,6 +371,68 @@ class Track:
         """Tweak instrument params after the preset: set(cutoff=900)."""
         self.params.update(self.machine.params_from(params, f"track {self.name}"))
         return self
+
+    def _auto_target(self, target):
+        """File target name and a value checker for an automation target:
+        "volume", "pan", an instrument param ("cutoff"), or "fx<N>:<param>"."""
+        where = f"track {self.name} automation"
+        if target == "volume":
+            def check(v):
+                if not 0 <= v <= 1.25:
+                    raise SlabError(f"{where}: volume {v} is outside [0, 1.25]")
+                return v
+            return "volume", check, False
+        if target == "pan":
+            def check(v):
+                if not -1 <= v <= 1:
+                    raise SlabError(f"{where}: pan {v} is outside [-1, 1]")
+                return v
+            return "pan", check, False
+        m = re.fullmatch(r"fx(\d+):(.+)", target)
+        if m:
+            i = int(m.group(1))
+            if i >= len(self.fx):
+                raise SlabError(f"{where}: {target} names effect {i}, but the track has {len(self.fx)}")
+            mach = machine(self.fx[i].machine_id)
+            pid = mach.resolve(m.group(2))
+            name = f"fx{i}:{pid}"
+        else:
+            mach = self.machine
+            pid = mach.resolve(target)
+            name = f"inst:{pid}"
+        param = mach.params[pid]
+        return name, (lambda v: param.coerce(v, where)), param.type != "float"
+
+    def automate(self, target, *points):
+        """An automation lane: automate("cutoff", (0, 400), (64, 4000, "curve", 0.5)).
+        Points are (beat, value[, shape[, tension]]); values in the param's
+        units (Hz, dB, 0..1), switches by index or label. Shapes: "linear"
+        (default), "curve" (tension -1..1, + = fast start), "hold" (steps).
+        The shape shapes the segment to the next point (docs/22)."""
+        name, check, stepped = self._auto_target(target)
+        lane = self.lanes.setdefault(name, [])
+        for p in points:
+            if not 2 <= len(p) <= 4:
+                raise SlabError(f"track {self.name} automation {target}: a point is (beat, value[, shape[, tension]]), got {p!r}")
+            beat, value = p[0], check(p[1])
+            shape = p[2] if len(p) > 2 else "linear"
+            tension = p[3] if len(p) > 3 else 0.0
+            if shape not in ("hold", "linear", "curve"):
+                raise SlabError(f"track {self.name} automation {target}: shape {shape!r} is not hold/linear/curve")
+            if stepped and shape != "hold":
+                shape = "hold"
+            if not -1 <= tension <= 1:
+                raise SlabError(f"track {self.name} automation {target}: tension {tension} is outside [-1, 1]")
+            if beat < 0:
+                raise SlabError(f"track {self.name} automation {target}: beat {beat} is before the song")
+            lane.append((beat, value, shape, tension))
+        lane.sort(key=lambda q: q[0])  # stable: same-beat points keep their order (a jump)
+        return self
+
+    def ramp(self, target, frm, to, v0, v1, tension=0.0):
+        """One sweep from v0 at beat `frm` to v1 at beat `to`, added to the
+        lane. tension bends it (+ = fast start)."""
+        return self.automate(target, (frm, v0, "curve" if tension else "linear", tension), (to, v1))
 
     def drum_pitch(self, lane):
         if isinstance(lane, int):
@@ -426,6 +490,10 @@ class Track:
                            **({"assets": {"smp": self.samples}} if self.samples else {})},
             "effects": [f.build(f"{where} fx {i}") for i, f in enumerate(self.fx)],
             "clips": [c.to_json() for c in sorted(self.clips, key=lambda c: c.start)],
+            **({"automation": [
+                {"target": t, "points": [[b, v] if sh == "linear" and te == 0 else [b, v, sh, te]
+                                         for b, v, sh, te in pts]}
+                for t, pts in self.lanes.items()]} if self.lanes else {}),
         }
 
 

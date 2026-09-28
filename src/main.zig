@@ -18,6 +18,7 @@ const fy_host_mod = @import("fy_host.zig");
 const document_mod = @import("document.zig");
 const describe_mod = @import("describe.zig");
 const history_mod = @import("history.zig");
+const automation = @import("automation.zig");
 const recorder_mod = @import("recorder.zig");
 const native_dialog = @import("native_dialog.zig");
 
@@ -49,6 +50,8 @@ test {
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
     _ = @import("meter_gen.zig");
+    _ = @import("automation.zig");
+    _ = @import("ui/automation_lane.zig");
 }
 
 const MAX_TRACKS: usize = 16;
@@ -525,6 +528,7 @@ pub fn main(init: std.process.Init) !void {
     var project_path_chosen = false;
     var focus: FocusPane = .arrangement;
     var dirty = false;
+    var auto_was_playing = false;
     var clipboard: EditClipboard = .{};
     defer clipboard.deinit(alloc);
     var status: StatusMessage = .{};
@@ -702,6 +706,14 @@ pub fn main(init: std.process.Init) !void {
 
         // (Side browser removed — machines are added via the "+" in the
         // machine-bay titlebar; see mbres.add_machine below.)
+
+        // Automation (docs/22): sticky overrides end when the transport
+        // starts; every machine control shows its lane's value at the
+        // playhead before any panel draws.
+        const playing_now = transport.isPlaying();
+        if (playing_now and !auto_was_playing) clearAutomationOverrides(tracks);
+        auto_was_playing = playing_now;
+        syncAutomationUi(tracks, transport.beats());
 
         const ares = arrangement.draw(ui, rects.arrangement, tracks, &master, &device_sel, &audio_pool, alloc, &selected_track, &selected_clip, &transport, &meter_state, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), &recorder, pane_m);
         if (ares.rename_clip) |ref| beginRenameClip(&rename, tracks, ref);
@@ -918,6 +930,8 @@ pub fn main(init: std.process.Init) !void {
                 beginPresetRename(&rename, dev, eff, idx, cur, mbres.preset_anchor);
             }
         };
+
+        if (serviceAutomationRequests(alloc, &history, tracks, &transport, &selected_track, &status)) dirty = true;
 
         try runRename(ui, alloc, &history, &rename, tracks, &transport, &dirty, &status);
 
@@ -1556,6 +1570,97 @@ fn applyProjectBytes(
     }
 }
 
+/// Push each lane's value at `beat` into its machine control's display,
+/// and null into every control no lane drives.
+fn syncAutomationUi(tracks: []track_mod.Track, beat: f64) void {
+    for (tracks) |*t| {
+        syncMachineAutoUi(t, &t.machine, .inst, 0, beat);
+        for (t.effects.items) |*fx| syncMachineAutoUi(t, &fx.mach, .fx, fx.uid, beat);
+    }
+}
+
+fn syncMachineAutoUi(t: *track_mod.Track, m: *const @import("machine.zig").Machine, kind: automation.TargetKind, uid: u16, beat: f64) void {
+    const set = m.set_auto_ui orelse return;
+    const info = m.control_info orelse return;
+    for (0..m.controlCount()) |i| {
+        const lane = t.findLane(automation.Target.control(kind, uid, info(m.state, i).id));
+        set(m.state, i, if (lane) |l| l.value(beat) else null);
+    }
+}
+
+fn clearAutomationOverrides(tracks: []track_mod.Track) void {
+    for (tracks) |*t| {
+        t.vol_override.store(0, .monotonic);
+        t.pan_override.store(0, .monotonic);
+        if (t.machine.clear_overrides) |f| f(t.machine.state);
+        for (t.effects.items) |*fx| if (fx.mach.clear_overrides) |f| f(fx.mach.state);
+    }
+}
+
+/// Serve panels' Show/Clear automation requests. Returns true on an edit.
+fn serviceAutomationRequests(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    tracks: []track_mod.Track,
+    transport: *transport_mod.Transport,
+    selected_track: *?usize,
+    status: *StatusMessage,
+) bool {
+    var edited = false;
+    for (tracks, 0..) |*t, ti| {
+        if (serviceMachineAutoRequest(alloc, history, tracks, transport, t, &t.machine, .inst, 0, status)) |e| {
+            edited = edited or e;
+            selected_track.* = ti;
+        }
+        for (t.effects.items) |*fx| {
+            if (serviceMachineAutoRequest(alloc, history, tracks, transport, t, &fx.mach, .fx, fx.uid, status)) |e| {
+                edited = edited or e;
+                selected_track.* = ti;
+            }
+        }
+    }
+    return edited;
+}
+
+/// Null when the machine raised nothing; else whether the document changed.
+fn serviceMachineAutoRequest(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    tracks: []track_mod.Track,
+    transport: *transport_mod.Transport,
+    t: *track_mod.Track,
+    m: *const @import("machine.zig").Machine,
+    kind: automation.TargetKind,
+    uid: u16,
+    status: *StatusMessage,
+) ?bool {
+    const take = m.take_auto_request orelse return null;
+    const req = take(m.state) orelse return null;
+    const info_fn = m.control_info orelse return false;
+    if (req.control >= m.controlCount()) return false;
+    const info = info_fn(m.state, req.control);
+    const target = automation.Target.control(kind, uid, info.id);
+    switch (req.action) {
+        .show => {
+            t.lanes_shown = true;
+            if (t.findLane(target) != null) return false;
+            pushHistorySnapshot(alloc, history, tracks, transport);
+            _ = t.laneFor(alloc, target, info.stepped) catch return false;
+            status.set("Automation lane: {s}", .{info.label});
+            return true;
+        },
+        .clear => {
+            for (t.lanes.items, 0..) |*l, li| if (l.target.eql(target)) {
+                pushHistorySnapshot(alloc, history, tracks, transport);
+                t.removeLane(alloc, li);
+                status.set("Cleared automation: {s}", .{info.label});
+                return true;
+            };
+            return false;
+        },
+    }
+}
+
 fn pushHistorySnapshot(alloc: std.mem.Allocator, history: *history_mod.History, tracks: []track_mod.Track, transport: *transport_mod.Transport) void {
     const snapshot = document_mod.serialize(alloc, tracks, transport) catch |err| {
         std.log.err("history snapshot failed: {s}", .{@errorName(err)});
@@ -2087,7 +2192,7 @@ fn handleFocusedDelete(
     const before = try document_mod.serialize(alloc, tracks, transport);
     const changed = switch (focus) {
         .piano_roll => clip_editor.deleteSelectedNotes(tracks, selected_clip.*),
-        .arrangement => arrangement.deleteSelectedClips(tracks, alloc, selected_clip),
+        .arrangement => arrangement.deleteSelectedPoints(tracks) or arrangement.deleteSelectedClips(tracks, alloc, selected_clip),
         .browser, .machine_bay, .top_bar => false,
     };
     if (changed) {

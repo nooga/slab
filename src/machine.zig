@@ -129,7 +129,11 @@ pub const MachineCtx = extern struct {
     beat_in_bar: f64 = 0,
     bar_len_beats: f64 = 0,
 
-    _reserved: [5]u64 = @splat(0),
+    /// Lanes driving this machine this block (docs/22): a
+    /// `*const snapshot.AutoView`, or null when nothing is automated.
+    automation: ?*const anyopaque = null,
+
+    _reserved: [4]u64 = @splat(0),
 };
 
 // ── Machine vtable (host-facing) ─────────────────────────────────────
@@ -200,6 +204,44 @@ pub const PanelWFn = *const fn (state: *anyopaque) f32;
 /// sampler that loads a kit). Valid until the machine next loads.
 pub const NoteLabelsFn = *const fn (state: *anyopaque) []const NoteLabel;
 
+/// What the host needs to know about one automatable control (docs/22).
+/// Values in knob space: a continuous control's 0..1 norm, a stepped
+/// control's raw index/integer.
+pub const ControlInfo = struct {
+    id: []const u8,
+    label: []const u8,
+    module: []const u8,
+    /// Switches and integer ranges: lanes hold steps between integers.
+    stepped: bool = false,
+    /// Stepped controls: lowest and highest raw value.
+    lo: f32 = 0,
+    hi: f32 = 1,
+};
+
+pub const ControlCountFn = *const fn (state: *anyopaque) usize;
+pub const ControlInfoFn = *const fn (state: *anyopaque, i: usize) ControlInfo;
+/// Knob-space value → real units (what presets and projects store).
+pub const ControlValueFn = *const fn (state: *anyopaque, i: usize, knob: f32) f64;
+/// Real units → knob space.
+pub const ControlKnobFn = *const fn (state: *anyopaque, i: usize, value: f64) f32;
+/// The control's current base (hand-set) value in knob space.
+pub const ControlBaseFn = *const fn (state: *anyopaque, i: usize) f32;
+/// Knob-space value as the title display would show it ("1.25 kHz").
+pub const FormatControlFn = *const fn (state: *anyopaque, i: usize, knob: f32, buf: []u8) []const u8;
+/// UI thread, every frame: the automated value a control should show, or
+/// null when no lane drives it (docs/22 §Automated controls).
+pub const SetAutoUiFn = *const fn (state: *anyopaque, i: usize, knob: ?f32) void;
+/// Drop every sticky manual override (transport start).
+pub const ClearOverridesFn = *const fn (state: *anyopaque) void;
+
+/// A panel's request to the host about automation, raised from the
+/// control's context menu or its LED.
+pub const AutoRequest = struct {
+    control: u16,
+    action: enum(u8) { show, clear },
+};
+pub const TakeAutoRequestFn = *const fn (state: *anyopaque) ?AutoRequest;
+
 pub const NOTE_LABEL_TEXT = 23;
 
 /// One entry of a machine's note map: a MIDI pitch it answers to plus a
@@ -257,6 +299,32 @@ pub const Machine = struct {
     note_labels: []const NoteLabel = &.{},
     /// Overrides note_labels when set: the map as of now.
     note_labels_fn: ?NoteLabelsFn = null,
+    /// Automation (docs/22). A machine without these has no automatable
+    /// controls.
+    control_count: ?ControlCountFn = null,
+    control_info: ?ControlInfoFn = null,
+    control_value: ?ControlValueFn = null,
+    control_knob: ?ControlKnobFn = null,
+    control_base: ?ControlBaseFn = null,
+    format_control: ?FormatControlFn = null,
+    set_auto_ui: ?SetAutoUiFn = null,
+    clear_overrides: ?ClearOverridesFn = null,
+    take_auto_request: ?TakeAutoRequestFn = null,
+
+    pub fn controlCount(self: *const Machine) usize {
+        const f = self.control_count orelse return 0;
+        if (self.control_info == null) return 0;
+        return f(self.state);
+    }
+
+    /// Index of the control with param id `id`.
+    pub fn controlIndex(self: *const Machine, id: []const u8) ?usize {
+        const info = self.control_info orelse return null;
+        for (0..self.controlCount()) |i| {
+            if (std.mem.eql(u8, info(self.state, i).id, id)) return i;
+        }
+        return null;
+    }
 
     /// The note map to draw: the live one if the machine has it.
     pub fn noteLabels(self: *const Machine) []const NoteLabel {

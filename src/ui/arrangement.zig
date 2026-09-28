@@ -31,10 +31,50 @@ const waveform = @import("../waveform.zig");
 const meter_mod = @import("../meter.zig");
 const meter_gen = @import("../meter_gen.zig");
 const recorder_mod = @import("../recorder.zig");
+const automation = @import("../automation.zig");
+const auto_lane = @import("automation_lane.zig");
+const machine_mod = @import("../machine.zig");
 
 /// Lane height and track-header width (logical px).
 pub const LANE_H: f32 = 52;
 const HEADER_W: f32 = 196;
+/// One automation lane row under a track (docs/06 §Working surfaces).
+pub const AUTO_H: f32 = 40;
+
+/// Automation rows shown under a track: its lanes, or one placeholder row
+/// to add the first.
+fn autoRows(t: *const Track) usize {
+    if (!t.lanes_shown) return 0;
+    return @max(t.lanes.items.len, 1);
+}
+
+fn rowH(t: *const Track) f32 {
+    return LANE_H + AUTO_H * @as(f32, @floatFromInt(autoRows(t)));
+}
+
+/// Top of track `ti`'s row, from the top of the lane content.
+fn rowTop(tracks: []const Track, ti: usize) f32 {
+    var y: f32 = 0;
+    for (tracks[0..@min(ti, tracks.len)]) |*t| y += rowH(t);
+    return y;
+}
+
+fn contentH(tracks: []const Track) f32 {
+    return rowTop(tracks, tracks.len);
+}
+
+/// The track whose row holds content-relative `y`; below the last row it
+/// counts on in LANE_H steps (drags off the end), above the first it's -1.
+fn trackAtY(tracks: []const Track, y: f32) i32 {
+    if (y < 0) return -1;
+    var top: f32 = 0;
+    for (tracks, 0..) |*t, i| {
+        const h = rowH(t);
+        if (y < top + h) return @intCast(i);
+        top += h;
+    }
+    return @as(i32, @intCast(tracks.len)) + @as(i32, @intFromFloat(@floor((y - top) / LANE_H)));
+}
 
 fn rulerH() f32 {
     return 16;
@@ -565,7 +605,7 @@ pub fn draw(
     updateBoxSelect(tracks, selected_track, selected_clip, m, timeline_x, timeline_w, timeline_x0, lanes_top);
 
     clampScroll(content_beats, timeline_w);
-    clampScrollY(tracks.len, lanes_h);
+    clampScrollY(contentH(tracks), lanes_h);
 
     // ── Ruler ────────────────────────────────────────────────────────
     ui.clip(bridge.fromRl(ruler_rect));
@@ -595,7 +635,7 @@ pub fn draw(
     // Lane backgrounds first, then the loop region, so the loop marquee sits
     // behind the clips (drawn below).
     for (tracks, 0..) |*t, ti| {
-        const ly = lanes_top + @as(f32, @floatFromInt(ti)) * LANE_H - scroll_y;
+        const ly = lanes_top + rowTop(tracks, ti) - scroll_y;
         if (ly + LANE_H <= lanes_top) continue;
         if (ly >= lanes_bottom) break;
         const lane_timeline = pane.rect(timeline_x, ly, timeline_w, LANE_H);
@@ -603,9 +643,14 @@ pub fn draw(
         drawTimelineLane(ui, lane_timeline, t.*, ti, lane_is_sel, timeline_x0, edit_snap);
     }
     for (tracks, 0..) |*t, ti| {
-        const ly = lanes_top + @as(f32, @floatFromInt(ti)) * LANE_H - scroll_y;
-        if (ly + LANE_H <= lanes_top) continue;
+        const ly = lanes_top + rowTop(tracks, ti) - scroll_y;
+        if (ly + rowH(t) <= lanes_top) continue;
         if (ly >= lanes_bottom) break;
+        // Automation rows under the clip row.
+        if (autoRows(t) > 0) {
+            if (drawAutomationRows(ui, alloc, tracks, t, ti, ly + LANE_H, timeline_x, timeline_w, timeline_x0, edit_snap, selected_track, selected_clip, m, press_consumed)) press_consumed = true;
+        }
+        if (ly + LANE_H <= lanes_top) continue;
         const lane_timeline = pane.rect(timeline_x, ly, timeline_w, LANE_H);
         const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
 
@@ -652,6 +697,7 @@ pub fn draw(
                 }
                 if (m.left_pressed and !pane.hasActiveDrag()) {
                     const ref: ClipRef = .{ .track = @intCast(ti), .clip = @intCast(i) };
+                    deselectAllPoints(tracks);
                     if (shift) {
                         clip.selected = !clip.selected;
                     } else if (!clip.selected) {
@@ -710,6 +756,7 @@ pub fn draw(
 
         // Single click on empty timeline area → track-only selection.
         if (!press_consumed and m.left_pressed and pane.contains(lane_timeline, m.x, m.y) and !pane.hasActiveDrag()) {
+            deselectAllPoints(tracks);
             beginBoxSelect(ti, m, shift);
             press_consumed = true;
         }
@@ -760,14 +807,16 @@ pub fn draw(
     // with the lanes. Clipped to the lane band so they don't leak into
     // the overview strip or beyond the bottom.
     ui.clip(bridge.fromRl(pane.rect(header_x, lanes_top, header_w, lanes_bottom - lanes_top)));
+    const play_beat = transport.beats();
     for (tracks, 0..) |*t, ti| {
-        const ly = lanes_top + @as(f32, @floatFromInt(ti)) * LANE_H - scroll_y;
-        if (ly + LANE_H <= lanes_top) continue;
+        const ly = lanes_top + rowTop(tracks, ti) - scroll_y;
+        if (ly + rowH(t) <= lanes_top) continue;
         if (ly >= lanes_bottom) break;
+        if (autoRows(t) > 0) drawAutomationHeaders(ui, alloc, t, ti, header_x, ly + LANE_H, header_w);
         const lane_header = pane.rect(header_x, ly, header_w, LANE_H);
         const lane_is_sel = selected_track.* != null and selected_track.*.? == ti;
         const editing = rename_target.kind == .track and rename_target.track == ti;
-        const hres = drawLaneHeader(ui, lane_header, t, ti, lane_is_sel, editing);
+        const hres = drawLaneHeader(ui, lane_header, t, ti, lane_is_sel, editing, play_beat);
         if (editing) result.rename_rect = hres.name_rect;
         switch (hres.action) {
             .none => {},
@@ -789,14 +838,14 @@ pub fn draw(
     // Below the last track the header column is a blank plate (nothing
     // shows bare chassis, docs/06 §Packing).
     {
-        const end_y = lanes_top + @as(f32, @floatFromInt(tracks.len)) * LANE_H - scroll_y;
+        const end_y = lanes_top + contentH(tracks) - scroll_y;
         if (end_y < lanes_bottom) _ = ui.plate(bridge.fromRl(pane.rect(header_x, @max(end_y, lanes_top), header_w, lanes_bottom - @max(end_y, lanes_top))), .{});
     }
     ui.unclip();
 
     // Lazy vertical scrollbar.
     const lanes_rect = pane.rect(r.x, lanes_top, r.width, lanes_bottom - lanes_top);
-    drawAndHandleScrollbar(ui, lanes_rect, @as(f32, @floatFromInt(tracks.len)) * LANE_H, m);
+    drawAndHandleScrollbar(ui, lanes_rect, contentH(tracks), m);
 
     // Pinned master strip at the bottom of the track bay.
     {
@@ -818,11 +867,15 @@ pub fn draw(
         device_sel.* = .audio;
     }
 
+    targetMenuTick(tracks, alloc);
+
     // Overview strip on top (rendered last so nothing scissor-clips it).
     drawOverview(ui, overview_rect, timeline_w, tracks, content_beats, transport, m);
     // The ruler owns right-click (meter menu); keep the arrangement menu off it.
     const rclick_on_ruler = m.right_pressed and pane.contains(ruler_rect, m.x, m.y);
-    if (!rclick_on_ruler and menu.openContext(ui, ARR_CONTEXT_KEY, bridge.fromRl(r))) {
+    // A lane point's menu opened this frame keeps the press.
+    const lane_menu_open = menu.active() and !menu.isOpen(ARR_CONTEXT_KEY);
+    if (!rclick_on_ruler and !lane_menu_open and menu.openContext(ui, ARR_CONTEXT_KEY, bridge.fromRl(r))) {
         context_target = .{ .beat = beatAtX(timeline_x0, m.x), .track = selected_track.* };
     }
     const has_selection = hasSelectedClips(tracks);
@@ -931,8 +984,7 @@ fn clampScroll(content_beats: f64, timeline_w: f32) void {
     if (scroll_x > max_sx) scroll_x = max_sx;
 }
 
-fn clampScrollY(n_tracks: usize, lanes_h: f32) void {
-    const content_h = @as(f32, @floatFromInt(n_tracks)) * LANE_H;
+fn clampScrollY(content_h: f32, lanes_h: f32) void {
     const max_sy = @max(0.0, content_h - lanes_h);
     if (scroll_y < 0) scroll_y = 0;
     if (scroll_y > max_sy) scroll_y = max_sy;
@@ -991,7 +1043,7 @@ fn updateBoxSelect(
         const box_r = normalizedRect(box_start_x, box_start_y, m.x, m.y);
         var primary: ?ClipRef = null;
         for (tracks, 0..) |*t, ti| {
-            const ly = lanes_top + @as(f32, @floatFromInt(ti)) * LANE_H - scroll_y;
+            const ly = lanes_top + rowTop(tracks, ti) - scroll_y;
             const lane = pane.rect(timeline_x, ly, timeline_w, LANE_H);
             for (t.clips.items, 0..) |*clip, ci| {
                 const clip_r = clipRect(lane, clip.*, timeline_x0);
@@ -1086,7 +1138,7 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
 
     const dx = m.x - drag_start_mouse_x;
     const d_beats = snap_mod.snapNearest(edit_snap, @as(f64, dx / px_per_beat), altBypassSnap());
-    drag_track_delta = @as(i32, @intFromFloat(@floor((m.y - lanes_top + scroll_y) / LANE_H))) - @as(i32, @intCast(drag_ref.track));
+    drag_track_delta = trackAtY(tracks, m.y - lanes_top + scroll_y) - @as(i32, @intCast(drag_ref.track));
 
     switch (drag_mode) {
         .none => {},
@@ -1156,7 +1208,7 @@ fn finishClipDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Cl
     const src_t = &tracks[drag_ref.track];
     if (drag_ref.clip >= src_t.clips.items.len) return;
 
-    const target_i_signed = @as(i32, @intFromFloat(@floor((m.y - lanes_top + scroll_y) / LANE_H)));
+    const target_i_signed = trackAtY(tracks, m.y - lanes_top + scroll_y);
     if (target_i_signed < 0) return;
     const target_i: usize = @intCast(target_i_signed);
     if (target_i >= tracks.len or target_i == drag_ref.track) return;
@@ -1325,7 +1377,7 @@ const HeaderResult = struct {
 /// Track header on the new Ui (docs/06 §Working surfaces): faceplate with
 /// the track-colour spine (+ amber selection stripe), index and name, R/M/S
 /// lit latches, pan and volume mini sliders, and a bare stereo meter.
-fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, selected: bool, editing_name: bool) HeaderResult {
+fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, selected: bool, editing_name: bool, beat: f64) HeaderResult {
     const r = bridge.fromRl(r_legacy);
     ui.pushId(t);
     defer ui.popId();
@@ -1340,7 +1392,11 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, sele
     _ = body.cutRight(4);
 
     var row1 = body.cutTop(20);
-    var btns = row1.cutRight(3 * 17);
+    var btns = row1.cutRight(4 * 17);
+    var shown = t.lanes_shown;
+    const auto_r = btns.cutLeft(17).insetXY(0, 2);
+    if (ctl.button(ui, auto_r, "autoshow", &shown, .{ .kind = .latch, .label = "A", .lit = ui_style.auto })) t.lanes_shown = shown;
+    menu.tip(ui, auto_r, if (t.lanes_shown) "Hide automation lanes" else "Show automation lanes");
     const can_arm = t.kind == .audio;
     var armed = t.isArmed();
     const arm_r = btns.cutLeft(17).insetXY(0, 2);
@@ -1364,14 +1420,25 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, sele
     if (!editing_name) ui.textIn(&ui.fonts.body, name_r, t.name(), if (selected) ui_style.text else ui_style.text_dim, .left, true);
 
     // Volume (bottom) and pan (above it, when the lane is tall enough).
-    const vol_r = body.cutBottom(@min(body.h, 16));
-    var v_norm: f32 = std.math.clamp(t.volume() / 1.25, 0.0, 1.0);
+    // Automated, they show the lane's value and a hand move overrides it
+    // (docs/22 §Manual changes).
+    var vol_r = body.cutBottom(@min(body.h, 16));
+    const vol_auto = t.findLane(automation.Target.volume()) != null and t.findLane(automation.Target.volume()).?.points.items.len > 0;
+    if (vol_auto) _ = vol_r.cutRight(8);
+    var v_norm: f32 = std.math.clamp(t.volumeAt(beat) / 1.25, 0.0, 1.0);
+    const vol_base = t.volume();
+    const pressed_now = ui.in.pressed;
     if (ctl.slider(ui, vol_r, "vol", &v_norm, .{ .kind = .mini, .horizontal = true, .show_readout = false, .ticks = 5, .default = 1.0 / 1.25 })) t.setVolume(v_norm * 1.25);
+    if (vol_auto) headerOverride(ui, &t.vol_override, "vol", t.volume() != vol_base, pressed_now, Rect.xywh(vol_r.right(), vol_r.y, 8, vol_r.h));
     menu.tip(ui, vol_r, "Track volume");
     if (body.h >= 14) {
-        const pan_r = body.cutBottom(14);
-        var p: f32 = (t.pan() + 1) / 2;
+        var pan_r = body.cutBottom(14);
+        const pan_auto = t.findLane(automation.Target.pan()) != null and t.findLane(automation.Target.pan()).?.points.items.len > 0;
+        if (pan_auto) _ = pan_r.cutRight(8);
+        var p: f32 = (t.panAt(beat) + 1) / 2;
+        const pan_base = t.pan();
         if (ctl.slider(ui, pan_r, "pan", &p, .{ .kind = .mini, .horizontal = true, .bipolar = true, .show_readout = false, .ticks = 3, .default = 0.5 })) t.setPan(p * 2 - 1);
+        if (pan_auto) headerOverride(ui, &t.pan_override, "pan", t.pan() != pan_base, pressed_now, Rect.xywh(pan_r.right(), pan_r.y, 8, pan_r.h));
         menu.tip(ui, pan_r, "Pan (double-click to center)");
     }
 
@@ -1379,6 +1446,308 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, sele
     const name_rl = bridge.toRl(name_r);
     if (b.pressed) return .{ .action = if (b.double) .rename else .select, .name_rect = name_rl };
     return .{ .action = .none, .name_rect = name_rl };
+}
+
+/// Override bookkeeping and LED for an automated header slider: a held drag
+/// overrides until release, other edits until the transport starts.
+fn headerOverride(ui: *Ui, ov: *std.atomic.Value(u8), key: []const u8, changed: bool, was_pressed: bool, led_cell: Rect) void {
+    const held = ui.active == ui.id(key);
+    if (changed) {
+        ov.store(if (held and !was_pressed) 1 else 2, .monotonic);
+    } else if (ov.load(.monotonic) == 1 and !held) {
+        ov.store(0, .monotonic);
+    }
+    const overridden = ov.load(.monotonic) != 0;
+    if (ctl.autoLed(ui, led_cell.x + 2, led_cell.y + @divFloor(led_cell.h - 4, 2), .{ key, "auto" }, overridden) and overridden) ov.store(0, .monotonic);
+    if (overridden) menu.tip(ui, led_cell, "Overridden by hand: click to follow the lane again");
+}
+
+// ── Automation lanes (docs/22) ───────────────────────────────────────
+
+pub fn deselectAllPoints(tracks: []Track) void {
+    for (tracks) |*t| for (t.lanes.items) |*l| l.deselectAll();
+}
+
+fn deselectPointsExcept(tracks: []Track, keep: *const automation.Lane) void {
+    for (tracks) |*t| for (t.lanes.items) |*l| if (l != keep) l.deselectAll();
+}
+
+pub fn hasSelectedPoints(tracks: []Track) bool {
+    for (tracks) |*t| for (t.lanes.items) |*l| if (l.selectedCount() > 0) return true;
+    return false;
+}
+
+/// Delete key in the arrangement: selected lane points win over clips.
+pub fn deleteSelectedPoints(tracks: []Track) bool {
+    var any = false;
+    for (tracks) |*t| for (t.lanes.items) |*l| if (l.selectedCount() > 0) {
+        l.removeSelected();
+        any = true;
+    };
+    return any;
+}
+
+const LaneFmt = struct {
+    mach: ?*const machine_mod.Machine,
+    ci: usize = 0,
+    kind: automation.TargetKind,
+};
+
+fn formatLane(ctx: *const anyopaque, knob: f32, buf: []u8) []const u8 {
+    const f: *const LaneFmt = @ptrCast(@alignCast(ctx));
+    switch (f.kind) {
+        .volume => {
+            const g = knob * 1.25;
+            if (g <= 1e-4) return "-INF DB";
+            return std.fmt.bufPrint(buf, "{d:.1} DB", .{20 * std.math.log10(g)}) catch "?";
+        },
+        .pan => {
+            const p = knob * 2 - 1;
+            if (@abs(p) < 0.005) return "C";
+            return std.fmt.bufPrint(buf, "{s} {d:.0}", .{ if (p < 0) "L" else "R", @abs(p) * 100 }) catch "?";
+        },
+        .inst, .fx => {
+            const m = f.mach orelse return "?";
+            const fc = m.format_control orelse return "?";
+            return fc(m.state, f.ci, knob, buf);
+        },
+    }
+}
+
+/// A lane's legend, value range and formatter context.
+const LaneInfo = struct {
+    name: []const u8,
+    lo: f32 = 0,
+    hi: f32 = 1,
+    fmt: LaneFmt,
+};
+
+fn laneInfo(buf: []u8, t: *const Track, lane: *const automation.Lane) LaneInfo {
+    return switch (lane.target.kind) {
+        .volume => .{ .name = "VOLUME", .fmt = .{ .mach = null, .kind = .volume } },
+        .pan => .{ .name = "PAN", .fmt = .{ .mach = null, .kind = .pan } },
+        .inst, .fx => blk: {
+            const m = t.targetMachine(lane.target) orelse break :blk .{
+                .name = std.fmt.bufPrint(buf, "{s} (GONE)", .{lane.target.param()}) catch "?",
+                .fmt = .{ .mach = null, .kind = lane.target.kind },
+            };
+            const ci = m.controlIndex(lane.target.param()) orelse break :blk .{
+                .name = std.fmt.bufPrint(buf, "{s} (GONE)", .{lane.target.param()}) catch "?",
+                .fmt = .{ .mach = null, .kind = lane.target.kind },
+            };
+            const info = m.control_info.?(m.state, ci);
+            const prefix: []const u8 = if (lane.target.kind == .fx) m.name else "";
+            const name = std.fmt.bufPrint(buf, "{s}{s}{s} {s}", .{ prefix, if (prefix.len > 0) " " else "", info.module, info.label }) catch info.label;
+            break :blk .{
+                .name = name,
+                .lo = if (info.stepped) info.lo else 0,
+                .hi = if (info.stepped) @max(info.hi, info.lo + 1) else 1,
+                .fmt = .{ .mach = m, .ci = ci, .kind = lane.target.kind },
+            };
+        },
+    };
+}
+
+/// The automation rows of track `ti` on the timeline. Returns true when a
+/// press landed in one.
+fn drawAutomationRows(
+    ui: *Ui,
+    alloc: std.mem.Allocator,
+    tracks: []Track,
+    t: *Track,
+    ti: usize,
+    y: f32,
+    timeline_x: f32,
+    timeline_w: f32,
+    timeline_x0: f32,
+    edit_snap: snap_mod.Setting,
+    selected_track: *?usize,
+    selected_clip: *?ClipRef,
+    m: pane.Mouse,
+    press_consumed: bool,
+) bool {
+    if (t.lanes.items.len == 0) {
+        const r = pane.rect(timeline_x, y, timeline_w, AUTO_H);
+        const ri = bridge.fromRl(r);
+        ui.rect(ri, ui_style.pane.shade(-3));
+        ui.rect(Rect.xywh(ri.x, ri.bottom() - 1, ri.w, 1), ui_style.chassis);
+        _ = ui.text(&ui.fonts.legend, ri.x + 4, ri.y + 14, "NO LANES: + IN THE HEADER, OR RIGHT-CLICK A KNOB", ui_style.text_mute);
+        return false;
+    }
+    var consumed = false;
+    const selected = selected_track.* != null and selected_track.*.? == ti;
+    for (t.lanes.items, 0..) |*lane, li| {
+        const r = pane.rect(timeline_x, y + @as(f32, @floatFromInt(li)) * AUTO_H, timeline_w, AUTO_H);
+        var nb: [64]u8 = undefined;
+        const info = laneInfo(&nb, t, lane);
+        const res = auto_lane.draw(ui, alloc, lane, .{
+            .rect = r,
+            .timeline_x0 = timeline_x0,
+            .scroll_x = scroll_x,
+            .px_per_beat = px_per_beat,
+            .edit_snap = edit_snap,
+            .color = trackColor(t.color),
+            .lo = info.lo,
+            .hi = info.hi,
+            .key = pane.keyFromIds(0xA070_1A4E_0000_0001, @intFromPtr(t), li),
+            .name = info.name,
+            .fmt = .{ .ctx = &info.fmt, .f = formatLane },
+            .selected = selected,
+        }, if (press_consumed) pane.neutral() else m);
+        if (res.pressed) {
+            consumed = true;
+            selected_track.* = ti;
+            selected_clip.* = null;
+            deselectAllClips(tracks);
+            deselectPointsExcept(tracks, lane);
+        }
+    }
+    return consumed;
+}
+
+const TARGET_MENU_KEY: u64 = 0xA070_7A26_E700_0001;
+var menu_track: usize = 0;
+/// The lane the picker retargets, or null to add a new lane.
+var menu_lane: ?usize = null;
+
+const T_VOLUME: u32 = 1;
+const T_PAN: u32 = 2;
+const T_INST: u32 = 10;
+const T_FX: u32 = 20; // + effect index
+const T_MODULE: u32 = 1000; // + module index
+const T_CONTROL: u32 = 100_000; // + control index
+
+fn openTargetMenu(ti: usize, lane: ?usize, r: Rect) void {
+    menu_track = ti;
+    menu_lane = lane;
+    menu.openBelow(TARGET_MENU_KEY, r);
+}
+
+/// The lane header column for track `ti`'s automation rows.
+fn drawAutomationHeaders(ui: *Ui, alloc: std.mem.Allocator, t: *Track, ti: usize, x: f32, y: f32, w: f32) void {
+    ui.pushId(.{ t, "lanes" });
+    defer ui.popId();
+    if (t.lanes.items.len == 0) {
+        var body = ui.plate(bridge.fromRl(pane.rect(x, y, w, AUTO_H)), .{ .fill = ui_style.face.shade(-6) });
+        ui.rect(Rect.xywh(body.x - 1, body.y, 3, body.h), trackColor(t.color).mix(ui_style.face, 0.5));
+        _ = body.cutLeft(6);
+        const add_r = body.insetXY(0, 10).takeLeft(92);
+        if (ctl.button(ui, add_r, "add", null, .{ .label = "+ ADD LANE", .flush = true })) openTargetMenu(ti, null, add_r);
+        return;
+    }
+    var remove: ?usize = null;
+    for (t.lanes.items, 0..) |*lane, li| {
+        ui.pushId(li);
+        defer ui.popId();
+        var body = ui.plate(bridge.fromRl(pane.rect(x, y + @as(f32, @floatFromInt(li)) * AUTO_H, w, AUTO_H)), .{ .fill = ui_style.face.shade(-6) });
+        ui.rect(Rect.xywh(body.x - 1, body.y, 3, body.h), trackColor(t.color).mix(ui_style.face, 0.5));
+        _ = body.cutLeft(6);
+        var row = body.insetXY(0, 11);
+        const del_r = row.cutRight(17);
+        _ = row.cutRight(2);
+        const add_r = row.cutRight(17);
+        _ = row.cutRight(4);
+        var nb: [64]u8 = undefined;
+        const info = laneInfo(&nb, t, lane);
+        if (ctl.button(ui, row, "target", null, .{ .label = info.name, .flush = true })) openTargetMenu(ti, li, row);
+        menu.tip(ui, row, "Pick what this lane drives");
+        if (ctl.button(ui, add_r, "add", null, .{ .label = "+", .flush = true })) openTargetMenu(ti, null, add_r);
+        menu.tip(ui, add_r, "Add a lane");
+        if (ctl.button(ui, del_r, "del", null, .{ .label = "\u{00D7}", .flush = true })) remove = li;
+        menu.tip(ui, del_r, "Remove this lane");
+    }
+    if (remove) |li| t.removeLane(alloc, li);
+}
+
+/// The lane target picker: VOLUME, PAN, then each machine ▸ module ▸ control.
+fn targetMenuTick(tracks: []Track, alloc: std.mem.Allocator) void {
+    if (!menu.isOpen(TARGET_MENU_KEY)) return;
+    if (menu_track >= tracks.len) {
+        menu.close();
+        return;
+    }
+    const t = &tracks[menu_track];
+    var items: [24]menu.Item = undefined;
+    var n: usize = 0;
+    items[n] = .{ .label = "Volume", .id = T_VOLUME };
+    n += 1;
+    items[n] = .{ .label = "Pan", .id = T_PAN };
+    n += 1;
+    if (t.machine.controlCount() > 0) {
+        items[n] = .{ .separator = true };
+        n += 1;
+        items[n] = .{ .label = t.machine.name, .id = T_INST, .submenu = true };
+        n += 1;
+    }
+    for (t.effects.items, 0..) |*fx, i| {
+        if (n >= items.len) break;
+        if (fx.mach.controlCount() == 0) continue;
+        items[n] = .{ .label = fx.mach.name, .id = T_FX + @as(u32, @intCast(i)), .submenu = true };
+        n += 1;
+    }
+    var picked: ?automation.Target = null;
+    var stepped = false;
+    if (menu.pick(TARGET_MENU_KEY, items[0..n])) |id| switch (id) {
+        T_VOLUME => picked = automation.Target.volume(),
+        T_PAN => picked = automation.Target.pan(),
+        else => {},
+    };
+    // Machine ▸ module ▸ control.
+    if (menu.subOpen(TARGET_MENU_KEY, 0)) |mid| {
+        const kind: automation.TargetKind = if (mid == T_INST) .inst else .fx;
+        const fx_i: usize = if (mid >= T_FX and mid < T_MODULE) mid - T_FX else 0;
+        const mach: ?*const machine_mod.Machine = if (kind == .inst) &t.machine else if (fx_i < t.effects.items.len) &t.effects.items[fx_i].mach else null;
+        if (mach) |mm| if (mm.control_info) |info_fn| {
+            var mods: [40][]const u8 = undefined;
+            var mod_n: usize = 0;
+            for (0..mm.controlCount()) |ci| {
+                const md = info_fn(mm.state, ci).module;
+                var seen = false;
+                for (mods[0..mod_n]) |x| if (std.mem.eql(u8, x, md)) {
+                    seen = true;
+                };
+                if (!seen and mod_n < mods.len) {
+                    mods[mod_n] = md;
+                    mod_n += 1;
+                }
+            }
+            var mitems: [40]menu.Item = undefined;
+            for (mods[0..mod_n], 0..) |md, i| mitems[i] = .{ .label = if (md.len > 0) md else "MAIN", .id = T_MODULE + @as(u32, @intCast(i)), .submenu = true };
+            _ = menu.subPick(TARGET_MENU_KEY, 1, mitems[0..mod_n]);
+            if (menu.subOpen(TARGET_MENU_KEY, 1)) |modid| if (modid >= T_MODULE and modid - T_MODULE < mod_n) {
+                const md = mods[modid - T_MODULE];
+                var citems: [40]menu.Item = undefined;
+                var cn: usize = 0;
+                for (0..mm.controlCount()) |ci| {
+                    const info = info_fn(mm.state, ci);
+                    if (!std.mem.eql(u8, info.module, md) or cn >= citems.len) continue;
+                    citems[cn] = .{ .label = info.label, .id = T_CONTROL + @as(u32, @intCast(ci)) };
+                    cn += 1;
+                }
+                if (menu.subPick(TARGET_MENU_KEY, 2, citems[0..cn])) |cid| {
+                    const ci = cid - T_CONTROL;
+                    const info = info_fn(mm.state, ci);
+                    stepped = info.stepped;
+                    picked = automation.Target.control(kind, if (kind == .fx) t.effects.items[fx_i].uid else 0, info.id);
+                }
+            };
+        };
+    }
+    const target = picked orelse return;
+    t.lanes_shown = true;
+    if (t.findLane(target) != null) return; // one lane per target
+    if (menu_lane) |li| {
+        if (li >= t.lanes.items.len) return;
+        const lane = &t.lanes.items[li];
+        lane.target = target;
+        lane.stepped = stepped;
+        if (stepped) for (lane.points.items) |*pt| {
+            pt.shape = .hold;
+            pt.value = @round(pt.value);
+        };
+    } else {
+        _ = t.laneFor(alloc, target, stepped) catch {};
+    }
 }
 
 /// Pinned master header: spine, MASTER, pan and volume, stereo meter.
