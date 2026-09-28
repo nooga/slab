@@ -186,7 +186,6 @@ Any parameter can be modulated by any modulation source:
 - Envelope followers
 - CV outputs from other machines
 - Velocity / pitch / pressure of the current voice
-- Automation lanes
 - External MIDI CC
 
 The mod matrix is a **host** structure, not a per-machine
@@ -194,6 +193,10 @@ structure. Machines expose their params (the `params.struct`);
 users in the UI drag a source onto a param, creating a mod
 connection. The host applies it to the pending params struct
 before the machine reads `params_current`.
+
+Automation is not a mod source. It sets the param's value
+([22-automation.md](22-automation.md)), and modulation adds on top of
+whatever automation produced.
 
 Modulation is **additive** over the param's base value, with a
 per-connection amount. Multiple mods on the same param sum.

@@ -217,5 +217,6 @@ writing a file.
 
 ## Not in the format yet
 
-Automation, tempo changes, sends and returns, sidechain, and the meter
+Automation (designed in [22-automation.md](22-automation.md) §Project
+format), tempo changes, sends and returns, sidechain, and the meter
 map's accent groups.

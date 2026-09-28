@@ -96,6 +96,12 @@ these rules.
 - Wheel over piano-roll overview: time zoom around cursor beat.
 - Drag overview viewport: pan time.
 
+### Automation lanes and note expression
+
+Point, segment and tension gestures, the expression mode (`E`) and the
+converge drag are specified in
+[22-automation.md §Editing curves](22-automation.md#editing-curves).
+
 ## Keyboard behavior
 
 - Space: play/stop.

@@ -66,6 +66,9 @@ self-contained but assumes the vocabulary established in earlier ones.
 22. [21-production-guide.md](21-production-guide.md) — writing and
     mixing a song: research, form, harmony, groove, sound choice,
     channel setup, compression, master, the stem report; `tools/slabkit`
+23. [22-automation.md](22-automation.md) — track lanes, clip lanes and
+    per-note expression on one curve type; automated controls, editing
+    gestures, engine and format (design)
 
 ## Terminology crib sheet
 

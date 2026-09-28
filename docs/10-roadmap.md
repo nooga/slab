@@ -234,7 +234,7 @@ This is where the product becomes real.
 ## Phase 5 — PDC, recording, performance
 
 1. **Plugin Delay Compensation.** Graph-wide latency alignment.
-2. **Automation lanes.** Record + edit.
+2. **Automation lanes.** Record + edit. Design: [22-automation.md](22-automation.md).
 3. **Audio recording.** Arm a track, record input into a clip.
 4. **External MIDI.** CoreMIDI in/out, device mapping.
 5. **Performance tuning.** Profile, vectorize, parallelize (start

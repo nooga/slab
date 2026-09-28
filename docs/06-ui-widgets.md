@@ -191,6 +191,7 @@ without gaps; accents are saturated but few. Values live in
 | `play` | `#3ddc84` | transport play |
 | `rec` | `#ff4d4d` | record, arm, clip warnings |
 | `mod` | `#6b8cff` | modulation, CV |
+| `auto` | `#d65cff` | automation: the automated-control LED (docs/22) |
 | `vfd` | `#ff9a2e` | display segments (amber-orange VFD) |
 | `vfd_hi` | `#ffd49a` | a readout being dragged |
 
@@ -242,7 +243,10 @@ One family per call, variants as options. Every control:
 - comes in **fixed sizes** (S / M / L; a panel uses one tier, see Sizing),
 - shows **idle, hot, active, focused, disabled** and, where it has a
   modulatable value, **modulated** (a thin `mod`-coloured arc/bar showing
-  where modulation currently pushes it),
+  where modulation currently pushes it) and, where it can be automated,
+  **automated**: it draws its effective (automated) value and lights a
+  square 4 `auto` LED at the right end of its legend; hollow when
+  overridden by hand (docs/22 §Automated controls),
 - follows the **interaction contract** below,
 - is hardware: lit top-left, parked on a faceplate. Only LEDs and
   displays glow.
@@ -586,7 +590,9 @@ the grid is quiet.
   colour (72% toward `pane`) carrying a note or waveform preview in a
   lighter tint. Selected: 1px amber outline.
 - **Automation:** breakpoint line in the track colour, 3×3 hollow point
-  handles, parameter name as a muted legend in the lane.
+  handles (filled `accent` when selected), `hold` segments as steps,
+  parameter name as a muted legend in the lane. Where a clip lane
+  overrides, the track curve draws muted under the clip's (docs/22).
 - **Piano roll:** key column faceplate (one row per semitone; white bed,
   black keys as 62%-wide bars, seams on E|F and B|C, octave labels on
   C), note grid with black-key rows darkened and octave lines on B|C,

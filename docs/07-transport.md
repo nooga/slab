@@ -121,7 +121,8 @@ Tracks can have **clips** on their timeline. A clip is one of:
   instrument machine at the head of the track's chain
 - **Audio clip:** a sample / rendered audio buffer, played through
   the chain (no instrument; inserts start at the first effect)
-- **Automation clip:** a curve for a param; bound to the mod matrix
+- **Automation** is not a clip kind: note clips carry clip lanes, and
+  tracks carry track lanes. See [22-automation.md](22-automation.md).
 
 When transport is in a clip's range, the track's first insert (or
 the clip directly, for audio clips) receives the clip's data. When

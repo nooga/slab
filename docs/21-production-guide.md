@@ -99,7 +99,7 @@ every section reads the same (the report flags spreads under 2 LU),
 parts aren't entering and leaving.
 
 **Without automation, arrange the dynamics.** Slab can't automate a
-fader or filter yet. Contour comes from:
+fader or filter yet (planned: [22-automation.md](22-automation.md)). Contour comes from:
 - parts entering and leaving section by section (the main tool);
 - clip velocities: `clip.velocities(fn)` for fades and swells; drum2
   and most synths respond to velocity;
