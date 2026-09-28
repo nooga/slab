@@ -298,6 +298,10 @@ fn runMachine(alloc: std.mem.Allocator, cli: *const Cli, path: []const u8) !usiz
             suite_buf[suite_n] = cs;
             suite_n += 1;
         }
+        if (isDynamics(name)) for (cases.dynamics_suite) |cs| {
+            suite_buf[suite_n] = cs;
+            suite_n += 1;
+        };
     } else if (isDrum(probe)) {
         var pitches: [32]f32 = undefined;
         var np: usize = 0;
@@ -613,6 +617,115 @@ fn runCase(
             steady = cases.burst_at_s + 0.05;
             off = cases.burst_at_s + cases.burst_len_s;
         },
+        .curve => {
+            const x = input orelse return error.NoInput;
+            try tbl.print(alloc, "in dB   out dB   gain dB\n", .{});
+            var outs: [cases.curve_steps]f64 = undefined;
+            var gains: [cases.curve_steps]f64 = undefined;
+            for (0..cases.curve_steps) |k| {
+                const t1 = @as(f64, @floatFromInt(k + 1)) * cases.curve_step_s;
+                const in_db = cases.curve_lo_db + cases.curve_step_db * @as(f64, @floatFromInt(k));
+                const seg = slice(out.l, t1 - 0.1, t1);
+                const o = an.dbAmp(an.rms(seg) / an.rms(slice(x, t1 - 0.1, t1)) * cases.dbToAmp(in_db));
+                outs[k] = o;
+                gains[k] = o - in_db;
+                try tbl.print(alloc, "{d:>5.0}  {d:>7.2}  {d:>7.2}\n", .{ in_db, o, o - in_db });
+            }
+            curve_series[0] = .{ .ys = try alloc.dupe(f64, &outs), .col = plot.amber, .lo = -48, .hi = 6, .label = "out dB" };
+            curve_series[1] = .{ .ys = try alloc.dupe(f64, &gains), .col = plot.cyan, .lo = -24, .hi = 24, .label = "gain dB" };
+            ncurve = 2;
+            spec_f0 = 1000;
+            spec_win = .{ cs.seconds - 0.2, cs.seconds };
+            onset = 0;
+            steady = cs.seconds - 0.1;
+            off = cs.seconds - 0.01;
+        },
+        .step => {
+            const x = input orelse return error.NoInput;
+            const g = try gainTraceDb(alloc, x, out.l, @floatCast(0.3 * cases.dbToAmp(cases.step_lo_db)));
+            const up: usize = @intFromFloat(cases.step_up_s * SR);
+            const down: usize = @intFromFloat(cases.step_down_s * SR);
+            const g_lo = meanOf(g[up - 4800 .. up]);
+            const g_hi = meanOf(g[down - 4800 .. down]);
+            const g_end = meanOf(g[g.len - 4800 ..]);
+            const dg = g_hi - g_lo;
+            const dr = g_end - g_hi;
+            try tbl.print(alloc, "gain {d:.2} dB at {d:.0} dBFS, {d:.2} dB at {d:.0} dBFS (GR {d:.2} dB), {d:.2} dB after\n", .{ g_lo, cases.step_lo_db, g_hi, cases.step_hi_db, g_lo - g_hi, g_end });
+            if (@abs(dg) > 0.1) {
+                try tbl.print(alloc, "attack  tau63 {s}  10-90% {s}\n", .{
+                    try fmtMs(alloc, crossAt(g, up, g_lo + 0.632 * dg, dg < 0)),
+                    try fmtMs(alloc, blk: {
+                        const a = crossAt(g, up, g_lo + 0.1 * dg, dg < 0) orelse break :blk null;
+                        const b = crossAt(g, up, g_lo + 0.9 * dg, dg < 0) orelse break :blk null;
+                        break :blk b - a;
+                    }),
+                });
+                var mn: f64 = g_hi;
+                for (g[up..down]) |v| mn = @min(mn, v);
+                try tbl.print(alloc, "overshoot {d:.2} dB\n", .{g_hi - mn});
+            }
+            if (@abs(dr) > 0.1) {
+                try tbl.print(alloc, "release tau63 {s}  10-90% {s}\n", .{
+                    try fmtMs(alloc, crossAt(g, down, g_hi + 0.632 * dr, dr < 0)),
+                    try fmtMs(alloc, blk: {
+                        const a = crossAt(g, down, g_hi + 0.1 * dr, dr < 0) orelse break :blk null;
+                        const b = crossAt(g, down, g_hi + 0.9 * dr, dr < 0) orelse break :blk null;
+                        break :blk b - a;
+                    }),
+                });
+            }
+            curve_series[0] = .{ .ys = try decimate(alloc, g, 400), .col = plot.cyan, .lo = -24, .hi = 6, .label = "gain dB" };
+            ncurve = 1;
+            spec_f0 = 1000;
+            spec_win = .{ cases.step_up_s + 0.2, cases.step_down_s };
+            onset = cases.step_up_s;
+            steady = cases.step_down_s - 0.05;
+            off = cases.step_down_s;
+        },
+        .drums => {
+            const x = input orelse return error.NoInput;
+            const g = try gainTraceDb(alloc, x, out.l, 0.001);
+            var store: [128]cases.DrumHit = undefined;
+            const hits = cases.drumHits(&store);
+            try tbl.print(alloc, "in:  peak {d:.1} dBFS  rms {d:.1}  crest {d:.1} dB\n", .{ an.dbAmp(peakAbs(x)), an.dbAmp(an.rms(x)), an.dbAmp(peakAbs(x) / an.rms(x)) });
+            try tbl.print(alloc, "out: peak {d:.1} dBFS  rms {d:.1}  crest {d:.1} dB  (overall gain {d:.2} dB)\n", .{ an.dbAmp(peakAbs(out.l)), an.dbAmp(an.rms(out.l)), an.dbAmp(peakAbs(out.l) / an.rms(out.l)), an.dbAmp(an.rms(out.l) / an.rms(x)) });
+            const kinds = [_]@TypeOf(hits[0].kind){ .kick, .snare };
+            const kind_names = [_][]const u8{ "kick", "snare" };
+            try tbl.print(alloc, "hit     GR max  GR +1ms  trans/body in  out\n", .{});
+            for (kinds, kind_names) |kind, kname| {
+                var gr_max: f64 = 0;
+                var gr_1: f64 = 0;
+                var tb_in: f64 = 0;
+                var tb_out: f64 = 0;
+                var cnt: f64 = 0;
+                for (hits) |hit| {
+                    if (hit.kind != kind) continue;
+                    const at: usize = @intFromFloat(hit.t * SR);
+                    if (at + 4800 >= g.len) continue;
+                    var mn: f64 = 0;
+                    for (g[at .. at + 3840]) |v| mn = @min(mn, v);
+                    // Relative to the gain just before the hit (makeup, mix).
+                    const base = g[at -| 1];
+                    gr_max += base - mn;
+                    gr_1 += base - g[at + 48];
+                    const tr_in = peakAbs(slice(x, hit.t, hit.t + 0.004));
+                    const bd_in = an.rms(slice(x, hit.t + 0.02, hit.t + 0.08));
+                    const tr_out = peakAbs(slice(out.l, hit.t, hit.t + 0.004));
+                    const bd_out = an.rms(slice(out.l, hit.t + 0.02, hit.t + 0.08));
+                    tb_in += an.dbAmp(tr_in / bd_in);
+                    tb_out += an.dbAmp(tr_out / bd_out);
+                    cnt += 1;
+                }
+                if (cnt == 0) continue;
+                try tbl.print(alloc, "{s:<6} {d:>7.2} {d:>8.2} {d:>13.2} {d:>5.2}\n", .{ kname, gr_max / cnt, gr_1 / cnt, tb_in / cnt, tb_out / cnt });
+            }
+            curve_series[0] = .{ .ys = try decimate(alloc, g, 600), .col = plot.cyan, .lo = -24, .hi = 12, .label = "gain dB" };
+            ncurve = 1;
+            spec_win = .{ 0, cs.seconds };
+            onset = 0;
+            steady = 60.0 / cases.drums_bpm;
+            off = 2 * 60.0 / cases.drums_bpm;
+        },
     }
     try rep.appendSlice(alloc, tbl.items);
     try rep.print(alloc, "\n", .{});
@@ -657,6 +770,53 @@ fn runCase(
         try cv.savePng(alloc, try std.fmt.allocPrint(alloc, "{s}.png", .{base}));
     }
     return .{ .name = cs.name, .hash = h, .l = out.l, .r = out.r, .ns_per_sample = out.ns_per_sample, .ratchet = ratchet };
+}
+
+/// Compressors get the dynamics cases too (docs/24 §Test plan). By name
+/// until per-machine bench cases land (docs/17 Track C).
+fn isDynamics(name: []const u8) bool {
+    const names = [_][]const u8{ "comp2", "bus2", "multi2" };
+    for (names) |n| if (std.mem.eql(u8, name, n)) return true;
+    return false;
+}
+
+/// Per-sample gain out/in in dB, held across samples where the input is
+/// too small to divide by (a compressor is a memoryless multiply, so the
+/// ratio is exact wherever the input isn't near zero).
+fn gainTraceDb(alloc: std.mem.Allocator, in: []const f32, out: []const f32, floor: f32) ![]f64 {
+    const g = try alloc.alloc(f64, in.len);
+    var last: f64 = 0;
+    for (in, out, g) |x, y, *d| {
+        if (@abs(x) > floor) last = an.dbAmp(@abs(@as(f64, y) / @as(f64, x)));
+        d.* = last;
+    }
+    return g;
+}
+
+fn meanOf(xs: []const f64) f64 {
+    if (xs.len == 0) return 0;
+    var a: f64 = 0;
+    for (xs) |x| a += x;
+    return a / @as(f64, @floatFromInt(xs.len));
+}
+
+/// First time at or after `from` where the trace crosses `level` in the
+/// direction of travel (`down` = falling).
+fn crossAt(g: []const f64, from: usize, level: f64, down: bool) ?f64 {
+    for (g[from..], from..) |v, i| {
+        if ((down and v <= level) or (!down and v >= level)) return @as(f64, @floatFromInt(i - from)) / SR;
+    }
+    return null;
+}
+
+fn fmtMs(alloc: std.mem.Allocator, t: ?f64) ![]const u8 {
+    return if (t) |x| std.fmt.allocPrint(alloc, "{d:.2} ms", .{x * 1000}) else "-";
+}
+
+fn peakAbs(x: []const f32) f64 {
+    var p: f32 = 0;
+    for (x) |v| p = @max(p, @abs(v));
+    return p;
 }
 
 fn bandDb(s: an.Spectrum, f: f64) f64 {

@@ -78,6 +78,10 @@ pub const IoFrame = extern struct {
     in_l: f64 = 0,
     in_r: f64 = 0,
     det: f64 = 0,
+    /// Signed detector audio: the key pair when keyed, else the input
+    /// pair; never swapped for the dual-mono R pass (docs/24 §Prerequisites).
+    sc_l: f64 = 0,
+    sc_r: f64 = 0,
 };
 const IO_STRIDE: u12 = @sizeOf(IoFrame);
 /// Knob smoothing (docs/17 D, docs/08 §2): the normalized knob position
@@ -1762,7 +1766,9 @@ fn renderEffectBlock(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
         f.in_l = if (in_l) |p| p[i] else 0;
         f.in_r = if (in_r) |p| p[i] else f.in_l;
         // A sidechain key drives the detector instead of the input.
-        f.det = if (key) |kp| @max(@abs(@as(f64, kp[0][i])), @abs(@as(f64, kp[1][i]))) else @max(@abs(f.in_l), @abs(f.in_r));
+        f.sc_l = if (key) |kp| kp[0][i] else f.in_l;
+        f.sc_r = if (key) |kp| kp[1][i] else f.in_r;
+        f.det = @max(@abs(f.sc_l), @abs(f.sc_r));
     }
     if (self.desc.stereo) {
         // True stereo: one pass sees both inputs and writes both outputs.
@@ -3892,6 +3898,8 @@ test "kernel ABI: KernelCtx and IoFrame match ctx.fy's Ctx and Io" {
         .{ .name = "Io.in-l", .off = @offsetOf(IoFrame, "in_l") },
         .{ .name = "Io.in-r", .off = @offsetOf(IoFrame, "in_r") },
         .{ .name = "Io.det", .off = @offsetOf(IoFrame, "det") },
+        .{ .name = "Io.sc-l", .off = @offsetOf(IoFrame, "sc_l") },
+        .{ .name = "Io.sc-r", .off = @offsetOf(IoFrame, "sc_r") },
     };
     for (ctx_fields) |f| {
         const v = try host.callWord(f.name);

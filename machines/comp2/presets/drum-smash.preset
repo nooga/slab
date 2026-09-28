@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "comp2", "note": "Aggressive drum-bus smash", "params": {"comp-thresh": -30, "comp-ratio": 8, "comp-knee": 3, "comp-atk": 0.001, "comp-rel": 0.09, "comp-makeup": 10, "comp-mix": 0.45}}
+{"schema": 1, "machine": "comp2", "note": "Aggressive drum-bus smash", "params": {"comp-thresh": -28, "comp-ratio": 8, "comp-knee": 3, "comp-atk": 0.00015, "comp-rel": 0.023, "comp-makeup": 10, "comp-mix": 0.45}}

@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "comp2", "note": "Audible dance pump", "params": {"comp-thresh": -24, "comp-ratio": 6, "comp-knee": 2, "comp-atk": 0.025, "comp-rel": 0.15, "comp-makeup": 6, "comp-mix": 1}}
+{"schema": 1, "machine": "comp2", "note": "Audible dance pump", "params": {"comp-thresh": -21, "comp-ratio": 6, "comp-knee": 2, "comp-atk": 0.0047, "comp-rel": 0.021, "comp-makeup": 6, "comp-mix": 1}}

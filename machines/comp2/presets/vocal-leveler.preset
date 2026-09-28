@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "comp2", "note": "Smooth vocal leveling", "params": {"comp-thresh": -22, "comp-ratio": 3, "comp-knee": 12, "comp-atk": 0.004, "comp-rel": 0.18, "comp-makeup": 5, "comp-mix": 1}}
+{"schema": 1, "machine": "comp2", "note": "Smooth vocal leveling", "params": {"comp-thresh": -20, "comp-ratio": 3, "comp-knee": 12, "comp-atk": 0.00088, "comp-rel": 0.023, "comp-makeup": 5, "comp-mix": 1}}

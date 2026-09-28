@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "comp2", "note": "Soft 1.5:1 glue", "params": {"comp-thresh": -12, "comp-ratio": 1.5, "comp-knee": 12, "comp-atk": 0.03, "comp-rel": 0.4, "comp-makeup": 2, "comp-mix": 1}}
+{"schema": 1, "machine": "comp2", "note": "Soft 1.5:1 glue", "params": {"comp-thresh": -12, "comp-ratio": 1.5, "comp-knee": 12, "comp-atk": 0.015, "comp-rel": 0.019, "comp-makeup": 2, "comp-mix": 1}}
