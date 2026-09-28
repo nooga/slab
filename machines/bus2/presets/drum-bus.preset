@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "bus2", "note": "glue a kit: 4:1, 10 ms, AUTO, SC 90 Hz, a little colour", "params": {"bus-thresh": -17.3, "bus-ratio": 1, "bus-atk": 4, "bus-rel": 4, "bus-hpf": 2, "bus-color": 0.25, "bus-makeup": 2.6, "bus-mix": 1}}

@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "bus2", "note": "light and clean master control: 2:1, 30 ms, AUTO", "params": {"bus-thresh": -13.0, "bus-ratio": 0, "bus-atk": 5, "bus-rel": 4, "bus-hpf": 1, "bus-color": 0.0, "bus-makeup": 0.8, "bus-mix": 1}}

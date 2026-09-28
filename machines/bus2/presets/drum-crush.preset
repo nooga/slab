@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "bus2", "note": "parallel crush: 10:1, fastest attack, dirty, 40% under the dry", "params": {"bus-thresh": -22.1, "bus-ratio": 2, "bus-atk": 0, "bus-rel": 0, "bus-hpf": 0, "bus-color": 0.6, "bus-makeup": 11.6, "bus-mix": 0.4}}

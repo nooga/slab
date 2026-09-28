@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "bus2", "note": "the classic mix-bus setting: 2:1, 30 ms, AUTO, 2 dB on the loud parts", "params": {"bus-thresh": -15.6, "bus-ratio": 0, "bus-atk": 5, "bus-rel": 4, "bus-hpf": 2, "bus-color": 0.1, "bus-makeup": 1.4, "bus-mix": 1}}

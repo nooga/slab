@@ -30,18 +30,18 @@ def bench_bin():
         BENCH = cands[-1]
     return BENCH
 
-def metrics(params, stem, preset=None):
-    args = [bench_bin(), "machines/comp2", "--no-sheets", f"--input={DRY}/{stem}.wav", f"--out={S}/tb/{stem}-{os.getpid()}-{abs(hash(json.dumps(params,sort_keys=True)))}"]
+def metrics(params, stem, preset=None, machine="comp2", prefix="comp"):
+    args = [bench_bin(), f"machines/{machine}", "--no-sheets", f"--input={DRY}/{stem}.wav", f"--out={S}/tb/{stem}-{os.getpid()}-{abs(hash(json.dumps(params,sort_keys=True)))}"]
     if preset: args.append(f"--preset={preset}")
-    for k, v in params.items(): args += ["-p", f"comp-{k}={v}"]
+    for k, v in params.items(): args += ["-p", f"{prefix}-{k}={v}"]
     r = subprocess.run(args, capture_output=True, text=True)
     m = re.search(r"metrics: (.*)", r.stderr + r.stdout)
     if not m: raise SystemExit(r.stderr[-2000:])
     return {k: float(v) for k, v in (kv.split("=") for kv in m.group(1).split())}
 
-def avg(params, stems, preset=None):
+def avg(params, stems, preset=None, machine="comp2", prefix="comp"):
     with ThreadPoolExecutor(len(stems)) as ex:
-        ms = list(ex.map(lambda s: metrics(params, s, preset), stems))
+        ms = list(ex.map(lambda s: metrics(params, s, preset, machine, prefix), stems))
     return {k: sum(m[k] for m in ms) / len(ms) for k in ms[0]}, ms
 
 def show(name, m):

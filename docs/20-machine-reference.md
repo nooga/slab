@@ -16,6 +16,7 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`rhodes`](#rhodes) | Rhodes E-Piano | instrument | 8 | `rd-` |
 | [`sampler`](#sampler) | Sampler | instrument | 8 | `smp-` |
 | [`unfairlight`](#unfairlight) | Unfairlight TMI | instrument | 8 | `cmi-` |
+| [`bus2`](#bus2) | Bus | effect | — | `bus-` |
 | [`chorus2`](#chorus2) | Chorus | effect | — | `chorus-` |
 | [`comp2`](#comp2) | Comp | effect | — | `comp-` |
 | [`delay2`](#delay2) | Delay | effect | — | `delay-` |
@@ -2146,6 +2147,29 @@ Presets:
 - `cmi-tour/sgtour/v1` — CMI tour / sgtour / V1
 - `cmi-tour/sgtour/vio` — CMI tour / sgtour / VIO
 - `cmi-tour/sgtour/we3` — CMI tour / sgtour / WE3
+
+## bus2
+
+**Bus**, stereo insert effect.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `bus-thresh` | COMP | THRESH | -36 … 0 | -18 | linear |
+| `bus-ratio` | COMP | RATIO | 0 2 / 1 4 / 2 10 | 1 | switch |
+| `bus-atk` | TIME | ATK | 0 .1 / 1 .3 / 2 1 / 3 3 / 4 10 / 5 30 | 4 | switch |
+| `bus-rel` | TIME | REL | 0 .1 / 1 .3 / 2 .6 / 3 1.2 / 4 AUTO | 4 | switch |
+| `bus-hpf` | SC | HPF | 0 OFF / 1 60 / 2 90 / 3 150 / 4 250 | 0 | switch |
+| `bus-color` | OUT | COLOR | 0 … 1 | 0 | linear |
+| `bus-makeup` | OUT | MAKEUP | 0 … 15 | 0 | linear |
+| `bus-mix` | OUT | MIX | 0 … 1 | 1 | pow |
+
+Presets:
+
+- `drum-bus` — glue a kit: 4:1, 10 ms, AUTO, SC 90 Hz, a little colour
+- `drum-crush` — parallel crush: 10:1, fastest attack, dirty, 40% under the dry
+- `master-glue` — light and clean master control: 2:1, 30 ms, AUTO
+- `mix-glue` — the classic mix-bus setting: 2:1, 30 ms, AUTO, 2 dB on the loud parts
+- `pump` — dance breathing: 4:1, 1 ms, 0.3 s, the kick drives it
 
 ## chorus2
 

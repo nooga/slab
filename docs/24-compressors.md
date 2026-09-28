@@ -2,8 +2,9 @@
 
 Which compressors Slab should have beyond `comp2`, how the classic
 designs make their sound, and how each new machine gets measured.
-**Status:** (0) prerequisites and (2) the comp2 revision are built
-(§comp2 as built); bus2, multi2 and the character modes are open. The
+**Status:** (0) prerequisites, (1) bus2 and (2) the comp2 revision are
+built (§comp2 as built, §bus2 as built); multi2 and the character modes
+are open. The
 survey's numbers marked *measured* are the old comp2 and come from
 `zig build bench` on comp2 (Debug, 2026-09-28) and from a numpy mirror
 of `comp.fy` (a scratch script, not in the repo) that matches the bench to 0.1 dB where they overlap
@@ -211,6 +212,54 @@ note onsets up 1–2 dB: the attack lag any compressor without lookahead
 has. THRESH is set for these songs' levels; on a hotter or quieter
 source, trim it: Glass Horizon's quiet kit runs `drum-bus` at −22 dB,
 measured in the song at 5.7 dB on hits, 1.1 dB median, level range −20 %.
+
+### bus2 as built (2026-09-29)
+
+`machines/bus2/bus2.fy`, DSP in `kernels/07-effects/bus.fy`. It runs
+comp.fy's detector (SC HPF, 5 ms peak hold) and soft-knee gain computer
+on the same pointers (`CompState`/`CompParams` first, the bus fields
+after), so the static curve is comp2's by construction. What it adds:
+
+- **Stepped controls.** RATIO 2/4/10; ATK 0.1/0.3/1/3/10/30 ms; REL
+  0.1/0.3/0.6/1.2 s/AUTO; SC HPF OFF/60/90/150/250 Hz; THRESH −36…0
+  (default −18), MAKEUP 0…15, MIX, COLOR. Knee fixed at 4 dB, PEAK
+  detector. The display shows the curve, level dot and GR.
+- **AUTO release.** Two followers on the target gain: fast (ATK, release
+  0.1 s) and slow (charge 0.4 s, release 1.2 s); the gain is the deeper
+  of the two. Bench `bursts`: release τ63 102 ms after a 50 ms burst,
+  1168 ms after a 2 s block (11×). Fixed REL: 102 / 102 ms.
+- **COLOR.** e = T·u²/(1+u²)·(a2 − a3·u), u = wet/T, a2 = a3 = 0.3·COLOR,
+  scaled by the GR (full at 12 dB), made at 2× (hb9 up2/dec2 per
+  channel), DC-blocked at ~10 Hz. Even and odd harmonics, monotonic, no
+  fold-back visible on the sweep. 1 kHz at −6 dBFS, T −24 (13 dB GR):
+  THD −90 dB at 0 (bit-clean: e is exactly 0), −33 dB at 0.3, −21 dB at
+  1; the fundamental drops 0.5 / 1.6 dB with it.
+- **FB/FF dropped.** A digital feedback loop with a one-sample delay
+  either rings (pole c + (1−c)(1−R): −0.9 at 10:1, 0.1 ms) or, once
+  its times are corrected, is feed-forward with a different knee. The
+  hardware's glue is the release and the colour; those are here.
+
+Measured (Debug): curve slopes 2/4/10:1 exact above the knee; attack
+τ63 0.19 / 0.38 / 1.10 / 3.15 / 10.3 / 30.6 ms (the two fastest read
+long: a 1 kHz peak needs up to a quarter cycle to show); 50 Hz THD
+−44.0 dB at defaults. Cost 181 ns/sample vs comp2's 68 (2.7×, over
+the 2× budget: the 2× oversampled colour runs even at COLOR 0).
+
+**Presets** (`tools/comp2_presets/design_bus2.py`, same method as
+§Presets: character by intent, THRESH solved on the songs' drum groups
+or mixes for a GR target at makeup 0, MAKEUP for level):
+
+| preset | character | target | measured (with makeup) |
+|---|---|---|---|
+| `drum-bus` | 4:1, 10 ms, AUTO, HPF 90, color 0.25 | 5 dB on hits | pump 1.13 (comp2 drum-bus 1.39), spread 6.3 → 5.5, t/b +0.7 |
+| `mix-glue` | 2:1, 30 ms, AUTO, HPF 90, color 0.1 | 2 dB p90 | pump 0.69, crest +0.1 |
+| `master-glue` | 2:1, 30 ms, AUTO, HPF 60, clean | 1.2 dB p90 | pump 0.44 |
+| `drum-crush` | 10:1, 0.1 ms, 0.1 s, color 0.6, mix 0.4 | 15 dB wet on hits | spread 6.3 → 4.8, +0.6 dB |
+| `pump` | 4:1, 1 ms, 0.3 s, no HPF, color 0.15 | 6 dB p90 | pump 1.84, spread 4.8 → 3.5 |
+
+On drums alone AUTO and a fixed 0.1 s release measure alike (same GR on
+hits, pump 1.11 vs 1.20): hits are too short to charge the slow
+follower. AUTO earns its keep on material with sustained loud passages.
 
 ### (0) Prerequisites
 

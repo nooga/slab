@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "bus2", "note": "dance breathing: 4:1, 1 ms, 0.3 s, the kick drives it", "params": {"bus-thresh": -14.3, "bus-ratio": 1, "bus-atk": 2, "bus-rel": 1, "bus-hpf": 0, "bus-color": 0.15, "bus-makeup": 4.6, "bus-mix": 1}}
