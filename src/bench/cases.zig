@@ -14,7 +14,7 @@ pub const Event = struct {
     vel: f32 = 0.8,
 };
 
-pub const Input = enum { none, impulse, sine, sweep, ladder, burst, saw, curve, step, drums, file };
+pub const Input = enum { none, impulse, sine, sweep, ladder, burst, saw, curve, step, bursts, drums, file };
 
 pub const Focus = enum {
     /// Per-note table: pitch, cents error, level, nonharmonic energy.
@@ -37,6 +37,9 @@ pub const Focus = enum {
     curve,
     /// Dynamics: gain step response, attack and release time constants.
     step,
+    /// Dynamics: release after a short burst and after a long block
+    /// (program-dependent release: AUTO).
+    bursts,
     /// Dynamics: a synthetic kit loop, gain reduction per hit and crest.
     drums,
     /// Dynamics on real material (`--input=FILE`): GR distribution, level
@@ -107,6 +110,7 @@ pub const effect_suite = [_]Case{
 pub const dynamics_suite = [_]Case{
     .{ .name = "curve", .seconds = curve_steps * curve_step_s, .focus = .curve, .input = .curve },
     .{ .name = "step", .seconds = 2.5, .focus = .step, .input = .step },
+    .{ .name = "bursts", .seconds = bursts_end_s, .focus = .bursts, .input = .bursts },
     .{ .name = "lowsine", .seconds = 2.0, .focus = .sine, .input = .sine, .input_hz = 50, .input_db = -6, .win = .{ 0.5, 1.5 } },
     .{ .name = "drums", .seconds = drums_bars * 4 * 60.0 / drums_bpm + 0.5, .focus = .drums, .input = .drums },
 };
@@ -122,6 +126,12 @@ pub const step_lo_db = -40.0;
 pub const step_hi_db = -10.0;
 pub const step_up_s = 0.5;
 pub const step_down_s = 1.0;
+
+/// Bursts: 1 kHz at step_lo, with a short burst and later a long block
+/// at step_hi; each is followed by bursts_gap_s at step_lo.
+pub const bursts_short = [2]f64{ 0.5, 0.55 };
+pub const bursts_long = [2]f64{ 2.5, 4.5 };
+pub const bursts_end_s = 7.0;
 
 /// Drums: kick on 1 and 3 (and the "and" of 3), snare on 2 and 4, hats on
 /// eighths, 110 bpm, peak -6 dBFS; deterministic.
@@ -237,6 +247,14 @@ pub fn genInput(case: Case, sr: f64, buf: []f32) void {
             const down: usize = @intFromFloat(step_down_s * sr);
             for (buf, 0..) |*v, i| {
                 const a = dbToAmp(if (i >= up and i < down) step_hi_db else step_lo_db);
+                v.* = @floatCast(a * @sin(2 * std.math.pi * 1000.0 * @as(f64, @floatFromInt(i)) / sr));
+            }
+        },
+        .bursts => {
+            for (buf, 0..) |*v, i| {
+                const t = @as(f64, @floatFromInt(i)) / sr;
+                const hi = (t >= bursts_short[0] and t < bursts_short[1]) or (t >= bursts_long[0] and t < bursts_long[1]);
+                const a = dbToAmp(if (hi) step_hi_db else step_lo_db);
                 v.* = @floatCast(a * @sin(2 * std.math.pi * 1000.0 * @as(f64, @floatFromInt(i)) / sr));
             }
         },

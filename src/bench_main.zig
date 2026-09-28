@@ -702,6 +702,29 @@ fn runCase(
             steady = cases.step_down_s - 0.05;
             off = cases.step_down_s;
         },
+        .bursts => {
+            const x = input orelse return error.NoInput;
+            const g = try gainTraceDb(alloc, x, out.l, @floatCast(0.3 * cases.dbToAmp(cases.step_lo_db)));
+            const base = meanOf(g[@as(usize, @intFromFloat(0.4 * SR))..@as(usize, @intFromFloat(0.5 * SR))]);
+            var taus: [2]?f64 = .{ null, null };
+            const spans = [_][2]f64{ cases.bursts_short, cases.bursts_long };
+            const names = [_][]const u8{ "50 ms burst", "2 s block" };
+            for (spans, names, 0..) |sp, label, k| {
+                const end: usize = @intFromFloat(sp[1] * SR);
+                const at_end = g[end - 48];
+                const dr = base - at_end;
+                taus[k] = if (dr > 0.1) crossAt(g, end, at_end + 0.632 * dr, false) else null;
+                try tbl.print(alloc, "{s}: GR {d:.2} dB at its end, release tau63 {s}\n", .{ label, dr, try fmtMs(alloc, taus[k]) });
+            }
+            if (taus[0] != null and taus[1] != null) try tbl.print(alloc, "release ratio long/short {d:.2}\n", .{taus[1].? / taus[0].?});
+            curve_series[0] = .{ .ys = try decimate(alloc, g, 400), .col = plot.cyan, .lo = -24, .hi = 6, .label = "gain dB" };
+            ncurve = 1;
+            spec_f0 = 1000;
+            spec_win = .{ cases.bursts_long[0] + 0.5, cases.bursts_long[1] };
+            onset = cases.bursts_long[0];
+            steady = cases.bursts_long[1] - 0.05;
+            off = cases.bursts_long[1];
+        },
         .drums => {
             const x = input orelse return error.NoInput;
             const g = try gainTraceDb(alloc, x, out.l, 0.001);
