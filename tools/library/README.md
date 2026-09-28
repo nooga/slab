@@ -41,6 +41,34 @@ sampler starts them at note-off in the same voice, beside the body's
 release, and a piano's gets 3 dB quieter per second held.
 Measurements are cached in `vcsl/analysis.json`.
 
+## Classic drum machines
+
+`tools/library/drums.py` turns Reverb's free **Drum Machines: The
+Complete Collection** (53 machines, from the TR-808, TR-909, LinnDrum,
+DMX, CR-78 and TR-707 to rhythm boxes like the Maestro Rhythm King) into
+sampler kits. Get it with a free Reverb account
+(https://reverb.com/item/15980096-reverb-drum-machines-the-complete-collection),
+unpack it into `$SLAB_LIBRARY/drum-machines/_sources/`, then:
+
+```sh
+tools/library/drums.py --list    # what goes on which key, per machine
+tools/library/drums.py           # write the kits and presets
+```
+
+Each machine with one-shots (10 packs are loops only) gets a `kit`: every
+sound on its General MIDI key (kick 36, snare 38, hats 42/44/46 choking
+each other, toms low to high, crash 49, ride 51, cowbell 56, congas 62-64,
+...), the middle setting of a knob grid leading, Soft/Mid/Hard/Loud and
+Accent takes of one sound as its velocity layers, other variants on keys
+84 and up. A sound with four or more variants (the 808's and 909's tone
+and decay grids) also gets a palette, `kicks`, `snares`, `toms`, ...:
+every variant, one a key from C2. Kits land in
+`lib:drum-machines/kits/<machine>/`, presets in
+`machines/sampler/presets/drums/<machine>/` (gitignored). A kit's level
+puts its loudest main sound at -6 dBFS; the balance inside it is the
+machine's. The 808 pack has no closed hat, so its shortest open hat
+plays on 42.
+
 ## Fairlight CMI disks
 
 `tools/library/cmi.py` imports CMI Series II / IIx voices into
