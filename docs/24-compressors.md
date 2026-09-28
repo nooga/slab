@@ -176,15 +176,41 @@ What landed, and where it differs from the plan below:
 - Measured on the default settings (bench): 50 Hz THD −27.7 → −41.9 dB
   (PEAK), −57.2 dB (RMS). HPF 150 Hz halves the kick's GR on the
   `drums` loop (6.0 → 2.9 dB) and leaves the snare's.
-- Presets were re-derived to **keep their sound**, not their old knob
-  labels: ATK/REL are the gain time constants the old comp2 actually
-  produced on the `step` case, and THRESH moved 0–3 dB to match each
-  preset's kick and snare GR on `drums`, then bass-leveler,
-  gentle-bus-glue, drum-smash and dry-drum-punch were settled on the
-  three songs (every comp2 stem within ±0.75 LU of the old render
-  through the master chain, the mixes within 0.4 LU). So the "glue"
-  presets still release in about 20 ms; a slower, truer glue is bus2's
-  job, or a new preset.
+- The presets were then redesigned from their names (§Presets).
+
+### Presets
+
+Designed from intent, not from the old comp2 (which, measured on real
+material, mostly worked against its names: 20 ms releases made the
+levelers and glues raise crest and push transients up to 8 dB). Each
+preset's character is fixed by its job; THRESH is solved on the songs'
+own material (the signal each comp2 there hears, `tools/comp2_presets`)
+for a GR target, MAKEUP for level. Measured with the bench's `file` case,
+averaged over the material:
+
+| preset | job | character | target | measured |
+|---|---|---|---|---|
+| `bass-leveler` | even out a bass line | 4:1, knee 6, 3 / 250 ms, PEAK | 3.5 dB median GR | spread −11 %, crest +0.8, pump 0.7 |
+| `vocal-leveler` | ride a lead | 3:1, knee 10, 2 / 150 ms, HPF 80 | 3.5 dB median | spread −25 %, crest −0.4 |
+| `dialog-leveler` | flatten talk | 6:1, knee 8, 2 / 150 ms, HPF 100 | 5.5 dB median | spread −33 %, crest −0.5 |
+| `smooth-pad-comp` | calm pads / keys | 2:1, knee 12, 25 / 300 ms, RMS, HPF 60 | 2 dB median | pump 0.7, crest flat |
+| `dry-drum-punch` | snap on a drum track | 4:1, knee 4, 10 / 60 ms | 5 dB on hits | transients +2.7 dB |
+| `drum-smash` | parallel smash | 10:1, 0.3 / 30 ms, mix 0.5 | 18 dB wet on hits | body +2.6 dB, spread 4.8 → 2.8, +0.9 dB |
+| `rude-clap` | clap/snare tail up | 8:1, 0.1 / 20 ms, mix 0.9 | 16 dB wet on hits | body +2.7 dB, spread 6.6 → 2.7 |
+| `pump` | fast bus squash | 4:1, 3 / 120 ms | 7 dB p90 | pump 2.3 dB (audible) |
+| `audible-pump` | dance breathing | 8:1, 8 / 220 ms | 9.5 dB p90 | pump 2.8 dB |
+| `bus-glue` | mix bus, SSL-ish | 2:1, knee 6, 10 / 150 ms, HPF 90 | 2.5 dB p90 | pump 0.9, crest +0.2 |
+| `gentle-bus-glue` | lighter mix bus | 2:1, knee 9, 30 / 200 ms, HPF 90 | 1.8 dB p90 | pump 0.6 |
+| `gentle-glue` | barely there | 1.5:1, knee 12, 30 / 300 ms, RMS, HPF 60 | 1 dB p90 | pump 0.4 |
+| `soft-master-glue` | master control | 2:1, knee 12, 20 / 300 ms, RMS, HPF 60 | 2 dB p90 | pump 0.7 |
+| `drum-bus` | glue a kit | 4:1, knee 4, 10 / 150 ms, HPF 90 | 6 dB on hits | spread −15 %, transients +1, pump 1.4 |
+
+(pump = std of the GR; spread = std of 100 ms levels; transients = the
+loudest 1 ms in the first 15 ms over the 40–120 ms body.) Levelers push
+note onsets up 1–2 dB: the attack lag any compressor without lookahead
+has. THRESH is set for these songs' levels; on a hotter or quieter
+source, trim it: Glass Horizon's quiet kit runs `drum-bus` at −22 dB,
+measured in the song at 5.7 dB on hits, 1.1 dB median, level range −20 %.
 
 ### (0) Prerequisites
 

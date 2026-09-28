@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "comp2", "note": "SSL-style drum bus: 4:1, hits through, glues the kit", "params": {"comp-thresh": -18.5, "comp-ratio": 4, "comp-knee": 4, "comp-atk": 0.01, "comp-rel": 0.15, "comp-hpf": 90, "comp-det": 0, "comp-makeup": 3.3, "comp-mix": 1}}

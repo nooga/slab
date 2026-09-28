@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "comp2", "note": "Soft pad / key compression", "params": {"comp-thresh": -18, "comp-ratio": 2, "comp-knee": 12, "comp-atk": 0.0098, "comp-rel": 0.046, "comp-makeup": 3, "comp-mix": 0.8}}
+{"schema": 1, "machine": "comp2", "note": "Soft pad / key compression", "params": {"comp-thresh": -17.9, "comp-ratio": 2, "comp-knee": 12, "comp-atk": 0.025, "comp-rel": 0.3, "comp-hpf": 60, "comp-det": 1, "comp-makeup": 2.2, "comp-mix": 1}}

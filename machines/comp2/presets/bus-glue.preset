@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "comp2", "note": "Transparent 2:1 mix-bus glue", "params": {"comp-thresh": -16, "comp-ratio": 2, "comp-knee": 9, "comp-atk": 0.0043, "comp-rel": 0.02, "comp-makeup": 3, "comp-mix": 1}}
+{"schema": 1, "machine": "comp2", "note": "Transparent 2:1 mix-bus glue", "params": {"comp-thresh": -14.8, "comp-ratio": 2, "comp-knee": 6, "comp-atk": 0.01, "comp-rel": 0.15, "comp-hpf": 90, "comp-det": 0, "comp-makeup": 1.9, "comp-mix": 1}}

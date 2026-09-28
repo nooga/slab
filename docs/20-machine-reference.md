@@ -2199,6 +2199,7 @@ Presets:
 - `bass-leveler` — Keeps rubber bass even
 - `bus-glue` — Transparent 2:1 mix-bus glue
 - `dialog-leveler` — Levels deadpan vocal / talk samples
+- `drum-bus` — SSL-style drum bus: 4:1, hits through, glues the kit
 - `drum-smash` — Aggressive drum-bus smash
 - `dry-drum-punch` — Dry, forward drums
 - `gentle-bus-glue` — Gentle 2:1 mix-bus glue
