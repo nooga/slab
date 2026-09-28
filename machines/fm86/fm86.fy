@@ -20,6 +20,7 @@ include "fm86_algo.fy"
   "k-fm86-voice-sample" render!
   "fm86-prepare"        prepare!
   "fm86-note-on"        note-on!
+  "fm86-note-expr"      note-expr!
   "fm86-note-off"       note-off!
   "fm86-derive"         derive!
   fm86-algo-table       derive-data!

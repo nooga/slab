@@ -125,6 +125,12 @@ dsp: juno-note-on
   ctx.chan 5.0 spread params.age-amt f* 0.14 f* exp2 -> state.cut-spread
 ;
 
+( ctx state params -- : per-note expression [docs/22]: retune the
+  sounding voice to ctx.hz. )
+dsp: juno-note-expr | ctx:Ctx state:JunoState params |
+  ctx.hz -> state.note-hz
+;
+
 ( ctx state params -- : release this voice from its current level. )
 dsp: juno-note-off
   | ctx state:JunoState params:JunoParams |

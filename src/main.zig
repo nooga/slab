@@ -18,6 +18,8 @@ const fy_host_mod = @import("fy_host.zig");
 const document_mod = @import("document.zig");
 const describe_mod = @import("describe.zig");
 const history_mod = @import("history.zig");
+const automation = @import("automation.zig");
+const auto_lane = @import("ui/automation_lane.zig");
 const recorder_mod = @import("recorder.zig");
 const native_dialog = @import("native_dialog.zig");
 
@@ -49,6 +51,9 @@ test {
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
     _ = @import("meter_gen.zig");
+    _ = @import("automation.zig");
+    _ = @import("ui/automation_lane.zig");
+    _ = @import("ui/lane_targets.zig");
 }
 
 const MAX_TRACKS: usize = 16;
@@ -525,6 +530,10 @@ pub fn main(init: std.process.Init) !void {
     var project_path_chosen = false;
     var focus: FocusPane = .arrangement;
     var dirty = false;
+    var auto_was_playing = false;
+    var auto_arm = false;
+    var auto_rec: AutoRecorder = .{};
+    var shot_frame: u32 = 0;
     var clipboard: EditClipboard = .{};
     defer clipboard.deinit(alloc);
     var status: StatusMessage = .{};
@@ -580,7 +589,7 @@ pub fn main(init: std.process.Init) !void {
             // Modal: only Esc/Enter act, handled after the dialog draws below.
         } else if (menu.active()) {
             // An open menu owns the keyboard (arrows, enter, esc).
-        } else if (rename.active()) {
+        } else if (rename.active() or auto_lane.entryActive()) {
             // The rename field owns the keyboard (runs after the panes).
         } else if (try handleProjectShortcuts(
             alloc,
@@ -613,6 +622,7 @@ pub fn main(init: std.process.Init) !void {
             if (c.rl.IsKeyPressed(c.rl.KEY_SPACE)) transport.toggle();
             if (c.rl.IsKeyPressed(c.rl.KEY_HOME)) transport.rewind();
             if (c.rl.IsKeyPressed(c.rl.KEY_TAB)) layout.clip_editor_visible = !layout.clip_editor_visible;
+            if (focus == .piano_roll and !commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_E)) clip_editor.toggleExpressionMode();
         }
 
         c.rl.BeginDrawing();
@@ -654,7 +664,12 @@ pub fn main(init: std.process.Init) !void {
             .current_input_idx = current_input_idx,
             .master_peak = .{ master.meter().l, master.meter().r },
             .master_volume = master.volume(),
+            .auto_arm = auto_arm,
         });
+        if (tres.auto_arm_toggle) {
+            auto_arm = !auto_arm;
+            status.set("{s}", .{if (auto_arm) "Automation recording armed" else "Automation recording off"});
+        }
         if (tres.render_audio) render_dlg.active = true;
         if (tres.master_volume) |v| {
             master.setVolume(v);
@@ -702,6 +717,14 @@ pub fn main(init: std.process.Init) !void {
 
         // (Side browser removed — machines are added via the "+" in the
         // machine-bay titlebar; see mbres.add_machine below.)
+
+        // Automation (docs/22): sticky overrides end when the transport
+        // starts; every machine control shows its lane's value at the
+        // playhead before any panel draws.
+        const playing_now = transport.isPlaying();
+        if (playing_now and !auto_was_playing) clearAutomationOverrides(tracks);
+        auto_was_playing = playing_now;
+        syncAutomationUi(tracks, transport.beats());
 
         const ares = arrangement.draw(ui, rects.arrangement, tracks, &master, &device_sel, &audio_pool, alloc, &selected_track, &selected_clip, &transport, &meter_state, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), &recorder, pane_m);
         if (ares.rename_clip) |ref| beginRenameClip(&rename, tracks, ref);
@@ -919,6 +942,9 @@ pub fn main(init: std.process.Init) !void {
             }
         };
 
+        if (serviceAutomationRequests(alloc, &history, tracks, &transport, &selected_track, &status)) dirty = true;
+        if (auto_rec.tick(alloc, &history, tracks, &transport, auto_arm and transport.isPlaying())) dirty = true;
+
         try runRename(ui, alloc, &history, &rename, tracks, &transport, &dirty, &status);
 
         // Render Audio dialog (modal: input behind it is suppressed above).
@@ -938,6 +964,26 @@ pub fn main(init: std.process.Init) !void {
 
         for (tracks) |*t| t.publishSnapshot(&audio_pool);
 
+        if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_PLAY") != null) transport.play();
+        if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_EXPR") != null) clip_editor.toggleExpressionMode();
+        if (shot_frame == 0) if (std.c.getenv("SLAB_SHOT_SELECT")) |sel| {
+            // "track:clip" — open that clip in the editor (screenshots).
+            var it = std.mem.splitScalar(u8, std.mem.span(sel), ':');
+            const ti = std.fmt.parseInt(u32, it.next() orelse "", 10) catch 0;
+            const ci = std.fmt.parseInt(u32, it.next() orelse "", 10) catch 0;
+            if (ti < tracks.len and ci < tracks[ti].clips.items.len) {
+                selected_track = ti;
+                selected_clip = .{ .track = ti, .clip = ci };
+            }
+        };
+        // "track:clip:notes" also selects the clip's notes, once the editor
+        // has opened it (opening a clip clears its selection).
+        if (shot_frame == 5) if (std.c.getenv("SLAB_SHOT_SELECT")) |sel| {
+            if (std.mem.endsWith(u8, std.mem.span(sel), ":notes")) if (selected_clip) |ref| {
+                for (tracks[ref.track].clips.items[ref.clip].notes.items) |*n| n.selected = true;
+            };
+        };
+        devScreenshot(&shot_frame);
         c.rl.EndDrawing();
 
         switch (render_action) {
@@ -1556,6 +1602,224 @@ fn applyProjectBytes(
     }
 }
 
+/// Dev hook: SLAB_SHOT=<path.png> saves the window's own framebuffer after
+/// SLAB_SHOT_FRAME frames (default 60), and every SLAB_SHOT_EVERY frames
+/// after that when set. SLAB_SHOT_PLAY=1 starts the transport at load;
+/// SLAB_SHOT_SELECT=track:clip opens that clip in the editor;
+/// SLAB_SHOT_EXPR=1 starts the piano roll in expression mode.
+fn devScreenshot(frame: *u32) void {
+    frame.* +%= 1;
+    const path = std.c.getenv("SLAB_SHOT") orelse return;
+    const first = envU32("SLAB_SHOT_FRAME") orelse 60;
+    const every = envU32("SLAB_SHOT_EVERY") orelse 0;
+    const f = frame.*;
+    const due = f == first or (every > 0 and f > first and (f - first) % every == 0);
+    if (!due) return;
+    const img = c.rl.LoadImageFromScreen();
+    defer c.rl.UnloadImage(img);
+    _ = c.rl.ExportImage(img, path);
+}
+
+fn envU32(name: [*:0]const u8) ?u32 {
+    const v = std.c.getenv(name) orelse return null;
+    return std.fmt.parseInt(u32, std.mem.span(v), 10) catch null;
+}
+
+/// Automation recording (docs/22 §Manual changes): while armed and
+/// playing, a held control writes its track lane — touch-write, one undo
+/// step per pass. The stroke is thinned to 1 px at the arrangement's zoom
+/// and rewritten into the lane every frame, so the curve shows as it goes.
+const AutoRecorder = struct {
+    const MAX: usize = 16384;
+    active: bool = false,
+    track: usize = 0,
+    target: automation.Target = automation.Target.volume(),
+    stepped: bool = false,
+    beats: [MAX]f64 = undefined,
+    vals: [MAX]f32 = undefined,
+    n: usize = 0,
+
+    const Held = struct { track: usize, target: automation.Target, stepped: bool, knob: f32 };
+
+    /// The control a hand holds this frame, if any (clears every report).
+    fn held(tracks: []track_mod.Track) ?Held {
+        var out: ?Held = null;
+        for (tracks, 0..) |*t, ti| {
+            if (t.touch_vol) out = .{ .track = ti, .target = automation.Target.volume(), .stepped = false, .knob = t.volume() / 1.25 };
+            if (t.touch_pan) out = .{ .track = ti, .target = automation.Target.pan(), .stepped = false, .knob = (t.pan() + 1) / 2 };
+            t.touch_vol = false;
+            t.touch_pan = false;
+            if (takeTouch(&t.machine, ti, .inst, 0)) |h| out = h;
+            for (t.effects.items) |*fx| if (takeTouch(&fx.mach, ti, .fx, fx.uid)) |h| {
+                out = h;
+            };
+        }
+        return out;
+    }
+
+    fn takeTouch(m: *const @import("machine.zig").Machine, ti: usize, kind: automation.TargetKind, uid: u16) ?Held {
+        const take = m.take_touch orelse return null;
+        const tc = take(m.state) orelse return null;
+        const info = (m.control_info orelse return null)(m.state, tc.control);
+        return .{ .track = ti, .target = automation.Target.control(kind, uid, info.id), .stepped = info.stepped, .knob = tc.knob };
+    }
+
+    /// Returns true when the document changed.
+    fn tick(self: *AutoRecorder, alloc: std.mem.Allocator, history: *history_mod.History, tracks: []track_mod.Track, transport: *transport_mod.Transport, recording: bool) bool {
+        const h = held(tracks);
+        if (!recording) {
+            self.active = false;
+            return false;
+        }
+        const hv = h orelse {
+            self.active = false;
+            return false;
+        };
+        const beat = transport.beats();
+        const same = self.active and self.track == hv.track and self.target.eql(hv.target) and self.n > 0 and beat >= self.beats[self.n - 1] - 1e-9;
+        if (!same) {
+            // A new pass (or the loop wrapped): one undo step each.
+            pushHistorySnapshot(alloc, history, tracks, transport);
+            self.* = .{ .active = true, .track = hv.track, .target = hv.target, .stepped = hv.stepped };
+        }
+        if (self.n < MAX and (self.n == 0 or beat > self.beats[self.n - 1] + 1e-6)) {
+            self.beats[self.n] = beat;
+            self.vals[self.n] = hv.knob;
+            self.n += 1;
+        } else if (self.n > 0) {
+            self.vals[self.n - 1] = hv.knob;
+        }
+        if (hv.track >= tracks.len) return false;
+        self.write(alloc, &tracks[hv.track]) catch return false;
+        return true;
+    }
+
+    /// Replace the lane's points over the pass with the thinned stroke.
+    fn write(self: *AutoRecorder, alloc: std.mem.Allocator, t: *track_mod.Track) !void {
+        const lane = try t.laneFor(alloc, self.target, self.stepped);
+        t.lanes_shown = true;
+        const b0 = self.beats[0];
+        const b1 = self.beats[self.n - 1];
+        var w: usize = 0;
+        for (lane.points.items) |pt| {
+            if (pt.beat >= b0 - 1e-9 and pt.beat <= b1 + 1e-9) continue;
+            lane.points.items[w] = pt;
+            w += 1;
+        }
+        lane.points.items.len = w;
+        var xs: [MAX]f32 = undefined;
+        var ys: [MAX]f32 = undefined;
+        var keep: [MAX]bool = undefined;
+        const ppb = arrangement.pxPerBeat();
+        for (0..self.n) |i| {
+            xs[i] = @floatCast((self.beats[i] - b0) * ppb);
+            ys[i] = self.vals[i] * arrangement.AUTO_H;
+        }
+        automation.thin(xs[0..self.n], ys[0..self.n], 1.0, keep[0..self.n]);
+        for (0..self.n) |i| {
+            if (!keep[i]) continue;
+            _ = try lane.insert(alloc, .{ .beat = self.beats[i], .value = self.vals[i] });
+        }
+    }
+};
+
+/// Push each lane's value at `beat` into its machine control's display,
+/// and null into every control no lane drives.
+fn syncAutomationUi(tracks: []track_mod.Track, beat: f64) void {
+    for (tracks) |*t| {
+        syncMachineAutoUi(t, &t.machine, .inst, 0, beat);
+        for (t.effects.items) |*fx| syncMachineAutoUi(t, &fx.mach, .fx, fx.uid, beat);
+    }
+}
+
+fn syncMachineAutoUi(t: *track_mod.Track, m: *const @import("machine.zig").Machine, kind: automation.TargetKind, uid: u16, beat: f64) void {
+    const set = m.set_auto_ui orelse return;
+    const info = m.control_info orelse return;
+    for (0..m.controlCount()) |i| {
+        const target = automation.Target.control(kind, uid, info(m.state, i).id);
+        if (!t.isAutomated(target)) {
+            set(m.state, i, null);
+            continue;
+        }
+        // Automated somewhere; where no lane speaks it shows its own value.
+        const base: f32 = if (m.control_base) |f| f(m.state, i) else 0;
+        set(m.state, i, t.autoValue(target, beat) orelse base);
+    }
+}
+
+fn clearAutomationOverrides(tracks: []track_mod.Track) void {
+    for (tracks) |*t| {
+        t.vol_override.store(0, .monotonic);
+        t.pan_override.store(0, .monotonic);
+        if (t.machine.clear_overrides) |f| f(t.machine.state);
+        for (t.effects.items) |*fx| if (fx.mach.clear_overrides) |f| f(fx.mach.state);
+    }
+}
+
+/// Serve panels' Show/Clear automation requests. Returns true on an edit.
+fn serviceAutomationRequests(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    tracks: []track_mod.Track,
+    transport: *transport_mod.Transport,
+    selected_track: *?usize,
+    status: *StatusMessage,
+) bool {
+    var edited = false;
+    for (tracks, 0..) |*t, ti| {
+        if (serviceMachineAutoRequest(alloc, history, tracks, transport, t, &t.machine, .inst, 0, status)) |e| {
+            edited = edited or e;
+            selected_track.* = ti;
+        }
+        for (t.effects.items) |*fx| {
+            if (serviceMachineAutoRequest(alloc, history, tracks, transport, t, &fx.mach, .fx, fx.uid, status)) |e| {
+                edited = edited or e;
+                selected_track.* = ti;
+            }
+        }
+    }
+    return edited;
+}
+
+/// Null when the machine raised nothing; else whether the document changed.
+fn serviceMachineAutoRequest(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    tracks: []track_mod.Track,
+    transport: *transport_mod.Transport,
+    t: *track_mod.Track,
+    m: *const @import("machine.zig").Machine,
+    kind: automation.TargetKind,
+    uid: u16,
+    status: *StatusMessage,
+) ?bool {
+    const take = m.take_auto_request orelse return null;
+    const req = take(m.state) orelse return null;
+    const info_fn = m.control_info orelse return false;
+    if (req.control >= m.controlCount()) return false;
+    const info = info_fn(m.state, req.control);
+    const target = automation.Target.control(kind, uid, info.id);
+    switch (req.action) {
+        .show => {
+            t.lanes_shown = true;
+            if (t.findLane(target) != null) return false;
+            pushHistorySnapshot(alloc, history, tracks, transport);
+            _ = t.laneFor(alloc, target, info.stepped) catch return false;
+            status.set("Automation lane: {s}", .{info.label});
+            return true;
+        },
+        .clear => {
+            for (t.lanes.items, 0..) |*l, li| if (l.target.eql(target)) {
+                pushHistorySnapshot(alloc, history, tracks, transport);
+                t.removeLane(alloc, li);
+                status.set("Cleared automation: {s}", .{info.label});
+                return true;
+            };
+            return false;
+        },
+    }
+}
+
 fn pushHistorySnapshot(alloc: std.mem.Allocator, history: *history_mod.History, tracks: []track_mod.Track, transport: *transport_mod.Transport) void {
     const snapshot = document_mod.serialize(alloc, tracks, transport) catch |err| {
         std.log.err("history snapshot failed: {s}", .{@errorName(err)});
@@ -1983,7 +2247,7 @@ fn executeEditCommand(
             if (copyFocusedSelection(alloc, clipboard, status, focus, tracks, selected_clip.*)) {
                 changed = switch (focus) {
                     .arrangement => arrangement.deleteSelectedClips(tracks, alloc, selected_clip),
-                    .piano_roll => clip_editor.deleteSelectedNotes(tracks, selected_clip.*),
+                    .piano_roll => clip_editor.deleteSelectedPoints(tracks, selected_clip.*) or clip_editor.deleteSelectedNotes(tracks, selected_clip.*),
                     .browser, .machine_bay, .top_bar => false,
                 };
                 if (changed) status.set("Cut", .{});
@@ -2003,7 +2267,7 @@ fn executeEditCommand(
         .delete => {
             changed = switch (focus) {
                 .arrangement => arrangement.deleteSelectedClips(tracks, alloc, selected_clip),
-                .piano_roll => clip_editor.deleteSelectedNotes(tracks, selected_clip.*),
+                .piano_roll => clip_editor.deleteSelectedPoints(tracks, selected_clip.*) or clip_editor.deleteSelectedNotes(tracks, selected_clip.*),
                 .browser, .machine_bay, .top_bar => false,
             };
             if (changed) status.set("Deleted", .{});
@@ -2086,8 +2350,8 @@ fn handleFocusedDelete(
     if (!deletePressed()) return;
     const before = try document_mod.serialize(alloc, tracks, transport);
     const changed = switch (focus) {
-        .piano_roll => clip_editor.deleteSelectedNotes(tracks, selected_clip.*),
-        .arrangement => arrangement.deleteSelectedClips(tracks, alloc, selected_clip),
+        .piano_roll => clip_editor.deleteSelectedPoints(tracks, selected_clip.*) or clip_editor.deleteSelectedNotes(tracks, selected_clip.*),
+        .arrangement => arrangement.deleteSelectedPoints(tracks) or arrangement.deleteSelectedClips(tracks, alloc, selected_clip),
         .browser, .machine_bay, .top_bar => false,
     };
     if (changed) {
@@ -2214,3 +2478,38 @@ test "synthpop_8bar demo loads as JSON with expected note counts" {
 }
 
 const _fy_host = @import("fy_host.zig");
+
+test "automation recording writes a thinned pass over the span it covered" {
+    const alloc = std.testing.allocator;
+    var history: history_mod.History = .{};
+    defer history.deinit(alloc);
+    var transport: transport_mod.Transport = .{};
+    transport.sample_rate = 48_000;
+    var tracks = [_]track_mod.Track{try track_mod.Track.init(alloc, "t", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, silent_machine)};
+    defer tracks[0].deinit(alloc);
+    // An existing lane: points inside the pass get replaced, the one after stays.
+    const lane = try tracks[0].laneFor(alloc, automation.Target.volume(), false);
+    _ = try lane.insert(alloc, .{ .beat = 1.5, .value = 0.9 });
+    _ = try lane.insert(alloc, .{ .beat = 10, .value = 0.2 });
+
+    const rec = try alloc.create(AutoRecorder);
+    defer alloc.destroy(rec);
+    rec.* = .{};
+    // A hand holds the fader and rides it linearly from 0.2 to 0.6 over beats 1..3.
+    var beat: f64 = 1;
+    while (beat <= 3.0001) : (beat += 0.05) {
+        transport.seekToSample(transport.beatsToSamples(beat));
+        tracks[0].touch_vol = true;
+        tracks[0].setVolume(@floatCast((0.2 + 0.2 * (beat - 1)) * 1.25));
+        _ = rec.tick(alloc, &history, &tracks, &transport, true);
+    }
+    _ = rec.tick(alloc, &history, &tracks, &transport, true); // released
+    try std.testing.expect(!rec.active);
+    const pts = tracks[0].findLane(automation.Target.volume()).?.points.items;
+    // A straight ride thins to its two ends; 0.9 at 1.5 is gone, 10 stays.
+    try std.testing.expectEqual(@as(usize, 3), pts.len);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), pts[0].beat, 1e-3);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.6), pts[1].value, 1e-3);
+    try std.testing.expectEqual(@as(f64, 10), pts[2].beat);
+    try std.testing.expectEqual(@as(usize, 1), history.undo_stack.items.len);
+}

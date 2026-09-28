@@ -583,8 +583,9 @@ the grid is quiet.
 - **Track header** (right of the lanes, one per lane): faceplate with a
   3px full-height colour bar, name (body font), R/M/S as lit latch caps
   (rec red, mute blue, solo yellow), a mini volume slider, and a ladder
-  meter on the right edge. Standard lane: 40px (two 20px rows); an
-  automation lane adds 28 and the header spans both.
+  meter on the right edge. Standard lane: 40px (two 20px rows); each
+  automation lane adds a 40px row under it with its own header
+  (docs/22).
 - **Clip:** 1px edge in the track colour darkened, a 12px name band in
   full track colour with dark legend text, a body tinted from the track
   colour (72% toward `pane`) carrying a note or waveform preview in a

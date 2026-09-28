@@ -33,6 +33,9 @@ const Rect = ui_core.Rect;
 const snap_mod = @import("snap.zig");
 const track_mod = @import("../track.zig");
 const machine_mod = @import("../machine.zig");
+const automation = @import("../automation.zig");
+const auto_lane = @import("automation_lane.zig");
+const lane_targets = @import("lane_targets.zig");
 const clip_mod = @import("../clip.zig");
 const Clip = clip_mod.Clip;
 const Note = clip_mod.Note;
@@ -201,6 +204,13 @@ fn overviewH() f32 {
 fn velocityLaneH() f32 {
     return 48;
 }
+/// The envelope strip: the clip's automation lanes, one shown at a time
+/// (docs/22 §Clip lanes).
+fn envLaneH() f32 {
+    return 44;
+}
+var env_lane: usize = 0;
+const ENV_MENU_KEY: u64 = 0xE7E1_0FE5_0000_0001;
 
 // Draw-mode in-progress note.
 var draw_active: bool = false;
@@ -263,6 +273,7 @@ const SB_KEY: u64 = 0x5CB0_1111_2222_3333;
 const PR_CONTEXT_KEY: u64 = 0xC077_7E17_BBBB_0001;
 
 pub fn deinit(alloc: std.mem.Allocator) void {
+    dim_lane.deinit(alloc);
     move_snaps.deinit(alloc);
     resize_snaps.deinit(alloc);
 }
@@ -528,7 +539,8 @@ pub fn emptyBody(ui: *Ui, r: Rect, msg: []const u8) void {
     ui.textIn(&ui.fonts.legend, r, msg, ui_style.text_mute, .center, false);
 }
 
-const TOOLS_W: i32 = 196;
+const TOOLS_W: i32 = 196 + EXPR_W;
+const EXPR_W: i32 = 48;
 const KS_W: i32 = 92;
 
 // One combined "C Major" picker (root → scale submenu sets both) + a swing
@@ -554,6 +566,12 @@ fn drawHeaderTools(ui: *Ui, tools: Rect) void {
     if (tools.empty()) return;
 
     var t = tools;
+    {
+        const er = t.cutLeft(EXPR_W);
+        var on = expr_mode;
+        if (ctl.button(ui, er, "expr", &on, .{ .kind = .latch, .label = "EXPR", .led = ui_style.auto, .flush = true })) toggleExpressionMode();
+        menu.tip(ui, er, "Expression (E): drag notes to bend them, edit their pitch curves");
+    }
     if (note_map.len > 0) {
         // Drum lanes have no key; the slot folds the roll to the mapped keys.
         const fr = t.cutLeft(KS_W);
@@ -626,7 +644,7 @@ pub fn draw(
     setNoteMap(resolved.note_labels, resolved.clip);
     drawHeaderTools(ui, head.tools);
     maybeResetOnClipChange(selected, resolved.clip);
-    const pres = drawPianoRoll(ui, bridge.toRl(head.body), resolved.clip, resolved.color, alloc, edit_snap, can_paste_notes, m);
+    const pres = drawPianoRoll(ui, bridge.toRl(head.body), resolved.clip, resolved.track, resolved.color, alloc, edit_snap, can_paste_notes, m);
 
     return .{
         .minimize = head.minimize,
@@ -643,6 +661,7 @@ pub fn draw(
 
 const Resolved = struct {
     clip: *Clip,
+    track: *track_mod.Track,
     color: c.rl.Color,
     note_labels: []const machine_mod.NoteLabel = &.{},
 };
@@ -654,6 +673,7 @@ fn resolveClip(tracks: []track_mod.Track, selected: ?ClipRef) ?Resolved {
     if (s.clip >= t.clips.items.len) return null;
     return .{
         .clip = &t.clips.items[s.clip],
+        .track = t,
         .color = t.color,
         .note_labels = t.machine.noteLabels(),
     };
@@ -664,6 +684,7 @@ fn maybeResetOnClipChange(selected: ?ClipRef, clip: *Clip) void {
     if (key != last_clip_key) {
         last_clip_key = key;
         clip.deselectAll();
+        env_lane = 0;
         initialized_scroll = false;
         // Cancel any in-progress drag state.
         cancelAllDrags();
@@ -671,6 +692,7 @@ fn maybeResetOnClipChange(selected: ?ClipRef, clip: *Clip) void {
 }
 
 fn cancelAllDrags() void {
+    expr_drag = .none;
     draw_active = false;
     box_active = false;
     move_active = false;
@@ -696,6 +718,7 @@ fn drawPianoRoll(
     ui: *Ui,
     r: c.rl.Rectangle,
     clip: *Clip,
+    track: *track_mod.Track,
     track_color_rl: c.rl.Color,
     alloc: std.mem.Allocator,
     edit_snap: snap_mod.Setting,
@@ -709,10 +732,16 @@ fn drawPianoRoll(
 
     const grid_top = ruler_rect.y + rulerH();
     const vel_h = @round(@min(velocityLaneH(), @max(28, r.height * 0.22)));
-    const grid_h = @max(48, r.height - overviewH() - rulerH() - vel_h);
+    const env_h = envLaneH();
+    const grid_h = @max(48, r.height - overviewH() - rulerH() - vel_h - env_h);
     const kbd_rect = pane.rect(r.x, grid_top, keyboardW(), grid_h);
     const grid_rect = pane.rect(r.x + keyboardW(), grid_top, r.width - keyboardW(), grid_h);
     const vel_rect = pane.rect(grid_rect.x, grid_rect.y + grid_rect.height, grid_rect.width, vel_h);
+    const env_rect = pane.rect(grid_rect.x, vel_rect.y + vel_h, grid_rect.width, env_h);
+    // A press on the notes clears lane points and vice versa.
+    if (m.left_pressed and pane.contains(grid_rect, m.x, m.y)) {
+        for (clip.lanes.items) |*l| l.deselectAll();
+    }
 
     cur_clip_start = clip.start_beat;
     initScrollIfNeeded(grid_rect, clip.*);
@@ -727,6 +756,7 @@ fn drawPianoRoll(
     ui.clip(bridge.fromRl(grid_rect));
     drawGrid(ui, grid_rect, edit_snap);
     drawExistingNotes(ui, grid_rect, clip.*, track_color);
+    drawBends(ui, grid_rect, clip.*, track_color, track.machine.takes_expression, m);
     drawClipEndOverlay(ui, grid_rect, clip.*);
 
     if (draw_active) {
@@ -750,11 +780,15 @@ fn drawPianoRoll(
     drawAndHandleScrollbar(ui, grid_rect, m);
     const velocity_consumed = handleVelocityLane(vel_rect, grid_rect, clip, m);
     drawVelocityLane(ui, pane.rect(r.x, vel_rect.y, keyboardW(), vel_h), vel_rect, grid_rect, clip.*, track_color);
+    drawEnvelopeStrip(ui, alloc, pane.rect(r.x, env_rect.y, keyboardW(), env_h), env_rect, clip, track, edit_snap, track_color, m);
 
     drawOverview(ui, overview_rect, grid_rect, clip.*, track_color, m);
 
-    var result = PianoRollResult{ .audition_pitch = if (velocity_consumed) null else handleInput(ui, grid_rect, clip, alloc, edit_snap, m) };
-    _ = menu.openContext(ui, PR_CONTEXT_KEY, bridge.fromRl(grid_rect));
+    const in_expr = expr_mode and !collapsed();
+    if (in_expr and !velocity_consumed) handleExpression(ui, grid_rect, clip, edit_snap, m);
+    var result = PianoRollResult{ .audition_pitch = if (velocity_consumed or in_expr) null else handleInput(ui, grid_rect, clip, alloc, edit_snap, m) };
+    exprMenuTick(clip);
+    if (!in_expr) _ = menu.openContext(ui, PR_CONTEXT_KEY, bridge.fromRl(grid_rect));
     const has_selection = clip.selectedCount() > 0;
     const has_notes = clip.notes.items.len > 0;
     const pr_context_items = [_]menu.Item{
@@ -1153,6 +1187,224 @@ fn drawVelocityLane(ui: *Ui, label_r: c.rl.Rectangle, r: c.rl.Rectangle, grid: c
         ui.rect(stem, if (note.selected) col else col.mix(ui_style.pane, 0.5));
         ui.rect(Rect.xywh(stem.x, stem.y, 3, 2), if (note.selected) ui_style.accent else col);
     }
+}
+
+/// The ENV strip: the clip lane picked in its menu, edited with the lane
+/// gestures (docs/22 §Editing curves). The label opens the target picker;
+/// picking a target the clip already automates switches to it.
+fn drawEnvelopeStrip(
+    ui: *Ui,
+    alloc: std.mem.Allocator,
+    label_r: c.rl.Rectangle,
+    r: c.rl.Rectangle,
+    clip: *Clip,
+    track: *track_mod.Track,
+    edit_snap: snap_mod.Setting,
+    col: ui_style.Color,
+    m: pane.Mouse,
+) void {
+    ui.pushId("env");
+    defer ui.popId();
+    // Expression mode with notes selected: the strip edits their pressure,
+    // slide or gain curve instead (docs/22 §Note expression).
+    if (expr_mode and !collapsed() and clip.selectedCount() > 0) {
+        drawNoteDimStrip(ui, alloc, label_r, r, clip, edit_snap, col, m);
+        return;
+    }
+    const has_lane = clip.lanes.items.len > 0;
+    if (env_lane >= clip.lanes.items.len) env_lane = 0;
+    const label = bridge.fromRl(label_r);
+    if (ctl.button(ui, label, "pick", null, .{ .label = "ENV", .flush = true })) lane_targets.open(ENV_MENU_KEY, label);
+    menu.tip(ui, label, "Pick the clip automation to show, or add one");
+
+    if (!has_lane) {
+        const vr = bridge.fromRl(r);
+        ui.rect(vr, ui_style.pane.shade(-3));
+        ui.rect(Rect.xywh(vr.x, vr.y, vr.w, 1), ui_style.edge);
+        _ = ui.text(&ui.fonts.legend, vr.x + 4, vr.y + 16, "NO CLIP AUTOMATION: CLICK ENV TO ADD A LANE", ui_style.text_mute);
+        if (m.left_pressed and pane.contains(r, m.x, m.y)) lane_targets.open(ENV_MENU_KEY, vr);
+    } else {
+        const lane = &clip.lanes.items[env_lane];
+        var nb: [64]u8 = undefined;
+        const info = lane_targets.laneInfo(&nb, track, lane);
+        const res = auto_lane.draw(ui, alloc, lane, .{
+            .rect = r,
+            .timeline_x0 = r.x,
+            .scroll_x = scroll_x,
+            .px_per_beat = px_per_beat,
+            .edit_snap = edit_snap,
+            .color = col,
+            .lo = info.lo,
+            .hi = info.hi,
+            .key = pane.keyFromIds(0xE7E1_1A4E_0000_0001, @intFromPtr(clip), env_lane),
+            .name = info.name,
+            .fmt = .{ .ctx = &info.fmt, .f = lane_targets.formatLane, .parse = lane_targets.parseLane },
+        }, m);
+        if (res.pressed) clip.deselectAll();
+        // Past the clip's end nothing plays.
+        const end_x = ceBeatToX(r.x, clip.length_beats);
+        if (end_x < r.x + r.width) {
+            const x0 = @max(end_x, r.x);
+            ui.rect(frect(x0, r.y, r.x + r.width - x0, r.height), ui_style.chassis.alpha(150));
+        }
+    }
+
+    const picked = lane_targets.tick(ENV_MENU_KEY, track, .{ .lanes = clip.lanes.items, .remove = has_lane }) orelse return;
+    switch (picked) {
+        .remove => if (has_lane) {
+            clip.removeLane(alloc, env_lane);
+            env_lane = 0;
+        },
+        .target => |pk| {
+            for (clip.lanes.items, 0..) |*l, i| if (l.target.eql(pk.target)) {
+                env_lane = i;
+                return;
+            };
+            _ = clip.laneFor(alloc, pk.target, pk.stepped) catch return;
+            env_lane = clip.lanes.items.len - 1;
+        },
+    }
+}
+
+var env_dim: clip_mod.ExprDim = .gain;
+const DIM_MENU_KEY: u64 = 0xE7E1_D1E5_0000_0001;
+/// A scratch lane the note curve is edited through, copied from the note
+/// every frame and written back to every selected note.
+var dim_lane: automation.Lane = .{ .target = automation.Target.volume() };
+
+const DimFmt = struct { dim: clip_mod.ExprDim };
+
+fn formatDim(ctx: *const anyopaque, v: f32, buf: []u8) []const u8 {
+    const f: *const DimFmt = @ptrCast(@alignCast(ctx));
+    return switch (f.dim) {
+        .gain => std.fmt.bufPrint(buf, "{d:.1} DB", .{v}) catch "?",
+        .pressure, .slide => std.fmt.bufPrint(buf, "{d:.2}", .{v}) catch "?",
+    };
+}
+
+fn parseDim(ctx: *const anyopaque, text: []const u8) ?f32 {
+    const f: *const DimFmt = @ptrCast(@alignCast(ctx));
+    var t = std.mem.trim(u8, text, " \t");
+    if (f.dim == .gain and std.ascii.endsWithIgnoreCase(t, "db")) t = std.mem.trim(u8, t[0 .. t.len - 2], " ");
+    return std.fmt.parseFloat(f32, t) catch null;
+}
+
+fn dimName(d: clip_mod.ExprDim) []const u8 {
+    return switch (d) {
+        .pressure => "PRESSURE",
+        .slide => "SLIDE",
+        .gain => "GAIN",
+    };
+}
+
+/// The selected notes' pressure/slide/gain curve, timed from the first
+/// selected note's start. Edits apply to every selected note.
+fn drawNoteDimStrip(
+    ui: *Ui,
+    alloc: std.mem.Allocator,
+    label_r: c.rl.Rectangle,
+    r: c.rl.Rectangle,
+    clip: *Clip,
+    edit_snap: snap_mod.Setting,
+    col: ui_style.Color,
+    m: pane.Mouse,
+) void {
+    const label = bridge.fromRl(label_r);
+    if (ctl.button(ui, label, "dim", null, .{ .label = switch (env_dim) {
+        .pressure => "PRES",
+        .slide => "SLID",
+        .gain => "GAIN",
+    }, .flush = true })) menu.openBelow(DIM_MENU_KEY, label);
+    menu.tip(ui, label, "Which per-note curve to edit: pressure, slide or gain");
+    if (menu.isOpen(DIM_MENU_KEY)) {
+        const items = [_]menu.Item{
+            .{ .label = "Pressure", .id = 0 },
+            .{ .label = "Slide", .id = 1 },
+            .{ .label = "Gain", .id = 2 },
+        };
+        if (menu.pick(DIM_MENU_KEY, &items)) |id| env_dim = @enumFromInt(id);
+    }
+    var first: ?usize = null;
+    for (clip.notes.items, 0..) |n, i| if (n.selected) {
+        first = i;
+        break;
+    };
+    const ni = first orelse return;
+    const note = &clip.notes.items[ni];
+    const cv = note.dim(env_dim);
+    const rg = clip_mod.dimRange(env_dim);
+    dim_lane.points.clearRetainingCapacity();
+    dim_lane.points.appendSlice(alloc, cv.points()) catch return;
+    var name_buf: [48]u8 = undefined;
+    const name = std.fmt.bufPrint(&name_buf, "NOTE {s}{s}", .{ dimName(env_dim), if (clip.selectedCount() > 1) " (ALL SELECTED)" else "" }) catch "NOTE";
+    const fmt_ctx = DimFmt{ .dim = env_dim };
+    const res = auto_lane.draw(ui, alloc, &dim_lane, .{
+        .rect = r,
+        .timeline_x0 = r.x + @as(f32, @floatCast(note.start_beat)) * px_per_beat,
+        .scroll_x = scroll_x,
+        .px_per_beat = px_per_beat,
+        .edit_snap = edit_snap,
+        .color = col,
+        .lo = rg.lo,
+        .hi = rg.hi,
+        .key = pane.keyFromIds(0xD1E5_1A4E_0000_0001, @intFromPtr(clip), ni),
+        .name = name,
+        .fmt = .{ .ctx = &fmt_ctx, .f = formatDim, .parse = parseDim },
+    }, m);
+    // Outside the note nothing plays.
+    const x0 = ceBeatToX(r.x, note.start_beat);
+    const x1 = ceBeatToX(r.x, note.start_beat + note.length_beats);
+    if (x0 > r.x) ui.rect(frect(r.x, r.y, x0 - r.x, r.height), ui_style.chassis.alpha(150));
+    if (x1 < r.x + r.width) ui.rect(frect(@max(x1, r.x), r.y, r.x + r.width - @max(x1, r.x), r.height), ui_style.chassis.alpha(150));
+    if (!res.edited) {
+        // Keep point selection across frames.
+        const n = @min(dim_lane.points.items.len, clip_mod.MAX_BEND);
+        for (dim_lane.points.items[0..n], 0..) |pt, i| if (i < cv.n) {
+            cv.pts[i].selected = pt.selected;
+        };
+        return;
+    }
+    const n: u8 = @intCast(@min(dim_lane.points.items.len, clip_mod.MAX_BEND));
+    for (clip.notes.items) |*other| {
+        if (!other.selected) continue;
+        const oc = other.dim(env_dim);
+        @memcpy(oc.pts[0..n], dim_lane.points.items[0..n]);
+        oc.n = n;
+        for (oc.slice()) |*pt| pt.value = std.math.clamp(pt.value, rg.lo, rg.hi);
+    }
+}
+
+/// Delete key in the piano roll: the selected envelope points win over
+/// notes.
+pub fn deleteSelectedPoints(tracks: []track_mod.Track, selected: ?ClipRef) bool {
+    const res = resolveClip(tracks, selected) orelse return false;
+    var any = false;
+    for (res.clip.lanes.items) |*l| if (l.selectedCount() > 0) {
+        l.removeSelected();
+        any = true;
+    };
+    // Selected pitch and pressure/slide/gain points on notes.
+    if (expr_mode) for (res.clip.notes.items) |*n| {
+        var i: usize = n.bend_n;
+        while (i > 0) {
+            i -= 1;
+            if (n.bend[i].selected) {
+                n.removeBend(i);
+                any = true;
+            }
+        }
+        for (&n.dims) |*cv| {
+            var w: u8 = 0;
+            for (cv.points()) |pt| {
+                if (pt.selected) continue;
+                cv.pts[w] = pt;
+                w += 1;
+            }
+            if (w != cv.n) any = true;
+            cv.n = w;
+        }
+    };
+    return any;
 }
 
 fn velTopPad() f32 {
@@ -1678,6 +1930,326 @@ fn handleOverviewInput(
 }
 
 // ── Utilities ────────────────────────────────────────────────────────
+
+// ── Note expression (docs/22 §Note expression) ──────────────────────
+
+var expr_mode: bool = false;
+const ExprDrag = enum { none, point, bend, converge };
+var expr_drag: ExprDrag = .none;
+var expr_note: usize = 0;
+var expr_point: usize = 0;
+var expr_start_x: f32 = 0;
+var expr_start_y: f32 = 0;
+var expr_orig: automation.Point = .{ .beat = 0, .value = 0 };
+const EXPR_KEY: u64 = 0xE7A2_0001_0000_0001;
+const EXPR_MENU_KEY: u64 = 0xE7A2_0001_0000_0002;
+const EXPR_HIT: f32 = 4;
+/// The converge gesture's default bend: slow start, then onto the target.
+const CONVERGE_TENSION: f32 = -0.3;
+
+/// E, or the EXPR latch: the piano roll edits pitch curves instead of notes.
+pub fn toggleExpressionMode() void {
+    expr_mode = !expr_mode;
+    cancelAllDrags();
+}
+
+/// Row centre of a (fractional) pitch; the roll must be chromatic.
+fn pitchY(grid: c.rl.Rectangle, p: f32) f32 {
+    return grid.y + (@as(f32, @floatFromInt(KEY_HI)) - p) * row_h - scroll_y + row_h * 0.5;
+}
+
+fn pitchAtYf(grid: c.rl.Rectangle, y: f32) f32 {
+    return @as(f32, @floatFromInt(KEY_HI)) - (y - grid.y + scroll_y - row_h * 0.5) / row_h;
+}
+
+fn bendX(grid: c.rl.Rectangle, note: Note, beat: f64) f32 {
+    return grid.x + @as(f32, @floatCast(note.start_beat + beat)) * px_per_beat - scroll_x;
+}
+
+/// A bend value from a pointer y: whole semitones, Alt free (cents).
+fn bendValueAt(grid: c.rl.Rectangle, note: Note, y: f32) f32 {
+    var v = pitchAtYf(grid, y) - @as(f32, @floatFromInt(note.pitch));
+    if (!altBypassSnap()) v = @round(v);
+    return std.math.clamp(v, -clip_mod.MAX_BEND_SEMIS, clip_mod.MAX_BEND_SEMIS);
+}
+
+/// Pitch curves: drawn from each note's own row across the pitch rows.
+/// Faint outside expression mode; in it, selected notes get handles.
+fn drawBends(ui: *Ui, grid: c.rl.Rectangle, clip: Clip, track_col: ui_style.Color, takes: bool, m: pane.Mouse) void {
+    if (collapsed()) return;
+    const in_expr = expr_mode;
+    // A machine without a note-expr word plays bends flat: mute them.
+    const col = if (takes) track_col else ui_style.text_mute;
+    for (clip.notes.items) |note| {
+        if (note.bend_n == 0 and !(in_expr and note.selected)) continue;
+        const x0 = bendX(grid, note, 0);
+        const x1 = bendX(grid, note, note.length_beats);
+        if (x1 < grid.x or x0 > grid.x + grid.width) continue;
+        const base: f32 = @floatFromInt(note.pitch);
+        const line_col = if (!in_expr) col.alpha(150) else if (note.selected) col.mix(ui_style.text, 0.55) else col;
+        var px = @max(x0, grid.x);
+        var py = pitchY(grid, base + note.bendAt(@as(f64, (px - x0) / px_per_beat)));
+        const right = @min(x1, grid.x + grid.width);
+        while (px < right) {
+            const nx = @min(px + 2, right);
+            const ny = pitchY(grid, base + note.bendAt(@as(f64, (nx - x0) / px_per_beat)));
+            ui.line(px, py, nx, ny, line_col);
+            px = nx;
+            py = ny;
+        }
+        if (!takes and note.bend_n > 0) {
+            const tr = frect(x0, pitchY(grid, base) - row_h, @max(x1 - x0, 4), row_h * 2);
+            menu.tip(ui, tr, "This machine takes no pitch expression: it plays the note unbent");
+        }
+        if (!(in_expr and note.selected)) continue;
+        for (note.bendPoints()) |pt| {
+            const hx: i32 = @intFromFloat(@round(bendX(grid, note, pt.beat)));
+            const hy: i32 = @intFromFloat(@round(pitchY(grid, base + pt.value)));
+            if (pt.selected) {
+                ui.rect(Rect.xywh(hx - 1, hy - 1, 3, 3), ui_style.accent);
+            } else {
+                ui.rect(Rect.xywh(hx - 1, hy - 1, 3, 3), ui_style.text);
+                ui.px(hx, hy, ui_style.pane);
+            }
+        }
+    }
+    // Converge preview: each selected note's line to the target.
+    if (in_expr and expr_drag == .converge and pane.isDraggingKey(EXPR_KEY)) {
+        const target = pitchAtYf(grid, m.y);
+        const t_pitch = if (altBypassSnap()) target else @round(target);
+        for (clip.notes.items) |note| {
+            if (!note.selected) continue;
+            const sx = @max(expr_start_x, bendX(grid, note, 0));
+            ui.line(sx, pitchY(grid, @floatFromInt(note.pitch)), m.x, pitchY(grid, t_pitch), ui_style.accent);
+        }
+    }
+    if (in_expr) {
+        const gr = frectRl(grid);
+        const hint = if (takes) "EXPRESSION: DRAG NOTES TO BEND, DOUBLE-CLICK A CURVE TO ADD A POINT" else "EXPRESSION: THIS MACHINE TAKES NO PITCH EXPRESSION (BENDS PLAY FLAT)";
+        _ = ui.text(&ui.fonts.legend, gr.x + 4, gr.y + 2, hint, if (takes) ui_style.auto.mix(ui_style.pane, 0.3) else ui_style.text_mute);
+    }
+}
+
+const BendHit = struct { note: usize, point: usize };
+
+fn bendPointAt(grid: c.rl.Rectangle, clip: *const Clip, x: f32, y: f32) ?BendHit {
+    for (clip.notes.items, 0..) |note, ni| {
+        if (!note.selected) continue;
+        const base: f32 = @floatFromInt(note.pitch);
+        for (note.bendPoints(), 0..) |pt, pi| {
+            const dx = @abs(bendX(grid, note, pt.beat) - x);
+            const dy = @abs(pitchY(grid, base + pt.value) - y);
+            if (@max(dx, dy) <= EXPR_HIT) return .{ .note = ni, .point = pi };
+        }
+    }
+    return null;
+}
+
+/// A note whose curve passes near (x, y), and the bend segment there (null
+/// before its first point or past its last). Selected notes win; any
+/// note's curve is clickable, so a click on it selects that note.
+fn bendCurveAt(grid: c.rl.Rectangle, clip: *const Clip, x: f32, y: f32) ?struct { note: usize, seg: ?usize } {
+    for ([_]bool{ true, false }) |want_sel| for (clip.notes.items, 0..) |note, ni| {
+        if (note.selected != want_sel) continue;
+        if (note.bend_n == 0 and !note.selected) continue;
+        const beat = @as(f64, (x - bendX(grid, note, 0)) / px_per_beat);
+        if (beat < 0 or beat > note.length_beats) continue;
+        const cy = pitchY(grid, @as(f32, @floatFromInt(note.pitch)) + note.bendAt(beat));
+        if (@abs(cy - y) > @max(EXPR_HIT, row_h * 0.5)) continue;
+        var seg: ?usize = null;
+        if (automation.segmentIndex(note.bendPoints(), beat)) |i| {
+            if (i + 1 < note.bend_n) seg = i;
+        }
+        return .{ .note = ni, .seg = seg };
+    };
+    return null;
+}
+
+fn handleExpression(ui: *Ui, grid: c.rl.Rectangle, clip: *Clip, edit_snap: snap_mod.Setting, m: pane.Mouse) void {
+    _ = ui;
+    // ── Continue ──
+    if (expr_drag != .none and pane.isDraggingKey(EXPR_KEY)) {
+        const dx = m.x - expr_start_x;
+        switch (expr_drag) {
+            .none => {},
+            .point => if (expr_note < clip.notes.items.len and expr_point < clip.notes.items[expr_note].bend_n) {
+                pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_ALL, 3);
+                const note = &clip.notes.items[expr_note];
+                const pts = note.bendSlice();
+                const lo: f64 = if (expr_point > 0) pts[expr_point - 1].beat else 0;
+                const hi: f64 = if (expr_point + 1 < pts.len) pts[expr_point + 1].beat else note.length_beats;
+                const db = snap_mod.snapNearest(edit_snap, @as(f64, dx / px_per_beat), altBypassSnap());
+                pts[expr_point].beat = std.math.clamp(expr_orig.beat + db, lo, @max(lo, hi));
+                pts[expr_point].value = bendValueAt(grid, note.*, m.y);
+            },
+            .bend => if (expr_note < clip.notes.items.len) {
+                pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 3);
+                const src = clip.notes.items[expr_note];
+                if (expr_point + 1 < src.bend_n) {
+                    const p0 = src.bend[expr_point];
+                    const p1 = src.bend[expr_point + 1];
+                    const span = p1.value - p0.value;
+                    if (@abs(span) > 1e-4) {
+                        const v = pitchAtYf(grid, m.y) - @as(f32, @floatFromInt(src.pitch));
+                        const t = automation.tensionForMidpoint((v - p0.value) / span);
+                        // The same segment bends on every selected note.
+                        for (clip.notes.items) |*n| {
+                            if (!n.selected or expr_point + 1 >= n.bend_n) continue;
+                            n.bend[expr_point].shape = .curve;
+                            n.bend[expr_point].tension = t;
+                        }
+                    }
+                }
+            },
+            .converge => pane.requestCursor(c.rl.MOUSE_CURSOR_CROSSHAIR, 3),
+        }
+        if (!m.left_down) {
+            if (expr_drag == .converge and @abs(dx) >= 3) {
+                const s = @max(0, snap_mod.snapNearest(edit_snap, beatAtX(grid, expr_start_x), altBypassSnap()));
+                const e = snap_mod.snapNearest(edit_snap, beatAtX(grid, m.x), altBypassSnap());
+                const target = pitchAtYf(grid, m.y);
+                const t_pitch = if (altBypassSnap()) target else @round(target);
+                if (e > s) for (clip.notes.items) |*n| {
+                    if (!n.selected) continue;
+                    const e0 = e - n.start_beat;
+                    if (e0 <= 0) continue;
+                    const s0 = @max(s - n.start_beat, 0);
+                    n.clearBend();
+                    _ = n.addBend(.{ .beat = s0, .value = 0, .shape = .curve, .tension = CONVERGE_TENSION });
+                    _ = n.addBend(.{ .beat = @max(e0, s0), .value = t_pitch - @as(f32, @floatFromInt(n.pitch)) });
+                };
+            }
+            expr_drag = .none;
+            pane.cancelDrag();
+        }
+        return;
+    }
+
+    if (!pane.contains(grid, m.x, m.y) or pane.hasActiveDrag()) return;
+    const hot_point = bendPointAt(grid, clip, m.x, m.y);
+    const hot_curve = if (hot_point == null) bendCurveAt(grid, clip, m.x, m.y) else null;
+    if (hot_point != null) {
+        pane.requestCursor(c.rl.MOUSE_CURSOR_POINTING_HAND, 2);
+    } else if (hot_curve != null) {
+        pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 2);
+    }
+    const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
+    const alt = c.rl.IsKeyDown(c.rl.KEY_LEFT_ALT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_ALT);
+
+    if (m.right_pressed) {
+        if (hot_point) |h| {
+            expr_note = h.note;
+            expr_point = h.point;
+            menu.openAt(EXPR_MENU_KEY, @intFromFloat(m.x), @intFromFloat(m.y));
+        }
+        return;
+    }
+    if (m.double_clicked) {
+        if (hot_point) |h| {
+            clip.notes.items[h.note].removeBend(h.point);
+        } else if (hot_curve) |h| {
+            const note = &clip.notes.items[h.note];
+            if (!note.selected) {
+                if (!shift) clip.deselectAll();
+                note.selected = true;
+            }
+            // A note's first point pins its own pitch at its start.
+            if (note.bend_n == 0) _ = note.addBend(.{ .beat = 0, .value = 0 });
+            const b = std.math.clamp(snap_mod.snapNearest(edit_snap, beatAtX(grid, m.x) - note.start_beat, altBypassSnap()), 0, note.length_beats);
+            _ = note.addBend(.{ .beat = b, .value = bendValueAt(grid, note.*, m.y) });
+        }
+        return;
+    }
+    if (!m.left_pressed) return;
+    expr_start_x = m.x;
+    expr_start_y = m.y;
+    if (hot_point) |h| {
+        if (!pane.tryStartDrag(EXPR_KEY)) return;
+        const note = &clip.notes.items[h.note];
+        for (note.bendSlice()) |*pt| pt.selected = false;
+        note.bend[h.point].selected = true;
+        expr_note = h.note;
+        expr_point = h.point;
+        expr_orig = note.bend[h.point];
+        expr_drag = .point;
+        return;
+    }
+    if (hot_curve) |h| {
+        const n = &clip.notes.items[h.note];
+        if (alt) if (h.seg) |sg| {
+            if (!n.selected) {
+                if (!shift) clip.deselectAll();
+                n.selected = true;
+            }
+            if (!pane.tryStartDrag(EXPR_KEY)) return;
+            expr_note = h.note;
+            expr_point = sg;
+            expr_drag = .bend;
+            return;
+        };
+        // Off the note's own row (its bent part): a click selects it.
+        if (findNoteAt(grid, clip.*, m.x, m.y) == null) {
+            if (shift) {
+                n.selected = !n.selected;
+            } else if (!n.selected) {
+                clip.deselectAll();
+                n.selected = true;
+            }
+            return;
+        }
+    }
+    if (findNoteAt(grid, clip.*, m.x, m.y)) |h| {
+        const n = &clip.notes.items[h.idx];
+        if (shift) {
+            n.selected = !n.selected;
+            return;
+        }
+        if (!n.selected) {
+            clip.deselectAll();
+            n.selected = true;
+        }
+        // Drag from a selected note: the converge gesture.
+        if (pane.tryStartDrag(EXPR_KEY)) expr_drag = .converge;
+        return;
+    }
+    if (!shift) clip.deselectAll();
+}
+
+const E_HOLD: u32 = 1;
+const E_LINEAR: u32 = 2;
+const E_CURVE: u32 = 3;
+const E_RESET: u32 = 4;
+const E_DELETE: u32 = 5;
+const E_CLEAR: u32 = 6;
+
+/// The bend point menu (right-click a handle in expression mode).
+fn exprMenuTick(clip: *Clip) void {
+    if (!menu.isOpen(EXPR_MENU_KEY)) return;
+    if (expr_note >= clip.notes.items.len or expr_point >= clip.notes.items[expr_note].bend_n) {
+        menu.close();
+        return;
+    }
+    const note = &clip.notes.items[expr_note];
+    const items = [_]menu.Item{
+        .{ .label = "Hold", .id = E_HOLD },
+        .{ .label = "Linear", .id = E_LINEAR },
+        .{ .label = "Curve", .id = E_CURVE },
+        .{ .label = "Reset tension", .id = E_RESET, .enabled = note.bend[expr_point].tension != 0 },
+        .{ .separator = true },
+        .{ .label = "Delete point", .id = E_DELETE },
+        .{ .label = "Clear bend", .id = E_CLEAR },
+    };
+    const picked = menu.pick(EXPR_MENU_KEY, &items) orelse return;
+    switch (picked) {
+        E_HOLD => note.bend[expr_point].shape = .hold,
+        E_LINEAR => note.bend[expr_point].shape = .linear,
+        E_CURVE => note.bend[expr_point].shape = .curve,
+        E_RESET => note.bend[expr_point].tension = 0,
+        E_DELETE => note.removeBend(expr_point),
+        E_CLEAR => note.clearBend(),
+        else => {},
+    }
+}
 
 fn beatAtX(grid: c.rl.Rectangle, x: f32) f64 {
     return @as(f64, (x - grid.x + scroll_x) / px_per_beat);

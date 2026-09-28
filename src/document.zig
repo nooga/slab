@@ -12,6 +12,7 @@ const transport_mod = @import("transport.zig");
 const machine_mod = @import("machine.zig");
 const audio_pool_mod = @import("audio_pool.zig");
 const meter_mod = @import("meter.zig");
+const automation = @import("automation.zig");
 
 extern fn close(fd: c_int) c_int;
 extern fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
@@ -171,6 +172,10 @@ pub fn serialize(
         try out.appendSlice(alloc, ",\"effects\":");
         try appendEffects(alloc, &out, t);
 
+        // Automation lanes (docs/22 §Project format).
+        try appendLanes(alloc, &out, t);
+        if (t.lanes_shown) try out.appendSlice(alloc, ",\"show_automation\":true");
+
         // Clips.
         try out.appendSlice(alloc, ",\"clips\":[");
         for (t.clips.items, 0..) |*clip, ci| {
@@ -195,11 +200,31 @@ pub fn serialize(
             try appendFmt(alloc, &out, ",\"start\":{d},\"len\":{d},\"notes\":[", .{ clip.start_beat, clip.length_beats });
             for (clip.notes.items, 0..) |note, ni| {
                 if (ni > 0) try out.append(alloc, ',');
-                try appendFmt(alloc, &out, "{{\"pitch\":{d},\"start\":{d},\"len\":{d},\"vel\":{d}}}", .{
+                try appendFmt(alloc, &out, "{{\"pitch\":{d},\"start\":{d},\"len\":{d},\"vel\":{d}", .{
                     note.pitch, note.start_beat, note.length_beats, note.velocity,
                 });
+                if (note.hasExpression()) {
+                    try out.appendSlice(alloc, ",\"expr\":{");
+                    var first_dim = true;
+                    if (note.bend_n > 0) {
+                        try out.appendSlice(alloc, "\"pitch\":");
+                        try appendPoints(alloc, &out, note.bendPoints());
+                        first_dim = false;
+                    }
+                    for (note.dims, 0..) |cv, d| {
+                        if (cv.n == 0) continue;
+                        if (!first_dim) try out.append(alloc, ',');
+                        first_dim = false;
+                        try appendFmt(alloc, &out, "\"{s}\":", .{@tagName(@as(clip_mod.ExprDim, @enumFromInt(d)))});
+                        try appendPoints(alloc, &out, cv.points());
+                    }
+                    try out.append(alloc, '}');
+                }
+                try out.append(alloc, '}');
             }
-            try out.appendSlice(alloc, "]}");
+            try out.append(alloc, ']');
+            try appendLaneList(alloc, &out, t, clip.lanes.items);
+            try out.append(alloc, '}');
         }
         try out.appendSlice(alloc, "]}");
     }
@@ -231,6 +256,168 @@ fn appendEffects(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const tr
         try out.append(alloc, '}');
     }
     try out.append(alloc, ']');
+}
+
+/// A lane's target as the file names it: `volume`, `pan`, `inst:<id>`,
+/// `fx<N>:<id>` (N = the effect's chain position now). Null when the
+/// target no longer resolves.
+fn laneTargetName(buf: []u8, t: *const track_mod.Track, target: automation.Target) ?[]const u8 {
+    return switch (target.kind) {
+        .volume => "volume",
+        .pan => "pan",
+        .inst => std.fmt.bufPrint(buf, "inst:{s}", .{target.param()}) catch null,
+        .fx => blk: {
+            for (t.effects.items, 0..) |*fx, i| {
+                if (fx.uid == target.fx_uid) break :blk std.fmt.bufPrint(buf, "fx{d}:{s}", .{ i, target.param() }) catch null;
+            }
+            break :blk null;
+        },
+    };
+}
+
+/// Knob-space lane value → real units (fader gain, pan, control value).
+fn laneValueOut(t: *const track_mod.Track, target: automation.Target, knob: f32) ?f64 {
+    return switch (target.kind) {
+        .volume => @as(f64, knob) * 1.25,
+        .pan => @as(f64, knob) * 2 - 1,
+        .inst, .fx => blk: {
+            const m = t.targetMachine(target) orelse break :blk null;
+            const i = m.controlIndex(target.param()) orelse break :blk null;
+            const f = m.control_value orelse break :blk null;
+            break :blk f(m.state, i, knob);
+        },
+    };
+}
+
+/// `,"automation":[…]` for `lanes` (a track's or a clip's), converting
+/// values through the track's machines. Nothing when no lane is written.
+fn appendLanes(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track_mod.Track) !void {
+    try appendLaneList(alloc, out, t, t.lanes.items);
+}
+
+fn appendLaneList(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track_mod.Track, lanes: []const automation.Lane) !void {
+    var first = true;
+    for (lanes) |*lane| {
+        if (lane.points.items.len == 0) continue;
+        var nb: [64]u8 = undefined;
+        const name = laneTargetName(&nb, t, lane.target) orelse continue;
+        // Unconvertible (the control is gone): nothing honest to write.
+        if (laneValueOut(t, lane.target, lane.points.items[0].value) == null) continue;
+        try out.appendSlice(alloc, if (first) ",\"automation\":[" else ",");
+        first = false;
+        try out.appendSlice(alloc, "{\"target\":");
+        try appendJsonString(alloc, out, name);
+        try out.appendSlice(alloc, ",\"points\":[");
+        for (lane.points.items, 0..) |pt, pi| {
+            if (pi > 0) try out.append(alloc, ',');
+            const v = laneValueOut(t, lane.target, pt.value).?;
+            if (pt.shape == .linear and pt.tension == 0) {
+                try appendFmt(alloc, out, "[{d},{d}]", .{ pt.beat, v });
+            } else {
+                try appendFmt(alloc, out, "[{d},{d},\"{s}\",{d}]", .{ pt.beat, v, @tagName(pt.shape), pt.tension });
+            }
+        }
+        try out.appendSlice(alloc, "]}");
+    }
+    if (!first) try out.append(alloc, ']');
+}
+
+/// Parse a file target name into a Target on `t` (effects must already be
+/// restored). Null for unknown forms or effect positions.
+fn parseLaneTarget(t: *const track_mod.Track, name: []const u8) ?automation.Target {
+    if (std.mem.eql(u8, name, "volume")) return automation.Target.volume();
+    if (std.mem.eql(u8, name, "pan")) return automation.Target.pan();
+    const colon = std.mem.indexOfScalar(u8, name, ':') orelse return null;
+    const head = name[0..colon];
+    const id = name[colon + 1 ..];
+    if (std.mem.eql(u8, head, "inst")) return automation.Target.control(.inst, 0, id);
+    if (head.len > 2 and std.mem.startsWith(u8, head, "fx")) {
+        const n = std.fmt.parseInt(usize, head[2..], 10) catch return null;
+        if (n >= t.effects.items.len) return null;
+        return automation.Target.control(.fx, t.effects.items[n].uid, id);
+    }
+    return null;
+}
+
+fn applyLanes(alloc: std.mem.Allocator, t: *track_mod.Track, av: std.json.Value) !void {
+    try applyLaneList(alloc, t, &t.lanes, av);
+}
+
+/// Parse lanes into `into` (a track's or a clip's list), converting values
+/// through `t`'s machines.
+fn applyLaneList(alloc: std.mem.Allocator, t: *track_mod.Track, into: *std.ArrayList(automation.Lane), av: std.json.Value) !void {
+    if (av != .array) return;
+    for (av.array.items) |lv| {
+        if (lv != .object) continue;
+        const name = strOf(objGet(lv.object, "target")) orelse continue;
+        const target = parseLaneTarget(t, name) orelse continue;
+        var dup = false;
+        for (into.items) |*l| if (l.target.eql(target)) {
+            dup = true;
+        };
+        if (dup) continue;
+        // Machine lanes convert through the control; unknown ids drop.
+        var ci: ?usize = null;
+        var stepped = false;
+        const mach = t.targetMachine(target);
+        if (mach) |m| {
+            ci = m.controlIndex(target.param()) orelse continue;
+            if (m.control_knob == null) continue;
+            if (m.control_info) |f| stepped = f(m.state, ci.?).stepped;
+        } else if (target.kind == .inst or target.kind == .fx) continue;
+        const pv = objGet(lv.object, "points") orelse continue;
+        if (pv != .array) continue;
+        var lane = automation.Lane{ .target = target, .stepped = stepped };
+        errdefer lane.deinit(alloc);
+        for (pv.array.items) |ptv| {
+            if (ptv != .array or ptv.array.items.len < 2) continue;
+            const a = ptv.array.items;
+            const value = asF64(a[1]);
+            const knob: f32 = switch (target.kind) {
+                .volume => @floatCast(std.math.clamp(value / 1.25, 0, 1)),
+                .pan => @floatCast(std.math.clamp((value + 1) / 2, 0, 1)),
+                .inst, .fx => mach.?.control_knob.?(mach.?.state, ci.?, value),
+            };
+            var pt = automation.Point{ .beat = @max(0, asF64(a[0])), .value = knob };
+            if (a.len >= 3) if (strOf(a[2])) |sh| {
+                pt.shape = std.meta.stringToEnum(automation.Shape, sh) orelse .linear;
+            };
+            if (a.len >= 4) pt.tension = @floatCast(std.math.clamp(asF64(a[3]), -1, 1));
+            _ = try lane.insert(alloc, pt);
+        }
+        if (lane.points.items.len == 0) {
+            lane.deinit(alloc);
+            continue;
+        }
+        try into.append(alloc, lane);
+    }
+}
+
+/// A point list as the file writes it, values as they are (note
+/// expression is already in its units: semitones).
+fn appendPoints(alloc: std.mem.Allocator, out: *std.ArrayList(u8), pts: []const automation.Point) !void {
+    try out.append(alloc, '[');
+    for (pts, 0..) |pt, pi| {
+        if (pi > 0) try out.append(alloc, ',');
+        if (pt.shape == .linear and pt.tension == 0) {
+            try appendFmt(alloc, out, "[{d},{d}]", .{ pt.beat, pt.value });
+        } else {
+            try appendFmt(alloc, out, "[{d},{d},\"{s}\",{d}]", .{ pt.beat, pt.value, @tagName(pt.shape), pt.tension });
+        }
+    }
+    try out.append(alloc, ']');
+}
+
+/// One file point `[beat, value(, shape, tension)]`, value as written.
+fn parsePoint(v: std.json.Value) ?automation.Point {
+    if (v != .array or v.array.items.len < 2) return null;
+    const a = v.array.items;
+    var pt = automation.Point{ .beat = @max(0, asF64(a[0])), .value = @floatCast(asF64(a[1])) };
+    if (a.len >= 3) if (strOf(a[2])) |sh| {
+        pt.shape = std.meta.stringToEnum(automation.Shape, sh) orelse .linear;
+    };
+    if (a.len >= 4) pt.tension = @floatCast(std.math.clamp(asF64(a[3]), -1, 1));
+    return pt;
 }
 
 fn appendParams(alloc: std.mem.Allocator, out: *std.ArrayList(u8), mach: machine_mod.Machine) !void {
@@ -354,6 +541,9 @@ pub fn apply(
 
         // Effect chain — instantiate by id, restore params + bypass.
         if (objGet(to, "effects")) |ev| try applyEffects(alloc, reg, &t, ev);
+
+        if (objGet(to, "automation")) |av| try applyLanes(alloc, &t, av);
+        if (objGet(to, "show_automation")) |x| t.lanes_shown = asBool(x);
 
         // Clips.
         if (objGet(to, "clips")) |cv| if (cv == .array) {
@@ -503,14 +693,34 @@ fn applyClip(alloc: std.mem.Allocator, t: *track_mod.Track, co: std.json.ObjectM
         for (nv.array.items) |note_v| {
             if (note_v != .object) continue;
             const no = note_v.object;
-            try clip.addNote(alloc, .{
+            var note = clip_mod.Note{
                 .pitch = asU8(objGet(no, "pitch") orelse continue),
                 .start_beat = if (objGet(no, "start")) |x| asF64(x) else 0,
                 .length_beats = if (objGet(no, "len")) |x| asF64(x) else 0,
                 .velocity = asU8(objGet(no, "vel") orelse continue),
-            });
+            };
+            if (objGet(no, "expr")) |ev| if (ev == .object) {
+                if (objGet(ev.object, "pitch")) |pv| if (pv == .array) {
+                    for (pv.array.items) |ptv| {
+                        const pt = parsePoint(ptv) orelse continue;
+                        _ = note.addBend(pt);
+                    }
+                };
+                inline for (std.meta.fields(clip_mod.ExprDim)) |fd| {
+                    const d: clip_mod.ExprDim = @enumFromInt(fd.value);
+                    const rg = clip_mod.dimRange(d);
+                    if (objGet(ev.object, fd.name)) |pv| if (pv == .array) {
+                        for (pv.array.items) |ptv| {
+                            const pt = parsePoint(ptv) orelse continue;
+                            _ = note.dim(d).add(pt, rg.lo, rg.hi);
+                        }
+                    };
+                }
+            };
+            try clip.addNote(alloc, note);
         }
     };
+    if (objGet(co, "automation")) |av| try applyLaneList(alloc, t, &clip.lanes, av);
     try t.addClip(alloc, clip);
 }
 
@@ -710,6 +920,99 @@ test "JSON project round-trips instrument-by-id, settings, and effect chain" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), master.volume(), 0.0001);
     try std.testing.expectEqual(@as(usize, 1), master.effects.items.len);
     try std.testing.expect(master.effectBypassed(0));
+}
+
+test "automation lanes round-trip in real units, effects by chain position" {
+    const alloc = std.testing.allocator;
+    var reg = registry_mod.Registry.init(alloc);
+    defer reg.deinit();
+    try reg.loadFyMachine("machines/ms20/ms20.fy");
+    try reg.loadFyMachine("machines/delay2/delay2.fy");
+    setRegistry(&reg);
+    defer active_reg = null;
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    setPool(&pool);
+    defer active_pool = null;
+    var transport: transport_mod.Transport = .{};
+    transport.sample_rate = 48_000;
+
+    const ms20_idx = reg.findById("ms20").?;
+    const inst = try reg.instantiate(ms20_idx);
+    var tracks = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "Lead", .{ .r = 1, .g = 2, .b = 3, .a = 255 }, inst),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    const t0 = &tracks[0];
+    t0.machine_idx = @intCast(ms20_idx);
+    const delay_idx = reg.findById("delay2").?;
+    // Two effects so the lane's target isn't simply the first.
+    for (0..2) |_| {
+        const fx = try reg.instantiate(delay_idx);
+        fx.reset(fx.state);
+        try t0.addEffect(alloc, fx, @intCast(delay_idx));
+    }
+    const fx_mach = &t0.effects.items[1].mach;
+    const fx_param = fx_mach.control_info.?(fx_mach.state, 0).id;
+
+    const cut = try t0.laneFor(alloc, automation.Target.control(.inst, 0, "cutoff"), false);
+    _ = try cut.insert(alloc, .{ .beat = 0, .value = 0.25 });
+    _ = try cut.insert(alloc, .{ .beat = 16, .value = 0.75, .shape = .curve, .tension = 0.5 });
+    _ = try cut.insert(alloc, .{ .beat = 32, .value = 0.5, .shape = .hold });
+    const vol = try t0.laneFor(alloc, automation.Target.volume(), false);
+    _ = try vol.insert(alloc, .{ .beat = 4, .value = 0.4 });
+    const fxl = try t0.laneFor(alloc, automation.Target.control(.fx, t0.effects.items[1].uid, fx_param), false);
+    _ = try fxl.insert(alloc, .{ .beat = 8, .value = 0.6 });
+    // A clip lane, timed from its clip.
+    var clip = clip_mod.Clip.init("A", 8, 8);
+    _ = try (try clip.laneFor(alloc, automation.Target.control(.inst, 0, "cutoff"), false)).insert(alloc, .{ .beat = 2, .value = 0.3 });
+    // A note with a pitch bend (semitones, beats from the note's start).
+    var bent = clip_mod.Note{ .pitch = 60, .start_beat = 0, .length_beats = 4, .velocity = 90 };
+    _ = bent.addBend(.{ .beat = 1, .value = 0 });
+    _ = bent.addBend(.{ .beat = 3.5, .value = -7, .shape = .curve, .tension = -0.4 });
+    _ = bent.dim(.gain).add(.{ .beat = 2, .value = -12 }, -48, 12);
+    try clip.addNote(alloc, bent);
+    try t0.addClip(alloc, clip);
+    // Lanes aimed at nothing are dropped on save.
+    const gone = try t0.laneFor(alloc, automation.Target.control(.inst, 0, "no-such-knob"), false);
+    _ = try gone.insert(alloc, .{ .beat = 0, .value = 0.5 });
+    t0.lanes_shown = true;
+
+    const bytes = try serialize(alloc, tracks[0..], &transport);
+    defer alloc.free(bytes);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "\"target\":\"fx1:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "\"curve\",0.5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "no-such-knob") == null);
+
+    var loaded_buf: [1]track_mod.Track = undefined;
+    var loaded_count: usize = 0;
+    var lt: transport_mod.Transport = .{};
+    lt.sample_rate = 48_000;
+    try apply(alloc, bytes, &reg, loaded_buf[0..], &loaded_count, &lt, test_machine);
+    defer for (loaded_buf[0..loaded_count]) |*t| t.deinit(alloc);
+    const l0 = &loaded_buf[0];
+    try std.testing.expect(l0.lanes_shown);
+    try std.testing.expectEqual(@as(usize, 3), l0.lanes.items.len);
+
+    const lcut = l0.findLane(automation.Target.control(.inst, 0, "cutoff")).?;
+    try std.testing.expectEqual(@as(usize, 3), lcut.points.items.len);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.75), lcut.points.items[1].value, 1e-5);
+    try std.testing.expectEqual(automation.Shape.curve, lcut.points.items[1].shape);
+    try std.testing.expectEqual(@as(f32, 0.5), lcut.points.items[1].tension);
+    try std.testing.expectEqual(automation.Shape.hold, lcut.points.items[2].shape);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.4), l0.findLane(automation.Target.volume()).?.points.items[0].value, 1e-6);
+    const lfx = l0.findLane(automation.Target.control(.fx, l0.effects.items[1].uid, fx_param)).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 0.6), lfx.points.items[0].value, 1e-5);
+    const lclip = l0.clips.items[0].findLane(automation.Target.control(.inst, 0, "cutoff")).?;
+    try std.testing.expectEqual(@as(f64, 2), lclip.points.items[0].beat);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.3), lclip.points.items[0].value, 1e-5);
+    const ln = l0.clips.items[0].notes.items[0];
+    try std.testing.expectEqual(@as(u8, 2), ln.bend_n);
+    try std.testing.expectEqual(@as(f32, -7), ln.bend[1].value);
+    try std.testing.expectEqual(automation.Shape.curve, ln.bend[1].shape);
+    try std.testing.expectEqual(@as(f32, -0.4), ln.bend[1].tension);
+    try std.testing.expectEqual(@as(f32, -12), ln.dimConst(.gain).points()[0].value);
+    try std.testing.expectEqual(@as(u8, 0), ln.dimConst(.pressure).n);
 }
 
 test "audio clips round-trip through the pool by path" {

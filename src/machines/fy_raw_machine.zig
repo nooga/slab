@@ -23,6 +23,9 @@ const native_dialog = @import("../native_dialog.zig");
 const ui_core = @import("../ui/core.zig");
 const ui_ctl = @import("../ui/controls.zig");
 const ui_style = @import("../ui/style.zig");
+const ui_menu = @import("../ui/menu.zig");
+const automation = @import("../automation.zig");
+const snapshot = @import("../snapshot.zig");
 const Ui = ui_core.Ui;
 const Rect = ui_core.Rect;
 
@@ -60,6 +63,10 @@ pub const KernelCtx = extern struct {
     pitch: f64 = 0,
     data: usize = 0,
     legato: f64 = 0,
+    // Per-note expression (docs/22), for note-expr words.
+    pressure: f64 = 0.5,
+    slide: f64 = 0,
+    gain: f64 = 1,
 };
 
 /// One sample's audio lanes, mirrored by `Io` in ctx.fy. Render words get a
@@ -80,6 +87,10 @@ const IO_STRIDE: u12 = @sizeOf(IoFrame);
 const SMOOTH_TAU_S: f64 = 0.02;
 const SMOOTH_CHUNK: usize = 32;
 const SMOOTH_EPS: f32 = 1e-5;
+/// An automated knob within this of its curve stops gliding and follows it;
+/// a lane jump bigger than AUTO_JUMP in one chunk glides instead.
+const AUTO_CATCH: f32 = 1e-3;
+const AUTO_JUMP: f32 = 0.05;
 
 /// -120 dBFS: a released voice whose whole-block contribution stays below
 /// this stops rendering until its next note-on.
@@ -105,6 +116,8 @@ pub const FyRawMachine = struct {
     prepare_caller: ?RawCaller = null,
     note_on_caller: ?RawCaller = null,
     note_off_caller: ?RawCaller = null,
+    note_expr_slots: RawSlots = .{},
+    note_expr_caller: ?RawCaller = null,
     render_caller: ?RawCaller = null,
     // Optional per-block dsp2 word (params sample-rate --): coefficient fills
     // that must not run per sample, e.g. the MS-20 svf profile region.
@@ -114,6 +127,22 @@ pub const FyRawMachine = struct {
     // UI-thread snap requests: preset/project/param sets jump, drags glide.
     smooth_norm: [MAX_CONTROLS]f32 = [_]f32{0} ** MAX_CONTROLS,
     snap_req: [MAX_CONTROLS]std.atomic.Value(bool) = [_]std.atomic.Value(bool){std.atomic.Value(bool).init(true)} ** MAX_CONTROLS,
+    // Automation (docs/22). Audio thread: this chunk's lane value per
+    // control, and whether a gliding control has caught up with its curve
+    // (then it follows exactly instead of lagging the 20 ms smoother).
+    auto_on: [MAX_CONTROLS]bool = [_]bool{false} ** MAX_CONTROLS,
+    auto_val: [MAX_CONTROLS]f32 = [_]f32{0} ** MAX_CONTROLS,
+    auto_locked: [MAX_CONTROLS]bool = [_]bool{false} ** MAX_CONTROLS,
+    // UI writes, audio reads: a manual override of an automated control,
+    // 0 none, 1 held (touch), 2 sticky until the transport starts.
+    auto_override: [MAX_CONTROLS]std.atomic.Value(u8) = [_]std.atomic.Value(u8){std.atomic.Value(u8).init(0)} ** MAX_CONTROLS,
+    // UI thread: the automated value each control shows (null = no lane),
+    // set by the host every frame, and a pending request for the host.
+    ui_auto: [MAX_CONTROLS]?f32 = [_]?f32{null} ** MAX_CONTROLS,
+    auto_request: ?machine.AutoRequest = null,
+    // The control a drag holds this frame (automation recording).
+    touch: ?machine.Touch = null,
+    ctx_control: usize = 0,
     panel_w: f32 = 128,
     failed: bool = false,
     // Active panel tab for paged machines (index into desc.pages). Per
@@ -195,7 +224,11 @@ pub const FyRawMachine = struct {
     // last-note priority. Releasing the sounding note falls back to the
     // newest still-held one as a legato retrigger.
     mono_held: [16]f32 = undefined,
+    mono_held_id: [16]i32 = undefined,
     mono_held_n: usize = 0,
+    // The note id each voice plays (-1: a source without ids). Note-offs
+    // and expression match by id, so a bent note is still found.
+    voice_note_id: [MAX_REGIONS]i32 = [_]i32{-1} ** MAX_REGIONS,
     // Idle voices are skipped entirely (docs/17 D6). A voice wakes on
     // note-on and goes idle once released and its contribution stays under
     // IDLE_FLOOR for a whole block. voice_peak is this block's max |delta|
@@ -581,6 +614,17 @@ pub const FyRawMachine = struct {
             .write_zones_json = writeZonesJsonImpl,
             .apply_zones_json = applyZonesJsonImpl,
             .note_labels_fn = noteLabelsImpl,
+            .takes_expression = self.note_expr_caller != null,
+            .control_count = controlCountImpl,
+            .control_info = controlInfoImpl,
+            .control_value = controlValueImpl,
+            .control_knob = controlKnobImpl,
+            .control_base = controlBaseImpl,
+            .format_control = formatControlImpl,
+            .set_auto_ui = setAutoUiImpl,
+            .clear_overrides = clearOverridesImpl,
+            .take_auto_request = takeAutoRequestImpl,
+            .take_touch = takeTouchImpl,
         };
     }
 
@@ -627,6 +671,7 @@ pub const FyRawMachine = struct {
         if (self.desc.prepareWord()) |w| self.prepare_caller = try self.compileEntry(w, &self.prepare_slots, false);
         if (self.desc.noteOnWord()) |w| self.note_on_caller = try self.compileEntry(w, &self.note_on_slots, false);
         if (self.desc.noteOffWord()) |w| self.note_off_caller = try self.compileEntry(w, &self.note_off_slots, false);
+        if (self.desc.noteExprWord()) |w| self.note_expr_caller = try self.compileEntry(w, &self.note_expr_slots, false);
         if (self.desc.blockPrepareWord()) |w| self.block_prepare_caller = try self.compileEntry(w, &self.block_prepare_slots, false);
         if (self.desc.deriveWord()) |w| self.derive_caller = try self.compileEntry(w, &self.derive_slots, false);
         self.render_caller = try self.compileEntry(self.desc.renderWord(), &self.render_slots, true);
@@ -668,12 +713,30 @@ pub const FyRawMachine = struct {
         var moving = false;
         for (self.desc.controls[0..self.desc.control_count], 0..) |ctl, i| {
             if (ctl.kind != .direct_f64) continue;
-            const target = self.controlNorm(i);
+            const auto = self.automated(i);
+            const target = if (auto) self.auto_val[i] else self.controlNorm(i);
             if (self.snap_req[i].swap(false, .acq_rel)) self.smooth_norm[i] = target;
             var cur = self.smooth_norm[i];
-            if (cur == target) continue;
+            if (!auto) {
+                self.auto_locked[i] = false;
+            } else if (self.auto_locked[i]) {
+                // A curve is already continuous: follow it exactly. A big
+                // jump (a seek, a loop wrap, a step in the lane) glides.
+                if (@abs(target - cur) <= AUTO_JUMP) {
+                    self.smooth_norm[i] = target;
+                    continue;
+                }
+                self.auto_locked[i] = false;
+            }
+            if (cur == target) {
+                if (auto) self.auto_locked[i] = true;
+                continue;
+            }
             cur += (target - cur) * a;
-            if (@abs(target - cur) < SMOOTH_EPS) cur = target;
+            if (@abs(target - cur) < SMOOTH_EPS or (auto and @abs(target - cur) < AUTO_CATCH)) {
+                cur = target;
+                if (auto) self.auto_locked[i] = true;
+            }
             self.smooth_norm[i] = cur;
             if (cur != target) moving = true;
         }
@@ -694,9 +757,42 @@ pub const FyRawMachine = struct {
         for (self.desc.controls[0..self.desc.control_count], 0..) |ctl, i| {
             if (ctl.kind != .direct_f64) continue;
             if (self.snap_req[i].load(.acquire)) continue;
+            if (self.auto_on[i]) continue; // chunked anyway while automated
             if (self.smooth_norm[i] != self.controlNorm(i)) return true;
         }
         return false;
+    }
+
+    /// Audio thread: a lane drives control `i` this chunk and no hand
+    /// override holds it.
+    fn automated(self: *const FyRawMachine, i: usize) bool {
+        return self.auto_on[i] and self.auto_override[i].load(.monotonic) == 0;
+    }
+
+    /// Audio thread: the raw value a stepped control plays this chunk.
+    fn effRaw(self: *const FyRawMachine, i: usize) f32 {
+        return if (self.automated(i)) self.auto_val[i] else self.controlNorm(i);
+    }
+
+    /// Audio thread: evaluate every lane on this machine at `beat`.
+    fn evalAutomation(self: *FyRawMachine, view: *const snapshot.AutoView, beat: f64) void {
+        @memset(self.auto_on[0..], false);
+        const snap = view.snap;
+        // Track lanes first, clip lanes by clip start: the last lane that
+        // applies wins (docs/22 §Precedence).
+        for (snap.lanes[0..snap.lane_count], 0..) |lane, li| {
+            if (!view.matches(lane) or lane.control >= self.desc.control_count) continue;
+            const lb = lane.localBeat(beat) orelse continue;
+            self.auto_on[lane.control] = true;
+            self.auto_val[lane.control] = automation.evalCursor(view.points(lane), lb, &view.cursors[li]);
+        }
+    }
+
+    /// UI thread: the value a control shows — its automated value unless
+    /// the hand overrides it.
+    fn shownNorm(self: *const FyRawMachine, i: usize) f32 {
+        if (self.ui_auto[i]) |v| if (self.auto_override[i].load(.monotonic) == 0) return v;
+        return self.controlNorm(i);
     }
 
     pub fn setControlNorm(self: *FyRawMachine, idx: usize, value: f32) void {
@@ -713,8 +809,8 @@ pub const FyRawMachine = struct {
         for (controls, 0..) |control, i| {
             switch (control.kind) {
                 .direct_f64 => self.writeParamF64(control.offset, normToValue(control, self.smooth_norm[i])),
-                .switch_sel => self.writeParamF64(control.offset, control.option_values[switchIndex(control, self.controlNorm(i))]),
-                .int_range => self.writeParamF64(control.offset, intRangeValue(control, self.controlNorm(i))),
+                .switch_sel => self.writeParamF64(control.offset, control.option_values[switchIndex(control, self.effRaw(i))]),
+                .int_range => self.writeParamF64(control.offset, intRangeValue(control, self.effRaw(i))),
             }
         }
 
@@ -961,6 +1057,98 @@ fn loadAssetImpl(state: *anyopaque, name: []const u8, path: []const u8) bool {
     return self.loadAssetRuntime(ai, path);
 }
 
+// ── Automation hooks (docs/22) ───────────────────────────────────────
+
+fn controlCountImpl(state: *anyopaque) usize {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    return self.desc.control_count;
+}
+
+fn controlInfoImpl(state: *anyopaque, i: usize) machine.ControlInfo {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    const ctl = &self.desc.controls[i];
+    var info = machine.ControlInfo{ .id = ctl.idSlice(), .label = ctl.label[0..ctl.label_len], .module = ctl.moduleSlice() };
+    switch (ctl.kind) {
+        .direct_f64 => {},
+        .switch_sel => {
+            info.stepped = true;
+            info.hi = @floatFromInt(@max(ctl.option_count, 1) - 1);
+        },
+        .int_range => {
+            info.stepped = true;
+            info.lo = @floatCast(ctl.min);
+            info.hi = @floatCast(ctl.max);
+        },
+    }
+    return info;
+}
+
+/// Knob space → real units, the preset convention (switches: option index).
+fn controlValueImpl(state: *anyopaque, i: usize, knob: f32) f64 {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    const ctl = self.desc.controls[i];
+    return switch (ctl.kind) {
+        .switch_sel => @floatFromInt(switchIndex(ctl, knob)),
+        .int_range => intRangeValue(ctl, knob),
+        .direct_f64 => normToValue(ctl, knob),
+    };
+}
+
+fn controlKnobImpl(state: *anyopaque, i: usize, value: f64) f32 {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    const ctl = self.desc.controls[i];
+    return switch (ctl.kind) {
+        .switch_sel => @floatFromInt(switchIndex(ctl, @floatCast(value))),
+        .int_range => @floatCast(intRangeValue(ctl, @floatCast(value))),
+        .direct_f64 => valueToNorm(ctl, value),
+    };
+}
+
+fn controlBaseImpl(state: *anyopaque, i: usize) f32 {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    return self.controlNorm(i);
+}
+
+fn formatControlImpl(state: *anyopaque, i: usize, knob: f32, buf: []u8) []const u8 {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    const ctl = &self.desc.controls[i];
+    return switch (ctl.kind) {
+        .switch_sel => std.fmt.bufPrint(buf, "{s}", .{std.mem.span(ctl.optionLabelZ(switchIndex(ctl.*, knob)))}) catch "?",
+        .int_range => std.fmt.bufPrint(buf, "{d}", .{@as(i64, @intFromFloat(intRangeValue(ctl.*, knob)))}) catch "?",
+        .direct_f64 => blk: {
+            var vb: [16:0]u8 = undefined;
+            break :blk std.fmt.bufPrint(buf, "{s}", .{std.mem.span(formatControlValue(&vb, normToValue(ctl.*, knob)))}) catch "?";
+        },
+    };
+}
+
+fn setAutoUiImpl(state: *anyopaque, i: usize, knob: ?f32) void {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    if (i >= MAX_CONTROLS) return;
+    self.ui_auto[i] = knob;
+    // Nothing left to override once the lane is gone.
+    if (knob == null) self.auto_override[i].store(0, .monotonic);
+}
+
+fn clearOverridesImpl(state: *anyopaque) void {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    for (&self.auto_override) |*o| o.store(0, .monotonic);
+}
+
+fn takeTouchImpl(state: *anyopaque) ?machine.Touch {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    const t = self.touch;
+    self.touch = null;
+    return t;
+}
+
+fn takeAutoRequestImpl(state: *anyopaque) ?machine.AutoRequest {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    const r = self.auto_request;
+    self.auto_request = null;
+    return r;
+}
+
 // Host param-set (project load): apply one id→value pair. Same real-value
 // convention as presets.
 fn setParamImpl(state: *anyopaque, id: []const u8, value: f64) void {
@@ -1164,14 +1352,19 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
     self.kctx.frames = @floatFromInt(frames);
     self.kctx.sr = ctx.sample_rate;
 
-    // Steady knobs: one pass. Gliding knobs: sub-blocks with params re-synced
-    // between them; prepare still runs once per block (it may reset per-block
-    // accumulators such as meters).
-    const gliding = self.anyGliding();
+    // Steady knobs: one pass. Gliding or automated knobs: sub-blocks with
+    // params re-synced between them; prepare still runs once per block (it
+    // may reset per-block accumulators such as meters).
+    const view: ?*const snapshot.AutoView = if (ctx.automation) |p| @ptrCast(@alignCast(p)) else null;
+    const auto = if (view) |v| v.any() else false;
+    if (!auto) @memset(self.auto_on[0..], false);
+    const gliding = auto or self.anyGliding();
     const chunk: usize = if (gliding) SMOOTH_CHUNK else frames;
+    const beats_per_sample = ctx.tempo_bpm / (60.0 * ctx.sample_rate);
     var pos: usize = 0;
     while (pos < frames) : (pos += chunk) {
         const n = @min(chunk, frames - pos);
+        if (auto) self.evalAutomation(view.?, ctx.ppq_position + @as(f64, @floatFromInt(pos)) * beats_per_sample);
         _ = self.advanceSmoothing(if (gliding) n else frames);
         self.syncRawParams(ctx.sample_rate, ctx.tempo_bpm);
         if (pos == 0) callPrepare(self, ctx.sample_rate) catch {
@@ -1296,12 +1489,13 @@ fn applyNoteEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
     switch (ev.kind) {
         .note_on => {
             if (ev.velocity <= 0) {
-                try noteOffEvent(self, ev.pitch);
+                try noteOffEvent(self, ev);
             } else {
                 try noteOnEvent(self, ev);
             }
         },
-        .note_off => try noteOffEvent(self, ev.pitch),
+        .note_off => try noteOffEvent(self, ev),
+        .expression => try noteExprEvent(self, ev),
         .reset => {
             self.mono_held_n = 0;
             for (0..self.regionCount()) |voice| {
@@ -1341,11 +1535,19 @@ fn isMonoMelodic(self: *const FyRawMachine) bool {
     return self.regionCount() == 1 and !self.desc.note_pitch;
 }
 
-fn monoForget(self: *FyRawMachine, pitch: f32) void {
+/// Whether event `ev` refers to a note played as (pitch, id): by id when
+/// both sides have one, else by pitch.
+fn sameNote(pitch: f32, id: i32, ev: machine.NoteEvent) bool {
+    if (ev.note_id >= 0 and id >= 0) return id == ev.note_id;
+    return pitch == ev.pitch;
+}
+
+fn monoForget(self: *FyRawMachine, ev: machine.NoteEvent) void {
     var w: usize = 0;
-    for (self.mono_held[0..self.mono_held_n]) |p| {
-        if (p == pitch) continue;
+    for (self.mono_held[0..self.mono_held_n], self.mono_held_id[0..self.mono_held_n]) |p, id| {
+        if (sameNote(p, id, ev)) continue;
         self.mono_held[w] = p;
+        self.mono_held_id[w] = id;
         w += 1;
     }
     self.mono_held_n = w;
@@ -1353,12 +1555,14 @@ fn monoForget(self: *FyRawMachine, pitch: f32) void {
 
 fn noteOnEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
     if (isMonoMelodic(self)) {
-        monoForget(self, ev.pitch);
+        monoForget(self, ev);
         if (self.mono_held_n == self.mono_held.len) {
             std.mem.copyForwards(f32, self.mono_held[0 .. self.mono_held.len - 1], self.mono_held[1..]);
+            std.mem.copyForwards(i32, self.mono_held_id[0 .. self.mono_held_id.len - 1], self.mono_held_id[1..]);
             self.mono_held_n -= 1;
         }
         self.mono_held[self.mono_held_n] = ev.pitch;
+        self.mono_held_id[self.mono_held_n] = ev.note_id;
         self.mono_held_n += 1;
     }
     // Legato: a note arriving while the voice is still held (mono slide).
@@ -1367,6 +1571,7 @@ fn noteOnEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
     self.age_counter += 1;
     self.voice_age[voice] = self.age_counter;
     self.voice_pitch[voice] = ev.pitch;
+    self.voice_note_id[voice] = ev.note_id;
     self.voice_gate[voice] = true;
     self.voice_idle[voice] = false;
     self.voice_peak[voice] = 0;
@@ -1379,16 +1584,17 @@ fn noteOnEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
 
 // note_id is -1 throughout the sequencer, so note-off matches the newest
 // gated voice holding this pitch. Mono machines just release voice 0.
-fn noteOffEvent(self: *FyRawMachine, pitch: f32) !void {
+fn noteOffEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
     const n = self.regionCount();
     if (isMonoMelodic(self)) {
-        monoForget(self, pitch);
+        monoForget(self, ev);
         // Releasing a note that isn't sounding just forgets it.
-        if (!self.voice_gate[0] or self.voice_pitch[0] != pitch) return;
+        if (!self.voice_gate[0] or !sameNote(self.voice_pitch[0], self.voice_note_id[0], ev)) return;
         if (self.mono_held_n > 0) {
             // Fall back to the newest held note, legato.
             const back = self.mono_held[self.mono_held_n - 1];
             self.voice_pitch[0] = back;
+            self.voice_note_id[0] = self.mono_held_id[self.mono_held_n - 1];
             self.kctx.legato = 1;
             self.kctx.pitch = back;
             try callNoteOn(self, 0, midiToHz(back), self.kctx.vel);
@@ -1408,7 +1614,7 @@ fn noteOffEvent(self: *FyRawMachine, pitch: f32) !void {
     var newest: u64 = 0;
     for (0..n) |v| {
         if (!self.voice_gate[v]) continue;
-        if (self.voice_pitch[v] != pitch) continue;
+        if (!sameNote(self.voice_pitch[v], self.voice_note_id[v], ev)) continue;
         if (self.voice_age[v] >= newest) {
             newest = self.voice_age[v];
             found = v;
@@ -1417,6 +1623,23 @@ fn noteOffEvent(self: *FyRawMachine, pitch: f32) !void {
     if (found) |v| {
         self.voice_gate[v] = false;
         try callNoteOff(self, v);
+    }
+}
+
+/// Per-note expression (docs/22 §Note expression): retune the voice that
+/// plays `ev.note_id` to `ev.pitch` through the machine's `note-expr`
+/// word. Machines without one ignore it.
+fn noteExprEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
+    const caller = if (self.note_expr_caller) |*c_| c_ else return;
+    if (ev.note_id < 0 or self.desc.note_pitch) return;
+    for (0..self.regionCount()) |v| {
+        if (self.voice_note_id[v] != ev.note_id) continue;
+        self.kctx.pitch = ev.pitch;
+        self.kctx.hz = midiToHz(ev.pitch);
+        self.kctx.pressure = ev.pressure;
+        self.kctx.slide = ev.slide;
+        self.kctx.gain = std.math.pow(f64, 10, @as(f64, ev.value) / 20);
+        _ = try caller.call(1, &self.entryArgs(v));
     }
 }
 
@@ -1478,6 +1701,7 @@ fn resetImpl(state: *anyopaque) void {
     }
     @memset(self.voice_gate[0..], false);
     @memset(self.voice_pitch[0..], -1);
+    @memset(self.voice_note_id[0..], -1);
     @memset(self.voice_idle[0..], true);
     self.mono_held_n = 0;
     @memset(self.params_buf[0..self.desc.params_size], 0);
@@ -1515,6 +1739,7 @@ fn drawPanelImpl(state: *anyopaque, ui: *Ui, rect: Rect) void {
     }
     const tier = chooseTier(self, ui, rect);
     _ = walkPanel(self, ui, rect, .{ .draw = tier });
+    autoMenuTick(self);
     // a stored rate moved: re-filter once the knob is let go
     if (ui.active == 0) self.refreshAntialias();
 }
@@ -1581,7 +1806,7 @@ fn controlNormByLabel(self: *const FyRawMachine, module: []const u8, label: []co
     for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
         if (std.mem.eql(u8, ctl.moduleSlice(), module) and
             std.mem.eql(u8, ctl.label[0..ctl.label_len], label))
-            return self.controlNorm(i);
+            return self.shownNorm(i);
     }
     return null;
 }
@@ -1805,7 +2030,7 @@ fn drawStrip(self: *FyRawMachine, ui: *Ui, r: Rect, view: StripView, tier: ui_ct
         local_i += 1;
         const nat = controlCell(ui, ctl, tier);
         const cell_w = col_x[ci + 1] - col_x[ci];
-        drawControl(self, ui, Rect.xywh(col_x[ci] + @divFloor(cell_w - nat[0], 2), row_y[ri], nat[0], nat[1]), gi, ctl, tier);
+        drawAutomatable(self, ui, Rect.xywh(col_x[ci] + @divFloor(cell_w - nat[0], 2), row_y[ri], nat[0], nat[1]), gi, ctl, tier);
     }
 }
 
@@ -1885,6 +2110,68 @@ fn controlCell(ui: *const Ui, ctl: *const Control, tier: ui_ctl.Size) [2]i32 {
     };
 }
 
+/// One control plus its automation state (docs/22 §Automated controls): it
+/// draws the automated value, a hand change overrides the lane (held drags
+/// until release, other edits until the transport starts), and the LED at
+/// the end of its legend shows the state; clicking a hollow LED re-enables.
+fn drawAutomatable(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Control, tier: ui_ctl.Size) void {
+    const base_before = self.controlNorm(gi);
+    const was_pressed = ui.in.pressed;
+    drawControl(self, ui, kr, gi, ctl, tier);
+    const wid = ui.id(gi);
+    if (ui.active == wid) self.touch = .{ .control = @intCast(gi), .knob = self.controlNorm(gi) };
+    // Right-click a control (any widget: the whole cell): the automation
+    // menu, ticked in drawPanelImpl.
+    if (ui.in.right_pressed and kr.contains(ui.in.ix(), ui.in.iy()) and !ui_menu.active()) {
+        self.ctx_control = gi;
+        ui_menu.openAt(autoMenuKey(self), ui.in.ix(), ui.in.iy());
+    }
+    if (self.ui_auto[gi] == null) return;
+    // The title display's value channel says the value isn't all yours.
+    if (ui.isHot(wid) and ui.touch.time == ui.in.time) ui.touch.automated = true;
+    const ov = &self.auto_override[gi];
+    const held = ui.active == wid;
+    if (self.controlNorm(gi) != base_before) {
+        ov.store(if (held and !was_pressed) 1 else 2, .monotonic);
+    } else if (ov.load(.monotonic) == 1 and !held) {
+        ov.store(0, .monotonic);
+    }
+    const overridden = ov.load(.monotonic) != 0;
+    const led_at = ui_ctl.autoLedPos(ui, kr, ctl.label[0..ctl.label_len]);
+    if (ui_ctl.autoLed(ui, led_at[0], led_at[1], .{ "auto", gi }, overridden)) {
+        if (overridden) ov.store(0, .monotonic) else self.auto_request = .{ .control = @intCast(gi), .action = .show };
+    }
+}
+
+fn autoMenuKey(self: *const FyRawMachine) u64 {
+    return @as(u64, @intFromPtr(self)) ^ 0xA070_A070_0000_0001;
+}
+
+const AUTO_SHOW: u32 = 1;
+const AUTO_CLEAR: u32 = 2;
+const AUTO_REENABLE: u32 = 3;
+
+/// The per-control automation context menu.
+fn autoMenuTick(self: *FyRawMachine) void {
+    const key = autoMenuKey(self);
+    if (!ui_menu.isOpen(key)) return;
+    const gi = self.ctx_control;
+    const automated = self.ui_auto[gi] != null;
+    const overridden = self.auto_override[gi].load(.monotonic) != 0;
+    const items = [_]ui_menu.Item{
+        .{ .label = "Show automation", .id = AUTO_SHOW },
+        .{ .label = "Clear automation", .id = AUTO_CLEAR, .enabled = automated },
+        .{ .label = "Re-enable automation", .id = AUTO_REENABLE, .enabled = overridden },
+    };
+    const picked = ui_menu.pick(key, &items) orelse return;
+    switch (picked) {
+        AUTO_SHOW => self.auto_request = .{ .control = @intCast(gi), .action = .show },
+        AUTO_CLEAR => self.auto_request = .{ .control = @intCast(gi), .action = .clear },
+        AUTO_REENABLE => self.auto_override[gi].store(0, .monotonic),
+        else => {},
+    }
+}
+
 /// One control in its natural rect, drawn as its widget.
 fn drawControl(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Control, tier: ui_ctl.Size) void {
     const label = ctl.label[0..ctl.label_len];
@@ -1893,7 +2180,7 @@ fn drawControl(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Co
     switch (ctl.widgetFor()) {
         .auto, .knob => drawKnob(self, ui, kr, gi, ctl, tier),
         .fader => {
-            var value = self.controlNorm(gi);
+            var value = self.shownNorm(gi);
             var vbuf: [16:0]u8 = undefined;
             const readout = std.mem.span(formatControlValue(&vbuf, normToValue(ctl.*, value)));
             if (ui_ctl.slider(ui, kr, gi, &value, .{
@@ -1906,7 +2193,7 @@ fn drawControl(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Co
             })) self.setControlNorm(gi, value);
         },
         .button => {
-            var on = switchIndex(ctl.*, self.controlNorm(gi)) == 1;
+            var on = switchIndex(ctl.*, self.shownNorm(gi)) == 1;
             if (ui_ctl.latch(ui, kr, gi, &on, .{ .size = tier, .label = label })) self.setControlRaw(gi, if (on) 1 else 0);
         },
         .display => {
@@ -1914,16 +2201,16 @@ fn drawControl(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Co
             if (ctl.kind == .int_range) {
                 const labels = il.fill(ctl);
                 const lo: i64 = @intFromFloat(@round(ctl.min));
-                const cur: i64 = @intFromFloat(intRangeValue(ctl.*, self.controlNorm(gi)));
+                const cur: i64 = @intFromFloat(intRangeValue(ctl.*, self.shownNorm(gi)));
                 var idx: u8 = @intCast(std.math.clamp(cur - lo, 0, @as(i64, @intCast(labels.len - 1))));
                 if (ui_ctl.displayField(ui, kr, gi, &idx, labels, label)) self.setControlRaw(gi, @floatFromInt(lo + idx));
             } else {
-                var idx: u8 = @intCast(switchIndex(ctl.*, self.controlNorm(gi)));
+                var idx: u8 = @intCast(switchIndex(ctl.*, self.shownNorm(gi)));
                 if (ui_ctl.displayField(ui, kr, gi, &idx, opts, label)) pickOption(self, gi, idx);
             }
         },
         .lever, .slide, .list, .radio, .vradio => |w| {
-            var idx: u8 = @intCast(switchIndex(ctl.*, self.controlNorm(gi)));
+            var idx: u8 = @intCast(switchIndex(ctl.*, self.shownNorm(gi)));
             const n: u8 = @intCast(opts.len);
             const changed = switch (w) {
                 .lever => ui_ctl.toggle(ui, kr, gi, &idx, .{ .positions = n, .label = label, .marks = opts }),
@@ -1942,7 +2229,7 @@ fn drawKnob(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Contr
         .switch_sel => {
             const n = ctl.option_count;
             if (n == 0) return;
-            const idx = switchIndex(ctl.*, self.controlNorm(gi));
+            const idx = switchIndex(ctl.*, self.shownNorm(gi));
             var v: f32 = if (n > 1) @as(f32, @floatFromInt(idx)) / @as(f32, @floatFromInt(n - 1)) else 0;
             const readout = std.mem.span(ctl.optionLabelZ(idx));
             if (ui_ctl.knob(ui, kr, gi, &v, .{ .size = tier, .variant = .stepped, .steps = @intCast(n), .label = label, .readout = readout, .show_readout = false })) {
@@ -1953,7 +2240,7 @@ fn drawKnob(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Contr
         .int_range => {
             const n_steps = @max(intRangeCount(ctl.*), 1);
             const lo: i64 = @intFromFloat(@round(ctl.min));
-            const cur: i64 = @intFromFloat(intRangeValue(ctl.*, self.controlNorm(gi)));
+            const cur: i64 = @intFromFloat(intRangeValue(ctl.*, self.shownNorm(gi)));
             const idx = std.math.clamp(cur - lo, 0, @as(i64, @intCast(n_steps - 1)));
             const steps_f: f32 = @floatFromInt(@max(n_steps - 1, 1));
             var v: f32 = @as(f32, @floatFromInt(idx)) / steps_f;
@@ -1968,7 +2255,7 @@ fn drawKnob(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Contr
             }
         },
         .direct_f64 => {
-            var value = self.controlNorm(gi);
+            var value = self.shownNorm(gi);
             var vbuf: [16:0]u8 = undefined;
             const readout = std.mem.span(formatControlValue(&vbuf, normToValue(ctl.*, value)));
             if (ui_ctl.knob(ui, kr, gi, &value, .{
@@ -4504,4 +4791,234 @@ test "raw machine presets: named save + rename round-trip" {
     var path_buf: [512]u8 = undefined;
     const path = try std.fmt.bufPrint(&path_buf, "{s}/zz-test-renamed.preset", .{inst.presetDir()});
     fy_host_mod.deleteFilePosix(path);
+}
+
+test "automation drives a knob per chunk, follows the curve, and yields to a hand override" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/juno2/juno2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    var ci: usize = 0;
+    while (!std.mem.eql(u8, inst.desc.controls[ci].idSlice(), "jn-level")) ci += 1;
+
+    // One lane on jn-level: 0 at beat 0 up to 1 at beat 4.
+    var snap = std.mem.zeroes(snapshot.TrackSnapshot);
+    snap.auto_points[0] = .{ .beat = 0, .value = 0 };
+    snap.auto_points[1] = .{ .beat = 4, .value = 1 };
+    snap.auto_point_count = 2;
+    snap.lanes[0] = .{ .kind = .inst, .control = @intCast(ci), .points_start = 0, .points_count = 2 };
+    snap.lane_count = 1;
+    var cursors = [_]u32{0} ** snapshot.MAX_LANES_PER_TRACK;
+    const view = snapshot.AutoView{ .snap = &snap, .cursors = &cursors, .kind = .inst };
+
+    const block = 256;
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.tempo_bpm = 120;
+    ctx.block_size = block;
+    ctx.automation = &view;
+    var l = [_]f32{0} ** block;
+    var r = [_]f32{0} ** block;
+    inst.setControlNormSnap(ci, 0.9);
+
+    // Playing forward from beat 2: it glides onto the curve, then follows it
+    // exactly at each 32-sample chunk.
+    const bps = 120.0 / (60.0 * 48_000.0);
+    var beat: f64 = 2.0;
+    for (0..20) |_| {
+        ctx.ppq_position = beat;
+        testRender(mach, &ctx, &l, &r);
+        beat += block * bps;
+    }
+    const last_chunk = beat - 32 * bps;
+    try testing.expect(inst.auto_locked[ci]);
+    try testing.expectApproxEqAbs(@as(f32, @floatCast(last_chunk / 4)), inst.smooth_norm[ci], 1e-5);
+
+    // A held override: the knob goes back to its hand-set base.
+    inst.auto_override[ci].store(1, .monotonic);
+    for (0..80) |_| {
+        ctx.ppq_position = beat;
+        testRender(mach, &ctx, &l, &r);
+        beat += block * bps;
+    }
+    try testing.expectApproxEqAbs(@as(f32, 0.9), inst.smooth_norm[ci], 1e-3);
+    try testing.expect(!inst.auto_locked[ci]);
+
+    // A machine without its lane in the view ignores it.
+    const other = snapshot.AutoView{ .snap = &snap, .cursors = &cursors, .kind = .fx, .fx_uid = 7 };
+    try testing.expect(!other.any());
+}
+
+test "note ids: a note-off finds its voice by id after the voice was bent" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/sampler/sampler.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    try testing.expect(inst.note_expr_caller != null);
+
+    const block = 64;
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.tempo_bpm = 120;
+    ctx.block_size = block;
+    var l = [_]f32{0} ** block;
+    var r = [_]f32{0} ** block;
+    // Two notes, then bend note 1 onto note 2's pitch: they're one pitch now.
+    var evs = [_]machine.NoteEvent{
+        .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 1, .pitch = 60, .velocity = 0.9 },
+        .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 2, .pitch = 67, .velocity = 0.9 },
+        .{ .sample_offset = 10, .kind = .expression, .channel = 0, .note_id = 1, .pitch = 67, .velocity = 0 },
+    };
+    ctx.note_in = &evs;
+    ctx.note_in_count = evs.len;
+    testRender(mach, &ctx, &l, &r);
+
+    var v1: ?usize = null;
+    for (0..inst.regionCount()) |v| if (inst.voice_note_id[v] == 1) {
+        v1 = v;
+    };
+    const voice = v1.?;
+    // The bend reached the voice: its advance grew by 7 semitones.
+    // SamplerState (kernels/06-voices/sampler.fy): inc, inc0 and bend are
+    // its 18th-20th f64 fields.
+    const bend = inst.readStateF64(voice, 19 * 8);
+    try testing.expectApproxEqAbs(@as(f64, 7), bend, 1e-9);
+    const inc = inst.readStateF64(voice, 17 * 8);
+    const inc0 = inst.readStateF64(voice, 18 * 8);
+    try testing.expectApproxEqAbs(std.math.pow(f64, 2, 7.0 / 12.0), inc / inc0, 1e-6);
+
+    // Releasing note 1 releases its own voice, not note 2's.
+    var off = [_]machine.NoteEvent{.{ .sample_offset = 0, .kind = .note_off, .channel = 0, .note_id = 1, .pitch = 60, .velocity = 0 }};
+    ctx.note_in = &off;
+    ctx.note_in_count = 1;
+    testRender(mach, &ctx, &l, &r);
+    try testing.expect(!inst.voice_gate[voice]);
+    var still: usize = 0;
+    for (0..inst.regionCount()) |v| still += @intFromBool(inst.voice_gate[v] and inst.voice_note_id[v] == 2);
+    try testing.expectEqual(@as(usize, 1), still);
+}
+
+test "every pitched voice machine takes note expression" {
+    const files = [_][]const u8{
+        "machines/sampler/sampler.fy",   "machines/unfairlight/unfairlight.fy",
+        "machines/juno2/juno2.fy",       "machines/fm86/fm86.fy",
+        "machines/rhodes/rhodes.fy",     "machines/ms20/ms20.fy",
+        "machines/cream/cream.fy",
+    };
+    for (files) |f| {
+        const inst = try FyRawMachine.create(testing.allocator, f);
+        const mach = inst.machineInterface();
+        defer mach.deinit.?(mach.state, testing.allocator);
+        testing.expect(inst.note_expr_caller != null) catch |err| {
+            std.debug.print("{s}: no note-expr word\n", .{f});
+            return err;
+        };
+        // A note, bent an octave up, renders finite.
+        var ctx = std.mem.zeroes(machine.MachineCtx);
+        ctx.sample_rate = 48_000;
+        ctx.tempo_bpm = 120;
+        ctx.block_size = 256;
+        var l = [_]f32{0} ** 256;
+        var r = [_]f32{0} ** 256;
+        var evs = [_]machine.NoteEvent{
+            .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 3, .pitch = 48, .velocity = 0.9 },
+            .{ .sample_offset = 128, .kind = .expression, .channel = 0, .note_id = 3, .pitch = 60, .velocity = 0 },
+        };
+        ctx.note_in = &evs;
+        ctx.note_in_count = evs.len;
+        testRender(mach, &ctx, &l, &r);
+        for (l) |x| try testing.expect(std.math.isFinite(x));
+    }
+}
+
+test "an automated cutoff sweep renders like the knob set by hand at each chunk" {
+    const a = try FyRawMachine.create(testing.allocator, "machines/juno2/juno2.fy");
+    const ma = a.machineInterface();
+    defer ma.deinit.?(ma.state, testing.allocator);
+    const b = try FyRawMachine.create(testing.allocator, "machines/juno2/juno2.fy");
+    const mb = b.machineInterface();
+    defer mb.deinit.?(mb.state, testing.allocator);
+    var ci: usize = 0;
+    while (!std.mem.eql(u8, a.desc.controls[ci].idSlice(), "jn-cutoff")) ci += 1;
+
+    // Lane: cutoff knob 0.2 → 0.8 over two beats. Gentle enough that each
+    // 32-sample chunk moves well under AUTO_JUMP: a steep start would
+    // (rightly) glide instead of following, and then the two differ.
+    var snap = std.mem.zeroes(snapshot.TrackSnapshot);
+    snap.auto_points[0] = .{ .beat = 0, .value = 0.2, .shape = .curve, .tension = -0.3 };
+    snap.auto_points[1] = .{ .beat = 2, .value = 0.8 };
+    snap.auto_point_count = 2;
+    snap.lanes[0] = .{ .kind = .inst, .control = @intCast(ci), .points_start = 0, .points_count = 2 };
+    snap.lane_count = 1;
+    var cursors = [_]u32{0} ** snapshot.MAX_LANES_PER_TRACK;
+    const view = snapshot.AutoView{ .snap = &snap, .cursors = &cursors, .kind = .inst };
+    a.setControlNormSnap(ci, 0.2);
+    b.setControlNormSnap(ci, 0.2);
+
+    const sr = 48_000.0;
+    const bps = 120.0 / (60.0 * sr);
+    const block = 256;
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = sr;
+    ctx.tempo_bpm = 120;
+    var on = [_]machine.NoteEvent{.{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 1, .pitch = 48, .velocity = 0.9 }};
+    var la = [_]f32{0} ** block;
+    var ra = [_]f32{0} ** block;
+    var lb = [_]f32{0} ** 32;
+    var rb = [_]f32{0} ** 32;
+    var max_diff: f32 = 0;
+    var energy: f32 = 0;
+    var pos: usize = 0;
+    while (pos < 48_000) : (pos += block) {
+        // A: the lane, one 256-sample block at a time.
+        ctx.block_size = block;
+        ctx.ppq_position = @as(f64, @floatFromInt(pos)) * bps;
+        ctx.automation = &view;
+        ctx.note_in = if (pos == 0) &on else null;
+        ctx.note_in_count = if (pos == 0) 1 else 0;
+        testRender(ma, &ctx, &la, &ra);
+        // B: the same values set by hand before each 32-sample chunk.
+        var k: usize = 0;
+        while (k < block) : (k += 32) {
+            const beat = @as(f64, @floatFromInt(pos + k)) * bps;
+            b.setControlNormSnap(ci, automation.eval(snap.auto_points[0..2], beat));
+            ctx.block_size = 32;
+            ctx.ppq_position = beat;
+            ctx.automation = null;
+            ctx.note_in = if (pos == 0 and k == 0) &on else null;
+            ctx.note_in_count = if (pos == 0 and k == 0) 1 else 0;
+            testRender(mb, &ctx, &lb, &rb);
+            for (la[k .. k + 32], lb) |x, y| {
+                max_diff = @max(max_diff, @abs(x - y));
+                energy = @max(energy, @abs(x));
+            }
+        }
+    }
+    if (max_diff >= 1e-4) std.debug.print("sweep: max diff {d} (energy {d})\n", .{ max_diff, energy });
+    try testing.expect(energy > 0.01);
+    try testing.expect(max_diff < 1e-4);
+}
+
+test "per-note gain scales the sampler voice from its onset" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/sampler/sampler.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.tempo_bpm = 120;
+    ctx.block_size = 64;
+    var l = [_]f32{0} ** 64;
+    var r = [_]f32{0} ** 64;
+    var evs = [_]machine.NoteEvent{
+        .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 1, .pitch = 60, .velocity = 0.9 },
+        .{ .sample_offset = 0, .kind = .expression, .channel = 0, .note_id = 1, .pitch = 60, .velocity = 0, .value = -30 },
+    };
+    ctx.note_in = &evs;
+    ctx.note_in_count = evs.len;
+    testRender(mach, &ctx, &l, &r);
+    for (0..inst.regionCount()) |v| if (inst.voice_note_id[v] == 1) {
+        // SamplerState: gain is field 7, gain0 field 22.
+        const g = inst.readStateF64(v, 6 * 8);
+        const g0 = inst.readStateF64(v, 21 * 8);
+        try testing.expect(g0 > 0);
+        try testing.expectApproxEqRel(g0 * std.math.pow(f64, 10, -1.5), g, 1e-6);
+    };
 }

@@ -54,7 +54,15 @@ song.render(stems=True)        # bounce + mix report
 | `arp(prog, "up"/"down"/"updown"/"random"/[indices], rate, octave)` | arpeggio per chord |
 | `repeat(every_beats)` | tile the first N beats across the clip |
 | `transpose(n)`, `swing(amount, grid)`, `humanize(time, vel)`, `velocities(fn)` | transforms |
-| `copy(section)` | same notes on another section |
+| `copy(section)` | same notes (and clip automation) on another section |
+| `automate(target, points…)`, `ramp(target, frm, to, v0, v1, tension)` | clip automation: like the track's, beats from the clip's start; overrides the track lane while the clip plays |
+| `bend(points, notes=None, dim="pitch")` | per-note expression: (beat from the note's start, value[, shape, tension]), max 8; pitch in semitones (every pitched machine), `gain` in dB (sampler, Unfairlight), `pressure`/`slide` 0..1 |
+| `converge(to, start, end, tension=-0.3)` | every note sounding over [start, end) bends onto pitch `to` by `end`: a chord folding onto one note |
+
+| Track method | Does |
+|---|---|
+| `automate(target, (beat, value[, shape[, tension]]), …)` | an automation lane (docs/22): target `"volume"`, `"pan"`, an instrument param (`"cutoff"`) or `"fx1:mix"`; values in the param's units; shape `linear`/`curve`/`hold` shapes the segment to the next point |
+| `ramp(target, frm, to, v0, v1, tension=0)` | one sweep from `v0` to `v1` between two beats; tension + = fast start |
 
 Discovery: `print(machine("juno2").help())`, `presets("fm86")`,
 `python3 tools/slabkit/gen_reference.py` (regenerates docs/20).

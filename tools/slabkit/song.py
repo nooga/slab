@@ -85,10 +85,85 @@ class Clip:
         self.start = start
         self.length = length
         self.notes = []
+        # Clip automation (docs/22): beats from the clip's start.
+        self.lanes = {}
 
     @property
     def song(self):
         return self.track.song
+
+    def automate(self, target, *points):
+        """A clip lane, like Track.automate but timed from the clip's start;
+        it moves and copies with the clip and overrides the track's lane
+        for the same target while the clip plays."""
+        where = f"clip {self.track.name}/{self.name} automation {target}"
+        _add_points(self.lanes, self.track._auto_target(target), where, points)
+        for b, *_ in self.lanes[self.track._auto_target(target)[0]]:
+            if b > self.length + 1e-9:
+                self.song.warn(f"{where}: point at beat {b:g} is past the clip's end ({self.length:g}) and won't play")
+        return self
+
+    def ramp(self, target, frm, to, v0, v1, tension=0.0):
+        """One sweep in clip beats, added to the clip's lane."""
+        return self.automate(target, (frm, v0, "curve" if tension else "linear", tension), (to, v1))
+
+    # ── note expression (docs/22) ────────────────────────────────────
+
+    def _pick(self, which):
+        if which is None:
+            return list(self.notes)
+        if callable(which):
+            return [n for n in self.notes if which(n)]
+        pitches = {note(w) for w in (which if isinstance(which, (list, tuple, set)) else [which])}
+        return [n for n in self.notes if n["pitch"] in pitches]
+
+    EXPR_RANGES = {"pitch": (-48, 48), "pressure": (0, 1), "slide": (0, 1), "gain": (-48, 12)}
+
+    def bend(self, points, notes=None, dim="pitch"):
+        """Per-note expression: points are (beat from the note's start,
+        value[, shape[, tension]]), at most 8. dim "pitch" (semitones,
+        ±48, the default), "pressure" / "slide" (0..1) or "gain" (dB,
+        -48..12). `notes` picks which: None = all, a pitch or list of
+        pitches, or a function of the note dict. Pitch plays on every
+        pitched machine; gain on the sampler and Unfairlight."""
+        where = f"clip {self.track.name}/{self.name} {dim}"
+        if dim not in self.EXPR_RANGES:
+            raise SlabError(f"{where}: dim is one of {', '.join(self.EXPR_RANGES)}")
+        lo, hi = self.EXPR_RANGES[dim]
+        lanes = {}
+        _add_points(lanes, ("e", lambda v: v, False), where, points)
+        pts = lanes["e"]
+        if len(pts) > 8:
+            raise SlabError(f"{where}: {len(pts)} points (a note holds at most 8)")
+        for _, v, _, _ in pts:
+            if not lo <= v <= hi:
+                raise SlabError(f"{where}: {v} is outside [{lo}, {hi}]")
+        for n in self._pick(notes):
+            n.setdefault("expr", {})[dim] = list(pts)
+        return self
+
+    def converge(self, to, start, end, tension=-0.3, notes=None):
+        """Every note sounding over [start, end) (clip beats) bends onto
+        pitch `to` by `end`, holding its own pitch until `start` — a chord
+        folding onto one note. Negative tension = slow start."""
+        target = note(to)
+        where = f"clip {self.track.name}/{self.name} converge"
+        if end <= start:
+            raise SlabError(f"{where}: end {end} is not after start {start}")
+        hit = 0
+        for n in self._pick(notes):
+            n0, n1 = n["start"], n["start"] + n["len"]
+            if n1 <= start or n0 >= end:
+                continue
+            semis = target - n["pitch"]
+            if not -48 <= semis <= 48:
+                raise SlabError(f"{where}: {n['pitch']} -> {target} is more than 48 semitones")
+            s0 = max(start - n0, 0.0)
+            n.setdefault("expr", {})["pitch"] = [(s0, 0.0, "curve" if tension else "linear", tension), (end - n0, float(semis), "linear", 0.0)]
+            hit += 1
+        if hit == 0:
+            self.song.warn(f"{where}: no note sounds over beats {start:g}..{end:g}")
+        return self
 
     @property
     def bar(self):
@@ -327,14 +402,48 @@ class Clip:
         start = section.start if section else at_beat
         c = self.track._new_clip(name or (section.name if section else self.name), start,
                                  section.length if section else self.length)
-        c.notes = [dict(n) for n in self.notes]
+        c.notes = [{**n, **({"expr": {k: list(v) for k, v in n["expr"].items()}} if n.get("expr") else {})} for n in self.notes]
+        c.lanes = {k: list(v) for k, v in self.lanes.items()}
         return c
 
     def to_json(self):
         notes = sorted(self.notes, key=lambda n: (n["start"], n["pitch"]))
         return {"type": "note", "name": self.name, "start": round(self.start, 6), "len": round(self.length, 6),
                 "notes": [{"pitch": n["pitch"], "start": round(n["start"], 5), "len": round(max(n["len"], 0.01), 5),
-                           "vel": n["vel"]} for n in notes]}
+                           "vel": n["vel"],
+                           **({"expr": {d: [[b, v] if sh == "linear" and te == 0 else [b, v, sh, te]
+                                            for b, v, sh, te in pts]
+                                        for d, pts in n["expr"].items()}} if n.get("expr") else {})}
+                          for n in notes],
+                **({"automation": _lanes_json(self.lanes)} if self.lanes else {})}
+
+
+def _add_points(lanes, resolved, where, points):
+    """Validate (beat, value[, shape[, tension]]) points into lanes[name]."""
+    name, check, stepped = resolved
+    lane = lanes.setdefault(name, [])
+    for p in points:
+        if not 2 <= len(p) <= 4:
+            raise SlabError(f"{where}: a point is (beat, value[, shape[, tension]]), got {p!r}")
+        beat, value = p[0], check(p[1])
+        shape = p[2] if len(p) > 2 else "linear"
+        tension = p[3] if len(p) > 3 else 0.0
+        if shape not in ("hold", "linear", "curve"):
+            raise SlabError(f"{where}: shape {shape!r} is not hold/linear/curve")
+        if stepped and shape != "hold":
+            shape = "hold"
+        if not -1 <= tension <= 1:
+            raise SlabError(f"{where}: tension {tension} is outside [-1, 1]")
+        if beat < 0:
+            raise SlabError(f"{where}: beat {beat} is negative")
+        lane.append((beat, value, shape, tension))
+    lane.sort(key=lambda q: q[0])  # stable: same-beat points keep their order (a jump)
+
+
+def _lanes_json(lanes):
+    return [{"target": t, "points": [[b, v] if sh == "linear" and te == 0 else [b, v, sh, te]
+                                     for b, v, sh, te in pts]}
+            for t, pts in lanes.items()]
 
 
 class Track:
@@ -354,6 +463,8 @@ class Track:
         self.color = color or PALETTE[len(song.tracks) % len(PALETTE)]
         self.mute = mute
         self.clips = []
+        # Automation lanes (docs/22): file target name -> [(beat, value, shape, tension)]
+        self.lanes = {}
         # The sampler's keymap: a .wav, an .sfz, or a folder of WAVs.
         self.samples = samples
         if samples is not None:
@@ -369,6 +480,51 @@ class Track:
         """Tweak instrument params after the preset: set(cutoff=900)."""
         self.params.update(self.machine.params_from(params, f"track {self.name}"))
         return self
+
+    def _auto_target(self, target):
+        """File target name and a value checker for an automation target:
+        "volume", "pan", an instrument param ("cutoff"), or "fx<N>:<param>"."""
+        where = f"track {self.name} automation"
+        if target == "volume":
+            def check(v):
+                if not 0 <= v <= 1.25:
+                    raise SlabError(f"{where}: volume {v} is outside [0, 1.25]")
+                return v
+            return "volume", check, False
+        if target == "pan":
+            def check(v):
+                if not -1 <= v <= 1:
+                    raise SlabError(f"{where}: pan {v} is outside [-1, 1]")
+                return v
+            return "pan", check, False
+        m = re.fullmatch(r"fx(\d+):(.+)", target)
+        if m:
+            i = int(m.group(1))
+            if i >= len(self.fx):
+                raise SlabError(f"{where}: {target} names effect {i}, but the track has {len(self.fx)}")
+            mach = machine(self.fx[i].machine_id)
+            pid = mach.resolve(m.group(2))
+            name = f"fx{i}:{pid}"
+        else:
+            mach = self.machine
+            pid = mach.resolve(target)
+            name = f"inst:{pid}"
+        param = mach.params[pid]
+        return name, (lambda v: param.coerce(v, where)), param.type != "float"
+
+    def automate(self, target, *points):
+        """An automation lane: automate("cutoff", (0, 400), (64, 4000, "curve", 0.5)).
+        Points are (beat, value[, shape[, tension]]); values in the param's
+        units (Hz, dB, 0..1), switches by index or label. Shapes: "linear"
+        (default), "curve" (tension -1..1, + = fast start), "hold" (steps).
+        The shape shapes the segment to the next point (docs/22)."""
+        _add_points(self.lanes, self._auto_target(target), f"track {self.name} automation {target}", points)
+        return self
+
+    def ramp(self, target, frm, to, v0, v1, tension=0.0):
+        """One sweep from v0 at beat `frm` to v1 at beat `to`, added to the
+        lane. tension bends it (+ = fast start)."""
+        return self.automate(target, (frm, v0, "curve" if tension else "linear", tension), (to, v1))
 
     def drum_pitch(self, lane):
         if isinstance(lane, int):
@@ -426,6 +582,7 @@ class Track:
                            **({"assets": {"smp": self.samples}} if self.samples else {})},
             "effects": [f.build(f"{where} fx {i}") for i, f in enumerate(self.fx)],
             "clips": [c.to_json() for c in sorted(self.clips, key=lambda c: c.start)],
+            **({"automation": _lanes_json(self.lanes)} if self.lanes else {}),
         }
 
 

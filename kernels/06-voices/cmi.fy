@@ -38,6 +38,10 @@ ustruct: CmiState
   f64 fade  f64 fade-k
   ( vibrato phase, cycles )
   f64 vph
+  ( per-note expression: the key, the unquantized clock it asked for, and
+    the filter latch plus the zone's TONE, in steps )
+  f64 key  f64 clock  f64 fsteps
+  f64 gain0  ( the zone's level at note-on; per-note gain scales it )
 ;
 
 ustruct: CmiParams
@@ -107,6 +111,7 @@ dsp: cmi-note-on | ctx:Ctx state:CmiState params:CmiParams |
   params.edits& p@64 | ed:ZoneEdits |
   k 0.0 fmax | k0 |
   zt c 8.0 f+ f@i  ed.level& k0 f@i db>lin  f* -> state.gain
+  state.gain -> state.gain0
   zt c 9.0 f+ f@i 1.5 f> mask>f -> state.oneshot
   ( the voice RAM: RATE, never above the file's own, 16,384 samples )
   params.rate zsr fmin | srate |
@@ -124,12 +129,15 @@ dsp: cmi-note-on | ctx:Ctx state:CmiState params:CmiParams |
   ( pitch on the card's grid )
   zroot 0.0  params.root zroot fsel-lt | root |
   key params.tune f+  ed.tune& k0 f@i f+  root f- 0.08333333333333333 f* exp2 | ratio |
+  key -> state.key
+  srate ratio f* -> state.clock
   srate ratio f* cmi-quantize-rate | rq n |
   rq ctx.sr f/ kr f/ 16.0 fmin -> state.inc
   params.start-seg 128.0 f* slen 128.0 f- 0.0 fmax fmin floor kr f/ start f+ -> state.ph
   0.0 -> state.vph
   0.0 -> state.held  0.0 -> state.pend  -1.0 -> state.i-prev
   ( the filter follows the octave register: [8 - n] 32 steps )
+  params.filter  ed.tone& k0 f@i 32.0 f* f+ -> state.fsteps
   8.0 n f- 32.0 f*  params.filter f+  ed.tone& k0 f@i 32.0 f* f+  256.0 f-  CMI-FSTEP f* exp2  6410.0 f*
     14000.0 fmin | fc |
   fc ctx.sr svf-g -> state.g1
@@ -158,6 +166,19 @@ dsp: cmi-note-on | ctx:Ctx state:CmiState params:CmiParams |
   ed.hit& k0 f@i | oldhit |
   hit  seq  oldhit  select  ed.hit& k0 f!i
   hit  k0  ed.last  select -> ed.last
+;
+
+( ctx state params -- : per-note expression [docs/22]: the bent note's
+  clock lands on the card's grid like any other note, so a bend steps
+  through the CMI's 1024 pitches an octave, and the filter follows the
+  octave register in whole octaves, as for a played note. )
+dsp: cmi-note-expr | ctx:Ctx state:CmiState params |
+  state.gain0 ctx.gain f* -> state.gain
+  ctx.pitch state.key f- 0.08333333333333333 f* exp2 state.clock f* cmi-quantize-rate | rq n |
+  rq ctx.sr f/ state.kr f/ 16.0 fmin -> state.inc
+  8.0 n f- 32.0 f*  state.fsteps f+  256.0 f-  CMI-FSTEP f* exp2  6410.0 f*  14000.0 fmin | fc |
+  fc ctx.sr svf-g -> state.g1
+  fc 1.224744871391589 f* ctx.sr svf-g -> state.g2
 ;
 
 ( age atk -- e : the attack ramp, 0..1 )

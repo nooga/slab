@@ -113,6 +113,15 @@ dsp: ms20-voice-note-on
   state.flt-env& params.flt-co& ctx.legato env-rc-trigger
 ;
 
+( ctx state params -- : per-note expression [docs/22]: the bend is
+  already a curve, so it moves the pitch directly, past the portamento. )
+dsp: ms20-voice-note-expr
+  | ctx:Ctx state:Ms20VoiceState params:Ms20VoiceParams |
+  ctx.hz 1.0 fmax log2 | o |
+  o -> state.target-oct
+  o -> state.oct
+;
+
 ( ctx state params -- : release both envelopes from where they are. )
 dsp: ms20-voice-note-off
   | ctx state:Ms20VoiceState params:Ms20VoiceParams |

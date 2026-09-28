@@ -4,8 +4,8 @@ A working guide for composing in Slab, by hand or with Claude driving
 `tools/slabkit`. It covers finding references, song form, harmony,
 melody, groove, choosing sounds, channel setup, compression, space, the
 master chain, and how to read the render report. Where general
-production advice meets a Slab limit (no sends, no automation, the
-master soft-clip), the Slab way is spelled out.
+production advice meets a Slab limit (no sends, the master
+soft-clip), the Slab way is spelled out.
 
 File format: [19-project-format.md](19-project-format.md). Params and
 presets: [20-machine-reference.md](20-machine-reference.md). Worked
@@ -98,8 +98,14 @@ about 1–2 LU below the chorus, bridge lower, last chorus highest. If
 every section reads the same (the report flags spreads under 2 LU),
 parts aren't entering and leaving.
 
-**Without automation, arrange the dynamics.** Slab can't automate a
-fader or filter yet (planned: [22-automation.md](22-automation.md)). Contour comes from:
+**Automate the long moves, arrange the rest.** Track automation
+([22-automation.md](22-automation.md)) rides faders, filters and effect
+sends: `track.ramp("cutoff", verse.start, chorus.start, 400, 3000,
+tension=-0.4)` opens a filter into the chorus, `track.automate("volume",
+…)` rides a fader, `track.automate("fx1:mix", …)` swells a reverb. A
+slow-start curve (negative tension) sounds more natural on a filter
+open than a straight line. Automation can't yet follow a clip or bend
+single notes, so contour also comes from:
 - parts entering and leaving section by section (the main tool);
 - clip velocities: `clip.velocities(fn)` for fades and swells; drum2
   and most synths respond to velocity;

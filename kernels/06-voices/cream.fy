@@ -166,6 +166,14 @@ dsp: cream-note-on | ctx:Ctx state:CreamState params:CreamParams -- |
   ctx.legato 0.5  ctx.vel state.vel  fsel-lt -> state.vel
 ;
 
+( ctx state params -- : per-note expression [docs/22]: the bend is
+  already a curve, so it moves the pitch directly, past the portamento. )
+dsp: cream-note-expr | ctx:Ctx state:CreamState params:CreamParams -- |
+  ctx.hz 1.0 fmax log2 | o |
+  o -> state.target-oct
+  o -> state.oct
+;
+
 ( ctx state params -- )
 dsp: cream-note-off | ctx state:CreamState params:CreamParams -- |
   state.f-env& params.f-co& env-rc-release

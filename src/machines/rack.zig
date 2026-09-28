@@ -132,6 +132,8 @@ pub const Rack = struct {
             .apply_state_json = applyStateJsonImpl,
             .panel_w_fn = panelWImpl,
             .host_titlebar = true,
+            // Parts get the notes, bends included; most of them play it.
+            .takes_expression = true,
             .panel_w = SIDE_W + 200,
         };
     }
@@ -332,6 +334,13 @@ pub const Rack = struct {
                 },
                 .note_off => if (releaseHeld(p, ev)) |off| {
                     out[n] = off;
+                    n += 1;
+                },
+                // Expression carries a pitch: transpose it like the note.
+                .expression => if (findHeld(p, ev) != null) {
+                    var e = ev;
+                    e.pitch = ev.pitch + @as(f32, @floatFromInt(p.transpose));
+                    out[n] = e;
                     n += 1;
                 },
                 .pressure, .slide, .glide, .note_hold => if (findHeld(p, ev)) |h| {

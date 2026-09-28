@@ -38,6 +38,7 @@ dsp: ms20-block-prepare | ctx:Ctx state params:Ms20VoiceParams -- |
   "SM-24 Mono" voice-sample machine*
   "k-ms20-voice-sample" render!
   "ms20-voice-note-on"  note-on!
+  "ms20-voice-note-expr" note-expr!
   "ms20-voice-note-off" note-off!
   "ms20-block-prepare"  block-prepare!
   Ms20VoiceState.size  state-size!

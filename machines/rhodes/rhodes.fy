@@ -17,6 +17,7 @@ include "../lib/manifest.fy"
   "Rhodes E-Piano" voice-sample machine*
   "k-rhodes-voice"       render!
   "rhodes-note-on"       note-on!
+  "rhodes-note-expr"     note-expr!
   "rhodes-note-off"      note-off!
   "rhodes-block-prepare" block-prepare!
   8 voices!

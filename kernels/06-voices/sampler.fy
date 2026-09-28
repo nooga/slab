@@ -84,6 +84,10 @@ ustruct: SamplerState
   ( playback )
   f64 ph         ( read position in the pool )
   f64 inc        ( advance per host sample )
+  f64 inc0       ( the note's own advance, before any bend )
+  f64 bend       ( per-note pitch expression, semitones from key )
+  f64 f-oct      ( filter corner at note-on, octaves over FILTER: TRK and TONE )
+  f64 gain0      ( the zone's level at note-on; per-note gain scales it )
   f64 held       ( CLOCK: the value on the output, before its BLEP )
   f64 pend       ( CLOCK: next output, naive + after-step correction )
   f64 i-prev     ( CLOCK: the stored sample index last read )
@@ -200,6 +204,7 @@ dsp: sampler-note-on | ctx:Ctx state:SamplerState params:SamplerParams |
   params.edits& p@64 | ed:ZoneEdits |
   k 0.0 fmax | k0 |
   zt c 8.0 f+ f@i  ed.level& k0 f@i db>lin  f* -> state.gain
+  state.gain -> state.gain0
   ( CUT overrides the pack: group n both joins and is cut by n )
   ed.cut& k0 f@i | cut |
   cut 0.5 f> | own |
@@ -221,6 +226,8 @@ dsp: sampler-note-on | ctx:Ctx state:SamplerState params:SamplerParams |
   zroot 0.0  params.root zroot fsel-lt | root |
   key params.tune f+  ed.tune& k0 f@i f+  root f- 0.08333333333333333 f* exp2 | ratio |
   zsr ctx.sr f/ ratio f* 16.0 fmin -> state.inc
+  state.inc -> state.inc0
+  0.0 -> state.bend
   start  params.start len f* f+ -> state.ph
   0.0 -> state.held
   0.0 -> state.pend
@@ -228,7 +235,9 @@ dsp: sampler-note-on | ctx:Ctx state:SamplerState params:SamplerParams |
   params.rate zsr f/ 0.001 1.0 fclamp -> state.kr
   1.0 -> state.oc
   ( filter corner follows the pitch by TRK octaves per octave )
-  ratio log2 params.trk f*  ed.tone& k0 f@i f+  exp2 params.filter-hz f* ctx.sr svf-g -> state.fg
+  ratio log2 params.trk f*  ed.tone& k0 f@i f+ | f-oct |
+  f-oct -> state.f-oct
+  f-oct exp2 params.filter-hz f* ctx.sr svf-g -> state.fg
   ( DECAY: -60 dB over the zone's decay time, on top of the envelope )
   ed.decay& k0 f@i | dcy |
   1.0 -> state.fade
@@ -270,13 +279,25 @@ dsp: sampler-note-off | ctx:Ctx state:SamplerState params:SamplerParams |
   zroot 0.0  params.root zroot fsel-lt | root |
   params.edits& p@64 | ed:ZoneEdits |
   k 0.0 fmax | k0 |
-  state.key params.tune f+  ed.tune& k0 f@i f+  root f- 0.08333333333333333 f* exp2 | ratio |
+  state.key state.bend f+  params.tune f+  ed.tune& k0 f@i f+  root f- 0.08333333333333333 f* exp2 | ratio |
   zt c 2.0 f+ f@i | rsr0 |
   rsr0 0.5 f<  24000.0  rsr0  select  ctx.sr f/ ratio f* 16.0 fmin -> state.r-inc
   start -> state.r-ph
   start len f+ -> state.r-end
   0.0  zt c 18.0 f+ f@i state.age f*  f- db>lin | fall |
   zt c 8.0 f+ f@i  ed.level& k0 f@i db>lin f*  fall f*  hit mask>f f* -> state.r-gain
+;
+
+( ctx state params -- : per-note expression [docs/22]: retune the voice
+  to ctx.pitch, a bend of ctx.pitch - key semitones on the note's own
+  advance; the filter tracks the bend by TRK like a note.  Per-note
+  gain scales the zone's level. )
+dsp: sampler-note-expr | ctx:Ctx state:SamplerState params:SamplerParams |
+  state.gain0 ctx.gain f* -> state.gain
+  ctx.pitch state.key f- -> state.bend
+  state.bend 0.08333333333333333 f* | boct |
+  state.inc0  boct exp2 f*  16.0 fmin -> state.inc
+  state.f-oct  boct params.trk f*  f+  exp2 params.filter-hz f* ctx.sr svf-g -> state.fg
 ;
 
 ( buf ph -- y : 4-point Hermite at ph between the stored samples. )

@@ -26,6 +26,7 @@ include "../lib/manifest.fy"
   "k-sampler-voice"       render!
   "sampler-note-on"       note-on!
   "sampler-note-off"      note-off!
+  "sampler-note-expr"     note-expr!
   "sampler-block-prepare" block-prepare!
   8 voices!
   SamplerState.size  state-size!

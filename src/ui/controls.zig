@@ -815,6 +815,32 @@ pub fn led(ui: *Ui, x: i32, y: i32, shape: LedShape, state: LedState, col: Color
     }
 }
 
+/// Where a control cell's automation LED goes: just after its centred
+/// legend, in the legend row.
+pub fn autoLedPos(ui: *const Ui, cell: Rect, label: []const u8) [2]i32 {
+    const lw = ui.fonts.legend.measure(label);
+    return .{ cell.x + @divFloor(cell.w + lw, 2) + 2, cell.y + @divFloor(LEGEND_H - 4, 2) };
+}
+
+/// The automated-control LED (docs/22 §Automated controls): a square 4 at
+/// (x, y). Lit while a lane drives the control; a hollow ring while the
+/// hand overrides it. Returns true when clicked.
+pub fn autoLed(ui: *Ui, x: i32, y: i32, key: anytype, overridden: bool) bool {
+    const wid = ui.id(key);
+    const b = ui.behaviorEx(wid, Rect.xywh(x - 2, y - 2, 8, 8), .{ .prio = 3, .focusable = false });
+    if (overridden) {
+        const col = if (b.hover) style.auto else style.auto.mix(style.well, 0.25);
+        ui.rect(Rect.xywh(x, y, 4, 1), col);
+        ui.rect(Rect.xywh(x, y + 3, 4, 1), col);
+        ui.rect(Rect.xywh(x, y + 1, 1, 2), col);
+        ui.rect(Rect.xywh(x + 3, y + 1, 1, 2), col);
+        ui.rect(Rect.xywh(x + 1, y + 1, 2, 2), style.well);
+    } else {
+        led(ui, x, y, .square4, .on, style.auto);
+    }
+    return b.clicked;
+}
+
 /// A flat shape tinted `col` (arrows on steppers, printed marks).
 fn ledShape(ui: *Ui, x: i32, y: i32, shape: LedShape, col: Color) void {
     ui.sprite(ui.art.leds[@intFromEnum(shape)].body, x, y, col);
@@ -1255,7 +1281,7 @@ pub fn titleStrip(ui: *Ui, r: Rect, name: []const u8, preset: []const u8) void {
     var buf: [48]u8 = undefined;
     const live = t.scope == ui.scopeId() and ui.in.time - t.time < core.TOUCH_HOLD;
     const s = if (live)
-        std.fmt.bufPrint(&buf, "{s} {s}", .{ t.labelStr(), t.valueStr() }) catch preset
+        std.fmt.bufPrint(&buf, "{s} {s}{s}", .{ t.labelStr(), t.valueStr(), if (t.automated) " A" else "" }) catch preset
     else
         preset;
     display(ui, disp_r, s, .{});
