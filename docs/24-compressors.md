@@ -2,9 +2,9 @@
 
 Which compressors Slab should have beyond `comp2`, how the classic
 designs make their sound, and how each new machine gets measured.
-**Status:** (0) prerequisites, (1) bus2 and (2) the comp2 revision are
-built (§comp2 as built, §bus2 as built); multi2 and the character modes
-are open. The
+**Status:** (0) prerequisites, (1) bus2, (2) the comp2 revision and
+(3) multi2 are built (§comp2 as built, §bus2 as built, §multi2 as
+built); the character modes are open. The
 survey's numbers marked *measured* are the old comp2 and come from
 `zig build bench` on comp2 (Debug, 2026-09-28) and from a numpy mirror
 of `comp.fy` (a scratch script, not in the repo) that matches the bench to 0.1 dB where they overlap
@@ -12,7 +12,7 @@ of `comp.fy` (a scratch script, not in the repo) that matches the bench to 0.1 d
 drum-bus recipe below).
 
 Code this touches, as it lands: `kernels/07-effects/comp.fy`, new
-`kernels/07-effects/{dyn,xover}.fy`, `machines/{comp2,bus2,multi2}/`,
+`kernels/07-effects/{bus,multi}.fy`, `machines/{comp2,bus2,multi2}/`,
 `kernels/00-primitives/ctx.fy` + `src/machines/fy_raw_machine.zig`
 (Io ABI), `src/bench/cases.zig` + `src/bench_main.zig` (new cases).
 
@@ -260,6 +260,70 @@ or mixes for a GR target at makeup 0, MAKEUP for level):
 On drums alone AUTO and a fixed 0.1 s release measure alike (same GR on
 hits, pump 1.11 vs 1.20): hits are too short to charge the slow
 follower. AUTO earns its keep on material with sustained loud passages.
+
+### multi2 as built (2026-09-29)
+
+`machines/multi2/multi2.fy`, DSP in `kernels/07-effects/multi.fy`.
+Stereo, no sidechain key (the per-band keyed detector would double the
+crossover cost; comp2 does keyed ducking).
+
+- **Crossover.** LR4 at XLO (40–400 Hz, default 120) and XHI (1–8 kHz,
+  default 2500) from TPT SVFs at Butterworth damping instead of
+  biquads: one SVF gives the LP and HP of the first stage, a second
+  stage on each makes the LR4 pair, and the low band's allpass at XHI
+  is `x − 2k·bp` of one more SVF. Seven SVFs a channel, coefficients
+  per block from `svf-g`. States are flushed below ~1e−34 (`x + c − c`),
+  so tails reach 0 instead of crawling through denormals.
+- **Per band:** THRESH (−48…0), RATIO (1…10, pow), GAIN (±12); linked
+  peak detector on `max(|L|,|R|)` of the band with a hold that decays
+  over 20 / 5 / 2 ms (low / mid / high), comp.fy's log-domain gain
+  computer with a fixed 4 dB knee, gain smoothing at ATK / REL × 2 for
+  the low band and × 0.5 for the high one. Each band has its own
+  transfer-curve display (`dyn-display` with prefixes `mlo` / `mmid` /
+  `mhi`).
+- **UP** (0…1): upward compression in the same gain computer. Below
+  THRESH − 10 dB the band is lifted by 0.5·UP per dB under that point
+  (UP 1 = 2:1 upward), capped at +12 dB and limited to the distance
+  above −60 dBFS, so the noise floor isn't raised.
+- **MIX** blends with the crossover's own sum, not the raw input: the
+  dry path goes through the same allpasses and a parallel mix doesn't
+  comb at the crossovers. OUT ±12 dB.
+
+Measured (Debug unless noted): all ratios 1 → impulse and sweep flat
+to ±0.0 dB 100 Hz–16 kHz; mid-band curve 2:1 above the knee (1 kHz,
+−8.45 dB at 0 dBFS vs −9 ideal: the 4 dB knee); UP 1 lifts −45 dBFS by
+8.5 dB (2:1 below −28); 1 kHz step attack τ63 10.9 ms (ATK 10) and
+release 153 ms (REL 150); low band (80 Hz) release ≈ 310 ms and high
+band (8 kHz) 76 ms, attack 5.0 ms at 8 kHz; 50 Hz THD −64 dB at 5 dB
+GR; sine THD −95 dB. Cost 107 ns/sample ReleaseFast vs comp2's 35
+(3.1×, inside the 5× budget).
+
+The bench reads a multiband's gain differently: its allpass phase
+makes the sample-wise out/in meaningless, so `step`, `bursts` and
+`drums` use the ratio of 1 ms RMS windows, and crossings are looked for
+10 ms after each edge (the crossovers ring). docs/13 §Dynamics cases.
+
+**Presets** (`tools/comp2_presets/design_multi2.py`): character by
+intent; each band's THRESH solved from that band's own level on the
+three songs' mixes (an FFT split with the LR4 magnitudes, p90 of 10 ms
+window peaks: THRESH = L90 − GR / (1 − 1/R)); OUT solved with the
+bench `file` case for level-neutral output.
+
+| preset | character | GR at the loud level lo / mid / hi |
+|---|---|---|
+| `master-balance` | 2 / 1.5 / 2:1, 10 ms / 150 ms, X 120 / 3000 | 2.5 / 1 / 1.5 dB |
+| `low-control` | low 3:1 only, 5 / 100 ms, X 150 | 4 / – / – |
+| `de-harsh` | high 4:1 only, 1 / 80 ms, X 4500 | – / – / 3 (t/b 9.5 → 8.1) |
+| `radio` | all 4:1, 3 / 80 ms, UP 0.4 | 4 / 3 / 3 |
+| `upward-lift` | all 1.5:1, 10 / 200 ms, UP 0.8 | 1 / 1 / 1, lift under |
+
+**On a master.** Voltage Riot (docs/21) put `master-balance` (low
+threshold +2 dB, mid +1, high +1.5 gain) in place of its broadband
+comp2 glue, limiter gain 8 → 9: −11.1 → −10.7 LUFS at the same ceiling,
+crest 9.6 → 9.7 dB, sub + low 70 → 60 % of the energy, break dips
+under the drops kept (1.8 / 1.2 LU). With comp2 glue left in as well,
+the breaks came up to the drops' level: a multiband and a broadband
+leveller stacked level too much.
 
 ### (0) Prerequisites
 
@@ -512,8 +576,8 @@ bus2's reason to exist.
 - **Io ABI change** touches every effect's frame size; the layout test
   catches mismatches, but every machine's goldens must still pass
   `--check` unchanged afterwards.
-- **multi2 panel width**: 14 knobs at the catalogue sizes may need two
-  rows; don't shrink controls (docs/06).
+- **multi2 panel width**: built at 420 px, a curve over each band's
+  three knobs and crossover / time / output below.
 
 ## Sources
 

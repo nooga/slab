@@ -33,7 +33,7 @@ def bench_bin():
 def metrics(params, stem, preset=None, machine="comp2", prefix="comp"):
     args = [bench_bin(), f"machines/{machine}", "--no-sheets", f"--input={DRY}/{stem}.wav", f"--out={S}/tb/{stem}-{os.getpid()}-{abs(hash(json.dumps(params,sort_keys=True)))}"]
     if preset: args.append(f"--preset={preset}")
-    for k, v in params.items(): args += ["-p", f"{prefix}-{k}={v}"]
+    for k, v in params.items(): args += ["-p", f"{prefix}-{k}={v}" if prefix else f"{k}={v}"]
     r = subprocess.run(args, capture_output=True, text=True)
     m = re.search(r"metrics: (.*)", r.stderr + r.stdout)
     if not m: raise SystemExit(r.stderr[-2000:])

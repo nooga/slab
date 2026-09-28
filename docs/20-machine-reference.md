@@ -25,6 +25,7 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`funk`](#funk) | Funk Overload | effect | — | `funk-` |
 | [`gate2`](#gate2) | Gate | effect | — | `gate-` |
 | [`limiter2`](#limiter2) | Limiter | effect | — | `lim-` |
+| [`multi2`](#multi2) | Multi | effect | — | `—` |
 | [`sat2`](#sat2) | Saturator | effect | — | `sat-` |
 | [`verb2`](#verb2) | Verb | effect | — | `verb-` |
 
@@ -2366,6 +2367,37 @@ Presets:
 | `lim-ceil` | LIM | CEIL | -24 … 0 | -0.3 | linear |
 | `lim-look` | LIM | LOOK | 0.1 … 10 | 2 | exp |
 | `lim-rel` | LIM | REL | 0.01 … 1 | 0.2 | exp |
+
+## multi2
+
+**Multi**, stereo insert effect.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `mlo-thresh` | LOW | THRESH | -48 … 0 | -18 | linear |
+| `mlo-ratio` | LOW | RATIO | 1 … 10 | 2 | pow |
+| `mlo-gain` | LOW | GAIN | -12 … 12 | 0 | linear |
+| `mmid-thresh` | MID | THRESH | -48 … 0 | -18 | linear |
+| `mmid-ratio` | MID | RATIO | 1 … 10 | 2 | pow |
+| `mmid-gain` | MID | GAIN | -12 … 12 | 0 | linear |
+| `mhi-thresh` | HIGH | THRESH | -48 … 0 | -18 | linear |
+| `mhi-ratio` | HIGH | RATIO | 1 … 10 | 2 | pow |
+| `mhi-gain` | HIGH | GAIN | -12 … 12 | 0 | linear |
+| `multi-xlo` | XOVER | LO | 40 … 400 | 120 | exp |
+| `multi-xhi` | XOVER | HI | 1000 … 8000 | 2500 | exp |
+| `multi-atk` | TIME | ATK | 0.0005 … 0.1 | 0.01 | exp |
+| `multi-rel` | TIME | REL | 0.02 … 1 | 0.15 | exp |
+| `multi-up` | OUT | UP | 0 … 1 | 0 | linear |
+| `multi-mix` | OUT | MIX | 0 … 1 | 1 | pow |
+| `multi-out` | OUT | OUT | -12 … 12 | 0 | linear |
+
+Presets:
+
+- `de-harsh` — a fast 4:1 on the top above 4.5 kHz for cymbals and harsh synths
+- `low-control` — holds kick and bass to one level under 150 Hz, 3:1; mid and top untouched
+- `master-balance` — mastering: every band a little - low 2:1 slow, mid 1.5:1, top 2:1 on peaks
+- `radio` — dense and loud: all bands 4:1, quick, upward lift under the quiet parts
+- `upward-lift` — brings the detail up: gentle downward, strong upward below each threshold
 
 ## sat2
 

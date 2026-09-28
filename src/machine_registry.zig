@@ -44,6 +44,7 @@ pub const builtin_machines = [_][]const u8{
     "machines/verb2/verb2.fy",
     "machines/comp2/comp2.fy",
     "machines/bus2/bus2.fy",
+    "machines/multi2/multi2.fy",
     "machines/eq2/eq2.fy",
     "machines/sat2/sat2.fy",
     "machines/era/era.fy",
