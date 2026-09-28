@@ -55,13 +55,16 @@ cr78 = song.track("CR-78", "sampler", "drums/roland-cr-78/kit", volume=0.9, fx=[
 ])
 # The kit: acoustic samples, toms filled out to five with copies, and the
 # gated room doing the rest.
-# Snare, toms and the crash go through the gated room; the kick has its
-# own track (a room full of kick is mud, and the 80s mixes kept it out).
+# Snare, toms and the crash send to the gated room; the kick has its own
+# track (a room full of kick is mud, and the 80s mixes kept it out).
 kit = song.track("KIT", "sampler", "vcsl-kits/acoustic-kit", volume=1.1, params=dict(level=1.0), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=90, p1_hz=450, p1_db=-3, p1_q=0.9, p2_hz=2200, p2_db=4, hs_hz=6000, hs_db=3),
     fx("comp2", "drum-smash", makeup=15),
-    fx("verb2", "gated-drum-room", mix=0.18),
 ])
+# The room is a return, fully wet, its gate keyed by the dry kit: the
+# tail slams shut when the drums stop, not when the room itself decays.
+room = song.bus("GATED ROOM", fx=[fx("verb2", "gated-drum-room", mix=1.0, key=kit)])
+kit.send(room, -11)
 kick = song.track("KICK", "sampler", "vcsl-kits/acoustic-kit", volume=1.1, params=dict(level=1.0), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=35, p1_hz=380, p1_db=-5, p1_q=1.2, p2_hz=3500, p2_db=3),
     fx("comp2", "dry-drum-punch", makeup=10),
