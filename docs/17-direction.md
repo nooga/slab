@@ -587,7 +587,7 @@ THRESH, held HOLD after the last one, shaped by SHAPE (decaying / flat /
 rising 'reverse'), shut in ~10 ms. PLATE mode leaves the wet path bit for
 bit as it was. It stands in for the send + keyed gate until routing lands.
 
-Unfairlight CIA (2026-09-27, machines/unfairlight): the CMI machine's
+Unfairlight TMI (2026-09-27, machines/unfairlight): the CMI machine's
 voice card, kernels/06-voices/cmi.fy after MAME's cmi01a.cpp. Any keymap
 becomes voice RAM: sampled at RATE, 8-bit, cut at 16,384 bytes. Notes
 play on the card's clock grid ((0x800 | pitch<<1) * mosc / 4096 / 16 over

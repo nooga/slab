@@ -6,7 +6,7 @@ bytes) images of CMI 8" floppies, and loose .VC voice files, and
 
   1. copies every voice into the Slab sample library,
      $SLAB_LIBRARY or ~/Music/Slab/Library, as cmi/<disk>/<VOICE>.vc;
-  2. writes an Unfairlight CIA preset per voice into
+  2. writes an Unfairlight TMI preset per voice into
      machines/unfairlight/presets/cmi-<disk>/, pointing at
      "lib:cmi/<disk>/<VOICE>.vc", with the voice's Page 7 settings when its
      disk carries its control file (NAME.CO: filter, attack, damping,

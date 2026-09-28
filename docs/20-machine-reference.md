@@ -15,7 +15,7 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`ms20`](#ms20) | SM-24 Mono | instrument | mono | `—` |
 | [`rhodes`](#rhodes) | Rhodes E-Piano | instrument | 8 | `rd-` |
 | [`sampler`](#sampler) | Sampler | instrument | 8 | `smp-` |
-| [`unfairlight`](#unfairlight) | Unfairlight CIA | instrument | 8 | `cmi-` |
+| [`unfairlight`](#unfairlight) | Unfairlight TMI | instrument | 8 | `cmi-` |
 | [`chorus2`](#chorus2) | Chorus | effect | — | `chorus-` |
 | [`comp2`](#comp2) | Comp | effect | — | `comp-` |
 | [`delay2`](#delay2) | Delay | effect | — | `delay-` |
@@ -708,7 +708,7 @@ Presets:
 
 ## unfairlight
 
-**Unfairlight CIA**, instrument, 8 voices.
+**Unfairlight TMI**, instrument, 8 voices.
 
 | param | section | label | range | default | notes |
 |---|---|---|---|---|---|
