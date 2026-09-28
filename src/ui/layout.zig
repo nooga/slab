@@ -50,6 +50,13 @@ pub const State = struct {
 
     machine_bay_collapsed: bool = false,
     clip_editor_visible: bool = false,
+    /// The mixer page takes the arrangement's place (docs/23).
+    mixer_visible: bool = false,
+
+    /// The clip editor has a pane: on, and not covered by the mixer.
+    pub fn clipShown(self: *const State) bool {
+        return self.clip_editor_visible and !self.mixer_visible;
+    }
 
     fn effBayH(self: *const State) i32 {
         return if (self.machine_bay_collapsed) machine_bay.TITLE_H else self.bay_h;
@@ -63,7 +70,8 @@ pub const State = struct {
         const main = screen;
         var rest = screen;
         const bay = rest.cutBottom(@min(self.effBayH(), @max(0, rest.h - MIN_ARRANGE)));
-        const clip = if (self.clip_editor_visible) rest.cutBottom(@min(self.clip_h, @max(0, rest.h - MIN_ARRANGE))) else Rect{};
+        // The mixer page takes the clip editor's room as well.
+        const clip = if (self.clipShown()) rest.cutBottom(@min(self.clip_h, @max(0, rest.h - MIN_ARRANGE))) else Rect{};
         return .{ .top = top, .main = main, .arr = rest, .clip = clip, .bay = bay };
     }
 
@@ -88,12 +96,12 @@ pub const State = struct {
             _ = ctl.split(ui, s.main, "bay", &self.bay_h, .{
                 .from_end = true,
                 .min = MIN_BAY,
-                .min_other = MIN_ARRANGE + (if (self.clip_editor_visible) self.clip_h else 0),
+                .min_other = MIN_ARRANGE + (if (self.clipShown()) self.clip_h else 0),
                 .collapsed = 0,
             });
         }
         // Clip editor seam, measured inside the region above the bay.
-        if (self.clip_editor_visible) {
+        if (self.clipShown()) {
             const above_bay = Rect.xywh(s.main.x, s.main.y, s.main.w, s.main.h - s.bay.h);
             _ = ctl.split(ui, above_bay, "clip", &self.clip_h, .{ .from_end = true, .min = MIN_CLIP, .min_other = MIN_ARRANGE });
         }
@@ -101,7 +109,7 @@ pub const State = struct {
         // on the Ui list, so every pane boundary is exactly one dark pixel.
         const now = self.split(@intFromFloat(sw_f), @intFromFloat(sh_f));
         seam(ui, now.arr);
-        if (self.clip_editor_visible) seam(ui, now.clip);
+        if (self.clipShown()) seam(ui, now.clip);
     }
 };
 

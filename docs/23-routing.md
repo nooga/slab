@@ -2,8 +2,9 @@
 
 Where a track's audio goes after its insert chain, and how one track's
 signal reaches another's effect. It covers step 11 of
-[17-direction.md](17-direction.md) (Track E). **Status: phase 1 built** (buses,
-outputs, sends, the format, slabkit, a header menu); phases 2–5 open. Supersedes the send/return sketch in
+[17-direction.md](17-direction.md) (Track E). **Status: phases 1–2 built** (buses,
+outputs, sends, the format, slabkit, the bus section, the mixer page);
+phases 3–5 open. Supersedes the send/return sketch in
 [07-transport.md §The graph](07-transport.md#the-graph) (the topological order
 there becomes §Render order below). Code, as it lands: `src/routing.zig`
 (the graph and its order), the routing fields in `track.zig`,
@@ -244,23 +245,26 @@ bass.fx[1].key(kick)            # or key=kick in fx(...)
 
 ### Mixer page
 
-**Tab** toggles the arrangement and the mixer (docs/12 §Keyboard
-already reserves it). A strip per track, then the buses, then the
-master on the right, all from the catalogue at one tier (docs/06):
+*Built* (`src/ui/mixer.zig`). **M** or the MIX latch (beside the
+arrangement's `+`) swaps the arrangement for the mixer; the mixer also
+takes the clip editor's room, and Tab still toggles the clip editor.
+Strips for the audio tracks, a gap, the buses, then the master pinned at
+the right edge. Every strip has the same rows, so they line up:
 
 | Row | Control |
 |---|---|
-| title | name on the track colour, kind label for buses |
-| inserts | one row per effect: name, bypass LED; click selects it in the bay |
-| sends | one small knob per send with its bus's short name; PRE latch; `+` adds a send to a bus |
-| output | selector: MASTER or a bus (cycle-closing choices disabled) |
-| pan | bipolar knob, centre detent |
-| fader | long-throw fader, dB scale, ladder meter beside it |
-| buttons | M, S, R latches |
+| title | colour bar, number or bus letter, name. Click edits the strip in the bay; right-click is the routing menu |
+| inserts | the chain's machine names, bypassed ones dimmed, `+N more` past four |
+| sends | a small knob per bus, lettered (A, B, …), two to a row. Half travel is 0 dB, full +6 dB. Turning one up from nothing creates the send (an undo step); right-click an existing one for pre/post and remove. A bus that would feed back is disabled |
+| output | `→ MASTER` or a bus; click for the output list |
+| pan | bipolar knob; BAL on the master |
+| fader | volume with the stereo meter and its scale beside it, dB readout below |
+| buttons | M, S, and R on audio tracks |
 
-Strips are fixed width; the page scrolls sideways when they don't fit.
-The machine bay stays below and follows the selected strip, as it
-follows the selected track now.
+Strips are fixed width (84 px); the page scrolls sideways with the wheel
+when they don't fit. The machine bay below follows the selected strip.
+Level, pan, mute and solo moves aren't undo steps, as in the arrangement
+headers; creating, removing or retapping a send is.
 
 ### Patch bay
 
@@ -312,7 +316,7 @@ Group folding waits for track reordering.
    a header's name for Output ▸ and Sends ▸ (each with New bus); sends
    made there are post-fader at 0 dB; levels and PRE wait for the mixer.
    Buses are ordinary rows until then and refuse new clips.*
-2. **Mixer page.** Strips, send knobs, output selectors, Tab.
+2. **Mixer page.** Strips, send knobs, output selectors, M. *Built.*
 3. **Keys.** The `sidechain` manifest flag, `det` from the key, 4-port
    `audio_in`, verb2 on `io.det`, the KEY selector in the effect title
    strip, the patch bay page. **Exit: the gated snare works end to

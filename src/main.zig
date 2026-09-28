@@ -38,6 +38,7 @@ const text_field = @import("ui/text_field.zig");
 const splash = @import("ui/splash.zig");
 const audio_clip_editor = @import("ui/audio_clip_editor.zig");
 const machine_bay = @import("ui/machine_bay.zig");
+const mixer = @import("ui/mixer.zig");
 const render_dialog = @import("ui/render_dialog.zig");
 
 test {
@@ -587,8 +588,8 @@ pub fn main(init: std.process.Init) !void {
 
         var rects = layout.compute(sw, sh);
         var tracks = tracks_buf[0..track_count];
-        if (!layout.clip_editor_visible and focus == .piano_roll) focus = .arrangement;
-        if (pane_m.left_pressed) focus = focusFromPoint(rects, pane_m, layout.clip_editor_visible);
+        if (!layout.clipShown() and focus == .piano_roll) focus = .arrangement;
+        if (pane_m.left_pressed) focus = focusFromPoint(rects, pane_m, layout.clipShown());
 
         if (render_dlg.active) {
             // Modal: only Esc/Enter act, handled after the dialog draws below.
@@ -627,6 +628,7 @@ pub fn main(init: std.process.Init) !void {
             if (c.rl.IsKeyPressed(c.rl.KEY_SPACE)) transport.toggle();
             if (c.rl.IsKeyPressed(c.rl.KEY_HOME)) transport.rewind();
             if (c.rl.IsKeyPressed(c.rl.KEY_TAB)) layout.clip_editor_visible = !layout.clip_editor_visible;
+            if (!commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_M)) layout.mixer_visible = !layout.mixer_visible;
             if (focus == .piano_roll and !commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_E)) clip_editor.toggleExpressionMode();
         }
 
@@ -731,7 +733,15 @@ pub fn main(init: std.process.Init) !void {
         auto_was_playing = playing_now;
         syncAutomationUi(tracks, transport.beats());
 
-        const ares = arrangement.draw(ui, rects.arrangement, tracks, &master, &device_sel, &audio_pool, alloc, &selected_track, &selected_clip, &transport, &meter_state, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), &recorder, pane_m);
+        var ares: arrangement.Result = .{};
+        if (layout.mixer_visible) {
+            const mres = mixer.draw(ui, rects.arrangement, tracks, &master, &device_sel, &selected_track, transport.beats());
+            ares.route = mres.route;
+            if (mres.toggle) layout.mixer_visible = false;
+        } else {
+            ares = arrangement.draw(ui, rects.arrangement, tracks, &master, &device_sel, &audio_pool, alloc, &selected_track, &selected_clip, &transport, &meter_state, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), &recorder, pane_m);
+            if (ares.toggle_mixer) layout.mixer_visible = true;
+        }
         if (ares.rename_clip) |ref| beginRenameClip(&rename, tracks, ref);
         if (ares.rename_track) |ti| beginRenameTrack(&rename, tracks, ti);
         if (ares.rename_rect) |rr| rename.rect = rr;
@@ -783,7 +793,7 @@ pub fn main(init: std.process.Init) !void {
             layout.clip_editor_visible = true;
             rects = layout.compute(sw, sh);
         }
-        if (layout.clip_editor_visible) {
+        if (layout.clipShown()) {
             const cres = if (selectedClipIsAudio(tracks, selected_clip))
                 audio_clip_editor.draw(ui, rects.clip_editor, tracks, &audio_pool, selected_clip, transport.bpm(), pane_m)
             else
@@ -985,6 +995,7 @@ pub fn main(init: std.process.Init) !void {
 
         if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_PLAY") != null) transport.play();
         if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_EXPR") != null) clip_editor.toggleExpressionMode();
+        if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_MIXER") != null) layout.mixer_visible = true;
         if (shot_frame == 0) if (std.c.getenv("SLAB_SHOT_SELECT")) |sel| {
             // "track:clip" — open that clip in the editor (screenshots).
             var it = std.mem.splitScalar(u8, std.mem.span(sel), ':');
@@ -1541,6 +1552,8 @@ fn applyRouteEdit(
     switch (edit.what) {
         .output => |o| target = o,
         .send_toggle => |bus| target = bus,
+        .send_add => |a| target = a.bus,
+        .send_pre => |p| target = p.bus,
         .output_new_bus, .send_new_bus => {
             if (track_count.* >= MAX_TRACKS) return error.TooManyTracks;
             var buses: usize = 0;
@@ -1576,6 +1589,22 @@ fn applyRouteEdit(
                 try t.addSend(target, false, 1.0);
                 status.set("{s}: sends to {s}", .{ t.name(), tracks_buf[target].name() });
             }
+        },
+        .send_add => |a| {
+            if (t.sendTo(target) != null) { // already there: the knob set its level
+                alloc.free(before);
+                return;
+            }
+            try t.addSend(target, false, a.level);
+            status.set("{s}: sends to {s}", .{ t.name(), tracks_buf[target].name() });
+        },
+        .send_pre => |p| {
+            const snd = t.sendTo(target) orelse {
+                alloc.free(before);
+                return;
+            };
+            snd.pre = p.pre;
+            status.set("{s}: send to {s} {s}-fader", .{ t.name(), tracks_buf[target].name(), if (p.pre) "pre" else "post" });
         },
     }
     try history.pushUndo(alloc, before);
@@ -1692,7 +1721,8 @@ fn applyProjectBytes(
 /// SLAB_SHOT_FRAME frames (default 60), and every SLAB_SHOT_EVERY frames
 /// after that when set. SLAB_SHOT_PLAY=1 starts the transport at load;
 /// SLAB_SHOT_SELECT=track:clip opens that clip in the editor;
-/// SLAB_SHOT_EXPR=1 starts the piano roll in expression mode.
+/// SLAB_SHOT_EXPR=1 starts the piano roll in expression mode;
+/// SLAB_SHOT_MIXER=1 opens the mixer page.
 fn devScreenshot(frame: *u32) void {
     frame.* +%= 1;
     const path = std.c.getenv("SLAB_SHOT") orelse return;

@@ -108,8 +108,9 @@ converge drag are specified in
 
 - Space: play/stop.
 - Home: rewind to start.
-- Tab: show/hide the clip editor for now; later this may become
-  arrangement/mixer toggle when a mixer view exists.
+- Tab: show/hide the clip editor.
+- M: swap the arrangement for the mixer page and back
+  ([23-routing.md](23-routing.md) §Mixer page).
 - Cmd/Ctrl `+`: increase UI zoom.
 - Cmd/Ctrl `-`: decrease UI zoom.
 - Cmd/Ctrl `0`: reset UI zoom.

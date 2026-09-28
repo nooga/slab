@@ -12,6 +12,7 @@ const c = @import("../c.zig");
 const pane = @import("pane_input.zig");
 const menu = @import("menu.zig");
 const routing = @import("../routing.zig");
+const route_menu = @import("route_menu.zig");
 const bridge = @import("bridge.zig");
 const ui_core = @import("core.zig");
 const ui_style = @import("style.zig");
@@ -233,20 +234,12 @@ pub const CopiedClip = struct {
     clip: Clip,
 };
 
-/// A routing edit from a track header's menu (docs/23), applied by main
-/// with an undo step. `new_bus` variants create the bus first.
-pub const RouteEdit = struct {
-    track: usize,
-    what: union(enum) {
-        output: u8, // a bus index, or routing.NONE for the master
-        output_new_bus,
-        send_toggle: u8,
-        send_new_bus,
-    },
-};
+pub const RouteEdit = route_menu.RouteEdit;
 
 pub const Result = struct {
     add_track: bool = false,
+    /// The MIX latch: show the mixer page (docs/23 §Mixer page).
+    toggle_mixer: bool = false,
     route: ?RouteEdit = null,
     command: menu.EditCommand = .none,
     command_beat: ?f64 = null,
@@ -696,6 +689,10 @@ pub fn draw(
         const add_r = head.cutRight(20).takeTop(20);
         if (ctl.button(ui, add_r, "add", null, .{ .label = "+", .flush = true })) result.add_track = true;
         menu.tip(ui, add_r, "Add track");
+        const mix_r = head.cutRight(36).takeTop(20);
+        var mix_on = false;
+        if (ctl.button(ui, mix_r, "mix", &mix_on, .{ .kind = .latch, .label = "MIX", .lit = ui_style.accent, .flush = true })) result.toggle_mixer = true;
+        menu.tip(ui, mix_r, "Mixer (M)");
         const plate_r = Rect.xywh(head.x, head.y, head.w, head.h);
         const body = ui.plate(plate_r, .{});
         _ = ui.engraved(&ui.fonts.legend, body.x + 5, body.y + 3, "TRACKS", ui_style.text_dim);
@@ -993,7 +990,7 @@ pub fn draw(
 
     targetMenuTick(tracks, alloc);
     headerAutoMenuTick(tracks, alloc);
-    result.route = routeMenuTick(tracks);
+    result.route = route_menu.tick(tracks);
 
     // Overview strip on top (rendered last so nothing scissor-clips it).
     drawOverview(ui, overview_rect, timeline_w, tracks, content_beats, transport, m);
@@ -1511,60 +1508,6 @@ const HeaderResult = struct {
     name_rect: c.rl.Rectangle,
 };
 
-const ROUTE_MENU_KEY: u64 = 0x2007_E000_0000_0001;
-var route_menu_track: usize = 0;
-var route_labels: [routing.MAX_TRACKS][routing.MAX_TRACKS + 8]u8 = undefined;
-
-/// Right-click on a header's name: Output ▸ and Sends ▸, each ending in
-/// New bus. Choices that would close a loop are disabled (docs/23).
-fn routeMenuTick(tracks: []Track) ?RouteEdit {
-    if (!menu.isOpen(ROUTE_MENU_KEY)) return null;
-    const ti = route_menu_track;
-    if (ti >= tracks.len) {
-        menu.close();
-        return null;
-    }
-    const t = &tracks[ti];
-    const top = [_]menu.Item{
-        .{ .label = "Output", .id = 1, .submenu = true },
-        .{ .label = "Sends", .id = 2, .submenu = true },
-    };
-    _ = menu.pick(ROUTE_MENU_KEY, &top);
-    const which = menu.subOpen(ROUTE_MENU_KEY, 0) orelse return null;
-
-    var nodes: [routing.MAX_TRACKS]routing.Node = undefined;
-    const n = @min(tracks.len, routing.MAX_TRACKS);
-    for (tracks[0..n], 0..) |*u, i| nodes[i] = u.routingNode();
-    const graph = routing.Routing.build(nodes[0..n]);
-    const self_idx: u8 = @intCast(ti);
-
-    var items: [routing.MAX_TRACKS + 3]menu.Item = undefined;
-    var k: usize = 0;
-    const NEW_BUS: u32 = 0x100;
-    if (which == 1) {
-        items[k] = .{ .label = if (t.output == routing.NONE) "\u{2022} Master" else "Master", .id = routing.NONE };
-        k += 1;
-    }
-    for (tracks[0..n], 0..) |*u, j| {
-        if (!u.isBus() or j == ti) continue;
-        const bus: u8 = @intCast(j);
-        const on = if (which == 1) t.output == bus else t.sendTo(bus) != null;
-        const lbl = std.fmt.bufPrint(&route_labels[j], "{s}{s}", .{ if (on) "\u{2022} " else "", u.name() }) catch u.name();
-        items[k] = .{ .label = lbl, .id = bus, .enabled = on or !graph.wouldCycle(self_idx, bus) };
-        k += 1;
-    }
-    items[k] = .{ .separator = true };
-    k += 1;
-    items[k] = .{ .label = "New bus", .id = NEW_BUS, .enabled = tracks.len < routing.MAX_TRACKS };
-    k += 1;
-    const id = menu.subPick(ROUTE_MENU_KEY, 1, items[0..k]) orelse return null;
-    if (which == 1) {
-        if (id == NEW_BUS) return .{ .track = ti, .what = .output_new_bus };
-        return .{ .track = ti, .what = .{ .output = @intCast(id) } };
-    }
-    if (id == NEW_BUS) return .{ .track = ti, .what = .send_new_bus };
-    return .{ .track = ti, .what = .{ .send_toggle = @intCast(id) } };
-}
 
 /// Track header on the new Ui (docs/06 §Working surfaces): faceplate with
 /// the track-colour spine (+ amber selection stripe), index and name, R/M/S
@@ -1643,8 +1586,7 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, numb
 
     const name_hit = Rect.xywh(r.x, r.y, name_r.right() - r.x, 20);
     if (ui.in.right_pressed and name_hit.contains(ui.in.ix(), ui.in.iy())) {
-        route_menu_track = idx;
-        menu.openAt(ROUTE_MENU_KEY, ui.in.ix(), ui.in.iy());
+        route_menu.open(idx, .all, ui.in.ix(), ui.in.iy());
     }
     menu.tip(ui, name_hit, if (t.isBus()) "Bus: right-click to route" else "Right-click to route");
     const b = ui.behaviorEx(ui.id("name"), name_hit, .{ .focusable = false });
@@ -1917,7 +1859,7 @@ fn drawMasterHeader(ui: *Ui, hdr_legacy: c.rl.Rectangle, master: *Track, selecte
 }
 
 /// Track colour as drawn (docs/06 §Palette): snapped to the track palette.
-fn trackColor(col: c.rl.Color) ui_style.Color {
+pub fn trackColor(col: c.rl.Color) ui_style.Color {
     return ui_style.nearestTrack(.{ .r = col.r, .g = col.g, .b = col.b });
 }
 
