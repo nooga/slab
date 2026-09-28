@@ -335,6 +335,15 @@ Glass Horizon's DRUMS group runs `fx("bus2", "drum-bus", thresh=-23,
 makeup=5)`, and its pad ducks under the group (`comp2` keyed by DRUMS)
 so the kit stands in front of it.
 
+On the master, `multi2` (three-band, docs/24 §multi2) holds the low
+end in its own band so kicks stop ducking the rest through the limiter;
+`master-balance` is the start, band GAIN adds presence. Use it instead
+of a broadband glue comp, not on top: both together level the breaks
+up to the drops. Voltage Riot's master is eq2 → `fx("multi2",
+"master-balance", mlo_thresh=-18.9, mmid_gain=1, mhi_gain=1.5)` →
+limiter2 at gain 9. Other presets: `low-control`, `de-harsh`, `radio`
+(4:1 everywhere, upward lift), `upward-lift`.
+
 Compress what moves too much: bass, drums, a lead with wide velocity.
 Leave pads alone; they're already even.
 

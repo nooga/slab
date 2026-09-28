@@ -196,10 +196,14 @@ bass.ride({build: (-8, 0)})
 pad.ride({break1: 1, break2: (0, 2)})
 
 # ── master: loud, but under the knee ───────────────────────────────────
+# multi2 holds the kick and bass in their own band so the limiter stops
+# ducking the whole mix on every kick; the mid and top get a little
+# presence back. It replaces a broadband glue comp: the two stacked
+# levelled the breaks up to the drops.
 song.master(fx=[
-    fx("eq2", hpf_on="ON", hpf_hz=26, ls_hz=90, ls_db=0, hs_hz=8000, hs_db=1),
-    fx("comp2", "bus-glue"),
-    fx("limiter2", gain=8.0, ceil=-3.2),
+    fx("eq2", hpf_on="ON", hpf_hz=26, ls_hz=90, ls_db=0),
+    fx("multi2", "master-balance", mlo_thresh=-18.9, mmid_gain=1, mhi_gain=1.5),
+    fx("limiter2", gain=9.0, ceil=-3.2),
 ])
 
 if __name__ == "__main__":

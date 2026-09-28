@@ -29098,32 +29098,37 @@
      "eq-hpf-on": 1,
      "eq-hpf-hz": 26,
      "eq-ls-hz": 90,
-     "eq-ls-db": 0,
-     "eq-hs-hz": 8000,
-     "eq-hs-db": 1
+     "eq-ls-db": 0
     },
     "bypass": false
    },
    {
-    "machine": "comp2",
+    "machine": "multi2",
     "params": {
-     "comp-thresh": -14.8,
-     "comp-ratio": 2,
-     "comp-knee": 6,
-     "comp-atk": 0.01,
-     "comp-rel": 0.15,
-     "comp-hpf": 90,
-     "comp-det": 0,
-     "comp-makeup": 1.9,
-     "comp-mix": 1
+     "multi-xlo": 120,
+     "multi-xhi": 3000,
+     "multi-atk": 0.01,
+     "multi-rel": 0.15,
+     "multi-up": 0.0,
+     "multi-mix": 1,
+     "multi-out": 1.0,
+     "mlo-ratio": 2.0,
+     "mlo-gain": 0,
+     "mlo-thresh": -18.9,
+     "mmid-ratio": 1.5,
+     "mmid-gain": 1,
+     "mmid-thresh": -12.7,
+     "mhi-ratio": 2.0,
+     "mhi-gain": 1.5,
+     "mhi-thresh": -17.9
     },
     "bypass": false,
-    "preset": "bus-glue"
+    "preset": "master-balance"
    },
    {
     "machine": "limiter2",
     "params": {
-     "lim-gain": 8.0,
+     "lim-gain": 9.0,
      "lim-ceil": -3.2
     },
     "bypass": false
