@@ -1503,6 +1503,8 @@ fn clipRect(lane: c.rl.Rectangle, clip: Clip, timeline_x0: f32) c.rl.Rectangle {
 
 
 const HeaderAction = enum { none, select, rename };
+/// The header's pan mini, beside the volume mini on the bottom row.
+const HEADER_PAN_W: i32 = 48;
 const HeaderResult = struct {
     action: HeaderAction = .none,
     name_rect: c.rl.Rectangle,
@@ -1557,10 +1559,13 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, numb
     const name_r = row1;
     if (!editing_name) ui.marquee(&ui.fonts.body, name_r, t.name(), if (selected) ui_style.text else ui_style.text_dim, .left, true, name_r.contains(ui.in.ix(), ui.in.iy()));
 
-    // Volume (bottom) and pan (above it, when the lane is tall enough).
-    // Automated, they show the lane's value and a hand move overrides it
-    // (docs/22 §Manual changes).
-    var vol_r = body.cutBottom(@min(body.h, 16));
+    // Pan and volume share the bottom row, pan short on the left, so both
+    // show at the default lane height. Automated, they show the lane's
+    // value and a hand move overrides it (docs/22 §Manual changes).
+    var mix_row = body.cutBottom(@min(body.h, 16));
+    var pan_r = mix_row.cutLeft(HEADER_PAN_W);
+    _ = mix_row.cutLeft(6);
+    var vol_r = mix_row;
     const vol_auto = t.isAutomated(automation.Target.volume());
     if (vol_auto) _ = vol_r.cutRight(8);
     var v_norm: f32 = std.math.clamp(t.volumeAt(beat) / 1.25, 0.0, 1.0);
@@ -1571,8 +1576,7 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, numb
     if (ui.in.right_pressed and vol_r.contains(ui.in.ix(), ui.in.iy())) openHeaderAutoMenu(idx, .volume, ui.in.ix(), ui.in.iy());
     if (vol_auto) headerOverride(ui, &t.vol_override, "vol", t.volume() != vol_base, pressed_now, Rect.xywh(vol_r.right(), vol_r.y, 8, vol_r.h));
     menu.tip(ui, vol_r, "Track volume");
-    if (body.h >= 14) {
-        var pan_r = body.cutBottom(14);
+    {
         const pan_auto = t.isAutomated(automation.Target.pan());
         if (pan_auto) _ = pan_r.cutRight(8);
         var p: f32 = (t.panAt(beat) + 1) / 2;
@@ -1845,15 +1849,17 @@ fn drawMasterHeader(ui: *Ui, hdr_legacy: c.rl.Rectangle, master: *Track, selecte
     _ = body.cutRight(4);
     const title = body.cutTop(20);
     ui.textIn(&ui.fonts.body_bold, title, "MASTER", if (selected) ui_style.text else ui_style.text_dim, .left, true);
-    const vol_r = body.cutBottom(@min(body.h, 16));
+    var mix_row = body.cutBottom(@min(body.h, 16));
+    const pan_r = mix_row.cutLeft(HEADER_PAN_W);
+    _ = mix_row.cutLeft(6);
+    const vol_r = mix_row;
     var v_norm: f32 = std.math.clamp(master.volume() / 1.25, 0.0, 1.0);
     if (ctl.slider(ui, vol_r, "vol", &v_norm, .{ .kind = .mini, .horizontal = true, .show_readout = false, .ticks = 5, .default = 1.0 / 1.25 })) master.setVolume(v_norm * 1.25);
     menu.tip(ui, vol_r, "Master volume");
-    if (body.h >= 14) {
-        const pan_r = body.cutBottom(14);
+    {
         var p: f32 = (master.pan() + 1) / 2;
         if (ctl.slider(ui, pan_r, "pan", &p, .{ .kind = .mini, .horizontal = true, .bipolar = true, .show_readout = false, .ticks = 3, .default = 0.5 })) master.setPan(p * 2 - 1);
-        menu.tip(ui, pan_r, "Master pan (double-click to center)");
+        menu.tip(ui, pan_r, "Master balance (double-click to center)");
     }
     return ui.behaviorEx(ui.id("select"), Rect.xywh(r.x, r.y, r.w, 20), .{ .focusable = false }).pressed;
 }
