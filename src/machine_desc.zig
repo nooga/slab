@@ -331,6 +331,11 @@ pub const Desc = struct {
     // Per-note expression hook (docs/22): retunes the voice to ctx.pitch.
     note_expr_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
     note_expr_word_len: usize = 0,
+    /// A cheaper render word for blocks where the params f64 at
+    /// `render_lite_sel` (byte offset) is exactly 0.
+    render_lite_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
+    render_lite_word_len: usize = 0,
+    render_lite_sel: usize = 0,
     // Generic derived-params hook: a dsp2 word (params derive-data --) the host
     // calls each block, plus an opaque machine-built data pointer. Lets a
     // machine keep all its specific logic in fy (e.g. FM-86 algorithm routing)
@@ -400,6 +405,10 @@ pub const Desc = struct {
         return if (self.note_expr_word_len == 0) null else self.note_expr_word[0..self.note_expr_word_len];
     }
 
+    pub fn renderLiteWord(self: *const Desc) ?[]const u8 {
+        return if (self.render_lite_word_len == 0) null else self.render_lite_word[0..self.render_lite_word_len];
+    }
+
     pub fn blockPrepareWord(self: *const Desc) ?[]const u8 {
         return if (self.block_prepare_word_len == 0) null else self.block_prepare_word[0..self.block_prepare_word_len];
     }
@@ -452,6 +461,8 @@ const MachineDescRaw = extern struct {
     stereo: Fy.Value,
     note_expr: Fy.Value,
     sidechain: Fy.Value,
+    render_lite: Fy.Value,
+    render_lite_sel: Fy.Value,
 };
 
 const PageRaw = extern struct { next: Fy.Value, name: Fy.Value, rows: Fy.Value };
@@ -576,6 +587,8 @@ pub fn read(host: *FyHost) !Desc {
     d.block_prepare_word_len = try copyBuf(d.block_prepare_word[0..], cstrSlice(md.block_prepare));
     d.derive_word_len = try copyBuf(d.derive_word[0..], cstrSlice(md.derive));
     d.note_expr_word_len = try copyBuf(d.note_expr_word[0..], cstrSlice(md.note_expr));
+    d.render_lite_word_len = try copyBuf(d.render_lite_word[0..], cstrSlice(md.render_lite));
+    d.render_lite_sel = @intCast(asInt(md.render_lite_sel));
     // derive-data is an opaque heap pointer (fy `alloc` returns the raw address
     // as a tagged int); >>2 recovers it. 0 = none.
     d.derive_data = @intCast(@as(u64, @bitCast(md.derive_data)) >> 2);

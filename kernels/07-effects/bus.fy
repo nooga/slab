@@ -104,8 +104,9 @@ dsp: bus-color | up:Up2 dn:Dec2 dc:BusDc w a2 a3 t inv-t -- y |
   w h f+
 ;
 
-( io bs bp cp gt -- : follow the target gain, colour, makeup and mix. )
-dsp: bus-apply | io:Io bs:BusState bp:BusParams cp:CompParams gt |
+( bs bp gt -- g : the fast and slow followers, and the gain they give
+  [log2]; stores the meter cell. )
+dsp: bus-follow | bs:BusState bp:BusParams gt -- g |
   bs.gf | f0 |
   gt f0 bp.atk-c bp.rel-c fsel-lt | cf |
   gt  f0 gt f-  cf f*  f+ | gf |
@@ -115,8 +116,22 @@ dsp: bus-apply | io:Io bs:BusState bp:BusParams cp:CompParams gt |
   gt  s0 gt f-  cs f*  f+ | gs |
   gs -> bs.gs
   bp.auto-on 0.5  gf  gf gs fmin  fsel-lt | g |
+  g -6.0205999132796239 f* -> bs.gr-db
+  g
+;
+
+( io cp yl yr -- : makeup and mix against the dry input. )
+dsp: bus-out | io:Io cp:CompParams yl yr |
+  cp.makeup-lin cp.mix f* | wet |
+  1.0 cp.mix f- | dry |
+  yl wet f*  io.in-l dry f*  f+ -> io.out-l
+  yr wet f*  io.in-r dry f*  f+ -> io.out-r
+;
+
+( io bs bp cp gt -- : follow the target gain, colour, makeup and mix. )
+dsp: bus-apply | io:Io bs:BusState bp:BusParams cp:CompParams gt |
+  bs bp gt bus-follow | g |
   g -6.0205999132796239 f* | gr |
-  gr -> bs.gr-db
   g exp2 | gain |
   gr BUS-COLOR-FULL f* 0.0 1.0 fclamp | amt |
   bp.k2 amt f* | a2 |
@@ -125,10 +140,7 @@ dsp: bus-apply | io:Io bs:BusState bp:BusParams cp:CompParams gt |
   bp.inv-t | it |
   bs.ul& bs.dl& bs.dcl&  io.in-l gain f*  a2 a3 t it bus-color | yl |
   bs.ur& bs.dr& bs.dcr&  io.in-r gain f*  a2 a3 t it bus-color | yr |
-  cp.makeup-lin cp.mix f* | wet |
-  1.0 cp.mix f- | dry |
-  yl wet f*  io.in-l dry f*  f+ -> io.out-l
-  yr wet f*  io.in-r dry f*  f+ -> io.out-r
+  io cp yl yr bus-out
 ;
 
 ( io ctx state params -- : one stereo bus2 sample. )
@@ -136,4 +148,15 @@ dsp: k-bus-tick | io:Io ctx state params:CompParams -- |
   io state params comp-detect comp-level
   params swap comp-knee | gt |
   io  state CompState.size ptr+  params CompParams.size ptr+  params  gt  bus-apply
+;
+
+( io ctx state params -- : the same at COLOR 0, without the 2x colour
+  stage [its term is exactly 0 there] - the host runs it for those
+  blocks [render-lite]. Turning COLOR to 0 drops the colour's DC-blocker
+  tail at once, a residue far under the signal. )
+dsp: k-bus-tick-clean | io:Io ctx state params:CompParams -- |
+  io state params comp-detect comp-level
+  params swap comp-knee | gt |
+  state CompState.size ptr+  params CompParams.size ptr+  gt  bus-follow exp2 | gain |
+  io params  io.in-l gain f*  io.in-r gain f*  bus-out
 ;

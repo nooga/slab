@@ -65,6 +65,9 @@ struct: MachineDesc
                        ctx.pitch / ctx.hz: per-note expression, docs/22 )
   ptr sidechain      ( int flag: an effect whose io.det can come from another
                        track's signal, a key [docs/23] )
+  ptr render-lite    ( cstr or 0 — a cheaper render word for blocks where
+                       the params f64 at render-lite-sel is exactly 0 )
+  ptr render-lite-sel  ( int params byte offset )
 ;
 
 struct: ControlDesc
@@ -168,6 +171,13 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
 ( the effect's detector [io.det] takes a sidechain key: with one set, the
   host fills io.det from the key track instead of the input [docs/23] )
 : sidechain  ( -- ) 1 _mf-md@ MachineDesc.sidechain! drop ;
+( a second render word the host runs instead for any block where the
+  params f64 at `offset` is exactly 0 - a stage that does nothing at
+  that setting [bus2's COLOR] skips its cost; the word must produce the
+  same output there )
+: render-lite!  ( str offset -- )
+  _mf-md@ MachineDesc.render-lite-sel! drop
+  cstr-new _mf-md@ MachineDesc.render-lite! drop ;
 
 ( declare a note the machine answers to; the piano roll renders one
   labelled lane per declared note instead of the chromatic keyboard. )

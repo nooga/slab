@@ -17,6 +17,14 @@ words take one more, leading:
 | `prepare` | `( ctx state params -- )` | every block, once per state region |
 | `block-prepare` | `( ctx state params -- )` | every block, once (region 0) |
 | `derive` | `( ctx state params -- )` | every block, before block-prepare |
+| `render-lite` | `( io ctx state params -- )` | effects: instead of `render`, for a block where the params f64 at its selector offset is exactly 0 |
+
+`render-lite` (manifest `"word" offset render-lite!`) lets a stage that
+does nothing at one setting skip its cost: the host checks the selector
+after block-prepare, so it can be a derived param, and a knob glide
+snaps to its target, so turning the knob to 0 gets there. The word must
+produce the same output as `render` at that setting; bus2's COLOR 0 is
+the case (bit-exact against its goldens).
 
 **Structs.** Both are defined in `kernels/00-primitives/ctx.fy`, mirrored
 by `KernelCtx` / `IoFrame` in the adapter, and checked by the test

@@ -116,6 +116,7 @@ pub const FyRawMachine = struct {
     note_on_slots: RawSlots = .{},
     note_off_slots: RawSlots = .{},
     render_slots: RawSlots = .{},
+    render_lite_slots: RawSlots = .{},
     block_prepare_slots: RawSlots = .{},
     prepare_caller: ?RawCaller = null,
     note_on_caller: ?RawCaller = null,
@@ -123,6 +124,7 @@ pub const FyRawMachine = struct {
     note_expr_slots: RawSlots = .{},
     note_expr_caller: ?RawCaller = null,
     render_caller: ?RawCaller = null,
+    render_lite_caller: ?RawCaller = null,
     // Optional per-block dsp2 word (params sample-rate --): coefficient fills
     // that must not run per sample, e.g. the MS-20 svf profile region.
     block_prepare_caller: ?RawCaller = null,
@@ -266,6 +268,8 @@ pub const FyRawMachine = struct {
         if (desc.voices > 1 and desc.buffer_count > 0) return error.RawMachineVoicesWithBuffers;
 
         try validateWord(host, desc.renderWord());
+        if (desc.renderLiteWord()) |word| try validateWord(host, word);
+        if (desc.renderLiteWord() != null and desc.render_lite_sel + 8 > desc.params_size) return error.InvalidMachineDesc;
         if (desc.prepareWord()) |word| try validateWord(host, word);
         if (desc.noteOnWord()) |word| try validateWord(host, word);
         if (desc.noteOffWord()) |word| try validateWord(host, word);
@@ -709,6 +713,7 @@ pub const FyRawMachine = struct {
         if (self.desc.blockPrepareWord()) |w| self.block_prepare_caller = try self.compileEntry(w, &self.block_prepare_slots, false);
         if (self.desc.deriveWord()) |w| self.derive_caller = try self.compileEntry(w, &self.derive_slots, false);
         self.render_caller = try self.compileEntry(self.desc.renderWord(), &self.render_slots, true);
+        if (self.desc.renderLiteWord()) |w| self.render_lite_caller = try self.compileEntry(w, &self.render_lite_slots, true);
     }
 
     fn initRawControls(self: *FyRawMachine) void {
@@ -1763,8 +1768,20 @@ fn callNoteOff(self: *FyRawMachine, voice: usize) !void {
     _ = try caller.call(1, &self.entryArgs(voice));
 }
 
+/// The render word for this block: the lite one when the machine declares
+/// it and its selector param is exactly 0 (block-prepare has run, so a
+/// derived selector is current; knob glides snap to their target, so a
+/// knob turned to 0 gets there).
+fn effectCaller(self: *FyRawMachine) !*RawCaller {
+    if (self.render_lite_caller) |*lite| {
+        const sel: *align(1) const f64 = @ptrCast(&self.params_buf[self.desc.render_lite_sel]);
+        if (sel.* == 0) return lite;
+    }
+    return if (self.render_caller) |*c_| c_ else error.UnknownWord;
+}
+
 fn renderEffectBlock(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f32, r: []f32) !void {
-    const caller = if (self.render_caller) |*c_| c_ else return error.UnknownWord;
+    const caller = try effectCaller(self);
     const in_l, const in_r = inputChannels(ctx);
     const key = keyChannels(ctx);
     const io = self.io[0..l.len];

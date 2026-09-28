@@ -242,8 +242,12 @@ after), so the static curve is comp2's by construction. What it adds:
 Measured (Debug): curve slopes 2/4/10:1 exact above the knee; attack
 τ63 0.19 / 0.38 / 1.10 / 3.15 / 10.3 / 30.6 ms (the two fastest read
 long: a 1 kHz peak needs up to a quarter cycle to show); 50 Hz THD
-−44.0 dB at defaults. Cost 181 ns/sample vs comp2's 68 (2.7×, over
-the 2× budget: the 2× oversampled colour runs even at COLOR 0).
+−44.0 dB at defaults. Cost (ReleaseFast) 36 ns/sample at COLOR 0,
+comp2's 35: the host runs `k-bus-tick-clean` for those blocks
+(`render-lite`, docs/04), without the colour stage. With COLOR up it's
+151 ns (4.3×, over the 2× budget): the 2× up/down-sampling and four
+shaper divisions for two channels cost that much in scalar code; a
+NEON L/R pair is the way down.
 
 **Presets** (`tools/comp2_presets/design_bus2.py`, same method as
 §Presets: character by intent, THRESH solved on the songs' drum groups

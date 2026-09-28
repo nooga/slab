@@ -14,6 +14,7 @@ include "../lib/manifest.fy"
   "Bus" effect-block machine*
   "k-bus-tick"        render!
   "bus-block-prepare" block-prepare!
+  "k-bus-tick-clean" CompParams.size BusParams.k2 + render-lite!
   CompState.size BusState.size +   state-size!
   CompParams.size BusParams.size + params-size!
   300.0 panel-w!
