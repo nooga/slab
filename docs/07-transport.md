@@ -103,9 +103,9 @@ Topologically a DAG. Cycles via sends are rejected (send-to-a-return-that-sends-
 > silent instrument with an effects-only chain, its `volume()` the master
 > fader and `meter()` the master meter. It is edited via the machine bay
 > (`device_sel` selects track vs master) and shown as a pinned strip at
-> the bottom of the track bay. **Returns + sends are not yet built**
-> (next step). Master FX + fader are **not yet persisted** (effect chains
-> aren't serialized at all yet — a separate task).
+> the bottom of the track bay. Buses, outputs and sends are built;
+> see [23-routing.md](23-routing.md), which supersedes this section's
+> send/return sketch and §Topological order.
 
 ### Why not a free node graph?
 

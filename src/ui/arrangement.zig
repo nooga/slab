@@ -11,6 +11,7 @@ const std = @import("std");
 const c = @import("../c.zig");
 const pane = @import("pane_input.zig");
 const menu = @import("menu.zig");
+const routing = @import("../routing.zig");
 const bridge = @import("bridge.zig");
 const ui_core = @import("core.zig");
 const ui_style = @import("style.zig");
@@ -167,8 +168,21 @@ pub const CopiedClip = struct {
     clip: Clip,
 };
 
+/// A routing edit from a track header's menu (docs/23), applied by main
+/// with an undo step. `new_bus` variants create the bus first.
+pub const RouteEdit = struct {
+    track: usize,
+    what: union(enum) {
+        output: u8, // a bus index, or routing.NONE for the master
+        output_new_bus,
+        send_toggle: u8,
+        send_new_bus,
+    },
+};
+
 pub const Result = struct {
     add_track: bool = false,
+    route: ?RouteEdit = null,
     command: menu.EditCommand = .none,
     command_beat: ?f64 = null,
     command_track: ?usize = null,
@@ -902,6 +916,7 @@ pub fn draw(
 
     targetMenuTick(tracks, alloc);
     headerAutoMenuTick(tracks, alloc);
+    result.route = routeMenuTick(tracks);
 
     // Overview strip on top (rendered last so nothing scissor-clips it).
     drawOverview(ui, overview_rect, timeline_w, tracks, content_beats, transport, m);
@@ -1420,6 +1435,61 @@ const HeaderResult = struct {
     name_rect: c.rl.Rectangle,
 };
 
+const ROUTE_MENU_KEY: u64 = 0x2007_E000_0000_0001;
+var route_menu_track: usize = 0;
+var route_labels: [routing.MAX_TRACKS][routing.MAX_TRACKS + 8]u8 = undefined;
+
+/// Right-click on a header's name: Output ▸ and Sends ▸, each ending in
+/// New bus. Choices that would close a loop are disabled (docs/23).
+fn routeMenuTick(tracks: []Track) ?RouteEdit {
+    if (!menu.isOpen(ROUTE_MENU_KEY)) return null;
+    const ti = route_menu_track;
+    if (ti >= tracks.len) {
+        menu.close();
+        return null;
+    }
+    const t = &tracks[ti];
+    const top = [_]menu.Item{
+        .{ .label = "Output", .id = 1, .submenu = true },
+        .{ .label = "Sends", .id = 2, .submenu = true },
+    };
+    _ = menu.pick(ROUTE_MENU_KEY, &top);
+    const which = menu.subOpen(ROUTE_MENU_KEY, 0) orelse return null;
+
+    var nodes: [routing.MAX_TRACKS]routing.Node = undefined;
+    const n = @min(tracks.len, routing.MAX_TRACKS);
+    for (tracks[0..n], 0..) |*u, i| nodes[i] = u.routingNode();
+    const graph = routing.Routing.build(nodes[0..n]);
+    const self_idx: u8 = @intCast(ti);
+
+    var items: [routing.MAX_TRACKS + 3]menu.Item = undefined;
+    var k: usize = 0;
+    const NEW_BUS: u32 = 0x100;
+    if (which == 1) {
+        items[k] = .{ .label = if (t.output == routing.NONE) "\u{2022} Master" else "Master", .id = routing.NONE };
+        k += 1;
+    }
+    for (tracks[0..n], 0..) |*u, j| {
+        if (!u.isBus() or j == ti) continue;
+        const bus: u8 = @intCast(j);
+        const on = if (which == 1) t.output == bus else t.sendTo(bus) != null;
+        const lbl = std.fmt.bufPrint(&route_labels[j], "{s}{s}", .{ if (on) "\u{2022} " else "", u.name() }) catch u.name();
+        items[k] = .{ .label = lbl, .id = bus, .enabled = on or !graph.wouldCycle(self_idx, bus) };
+        k += 1;
+    }
+    items[k] = .{ .separator = true };
+    k += 1;
+    items[k] = .{ .label = "New bus", .id = NEW_BUS, .enabled = tracks.len < routing.MAX_TRACKS };
+    k += 1;
+    const id = menu.subPick(ROUTE_MENU_KEY, 1, items[0..k]) orelse return null;
+    if (which == 1) {
+        if (id == NEW_BUS) return .{ .track = ti, .what = .output_new_bus };
+        return .{ .track = ti, .what = .{ .output = @intCast(id) } };
+    }
+    if (id == NEW_BUS) return .{ .track = ti, .what = .send_new_bus };
+    return .{ .track = ti, .what = .{ .send_toggle = @intCast(id) } };
+}
+
 /// Track header on the new Ui (docs/06 §Working surfaces): faceplate with
 /// the track-colour spine (+ amber selection stripe), index and name, R/M/S
 /// lit latches, pan and volume mini sliders, and a bare stereo meter.
@@ -1492,7 +1562,13 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, sele
         menu.tip(ui, pan_r, "Pan (double-click to center)");
     }
 
-    const b = ui.behaviorEx(ui.id("name"), Rect.xywh(r.x, r.y, name_r.right() - r.x, 20), .{ .focusable = false });
+    const name_hit = Rect.xywh(r.x, r.y, name_r.right() - r.x, 20);
+    if (ui.in.right_pressed and name_hit.contains(ui.in.ix(), ui.in.iy())) {
+        route_menu_track = idx;
+        menu.openAt(ROUTE_MENU_KEY, ui.in.ix(), ui.in.iy());
+    }
+    menu.tip(ui, name_hit, if (t.isBus()) "Bus: right-click to route" else "Right-click to route");
+    const b = ui.behaviorEx(ui.id("name"), name_hit, .{ .focusable = false });
     const name_rl = bridge.toRl(name_r);
     if (b.pressed) return .{ .action = if (b.double) .rename else .select, .name_rect = name_rl };
     return .{ .action = .none, .name_rect = name_rl };
@@ -1771,6 +1847,7 @@ fn clipNameRect(r: c.rl.Rectangle) c.rl.Rectangle {
 }
 
 fn createClipOnTrack(t: *Track, alloc: std.mem.Allocator, track_idx: usize, start_beat: f64, selected: *?ClipRef) void {
+    if (t.isBus()) return; // a bus plays what's routed to it, not clips
     var buf: [clip_mod.MAX_NAME]u8 = undefined;
     const name_str = std.fmt.bufPrint(&buf, "Clip {d}", .{t.clips.items.len + 1}) catch "Clip";
     // A "one-bar clip" is one bar of the current meter (3 beats in 3/4,

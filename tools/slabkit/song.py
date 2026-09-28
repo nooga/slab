@@ -17,7 +17,7 @@ from . import rhythm
 from .machines import ROOT, SLAB, SlabError, library_path, machine, preset as load_preset, preset_assets
 from .theory import Chord, Key, note, voice_lead
 
-MAX_TRACKS = 16
+MAX_TRACKS = 32  # buses count (docs/23)
 MAX_CLIPS = 64
 MAX_NOTES = 2048
 

@@ -61,7 +61,7 @@ test {
     _ = @import("ui/arrangement.zig");
 }
 
-const MAX_TRACKS: usize = 16;
+const MAX_TRACKS: usize = @import("routing.zig").MAX_TRACKS;
 const DEV_BOOT_AUDITION = true;
 const DEV_BOOT_AUTOPLAY = false;
 
@@ -766,6 +766,14 @@ pub fn main(init: std.process.Init) !void {
             dirty = true;
             status.set("Added track", .{});
         }
+        if (ares.route) |edit| {
+            applyRouteEdit(alloc, &history, &status, &audio, edit, &tracks_buf, &track_count, &transport) catch |err| {
+                status.set("Routing failed: {s}", .{@errorName(err)});
+            };
+            tracks = tracks_buf[0..track_count];
+            engine.tracks = tracks;
+            dirty = true;
+        }
         const selection_changed = !clipRefEq(selected_clip, prev_selected_clip);
         if (selection_changed and selected_clip != null) {
             layout.clip_editor_visible = true;
@@ -799,6 +807,7 @@ pub fn main(init: std.process.Init) !void {
                 if (selected_track) |ti| if (ti < tracks.len) {
                     bay_dev = &tracks[ti];
                     bay_idx = ti;
+                    bay_is_bus = tracks[ti].isBus();
                 };
             },
             .master => {
@@ -1501,6 +1510,67 @@ fn uiRect(r: c.rl.Rectangle) ui_geom.Rect {
 fn basename(path: []const u8) []const u8 {
     if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| return path[idx + 1 ..];
     return path;
+}
+
+/// A header routing edit (docs/23) with one undo step. A new bus is
+/// appended with the device stopped, like an added track.
+fn applyRouteEdit(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    status: anytype,
+    audio: *audio_mod.Audio,
+    edit: arrangement.RouteEdit,
+    tracks_buf: *[MAX_TRACKS]track_mod.Track,
+    track_count: *usize,
+    transport: *const transport_mod.Transport,
+) !void {
+    const routing = @import("routing.zig");
+    if (edit.track >= track_count.*) return;
+    const before = try document_mod.serialize(alloc, tracks_buf[0..track_count.*], transport);
+    errdefer alloc.free(before);
+
+    var target: u8 = routing.NONE;
+    switch (edit.what) {
+        .output => |o| target = o,
+        .send_toggle => |bus| target = bus,
+        .output_new_bus, .send_new_bus => {
+            if (track_count.* >= MAX_TRACKS) return error.TooManyTracks;
+            var buses: usize = 0;
+            for (tracks_buf[0..track_count.*]) |*t| {
+                if (t.isBus()) buses += 1;
+            }
+            var name_buf: [32]u8 = undefined;
+            const name = std.fmt.bufPrint(&name_buf, "Bus {d}", .{buses + 1}) catch "Bus";
+            audio.stop();
+            defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+            var bus = try track_mod.Track.init(alloc, name, trackColor(track_count.*), silent_machine);
+            bus.kind = .bus;
+            bus.setVolume(1.0);
+            tracks_buf[track_count.*] = bus;
+            target = @intCast(track_count.*);
+            track_count.* += 1;
+        },
+    }
+    const t = &tracks_buf[edit.track];
+    switch (edit.what) {
+        .output, .output_new_bus => {
+            t.output = target;
+            status.set("{s} outputs to {s}", .{ t.name(), if (target == routing.NONE) "Master" else tracks_buf[target].name() });
+        },
+        .send_toggle, .send_new_bus => {
+            if (t.sendTo(target)) |_| {
+                for (t.sendSlots(), 0..) |snd, i| if (snd.bus == target) {
+                    t.removeSend(i);
+                    break;
+                };
+                status.set("{s}: send to {s} removed", .{ t.name(), tracks_buf[target].name() });
+            } else {
+                try t.addSend(target, false, 1.0);
+                status.set("{s}: sends to {s}", .{ t.name(), tracks_buf[target].name() });
+            }
+        },
+    }
+    try history.pushUndo(alloc, before);
 }
 
 /// Bounce `project` to `out` (24-bit WAV): every clip plus a 3 s tail,

@@ -2,8 +2,8 @@
 
 Where a track's audio goes after its insert chain, and how one track's
 signal reaches another's effect. It covers step 11 of
-[17-direction.md](17-direction.md) (Track E). **Status: design, phase 1
-starting.** Supersedes the send/return sketch in
+[17-direction.md](17-direction.md) (Track E). **Status: phase 1 built** (buses,
+outputs, sends, the format, slabkit, a header menu); phases 2–5 open. Supersedes the send/return sketch in
 [07-transport.md §The graph](07-transport.md#the-graph) (the topological order
 there becomes §Render order below). Code, as it lands: `src/routing.zig`
 (the graph and its order), the routing fields in `track.zig`,
@@ -296,7 +296,10 @@ and no clip lane. Group folding waits for track reordering.
    engine tests (a send renders as the sum of its dry and wet paths; a
    group equals the sum of its members through the group's chain;
    unrouted projects render bit-exact). A minimal UI to create a bus and
-   set outputs and sends from the track header menu.
+   set outputs and sends from the track header menu. *Built: right-click
+   a header's name for Output ▸ and Sends ▸ (each with New bus); sends
+   made there are post-fader at 0 dB; levels and PRE wait for the mixer.
+   Buses are ordinary rows until then and refuse new clips.*
 2. **Mixer page.** Strips, send knobs, output selectors, Tab.
 3. **Keys.** The `sidechain` manifest flag, `det` from the key, 4-port
    `audio_in`, verb2 on `io.det`, the KEY selector in the effect title
