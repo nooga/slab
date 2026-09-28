@@ -185,7 +185,11 @@ pub const FyRawMachine = struct {
     // selected, the piano roll's key names for a kit, and the zone list's
     // hit lights (the voice writes zone_edits.hit / .last).
     zone_edits: keymap.ZoneEdits = .{},
+    /// Reversed sounds and sounds copied onto keys, applied on every load.
+    zone_derive: keymap.Derive = .{},
     zone_sel: usize = 0,
+    /// The zone row a right-click opened the zone menu on.
+    zone_ctx: usize = 0,
     // The zone list shows one row per zone name: velocity layers and round
     // robins of one sound (an SFZ label, a repeated file) edit together.
     zone_row_first: [keymap.MAX_ZONES]u16 = undefined,
@@ -408,7 +412,8 @@ pub const FyRawMachine = struct {
         var rb: [1024]u8 = undefined;
         var pb: [1024]u8 = undefined;
         const src = keymap.portablePath(&pb, path);
-        var loaded = keymap.load(self.alloc, keymap.resolvePath(&rb, src)) catch return false;
+        const raw = keymap.load(self.alloc, keymap.resolvePath(&rb, src)) catch return false;
+        var loaded = keymap.derive(self.alloc, raw, &self.zone_derive) catch return false;
         // Edits follow zones by name: a reloaded or swapped kit keeps the
         // clap you turned down.
         const edits = remapEdits(&self.zone_edits, &self.asset_keymap[ai], &loaded);
@@ -435,6 +440,29 @@ pub const FyRawMachine = struct {
     /// Inside the fence, after a sample swap: sounding voices hold read
     /// positions into the old pool, which may be shorter than theirs, so
     /// they stop here; the next note-on sets a voice up from scratch.
+    /// Reload the keymap with `zone_derive` as it is now, keeping the
+    /// selected sound selected when it still exists.
+    fn rederive(self: *FyRawMachine, ai: usize) void {
+        var pbuf: [1024]u8 = undefined;
+        const cur = self.assetPath(ai);
+        if (cur.len == 0 or cur.len > pbuf.len) return;
+        @memcpy(pbuf[0..cur.len], cur);
+        const km = &self.asset_keymap[ai];
+        var sel_name = keymap.Name{};
+        if (self.zone_sel < km.count) sel_name = km.names[self.zone_sel];
+        if (!self.loadKeymapRuntime(ai, pbuf[0..cur.len])) return;
+        self.selectZoneNamed(ai, sel_name.slice());
+    }
+
+    fn selectZoneNamed(self: *FyRawMachine, ai: usize, name: []const u8) void {
+        const km = &self.asset_keymap[ai];
+        for (km.names, 0..) |nm, i| if (std.mem.eql(u8, nm.slice(), name)) {
+            self.zone_sel = i;
+            self.zone_follow_moved = true; // scroll it into view
+            return;
+        };
+    }
+
     fn silenceVoices(self: *FyRawMachine) void {
         @memset(self.voice_idle[0..], true);
         @memset(self.voice_gate[0..], false);
@@ -990,7 +1018,8 @@ fn noteLabelsImpl(state: *anyopaque) []const machine.NoteLabel {
 
 // {"clap":{"level":-6},"kick":{"tune":-2,"decay":0.4}}: zones whose edits
 // aren't flat, by name (names are file stems; quotes and backslashes are
-// dropped rather than escaped).
+// dropped rather than escaped). A reversed sound adds "reverse":true, a
+// copy "copy":"<source name>","key":<key>.
 fn writeZonesJsonImpl(state: *anyopaque, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     const ai = self.keymapAsset() orelse return;
@@ -998,23 +1027,61 @@ fn writeZonesJsonImpl(state: *anyopaque, out: *std.ArrayList(u8), alloc: std.mem
     const e = &self.zone_edits;
     var first = true;
     var buf: [160]u8 = undefined;
+    const d = &self.zone_derive;
     for (km.names, 0..) |nm, i| {
-        if (e.level[i] == 0 and e.tune[i] == 0 and e.decay[i] == 0 and e.tone[i] == 0 and e.cut[i] == 0) continue;
+        // one entry per sound: its layers share the name and the edits
+        const dup = for (km.names[0..i]) |prev| {
+            if (std.mem.eql(u8, prev.slice(), nm.slice())) break true;
+        } else false;
+        if (dup) continue;
+        const rev = d.isReversed(nm.slice());
+        const copy = d.copyIndex(nm.slice());
+        if (e.level[i] == 0 and e.tune[i] == 0 and e.decay[i] == 0 and e.tone[i] == 0 and e.cut[i] == 0 and !rev and copy == null) continue;
         try out.appendSlice(alloc, if (first) "{\"" else ",\"");
         first = false;
-        for (nm.slice()) |ch| if (ch != '"' and ch != '\\' and ch >= 0x20) try out.append(alloc, ch);
-        const frag = try std.fmt.bufPrint(&buf, "\":{{\"level\":{d},\"tune\":{d},\"decay\":{d},\"tone\":{d},\"cut\":{d}}}", .{ e.level[i], e.tune[i], e.decay[i], e.tone[i], e.cut[i] });
+        try appendZoneName(out, alloc, nm.slice());
+        const frag = try std.fmt.bufPrint(&buf, "\":{{\"level\":{d},\"tune\":{d},\"decay\":{d},\"tone\":{d},\"cut\":{d}", .{ e.level[i], e.tune[i], e.decay[i], e.tone[i], e.cut[i] });
         try out.appendSlice(alloc, frag);
+        if (rev) try out.appendSlice(alloc, ",\"reverse\":true");
+        if (copy) |ci| {
+            try out.appendSlice(alloc, ",\"copy\":\"");
+            try appendZoneName(out, alloc, d.copies[ci].from.slice());
+            try out.appendSlice(alloc, try std.fmt.bufPrint(&buf, "\",\"key\":{d}", .{d.copies[ci].key}));
+        }
+        try out.append(alloc, '}');
     }
     if (!first) try out.append(alloc, '}');
 }
 
+fn appendZoneName(out: *std.ArrayList(u8), alloc: std.mem.Allocator, name: []const u8) !void {
+    for (name) |ch| if (ch != '"' and ch != '\\' and ch >= 0x20) try out.append(alloc, ch);
+}
+
 /// Set edits by zone name; every zone of that name (an SFZ can reuse a
-/// sample) takes them. Zones not named start flat.
+/// sample) takes them. Zones not named start flat. Reversals and copies
+/// are set first (reloading the keymap when they changed), so a copy's
+/// own edits find it.
 fn applyZonesJsonImpl(state: *anyopaque, zones: std.json.Value) void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     if (zones != .object) return;
     const ai = self.keymapAsset() orelse return;
+    var d = keymap.Derive{};
+    var dit = zones.object.iterator();
+    while (dit.next()) |kv| {
+        if (kv.value_ptr.* != .object) continue;
+        const o = kv.value_ptr.object;
+        if (o.get("copy")) |cv| if (cv == .string) {
+            const key = if (o.get("key")) |k| std.math.clamp(jsonF64(k), 0, 127) else 0;
+            d.addCopy(kv.key_ptr.*, cv.string, @intFromFloat(key));
+        };
+        if (o.get("reverse")) |rv| if (rv == .bool and rv.bool) d.setReversed(kv.key_ptr.*, true);
+    }
+    // copies in the order they were made: sources before their copies
+    sortCopies(&d);
+    if (!d.eql(&self.zone_derive)) {
+        self.zone_derive = d;
+        self.rederive(ai);
+    }
     const km = &self.asset_keymap[ai];
     var e = keymap.ZoneEdits{};
     e.hit = self.zone_edits.hit;
@@ -1041,7 +1108,35 @@ fn applyZonesJsonImpl(state: *anyopaque, zones: std.json.Value) void {
     self.zone_edits.cut = e.cut;
 }
 
+/// Order copies so each comes after the copy it was made from (JSON
+/// objects keep no order we can rely on).
+fn sortCopies(d: *keymap.Derive) void {
+    var placed: usize = 0;
+    var guard: usize = 0;
+    while (placed < d.copy_n and guard < keymap.MAX_DERIVED * keymap.MAX_DERIVED) : (guard += 1) {
+        // find an unplaced copy whose source isn't an unplaced copy
+        var pick: ?usize = null;
+        for (placed..d.copy_n) |i| {
+            const from = d.copies[i].from.slice();
+            const waits = for (placed..d.copy_n) |j| {
+                if (j != i and std.mem.eql(u8, d.copies[j].name.slice(), from)) break true;
+            } else false;
+            if (!waits) {
+                pick = i;
+                break;
+            }
+        }
+        const i = pick orelse return; // a cycle: leave the rest
+        std.mem.swap(keymap.Copy, &d.copies[placed], &d.copies[i]);
+        placed += 1;
+    }
+}
+
 fn resetZoneEdits(self: *FyRawMachine) void {
+    if (!self.zone_derive.empty()) {
+        self.zone_derive = .{};
+        if (self.keymapAsset()) |ai| self.rederive(ai);
+    }
     const flat = keymap.ZoneEdits{};
     self.zone_edits.level = flat.level;
     self.zone_edits.tune = flat.tune;
@@ -2929,6 +3024,7 @@ fn drawSegmentDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []const
 /// FOLLOW to select whatever plays.
 fn drawZoneDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []const u8) void {
     const ai = self.assetIndexByName(asset_name) orelse return;
+    zoneMenuTick(self, ai); // before the keymap is read: it may reload it
     const km = &self.asset_keymap[ai];
     const n = km.count;
     if (n == 0) return;
@@ -2990,6 +3086,11 @@ fn drawZoneDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []const u8
         const row = Rect.xywh(list.x, y, list.w, ROW);
         const b = ui.behavior(ui.id(.{ "zrow", ai, r_i }), row, false);
         if (b.pressed) self.zone_sel = i;
+        if (ui.in.right_pressed and row.contains(ui.in.ix(), ui.in.iy()) and !ui_menu.active()) {
+            self.zone_sel = i;
+            self.zone_ctx = i;
+            ui_menu.openAt(zoneMenuKey(self), ui.in.ix(), ui.in.iy());
+        }
         const sel = r_i == sel_row;
         if (sel) ui.rect(row, ui_style.vfd.alpha(36));
         // the row's light and key span cover all its zones
@@ -3019,6 +3120,8 @@ fn drawZoneDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []const u8
             var gb: [8]u8 = undefined;
             ui.textIn(&ui.fonts.legend, Rect.xywh(row.right() - 62, y, 20, ROW), std.fmt.bufPrint(&gb, "G{d}", .{@as(i32, @intFromFloat(cg))}) catch "", col, .right, true);
         }
+        if (self.zone_derive.isReversed(km.names[i].slice()))
+            ui.textIn(&ui.fonts.legend, Rect.xywh(row.right() - 90, y, 26, ROW), "REV", col, .right, true);
         if (e.level[i] != 0) {
             var lb: [12]u8 = undefined;
             ui.textIn(&ui.fonts.legend, Rect.xywh(row.right() - 40, y, 38, ROW), std.fmt.bufPrint(&lb, "{d:.1}", .{e.level[i]}) catch "", col, .right, true);
@@ -3080,6 +3183,90 @@ fn drawZoneDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, asset_name: []const u8
         e.tone[zz] = e.tone[zi];
         e.cut[zz] = e.cut[zi];
     };
+}
+
+fn zoneMenuKey(self: *const FyRawMachine) u64 {
+    return @as(u64, @intFromPtr(self)) ^ 0x2073_2073_0000_0002;
+}
+
+const ZONE_DUPLICATE: u32 = 1;
+const ZONE_REVERSE: u32 = 2;
+const ZONE_REMOVE_COPY: u32 = 3;
+
+/// A zone row's menu: copy the sound onto the nearest free key, play it
+/// backwards, or remove a copy.
+fn zoneMenuTick(self: *FyRawMachine, ai: usize) void {
+    const key = zoneMenuKey(self);
+    if (!ui_menu.isOpen(key)) return;
+    const km = &self.asset_keymap[ai];
+    if (self.zone_ctx >= km.count) return;
+    const zi = self.zone_ctx;
+    const name = km.names[zi];
+    const z = km.zones[zi];
+    const one_key = z.lo_key == z.hi_key;
+    const free = if (one_key) keymap.freeKey(km, @intFromFloat(std.math.clamp(z.lo_key, 0, 127))) else null;
+    var dup_buf: [32]u8 = undefined;
+    var kn: [4]u8 = undefined;
+    const dup_label = if (free) |k|
+        std.fmt.bufPrint(&dup_buf, "Duplicate to {s}", .{keyName(&kn, @floatFromInt(k))}) catch "Duplicate"
+    else
+        "Duplicate";
+    const d = &self.zone_derive;
+    const rev = d.isReversed(name.slice());
+    const is_copy = d.copyIndex(name.slice()) != null;
+    const items = [_]ui_menu.Item{
+        .{ .label = dup_label, .id = ZONE_DUPLICATE, .enabled = free != null and km.count < keymap.MAX_ZONES and d.copy_n < keymap.MAX_DERIVED },
+        .{ .label = if (rev) "Play forward" else "Reverse", .id = ZONE_REVERSE, .enabled = rev or d.rev_n < keymap.MAX_DERIVED },
+        .{ .separator = true },
+        .{ .label = "Remove copy", .id = ZONE_REMOVE_COPY, .enabled = is_copy },
+    };
+    const picked = ui_menu.pick(key, &items) orelse return;
+    switch (picked) {
+        ZONE_DUPLICATE => {
+            const k = free orelse return;
+            var nb: [keymap.NAME_MAX]u8 = undefined;
+            const copy_name = uniqueZoneName(km, d, &nb, name.slice());
+            d.addCopy(copy_name, name.slice(), k);
+            self.rederive(ai);
+            // the copy starts as the sound it copies
+            const e = &self.zone_edits;
+            for (self.asset_keymap[ai].names, 0..) |nm, i| if (std.mem.eql(u8, nm.slice(), copy_name)) {
+                e.level[i] = e.level[zi];
+                e.tune[i] = e.tune[zi];
+                e.decay[i] = e.decay[zi];
+                e.tone[i] = e.tone[zi];
+                e.cut[i] = e.cut[zi];
+            };
+            self.selectZoneNamed(ai, copy_name);
+        },
+        ZONE_REVERSE => {
+            d.setReversed(name.slice(), !rev);
+            self.rederive(ai);
+        },
+        ZONE_REMOVE_COPY => {
+            d.removeCopy(name.slice());
+            self.rederive(ai);
+        },
+        else => {},
+    }
+}
+
+/// "<name> 2", "<name> 3", …: the first no zone or copy has, cut to fit.
+fn uniqueZoneName(km: *const keymap.Keymap, d: *const keymap.Derive, buf: []u8, base: []const u8) []const u8 {
+    var n: usize = 2;
+    while (n < 1000) : (n += 1) {
+        var sb: [8]u8 = undefined;
+        const suffix = std.fmt.bufPrint(&sb, " {d}", .{n}) catch return base;
+        const keep = @min(base.len, buf.len - suffix.len);
+        @memcpy(buf[0..keep], base[0..keep]);
+        @memcpy(buf[keep..][0..suffix.len], suffix);
+        const cand = buf[0 .. keep + suffix.len];
+        const taken = for (km.names) |nm| {
+            if (std.mem.eql(u8, nm.slice(), cand)) break true;
+        } else d.copyIndex(cand) != null;
+        if (!taken) return cand;
+    }
+    return base;
 }
 
 /// CUT edit steps: 0 the pack's choke, 1 none, n+1 group n.
@@ -4487,6 +4674,50 @@ test "sampler zones: CUT overrides the pack's choke per zone" {
     var sn = [_]machine.NoteEvent{T.on(38, 1)};
     T.play(inst, &sn, 8, &out);
     try testing.expect(T.rms(out[512 * 3 ..]) < 0.001);
+}
+
+test "sampler zones: a reversed copy loads from the zones JSON, plays and writes back" {
+    const T = keymap_test;
+    const a = testing.allocator;
+    T.mkdirs("revkit");
+    try T.sine(a, T.dir ++ "/revkit/snare.wav", 200, 0.05, null, null);
+    const inst = try FyRawMachine.create(a, "machines/sampler/sampler.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, a);
+    try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/revkit"));
+    const km = &inst.asset_keymap[0];
+    try testing.expectEqual(@as(usize, 1), km.count);
+    const snare_key = km.zones[0].lo_key;
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, a,
+        \\{"snare":{"level":-3},"snare 2":{"level":-6,"copy":"snare","key":60,"reverse":true}}
+    , .{});
+    defer parsed.deinit();
+    applyZonesJsonImpl(inst, parsed.value);
+    try testing.expectEqual(@as(usize, 2), km.count);
+    const fwd = km.samples(km.zones[0]);
+    const back = km.samples(km.zones[1]);
+    try testing.expectEqual(fwd.len, back.len);
+    for (fwd, 0..) |v, i| try testing.expectEqual(v, back[back.len - 1 - i]);
+    try testing.expectEqual(@as(f64, 60), km.zones[1].lo_key);
+    try testing.expectEqual(snare_key, km.zones[0].lo_key);
+    try testing.expectEqual(@as(f64, -6), inst.zone_edits.level[1]);
+    try testing.expectEqual(@as(f64, -3), inst.zone_edits.level[0]);
+
+    var out = [_]f32{0} ** (512 * 4);
+    var ev = [_]machine.NoteEvent{T.on(60, 1)};
+    T.play(inst, &ev, 4, &out);
+    try testing.expect(T.rms(out[0..]) > 0.01);
+
+    var json: std.ArrayList(u8) = .empty;
+    defer json.deinit(a);
+    try writeZonesJsonImpl(inst, &json, a);
+    try testing.expect(std.mem.indexOf(u8, json.items, "\"snare 2\":{\"level\":-6") != null);
+    try testing.expect(std.mem.indexOf(u8, json.items, "\"reverse\":true,\"copy\":\"snare\",\"key\":60}") != null);
+
+    // a preset without zones drops the copy
+    resetZoneEdits(inst);
+    try testing.expectEqual(@as(usize, 1), km.count);
 }
 
 test "sampler keymap: sfz round robin alternates per key" {

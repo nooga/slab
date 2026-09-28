@@ -68,6 +68,8 @@ pub const AudioClipSnap = struct {
     fade_in_samples: f64 = 0,
     fade_out_samples: f64 = 0,
     gain: f32 = 1.0,
+    /// Read the window from its end back to its start.
+    reversed: bool = false,
 };
 
 /// A lane resolved for the audio thread: the target machine slot and its

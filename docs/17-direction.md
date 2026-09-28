@@ -570,6 +570,16 @@ cmi-voice, cmi-grit, emulator, sp1200-kit, and the VCSL library
 SFZs, `lib:` presets in vcsl-* banks). The project
 file saves the keymap path (docs/19).
 
+Reverse (2026-09-28): audio clips carry a `reversed` flag the engine
+reads backwards over the clip's window; split, trims and the editor
+(mirrored, REV latch) work in play order, arrangement menu Reverse. The
+sampler and Unfairlight reverse a *sound*: the zone row's right-click
+menu has Reverse, Duplicate to <free key> and Remove copy. Both are a
+`keymap.Derive` applied to every load: copies are extra zones on the
+same samples, reversal lays a backwards copy of the sample at the end
+of the pool (loop mirrored), so the voice code is unchanged. Kept by
+name in the zones JSON, like the edits.
+
 Unfairlight CIA (2026-09-27, machines/unfairlight): the CMI machine's
 voice card, kernels/06-voices/cmi.fy after MAME's cmi01a.cpp. Any keymap
 becomes voice RAM: sampled at RATE, 8-bit, cut at 16,384 bytes. Notes

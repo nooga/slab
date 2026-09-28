@@ -62,7 +62,7 @@ pub fn draw(
     const name = if (resolved_opt) |res| res.clip.name() else "";
     const color: ?ui_style.Color = if (resolved_opt) |res| ui_style.nearestTrack(.{ .r = res.color.r, .g = res.color.g, .b = res.color.b }) else null;
     const head = clip_editor.paneHead(ui, bridge.fromRl(r), "AUDIO", name, color, null, 0);
-    const res = Result{ .minimize = head.minimize, .close = head.close, .rename_rect = bridge.toRl(head.title) };
+    var res = Result{ .minimize = head.minimize, .close = head.close, .rename_rect = bridge.toRl(head.title) };
     const body = bridge.toRl(head.body);
 
     const resolved = resolved_opt orelse {
@@ -103,9 +103,13 @@ pub fn draw(
     handleWheel(grid, source_beats, m);
     clampView(grid, source_beats);
 
-    // Conversions.
-    const ws_b = clip.audio.start_sec / sec_per_beat;
-    const we_b = (clip.audio.start_sec + clip.audio.dur_sec) / sec_per_beat;
+    // Conversions. A reversed clip shows its source mirrored, so the grid
+    // reads left to right the way it plays: display seconds d = source_sec - s.
+    const rev = clip.audio.reversed;
+    const win_d0 = if (rev) source_sec - (clip.audio.start_sec + clip.audio.dur_sec) else clip.audio.start_sec;
+    const win_d1 = win_d0 + clip.audio.dur_sec;
+    const ws_b = win_d0 / sec_per_beat;
+    const we_b = win_d1 / sec_per_beat;
 
     // ── Ruler ────────────────────────────────────────────────────────
     ui.clip(bridge.fromRl(ruler_rect));
@@ -128,9 +132,11 @@ pub fn draw(
             const bl = xToBeat(grid, vx0);
             const br = xToBeat(grid, vx1);
             const total: f64 = @floatFromInt(src.cache.sample_count);
-            const s_l = std.math.clamp(bl * sec_per_beat * rate, 0, total);
-            const s_r = std.math.clamp(br * sec_per_beat * rate, 0, total);
-            surf.waveform(ui, frect(vx0, grid.y + 2, vx1 - vx0, grid.height - 4), &src.cache, s_l, s_r, track_color);
+            const d_l = std.math.clamp(bl * sec_per_beat * rate, 0, total);
+            const d_r = std.math.clamp(br * sec_per_beat * rate, 0, total);
+            const s_l = if (rev) total - d_r else d_l;
+            const s_r = if (rev) total - d_l else d_r;
+            surf.waveformDir(ui, frect(vx0, grid.y + 2, vx1 - vx0, grid.height - 4), &src.cache, s_l, s_r, track_color, rev);
         }
     }
 
@@ -152,14 +158,14 @@ pub fn draw(
     if (fo_b > 0) ui.line(out_x, grid.y, xe, grid.y + grid.height, ui_style.text_dim);
 
     // ── Window edge handles (full height, below the fade strip) ──────
-    var s0 = clip.audio.start_sec;
-    var s1 = clip.audio.start_sec + clip.audio.dur_sec;
+    var s0 = win_d0;
+    var s1 = win_d1;
     if (edgeHandle(ui, clip, grid, xs, EDGE_SALT, 0, m)) |nx|
         s0 = std.math.clamp(beatAtX(grid, nx) * sec_per_beat, 0, s1 - MIN_SEC);
     if (edgeHandle(ui, clip, grid, xe, EDGE_SALT, 1, m)) |nx|
         s1 = std.math.clamp(beatAtX(grid, nx) * sec_per_beat, s0 + MIN_SEC, source_sec);
-    if (s0 != clip.audio.start_sec or s1 != clip.audio.start_sec + clip.audio.dur_sec) {
-        clip.audio.start_sec = s0;
+    if (s0 != win_d0 or s1 != win_d1) {
+        clip.audio.start_sec = if (rev) source_sec - s1 else s0;
         clip.audio.dur_sec = s1 - s0;
         clip.length_beats = @max(0.01, (s1 - s0) / sec_per_beat);
     }
@@ -177,7 +183,7 @@ pub fn draw(
     ui.unclip();
 
     // ── Minimap overview ─────────────────────────────────────────────
-    drawOverview(ui, ov_rect, grid, src, track_color, source_beats, m);
+    drawOverview(ui, ov_rect, grid, src, track_color, source_beats, rev, m);
 
     // ── Control row: gain slider + dot-matrix readout ────────────────
     var row = ui.plate(bridge.fromRl(ctrl_rect), .{});
@@ -189,6 +195,11 @@ pub fn draw(
         clip.audio.gain = @floatCast(g * MAX_GAIN);
     }
     menu.tip(ui, gain_r, "Clip gain (double-click for unity)");
+    _ = row.cutLeft(6);
+    const rev_r = row.cutLeft(40);
+    var rev_on = rev;
+    if (ctl.button(ui, rev_r, "rev", &rev_on, .{ .kind = .latch, .label = "REV", .led = ui_style.accent, .flush = true })) res.command = .reverse;
+    menu.tip(ui, rev_r, "Play the clip backwards");
     _ = row.cutLeft(6);
     var buf: [96]u8 = undefined;
     const info = std.fmt.bufPrint(&buf, "START {d:.2}S  LEN {d:.2}S  FADE {d:.2}/{d:.2}S  GAIN {d:.2}X", .{
@@ -313,11 +324,11 @@ fn shadeFade(ui: *Ui, grid: c.rl.Rectangle, x0: f32, x1: f32, fade_in: bool) voi
     }
 }
 
-fn drawOverview(ui: *Ui, strip: c.rl.Rectangle, grid: c.rl.Rectangle, src: *const audio_pool_mod.Source, track_color: ui_style.Color, source_beats: f64, m: pane.Mouse) void {
+fn drawOverview(ui: *Ui, strip: c.rl.Rectangle, grid: c.rl.Rectangle, src: *const audio_pool_mod.Source, track_color: ui_style.Color, source_beats: f64, rev: bool, m: pane.Mouse) void {
     const inner_r = ui.well(bridge.fromRl(strip), ui_style.well);
     if (inner_r.w < 2 or inner_r.h < 2) return;
     const inner = bridge.toRl(inner_r);
-    surf.waveform(ui, inner_r, &src.cache, 0, @floatFromInt(src.cache.sample_count), track_color.mix(ui_style.well, 0.35));
+    surf.waveformDir(ui, inner_r, &src.cache, 0, @floatFromInt(src.cache.sample_count), track_color.mix(ui_style.well, 0.35), rev);
 
     // Viewport window.
     const content_w = @as(f32, @floatCast(source_beats)) * px_per_beat;

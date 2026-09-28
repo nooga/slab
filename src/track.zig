@@ -353,6 +353,7 @@ pub const Track = struct {
                     .start_beat = clip.start_beat,
                     .length_beats = clip.length_beats,
                     .gain = clip.audio.gain,
+                    .reversed = clip.audio.reversed,
                 };
                 if (pool.get(clip.audio.source)) |src| {
                     const rate = src.sample.sample_rate;
@@ -566,7 +567,7 @@ test "publishSnapshot round-trip" {
     try testing.expectApproxEqAbs(@as(f64, 1.0), s.notes[0].length_beats, 1e-12);
 }
 
-fn testMachine() machine.Machine {
+pub fn testMachine() machine.Machine {
     return machine.Machine{
         .name = "fx",
         .state = undefined,

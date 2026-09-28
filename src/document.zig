@@ -187,10 +187,12 @@ pub fn serialize(
                     "";
                 try out.appendSlice(alloc, "{\"type\":\"audio\",\"name\":");
                 try appendJsonString(alloc, &out, clip.name());
-                try appendFmt(alloc, &out, ",\"start\":{d},\"len\":{d},\"gain\":{d},\"start_sec\":{d},\"dur_sec\":{d},\"fade_in\":{d},\"fade_out\":{d},\"source\":", .{
+                try appendFmt(alloc, &out, ",\"start\":{d},\"len\":{d},\"gain\":{d},\"start_sec\":{d},\"dur_sec\":{d},\"fade_in\":{d},\"fade_out\":{d},", .{
                     clip.start_beat, clip.length_beats, clip.audio.gain,
                     clip.audio.start_sec, clip.audio.dur_sec, clip.audio.fade_in_sec, clip.audio.fade_out_sec,
                 });
+                if (clip.audio.reversed) try out.appendSlice(alloc, "\"reversed\":true,");
+                try out.appendSlice(alloc, "\"source\":");
                 try appendJsonString(alloc, &out, src_path);
                 try out.append(alloc, '}');
                 continue;
@@ -683,6 +685,7 @@ fn applyClip(alloc: std.mem.Allocator, t: *track_mod.Track, co: std.json.ObjectM
         aclip.audio.dur_sec = if (objGet(co, "dur_sec")) |x| asF64(x) else 0;
         aclip.audio.fade_in_sec = if (objGet(co, "fade_in")) |x| asF64(x) else 0;
         aclip.audio.fade_out_sec = if (objGet(co, "fade_out")) |x| asF64(x) else 0;
+        aclip.audio.reversed = if (objGet(co, "reversed")) |x| x == .bool and x.bool else false;
         try t.addClip(alloc, aclip);
         return;
     }
@@ -1039,6 +1042,7 @@ test "audio clips round-trip through the pool by path" {
     aclip.audio.dur_sec = 1.5;
     aclip.audio.fade_in_sec = 0.1;
     aclip.audio.fade_out_sec = 0.2;
+    aclip.audio.reversed = true;
     try tracks[0].addClip(alloc, aclip);
 
     const bytes = try serialize(alloc, tracks[0..], &transport);
@@ -1066,6 +1070,7 @@ test "audio clips round-trip through the pool by path" {
     try std.testing.expectApproxEqAbs(@as(f64, 1.5), got.audio.dur_sec, 1e-4);
     try std.testing.expectApproxEqAbs(@as(f64, 0.1), got.audio.fade_in_sec, 1e-4);
     try std.testing.expectApproxEqAbs(@as(f64, 0.2), got.audio.fade_out_sec, 1e-4);
+    try std.testing.expect(got.audio.reversed);
     try std.testing.expectEqual(src, got.audio.source);
 }
 
