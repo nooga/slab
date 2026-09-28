@@ -48,7 +48,7 @@ E4:1.5 D4:.5 E4:1 G4:1 | F#4:2 A4:1 G4:1 | F#4:2 E4:2 | D#4:4
 
 # ── tracks ─────────────────────────────────────────────────────────────
 # The CR-78: runs from the first bar to the last, dry-ish in a small room.
-cr78 = song.track("CR-78", "sampler", "drums/roland-cr-78/kit", volume=0.9, fx=[
+cr78 = song.track("CR-78", "sampler", "drums/roland-cr-78/kit", volume=0.993, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=40, p1_hz=350, p1_db=-2, hs_hz=8000, hs_db=1.5),
     fx("comp2", "dry-drum-punch", mix=0.5),
     fx("verb2", "small-room", mix=0.16),
@@ -57,43 +57,48 @@ cr78 = song.track("CR-78", "sampler", "drums/roland-cr-78/kit", volume=0.9, fx=[
 # gated room doing the rest.
 # Toms and the crash stay on KIT; the snare and the kick get tracks of
 # their own (a room full of kick is mud, and the 80s mixes kept it out).
-def kit_fx():
+def kit_fx(smash=16):
     return [
         fx("eq2", hpf_on="ON", hpf_hz=90, p1_hz=450, p1_db=-3, p1_q=0.9, p2_hz=2200, p2_db=4, hs_hz=6000, hs_db=3),
-        fx("comp2", "drum-smash", makeup=15),
+        fx("comp2", "drum-smash", makeup=smash),  # a hot smash: the kit leads
     ]
 
 
-kit = song.track("KIT", "sampler", "vcsl-kits/acoustic-kit", volume=1.1, params=dict(level=1.0), fx=kit_fx())
-snare = song.track("SNARE", "sampler", "vcsl-kits/acoustic-kit", volume=1.1, params=dict(level=1.0), fx=kit_fx())
+kit = song.track("KIT", "sampler", "vcsl-kits/acoustic-kit", volume=0.961, params=dict(level=1.0), fx=kit_fx())
+snare = song.track("SNARE", "sampler", "vcsl-kits/acoustic-kit", volume=1.25, params=dict(level=1.0), fx=kit_fx(smash=18))
 # The room is a return, fully wet. Snare and toms both send to it, but
 # only the snare opens its gate: each backbeat blooms and slams shut,
 # and the toms ring into the room only while the snare holds it open.
 room = song.bus("GATED ROOM", fx=[fx("verb2", "gated-drum-room", mix=1.0, key=snare)])
-kit.send(room, -11)
-snare.send(room, -11)
-kick = song.track("KICK", "sampler", "vcsl-kits/acoustic-kit", volume=1.1, params=dict(level=1.0), fx=[
+kit.send(room, -14.1)
+snare.send(room, -14.1)
+kick = song.track("KICK", "sampler", "vcsl-kits/acoustic-kit", volume=1.11, params=dict(level=1.0), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=35, p1_hz=380, p1_db=-5, p1_q=1.2, p2_hz=3500, p2_db=3),
-    fx("comp2", "dry-drum-punch", makeup=10),
+    fx("comp2", "dry-drum-punch", makeup=5.5),
     fx("verb2", "small-room", mix=0.1),
 ])
+# The drum bus: kit, snare, kick and their room glued on one SSL-style
+# compressor, 4:1 with the hits let through (comp2 drum-bus).
+drums = song.bus("DRUMS", fx=[fx("comp2", "drum-bus", thresh=-22, makeup=2.4)])  # a quiet kit: 5-6 dB on the hits
+for t in (kit, snare, kick, room):
+    t.output = drums
 TOM_HI2 = kit.duplicate_zone("high tom", 50, as_name="rack tom", tune=3)
 TOM_LO2 = kit.duplicate_zone("mid tom", 43, as_name="floor tom hi", tune=-2.5)
 KICK, SNARE, CRASH = 36, 38, 49
 TOMS = [50, 48, 45, 43, 41]  # high to low
 
-pad = song.track("PAD", "juno2", "bittersweet-minor-pad", volume=0.21, params=dict(level=0.55), fx=[
+pad = song.track("PAD", "juno2", "bittersweet-minor-pad", volume=0.23, params=dict(level=0.55), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=260, p1_hz=400, p1_db=-4, p1_q=0.8, hs_hz=7000, hs_db=-1),
     fx("chorus2", "juno-ii"),
     fx("verb2", "big-plate-hall", mix=0.32),
 ])
-voice = song.track("VOICE", "unfairlight", "sararr", volume=1.0, params=dict(vib_depth=0.12, filter=215, vol=0.95), fx=[
+voice = song.track("VOICE", "unfairlight", "sararr", volume=0.538, params=dict(vib_depth=0.12, filter=215, vol=0.95), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=150, p1_hz=400, p1_db=-2, p2_hz=2600, p2_db=4, hs_hz=7000, hs_db=3),
     fx("comp2", "vocal-leveler"),
     fx("delay2", sync="SYNC", div="1/4", fb=0.28, damp=3500, mix=0.16),
     fx("verb2", "vocal-plate", mix=0.26),
 ])
-choir = song.track("CHOIR", "unfairlight", "choir05", volume=0.17, pan=-0.15, fx=[
+choir = song.track("CHOIR", "unfairlight", "choir05", volume=0.193, pan=-0.15, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=320, p1_hz=500, p1_db=-3),
     fx("chorus2", "string-ensemble"),
     fx("verb2", "big-hall", mix=0.35),
@@ -101,23 +106,23 @@ choir = song.track("CHOIR", "unfairlight", "choir05", volume=0.17, pan=-0.15, fx
 # Fretless-ish: triangle + a little saw at 8' (the preset's 16' sat an
 # octave under the notes), no sub, the filter open enough
 # for the notes to speak, and glide between tied notes.
-bass = song.track("BASS", "cream", "deep-sub-bass", volume=0.85, params=dict(
+bass = song.track("BASS", "cream", "deep-sub-bass", volume=0.346, params=dict(
     range1="8", range2="8", glide=0.07, lvl3=0.0, lvl2=0.35, cutoff=750, emphasis=0.25, contour=2.2, f_dec=0.45, f_sus=0.35), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=38, p1_hz=260, p1_db=-2, p2_hz=800, p2_db=3, p2_q=0.9),
     fx("comp2", "bass-leveler"),
 ])
-keys = song.track("RHODES", "rhodes", "mellow", volume=0.35, pan=0.2, fx=[
+keys = song.track("RHODES", "rhodes", "mellow", volume=0.795, pan=0.2, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=160),
     fx("chorus2", "wide-keys"),
     fx("verb2", "medium-plate", mix=0.22),
 ])
 # The echo guitar stand-in: a pluck into long dub echoes.
-echo = song.track("ECHO", "juno2", "pluck-keys", volume=0.26, pan=-0.3, fx=[
+echo = song.track("ECHO", "juno2", "pluck-keys", volume=0.562, pan=-0.3, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=400, hs_hz=6000, hs_db=-3),
     fx("delay2", "dub-tail", mix=0.4),
     fx("verb2", "plate", mix=0.25),
 ])
-swell = song.track("SWELL", "sampler", volume=1.25, fx=[
+swell = song.track("SWELL", "sampler", volume=1.1, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=300),
     fx("verb2", "big-hall", mix=0.3),
 ])
@@ -251,11 +256,16 @@ for sec in (verse1, verse2):
 echo.clip(verse2).arp(VERSE, [0, 2, 3, 2], rate=1.0, octave=4, vel=78, gate=0.4)
 echo.clip(intro, at_bar=4, bars=4).arp(VERSE, [3, 2, 0], rate=1.5, octave=5, vel=70, gate=0.35)
 
+# ── mix rides (docs/21 §8) ─────────────────────────────────────────────
+# the line lifts in the choruses; the pad steps back under the verses
+voice.ride({chorus1: 1, chorus2: 1, chorus3: 1.5, outro: 1})
+pad.ride({verse1: -2, verse2: -2})
+
 # ── master ─────────────────────────────────────────────────────────────
 song.master(fx=[
-    fx("eq2", hpf_on="ON", hpf_hz=25, hs_hz=10000, hs_db=1),
+    fx("eq2", hpf_on="ON", hpf_hz=25, p1_hz=300, p1_db=-1.5, p1_q=0.8, hs_hz=10000, hs_db=2),
     fx("comp2", "gentle-bus-glue", mix=0.6),
-    fx("limiter2", gain=2.5, ceil=-3.2),
+    fx("limiter2", gain=5.0, ceil=-3.2),
 ])
 
 if __name__ == "__main__":

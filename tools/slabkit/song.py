@@ -617,6 +617,36 @@ class Track:
         lane. tension bends it (+ = fast start)."""
         return self.automate(target, (frm, v0, "curve" if tension else "linear", tension), (to, v1))
 
+    def ride(self, rides, glide=1.0):
+        """A mix ride on the volume lane: {section: dB}, or {section: (dB0, dB1)}
+        for a move across the section. Unlisted sections sit at the fader;
+        changes glide over `glide` beats into each section. Call after the
+        fader is final (the lane is in fader units)."""
+        v = self.volume
+        pts = []
+        prev = None
+        for sec in self.song.sections:
+            r = rides.get(sec, 0.0)
+            d0, d1 = r if isinstance(r, tuple) else (r, r)
+            a, b = min(1.25, v * 10 ** (d0 / 20)), min(1.25, v * 10 ** (d1 / 20))
+            if prev is None:
+                pts.append((sec.start, a))
+            elif abs(prev - a) > 1e-9:
+                pts.append((max(0.0, sec.start - glide), prev))
+                pts.append((sec.start, a))
+            if abs(a - b) > 1e-9:
+                pts.append((sec.start + sec.length, b))
+            prev = b
+        pts.append((self.song.sections[-1].start + self.song.sections[-1].length, prev))
+        # drop points that repeat the time of the one before
+        clean = []
+        for t, val in pts:
+            if clean and abs(clean[-1][0] - t) < 1e-9:
+                clean[-1] = (t, val)
+            else:
+                clean.append((t, val))
+        return self.automate("volume", *clean)
+
     def audio(self, path, section=None, at_bar=0, at_beat=None, start_sec=0.0, dur_sec=None,
               gain=1.0, fade_in=0.0, fade_out=0.0, reverse=False, name=None):
         """Place a WAV: at a section's start plus `at_bar` bars, or at

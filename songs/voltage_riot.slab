@@ -23,7 +23,7 @@
     90,
     120
    ],
-   "volume": 0.45,
+   "volume": 0.379,
    "pan": 0.0,
    "mute": false,
    "solo": false,
@@ -69,7 +69,7 @@
       "eq-hpf-on": 1,
       "eq-hpf-hz": 30,
       "eq-ls-hz": 90,
-      "eq-ls-db": 3,
+      "eq-ls-db": 1.5,
       "eq-p1-hz": 300,
       "eq-p1-db": -4,
       "eq-p1-q": 1.2,
@@ -2114,7 +2114,7 @@
     206,
     174
    ],
-   "volume": 1.0,
+   "volume": 0.359,
    "pan": 0.0,
    "mute": false,
    "solo": false,
@@ -2178,12 +2178,14 @@
     {
      "machine": "comp2",
      "params": {
-      "comp-thresh": -22,
-      "comp-ratio": 5,
-      "comp-knee": 4,
-      "comp-atk": 0.00088,
-      "comp-rel": 0.023,
-      "comp-makeup": 5,
+      "comp-thresh": -10.7,
+      "comp-ratio": 4,
+      "comp-knee": 6,
+      "comp-atk": 0.003,
+      "comp-rel": 0.25,
+      "comp-hpf": 20,
+      "comp-det": 0,
+      "comp-makeup": 3.8,
       "comp-mix": 1
      },
      "bypass": false
@@ -6254,6 +6256,33 @@
       }
      ]
     }
+   ],
+   "automation": [
+    {
+     "target": "volume",
+     "points": [
+      [
+       0.0,
+       0.359
+      ],
+      [
+       63.0,
+       0.359
+      ],
+      [
+       64.0,
+       0.1429204742287055
+      ],
+      [
+       128.0,
+       0.359
+      ],
+      [
+       416.0,
+       0.359
+      ]
+     ]
+    }
    ]
   },
   {
@@ -6263,7 +6292,7 @@
     110,
     230
    ],
-   "volume": 1.0,
+   "volume": 1.25,
    "pan": 0.0,
    "mute": false,
    "solo": false,
@@ -6308,7 +6337,9 @@
      "machine": "eq2",
      "params": {
       "eq-hpf-on": 1,
-      "eq-hpf-hz": 90,
+      "eq-hpf-hz": 140,
+      "eq-p2-hz": 1500,
+      "eq-p2-db": 2,
       "eq-hs-hz": 6000,
       "eq-hs-db": -3
      },
@@ -10670,7 +10701,7 @@
     190,
     80
    ],
-   "volume": 0.53,
+   "volume": 0.645,
    "pan": 0.15,
    "mute": false,
    "solo": false,
@@ -12105,7 +12136,7 @@
     170,
     250
    ],
-   "volume": 0.45,
+   "volume": 0.511,
    "pan": 0.0,
    "mute": false,
    "solo": false,
@@ -13706,7 +13737,7 @@
     130,
     70
    ],
-   "volume": 0.65,
+   "volume": 0.809,
    "pan": 0.18,
    "mute": false,
    "solo": false,
@@ -20546,7 +20577,7 @@
     200,
     90
    ],
-   "volume": 0.28,
+   "volume": 0.3,
    "pan": -0.2,
    "mute": false,
    "solo": false,
@@ -22168,7 +22199,7 @@
     120,
     200
    ],
-   "volume": 0.4,
+   "volume": 0.504,
    "pan": -0.12,
    "mute": false,
    "solo": false,
@@ -26508,7 +26539,7 @@
     90,
     120
    ],
-   "volume": 0.3,
+   "volume": 0.333,
    "pan": 0.0,
    "mute": false,
    "solo": false,
@@ -27168,6 +27199,49 @@
       }
      ]
     }
+   ],
+   "automation": [
+    {
+     "target": "volume",
+     "points": [
+      [
+       0.0,
+       0.333
+      ],
+      [
+       127.0,
+       0.333
+      ],
+      [
+       128.0,
+       0.37363214528255384
+      ],
+      [
+       159.0,
+       0.37363214528255384
+      ],
+      [
+       160.0,
+       0.333
+      ],
+      [
+       287.0,
+       0.4192221621274577
+      ],
+      [
+       288.0,
+       0.4192221621274577
+      ],
+      [
+       288.0,
+       0.333
+      ],
+      [
+       416.0,
+       0.333
+      ]
+     ]
+    }
    ]
   },
   {
@@ -27177,7 +27251,7 @@
     206,
     174
    ],
-   "volume": 0.38,
+   "volume": 0.457,
    "pan": 0.0,
    "mute": false,
    "solo": false,
@@ -27589,7 +27663,7 @@
     110,
     230
    ],
-   "volume": 0.38,
+   "volume": 0.393,
    "pan": 0.0,
    "mute": false,
    "solo": false,
@@ -27953,7 +28027,7 @@
     190,
     80
    ],
-   "volume": 0.24,
+   "volume": 0.263,
    "pan": 0.0,
    "mute": false,
    "solo": false,
@@ -29004,21 +29078,23 @@
      "eq-hpf-on": 1,
      "eq-hpf-hz": 26,
      "eq-ls-hz": 90,
-     "eq-ls-db": 2,
+     "eq-ls-db": 0,
      "eq-hs-hz": 8000,
-     "eq-hs-db": -1.5
+     "eq-hs-db": 1
     },
     "bypass": false
    },
    {
     "machine": "comp2",
     "params": {
-     "comp-thresh": -16,
+     "comp-thresh": -14.8,
      "comp-ratio": 2,
-     "comp-knee": 9,
-     "comp-atk": 0.0043,
-     "comp-rel": 0.02,
-     "comp-makeup": 3,
+     "comp-knee": 6,
+     "comp-atk": 0.01,
+     "comp-rel": 0.15,
+     "comp-hpf": 90,
+     "comp-det": 0,
+     "comp-makeup": 1.9,
      "comp-mix": 1
     },
     "bypass": false
@@ -29026,7 +29102,7 @@
    {
     "machine": "limiter2",
     "params": {
-     "lim-gain": 4.5,
+     "lim-gain": 8.0,
      "lim-ceil": -3.2
     },
     "bypass": false

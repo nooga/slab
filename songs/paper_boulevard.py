@@ -47,7 +47,7 @@ r:.5 F#5:.25 E5 D5:.75 C#5:.25 A4:.5 D5:1.5 | r:4
 HOOK_B = HOOK.strip().split("\n")[2] + " | " + HOOK.strip().split("\n")[3]
 
 # ── tracks ─────────────────────────────────────────────────────────────
-kit = song.track("KIT", "drum2", "gated-snare-kit", volume=1.0, params=dict(
+kit = song.track("KIT", "drum2", "gated-snare-kit", volume=0.683, params=dict(
     kick_decay=0.3, snare_decay=0.26, snare_tone=2600, master_drive=1.25), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=32, p1_hz=420, p1_db=-2.5, p1_q=1.0, hs_hz=7000, hs_db=2),
     fx("comp2", "dry-drum-punch"),
@@ -59,22 +59,22 @@ hats = song.track("HATS", "drum2", "crisp-hat-kit", volume=1.0, pan=0.22,
     fx("eq2", hpf_on="ON", hpf_hz=500, hs_hz=9000, hs_db=-2),
     fx("verb2", "small-room", mix=0.12),
 ])
-bass = song.track("BASS", "cream", "outstanding-funk-bass", volume=1.25, params=dict(
+bass = song.track("BASS", "cream", "outstanding-funk-bass", volume=0.555, params=dict(
     cutoff=900, contour=2.6, glide=0.0, age=0.25, level=0.8), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=34, p1_hz=250, p1_db=-2, p1_q=1.2),
     fx("comp2", "bass-leveler"),
 ])
-ep = song.track("E.PIANO", "fm86", "e-piano-1", volume=0.43, pan=-0.25, fx=[
+ep = song.track("E.PIANO", "fm86", "e-piano-1", volume=0.411, pan=-0.25, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=180, p2_hz=2800, p2_db=1.5),
     fx("chorus2", "wide-keys"),
     fx("verb2", "medium-plate", mix=0.18),
 ])
-pad = song.track("PAD", "juno2", "wide-sunny-pad", volume=0.2, params=dict(level=0.5, age=0.4), fx=[
+pad = song.track("PAD", "juno2", "wide-sunny-pad", volume=0.193, params=dict(level=0.5, age=0.4), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=260, p1_hz=500, p1_db=-3, hs_hz=8000, hs_db=-3),
     fx("chorus2", "juno-ii"),
     fx("verb2", "big-plate-hall", mix=0.3),
 ])
-brass = song.track("BRASS", "juno2", "bright-brass-stab", volume=0.42, pan=0.18, fx=[
+brass = song.track("BRASS", "juno2", "bright-brass-stab", volume=0.392, pan=0.18, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=220),
     fx("verb2", "medium-plate", mix=0.22),
 ])
@@ -88,7 +88,7 @@ hook = song.track("HOOK", "fm86", "syn-lead-1", volume=0.45, fx=[
     fx("verb2", "plate", mix=0.2),
 ])
 # the gloss: a short pluck an octave up, low in the mix, spread by chorus
-hook_hi = song.track("HOOK+", "juno2", "pluck-keys", volume=0.4, pan=-0.1, fx=[
+hook_hi = song.track("HOOK+", "juno2", "pluck-keys", volume=0.509, pan=-0.1, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=600),
     fx("chorus2", "wide-keys"),
     fx("verb2", "plate", mix=0.25),
@@ -197,11 +197,20 @@ for sec in (chorus1, chorus2, chorus3, outro):
     hook_clip(sec, HOOK)
 hook_clip(end, "F#5:.75 D5:.25 r:3", bars=1)
 
+# ── mix rides (docs/21 §8) ─────────────────────────────────────────────
+# verses thin out, the pres build, the choruses open up, the key change
+# lifts again
+kit.ride({verse1: -1.5, verse2: -1.5})
+bass.ride({verse1: -1, verse2: -1})
+pad.ride({verse1: -3, verse2: -3, pre1: (-3, 0), pre2: (-3, 0), chorus3: 1.5, outro: 1.5})
+brass.ride({chorus1: 1.5, chorus2: 1.5, chorus3: 2.5, outro: 2})
+hook_hi.ride({chorus3: 2, outro: 2})
+
 # ── master ─────────────────────────────────────────────────────────────
 song.master(fx=[
     fx("eq2", hpf_on="ON", hpf_hz=25, hs_hz=10000, hs_db=1.5),
     fx("comp2", "gentle-bus-glue"),
-    fx("limiter2", gain=4.5, ceil=-3.2),
+    fx("limiter2", gain=7.3, ceil=-3.2),
 ])
 
 if __name__ == "__main__":

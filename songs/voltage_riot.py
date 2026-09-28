@@ -27,17 +27,17 @@ BAR = song.bar_beats
 DROPS = (drop1, drop2)
 
 # ── tracks ─────────────────────────────────────────────────────────────
-kick = song.track("KICK", "drum2", "909-punch", volume=0.45, params=dict(
+kick = song.track("KICK", "drum2", "909-punch", volume=0.379, params=dict(
     # body at 55 Hz and up, where speakers and guts respond; 44 Hz measured
     # big and sounded like nothing
     kick_tune=55, kick_sweep=12, kick_bend=0.04, kick_decay=0.32, kick_click=0.5,
     kick_drive=5, kick_level=1.0, master_drive=1.6), fx=[
-    fx("eq2", hpf_on="ON", hpf_hz=30, ls_hz=90, ls_db=3, p1_hz=300, p1_db=-4, p1_q=1.2, p2_hz=3500, p2_db=2),
+    fx("eq2", hpf_on="ON", hpf_hz=30, ls_hz=90, ls_db=1.5, p1_hz=300, p1_db=-4, p1_q=1.2, p2_hz=3500, p2_db=2),
     fx("sat2", drive=9, mode="TAPE", mix=0.6),
 ])
 # not a sub preset: its 16' oscillators and 2-octave sub put the line at
 # 22-44 Hz, where nothing hears it. 8' saw + square play the written pitch.
-bass = song.track("BASS", "cream", "deep-sub-bass", volume=1.0, params=dict(
+bass = song.track("BASS", "cream", "deep-sub-bass", volume=0.359, params=dict(
     range1="8", wave1="SAW", range2="8", wave2="SQR", detune2=0.08, lvl1=1.0, lvl2=0.7, lvl3=0.0,
     cutoff=600, emphasis=0.2, contour=2.4, drive=0.7, f_dec=0.18, a_dec=0.22, a_sus=0.3, a_rel=0.06,
     level=0.8), fx=[
@@ -46,55 +46,55 @@ bass = song.track("BASS", "cream", "deep-sub-bass", volume=1.0, params=dict(
     fx("sat2", drive=12, mode="XFMR", tone=3000, mix=0.5, out=3),
     fx("comp2", "bass-leveler"),
 ])
-acid = song.track("ACID", "ms20", "acid-bass", volume=1.0, params=dict(
+acid = song.track("ACID", "ms20", "acid-bass", volume=1.25, params=dict(
     resonance=0.8, env_amount=3.5, drive=1.5), fx=[
-    fx("eq2", hpf_on="ON", hpf_hz=90, hs_hz=6000, hs_db=-3),
+    fx("eq2", hpf_on="ON", hpf_hz=140, p2_hz=1500, p2_db=2, hs_hz=6000, hs_db=-3),
     fx("sat2", drive=10, mode="FUZZ", tone=4500, mix=0.3),
     fx("delay2", sync="SYNC", div="1/8.", fb=0.35, damp=3000, mix=0.18),
 ])
 # the drop-2 acid: same line an octave up, filter wide open, screaming
-acid2 = song.track("ACID!", "ms20", "acid-bass", volume=0.53, pan=0.15, params=dict(
+acid2 = song.track("ACID!", "ms20", "acid-bass", volume=0.645, pan=0.15, params=dict(
     cutoff=1100, resonance=1.0, env_amount=4.5, drive=2), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=250, hs_hz=6000, hs_db=-3),
     fx("sat2", drive=12, mode="DIODE", tone=4500, mix=0.35),
     fx("delay2", sync="SYNC", div="1/16", fb=0.4, damp=4000, mix=0.2),
 ])
-clap = song.track("CLAP", "drum2", "clap-forward-kit", volume=0.45, params=dict(
+clap = song.track("CLAP", "drum2", "clap-forward-kit", volume=0.511, params=dict(
     clap_decay=0.3, snare_tone=3000, master_drive=2.2), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=180, p2_hz=2500, p2_db=2),
     fx("verb2", "short-plate-room", mix=0.22),
 ])
-hats = song.track("HATS", "drum2", "crisp-hat-kit", volume=0.65, pan=0.18, params=dict(
+hats = song.track("HATS", "drum2", "crisp-hat-kit", volume=0.809, pan=0.18, params=dict(
     hat_level=1.4, hat_chdec=0.035, hat_ohdec=0.3, master_drive=1.8), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=600),
     fx("sat2", drive=6, mode="TAPE", mix=0.4),
 ])
-perc = song.track("PERC", "drum2", "synthetic-tom-kit", volume=0.28, pan=-0.2, params=dict(
+perc = song.track("PERC", "drum2", "synthetic-tom-kit", volume=0.3, pan=-0.2, params=dict(
     tom_tune=150, tom_decay=0.18, tom_drive=4), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=120),
     fx("delay2", sync="SYNC", div="1/8.", fb=0.3, damp=3500, mix=0.2),
 ])
-stab = song.track("STAB", "juno2", "party-chord-stab", volume=0.4, pan=-0.12, fx=[
+stab = song.track("STAB", "juno2", "party-chord-stab", volume=0.504, pan=-0.12, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=220),
     fx("sat2", drive=12, mode="FUZZ", tone=3500, mix=0.3),
     fx("delay2", sync="SYNC", div="1/8.", fb=0.42, damp=3200, mix=0.26),
     fx("verb2", "big-hall", mix=0.2),
 ])
-pad = song.track("PAD", "juno2", "hazy-slow-attack-pad", volume=0.3, fx=[
+pad = song.track("PAD", "juno2", "hazy-slow-attack-pad", volume=0.333, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=200, p1_hz=450, p1_db=-3),
     fx("chorus2", "juno-ii"),
     fx("verb2", "cathedral", mix=0.4),
 ])
-scream = song.track("SCREAM", "ms20", "scream-lead", volume=0.38, params=dict(portamento=0.4), fx=[
+scream = song.track("SCREAM", "ms20", "scream-lead", volume=0.457, params=dict(portamento=0.4), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=300),
     fx("delay2", sync="SYNC", div="1/4", fb=0.45, damp=3500, mix=0.25),
     fx("verb2", "big-plate-hall", mix=0.3),
 ])
-riser = song.track("RISER", "ms20", "rising-filter-fx", volume=0.38, fx=[
+riser = song.track("RISER", "ms20", "rising-filter-fx", volume=0.393, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=400),
     fx("verb2", "big-hall", mix=0.35),
 ])
-roll = song.track("ROLL", "drum2", "gated-snare-kit", volume=0.24, params=dict(
+roll = song.track("ROLL", "drum2", "gated-snare-kit", volume=0.263, params=dict(
     snare_decay=0.12, snare_tone=3200, snare_level=1.0), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=200),
     fx("verb2", "big-hall", mix=0.3),
@@ -190,11 +190,16 @@ perc.clip(outro).drums({"tom": "......x.....x..x"})
 for c in (kick.clips[-1], hats.clips[-1], perc.clips[-1]):
     c.velocities(lambda n, c=c: n["vel"] * (1 - 0.5 * n["start"] / c.length))
 
+# ── mix rides (docs/21 §8) ─────────────────────────────────────────────
+# the bass swells in across the build; the pad blooms in the breaks
+bass.ride({build: (-8, 0)})
+pad.ride({break1: 1, break2: (0, 2)})
+
 # ── master: loud, but under the knee ───────────────────────────────────
 song.master(fx=[
-    fx("eq2", hpf_on="ON", hpf_hz=26, ls_hz=90, ls_db=2, hs_hz=8000, hs_db=-1.5),
+    fx("eq2", hpf_on="ON", hpf_hz=26, ls_hz=90, ls_db=0, hs_hz=8000, hs_db=1),
     fx("comp2", "bus-glue"),
-    fx("limiter2", gain=4.5, ceil=-3.2),
+    fx("limiter2", gain=8.0, ceil=-3.2),
 ])
 
 if __name__ == "__main__":

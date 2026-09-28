@@ -316,9 +316,12 @@ The report flags sub energy that dwarfs the 60–250 Hz band.
 | `makeup` | gain back after reduction | about half the reduction |
 | `mix` | parallel blend | 0.3–0.5 with heavy settings for "parallel smash" |
 
-Preset shortcuts: `dry-drum-punch`, `drum-smash` (use at mix 0.3–0.5),
-`bass-leveler`, `smooth-pad-comp`, `gentle-bus-glue`,
-`soft-master-glue`, `pump` / `audible-pump`. For ducking, key the
+Preset shortcuts (each measured against its job, docs/24 §Presets):
+`dry-drum-punch`, `drum-smash` (parallel, mix 0.5), `drum-bus` (on a
+DRUMS group), `rude-clap`, `bass-leveler`, `vocal-leveler`,
+`smooth-pad-comp`, `bus-glue` / `gentle-bus-glue` / `soft-master-glue`,
+`pump` / `audible-pump`. They're level-neutral on the songs' material;
+trim THRESH to the source (a quieter track needs a lower one). For ducking, key the
 detector from another track: `fx("comp2", thresh=-30, ratio=6, key=kick)`
 on the bass or pad pumps it on every kick; a muted "ghost kick" track
 still keys (docs/23 §Sidechain keys).
@@ -370,6 +373,14 @@ eq2 (hpf 25 Hz, gentle air shelf) → comp2 gentle-bus-glue → limiter2 (ceil �
 | streaming-safe, dynamic | −14 LUFS |
 | modern pop / dance | −10 to −12 LUFS |
 | too loud (squashed, crest under 8 dB) | above −9 LUFS |
+
+### Rides
+
+`track.ride({verse1: -2, chorus3: 1.5})` writes the volume lane: each
+listed section sits that many dB off the fader (`(dB0, dB1)` moves across
+it), with a one-beat glide in. Use it for section contrast (verses thin,
+choruses open) and for the lead lifting in the chorus. Call it after the
+fader is final. A stem whose track rides reads its average.
 
 ### Mixing by numbers: the stem report
 
