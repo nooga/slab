@@ -106,7 +106,7 @@ JSON. Top level:
 | `mute` / `solo` | any soloed track mutes all unsoloed ones |
 | `instrument.machine` | machine **id**: the folder name under `machines/` (`juno2`, not "Ju-Know"). Display names change; ids don't. |
 | `instrument.assets` | files the machine has loaded, by asset name. Only the sampler has one: `{"smp": "path"}`, where the path is a `.wav`, an `.sfz` or a folder of WAVs (relative to the working directory, or absolute). A path under the sample library is written `lib:<path>`, relative to `$SLAB_LIBRARY` (default `~/Music/Slab/Library`), so projects and shipped presets find library samples on any machine. Missing: the machine keeps its bundled sample. |
-| `instrument.zones` | the sampler's per-zone edits, by zone name (the sample's file stem): `{"clap": {"level": -6, "tune": 0, "decay": 0, "tone": 0, "cut": 0}}`. level in dB, tune in semitones, decay in seconds to −60 dB (0 = off), tone in octaves of filter offset, cut the choke: 0 the pack's (`group`/`off_by`), 1 none, n+1 choke group n (the zone joins it and is cut by it). Zones sharing a name (an SFZ label, a sample's layers and round robins) take the same edits. Only edited zones are written; names that don't match the loaded keymap are ignored. |
+| `instrument.zones` | the sampler's per-zone edits, by zone name (the sample's file stem): `{"clap": {"level": -6, "tune": 0, "decay": 0, "tone": 0, "cut": 0}}`. level in dB, tune in semitones, decay in seconds to −60 dB (0 = off), tone in octaves of filter offset, cut the choke: 0 the pack's (`group`/`off_by`), 1 none, n+1 choke group n (the zone joins it and is cut by it). Zones sharing a name (an SFZ label, a sample's layers and round robins) take the same edits. Only edited zones are written; names that don't match the loaded keymap are ignored. `"reverse": true` plays the sound backwards (a reversed copy of its samples, loop mirrored). A **copy** is a sound of its own, `"snare 2": {"copy": "snare", "key": 39, …}`: every zone of the named one-key sound on `key`, pitched as the original, with its own edits (sampler and Unfairlight kits). |
 | `instrument.state` | settings a machine keeps beyond flat params: a Rack's `{"parts": […]}`, the same form as its presets. |
 | `effects` | insert chain, run in order, stereo. `bypass: true` passes audio through untouched. |
 | `automation` | track automation lanes, see below. Optional. |
@@ -191,8 +191,10 @@ An **audio clip**:
 
 `source` is a WAV path (relative to the working directory, or
 absolute). `start_sec` is where in the file playback begins, `dur_sec`
-is how much plays, and the fades are in seconds. A missing file keeps
-the clip, which then plays silent.
+is how much plays, and the fades are in seconds. `"reversed": true`
+plays that window from its end back to its start; the fades and the
+gain stay in clip time (a fade-in still fades the clip's first
+moments). A missing file keeps the clip, which then plays silent.
 
 ## How the machines interpret notes
 

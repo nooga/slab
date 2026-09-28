@@ -837,16 +837,26 @@ fn mixAudioClips(
         while (a < hi) : (a += 1) {
             const i: usize = @intFromFloat(a - block_lo);
             if (i >= frames) break;
-            const src_pos = clip.start_sample + (a - clip_start) * step;
-            if (src_pos < 0) continue;
+            const pos = (a - clip_start) * step; // samples into the window
+            // Reversed: the window's last sample first, down to its first.
+            const src_pos = if (clip.reversed)
+                clip.start_sample + clip.dur_samples - 1 - pos
+            else
+                clip.start_sample + pos;
+            if (src_pos < 0) {
+                if (clip.reversed) break; // read past the source head
+                continue;
+            }
             const idx0f = @floor(src_pos);
             const idx0: usize = @intFromFloat(idx0f);
-            if (idx0 >= len) break; // source exhausted — rest of clip is silent
+            if (idx0 >= len) {
+                if (clip.reversed) continue; // window runs past the source end: silent until it's back in
+                break; // source exhausted — rest of clip is silent
+            }
             const frac: f32 = @floatCast(src_pos - idx0f);
             const s0: f32 = @floatCast(data[idx0]);
             const s1: f32 = if (idx0 + 1 < len) @floatCast(data[idx0 + 1]) else s0;
             // Linear fade-in/out envelope over the played window.
-            const pos = src_pos - clip.start_sample; // samples into the window
             var fade: f64 = 1.0;
             if (clip.fade_in_samples > 0 and pos < clip.fade_in_samples)
                 fade = pos / clip.fade_in_samples;
@@ -1242,6 +1252,32 @@ test "mixAudioClips: linear fade-in/out ramps the window edges" {
     try testing.expectApproxEqAbs(@as(f32, 1.0), l[4], 1e-5);
     // pos 7 → remaining 1 → 0.5; (pos 8 would be 0 but window/source end at 8).
     try testing.expectApproxEqAbs(@as(f32, 0.5), l[7], 1e-5);
+}
+
+test "mixAudioClips: a reversed clip reads its window end to start, fades in clip time" {
+    var data = [_]f64{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    var snap = snap_mod.TrackSnapshot{};
+    snap.audio_clip_count = 1;
+    snap.audio_clips[0] = .{
+        .start_beat = 0,
+        .length_beats = 1,
+        .data = &data,
+        .len = data.len,
+        .source_rate = 48_000,
+        .start_sample = 2, // window = source 2..7
+        .dur_samples = 6,
+        .fade_in_samples = 2,
+        .gain = 1.0,
+        .reversed = true,
+    };
+    var l = [_]f32{0} ** 6;
+    var r = [_]f32{0} ** 6;
+    mixAudioClips(&snap, 0, 6, 6.0, 48_000, &l, &r);
+    // 7, 6, 5, 4, 3, 2 with the fade-in on the first two (0, 0.5).
+    try testing.expectApproxEqAbs(@as(f32, 0), l[0], 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 3), l[1], 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 5), l[2], 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 2), l[5], 1e-5);
 }
 
 test "mixAudioClips: missing source data is skipped" {

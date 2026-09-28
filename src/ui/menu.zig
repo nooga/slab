@@ -45,6 +45,7 @@ pub const EditCommand = enum {
     octave_down,
     rename,
     import_audio,
+    reverse,
 };
 
 pub const Item = struct {

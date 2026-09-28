@@ -54,6 +54,7 @@ test {
     _ = @import("automation.zig");
     _ = @import("ui/automation_lane.zig");
     _ = @import("ui/lane_targets.zig");
+    _ = @import("ui/arrangement.zig");
 }
 
 const MAX_TRACKS: usize = 16;
@@ -2286,6 +2287,14 @@ fn executeEditCommand(
                 changed = true;
                 status.set("Loop cleared", .{});
             }
+        },
+        .reverse => {
+            changed = switch (focus) {
+                .arrangement => arrangement.reverseAudioClips(tracks, selected_clip.*, true),
+                .piano_roll => arrangement.reverseAudioClips(tracks, selected_clip.*, false),
+                else => false,
+            };
+            if (changed) status.set("Reversed", .{});
         },
         .split_at_playhead => {
             changed = if (focus == .arrangement) arrangement.splitSelectedClipsAt(tracks, alloc, selected_clip, transport.beats(), transport.bpm()) else false;

@@ -37,6 +37,9 @@ pub const AudioRef = struct {
     /// Linear fade-in / fade-out lengths, in source seconds (0 = none).
     fade_in_sec: f64 = 0,
     fade_out_sec: f64 = 0,
+    /// Plays the window end to start. The window stays the source region
+    /// `[start_sec, start_sec+dur_sec)`; fades and gain stay in clip time.
+    reversed: bool = false,
 };
 
 pub const Note = struct {

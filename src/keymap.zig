@@ -150,6 +150,187 @@ pub const Keymap = struct {
     }
 };
 
+/// What the host does to a loaded keymap before the voice sees it: sounds
+/// played backwards and sounds copied onto a key of their own. Kept by
+/// zone name like ZoneEdits, so a reload or a kit swap carries it, and
+/// applied by `derive` on every load.
+pub const MAX_DERIVED = 64;
+
+pub const Copy = struct {
+    name: Name,
+    from: Name,
+    key: u8,
+};
+
+pub const Derive = struct {
+    reversed: [MAX_DERIVED]Name = undefined,
+    rev_n: u8 = 0,
+    copies: [MAX_DERIVED]Copy = undefined,
+    copy_n: u8 = 0,
+
+    pub fn empty(self: *const Derive) bool {
+        return self.rev_n == 0 and self.copy_n == 0;
+    }
+
+    pub fn eql(self: *const Derive, other: *const Derive) bool {
+        if (self.rev_n != other.rev_n or self.copy_n != other.copy_n) return false;
+        for (self.reversed[0..self.rev_n]) |*n| if (!other.isReversed(n.slice())) return false;
+        for (self.copies[0..self.copy_n]) |*cp| {
+            const i = other.copyIndex(cp.name.slice()) orelse return false;
+            const o = &other.copies[i];
+            if (o.key != cp.key or !std.mem.eql(u8, o.from.slice(), cp.from.slice())) return false;
+        }
+        return true;
+    }
+
+    pub fn isReversed(self: *const Derive, name: []const u8) bool {
+        for (self.reversed[0..self.rev_n]) |*n| if (std.mem.eql(u8, n.slice(), name)) return true;
+        return false;
+    }
+
+    pub fn setReversed(self: *Derive, name: []const u8, on: bool) void {
+        for (self.reversed[0..self.rev_n], 0..) |*n, i| if (std.mem.eql(u8, n.slice(), name)) {
+            if (!on) {
+                self.reversed[i] = self.reversed[self.rev_n - 1];
+                self.rev_n -= 1;
+            }
+            return;
+        };
+        if (on and self.rev_n < MAX_DERIVED) {
+            self.reversed[self.rev_n] = Name.set(name);
+            self.rev_n += 1;
+        }
+    }
+
+    pub fn copyIndex(self: *const Derive, name: []const u8) ?usize {
+        for (self.copies[0..self.copy_n], 0..) |*cp, i| if (std.mem.eql(u8, cp.name.slice(), name)) return i;
+        return null;
+    }
+
+    pub fn addCopy(self: *Derive, name: []const u8, from: []const u8, key: u8) void {
+        if (self.copyIndex(name) != null or self.copy_n >= MAX_DERIVED) return;
+        self.copies[self.copy_n] = .{ .name = Name.set(name), .from = Name.set(from), .key = key };
+        self.copy_n += 1;
+    }
+
+    /// Drop a copy, its reversal, and the copies made from it.
+    pub fn removeCopy(self: *Derive, name: []const u8) void {
+        const i = self.copyIndex(name) orelse return;
+        const gone = self.copies[i].name;
+        std.mem.copyForwards(Copy, self.copies[i .. self.copy_n - 1], self.copies[i + 1 .. self.copy_n]);
+        self.copy_n -= 1;
+        self.setReversed(gone.slice(), false);
+        while (true) {
+            const child = for (self.copies[0..self.copy_n]) |*cp| {
+                if (std.mem.eql(u8, cp.from.slice(), gone.slice())) break cp.name;
+            } else return;
+            self.removeCopy(child.slice());
+        }
+    }
+};
+
+/// `base` with `d` applied: each copy's zones (every layer of its source
+/// sound) moved onto its key, then each reversed sound's samples laid
+/// backwards at the end of the pool with its loop mirrored. Consumes
+/// `base`; the voice code is untouched, it just reads other samples.
+pub fn derive(alloc: std.mem.Allocator, base: Keymap, d: *const Derive) Error!Keymap {
+    if (d.empty() or base.count == 0) return base;
+    var km = base;
+    const names = alloc.alloc(Name, MAX_ZONES) catch return Error.OutOfMemory;
+    errdefer alloc.free(names);
+    @memcpy(names[0..km.count], km.names);
+    var n = km.count;
+
+    // Copies, in order, so a copy can be made from an earlier copy.
+    for (d.copies[0..d.copy_n]) |*cp| {
+        const have = n;
+        for (0..have) |z| {
+            if (!std.mem.eql(u8, names[z].slice(), cp.from.slice())) continue;
+            const src = km.zones[z];
+            if (src.lo_key != src.hi_key or n >= MAX_ZONES) continue; // a copy is one key
+            var zz = src;
+            const shift = @as(f64, @floatFromInt(cp.key)) - src.lo_key;
+            zz.lo_key = @floatFromInt(cp.key);
+            zz.hi_key = zz.lo_key;
+            if (zz.root >= 0) zz.root += shift; // sounds as the original did
+            km.zones[n] = zz;
+            names[n] = cp.name;
+            n += 1;
+        }
+    }
+
+    // Reversed samples: one backwards copy per distinct sample region.
+    var region_start: [MAX_ZONES]f64 = undefined;
+    var region_len: [MAX_ZONES]f64 = undefined;
+    var region_at: [MAX_ZONES]usize = undefined;
+    var regions: usize = 0;
+    var extra: usize = 0;
+    for (0..n) |z| {
+        if (!d.isReversed(names[z].slice())) continue;
+        const zz = km.zones[z];
+        const known = for (0..regions) |r| {
+            if (region_start[r] == zz.start and region_len[r] == zz.len) break true;
+        } else false;
+        if (known) continue;
+        region_start[regions] = zz.start;
+        region_len[regions] = zz.len;
+        region_at[regions] = km.pool.len + extra;
+        extra += @as(usize, @intFromFloat(zz.len)) + GUARD;
+        regions += 1;
+    }
+    if (regions > 0) {
+        const pool = alloc.alloc(f64, km.pool.len + extra) catch return Error.OutOfMemory;
+        @memcpy(pool[0..km.pool.len], km.pool);
+        @memset(pool[km.pool.len..], 0);
+        for (0..regions) |r| {
+            const s0: usize = @intFromFloat(region_start[r]);
+            const len: usize = @intFromFloat(region_len[r]);
+            const dst = pool[region_at[r]..][0..len];
+            for (dst, 0..) |*v, i| v.* = km.pool[s0 + len - 1 - i];
+        }
+        for (0..n) |z| {
+            if (!d.isReversed(names[z].slice())) continue;
+            const zz = &km.zones[z];
+            for (0..regions) |r| if (region_start[r] == zz.start and region_len[r] == zz.len) {
+                zz.start = @floatFromInt(region_at[r]);
+                break;
+            };
+            if (zz.loop_end > zz.loop_start) {
+                const ls = zz.loop_start;
+                zz.loop_start = zz.len - zz.loop_end;
+                zz.loop_end = zz.len - ls;
+            }
+        }
+        alloc.free(km.pool);
+        km.pool = pool;
+    }
+    // Keymap.deinit frees names by its slice: keep the allocation exact.
+    const exact = alloc.dupe(Name, names[0..n]) catch return Error.OutOfMemory;
+    alloc.free(names);
+    alloc.free(km.names);
+    km.names = exact;
+    km.count = n;
+    return km;
+}
+
+/// The nearest key to `key` that no zone plays, looking up first.
+pub fn freeKey(km: *const Keymap, key: u8) ?u8 {
+    var used = [_]bool{false} ** 128;
+    for (km.zones[0..km.count]) |z| {
+        const lo: usize = @intFromFloat(std.math.clamp(z.lo_key, 0, 127));
+        const hi: usize = @intFromFloat(std.math.clamp(z.hi_key, 0, 127));
+        for (lo..hi + 1) |k| used[k] = true;
+    }
+    var k: usize = key;
+    while (k < 128) : (k += 1) if (!used[k]) return @intCast(k);
+    k = key;
+    while (k > 0) {
+        k -= 1;
+        if (!used[k]) return @intCast(k);
+    }
+    return null;
+}
+
 pub const Error = error{
     OpenFailed,
     ReadFailed,
@@ -1079,4 +1260,61 @@ test "sfz: inheritance, note names, spaces in paths, loops, release zones" {
     try testing.expectEqual(LOOP_ONESHOT, h.zone.loop_mode);
     try testing.expectEqual(@as(f64, 1), h.zone.off_by);
     try testing.expectEqual(@as(f64, -0.5), h.zone.pan);
+}
+
+/// A two-sound kit built in memory: "kick" on 36 (samples 1..4 with a
+/// loop 1..3), "snare" on 38 (samples 10, 20).
+fn testKit(alloc: std.mem.Allocator) !Keymap {
+    const pool = try alloc.alloc(f64, GUARD + 4 + GUARD + 2 + GUARD);
+    @memset(pool, 0);
+    const k0 = GUARD;
+    const s0 = GUARD + 4 + GUARD;
+    for (0..4) |i| pool[k0 + i] = @floatFromInt(i + 1);
+    pool[s0] = 10;
+    pool[s0 + 1] = 20;
+    const zones = try alloc.alloc(Zone, MAX_ZONES);
+    @memset(zones, unused_zone);
+    zones[0] = .{ .start = k0, .len = 4, .lo_key = 36, .hi_key = 36, .root = 36, .loop_mode = LOOP_ON, .loop_start = 1, .loop_end = 3 };
+    zones[1] = .{ .start = s0, .len = 2, .lo_key = 38, .hi_key = 38, .root = 38 };
+    const names = try alloc.alloc(Name, 2);
+    names[0] = Name.set("kick");
+    names[1] = Name.set("snare");
+    return .{ .pool = pool, .zones = zones, .count = 2, .names = names };
+}
+
+test "derive: a reversed copy on its own key, the original untouched" {
+    const alloc = testing.allocator;
+    var d = Derive{};
+    d.addCopy("kick 2", "kick", 37);
+    d.setReversed("kick 2", true);
+    var km = try derive(alloc, try testKit(alloc), &d);
+    defer km.deinit(alloc);
+    try testing.expectEqual(@as(usize, 3), km.count);
+    try testing.expectEqualStrings("kick 2", km.names[2].slice());
+    const z = km.zones[2];
+    try testing.expectEqual(@as(f64, 37), z.lo_key);
+    try testing.expectEqual(@as(f64, 37), z.root); // sounds unshifted on its key
+    try testing.expectEqualSlices(f64, &.{ 4, 3, 2, 1 }, km.samples(z));
+    try testing.expectEqualSlices(f64, &.{ 1, 2, 3, 4 }, km.samples(km.zones[0]));
+    // loop 1..3 of four samples mirrors to 1..3 (it's centred); guard after
+    try testing.expectEqual(@as(f64, 1), z.loop_start);
+    try testing.expectEqual(@as(f64, 3), z.loop_end);
+    const at: usize = @intFromFloat(z.start);
+    try testing.expectEqual(@as(f64, 0), km.pool[at + 4]);
+    try testing.expectEqual(@as(?u8, 39), freeKey(&km, 36));
+
+    // dropping the copy drops its reversal too
+    d.removeCopy("kick 2");
+    try testing.expect(d.empty());
+}
+
+test "derive: reversing a sound in place" {
+    const alloc = testing.allocator;
+    var d = Derive{};
+    d.setReversed("snare", true);
+    var km = try derive(alloc, try testKit(alloc), &d);
+    defer km.deinit(alloc);
+    try testing.expectEqual(@as(usize, 2), km.count);
+    try testing.expectEqualSlices(f64, &.{ 20, 10 }, km.samples(km.zones[1]));
+    try testing.expectEqualSlices(f64, &.{ 1, 2, 3, 4 }, km.samples(km.zones[0]));
 }

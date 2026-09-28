@@ -362,6 +362,29 @@ pub fn loopArrangement(tracks: []Track, transport: *Transport) bool {
     return true;
 }
 
+/// Flip the selected audio clips' playback direction (with `selection`
+/// false, or none selected: the focused clip). The window and fades stay
+/// where they are.
+pub fn reverseAudioClips(tracks: []Track, focused: ?ClipRef, selection: bool) bool {
+    var changed = false;
+    if (selection) for (tracks) |*t| for (t.clips.items) |*clip| if (clip.selected and clip.isAudio()) {
+        clip.audio.reversed = !clip.audio.reversed;
+        changed = true;
+    };
+    if (changed) return true;
+    const f = focused orelse return false;
+    if (f.track >= tracks.len or f.clip >= tracks[f.track].clips.items.len) return false;
+    const clip = &tracks[f.track].clips.items[f.clip];
+    if (!clip.isAudio()) return false;
+    clip.audio.reversed = !clip.audio.reversed;
+    return true;
+}
+
+fn hasSelectedAudioClips(tracks: []Track) bool {
+    for (tracks) |t| for (t.clips.items) |clip| if (clip.selected and clip.isAudio()) return true;
+    return false;
+}
+
 pub fn splitSelectedClipsAt(tracks: []Track, alloc: std.mem.Allocator, focused_clip: *?ClipRef, beat: f64, bpm: f64) bool {
     var changed = false;
     var first: ?ClipRef = null;
@@ -381,8 +404,16 @@ pub fn splitSelectedClipsAt(tracks: []Track, alloc: std.mem.Allocator, focused_c
                 var right_a = Clip.initAudio(clip.name(), beat, clip.start_beat + clip.length_beats - beat, clip.audio.source);
                 right_a.selected = true;
                 right_a.audio.gain = clip.audio.gain;
-                right_a.audio.start_sec = clip.audio.start_sec + split_sec;
+                right_a.audio.reversed = clip.audio.reversed;
                 right_a.audio.dur_sec = @max(0.0, clip.audio.dur_sec - split_sec);
+                if (clip.audio.reversed) {
+                    // Reversed, the left part plays the window's tail and
+                    // the right part the head.
+                    right_a.audio.start_sec = clip.audio.start_sec;
+                    clip.audio.start_sec += right_a.audio.dur_sec;
+                } else {
+                    right_a.audio.start_sec = clip.audio.start_sec + split_sec;
+                }
                 clip.audio.dur_sec = split_sec;
                 clip.length_beats = local;
                 clip.selected = false;
@@ -892,6 +923,7 @@ pub fn draw(
         .{ .separator = true },
         .{ .label = "Duplicate", .command = .duplicate, .enabled = has_selection },
         .{ .label = "Split at playhead", .command = .split_at_playhead, .enabled = has_selection },
+        .{ .label = "Reverse", .command = .reverse, .enabled = hasSelectedAudioClips(tracks) },
         .{ .label = "Delete", .command = .delete, .enabled = has_selection },
         .{ .separator = true },
         .{ .label = "Rename", .command = .rename, .enabled = has_selection },
@@ -1165,7 +1197,15 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
             const new_len = drag_start_length + d_beats;
             clip.length_beats = if (new_len < minClipBeats(edit_snap)) minClipBeats(edit_snap) else new_len;
             // For audio, resizing trims the source window so reflow keeps it.
-            if (clip.isAudio()) clip.audio.dur_sec = clip.length_beats * 60.0 / cur_bpm;
+            // Reversed, the right edge plays the window's head: it moves.
+            if (clip.isAudio()) {
+                if (clip.audio.reversed) {
+                    const tail = drag_start_audio_start_sec + drag_start_audio_dur_sec;
+                    clip.length_beats = @min(clip.length_beats, tail * cur_bpm / 60.0); // can't read before the source start
+                    clip.audio.dur_sec = clip.length_beats * 60.0 / cur_bpm;
+                    clip.audio.start_sec = @max(0.0, tail - clip.audio.dur_sec);
+                } else clip.audio.dur_sec = clip.length_beats * 60.0 / cur_bpm;
+            }
         },
         .fade_in, .fade_out => {
             // Fades drag unsnapped in seconds, clamped to the window length.
@@ -1188,7 +1228,10 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
             // Clamp the move so the window stays within [0, source] and the
             // clip keeps a minimum length.
             const sec_per_beat = 60.0 / cur_bpm;
-            const max_back = drag_start_audio_start_sec / sec_per_beat; // can't trim before source start
+            // Reversed, the left edge plays the window's tail, so the head
+            // stays put and only the length changes.
+            const rev = clip.audio.reversed;
+            const max_back = if (rev) std.math.inf(f64) else drag_start_audio_start_sec / sec_per_beat; // can't trim before source start
             var delta = d_beats;
             if (delta < -max_back) delta = -max_back; // expanding left limited by source head
             if (delta > drag_start_length - min_len) delta = drag_start_length - min_len;
@@ -1197,7 +1240,7 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
             clip.start_beat = new_start;
             clip.length_beats = right_beat - new_start;
             const delta_sec = delta * sec_per_beat;
-            clip.audio.start_sec = @max(0.0, drag_start_audio_start_sec + delta_sec);
+            if (!rev) clip.audio.start_sec = @max(0.0, drag_start_audio_start_sec + delta_sec);
             clip.audio.dur_sec = @max(0.0, drag_start_audio_dur_sec - delta_sec);
         },
     }
@@ -2162,7 +2205,7 @@ fn drawClip(ui: *Ui, r_: c.rl.Rectangle, clip: Clip, color_: c.rl.Color, selecte
                     const win_start = clip.audio.start_sec * rate;
                     const total: f64 = @floatFromInt(src.cache.sample_count);
                     const win_end = @min(total, win_start + clip.audio.dur_sec * rate);
-                    surf.waveform(ui, body, &src.cache, win_start, win_end, preview);
+                    surf.waveformDir(ui, body, &src.cache, win_start, win_end, preview, clip.audio.reversed);
                 }
             }
             // Fade wedges + grab handles in the top corners (hit zones
@@ -2258,3 +2301,25 @@ fn drawBoxSelectOverlay(ui: *Ui, timeline_x: f32, timeline_w: f32, lanes_top: f3
     ui.bevel(b, ui_style.accent, ui_style.accent);
 }
 
+
+test "splitting a reversed audio clip: the left part plays the window's tail" {
+    const alloc = std.testing.allocator;
+    var tracks = [_]Track{try Track.init(alloc, "t", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, track_mod.testMachine())};
+    defer tracks[0].deinit(alloc);
+    var clip = Clip.initAudio("rev", 0, 4, 0);
+    clip.audio.start_sec = 1;
+    clip.audio.dur_sec = 2; // 4 beats at 120 bpm
+    clip.audio.reversed = true;
+    clip.selected = true;
+    try tracks[0].addClip(alloc, clip);
+    var focused: ?ClipRef = null;
+    try std.testing.expect(splitSelectedClipsAt(tracks[0..], alloc, &focused, 1, 120));
+    const left = tracks[0].clips.items[0].audio;
+    const right = tracks[0].clips.items[1].audio;
+    // left: 1 beat = 0.5 s, the window's last half second
+    try std.testing.expectApproxEqAbs(@as(f64, 2.5), left.start_sec, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.5), left.dur_sec, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), right.start_sec, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.5), right.dur_sec, 1e-9);
+    try std.testing.expect(left.reversed and right.reversed);
+}

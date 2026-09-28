@@ -11,6 +11,7 @@ import os
 import random
 import re
 import subprocess
+import wave
 
 from . import rhythm
 from .machines import ROOT, SLAB, SlabError, machine, preset as load_preset
@@ -418,6 +419,46 @@ class Clip:
                 **({"automation": _lanes_json(self.lanes)} if self.lanes else {})}
 
 
+def _wav_seconds(path):
+    try:
+        with wave.open(path, "rb") as w:
+            return w.getnframes() / float(w.getframerate())
+    except (wave.Error, EOFError, OSError):
+        return None
+
+
+class AudioClip:
+    """A WAV placed on a track and mixed in directly (docs/19 audio clips).
+    It plays the source window [start_sec, start_sec + dur_sec) at native
+    rate; reverse=True plays that window end to start. Fades are seconds,
+    in clip time."""
+
+    notes = ()
+    lanes = {}
+
+    def __init__(self, track, path, start, start_sec, dur_sec, gain, fade_in, fade_out, reverse, name):
+        self.track = track
+        self.path = os.path.abspath(path)
+        self.start = start
+        self.start_sec = start_sec
+        self.dur_sec = dur_sec
+        self.gain = gain
+        self.fade_in = fade_in
+        self.fade_out = fade_out
+        self.reverse = reverse
+        self.name = name
+
+    @property
+    def length(self):
+        return self.dur_sec * self.track.song.bpm / 60.0
+
+    def to_json(self):
+        return {"type": "audio", "name": self.name, "start": round(self.start, 6), "len": round(self.length, 6),
+                "gain": self.gain, "start_sec": self.start_sec, "dur_sec": self.dur_sec,
+                "fade_in": self.fade_in, "fade_out": self.fade_out,
+                **({"reversed": True} if self.reverse else {}), "source": self.path}
+
+
 def _add_points(lanes, resolved, where, points):
     """Validate (beat, value[, shape[, tension]]) points into lanes[name]."""
     name, check, stepped = resolved
@@ -467,6 +508,8 @@ class Track:
         self.lanes = {}
         # The sampler's keymap: a .wav, an .sfz, or a folder of WAVs.
         self.samples = samples
+        # Per-sound edits by zone name, and copies/reversals (zone()).
+        self.zones = {}
         if samples is not None:
             if self.machine.id != "sampler":
                 raise SlabError(f"track {name}: samples= is for the sampler, not {self.machine.id}")
@@ -526,6 +569,66 @@ class Track:
         lane. tension bends it (+ = fast start)."""
         return self.automate(target, (frm, v0, "curve" if tension else "linear", tension), (to, v1))
 
+    def audio(self, path, section=None, at_bar=0, at_beat=None, start_sec=0.0, dur_sec=None,
+              gain=1.0, fade_in=0.0, fade_out=0.0, reverse=False, name=None):
+        """Place a WAV: at a section's start plus `at_bar` bars, or at
+        `at_beat`. dur_sec defaults to the rest of the file. reverse=True
+        plays it backwards (a swell into the downbeat: end it on the bar)."""
+        where = f"track {self.name} audio {path}"
+        if not os.path.exists(path):
+            raise SlabError(f"{where}: file not found")
+        total = _wav_seconds(path)
+        if dur_sec is None:
+            if total is None:
+                raise SlabError(f"{where}: can't read its length; pass dur_sec=")
+            dur_sec = total - start_sec
+        if dur_sec <= 0:
+            raise SlabError(f"{where}: nothing to play (start_sec {start_sec} past the end)")
+        bb = self.song.bar_beats
+        start = at_beat if at_beat is not None else (section.start if section else 0) + at_bar * bb
+        c = AudioClip(self, path, start, start_sec, dur_sec, gain, fade_in, fade_out, reverse,
+                      name or os.path.splitext(os.path.basename(path))[0])
+        self.clips.append(c)
+        return c
+
+    def _sampler_only(self, what):
+        if self.machine.id not in ("sampler", "unfairlight"):
+            raise SlabError(f"track {self.name}: {what} is for the sampler or Unfairlight, not {self.machine.id}")
+
+    def zone(self, name, level=None, tune=None, decay=None, tone=None, reverse=None):
+        """Edit one sound of the sampler's keymap by name: level dB, tune
+        semitones, decay seconds (0 off), tone octaves; reverse=True plays
+        it backwards."""
+        self._sampler_only("zone()")
+        z = self.zones.setdefault(name, {})
+        for k, v in (("level", level), ("tune", tune), ("decay", decay), ("tone", tone)):
+            if v is not None:
+                z[k] = float(v)
+        if reverse is not None:
+            if reverse:
+                z["reverse"] = True
+            else:
+                z.pop("reverse", None)
+        return self
+
+    def duplicate_zone(self, name, key, as_name=None, reverse=False, **edits):
+        """Copy a kit sound onto another key (a note name or number), as
+        its own sound: duplicate_zone("snare", "D#2", reverse=True). Returns
+        the copy's name ("snare 2" unless as_name)."""
+        self._sampler_only("duplicate_zone()")
+        copy = as_name or f"{name} 2"
+        n = 3
+        while as_name is None and copy in self.zones:
+            copy = f"{name} {n}"
+            n += 1
+        k = note(key)
+        if not 0 <= k <= 127:
+            raise SlabError(f"track {self.name}: key {key!r} out of MIDI range")
+        base = {kk: v for kk, v in self.zones.get(name, {}).items() if kk in ("level", "tune", "decay", "tone")}
+        self.zones[copy] = {**base, "copy": name, "key": k}
+        self.zone(copy, reverse=reverse, **edits)
+        return copy
+
     def drum_pitch(self, lane):
         if isinstance(lane, int):
             return lane
@@ -579,7 +682,8 @@ class Track:
             "name": self.name, "color": self.color, "volume": self.volume, "pan": self.pan,
             "mute": self.mute, "solo": False,
             "instrument": {"machine": self.machine.id, "params": self.params,
-                           **({"assets": {"smp": self.samples}} if self.samples else {})},
+                           **({"assets": {"smp": self.samples}} if self.samples else {}),
+                           **({"zones": self.zones} if self.zones else {})},
             "effects": [f.build(f"{where} fx {i}") for i, f in enumerate(self.fx)],
             "clips": [c.to_json() for c in sorted(self.clips, key=lambda c: c.start)],
             **({"automation": _lanes_json(self.lanes)} if self.lanes else {}),
@@ -657,7 +761,7 @@ class Song:
         with open(path, "w") as f:
             json.dump(project, f, indent=1)
         if not quiet:
-            n = sum(len(c["notes"]) for t in project["tracks"] for c in t["clips"])
+            n = sum(len(c.get("notes", ())) for t in project["tracks"] for c in t["clips"])
             secs = self.bars * self.bar_beats * 60 / self.bpm
             print(f"saved {os.path.relpath(path)}: {len(project['tracks'])} tracks, {n} notes, "
                   f"{self.bars} bars, {int(secs // 60)}:{int(secs % 60):02d}")

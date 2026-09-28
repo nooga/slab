@@ -306,6 +306,11 @@ const waveform_mod = @import("../waveform.zig");
 /// Peak waveform of `cache[win_start..win_end)` (samples) across `r`: one
 /// 1px column per logical pixel, min..max of the source under it.
 pub fn waveform(ui: *Ui, r: Rect, cache: *const waveform_mod.PeakCache, win_start: f64, win_end: f64, col: Color) void {
+    waveformDir(ui, r, cache, win_start, win_end, col, false);
+}
+
+/// `waveform`, drawn right to left when `reversed` (a reversed clip).
+pub fn waveformDir(ui: *Ui, r: Rect, cache: *const waveform_mod.PeakCache, win_start: f64, win_end: f64, col: Color, reversed: bool) void {
     if (r.w < 1 or r.h < 1 or cache.sample_count == 0) return;
     const span = @max(win_end - win_start, 1.0);
     const spp = span / @as(f64, @floatFromInt(r.w));
@@ -313,7 +318,10 @@ pub fn waveform(ui: *Ui, r: Rect, cache: *const waveform_mod.PeakCache, win_star
     ui.rect(Rect.xywh(r.x, r.y + @divFloor(r.h, 2), r.w, 1), col.alpha(60));
     var px: i32 = 0;
     while (px < r.w) : (px += 1) {
-        const s0 = win_start + @as(f64, @floatFromInt(px)) * spp;
+        const s0 = if (reversed)
+            win_start + span - @as(f64, @floatFromInt(px + 1)) * spp
+        else
+            win_start + @as(f64, @floatFromInt(px)) * spp;
         const p = cache.rangePeak(s0, s0 + spp, spp);
         const y0: i32 = @intFromFloat(@round(half - std.math.clamp(@as(f32, @floatCast(p.max)), -1, 1) * half));
         const y1: i32 = @intFromFloat(@round(half - std.math.clamp(@as(f32, @floatCast(p.min)), -1, 1) * half));
