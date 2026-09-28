@@ -55,16 +55,23 @@ cr78 = song.track("CR-78", "sampler", "drums/roland-cr-78/kit", volume=0.9, fx=[
 ])
 # The kit: acoustic samples, toms filled out to five with copies, and the
 # gated room doing the rest.
-# Snare, toms and the crash send to the gated room; the kick has its own
-# track (a room full of kick is mud, and the 80s mixes kept it out).
-kit = song.track("KIT", "sampler", "vcsl-kits/acoustic-kit", volume=1.1, params=dict(level=1.0), fx=[
-    fx("eq2", hpf_on="ON", hpf_hz=90, p1_hz=450, p1_db=-3, p1_q=0.9, p2_hz=2200, p2_db=4, hs_hz=6000, hs_db=3),
-    fx("comp2", "drum-smash", makeup=15),
-])
-# The room is a return, fully wet, its gate keyed by the dry kit: the
-# tail slams shut when the drums stop, not when the room itself decays.
-room = song.bus("GATED ROOM", fx=[fx("verb2", "gated-drum-room", mix=1.0, key=kit)])
+# Toms and the crash stay on KIT; the snare and the kick get tracks of
+# their own (a room full of kick is mud, and the 80s mixes kept it out).
+def kit_fx():
+    return [
+        fx("eq2", hpf_on="ON", hpf_hz=90, p1_hz=450, p1_db=-3, p1_q=0.9, p2_hz=2200, p2_db=4, hs_hz=6000, hs_db=3),
+        fx("comp2", "drum-smash", makeup=15),
+    ]
+
+
+kit = song.track("KIT", "sampler", "vcsl-kits/acoustic-kit", volume=1.1, params=dict(level=1.0), fx=kit_fx())
+snare = song.track("SNARE", "sampler", "vcsl-kits/acoustic-kit", volume=1.1, params=dict(level=1.0), fx=kit_fx())
+# The room is a return, fully wet. Snare and toms both send to it, but
+# only the snare opens its gate: each backbeat blooms and slams shut,
+# and the toms ring into the room only while the snare holds it open.
+room = song.bus("GATED ROOM", fx=[fx("verb2", "gated-drum-room", mix=1.0, key=snare)])
 kit.send(room, -11)
+snare.send(room, -11)
 kick = song.track("KICK", "sampler", "vcsl-kits/acoustic-kit", volume=1.1, params=dict(level=1.0), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=35, p1_hz=380, p1_db=-5, p1_q=1.2, p2_hz=3500, p2_db=3),
     fx("comp2", "dry-drum-punch", makeup=10),
@@ -192,11 +199,12 @@ roll(out, 28, 4, vel=(98, 126))                              # ...all five, into
 out.humanize(time=0.004, vel=6)
 kit.clip(end, bars=1).note(KICK, 0, 0.5, 120).note(SNARE, 0, 0.5, 118).note(CRASH, 0, 2, 120)
 
-# the kick moves to its own track, clip for clip
+# the kick and the snare move to their own tracks, clip for clip
 for c in kit.clips:
-    k = kick._new_clip(c.name, c.start, c.length)
-    k.notes = [n for n in c.notes if n["pitch"] == KICK]
-    c.notes = [n for n in c.notes if n["pitch"] != KICK]
+    for pitch, track in ((KICK, kick), (SNARE, snare)):
+        k = track._new_clip(c.name, c.start, c.length)
+        k.notes = [n for n in c.notes if n["pitch"] == pitch]
+    c.notes = [n for n in c.notes if n["pitch"] not in (KICK, SNARE)]
 
 # the reversed crash: swells over the end of the bridge and stops dead at the break
 crash_wav = next(os.path.join(root, f) for root, _, files in os.walk(library_path("lib:vcsl"))
