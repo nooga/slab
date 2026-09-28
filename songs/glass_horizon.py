@@ -60,7 +60,7 @@ cr78 = song.track("CR-78", "sampler", "drums/roland-cr-78/kit", volume=0.9, fx=[
 kit = song.track("KIT", "sampler", "vcsl-kits/acoustic-kit", volume=1.1, params=dict(level=1.0), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=90, p1_hz=450, p1_db=-3, p1_q=0.9, p2_hz=2200, p2_db=4, hs_hz=6000, hs_db=3),
     fx("comp2", "drum-smash", makeup=15),
-    fx("verb2", "gated-drum-room", mix=0.65),
+    fx("verb2", "gated-drum-room", mix=0.18),
 ])
 kick = song.track("KICK", "sampler", "vcsl-kits/acoustic-kit", volume=1.1, params=dict(level=1.0), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=35, p1_hz=380, p1_db=-5, p1_q=1.2, p2_hz=3500, p2_db=3),
