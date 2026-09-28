@@ -2,9 +2,9 @@
 
 Where a track's audio goes after its insert chain, and how one track's
 signal reaches another's effect. It covers step 11 of
-[17-direction.md](17-direction.md) (Track E). **Status: phases 1–2 built** (buses,
-outputs, sends, the format, slabkit, the bus section, the mixer page);
-phases 3–5 open. Supersedes the send/return sketch in
+[17-direction.md](17-direction.md) (Track E). **Status: phases 1–3 built** (buses,
+outputs, sends, the format, slabkit, the bus section, the mixer page,
+sidechain keys) except the patch bay; phases 4–5 open. Supersedes the send/return sketch in
 [07-transport.md §The graph](07-transport.md#the-graph) (the topological order
 there becomes §Render order below). Code, as it lands: `src/routing.zig`
 (the graph and its order), the routing fields in `track.zig`,
@@ -99,6 +99,19 @@ track index, so an unrouted project renders in the same order as today.
 The master is last and is not in the graph.
 
 ## Sidechain keys
+
+*Built.* The manifest word `sidechain` sets the flag
+(`Machine.takes_key`); the engine hands a keyed effect 4 `audio_in`
+ports; `fy_raw_machine` fills `io.det` from the key pair. The KEY latch
+sits in the effect's title strip in the bay (lit and naming the source
+when set; the menu disables sources that would close a loop), the mixer
+lists keyed inserts as `Comp ← KICK`, slabkit takes `fx(..., key=track)`
+and refuses it on a machine without the flag. Tests: the engine test
+with a muted key source, comp2 following its key's level, and verb2
+GATED opening on the key and not its input. **Acceptance:** Glass
+Horizon rebuilt with the kit sending to a verb2 bus keyed by the kit
+renders the same gated envelope as the insert (hold, then a ~35 dB cut
+within 20 ms), 2 dB hotter at a −9 dB send.
 
 Every stereo-linked dynamics kernel already reads one detector lane,
 `io.det` = max(|L|, |R|) of its input (`kernels/00-primitives/ctx.fy`):
@@ -320,7 +333,7 @@ Group folding waits for track reordering.
 3. **Keys.** The `sidechain` manifest flag, `det` from the key, 4-port
    `audio_in`, verb2 on `io.det`, the KEY selector in the effect title
    strip, the patch bay page. **Exit: the gated snare works end to
-   end** in Glass Horizon.
+   end** in Glass Horizon. *Built but the patch bay; the exit holds.*
 4. **PDC.** Latency in manifests, measured on the bench, delay at sums.
 5. **Later.** Send-level automation, group folding with track
    reordering and deletion, note keys, a channel-strip machine

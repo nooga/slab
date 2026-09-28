@@ -354,6 +354,8 @@ pub const Desc = struct {
     note_pitch: bool = false,
     // Voices write out-l and out-r; effects get one true-stereo pass.
     stereo: bool = false,
+    /// io.det can come from a sidechain key (docs/23 §Sidechain keys).
+    sidechain: bool = false,
     note_labels: [MAX_NOTE_LABELS]machine.NoteLabel = undefined,
     note_label_count: usize = 0,
     buffers: [MAX_BUFFERS]BufferReq = undefined,
@@ -442,6 +444,7 @@ const MachineDescRaw = extern struct {
     derive_data: Fy.Value,
     stereo: Fy.Value,
     note_expr: Fy.Value,
+    sidechain: Fy.Value,
 };
 
 const PageRaw = extern struct { next: Fy.Value, name: Fy.Value, rows: Fy.Value };
@@ -679,6 +682,7 @@ pub fn read(host: *FyHost) !Desc {
 
     d.note_pitch = asInt(md.note_pitch) != 0;
     d.stereo = asInt(md.stereo) != 0;
+    d.sidechain = asInt(md.sidechain) != 0;
     var nl_it = rawPtr(NoteLabelRaw, md.note_labels);
     while (nl_it) |nl| : (nl_it = rawPtr(NoteLabelRaw, nl.next)) {
         if (d.note_label_count >= MAX_NOTE_LABELS) return error.TooManyNoteLabels;

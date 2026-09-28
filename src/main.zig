@@ -830,7 +830,8 @@ pub fn main(init: std.process.Init) !void {
             },
         }
 
-        const mbres = machine_bay.draw(ui, rects.machine_bay, bay_dev, bay_idx, bay_is_bus, layout.machine_bay_collapsed, &reg);
+        const mbres = machine_bay.draw(ui, rects.machine_bay, bay_dev, bay_idx, bay_is_bus, layout.machine_bay_collapsed, &reg, tracks);
+        if (mbres.key_menu_fx) |uid| if (bay_idx) |ti| @import("ui/route_menu.zig").openKey(ti, uid, mbres.key_menu_at[0], mbres.key_menu_at[1]);
         if (mbres.minimize) layout.machine_bay_collapsed = !layout.machine_bay_collapsed;
         if (mbres.add_machine) |reg_idx| {
             if (bay_dev) |dev| {
@@ -1554,6 +1555,7 @@ fn applyRouteEdit(
         .send_toggle => |bus| target = bus,
         .send_add => |a| target = a.bus,
         .send_pre => |p| target = p.bus,
+        .key => |k| target = k.src,
         .output_new_bus, .send_new_bus => {
             if (track_count.* >= MAX_TRACKS) return error.TooManyTracks;
             var buses: usize = 0;
@@ -1597,6 +1599,17 @@ fn applyRouteEdit(
             }
             try t.addSend(target, false, a.level);
             status.set("{s}: sends to {s}", .{ t.name(), tracks_buf[target].name() });
+        },
+        .key => |k| {
+            const fx = t.effectByUid(k.fx_uid) orelse {
+                alloc.free(before);
+                return;
+            };
+            fx.key = k.src;
+            if (k.src == routing.NONE)
+                status.set("{s}: {s} unkeyed", .{ t.name(), fx.mach.name })
+            else
+                status.set("{s}: {s} keyed by {s}", .{ t.name(), fx.mach.name, tracks_buf[k.src].name() });
         },
         .send_pre => |p| {
             const snd = t.sendTo(target) orelse {

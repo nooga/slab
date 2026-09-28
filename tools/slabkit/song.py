@@ -57,26 +57,36 @@ class Section:
 
 
 class FX:
-    def __init__(self, machine_id, preset=None, bypass=False, **params):
+    def __init__(self, machine_id, preset=None, bypass=False, key=None, **params):
         self.machine_id = machine_id
         self.preset = preset
         self.bypass = bypass
+        # A track (or bus) whose pre-fader signal drives the detector.
+        self.key = key
         self.params = params
 
-    def build(self, where):
+    def build(self, where, index=None):
         m = machine(self.machine_id)
         if m.kind != "effect":
             raise SlabError(f"{where}: {self.machine_id} is an instrument, not an effect")
         values = dict(load_preset(m.id, self.preset)) if self.preset else {}
         values.update(m.params_from(self.params, where))
-        return {"machine": m.id, "params": values, "bypass": self.bypass}
+        out = {"machine": m.id, "params": values, "bypass": self.bypass}
+        if self.key is not None:
+            if not m.sidechain:
+                raise SlabError(f"{where}: {m.id} takes no sidechain key (comp2, gate2 and verb2 do)")
+            if index is None or id(self.key) not in index:
+                raise SlabError(f"{where}: key {self.key!r} isn't a track in this song")
+            out["key"] = index[id(self.key)]
+        return out
 
 
-def fx(machine_id, preset=None, bypass=False, **params):
+def fx(machine_id, preset=None, bypass=False, key=None, **params):
     """An insert effect: fx("comp2", "drum-smash", thresh=-20). Params may
     drop the machine prefix and use underscores (thresh → comp-thresh);
-    switches take an index or a label (div="1/8.")."""
-    return FX(machine_id, preset, bypass, **params)
+    switches take an index or a label (div="1/8."). key=track sidechains a
+    comp2/gate2/verb2 detector from that track (docs/23)."""
+    return FX(machine_id, preset, bypass, key, **params)
 
 
 class Clip:
@@ -717,7 +727,7 @@ class Track:
             "instrument": {"machine": self.machine.id, "params": self.params,
                            **({"assets": self.assets} if self.assets else {}),
                            **({"zones": self.zones} if self.zones else {})},
-            "effects": [f.build(f"{where} fx {i}") for i, f in enumerate(self.fx)],
+            "effects": [f.build(f"{where} fx {i}", index) for i, f in enumerate(self.fx)],
             "clips": [c.to_json() for c in sorted(self.clips, key=lambda c: c.start)],
             **({"automation": _lanes_json(self.lanes)} if self.lanes else {}),
             **self._routing_json(index or {}),
@@ -771,7 +781,7 @@ class Bus(Track):
         return {
             "name": self.name, "kind": "bus", "color": self.color, "volume": self.volume, "pan": self.pan,
             "mute": self.mute, "solo": False, "instrument": None,
-            "effects": [f.build(f"bus {self.name} fx {i}") for i, f in enumerate(self.fx)],
+            "effects": [f.build(f"bus {self.name} fx {i}", index) for i, f in enumerate(self.fx)],
             "clips": [],
             **({"automation": _lanes_json(self.lanes)} if self.lanes else {}),
             **self._routing_json(index or {}),
@@ -829,8 +839,12 @@ class Song:
         return b
 
     def _check_routing(self):
-        """Refuse a loop through outputs and sends (the app would drop it)."""
+        """Refuse a loop through outputs, sends and keys (the app would drop it)."""
         succ = {id(t): [x for x in [t.output] + [b for b, _, _ in t.sends] if x is not None] for t in self.tracks}
+        for t in self.tracks:
+            for f in t.fx:
+                if f.key is not None and id(f.key) in succ:
+                    succ[id(f.key)].append(t)
         state = {}
 
         def visit(t, path):

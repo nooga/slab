@@ -16,6 +16,7 @@ include "../lib/manifest.fy"
   CompState.size  state-size!
   CompParams.size params-size!
   360.0 panel-w!
+  sidechain
 
 
   "COMP" "THRESH" "comp-thresh" CompParams.thresh-db -48.0 0.0  -18.0 curve-lin knob

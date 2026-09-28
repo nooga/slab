@@ -16,6 +16,7 @@ include "../lib/manifest.fy"
   VerbState.size  state-size!
   VerbParams.size params-size!
   310.0 panel-w!
+  sidechain
 
   ( one packed tank ring per channel; region table in reverb.fy )
   "tank" VerbState.buf VerbState.buf-len 0.9 buffer

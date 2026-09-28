@@ -505,7 +505,8 @@ pub const Engine = struct {
             }
             const inst_ns = if (track_probe) probeNowNs() - inst_start else 0;
             const fx_start = if (track_probe) probeNowNs() else 0;
-            const rendered = renderEffects(t, ctx, l, r, fx_l_buf[0..frames], fx_r_buf[0..frames]);
+            const keys: ?Keys = if (node.key_count > 0) .{ .node = node, .pre_l = &self.pre_l, .pre_r = &self.pre_r, .live = live } else null;
+            const rendered = renderEffectsKeyed(t, ctx, l, r, fx_l_buf[0..frames], fx_r_buf[0..frames], keys);
             const fx_ns = if (track_probe) probeNowNs() - fx_start else 0;
             // The chain may end in the scratch pair; the pre tap is `l`/`r`.
             if (rendered.l.ptr != l.ptr) {
@@ -813,6 +814,17 @@ const RenderedPair = struct {
     r: []f32,
 };
 
+/// Where a track's keyed effects find their keys (docs/23 §Sidechain
+/// keys): the routing node naming each key's source, and the pre taps
+/// rendered so far this block.
+const Keys = struct {
+    node: *const routing.Node,
+    pre_l: *const [routing.MAX_TRACKS][MAX_BLOCK]f32,
+    pre_r: *const [routing.MAX_TRACKS][MAX_BLOCK]f32,
+    /// Sources rendered this block (the rest hold a stale block).
+    live: u32,
+};
+
 fn renderEffects(
     t: *Track,
     base_ctx: machine.MachineCtx,
@@ -820,6 +832,18 @@ fn renderEffects(
     src_r: []f32,
     scratch_l: []f32,
     scratch_r: []f32,
+) RenderedPair {
+    return renderEffectsKeyed(t, base_ctx, src_l, src_r, scratch_l, scratch_r, null);
+}
+
+fn renderEffectsKeyed(
+    t: *Track,
+    base_ctx: machine.MachineCtx,
+    src_l: []f32,
+    src_r: []f32,
+    scratch_l: []f32,
+    scratch_r: []f32,
+    keys: ?Keys,
 ) RenderedPair {
     var cur_l = src_l;
     var cur_r = src_r;
@@ -834,12 +858,17 @@ fn renderEffects(
         }
         @memset(next_l, 0);
         @memset(next_r, 0);
-        const in_ports = [_][*]const f32{ cur_l.ptr, cur_r.ptr };
+        var in_ports = [_][*]const f32{ cur_l.ptr, cur_r.ptr, cur_l.ptr, cur_r.ptr };
         var ctx = base_ctx;
         ctx.note_in = null;
         ctx.note_in_count = 0;
         ctx.audio_in = @ptrCast(&in_ports[0]);
         ctx.audio_in_count = 2;
+        if (keys) |k| if (fx.mach.takes_key) if (k.node.keyFor(fx.uid)) |src| if (k.live & routing.bit(src) != 0) {
+            in_ports[2] = &k.pre_l[src];
+            in_ports[3] = &k.pre_r[src];
+            ctx.audio_in_count = 4;
+        };
         // Retarget the instrument's lane view at this effect.
         var fx_view: snap_mod.AutoView = undefined;
         if (base_ctx.automation) |p| {
@@ -1656,4 +1685,53 @@ test "routing: a send level change ramps across the block" {
     try testing.expect(out[2 * 32] < 0.06 * c and out[2 * 32] > 0.04 * c); // halfway
     eng.renderChunk(&out, 64, 128);
     try testing.expectEqual(@as(f32, 0), out[0]);
+}
+
+test "routing: a keyed effect hears its key's pre tap, even from a muted track" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var kick_lvl: f32 = 0.25;
+    var bass_lvl: f32 = 0.1;
+    var unused: f32 = 0;
+    // Effect: outputs its key L (0 without one), so the master shows it.
+    var keyed = RouteTestMachines.gain(&unused);
+    keyed.takes_key = true;
+    keyed.render = struct {
+        fn f(_: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []f32) void {
+            const ins = ctx.audio_in.?;
+            for (l, r, 0..) |*a, *b, i| {
+                a.* = if (ctx.audio_in_count >= 4) ins[2][i] else 0;
+                b.* = a.*;
+            }
+        }
+    }.f;
+    var tracks = [_]Track{
+        try Track.init(alloc, "kick", col, RouteTestMachines.dc(&kick_lvl)),
+        try Track.init(alloc, "bass", col, RouteTestMachines.dc(&bass_lvl)),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    for (&tracks) |*t| t.setVolume(1.0);
+    try tracks[1].addEffect(alloc, keyed, 0);
+    tracks[1].effects.items[0].key = 0;
+    tracks[0].mute.store(true, .monotonic);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+    var transport = Transport{};
+    transport.sample_rate = 48_000;
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+
+    const c = @cos(@as(f32, std.math.pi / 4.0));
+    var out: [64 * 2]f32 = undefined;
+    eng.renderOffline(&out, 64, 0, null, null);
+    // The kick is muted (not in the mix) but its pre tap keys the bass.
+    try testing.expectApproxEqAbs(0.25 * c, out[10], 1e-6);
+
+    // Without the manifest flag the effect gets no key.
+    tracks[1].effects.items[0].mach.takes_key = false;
+    eng.renderOffline(&out, 64, 0, null, null);
+    try testing.expectEqual(@as(f32, 0), out[10]);
 }

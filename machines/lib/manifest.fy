@@ -63,6 +63,8 @@ struct: MachineDesc
                        true-stereo pass with in-l/in-r instead of dual mono )
   ptr note-expr      ( cstr or 0 — dsp: word retuning a sounding voice to
                        ctx.pitch / ctx.hz: per-note expression, docs/22 )
+  ptr sidechain      ( int flag: an effect whose io.det can come from another
+                       track's signal, a key [docs/23] )
 ;
 
 struct: ControlDesc
@@ -163,6 +165,9 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
 : note-pitch  ( -- ) 1 _mf-md@ MachineDesc.note-pitch! drop ;
 ( the machine renders true stereo [see MachineDesc.stereo] )
 : stereo  ( -- ) 1 _mf-md@ MachineDesc.stereo! drop ;
+( the effect's detector [io.det] takes a sidechain key: with one set, the
+  host fills io.det from the key track instead of the input [docs/23] )
+: sidechain  ( -- ) 1 _mf-md@ MachineDesc.sidechain! drop ;
 
 ( declare a note the machine answers to; the piano roll renders one
   labelled lane per declared note instead of the chromatic keyboard. )

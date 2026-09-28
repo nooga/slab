@@ -20,6 +20,7 @@ include "../lib/manifest.fy"
   GateState.size  state-size!
   GateParams.size params-size!
   260.0 panel-w!
+  sidechain
 
 
   "GATE" "THRESH" "gate-thresh" GateParams.thresh-db -60.0  0.0  -40.0 curve-lin knob

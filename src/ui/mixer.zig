@@ -173,7 +173,7 @@ fn drawStrip(
         menu.tip(ui, tr, "Click to edit in the bay, right-click to route");
     }
 
-    drawInserts(ui, rows.inserts, t);
+    drawInserts(ui, rows.inserts, t, tracks);
     if (ui.behaviorEx(ui.id("inserts"), rows.inserts, .{ .focusable = false }).pressed) select(device_sel, selected_track, ti);
 
     // Sends: a knob per bus, two to a row, in bus order.
@@ -267,14 +267,19 @@ fn drawSendKnob(ui: *Ui, cr: Rect, tracks: []Track, ti: usize, bus: u8, res: *Re
     menu.tip(ui, cr, if (disabled) "Would feed back into itself" else if (existing != null) "Send level (right-click: pre/post, remove)" else "Turn up to send to this bus");
 }
 
-fn drawInserts(ui: *Ui, r: Rect, t: *const Track) void {
+fn drawInserts(ui: *Ui, r: Rect, t: *const Track, tracks: []const Track) void {
     const w = ui.well(r.insetXY(4, 2), ui_style.well);
     const n = t.effects.items.len;
     const shown: usize = if (n > INSERT_ROWS) INSERT_ROWS - 1 else n;
     for (t.effects.items[0..shown], 0..) |*fx, i| {
         const row = Rect.xywh(w.x + 2, w.y + @as(i32, @intCast(i)) * INSERT_ROW_H, w.w - 4, INSERT_ROW_H);
         const off = t.effectBypassed(i);
-        ui.textIn(&ui.fonts.legend, row, fx.mach.name, if (off) ui_style.text_mute else ui_style.text_dim, .left, false);
+        var nbuf: [64]u8 = undefined;
+        const label = if (fx.mach.takes_key and fx.key < tracks.len)
+            std.fmt.bufPrint(&nbuf, "{s} \u{2190} {s}", .{ fx.mach.name, tracks[fx.key].name() }) catch fx.mach.name
+        else
+            fx.mach.name;
+        ui.textIn(&ui.fonts.legend, row, label, if (off) ui_style.text_mute else ui_style.text_dim, .left, false);
     }
     if (n > shown) {
         var buf: [16]u8 = undefined;
@@ -298,7 +303,7 @@ fn drawMasterStrip(ui: *Ui, r: Rect, master: *Track, send_rows: i32, device_sel:
         ui.textIn(&ui.fonts.body_bold, Rect.xywh(tr.x + 3, tr.y + 5, tr.w - 6, tr.h - 5), "MASTER", if (selected) ui_style.text else ui_style.text_dim, .left, true);
         if (ui.behaviorEx(ui.id("title"), tr, .{ .focusable = false }).pressed) device_sel.* = .master;
     }
-    drawInserts(ui, rows.inserts, master);
+    drawInserts(ui, rows.inserts, master, &.{});
     if (ui.behaviorEx(ui.id("inserts"), rows.inserts, .{ .focusable = false }).pressed) device_sel.* = .master;
     {
         var p: f32 = (master.pan() + 1) / 2;

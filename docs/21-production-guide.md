@@ -263,7 +263,7 @@ stem report.
 
 | Track | Chain |
 |---|---|
-| kick + snare | `eq2` hpf 30–35 Hz, cut 400 Hz −2.5 dB, shelf 7 kHz +2 → `comp2` `dry-drum-punch` (or thresh −16, ratio 3.5, atk 8 ms, rel 120 ms, makeup +3) → `verb2` `bright-plate`, mix 0.15–0.2, predelay 10 ms for the 80s snare. For the big gated 80s room (Phil Collins, "Mama") use `verb2` in GATED mode instead: `gated-drum-room` on the kit (the dry drums key the gate, so the room bursts on each hit and cuts dead after HOLD), `gated-snare-slam` for a snare-only track, `reverse-nonlin` for the swell-up program. Keep DECAY high (0.9+) so the tail is still full when the gate shuts, and a hat or shaker on the same track re-opens it: put those on their own track |
+| kick + snare | `eq2` hpf 30–35 Hz, cut 400 Hz −2.5 dB, shelf 7 kHz +2 → `comp2` `dry-drum-punch` (or thresh −16, ratio 3.5, atk 8 ms, rel 120 ms, makeup +3) → `verb2` `bright-plate`, mix 0.15–0.2, predelay 10 ms for the 80s snare. For the big gated 80s room (Phil Collins, "Mama") use `verb2` in GATED mode instead: `gated-drum-room` on the kit (the dry drums key the gate, so the room bursts on each hit and cuts dead after HOLD), `gated-snare-slam` for a snare-only track, `reverse-nonlin` for the swell-up program. Keep DECAY high (0.9+) so the tail is still full when the gate shuts, and a hat or shaker on the same track re-opens it: put those on their own track. The console way is a bus: `room = song.bus("ROOM", fx=[fx("verb2", "gated-drum-room", mix=1.0, key=kit)])`, `kit.send(room, -11)`; the room then keys off the kit's own signal and several tracks can share it |
 | hats | `eq2` hpf 400–500 Hz, shelf 9 kHz −2 if harsh → `verb2` `small-room` mix 0.1. Pan 0.2–0.3 |
 | bass | `eq2` hpf 30–35 Hz, cut 250 Hz −2 → `comp2` `bass-leveler` (thresh −14, ratio 3, atk 4 ms, rel 90 ms). No chorus or reverb. Centred |
 | e-piano / keys | `eq2` hpf 150–200 Hz, +1.5 dB at 2.8 kHz → `chorus2` `wide-keys` → `verb2` `medium-plate` 0.18. Pan ±0.25 |
@@ -316,8 +316,10 @@ The report flags sub energy that dwarfs the 60–250 Hz band.
 
 Preset shortcuts: `dry-drum-punch`, `drum-smash` (use at mix 0.3–0.5),
 `bass-leveler`, `smooth-pad-comp`, `gentle-bus-glue`,
-`soft-master-glue`, `pump` / `audible-pump` (an effect, not control;
-there's no sidechain yet).
+`soft-master-glue`, `pump` / `audible-pump`. For ducking, key the
+detector from another track: `fx("comp2", thresh=-30, ratio=6, key=kick)`
+on the bass or pad pumps it on every kick; a muted "ghost kick" track
+still keys (docs/23 §Sidechain keys).
 
 Compress what moves too much: bass, drums, a lead with wide velocity.
 Leave pads alone; they're already even.

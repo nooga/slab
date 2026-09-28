@@ -68,6 +68,8 @@ class Machine:
         self.kind = d["kind"]          # instrument | effect
         self.voices = d["voices"]
         self.note_pitch = d["note_pitch"]
+        # The detector takes a sidechain key: fx(..., key=track) (docs/23).
+        self.sidechain = d.get("sidechain", False)
         self.note_labels = {n["label"].lower(): n["pitch"] for n in d["note_labels"]}
         self.params = {p["id"]: Param(p) for p in d["params"]}
         # Most machines prefix every id ("jn-cutoff", "comp-thresh"); knowing

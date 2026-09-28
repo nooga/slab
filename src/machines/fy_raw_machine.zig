@@ -643,6 +643,7 @@ pub const FyRawMachine = struct {
             .apply_zones_json = applyZonesJsonImpl,
             .note_labels_fn = noteLabelsImpl,
             .takes_expression = self.note_expr_caller != null,
+            .takes_key = self.desc.sidechain,
             .control_count = controlCountImpl,
             .control_info = controlInfoImpl,
             .control_value = controlValueImpl,
@@ -1469,7 +1470,7 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
             return;
         };
         var ev_buf: [256]machine.NoteEvent = undefined;
-        var ports: [2][*]const f32 = undefined;
+        var ports: [4][*]const f32 = undefined;
         const sub = subCtx(ctx, pos, n, &ev_buf, &ports);
         const ok = switch (self.desc.mode) {
             .voice_sample => renderVoiceSample(self, &sub, l[pos .. pos + n], r[pos .. pos + n]),
@@ -1487,7 +1488,7 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
 
 /// A view of `ctx` covering frames [pos, pos+n): events re-based into the
 /// window, audio inputs offset. Whole-block calls get `ctx` back unchanged.
-fn subCtx(ctx: *const machine.MachineCtx, pos: usize, n: usize, ev_buf: *[256]machine.NoteEvent, ports: *[2][*]const f32) machine.MachineCtx {
+fn subCtx(ctx: *const machine.MachineCtx, pos: usize, n: usize, ev_buf: *[256]machine.NoteEvent, ports: *[4][*]const f32) machine.MachineCtx {
     var sub = ctx.*;
     sub.block_size = @intCast(n);
     if (pos == 0 and n == ctx.block_size) return sub;
@@ -1505,7 +1506,9 @@ fn subCtx(ctx: *const machine.MachineCtx, pos: usize, n: usize, ev_buf: *[256]ma
     sub.note_in = if (count > 0) ev_buf else null;
     sub.note_in_count = @intCast(count);
     if (ctx.audio_in_count >= 2) if (ctx.audio_in) |p| {
-        ports.* = .{ p[0] + pos, p[1] + pos };
+        // In L/R, and the sidechain key L/R when there is one (docs/23).
+        const k: usize = @min(ctx.audio_in_count, 4);
+        for (ports[0..k], p[0..k]) |*d, src| d.* = src + pos;
         sub.audio_in = ports;
     };
     return sub;
@@ -1753,11 +1756,13 @@ fn callNoteOff(self: *FyRawMachine, voice: usize) !void {
 fn renderEffectBlock(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f32, r: []f32) !void {
     const caller = if (self.render_caller) |*c_| c_ else return error.UnknownWord;
     const in_l, const in_r = inputChannels(ctx);
+    const key = keyChannels(ctx);
     const io = self.io[0..l.len];
     for (io, 0..) |*f, i| {
         f.in_l = if (in_l) |p| p[i] else 0;
         f.in_r = if (in_r) |p| p[i] else f.in_l;
-        f.det = @max(@abs(f.in_l), @abs(f.in_r));
+        // A sidechain key drives the detector instead of the input.
+        f.det = if (key) |kp| @max(@abs(@as(f64, kp[0][i])), @abs(@as(f64, kp[1][i]))) else @max(@abs(f.in_l), @abs(f.in_r));
     }
     if (self.desc.stereo) {
         // True stereo: one pass sees both inputs and writes both outputs.
@@ -1780,6 +1785,12 @@ fn renderEffectBlock(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
         _ = try caller.call(l.len, &args);
         for (dst, io) |*d, f| d.* = @floatCast(f.out_l); // no clamp (D5)
     }
+}
+
+/// The sidechain key pair (ports 2 and 3), when the host sent one.
+fn keyChannels(ctx: *const machine.MachineCtx) ?[2][*]const f32 {
+    if (ctx.audio_in_count >= 4) if (ctx.audio_in) |ports| return .{ ports[2], ports[3] };
+    return null;
 }
 
 fn inputChannels(ctx: *const machine.MachineCtx) struct { ?[*]const f32, ?[*]const f32 } {
@@ -5252,4 +5263,87 @@ test "per-note gain scales the sampler voice from its onset" {
         try testing.expect(g0 > 0);
         try testing.expectApproxEqRel(g0 * std.math.pow(f64, 10, -1.5), g, 1e-6);
     };
+}
+
+test "sidechain: comp2 compresses its input by the key's level" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/comp2/comp2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    try testing.expect(mach.takes_key);
+
+    // A quiet input (far under the -18 dB threshold) and a loud key: keyed,
+    // the key's level sets the gain; unkeyed, the input passes ~1:1.
+    const block = 512;
+    var in_l: [block]f32 = undefined;
+    var key_l: [block]f32 = undefined;
+    const ports = [_][*]const f32{ &in_l, &in_l, &key_l, &key_l };
+    var gains: [2]f64 = undefined;
+    for (&gains, [_]u32{ 4, 2 }) |*g, count| {
+        mach.reset(mach.state);
+        var ctx = std.mem.zeroes(machine.MachineCtx);
+        ctx.sample_rate = 48_000;
+        ctx.block_size = block;
+        ctx.audio_in = @ptrCast(&ports[0]);
+        ctx.audio_in_count = count;
+        var l: [block]f32 = undefined;
+        var r: [block]f32 = undefined;
+        var phase: f64 = 0;
+        for (0..40) |blk| {
+            for (&in_l, &key_l) |*a, *k| {
+                const s = @sin(phase);
+                phase += 2.0 * std.math.pi * 1000.0 / 48_000.0;
+                a.* = @floatCast(0.02 * s);
+                k.* = @floatCast(0.9 * s);
+            }
+            testRender(mach, &ctx, &l, &r);
+            if (blk == 39) {
+                var in_e: f64 = 0;
+                var out_e: f64 = 0;
+                for (in_l, l) |x, y| {
+                    in_e += @as(f64, x) * x;
+                    out_e += @as(f64, y) * y;
+                }
+                g.* = 10.0 * std.math.log10(out_e / in_e);
+            }
+        }
+    }
+    try testing.expect(gains[0] < -8.0); // keyed: the loud key pulls it down
+    try testing.expect(@abs(gains[1]) < 1.0); // unkeyed: untouched
+}
+
+test "sidechain: verb2 GATED opens on the key, not the input" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/verb2/verb2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    try testing.expect(mach.takes_key);
+
+    // An impulse fills the tank at block 0; the key stays silent until a
+    // hit at block 8. Wet only, so what comes out is the gated tail.
+    const block = 512;
+    var in_l = [_]f32{0} ** block;
+    var key_l = [_]f32{0} ** block;
+    const ports = [_][*]const f32{ &in_l, &in_l, &key_l, &key_l };
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = block;
+    ctx.audio_in = @ptrCast(&ports[0]);
+    ctx.audio_in_count = 4;
+    mach.set_param.?(mach.state, "verb-mode", 1); // GATED
+    mach.set_param.?(mach.state, "verb-mix", 1.0);
+    mach.set_param.?(mach.state, "verb-decay", 0.95);
+    var l = [_]f32{0} ** block;
+    var r = [_]f32{0} ** block;
+    var before: f64 = 0;
+    var after: f64 = 0;
+    for (0..16) |blk| {
+        in_l[0] = if (blk == 0) 0.9 else 0;
+        key_l[0] = if (blk == 8) 0.9 else 0;
+        testRender(mach, &ctx, &l, &r);
+        for (l) |x| {
+            if (blk < 8) before += @abs(x) else after += @abs(x);
+        }
+    }
+    // The input's own hit doesn't open the gate: only the key's does.
+    try testing.expect(before < 1e-3);
+    try testing.expect(after > 0.05);
 }
