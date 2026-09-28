@@ -154,9 +154,7 @@ def presets(mid):
     return sorted(out, key=lambda n: (n.count("/"), n))
 
 
-def preset(mid, name):
-    """A preset's params, keyed by param id. `name` may omit the bank when
-    it is unique ("dx-bass" finds "rom1a/dx-bass")."""
+def _preset_file(mid, name):
     names = presets(mid)
     hits = [n for n in names if n == name] or [n for n in names if n.split("/")[-1] == name]
     if len(hits) != 1:
@@ -165,4 +163,24 @@ def preset(mid, name):
         close = difflib.get_close_matches(name, names, n=4)
         raise SlabError(f"{mid} has no preset {name!r}" + (f"; close: {', '.join(close)}" if close else ""))
     with open(os.path.join(MACHINES_DIR, mid, "presets", hits[0] + ".preset")) as f:
-        return dict(json.load(f)["params"])
+        return json.load(f)
+
+
+def preset(mid, name):
+    """A preset's params, keyed by param id. `name` may omit the bank when
+    it is unique ("dx-bass" finds "rom1a/dx-bass")."""
+    return dict(_preset_file(mid, name)["params"])
+
+
+def preset_assets(mid, name):
+    """The files a preset loads ({"smp": "lib:…/kit.sfz"}), or {}."""
+    return dict(_preset_file(mid, name).get("assets") or {})
+
+
+def library_path(path):
+    """A "lib:" path as a file path under $SLAB_LIBRARY (default
+    ~/Music/Slab/Library); anything else unchanged."""
+    if not path.startswith("lib:"):
+        return path
+    root = os.environ.get("SLAB_LIBRARY") or os.path.expanduser("~/Music/Slab/Library")
+    return os.path.join(root.rstrip("/"), path[4:])

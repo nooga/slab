@@ -14,7 +14,7 @@ import subprocess
 import wave
 
 from . import rhythm
-from .machines import ROOT, SLAB, SlabError, machine, preset as load_preset
+from .machines import ROOT, SLAB, SlabError, library_path, machine, preset as load_preset, preset_assets
 from .theory import Chord, Key, note, voice_lead
 
 MAX_TRACKS = 16
@@ -508,13 +508,19 @@ class Track:
         self.lanes = {}
         # The sampler's keymap: a .wav, an .sfz, or a folder of WAVs.
         self.samples = samples
+        # Files the instrument loads: the preset's (a kit, a CMI voice), or samples=.
+        self.assets = preset_assets(machine_id, preset) if preset else {}
         # Per-sound edits by zone name, and copies/reversals (zone()).
         self.zones = {}
         if samples is not None:
             if self.machine.id != "sampler":
                 raise SlabError(f"track {name}: samples= is for the sampler, not {self.machine.id}")
-            if not os.path.exists(samples):
+            if not os.path.exists(library_path(samples)):
                 song.warn(f"track {name}: samples {samples!r} not found; the track keeps the bundled pluck")
+            self.assets["smp"] = samples
+        for aname, apath in self.assets.items():
+            if samples is None and not os.path.exists(library_path(apath)):
+                song.warn(f"track {name}: preset {preset!r} loads {apath!r}, which isn't here (fetch the library?)")
 
     def __repr__(self):
         return f"Track({self.name}: {self.machine.id}, {len(self.clips)} clips)"
@@ -682,7 +688,7 @@ class Track:
             "name": self.name, "color": self.color, "volume": self.volume, "pan": self.pan,
             "mute": self.mute, "solo": False,
             "instrument": {"machine": self.machine.id, "params": self.params,
-                           **({"assets": {"smp": self.samples}} if self.samples else {}),
+                           **({"assets": self.assets} if self.assets else {}),
                            **({"zones": self.zones} if self.zones else {})},
             "effects": [f.build(f"{where} fx {i}") for i, f in enumerate(self.fx)],
             "clips": [c.to_json() for c in sorted(self.clips, key=lambda c: c.start)],
