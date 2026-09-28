@@ -79,7 +79,7 @@ kick = song.track("KICK", "sampler", "vcsl-kits/acoustic-kit", volume=1.11, para
 ])
 # The drum bus: kit, snare, kick and their room glued on one SSL-style
 # compressor, 4:1 with the hits let through (comp2 drum-bus).
-drums = song.bus("DRUMS", fx=[fx("comp2", "drum-bus", thresh=-22, makeup=2.4)])  # a quiet kit: 5-6 dB on the hits
+drums = song.bus("DRUMS", volume=1.25, fx=[fx("comp2", "drum-bus", thresh=-22, makeup=2.4)])  # a quiet kit: 5-6 dB on the hits
 for t in (kit, snare, kick, room):
     t.output = drums
 TOM_HI2 = kit.duplicate_zone("high tom", 50, as_name="rack tom", tune=3)
@@ -258,8 +258,11 @@ echo.clip(intro, at_bar=4, bars=4).arp(VERSE, [3, 2, 0], rate=1.5, octave=5, vel
 
 # ── mix rides (docs/21 §8) ─────────────────────────────────────────────
 # the line lifts in the choruses; the pad steps back under the verses
+# and under the kit
 voice.ride({chorus1: 1, chorus2: 1, chorus3: 1.5, outro: 1})
-pad.ride({verse1: -2, verse2: -2})
+pad.ride({verse1: -2, verse2: -2, chorus3: -3, outro: -3, end: -3})
+# the kit's sections: the pads make room for it
+choir.ride({chorus3: -2, outro: -2})
 
 # ── master ─────────────────────────────────────────────────────────────
 song.master(fx=[
