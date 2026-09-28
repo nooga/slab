@@ -17,11 +17,17 @@ pub const MAX_AUTO_POINTS_PER_TRACK: usize = 8192;
 pub const MAX_NOTES_PER_TRACK: usize = 2048;
 pub const MAX_AUDIO_CLIPS_PER_TRACK: usize = 64;
 
+pub const MAX_EXPR_POINTS_PER_TRACK: usize = 4096;
+
 pub const NoteSnap = struct {
     start_beat: f64,
     length_beats: f64,
     pitch: u8,
     velocity: u8,
+    /// Pitch bend points in `expr_points` (beats from the note's start,
+    /// semitones), docs/22 §Note expression.
+    expr_count: u8 = 0,
+    expr_start: u32 = 0,
 };
 
 pub const ClipHeader = struct {
@@ -113,6 +119,8 @@ pub const TrackSnapshot = struct {
     lane_count: u32 = 0,
     auto_points: [MAX_AUTO_POINTS_PER_TRACK]automation.Point = undefined,
     auto_point_count: u32 = 0,
+    expr_points: [MAX_EXPR_POINTS_PER_TRACK]automation.Point = undefined,
+    expr_point_count: u32 = 0,
 
     /// Track volume or pan at `beat`, or null when no lane speaks. Lanes
     /// are published track lanes first, then clip lanes by clip start, so

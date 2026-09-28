@@ -112,6 +112,8 @@ pub const FyRawMachine = struct {
     prepare_caller: ?RawCaller = null,
     note_on_caller: ?RawCaller = null,
     note_off_caller: ?RawCaller = null,
+    note_expr_slots: RawSlots = .{},
+    note_expr_caller: ?RawCaller = null,
     render_caller: ?RawCaller = null,
     // Optional per-block dsp2 word (params sample-rate --): coefficient fills
     // that must not run per sample, e.g. the MS-20 svf profile region.
@@ -216,7 +218,11 @@ pub const FyRawMachine = struct {
     // last-note priority. Releasing the sounding note falls back to the
     // newest still-held one as a legato retrigger.
     mono_held: [16]f32 = undefined,
+    mono_held_id: [16]i32 = undefined,
     mono_held_n: usize = 0,
+    // The note id each voice plays (-1: a source without ids). Note-offs
+    // and expression match by id, so a bent note is still found.
+    voice_note_id: [MAX_REGIONS]i32 = [_]i32{-1} ** MAX_REGIONS,
     // Idle voices are skipped entirely (docs/17 D6). A voice wakes on
     // note-on and goes idle once released and its contribution stays under
     // IDLE_FLOOR for a whole block. voice_peak is this block's max |delta|
@@ -657,6 +663,7 @@ pub const FyRawMachine = struct {
         if (self.desc.prepareWord()) |w| self.prepare_caller = try self.compileEntry(w, &self.prepare_slots, false);
         if (self.desc.noteOnWord()) |w| self.note_on_caller = try self.compileEntry(w, &self.note_on_slots, false);
         if (self.desc.noteOffWord()) |w| self.note_off_caller = try self.compileEntry(w, &self.note_off_slots, false);
+        if (self.desc.noteExprWord()) |w| self.note_expr_caller = try self.compileEntry(w, &self.note_expr_slots, false);
         if (self.desc.blockPrepareWord()) |w| self.block_prepare_caller = try self.compileEntry(w, &self.block_prepare_slots, false);
         if (self.desc.deriveWord()) |w| self.derive_caller = try self.compileEntry(w, &self.derive_slots, false);
         self.render_caller = try self.compileEntry(self.desc.renderWord(), &self.render_slots, true);
@@ -1467,12 +1474,13 @@ fn applyNoteEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
     switch (ev.kind) {
         .note_on => {
             if (ev.velocity <= 0) {
-                try noteOffEvent(self, ev.pitch);
+                try noteOffEvent(self, ev);
             } else {
                 try noteOnEvent(self, ev);
             }
         },
-        .note_off => try noteOffEvent(self, ev.pitch),
+        .note_off => try noteOffEvent(self, ev),
+        .expression => try noteExprEvent(self, ev),
         .reset => {
             self.mono_held_n = 0;
             for (0..self.regionCount()) |voice| {
@@ -1512,11 +1520,19 @@ fn isMonoMelodic(self: *const FyRawMachine) bool {
     return self.regionCount() == 1 and !self.desc.note_pitch;
 }
 
-fn monoForget(self: *FyRawMachine, pitch: f32) void {
+/// Whether event `ev` refers to a note played as (pitch, id): by id when
+/// both sides have one, else by pitch.
+fn sameNote(pitch: f32, id: i32, ev: machine.NoteEvent) bool {
+    if (ev.note_id >= 0 and id >= 0) return id == ev.note_id;
+    return pitch == ev.pitch;
+}
+
+fn monoForget(self: *FyRawMachine, ev: machine.NoteEvent) void {
     var w: usize = 0;
-    for (self.mono_held[0..self.mono_held_n]) |p| {
-        if (p == pitch) continue;
+    for (self.mono_held[0..self.mono_held_n], self.mono_held_id[0..self.mono_held_n]) |p, id| {
+        if (sameNote(p, id, ev)) continue;
         self.mono_held[w] = p;
+        self.mono_held_id[w] = id;
         w += 1;
     }
     self.mono_held_n = w;
@@ -1524,12 +1540,14 @@ fn monoForget(self: *FyRawMachine, pitch: f32) void {
 
 fn noteOnEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
     if (isMonoMelodic(self)) {
-        monoForget(self, ev.pitch);
+        monoForget(self, ev);
         if (self.mono_held_n == self.mono_held.len) {
             std.mem.copyForwards(f32, self.mono_held[0 .. self.mono_held.len - 1], self.mono_held[1..]);
+            std.mem.copyForwards(i32, self.mono_held_id[0 .. self.mono_held_id.len - 1], self.mono_held_id[1..]);
             self.mono_held_n -= 1;
         }
         self.mono_held[self.mono_held_n] = ev.pitch;
+        self.mono_held_id[self.mono_held_n] = ev.note_id;
         self.mono_held_n += 1;
     }
     // Legato: a note arriving while the voice is still held (mono slide).
@@ -1538,6 +1556,7 @@ fn noteOnEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
     self.age_counter += 1;
     self.voice_age[voice] = self.age_counter;
     self.voice_pitch[voice] = ev.pitch;
+    self.voice_note_id[voice] = ev.note_id;
     self.voice_gate[voice] = true;
     self.voice_idle[voice] = false;
     self.voice_peak[voice] = 0;
@@ -1550,16 +1569,17 @@ fn noteOnEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
 
 // note_id is -1 throughout the sequencer, so note-off matches the newest
 // gated voice holding this pitch. Mono machines just release voice 0.
-fn noteOffEvent(self: *FyRawMachine, pitch: f32) !void {
+fn noteOffEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
     const n = self.regionCount();
     if (isMonoMelodic(self)) {
-        monoForget(self, pitch);
+        monoForget(self, ev);
         // Releasing a note that isn't sounding just forgets it.
-        if (!self.voice_gate[0] or self.voice_pitch[0] != pitch) return;
+        if (!self.voice_gate[0] or !sameNote(self.voice_pitch[0], self.voice_note_id[0], ev)) return;
         if (self.mono_held_n > 0) {
             // Fall back to the newest held note, legato.
             const back = self.mono_held[self.mono_held_n - 1];
             self.voice_pitch[0] = back;
+            self.voice_note_id[0] = self.mono_held_id[self.mono_held_n - 1];
             self.kctx.legato = 1;
             self.kctx.pitch = back;
             try callNoteOn(self, 0, midiToHz(back), self.kctx.vel);
@@ -1579,7 +1599,7 @@ fn noteOffEvent(self: *FyRawMachine, pitch: f32) !void {
     var newest: u64 = 0;
     for (0..n) |v| {
         if (!self.voice_gate[v]) continue;
-        if (self.voice_pitch[v] != pitch) continue;
+        if (!sameNote(self.voice_pitch[v], self.voice_note_id[v], ev)) continue;
         if (self.voice_age[v] >= newest) {
             newest = self.voice_age[v];
             found = v;
@@ -1588,6 +1608,20 @@ fn noteOffEvent(self: *FyRawMachine, pitch: f32) !void {
     if (found) |v| {
         self.voice_gate[v] = false;
         try callNoteOff(self, v);
+    }
+}
+
+/// Per-note expression (docs/22 §Note expression): retune the voice that
+/// plays `ev.note_id` to `ev.pitch` through the machine's `note-expr`
+/// word. Machines without one ignore it.
+fn noteExprEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
+    const caller = if (self.note_expr_caller) |*c_| c_ else return;
+    if (ev.note_id < 0 or self.desc.note_pitch) return;
+    for (0..self.regionCount()) |v| {
+        if (self.voice_note_id[v] != ev.note_id) continue;
+        self.kctx.pitch = ev.pitch;
+        self.kctx.hz = midiToHz(ev.pitch);
+        _ = try caller.call(1, &self.entryArgs(v));
     }
 }
 
@@ -1649,6 +1683,7 @@ fn resetImpl(state: *anyopaque) void {
     }
     @memset(self.voice_gate[0..], false);
     @memset(self.voice_pitch[0..], -1);
+    @memset(self.voice_note_id[0..], -1);
     @memset(self.voice_idle[0..], true);
     self.mono_held_n = 0;
     @memset(self.params_buf[0..self.desc.params_size], 0);
@@ -4789,4 +4824,52 @@ test "automation drives a knob per chunk, follows the curve, and yields to a han
     // A machine without its lane in the view ignores it.
     const other = snapshot.AutoView{ .snap = &snap, .cursors = &cursors, .kind = .fx, .fx_uid = 7 };
     try testing.expect(!other.any());
+}
+
+test "note ids: a note-off finds its voice by id after the voice was bent" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/sampler/sampler.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    try testing.expect(inst.note_expr_caller != null);
+
+    const block = 64;
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.tempo_bpm = 120;
+    ctx.block_size = block;
+    var l = [_]f32{0} ** block;
+    var r = [_]f32{0} ** block;
+    // Two notes, then bend note 1 onto note 2's pitch: they're one pitch now.
+    var evs = [_]machine.NoteEvent{
+        .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 1, .pitch = 60, .velocity = 0.9 },
+        .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 2, .pitch = 67, .velocity = 0.9 },
+        .{ .sample_offset = 10, .kind = .expression, .channel = 0, .note_id = 1, .pitch = 67, .velocity = 0 },
+    };
+    ctx.note_in = &evs;
+    ctx.note_in_count = evs.len;
+    testRender(mach, &ctx, &l, &r);
+
+    var v1: ?usize = null;
+    for (0..inst.regionCount()) |v| if (inst.voice_note_id[v] == 1) {
+        v1 = v;
+    };
+    const voice = v1.?;
+    // The bend reached the voice: its advance grew by 7 semitones.
+    // SamplerState (kernels/06-voices/sampler.fy): inc, inc0 and bend are
+    // its 18th-20th f64 fields.
+    const bend = inst.readStateF64(voice, 19 * 8);
+    try testing.expectApproxEqAbs(@as(f64, 7), bend, 1e-9);
+    const inc = inst.readStateF64(voice, 17 * 8);
+    const inc0 = inst.readStateF64(voice, 18 * 8);
+    try testing.expectApproxEqAbs(std.math.pow(f64, 2, 7.0 / 12.0), inc / inc0, 1e-6);
+
+    // Releasing note 1 releases its own voice, not note 2's.
+    var off = [_]machine.NoteEvent{.{ .sample_offset = 0, .kind = .note_off, .channel = 0, .note_id = 1, .pitch = 60, .velocity = 0 }};
+    ctx.note_in = &off;
+    ctx.note_in_count = 1;
+    testRender(mach, &ctx, &l, &r);
+    try testing.expect(!inst.voice_gate[voice]);
+    var still: usize = 0;
+    for (0..inst.regionCount()) |v| still += @intFromBool(inst.voice_gate[v] and inst.voice_note_id[v] == 2);
+    try testing.expectEqual(@as(usize, 1), still);
 }

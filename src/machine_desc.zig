@@ -321,6 +321,9 @@ pub const Desc = struct {
     note_off_word_len: usize = 0,
     block_prepare_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
     block_prepare_word_len: usize = 0,
+    // Per-note expression hook (docs/22): retunes the voice to ctx.pitch.
+    note_expr_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
+    note_expr_word_len: usize = 0,
     // Generic derived-params hook: a dsp2 word (params derive-data --) the host
     // calls each block, plus an opaque machine-built data pointer. Lets a
     // machine keep all its specific logic in fy (e.g. FM-86 algorithm routing)
@@ -384,6 +387,10 @@ pub const Desc = struct {
         return if (self.note_off_word_len == 0) null else self.note_off_word[0..self.note_off_word_len];
     }
 
+    pub fn noteExprWord(self: *const Desc) ?[]const u8 {
+        return if (self.note_expr_word_len == 0) null else self.note_expr_word[0..self.note_expr_word_len];
+    }
+
     pub fn blockPrepareWord(self: *const Desc) ?[]const u8 {
         return if (self.block_prepare_word_len == 0) null else self.block_prepare_word[0..self.block_prepare_word_len];
     }
@@ -434,6 +441,7 @@ const MachineDescRaw = extern struct {
     derive: Fy.Value,
     derive_data: Fy.Value,
     stereo: Fy.Value,
+    note_expr: Fy.Value,
 };
 
 const PageRaw = extern struct { next: Fy.Value, name: Fy.Value, rows: Fy.Value };
@@ -557,6 +565,7 @@ pub fn read(host: *FyHost) !Desc {
     d.note_off_word_len = try copyBuf(d.note_off_word[0..], cstrSlice(md.note_off));
     d.block_prepare_word_len = try copyBuf(d.block_prepare_word[0..], cstrSlice(md.block_prepare));
     d.derive_word_len = try copyBuf(d.derive_word[0..], cstrSlice(md.derive));
+    d.note_expr_word_len = try copyBuf(d.note_expr_word[0..], cstrSlice(md.note_expr));
     // derive-data is an opaque heap pointer (fy `alloc` returns the raw address
     // as a tagged int); >>2 recovers it. 0 = none.
     d.derive_data = @intCast(@as(u64, @bitCast(md.derive_data)) >> 2);

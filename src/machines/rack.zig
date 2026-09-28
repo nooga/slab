@@ -334,6 +334,13 @@ pub const Rack = struct {
                     out[n] = off;
                     n += 1;
                 },
+                // Expression carries a pitch: transpose it like the note.
+                .expression => if (findHeld(p, ev) != null) {
+                    var e = ev;
+                    e.pitch = ev.pitch + @as(f32, @floatFromInt(p.transpose));
+                    out[n] = e;
+                    n += 1;
+                },
                 .pressure, .slide, .glide, .note_hold => if (findHeld(p, ev)) |h| {
                     var e = ev;
                     e.pitch = p.held[h].pitch;

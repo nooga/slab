@@ -38,6 +38,8 @@ ustruct: CmiState
   f64 fade  f64 fade-k
   ( vibrato phase, cycles )
   f64 vph
+  ( per-note expression: the key and the unquantized clock it asked for )
+  f64 key  f64 clock
 ;
 
 ustruct: CmiParams
@@ -124,6 +126,8 @@ dsp: cmi-note-on | ctx:Ctx state:CmiState params:CmiParams |
   ( pitch on the card's grid )
   zroot 0.0  params.root zroot fsel-lt | root |
   key params.tune f+  ed.tune& k0 f@i f+  root f- 0.08333333333333333 f* exp2 | ratio |
+  key -> state.key
+  srate ratio f* -> state.clock
   srate ratio f* cmi-quantize-rate | rq n |
   rq ctx.sr f/ kr f/ 16.0 fmin -> state.inc
   params.start-seg 128.0 f* slen 128.0 f- 0.0 fmax fmin floor kr f/ start f+ -> state.ph
@@ -158,6 +162,15 @@ dsp: cmi-note-on | ctx:Ctx state:CmiState params:CmiParams |
   ed.hit& k0 f@i | oldhit |
   hit  seq  oldhit  select  ed.hit& k0 f!i
   hit  k0  ed.last  select -> ed.last
+;
+
+( ctx state params -- : per-note expression [docs/22]: the bent note's
+  clock lands on the card's grid like any other note, so a bend steps
+  through the CMI's 1024 pitches an octave.  The filter keeps the note's
+  octave. )
+dsp: cmi-note-expr | ctx:Ctx state:CmiState params |
+  ctx.pitch state.key f- 0.08333333333333333 f* exp2 state.clock f* cmi-quantize-rate | rq n |
+  rq ctx.sr f/ state.kr f/ 16.0 fmin -> state.inc
 ;
 
 ( age atk -- e : the attack ramp, 0..1 )

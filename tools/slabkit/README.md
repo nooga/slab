@@ -56,6 +56,8 @@ song.render(stems=True)        # bounce + mix report
 | `transpose(n)`, `swing(amount, grid)`, `humanize(time, vel)`, `velocities(fn)` | transforms |
 | `copy(section)` | same notes (and clip automation) on another section |
 | `automate(target, points…)`, `ramp(target, frm, to, v0, v1, tension)` | clip automation: like the track's, beats from the clip's start; overrides the track lane while the clip plays |
+| `bend(points, notes=None)` | pitch-bend notes: (beat from the note's start, semitones[, shape, tension]), max 8; sampler and Unfairlight play it |
+| `converge(to, start, end, tension=-0.3)` | every note sounding over [start, end) bends onto pitch `to` by `end`: a chord folding onto one note |
 
 | Track method | Does |
 |---|---|

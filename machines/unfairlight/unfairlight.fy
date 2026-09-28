@@ -18,6 +18,7 @@ include "../lib/manifest.fy"
   "k-cmi-voice"       render!
   "cmi-note-on"       note-on!
   "cmi-note-off"      note-off!
+  "cmi-note-expr"     note-expr!
   "cmi-block-prepare" block-prepare!
   8 voices!
   CmiState.size  state-size!

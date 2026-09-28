@@ -21,6 +21,9 @@ pub const NoteKind = enum(u8) {
     cc = 6,
     program_change = 7,
     reset = 8,
+    /// Per-note expression (docs/22): `pitch` is the note's current pitch
+    /// (base + bend) for voice `note_id`.
+    expression = 9,
 };
 
 pub const NoteEvent = extern struct {

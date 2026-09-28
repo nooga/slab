@@ -50,7 +50,54 @@ pub const Note = struct {
     velocity: u8 = 100,
     /// Transient UI flag — not persisted, not consumed by the engine.
     selected: bool = false,
+    /// Pitch expression (docs/22 §Note expression): up to MAX_BEND points,
+    /// beats from the note's start, values in semitones from `pitch`.
+    /// Inline so a Note stays a plain value that copies with clipboards.
+    bend: [MAX_BEND]automation.Point = undefined,
+    bend_n: u8 = 0,
+
+    pub fn bendPoints(self: *const Note) []const automation.Point {
+        return self.bend[0..self.bend_n];
+    }
+
+    pub fn bendSlice(self: *Note) []automation.Point {
+        return self.bend[0..self.bend_n];
+    }
+
+    /// Semitones from `pitch` at `beat` into the note (0 without a bend).
+    pub fn bendAt(self: *const Note, beat: f64) f32 {
+        if (self.bend_n == 0) return 0;
+        return automation.eval(self.bendPoints(), beat);
+    }
+
+    /// Add a bend point, keeping order. False when full.
+    pub fn addBend(self: *Note, p: automation.Point) bool {
+        if (self.bend_n >= MAX_BEND) return false;
+        var q = p;
+        q.value = std.math.clamp(q.value, -MAX_BEND_SEMIS, MAX_BEND_SEMIS);
+        const at = if (automation.segmentIndex(self.bendPoints(), q.beat)) |i| i + 1 else 0;
+        var i: usize = self.bend_n;
+        while (i > at) : (i -= 1) self.bend[i] = self.bend[i - 1];
+        self.bend[at] = q;
+        self.bend_n += 1;
+        return true;
+    }
+
+    pub fn removeBend(self: *Note, i: usize) void {
+        if (i >= self.bend_n) return;
+        var j = i;
+        while (j + 1 < self.bend_n) : (j += 1) self.bend[j] = self.bend[j + 1];
+        self.bend_n -= 1;
+    }
+
+    pub fn clearBend(self: *Note) void {
+        self.bend_n = 0;
+    }
 };
+
+pub const MAX_BEND = 8;
+/// Bend range, fixed (docs/22): enough to fold a wide chord onto one note.
+pub const MAX_BEND_SEMIS: f32 = 48;
 
 pub const Clip = struct {
     /// Start time on the track timeline, in beats.

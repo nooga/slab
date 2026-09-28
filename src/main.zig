@@ -618,6 +618,7 @@ pub fn main(init: std.process.Init) !void {
             if (c.rl.IsKeyPressed(c.rl.KEY_SPACE)) transport.toggle();
             if (c.rl.IsKeyPressed(c.rl.KEY_HOME)) transport.rewind();
             if (c.rl.IsKeyPressed(c.rl.KEY_TAB)) layout.clip_editor_visible = !layout.clip_editor_visible;
+            if (focus == .piano_roll and !commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_E)) clip_editor.toggleExpressionMode();
         }
 
         c.rl.BeginDrawing();
@@ -954,6 +955,7 @@ pub fn main(init: std.process.Init) !void {
         for (tracks) |*t| t.publishSnapshot(&audio_pool);
 
         if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_PLAY") != null) transport.play();
+        if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_EXPR") != null) clip_editor.toggleExpressionMode();
         if (shot_frame == 0) if (std.c.getenv("SLAB_SHOT_SELECT")) |sel| {
             // "track:clip" — open that clip in the editor (screenshots).
             var it = std.mem.splitScalar(u8, std.mem.span(sel), ':');
@@ -1586,7 +1588,8 @@ fn applyProjectBytes(
 /// Dev hook: SLAB_SHOT=<path.png> saves the window's own framebuffer after
 /// SLAB_SHOT_FRAME frames (default 60), and every SLAB_SHOT_EVERY frames
 /// after that when set. SLAB_SHOT_PLAY=1 starts the transport at load;
-/// SLAB_SHOT_SELECT=track:clip opens that clip in the editor.
+/// SLAB_SHOT_SELECT=track:clip opens that clip in the editor;
+/// SLAB_SHOT_EXPR=1 starts the piano roll in expression mode.
 fn devScreenshot(frame: *u32) void {
     frame.* +%= 1;
     const path = std.c.getenv("SLAB_SHOT") orelse return;

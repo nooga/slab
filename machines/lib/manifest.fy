@@ -22,7 +22,8 @@
       machine-desc
     ;
 
-  Entry words [render, prepare, note-on, note-off, block-prepare, derive]
+  Entry words [render, prepare, note-on, note-off, note-expr,
+  block-prepare, derive]
   all take ( ctx state params -- ); render takes a leading io pointer:
   ( io ctx state params -- ).  Ctx/Io live in kernels/00-primitives/ctx.fy
   [docs/04 §Kernel ABI].
@@ -60,6 +61,8 @@ struct: MachineDesc
                        entry word as ctx.data. )
   ptr stereo         ( int flag: voices write out-l AND out-r; effects get one
                        true-stereo pass with in-l/in-r instead of dual mono )
+  ptr note-expr      ( cstr or 0 — dsp: word retuning a sounding voice to
+                       ctx.pitch / ctx.hz: per-note expression, docs/22 )
 ;
 
 struct: ControlDesc
@@ -147,6 +150,7 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
 : prepare!       ( str -- ) cstr-new _mf-md@ MachineDesc.prepare! drop ;
 : note-on!       ( str -- ) cstr-new _mf-md@ MachineDesc.note-on! drop ;
 : note-off!      ( str -- ) cstr-new _mf-md@ MachineDesc.note-off! drop ;
+: note-expr!     ( str -- ) cstr-new _mf-md@ MachineDesc.note-expr! drop ;
 : block-prepare! ( str -- ) cstr-new _mf-md@ MachineDesc.block-prepare! drop ;
 : derive!        ( str -- ) cstr-new _mf-md@ MachineDesc.derive! drop ;
 : derive-data!   ( ptr -- ) _mf-md@ MachineDesc.derive-data! drop ;

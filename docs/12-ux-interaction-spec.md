@@ -90,6 +90,8 @@ these rules.
 - `Q`: quantize selected notes.
 - `H`: humanize selected notes.
 - `S`: snap selected notes to the active scale.
+- `E`: toggle expression mode (pitch curves on the notes, the converge
+  drag; docs/22 §Note expression).
 - Wheel: pan time and pitch.
 - Shift-wheel: time zoom around cursor beat.
 - Alt-wheel: vertical pitch zoom around cursor pitch row.

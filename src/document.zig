@@ -200,9 +200,15 @@ pub fn serialize(
             try appendFmt(alloc, &out, ",\"start\":{d},\"len\":{d},\"notes\":[", .{ clip.start_beat, clip.length_beats });
             for (clip.notes.items, 0..) |note, ni| {
                 if (ni > 0) try out.append(alloc, ',');
-                try appendFmt(alloc, &out, "{{\"pitch\":{d},\"start\":{d},\"len\":{d},\"vel\":{d}}}", .{
+                try appendFmt(alloc, &out, "{{\"pitch\":{d},\"start\":{d},\"len\":{d},\"vel\":{d}", .{
                     note.pitch, note.start_beat, note.length_beats, note.velocity,
                 });
+                if (note.bend_n > 0) {
+                    try out.appendSlice(alloc, ",\"expr\":{\"pitch\":");
+                    try appendPoints(alloc, &out, note.bendPoints());
+                    try out.append(alloc, '}');
+                }
+                try out.append(alloc, '}');
             }
             try out.append(alloc, ']');
             try appendLaneList(alloc, &out, t, clip.lanes.items);
@@ -373,6 +379,33 @@ fn applyLaneList(alloc: std.mem.Allocator, t: *track_mod.Track, into: *std.Array
         }
         try into.append(alloc, lane);
     }
+}
+
+/// A point list as the file writes it, values as they are (note
+/// expression is already in its units: semitones).
+fn appendPoints(alloc: std.mem.Allocator, out: *std.ArrayList(u8), pts: []const automation.Point) !void {
+    try out.append(alloc, '[');
+    for (pts, 0..) |pt, pi| {
+        if (pi > 0) try out.append(alloc, ',');
+        if (pt.shape == .linear and pt.tension == 0) {
+            try appendFmt(alloc, out, "[{d},{d}]", .{ pt.beat, pt.value });
+        } else {
+            try appendFmt(alloc, out, "[{d},{d},\"{s}\",{d}]", .{ pt.beat, pt.value, @tagName(pt.shape), pt.tension });
+        }
+    }
+    try out.append(alloc, ']');
+}
+
+/// One file point `[beat, value(, shape, tension)]`, value as written.
+fn parsePoint(v: std.json.Value) ?automation.Point {
+    if (v != .array or v.array.items.len < 2) return null;
+    const a = v.array.items;
+    var pt = automation.Point{ .beat = @max(0, asF64(a[0])), .value = @floatCast(asF64(a[1])) };
+    if (a.len >= 3) if (strOf(a[2])) |sh| {
+        pt.shape = std.meta.stringToEnum(automation.Shape, sh) orelse .linear;
+    };
+    if (a.len >= 4) pt.tension = @floatCast(std.math.clamp(asF64(a[3]), -1, 1));
+    return pt;
 }
 
 fn appendParams(alloc: std.mem.Allocator, out: *std.ArrayList(u8), mach: machine_mod.Machine) !void {
@@ -648,12 +681,19 @@ fn applyClip(alloc: std.mem.Allocator, t: *track_mod.Track, co: std.json.ObjectM
         for (nv.array.items) |note_v| {
             if (note_v != .object) continue;
             const no = note_v.object;
-            try clip.addNote(alloc, .{
+            var note = clip_mod.Note{
                 .pitch = asU8(objGet(no, "pitch") orelse continue),
                 .start_beat = if (objGet(no, "start")) |x| asF64(x) else 0,
                 .length_beats = if (objGet(no, "len")) |x| asF64(x) else 0,
                 .velocity = asU8(objGet(no, "vel") orelse continue),
-            });
+            };
+            if (objGet(no, "expr")) |ev| if (ev == .object) if (objGet(ev.object, "pitch")) |pv| if (pv == .array) {
+                for (pv.array.items) |ptv| {
+                    const pt = parsePoint(ptv) orelse continue;
+                    _ = note.addBend(pt);
+                }
+            };
+            try clip.addNote(alloc, note);
         }
     };
     if (objGet(co, "automation")) |av| try applyLaneList(alloc, t, &clip.lanes, av);
@@ -902,6 +942,11 @@ test "automation lanes round-trip in real units, effects by chain position" {
     // A clip lane, timed from its clip.
     var clip = clip_mod.Clip.init("A", 8, 8);
     _ = try (try clip.laneFor(alloc, automation.Target.control(.inst, 0, "cutoff"), false)).insert(alloc, .{ .beat = 2, .value = 0.3 });
+    // A note with a pitch bend (semitones, beats from the note's start).
+    var bent = clip_mod.Note{ .pitch = 60, .start_beat = 0, .length_beats = 4, .velocity = 90 };
+    _ = bent.addBend(.{ .beat = 1, .value = 0 });
+    _ = bent.addBend(.{ .beat = 3.5, .value = -7, .shape = .curve, .tension = -0.4 });
+    try clip.addNote(alloc, bent);
     try t0.addClip(alloc, clip);
     // Lanes aimed at nothing are dropped on save.
     const gone = try t0.laneFor(alloc, automation.Target.control(.inst, 0, "no-such-knob"), false);
@@ -936,6 +981,11 @@ test "automation lanes round-trip in real units, effects by chain position" {
     const lclip = l0.clips.items[0].findLane(automation.Target.control(.inst, 0, "cutoff")).?;
     try std.testing.expectEqual(@as(f64, 2), lclip.points.items[0].beat);
     try std.testing.expectApproxEqAbs(@as(f32, 0.3), lclip.points.items[0].value, 1e-5);
+    const ln = l0.clips.items[0].notes.items[0];
+    try std.testing.expectEqual(@as(u8, 2), ln.bend_n);
+    try std.testing.expectEqual(@as(f32, -7), ln.bend[1].value);
+    try std.testing.expectEqual(automation.Shape.curve, ln.bend[1].shape);
+    try std.testing.expectEqual(@as(f32, -0.4), ln.bend[1].tension);
 }
 
 test "audio clips round-trip through the pool by path" {

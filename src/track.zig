@@ -336,6 +336,7 @@ pub const Track = struct {
         dst.clip_count = 0;
         dst.note_count = 0;
         dst.audio_clip_count = 0;
+        dst.expr_point_count = 0;
         self.publishLanes(dst);
 
         for (self.clips.items) |*clip| {
@@ -380,6 +381,12 @@ pub const Track = struct {
                     .pitch = note.pitch,
                     .velocity = note.velocity,
                 };
+                if (note.bend_n > 0 and dst.expr_point_count + note.bend_n <= snap_mod.MAX_EXPR_POINTS_PER_TRACK) {
+                    dst.notes[dst.note_count].expr_start = dst.expr_point_count;
+                    dst.notes[dst.note_count].expr_count = note.bend_n;
+                    @memcpy(dst.expr_points[dst.expr_point_count..][0..note.bend_n], note.bendPoints());
+                    dst.expr_point_count += note.bend_n;
+                }
                 dst.note_count += 1;
                 notes_added += 1;
             }

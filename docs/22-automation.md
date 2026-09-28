@@ -3,8 +3,9 @@
 Values that change over time on their own: a fader ride into the
 chorus, a filter opening over 16 bars, a chord whose notes bend onto
 one pitch. **Status: phases 1 and 2 (curves, track lanes, automated
-controls, clip lanes) are built; note expression and recording are
-design.**
+controls, clip lanes) and the pitch half of phase 3 (note bends,
+expression mode, the converge drag) are built; pressure, slide and gain
+expression, and recording, are design.**
 Code: `src/automation.zig` (curve, lanes), `src/ui/automation_lane.zig`
 (the lane editor), the `automation` fields in `track.zig`,
 `snapshot.zig`, `engine.zig` and `machines/fy_raw_machine.zig`.
@@ -293,11 +294,21 @@ come back if the clip grows) but they don't play.
 the note's own row and runs across the pitch rows, so you can see
 exactly where it lands:
 
-- **Expression mode:** the key `E` (and a piano-roll header latch)
-  toggles it. In expression mode:
-  - every note's pitch curve draws in the note's highlight tint,
-  - the curves of selected notes get handles and take the gestures
-    above.
+- **Expression mode:** the key `E` (and the EXPR latch in the piano
+  roll's header) toggles it. Drum-lane rolls (folded to a note map)
+  have none. In expression mode:
+  - every note's pitch curve draws in the track colour, a selected
+    note's brighter, and selected notes' points get handles,
+  - click a note to select it (Shift toggles), click empty grid to
+    deselect; notes don't move or resize,
+  - drag a handle to move it: time snaps to the grid within its
+    neighbours and the note, pitch snaps to semitones (Alt: free),
+  - double-click a selected note's curve to add a point (a note's
+    first point also pins beat 0 at its own pitch); double-click a
+    handle to delete it,
+  - Alt-drag a curve segment to bend it,
+  - right-click a handle: Hold / Linear / Curve, Reset tension, Delete
+    point, Clear bend.
 - **Outside expression mode**, curves draw faintly on notes that have
   them, and aren't editable.
 - **Pitch values snap to semitone rows.** Alt drags free, in cents.
@@ -307,15 +318,20 @@ exactly where it lands:
   `[0, len]` of the note. After the note ends, the curve holds its
   last value, so the release keeps the bent pitch.
 - **Converge gesture:** in expression mode, drag from a selected note's
-  body to a target row and time. Every selected note gets a curve:
-  it holds 0 until the drag's start time, then runs a `curve` segment
-  to *(target pitch − its own pitch)* at the drag's end time.
+  body to a target row and time; accent lines preview it. Every selected
+  note's bend is replaced by: 0 until the drag's start time, then a
+  `curve` segment (tension −0.3, slow start) to *(target pitch − its
+  own pitch)* at the drag's end time.
   One drag makes a chord fold onto one note or spread from a unison.
   Alt-dragging one note's segment afterwards bends that segment on
   every selected note together.
-- **Pressure, slide and gain** edit in the envelope strip, which
-  switches to per-note mode for the selected note. With several notes
-  selected, it draws all their curves and edits them together.
+- **Pressure, slide and gain** (not built yet) edit in the envelope
+  strip, which switches to per-note mode for the selected note. With
+  several notes selected, it draws all their curves and edits them
+  together.
+- A note holds at most 8 bend points (`clip.MAX_BEND`), inline in the
+  `Note`, so notes stay plain values that copy through clipboards,
+  duplicates and splits.
 
 ## Engine
 
@@ -403,41 +419,37 @@ zipper even at large block sizes.
 
 ### Note expression
 
-Three changes, all needed before a note can bend:
+Three pieces, as built:
 
-1. **Real note ids.** Today the sequencer sends `note_id = -1`
-   (`engine.zig`), and `FyRawMachine` matches note-offs by pitch
-   (`voice_pitch`). A bent note's pitch no longer matches, and
-   converging notes end up sharing one. The sequencer will assign
-   `note_id` = the note's snapshot index, with a per-trigger generation
-   in the high bits, so a looped note never matches its own release
-   tail. Voices record the id and note-off matches by id. Pitch
-   matching stays as a fallback for `-1` sources (the computer keyboard,
-   future MIDI).
-2. **An expression event.** A new `NoteKind.expression` carries, for
-   one `note_id`:
-   - `pitch`: absolute MIDI float (base + bend),
-   - `pressure`,
-   - `slide`,
-   - `value`: gain in dB.
-
-   While a note with expression is held or releasing, the sequencer
-   evaluates its curves at each 32-sample chunk and sends an event when
-   any value changed. A track with active expression renders in chunks,
-   like a machine with lanes.
-3. **A machine hook.** A new optional manifest entry `note-expr`
-   (`( ctx state params -- )`, like `note-on`). The host finds the
-   voice holding the id, sets `kctx.pitch`, the Hz value, `kctx.pressure`,
-   `kctx.slide` and `kctx.gain`, and calls the word for that voice's
-   region. The word updates the voice's phase increment, playback rate
-   or level. Machines without the hook ignore expression, and the piano
-   roll draws their curves in `text_mute`, with the tooltip "machine
-   takes no pitch expression".
-
-   Each machine needs its own small change:
-   - the sampler and Unfairlight: playback rate,
-   - the synths: oscillator increments,
-   - drum2: none.
+1. **Real note ids.** The sequencer sends each note's index in the
+   track snapshot as its `note_id` (`engine.gatherEvents`). Voices
+   record it (`FyRawMachine.voice_note_id`, and the mono held-note
+   stack), and note-offs and expression match by id, so a bent or
+   converged note is still found. Pitch matching stays as the fallback
+   for `-1` sources (the computer keyboard, future MIDI). A looped note
+   can't meet its own tail: a loop wrap resets the machines. The Rack
+   matched by id already and now transposes expression per part.
+2. **An expression event.** `NoteKind.expression` carries, for one
+   `note_id`, `pitch`: the note's current pitch (base + bend, MIDI
+   float). While a bent note sounds, the sequencer sends one at its
+   onset and every `EXPR_STEP` (32) samples; after note-off the voice
+   keeps the last value. Voice machines apply events sample-accurately,
+   so there is no extra chunking. `pressure`, `slide` and gain join the
+   event with their phase.
+3. **A machine hook.** The optional manifest entry `note-expr`
+   (`( ctx state params -- )`, like `note-on`; `note-expr!` in
+   manifest.fy). The host finds the voice holding the id, sets
+   `ctx.pitch` and `ctx.hz`, and calls the word for that voice's region.
+   Machines without it ignore expression. Built:
+   - **sampler** (`sampler-note-expr`): the note-on keeps its unbent
+     advance (`inc0`); the bend rescales it, and the release zone plays
+     at the bent pitch. The filter keeps the note's tracking.
+   - **Unfairlight** (`cmi-note-expr`): the bent clock lands on the
+     card's pitch grid like any note (1024 steps an octave); the filter
+     keeps the note's octave.
+   - Not yet: the synths (oscillator increments), and the piano roll's
+     `text_mute` curves plus "machine takes no pitch expression" tooltip
+     for machines without the hook.
 
 Mono machines apply expression to the sounding note. A 32-sample step
 on a slow bend is inaudible. If fast bends step audibly, the expression
@@ -492,11 +504,13 @@ phases.
   single-segment sweep from `v0` to `v1`, added into the lane.
 - `clip.automate(...)` / `clip.ramp(...)` (built): the same, with
   clip-relative beats; `clip.copy(section)` copies them.
-- `clip.bend(note_or_filter, points, dim="pitch")`: expression on
-  matching notes.
-- `clip.converge(to, start, end, tension=0)`: the converge gesture as a
-  call. Every note sounding over `[start, end]` bends to pitch `to` by
-  `end`.
+- `clip.bend(points, notes=None)` (built): a pitch bend on the picked
+  notes (all, a pitch or pitches, or a predicate on the note dict).
+  Points are `(beat from the note's start, semitones[, shape, tension])`,
+  at most 8.
+- `clip.converge(to, start, end, tension=-0.3, notes=None)` (built): the
+  converge gesture as a call. Every note sounding over `[start, end)`
+  (clip beats) bends to pitch `to` by `end`.
 
 slabkit checks targets and ranges against `slab --describe` like it
 checks params. `--render` runs the same engine, so scripted automation
@@ -518,14 +532,11 @@ renders exactly as it plays.
    applies wins, the same rule as `Track.autoValue` on the UI side),
    copy/move/split with clips, the ENV strip, the overlay on track
    lanes, the format, slabkit `clip.automate`/`clip.ramp`.
-3. **Note expression.**
-   - Note ids and voice matching by id; this can land earlier on its
-     own.
-   - The `expression` event and the `note-expr` hook, starting with the
-     sampler and Unfairlight (rate is easy), then the synths.
-   - The piano-roll expression mode, the converge gesture, and
-     `bend`/`converge`.
-   - Pitch first, then pressure, slide and gain.
+3. **Note expression.** Built for pitch: note ids and voice matching by
+   id, the `expression` event, the `note-expr` hook on the sampler and
+   Unfairlight, `Note.bend` in the snapshot and format, the piano-roll
+   expression mode and converge drag, slabkit `bend`/`converge`. Left:
+   the synths' hooks, the no-hook indication, pressure/slide/gain.
 4. **Recording.** The `AUTO` arm, touch-write, and RDP thinning.
 
 ## Not planned yet

@@ -107,6 +107,57 @@ class Clip:
         """One sweep in clip beats, added to the clip's lane."""
         return self.automate(target, (frm, v0, "curve" if tension else "linear", tension), (to, v1))
 
+    # ── note expression (docs/22) ────────────────────────────────────
+
+    def _pick(self, which):
+        if which is None:
+            return list(self.notes)
+        if callable(which):
+            return [n for n in self.notes if which(n)]
+        pitches = {note(w) for w in (which if isinstance(which, (list, tuple, set)) else [which])}
+        return [n for n in self.notes if n["pitch"] in pitches]
+
+    def bend(self, points, notes=None):
+        """Pitch-bend notes: points are (beat from the note's start,
+        semitones[, shape[, tension]]), at most 8. `notes` picks which:
+        None = all, a pitch or list of pitches, or a function of the note
+        dict. The machine must take pitch expression (sampler, Unfairlight)."""
+        where = f"clip {self.track.name}/{self.name} bend"
+        pts = []
+        _add_points({"b": pts}, ("b", lambda v: v, False), where, points)
+        pts = pts  # _add_points filled the list in place
+        if len(pts) > 8:
+            raise SlabError(f"{where}: {len(pts)} points (a note holds at most 8)")
+        for _, v, _, _ in pts:
+            if not -48 <= v <= 48:
+                raise SlabError(f"{where}: {v} semitones is outside ±48")
+        for n in self._pick(notes):
+            n["expr"] = list(pts)
+        return self
+
+    def converge(self, to, start, end, tension=-0.3, notes=None):
+        """Every note sounding over [start, end) (clip beats) bends onto
+        pitch `to` by `end`, holding its own pitch until `start` — a chord
+        folding onto one note. Negative tension = slow start."""
+        target = note(to)
+        where = f"clip {self.track.name}/{self.name} converge"
+        if end <= start:
+            raise SlabError(f"{where}: end {end} is not after start {start}")
+        hit = 0
+        for n in self._pick(notes):
+            n0, n1 = n["start"], n["start"] + n["len"]
+            if n1 <= start or n0 >= end:
+                continue
+            semis = target - n["pitch"]
+            if not -48 <= semis <= 48:
+                raise SlabError(f"{where}: {n['pitch']} -> {target} is more than 48 semitones")
+            s0 = max(start - n0, 0.0)
+            n["expr"] = [(s0, 0.0, "curve" if tension else "linear", tension), (end - n0, float(semis), "linear", 0.0)]
+            hit += 1
+        if hit == 0:
+            self.song.warn(f"{where}: no note sounds over beats {start:g}..{end:g}")
+        return self
+
     @property
     def bar(self):
         return self.song.bar_beats
@@ -352,7 +403,10 @@ class Clip:
         notes = sorted(self.notes, key=lambda n: (n["start"], n["pitch"]))
         return {"type": "note", "name": self.name, "start": round(self.start, 6), "len": round(self.length, 6),
                 "notes": [{"pitch": n["pitch"], "start": round(n["start"], 5), "len": round(max(n["len"], 0.01), 5),
-                           "vel": n["vel"]} for n in notes],
+                           "vel": n["vel"],
+                           **({"expr": {"pitch": [[b, v] if sh == "linear" and te == 0 else [b, v, sh, te]
+                                                  for b, v, sh, te in n["expr"]]}} if n.get("expr") else {})}
+                          for n in notes],
                 **({"automation": _lanes_json(self.lanes)} if self.lanes else {})}
 
 

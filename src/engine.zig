@@ -13,7 +13,10 @@ const meter = @import("meter.zig");
 const automation = @import("automation.zig");
 
 pub const MAX_BLOCK = audio.BLOCK_FRAMES * 4;
-pub const MAX_EVENTS_PER_TRACK = 128;
+pub const MAX_EVENTS_PER_TRACK = 1024;
+/// Expression events for a bent note go out every this many samples while
+/// it sounds (docs/22 §Note expression): 0.67 ms at 48 kHz.
+pub const EXPR_STEP: u32 = 32;
 
 /// Fallback meter state (constant 4/4) used until the document installs
 /// its own. Module-level so the address is stable for the field default.
@@ -875,10 +878,16 @@ fn gatherEvents(
         if (clip.start_beat >= beat_end) continue;
 
         const note_slice = snap.notes[clip.notes_start..][0..clip.notes_count];
-        for (note_slice) |note| {
+        for (note_slice, 0..) |note, j| {
             const abs_on = clip.start_beat + note.start_beat;
             const abs_off_raw = abs_on + note.length_beats;
             const abs_off = @min(abs_off_raw, clip_end);
+            // The note's index in the snapshot is its id: note-offs and
+            // expression find their voice by it, bent or not.
+            const note_id: i32 = @intCast(clip.notes_start + j);
+            if (note.expr_count > 0 and abs_on < beat_end and abs_off > beat_start and note.start_beat < clip.length_beats) {
+                count = gatherExpression(snap, note, note_id, abs_on, abs_off, beat_start, samples_per_beat, frames, out, count);
+            }
 
             if (abs_on >= beat_start and abs_on < beat_end) {
                 if (count < MAX_EVENTS_PER_TRACK) {
@@ -890,7 +899,7 @@ fn gatherEvents(
                         .sample_offset = fo,
                         .kind = .note_on,
                         .channel = 0,
-                        .note_id = -1,
+                        .note_id = note_id,
                         .pitch = @floatFromInt(note.pitch),
                         .velocity = @as(f32, @floatFromInt(note.velocity)) / 127.0,
                     };
@@ -907,7 +916,7 @@ fn gatherEvents(
                         .sample_offset = fo,
                         .kind = .note_off,
                         .channel = 0,
-                        .note_id = -1,
+                        .note_id = note_id,
                         .pitch = @floatFromInt(note.pitch),
                         .velocity = 0,
                     };
@@ -924,6 +933,47 @@ fn gatherEvents(
             return noteKindOrder(a.kind) < noteKindOrder(b.kind);
         }
     }.lt);
+    return count;
+}
+
+/// Expression events for one bent note inside this block: at its note-on
+/// (if it starts here) and every EXPR_STEP samples while it sounds.
+fn gatherExpression(
+    snap: *const snap_mod.TrackSnapshot,
+    note: snap_mod.NoteSnap,
+    note_id: i32,
+    abs_on: f64,
+    abs_off: f64,
+    beat_start: f64,
+    samples_per_beat: f64,
+    frames: u32,
+    out: *[MAX_EVENTS_PER_TRACK]machine.NoteEvent,
+    count_in: usize,
+) usize {
+    var count = count_in;
+    const pts = snap.expr_points[note.expr_start..][0..note.expr_count];
+    const base: f32 = @floatFromInt(note.pitch);
+    var k: u32 = 0;
+    // A note starting in this block gets its first value at its own onset.
+    const on_off: f64 = (abs_on - beat_start) * samples_per_beat;
+    if (on_off > 0) k = @intFromFloat(@round(on_off));
+    while (k < frames and count < MAX_EVENTS_PER_TRACK) {
+        const beat = beat_start + @as(f64, @floatFromInt(k)) / samples_per_beat;
+        if (beat >= abs_off) break;
+        if (beat >= abs_on - 1e-9) {
+            const bend = std.math.clamp(automation.eval(pts, @max(0, beat - abs_on)), -48, 48);
+            out[count] = .{
+                .sample_offset = k,
+                .kind = .expression,
+                .channel = 0,
+                .note_id = note_id,
+                .pitch = base + bend,
+                .velocity = 0,
+            };
+            count += 1;
+        }
+        k = (k / EXPR_STEP + 1) * EXPR_STEP;
+    }
     return count;
 }
 
@@ -1270,4 +1320,33 @@ test "faderGains follows volume and pan lanes unless overridden" {
     const go = faderGains(&t, snap, 2);
     try testing.expectApproxEqAbs(@as(f32, 1.0), go.v, 1e-6);
     try testing.expectApproxEqAbs(go.l, go.r, 1e-6);
+}
+
+test "gatherEvents: note ids, and expression every EXPR_STEP samples for a bent note" {
+    const spb = 480.0;
+    const frames: u32 = 128;
+    var snap = makeSnap(&.{.{
+        .start = 0,
+        .len = 4,
+        .notes = &.{ .{ .start = 0, .len = 2, .pitch = 60 }, .{ .start = 0, .len = 2, .pitch = 64 } },
+    }});
+    // Note 0 bends up 12 semitones over its first beat; note 1 doesn't bend.
+    snap.expr_points[0] = .{ .beat = 0, .value = 0 };
+    snap.expr_points[1] = .{ .beat = 1, .value = 12 };
+    snap.expr_point_count = 2;
+    snap.notes[0].expr_start = 0;
+    snap.notes[0].expr_count = 2;
+    var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
+    const n = gatherEvents(&snap, 0.5, 0.5 + @as(f64, frames) / spb, spb, frames, &events);
+    var exprs: usize = 0;
+    for (events[0..n]) |ev| {
+        try testing.expect(ev.note_id >= 0);
+        if (ev.kind != .expression) continue;
+        try testing.expectEqual(@as(i32, 0), ev.note_id);
+        const beat = 0.5 + @as(f64, @floatFromInt(ev.sample_offset)) / spb;
+        try testing.expectApproxEqAbs(@as(f32, @floatCast(60 + 12 * beat)), ev.pitch, 1e-3);
+        try testing.expect(ev.sample_offset % EXPR_STEP == 0);
+        exprs += 1;
+    }
+    try testing.expectEqual(@as(usize, frames / EXPR_STEP), exprs);
 }
