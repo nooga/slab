@@ -529,6 +529,7 @@ pub fn main(init: std.process.Init) !void {
     var focus: FocusPane = .arrangement;
     var dirty = false;
     var auto_was_playing = false;
+    var shot_frame: u32 = 0;
     var clipboard: EditClipboard = .{};
     defer clipboard.deinit(alloc);
     var status: StatusMessage = .{};
@@ -952,6 +953,8 @@ pub fn main(init: std.process.Init) !void {
 
         for (tracks) |*t| t.publishSnapshot(&audio_pool);
 
+        if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_PLAY") != null) transport.play();
+        devScreenshot(&shot_frame);
         c.rl.EndDrawing();
 
         switch (render_action) {
@@ -1568,6 +1571,27 @@ fn applyProjectBytes(
     if (document_mod.activePool()) |p| {
         for (tracks.*) |*t| t.publishSnapshot(p);
     }
+}
+
+/// Dev hook: SLAB_SHOT=<path.png> saves the window's own framebuffer after
+/// SLAB_SHOT_FRAME frames (default 60), and every SLAB_SHOT_EVERY frames
+/// after that when set. SLAB_SHOT_PLAY=1 starts the transport at load.
+fn devScreenshot(frame: *u32) void {
+    frame.* +%= 1;
+    const path = std.c.getenv("SLAB_SHOT") orelse return;
+    const first = envU32("SLAB_SHOT_FRAME") orelse 60;
+    const every = envU32("SLAB_SHOT_EVERY") orelse 0;
+    const f = frame.*;
+    const due = f == first or (every > 0 and f > first and (f - first) % every == 0);
+    if (!due) return;
+    const img = c.rl.LoadImageFromScreen();
+    defer c.rl.UnloadImage(img);
+    _ = c.rl.ExportImage(img, path);
+}
+
+fn envU32(name: [*:0]const u8) ?u32 {
+    const v = std.c.getenv(name) orelse return null;
+    return std.fmt.parseInt(u32, std.mem.span(v), 10) catch null;
 }
 
 /// Push each lane's value at `beat` into its machine control's display,
