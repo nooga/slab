@@ -263,9 +263,9 @@ stem report.
 
 | Track | Chain |
 |---|---|
-| kick + snare | `eq2` hpf 30–35 Hz, cut 400 Hz −2.5 dB, shelf 7 kHz +2 → `comp2` `dry-drum-punch` (or thresh −16, ratio 3.5, atk 8 ms, rel 120 ms, makeup +3) → `verb2` `bright-plate`, mix 0.15–0.2, predelay 10 ms for the 80s snare. For the big gated 80s room (Phil Collins, "Mama") use `verb2` in GATED mode instead: `gated-drum-room` on the kit (the dry drums key the gate, so the room bursts on each hit and cuts dead after HOLD), `gated-snare-slam` for a snare-only track, `reverse-nonlin` for the swell-up program. Keep DECAY high (0.9+) so the tail is still full when the gate shuts, and a hat or shaker on the same track re-opens it: put those on their own track |
+| kick + snare | `eq2` hpf 30–35 Hz, cut 400 Hz −2.5 dB, shelf 7 kHz +2 → `comp2` `dry-drum-punch` (or thresh −16, ratio 3.5, atk 3 ms, rel 30 ms, makeup +3) → `verb2` `bright-plate`, mix 0.15–0.2, predelay 10 ms for the 80s snare. For the big gated 80s room (Phil Collins, "Mama") use `verb2` in GATED mode instead: `gated-drum-room` on the kit (the dry drums key the gate, so the room bursts on each hit and cuts dead after HOLD), `gated-snare-slam` for a snare-only track, `reverse-nonlin` for the swell-up program. Keep DECAY high (0.9+) so the tail is still full when the gate shuts, and a hat or shaker on the same track re-opens it: put those on their own track. The console way is a bus: `room = song.bus("ROOM", fx=[fx("verb2", "gated-drum-room", mix=1.0, key=kit)])`, `kit.send(room, -11)`; the room then keys off the kit's own signal and several tracks can share it. Key it from a snare on its own track instead (`key=snare`, Glass Horizon) and only the backbeat opens the room: toms ring into it only while a snare holds it open, so a fill after the last snare hit plays dry |
 | hats | `eq2` hpf 400–500 Hz, shelf 9 kHz −2 if harsh → `verb2` `small-room` mix 0.1. Pan 0.2–0.3 |
-| bass | `eq2` hpf 30–35 Hz, cut 250 Hz −2 → `comp2` `bass-leveler` (thresh −14, ratio 3, atk 4 ms, rel 90 ms). No chorus or reverb. Centred |
+| bass | `eq2` hpf 30–35 Hz, cut 250 Hz −2 → `comp2` `bass-leveler` (thresh −14, ratio 3, atk 1 ms, rel 25 ms; `det=1` RMS for less low-end grit). No chorus or reverb. Centred |
 | e-piano / keys | `eq2` hpf 150–200 Hz, +1.5 dB at 2.8 kHz → `chorus2` `wide-keys` → `verb2` `medium-plate` 0.18. Pan ±0.25 |
 | pad | `eq2` hpf 240–300 Hz, −3 dB at 500 Hz, shelf 8 kHz −3 → `chorus2` `juno-ii` → `verb2` `big-plate-hall` 0.3. Quiet: it's a bed |
 | brass / stabs | `eq2` hpf 200–250 → `verb2` `medium-plate` 0.2. Pan opposite the keys |
@@ -309,15 +309,22 @@ The report flags sub energy that dwarfs the 60–250 Hz band.
 | `thresh` | level where gain reduction starts | set so the loud hits get 3–6 dB of reduction |
 | `ratio` | how hard above threshold | 2 glue, 3–4 control, 8+ smash |
 | `knee` | softness around threshold | 6 default; 8–12 on buses |
-| `atk` | how fast it clamps | 5–10 ms lets drum transients through; 1–3 ms flattens them |
-| `rel` | how fast it lets go | 80–150 ms on drums and bass; 200–400 ms on buses; too short pumps and distorts |
+| `atk` | how fast the gain clamps (a time constant: 63 % of the way) | 3–10 ms lets drum transients through; under 1 ms flattens them |
+| `rel` | how fast it lets go (time constant) | 10–50 ms on drums and bass; 50–300 ms on buses; short pumps, and on bass distorts (try `det` RMS) |
+| `hpf` | sidechain high-pass: the detector ignores what's below | 20 = off; 80–150 Hz on buses so the kick doesn't pump everything |
+| `det` | PEAK (0) follows hits; RMS (1) follows average level | RMS on bass, vocals, pads |
 | `makeup` | gain back after reduction | about half the reduction |
 | `mix` | parallel blend | 0.3–0.5 with heavy settings for "parallel smash" |
 
-Preset shortcuts: `dry-drum-punch`, `drum-smash` (use at mix 0.3–0.5),
-`bass-leveler`, `smooth-pad-comp`, `gentle-bus-glue`,
-`soft-master-glue`, `pump` / `audible-pump` (an effect, not control;
-there's no sidechain yet).
+Preset shortcuts (each measured against its job, docs/24 §Presets):
+`dry-drum-punch`, `drum-smash` (parallel, mix 0.5), `drum-bus` (on a
+DRUMS group), `rude-clap`, `bass-leveler`, `vocal-leveler`,
+`smooth-pad-comp`, `bus-glue` / `gentle-bus-glue` / `soft-master-glue`,
+`pump` / `audible-pump`. They're level-neutral on the songs' material;
+trim THRESH to the source (a quieter track needs a lower one). For ducking, key the
+detector from another track: `fx("comp2", thresh=-30, ratio=6, key=kick)`
+on the bass or pad pumps it on every kick; a muted "ghost kick" track
+still keys (docs/23 §Sidechain keys).
 
 Compress what moves too much: bass, drums, a lead with wide velocity.
 Leave pads alone; they're already even.
@@ -366,6 +373,14 @@ eq2 (hpf 25 Hz, gentle air shelf) → comp2 gentle-bus-glue → limiter2 (ceil �
 | streaming-safe, dynamic | −14 LUFS |
 | modern pop / dance | −10 to −12 LUFS |
 | too loud (squashed, crest under 8 dB) | above −9 LUFS |
+
+### Rides
+
+`track.ride({verse1: -2, chorus3: 1.5})` writes the volume lane: each
+listed section sits that many dB off the fader (`(dB0, dB1)` moves across
+it), with a one-beat glide in. Use it for section contrast (verses thin,
+choruses open) and for the lead lifting in the chorus. Call it after the
+fader is final. A stem whose track rides reads its average.
 
 ### Mixing by numbers: the stem report
 

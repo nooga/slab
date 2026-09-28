@@ -6,6 +6,7 @@
 const std = @import("std");
 const c = @import("c.zig");
 const track_mod = @import("track.zig");
+const routing = @import("routing.zig");
 const clip_mod = @import("clip.zig");
 const registry_mod = @import("machine_registry.zig");
 const transport_mod = @import("transport.zig");
@@ -151,6 +152,7 @@ pub fn serialize(
         try appendFmt(alloc, &out, ",\"volume\":{d},\"pan\":{d},\"mute\":{s},\"solo\":{s}", .{
             t.volume(), t.pan(), boolStr(t.mute.load(.monotonic)), boolStr(t.solo.load(.monotonic)),
         });
+        try appendRouting(alloc, &out, t);
 
         // Instrument: stable id + inline settings, or null.
         try out.appendSlice(alloc, ",\"instrument\":");
@@ -175,6 +177,7 @@ pub fn serialize(
         // Automation lanes (docs/22 §Project format).
         try appendLanes(alloc, &out, t);
         if (t.lanes_shown) try out.appendSlice(alloc, ",\"show_automation\":true");
+        if (t.folded and t.isBus()) try out.appendSlice(alloc, ",\"folded\":true");
 
         // Clips.
         try out.appendSlice(alloc, ",\"clips\":[");
@@ -247,6 +250,20 @@ fn boolStr(b: bool) []const u8 {
     return if (b) "true" else "false";
 }
 
+// `,"kind":"bus"`, `,"output":N`, `,"sends":[…]` (docs/23 §Project format),
+// each only when it isn't the default.
+fn appendRouting(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track_mod.Track) !void {
+    if (t.kind == .bus) try out.appendSlice(alloc, ",\"kind\":\"bus\"");
+    if (t.output != routing.NONE) try appendFmt(alloc, out, ",\"output\":{d}", .{t.output});
+    if (t.send_count == 0) return;
+    try out.appendSlice(alloc, ",\"sends\":[");
+    for (t.sends[0..t.send_count], 0..) |*snd, i| {
+        if (i > 0) try out.append(alloc, ',');
+        try appendFmt(alloc, out, "{{\"to\":{d},\"level\":{d},\"pre\":{s}}}", .{ snd.bus, snd.level(), boolStr(snd.pre) });
+    }
+    try out.append(alloc, ']');
+}
+
 fn appendEffects(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track_mod.Track) !void {
     try out.append(alloc, '[');
     for (t.effects.items, 0..) |*fx, ei| {
@@ -255,6 +272,7 @@ fn appendEffects(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const tr
         try appendJsonString(alloc, out, if (fx.idx) |fi| machineId(fi) else "");
         try appendFmt(alloc, out, ",\"bypass\":{s},\"params\":", .{boolStr(t.effectBypassed(ei))});
         try appendParams(alloc, out, fx.mach);
+        if (fx.key != routing.NONE) try appendFmt(alloc, out, ",\"key\":{d}", .{fx.key});
         try out.append(alloc, '}');
     }
     try out.append(alloc, ']');
@@ -503,61 +521,10 @@ pub fn apply(
 
     for (tracks_v.array.items) |trk_v| {
         if (trk_v != .object) return error.InvalidProject;
-        const to = trk_v.object;
-
-        const name = strOf(objGet(to, "name")) orelse "";
-        var color = c.rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
-        if (objGet(to, "color")) |cv| if (cv == .array and cv.array.items.len >= 3) {
-            color.r = asU8(cv.array.items[0]);
-            color.g = asU8(cv.array.items[1]);
-            color.b = asU8(cv.array.items[2]);
-        };
-        const volume: f32 = @floatCast(if (objGet(to, "volume")) |x| asF64(x) else 0.8);
-        const pan_v: f32 = @floatCast(if (objGet(to, "pan")) |x| asF64(x) else 0.0);
-        const mute = if (objGet(to, "mute")) |x| asBool(x) else false;
-        const solo = if (objGet(to, "solo")) |x| asBool(x) else false;
-
-        // Instrument — resolve by stable id, instantiate, restore settings.
-        var mach = silent_machine;
-        var machine_idx: ?u8 = null;
-        if (objGet(to, "instrument")) |iv| if (iv == .object) {
-            if (strOf(objGet(iv.object, "machine"))) |mid| {
-                if (reg.findById(mid)) |idx| {
-                    mach = try reg.instantiate(idx);
-                    machine_idx = @intCast(idx);
-                    if (objGet(iv.object, "params")) |pv| applyParams(mach, pv);
-                    if (objGet(iv.object, "assets")) |av| applyAssets(mach, av);
-                    if (objGet(iv.object, "zones")) |zv| if (mach.apply_zones_json) |f| f(mach.state, zv);
-                    if (objGet(iv.object, "state")) |sv| if (mach.apply_state_json) |f| f(mach.state, sv);
-                }
-            }
-        };
-
-        var t = try track_mod.Track.init(alloc, name, color, mach);
-        errdefer t.deinit(alloc);
-        t.machine_idx = machine_idx;
-        t.setVolume(volume);
-        t.setPan(pan_v);
-        t.mute.store(mute, .monotonic);
-        t.solo.store(solo, .monotonic);
-
-        // Effect chain — instantiate by id, restore params + bypass.
-        if (objGet(to, "effects")) |ev| try applyEffects(alloc, reg, &t, ev);
-
-        if (objGet(to, "automation")) |av| try applyLanes(alloc, &t, av);
-        if (objGet(to, "show_automation")) |x| t.lanes_shown = asBool(x);
-
-        // Clips.
-        if (objGet(to, "clips")) |cv| if (cv == .array) {
-            for (cv.array.items) |clv| {
-                if (clv != .object) continue;
-                try applyClip(alloc, &t, clv.object);
-            }
-        };
-
-        tracks_buf[track_count.*] = t;
+        tracks_buf[track_count.*] = try parseTrack(alloc, reg, trk_v.object, silent_machine);
         track_count.* += 1;
     }
+    sanitizeRouting(tracks_buf[0..track_count.*]);
 
     // Master bus — volume + effect chain into the registered master.
     if (active_master) |m| if (objGet(root, "master")) |mv| if (mv == .object) {
@@ -568,6 +535,94 @@ pub fn apply(
         m.effects.clearRetainingCapacity();
         if (objGet(mo, "effects")) |ev| try applyEffects(alloc, reg, m, ev);
     };
+}
+
+/// One track from its project object: machines instantiated, settings,
+/// routing (unchecked: `sanitizeRouting` runs over the whole project),
+/// automation and clips restored.
+fn parseTrack(alloc: std.mem.Allocator, reg: *registry_mod.Registry, to: std.json.ObjectMap, silent_machine: machine_mod.Machine) !track_mod.Track {
+    const name = strOf(objGet(to, "name")) orelse "";
+    var color = c.rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    if (objGet(to, "color")) |cv| if (cv == .array and cv.array.items.len >= 3) {
+        color.r = asU8(cv.array.items[0]);
+        color.g = asU8(cv.array.items[1]);
+        color.b = asU8(cv.array.items[2]);
+    };
+    const volume: f32 = @floatCast(if (objGet(to, "volume")) |x| asF64(x) else 0.8);
+    const pan_v: f32 = @floatCast(if (objGet(to, "pan")) |x| asF64(x) else 0.0);
+    const mute = if (objGet(to, "mute")) |x| asBool(x) else false;
+    const solo = if (objGet(to, "solo")) |x| asBool(x) else false;
+
+    // Instrument — resolve by stable id, instantiate, restore settings.
+    var mach = silent_machine;
+    var machine_idx: ?u8 = null;
+    if (objGet(to, "instrument")) |iv| if (iv == .object) {
+        if (strOf(objGet(iv.object, "machine"))) |mid| {
+            if (reg.findById(mid)) |idx| {
+                mach = try reg.instantiate(idx);
+                machine_idx = @intCast(idx);
+                if (objGet(iv.object, "params")) |pv| applyParams(mach, pv);
+                if (objGet(iv.object, "assets")) |av| applyAssets(mach, av);
+                if (objGet(iv.object, "zones")) |zv| if (mach.apply_zones_json) |f| f(mach.state, zv);
+                if (objGet(iv.object, "state")) |sv| if (mach.apply_state_json) |f| f(mach.state, sv);
+            }
+        }
+    };
+
+    var t = try track_mod.Track.init(alloc, name, color, mach);
+    errdefer t.deinit(alloc);
+    t.machine_idx = machine_idx;
+    t.setVolume(volume);
+    t.setPan(pan_v);
+    t.mute.store(mute, .monotonic);
+    t.solo.store(solo, .monotonic);
+    if (strOf(objGet(to, "kind"))) |k| if (std.mem.eql(u8, k, "bus")) {
+        t.kind = .bus;
+    };
+    if (objGet(to, "output")) |x| t.output = asTrackRef(x);
+    if (objGet(to, "sends")) |sv| if (sv == .array) for (sv.array.items) |snd| {
+        if (snd != .object) continue;
+        const bus = asTrackRef(objGet(snd.object, "to") orelse continue);
+        const lvl: f32 = @floatCast(if (objGet(snd.object, "level")) |x| asF64(x) else 1.0);
+        const pre = if (objGet(snd.object, "pre")) |x| asBool(x) else false;
+        t.addSend(bus, pre, lvl) catch break;
+    };
+
+    // Effect chain — instantiate by id, restore params + bypass.
+    if (objGet(to, "effects")) |ev| try applyEffects(alloc, reg, &t, ev);
+
+    if (objGet(to, "automation")) |av| try applyLanes(alloc, &t, av);
+    if (objGet(to, "show_automation")) |x| t.lanes_shown = asBool(x);
+
+    // Clips.
+    if (objGet(to, "clips")) |cv| if (cv == .array) {
+        for (cv.array.items) |clv| {
+            if (clv != .object) continue;
+            try applyClip(alloc, &t, clv.object);
+        }
+    };
+    if (objGet(to, "folded")) |x| t.folded = asBool(x);
+    return t;
+}
+
+/// A copy of `tracks[ti]` with fresh machines, made by writing the
+/// project out and reading that one track back. Its routing references
+/// are the original's, unchecked.
+pub fn cloneTrack(
+    alloc: std.mem.Allocator,
+    tracks: []track_mod.Track,
+    ti: usize,
+    transport: *const transport_mod.Transport,
+    reg: *registry_mod.Registry,
+    silent_machine: machine_mod.Machine,
+) !track_mod.Track {
+    const data = try serialize(alloc, tracks, transport);
+    defer alloc.free(data);
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, data, .{}) catch return error.InvalidProject;
+    defer parsed.deinit();
+    const tracks_v = objGet(parsed.value.object, "tracks") orelse return error.InvalidProject;
+    if (tracks_v != .array or ti >= tracks_v.array.items.len or tracks_v.array.items[ti] != .object) return error.InvalidProject;
+    return parseTrack(alloc, reg, tracks_v.array.items[ti].object, silent_machine);
 }
 
 // Restore an effect chain (instantiate by id, restore params + bypass) onto a
@@ -584,7 +639,67 @@ fn applyEffects(alloc: std.mem.Allocator, reg: *registry_mod.Registry, t: *track
         try t.addEffect(alloc, fxmach, @intCast(idx));
         if (objGet(fo, "params")) |pv| applyParams(fxmach, pv);
         if (objGet(fo, "bypass")) |bv| if (asBool(bv)) t.toggleEffectBypass(t.effects.items.len - 1);
+        if (objGet(fo, "key")) |kv| t.effects.items[t.effects.items.len - 1].key = asTrackRef(kv);
     }
+}
+
+/// A track index from the file, or routing.NONE when it isn't one.
+fn asTrackRef(v: std.json.Value) u8 {
+    const f = asF64(v);
+    if (!(f >= 0 and f < routing.MAX_TRACKS)) return routing.NONE;
+    return @intFromFloat(f);
+}
+
+/// Drop routing a file can't mean (docs/23 §Project format): outputs and
+/// sends to anything but another bus, duplicate sends, keys from a missing
+/// track or the track itself, and anything closing a cycle. Edges are added
+/// back in track order, so the first of two conflicting ones wins.
+fn sanitizeRouting(tracks: []track_mod.Track) void {
+    var nodes: [routing.MAX_TRACKS]routing.Node = undefined;
+    const n = tracks.len;
+    for (tracks, 0..) |*t, i| nodes[i] = .{ .is_bus = t.isBus() };
+    for (tracks, 0..) |*t, i| {
+        const self_idx: u8 = @intCast(i);
+        if (t.output != routing.NONE) {
+            if (isBusRef(tracks, t.output, i) and !routing.Routing.build(nodes[0..n]).wouldCycle(self_idx, t.output)) {
+                nodes[i].output = t.output;
+            } else {
+                std.log.warn("project: track {d} output {d} dropped", .{ i, t.output });
+                t.output = routing.NONE;
+            }
+        }
+        var k: usize = 0;
+        while (k < t.send_count) {
+            const bus = t.sends[k].bus;
+            const dup = for (t.sends[0..k]) |s| {
+                if (s.bus == bus) break true;
+            } else false;
+            if (!dup and isBusRef(tracks, bus, i) and !routing.Routing.build(nodes[0..n]).wouldCycle(self_idx, bus)) {
+                nodes[i].sends[nodes[i].send_count] = .{ .bus = bus, .pre = t.sends[k].pre };
+                nodes[i].send_count += 1;
+                k += 1;
+            } else {
+                std.log.warn("project: track {d} send to {d} dropped", .{ i, bus });
+                t.removeSend(k);
+            }
+        }
+        for (t.effects.items) |*fx| {
+            if (fx.key == routing.NONE) continue;
+            if (fx.key < n and fx.key != i and nodes[i].key_count < routing.MAX_KEYS and
+                !routing.Routing.build(nodes[0..n]).wouldCycle(fx.key, self_idx))
+            {
+                nodes[i].keys[nodes[i].key_count] = .{ .fx_uid = fx.uid, .src = fx.key };
+                nodes[i].key_count += 1;
+            } else {
+                std.log.warn("project: track {d} key from {d} dropped", .{ i, fx.key });
+                fx.key = routing.NONE;
+            }
+        }
+    }
+}
+
+fn isBusRef(tracks: []const track_mod.Track, target: u8, self_idx: usize) bool {
+    return target < tracks.len and target != self_idx and tracks[target].isBus();
 }
 
 // ── JSON value helpers ───────────────────────────────────────────────
@@ -1156,4 +1271,80 @@ test "project without meter falls back to 4/4" {
     try std.testing.expectEqual(@as(usize, 1), pts.len);
     try std.testing.expectEqual(@as(u8, 4), pts[0].numerator);
     try std.testing.expectEqual(@as(u8, 4), pts[0].denominator);
+}
+
+test "routing round-trips: buses, outputs, sends, keys" {
+    const alloc = std.testing.allocator;
+    var reg = registry_mod.Registry.init(alloc);
+    defer reg.deinit();
+    try reg.loadFyMachine("machines/comp2/comp2.fy");
+    setRegistry(&reg);
+    defer active_reg = null;
+    var transport: transport_mod.Transport = .{};
+    transport.sample_rate = 48_000;
+    const col = c.rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+
+    var tracks = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "kick", col, test_machine),
+        try track_mod.Track.init(alloc, "bass", col, test_machine),
+        try track_mod.Track.init(alloc, "drums", col, test_machine),
+        try track_mod.Track.init(alloc, "verb", col, test_machine),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    tracks[2].kind = .bus;
+    tracks[3].kind = .bus;
+    tracks[0].output = 2;
+    try tracks[0].addSend(3, true, 0.25);
+    try tracks[2].addSend(3, false, 1.5);
+    const comp_idx = reg.findById("comp2").?;
+    const comp = try reg.instantiate(comp_idx);
+    try tracks[1].addEffect(alloc, comp, @intCast(comp_idx));
+    tracks[1].effects.items[0].key = 0;
+
+    const bytes = try serialize(alloc, tracks[0..], &transport);
+    defer alloc.free(bytes);
+    var loaded: [4]track_mod.Track = undefined;
+    var count: usize = 0;
+    var lt: transport_mod.Transport = .{};
+    try apply(alloc, bytes, &reg, loaded[0..], &count, &lt, test_machine);
+    defer for (loaded[0..count]) |*t| t.deinit(alloc);
+
+    try std.testing.expectEqual(track_mod.Kind.audio, loaded[0].kind);
+    try std.testing.expectEqual(track_mod.Kind.bus, loaded[2].kind);
+    try std.testing.expectEqual(@as(u8, 2), loaded[0].output);
+    try std.testing.expectEqual(routing.NONE, loaded[1].output);
+    try std.testing.expectEqual(@as(u8, 1), loaded[0].send_count);
+    try std.testing.expectEqual(@as(u8, 3), loaded[0].sends[0].bus);
+    try std.testing.expect(loaded[0].sends[0].pre);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25), loaded[0].sends[0].level(), 1e-6);
+    try std.testing.expect(!loaded[2].sends[0].pre);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.5), loaded[2].sends[0].level(), 1e-6);
+    try std.testing.expectEqual(@as(u8, 0), loaded[1].effects.items[0].key);
+}
+
+test "routing a file can't mean is dropped on load" {
+    const alloc = std.testing.allocator;
+    var reg = registry_mod.Registry.init(alloc);
+    defer reg.deinit();
+    setRegistry(&reg);
+    defer active_reg = null;
+    // 0 sends to 1 (not a bus) and twice to 2; bus 2 → bus 3 → bus 2 loops.
+    const json =
+        \\{"schema":1,"tracks":[
+        \\ {"name":"a","output":0,"sends":[{"to":1},{"to":2},{"to":2}]},
+        \\ {"name":"b","output":9},
+        \\ {"name":"g1","kind":"bus","output":3},
+        \\ {"name":"g2","kind":"bus","output":2}]}
+    ;
+    var loaded: [4]track_mod.Track = undefined;
+    var count: usize = 0;
+    var lt: transport_mod.Transport = .{};
+    try apply(alloc, json, &reg, loaded[0..], &count, &lt, test_machine);
+    defer for (loaded[0..count]) |*t| t.deinit(alloc);
+    try std.testing.expectEqual(routing.NONE, loaded[0].output); // itself, not a bus
+    try std.testing.expectEqual(@as(u8, 1), loaded[0].send_count);
+    try std.testing.expectEqual(@as(u8, 2), loaded[0].sends[0].bus);
+    try std.testing.expectEqual(routing.NONE, loaded[1].output);
+    try std.testing.expectEqual(@as(u8, 3), loaded[2].output); // first edge wins
+    try std.testing.expectEqual(routing.NONE, loaded[3].output); // would close the loop
 }

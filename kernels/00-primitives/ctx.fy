@@ -32,4 +32,6 @@ ustruct: Io
   f64 in-l     ( effect input for this pass's channel [dual-mono lane] )
   f64 in-r
   f64 det      ( max of |L| |R| of the effect input: stereo-linked detector )
+  f64 sc-l     ( signed detector audio: the key pair when keyed, else the )
+  f64 sc-r     ( input pair; never swapped for a dual-mono R pass )
 ;

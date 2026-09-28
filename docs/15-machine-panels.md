@@ -202,6 +202,15 @@ cell|1.6|HPF*4/EG*1                    # short display under a taller HPF
   `cmi-loop` is on) and the START segment (`cmi-start`). The three
   markers drag in whole segments; the title row is a waveform-display's.
 
+- `dyn-display ( name prefix gr lvl -- )` draws a compressor's transfer
+  curve: the static curve of the `<prefix>-thresh` / `-ratio` / `-knee`
+  controls (input dB across, output dB up, −48…0 on both, unity dim,
+  THRESH marked), the detector level (state f64 at `lvl`, linear) as a
+  dot at the gain actually applied, so attack and release show as the
+  dot leaving and rejoining the curve, and a GR bar (state f64 at `gr`,
+  dB) down the right edge with a `GR x.x` readout. comp2 puts it beside
+  THRESH / RATIO / KNEE.
+
 These visualizers are **drawn in Zig today** (selected by the manifest kind).
 They are the visual reference for the planned fy-drawn displays.
 

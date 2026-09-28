@@ -310,6 +310,9 @@ pub const Machine = struct {
     /// Plays per-note pitch expression (a `note-expr` word, docs/22);
     /// others play bends flat and the piano roll mutes their curves.
     takes_expression: bool = false,
+    /// Its detector takes a sidechain key (manifest `sidechain`, docs/23):
+    /// the host then sends 4 audio_in ports, in L/R then key L/R.
+    takes_key: bool = false,
     /// Automation (docs/22). A machine without these has no automatable
     /// controls.
     control_count: ?ControlCountFn = null,

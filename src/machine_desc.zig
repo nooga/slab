@@ -238,7 +238,7 @@ pub const Strip = struct {
     }
 };
 
-pub const DisplayKind = enum { adsr, waveform, meter, response, algo, eg4, zones, segments };
+pub const DisplayKind = enum { adsr, waveform, meter, response, algo, eg4, zones, segments, dynamics };
 
 /// Algo display slots in `Display.offsets`, in the order `algo-display`
 /// pushes them: operator count, row stride, then the row offsets (all in
@@ -251,6 +251,9 @@ pub const MAX_ALGO_OPS = 8;
 /// in the order the manifest `meter-display` word pushes them.
 pub const METER_OFFSETS = 7;
 pub const MeterOffset = enum(usize) { gmin = 0, ipk, opk, msm, mss, msum, mn };
+
+/// Dynamics display state-offset slots, in `dyn-display`'s order.
+pub const DynOffset = enum(usize) { gr = 0, lvl };
 
 pub const Display = struct {
     name: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
@@ -270,6 +273,10 @@ pub const Display = struct {
     }
 
     pub fn meterOffset(self: *const Display, o: MeterOffset) usize {
+        return self.offsets[@intFromEnum(o)];
+    }
+
+    pub fn dynOffset(self: *const Display, o: DynOffset) usize {
         return self.offsets[@intFromEnum(o)];
     }
 
@@ -354,6 +361,8 @@ pub const Desc = struct {
     note_pitch: bool = false,
     // Voices write out-l and out-r; effects get one true-stereo pass.
     stereo: bool = false,
+    /// io.det can come from a sidechain key (docs/23 §Sidechain keys).
+    sidechain: bool = false,
     note_labels: [MAX_NOTE_LABELS]machine.NoteLabel = undefined,
     note_label_count: usize = 0,
     buffers: [MAX_BUFFERS]BufferReq = undefined,
@@ -442,6 +451,7 @@ const MachineDescRaw = extern struct {
     derive_data: Fy.Value,
     stereo: Fy.Value,
     note_expr: Fy.Value,
+    sidechain: Fy.Value,
 };
 
 const PageRaw = extern struct { next: Fy.Value, name: Fy.Value, rows: Fy.Value };
@@ -662,10 +672,19 @@ pub fn read(host: *FyHost) !Desc {
             5 => .eg4,
             6 => .zones,
             7 => .segments,
+            8 => .dynamics,
             else => return error.InvalidMachineDesc,
         };
         out.source_len = try copyText(&out.source, cstrSlice(disp.sources));
         if (out.kind == .algo) try readAlgoDisplay(&d, out, disp);
+        if (out.kind == .dynamics) {
+            const raw = [_]Fy.Value{ disp.off0, disp.off1 };
+            for (out.offsets[0..2], raw) |*o, v| {
+                const off: usize = @intCast(asInt(v));
+                if (off + 8 > d.state_size) return error.InvalidMachineDesc;
+                o.* = off;
+            }
+        }
         if (out.kind == .meter) {
             const raw = [_]Fy.Value{ disp.off0, disp.off1, disp.off2, disp.off3, disp.off4, disp.off5, disp.off6 };
             for (&out.offsets, raw) |*o, v| {
@@ -679,6 +698,7 @@ pub fn read(host: *FyHost) !Desc {
 
     d.note_pitch = asInt(md.note_pitch) != 0;
     d.stereo = asInt(md.stereo) != 0;
+    d.sidechain = asInt(md.sidechain) != 0;
     var nl_it = rawPtr(NoteLabelRaw, md.note_labels);
     while (nl_it) |nl| : (nl_it = rawPtr(NoteLabelRaw, nl.next)) {
         if (d.note_label_count >= MAX_NOTE_LABELS) return error.TooManyNoteLabels;

@@ -87,3 +87,20 @@ pub fn row(ui: *Ui, body: *Rect, label: []const u8, h: i32) Rect {
     ui.textIn(&ui.fonts.legend, lab, label, style.text_dim, .left, true);
     return r;
 }
+
+/// A yes/no question: `lines` of text over CANCEL and `ok`. Enter picks
+/// `ok`, Esc cancels. Returns the answer once given.
+pub fn confirm(ui: *Ui, screen: Rect, key: anytype, title: []const u8, lines: []const []const u8, ok: []const u8) ?bool {
+    const h = TITLE_H + BUTTONS_H + 16 + @as(i32, @intCast(lines.len)) * 16;
+    const f = begin(ui, screen, key, title, 360, h);
+    defer end(ui);
+    var body = f.body;
+    for (lines, 0..) |ln, i| {
+        const r = body.cutTop(16);
+        ui.textIn(&ui.fonts.body, r, ln, if (i + 1 == lines.len and lines.len > 1) style.text_dim else style.text, .left, false);
+    }
+    if (buttons(ui, f.buttons, &.{ "CANCEL", ok }, 1)) |i| return i == 1;
+    if (f.escape) return false;
+    if (f.enter) return true;
+    return null;
+}

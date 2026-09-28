@@ -35,7 +35,8 @@
   reverb-render - impulse, RT60 + echo density ratchets, WAV.
 
   GATED mode is the 80s non-linear program [AMS RMX16 NonLin2, the SSL
-  gated room]: the dry input keys a gate on the wet signal.  A hit over
+  gated room]: the dry input, both channels linked [io.det], keys a gate
+  on the wet signal, or a sidechain key does [docs/23].  A hit over
   THRESH opens it; it stays open HOLD seconds after the last such
   sample, shaped over that window by SHAPE [-1 decaying, 0 flat, +1
   rising - the 'reverse' program], then shuts in about 10 ms.  Run
@@ -290,9 +291,11 @@ dsp: verb-tank-b-out | state:VerbState params:VerbParams buf tb -- |
   drop
 ;
 
-( The GATED mode's wet gain for this sample, keyed by the dry input. )
-dsp: verb-gate | state:VerbState params:VerbParams x -- g |
-  x fabs params.gate-thr  state.gate-t 1.0 f+  0.0  fsel-lt | t |
+( The GATED mode's wet gain for this sample, keyed by `key`: io.det, the
+  max of |L| |R| of the dry input, or of a sidechain key's when the host
+  sets one [docs/23].  Either way both channels open together. )
+dsp: verb-gate | state:VerbState params:VerbParams key -- g |
+  key params.gate-thr  state.gate-t 1.0 f+  0.0  fsel-lt | t |
   t -> state.gate-t
   t params.gate-hold f/ | u |
   params.gate-shape | sh |
@@ -307,8 +310,8 @@ dsp: verb-gate | state:VerbState params:VerbParams x -- g |
   gn
 ;
 
-( Seven output taps, dry/wet mix. )
-dsp: verb-out | out state:VerbState params:VerbParams buf x -- |
+( Seven output taps, dry/wet mix; `key` drives the GATED mode's gate. )
+dsp: verb-out | out state:VerbState params:VerbParams buf x key -- |
   buf 52920.0 state.b-d1-pos params.b-d1-len
     state.tap-1 vb-tap
   buf 52920.0 state.b-d1-pos params.b-d1-len
@@ -324,7 +327,7 @@ dsp: verb-out | out state:VerbState params:VerbParams buf x -- |
   buf 37816.0 state.a-d2-pos params.a-d2-len
     state.tap-7 vb-tap f-
   0.6 f* | wet0 |
-  state params x verb-gate | gg |
+  state params key verb-gate | gg |
   ( plate mode leaves the wet path untouched, bit for bit )
   params.mode 0.5 wet0 wet0 gg f* fsel-lt | wet |
   x  1.0 params.mix f-  f*
@@ -345,5 +348,5 @@ dsp: k-verb-tick | io:Io ctx state:VerbState params -- |
   state params verb-lfo | ma mb |
   state params buf  state params buf d ma verb-tank-a-in  verb-tank-a-out
   state params buf  state params buf d mb verb-tank-b-in  verb-tank-b-out
-  io state params buf x verb-out
+  io state params buf x io.det verb-out
 ;

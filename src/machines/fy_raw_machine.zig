@@ -78,6 +78,10 @@ pub const IoFrame = extern struct {
     in_l: f64 = 0,
     in_r: f64 = 0,
     det: f64 = 0,
+    /// Signed detector audio: the key pair when keyed, else the input
+    /// pair; never swapped for the dual-mono R pass (docs/24 §Prerequisites).
+    sc_l: f64 = 0,
+    sc_r: f64 = 0,
 };
 const IO_STRIDE: u12 = @sizeOf(IoFrame);
 /// Knob smoothing (docs/17 D, docs/08 §2): the normalized knob position
@@ -643,6 +647,7 @@ pub const FyRawMachine = struct {
             .apply_zones_json = applyZonesJsonImpl,
             .note_labels_fn = noteLabelsImpl,
             .takes_expression = self.note_expr_caller != null,
+            .takes_key = self.desc.sidechain,
             .control_count = controlCountImpl,
             .control_info = controlInfoImpl,
             .control_value = controlValueImpl,
@@ -1469,7 +1474,7 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
             return;
         };
         var ev_buf: [256]machine.NoteEvent = undefined;
-        var ports: [2][*]const f32 = undefined;
+        var ports: [4][*]const f32 = undefined;
         const sub = subCtx(ctx, pos, n, &ev_buf, &ports);
         const ok = switch (self.desc.mode) {
             .voice_sample => renderVoiceSample(self, &sub, l[pos .. pos + n], r[pos .. pos + n]),
@@ -1487,7 +1492,7 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
 
 /// A view of `ctx` covering frames [pos, pos+n): events re-based into the
 /// window, audio inputs offset. Whole-block calls get `ctx` back unchanged.
-fn subCtx(ctx: *const machine.MachineCtx, pos: usize, n: usize, ev_buf: *[256]machine.NoteEvent, ports: *[2][*]const f32) machine.MachineCtx {
+fn subCtx(ctx: *const machine.MachineCtx, pos: usize, n: usize, ev_buf: *[256]machine.NoteEvent, ports: *[4][*]const f32) machine.MachineCtx {
     var sub = ctx.*;
     sub.block_size = @intCast(n);
     if (pos == 0 and n == ctx.block_size) return sub;
@@ -1505,7 +1510,9 @@ fn subCtx(ctx: *const machine.MachineCtx, pos: usize, n: usize, ev_buf: *[256]ma
     sub.note_in = if (count > 0) ev_buf else null;
     sub.note_in_count = @intCast(count);
     if (ctx.audio_in_count >= 2) if (ctx.audio_in) |p| {
-        ports.* = .{ p[0] + pos, p[1] + pos };
+        // In L/R, and the sidechain key L/R when there is one (docs/23).
+        const k: usize = @min(ctx.audio_in_count, 4);
+        for (ports[0..k], p[0..k]) |*d, src| d.* = src + pos;
         sub.audio_in = ports;
     };
     return sub;
@@ -1753,11 +1760,15 @@ fn callNoteOff(self: *FyRawMachine, voice: usize) !void {
 fn renderEffectBlock(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f32, r: []f32) !void {
     const caller = if (self.render_caller) |*c_| c_ else return error.UnknownWord;
     const in_l, const in_r = inputChannels(ctx);
+    const key = keyChannels(ctx);
     const io = self.io[0..l.len];
     for (io, 0..) |*f, i| {
         f.in_l = if (in_l) |p| p[i] else 0;
         f.in_r = if (in_r) |p| p[i] else f.in_l;
-        f.det = @max(@abs(f.in_l), @abs(f.in_r));
+        // A sidechain key drives the detector instead of the input.
+        f.sc_l = if (key) |kp| kp[0][i] else f.in_l;
+        f.sc_r = if (key) |kp| kp[1][i] else f.in_r;
+        f.det = @max(@abs(f.sc_l), @abs(f.sc_r));
     }
     if (self.desc.stereo) {
         // True stereo: one pass sees both inputs and writes both outputs.
@@ -1780,6 +1791,12 @@ fn renderEffectBlock(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
         _ = try caller.call(l.len, &args);
         for (dst, io) |*d, f| d.* = @floatCast(f.out_l); // no clamp (D5)
     }
+}
+
+/// The sidechain key pair (ports 2 and 3), when the host sent one.
+fn keyChannels(ctx: *const machine.MachineCtx) ?[2][*]const f32 {
+    if (ctx.audio_in_count >= 4) if (ctx.audio_in) |ports| return .{ ports[2], ports[3] };
+    return null;
 }
 
 fn inputChannels(ctx: *const machine.MachineCtx) struct { ?[*]const f32, ?[*]const f32 } {
@@ -2386,6 +2403,7 @@ fn drawDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void
         .segments => drawSegmentDisplay(self, ui, r, disp.sourceSlice()),
         .meter => drawMeterDisplay(self, ui, r, disp),
         .response => drawResponseDisplay(self, ui, r),
+        .dynamics => drawDynamicsDisplay(self, ui, r, disp),
         .algo => drawAlgoDisplay(self, ui, r, disp),
         .eg4 => drawEg4Display(self, ui, r, disp.sourceSlice()),
         .zones => drawZoneDisplay(self, ui, r, disp.sourceSlice()),
@@ -2685,6 +2703,94 @@ fn controlValueById(self: *const FyRawMachine, id: []const u8) ?f64 {
         }
     }
     return null;
+}
+
+const DYN_LO_DB: f64 = -48.0; // the curve's axes run DYN_LO_DB .. 0 dBFS
+const DYN_GR_RANGE: f64 = 24.0;
+
+/// The value of control `<prefix><suffix>` ("comp" ++ "-thresh"), or `def`.
+fn prefixedValue(self: *const FyRawMachine, prefix: []const u8, suffix: []const u8, def: f64) f64 {
+    var buf: [64]u8 = undefined;
+    const id = std.fmt.bufPrint(&buf, "{s}{s}", .{ prefix, suffix }) catch return def;
+    return controlValueById(self, id) orelse def;
+}
+
+/// A compressor's static gain (dB, <= 0) at input level `in` (dB): soft
+/// knee of width `knee` around `thr` (the kernel's gain computer).
+fn dynGainDb(in: f64, thr: f64, ratio: f64, knee: f64) f64 {
+    const l = in - thr;
+    const w = @max(knee, 1e-6);
+    const slope = 1.0 / @max(ratio, 1.0) - 1.0;
+    if (2 * l < -w) return 0;
+    if (2 * @abs(l) <= w) return slope * (l + w / 2) * (l + w / 2) / (2 * w);
+    return slope * l;
+}
+
+/// Transfer curve (docs/24): input dB across, output dB up, both
+/// DYN_LO_DB..0; unity dim, the curve in the display pen, THRESH marked,
+/// the detector level as a dot at the gain now applied (so attack and
+/// release show as the dot leaving and rejoining the curve), and a GR
+/// bar down the right edge.
+fn drawDynamicsDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void {
+    const field = ui.well(r, ui_style.well);
+    if (field.w < 24 or field.h < 16) return;
+    const pre = disp.sourceSlice();
+    const thr = prefixedValue(self, pre, "-thresh", -18);
+    const ratio = prefixedValue(self, pre, "-ratio", 4);
+    const knee = prefixedValue(self, pre, "-knee", 6);
+    const gr = @max(0, self.readStateF64(0, disp.dynOffset(.gr)));
+    const lvl = self.readStateF64(0, disp.dynOffset(.lvl));
+    ui.animate();
+
+    var area = field.inset(2);
+    const bar = area.cutRight(5);
+    _ = area.cutRight(3);
+    // Square plot, left-aligned: both axes in dB at the same scale.
+    const side = @min(area.w, area.h);
+    const plot_r = Rect.xywh(area.x, area.y + @divFloor(area.h - side, 2), side, side);
+    const px: f32 = @floatFromInt(plot_r.x);
+    const py: f32 = @floatFromInt(plot_r.y);
+    const ps: f32 = @floatFromInt(plot_r.w);
+    const X = struct {
+        fn of(db: f64, o: f32, s: f32) f32 {
+            return o + @as(f32, @floatCast(std.math.clamp((db - DYN_LO_DB) / -DYN_LO_DB, 0, 1))) * s;
+        }
+    };
+    const grid = ui_style.vfd.alpha(26);
+    ui.clip(field);
+    defer ui.unclip();
+    inline for (.{ -36.0, -24.0, -12.0 }) |g| {
+        const gx: i32 = @intFromFloat(X.of(g, px, ps));
+        const gy: i32 = @intFromFloat(py + ps - (X.of(g, px, ps) - px));
+        ui.rect(Rect.xywh(gx, plot_r.y, 1, plot_r.h), grid);
+        ui.rect(Rect.xywh(plot_r.x, gy, plot_r.w, 1), grid);
+    }
+    ui.line(px, py + ps, px + ps, py, ui_style.vfd.alpha(48)); // unity
+    // THRESH: a dim tick up the plot.
+    ui.rect(Rect.xywh(@intFromFloat(X.of(thr, px, ps)), plot_r.y, 1, plot_r.h), ui_style.vfd.alpha(60));
+    const N: usize = 96;
+    var prev: [2]f32 = .{ 0, 0 };
+    for (0..N) |i| {
+        const in = DYN_LO_DB * (1 - @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(N - 1)));
+        const out = in + dynGainDb(in, thr, ratio, knee);
+        const p = [2]f32{ X.of(in, px, ps), py + ps - (X.of(out, px, ps) - px) };
+        if (i > 0) ui.line(prev[0], prev[1], p[0], p[1], ui_style.vfd);
+        prev = p;
+    }
+    // The detector level at the gain now applied.
+    const lvl_db = 20 * std.math.log10(@max(lvl, 1e-6));
+    if (lvl_db > DYN_LO_DB) {
+        const dx: i32 = @intFromFloat(X.of(lvl_db, px, ps));
+        const dy: i32 = @intFromFloat(py + ps - (X.of(lvl_db - gr, px, ps) - px));
+        ui.rect(Rect.xywh(dx - 1, dy - 1, 3, 3), ui_style.text);
+    }
+    // GR bar, from the top down.
+    ui.rect(bar, ui_style.vfd.alpha(18));
+    const gh: i32 = @intFromFloat(@round(std.math.clamp(gr / DYN_GR_RANGE, 0, 1) * @as(f64, @floatFromInt(bar.h))));
+    if (gh > 0) ui.rect(Rect.xywh(bar.x, bar.y, bar.w, gh), ui_style.vfd);
+    var tb: [16]u8 = undefined;
+    const txt = std.fmt.bufPrint(&tb, "GR {d:.1}", .{gr}) catch "";
+    ui.textIn(&ui.fonts.legend, Rect.xywh(plot_r.x + 3, plot_r.y + 2, plot_r.w, 10), txt, ui_style.vfd, .left, false);
 }
 
 fn drawResponseDisplay(self: *FyRawMachine, ui: *Ui, r: Rect) void {
@@ -3881,6 +3987,8 @@ test "kernel ABI: KernelCtx and IoFrame match ctx.fy's Ctx and Io" {
         .{ .name = "Io.in-l", .off = @offsetOf(IoFrame, "in_l") },
         .{ .name = "Io.in-r", .off = @offsetOf(IoFrame, "in_r") },
         .{ .name = "Io.det", .off = @offsetOf(IoFrame, "det") },
+        .{ .name = "Io.sc-l", .off = @offsetOf(IoFrame, "sc_l") },
+        .{ .name = "Io.sc-r", .off = @offsetOf(IoFrame, "sc_r") },
     };
     for (ctx_fields) |f| {
         const v = try host.callWord(f.name);
@@ -5252,4 +5360,87 @@ test "per-note gain scales the sampler voice from its onset" {
         try testing.expect(g0 > 0);
         try testing.expectApproxEqRel(g0 * std.math.pow(f64, 10, -1.5), g, 1e-6);
     };
+}
+
+test "sidechain: comp2 compresses its input by the key's level" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/comp2/comp2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    try testing.expect(mach.takes_key);
+
+    // A quiet input (far under the -18 dB threshold) and a loud key: keyed,
+    // the key's level sets the gain; unkeyed, the input passes ~1:1.
+    const block = 512;
+    var in_l: [block]f32 = undefined;
+    var key_l: [block]f32 = undefined;
+    const ports = [_][*]const f32{ &in_l, &in_l, &key_l, &key_l };
+    var gains: [2]f64 = undefined;
+    for (&gains, [_]u32{ 4, 2 }) |*g, count| {
+        mach.reset(mach.state);
+        var ctx = std.mem.zeroes(machine.MachineCtx);
+        ctx.sample_rate = 48_000;
+        ctx.block_size = block;
+        ctx.audio_in = @ptrCast(&ports[0]);
+        ctx.audio_in_count = count;
+        var l: [block]f32 = undefined;
+        var r: [block]f32 = undefined;
+        var phase: f64 = 0;
+        for (0..40) |blk| {
+            for (&in_l, &key_l) |*a, *k| {
+                const s = @sin(phase);
+                phase += 2.0 * std.math.pi * 1000.0 / 48_000.0;
+                a.* = @floatCast(0.02 * s);
+                k.* = @floatCast(0.9 * s);
+            }
+            testRender(mach, &ctx, &l, &r);
+            if (blk == 39) {
+                var in_e: f64 = 0;
+                var out_e: f64 = 0;
+                for (in_l, l) |x, y| {
+                    in_e += @as(f64, x) * x;
+                    out_e += @as(f64, y) * y;
+                }
+                g.* = 10.0 * std.math.log10(out_e / in_e);
+            }
+        }
+    }
+    try testing.expect(gains[0] < -8.0); // keyed: the loud key pulls it down
+    try testing.expect(@abs(gains[1]) < 1.0); // unkeyed: untouched
+}
+
+test "sidechain: verb2 GATED opens on the key, not the input" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/verb2/verb2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    try testing.expect(mach.takes_key);
+
+    // An impulse fills the tank at block 0; the key stays silent until a
+    // hit at block 8. Wet only, so what comes out is the gated tail.
+    const block = 512;
+    var in_l = [_]f32{0} ** block;
+    var key_l = [_]f32{0} ** block;
+    const ports = [_][*]const f32{ &in_l, &in_l, &key_l, &key_l };
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = block;
+    ctx.audio_in = @ptrCast(&ports[0]);
+    ctx.audio_in_count = 4;
+    mach.set_param.?(mach.state, "verb-mode", 1); // GATED
+    mach.set_param.?(mach.state, "verb-mix", 1.0);
+    mach.set_param.?(mach.state, "verb-decay", 0.95);
+    var l = [_]f32{0} ** block;
+    var r = [_]f32{0} ** block;
+    var before: f64 = 0;
+    var after: f64 = 0;
+    for (0..16) |blk| {
+        in_l[0] = if (blk == 0) 0.9 else 0;
+        key_l[0] = if (blk == 8) 0.9 else 0;
+        testRender(mach, &ctx, &l, &r);
+        for (l) |x| {
+            if (blk < 8) before += @abs(x) else after += @abs(x);
+        }
+    }
+    // The input's own hit doesn't open the gate: only the key's does.
+    try testing.expect(before < 1e-3);
+    try testing.expect(after > 0.05);
 }

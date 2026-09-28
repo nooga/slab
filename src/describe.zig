@@ -42,7 +42,7 @@ fn writeMachine(alloc: std.mem.Allocator, out: *std.ArrayList(u8), path: []const
     try document_mod.appendJsonString(alloc, out, d.nameSlice());
     try out.appendSlice(alloc, ",\"kind\":");
     try document_mod.appendJsonString(alloc, out, if (d.mode == .voice_sample) "instrument" else "effect");
-    try fmt(alloc, out, ",\"voices\":{d},\"stereo\":{},\"note_pitch\":{}", .{ d.voices, d.stereo, d.note_pitch });
+    try fmt(alloc, out, ",\"voices\":{d},\"stereo\":{},\"note_pitch\":{},\"sidechain\":{}", .{ d.voices, d.stereo, d.note_pitch, d.sidechain });
 
     try out.appendSlice(alloc, ",\"note_labels\":[");
     for (d.noteLabels(), 0..) |*nl, i| {

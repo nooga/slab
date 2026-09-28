@@ -108,20 +108,26 @@ JSON. Top level:
 | `instrument.assets` | files the machine has loaded, by asset name. Only the sampler has one: `{"smp": "path"}`, where the path is a `.wav`, an `.sfz` or a folder of WAVs (relative to the working directory, or absolute). A path under the sample library is written `lib:<path>`, relative to `$SLAB_LIBRARY` (default `~/Music/Slab/Library`), so projects and shipped presets find library samples on any machine. Missing: the machine keeps its bundled sample. |
 | `instrument.zones` | the sampler's per-zone edits, by zone name (the sample's file stem): `{"clap": {"level": -6, "tune": 0, "decay": 0, "tone": 0, "cut": 0}}`. level in dB, tune in semitones, decay in seconds to −60 dB (0 = off), tone in octaves of filter offset, cut the choke: 0 the pack's (`group`/`off_by`), 1 none, n+1 choke group n (the zone joins it and is cut by it). Zones sharing a name (an SFZ label, a sample's layers and round robins) take the same edits. Only edited zones are written; names that don't match the loaded keymap are ignored. `"reverse": true` plays the sound backwards (a reversed copy of its samples, loop mirrored). A **copy** is a sound of its own, `"snare 2": {"copy": "snare", "key": 39, …}`: every zone of the named one-key sound on `key`, pitched as the original, with its own edits (sampler and Unfairlight kits). |
 | `instrument.state` | settings a machine keeps beyond flat params: a Rack's `{"parts": […]}`, the same form as its presets. |
-| `effects` | insert chain, run in order, stereo. `bypass: true` passes audio through untouched. |
+| `effects` | insert chain, run in order, stereo. `bypass: true` passes audio through untouched. `key` (an index into `tracks`) sidechains the effect's detector from that track's pre-fader signal ([23-routing.md](23-routing.md)). |
+| `kind` | `"bus"` for a bus (a group or a return: no instrument, no clips; its input is what's routed to it). Missing = an audio track. |
+| `folded` | On a bus: `true` hides a group's members in the arrangement and mixer. UI state only; missing = unfolded. |
+| `output` | index into `tracks` of the bus the post-fader signal goes to. Missing = the master. |
+| `sends` | `[{"to": 10, "level": 0.5, "pre": false}]`: copies into buses, `level` linear gain 0–2 (1 = 0 dB), `pre` true taps before the fader. |
 | `automation` | track automation lanes, see below. Optional. |
 | `show_automation` | `true` shows the lanes under the track in the arrangement. |
 
-Signal flow per track: instrument → audio clips summed in → effects in
-order → volume → pan → master sum → master effects → master volume and
-balance → **master soft-clip** → output.
+Signal flow per track: instrument (a bus: its routed input) → audio
+clips summed in → effects in order → volume → pan → its output (the
+master or a bus) and its sends → master effects → master volume and
+balance → **master soft-clip** → output. Routing that isn't a bus, is
+duplicated or closes a loop is dropped on load with a warning
+([23-routing.md](23-routing.md) §Semantics).
 
 The master soft-clip is linear up to ±0.7 (−3.1 dBFS) and bends
 smoothly toward ±1.0 above that (`src/engine.zig`, `masterSoftClip`).
 Nothing clips hard, but anything peaking above −3.1 dBFS is being
 saturated. A limiter on the master with its ceiling at −3.2 dB keeps
-the output clean. There are no sends, groups or sidechains yet, so
-reverb and delay are inserts with a `mix` control.
+the output clean.
 
 ### Automation
 

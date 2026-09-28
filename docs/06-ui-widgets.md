@@ -82,7 +82,13 @@ Two modes, one layout.
   unit ("124.0 BPM") sit on the same line even when the unit is the
   legend face.
 - **Coverage:** ASCII + Latin-1 + the punctuation and ⌘⇧⌥⌃ set already
-  used for menus. Missing glyphs fall back to the vector face.
+  used for menus, plus • ← → synthesized like the key symbols. Missing
+  glyphs fall back to the vector face.
+- **Text that doesn't fit** is clipped to its box, never drawn past it,
+  and never shrunk. `Ui.marquee` slides it back and forth in whole
+  pixels (18 px/s, a 1.2 s pause at each end) to show the rest: labels
+  such as track names only while hovered, displays (a mixer strip's
+  insert list) whenever they're truncated.
 
 ## Materials
 
@@ -285,6 +291,10 @@ Vertical or horizontal; any of them can be `bipolar` (centre detent).
 | `latch` | square cap, stays down; LED above or lit cap |
 | `momentary` | same cap, no latch |
 | `segmented` | row of joined caps, exactly one down (range, mode) |
+
+A bypass latch's LED is never dark: green while the device runs, red
+while bypassed (`led_off`). The touch display names what a latch does,
+not its cap text: `BYPASS OFF`, `POWER ON`, `KEY KICK`.
 
 ### Selectors
 

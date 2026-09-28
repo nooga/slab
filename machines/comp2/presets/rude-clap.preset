@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "comp2", "note": "Makes clap/snare rude (transient grab)", "params": {"comp-thresh": -28, "comp-ratio": 8, "comp-knee": 1, "comp-atk": 0.0008, "comp-rel": 0.08, "comp-makeup": 7, "comp-mix": 0.9}}
+{"schema": 1, "machine": "comp2", "note": "Makes clap/snare rude (transient grab)", "params": {"comp-thresh": -25.8, "comp-ratio": 8, "comp-knee": 2, "comp-atk": 0.0001, "comp-rel": 0.02, "comp-hpf": 20, "comp-det": 0, "comp-makeup": 10.1, "comp-mix": 0.9}}

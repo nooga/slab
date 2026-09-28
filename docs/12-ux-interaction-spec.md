@@ -108,8 +108,9 @@ converge drag are specified in
 
 - Space: play/stop.
 - Home: rewind to start.
-- Tab: show/hide the clip editor for now; later this may become
-  arrangement/mixer toggle when a mixer view exists.
+- Tab: show/hide the clip editor.
+- M: swap the arrangement for the mixer page and back
+  ([23-routing.md](23-routing.md) §Mixer page).
 - Cmd/Ctrl `+`: increase UI zoom.
 - Cmd/Ctrl `-`: decrease UI zoom.
 - Cmd/Ctrl `0`: reset UI zoom.
@@ -198,7 +199,9 @@ there are notes. Empty clips use the default row height and center C4.
 - Grid lines must be visible at default scale without dominating notes
   or clips.
 - Bar lines are brighter than beat lines.
-- Clip-end and playhead lines use accent colors and remain 1px.
+- Clip-end and playhead lines use accent colors and remain 1px. The
+  clip editors show the playhead too, while the transport plays inside
+  the open clip.
 - Black-key piano-roll rows should be distinguishable from white-key
   rows even at low row heights.
 - Text and status cells must not rely on tiny muted labels alone; the

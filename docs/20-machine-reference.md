@@ -2186,8 +2186,10 @@ Presets:
 | `comp-thresh` | COMP | THRESH | -48 … 0 | -18 | linear |
 | `comp-ratio` | COMP | RATIO | 1 … 20 | 4 | pow |
 | `comp-knee` | COMP | KNEE | 0 … 18 | 6 | linear |
-| `comp-atk` | TIME | ATK | 0.0002 … 0.1 | 0.005 | exp |
-| `comp-rel` | TIME | REL | 0.02 … 1.5 | 0.12 | exp |
+| `comp-atk` | TIME | ATK | 0.0001 … 0.1 | 0.003 | exp |
+| `comp-rel` | TIME | REL | 0.01 … 2 | 0.1 | exp |
+| `comp-hpf` | SC | HPF | 20 … 500 | 20 | exp |
+| `comp-det` | SC | DET | 0 PEAK / 1 RMS | 0 | switch |
 | `comp-makeup` | OUT | GAIN | 0 … 24 | 0 | linear |
 | `comp-mix` | OUT | MIX | 0 … 1 | 1 | pow |
 
@@ -2197,6 +2199,7 @@ Presets:
 - `bass-leveler` — Keeps rubber bass even
 - `bus-glue` — Transparent 2:1 mix-bus glue
 - `dialog-leveler` — Levels deadpan vocal / talk samples
+- `drum-bus` — SSL-style drum bus: 4:1, hits through, glues the kit
 - `drum-smash` — Aggressive drum-bus smash
 - `dry-drum-punch` — Dry, forward drums
 - `gentle-bus-glue` — Gentle 2:1 mix-bus glue

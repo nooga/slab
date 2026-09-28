@@ -688,6 +688,22 @@ zig build test-dsp
 zig build bench-dsp
 ```
 
+### Dynamics cases
+
+Compressors (`comp2`, and `bus2`/`multi2` when they land; listed by name
+in `bench_main.zig`) also run `curve` (1 kHz, −48 → 0 dBFS in 3 dB
+steps), `step` (−40 → −10 → −40 dBFS: attack and release τ63 and 10–90 %
+of the gain), `lowsine` (50 Hz THD) and `drums` (a synthetic 110 bpm kit
+loop: crest, GR per kick and snare, GR 1 ms in, transient-to-body).
+Gain is measured sample by sample as out/in, exact for a compressor
+(a memoryless multiply), so no meter cell is needed. docs/24 §Test plan.
+
+`--input=FILE.wav` runs an effect on real audio instead (the `file` case):
+gain percentiles (absolute, and GR relative to quiet passages), pump (GR
+std), crest (median over 400 ms), level spread (100 ms), transient/body
+at onsets, and a `metrics:` key=value line for scripts. It's what
+`tools/comp2_presets` designs the comp2 presets with.
+
 ### Fixture input
 
 A fixture should be able to specify:

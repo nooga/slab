@@ -38,6 +38,8 @@ const text_field = @import("ui/text_field.zig");
 const splash = @import("ui/splash.zig");
 const audio_clip_editor = @import("ui/audio_clip_editor.zig");
 const machine_bay = @import("ui/machine_bay.zig");
+const mixer = @import("ui/mixer.zig");
+const dialog = @import("ui/dialog.zig");
 const render_dialog = @import("ui/render_dialog.zig");
 
 test {
@@ -50,6 +52,11 @@ test {
     _ = @import("ui/text_field.zig");
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
+    _ = @import("routing.zig");
+    _ = @import("ui/track_order.zig");
+    _ = @import("engine.zig");
+    _ = @import("track.zig");
+    _ = @import("document.zig");
     _ = @import("meter_gen.zig");
     _ = @import("automation.zig");
     _ = @import("ui/automation_lane.zig");
@@ -57,7 +64,7 @@ test {
     _ = @import("ui/arrangement.zig");
 }
 
-const MAX_TRACKS: usize = 16;
+const MAX_TRACKS: usize = @import("routing.zig").MAX_TRACKS;
 const DEV_BOOT_AUDITION = true;
 const DEV_BOOT_AUTOPLAY = false;
 
@@ -541,6 +548,9 @@ pub fn main(init: std.process.Init) !void {
     var edit_snap: snap_mod.Setting = .note_16;
     var rename: RenameState = .{};
     var render_dlg: render_dialog.State = .{};
+    // A track awaiting the delete confirmation, and the dialog's text.
+    var pending_delete: ?usize = null;
+    var delete_msg: DeleteMsg = .{};
     var render_job: RenderJob = .{};
 
     if (cli.project) |path| {
@@ -568,7 +578,8 @@ pub fn main(init: std.process.Init) !void {
         // One owner of the pointer at a time: a legacy menu, modal or drag
         // hides input from the new Ui, and a new-Ui drag hides it from the
         // legacy panes.
-        if (menu.active() or render_dlg.active or pane.hasActiveDrag()) ui.suppressInput();
+        const modal = render_dlg.active or pending_delete != null;
+        if (menu.active() or modal or pane.hasActiveDrag()) ui.suppressInput();
 
         // While a menu is open it's modal for the mouse: panes get a
         // neutralized mouse (no hover/clicks fall through), the menu keeps
@@ -576,17 +587,17 @@ pub fn main(init: std.process.Init) !void {
         // A new-Ui widget that owns or hovers the pointer (a seam, a toolbar
         // tile) hides it from the legacy panes, so one press never lands in
         // both UIs.
-        const pane_m = if (menu.active() or render_dlg.active or ui.active != 0 or ui.hot != 0) pane.neutral() else m;
+        const pane_m = if (menu.active() or modal or ui.active != 0 or ui.hot != 0) pane.neutral() else m;
 
 
         layout.splitters(ui, sw, sh);
 
         var rects = layout.compute(sw, sh);
         var tracks = tracks_buf[0..track_count];
-        if (!layout.clip_editor_visible and focus == .piano_roll) focus = .arrangement;
-        if (pane_m.left_pressed) focus = focusFromPoint(rects, pane_m, layout.clip_editor_visible);
+        if (!layout.clipShown() and focus == .piano_roll) focus = .arrangement;
+        if (pane_m.left_pressed) focus = focusFromPoint(rects, pane_m, layout.clipShown());
 
-        if (render_dlg.active) {
+        if (modal) {
             // Modal: only Esc/Enter act, handled after the dialog draws below.
         } else if (menu.active()) {
             // An open menu owns the keyboard (arrows, enter, esc).
@@ -623,6 +634,7 @@ pub fn main(init: std.process.Init) !void {
             if (c.rl.IsKeyPressed(c.rl.KEY_SPACE)) transport.toggle();
             if (c.rl.IsKeyPressed(c.rl.KEY_HOME)) transport.rewind();
             if (c.rl.IsKeyPressed(c.rl.KEY_TAB)) layout.clip_editor_visible = !layout.clip_editor_visible;
+            if (!commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_M)) layout.mixer_visible = !layout.mixer_visible;
             if (focus == .piano_roll and !commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_E)) clip_editor.toggleExpressionMode();
         }
 
@@ -727,7 +739,17 @@ pub fn main(init: std.process.Init) !void {
         auto_was_playing = playing_now;
         syncAutomationUi(tracks, transport.beats());
 
-        const ares = arrangement.draw(ui, rects.arrangement, tracks, &master, &device_sel, &audio_pool, alloc, &selected_track, &selected_clip, &transport, &meter_state, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), &recorder, pane_m);
+        var ares: arrangement.Result = .{};
+        if (layout.mixer_visible) {
+            const mres = mixer.draw(ui, rects.arrangement, tracks, &master, &device_sel, &selected_track, transport.beats());
+            ares.route = mres.route;
+            ares.add_track = mres.add_track;
+            ares.add_bus = mres.add_bus;
+            if (mres.toggle) layout.mixer_visible = false;
+        } else {
+            ares = arrangement.draw(ui, rects.arrangement, tracks, &master, &device_sel, &audio_pool, alloc, &selected_track, &selected_clip, &transport, &meter_state, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), &recorder, pane_m);
+            if (ares.toggle_mixer) layout.mixer_visible = true;
+        }
         if (ares.rename_clip) |ref| beginRenameClip(&rename, tracks, ref);
         if (ares.rename_track) |ti| beginRenameTrack(&rename, tracks, ti);
         if (ares.rename_rect) |rr| rename.rect = rr;
@@ -742,36 +764,49 @@ pub fn main(init: std.process.Init) !void {
                 .track = ares.command_track,
             }, tracks, &transport, &selected_track, &selected_clip, &rename, &dirty);
         }
-        if (ares.add_track and track_count < MAX_TRACKS) {
-            audio.stop();
-            defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
-
-            var name_buf: [32]u8 = undefined;
-            const name = std.fmt.bufPrint(&name_buf, "Track {d}", .{track_count + 1}) catch "Track";
-            tracks_buf[track_count] = try track_mod.Track.init(
-                alloc,
-                name,
-                trackColor(track_count),
-                silent_machine,
-            );
-            selected_track = track_count;
-            selected_clip = null;
-            track_count += 1;
+        if (ares.add_track or ares.add_bus) {
+            if (appendTrack(alloc, &history, &audio, &tracks_buf, &track_count, &transport, ares.add_bus)) |ti| {
+                selected_track = ti;
+                selected_clip = null;
+                tracks = tracks_buf[0..track_count];
+                engine.tracks = tracks;
+                dirty = true;
+                status.set("Added {s}", .{tracks[ti].name()});
+            } else |err| status.set("Can't add: {s}", .{@errorName(err)});
+        }
+        if (ares.route) |edit| if (edit.what == .duplicate) {
+            duplicateTrack(alloc, &history, &status, &audio, &engine, &reg, &tracks_buf, &track_count, &transport, edit.track, &selected_track, &selected_clip, &prev_selected_clip) catch |err| status.set("Duplicate failed: {s}", .{@errorName(err)});
+            tracks = tracks_buf[0..track_count];
+            dirty = true;
+        } else if (edit.what == .delete) {
+            if (recorder.isRecording() or rec_finishing) {
+                status.set("Stop recording before deleting a track", .{});
+            } else if (edit.track < track_count) {
+                if (trackContents(tracks, edit.track, &delete_msg)) pending_delete = edit.track else {
+                    deleteTrack(alloc, &history, &status, &audio, &engine, &tracks_buf, &track_count, &transport, edit.track, &selected_track, &selected_clip, &prev_selected_clip, &rename) catch |err| status.set("Delete failed: {s}", .{@errorName(err)});
+                    tracks = tracks_buf[0..track_count];
+                    dirty = true;
+                }
+            }
+        } else {
+            applyRouteEdit(alloc, &history, &status, &audio, edit, &tracks_buf, &track_count, &transport) catch |err| {
+                status.set("Routing failed: {s}", .{@errorName(err)});
+            };
             tracks = tracks_buf[0..track_count];
             engine.tracks = tracks;
             dirty = true;
-            status.set("Added track", .{});
-        }
+        };
         const selection_changed = !clipRefEq(selected_clip, prev_selected_clip);
         if (selection_changed and selected_clip != null) {
             layout.clip_editor_visible = true;
             rects = layout.compute(sw, sh);
         }
-        if (layout.clip_editor_visible) {
+        if (layout.clipShown()) {
+            const play_beat: ?f64 = if (transport.isPlaying()) transport.beats() else null;
             const cres = if (selectedClipIsAudio(tracks, selected_clip))
-                audio_clip_editor.draw(ui, rects.clip_editor, tracks, &audio_pool, selected_clip, transport.bpm(), pane_m)
+                audio_clip_editor.draw(ui, rects.clip_editor, tracks, &audio_pool, selected_clip, transport.bpm(), play_beat, pane_m)
             else
-                clip_editor.draw(ui, rects.clip_editor, tracks, alloc, selected_clip, meter_state.liveMap(), edit_snap, clipboard.mode == .notes, pane_m);
+                clip_editor.draw(ui, rects.clip_editor, tracks, alloc, selected_clip, meter_state.liveMap(), edit_snap, clipboard.mode == .notes, play_beat, pane_m);
             if (rename.active() and rename.kind == .clip) {
                 if (cres.rename_rect) |rr| rename.rect = rr;
             }
@@ -795,6 +830,7 @@ pub fn main(init: std.process.Init) !void {
                 if (selected_track) |ti| if (ti < tracks.len) {
                     bay_dev = &tracks[ti];
                     bay_idx = ti;
+                    bay_is_bus = tracks[ti].isBus();
                 };
             },
             .master => {
@@ -803,7 +839,8 @@ pub fn main(init: std.process.Init) !void {
             },
         }
 
-        const mbres = machine_bay.draw(ui, rects.machine_bay, bay_dev, bay_idx, bay_is_bus, layout.machine_bay_collapsed, &reg);
+        const mbres = machine_bay.draw(ui, rects.machine_bay, bay_dev, bay_idx, bay_is_bus, layout.machine_bay_collapsed, &reg, tracks);
+        if (mbres.key_menu_fx) |uid| if (bay_idx) |ti| @import("ui/route_menu.zig").openKey(ti, uid, mbres.key_menu_at[0], mbres.key_menu_at[1]);
         if (mbres.minimize) layout.machine_bay_collapsed = !layout.machine_bay_collapsed;
         if (mbres.add_machine) |reg_idx| {
             if (bay_dev) |dev| {
@@ -955,6 +992,13 @@ pub fn main(init: std.process.Init) !void {
             const prog: ?render_dialog.Progress = if (render_job.active) renderProgress(&render_job) else null;
             render_action = render_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &render_dlg, loop_available, prog);
         }
+        var delete_answer: ?bool = null;
+        if (pending_delete) |ti| {
+            if (ti >= tracks.len) pending_delete = null else {
+                const bus = tracks[ti].isBus();
+                delete_answer = dialog.confirm(ui, uiRect(pane.rect(0, 0, sw, sh)), "delete-track", if (bus) "DELETE BUS" else "DELETE TRACK", delete_msg.lines(), "DELETE");
+            }
+        }
 
         splash.overlay(ui, screenRect());
         menu.draw(ui);
@@ -964,9 +1008,11 @@ pub fn main(init: std.process.Init) !void {
         ui.endFrame();
 
         for (tracks) |*t| t.publishSnapshot(&audio_pool);
+        engine.publishRouting();
 
         if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_PLAY") != null) transport.play();
         if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_EXPR") != null) clip_editor.toggleExpressionMode();
+        if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_MIXER") != null) layout.mixer_visible = true;
         if (shot_frame == 0) if (std.c.getenv("SLAB_SHOT_SELECT")) |sel| {
             // "track:clip" — open that clip in the editor (screenshots).
             var it = std.mem.splitScalar(u8, std.mem.span(sel), ':');
@@ -986,6 +1032,15 @@ pub fn main(init: std.process.Init) !void {
         };
         devScreenshot(&shot_frame);
         c.rl.EndDrawing();
+
+        if (delete_answer) |yes| {
+            const ti = pending_delete.?;
+            pending_delete = null;
+            if (yes) {
+                deleteTrack(alloc, &history, &status, &audio, &engine, &tracks_buf, &track_count, &transport, ti, &selected_track, &selected_clip, &prev_selected_clip, &rename) catch |err| status.set("Delete failed: {s}", .{@errorName(err)});
+                dirty = true;
+            }
+        }
 
         switch (render_action) {
             .none => {},
@@ -1101,6 +1156,10 @@ fn importAudioClip(
 ) !void {
     if (tracks.len == 0) return;
     const ti = @min(target_track orelse selected_track.* orelse 0, tracks.len - 1);
+    if (tracks[ti].isBus()) {
+        status.set("A bus takes no clips: import onto a track", .{});
+        return;
+    }
 
     const path = (try native_dialog.openAudioFile(alloc)) orelse return; // cancelled
     defer alloc.free(path);
@@ -1498,6 +1557,312 @@ fn basename(path: []const u8) []const u8 {
     return path;
 }
 
+/// A header routing edit (docs/23) with one undo step. A new bus is
+/// appended with the device stopped, like an added track.
+fn applyRouteEdit(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    status: anytype,
+    audio: *audio_mod.Audio,
+    edit: arrangement.RouteEdit,
+    tracks_buf: *[MAX_TRACKS]track_mod.Track,
+    track_count: *usize,
+    transport: *const transport_mod.Transport,
+) !void {
+    const routing = @import("routing.zig");
+    if (edit.track >= track_count.* or edit.what == .delete or edit.what == .duplicate) return;
+    const before = try document_mod.serialize(alloc, tracks_buf[0..track_count.*], transport);
+    errdefer alloc.free(before);
+
+    var target: u8 = routing.NONE;
+    switch (edit.what) {
+        .output => |o| target = o,
+        .send_toggle => |bus| target = bus,
+        .send_add => |a| target = a.bus,
+        .send_pre => |p| target = p.bus,
+        .key => |k| target = k.src,
+        .output_new_bus, .send_new_bus => {
+            audio.stop();
+            defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+            target = @intCast(try newTrack(alloc, tracks_buf, track_count, true, if (edit.what == .output_new_bus) "Group" else "Return"));
+        },
+        .delete, .duplicate => unreachable,
+    }
+    const t = &tracks_buf[edit.track];
+    switch (edit.what) {
+        .output, .output_new_bus => {
+            t.output = target;
+            status.set("{s} outputs to {s}", .{ t.name(), if (target == routing.NONE) "Master" else tracks_buf[target].name() });
+        },
+        .send_toggle, .send_new_bus => {
+            if (t.sendTo(target)) |_| {
+                for (t.sendSlots(), 0..) |snd, i| if (snd.bus == target) {
+                    t.removeSend(i);
+                    break;
+                };
+                status.set("{s}: send to {s} removed", .{ t.name(), tracks_buf[target].name() });
+            } else {
+                try t.addSend(target, false, 1.0);
+                status.set("{s}: sends to {s}", .{ t.name(), tracks_buf[target].name() });
+            }
+        },
+        .send_add => |a| {
+            if (t.sendTo(target) != null) { // already there: the knob set its level
+                alloc.free(before);
+                return;
+            }
+            try t.addSend(target, false, a.level);
+            status.set("{s}: sends to {s}", .{ t.name(), tracks_buf[target].name() });
+        },
+        .key => |k| {
+            const fx = t.effectByUid(k.fx_uid) orelse {
+                alloc.free(before);
+                return;
+            };
+            fx.key = k.src;
+            if (k.src == routing.NONE)
+                status.set("{s}: {s} unkeyed", .{ t.name(), fx.mach.name })
+            else
+                status.set("{s}: {s} keyed by {s}", .{ t.name(), fx.mach.name, tracks_buf[k.src].name() });
+        },
+        .send_pre => |p| {
+            const snd = t.sendTo(target) orelse {
+                alloc.free(before);
+                return;
+            };
+            snd.pre = p.pre;
+            status.set("{s}: send to {s} {s}-fader", .{ t.name(), tracks_buf[target].name(), if (p.pre) "pre" else "post" });
+        },
+        .delete, .duplicate => unreachable,
+    }
+    try history.pushUndo(alloc, before);
+}
+
+/// Append an empty track or bus named `prefix` and the next free number
+/// ("Track 5", "Group 2"). Audio-stopped. Returns its index.
+fn newTrack(alloc: std.mem.Allocator, tracks_buf: *[MAX_TRACKS]track_mod.Track, track_count: *usize, bus: bool, prefix: []const u8) !usize {
+    if (track_count.* >= MAX_TRACKS) return error.TooManyTracks;
+    var name_buf: [track_mod.MAX_NAME]u8 = undefined;
+    const name = freeName(&name_buf, tracks_buf[0..track_count.*], prefix, 1);
+    var t = try track_mod.Track.init(alloc, name, trackColor(track_count.*), silent_machine);
+    if (bus) {
+        t.kind = .bus;
+        t.setVolume(1.0);
+    }
+    tracks_buf[track_count.*] = t;
+    track_count.* += 1;
+    return track_count.* - 1;
+}
+
+/// "`base` N" for the lowest N from `from` that no track is named yet.
+fn freeName(buf: []u8, tracks: []const track_mod.Track, base: []const u8, from: usize) []const u8 {
+    var k = from;
+    while (k < 1000) : (k += 1) {
+        const name = std.fmt.bufPrint(buf, "{s} {d}", .{ base, k }) catch return base;
+        var taken = false;
+        for (tracks) |*t| taken = taken or std.mem.eql(u8, t.name(), name);
+        if (!taken) return name;
+    }
+    return base;
+}
+
+/// "+" / "+ BUS": `newTrack` as one undo step.
+fn appendTrack(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    audio: *audio_mod.Audio,
+    tracks_buf: *[MAX_TRACKS]track_mod.Track,
+    track_count: *usize,
+    transport: *const transport_mod.Transport,
+    bus: bool,
+) !usize {
+    if (track_count.* >= MAX_TRACKS) return error.TooManyTracks;
+    const before = try document_mod.serialize(alloc, tracks_buf[0..track_count.*], transport);
+    errdefer alloc.free(before);
+    const ti = blk: {
+        audio.stop();
+        defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+        break :blk try newTrack(alloc, tracks_buf, track_count, bus, if (bus) "Bus" else "Track");
+    };
+    try history.pushUndo(alloc, before);
+    return ti;
+}
+
+/// The delete confirmation's text: what the track holds and what feeds it.
+const DeleteMsg = struct {
+    buf: [3][96]u8 = undefined,
+    len: [3]usize = .{ 0, 0, 0 },
+    n: usize = 0,
+    slices: [3][]const u8 = undefined,
+
+    fn add(self: *DeleteMsg, comptime fmt: []const u8, args: anytype) void {
+        const out = std.fmt.bufPrint(&self.buf[self.n], fmt, args) catch self.buf[self.n][0..0];
+        self.len[self.n] = out.len;
+        self.n += 1;
+    }
+
+    fn lines(self: *DeleteMsg) []const []const u8 {
+        for (0..self.n) |i| self.slices[i] = self.buf[i][0..self.len[i]];
+        return self.slices[0..self.n];
+    }
+};
+
+/// What deleting track `ti` would lose, written into `msg`; false when the
+/// track is empty (no clips, lanes, machines, nothing routed into it).
+fn trackContents(tracks: []track_mod.Track, ti: usize, msg: *DeleteMsg) bool {
+    const t = &tracks[ti];
+    var feeds: usize = 0;
+    for (tracks, 0..) |*u, j| {
+        if (j == ti) continue;
+        var hit = u.output == ti or u.sendTo(@intCast(ti)) != null;
+        for (u.effects.items) |fx| hit = hit or fx.key == ti;
+        if (hit) feeds += 1;
+    }
+    const clips = t.clips.items.len;
+    const fx = t.effects.items.len;
+    const lanes = t.lanes.items.len;
+    const inst = t.machine_idx != null;
+    if (clips == 0 and fx == 0 and lanes == 0 and !inst and feeds == 0) return false;
+
+    var parts: [4][32]u8 = undefined;
+    var part: [4][]const u8 = undefined;
+    var k: usize = 0;
+    if (clips > 0) {
+        part[k] = std.fmt.bufPrint(&parts[k], "{d} clip{s}", .{ clips, if (clips == 1) "" else "s" }) catch "";
+        k += 1;
+    }
+    if (inst) {
+        part[k] = "an instrument";
+        k += 1;
+    }
+    if (fx > 0) {
+        part[k] = std.fmt.bufPrint(&parts[k], "{d} effect{s}", .{ fx, if (fx == 1) "" else "s" }) catch "";
+        k += 1;
+    }
+    if (lanes > 0) {
+        part[k] = std.fmt.bufPrint(&parts[k], "{d} automation lane{s}", .{ lanes, if (lanes == 1) "" else "s" }) catch "";
+        k += 1;
+    }
+    msg.* = .{};
+    switch (k) {
+        0 => msg.add("{s} holds nothing itself.", .{t.name()}),
+        1 => msg.add("{s} has {s}.", .{ t.name(), part[0] }),
+        2 => msg.add("{s} has {s} and {s}.", .{ t.name(), part[0], part[1] }),
+        3 => msg.add("{s} has {s}, {s} and {s}.", .{ t.name(), part[0], part[1], part[2] }),
+        else => msg.add("{s} has {s}, {s}, {s} and {s}.", .{ t.name(), part[0], part[1], part[2], part[3] }),
+    }
+    if (feeds > 0) msg.add("{d} track{s} route{s} into it.", .{ feeds, if (feeds == 1) "" else "s", if (feeds == 1) "s" else "" });
+    msg.add("Undo brings it back.", .{});
+    return true;
+}
+
+/// Copy track `ti` in right under itself (docs/23 §Duplicating a track):
+/// the tracks after it move up one and every reference is renumbered.
+/// The copy is selected. One undo step.
+fn duplicateTrack(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    status: anytype,
+    audio: *audio_mod.Audio,
+    engine: *engine_mod.Engine,
+    reg: *registry_mod.Registry,
+    tracks_buf: *[MAX_TRACKS]track_mod.Track,
+    track_count: *usize,
+    transport: *const transport_mod.Transport,
+    ti: usize,
+    selected_track: *?usize,
+    selected_clip: *?clip_mod.ClipRef,
+    prev_selected_clip: *?clip_mod.ClipRef,
+) !void {
+    if (ti >= track_count.*) return;
+    if (track_count.* >= MAX_TRACKS) return error.TooManyTracks;
+    const tracks = tracks_buf[0..track_count.*];
+    const before = try document_mod.serialize(alloc, tracks, transport);
+    errdefer alloc.free(before);
+    var copy = try document_mod.cloneTrack(alloc, tracks, ti, transport, reg, silent_machine);
+    // "KIT" → "KIT 2"; "Track 3" → the next free "Track N".
+    {
+        const orig = tracks[ti].name();
+        var base = orig;
+        if (std.mem.lastIndexOfScalar(u8, orig, ' ')) |sp| {
+            if (sp + 1 < orig.len and std.fmt.parseInt(u32, orig[sp + 1 ..], 10) catch null != null) base = orig[0..sp];
+        }
+        var name_buf: [track_mod.MAX_NAME]u8 = undefined;
+        copy.setName(freeName(&name_buf, tracks, base, 2));
+    }
+    const pos: u8 = @intCast(ti + 1);
+    {
+        audio.stop();
+        defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+        var i = track_count.*;
+        while (i > pos) : (i -= 1) tracks_buf[i] = tracks_buf[i - 1];
+        track_count.* += 1;
+        for (tracks_buf[0..track_count.*], 0..) |*t, j| {
+            if (j != pos) t.makeRoomAt(pos);
+        }
+        copy.makeRoomAt(pos);
+        tracks_buf[pos] = copy;
+        engine.tracks = tracks_buf[0..track_count.*];
+        engine.send_prev = @splat(@splat(-1));
+        engine.publishRouting();
+    }
+    try history.pushUndo(alloc, before);
+
+    inline for (.{ selected_clip, prev_selected_clip }) |ref| if (ref.*) |r| {
+        if (r.track >= pos) ref.*.?.track = r.track + 1;
+    };
+    selected_track.* = pos;
+    status.set("Duplicated as {s}", .{tracks_buf[pos].name()});
+}
+
+/// Remove track `ti`: the tracks above it move down one, and every
+/// output, send and key that pointed at it goes (an output falls back to
+/// the master). One undo step; the selection follows the renumbering.
+fn deleteTrack(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    status: anytype,
+    audio: *audio_mod.Audio,
+    engine: *engine_mod.Engine,
+    tracks_buf: *[MAX_TRACKS]track_mod.Track,
+    track_count: *usize,
+    transport: *const transport_mod.Transport,
+    ti: usize,
+    selected_track: *?usize,
+    selected_clip: *?clip_mod.ClipRef,
+    prev_selected_clip: *?clip_mod.ClipRef,
+    rename: *RenameState,
+) !void {
+    if (ti >= track_count.*) return;
+    const before = try document_mod.serialize(alloc, tracks_buf[0..track_count.*], transport);
+    errdefer alloc.free(before);
+    var name_buf: [track_mod.MAX_NAME]u8 = undefined;
+    const name = name_buf[0..tracks_buf[ti].name().len];
+    @memcpy(name, tracks_buf[ti].name());
+    {
+        audio.stop();
+        defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+        tracks_buf[ti].deinit(alloc);
+        var i = ti;
+        while (i + 1 < track_count.*) : (i += 1) tracks_buf[i] = tracks_buf[i + 1];
+        track_count.* -= 1;
+        for (tracks_buf[0..track_count.*]) |*t| t.forgetTrack(@intCast(ti));
+        engine.tracks = tracks_buf[0..track_count.*];
+        engine.send_prev = @splat(@splat(-1));
+        engine.publishRouting();
+    }
+    try history.pushUndo(alloc, before);
+
+    if (selected_track.*) |s| {
+        if (s > ti) selected_track.* = s - 1 else if (s == ti) selected_track.* = if (track_count.* == 0) null else @min(ti, track_count.* - 1);
+    }
+    inline for (.{ selected_clip, prev_selected_clip }) |ref| if (ref.*) |r| {
+        if (r.track == ti) ref.* = null else if (r.track > ti) ref.*.?.track = r.track - 1;
+    };
+    if (rename.active()) rename.* = .{};
+    status.set("Deleted {s}", .{name});
+}
+
 /// Bounce `project` to `out` (24-bit WAV): every clip plus a 3 s tail,
 /// through the same engine and master soft clip as a DAW render.
 fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, out: []const u8) !void {
@@ -1535,6 +1900,7 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, out: []const u8
         .master = &master,
         .meter_state = &meter_state,
     };
+    engine.publishRouting();
     var last_beat: f64 = 0;
     for (tracks) |*t| for (t.clips.items) |*clip| {
         last_beat = @max(last_beat, clip.endBeat());
@@ -1595,6 +1961,7 @@ fn applyProjectBytes(
     track_count.* = next_count;
     tracks.* = tracks_buf[0..next_count];
     engine.tracks = tracks.*;
+    engine.publishRouting();
     selected_track.* = if (track_count.* > 0) 0 else null;
     selected_clip.* = null;
     prev_selected_clip.* = null;
@@ -1607,7 +1974,8 @@ fn applyProjectBytes(
 /// SLAB_SHOT_FRAME frames (default 60), and every SLAB_SHOT_EVERY frames
 /// after that when set. SLAB_SHOT_PLAY=1 starts the transport at load;
 /// SLAB_SHOT_SELECT=track:clip opens that clip in the editor;
-/// SLAB_SHOT_EXPR=1 starts the piano roll in expression mode.
+/// SLAB_SHOT_EXPR=1 starts the piano roll in expression mode;
+/// SLAB_SHOT_MIXER=1 opens the mixer page.
 fn devScreenshot(frame: *u32) void {
     frame.* +%= 1;
     const path = std.c.getenv("SLAB_SHOT") orelse return;

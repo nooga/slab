@@ -614,6 +614,8 @@ pub const Ui = struct {
     }
 
     pub const Align = enum { left, center, right };
+    const MARQUEE_PX_S: f64 = 18;
+    const MARQUEE_PAUSE_S: f64 = 1.2;
 
     /// Text vertically centred in `r` on the font's cap band, aligned.
     pub fn textIn(ui: *Ui, f: *const Font, r: Rect, s: []const u8, col: Color, al: Align, engrave: bool) void {
@@ -625,6 +627,29 @@ pub const Ui = struct {
         };
         const y = r.y + @divFloor(r.h - f.lineHeight(), 2);
         _ = if (engrave) ui.engraved(f, x, y, s, col) else ui.text(f, x, y, s, col);
+    }
+
+    /// Like `textIn`, but text wider than `r` is clipped to it, and with
+    /// `moving` it slides back and forth to show the rest: a pause at
+    /// each end, whole pixels at MARQUEE_PX_S. Callers animate labels that
+    /// are hovered, displays always.
+    pub fn marquee(ui: *Ui, f: *const Font, r: Rect, s: []const u8, col: Color, al: Align, engrave: bool, moving: bool) void {
+        const w = f.measure(s);
+        if (w <= r.w) return ui.textIn(f, r, s, col, al, engrave);
+        const over: f64 = @floatFromInt(w - r.w);
+        var off: i32 = 0;
+        if (moving) {
+            const run = over / MARQUEE_PX_S;
+            const period = 2 * (MARQUEE_PAUSE_S + run);
+            const t = @mod(ui.in.time, period);
+            const pos = if (t < MARQUEE_PAUSE_S) 0 else if (t < MARQUEE_PAUSE_S + run) (t - MARQUEE_PAUSE_S) / run else if (t < 2 * MARQUEE_PAUSE_S + run) 1 else 1 - (t - 2 * MARQUEE_PAUSE_S - run) / run;
+            off = @intFromFloat(@round(pos * over));
+            ui.wants_frame = true;
+        }
+        ui.clip(r);
+        defer ui.unclip();
+        const y = r.y + @divFloor(r.h - f.lineHeight(), 2);
+        _ = if (engrave) ui.engraved(f, r.x - off, y, s, col) else ui.text(f, r.x - off, y, s, col);
     }
 
     // ── Surfaces (docs/06 §Materials) ────────────────────────────────

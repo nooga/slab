@@ -9,6 +9,7 @@ const clip_mod = @import("clip.zig");
 const snap_mod = @import("snapshot.zig");
 const audio_pool_mod = @import("audio_pool.zig");
 const automation = @import("automation.zig");
+const routing = @import("routing.zig");
 
 pub const MAX_NAME = 32;
 
@@ -24,6 +25,9 @@ pub const Effect = struct {
     /// it survives reordering the chain.
     uid: u16 = 0,
     bypass: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// Sidechain key (docs/23 §Sidechain keys): the track whose pre tap
+    /// drives this effect's detector, or routing.NONE.
+    key: u8 = routing.NONE,
     /// Block peaks the engine writes after each render and the bay's I/O
     /// meters read: in L, in R, out L, out R, as f32 bits.
     io_peak: [4]std.atomic.Value(u32) = [_]std.atomic.Value(u32){std.atomic.Value(u32).init(0)} ** 4,
@@ -40,17 +44,39 @@ pub const Effect = struct {
     }
 };
 
-/// What role a Track plays in the signal graph. Audio tracks have an
-/// instrument + clips and sum into the master. `ret` (return) and
-/// `master` are buses: silent instrument, effects-only chain, no clips.
-/// `ret` is defined now for persistence/forward-compat; unused until the
-/// returns+sends phase.
-pub const Kind = enum(u8) { audio, ret, master };
+/// What role a Track plays in the signal graph (docs/23). Audio tracks
+/// have an instrument + clips. A `bus` has neither: its input is the sum of
+/// the outputs and sends routed to it (a group or a return, by use). The
+/// `master` is the final bus and lives outside the track list.
+pub const Kind = enum(u8) { audio, bus, master };
+
+/// A copy of the track's signal into a bus (docs/23 §Model). The target and
+/// tap are routing (published through `routing.Routing`); the level is an
+/// atomic the engine reads per block, so dragging it publishes nothing.
+pub const Send = struct {
+    bus: u8,
+    pre: bool = false,
+    /// Linear gain 0..2 (1 = 0 dB), bit-cast for atomic.
+    level_bits: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 1.0))),
+
+    pub fn level(self: *const Send) f32 {
+        return @bitCast(self.level_bits.load(.monotonic));
+    }
+
+    pub fn setLevel(self: *Send, v: f32) void {
+        self.level_bits.store(@bitCast(std.math.clamp(v, 0.0, 2.0)), .monotonic);
+    }
+};
 
 pub const Track = struct {
     name_buf: [MAX_NAME]u8 = [_]u8{0} ** MAX_NAME,
     name_len: u8 = 0,
     kind: Kind = .audio,
+    /// Where the post-fader signal goes: a bus's track index, or
+    /// routing.NONE for the master (docs/23).
+    output: u8 = routing.NONE,
+    sends: [routing.MAX_SENDS]Send = undefined,
+    send_count: u8 = 0,
     color: c.rl.Color,
     machine: machine.Machine,
     /// Registry index for persistence. Null means the silent placeholder.
@@ -69,6 +95,8 @@ pub const Track = struct {
     lanes: std.ArrayList(automation.Lane) = .empty,
     /// Arrangement: lanes shown under the track row.
     lanes_shown: bool = false,
+    /// A group's members are hidden in the arrangement and mixer (UI only).
+    folded: bool = false,
     next_fx_uid: u16 = 1,
     /// Audio-thread-owned per-lane segment cursors (automation.evalCursor).
     auto_cursors: [snap_mod.MAX_LANES_PER_TRACK]u32 = [_]u32{0} ** snap_mod.MAX_LANES_PER_TRACK,
@@ -218,6 +246,86 @@ pub const Track = struct {
         if (slot.mach.deinit) |deinit_fn| deinit_fn(slot.mach.state, alloc);
         slot.mach = mach;
         slot.idx = idx;
+    }
+
+    pub fn isBus(self: *const Track) bool {
+        return self.kind == .bus;
+    }
+
+    pub fn sendSlots(self: *Track) []Send {
+        return self.sends[0..self.send_count];
+    }
+
+    /// Add a send to `bus`. Routing edit: republish the engine's routing.
+    pub fn addSend(self: *Track, bus: u8, pre: bool, level: f32) error{TooManySends}!void {
+        if (self.send_count >= routing.MAX_SENDS) return error.TooManySends;
+        self.sends[self.send_count] = .{ .bus = bus, .pre = pre };
+        self.sends[self.send_count].setLevel(level);
+        self.send_count += 1;
+    }
+
+    pub fn removeSend(self: *Track, i: usize) void {
+        if (i >= self.send_count) return;
+        var k = i;
+        while (k + 1 < self.send_count) : (k += 1) {
+            self.sends[k].bus = self.sends[k + 1].bus;
+            self.sends[k].pre = self.sends[k + 1].pre;
+            self.sends[k].setLevel(self.sends[k + 1].level());
+        }
+        self.send_count -= 1;
+    }
+
+    /// The send slot into `bus`, if any.
+    pub fn sendTo(self: *Track, bus: u8) ?*Send {
+        for (self.sendSlots()) |*s| if (s.bus == bus) return s;
+        return null;
+    }
+
+    /// Track `gone` was deleted and every track above it moved down one:
+    /// drop this track's output, sends and keys into it and renumber the
+    /// rest. An output into it falls back to the master.
+    pub fn forgetTrack(self: *Track, gone: u8) void {
+        if (self.output == gone) self.output = routing.NONE else if (self.output != routing.NONE and self.output > gone) self.output -= 1;
+        var i: usize = 0;
+        while (i < self.send_count) {
+            const b = self.sends[i].bus;
+            if (b == gone) {
+                self.removeSend(i);
+                continue;
+            }
+            if (b > gone) self.sends[i].bus = b - 1;
+            i += 1;
+        }
+        for (self.effects.items) |*fx| {
+            if (fx.key == gone) fx.key = routing.NONE else if (fx.key != routing.NONE and fx.key > gone) fx.key -= 1;
+        }
+    }
+
+    /// A track is being inserted at `pos` and every track from there on
+    /// moves up one: renumber this track's output, sends and keys.
+    pub fn makeRoomAt(self: *Track, pos: u8) void {
+        if (self.output != routing.NONE and self.output >= pos) self.output += 1;
+        for (self.sendSlots()) |*snd| {
+            if (snd.bus >= pos) snd.bus += 1;
+        }
+        for (self.effects.items) |*fx| {
+            if (fx.key != routing.NONE and fx.key >= pos) fx.key += 1;
+        }
+    }
+
+    /// This track as the routing graph sees it.
+    pub fn routingNode(self: *const Track) routing.Node {
+        var nd = routing.Node{ .is_bus = self.isBus(), .output = self.output };
+        for (self.sends[0..self.send_count]) |s| {
+            nd.sends[nd.send_count] = .{ .bus = s.bus, .pre = s.pre };
+            nd.send_count += 1;
+        }
+        for (self.effects.items) |fx| {
+            if (fx.key == routing.NONE or nd.key_count >= routing.MAX_KEYS) continue;
+            nd.keys[nd.key_count] = .{ .fx_uid = fx.uid, .src = fx.key };
+            nd.key_count += 1;
+        }
+        return nd;
     }
 
     pub fn isArmed(self: *const Track) bool {
@@ -581,6 +689,41 @@ pub fn testMachine() machine.Machine {
             fn f(_: *anyopaque) void {}
         }.f,
     };
+}
+
+test "forgetTrack drops references to the deleted track and renumbers the rest" {
+    const machine_mod = @import("machine.zig");
+    var t = try Track.init(std.testing.allocator, "T", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, machine_mod.Machine{
+        .name = "test",
+        .state = undefined,
+        .render = struct {
+            fn f(_: *anyopaque, _: *const machine_mod.MachineCtx, _: []f32, _: []f32) void {}
+        }.f,
+        .draw_panel = struct {
+            fn f(_: *anyopaque, _: *@import("ui/core.zig").Ui, _: @import("ui/geom.zig").Rect) void {}
+        }.f,
+        .reset = struct {
+            fn f(_: *anyopaque) void {}
+        }.f,
+    });
+    defer t.deinit(std.testing.allocator);
+    t.output = 3;
+    try t.addSend(2, false, 0.5);
+    try t.addSend(4, true, 0.25);
+    try t.addSend(1, false, 1.0);
+    t.forgetTrack(2);
+    try std.testing.expectEqual(@as(u8, 2), t.output);
+    try std.testing.expectEqual(@as(u8, 2), t.send_count);
+    try std.testing.expectEqual(@as(u8, 3), t.sends[0].bus);
+    try std.testing.expect(t.sends[0].pre);
+    try std.testing.expectEqual(@as(f32, 0.25), t.sends[0].level());
+    try std.testing.expectEqual(@as(u8, 1), t.sends[1].bus);
+    t.forgetTrack(2);
+    try std.testing.expectEqual(routing.NONE, t.output);
+    t.makeRoomAt(2); // sends are 2, 1 after the second forget
+    try std.testing.expectEqual(routing.NONE, t.output);
+    try std.testing.expectEqual(@as(u8, 3), t.sends[0].bus);
+    try std.testing.expectEqual(@as(u8, 1), t.sends[1].bus);
 }
 
 test "removeEffect shifts chain and bypass travels with the slot" {

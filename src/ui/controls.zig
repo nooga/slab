@@ -460,6 +460,15 @@ pub const ButtonOpts = struct {
     label: []const u8 = "",
     /// LED inside the cap (left of the label), in this colour.
     led: ?Color = null,
+    /// The LED lit in this colour while the button is off, instead of dark
+    /// (a bypass: green running, red bypassed).
+    led_off: ?Color = null,
+    /// What the touch display shows while hovered, instead of the label
+    /// and ON/OFF.
+    touch_name: ?[]const u8 = null,
+    touch_value: ?[]const u8 = null,
+    /// A label wider than the cap slides while hovered (Ui.marquee).
+    marquee: bool = false,
     /// Cap itself lights in this colour when on (808 style).
     lit: ?Color = null,
     /// A shape printed on the cap (transport ▶ ■ ●), lit in `glyph_on`
@@ -495,7 +504,8 @@ pub fn button(ui: *Ui, r: Rect, key: anytype, on: ?*bool, o: ButtonOpts) bool {
     const is_on = if (on) |p| p.* else false;
     const down = b.held and b.hover or (o.kind == .latch and is_on);
     cap(ui, r, down, is_on, ui.isHot(wid), o);
-    if (ui.isHot(wid) and o.label.len > 0) ui.setTouch(o.label, if (is_on) "ON" else "OFF");
+    if (ui.isHot(wid) and (o.label.len > 0 or o.touch_name != null))
+        ui.setTouch(o.touch_name orelse o.label, o.touch_value orelse if (is_on) "ON" else "OFF");
     focusRing(ui, wid, r);
     return clicked;
 }
@@ -532,7 +542,8 @@ fn cap(ui: *Ui, r: Rect, down: bool, is_on: bool, hot: bool, o: ButtonOpts) void
         const LED_GAP = 4;
         const group = if (label.len > 0) 3 + LED_GAP + ui.fonts.legend.measure(label) else 3;
         const lx = content.x + @max(1, @divFloor(content.w - group, 2));
-        led(ui, lx, content.y + @divFloor(content.h - 3, 2), .round3, if (is_on) .on else .off, lc);
+        const lit_col = if (is_on) lc else o.led_off orelse lc;
+        led(ui, lx, content.y + @divFloor(content.h - 3, 2), .round3, if (is_on or o.led_off != null) .on else .off, lit_col);
         content = Rect.xywh(lx + 3 + LED_GAP, content.y, content.right() - (lx + 3 + LED_GAP), content.h);
     }
     if (o.glyph) |shape| {
@@ -544,7 +555,10 @@ fn cap(ui: *Ui, r: Rect, down: bool, is_on: bool, hot: bool, o: ButtonOpts) void
     if (label.len > 0) {
         const f = &ui.fonts.legend;
         const col = if (o.disabled) style.text_mute else if (o.lit != null and is_on) style.text else style.text_dim;
-        ui.textIn(f, content, label, col, if (o.led != null) .left else .center, !down);
+        if (o.marquee)
+            ui.marquee(f, content, label, col, if (o.led != null) .left else .center, !down, hot)
+        else
+            ui.textIn(f, content, label, col, if (o.led != null) .left else .center, !down);
     }
 }
 

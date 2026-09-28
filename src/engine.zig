@@ -11,6 +11,7 @@ const Track = @import("track.zig").Track;
 const snap_mod = @import("snapshot.zig");
 const meter = @import("meter.zig");
 const automation = @import("automation.zig");
+const routing = @import("routing.zig");
 
 pub const MAX_BLOCK = audio.BLOCK_FRAMES * 4;
 pub const MAX_EVENTS_PER_TRACK = 1024;
@@ -54,6 +55,33 @@ pub const Engine = struct {
     master_r: [MAX_BLOCK]f32 = undefined,
     master_fx_l: [MAX_BLOCK]f32 = undefined,
     master_fx_r: [MAX_BLOCK]f32 = undefined,
+
+    /// Routing (docs/23), double-buffered like track snapshots: the UI
+    /// builds into the unpublished slot and flips; the audio thread holds
+    /// the published one for one renderChunk.
+    routing_bufs: [2]routing.Routing = .{ .{}, .{} },
+    routing_published: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    /// Each track's pre tap (after inserts, before the fader), kept for the
+    /// block so keys and pre-fader sends can read it.
+    pre_l: [routing.MAX_TRACKS][MAX_BLOCK]f32 = undefined,
+    pre_r: [routing.MAX_TRACKS][MAX_BLOCK]f32 = undefined,
+    /// Bus inputs: outputs and sends routed to a bus sum here.
+    bus_l: [routing.MAX_TRACKS][MAX_BLOCK]f32 = undefined,
+    bus_r: [routing.MAX_TRACKS][MAX_BLOCK]f32 = undefined,
+    /// Last block's gain per send slot, the start of this block's ramp;
+    /// negative until the slot has played.
+    send_prev: [routing.MAX_TRACKS][routing.MAX_SENDS]f32 = @splat(@splat(-1)),
+
+    /// UI thread: rebuild the routing from the tracks and publish it.
+    pub fn publishRouting(self: *Engine) void {
+        const published = self.routing_published.load(.monotonic);
+        const dst = &self.routing_bufs[1 - published];
+        var nodes: [routing.MAX_TRACKS]routing.Node = undefined;
+        const n = @min(self.tracks.len, routing.MAX_TRACKS);
+        for (self.tracks[0..n], 0..) |*t, i| nodes[i] = t.routingNode();
+        dst.* = routing.Routing.build(nodes[0..n]);
+        self.routing_published.store(1 - published, .release);
+    }
 
     pub fn auditionNote(self: *Engine, track_idx: usize, pitch: u8) void {
         self.audition_track.store(@intCast(@min(track_idx, std.math.maxInt(u32))), .monotonic);
@@ -363,12 +391,9 @@ pub const Engine = struct {
     }
 
     fn renderChunk(self: *Engine, out: []f32, frames: u32, block_start: u64) void {
-        // Planar L/R scratch buffers — the machine ABI is
-        // channel-planar. For our Zig machines we also hand L/R
-        // slices directly to render(), so we don't have to thread
-        // the full audio_out port table yet.
-        var l_buf: [MAX_BLOCK]f32 = undefined;
-        var r_buf: [MAX_BLOCK]f32 = undefined;
+        // Planar L/R scratch — the machine ABI is channel-planar. Each
+        // track renders into its pre tap (self.pre_l/r); this pair is the
+        // effect chain's ping-pong partner, then the post-fader signal.
         var fx_l_buf: [MAX_BLOCK]f32 = undefined;
         var fx_r_buf: [MAX_BLOCK]f32 = undefined;
 
@@ -377,13 +402,30 @@ pub const Engine = struct {
         @memset(self.master_l[0..frames], 0);
         @memset(self.master_r[0..frames], 0);
 
-        var any_solo = false;
-        for (self.tracks) |*t| {
-            if (t.solo.load(.monotonic)) {
-                any_solo = true;
-                break;
-            }
+        // The published routing, or plain track → master when it doesn't
+        // cover the track list yet (a track added since the last publish).
+        var fallback: routing.Routing = undefined;
+        const graph: *const routing.Routing = blk: {
+            const rt = &self.routing_bufs[self.routing_published.load(.acquire)];
+            if (rt.count == self.tracks.len) break :blk rt;
+            var nodes: [routing.MAX_TRACKS]routing.Node = undefined;
+            const n = @min(self.tracks.len, routing.MAX_TRACKS);
+            for (self.tracks[0..n], 0..) |*t, i| nodes[i] = .{ .is_bus = t.isBus() };
+            fallback = routing.Routing.build(nodes[0..n]);
+            break :blk &fallback;
+        };
+        var muted: u32 = 0;
+        var soloed: u32 = 0;
+        for (self.tracks[0..graph.count], 0..) |*t, i| {
+            if (t.mute.load(.monotonic)) muted |= routing.bit(@intCast(i));
+            if (t.solo.load(.monotonic)) soloed |= routing.bit(@intCast(i));
         }
+        const heard = graph.audible(muted, soloed);
+        const live = graph.rendered(heard);
+        for (graph.nodes[0..graph.count], 0..) |nd, i| if (nd.is_bus) {
+            @memset(self.bus_l[i][0..frames], 0);
+            @memset(self.bus_r[i][0..frames], 0);
+        };
 
         const sr = self.transport.sample_rate;
         const bpm = self.transport.bpm();
@@ -403,17 +445,25 @@ pub const Engine = struct {
 
         var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
 
-        for (self.tracks) |*t| {
-            const muted = t.mute.load(.monotonic) or (any_solo and !t.solo.load(.monotonic));
-            if (muted) {
+        for (graph.renderOrder()) |ti| {
+            const t = &self.tracks[ti];
+            const node = &graph.nodes[ti];
+            if (live & routing.bit(ti) == 0) {
                 t.setMeter(0, 0);
                 continue;
             }
+            const is_heard = heard & routing.bit(ti) != 0;
 
-            const l = l_buf[0..frames];
-            const r = r_buf[0..frames];
-            @memset(l, 0);
-            @memset(r, 0);
+            // A bus starts from its summed input; a track from silence.
+            const l = self.pre_l[ti][0..frames];
+            const r = self.pre_r[ti][0..frames];
+            if (node.is_bus) {
+                @memcpy(l, self.bus_l[ti][0..frames]);
+                @memcpy(r, self.bus_r[ti][0..frames]);
+            } else {
+                @memset(l, 0);
+                @memset(r, 0);
+            }
 
             // Load the snapshot pointer once per track per block.
             // See snapshot.zig for the double-buffer invariant.
@@ -446,17 +496,25 @@ pub const Engine = struct {
 
             const track_probe = trackProbeEnabled();
             const inst_start = if (track_probe) probeNowNs() else 0;
-            // Disabled instrument → feed silence into the effect chain.
-            if (t.isEnabled()) t.machine.render(t.machine.state, &ctx, l, r);
-            // Audio clips mix on top of the instrument output, into the same
-            // planar L/R, so the track's insert chain processes the sum.
-            mixAudioClips(snap, block_start, frames, spb, sr, l, r);
+            if (!node.is_bus) {
+                // Disabled instrument → feed silence into the effect chain.
+                if (t.isEnabled()) t.machine.render(t.machine.state, &ctx, l, r);
+                // Audio clips mix on top of the instrument output, into the
+                // same planar L/R, so the track's insert chain processes the sum.
+                mixAudioClips(snap, block_start, frames, spb, sr, l, r);
+            }
             const inst_ns = if (track_probe) probeNowNs() - inst_start else 0;
             const fx_start = if (track_probe) probeNowNs() else 0;
-            const rendered = renderEffects(t, ctx, l, r, fx_l_buf[0..frames], fx_r_buf[0..frames]);
+            const keys: ?Keys = if (node.key_count > 0) .{ .node = node, .pre_l = &self.pre_l, .pre_r = &self.pre_r, .live = live } else null;
+            const rendered = renderEffectsKeyed(t, ctx, l, r, fx_l_buf[0..frames], fx_r_buf[0..frames], keys);
             const fx_ns = if (track_probe) probeNowNs() - fx_start else 0;
-            const final_l = rendered.l;
-            const final_r = rendered.r;
+            // The chain may end in the scratch pair; the pre tap is `l`/`r`.
+            if (rendered.l.ptr != l.ptr) {
+                @memcpy(l, rendered.l);
+                @memcpy(r, rendered.r);
+            }
+            const final_l: []const f32 = l;
+            const final_r: []const f32 = r;
 
             // Fader gains at the block's ends; automated volume/pan ramp
             // between them per sample (docs/22 §Track volume and pan).
@@ -464,6 +522,10 @@ pub const Engine = struct {
             const g1 = faderGains(t, snap, beat_end);
             const v = g0.v;
             const inv_n: f32 = 1.0 / @as(f32, @floatFromInt(frames));
+            // Post-fader signal into the free scratch pair, then summed into
+            // the output and the post-fader sends.
+            const post_l = fx_l_buf[0..frames];
+            const post_r = fx_r_buf[0..frames];
             var peak_l: f32 = 0;
             var peak_r: f32 = 0;
             var i: usize = 0;
@@ -473,14 +535,37 @@ pub const Engine = struct {
                 const vr = g0.r + (g1.r - g0.r) * f;
                 const sl = final_l[i] * vl;
                 const sr2 = final_r[i] * vr;
-                self.master_l[i] += sl;
-                self.master_r[i] += sr2;
+                post_l[i] = sl;
+                post_r[i] = sr2;
                 const al = @abs(sl);
                 const ar = @abs(sr2);
                 if (al > peak_l) peak_l = al;
                 if (ar > peak_r) peak_r = ar;
             }
-            t.setMeter(peak_l, peak_r);
+            if (is_heard) {
+                const dst_l = if (node.output == routing.NONE) self.master_l[0..frames] else self.bus_l[node.output][0..frames];
+                const dst_r = if (node.output == routing.NONE) self.master_r[0..frames] else self.bus_r[node.output][0..frames];
+                for (dst_l, post_l) |*d, x| d.* += x;
+                for (dst_r, post_r) |*d, x| d.* += x;
+                for (node.sendSlots(), 0..) |s, si| {
+                    // The track's send list can be shorter than the
+                    // published one for a frame after a send is removed.
+                    if (si >= t.send_count) break;
+                    const lvl = t.sends[si].level();
+                    const prev = if (self.send_prev[ti][si] < 0) lvl else self.send_prev[ti][si];
+                    self.send_prev[ti][si] = lvl;
+                    const src_l: []const f32 = if (s.pre) final_l else post_l;
+                    const src_r: []const f32 = if (s.pre) final_r else post_r;
+                    const bl = self.bus_l[s.bus][0..frames];
+                    const br = self.bus_r[s.bus][0..frames];
+                    for (0..frames) |k| {
+                        const gk = prev + (lvl - prev) * (@as(f32, @floatFromInt(k)) * inv_n);
+                        bl[k] += src_l[k] * gk;
+                        br[k] += src_r[k] * gk;
+                    }
+                }
+                t.setMeter(peak_l, peak_r);
+            } else t.setMeter(0, 0);
             if (track_probe) {
                 const total_ns = inst_ns + fx_ns;
                 const budget_ns = @divTrunc(@as(i128, @intCast(frames)) * std.time.ns_per_s, @as(i128, @intCast(sr)));
@@ -729,6 +814,17 @@ const RenderedPair = struct {
     r: []f32,
 };
 
+/// Where a track's keyed effects find their keys (docs/23 §Sidechain
+/// keys): the routing node naming each key's source, and the pre taps
+/// rendered so far this block.
+const Keys = struct {
+    node: *const routing.Node,
+    pre_l: *const [routing.MAX_TRACKS][MAX_BLOCK]f32,
+    pre_r: *const [routing.MAX_TRACKS][MAX_BLOCK]f32,
+    /// Sources rendered this block (the rest hold a stale block).
+    live: u32,
+};
+
 fn renderEffects(
     t: *Track,
     base_ctx: machine.MachineCtx,
@@ -736,6 +832,18 @@ fn renderEffects(
     src_r: []f32,
     scratch_l: []f32,
     scratch_r: []f32,
+) RenderedPair {
+    return renderEffectsKeyed(t, base_ctx, src_l, src_r, scratch_l, scratch_r, null);
+}
+
+fn renderEffectsKeyed(
+    t: *Track,
+    base_ctx: machine.MachineCtx,
+    src_l: []f32,
+    src_r: []f32,
+    scratch_l: []f32,
+    scratch_r: []f32,
+    keys: ?Keys,
 ) RenderedPair {
     var cur_l = src_l;
     var cur_r = src_r;
@@ -750,12 +858,17 @@ fn renderEffects(
         }
         @memset(next_l, 0);
         @memset(next_r, 0);
-        const in_ports = [_][*]const f32{ cur_l.ptr, cur_r.ptr };
+        var in_ports = [_][*]const f32{ cur_l.ptr, cur_r.ptr, cur_l.ptr, cur_r.ptr };
         var ctx = base_ctx;
         ctx.note_in = null;
         ctx.note_in_count = 0;
         ctx.audio_in = @ptrCast(&in_ports[0]);
         ctx.audio_in_count = 2;
+        if (keys) |k| if (fx.mach.takes_key) if (k.node.keyFor(fx.uid)) |src| if (k.live & routing.bit(src) != 0) {
+            in_ports[2] = &k.pre_l[src];
+            in_ports[3] = &k.pre_r[src];
+            ctx.audio_in_count = 4;
+        };
         // Retarget the instrument's lane view at this effect.
         var fx_view: snap_mod.AutoView = undefined;
         if (base_ctx.automation) |p| {
@@ -1047,12 +1160,14 @@ test "gatherEvents: note-on and note-off in same block" {
     }});
     var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
 
-    // Block covers beats [0..2): expect note-on at beat 0 (offset 0).
+    // Block covers beats [0..2): note-on at beat 0, note-off at beat 1.
     const n = gatherEvents(&snap, 0, 2.0, spb, frames, &events);
-    try testing.expectEqual(@as(usize, 1), n);
+    try testing.expectEqual(@as(usize, 2), n);
     try testing.expect(events[0].kind == .note_on);
     try testing.expectEqual(@as(f32, 60), events[0].pitch);
     try testing.expectEqual(@as(u32, 0), events[0].sample_offset);
+    try testing.expect(events[1].kind == .note_off);
+    try testing.expectEqual(@as(u32, 48), events[1].sample_offset);
 }
 
 test "gatherEvents: note-off fires when note ends" {
@@ -1065,11 +1180,13 @@ test "gatherEvents: note-off fires when note ends" {
     }});
     var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
 
-    // Block covers beats [1..3): note-off at beat 1 = sample offset 0.
-    const n = gatherEvents(&snap, 1.0, 3.0, spb, frames, &events);
+    // Block covers beats [0.5..2.5): note-off at beat 1 = sample offset 24.
+    const n = gatherEvents(&snap, 0.5, 2.5, spb, frames, &events);
     try testing.expectEqual(@as(usize, 1), n);
     try testing.expect(events[0].kind == .note_off);
-    try testing.expectEqual(@as(u32, 0), events[0].sample_offset);
+    try testing.expectEqual(@as(u32, 24), events[0].sample_offset);
+    // An end on a block's first beat went out with the block before it.
+    try testing.expectEqual(@as(usize, 0), gatherEvents(&snap, 1.0, 3.0, spb, frames, &events));
 }
 
 test "gatherEvents: note outside block produces no events" {
@@ -1432,4 +1549,189 @@ test "gatherEvents: pressure, slide and gain ride the expression event" {
     try testing.expectApproxEqAbs(@as(f32, -30), first.?.value, 0.1);
     try testing.expectEqual(@as(f32, 0.5), first.?.pressure);
     try testing.expectEqual(@as(f32, 60), first.?.pitch);
+}
+
+// ── Routing (docs/23) ────────────────────────────────────────────────
+
+const RouteTestMachines = struct {
+    /// Instrument: a constant `*f32` on both channels.
+    fn dc(level: *f32) machine.Machine {
+        return .{
+            .name = "dc",
+            .state = level,
+            .render = struct {
+                fn f(st: *anyopaque, _: *const machine.MachineCtx, l: []f32, r: []f32) void {
+                    const v: *f32 = @ptrCast(@alignCast(st));
+                    @memset(l, v.*);
+                    @memset(r, v.*);
+                }
+            }.f,
+            .draw_panel = struct {
+                fn f(_: *anyopaque, _: *@import("ui/core.zig").Ui, _: @import("ui/geom.zig").Rect) void {}
+            }.f,
+            .reset = struct {
+                fn f(_: *anyopaque) void {}
+            }.f,
+        };
+    }
+
+    /// Effect: input × `*f32`.
+    fn gain(k: *f32) machine.Machine {
+        var m = dc(k);
+        m.name = "gain";
+        m.render = struct {
+            fn f(st: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []f32) void {
+                const g: *f32 = @ptrCast(@alignCast(st));
+                const ins = ctx.audio_in.?;
+                for (l, 0..) |*x, i| x.* = ins[0][i] * g.*;
+                for (r, 0..) |*x, i| x.* = ins[1][i] * g.*;
+            }
+        }.f;
+        return m;
+    }
+};
+
+test "routing: a group, a pre-fader send and a return sum as their paths" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var tenth: f32 = 0.1;
+    var zero: f32 = 0;
+    var two: f32 = 2;
+    var four: f32 = 4;
+    var tracks = [_]Track{
+        try Track.init(alloc, "kit", col, RouteTestMachines.dc(&tenth)),
+        try Track.init(alloc, "bass", col, RouteTestMachines.dc(&tenth)),
+        try Track.init(alloc, "group", col, RouteTestMachines.dc(&zero)),
+        try Track.init(alloc, "verb", col, RouteTestMachines.dc(&zero)),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    for (&tracks) |*t| t.setVolume(1.0);
+    tracks[0].output = 2;
+    try tracks[1].addSend(3, true, 0.5);
+    tracks[2].kind = .bus;
+    tracks[3].kind = .bus;
+    try tracks[2].addEffect(alloc, RouteTestMachines.gain(&two), 0);
+    try tracks[3].addEffect(alloc, RouteTestMachines.gain(&four), 0);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+
+    var transport = Transport{};
+    transport.sample_rate = 48_000;
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+    try testing.expectEqualSlices(u8, &.{ 0, 1, 2, 3 }, eng.routing_bufs[eng.routing_published.load(.monotonic)].renderOrder());
+
+    const c = @cos(@as(f32, std.math.pi / 4.0)); // centre pan
+    const kit = 0.1 * c * 2 * c; // through the group's ×2 and fader
+    const bass = 0.1 * c;
+    const verb = 0.1 * 0.5 * 4 * c; // pre tap (no pan) × send × return
+    var out: [64 * 2]f32 = undefined;
+    eng.renderOffline(&out, 64, 0, null, null);
+    try testing.expectApproxEqAbs(kit + bass + verb, out[10], 1e-6);
+    try testing.expectApproxEqAbs(kit + bass + verb, out[11], 1e-6);
+
+    // Muting the bass silences its dry signal and its send.
+    tracks[1].mute.store(true, .monotonic);
+    eng.renderOffline(&out, 64, 0, null, null);
+    try testing.expectApproxEqAbs(kit, out[10], 1e-6);
+    tracks[1].mute.store(false, .monotonic);
+
+    // Soloing the return keeps its source (the bass, dry too) and drops the kit.
+    tracks[3].solo.store(true, .monotonic);
+    eng.renderOffline(&out, 64, 0, null, null);
+    try testing.expectApproxEqAbs(bass + verb, out[10], 1e-6);
+    tracks[3].solo.store(false, .monotonic);
+
+    // Soloing the kit keeps the group it feeds.
+    tracks[0].solo.store(true, .monotonic);
+    eng.renderOffline(&out, 64, 0, null, null);
+    try testing.expectApproxEqAbs(kit, out[10], 1e-6);
+}
+
+test "routing: a send level change ramps across the block" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var tenth: f32 = 0.1;
+    var zero: f32 = 0;
+    var tracks = [_]Track{
+        try Track.init(alloc, "src", col, RouteTestMachines.dc(&tenth)),
+        try Track.init(alloc, "ret", col, RouteTestMachines.dc(&zero)),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    tracks[0].setVolume(0); // only the pre send is heard
+    tracks[1].setVolume(1.0);
+    tracks[1].kind = .bus;
+    try tracks[0].addSend(1, true, 1.0);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+    var transport = Transport{};
+    transport.sample_rate = 48_000;
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+
+    const c = @cos(@as(f32, std.math.pi / 4.0));
+    var out: [64 * 2]f32 = undefined;
+    eng.renderChunk(&out, 64, 0);
+    try testing.expectApproxEqAbs(0.1 * c, out[0], 1e-6);
+    tracks[0].sends[0].setLevel(0);
+    eng.renderChunk(&out, 64, 64);
+    try testing.expectApproxEqAbs(0.1 * c, out[0], 1e-6); // ramp starts at the old level
+    try testing.expect(out[2 * 32] < 0.06 * c and out[2 * 32] > 0.04 * c); // halfway
+    eng.renderChunk(&out, 64, 128);
+    try testing.expectEqual(@as(f32, 0), out[0]);
+}
+
+test "routing: a keyed effect hears its key's pre tap, even from a muted track" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var kick_lvl: f32 = 0.25;
+    var bass_lvl: f32 = 0.1;
+    var unused: f32 = 0;
+    // Effect: outputs its key L (0 without one), so the master shows it.
+    var keyed = RouteTestMachines.gain(&unused);
+    keyed.takes_key = true;
+    keyed.render = struct {
+        fn f(_: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []f32) void {
+            const ins = ctx.audio_in.?;
+            for (l, r, 0..) |*a, *b, i| {
+                a.* = if (ctx.audio_in_count >= 4) ins[2][i] else 0;
+                b.* = a.*;
+            }
+        }
+    }.f;
+    var tracks = [_]Track{
+        try Track.init(alloc, "kick", col, RouteTestMachines.dc(&kick_lvl)),
+        try Track.init(alloc, "bass", col, RouteTestMachines.dc(&bass_lvl)),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    for (&tracks) |*t| t.setVolume(1.0);
+    try tracks[1].addEffect(alloc, keyed, 0);
+    tracks[1].effects.items[0].key = 0;
+    tracks[0].mute.store(true, .monotonic);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+    var transport = Transport{};
+    transport.sample_rate = 48_000;
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+
+    const c = @cos(@as(f32, std.math.pi / 4.0));
+    var out: [64 * 2]f32 = undefined;
+    eng.renderOffline(&out, 64, 0, null, null);
+    // The kick is muted (not in the mix) but its pre tap keys the bass.
+    try testing.expectApproxEqAbs(0.25 * c, out[10], 1e-6);
+
+    // Without the manifest flag the effect gets no key.
+    tracks[1].effects.items[0].mach.takes_key = false;
+    eng.renderOffline(&out, 64, 0, null, null);
+    try testing.expectEqual(@as(f32, 0), out[10]);
 }
