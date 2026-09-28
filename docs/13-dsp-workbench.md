@@ -699,7 +699,11 @@ each: release τ63 after both, which a program-dependent release makes
 differ), `lowsine` (50 Hz THD) and `drums` (a synthetic 110 bpm kit
 loop: crest, GR per kick and snare, GR 1 ms in, transient-to-body).
 Gain is measured sample by sample as out/in, exact for a compressor
-(a memoryless multiply), so no meter cell is needed. docs/24 §Test plan.
+(a memoryless multiply), so no meter cell is needed. A multiband's
+crossover turns the phase, so for `multi2` it's the ratio of 1 ms RMS
+windows instead, and crossings are looked for 10 ms after each edge,
+past the crossovers' ringing (`isMultiband`, `edgeSkip`). docs/24 §Test
+plan.
 
 `--input=FILE.wav` runs an effect on real audio instead (the `file` case):
 gain percentiles (absolute, and GR relative to quiet passages), pump (GR

@@ -662,7 +662,10 @@ fn runCase(
         },
         .step => {
             const x = input orelse return error.NoInput;
-            const g = try gainTraceDb(alloc, x, out.l, @floatCast(0.3 * cases.dbToAmp(cases.step_lo_db)));
+            const g = try gainTraceDb(alloc, x, out.l, @floatCast(0.3 * cases.dbToAmp(cases.step_lo_db)), isMultiband(mname));
+            // A crossover rings at each edge, which spikes the windowed
+            // trace; crossings are looked for after it, timed from the edge.
+            const skip = edgeSkip(mname);
             const up: usize = @intFromFloat(cases.step_up_s * SR);
             const down: usize = @intFromFloat(cases.step_down_s * SR);
             const g_lo = meanOf(g[up - 4800 .. up]);
@@ -673,23 +676,23 @@ fn runCase(
             try tbl.print(alloc, "gain {d:.2} dB at {d:.0} dBFS, {d:.2} dB at {d:.0} dBFS (GR {d:.2} dB), {d:.2} dB after\n", .{ g_lo, cases.step_lo_db, g_hi, cases.step_hi_db, g_lo - g_hi, g_end });
             if (@abs(dg) > 0.1) {
                 try tbl.print(alloc, "attack  tau63 {s}  10-90% {s}\n", .{
-                    try fmtMs(alloc, crossAt(g, up, g_lo + 0.632 * dg, dg < 0)),
+                    try fmtMs(alloc, crossAfter(g, up, skip, g_lo + 0.632 * dg, dg < 0)),
                     try fmtMs(alloc, blk: {
-                        const a = crossAt(g, up, g_lo + 0.1 * dg, dg < 0) orelse break :blk null;
-                        const b = crossAt(g, up, g_lo + 0.9 * dg, dg < 0) orelse break :blk null;
+                        const a = crossAfter(g, up, skip, g_lo + 0.1 * dg, dg < 0) orelse break :blk null;
+                        const b = crossAfter(g, up, skip, g_lo + 0.9 * dg, dg < 0) orelse break :blk null;
                         break :blk b - a;
                     }),
                 });
                 var mn: f64 = g_hi;
-                for (g[up..down]) |v| mn = @min(mn, v);
+                for (g[up + skip .. down]) |v| mn = @min(mn, v);
                 try tbl.print(alloc, "overshoot {d:.2} dB\n", .{g_hi - mn});
             }
             if (@abs(dr) > 0.1) {
                 try tbl.print(alloc, "release tau63 {s}  10-90% {s}\n", .{
-                    try fmtMs(alloc, crossAt(g, down, g_hi + 0.632 * dr, dr < 0)),
+                    try fmtMs(alloc, crossAfter(g, down, skip, g_hi + 0.632 * dr, dr < 0)),
                     try fmtMs(alloc, blk: {
-                        const a = crossAt(g, down, g_hi + 0.1 * dr, dr < 0) orelse break :blk null;
-                        const b = crossAt(g, down, g_hi + 0.9 * dr, dr < 0) orelse break :blk null;
+                        const a = crossAfter(g, down, skip, g_hi + 0.1 * dr, dr < 0) orelse break :blk null;
+                        const b = crossAfter(g, down, skip, g_hi + 0.9 * dr, dr < 0) orelse break :blk null;
                         break :blk b - a;
                     }),
                 });
@@ -704,7 +707,7 @@ fn runCase(
         },
         .bursts => {
             const x = input orelse return error.NoInput;
-            const g = try gainTraceDb(alloc, x, out.l, @floatCast(0.3 * cases.dbToAmp(cases.step_lo_db)));
+            const g = try gainTraceDb(alloc, x, out.l, @floatCast(0.3 * cases.dbToAmp(cases.step_lo_db)), isMultiband(mname));
             const base = meanOf(g[@as(usize, @intFromFloat(0.4 * SR))..@as(usize, @intFromFloat(0.5 * SR))]);
             var taus: [2]?f64 = .{ null, null };
             const spans = [_][2]f64{ cases.bursts_short, cases.bursts_long };
@@ -713,7 +716,7 @@ fn runCase(
                 const end: usize = @intFromFloat(sp[1] * SR);
                 const at_end = g[end - 48];
                 const dr = base - at_end;
-                taus[k] = if (dr > 0.1) crossAt(g, end, at_end + 0.632 * dr, false) else null;
+                taus[k] = if (dr > 0.1) crossAfter(g, end, edgeSkip(mname), at_end + 0.632 * dr, false) else null;
                 try tbl.print(alloc, "{s}: GR {d:.2} dB at its end, release tau63 {s}\n", .{ label, dr, try fmtMs(alloc, taus[k]) });
             }
             if (taus[0] != null and taus[1] != null) try tbl.print(alloc, "release ratio long/short {d:.2}\n", .{taus[1].? / taus[0].?});
@@ -727,7 +730,7 @@ fn runCase(
         },
         .drums => {
             const x = input orelse return error.NoInput;
-            const g = try gainTraceDb(alloc, x, out.l, 0.001);
+            const g = try gainTraceDb(alloc, x, out.l, 0.001, isMultiband(mname));
             var store: [128]cases.DrumHit = undefined;
             const hits = cases.drumHits(&store);
             try tbl.print(alloc, "in:  peak {d:.1} dBFS  rms {d:.1}  crest {d:.1} dB\n", .{ an.dbAmp(peakAbs(x)), an.dbAmp(an.rms(x)), an.dbAmp(peakAbs(x) / an.rms(x)) });
@@ -831,14 +834,46 @@ fn isDynamics(name: []const u8) bool {
     return false;
 }
 
+/// Band-splitting compressors shift phase, so their gain is only readable
+/// as a level ratio, not per sample.
+fn isMultiband(name: []const u8) bool {
+    return std.mem.eql(u8, name, "multi2");
+}
+
 /// Per-sample gain out/in in dB, held across samples where the input is
 /// too small to divide by (a compressor is a memoryless multiply, so the
-/// ratio is exact wherever the input isn't near zero).
-fn gainTraceDb(alloc: std.mem.Allocator, in: []const f32, out: []const f32, floor: f32) ![]f64 {
+/// ratio is exact wherever the input isn't near zero). `windowed` reads
+/// it instead as the ratio of 1 ms RMS windows centred on each sample
+/// (one cycle of the 1 kHz tests) - for crossovers, whose allpass phase
+/// makes y/x meaningless sample by sample.
+fn gainTraceDb(alloc: std.mem.Allocator, in: []const f32, out: []const f32, floor: f32, windowed: bool) ![]f64 {
     const g = try alloc.alloc(f64, in.len);
     var last: f64 = 0;
-    for (in, out, g) |x, y, *d| {
-        if (@abs(x) > floor) last = an.dbAmp(@abs(@as(f64, y) / @as(f64, x)));
+    if (!windowed) {
+        for (in, out, g) |x, y, *d| {
+            if (@abs(x) > floor) last = an.dbAmp(@abs(@as(f64, y) / @as(f64, x)));
+            d.* = last;
+        }
+        return g;
+    }
+    const H: usize = 24;
+    var sx: f64 = 0;
+    var sy: f64 = 0;
+    for (0..@min(H, in.len)) |i| {
+        sx += @as(f64, in[i]) * in[i];
+        sy += @as(f64, out[i]) * out[i];
+    }
+    for (g, 0..) |*d, i| {
+        if (i + H < in.len) {
+            sx += @as(f64, in[i + H]) * in[i + H];
+            sy += @as(f64, out[i + H]) * out[i + H];
+        }
+        if (i >= H) {
+            sx -= @as(f64, in[i - H]) * in[i - H];
+            sy -= @as(f64, out[i - H]) * out[i - H];
+        }
+        const n: f64 = @floatFromInt(2 * H);
+        if (@sqrt(@max(sx, 0) / n) > floor) last = 10 * std.math.log10(@max(sy, 1e-30) / @max(sx, 1e-30));
         d.* = last;
     }
     return g;
@@ -976,6 +1011,19 @@ fn meanOf(xs: []const f64) f64 {
 
 /// First time at or after `from` where the trace crosses `level` in the
 /// direction of travel (`down` = falling).
+/// crossAt, but looking only from `skip` samples after `from` (still timed
+/// from `from`).
+fn crossAfter(g: []const f64, from: usize, skip: usize, level: f64, down: bool) ?f64 {
+    const t = crossAt(g, from + skip, level, down) orelse return null;
+    return t + @as(f64, @floatFromInt(skip)) / SR;
+}
+
+/// Samples of a level edge the windowed gain trace can't be read over
+/// (multiband: the crossovers ring for a few ms).
+fn edgeSkip(name: []const u8) usize {
+    return if (isMultiband(name)) 480 else 0;
+}
+
 fn crossAt(g: []const f64, from: usize, level: f64, down: bool) ?f64 {
     for (g[from..], from..) |v, i| {
         if ((down and v <= level) or (!down and v >= level)) return @as(f64, @floatFromInt(i - from)) / SR;
