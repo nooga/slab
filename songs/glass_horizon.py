@@ -77,9 +77,11 @@ kick = song.track("KICK", "sampler", "vcsl-kits/acoustic-kit", volume=1.11, para
     fx("comp2", "dry-drum-punch", makeup=5.5),
     fx("verb2", "small-room", mix=0.1),
 ])
-# The drum bus: kit, snare, kick and their room glued on one SSL-style
-# compressor, 4:1 with the hits let through (comp2 drum-bus).
-drums = song.bus("DRUMS", volume=1.25, fx=[fx("comp2", "drum-bus", thresh=-22, makeup=2.4)])  # a quiet kit: 5-6 dB on the hits
+# The drum bus: kit, snare, kick and their room glued on bus2, the
+# SSL-style compressor: 4:1, 10 ms lets the stick through, AUTO holds a
+# floor under the hits, a little colour. Pushed (6 dB on the hits, +1 dB
+# out) so the kit stands up in front of the pad.
+drums = song.bus("DRUMS", volume=1.25, fx=[fx("bus2", "drum-bus", thresh=-23, makeup=5.0)])
 for t in (kit, snare, kick, room):
     t.output = drums
 TOM_HI2 = kit.duplicate_zone("high tom", 50, as_name="rack tom", tune=3)
@@ -90,6 +92,9 @@ TOMS = [50, 48, 45, 43, 41]  # high to low
 pad = song.track("PAD", "juno2", "bittersweet-minor-pad", volume=0.23, params=dict(level=0.55), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=260, p1_hz=400, p1_db=-4, p1_q=0.8, hs_hz=7000, hs_db=-1),
     fx("chorus2", "juno-ii"),
+    # ducks under the drums (a few dB on the hits, back in an eighth), so
+    # the pad makes room instead of masking the kit
+    fx("comp2", key=drums, thresh=-12, ratio=3, knee=6, atk=0.002, rel=0.12),
     fx("verb2", "big-plate-hall", mix=0.32),
 ])
 voice = song.track("VOICE", "unfairlight", "sararr", volume=0.538, params=dict(vib_depth=0.12, filter=215, vol=0.95), fx=[

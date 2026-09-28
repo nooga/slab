@@ -326,6 +326,15 @@ detector from another track: `fx("comp2", thresh=-30, ratio=6, key=kick)`
 on the bass or pad pumps it on every kick; a muted "ghost kick" track
 still keys (docs/23 §Sidechain keys).
 
+For groups and the mix bus, `bus2` (SSL-style, docs/24 §bus2) is the
+glue: stepped RATIO/ATK/REL (indices: `ratio=1` is 4:1, `atk=4` 10 ms,
+`rel=4` AUTO), AUTO release (fast after single hits, slow after loud
+passages) and COLOR (distortion that grows with the squash). Presets
+`drum-bus`, `mix-glue`, `master-glue`, `drum-crush` (parallel), `pump`.
+Glass Horizon's DRUMS group runs `fx("bus2", "drum-bus", thresh=-23,
+makeup=5)`, and its pad ducks under the group (`comp2` keyed by DRUMS)
+so the kit stands in front of it.
+
 Compress what moves too much: bass, drums, a lead with wide velocity.
 Leave pads alone; they're already even.
 
