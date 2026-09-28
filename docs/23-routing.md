@@ -284,9 +284,21 @@ connected, not a second model, and it doesn't draw a free graph.
 
 ### Arrangement
 
-Buses get rows in a section under the tracks and above the master
-strip, with the same header minis (fader, pan, M/S, meter) as tracks
-and no clip lane. Group folding waits for track reordering.
+*Built.* Rows are drawn in a display order, not index order: audio
+tracks, then a BUSES divider, then the buses, all above the pinned
+master strip. Indices never move, so routing references stay valid.
+
+- Audio tracks are numbered 1, 2, … among themselves; buses are lettered
+  A, B, … as Live letters its returns.
+- A bus header has the same minis as a track (volume, pan, M/S, meter,
+  A for lanes) and no arm latch.
+- A bus lane is a flat dark well with bar lines (for its automation
+  lanes) and names what feeds it: `← KIT · BASS (send)`.
+- Clips never land on a bus: creation, import and paste refuse, and
+  clip drags and pastes move by audio row, skipping the bus section.
+- The overview strip shows audio tracks only.
+
+Group folding waits for track reordering.
 
 ## Phasing
 

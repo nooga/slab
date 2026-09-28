@@ -751,7 +751,11 @@ pub fn main(init: std.process.Init) !void {
             defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
 
             var name_buf: [32]u8 = undefined;
-            const name = std.fmt.bufPrint(&name_buf, "Track {d}", .{track_count + 1}) catch "Track";
+            var n_audio: usize = 0;
+            for (tracks) |*t| {
+                if (!t.isBus()) n_audio += 1;
+            }
+            const name = std.fmt.bufPrint(&name_buf, "Track {d}", .{n_audio + 1}) catch "Track";
             tracks_buf[track_count] = try track_mod.Track.init(
                 alloc,
                 name,
@@ -1115,6 +1119,10 @@ fn importAudioClip(
 ) !void {
     if (tracks.len == 0) return;
     const ti = @min(target_track orelse selected_track.* orelse 0, tracks.len - 1);
+    if (tracks[ti].isBus()) {
+        status.set("A bus takes no clips: import onto a track", .{});
+        return;
+    }
 
     const path = (try native_dialog.openAudioFile(alloc)) orelse return; // cancelled
     defer alloc.free(path);

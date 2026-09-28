@@ -54,28 +54,93 @@ fn rowH(t: *const Track) f32 {
     return LANE_H + AUTO_H * @as(f32, @floatFromInt(autoRows(t)));
 }
 
+// Display order (docs/23 §Arrangement): audio tracks in index order, then
+// a BUSES divider, then the buses in index order. Track indices never
+// change; only where a row is drawn does.
+
+/// Height of the strip that opens the bus section.
+const BUS_DIV_H: f32 = 16;
+
+fn hasBuses(tracks: []const Track) bool {
+    for (tracks) |*t| if (t.isBus()) return true;
+    return false;
+}
+
 /// Top of track `ti`'s row, from the top of the lane content.
 fn rowTop(tracks: []const Track, ti: usize) f32 {
+    const bus = ti < tracks.len and tracks[ti].isBus();
     var y: f32 = 0;
-    for (tracks[0..@min(ti, tracks.len)]) |*t| y += rowH(t);
+    for (tracks, 0..) |*t, j| {
+        if (!t.isBus() and (bus or j < ti)) y += rowH(t);
+    }
+    if (!bus) return y;
+    y += BUS_DIV_H;
+    for (tracks[0..ti]) |*t| if (t.isBus()) {
+        y += rowH(t);
+    };
+    return y;
+}
+
+/// Top of the BUSES divider (valid when there are buses).
+fn busDividerTop(tracks: []const Track) f32 {
+    var y: f32 = 0;
+    for (tracks) |*t| if (!t.isBus()) {
+        y += rowH(t);
+    };
     return y;
 }
 
 fn contentH(tracks: []const Track) f32 {
-    return rowTop(tracks, tracks.len);
+    var y: f32 = if (hasBuses(tracks)) BUS_DIV_H else 0;
+    for (tracks) |*t| y += rowH(t);
+    return y;
 }
 
-/// The track whose row holds content-relative `y`; below the last row it
-/// counts on in LANE_H steps (drags off the end), above the first it's -1.
-fn trackAtY(tracks: []const Track, y: f32) i32 {
+/// Audio track `ti`'s position among the audio tracks.
+fn audioRank(tracks: []const Track, ti: usize) i32 {
+    var k: i32 = 0;
+    for (tracks[0..@min(ti, tracks.len)]) |*t| if (!t.isBus()) {
+        k += 1;
+    };
+    return k;
+}
+
+/// The audio track at `rank`, if there is one.
+fn audioAt(tracks: []const Track, rank: i32) ?usize {
+    if (rank < 0) return null;
+    var k: i32 = 0;
+    for (tracks, 0..) |*t, i| {
+        if (t.isBus()) continue;
+        if (k == rank) return i;
+        k += 1;
+    }
+    return null;
+}
+
+/// The audio rank whose row holds content-relative `y`: -1 above the
+/// first, and past the last audio track (the bus section, or below) it
+/// counts on in LANE_H steps, so a drag there finds no target.
+fn audioRankAtY(tracks: []const Track, y: f32) i32 {
     if (y < 0) return -1;
     var top: f32 = 0;
-    for (tracks, 0..) |*t, i| {
+    var k: i32 = 0;
+    for (tracks) |*t| {
+        if (t.isBus()) continue;
         const h = rowH(t);
-        if (y < top + h) return @intCast(i);
+        if (y < top + h) return k;
         top += h;
+        k += 1;
     }
-    return @as(i32, @intCast(tracks.len)) + @as(i32, @intFromFloat(@floor((y - top) / LANE_H)));
+    return k + @as(i32, @intFromFloat(@floor((y - top) / LANE_H)));
+}
+
+/// Bus `ti`'s letter (A, B, …) in display order, as Live letters returns.
+fn busLetter(tracks: []const Track, ti: usize) u8 {
+    var k: u8 = 0;
+    for (tracks[0..ti]) |*t| if (t.isBus()) {
+        k += 1;
+    };
+    return @as(u8, 'A') + @min(k, 25);
 }
 
 fn rulerH() f32 {
@@ -311,7 +376,8 @@ pub fn copySelectedClips(tracks: []Track, alloc: std.mem.Allocator, out: *std.Ar
             copied.selected = true;
             for (copied.notes.items) |*n| n.selected = false;
             out.append(alloc, .{
-                .rel_track = @as(i32, @intCast(ti)) - @as(i32, @intCast(base_track)),
+                // By audio rank, so a paste lays clips out over tracks, not buses.
+                .rel_track = audioRank(tracks, ti) - audioRank(tracks, base_track),
                 .clip = copied,
             }) catch |err| {
                 std.log.err("copy clip append failed: {s}", .{@errorName(err)});
@@ -334,13 +400,12 @@ pub fn pasteClips(
 ) bool {
     if (items.len == 0 or tracks.len == 0) return false;
     const base_track = target_track orelse selected_track.* orelse 0;
+    if (base_track >= tracks.len or tracks[base_track].isBus()) return false;
     deselectAllClips(tracks);
     var first: ?ClipRef = null;
     var changed = false;
     for (items) |*item| {
-        const target_i_signed = @as(i32, @intCast(base_track)) + item.rel_track;
-        if (target_i_signed < 0 or target_i_signed >= @as(i32, @intCast(tracks.len))) continue;
-        const target_i: usize = @intCast(target_i_signed);
+        const target_i = audioAt(tracks, audioRank(tracks, base_track) + item.rel_track) orelse continue;
         var clip = item.clip.clone(alloc) catch |err| {
             std.log.err("paste clip clone failed: {s}", .{@errorName(err)});
             continue;
@@ -684,15 +749,20 @@ pub fn draw(
     for (tracks, 0..) |*t, ti| {
         const ly = lanes_top + rowTop(tracks, ti) - scroll_y;
         if (ly + LANE_H <= lanes_top) continue;
-        if (ly >= lanes_bottom) break;
+        if (ly >= lanes_bottom) continue; // display order isn't index order
         const lane_timeline = pane.rect(timeline_x, ly, timeline_w, LANE_H);
         const lane_is_sel = selected_track.* != null and selected_track.*.? == ti;
         drawTimelineLane(ui, lane_timeline, t.*, ti, lane_is_sel, timeline_x0, edit_snap);
+        if (t.isBus()) drawBusFeeds(ui, lane_timeline, tracks, ti);
+    }
+    if (hasBuses(tracks)) {
+        const dy = lanes_top + busDividerTop(tracks) - scroll_y;
+        if (dy + BUS_DIV_H > lanes_top and dy < lanes_bottom) drawBusDivider(ui, pane.rect(timeline_x, dy, timeline_w, BUS_DIV_H));
     }
     for (tracks, 0..) |*t, ti| {
         const ly = lanes_top + rowTop(tracks, ti) - scroll_y;
         if (ly + rowH(t) <= lanes_top) continue;
-        if (ly >= lanes_bottom) break;
+        if (ly >= lanes_bottom) continue; // display order isn't index order
         // Automation rows under the clip row.
         if (autoRows(t) > 0) {
             if (drawAutomationRows(ui, alloc, tracks, t, ti, ly + LANE_H, timeline_x, timeline_w, timeline_x0, edit_snap, selected_track, selected_clip, m, press_consumed)) press_consumed = true;
@@ -858,12 +928,12 @@ pub fn draw(
     for (tracks, 0..) |*t, ti| {
         const ly = lanes_top + rowTop(tracks, ti) - scroll_y;
         if (ly + rowH(t) <= lanes_top) continue;
-        if (ly >= lanes_bottom) break;
+        if (ly >= lanes_bottom) continue; // display order isn't index order
         if (autoRows(t) > 0) drawAutomationHeaders(ui, alloc, t, ti, header_x, ly + LANE_H, header_w);
         const lane_header = pane.rect(header_x, ly, header_w, LANE_H);
         const lane_is_sel = selected_track.* != null and selected_track.*.? == ti;
         const editing = rename_target.kind == .track and rename_target.track == ti;
-        const hres = drawLaneHeader(ui, lane_header, t, ti, lane_is_sel, editing, play_beat);
+        const hres = drawLaneHeader(ui, lane_header, t, ti, @as(usize, @intCast(audioRank(tracks, ti))) + 1, if (t.isBus()) busLetter(tracks, ti) else null, lane_is_sel, editing, play_beat);
         if (editing) result.rename_rect = hres.name_rect;
         switch (hres.action) {
             .none => {},
@@ -880,6 +950,13 @@ pub fn draw(
                 device_sel.* = .audio;
                 result.rename_track = ti;
             },
+        }
+    }
+    if (hasBuses(tracks)) {
+        const dy = lanes_top + busDividerTop(tracks) - scroll_y;
+        if (dy + BUS_DIV_H > lanes_top and dy < lanes_bottom) {
+            const hr = ui.plate(bridge.fromRl(pane.rect(header_x, dy, header_w, BUS_DIV_H)), .{ .fill = ui_style.face.shade(-4) });
+            _ = ui.engraved(&ui.fonts.legend, hr.x + 5, hr.y + 3, "BUSES", ui_style.text_dim);
         }
     }
     // Below the last track the header column is a blank plate (nothing
@@ -1188,7 +1265,7 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
 
     const dx = m.x - drag_start_mouse_x;
     const d_beats = snap_mod.snapNearest(edit_snap, @as(f64, dx / px_per_beat), altBypassSnap());
-    drag_track_delta = trackAtY(tracks, m.y - lanes_top + scroll_y) - @as(i32, @intCast(drag_ref.track));
+    drag_track_delta = audioRankAtY(tracks, m.y - lanes_top + scroll_y) - audioRank(tracks, drag_ref.track);
 
     switch (drag_mode) {
         .none => {},
@@ -1269,13 +1346,12 @@ fn finishClipDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Cl
     const src_t = &tracks[drag_ref.track];
     if (drag_ref.clip >= src_t.clips.items.len) return;
 
-    const target_i_signed = trackAtY(tracks, m.y - lanes_top + scroll_y);
-    if (target_i_signed < 0) return;
-    const target_i: usize = @intCast(target_i_signed);
-    if (target_i >= tracks.len or target_i == drag_ref.track) return;
+    const target_rank = audioRankAtY(tracks, m.y - lanes_top + scroll_y);
+    const target_i = audioAt(tracks, target_rank) orelse return;
+    if (target_i == drag_ref.track) return;
 
     if (drag_snap_count > 0) {
-        moveSelectedClipsBetweenTracks(tracks, alloc, selected_clip, target_i_signed - @as(i32, @intCast(drag_ref.track)));
+        moveSelectedClipsBetweenTracks(tracks, alloc, selected_clip, target_rank - audioRank(tracks, drag_ref.track));
         return;
     }
 
@@ -1318,8 +1394,8 @@ fn moveSelectedClipsBetweenTracks(tracks: []Track, alloc: std.mem.Allocator, sel
         s_i -= 1;
         const s = drag_snaps[s_i];
         if (s.track >= tracks.len) continue;
-        const target_signed = @as(i32, @intCast(s.track)) + delta;
-        if (target_signed < 0 or target_signed >= @as(i32, @intCast(tracks.len))) continue;
+        // Moves go by audio rank: clips skip past buses.
+        const target_signed: i32 = @intCast(audioAt(tracks, audioRank(tracks, s.track) + delta) orelse continue);
         const st = &tracks[s.track];
         if (s.clip >= st.clips.items.len) continue;
         if (!st.clips.items[s.clip].selected) continue;
@@ -1493,7 +1569,9 @@ fn routeMenuTick(tracks: []Track) ?RouteEdit {
 /// Track header on the new Ui (docs/06 §Working surfaces): faceplate with
 /// the track-colour spine (+ amber selection stripe), index and name, R/M/S
 /// lit latches, pan and volume mini sliders, and a bare stereo meter.
-fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, selected: bool, editing_name: bool, beat: f64) HeaderResult {
+/// `number` is the track's place among the audio tracks (1-based); a bus
+/// shows its `bus_letter` instead.
+fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, number: usize, bus_letter: ?u8, selected: bool, editing_name: bool, beat: f64) HeaderResult {
     const r = bridge.fromRl(r_legacy);
     ui.pushId(t);
     defer ui.popId();
@@ -1513,11 +1591,12 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, sele
     const auto_r = btns.cutLeft(17).insetXY(0, 2);
     if (ctl.button(ui, auto_r, "autoshow", &shown, .{ .kind = .latch, .label = "A", .lit = ui_style.auto })) t.lanes_shown = shown;
     menu.tip(ui, auto_r, if (t.lanes_shown) "Hide automation lanes" else "Show automation lanes");
-    const can_arm = t.kind == .audio;
-    var armed = t.isArmed();
     const arm_r = btns.cutLeft(17).insetXY(0, 2);
-    if (ctl.button(ui, arm_r, "arm", &armed, .{ .kind = .latch, .label = "R", .lit = ui_style.rec, .disabled = !can_arm })) t.setArmed(armed);
-    menu.tip(ui, arm_r, if (t.isArmed()) "Disarm (record)" else "Arm for recording");
+    if (!t.isBus()) {
+        var armed = t.isArmed();
+        if (ctl.button(ui, arm_r, "arm", &armed, .{ .kind = .latch, .label = "R", .lit = ui_style.rec, .disabled = t.kind != .audio })) t.setArmed(armed);
+        menu.tip(ui, arm_r, if (t.isArmed()) "Disarm (record)" else "Arm for recording");
+    }
     var muted = t.mute.load(.monotonic);
     const mute_r = btns.cutLeft(17).insetXY(0, 2);
     if (ctl.button(ui, mute_r, "mute", &muted, .{ .kind = .latch, .label = "M", .lit = ui_style.led_blue })) t.mute.store(muted, .monotonic);
@@ -1529,7 +1608,7 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, sele
 
     // Index badge + name; the name row is also the select/rename target.
     var ibuf: [8]u8 = undefined;
-    const idx_s = std.fmt.bufPrint(&ibuf, "{d}", .{idx + 1}) catch "?";
+    const idx_s = if (bus_letter) |l| std.fmt.bufPrint(&ibuf, "{c}", .{l}) catch "?" else std.fmt.bufPrint(&ibuf, "{d}", .{number}) catch "?";
     const idx_r = row1.cutLeft(14);
     ui.textIn(&ui.fonts.legend, idx_r, idx_s, ui_style.text_mute, .left, true);
     const name_r = row1;
@@ -2019,10 +2098,12 @@ fn drawOverview(
     const px_per_beat_ov = inner.width / cb;
 
     // Each track gets a thin horizontal slice.
-    if (tracks.len > 0) {
-        const lane_h = @max(1.0, inner.height / @as(f32, @floatFromInt(tracks.len)));
+    const n_audio = audioRank(tracks, tracks.len);
+    if (n_audio > 0) {
+        const lane_h = @max(1.0, inner.height / @as(f32, @floatFromInt(n_audio)));
         for (tracks, 0..) |*t, i| {
-            const ly = inner.y + @as(f32, @floatFromInt(i)) * lane_h;
+            if (t.isBus()) continue; // no clips
+            const ly = inner.y + @as(f32, @floatFromInt(audioRank(tracks, i))) * lane_h;
             for (t.clips.items) |clip| {
                 const cx = inner.x + @as(f32, @floatCast(clip.start_beat)) * px_per_beat_ov;
                 const cw = @max(@as(f32, @floatCast(clip.length_beats)) * px_per_beat_ov, 1.0);
@@ -2187,10 +2268,38 @@ fn drawBeatTicks(ui: *Ui, ruler: c.rl.Rectangle, timeline_x: f32, timeline_w: f3
     }
 }
 
+/// The strip opening the bus section: a flat bar across the timeline.
+fn drawBusDivider(ui: *Ui, r_: c.rl.Rectangle) void {
+    const r = bridge.fromRl(r_);
+    ui.rect(r, ui_style.face.shade(-4));
+    ui.rect(Rect.xywh(r.x, r.y, r.w, 1), ui_style.edge);
+    ui.rect(Rect.xywh(r.x, r.bottom() - 1, r.w, 1), ui_style.chassis);
+}
+
+/// What feeds bus `ti`, written into its lane: "← KIT · SNARE (send)".
+fn drawBusFeeds(ui: *Ui, r_: c.rl.Rectangle, tracks: []Track, ti: usize) void {
+    var buf: [160]u8 = undefined;
+    var w: usize = 0;
+    const arrow = "\u{2190} ";
+    for (tracks, 0..) |*u, j| {
+        if (j == ti) continue;
+        const out = u.output == ti;
+        const send = if (u.sendTo(@intCast(ti))) |_| true else false;
+        if (!out and !send) continue;
+        const sep = if (w == 0) arrow else " \u{00B7} ";
+        const piece = std.fmt.bufPrint(buf[w..], "{s}{s}{s}", .{ sep, u.name(), if (send and !out) " (send)" else "" }) catch break;
+        w += piece.len;
+    }
+    const r = bridge.fromRl(r_);
+    const text = if (w == 0) "nothing routed here: right-click a track's name, Output or Sends" else buf[0..w];
+    ui.textIn(&ui.fonts.legend, Rect.xywh(r.x + 6, r.y + 4, r.w - 12, 12), text, ui_style.text_mute, .left, true);
+}
+
 fn drawTimelineLane(ui: *Ui, r_: c.rl.Rectangle, t: Track, idx: usize, selected: bool, timeline_x0: f32, edit_snap: snap_mod.Setting) void {
     const r = bridge.fromRl(r_);
     _ = idx;
-    ui.rect(r, if (selected) ui_style.pane_alt else ui_style.pane);
+    // A bus has no clips: a flat dark well, bar lines kept for its lanes.
+    ui.rect(r, if (t.isBus()) (if (selected) ui_style.well.shade(6) else ui_style.well) else if (selected) ui_style.pane_alt else ui_style.pane);
     const right = r_.x + r_.width - 1;
 
     // Fine sub-grid (uniform), then meter-driven beat and bar lines.
@@ -2221,7 +2330,6 @@ fn drawTimelineLane(ui: *Ui, r_: c.rl.Rectangle, t: Track, idx: usize, selected:
         bar += 1;
     }
     ui.rect(Rect.xywh(r.x, r.bottom() - 1, r.w, 1), ui_style.chassis);
-    _ = t;
 }
 
 /// The in-progress take on the armed track: a red region from the take's

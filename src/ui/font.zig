@@ -209,6 +209,10 @@ const KEY_GLYPHS = [_]KeyGlyph{
     .{ .cp = 0x2193, .slot = 0x88, .rows = &.{ "..#..", "..#..", "..#..", "#.#.#", ".###.", "..#.." } }, // ↓
     .{ .cp = 0x2303, .slot = 0x89, .rows = &.{ "..#..", ".#.#.", "#...#" } }, // ⌃
     .{ .cp = 0x25B8, .slot = 0x8A, .rows = &.{ "#..", "##.", "###", "##.", "#.." } }, // ▸
+    // Marks and arrows for labels; the empty last row lifts them to mid-height.
+    .{ .cp = 0x2022, .slot = 0x8B, .rows = &.{ ".##.", "####", "####", ".##.", "...." } }, // •
+    .{ .cp = 0x2190, .slot = 0x8C, .rows = &.{ "..#..", ".#...", "#####", ".#...", "..#..", "....." } }, // ←
+    .{ .cp = 0x2192, .slot = 0x8D, .rows = &.{ "..#..", "...#.", "#####", "...#.", "..#..", "....." } }, // →
 };
 
 /// Map a few common non-Latin-1 punctuation codepoints onto the
