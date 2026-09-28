@@ -763,10 +763,13 @@ pub const FyRawMachine = struct {
     fn evalAutomation(self: *FyRawMachine, view: *const snapshot.AutoView, beat: f64) void {
         @memset(self.auto_on[0..], false);
         const snap = view.snap;
+        // Track lanes first, clip lanes by clip start: the last lane that
+        // applies wins (docs/22 §Precedence).
         for (snap.lanes[0..snap.lane_count], 0..) |lane, li| {
             if (!view.matches(lane) or lane.control >= self.desc.control_count) continue;
+            const lb = lane.localBeat(beat) orelse continue;
             self.auto_on[lane.control] = true;
-            self.auto_val[lane.control] = automation.evalCursor(view.points(lane), beat, &view.cursors[li]);
+            self.auto_val[lane.control] = automation.evalCursor(view.points(lane), lb, &view.cursors[li]);
         }
     }
 

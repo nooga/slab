@@ -395,45 +395,101 @@ pub const Track = struct {
         self.snap_published.store(write_idx, .release);
     }
 
-    /// Resolve lanes to (slot, control index) and copy their points. Lanes
+    /// Resolve lanes to (slot, control index) and copy their points: track
+    /// lanes, then clip lanes ordered by clip start, so the audio thread's
+    /// "last lane that applies wins" is the precedence of docs/22. Lanes
     /// that are empty or whose control no longer exists are left out.
     fn publishLanes(self: *const Track, dst: *snap_mod.TrackSnapshot) void {
         dst.lane_count = 0;
         dst.auto_point_count = 0;
-        for (self.lanes.items) |*lane| {
-            const pts = lane.points.items;
-            if (pts.len == 0) continue;
-            if (dst.lane_count >= snap_mod.MAX_LANES_PER_TRACK) break;
-            if (dst.auto_point_count + pts.len > snap_mod.MAX_AUTO_POINTS_PER_TRACK) break;
-            var ls = snap_mod.LaneSnap{
-                .kind = lane.target.kind,
-                .fx_uid = lane.target.fx_uid,
-                .points_start = dst.auto_point_count,
-                .points_count = @intCast(pts.len),
-            };
-            if (self.targetMachine(lane.target)) |m| {
-                const ci = m.controlIndex(lane.target.param()) orelse continue;
-                ls.control = @intCast(ci);
-            } else if (lane.target.kind == .inst or lane.target.kind == .fx) continue;
-            @memcpy(dst.auto_points[dst.auto_point_count..][0..pts.len], pts);
-            dst.auto_point_count += @intCast(pts.len);
-            dst.lanes[dst.lane_count] = ls;
-            dst.lane_count += 1;
+        for (self.lanes.items) |*lane| self.publishLane(dst, lane, null);
+        // Note clips holding lanes, by start (stable: equal starts keep
+        // their list order).
+        var order: [snap_mod.MAX_CLIPS_PER_TRACK]u16 = undefined;
+        var n: usize = 0;
+        for (self.clips.items, 0..) |*clip, ci| {
+            if (clip.isAudio() or clip.lanes.items.len == 0 or n >= order.len) continue;
+            order[n] = @intCast(ci);
+            n += 1;
         }
+        std.sort.insertion(u16, order[0..n], self, struct {
+            fn lt(t: *const Track, a: u16, b: u16) bool {
+                return t.clips.items[a].start_beat < t.clips.items[b].start_beat;
+            }
+        }.lt);
+        for (order[0..n]) |ci| {
+            const clip = &self.clips.items[ci];
+            for (clip.lanes.items) |*lane| self.publishLane(dst, lane, clip);
+        }
+    }
+
+    fn publishLane(self: *const Track, dst: *snap_mod.TrackSnapshot, lane: *const automation.Lane, clip: ?*const clip_mod.Clip) void {
+        const pts = lane.points.items;
+        if (pts.len == 0) return;
+        if (dst.lane_count >= snap_mod.MAX_LANES_PER_TRACK) return;
+        if (dst.auto_point_count + pts.len > snap_mod.MAX_AUTO_POINTS_PER_TRACK) return;
+        var ls = snap_mod.LaneSnap{
+            .kind = lane.target.kind,
+            .fx_uid = lane.target.fx_uid,
+            .points_start = dst.auto_point_count,
+            .points_count = @intCast(pts.len),
+        };
+        if (clip) |cl| {
+            ls.clip_start = cl.start_beat;
+            ls.clip_len = cl.length_beats;
+        }
+        if (self.targetMachine(lane.target)) |m| {
+            const ci = m.controlIndex(lane.target.param()) orelse return;
+            ls.control = @intCast(ci);
+        } else if (lane.target.kind == .inst or lane.target.kind == .fx) return;
+        @memcpy(dst.auto_points[dst.auto_point_count..][0..pts.len], pts);
+        dst.auto_point_count += @intCast(pts.len);
+        dst.lanes[dst.lane_count] = ls;
+        dst.lane_count += 1;
+    }
+
+    /// The automated value (knob space) of `target` at song beat `beat`,
+    /// by the audio thread's precedence: a clip lane while its clip plays
+    /// (the later-starting clip on overlap), else the track lane. Null
+    /// when no lane speaks there.
+    pub fn autoValue(self: *Track, target: automation.Target, beat: f64) ?f32 {
+        var best: ?f32 = null;
+        var best_start: f64 = -std.math.inf(f64);
+        for (self.clips.items) |*clip| {
+            if (clip.isAudio() or clip.lanes.items.len == 0) continue;
+            if (beat < clip.start_beat or beat >= clip.endBeat()) continue;
+            if (clip.start_beat < best_start) continue;
+            const l = clip.findLane(target) orelse continue;
+            const v = l.value(beat - clip.start_beat) orelse continue;
+            best = v;
+            best_start = clip.start_beat;
+        }
+        if (best) |v| return v;
+        if (self.findLane(target)) |l| return l.value(beat);
+        return null;
+    }
+
+    /// Whether any lane (track or clip) with points drives `target`.
+    pub fn isAutomated(self: *Track, target: automation.Target) bool {
+        if (self.findLane(target)) |l| if (l.points.items.len > 0) return true;
+        for (self.clips.items) |*clip| {
+            if (clip.findLane(target)) |l| if (l.points.items.len > 0) return true;
+        }
+        return false;
     }
 
     /// Volume in effect at `beat` for the UI (the audio thread ramps the
     /// same lane per block): the lane unless overridden, else the fader.
     pub fn volumeAt(self: *Track, beat: f64) f32 {
         if (self.vol_override.load(.monotonic) == 0) {
-            if (self.findLane(automation.Target.volume())) |l| if (l.value(beat)) |k| return k * 1.25;
+            if (self.autoValue(automation.Target.volume(), beat)) |k| return k * 1.25;
         }
         return self.volume();
     }
 
     pub fn panAt(self: *Track, beat: f64) f32 {
         if (self.pan_override.load(.monotonic) == 0) {
-            if (self.findLane(automation.Target.pan())) |l| if (l.value(beat)) |k| return k * 2 - 1;
+            if (self.autoValue(automation.Target.pan(), beat)) |k| return k * 2 - 1;
         }
         return self.pan();
     }
@@ -554,4 +610,62 @@ test "moveEffect reorders and bypass follows the moved slot" {
     try testing.expectEqual(@as(?u8, 0), t.effects.items[3].idx);
     try testing.expect(!t.effectBypassed(0));
     try testing.expect(t.effectBypassed(3));
+}
+
+test "clip lanes override the track lane while their clip plays, later start wins" {
+    const alloc = testing.allocator;
+    var t = try Track.init(alloc, "t", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, testMachine());
+    defer t.deinit(alloc);
+    const vol = automation.Target.volume();
+    const tl = try t.laneFor(alloc, vol, false);
+    _ = try tl.insert(alloc, .{ .beat = 0, .value = 0.1 });
+
+    // Clip A [4, 12) holds 0.5; clip B [8, 16) ramps 0.2 → 0.6 over its span.
+    var a = clip_mod.Clip.init("A", 4, 8);
+    _ = try (try a.laneFor(alloc, vol, false)).insert(alloc, .{ .beat = 0, .value = 0.5 });
+    var b = clip_mod.Clip.init("B", 8, 8);
+    const bl = try b.laneFor(alloc, vol, false);
+    _ = try bl.insert(alloc, .{ .beat = 0, .value = 0.2 });
+    _ = try bl.insert(alloc, .{ .beat = 8, .value = 0.6 });
+    // Listed B first: precedence goes by start, not list order.
+    try t.addClip(alloc, b);
+    try t.addClip(alloc, a);
+
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    t.publishSnapshot(&pool);
+    const snap = t.currentSnapshot();
+    try testing.expectEqual(@as(u32, 3), snap.lane_count);
+
+    const cases = [_]struct { beat: f64, want: f32 }{
+        .{ .beat = 2, .want = 0.1 }, // track lane
+        .{ .beat = 6, .want = 0.5 }, // clip A
+        .{ .beat = 10, .want = 0.3 }, // B started later: it wins
+        .{ .beat = 14, .want = 0.5 },
+        .{ .beat = 20, .want = 0.1 }, // back to the track
+    };
+    for (cases) |cs| {
+        const audio_v = snap.faderValue(.volume, cs.beat, &t.auto_cursors).?;
+        try testing.expectApproxEqAbs(cs.want, audio_v, 1e-6);
+        try testing.expectApproxEqAbs(cs.want, t.autoValue(vol, cs.beat).?, 1e-6);
+    }
+    try testing.expect(t.isAutomated(automation.Target.pan()) == false);
+}
+
+test "splitting a clip's lanes keeps both halves playing the same curve" {
+    const alloc = testing.allocator;
+    var left = clip_mod.Clip.init("A", 0, 8);
+    defer left.deinit(alloc);
+    const l = try left.laneFor(alloc, automation.Target.volume(), false);
+    _ = try l.insert(alloc, .{ .beat = 0, .value = 0 });
+    _ = try l.insert(alloc, .{ .beat = 8, .value = 0.8 });
+    var right = clip_mod.Clip.init("A", 3, 5);
+    defer right.deinit(alloc);
+    try left.splitLanes(alloc, &right, 3);
+    const lv = left.lanes.items[0].value(2.5).?;
+    try testing.expectApproxEqAbs(@as(f32, 0.25), lv, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.3), left.lanes.items[0].value(3).?, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.3), right.lanes.items[0].value(0).?, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), right.lanes.items[0].value(2).?, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.8), right.lanes.items[0].value(5).?, 1e-6);
 }

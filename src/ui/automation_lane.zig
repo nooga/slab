@@ -146,8 +146,7 @@ fn segmentAt(v: *const View, lane: *const Lane, mx: f32, my: f32) ?usize {
 
 // ── Drawing ──────────────────────────────────────────────────────────
 
-fn drawCurve(ui: *Ui, v: *const View, lane: *const Lane, col: Color) void {
-    const pts = lane.points.items;
+fn drawCurve(ui: *Ui, v: *const View, pts: []const Point, col: Color) void {
     const left = v.rect.x;
     const right = v.rect.x + v.rect.width;
     if (pts.len == 0) return;
@@ -460,7 +459,7 @@ pub fn draw(ui: *Ui, alloc: std.mem.Allocator, lane: *Lane, v: View, m: pane.Mou
     if (lane.points.items.len == 0) {
         _ = ui.text(&ui.fonts.legend, ri.x + 4, ri.bottom() - 13, "DOUBLE-CLICK TO ADD A POINT", ui_style.text_mute.mix(ui_style.pane, 0.4));
     }
-    drawCurve(ui, &v, lane, col);
+    drawCurve(ui, &v, lane.points.items, col);
     for (lane.points.items, 0..) |p, i| {
         const px = xOf(&v, p.beat);
         if (px < r.x - 3 or px > r.x + r.width + 3) continue;
@@ -491,6 +490,24 @@ pub fn draw(ui: *Ui, alloc: std.mem.Allocator, lane: *Lane, v: View, m: pane.Mou
         drawReadout(ui, &v, xOf(&v, p.beat), yOf(&v, p.value), p.value);
     }
     return res;
+}
+
+/// Draw a clip lane's curve over a track lane between song beats `from`
+/// and `to` (docs/22 §Track lanes): the track curve under it dims, since
+/// the clip's is what plays there. `points` are timed from `from`.
+pub fn drawOverlay(ui: *Ui, v: View, points: []const Point, from: f64, to: f64) void {
+    if (points.len == 0) return;
+    const x0 = @max(xOf(&v, from), v.rect.x);
+    const x1 = @min(xOf(&v, to), v.rect.x + v.rect.width);
+    if (x1 <= x0) return;
+    const span = Rect.xywh(@intFromFloat(@floor(x0)), @intFromFloat(v.rect.y), @intFromFloat(@ceil(x1 - x0)), @intFromFloat(v.rect.height - 1));
+    ui.clip(span);
+    defer ui.unclip();
+    ui.rect(span, ui_style.pane.shade(-3).alpha(200));
+    ui.rect(Rect.xywh(span.x, span.y, 1, span.h), v.color.mix(ui_style.pane, 0.5));
+    var sv = v;
+    sv.timeline_x0 += @as(f32, @floatCast(from)) * v.px_per_beat;
+    drawCurve(ui, &sv, points, v.color.mix(ui_style.text, 0.35));
 }
 
 fn firstSelected(lane: *const Lane) ?usize {

@@ -165,6 +165,11 @@ A **note clip**:
   A note plays at `clip.start + note.start`. Only notes inside
   `[0, len)` play.
 - `pitch` is MIDI (C4 = 60) and `vel` is 1–127.
+- `automation` (optional): clip lanes, the same form as a track's but
+  with beats from the clip's start. While the clip plays they override
+  the track's lane for the same target; where clips overlap, the one
+  that starts later wins. Points past the clip's end are kept but
+  don't play.
 - At most 64 clips and 2048 notes per track.
 - Clips on one track may overlap, and both play.
 
@@ -247,5 +252,5 @@ writing a file.
 
 ## Not in the format yet
 
-Clip automation and note expression ([22-automation.md](22-automation.md)), tempo changes, sends and returns, sidechain, and the meter
+Note expression ([22-automation.md](22-automation.md)), tempo changes, sends and returns, sidechain, and the meter
 map's accent groups.

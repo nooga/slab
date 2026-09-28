@@ -34,6 +34,7 @@ const recorder_mod = @import("../recorder.zig");
 const automation = @import("../automation.zig");
 const auto_lane = @import("automation_lane.zig");
 const machine_mod = @import("../machine.zig");
+const lane_targets = @import("lane_targets.zig");
 
 /// Lane height and track-header width (logical px).
 pub const LANE_H: f32 = 52;
@@ -418,6 +419,7 @@ pub fn splitSelectedClipsAt(tracks: []Track, alloc: std.mem.Allocator, focused_c
                 }
             }
 
+            clip.splitLanes(alloc, &right, local) catch |err| std.log.err("split clip lanes failed: {s}", .{@errorName(err)});
             clip.length_beats = local;
             clip.selected = false;
             t.addClip(alloc, right) catch |err| {
@@ -1423,7 +1425,7 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, sele
     // Automated, they show the lane's value and a hand move overrides it
     // (docs/22 §Manual changes).
     var vol_r = body.cutBottom(@min(body.h, 16));
-    const vol_auto = t.findLane(automation.Target.volume()) != null and t.findLane(automation.Target.volume()).?.points.items.len > 0;
+    const vol_auto = t.isAutomated(automation.Target.volume());
     if (vol_auto) _ = vol_r.cutRight(8);
     var v_norm: f32 = std.math.clamp(t.volumeAt(beat) / 1.25, 0.0, 1.0);
     const vol_base = t.volume();
@@ -1433,7 +1435,7 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, sele
     menu.tip(ui, vol_r, "Track volume");
     if (body.h >= 14) {
         var pan_r = body.cutBottom(14);
-        const pan_auto = t.findLane(automation.Target.pan()) != null and t.findLane(automation.Target.pan()).?.points.items.len > 0;
+        const pan_auto = t.isAutomated(automation.Target.pan());
         if (pan_auto) _ = pan_r.cutRight(8);
         var p: f32 = (t.panAt(beat) + 1) / 2;
         const pan_base = t.pan();
@@ -1487,67 +1489,6 @@ pub fn deleteSelectedPoints(tracks: []Track) bool {
     return any;
 }
 
-const LaneFmt = struct {
-    mach: ?*const machine_mod.Machine,
-    ci: usize = 0,
-    kind: automation.TargetKind,
-};
-
-fn formatLane(ctx: *const anyopaque, knob: f32, buf: []u8) []const u8 {
-    const f: *const LaneFmt = @ptrCast(@alignCast(ctx));
-    switch (f.kind) {
-        .volume => {
-            const g = knob * 1.25;
-            if (g <= 1e-4) return "-INF DB";
-            return std.fmt.bufPrint(buf, "{d:.1} DB", .{20 * std.math.log10(g)}) catch "?";
-        },
-        .pan => {
-            const p = knob * 2 - 1;
-            if (@abs(p) < 0.005) return "C";
-            return std.fmt.bufPrint(buf, "{s} {d:.0}", .{ if (p < 0) "L" else "R", @abs(p) * 100 }) catch "?";
-        },
-        .inst, .fx => {
-            const m = f.mach orelse return "?";
-            const fc = m.format_control orelse return "?";
-            return fc(m.state, f.ci, knob, buf);
-        },
-    }
-}
-
-/// A lane's legend, value range and formatter context.
-const LaneInfo = struct {
-    name: []const u8,
-    lo: f32 = 0,
-    hi: f32 = 1,
-    fmt: LaneFmt,
-};
-
-fn laneInfo(buf: []u8, t: *const Track, lane: *const automation.Lane) LaneInfo {
-    return switch (lane.target.kind) {
-        .volume => .{ .name = "VOLUME", .fmt = .{ .mach = null, .kind = .volume } },
-        .pan => .{ .name = "PAN", .fmt = .{ .mach = null, .kind = .pan } },
-        .inst, .fx => blk: {
-            const m = t.targetMachine(lane.target) orelse break :blk .{
-                .name = std.fmt.bufPrint(buf, "{s} (GONE)", .{lane.target.param()}) catch "?",
-                .fmt = .{ .mach = null, .kind = lane.target.kind },
-            };
-            const ci = m.controlIndex(lane.target.param()) orelse break :blk .{
-                .name = std.fmt.bufPrint(buf, "{s} (GONE)", .{lane.target.param()}) catch "?",
-                .fmt = .{ .mach = null, .kind = lane.target.kind },
-            };
-            const info = m.control_info.?(m.state, ci);
-            const prefix: []const u8 = if (lane.target.kind == .fx) m.name else "";
-            const name = std.fmt.bufPrint(buf, "{s}{s}{s} {s}", .{ prefix, if (prefix.len > 0) " " else "", info.module, info.label }) catch info.label;
-            break :blk .{
-                .name = name,
-                .lo = if (info.stepped) info.lo else 0,
-                .hi = if (info.stepped) @max(info.hi, info.lo + 1) else 1,
-                .fmt = .{ .mach = m, .ci = ci, .kind = lane.target.kind },
-            };
-        },
-    };
-}
-
 /// The automation rows of track `ti` on the timeline. Returns true when a
 /// press landed in one.
 fn drawAutomationRows(
@@ -1579,7 +1520,7 @@ fn drawAutomationRows(
     for (t.lanes.items, 0..) |*lane, li| {
         const r = pane.rect(timeline_x, y + @as(f32, @floatFromInt(li)) * AUTO_H, timeline_w, AUTO_H);
         var nb: [64]u8 = undefined;
-        const info = laneInfo(&nb, t, lane);
+        const info = lane_targets.laneInfo(&nb, t, lane);
         const res = auto_lane.draw(ui, alloc, lane, .{
             .rect = r,
             .timeline_x0 = timeline_x0,
@@ -1591,9 +1532,32 @@ fn drawAutomationRows(
             .hi = info.hi,
             .key = pane.keyFromIds(0xA070_1A4E_0000_0001, @intFromPtr(t), li),
             .name = info.name,
-            .fmt = .{ .ctx = &info.fmt, .f = formatLane },
+            .fmt = .{ .ctx = &info.fmt, .f = lane_targets.formatLane },
             .selected = selected,
         }, if (press_consumed) pane.neutral() else m);
+        // Clips holding a lane for the same target play theirs.
+        for (t.clips.items) |*clip| {
+            if (clip.isAudio()) continue;
+            const cl = clip.findLane(lane.target) orelse continue;
+            auto_lane.drawOverlay(ui, .{
+                .rect = r,
+                .timeline_x0 = timeline_x0,
+                .scroll_x = scroll_x,
+                .px_per_beat = px_per_beat,
+                .edit_snap = edit_snap,
+                .color = trackColor(t.color),
+                .lo = info.lo,
+                .hi = info.hi,
+                .key = 0,
+            }, cl.points.items, clip.start_beat, clip.endBeat());
+        }
+        // The legend stays readable over the overlays.
+        {
+            const ri = bridge.fromRl(r);
+            ui.clip(ri);
+            _ = ui.text(&ui.fonts.legend, ri.x + 4, ri.y + 2, info.name, ui_style.text_mute);
+            ui.unclip();
+        }
         if (res.pressed) {
             consumed = true;
             selected_track.* = ti;
@@ -1610,12 +1574,6 @@ var menu_track: usize = 0;
 /// The lane the picker retargets, or null to add a new lane.
 var menu_lane: ?usize = null;
 
-const T_VOLUME: u32 = 1;
-const T_PAN: u32 = 2;
-const T_INST: u32 = 10;
-const T_FX: u32 = 20; // + effect index
-const T_MODULE: u32 = 1000; // + module index
-const T_CONTROL: u32 = 100_000; // + control index
 
 fn openTargetMenu(ti: usize, lane: ?usize, r: Rect) void {
     menu_track = ti;
@@ -1648,7 +1606,7 @@ fn drawAutomationHeaders(ui: *Ui, alloc: std.mem.Allocator, t: *Track, ti: usize
         const add_r = row.cutRight(17);
         _ = row.cutRight(4);
         var nb: [64]u8 = undefined;
-        const info = laneInfo(&nb, t, lane);
+        const info = lane_targets.laneInfo(&nb, t, lane);
         if (ctl.button(ui, row, "target", null, .{ .label = info.name, .flush = true })) openTargetMenu(ti, li, row);
         menu.tip(ui, row, "Pick what this lane drives");
         if (ctl.button(ui, add_r, "add", null, .{ .label = "+", .flush = true })) openTargetMenu(ti, null, add_r);
@@ -1659,7 +1617,7 @@ fn drawAutomationHeaders(ui: *Ui, alloc: std.mem.Allocator, t: *Track, ti: usize
     if (remove) |li| t.removeLane(alloc, li);
 }
 
-/// The lane target picker: VOLUME, PAN, then each machine ▸ module ▸ control.
+/// The lane target picker for the arrangement's lane headers.
 fn targetMenuTick(tracks: []Track, alloc: std.mem.Allocator) void {
     if (!menu.isOpen(TARGET_MENU_KEY)) return;
     if (menu_track >= tracks.len) {
@@ -1667,86 +1625,18 @@ fn targetMenuTick(tracks: []Track, alloc: std.mem.Allocator) void {
         return;
     }
     const t = &tracks[menu_track];
-    var items: [24]menu.Item = undefined;
-    var n: usize = 0;
-    items[n] = .{ .label = "Volume", .id = T_VOLUME };
-    n += 1;
-    items[n] = .{ .label = "Pan", .id = T_PAN };
-    n += 1;
-    if (t.machine.controlCount() > 0) {
-        items[n] = .{ .separator = true };
-        n += 1;
-        items[n] = .{ .label = t.machine.name, .id = T_INST, .submenu = true };
-        n += 1;
-    }
-    for (t.effects.items, 0..) |*fx, i| {
-        if (n >= items.len) break;
-        if (fx.mach.controlCount() == 0) continue;
-        items[n] = .{ .label = fx.mach.name, .id = T_FX + @as(u32, @intCast(i)), .submenu = true };
-        n += 1;
-    }
-    var picked: ?automation.Target = null;
-    var stepped = false;
-    if (menu.pick(TARGET_MENU_KEY, items[0..n])) |id| switch (id) {
-        T_VOLUME => picked = automation.Target.volume(),
-        T_PAN => picked = automation.Target.pan(),
-        else => {},
+    const picked = lane_targets.tick(TARGET_MENU_KEY, t, .{ .lanes = t.lanes.items }) orelse return;
+    const pick = switch (picked) {
+        .target => |pk| pk,
+        .remove => return,
     };
-    // Machine ▸ module ▸ control.
-    if (menu.subOpen(TARGET_MENU_KEY, 0)) |mid| {
-        const kind: automation.TargetKind = if (mid == T_INST) .inst else .fx;
-        const fx_i: usize = if (mid >= T_FX and mid < T_MODULE) mid - T_FX else 0;
-        const mach: ?*const machine_mod.Machine = if (kind == .inst) &t.machine else if (fx_i < t.effects.items.len) &t.effects.items[fx_i].mach else null;
-        if (mach) |mm| if (mm.control_info) |info_fn| {
-            var mods: [40][]const u8 = undefined;
-            var mod_n: usize = 0;
-            for (0..mm.controlCount()) |ci| {
-                const md = info_fn(mm.state, ci).module;
-                var seen = false;
-                for (mods[0..mod_n]) |x| if (std.mem.eql(u8, x, md)) {
-                    seen = true;
-                };
-                if (!seen and mod_n < mods.len) {
-                    mods[mod_n] = md;
-                    mod_n += 1;
-                }
-            }
-            var mitems: [40]menu.Item = undefined;
-            for (mods[0..mod_n], 0..) |md, i| mitems[i] = .{ .label = if (md.len > 0) md else "MAIN", .id = T_MODULE + @as(u32, @intCast(i)), .submenu = true };
-            _ = menu.subPick(TARGET_MENU_KEY, 1, mitems[0..mod_n]);
-            if (menu.subOpen(TARGET_MENU_KEY, 1)) |modid| if (modid >= T_MODULE and modid - T_MODULE < mod_n) {
-                const md = mods[modid - T_MODULE];
-                var citems: [40]menu.Item = undefined;
-                var cn: usize = 0;
-                for (0..mm.controlCount()) |ci| {
-                    const info = info_fn(mm.state, ci);
-                    if (!std.mem.eql(u8, info.module, md) or cn >= citems.len) continue;
-                    citems[cn] = .{ .label = info.label, .id = T_CONTROL + @as(u32, @intCast(ci)) };
-                    cn += 1;
-                }
-                if (menu.subPick(TARGET_MENU_KEY, 2, citems[0..cn])) |cid| {
-                    const ci = cid - T_CONTROL;
-                    const info = info_fn(mm.state, ci);
-                    stepped = info.stepped;
-                    picked = automation.Target.control(kind, if (kind == .fx) t.effects.items[fx_i].uid else 0, info.id);
-                }
-            };
-        };
-    }
-    const target = picked orelse return;
     t.lanes_shown = true;
-    if (t.findLane(target) != null) return; // one lane per target
+    if (t.findLane(pick.target) != null) return; // one lane per target
     if (menu_lane) |li| {
         if (li >= t.lanes.items.len) return;
-        const lane = &t.lanes.items[li];
-        lane.target = target;
-        lane.stepped = stepped;
-        if (stepped) for (lane.points.items) |*pt| {
-            pt.shape = .hold;
-            pt.value = @round(pt.value);
-        };
+        lane_targets.retarget(&t.lanes.items[li], pick);
     } else {
-        _ = t.laneFor(alloc, target, stepped) catch {};
+        _ = t.laneFor(alloc, pick.target, pick.stepped) catch {};
     }
 }
 

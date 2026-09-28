@@ -85,10 +85,27 @@ class Clip:
         self.start = start
         self.length = length
         self.notes = []
+        # Clip automation (docs/22): beats from the clip's start.
+        self.lanes = {}
 
     @property
     def song(self):
         return self.track.song
+
+    def automate(self, target, *points):
+        """A clip lane, like Track.automate but timed from the clip's start;
+        it moves and copies with the clip and overrides the track's lane
+        for the same target while the clip plays."""
+        where = f"clip {self.track.name}/{self.name} automation {target}"
+        _add_points(self.lanes, self.track._auto_target(target), where, points)
+        for b, *_ in self.lanes[self.track._auto_target(target)[0]]:
+            if b > self.length + 1e-9:
+                self.song.warn(f"{where}: point at beat {b:g} is past the clip's end ({self.length:g}) and won't play")
+        return self
+
+    def ramp(self, target, frm, to, v0, v1, tension=0.0):
+        """One sweep in clip beats, added to the clip's lane."""
+        return self.automate(target, (frm, v0, "curve" if tension else "linear", tension), (to, v1))
 
     @property
     def bar(self):
@@ -328,13 +345,43 @@ class Clip:
         c = self.track._new_clip(name or (section.name if section else self.name), start,
                                  section.length if section else self.length)
         c.notes = [dict(n) for n in self.notes]
+        c.lanes = {k: list(v) for k, v in self.lanes.items()}
         return c
 
     def to_json(self):
         notes = sorted(self.notes, key=lambda n: (n["start"], n["pitch"]))
         return {"type": "note", "name": self.name, "start": round(self.start, 6), "len": round(self.length, 6),
                 "notes": [{"pitch": n["pitch"], "start": round(n["start"], 5), "len": round(max(n["len"], 0.01), 5),
-                           "vel": n["vel"]} for n in notes]}
+                           "vel": n["vel"]} for n in notes],
+                **({"automation": _lanes_json(self.lanes)} if self.lanes else {})}
+
+
+def _add_points(lanes, resolved, where, points):
+    """Validate (beat, value[, shape[, tension]]) points into lanes[name]."""
+    name, check, stepped = resolved
+    lane = lanes.setdefault(name, [])
+    for p in points:
+        if not 2 <= len(p) <= 4:
+            raise SlabError(f"{where}: a point is (beat, value[, shape[, tension]]), got {p!r}")
+        beat, value = p[0], check(p[1])
+        shape = p[2] if len(p) > 2 else "linear"
+        tension = p[3] if len(p) > 3 else 0.0
+        if shape not in ("hold", "linear", "curve"):
+            raise SlabError(f"{where}: shape {shape!r} is not hold/linear/curve")
+        if stepped and shape != "hold":
+            shape = "hold"
+        if not -1 <= tension <= 1:
+            raise SlabError(f"{where}: tension {tension} is outside [-1, 1]")
+        if beat < 0:
+            raise SlabError(f"{where}: beat {beat} is negative")
+        lane.append((beat, value, shape, tension))
+    lane.sort(key=lambda q: q[0])  # stable: same-beat points keep their order (a jump)
+
+
+def _lanes_json(lanes):
+    return [{"target": t, "points": [[b, v] if sh == "linear" and te == 0 else [b, v, sh, te]
+                                     for b, v, sh, te in pts]}
+            for t, pts in lanes.items()]
 
 
 class Track:
@@ -409,24 +456,7 @@ class Track:
         units (Hz, dB, 0..1), switches by index or label. Shapes: "linear"
         (default), "curve" (tension -1..1, + = fast start), "hold" (steps).
         The shape shapes the segment to the next point (docs/22)."""
-        name, check, stepped = self._auto_target(target)
-        lane = self.lanes.setdefault(name, [])
-        for p in points:
-            if not 2 <= len(p) <= 4:
-                raise SlabError(f"track {self.name} automation {target}: a point is (beat, value[, shape[, tension]]), got {p!r}")
-            beat, value = p[0], check(p[1])
-            shape = p[2] if len(p) > 2 else "linear"
-            tension = p[3] if len(p) > 3 else 0.0
-            if shape not in ("hold", "linear", "curve"):
-                raise SlabError(f"track {self.name} automation {target}: shape {shape!r} is not hold/linear/curve")
-            if stepped and shape != "hold":
-                shape = "hold"
-            if not -1 <= tension <= 1:
-                raise SlabError(f"track {self.name} automation {target}: tension {tension} is outside [-1, 1]")
-            if beat < 0:
-                raise SlabError(f"track {self.name} automation {target}: beat {beat} is before the song")
-            lane.append((beat, value, shape, tension))
-        lane.sort(key=lambda q: q[0])  # stable: same-beat points keep their order (a jump)
+        _add_points(self.lanes, self._auto_target(target), f"track {self.name} automation {target}", points)
         return self
 
     def ramp(self, target, frm, to, v0, v1, tension=0.0):
@@ -490,10 +520,7 @@ class Track:
                            **({"assets": {"smp": self.samples}} if self.samples else {})},
             "effects": [f.build(f"{where} fx {i}") for i, f in enumerate(self.fx)],
             "clips": [c.to_json() for c in sorted(self.clips, key=lambda c: c.start)],
-            **({"automation": [
-                {"target": t, "points": [[b, v] if sh == "linear" and te == 0 else [b, v, sh, te]
-                                         for b, v, sh, te in pts]}
-                for t, pts in self.lanes.items()]} if self.lanes else {}),
+            **({"automation": _lanes_json(self.lanes)} if self.lanes else {}),
         }
 
 

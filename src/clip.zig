@@ -8,6 +8,7 @@
 //! snapshot (see snapshot.zig) — never these structs directly.
 
 const std = @import("std");
+const automation = @import("automation.zig");
 
 pub const MAX_NAME = 32;
 
@@ -66,6 +67,10 @@ pub const Clip = struct {
     kind: ClipKind = .note,
     audio: AudioRef = .{},
     notes: std.ArrayList(Note) = .empty,
+    /// Clip automation lanes (docs/22): beats from the clip's start; they
+    /// move and copy with the clip and override the track's lane for the
+    /// same target while the clip plays.
+    lanes: std.ArrayList(automation.Lane) = .empty,
 
     pub fn init(display_name: []const u8, start_beat: f64, length_beats: f64) Clip {
         var c = Clip{
@@ -93,6 +98,8 @@ pub const Clip = struct {
 
     pub fn deinit(self: *Clip, alloc: std.mem.Allocator) void {
         self.notes.deinit(alloc);
+        for (self.lanes.items) |*l| l.deinit(alloc);
+        self.lanes.deinit(alloc);
     }
 
     pub fn clone(self: *const Clip, alloc: std.mem.Allocator) !Clip {
@@ -102,7 +109,59 @@ pub const Clip = struct {
         c.audio = self.audio;
         errdefer c.deinit(alloc);
         try c.notes.appendSlice(alloc, self.notes.items);
+        for (self.lanes.items) |*l| {
+            var lc = try l.clone(alloc);
+            c.lanes.append(alloc, lc) catch |err| {
+                lc.deinit(alloc);
+                return err;
+            };
+        }
         return c;
+    }
+
+    pub fn findLane(self: *Clip, target: automation.Target) ?*automation.Lane {
+        for (self.lanes.items) |*l| if (l.target.eql(target)) return l;
+        return null;
+    }
+
+    pub fn laneFor(self: *Clip, alloc: std.mem.Allocator, target: automation.Target, stepped: bool) !*automation.Lane {
+        if (self.findLane(target)) |l| return l;
+        try self.lanes.append(alloc, .{ .target = target, .stepped = stepped });
+        return &self.lanes.items[self.lanes.items.len - 1];
+    }
+
+    pub fn removeLane(self: *Clip, alloc: std.mem.Allocator, i: usize) void {
+        if (i >= self.lanes.items.len) return;
+        self.lanes.items[i].deinit(alloc);
+        _ = self.lanes.orderedRemove(i);
+    }
+
+    /// Split the clip's lanes at clip-relative beat `at` into `right`
+    /// (whose beats restart at 0). Both halves get a point at the cut with
+    /// the curve's value there, so each keeps playing what it played.
+    pub fn splitLanes(self: *Clip, alloc: std.mem.Allocator, right: *Clip, at: f64) !void {
+        for (self.lanes.items) |*l| {
+            if (l.points.items.len == 0) continue;
+            const v = l.value(at).?;
+            var r = automation.Lane{ .target = l.target, .stepped = l.stepped };
+            errdefer r.deinit(alloc);
+            const shape_at = if (automation.segmentIndex(l.points.items, at)) |i| l.points.items[i].shape else .linear;
+            try r.points.append(alloc, .{ .beat = 0, .value = v, .shape = shape_at });
+            var w: usize = 0;
+            for (l.points.items) |pt| {
+                if (pt.beat > at) {
+                    var q = pt;
+                    q.beat -= at;
+                    try r.points.append(alloc, q);
+                } else {
+                    l.points.items[w] = pt;
+                    w += 1;
+                }
+            }
+            l.points.items.len = w;
+            _ = try l.insert(alloc, .{ .beat = at, .value = v });
+            try right.lanes.append(alloc, r);
+        }
     }
 
     pub fn name(self: *const Clip) []const u8 {

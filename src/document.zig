@@ -204,7 +204,9 @@ pub fn serialize(
                     note.pitch, note.start_beat, note.length_beats, note.velocity,
                 });
             }
-            try out.appendSlice(alloc, "]}");
+            try out.append(alloc, ']');
+            try appendLaneList(alloc, &out, t, clip.lanes.items);
+            try out.append(alloc, '}');
         }
         try out.appendSlice(alloc, "]}");
     }
@@ -269,9 +271,15 @@ fn laneValueOut(t: *const track_mod.Track, target: automation.Target, knob: f32)
     };
 }
 
+/// `,"automation":[…]` for `lanes` (a track's or a clip's), converting
+/// values through the track's machines. Nothing when no lane is written.
 fn appendLanes(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track_mod.Track) !void {
+    try appendLaneList(alloc, out, t, t.lanes.items);
+}
+
+fn appendLaneList(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track_mod.Track, lanes: []const automation.Lane) !void {
     var first = true;
-    for (t.lanes.items) |*lane| {
+    for (lanes) |*lane| {
         if (lane.points.items.len == 0) continue;
         var nb: [64]u8 = undefined;
         const name = laneTargetName(&nb, t, lane.target) orelse continue;
@@ -314,12 +322,22 @@ fn parseLaneTarget(t: *const track_mod.Track, name: []const u8) ?automation.Targ
 }
 
 fn applyLanes(alloc: std.mem.Allocator, t: *track_mod.Track, av: std.json.Value) !void {
+    try applyLaneList(alloc, t, &t.lanes, av);
+}
+
+/// Parse lanes into `into` (a track's or a clip's list), converting values
+/// through `t`'s machines.
+fn applyLaneList(alloc: std.mem.Allocator, t: *track_mod.Track, into: *std.ArrayList(automation.Lane), av: std.json.Value) !void {
     if (av != .array) return;
     for (av.array.items) |lv| {
         if (lv != .object) continue;
         const name = strOf(objGet(lv.object, "target")) orelse continue;
         const target = parseLaneTarget(t, name) orelse continue;
-        if (t.findLane(target) != null) continue;
+        var dup = false;
+        for (into.items) |*l| if (l.target.eql(target)) {
+            dup = true;
+        };
+        if (dup) continue;
         // Machine lanes convert through the control; unknown ids drop.
         var ci: ?usize = null;
         var stepped = false;
@@ -353,7 +371,7 @@ fn applyLanes(alloc: std.mem.Allocator, t: *track_mod.Track, av: std.json.Value)
             lane.deinit(alloc);
             continue;
         }
-        try t.lanes.append(alloc, lane);
+        try into.append(alloc, lane);
     }
 }
 
@@ -638,6 +656,7 @@ fn applyClip(alloc: std.mem.Allocator, t: *track_mod.Track, co: std.json.ObjectM
             });
         }
     };
+    if (objGet(co, "automation")) |av| try applyLaneList(alloc, t, &clip.lanes, av);
     try t.addClip(alloc, clip);
 }
 
@@ -880,6 +899,10 @@ test "automation lanes round-trip in real units, effects by chain position" {
     _ = try vol.insert(alloc, .{ .beat = 4, .value = 0.4 });
     const fxl = try t0.laneFor(alloc, automation.Target.control(.fx, t0.effects.items[1].uid, fx_param), false);
     _ = try fxl.insert(alloc, .{ .beat = 8, .value = 0.6 });
+    // A clip lane, timed from its clip.
+    var clip = clip_mod.Clip.init("A", 8, 8);
+    _ = try (try clip.laneFor(alloc, automation.Target.control(.inst, 0, "cutoff"), false)).insert(alloc, .{ .beat = 2, .value = 0.3 });
+    try t0.addClip(alloc, clip);
     // Lanes aimed at nothing are dropped on save.
     const gone = try t0.laneFor(alloc, automation.Target.control(.inst, 0, "no-such-knob"), false);
     _ = try gone.insert(alloc, .{ .beat = 0, .value = 0.5 });
@@ -910,6 +933,9 @@ test "automation lanes round-trip in real units, effects by chain position" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.4), l0.findLane(automation.Target.volume()).?.points.items[0].value, 1e-6);
     const lfx = l0.findLane(automation.Target.control(.fx, l0.effects.items[1].uid, fx_param)).?;
     try std.testing.expectApproxEqAbs(@as(f32, 0.6), lfx.points.items[0].value, 1e-5);
+    const lclip = l0.clips.items[0].findLane(automation.Target.control(.inst, 0, "cutoff")).?;
+    try std.testing.expectEqual(@as(f64, 2), lclip.points.items[0].beat);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.3), lclip.points.items[0].value, 1e-5);
 }
 
 test "audio clips round-trip through the pool by path" {

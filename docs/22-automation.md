@@ -2,8 +2,9 @@
 
 Values that change over time on their own: a fader ride into the
 chorus, a filter opening over 16 bars, a chord whose notes bend onto
-one pitch. **Status: phase 1 (curves, track lanes, automated controls)
-is built; clip lanes, note expression and recording are design.**
+one pitch. **Status: phases 1 and 2 (curves, track lanes, automated
+controls, clip lanes) are built; note expression and recording are
+design.**
 Code: `src/automation.zig` (curve, lanes), `src/ui/automation_lane.zig`
 (the lane editor), the `automation` fields in `track.zig`,
 `snapshot.zig`, `engine.zig` and `machines/fy_raw_machine.zig`.
@@ -269,6 +270,18 @@ selected, and the target's name as a muted legend in the lane.
 
 ### Clip lanes (clip editor)
 
+An **ENV** strip (44 px) under the piano roll's velocity lane shows one
+of the clip's lanes at a time. The ENV label opens the target picker
+(existing lanes are marked with a dot): picking a target the clip
+already automates switches the strip to it, picking a new one adds a
+lane, and "Remove lane" deletes the shown one. The strip scrolls and
+zooms with the piano roll; past the clip's end it's shaded. Delete in
+the piano roll removes selected envelope points before notes.
+
+Splitting a clip splits its lanes: both halves get a point at the cut
+with the curve's value there (a `curve` segment cut in two keeps its
+tension on both halves, so its shape shifts slightly).
+
 An envelope strip under the piano roll's velocity lane, with a target
 dropdown and the same gestures. Only points in `[0, len)` of the clip
 matter. Resizing a clip shorter keeps the points past its end (they
@@ -477,8 +490,8 @@ phases.
   Section starts work for beats.
 - `track.ramp(target, frm, to, v0, v1, tension=0)` (built): a
   single-segment sweep from `v0` to `v1`, added into the lane.
-- `clip.automate(...)` / `clip.ramp(...)`: the same, with clip-relative
-  beats.
+- `clip.automate(...)` / `clip.ramp(...)` (built): the same, with
+  clip-relative beats; `clip.copy(section)` copies them.
 - `clip.bend(note_or_filter, points, dim="pitch")`: expression on
   matching notes.
 - `clip.converge(to, start, end, tension=0)`: the converge gesture as a
@@ -500,8 +513,11 @@ renders exactly as it plays.
    - Left over: the title-strip `A` cell, Enter value…, the context
      menu on switch/radio widgets and the header minis, a bench case
      (a cutoff sweep matching a knob-drag render).
-2. **Clip lanes.** The clip editor's envelope strip, precedence,
-   copy/move with clips, and the overlay on track lanes.
+2. **Clip lanes.** Built: `Clip.lanes`, precedence in the snapshot
+   (track lanes first, clip lanes by clip start, the last lane that
+   applies wins, the same rule as `Track.autoValue` on the UI side),
+   copy/move/split with clips, the ENV strip, the overlay on track
+   lanes, the format, slabkit `clip.automate`/`clip.ramp`.
 3. **Note expression.**
    - Note ids and voice matching by id; this can land earlier on its
      own.

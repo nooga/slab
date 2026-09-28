@@ -12,8 +12,8 @@
 const automation = @import("automation.zig");
 
 pub const MAX_CLIPS_PER_TRACK: usize = 64;
-pub const MAX_LANES_PER_TRACK: usize = 32;
-pub const MAX_AUTO_POINTS_PER_TRACK: usize = 4096;
+pub const MAX_LANES_PER_TRACK: usize = 128; // track + clip lanes
+pub const MAX_AUTO_POINTS_PER_TRACK: usize = 8192;
 pub const MAX_NOTES_PER_TRACK: usize = 2048;
 pub const MAX_AUDIO_CLIPS_PER_TRACK: usize = 64;
 
@@ -52,12 +52,28 @@ pub const AudioClipSnap = struct {
 
 /// A lane resolved for the audio thread: the target machine slot and its
 /// control index, and a window into `auto_points` (knob space).
+/// Clip lanes (docs/22 §Precedence) carry their clip's span and time their
+/// points from its start; a track lane has `clip_len < 0`.
 pub const LaneSnap = struct {
     kind: automation.TargetKind,
     fx_uid: u16 = 0,
     control: u16 = 0,
     points_start: u32,
     points_count: u32,
+    clip_start: f64 = 0,
+    clip_len: f64 = -1,
+
+    pub fn isClip(self: LaneSnap) bool {
+        return self.clip_len >= 0;
+    }
+
+    /// Whether the lane speaks at song beat `beat`, and the beat on its
+    /// own time axis.
+    pub fn localBeat(self: LaneSnap, beat: f64) ?f64 {
+        if (!self.isClip()) return beat;
+        if (beat < self.clip_start or beat >= self.clip_start + self.clip_len) return null;
+        return beat - self.clip_start;
+    }
 };
 
 /// What a machine sees of its track's lanes (`MachineCtx.automation`).
@@ -98,11 +114,16 @@ pub const TrackSnapshot = struct {
     auto_points: [MAX_AUTO_POINTS_PER_TRACK]automation.Point = undefined,
     auto_point_count: u32 = 0,
 
-    /// The lane targeting track volume or pan, if any.
-    pub fn trackLane(self: *const TrackSnapshot, kind: automation.TargetKind) ?usize {
+    /// Track volume or pan at `beat`, or null when no lane speaks. Lanes
+    /// are published track lanes first, then clip lanes by clip start, so
+    /// the last one that applies wins (docs/22 §Precedence).
+    pub fn faderValue(self: *const TrackSnapshot, kind: automation.TargetKind, beat: f64, cursors: *[MAX_LANES_PER_TRACK]u32) ?f32 {
+        var out: ?f32 = null;
         for (self.lanes[0..self.lane_count], 0..) |l, i| {
-            if (l.kind == kind) return i;
+            if (l.kind != kind) continue;
+            const lb = l.localBeat(beat) orelse continue;
+            out = automation.evalCursor(self.auto_points[l.points_start..][0..l.points_count], lb, &cursors[i]);
         }
-        return null;
+        return out;
     }
 };

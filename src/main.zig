@@ -954,6 +954,16 @@ pub fn main(init: std.process.Init) !void {
         for (tracks) |*t| t.publishSnapshot(&audio_pool);
 
         if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_PLAY") != null) transport.play();
+        if (shot_frame == 0) if (std.c.getenv("SLAB_SHOT_SELECT")) |sel| {
+            // "track:clip" — open that clip in the editor (screenshots).
+            var it = std.mem.splitScalar(u8, std.mem.span(sel), ':');
+            const ti = std.fmt.parseInt(u32, it.next() orelse "", 10) catch 0;
+            const ci = std.fmt.parseInt(u32, it.next() orelse "", 10) catch 0;
+            if (ti < tracks.len and ci < tracks[ti].clips.items.len) {
+                selected_track = ti;
+                selected_clip = .{ .track = ti, .clip = ci };
+            }
+        };
         devScreenshot(&shot_frame);
         c.rl.EndDrawing();
 
@@ -1575,7 +1585,8 @@ fn applyProjectBytes(
 
 /// Dev hook: SLAB_SHOT=<path.png> saves the window's own framebuffer after
 /// SLAB_SHOT_FRAME frames (default 60), and every SLAB_SHOT_EVERY frames
-/// after that when set. SLAB_SHOT_PLAY=1 starts the transport at load.
+/// after that when set. SLAB_SHOT_PLAY=1 starts the transport at load;
+/// SLAB_SHOT_SELECT=track:clip opens that clip in the editor.
 fn devScreenshot(frame: *u32) void {
     frame.* +%= 1;
     const path = std.c.getenv("SLAB_SHOT") orelse return;
@@ -1607,8 +1618,14 @@ fn syncMachineAutoUi(t: *track_mod.Track, m: *const @import("machine.zig").Machi
     const set = m.set_auto_ui orelse return;
     const info = m.control_info orelse return;
     for (0..m.controlCount()) |i| {
-        const lane = t.findLane(automation.Target.control(kind, uid, info(m.state, i).id));
-        set(m.state, i, if (lane) |l| l.value(beat) else null);
+        const target = automation.Target.control(kind, uid, info(m.state, i).id);
+        if (!t.isAutomated(target)) {
+            set(m.state, i, null);
+            continue;
+        }
+        // Automated somewhere; where no lane speaks it shows its own value.
+        const base: f32 = if (m.control_base) |f| f(m.state, i) else 0;
+        set(m.state, i, t.autoValue(target, beat) orelse base);
     }
 }
 
@@ -2112,7 +2129,7 @@ fn executeEditCommand(
             if (copyFocusedSelection(alloc, clipboard, status, focus, tracks, selected_clip.*)) {
                 changed = switch (focus) {
                     .arrangement => arrangement.deleteSelectedClips(tracks, alloc, selected_clip),
-                    .piano_roll => clip_editor.deleteSelectedNotes(tracks, selected_clip.*),
+                    .piano_roll => clip_editor.deleteSelectedPoints(tracks, selected_clip.*) or clip_editor.deleteSelectedNotes(tracks, selected_clip.*),
                     .browser, .machine_bay, .top_bar => false,
                 };
                 if (changed) status.set("Cut", .{});
@@ -2132,7 +2149,7 @@ fn executeEditCommand(
         .delete => {
             changed = switch (focus) {
                 .arrangement => arrangement.deleteSelectedClips(tracks, alloc, selected_clip),
-                .piano_roll => clip_editor.deleteSelectedNotes(tracks, selected_clip.*),
+                .piano_roll => clip_editor.deleteSelectedPoints(tracks, selected_clip.*) or clip_editor.deleteSelectedNotes(tracks, selected_clip.*),
                 .browser, .machine_bay, .top_bar => false,
             };
             if (changed) status.set("Deleted", .{});
@@ -2215,7 +2232,7 @@ fn handleFocusedDelete(
     if (!deletePressed()) return;
     const before = try document_mod.serialize(alloc, tracks, transport);
     const changed = switch (focus) {
-        .piano_roll => clip_editor.deleteSelectedNotes(tracks, selected_clip.*),
+        .piano_roll => clip_editor.deleteSelectedPoints(tracks, selected_clip.*) or clip_editor.deleteSelectedNotes(tracks, selected_clip.*),
         .arrangement => arrangement.deleteSelectedPoints(tracks) or arrangement.deleteSelectedClips(tracks, alloc, selected_clip),
         .browser, .machine_bay, .top_bar => false,
     };

@@ -783,15 +783,11 @@ const FaderGains = struct { v: f32, l: f32, r: f32 };
 fn faderGains(t: *Track, snap: *const snap_mod.TrackSnapshot, beat: f64) FaderGains {
     var v = t.volume();
     var p = t.pan();
-    if (t.vol_override.load(.monotonic) == 0) if (snap.trackLane(.volume)) |li| {
-        const lane = snap.lanes[li];
-        const pts = snap.auto_points[lane.points_start..][0..lane.points_count];
-        v = std.math.clamp(automation.evalCursor(pts, beat, &t.auto_cursors[li]) * 1.25, 0, 1.25);
+    if (t.vol_override.load(.monotonic) == 0) if (snap.faderValue(.volume, beat, &t.auto_cursors)) |k| {
+        v = std.math.clamp(k * 1.25, 0, 1.25);
     };
-    if (t.pan_override.load(.monotonic) == 0) if (snap.trackLane(.pan)) |li| {
-        const lane = snap.lanes[li];
-        const pts = snap.auto_points[lane.points_start..][0..lane.points_count];
-        p = std.math.clamp(automation.evalCursor(pts, beat, &t.auto_cursors[li]) * 2 - 1, -1, 1);
+    if (t.pan_override.load(.monotonic) == 0) if (snap.faderValue(.pan, beat, &t.auto_cursors)) |k| {
+        p = std.math.clamp(k * 2 - 1, -1, 1);
     };
     const angle = (p + 1.0) * (std.math.pi / 4.0);
     return .{ .v = v, .l = v * @cos(angle), .r = v * @sin(angle) };

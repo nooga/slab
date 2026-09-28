@@ -33,6 +33,9 @@ const Rect = ui_core.Rect;
 const snap_mod = @import("snap.zig");
 const track_mod = @import("../track.zig");
 const machine_mod = @import("../machine.zig");
+const automation = @import("../automation.zig");
+const auto_lane = @import("automation_lane.zig");
+const lane_targets = @import("lane_targets.zig");
 const clip_mod = @import("../clip.zig");
 const Clip = clip_mod.Clip;
 const Note = clip_mod.Note;
@@ -201,6 +204,13 @@ fn overviewH() f32 {
 fn velocityLaneH() f32 {
     return 48;
 }
+/// The envelope strip: the clip's automation lanes, one shown at a time
+/// (docs/22 §Clip lanes).
+fn envLaneH() f32 {
+    return 44;
+}
+var env_lane: usize = 0;
+const ENV_MENU_KEY: u64 = 0xE7E1_0FE5_0000_0001;
 
 // Draw-mode in-progress note.
 var draw_active: bool = false;
@@ -626,7 +636,7 @@ pub fn draw(
     setNoteMap(resolved.note_labels, resolved.clip);
     drawHeaderTools(ui, head.tools);
     maybeResetOnClipChange(selected, resolved.clip);
-    const pres = drawPianoRoll(ui, bridge.toRl(head.body), resolved.clip, resolved.color, alloc, edit_snap, can_paste_notes, m);
+    const pres = drawPianoRoll(ui, bridge.toRl(head.body), resolved.clip, resolved.track, resolved.color, alloc, edit_snap, can_paste_notes, m);
 
     return .{
         .minimize = head.minimize,
@@ -643,6 +653,7 @@ pub fn draw(
 
 const Resolved = struct {
     clip: *Clip,
+    track: *track_mod.Track,
     color: c.rl.Color,
     note_labels: []const machine_mod.NoteLabel = &.{},
 };
@@ -654,6 +665,7 @@ fn resolveClip(tracks: []track_mod.Track, selected: ?ClipRef) ?Resolved {
     if (s.clip >= t.clips.items.len) return null;
     return .{
         .clip = &t.clips.items[s.clip],
+        .track = t,
         .color = t.color,
         .note_labels = t.machine.noteLabels(),
     };
@@ -664,6 +676,7 @@ fn maybeResetOnClipChange(selected: ?ClipRef, clip: *Clip) void {
     if (key != last_clip_key) {
         last_clip_key = key;
         clip.deselectAll();
+        env_lane = 0;
         initialized_scroll = false;
         // Cancel any in-progress drag state.
         cancelAllDrags();
@@ -696,6 +709,7 @@ fn drawPianoRoll(
     ui: *Ui,
     r: c.rl.Rectangle,
     clip: *Clip,
+    track: *track_mod.Track,
     track_color_rl: c.rl.Color,
     alloc: std.mem.Allocator,
     edit_snap: snap_mod.Setting,
@@ -709,10 +723,16 @@ fn drawPianoRoll(
 
     const grid_top = ruler_rect.y + rulerH();
     const vel_h = @round(@min(velocityLaneH(), @max(28, r.height * 0.22)));
-    const grid_h = @max(48, r.height - overviewH() - rulerH() - vel_h);
+    const env_h = envLaneH();
+    const grid_h = @max(48, r.height - overviewH() - rulerH() - vel_h - env_h);
     const kbd_rect = pane.rect(r.x, grid_top, keyboardW(), grid_h);
     const grid_rect = pane.rect(r.x + keyboardW(), grid_top, r.width - keyboardW(), grid_h);
     const vel_rect = pane.rect(grid_rect.x, grid_rect.y + grid_rect.height, grid_rect.width, vel_h);
+    const env_rect = pane.rect(grid_rect.x, vel_rect.y + vel_h, grid_rect.width, env_h);
+    // A press on the notes clears lane points and vice versa.
+    if (m.left_pressed and pane.contains(grid_rect, m.x, m.y)) {
+        for (clip.lanes.items) |*l| l.deselectAll();
+    }
 
     cur_clip_start = clip.start_beat;
     initScrollIfNeeded(grid_rect, clip.*);
@@ -750,6 +770,7 @@ fn drawPianoRoll(
     drawAndHandleScrollbar(ui, grid_rect, m);
     const velocity_consumed = handleVelocityLane(vel_rect, grid_rect, clip, m);
     drawVelocityLane(ui, pane.rect(r.x, vel_rect.y, keyboardW(), vel_h), vel_rect, grid_rect, clip.*, track_color);
+    drawEnvelopeStrip(ui, alloc, pane.rect(r.x, env_rect.y, keyboardW(), env_h), env_rect, clip, track, edit_snap, track_color, m);
 
     drawOverview(ui, overview_rect, grid_rect, clip.*, track_color, m);
 
@@ -1153,6 +1174,89 @@ fn drawVelocityLane(ui: *Ui, label_r: c.rl.Rectangle, r: c.rl.Rectangle, grid: c
         ui.rect(stem, if (note.selected) col else col.mix(ui_style.pane, 0.5));
         ui.rect(Rect.xywh(stem.x, stem.y, 3, 2), if (note.selected) ui_style.accent else col);
     }
+}
+
+/// The ENV strip: the clip lane picked in its menu, edited with the lane
+/// gestures (docs/22 §Editing curves). The label opens the target picker;
+/// picking a target the clip already automates switches to it.
+fn drawEnvelopeStrip(
+    ui: *Ui,
+    alloc: std.mem.Allocator,
+    label_r: c.rl.Rectangle,
+    r: c.rl.Rectangle,
+    clip: *Clip,
+    track: *track_mod.Track,
+    edit_snap: snap_mod.Setting,
+    col: ui_style.Color,
+    m: pane.Mouse,
+) void {
+    ui.pushId("env");
+    defer ui.popId();
+    const has_lane = clip.lanes.items.len > 0;
+    if (env_lane >= clip.lanes.items.len) env_lane = 0;
+    const label = bridge.fromRl(label_r);
+    if (ctl.button(ui, label, "pick", null, .{ .label = "ENV", .flush = true })) lane_targets.open(ENV_MENU_KEY, label);
+    menu.tip(ui, label, "Pick the clip automation to show, or add one");
+
+    if (!has_lane) {
+        const vr = bridge.fromRl(r);
+        ui.rect(vr, ui_style.pane.shade(-3));
+        ui.rect(Rect.xywh(vr.x, vr.y, vr.w, 1), ui_style.edge);
+        _ = ui.text(&ui.fonts.legend, vr.x + 4, vr.y + 16, "NO CLIP AUTOMATION: CLICK ENV TO ADD A LANE", ui_style.text_mute);
+        if (m.left_pressed and pane.contains(r, m.x, m.y)) lane_targets.open(ENV_MENU_KEY, vr);
+    } else {
+        const lane = &clip.lanes.items[env_lane];
+        var nb: [64]u8 = undefined;
+        const info = lane_targets.laneInfo(&nb, track, lane);
+        const res = auto_lane.draw(ui, alloc, lane, .{
+            .rect = r,
+            .timeline_x0 = r.x,
+            .scroll_x = scroll_x,
+            .px_per_beat = px_per_beat,
+            .edit_snap = edit_snap,
+            .color = col,
+            .lo = info.lo,
+            .hi = info.hi,
+            .key = pane.keyFromIds(0xE7E1_1A4E_0000_0001, @intFromPtr(clip), env_lane),
+            .name = info.name,
+            .fmt = .{ .ctx = &info.fmt, .f = lane_targets.formatLane },
+        }, m);
+        if (res.pressed) clip.deselectAll();
+        // Past the clip's end nothing plays.
+        const end_x = ceBeatToX(r.x, clip.length_beats);
+        if (end_x < r.x + r.width) {
+            const x0 = @max(end_x, r.x);
+            ui.rect(frect(x0, r.y, r.x + r.width - x0, r.height), ui_style.chassis.alpha(150));
+        }
+    }
+
+    const picked = lane_targets.tick(ENV_MENU_KEY, track, .{ .lanes = clip.lanes.items, .remove = has_lane }) orelse return;
+    switch (picked) {
+        .remove => if (has_lane) {
+            clip.removeLane(alloc, env_lane);
+            env_lane = 0;
+        },
+        .target => |pk| {
+            for (clip.lanes.items, 0..) |*l, i| if (l.target.eql(pk.target)) {
+                env_lane = i;
+                return;
+            };
+            _ = clip.laneFor(alloc, pk.target, pk.stepped) catch return;
+            env_lane = clip.lanes.items.len - 1;
+        },
+    }
+}
+
+/// Delete key in the piano roll: the selected envelope points win over
+/// notes.
+pub fn deleteSelectedPoints(tracks: []track_mod.Track, selected: ?ClipRef) bool {
+    const res = resolveClip(tracks, selected) orelse return false;
+    var any = false;
+    for (res.clip.lanes.items) |*l| if (l.selectedCount() > 0) {
+        l.removeSelected();
+        any = true;
+    };
+    return any;
 }
 
 fn velTopPad() f32 {

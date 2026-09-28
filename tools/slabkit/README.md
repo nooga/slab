@@ -54,7 +54,8 @@ song.render(stems=True)        # bounce + mix report
 | `arp(prog, "up"/"down"/"updown"/"random"/[indices], rate, octave)` | arpeggio per chord |
 | `repeat(every_beats)` | tile the first N beats across the clip |
 | `transpose(n)`, `swing(amount, grid)`, `humanize(time, vel)`, `velocities(fn)` | transforms |
-| `copy(section)` | same notes on another section |
+| `copy(section)` | same notes (and clip automation) on another section |
+| `automate(target, points…)`, `ramp(target, frm, to, v0, v1, tension)` | clip automation: like the track's, beats from the clip's start; overrides the track lane while the clip plays |
 
 | Track method | Does |
 |---|---|
