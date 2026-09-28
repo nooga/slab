@@ -698,6 +698,12 @@ loop: crest, GR per kick and snare, GR 1 ms in, transient-to-body).
 Gain is measured sample by sample as out/in, exact for a compressor
 (a memoryless multiply), so no meter cell is needed. docs/24 §Test plan.
 
+`--input=FILE.wav` runs an effect on real audio instead (the `file` case):
+gain percentiles (absolute, and GR relative to quiet passages), pump (GR
+std), crest (median over 400 ms), level spread (100 ms), transient/body
+at onsets, and a `metrics:` key=value line for scripts. It's what
+`tools/comp2_presets` designs the comp2 presets with.
+
 ### Fixture input
 
 A fixture should be able to specify:

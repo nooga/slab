@@ -37,6 +37,9 @@ const BLOCK: usize = 256;
 
 const GoldenMode = enum { none, check, record };
 
+/// The --input audio, for the `file` case.
+var file_input: []const f32 = &.{};
+
 const CostRow = struct { name: []const u8, ns: f64, voices: usize };
 var cost_rows: [64]CostRow = undefined;
 var cost_count: usize = 0;
@@ -54,6 +57,8 @@ const Cli = struct {
     out: []const u8 = "scratch/bench",
     golden: GoldenMode = .none,
     no_sheets: bool = false,
+    /// --input=FILE: run an effect on this audio (mono) as the `file` case.
+    input: ?[]const u8 = null,
 };
 
 const usage_text =
@@ -67,6 +72,7 @@ const usage_text =
     \\  --check | --record    compare with / write bench/golden/<machine>.txt
     \\  --no-sheets           skip PNGs (fast golden checks)
     \\  --out=DIR             output root (default scratch/bench)
+    \\  --input=FILE.wav      effects: run only the `file` case on this audio
     \\
 ;
 
@@ -88,6 +94,8 @@ pub fn main(init: std.process.Init) !void {
             cli.sweep = a["--sweep=".len..];
         } else if (std.mem.startsWith(u8, a, "--preset=")) {
             cli.preset = a["--preset=".len..];
+        } else if (std.mem.startsWith(u8, a, "--input=")) {
+            cli.input = a["--input=".len..];
         } else if (std.mem.startsWith(u8, a, "--out=")) {
             cli.out = a["--out=".len..];
         } else if (std.mem.eql(u8, a, "--check")) {
@@ -293,7 +301,18 @@ fn runMachine(alloc: std.mem.Allocator, cli: *const Cli, path: []const u8) !usiz
     var suite_buf: [16]cases.Case = undefined;
     var suite_n: usize = 0;
     var drum_store: [64]cases.Event = undefined;
-    if (isEffect(probe)) {
+    var file_audio: ?[]f32 = null;
+    if (cli.input) |path_in| {
+        if (!isEffect(probe)) return error.InputNeedsAnEffect;
+        var smp = try wav.load(alloc, path_in);
+        const buf = try alloc.alloc(f32, smp.data.len);
+        for (buf, smp.data) |*d, v| d.* = @floatCast(v);
+        smp.deinit(alloc);
+        file_audio = buf;
+        file_input = buf;
+        suite_buf[0] = .{ .name = "file", .seconds = @as(f64, @floatFromInt(buf.len)) / SR, .focus = .file, .input = .file };
+        suite_n = 1;
+    } else if (isEffect(probe)) {
         for (cases.effect_suite) |cs| {
             suite_buf[suite_n] = cs;
             suite_n += 1;
@@ -327,6 +346,7 @@ fn runMachine(alloc: std.mem.Allocator, cli: *const Cli, path: []const u8) !usiz
         }
     }
 
+    _ = &file_audio;
     var results: [16]CaseResult = undefined;
     var nres: usize = 0;
     for (suite_buf[0..suite_n]) |cs| {
@@ -389,7 +409,7 @@ fn runCase(
     var input: ?[]f32 = null;
     if (cs.input != .none) {
         const buf = try alloc.alloc(f32, frames);
-        cases.genInput(cs, SR, buf);
+        if (cs.input == .file) @memcpy(buf, file_input[0..frames]) else cases.genInput(cs, SR, buf);
         input = buf;
     }
     const out = try render(alloc, inst, frames, cs.events, input, &.{});
@@ -726,6 +746,14 @@ fn runCase(
             steady = 60.0 / cases.drums_bpm;
             off = 2 * 60.0 / cases.drums_bpm;
         },
+        .file => {
+            const x = input orelse return error.NoInput;
+            try fileMetrics(alloc, &tbl, x, out.l);
+            spec_win = .{ 0, @min(cs.seconds, 10) };
+            onset = 0;
+            steady = cs.seconds / 2;
+            off = cs.seconds - 0.2;
+        },
     }
     try rep.appendSlice(alloc, tbl.items);
     try rep.print(alloc, "\n", .{});
@@ -791,6 +819,129 @@ fn gainTraceDb(alloc: std.mem.Allocator, in: []const f32, out: []const f32, floo
         d.* = last;
     }
     return g;
+}
+
+/// Real-material dynamics report (docs/24 §Test plan). Active = 10 ms
+/// windows of the input above -45 dBFS RMS. GR is relative to the gain
+/// the machine applies to quiet passages (its makeup and mix), the 99th
+/// percentile of the per-window gain. One `metrics:` line of key=value
+/// pairs for scripts.
+fn fileMetrics(alloc: std.mem.Allocator, tbl: *std.ArrayList(u8), x: []const f32, y: []const f32) !void {
+    const W: usize = 480; // 10 ms
+    const nw = x.len / W;
+    var gains: std.ArrayList(f64) = .empty;
+    var lv_in: std.ArrayList(f64) = .empty;
+    var lv_out: std.ArrayList(f64) = .empty;
+    for (0..nw) |k| {
+        const a = x[k * W .. (k + 1) * W];
+        const b = y[k * W .. (k + 1) * W];
+        const ri = an.rms(a);
+        if (an.dbAmp(ri) < -45) continue;
+        try gains.append(alloc, an.dbAmp(an.rms(b) / ri));
+        try lv_in.append(alloc, an.dbAmp(ri));
+        try lv_out.append(alloc, an.dbAmp(an.rms(b)));
+    }
+    if (gains.items.len < 10) {
+        try tbl.print(alloc, "input too quiet\n", .{});
+        return;
+    }
+    const g_sorted = try alloc.dupe(f64, gains.items);
+    std.mem.sort(f64, g_sorted, {}, std.sort.asc(f64));
+    const pct = struct {
+        fn of(v: []const f64, p: f64) f64 {
+            return v[@min(v.len - 1, @as(usize, @intFromFloat(p * @as(f64, @floatFromInt(v.len - 1)))))];
+        }
+    };
+    const g_top = pct.of(g_sorted, 0.99);
+    const gr50 = g_top - pct.of(g_sorted, 0.5);
+    const gr90 = g_top - pct.of(g_sorted, 0.1);
+    const gr99 = g_top - pct.of(g_sorted, 0.01);
+    // Level spread: 100 ms RMS (ten windows) in dB, std and p90-p10.
+    const spread = struct {
+        fn of(a: std.mem.Allocator, lv: []const f64) ![2]f64 {
+            var blocks: std.ArrayList(f64) = .empty;
+            var k: usize = 0;
+            while (k + 10 <= lv.len) : (k += 10) {
+                var p: f64 = 0;
+                for (lv[k .. k + 10]) |d| p += std.math.pow(f64, 10, d / 10);
+                try blocks.append(a, 10 * std.math.log10(p / 10));
+            }
+            if (blocks.items.len < 2) return .{ 0, 0 };
+            var m: f64 = 0;
+            for (blocks.items) |v| m += v;
+            m /= @floatFromInt(blocks.items.len);
+            var v2: f64 = 0;
+            for (blocks.items) |v| v2 += (v - m) * (v - m);
+            std.mem.sort(f64, blocks.items, {}, std.sort.asc(f64));
+            return .{ @sqrt(v2 / @as(f64, @floatFromInt(blocks.items.len))), pct.of(blocks.items, 0.9) - pct.of(blocks.items, 0.1) };
+        }
+    };
+    const sp_in = try spread.of(alloc, lv_in.items);
+    const sp_out = try spread.of(alloc, lv_out.items);
+    // Pumping: std of the per-window GR.
+    var gm: f64 = 0;
+    for (gains.items) |g| gm += g;
+    gm /= @floatFromInt(gains.items.len);
+    var gv: f64 = 0;
+    for (gains.items) |g| gv += (g - gm) * (g - gm);
+    const pump = @sqrt(gv / @as(f64, @floatFromInt(gains.items.len)));
+    // Onsets: a 5 ms window 8 dB over the mean of the previous 50 ms and
+    // above -30 dBFS; transient = the loudest 1 ms RMS in the first 15 ms
+    // (what the ear hears as the hit, not a few samples of overshoot; a
+    // sampled snare can take 10 ms to peak), body = RMS 40-120 ms.
+    const O: usize = 240;
+    var tb_in: f64 = 0;
+    var tb_out: f64 = 0;
+    var n_on: f64 = 0;
+    var i: usize = 10 * O;
+    while (i + 26 * O < x.len) : (i += O) {
+        const cur = an.rms(x[i .. i + O]);
+        const prev = an.rms(x[i - 10 * O .. i]);
+        if (an.dbAmp(cur) < -30 or an.dbAmp(cur / @max(prev, 1e-9)) < 8) continue;
+        const body_in = an.rms(x[i + 8 * O .. i + 24 * O]);
+        const body_out = an.rms(y[i + 8 * O .. i + 24 * O]);
+        tb_in += an.dbAmp(transientRms(x[i .. i + 3 * O]) / @max(body_in, 1e-9));
+        tb_out += an.dbAmp(transientRms(y[i .. i + 3 * O]) / @max(body_out, 1e-9));
+        n_on += 1;
+        i += 26 * O; // one onset per 130 ms at most
+    }
+    // Crest: the median over 400 ms windows of peak/RMS, so one onset
+    // after silence (where any compressor has let go) doesn't decide it.
+    const crest = struct {
+        fn of(a: std.mem.Allocator, v: []const f32) !f64 {
+            const C: usize = 19200;
+            var cs: std.ArrayList(f64) = .empty;
+            var k: usize = 0;
+            while (k + C <= v.len) : (k += C) {
+                const seg = v[k .. k + C];
+                const r = an.rms(seg);
+                if (an.dbAmp(r) < -45) continue;
+                try cs.append(a, an.dbAmp(peakAbs(seg) / r));
+            }
+            if (cs.items.len == 0) return 0;
+            std.mem.sort(f64, cs.items, {}, std.sort.asc(f64));
+            return cs.items[cs.items.len / 2];
+        }
+    };
+    const crest_in = try crest.of(alloc, x);
+    const crest_out = try crest.of(alloc, y);
+    try tbl.print(alloc, "active {d:.1} s  gain quiet {d:.2} dB\n", .{ @as(f64, @floatFromInt(gains.items.len)) * 0.01, g_top });
+    try tbl.print(alloc, "GR p50 {d:.2}  p90 {d:.2}  p99 {d:.2} dB   pump (GR std) {d:.2} dB\n", .{ gr50, gr90, gr99, pump });
+    try tbl.print(alloc, "crest (median 400 ms) {d:.2} -> {d:.2} dB   spread std {d:.2} -> {d:.2}, p90-p10 {d:.2} -> {d:.2} dB\n", .{ crest_in, crest_out, sp_in[0], sp_out[0], sp_in[1], sp_out[1] });
+    if (n_on > 0) try tbl.print(alloc, "onsets {d:.0}: transient/body {d:.2} -> {d:.2} dB\n", .{ n_on, tb_in / n_on, tb_out / n_on });
+    try tbl.print(alloc, "gain p50 {d:.2}  p10 {d:.2}  p01 {d:.2} dB (absolute)\n", .{ pct.of(g_sorted, 0.5), pct.of(g_sorted, 0.1), pct.of(g_sorted, 0.01) });
+    try tbl.print(alloc, "metrics: g50={d:.3} g10={d:.3} g01={d:.3} ", .{ pct.of(g_sorted, 0.5), pct.of(g_sorted, 0.1), pct.of(g_sorted, 0.01) });
+    try tbl.print(alloc, "gr50={d:.3} gr90={d:.3} gr99={d:.3} pump={d:.3} crest_in={d:.3} crest_out={d:.3} spread_in={d:.3} spread_out={d:.3} range_in={d:.3} range_out={d:.3} tb_in={d:.3} tb_out={d:.3} onsets={d:.0} gain_quiet={d:.3} out_rms={d:.3} in_rms={d:.3}\n", .{
+        gr50, gr90, gr99, pump, crest_in, crest_out, sp_in[0], sp_out[0], sp_in[1], sp_out[1],
+        if (n_on > 0) tb_in / n_on else 0, if (n_on > 0) tb_out / n_on else 0, n_on, g_top, an.dbAmp(an.rms(y)), an.dbAmp(an.rms(x)),
+    });
+}
+
+fn transientRms(x: []const f32) f64 {
+    var best: f64 = 0;
+    var k: usize = 0;
+    while (k + 48 <= x.len) : (k += 12) best = @max(best, an.rms(x[k .. k + 48]));
+    return best;
 }
 
 fn meanOf(xs: []const f64) f64 {

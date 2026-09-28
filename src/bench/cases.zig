@@ -14,7 +14,7 @@ pub const Event = struct {
     vel: f32 = 0.8,
 };
 
-pub const Input = enum { none, impulse, sine, sweep, ladder, burst, saw, curve, step, drums };
+pub const Input = enum { none, impulse, sine, sweep, ladder, burst, saw, curve, step, drums, file };
 
 pub const Focus = enum {
     /// Per-note table: pitch, cents error, level, nonharmonic energy.
@@ -39,6 +39,9 @@ pub const Focus = enum {
     step,
     /// Dynamics: a synthetic kit loop, gain reduction per hit and crest.
     drums,
+    /// Dynamics on real material (`--input=FILE`): GR distribution, level
+    /// spread, transients, pumping (docs/24 §Test plan).
+    file,
 };
 
 pub const Case = struct {
@@ -279,6 +282,7 @@ pub fn genInput(case: Case, sr: f64, buf: []f32) void {
                 for (buf) |*v| v.* *= g;
             }
         },
+        .file => {}, // filled by the caller from --input
         .saw => {
             var ph: f64 = 0;
             for (buf) |*v| {
