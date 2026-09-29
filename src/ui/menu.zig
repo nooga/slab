@@ -46,6 +46,7 @@ pub const EditCommand = enum {
     rename,
     import_audio,
     reverse,
+    clear_solo_mute,
 };
 
 pub const Item = struct {
@@ -81,6 +82,7 @@ fn commandShortcut(cmd: EditCommand) ?[]const u8 {
         .file_save_as => "\u{2318}\u{21E7}S",
         .file_open => "\u{2318}O",
         .render_audio => "\u{2318}R",
+        .clear_solo_mute => "\u{21E7}M",
         else => null,
     };
 }

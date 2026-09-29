@@ -1071,6 +1071,8 @@ pub fn draw(
         .{ .label = "Loop selection", .command = .loop_selection, .enabled = has_selection },
         .{ .label = "Loop arrangement", .command = .loop_arrangement, .enabled = has_clips },
         .{ .label = "Clear loop", .command = .clear_loop, .enabled = true },
+        .{ .separator = true },
+        .{ .label = "Clear solos & mutes", .command = .clear_solo_mute, .enabled = anySoloOrMute(tracks) },
     };
     result.command = menu.command(ARR_CONTEXT_KEY, &arr_context_items);
     if (result.command != .none) {
@@ -1149,6 +1151,21 @@ fn selectedClipRange(tracks: []Track) ?struct { start: f64, end: f64 } {
         }
     }
     return if (found) .{ .start = start, .end = end } else null;
+}
+
+pub fn anySoloOrMute(tracks: []const Track) bool {
+    for (tracks) |*t| if (t.mute.load(.monotonic) or t.solo.load(.monotonic)) return true;
+    return false;
+}
+
+/// Unmutes and unsolos every track; false when there was nothing to clear.
+pub fn clearSolosAndMutes(tracks: []Track) bool {
+    const any = anySoloOrMute(tracks);
+    for (tracks) |*t| {
+        t.mute.store(false, .monotonic);
+        t.solo.store(false, .monotonic);
+    }
+    return any;
 }
 
 fn maxScrollX(content_beats: f64, timeline_w: f32) f32 {
@@ -1666,11 +1683,11 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, numb
     var muted = t.mute.load(.monotonic);
     const mute_r = btns.cutLeft(17).insetXY(0, 2);
     if (ctl.button(ui, mute_r, "mute", &muted, .{ .kind = .latch, .label = "M", .lit = ui_style.led_blue })) t.mute.store(muted, .monotonic);
-    menu.tip(ui, mute_r, if (muted) "Unmute track" else "Mute track");
+    menu.tip(ui, mute_r, if (muted) "Unmute track (\u{21E7}M clears all)" else "Mute track");
     var solo = t.solo.load(.monotonic);
     const solo_r = btns.insetXY(0, 2);
     if (ctl.button(ui, solo_r, "solo", &solo, .{ .kind = .latch, .label = "S", .lit = ui_style.led_yellow })) t.solo.store(solo, .monotonic);
-    menu.tip(ui, solo_r, if (solo) "Unsolo track" else "Solo track");
+    menu.tip(ui, solo_r, if (solo) "Unsolo track (\u{21E7}M clears all)" else "Solo track");
 
     // Index badge + name; the name row is also the select/rename target.
     var ibuf: [8]u8 = undefined;

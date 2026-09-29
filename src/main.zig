@@ -635,7 +635,11 @@ pub fn main(init: std.process.Init) !void {
             if (c.rl.IsKeyPressed(c.rl.KEY_SPACE)) transport.toggle();
             if (c.rl.IsKeyPressed(c.rl.KEY_HOME)) transport.rewind();
             if (c.rl.IsKeyPressed(c.rl.KEY_TAB)) layout.clip_editor_visible = !layout.clip_editor_visible;
-            if (!commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_M)) layout.mixer_visible = !layout.mixer_visible;
+            if (!commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_M)) {
+                if (shiftDown()) {
+                    try executeEditCommand(alloc, &history, &clipboard, &status, focus, edit_snap, .clear_solo_mute, .{}, tracks, &transport, &selected_track, &selected_clip, &rename, &dirty);
+                } else layout.mixer_visible = !layout.mixer_visible;
+            }
             if (focus == .piano_roll and !commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_E)) clip_editor.toggleExpressionMode();
         }
 
@@ -2665,6 +2669,10 @@ fn executeEditCommand(
             };
             if (changed) status.set("Reversed", .{});
         },
+        .clear_solo_mute => {
+            changed = arrangement.clearSolosAndMutes(tracks);
+            if (changed) status.set("Solos and mutes cleared", .{});
+        },
         .split_at_playhead => {
             changed = if (focus == .arrangement) arrangement.splitSelectedClipsAt(tracks, alloc, selected_clip, transport.beats(), transport.bpm()) else false;
             if (changed) status.set("Split clips", .{});
@@ -2699,7 +2707,7 @@ fn executeEditCommand(
         dirty.* = true;
     } else {
         alloc.free(before);
-        if (command != .paste) status.set("No selection", .{});
+        if (command == .clear_solo_mute) status.set("No solos or mutes", .{}) else if (command != .paste) status.set("No selection", .{});
     }
 }
 
@@ -2744,6 +2752,10 @@ fn handleFocusedDelete(
 
 fn deletePressed() bool {
     return c.rl.IsKeyPressed(c.rl.KEY_DELETE) or c.rl.IsKeyPressed(c.rl.KEY_BACKSPACE);
+}
+
+fn shiftDown() bool {
+    return c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
 }
 
 fn shouldCaptureHistory(m: pane.Mouse, rects: layout_mod.Rects, focus: FocusPane) bool {
