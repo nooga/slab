@@ -207,9 +207,20 @@ bounce drops that many frames from its start (keeping the block grid, so
 block-rate randomness renders the same), and a recorded take is placed
 earlier by it on top of the device round trip.
 
-Not compensated yet: sidechain keys (a key arrives as early as its
-source's pre tap), and a change of latency mid-play jumps the delays
-(a click, like any insert added while playing).
+Sidechain keys are aligned too. A keyed effect's input is as late as
+the track's input plus the instrument and the inserts before it; its key
+is as late as the source's taps. An early key is read back from the
+source's pre-tap history. A late key instead makes the track's own input
+later (step 1 takes the max): a bus's feeds are delayed more, and an
+instrument track's chain input (instrument plus audio clips) is delayed
+through a third history tap. A track that doesn't render writes silence
+into its history, so un-muting it replays nothing stale.
+
+The UI shows `master_latency` in the transport bar while it isn't 0, and
+each latent device's share on hover over its name.
+
+Not compensated yet: a change of latency mid-play jumps the delays (a
+click, like any insert added while playing).
 
 ## Sample accuracy
 

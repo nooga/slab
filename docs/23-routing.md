@@ -157,7 +157,7 @@ each effect, with the peak offset reported next to ns/smp).
 offset and group delay; limiter2, sat2 and funk declare theirs, and the
 engine compensates at every bus and the master (docs/07 §PDC). The IIR
 stages (multi2's crossovers, chorus2, eq2) show phase, not delay, and
-declare none. Keys aren't compensated yet.
+declare none. Sidechain keys are compensated the same way (docs/07 §PDC).
 
 ## Engine
 

@@ -91,6 +91,8 @@ pub const Engine = struct {
     lat_out: [routing.MAX_TRACKS]u32 = @splat(0),
     lat_in: [routing.MAX_TRACKS]u32 = @splat(0),
     lat_master_in: u32 = 0,
+    /// Where each track's block starts in the history this block.
+    hist_at: [routing.MAX_TRACKS]usize = @splat(0),
     /// The whole project's: how late the master output is (UI reads it).
     master_latency: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
@@ -113,6 +115,20 @@ pub const Engine = struct {
         var master_in: u32 = 0;
         for (graph.renderOrder()) |ti| {
             const nd = &graph.nodes[ti];
+            // A keyed effect's input must be at least as late as its key
+            // (the source's pre tap), so a late key makes the track later.
+            if (nd.key_count > 0) {
+                const t = &self.tracks[ti];
+                var p = instLatency(t, nd.is_bus);
+                for (t.effects.items, 0..) |*fx, i| {
+                    if (t.effectBypassed(i)) continue;
+                    if (fx.mach.takes_key) if (nd.keyFor(fx.uid)) |src| {
+                        self.lat_in[ti] = @max(self.lat_in[ti], self.lat_out[src] -| p);
+                    };
+                    p += fx.mach.latencySamples();
+                }
+                self.lat_in[ti] = @min(self.lat_in[ti], PDC_LIMIT);
+            }
             const out = @min(self.lat_in[ti] + chainLatency(&self.tracks[ti], nd.is_bus), PDC_LIMIT);
             self.lat_out[ti] = out;
             if (nd.output == routing.NONE) {
@@ -551,6 +567,7 @@ pub const Engine = struct {
             const t = &self.tracks[ti];
             const node = &graph.nodes[ti];
             if (live & routing.bit(ti) == 0) {
+                if (self.pdc) |h| h.silence(ti, frames);
                 t.setMeter(0, 0);
                 continue;
             }
@@ -604,10 +621,25 @@ pub const Engine = struct {
                 // Audio clips mix on top of the instrument output, into the
                 // same planar L/R, so the track's insert chain processes the sum.
                 mixAudioClips(snap, block_start, frames, spb, sr, l, r);
+                // Late for a key that arrives later still (PDC).
+                if (self.pdc) |h| {
+                    h.put(ti, .input, l, r);
+                    const d = self.lat_in[ti];
+                    if (d > 0) h.read(ti, .input, h.w[ti], d, l, r);
+                }
             }
             const inst_ns = if (track_probe) probeNowNs() - inst_start else 0;
             const fx_start = if (track_probe) probeNowNs() else 0;
-            const keys: ?Keys = if (node.key_count > 0) .{ .node = node, .pre_l = &self.pre_l, .pre_r = &self.pre_r, .live = live } else null;
+            const keys: ?Keys = if (node.key_count > 0) .{
+                .node = node,
+                .pre_l = &self.pre_l,
+                .pre_r = &self.pre_r,
+                .live = live,
+                .hist = self.pdc,
+                .hist_at = &self.hist_at,
+                .lat_out = &self.lat_out,
+                .lat = self.lat_in[ti] + instLatency(t, node.is_bus),
+            } else null;
             const rendered = renderEffectsKeyed(t, ctx, l, r, fx_l_buf[0..frames], fx_r_buf[0..frames], keys);
             const fx_ns = if (track_probe) probeNowNs() - fx_start else 0;
             // The chain may end in the scratch pair; the pre tap is `l`/`r`.
@@ -646,6 +678,7 @@ pub const Engine = struct {
             }
             // The taps' history, for paths that must arrive later (PDC).
             const hist_at = if (self.pdc) |h| h.write(ti, final_l, final_r, post_l, post_r) else 0;
+            self.hist_at[ti] = hist_at;
             var dly_l: [MAX_BLOCK]f32 = undefined;
             var dly_r: [MAX_BLOCK]f32 = undefined;
             if (is_heard) {
@@ -932,6 +965,12 @@ const Keys = struct {
     pre_r: *const [routing.MAX_TRACKS][MAX_BLOCK]f32,
     /// Sources rendered this block (the rest hold a stale block).
     live: u32,
+    /// Delay compensation: a key is read late by how much earlier it is
+    /// than the keyed effect's input, `lat` at the chain's start.
+    hist: ?*const PdcHistory = null,
+    hist_at: ?*const [routing.MAX_TRACKS]usize = null,
+    lat_out: ?*const [routing.MAX_TRACKS]u32 = null,
+    lat: u32 = 0,
 };
 
 /// Ring length of the PDC history, a power of two; the most a path can be
@@ -940,9 +979,11 @@ pub const PDC_MAX: usize = 8192;
 const PDC_LIMIT: u32 = PDC_MAX - MAX_BLOCK;
 
 pub const PdcHistory = struct {
-    pub const Tap = enum { pre, post };
-    /// Per track: the pre-fader tap (after inserts) and post-fader tap, L/R.
-    bufs: [routing.MAX_TRACKS][2][2][PDC_MAX]f32,
+    /// `input` is an instrument track's chain input (instrument and audio
+    /// clips), delayed when a late key must meet it.
+    pub const Tap = enum { pre, post, input };
+    /// Per track and tap, L/R.
+    bufs: [routing.MAX_TRACKS][3][2][PDC_MAX]f32,
     /// Per track: where the next block is written.
     w: [routing.MAX_TRACKS]usize,
 
@@ -951,16 +992,33 @@ pub const PdcHistory = struct {
         @memset(&self.w, 0);
     }
 
-    /// Appends track `ti`'s block; returns where it starts.
+    /// Stores one tap of track `ti`'s block at the write position, which
+    /// `write` then moves past it.
+    fn put(self: *PdcHistory, ti: usize, tap: Tap, l: []const f32, r: []const f32) void {
+        const at = self.w[ti];
+        for ([2][]const f32{ l, r }, 0..) |src, ch| {
+            const ring = &self.bufs[ti][@intFromEnum(tap)][ch];
+            for (src, 0..) |x, i| ring[(at + i) & (PDC_MAX - 1)] = x;
+        }
+    }
+
+    /// Appends track `ti`'s taps for the block; returns where it starts.
     fn write(self: *PdcHistory, ti: usize, pre_l: []const f32, pre_r: []const f32, post_l: []const f32, post_r: []const f32) usize {
         const at = self.w[ti];
-        const srcs = [2][2][]const f32{ .{ pre_l, pre_r }, .{ post_l, post_r } };
-        for (srcs, 0..) |tap, k| for (tap, 0..) |src, ch| {
-            const ring = &self.bufs[ti][k][ch];
-            for (src, 0..) |x, i| ring[(at + i) & (PDC_MAX - 1)] = x;
-        };
+        self.put(ti, .pre, pre_l, pre_r);
+        self.put(ti, .post, post_l, post_r);
         self.w[ti] = (at + pre_l.len) & (PDC_MAX - 1);
         return at;
+    }
+
+    /// A block of silence for a track that didn't render, so a delayed
+    /// read after it comes back finds no stale audio.
+    fn silence(self: *PdcHistory, ti: usize, frames: usize) void {
+        const at = self.w[ti];
+        for (&self.bufs[ti]) |*tap| for (tap) |*ring| {
+            for (0..frames) |i| ring[(at + i) & (PDC_MAX - 1)] = 0;
+        };
+        self.w[ti] = (at + frames) & (PDC_MAX - 1);
     }
 
     /// The block written at `at`, `delay` samples late.
@@ -978,12 +1036,15 @@ pub const PdcHistory = struct {
 /// Samples a track's signal is late at its taps: its instrument's (not a
 /// bus's) and its active inserts'.
 fn chainLatency(t: *const Track, is_bus: bool) u32 {
-    var n: u32 = 0;
-    if (!is_bus and t.isEnabled()) n += t.machine.latencySamples();
+    var n = instLatency(t, is_bus);
     for (t.effects.items, 0..) |*fx, i| {
         if (!t.effectBypassed(i)) n += fx.mach.latencySamples();
     }
     return n;
+}
+
+fn instLatency(t: *const Track, is_bus: bool) u32 {
+    return if (!is_bus and t.isEnabled()) t.machine.latencySamples() else 0;
 }
 
 fn renderEffects(
@@ -1010,6 +1071,10 @@ fn renderEffectsKeyed(
     var cur_r = src_r;
     var next_l = scratch_l;
     var next_r = scratch_r;
+    // How late the signal is entering each effect (PDC), and a delayed key.
+    var lat: u32 = if (keys) |k| k.lat else 0;
+    var key_l: [MAX_BLOCK]f32 = undefined;
+    var key_r: [MAX_BLOCK]f32 = undefined;
 
     for (t.effects.items, 0..) |*fx, i| {
         const in_peak = [2]f32{ blockPeak(cur_l), blockPeak(cur_r) };
@@ -1028,8 +1093,18 @@ fn renderEffectsKeyed(
         if (keys) |k| if (fx.mach.takes_key) if (k.node.keyFor(fx.uid)) |src| if (k.live & routing.bit(src) != 0) {
             in_ports[2] = &k.pre_l[src];
             in_ports[3] = &k.pre_r[src];
+            if (k.hist) |h| {
+                const d = lat -| k.lat_out.?[src];
+                if (d > 0) {
+                    const n = cur_l.len;
+                    h.read(src, .pre, k.hist_at.?[src], d, key_l[0..n], key_r[0..n]);
+                    in_ports[2] = &key_l;
+                    in_ports[3] = &key_r;
+                }
+            }
             ctx.audio_in_count = 4;
         };
+        lat += fx.mach.latencySamples();
         // Retarget the instrument's lane view at this effect.
         var fx_view: snap_mod.AutoView = undefined;
         if (base_ctx.automation) |p| {
@@ -2135,6 +2210,74 @@ const PdcTestMachines = struct {
         };
     }
 };
+
+test "PDC: a keyed effect meets its key on the same sample, late or early" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var kick_lvl: f32 = 0.25;
+    var bass_lvl: f32 = 0.5;
+    var unused: f32 = 0;
+    // Effect: its input plus its key, so a misaligned key shows as two peaks.
+    var keyed = RouteTestMachines.gain(&unused);
+    keyed.takes_key = true;
+    keyed.render = struct {
+        fn f(_: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []f32) void {
+            const ins = ctx.audio_in.?;
+            for (l, r, 0..) |*a, *b, i| {
+                a.* = ins[0][i] + if (ctx.audio_in_count >= 4) ins[2][i] else 0;
+                b.* = a.*;
+            }
+        }
+    }.f;
+    var kick_d = PdcTestMachines.Delay{ .n = 10 };
+    var bass_d = PdcTestMachines.Delay{ .n = 7 };
+    var tracks = [_]Track{
+        try Track.init(alloc, "kick", col, PdcTestMachines.impulse(&kick_lvl)),
+        try Track.init(alloc, "bass", col, PdcTestMachines.impulse(&bass_lvl)),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    for (&tracks) |*t| t.setVolume(1.0);
+    try tracks[0].addEffect(alloc, PdcTestMachines.delay(&kick_d), 0);
+    try tracks[1].addEffect(alloc, PdcTestMachines.delay(&bass_d), 0);
+    try tracks[1].addEffect(alloc, keyed, 1);
+    tracks[1].effects.items[1].key = 0;
+    tracks[0].mute.store(true, .monotonic);
+    tracks[1].effects.items[0].bypass.store(true, .monotonic);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+    var transport = Transport{};
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    try eng.initPdc(alloc);
+    defer eng.deinitPdc(alloc);
+    eng.publishRouting();
+
+    const c = @cos(@as(f32, std.math.pi / 4.0));
+    var out: [64 * 2]f32 = undefined;
+    // A late key (the kick's insert): the bass waits for it.
+    transport.play();
+    eng.render(&out, 64);
+    try testing.expectEqual(@as(?usize, 10), onlyPeakAt(&out));
+    try testing.expectApproxEqAbs(0.75 * c, out[20], 1e-6);
+    try testing.expectEqual(@as(u32, 10), eng.master_latency.load(.monotonic));
+
+    // An early key (the bass's own insert before the keyed effect): the
+    // key is read late instead.
+    tracks[0].effects.items[0].bypass.store(true, .monotonic);
+    tracks[1].effects.items[0].bypass.store(false, .monotonic);
+    eng.renderOffline(&out, 64, 0, null, null);
+    try testing.expectEqual(@as(?usize, 0), onlyPeakAt(&out));
+    try testing.expectEqual(@as(u32, 7), eng.master_latency.load(.monotonic));
+
+    // Both: the later of the two sets the pace.
+    tracks[0].effects.items[0].bypass.store(false, .monotonic);
+    eng.renderOffline(&out, 64, 0, null, null);
+    try testing.expectEqual(@as(?usize, 0), onlyPeakAt(&out));
+    try testing.expectApproxEqAbs(0.75 * c, out[0], 1e-6);
+    try testing.expectEqual(@as(u32, 10), eng.master_latency.load(.monotonic));
+}
 
 fn onlyPeakAt(out: []const f32) ?usize {
     var at: ?usize = null;
