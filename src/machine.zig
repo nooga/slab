@@ -255,6 +255,9 @@ pub const TakeAutoRequestFn = *const fn (state: *anyopaque) ?AutoRequest;
 /// space), for automation recording. Taking it clears it.
 pub const Touch = struct { control: u16, knob: f32 };
 pub const TakeTouchFn = *const fn (state: *anyopaque) ?Touch;
+/// Audio thread, each block: how many samples later the output is than the
+/// input (docs/07 §PDC).
+pub const LatencyFn = *const fn (state: *anyopaque) u32;
 
 pub const NOTE_LABEL_TEXT = 23;
 
@@ -333,6 +336,13 @@ pub const Machine = struct {
     clear_overrides: ?ClearOverridesFn = null,
     take_auto_request: ?TakeAutoRequestFn = null,
     take_touch: ?TakeTouchFn = null,
+    /// Delay compensation (docs/07 §PDC); none = no latency.
+    latency: ?LatencyFn = null,
+
+    pub fn latencySamples(self: *const Machine) u32 {
+        const f = self.latency orelse return 0;
+        return f(self.state);
+    }
 
     pub fn controlCount(self: *const Machine) usize {
         const f = self.control_count orelse return 0;

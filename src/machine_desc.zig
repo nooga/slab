@@ -346,6 +346,9 @@ pub const Desc = struct {
     control_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
     control_word_len: usize = 0,
     control_period: usize = 0,
+    /// Params byte offset + 1 of the f64 holding the machine's latency in
+    /// samples (docs/07 §PDC); 0 = none.
+    latency_sel: usize = 0,
     // Generic derived-params hook: a dsp2 word (params derive-data --) the host
     // calls each block, plus an opaque machine-built data pointer. Lets a
     // machine keep all its specific logic in fy (e.g. FM-86 algorithm routing)
@@ -480,6 +483,7 @@ const MachineDescRaw = extern struct {
     key_flag: Fy.Value,
     control: Fy.Value,
     control_period: Fy.Value,
+    latency: Fy.Value,
 };
 
 const PageRaw = extern struct { next: Fy.Value, name: Fy.Value, rows: Fy.Value };
@@ -607,6 +611,7 @@ pub fn read(host: *FyHost) !Desc {
     d.render_lite_word_len = try copyBuf(d.render_lite_word[0..], cstrSlice(md.render_lite));
     d.render_lite_sel = @intCast(asInt(md.render_lite_sel));
     d.key_flag = @intCast(asInt(md.key_flag));
+    d.latency_sel = @intCast(asInt(md.latency));
     d.control_word_len = try copyBuf(d.control_word[0..], cstrSlice(md.control));
     d.control_period = @intCast(asInt(md.control_period));
     if (d.control_word_len > 0 and (d.mode != .voice_sample or d.control_period == 0)) return error.InvalidMachineDesc;
@@ -1018,3 +1023,14 @@ test "descriptor walker reads the MS-20 manifest from fy" {
     try testing.expect(found);
 }
 
+
+test "latency! names the params f64 holding a machine's latency (limiter2, sat2)" {
+    inline for (.{ "machines/limiter2/limiter2.fy", "machines/sat2/sat2.fy" }) |path| {
+        var host = FyHost.init(testing.allocator);
+        defer host.deinit();
+        try host.compileFile(path);
+        const d = try read(&host);
+        try testing.expect(d.latency_sel > 0);
+        try testing.expect(d.latency_sel - 1 + 8 <= d.params_size);
+    }
+}

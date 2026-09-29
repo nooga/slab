@@ -562,6 +562,7 @@ fn runCase(
             const env = try an.envelopeDb(alloc, seg, 240);
             const sh = an.shape(env, 240.0 / SR);
             try tbl.print(alloc, "gain @100 {d:.1}  @1k {d:.1}  @10k {d:.1} dB\n", .{ bandDb(irs, 100), bandDb(irs, 1000), bandDb(irs, 10000) });
+            try tbl.print(alloc, "latency: peak at {d} smp, group delay @100 {d:.2}  @1k {d:.2}  @10k {d:.2} smp\n", .{ peakIndex(seg), groupDelay(seg, 100), groupDelay(seg, 1000), groupDelay(seg, 10000) });
             try tbl.print(alloc, "peak-relative -60 dB {d:.3}s  EDC T60 (Schroeder, T30x2) {d:.3}s\n", .{ sh.t60_s, an.edcT60(seg, SR) });
             ir_spec = irs;
             spec_win = .{ at, cs.seconds };
@@ -1410,4 +1411,37 @@ fn nowNs() u64 {
         @as(u128, @intCast(std.c.mach_absolute_time())) * @as(u128, @intCast(info.numer)),
         @as(u128, @intCast(info.denom)),
     ));
+}
+
+fn peakIndex(x: []const f32) usize {
+    var best: usize = 0;
+    for (x, 0..) |v, i| if (@abs(v) > @abs(x[best])) {
+        best = i;
+    };
+    return best;
+}
+
+/// Group delay in samples at `hz`, from the phase slope of the response's
+/// DFT across hz ± 1% (first 8192 samples). What PDC should compensate
+/// for an IIR stage whose delay isn't a clean shift.
+fn groupDelay(x: []const f32, hz: f64) f64 {
+    const n = @min(x.len, 8192);
+    const d = hz * 0.01;
+    const ph = struct {
+        fn at(y: []const f32, f: f64) f64 {
+            var re: f64 = 0;
+            var im: f64 = 0;
+            const w = 2.0 * std.math.pi * f / SR;
+            for (y, 0..) |v, i| {
+                const a = w * @as(f64, @floatFromInt(i));
+                re += v * @cos(a);
+                im -= v * @sin(a);
+            }
+            return std.math.atan2(im, re);
+        }
+    };
+    var dp = ph.at(x[0..n], hz + d) - ph.at(x[0..n], hz - d);
+    while (dp > std.math.pi) dp -= 2 * std.math.pi;
+    while (dp < -std.math.pi) dp += 2 * std.math.pi;
+    return -dp / (2.0 * std.math.pi * 2.0 * d / SR);
 }

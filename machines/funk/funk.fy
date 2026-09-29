@@ -17,6 +17,7 @@ include "../lib/manifest.fy"
   "k-funk-tick-thru" FunkParams.funk render-lite!
   FunkState.size  state-size!
   FunkParams.size params-size!
+  FunkParams.lat latency!
   160.0 panel-w!
   stereo
 

@@ -15,6 +15,7 @@ include "../lib/manifest.fy"
   "lim-block-prepare"   block-prepare!
   LimState.size  state-size!
   LimParams.size params-size!
+  LimParams.lat latency!
   240.0 panel-w!
 
   ( 12 ms lookahead ring per channel; LOOK tops out at 10 ms )

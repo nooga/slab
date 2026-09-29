@@ -85,6 +85,7 @@ ustruct: FunkParams
   f64 range    ( 0 BASS, 1 GTR, 2 KEYS )
   ( derived - filled by funk-block-prepare )
   f64 osr
+  f64 lat      ( latency: the 4x halfband pair's )
   f64 base-hz
   f64 oct      ( sweep depth, octaves )
   f64 k        ( SVF damping term, 1/Q )
@@ -135,6 +136,7 @@ dsp: funk-block-prepare | ctx:Ctx state params:FunkParams |
   ctx.sr | sr |
   4.0 sr f* | osr |
   osr -> params.osr
+  OS4-LATENCY -> params.lat
   params.funk | f |
   params.range | m |
   f 0.0 0.4 funk-ramp | w1 |

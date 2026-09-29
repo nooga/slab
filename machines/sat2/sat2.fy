@@ -18,6 +18,7 @@ include "../lib/manifest.fy"
   "sat-block-prepare" block-prepare!
   SatState.size  state-size!
   SatParams.size params-size!
+  SatParams.lat latency!
   270.0 panel-w!
 
   "SAT" "DRIVE" "sat-drive" SatParams.drive-db 0.0   36.0   6.0    curve-lin knob

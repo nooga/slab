@@ -99,7 +99,7 @@ machine: tal-u-no
     cv-in:      0
     cv-out:     0
 
-  latency:     0                  ( samples — for PDC )
+  latency:     0                  ( samples — for PDC; `offset latency!`, docs/04 )
   oversample:  2                  ( host wraps process in 2× )
 
   panel:       \uno-draw \uno-events

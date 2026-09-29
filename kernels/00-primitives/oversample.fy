@@ -15,6 +15,11 @@
   delay is a few samples at the base rate, and the phase is nonlinear
   near Nyquist, as with any IIR halfband. )
 
+( An up4 + dec4 pair's delay in whole base-rate samples, for delay
+  compensation: its group delay is 4.9..5.6 samples from 100 Hz to 10 kHz
+  and the impulse peaks 5 samples late [bench impulse, sat2]. )
+:: OS4-LATENCY 5.0 ;
+
 ustruct: HbAp f64 x f64 y ;          ( one section: last input, last output )
 ustruct: Hb9 f64 m 18 ;              ( 9 sections )
 ustruct: Hb4 f64 m 8 ;               ( 4 sections )

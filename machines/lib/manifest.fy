@@ -74,6 +74,9 @@ struct: MachineDesc
                        params --] the host calls on each voice every
                        control-period samples, before the render that follows )
   ptr control-period ( int samples )
+  ptr latency        ( int: params byte offset + 1 of the f64 holding the
+                       machine's latency in samples, kept current by its
+                       derive or block-prepare word; 0 = none [docs/07 PDC] )
 ;
 
 struct: ControlDesc
@@ -188,6 +191,10 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
 : control!  ( str period -- )
   _mf-md@ MachineDesc.control-period! drop
   cstr-new _mf-md@ MachineDesc.control! drop ;
+( offset latency! : the params f64 at `offset` is the machine's latency in
+  samples - how much later its output is than its input - which the host
+  compensates on parallel paths [docs/07 PDC] )
+: latency!  ( offset -- )  1 + _mf-md@ MachineDesc.latency! drop ;
 : render-lite!  ( str offset -- )
   _mf-md@ MachineDesc.render-lite-sel! drop
   cstr-new _mf-md@ MachineDesc.render-lite! drop ;

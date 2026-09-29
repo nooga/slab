@@ -250,6 +250,10 @@ pub const FyRawMachine = struct {
     mono_held: [16]f32 = undefined,
     mono_held_id: [16]i32 = undefined,
     mono_held_n: usize = 0,
+    // The rate and tempo params were last derived at: a reset re-derives
+    // at them, so what the host reads from params (latency) stays valid.
+    synced_sr: f64 = 48_000,
+    synced_tempo: f64 = 120,
     // The note id each voice plays (-1: a source without ids). Note-offs
     // and expression match by id, so a bent note is still found.
     voice_note_id: [MAX_REGIONS]i32 = [_]i32{-1} ** MAX_REGIONS,
@@ -285,6 +289,7 @@ pub const FyRawMachine = struct {
         if (desc.renderLiteWord()) |word| try validateWord(host, word);
         if (desc.renderLiteWord() != null and desc.render_lite_sel + 8 > desc.params_size) return error.InvalidMachineDesc;
         if (desc.key_flag > 0 and desc.key_flag - 1 + 8 > desc.params_size) return error.InvalidMachineDesc;
+        if (desc.latency_sel > 0 and desc.latency_sel - 1 + 8 > desc.params_size) return error.InvalidMachineDesc;
         if (desc.prepareWord()) |word| try validateWord(host, word);
         if (desc.noteOnWord()) |word| try validateWord(host, word);
         if (desc.noteOffWord()) |word| try validateWord(host, word);
@@ -669,6 +674,7 @@ pub const FyRawMachine = struct {
             .note_labels_fn = noteLabelsImpl,
             .takes_expression = self.note_expr_caller != null,
             .takes_key = self.desc.sidechain,
+            .latency = if (self.desc.latency_sel > 0) latencyImpl else null,
             .control_count = controlCountImpl,
             .control_info = controlInfoImpl,
             .control_value = controlValueImpl,
@@ -861,6 +867,8 @@ pub const FyRawMachine = struct {
     }
 
     fn syncRawParams(self: *FyRawMachine, sample_rate: f64, tempo_bpm: f64) void {
+        self.synced_sr = sample_rate;
+        self.synced_tempo = tempo_bpm;
         const controls = self.desc.controls[0..self.desc.control_count];
         for (controls, 0..) |control, i| {
             switch (control.kind) {
@@ -1242,6 +1250,15 @@ fn loadAssetImpl(state: *anyopaque, name: []const u8, path: []const u8) bool {
 }
 
 // ── Automation hooks (docs/22) ───────────────────────────────────────
+
+/// The params f64 the machine keeps its latency in, whole samples.
+fn latencyImpl(state: *anyopaque) u32 {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    const off = self.desc.latency_sel - 1;
+    const v: *align(1) const f64 = @ptrCast(&self.params_buf[off]);
+    if (!(v.* > 0)) return 0;
+    return @intFromFloat(@min(@ceil(v.*), 1e6));
+}
 
 fn controlCountImpl(state: *anyopaque) usize {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
@@ -1938,6 +1955,7 @@ fn resetImpl(state: *anyopaque) void {
     self.injectBuffers();
     self.injectAssets(); // params were memset; restore the asset pointers
     self.failed = false;
+    self.syncRawParams(self.synced_sr, self.synced_tempo);
 }
 
 fn deinitImpl(state: *anyopaque, alloc: std.mem.Allocator) void {
@@ -6003,4 +6021,26 @@ test "sidechain: verb2 GATED opens on the key, not the input" {
     // The input's own hit doesn't open the gate: only the key's does.
     try testing.expect(before < 1e-3);
     try testing.expect(after > 0.05);
+}
+
+test "limiter2, sat2 and funk report their latency to the host" {
+    const cases = .{
+        .{ "machines/limiter2/limiter2.fy", 97 }, // LOOK 2 ms at 48 kHz, read a sample late
+        .{ "machines/sat2/sat2.fy", 5 },
+        .{ "machines/funk/funk.fy", 5 },
+    };
+    inline for (cases) |cs| {
+        const inst = try FyRawMachine.create(testing.allocator, cs[0]);
+        const mach = inst.machineInterface();
+        defer mach.deinit.?(mach.state, testing.allocator);
+        try testing.expectEqual(@as(u32, cs[1]), mach.latencySamples());
+    }
+}
+
+test "a reset keeps the latency a machine reports" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/limiter2/limiter2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    mach.reset(mach.state);
+    try testing.expectEqual(@as(u32, 97), mach.latencySamples());
 }

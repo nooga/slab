@@ -494,6 +494,8 @@ pub fn main(init: std.process.Init) !void {
         .master = &master,
         .meter_state = &meter_state,
     };
+    try engine.initPdc(alloc);
+    defer engine.deinitPdc(alloc);
 
     // ── Audio device ─────────────────────────────────────────────────
     var audio: audio_mod.Audio = undefined;
@@ -1077,7 +1079,7 @@ pub fn main(init: std.process.Init) !void {
         // the take file: turn it into a pooled source + clip on the armed track.
         if (rec_finishing and recorder.isFinished()) {
             const res = recorder.finish();
-            placeRecordedClip(alloc, &audio_pool, &history, &status, tracks, &transport, &recorder, &audio, res, rec_track, &selected_track, &selected_clip, &dirty) catch |err| {
+            placeRecordedClip(alloc, &audio_pool, &history, &status, tracks, &transport, &recorder, &audio, engine.master_latency.load(.monotonic), res, rec_track, &selected_track, &selected_clip, &dirty) catch |err| {
                 std.log.err("record finalize failed: {s}", .{@errorName(err)});
                 status.set("Recording finalize failed", .{});
             };
@@ -1217,6 +1219,7 @@ fn placeRecordedClip(
     transport: *transport_mod.Transport,
     recorder: *recorder_mod.Recorder,
     audio: *audio_mod.Audio,
+    pdc_latency: u32,
     res: recorder_mod.Result,
     rec_track: ?usize,
     selected_track: *?usize,
@@ -1237,9 +1240,10 @@ fn placeRecordedClip(
     const bpm: f64 = transport.bpm();
     const len_beats = @max(0.25, dur_sec * bpm / 60.0);
 
-    // Latency-compensate: captured audio arrives a round-trip late, so place
-    // the clip earlier by that much so it lands where the sound occurred.
-    const latency: u64 = audio.roundTripLatencyFrames();
+    // Latency-compensate: captured audio arrives a round-trip late, and the
+    // playback it was played against was late by the project's own latency
+    // (PDC), so place the clip earlier by both.
+    const latency: u64 = @as(u64, audio.roundTripLatencyFrames()) + pdc_latency;
     const adj_sample = if (res.start_sample > latency) res.start_sample - latency else 0;
     const start = transport.samplesToBeats(adj_sample);
 
@@ -1905,6 +1909,8 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, out: []const u8
         .master = &master,
         .meter_state = &meter_state,
     };
+    try engine.initPdc(alloc);
+    defer engine.deinitPdc(alloc);
     engine.publishRouting();
     var last_beat: f64 = 0;
     for (tracks) |*t| for (t.clips.items) |*clip| {

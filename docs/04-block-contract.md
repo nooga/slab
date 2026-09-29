@@ -44,6 +44,15 @@ With `render-lite!` on the same offset, a machine runs a keyed word only
 when keyed: multi2 splits the key through a second crossover then, and
 runs its unkeyed word, at its old cost, the rest of the time.
 
+`latency!` (manifest `offset latency!`) names the params f64 holding the
+machine's latency in samples, how much later its output is than its
+input, which its derive or block-prepare word keeps current. The host
+reads it each block for delay compensation (docs/07 §PDC), and a reset
+re-derives params so the value holds through one. limiter2 reports its
+lookahead (rounded up: its ring reads a whole sample), sat2 and funk
+their 4x oversampler's 5 samples (`OS4-LATENCY`, sat2 only while MIX is
+up).
+
 **Structs.** Both are defined in `kernels/00-primitives/ctx.fy`, mirrored
 by `KernelCtx` / `IoFrame` in the adapter, and checked by the test
 "kernel ABI: KernelCtx and IoFrame match ctx.fy".

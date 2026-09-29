@@ -181,31 +181,35 @@ thread has definitely moved on).
 
 ## Plugin Delay Compensation (PDC)
 
-Machines declare latency in samples. The host computes, per chain
-and per branch point, how much delay to insert to realign parallel
-signals. Canonical example: a send with a reverb that has 0
-internal latency arrives earlier than the dry track that went
-through a lookahead compressor with 1024 samples of latency. The
-host inserts 1024 samples of delay on the dry path.
+Machines report latency in samples (manifest `latency!`, docs/04), read
+each block, so a knob that changes it (limiter2's LOOK) takes effect at
+the next block. Canonical example: a send with a reverb that has 0
+internal latency arrives earlier than the dry track that went through a
+lookahead limiter with 97 samples of latency; the host delays the send.
 
-Algorithm:
+Each block, before rendering (`Engine.computeLatencies`):
 
-1. Traverse the graph, compute `latency_to_output` for each node
-   (sum of latencies along the path).
-2. For each node with multiple incoming paths (mixer sums), take
-   `max(latency_to_output_of_parents)` and apply delay on the
-   shorter paths.
-3. For machines themselves: they operate "latency-naively" — they
-   process their input and produce their output. The host's delay
-   lines handle alignment.
+1. In render order, a track's latency at its taps is its input's (0 for
+   a track, the latest of its feeds for a bus) plus its chain's: the
+   instrument's (not a bus's) and every insert that isn't bypassed.
+2. Each bus's input latency is the max over everything summed into it,
+   outputs and sends alike (muted ones too, so muting doesn't move the
+   others); the master's likewise.
+3. Every path into a sum is delayed by the difference, read back from the
+   source track's tap history (`PdcHistory`: a ring per track of the
+   pre- and post-fader taps, 8192 samples, one heap allocation made at
+   startup). A path needing no delay reads the block itself, so a
+   project without latency renders exactly as without PDC.
 
-Delay buffers come from a per-chain persistent arena (separate from
-machine persistent arenas — host-owned). Max expected project
-latency is bounded (a few thousand samples) so these are small.
+Machines operate latency-naively; the host's delays do the aligning.
+What's left late is the whole project, by `master_latency`: an offline
+bounce drops that many frames from its start (keeping the block grid, so
+block-rate randomness renders the same), and a recorded take is placed
+earlier by it on top of the device round trip.
 
-PDC runs at graph build. Live-adjusting latency during playback
-(machine changes its own latency) is possible but requires another
-graph swap; machines shouldn't do this continuously.
+Not compensated yet: sidechain keys (a key arrives as early as its
+source's pre tap), and a change of latency mid-play jumps the delays
+(a click, like any insert added while playing).
 
 ## Sample accuracy
 

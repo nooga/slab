@@ -40,6 +40,7 @@ ustruct: SatParams
   f64 drive-lin
   f64 out-lin
   f64 tone-g
+  f64 lat        ( latency: the 4x halfband pair's, while any wet is mixed in )
   Shape sh
 ;
 
@@ -55,6 +56,7 @@ dsp: sat-block-prepare | ctx:Ctx state params:SatParams -- |
   params.mode | m |
   params.out-db db>lin  m 0.7 1.0 1.0 1.2 1.0 pick5 f*  -> params.out-lin
   params.tone-hz 6.283185307179586 f* ctx.sr f/ 0.0 1.0 fclamp -> params.tone-g
+  0.0 params.mix  OS4-LATENCY 0.0  fsel-lt -> params.lat
   params.sh&
     m 0.25 0.0 0.05 0.0 0.3 pick5
     m 0.15 0.0 0.08 0.0 0.3 pick5

@@ -82,6 +82,61 @@ pub const Engine = struct {
     /// negative until the slot has played.
     send_prev: [routing.MAX_TRACKS][routing.MAX_SENDS]f32 = @splat(@splat(-1)),
 
+    /// Delay compensation (docs/07 §PDC): each track's recent output, from
+    /// which a path that arrives early at a sum is read late. Allocated
+    /// once by `initPdc`; without it paths sum as they arrive.
+    pdc: ?*PdcHistory = null,
+    /// This block's latencies, samples: of each track's signal at its taps,
+    /// and at each bus's input (the latest of what feeds it).
+    lat_out: [routing.MAX_TRACKS]u32 = @splat(0),
+    lat_in: [routing.MAX_TRACKS]u32 = @splat(0),
+    lat_master_in: u32 = 0,
+    /// The whole project's: how late the master output is (UI reads it).
+    master_latency: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+
+    /// UI thread, before audio starts.
+    pub fn initPdc(self: *Engine, alloc: std.mem.Allocator) !void {
+        const h = try alloc.create(PdcHistory);
+        h.clear();
+        self.pdc = h;
+    }
+
+    pub fn deinitPdc(self: *Engine, alloc: std.mem.Allocator) void {
+        if (self.pdc) |h| alloc.destroy(h);
+        self.pdc = null;
+    }
+
+    /// Each track's latency at its taps and each bus's at its input, in
+    /// render order; the master's input takes the latest of its tracks.
+    fn computeLatencies(self: *Engine, graph: *const routing.Routing) void {
+        @memset(&self.lat_in, 0);
+        var master_in: u32 = 0;
+        for (graph.renderOrder()) |ti| {
+            const nd = &graph.nodes[ti];
+            const out = @min(self.lat_in[ti] + chainLatency(&self.tracks[ti], nd.is_bus), PDC_LIMIT);
+            self.lat_out[ti] = out;
+            if (nd.output == routing.NONE) {
+                master_in = @max(master_in, out);
+            } else self.lat_in[nd.output] = @max(self.lat_in[nd.output], out);
+            for (nd.sendSlots()) |sl| self.lat_in[sl.bus] = @max(self.lat_in[sl.bus], out);
+        }
+        self.lat_master_in = master_in;
+        const master_chain = if (self.master) |mb| chainLatency(mb, true) else 0;
+        self.master_latency.store(master_in + master_chain, .monotonic);
+    }
+
+    /// The published routing, or plain track → master when it doesn't
+    /// cover the track list yet (a track added since the last publish).
+    fn currentGraph(self: *Engine, fallback: *routing.Routing) *const routing.Routing {
+        const rt = &self.routing_bufs[self.routing_published.load(.acquire)];
+        if (rt.count == self.tracks.len) return rt;
+        var nodes: [routing.MAX_TRACKS]routing.Node = undefined;
+        const n = @min(self.tracks.len, routing.MAX_TRACKS);
+        for (self.tracks[0..n], 0..) |*t, i| nodes[i] = .{ .is_bus = t.isBus() };
+        fallback.* = routing.Routing.build(nodes[0..n]);
+        return fallback;
+    }
+
     /// UI thread: rebuild the routing from the tracks and publish it.
     pub fn publishRouting(self: *Engine) void {
         const published = self.routing_published.load(.monotonic);
@@ -138,15 +193,31 @@ pub const Engine = struct {
     ) void {
         self.resetAllMachines();
         self.chase_pending = true;
-        var done: usize = 0;
         var pos = start_sample;
+        // The master is late by the project's latency: its first `skip`
+        // frames are dropped, so the bounce lines up with the timeline. The
+        // blocks stay where they'd be without it (machines with block-rate
+        // randomness render the same), only the copy out is offset.
+        var fallback: routing.Routing = undefined;
+        self.computeLatencies(self.currentGraph(&fallback));
+        const skip: usize = self.master_latency.load(.monotonic);
+        var scratch: [MAX_BLOCK * audio.CHANNELS]f32 = undefined;
+        var rendered: usize = 0;
+        var done: usize = 0;
         while (done < total_frames) {
             if (cancel) |c| if (c.load(.monotonic)) break;
-            const chunk: u32 = @intCast(@min(@as(usize, MAX_BLOCK), total_frames - done));
-            const slice = out[done * audio.CHANNELS ..][0 .. chunk * audio.CHANNELS];
+            const chunk: u32 = @intCast(@min(@as(usize, MAX_BLOCK), total_frames + skip - rendered));
+            const dropped = if (rendered < skip) @min(chunk, skip - rendered) else 0;
+            const direct = dropped == 0;
+            const slice = if (direct) out[done * audio.CHANNELS ..][0 .. chunk * audio.CHANNELS] else scratch[0 .. chunk * audio.CHANNELS];
             self.renderChunk(slice, chunk, pos);
             masterSoftClip(slice);
-            done += chunk;
+            if (!direct) {
+                const keep = slice[dropped * audio.CHANNELS ..];
+                @memcpy(out[done * audio.CHANNELS ..][0..keep.len], keep);
+            }
+            done += chunk - dropped;
+            rendered += chunk;
             pos += chunk;
             if (progress) |p| p.store(done, .monotonic);
         }
@@ -273,6 +344,16 @@ pub const Engine = struct {
         if (self.master) |mb| {
             for (mb.effects.items) |*fx| fx.mach.reset(fx.mach.state);
         }
+    }
+
+    /// A tap of track `ti` for this block, `delay` samples late: the block
+    /// itself at 0, else read back from the history written at `at`.
+    fn tapped(self: *Engine, ti: usize, tap: PdcHistory.Tap, at: usize, delay: u32, l: []const f32, r: []const f32, buf_l: *[MAX_BLOCK]f32, buf_r: *[MAX_BLOCK]f32) struct { l: []const f32, r: []const f32 } {
+        const h = self.pdc orelse return .{ .l = l, .r = r };
+        if (delay == 0) return .{ .l = l, .r = r };
+        const n = l.len;
+        h.read(ti, tap, at, delay, buf_l[0..n], buf_r[0..n]);
+        return .{ .l = buf_l[0..n], .r = buf_r[0..n] };
     }
 
     fn nextRenderChunk(self: *Engine, max_frames: u32, pos: u64) usize {
@@ -428,18 +509,8 @@ pub const Engine = struct {
         @memset(self.master_l[0..frames], 0);
         @memset(self.master_r[0..frames], 0);
 
-        // The published routing, or plain track → master when it doesn't
-        // cover the track list yet (a track added since the last publish).
         var fallback: routing.Routing = undefined;
-        const graph: *const routing.Routing = blk: {
-            const rt = &self.routing_bufs[self.routing_published.load(.acquire)];
-            if (rt.count == self.tracks.len) break :blk rt;
-            var nodes: [routing.MAX_TRACKS]routing.Node = undefined;
-            const n = @min(self.tracks.len, routing.MAX_TRACKS);
-            for (self.tracks[0..n], 0..) |*t, i| nodes[i] = .{ .is_bus = t.isBus() };
-            fallback = routing.Routing.build(nodes[0..n]);
-            break :blk &fallback;
-        };
+        const graph = self.currentGraph(&fallback);
         var muted: u32 = 0;
         var soloed: u32 = 0;
         for (self.tracks[0..graph.count], 0..) |*t, i| {
@@ -448,6 +519,7 @@ pub const Engine = struct {
         }
         const heard = graph.audible(muted, soloed);
         const live = graph.rendered(heard);
+        self.computeLatencies(graph);
         for (graph.nodes[0..graph.count], 0..) |nd, i| if (nd.is_bus) {
             @memset(self.bus_l[i][0..frames], 0);
             @memset(self.bus_r[i][0..frames], 0);
@@ -572,11 +644,17 @@ pub const Engine = struct {
                 if (al > peak_l) peak_l = al;
                 if (ar > peak_r) peak_r = ar;
             }
+            // The taps' history, for paths that must arrive later (PDC).
+            const hist_at = if (self.pdc) |h| h.write(ti, final_l, final_r, post_l, post_r) else 0;
+            var dly_l: [MAX_BLOCK]f32 = undefined;
+            var dly_r: [MAX_BLOCK]f32 = undefined;
             if (is_heard) {
                 const dst_l = if (node.output == routing.NONE) self.master_l[0..frames] else self.bus_l[node.output][0..frames];
                 const dst_r = if (node.output == routing.NONE) self.master_r[0..frames] else self.bus_r[node.output][0..frames];
-                for (dst_l, post_l) |*d, x| d.* += x;
-                for (dst_r, post_r) |*d, x| d.* += x;
+                const out_in = if (node.output == routing.NONE) self.lat_master_in else self.lat_in[node.output];
+                const out_tap = self.tapped(ti, .post, hist_at, out_in -| self.lat_out[ti], post_l, post_r, &dly_l, &dly_r);
+                for (dst_l, out_tap.l) |*d, x| d.* += x;
+                for (dst_r, out_tap.r) |*d, x| d.* += x;
                 for (node.sendSlots(), 0..) |s, si| {
                     // The track's send list can be shorter than the
                     // published one for a frame after a send is removed.
@@ -584,8 +662,9 @@ pub const Engine = struct {
                     const lvl = t.sends[si].level();
                     const prev = if (self.send_prev[ti][si] < 0) lvl else self.send_prev[ti][si];
                     self.send_prev[ti][si] = lvl;
-                    const src_l: []const f32 = if (s.pre) final_l else post_l;
-                    const src_r: []const f32 = if (s.pre) final_r else post_r;
+                    const send_tap = self.tapped(ti, if (s.pre) .pre else .post, hist_at, self.lat_in[s.bus] -| self.lat_out[ti], if (s.pre) final_l else post_l, if (s.pre) final_r else post_r, &dly_l, &dly_r);
+                    const src_l = send_tap.l;
+                    const src_r = send_tap.r;
                     const bl = self.bus_l[s.bus][0..frames];
                     const br = self.bus_r[s.bus][0..frames];
                     for (0..frames) |k| {
@@ -854,6 +933,58 @@ const Keys = struct {
     /// Sources rendered this block (the rest hold a stale block).
     live: u32,
 };
+
+/// Ring length of the PDC history, a power of two; the most a path can be
+/// delayed leaves a block's room (170 ms at 48 kHz, well above any lookahead).
+pub const PDC_MAX: usize = 8192;
+const PDC_LIMIT: u32 = PDC_MAX - MAX_BLOCK;
+
+pub const PdcHistory = struct {
+    pub const Tap = enum { pre, post };
+    /// Per track: the pre-fader tap (after inserts) and post-fader tap, L/R.
+    bufs: [routing.MAX_TRACKS][2][2][PDC_MAX]f32,
+    /// Per track: where the next block is written.
+    w: [routing.MAX_TRACKS]usize,
+
+    fn clear(self: *PdcHistory) void {
+        for (&self.bufs) |*t| for (t) |*tap| for (tap) |*ch| @memset(ch, 0);
+        @memset(&self.w, 0);
+    }
+
+    /// Appends track `ti`'s block; returns where it starts.
+    fn write(self: *PdcHistory, ti: usize, pre_l: []const f32, pre_r: []const f32, post_l: []const f32, post_r: []const f32) usize {
+        const at = self.w[ti];
+        const srcs = [2][2][]const f32{ .{ pre_l, pre_r }, .{ post_l, post_r } };
+        for (srcs, 0..) |tap, k| for (tap, 0..) |src, ch| {
+            const ring = &self.bufs[ti][k][ch];
+            for (src, 0..) |x, i| ring[(at + i) & (PDC_MAX - 1)] = x;
+        };
+        self.w[ti] = (at + pre_l.len) & (PDC_MAX - 1);
+        return at;
+    }
+
+    /// The block written at `at`, `delay` samples late.
+    fn read(self: *const PdcHistory, ti: usize, tap: Tap, at: usize, delay: u32, l: []f32, r: []f32) void {
+        const k = @intFromEnum(tap);
+        const start = at + PDC_MAX - @min(delay, PDC_LIMIT);
+        for (l, r, 0..) |*dl, *dr, i| {
+            const j = (start + i) & (PDC_MAX - 1);
+            dl.* = self.bufs[ti][k][0][j];
+            dr.* = self.bufs[ti][k][1][j];
+        }
+    }
+};
+
+/// Samples a track's signal is late at its taps: its instrument's (not a
+/// bus's) and its active inserts'.
+fn chainLatency(t: *const Track, is_bus: bool) u32 {
+    var n: u32 = 0;
+    if (!is_bus and t.isEnabled()) n += t.machine.latencySamples();
+    for (t.effects.items, 0..) |*fx, i| {
+        if (!t.effectBypassed(i)) n += fx.mach.latencySamples();
+    }
+    return n;
+}
 
 fn renderEffects(
     t: *Track,
@@ -1943,4 +2074,123 @@ test "a loop wrap releases the note ending on the loop end, and the ones past it
     eng.render(&out, 64);
     try testing.expect(transport.beats() < 4);
     try testing.expectEqual(@as(i32, 0), Held.on[50]);
+}
+
+const PdcTestMachines = struct {
+    /// Instrument: `*f32` on the project's first sample, then silence.
+    fn impulse(level: *f32) machine.Machine {
+        var m = RouteTestMachines.dc(level);
+        m.name = "impulse";
+        m.render = struct {
+            fn f(st: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []f32) void {
+                const v: *f32 = @ptrCast(@alignCast(st));
+                @memset(l, 0);
+                @memset(r, 0);
+                if (ctx.block_start == 0) {
+                    l[0] = v.*;
+                    r[0] = v.*;
+                }
+            }
+        }.f;
+        return m;
+    }
+
+    /// Effect: the input `n` samples late, and says so.
+    const Delay = struct {
+        n: u32,
+        ring: [2][64]f32 = @splat(@splat(0)),
+        w: usize = 0,
+    };
+    fn delay(d: *Delay) machine.Machine {
+        return .{
+            .name = "delay",
+            .state = d,
+            .render = struct {
+                fn f(st: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []f32) void {
+                    const s: *Delay = @ptrCast(@alignCast(st));
+                    const ins = ctx.audio_in.?;
+                    for (0..l.len) |i| {
+                        const at = (s.w + i) % 64;
+                        const from = (s.w + i + 64 - s.n) % 64;
+                        s.ring[0][at] = ins[0][i];
+                        s.ring[1][at] = ins[1][i];
+                        l[i] = s.ring[0][from];
+                        r[i] = s.ring[1][from];
+                    }
+                    s.w = (s.w + l.len) % 64;
+                }
+            }.f,
+            .draw_panel = struct {
+                fn f(_: *anyopaque, _: *@import("ui/core.zig").Ui, _: @import("ui/geom.zig").Rect) void {}
+            }.f,
+            .reset = struct {
+                fn f(_: *anyopaque) void {}
+            }.f,
+            .latency = struct {
+                fn f(st: *anyopaque) u32 {
+                    const s: *Delay = @ptrCast(@alignCast(st));
+                    return s.n;
+                }
+            }.f,
+        };
+    }
+};
+
+fn onlyPeakAt(out: []const f32) ?usize {
+    var at: ?usize = null;
+    for (0..out.len / 2) |i| if (@abs(out[i * 2]) > 1e-6) {
+        if (at != null) return null;
+        at = i;
+    };
+    return at;
+}
+
+test "PDC: a latent track, a direct one and a send to a return all land on the same sample" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var quarter: f32 = 0.25;
+    var zero: f32 = 0;
+    var one: f32 = 1;
+    var d = PdcTestMachines.Delay{ .n = 10 };
+    var tracks = [_]Track{
+        try Track.init(alloc, "direct", col, PdcTestMachines.impulse(&quarter)),
+        try Track.init(alloc, "latent", col, PdcTestMachines.impulse(&quarter)),
+        try Track.init(alloc, "verb", col, RouteTestMachines.dc(&zero)),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    for (&tracks) |*t| t.setVolume(1.0);
+    try tracks[1].addEffect(alloc, PdcTestMachines.delay(&d), 0);
+    tracks[2].kind = .bus;
+    try tracks[2].addEffect(alloc, RouteTestMachines.gain(&one), 0);
+    try tracks[0].addSend(2, false, 0.5); // the direct track also feeds the return
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+
+    var transport = Transport{};
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    try eng.initPdc(alloc);
+    defer eng.deinitPdc(alloc);
+    eng.publishRouting();
+
+    // Live: everything arrives with the latent track, 10 samples in.
+    var out: [64 * 2]f32 = undefined;
+    transport.play();
+    eng.render(&out, 64);
+    try testing.expectEqual(@as(?usize, 10), onlyPeakAt(&out));
+    const c = @cos(@as(f32, std.math.pi / 4.0));
+    try testing.expectApproxEqAbs(0.25 * c * (1 + 1 + 0.5 * c), out[20], 1e-6);
+    try testing.expectEqual(@as(u32, 10), eng.master_latency.load(.monotonic));
+
+    // A bounce drops the project's latency: the impulse is on sample 0.
+    eng.renderOffline(&out, 64, 0, null, null);
+    try testing.expectEqual(@as(?usize, 0), onlyPeakAt(&out));
+
+    // Without the latent insert nothing is delayed.
+    tracks[1].effects.items[0].bypass.store(true, .monotonic);
+    eng.renderOffline(&out, 64, 0, null, null);
+    try testing.expectEqual(@as(?usize, 0), onlyPeakAt(&out));
+    try testing.expectEqual(@as(u32, 0), eng.master_latency.load(.monotonic));
 }

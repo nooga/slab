@@ -56,6 +56,7 @@ ustruct: LimParams
   f64 gain-lin
   f64 ceil-lin
   f64 look-spl  ( lookahead in samples )
+  f64 lat       ( latency: whole samples, the ring reads floor[w - look-spl] )
   f64 atk-c     ( gain-decrease one-pole coeff, ~3/look-spl )
   f64 rel-c     ( gain-increase one-pole coeff )
   f64 msm-c     ( momentary one-pole coeff [~1/(0.4*sr)] )
@@ -75,6 +76,7 @@ dsp: lim-block-prepare
   -> params.ceil-lin
   params.look-ms 0.001 f* sr f* 1.0 4800.0 fclamp | ls |
   ls -> params.look-spl
+  0.0  0.0 ls f- floor  f- -> params.lat
   3.0 ls f/ 0.0 1.0 fclamp
   -> params.atk-c
   1.0 params.rel-s sr f* f/ 0.0 1.0 fclamp
