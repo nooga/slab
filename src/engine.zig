@@ -40,6 +40,10 @@ pub const Engine = struct {
     /// The next block starts somewhere the notes didn't lead to (play,
     /// a seek, a loop wrap): notes already sounding there start with it.
     chase_pending: bool = true,
+    /// The beat the playhead jumped away from (a seek, a loop wrap): the
+    /// next block sends note-offs to the notes that were sounding there,
+    /// so their voices release instead of hanging or being cut (a click).
+    release_from: ?f64 = null,
     audition_request: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     audition_track: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     audition_pitch_bits: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 60))),
@@ -189,7 +193,7 @@ pub const Engine = struct {
             // never see their note-offs, so the instruments let go. Effects
             // keep their tails.
             if (self.was_playing and start_pos != self.played_to) {
-                self.releaseInstruments();
+                self.release_from = self.transport.samplesToBeats(self.played_to);
                 self.chase_pending = true;
             }
             if (!self.was_playing) self.chase_pending = true;
@@ -271,10 +275,6 @@ pub const Engine = struct {
         }
     }
 
-    fn releaseInstruments(self: *Engine) void {
-        for (self.tracks) |*t| t.machine.reset(t.machine.state);
-    }
-
     fn nextRenderChunk(self: *Engine, max_frames: u32, pos: u64) usize {
         if (!self.transport.loopEnabled()) return max_frames;
         const start_b = self.transport.loopStartBeats();
@@ -306,7 +306,9 @@ pub const Engine = struct {
                 .{ pos, frames, next, start_s, end_s },
             );
         }
-        self.resetAllMachines();
+        // Where the rendered stream stopped: the loop end rounded to a sample,
+        // or past it when the playhead was seeked beyond the loop.
+        self.release_from = self.transport.samplesToBeats(pos + frames);
         self.chase_pending = true;
         return next;
     }
@@ -458,6 +460,8 @@ pub const Engine = struct {
         const beat_end = self.transport.samplesToBeats(block_start + frames);
         const chase = self.chase_pending;
         self.chase_pending = false;
+        const release_at = self.release_from;
+        self.release_from = null;
         // Meter position for this block (homogeneous within the block).
         // Adopt a staged meter edit only when we cross into a new bar, so
         // bars never re-lay under the playhead mid-bar (docs/07).
@@ -494,7 +498,7 @@ pub const Engine = struct {
             // Load the snapshot pointer once per track per block.
             // See snapshot.zig for the double-buffer invariant.
             const snap = t.currentSnapshot();
-            const n_events = gatherEvents(snap, beat_start, beat_end, spb, frames, chase, &events);
+            const n_events = gatherEvents(snap, beat_start, beat_end, spb, frames, chase, release_at, &events);
 
             const inst_view = snap_mod.AutoView{ .snap = snap, .cursors = &t.auto_cursors, .kind = .inst };
             const ctx = machine.MachineCtx{
@@ -1023,14 +1027,18 @@ fn gatherEvents(
     frames: u32,
     /// Also start the notes already sounding at beat_start (chase).
     chase: bool,
+    /// The playhead jumped here from this beat: end the notes that were
+    /// sounding there, first thing in the block.
+    release_at: ?f64,
     out: *[MAX_EVENTS_PER_TRACK]machine.NoteEvent,
 ) usize {
     var count: usize = 0;
 
     for (snap.clips[0..snap.clip_count]) |clip| {
         const clip_end = clip.start_beat + clip.length_beats;
-        if (clip_end <= beat_start) continue;
-        if (clip.start_beat >= beat_end) continue;
+        const in_block = clip_end > beat_start and clip.start_beat < beat_end;
+        const at_release = if (release_at) |rb| clip.start_beat < rb and clip_end > rb else false;
+        if (!in_block and !at_release) continue;
 
         const note_slice = snap.notes[clip.notes_start..][0..clip.notes_count];
         for (note_slice, 0..) |note, j| {
@@ -1044,17 +1052,20 @@ fn gatherEvents(
                 count = gatherExpression(snap, note, note_id, abs_on, abs_off, beat_start, samples_per_beat, frames, out, count);
             }
 
-            const chased = chase and abs_on < beat_start and abs_off > beat_start and
-                note.start_beat < clip.length_beats and
+            // A jump: notes sounding where the playhead left end, notes under
+            // where it landed start (chase). One sounding at both carries on.
+            const audible = note.start_beat < clip.length_beats;
+            const held = if (release_at) |rb| audible and abs_on < rb and abs_off > rb else false;
+            const chased = chase and audible and abs_on < beat_start and abs_off > beat_start and
                 (abs_off - beat_start) * samples_per_beat >= CHASE_MIN_SAMPLES;
-            if (chased and count < MAX_EVENTS_PER_TRACK) {
+            if (held != chased and count < MAX_EVENTS_PER_TRACK) {
                 out[count] = .{
                     .sample_offset = 0,
-                    .kind = .note_on,
+                    .kind = if (held) .note_off else .note_on,
                     .channel = 0,
                     .note_id = note_id,
                     .pitch = @floatFromInt(note.pitch),
-                    .velocity = @as(f32, @floatFromInt(note.velocity)) / 127.0,
+                    .velocity = if (held) 0 else @as(f32, @floatFromInt(note.velocity)) / 127.0,
                 };
                 count += 1;
             }
@@ -1207,7 +1218,7 @@ test "gatherEvents: note-on and note-off in same block" {
     var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
 
     // Block covers beats [0..2): note-on at beat 0, note-off at beat 1.
-    const n = gatherEvents(&snap, 0, 2.0, spb, frames, false, &events);
+    const n = gatherEvents(&snap, 0, 2.0, spb, frames, false, null, &events);
     try testing.expectEqual(@as(usize, 2), n);
     try testing.expect(events[0].kind == .note_on);
     try testing.expectEqual(@as(f32, 60), events[0].pitch);
@@ -1235,12 +1246,12 @@ test "gatherEvents: chase starts the notes already sounding, unless nearly over"
     const b1 = b0 + @as(f64, frames) / spb;
 
     // Playing on: nothing starts, the short note ends.
-    try testing.expectEqual(@as(usize, 1), gatherEvents(&snap, b0, b1, spb, frames, false, &events));
+    try testing.expectEqual(@as(usize, 1), gatherEvents(&snap, b0, b1, spb, frames, false, null, &events));
     try testing.expect(events[0].kind == .note_off);
 
     // After a seek to beat 2: the pad starts at the block's first sample;
     // the note with 120 samples left doesn't, and ends as usual.
-    const n = gatherEvents(&snap, b0, b1, spb, frames, true, &events);
+    const n = gatherEvents(&snap, b0, b1, spb, frames, true, null, &events);
     try testing.expectEqual(@as(usize, 2), n);
     try testing.expect(events[0].kind == .note_on);
     try testing.expectEqual(@as(f32, 48), events[0].pitch);
@@ -1260,12 +1271,12 @@ test "gatherEvents: note-off fires when note ends" {
     var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
 
     // Block covers beats [0.5..2.5): note-off at beat 1 = sample offset 24.
-    const n = gatherEvents(&snap, 0.5, 2.5, spb, frames, false, &events);
+    const n = gatherEvents(&snap, 0.5, 2.5, spb, frames, false, null, &events);
     try testing.expectEqual(@as(usize, 1), n);
     try testing.expect(events[0].kind == .note_off);
     try testing.expectEqual(@as(u32, 24), events[0].sample_offset);
     // An end on a block's first beat went out with the block before it.
-    try testing.expectEqual(@as(usize, 0), gatherEvents(&snap, 1.0, 3.0, spb, frames, false, &events));
+    try testing.expectEqual(@as(usize, 0), gatherEvents(&snap, 1.0, 3.0, spb, frames, false, null, &events));
 }
 
 test "gatherEvents: note outside block produces no events" {
@@ -1279,7 +1290,7 @@ test "gatherEvents: note outside block produces no events" {
     var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
 
     // Block covers beats [0..2): note starts at beat 3 — no events.
-    const n = gatherEvents(&snap, 0, 2.0, spb, frames, false, &events);
+    const n = gatherEvents(&snap, 0, 2.0, spb, frames, false, null, &events);
     try testing.expectEqual(@as(usize, 0), n);
 }
 
@@ -1294,7 +1305,7 @@ test "gatherEvents: clip entirely before block is skipped" {
     var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
 
     // Block covers beats [4..6): clip ends at beat 2 — no events.
-    const n = gatherEvents(&snap, 4.0, 6.0, spb, frames, false, &events);
+    const n = gatherEvents(&snap, 4.0, 6.0, spb, frames, false, null, &events);
     try testing.expectEqual(@as(usize, 0), n);
 }
 
@@ -1313,7 +1324,7 @@ test "gatherEvents: events are sorted by sample_offset" {
     var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
 
     // Block [0..4): both note-ons fire. Sorted: pitch 60 (offset 0) < pitch 62 (offset 48).
-    const n = gatherEvents(&snap, 0, 4.0, spb, frames, false, &events);
+    const n = gatherEvents(&snap, 0, 4.0, spb, frames, false, null, &events);
     try testing.expect(n >= 2);
     try testing.expect(events[0].sample_offset <= events[1].sample_offset);
 }
@@ -1330,7 +1341,7 @@ test "gatherEvents: note clamped to clip end" {
     var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
 
     // Block [0..2): note-on at 0, note-off clamped to clip end at beat 1.
-    const n = gatherEvents(&snap, 0, 2.0, spb, frames, false, &events);
+    const n = gatherEvents(&snap, 0, 2.0, spb, frames, false, null, &events);
     try testing.expectEqual(@as(usize, 2), n);
     // After sort: note-on (offset 0) < note-off (offset 48).
     try testing.expect(events[0].kind == .note_on);
@@ -1578,7 +1589,7 @@ test "gatherEvents: note ids, and expression every EXPR_STEP samples for a bent 
     snap.notes[0].expr_start = 0;
     snap.notes[0].expr_count = 2;
     var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
-    const n = gatherEvents(&snap, 0.5, 0.5 + @as(f64, frames) / spb, spb, frames, false, &events);
+    const n = gatherEvents(&snap, 0.5, 0.5 + @as(f64, frames) / spb, spb, frames, false, null, &events);
     var exprs: usize = 0;
     for (events[0..n]) |ev| {
         try testing.expect(ev.note_id >= 0);
@@ -1619,7 +1630,7 @@ test "gatherEvents: pressure, slide and gain ride the expression event" {
     t.publishSnapshot(&pool);
     const snap = t.currentSnapshot();
     var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
-    const cnt = gatherEvents(snap, 0, 2048.0 / 48_000.0, 48_000, 2048, false, &events);
+    const cnt = gatherEvents(snap, 0, 2048.0 / 48_000.0, 48_000, 2048, false, null, &events);
     var first: ?machine.NoteEvent = null;
     for (events[0..cnt]) |ev| if (ev.kind == .expression and first == null) {
         first = ev;
@@ -1815,19 +1826,22 @@ test "routing: a keyed effect hears its key's pre tap, even from a muted track" 
     try testing.expectEqual(@as(f32, 0), out[10]);
 }
 
-test "a seek while playing releases held notes and restarts the ones under the playhead" {
+test "a seek releases the notes it leaves, starts the ones it lands in, and keeps the ones in both" {
     const alloc = testing.allocator;
     const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const Counter = struct {
+    const Rec = struct {
         var resets: usize = 0;
-        var ons: usize = 0;
+        var log: [16]struct { on: bool, pitch: f32, at: u32 } = undefined;
+        var n: usize = 0;
         fn machine_() machine.Machine {
             var level: f32 = 0;
             var m = RouteTestMachines.dc(&level);
             m.render = struct {
                 fn f(_: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []f32) void {
                     if (ctx.note_in) |ev| for (ev[0..ctx.note_in_count]) |e| {
-                        if (e.kind == .note_on) ons += 1;
+                        if (e.kind != .note_on and e.kind != .note_off) continue;
+                        if (n < log.len) log[n] = .{ .on = e.kind == .note_on, .pitch = e.pitch, .at = e.sample_offset };
+                        n += 1;
                     };
                     @memset(l, 0);
                     @memset(r, 0);
@@ -1841,10 +1855,12 @@ test "a seek while playing releases held notes and restarts the ones under the p
             return m;
         }
     };
-    var tracks = [_]Track{try Track.init(alloc, "keys", col, Counter.machine_())};
+    var tracks = [_]Track{try Track.init(alloc, "keys", col, Rec.machine_())};
     defer for (&tracks) |*t| t.deinit(alloc);
-    var clip = @import("clip.zig").Clip.init("pad", 0, 16);
-    try clip.addNote(alloc, .{ .pitch = 48, .start_beat = 0, .length_beats = 16, .velocity = 100 });
+    var clip = @import("clip.zig").Clip.init("A", 0, 16);
+    try clip.addNote(alloc, .{ .pitch = 36, .start_beat = 0, .length_beats = 16, .velocity = 100 }); // in both
+    try clip.addNote(alloc, .{ .pitch = 60, .start_beat = 0, .length_beats = 2, .velocity = 100 }); // left behind
+    try clip.addNote(alloc, .{ .pitch = 67, .start_beat = 6, .length_beats = 4, .velocity = 100 }); // landed in
     try tracks[0].addClip(alloc, clip);
     var pool = @import("audio_pool.zig").AudioPool.init(alloc);
     defer pool.deinit();
@@ -1860,17 +1876,71 @@ test "a seek while playing releases held notes and restarts the ones under the p
     transport.play();
     eng.render(&out, 64);
     eng.render(&out, 64);
-    try testing.expectEqual(@as(usize, 0), Counter.resets);
-    try testing.expectEqual(@as(usize, 1), Counter.ons);
+    try testing.expectEqual(@as(usize, 2), Rec.n); // 36 and 60 on
     try testing.expectEqual(@as(u64, 128), transport.samples());
 
     transport.seekToBeats(8);
     const at = transport.samples();
     eng.render(&out, 64);
-    try testing.expectEqual(@as(usize, 1), Counter.resets);
-    try testing.expectEqual(@as(usize, 2), Counter.ons); // the pad again, from beat 8
+    try testing.expectEqual(@as(usize, 4), Rec.n);
+    try testing.expect(!Rec.log[2].on and Rec.log[2].pitch == 60 and Rec.log[2].at == 0);
+    try testing.expect(Rec.log[3].on and Rec.log[3].pitch == 67 and Rec.log[3].at == 0);
     try testing.expectEqual(at + 64, transport.samples());
     eng.render(&out, 64);
-    try testing.expectEqual(@as(usize, 1), Counter.resets);
-    try testing.expectEqual(@as(usize, 2), Counter.ons);
+    try testing.expectEqual(@as(usize, 4), Rec.n);
+    try testing.expectEqual(@as(usize, 0), Rec.resets); // released, never cut
+}
+
+test "a loop wrap releases the note ending on the loop end, and the ones past it after a seek" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const Held = struct {
+        var on: [128]i32 = [_]i32{0} ** 128;
+        fn machine_() machine.Machine {
+            var level: f32 = 0;
+            var m = RouteTestMachines.dc(&level);
+            m.render = struct {
+                fn f(_: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []f32) void {
+                    if (ctx.note_in) |ev| for (ev[0..ctx.note_in_count]) |e| {
+                        const p: usize = @intFromFloat(e.pitch);
+                        if (e.kind == .note_on) on[p] += 1;
+                        if (e.kind == .note_off and on[p] > 0) on[p] -= 1;
+                    };
+                    @memset(l, 0);
+                    @memset(r, 0);
+                }
+            }.f;
+            return m;
+        }
+    };
+    var tracks = [_]Track{try Track.init(alloc, "bass", col, Held.machine_())};
+    defer for (&tracks) |*t| t.deinit(alloc);
+    var clip = @import("clip.zig").Clip.init("A", 0, 8);
+    try clip.addNote(alloc, .{ .pitch = 40, .start_beat = 2, .length_beats = 2, .velocity = 100 }); // ends on the loop end
+    try clip.addNote(alloc, .{ .pitch = 50, .start_beat = 5, .length_beats = 3, .velocity = 100 }); // past the loop
+    try tracks[0].addClip(alloc, clip);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+
+    var transport = Transport{};
+    transport.setBpm(121); // the loop end falls between samples
+    transport.setLoopBeats(0, 4);
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+
+    var out: [64 * 2]f32 = undefined;
+    transport.play();
+    while (transport.beats() < 3.5) eng.render(&out, 64);
+    try testing.expectEqual(@as(i32, 1), Held.on[40]);
+    while (transport.beats() >= 3.0) eng.render(&out, 64); // through the wrap
+    try testing.expectEqual(@as(i32, 0), Held.on[40]);
+
+    transport.seekToBeats(6); // beyond the loop: one block there, then wrapped into it
+    eng.render(&out, 64);
+    eng.render(&out, 64);
+    try testing.expect(transport.beats() < 4);
+    try testing.expectEqual(@as(i32, 0), Held.on[50]);
 }

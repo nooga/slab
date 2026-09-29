@@ -269,13 +269,16 @@ All called on the UI thread. The audio thread reads consistent
 state at block boundaries only.
 
 **Discontinuities.** The engine remembers where its last block left the
-transport. Finding it elsewhere while playing means the UI seeked: the
-instruments are reset, so notes held across the jump don't hang (effects
-keep their tails), and a seek landing mid-block survives, since the block
-end is written with a compare-exchange. After a seek, play start, loop
-wrap or the start of an offline render, the first block **chases**: a
-note already sounding at that point starts on the block's first sample,
-unless it has under 5 ms left.
+transport. Finding it elsewhere while playing means the UI seeked; a
+loop wrap is a jump too. The first block after a jump sends note-offs to
+the notes that were sounding where the playhead left, so their voices
+release (a reset would cut them mid-waveform: a click), and **chases**
+the notes under where it landed, starting them on its first sample
+unless they have under 5 ms left. A note sounding at both points just
+carries on, so scrubbing through a pad doesn't retrigger it. Effects
+keep their tails. Play start and the start of an offline render chase
+too. A seek landing mid-block survives, since the block end is written
+with a compare-exchange.
 
 ## Tempo map
 
