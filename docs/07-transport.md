@@ -268,6 +268,15 @@ pub fn setRecording(self: *Transport, on: bool) void;
 All called on the UI thread. The audio thread reads consistent
 state at block boundaries only.
 
+**Discontinuities.** The engine remembers where its last block left the
+transport. Finding it elsewhere while playing means the UI seeked: the
+instruments are reset, so notes held across the jump don't hang (effects
+keep their tails), and a seek landing mid-block survives, since the block
+end is written with a compare-exchange. After a seek, play start, loop
+wrap or the start of an offline render, the first block **chases**: a
+note already sounding at that point starts on the block's first sample,
+unless it has under 5 ms left.
+
 ## Tempo map
 
 Tempo is not just a scalar — it's a **map**: piecewise-linear curve
