@@ -84,6 +84,7 @@ pub const Audio = struct {
         if (self.has_capture_id) duplex.capture.pDeviceID = &self.capture_id;
         duplex.sampleRate = SAMPLE_RATE;
         duplex.periodSizeInFrames = requestedBlockFrames();
+        duplex.coreaudio.allowNominalSampleRateChange = c.ma.MA_TRUE;
         duplex.dataCallback = audioCallback;
         duplex.pUserData = self;
 
@@ -96,6 +97,20 @@ pub const Audio = struct {
         }
         self.capture_available = true;
         try self.startDevice();
+        self.warnIfResampling();
+    }
+
+    /// The engine renders at 48 kHz in fixed 256-frame callbacks. A device
+    /// left at another rate (MacBook speakers default to 44.1 kHz) makes
+    /// miniaudio resample, and to keep the callbacks fixed-size it sometimes
+    /// asks for two blocks inside one hardware period: a render past half the
+    /// budget then misses the deadline, and since the transport only moves
+    /// with rendered audio, playback drags. Devices are asked to switch to
+    /// 48 kHz at open (allowNominalSampleRateChange); this says when one won't.
+    fn warnIfResampling(self: *Audio) void {
+        const rate = self.device.playback.internalSampleRate;
+        if (rate != SAMPLE_RATE)
+            std.log.warn("audio: output device runs at {} Hz, resampling from {} Hz; heavy projects may drag", .{ rate, SAMPLE_RATE });
     }
 
     fn openPlayback(self: *Audio) !void {
@@ -104,11 +119,13 @@ pub const Audio = struct {
         play.playback.channels = CHANNELS;
         play.sampleRate = SAMPLE_RATE;
         play.periodSizeInFrames = requestedBlockFrames();
+        play.coreaudio.allowNominalSampleRateChange = c.ma.MA_TRUE;
         play.dataCallback = audioCallback;
         play.pUserData = self;
         if (c.ma.ma_device_init(&self.context, &play, &self.device) != c.ma.MA_SUCCESS)
             return error.AudioInitFailed;
         try self.startDevice();
+        self.warnIfResampling();
     }
 
     fn startDevice(self: *Audio) !void {
