@@ -577,7 +577,7 @@ fn runCase(
             const hm = an.harmonics(sp, cs.input_hz);
             ratchet = hm;
             const in_rms = cases.dbToAmp(cs.input_db) / std.math.sqrt2;
-            try tbl.print(alloc, "in {d:.0} Hz {d:.1} dBFS: gain {d:.2} dB  THD {d:.1} dB  nonharm {d:.1} dB\n", .{ cs.input_hz, cs.input_db, an.dbAmp(an.rms(seg) / in_rms), hm.thd_db, hm.nonharm_db });
+            try tbl.print(alloc, "in {d:.0} Hz {d:.1} dBFS: gain {d:.2} dB  THD {d:.1} dB (H2 {d:.1}, H3 {d:.1})  nonharm {d:.1} dB\n", .{ cs.input_hz, cs.input_db, an.dbAmp(an.rms(seg) / in_rms), hm.thd_db, hm.h2_db, hm.h3_db, hm.nonharm_db });
             spec_f0 = cs.input_hz;
             onset = 0;
             off = 1.5;
@@ -662,7 +662,7 @@ fn runCase(
         },
         .step => {
             const x = input orelse return error.NoInput;
-            const g = try gainTraceDb(alloc, x, out.l, @floatCast(0.3 * cases.dbToAmp(cases.step_lo_db)), isMultiband(mname));
+            const g = try gainTraceDb(alloc, x, out.l, @floatCast(0.3 * cases.dbToAmp(cases.step_lo_db)), windowedGain(mname));
             // A crossover rings at each edge, which spikes the windowed
             // trace; crossings are looked for after it, timed from the edge.
             const skip = edgeSkip(mname);
@@ -707,7 +707,7 @@ fn runCase(
         },
         .bursts => {
             const x = input orelse return error.NoInput;
-            const g = try gainTraceDb(alloc, x, out.l, @floatCast(0.3 * cases.dbToAmp(cases.step_lo_db)), isMultiband(mname));
+            const g = try gainTraceDb(alloc, x, out.l, @floatCast(0.3 * cases.dbToAmp(cases.step_lo_db)), windowedGain(mname));
             const base = meanOf(g[@as(usize, @intFromFloat(0.4 * SR))..@as(usize, @intFromFloat(0.5 * SR))]);
             var taus: [2]?f64 = .{ null, null };
             const spans = [_][2]f64{ cases.bursts_short, cases.bursts_long };
@@ -730,7 +730,7 @@ fn runCase(
         },
         .drums => {
             const x = input orelse return error.NoInput;
-            const g = try gainTraceDb(alloc, x, out.l, 0.001, isMultiband(mname));
+            const g = try gainTraceDb(alloc, x, out.l, 0.001, windowedGain(mname));
             var store: [128]cases.DrumHit = undefined;
             const hits = cases.drumHits(&store);
             try tbl.print(alloc, "in:  peak {d:.1} dBFS  rms {d:.1}  crest {d:.1} dB\n", .{ an.dbAmp(peakAbs(x)), an.dbAmp(an.rms(x)), an.dbAmp(peakAbs(x) / an.rms(x)) });
@@ -829,7 +829,7 @@ fn runCase(
 /// Compressors get the dynamics cases too (docs/24 §Test plan). By name
 /// until per-machine bench cases land (docs/17 Track C).
 fn isDynamics(name: []const u8) bool {
-    const names = [_][]const u8{ "comp2", "bus2", "multi2" };
+    const names = [_][]const u8{ "comp2", "bus2", "multi2", "char2" };
     for (names) |n| if (std.mem.eql(u8, name, n)) return true;
     return false;
 }
@@ -838,6 +838,12 @@ fn isDynamics(name: []const u8) bool {
 /// as a level ratio, not per sample.
 fn isMultiband(name: []const u8) bool {
     return std.mem.eql(u8, name, "multi2");
+}
+
+/// Machines whose out/in isn't a pure gain sample by sample: crossover
+/// phase (multiband), or colour on by default (char2).
+fn windowedGain(name: []const u8) bool {
+    return isMultiband(name) or std.mem.eql(u8, name, "char2");
 }
 
 /// Per-sample gain out/in in dB, held across samples where the input is

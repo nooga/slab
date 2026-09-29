@@ -159,6 +159,10 @@ pub const Harmonics = struct {
     /// Power NOT near any harmonic of f0 relative to harmonic power, dB.
     /// Aliasing, noise, and inharmonic junk all land here.
     nonharm_db: f64 = -200,
+    /// The 2nd and 3rd harmonics alone relative to the fundamental, dB:
+    /// even- vs odd-leaning colour.
+    h2_db: f64 = -200,
+    h3_db: f64 = -200,
 };
 
 pub fn harmonics(s: Spectrum, f0: f64) Harmonics {
@@ -167,6 +171,8 @@ pub fn harmonics(s: Spectrum, f0: f64) Harmonics {
     var p_fund: f64 = 0;
     var p_harm: f64 = 0;
     var p_non: f64 = 0;
+    var p2: f64 = 0;
+    var p3: f64 = 0;
     for (s.pow, 0..) |p, b| {
         const f = @as(f64, @floatFromInt(b)) * s.bin_hz;
         if (f < 20) continue;
@@ -178,11 +184,15 @@ pub fn harmonics(s: Spectrum, f0: f64) Harmonics {
             p_fund += p;
         } else {
             p_harm += p;
+            if (k == 2) p2 += p;
+            if (k == 3) p3 += p;
         }
     }
     return .{
         .thd_db = dbPow(p_harm / @max(p_fund, 1e-30)),
         .nonharm_db = dbPow(p_non / @max(p_fund + p_harm, 1e-30)),
+        .h2_db = dbPow(p2 / @max(p_fund, 1e-30)),
+        .h3_db = dbPow(p3 / @max(p_fund, 1e-30)),
     };
 }
 
