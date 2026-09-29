@@ -125,6 +125,12 @@ pub const FyRawMachine = struct {
     note_expr_caller: ?RawCaller = null,
     render_caller: ?RawCaller = null,
     render_lite_caller: ?RawCaller = null,
+    // Control-rate hook (docs/04): run on a voice every control_period
+    // samples of its render, counted from note-on; voice_ctl_left is how
+    // many samples each voice has before its next call.
+    control_slots: RawSlots = .{},
+    control_caller: ?RawCaller = null,
+    voice_ctl_left: [MAX_REGIONS]usize = [_]usize{0} ** MAX_REGIONS,
     // Optional per-block dsp2 word (params sample-rate --): coefficient fills
     // that must not run per sample, e.g. the MS-20 svf profile region.
     block_prepare_caller: ?RawCaller = null,
@@ -724,6 +730,7 @@ pub const FyRawMachine = struct {
         if (self.desc.deriveWord()) |w| self.derive_caller = try self.compileEntry(w, &self.derive_slots, false);
         self.render_caller = try self.compileEntry(self.desc.renderWord(), &self.render_slots, true);
         if (self.desc.renderLiteWord()) |w| self.render_lite_caller = try self.compileEntry(w, &self.render_lite_slots, true);
+        if (self.desc.controlWord()) |w| self.control_caller = try self.compileEntry(w, &self.control_slots, false);
     }
 
     fn initRawControls(self: *FyRawMachine) void {
@@ -1658,8 +1665,24 @@ fn renderVoiceSegment(self: *FyRawMachine, start: usize, end: usize) !void {
         const snap = self.voice_snap[start..end];
         for (snap, io) |*d, f| d.* = f.out_l;
         const e = self.entryArgs(voice);
-        const args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&io[0]) }, e[0], e[1], e[2] };
-        _ = try caller.call(@intCast(end - start), &args);
+        if (self.control_caller) |*ctl| {
+            // Slice the render at the voice's control points.
+            var at = start;
+            while (at < end) {
+                if (self.voice_ctl_left[voice] == 0) {
+                    _ = try ctl.call(1, &e);
+                    self.voice_ctl_left[voice] = self.desc.control_period;
+                }
+                const n = @min(end - at, self.voice_ctl_left[voice]);
+                const args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&self.io[at]) }, e[0], e[1], e[2] };
+                _ = try caller.call(@intCast(n), &args);
+                self.voice_ctl_left[voice] -= n;
+                at += n;
+            }
+        } else {
+            const args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&io[0]) }, e[0], e[1], e[2] };
+            _ = try caller.call(@intCast(end - start), &args);
+        }
         var pk = self.voice_peak[voice];
         for (snap, io) |b, f| pk = @max(pk, @abs(f.out_l - b));
         self.voice_peak[voice] = pk;
@@ -1756,6 +1779,7 @@ fn noteOnEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
     self.voice_gate[voice] = true;
     self.voice_idle[voice] = false;
     self.voice_peak[voice] = 0;
+    self.voice_ctl_left[voice] = 0; // control runs before the note's first sample
     // note-pitch machines (drums) address slots by raw MIDI pitch.
     const note_arg = if (self.desc.note_pitch) @as(f64, ev.pitch) else midiToHz(ev.pitch);
     self.kctx.pitch = ev.pitch;
@@ -4092,6 +4116,62 @@ test "FM-86 survives many small live-style blocks with note churn" {
         testRender(mach, &ctx, &l, &r);
         for (l) |s| try testing.expect(std.math.isFinite(s));
     }
+}
+
+// Renders `out.len` frames of FM-86 in blocks cycling through `sizes`, with a
+// chord on at frame 100 and off at frame 12_000 (absolute).
+fn fm86RenderBlocks(out: []f32, sizes: []const usize) !void {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/fm86/fm86.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    var r = [_]f32{0} ** 1024;
+    const on_at: usize = 100;
+    const off_at: usize = 12_000;
+    var pos: usize = 0;
+    var k: usize = 0;
+    while (pos < out.len) : (k += 1) {
+        const n = @min(sizes[k % sizes.len], out.len - pos);
+        var evs: [6]machine.NoteEvent = undefined;
+        var ne: usize = 0;
+        for ([_]f32{ 57, 60, 64 }, 0..) |p, j| {
+            if (on_at >= pos and on_at < pos + n) {
+                evs[ne] = .{ .sample_offset = @intCast(on_at - pos), .kind = .note_on, .channel = 0, .note_id = @intCast(j), .pitch = p, .velocity = 0.8 };
+                ne += 1;
+            }
+        }
+        for ([_]f32{ 57, 60, 64 }, 0..) |p, j| {
+            if (off_at >= pos and off_at < pos + n) {
+                evs[ne] = .{ .sample_offset = @intCast(off_at - pos), .kind = .note_off, .channel = 0, .note_id = @intCast(j), .pitch = p, .velocity = 0 };
+                ne += 1;
+            }
+        }
+        ctx.block_size = @intCast(n);
+        ctx.note_in = if (ne > 0) @ptrCast(evs[0..].ptr) else null;
+        ctx.note_in_count = @intCast(ne);
+        testRender(mach, &ctx, out[pos .. pos + n], r[0..n]);
+        pos += n;
+    }
+}
+
+test "FM-86's control rate doesn't depend on the host's block size" {
+    // The control! hook runs every 64 samples of each voice, whatever the
+    // blocks are: 1024-frame offline blocks and odd live-sized ones render
+    // the same samples.
+    const frames = 24_000;
+    const a = try testing.allocator.alloc(f32, frames);
+    defer testing.allocator.free(a);
+    const b = try testing.allocator.alloc(f32, frames);
+    defer testing.allocator.free(b);
+    try fm86RenderBlocks(a, &.{1024});
+    try fm86RenderBlocks(b, &.{ 37, 256, 5, 200, 64, 511 });
+    var peak: f32 = 0;
+    for (a, b) |x, y| {
+        try testing.expectEqual(x, y);
+        peak = @max(peak, @abs(x));
+    }
+    try testing.expect(peak > 0.01);
 }
 
 test "raw DSP2 saturator fixture processes audio input through generic adapter" {

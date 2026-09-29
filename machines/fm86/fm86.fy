@@ -17,6 +17,7 @@ include "fm86_algo.fy"
 : manifest
   "FM-7.11" voice-sample machine*
   "k-fm86-voice-sample" render!
+  "k-fm86-voice-control" 64 control!
   "fm86-note-on"        note-on!
   "fm86-note-expr"      note-expr!
   "fm86-note-off"       note-off!

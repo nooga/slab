@@ -70,6 +70,10 @@ struct: MachineDesc
   ptr render-lite-sel  ( int params byte offset )
   ptr key-flag       ( int: params byte offset + 1 where the host writes 1.0
                        while a sidechain key is connected, else 0.0; 0 = none )
+  ptr control        ( cstr or 0 — voice machines: a dsp: word [ctx state
+                       params --] the host calls on each voice every
+                       control-period samples, before the render that follows )
+  ptr control-period ( int samples )
 ;
 
 struct: ControlDesc
@@ -179,6 +183,11 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   same output there )
 : key-flag!  ( offset -- )  1 + _mf-md@ MachineDesc.key-flag! drop ;
 
+( "word" period control! : a voice's control-rate hook [docs/04], run every
+  `period` samples of each voice, counted from its note-on )
+: control!  ( str period -- )
+  _mf-md@ MachineDesc.control-period! drop
+  cstr-new _mf-md@ MachineDesc.control! drop ;
 : render-lite!  ( str offset -- )
   _mf-md@ MachineDesc.render-lite-sel! drop
   cstr-new _mf-md@ MachineDesc.render-lite! drop ;

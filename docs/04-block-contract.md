@@ -18,6 +18,7 @@ words take one more, leading:
 | `block-prepare` | `( ctx state params -- )` | every block, once (region 0) |
 | `derive` | `( ctx state params -- )` | every block, before block-prepare |
 | `render-lite` | `( io ctx state params -- )` | effects: instead of `render`, for a block where the params f64 at its selector offset is exactly 0 |
+| `control` | `( ctx state params -- )` | voices: every *period* samples of each voice, counted from its note-on, before the render that follows |
 
 `render-lite` (manifest `"word" offset render-lite!`) lets a stage that
 does nothing at one setting skip its cost: the host checks the selector
@@ -25,6 +26,15 @@ after block-prepare, so it can be a derived param, and a knob glide
 snaps to its target, so turning the knob to 0 gets there. The word must
 produce the same output as `render` at that setting; bus2's COLOR 0 is
 the case (bit-exact against its goldens).
+
+`control!` (manifest `"word" period control!`) gives a voice machine a
+control rate that doesn't depend on the host's block size. The host
+slices each voice's render at every *period*-th sample of that voice
+and calls the word there; note-on resets the count, so the first call
+comes before the note's first sample. The render word then runs only
+the per-sample path. FM-86 uses it with period 64, which is msfa's N:
+envelopes, LFO and pitch EG step per block, and each operator's gain
+ramps linearly across it.
 
 `key-flag!` (manifest `offset key-flag!`) names a params f64 the host
 sets each block: 1.0 while a sidechain key is connected, 0.0 otherwise.

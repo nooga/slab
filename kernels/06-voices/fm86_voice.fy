@@ -14,16 +14,20 @@
   fine, detune scaled by the note; fixed: 10^(coarse + fine/100) Hz],
   its output level [Env::scaleoutlevel + keyboard level scaling +
   velocity], and the four stage targets, per-sample increments and hold
-  counts of its envelope [rate scaling folded in].  Per sample: the LFO
-  [six waves, delay], the pitch EG, then each operator's envelope
-  [dx-env: msfa's Env::getsample - the attack jumps to 1716/256 and
-  climbs by [17 - level] x rate, decays fall linearly in log2, flat
-  segments hold for the measured `statics` time], amplitude modulation
-  [AMS], and the algorithm matrix [fm-op-step, OP6 first].
+  counts of its envelope [rate scaling folded in].
 
-  msfa runs the envelopes and LFO once per 64 samples and ramps the gain
-  between; here they run every sample.  Envelope rates carry msfa's
-  44.1 kHz scaling. )
+  Like msfa, the control path runs once per DX-N = 64 samples
+  [k-fm86-voice-control, the manifest's control! hook]: the LFO [six
+  waves, delay], the pitch EG, each operator's envelope [dx-env: msfa's
+  Env::getsample - the attack jumps to 1716/256 and climbs by
+  [17 - level] x rate, decays fall linearly in log2, flat segments hold
+  for the measured `statics` time], amplitude modulation [AMS], and so
+  each operator's gain target and phase increment for the next 64
+  samples.  Per sample [fm86-voice-step] each gain ramps linearly to its
+  target [FmOpKernel::compute] under the algorithm matrix [fm-op-step,
+  OP6 first]; an operator whose gain starts and ends a block under the
+  threshold is silent for it [FmCore::render].  Envelope rates carry
+  msfa's 44.1 kHz scaling. )
 
 include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../01-oscillators/fm_operator.fy"
@@ -44,6 +48,11 @@ ustruct: DxOpS
   f64 binc     ( phase increment at the note's pitch, cycles / sample )
   f64 fixed    ( 1: fixed frequency - no pitch EG, no LFO )
   f64 ams      ( amplitude-modulation sensitivity, 0..1 )
+  ( this control block, set by dx-op-control )
+  f64 g        ( gain, ramping )
+  f64 dg       ( gain step per sample )
+  f64 gout     ( the gain target: where the next block ramps from )
+  f64 inc      ( phase increment, cycles / sample )
 ;
 
 ustruct: Fm86State
@@ -108,6 +117,7 @@ ustruct: Fm86Params
 :: DX-NOTE0 3.0313597917556763 ;    ( log2 440 - 69/12: MIDI note 0 )
 :: DX-LOG10 0.033219280948873623 ;  ( log2 10 / 100 )
 :: DX-Q24 5.9604644775390625e-08 ;  ( 1 / 2^24 )
+:: DX-N 64.0 ;                      ( samples per control block [msfa N] )
 
 ( ix a b c d -- x : the value for stage ix. )
 dsp: dx-pick4 | ix a b c d -- x |
@@ -205,57 +215,65 @@ dsp: dx-op-off | o:DxOpS |
   o.t3 o.lvl f=  o.s3 0.0 select -> o.st
 ;
 
-( ── per sample ───────────────────────────────────────────────────────── )
+( ── per control block [DX-N samples] ──────────────────────────────── )
 
-( o down -- level : one operator envelope sample [Env::getsample]. )
+( o down -- level : one operator envelope block [Env::getsample with
+  ACCURATE_ENVELOPE]: a flat stage counts its hold down by a block and,
+  at zero, advances; then the stage moves by a block's increment. )
 dsp: dx-env | o:DxOpS down -- l |
   o.lvl | l0 |
-  o.ix | ix |
-  o.st | st |
+  o.ix | ix0 |
+  o.st | st0 |
+  st0 0.5 f> | held |
+  st0 DX-N f- 0.0 fmax | st1 |
+  held st1 0.5 f< and | sdone |
+  sdone  ix0 1.0 f+  ix0  select | ix |
   ix o.t0 o.t1 o.t2 o.t3 dx-pick4 | tg |
-  ix o.i0 o.i1 o.i2 o.i3 dx-pick4 | inc |
+  ix o.i0 o.i1 o.i2 o.i3 dx-pick4 DX-N f* | inc |
+  ix o.s0 o.s1 o.s2 o.s3 dx-pick4 | sn |
+  ( a hold that ran out enters the next stage as advance[] would )
+  sdone  tg l0 f> mask>f  o.rise  select | rise0 |
+  sdone  tg l0 f= sn 0.0 select  st1  select | st |
   ix 3.0 f<  ix 4.0 f<  down 0.5 f<  and  or | act |
-  st 0.5 f> | hold |
-  st 1.0 f- 0.0 fmax | st1 |
-  hold st1 0.5 f< and | hdone |
+  act  st 0.5 f> not  and | mv |
   l0 DX-JUMP fmax | lj |
   lj  17.0 lj f- floor inc f*  f+ | lr |
   l0 inc f- | lf |
-  o.rise 0.5 f> | rising |
+  rise0 0.5 f> | rising |
   rising lr lf select | c |
   rising c tg f>= and  rising not c tg f<= and  or | past |
-  act hold not and | mv |
   mv past and | reach |
   mv  reach tg c select  l0  select | l1 |
-  reach hdone or | adv |
-  adv  ix 1.0 f+  ix  select | ix1 |
+  reach  ix 1.0 f+  ix  select | ix1 |
   ix1 o.t0 o.t1 o.t2 o.t3 dx-pick4 | tn |
-  ix1 o.s0 o.s1 o.s2 o.s3 dx-pick4 | sn |
-  adv  tn l1 f> mask>f  o.rise  select -> o.rise
-  adv  tn l1 f= sn 0.0 select  hold st1 st select  select -> o.st
+  ix1 o.s0 o.s1 o.s2 o.s3 dx-pick4 | sn1 |
+  reach  tn l1 f> mask>f  rise0  select -> o.rise
+  reach  tn l1 f= sn1 0.0 select  st  select -> o.st
   ix1 -> o.ix
   l1 -> o.lvl
   l1
 ;
 
-( o down amod -- gain : envelope, amplitude modulation [the AMS
-  attenuation in Dx7Note::compute], gain. )
-dsp: dx-gain | o:DxOpS down amod -- g |
+( o down amod pr pf -- : one operator's control block: its envelope, the
+  AMS attenuation [Dx7Note::compute], the gain the next DX-N samples
+  ramp to [FmCore::render: silent when both ends are under threshold],
+  and the phase increment [fixed operators get only the bend]. )
+dsp: dx-op-control | o:DxOpS down amod pr pf |
   o down dx-env | l |
   amod o.ams f* 4.48 f* 12.2 f+ exp DX-Q24 f* | pt |
-  o.ams 0.0 f>  l l pt f* f-  l  select 14.0 f- exp2 | g |
-  g DX-THRESH f<  0.0 g select
+  o.ams 0.0 f>  l l pt f* f-  l  select 14.0 f- exp2 | g2 |
+  o.gout | g1 |
+  g2 -> o.gout
+  g1 DX-THRESH f<  g2 DX-THRESH f<  and | quiet |
+  quiet  0.0  g1  select -> o.g
+  quiet  0.0  g2 g1 f- DX-N f/  select -> o.dg
+  o.fixed 0.5 f> pf pr select o.binc f* -> o.inc
 ;
 
-( o pr pf -- inc : this sample's phase increment; fixed operators get
-  only the bend. )
-dsp: dx-inc | o:DxOpS pr pf -- inc |
-  o.fixed 0.5 f> pf pr select o.binc f*
-;
-
-( s p -- v delay : the LFO [msfa Lfo::getsample / getdelay], v 0..1. )
+( s p -- v delay : the LFO for a block [msfa Lfo::getsample / getdelay],
+  v 0..1. )
 dsp: dx-lfo-step | s:Fm86State p:Fm86Params -- v d |
-  s.lph p.lfo-inc f+ | ph |
+  s.lph p.lfo-inc DX-N f* f+ | ph |
   ph ffrac | u |
   u -> s.lph
   ph 1.0 f>= | wrap |
@@ -272,19 +290,20 @@ dsp: dx-lfo-step | s:Fm86State p:Fm86Params -- v d |
   p.lfo-wave | w |
   w 0.5 tri  w 1.5 sdn  w 2.5 sup  w 3.5 sq  w 4.5 sn sh  fsel-lt fsel-lt fsel-lt fsel-lt fsel-lt | v |
   s.ldl | d0 |
-  d0 0.5 f<  p.dl-inc1 p.dl-inc2 select | dd |
+  d0 0.5 f<  p.dl-inc1 p.dl-inc2 select DX-N f* | dd |
   d0 dd f+ | d1 |
   d1 1.0 f>  d0 d1 select -> s.ldl
   d1 1.0 f>  1.0  d1 0.5 f<  0.0  d1 0.5 f- 2.0 f*  select  select | dly |
   v dly
 ;
 
-( s down -- pitch : the pitch EG [msfa PitchEnv::getsample], octaves. )
+( s down -- pitch : the pitch EG for a block [msfa PitchEnv::getsample],
+  octaves. )
 dsp: dx-penv | s:Fm86State down -- pl |
   s.pl | l0 |
   s.pix | ix |
   ix s.pt0 s.pt1 s.pt2 s.pt3 dx-pick4 | tg |
-  ix s.pi0 s.pi1 s.pi2 s.pi3 dx-pick4 | inc |
+  ix s.pi0 s.pi1 s.pi2 s.pi3 dx-pick4 DX-N f* | inc |
   ix 3.0 f<  ix 4.0 f<  down 0.5 f<  and  or | act |
   s.prise 0.5 f> | rising |
   rising  l0 inc f+  l0 inc f-  select | c |
@@ -298,37 +317,62 @@ dsp: dx-penv | s:Fm86State down -- pl |
   l1
 ;
 
+( ctx state params -- : a voice's control block, every DX-N samples
+  [the manifest's control! hook]. )
+dsp: k-fm86-voice-control | ctx state:Fm86State params:Fm86Params |
+  state.down | down |
+  state params dx-lfo-step | v dly |
+  state down dx-penv | pe |
+  ( pitch: EG + LFO [PMD x PMS x delay], and the note's bend )
+  pe  params.pmd params.pmsv f* dly f* v 0.5 f- f* 0.000030517578125 f*  f+  state.bend f+ exp2 | pr |
+  state.bend exp2 | pf |
+  ( amplitude modulation depth: AMD x delay x the inverted LFO )
+  params.amd dly f* 1.0 v f- f* 0.00390625 f* | am |
+  state.op1& down am pr pf dx-op-control
+  state.op2& down am pr pf dx-op-control
+  state.op3& down am pr pf dx-op-control
+  state.op4& down am pr pf dx-op-control
+  state.op5& down am pr pf dx-op-control
+  state.op6& down am pr pf dx-op-control
+;
+
+( ── per sample ───────────────────────────────────────────────────────── )
+
+( o -- g : the operator's gain this sample, one step along its ramp. )
+dsp: dx-ramp | o:DxOpS -- g |
+  o.g o.dg f+ | g |
+  g -> o.g
+  g
+;
+
+( o -- inc : the operator's phase increment for this block. )
+dsp: dx-oinc | o:DxOpS -- i |
+  o.inc
+;
+
 ( s p -- out : one voice sample. )
 dsp: fm86-voice-step | s:Fm86State p:Fm86Params -- out |
-  s.down | down |
-  s p dx-lfo-step | v dly |
-  s down dx-penv | pe |
-  ( pitch: EG + LFO [PMD x PMS x delay], and the note's bend )
-  pe  p.pmd p.pmsv f* dly f* v 0.5 f- f* 0.000030517578125 f*  f+  s.bend f+ exp2 | pr |
-  s.bend exp2 | pf |
-  ( amplitude modulation depth: AMD x delay x the inverted LFO )
-  p.amd dly f* 1.0 v f- f* 0.00390625 f* | am |
-  s.op6& down am dx-gain | g5 |
-  s.op5& down am dx-gain | g4 |
-  s.op4& down am dx-gain | g3 |
-  s.op3& down am dx-gain | g2 |
-  s.op2& down am dx-gain | g1 |
-  s.op1& down am dx-gain | g0 |
+  s.op6& dx-ramp | g5 |
+  s.op5& dx-ramp | g4 |
+  s.op4& dx-ramp | g3 |
+  s.op3& dx-ramp | g2 |
+  s.op2& dx-ramp | g1 |
+  s.op1& dx-ramp | g0 |
   ( the algorithm matrix, OP6 first )
-  s.op6&  s.op6& pr pf dx-inc  0.0  g5 p.fb5 fm-op-step | out5 |
-  s.op5&  s.op5& pr pf dx-inc
+  s.op6&  s.op6& dx-oinc  0.0  g5 p.fb5 fm-op-step | out5 |
+  s.op5&  s.op5& dx-oinc
     p.w45 out5 f*
     g4 p.fb4 fm-op-step | out4 |
-  s.op4&  s.op4& pr pf dx-inc
+  s.op4&  s.op4& dx-oinc
     p.w34 out4 f* p.w35 out5 f* f+
     g3 p.fb3 fm-op-step | out3 |
-  s.op3&  s.op3& pr pf dx-inc
+  s.op3&  s.op3& dx-oinc
     p.w23 out3 f* p.w24 out4 f* f+ p.w25 out5 f* f+
     g2 p.fb2 fm-op-step | out2 |
-  s.op2&  s.op2& pr pf dx-inc
+  s.op2&  s.op2& dx-oinc
     p.w12 out2 f* p.w13 out3 f* f+ p.w14 out4 f* f+ p.w15 out5 f* f+
     g1 p.fb1 fm-op-step | out1 |
-  s.op1&  s.op1& pr pf dx-inc
+  s.op1&  s.op1& dx-oinc
     p.w01 out1 f* p.w02 out2 f* f+ p.w03 out3 f* f+ p.w04 out4 f* f+ p.w05 out5 f* f+
     g0 p.fb0 fm-op-step | out0 |
   p.c0 out0 f*
