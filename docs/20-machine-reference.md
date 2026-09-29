@@ -2541,10 +2541,27 @@ Presets:
 | param | section | label | range | default | notes |
 |---|---|---|---|---|---|
 | `sat-drive` | SAT | DRIVE | 0 … 36 | 6 | linear |
-| `sat-mode` | SAT | MODE | 0 TUBE / 1 TAPE / 2 XFMR / 3 DIODE / 4 FUZZ | 0 | switch |
+| `sat-mode` | SAT | MODE | 0 TUBE / 1 TAPE / 2 XFMR / 3 DIODE / 4 FUZZ / 5 VALVE | 0 | switch |
+| `sat-sag` | SAT | SAG | 0 … 1 | 0 | linear |
 | `sat-tone` | SAT | TONE | 800 … 18000 | 18000 | exp |
 | `sat-mix` | SAT | MIX | 0 … 1 | 1 | pow |
 | `sat-out` | SAT | OUT | -24 … 24 | 0 | linear |
+
+Presets:
+
+- `diode-drive` — DIODE like a pedal overdrive: lopsided hard knee, dark top
+- `drum-crush` — DIODE smashed, 30% wet: parallel crush for drum buses
+- `fuzz-sputter` — FUZZ with full sag: a starved stage - notes gate and sputter as they decay
+- `fuzz-wall` — FUZZ 30 dB: square-ish wall, sustain for days
+- `iron-bass` — XFMR 12 dB, 70% wet: thick bass under a clean top
+- `iron-bus` — XFMR 4 dB: console-iron fullness on the mix bus
+- `tape-glue` — TAPE, a light 6 dB: bus and mix glue, soft shoulder, no grit
+- `tape-slam` — TAPE driven hard in parallel: drums squashed and fattened, transients kept
+- `tube-thicken` — TUBE half wet with some sag: synths and pads thicken on the loud notes
+- `tube-warm` — TUBE 8 dB, 70% wet: even-harmonic warmth for vocals and keys
+- `valve-bass` — VALVE 12 dB with sag: heavy bass - H2 weight, the loud notes bloom and sag
+- `valve-crunch` — VALVE pushed into the top: crunch for guitars, Rhodes and bass leads
+- `valve-preamp` — VALVE barely driven: a clean triode preamp, second harmonic only
 
 ## verb2
 
