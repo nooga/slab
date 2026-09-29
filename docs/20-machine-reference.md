@@ -150,68 +150,151 @@ Presets:
 | param | section | label | range | default | notes |
 |---|---|---|---|---|---|
 | `algo` | GLOBAL | ALGO | 1 … 32 | 1 | integer |
-| `feedback` | GLOBAL | FBK | 0 … 3 | 0 | linear |
-| `master` | GLOBAL | MASTER | 0 … 1 | 0.7 | pow |
-| `op1-ratio` | OP1 | RATIO | 0.25 … 32 | 1 | linear |
-| `op1-level` | OP1 | LEVEL | 0 … 2.5 | 1 | pow |
-| `op1-r1` | EG1 | R1 | 1e-07 … 0.02 | 0.012 | exp |
-| `op1-r2` | EG1 | R2 | 1e-07 … 0.02 | 0.008 | exp |
-| `op1-r3` | EG1 | R3 | 1e-07 … 0.02 | 0.004 | exp |
-| `op1-r4` | EG1 | R4 | 1e-07 … 0.02 | 0.01 | exp |
-| `op1-l1` | EG1 | L1 | 0 … 1 | 1 | linear |
-| `op1-l2` | EG1 | L2 | 0 … 1 | 0.95 | linear |
-| `op1-l3` | EG1 | L3 | 0 … 1 | 0.9 | linear |
-| `op1-l4` | EG1 | L4 | 0 … 1 | 0 | linear |
-| `op2-ratio` | OP2 | RATIO | 0.25 … 32 | 1 | linear |
-| `op2-level` | OP2 | LEVEL | 0 … 2.5 | 0.6 | pow |
-| `op2-r1` | EG2 | R1 | 1e-07 … 0.02 | 0.012 | exp |
-| `op2-r2` | EG2 | R2 | 1e-07 … 0.02 | 0.008 | exp |
-| `op2-r3` | EG2 | R3 | 1e-07 … 0.02 | 0.004 | exp |
-| `op2-r4` | EG2 | R4 | 1e-07 … 0.02 | 0.01 | exp |
-| `op2-l1` | EG2 | L1 | 0 … 1 | 1 | linear |
-| `op2-l2` | EG2 | L2 | 0 … 1 | 0.95 | linear |
-| `op2-l3` | EG2 | L3 | 0 … 1 | 0.9 | linear |
-| `op2-l4` | EG2 | L4 | 0 … 1 | 0 | linear |
-| `op3-ratio` | OP3 | RATIO | 0.25 … 32 | 1 | linear |
-| `op3-level` | OP3 | LEVEL | 0 … 2.5 | 1 | pow |
-| `op3-r1` | EG3 | R1 | 1e-07 … 0.02 | 0.012 | exp |
-| `op3-r2` | EG3 | R2 | 1e-07 … 0.02 | 0.008 | exp |
-| `op3-r3` | EG3 | R3 | 1e-07 … 0.02 | 0.004 | exp |
-| `op3-r4` | EG3 | R4 | 1e-07 … 0.02 | 0.01 | exp |
-| `op3-l1` | EG3 | L1 | 0 … 1 | 1 | linear |
-| `op3-l2` | EG3 | L2 | 0 … 1 | 0.95 | linear |
-| `op3-l3` | EG3 | L3 | 0 … 1 | 0.9 | linear |
-| `op3-l4` | EG3 | L4 | 0 … 1 | 0 | linear |
-| `op4-ratio` | OP4 | RATIO | 0.25 … 32 | 1 | linear |
-| `op4-level` | OP4 | LEVEL | 0 … 2.5 | 0.6 | pow |
-| `op4-r1` | EG4 | R1 | 1e-07 … 0.02 | 0.012 | exp |
-| `op4-r2` | EG4 | R2 | 1e-07 … 0.02 | 0.008 | exp |
-| `op4-r3` | EG4 | R3 | 1e-07 … 0.02 | 0.004 | exp |
-| `op4-r4` | EG4 | R4 | 1e-07 … 0.02 | 0.01 | exp |
-| `op4-l1` | EG4 | L1 | 0 … 1 | 1 | linear |
-| `op4-l2` | EG4 | L2 | 0 … 1 | 0.95 | linear |
-| `op4-l3` | EG4 | L3 | 0 … 1 | 0.9 | linear |
-| `op4-l4` | EG4 | L4 | 0 … 1 | 0 | linear |
-| `op5-ratio` | OP5 | RATIO | 0.25 … 32 | 1 | linear |
-| `op5-level` | OP5 | LEVEL | 0 … 2.5 | 0.5 | pow |
-| `op5-r1` | EG5 | R1 | 1e-07 … 0.02 | 0.012 | exp |
-| `op5-r2` | EG5 | R2 | 1e-07 … 0.02 | 0.008 | exp |
-| `op5-r3` | EG5 | R3 | 1e-07 … 0.02 | 0.004 | exp |
-| `op5-r4` | EG5 | R4 | 1e-07 … 0.02 | 0.01 | exp |
-| `op5-l1` | EG5 | L1 | 0 … 1 | 1 | linear |
-| `op5-l2` | EG5 | L2 | 0 … 1 | 0.95 | linear |
-| `op5-l3` | EG5 | L3 | 0 … 1 | 0.9 | linear |
-| `op5-l4` | EG5 | L4 | 0 … 1 | 0 | linear |
-| `op6-ratio` | OP6 | RATIO | 0.25 … 32 | 1 | linear |
-| `op6-level` | OP6 | LEVEL | 0 … 2.5 | 0.5 | pow |
-| `op6-r1` | EG6 | R1 | 1e-07 … 0.02 | 0.012 | exp |
-| `op6-r2` | EG6 | R2 | 1e-07 … 0.02 | 0.008 | exp |
-| `op6-r3` | EG6 | R3 | 1e-07 … 0.02 | 0.004 | exp |
-| `op6-r4` | EG6 | R4 | 1e-07 … 0.02 | 0.01 | exp |
-| `op6-l1` | EG6 | L1 | 0 … 1 | 1 | linear |
-| `op6-l2` | EG6 | L2 | 0 … 1 | 0.95 | linear |
-| `op6-l3` | EG6 | L3 | 0 … 1 | 0.9 | linear |
-| `op6-l4` | EG6 | L4 | 0 … 1 | 0 | linear |
+| `feedback` | GLOBAL | FBK | 0 … 7 | 0 | integer |
+| `transpose` | GLOBAL | TRNSP | -24 … 24 | 0 | integer |
+| `oks` | GLOBAL | KSYNC | 0 OFF / 1 ON | 1 | switch |
+| `volume` | GLOBAL | VOL | 0 … 2 | 1 | pow |
+| `op1-ol` | OP1 | LEVEL | 0 … 99 | 99 | integer |
+| `op1-coarse` | OP1 | COARSE | 0 … 31 | 1 | integer |
+| `op1-fine` | OP1 | FINE | 0 … 99 | 0 | integer |
+| `op1-det` | OP1 | DETUNE | -7 … 7 | 0 | integer |
+| `op1-mode` | OP1 | MODE | 0 RATIO / 1 FIXED | 0 | switch |
+| `op1-r1` | EG1 | R1 | 0 … 99 | 99 | integer |
+| `op1-r2` | EG1 | R2 | 0 … 99 | 99 | integer |
+| `op1-r3` | EG1 | R3 | 0 … 99 | 99 | integer |
+| `op1-r4` | EG1 | R4 | 0 … 99 | 99 | integer |
+| `op1-l1` | EG1 | L1 | 0 … 99 | 99 | integer |
+| `op1-l2` | EG1 | L2 | 0 … 99 | 99 | integer |
+| `op1-l3` | EG1 | L3 | 0 … 99 | 99 | integer |
+| `op1-l4` | EG1 | L4 | 0 … 99 | 0 | integer |
+| `op1-bp` | KS1 | BREAK | 0 … 99 | 39 | integer |
+| `op1-ld` | KS1 | L DEP | 0 … 99 | 0 | integer |
+| `op1-rd` | KS1 | R DEP | 0 … 99 | 0 | integer |
+| `op1-lc` | KS1 | L CRV | 0 -LIN / 1 -EXP / 2 +EXP / 3 +LIN | 0 | switch |
+| `op1-rc` | KS1 | R CRV | 0 -LIN / 1 -EXP / 2 +EXP / 3 +LIN | 0 | switch |
+| `op1-rs` | KS1 | RATE | 0 … 7 | 0 | integer |
+| `op1-kvs` | SENS1 | VEL | 0 … 7 | 0 | integer |
+| `op1-ams` | SENS1 | AMS | 0 … 3 | 0 | integer |
+| `op2-ol` | OP2 | LEVEL | 0 … 99 | 0 | integer |
+| `op2-coarse` | OP2 | COARSE | 0 … 31 | 1 | integer |
+| `op2-fine` | OP2 | FINE | 0 … 99 | 0 | integer |
+| `op2-det` | OP2 | DETUNE | -7 … 7 | 0 | integer |
+| `op2-mode` | OP2 | MODE | 0 RATIO / 1 FIXED | 0 | switch |
+| `op2-r1` | EG2 | R1 | 0 … 99 | 99 | integer |
+| `op2-r2` | EG2 | R2 | 0 … 99 | 99 | integer |
+| `op2-r3` | EG2 | R3 | 0 … 99 | 99 | integer |
+| `op2-r4` | EG2 | R4 | 0 … 99 | 99 | integer |
+| `op2-l1` | EG2 | L1 | 0 … 99 | 99 | integer |
+| `op2-l2` | EG2 | L2 | 0 … 99 | 99 | integer |
+| `op2-l3` | EG2 | L3 | 0 … 99 | 99 | integer |
+| `op2-l4` | EG2 | L4 | 0 … 99 | 0 | integer |
+| `op2-bp` | KS2 | BREAK | 0 … 99 | 39 | integer |
+| `op2-ld` | KS2 | L DEP | 0 … 99 | 0 | integer |
+| `op2-rd` | KS2 | R DEP | 0 … 99 | 0 | integer |
+| `op2-lc` | KS2 | L CRV | 0 -LIN / 1 -EXP / 2 +EXP / 3 +LIN | 0 | switch |
+| `op2-rc` | KS2 | R CRV | 0 -LIN / 1 -EXP / 2 +EXP / 3 +LIN | 0 | switch |
+| `op2-rs` | KS2 | RATE | 0 … 7 | 0 | integer |
+| `op2-kvs` | SENS2 | VEL | 0 … 7 | 0 | integer |
+| `op2-ams` | SENS2 | AMS | 0 … 3 | 0 | integer |
+| `op3-ol` | OP3 | LEVEL | 0 … 99 | 0 | integer |
+| `op3-coarse` | OP3 | COARSE | 0 … 31 | 1 | integer |
+| `op3-fine` | OP3 | FINE | 0 … 99 | 0 | integer |
+| `op3-det` | OP3 | DETUNE | -7 … 7 | 0 | integer |
+| `op3-mode` | OP3 | MODE | 0 RATIO / 1 FIXED | 0 | switch |
+| `op3-r1` | EG3 | R1 | 0 … 99 | 99 | integer |
+| `op3-r2` | EG3 | R2 | 0 … 99 | 99 | integer |
+| `op3-r3` | EG3 | R3 | 0 … 99 | 99 | integer |
+| `op3-r4` | EG3 | R4 | 0 … 99 | 99 | integer |
+| `op3-l1` | EG3 | L1 | 0 … 99 | 99 | integer |
+| `op3-l2` | EG3 | L2 | 0 … 99 | 99 | integer |
+| `op3-l3` | EG3 | L3 | 0 … 99 | 99 | integer |
+| `op3-l4` | EG3 | L4 | 0 … 99 | 0 | integer |
+| `op3-bp` | KS3 | BREAK | 0 … 99 | 39 | integer |
+| `op3-ld` | KS3 | L DEP | 0 … 99 | 0 | integer |
+| `op3-rd` | KS3 | R DEP | 0 … 99 | 0 | integer |
+| `op3-lc` | KS3 | L CRV | 0 -LIN / 1 -EXP / 2 +EXP / 3 +LIN | 0 | switch |
+| `op3-rc` | KS3 | R CRV | 0 -LIN / 1 -EXP / 2 +EXP / 3 +LIN | 0 | switch |
+| `op3-rs` | KS3 | RATE | 0 … 7 | 0 | integer |
+| `op3-kvs` | SENS3 | VEL | 0 … 7 | 0 | integer |
+| `op3-ams` | SENS3 | AMS | 0 … 3 | 0 | integer |
+| `op4-ol` | OP4 | LEVEL | 0 … 99 | 0 | integer |
+| `op4-coarse` | OP4 | COARSE | 0 … 31 | 1 | integer |
+| `op4-fine` | OP4 | FINE | 0 … 99 | 0 | integer |
+| `op4-det` | OP4 | DETUNE | -7 … 7 | 0 | integer |
+| `op4-mode` | OP4 | MODE | 0 RATIO / 1 FIXED | 0 | switch |
+| `op4-r1` | EG4 | R1 | 0 … 99 | 99 | integer |
+| `op4-r2` | EG4 | R2 | 0 … 99 | 99 | integer |
+| `op4-r3` | EG4 | R3 | 0 … 99 | 99 | integer |
+| `op4-r4` | EG4 | R4 | 0 … 99 | 99 | integer |
+| `op4-l1` | EG4 | L1 | 0 … 99 | 99 | integer |
+| `op4-l2` | EG4 | L2 | 0 … 99 | 99 | integer |
+| `op4-l3` | EG4 | L3 | 0 … 99 | 99 | integer |
+| `op4-l4` | EG4 | L4 | 0 … 99 | 0 | integer |
+| `op4-bp` | KS4 | BREAK | 0 … 99 | 39 | integer |
+| `op4-ld` | KS4 | L DEP | 0 … 99 | 0 | integer |
+| `op4-rd` | KS4 | R DEP | 0 … 99 | 0 | integer |
+| `op4-lc` | KS4 | L CRV | 0 -LIN / 1 -EXP / 2 +EXP / 3 +LIN | 0 | switch |
+| `op4-rc` | KS4 | R CRV | 0 -LIN / 1 -EXP / 2 +EXP / 3 +LIN | 0 | switch |
+| `op4-rs` | KS4 | RATE | 0 … 7 | 0 | integer |
+| `op4-kvs` | SENS4 | VEL | 0 … 7 | 0 | integer |
+| `op4-ams` | SENS4 | AMS | 0 … 3 | 0 | integer |
+| `op5-ol` | OP5 | LEVEL | 0 … 99 | 0 | integer |
+| `op5-coarse` | OP5 | COARSE | 0 … 31 | 1 | integer |
+| `op5-fine` | OP5 | FINE | 0 … 99 | 0 | integer |
+| `op5-det` | OP5 | DETUNE | -7 … 7 | 0 | integer |
+| `op5-mode` | OP5 | MODE | 0 RATIO / 1 FIXED | 0 | switch |
+| `op5-r1` | EG5 | R1 | 0 … 99 | 99 | integer |
+| `op5-r2` | EG5 | R2 | 0 … 99 | 99 | integer |
+| `op5-r3` | EG5 | R3 | 0 … 99 | 99 | integer |
+| `op5-r4` | EG5 | R4 | 0 … 99 | 99 | integer |
+| `op5-l1` | EG5 | L1 | 0 … 99 | 99 | integer |
+| `op5-l2` | EG5 | L2 | 0 … 99 | 99 | integer |
+| `op5-l3` | EG5 | L3 | 0 … 99 | 99 | integer |
+| `op5-l4` | EG5 | L4 | 0 … 99 | 0 | integer |
+| `op5-bp` | KS5 | BREAK | 0 … 99 | 39 | integer |
+| `op5-ld` | KS5 | L DEP | 0 … 99 | 0 | integer |
+| `op5-rd` | KS5 | R DEP | 0 … 99 | 0 | integer |
+| `op5-lc` | KS5 | L CRV | 0 -LIN / 1 -EXP / 2 +EXP / 3 +LIN | 0 | switch |
+| `op5-rc` | KS5 | R CRV | 0 -LIN / 1 -EXP / 2 +EXP / 3 +LIN | 0 | switch |
+| `op5-rs` | KS5 | RATE | 0 … 7 | 0 | integer |
+| `op5-kvs` | SENS5 | VEL | 0 … 7 | 0 | integer |
+| `op5-ams` | SENS5 | AMS | 0 … 3 | 0 | integer |
+| `op6-ol` | OP6 | LEVEL | 0 … 99 | 0 | integer |
+| `op6-coarse` | OP6 | COARSE | 0 … 31 | 1 | integer |
+| `op6-fine` | OP6 | FINE | 0 … 99 | 0 | integer |
+| `op6-det` | OP6 | DETUNE | -7 … 7 | 0 | integer |
+| `op6-mode` | OP6 | MODE | 0 RATIO / 1 FIXED | 0 | switch |
+| `op6-r1` | EG6 | R1 | 0 … 99 | 99 | integer |
+| `op6-r2` | EG6 | R2 | 0 … 99 | 99 | integer |
+| `op6-r3` | EG6 | R3 | 0 … 99 | 99 | integer |
+| `op6-r4` | EG6 | R4 | 0 … 99 | 99 | integer |
+| `op6-l1` | EG6 | L1 | 0 … 99 | 99 | integer |
+| `op6-l2` | EG6 | L2 | 0 … 99 | 99 | integer |
+| `op6-l3` | EG6 | L3 | 0 … 99 | 99 | integer |
+| `op6-l4` | EG6 | L4 | 0 … 99 | 0 | integer |
+| `op6-bp` | KS6 | BREAK | 0 … 99 | 39 | integer |
+| `op6-ld` | KS6 | L DEP | 0 … 99 | 0 | integer |
+| `op6-rd` | KS6 | R DEP | 0 … 99 | 0 | integer |
+| `op6-lc` | KS6 | L CRV | 0 -LIN / 1 -EXP / 2 +EXP / 3 +LIN | 0 | switch |
+| `op6-rc` | KS6 | R CRV | 0 -LIN / 1 -EXP / 2 +EXP / 3 +LIN | 0 | switch |
+| `op6-rs` | KS6 | RATE | 0 … 7 | 0 | integer |
+| `op6-kvs` | SENS6 | VEL | 0 … 7 | 0 | integer |
+| `op6-ams` | SENS6 | AMS | 0 … 3 | 0 | integer |
+| `lfo-speed` | LFO | SPEED | 0 … 99 | 35 | integer |
+| `lfo-delay` | LFO | DELAY | 0 … 99 | 0 | integer |
+| `lfo-pmd` | LFO | PMD | 0 … 99 | 0 | integer |
+| `lfo-amd` | LFO | AMD | 0 … 99 | 0 | integer |
+| `pms` | LFO | PMS | 0 … 7 | 3 | integer |
+| `lfo-sync` | LFO | SYNC | 0 OFF / 1 ON | 1 | switch |
+| `lfo-wave` | LFO | WAVE | 0 TRI / 1 SAW- / 2 SAW+ / 3 SQR / 4 SIN / 5 S/H | 0 | switch |
+| `pr1` | PEG | R1 | 0 … 99 | 99 | integer |
+| `pr2` | PEG | R2 | 0 … 99 | 99 | integer |
+| `pr3` | PEG | R3 | 0 … 99 | 99 | integer |
+| `pr4` | PEG | R4 | 0 … 99 | 99 | integer |
+| `pl1` | PEG | L1 | 0 … 99 | 50 | integer |
+| `pl2` | PEG | L2 | 0 … 99 | 50 | integer |
+| `pl3` | PEG | L3 | 0 … 99 | 50 | integer |
+| `pl4` | PEG | L4 | 0 … 99 | 50 | integer |
 
 Presets:
 

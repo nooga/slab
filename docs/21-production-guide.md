@@ -205,7 +205,8 @@ Step strings, 16 steps per 4/4 bar: `X` accent, `x` hit, `o` ghost,
 Fill roles, not track slots. A full pop arrangement is about six
 roles. Machines are named by id (what projects and slabkit use); the
 panel shows their display names: `drum2` DS-404 Drums, `cream` Mog
-Passenger, `ms20` SM-24 Mono, `juno2` Ju-Know, `fm86` FM-7.11,
+Passenger, `ms20` SM-24 Mono, `juno2` Ju-Know, `fm86` FM-7.11 (a DX7: its
+parameters are the DX7's own, 0..99, and .syx voices import byte for byte),
 `rhodes` Rhodes E-Piano, `sampler` Sampler.
 
 | Role | Slab machines and starting presets |

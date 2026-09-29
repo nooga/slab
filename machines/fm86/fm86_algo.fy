@@ -74,15 +74,18 @@ include "../../kernels/00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 
 ( --- routing derive word (dsp: indexes the table, writes params) ----- )
 
-( ctx state params -- : fill the voice routing from the ALGO row. Copies the
-  15 upper-triangular weights, scales the 6 carrier flags by MASTER and the 6
-  feedback flags by FEEDBACK. Flat (no call:) so the raw caller can build it. )
+( ctx state params -- : each block, the ALGO row into the routing
+  params - the 15 upper-triangular weights, the carriers at VOLUME / 16
+  [Dexed's output scale: one full carrier is 2 / 16], feedback on the
+  row's operator at 2^(FEEDBACK - 8) [msfa: (y0 + y1) >> (9 - fb)] -
+  and the LFO's per-sample rate, delay increments and depths
+  [msfa Lfo::reset, Dx7Note::init].  Flat (no call:). )
 dsp: fm86-derive
   | ctx:Ctx state params:Fm86Params |
   ctx.data& p@64 | derive-data |
   params.algo 1.0 f- 48.0 f*   | rb |
-  params.master                | master |
-  params.feedback              | feedback |
+  params.volume 0.0625 f*      | vol |
+  params.feedback 0.5 f<  0.0  params.feedback 8.0 f- exp2  select | fbk |
   derive-data rb  1.0 f+ f@i -> params.w01
   derive-data rb  2.0 f+ f@i -> params.w02
   derive-data rb  3.0 f+ f@i -> params.w03
@@ -98,16 +101,32 @@ dsp: fm86-derive
   derive-data rb 22.0 f+ f@i -> params.w34
   derive-data rb 23.0 f+ f@i -> params.w35
   derive-data rb 29.0 f+ f@i -> params.w45
-  derive-data rb 36.0 f+ f@i master f* -> params.c0
-  derive-data rb 37.0 f+ f@i master f* -> params.c1
-  derive-data rb 38.0 f+ f@i master f* -> params.c2
-  derive-data rb 39.0 f+ f@i master f* -> params.c3
-  derive-data rb 40.0 f+ f@i master f* -> params.c4
-  derive-data rb 41.0 f+ f@i master f* -> params.c5
-  derive-data rb 42.0 f+ f@i feedback f* -> params.fb0
-  derive-data rb 43.0 f+ f@i feedback f* -> params.fb1
-  derive-data rb 44.0 f+ f@i feedback f* -> params.fb2
-  derive-data rb 45.0 f+ f@i feedback f* -> params.fb3
-  derive-data rb 46.0 f+ f@i feedback f* -> params.fb4
-  derive-data rb 47.0 f+ f@i feedback f* -> params.fb5
+  derive-data rb 36.0 f+ f@i vol f* -> params.c0
+  derive-data rb 37.0 f+ f@i vol f* -> params.c1
+  derive-data rb 38.0 f+ f@i vol f* -> params.c2
+  derive-data rb 39.0 f+ f@i vol f* -> params.c3
+  derive-data rb 40.0 f+ f@i vol f* -> params.c4
+  derive-data rb 41.0 f+ f@i vol f* -> params.c5
+  derive-data rb 42.0 f+ f@i fbk f* -> params.fb0
+  derive-data rb 43.0 f+ f@i fbk f* -> params.fb1
+  derive-data rb 44.0 f+ f@i fbk f* -> params.fb2
+  derive-data rb 45.0 f+ f@i fbk f* -> params.fb3
+  derive-data rb 46.0 f+ f@i fbk f* -> params.fb4
+  derive-data rb 47.0 f+ f@i fbk f* -> params.fb5
+  ( LFO: speed [lfoSource x 4437500000 / 2^32 Hz], delay [99 - DELAY
+    counts up to the halfway point, then ramps the depth in] )
+  ctx.sr | sr |
+  dx-lfo params.lfo-speed f@i 1.0332 f* sr f/ -> params.lfo-inc
+  99.0 params.lfo-delay f- | a |
+  a 16.0 f/ floor | ah |
+  a ah 16.0 f* f- 16.0 f+  1.0 ah f+ fexp2i f* | a1 |
+  a1 128.0 f/ floor 128.0 f* 128.0 fmax | a2 |
+  25190424.0 sr f/ 2.3283064365386963e-10 f* | unit |
+  a 98.5 f>  2.0  unit a1 f*  select -> params.dl-inc1
+  a 98.5 f>  2.0  unit a2 f*  select -> params.dl-inc2
+  params.lfo-pmd 165.0 f* 64.0 f/ floor -> params.pmd
+  params.lfo-amd 165.0 f* 64.0 f/ floor -> params.amd
+  params.pms | ps |
+  ps 0.5 0.0  ps 1.5 10.0  ps 2.5 20.0  ps 3.5 33.0  ps 4.5 55.0  ps 5.5 92.0  ps 6.5 153.0 255.0
+    fsel-lt fsel-lt fsel-lt fsel-lt fsel-lt fsel-lt fsel-lt -> params.pmsv
 ;

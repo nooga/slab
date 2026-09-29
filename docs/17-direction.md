@@ -147,7 +147,10 @@ DSP work.
 - Fixed 2026-09-26 with a flux-derivative pickup (docs/17 G4; see
   `kernels/06-voices/rhodes.fy`).
 
-**FM-86 ignores velocity.**
+**FM-86 ignores velocity.** (Fixed 2026-09-29: FM-86 is now a port of
+Dexed's msfa with the DX7's own parameters, velocity sensitivity
+included; pinned to msfa renders, see the "FM-86 matches Dexed's msfa"
+test.)
 
 - Every level reads −8.9 dB from velocity 0.25 to 1.0.
 - It costs 2.1 µs/sample for a single note, because all 8 voices always

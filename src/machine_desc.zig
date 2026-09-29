@@ -18,12 +18,12 @@ const machine = @import("machine.zig");
 pub const MAX_NAME = 64;
 pub const MAX_WORD = 64;
 pub const MAX_TEXT = 24;
-pub const MAX_CONTROLS = 128;
+pub const MAX_CONTROLS = 160;
 pub const MAX_OPTS = 16;
 /// `sets` entries across a machine's switch options.
 pub const MAX_OPT_SETS = 256;
 pub const MAX_CONSTS = 16;
-pub const MAX_STRIPS = 16;
+pub const MAX_STRIPS = 32;
 pub const MAX_DISPLAYS = 16;
 pub const MAX_ROWS = 8;
 pub const MAX_PAGES = 8;
@@ -838,7 +838,7 @@ fn parseRows(d: *const Desc, head: ?*const RowRaw, out: []LayoutRow) !usize {
 
 const testing = std.testing;
 
-test "descriptor walker reads the FM-86 manifest (7 tabs, 63 controls)" {
+test "descriptor walker reads the FM-86 manifest (8 tabs, 146 controls)" {
     var host = FyHost.init(testing.allocator);
     defer host.deinit();
     try host.compileFile("machines/fm86/fm86.fy");
@@ -847,19 +847,21 @@ test "descriptor walker reads the FM-86 manifest (7 tabs, 63 controls)" {
     try testing.expectEqualStrings("FM-7.11", d.nameSlice());
     try testing.expectEqual(Mode.voice_sample, d.mode);
     try testing.expectEqualStrings("k-fm86-voice-sample", d.renderWord());
-    try testing.expectEqualStrings("fm86-prepare", d.prepareWord().?);
-    try testing.expect(d.blockPrepareWord() == null); // inc is per-sample now
+    try testing.expect(d.prepareWord() == null);
+    try testing.expect(d.blockPrepareWord() == null); // note-on and derive do the work
     try testing.expectEqual(@as(usize, 8), d.voices); // polyphonic
     // Routing lives in fy: a derive word + a machine-built data table.
     try testing.expectEqualStrings("fm86-derive", d.deriveWord().?);
     try testing.expect(d.derive_data != 0);
-    // 3 global + 6 operators * 10 = 63 controls; 7 tabs.
-    try testing.expectEqual(@as(usize, 63), d.control_count);
-    try testing.expectEqual(@as(usize, 7), d.page_count);
+    // The DX7's parameters: 5 global + 6 operators * 21 + LFO 7 + pitch EG 8;
+    // VOICE, one page per operator, MOD.
+    try testing.expectEqual(@as(usize, 146), d.control_count);
+    try testing.expectEqual(@as(usize, 8), d.page_count);
     try testing.expectEqual(@as(usize, 0), d.row_count);
     try testing.expectEqualStrings("VOICE", d.pages[0].nameSlice());
-    try testing.expectEqualStrings("EG 6", d.pages[6].nameSlice());
-    try testing.expectEqual(@as(usize, 6), d.const_count); // 6 rate-scale consts
+    try testing.expectEqualStrings("OP 6", d.pages[6].nameSlice());
+    try testing.expectEqualStrings("MOD", d.pages[7].nameSlice());
+    try testing.expectEqual(@as(usize, 0), d.const_count);
 
     // The ALGO control is an int_range selector over the 32 algorithms; its
     // offset is the Fm86Params.algo field the host's routing hook reads.

@@ -29,7 +29,7 @@ const snapshot = @import("../snapshot.zig");
 const Ui = ui_core.Ui;
 const Rect = ui_core.Rect;
 
-const MAX_STATE = 1024;
+const MAX_STATE = 2048;
 const MAX_PARAMS = 4096;
 // State regions: polyphonic voice machines get one per voice, effect
 // machines use two (L/R). The region index reaches kernels as ctx.chan.
@@ -2655,14 +2655,16 @@ fn drawAlgoDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) 
 
 fn drawEg4Display(self: *FyRawMachine, ui: *Ui, r: Rect, module: []const u8) void {
     const field = ui.well(r, ui_style.well);
+    // DX7 units: rates and levels 0..99. A pitch EG [module "PEG"] centres
+    // at level 50.
     var rate: [4]f64 = undefined;
     var level: [4]f64 = undefined;
     inline for (0..4) |k| {
         var lb: [2]u8 = undefined;
         lb = .{ 'R', '1' + k };
-        rate[k] = controlValueByLabel(self, module, &lb) orelse 0.01;
+        rate[k] = controlValueByLabel(self, module, &lb) orelse 50;
         lb = .{ 'L', '1' + k };
-        level[k] = controlValueByLabel(self, module, &lb) orelse 0.5;
+        level[k] = (controlValueByLabel(self, module, &lb) orelse 50) / 99.0;
     }
     ui.clip(field);
     defer ui.unclip();
@@ -2672,13 +2674,15 @@ fn drawEg4Display(self: *FyRawMachine, ui: *Ui, r: Rect, module: []const u8) voi
     const h: f32 = @as(f32, @floatFromInt(field.h)) - 15;
     if (w <= 1 or h <= 1) return;
     const base = top + h;
-    const sr: f64 = 48000.0;
     // Segment starts/ends: L4→L1, L1→L2, L2→L3, [hold L3], L3→L4.
     const from = [4]f64{ level[3], level[0], level[1], level[2] };
     const to = [4]f64{ level[0], level[1], level[2], level[3] };
     var seg_w: [4]f32 = undefined;
     for (0..4) |k| {
-        const secs = @abs(to[k] - from[k]) / @max(rate[k], 1e-9) / sr;
+        // A full sweep takes ~40 s at rate 0 and a few ms at 99, roughly
+        // halving every 6 steps; drawn on a log scale.
+        const full = 40.0 * std.math.pow(f64, 2.0, -rate[k] / 6.0);
+        const secs = @abs(to[k] - from[k]) * full;
         seg_w[k] = @floatCast(@log(1.0 + secs / 0.01) + 0.15);
     }
     const hold: f32 = 1.2;
@@ -2687,7 +2691,6 @@ fn drawEg4Display(self: *FyRawMachine, ui: *Ui, r: Rect, module: []const u8) voi
     var x = x0;
     for (0..4) |k| {
         if (k == 3) {
-            // Sustain hold at L3, then release.
             const hx = x + w * hold / total;
             const ly = base - @as(f32, @floatCast(level[2])) * h;
             ui.line(x, ly, hx, ly, col.alpha(150));
@@ -3681,11 +3684,11 @@ test "FM-86 fy derive routing matches the dx7_algorithms oracle (all 32)" {
     const mach = inst.machineInterface();
     defer mach.deinit.?(mach.state, testing.allocator);
 
-    // master 1.0 so carrier weights compare 1:1 with the oracle (which doesn't
-    // fold master); a non-zero feedback to check the fb fields land.
-    const feedback: f64 = 0.6;
-    mach.set_param.?(mach.state, "master", 1.0);
-    mach.set_param.?(mach.state, "feedback", feedback);
+    // VOLUME 1 puts the carriers at 1/16 [Dexed's output scale], FEEDBACK 6
+    // the feedback operator at 2^(6 - 8) [msfa (y0 + y1) >> (9 - fb)].
+    const feedback: f64 = 0.25;
+    mach.set_param.?(mach.state, "volume", 1.0);
+    mach.set_param.?(mach.state, "feedback", 6.0);
 
     var ctx = std.mem.zeroes(machine.MachineCtx);
     ctx.sample_rate = 48_000;
@@ -3707,7 +3710,8 @@ test "FM-86 fy derive routing matches the dx7_algorithms oracle (all 32)" {
         // atomics, so a value like 0.6 comes back as 0.6 + ~1e-7.
         inline for (.{ "w01", "w02", "w03", "w04", "w05", "w12", "w13", "w14", "w15", "w23", "w24", "w25", "w34", "w35", "w45", "c0", "c1", "c2", "c3", "c4", "c5", "fb0", "fb1", "fb2", "fb3", "fb4", "fb5" }) |f| {
             // Fm86Params carries the routing block by name (no inc/lvl prefix).
-            const got = inst.readParamF64(try fyFieldOffset(inst, "Fm86Params." ++ f));
+            const scale: f64 = if (f[0] == 'c') 16.0 else 1.0;
+            const got = scale * inst.readParamF64(try fyFieldOffset(inst, "Fm86Params." ++ f));
             testing.expectApproxEqAbs(@field(want, f), got, 1e-5) catch |e| {
                 std.debug.print("algorithm {d} field {s}: want {d} got {d}\n", .{ n, f, @field(want, f), got });
                 return e;
@@ -3746,8 +3750,14 @@ test "FM-86 plays an imported DX7 preset (E.PIANO 1)" {
         if (std.mem.eql(u8, std.mem.span(mach.preset_name.?(mach.state, i)), "e-piano-1")) idx = i;
     }
     // The factory bank is generated locally (machines/fm86/tools/dx7_import.py)
-    // and may not be committed (Yamaha-derived); validate when present.
+    // and may not be committed (Yamaha-derived); validate when present, and
+    // only in the DX7-native format [op1-ol, not the old op1-level].
     if (idx < 0) return error.SkipZigTest;
+    {
+        var fbuf: [presets_mod.MAX_FILE]u8 = undefined;
+        const data = presets_mod.readFileBuf(&fbuf, inst.presetDir(), inst.presets.names[@intCast(idx)].slice()) orelse return error.SkipZigTest;
+        if (std.mem.indexOf(u8, data, "\"op1-ol\"") == null) return error.SkipZigTest;
+    }
     mach.apply_preset.?(mach.state, @intCast(idx));
 
     // Hold the note across ~0.5 s (render caps a call at MAX_BLOCK), note-on
@@ -3793,6 +3803,176 @@ test "FM-86 plays an imported DX7 preset (E.PIANO 1)" {
     // left this near-silent (notes played only their attack transient).
     try testing.expect(late_rms > 0.01);
     try testing.expect(late_rms > attack_rms * 0.05);
+}
+
+// ── FM-86 against Dexed's msfa ───────────────────────────────────────
+// Expected numbers are msfa's own renders of the same patches, measured
+// the way the test measures (single-bin DFTs, 20 ms RMS windows)
+// (scratch/dx7cmp/synth.py: a synthetic cartridge, one feature per voice,
+// through Dexed's Source/msfa built as a standalone renderer).
+
+const Fm86Kv = struct { []const u8, f64 };
+
+/// A fresh FM-86 with every operator silent, then `kv` applied (DX7 units).
+fn fm86Patch(kv: []const Fm86Kv) !*FyRawMachine {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/fm86/fm86.fy");
+    applyControlValue(inst, "op1-ol", 0);
+    for (kv) |p| applyControlValue(inst, p[0], p[1]);
+    return inst;
+}
+
+/// Render one note: on at 0, off at `hold` s, `out.len` samples at 48 kHz.
+fn fm86Note(inst: *FyRawMachine, pitch: u8, vel: f32, hold: f64, out: []f32) void {
+    const mach = inst.machineInterface();
+    mach.reset(mach.state);
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    const off_at: usize = @intFromFloat(hold * 48_000.0);
+    var pos: usize = 0;
+    var r: [512]f32 = undefined;
+    while (pos < out.len) {
+        const n = @min(512, out.len - pos);
+        ctx.block_size = @intCast(n);
+        var ev: [1]machine.NoteEvent = undefined;
+        ctx.note_in = null;
+        ctx.note_in_count = 0;
+        if (pos == 0) {
+            ev[0] = .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 1, .pitch = pitch, .velocity = vel };
+            ctx.note_in = &ev;
+            ctx.note_in_count = 1;
+        } else if (pos <= off_at and off_at < pos + n) {
+            ev[0] = .{ .sample_offset = @intCast(off_at - pos), .kind = .note_off, .channel = 0, .note_id = 1, .pitch = pitch, .velocity = 0 };
+            ctx.note_in = &ev;
+            ctx.note_in_count = 1;
+        }
+        testRender(mach, &ctx, out[pos..][0..n], r[0..n]);
+        pos += n;
+    }
+}
+
+fn fm86RmsDb(x: []const f32, t0: f64, t1: f64) f64 {
+    var e: f64 = 0;
+    const a: usize = @intFromFloat(t0 * 48_000.0);
+    const b: usize = @intFromFloat(t1 * 48_000.0);
+    for (x[a..b]) |v| e += @as(f64, v) * v;
+    return 10.0 * std.math.log10(e / @as(f64, @floatFromInt(b - a)) + 1e-24);
+}
+
+/// Hann-windowed single-bin magnitude at `hz`, dB.
+fn fm86BinDb(x: []const f32, hz: f64) f64 {
+    var re: f64 = 0;
+    var im: f64 = 0;
+    const n: f64 = @floatFromInt(x.len);
+    for (x, 0..) |v, i| {
+        const fi: f64 = @floatFromInt(i);
+        const w = 0.5 - 0.5 * @cos(2.0 * std.math.pi * fi / n);
+        const ph = 2.0 * std.math.pi * hz * fi / 48_000.0;
+        re += w * v * @cos(ph);
+        im += w * v * @sin(ph);
+    }
+    return 20.0 * std.math.log10(@sqrt(re * re + im * im) + 1e-24);
+}
+
+/// A pure tone's frequency from its interpolated rising zero crossings.
+fn fm86ZeroHz(x: []const f32) f64 {
+    var first: ?f64 = null;
+    var last: f64 = 0;
+    var count: usize = 0;
+    for (x[1..], 1..) |v, i| {
+        if (x[i - 1] < 0 and v >= 0) {
+            const t = @as(f64, @floatFromInt(i - 1)) + x[i - 1] / (x[i - 1] - v);
+            if (first == null) first = t else count += 1;
+            last = t;
+        }
+    }
+    return @as(f64, @floatFromInt(count)) * 48_000.0 / (last - first.?);
+}
+
+test "FM-86 matches Dexed's msfa: envelope, velocity, scaling, tuning, FM, LFO" {
+    const buf = try testing.allocator.alloc(f32, 96_000);
+    defer testing.allocator.free(buf);
+    const v100: f32 = 100.0 / 127.0;
+    {
+        // Envelope R 50 40 30 60, L 99 80 60 0, released at 1.0 s.
+        const inst = try fm86Patch(&.{ .{ "op1-ol", 99 }, .{ "op1-r1", 50 }, .{ "op1-r2", 40 }, .{ "op1-r3", 30 }, .{ "op1-r4", 60 }, .{ "op1-l2", 80 }, .{ "op1-l3", 60 } });
+        defer inst.machineInterface().deinit.?(inst, testing.allocator);
+        fm86Note(inst, 60, v100, 1.0, buf[0..76_800]);
+        const want = [_][2]f64{ .{ 0.02, -53.827 }, .{ 0.1, -29.822 }, .{ 0.3, -23.906 }, .{ 0.6, -30.003 }, .{ 0.95, -35.410 }, .{ 1.1, -57.038 }, .{ 1.3, -95.749 } };
+        for (want) |w| try testing.expectApproxEqAbs(w[1], fm86RmsDb(buf, w[0], w[0] + 0.02), 0.3);
+    }
+    {
+        // Velocity sensitivity 7: velocity 127 vs 30.
+        const inst = try fm86Patch(&.{ .{ "op1-ol", 99 }, .{ "op1-kvs", 7 } });
+        defer inst.machineInterface().deinit.?(inst, testing.allocator);
+        fm86Note(inst, 60, 1.0, 0.5, buf[0..28_800]);
+        const hi = fm86RmsDb(buf, 0.2, 0.4);
+        fm86Note(inst, 60, 30.0 / 127.0, 0.5, buf[0..28_800]);
+        try testing.expectApproxEqAbs(30.103, hi - fm86RmsDb(buf, 0.2, 0.4), 0.05);
+    }
+    {
+        // Keyboard level scaling: break point 39, right -EXP 99.
+        const inst = try fm86Patch(&.{ .{ "op1-ol", 99 }, .{ "op1-rd", 99 }, .{ "op1-rc", 1 }, .{ "op1-ld", 60 }, .{ "op1-lc", 3 } });
+        defer inst.machineInterface().deinit.?(inst, testing.allocator);
+        fm86Note(inst, 84, v100, 0.5, buf[0..28_800]);
+        const hi = fm86RmsDb(buf, 0.2, 0.4);
+        fm86Note(inst, 60, v100, 0.5, buf[0..28_800]);
+        try testing.expectApproxEqAbs(-6.011, hi - fm86RmsDb(buf, 0.2, 0.4), 0.05);
+    }
+    {
+        // Ratio 2, fine 50, detune +7 at middle C; fixed mode 10^2.30 Hz.
+        const inst = try fm86Patch(&.{ .{ "op1-ol", 99 }, .{ "op1-coarse", 2 }, .{ "op1-fine", 50 }, .{ "op1-det", 7 } });
+        defer inst.machineInterface().deinit.?(inst, testing.allocator);
+        fm86Note(inst, 60, v100, 1.0, buf[0..48_000]);
+        try testing.expectApproxEqAbs(788.682, fm86ZeroHz(buf[4800..43_200]), 0.05); // msfa's osc_freq, exactly
+        const fx = try fm86Patch(&.{ .{ "op1-ol", 99 }, .{ "op1-mode", 1 }, .{ "op1-coarse", 2 }, .{ "op1-fine", 30 } });
+        defer fx.machineInterface().deinit.?(fx, testing.allocator);
+        fm86Note(fx, 60, v100, 1.0, buf[0..48_000]);
+        try testing.expectApproxEqAbs(199.526, fm86ZeroHz(buf[4800..43_200]), 0.05); // 10^2.30
+    }
+    {
+        // Algorithm 1, OP2 at 80 modulating OP1: the carrier's harmonics.
+        const inst = try fm86Patch(&.{ .{ "algo", 1 }, .{ "op1-ol", 99 }, .{ "op2-ol", 80 } });
+        defer inst.machineInterface().deinit.?(inst, testing.allocator);
+        fm86Note(inst, 60, v100, 1.0, buf[0..48_000]);
+        const seg = buf[9600..33_600];
+        const f0 = 261.6255653;
+        const h1 = fm86BinDb(seg, f0);
+        try testing.expectApproxEqAbs(4.175, fm86BinDb(seg, 2 * f0) - h1, 0.1);
+        try testing.expectApproxEqAbs(-1.620, fm86BinDb(seg, 3 * f0) - h1, 0.1);
+        // Algorithm 32, OP6 alone with feedback 6.
+        const fb = try fm86Patch(&.{ .{ "algo", 32 }, .{ "op6-ol", 99 }, .{ "feedback", 6 } });
+        defer fb.machineInterface().deinit.?(fb, testing.allocator);
+        fm86Note(fb, 60, v100, 1.0, buf[0..48_000]);
+        const h = fm86BinDb(seg, f0);
+        try testing.expectApproxEqAbs(-4.207, fm86BinDb(seg, 2 * f0) - h, 0.1);
+        try testing.expectApproxEqAbs(-9.901, fm86BinDb(seg, 3 * f0) - h, 0.1);
+    }
+    {
+        // Rate scaling 7: a decay at R2 30 is ~0.13 s to -30 dB at note 96.
+        const inst = try fm86Patch(&.{ .{ "op1-ol", 99 }, .{ "op1-r2", 30 }, .{ "op1-l2", 0 }, .{ "op1-l3", 0 }, .{ "op1-rs", 7 } });
+        defer inst.machineInterface().deinit.?(inst, testing.allocator);
+        fm86Note(inst, 96, v100, 2.0, buf[0..48_000]);
+        const ref = fm86RmsDb(buf, 0.01, 0.02);
+        var t: f64 = 0.01;
+        while (t < 0.5 and fm86RmsDb(buf, t, t + 0.01) > ref - 30.0) t += 0.01;
+        try testing.expectApproxEqAbs(0.13, t, 0.015);
+    }
+    {
+        // Amplitude modulation: AMD 99, AMS 3, triangle - 77 dB peak to peak.
+        const inst = try fm86Patch(&.{ .{ "op1-ol", 99 }, .{ "op1-ams", 3 }, .{ "lfo-amd", 99 }, .{ "lfo-wave", 0 } });
+        defer inst.machineInterface().deinit.?(inst, testing.allocator);
+        fm86Note(inst, 60, v100, 2.0, buf[0..96_000]);
+        var lo: f64 = 0;
+        var hi: f64 = -1000;
+        var t: f64 = 0.2;
+        lo = 1000;
+        while (t < 1.8) : (t += 0.01) {
+            const e = fm86RmsDb(buf, t, t + 0.01);
+            lo = @min(lo, e);
+            hi = @max(hi, e);
+        }
+        try testing.expectApproxEqAbs(77.395, hi - lo, 1.0);
+    }
 }
 
 test "FM-86 is polyphonic — a chord sounds all three notes" {
