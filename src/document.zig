@@ -130,15 +130,23 @@ pub fn serialize(
         boolStr(transport.loopEnabled()), transport.loopStartBeats(), transport.loopEndBeats(),
     });
 
-    // Meter map (docs/07 §meter-map). Groups are not serialized yet —
-    // they arrive with the generator slice.
+    // Meter map (docs/07 §meter-map); `groups` only when set explicitly.
     if (active_meter) |st| {
         try out.appendSlice(alloc, ",\"meter\":[");
         for (st.liveMap().points, 0..) |p, i| {
             if (i > 0) try out.append(alloc, ',');
-            try appendFmt(alloc, &out, "{{\"bar\":{d},\"num\":{d},\"den\":{d}}}", .{
+            try appendFmt(alloc, &out, "{{\"bar\":{d},\"num\":{d},\"den\":{d}", .{
                 p.start_bar, p.numerator, p.denominator,
             });
+            if (p.hasGroups()) {
+                try out.appendSlice(alloc, ",\"groups\":[");
+                for (p.groups.slice(), 0..) |g, gi| {
+                    if (gi > 0) try out.append(alloc, ',');
+                    try appendFmt(alloc, &out, "{d}", .{g});
+                }
+                try out.append(alloc, ']');
+            }
+            try out.append(alloc, '}');
         }
         try out.append(alloc, ']');
     }
@@ -520,10 +528,21 @@ pub fn apply(
             for (mv.array.items) |pv| {
                 if (pv != .object) continue;
                 const po = pv.object;
+                var groups: meter_mod.Groups = .{};
+                if (objGet(po, "groups")) |gv| if (gv == .array) {
+                    for (gv.array.items) |x| {
+                        if (groups.len >= meter_mod.MAX_GROUPS) break;
+                        const g = asF64(x);
+                        if (!(g >= 1 and g <= 32)) break;
+                        groups.v[groups.len] = @intFromFloat(g);
+                        groups.len += 1;
+                    }
+                };
                 ms.append(.{
                     .start_bar = if (ms.len == 0) 0 else @intFromFloat(asF64(objGet(po, "bar") orelse continue)),
                     .numerator = @intFromFloat(asF64(objGet(po, "num") orelse continue)),
                     .denominator = @intFromFloat(asF64(objGet(po, "den") orelse continue)),
+                    .groups = groups,
                 });
             }
         };
@@ -1232,7 +1251,7 @@ test "meter map round-trips through serialize/apply" {
         const ls = src_state.liveStore();
         ls.clear();
         ls.append(.{ .start_bar = 0, .numerator = 4, .denominator = 4 });
-        ls.append(.{ .start_bar = 4, .numerator = 7, .denominator = 8 });
+        ls.append(.{ .start_bar = 4, .numerator = 7, .denominator = 8, .groups = meter_mod.Groups.of(&.{ 3, 2, 2 }) });
     }
     setMeterState(&src_state);
     defer active_meter = null;
@@ -1272,6 +1291,8 @@ test "meter map round-trips through serialize/apply" {
     try std.testing.expectEqual(@as(u32, 4), pts[1].start_bar);
     try std.testing.expectEqual(@as(u8, 7), pts[1].numerator);
     try std.testing.expectEqual(@as(u8, 8), pts[1].denominator);
+    try std.testing.expectEqualSlices(u8, &.{ 3, 2, 2 }, pts[1].groups.slice());
+    try std.testing.expect(!pts[0].hasGroups());
 }
 
 test "project without meter falls back to 4/4" {

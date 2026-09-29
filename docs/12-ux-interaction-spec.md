@@ -140,7 +140,10 @@ contract in the frame.
 - **Bar lines come from the meter map**, not `beat % 4`. The ruler
   reads `MeterMap.barStartBeat`; bar spacing varies when the meter
   changes. In-bar subdivision follows the denominator, with brighter
-  lines at `groups` boundaries (e.g. 7/8 as 2+2+3).
+  lines at `groups` boundaries (e.g. 7/8 as 2+2+3). Right-click the
+  ruler → **Grouping of N/D** picks the grouping of the meter under the
+  cursor (default, or any split into 2s and 3s; the current one is
+  bulleted).
 - **Snap is meter-aware.** Bar-snap and "one bar" lengths consult the
   meter map at that bar. A "one-bar clip" created on the arrangement
   is as long as the bar it lands in.

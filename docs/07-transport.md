@@ -321,7 +321,7 @@ pub const MeterPoint = struct {
     start_bar:   u32,
     numerator:   u8,
     denominator: u8,          // power of two: 2, 4, 8, 16
-    groups:      []const u8 = &.{}, // additive grouping (7/8 as {2,2,3}); empty = even
+    groups:      Groups = .{},      // additive grouping (7/8 as {2,2,3}), inline [16]u8 + len
 };
 ```
 
@@ -332,7 +332,16 @@ read. Seeking to any bar stays O(1).
 
 `groups` carries the additive feel (7/8 as 2+2+3 vs 3+2+2). It drives
 the metronome's secondary accents and the brighter in-bar grid lines.
-Empty means even subdivision by the denominator.
+Empty means the default: /4 meters accent only the downbeat; /8 and
+finer split into 3s when the numerator divides by 3, else 2s with a
+trailing 3 (7/8 → 2+2+3, 11/8 → 2+2+2+2+3). Groups that don't sum to
+the numerator are ignored, and changing a point's numerator clears
+them. They are stored inline (at most 16 — numerator ≤ 32, groups ≥ 2)
+so a point stays plain data for the audio copy, and saved as
+`"groups":[3,2,2]` on the meter entry only when set. The ruler's
+right-click meter menu has **Grouping of N/D**: the default, then every
+split into 2s and 3s, fewest groups first (`meter.groupingChoices`,
+up to 12). slabkit: `Song(meter=(7, 8), groups=(3, 2, 2))`.
 
 ### Generators
 

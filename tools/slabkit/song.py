@@ -830,7 +830,15 @@ class Bus(Track):
 
 
 class Song:
-    def __init__(self, title, bpm=120, key="C major", meter=(4, 4), loop=False):
+    def __init__(self, title, bpm=120, key="C major", meter=(4, 4), loop=False, groups=None):
+        """meter=(7, 8), groups=(2, 2, 3): the grouping sets the metronome's
+        and the grid's accents (docs/07 §meter-map); None is the default
+        (7/8 -> 2+2+3, 9/8 -> 3+3+3, /4 meters downbeat only)."""
+        if groups is not None:
+            groups = tuple(int(g) for g in groups)
+            if sum(groups) != meter[0] or min(groups) < 1 or len(groups) > 16:
+                raise SlabError(f"groups {groups} must be 1..16 positive parts summing to {meter[0]}")
+        self.groups = groups
         self.title = title
         self.bpm = bpm
         self.key = Key(key) if isinstance(key, str) else key
@@ -920,7 +928,7 @@ class Song:
         return {
             "schema": 1,
             "transport": {"bpm": float(self.bpm), "loop": {"on": self.loop, "start": 0.0, "end": float(end)}},
-            "meter": [{"bar": 0, "num": num, "den": den}],
+            "meter": [dict({"bar": 0, "num": num, "den": den}, **({"groups": list(self.groups)} if self.groups else {}))],
             "tracks": [t.build(index) for t in self.tracks],
             "master": {"volume": self.master_volume, "pan": self.master_pan,
                        "effects": [f.build(f"master fx {i}") for i, f in enumerate(self.master_fx)]},

@@ -1466,6 +1466,30 @@ fn moveSelectedClipsBetweenTracks(tracks: []Track, alloc: std.mem.Allocator, sel
 
 const METER_MENU_KEY: u64 = 0x4d_45_54_52_4d_4e_55_01; // "METRMNU"
 const METER_REMOVE_ID: u32 = 1000;
+const METER_GROUPS_ID: u32 = 1001;
+// Grouping submenu rows: DEFAULT, then GROUP_BASE + choice index.
+const GROUP_DEFAULT_ID: u32 = 3000;
+const GROUP_BASE: u32 = 3001;
+// Main-thread label storage for the grouping rows (the menu draws them at
+// the end of the frame).
+var group_choices: [meter_mod.MAX_CHOICES]meter_mod.Groups = undefined;
+var group_labels: [meter_mod.MAX_CHOICES + 1][72]u8 = undefined;
+var group_title: [32]u8 = undefined;
+
+/// "3+2+2", optionally with the current-choice bullet.
+fn groupsLabel(buf: []u8, gs: []const u8, on: bool) []const u8 {
+    var w: usize = 0;
+    if (on) {
+        const b = "\u{2022} ";
+        @memcpy(buf[0..b.len], b);
+        w = b.len;
+    }
+    for (gs, 0..) |g, i| {
+        const part = std.fmt.bufPrint(buf[w..], "{s}{d}", .{ if (i > 0) "+" else "", g }) catch break;
+        w += part.len;
+    }
+    return buf[0..w];
+}
 // Bar the meter menu targets (set when opened on a ruler right-click).
 var meter_menu_bar: u32 = 0;
 
@@ -1500,14 +1524,19 @@ var gen_nums: [64]u8 = undefined;
 
 fn meterMenuTick(meter_state: *meter_mod.MeterState) void {
     if (!menu.isOpen(METER_MENU_KEY)) return;
-    var items: [METER_CHOICES.len + 1 + METER_GENS.len]menu.Item = undefined;
+    var items: [METER_CHOICES.len + 3 + METER_GENS.len]menu.Item = undefined;
     inline for (METER_CHOICES, 0..) |ch, i| items[i] = .{ .label = ch.label, .id = @intCast(i) };
     // A change can be removed only if one starts exactly on the target bar
     // (and never bar 0, the base meter).
-    const seg = cur_meter.segmentForBar(meter_menu_bar);
+    const seg = meter_state.liveMap().segmentForBar(meter_menu_bar); // the edited map, not the one playing
     const can_remove = meter_menu_bar > 0 and seg.start_bar == meter_menu_bar;
-    items[METER_CHOICES.len] = .{ .label = "Remove change here", .id = METER_REMOVE_ID, .enabled = can_remove };
-    inline for (METER_GENS, 0..) |g, i| items[METER_CHOICES.len + 1 + i] = .{ .label = g.label, .id = METER_GEN_BASE + @as(u32, @intCast(i)) };
+    // Grouping of the meter this bar is in: 7/8 as 2+2+3, 3+2+2, ...
+    const n_groups = meter_mod.groupingChoices(seg.numerator, &group_choices);
+    const title = std.fmt.bufPrint(&group_title, "Grouping of {d}/{d}", .{ seg.numerator, seg.denominator }) catch "Grouping";
+    items[METER_CHOICES.len] = .{ .separator = true };
+    items[METER_CHOICES.len + 1] = .{ .label = title, .id = METER_GROUPS_ID, .submenu = true, .enabled = n_groups > 0 };
+    items[METER_CHOICES.len + 2] = .{ .label = "Remove change here", .id = METER_REMOVE_ID, .enabled = can_remove };
+    inline for (METER_GENS, 0..) |g, i| items[METER_CHOICES.len + 3 + i] = .{ .label = g.label, .id = METER_GEN_BASE + @as(u32, @intCast(i)) };
 
     if (menu.pick(METER_MENU_KEY, &items)) |id| {
         if (id == METER_REMOVE_ID) {
@@ -1527,6 +1556,29 @@ fn meterMenuTick(meter_state: *meter_mod.MeterState) void {
             meter_state.insertChange(meter_menu_bar, ch.num, ch.den);
         }
     }
+    if (menu.subOpen(METER_MENU_KEY, 0)) |sid| if (sid == METER_GROUPS_ID) {
+        var sub: [meter_mod.MAX_CHOICES + 1]menu.Item = undefined;
+        var dbuf: [meter_mod.MAX_GROUPS]u8 = undefined;
+        const plain = meter_mod.MeterPoint{ .start_bar = 0, .numerator = seg.numerator, .denominator = seg.denominator };
+        const dg = plain.groupsInto(&dbuf);
+        const explicit = seg.hasGroups();
+        {
+            const lb = &group_labels[0];
+            const bullet: []const u8 = if (!explicit) "\u{2022} " else "";
+            var dtxt: [48]u8 = undefined;
+            const inner: []const u8 = if (dg.len == 1) "downbeat only" else groupsLabel(&dtxt, dg, false);
+            const txt: []const u8 = std.fmt.bufPrint(lb, "{s}Default ({s})", .{ bullet, inner }) catch "Default";
+            sub[0] = .{ .label = txt, .id = GROUP_DEFAULT_ID };
+        }
+        for (group_choices[0..n_groups], 0..) |gc, i| {
+            const on = explicit and gc.eql(seg.groups);
+            sub[i + 1] = .{ .label = groupsLabel(&group_labels[i + 1], gc.slice(), on), .id = GROUP_BASE + @as(u32, @intCast(i)) };
+        }
+        if (menu.subPick(METER_MENU_KEY, 1, sub[0 .. n_groups + 1])) |gid| {
+            const gs: meter_mod.Groups = if (gid == GROUP_DEFAULT_ID) .{} else group_choices[gid - GROUP_BASE];
+            meter_state.setGroupsAtBar(meter_menu_bar, gs);
+        }
+    };
 }
 
 

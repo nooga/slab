@@ -53,16 +53,83 @@ fn defaultGroups(num: u8, den: u8, out: *[MAX_GROUPS]u8) []const u8 {
     return out[0..n];
 }
 
+/// An explicit additive grouping stored inline, so a `MeterPoint` stays
+/// plain data: it copies into the audio thread's map and serializes with
+/// no storage behind it. `len` 0 means "use the default".
+pub const Groups = struct {
+    len: u8 = 0,
+    v: [MAX_GROUPS]u8 = [_]u8{0} ** MAX_GROUPS,
+
+    /// Groups from a slice; longer than MAX_GROUPS is truncated (and so
+    /// won't sum to the numerator, falling back to the default).
+    pub fn of(s: []const u8) Groups {
+        var g: Groups = .{};
+        const n = @min(s.len, MAX_GROUPS);
+        for (s[0..n], 0..) |x, i| g.v[i] = x;
+        g.len = @intCast(n);
+        return g;
+    }
+
+    pub fn slice(self: *const Groups) []const u8 {
+        return self.v[0..self.len];
+    }
+
+    pub fn eql(a: Groups, b: Groups) bool {
+        return a.len == b.len and std.mem.eql(u8, a.v[0..a.len], b.v[0..b.len]);
+    }
+};
+
+/// Most groupings `groupingChoices` offers for one numerator.
+pub const MAX_CHOICES: usize = 12;
+
+/// The additive groupings worth offering for a numerator: every way to
+/// split it into 2s and 3s [7 -> 2+2+3, 2+3+2, 3+2+2], all-3s first,
+/// then fewer groups before more, up to MAX_CHOICES. Numerators under 4
+/// have none [a bar of 2 or 3 is one group].
+pub fn groupingChoices(num: u8, out: *[MAX_CHOICES]Groups) usize {
+    if (num < 4 or num > 32) return 0;
+    var n: usize = 0;
+    // Fewest groups first: k threes and j twos with 3k + 2j = num,
+    // k from most to least.
+    var k: i32 = @divFloor(@as(i32, num), 3);
+    while (k >= 0 and n < MAX_CHOICES) : (k -= 1) {
+        const rest = @as(i32, num) - 3 * k;
+        if (@mod(rest, 2) != 0) continue;
+        const j = @divExact(rest, 2);
+        const total: usize = @intCast(k + j);
+        if (total > MAX_GROUPS or total < 2) continue;
+        // every placement of the k threes among `total` slots, 3s first
+        var mask: u32 = 0;
+        const limit: u32 = @as(u32, 1) << @intCast(total);
+        var bits: u32 = limit;
+        while (bits > 0 and n < MAX_CHOICES) {
+            bits -= 1;
+            mask = bits;
+            if (@popCount(mask) != k) continue;
+            var g: Groups = .{ .len = @intCast(total) };
+            var i: usize = 0;
+            while (i < total) : (i += 1) {
+                const three = (mask >> @intCast(total - 1 - i)) & 1 == 1;
+                g.v[i] = if (three) 3 else 2;
+            }
+            out[n] = g;
+            n += 1;
+        }
+    }
+    return n;
+}
+
 /// One entry in a meter map. Applies from `start_bar` until the next
 /// point's `start_bar` (or forever, if it is the last point).
 pub const MeterPoint = struct {
     start_bar: u32,
     numerator: u8,
     denominator: u8, // power of two: 2, 4, 8, 16
-    /// Additive grouping (7/8 as {2,2,3}); empty means even subdivision
-    /// by the denominator. Drives accents and in-bar grid emphasis only —
-    /// it has no effect on bar length or any function in this module.
-    groups: []const u8 = &.{},
+    /// Additive grouping (7/8 as {2,2,3}); empty means the musical
+    /// default [defaultGroups]. Drives accents and in-bar grid emphasis
+    /// only - it has no effect on bar length or any function in this
+    /// module. Ignored unless it sums to the numerator.
+    groups: Groups = .{},
 
     /// Quarter-beats spanned by one bar of this meter.
     pub fn barLenBeats(self: MeterPoint) f64 {
@@ -82,15 +149,24 @@ pub const MeterPoint = struct {
     /// `defaultGroups`). Written into `out`; the returned slice sums to
     /// the numerator.
     pub fn groupsInto(self: MeterPoint, out: *[MAX_GROUPS]u8) []const u8 {
-        if (self.groups.len > 0 and self.groups.len <= MAX_GROUPS) {
-            var sum: u32 = 0;
-            for (self.groups) |g| sum += g;
-            if (sum == self.numerator) {
-                for (self.groups, 0..) |g, i| out[i] = g;
-                return out[0..self.groups.len];
-            }
+        if (self.hasGroups()) {
+            const gs = self.groups.slice();
+            for (gs, 0..) |g, i| out[i] = g;
+            return out[0..gs.len];
         }
         return defaultGroups(self.numerator, self.denominator, out);
+    }
+
+    /// True when explicit groups are set and valid (each >= 1, summing to
+    /// the numerator).
+    pub fn hasGroups(self: MeterPoint) bool {
+        if (self.groups.len == 0) return false;
+        var sum: u32 = 0;
+        for (self.groups.slice()) |g| {
+            if (g == 0) return false;
+            sum += g;
+        }
+        return sum == self.numerator;
     }
 
     /// Accent strength of meter-beat `beat_index` (0-based) within a bar:
@@ -346,9 +422,6 @@ pub const MeterStore = struct {
 /// `commitImmediate()` is the non-realtime path (project load, edits while
 /// stopped) and assumes no concurrent render.
 ///
-/// NOTE: `MeterPoint.groups` is copied by slice header only; until the
-/// generator slice owns group storage, staged points must use empty
-/// groups (or storage that outlives the state).
 pub const MeterState = struct {
     live: MeterStore = .{},
     audio_copy: MeterStore = .{},
@@ -407,8 +480,11 @@ pub const MeterState = struct {
     pub fn editMeterAt(self: *MeterState, index: usize, numerator: u8, denominator: u8) void {
         _ = self.seq.fetchAdd(1, .release); // -> odd
         if (index < self.live.len) {
-            self.live.buf[index].numerator = numerator;
-            self.live.buf[index].denominator = denominator;
+            const p = &self.live.buf[index];
+            // a new numerator invalidates the grouping
+            if (p.numerator != numerator) p.groups = .{};
+            p.numerator = numerator;
+            p.denominator = denominator;
         }
         _ = self.seq.fetchAdd(1, .release); // -> even
         self.dirty.store(true, .release);
@@ -420,6 +496,22 @@ pub const MeterState = struct {
     pub fn insertChange(self: *MeterState, start_bar: u32, numerator: u8, denominator: u8) void {
         _ = self.seq.fetchAdd(1, .release);
         self.live.insertSorted(.{ .start_bar = start_bar, .numerator = numerator, .denominator = denominator });
+        _ = self.seq.fetchAdd(1, .release);
+        self.dirty.store(true, .release);
+    }
+
+    /// UI thread: set the grouping of the meter segment that contains
+    /// `bar` (empty = the default), pending adoption like any edit.
+    pub fn setGroupsAtBar(self: *MeterState, bar: u32, groups: Groups) void {
+        _ = self.seq.fetchAdd(1, .release);
+        var i: usize = self.live.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.live.buf[i].start_bar <= bar) {
+                self.live.buf[i].groups = groups;
+                break;
+            }
+        }
         _ = self.seq.fetchAdd(1, .release);
         self.dirty.store(true, .release);
     }
@@ -634,8 +726,39 @@ test "accentAt: 7/8 default groups to 2+2+3" {
     try testing.expectEqual(Accent.weak, p.accentAt(6));
 }
 
+test "groupingChoices: 7 -> 3+2+2, 2+3+2, 2+2+3; 9 all-3s first" {
+    var out: [MAX_CHOICES]Groups = undefined;
+    const n7 = groupingChoices(7, &out);
+    try testing.expectEqual(@as(usize, 3), n7);
+    try testing.expectEqualSlices(u8, &.{ 3, 2, 2 }, out[0].slice());
+    try testing.expectEqualSlices(u8, &.{ 2, 3, 2 }, out[1].slice());
+    try testing.expectEqualSlices(u8, &.{ 2, 2, 3 }, out[2].slice());
+    const n9 = groupingChoices(9, &out);
+    try testing.expectEqualSlices(u8, &.{ 3, 3, 3 }, out[0].slice());
+    try testing.expectEqual(@as(usize, 5), n9); // 3+3+3 and the four 2+2+2+3s
+    try testing.expectEqual(@as(usize, 0), groupingChoices(3, &out));
+    try testing.expectEqual(@as(usize, 1), groupingChoices(4, &out)); // 2+2
+    try testing.expect(groupingChoices(31, &out) <= MAX_CHOICES);
+}
+
+test "explicit groups: inline, invalid ones fall back, a new numerator clears them" {
+    var st: MeterState = .{};
+    st.live.reset();
+    st.editMeterAt(0, 7, 8);
+    st.setGroupsAtBar(0, Groups.of(&.{ 3, 2, 2 }));
+    st.commitImmediate();
+    const p = st.map().segmentForBar(0);
+    try testing.expect(p.hasGroups());
+    try testing.expectEqual(Accent.group, p.accentAt(3));
+    try testing.expectEqual(Accent.weak, p.accentAt(2));
+    const bad = MeterPoint{ .start_bar = 0, .numerator = 7, .denominator = 8, .groups = Groups.of(&.{ 3, 3 }) };
+    try testing.expect(!bad.hasGroups());
+    st.editMeterAt(0, 5, 8);
+    try testing.expect(!st.liveMap().points[0].hasGroups());
+}
+
 test "accentAt: explicit groups override the default (3+2+2)" {
-    const p = MeterPoint{ .start_bar = 0, .numerator = 7, .denominator = 8, .groups = &.{ 3, 2, 2 } };
+    const p = MeterPoint{ .start_bar = 0, .numerator = 7, .denominator = 8, .groups = Groups.of(&.{ 3, 2, 2 }) };
     try testing.expectEqual(Accent.downbeat, p.accentAt(0));
     try testing.expectEqual(Accent.group, p.accentAt(3));
     try testing.expectEqual(Accent.group, p.accentAt(5));
