@@ -32,6 +32,7 @@
 include "../00-primitives/ctx.fy"  ( kernel ABI: Ctx, Io )
 include "../01-oscillators/fm_operator.fy"
 include "dx7_tables.fy"
+include "dx7_chip.fy"
 
 ustruct: DxOpS
   ( FmOpState prefix: fm-op-step reads these )
@@ -53,6 +54,10 @@ ustruct: DxOpS
   f64 dg       ( gain step per sample )
   f64 gout     ( the gain target: where the next block ramps from )
   f64 inc      ( phase increment, cycles / sample )
+  ( the same block for the DX7 engines, in the log domain [dx7_chip.fy] )
+  f64 a        ( attenuation, octaves under full scale, ramping )
+  f64 da       ( attenuation step per sample )
+  f64 aout     ( the attenuation target )
 ;
 
 ustruct: Fm86State
@@ -68,6 +73,8 @@ ustruct: Fm86State
   f64 lph      ( phase, cycles )
   f64 ldl      ( delay counter, 0..1 [msfa delaystate_ / 2^32] )
   f64 lrnd     ( S&H generator )
+  ( the DX7 engines' reconstruction filter, two biquads )
+  f64 z1 f64 z2 f64 z3 f64 z4
 ;
 
 ustruct: DxOpP
@@ -106,9 +113,16 @@ ustruct: Fm86Params
   f64 lfo-wave  ( 0 TRI 1 SAW DOWN 2 SAW UP 3 SQUARE 4 SINE 5 S&H )
   f64 pms       ( 0..7 )
   f64 volume    ( output gain, 1 = Dexed's level )
+  f64 engine    ( 0 MODERN [msfa], 1 DX7, 2 DX7 II [dx7_chip.fy] )
   ( --- derived each block by fm86-derive --- )
   f64 lfo-inc f64 dl-inc1 f64 dl-inc2
   f64 pmd f64 pmsv f64 amd
+  ( the DX7 engines: the operators' output resolution, the voice's scale
+    into and out of the DAC [the carriers divided by their count], which
+    DAC, and the reconstruction filter's two sections )
+  f64 opbits f64 dacin f64 dacout f64 v2
+  f64 fa0 f64 fa1 f64 fa2 f64 fa3 f64 fa4
+  f64 fb0q f64 fb1q f64 fb2q f64 fb3q f64 fb4q
 ;
 
 :: DX-JUMP 6.703125 ;               ( the attack's floor, 1716 / 256 )
@@ -267,6 +281,14 @@ dsp: dx-op-control | o:DxOpS down amod pr pf |
   g1 DX-THRESH f<  g2 DX-THRESH f<  and | quiet |
   quiet  0.0  g1  select -> o.g
   quiet  0.0  g2 g1 f- DX-N f/  select -> o.dg
+  ( the DX7 engines ramp the attenuation instead: gain 2^(l - 14) is
+    2^-a of full scale 2 )
+  o.ams 0.0 f>  l l pt f* f-  l  select | la |
+  15.0 la f- 0.0 fmax | a2 |
+  o.aout | a1 |
+  a2 -> o.aout
+  quiet  40.0  a1  select -> o.a
+  quiet  0.0  a2 a1 f- DX-N f/  select -> o.da
   o.fixed 0.5 f> pf pr select o.binc f* -> o.inc
 ;
 
@@ -381,6 +403,79 @@ dsp: fm86-voice-step | s:Fm86State p:Fm86Params -- out |
   p.c3 out3 f* f+
   p.c4 out4 f* f+
   p.c5 out5 f* f+
+;
+
+( ── per sample, the DX7 engines [dx7_chip.fy] ─────────────────────── )
+
+( o -- att : the operator's attenuation this sample. )
+dsp: dxv-ramp | o:DxOpS -- a |
+  o.a o.da f+ | a |
+  a -> o.a
+  a
+;
+
+( o inc mod att fb bits -- out : one operator sample through the chip's
+  log-sine and exponent ROMs [fm-op-step's feedback and phase]. )
+dsp: dxv-op-step | o:DxOpS inc mod att fb bits -- out |
+  o.fb1 o.fb2 f+ 0.5 f* fb f* | fbm |
+  o.phase mod f+ fbm f+  att bits dxc-op | y |
+  o.fb1 -> o.fb2
+  y -> o.fb1
+  o.phase inc f+ ffrac -> o.phase
+  y
+;
+
+( s p x -- y : the reconstruction filter, two biquads [TDF-II]. )
+dsp: dxv-lpf | s:Fm86State p:Fm86Params x -- y |
+  p.fa0 x f* s.z1 f+ | y1 |
+  p.fa1 x f* p.fa3 y1 f* f- s.z2 f+ -> s.z1
+  p.fa2 x f* p.fa4 y1 f* f- -> s.z2
+  p.fb0q y1 f* s.z3 f+ | y2 |
+  p.fb1q y1 f* p.fb3q y2 f* f- s.z4 f+ -> s.z3
+  p.fb2q y1 f* p.fb4q y2 f* f- -> s.z4
+  y2
+;
+
+( s p -- out : one voice sample on the DX7 engines. )
+dsp: fm86-voice-step-dx | s:Fm86State p:Fm86Params -- out |
+  p.opbits | bits |
+  s.op6& dxv-ramp | a5 |
+  s.op5& dxv-ramp | a4 |
+  s.op4& dxv-ramp | a3 |
+  s.op3& dxv-ramp | a2 |
+  s.op2& dxv-ramp | a1 |
+  s.op1& dxv-ramp | a0 |
+  s.op6&  s.op6& dx-oinc  0.0  a5 p.fb5 bits dxv-op-step | out5 |
+  s.op5&  s.op5& dx-oinc
+    p.w45 out5 f*
+    a4 p.fb4 bits dxv-op-step | out4 |
+  s.op4&  s.op4& dx-oinc
+    p.w34 out4 f* p.w35 out5 f* f+
+    a3 p.fb3 bits dxv-op-step | out3 |
+  s.op3&  s.op3& dx-oinc
+    p.w23 out3 f* p.w24 out4 f* f+ p.w25 out5 f* f+
+    a2 p.fb2 bits dxv-op-step | out2 |
+  s.op2&  s.op2& dx-oinc
+    p.w12 out2 f* p.w13 out3 f* f+ p.w14 out4 f* f+ p.w15 out5 f* f+
+    a1 p.fb1 bits dxv-op-step | out1 |
+  s.op1&  s.op1& dx-oinc
+    p.w01 out1 f* p.w02 out2 f* f+ p.w03 out3 f* f+ p.w04 out4 f* f+ p.w05 out5 f* f+
+    a0 p.fb0 bits dxv-op-step | out0 |
+  p.c0 out0 f*
+  p.c1 out1 f* f+
+  p.c2 out2 f* f+
+  p.c3 out3 f* f+
+  p.c4 out4 f* f+
+  p.c5 out5 f* f+ | mix |
+  mix p.dacin f* p.v2 dxc-dac p.dacout f* | d |
+  s p d dxv-lpf
+;
+
+( io ctx state params -- : one voice sample on the DX7 engines,
+  ACCUMULATED into out; the manifest's render word, with the MODERN one
+  as its render-lite for ENGINE 0. )
+dsp: k-fm86-voice-sample-dx | io ctx state params -- |
+  io f@64  state params fm86-voice-step-dx  f+  io f!64
 ;
 
 ( io ctx state params -- : one FM-86 voice sample, ACCUMULATED into out.

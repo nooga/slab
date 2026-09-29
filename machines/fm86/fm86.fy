@@ -16,7 +16,8 @@ include "fm86_algo.fy"
 
 : manifest
   "FM-7.11" voice-sample machine*
-  "k-fm86-voice-sample" render!
+  "k-fm86-voice-sample-dx" render!
+  "k-fm86-voice-sample" Fm86Params.engine render-lite!
   "k-fm86-voice-control" 64 control!
   "fm86-note-on"        note-on!
   "fm86-note-expr"      note-expr!
@@ -34,6 +35,7 @@ include "fm86_algo.fy"
   "GLOBAL" "TRNSP" "transpose" Fm86Params.transpose -24.0 24.0 0.0 int-step
   "GLOBAL" "KSYNC" "oks"       Fm86Params.oks 1.0 switch  "OFF" 0.0 opt  "ON" 1.0 opt
   "GLOBAL" "VOL"   "volume"    Fm86Params.volume 0.0 2.0 1.0 curve-pow knob
+  "GLOBAL" "ENGINE" "engine"   Fm86Params.engine 0.0 switch  "MODERN" 0.0 opt  "DX7" 1.0 opt  "DX7 II" 2.0 opt
   ( ── operator 1 ── )
   "OP1" "LEVEL"  "op1-ol"     Fm86Params.op1 DxOpP.ol +     0.0 99.0 99.0 int-step
   "OP1" "COARSE" "op1-coarse" Fm86Params.op1 DxOpP.coarse + 0.0 31.0 1.0 int-step
@@ -185,7 +187,7 @@ include "fm86_algo.fy"
   "PEG" "L4" "pl4" Fm86Params.pl4 0.0 99.0 50.0 int-step
 
   ( ── strips ──────────────────────────────────────────────────────── )
-  "GLOBAL" 5 strip
+  "GLOBAL" 6 strip
   "OP1" 5 strip  "EG1" 4 strip  "KS1" 3 strip  "SENS1" 2 strip
   "OP2" 5 strip  "EG2" 4 strip  "KS2" 3 strip  "SENS2" 2 strip
   "OP3" 5 strip  "EG3" 4 strip  "KS3" 3 strip  "SENS3" 2 strip

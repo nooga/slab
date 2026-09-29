@@ -126,6 +126,33 @@ dsp: fm86-derive
   a 98.5 f>  2.0  unit a2 f*  select -> params.dl-inc2
   params.lfo-pmd 165.0 f* 64.0 f/ floor -> params.pmd
   params.lfo-amd 165.0 f* 64.0 f/ floor -> params.amd
+  ( the DX7 engines: 12-bit operators and the gain-ranged DAC with a
+    16 kHz filter [DX7], or 14-bit operators and a linear DAC with a
+    20 kHz one [DX7 II]; the voice enters the DAC as its carriers
+    divided by their count, full scale 2 )
+  params.engine 1.5 f> mask>f | v2 |
+  v2 -> params.v2
+  v2 0.5 f>  16384.0  4096.0  select -> params.opbits
+  derive-data rb 36.0 f+ f@i  derive-data rb 37.0 f+ f@i f+  derive-data rb 38.0 f+ f@i f+
+  derive-data rb 39.0 f+ f@i f+  derive-data rb 40.0 f+ f@i f+  derive-data rb 41.0 f+ f@i f+
+    1.0 fmax | ncar |
+  vol 0.000000001 fmax 2.0 f* ncar f* | dsc |
+  dsc -> params.dacout
+  1.0 dsc f/ -> params.dacin
+  v2 0.5 f>  20000.0  16000.0  select  sr 0.45 f* fmin | fc |
+  fc sr f/ 3.141592653589793 f* tan-warp | k |
+  k k f* | kk |
+  ( 4-pole Butterworth: sections at Q 0.5412 and 1.3066 )
+  1.0  1.0 k 0.5411961001461969 f/ f+ kk f+  f/ | n1 |
+  kk n1 f* | b1 |
+  b1 -> params.fa0  b1 2.0 f* -> params.fa1  b1 -> params.fa2
+  kk 1.0 f- 2.0 f* n1 f* -> params.fa3
+  1.0 k 0.5411961001461969 f/ f- kk f+ n1 f* -> params.fa4
+  1.0  1.0 k 1.3065629648763766 f/ f+ kk f+  f/ | n2 |
+  kk n2 f* | b2 |
+  b2 -> params.fb0q  b2 2.0 f* -> params.fb1q  b2 -> params.fb2q
+  kk 1.0 f- 2.0 f* n2 f* -> params.fb3q
+  1.0 k 1.3065629648763766 f/ f- kk f+ n2 f* -> params.fb4q
   params.pms | ps |
   ps 0.5 0.0  ps 1.5 10.0  ps 2.5 20.0  ps 3.5 33.0  ps 4.5 55.0  ps 5.5 92.0  ps 6.5 153.0 255.0
     fsel-lt fsel-lt fsel-lt fsel-lt fsel-lt fsel-lt fsel-lt -> params.pmsv

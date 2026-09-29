@@ -852,7 +852,7 @@ fn parseRows(d: *const Desc, head: ?*const RowRaw, out: []LayoutRow) !usize {
 
 const testing = std.testing;
 
-test "descriptor walker reads the FM-86 manifest (8 tabs, 146 controls)" {
+test "descriptor walker reads the FM-86 manifest (8 tabs, 147 controls)" {
     var host = FyHost.init(testing.allocator);
     defer host.deinit();
     try host.compileFile("machines/fm86/fm86.fy");
@@ -860,7 +860,10 @@ test "descriptor walker reads the FM-86 manifest (8 tabs, 146 controls)" {
 
     try testing.expectEqualStrings("FM-7.11", d.nameSlice());
     try testing.expectEqual(Mode.voice_sample, d.mode);
-    try testing.expectEqualStrings("k-fm86-voice-sample", d.renderWord());
+    try testing.expectEqualStrings("k-fm86-voice-sample-dx", d.renderWord());
+    try testing.expectEqualStrings("k-fm86-voice-sample", d.renderLiteWord().?); // ENGINE MODERN
+    try testing.expectEqualStrings("k-fm86-voice-control", d.controlWord().?);
+    try testing.expectEqual(@as(usize, 64), d.control_period);
     try testing.expect(d.prepareWord() == null);
     try testing.expect(d.blockPrepareWord() == null); // note-on and derive do the work
     try testing.expectEqual(@as(usize, 8), d.voices); // polyphonic
@@ -869,7 +872,7 @@ test "descriptor walker reads the FM-86 manifest (8 tabs, 146 controls)" {
     try testing.expect(d.derive_data != 0);
     // The DX7's parameters: 5 global + 6 operators * 21 + LFO 7 + pitch EG 8;
     // VOICE, one page per operator, MOD.
-    try testing.expectEqual(@as(usize, 146), d.control_count);
+    try testing.expectEqual(@as(usize, 147), d.control_count);
     try testing.expectEqual(@as(usize, 8), d.page_count);
     try testing.expectEqual(@as(usize, 0), d.row_count);
     try testing.expectEqualStrings("VOICE", d.pages[0].nameSlice());

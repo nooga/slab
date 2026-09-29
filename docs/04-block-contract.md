@@ -17,7 +17,7 @@ words take one more, leading:
 | `prepare` | `( ctx state params -- )` | every block, once per state region |
 | `block-prepare` | `( ctx state params -- )` | every block, once (region 0) |
 | `derive` | `( ctx state params -- )` | every block, before block-prepare |
-| `render-lite` | `( io ctx state params -- )` | effects: instead of `render`, for a block where the params f64 at its selector offset is exactly 0 |
+| `render-lite` | `( io ctx state params -- )` | effects and voices: instead of `render`, for a block where the params f64 at its selector offset is exactly 0 |
 | `control` | `( ctx state params -- )` | voices: every *period* samples of each voice, counted from its note-on, before the render that follows |
 
 `render-lite` (manifest `"word" offset render-lite!`) lets a stage that
@@ -25,7 +25,9 @@ does nothing at one setting skip its cost: the host checks the selector
 after block-prepare, so it can be a derived param, and a knob glide
 snaps to its target, so turning the knob to 0 gets there. The word must
 produce the same output as `render` at that setting; bus2's COLOR 0 is
-the case (bit-exact against its goldens).
+the case (bit-exact against its goldens). On a voice machine it picks
+the word for every voice's pass: FM-86's render is the DX7 chip model,
+and its ENGINE 0 (MODERN) selects the msfa word as the lite one.
 
 `control!` (manifest `"word" period control!`) gives a voice machine a
 control rate that doesn't depend on the host's block size. The host

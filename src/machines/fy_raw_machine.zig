@@ -1655,7 +1655,7 @@ fn renderVoiceSample(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
 
 fn renderVoiceSegment(self: *FyRawMachine, start: usize, end: usize) !void {
     if (end <= start) return;
-    const caller = if (self.render_caller) |*c_| c_ else return error.UnknownWord;
+    const caller = try effectCaller(self);
     // Polyphonic machines render every voice every block (Juno-style — no
     // freeing, silent voices are cheap and predictable); kernels of
     // multi-voice machines ACCUMULATE into the host-zeroed out buffer.
@@ -1860,7 +1860,7 @@ fn callNoteOff(self: *FyRawMachine, voice: usize) !void {
     _ = try caller.call(1, &self.entryArgs(voice));
 }
 
-/// The render word for this block: the lite one when the machine declares
+/// The render word for this block (effects and voices): the lite one when the machine declares
 /// it and its selector param is exactly 0 (block-prepare has run, so a
 /// derived selector is current; knob glides snap to their target, so a
 /// knob turned to 0 gets there).
@@ -4116,6 +4116,68 @@ test "FM-86 survives many small live-style blocks with note churn" {
         testRender(mach, &ctx, &l, &r);
         for (l) |s| try testing.expect(std.math.isFinite(s));
     }
+}
+
+/// dB of what's left of x[a..b] after removing its best-fit sinusoid at
+/// `hz`, relative to x: a pure tone's noise and distortion.
+fn fm86ResidualDb(x: []const f32, hz: f64, t0: f64, t1: f64) f64 {
+    const a: usize = @intFromFloat(t0 * 48_000.0);
+    const b: usize = @intFromFloat(t1 * 48_000.0);
+    var ss: f64 = 0;
+    var cc: f64 = 0;
+    var sc: f64 = 0;
+    var xs: f64 = 0;
+    var xc: f64 = 0;
+    for (x[a..b], a..) |v, i| {
+        const w = 2.0 * std.math.pi * hz * @as(f64, @floatFromInt(i)) / 48_000.0;
+        const sw = @sin(w);
+        const cw = @cos(w);
+        ss += sw * sw;
+        cc += cw * cw;
+        sc += sw * cw;
+        xs += v * sw;
+        xc += v * cw;
+    }
+    const det = ss * cc - sc * sc;
+    const ks = (xs * cc - xc * sc) / det;
+    const kc = (xc * ss - xs * sc) / det;
+    var e: f64 = 0;
+    var r: f64 = 0;
+    for (x[a..b], a..) |v, i| {
+        const w = 2.0 * std.math.pi * hz * @as(f64, @floatFromInt(i)) / 48_000.0;
+        const d = v - ks * @sin(w) - kc * @cos(w);
+        e += @as(f64, v) * v;
+        r += d * d;
+    }
+    return 10.0 * std.math.log10(r / e + 1e-30);
+}
+
+test "FM-86's DX7 engines keep MODERN's level and add the chips' noise" {
+    // A lone sine carrier, loud and quiet: the DX7 engines must sound at
+    // MODERN's level, and add noise that grows as the note gets quieter,
+    // more on the DX7 [12-bit operators, gain-ranged DAC] than the DX7 II.
+    const buf = try testing.allocator.alloc(f32, 48_000);
+    defer testing.allocator.free(buf);
+    var rms: [3]f64 = undefined;
+    var res_loud: [3]f64 = undefined;
+    var res_quiet: [3]f64 = undefined;
+    for (0..3) |eng| {
+        const e: f64 = @floatFromInt(eng);
+        const loud = try fm86Patch(&.{ .{ "op1-ol", 99 }, .{ "engine", e } });
+        defer loud.machineInterface().deinit.?(loud, testing.allocator);
+        fm86Note(loud, 69, 0.8, 1.0, buf);
+        rms[eng] = fm86RmsDb(buf, 0.2, 0.8);
+        res_loud[eng] = fm86ResidualDb(buf, 440.0, 0.2, 0.8);
+        const quiet = try fm86Patch(&.{ .{ "op1-ol", 45 }, .{ "engine", e } });
+        defer quiet.machineInterface().deinit.?(quiet, testing.allocator);
+        fm86Note(quiet, 69, 0.8, 1.0, buf);
+        res_quiet[eng] = fm86ResidualDb(buf, 440.0, 0.2, 0.8);
+    }
+    for (1..3) |eng| try testing.expectApproxEqAbs(rms[0], rms[eng], 0.1);
+    try testing.expect(res_loud[0] < -85); // f32 output rounding
+    try testing.expect(res_loud[1] > -90 and res_loud[1] < -50);
+    try testing.expect(res_quiet[1] > res_loud[1] + 10); // grit grows as the note gets quiet
+    try testing.expect(res_quiet[1] > res_quiet[2] + 3); // the DX7 II is cleaner
 }
 
 // Renders `out.len` frames of FM-86 in blocks cycling through `sizes`, with a
