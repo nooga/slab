@@ -3745,9 +3745,9 @@ test "FM-86 plays an imported DX7 preset (E.PIANO 1)" {
     // Find the imported E.PIANO preset and apply it through the real loader.
     const count = mach.preset_count.?(mach.state);
     var idx: i32 = -1;
-    var i: u8 = 0;
+    var i: usize = 0;
     while (i < count) : (i += 1) {
-        if (std.mem.eql(u8, std.mem.span(mach.preset_name.?(mach.state, i)), "e-piano-1")) idx = i;
+        if (std.mem.eql(u8, std.mem.span(mach.preset_name.?(mach.state, @intCast(i))), "rom1a/e-piano-1")) idx = @intCast(i);
     }
     // The factory bank is generated locally (machines/fm86/tools/dx7_import.py)
     // and may not be committed (Yamaha-derived); validate when present, and

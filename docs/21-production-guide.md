@@ -206,7 +206,9 @@ Fill roles, not track slots. A full pop arrangement is about six
 roles. Machines are named by id (what projects and slabkit use); the
 panel shows their display names: `drum2` DS-404 Drums, `cream` Mog
 Passenger, `ms20` SM-24 Mono, `juno2` Ju-Know, `fm86` FM-7.11 (a DX7: its
-parameters are the DX7's own, 0..99, and .syx voices import byte for byte),
+parameters are the DX7's own, 0..99, and .syx voices import byte for byte;
+the eight factory ROMs are banks `rom1a` … `rom4b` - name the bank where a
+voice repeats, e.g. `rom1a/e-piano-1`),
 `rhodes` Rhodes E-Piano, `sampler` Sampler.
 
 | Role | Slab machines and starting presets |

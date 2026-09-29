@@ -64,7 +64,7 @@ bass = song.track("BASS", "cream", "outstanding-funk-bass", volume=0.555, params
     fx("eq2", hpf_on="ON", hpf_hz=34, p1_hz=250, p1_db=-2, p1_q=1.2),
     fx("comp2", "bass-leveler"),
 ])
-ep = song.track("E.PIANO", "fm86", "e-piano-1", volume=0.411, pan=-0.25, fx=[
+ep = song.track("E.PIANO", "fm86", "rom1a/e-piano-1", volume=0.52, pan=-0.25, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=180, p2_hz=2800, p2_db=1.5),
     fx("chorus2", "wide-keys"),
     fx("verb2", "medium-plate", mix=0.18),
@@ -78,11 +78,11 @@ brass = song.track("BRASS", "juno2", "bright-brass-stab", volume=0.392, pan=0.18
     fx("eq2", hpf_on="ON", hpf_hz=220),
     fx("verb2", "medium-plate", mix=0.22),
 ])
-bells = song.track("VIBES", "fm86", "vibe-1", volume=0.27, pan=0.35, fx=[
+bells = song.track("VIBES", "fm86", "rom1a/vibe-1", volume=0.54, pan=0.35, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=400),
     fx("delay2", sync="SYNC", div="1/8.", fb=0.3, damp=4000, mix=0.22),
 ])
-hook = song.track("HOOK", "fm86", "syn-lead-1", volume=0.45, fx=[
+hook = song.track("HOOK", "fm86", "rom1a/syn-lead-1", volume=0.64, params=dict(volume=2.0), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=250, p2_hz=3000, p2_db=1.5),
     fx("delay2", sync="SYNC", div="1/8.", fb=0.32, damp=3800, mix=0.24),
     fx("verb2", "plate", mix=0.2),
