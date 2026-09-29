@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "funk", "note": "Saturated overload wah", "params": {"funk-macro": 1, "funk-freq": 620, "funk-speed": 0.03, "funk-mix": 0.9}}
+{"schema": 1, "machine": "funk", "note": "Into the MS-20: driven, barking wah on anything", "params": {"funk-macro": 0.88, "funk-range": 1}}

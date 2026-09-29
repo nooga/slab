@@ -2351,26 +2351,17 @@ Presets:
 | param | section | label | range | default | notes |
 |---|---|---|---|---|---|
 | `funk-macro` | FUNK | OVERLOAD | 0 … 1 | 0.35 | linear |
-| `funk-freq` | TONE | FREQ | 150 … 2000 | 420 | exp |
-| `funk-speed` | TONE | SPEED | 0.02 … 0.4 | 0.08 | exp |
-| `funk-mix` | TONE | MIX | 0 … 1 | 1 | pow |
+| `funk-range` | FUNK | RANGE | 0 BASS / 1 GTR / 2 KEYS | 1 | switch |
 
 Presets:
 
-- `big-auto-wah` — Exaggerated disco wah
-- `choppy-filter` — Choppy rhythmic filter
-- `clean-quack` — Clean envelope quack
-- `deep-wah` — Deep, slow auto-wah
-- `envelope-funk` — Bass/guitar-style envelope funk
-- `filter-pulse` — Filter movement on arp/bass
-- `funk-overload-max` — FUNK OVERLOAD — ridiculous, almost too much
-- `light-chord-quack` — Light quack for chords
-- `overload` — Saturated overload wah
-- `sleazy-wah` — Sleazy spoken-hook wah
-- `slow-sweep` — Slow auto-wah sweep
-- `snap-wah` — Snappy fast quack
-- `stutter-funk` — Fast stuttering funk filter
-- `subtle-rhythm-wah` — Subtle rhythm-key movement
+- `clav-quack` — Squeezed, resonant quack for 16th-note clav and rhythm guitar
+- `keys-quack` — Thin bandpass quack for e-piano and organ stabs
+- `meltdown` — FUNK OVERLOAD: the MS-20 screaming at the edge of oscillation
+- `overload` — Into the MS-20: driven, barking wah on anything
+- `rubber-bass` — Round envelope-filter bass, the notes bloom and close
+- `squelch-bass` — Tight squeezed bass wah, every note the same bite
+- `touch-wah` — Gentle touch wah on guitar or clav: each note opens by how hard it hits
 
 ## gate2
 

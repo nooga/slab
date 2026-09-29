@@ -227,7 +227,7 @@ Genre palettes:
 - **Italo / disco**: four on the floor (`light-disco-kit`), octave bass
   (`rubber-disco-bass`), `party-chord-stab`, `string-machine-wash`.
 - **Boogie / funk**: `tight-funk-kit`, `ms20` `squelchy-boogie-bass`,
-  `clav-1` through `funk` (auto-wah), `posh-brass-poly`.
+  `clav-1` through `funk` (`clav-quack`), `posh-brass-poly`.
 
 Tweak after loading a preset: `track.set(cutoff=..., level=...)`. The
 most useful moves are the filter cutoff (darker sits further back),
@@ -350,6 +350,15 @@ up to the drops. Voltage Riot's master is eq2 → `fx("multi2",
 "master-balance", mlo_thresh=-18.9, mmid_gain=1, mhi_gain=1.5)` →
 limiter2 at gain 9. Other presets: `low-control`, `de-harsh`, `radio`
 (4:1 everywhere, upward lift), `upward-lift`.
+
+`funk` (FUNK OVERLOAD) is one knob and a RANGE switch (BASS / GTR /
+KEYS). 0 is bypass; up to 0.4 a touch wah; to 0.75 squeezed and more
+resonant; above that it crossfades into the MS-20 HOT lowpass and
+screams at 1. Each note opens the filter by how hard it hits against the
+part's own running level, so the same setting works on a quiet or a hot
+part, and an auto-gain holds the loudness (within about 1 dB). Presets:
+`touch-wah`, `clav-quack`, `keys-quack`, `rubber-bass`, `squelch-bass`,
+`overload`, `meltdown`.
 
 Compress what moves too much: bass, drums, a lead with wide velocity.
 Leave pads alone; they're already even.

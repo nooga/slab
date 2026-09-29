@@ -1,10 +1,11 @@
-( funk.fy — FUNK OVERLOAD machine.
+( funk.fy - FUNK OVERLOAD machine.
 
-  The DSP lives in the kernels rig [kernels/07-effects/funk.fy].  One
-  big macro knob sweeps the whole effect from clean lowpass, through
-  touch-wah and drive, into envelope-gated stutter.  The strip title
-  "FUNK" sits above the hero knob labelled "OVERLOAD".  Per-channel
-  effect; chain it after juno2 clav patches or across a drum bus. )
+  One knob: bypass at 0, a touch wah, then squeeze and resonance, then
+  the MS-20 HOT lowpass screaming at the top.  RANGE puts the filter
+  where the part lives: BASS 180 Hz, GTR 400 Hz, KEYS 700 Hz [thinner,
+  a bandpass quack].  The response follows how hard each note hits
+  against the part's own running level, not the track's volume, and an
+  auto-gain holds the loudness.  The DSP is kernels/07-effects/funk.fy. )
 
 include "../../kernels/07-effects/funk.fy"
 include "../lib/manifest.fy"
@@ -13,20 +14,19 @@ include "../lib/manifest.fy"
   "Funk Overload" effect-block machine*
   "k-funk-tick"        render!
   "funk-block-prepare" block-prepare!
+  "k-funk-tick-thru" FunkParams.funk render-lite!
   FunkState.size  state-size!
   FunkParams.size params-size!
-  250.0 panel-w!
+  160.0 panel-w!
+  stereo
 
   "FUNK" "OVERLOAD" "funk-macro" FunkParams.funk 0.0 1.0 0.35 curve-lin knob
-  "TONE" "FREQ"  "funk-freq"  FunkParams.freq  150.0 2000.0 420.0 curve-exp knob
-  "TONE" "SPEED" "funk-speed" FunkParams.speed 0.02  0.4    0.08  curve-exp knob
-  "TONE" "MIX"   "funk-mix"   FunkParams.mix   0.0   1.0    1.0   curve-pow knob
+  "FUNK" "RANGE" "funk-range" FunkParams.range 1.0 switch
+    "BASS" 0.0 opt  "GTR" 1.0 opt  "KEYS" 2.0 opt
 
-  "FUNK" 1 strip
-  "TONE" 3 strip
+  "FUNK" 2 strip
   1.0 row
-    1.3 cell  "FUNK" 1.0 item
-    1.0 cell  "TONE" 1.0 item
+    1.0 cell  "FUNK" 1.0 item
 
   machine-desc
 ;
