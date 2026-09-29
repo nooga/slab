@@ -698,9 +698,16 @@ fn currentPresetLabel(buf: []u8, mach: *const Machine) [*:0]const u8 {
         if (idx >= 0) {
             if (mach.preset_name) |nf| {
                 const nm = std.mem.span(nf(mach.state, @intCast(idx)));
-                const l = @min(nm.len, buf.len - 1);
+                const modified = if (mach.preset_modified) |mf| mf(mach.state) else false;
+                // "name*" once a knob has moved off the preset
+                const l = @min(nm.len, buf.len - 2);
                 @memcpy(buf[0..l], nm[0..l]);
-                buf[l] = 0;
+                var e = l;
+                if (modified) {
+                    buf[e] = '*';
+                    e += 1;
+                }
+                buf[e] = 0;
                 return @ptrCast(&buf[0]);
             }
         }

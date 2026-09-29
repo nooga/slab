@@ -182,6 +182,9 @@ pub const CurrentPresetFn = *const fn (state: *anyopaque) i32;
 /// Mark preset `index` (or -1) as the current one without applying it —
 /// a project load restoring the label its saved settings came from.
 pub const MarkPresetFn = *const fn (state: *anyopaque, index: i32) void;
+/// True when a preset is current and a knob it sets has moved since - the
+/// panel's "name*" marker.
+pub const PresetModifiedFn = *const fn (state: *anyopaque) bool;
 /// Append the machine's current settings as a JSON object `{"id":value,…}`
 /// (real values, same convention as presets) for embedding in a project.
 pub const WriteParamsJsonFn = *const fn (state: *anyopaque, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void;
@@ -288,6 +291,7 @@ pub const Machine = struct {
     rename_preset: ?RenamePresetFn = null,
     current_preset: ?CurrentPresetFn = null,
     mark_preset: ?MarkPresetFn = null,
+    preset_modified: ?PresetModifiedFn = null,
     /// Project persistence: dump/restore the machine's settings as JSON.
     write_params_json: ?WriteParamsJsonFn = null,
     set_param: ?SetParamFn = null,

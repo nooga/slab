@@ -37,6 +37,11 @@ for a bank (the panel shows banks as submenus):
   ignored. Params the preset leaves out keep their current value, which
   is the manifest default on a fresh instance.
 - `machine` and `note` are metadata; the loader ignores them.
+- The panel shows the current preset's name, with a `*` once any
+  control the preset sets has moved off its value (moving it back
+  clears it). A project's `"preset"` marks which preset its settings
+  came from, and the comparison is against that preset's file, so a
+  preset tweaked before the save loads as `name*`.
 
 A track's `instrument.params` and an effect's `params` in a project use
 exactly the same map.

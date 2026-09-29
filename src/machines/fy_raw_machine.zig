@@ -162,6 +162,11 @@ pub const FyRawMachine = struct {
     preset_dir_len: usize = 0,
     presets: presets_mod.List = .{},
     current_preset_idx: i32 = -1,
+    // What the current preset sets each control to (stored form: norm, or
+    // the option index), and which controls it names - the panel's
+    // "modified" marker compares the knobs against these. UI thread.
+    preset_ref: [MAX_CONTROLS]f32 = [_]f32{0} ** MAX_CONTROLS,
+    preset_ref_on: [MAX_CONTROLS]bool = [_]bool{false} ** MAX_CONTROLS,
     // Host-allocated audio buffers (manifest `buffer` requests), one per
     // channel. Base pointer + element count are injected into each channel's
     // state at the request's introspected offsets.
@@ -644,6 +649,7 @@ pub const FyRawMachine = struct {
             .rename_preset = renamePresetImpl,
             .current_preset = currentPresetImpl,
             .mark_preset = markPresetImpl,
+            .preset_modified = presetModifiedImpl,
             .write_params_json = writeParamsJsonImpl,
             .set_param = setParamImpl,
             .write_assets_json = writeAssetsJsonImpl,
@@ -919,6 +925,7 @@ fn currentPresetImpl(state: *anyopaque) i32 {
 fn markPresetImpl(state: *anyopaque, index: i32) void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     self.current_preset_idx = if (index >= 0 and index < self.presets.count) index else -1;
+    if (self.current_preset_idx >= 0) refFromFile(self, @intCast(self.current_preset_idx));
 }
 
 /// A switch moved on the panel: store the option, then whatever that
@@ -930,6 +937,62 @@ fn pickOption(self: *FyRawMachine, gi: usize, idx: usize) void {
     }
 }
 
+// The form a real value is stored in for this control: the option index
+// for a switch, the stepped value for an int range, the 0..1 norm for a
+// direct knob.
+fn storedValue(ctl: Control, value: f64) f32 {
+    return switch (ctl.kind) {
+        .switch_sel => blk: {
+            const hi: f64 = @floatFromInt(@max(ctl.option_count, 1) - 1);
+            break :blk @floatCast(std.math.clamp(value, 0, hi));
+        },
+        .int_range => @floatCast(intRangeValue(ctl, @floatCast(value))),
+        .direct_f64 => std.math.clamp(valueToNorm(ctl, value), 0.0, 1.0),
+    };
+}
+
+// The current preset's reference is the knobs as they stand [after an
+// apply or a save].
+fn refFromControls(self: *FyRawMachine) void {
+    for (0..self.desc.control_count) |i| {
+        self.preset_ref[i] = self.controlNorm(i);
+        self.preset_ref_on[i] = true;
+    }
+}
+
+// ... or what preset `index`'s file sets [a project load marks the preset
+// its settings came from, which may have been changed since].
+fn refFromFile(self: *FyRawMachine, index: usize) void {
+    @memset(self.preset_ref_on[0..], false);
+    var fbuf: [presets_mod.MAX_FILE]u8 = undefined;
+    const data = presets_mod.readFileBuf(&fbuf, self.presetDir(), self.presets.names[index].slice()) orelse return;
+    var parsed = std.json.parseFromSlice(std.json.Value, self.alloc, data, .{}) catch return;
+    defer parsed.deinit();
+    if (parsed.value != .object) return;
+    const params = parsed.value.object.get("params") orelse return;
+    if (params != .object) return;
+    var it = params.object.iterator();
+    while (it.next()) |kv| {
+        for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
+            if (!std.mem.eql(u8, ctl.idSlice(), kv.key_ptr.*)) continue;
+            self.preset_ref[i] = storedValue(ctl.*, jsonF64(kv.value_ptr.*));
+            self.preset_ref_on[i] = true;
+            break;
+        }
+    }
+}
+
+// True when a preset is current and some knob it sets has moved off it.
+fn presetModifiedImpl(state: *anyopaque) bool {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    if (self.current_preset_idx < 0) return false;
+    for (0..self.desc.control_count) |i| {
+        if (!self.preset_ref_on[i]) continue;
+        if (@abs(self.controlNorm(i) - self.preset_ref[i]) > 1e-5) return true;
+    }
+    return false;
+}
+
 // Store one real-valued control by its stable id. Shared by preset apply,
 // the host param-set path (project load), and anything that restores a
 // machine's settings from an id→value map. Switches clamp to the option
@@ -937,13 +1000,10 @@ fn pickOption(self: *FyRawMachine, gi: usize, idx: usize) void {
 fn applyControlValue(self: *FyRawMachine, id: []const u8, value: f64) void {
     for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
         if (!std.mem.eql(u8, ctl.idSlice(), id)) continue;
+        const v = storedValue(ctl.*, value);
         switch (ctl.kind) {
-            .switch_sel => {
-                const hi: f64 = @floatFromInt(@max(ctl.option_count, 1) - 1);
-                self.setControlRaw(i, @floatCast(std.math.clamp(value, 0, hi)));
-            },
-            .int_range => self.setControlRaw(i, @floatCast(intRangeValue(ctl.*, @floatCast(value)))),
-            .direct_f64 => self.setControlNormSnap(i, valueToNorm(ctl.*, value)),
+            .switch_sel, .int_range => self.setControlRaw(i, v),
+            .direct_f64 => self.setControlNormSnap(i, v),
         }
         return;
     }
@@ -991,6 +1051,7 @@ fn applyPresetImpl(state: *anyopaque, index: machine.PresetIndex) void {
     if (params != .object) return;
     var it = params.object.iterator();
     while (it.next()) |kv| applyControlValue(self, kv.key_ptr.*, jsonF64(kv.value_ptr.*));
+    refFromControls(self);
     self.refreshAntialias();
 }
 
@@ -1345,6 +1406,7 @@ fn rescanAndSelect(self: *FyRawMachine, name: []const u8) ?machine.PresetIndex {
     for (self.presets.names[0..self.presets.count], 0..) |*pn, i| {
         if (std.mem.eql(u8, pn.slice(), name)) {
             self.current_preset_idx = @intCast(i);
+            refFromControls(self);
             return @intCast(i);
         }
     }
@@ -5146,6 +5208,38 @@ test "raw machine presets: scan factory, save round-trip, apply restores" {
     var path_buf: [512]u8 = undefined;
     const path = try std.fmt.bufPrint(&path_buf, "{s}/{s}.preset", .{ inst.presetDir(), inst.presets.names[idx].slice() });
     fy_host_mod.deleteFilePosix(path);
+}
+
+test "raw machine presets: modified once a knob leaves the preset, clean when it returns" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/funk/funk.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    var idx: ?machine.PresetIndex = null;
+    for (inst.presets.names[0..inst.presets.count], 0..) |*pn, i| {
+        if (std.mem.eql(u8, pn.slice(), "touch-wah")) idx = @intCast(i);
+    }
+    const ti = idx orelse return error.PresetMissing;
+
+    try testing.expect(!presetModifiedImpl(inst)); // no preset: never "modified"
+    applyPresetImpl(inst, ti);
+    try testing.expect(!presetModifiedImpl(inst));
+    const at = inst.controlNorm(0);
+    inst.setControlNorm(0, 0.9);
+    try testing.expect(presetModifiedImpl(inst));
+    inst.setControlNorm(0, at);
+    try testing.expect(!presetModifiedImpl(inst));
+    // A switch counts too.
+    inst.setControlRaw(1, 2.0);
+    try testing.expect(presetModifiedImpl(inst));
+
+    // A project load marks the preset its settings came from: compared
+    // with the file, so settings changed before the save still show.
+    inst.setControlNorm(0, 0.9);
+    markPresetImpl(inst, @intCast(ti));
+    try testing.expect(presetModifiedImpl(inst));
+    applyPresetImpl(inst, ti);
+    markPresetImpl(inst, @intCast(ti));
+    try testing.expect(!presetModifiedImpl(inst));
 }
 
 test "raw machine presets: named save + rename round-trip" {
