@@ -327,7 +327,10 @@ comp2 glue, limiter gain 8 → 9: −11.1 → −10.7 LUFS at the same ceiling,
 crest 9.6 → 9.7 dB, sub + low 70 → 60 % of the energy, break dips
 under the drops kept (1.8 / 1.2 LU). With comp2 glue left in as well,
 the breaks came up to the drops' level: a multiband and a broadband
-leveller stacked level too much.
+leveller stacked level too much. Glass Horizon and Paper Boulevard kept
+their comp2 glue: with multi2 instead they measured +0.5 LU at the cost
+of 0.4 dB crest and nothing else (sub 1 % and 21 % - no low end driving
+their limiters); char2 `vari-glue` measured the same as the glue.
 
 ### char2 as built (2026-09-29)
 
