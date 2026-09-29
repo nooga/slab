@@ -268,8 +268,13 @@ follower. AUTO earns its keep on material with sustained loud passages.
 ### multi2 as built (2026-09-29)
 
 `machines/multi2/multi2.fy`, DSP in `kernels/07-effects/multi.fy`.
-Stereo, no sidechain key (the per-band keyed detector would double the
-crossover cost; comp2 does keyed ducking).
+Stereo. Keyed (added later, `key-flag!`), the key runs through its own
+crossover and each band's detector hears the key's band: a kick key
+ducks only the bass's low band. Keyed by its own input it is bit-exact
+with unkeyed; unkeyed it runs the old word at the old cost [render-lite].
+Measured (unit test, every band 4:1 from -30 dB, input 60 Hz + 1 kHz at
+-12 dB each, key 60 Hz at 0 dB): the lows 5.9 dB down, the mids 9.3 dB
+up against unkeyed. Keyed cost 148 ns/sample (bench, Debug host).
 
 - **Crossover.** LR4 at XLO (40–400 Hz, default 120) and XHI (1–8 kHz,
   default 2500) from TPT SVFs at Butterworth damping instead of

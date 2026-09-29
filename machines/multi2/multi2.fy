@@ -5,19 +5,24 @@
   ATK / REL [the low band runs at twice them, the high band at half].
   UP adds upward compression below each band's threshold, for the quiet
   detail a downward compressor can't bring up.  The knee is fixed at
-  4 dB and the detectors are PEAK.  The DSP is kernels/07-effects/multi.fy. )
+  4 dB and the detectors are PEAK.  Keyed, each band's detector hears
+  the key's own band [a kick ducking only the bass's lows].  The DSP is
+  kernels/07-effects/multi.fy. )
 
 include "../../kernels/07-effects/multi.fy"
 include "../lib/manifest.fy"
 
 : manifest
   "Multi" effect-block machine*
-  "k-multi-tick"    render!
+  "k-multi-tick-key" render!
+  "k-multi-tick" MultiParams.keyed render-lite!   ( unkeyed: the cheaper word )
+  MultiParams.keyed key-flag!
   "k-multi-prepare" block-prepare!
   MultiState.size  state-size!
   MultiParams.size params-size!
   420.0 panel-w!
   stereo
+  sidechain
 
   "LOW" "THRESH" "mlo-thresh" MultiParams.lo MbBandP.thresh-db + -48.0 0.0 -18.0 curve-lin knob
   "LOW" "RATIO"  "mlo-ratio"  MultiParams.lo MbBandP.ratio +      1.0 10.0 2.0 curve-pow knob

@@ -26,6 +26,12 @@ snaps to its target, so turning the knob to 0 gets there. The word must
 produce the same output as `render` at that setting; bus2's COLOR 0 is
 the case (bit-exact against its goldens).
 
+`key-flag!` (manifest `offset key-flag!`) names a params f64 the host
+sets each block: 1.0 while a sidechain key is connected, 0.0 otherwise.
+With `render-lite!` on the same offset, a machine runs a keyed word only
+when keyed: multi2 splits the key through a second crossover then, and
+runs its unkeyed word, at its old cost, the rest of the time.
+
 **Structs.** Both are defined in `kernels/00-primitives/ctx.fy`, mirrored
 by `KernelCtx` / `IoFrame` in the adapter, and checked by the test
 "kernel ABI: KernelCtx and IoFrame match ctx.fy".

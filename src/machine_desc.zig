@@ -337,6 +337,10 @@ pub const Desc = struct {
     render_lite_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
     render_lite_word_len: usize = 0,
     render_lite_sel: usize = 0,
+    /// Params byte offset + 1 of the f64 the host sets to 1.0 while a
+    /// sidechain key is connected (0.0 otherwise); 0 = the machine
+    /// doesn't ask.
+    key_flag: usize = 0,
     // Generic derived-params hook: a dsp2 word (params derive-data --) the host
     // calls each block, plus an opaque machine-built data pointer. Lets a
     // machine keep all its specific logic in fy (e.g. FM-86 algorithm routing)
@@ -464,6 +468,7 @@ const MachineDescRaw = extern struct {
     sidechain: Fy.Value,
     render_lite: Fy.Value,
     render_lite_sel: Fy.Value,
+    key_flag: Fy.Value,
 };
 
 const PageRaw = extern struct { next: Fy.Value, name: Fy.Value, rows: Fy.Value };
@@ -590,6 +595,7 @@ pub fn read(host: *FyHost) !Desc {
     d.note_expr_word_len = try copyBuf(d.note_expr_word[0..], cstrSlice(md.note_expr));
     d.render_lite_word_len = try copyBuf(d.render_lite_word[0..], cstrSlice(md.render_lite));
     d.render_lite_sel = @intCast(asInt(md.render_lite_sel));
+    d.key_flag = @intCast(asInt(md.key_flag));
     // derive-data is an opaque heap pointer (fy `alloc` returns the raw address
     // as a tagged int); >>2 recovers it. 0 = none.
     d.derive_data = @intCast(@as(u64, @bitCast(md.derive_data)) >> 2);

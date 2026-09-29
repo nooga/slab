@@ -349,7 +349,9 @@ of a broadband glue comp, not on top: both together level the breaks
 up to the drops. Voltage Riot's master is eq2 → `fx("multi2",
 "master-balance", mlo_thresh=-18.9, mmid_gain=1, mhi_gain=1.5)` →
 limiter2 at gain 9. Other presets: `low-control`, `de-harsh`, `radio`
-(4:1 everywhere, upward lift), `upward-lift`.
+(4:1 everywhere, upward lift), `upward-lift`. Keyed (`fx("multi2", ...,
+key=kick)`), each band listens to the key's same band: the kick ducks
+only the bass's lows, a vocal only a pad's mids.
 
 `funk` (FUNK OVERLOAD) is one knob and a RANGE switch (BASS / GTR /
 KEYS). 0 is bypass; up to 0.4 a touch wah; to 0.75 squeezed and more

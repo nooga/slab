@@ -27,7 +27,13 @@
   pulled towards a window around its threshold.
 
   MIX blends with the crossover's own sum [the dry path goes through the
-  same allpasses, so a parallel mix doesn't comb at the crossovers]. )
+  same allpasses, so a parallel mix doesn't comb at the crossovers].
+
+  KEY: with a sidechain key connected, the key runs through a crossover
+  of its own and each band's detector hears the key's band - a kick
+  ducks only the bass's low band, a vocal only the pad's mids.  The host
+  sets `keyed` and runs k-multi-tick-key; unkeyed it runs k-multi-tick
+  [render-lite], which costs what it always did. )
 
 include "comp.fy"   ( ctx, math, svf-g, comp-tau-coeff )
 
@@ -47,6 +53,8 @@ ustruct: MultiState
   MbBand lo
   MbBand mid
   MbBand hi
+  MbChan kl    ( the key's own crossover [keyed only] )
+  MbChan kr
 ;
 
 ustruct: MbBandP
@@ -81,6 +89,7 @@ ustruct: MultiParams
   f64 g-lo
   f64 g-hi
   f64 out-lin
+  f64 keyed    ( host: 1 while a sidechain key is connected [key-flag] )
 ;
 
 :: MB-K 1.4142135623730951 ;        ( SVF damping term 2d, Butterworth )
@@ -179,6 +188,15 @@ dsp: mb-band | b:MbBand bp:MbBandP x -- gain |
   g exp2 bp.gain-lin f*
 ;
 
+( io params lo mid hi klo kmd khi -- y : one channel's bands, gained
+  and mixed against their dry sum. )
+dsp: mb-mix | params:MultiParams lo mid hi klo kmd khi -- y |
+  params.out-lin params.mix f* | wet |
+  1.0 params.mix f-  params.out-lin f* | dry |
+  lo klo f*  mid kmd f*  f+  hi khi f*  f+  wet f*
+  lo mid f+ hi f+  dry f*  f+
+;
+
 ( io ctx state params -- : one stereo multi2 sample. )
 dsp: k-multi-tick | io:Io ctx state:MultiState params:MultiParams -- |
   params.g-lo | gl |
@@ -188,10 +206,22 @@ dsp: k-multi-tick | io:Io ctx state:MultiState params:MultiParams -- |
   state.lo&  params.lo&  lol fabs lor fabs fmax  mb-band | klo |
   state.mid& params.mid& mdl fabs mdr fabs fmax  mb-band | kmd |
   state.hi&  params.hi&  hil fabs hir fabs fmax  mb-band | khi |
-  params.out-lin params.mix f* | wet |
-  1.0 params.mix f-  params.out-lin f* | dry |
-  lol klo f*  mdl kmd f*  f+  hil khi f*  f+  wet f*
-  lol mdl f+ hil f+  dry f*  f+ -> io.out-l
-  lor klo f*  mdr kmd f*  f+  hir khi f*  f+  wet f*
-  lor mdr f+ hir f+  dry f*  f+ -> io.out-r
+  params lol mdl hil klo kmd khi mb-mix -> io.out-l
+  params lor mdr hir klo kmd khi mb-mix -> io.out-r
+;
+
+( io ctx state params -- : the same with the detectors on the key's
+  bands. )
+dsp: k-multi-tick-key | io:Io ctx state:MultiState params:MultiParams -- |
+  params.g-lo | gl |
+  params.g-hi | gh |
+  state.l& io.in-l gl gh mb-split | lol mdl hil |
+  state.r& io.in-r gl gh mb-split | lor mdr hir |
+  state.kl& io.sc-l gl gh mb-split | kll kml khl |
+  state.kr& io.sc-r gl gh mb-split | klr kmr khr |
+  state.lo&  params.lo&  kll fabs klr fabs fmax  mb-band | klo |
+  state.mid& params.mid& kml fabs kmr fabs fmax  mb-band | kmd |
+  state.hi&  params.hi&  khl fabs khr fabs fmax  mb-band | khi |
+  params lol mdl hil klo kmd khi mb-mix -> io.out-l
+  params lor mdr hir klo kmd khi mb-mix -> io.out-r
 ;

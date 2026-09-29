@@ -68,6 +68,8 @@ struct: MachineDesc
   ptr render-lite    ( cstr or 0 — a cheaper render word for blocks where
                        the params f64 at render-lite-sel is exactly 0 )
   ptr render-lite-sel  ( int params byte offset )
+  ptr key-flag       ( int: params byte offset + 1 where the host writes 1.0
+                       while a sidechain key is connected, else 0.0; 0 = none )
 ;
 
 struct: ControlDesc
@@ -175,6 +177,8 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   params f64 at `offset` is exactly 0 - a stage that does nothing at
   that setting [bus2's COLOR] skips its cost; the word must produce the
   same output there )
+: key-flag!  ( offset -- )  1 + _mf-md@ MachineDesc.key-flag! drop ;
+
 : render-lite!  ( str offset -- )
   _mf-md@ MachineDesc.render-lite-sel! drop
   cstr-new _mf-md@ MachineDesc.render-lite! drop ;

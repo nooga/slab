@@ -162,6 +162,9 @@ pub const FyRawMachine = struct {
     preset_dir_len: usize = 0,
     presets: presets_mod.List = .{},
     current_preset_idx: i32 = -1,
+    // A sidechain key was connected on the last render [the manifest's
+    // key-flag param]. Audio thread.
+    keyed: bool = false,
     // What the current preset sets each control to (stored form: norm, or
     // the option index), and which controls it names - the panel's
     // "modified" marker compares the knobs against these. UI thread.
@@ -275,6 +278,7 @@ pub const FyRawMachine = struct {
         try validateWord(host, desc.renderWord());
         if (desc.renderLiteWord()) |word| try validateWord(host, word);
         if (desc.renderLiteWord() != null and desc.render_lite_sel + 8 > desc.params_size) return error.InvalidMachineDesc;
+        if (desc.key_flag > 0 and desc.key_flag - 1 + 8 > desc.params_size) return error.InvalidMachineDesc;
         if (desc.prepareWord()) |word| try validateWord(host, word);
         if (desc.noteOnWord()) |word| try validateWord(host, word);
         if (desc.noteOffWord()) |word| try validateWord(host, word);
@@ -862,6 +866,7 @@ pub const FyRawMachine = struct {
         for (self.desc.consts[0..self.desc.const_count]) |cnst| {
             self.writeParamF64(cnst.offset, cnst.value);
         }
+        if (self.desc.key_flag > 0) self.writeParamF64(self.desc.key_flag - 1, if (self.keyed) 1.0 else 0.0);
 
         // Machine-declared derive hook (params derive-data --): compute derived
         // params from the fresh control values, e.g. FM-86 expands ALGO into the
@@ -1532,6 +1537,7 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
     const auto = if (view) |v| v.any() else false;
     if (!auto) @memset(self.auto_on[0..], false);
     const gliding = auto or self.anyGliding();
+    self.keyed = keyChannels(ctx) != null;
     const chunk: usize = if (gliding) SMOOTH_CHUNK else frames;
     const beats_per_sample = ctx.tempo_bpm / (60.0 * ctx.sample_rate);
     var pos: usize = 0;
@@ -5544,6 +5550,71 @@ test "sidechain: comp2 compresses its input by the key's level" {
     }
     try testing.expect(gains[0] < -8.0); // keyed: the loud key pulls it down
     try testing.expect(@abs(gains[1]) < 1.0); // unkeyed: untouched
+}
+
+test "sidechain: multi2 keyed by its own input is bit-exact, a low key ducks only the lows" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/multi2/multi2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    try testing.expect(mach.takes_key);
+    for (inst.desc.controls[0..inst.desc.control_count], 0..) |*ctl, i| {
+        // every band at 4:1 from -30 dB
+        if (std.mem.endsWith(u8, ctl.idSlice(), "-ratio")) inst.setControlNormSnap(i, valueToNorm(ctl.*, 4.0));
+        if (std.mem.endsWith(u8, ctl.idSlice(), "-thresh")) inst.setControlNormSnap(i, valueToNorm(ctl.*, -30.0));
+    }
+
+    // Input: 60 Hz + 1 kHz at -12 dB each. Key: 60 Hz at 0 dB, or the input.
+    const block = 512;
+    const blocks = 100;
+    var in_l: [block]f32 = undefined;
+    var key_l: [block]f32 = undefined;
+    var ports = [_][*]const f32{ &in_l, &in_l, &key_l, &key_l };
+    const KeyMode = enum { unkeyed, self_key, low_key };
+    var outs: [3][block * blocks]f32 = undefined;
+    for (&outs, [_]KeyMode{ .unkeyed, .self_key, .low_key }) |*o, mode| {
+        mach.reset(mach.state);
+        var ctx = std.mem.zeroes(machine.MachineCtx);
+        ctx.sample_rate = 48_000;
+        ctx.block_size = block;
+        ctx.audio_in = @ptrCast(&ports[0]);
+        ctx.audio_in_count = if (mode == .unkeyed) 2 else 4;
+        ports[2] = if (mode == .self_key) &in_l else &key_l;
+        ports[3] = ports[2];
+        var l: [block]f32 = undefined;
+        var r: [block]f32 = undefined;
+        for (0..blocks) |blk| {
+            for (&in_l, &key_l, 0..) |*a, *k, i| {
+                const t: f64 = @as(f64, @floatFromInt(blk * block + i)) / 48_000.0;
+                const lo = @sin(2.0 * std.math.pi * 60.0 * t);
+                a.* = @floatCast(0.25 * lo + 0.25 * @sin(2.0 * std.math.pi * 1000.0 * t));
+                k.* = @floatCast(lo);
+            }
+            testRender(mach, &ctx, &l, &r);
+            @memcpy(o[blk * block ..][0..block], &l);
+        }
+    }
+    try testing.expectEqualSlices(f32, &outs[0], &outs[1]);
+
+    // Level of one frequency over the last half second [a single-bin DFT].
+    const bin = struct {
+        fn db(x: []const f32, hz: f64) f64 {
+            var re: f64 = 0;
+            var im: f64 = 0;
+            for (x, 0..) |v, i| {
+                const w = 2.0 * std.math.pi * hz * @as(f64, @floatFromInt(i)) / 48_000.0;
+                re += @as(f64, v) * @cos(w);
+                im += @as(f64, v) * @sin(w);
+            }
+            return 20.0 * std.math.log10(@sqrt(re * re + im * im) * 2.0 / @as(f64, @floatFromInt(x.len)));
+        }
+    };
+    const tail = block * blocks - 24_000;
+    const lo_un = bin.db(outs[0][tail..], 60.0);
+    const lo_key = bin.db(outs[2][tail..], 60.0);
+    const hi_un = bin.db(outs[0][tail..], 1000.0);
+    const hi_key = bin.db(outs[2][tail..], 1000.0);
+    try testing.expect(lo_key < lo_un - 4.0); // the loud low key pulls the lows down [-5.9 dB]
+    try testing.expect(hi_key > hi_un + 6.0); // the key has no mids: they open up [+9.3 dB]
 }
 
 test "sidechain: verb2 GATED opens on the key, not the input" {
