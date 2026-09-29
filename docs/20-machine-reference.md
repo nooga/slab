@@ -17,6 +17,7 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`sampler`](#sampler) | Sampler | instrument | 8 | `smp-` |
 | [`unfairlight`](#unfairlight) | Unfairlight TMI | instrument | 8 | `cmi-` |
 | [`bus2`](#bus2) | Bus | effect | — | `bus-` |
+| [`char2`](#char2) | Char | effect | — | `char-` |
 | [`chorus2`](#chorus2) | Chorus | effect | — | `chorus-` |
 | [`comp2`](#comp2) | Comp | effect | — | `comp-` |
 | [`delay2`](#delay2) | Delay | effect | — | `delay-` |
@@ -2171,6 +2172,32 @@ Presets:
 - `master-glue` — light and clean master control: 2:1, 30 ms, AUTO
 - `mix-glue` — the classic mix-bus setting: 2:1, 30 ms, AUTO, 2 dB on the loud parts
 - `pump` — dance breathing: 4:1, 1 ms, 0.3 s, the kick drives it
+
+## char2
+
+**Char**, stereo insert effect.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `char-mode` | COMP | MODE | 0 FET / 1 OPTO / 2 VARI | 0 | switch |
+| `char-thresh` | COMP | THRESH | -40 … 0 | -18 | linear |
+| `char-ratio` | COMP | RATIO | 1 … 20 | 4 | pow |
+| `char-atk` | TIME | ATK | 2e-05 … 0.05 | 0.001 | exp |
+| `char-rel` | TIME | REL | 0.05 … 5 | 0.3 | exp |
+| `char-hpf` | SC | HPF | 20 … 500 | 20 | exp |
+| `char-drive` | OUT | DRIVE | 0 … 1 | 0.3 | linear |
+| `char-makeup` | OUT | MAKEUP | 0 … 24 | 0 | linear |
+| `char-mix` | OUT | MIX | 0 … 1 | 1 | pow |
+
+Presets:
+
+- `fet-punch` — FET 4:1, 3 ms lets the stick through, 0.1 s, a little grit - drums
+- `fet-smash` — 1176 all-buttons flavour for parallel smash: FET 20:1, 50 us, dirty, 40% under the dry kit
+- `opto-bass` — LA-2A on bass: OPTO 4:1, holds the line even
+- `opto-smooth` — gentle opto levelling for pads and keys, 2.5:1, long release
+- `opto-vocal` — LA-2A on a vocal: OPTO 3:1, the two-stage release, light warmth
+- `vari-drums` — vari-mu on drums: VARI 4:1, thick and warm
+- `vari-glue` — Fairchild on the mix bus: VARI 2:1 over its wide knee, slow floor, warm
 
 ## chorus2
 

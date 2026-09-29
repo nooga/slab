@@ -2760,7 +2760,9 @@ fn drawDynamicsDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Displ
     const pre = disp.sourceSlice();
     const thr = prefixedValue(self, pre, "-thresh", -18);
     const ratio = prefixedValue(self, pre, "-ratio", 4);
-    const knee = prefixedValue(self, pre, "-knee", 4); // bus2 fixes it at 4
+    // A mode-dependent knee comes from state (char2); bus2 fixes it at 4.
+    const knee_off = disp.dynOffset(.knee);
+    const knee = if (knee_off != 0) self.readStateF64(0, knee_off) else prefixedValue(self, pre, "-knee", 4);
     const gr = @max(0, self.readStateF64(0, disp.dynOffset(.gr)));
     const lvl = self.readStateF64(0, disp.dynOffset(.lvl));
     ui.animate();

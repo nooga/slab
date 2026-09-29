@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "char2", "note": "FET 4:1, 3 ms lets the stick through, 0.1 s, a little grit - drums", "params": {"char-mode": 0, "char-ratio": 4, "char-atk": 0.003, "char-rel": 0.1, "char-drive": 0.3, "char-mix": 1, "char-makeup": 2.5, "char-thresh": -14.5}}

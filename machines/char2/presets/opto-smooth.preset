@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "char2", "note": "gentle opto levelling for pads and keys, 2.5:1, long release", "params": {"char-mode": 1, "char-ratio": 2.5, "char-atk": 0.01, "char-rel": 1.5, "char-drive": 0.15, "char-mix": 1, "char-makeup": 2.0, "char-thresh": -15.9}}

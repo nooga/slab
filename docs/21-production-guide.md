@@ -335,6 +335,13 @@ Glass Horizon's DRUMS group runs `fx("bus2", "drum-bus", thresh=-23,
 makeup=5)`, and its pad ducks under the group (`comp2` keyed by DRUMS)
 so the kit stands in front of it.
 
+For character, `char2` (docs/24 §char2) has three modes: FET (fast,
+odd-harmonic grit: `fet-punch` on drums, `fet-smash` parallel under
+them), OPTO (smooth two-stage release: `opto-vocal`, `opto-bass`,
+`opto-smooth` for pads and keys) and VARI (wide knee, warm, a slow
+floor: `vari-glue` on the mix bus, `vari-drums`). DRIVE sets how much
+the colour grows with the squash; 0 is clean.
+
 On the master, `multi2` (three-band, docs/24 §multi2) holds the low
 end in its own band so kicks stop ducking the rest through the limiter;
 `master-balance` is the start, band GAIN adds presence. Use it instead

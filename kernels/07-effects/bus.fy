@@ -63,7 +63,8 @@ ustruct: BusParams  ( after CompParams )
 :: BUS-COLOR-2 0.3 ;
 :: BUS-COLOR-3 0.3 ;         ( < 0.89 keeps the curve monotonic )
 :: BUS-COLOR-FULL 0.08333333333333333 ;   ( 1 / 12 dB )
-:: BUS-DC-R 0.9987 ;         ( ~10 Hz at 48 kHz )
+:: BUS-DC-R 0.9987 ;
+:: BUS-FLUSH 1.0e-18 ;         ( ~10 Hz at 48 kHz )
 
 ( sr thresh rel atk bp -- : the followers' coefficients and the colour. )
 dsp: bus-prepare | sr thresh rel atk bp:BusParams |
@@ -99,8 +100,9 @@ dsp: bus-color | up:Up2 dn:Dec2 dc:BusDc w a2 a3 t inv-t -- y |
   w1 inv-t f* a2 a3 bus-shape t f* | e1 |
   dn e0 e1 dec2 | e |
   e dc.x f-  BUS-DC-R dc.y f*  f+ | h |
-  e -> dc.x
-  h -> dc.y
+  ( flushed below ~1e-34: the blocker's tail reaches 0, not denormals )
+  e BUS-FLUSH f+ BUS-FLUSH f- -> dc.x
+  h BUS-FLUSH f+ BUS-FLUSH f- -> dc.y
   w h f+
 ;
 

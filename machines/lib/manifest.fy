@@ -381,6 +381,15 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   _mf-last-disp !64
 ;
 
+( The same, with the knee read from state f64 at `knee` [dB] instead of
+  the prefix-knee control - for a machine whose knee follows a mode. )
+:: _mf-knee 8 alloc ;
+: dyn-display-knee  ( name prefix gr lvl knee -- )
+  _mf-knee !64
+  dyn-display
+  _mf-knee @64 _mf-last-disp @64 DisplayDesc.off2! drop
+;
+
 ( An operator-routing diagram [kind 4], read from the machine's
   derive-data table: the row is the value of the int-step control `selector`
   minus its min; `ops` operators; each row is `stride` f64s holding a

@@ -252,8 +252,9 @@ pub const MAX_ALGO_OPS = 8;
 pub const METER_OFFSETS = 7;
 pub const MeterOffset = enum(usize) { gmin = 0, ipk, opk, msm, mss, msum, mn };
 
-/// Dynamics display state-offset slots, in `dyn-display`'s order.
-pub const DynOffset = enum(usize) { gr = 0, lvl };
+/// Dynamics display state-offset slots, in `dyn-display`'s order; `knee`
+/// is 0 unless `dyn-display-knee` set it.
+pub const DynOffset = enum(usize) { gr = 0, lvl, knee };
 
 pub const Display = struct {
     name: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
@@ -691,8 +692,8 @@ pub fn read(host: *FyHost) !Desc {
         out.source_len = try copyText(&out.source, cstrSlice(disp.sources));
         if (out.kind == .algo) try readAlgoDisplay(&d, out, disp);
         if (out.kind == .dynamics) {
-            const raw = [_]Fy.Value{ disp.off0, disp.off1 };
-            for (out.offsets[0..2], raw) |*o, v| {
+            const raw = [_]Fy.Value{ disp.off0, disp.off1, disp.off2 };
+            for (out.offsets[0..3], raw) |*o, v| {
                 const off: usize = @intCast(asInt(v));
                 if (off + 8 > d.state_size) return error.InvalidMachineDesc;
                 o.* = off;

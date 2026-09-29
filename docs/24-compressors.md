@@ -2,9 +2,9 @@
 
 Which compressors Slab should have beyond `comp2`, how the classic
 designs make their sound, and how each new machine gets measured.
-**Status:** (0) prerequisites, (1) bus2, (2) the comp2 revision and
-(3) multi2 are built (§comp2 as built, §bus2 as built, §multi2 as
-built); the character modes are open. The
+**Status:** all built: (0) prerequisites, (1) bus2, (2) the comp2
+revision, (3) multi2 and (4) the character modes as `char2` (§comp2 /
+bus2 / multi2 / char2 as built). The
 survey's numbers marked *measured* are the old comp2 and come from
 `zig build bench` on comp2 (Debug, 2026-09-28) and from a numpy mirror
 of `comp.fy` (a scratch script, not in the repo) that matches the bench to 0.1 dB where they overlap
@@ -12,7 +12,7 @@ of `comp.fy` (a scratch script, not in the repo) that matches the bench to 0.1 d
 drum-bus recipe below).
 
 Code this touches, as it lands: `kernels/07-effects/comp.fy`, new
-`kernels/07-effects/{bus,multi}.fy`, `machines/{comp2,bus2,multi2}/`,
+`kernels/07-effects/{bus,multi,char}.fy`, `machines/{comp2,bus2,multi2,char2}/`,
 `kernels/00-primitives/ctx.fy` + `src/machines/fy_raw_machine.zig`
 (Io ABI), `src/bench/cases.zig` + `src/bench_main.zig` (new cases).
 
@@ -329,6 +329,51 @@ under the drops kept (1.8 / 1.2 LU). With comp2 glue left in as well,
 the breaks came up to the drops' level: a multiband and a broadband
 leveller stacked level too much.
 
+### char2 as built (2026-09-29)
+
+`machines/char2/char2.fy`, DSP in `kernels/07-effects/char.fy`. A
+separate machine, not a comp2 switch: comp2 stays the clean tool whose
+knobs all mean what they say, and char2's MODE is a bundle that sets
+the knee, detector, release shape and colour itself. Reuses comp.fy's
+detector and gain computer and bus.fy's 2× colour stage and output.
+
+| mode | knee | detector | release | colour (DRIVE 1, 1 kHz −6 dBFS, T −24) |
+|---|---|---|---|---|
+| FET | 2 dB | PEAK | REL | odd-leaning: H3 −26, H2 −34 dB |
+| OPTO | 12 dB | RMS (the cell integrates: attack reads 8 ms at ATK 1) | half at 60 ms, half at REL; REL stretches up to 3× with a 3 s memory of GR / 6 dB | light even: H2 −26, H3 −47 dB |
+| VARI | 24 dB (the ratio rises with level) | PEAK | the deeper of REL and a slow branch (charge 0.5 s, release 5 × REL) | heavy even: H2 −22, H3 −39 dB |
+
+- **No feedback topology.** The table in §(4) below planned an SSL-style
+  replica feedback for FET/OPTO/VARI; a digital loop at a fast attack
+  and a high ratio is unstable (§bus2 as built), and what feedback buys
+  in hardware - softer, program-dependent timing - is what the modes set
+  directly.
+- **Knee on the display** comes from a state cell (`dyn-display-knee`),
+  since it follows MODE rather than a control. A `derive` word writes the
+  mode's knee and detector into comp.fy's params before block-prepare.
+- **DRIVE 0 is clean** (THD < −94 dB, all modes) and runs
+  `k-char-tick-clean` (`render-lite`, docs/04).
+
+Measured (Debug): FET release τ63 966 ms at REL 1 s; OPTO release 331 ms
+after a 50 ms burst and 488 ms after a 2 s block (1.47×); VARI after the
+block holds past the 1.5 s window; 50 Hz THD at DRIVE 0 and 9 dB GR
+−50 / −57 / −51 dB (FET / OPTO / VARI); NONHARM −70.2 dB, the stimulus
+floor, with and without DRIVE. Cost (ReleaseFast) 38 ns/sample at DRIVE
+0, 155 with colour. The DC blocker's states are flushed below ~1e−34
+(bus2 shares it), so tails reach 0 instead of denormals.
+
+**Presets** (`tools/comp2_presets/design_char2.py`, the bus2 method):
+
+| preset | character | material, target | measured |
+|---|---|---|---|
+| `fet-smash` | FET 20:1, 50 µs, 0.15 s, drive 0.7, mix 0.4 | drums, 14 dB wet on hits | spread 6.3 → 5.0, +0.7 dB |
+| `fet-punch` | FET 4:1, 3 ms, 0.1 s, drive 0.3 | drums, 5 dB on hits | t/b +0.6, crest +0.9 |
+| `opto-vocal` | OPTO 3:1, 1 s, drive 0.3 | voice, 4 dB p90 | spread 1.7 → 1.4, pump 0.57 |
+| `opto-bass` | OPTO 4:1, 0.8 s, drive 0.35 | bass, 4 dB p90 | spread 2.9 → 2.6 |
+| `opto-smooth` | OPTO 2.5:1, 1.5 s, drive 0.15 | pads and keys, 2.5 dB p90 | pump 0.62 |
+| `vari-glue` | VARI 2:1, 10 ms / 0.4 s, HPF 60, drive 0.25 | mixes, 2 dB p90 | pump 0.56 |
+| `vari-drums` | VARI 4:1, 3 ms / 0.3 s, HPF 60, drive 0.5 | drums, 5 dB on hits | t/b +0.5 |
+
 ### (0) Prerequisites
 
 **Io carries signed detector audio.** Add two fields to `Io`
@@ -453,7 +498,7 @@ x ─► LR4 @ xlo ─┬─ LP ─────────► AP2 @ xhi ─► 
 New: `xover.fy` (`lr4-split`, `ap2`), coefficients per block from
 the shared biquad words. ~150 lines kernel + ~60 manifest.
 
-### (4) Character modes (after bus2 and multi2)
+### (4) Character modes (after bus2 and multi2) — built as char2, see §char2 as built
 
 One `comp2` switch or a separate `char2`; decide when bus2 exists. Each
 mode is a bundle of the knobs above, not a circuit model:
