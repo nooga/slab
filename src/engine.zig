@@ -34,6 +34,9 @@ pub const Engine = struct {
     /// which a staged meter edit may be adopted.
     meter_last_bar: ?u32 = null,
     was_playing: bool = false,
+    /// Where the last played block left the transport. Finding it elsewhere
+    /// at the next block means the UI moved the playhead mid-play.
+    played_to: u64 = 0,
     audition_request: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     audition_track: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     audition_pitch_bits: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 60))),
@@ -177,11 +180,16 @@ pub const Engine = struct {
                 if (self.master) |mb| mb.setMeter(0, 0);
             }
         } else {
+            const start_pos = self.transport.samples();
+            // A seek while playing: the notes held across the jump would
+            // never see their note-offs, so the instruments let go. Effects
+            // keep their tails.
+            if (self.was_playing and start_pos != self.played_to) self.releaseInstruments();
             self.was_playing = true;
 
             // Chunk the callback block down to MAX_BLOCK if needed.
             var done: usize = 0;
-            var pos = self.transport.samples();
+            var pos = start_pos;
             while (done < n) {
                 const chunk = self.nextRenderChunk(@intCast(@min(MAX_BLOCK, n - done)), pos);
                 self.renderChunk(
@@ -193,7 +201,10 @@ pub const Engine = struct {
                 pos = self.advanceRenderPos(pos, @intCast(chunk));
             }
 
-            self.transport.seekToSample(pos);
+            // Unless the UI seeked while this block rendered: then its
+            // position stands and the next block sees the jump.
+            self.played_to = pos;
+            _ = self.transport.sample_pos.cmpxchgStrong(start_pos, pos, .monotonic, .monotonic);
         }
 
         // Master output stage: linear pass-through up to ±0.7, then a smooth
@@ -250,6 +261,10 @@ pub const Engine = struct {
         if (self.master) |mb| {
             for (mb.effects.items) |*fx| fx.mach.reset(fx.mach.state);
         }
+    }
+
+    fn releaseInstruments(self: *Engine) void {
+        for (self.tracks) |*t| t.machine.reset(t.machine.state);
     }
 
     fn nextRenderChunk(self: *Engine, max_frames: u32, pos: u64) usize {
@@ -1734,4 +1749,54 @@ test "routing: a keyed effect hears its key's pre tap, even from a muted track" 
     tracks[1].effects.items[0].mach.takes_key = false;
     eng.renderOffline(&out, 64, 0, null, null);
     try testing.expectEqual(@as(f32, 0), out[10]);
+}
+
+test "a seek while playing releases held notes; playing on doesn't" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const Counter = struct {
+        var resets: usize = 0;
+        fn machine_() machine.Machine {
+            var level: f32 = 0;
+            var m = RouteTestMachines.dc(&level);
+            m.render = struct {
+                fn f(_: *anyopaque, _: *const machine.MachineCtx, l: []f32, r: []f32) void {
+                    @memset(l, 0);
+                    @memset(r, 0);
+                }
+            }.f;
+            m.reset = struct {
+                fn f(_: *anyopaque) void {
+                    resets += 1;
+                }
+            }.f;
+            return m;
+        }
+    };
+    var tracks = [_]Track{try Track.init(alloc, "keys", col, Counter.machine_())};
+    defer for (&tracks) |*t| t.deinit(alloc);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+
+    var transport = Transport{};
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+
+    var out: [64 * 2]f32 = undefined;
+    transport.play();
+    eng.render(&out, 64);
+    eng.render(&out, 64);
+    try testing.expectEqual(@as(usize, 0), Counter.resets);
+    try testing.expectEqual(@as(u64, 128), transport.samples());
+
+    transport.seekToBeats(8);
+    const at = transport.samples();
+    eng.render(&out, 64);
+    try testing.expectEqual(@as(usize, 1), Counter.resets);
+    try testing.expectEqual(at + 64, transport.samples());
+    eng.render(&out, 64);
+    try testing.expectEqual(@as(usize, 1), Counter.resets);
 }
