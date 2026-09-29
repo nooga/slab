@@ -33,7 +33,6 @@ test "analog: drift RMS about 1 at any rate; spread distinct per voice" {
 
     const slow = try driftRms(&host, 0.5);
     const fast = try driftRms(&host, 8.0);
-    std.debug.print("drift rms 0.5 Hz {d:.3}, 8 Hz {d:.3}\n", .{ slow, fast });
     try std.testing.expect(slow > 0.4 and slow < 2.6); // 60 periods: a noisy estimate
     try std.testing.expect(fast > 0.7 and fast < 1.4);
 

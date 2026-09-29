@@ -99,7 +99,6 @@ test "moog ladder: -24 dB/oct response, self-oscillation tracks the cutoff" {
     for ([_]f64{ 110.0, 440.0, 1760.0, 7040.0 }) |fc| {
         const hz = try oscHz(&rig, fc);
         const cents = 1200.0 * std.math.log2(hz / fc);
-        std.debug.print("moog self-osc {d:.0} Hz -> {d:.2} Hz ({d:.1} cents)\n", .{ fc, hz, cents });
         try std.testing.expect(@abs(cents) < 6.0);
     }
 }

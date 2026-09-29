@@ -1376,6 +1376,9 @@ test "routing round-trips: buses, outputs, sends, keys" {
 
 test "routing a file can't mean is dropped on load" {
     const alloc = std.testing.allocator;
+    // The drops are logged as warnings; expected here.
+    std.testing.log_level = .err;
+    defer std.testing.log_level = .warn;
     var reg = registry_mod.Registry.init(alloc);
     defer reg.deinit();
     setRegistry(&reg);
