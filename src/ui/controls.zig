@@ -1174,6 +1174,11 @@ pub fn displayHeight(large: bool) i32 {
 /// Dot-matrix readout (docs/06 §Displays). Tamzen 6×12 is the matrix face:
 /// its caps are 5×7, the classic LCD cell.
 pub fn display(ui: *Ui, r: Rect, s: []const u8, o: DisplayOpts) void {
+    displayLines(ui, r, &.{s}, o);
+}
+
+/// A display of several rows, stacked and centred in the well.
+pub fn displayLines(ui: *Ui, r: Rect, lines: []const []const u8, o: DisplayOpts) void {
     const inner = ui.well(if (o.flush) seamed(ui, r) else r, style.well);
     const m = style.materials;
     const f = &ui.fonts.legend;
@@ -1182,30 +1187,34 @@ pub fn display(ui: *Ui, r: Rect, s: []const u8, o: DisplayOpts) void {
     const ch = CELL_H * k;
     const cells = @divFloor(inner.w - 2 * k, cw);
     if (cells <= 0) return;
-    const text_w = @min(f.measure(s) * k, cells * cw);
-    const x0 = inner.x + k + switch (o.align_) {
-        .left => 0,
-        .center => @divFloor(cells * cw - text_w, 2 * cw) * cw,
-        .right => cells * cw - text_w,
-    };
-    const y0 = inner.y + @divFloor(inner.h - ch, 2);
+    const rows: i32 = @intCast(lines.len);
+    const top = inner.y + @divFloor(inner.h - ch * rows, 2);
     ui.clip(inner);
-    // Ghost cells: the unlit 5×7 cap box of every cell.
-    if (o.ghost and m.ghost_alpha > 0) {
-        var i: i32 = 0;
-        while (i < cells) : (i += 1) ui.rect(Rect.xywh(inner.x + k + i * cw, y0 + 2 * k, 5 * k, 7 * k), o.color.alpha(m.ghost_alpha));
-    }
-    // Halo, then lit glyphs.
-    var pen = x0;
-    var it = font_mod.Utf8Iter{ .s = s };
-    while (it.next()) |cp| {
-        if (pen + cw > inner.right()) break;
-        const idx = f.index(cp);
-        const g = &f.glyphs[idx];
-        const halo = ui.art.display_halo[idx];
-        if (m.halo_alpha > 0 and halo.w > 0) ui.spriteScaled(halo, pen + (g.dx - 1) * k, y0 + (g.dy - 1) * k, k, o.color.alpha(m.halo_alpha));
-        if (g.src.w > 0) ui.spriteScaled(g.src, pen + g.dx * k, y0 + g.dy * k, k, o.color);
-        pen += g.advance * k;
+    for (lines, 0..) |s, row| {
+        const text_w = @min(f.measure(s) * k, cells * cw);
+        const x0 = inner.x + k + switch (o.align_) {
+            .left => 0,
+            .center => @divFloor(cells * cw - text_w, 2 * cw) * cw,
+            .right => cells * cw - text_w,
+        };
+        const y0 = top + @as(i32, @intCast(row)) * ch;
+        // Ghost cells: the unlit 5×7 cap box of every cell.
+        if (o.ghost and m.ghost_alpha > 0) {
+            var i: i32 = 0;
+            while (i < cells) : (i += 1) ui.rect(Rect.xywh(inner.x + k + i * cw, y0 + 2 * k, 5 * k, 7 * k), o.color.alpha(m.ghost_alpha));
+        }
+        // Halo, then lit glyphs.
+        var pen = x0;
+        var it = font_mod.Utf8Iter{ .s = s };
+        while (it.next()) |cp| {
+            if (pen + cw > inner.right()) break;
+            const idx = f.index(cp);
+            const g = &f.glyphs[idx];
+            const halo = ui.art.display_halo[idx];
+            if (m.halo_alpha > 0 and halo.w > 0) ui.spriteScaled(halo, pen + (g.dx - 1) * k, y0 + (g.dy - 1) * k, k, o.color.alpha(m.halo_alpha));
+            if (g.src.w > 0) ui.spriteScaled(g.src, pen + g.dx * k, y0 + g.dy * k, k, o.color);
+            pen += g.advance * k;
+        }
     }
     // Dot gaps: once a matrix dot spans 2+ device px, a 1-device-px
     // well-coloured mesh on every dot boundary turns solid glyphs into a
@@ -1215,10 +1224,11 @@ pub fn display(ui: *Ui, r: Rect, s: []const u8, o: DisplayOpts) void {
     if (dot_dev >= 2) {
         const gap = 1.0 / ds;
         const gap_col = style.well.alpha(200);
+        const h = ch * rows;
         var x: i32 = inner.x + k;
-        while (x < inner.right()) : (x += k) ui.frect(@as(f32, @floatFromInt(x + k)) - gap, @floatFromInt(y0), gap, @floatFromInt(ch), gap_col);
-        var y: i32 = y0;
-        while (y < y0 + ch) : (y += k) ui.frect(@floatFromInt(inner.x), @as(f32, @floatFromInt(y + k)) - gap, @floatFromInt(inner.w), gap, gap_col);
+        while (x < inner.right()) : (x += k) ui.frect(@as(f32, @floatFromInt(x + k)) - gap, @floatFromInt(top), gap, @floatFromInt(h), gap_col);
+        var y: i32 = top;
+        while (y < top + h) : (y += k) ui.frect(@floatFromInt(inner.x), @as(f32, @floatFromInt(y + k)) - gap, @floatFromInt(inner.w), gap, gap_col);
     }
     ui.unclip();
 }

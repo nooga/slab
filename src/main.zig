@@ -671,6 +671,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
+        const cpu_load = audio.takeLoad();
         const tres = transport_bar.draw(ui, uiRect(rects.top_bar), .{
             .transport = &transport,
             .meter_state = &meter_state,
@@ -685,6 +686,9 @@ pub fn main(init: std.process.Init) !void {
             .master_peak = .{ master.meter().l, master.meter().r },
             .master_volume = master.volume(),
             .auto_arm = auto_arm,
+            .pdc_latency = engine.master_latency.load(.monotonic),
+            .cpu_load = cpu_load.avg,
+            .cpu_peak = cpu_load.peak,
         });
         if (tres.auto_arm_toggle) {
             auto_arm = !auto_arm;
@@ -846,6 +850,7 @@ pub fn main(init: std.process.Init) !void {
             },
         }
 
+        machine_bay.sample_rate = transport.sample_rate;
         const mbres = machine_bay.draw(ui, rects.machine_bay, bay_dev, bay_idx, bay_is_bus, layout.machine_bay_collapsed, &reg, tracks);
         if (mbres.key_menu_fx) |uid| if (bay_idx) |ti| @import("ui/route_menu.zig").openKey(ti, uid, mbres.key_menu_at[0], mbres.key_menu_at[1]);
         if (mbres.minimize) layout.machine_bay_collapsed = !layout.machine_bay_collapsed;

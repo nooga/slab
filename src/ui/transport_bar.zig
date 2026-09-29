@@ -56,6 +56,12 @@ pub const Args = struct {
     master_volume: f32 = 1,
     /// Automation recording armed (docs/22 §Manual changes).
     auto_arm: bool = false,
+    /// How late the master output is, samples (docs/07 §PDC).
+    pdc_latency: u32 = 0,
+    /// DSP load, render time over the callback budget: smoothed, and the
+    /// worst callback since the last frame.
+    cpu_load: f32 = 0,
+    cpu_peak: f32 = 0,
 };
 
 const FILE_MENU_KEY: u64 = 0x5346494c45; // "SFILE"
@@ -135,6 +141,7 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     // between.
     logoTile(ui, bar.cutRight(logoW(bar.h)));
     if (bar.w >= MASTER_MIN_W) masterTile(ui, bar.cutRight(@min(MASTER_W, bar.w)), a, &res);
+    if (bar.w >= STATS_W) statsTile(ui, bar.cutRight(STATS_W), a);
     _ = ui.plate(bar, .{});
     return res;
 }
@@ -176,6 +183,39 @@ fn masterTile(ui: *Ui, r: Rect, a: Args, res: *Result) void {
     _ = body.cutRight(4);
     ctl.meterStereo(ui, body, "meter", a.master_peak, a.master_peak, .{ .horizontal = true });
     menu.tip(ui, row, "Master output (peak, dBFS)");
+}
+
+const STATS_W: i32 = 76;
+var peak_hold: f32 = 0;
+var cpu_shown: f32 = 0;
+var cpu_at: f64 = -1;
+var peak_at: f64 = 0;
+
+/// Engine stats, two small rows: delay compensation and DSP load.
+fn statsTile(ui: *Ui, r: Rect, a: Args) void {
+    const sr = a.transport.sample_rate;
+    const ms = @as(f32, @floatFromInt(a.pdc_latency)) * 1000 / @as(f32, @floatFromInt(@max(sr, 1)));
+    var pbuf: [16]u8 = undefined;
+    var cbuf: [16]u8 = undefined;
+    // The number changes twice a second, so it can be read.
+    if (ui.in.time - cpu_at >= 0.5 or ui.in.time < cpu_at) {
+        cpu_shown = a.cpu_load;
+        cpu_at = ui.in.time;
+    }
+    const cpu = @round(@min(cpu_shown, 9.99) * 100);
+    const rows = [_][]const u8{
+        std.fmt.bufPrint(&pbuf, "PDC {d:.1}ms", .{ms}) catch "PDC ?",
+        std.fmt.bufPrint(&cbuf, "CPU {d:.0}%", .{cpu}) catch "CPU ?",
+    };
+    // The worst callback, held a second so a spike is seen.
+    if (a.cpu_peak >= peak_hold or ui.in.time - peak_at > 1.0) {
+        peak_hold = a.cpu_peak;
+        peak_at = ui.in.time;
+    }
+    const hot = peak_hold >= 0.9;
+    ctl.displayLines(ui, r, &rows, .{ .align_ = .left, .flush = true, .color = if (hot) style.rec else style.vfd });
+    var tbuf: [140]u8 = undefined;
+    menu.tip(ui, r, std.fmt.bufPrint(&tbuf, "Delay compensation {d} smp ({d:.1} ms). DSP load {d:.0}%, peak {d:.0}% of the audio budget", .{ a.pdc_latency, ms, cpu, @round(@min(peak_hold, 9.99) * 100) }) catch "Engine stats");
 }
 
 fn fileLabel(buf: []u8, path: []const u8, chosen: bool, dirty: bool) []const u8 {

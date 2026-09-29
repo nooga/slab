@@ -69,6 +69,8 @@ pub const Result = struct {
 
 // The tracks and the edited track's index, for the KEY latch's label.
 var bay_tracks: []const Track = &.{};
+/// For the latency readouts in ms; main sets it from the transport.
+pub var sample_rate: u32 = 48_000;
 var bay_track_idx: ?usize = null;
 
 pub const TITLE_H: i32 = 20;
@@ -386,7 +388,10 @@ fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, fx: ?*const E
     _ = ctl.button(ui, name_r, "name-cap", null, .{ .flush = true, .disabled = true });
     ui.textIn(&ui.fonts.body_bold, Rect.xywh(name_r.x + 6, name_r.y, name_r.w - 8 - led_w, name_r.h - 1), name, if (ui.isHot(nid)) ui_style.text else ui_style.text_dim, .left, true);
     if (glow) |g| ctl.led(ui, name_r.right() - led_w - 2, name_r.y + @divFloor(name_r.h - 1 - 5, 2), .round5, if (g > 0.2) .on else .off, ui_style.led_green);
-    menu.tip(ui, name_r, if (is_inst) "Replace machine" else "Drag to reorder, click to replace");
+    const what: []const u8 = if (is_inst) "Replace machine" else "Drag to reorder, click to replace";
+    const lat = mach.latencySamples();
+    var lbuf: [96]u8 = undefined;
+    menu.tip(ui, name_r, if (lat == 0) what else std.fmt.bufPrint(&lbuf, "{s}. Latency {d} smp ({d:.1} ms)", .{ what, lat, latencyMs(lat, sample_rate) }) catch what);
     const replace_key = pane.keyFromIds(REPLACE_MENU_KEY, @intFromPtr(mach.state), 0);
     if (is_inst and nb.clicked and !menu.isOpen(replace_key)) {
         scanRegistryPresets(reg);
@@ -791,3 +796,6 @@ fn presetMenu(preset_rect: Rect, clicked: bool, mach: *const Machine) PresetActi
     return .{};
 }
 
+pub fn latencyMs(samples: u32, sr: u32) f32 {
+    return @as(f32, @floatFromInt(samples)) * 1000 / @as(f32, @floatFromInt(@max(sr, 1)));
+}

@@ -48,6 +48,24 @@ pub const Audio = struct {
     capture_fn: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     probe_counter: u32 = 0,
     probe_overruns: u32 = 0,
+    /// DSP load: render time over the callback's budget, smoothed, in
+    /// permille (the UI's CPU readout); `load_peak` holds the worst since
+    /// the UI last took it.
+    load: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    load_peak: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    load_avg: f32 = 0,
+
+    fn noteLoad(self: *Audio, ticks: u64, frames: u32) void {
+        noteLoadImpl(self, ticks, frames);
+    }
+
+    /// UI thread: the smoothed load and the peak since the last call, 0..1+.
+    pub fn takeLoad(self: *Audio) struct { avg: f32, peak: f32 } {
+        return .{
+            .avg = @as(f32, @floatFromInt(self.load.load(.monotonic))) / 1000,
+            .peak = @as(f32, @floatFromInt(self.load_peak.swap(0, .monotonic))) / 1000,
+        };
+    }
 
     pub fn init(self: *Audio) !void {
         self.render_ctx = std.atomic.Value(usize).init(0);
@@ -270,7 +288,9 @@ fn audioCallback(
     const render: RenderFn = @ptrFromInt(fn_raw);
     const probe = audioProbeEnabled();
     const t0 = if (probe) probeNowNs() else 0;
+    const tick0 = std.c.mach_absolute_time();
     render(ctx, out_f32, @intCast(frames));
+    self.noteLoad(std.c.mach_absolute_time() - tick0, frames);
     if (probe) {
         const elapsed_ns: i128 = probeNowNs() - t0;
         const budget_ns: i128 = @divTrunc(@as(i128, @intCast(frames)) * std.time.ns_per_s, SAMPLE_RATE);
@@ -308,6 +328,21 @@ fn requestedBlockFrames() u32 {
         64, 128, 256, 512, 1024 => parsed,
         else => BLOCK_FRAMES,
     };
+}
+
+var timebase: std.c.mach_timebase_info_data = .{ .numer = 0, .denom = 0 };
+
+fn noteLoadImpl(self: *Audio, ticks: u64, frames: u32) void {
+    if (timebase.denom == 0) _ = std.c.mach_timebase_info(&timebase);
+    const ns = @as(f64, @floatFromInt(ticks)) * @as(f64, @floatFromInt(timebase.numer)) / @as(f64, @floatFromInt(@max(timebase.denom, 1)));
+    const budget_ns = @as(f64, @floatFromInt(frames)) * 1e9 / @as(f64, @floatFromInt(self.device.sampleRate));
+    if (budget_ns <= 0) return;
+    const x: f32 = @floatCast(ns / budget_ns);
+    // A time constant of about half a second at 256-frame callbacks.
+    self.load_avg += (x - self.load_avg) * 0.01;
+    self.load.store(@intFromFloat(@min(self.load_avg, 4) * 1000), .monotonic);
+    const p: u32 = @intFromFloat(@min(x, 4) * 1000);
+    if (p > self.load_peak.load(.monotonic)) self.load_peak.store(p, .monotonic);
 }
 
 fn probeNowNs() i128 {
