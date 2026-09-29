@@ -62,6 +62,7 @@ test {
     _ = @import("ui/automation_lane.zig");
     _ = @import("ui/lane_targets.zig");
     _ = @import("ui/arrangement.zig");
+    _ = @import("ui/follow.zig");
 }
 
 const MAX_TRACKS: usize = @import("routing.zig").MAX_TRACKS;

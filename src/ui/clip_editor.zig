@@ -36,6 +36,7 @@ const machine_mod = @import("../machine.zig");
 const automation = @import("../automation.zig");
 const auto_lane = @import("automation_lane.zig");
 const lane_targets = @import("lane_targets.zig");
+const follow_mod = @import("follow.zig");
 const clip_mod = @import("../clip.zig");
 const Clip = clip_mod.Clip;
 const Note = clip_mod.Note;
@@ -189,6 +190,7 @@ var mode: Mode = .draw;
 var px_per_beat: f32 = 24;
 var row_h: f32 = 10;
 var scroll_x: f32 = 0;
+var follow: follow_mod.Follow = .{};
 var scroll_y: f32 = 0;
 var initialized_scroll: bool = false;
 // Live meter map + the edited clip's absolute start beat, captured per
@@ -749,6 +751,16 @@ fn drawPianoRoll(
     initScrollIfNeeded(grid_rect, clip.*);
     handleWheel(grid_rect, clip.*, m);
     clampScroll(grid_rect, clip.*);
+    const local_play: ?f64 = if (play_beat) |b| b - clip.start_beat else null;
+    const in_clip = if (local_play) |lb| lb >= 0 and lb < clip.length_beats else false;
+    follow.step(
+        &scroll_x,
+        if (in_clip) @as(f32, @floatCast(local_play.?)) * px_per_beat else null,
+        grid_rect.width,
+        @max(0, @as(f32, @floatCast(clip.length_beats)) * px_per_beat - grid_rect.width),
+        c.rl.GetFrameTime(),
+        pane.hasActiveDrag() and pane.contains(r, m.x, m.y),
+    );
 
     drawRuler(ui, ruler_rect, grid_rect, edit_snap);
     drawKeyboard(ui, kbd_rect);
@@ -821,6 +833,7 @@ fn drawPianoRoll(
 
 fn initScrollIfNeeded(grid: c.rl.Rectangle, clip: Clip) void {
     if (initialized_scroll) return;
+    follow.reset();
     const rows = @as(f32, @floatFromInt(rowCount()));
     px_per_beat = minPxPerBeat(grid, clip);
     if (collapsed()) {

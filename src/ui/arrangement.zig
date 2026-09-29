@@ -38,6 +38,7 @@ const automation = @import("../automation.zig");
 const auto_lane = @import("automation_lane.zig");
 const machine_mod = @import("../machine.zig");
 const lane_targets = @import("lane_targets.zig");
+const follow_mod = @import("follow.zig");
 
 /// Lane height and track-header width (logical px).
 pub const LANE_H: f32 = 52;
@@ -196,6 +197,7 @@ var cur_bpm: f64 = 120;
 var default_meter_pts = [_]meter_mod.MeterPoint{.{ .start_bar = 0, .numerator = 4, .denominator = 4 }};
 var cur_meter: meter_mod.MeterMap = .{ .points = &default_meter_pts };
 var scroll_x: f32 = 0;
+var follow: follow_mod.Follow = .{};
 var scroll_y: f32 = 0;
 var last_scroll_time: f64 = 0;
 
@@ -734,6 +736,15 @@ pub fn draw(
 
     clampScroll(content_beats, timeline_w);
     clampScrollY(contentH(tracks), lanes_h);
+    const timeline_zone = pane.rect(timeline_x, r.y, timeline_w, lanes_bottom - r.y);
+    follow.step(
+        &scroll_x,
+        if (transport.isPlaying()) @as(f32, @floatCast(transport.beats())) * px_per_beat else null,
+        timeline_w - (timeline_x0 - timeline_x),
+        maxScrollX(content_beats, timeline_w),
+        c.rl.GetFrameTime(),
+        pane.hasActiveDrag() and pane.contains(timeline_zone, m.x, m.y),
+    );
 
     // ── Ruler ────────────────────────────────────────────────────────
     ui.clip(bridge.fromRl(ruler_rect));
@@ -1140,8 +1151,12 @@ fn selectedClipRange(tracks: []Track) ?struct { start: f64, end: f64 } {
     return if (found) .{ .start = start, .end = end } else null;
 }
 
+fn maxScrollX(content_beats: f64, timeline_w: f32) f32 {
+    return @max(0.0, @as(f32, @floatCast(content_beats)) * px_per_beat - timeline_w);
+}
+
 fn clampScroll(content_beats: f64, timeline_w: f32) void {
-    const max_sx = @max(0.0, @as(f32, @floatCast(content_beats)) * px_per_beat - timeline_w);
+    const max_sx = maxScrollX(content_beats, timeline_w);
     if (scroll_x < 0) scroll_x = 0;
     if (scroll_x > max_sx) scroll_x = max_sx;
 }

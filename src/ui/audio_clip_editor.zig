@@ -7,6 +7,7 @@
 //! with on-waveform handles, and the trimmed + faded regions are shaded.
 
 const std = @import("std");
+const follow_mod = @import("follow.zig");
 const c = @import("../c.zig");
 const pane = @import("pane_input.zig");
 const menu = @import("menu.zig");
@@ -45,6 +46,7 @@ fn ctrlH() f32 {
 // Beat-axis view state (persisted across frames, refit when the clip changes).
 var px_per_beat: f32 = 48;
 var scroll_x: f32 = 0;
+var follow: follow_mod.Follow = .{};
 var view_key: u64 = 0;
 
 pub fn draw(
@@ -100,6 +102,7 @@ pub fn draw(
         view_key = key;
         px_per_beat = fitPx(grid, source_beats);
         scroll_x = 0;
+        follow.reset();
     }
     handleWheel(grid, source_beats, m);
     clampView(grid, source_beats);
@@ -111,6 +114,21 @@ pub fn draw(
     const win_d1 = win_d0 + clip.audio.dur_sec;
     const ws_b = win_d0 / sec_per_beat;
     const we_b = win_d1 / sec_per_beat;
+
+    // Where the transport is in the source, while it plays inside the clip.
+    const play_src_b: ?f64 = if (play_beat) |b| blk: {
+        const local = b - clip.start_beat;
+        if (local < 0 or local >= clip.length_beats) break :blk null;
+        break :blk ws_b + (we_b - ws_b) * local / @max(0.001, clip.length_beats);
+    } else null;
+    follow.step(
+        &scroll_x,
+        if (play_src_b) |pb| @as(f32, @floatCast(pb)) * px_per_beat else null,
+        grid.width,
+        @max(0, @as(f32, @floatCast(source_beats)) * px_per_beat - grid.width),
+        c.rl.GetFrameTime(),
+        pane.hasActiveDrag() and pane.contains(r, m.x, m.y),
+    );
 
     // ── Ruler ────────────────────────────────────────────────────────
     ui.clip(bridge.fromRl(ruler_rect));
@@ -185,13 +203,10 @@ pub fn draw(
 
     // The transport's position while it plays inside the clip, mapped
     // into the played window (ruler through grid).
-    if (play_beat) |b| {
-        const local = b - clip.start_beat;
-        if (local >= 0 and local < clip.length_beats) {
-            const px = beatToX(grid, ws_b + (we_b - ws_b) * local / @max(0.001, clip.length_beats));
-            if (px >= grid.x and px < grid.x + grid.width)
-                ui.rect(frect(@floor(px), ruler_rect.y, 1, grid.y + grid.height - ruler_rect.y), ui_style.accent);
-        }
+    if (play_src_b) |pb| {
+        const px = beatToX(grid, pb);
+        if (px >= grid.x and px < grid.x + grid.width)
+            ui.rect(frect(@floor(px), ruler_rect.y, 1, grid.y + grid.height - ruler_rect.y), ui_style.accent);
     }
 
     // ── Minimap overview ─────────────────────────────────────────────
