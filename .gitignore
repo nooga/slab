@@ -17,3 +17,7 @@ machines/unfairlight/presets/cmi-*/
 machines/rack/presets/cmi-*/
 machines/rack/presets/multi-*/
 machines/sampler/presets/drums/
+
+# tributes read their notes from a MIDI file the user owns; the rendered
+# project carries those notes, so it stays local
+songs/*_tribute.slab
