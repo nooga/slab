@@ -31,8 +31,16 @@
   operator with a 14-bit magnitude, a linear 16-bit DAC with no gain
   ranging, and a gentler 20 kHz filter.
 
-  The DX7's 49,096 Hz sample rate is not modelled: FM-86 runs at the
-  host's. )
+  Both engines also take the feedback of ALGO 4 and 6 round the loop the
+  DX7's algorithm chart draws [OP4, OP5 back to OP6; fm86-voice-step-dx],
+  where msfa has OP6 feed itself.  At high levels and FBK 7 the ALGO 4
+  loop turns to noise, as players report of the instrument; that is
+  lore, not a measurement.
+
+  Not modelled: the DX7's 49,096 Hz sample rate [FM-86 runs at the
+  host's], and the "buzz" Dexed's authors hear on hardware that no
+  engine reproduces - its cause isn't documented, so it waits for a
+  recording to measure against. )
 
 include "../00-primitives/math.fy"
 

@@ -75,6 +75,9 @@ ustruct: Fm86State
   f64 lrnd     ( S&H generator )
   ( the DX7 engines' reconstruction filter, two biquads )
   f64 z1 f64 z2 f64 z3 f64 z4
+  ( the DX7 engines' feedback loop through OP4 [ALGO 4] or OP5 [ALGO 6]:
+    the loop end's last two outputs )
+  f64 lf1 f64 lf2
 ;
 
 ustruct: DxOpP
@@ -121,6 +124,7 @@ ustruct: Fm86Params
     into and out of the DAC [the carriers divided by their count], which
     DAC, and the reconstruction filter's two sections )
   f64 opbits f64 dacin f64 dacout f64 v2
+  f64 fbloop f64 fbl4   ( 1: OP6's feedback comes round a loop; 1: from OP4, else OP5 )
   f64 fa0 f64 fa1 f64 fa2 f64 fa3 f64 fa4
   f64 fb0q f64 fb1q f64 fb2q f64 fb3q f64 fb4q
 ;
@@ -414,10 +418,14 @@ dsp: dxv-ramp | o:DxOpS -- a |
   a
 ;
 
-( o inc mod att fb bits -- out : one operator sample through the chip's
-  log-sine and exponent ROMs [fm-op-step's feedback and phase]. )
-dsp: dxv-op-step | o:DxOpS inc mod att fb bits -- out |
-  o.fb1 o.fb2 f+ 0.5 f* fb f* | fbm |
+( o fb -- fbm : an operator's own feedback, the DX two-sample average. )
+dsp: dxv-fb | o:DxOpS fb -- m |
+  o.fb1 o.fb2 f+ 0.5 f* fb f*
+;
+
+( o inc mod att fbm bits -- out : one operator sample through the chip's
+  log-sine and exponent ROMs; fbm is its feedback modulation. )
+dsp: dxv-op-step | o:DxOpS inc mod att fbm bits -- out |
   o.phase mod f+ fbm f+  att bits dxc-op | y |
   o.fb1 -> o.fb2
   y -> o.fb1
@@ -445,22 +453,28 @@ dsp: fm86-voice-step-dx | s:Fm86State p:Fm86Params -- out |
   s.op3& dxv-ramp | a2 |
   s.op2& dxv-ramp | a1 |
   s.op1& dxv-ramp | a0 |
-  s.op6&  s.op6& dx-oinc  0.0  a5 p.fb5 bits dxv-op-step | out5 |
+  ( OP6's feedback: its own, or on ALGO 4 and 6 the loop's end [the
+    DX7's algorithm chart draws the line from OP4, from OP5] )
+  s.lf1 s.lf2 f+ 0.5 f* p.fb5 f* | lfm |
+  p.fbloop 0.5 f>  lfm  s.op6& p.fb5 dxv-fb  select | fb6 |
+  s.op6&  s.op6& dx-oinc  0.0  a5 fb6 bits dxv-op-step | out5 |
   s.op5&  s.op5& dx-oinc
     p.w45 out5 f*
-    a4 p.fb4 bits dxv-op-step | out4 |
+    a4 s.op5& p.fb4 dxv-fb bits dxv-op-step | out4 |
   s.op4&  s.op4& dx-oinc
     p.w34 out4 f* p.w35 out5 f* f+
-    a3 p.fb3 bits dxv-op-step | out3 |
+    a3 s.op4& p.fb3 dxv-fb bits dxv-op-step | out3 |
+  s.lf1 -> s.lf2
+  p.fbl4 0.5 f>  out3 out4 select -> s.lf1
   s.op3&  s.op3& dx-oinc
     p.w23 out3 f* p.w24 out4 f* f+ p.w25 out5 f* f+
-    a2 p.fb2 bits dxv-op-step | out2 |
+    a2 s.op3& p.fb2 dxv-fb bits dxv-op-step | out2 |
   s.op2&  s.op2& dx-oinc
     p.w12 out2 f* p.w13 out3 f* f+ p.w14 out4 f* f+ p.w15 out5 f* f+
-    a1 p.fb1 bits dxv-op-step | out1 |
+    a1 s.op2& p.fb1 dxv-fb bits dxv-op-step | out1 |
   s.op1&  s.op1& dx-oinc
     p.w01 out1 f* p.w02 out2 f* f+ p.w03 out3 f* f+ p.w04 out4 f* f+ p.w05 out5 f* f+
-    a0 p.fb0 bits dxv-op-step | out0 |
+    a0 s.op1& p.fb0 dxv-fb bits dxv-op-step | out0 |
   p.c0 out0 f*
   p.c1 out1 f* f+
   p.c2 out2 f* f+

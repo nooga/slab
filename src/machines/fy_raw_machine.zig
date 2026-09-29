@@ -4180,6 +4180,35 @@ test "FM-86's DX7 engines keep MODERN's level and add the chips' noise" {
     try testing.expect(res_quiet[1] > res_quiet[2] + 3); // the DX7 II is cleaner
 }
 
+fn fm86Crossings(x: []const f32) usize {
+    var n: usize = 0;
+    for (x[1..], x[0 .. x.len - 1]) |b, a| {
+        if ((a < 0) != (b < 0)) n += 1;
+    }
+    return n;
+}
+
+test "FM-86's DX7 engines take OP6's feedback round the ALGO 4 loop" {
+    // The DX7's chart draws ALGO 4's feedback from OP4 back to OP6: at
+    // full levels and FBK 7 the three-operator loop runs into noise, where
+    // MODERN [msfa, OP6 feeding itself] stays a tone. ALGO 5 has no loop,
+    // so it keeps MODERN's character on DX7 II.
+    const buf = try testing.allocator.alloc(f32, 24_000);
+    defer testing.allocator.free(buf);
+    var zc: [2][2]usize = undefined; // [algo 4, algo 5][MODERN, DX7 II]
+    for ([_]f64{ 4, 5 }, 0..) |algo, ai| {
+        for ([_]f64{ 0, 2 }, 0..) |eng, ei| {
+            const inst = try fm86Patch(&.{ .{ "algo", algo }, .{ "feedback", 7 }, .{ "op4-ol", 99 }, .{ "op5-ol", 80 }, .{ "op6-ol", 80 }, .{ "engine", eng } });
+            defer inst.machineInterface().deinit.?(inst, testing.allocator);
+            fm86Note(inst, 60, 0.8, 0.5, buf);
+            zc[ai][ei] = fm86Crossings(buf[2400..21600]);
+        }
+    }
+    try testing.expect(zc[0][1] > 5 * zc[0][0]);
+    try testing.expect(zc[1][1] * 2 < zc[1][0] * 3);
+    try testing.expect(zc[1][0] * 2 < zc[1][1] * 3);
+}
+
 // Renders `out.len` frames of FM-86 in blocks cycling through `sizes`, with a
 // chord on at frame 100 and off at frame 12_000 (absolute).
 fn fm86RenderBlocks(out: []f32, sizes: []const usize) !void {

@@ -132,6 +132,10 @@ dsp: fm86-derive
     divided by their count, full scale 2 )
   params.engine 1.5 f> mask>f | v2 |
   v2 -> params.v2
+  ( feedback round a loop, as the DX7 chart draws ALGO 4 [OP6 -> OP5 ->
+    OP4 -> back to OP6] and ALGO 6 [OP6 -> OP5 -> back] )
+  params.engine 0.5 f>  params.algo 4.0 f=  params.algo 6.0 f=  or  and mask>f -> params.fbloop
+  params.algo 4.0 f= mask>f -> params.fbl4
   v2 0.5 f>  16384.0  4096.0  select -> params.opbits
   derive-data rb 36.0 f+ f@i  derive-data rb 37.0 f+ f@i f+  derive-data rb 38.0 f+ f@i f+
   derive-data rb 39.0 f+ f@i f+  derive-data rb 40.0 f+ f@i f+  derive-data rb 41.0 f+ f@i f+
