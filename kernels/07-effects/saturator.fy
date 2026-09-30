@@ -1,19 +1,39 @@
-( saturator.fy - the saturation box: six characters, 4x oversampled.
+( saturator.fy - the saturation box: eight characters, 4x oversampled.
 
-  in -> DRIVE -> up4 -> shape x4 -> dec4 -> DC block -> TONE -> OUT, MIX
-                  |                ^
-                  +-> |x| -> heat -+  SAG: bias shift
+  in -> PRE -> DRIVE -> up4 -> shape x4 -> dec4 -> POST -> DC -> TONE -> OUT
+                         |                ^                      MIX with dry
+                         +-> |x| -> heat -+  SAG: bias shift
 
   The curve is the parametric shaper in 02-shapers/shapers.fy; MODE picks
   its constants once per block:
 
-    mode         bias  even  hard  knee  neg    character
-    TUBE         0.25  0.15  1.0   1.0   1.0    asymmetric, even harmonics
-    TAPE         0     0     1.0   0     1.0    soft algebraic shoulder
-    XFMR         0.05  0.08  1.0   0.6   1.0    mild, fuller lows
-    DIODE        0     0     2.0   1.0   0.45   hard knee, lopsided
-    FUZZ         0.3   0.3   4.0   1.0   0.6    sulfur: square-ish, gated
-    VALVE        the triode curve [shapers.fy]        hard top, soft bottom
+    mode    bias  even  hard  knee  neg   extra      character
+    TUBE    0.25  0.15  1.0   1.0   1.0              asymmetric, even harmonics
+    TAPE    0     0     1.0   0     1.0              soft algebraic shoulder
+    XFMR    0.05  0.08  1.0   0.6   1.0              mild, fuller lows
+    DIODE   0     0     2.0   1.0   0.45             hard knee, lopsided
+    FUZZ    0.3   0.3   4.0   1.0   0.6              sulfur: square-ish, gated
+    VALVE   -1.0              0.35 in  valve 1       the triode: hard top,
+                                                     soft bottom
+    RAIL    0.03  0     3.0   1.0   1.0   clip 0.22  tanh stage into the rails
+    FOLD    0.1   0     1.0               fold 1     sine folder, buzz
+
+  PRE and POST are the filtering around the nonlinearity, which is where
+  most of each type's sound lives [a low shelf, a high shelf and a bell
+  before; the shelves, a bell and a lowpass after].  COLOR scales them
+  all, in dB; at 0 the box is wide band.  At COLOR 1:
+
+    mode    pre                        post                      why
+    TUBE    lows -4 dB < 150 Hz        lows +3, LP 12 k          cathode bypass, Miller
+    TAPE    highs +8 dB > 3 kHz        highs -8, bump +3 @ 70,   pre/de-emphasis: highs
+                                       LP 15 k                   saturate first; head bump
+    XFMR    lows +10 dB < 180 Hz       lows -10, LP 16 k         flux: lows saturate first
+    DIODE   lows -12 < 700, +4 @ 900   lows +6, LP 5 k           the Screamer's mid push
+    FUZZ    -                          scoop -10 @ 900, LP 7 k   the Muff's tone stack
+    VALVE   lows -6 dB < 250 Hz        lows +3, LP 9 k           coupling caps, Miller
+    RAIL    lows -12 < 300, +6 @ 800   lows +6, scoop -8 @ 700,  tight high gain
+                                       LP 7 k
+    FOLD    -                          LP 14 k
 
   SAG is the valve's memory: the driven level, rectified and smoothed
   [20 ms up, 150 ms down, the grid charging its coupling cap fast and
@@ -22,7 +42,7 @@
   quieter [the sag] - and recovers over a few hundred ms after it.  The
   move is not renormalized; the DC blocker takes the offset it leaves.
   Each mode has its depth: FUZZ's starves the stage into gating and
-  sputter, VALVE's [scaled by its 0.35 input] runs toward blocking. 
+  sputter, VALVE's [scaled by its 0.35 input] runs toward blocking.
 
   Oversampling keeps the harmonics of a hard drive from folding back as
   inharmonic grit; the DC blocker takes out what the asymmetric modes
@@ -33,24 +53,73 @@ include "../00-primitives/math.fy"
 include "../00-primitives/oversample.fy"
 include "../02-shapers/shapers.fy"
 
+( ── the filters around the shaper ── )
+
+ustruct: Pole  f64 s ;
+ustruct: BellSt  f64 ic1  f64 ic2 ;
+ustruct: Bell  f64 a1  f64 a2  f64 a3  f64 m1 ;
+( a one-pole shelf: x + k LP[x] [low] or x + k [x - LP[x]] [high], its
+  pole placed so a shelf and its negative in dB cancel exactly )
+ustruct: Shelf  f64 G  f64 k ;
+
+( f sr -- G : a TPT one-pole's gain. )
+dsp: pole-G | f sr -- G |
+  f 3.141592653589793 f* sr f/ tan | g |
+  g 1.0 g f+ f/
+;
+
+( p G x -- y : TPT one-pole lowpass. )
+dsp: pole-lp | p:Pole G x -- y |
+  x p.s f- G f* | v |
+  v p.s f+ | y |
+  y v f+ -> p.s
+  y
+;
+
+( b f db q sr -- : an SVF bell [Simper]; 0 dB is an exact pass. )
+dsp: bell-set | b:Bell f db q sr -- |
+  db 0.025 f* 3.321928094887362 f* exp2 | A |
+  f 3.141592653589793 f* sr f/ tan | g |
+  1.0 q A f* f/ | k |
+  1.0  1.0 g g k f+ f* f+  f/ | a1 |
+  a1 -> b.a1
+  g a1 f* | a2 |
+  a2 -> b.a2
+  g a2 f* -> b.a3
+  k A A f* 1.0 f- f* -> b.m1
+;
+
+( st b x -- y )
+dsp: bell-tick | st:BellSt b:Bell x -- y |
+  x st.ic2 f- | v3 |
+  b.a1 st.ic1 f*  b.a2 v3 f*  f+ | v1 |
+  st.ic2  b.a2 st.ic1 f* f+  b.a3 v3 f* f+ | v2 |
+  v1 2.0 f* st.ic1 f- -> st.ic1
+  v2 2.0 f* st.ic2 f- -> st.ic2
+  x  b.m1 v1 f*  f+
+;
+
 ustruct: SatState
   f64 dc-x1   ( DC blocker previous input )
   f64 dc-y1   ( DC blocker previous output )
   f64 lp      ( tone lowpass state )
   f64 heat    ( SAG: the smoothed driven level )
   f64 d1  f64 d2  f64 d3  f64 d4  f64 d5   ( dry, delayed to meet the wet )
+  Pole pre-lo  Pole pre-hi  BellSt pre-bell
+  Pole post-lo  Pole post-hi  BellSt post-bell  Pole post-lp
   Up4 up
   Dec4 dec
 ;
 
 ustruct: SatParams
   ( user-facing )
-  f64 drive-db   ( 0..36 )
-  f64 mode       ( 0..4 switch )
+  f64 drive-db   ( 0..48 )
+  f64 mode       ( 0..7 switch )
   f64 tone-hz    ( tone lowpass cutoff )
   f64 mix        ( 0..1 )
   f64 out-db     ( -24..24 makeup )
   f64 sag        ( 0..1 )
+  f64 color      ( 0..1: the mode's filtering )
   ( derived - filled by sat-block-prepare )
   f64 drive-lin
   f64 out-lin
@@ -59,43 +128,98 @@ ustruct: SatParams
   f64 heat-down
   f64 sag-depth  ( SAG times the mode's depth, negative: down the curve )
   f64 lat        ( latency: the 4x halfband pair's, while any wet is mixed in )
+  Shelf pre-lo  Shelf pre-hi  Shelf post-lo  Shelf post-hi
+  f64 lp-G
+  Bell pre-bell
+  Bell post-bell
   Shape sh
 ;
 
-( m a b c d e f -- v : the mode's value of six. )
-dsp: pick6 | m a b c d e f -- v |
-  m 0.5 a  m 1.5 b  m 2.5 c  m 3.5 d  m 4.5 e f  fsel-lt fsel-lt fsel-lt fsel-lt fsel-lt
+( m a b c d e f g h -- v : the mode's value of eight. )
+dsp: pick8 | m a b c d e f g h -- v |
+  m 0.5 a  m 1.5 b  m 2.5 c  m 3.5 d  m 4.5 e  m 5.5 f  m 6.5 g h
+  fsel-lt fsel-lt fsel-lt fsel-lt fsel-lt fsel-lt fsel-lt
 ;
 
 ( tau sr -- k : one-pole coefficient for a time constant in seconds. )
 dsp: sat-coef | tau sr -- k |  1.0  -1.0 tau sr f* f/ exp  f- ;
 
-( ctx state params -- : gains, tone coefficient, and the mode's curve.
-  Heavier modes get a little less output so switching modes is fair. )
+( sh f db hi sr -- : a shelf of db at corner f, high if hi = 1.  The
+  pole sits at f / sqrt G [low] or f sqrt G [high]: the zero then lands
+  at the mirror point, and -db is the exact inverse. )
+dsp: shelf-set | sh:Shelf f db hi sr -- |
+  db db>lin | G |
+  G 1.0 f- -> sh.k
+  db 0.5 f* db>lin | r |
+  hi 0.5  f r f/  f r f*  fsel-lt  0.45 sr f* fmin  sr pole-G -> sh.G
+;
+
+( sh x p -- y : a low shelf with its state p. )
+dsp: shelf-lo | sh:Shelf x p -- y |  x  p sh.G x pole-lp sh.k f*  f+ ;
+
+( sh x p -- y : a high shelf. )
+dsp: shelf-hi | sh:Shelf x p -- y |  x  x p sh.G x pole-lp f-  sh.k f*  f+ ;
+
+( ctx state params -- : gains, filters, and the mode's curve.  The
+  makeup evens the modes out at the default drive. )
 dsp: sat-block-prepare | ctx:Ctx state params:SatParams -- |
   params.drive-db db>lin -> params.drive-lin
   params.mode | m |
-  params.out-db db>lin  m 0.7 1.0 1.0 1.2 1.0 0.5 pick6 f*  -> params.out-lin
-  params.tone-hz 6.283185307179586 f* ctx.sr f/ 0.0 1.0 fclamp -> params.tone-g
-  0.020 ctx.sr sat-coef -> params.heat-up
-  0.150 ctx.sr sat-coef -> params.heat-down
-  params.sag  m 0.5 0.3 0.4 0.5 1.0 1.4 pick6 f*  -1.0 f* -> params.sag-depth
+  params.color | c |
+  ctx.sr | sr |
+  params.out-db db>lin  m 0.7 0.795 0.741 0.73 1.62 0.538 3.424 0.794 pick8 f*  -> params.out-lin
+  params.tone-hz 6.283185307179586 f* sr f/ 0.0 1.0 fclamp -> params.tone-g
+  0.020 sr sat-coef -> params.heat-up
+  0.150 sr sat-coef -> params.heat-down
+  params.sag  m 0.5 0.3 0.4 0.5 1.0 1.4 0.6 0.8 pick8 f*  -1.0 f* -> params.sag-depth
   0.0 params.mix  OS4-LATENCY 0.0  fsel-lt -> params.lat
+  ( filters )
+  m 150.0 100.0 180.0 700.0 150.0 250.0 300.0 150.0 pick8 | lo-f |
+  params.pre-lo&   lo-f  m -4.0 0.0 10.0 -12.0 0.0 -6.0 -12.0 0.0 pick8 c f*  0.0 sr shelf-set
+  params.post-lo&  lo-f  m 3.0 0.0 -10.0 6.0 0.0 3.0 6.0 0.0 pick8 c f*  0.0 sr shelf-set
+  params.pre-hi&   3000.0  m 0.0 8.0 0.0 0.0 0.0 0.0 0.0 0.0 pick8 c f*  1.0 sr shelf-set
+  params.post-hi&  3000.0  m 0.0 -8.0 0.0 0.0 0.0 0.0 0.0 0.0 pick8 c f*  1.0 sr shelf-set
+  params.pre-bell&
+    m 1000.0 1000.0 1000.0 900.0 1000.0 1000.0 800.0 1000.0 pick8
+    m 0.0 0.0 0.0 4.0 0.0 0.0 6.0 0.0 pick8 c f*
+    0.7 sr bell-set
+  params.post-bell&
+    m 1000.0 70.0 1000.0 1000.0 900.0 1000.0 700.0 1000.0 pick8
+    m 0.0 3.0 0.0 0.0 -10.0 0.0 -8.0 0.0 pick8 c f*
+    0.7 sr bell-set
+  m 12000.0 15000.0 16000.0 5000.0 7000.0 9000.0 7000.0 14000.0 pick8 sr pole-G -> params.lp-G
   params.sh&
-    m 0.25 0.0 0.05 0.0 0.3 -1.0 pick6
-    m 0.15 0.0 0.08 0.0 0.3 0.0 pick6
-    m 1.0  1.0 1.0  2.0 4.0 0.35 pick6
-    m 1.0  0.0 0.6  1.0 1.0 1.0 pick6
-    m 1.0  1.0 1.0  0.45 0.6 1.0 pick6
-    m 0.0  0.0 0.0  0.0 0.0 1.0 pick6
+    m 0.25 0.0 0.05 0.0 0.3 -1.0 0.03 0.1 pick8
+    m 0.15 0.0 0.08 0.0 0.3 0.0 0.0 0.0 pick8
+    m 1.0  1.0 1.0  2.0 4.0 0.35 3.0 1.0 pick8
+    m 1.0  0.0 0.6  1.0 1.0 1.0 1.0 1.0 pick8
+    m 1.0  1.0 1.0  0.45 0.6 1.0 1.0 1.0 pick8
+    m 0.0  0.0 0.0  0.0 0.0 1.0 0.0 0.0 pick8
+    m 0.0  0.0 0.0  0.0 0.0 0.0 0.0 1.0 pick8
+    m 1000000.0 1000000.0 1000000.0 1000000.0 1000000.0 1000000.0 0.22 1000000.0 pick8
   shape-set
+;
+
+( state params x -- y : the mode's filtering before the drive. )
+dsp: sat-pre | state:SatState params:SatParams x -- y |
+  params.pre-lo& x state.pre-lo& shelf-lo | x1 |
+  params.pre-hi& x1 state.pre-hi& shelf-hi | x2 |
+  state.pre-bell& params.pre-bell& x2 bell-tick
+;
+
+( state params y -- z : and after the shaper. )
+dsp: sat-post | state:SatState params:SatParams y -- z |
+  params.post-lo& y state.post-lo& shelf-lo | y1 |
+  params.post-hi& y1 state.post-hi& shelf-hi | y2 |
+  state.post-bell& params.post-bell& y2 bell-tick | y3 |
+  y3  state.post-lp& params.lp-G y3 pole-lp y3 f-  params.color f*  f+
 ;
 
 ( io ctx state params -- : one saturator sample. )
 dsp: k-sat-tick | out:Io ctx state:SatState params:SatParams -- |
   out.in-l | dry |
   params.sh& | sh |
-  dry params.drive-lin f* | x |
+  state params dry sat-pre  params.drive-lin f* | x |
   ( SAG: follow the driven level, rising faster than it falls )
   x fabs | lvl |
   state.heat lvl  params.heat-up params.heat-down  fsel-lt | hk |
@@ -105,7 +229,8 @@ dsp: k-sat-tick | out:Io ctx state:SatState params:SatParams -- |
   0.0 off f+ sh shape-raw | y0 |
   state.up&  x  up4 | a b c d |
   state.dec&  a off y0 sh shape-at  b off y0 sh shape-at
-              c off y0 sh shape-at  d off y0 sh shape-at  dec4 | y |
+              c off y0 sh shape-at  d off y0 sh shape-at  dec4 | yd |
+  state params yd sat-post | y |
   ( DC blocker: dcy = y - x1 + R*y1 )
   y state.dc-x1 f-  0.9995 state.dc-y1 f* f+ | dcy |
   y   -> state.dc-x1

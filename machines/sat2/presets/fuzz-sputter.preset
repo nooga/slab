@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "sat2", "note": "FUZZ with full sag: a starved stage - notes gate and sputter as they decay", "params": {"sat-drive": 26, "sat-mode": 4, "sat-sag": 1.0, "sat-tone": 1800, "sat-mix": 1.0, "sat-out": 3.5}}
+{"schema": 1, "machine": "sat2", "note": "FUZZ with full sag: a starved stage - notes gate and sputter as they decay", "params": {"sat-drive": 26, "sat-mode": 4, "sat-sag": 1.0, "sat-tone": 1800, "sat-mix": 1.0, "sat-out": -0.5, "sat-color": 1.0}}

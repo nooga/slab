@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "sat2", "note": "TAPE driven hard in parallel: drums squashed and fattened, transients kept", "params": {"sat-drive": 18, "sat-mode": 1, "sat-sag": 0.2, "sat-tone": 9000, "sat-mix": 0.6, "sat-out": -4.0}}
+{"schema": 1, "machine": "sat2", "note": "TAPE driven hard in parallel: drums squashed and fattened, transients kept", "params": {"sat-drive": 18, "sat-mode": 1, "sat-sag": 0.2, "sat-tone": 9000, "sat-mix": 0.6, "sat-out": -2.0, "sat-color": 1.0}}

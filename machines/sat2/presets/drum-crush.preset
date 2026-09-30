@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "sat2", "note": "DIODE smashed, 30% wet: parallel crush for drum buses", "params": {"sat-drive": 28, "sat-mode": 3, "sat-sag": 0, "sat-tone": 6000, "sat-mix": 0.3, "sat-out": -1.5}}
+{"schema": 1, "machine": "sat2", "note": "DIODE smashed, 30% wet: parallel crush for drum buses", "params": {"sat-drive": 28, "sat-mode": 3, "sat-sag": 0, "sat-tone": 6000, "sat-mix": 0.3, "sat-out": 0.0, "sat-color": 0.6}}

@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "sat2", "note": "RAIL 30 dB: tight high-gain rhythm - lows held back going in, mids scooped after", "params": {"sat-drive": 30, "sat-mode": 6, "sat-sag": 0.2, "sat-color": 1.0, "sat-tone": 9000, "sat-mix": 1.0, "sat-out": 0.0}}

@@ -1,16 +1,20 @@
 ( shapers.fy - one parametric waveshaper for the whole saturation family.
 
-    u = x + bias + even x^2               bias and x^2 tilt the curve:
-                                          even harmonics, the tube warmth
+    u = x + bias + even x^2/[1 + x^2]     bias and x^2 tilt the curve:
+                                          even harmonics, the tube warmth;
+                                          the tilt saturates, so a huge
+                                          drive can't pin the curve
     u = u < 0 ? u neg : u                 a weaker negative side: diode
                                           and fuzz asymmetry
     y = knee * tanh[hard u] / hard        the tanh shoulder ...
       + [1 - knee] * u / sqrt[1 + u^2]    ... or the softer algebraic one
-    y = valve v + [1 - valve] y           v = 2 tanh[exp[3 hard u - 0.6]] - 1, the
-                                          triode: grid conduction clips the
+    y = valve v + fold f                  v = 2 tanh[exp[3 hard u - 0.6]] - 1, the
+    + [1 - valve - fold] y                triode: grid conduction clips the
                                           top hard, the bottom runs into
-                                          cutoff along a long soft tail
-  y = [y - y0] gain                     y0 = the same at x = 0, so the
+                                          cutoff along a long soft tail;
+                                          f = sin[pi/2 hard u], the folder
+  y = clamp[[y - y0] gain, +-clip]      a rail after the stage [RAIL];
+                                          y0 = the same at x = 0, so the
                                           curve passes through zero; gain
                                           = 1 / its slope there
 
@@ -29,6 +33,8 @@ ustruct: Shape
   f64 knee
   f64 neg
   f64 valve
+  f64 fold
+  f64 clip
   f64 y0
   f64 gain
 ;
@@ -41,11 +47,14 @@ dsp: valve-curve | u -- v |
 
 ( x sh -- y : the curve without the rest-point correction. )
 dsp: shape-raw | x sh:Shape -- y |
-  x sh.bias f+  x x f* sh.even f*  f+ | u0 |
+  x x f* | x2 |
+  x sh.bias f+  x2  1.0 x2 f+ f/  sh.even f*  f+ | u0 |
   u0 0.0  u0 sh.neg f*  u0  fsel-lt | u |
   u sh.hard f* tanh-fast  sh.hard f/  sh.knee f*
   u  1.0 u u f* f+ fsqrt  f/  1.0 sh.knee f- f*  f+ | y |
-  u sh.hard f* valve-curve sh.valve f*  y 1.0 sh.valve f- f*  f+
+  u sh.hard f* | uh |
+  uh valve-curve sh.valve f*  y 1.0 sh.valve f- sh.fold f- f*  f+
+  uh 0.5 f* sinpi sh.fold f*  f+
 ;
 
 ( x sh -- y )
@@ -57,17 +66,20 @@ dsp: shape | x sh:Shape -- y |
   [a bias shift]; y0 is its value at x = 0 there, so rest stays at 0.
   The slope isn't renormalized: moving off the rest point is the sag. )
 dsp: shape-at | x off y0 sh:Shape -- y |
-  x off f+ sh shape-raw  y0 f-  sh.gain f*
+  x off f+ sh shape-raw  y0 f-  sh.gain f*  sh.clip fneg sh.clip fclamp
 ;
 
-( sh bias even hard knee neg valve -- : set a shape and its rest point. )
-dsp: shape-set | sh:Shape bias even hard knee neg valve -- |
+( sh bias even hard knee neg valve fold clip -- : set a shape and its
+  rest point. )
+dsp: shape-set | sh:Shape bias even hard knee neg valve fold clip -- |
   bias -> sh.bias
   even -> sh.even
   hard -> sh.hard
   knee -> sh.knee
   neg  -> sh.neg
   valve -> sh.valve
+  fold -> sh.fold
+  clip -> sh.clip
   0.0 sh shape-raw -> sh.y0
   ( slope at rest, central difference; the negative side's slope for
     x < 0 is neg times this and stays that way on purpose )
