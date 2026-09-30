@@ -383,6 +383,74 @@ beat_at_k = ppq_position + k * (tempo_bpm / 60.0) / sample_rate
 Tempo changes: `tempo_bpm` is the tempo at `block_start`. For tempo
 ramps the host splits the block at the ramp endpoints, same pattern.
 
+## Idle skipping (implemented, 2026-09-30)
+
+An optimization: the host stops rendering an instrument or effect that
+has gone silent and has nothing coming, and feeds the rest of the chain
+silence in its place. A track with no notes in a section used to cost
+~1.8% of a core, and a sat2 fed silence ~6.5%, because every machine
+rendered every block. The same logic as the voice service's idle voices
+(docs/17 D6), one level up: whole machines instead of voices.
+
+**The toggle.** `Engine.idle_skip` (src/engine.zig), on by default. Off
+renders every machine every block, the way the engine worked before. On
+the command line, `slab --no-idle-skip` turns it off for the app and for
+`--render` bounces, so you can A/B the timing or the audio. With it off,
+renders are bit-exact with the old engine.
+
+**The rules** (`Engine.renderChunk`, `renderEffectsKeyed`):
+
+- *Silence* is a block peak at or under `IDLE_FLOOR`, 1e-6 (−120 dBFS).
+- *Instrument.* Skipped when no note event reaches it this block, no
+  note sounds in the clips from the block's start to 0.1 s past its end
+  (`IDLE_WAKE_AHEAD_S`), and its output has been silent for its hold.
+  It wakes 0.1 s ahead of its next note, so its smoothed controls (20 ms,
+  docs/22) settle on the automation before the note. It also wakes on any
+  event: note-offs after a seek, CCs, expression.
+- *Effect.* Skipped when its input, and its sidechain key if it has one,
+  is silent and its input and output have both been silent for its hold.
+  It wakes on the first block whose input isn't silent, and it renders
+  that block. While the track's instrument is awake for a note, every
+  effect on the track renders too, so the chain also sees the automation
+  before the note arrives.
+- *Hold* (`Machine.idleHold`): at least `IDLE_HOLD_S` (0.25 s), or the
+  machine's latency plus its tail if that is longer.
+- The master chain follows the effect rules. Buses follow them too: a bus
+  has no instrument, so its input is the only thing that wakes it.
+
+**Tail.** `Machine.tail` gives the longest the output can stay silent
+while the machine still holds sound it will play without new input. A
+delay's echo is the obvious case: a long gap, then the repeat. fy
+machines get the tail from the manifest automatically: it is the longest
+host buffer (`buffer`, e.g. delay2's 1.6 s ring and verb2's 0.9 s tank)
+plus `tail!` seconds. Declare `tail!` only for stored sound the buffers
+don't already cover. `-1.0 tail!` (`TAIL_FOREVER`) means never skip the
+machine: use it for one that makes sound from nothing, like a noise bed
+or a self-oscillating drone with no notes. A machine that holds sound
+without declaring it gets cut. The engine test "sound an effect keeps
+past its silent output" shows this with an echo.
+
+**What a sleeping machine misses.** It isn't called, so time stops for
+it. Free-running phases (LFOs, era's sample-and-hold clock) resume
+where they stopped, not where they would have been. So a render with
+the skip on can differ from one with it off, while both are valid.
+For example, era on a drum track shifts its decimation grid after every
+gap: −32 dBFS of difference in aliasing on songs/sweat_geometry. With
+era excluded, the rest of that song matches to −138 dBFS. Automation
+moving while a machine sleeps is picked up when it wakes (the 0.1 s
+wake-ahead covers instruments). A hot-patch to a sleeping machine runs
+at its next wake. For a new version meant to sound from silence, turn
+the toggle off or declare `-1.0 tail!`.
+
+**PDC** (docs/07) is unchanged. A skipped machine's latency still counts
+toward its track's, every tap history is written every block (silence
+from a skipped chain), and the hold covers latency, so a lookahead line
+is empty before its machine sleeps and delays correctly when it wakes.
+
+**Audio thread.** Only plain counters, no allocation or locks:
+`Track.inst_quiet`, `Effect.quiet`, and samples of silence (saturating).
+Replacing a machine resets its counter.
+
 ## Why one ctx pointer and not varargs
 
 - Stable ABI surface. Adding a field at the end (in `_reserved`)
@@ -401,6 +469,8 @@ ramps the host splits the block at the ramp endpoints, same pattern.
 - Respect `block_size`; respect `note_out_cap`.
 - Don't store pointers past return.
 - Don't touch anything outside `ctx` and the ranges it points to.
+- Silent output with no input means nothing is coming, unless the
+  machine declares a tail (see Idle skipping).
 
 Machines that hold to this run parallel-safely, render
 offline-identically to realtime, unit-test cleanly, and hot-reload

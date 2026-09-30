@@ -19,6 +19,17 @@ pub const MAX_EVENTS_PER_TRACK = 1024;
 /// it sounds (docs/22 §Note expression): 0.67 ms at 48 kHz.
 pub const EXPR_STEP: u32 = 32;
 
+/// Idle skipping (docs/04 §Idle skipping): a block whose peak is at or
+/// under this is silence (−120 dBFS).
+pub const IDLE_FLOOR: f32 = 1e-6;
+/// How long a machine's input and output must stay silent before it is
+/// skipped, unless its latency and tail are longer.
+const IDLE_HOLD_S: f32 = 0.25;
+/// An idle instrument wakes this far ahead of its next note, so its
+/// smoothed controls settle on the automation before the note (the
+/// smoothing is 20 ms, docs/22) and its chain renders with it.
+const IDLE_WAKE_AHEAD_S: f64 = 0.1;
+
 /// Fallback meter state (constant 4/4) used until the document installs
 /// its own. Module-level so the address is stable for the field default.
 var default_meter_state: meter.MeterState = .{};
@@ -67,6 +78,13 @@ pub const Engine = struct {
     master_fx_r: [MAX_BLOCK]f32 = undefined,
     /// What the output does past full scale [MasterClip].
     master_clip: MasterClip = .{},
+    /// Idle skipping (docs/04 §Idle skipping), an optimization: an
+    /// instrument with no note near and an effect whose input is silent,
+    /// both silent past their hold, aren't rendered and output silence
+    /// until a note or signal reaches them. Off renders every machine every
+    /// block: for A/B timing, or a machine meant to sound from nothing that
+    /// declares no `tail!`. `--no-idle-skip` on the command line.
+    idle_skip: bool = true,
 
     /// Routing (docs/23), double-buffered like track snapshots: the UI
     /// builds into the unpublished slot and flips; the audio thread holds
@@ -482,7 +500,7 @@ pub const Engine = struct {
 
         if (send_on) t.pulseNote();
         t.machine.render(t.machine.state, &ctx, l, r);
-        const rendered = renderEffects(t, ctx, l, r, fx_l_buf[0..n], fx_r_buf[0..n]);
+        const rendered = renderEffects(t, ctx, l, r, fx_l_buf[0..n], fx_r_buf[0..n], .{});
         const final_l = rendered.l;
         const final_r = rendered.r;
         const g = faderGains(t, snap, beat);
@@ -613,9 +631,25 @@ pub const Engine = struct {
 
             const track_probe = trackProbeEnabled();
             const inst_start = if (track_probe) probeNowNs() else 0;
+            // A note sounding or close keeps the whole track awake.
+            var wake = false;
             if (!node.is_bus) {
                 // Disabled instrument → feed silence into the effect chain.
-                if (t.isEnabled()) t.machine.render(t.machine.state, &ctx, l, r);
+                if (t.isEnabled()) {
+                    if (!self.idle_skip) {
+                        t.machine.render(t.machine.state, &ctx, l, r);
+                    } else {
+                        const ahead = IDLE_WAKE_AHEAD_S * bpm / 60.0;
+                        wake = n_events > 0 or notesNear(snap, beat_start, beat_end + ahead);
+                        const hold = t.machine.idleHold(@floatFromInt(sr), idleHoldSamples(sr));
+                        // Asleep: `l`/`r` stay silent.
+                        if (wake or hold == machine.TAIL_FOREVER or t.inst_quiet < hold) {
+                            t.machine.render(t.machine.state, &ctx, l, r);
+                            const loud = @max(blockPeak(l), blockPeak(r)) > IDLE_FLOOR;
+                            t.inst_quiet = if (wake or loud) 0 else t.inst_quiet +| frames;
+                        }
+                    }
+                }
                 // Audio clips mix on top of the instrument output, into the
                 // same planar L/R, so the track's insert chain processes the sum.
                 mixAudioClips(snap, block_start, frames, spb, sr, l, r);
@@ -638,7 +672,7 @@ pub const Engine = struct {
                 .lat_out = &self.lat_out,
                 .lat = self.lat_in[ti] + instLatency(t, node.is_bus),
             } else null;
-            const rendered = renderEffectsKeyed(t, ctx, l, r, fx_l_buf[0..frames], fx_r_buf[0..frames], keys);
+            const rendered = renderEffectsKeyed(t, ctx, l, r, fx_l_buf[0..frames], fx_r_buf[0..frames], keys, .{ .on = self.idle_skip, .wake = wake });
             const fx_ns = if (track_probe) probeNowNs() - fx_start else 0;
             // The chain may end in the scratch pair; the pre tap is `l`/`r`.
             if (rendered.l.ptr != l.ptr) {
@@ -780,7 +814,7 @@ pub const Engine = struct {
                     .ppq_position = 0,
                     .transport_state = if (self.transport.isPlaying()) .playing else .stopped,
                 };
-                const rendered = renderEffects(mb, base, l, r, self.master_fx_l[0..n], self.master_fx_r[0..n]);
+                const rendered = renderEffects(mb, base, l, r, self.master_fx_l[0..n], self.master_fx_r[0..n], .{ .on = self.idle_skip });
                 l = rendered.l;
                 r = rendered.r;
             }
@@ -1066,6 +1100,18 @@ fn instLatency(t: *const Track, is_bus: bool) u32 {
     return if (!is_bus and t.isEnabled()) t.machine.latencySamples() else 0;
 }
 
+/// Idle skipping for one chain (docs/04 §Idle skipping).
+const Idle = struct {
+    on: bool = false,
+    /// The track's instrument has a note sounding or close: every effect
+    /// renders, whatever its input.
+    wake: bool = false,
+};
+
+fn idleHoldSamples(sample_rate: u32) u32 {
+    return @intFromFloat(IDLE_HOLD_S * @as(f32, @floatFromInt(sample_rate)));
+}
+
 fn renderEffects(
     t: *Track,
     base_ctx: machine.MachineCtx,
@@ -1073,8 +1119,9 @@ fn renderEffects(
     src_r: []f32,
     scratch_l: []f32,
     scratch_r: []f32,
+    idle: Idle,
 ) RenderedPair {
-    return renderEffectsKeyed(t, base_ctx, src_l, src_r, scratch_l, scratch_r, null);
+    return renderEffectsKeyed(t, base_ctx, src_l, src_r, scratch_l, scratch_r, null, idle);
 }
 
 fn renderEffectsKeyed(
@@ -1085,7 +1132,9 @@ fn renderEffectsKeyed(
     scratch_l: []f32,
     scratch_r: []f32,
     keys: ?Keys,
+    idle: Idle,
 ) RenderedPair {
+    const default_hold = idleHoldSamples(@intFromFloat(base_ctx.sample_rate));
     var cur_l = src_l;
     var cur_r = src_r;
     var next_l = scratch_l;
@@ -1124,6 +1173,19 @@ fn renderEffectsKeyed(
             ctx.audio_in_count = 4;
         };
         lat += fx.mach.latencySamples();
+        // Its input (and key) silent: asleep past its hold, so the chain
+        // goes on from silence. Its PDC share stays counted above.
+        const quiet_in = idle.on and !idle.wake and @max(in_peak[0], in_peak[1]) <= IDLE_FLOOR and
+            (ctx.audio_in_count < 4 or @max(blockPeak(in_ports[2][0..cur_l.len]), blockPeak(in_ports[3][0..cur_l.len])) <= IDLE_FLOOR);
+        if (quiet_in) {
+            const hold = fx.mach.idleHold(base_ctx.sample_rate, default_hold);
+            if (hold != machine.TAIL_FOREVER and fx.quiet >= hold) {
+                @memset(cur_l, 0);
+                @memset(cur_r, 0);
+                fx.setIo(in_peak, .{ 0, 0 });
+                continue;
+            }
+        }
         // Retarget the instrument's lane view at this effect.
         var fx_view: snap_mod.AutoView = undefined;
         if (base_ctx.automation) |p| {
@@ -1134,7 +1196,9 @@ fn renderEffectsKeyed(
             ctx.automation = &fx_view;
         }
         fx.mach.render(fx.mach.state, &ctx, next_l, next_r);
-        fx.setIo(in_peak, .{ blockPeak(next_l), blockPeak(next_r) });
+        const out_peak = [2]f32{ blockPeak(next_l), blockPeak(next_r) };
+        fx.setIo(in_peak, out_peak);
+        if (idle.on) fx.quiet = if (quiet_in and @max(out_peak[0], out_peak[1]) <= IDLE_FLOOR) fx.quiet +| @as(u32, @intCast(cur_l.len)) else 0;
 
         const old_l = cur_l;
         const old_r = cur_r;
@@ -1339,6 +1403,21 @@ fn gatherEvents(
         }
     }.lt);
     return count;
+}
+
+/// Whether a note sounds anywhere in [lo, hi) beats (idle skipping).
+fn notesNear(snap: *const snap_mod.TrackSnapshot, lo: f64, hi: f64) bool {
+    for (snap.clips[0..snap.clip_count]) |clip| {
+        const clip_end = clip.start_beat + clip.length_beats;
+        if (clip_end <= lo or clip.start_beat >= hi) continue;
+        for (snap.notes[clip.notes_start..][0..clip.notes_count]) |note| {
+            if (note.start_beat >= clip.length_beats) continue;
+            const on = clip.start_beat + note.start_beat;
+            const off = @min(on + note.length_beats, clip_end);
+            if (on < hi and off > lo) return true;
+        }
+    }
+    return false;
 }
 
 /// Expression events for one bent note inside this block: at its note-on
@@ -2361,4 +2440,151 @@ test "PDC: a latent track, a direct one and a send to a return all land on the s
     eng.renderOffline(&out, 64, 0, null, null);
     try testing.expectEqual(@as(?usize, 0), onlyPeakAt(&out));
     try testing.expectEqual(@as(u32, 0), eng.master_latency.load(.monotonic));
+}
+
+const IdleTestMachines = struct {
+    /// Instrument: a linear decay from 1 at each note-on to exact silence
+    /// in 1000 samples. Counts its renders.
+    const Env = struct { env: f32 = 0, renders: usize = 0 };
+    fn env(e: *Env) machine.Machine {
+        var m = RouteTestMachines.dc(undefined);
+        m.name = "env";
+        m.state = e;
+        m.render = struct {
+            fn f(st: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []f32) void {
+                const s: *Env = @ptrCast(@alignCast(st));
+                s.renders += 1;
+                const evs = if (ctx.note_in) |p| p[0..ctx.note_in_count] else &[_]machine.NoteEvent{};
+                for (l, r, 0..) |*a, *b, i| {
+                    for (evs) |ev| if (ev.kind == .note_on and ev.sample_offset == i) {
+                        s.env = 1;
+                    };
+                    a.* = s.env;
+                    b.* = s.env;
+                    s.env = @max(0, s.env - 0.001);
+                }
+            }
+        }.f;
+        m.reset = struct {
+            fn f(st: *anyopaque) void {
+                const s: *Env = @ptrCast(@alignCast(st));
+                s.env = 0;
+            }
+        }.f;
+        return m;
+    }
+
+    /// Effect: its input, plus half of the first loud sample again `gap`
+    /// samples later - sound it plays after its output has been silent.
+    const Echo = struct { gap: u32, declare: u32 = 0, left: u32 = 0, val: f32 = 0, renders: usize = 0 };
+    fn echo(e: *Echo) machine.Machine {
+        var m = RouteTestMachines.dc(undefined);
+        m.name = "echo";
+        m.state = e;
+        m.render = struct {
+            fn f(st: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []f32) void {
+                const s: *Echo = @ptrCast(@alignCast(st));
+                s.renders += 1;
+                const ins = ctx.audio_in.?;
+                for (l, r, 0..) |*a, *b, i| {
+                    var y = ins[0][i];
+                    if (s.left > 0) {
+                        s.left -= 1;
+                        if (s.left == 0) y += s.val;
+                    } else if (ins[0][i] > 0.5) {
+                        s.val = ins[0][i] * 0.5;
+                        s.left = s.gap;
+                    }
+                    a.* = y;
+                    b.* = y;
+                }
+            }
+        }.f;
+        m.reset = struct {
+            fn f(st: *anyopaque) void {
+                const s: *Echo = @ptrCast(@alignCast(st));
+                s.left = 0;
+            }
+        }.f;
+        m.tail = struct {
+            fn f(st: *anyopaque, _: f64) u32 {
+                const s: *Echo = @ptrCast(@alignCast(st));
+                return s.declare;
+            }
+        }.f;
+        return m;
+    }
+};
+
+/// One track, notes at beats 0 and 4 (0.5 s apart at 120 bpm is 24000
+/// samples a beat), rendered for five beats.
+fn idleTestRender(alloc: std.mem.Allocator, idle_skip: bool, e: *IdleTestMachines.Env, fx: []const machine.Machine, out: []f32) !void {
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var tracks = [_]Track{try Track.init(alloc, "t", col, IdleTestMachines.env(e))};
+    defer for (&tracks) |*t| t.deinit(alloc);
+    tracks[0].setVolume(1.0);
+    for (fx, 0..) |m, i| try tracks[0].addEffect(alloc, m, @intCast(i));
+    var clip = @import("clip.zig").Clip.init("A", 0, 8);
+    try clip.addNote(alloc, .{ .pitch = 60, .start_beat = 0, .length_beats = 0.1, .velocity = 100 });
+    try clip.addNote(alloc, .{ .pitch = 60, .start_beat = 4, .length_beats = 0.1, .velocity = 100 });
+    try tracks[0].addClip(alloc, clip);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    tracks[0].publishSnapshot(&pool);
+    var transport = Transport{};
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks, .idle_skip = idle_skip };
+    try eng.initPdc(alloc);
+    defer eng.deinitPdc(alloc);
+    eng.publishRouting();
+    eng.renderOffline(out, out.len / 2, 0, null, null);
+}
+
+test "idle skipping: an instrument and a latent effect sleep between notes and the mix is bit-exact" {
+    const alloc = testing.allocator;
+    const frames = 5 * 24000;
+    const a = try alloc.alloc(f32, frames * 2);
+    defer alloc.free(a);
+    const b = try alloc.alloc(f32, frames * 2);
+    defer alloc.free(b);
+    var e_all = IdleTestMachines.Env{};
+    var d_all = PdcTestMachines.Delay{ .n = 10 };
+    try idleTestRender(alloc, false, &e_all, &.{PdcTestMachines.delay(&d_all)}, a);
+    var e_idle = IdleTestMachines.Env{};
+    var d_idle = PdcTestMachines.Delay{ .n = 10 };
+    try idleTestRender(alloc, true, &e_idle, &.{PdcTestMachines.delay(&d_idle)}, b);
+
+    try testing.expectEqualSlices(f32, a, b);
+    // The second note lands on its sample (a bounce drops the latency),
+    // at the centre pan's gain.
+    const c = @cos(@as(f32, std.math.pi / 4.0));
+    try testing.expectApproxEqAbs(c, b[96000 * 2], 1e-6);
+    // Awake: the first note and its hold (13 of 118 blocks), 0.1 s before
+    // the second note at 2 s to its hold's end (about 22 blocks).
+    const blocks = e_all.renders;
+    try testing.expect(e_idle.renders < blocks / 2);
+    try testing.expect(e_idle.renders > blocks / 5);
+}
+
+test "idle skipping: sound an effect keeps past its silent output plays when it declares a tail" {
+    const alloc = testing.allocator;
+    const frames = 5 * 24000;
+    const out = try alloc.alloc(f32, frames * 2);
+    defer alloc.free(out);
+    const gap = 18000; // past the 12000-sample default hold
+    const echo_at = gap; // the first loud sample is the note's first
+    for ([_]struct { skip: bool, declare: u32, heard: bool }{
+        .{ .skip = false, .declare = 0, .heard = true },
+        .{ .skip = true, .declare = gap, .heard = true },
+        .{ .skip = true, .declare = machine.TAIL_FOREVER, .heard = true },
+        // Undeclared, it is skipped before the echo: why the tail exists.
+        .{ .skip = true, .declare = 0, .heard = false },
+    }) |case| {
+        var e = IdleTestMachines.Env{};
+        var echo = IdleTestMachines.Echo{ .gap = gap, .declare = case.declare };
+        try idleTestRender(alloc, case.skip, &e, &.{IdleTestMachines.echo(&echo)}, out);
+        const heard = out[echo_at * 2] > 0.3; // 0.5 × the centre pan's 0.71
+        try testing.expectEqual(case.heard, heard);
+    }
 }

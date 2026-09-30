@@ -258,6 +258,12 @@ pub const TakeTouchFn = *const fn (state: *anyopaque) ?Touch;
 /// Audio thread, each block: how many samples later the output is than the
 /// input (docs/07 §PDC).
 pub const LatencyFn = *const fn (state: *anyopaque) u32;
+/// Audio thread: the longest the machine's output can stay silent while it
+/// still holds sound it will play without new input (a delay line's
+/// length), in samples at `sample_rate`; TAIL_FOREVER = never idle-skip it
+/// (docs/04 §Idle skipping).
+pub const TailFn = *const fn (state: *anyopaque, sample_rate: f64) u32;
+pub const TAIL_FOREVER: u32 = std.math.maxInt(u32);
 
 pub const NOTE_LABEL_TEXT = 23;
 
@@ -338,10 +344,22 @@ pub const Machine = struct {
     take_touch: ?TakeTouchFn = null,
     /// Delay compensation (docs/07 §PDC); none = no latency.
     latency: ?LatencyFn = null,
+    /// Idle skipping (docs/04 §Idle skipping); none = no stored sound
+    /// beyond the host's default hold.
+    tail: ?TailFn = null,
 
     pub fn latencySamples(self: *const Machine) u32 {
         const f = self.latency orelse return 0;
         return f(self.state);
+    }
+
+    /// How long the machine's input and output must both stay silent
+    /// before the host may stop rendering it: its latency and tail, at
+    /// least `default_hold`. TAIL_FOREVER: never.
+    pub fn idleHold(self: *const Machine, sample_rate: f64, default_hold: u32) u32 {
+        const tail = if (self.tail) |f| f(self.state, sample_rate) else 0;
+        if (tail == TAIL_FOREVER) return TAIL_FOREVER;
+        return @max(default_hold, self.latencySamples() +| tail);
     }
 
     pub fn controlCount(self: *const Machine) usize {

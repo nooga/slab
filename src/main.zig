@@ -375,12 +375,14 @@ fn applyPresetTo(t: *track_mod.Track, preset_idx: u16) void {
 /// `slab [project.slab] [--render out.wav]`: open a project at startup, or
 /// bounce it headless (no window, no audio device) and exit. `slab
 /// --gallery` opens the UI gallery (docs/06), no engine. `slab --describe
-/// out.json` dumps every machine's params (docs/19).
+/// out.json` dumps every machine's params (docs/19). `--no-idle-skip`
+/// renders every machine every block (docs/04 §Idle skipping).
 const Cli = struct {
     project: ?[]const u8 = null,
     render: ?[]const u8 = null,
     describe: ?[]const u8 = null,
     gallery: bool = false,
+    idle_skip: bool = true,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -396,6 +398,8 @@ pub fn main(init: std.process.Init) !void {
                 cli.describe = args.next() orelse return error.MissingDescribePath;
             } else if (std.mem.eql(u8, a, "--gallery")) {
                 cli.gallery = true;
+            } else if (std.mem.eql(u8, a, "--no-idle-skip")) {
+                cli.idle_skip = false;
             } else cli.project = a;
         }
     }
@@ -412,7 +416,7 @@ pub fn main(init: std.process.Init) !void {
 
     if (cli.gallery) return ui_gallery.run(alloc);
     if (cli.describe) |out| return describe_mod.run(alloc, out);
-    if (cli.render) |out| return renderHeadless(alloc, cli.project orelse return error.MissingProject, out);
+    if (cli.render) |out| return renderHeadless(alloc, cli.project orelse return error.MissingProject, out, cli.idle_skip);
 
     c.rl.SetConfigFlags(c.rl.FLAG_WINDOW_RESIZABLE | c.rl.FLAG_VSYNC_HINT | c.rl.FLAG_WINDOW_HIGHDPI);
     c.rl.InitWindow(1400, 860, "slab");
@@ -493,6 +497,7 @@ pub fn main(init: std.process.Init) !void {
         .tracks = tracks_buf[0..track_count],
         .master = &master,
         .meter_state = &meter_state,
+        .idle_skip = cli.idle_skip,
     };
     try engine.initPdc(alloc);
     defer engine.deinitPdc(alloc);
@@ -1879,7 +1884,7 @@ fn deleteTrack(
 
 /// Bounce `project` to `out` (24-bit WAV): every clip plus a 3 s tail,
 /// through the same engine and master soft clip as a DAW render.
-fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, out: []const u8) !void {
+fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, out: []const u8, idle_skip: bool) !void {
     var reg = registry_mod.Registry.init(alloc);
     defer reg.deinit();
     for (registry_mod.builtin_machines) |path| try reg.loadFyMachine(path);
@@ -1913,6 +1918,7 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, out: []const u8
         .tracks = tracks,
         .master = &master,
         .meter_state = &meter_state,
+        .idle_skip = idle_skip,
     };
     try engine.initPdc(alloc);
     defer engine.deinitPdc(alloc);

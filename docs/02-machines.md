@@ -100,6 +100,7 @@ machine: tal-u-no
     cv-out:     0
 
   latency:     0                  ( samples — for PDC; `offset latency!`, docs/04 )
+  tail:        0                  ( s of stored sound past silence; `tail!`, docs/04 §Idle skipping )
   oversample:  2                  ( host wraps process in 2× )
 
   panel:       \uno-draw \uno-events

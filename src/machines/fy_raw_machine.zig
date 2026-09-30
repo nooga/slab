@@ -675,6 +675,7 @@ pub const FyRawMachine = struct {
             .takes_expression = self.note_expr_caller != null,
             .takes_key = self.desc.sidechain,
             .latency = if (self.desc.latency_sel > 0) latencyImpl else null,
+            .tail = tailImpl,
             .control_count = controlCountImpl,
             .control_info = controlInfoImpl,
             .control_value = controlValueImpl,
@@ -1258,6 +1259,16 @@ fn latencyImpl(state: *anyopaque) u32 {
     const v: *align(1) const f64 = @ptrCast(&self.params_buf[off]);
     if (!(v.* > 0)) return 0;
     return @intFromFloat(@min(@ceil(v.*), 1e6));
+}
+
+/// Idle skipping (docs/04): the longest host buffer (a delay's ring can
+/// play back that long after it went quiet) plus the declared `tail!`.
+fn tailImpl(state: *anyopaque, sample_rate: f64) u32 {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    if (self.desc.tail_s < 0) return machine.TAIL_FOREVER;
+    var s = self.desc.tail_s;
+    for (self.desc.buffers[0..self.desc.buffer_count]) |b| s = @max(s, b.seconds + self.desc.tail_s);
+    return @intFromFloat(@min(@ceil(s * sample_rate), 1e9));
 }
 
 fn controlCountImpl(state: *anyopaque) usize {
@@ -6062,6 +6073,20 @@ test "limiter2, sat2 and funk report their latency to the host" {
         const mach = inst.machineInterface();
         defer mach.deinit.?(mach.state, testing.allocator);
         try testing.expectEqual(@as(u32, cs[1]), mach.latencySamples());
+    }
+}
+
+test "idle hold: a delay holds on for its ring, a limiter for its lookahead, an eq for the default" {
+    const cases = .{
+        .{ "machines/delay2/delay2.fy", 76_800 }, // the 1.6 s ring at 48 kHz
+        .{ "machines/limiter2/limiter2.fy", 576 + 97 }, // 12 ms ring + its latency
+        .{ "machines/eq2/eq2.fy", 100 },
+    };
+    inline for (cases) |cs| {
+        const inst = try FyRawMachine.create(testing.allocator, cs[0]);
+        const mach = inst.machineInterface();
+        defer mach.deinit.?(mach.state, testing.allocator);
+        try testing.expectEqual(@as(u32, cs[1]), mach.idleHold(48_000, 100));
     }
 }
 

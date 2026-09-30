@@ -351,6 +351,10 @@ pub const Desc = struct {
     /// Params byte offset + 1 of the f64 holding the machine's latency in
     /// samples (docs/07 §PDC); 0 = none.
     latency_sel: usize = 0,
+    /// Seconds of silent output past which the machine still plays stored
+    /// sound, beyond its buffers (docs/04 §Idle skipping); negative = never
+    /// idle-skip it.
+    tail_s: f64 = 0,
     // Generic derived-params hook: a dsp2 word (params derive-data --) the host
     // calls each block, plus an opaque machine-built data pointer. Lets a
     // machine keep all its specific logic in fy (e.g. FM-86 algorithm routing)
@@ -486,6 +490,7 @@ const MachineDescRaw = extern struct {
     control: Fy.Value,
     control_period: Fy.Value,
     latency: Fy.Value,
+    tail: Fy.Value,
 };
 
 const PageRaw = extern struct { next: Fy.Value, name: Fy.Value, rows: Fy.Value };
@@ -615,6 +620,7 @@ pub fn read(host: *FyHost) !Desc {
     d.render_lite_sel = @intCast(asInt(md.render_lite_sel));
     d.key_flag = @intCast(asInt(md.key_flag));
     d.latency_sel = @intCast(asInt(md.latency));
+    d.tail_s = asF64(md.tail);
     d.control_word_len = try copyBuf(d.control_word[0..], cstrSlice(md.control));
     d.control_period = @intCast(asInt(md.control_period));
     if (d.control_word_len > 0 and (d.mode != .voice_sample or d.control_period == 0)) return error.InvalidMachineDesc;

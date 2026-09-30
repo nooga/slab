@@ -77,6 +77,10 @@ struct: MachineDesc
   ptr latency        ( int: params byte offset + 1 of the f64 holding the
                        machine's latency in samples, kept current by its
                        derive or block-prepare word; 0 = none [docs/07 PDC] )
+  ptr tail           ( float seconds the output can stay silent while the
+                       machine still holds sound it will play unprompted,
+                       beyond its buffers; negative = never idle-skip it;
+                       0 = none [docs/04 Idle skipping] )
 ;
 
 struct: ControlDesc
@@ -196,6 +200,11 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   samples - how much later its output is than its input - which the host
   compensates on parallel paths [docs/07 PDC] )
 : latency!  ( offset -- )  1 + _mf-md@ MachineDesc.latency! drop ;
+( seconds tail! : the host keeps rendering the machine this long after its
+  input and output fall silent, on top of its buffers' length, which it
+  counts already [a delay's ring]; a negative time never lets it skip the
+  machine - one that makes sound from nothing [docs/04 Idle skipping] )
+: tail!  ( f -- )  _mf-md@ MachineDesc.tail! drop ;
 : render-lite!  ( str offset -- )
   _mf-md@ MachineDesc.render-lite-sel! drop
   cstr-new _mf-md@ MachineDesc.render-lite! drop ;

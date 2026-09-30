@@ -31,6 +31,10 @@ pub const Effect = struct {
     /// Block peaks the engine writes after each render and the bay's I/O
     /// meters read: in L, in R, out L, out R, as f32 bits.
     io_peak: [4]std.atomic.Value(u32) = [_]std.atomic.Value(u32){std.atomic.Value(u32).init(0)} ** 4,
+    /// Audio thread: samples its input and output have both been silent,
+    /// saturating; past the machine's hold it isn't rendered (docs/04
+    /// §Idle skipping).
+    quiet: u32 = 0,
 
     pub fn setIo(self: *Effect, in: [2]f32, out: [2]f32) void {
         const v = [4]f32{ in[0], in[1], out[0], out[1] };
@@ -86,6 +90,9 @@ pub const Track = struct {
     /// with the device stopped (see main.zig), so a realloc never races a
     /// render.
     effects: std.ArrayList(Effect) = .empty,
+    /// Audio thread: samples the instrument has been silent with no note
+    /// near, saturating (docs/04 §Idle skipping).
+    inst_quiet: u32 = 0,
 
     /// Clip list — UI-thread-owned. Audio thread reads via snapshot only.
     clips: std.ArrayList(clip_mod.Clip) = .empty,
@@ -179,6 +186,7 @@ pub const Track = struct {
             deinit_fn(self.machine.state, alloc);
         }
         self.machine = mach;
+        self.inst_quiet = 0;
     }
 
     pub fn addEffect(self: *Track, alloc: std.mem.Allocator, mach: machine.Machine, idx: u8) !void {
@@ -246,6 +254,7 @@ pub const Track = struct {
         if (slot.mach.deinit) |deinit_fn| deinit_fn(slot.mach.state, alloc);
         slot.mach = mach;
         slot.idx = idx;
+        slot.quiet = 0;
     }
 
     pub fn isBus(self: *const Track) bool {

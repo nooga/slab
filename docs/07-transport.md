@@ -215,7 +215,9 @@ source's pre-tap history. A late key instead makes the track's own input
 later (step 1 takes the max): a bus's feeds are delayed more, and an
 instrument track's chain input (instrument plus audio clips) is delayed
 through a third history tap. A track that doesn't render writes silence
-into its history, so un-muting it replays nothing stale.
+into its history, so un-muting it replays nothing stale. A machine the
+host skips while it's silent (docs/04 §Idle skipping) keeps its latency
+in the sums, and its track's history is written every block as usual.
 
 The UI shows `master_latency` in the transport bar while it isn't 0, and
 each latent device's share on hover over its name.
