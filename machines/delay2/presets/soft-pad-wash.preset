@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "delay2", "note": "Soft blurred pad delay", "params": {"delay-time": 0.55, "delay-fb": 0.6, "delay-damp": 3000, "delay-mix": 0.45}}
+{"schema": 1, "machine": "delay2", "note": "Soft blurred pad delay", "params": {"delay-time": 0.55, "delay-fb": 0.6, "delay-damp": 3000, "delay-mix": 0.45, "delay-char": 2, "delay-mode": 2, "delay-offset": 0.01, "delay-mod": 0.4, "delay-rate": 0.5}}

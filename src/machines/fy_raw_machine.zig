@@ -155,6 +155,9 @@ pub const FyRawMachine = struct {
     // Audio-thread smoothed knob positions (direct_f64 controls only) and
     // UI-thread snap requests: preset/project/param sets jump, drags glide.
     smooth_norm: [MAX_CONTROLS]f32 = [_]f32{0} ** MAX_CONTROLS,
+    // Set by a control edit (UI thread), taken by the engine's idle skip:
+    // a sleeping machine renders again so the edit reaches its params.
+    wake_req: std.atomic.Value(bool) = .init(false),
     snap_req: [MAX_CONTROLS]std.atomic.Value(bool) = [_]std.atomic.Value(bool){std.atomic.Value(bool).init(true)} ** MAX_CONTROLS,
     // Automation (docs/22). Audio thread: this chunk's lane value per
     // control, and whether a gliding control has caught up with its curve
@@ -618,7 +621,9 @@ pub const FyRawMachine = struct {
             const n: usize = @max(1, @as(usize, @intFromFloat(@ceil(req.seconds * BUFFER_SR))));
             const mem_l = try alloc.alloc(f64, n);
             errdefer alloc.free(mem_l);
-            const mem_r = try alloc.alloc(f64, n);
+            // A true-stereo effect runs one pass on region 0, so it gets
+            // one copy; a stereo kernel wanting two rings declares two.
+            const mem_r = try alloc.alloc(f64, if (self.desc.stereo) 0 else n);
             @memset(mem_l, 0);
             @memset(mem_r, 0);
             self.buffer_mem[bi] = .{ mem_l, mem_r };
@@ -637,7 +642,7 @@ pub const FyRawMachine = struct {
     // states. Must rerun after any state memset (reset).
     fn injectBuffers(self: *FyRawMachine) void {
         for (self.desc.buffers[0..self.desc.buffer_count], 0..) |*req, bi| {
-            for (0..2) |ch| {
+            for (0..@as(usize, if (self.desc.stereo) 1 else 2)) |ch| {
                 const mem = self.buffer_mem[bi][ch];
                 self.writeStateUsize(ch, req.ptr_offset, @intFromPtr(mem.ptr));
                 self.writeStateF64(ch, req.len_offset, @floatFromInt(mem.len));
@@ -694,6 +699,7 @@ pub const FyRawMachine = struct {
             .takes_key = self.desc.sidechain,
             .latency = if (self.desc.latency_sel > 0) latencyImpl else null,
             .tail = tailImpl,
+            .take_wake = takeWakeImpl,
             .control_count = controlCountImpl,
             .control_info = controlInfoImpl,
             .control_value = controlValueImpl,
@@ -899,11 +905,13 @@ pub const FyRawMachine = struct {
 
     pub fn setControlNorm(self: *FyRawMachine, idx: usize, value: f32) void {
         self.raw_control_bits[idx].store(@bitCast(std.math.clamp(value, 0.0, 1.0)), .monotonic);
+        self.wake_req.store(true, .release);
     }
 
     // Unclamped store — switches keep the selected index here, not a 0..1 norm.
     fn setControlRaw(self: *FyRawMachine, idx: usize, value: f32) void {
         self.raw_control_bits[idx].store(@bitCast(value), .monotonic);
+        self.wake_req.store(true, .release);
     }
 
     fn syncRawParams(self: *FyRawMachine, sample_rate: f64, tempo_bpm: f64) void {
@@ -1308,6 +1316,11 @@ fn tailImpl(state: *anyopaque, sample_rate: f64) u32 {
     var s = self.desc.tail_s;
     for (self.desc.buffers[0..self.desc.buffer_count]) |b| s = @max(s, b.seconds + self.desc.tail_s);
     return @intFromFloat(@min(@ceil(s * sample_rate), 1e9));
+}
+
+fn takeWakeImpl(state: *anyopaque) bool {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    return self.wake_req.swap(false, .acq_rel);
 }
 
 fn controlCountImpl(state: *anyopaque) usize {
@@ -2716,6 +2729,8 @@ fn drawDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void
         .meter => drawMeterDisplay(self, ui, r, disp),
         .response => drawResponseDisplay(self, ui, r),
         .dynamics => drawDynamicsDisplay(self, ui, r, disp),
+        .taps => drawTapsDisplay(self, ui, r, disp),
+        .decay => drawDecayDisplay(self, ui, r, disp),
         .algo => drawAlgoDisplay(self, ui, r, disp),
         .eg4 => drawEg4Display(self, ui, r, disp.sourceSlice()),
         .zones => drawZoneDisplay(self, ui, r, disp.sourceSlice()),
@@ -3108,6 +3123,222 @@ fn drawDynamicsDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Displ
     var tb: [16]u8 = undefined;
     const txt = std.fmt.bufPrint(&tb, "GR {d:.1}", .{gr}) catch "";
     ui.textIn(&ui.fonts.legend, Rect.xywh(plot_r.x + 3, plot_r.y + 2, plot_r.w, 10), txt, ui_style.vfd, .left, false);
+}
+
+// ── Delay repeat train ────────────────────────────────────────────────
+//
+// The repeats a single hit would make, from the derived tap times and
+// feedback: left taps up from the centre line, right taps down, each bar
+// the repeat's gain. The beat grid is the host tempo's quarter notes.
+
+const TAPS_MAX: usize = 32;
+
+fn drawTapsDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void {
+    const field = ui.well(r, ui_style.well);
+    if (field.w < 24 or field.h < 16) return;
+    // From the controls, as the kernel's block-prepare derives them, so it
+    // shows the settings while the transport is stopped too.
+    const pre = disp.sourceSlice();
+    const tempo = std.math.clamp(self.synced_tempo, 20, 999);
+    const beat = 60 / tempo;
+    const tl = if (prefixedValue(self, pre, "-sync", 0) >= 0.5)
+        std.math.clamp(beat * prefixedValue(self, pre, "-div", 0.5), 0.02, 1.5)
+    else
+        prefixedValue(self, pre, "-time", 0.36);
+    const tr = @max(tl * prefixedValue(self, pre, "-ratio", 1) + prefixedValue(self, pre, "-offset", 0), 0.0001);
+    const fb_knob = prefixedValue(self, pre, "-fb", 0.45);
+    const digital_clean = prefixedValue(self, pre, "-char", 0) < 0.5 and prefixedValue(self, pre, "-drive", 0) <= 0;
+    const fb = std.math.clamp(if (digital_clean) @min(fb_knob, 0.99) else fb_knob, 0, 1.1);
+    const mode = prefixedValue(self, pre, "-mode", 0);
+    const sr: f64 = 1000; // times below are in ms
+
+    // Taps: (time, gain, right side), in any order.
+    var taps: [TAPS_MAX]struct { t: f64, g: f64, right: bool } = undefined;
+    var n: usize = 0;
+    var g: f64 = 1;
+    var k: usize = 0;
+    while (n + 2 <= TAPS_MAX and g > 0.004 and k < TAPS_MAX) : (k += 1) {
+        const kf: f64 = @floatFromInt(k);
+        if (mode < 0.5) { // STEREO: two independent trains
+            taps[n] = .{ .t = (kf + 1) * tl, .g = g, .right = false };
+            taps[n + 1] = .{ .t = (kf + 1) * tr, .g = g, .right = true };
+            n += 2;
+        } else if (mode < 1.5) { // PING: L, then R one right-time later, ...
+            const pair = kf * (tl + tr);
+            taps[n] = .{ .t = pair + tl, .g = std.math.pow(f64, fb, 2 * kf), .right = false };
+            taps[n + 1] = .{ .t = pair + tl + tr, .g = std.math.pow(f64, fb, 2 * kf + 1), .right = true };
+            n += 2;
+            g = taps[n - 1].g;
+            continue;
+        } else { // WIDE: one ring, the right tap offset from the left
+            taps[n] = .{ .t = (kf + 1) * tl, .g = g, .right = false };
+            taps[n + 1] = .{ .t = tr + kf * tl, .g = g, .right = true };
+            n += 2;
+        }
+        g *= fb;
+    }
+    // Show about four of the longer repeats, at least one beat.
+    const span = @max(4 * @max(tl, tr), if (beat > 0) beat else 0);
+    ui.animate();
+    ui.clip(field);
+    defer ui.unclip();
+    const area = field.inset(2);
+    const ax: f32 = @floatFromInt(area.x);
+    const aw: f32 = @floatFromInt(area.w);
+    const mid = area.y + @divFloor(area.h, 2);
+    const half: f64 = @floatFromInt(@divFloor(area.h, 2) - 1);
+    const X = struct {
+        fn of(t: f64, s: f64, o: f32, w: f32) i32 {
+            return @intFromFloat(o + @as(f32, @floatCast(std.math.clamp(t / s, 0, 1))) * w);
+        }
+    };
+    // Beat grid: quarters dim, bars (4 beats) brighter, when they fit.
+    if (beat > 0 and beat / span * aw >= 4) {
+        var b: f64 = beat;
+        var i: usize = 1;
+        while (b < span) : ({
+            b += beat;
+            i += 1;
+        }) {
+            const col = if (i % 4 == 0) ui_style.vfd.alpha(48) else ui_style.vfd.alpha(22);
+            ui.rect(Rect.xywh(X.of(b, span, ax, aw), area.y, 1, area.h), col);
+        }
+    }
+    ui.rect(Rect.xywh(area.x, mid, area.w, 1), ui_style.vfd.alpha(40));
+    // The dry hit at 0.
+    ui.rect(Rect.xywh(area.x, mid - 3, 1, 7), ui_style.text);
+    for (taps[0..n]) |tp| {
+        if (tp.t > span) continue;
+        const h: i32 = @intFromFloat(@round(std.math.clamp(tp.g, 0, 1) * half));
+        if (h < 1) continue;
+        const x = X.of(tp.t, span, ax, aw);
+        if (tp.right) {
+            ui.rect(Rect.xywh(x - 1, mid + 1, 2, h), PENS[2]);
+        } else {
+            ui.rect(Rect.xywh(x - 1, mid - h, 2, h), ui_style.vfd);
+        }
+    }
+    var tb: [32]u8 = undefined;
+    const txt = std.fmt.bufPrint(&tb, "L {d:.0}  R {d:.0} ms", .{ tl * sr, tr * sr }) catch "";
+    ui.textIn(&ui.fonts.legend, Rect.xywh(area.x + 3, area.y + 1, area.w, 10), txt, ui_style.vfd, .left, false);
+}
+
+// ── Reverb decay ──────────────────────────────────────────────────────
+//
+// Level against time for one hit: the dry hit, the early reflections
+// (the kernel's tap table), then the late tail from the predelay: the
+// low band (BASS times DECAY), the mid band (DECAY) and 8 kHz, which the
+// loop's damping lowpass takes down faster per pass.
+
+const DECAY_FLOOR_DB: f64 = -60.0;
+// Mirrors kernels/07-effects/reverb.fy: the plate's half-loops (10645 and
+// 10944 samples at 29761 Hz) and the FDN's mean line at 48 kHz.
+const VERB_PLATE_HALF_LOOP: f64 = 10794.5;
+const VERB_ROOM_LINE: f64 = 900.25;
+const VERB_HALL_LINE: f64 = 2602.75;
+const ER_MS_L = [_]f64{ 4.3, 11.7, 17.9, 23.3, 31.1, 39.7, 47.3, 57.1 };
+const ER_MS_R = [_]f64{ 6.1, 13.3, 19.7, 27.1, 33.9, 41.9, 51.7, 61.3 };
+const ER_GAIN = [_]f64{ 0.84, 0.71, 0.62, 0.55, 0.47, 0.40, 0.33, 0.27 };
+
+/// |H| in dB of the kernels' one-pole lowpass (cutoff `fc`) at `f`.
+fn onePoleDb(fc: f64, f: f64, sr: f64) f64 {
+    const a = 1 - @exp(-2 * std.math.pi * fc / sr);
+    const w = 2 * std.math.pi * f / sr;
+    const b = 1 - a;
+    return 20 * std.math.log10(a / @sqrt(@max(1 - 2 * b * @cos(w) + b * b, 1e-12)));
+}
+
+fn drawDecayDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void {
+    const field = ui.well(r, ui_style.well);
+    if (field.w < 24 or field.h < 16) return;
+    // From the controls (see drawTapsDisplay), with reverb.fy's lengths.
+    const pre_id = disp.sourceSlice();
+    const sr = self.synced_sr;
+    const tempo = std.math.clamp(self.synced_tempo, 20, 999);
+    const sync = prefixedValue(self, pre_id, "-pre-sync", 0);
+    const pre = std.math.clamp(if (sync > 0) 60 / tempo * sync else prefixedValue(self, pre_id, "-predelay", 0.02), 0, 0.25);
+    const rt = @max(prefixedValue(self, pre_id, "-decay", 3), 0.05);
+    const bass = prefixedValue(self, pre_id, "-bass", 1);
+    const damp = prefixedValue(self, pre_id, "-damp", 5000);
+    const early = prefixedValue(self, pre_id, "-early", 0);
+    const algo = prefixedValue(self, pre_id, "-algo", 0);
+    const size = prefixedValue(self, pre_id, "-size", 1);
+    const gated = prefixedValue(self, pre_id, "-mode", 0) >= 0.5;
+    const hold = prefixedValue(self, pre_id, "-gate-hold", 0.35);
+    // Seconds between damping passes: the plate's mean half-loop, or the
+    // FDN's mean line.
+    const loop_s = size * (if (algo < 0.5) VERB_PLATE_HALF_LOOP / 29761.0 else if (algo < 1.5) VERB_ROOM_LINE / 48000.0 else VERB_HALL_LINE / 48000.0);
+    const passes = 1 / loop_s;
+    // One more loop's worth of loss at 8 kHz: 60 dB over the mid time,
+    // plus the damping lowpass once per pass.
+    const hf_rt = 60 / (60 / rt - onePoleDb(damp, 8000, sr) * passes);
+    const span = @max(pre + @max(rt, rt * bass) * 1.1, 0.3);
+
+    ui.animate();
+    ui.clip(field);
+    defer ui.unclip();
+    const area = field.inset(2);
+    const ax: f32 = @floatFromInt(area.x);
+    const ay: f32 = @floatFromInt(area.y);
+    const aw: f32 = @floatFromInt(area.w);
+    const ah: f32 = @floatFromInt(area.h);
+    const P = struct {
+        // Square-root time: the predelay and early taps get room, the
+        // tail still fits.
+        fn x(t: f64, s: f64, o: f32, w: f32) f32 {
+            return o + @as(f32, @floatCast(@sqrt(std.math.clamp(t / s, 0, 1)))) * w;
+        }
+        fn y(db: f64, o: f32, h: f32) f32 {
+            return o + @as(f32, @floatCast(std.math.clamp(db / DECAY_FLOOR_DB, 0, 1))) * (h - 1);
+        }
+    };
+    // dB grid every 20, seconds when they fit.
+    inline for (.{ -20.0, -40.0 }) |g| {
+        ui.rect(Rect.xywh(area.x, @intFromFloat(P.y(g, ay, ah)), area.w, 1), ui_style.vfd.alpha(22));
+    }
+    inline for (.{ 0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0 }) |sec| {
+        if (sec < span) ui.rect(Rect.xywh(@intFromFloat(P.x(sec, span, ax, aw)), area.y, 1, area.h), ui_style.vfd.alpha(22));
+    }
+    // Dry hit, then the early taps.
+    ui.rect(Rect.xywh(area.x, area.y, 1, area.h), ui_style.text.alpha(90));
+    if (early > 0) {
+        const es = (if (algo < 0.5) @as(f64, 0.6) else if (algo < 1.5) @as(f64, 0.7) else 1.25) * size * 0.001;
+        for (ER_MS_L, ER_MS_R, ER_GAIN) |ml, mr, g| {
+            const db = 20 * std.math.log10(@max(g * early * 0.5, 1e-6));
+            const top: i32 = @intFromFloat(P.y(db, ay, ah));
+            const h = area.y + area.h - top;
+            ui.rect(Rect.xywh(@intFromFloat(P.x(ml * es, span, ax, aw)), top, 1, h), ui_style.vfd.alpha(120));
+            ui.rect(Rect.xywh(@intFromFloat(P.x(mr * es, span, ax, aw)), top, 1, h), PENS[2].alpha(120));
+        }
+    }
+    // Late tail: straight lines in dB from the predelay.
+    const x0 = P.x(pre, span, ax, aw);
+    const lines = [_]struct { rt: f64, c: ui_style.Color }{
+        .{ .rt = rt * bass, .c = PENS[2] },
+        .{ .rt = hf_rt, .c = PENS[1].alpha(160) },
+        .{ .rt = rt, .c = ui_style.vfd },
+    };
+    for (lines) |ln| {
+        if (!(ln.rt > 0)) continue;
+        // Straight in dB against time, so a curve on this axis.
+        const N = 32;
+        var prev = [2]f32{ x0, ay };
+        for (1..N + 1) |i| {
+            const u = @as(f64, @floatFromInt(i)) / N;
+            const p = [2]f32{ P.x(pre + u * ln.rt, span, ax, aw), P.y(u * DECAY_FLOOR_DB, ay, ah) };
+            ui.line(prev[0], prev[1], p[0], p[1], ln.c);
+            prev = p;
+        }
+    }
+    if (gated) {
+        const gx: i32 = @intFromFloat(P.x(pre + hold, span, ax, aw));
+        ui.rect(Rect.xywh(gx, area.y, 1, area.h), ui_style.text.alpha(140));
+    }
+    const names = [_][]const u8{ "PLATE", "ROOM", "HALL" };
+    const ai: usize = @intFromFloat(std.math.clamp(@round(algo), 0, 2));
+    var tb: [40]u8 = undefined;
+    const txt = std.fmt.bufPrint(&tb, "{s}  {d:.1} s", .{ names[ai], rt }) catch "";
+    ui.textIn(&ui.fonts.legend, Rect.xywh(area.x + 3, area.y + 1, area.w, 10), txt, ui_style.vfd, .right, false);
 }
 
 fn drawResponseDisplay(self: *FyRawMachine, ui: *Ui, r: Rect) void {
@@ -4551,57 +4782,170 @@ test "MS-20 block-prepare derives the LPF, HPF and envelope coefficients in fy" 
     try testing.expectApproxEqAbs(sus, inst.readParamF64(co + try fyFieldOffset(inst, "EnvRcCoefs.sus")), 1e-12);
 }
 
-test "raw DSP2 delay machine: host buffer injection and echo" {
+test "raw DSP2 delay machine: two rings, injected once into the stereo region" {
     const inst = try FyRawMachine.create(testing.allocator, "machines/delay2/delay2.fy");
     const mach = inst.machineInterface();
     defer mach.deinit.?(mach.state, testing.allocator);
 
-    // One buffer request, allocated per channel and injected into both
-    // channel states (pointer in cell 0, element count in cell 1).
-    try testing.expectEqual(@as(usize, 1), inst.desc.buffer_count);
-    const len_f: f64 = @floatFromInt(inst.buffer_mem[0][0].len);
-    for (0..2) |ch| {
-        const base = ch * MAX_STATE;
-        const ptr_bits: *align(8) const usize = @ptrCast(@alignCast(&inst.state_buf[base]));
-        try testing.expectEqual(@intFromPtr(inst.buffer_mem[0][ch].ptr), ptr_bits.*);
-        const len_cell: *align(8) const f64 = @ptrCast(@alignCast(&inst.state_buf[base + 8]));
-        try testing.expectEqual(len_f, len_cell.*);
+    // Two buffer requests (left and right ring); a stereo effect gets one
+    // copy of each, both injected into region 0.
+    try testing.expectEqual(@as(usize, 2), inst.desc.buffer_count);
+    for (0..2) |bi| {
+        try testing.expect(inst.buffer_mem[bi][0].len > 0);
+        try testing.expectEqual(@as(usize, 0), inst.buffer_mem[bi][1].len);
+        const req = inst.desc.buffers[bi];
+        const ptr_bits: *align(8) const usize = @ptrCast(@alignCast(&inst.state_buf[req.ptr_offset]));
+        try testing.expectEqual(@intFromPtr(inst.buffer_mem[bi][0].ptr), ptr_bits.*);
     }
+}
 
-    // Impulse in the first block, silence after: the wet tap must come back
-    // roughly one delay time later, and only on the channel that got fed.
-    const block = 512;
+/// Render `n` samples of an effect fed one impulse (`amp_l`, `amp_r`) at
+/// sample 0, after applying `sets` (control id, value). Caller frees.
+const ParamSet = struct { []const u8, f64 };
+fn renderEffectImpulse(path: []const u8, sets: []const ParamSet, amp_l: f32, amp_r: f32, n: usize) ![2][]f32 {
+    const inst = try FyRawMachine.create(testing.allocator, path);
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    for (sets) |st| mach.set_param.?(mach.state, st[0], st[1]);
+    const block = 256;
     var in_l = [_]f32{0} ** block;
     var in_r = [_]f32{0} ** block;
-    in_l[0] = 0.9;
     const in_ports = [_][*]const f32{ &in_l, &in_r };
     var ctx = std.mem.zeroes(machine.MachineCtx);
     ctx.sample_rate = 48_000;
     ctx.block_size = block;
+    ctx.tempo_bpm = 120;
     ctx.audio_in = @ptrCast(&in_ports[0]);
     ctx.audio_in_count = 2;
-
-    var l = [_]f32{0} ** block;
-    var r = [_]f32{0} ** block;
-    var echo_l: f64 = 0;
-    var echo_r: f64 = 0;
-    var blk: usize = 0;
-    while (blk < 48) : (blk += 1) {
-        testRender(mach, &ctx, &l, &r);
-        if (blk == 0) {
-            in_l[0] = 0; // impulse only once
-            try testing.expect(l[0] > 0.4); // dry portion passes immediately
-        } else {
-            for (l) |x| echo_l = @max(echo_l, @abs(x));
-            for (r) |x| echo_r = @max(echo_r, @abs(x));
-        }
-        for (l, r) |sl, sr| {
-            try testing.expect(std.math.isFinite(sl));
-            try testing.expect(std.math.isFinite(sr));
-        }
+    const out_l = try testing.allocator.alloc(f32, n);
+    errdefer testing.allocator.free(out_l);
+    const out_r = try testing.allocator.alloc(f32, n);
+    var pos: usize = 0;
+    while (pos < n) : (pos += block) {
+        in_l[0] = if (pos == 0) amp_l else 0;
+        in_r[0] = if (pos == 0) amp_r else 0;
+        const m = @min(block, n - pos);
+        testRender(mach, &ctx, out_l[pos..][0..m], out_r[pos..][0..m]);
     }
-    try testing.expect(echo_l > 0.05); // wet repeat arrived
-    try testing.expect(echo_r < 0.0001); // R state/ring independent of L
+    return .{ out_l, out_r };
+}
+
+/// Index of the largest |x| in `xs[from..to]`, and its magnitude.
+fn peakIn(xs: []const f32, from: usize, to: usize) struct { at: usize, v: f32 } {
+    var best: f32 = 0;
+    var at: usize = from;
+    for (xs[from..@min(to, xs.len)], from..) |x, i| if (@abs(x) > best) {
+        best = @abs(x);
+        at = i;
+    };
+    return .{ .at = at, .v = best };
+}
+
+fn nearSample(at: usize, want: usize) bool {
+    return @abs(@as(i64, @intCast(at)) - @as(i64, @intCast(want))) <= 2;
+}
+
+test "delay STEREO: each side echoes on its own ring, R at TIME * RATIO + OFFSET" {
+    // 0.25 s left; 3:2 ratio (index 5) plus 10 ms on the right.
+    const sets = [_]ParamSet{ .{ "delay-time", 0.25 }, .{ "delay-fb", 0 }, .{ "delay-mix", 1 }, .{ "delay-ratio", 5 }, .{ "delay-offset", 0.01 } };
+    const only_l = try renderEffectImpulse("machines/delay2/delay2.fy", &sets, 1, 0, 30_000);
+    defer for (only_l) |o| testing.allocator.free(o);
+    const pl = peakIn(only_l[0], 16, only_l[0].len);
+    try testing.expect(nearSample(pl.at, 12_000));
+    try testing.expect(pl.v > 0.9);
+    try testing.expect(peakIn(only_l[1], 0, only_l[1].len).v < 1e-6); // nothing leaks to R
+    const only_r = try renderEffectImpulse("machines/delay2/delay2.fy", &sets, 0, 1, 30_000);
+    defer for (only_r) |o| testing.allocator.free(o);
+    const pr = peakIn(only_r[1], 16, only_r[1].len);
+    try testing.expect(nearSample(pr.at, 18_000 + 480));
+    try testing.expect(peakIn(only_r[0], 0, only_r[0].len).v < 1e-6);
+}
+
+test "delay PING: a hit bounces L, R, L at the left and right times" {
+    // PING (mode 1), 0.1 s left, 2:1 right = 0.2 s; FB 0.5.
+    const sets = [_]ParamSet{ .{ "delay-mode", 1 }, .{ "delay-time", 0.1 }, .{ "delay-ratio", 6 }, .{ "delay-fb", 0.5 }, .{ "delay-mix", 1 }, .{ "delay-damp", 16000 } };
+    const out = try renderEffectImpulse("machines/delay2/delay2.fy", &sets, 1, 1, 40_000);
+    defer for (out) |o| testing.allocator.free(o);
+    // First repeat on the left at 4800, then the right at 4800 + 9600,
+    // then the left again at 2 * 4800 + 9600.
+    const l1 = peakIn(out[0], 16, 9_000);
+    try testing.expect(nearSample(l1.at, 4_800));
+    try testing.expect(peakIn(out[1], 16, 9_000).v < 1e-6);
+    const r1 = peakIn(out[1], 9_000, 16_000);
+    try testing.expect(nearSample(r1.at, 14_400));
+    try testing.expect(r1.v < l1.v * 0.7 and r1.v > l1.v * 0.3); // one pass of FB 0.5
+    const l2 = peakIn(out[0], 16_000, 24_000);
+    try testing.expect(nearSample(l2.at, 19_200));
+}
+
+test "delay WIDE: one ring, the right output tapped at the right time" {
+    const sets = [_]ParamSet{ .{ "delay-mode", 2 }, .{ "delay-time", 0.1 }, .{ "delay-fb", 0 }, .{ "delay-mix", 1 }, .{ "delay-offset", 0.015 } };
+    const out = try renderEffectImpulse("machines/delay2/delay2.fy", &sets, 1, 0, 12_000);
+    defer for (out) |o| testing.allocator.free(o);
+    try testing.expect(nearSample(peakIn(out[0], 16, 12_000).at, 4_800));
+    const r = peakIn(out[1], 16, 12_000);
+    try testing.expect(nearSample(r.at, 4_800 + 720));
+    try testing.expect(r.v > 0.45); // the mono sum of an L-only hit
+}
+
+test "delay FREEZE holds the loop; TAPE at FB 1.1 self-oscillates but stays bounded" {
+    // Freeze after the hit is in the ring: render the impulse, then flip.
+    {
+        const inst = try FyRawMachine.create(testing.allocator, "machines/delay2/delay2.fy");
+        const mach = inst.machineInterface();
+        defer mach.deinit.?(mach.state, testing.allocator);
+        mach.set_param.?(mach.state, "delay-time", 0.05);
+        mach.set_param.?(mach.state, "delay-fb", 0);
+        mach.set_param.?(mach.state, "delay-mix", 1);
+        const block = 256;
+        var in_l = [_]f32{0} ** block;
+        const in_ports = [_][*]const f32{ &in_l, &in_l };
+        var ctx = std.mem.zeroes(machine.MachineCtx);
+        ctx.sample_rate = 48_000;
+        ctx.block_size = block;
+        ctx.audio_in = @ptrCast(&in_ports[0]);
+        ctx.audio_in_count = 2;
+        var l = [_]f32{0} ** block;
+        var r = [_]f32{0} ** block;
+        in_l[0] = 1;
+        testRender(mach, &ctx, &l, &r);
+        in_l[0] = 0;
+        mach.set_param.?(mach.state, "delay-freeze", 1);
+        var late: f32 = 0;
+        for (0..400) |bi| { // ~2.1 s: some 40 loops
+            testRender(mach, &ctx, &l, &r);
+            if (bi >= 380) for (l) |x| {
+                late = @max(late, @abs(x));
+            };
+        }
+        try testing.expect(late > 0.9); // no decay while frozen
+    }
+    {
+        const sets = [_]ParamSet{ .{ "delay-char", 1 }, .{ "delay-time", 0.05 }, .{ "delay-fb", 1.1 }, .{ "delay-mix", 1 } };
+        const out = try renderEffectImpulse("machines/delay2/delay2.fy", &sets, 1, 1, 480_000);
+        defer for (out) |o| testing.allocator.free(o);
+        var peak: f32 = 0;
+        for (out[0]) |x| {
+            try testing.expect(std.math.isFinite(x));
+            peak = @max(peak, @abs(x));
+        }
+        try testing.expect(peak < 4);
+        try testing.expect(peakIn(out[0], 430_000, 480_000).v > 0.1); // still ringing
+    }
+}
+
+test "delay: every mode and character renders the same with and without branching" {
+    defer dsp_versioning = true;
+    for ([_]f64{ 0, 1, 2 }) |mode| for ([_]f64{ 0, 1, 2 }) |ch| for ([_]f64{ 0, 0.6 }) |drive| {
+        const sets = [_]ParamSet{ .{ "delay-mode", mode }, .{ "delay-char", ch }, .{ "delay-drive", drive }, .{ "delay-time", 0.03 }, .{ "delay-fb", 0.7 }, .{ "delay-mod", 0.5 }, .{ "delay-duck", 0.5 }, .{ "delay-ratio", 5 } };
+        var outs: [2][2][]f32 = undefined;
+        for ([_]bool{ true, false }, 0..) |v, i| {
+            dsp_versioning = v;
+            outs[i] = try renderEffectImpulse("machines/delay2/delay2.fy", &sets, 0.8, 0.3, 8_000);
+        }
+        defer for (outs) |o| for (o) |x| testing.allocator.free(x);
+        for (0..2) |chn| try testing.expectEqualSlices(f32, outs[0][chn], outs[1][chn]);
+    };
 }
 
 test "kernel ABI: KernelCtx and IoFrame match ctx.fy's Ctx and Io" {
@@ -4810,6 +5154,135 @@ test "delay SYNC follows ctx.tempo: quarter-note echo lands on the beat" {
         }
         try testing.expect(best > 0.5);
         try testing.expect(@abs(@as(i64, @intCast(best_at)) - @as(i64, @intCast(cs.echo_at))) <= 2);
+    }
+}
+
+/// Energy of `xs` (both channels) in [from, to) samples.
+fn energyIn(out: [2][]f32, from: usize, to: usize) f64 {
+    var e: f64 = 0;
+    for (out) |ch| for (ch[from..to]) |x| {
+        e += @as(f64, x) * x;
+    };
+    return e;
+}
+
+test "verb DECAY is in seconds for every algorithm" {
+    // 60 dB per DECAY seconds is 20 dB (x100 in energy) per third of it:
+    // compare two windows a third of DECAY apart, well into the tail.
+    for ([_]f64{ 0, 1, 2 }) |algo| {
+        const rt = 1.5;
+        const sets = [_]ParamSet{ .{ "verb-algo", algo }, .{ "verb-decay", rt }, .{ "verb-mix", 1 }, .{ "verb-damp", 16000 }, .{ "verb-tone", 18000 }, .{ "verb-mod", 0 } };
+        const out = try renderEffectImpulse("machines/verb2/verb2.fy", &sets, 1, 1, 96_000);
+        defer for (out) |o| testing.allocator.free(o);
+        const w = 4_800;
+        const a = energyIn(out, 24_000, 24_000 + w);
+        const b = energyIn(out, 48_000, 48_000 + w);
+        const db = 10 * std.math.log10(a / b);
+        // 0.5 s apart at RT 1.5 s: 20 dB, give or take the damping and modes.
+        try testing.expect(db > 16 and db < 25);
+    }
+}
+
+test "verb BASS rings the lows longer, EARLY adds reflections, the image survives HALL" {
+    const Band = struct {
+        // Energy under ~200 Hz: a two-pole lowpass over the signal.
+        fn low(out: [2][]f32, from: usize, to: usize) f64 {
+            var e: f64 = 0;
+            for (out) |ch| {
+                var z1: f64 = 0;
+                var z2: f64 = 0;
+                for (ch[0..to], 0..) |x, i| {
+                    z1 += (x - z1) * 0.026;
+                    z2 += (z1 - z2) * 0.026;
+                    if (i >= from) e += z2 * z2;
+                }
+            }
+            return e;
+        }
+    };
+    for ([_]f64{ 0, 2 }) |algo| {
+        var lows: [2]f64 = undefined;
+        for ([_]f64{ 1, 2.5 }, 0..) |bass, i| {
+            const sets = [_]ParamSet{ .{ "verb-algo", algo }, .{ "verb-decay", 1.0 }, .{ "verb-bass", bass }, .{ "verb-mix", 1 } };
+            const out = try renderEffectImpulse("machines/verb2/verb2.fy", &sets, 1, 1, 72_000);
+            defer for (out) |o| testing.allocator.free(o);
+            lows[i] = Band.low(out, 48_000, 72_000);
+        }
+        try testing.expect(lows[1] > lows[0] * 10); // 2.5x the low decay
+    }
+    {
+        // Reflections arrive in the first 60 ms, before a long predelay.
+        var early: [2]f64 = undefined;
+        for ([_]f64{ 0, 1 }, 0..) |e, i| {
+            const sets = [_]ParamSet{ .{ "verb-algo", 1 }, .{ "verb-early", e }, .{ "verb-predelay", 0.2 }, .{ "verb-mix", 1 } };
+            const out = try renderEffectImpulse("machines/verb2/verb2.fy", &sets, 1, 1, 4_800);
+            defer for (out) |o| testing.allocator.free(o);
+            early[i] = energyIn(out, 0, 4_800);
+        }
+        try testing.expect(early[0] < 1e-12);
+        try testing.expect(early[1] > 0.01);
+    }
+    {
+        // A hard-left hit stays left early on in the HALL.
+        const sets = [_]ParamSet{ .{ "verb-algo", 2 }, .{ "verb-mix", 1 }, .{ "verb-predelay", 0.001 } };
+        const out = try renderEffectImpulse("machines/verb2/verb2.fy", &sets, 1, 0, 9_600);
+        defer for (out) |o| testing.allocator.free(o);
+        var el: f64 = 0;
+        var er: f64 = 0;
+        for (out[0][0..4_800], out[1][0..4_800]) |l, r| {
+            el += @as(f64, l) * l;
+            er += @as(f64, r) * r;
+        }
+        try testing.expect(el > er * 2);
+    }
+}
+
+test "verb: every algorithm, BASS, EARLY and the gate render the same with and without branching" {
+    defer dsp_versioning = true;
+    for ([_]f64{ 0, 1, 2 }) |algo| for ([_]f64{ 1, 1.8 }) |bass| for ([_]f64{ 0, 0.7 }) |early| for ([_]f64{ 0, 1 }) |gate| {
+        const sets = [_]ParamSet{ .{ "verb-algo", algo }, .{ "verb-bass", bass }, .{ "verb-early", early }, .{ "verb-mode", gate }, .{ "verb-decay", 2 }, .{ "verb-lowcut", 120 } };
+        var outs: [2][2][]f32 = undefined;
+        for ([_]bool{ true, false }, 0..) |v, i| {
+            dsp_versioning = v;
+            outs[i] = try renderEffectImpulse("machines/verb2/verb2.fy", &sets, 0.8, 0.3, 6_000);
+        }
+        defer for (outs) |o| for (o) |x| testing.allocator.free(x);
+        for (0..2) |chn| try testing.expectEqualSlices(f32, outs[0][chn], outs[1][chn]);
+    };
+}
+
+test "verb: sweeping SIZE and DECAY while it rings stays finite and bounded" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/verb2/verb2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    const block = 256;
+    var in_l: [block]f32 = undefined;
+    var in_r: [block]f32 = undefined;
+    const in_ports = [_][*]const f32{ &in_l, &in_r };
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 96_000; // the regions are sized for 96 kHz
+    ctx.block_size = block;
+    ctx.audio_in = @ptrCast(&in_ports[0]);
+    ctx.audio_in_count = 2;
+    var l = [_]f32{0} ** block;
+    var r = [_]f32{0} ** block;
+    var seed: u32 = 1;
+    for (0..600) |bi| {
+        for (&in_l, &in_r) |*a, *b| {
+            seed = seed *% 1664525 +% 1013904223;
+            a.* = (@as(f32, @floatFromInt(seed >> 9)) / 8388608.0 - 1) * 0.5;
+            b.* = -a.*;
+        }
+        const t: f64 = @floatFromInt(bi);
+        mach.set_param.?(mach.state, "verb-algo", @floor(@mod(t / 100, 3)));
+        mach.set_param.?(mach.state, "verb-size", 1.0 + 0.5 * @sin(t * 0.05));
+        mach.set_param.?(mach.state, "verb-decay", 20 + 19 * @sin(t * 0.031));
+        mach.set_param.?(mach.state, "verb-predelay", 0.12 + 0.12 * @sin(t * 0.07));
+        testRender(mach, &ctx, &l, &r);
+        for (l, r) |sl, sr| {
+            try testing.expect(std.math.isFinite(sl) and std.math.isFinite(sr));
+            try testing.expect(@abs(sl) < 20 and @abs(sr) < 20);
+        }
     }
 }
 
@@ -6218,7 +6691,7 @@ test "limiter2, sat2 and funk report their latency to the host" {
 
 test "idle hold: a delay holds on for its ring, a limiter for its lookahead, an eq for the default" {
     const cases = .{
-        .{ "machines/delay2/delay2.fy", 76_800 }, // the 1.6 s ring at 48 kHz
+        .{ "machines/delay2/delay2.fy", 148_800 }, // the 3.1 s rings at 48 kHz
         .{ "machines/limiter2/limiter2.fy", 576 + 97 }, // 12 ms ring + its latency
         .{ "machines/eq2/eq2.fy", 100 },
     };
@@ -6240,8 +6713,8 @@ test "a reset keeps the latency a machine reports" {
 
 test "NEON lanes: every dual-mono effect renders the same samples as its two scalar passes" {
     const effects = [_][]const u8{
-        "machines/eq2/eq2.fy",         "machines/sat2/sat2.fy",     "machines/verb2/verb2.fy",
-        "machines/delay2/delay2.fy",   "machines/chorus2/chorus2.fy", "machines/limiter2/limiter2.fy",
+        "machines/eq2/eq2.fy",         "machines/sat2/sat2.fy",     "machines/chorus2/chorus2.fy",
+        "machines/limiter2/limiter2.fy",
         "machines/gate2/gate2.fy",     "machines/era/era.fy",
     };
     const block = 256;

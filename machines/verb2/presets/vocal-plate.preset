@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "verb2", "note": "Aperitivo: vocal / lead plate", "params": {"verb-predelay": 0.025, "verb-decay": 0.68, "verb-damp": 6500, "verb-tone": 11000, "verb-mix": 0.26, "verb-mod": 8}}
+{"schema": 1, "machine": "verb2", "note": "Aperitivo: vocal / lead plate", "params": {"verb-predelay": 0.025, "verb-decay": 3.25, "verb-damp": 6500, "verb-tone": 11000, "verb-mix": 0.26, "verb-mod": 8}}

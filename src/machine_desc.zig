@@ -240,7 +240,7 @@ pub const Strip = struct {
     }
 };
 
-pub const DisplayKind = enum { adsr, waveform, meter, response, algo, eg4, zones, segments, dynamics };
+pub const DisplayKind = enum { adsr, waveform, meter, response, algo, eg4, zones, segments, dynamics, taps, decay };
 
 /// Algo display slots in `Display.offsets`, in the order `algo-display`
 /// pushes them: operator count, row stride, then the row offsets (all in
@@ -257,6 +257,8 @@ pub const MeterOffset = enum(usize) { gmin = 0, ipk, opk, msm, mss, msum, mn };
 /// Dynamics display state-offset slots, in `dyn-display`'s order; `knee`
 /// is 0 unless `dyn-display-knee` set it.
 pub const DynOffset = enum(usize) { gr = 0, lvl, knee };
+
+
 
 pub const Display = struct {
     name: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
@@ -722,6 +724,8 @@ pub fn read(host: *FyHost) !Desc {
             6 => .zones,
             7 => .segments,
             8 => .dynamics,
+            9 => .taps,
+            10 => .decay,
             else => return error.InvalidMachineDesc,
         };
         out.source_len = try copyText(&out.source, cstrSlice(disp.sources));

@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "delay2", "note": "Short stereo reflection", "params": {"delay-time": 0.12, "delay-fb": 0.25, "delay-damp": 8000, "delay-mix": 0.28}}
+{"schema": 1, "machine": "delay2", "note": "Short stereo reflection", "params": {"delay-time": 0.12, "delay-fb": 0.25, "delay-damp": 8000, "delay-mix": 0.28, "delay-mode": 2, "delay-offset": 0.018}}

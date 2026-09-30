@@ -211,6 +211,24 @@ cell|1.6|HPF*4/EG*1                    # short display under a taller HPF
   dB) down the right edge with a `GR x.x` readout. comp2 puts it beside
   THRESH / RATIO / KNEE.
 
+- `taps-display ( name prefix -- )` draws a delay's repeat train for one
+  hit: left taps up from a centre line, right taps down, each bar the
+  repeat's gain, over the host tempo's beat grid (bars brighter), with an
+  `L x  R y ms` readout. It follows `<prefix>-mode`: STEREO two trains,
+  PING alternating sides, WIDE a right tap offset on one ring. delay2 puts
+  it over its TIME strip.
+- `decay-display ( name prefix -- )` draws a reverb's level against time
+  on a square-root time axis (so the predelay gap and the early taps get
+  room): the dry hit, the early reflections when `<prefix>-early` is up,
+  then from the predelay the low band (DECAY × BASS), the mid band
+  (DECAY) and 8 kHz (faster by the loop's damping lowpass per pass), and
+  the gate's hold as a line when GATED. verb2 puts it beside SPACE.
+
+Both compute from the machine's controls on the UI thread, as the kernel's
+block-prepare would, not from derived params: the engine renders nothing
+while the transport is stopped, so derived params would show the last
+played settings.
+
 These visualizers are **drawn in Zig today** (selected by the manifest kind).
 They are the visual reference for the planned fy-drawn displays.
 

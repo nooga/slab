@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "delay2", "note": "Short dark bucket-brigade echo with chorus wobble", "params": {"delay-char": 2, "delay-time": 0.12, "delay-fb": 0.4, "delay-mod": 0.6, "delay-rate": 0.8, "delay-damp": 5000, "delay-mix": 0.35}}

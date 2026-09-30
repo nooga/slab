@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "delay2", "note": "Dotted-8th arp/lead delay (\u2248120 BPM)", "params": {"delay-time": 0.375, "delay-fb": 0.45, "delay-damp": 5500, "delay-mix": 0.32}}
+{"schema": 1, "machine": "delay2", "note": "Dotted-8th arp/lead delay (\u2248120 BPM)", "params": {"delay-time": 0.375, "delay-fb": 0.45, "delay-damp": 5500, "delay-mix": 0.32, "delay-sync": 1, "delay-div": 3, "delay-duck": 0.3}}

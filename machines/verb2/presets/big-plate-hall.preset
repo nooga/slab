@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "verb2", "note": "Night-coast hall \u2014 big but not cathedral", "params": {"verb-predelay": 0.04, "verb-decay": 0.9, "verb-damp": 4500, "verb-tone": 8000, "verb-mix": 0.32, "verb-mod": 12}}
+{"schema": 1, "machine": "verb2", "note": "Night-coast hall \u2014 big but not cathedral", "params": {"verb-predelay": 0.04, "verb-decay": 11.89, "verb-damp": 4500, "verb-tone": 8000, "verb-mix": 0.32, "verb-mod": 12}}

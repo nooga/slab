@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "delay2", "note": "Warm tape echo, a touch of wow and saturation", "params": {"delay-char": 1, "delay-time": 0.33, "delay-fb": 0.55, "delay-drive": 0.4, "delay-damp": 6000, "delay-lowcut": 80, "delay-mix": 0.35}}

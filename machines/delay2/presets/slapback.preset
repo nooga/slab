@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "delay2", "note": "Short slapback for spoken voice", "params": {"delay-time": 0.09, "delay-fb": 0.1, "delay-damp": 7000, "delay-mix": 0.4}}
+{"schema": 1, "machine": "delay2", "note": "Short slapback for spoken voice", "params": {"delay-time": 0.09, "delay-fb": 0.1, "delay-damp": 7000, "delay-mix": 0.4, "delay-char": 1, "delay-drive": 0.2}}

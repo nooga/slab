@@ -89,8 +89,10 @@ in docs/05 §Writing fast machines.
 - `| a b |` pops its values. A `)` inside a `( comment )` ends the
   comment, so write "[0, 1)" with brackets.
 - Loads see earlier stores to the same field, but `f!i` lands at the end
-  of the word. An `f!i` inside an `ifte` arm that gets if-converted is a
-  compile error.
+  of the word. An `f!i` inside an if-converted `ifte` arm becomes a
+  conditional store, which keeps the word out of lane mode.
+- A `ustruct` field named `size` shadows `Struct.size`, so
+  `params-size!` gets that field's offset. Name it something else.
 - Voice render words **accumulate** into `io.out-l`; effects write it.
 - Control ids are the save format. Renaming one breaks presets and
   projects; reordering struct fields doesn't.

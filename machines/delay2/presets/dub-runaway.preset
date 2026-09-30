@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "delay2", "note": "Self-oscillating tape dub feedback, ride the FB knob", "params": {"delay-char": 1, "delay-mode": 1, "delay-time": 0.375, "delay-fb": 1.05, "delay-drive": 0.7, "delay-lowcut": 200, "delay-damp": 2500, "delay-mix": 0.45}}

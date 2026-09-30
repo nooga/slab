@@ -413,6 +413,10 @@ renders are bit-exact with the old engine.
   that block. While the track's instrument is awake for a note, every
   effect on the track renders too, so the chain also sees the automation
   before the note arrives.
+- *Control edit.* Turning a knob, loading a preset or setting a param
+  from a project (`Machine.take_wake`, FyRawMachine's `wake_req`) restarts
+  the machine's hold, so a sleeping machine renders on until the edit has
+  glided into its params and block-prepare has derived from it.
 - *Hold* (`Machine.idleHold`): at least `IDLE_HOLD_S` (0.25 s), or the
   machine's latency plus its tail if that is longer.
 - The master chain follows the effect rules. Buses follow them too: a bus
@@ -422,7 +426,7 @@ renders are bit-exact with the old engine.
 while the machine still holds sound it will play without new input. A
 delay's echo is the obvious case: a long gap, then the repeat. fy
 machines get the tail from the manifest automatically: it is the longest
-host buffer (`buffer`, e.g. delay2's 1.6 s ring and verb2's 0.9 s tank)
+host buffer (`buffer`, e.g. delay2's 3.1 s rings and verb2's 2.37 s tank)
 plus `tail!` seconds. Declare `tail!` only for stored sound the buffers
 don't already cover. `-1.0 tail!` (`TAIL_FOREVER`) means never skip the
 machine: use it for one that makes sound from nothing, like a noise bed

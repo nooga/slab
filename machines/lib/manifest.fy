@@ -474,6 +474,37 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   _mf-last-disp !64
 ;
 
+( A delay's repeat train [kind 9], from the machine's own controls:
+  `<prefix>-time` / -sync / -div / -ratio / -offset / -fb / -mode /
+  -char / -drive, and the host tempo. )
+: taps-display  ( name prefix -- )
+  DisplayDesc.alloc
+  swap cstr-new swap DisplayDesc.sources!
+  swap cstr-new swap DisplayDesc.name!
+  9 swap DisplayDesc.kind!
+  _mf-last-disp @64 0 =
+  [ dup _mf-md@ MachineDesc.displays! drop ]
+  [ dup _mf-last-disp @64 DisplayDesc.next! drop ]
+  ifte
+  _mf-last-disp !64
+;
+
+( A reverb's decay [kind 10]: the predelay gap, the early reflections and
+  the low / mid / high decay lines, from the machine's `<prefix>-decay` /
+  -bass / -damp / -early / -algo / -size / -predelay / -pre-sync / -mode /
+  -gate-hold controls and the host tempo. )
+: decay-display  ( name prefix -- )
+  DisplayDesc.alloc
+  swap cstr-new swap DisplayDesc.sources!
+  swap cstr-new swap DisplayDesc.name!
+  10 swap DisplayDesc.kind!
+  _mf-last-disp @64 0 =
+  [ dup _mf-md@ MachineDesc.displays! drop ]
+  [ dup _mf-last-disp @64 DisplayDesc.next! drop ]
+  ifte
+  _mf-last-disp !64
+;
+
 ( Open a named tab.  Rows declared after this belong to the page until the
   next `page`; the panel grows a tab bar.  Mixing top-level rows and pages is
   not supported — use one or the other. )

@@ -179,7 +179,9 @@ multi2, char2, funk) already run one pass, so they gain nothing.
 
 Measured in the ReleaseFast bench, ns per sample, lanes against scalar:
 eq2 18/52, sat2 170/272, gate2 14/21, limiter2 24/33, verb2 100/122,
-delay2 14/18, chorus2 17/19. On the 8-bar songs/sweat_geometry window
+delay2 14/18, chorus2 17/19. (delay2 and verb2 have since become true
+stereo: ping-pong and one shared reverb tank can't be two independent
+lanes. See docs/20 for their costs.) On the 8-bar songs/sweat_geometry window
 (effects alone): 6.06 s → 5.32 s.
 
 **The toggle.** `fy_raw_machine.neon_lanes`, on by default. `slab
@@ -711,8 +713,13 @@ ways (`Dsp2.Program.buildVariants`):
     one arm stores keeps its old value in the other.
   - The result is correct and bit-identical to a real branch, but it
     saves nothing.
-  - An `f!i` store inside a converted arm is refused, because its address
-    isn't known.
+  - An `f!i` store inside a converted arm has no address known at build
+    time, so it can't merge through a select. It becomes a conditional
+    store: a `cbz` on the arm's mask skips the `str`, the one branch a
+    body may hold. Both arms may write the same cell, and nested arms
+    AND their masks. A word with one doesn't run in lane mode. (verb2's
+    PLATE and ROOM/HALL arms each write their own rings this way under
+    `--no-branches`.)
   - A direct call or an inlined stage (one body that must run anywhere)
     if-converts everything.
 

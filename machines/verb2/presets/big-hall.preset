@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "verb2", "note": "Long, lush concert hall", "params": {"verb-predelay": 0.045, "verb-decay": 0.93, "verb-damp": 2600, "verb-tone": 6500, "verb-mix": 0.35, "verb-mod": 12}}
+{"schema": 1, "machine": "verb2", "note": "Long, lush concert hall", "params": {"verb-predelay": 0.045, "verb-decay": 3.2, "verb-damp": 2600, "verb-tone": 6500, "verb-mix": 0.35, "verb-mod": 12, "verb-algo": 2, "verb-size": 1.25, "verb-early": 0.35, "verb-bass": 1.3, "verb-xover": 350}}

@@ -2460,19 +2460,33 @@ Presets:
 
 | param | section | label | range | default | notes |
 |---|---|---|---|---|---|
-| `delay-time` | DELAY | TIME | 0.02 … 1.5 | 0.36 | exp |
-| `delay-fb` | DELAY | FB | 0 … 0.92 | 0.45 | pow |
-| `delay-damp` | DELAY | DAMP | 500 … 16000 | 5500 | exp |
-| `delay-mix` | DELAY | MIX | 0 … 1 | 0.35 | pow |
-| `delay-sync` | SYNC | SYNC | 0 FREE / 1 SYNC | 0 | switch |
-| `delay-div` | SYNC | DIV | 0 1/16 / 1 1/8T / 2 1/8 / 3 1/8. / 4 1/4 / 5 1/4. / 6 1/2 | 2 | switch |
+| `delay-time` | TIME | TIME | 0.02 … 1.5 | 0.36 | exp |
+| `delay-sync` | TIME | SYNC | 0 FREE / 1 SYNC | 0 | switch |
+| `delay-div` | TIME | DIV | 0 1/16 / 1 1/8T / 2 1/8 / 3 1/8. / 4 1/4 / 5 1/4. / 6 1/2 | 2 | switch |
+| `delay-ratio` | TIME | R:L | 0 1:1 / 1 3:4 / 2 2:3 / 3 1:2 / 4 4:3 / 5 3:2 / 6 2:1 | 0 | switch |
+| `delay-offset` | TIME | OFFSET | -0.02 … 0.02 | 0 | linear |
+| `delay-fb` | FEEDBACK | FB | 0 … 1.1 | 0.45 | pow |
+| `delay-lowcut` | FEEDBACK | LO CUT | 20 … 2000 | 20 | exp |
+| `delay-damp` | FEEDBACK | HI CUT | 500 … 16000 | 5500 | exp |
+| `delay-drive` | FEEDBACK | DRIVE | 0 … 1 | 0 | linear |
+| `delay-mode` | CHAR | MODE | 0 STEREO / 1 PING / 2 WIDE | 0 | switch |
+| `delay-char` | CHAR | CHAR | 0 DIGITAL / 1 TAPE / 2 BBD | 0 | switch |
+| `delay-mod` | CHAR | MOD | 0 … 1 | 0 | pow |
+| `delay-rate` | CHAR | RATE | 0.1 … 6 | 0.8 | exp |
+| `delay-duck` | OUT | DUCK | 0 … 1 | 0 | linear |
+| `delay-width` | OUT | WIDTH | 0 … 1.5 | 1 | linear |
+| `delay-mix` | OUT | MIX | 0 … 1 | 0.35 | pow |
+| `delay-freeze` | OUT | FREEZE | 0 OFF / 1 ON | 0 | switch |
 
 Presets:
 
 - `ambient-wash` — Long, dark feedback wash
+- `bbd-chorus-echo` — Short dark bucket-brigade echo with chorus wobble
 - `controlled-dub` — Feedback-heavy but controlled dub
 - `dotted-eighth-lead-120` — Dotted-8th arp/lead delay (≈120 BPM)
+- `dub-runaway` — Self-oscillating tape dub feedback, ride the FB knob
 - `dub-tail` — Dark dub feedback tail
+- `ducked-vocal-throw` — Quarter-note ping that ducks under the vocal and blooms in the gaps
 - `eighth-lead-120` — 1/8 lead delay (≈120 BPM)
 - `hook-echo` — Hook echo — bouncy mid feedback
 - `long-fade-echo` — Long fading transition echo
@@ -2482,6 +2496,7 @@ Presets:
 - `short-stereo-reflect` — Short stereo reflection
 - `slapback` — Short slapback for spoken voice
 - `soft-pad-wash` — Soft blurred pad delay
+- `tape-echo` — Warm tape echo, a touch of wow and saturation
 
 ## eq2
 
@@ -2651,13 +2666,23 @@ Presets:
 
 | param | section | label | range | default | notes |
 |---|---|---|---|---|---|
-| `verb-predelay` | PLATE | PREDLY | 0.001 … 0.12 | 0.02 | exp |
-| `verb-decay` | PLATE | DECAY | 0.3 … 0.97 | 0.75 | linear |
-| `verb-damp` | PLATE | DAMP | 1000 … 16000 | 5000 | exp |
-| `verb-tone` | PLATE | TONE | 1000 … 18000 | 9000 | exp |
-| `verb-mix` | PLATE | MIX | 0 … 1 | 0.3 | pow |
-| `verb-mod` | PLATE | MOD | 0 … 24 | 10 | linear |
-| `verb-mode` | GATE | MODE | 0 PLATE / 1 GATED | 0 | switch |
+| `verb-algo` | SPACE | ALGO | 0 PLATE / 1 ROOM / 2 HALL | 0 | switch |
+| `verb-size` | SPACE | SIZE | 0.5 … 1.5 | 1 | linear |
+| `verb-decay` | SPACE | DECAY | 0.2 … 40 | 3 | exp |
+| `verb-diff` | SPACE | DIFF | 0 … 1 | 1 | linear |
+| `verb-predelay` | INPUT | PREDLY | 0.001 … 0.25 | 0.02 | exp |
+| `verb-pre-sync` | INPUT | SYNC | 0 FREE / 1 1/64 / 2 1/32 / 3 1/16 / 4 1/8 | 0 | switch |
+| `verb-lowcut` | INPUT | LO CUT | 20 … 1000 | 20 | exp |
+| `verb-tone` | INPUT | HI CUT | 1000 … 18000 | 9000 | exp |
+| `verb-damp` | TONE | DAMP | 1000 … 16000 | 5000 | exp |
+| `verb-bass` | TONE | BASS | 0.5 … 2.5 | 1 | linear |
+| `verb-xover` | TONE | XOVER | 100 … 1500 | 400 | exp |
+| `verb-mod` | MOD | DEPTH | 0 … 24 | 10 | linear |
+| `verb-mod-rate` | MOD | RATE | 0.1 … 5 | 1.2 | exp |
+| `verb-early` | OUT | EARLY | 0 … 1 | 0 | linear |
+| `verb-width` | OUT | WIDTH | 0 … 1.5 | 1 | linear |
+| `verb-mix` | OUT | MIX | 0 … 1 | 0.3 | pow |
+| `verb-mode` | GATE | GATE | 0 OFF / 1 GATED | 0 | switch |
 | `verb-gate-thr` | GATE | THRESH | -60 … 0 | -30 | linear |
 | `verb-gate-hold` | GATE | HOLD | 0.05 … 1 | 0.35 | exp |
 | `verb-gate-shape` | GATE | SHAPE | -1 … 1 | 0 | linear |
@@ -2669,9 +2694,11 @@ Presets:
 - `bluesky-pad` — Vast, bright pad space
 - `bright-plate` — Bright 80s plate
 - `cathedral` — Long, dark, modulated cathedral
+- `chamber` — Mid-size echo chamber, dense and warm
 - `dreamy-wash` — String-lights dreamy background wash
 - `gated-drum-room` — 80s non-linear drum room: a full burst for 0.3 s after each hit, then cut dead
 - `gated-snare-slam` — Long bright gated snare: burst held 0.45 s, slight fade inside the window
+- `live-drum-room` — Punchy wooden live room for a kit, lows kept short
 - `long-melancholy-verb` — Summer ending: long melancholic pad verb
 - `medium-plate` — Hotel lobby: classy medium verb
 - `plate` — Bright, short plate
@@ -2680,4 +2707,5 @@ Presets:
 - `short-plate-room` — Lido: short beach-club room
 - `small-room` — Tight, natural small room
 - `ugly-tiny-room` — Autogrill bathroom — ugly/funny small verb
+- `vocal-hall` — Smooth hall for a lead vocal: a sixteenth of predelay, the bottom cut
 - `vocal-plate` — Aperitivo: vocal / lead plate

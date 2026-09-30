@@ -44,13 +44,14 @@ cells per channel (UI thread — never the audio thread) and writes the
 base pointer and element count into that channel's state at the two
 introspected offsets. Kernels read them back with `p@64` / `f@64` and
 index with `f@i` / `f!i`. Reset memsets state, zeroes the buffers, and
-re-injects the pointers. Effect machines get per-channel state regions,
-so L and R own independent rings. Effects that decorrelate channels
-read `ctx.chan` (0.0 L / 1.0 R): verb2 picks its L/R tap sets and LFO
-phase from it. The stereo-linked detector is `io.det`, the host's
-per-sample `max(|L|,|R|)` of the input (or of the key, with
-`sidechain`). Both channels reading it is what stereo-links comp2's
-gain.
+re-injects the pointers. Dual-mono effect machines get per-channel state
+regions, so L and R own independent rings. A `stereo` effect runs one
+pass on region 0 and gets one copy of each buffer; one that needs a ring
+per side declares two (delay2's `dline-l` / `dline-r`). Effects that
+decorrelate channels read `ctx.chan` (0.0 L / 1.0 R): chorus2 inverts its
+right LFO by it. The stereo-linked detector is `io.det`, the host's
+per-sample `max(|L|,|R|)` of the input (or of the key, with `sidechain`).
+Both channels reading it is what stereo-links comp2's gain.
 
 **The asset arena (implemented):** the read-only sibling of host buffers.
 A machine declares `"name" Params.ptr Params.len Params.sr "file.wav"

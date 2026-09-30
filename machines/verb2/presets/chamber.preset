@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "verb2", "note": "Mid-size echo chamber, dense and warm", "params": {"verb-algo": 1, "verb-decay": 1.6, "verb-size": 1.3, "verb-early": 0.4, "verb-bass": 1.2, "verb-damp": 4500, "verb-tone": 9000, "verb-predelay": 0.015, "verb-mix": 0.28, "verb-mod": 8}}
