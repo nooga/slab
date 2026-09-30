@@ -376,7 +376,8 @@ fn applyPresetTo(t: *track_mod.Track, preset_idx: u16) void {
 /// bounce it headless (no window, no audio device) and exit. `slab
 /// --gallery` opens the UI gallery (docs/06), no engine. `slab --describe
 /// out.json` dumps every machine's params (docs/19). `--no-idle-skip`
-/// renders every machine every block (docs/04 §Idle skipping).
+/// renders every machine every block (docs/04 §Idle skipping). `--no-neon`
+/// renders dual-mono effects in two scalar passes (docs/05 §Lane mode).
 const Cli = struct {
     project: ?[]const u8 = null,
     render: ?[]const u8 = null,
@@ -400,6 +401,8 @@ pub fn main(init: std.process.Init) !void {
                 cli.gallery = true;
             } else if (std.mem.eql(u8, a, "--no-idle-skip")) {
                 cli.idle_skip = false;
+            } else if (std.mem.eql(u8, a, "--no-neon")) {
+                @import("machines/fy_raw_machine.zig").neon_lanes = false;
             } else cli.project = a;
         }
     }

@@ -138,6 +138,82 @@ These fields are testable. A kernel that sounds correct but starts
 emitting calls or stack spills inside the loop should fail a compiler
 ratchet before it becomes part of the library.
 
+## Lane mode (implemented, 2026-09-30)
+
+What actually shipped first. It isn't the NEON words sketched below: the
+compiler vectorizes a whole kernel across *instances*, and the kernel
+source doesn't change.
+
+A dual-mono effect runs one kernel per channel against its own state. In
+lane mode (fy `Dsp2.Builder.emitLanes`, `Fy.compileDsp2RawLanesCaller`)
+the same per-sample program runs once with every f64 held in a 2 × f64
+NEON register: lane 0 is the left channel's instance and lane 1 the
+right's.
+
+- Each entry argument is either one register shared by both lanes
+  (params) or a register per lane (io frames, ctx, state).
+- A load through a shared pointer is `ld1r`, one value into both lanes. A
+  per-lane load is `ldr d` plus `ld1 {v.d}[1]`. A per-lane store is
+  `str d` plus `st1 {v.d}[1]`.
+- Indexed access (`f@i`, `f!i`) takes each lane's index to its own
+  address.
+- Every arithmetic, compare, select and exponent-bit op has its `.2d` or
+  `.16b` form. There is no `fcsel` across lanes, so `select` is always a
+  mask plus `bsl`.
+
+Each lane does the same IEEE operations in the same order as the scalar
+body, so the output is **bit-identical** to two scalar passes. The fy test
+"dsp lanes: …" and the slab test "NEON lanes: every dual-mono effect …"
+check this with different signals on the two channels.
+
+Lane mode refuses a word (and the host falls back to two scalar passes)
+when:
+- it has stack outputs or f64 arguments;
+- it stores through the shared pointer, where which lane wins would
+  differ from running the passes in order;
+- it is a `call:` composition.
+
+The host (`FyRawMachine.compileLanes`) compiles it for every effect that
+isn't `stereo`, beside the scalar word. Stereo effects (comp2, bus2,
+multi2, char2, funk) already run one pass, so they gain nothing.
+
+Measured in the ReleaseFast bench, ns per sample, lanes against scalar:
+eq2 18/52, sat2 170/272, gate2 14/21, limiter2 24/33, verb2 100/122,
+delay2 14/18, chorus2 17/19. On the 8-bar songs/sweat_geometry window
+(effects alone): 6.06 s → 5.32 s.
+
+**The toggle.** `fy_raw_machine.neon_lanes`, on by default. `slab
+--no-neon` and `zig build bench -- --no-neon` render the scalar passes,
+for A/B checks.
+
+**Voices in pairs.** A poly machine's voices are the same kernel against
+separate state, so `renderVoiceSegment` renders consecutive sounding
+voices two at a time.
+- Voice kernels accumulate (`io f@64 o f+ io f!64`). Lane 0 adds onto the
+  running sum as it would alone. Lane 1 renders into frames that start at
+  −0.0 (x + −0.0 is exactly x), and the host adds that in. The sum is
+  (S + ya) + yb, the sequential order.
+- Each voice's peak, which idle detection reads, is measured the same way
+  as before.
+- An odd voice out renders alone.
+- fm86's control-rate word splits a pair's pass at whichever voice's
+  control point comes first.
+
+The slab test "NEON lanes: voices rendered in pairs …" plays five
+staggered notes on Profit-5, Juno, FM-86 and Rhodes and compares both
+channels bit for bit.
+
+Bench chord case, ns per sample, lanes against one at a time:
+- Profit-5: 884/1475
+- Juno: 210/343
+- FM-86: 157/262
+- Unfairlight: 83/129
+- Rhodes: 73/105
+- Sampler: 129/174
+
+The sweat_geometry window with effects and voices both paired: 6.03 s →
+4.79 s.
+
 ## NEON instruction set
 
 Extension to fy's `src/asm.zig`. Concretely ~300–500 lines of

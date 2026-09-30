@@ -43,6 +43,11 @@ const MAX_OPTS = machine_desc.MAX_OPTS;
 const MAX_CONTROLS = machine_desc.MAX_CONTROLS;
 const MAX_STRIPS = machine_desc.MAX_STRIPS;
 const RawCaller = Fy.Dsp2RawRepeatedCaller;
+/// Dual-mono effects render both channels in one pass, the left in lane 0
+/// and the right in lane 1 of NEON registers (fy lane mode): the same
+/// samples as two scalar passes, at about half the arithmetic. Off (or a
+/// word lane mode can't take) renders the two passes. `--no-neon`.
+pub var neon_lanes: bool = true;
 const RawSlots = Fy.Dsp2RawRepeatedSlots;
 
 pub const Mode = machine_desc.Mode;
@@ -112,6 +117,14 @@ pub const FyRawMachine = struct {
     params_buf: [MAX_PARAMS]u8 align(8) = [_]u8{0} ** MAX_PARAMS,
     io: [MAX_BLOCK]IoFrame = [_]IoFrame{.{}} ** MAX_BLOCK,
     kctx: KernelCtx = .{},
+    /// Lane mode's right channel: its io frames (in_l holds R) and ctx
+    /// (chan = 1), beside `io` and `kctx` for the left.
+    io_r: [MAX_BLOCK]IoFrame = [_]IoFrame{.{}} ** MAX_BLOCK,
+    kctx_r: KernelCtx = .{},
+    render_lanes_slots: RawSlots = .{},
+    render_lite_lanes_slots: RawSlots = .{},
+    render_lanes_caller: ?RawCaller = null,
+    render_lite_lanes_caller: ?RawCaller = null,
     prepare_slots: RawSlots = .{},
     note_on_slots: RawSlots = .{},
     note_off_slots: RawSlots = .{},
@@ -737,7 +750,28 @@ pub const FyRawMachine = struct {
         if (self.desc.deriveWord()) |w| self.derive_caller = try self.compileEntry(w, &self.derive_slots, false);
         self.render_caller = try self.compileEntry(self.desc.renderWord(), &self.render_slots, true);
         if (self.desc.renderLiteWord()) |w| self.render_lite_caller = try self.compileEntry(w, &self.render_lite_slots, true);
+        // Voices pair up whatever their output; effects need one pass per
+        // channel to pair (a stereo effect already runs once).
+        if (self.desc.mode == .voice_sample or !self.desc.stereo) {
+            self.render_lanes_caller = self.compileLanes(self.desc.renderWord(), &self.render_lanes_slots);
+            if (self.desc.renderLiteWord()) |w| self.render_lite_lanes_caller = self.compileLanes(w, &self.render_lite_lanes_slots);
+        }
         if (self.desc.controlWord()) |w| self.control_caller = try self.compileEntry(w, &self.control_slots, false);
+    }
+
+    /// A dual-mono render word in lane mode ( io ctx state params -- ): io,
+    /// ctx and state one per channel in x0/x1, x2/x3, x4/x5, params shared
+    /// in x6. Null when lane mode can't take the word; the scalar passes
+    /// render it then.
+    fn compileLanes(self: *FyRawMachine, word: []const u8, slots: *RawSlots) ?RawCaller {
+        const fy = &self.host.fy;
+        if (fy.isCompositionWord(word)) return null;
+        return fy.compileDsp2RawLanesCaller(word, slots, &.{
+            .{ .pair = .{ 0, 1 } }, .{ .pair = .{ 2, 3 } }, .{ .pair = .{ 4, 5 } }, .{ .uniform = 6 },
+        }, IO_STRIDE) catch |err| {
+            std.log.info("{s}: {s} renders without NEON lanes ({s})", .{ self.desc.nameSlice(), word, @errorName(err) });
+            return null;
+        };
     }
 
     fn initRawControls(self: *FyRawMachine) void {
@@ -1684,12 +1718,82 @@ fn renderVoiceSample(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
 fn renderVoiceSegment(self: *FyRawMachine, start: usize, end: usize) !void {
     if (end <= start) return;
     const caller = try effectCaller(self);
-    // Polyphonic machines render every voice every block (Juno-style — no
-    // freeing, silent voices are cheap and predictable); kernels of
-    // multi-voice machines ACCUMULATE into the host-zeroed out buffer.
+    // Polyphonic machines render every sounding voice; kernels of
+    // multi-voice machines ACCUMULATE into the host-zeroed out buffer, in
+    // voice order. In lane mode consecutive sounding voices render in
+    // pairs, one per NEON lane, and sum in the same order.
+    var active: [MAX_REGIONS]usize = undefined;
+    var n_active: usize = 0;
+    for (0..self.regionCount()) |voice| if (!self.voice_idle[voice]) {
+        active[n_active] = voice;
+        n_active += 1;
+    };
+    var i: usize = 0;
+    if (neon_lanes) if (effectLanesCaller(self)) |lanes| {
+        while (i + 1 < n_active) : (i += 2) try renderVoicePair(self, lanes, active[i], active[i + 1], start, end);
+    };
+    while (i < n_active) : (i += 1) try renderVoice(self, caller, active[i], start, end);
+}
+
+/// Voices `a` then `b` over [start, end), in one lane-mode pass: `a` adds
+/// onto the buffer as it would alone; `b` renders into frames starting at
+/// -0.0 (x + -0.0 is x, exactly), then the host adds them in. So the sum
+/// is (S + ya) + yb, as `a` then `b` alone leave it, and each voice's
+/// peak (what idling watches) is measured the same way.
+fn renderVoicePair(self: *FyRawMachine, lanes: *RawCaller, a: usize, b: usize, start: usize, end: usize) !void {
     const io = self.io[start..end];
-    for (0..self.regionCount()) |voice| {
-        if (self.voice_idle[voice]) continue;
+    const io_b = self.io_r[start..end];
+    const snap = self.voice_snap[start..end];
+    for (snap, io, io_b) |*d, f, *fb| {
+        d.* = f.out_l;
+        fb.* = f;
+        fb.out_l = -0.0;
+        fb.out_r = -0.0;
+    }
+    var at: usize = 0;
+    const len = end - start;
+    while (at < len) {
+        // Both voices' control points split the pass.
+        var n = len - at;
+        if (self.control_caller) |*ctl| {
+            for ([2]usize{ a, b }) |v| if (self.voice_ctl_left[v] == 0) {
+                _ = try ctl.call(1, &self.entryArgs(v));
+                self.voice_ctl_left[v] = self.desc.control_period;
+            };
+            n = @min(n, @min(self.voice_ctl_left[a], self.voice_ctl_left[b]));
+        }
+        self.kctx.chan = @floatFromInt(a);
+        self.kctx_r = self.kctx;
+        self.kctx_r.chan = @floatFromInt(b);
+        const args = [_]Fy.Dsp2RawArg{
+            .{ .ptr = @intFromPtr(&io[at]) },    .{ .ptr = @intFromPtr(&io_b[at]) },
+            .{ .ptr = @intFromPtr(&self.kctx) }, .{ .ptr = @intFromPtr(&self.kctx_r) },
+            .{ .ptr = self.statePtrCh(a) },      .{ .ptr = self.statePtrCh(b) },
+            .{ .ptr = self.paramsPtr() },
+        };
+        _ = try lanes.call(@intCast(n), &args);
+        if (self.control_caller != null) {
+            self.voice_ctl_left[a] -= n;
+            self.voice_ctl_left[b] -= n;
+        }
+        at += n;
+    }
+    var pk_a = self.voice_peak[a];
+    var pk_b = self.voice_peak[b];
+    for (io, io_b, snap) |*f, fb, s0| {
+        const after_a = f.out_l;
+        pk_a = @max(pk_a, @abs(after_a - s0));
+        f.out_l = after_a + fb.out_l;
+        pk_b = @max(pk_b, @abs(f.out_l - after_a));
+        f.out_r += fb.out_r;
+    }
+    self.voice_peak[a] = pk_a;
+    self.voice_peak[b] = pk_b;
+}
+
+fn renderVoice(self: *FyRawMachine, caller: *RawCaller, voice: usize, start: usize, end: usize) !void {
+    const io = self.io[start..end];
+    {
         const snap = self.voice_snap[start..end];
         for (snap, io) |*d, f| d.* = f.out_l;
         const e = self.entryArgs(voice);
@@ -1900,6 +2004,15 @@ fn effectCaller(self: *FyRawMachine) !*RawCaller {
     return if (self.render_caller) |*c_| c_ else error.UnknownWord;
 }
 
+/// effectCaller's lane-mode twin, null when that word has none.
+fn effectLanesCaller(self: *FyRawMachine) ?*RawCaller {
+    if (self.render_lite_caller != null) {
+        const sel: *align(1) const f64 = @ptrCast(&self.params_buf[self.desc.render_lite_sel]);
+        if (sel.* == 0) return if (self.render_lite_lanes_caller) |*c_| c_ else null;
+    }
+    return if (self.render_lanes_caller) |*c_| c_ else null;
+}
+
 fn renderEffectBlock(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f32, r: []f32) !void {
     const caller = try effectCaller(self);
     const in_l, const in_r = inputChannels(ctx);
@@ -1924,6 +2037,28 @@ fn renderEffectBlock(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
         }
         return;
     }
+    // Both channels at once, one per NEON lane: the right's frames are the
+    // left's with the inputs swapped, as the second scalar pass sees them.
+    if (neon_lanes) if (effectLanesCaller(self)) |lanes| {
+        const io_r = self.io_r[0..l.len];
+        for (io_r, io) |*fr, f| {
+            fr.* = f;
+            std.mem.swap(f64, &fr.in_l, &fr.in_r);
+        }
+        self.kctx.chan = 0;
+        self.kctx_r = self.kctx;
+        self.kctx_r.chan = 1;
+        const args = [_]Fy.Dsp2RawArg{
+            .{ .ptr = @intFromPtr(&io[0]) },            .{ .ptr = @intFromPtr(&io_r[0]) },
+            .{ .ptr = @intFromPtr(&self.kctx) },        .{ .ptr = @intFromPtr(&self.kctx_r) },
+            .{ .ptr = self.statePtrCh(0) },             .{ .ptr = self.statePtrCh(1) },
+            .{ .ptr = self.paramsPtr() },
+        };
+        _ = try lanes.call(l.len, &args);
+        for (l, io) |*d, f| d.* = @floatCast(f.out_l);
+        for (r, io_r) |*d, f| d.* = @floatCast(f.out_l);
+        return;
+    };
     // Dual-mono lanes: each channel pass sees its input in in_l and writes
     // out_l, against its own state region (ctx.chan = channel).
     const outs = [2][]f32{ l, r };
@@ -6096,4 +6231,118 @@ test "a reset keeps the latency a machine reports" {
     defer mach.deinit.?(mach.state, testing.allocator);
     mach.reset(mach.state);
     try testing.expectEqual(@as(u32, 97), mach.latencySamples());
+}
+
+test "NEON lanes: every dual-mono effect renders the same samples as its two scalar passes" {
+    const effects = [_][]const u8{
+        "machines/eq2/eq2.fy",         "machines/sat2/sat2.fy",     "machines/verb2/verb2.fy",
+        "machines/delay2/delay2.fy",   "machines/chorus2/chorus2.fy", "machines/limiter2/limiter2.fy",
+        "machines/gate2/gate2.fy",     "machines/era/era.fy",
+    };
+    const block = 256;
+    const blocks = 24;
+    var in_l: [block]f32 = undefined;
+    var in_r: [block]f32 = undefined;
+    const ports = [_][*]const f32{ &in_l, &in_r };
+    defer neon_lanes = true;
+    for (effects) |path| {
+        var outs: [2][2][block * blocks]f32 = undefined;
+        var laned = false;
+        for ([_]bool{ false, true }, 0..) |lanes, v| {
+            neon_lanes = lanes;
+            const inst = try FyRawMachine.create(testing.allocator, path);
+            const mach = inst.machineInterface();
+            defer mach.deinit.?(mach.state, testing.allocator);
+            if (lanes) laned = inst.render_lanes_caller != null;
+            var ctx = std.mem.zeroes(machine.MachineCtx);
+            ctx.sample_rate = 48_000;
+            ctx.block_size = block;
+            ctx.tempo_bpm = 120;
+            ctx.audio_in = @ptrCast(&ports[0]);
+            ctx.audio_in_count = 2;
+            var seed: u32 = 7;
+            for (0..blocks) |b| {
+                for (&in_l, &in_r, 0..) |*a, *b2, i| {
+                    const t: f32 = @floatFromInt(b * block + i);
+                    seed = seed *% 1664525 +% 1013904223;
+                    const noise = @as(f32, @floatFromInt(seed >> 9)) / 8388608.0 - 1.0;
+                    // Different on each side, loud in bursts, then silent.
+                    const on: f32 = if (b < blocks - 6) 1 else 0;
+                    a.* = on * (0.7 * @sin(t * 0.0144) + 0.1 * noise);
+                    b2.* = on * (0.9 * @sin(t * 0.0437) * @cos(t * 0.0021));
+                }
+                testRender(mach, &ctx, outs[v][0][b * block ..][0..block], outs[v][1][b * block ..][0..block]);
+            }
+        }
+        testing.expect(laned) catch |e| {
+            std.debug.print("{s}: no lane caller\n", .{path});
+            return e;
+        };
+        for (0..2) |ch| {
+            for (outs[0][ch], outs[1][ch], 0..) |a, b, i| if (@as(u32, @bitCast(a)) != @as(u32, @bitCast(b))) {
+                std.debug.print("{s}: channel {} differs at {}: {d} vs {d}\n", .{ path, ch, i, a, b });
+                return error.TestExpectedEqual;
+            };
+        }
+        // And the channels really are different signals.
+        try testing.expect(!std.mem.eql(f32, &outs[1][0], &outs[1][1]));
+    }
+}
+
+test "NEON lanes: voices rendered in pairs sum to the same samples as one at a time" {
+    const synths = [_][]const u8{
+        "machines/profit5/profit5.fy", "machines/juno2/juno2.fy", "machines/fm86/fm86.fy",
+        "machines/rhodes/rhodes.fy",
+    };
+    const block = 256;
+    const blocks = 40;
+    defer neon_lanes = true;
+    for (synths) |path| {
+        var outs: [2][2][block * blocks]f32 = undefined;
+        var laned = false;
+        for ([_]bool{ false, true }, 0..) |lanes, v| {
+            neon_lanes = lanes;
+            const inst = try FyRawMachine.create(testing.allocator, path);
+            const mach = inst.machineInterface();
+            defer mach.deinit.?(mach.state, testing.allocator);
+            if (lanes) laned = inst.render_lanes_caller != null;
+            var ctx = std.mem.zeroes(machine.MachineCtx);
+            ctx.sample_rate = 48_000;
+            ctx.block_size = block;
+            ctx.tempo_bpm = 120;
+            for (0..blocks) |b| {
+                // Five notes (one voice renders alone) starting mid-block at
+                // different offsets, then released one by one.
+                var evs: [8]machine.NoteEvent = undefined;
+                var n: usize = 0;
+                const pitches = [_]f32{ 48, 55, 60, 64, 71 };
+                for (pitches, 0..) |p, k| {
+                    if (b == k * 2) {
+                        evs[n] = .{ .sample_offset = @intCast(17 + 41 * k), .kind = .note_on, .channel = 0, .note_id = @intCast(k), .pitch = p, .velocity = 0.5 + 0.1 * @as(f32, @floatFromInt(k)) };
+                        n += 1;
+                    }
+                    if (b == 22 + k * 3) {
+                        evs[n] = .{ .sample_offset = @intCast(5 + 30 * k), .kind = .note_off, .channel = 0, .note_id = @intCast(k), .pitch = p, .velocity = 0 };
+                        n += 1;
+                    }
+                }
+                ctx.note_in = if (n > 0) @ptrCast(&evs[0]) else null;
+                ctx.note_in_count = @intCast(n);
+                testRender(mach, &ctx, outs[v][0][b * block ..][0..block], outs[v][1][b * block ..][0..block]);
+            }
+        }
+        testing.expect(laned) catch |e| {
+            std.debug.print("{s}: no lane caller\n", .{path});
+            return e;
+        };
+        for (0..2) |ch| {
+            for (outs[0][ch], outs[1][ch], 0..) |x, y, i| if (@as(u32, @bitCast(x)) != @as(u32, @bitCast(y))) {
+                std.debug.print("{s}: channel {} differs at {}: {d} vs {d}\n", .{ path, ch, i, x, y });
+                return error.TestExpectedEqual;
+            };
+        }
+        var peak: f32 = 0;
+        for (outs[1][0]) |x| peak = @max(peak, @abs(x));
+        try testing.expect(peak > 0.01);
+    }
 }
