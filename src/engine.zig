@@ -640,7 +640,11 @@ pub const Engine = struct {
                         t.machine.render(t.machine.state, &ctx, l, r);
                     } else {
                         const ahead = IDLE_WAKE_AHEAD_S * bpm / 60.0;
+                        // A control edit wakes it too, so its params and
+                        // displays catch up (the edit may be all there is).
+                        const edited = t.machine.takeWake();
                         wake = n_events > 0 or notesNear(snap, beat_start, beat_end + ahead);
+                        if (edited) t.inst_quiet = 0;
                         const hold = t.machine.idleHold(@floatFromInt(sr), idleHoldSamples(sr));
                         // Asleep: `l`/`r` stay silent.
                         if (wake or hold == machine.TAIL_FOREVER or t.inst_quiet < hold) {
@@ -1177,6 +1181,9 @@ fn renderEffectsKeyed(
         // goes on from silence. Its PDC share stays counted above.
         const quiet_in = idle.on and !idle.wake and @max(in_peak[0], in_peak[1]) <= IDLE_FLOOR and
             (ctx.audio_in_count < 4 or @max(blockPeak(in_ports[2][0..cur_l.len]), blockPeak(in_ports[3][0..cur_l.len])) <= IDLE_FLOOR);
+        // A control edit restarts its hold: it renders on until the edit
+        // has settled into its params.
+        if (idle.on and fx.mach.takeWake()) fx.quiet = 0;
         if (quiet_in) {
             const hold = fx.mach.idleHold(base_ctx.sample_rate, default_hold);
             if (hold != machine.TAIL_FOREVER and fx.quiet >= hold) {
@@ -2476,7 +2483,7 @@ const IdleTestMachines = struct {
 
     /// Effect: its input, plus half of the first loud sample again `gap`
     /// samples later - sound it plays after its output has been silent.
-    const Echo = struct { gap: u32, declare: u32 = 0, left: u32 = 0, val: f32 = 0, renders: usize = 0 };
+    const Echo = struct { gap: u32, declare: u32 = 0, left: u32 = 0, val: f32 = 0, renders: usize = 0, wake_at: usize = 0, wake_calls: usize = 0 };
     fn echo(e: *Echo) machine.Machine {
         var m = RouteTestMachines.dc(undefined);
         m.name = "echo";
@@ -2510,6 +2517,13 @@ const IdleTestMachines = struct {
             fn f(st: *anyopaque, _: f64) u32 {
                 const s: *Echo = @ptrCast(@alignCast(st));
                 return s.declare;
+            }
+        }.f;
+        m.take_wake = struct {
+            fn f(st: *anyopaque) bool {
+                const s: *Echo = @ptrCast(@alignCast(st));
+                s.wake_calls += 1;
+                return s.wake_calls == s.wake_at;
             }
         }.f;
         return m;
@@ -2565,6 +2579,24 @@ test "idle skipping: an instrument and a latent effect sleep between notes and t
     const blocks = e_all.renders;
     try testing.expect(e_idle.renders < blocks / 2);
     try testing.expect(e_idle.renders > blocks / 5);
+}
+
+test "idle skipping: a control edit wakes a sleeping effect for its hold" {
+    const alloc = testing.allocator;
+    const frames = 5 * 24000;
+    const out = try alloc.alloc(f32, frames * 2);
+    defer alloc.free(out);
+    var renders: [2]usize = undefined;
+    // Asked once, well into the silence between the notes (block 70 of
+    // 118, about 1.5 s), where the echo sleeps.
+    for (0..2) |i| {
+        var e = IdleTestMachines.Env{};
+        var echo = IdleTestMachines.Echo{ .gap = 1, .wake_at = if (i == 1) 70 else 0 };
+        try idleTestRender(alloc, true, &e, &.{IdleTestMachines.echo(&echo)}, out);
+        renders[i] = echo.renders;
+    }
+    // The wake renders the default hold again: 12000 samples, several blocks.
+    try testing.expect(renders[1] > renders[0] + 3);
 }
 
 test "idle skipping: sound an effect keeps past its silent output plays when it declares a tail" {

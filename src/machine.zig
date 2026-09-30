@@ -262,6 +262,7 @@ pub const LatencyFn = *const fn (state: *anyopaque) u32;
 /// still holds sound it will play without new input (a delay line's
 /// length), in samples at `sample_rate`; TAIL_FOREVER = never idle-skip it
 /// (docs/04 §Idle skipping).
+pub const TakeWakeFn = *const fn (state: *anyopaque) bool;
 pub const TailFn = *const fn (state: *anyopaque, sample_rate: f64) u32;
 pub const TAIL_FOREVER: u32 = std.math.maxInt(u32);
 
@@ -347,6 +348,10 @@ pub const Machine = struct {
     /// Idle skipping (docs/04 §Idle skipping); none = no stored sound
     /// beyond the host's default hold.
     tail: ?TailFn = null,
+    /// Idle skipping: true once after a control edit landed while the
+    /// machine may be asleep, so the host renders it again (and its
+    /// derived params and displays catch up). None = never asks.
+    take_wake: ?TakeWakeFn = null,
 
     pub fn latencySamples(self: *const Machine) u32 {
         const f = self.latency orelse return 0;
@@ -360,6 +365,12 @@ pub const Machine = struct {
         const tail = if (self.tail) |f| f(self.state, sample_rate) else 0;
         if (tail == TAIL_FOREVER) return TAIL_FOREVER;
         return @max(default_hold, self.latencySamples() +| tail);
+    }
+
+    /// Consume a pending wake request (audio thread).
+    pub fn takeWake(self: *const Machine) bool {
+        const f = self.take_wake orelse return false;
+        return f(self.state);
     }
 
     pub fn controlCount(self: *const Machine) usize {
