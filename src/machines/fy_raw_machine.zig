@@ -5781,7 +5781,7 @@ test "every pitched voice machine takes note expression" {
         "machines/sampler/sampler.fy",   "machines/unfairlight/unfairlight.fy",
         "machines/juno2/juno2.fy",       "machines/fm86/fm86.fy",
         "machines/rhodes/rhodes.fy",     "machines/ms20/ms20.fy",
-        "machines/cream/cream.fy",
+        "machines/cream/cream.fy",       "machines/profit5/profit5.fy",
     };
     for (files) |f| {
         const inst = try FyRawMachine.create(testing.allocator, f);

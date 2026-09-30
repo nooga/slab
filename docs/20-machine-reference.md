@@ -13,6 +13,7 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`fm86`](#fm86) | FM-7.11 | instrument | 8 | `—` |
 | [`juno2`](#juno2) | Ju-Know | instrument | 8 | `jn-` |
 | [`ms20`](#ms20) | SM-24 Mono | instrument | mono | `—` |
+| [`profit5`](#profit5) | Profit-5 | instrument | 8 | `p5-` |
 | [`rhodes`](#rhodes) | Rhodes E-Piano | instrument | 8 | `rd-` |
 | [`sampler`](#sampler) | Sampler | instrument | 8 | `smp-` |
 | [`unfairlight`](#unfairlight) | Unfairlight TMI | instrument | 8 | `cmi-` |
@@ -667,6 +668,77 @@ Presets:
 - `squelchy-boogie-bass` — Low squelchy boogie bass
 - `tight-pulse-bass` — Tight tollgate pulse bass
 - `vibrato-lead` — Vibrato + portamento lead
+
+## profit5
+
+**Profit-5**, instrument, 8 voices.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `p5-pm-fenv` | POLY-MOD | F ENV | 0 … 1 | 0 | pow |
+| `p5-pm-oscb` | POLY-MOD | OSC B | 0 … 1 | 0 | pow |
+| `p5-pm-dfa` | POLY-MOD | FREQ A | 0 OFF / 1 ON | 0 | switch |
+| `p5-pm-dpw` | POLY-MOD | PW A | 0 OFF / 1 ON | 0 | switch |
+| `p5-pm-dfl` | POLY-MOD | FILT | 0 OFF / 1 ON | 0 | switch |
+| `p5-freq-a` | OSC A | FREQ | -24 … 24 | 0 | integer |
+| `p5-saw-a` | OSC A | SAW | 0 OFF / 1 ON | 1 | switch |
+| `p5-pul-a` | OSC A | PULSE | 0 OFF / 1 ON | 0 | switch |
+| `p5-pw-a` | OSC A | PW | 0.05 … 0.95 | 0.5 | linear |
+| `p5-sync` | OSC A | SYNC | 0 OFF / 1 ON | 0 | switch |
+| `p5-freq-b` | OSC B | FREQ | -24 … 24 | 0 | integer |
+| `p5-fine-b` | OSC B | FINE | -1 … 1 | 0.08 | linear |
+| `p5-pw-b` | OSC B | PW | 0.05 … 0.95 | 0.5 | linear |
+| `p5-saw-b` | OSC B | SAW | 0 OFF / 1 ON | 1 | switch |
+| `p5-tri-b` | OSC B | TRI | 0 OFF / 1 ON | 0 | switch |
+| `p5-pul-b` | OSC B | PULSE | 0 OFF / 1 ON | 0 | switch |
+| `p5-lo-b` | OSC B | LO | 0 OFF / 1 ON | 0 | switch |
+| `p5-kbd-b` | OSC B | KBD | 0 OFF / 1 ON | 1 | switch |
+| `p5-lfo-rate` | WHEEL-MOD | RATE | 0.04 … 20 | 5 | exp |
+| `p5-lfo-wave` | WHEEL-MOD | WAVE | 0 SAW / 1 TRI / 2 SQR | 1 | switch |
+| `p5-wm-mix` | WHEEL-MOD | MIX | 0 … 1 | 0 | linear |
+| `p5-wm-amt` | WHEEL-MOD | AMOUNT | 0 … 1 | 0 | pow |
+| `p5-wm-dfa` | WHEEL-MOD | FREQ A | 0 OFF / 1 ON | 1 | switch |
+| `p5-wm-dfb` | WHEEL-MOD | FREQ B | 0 OFF / 1 ON | 1 | switch |
+| `p5-wm-dpa` | WHEEL-MOD | PW A | 0 OFF / 1 ON | 0 | switch |
+| `p5-wm-dpb` | WHEEL-MOD | PW B | 0 OFF / 1 ON | 0 | switch |
+| `p5-wm-dfl` | WHEEL-MOD | FILT | 0 OFF / 1 ON | 0 | switch |
+| `p5-lvl-a` | MIXER | OSC A | 0 … 1 | 1 | pow |
+| `p5-lvl-b` | MIXER | OSC B | 0 … 1 | 0.8 | pow |
+| `p5-lvl-n` | MIXER | NOISE | 0 … 1 | 0 | pow |
+| `p5-ftype` | FILTER | TYPE | 0 P5 / 1 OB / 2 OB BP | 0 | switch |
+| `p5-cutoff` | FILTER | CUTOFF | 20 … 18000 | 1600 | exp |
+| `p5-res` | FILTER | RES | 0 … 1.1 | 0.15 | linear |
+| `p5-env` | FILTER | ENV | 0 … 1 | 0.35 | linear |
+| `p5-kbd` | FILTER | KBD | 0 … 1 | 0.5 | linear |
+| `p5-drive` | FILTER | DRIVE | 0 … 1 | 0.35 | linear |
+| `p5-mode` | FILTER | MODE | 0 … 1 | 0 | linear |
+| `p5-f-atk` | F ENV | ATK | 0.001 … 10 | 0.002 | exp |
+| `p5-f-dec` | F ENV | DEC | 0.005 … 12 | 0.4 | exp |
+| `p5-f-sus` | F ENV | SUS | 0 … 1 | 0.3 | linear |
+| `p5-f-rel` | F ENV | REL | 0.005 … 12 | 0.35 | exp |
+| `p5-a-atk` | A ENV | ATK | 0.001 … 10 | 0.002 | exp |
+| `p5-a-dec` | A ENV | DEC | 0.005 … 12 | 0.6 | exp |
+| `p5-a-sus` | A ENV | SUS | 0 … 1 | 0.8 | linear |
+| `p5-a-rel` | A ENV | REL | 0.005 … 12 | 0.35 | exp |
+| `p5-glide` | OUT | GLIDE | 0 … 5 | 0 | pow |
+| `p5-vel` | OUT | VEL | 0 … 1 | 0.3 | linear |
+| `p5-heat` | OUT | HEAT | 0 … 1 | 0 | linear |
+| `p5-fbk` | OUT | FEEDBACK | 0 … 1 | 0 | linear |
+| `p5-age` | OUT | AGE | 0 … 1 | 0.4 | linear |
+| `p5-level` | OUT | LEVEL | 0 … 1 | 0.3 | pow |
+
+Presets:
+
+- `clang-fm-bass` — Synced poly-mod bass: OSC B triangle FMs OSC A, synced so the pitch stays put
+- `heavy-bass` — Heated, fed-back bass: HEAT and FEEDBACK squeeze the low end
+- `ob-jump-brass` — Bright OB-style synth brass for big stabs
+- `ob-pad` — Oberheim 12 dB pad: OB filter slightly toward notch, wide detune
+- `pluck-keys` — Short filtered pluck for arpeggios and comping
+- `poly-mod-bell` — Clangy FM bell: OSC B triangle modulating OSC A through POLY-MOD
+- `poly-strings` — String ensemble pad: detuned saws, slow vibrato, soft attack
+- `prophet-brass` — Classic 5-voice brass: two detuned saws, slow filter swell
+- `shred-lead` — Serious shred: FEEDBACK past unity, hot DRIVE and HEAT, sputtering lead
+- `sync-lead` — Sync sweep lead: filter env sweeps synced OSC A through POLY-MOD
 
 ## rhodes
 
@@ -2540,13 +2612,13 @@ Presets:
 
 | param | section | label | range | default | notes |
 |---|---|---|---|---|---|
-| `sat-drive` | SAT | DRIVE | 0 … 48 | 6 | linear |
-| `sat-mode` | SAT | MODE | 0 TUBE / 1 TAPE / 2 XFMR / 3 DIODE / 4 FUZZ / 5 VALVE / 6 RAIL / 7 FOLD | 0 | switch |
-| `sat-sag` | SAT | SAG | 0 … 1 | 0 | linear |
-| `sat-color` | SAT | COLOR | 0 … 1 | 1 | linear |
-| `sat-tone` | SAT | TONE | 800 … 18000 | 18000 | exp |
-| `sat-mix` | SAT | MIX | 0 … 1 | 1 | pow |
-| `sat-out` | SAT | OUT | -24 … 24 | 0 | linear |
+| `sat-drive` | STAGE | DRIVE | 0 … 48 | 6 | linear |
+| `sat-mode` | STAGE | MODE | 0 TUBE / 1 TAPE / 2 XFMR / 3 DIODE / 4 FUZZ / 5 VALVE / 6 RAIL / 7 FOLD | 0 | switch |
+| `sat-sag` | STAGE | SAG | 0 … 1 | 0 | linear |
+| `sat-color` | VOICE | COLOR | 0 … 1 | 1 | linear |
+| `sat-tone` | VOICE | TONE | 800 … 18000 | 18000 | exp |
+| `sat-mix` | OUT | MIX | 0 … 1 | 1 | pow |
+| `sat-out` | OUT | OUT | -24 … 24 | 0 | linear |
 
 Presets:
 

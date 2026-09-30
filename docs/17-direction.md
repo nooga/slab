@@ -542,6 +542,29 @@ by three machines:
 The 808 and 909 get per-pad outputs and choke groups; the gated snare
 and sidechain need Track E.
 
+Profit-5 (2026-09-30, row 2 above, built ahead of the supersaw):
+`machines/profit5`, voice in `kernels/06-voices/profit5.fy`, 8 voices.
+POLY-MOD (filter env and OSC B to FREQ A, PW A, FILTER), A synced to B,
+B's LO and KBD switches, WHEEL-MOD (SAW/TRI/SQR crossfaded into noise,
+AMOUNT standing in for the wheel), glide, velocity. Oscillators at 4x,
+filter at 2x. FILTER switches the P5 4-pole (`04-filters/ota_cascade.fy`:
+Huovilainen stages at his 2x rate, resonance through a lopsided tanh and
+a 3 Hz coupling cap; RES 1 oscillates from 100 Hz up, 10-30 cents flat)
+and the SEM 12 dB (`04-filters/sem_svf.fy`: TPT SVF, lopsided saturating
+integrators, LP-notch-HP MODE, BP). Past the original: HEAT (a 3 Hz up /
+1 Hz down follower on the filter output biases, drives and sags the
+filter), FEEDBACK (VCA out back into the mix, gain above 1 in the band
+past ~0.8), and a -86 dB noise floor that starts self-oscillation.
+B -> FREQ A divides out the mean speed-up of exponential FM (from B's
+wave and depth, per block), so A keeps its pitch; tonal FM basses still
+want SYNC, since AGE drifts A and B apart and FM exposes any mistuning.
+`01-oscillators/primitives/vco.fy` is the first oscillator character
+layer: the saw bowed toward the capacitor ramp per voice, and the droop
+highpass that sags low pulse tops; AGE spreads both. Juno and Cream
+still use the ideal waves. Cost: ~375 ns/smp per sounding voice
+(ReleaseFast), both filters computed every sample. Open: unison (needs
+the host voice pool), the Prophet's per-knob ranges against the manual.
+
 Converter kernels (2026-09-27): `kernels/09-digital/digital.fy` has the
 shared parts: round/truncate/mu-law quantizers with fractional BITS, and
 `zoh-tick`, a sample-and-hold at any rate below the host's that samples

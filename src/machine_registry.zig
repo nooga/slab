@@ -53,6 +53,7 @@ pub const builtin_machines = [_][]const u8{
     "machines/limiter2/limiter2.fy",
     "machines/chorus2/chorus2.fy",
     "machines/juno2/juno2.fy",
+    "machines/profit5/profit5.fy",
     "machines/rhodes/rhodes.fy",
     "machines/funk/funk.fy",
     "machines/sampler/sampler.fy",

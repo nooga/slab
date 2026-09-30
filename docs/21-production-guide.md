@@ -205,7 +205,7 @@ Step strings, 16 steps per 4/4 bar: `X` accent, `x` hit, `o` ghost,
 Fill roles, not track slots. A full pop arrangement is about six
 roles. Machines are named by id (what projects and slabkit use); the
 panel shows their display names: `drum2` DS-404 Drums, `cream` Mog
-Passenger, `ms20` SM-24 Mono, `juno2` Ju-Know, `fm86` FM-7.11 (a DX7: its
+Passenger, `ms20` SM-24 Mono, `juno2` Ju-Know, `profit5` Profit-5 (a Prophet-5 with an Oberheim filter switch), `fm86` FM-7.11 (a DX7: its
 parameters are the DX7's own, 0..99, and .syx voices import byte for byte;
 the eight factory ROMs are banks `rom1a` … `rom4b` - name the bank where a
 voice repeats, e.g. `rom1a/e-piano-1`),
@@ -214,12 +214,12 @@ voice repeats, e.g. `rom1a/e-piano-1`),
 | Role | Slab machines and starting presets |
 |---|---|
 | drums | `drum2`: `gated-snare-kit` (80s pop), `polite-studio-kit`, `909-punch`, `808-boom`, `tight-funk-kit`, `light-disco-kit` |
-| bass | `cream`: `outstanding-funk-bass`, `synthwave-bass`, `deep-sub-bass`. `ms20`: `rubber-bass`, `acid-bass`, `octave-night-bass`. `fm86`: `bass-1` (DX slap) |
-| harmonic bed | `juno2`: `wide-sunny-pad`, `lush-pad`, `strings`, `string-machine-wash`. `fm86`: `strings-1` |
-| rhythmic comping | `fm86`: `e-piano-1` (the DX7 ballad piano), `clav-1`. `rhodes`: `default`, `mellow`. `juno2`: `warm-chord-plucks`, `polite-synth-pop-keys` |
-| lead / vocal line | `cream`: `cream-lead`, `whistle`. `ms20`: `vibrato-lead`, `portamento-highway-lead`. `fm86`: `syn-lead-1`, `flute-1` |
-| stabs / brass | `juno2`: `bright-brass-stab`, `brass-stab`, `posh-brass-poly`. `fm86`: `brass-1` |
-| ear candy | `fm86`: `vibe-1`, `marimba`, `tub-bells`, `orch-chime`. `delay2` on a sparse arp |
+| bass | `cream`: `outstanding-funk-bass`, `synthwave-bass`, `deep-sub-bass`. `profit5`: `heavy-bass`, `clang-fm-bass`. `ms20`: `rubber-bass`, `acid-bass`, `octave-night-bass`. `fm86`: `bass-1` (DX slap) |
+| harmonic bed | `juno2`: `wide-sunny-pad`, `lush-pad`, `strings`, `string-machine-wash`. `profit5`: `poly-strings`, `ob-pad`. `fm86`: `strings-1` |
+| rhythmic comping | `fm86`: `e-piano-1` (the DX7 ballad piano), `clav-1`. `rhodes`: `default`, `mellow`. `juno2`: `warm-chord-plucks`, `polite-synth-pop-keys`. `profit5`: `pluck-keys` |
+| lead / vocal line | `cream`: `cream-lead`, `whistle`. `ms20`: `vibrato-lead`, `portamento-highway-lead`. `fm86`: `syn-lead-1`, `flute-1`. `profit5`: `sync-lead`, `shred-lead` |
+| stabs / brass | `juno2`: `bright-brass-stab`, `brass-stab`, `posh-brass-poly`. `profit5`: `prophet-brass`, `ob-jump-brass`. `fm86`: `brass-1` |
+| ear candy | `profit5`: `poly-mod-bell`. `fm86`: `vibe-1`, `marimba`, `tub-bells`, `orch-chime`. `delay2` on a sparse arp |
 
 Genre palettes:
 
@@ -234,7 +234,7 @@ Genre palettes:
 
 Tweak after loading a preset: `track.set(cutoff=..., level=...)`. The
 most useful moves are the filter cutoff (darker sits further back),
-env amount, `age` (analog drift on juno2 and cream) and level.
+env amount, `age` (analog drift on juno2, cream and profit5) and level.
 
 ## 8. Mixing
 
