@@ -327,8 +327,10 @@ stores, reached through args the loop doesn't advance.
 
 Otherwise both arms are computed and merged with selects. Stores only one
 arm makes keep their old value in the other arm. An `f!i` store inside
-such an arm is an error. The same test repeated, for example in inlined
-copies, is one decision.
+such an arm has no address known at build time, so it becomes a
+conditional store instead: a `cbz` on the arm's mask skips it. Both arms
+may write the same cell. A word with one can't run in lane mode. The same
+test repeated, for example in inlined copies, is one decision.
 
 `Fy.dsp2_versioning = false` makes every `ifte` merge with selects.
 `Fy.dsp2VariantCount` reports how many bodies a word splits into.

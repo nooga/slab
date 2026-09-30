@@ -2231,15 +2231,79 @@ test "dsp ifte: lane mode versions shared masks and if-converts per-lane ones, b
 
 const Dsp2LaneArg = @import("dsp2.zig").LaneArg;
 
-test "dsp ifte: unbalanced arms, a non-mask condition and an indexed store in a converted arm are errors" {
+test "dsp ifte: unbalanced arms and a non-mask condition are errors" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
     Fy.Builtins.fyPtr = @intFromPtr(&fy);
     _ = try fy.run("ustruct: EIo f64 in f64 out ; ustruct: ESt f64 i f64 tab 4 ;");
     try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-e1 | io:EIo -- | io.in 0.0 f> [ 1.0 ] [ 1.0 2.0 ] ifte f+ -> io.out ;"));
     try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-e2 | io:EIo -- | io.in [ 1.0 ] [ 2.0 ] ifte -> io.out ;"));
-    try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-e3 | io:EIo s:ESt -- | io.in 0.0 f> [ 1.0 s.tab& s.i f!i ] [ ] ifte ;"));
     try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-e4 | io:EIo -- | io.in 0.0 f> [ 1.0 ] ifte -> io.out ;"));
+}
+
+test "dsp ifte: indexed stores in converted arms happen only where their arm is taken" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+    // Both arms write the same ring cell (the store that isn't taken must
+    // not clobber the one that is), an inner converted ifte writes another
+    // cell, and the read sees the ring before this sample's writes.
+    _ = try fy.run(
+        \\ustruct: CIo f64 in f64 out ;
+        \\ustruct: CSt f64 w f64 ring 8 ;
+        \\ustruct: CP f64 k ;
+        \\dsp: k-cst | io:CIo ctx st:CSt p:CP -- |
+        \\  io.in | x |
+        \\  st.w | w |
+        \\  st.ring& w f@i -> io.out
+        \\  w 4.0 f+ | u0 |
+        \\  u0 8.0  u0  u0 8.0 f-  fsel-lt | u |
+        \\  x 0.0 f>
+        \\  [ x st.ring& w f!i
+        \\    x 1.0 f>  [ 9.0 st.ring& u f!i ]  [ ]  ifte ]
+        \\  [ x fneg 2.0 f* st.ring& w f!i ]
+        \\  ifte
+        \\  w 1.0 f+ | w1 |
+        \\  w1 8.0  w1  0.0  fsel-lt -> st.w ;
+        \\dsp: k-cst1 | io:CIo ctx st:CSt p:CP -- |
+        \\  io.in 0.0 f>  [ io.in st.ring& st.w f!i ]  [ ]  ifte ;
+    );
+    // A signal-dependent mask: if-converted even with versioning on.
+    try std.testing.expectEqual(@as(usize, 1), try fy.dsp2VariantCount("k-cst", null, 1));
+    for ([_]bool{ true, false }) |versioning| {
+        var ios: [48]IfIo = undefined;
+        ifInputs(&ios);
+        var st = [_]f64{0} ** 9;
+        var ctx = [_]f64{0};
+        var params = [_]f64{0};
+        try ifRun(&fy, "k-cst", versioning, &ios, &ctx, &st, &params);
+        var ring = [_]f64{0} ** 8;
+        var w: usize = 0;
+        for (ios) |f| {
+            try std.testing.expectEqual(ring[w], f.out);
+            const x = f.in;
+            // Stores land in order: the arm's ring cell, then the inner one.
+            if (x > 0.0) {
+                ring[w] = x;
+                if (x > 1.0) ring[(w + 4) % 8] = 9.0;
+            } else ring[w] = -x * 2.0;
+            w = (w + 1) % 8;
+        }
+        try std.testing.expectEqualSlices(f64, &ring, st[1..9]);
+        try std.testing.expectEqual(@as(f64, @floatFromInt(w)), st[0]);
+
+        // One conditional store and nothing else: the unstashed path.
+        ifInputs(&ios);
+        var st1 = [_]f64{0} ** 9;
+        st1[0] = 3;
+        try ifRun(&fy, "k-cst1", versioning, &ios, &ctx, &st1, &params);
+        var last: f64 = 0;
+        for (ios) |f| if (f.in > 0.0) {
+            last = f.in;
+        };
+        try std.testing.expectEqual(last, st1[4]);
+        for (st1[1..9], 1..) |v, i| if (i != 4) try std.testing.expectEqual(@as(f64, 0), v);
+    }
 }
 
 test "dsp ifte: spilling bodies and compound masks dispatch to the right variant" {

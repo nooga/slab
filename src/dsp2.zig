@@ -23,8 +23,6 @@ pub const Error = error{
     NeedDecision,
     /// The two arms of an `ifte` leave different stack depths.
     UnbalancedIf,
-    /// An indexed store (`f!i`) inside an if-converted arm.
-    BranchIndexedStore,
 };
 
 /// A versioned `ifte`: its mask and the arm this body took (Program.run).
@@ -113,6 +111,11 @@ const Store = struct {
     value: usize,
     /// Lane mode: lane 1's pointer (lane 0's is `ptr`).
     ptr_b: ?usize = null,
+    /// An indexed store from an if-converted `ifte` arm: a mask, and the
+    /// store happens only where it is set (a `cbz` around the `str`). Its
+    /// address isn't known at build time, so it can't merge with the other
+    /// arm's stores through a select the way a field store does.
+    cond: ?usize = null,
 };
 
 /// Where an entry argument lives in lane mode: one x-register shared by
@@ -586,6 +589,8 @@ pub const Builder = struct {
             // Two lanes storing to one address: which lane wins is not what
             // the scalar body run twice would leave.
             if (uni[st.ptr]) return Error.LaneUnsupported;
+            // A conditional store would need a branch per lane.
+            if (st.cond != null) return Error.LaneUnsupported;
             try lb.stores.append(.{ .ptr = map0[st.ptr], .ptr_b = map1[st.ptr], .value = map0[st.value] });
         }
         for (self.guards.items) |g| {
@@ -797,7 +802,10 @@ pub const Builder = struct {
         const spill_stores = self.stores.items.len > 1;
         // A stashed store: value, pointer (16 bytes); in lane mode the
         // 2-lane value and both lanes' pointers (32).
-        const stash_stride: usize = if (self.lanes) 32 else 16;
+        // A conditional store also stashes its mask (24).
+        var any_cond = false;
+        for (self.stores.items) |st| any_cond = any_cond or st.cond != null;
+        const stash_stride: usize = if (self.lanes) 32 else if (any_cond) 24 else 16;
         const stash_bytes: usize = if (spill_stores) std.mem.alignForward(usize, self.stores.items.len * stash_stride, 16) else 0;
         if (stash_bytes > 4080) return Error.RegisterExhausted;
         cg.slot_base = stash_bytes;
@@ -819,11 +827,16 @@ pub const Builder = struct {
                 } else {
                     try out.append(Asm.str_d_imm(val_reg, 31, offset));
                     try out.append(Asm.str_x_imm(ptr_reg, 31, offset + 8));
+                    if (store.cond) |cd| {
+                        const cond_reg = try cg.valueD(cd);
+                        try out.append(Asm.str_d_imm(cond_reg, 31, offset + 16));
+                    }
                 }
                 cg.unpinTo(mark);
                 cg.consumeValue(store.value);
                 cg.consumeValue(store.ptr);
                 if (store.ptr_b) |pb| cg.consumeValue(pb);
+                if (store.cond) |cd| cg.consumeValue(cd);
             }
         }
 
@@ -855,6 +868,11 @@ pub const Builder = struct {
                     try out.append(Asm.ldr_x_imm(ptr_reg, 31, offset + 24));
                     try out.append(Asm.@"st1 {Vt.D}[1], [Xn]"(val_reg, ptr_reg));
                 } else {
+                    if (self.stores.items[i].cond != null) {
+                        // Skip the load-load-store when the mask is clear.
+                        try out.append(Asm.ldr_x_imm(ptr_reg, 31, offset + 16));
+                        try out.append(Asm.@"cbz Xt, offset"(ptr_reg, 4));
+                    }
                     try out.append(Asm.ldr_d_imm(val_reg, 31, offset));
                     try out.append(Asm.ldr_x_imm(ptr_reg, 31, offset + 8));
                     try out.append(Asm.str_d_imm(val_reg, ptr_reg, 0));
@@ -867,6 +885,14 @@ pub const Builder = struct {
                 const mark = cg.pin_len;
                 const val_reg = try cg.valueD(store.value);
                 const ptr_reg = try cg.valueX(store.ptr);
+                if (store.cond) |cd| {
+                    const cond_reg = try cg.valueD(cd);
+                    const bits = try cg.allocX();
+                    try out.append(Asm.@"fmov Xd, Dn"(bits, cond_reg));
+                    try out.append(Asm.@"cbz Xt, offset"(bits, 2));
+                    cg.releaseX(bits);
+                    cg.consumeValue(cd);
+                }
                 try out.append(Asm.str_d_imm(val_reg, ptr_reg, 0));
                 if (store.ptr_b) |pb| {
                     const ptr_b = try cg.valueX(pb);
@@ -971,6 +997,7 @@ pub const Builder = struct {
             remaining_uses[store.ptr] += 1;
             remaining_uses[store.value] += 1;
             if (store.ptr_b) |pb| remaining_uses[pb] += 1;
+            if (store.cond) |cd| remaining_uses[cd] += 1;
         }
         for (self.stack.items) |value| remaining_uses[value] += 1;
     }
@@ -1474,7 +1501,6 @@ pub const Program = struct {
         const used_f = a.alloc(bool, stores_f.len) catch return Error.OutOfMemory;
         defer a.free(used_f);
         @memset(used_f, false);
-        const fail_at: Failure = .{ .err = Error.BranchIndexedStore, .token = t_open, .depth = 0, .arity = arity };
         for (0..base) |i| {
             used_f[i] = true;
             var st = stores_t[i];
@@ -1485,7 +1511,10 @@ pub const Program = struct {
             try b.stores.append(st);
         }
         for (stores_t[base..]) |st| {
-            if (b.isIndexed(st.ptr)) return fail_at;
+            if (b.isIndexed(st.ptr)) {
+                try b.stores.append(.{ .ptr = st.ptr, .value = st.value, .cond = try condAnd(b, m, st.cond) });
+                continue;
+            }
             var vf: ?usize = null;
             const k = b.addrKey(st.ptr);
             for (stores_f[base..], base..) |sf, j| {
@@ -1505,7 +1534,11 @@ pub const Program = struct {
         }
         for (stores_f[base..], base..) |sf, j| {
             if (used_f[j]) continue;
-            if (b.isIndexed(sf.ptr)) return fail_at;
+            if (b.isIndexed(sf.ptr)) {
+                const nm = try b.addValue(.{ .op = .mnot, .ty = .mask, .a = m });
+                try b.stores.append(.{ .ptr = sf.ptr, .value = sf.value, .cond = try condAnd(b, nm, sf.cond) });
+                continue;
+            }
             const old = try b.addValue(.{ .op = .load_f64, .ty = .f64, .a = sf.ptr });
             const v = self.mergeValue(b, m, old, sf.value) catch |err| {
                 if (err == error.OutOfMemory) return err;
@@ -1514,6 +1547,13 @@ pub const Program = struct {
             try b.stores.append(.{ .ptr = sf.ptr, .value = v });
         }
         return null;
+    }
+
+    /// The mask an arm's indexed store runs under: `m`, and the mask it
+    /// already had from an inner converted `ifte`.
+    fn condAnd(b: *Builder, m: usize, inner: ?usize) Error!usize {
+        const i = inner orelse return m;
+        return b.addValue(.{ .op = .mand, .ty = .mask, .a = m, .b = i });
     }
 
     /// m ? t : f for an f64 or a mask.

@@ -1729,7 +1729,16 @@ pub const Fy = struct {
     fn dsp2BodiesStraight(vc: *const Dsp2VariantCode) bool {
         for (vc.bodies.items) |body| {
             const report = analyzeCode(body);
-            if (report.local_branch_count != 0 or report.bl_count != 0 or report.blr_count != 0 or
+            // The one branch a body may hold: a conditional store's forward
+            // cbz, which lands inside the body (or just past its end).
+            var skips: usize = 0;
+            for (body, 0..) |instr, i| {
+                if (instr & 0x7f000000 != 0x34000000) continue; // cbz Xt / Wt
+                const imm: i32 = @as(i32, @bitCast(instr << 8)) >> 13;
+                if (imm <= 0 or i + @as(usize, @intCast(imm)) > body.len) return false;
+                skips += 1;
+            }
+            if (report.local_branch_count != skips or report.bl_count != 0 or report.blr_count != 0 or
                 report.ret_count != 0 or report.push_count != 0 or report.pop_count != 0) return false;
         }
         return true;
@@ -6111,7 +6120,6 @@ pub const Fy = struct {
                 error.BadTimesCount => "`times` needs a constant count 0..1024 (a literal or `::`)",
                 error.UnbalancedTimes => "each `times` copy must leave the stack as deep as it found it",
                 error.UnbalancedIf => "the two arms of `ifte` must leave the stack equally deep",
-                error.BranchIndexedStore => "an `f!i` store inside an if-converted `ifte` arm",
                 else => @errorName(f.err),
             };
             if (f.token >= program.tokens.items.len) {
