@@ -667,6 +667,22 @@ pub fn @"st1 {Vt.D}[1], [Xn]"(t: u5, n: u5) u32 {
 pub fn @"ld1r {Vt.2D}, [Xn]"(t: u5, n: u5) u32 {
     return vec2(0x4D40CC00, t, n);
 }
+// CBZ / CBNZ Xt, label — branch if Xt is (not) zero; offset in instructions
+pub fn @"cbz Xt, offset"(t: u5, offset: i19) u32 {
+    return 0xB4000000 | ((@as(u32, @bitCast(@as(i32, offset))) & 0x7ffff) << 5) | @as(u32, t);
+}
+pub fn @"cbnz Xt, offset"(t: u5, offset: i19) u32 {
+    return 0xB5000000 | ((@as(u32, @bitCast(@as(i32, offset))) & 0x7ffff) << 5) | @as(u32, t);
+}
+
+test "cbz, cbnz and b match the assembler" {
+    const t = @import("std").testing;
+    try t.expectEqual(@as(u32, 0xb4000089), @"cbz Xt, offset"(9, 4));
+    try t.expectEqual(@as(u32, 0xb5000069), @"cbnz Xt, offset"(9, 3));
+    try t.expectEqual(@as(u32, 0x14000002), @"b offset"(2));
+    try t.expectEqual(@as(u32, 0xb4ffff89), @"cbz Xt, offset"(9, -4));
+}
+
 test "two-lane encodings match the assembler" {
     const t = @import("std").testing;
     try t.expectEqual(@as(u32, 0x4e63d441), @"fadd Vd.2D, Vn.2D, Vm.2D"(1, 2, 3));
