@@ -57,6 +57,20 @@ dsp: shape-raw | x sh:Shape -- y |
   uh 0.5 f* sinpi sh.fold f*  f+
 ;
 
+( x sh -- y : shape-raw for a shape with no valve and no fold term, the
+  same value there without their cost [exp, tanh, sin per call]. )
+dsp: shape-raw-plain | x sh:Shape -- y |
+  x x f* | x2 |
+  x sh.bias f+  x2  1.0 x2 f+ f/  sh.even f*  f+ | u0 |
+  u0 0.0  u0 sh.neg f*  u0  fsel-lt | u |
+  u sh.hard f* tanh-fast  sh.hard f/  sh.knee f*
+  u  1.0 u u f* f+ fsqrt  f/  1.0 sh.knee f- f*  f+
+;
+
+( sh -- w : 0 when the shape has no valve and no fold term, so the plain
+  words give its exact values. )
+dsp: shape-exotic | sh:Shape -- w |  sh.valve fabs  sh.fold fabs  f+ ;
+
 ( x sh -- y )
 dsp: shape | x sh:Shape -- y |
   x sh shape-raw  sh.y0 f-  sh.gain f*
@@ -67,6 +81,15 @@ dsp: shape | x sh:Shape -- y |
   The slope isn't renormalized: moving off the rest point is the sag. )
 dsp: shape-at | x off y0 sh:Shape -- y |
   x off f+ sh shape-raw  y0 f-  sh.gain f*  sh.clip fneg sh.clip fclamp
+;
+
+( sh -- y0 : the shape's value at rest. )
+dsp: shape-rest | sh:Shape -- y0 |  sh.y0 ;
+
+( x y0 sh -- y : shape-at at the rest point [no bias shift] for a plain
+  shape: y0 is sh.y0. )
+dsp: shape-at-plain | x y0 sh:Shape -- y |
+  x sh shape-raw-plain  y0 f-  sh.gain f*  sh.clip fneg sh.clip fclamp
 ;
 
 ( sh bias even hard knee neg valve fold clip -- : set a shape and its

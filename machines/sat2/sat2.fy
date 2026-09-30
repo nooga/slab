@@ -18,6 +18,7 @@ include "../lib/manifest.fy"
   "Saturator" effect-block machine*
   "k-sat-tick"        render!
   "sat-block-prepare" block-prepare!
+  "k-sat-tick-plain" SatParams.rich render-lite!
   SatState.size  state-size!
   SatParams.size params-size!
   SatParams.lat latency!

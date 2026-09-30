@@ -128,6 +128,7 @@ ustruct: SatParams
   f64 heat-down
   f64 sag-depth  ( SAG times the mode's depth, negative: down the curve )
   f64 lat        ( latency: the 4x halfband pair's, while any wet is mixed in )
+  f64 rich       ( 0: no SAG and a plain curve, k-sat-tick-plain renders )
   Shelf pre-lo  Shelf pre-hi  Shelf post-lo  Shelf post-hi
   f64 lp-G
   Bell pre-bell
@@ -198,6 +199,7 @@ dsp: sat-block-prepare | ctx:Ctx state params:SatParams -- |
     m 0.0  0.0 0.0  0.0 0.0 0.0 0.0 1.0 pick8
     m 1000000.0 1000000.0 1000000.0 1000000.0 1000000.0 1000000.0 0.22 1000000.0 pick8
   shape-set
+  params.sag-depth fabs  params.sh& shape-exotic  f+ -> params.rich
 ;
 
 ( state params x -- y : the mode's filtering before the drive. )
@@ -215,7 +217,9 @@ dsp: sat-post | state:SatState params:SatParams y -- z |
   y3  state.post-lp& params.lp-G y3 pole-lp y3 f-  params.color f*  f+
 ;
 
-( io ctx state params -- : one saturator sample. )
+( io ctx state params -- : one saturator sample.  The shaper runs five
+  times a sample [four at 4x, and once for SAG's rest point]: 75% of the
+  cost, the halfbands 13%.  Hence the plain word below. )
 dsp: k-sat-tick | out:Io ctx state:SatState params:SatParams -- |
   out.in-l | dry |
   params.sh& | sh |
@@ -230,6 +234,43 @@ dsp: k-sat-tick | out:Io ctx state:SatState params:SatParams -- |
   state.up&  x  up4 | a b c d |
   state.dec&  a off y0 sh shape-at  b off y0 sh shape-at
               c off y0 sh shape-at  d off y0 sh shape-at  dec4 | yd |
+  state params yd sat-post | y |
+  ( DC blocker: dcy = y - x1 + R*y1 )
+  y state.dc-x1 f-  0.9995 state.dc-y1 f* f+ | dcy |
+  y   -> state.dc-x1
+  dcy -> state.dc-y1
+  ( tone one-pole lowpass )
+  state.lp  dcy state.lp f-  params.tone-g f*  f+ | toned |
+  toned -> state.lp
+  ( the dry waits for the halfbands while any wet is mixed in )
+  0.0 params.mix  state.d5  dry  fsel-lt | dly |
+  state.d4 -> state.d5
+  state.d3 -> state.d4
+  state.d2 -> state.d3
+  state.d1 -> state.d2
+  dry -> state.d1
+  toned params.out-lin f*  params.mix f*
+  dly  1.0 params.mix f-  f*  f+
+  out f!64
+;
+
+( io ctx state params -- : k-sat-tick while rich is 0 - no SAG, and a
+  curve with no valve or fold term: the same samples at 55% of the cost.
+  With SAG at 0 the bias shift is -0.0, and x + -0.0 is x, so the shaper
+  needs no shift and its rest value is the shape's own. )
+dsp: k-sat-tick-plain | out:Io ctx state:SatState params:SatParams -- |
+  out.in-l | dry |
+  params.sh& | sh |
+  state params dry sat-pre  params.drive-lin f* | x |
+  ( the heat keeps following, so SAG turned up starts from it )
+  x fabs | lvl |
+  state.heat lvl  params.heat-up params.heat-down  fsel-lt | hk |
+  state.heat  lvl state.heat f-  hk f*  f+ | heat |
+  heat -> state.heat
+  sh shape-rest | y0 |
+  state.up&  x  up4 | a b c d |
+  state.dec&  a y0 sh shape-at-plain  b y0 sh shape-at-plain
+              c y0 sh shape-at-plain  d y0 sh shape-at-plain  dec4 | yd |
   state params yd sat-post | y |
   ( DC blocker: dcy = y - x1 + R*y1 )
   y state.dc-x1 f-  0.9995 state.dc-y1 f* f+ | dcy |
