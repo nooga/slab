@@ -37,7 +37,14 @@
   aliases mostly land above the band dec4 removes.
 
   Legato: a note that arrives while one is held [ctx.legato] glides
-  without restarting the contours, the way a single-trigger mono plays. )
+  without restarting the contours, the way a single-trigger mono plays.
+
+  Backported from Profit-5, on AGE: each saw bows toward the capacitor
+  ramp [vco.fy], the mix passes a 10 Hz coupling cap before the ladder,
+  the filter contour bleeds into the audio [the Minimoog's thump], the
+  ladder's loop saturates lopsided [moog-step-aged], and a -86 dB noise floor sits under it.  FEEDBACK is
+  the Model D trick: the VCA output patched back into the mixer; past
+  ~0.8 the loop has gain in the band and the voice growls. )
 
 include "../00-primitives/ctx.fy"
 include "../00-primitives/math.fy"
@@ -45,6 +52,7 @@ include "../00-primitives/oversample.fy"
 include "../01-oscillators/primitives/phase.fy"
 include "../01-oscillators/primitives/blep.fy"
 include "../01-oscillators/primitives/shapes.fy"
+include "../01-oscillators/primitives/vco.fy"
 include "../03-envelopes/primitives/env_rc.fy"
 include "../04-filters/moog_ladder.fy"
 include "../08-analog/analog.fy"
@@ -64,6 +72,8 @@ ustruct: CreamState
   MoogLadder lad
   Dec4 dec
   Drift dr1  Drift dr2  Drift dr3  Drift drc
+  f64 dro-x  f64 dro-y   ( the mix's coupling cap, at 4x )
+  f64 y-prev             ( VCA output, for FEEDBACK )
 ;
 
 ustruct: CreamParams
@@ -96,6 +106,7 @@ ustruct: CreamParams
   f64 lfo-wave                            ( 0 tri 1 square 2 saw 3 S&H - switch )
   f64 lfo-pitch                           ( LFO -> pitch, semitones )
   f64 lfo-cut                             ( LFO -> cutoff, octaves )
+  f64 fbk                                 ( FEEDBACK 0..1: VCA out -> mixer )
   ( derived by cream-block-prepare )
   f64 inv-sr
   f64 inv-osr
@@ -109,6 +120,11 @@ ustruct: CreamParams
   f64 cut-drift-c
   f64 comp                                ( bass compensation: 0.5 or 0 )
   f64 mix-a f64 mix-b f64 mix-c f64 mix-d f64 mix-e   ( pole-mix taps )
+  f64 curve1 f64 curve2 f64 curve3        ( saw bows, from AGE )
+  f64 dro-a
+  f64 bleed
+  f64 fb-g
+  f64 lp-off f64 lp-toff f64 lp-slope f64 lp-hpa   ( the aged ladder loop )
   EnvRcCoefs f-co
   EnvRcCoefs a-co
 ;
@@ -146,6 +162,23 @@ dsp: cream-block-prepare | ctx:Ctx state params:CreamParams -- |
   m 0.5  0.0  m 1.5 1.0  m 2.5 -2.0 6.0 fsel-lt  fsel-lt  fsel-lt -> params.mix-c
   m 2.5  0.0 -4.0  fsel-lt -> params.mix-d
   m 0.5  1.0  m 2.5 0.0 1.0 fsel-lt  fsel-lt -> params.mix-e
+  ( AGE: the analog layer backported from Profit-5 )
+  params.age-amt | ag |
+  ag 0.3 f* -> params.curve1
+  ag 0.22 f* -> params.curve2
+  ag 0.26 f* -> params.curve3
+  1.0  1.0  6.283185307179586 10.0 f* osr f/  f+  f/ -> params.dro-a
+  ag 0.05 f* -> params.bleed
+  params.fbk 0.6 f* -> params.fb-g
+  ag 0.3 f* | off |
+  off -> params.lp-off
+  off tanh | t |
+  t -> params.lp-toff
+  1.0  1.0 t t f* f-  f/ -> params.lp-slope
+  ( no coupling cap in this loop: even 3 Hz costs a just-over-threshold
+    self-oscillation [the whistle preset] its level; the output DC block
+    takes the offset's DC instead )
+  1.0 -> params.lp-hpa
   params.f-co&  params.f-atk params.f-dec params.f-sus params.f-rel  0.0 0.0  ctx.inv-sr env-rc-coefs
   params.a-co&  params.a-atk params.a-dec params.a-sus params.a-rel  0.0 0.0  ctx.inv-sr env-rc-coefs
 ;
@@ -180,19 +213,20 @@ dsp: cream-note-off | ctx state:CreamState params:CreamParams -- |
   state.a-env& params.a-co& env-rc-release
 ;
 
-( wave phase dt -- y : 0 tri 1 saw 2 square 3 wide 4 narrow pulse. )
-dsp: cr-wave | w ph dt -- y |
+( wave phase dt curve -- y : 0 tri 1 saw 2 square 3 wide 4 narrow
+  pulse; curve bows the saw. )
+dsp: cr-wave | w ph dt cv -- y |
   w 2.5  0.5  w 3.5  0.7  0.88  fsel-lt  fsel-lt | width |
   w 0.5
     ph tri-raw
-    w 1.5  ph dt saw-polyblep  ph dt width pulse-polyblep  fsel-lt
+    w 1.5  ph dt cv vco-saw  ph dt width pulse-polyblep  fsel-lt
   fsel-lt
 ;
 
 ( one 4x substep: OSC 1 leads; OSC 2 restarts when OSC 1 wraps if SYNC
   is on; OSC 3 as SUB restarts on every 1/sub-oct-th wrap of OSC 1, i.e.
   it follows OSC 1's phase exactly. )
-dsp: cr-sub | state:CreamState params:CreamParams dt1 dt2 dt3 nz g k -- y |
+dsp: cr-sub | state:CreamState params:CreamParams dt1 dt2 dt3 nz g k fbx extra -- y |
   state.ph1 dt1 f+ | q1 |
   q1 wrap01 | p1 |
   p1 -> state.ph1
@@ -212,13 +246,19 @@ dsp: cr-sub | state:CreamState params:CreamParams dt1 dt2 dt3 nz g k -- y |
   state.ph3 dt3 phase-advance01 | p3free |
   params.osc3-mode 0.5 f<  c2 p1 f+ params.sub-oct f*  p3free  select | p3 |
   p3 -> state.ph3
-  params.wave1 p1 dt1 cr-wave params.lvl1 f*
-  params.wave2 p2 dt2 cr-wave params.lvl2 f* f+
-  params.osc3-mode 0.5  p3 dt3 0.5 pulse-polyblep  params.wave3 p3 dt3 cr-wave  fsel-lt
+  params.wave1 p1 dt1 params.curve1 cr-wave params.lvl1 f*
+  params.wave2 p2 dt2 params.curve2 cr-wave params.lvl2 f* f+
+  params.osc3-mode 0.5  p3 dt3 0.5 pulse-polyblep  params.wave3 p3 dt3 params.curve3 cr-wave  fsel-lt
     params.lvl3 f* f+
   nz params.noise f* f+
+  fbx f+ | m |
+  ( the coupling cap, then the bleed and noise floor )
+  m state.dro-x state.dro-y params.dro-a droop-hp | md |
+  m -> state.dro-x
+  md -> state.dro-y
+  md extra f+
   params.lad-in f*  k params.comp f* 1.0 f+ f* | x |
-  state.lad& x g k moog-step drop
+  state.lad& x g k  params.lp-off params.lp-toff params.lp-slope params.lp-hpa  moog-step-aged drop
   state.lad&  params.mix-a params.mix-b params.mix-c params.mix-d params.mix-e  moog-mix
 ;
 
@@ -265,12 +305,15 @@ dsp: k-cream-voice | io ctx state:CreamState params:CreamParams -- |
   state.noise-rng 1103515245.0 f* 0.31337 f+ ffrac | r |
   r -> state.noise-rng
   r 2.0 f* 1.0 f- | nz |
+  state.y-prev params.fb-g f* | fbx |
+  fenv params.bleed f*  nz 0.0001 f* f+ | extra |
   state.dec&
-    state params dt1 dt2 dt3 nz g k cr-sub
-    state params dt1 dt2 dt3 nz g k cr-sub
-    state params dt1 dt2 dt3 nz g k cr-sub
-    state params dt1 dt2 dt3 nz g k cr-sub
+    state params dt1 dt2 dt3 nz g k fbx extra cr-sub
+    state params dt1 dt2 dt3 nz g k fbx extra cr-sub
+    state params dt1 dt2 dt3 nz g k fbx extra cr-sub
+    state params dt1 dt2 dt3 nz g k fbx extra cr-sub
   dec4  params.lad-out f* | y |
+  y aenv f* -> state.y-prev
   ( VCA, velocity a gentle 6 dB, then a ~10 Hz DC block )
   y aenv f*  0.5 state.vel 0.5 f* f+ f*  params.level f*  2.0 f* | x |
   x state.dc-x f-  state.dc-y 0.9987 f*  f+ | o |

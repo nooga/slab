@@ -21,7 +21,14 @@
   damping supplies the peak.  fb-amt is resonance * fb-gain * fb-clip.
 
   Coefficients come once per block from ms20-lpf-set; g per sample from
-  the cutoff [svf-g at the 4x rate]. )
+  the cutoff [svf-g at the 4x rate].
+
+  ms20-lpf-set-offs makes the feedback clip lopsided, the real diodes'
+  mismatch: tanh[a + off] - tanh[off], rescaled to unit slope.  The DC it
+  makes goes back through the input stage and shifts its operating
+  point, so a screaming filter grows even harmonics; the fb DC tracker
+  is the loop's coupling cap.  The fields default to zero, symmetric,
+  which is the June probe exactly. )
 
 include "../02-shapers/rational.fy"   ( tanh-rational )
 include "../00-primitives/math.fy"
@@ -41,6 +48,9 @@ ustruct: Ms20LpfProfile
   f64 damping    ( SVF damping, from resonance )
   f64 fb-dc-c    ( feedback DC tracker, 18 Hz at the 4x rate )
   f64 out-dc-c   ( output DC blocker, 10 Hz at the 4x rate )
+  f64 fb-off     ( feedback clip offset: 0 symmetric )
+  f64 fb-toff    ( its clip, subtracted so fb[0] = 0 )
+  f64 fb-dnorm   ( slope correction - 1, so 0 is exact unity )
 ;
 
 ( pr drive res mode osr -- : one block's constants.  mode 0 HOT [f-hot],
@@ -56,12 +66,21 @@ dsp: ms20-lpf-set | pr:Ms20LpfProfile drive res mode osr -- |
   1.0  -6.283185307179586 10.0 f* osr f/ exp  f- -> pr.out-dc-c
 ;
 
+( pr off -- : the diodes' mismatch. )
+dsp: ms20-lpf-set-offs | pr:Ms20LpfProfile off -- |
+  off -> pr.fb-off
+  off tanh-rational | t |
+  t -> pr.fb-toff
+  1.0  1.0 t t f* f-  f/  1.0 f- -> pr.fb-dnorm
+;
+
 ( f pr x g -- y : one substep. )
 dsp: ms20-lpf-step | f:Ms20Lpf pr:Ms20LpfProfile x g -- y |
   f.ic1 | ic1 |
   f.ic2 | ic2 |
   f.fb-dc  ic2 f.fb-dc f-  pr.fb-dc-c f*  f+ | fbdc |
-  ic2 fbdc f-  pr.fb-amt f*  tanh-rational | fb |
+  ic2 fbdc f-  pr.fb-amt f*  pr.fb-off f+  tanh-rational  pr.fb-toff f- | fb0 |
+  fb0  fb0 pr.fb-dnorm f*  f+ | fb |
   x pr.drive f*  fb f-  tanh-rational | d |
   pr.damping 2.0 f* | dd |
   d  dd g f+ ic1 f* f-  ic2 f-

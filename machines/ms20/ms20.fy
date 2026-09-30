@@ -32,6 +32,15 @@ dsp: ms20-block-prepare | ctx:Ctx state params:Ms20VoiceParams -- |
     bounded by its bandpass clip )
   1.0  params.hpf-resonance 0.5 f*  f- 0.0 fmax | u |
   u u f* 1.4 f* -> params.hpf-q
+  ( AGE: the analog layer [ms20_voice_probe.fy] )
+  params.age-amt | ag |
+  ag 0.3 f* -> params.curve1
+  ag 0.22 f* -> params.curve2
+  0.35 ctx.inv-sr drift-coef -> params.drift-c
+  0.15 ctx.inv-sr drift-coef -> params.cut-drift-c
+  0.0 -> params.bleed
+  1.0  1.0  6.283185307179586 15.0 f* ctx.inv-sr f*  f+  f/ -> params.dro-a
+  params.lpf-pr&  0.1 ag 0.2 f* f+  ms20-lpf-set-offs
 ;
 
 : manifest
@@ -72,6 +81,7 @@ dsp: ms20-block-prepare | ctx:Ctx state params:Ms20VoiceParams -- |
   "LPF" "ENV"  "env-amount" Ms20VoiceParams.env-amount 0.0 8.0 4.8 curve-lin knob
 
   "VCA" "LVL" "level" Ms20VoiceParams.level 0.0 1.0 0.44 curve-pow knob
+  "VCA" "AGE" "age"   Ms20VoiceParams.age-amt 0.0 1.0 0.4 curve-lin knob
 
   "AMP ENV" "HOLD" "amp-hold"   Ms20VoiceParams.amp-hold    0.0 20.0 0.0 curve-pow knob
   "AMP ENV" "ATK" "amp-attack"  Ms20VoiceParams.amp-attack  0.001 10.0 0.0055 curve-exp knob
@@ -101,7 +111,7 @@ dsp: ms20-block-prepare | ctx:Ctx state params:Ms20VoiceParams -- |
   "MIX" 3 strip
   "HPF" 2 strip
   "LPF" 5 strip
-  "VCA" 1 strip
+  "VCA" 2 strip
   "MG" 2 strip
   "MOD" 5 strip
   "FLT ENV" 5 strip

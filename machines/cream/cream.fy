@@ -79,6 +79,7 @@ include "../lib/manifest.fy"
   "OUT" "GLIDE" "cr-glide" CreamParams.glide   0.0 5.0 0.0 curve-pow knob
   "OUT" "AGE"   "cr-age"   CreamParams.age-amt 0.0 1.0 0.4 curve-lin knob
   "OUT" "LEVEL" "cr-level" CreamParams.level   0.0 1.0 0.6 curve-pow knob
+  "OUT" "FEEDBACK" "cr-fbk" CreamParams.fbk    0.0 1.0 0.0 curve-lin knob
 
   ( The Moog face: the oscillator bank as three rows, the mixer, the
     modifiers [filter over its contour over the loudness contour], then
@@ -92,7 +93,7 @@ include "../lib/manifest.fy"
   "F CONTOUR" 4 strip
   "L CONTOUR" 4 strip
   "LFO" 2 strip
-  "OUT" 3 strip
+  "OUT" 4 strip
 
   "CONTOURS" "F CONTOUR,L CONTOUR" adsr-display
 

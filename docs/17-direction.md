@@ -565,6 +565,15 @@ still use the ideal waves. Cost: ~375 ns/smp per sounding voice
 (ReleaseFast), both filters computed every sample. Open: unison (needs
 the host voice pool), the Prophet's per-knob ranges against the manual.
 
+Analog backport (2026-09-30): the Profit-5 layer went to the SM-24
+(docs/14 §Analog layer: AGE, mostly common-mode drift, bowed saws,
+coupling cap, envelope bleed, noise floor, lopsided LPF diodes, a real 4x
+upsampler into the LPF) and to Cream (bowed saws, a 10 Hz coupling cap,
+the contour's bleed, noise floor, a lopsided ladder loop on AGE via
+`moog-step-aged`, and FEEDBACK: the Model D's output patched into its
+mixer). Cream's loop has no coupling cap: even 3 Hz at 4x cost the
+whistle preset 11 dB of self-oscillation. Presets stay within ±1 dB.
+
 Converter kernels (2026-09-27): `kernels/09-digital/digital.fy` has the
 shared parts: round/truncate/mu-law quantizers with fractional BITS, and
 `zoh-tick`, a sample-and-hold at any rate below the host's that samples

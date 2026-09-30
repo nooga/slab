@@ -25,6 +25,7 @@ ustruct: MoogLadder
   f64 y-prev                         ( last s3, for the half-sample feedback )
   f64 fb                             ( averaged feedback )
   f64 in                             ( this substep's stage input, x - k fb )
+  f64 hp-x  f64 hp-y                 ( moog-step-aged: the loop's coupling cap )
 ;
 
 :: MOOG-THERMAL 1.6025641025641026 ;
@@ -44,6 +45,35 @@ dsp: moog-coeffs | cutoff osr res -- g k |
 ( m x g k -- y : one substep. )
 dsp: moog-step | m:MoogLadder x g k -- y |
   x k m.fb f* f- | v |
+  v -> m.in
+  v MOOG-THERMAL f* tanh-fast | u |
+  m.s0  u m.t0 f- g f* f+ | s0 |
+  s0 MOOG-THERMAL f* tanh-fast | t0 |
+  m.s1  t0 m.t1 f- g f* f+ | s1 |
+  s1 MOOG-THERMAL f* tanh-fast | t1 |
+  m.s2  t1 m.t2 f- g f* f+ | s2 |
+  s2 MOOG-THERMAL f* tanh-fast | t2 |
+  m.s3  t2 m.t3 f- g f* f+ | s3 |
+  s3 MOOG-THERMAL f* tanh-fast | t3 |
+  s0 -> m.s0  s1 -> m.s1  s2 -> m.s2  s3 -> m.s3
+  t0 -> m.t0  t1 -> m.t1  t2 -> m.t2  t3 -> m.t3
+  s3 m.y-prev f+ 0.5 f* -> m.fb
+  s3 -> m.y-prev
+  s3
+;
+
+( m x g k off toff slope hpa -- y : moog-step with an aged loop.  The
+  feedback runs through a lopsided tanh, tanh[fb + off] - tanh[off] at
+  unit slope [the pairs' mismatch: a screaming ladder grows even
+  harmonics], then a coupling highpass [hpa from ota-hp-coef-style
+  1/[1 + w/osr]; ~3 Hz keeps the bass oscillating].  off 0 with hpa 1
+  is moog-step. )
+dsp: moog-step-aged | m:MoogLadder x g k off toff slope hpa -- y |
+  m.fb off f+ tanh-fast toff f-  slope f* | fs |
+  m.hp-y fs f+ m.hp-x f- hpa f* | fh |
+  fs -> m.hp-x
+  fh -> m.hp-y
+  x k fh f* f- | v |
   v -> m.in
   v MOOG-THERMAL f* tanh-fast | u |
   m.s0  u m.t0 f- g f* f+ | s0 |

@@ -85,6 +85,35 @@ What was wrong, from listening, and the fix:
   tracks C2.
 - The VCA makeup is ×1.6.
 
+## Analog layer (2026-09-30)
+
+Backported from Profit-5 (docs/17) after the user heard it as more
+analog than the SM-24. A new **AGE** knob (VCA section, default 0.4):
+
+- **Drift:** the VCOs wander on a slow drift, mostly common-mode (~6
+  cents RMS at 1) with a third of it their own. Fully independent drift
+  pushed the default patch's two VCOs 9 cents apart at AGE 0.4, on top
+  of the 10-cent detune, and sounded sour. The cutoff wanders 0.07 oct
+  RMS at 1.
+- **Bowed saws** (`vco.fy`): each VCO's saw bends toward the capacitor
+  ramp, VCO1 by 0.3·AGE, VCO2 by 0.22·AGE.
+- **Coupling cap:** the mix passes a 15 Hz highpass before the HPF, so
+  low pulse tops sag. At 25 Hz it cost the 32' basses 1–2 dB.
+- **Envelope bleed:** the filter EG leaks into the audio at 0.05·AGE.
+- **Noise floor:** −86 dB at the LPF input.
+- **Lopsided diodes:** the LPF feedback clip is `tanh(a + off) −
+  tanh(off)` at unit slope, off = 0.1 + 0.2·AGE (`ms20-lpf-set-offs`).
+  Funk leaves it at 0 and stays bit-exact.
+- **4x upsampler:** the LPF is fed through `up4` rather than holding
+  each sample across the substeps. Holding sent the input's images into
+  the hot input stage, which folded them back as grit.
+
+The VCA makeup went to ×1.78 to keep the presets where they were: all
+16 are within ±1 dB of v3 (bench notes case). A single VCO at AGE 0.4
+measures −61 dB nonharm on a held C3 (−67 at 0); the default patch's
+number moves more, since its detuned pair's beating depends on the
+drift.
+
 ## Reference architecture
 
 ```

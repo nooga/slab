@@ -227,8 +227,8 @@ test "fy manifest loads MS-20 machine entry" {
     try std.testing.expectEqual(@as(?usize, null), reg.findById("nope"));
     try std.testing.expect(e.in_notes);
     try std.testing.expect(!e.in_audio);
-    try std.testing.expectEqual(@as(usize, 392), e.raw_state_size);
-    try std.testing.expectEqual(@as(usize, 496), e.params_size);
+    try std.testing.expectEqual(@as(usize, 712), e.raw_state_size);
+    try std.testing.expectEqual(@as(usize, 576), e.params_size);
     try std.testing.expectEqual(@as(f32, 940.0), e.panel_w);
 }
 

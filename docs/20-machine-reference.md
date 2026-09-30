@@ -75,9 +75,11 @@ project or preset stores (docs/19): real units for knobs, the option
 | `cr-glide` | OUT | GLIDE | 0 … 5 | 0 | pow |
 | `cr-age` | OUT | AGE | 0 … 1 | 0.4 | linear |
 | `cr-level` | OUT | LEVEL | 0 … 1 | 0.6 | pow |
+| `cr-fbk` | OUT | FEEDBACK | 0 … 1 | 0 | linear |
 
 Presets:
 
+- `bass-mog`
 - `cream-lead` — Singing lead: saws a hair apart, OSC 3 a free square an octave up, glide, legato
 - `deep-sub-bass` — Round sub bass: 16' triangle over a sub two octaves down, filter nearly closed
 - `growl` — Mixer driven to the rail: fat, compressed, dirty
@@ -632,6 +634,7 @@ Presets:
 | `lpf-mode` | LPF | MODE | 0 HOT / 1 WET | 0 | switch |
 | `env-amount` | LPF | ENV | 0 … 8 | 4.8 | linear |
 | `level` | VCA | LVL | 0 … 1 | 0.44 | pow |
+| `age` | VCA | AGE | 0 … 1 | 0.4 | linear |
 | `amp-hold` | AMP ENV | HOLD | 0 … 20 | 0 | pow |
 | `amp-attack` | AMP ENV | ATK | 0.001 … 10 | 0.0055 | exp |
 | `amp-decay` | AMP ENV | DEC | 0.01 … 10 | 0.12 | exp |

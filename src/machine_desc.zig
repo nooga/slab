@@ -996,10 +996,10 @@ test "descriptor walker reads the MS-20 manifest from fy" {
     try testing.expectEqualStrings("k-ms20-voice-sample", d.renderWord());
     try testing.expect(d.prepareWord() == null);
     try testing.expectEqualStrings("ms20-block-prepare", d.blockPrepareWord().?);
-    try testing.expectEqual(@as(usize, 392), d.state_size);
-    try testing.expectEqual(@as(usize, 496), d.params_size);
+    try testing.expectEqual(@as(usize, 712), d.state_size);
+    try testing.expectEqual(@as(usize, 576), d.params_size);
     try testing.expectEqual(@as(f32, 940.0), d.panel_w);
-    try testing.expectEqual(@as(usize, 34), d.control_count);
+    try testing.expectEqual(@as(usize, 35), d.control_count);
     try testing.expectEqual(@as(usize, 10), d.strip_count);
     try testing.expectEqual(@as(usize, 1), d.display_count);
     try testing.expectEqual(@as(usize, 2), d.row_count);

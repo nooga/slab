@@ -13,7 +13,17 @@
 
   The oscillators free-run - a note never resets their phase - and the
   envelopes are RC [env_rc.fy]: a retrigger attacks from the current
-  level, so nothing in the voice jumps.  A legato note [ctx.legato] only
+  level, so nothing in the voice jumps.
+
+  AGE is the analog layer, backported from Profit-5: the VCOs wander on
+  a slow drift, mostly together [one board, one temperature], the cutoff
+  wanders, each saw bows toward the capacitor ramp [vco.fy], the mix
+  goes through a coupling cap that sags pulse tops, the filter EG bleeds
+  into the audio, and the LPF's feedback diodes mismatch [a lopsided
+  clip].  A -86 dB noise floor sits under it all.  The LPF is fed through
+  a real 4x upsampler: holding each sample across the substeps sent its
+  images into the hot input stage, which folded them back as grit that
+  had nothing to do with the note.  A legato note [ctx.legato] only
   moves the pitch.
 
   PORTAMENTO glides every note, in octaves, the way the MS-20's does [up
@@ -28,6 +38,8 @@ include "../00-primitives/oversample.fy"
 include "../01-oscillators/primitives/phase.fy"
 include "../01-oscillators/primitives/blep.fy"
 include "../01-oscillators/primitives/shapes.fy"
+include "../01-oscillators/primitives/vco.fy"
+include "../08-analog/analog.fy"
 include "../02-shapers/rational.fy"   ( tanh-rational )
 include "../03-envelopes/primitives/env_rc.fy"
 include "../04-filters/coeffs.fy"   ( svf-g, svf-damping )
@@ -50,6 +62,9 @@ ustruct: Ms20VoiceState
   EnvRc flt-env
   Ms20Lpf lpf
   Dec4 dec
+  Up4 up
+  Drift dr1  Drift dr2  Drift drc  Drift drv
+  f64 dro-x  f64 dro-y   ( the mix's coupling cap )
 ;
 
 ustruct: Ms20VoiceParams
@@ -90,6 +105,7 @@ ustruct: Ms20VoiceParams
   f64 portamento       ( glide time, seconds - 0 is off )
   f64 filter-delay     ( filter EG: key-down -> attack, seconds [EG1 DELAY] )
   f64 amp-hold         ( amp EG: key-up -> release, seconds [EG2 HOLD] )
+  f64 age-amt          ( AGE 0..1: the analog layer )
   ( derived per block by ms20-block-prepare )
   EnvRcCoefs amp-co
   EnvRcCoefs flt-co
@@ -98,6 +114,10 @@ ustruct: Ms20VoiceParams
   f64 hpf-f            ( HPF Chamberlin f )
   f64 hpf-q            ( HPF damping )
   f64 porta-c          ( glide one-pole coefficient, per sample )
+  f64 curve1  f64 curve2  ( saw bows, from AGE )
+  f64 drift-c  f64 cut-drift-c
+  f64 bleed
+  f64 dro-a
 ;
 
 ( ctx state params -- : a note.  A fresh note gates both envelopes from
@@ -109,6 +129,10 @@ dsp: ms20-voice-note-on
   ( the very first note starts on pitch instead of gliding up from 0 Hz )
   state.oct 1.0  o  state.oct  fsel-lt -> state.oct
   ctx.legato 0.5  ctx.vel state.vel  fsel-lt -> state.vel
+  state.dr1& 1.0 drift-seed-once
+  state.dr2& 2.0 drift-seed-once
+  state.drc& 3.0 drift-seed-once
+  state.drv& 4.0 drift-seed-once
   state.amp-env& params.amp-co& ctx.legato env-rc-trigger
   state.flt-env& params.flt-co& ctx.legato env-rc-trigger
 ;
@@ -142,7 +166,7 @@ dsp: v-vco1 | state:Ms20VoiceState params:Ms20VoiceParams pmod pw -- y |
   -> state.phase1
   params.vco1-wave
   phase tri-raw
-  phase dt saw-falling-polyblep
+  phase dt params.curve1 vco-saw fneg
   phase dt pw pulse-polyblep
   wave-sel3
 ;
@@ -160,7 +184,7 @@ dsp: v-vco2 | state:Ms20VoiceState params:Ms20VoiceParams pmod pw -- y |
   phase dt 0.5 pulse-polyblep | sq |
   params.vco2-wave 2.5
     params.vco2-wave
-    phase dt saw-falling-polyblep
+    phase dt params.curve2 vco-saw fneg
     sq
     phase dt pw pulse-polyblep
     wave-sel3
@@ -183,9 +207,9 @@ dsp: v-noise-raw | state:Ms20VoiceState -- y |
 ;
 
 ( VCO1*lvl + VCO2*lvl + noise*lvl at 0.62 per unit: clean. )
-dsp: v-osc-mix | state params:Ms20VoiceParams pmod pw -- y |
-  state params pmod pw v-vco1  params.saw-level f*
-  state params pmod pw v-vco2  params.pulse-level f*  f+
+dsp: v-osc-mix | state params:Ms20VoiceParams pmod1 pmod2 pw -- y |
+  state params pmod1 pw v-vco1  params.saw-level f*
+  state params pmod2 pw v-vco2  params.pulse-level f*  f+
   state v-noise-raw  params.noise-level f*  f+
   0.62 f*
 ;
@@ -227,18 +251,36 @@ dsp: k-ms20-voice-sample | io ctx state:Ms20VoiceState params:Ms20VoiceParams --
   1.0  mg params.mg-pitch f* f+  fenv params.eg-pitch f* f+ | pmod |
   ( pw = clamp[pulse-width + mg*mg-pw, 0.02, 0.98] )
   params.pulse-width  mg params.mg-pw f* f+  0.02 0.98 fclamp | pw |
-  state params  state params pmod pw v-osc-mix  v-hpf | x |
+  ( AGE: the VCOs share a board, so most of their drift is common
+    [~6 cents RMS at 1] and a third of it their own - the pitch wanders,
+    the interval between them barely does )
+  params.age-amt 0.0035 f* | dscale |
+  state.drv& params.drift-c drift-step | dv |
+  state.dr1& params.drift-c drift-step 0.35 f* dv f+ dscale f* 1.0 f+ pmod f* | pmod1 |
+  state.dr2& params.drift-c drift-step 0.35 f* dv f+ dscale f* 1.0 f+ pmod f* | pmod2 |
+  state params pmod1 pmod2 pw v-osc-mix | m |
+  ( the coupling cap, then the HPF; the EG's bleed and the noise floor
+    join after it )
+  m state.dro-x state.dro-y params.dro-a droop-hp | md |
+  m -> state.dro-x
+  md -> state.dro-y
+  state params md v-hpf
+    fenv params.bleed f* f+
+    state.noise-rng 2.0 f* 1.0 f- 0.0001 f* f+ | x |
   ( cutoff in octaves, like control voltage: base * 2^[env + MG] )
-  fenv params.env-amount f*  mg params.mg-cutoff f*  f+  exp2  params.cutoff f*
+  fenv params.env-amount f*  mg params.mg-cutoff f*  f+
+  state.drc& params.cut-drift-c drift-step  params.age-amt 0.07 f* f*  f+
+  exp2  params.cutoff f*
     params.osr svf-g | g |
+  state.up& x up4 | x0 x1 x2 x3 |
   state.dec&
-    state params x g v-lpf-sub
-    state params x g v-lpf-sub
-    state params x g v-lpf-sub
-    state params x g v-lpf-sub
+    state params x0 g v-lpf-sub
+    state params x1 g v-lpf-sub
+    state params x2 g v-lpf-sub
+    state params x3 g v-lpf-sub
   dec4 | y |
   ( VCA: envelope, velocity, level; then a ~20 Hz DC block )
-  y aenv f*  state.vel f*  params.level f*  1.6 f* | v |
+  y aenv f*  state.vel f*  params.level f*  1.78 f* | v |
   v state.dc-prev-x f-  state.dc-prev-y 0.9974 f*  f+ | o |
   v -> state.dc-prev-x
   o -> state.dc-prev-y
