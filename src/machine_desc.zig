@@ -101,6 +101,8 @@ pub const Control = struct {
     default: f64 = 0,
     curve: ParamCurve = .linear,
     widget: Widget = .auto,
+    /// Takes a whole column of its strip (`span-rows`).
+    span_rows: bool = false,
     // switch_sel only: discrete options. The control stores the selected
     // index; sync writes option_values[index] to the param offset.
     option_count: usize = 0,
@@ -501,6 +503,7 @@ const ControlRaw = extern struct {
     curve: Fy.Value,
     options: Fy.Value,
     widget: Fy.Value,
+    span: Fy.Value,
 };
 
 const OptionRaw = extern struct { next: Fy.Value, label: Fy.Value, value: Fy.Value, sets: Fy.Value };
@@ -669,6 +672,7 @@ pub fn read(host: *FyHost) !Desc {
         if (widget < 0 or widget >= std.meta.fields(Widget).len) return error.InvalidMachineDesc;
         out.widget = @enumFromInt(widget);
         if (!out.widgetFits(out.widget)) return error.InvalidMachineDesc;
+        out.span_rows = asInt(ctl.span) != 0;
         d.control_count += 1;
     }
 

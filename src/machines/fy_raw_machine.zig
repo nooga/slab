@@ -2267,15 +2267,14 @@ fn drawStrip(self: *FyRawMachine, ui: *Ui, r: Rect, view: StripView, tier: ui_ct
     var row_y: [MAX_CONTROLS + 1]i32 = undefined;
     row_y[0] = grid.y;
     for (0..t.rows) |ri| row_y[ri + 1] = row_y[ri] + t.row_h[ri] + ROW_GAP;
+    var spans: usize = 0;
     var local_i: usize = 0;
     for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, gi| {
         if (!std.mem.eql(u8, ctl.moduleSlice(), view.module)) continue;
-        const ci = local_i % t.cols;
-        const ri = local_i / t.cols;
-        local_i += 1;
+        const pos = t.slot(ctl.span_rows, &spans, &local_i);
         const nat = controlCell(ui, ctl, tier);
-        const cell_w = col_x[ci + 1] - col_x[ci];
-        drawAutomatable(self, ui, Rect.xywh(col_x[ci] + @divFloor(cell_w - nat[0], 2), row_y[ri], nat[0], nat[1]), gi, ctl, tier);
+        const cell_w = col_x[pos.col + 1] - col_x[pos.col];
+        drawAutomatable(self, ui, Rect.xywh(col_x[pos.col] + @divFloor(cell_w - nat[0], 2), row_y[pos.row], nat[0], nat[1]), gi, ctl, tier);
     }
 }
 
@@ -2287,6 +2286,9 @@ const StripTable = struct {
     row_h: [MAX_CONTROLS]i32 = [_]i32{0} ** MAX_CONTROLS,
     cols: usize = 0,
     rows: usize = 0,
+    /// Leading columns taken whole by `span-rows` controls; the grid of
+    /// the others is `cols - spans` wide, beside them.
+    spans: usize = 0,
 
     fn width(t: *const StripTable) i32 {
         var w: i32 = 0;
@@ -2299,21 +2301,47 @@ const StripTable = struct {
         for (t.row_h[0..t.rows]) |rh| h += rh;
         return h + ROW_GAP * @as(i32, @intCast(t.rows -| 1));
     }
+
+    /// The next control's column and row: spanning ones take the leading
+    /// columns in order, the rest fill the grid row by row.
+    fn slot(t: *const StripTable, span: bool, spans: *usize, grid_i: *usize) struct { col: usize, row: usize } {
+        if (span) {
+            spans.* += 1;
+            return .{ .col = spans.* - 1, .row = 0 };
+        }
+        const gcols = @max(t.cols - t.spans, 1);
+        const i = grid_i.*;
+        grid_i.* += 1;
+        return .{ .col = t.spans + i % gcols, .row = i / gcols };
+    }
 };
 
 fn stripTable(self: *const FyRawMachine, ui: *const Ui, view: StripView, tier: ui_ctl.Size) StripTable {
     var t = StripTable{};
-    const cols: usize = @max(view.cols, 1);
+    var spans: usize = 0;
     var n: usize = 0;
     for (self.desc.controls[0..self.desc.control_count]) |*ctl| {
         if (!std.mem.eql(u8, ctl.moduleSlice(), view.module)) continue;
-        const nat = controlCell(ui, ctl, tier);
-        t.col_w[n % cols] = @max(t.col_w[n % cols], nat[0]);
-        t.row_h[n / cols] = @max(t.row_h[n / cols], nat[1]);
-        n += 1;
+        if (ctl.span_rows) spans += 1 else n += 1;
     }
-    t.cols = @min(n, cols);
-    t.rows = (n + cols - 1) / cols;
+    if (spans + n == 0) return t;
+    const gcols: usize = @max(@max(view.cols, 1) -| spans, 1);
+    t.spans = spans;
+    t.cols = spans + @min(n, gcols);
+    t.rows = @max((n + gcols - 1) / gcols, 1);
+    var span_h: i32 = 0;
+    var si: usize = 0;
+    var gi: usize = 0;
+    for (self.desc.controls[0..self.desc.control_count]) |*ctl| {
+        if (!std.mem.eql(u8, ctl.moduleSlice(), view.module)) continue;
+        const nat = controlCell(ui, ctl, tier);
+        const pos = t.slot(ctl.span_rows, &si, &gi);
+        t.col_w[pos.col] = @max(t.col_w[pos.col], nat[0]);
+        if (ctl.span_rows) span_h = @max(span_h, nat[1]) else t.row_h[pos.row] = @max(t.row_h[pos.row], nat[1]);
+    }
+    // A spanning control taller than the grid stretches its last row.
+    const short = span_h - t.height();
+    if (short > 0) t.row_h[t.rows - 1] += short;
     return t;
 }
 

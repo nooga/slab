@@ -92,6 +92,7 @@ struct: ControlDesc
   ptr curve          ( int: 0 linear, 1 exp )
   ptr options        ( OptionDesc chain, switch only )
   ptr widget         ( int: panel control, 0 auto [see `as-fader` & co] )
+  ptr span           ( int: 1 = takes a whole strip column [`span-rows`] )
 ;
 
 struct: OptionDesc  ptr next  ptr label  ptr value  ptr sets ;
@@ -304,6 +305,10 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
 : as-display 8 _mf-widget ;
 ( joined LED buttons stacked top to bottom, one down )
 : as-vradio  9 _mf-widget ;
+
+( the control takes a whole column of its strip, beside the grid the
+  others fill - a tall LED list next to its knobs )
+: span-rows  _mf-last-ctl @64 1 swap ControlDesc.span! drop ;
 
 ( --- panel: strips, displays, weighted layout --------------------- )
 : _mf-append-disp  ( disp -- )
