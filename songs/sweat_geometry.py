@@ -80,7 +80,7 @@ kick = song.track("KICK", "drum2", "909-punch", volume=1.0, output=drums, params
 # harmonics, the EQ keeps only the lows, and the kick ducks it hard so it
 # swells in the gaps: low end that moves between the pulses.
 rumble = song.bus("RUMBLE", volume=0.6, output=mix, fx=[
-    fx("verb2", mix=1.0, decay=0.93, damp=1200, tone=1500, predelay=0.012, mod=4),
+    fx("verb2", mix=1.0, decay=17.26, damp=1200, tone=1500, predelay=0.012, mod=4),
     fx("sat2", "valve-bass", drive=16, mix=0.8),
     fx("eq2", hpf_on="ON", hpf_hz=38, p1_hz=420, p1_db=-6, p1_q=0.7, hs_hz=1500, hs_db=-18),
     fx("comp2", key=kick, thresh=-34, ratio=10, knee=4, atk=0.0008, rel=0.16),

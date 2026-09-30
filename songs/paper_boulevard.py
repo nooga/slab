@@ -52,7 +52,7 @@ kit = song.track("KIT", "drum2", "gated-snare-kit", volume=0.683, params=dict(
     fx("eq2", hpf_on="ON", hpf_hz=32, p1_hz=420, p1_db=-2.5, p1_q=1.0, hs_hz=7000, hs_db=2),
     fx("comp2", "dry-drum-punch"),
     # the 80s snare: a bright plate, short enough to stay out of the vocal
-    fx("verb2", "bright-plate", decay=0.7, predelay=0.012, mix=0.2, damp=7000),
+    fx("verb2", "bright-plate", decay=3.51, predelay=0.012, mix=0.2, damp=7000),
 ])
 hats = song.track("HATS", "drum2", "crisp-hat-kit", volume=1.0, pan=0.22,
                    params=dict(hat_level=1.5, master_level=1.0), fx=[

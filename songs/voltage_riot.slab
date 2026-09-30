@@ -12196,7 +12196,7 @@
      "machine": "verb2",
      "params": {
       "verb-predelay": 0.008,
-      "verb-decay": 0.5,
+      "verb-decay": 1.81,
       "verb-damp": 6000,
       "verb-tone": 9000,
       "verb-mix": 0.22,
@@ -22274,7 +22274,7 @@
      "machine": "verb2",
      "params": {
       "verb-predelay": 0.045,
-      "verb-decay": 0.93,
+      "verb-decay": 17.26,
       "verb-damp": 2600,
       "verb-tone": 6500,
       "verb-mix": 0.2,
@@ -26610,7 +26610,7 @@
      "machine": "verb2",
      "params": {
       "verb-predelay": 0.06,
-      "verb-decay": 0.97,
+      "verb-decay": 40.0,
       "verb-damp": 2200,
       "verb-tone": 5500,
       "verb-mix": 0.4,
@@ -27331,7 +27331,7 @@
      "machine": "verb2",
      "params": {
       "verb-predelay": 0.04,
-      "verb-decay": 0.9,
+      "verb-decay": 11.89,
       "verb-damp": 4500,
       "verb-tone": 8000,
       "verb-mix": 0.3,
@@ -27733,7 +27733,7 @@
      "machine": "verb2",
      "params": {
       "verb-predelay": 0.045,
-      "verb-decay": 0.93,
+      "verb-decay": 17.26,
       "verb-damp": 2600,
       "verb-tone": 6500,
       "verb-mix": 0.35,
@@ -28098,7 +28098,7 @@
      "machine": "verb2",
      "params": {
       "verb-predelay": 0.045,
-      "verb-decay": 0.93,
+      "verb-decay": 17.26,
       "verb-damp": 2600,
       "verb-tone": 6500,
       "verb-mix": 0.3,

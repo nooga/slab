@@ -71,7 +71,7 @@ drums = song.bus("DRUMS", volume=1.1, fx=[fx("bus2", "drum-bus", thresh=-22, mak
 piano = song.track("PIANO", "fm86", "rom1a/piano-2", volume=1.2, pan=-0.5, params=dict(volume=2.0), output=keys_bus, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=90, ls_hz=200, ls_db=2, p1_hz=500, p1_db=-4, p1_q=1.0, p2_hz=5000, p2_db=5, hs_hz=10000, hs_db=4),
     fx("chorus2", "wide-keys", mix=0.5),
-    fx("verb2", "bright-plate", decay=0.9, predelay=0.018, mix=0.14, damp=9000),
+    fx("verb2", "bright-plate", decay=11.89, predelay=0.018, mix=0.14, damp=9000),
 ])
 bite = song.track("BITE", "fm86", "rom2b/syn-clav-1", volume=0.9, pan=0.6, params=dict(volume=2.0), output=keys_bus, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=800, p2_hz=3000, p2_db=-2, hs_hz=6500, hs_db=5),
@@ -104,7 +104,7 @@ lead = song.track("LEAD", "fm86", "slab/glass-lead", volume=1.25, pan=0.05, para
     fx("eq2", hpf_on="ON", hpf_hz=320, p1_hz=700, p1_db=-2, p2_hz=3200, p2_db=2, hs_hz=10000, hs_db=2),
     fx("chorus2", "bell-widener", mix=0.3),
     fx("delay2", sync="SYNC", div="1/8.", fb=0.3, damp=6500, mix=0.22),
-    fx("verb2", "bright-plate", decay=0.93, predelay=0.02, mix=0.16, damp=10000),
+    fx("verb2", "bright-plate", decay=17.26, predelay=0.02, mix=0.16, damp=10000),
 ])
 glass = song.track("GLASS", "fm86", "rom2a/bells", volume=0.7, pan=0.6, output=lead_bus, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=900, hs_hz=9000, hs_db=2),
