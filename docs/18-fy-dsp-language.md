@@ -137,6 +137,14 @@ produce, so the same code vectorizes (docs/17 A9). A compare used once by
 a `select` compiles to `fcmp` + `fcsel`; a mask used more than once is
 materialized and selects with `bsl`.
 
+Branching: `mask [ then ] [ else ] ifte`. The two quotes must leave the
+same stack depth. When the mask is loop-invariant (built from params,
+ctx, constants, or fields the body never stores to), the word is
+versioned: one loop per path, chosen once per call, so the untaken arm
+costs nothing. Any other mask is if-converted into `select`s, which is
+correct but no cheaper. An `f!i` inside an arm that gets if-converted is
+refused. Rules and measurements: docs/05 §Branching.
+
 There are no DSP algorithms in the compiler. polyBLEP, pulse BLEP, the
 ADSRs, the cap ramp and phase wrap are fy words in
 `kernels/01-oscillators/primitives/` and `kernels/03-envelopes/primitives/`.

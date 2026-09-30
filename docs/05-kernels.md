@@ -561,21 +561,92 @@ stft-process             ( in out n state-ptr window size hop body-word -- )
 All of these are **tens of lines each** once the base NEON primitives
 exist. See also [10-roadmap.md](10-roadmap.md) for build order.
 
-## Performance notes
+## Writing fast machines
 
-- **Instruction scheduling matters.** `fmla.4s` is 3-cycle latency,
-  4-per-cycle throughput on M-series. A naive IIR chain will run at
-  1/3 speed. Canonical pattern: process two independent chains in
-  parallel (e.g. two voices' filters), interleave the fmla's. The
-  kernel library authors take this seriously; machine authors don't
-  usually need to because combinators hand them parallelism.
-- **Cache.** Block arena is sized to fit L1 (128kB M1). At 64-sample
-  blocks × stereo f32 that's 512B per buffer — room for dozens of
-  intermediates.
-- **Branches are cheap per-block, expensive per-sample.** Keep
-  conditionals at block rate wherever possible. A shaper that
-  branches on sign per-sample is slow; `bsl.16b` with a
-  compare-mask is fast.
+The whole audio path runs on one core. At 48 kHz that core has 20.8 µs
+per sample, and every machine in the song shares it. A busy song, like
+songs/sweat_geometry with 29 tracks, used most of that core before the
+optimizations below. So cost is part of a machine's design. These rules
+come from measurements, most-effective first.
+
+**1. Do the work at block rate.**
+- Anything that depends only on knobs belongs in `block-prepare` or
+  `derive`, which write the derived fields of params: coefficients
+  (`tan-warp`), `db>lin` gains, `exp` time constants, and table indices.
+  The render word then only reads those fields.
+- A voice's slow modulation (envelope-to-cutoff and the like) can go in
+  `control!` (docs/04), which runs every N samples.
+- One `exp` or `tan` in the per-sample path costs tens of ns.
+
+**2. Branch on params with `ifte`, not `select`** (§Branching).
+- A mask built from params, ctx or fields the body never stores to is
+  versioned. The untaken arm costs nothing, and there's no branch in
+  the loop.
+- Put every mode, waveform switch, "stage off at 0" knob and oversampler
+  that can be bypassed behind one. This was 1.1–2.7× on sat2, Profit-5,
+  funk, era and the sampler.
+- Keep the guard loop-invariant. If the body stores to a field the guard
+  reads, or has an `f!i` into the struct, the `ifte` if-converts and
+  saves nothing.
+- Use `select` for signal-dependent choices (sign, clip, envelope
+  stage). Those if-convert anyway.
+- Decide deliberately what a stateful arm does when it switches back:
+  hold its state or zero it (§Branching, stateful arms).
+- More than 32 bodies falls back to if-conversion. Nest only switches
+  that really multiply.
+
+**3. Stay lane-eligible** (§Lane mode).
+- A dual-mono effect renders both channels in one NEON pass, and a
+  voice pool with `voices! > 1` renders voice pairs. That's 1.1–2.9× in the
+  bench, with no source change: eq2 52 → 18 ns, Profit-5 1475 → 884 ns.
+- Lane mode refuses a render word that has stack outputs or f64
+  arguments, stores through params, or is a `call:` composition. The
+  refusal is logged as "renders without NEON lanes".
+- A mask on `ctx.chan` if-converts in lane mode. Prefer per-channel
+  state that `prepare` seeds from `ctx.chan` (e.g. a tap offset) over
+  branching on the channel per sample.
+- `stereo` effects get one pass, and there are no lanes to use.
+
+**4. Let the host put you to sleep** (docs/04 §Idle skipping).
+- A machine whose output and input both stay under −120 dBFS for its
+  hold isn't called at all. A voice goes idle once it is released and
+  its block peak drops under the same floor.
+- Things that defeat this:
+  - noise, hiss or dither that runs without input or envelope;
+  - a DC offset;
+  - a release that decays to a floor above 1e-6 instead of to zero.
+- Gate the machine's own noise by its envelope or input level.
+- Declare `tail!` correctly. Too short cuts sound off, and `-1.0` keeps
+  the machine awake forever, so use `-1.0` only for machines that really
+  do make sound from silence.
+
+**5. Oversample only the nonlinearity.** Wrap just the shaper in
+`up4`/`dec4` (00-primitives/oversample.fy), not the filters and the
+mix around it. Branch the oversampler away when the stage is clean
+(sat2 does this at SAG 0 in the plain modes).
+
+**6. Keep the per-sample graph tight.**
+- Spills inside the loop and calls inside the loop are the expensive
+  parts (§Compiler reports).
+- Inline value-returning stages into one word, and use `call:` only to
+  outline.
+- For a large voice, compose it from separate kernel calls. Don't chain
+  many complex word calls inside one `dsp:` word (a known fy limit).
+
+**7. Voice count is cost.** Profit-5 costs per ringing voice (a 4-voice
+stab track about 20% of a core). Size `voices!` to the instrument and
+keep releases honest.
+
+**Measuring.**
+- `zig build bench -Doptimize=ReleaseFast -- machines/<id>` reports
+  ns/sample per case and a `## cost` section (docs/13 §Bench v2). Debug
+  builds cost about 1.7× more.
+- To A/B an optimization, run with and without `--no-branches` or
+  `--no-neon`. The audio must be bit-identical, per `--check` against
+  the goldens.
+- For a song, `slab song.slab --render out.wav` prints its render-only
+  time. `--no-idle-skip --no-neon --no-branches` gives the unoptimized
+  baseline.
 
 ## Inline vs dev mode
 
