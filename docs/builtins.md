@@ -314,6 +314,25 @@ the original stack values still need to be cleaned up.
 These accessors are untagged and DSP-only. Use normal `struct:` for
 tagged fy heap/FFI structs and manifests.
 
+### Conditionals in `dsp:`
+
+`mask [ then ] [ else ] ifte` chooses between two quotes that leave the
+same stack depth. The mask is a compare (`f<`, `f=`, …) or a combination
+of compares with `and`, `or` and `not`.
+
+When the mask is loop-invariant, the repeated callers compile one body
+per outcome and pick one per call, so the untaken arm costs nothing.
+Loop-invariant means it is built from constants and fields the word never
+stores, reached through args the loop doesn't advance.
+
+Otherwise both arms are computed and merged with selects. Stores only one
+arm makes keep their old value in the other arm. An `f!i` store inside
+such an arm is an error. The same test repeated, for example in inlined
+copies, is one decision.
+
+`Fy.dsp2_versioning = false` makes every `ifte` merge with selects.
+`Fy.dsp2VariantCount` reports how many bodies a word splits into.
+
 ### Lane mode (host API)
 
 An embedder can run one `dsp:` word as two instances at once, one per

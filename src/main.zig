@@ -102,6 +102,9 @@ pub const Fy = struct {
     // bumped whenever a word is (re)defined.
     dsp2_caller_cache: std.StringHashMap(CachedRawCaller) = undefined,
     dsp2_caller_gen: u64 = 0,
+    /// Repeated dsp callers split at versioned `ifte`s (a body per path,
+    /// chosen per call). Off: one if-converted body, every arm computed.
+    dsp2_versioning: bool = true,
     // Path of the source file being compiled, when known (include/import
     // set it; hosts may set it around a top-level run).
     src_file: ?[]const u8 = null,
@@ -1569,6 +1572,169 @@ pub const Fy = struct {
         return body.toOwnedSlice();
     }
 
+    /// A repeated caller's bodies: one per path through the word's
+    /// versioned `ifte`s (Dsp2 Program.buildVariants), each with the guard
+    /// checks that select it (all but the last, which is what's left).
+    const Dsp2VariantCode = struct {
+        alloc: std.mem.Allocator,
+        bodies: compat.ArrayList([]u32),
+        guards: compat.ArrayList([]u32),
+        fixups: compat.ArrayList([]usize),
+
+        fn init(alloc: std.mem.Allocator) Dsp2VariantCode {
+            return .{
+                .alloc = alloc,
+                .bodies = compat.ArrayList([]u32).init(alloc),
+                .guards = compat.ArrayList([]u32).init(alloc),
+                .fixups = compat.ArrayList([]usize).init(alloc),
+            };
+        }
+
+        fn clear(self: *Dsp2VariantCode) void {
+            for (self.bodies.items) |x| self.alloc.free(x);
+            for (self.guards.items) |x| self.alloc.free(x);
+            for (self.fixups.items) |x| self.alloc.free(x);
+            self.bodies.clearRetainingCapacity();
+            self.guards.clearRetainingCapacity();
+            self.fixups.clearRetainingCapacity();
+        }
+
+        fn deinit(self: *Dsp2VariantCode) void {
+            self.clear();
+            self.bodies.deinit();
+            self.guards.deinit();
+            self.fixups.deinit();
+        }
+    };
+
+    /// The raw-register (or, with `lane_args`, lane-mode) bodies of `word`
+    /// for a repeated caller whose loop advances the entry args in
+    /// `advanced` (a bit per arg).
+    fn buildDsp2VariantsAlloc(self: *Fy, word: Word, lane_args: ?[]const Dsp2.LaneArg, advanced: u32) !Dsp2VariantCode {
+        if (!word.dsp2) return error.NotDspWord;
+        const tokens = word.dsp2_body orelse return error.NotDspWord;
+        if (lane_args != null and Dsp2.isComposition(tokens)) return error.LaneUnsupported;
+
+        var vc = Dsp2VariantCode.init(self.fyalloc);
+        errdefer vc.deinit();
+        var convert = compat.ArrayList(usize).init(self.fyalloc);
+        defer convert.deinit();
+        var program = Dsp2.Program.init(self.fyalloc);
+        defer program.deinit();
+        try program.addTokens(tokens);
+        var builders = compat.ArrayList(Dsp2.Builder).init(self.fyalloc);
+        defer {
+            for (builders.items) |*b| b.deinit();
+            builders.deinit();
+        }
+
+        restart: while (true) {
+            vc.clear();
+            if (self.dsp2_versioning) {
+                try program.buildVariants(word.c, advanced, &convert, &builders);
+            } else {
+                for (builders.items) |*b| b.deinit();
+                builders.clearRetainingCapacity();
+                program.branching = .{};
+                try builders.append(try program.buildWith(word.c));
+            }
+            for (builders.items, 0..) |*b, i| {
+                const last = i + 1 == builders.items.len;
+                var body = compat.ArrayList(u32).init(self.fyalloc);
+                errdefer body.deinit();
+                var guard = compat.ArrayList(u32).init(self.fyalloc);
+                errdefer guard.deinit();
+                var fix = compat.ArrayList(usize).init(self.fyalloc);
+                errdefer fix.deinit();
+                if (lane_args) |la| {
+                    var lb = b.laneBuilder(la) catch |err| {
+                        if (err != error.LaneGuardVarying) return err;
+                        // The lanes disagree on this arm: if-convert it.
+                        try convert.append(b.bad_guard);
+                        body.deinit();
+                        guard.deinit();
+                        fix.deinit();
+                        continue :restart;
+                    };
+                    defer lb.deinit();
+                    try lb.emitBody(&body);
+                    if (!last) try lb.emitGuards(&guard, &fix);
+                } else {
+                    try b.emitWithArgAbi(&body, .raw_registers);
+                    if (!last) try b.emitGuards(&guard, &fix);
+                }
+                try vc.bodies.append(try body.toOwnedSlice());
+                try vc.guards.append(try guard.toOwnedSlice());
+                try vc.fixups.append(try fix.toOwnedSlice());
+            }
+            return vc;
+        }
+    }
+
+    /// How many bodies a repeated caller of `name` would carry (tests,
+    /// reports): 1 unless versioned `ifte`s split it.
+    pub fn dsp2VariantCount(self: *Fy, name: []const u8, lane_args: ?[]const Dsp2.LaneArg, advanced: u32) !usize {
+        const word = self.userWords.get(name) orelse return error.UnknownWord;
+        var vc = try self.buildDsp2VariantsAlloc(word, lane_args, advanced);
+        defer vc.deinit();
+        return vc.bodies.items.len;
+    }
+
+    const Dsp2Advance = struct { reg: u5, by: u12 };
+
+    /// The repeated caller's dispatch and loops: each variant's guard checks
+    /// fall through to a jump into its loop, or on a mismatch jump to the
+    /// next variant's checks; the last variant has none. Each loop runs its
+    /// body `x23` times, advancing `advances` per iteration, then exits.
+    fn appendDsp2VariantLoops(code: *compat.ArrayList(u32), vc: *const Dsp2VariantCode, advances: []const Dsp2Advance) !void {
+        const n = vc.bodies.items.len;
+        var loop_jump: [Dsp2.MAX_VARIANTS]usize = undefined;
+        var exit_jump: [Dsp2.MAX_VARIANTS]usize = undefined;
+        var pending: [64]usize = undefined;
+        var pending_n: usize = 0;
+        for (0..n) |v| {
+            const here = code.items.len;
+            for (pending[0..pending_n]) |at| {
+                const off: i32 = @intCast(@as(isize, @intCast(here)) - @as(isize, @intCast(at)));
+                code.items[at] = (code.items[at] & ~(@as(u32, 0x7ffff) << 5)) | ((@as(u32, @bitCast(off)) & 0x7ffff) << 5);
+            }
+            pending_n = 0;
+            if (v + 1 < n) {
+                const base = code.items.len;
+                try code.appendSlice(vc.guards.items[v]);
+                for (vc.fixups.items[v]) |f| {
+                    if (pending_n == pending.len) return error.RegisterExhausted;
+                    pending[pending_n] = base + f;
+                    pending_n += 1;
+                }
+            }
+            loop_jump[v] = code.items.len;
+            try code.append(Asm.@"b offset"(0));
+        }
+        for (0..n) |v| {
+            const loop_pos = code.items.len;
+            code.items[loop_jump[v]] = Asm.@"b offset"(@intCast(@as(isize, @intCast(loop_pos)) - @as(isize, @intCast(loop_jump[v]))));
+            try code.appendSlice(vc.bodies.items[v]);
+            for (advances) |adv| try code.append(Asm.add_imm(adv.reg, adv.reg, adv.by));
+            try code.append(Asm.@"subs Xn, Xn, #imm"(23, 1));
+            const bne_pos = code.items.len;
+            try code.append(Asm.@"b.cond offset"(Asm.COND_NE, @intCast(@as(isize, @intCast(loop_pos)) - @as(isize, @intCast(bne_pos)))));
+            exit_jump[v] = code.items.len;
+            if (v + 1 < n) try code.append(Asm.@"b offset"(0));
+        }
+        const exit = code.items.len;
+        for (0..n - 1) |v| code.items[exit_jump[v]] = Asm.@"b offset"(@intCast(@as(isize, @intCast(exit)) - @as(isize, @intCast(exit_jump[v]))));
+    }
+
+    fn dsp2BodiesStraight(vc: *const Dsp2VariantCode) bool {
+        for (vc.bodies.items) |body| {
+            const report = analyzeCode(body);
+            if (report.local_branch_count != 0 or report.bl_count != 0 or report.blr_count != 0 or
+                report.ret_count != 0 or report.push_count != 0 or report.pop_count != 0) return false;
+        }
+        return true;
+    }
+
     fn buildDsp2BodyLanesAlloc(self: *Fy, word: Word, lane_args: []const Dsp2.LaneArg) ![]u32 {
         if (!word.dsp2) return error.NotDspWord;
         const tokens = word.dsp2_body orelse return error.NotDspWord;
@@ -1943,19 +2109,12 @@ pub const Fy = struct {
         if (auto_advance_arg3 and arg_kinds.len <= 3) return error.RegisterExhausted;
 
         const word = self.userWords.get(name) orelse return error.UnknownWord;
-        const raw_body = try self.buildDsp2BodyAlloc(word, .raw_registers);
-        defer self.fyalloc.free(raw_body);
-
-        const report = analyzeCode(raw_body);
-        if (report.local_branch_count != 0 or
-            report.bl_count != 0 or
-            report.blr_count != 0 or
-            report.ret_count != 0 or
-            report.push_count != 0 or
-            report.pop_count != 0)
-        {
-            return error.UnsupportedDsp2RawBody;
-        }
+        var advanced: u32 = 0;
+        if (out_stride != 0) advanced |= 1;
+        if (auto_advance_arg3) advanced |= 1 << 3;
+        var vc = try self.buildDsp2VariantsAlloc(word, null, advanced);
+        defer vc.deinit();
+        if (!dsp2BodiesStraight(&vc)) return error.UnsupportedDsp2RawBody;
 
         var code = compat.ArrayList(u32).init(self.fyalloc);
         errdefer code.deinit();
@@ -1984,17 +2143,17 @@ pub const Fy = struct {
             }
         }
 
-        const loop_pos = code.items.len;
-        try code.appendSlice(raw_body);
+        var advances: [2]Dsp2Advance = undefined;
+        var n_adv: usize = 0;
         if (out_stride != 0) {
-            try code.append(Asm.add_imm(Dsp2.RAW_X_ARG_REGS[0], Dsp2.RAW_X_ARG_REGS[0], out_stride));
+            advances[n_adv] = .{ .reg = Dsp2.RAW_X_ARG_REGS[0], .by = out_stride };
+            n_adv += 1;
         }
         if (auto_advance_arg3) {
-            try code.append(Asm.add_imm(Dsp2.RAW_X_ARG_REGS[3], Dsp2.RAW_X_ARG_REGS[3], 8));
+            advances[n_adv] = .{ .reg = Dsp2.RAW_X_ARG_REGS[3], .by = 8 };
+            n_adv += 1;
         }
-        try code.append(Asm.@"subs Xn, Xn, #imm"(23, 1));
-        const bne_pos = code.items.len;
-        try code.append(Asm.@"b.cond offset"(Asm.COND_NE, @intCast(@as(isize, @intCast(loop_pos)) - @as(isize, @intCast(bne_pos)))));
+        try appendDsp2VariantLoops(&code, &vc, advances[0..n_adv]);
 
         comptime var k = Dsp2.RAW_CALLEE_SAVED_X.len;
         inline while (k > 0) : (k -= 1) try code.append(Asm.@".rpop Xn"(Dsp2.RAW_CALLEE_SAVED_X[k - 1]));
@@ -2047,19 +2206,9 @@ pub const Fy = struct {
         };
 
         const word = self.userWords.get(name) orelse return error.UnknownWord;
-        const raw_body = try self.buildDsp2BodyLanesAlloc(word, lane_args);
-        defer self.fyalloc.free(raw_body);
-
-        const report = analyzeCode(raw_body);
-        if (report.local_branch_count != 0 or
-            report.bl_count != 0 or
-            report.blr_count != 0 or
-            report.ret_count != 0 or
-            report.push_count != 0 or
-            report.pop_count != 0)
-        {
-            return error.UnsupportedDsp2RawBody;
-        }
+        var vc = try self.buildDsp2VariantsAlloc(word, lane_args, 1);
+        defer vc.deinit();
+        if (!dsp2BodiesStraight(&vc)) return error.UnsupportedDsp2RawBody;
 
         var code = compat.ArrayList(u32).init(self.fyalloc);
         errdefer code.deinit();
@@ -2083,14 +2232,9 @@ pub const Fy = struct {
             try code.append(Asm.ldr_x_imm(Dsp2.RAW_X_ARG_REGS[r], 16, @intCast(8 + r * 8)));
         };
 
-        const loop_pos = code.items.len;
-        try code.appendSlice(raw_body);
-        if (stride != 0) for (lane_args[0].pair) |r| {
-            try code.append(Asm.add_imm(r, r, stride));
-        };
-        try code.append(Asm.@"subs Xn, Xn, #imm"(23, 1));
-        const bne_pos = code.items.len;
-        try code.append(Asm.@"b.cond offset"(Asm.COND_NE, @intCast(@as(isize, @intCast(loop_pos)) - @as(isize, @intCast(bne_pos)))));
+        const pair = lane_args[0].pair;
+        const advances = [_]Dsp2Advance{ .{ .reg = pair[0], .by = stride }, .{ .reg = pair[1], .by = stride } };
+        try appendDsp2VariantLoops(&code, &vc, if (stride != 0) &advances else &.{});
 
         comptime var k = Dsp2.RAW_CALLEE_SAVED_X.len;
         inline while (k > 0) : (k -= 1) try code.append(Asm.@".rpop Xn"(Dsp2.RAW_CALLEE_SAVED_X[k - 1]));
@@ -5966,6 +6110,8 @@ pub const Fy = struct {
                 error.UnsupportedWord => "unsupported word in dsp:",
                 error.BadTimesCount => "`times` needs a constant count 0..1024 (a literal or `::`)",
                 error.UnbalancedTimes => "each `times` copy must leave the stack as deep as it found it",
+                error.UnbalancedIf => "the two arms of `ifte` must leave the stack equally deep",
+                error.BranchIndexedStore => "an `f!i` store inside an if-converted `ifte` arm",
                 else => @errorName(f.err),
             };
             if (f.token >= program.tokens.items.len) {

@@ -1948,3 +1948,374 @@ test "dsp lanes: a body that spills stays bit-identical" {
     _ = try fy.run(src.items);
     try laneCheck(&fy, "k-spill", 64);
 }
+
+// ── ifte in dsp words ─────────────────────────────────────────────────
+
+const IfIo = extern struct { in: f64, out: f64 };
+
+/// Run `word` over `n` frames with io, ctx, state and params pointers,
+/// versioned or with one if-converted body; state and outputs land in
+/// `st` and `ios`.
+fn ifRun(fy: *Fy, word: []const u8, versioning: bool, ios: []IfIo, ctx: []f64, st: []f64, params: []f64) !void {
+    fy.dsp2_versioning = versioning;
+    defer fy.dsp2_versioning = true;
+    var slots = Fy.Dsp2RawRepeatedSlots{};
+    var caller = try fy.compileDsp2RawRepeatedCaller(word, &slots, &.{ .ptr, .ptr, .ptr, .ptr }, @sizeOf(IfIo), false);
+    const args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(ios.ptr) }, .{ .ptr = @intFromPtr(ctx.ptr) },
+        .{ .ptr = @intFromPtr(st.ptr) },  .{ .ptr = @intFromPtr(params.ptr) },
+    };
+    _ = try caller.call(ios.len, &args);
+}
+
+fn ifInputs(ios: []IfIo) void {
+    for (ios, 0..) |*f, i| {
+        const t: f64 = @floatFromInt(i);
+        f.* = .{ .in = @sin(t * 0.61) * 1.5, .out = 0 };
+    }
+}
+
+fn expectSameBits(a: []const f64, b: []const f64) !void {
+    for (a, b, 0..) |x, y, i| {
+        if (@as(u64, @bitCast(x)) != @as(u64, @bitCast(y))) {
+            std.debug.print("differs at {}: {d} vs {d}\n", .{ i, x, y });
+            return error.TestExpectedEqual;
+        }
+    }
+}
+
+const IF_WORDS =
+    \\ustruct: TIo f64 in f64 out ;
+    \\ustruct: TSt f64 acc f64 neg f64 pad 6 ;
+    \\ustruct: TP f64 mode f64 gate ;
+    \\dsp: k-if1 | io:TIo ctx st:TSt p:TP -- |
+    \\  io.in | x |
+    \\  p.mode 1.0 f=  [ x 2.0 f* ]  [ x x f* 0.5 f- ]  ifte | y |
+    \\  x 0.0 f<  [ y fneg -> st.neg  y ]  [ y 0.25 f+ ]  ifte | z |
+    \\  p.gate 0.5 f>  [ st.acc z f+ -> st.acc ]  [ ]  ifte
+    \\  p.mode 2.0 f=  [ p.gate 0.0 f>  [ z 3.0 f* ]  [ z 4.0 f* ]  ifte ]  [ z ]  ifte | w |
+    \\  st.acc w f+ -> io.out ;
+;
+
+/// k-if1 in Zig, one frame at a time.
+fn ifRef(ios: []IfIo, st: []f64, p: []const f64) void {
+    for (ios) |*f| {
+        const x = f.in;
+        const y = if (p[0] == 1.0) x * 2.0 else x * x - 0.5;
+        var z: f64 = undefined;
+        if (x < 0.0) {
+            st[1] = -y;
+            z = y;
+        } else z = y + 0.25;
+        if (p[1] > 0.5) st[0] = st[0] + z;
+        const w = if (p[0] == 2.0) (if (p[1] > 0.0) z * 3.0 else z * 4.0) else z;
+        f.out = st[0] + w;
+    }
+}
+
+test "dsp ifte: versioned and if-converted bodies both compute what the arms say" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+    _ = try fy.run(IF_WORDS);
+    // Params guards: mode = 1 (2 ways) x gate (2) x mode = 2 (then its gate
+    // test, 2; else 1) = 12 bodies; the x < 0 test depends on the input
+    // and if-converts.
+    try std.testing.expectEqual(@as(usize, 12), try fy.dsp2VariantCount("k-if1", null, 1));
+    fy.dsp2_versioning = false;
+    try std.testing.expectEqual(@as(usize, 1), try fy.dsp2VariantCount("k-if1", null, 1));
+    fy.dsp2_versioning = true;
+
+    for ([_]f64{ 0, 1, 2 }) |mode| for ([_]f64{ 0, 0.25, 1 }) |gate| {
+        var params = [_]f64{ mode, gate };
+        var ctx = [_]f64{0};
+        var ref_io: [48]IfIo = undefined;
+        ifInputs(&ref_io);
+        var ref_st = [_]f64{ 0.5, 0 } ++ [_]f64{0} ** 6;
+        ifRef(&ref_io, &ref_st, &params);
+        for ([_]bool{ true, false }) |versioning| {
+            var ios: [48]IfIo = undefined;
+            ifInputs(&ios);
+            var st = [_]f64{ 0.5, 0 } ++ [_]f64{0} ** 6;
+            try ifRun(&fy, "k-if1", versioning, &ios, &ctx, &st, &params);
+            try expectSameBits(@ptrCast(&ref_io), @ptrCast(&ios));
+            try expectSameBits(&ref_st, &st);
+        }
+    };
+}
+
+test "dsp ifte: a mask from stored state or the advancing io if-converts, from ctx it versions" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+    _ = try fy.run(
+        \\ustruct: GIo f64 in f64 out ;
+        \\ustruct: GSt f64 a f64 b f64 idx f64 tab 4 ;
+        \\ustruct: GC f64 chan ;
+        \\dsp: k-g-state | io:GIo ctx:GC st:GSt p -- |
+        \\  st.a 0.5 f>  [ io.in ]  [ io.in fneg ]  ifte -> io.out
+        \\  st.a 0.01 f+ -> st.a ;
+        \\dsp: k-g-io | io:GIo ctx:GC st:GSt p -- |
+        \\  io.in 0.0 f>  [ 1.0 ]  [ -1.0 ]  ifte -> io.out ;
+        \\dsp: k-g-ctx | io:GIo ctx:GC st:GSt p -- |
+        \\  ctx.chan 0.5 f>  [ io.in ]  [ io.in 2.0 f* ]  ifte -> io.out ;
+        \\dsp: k-g-unstored | io:GIo ctx:GC st:GSt p -- |
+        \\  st.b 0.5 f>  [ io.in ]  [ io.in 2.0 f* ]  ifte -> io.out
+        \\  st.a 1.0 f+ -> st.a ;
+        \\dsp: k-g-indexed | io:GIo ctx:GC st:GSt p -- |
+        \\  st.b 0.5 f>  [ io.in ]  [ io.in 2.0 f* ]  ifte -> io.out
+        \\  io.in st.tab& st.idx f!i ;
+    );
+    try std.testing.expectEqual(@as(usize, 1), try fy.dsp2VariantCount("k-g-state", null, 1));
+    try std.testing.expectEqual(@as(usize, 1), try fy.dsp2VariantCount("k-g-io", null, 1));
+    try std.testing.expectEqual(@as(usize, 2), try fy.dsp2VariantCount("k-g-ctx", null, 1));
+    // A field the body never stores is as good as a param.
+    try std.testing.expectEqual(@as(usize, 2), try fy.dsp2VariantCount("k-g-unstored", null, 1));
+    // An indexed store could land on any field of its struct.
+    try std.testing.expectEqual(@as(usize, 1), try fy.dsp2VariantCount("k-g-indexed", null, 1));
+
+    // The state guard flips mid-block (a crosses 0.5 at frame 30): the
+    // if-converted body follows it sample by sample.
+    var ios: [64]IfIo = undefined;
+    ifInputs(&ios);
+    var st = [_]f64{0.2} ++ [_]f64{0} ** 7;
+    var ctx = [_]f64{0};
+    var params = [_]f64{0};
+    try ifRun(&fy, "k-g-state", true, &ios, &ctx, &st, &params);
+    var a: f64 = 0.2;
+    var flips: usize = 0;
+    for (ios, 0..) |f, i| {
+        const expect = if (a > 0.5) f.in else -f.in;
+        if (i > 0 and (a > 0.5) != (a - 0.01 > 0.5)) flips += 1;
+        try std.testing.expectEqual(expect, f.out);
+        a += 0.01;
+    }
+    try std.testing.expectEqual(@as(usize, 1), flips);
+    // ctx picks its arm per call.
+    for ([_]f64{ 0, 1 }) |chan| {
+        ifInputs(&ios);
+        ctx[0] = chan;
+        try ifRun(&fy, "k-g-ctx", true, &ios, &ctx, &st, &params);
+        for (ios) |f| try std.testing.expectEqual(if (chan > 0.5) f.in else f.in * 2.0, f.out);
+    }
+}
+
+test "dsp ifte: past MAX_VARIANTS bodies the rest if-convert, and every combination still agrees" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+    _ = try fy.run(
+        \\ustruct: MIo f64 in f64 out ;
+        \\ustruct: MP f64 a f64 b f64 c f64 d f64 e f64 f ;
+        \\dsp: k-many | io:MIo ctx st p:MP -- |
+        \\  io.in | x |
+        \\  p.a 0.5 f>  [ x 1.5 f* ]  [ x ]  ifte | x1 |
+        \\  p.b 0.5 f>  [ x1 0.25 f+ ]  [ x1 ]  ifte | x2 |
+        \\  p.c 0.5 f>  [ x2 fabs ]  [ x2 ]  ifte | x3 |
+        \\  p.d 0.5 f>  [ x3 x3 f* ]  [ x3 ]  ifte | x4 |
+        \\  p.e 0.5 f>  [ x4 fneg ]  [ x4 ]  ifte | x5 |
+        \\  p.f 0.5 f>  [ x5 0.5 f* ]  [ x5 ]  ifte -> io.out ;
+    );
+    const n = try fy.dsp2VariantCount("k-many", null, 1);
+    try std.testing.expect(n <= Dsp2MaxVariants and n >= 8);
+    for (0..64) |combo| {
+        var params: [6]f64 = undefined;
+        for (&params, 0..) |*p, k| p.* = if ((combo >> @intCast(k)) & 1 != 0) 1.0 else 0.0;
+        var ctx = [_]f64{0};
+        var st = [_]f64{0};
+        var a: [16]IfIo = undefined;
+        var b: [16]IfIo = undefined;
+        ifInputs(&a);
+        ifInputs(&b);
+        try ifRun(&fy, "k-many", true, &a, &ctx, &st, &params);
+        try ifRun(&fy, "k-many", false, &b, &ctx, &st, &params);
+        try expectSameBits(@ptrCast(&a), @ptrCast(&b));
+        // And against the plain arithmetic.
+        for (a) |f| {
+            var x = f.in;
+            if (params[0] > 0.5) x *= 1.5;
+            if (params[1] > 0.5) x += 0.25;
+            if (params[2] > 0.5) x = @abs(x);
+            if (params[3] > 0.5) x *= x;
+            if (params[4] > 0.5) x = -x;
+            if (params[5] > 0.5) x *= 0.5;
+            try std.testing.expectEqual(x, f.out);
+        }
+    }
+}
+
+const Dsp2MaxVariants = 32;
+
+test "dsp ifte: a NaN mask takes the else arm, versioned or not" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+    _ = try fy.run(
+        \\ustruct: NIo f64 in f64 out ;
+        \\ustruct: NP f64 v ;
+        \\dsp: k-nan | io:NIo ctx st p:NP -- |
+        \\  p.v 0.5 f<  [ 1.0 ]  [ 2.0 ]  ifte  io.in 0.0 f* f+ -> io.out ;
+    );
+    for ([_]bool{ true, false }) |versioning| {
+        var ios: [4]IfIo = undefined;
+        ifInputs(&ios);
+        var params = [_]f64{std.math.nan(f64)};
+        var ctx = [_]f64{0};
+        var st = [_]f64{0};
+        try ifRun(&fy, "k-nan", versioning, &ios, &ctx, &st, &params);
+        for (ios) |f| try std.testing.expectEqual(@as(f64, 2.0), f.out);
+    }
+}
+
+test "dsp ifte: ifte inside times, masks as values, and arms that store the same field" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+    _ = try fy.run(
+        \\ustruct: RIo f64 in f64 out ;
+        \\ustruct: RSt f64 s f64 t ;
+        \\ustruct: RP f64 k ;
+        \\dsp: k-rep | io:RIo ctx st:RSt p:RP -- |
+        \\  io.in
+        \\  3 [ dup 0.0 f>  [ 0.5 f* ]  [ 2.0 f* 0.1 f+ ]  ifte ] times | y |
+        \\  y 1.0 f<  y -1.0 f>  and  [ y 0.0 f< ]  [ p.k 0.0 f> ]  ifte | m |
+        \\  m  [ y -> st.s  1.0 -> st.t ]  [ y fneg -> st.s ]  ifte
+        \\  m mask>f  st.s f+ -> io.out ;
+    );
+    for ([_]f64{ 0, 1 }) |k| for ([_]bool{ true, false }) |versioning| {
+        var ios: [40]IfIo = undefined;
+        ifInputs(&ios);
+        var params = [_]f64{k};
+        var ctx = [_]f64{0};
+        var st = [_]f64{ 0, 0 };
+        try ifRun(&fy, "k-rep", versioning, &ios, &ctx, &st, &params);
+        var s: f64 = 0;
+        var t: f64 = 0;
+        for (ios) |f| {
+            var y = f.in;
+            for (0..3) |_| y = if (y > 0.0) y * 0.5 else y * 2.0 + 0.1;
+            const m = if (y < 1.0 and y > -1.0) y < 0.0 else k > 0.0;
+            if (m) {
+                s = y;
+                t = 1.0;
+            } else s = -y;
+            try std.testing.expectEqual((if (m) @as(f64, 1.0) else 0.0) + s, f.out);
+        }
+        try std.testing.expectEqual(t, st[1]);
+    };
+}
+
+test "dsp ifte: lane mode versions shared masks and if-converts per-lane ones, bit-identical" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+    _ = try fy.run(
+        \\ustruct: LIo f64 in f64 out ;
+        \\ustruct: LCtx f64 chan ;
+        \\ustruct: LSt f64 y f64 w f64 ring 8 f64 z ;
+        \\ustruct: LP f64 k f64 g ;
+        \\dsp: k-lif | io:LIo ctx:LCtx s:LSt p:LP -- |
+        \\  io.in | x |
+        \\  p.g 1.0 f>  [ x p.g f* ]  [ x x f* ]  ifte | a |
+        \\  ctx.chan 0.5 f>  [ a 0.5 f* ]  [ a 0.25 f+ ]  ifte | b |
+        \\  s.y  b s.y f-  p.k f*  f+ | y |
+        \\  y -> s.y
+        \\  x 0.0 f<  [ y 1.0 f+ -> s.z ]  [ ]  ifte
+        \\  y s.z f+ -> io.out ;
+    );
+    const lanes_args = [_]Dsp2LaneArg{ .{ .pair = .{ 0, 1 } }, .{ .pair = .{ 2, 3 } }, .{ .pair = .{ 4, 5 } }, .{ .uniform = 6 } };
+    try std.testing.expectEqual(@as(usize, 4), try fy.dsp2VariantCount("k-lif", null, 1));
+    try std.testing.expectEqual(@as(usize, 2), try fy.dsp2VariantCount("k-lif", &lanes_args, 1));
+    try laneCheck(&fy, "k-lif", 64); // params 0.3, 1.7: g > 1
+}
+
+const Dsp2LaneArg = @import("dsp2.zig").LaneArg;
+
+test "dsp ifte: unbalanced arms, a non-mask condition and an indexed store in a converted arm are errors" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+    _ = try fy.run("ustruct: EIo f64 in f64 out ; ustruct: ESt f64 i f64 tab 4 ;");
+    try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-e1 | io:EIo -- | io.in 0.0 f> [ 1.0 ] [ 1.0 2.0 ] ifte f+ -> io.out ;"));
+    try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-e2 | io:EIo -- | io.in [ 1.0 ] [ 2.0 ] ifte -> io.out ;"));
+    try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-e3 | io:EIo s:ESt -- | io.in 0.0 f> [ 1.0 s.tab& s.i f!i ] [ ] ifte ;"));
+    try std.testing.expectError(error.UnknownWord, fy.run("dsp: k-e4 | io:EIo -- | io.in 0.0 f> [ 1.0 ] ifte -> io.out ;"));
+}
+
+test "dsp ifte: spilling bodies and compound masks dispatch to the right variant" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+    const a = std.testing.allocator;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(a);
+    try src.appendSlice(a, "ustruct: SIo f64 in f64 out ;\nustruct: SP f64 a f64 b f64 c ;\nustruct: SS f64 acc f64 pad 7 ;\n");
+    try src.appendSlice(a, "dsp: k-sbig | io:SIo ctx st:SS p:SP -- |\n  io.in st.acc f+ | x |\n");
+    // 30 values live across the arms: every variant spills.
+    for (0..30) |i| try src.print(a, "  x {d}.0 f* {d}.5 f+ | a{d} |\n", .{ i + 1, i, i });
+    try src.appendSlice(a, "  p.a p.b f* 0.3 f>  p.c 0.1 f<  or not  [ a0");
+    for (1..30) |i| try src.print(a, " a{d} f+", .{i});
+    try src.appendSlice(a, " ]  [ a0");
+    for (1..30) |i| try src.print(a, " a{d} f* 0.5 f*", .{i});
+    try src.appendSlice(a, " ]  ifte | s |\n  p.c 0.5 f>  [ s a3 f/ ]  [ s a7 f- ]  ifte | t |\n");
+    try src.appendSlice(a, "  p.b 0.0 f=  [ t a0 f* a1 f+ ]  [ t ]  ifte -> io.out\n  t 0.001 f* -> st.acc ;\n");
+    _ = try fy.run(src.items);
+    try std.testing.expectEqual(@as(usize, 8), try fy.dsp2VariantCount("k-sbig", null, 1));
+    const values = [_][3]f64{
+        .{ 1, 1, 0 }, .{ 0, 0, 0 }, .{ 1, 0.2, 0.05 }, .{ 0.5, 0.5, 0.7 },
+        .{ 1, 0, 1 }, .{ 0.1, 0.1, 0.2 }, .{ 2, 2, 0.6 }, .{ 0, 3, 0.05 },
+    };
+    for (values) |pv| {
+        var params = pv;
+        var outs: [2][32]IfIo = undefined;
+        var sts: [2][8]f64 = undefined;
+        for ([_]bool{ true, false }, 0..) |versioning, v| {
+            ifInputs(&outs[v]);
+            sts[v] = [_]f64{0} ** 8;
+            var ctx = [_]f64{0};
+            try ifRun(&fy, "k-sbig", versioning, &outs[v], &ctx, &sts[v], &params);
+        }
+        try expectSameBits(@ptrCast(&outs[0]), @ptrCast(&outs[1]));
+        try expectSameBits(&sts[0], &sts[1]);
+    }
+}
+
+test "dsp ifte: the same test in every copy of an inlined word is one decision" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+    _ = try fy.run(
+        \\ustruct: DIo f64 in f64 out ;
+        \\ustruct: DSh f64 mode f64 k ;
+        \\ustruct: DP f64 pad DSh sh ;
+        \\dsp: d-shape | x sh:DSh -- y |
+        \\  sh.mode 1.0 f=  [ x sh.k f* ]  [ sh.mode 2.0 f=  [ x x f* ]  [ x fabs ]  ifte ]  ifte ;
+        \\dsp: k-dedup | io:DIo ctx st p:DP -- |
+        \\  p.sh& | sh |
+        \\  io.in sh d-shape  io.in 0.5 f* sh d-shape f+
+        \\  4 [ 0.25 f* sh d-shape ] times -> io.out ;
+    );
+    // Six copies of d-shape, three ways each: three bodies, not 3^6.
+    try std.testing.expectEqual(@as(usize, 3), try fy.dsp2VariantCount("k-dedup", null, 1));
+    for ([_]f64{ 1, 2, 3 }) |mode| {
+        var params = [_]f64{ 0, mode, 1.5 };
+        var outs: [2][24]IfIo = undefined;
+        for ([_]bool{ true, false }, 0..) |versioning, v| {
+            ifInputs(&outs[v]);
+            var ctx = [_]f64{0};
+            var st = [_]f64{0};
+            try ifRun(&fy, "k-dedup", versioning, &outs[v], &ctx, &st, &params);
+        }
+        try expectSameBits(@ptrCast(&outs[0]), @ptrCast(&outs[1]));
+        for (outs[0]) |f| {
+            const shp = struct {
+                fn g(x: f64, m: f64) f64 {
+                    return if (m == 1.0) x * 1.5 else if (m == 2.0) x * x else @abs(x);
+                }
+            }.g;
+            var y = shp(f.in, mode) + shp(f.in * 0.5, mode);
+            for (0..4) |_| y = shp(y * 0.25, mode);
+            try std.testing.expectEqual(y, f.out);
+        }
+    }
+}

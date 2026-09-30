@@ -15,7 +15,40 @@ pub const Error = error{
     /// The word can't run in lane mode (Builder.emitLanes): a stack
     /// output, an f64 argument, or a store through a shared pointer.
     LaneUnsupported,
+    /// Lane mode: a versioned `ifte` whose mask differs between the lanes
+    /// (Builder.bad_guard names its token); it has to if-convert there.
+    LaneGuardVarying,
+    /// Program.run reached a versioned `ifte` past its decisions
+    /// (buildVariants branches there).
+    NeedDecision,
+    /// The two arms of an `ifte` leave different stack depths.
+    UnbalancedIf,
+    /// An indexed store (`f!i`) inside an if-converted arm.
+    BranchIndexedStore,
 };
+
+/// A versioned `ifte`: its mask and the arm this body took (Program.run).
+pub const Guard = struct {
+    mask: usize,
+    taken: bool,
+    /// The `ifte`'s `[` in the token stream.
+    token: usize,
+};
+
+/// How Program.run lowers `mask [ then ] [ else ] ifte`.
+pub const Branching = struct {
+    /// Every `ifte` if-converts: both arms build, their results meet in
+    /// selects. One body that runs anywhere (a direct call, an inlined stage).
+    convert_all: bool = true,
+    /// Otherwise each `ifte` takes the next of these, in the order they are
+    /// reached, and records a Guard; past the end, NeedDecision.
+    decisions: []const bool = &.{},
+    /// `ifte`s (their `[` token) that if-convert even so.
+    convert: []const usize = &.{},
+};
+
+/// The most bodies buildVariants makes before it if-converts the rest.
+pub const MAX_VARIANTS = 32;
 
 const Ty = enum {
     unknown,
@@ -133,6 +166,10 @@ pub const Builder = struct {
     initial_arity: usize = 0,
     /// Lane mode: f64 values are 2-lane vectors (see emitLanes).
     lanes: bool = false,
+    /// The versioned `ifte`s this body took an arm of, in order.
+    guards: compat.ArrayList(Guard) = undefined,
+    /// laneBuilder's LaneGuardVarying: the guard's token.
+    bad_guard: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator) Builder {
         return .{
@@ -142,10 +179,12 @@ pub const Builder = struct {
             .args = compat.ArrayList(usize).init(allocator),
             .local_frames = compat.ArrayList(LocalFrame).init(allocator),
             .stores = compat.ArrayList(Store).init(allocator),
+            .guards = compat.ArrayList(Guard).init(allocator),
         };
     }
 
     pub fn deinit(self: *Builder) void {
+        self.guards.deinit();
         self.values.deinit();
         self.stack.deinit();
         self.args.deinit();
@@ -450,9 +489,17 @@ pub const Builder = struct {
     /// scalar body twice. The word must take pointers only, return nothing,
     /// and store only through per-lane pointers.
     pub fn emitLanes(self: *Builder, out: *compat.ArrayList(u32), lane_args: []const LaneArg) Error!void {
+        var lb = try self.laneBuilder(lane_args);
+        defer lb.deinit();
+        try lb.emitBody(out);
+    }
+
+    /// The lane-mode twin of this body (see emitLanes); its guards map
+    /// over and must be the same in both lanes.
+    pub fn laneBuilder(self: *Builder, lane_args: []const LaneArg) Error!Builder {
         if (self.stack.items.len != 0 or lane_args.len != self.initial_arity) return Error.LaneUnsupported;
         var lb = Builder.init(self.allocator);
-        defer lb.deinit();
+        errdefer lb.deinit();
         lb.lanes = true;
         const n = self.values.items.len;
         const map0 = self.allocator.alloc(usize, n) catch return Error.OutOfMemory;
@@ -541,18 +588,147 @@ pub const Builder = struct {
             if (uni[st.ptr]) return Error.LaneUnsupported;
             try lb.stores.append(.{ .ptr = map0[st.ptr], .ptr_b = map1[st.ptr], .value = map0[st.value] });
         }
+        for (self.guards.items) |g| {
+            // One loop runs both lanes: they must agree on every arm.
+            if (!uni[g.mask]) {
+                lb.bad_guard = g.token;
+                self.bad_guard = g.token;
+                return Error.LaneGuardVarying;
+            }
+            try lb.guards.append(.{ .mask = map0[g.mask], .taken = g.taken, .token = g.token });
+        }
+        return lb;
+    }
 
+    /// The raw-register body, spilling if it must (emitWithArgAbi's order).
+    pub fn emitBody(self: *Builder, out: *compat.ArrayList(u32)) Error!void {
         const start = out.items.len;
-        lb.emitMode(out, .raw_registers, .plain, null) catch |err| {
+        self.emitMode(out, .raw_registers, .plain, null) catch |err| {
             if (err != Error.RegisterExhausted) return err;
             out.shrinkRetainingCapacity(start);
             var trace = compat.ArrayList(usize).init(self.allocator);
             defer trace.deinit();
             var scratch = compat.ArrayList(u32).init(self.allocator);
             defer scratch.deinit();
-            try lb.emitMode(&scratch, .raw_registers, .dry, &trace);
-            try lb.emitMode(out, .raw_registers, .spill, &trace);
+            try self.emitMode(&scratch, .raw_registers, .dry, &trace);
+            try self.emitMode(out, .raw_registers, .spill, &trace);
         };
+    }
+
+    /// The checks that select this body: per guard, its mask into an
+    /// x-register and a `cbz` (taken arm) or `cbnz` (else arm) that jumps
+    /// away on a mismatch. Each branch's position goes into `fixups`, its
+    /// offset left 0 for the caller to patch. Registers only, no frame; the
+    /// entry args (x0..) are read, never written.
+    pub fn emitGuards(self: *Builder, out: *compat.ArrayList(u32), fixups: *compat.ArrayList(usize)) Error!void {
+        const n_values = self.values.items.len;
+        const locs = self.allocator.alloc(Loc, n_values) catch return Error.OutOfMemory;
+        defer self.allocator.free(locs);
+        @memset(locs, .none);
+        const remaining_uses = self.allocator.alloc(u32, n_values) catch return Error.OutOfMemory;
+        defer self.allocator.free(remaining_uses);
+        @memset(remaining_uses, 0);
+        for (self.guards.items) |g| self.countCone(g.mask, remaining_uses);
+        const spill_slot = self.allocator.alloc(?u16, n_values) catch return Error.OutOfMemory;
+        defer self.allocator.free(spill_slot);
+        @memset(spill_slot, null);
+        const cur_next = self.allocator.alloc(usize, n_values) catch return Error.OutOfMemory;
+        defer self.allocator.free(cur_next);
+        @memset(cur_next, std.math.maxInt(usize));
+        const depth = self.allocator.alloc(u32, n_values) catch return Error.OutOfMemory;
+        defer self.allocator.free(depth);
+        self.computeDepths(depth);
+        var cg = Codegen{
+            .builder = self,
+            .out = out,
+            .locs = locs,
+            .remaining_uses = remaining_uses,
+            .arg_abi = .raw_registers,
+            .cur_next = cur_next,
+            .spill_slot = spill_slot,
+            .depth = depth,
+            .lanes = self.lanes,
+        };
+        self.initDPool(&cg, .raw_registers);
+        for (self.guards.items) |g| {
+            const mark = cg.pin_len;
+            const m = try cg.valueD(g.mask);
+            const x = try cg.allocX();
+            // The mask's lane 0: all ones (taken) or zero.
+            try out.append(Asm.@"fmov Xd, Dn"(x, m));
+            try fixups.append(out.items.len);
+            try out.append(if (g.taken) Asm.@"cbz Xt, offset"(x, 0) else Asm.@"cbnz Xt, offset"(x, 0));
+            cg.releaseX(x);
+            cg.unpinTo(mark);
+            cg.consumeValue(g.mask);
+        }
+    }
+
+    /// Uses within `id`'s operand cone, one per edge, for emitGuards.
+    fn countCone(self: *const Builder, id: usize, uses: []u32) void {
+        uses[id] += 1;
+        if (uses[id] > 1) return; // its operands are counted once
+        const v = self.values.items[id];
+        for (self.operands(v)) |o| if (o) |oid| self.countCone(oid, uses);
+    }
+
+    fn operands(_: *const Builder, v: Value) [3]?usize {
+        return switch (v.op) {
+            .arg, .int_const, .f64_const => .{ null, null, null },
+            .ptr_add, .load_f64, .load_ptr, .fabs, .fneg, .fsqrt, .ffloor, .fexp2i, .flog2i, .fmant, .mnot, .mask_to_f, .load_splat => .{ v.a, null, null },
+            .ptr_add_idx, .fadd, .fsub, .fmul, .fdiv, .fmin, .fmax, .fcmp, .mand, .mor, .load_lane2, .ptr_add_idx_lane => .{ v.a, v.b, null },
+            .select => .{ v.a, v.b, v.c },
+        };
+    }
+
+    /// The same every iteration of the sample loop: built only from
+    /// constants and loads of fields no store in the body can touch, from
+    /// entry args the loop doesn't advance (`advanced`, a bit per arg).
+    /// What a versioned `ifte` needs of its mask.
+    pub fn invariant(self: *const Builder, id: usize, advanced: u32) bool {
+        return self.invariantAt(id, advanced, 0);
+    }
+
+    fn invariantAt(self: *const Builder, id: usize, advanced: u32, depth: usize) bool {
+        if (depth > 256) return false;
+        const v = self.values.items[id];
+        switch (v.op) {
+            .int_const, .f64_const => return true,
+            .arg => return v.arg_index >= 32 or (advanced >> @intCast(v.arg_index)) & 1 == 0,
+            .load_f64 => {
+                const k = self.addrKey(v.a);
+                const root = self.values.items[k.root];
+                if (root.op != .arg) return false;
+                if (root.arg_index < 32 and (advanced >> @intCast(root.arg_index)) & 1 != 0) return false;
+                for (self.stores.items) |st| {
+                    const sk = self.addrKey(st.ptr);
+                    if (sk.root == k.root and sk.off == k.off) return false;
+                    // An indexed store under the same arg may land anywhere.
+                    if (self.values.items[sk.root].op == .ptr_add_idx and self.baseArg(sk.root) == k.root) return false;
+                }
+                return true;
+            },
+            .load_ptr, .ptr_add_idx, .load_lane2, .load_splat, .ptr_add_idx_lane => return false,
+            else => {
+                for (self.operands(v)) |o| if (o) |oid| {
+                    if (!self.invariantAt(oid, advanced, depth + 1)) return false;
+                };
+                return true;
+            },
+        }
+    }
+
+    /// The entry arg under a pointer's ptr+/indexed chain, if any.
+    fn baseArg(self: *const Builder, id: usize) ?usize {
+        var cur = id;
+        while (true) {
+            const v = self.values.items[cur];
+            switch (v.op) {
+                .arg => return cur,
+                .ptr_add, .ptr_add_idx => cur = v.a,
+                else => return null,
+            }
+        }
     }
 
     fn emitMode(self: *Builder, out: *compat.ArrayList(u32), arg_abi: ArgAbi, mode: Mode, trace: ?*compat.ArrayList(usize)) Error!void {
@@ -613,37 +789,7 @@ pub const Builder = struct {
             .lanes = self.lanes,
         };
 
-        // D-register pool. In raw_registers mode an f64 arg i lives in
-        // RAW_D_ARG_REGS[i]=d(8+i) and must not be allocated as scratch; a
-        // pointer arg lives in an x-register, so its d(8+i) is free. We free
-        // d(8+i) only when arg i is provably used as a pointer (load/ptr+/store/
-        // base) — conservative, so a true f64 arg is always reserved.
-        {
-            var n: usize = 0;
-            var r: usize = 0;
-            while (r < 8) : (r += 1) {
-                cg.d_pool[n] = @intCast(r);
-                n += 1;
-            }
-            r = 8;
-            while (r < 16) : (r += 1) {
-                const arg_i = r - 8;
-                const reserved = if (arg_abi == .raw_registers)
-                    (arg_i < self.initial_arity and !self.argUsedAsPtr(arg_i))
-                else
-                    true;
-                if (!reserved) {
-                    cg.d_pool[n] = @intCast(r);
-                    n += 1;
-                }
-            }
-            r = 16;
-            while (r < 32) : (r += 1) {
-                cg.d_pool[n] = @intCast(r);
-                n += 1;
-            }
-            cg.d_pool_len = n;
-        }
+        self.initDPool(&cg, arg_abi);
 
         // Stack frame: [0, stash) holds deferred stores (value, ptr) when
         // there is more than one; spill slots follow. The spill pass sizes
@@ -761,6 +907,40 @@ pub const Builder = struct {
         std.debug.assert(mode != .spill or cg.tpos == next_pos.len);
     }
 
+    // D-register pool. In raw_registers mode an f64 arg i lives in
+    // RAW_D_ARG_REGS[i]=d(8+i) and must not be allocated as scratch; a
+    // pointer arg lives in an x-register, so its d(8+i) is free. We free
+    // d(8+i) only when arg i is provably used as a pointer (load/ptr+/store/
+    // base) — conservative, so a true f64 arg is always reserved.
+    fn initDPool(self: *Builder, cg: *Codegen, arg_abi: ArgAbi) void {
+        {
+            var n: usize = 0;
+            var r: usize = 0;
+            while (r < 8) : (r += 1) {
+                cg.d_pool[n] = @intCast(r);
+                n += 1;
+            }
+            r = 8;
+            while (r < 16) : (r += 1) {
+                const arg_i = r - 8;
+                const reserved = if (arg_abi == .raw_registers)
+                    (arg_i < self.initial_arity and !self.argUsedAsPtr(arg_i))
+                else
+                    true;
+                if (!reserved) {
+                    cg.d_pool[n] = @intCast(r);
+                    n += 1;
+                }
+            }
+            r = 16;
+            while (r < 32) : (r += 1) {
+                cg.d_pool[n] = @intCast(r);
+                n += 1;
+            }
+            cg.d_pool_len = n;
+        }
+    }
+
     pub fn outputCount(self: *const Builder) usize {
         return self.stack.items.len;
     }
@@ -839,6 +1019,45 @@ pub const Builder = struct {
             if (sk.root == k.root and sk.off == k.off) return i;
         }
         return null;
+    }
+
+    /// The same computation: equal constants, the same fields loaded, the
+    /// same operations on the same operands. Loads compare by address, so
+    /// this is for loop-invariant masks (buildVariants checks those before
+    /// a body is used): two loads of a field no store touches agree.
+    fn sameValue(self: *const Builder, x: usize, y: usize, depth: usize) bool {
+        if (x == y) return true;
+        if (depth > 64) return false;
+        const vx = self.values.items[x];
+        const vy = self.values.items[y];
+        if (vx.op != vy.op or vx.ty != vy.ty) return false;
+        switch (vx.op) {
+            .f64_const => return @as(u64, @bitCast(vx.float_value)) == @as(u64, @bitCast(vy.float_value)),
+            .int_const => return vx.int_value == vy.int_value,
+            .arg => return vx.arg_index == vy.arg_index,
+            .load_f64, .ptr_add => {
+                if (self.isIndexed(vx.a) or self.isIndexed(vy.a)) return false;
+                const kx = self.addrKey(if (vx.op == .ptr_add) x else vx.a);
+                const ky = self.addrKey(if (vy.op == .ptr_add) y else vy.a);
+                return kx.root == ky.root and kx.off == ky.off;
+            },
+            .load_ptr, .ptr_add_idx, .load_lane2, .load_splat, .ptr_add_idx_lane => return false,
+            else => {
+                if (vx.int_value != vy.int_value) return false;
+                const ox = self.operands(vx);
+                const oy = self.operands(vy);
+                for (ox, oy) |a, c| {
+                    if ((a == null) != (c == null)) return false;
+                    if (a) |ai| if (!self.sameValue(ai, c.?, depth + 1)) return false;
+                }
+                return true;
+            },
+        }
+    }
+
+    /// A pointer with no constant address: its chain has an f@i index.
+    fn isIndexed(self: *const Builder, ptr: usize) bool {
+        return self.values.items[self.addrKey(ptr).root].op == .ptr_add_idx;
     }
 
     fn pop(self: *Builder) Error!usize {
@@ -1004,6 +1223,9 @@ pub const Program = struct {
     cur: Origin = .{},
     /// Set by build() when it fails: the most informative attempt.
     fail: ?Failure = null,
+    /// How `ifte` lowers (see Branching); build-time state below.
+    branching: Branching = .{},
+    decision_pos: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator) Program {
         return .{
@@ -1089,14 +1311,19 @@ pub const Program = struct {
                 try b.stack.append(id);
                 try b.args.append(id);
             }
+            self.decision_pos = 0;
             var failed = try self.run(&b, 0, self.tokens.items.len, arity);
             if (failed == null and b.stores.items.len == 0 and b.stack.items.len == 0)
                 failed = .{ .err = Error.BadStackEffect, .token = self.tokens.items.len, .depth = 0, .arity = arity };
             if (failed) |f| {
                 if (self.fail == null or f.token > self.fail.?.token) self.fail = f;
                 // Unknown words fail at every arity; stop searching (the
-                // errdefer frees b).
+                // errdefer frees b). An undecided `ifte` is not a failure.
                 if (f.err == Error.UnsupportedWord) return f.err;
+                if (f.err == Error.NeedDecision) {
+                    self.fail = f;
+                    return f.err;
+                }
                 b.deinit();
                 continue;
             }
@@ -1131,6 +1358,21 @@ pub const Program = struct {
                     const close = self.matchQuote(ti, end) orelse
                         return .{ .err = Error.UnsupportedWord, .token = ti, .depth = b.stack.items.len, .arity = arity };
                     const after = close + 1;
+                    // `mask [ then ] [ else ] ifte`
+                    if (after < end and self.tokens.items[after] == .quote_begin) {
+                        if (self.matchQuote(after, end)) |close2| {
+                            const w_at = close2 + 1;
+                            const is_ifte = w_at < end and switch (self.tokens.items[w_at]) {
+                                .word => |w| std.mem.eql(u8, w, "ifte"),
+                                else => false,
+                            };
+                            if (is_ifte) {
+                                if (try self.runIfte(b, ti, close, after, close2, arity)) |f| return f;
+                                ti = w_at + 1;
+                                continue;
+                            }
+                        }
+                    }
                     const is_times = after < end and switch (self.tokens.items[after]) {
                         .word => |w| std.mem.eql(u8, w, "times"),
                         else => false,
@@ -1160,6 +1402,182 @@ pub const Program = struct {
             ti += 1;
         }
         return null;
+    }
+
+    /// `mask [ then ] [ else ] ifte` with the quotes at [t_open, t_close]
+    /// and [f_open, f_close]. Versioned: take the next decision's arm and
+    /// record a Guard. If-converted: build both arms from the same state,
+    /// then merge every stack slot and stored field they leave different
+    /// through a select on the mask.
+    fn runIfte(self: *Program, b: *Builder, t_open: usize, t_close: usize, f_open: usize, f_close: usize, arity: usize) Error!?Failure {
+        const m = b.pop() catch return .{ .err = Error.StackUnderflow, .token = t_open, .depth = b.stack.items.len, .arity = arity };
+        b.expectTy(m, .mask) catch return .{ .err = Error.TypeMismatch, .token = t_open, .depth = b.stack.items.len, .arity = arity };
+        const frames = b.local_frames.items.len;
+        const convert = self.branching.convert_all or std.mem.indexOfScalar(usize, self.branching.convert, t_open) != null;
+        if (!convert) {
+            // The same test again (an inlined word used twice, a `times`
+            // copy) takes the same arm: one decision, not one per copy.
+            var take: ?bool = null;
+            for (b.guards.items) |g| if (b.sameValue(g.mask, m, 0)) {
+                take = g.taken;
+                break;
+            };
+            if (take == null) {
+                if (self.decision_pos >= self.branching.decisions.len)
+                    return .{ .err = Error.NeedDecision, .token = t_open, .depth = b.stack.items.len, .arity = arity };
+                take = self.branching.decisions[self.decision_pos];
+                self.decision_pos += 1;
+                try b.guards.append(.{ .mask = m, .taken = take.?, .token = t_open });
+            }
+            const r = if (take.?) try self.run(b, t_open + 1, t_close, arity) else try self.run(b, f_open + 1, f_close, arity);
+            if (r) |f| return f;
+            if (b.local_frames.items.len != frames)
+                return .{ .err = Error.UnbalancedIf, .token = t_close, .depth = b.stack.items.len, .arity = arity };
+            return null;
+        }
+
+        const a = self.allocator;
+        const stack0 = a.dupe(usize, b.stack.items) catch return Error.OutOfMemory;
+        defer a.free(stack0);
+        const stores0 = a.dupe(Store, b.stores.items) catch return Error.OutOfMemory;
+        defer a.free(stores0);
+
+        if (try self.run(b, t_open + 1, t_close, arity)) |f| return f;
+        const stack_t = a.dupe(usize, b.stack.items) catch return Error.OutOfMemory;
+        defer a.free(stack_t);
+        const stores_t = a.dupe(Store, b.stores.items) catch return Error.OutOfMemory;
+        defer a.free(stores_t);
+
+        b.stack.clearRetainingCapacity();
+        try b.stack.appendSlice(stack0);
+        b.stores.clearRetainingCapacity();
+        try b.stores.appendSlice(stores0);
+        if (try self.run(b, f_open + 1, f_close, arity)) |f| return f;
+        if (b.local_frames.items.len != frames or b.stack.items.len != stack_t.len)
+            return .{ .err = Error.UnbalancedIf, .token = f_close, .depth = b.stack.items.len, .arity = arity };
+
+        // Stack: the arms' values, selected where they differ.
+        for (b.stack.items, stack_t) |*slot, t| {
+            if (slot.* == t) continue;
+            slot.* = self.mergeValue(b, m, t, slot.*) catch |err| {
+                if (err == error.OutOfMemory) return err;
+                return .{ .err = err, .token = f_close, .depth = b.stack.items.len, .arity = arity };
+            };
+        }
+
+        // Stores: fields both arms had (from before the ifte), then fields
+        // only one arm wrote, against the memory the other leaves alone.
+        const stores_f = a.dupe(Store, b.stores.items) catch return Error.OutOfMemory;
+        defer a.free(stores_f);
+        b.stores.clearRetainingCapacity();
+        const base = stores0.len;
+        const used_f = a.alloc(bool, stores_f.len) catch return Error.OutOfMemory;
+        defer a.free(used_f);
+        @memset(used_f, false);
+        const fail_at: Failure = .{ .err = Error.BranchIndexedStore, .token = t_open, .depth = 0, .arity = arity };
+        for (0..base) |i| {
+            used_f[i] = true;
+            var st = stores_t[i];
+            if (st.value != stores_f[i].value) st.value = self.mergeValue(b, m, st.value, stores_f[i].value) catch |err| {
+                if (err == error.OutOfMemory) return err;
+                return .{ .err = err, .token = f_close, .depth = 0, .arity = arity };
+            };
+            try b.stores.append(st);
+        }
+        for (stores_t[base..]) |st| {
+            if (b.isIndexed(st.ptr)) return fail_at;
+            var vf: ?usize = null;
+            const k = b.addrKey(st.ptr);
+            for (stores_f[base..], base..) |sf, j| {
+                const kf = b.addrKey(sf.ptr);
+                if (kf.root == k.root and kf.off == k.off) {
+                    vf = sf.value;
+                    used_f[j] = true;
+                    break;
+                }
+            }
+            const old = vf orelse try b.addValue(.{ .op = .load_f64, .ty = .f64, .a = st.ptr });
+            const v = if (old == st.value) st.value else self.mergeValue(b, m, st.value, old) catch |err| {
+                if (err == error.OutOfMemory) return err;
+                return .{ .err = err, .token = f_close, .depth = 0, .arity = arity };
+            };
+            try b.stores.append(.{ .ptr = st.ptr, .value = v });
+        }
+        for (stores_f[base..], base..) |sf, j| {
+            if (used_f[j]) continue;
+            if (b.isIndexed(sf.ptr)) return fail_at;
+            const old = try b.addValue(.{ .op = .load_f64, .ty = .f64, .a = sf.ptr });
+            const v = self.mergeValue(b, m, old, sf.value) catch |err| {
+                if (err == error.OutOfMemory) return err;
+                return .{ .err = err, .token = f_close, .depth = 0, .arity = arity };
+            };
+            try b.stores.append(.{ .ptr = sf.ptr, .value = v });
+        }
+        return null;
+    }
+
+    /// m ? t : f for an f64 or a mask.
+    fn mergeValue(_: *Program, b: *Builder, m: usize, t: usize, f: usize) Error!usize {
+        const ty = b.values.items[t].ty;
+        if (ty == .mask or b.values.items[f].ty == .mask) {
+            try b.expectTy(t, .mask);
+            try b.expectTy(f, .mask);
+            const mt = try b.addValue(.{ .op = .mand, .ty = .mask, .a = m, .b = t });
+            const nm = try b.addValue(.{ .op = .mnot, .ty = .mask, .a = m });
+            const mf = try b.addValue(.{ .op = .mand, .ty = .mask, .a = nm, .b = f });
+            return b.addValue(.{ .op = .mor, .ty = .mask, .a = mt, .b = mf });
+        }
+        return b.selectValue(m, t, f);
+    }
+
+    /// Build every straight-line body the versioned `ifte`s lead to, one
+    /// per path of arms, into `out` (the caller deinits them). A mask that
+    /// isn't loop-invariant (Builder.invariant with `advanced`), and every
+    /// `ifte` past MAX_VARIANTS bodies, if-converts instead: its token
+    /// joins `convert` and the build starts over. `convert` may come in
+    /// non-empty (lane mode's varying guards) and holds all of them after.
+    pub fn buildVariants(self: *Program, known_arity: ?usize, advanced: u32, convert: *compat.ArrayList(usize), out: *compat.ArrayList(Builder)) Error!void {
+        const a = self.allocator;
+        var paths = compat.ArrayList([]bool).init(a);
+        defer {
+            for (paths.items) |p| a.free(p);
+            paths.deinit();
+        }
+        outer: while (true) {
+            for (out.items) |*bld| bld.deinit();
+            out.clearRetainingCapacity();
+            for (paths.items) |p| a.free(p);
+            paths.clearRetainingCapacity();
+            try paths.append(try a.alloc(bool, 0));
+            while (paths.pop()) |path| {
+                defer a.free(path);
+                self.branching = .{ .convert_all = false, .decisions = path, .convert = convert.items };
+                var bld = self.buildWith(known_arity) catch |err| {
+                    if (err != Error.NeedDecision) return err;
+                    const tok = self.fail.?.token;
+                    if (out.items.len + paths.items.len + 2 > MAX_VARIANTS) {
+                        try convert.append(tok);
+                        continue :outer;
+                    }
+                    // Depth-first, the taken arm first.
+                    for ([_]bool{ false, true }) |d| {
+                        const np = try a.alloc(bool, path.len + 1);
+                        @memcpy(np[0..path.len], path);
+                        np[path.len] = d;
+                        try paths.append(np);
+                    }
+                    continue;
+                };
+                for (bld.guards.items) |g| if (!bld.invariant(g.mask, advanced)) {
+                    try convert.append(g.token);
+                    bld.deinit();
+                    continue :outer;
+                };
+                try out.append(bld);
+            }
+            self.branching = .{};
+            return;
+        }
     }
 
     /// Index of the quote_end matching the quote_begin at `open`.
