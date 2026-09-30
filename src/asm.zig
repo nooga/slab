@@ -295,12 +295,12 @@ pub fn @"fmadd Dd, Dn, Dm, Da"(d: u5, n: u5, m: u5, a: u5) u32 {
 
 // FADD Vd.2D, Vn.2D, Vm.2D — vector double-precision add
 pub fn @"fadd Vd.2D, Vn.2D, Vm.2D"(d: u5, n: u5, m: u5) u32 {
-    return 0x4E61D400 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
+    return 0x4E60D400 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
 }
 
 // FMUL Vd.2D, Vn.2D, Vm.2D — vector double-precision multiply
 pub fn @"fmul Vd.2D, Vn.2D, Vm.2D"(d: u5, n: u5, m: u5) u32 {
-    return 0x6E61DC00 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
+    return 0x6E60DC00 | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
 }
 
 // FMLA Vd.2D, Vn.2D, Vm.2D — vector fused multiply-add: Vd += Vn * Vm
@@ -571,3 +571,134 @@ pub fn @"sub Xd, Xn, #1023"(d: u5, n: u5) u32 {
 pub const COND_MI: u4 = 4;
 pub const COND_LS: u4 = 9;
 pub const COND_GE: u4 = 10;
+
+// --- Two-lane f64 NEON for dsp2's lane mode (encodings checked against
+// clang's assembler). Vd/Vn/Vm are the full 128-bit registers. ---
+
+fn vec3(base: u32, d: u5, n: u5, m: u5) u32 {
+    return base | @as(u32, d) | (@as(u32, n) << 5) | (@as(u32, m) << 16);
+}
+
+fn vec2(base: u32, d: u5, n: u5) u32 {
+    return base | @as(u32, d) | (@as(u32, n) << 5);
+}
+
+pub fn @"fsub Vd.2D, Vn.2D, Vm.2D"(d: u5, n: u5, m: u5) u32 {
+    return vec3(0x4EE0D400, d, n, m);
+}
+pub fn @"fdiv Vd.2D, Vn.2D, Vm.2D"(d: u5, n: u5, m: u5) u32 {
+    return vec3(0x6E60FC00, d, n, m);
+}
+pub fn @"fmin Vd.2D, Vn.2D, Vm.2D"(d: u5, n: u5, m: u5) u32 {
+    return vec3(0x4EE0F400, d, n, m);
+}
+pub fn @"fmax Vd.2D, Vn.2D, Vm.2D"(d: u5, n: u5, m: u5) u32 {
+    return vec3(0x4E60F400, d, n, m);
+}
+pub fn @"and Vd.16B, Vn.16B, Vm.16B"(d: u5, n: u5, m: u5) u32 {
+    return vec3(0x4E201C00, d, n, m);
+}
+pub fn @"orr Vd.16B, Vn.16B, Vm.16B"(d: u5, n: u5, m: u5) u32 {
+    return vec3(0x4EA01C00, d, n, m);
+}
+pub fn @"bsl Vd.16B, Vn.16B, Vm.16B"(d: u5, n: u5, m: u5) u32 {
+    return vec3(0x6E601C00, d, n, m);
+}
+pub fn @"add Vd.2D, Vn.2D, Vm.2D"(d: u5, n: u5, m: u5) u32 {
+    return vec3(0x4EE08400, d, n, m);
+}
+pub fn @"sub Vd.2D, Vn.2D, Vm.2D"(d: u5, n: u5, m: u5) u32 {
+    return vec3(0x6EE08400, d, n, m);
+}
+// FCMGT/FCMGE/FCMEQ Vd.2D: all-ones lanes where true, NaN false.
+pub fn @"fcmgt Vd.2D, Vn.2D, Vm.2D"(d: u5, n: u5, m: u5) u32 {
+    return vec3(0x6EE0E400, d, n, m);
+}
+pub fn @"fcmge Vd.2D, Vn.2D, Vm.2D"(d: u5, n: u5, m: u5) u32 {
+    return vec3(0x6E60E400, d, n, m);
+}
+pub fn @"fcmeq Vd.2D, Vn.2D, Vm.2D"(d: u5, n: u5, m: u5) u32 {
+    return vec3(0x4E60E400, d, n, m);
+}
+pub fn @"mvn Vd.16B, Vn.16B"(d: u5, n: u5) u32 {
+    return vec2(0x6E205800, d, n);
+}
+pub fn @"fabs Vd.2D, Vn.2D"(d: u5, n: u5) u32 {
+    return vec2(0x4EE0F800, d, n);
+}
+pub fn @"fneg Vd.2D, Vn.2D"(d: u5, n: u5) u32 {
+    return vec2(0x6EE0F800, d, n);
+}
+pub fn @"fsqrt Vd.2D, Vn.2D"(d: u5, n: u5) u32 {
+    return vec2(0x6EE1F800, d, n);
+}
+pub fn @"frintm Vd.2D, Vn.2D"(d: u5, n: u5) u32 {
+    return vec2(0x4E619800, d, n);
+}
+pub fn @"fcvtms Vd.2D, Vn.2D"(d: u5, n: u5) u32 {
+    return vec2(0x4E61B800, d, n);
+}
+pub fn @"scvtf Vd.2D, Vn.2D"(d: u5, n: u5) u32 {
+    return vec2(0x4E61D800, d, n);
+}
+// SHL Vd.2D, Vn.2D, #52 and USHR Vd.2D, Vn.2D, #52 (the f64 exponent).
+pub fn @"shl Vd.2D, Vn.2D, #52"(d: u5, n: u5) u32 {
+    return vec2(0x4F745400, d, n);
+}
+pub fn @"ushr Vd.2D, Vn.2D, #52"(d: u5, n: u5) u32 {
+    return vec2(0x6F4C0400, d, n);
+}
+// DUP Vd.2D, Vn.D[0] — lane 0 into both lanes
+pub fn @"dup Vd.2D, Vn.D[0]"(d: u5, n: u5) u32 {
+    return vec2(0x4E080400, d, n);
+}
+// MOV Dd, Vn.D[1] — lane 1 into a scalar register (upper half zeroed)
+pub fn @"mov Dd, Vn.D[1]"(d: u5, n: u5) u32 {
+    return vec2(0x5E180400, d, n);
+}
+// LD1 {Vt.D}[1], [Xn] / ST1 {Vt.D}[1], [Xn] — one lane from / to memory
+pub fn @"ld1 {Vt.D}[1], [Xn]"(t: u5, n: u5) u32 {
+    return vec2(0x4D408400, t, n);
+}
+pub fn @"st1 {Vt.D}[1], [Xn]"(t: u5, n: u5) u32 {
+    return vec2(0x4D008400, t, n);
+}
+// LD1R {Vt.2D}, [Xn] — one f64 into both lanes
+pub fn @"ld1r {Vt.2D}, [Xn]"(t: u5, n: u5) u32 {
+    return vec2(0x4D40CC00, t, n);
+}
+test "two-lane encodings match the assembler" {
+    const t = @import("std").testing;
+    try t.expectEqual(@as(u32, 0x4e63d441), @"fadd Vd.2D, Vn.2D, Vm.2D"(1, 2, 3));
+    try t.expectEqual(@as(u32, 0x6e63dc41), @"fmul Vd.2D, Vn.2D, Vm.2D"(1, 2, 3));
+    try t.expectEqual(@as(u32, 0x4ee3d441), @"fsub Vd.2D, Vn.2D, Vm.2D"(1, 2, 3));
+    try t.expectEqual(@as(u32, 0x6e63fc41), @"fdiv Vd.2D, Vn.2D, Vm.2D"(1, 2, 3));
+    try t.expectEqual(@as(u32, 0x4ee3f441), @"fmin Vd.2D, Vn.2D, Vm.2D"(1, 2, 3));
+    try t.expectEqual(@as(u32, 0x4e63f441), @"fmax Vd.2D, Vn.2D, Vm.2D"(1, 2, 3));
+    try t.expectEqual(@as(u32, 0x4e231c41), @"and Vd.16B, Vn.16B, Vm.16B"(1, 2, 3));
+    try t.expectEqual(@as(u32, 0x4ea31c41), @"orr Vd.16B, Vn.16B, Vm.16B"(1, 2, 3));
+    try t.expectEqual(@as(u32, 0x6e631c41), @"bsl Vd.16B, Vn.16B, Vm.16B"(1, 2, 3));
+    try t.expectEqual(@as(u32, 0x4ee38441), @"add Vd.2D, Vn.2D, Vm.2D"(1, 2, 3));
+    try t.expectEqual(@as(u32, 0x6ee38441), @"sub Vd.2D, Vn.2D, Vm.2D"(1, 2, 3));
+    try t.expectEqual(@as(u32, 0x6ee3e441), @"fcmgt Vd.2D, Vn.2D, Vm.2D"(1, 2, 3));
+    try t.expectEqual(@as(u32, 0x6e63e441), @"fcmge Vd.2D, Vn.2D, Vm.2D"(1, 2, 3));
+    try t.expectEqual(@as(u32, 0x4e63e441), @"fcmeq Vd.2D, Vn.2D, Vm.2D"(1, 2, 3));
+    try t.expectEqual(@as(u32, 0x6e205841), @"mvn Vd.16B, Vn.16B"(1, 2));
+    try t.expectEqual(@as(u32, 0x4ee0f841), @"fabs Vd.2D, Vn.2D"(1, 2));
+    try t.expectEqual(@as(u32, 0x6ee0f841), @"fneg Vd.2D, Vn.2D"(1, 2));
+    try t.expectEqual(@as(u32, 0x6ee1f841), @"fsqrt Vd.2D, Vn.2D"(1, 2));
+    try t.expectEqual(@as(u32, 0x4e619841), @"frintm Vd.2D, Vn.2D"(1, 2));
+    try t.expectEqual(@as(u32, 0x4e61b841), @"fcvtms Vd.2D, Vn.2D"(1, 2));
+    try t.expectEqual(@as(u32, 0x4e61d841), @"scvtf Vd.2D, Vn.2D"(1, 2));
+    try t.expectEqual(@as(u32, 0x4f745441), @"shl Vd.2D, Vn.2D, #52"(1, 2));
+    try t.expectEqual(@as(u32, 0x6f4c0441), @"ushr Vd.2D, Vn.2D, #52"(1, 2));
+    try t.expectEqual(@as(u32, 0x4e080441), @"dup Vd.2D, Vn.D[0]"(1, 2));
+    try t.expectEqual(@as(u32, 0x4e080c41), @"dup Vd.2D, Xn"(1, 2));
+    try t.expectEqual(@as(u32, 0x5e180441), @"mov Dd, Vn.D[1]"(1, 2));
+    try t.expectEqual(@as(u32, 0x4d408441), @"ld1 {Vt.D}[1], [Xn]"(1, 2));
+    try t.expectEqual(@as(u32, 0x4d008441), @"st1 {Vt.D}[1], [Xn]"(1, 2));
+    try t.expectEqual(@as(u32, 0x4d40cc41), @"ld1r {Vt.2D}, [Xn]"(1, 2));
+    try t.expectEqual(@as(u32, 0x3dc00841), ldr_q_imm(1, 2, 32));
+    try t.expectEqual(@as(u32, 0x3d800841), str_q_imm(1, 2, 32));
+    try t.expectEqual(@as(u32, 0x4e63cc41), @"fmla Vd.2D, Vn.2D, Vm.2D"(1, 2, 3));
+}

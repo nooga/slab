@@ -10,4 +10,5 @@ pub const Fy = main.Fy;
 
 test {
     _ = @import("tests.zig");
+    _ = @import("asm.zig");
 }
