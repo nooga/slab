@@ -12,6 +12,9 @@ pub const Error = error{
     StackUnderflow,
     TypeMismatch,
     UnsupportedWord,
+    /// The word can't run in lane mode (Builder.emitLanes): a stack
+    /// output, an f64 argument, or a store through a shared pointer.
+    LaneUnsupported,
 };
 
 const Ty = enum {
@@ -50,6 +53,10 @@ const Op = enum {
     mnot,
     mask_to_f, // 1.0 where set, 0.0 elsewhere
     select, // a ? b : c, a a mask
+    // Lane mode only (Builder.emitLanes): every f64 is a 2 x f64 vector.
+    load_lane2, // lane 0 from pointer a, lane 1 from pointer b
+    load_splat, // one f64 from pointer a into both lanes
+    ptr_add_idx_lane, // base a + trunc(lane int_value of f64 b) * 8
 };
 
 const Cmp = enum(i64) { lt, le, gt, ge, eq };
@@ -71,6 +78,15 @@ const Value = struct {
 const Store = struct {
     ptr: usize,
     value: usize,
+    /// Lane mode: lane 1's pointer (lane 0's is `ptr`).
+    ptr_b: ?usize = null,
+};
+
+/// Where an entry argument lives in lane mode: one x-register shared by
+/// both lanes (a params block), or one per lane (per-channel state, io).
+pub const LaneArg = union(enum) {
+    uniform: u5,
+    pair: [2]u5,
 };
 
 const LocalFrame = struct {
@@ -115,6 +131,8 @@ pub const Builder = struct {
     local_frames: compat.ArrayList(LocalFrame),
     stores: compat.ArrayList(Store),
     initial_arity: usize = 0,
+    /// Lane mode: f64 values are 2-lane vectors (see emitLanes).
+    lanes: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) Builder {
         return .{
@@ -394,11 +412,12 @@ pub const Builder = struct {
         for (self.values.items) |v| {
             switch (v.op) {
                 .load_f64, .load_ptr, .ptr_add => if (v.a == id) return true,
-                .ptr_add_idx => if (v.a == id) return true,
+                .ptr_add_idx, .ptr_add_idx_lane, .load_splat => if (v.a == id) return true,
+                .load_lane2 => if (v.a == id or v.b == id) return true,
                 else => {},
             }
         }
-        for (self.stores.items) |s| if (s.ptr == id) return true;
+        for (self.stores.items) |s| if (s.ptr == id or s.ptr_b == id) return true;
         return false;
     }
 
@@ -419,6 +438,120 @@ pub const Builder = struct {
             defer scratch.deinit();
             try self.emitMode(&scratch, arg_abi, .dry, &trace);
             try self.emitMode(out, arg_abi, .spill, &trace);
+        };
+    }
+
+    /// Emit the body in lane mode: two instances of the word run at once,
+    /// one per lane of every f64 register (NEON 2 x f64), each against its
+    /// own pointers. `lane_args[i]` says where entry argument i is: shared
+    /// or one x-register per lane. Each lane computes exactly what the
+    /// scalar body computes for its pointers - the same IEEE operations in
+    /// the same order - so the results are bit-identical to running the
+    /// scalar body twice. The word must take pointers only, return nothing,
+    /// and store only through per-lane pointers.
+    pub fn emitLanes(self: *Builder, out: *compat.ArrayList(u32), lane_args: []const LaneArg) Error!void {
+        if (self.stack.items.len != 0 or lane_args.len != self.initial_arity) return Error.LaneUnsupported;
+        var lb = Builder.init(self.allocator);
+        defer lb.deinit();
+        lb.lanes = true;
+        const n = self.values.items.len;
+        const map0 = self.allocator.alloc(usize, n) catch return Error.OutOfMemory;
+        defer self.allocator.free(map0);
+        const map1 = self.allocator.alloc(usize, n) catch return Error.OutOfMemory;
+        defer self.allocator.free(map1);
+        // Same in both lanes: shared args, constants and what they derive.
+        const uni = self.allocator.alloc(bool, n) catch return Error.OutOfMemory;
+        defer self.allocator.free(uni);
+
+        for (self.values.items, 0..) |v, i| {
+            var nv = v;
+            switch (v.op) {
+                .arg => {
+                    if (v.ty == .f64 or v.ty == .mask or v.ty == .int) return Error.LaneUnsupported;
+                    switch (lane_args[v.arg_index]) {
+                        .uniform => |r| {
+                            map0[i] = try lb.addValue(.{ .op = .arg, .ty = .ptr, .arg_index = r });
+                            map1[i] = map0[i];
+                            uni[i] = true;
+                        },
+                        .pair => |rs| {
+                            map0[i] = try lb.addValue(.{ .op = .arg, .ty = .ptr, .arg_index = rs[0] });
+                            map1[i] = try lb.addValue(.{ .op = .arg, .ty = .ptr, .arg_index = rs[1] });
+                            uni[i] = false;
+                        },
+                    }
+                    continue;
+                },
+                .int_const, .f64_const => {
+                    map0[i] = try lb.addValue(v);
+                    map1[i] = map0[i];
+                    uni[i] = true;
+                    continue;
+                },
+                .ptr_add, .load_ptr => {
+                    uni[i] = uni[v.a];
+                    nv.a = map0[v.a];
+                    map0[i] = try lb.addValue(nv);
+                    if (uni[i]) {
+                        map1[i] = map0[i];
+                    } else {
+                        nv.a = map1[v.a];
+                        map1[i] = try lb.addValue(nv);
+                    }
+                    continue;
+                },
+                .ptr_add_idx => {
+                    uni[i] = uni[v.a] and uni[v.b];
+                    map0[i] = try lb.addValue(.{ .op = .ptr_add_idx_lane, .ty = .ptr, .a = map0[v.a], .b = map0[v.b], .int_value = 0 });
+                    map1[i] = if (uni[i]) map0[i] else try lb.addValue(.{ .op = .ptr_add_idx_lane, .ty = .ptr, .a = map1[v.a], .b = map0[v.b], .int_value = 1 });
+                    continue;
+                },
+                .load_f64 => {
+                    uni[i] = uni[v.a];
+                    map0[i] = if (uni[i])
+                        try lb.addValue(.{ .op = .load_splat, .ty = .f64, .a = map0[v.a] })
+                    else
+                        try lb.addValue(.{ .op = .load_lane2, .ty = .f64, .a = map0[v.a], .b = map1[v.a] });
+                    map1[i] = map0[i];
+                    continue;
+                },
+                .fabs, .fneg, .fsqrt, .ffloor, .fexp2i, .flog2i, .fmant, .mnot, .mask_to_f => {
+                    uni[i] = uni[v.a];
+                    nv.a = map0[v.a];
+                },
+                .fadd, .fsub, .fmul, .fdiv, .fmin, .fmax, .fcmp, .mand, .mor => {
+                    uni[i] = uni[v.a] and uni[v.b];
+                    nv.a = map0[v.a];
+                    nv.b = map0[v.b];
+                },
+                .select => {
+                    uni[i] = uni[v.a] and uni[v.b] and uni[v.c];
+                    nv.a = map0[v.a];
+                    nv.b = map0[v.b];
+                    nv.c = map0[v.c];
+                },
+                .load_lane2, .load_splat, .ptr_add_idx_lane => return Error.LaneUnsupported,
+            }
+            map0[i] = try lb.addValue(nv);
+            map1[i] = map0[i];
+        }
+        for (self.stores.items) |st| {
+            // Two lanes storing to one address: which lane wins is not what
+            // the scalar body run twice would leave.
+            if (uni[st.ptr]) return Error.LaneUnsupported;
+            try lb.stores.append(.{ .ptr = map0[st.ptr], .ptr_b = map1[st.ptr], .value = map0[st.value] });
+        }
+
+        const start = out.items.len;
+        lb.emitMode(out, .raw_registers, .plain, null) catch |err| {
+            if (err != Error.RegisterExhausted) return err;
+            out.shrinkRetainingCapacity(start);
+            var trace = compat.ArrayList(usize).init(self.allocator);
+            defer trace.deinit();
+            var scratch = compat.ArrayList(u32).init(self.allocator);
+            defer scratch.deinit();
+            try lb.emitMode(&scratch, .raw_registers, .dry, &trace);
+            try lb.emitMode(out, .raw_registers, .spill, &trace);
         };
     }
 
@@ -477,6 +610,7 @@ pub const Builder = struct {
             .cur_next = cur_next,
             .spill_slot = spill_slot,
             .depth = depth,
+            .lanes = self.lanes,
         };
 
         // D-register pool. In raw_registers mode an f64 arg i lives in
@@ -515,7 +649,11 @@ pub const Builder = struct {
         // there is more than one; spill slots follow. The spill pass sizes
         // the frame once codegen is done and patches the `sub sp`.
         const spill_stores = self.stores.items.len > 1;
-        const stash_bytes: usize = if (spill_stores) std.mem.alignForward(usize, self.stores.items.len * 16, 16) else 0;
+        // A stashed store: value, pointer (16 bytes); in lane mode the
+        // 2-lane value and both lanes' pointers (32).
+        const stash_stride: usize = if (self.lanes) 32 else 16;
+        const stash_bytes: usize = if (spill_stores) std.mem.alignForward(usize, self.stores.items.len * stash_stride, 16) else 0;
+        if (stash_bytes > 4080) return Error.RegisterExhausted;
         cg.slot_base = stash_bytes;
         const use_frame = spill_stores or mode == .spill;
         const frame_at = out.items.len;
@@ -526,12 +664,20 @@ pub const Builder = struct {
                 const mark = cg.pin_len;
                 const val_reg = try cg.valueD(store.value);
                 const ptr_reg = try cg.valueX(store.ptr);
-                const offset: u12 = @intCast(i * 16);
-                try out.append(Asm.str_d_imm(val_reg, 31, offset));
-                try out.append(Asm.str_x_imm(ptr_reg, 31, offset + 8));
+                const offset: u12 = @intCast(i * stash_stride);
+                if (self.lanes) {
+                    const ptr_b = try cg.valueX(store.ptr_b.?);
+                    try out.append(Asm.str_q_imm(val_reg, 31, offset));
+                    try out.append(Asm.str_x_imm(ptr_reg, 31, offset + 16));
+                    try out.append(Asm.str_x_imm(ptr_b, 31, offset + 24));
+                } else {
+                    try out.append(Asm.str_d_imm(val_reg, 31, offset));
+                    try out.append(Asm.str_x_imm(ptr_reg, 31, offset + 8));
+                }
                 cg.unpinTo(mark);
                 cg.consumeValue(store.value);
                 cg.consumeValue(store.ptr);
+                if (store.ptr_b) |pb| cg.consumeValue(pb);
             }
         }
 
@@ -555,10 +701,18 @@ pub const Builder = struct {
             for (self.stores.items, 0..) |_, i| {
                 const val_reg = try cg.allocD();
                 const ptr_reg = try cg.allocX();
-                const offset: u12 = @intCast(i * 16);
-                try out.append(Asm.ldr_d_imm(val_reg, 31, offset));
-                try out.append(Asm.ldr_x_imm(ptr_reg, 31, offset + 8));
-                try out.append(Asm.str_d_imm(val_reg, ptr_reg, 0));
+                const offset: u12 = @intCast(i * stash_stride);
+                if (self.lanes) {
+                    try out.append(Asm.ldr_q_imm(val_reg, 31, offset));
+                    try out.append(Asm.ldr_x_imm(ptr_reg, 31, offset + 16));
+                    try out.append(Asm.str_d_imm(val_reg, ptr_reg, 0));
+                    try out.append(Asm.ldr_x_imm(ptr_reg, 31, offset + 24));
+                    try out.append(Asm.@"st1 {Vt.D}[1], [Xn]"(val_reg, ptr_reg));
+                } else {
+                    try out.append(Asm.ldr_d_imm(val_reg, 31, offset));
+                    try out.append(Asm.ldr_x_imm(ptr_reg, 31, offset + 8));
+                    try out.append(Asm.str_d_imm(val_reg, ptr_reg, 0));
+                }
                 cg.releaseD(val_reg);
                 cg.releaseX(ptr_reg);
             }
@@ -568,13 +722,18 @@ pub const Builder = struct {
                 const val_reg = try cg.valueD(store.value);
                 const ptr_reg = try cg.valueX(store.ptr);
                 try out.append(Asm.str_d_imm(val_reg, ptr_reg, 0));
+                if (store.ptr_b) |pb| {
+                    const ptr_b = try cg.valueX(pb);
+                    try out.append(Asm.@"st1 {Vt.D}[1], [Xn]"(val_reg, ptr_b));
+                }
                 cg.unpinTo(mark);
                 cg.consumeValue(store.value);
                 cg.consumeValue(store.ptr);
+                if (store.ptr_b) |pb| cg.consumeValue(pb);
             }
         }
         if (use_frame) {
-            const bytes = std.mem.alignForward(usize, cg.slot_base + @as(usize, cg.slot_count) * 8, 16);
+            const bytes = std.mem.alignForward(usize, cg.slot_base + @as(usize, cg.slot_count) * cg.slotSize(), 16);
             if (bytes > 4080) return Error.RegisterExhausted;
             out.items[frame_at] = Asm.sub_sp_imm(@intCast(bytes));
             try out.append(Asm.add_sp_imm(@intCast(bytes)));
@@ -616,8 +775,8 @@ pub const Builder = struct {
         for (self.values.items) |value| {
             switch (value.op) {
                 .arg, .int_const, .f64_const => {},
-                .ptr_add, .load_f64, .load_ptr, .fabs, .fneg, .fsqrt, .ffloor, .fexp2i, .flog2i, .fmant, .mnot, .mask_to_f => remaining_uses[value.a] += 1,
-                .ptr_add_idx, .fadd, .fsub, .fmul, .fdiv, .fmin, .fmax, .fcmp, .mand, .mor => {
+                .ptr_add, .load_f64, .load_ptr, .fabs, .fneg, .fsqrt, .ffloor, .fexp2i, .flog2i, .fmant, .mnot, .mask_to_f, .load_splat => remaining_uses[value.a] += 1,
+                .ptr_add_idx, .fadd, .fsub, .fmul, .fdiv, .fmin, .fmax, .fcmp, .mand, .mor, .load_lane2, .ptr_add_idx_lane => {
                     remaining_uses[value.a] += 1;
                     remaining_uses[value.b] += 1;
                 },
@@ -631,6 +790,7 @@ pub const Builder = struct {
         for (self.stores.items) |store| {
             remaining_uses[store.ptr] += 1;
             remaining_uses[store.value] += 1;
+            if (store.ptr_b) |pb| remaining_uses[pb] += 1;
         }
         for (self.stack.items) |value| remaining_uses[value] += 1;
     }
@@ -643,8 +803,8 @@ pub const Builder = struct {
         for (self.values.items, 0..) |v, i| {
             const ops: [3]?usize = switch (v.op) {
                 .arg, .int_const, .f64_const => .{ null, null, null },
-                .ptr_add, .load_f64, .load_ptr, .fabs, .fneg, .fsqrt, .ffloor, .fexp2i, .flog2i, .fmant, .mnot, .mask_to_f => .{ v.a, null, null },
-                .ptr_add_idx, .fadd, .fsub, .fmul, .fdiv, .fmin, .fmax, .fcmp, .mand, .mor => .{ v.a, v.b, null },
+                .ptr_add, .load_f64, .load_ptr, .fabs, .fneg, .fsqrt, .ffloor, .fexp2i, .flog2i, .fmant, .mnot, .mask_to_f, .load_splat => .{ v.a, null, null },
+                .ptr_add_idx, .fadd, .fsub, .fmul, .fdiv, .fmin, .fmax, .fcmp, .mand, .mor, .load_lane2, .ptr_add_idx_lane => .{ v.a, v.b, null },
                 .select => .{ v.a, v.b, v.c },
             };
             var d: u32 = 0;
@@ -1109,6 +1269,8 @@ const Codegen = struct {
     slot_count: u16 = 0,
     free_slots: [64]u16 = undefined,
     free_slot_count: usize = 0,
+    /// Lane mode: d-registers hold 2-lane vectors (full q), slots are 16.
+    lanes: bool = false,
 
     /// Every operand request goes through here, in the same order in the
     /// dry and spill passes; that order is the clock for next-use distances.
@@ -1163,10 +1325,22 @@ const Codegen = struct {
         return slot;
     }
 
+    fn slotSize(self: *const Codegen) usize {
+        return if (self.lanes) 16 else 8;
+    }
+
     fn slotOffset(self: *const Codegen, slot: u16) Error!u12 {
-        const off = self.slot_base + @as(usize, slot) * 8;
-        if (off > 4088) return Error.RegisterExhausted;
+        const off = self.slot_base + @as(usize, slot) * self.slotSize();
+        if (off + self.slotSize() > 4096) return Error.RegisterExhausted;
         return @intCast(off);
+    }
+
+    fn storeSlotD(self: *const Codegen, reg: u5, off: u12) u32 {
+        return if (self.lanes) Asm.str_q_imm(reg, 31, off) else Asm.str_d_imm(reg, 31, off);
+    }
+
+    fn loadSlotD(self: *const Codegen, reg: u5, off: u12) u32 {
+        return if (self.lanes) Asm.ldr_q_imm(reg, 31, off) else Asm.ldr_d_imm(reg, 31, off);
     }
 
     /// Free a register by spilling the unpinned value whose next use is
@@ -1195,7 +1369,7 @@ const Codegen = struct {
             const slot = try self.allocSlot();
             self.spill_slot[id] = slot;
             const off = try self.slotOffset(slot);
-            try self.out.append(if (is_x) Asm.str_x_imm(reg, 31, off) else Asm.str_d_imm(reg, 31, off));
+            try self.out.append(if (is_x) Asm.str_x_imm(reg, 31, off) else self.storeSlotD(reg, off));
         }
         owners[reg] = null;
         self.locs[id] = .none;
@@ -1353,6 +1527,26 @@ const Codegen = struct {
                 self.consumeValue(value.b);
                 break :blk reg;
             },
+            .ptr_add_idx_lane => blk: {
+                // The scalar fcvtzs reads lane 0; lane 1 moves down first.
+                const base = try self.valueX(value.a);
+                const idx = try self.valueD(value.b);
+                const reg = try self.allocX();
+                const xi = try self.allocX();
+                if (value.int_value == 0) {
+                    try self.out.append(Asm.@"fcvtzs Xd, Dn"(xi, idx));
+                } else {
+                    const t = try self.allocD();
+                    try self.out.append(Asm.@"mov Dd, Vn.D[1]"(t, idx));
+                    try self.out.append(Asm.@"fcvtzs Xd, Dn"(xi, t));
+                    self.releaseD(t);
+                }
+                try self.out.append(Asm.@"add Xd, Xn, Xm, lsl #3"(reg, base, xi));
+                self.releaseX(xi);
+                self.consumeValue(value.a);
+                self.consumeValue(value.b);
+                break :blk reg;
+            },
             else => return Error.TypeMismatch,
         };
         self.unpinTo(mark);
@@ -1393,7 +1587,7 @@ const Codegen = struct {
         }
         if (self.spill_slot[id]) |slot| {
             const reg = try self.allocD();
-            try self.out.append(Asm.ldr_d_imm(reg, 31, try self.slotOffset(slot)));
+            try self.out.append(self.loadSlotD(reg, try self.slotOffset(slot)));
             return self.settle(id, false, reg);
         }
 
@@ -1409,6 +1603,7 @@ const Codegen = struct {
     /// after the last instruction, so the destination never aliases a live
     /// input of a multi-instruction sequence.
     fn computeD(self: *Codegen, value: Value) Error!u5 {
+        if (self.lanes) return self.computeLanes(value);
         switch (value.op) {
             .arg => {
                 const reg = try self.allocD();
@@ -1572,6 +1767,140 @@ const Codegen = struct {
             },
             else => return Error.TypeMismatch,
         }
+    }
+
+    /// computeD in lane mode: the same operations on both lanes.
+    fn computeLanes(self: *Codegen, value: Value) Error!u5 {
+        switch (value.op) {
+            .f64_const => {
+                const reg = try self.allocD();
+                try self.emitF64Const(reg, value.float_value);
+                try self.out.append(Asm.@"dup Vd.2D, Vn.D[0]"(reg, reg));
+                return reg;
+            },
+            .load_lane2 => {
+                const p0 = try self.valueX(value.a);
+                const p1 = try self.valueX(value.b);
+                const reg = try self.allocD();
+                try self.out.append(Asm.ldr_d_imm(reg, p0, 0));
+                try self.out.append(Asm.@"ld1 {Vt.D}[1], [Xn]"(reg, p1));
+                self.consumeValue(value.a);
+                self.consumeValue(value.b);
+                return reg;
+            },
+            .load_splat => {
+                const p = try self.valueX(value.a);
+                const reg = try self.allocD();
+                try self.out.append(Asm.@"ld1r {Vt.2D}, [Xn]"(reg, p));
+                self.consumeValue(value.a);
+                return reg;
+            },
+            .fadd, .fsub, .fmul, .fdiv, .fmin, .fmax, .mand, .mor, .fcmp => {
+                const r = try self.valuesD(2, .{ value.a, value.b });
+                const a = r[0];
+                const b = r[1];
+                const reg = try self.allocD();
+                try self.out.append(switch (value.op) {
+                    .fadd => Asm.@"fadd Vd.2D, Vn.2D, Vm.2D"(reg, a, b),
+                    .fsub => Asm.@"fsub Vd.2D, Vn.2D, Vm.2D"(reg, a, b),
+                    .fmul => Asm.@"fmul Vd.2D, Vn.2D, Vm.2D"(reg, a, b),
+                    .fdiv => Asm.@"fdiv Vd.2D, Vn.2D, Vm.2D"(reg, a, b),
+                    .fmin => Asm.@"fmin Vd.2D, Vn.2D, Vm.2D"(reg, a, b),
+                    .fmax => Asm.@"fmax Vd.2D, Vn.2D, Vm.2D"(reg, a, b),
+                    .mand => Asm.@"and Vd.16B, Vn.16B, Vm.16B"(reg, a, b),
+                    .mor => Asm.@"orr Vd.16B, Vn.16B, Vm.16B"(reg, a, b),
+                    .fcmp => switch (@as(Cmp, @enumFromInt(value.int_value))) {
+                        .lt => Asm.@"fcmgt Vd.2D, Vn.2D, Vm.2D"(reg, b, a),
+                        .le => Asm.@"fcmge Vd.2D, Vn.2D, Vm.2D"(reg, b, a),
+                        .gt => Asm.@"fcmgt Vd.2D, Vn.2D, Vm.2D"(reg, a, b),
+                        .ge => Asm.@"fcmge Vd.2D, Vn.2D, Vm.2D"(reg, a, b),
+                        .eq => Asm.@"fcmeq Vd.2D, Vn.2D, Vm.2D"(reg, a, b),
+                    },
+                    else => unreachable,
+                });
+                self.consumeValue(value.a);
+                self.consumeValue(value.b);
+                return reg;
+            },
+            .fabs, .fneg, .fsqrt, .ffloor, .mnot => {
+                const a = try self.valueD(value.a);
+                const reg = try self.allocD();
+                try self.out.append(switch (value.op) {
+                    .fabs => Asm.@"fabs Vd.2D, Vn.2D"(reg, a),
+                    .fneg => Asm.@"fneg Vd.2D, Vn.2D"(reg, a),
+                    .fsqrt => Asm.@"fsqrt Vd.2D, Vn.2D"(reg, a),
+                    .ffloor => Asm.@"frintm Vd.2D, Vn.2D"(reg, a),
+                    .mnot => Asm.@"mvn Vd.16B, Vn.16B"(reg, a),
+                    else => unreachable,
+                });
+                self.consumeValue(value.a);
+                return reg;
+            },
+            .fexp2i, .flog2i, .fmant => {
+                // The scalar bit tricks, lane-wise, with the integer
+                // constants splatted into a scratch vector.
+                const a = try self.valueD(value.a);
+                const reg = try self.allocD();
+                const t = try self.allocD();
+                const x = try self.allocX();
+                switch (value.op) {
+                    .fexp2i => {
+                        try self.out.append(Asm.@"fcvtms Vd.2D, Vn.2D"(reg, a));
+                        try self.splatBits(t, x, 1023);
+                        try self.out.append(Asm.@"add Vd.2D, Vn.2D, Vm.2D"(reg, reg, t));
+                        try self.out.append(Asm.@"shl Vd.2D, Vn.2D, #52"(reg, reg));
+                    },
+                    .flog2i => {
+                        try self.out.append(Asm.@"ushr Vd.2D, Vn.2D, #52"(reg, a));
+                        try self.splatBits(t, x, 0x7ff);
+                        try self.out.append(Asm.@"and Vd.16B, Vn.16B, Vm.16B"(reg, reg, t));
+                        try self.splatBits(t, x, 1023);
+                        try self.out.append(Asm.@"sub Vd.2D, Vn.2D, Vm.2D"(reg, reg, t));
+                        try self.out.append(Asm.@"scvtf Vd.2D, Vn.2D"(reg, reg));
+                    },
+                    .fmant => {
+                        try self.splatBits(t, x, 0xfffffffffffff);
+                        try self.out.append(Asm.@"and Vd.16B, Vn.16B, Vm.16B"(reg, a, t));
+                        try self.splatBits(t, x, 0x3ff0000000000000);
+                        try self.out.append(Asm.@"orr Vd.16B, Vn.16B, Vm.16B"(reg, reg, t));
+                    },
+                    else => unreachable,
+                }
+                self.releaseX(x);
+                self.releaseD(t);
+                self.consumeValue(value.a);
+                return reg;
+            },
+            .mask_to_f => {
+                const m = try self.valueD(value.a);
+                const one = try self.allocD();
+                try self.emitF64Const(one, 1.0);
+                try self.out.append(Asm.@"dup Vd.2D, Vn.D[0]"(one, one));
+                const reg = try self.allocD();
+                try self.out.append(Asm.@"and Vd.16B, Vn.16B, Vm.16B"(reg, m, one));
+                self.releaseD(one);
+                self.consumeValue(value.a);
+                return reg;
+            },
+            .select => {
+                // No fcsel across lanes: always the mask and a bit select.
+                const r = try self.valuesD(3, .{ value.a, value.b, value.c });
+                const reg = try self.allocD();
+                try self.out.append(Asm.@"orr Vd.16B, Vn.16B, Vm.16B"(reg, r[0], r[0]));
+                try self.out.append(Asm.@"bsl Vd.16B, Vn.16B, Vm.16B"(reg, r[1], r[2]));
+                self.consumeValue(value.a);
+                self.consumeValue(value.b);
+                self.consumeValue(value.c);
+                return reg;
+            },
+            else => return Error.TypeMismatch,
+        }
+    }
+
+    /// 64-bit `bits` into both lanes of `v`, through `x`.
+    fn splatBits(self: *Codegen, v: u5, x: u5, bits: u64) Error!void {
+        for (Asm.movImm64(x, bits)) |instr| try self.out.append(instr);
+        try self.out.append(Asm.@"dup Vd.2D, Xn"(v, x));
     }
 
     fn emitF64Const(self: *Codegen, reg: u5, value: f64) Error!void {

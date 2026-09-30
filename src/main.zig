@@ -1569,6 +1569,31 @@ pub const Fy = struct {
         return body.toOwnedSlice();
     }
 
+    fn buildDsp2BodyLanesAlloc(self: *Fy, word: Word, lane_args: []const Dsp2.LaneArg) ![]u32 {
+        if (!word.dsp2) return error.NotDspWord;
+        const tokens = word.dsp2_body orelse return error.NotDspWord;
+        if (Dsp2.isComposition(tokens)) return error.LaneUnsupported;
+
+        var program = Dsp2.Program.init(self.fyalloc);
+        defer program.deinit();
+        try program.addTokens(tokens);
+
+        var builder = try program.buildWith(word.c);
+        defer builder.deinit();
+
+        var body = compat.ArrayList(u32).init(self.fyalloc);
+        errdefer body.deinit();
+        try builder.emitLanes(&body, lane_args);
+        return body.toOwnedSlice();
+    }
+
+    pub fn disassembleDsp2LanesWordAlloc(self: *Fy, allocator: std.mem.Allocator, name: []const u8, lane_args: []const Dsp2.LaneArg) ![]u8 {
+        const word = self.userWords.get(name) orelse return error.UnknownWord;
+        const body = try self.buildDsp2BodyLanesAlloc(word, lane_args);
+        defer self.fyalloc.free(body);
+        return disassembleAlloc(allocator, body);
+    }
+
     pub fn reportDsp2RawWord(self: *Fy, name: []const u8) !CompileReport {
         const word = self.userWords.get(name) orelse return error.UnknownWord;
         const body = try self.buildDsp2BodyAlloc(word, .raw_registers);
@@ -1993,6 +2018,106 @@ pub const Fy = struct {
             .entry = fun,
             .slots = slots,
             .arg_count = arg_kinds.len,
+        };
+    }
+
+    /// A repeated caller for `name` in lane mode (Dsp2.Builder.emitLanes):
+    /// two instances of the word per iteration, one per NEON lane. Slot
+    /// `arg_bits[r]` is loaded into x-register r for every register the
+    /// lane args name. Entry arg 0 must be a lane pair: both of its
+    /// registers advance `stride` bytes per iteration (the io frames).
+    pub fn compileDsp2RawLanesCaller(
+        self: *Fy,
+        name: []const u8,
+        slots: *Dsp2RawRepeatedSlots,
+        lane_args: []const Dsp2.LaneArg,
+        stride: u12,
+    ) !Dsp2RawRepeatedCaller {
+        if (lane_args.len == 0 or lane_args[0] != .pair) return error.LaneUnsupported;
+        var used = [_]bool{false} ** Dsp2.RAW_X_ARG_REGS.len;
+        for (lane_args) |la| switch (la) {
+            .uniform => |r| {
+                if (r >= used.len) return error.RegisterExhausted;
+                used[r] = true;
+            },
+            .pair => |rs| for (rs) |r| {
+                if (r >= used.len) return error.RegisterExhausted;
+                used[r] = true;
+            },
+        };
+
+        const word = self.userWords.get(name) orelse return error.UnknownWord;
+        const raw_body = try self.buildDsp2BodyLanesAlloc(word, lane_args);
+        defer self.fyalloc.free(raw_body);
+
+        const report = analyzeCode(raw_body);
+        if (report.local_branch_count != 0 or
+            report.bl_count != 0 or
+            report.blr_count != 0 or
+            report.ret_count != 0 or
+            report.push_count != 0 or
+            report.pop_count != 0)
+        {
+            return error.UnsupportedDsp2RawBody;
+        }
+
+        var code = compat.ArrayList(u32).init(self.fyalloc);
+        errdefer code.deinit();
+
+        // The same frame as compileDsp2RawRepeatedCaller. The body uses all
+        // of v8-v15, but only their low halves (d8-d15) are callee-saved.
+        try code.append(Asm.@"stp x29, x30, [sp, #0x10]!");
+        try code.append(Asm.@"mov x29, sp");
+        try code.append(Asm.@"stp x21, x22, [sp, #0x10]!");
+        try code.append(Asm.sub_sp_imm(64));
+        inline for (0..8) |i| {
+            try code.append(Asm.str_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
+        }
+        try code.append(Asm.@".rpush Xn"(23));
+        inline for (Dsp2.RAW_CALLEE_SAVED_X) |r| try code.append(Asm.@".rpush Xn"(r));
+
+        const slots_addr = @intFromPtr(slots);
+        for (Asm.movImm64(16, slots_addr)) |instr| try code.append(instr);
+        try code.append(Asm.ldr_x_imm(23, 16, 0));
+        for (used, 0..) |u, r| if (u) {
+            try code.append(Asm.ldr_x_imm(Dsp2.RAW_X_ARG_REGS[r], 16, @intCast(8 + r * 8)));
+        };
+
+        const loop_pos = code.items.len;
+        try code.appendSlice(raw_body);
+        if (stride != 0) for (lane_args[0].pair) |r| {
+            try code.append(Asm.add_imm(r, r, stride));
+        };
+        try code.append(Asm.@"subs Xn, Xn, #imm"(23, 1));
+        const bne_pos = code.items.len;
+        try code.append(Asm.@"b.cond offset"(Asm.COND_NE, @intCast(@as(isize, @intCast(loop_pos)) - @as(isize, @intCast(bne_pos)))));
+
+        comptime var k = Dsp2.RAW_CALLEE_SAVED_X.len;
+        inline while (k > 0) : (k -= 1) try code.append(Asm.@".rpop Xn"(Dsp2.RAW_CALLEE_SAVED_X[k - 1]));
+        try code.append(Asm.@".rpop Xn"(23));
+        inline for (0..8) |i| {
+            try code.append(Asm.ldr_d_imm(@intCast(8 + i), 31, @intCast(i * 8)));
+        }
+        try code.append(Asm.add_sp_imm(64));
+        try code.append(Asm.@"ldp x21, x22, [sp], #0x10");
+        try code.append(Asm.@"ldp x29, x30, [sp], #0x10");
+        try code.append(Asm.@"mov x0, #0");
+        try code.append(Asm.ret);
+
+        const wrapper_code = try code.toOwnedSlice();
+        const executable = self.image.link(wrapper_code);
+        self.fyalloc.free(wrapper_code);
+
+        const fun: *const fn () Value = @ptrCast(@alignCast(executable));
+        var n_args: usize = 0;
+        for (used, 0..) |u, r| if (u) {
+            n_args = r + 1;
+        };
+        return .{
+            .fy = self,
+            .entry = fun,
+            .slots = slots,
+            .arg_count = n_args,
         };
     }
 

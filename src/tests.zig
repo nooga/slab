@@ -1849,3 +1849,102 @@ test "dsp: spilling keeps more live values than registers" {
     // The body opens a spill frame: sub sp, sp, #n (0xd10003ff | n << 10).
     try std.testing.expect(std.mem.startsWith(u8, dis, "0000: d1"));
 }
+
+// Lane mode (Dsp2.Builder.emitLanes): a word run as two NEON lanes must
+// leave exactly what running it twice, once per channel, leaves.
+fn laneCheck(fy: *Fy, word: []const u8, n: usize) !void {
+    const Io = extern struct { in: f64, out: f64 };
+    var ios: [2][64]Io = undefined;
+    var ctxs = [2][1]f64{ .{0.0}, .{1.0} };
+    var st_scalar: [2][16]f64 = undefined;
+    var st_lanes: [2][16]f64 = undefined;
+    var params = [_]f64{ 0.3, 1.7 };
+    for (0..2) |c| {
+        for (0..n) |i| {
+            const t: f64 = @floatFromInt(i);
+            ios[c][i] = .{ .in = @sin(t * 0.37 + @as(f64, @floatFromInt(c))) * 1.3, .out = 0 };
+        }
+        for (0..16) |k| st_scalar[c][k] = if (k == 1) 0 else @as(f64, @floatFromInt(k + c)) * 0.125;
+    }
+    st_lanes = st_scalar;
+    var ios_lanes = ios;
+
+    var slots = Fy.Dsp2RawRepeatedSlots{};
+    var scalar = try fy.compileDsp2RawRepeatedCaller(word, &slots, &.{ .ptr, .ptr, .ptr, .ptr }, @sizeOf(Io), false);
+    for (0..2) |c| {
+        const args = [_]Fy.Dsp2RawArg{
+            .{ .ptr = @intFromPtr(&ios[c][0]) },
+            .{ .ptr = @intFromPtr(&ctxs[c][0]) },
+            .{ .ptr = @intFromPtr(&st_scalar[c][0]) },
+            .{ .ptr = @intFromPtr(&params[0]) },
+        };
+        _ = try scalar.call(n, &args);
+    }
+
+    var lslots = Fy.Dsp2RawRepeatedSlots{};
+    var lanes = try fy.compileDsp2RawLanesCaller(word, &lslots, &.{
+        .{ .pair = .{ 0, 1 } }, .{ .pair = .{ 2, 3 } }, .{ .pair = .{ 4, 5 } }, .{ .uniform = 6 },
+    }, @sizeOf(Io));
+    const largs = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&ios_lanes[0][0]) }, .{ .ptr = @intFromPtr(&ios_lanes[1][0]) },
+        .{ .ptr = @intFromPtr(&ctxs[0][0]) },      .{ .ptr = @intFromPtr(&ctxs[1][0]) },
+        .{ .ptr = @intFromPtr(&st_lanes[0][0]) },  .{ .ptr = @intFromPtr(&st_lanes[1][0]) },
+        .{ .ptr = @intFromPtr(&params[0]) },
+    };
+    _ = try lanes.call(n, &largs);
+
+    for (0..2) |c| {
+        for (0..n) |i| try std.testing.expectEqual(@as(u64, @bitCast(ios[c][i].out)), @as(u64, @bitCast(ios_lanes[c][i].out)));
+        for (0..16) |k| try std.testing.expectEqual(@as(u64, @bitCast(st_scalar[c][k])), @as(u64, @bitCast(st_lanes[c][k])));
+    }
+    // Not trivially equal: the channels differ.
+    try std.testing.expect(ios[0][n - 1].out != ios[1][n - 1].out);
+}
+
+test "dsp lanes: two channels in one NEON pass are bit-identical to two scalar passes" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+    _ = try fy.run(
+        \\ustruct: LIo f64 in f64 out ;
+        \\ustruct: LCtx f64 chan ;
+        \\ustruct: LSt f64 y f64 w f64 ring 8 f64 z ;
+        \\ustruct: LP f64 k f64 g ;
+        \\dsp: k-lane | io:LIo ctx:LCtx s:LSt p:LP -- |
+        \\  io.in ctx.chan 0.25 f* f+ | x |
+        \\  s.y  x s.y f-  p.k f*  f+ | y |
+        \\  y -> s.y
+        \\  s.ring& s.w f@i | old |
+        \\  y s.ring& s.w f!i
+        \\  s.w 1.0 f+ | w1 |
+        \\  w1 8.0  w1 0.0  fsel-lt -> s.w
+        \\  x fabs 1.0 f+ | ax |
+        \\  ax flog2i  ax fmant f+  x 3.0 f* fexp2i f+ | bits |
+        \\  x 0.0 f<  x 0.5 f>  or not mask>f | m |
+        \\  x x f* 1.0 f+ fsqrt | r |
+        \\  y old f+ bits f+ m f+  r f/  p.g f*  -2.0 fmax 2.0 fmin
+        \\  x fneg floor f+ -> io.out
+        \\  s.z x f+ -> s.z ;
+    );
+    try laneCheck(&fy, "k-lane", 64);
+}
+
+test "dsp lanes: a body that spills stays bit-identical" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+    // 40 values live across two reductions: more than the registers.
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(std.testing.allocator);
+    const a = std.testing.allocator;
+    try src.appendSlice(a, "ustruct: SIo f64 in f64 out ;\nustruct: SSt f64 acc f64 pad 15 ;\n");
+    try src.appendSlice(a, "dsp: k-spill | io:SIo ctx st:SSt p -- |\n  io.in st.acc f+ | x |\n");
+    for (0..40) |i| try src.print(a, "  x {d}.0 f* {d}.5 f+ | a{d} |\n", .{ i + 1, i, i });
+    try src.appendSlice(a, "  a0");
+    for (1..40) |i| try src.print(a, " a{d} f+", .{i});
+    try src.appendSlice(a, " | s1 |\n  a0");
+    for (1..40) |i| try src.print(a, " a{d} f* 0.5 f*", .{i});
+    try src.appendSlice(a, " s1 f+ -> io.out\n  s1 0.001 f* -> st.acc ;\n");
+    _ = try fy.run(src.items);
+    try laneCheck(&fy, "k-spill", 64);
+}

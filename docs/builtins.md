@@ -314,6 +314,21 @@ the original stack values still need to be cleaned up.
 These accessors are untagged and DSP-only. Use normal `struct:` for
 tagged fy heap/FFI structs and manifests.
 
+### Lane mode (host API)
+
+An embedder can run one `dsp:` word as two instances at once, one per
+lane of 2 × f64 NEON registers: `Fy.compileDsp2RawLanesCaller(name,
+slots, lane_args, stride)`. Each entry argument is either one register
+shared by both lanes (`.uniform`) or one register per lane (`.pair`).
+Arg 0 must be a pair, and both of its registers advance `stride` bytes
+per iteration.
+
+The results are bit-identical to calling the scalar word once per
+instance. The word must take pointers only, return nothing, store only
+through per-lane pointers, and not be a `call:` composition; otherwise
+the call fails with `error.LaneUnsupported`. Slab uses it for dual-mono
+effects: the left channel runs in lane 0, the right in lane 1.
+
 ## FFI
 
 | Word | Stack Effect | Description |
