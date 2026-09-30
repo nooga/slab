@@ -65,6 +65,8 @@ pub const Engine = struct {
     master_r: [MAX_BLOCK]f32 = undefined,
     master_fx_l: [MAX_BLOCK]f32 = undefined,
     master_fx_r: [MAX_BLOCK]f32 = undefined,
+    /// What the output does past full scale [MasterClip].
+    master_clip: MasterClip = .{},
 
     /// Routing (docs/23), double-buffered like track snapshots: the UI
     /// builds into the unpublished slot and flips; the audio thread holds
@@ -227,7 +229,7 @@ pub const Engine = struct {
             const direct = dropped == 0;
             const slice = if (direct) out[done * audio.CHANNELS ..][0 .. chunk * audio.CHANNELS] else scratch[0 .. chunk * audio.CHANNELS];
             self.renderChunk(slice, chunk, pos);
-            masterSoftClip(slice);
+            self.master_clip.apply(slice);
             if (!direct) {
                 const keep = slice[dropped * audio.CHANNELS ..];
                 @memcpy(out[done * audio.CHANNELS ..][0..keep.len], keep);
@@ -306,25 +308,21 @@ pub const Engine = struct {
             _ = self.transport.sample_pos.cmpxchgStrong(start_pos, pos, .monotonic, .monotonic);
         }
 
-        // Master output stage: linear pass-through up to ±0.7, then a smooth
-        // soft-knee saturator that asymptotes toward ±1.0. Internal mix is
-        // 32-bit float with effectively unlimited headroom, just like Live's
-        // master bus — this stage only kicks in when the sum gets hot, and
-        // replaces the device-level hard-clip that produced "deep-fried"
-        // output when many sources stacked.
+        // Master output stage [MasterClip]: the float mix has no headroom
+        // limit; this decides only what happens past full scale.
         const trace_audio = audioTraceEnabled();
         const trace_signal = signalProbeEnabled();
         const pre_clip_peak = if (trace_audio) peakInterleaved(out_slice) else 0;
         const pre_stats = if (trace_signal) signalStatsInterleaved(out_slice) else SignalStats{};
-        masterSoftClip(out_slice);
+        self.master_clip.apply(out_slice);
         const post_stats = if (trace_signal) signalStatsInterleaved(out_slice) else SignalStats{};
         if (trace_audio) {
             const post_clip_peak = peakInterleaved(out_slice);
             self.trace_counter +%= 1;
-            if (pre_clip_peak > KNEE or self.trace_counter % 256 == 0) {
+            if (pre_clip_peak > self.master_clip.knee or self.trace_counter % 256 == 0) {
                 std.debug.print(
                     "audio master frame={} playing={} pre={d:.3} post={d:.3} knee={d:.3}\n",
-                    .{ self.transport.samples(), playing, pre_clip_peak, post_clip_peak, KNEE },
+                    .{ self.transport.samples(), playing, pre_clip_peak, post_clip_peak, self.master_clip.knee },
                 );
             }
         }
@@ -763,7 +761,7 @@ pub const Engine = struct {
     /// Master bus post-processing: run the master Track's FX chain over the
     /// accumulated planar bus, apply the master fader, write interleaved to
     /// `out`, and update the master meter. With no master configured (or no
-    /// FX) it is fader/passthrough. The top-level masterSoftClip then runs
+    /// FX) it is fader/passthrough. The top-level master_clip then runs
     /// once over the whole device buffer.
     fn finishMaster(self: *Engine, out: []f32, frames: u32) void {
         const n: usize = frames;
@@ -808,28 +806,49 @@ pub const Engine = struct {
     }
 };
 
-// Soft-knee saturator. Linear inside ±KNEE so quiet/normal mixes are
-// bit-perfect; above KNEE it bends smoothly and asymptotes toward ±1.0
-// regardless of input magnitude. Curve is C¹-continuous at ±KNEE.
-//
-//   y = x                                 for |x| ≤ K
-//   y = sgn(x) · (K + (1-K)·t / (t + R))  for |x| > K, t = |x| - K
-//
-// R controls the knee shape; R = 1 - K gives a clean smooth transition.
-const KNEE: f32 = 0.7;
-const KNEE_R: f32 = 0.3; // 1 - KNEE
+/// The master output stage: the last thing before the device or the file.
+/// The mix itself is 32-bit float with no headroom limit; this only decides
+/// what happens past full scale.
+///
+///   .soft  linear inside ±knee, then bends smoothly toward ±1.0 whatever
+///          the input [C1 at the knee]:
+///            y = sgn(x) · (K + (1-K)·t / (t + (1-K))),  t = |x| - K
+///   .hard  clamp at ±1.0, what a converter does in other DAWs
+///   .off   raw float out [the device clamps; a WAV keeps the overs]
+///
+/// The knee used to be 0.7 (−3.1 dBFS). A memoryless curve that low
+/// compresses whatever rides on a loud sound: at a sum of 1.0 its slope is
+/// 0.25, so quieter tracks lost 12 dB wherever a hot one peaked. At 0.95
+/// (−0.45 dBFS) it is a safety net that leaves everything under full scale
+/// alone; the master meter's clip LED shows the overs.
+pub const MasterClip = struct {
+    mode: Mode = .soft,
+    knee: f32 = 0.95,
 
-inline fn softClip(x: f32) f32 {
-    const ax = @abs(x);
-    if (ax <= KNEE) return x;
-    const sign: f32 = if (x < 0) -1.0 else 1.0;
-    const over = ax - KNEE;
-    return sign * (KNEE + KNEE_R * (over / (over + KNEE_R)));
-}
+    pub const Mode = enum { off, soft, hard };
 
-fn masterSoftClip(buf: []f32) void {
-    for (buf) |*s| s.* = softClip(s.*);
-}
+    pub inline fn sample(self: MasterClip, x: f32) f32 {
+        return switch (self.mode) {
+            .off => x,
+            .hard => std.math.clamp(x, -1.0, 1.0),
+            .soft => soft(x, self.knee),
+        };
+    }
+
+    pub fn apply(self: MasterClip, buf: []f32) void {
+        if (self.mode == .off) return;
+        for (buf) |*s| s.* = self.sample(s.*);
+    }
+
+    inline fn soft(x: f32, k: f32) f32 {
+        const ax = @abs(x);
+        if (ax <= k) return x;
+        const r = 1.0 - k;
+        const sign: f32 = if (x < 0) -1.0 else 1.0;
+        const over = ax - k;
+        return sign * (k + r * (over / (over + r)));
+    }
+};
 
 fn audioTraceEnabled() bool {
     return std.c.getenv("SLAB_AUDIO_TRACE") != null;
@@ -1703,40 +1722,46 @@ test "mixAudioClips: missing source data is skipped" {
     for (l) |v| try testing.expectEqual(@as(f32, 0), v);
 }
 
-test "softClip: linear pass-through inside the knee" {
-    try testing.expectEqual(@as(f32, 0.0), softClip(0.0));
-    try testing.expectEqual(@as(f32, 0.5), softClip(0.5));
-    try testing.expectEqual(@as(f32, -0.5), softClip(-0.5));
-    try testing.expectEqual(@as(f32, KNEE), softClip(KNEE));
+test "MasterClip soft: linear pass-through inside the knee" {
+    const c = MasterClip{};
+    try testing.expectEqual(@as(f32, 0.0), c.sample(0.0));
+    try testing.expectEqual(@as(f32, 0.9), c.sample(0.9));
+    try testing.expectEqual(@as(f32, -0.9), c.sample(-0.9));
+    try testing.expectEqual(c.knee, c.sample(c.knee));
 }
 
-test "softClip: continuous at the knee" {
+test "MasterClip soft: continuous at the knee" {
+    const c = MasterClip{ .knee = 0.7 };
     const eps: f32 = 1e-6;
-    const below = softClip(KNEE - eps);
-    const above = softClip(KNEE + eps);
-    try testing.expect(@abs(below - above) < 1e-3);
+    try testing.expect(@abs(c.sample(0.7 - eps) - c.sample(0.7 + eps)) < 1e-3);
 }
 
-test "softClip: bounded in (-1, 1) for arbitrary input" {
-    const inputs = [_]f32{ 1.0, 1.5, 4.0, 100.0, -1.0, -1.5, -4.0, -100.0 };
-    for (inputs) |x| {
-        const y = softClip(x);
-        try testing.expect(y > -1.0);
-        try testing.expect(y < 1.0);
-        // sign preserved
-        if (x > 0) try testing.expect(y > 0);
-        if (x < 0) try testing.expect(y < 0);
+test "MasterClip soft: bounded in (-1, 1) and monotonic for any knee" {
+    for ([_]f32{ 0.5, 0.7, 0.95 }) |k| {
+        const c = MasterClip{ .knee = k };
+        for ([_]f32{ 1.0, 1.5, 4.0, 100.0, -1.0, -1.5, -4.0, -100.0 }) |x| {
+            const y = c.sample(x);
+            try testing.expect(y > -1.0 and y < 1.0);
+            try testing.expect((x > 0) == (y > 0));
+        }
+        var prev = c.sample(-10.0);
+        var x: f32 = -10.0;
+        while (x <= 10.0) : (x += 0.1) {
+            const y = c.sample(x);
+            try testing.expect(y >= prev);
+            prev = y;
+        }
     }
 }
 
-test "softClip: monotonic" {
-    var prev = softClip(-10.0);
-    var x: f32 = -10.0;
-    while (x <= 10.0) : (x += 0.1) {
-        const y = softClip(x);
-        try testing.expect(y >= prev);
-        prev = y;
-    }
+test "MasterClip hard clamps and off passes the overs" {
+    const hard = MasterClip{ .mode = .hard };
+    try testing.expectEqual(@as(f32, 1.0), hard.sample(3.0));
+    try testing.expectEqual(@as(f32, -1.0), hard.sample(-3.0));
+    try testing.expectEqual(@as(f32, 0.99), hard.sample(0.99));
+    var buf = [_]f32{ 2.0, -2.0, 0.5 };
+    (MasterClip{ .mode = .off }).apply(&buf);
+    try testing.expectEqualSlices(f32, &.{ 2.0, -2.0, 0.5 }, &buf);
 }
 
 test "faderGains follows volume and pan lanes unless overridden" {

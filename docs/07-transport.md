@@ -98,7 +98,8 @@ Topologically a DAG. Cycles via sends are rejected (send-to-a-return-that-sends-
 > **Status (implemented):** the **master bus** exists. Audio tracks
 > accumulate (post-fader) into a planar master bus on the `Engine`
 > struct; the master Track's effect chain processes the sum, the master
-> fader is applied, then the interleaved write + soft-clip. The master is
+> fader is applied, then the interleaved write + the output stage
+> (`MasterClip`: soft past ±0.95 by default, or hard, or off). The master is
 > a standalone `Track` (`kind = .master`) outside the `tracks` array — a
 > silent instrument with an effects-only chain, its `volume()` the master
 > fader and `meter()` the master meter. It is edited via the machine bay

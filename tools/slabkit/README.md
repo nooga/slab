@@ -23,7 +23,7 @@ drums = song.track("KIT", "drum2", "gated-snare-kit", volume=1.0,
                    params=dict(snare_decay=0.26),    # prefix optional, _ for -
                    fx=[fx("comp2", "dry-drum-punch"), fx("verb2", "bright-plate", mix=0.2)])
 keys = song.track("KEYS", "fm86", "e-piano-1", volume=0.32, pan=-0.25)
-song.master(fx=[fx("comp2", "gentle-bus-glue"), fx("limiter2", gain=3, ceil=-3.2)])
+song.master(fx=[fx("comp2", "gentle-bus-glue"), fx("limiter2", gain=3, ceil=-1)])
 
 c = drums.clip(chorus)                               # whole section; or bars=, at_bar=
 c.drums({"kick": "x.....x.x.....x.", "snare": "....x..o....x..."}, bars=7)

@@ -129,11 +129,13 @@ balance → **master soft-clip** → output. Routing that isn't a bus, is
 duplicated or closes a loop is dropped on load with a warning
 ([23-routing.md](23-routing.md) §Semantics).
 
-The master soft-clip is linear up to ±0.7 (−3.1 dBFS) and bends
-smoothly toward ±1.0 above that (`src/engine.zig`, `masterSoftClip`).
-Nothing clips hard, but anything peaking above −3.1 dBFS is being
-saturated. A limiter on the master with its ceiling at −3.2 dB keeps
-the output clean.
+The master soft-clip is linear up to ±0.95 (−0.45 dBFS) and bends
+smoothly toward ±1.0 above that (`src/engine.zig`, `MasterClip`; the
+mode, soft, hard or off, and the knee are engine fields). It is a safety
+net: everything under full scale passes untouched. A limiter on the
+master with its ceiling at −0.5 dB keeps the output clean. (Until
+2026-09-30 the knee sat at 0.7, −3.1 dBFS, where the memoryless curve
+compressed quiet tracks under any loud one.)
 
 ### Automation
 

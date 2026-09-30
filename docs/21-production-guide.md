@@ -241,7 +241,8 @@ env amount, `age` (analog drift on juno2, cream and profit5) and level.
 ### Gain structure in Slab
 
 - Machines have headroom and nothing clips inside the mix. The only
-  nonlinearity is the **master soft-clip above −3.1 dBFS**.
+  nonlinearity is the **master soft-clip above −0.45 dBFS**, a safety
+  net; the master meter's clip LED lights at 0 dBFS.
 - Track `volume` is linear gain: 0.5 ≈ −6 dB, 0.25 ≈ −12 dB, 1.25 max.
   Pan is equal-power, so centred tracks are 3 dB down per side.
 - Balance first with `volume`. Use instrument `level` params only when
@@ -398,12 +399,13 @@ collapse in mono.
 ### The master
 
 ```
-eq2 (hpf 25 Hz, gentle air shelf) → comp2 gentle-bus-glue → limiter2 (ceil −3.2, gain to taste)
+eq2 (hpf 25 Hz, gentle air shelf) → comp2 gentle-bus-glue → limiter2 (ceil −1, gain to taste)
 ```
 
-- **Limiter ceiling at −3.2 dB** keeps the output below the soft-clip
-  knee. Higher ceilings are fine if you want the knee as glue, but
-  watch "% of samples past knee" in the report.
+- **Limiter ceiling at −1 dB** keeps the output below the soft-clip
+  knee (−0.45 dBFS) with room for inter-sample peaks. Existing songs
+  that use −3.2 were written for the old −3.1 dBFS knee; they still work,
+  2 dB quieter than they could be.
 - **Limiter gain**: raise it until the integrated loudness reaches the
   target, then stop.
 
@@ -451,7 +453,7 @@ Report flags and what to do:
 | low end over 72% | bass or kick too loud, or pads not high-passed |
 | a lot of top end | hats or noise too loud; bright presets; ease the master air shelf |
 | crest under 8 dB | too much limiting or compression; lower limiter gain or comp ratio |
-| samples past the knee | limiter ceiling at −3.2, or turn the master down |
+| samples past the knee | limiter ceiling at −1, or turn the master down |
 | sections differ under 2 LU | arrangement too static: drop parts in verses and the bridge, add parts in choruses |
 
 ## 9. From listening notes to changes

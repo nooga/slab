@@ -10,9 +10,9 @@ import wave
 
 import numpy as np
 
-# Slab's master output stage is linear to ±0.7 and soft-clips above
-# (src/engine.zig masterSoftClip). Samples past this are being bent.
-KNEE = 0.7
+# Slab's master output stage is linear to ±0.95 and soft-clips above
+# (src/engine.zig MasterClip, the default). Samples past this are being bent.
+KNEE = 0.95
 
 BANDS = [("sub", 20, 60), ("low", 60, 250), ("lowmid", 250, 1000),
          ("mid", 1000, 4000), ("high", 4000, 10000), ("air", 10000, 20000)]
@@ -162,8 +162,8 @@ def advice(s):
     elif s["lufs"] < -16:
         out.append(f"quiet ({s['lufs']:.1f} LUFS): raise the master limiter gain toward -10..-12 LUFS")
     if s["knee_frac"] > 0.01:
-        out.append(f"{100 * s['knee_frac']:.1f}% of samples are past the master soft-clip knee (-3.1 dBFS): "
-                   "set limiter CEIL to -3.2 dB, or accept it as saturation")
+        out.append(f"{100 * s['knee_frac']:.1f}% of samples are past the master soft-clip knee (-0.45 dBFS): "
+                   "set limiter CEIL to -0.5 dB, or accept it as saturation")
     if s["crest_db"] < 8:
         out.append(f"crest factor {s['crest_db']:.1f} dB: dense/over-compressed; transients are flattened")
     b = s["bands"]
