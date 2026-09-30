@@ -72,6 +72,7 @@ const usage_text =
     \\  --check | --record    compare with / write bench/golden/<machine>.txt
     \\  --no-sheets           skip PNGs (fast golden checks)
     \\  --no-neon             dual-mono effects in two scalar passes
+    \\  --no-branches         if-convert every dsp ifte (both arms run)
     \\  --out=DIR             output root (default scratch/bench)
     \\  --input=FILE.wav      effects: run only the `file` case on this audio
     \\
@@ -105,6 +106,8 @@ pub fn main(init: std.process.Init) !void {
             cli.golden = .record;
         } else if (std.mem.eql(u8, a, "--no-neon")) {
             raw.neon_lanes = false;
+        } else if (std.mem.eql(u8, a, "--no-branches")) {
+            raw.dsp_versioning = false;
         } else if (std.mem.eql(u8, a, "--no-sheets")) {
             cli.no_sheets = true;
         } else if (std.mem.eql(u8, a, "-p")) {

@@ -48,6 +48,10 @@ const RawCaller = Fy.Dsp2RawRepeatedCaller;
 /// samples as two scalar passes, at about half the arithmetic. Off (or a
 /// word lane mode can't take) renders the two passes. `--no-neon`.
 pub var neon_lanes: bool = true;
+/// A dsp `ifte` whose mask comes from params picks one of several compiled
+/// bodies per block, so the untaken arm costs nothing (docs/05 §Branching).
+/// Off: every `ifte` if-converts, both arms computed. `--no-branches`.
+pub var dsp_versioning: bool = true;
 const RawSlots = Fy.Dsp2RawRepeatedSlots;
 
 pub const Mode = machine_desc.Mode;
@@ -288,6 +292,7 @@ pub const FyRawMachine = struct {
         const host = try alloc.create(FyHost);
         errdefer alloc.destroy(host);
         host.* = FyHost.init(alloc);
+        host.fy.dsp2_versioning = dsp_versioning;
         errdefer host.deinit();
 
         try host.compileFile(path);
@@ -750,9 +755,9 @@ pub const FyRawMachine = struct {
         if (self.desc.deriveWord()) |w| self.derive_caller = try self.compileEntry(w, &self.derive_slots, false);
         self.render_caller = try self.compileEntry(self.desc.renderWord(), &self.render_slots, true);
         if (self.desc.renderLiteWord()) |w| self.render_lite_caller = try self.compileEntry(w, &self.render_lite_slots, true);
-        // Voices pair up whatever their output; effects need one pass per
-        // channel to pair (a stereo effect already runs once).
-        if (self.desc.mode == .voice_sample or !self.desc.stereo) {
+        // Poly voices pair up whatever their output; effects need one pass
+        // per channel to pair (a stereo effect already runs once).
+        if (if (self.desc.mode == .voice_sample) self.desc.voices > 1 else !self.desc.stereo) {
             self.render_lanes_caller = self.compileLanes(self.desc.renderWord(), &self.render_lanes_slots);
             if (self.desc.renderLiteWord()) |w| self.render_lite_lanes_caller = self.compileLanes(w, &self.render_lite_lanes_slots);
         }

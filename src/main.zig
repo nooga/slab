@@ -378,6 +378,8 @@ fn applyPresetTo(t: *track_mod.Track, preset_idx: u16) void {
 /// out.json` dumps every machine's params (docs/19). `--no-idle-skip`
 /// renders every machine every block (docs/04 §Idle skipping). `--no-neon`
 /// renders dual-mono effects in two scalar passes (docs/05 §Lane mode).
+/// `--no-branches` computes both arms of every dsp `ifte` (docs/05
+/// §Branching).
 const Cli = struct {
     project: ?[]const u8 = null,
     render: ?[]const u8 = null,
@@ -403,6 +405,8 @@ pub fn main(init: std.process.Init) !void {
                 cli.idle_skip = false;
             } else if (std.mem.eql(u8, a, "--no-neon")) {
                 @import("machines/fy_raw_machine.zig").neon_lanes = false;
+            } else if (std.mem.eql(u8, a, "--no-branches")) {
+                @import("machines/fy_raw_machine.zig").dsp_versioning = false;
             } else cli.project = a;
         }
     }
