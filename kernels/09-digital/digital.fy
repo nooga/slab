@@ -46,10 +46,9 @@ dsp: mulaw-quantize | x step -- q |
 
 ( x step mode -- q : 0 ROUND, 1 TRUNC, 2 MU-LAW. )
 dsp: quantize-mode | x step mode -- q |
-  mode 0.5  x step quantize-round
-  mode 1.5  x step quantize-trunc
-            x step mulaw-quantize
-  fsel-lt fsel-lt
+  ( a switch: only the chosen quantizer runs )
+  mode 0.5 f<  [ x step quantize-round ]
+  [ mode 1.5 f<  [ x step quantize-trunc ]  [ x step mulaw-quantize ]  ifte ]  ifte
 ;
 
 ( x3 x2 x1 x0 t -- y : 4-point, 3rd-order Hermite between x2 and x1,

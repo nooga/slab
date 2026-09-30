@@ -362,7 +362,8 @@ dsp: k-sampler-voice | out:Io ctx state:SamplerState params:SamplerParams -- |
   params.pool& p@64 | buf |
   state.ph | ph |
   ph state.end f< mask>f | alive |
-  params.engine 0.5  buf ph smp-hermite  state buf params smp-clock  fsel-lt | x |
+  ( ENGINE is a mode: CLEAN reads the zone, the others run its clock )
+  params.engine 0.5 f<  [ buf ph smp-hermite ]  [ state buf params smp-clock ]  ifte | x |
   state.f1& state.f2& x state.fg BW-D1 tpt-svf-lp-step | a |
   state.f3& state.f4& a state.fg params.fd2 tpt-svf-lp-step | y |
   ( advance: wrap inside the loop, else park at the end )

@@ -154,8 +154,8 @@ dsp: ms20-voice-note-off
 ;
 
 ( VCO1 with waveform select (tri/saw/pulse), octave scaled, phase advanced.
-  The three candidates are computed and picked - no branches. pmod is the
-  frequency multiplier from MG/EG routing, pw the effective pulse width. )
+  WAVE is a switch: only its wave is computed. pmod is the frequency
+  multiplier from MG/EG routing, pw the effective pulse width. )
 dsp: v-vco1 | state:Ms20VoiceState params:Ms20VoiceParams pmod pw -- y |
   state.phase1
   params.note-hz  params.vco-octave  params.inv-sample-rate
@@ -164,11 +164,11 @@ dsp: v-vco1 | state:Ms20VoiceState params:Ms20VoiceParams pmod pw -- y |
   | phase dt |
   phase dt phase-advance01
   -> state.phase1
-  params.vco1-wave
-  phase tri-raw
-  phase dt params.curve1 vco-saw fneg
-  phase dt pw pulse-polyblep
-  wave-sel3
+  params.vco1-wave 0.5 f<
+  [ phase tri-raw ]
+  [ params.vco1-wave 1.5 f<
+    [ phase dt params.curve1 vco-saw fneg ]
+    [ phase dt pw pulse-polyblep ]  ifte ]  ifte
 ;
 
 ( VCO2 with waveform select (saw/square/pulse/ring), detuned and
@@ -182,18 +182,15 @@ dsp: v-vco2 | state:Ms20VoiceState params:Ms20VoiceParams pmod pw -- y |
   phase dt phase-advance01
   -> state.phase2
   phase dt 0.5 pulse-polyblep | sq |
-  params.vco2-wave 2.5
-    params.vco2-wave
-    phase dt params.curve2 vco-saw fneg
-    sq
-    phase dt pw pulse-polyblep
-    wave-sel3
+  params.vco2-wave 2.5 f<
+  [ params.vco2-wave 0.5 f<
+    [ phase dt params.curve2 vco-saw fneg ]
+    [ params.vco2-wave 1.5 f<  [ sq ]  [ phase dt pw pulse-polyblep ]  ifte ]  ifte ]
   ( RING: VCO1's pulse at PW times VCO2's square, sign flipped - the XOR )
-    state.phase1
+  [ state.phase1
       params.note-hz params.vco-octave f* params.inv-sample-rate f* pmod f*
       pw pulse-polyblep
-    sq f* -1.0 f*
-  fsel-lt
+    sq f* -1.0 f* ]  ifte
 ;
 
 ( Float-LCG white-ish noise in -1..1, advancing the rng state. )

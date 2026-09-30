@@ -66,9 +66,12 @@ dsp: era-block-prepare | ctx:Ctx state params:EraParams -- |
 dsp: k-era-tick | out:Io ctx state:EraState params:EraParams -- |
   out.in-l | dry |
   dry params.in-lin f* | x |
-  state.aa1& state.aa2& x params.aa-g BW-D1 tpt-svf-lp-step | a |
-  state.aa3& state.aa4& a params.aa-g BW-D2 tpt-svf-lp-step | aa |
-  params.aa 0.5  x  aa  fsel-lt  -1.0 1.0 fclamp | xin |
+  ( AA is a switch: off, its filter doesn't run and rests at zero )
+  params.aa 0.5 f<
+  [ 0.0 -> state.aa1  0.0 -> state.aa2  0.0 -> state.aa3  0.0 -> state.aa4  x ]
+  [ state.aa1& state.aa2& x params.aa-g BW-D1 tpt-svf-lp-step | a |
+    state.aa3& state.aa4& a params.aa-g BW-D2 tpt-svf-lp-step ]  ifte
+  -1.0 1.0 fclamp | xin |
   state.zoh& xin params.dt params.step params.mode zoh-tick | h |
   state.rc1& state.rc2& h params.rc-g BW-D1 tpt-svf-lp-step | r |
   state.rc3& state.rc4& r params.rc-g params.rc-d tpt-svf-lp-step | y |

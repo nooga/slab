@@ -604,43 +604,88 @@ See [09-hot-reload.md](09-hot-reload.md) for the full story.
 - SIMD horizontal reductions (e.g. summing 4 lanes). Available
   instructions but no clean combinator yet.
 
-## Branching (proposal, 2026-09-30)
+## Branching (implemented, 2026-09-30)
 
-Every `dsp:` body is one straight-line value graph per sample: no
-jumps, and `select` evaluates both sides. So a kernel with modes pays for
-every mode. sat2's shaper computes the VALVE and FOLD curves in all eight
-modes and multiplies the unused ones by 0: 40% of its cost. The render
-hooks (`render-lite!`) paper over that one case at a time.
-
-Proposed syntax, Forth-style, with the quotes `times` already parses:
+A `dsp:` body is one straight-line value graph per sample, with no jumps,
+and `select` evaluates both of its sides. Before branching, a kernel with
+modes paid for every mode. sat2's shaper computed the VALVE and FOLD
+curves in all eight modes and multiplied the unused ones by 0.
 
 ```forth
-params.valve 0.0 f=  [ y ]  [ uh valve-curve … blend ]  ifte
+params.mode 1.0 f=  [ x 2.0 f* ]  [ x x f* ]  ifte
 ```
 
-`mask [ then ] [ else ] ifte`. Both arms must leave the same stack
-effect. How it compiles depends on what the mask depends on:
+`mask [ then ] [ else ] ifte` takes a mask (a compare, `and`/`or`/`not`)
+and two quotes that leave the same stack depth. fy lowers it one of two
+ways (`Dsp2.Program.buildVariants`):
 
-- **Uniform:** it comes only from params, ctx, constants and `::`
-  (nothing a per-sample store changes). The compiler builds the body
-  once per outcome, taking each branch as if it were straight-line code.
-  With k such branches that is 2^k bodies, capped at maybe 16. The
-  wrapper evaluates the masks once per block from the params and jumps
-  to the matching sample loop. The untaken arm costs nothing, the loop
-  has no branch in it, and each variant is ordinary dsp code, so lane
-  mode and bit-exactness carry over unchanged. This covers modes,
-  switches and "SAG is 0", and it replaces `render-lite!`.
-- **Varying:** the mask depends on the signal or state. The compiler
-  if-converts: both arms are built into the graph and every value and
-  store they differ in goes through `select`. That's correct and
-  bit-identical to a branch, but it saves nothing, same as today, and
-  the compiler reports it so the author knows. A real per-sample jump
-  would need control flow in the register allocator: registers merged
-  at the join, and stores that are currently deferred to the end of the
-  body emitted inside the arms. In lane mode it would need both lanes to
-  agree or it would fall back to masking. That's possible later, but
-  what DSP code branches on is almost always a per-block setting.
+- **Versioned.** The mask is loop-invariant. It is built only from
+  constants and loads of fields that no store in the body touches (an
+  `f!i` store rules out its whole struct), through entry args the sample
+  loop doesn't advance (io does advance). In practice that means params,
+  ctx and fields the kernel only reads.
+  - Each versioned `ifte` splits the word into one straight-line body per
+    path of arms.
+  - The repeated caller's wrapper evaluates the masks once per call, from
+    the params as they stand, and jumps to the matching loop.
+  - The untaken arm costs nothing, and the loop has no branch in it.
+  - The same test in every inlined copy of a word, or in each `times`
+    copy, is one decision (compared structurally), so a shaper inlined
+    five times makes 3 bodies, not 3^5.
+  - Past `MAX_VARIANTS` (32) bodies, the later `ifte`s if-convert.
+- **If-converted.** Any other mask depends on the signal or on state the
+  body writes.
+  - Both arms are built from the same state, and every stack slot and
+    stored field they leave different meets in a `select`. A field only
+    one arm stores keeps its old value in the other.
+  - The result is correct and bit-identical to a real branch, but it
+    saves nothing.
+  - An `f!i` store inside a converted arm is refused, because its address
+    isn't known.
+  - A direct call or an inlined stage (one body that must run anywhere)
+    if-converts everything.
 
-The per-block choice fits how params change: the host writes params
-between blocks, and knob glides re-sync them every 32 samples. So a
-branch on a uniform mask sees one value per block or sub-block.
+A NaN mask takes the else arm either way. In lane mode (§Lane mode), a
+mask the two lanes can disagree on, such as `ctx.chan`, if-converts, and
+the other masks version as usual.
+
+**The toggle.** `Fy.dsp2_versioning`, set from
+`fy_raw_machine.dsp_versioning`. `slab --no-branches` and `zig build bench
+-- --no-branches` if-convert every `ifte`, for A/B checks. With
+`--no-branches --no-neon --no-idle-skip` the sweat_geometry window
+renders bit-identical to the engine before any of this work.
+
+**Stateful arms.** A stage that holds state (a filter) stops updating
+while its arm isn't taken, where it used to keep tracking the input
+unused. At a fixed setting the output is bit-identical to before. It can
+differ only after the switch flips. So a switchable stage either:
+- holds its state (Profit-5's filters, the sampler's clock: a mode
+  change is rare, and holding is what a real switch does), or
+- zeroes it in the other arm, so it comes back from rest (funk's MS-20
+  below FUNK 0.75, the comp detector's HPF, era's anti-alias filter).
+
+Where it's applied. Every case is bit-identical to the previous kernel,
+checked setting by setting (bench, NEON on and off). Measured in ns per
+sample, before → after:
+
+| machine | where | ns/sample |
+|---|---|---|
+| sat2 | SAG at 0 (no rest-point shaper); only the mode's curve (valve, fold, tanh/algebraic knee) | 311 → 170 with SAG, 307 → 169 FOLD, 172 → 160 plain; `render-lite!` retired |
+| Profit-5 | FILTER TYPE: one filter and its coefficients; OSC switches PULSE/TRI | 873 → 729 P5, 893 → 550 OB (chord) |
+| funk | MS-20 stage below FUNK 0.75 | 610 → 345 |
+| cream | waveform switches (12 calls a sample) | 636 → 558 |
+| comp2, bus2, char2 | detector HPF off, RMS sqrt only in RMS | 34 → 26, 37 → 27, 157 → 136 |
+| era | anti-alias off; one quantizer | 95 → 42 |
+| sampler | CLEAN engine; one quantizer (digital.fy) | 129 → 48 CLEAN, 130 → 65 CMI |
+| unfairlight | vibrato at depth 0 | 83 → 57 |
+| ms20 | VCO waveform switches | 307 → 278 |
+| juno2 | PULSE off, SUB at 0 (scalar path) | 344 → 287 |
+| verb2 | no gate in PLATE | 99 → 92 |
+
+On the sweat_geometry window: 4.79 s → 3.95 s.
+
+Not done:
+- eq2's bands at 0 dB. Their gains are automated through 0, and a
+  frozen biquad would click.
+- The other `render-lite!` words (bus2, char2, fm86, funk, multi2). An
+  `ifte` would only make them simpler, not faster.

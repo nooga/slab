@@ -210,8 +210,13 @@ dsp: funk-svf | s:FunkSvf x g k -- lp bp hp |
 dsp: funk-sub | c:FunkChan p:FunkParams x g ref iref -- y |
   c.svf& x g p.k funk-svf | lp bp hp |
   lp p.wl f*  bp p.wb f* f+  hp p.wh f* f+ | y1 |
-  c.ms& p.pr&  x iref f* FUNK-MS-IN f*  g  ms20-lpf-step  ref f* FUNK-MS-OUT f* | y2 |
-  y1  y2 y1 f-  p.w3 f*  f+
+  ( the MS-20's share is 0 below FUNK 0.75: it doesn't run there, and
+    rests at zero so it fades in from rest, not from a stale state )
+  p.w3 0.0 f=
+  [ c.ms& | m:Ms20Lpf |  0.0 -> m.ic1  0.0 -> m.ic2  0.0 -> m.fb-dc  0.0 -> m.out-dc
+    y1 ]
+  [ c.ms& p.pr&  x iref f* FUNK-MS-IN f*  g  ms20-lpf-step  ref f* FUNK-MS-OUT f* | y2 |
+    y1  y2 y1 f-  p.w3 f*  f+ ]  ifte
 ;
 
 ( c p x g ref iref -- y : one channel, 1x in and out. )

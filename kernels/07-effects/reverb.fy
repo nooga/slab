@@ -327,9 +327,9 @@ dsp: verb-out | out state:VerbState params:VerbParams buf x key -- |
   buf 37816.0 state.a-d2-pos params.a-d2-len
     state.tap-7 vb-tap f-
   0.6 f* | wet0 |
-  state params key verb-gate | gg |
-  ( plate mode leaves the wet path untouched, bit for bit )
-  params.mode 0.5 wet0 wet0 gg f* fsel-lt | wet |
+  ( plate mode leaves the wet path untouched, bit for bit, and runs no
+    gate )
+  params.mode 0.5 f<  [ wet0 ]  [ state params key verb-gate | gg |  wet0 gg f* ]  ifte | wet |
   x  1.0 params.mix f-  f*
   wet params.mix f*  f+
   out f!64

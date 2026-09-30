@@ -173,12 +173,14 @@ dsp: jn-dco | ctx:Ctx state:JunoState params:JunoParams lfo env -- osc |
       0.5  params.pwm 0.45 f* env f*  f-
     fsel-lt
   fsel-lt | width |
+  ( a wave switched off or a SUB at 0 isn't computed; the sub's phase
+    runs on either way )
   phs dt saw-falling-polyblep params.saw-on f*
-  phs dt width pulse-polyblep params.pulse-on f* f+
+  params.pulse-on 0.0 f=  [ 0.0 ]  [ phs dt width pulse-polyblep params.pulse-on f* ]  ifte f+
   ( sub: blep square at half rate )
   state.sub-phase dt 0.5 f* phase-advance01 | sph |
   sph -> state.sub-phase
-  sph  dt 0.5 f*  0.5 pulse-polyblep params.sub-level f* f+
+  params.sub-level 0.0 f=  [ 0.0 ]  [ sph  dt 0.5 f*  0.5 pulse-polyblep params.sub-level f* ]  ifte f+
   ( noise: float LCG )
   state.noise-rng 1103515245.0 f* 0.31337 f+ ffrac | rng |
   rng -> state.noise-rng

@@ -233,9 +233,10 @@ dsp: p5-osc | state:P5State params:P5Params dta dtb fterm pwa pwb nz -- x |
   qb wrap01 | pb |
   pb -> state.phb
   1.0 qb f<= | wrapped |
+  ( the switches are 0 or 1: a wave switched off isn't computed )
   pb dtb state.curve-b vco-saw params.saw-b f*
-  pb tri-raw params.tri-b f* f+
-  pb dtb pwb pulse-polyblep params.pul-b f* f+ | b |
+  params.tri-b 0.0 f=  [ 0.0 ]  [ pb tri-raw params.tri-b f* ]  ifte f+
+  params.pul-b 0.0 f=  [ 0.0 ]  [ pb dtb pwb pulse-polyblep params.pul-b f* ]  ifte f+ | b |
   b -> state.bsum
   fterm  b params.pm-oscb f*  f+ | pm |
   dta  pm params.pm-freq f* exp2  f*  params.pm-norm f* | da |
@@ -245,7 +246,7 @@ dsp: p5-osc | state:P5State params:P5Params dta dtb fterm pwa pwb nz -- x |
   pa -> state.pha
   pwa  pm params.pm-pw f*  f+  0.02 0.98 fclamp | wa |
   pa da state.curve-a vco-saw params.saw-a f*
-  pa da wa pulse-polyblep params.pul-a f* f+
+  params.pul-a 0.0 f=  [ 0.0 ]  [ pa da wa pulse-polyblep params.pul-a f* ]  ifte f+
   params.lvl-a f*
   b params.lvl-b f* f+
   nz params.lvl-n f* f+
@@ -258,9 +259,10 @@ dsp: p5-filt | state:P5State params:P5Params x extra dmul g k sg sd -- y |
   x -> state.dro-x
   xd -> state.dro-y
   xd extra f+  params.lad-in dmul f* f* | xin |
-  state.ota& xin g k params.hp-a ota-step | yo |
-  state.sem& xin sg sd params.lpw params.hpw params.bpw sem-step | ys |
-  params.is-ob 0.5  yo  ys params.ob-comp f*  fsel-lt
+  ( FILTER is a mode: only its filter runs; the other holds its state )
+  params.is-ob 0.5 f<
+  [ state.ota& xin g k params.hp-a ota-step ]
+  [ state.sem& xin sg sd params.lpw params.hpw params.bpw sem-step params.ob-comp f* ]  ifte
 ;
 
 ( io ctx state params -- : one output sample. )
@@ -308,8 +310,9 @@ dsp: k-p5-voice | io ctx state:P5State params:P5Params -- |
   hv -0.7 f*  f+
   exp2 params.cutoff f* state.cut-spread f* | fc |
   ( x1.08: RES 1 oscillates at every cutoff, like a Prophet at full )
-  fc params.osr2 params.res 1.08 f* ota-coeffs | g k |
-  fc params.osr2 params.res sem-coeffs | sg sd |
+  params.is-ob 0.5 f<
+  [ fc params.osr2 params.res 1.08 f* ota-coeffs  0.0 0.0 ]
+  [ 0.0 0.0  fc params.osr2 params.res sem-coeffs ]  ifte | g k sg sd |
   ( into the filter: FEEDBACK from the last output, the heat's bias and
     the envelope's bleed )
   state.y-prev params.fb-g f* | fbx |

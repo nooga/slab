@@ -216,11 +216,13 @@ dsp: cream-note-off | ctx state:CreamState params:CreamParams -- |
 ( wave phase dt curve -- y : 0 tri 1 saw 2 square 3 wide 4 narrow
   pulse; curve bows the saw. )
 dsp: cr-wave | w ph dt cv -- y |
-  w 2.5  0.5  w 3.5  0.7  0.88  fsel-lt  fsel-lt | width |
-  w 0.5
-    ph tri-raw
-    w 1.5  ph dt cv vco-saw  ph dt width pulse-polyblep  fsel-lt
-  fsel-lt
+  ( a switch: only the chosen wave is computed )
+  w 0.5 f<
+  [ ph tri-raw ]
+  [ w 1.5 f<
+    [ ph dt cv vco-saw ]
+    [ w 2.5  0.5  w 3.5  0.7  0.88  fsel-lt  fsel-lt | width |
+      ph dt width pulse-polyblep ]  ifte ]  ifte
 ;
 
 ( one 4x substep: OSC 1 leads; OSC 2 restarts when OSC 1 wraps if SYNC
@@ -248,7 +250,8 @@ dsp: cr-sub | state:CreamState params:CreamParams dt1 dt2 dt3 nz g k fbx extra -
   p3 -> state.ph3
   params.wave1 p1 dt1 params.curve1 cr-wave params.lvl1 f*
   params.wave2 p2 dt2 params.curve2 cr-wave params.lvl2 f* f+
-  params.osc3-mode 0.5  p3 dt3 0.5 pulse-polyblep  params.wave3 p3 dt3 params.curve3 cr-wave  fsel-lt
+  params.osc3-mode 0.5 f<
+    [ p3 dt3 0.5 pulse-polyblep ]  [ params.wave3 p3 dt3 params.curve3 cr-wave ]  ifte
     params.lvl3 f* f+
   nz params.noise f* f+
   fbx f+ | m |

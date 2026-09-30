@@ -125,11 +125,13 @@ dsp: comp-hp-step | s1p s2p x g -- hp |
 ( The detector level: the louder sidechain channel, high-passed when
   the filter is on, peak or RMS. )
 dsp: comp-detect | io:Io state:CompState params:CompParams -- lvl |
-  state.hl1& state.hl2& io.sc-l params.hpf-g comp-hp-step | fl |
-  state.hr1& state.hr2& io.sc-r params.hpf-g comp-hp-step | fr |
-  io.sc-l fabs io.sc-r fabs fmax | raw |
-  fl fabs fr fabs fmax | filt |
-  params.hpf-on 0.5 raw filt fsel-lt | x |
+  ( the HPF is a switch: off, it doesn't run and rests at zero )
+  params.hpf-on 0.5 f<
+  [ 0.0 -> state.hl1  0.0 -> state.hl2  0.0 -> state.hr1  0.0 -> state.hr2
+    io.sc-l fabs io.sc-r fabs fmax ]
+  [ state.hl1& state.hl2& io.sc-l params.hpf-g comp-hp-step | fl |
+    state.hr1& state.hr2& io.sc-r params.hpf-g comp-hp-step | fr |
+    fl fabs fr fabs fmax ]  ifte | x |
   ( instant up, a short decay: a steady tone reads as its peak, not
     as a level that dips to zero every half-cycle )
   x  state.pk params.pk-c f*  fmax | pk |
@@ -137,8 +139,7 @@ dsp: comp-detect | io:Io state:CompState params:CompParams -- lvl |
   x x f* | p2 |
   p2  state.ms p2 f-  params.rms-c f*  f+ | ms |
   ms -> state.ms
-  ms 2.0 f* fsqrt | rms |
-  params.det 0.5 pk rms fsel-lt | lvl |
+  params.det 0.5 f<  [ pk ]  [ ms 2.0 f* fsqrt ]  ifte | lvl |
   lvl -> state.lvl
   lvl
 ;

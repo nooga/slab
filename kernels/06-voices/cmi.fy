@@ -222,7 +222,8 @@ dsp: k-cmi-voice | out:Io ctx state:CmiState params:CmiParams -- |
   ( advance: segment loop, else park at the end )
   state.vph params.vib-rate params.inv-sr f* f+ ffrac | vp |
   vp -> state.vph
-  vp sin2pi params.vib-depth f* 0.08333333333333333 f* exp2 | vm |
+  params.vib-depth 0.0 f=  [ 1.0 ]
+  [ vp sin2pi params.vib-depth f* 0.08333333333333333 f* exp2 ]  ifte | vm |
   ph state.inc vm f* f+ | p2 |
   state.loop-on 0.5 f>  p2 state.le f>=  and | wrap |
   wrap  p2 state.le state.ls f- f-  p2  select  state.end fmin -> state.ph

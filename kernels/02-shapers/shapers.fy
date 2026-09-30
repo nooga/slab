@@ -50,26 +50,22 @@ dsp: shape-raw | x sh:Shape -- y |
   x x f* | x2 |
   x sh.bias f+  x2  1.0 x2 f+ f/  sh.even f*  f+ | u0 |
   u0 0.0  u0 sh.neg f*  u0  fsel-lt | u |
-  u sh.hard f* tanh-fast  sh.hard f/  sh.knee f*
-  u  1.0 u u f* f+ fsqrt  f/  1.0 sh.knee f- f*  f+ | y |
-  u sh.hard f* | uh |
-  uh valve-curve sh.valve f*  y 1.0 sh.valve f- sh.fold f- f*  f+
-  uh 0.5 f* sinpi sh.fold f*  f+
+  ( valve and fold are 0 or 1, set per mode: each branch computes only
+    the curve its mode weighs in, and the others' terms are exact zeros )
+  sh.valve 0.0 f=  sh.fold 0.0 f=  and
+  [ ( knee blends the tanh shoulder with the algebraic one; at 1 or 0
+      only one of them counts )
+    sh.knee 1.0 f=
+    [ u sh.hard f* tanh-fast  sh.hard f/  sh.knee f* ]
+    [ sh.knee 0.0 f=
+      [ u  1.0 u u f* f+ fsqrt  f/  1.0 sh.knee f- f* ]
+      [ u sh.hard f* tanh-fast  sh.hard f/  sh.knee f*
+        u  1.0 u u f* f+ fsqrt  f/  1.0 sh.knee f- f*  f+ ]  ifte ]  ifte ]
+  [ u sh.hard f* | uh |
+    sh.fold 0.0 f=
+    [ uh valve-curve sh.valve f* ]
+    [ uh 0.5 f* sinpi sh.fold f* ]  ifte ]  ifte
 ;
-
-( x sh -- y : shape-raw for a shape with no valve and no fold term, the
-  same value there without their cost [exp, tanh, sin per call]. )
-dsp: shape-raw-plain | x sh:Shape -- y |
-  x x f* | x2 |
-  x sh.bias f+  x2  1.0 x2 f+ f/  sh.even f*  f+ | u0 |
-  u0 0.0  u0 sh.neg f*  u0  fsel-lt | u |
-  u sh.hard f* tanh-fast  sh.hard f/  sh.knee f*
-  u  1.0 u u f* f+ fsqrt  f/  1.0 sh.knee f- f*  f+
-;
-
-( sh -- w : 0 when the shape has no valve and no fold term, so the plain
-  words give its exact values. )
-dsp: shape-exotic | sh:Shape -- w |  sh.valve fabs  sh.fold fabs  f+ ;
 
 ( x sh -- y )
 dsp: shape | x sh:Shape -- y |
@@ -86,10 +82,9 @@ dsp: shape-at | x off y0 sh:Shape -- y |
 ( sh -- y0 : the shape's value at rest. )
 dsp: shape-rest | sh:Shape -- y0 |  sh.y0 ;
 
-( x y0 sh -- y : shape-at at the rest point [no bias shift] for a plain
-  shape: y0 is sh.y0. )
-dsp: shape-at-plain | x y0 sh:Shape -- y |
-  x sh shape-raw-plain  y0 f-  sh.gain f*  sh.clip fneg sh.clip fclamp
+( x y0 sh -- y : shape-at at the rest point, no bias shift. )
+dsp: shape-at0 | x y0 sh:Shape -- y |
+  x sh shape-raw  y0 f-  sh.gain f*  sh.clip fneg sh.clip fclamp
 ;
 
 ( sh bias even hard knee neg valve fold clip -- : set a shape and its
