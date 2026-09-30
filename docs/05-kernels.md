@@ -603,3 +603,44 @@ See [09-hot-reload.md](09-hot-reload.md) for the full story.
   soft limit, trust authors.
 - SIMD horizontal reductions (e.g. summing 4 lanes). Available
   instructions but no clean combinator yet.
+
+## Branching (proposal, 2026-09-30)
+
+Every `dsp:` body is one straight-line value graph per sample: no
+jumps, and `select` evaluates both sides. So a kernel with modes pays for
+every mode. sat2's shaper computes the VALVE and FOLD curves in all eight
+modes and multiplies the unused ones by 0: 40% of its cost. The render
+hooks (`render-lite!`) paper over that one case at a time.
+
+Proposed syntax, Forth-style, with the quotes `times` already parses:
+
+```forth
+params.valve 0.0 f=  [ y ]  [ uh valve-curve … blend ]  ifte
+```
+
+`mask [ then ] [ else ] ifte`. Both arms must leave the same stack
+effect. How it compiles depends on what the mask depends on:
+
+- **Uniform:** it comes only from params, ctx, constants and `::`
+  (nothing a per-sample store changes). The compiler builds the body
+  once per outcome, taking each branch as if it were straight-line code.
+  With k such branches that is 2^k bodies, capped at maybe 16. The
+  wrapper evaluates the masks once per block from the params and jumps
+  to the matching sample loop. The untaken arm costs nothing, the loop
+  has no branch in it, and each variant is ordinary dsp code, so lane
+  mode and bit-exactness carry over unchanged. This covers modes,
+  switches and "SAG is 0", and it replaces `render-lite!`.
+- **Varying:** the mask depends on the signal or state. The compiler
+  if-converts: both arms are built into the graph and every value and
+  store they differ in goes through `select`. That's correct and
+  bit-identical to a branch, but it saves nothing, same as today, and
+  the compiler reports it so the author knows. A real per-sample jump
+  would need control flow in the register allocator: registers merged
+  at the join, and stores that are currently deferred to the end of the
+  body emitted inside the arms. In lane mode it would need both lanes to
+  agree or it would fall back to masking. That's possible later, but
+  what DSP code branches on is almost always a per-block setting.
+
+The per-block choice fits how params change: the host writes params
+between blocks, and knob glides re-sync them every 32 samples. So a
+branch on a uniform mask sees one value per block or sub-block.
