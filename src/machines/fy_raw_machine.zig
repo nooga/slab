@@ -1661,8 +1661,8 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
     const frames = @min(@as(usize, @intCast(ctx.block_size)), @min(l.len, @min(r.len, MAX_BLOCK)));
     if (frames == 0) return;
 
-    fy_host_mod.lockCallbacks();
-    defer fy_host_mod.unlockCallbacks();
+    // The caller holds the fy callback lock for the block (the engine, once
+    // for every machine it renders, on any of its threads).
     Fy.Builtins.fyPtr = @intFromPtr(&self.host.fy);
 
     self.kctx.beat = ctx.ppq_position;

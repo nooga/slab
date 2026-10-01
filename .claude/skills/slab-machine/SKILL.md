@@ -57,7 +57,8 @@ poly voice with note hooks). `kernels/02-shapers/shapers.fy` and
 
 ## Performance checklist
 
-A song shares one core, 20.8 µs per sample at 48 kHz. The details are
+Tracks render in parallel, but each track on one core: 20.8 µs per sample
+at 48 kHz, and a heavy track sets the block's critical path. The details are
 in docs/05 §Writing fast machines.
 
 - [ ] Knob-only math (`exp`, `tan-warp`, `db>lin`, coefficients) happens

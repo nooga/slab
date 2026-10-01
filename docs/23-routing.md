@@ -221,7 +221,8 @@ finishMaster (unchanged)
 
 Because the order is topological, every `bus_in` is complete before its
 bus runs and every `pre[key]` is ready before its reader. The offline
-render runs the same loop.
+render runs the same loop. The loop runs on several threads, in the same
+order per sum (docs/07 §Parallel rendering).
 
 ## Project format
 

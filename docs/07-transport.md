@@ -239,16 +239,58 @@ This means:
 - Unit tests can drive ctx directly without running the audio
   thread.
 
-## Scheduler parallelism (deferred)
+## Parallel rendering
 
-v1: single-threaded graph walk on the audio thread. Fine for
-dozens of machines at 64-sample blocks.
+Built (`src/engine.zig` `renderChunk`, `src/render_pool.zig`). Tracks
+render on several threads, and the output is bit-identical to a
+one-thread render at any thread count.
 
-Later: tracks with no inter-dependencies (most of them) can run in
-parallel on worker threads. The pure `(ctx, persistent) → output`
-contract makes this trivial to add later. The block arena becomes
-one-per-worker; the voice pool services become thread-local (or
-lock-free per-machine). Not a v1 concern.
+**Render, then sum.** A block's work per node splits in two:
+
+- *Render* (`renderNode`), on any thread: the instrument or the bus
+  input, the insert chain and the fader, into the node's own pre and
+  post taps and its PDC history, plus its meter. It touches only that
+  node's state and what feeds it.
+- *Sum* (`mixContrib`): one output or send of a rendered node, added
+  into a bus's input or the master. Each destination keeps its
+  contributions in render order and takes them one at a time, from
+  whichever thread finishes the one it waits on (`advanceDest`). Every
+  buffer adds in the order a serial render adds it, which is what keeps
+  the floats identical.
+
+**Readiness.** A bus is ready once its whole input is summed. A keyed
+node is ready once its keys have rendered (it reads their pre taps and
+history, not a sum). Everything else is ready at the block's start.
+Only edges from nodes earlier in render order count, so a cycle left in
+the graph renders, as it does serially.
+
+**Scheduling.** A thread takes the ready node with the highest
+priority: its own smoothed render time plus the costliest chain it
+feeds, so long chains start first. A block can't finish faster than its
+critical path, the costliest chain from a source through its buses to
+the master, plus the master chain, which runs after the sums.
+
+**Threads.** `--threads N` sets the total, the audio thread included;
+the default is one per performance core. Workers sleep on a Mach
+semaphore between blocks, are woken at a block's start (at most one per
+node beyond the first), spin while it is open and help render.
+A worker that wakes late finds the block closed. The audio thread
+renders anything no worker took, so a descheduled worker costs time,
+never output.
+
+**fy.** Each machine owns its fy instance and JIT image; raw kernel
+calls touch only that instance and their own slots. `Builtins.fyPtr` is
+thread-local in fy. The callback lock that keeps hot-patch and runtime
+asset swaps out of renders is taken once per block by the engine (the
+audio callback and each offline chunk), not per machine.
+
+**Measured** (offline bounce, M-series, 8 performance cores):
+sweat_geometry 66.7 s → 21.4 s, broken_glass 4.5 s → 1.0 s, the others
+1.8–2.8× faster. The slower ones are bound by their critical path: one
+heavy synth through its bus and the master.
+
+**Not yet:** joining CoreAudio's I/O workgroup (the workers run at user
+interactive QoS), and splitting one node's insert chain across threads.
 
 ## UI-side scheduling (control-rate)
 

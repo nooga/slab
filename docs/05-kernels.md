@@ -565,10 +565,12 @@ exist. See also [10-roadmap.md](10-roadmap.md) for build order.
 
 ## Writing fast machines
 
-The whole audio path runs on one core. At 48 kHz that core has 20.8 µs
-per sample, and every machine in the song shares it. A busy song, like
-songs/sweat_geometry with 29 tracks, used most of that core before the
-optimizations below. So cost is part of a machine's design. These rules
+Tracks render in parallel (docs/07 §Parallel rendering), but one track
+renders on one core at a time: its instrument and insert chain have 20.8
+µs per sample at 48 kHz, and a heavy track on the critical path sets the
+whole block's time. A busy song, like songs/sweat_geometry with 29
+tracks, used most of a core before the optimizations below. So cost is
+part of a machine's design. These rules
 come from measurements, most-effective first.
 
 **1. Do the work at block rate.**

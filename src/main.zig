@@ -380,13 +380,23 @@ fn applyPresetTo(t: *track_mod.Track, preset_idx: u16) void {
 /// renders every machine every block (docs/04 §Idle skipping). `--no-neon`
 /// renders dual-mono effects in two scalar passes (docs/05 §Lane mode).
 /// `--no-branches` computes both arms of every dsp `ifte` (docs/05
-/// §Branching).
+/// §Branching). `--threads N` renders tracks on N threads, 1 on the audio
+/// thread alone (docs/07 §Parallel rendering; default: the performance
+/// cores).
 const Cli = struct {
     project: ?[]const u8 = null,
     render: ?[]const u8 = null,
     describe: ?[]const u8 = null,
     gallery: bool = false,
     idle_skip: bool = true,
+    /// Render threads, the audio thread included; null: the default.
+    threads: ?usize = null,
+
+    /// Render workers beside the audio thread.
+    fn workers(cli: Cli) usize {
+        const t = cli.threads orelse return @import("render_pool.zig").defaultWorkers();
+        return @min(t -| 1, @import("render_pool.zig").MAX_WORKERS);
+    }
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -402,6 +412,9 @@ pub fn main(init: std.process.Init) !void {
                 cli.describe = args.next() orelse return error.MissingDescribePath;
             } else if (std.mem.eql(u8, a, "--gallery")) {
                 cli.gallery = true;
+            } else if (std.mem.eql(u8, a, "--threads")) {
+                const v = args.next() orelse return error.MissingThreadCount;
+                cli.threads = @max(1, std.fmt.parseInt(usize, v, 10) catch return error.BadThreadCount);
             } else if (std.mem.eql(u8, a, "--no-idle-skip")) {
                 cli.idle_skip = false;
             } else if (std.mem.eql(u8, a, "--no-neon")) {
@@ -424,7 +437,7 @@ pub fn main(init: std.process.Init) !void {
 
     if (cli.gallery) return ui_gallery.run(alloc);
     if (cli.describe) |out| return describe_mod.run(alloc, out);
-    if (cli.render) |out| return renderHeadless(alloc, cli.project orelse return error.MissingProject, out, cli.idle_skip);
+    if (cli.render) |out| return renderHeadless(alloc, cli.project orelse return error.MissingProject, out, cli.idle_skip, cli.workers());
 
     c.rl.SetConfigFlags(c.rl.FLAG_WINDOW_RESIZABLE | c.rl.FLAG_VSYNC_HINT | c.rl.FLAG_WINDOW_HIGHDPI);
     c.rl.InitWindow(1400, 860, "slab");
@@ -509,6 +522,8 @@ pub fn main(init: std.process.Init) !void {
     };
     try engine.initPdc(alloc);
     defer engine.deinitPdc(alloc);
+    try engine.initPool(alloc, cli.workers());
+    defer engine.deinitPool(alloc);
 
     // ── Audio device ─────────────────────────────────────────────────
     var audio: audio_mod.Audio = undefined;
@@ -1906,7 +1921,7 @@ fn deleteTrack(
 
 /// Bounce `project` to `out` (24-bit WAV): every clip plus a 3 s tail,
 /// through the same engine and master soft clip as a DAW render.
-fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, out: []const u8, idle_skip: bool) !void {
+fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, out: []const u8, idle_skip: bool, workers: usize) !void {
     var reg = registry_mod.Registry.init(alloc);
     defer reg.deinit();
     for (registry_mod.builtin_machines) |path| try reg.loadFyMachine(path);
@@ -1944,6 +1959,8 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, out: []const u8
     };
     try engine.initPdc(alloc);
     defer engine.deinitPdc(alloc);
+    try engine.initPool(alloc, workers);
+    defer engine.deinitPool(alloc);
     engine.publishRouting();
     var last_beat: f64 = 0;
     for (tracks) |*t| for (t.clips.items) |*clip| {

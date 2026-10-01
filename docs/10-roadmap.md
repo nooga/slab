@@ -271,8 +271,6 @@ on an M-series Mac at 8ms latency with a realistic project load
 
 - **Free-node-graph editor.** Live-style covers most of what
   people need; wiring can come later on top of the same scheduler.
-- **Parallel track graph execution.** The pure contract makes it
-  easy to add later when a real session needs it.
 - **GPU DSP.** Some spectral and convolutional tasks benefit; the
   architecture doesn't preclude it, but it's a later add.
 - **Theming the frame.** Brutalist grey is the identity.
