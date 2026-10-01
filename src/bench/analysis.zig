@@ -160,7 +160,7 @@ pub const Harmonics = struct {
     /// Aliasing, noise, and inharmonic junk all land here.
     nonharm_db: f64 = -200,
     /// The 2nd and 3rd harmonics alone relative to the fundamental, dB:
-    /// even- vs odd-leaning colour.
+    /// even- vs odd-leaning color.
     h2_db: f64 = -200,
     h3_db: f64 = -200,
 };

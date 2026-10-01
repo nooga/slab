@@ -458,9 +458,9 @@ pub const ButtonKind = enum { momentary, latch };
 pub const ButtonOpts = struct {
     kind: ButtonKind = .momentary,
     label: []const u8 = "",
-    /// LED inside the cap (left of the label), in this colour.
+    /// LED inside the cap (left of the label), in this color.
     led: ?Color = null,
-    /// The LED lit in this colour while the button is off, instead of dark
+    /// The LED lit in this color while the button is off, instead of dark
     /// (a bypass: green running, red bypassed).
     led_off: ?Color = null,
     /// What the touch display shows while hovered, instead of the label
@@ -469,7 +469,7 @@ pub const ButtonOpts = struct {
     touch_value: ?[]const u8 = null,
     /// A label wider than the cap slides while hovered (Ui.marquee).
     marquee: bool = false,
-    /// Cap itself lights in this colour when on (808 style).
+    /// Cap itself lights in this color when on (808 style).
     lit: ?Color = null,
     /// A shape printed on the cap (transport ▶ ■ ●), lit in `glyph_on`
     /// while the button is on.
@@ -952,7 +952,7 @@ pub fn meterPos(db: f32) f32 {
     return 1;
 }
 
-/// Inverse of meterPos (bisection; exact enough for colour zoning).
+/// Inverse of meterPos (bisection; exact enough for color zoning).
 fn meterDb(t: f32) f32 {
     var lo: f32 = METER_FLOOR;
     var hi: f32 = 0;
@@ -995,7 +995,7 @@ fn ballistics(ui: *Ui, wid: core.Id, peak_db: f32, rms_db: f32) Ballistics {
     return .{ .peak = peak.*, .rms = rms.*, .hold = hold.* };
 }
 
-/// One bar: segments coloured by dB zone. RMS body at full brightness,
+/// One bar: segments colored by dB zone. RMS body at full brightness,
 /// peak above it a step dimmer, a bright peak-hold segment, unlit
 /// segments as dark ghost glass.
 fn meterBar(ui: *Ui, r: Rect, b: Ballistics, horizontal: bool) void {
@@ -1217,7 +1217,7 @@ pub fn displayLines(ui: *Ui, r: Rect, lines: []const []const u8, o: DisplayOpts)
         }
     }
     // Dot gaps: once a matrix dot spans 2+ device px, a 1-device-px
-    // well-coloured mesh on every dot boundary turns solid glyphs into a
+    // well-colored mesh on every dot boundary turns solid glyphs into a
     // dot matrix.
     const ds = ui.deviceScale();
     const dot_dev = ds * @as(f32, @floatFromInt(k));

@@ -184,7 +184,7 @@ Frames are already requested while playing (playhead). While stopped,
 a locate or a lane edit requests one.
 
 **Indicator.** The control's legend gets a square 4 px LED in the new
-`auto` colour (docs/06 §Palette) at its right end. Panels can't place
+`auto` color (docs/06 §Palette) at its right end. Panels can't place
 it; the control catalogue draws it.
 
 | LED | Meaning |
@@ -250,7 +250,7 @@ all of them. They follow the piano roll's conventions (docs/12
   snapshot undo (`history.zig`) covers them with no extra work.
 
 Drawing follows docs/06 §Working surfaces: a 1 px line in the track
-colour, 3×3 hollow point handles, a filled `accent` handle when
+color, 3×3 hollow point handles, a filled `accent` handle when
 selected, and the target's name as a muted legend in the lane.
 `hold` segments draw as steps.
 
@@ -302,7 +302,7 @@ exactly where it lands:
 - **Expression mode:** the key `E` (and the EXPR latch in the piano
   roll's header) toggles it. Drum-lane rolls (folded to a note map)
   have none. In expression mode:
-  - every note's pitch curve draws in the track colour, a selected
+  - every note's pitch curve draws in the track color, a selected
     note's brighter, and selected notes' points get handles,
   - click a note to select it (Shift toggles), click empty grid to
     deselect; notes don't move or resize,

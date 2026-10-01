@@ -2360,7 +2360,7 @@ Presets:
 
 Presets:
 
-- `drum-bus` — glue a kit: 4:1, 10 ms, AUTO, SC 90 Hz, a little colour
+- `drum-bus` — glue a kit: 4:1, 10 ms, AUTO, SC 90 Hz, a little color
 - `drum-crush` — parallel crush: 10:1, fastest attack, dirty, 40% under the dry
 - `master-glue` — light and clean master control: 2:1, 30 ms, AUTO
 - `mix-glue` — the classic mix-bus setting: 2:1, 30 ms, AUTO, 2 dB on the loud parts

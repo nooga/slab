@@ -4593,7 +4593,7 @@ fn drawAdsrCurve(self: *FyRawMachine, ui: *Ui, area: Rect, source: []const u8, c
     ui.line(xd1, base - sus * h, xh1, base - sus * h, col);
     capSeg(ui, xh1, sus, xr1, 0.0, base, h, col);
 
-    // Inline label: the source's first token, in the curve's colour; labels
+    // Inline label: the source's first token, in the curve's color; labels
     // of overlaid sources sit side by side.
     const tok = source[0 .. std.mem.indexOfScalar(u8, source, ' ') orelse source.len];
     _ = ui.text(&ui.fonts.legend, area.x + 2 + @as(i32, @intCast(label_idx)) * 40, area.y, tok[0..@min(tok.len, 11)], col);

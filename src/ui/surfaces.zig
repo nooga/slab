@@ -114,7 +114,7 @@ pub const TrackUi = struct {
     selected: bool = false,
 };
 
-/// Track header faceplate: colour bar, name, S/M/R, volume, meter.
+/// Track header faceplate: color bar, name, S/M/R, volume, meter.
 /// Height is the lane height; two rows of 20 at the standard lane.
 pub fn trackHeader(ui: *Ui, r: Rect, key: anytype, t: *TrackUi) void {
     ui.pushId(key);
@@ -138,7 +138,7 @@ pub fn trackHeader(ui: *Ui, r: Rect, key: anytype, t: *TrackUi) void {
 
 pub const MiniNote = struct { beat: f32, len: f32, pitch: u8, vel: f32 = 0.8 };
 
-/// A clip on a lane: full-colour name band, tinted body with a note
+/// A clip on a lane: full-color name band, tinted body with a note
 /// preview, 1px darker edge; amber outline when selected.
 pub fn clip(ui: *Ui, r: Rect, v: TimeView, start: f32, len: f32, name: []const u8, col: Color, notes: []const MiniNote, selected: bool) void {
     const x0 = v.x(r, start);

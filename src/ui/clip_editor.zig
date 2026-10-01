@@ -508,7 +508,7 @@ pub const Head = struct {
 };
 
 /// Editor pane head: one 20px toolbar of flush tiles — optional DRAW latch,
-/// the title (track-colour bar, engraved kind, clip name), the caller's
+/// the title (track-color bar, engraved kind, clip name), the caller's
 /// tools, collapse and close.
 pub fn paneHead(ui: *Ui, r: Rect, kind: []const u8, name: []const u8, color: ?ui_style.Color, draw_mode: ?*bool, tools_w: i32) Head {
     var rest = r;

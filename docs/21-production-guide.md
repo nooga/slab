@@ -130,7 +130,7 @@ inversion nearest the previous one.
 | ambient | `Imaj7 IVmaj7` or `i ♭VI` pedal, slow changes (2–4 bars per chord) |
 
 Rules of thumb:
-- **Colour follows genre.** Maj7, m7, add9 and sus4 sound sophisticated
+- **Color follows genre.** Maj7, m7, add9 and sus4 sound sophisticated
   and 80s. Plain triads sound rock or synthwave. Dominant 9ths sound
   funk.
 - **Put a sus4 before a V7** (`A7sus4:2 A7:2`) to lean into a
@@ -163,7 +163,7 @@ Registers, so parts don't fight:
 - **Leave space.** Start phrases after the downbeat (`r:.5`) and end
   them with a rest. A lead that never stops is exhausting.
 - **Land on chord tones** on strong beats (root, 3rd, 5th, and the
-  maj7 for colour). Put passing notes on the offbeats.
+  maj7 for color). Put passing notes on the offbeats.
 - **Contour**: the verse is lower and stepwise; the pre-chorus rises;
   the chorus holds the highest note of the song, usually on beat 1 of
   bar 1 or 5.
@@ -257,7 +257,7 @@ EQ (clean-up: HPF, mud cut) → comp → sat → EQ (tone) → chorus → delay 
 ```
 
 EQ before the comp so rumble doesn't pump it. Saturation after the comp
-so it colours an even signal. Modulation, then time-based effects, at
+so it colors an even signal. Modulation, then time-based effects, at
 the end.
 
 ### Channel starting points
@@ -344,7 +344,7 @@ odd-harmonic grit: `fet-punch` on drums, `fet-smash` parallel under
 them), OPTO (smooth two-stage release: `opto-vocal`, `opto-bass`,
 `opto-smooth` for pads and keys) and VARI (wide knee, warm, a slow
 floor: `vari-glue` on the mix bus, `vari-drums`). DRIVE sets how much
-the colour grows with the squash; 0 is clean.
+the color grows with the squash; 0 is clean.
 
 On the master, `multi2` (three-band, docs/24 §multi2) holds the low
 end in its own band so kicks stop ducking the rest through the limiter;

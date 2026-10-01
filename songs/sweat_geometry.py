@@ -50,7 +50,7 @@ KICK_SECTIONS = (intro, groove, build1, drop1, drop2, outro)
 # Everything goes through MIX so a build can high-pass the whole record
 # (rule 5's DJ trick). fx0 is the automated filter.
 mix = song.bus("MIX", fx=[fx("eq2", hpf_on="ON", hpf_hz=20)])
-# Rule 6: the kit speaks as one box. VALVE colours it all, bus2 glues,
+# Rule 6: the kit speaks as one box. VALVE colors it all, bus2 glues,
 # a FET smash underneath fattens the tails between hits.
 drums = song.bus("909", volume=1.0, output=mix, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=28, p1_hz=320, p1_db=-2.5, p1_q=1.0),

@@ -1,10 +1,10 @@
 ( char2.fy - character compressor machine [docs/24 §Character modes].
 
   MODE picks a bundle: FET [2 dB knee, peak, REL as set, odd-leaning
-  colour], OPTO [12 dB knee, RMS, half back in 60 ms and the rest over
-  REL, slower after long squash, light even colour], VARI [24 dB knee -
+  color], OPTO [12 dB knee, RMS, half back in 60 ms and the rest over
+  REL, slower after long squash, light even color], VARI [24 dB knee -
   the ratio rises with level - peak, a slow branch that holds a floor,
-  heavy even colour].  DRIVE scales the colour, which grows with the
+  heavy even color].  DRIVE scales the color, which grows with the
   gain reduction; 0 is clean.  The DSP is kernels/07-effects/char.fy. )
 
 include "../../kernels/07-effects/char.fy"

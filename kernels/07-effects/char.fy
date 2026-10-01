@@ -1,7 +1,7 @@
 ( char.fy - character compressor [docs/24 §Character modes]: three
   bundles of the survey's knobs, not circuit models.
 
-         knee   detector  release                          colour
+         knee   detector  release                          color
     FET   2 dB  PEAK      REL                              odd-leaning
     OPTO 12 dB  RMS       half 60 ms, half REL - and REL   even, light
                           stretches to 3x after long squash
@@ -16,7 +16,7 @@
   §bus2 as built], and what the hardware's feedback buys - softer,
   program-dependent timing - is what the modes set directly.
 
-  The detector and gain computer are comp.fy's; the colour is bus.fy's
+  The detector and gain computer are comp.fy's; the color is bus.fy's
   2x shaper, growing with the gain reduction, with per-mode 2nd / 3rd
   weights scaled by DRIVE.  DRIVE 0 is clean, and the host runs the
   cheaper k-char-tick-clean for those blocks [render-lite].
@@ -80,7 +80,7 @@ dsp: char-derive | ctx state params:CompParams |
   m 0.0 1.0 0.0 char-pick -> params.det
 ;
 
-( sr atk rel thresh knee cs cp -- : the followers, memory and colour. )
+( sr atk rel thresh knee cs cp -- : the followers, memory and color. )
 dsp: char-prepare | sr atk rel thresh knee cs:CharState cp:CharParams |
   cp.mode | m |
   knee -> cs.knee
@@ -147,7 +147,7 @@ dsp: k-char-tick | io:Io ctx state params:CompParams -- |
   io params yl yr bus-out
 ;
 
-( io ctx state params -- : the same at DRIVE 0, without the colour
+( io ctx state params -- : the same at DRIVE 0, without the color
   stage [render-lite]. )
 dsp: k-char-tick-clean | io:Io ctx state params:CompParams -- |
   io state params comp-detect comp-level

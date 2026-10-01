@@ -701,10 +701,10 @@ loop: crest, GR per kick and snare, GR 1 ms in, transient-to-body).
 Gain is measured sample by sample as out/in, exact for a compressor
 (a memoryless multiply), so no meter cell is needed. A multiband's
 crossover turns the phase, so for `multi2` it's the ratio of 1 ms RMS
-windows instead (also for `char2`, whose colour is on by default:
+windows instead (also for `char2`, whose color is on by default:
 `windowedGain`), and crossings are looked for 10 ms after each edge,
 past the crossovers' ringing (`isMultiband`, `edgeSkip`). The `sine`
-line gives H2 and H3 beside THD, the even/odd balance of a colour. docs/24 §Test
+line gives H2 and H3 beside THD, the even/odd balance of a color. docs/24 §Test
 plan.
 
 `--input=FILE.wav` runs an effect on real audio instead (the `file` case):

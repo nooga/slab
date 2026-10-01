@@ -59,14 +59,14 @@ Measured behaviour worth knowing:
 
 ### The designs
 
-| unit | gain element | topology | detector | ratio / knee | attack | release | where the colour comes from |
+| unit | gain element | topology | detector | ratio / knee | attack | release | where the color comes from |
 |---|---|---|---|---|---|---|---|
 | **SSL G / 4000 bus** | VCA (dbx 202 / THAT 2180) | **feedback-like**: sidechain VCA replica driven by the same CV, rectified *after* it [Gyraf] | full-wave, peak-ish | 2, 4, 10; knee soft by rectifier/CV curve | 0.1, 0.3, 1, 3, 10, 30 ms | 0.1, 0.3, 0.6, 1.2 s, AUTO (two RC branches, 91k·6.8µ ≈ 0.62 s and 750k·0.47µ ≈ 0.35 s: short on peaks, slow under sustained GR) | clean VCA; the sound is the time constants + FB loop; later units (500 G-Comp, THE BUS+) add a sidechain HPF |
 | **UREI 1176** | FET as variable resistor | feedback | peak | 4, 8, 12, 20; all-buttons ≈ 12–20 with rebiased, much higher THD | 20–800 µs | 50 ms–1.1 s | FET and transformer distortion, odd-leaning, rises with GR; all-buttons "British mode" |
 | **LA-2A** | T4 electro-optical cell (EL panel + LDR) | feedback | opto: the panel's light is a thermal/chemical integrator — RMS-like, frequency-dependent | ~3:1 COMPRESS / ~∞ LIMIT; very soft, program dependent | ≈ 10 ms average | two stage: ≈ 60 ms to 50 %, then 1–15 s for the rest, longer after long, heavy GR | tube makeup stage; the release memory is the character |
 | **Fairchild 660/670** | vari-mu (remote-cutoff 6386 tubes) | feedback | peak | not a knob: ratio rises with level → knee tens of dB wide | 0.2–0.4 ms | 6 settings 0.3–25 s; positions 5–6 auto (0.2–0.3 s single peaks, 10 s multiple, 25 s sustained) | tube gain stage, THD rises with GR, even-leaning; push-pull cancels some of it |
 | **API 2500** | VCA | switch: NEW = feed-forward, OLD = feedback | RMS; THRUST filter in front of it | 1.5–∞; knee HARD / MED / SOFT | 0.03–30 ms | 0.05–2 s + variable | THRUST: MED = +3 dB/oct tilt below ~200 Hz and above ~3 kHz, flat between; LOUD = +3 dB/oct across the band (inverse pink) [SOS] — the detector hears equal energy per octave, so kick and bass stop running the comp |
-| **Distressor** | (proprietary, VCA-class) | — | selectable: normal, HP-filtered detector, "opto" 10:1 mode with its own release | 1, 2, 3, 4, 6, 10 (opto), 20, Nuke (brick wall) | ~0.05–30 ms | ~0.05–3.5 s (opto mode longer) | DIST 2 (mostly 2nd harmonic when compressing) and DIST 3 (2nd + 3rd, tape-like flattening); 1:1 ratio = colour with no compression; HPF in audio and detector paths |
+| **Distressor** | (proprietary, VCA-class) | — | selectable: normal, HP-filtered detector, "opto" 10:1 mode with its own release | 1, 2, 3, 4, 6, 10 (opto), 20, Nuke (brick wall) | ~0.05–30 ms | ~0.05–3.5 s (opto mode longer) | DIST 2 (mostly 2nd harmonic when compressing) and DIST 3 (2nd + 3rd, tape-like flattening); 1:1 ratio = color with no compression; HPF in audio and detector paths |
 | **Neve 33609** | diode bridge | feedback | peak | ~1.5–6 compressor + separate limiter | fast / slow | ~0.1–1.5 s + AUTO (unverified, from manuals) | diode bridge + transformers; compressor and limiter as two stages in series |
 | **Multiband (C4, Pro-MB, OTT)** | per band | FF | per band | per band | per band | per band | band split. OTT = Ableton Multiband Dynamics preset: splits 88.3 Hz / 2.5 kHz, downward ≈ 66:1 low+mid and ∞:1 high, **upward 4.17:1** on all bands, +5.2 dB in, soft knee |
 
@@ -122,7 +122,7 @@ LA-2A's second stage are all versions of this. An opto flavour weights
 the two branches (`0.5·fast + 0.5·slow`) instead of `max`, which gives
 the LA-2A's "50 % in 60 ms, the rest over seconds".
 
-**Where saturation sits.** FET, vari-mu and opto units all colour after
+**Where saturation sits.** FET, vari-mu and opto units all color after
 the gain element (makeup/transformer stages), and in FET and vari-mu
 the THD **rises with gain reduction**. Cheapest convincing model:
 the existing `shapers.fy` curve after the gain, input scaled by
@@ -149,7 +149,7 @@ Line counts are estimates for `dsp:` fy against the existing kernels.
 | **FF / FB switch** | FB = softer, self-regulating, "old" | 1 multiply + ratio remap | ~6 | SSL replica form |
 | **PEAK / RMS** | RMS = smoother, less LF THD | 1 one-pole on x², sqrt via exp2/log2 | ~8 | |
 | **THRUST tilt** (API) | kick-proof detector, mids/highs drive GR | 2 shelves or 1st-order tilt | ~20 | a richer SC HPF; later |
-| **GR-coupled drive** | FET/tube colour that grows with squash | shaper + 4× OS ≈ sat2 cost | ~25 | the only knob that costs real CPU |
+| **GR-coupled drive** | FET/tube color that grows with squash | shaper + 4× OS ≈ sat2 cost | ~25 | the only knob that costs real CPU |
 | **stereo link %** | width vs stability | needs `stereo` flag, 2 detectors | ~10 | bus2/multi2 are stereo anyway |
 | **upward compression** (OTT) | lifts low-level detail; the "OTT sound" | second gain-computer branch below a lower threshold | ~12 | multi2 follow-up |
 
@@ -237,14 +237,14 @@ after), so the static curve is comp2's by construction. What it adds:
 - **FB/FF dropped.** A digital feedback loop with a one-sample delay
   either rings (pole c + (1−c)(1−R): −0.9 at 10:1, 0.1 ms) or, once
   its times are corrected, is feed-forward with a different knee. The
-  hardware's glue is the release and the colour; those are here.
+  hardware's glue is the release and the color; those are here.
 
 Measured (Debug): curve slopes 2/4/10:1 exact above the knee; attack
 τ63 0.19 / 0.38 / 1.10 / 3.15 / 10.3 / 30.6 ms (the two fastest read
 long: a 1 kHz peak needs up to a quarter cycle to show); 50 Hz THD
 −44.0 dB at defaults. Cost (ReleaseFast) 36 ns/sample at COLOR 0,
 comp2's 35: the host runs `k-bus-tick-clean` for those blocks
-(`render-lite`, docs/04), without the colour stage. With COLOR up it's
+(`render-lite`, docs/04), without the color stage. With COLOR up it's
 151 ns (4.3×, over the 2× budget): the 2× up/down-sampling and four
 shaper divisions for two channels cost that much in scalar code; a
 NEON L/R pair is the way down.
@@ -342,10 +342,10 @@ their limiters); char2 `vari-glue` measured the same as the glue.
 `machines/char2/char2.fy`, DSP in `kernels/07-effects/char.fy`. A
 separate machine, not a comp2 switch: comp2 stays the clean tool whose
 knobs all mean what they say, and char2's MODE is a bundle that sets
-the knee, detector, release shape and colour itself. Reuses comp.fy's
-detector and gain computer and bus.fy's 2× colour stage and output.
+the knee, detector, release shape and color itself. Reuses comp.fy's
+detector and gain computer and bus.fy's 2× color stage and output.
 
-| mode | knee | detector | release | colour (DRIVE 1, 1 kHz −6 dBFS, T −24) |
+| mode | knee | detector | release | color (DRIVE 1, 1 kHz −6 dBFS, T −24) |
 |---|---|---|---|---|
 | FET | 2 dB | PEAK | REL | odd-leaning: H3 −26, H2 −34 dB |
 | OPTO | 12 dB | RMS (the cell integrates: attack reads 8 ms at ATK 1) | half at 60 ms, half at REL; REL stretches up to 3× with a 3 s memory of GR / 6 dB | light even: H2 −26, H3 −47 dB |
@@ -367,7 +367,7 @@ after a 50 ms burst and 488 ms after a 2 s block (1.47×); VARI after the
 block holds past the 1.5 s window; 50 Hz THD at DRIVE 0 and 9 dB GR
 −50 / −57 / −51 dB (FET / OPTO / VARI); NONHARM −70.2 dB, the stimulus
 floor, with and without DRIVE. Cost (ReleaseFast) 38 ns/sample at DRIVE
-0, 155 with colour. The DC blocker's states are flushed below ~1e−34
+0, 155 with color. The DC blocker's states are flushed below ~1e−34
 (bus2 shares it), so tails reach 0 instead of denormals.
 
 **Presets** (`tools/comp2_presets/design_char2.py`, the bus2 method):
@@ -511,7 +511,7 @@ the shared biquad words. ~150 lines kernel + ~60 manifest.
 One `comp2` switch or a separate `char2`; decide when bus2 exists. Each
 mode is a bundle of the knobs above, not a circuit model:
 
-| mode | topology | detector | knee / ratio | times | colour |
+| mode | topology | detector | knee / ratio | times | color |
 |---|---|---|---|---|---|
 | CLEAN | FF | peak | as set | as set | none |
 | FET (1176) | FB replica | peak | as set; ALL = ratio 16 + knee 0 + drive ×2 | atk 0.02–0.8 ms range | tape-curve shaper, drive ∝ GR, 4× OS |
@@ -534,7 +534,7 @@ acceptance bar; failures block the machine.
 | attack / release | `step` | τ63 within ±15 % of the switch value for every ATK/REL position | within ±15 % across the knob; independent of step size (±10 vs ±20 dB step within 10 %) | per band, scaling ×2 / ×0.5 visible |
 | program-dependent release | `bursts` | AUTO: release after 2 s block ≥ 3× release after 50 ms burst | — | — |
 | LF distortion | `lowsine` | 50 Hz THD < −40 dB at 6 dB GR, REL ≥ 0.1 s | < −40 dB at defaults (today −27.7) | < −40 dB |
-| colour | `sine` at 3 levels | clean: THD < −60 dB | clean | with drive (mode 4): harmonic signature — 2nd > 3rd for TUBE, 3rd > 2nd for tape/FET — and NONHARM < −70 dB (aliasing) |
+| color | `sine` at 3 levels | clean: THD < −60 dB | clean | with drive (mode 4): harmonic signature — 2nd > 3rd for TUBE, 3rd > 2nd for tape/FET — and NONHARM < −70 dB (aliasing) |
 | SC HPF | `key` | HPF 150: GR on 60 Hz burst ≥ 10 dB less than on 3 kHz burst; OFF: within 1 dB | same with `comp-hpf` 150 | per band: 60 Hz key only moves the low band |
 | stereo link | `link` | R GR = L GR within 0.1 dB | same (host-linked) | per band |
 | crossover null | `sweep`, `impulse` | — | — | all ratios 1: magnitude flat ±0.1 dB 20 Hz–20 kHz |
@@ -621,7 +621,7 @@ bus2's reason to exist.
   existing idiom; no NEON is needed to hit budget (bus2 ~1.5×, multi2
   ~3–4× comp2, ~100 ns/sample Debug today). Stereo machines process L
   and R in one pass, a natural 2× f64 NEON pair later.
-- **Aliasing.** Any drive/colour stage must go through `up4`/`dec4`;
+- **Aliasing.** Any drive/color stage must go through `up4`/`dec4`;
   gain modulation itself is band-limited enough at τ ≥ 0.1 ms, but a
   20 µs FET attack is not — the FET mode's fastest attack should be
   checked with `sine` NONHARM before shipping.

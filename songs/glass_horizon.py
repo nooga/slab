@@ -79,7 +79,7 @@ kick = song.track("KICK", "sampler", "vcsl-kits/acoustic-kit", volume=1.11, para
 ])
 # The drum bus: kit, snare, kick and their room glued on bus2, the
 # SSL-style compressor: 4:1, 10 ms lets the stick through, AUTO holds a
-# floor under the hits, a little colour. Pushed (6 dB on the hits, +1 dB
+# floor under the hits, a little color. Pushed (6 dB on the hits, +1 dB
 # out) so the kit stands up in front of the pad.
 drums = song.bus("DRUMS", volume=1.25, fx=[fx("bus2", "drum-bus", thresh=-23, makeup=5.0)])
 for t in (kit, snare, kick, room):

@@ -848,7 +848,7 @@ fn isMultiband(name: []const u8) bool {
 }
 
 /// Machines whose out/in isn't a pure gain sample by sample: crossover
-/// phase (multiband), or colour on by default (char2).
+/// phase (multiband), or color on by default (char2).
 fn windowedGain(name: []const u8) bool {
     return isMultiband(name) or std.mem.eql(u8, name, "char2");
 }

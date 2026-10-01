@@ -66,7 +66,7 @@ ustruct: BusParams  ( after CompParams )
 :: BUS-DC-R 0.9987 ;
 :: BUS-FLUSH 1.0e-18 ;         ( ~10 Hz at 48 kHz )
 
-( sr thresh rel atk bp -- : the followers' coefficients and the colour. )
+( sr thresh rel atk bp -- : the followers' coefficients and the color. )
 dsp: bus-prepare | sr thresh rel atk bp:BusParams |
   rel BUS-AUTO-BELOW 1.0 0.0 fsel-lt -> bp.auto-on
   atk sr comp-tau-coeff -> bp.atk-c
@@ -86,13 +86,13 @@ dsp: bus-block-prepare | ctx:Ctx state params:CompParams |
   ctx.sr params.thresh-db params.rel-s params.atk-s  params CompParams.size ptr+  bus-prepare
 ;
 
-( u a2 a3 -- e/T : the colour term at one sample, u = w / T. )
+( u a2 a3 -- e/T : the color term at one sample, u = w / T. )
 dsp: bus-shape | u a2 a3 -- e |
   u u f* | q |
   q  1.0 q f+  f/  a2 a3 u f* f-  f*
 ;
 
-( up dn dc w a2 a3 t inv-t -- y : w plus its colour, made at 2x and
+( up dn dc w a2 a3 t inv-t -- y : w plus its color, made at 2x and
   brought back, DC-blocked. )
 dsp: bus-color | up:Up2 dn:Dec2 dc:BusDc w a2 a3 t inv-t -- y |
   up w up2 | w0 w1 |
@@ -130,7 +130,7 @@ dsp: bus-out | io:Io cp:CompParams yl yr |
   yr wet f*  io.in-r dry f*  f+ -> io.out-r
 ;
 
-( io bs bp cp gt -- : follow the target gain, colour, makeup and mix. )
+( io bs bp cp gt -- : follow the target gain, color, makeup and mix. )
 dsp: bus-apply | io:Io bs:BusState bp:BusParams cp:CompParams gt |
   bs bp gt bus-follow | g |
   g -6.0205999132796239 f* | gr |
@@ -152,9 +152,9 @@ dsp: k-bus-tick | io:Io ctx state params:CompParams -- |
   io  state CompState.size ptr+  params CompParams.size ptr+  params  gt  bus-apply
 ;
 
-( io ctx state params -- : the same at COLOR 0, without the 2x colour
+( io ctx state params -- : the same at COLOR 0, without the 2x color
   stage [its term is exactly 0 there] - the host runs it for those
-  blocks [render-lite]. Turning COLOR to 0 drops the colour's DC-blocker
+  blocks [render-lite]. Turning COLOR to 0 drops the color's DC-blocker
   tail at once, a residue far under the signal. )
 dsp: k-bus-tick-clean | io:Io ctx state params:CompParams -- |
   io state params comp-detect comp-level

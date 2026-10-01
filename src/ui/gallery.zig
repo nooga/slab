@@ -362,7 +362,7 @@ fn palettePanel(ui: *Ui, r: Rect) void {
         _ = ui.well(chip, s.c);
         ui.textIn(&ui.fonts.legend, cc, s.n, style.text_mute, .left, false);
     }
-    // Track colours.
+    // Track colors.
     const n: i32 = style.track.len;
     for (style.track, 0..) |tc, i| {
         const cell = body.cell(n, 1, @intCast(i), 0).inset(2);

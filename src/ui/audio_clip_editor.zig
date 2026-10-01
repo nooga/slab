@@ -1,7 +1,7 @@
 //! Audio clip editor — the clip-editor pane's view for an *audio* clip (the
 //! piano roll handles note clips). It mirrors the piano roll's navigation:
 //! a beat ruler + grid, horizontal zoom (Shift+wheel) and pan, and a minimap
-//! overview. The whole source waveform is drawn in the track colour along a
+//! overview. The whole source waveform is drawn in the track color along a
 //! beat axis (source seconds → beats at the project tempo, since playback is
 //! unwarped). The played window's start/end and the fade-in/out are editable
 //! with on-waveform handles, and the trimmed + faded regions are shaded.
