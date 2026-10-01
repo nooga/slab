@@ -82,7 +82,7 @@ JSON. Top level:
   "transport": {"bpm": 106.0, "loop": {"on": false, "start": 0.0, "end": 296.0}},
   "meter": [{"bar": 0, "num": 4, "den": 4}],
   "tracks": [ … ],
-  "master": {"volume": 1.0, "pan": 0.0, "effects": [ … ]}
+  "master": {"volume": 1.0, "pan": 0.0, "subsonic": false, "effects": [ … ]}
 }
 ```
 
@@ -92,7 +92,7 @@ JSON. Top level:
 | `transport.loop` | loop region in **beats**; `on` sets whether playback loops. The render ignores it. |
 | `meter` | meter map: `{bar, num, den}` points. The first point is forced to bar 0. Missing = 4/4. It changes the bar grid and what machines get as `bar`/`beat_in_bar`; note times are always in beats. |
 | `tracks` | at most 16 |
-| `master` | the master bus: `volume` (linear gain, default 1.0), `pan` (a balance control, not a pan law), `effects` |
+| `master` | the master bus: `volume` (linear gain, default 1.0), `pan` (a balance control, not a pan law), `subsonic` (`true` turns on the 30 Hz subsonic filter, default `false`), `effects` |
 
 ### Track
 
@@ -127,10 +127,16 @@ JSON. Top level:
 
 Signal flow per track: instrument (a bus: its routed input) → audio
 clips summed in → effects in order → volume → pan → its output (the
-master or a bus) and its sends → master effects → master volume and
-balance → **master soft-clip** → output. Routing that isn't a bus, is
+master or a bus) and its sends → master subsonic filter (when on) →
+master effects → master volume and balance → **master soft-clip** →
+output. Routing that isn't a bus, is
 duplicated or closes a loop is dropped on load with a warning
 ([23-routing.md](23-routing.md) §Semantics).
+
+The subsonic filter (`SUB 30` on the master strip; `src/engine.zig`,
+`Subsonic`) is a 4th-order Butterworth highpass at 30 Hz, 24 dB/oct:
+−3 dB at 30 Hz, −24 dB at 15 Hz, flat above ~100 Hz. It sits before the
+master effects so their detectors never react to energy nobody hears.
 
 The master soft-clip is linear up to ±0.95 (−0.45 dBFS) and bends
 smoothly toward ±1.0 above that (`src/engine.zig`, `MasterClip`; the

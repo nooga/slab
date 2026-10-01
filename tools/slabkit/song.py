@@ -847,6 +847,7 @@ class Song:
         self.sections = []
         self.tracks = []
         self.master_volume = 1.0
+        self.master_subsonic = False
         self.master_pan = 0.0
         self.master_fx = []
         self.warnings = []
@@ -913,9 +914,11 @@ class Song:
             if not state.get(id(t)):
                 visit(t, [])
 
-    def master(self, volume=1.0, fx=(), pan=0.0):
+    def master(self, volume=1.0, fx=(), pan=0.0, subsonic=False):
+        """subsonic=True: the master's 24 dB/oct highpass at 30 Hz, before its fx."""
         self.master_volume = volume
         self.master_pan = pan
+        self.master_subsonic = subsonic
         self.master_fx = list(fx)
         return self
 
@@ -930,7 +933,7 @@ class Song:
             "transport": {"bpm": float(self.bpm), "loop": {"on": self.loop, "start": 0.0, "end": float(end)}},
             "meter": [dict({"bar": 0, "num": num, "den": den}, **({"groups": list(self.groups)} if self.groups else {}))],
             "tracks": [t.build(index) for t in self.tracks],
-            "master": {"volume": self.master_volume, "pan": self.master_pan,
+            "master": {"volume": self.master_volume, "pan": self.master_pan, "subsonic": self.master_subsonic,
                        "effects": [f.build(f"master fx {i}") for i, f in enumerate(self.master_fx)]},
         }
 

@@ -247,7 +247,7 @@ pub fn serialize(
 
     // Master bus — volume + effect chain (no instrument, no clips).
     if (active_master) |m| {
-        try appendFmt(alloc, &out, ",\"master\":{{\"volume\":{d},\"pan\":{d},\"effects\":", .{ m.volume(), m.pan() });
+        try appendFmt(alloc, &out, ",\"master\":{{\"volume\":{d},\"pan\":{d},\"subsonic\":{s},\"effects\":", .{ m.volume(), m.pan(), boolStr(m.subsonic.load(.monotonic)) });
         try appendEffects(alloc, &out, m);
         try out.append(alloc, '}');
     }
@@ -574,6 +574,7 @@ pub fn apply(
         const mo = mv.object;
         if (objGet(mo, "volume")) |x| m.setVolume(@floatCast(asF64(x)));
         if (objGet(mo, "pan")) |x| m.setPan(@floatCast(asF64(x)));
+        m.subsonic.store(if (objGet(mo, "subsonic")) |x| asBool(x) else false, .monotonic);
         for (m.effects.items) |*fx| if (fx.mach.deinit) |d| d(fx.mach.state, alloc);
         m.effects.clearRetainingCapacity();
         if (objGet(mo, "effects")) |ev| try applyEffects(alloc, reg, m, ev);
@@ -1065,9 +1066,12 @@ test "JSON project round-trips instrument-by-id, settings, and effect chain" {
     mfx.reset(mfx.state);
     try master.addEffect(alloc, mfx, @intCast(delay_idx));
     master.toggleEffectBypass(0);
+    master.subsonic.store(true, .monotonic);
 
     const bytes = try serialize(alloc, tracks[0..], &transport);
     defer alloc.free(bytes);
+    // The master is restored in place: clear it so the load must set it.
+    master.subsonic.store(false, .monotonic);
 
     var loaded_buf: [1]track_mod.Track = undefined;
     var loaded_count: usize = 0;
@@ -1094,8 +1098,9 @@ test "JSON project round-trips instrument-by-id, settings, and effect chain" {
     try std.testing.expectEqualStrings(src_params.items, ld_params.items);
     try std.testing.expect(std.mem.indexOf(u8, ld_params.items, "\"cutoff\":") != null);
 
-    // Master bus restored in place (volume + bypassed effect).
+    // Master bus restored in place (volume, subsonic, bypassed effect).
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), master.volume(), 0.0001);
+    try std.testing.expect(master.subsonic.load(.monotonic));
     try std.testing.expectEqual(@as(usize, 1), master.effects.items.len);
     try std.testing.expect(master.effectBypassed(0));
 }

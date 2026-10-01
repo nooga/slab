@@ -402,6 +402,11 @@ collapse in mono.
 eq2 (hpf 25 Hz, gentle air shelf) → comp2 gentle-bus-glue → limiter2 (ceil −1, gain to taste)
 ```
 
+- **Subsonic**: `song.master(subsonic=True)` (the strip's `SUB 30`)
+  cuts under 30 Hz at 24 dB/oct before the chain. Use it when a 16'/sub
+  preset or an FM bass written low puts real energy under 20 Hz: the
+  meters, the glue comp and the limiter all react to it, and nobody
+  hears it. The eq2 hpf above still shapes what's left.
 - **Limiter ceiling at −1 dB** keeps the output below the soft-clip
   knee (−0.45 dBFS) with room for inter-sample peaks. Existing songs
   that use −3.2 were written for the old −3.1 dBFS knee; they still work,

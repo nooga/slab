@@ -78,6 +78,8 @@ pub const Engine = struct {
     master_fx_r: [MAX_BLOCK]f32 = undefined,
     /// What the output does past full scale [MasterClip].
     master_clip: MasterClip = .{},
+    /// The master's optional subsonic highpass [Subsonic], before its FX.
+    master_subsonic: Subsonic = .{},
     /// Idle skipping (docs/04 §Idle skipping), an optimization: an
     /// instrument with no note near and an effect whose input is silent,
     /// both silent past their hold, aren't rendered and output silence
@@ -376,6 +378,7 @@ pub const Engine = struct {
         if (self.master) |mb| {
             for (mb.effects.items) |*fx| fx.mach.reset(fx.mach.state);
         }
+        self.master_subsonic.reset();
     }
 
     /// A tap of track `ti` for this block, `delay` samples late: the block
@@ -809,6 +812,10 @@ pub const Engine = struct {
         var mpl: f32 = 1.0;
         var mpr: f32 = 1.0;
         if (self.master) |mb| {
+            if (mb.subsonic.load(.monotonic))
+                self.master_subsonic.process(l, r, @floatFromInt(self.transport.sample_rate))
+            else
+                self.master_subsonic.reset();
             if (mb.effectCount() > 0) {
                 const base = machine.MachineCtx{
                     .sample_rate = @floatFromInt(self.transport.sample_rate),
@@ -841,6 +848,62 @@ pub const Engine = struct {
             peak_r = @max(peak_r, @abs(sr));
         }
         if (self.master) |mb| mb.setMeter(peak_l, peak_r);
+    }
+};
+
+/// The master's subsonic filter (docs/19 §Track): a 4th-order Butterworth
+/// highpass at 30 Hz, 24 dB/oct, on the master's input before its inserts.
+/// Energy under 30 Hz is mostly felt, not heard, on a club rig and inaudible
+/// on headphones, yet it moves meters, compressors and the limiter; the
+/// switch takes it out of the mix in one place. Two RBJ sections at the
+/// Butterworth Qs, f64 state, designed on the first block at a new rate.
+pub const Subsonic = struct {
+    pub const HZ: f64 = 30.0;
+    const QS = [2]f64{ 0.5411961001461969, 1.3065629648763766 };
+
+    rate: f64 = 0,
+    b0: [2]f64 = .{ 1, 1 },
+    b1: [2]f64 = .{ 0, 0 },
+    a1: [2]f64 = .{ 0, 0 },
+    a2: [2]f64 = .{ 0, 0 },
+    /// [channel][section]: the TDF-II state pair.
+    z1: [2][2]f64 = .{ .{ 0, 0 }, .{ 0, 0 } },
+    z2: [2][2]f64 = .{ .{ 0, 0 }, .{ 0, 0 } },
+
+    fn design(self: *Subsonic, sr: f64) void {
+        const w0 = 2.0 * std.math.pi * HZ / sr;
+        const cw = @cos(w0);
+        for (QS, 0..) |q, k| {
+            const alpha = @sin(w0) / (2.0 * q);
+            const a0 = 1.0 + alpha;
+            // b2 = b0 and b1 = -2 b0 for a highpass.
+            self.b0[k] = (1.0 + cw) / 2.0 / a0;
+            self.b1[k] = -(1.0 + cw) / a0;
+            self.a1[k] = -2.0 * cw / a0;
+            self.a2[k] = (1.0 - alpha) / a0;
+        }
+        self.rate = sr;
+    }
+
+    pub fn process(self: *Subsonic, l: []f32, r: []f32, sr: f64) void {
+        if (sr != self.rate) self.design(sr);
+        inline for (.{ l, r }, 0..) |buf, ch| {
+            for (buf) |*s| {
+                var x: f64 = s.*;
+                inline for (0..2) |k| {
+                    const y = self.b0[k] * x + self.z1[ch][k];
+                    self.z1[ch][k] = self.b1[k] * x - self.a1[k] * y + self.z2[ch][k];
+                    self.z2[ch][k] = self.b0[k] * x - self.a2[k] * y;
+                    x = y;
+                }
+                s.* = @floatCast(x);
+            }
+        }
+    }
+
+    pub fn reset(self: *Subsonic) void {
+        self.z1 = .{ .{ 0, 0 }, .{ 0, 0 } };
+        self.z2 = .{ .{ 0, 0 }, .{ 0, 0 } };
     }
 };
 
@@ -1806,6 +1869,38 @@ test "mixAudioClips: missing source data is skipped" {
     var r = [_]f32{0} ** 4;
     mixAudioClips(&snap, 0, 4, 10.0, 48_000, &l, &r);
     for (l) |v| try testing.expectEqual(@as(f32, 0), v);
+}
+
+test "Subsonic: Butterworth at 30 Hz, 24 dB/oct below, flat above" {
+    const sr: f64 = 48000;
+    const cases = [_]struct { hz: f64, db: f64, tol: f64 }{
+        .{ .hz = 30, .db = -3.01, .tol = 0.05 },
+        .{ .hz = 15, .db = -24.1, .tol = 0.2 }, // an octave down: 24 dB/oct
+        .{ .hz = 120, .db = 0.0, .tol = 0.02 },
+        .{ .hz = 1000, .db = 0.0, .tol = 0.001 },
+    };
+    for (cases) |cs| {
+        var f = Subsonic{};
+        var l: [4800]f32 = undefined;
+        var r: [4800]f32 = undefined;
+        var sum: f64 = 0;
+        var n: usize = 0;
+        // 3 s to settle, then the RMS over the last 0.5 s against a full-
+        // scale sine's (the phase shift moves the peak between samples).
+        while (n < 36000) : (n += 4800) {
+            for (&l, &r, 0..) |*a, *b, i| {
+                const v: f32 = @floatCast(@sin(2.0 * std.math.pi * cs.hz * @as(f64, @floatFromInt(n + i)) / sr));
+                a.* = v;
+                b.* = v;
+            }
+            f.process(&l, &r, sr);
+            if (n >= 26400) for (l) |v| {
+                sum += @as(f64, v) * v;
+            };
+        }
+        const rms = @sqrt(sum / 9600.0);
+        try testing.expectApproxEqAbs(cs.db, 20 * std.math.log10(rms * std.math.sqrt2), cs.tol);
+    }
 }
 
 test "MasterClip soft: linear pass-through inside the knee" {

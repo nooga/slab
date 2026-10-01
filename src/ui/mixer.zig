@@ -361,6 +361,12 @@ fn drawMasterStrip(ui: *Ui, r: Rect, master: *Track, send_rows: i32, device_sel:
         ctl.meterStereo(ui, meter_r.insetXY(2, 0), "meter", .{ peaks.l, peaks.r }, .{ peaks.l, peaks.r }, .{ .scale = .auto, .clip_led = true });
         ui.textIn(&ui.fonts.legend, rows.readout, db_s, ui_style.text_mute, .center, false);
     }
+    {
+        const br = rows.buttons.insetXY(4, 2);
+        var on = master.subsonic.load(.monotonic);
+        if (ctl.button(ui, br, "subsonic", &on, .{ .kind = .latch, .label = "SUB 30" })) master.subsonic.store(on, .monotonic);
+        menu.tip(ui, br, "Subsonic filter: 24 dB/oct highpass at 30 Hz before the master inserts");
+    }
 }
 
 /// A thin horizontal scroll bar: drag the thumb, or click the track to jump.
