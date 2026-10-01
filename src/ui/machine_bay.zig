@@ -65,6 +65,10 @@ pub const Result = struct {
     // KEY latch on a sidechain effect: open the key menu there (docs/23).
     key_menu_fx: ?u16 = null,
     key_menu_at: [2]i32 = .{ 0, 0 },
+
+    // UNI chip on an instrument: open the unison panel, its top-right
+    // corner here (docs/08 §Unison).
+    unison_at: ?[2]i32 = null,
 };
 
 // The tracks and the edited track's index, for the KEY latch's label.
@@ -72,6 +76,8 @@ var bay_tracks: []const Track = &.{};
 /// For the latency readouts in ms; main sets it from the transport.
 pub var sample_rate: u32 = 48_000;
 var bay_track_idx: ?usize = null;
+/// Where the last drawn UNI chip hangs its panel (screenshots).
+pub var unison_chip_at: ?[2]i32 = null;
 
 pub const TITLE_H: i32 = 20;
 const MINIMAP_H: i32 = 8;
@@ -362,6 +368,21 @@ fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, fx: ?*const E
             result.key_menu_at = .{ key_r.x, key_r.bottom() };
         }
         menu.tip(ui, key_r, if (keyed) "Sidechain key: this track's signal drives the detector" else "Sidechain: key the detector from another track");
+    };
+    // UNI: the instrument's unison stack; the chip opens its panel.
+    if (is_inst) if (mach.unison) |u| {
+        const n = u.voices();
+        var ubuf: [16]u8 = undefined;
+        const ulabel = if (n > 1) std.fmt.bufPrint(&ubuf, "UNI {d}", .{n}) catch "UNI" else "UNI";
+        const uni_r = bar.cutRight(@max(40, ui.fonts.legend.measure(ulabel) + 24));
+        var uni_on = n > 1;
+        var vbuf: [24]u8 = undefined;
+        const uval = if (n > 1) std.fmt.bufPrint(&vbuf, "{d} VOICES", .{n}) catch "" else "OFF";
+        unison_chip_at = .{ uni_r.right(), uni_r.bottom() };
+        if (ctl.button(ui, uni_r, "uni", &uni_on, .{ .kind = .latch, .label = ulabel, .led = ui_style.accent, .flush = true, .touch_name = "UNISON", .touch_value = uval })) {
+            result.unison_at = .{ uni_r.right(), uni_r.bottom() };
+        }
+        menu.tip(ui, uni_r, if (n > 1) "Unison: each note plays a detuned, spread stack of voices" else "Unison: stack detuned voices on every note");
     };
     var on = active;
     if (ctl.button(ui, pwr, "power", &on, .{

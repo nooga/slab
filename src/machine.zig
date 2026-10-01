@@ -285,6 +285,120 @@ pub const NoteLabel = struct {
     }
 };
 
+/// Host unison (docs/08 §Unison): each note plays on `count` voices of the
+/// machine's pool, detuned across DETUNE cents, panned across SPREAD, with
+/// the side voices at BLEND under the centre and the group's power held
+/// at one voice's. A poly machine shares its pool (notes = pool / count);
+/// a mono one gets `count` clones of its voice. The UI thread writes, the
+/// audio thread reads each block; a torn read across fields only lasts a
+/// block.
+pub const Unison = struct {
+    pub const MAX_COUNT: u8 = 8;
+    pub const MAX_POOL: u8 = 16;
+    /// Cents from the lowest voice to the highest. The JP-8000 supersaw
+    /// reaches about 380 at full detune.
+    pub const DEF_DETUNE: f32 = 50;
+    pub const MAX_DETUNE: f32 = 400;
+    pub const DEF_SPREAD: f32 = 0.7;
+    pub const DEF_BLEND: f32 = 0.75;
+
+    /// The machine's own polyphony (`voices!`); 1 = a mono machine.
+    native: u8,
+    count: std.atomic.Value(u8) = .init(1),
+    /// Pool size for a poly machine; a mono one's pool is `count`.
+    pool: std.atomic.Value(u8),
+    detune_bits: std.atomic.Value(u32) = .init(@bitCast(DEF_DETUNE)),
+    spread_bits: std.atomic.Value(u32) = .init(@bitCast(DEF_SPREAD)),
+    blend_bits: std.atomic.Value(u32) = .init(@bitCast(DEF_BLEND)),
+
+    pub fn init(native: u8) Unison {
+        return .{ .native = native, .pool = .init(native) };
+    }
+
+    pub fn mono(u: *const Unison) bool {
+        return u.native == 1;
+    }
+    pub fn voices(u: *const Unison) u8 {
+        return @max(u.count.load(.monotonic), 1);
+    }
+    /// Regions in use: the pool, never fewer than one note's voices.
+    pub fn poolSize(u: *const Unison) u8 {
+        const n = u.voices();
+        return if (u.mono()) n else @max(u.pool.load(.monotonic), n);
+    }
+    /// Notes that sound at once.
+    pub fn notes(u: *const Unison) u8 {
+        return u.poolSize() / u.voices();
+    }
+    pub fn detune(u: *const Unison) f32 {
+        return @bitCast(u.detune_bits.load(.monotonic));
+    }
+    pub fn spread(u: *const Unison) f32 {
+        return @bitCast(u.spread_bits.load(.monotonic));
+    }
+    pub fn blend(u: *const Unison) f32 {
+        return @bitCast(u.blend_bits.load(.monotonic));
+    }
+    pub fn setCount(u: *Unison, n: u8) void {
+        u.count.store(std.math.clamp(n, 1, MAX_COUNT), .monotonic);
+    }
+    pub fn setPool(u: *Unison, n: u8) void {
+        u.pool.store(std.math.clamp(n, 1, MAX_POOL), .monotonic);
+    }
+    pub fn setDetune(u: *Unison, cents: f32) void {
+        u.detune_bits.store(@bitCast(std.math.clamp(cents, 0, MAX_DETUNE)), .monotonic);
+    }
+    pub fn setSpread(u: *Unison, v: f32) void {
+        u.spread_bits.store(@bitCast(std.math.clamp(v, 0, 1)), .monotonic);
+    }
+    pub fn setBlend(u: *Unison, v: f32) void {
+        u.blend_bits.store(@bitCast(std.math.clamp(v, 0, 1)), .monotonic);
+    }
+
+    /// Off, on the machine's own pool: nothing to save.
+    pub fn isDefault(u: *const Unison) bool {
+        return u.voices() == 1 and (u.mono() or u.pool.load(.monotonic) == u.native);
+    }
+    pub fn reset(u: *Unison) void {
+        u.* = init(u.native);
+    }
+
+    /// `{"count":4,"detune":20,"spread":0.7,"blend":0.75,"voices":8}`
+    /// (voices only for a poly machine).
+    pub fn writeJson(u: *const Unison, out: *std.ArrayList(u8), alloc: std.mem.Allocator) !void {
+        var buf: [160]u8 = undefined;
+        const s = try std.fmt.bufPrint(&buf, "{{\"count\":{d},\"detune\":{d},\"spread\":{d},\"blend\":{d}", .{ u.voices(), u.detune(), u.spread(), u.blend() });
+        try out.appendSlice(alloc, s);
+        if (!u.mono()) {
+            const p = try std.fmt.bufPrint(&buf, ",\"voices\":{d}", .{u.pool.load(.monotonic)});
+            try out.appendSlice(alloc, p);
+        }
+        try out.append(alloc, '}');
+    }
+
+    /// Restore from such an object; missing fields take their defaults.
+    pub fn applyJson(u: *Unison, v: std.json.Value) void {
+        u.reset();
+        if (v != .object) return;
+        const num = struct {
+            fn of(o: std.json.ObjectMap, k: []const u8) ?f64 {
+                const x = o.get(k) orelse return null;
+                return switch (x) {
+                    .integer => |i| @floatFromInt(i),
+                    .float => |f| f,
+                    else => null,
+                };
+            }
+        }.of;
+        const o = v.object;
+        if (num(o, "count")) |x| u.setCount(@intFromFloat(std.math.clamp(@round(x), 1, MAX_COUNT)));
+        if (num(o, "voices")) |x| u.setPool(@intFromFloat(std.math.clamp(@round(x), 1, MAX_POOL)));
+        if (num(o, "detune")) |x| u.setDetune(@floatCast(x));
+        if (num(o, "spread")) |x| u.setSpread(@floatCast(x));
+        if (num(o, "blend")) |x| u.setBlend(@floatCast(x));
+    }
+};
+
 pub const Machine = struct {
     name: []const u8,
     state: *anyopaque,
@@ -331,6 +445,9 @@ pub const Machine = struct {
     /// Its detector takes a sidechain key (manifest `sidechain`, docs/23):
     /// the host then sends 4 audio_in ports, in L/R then key L/R.
     takes_key: bool = false,
+    /// Host unison settings (the titlebar UNI chip, docs/08 §Unison); null
+    /// for machines that can't stack voices (drums, effects).
+    unison: ?*Unison = null,
     /// Automation (docs/22). A machine without these has no automatable
     /// controls.
     control_count: ?ControlCountFn = null,

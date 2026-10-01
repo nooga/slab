@@ -189,11 +189,17 @@ dsp: cream-note-on | ctx:Ctx state:CreamState params:CreamParams -- |
   ctx.hz 1.0 fmax log2 | o |
   o -> state.target-oct
   state.oct 1.0  o  state.oct  fsel-lt -> state.oct
-  ( a fresh voice seeds its drift generators apart from each other )
-  state.dr1& 1.0 drift-seed-once
-  state.dr2& 2.0 drift-seed-once
-  state.dr3& 3.0 drift-seed-once
-  state.drc& 4.0 drift-seed-once
+  ( a fresh voice seeds its drift generators apart from each other, and
+    from its unison clones [ctx.chan]; its oscillators start at the
+    host's unison phase, not 0 )
+  ctx.chan 8.0 f* | ch |
+  state.dr1& ch 1.0 f+ drift-seed-once
+  state.dr2& ch 2.0 f+ drift-seed-once
+  state.dr3& ch 3.0 f+ drift-seed-once
+  state.drc& ch 4.0 f+ drift-seed-once
+  state.ph1 0.0 f=  ctx.phase  state.ph1  select -> state.ph1
+  state.ph2 0.0 f=  ctx.phase 2.618 f* ffrac  state.ph2  select -> state.ph2
+  state.ph3 0.0 f=  ctx.phase 4.236 f* ffrac  state.ph3  select -> state.ph3
   state.f-env& params.f-co& ctx.legato env-rc-trigger
   state.a-env& params.a-co& ctx.legato env-rc-trigger
   ctx.legato 0.5  ctx.vel state.vel  fsel-lt -> state.vel

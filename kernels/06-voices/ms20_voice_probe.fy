@@ -129,10 +129,14 @@ dsp: ms20-voice-note-on
   ( the very first note starts on pitch instead of gliding up from 0 Hz )
   state.oct 1.0  o  state.oct  fsel-lt -> state.oct
   ctx.legato 0.5  ctx.vel state.vel  fsel-lt -> state.vel
-  state.dr1& 1.0 drift-seed-once
-  state.dr2& 2.0 drift-seed-once
-  state.drc& 3.0 drift-seed-once
-  state.drv& 4.0 drift-seed-once
+  ( unison clones [ctx.chan] drift apart, and start at the host's phase )
+  ctx.chan 8.0 f* | ch |
+  state.dr1& ch 1.0 f+ drift-seed-once
+  state.dr2& ch 2.0 f+ drift-seed-once
+  state.drc& ch 3.0 f+ drift-seed-once
+  state.drv& ch 4.0 f+ drift-seed-once
+  state.phase1 0.0 f=  ctx.phase  state.phase1  select -> state.phase1
+  state.phase2 0.0 f=  ctx.phase 2.618 f* ffrac  state.phase2  select -> state.phase2
   state.amp-env& params.amp-co& ctx.legato env-rc-trigger
   state.flt-env& params.flt-co& ctx.legato env-rc-trigger
 ;

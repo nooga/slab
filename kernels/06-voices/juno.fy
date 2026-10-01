@@ -120,6 +120,9 @@ dsp: juno-note-on
   0.0 -> state.age
   state.env& params.co& 0.0 env-rc-trigger
   state.drift& ctx.chan 1.0 f+ drift-seed-once
+  ( unison: a fresh voice's DCO starts at the host's phase, not 0 )
+  state.phase 0.0 f=  ctx.phase  state.phase  select -> state.phase
+  state.sub-phase 0.0 f=  ctx.phase 0.5 f*  state.sub-phase  select -> state.sub-phase
   ( AGE: each voice's parts are a little off, the same way every time )
   1.0  ctx.chan 7.0 spread params.age-amt f* 0.08 f*  f+ -> state.t-spread
   ctx.chan 5.0 spread params.age-amt f* 0.14 f* exp2 -> state.cut-spread

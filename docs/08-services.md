@@ -90,17 +90,64 @@ Default: `oldest-release` (prefer voices already releasing).
 
 ### Unison
 
-If the machine's params include a "unison" parameter, the manifest
-can declare:
+Built (`src/machines/fy_raw_machine.zig`, `machine.Unison`). The host
+plays each note on a group of the machine's own voices, so any melodic
+voice machine stacks without changing its DSP. Drum machines
+(`note-pitch`), stereo voices and machines with host buffers don't take
+it (`Machine.unison` is null).
 
-```
-  unison-param:      voices         ( field name in params )
-  unison-spread:     spread         ( detune amount )
-```
+**Settings.** The instrument's titlebar has a **UNI** chip (`UNI 4` with
+its LED lit when on). It opens a small panel (`src/ui/unison_panel.zig`):
 
-The voice pool then spawns N voices per note-on, detunes them, and
-distributes them stereo. The machine's voice body runs on each
-unison voice like any other — it doesn't know unison exists.
+| knob | range | what |
+|---|---|---|
+| VOICES | 1–16 | a poly machine's pool, default its `voices!` |
+| UNISON | 1–8 | voices per note |
+| DETUNE | 0–400 cents | lowest voice to highest; default 50. The JP-8000 supersaw reaches about 380 |
+| SPREAD | 0–1 | the outer voices' pan, hard at 1 |
+| BLEND | 0–1 | the side voices' level against the centre one (or two) |
+
+**Pool.** A poly machine shares its pool: notes = VOICES / UNISON, so
+juno2's 8 voices at UNISON 4 play two notes. When one note fills the
+pool, the machine plays mono, with the mono note stack and legato. A mono
+machine (Mog Passenger, SM-24) gets UNISON clones of its voice instead
+(the pool follows UNISON) and keeps its mono behaviour. Growing VOICES
+costs CPU on purpose; shrinking it stops the voices it drops.
+
+**Groups.** A note's voices share a voice age. Stealing takes the oldest
+group whole, note-off releases the group, and note expression retunes
+every voice in it, keeping each voice's detune. Moving DETUNE retunes
+sounding groups through the machine's `note-expr` word.
+
+**Voicing.**
+
+- Voice k of n sits at p = 2k/(n−1) − 1. Its pitch offset is
+  ½·DETUNE·sign(p)·|p|^1.5: the inner voices sit close and the outer
+  ones far, as the JP-8000 spaces its saws, so the beat rates don't form
+  an even ladder.
+- Each note also nudges every voice by up to a fifth of an even step,
+  from the instance's own generator, so renders stay deterministic.
+- The centre voice (or two) plays at 1 and the sides at BLEND. The
+  group's power is normalized to one voice's, so UNISON doesn't make it
+  louder.
+- Pan is p·SPREAD, with the sign flipped on alternate pairs from the
+  outside in, so pitch and place don't line up. The pan law is equal
+  power, unity in the middle.
+
+**Kernel side.** Note-on gets `ctx.uni` (p) and `ctx.phase`, a random
+0–1 start phase. Oscillators that free-run from 0 seed from `phase`
+while still at 0, so the stack doesn't flange on its first note.
+Kernels that seed drift from constants add `ctx.chan`, so clones drift
+apart. juno2, profit5, cream and ms20 do both.
+
+**Rendering.** With UNISON at 1 and no stacked voice sounding, the old
+path runs unchanged and output is bit-identical. Otherwise each voice
+(or NEON lane pair) renders into frames starting at −0.0, and is added
+into L and R at its gains.
+
+**Saving.** A project stores `instrument.unison`, and a preset stores a
+top-level `unison`, both only when it isn't the default. Applying a
+preset without one plays one voice a note (docs/19).
 
 ## 2. Param smoother
 

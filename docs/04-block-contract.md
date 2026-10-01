@@ -69,6 +69,9 @@ by `KernelCtx` / `IoFrame` in the adapter, and checked by the test
   | `chan` | region index: voice index for voice machines, 0 L / 1 R for effects |
   | `hz`, `vel`, `pitch` | note-on data; `hz` is raw MIDI pitch for `note-pitch` machines |
   | `data` | the derive-data pointer; read with `ctx Ctx.data-p p@64` |
+  | `legato` | note-on: 1 when a mono voice was still held (slide) |
+  | `pressure`, `slide`, `gain` | note-expr data (docs/22) |
+  | `uni`, `phase` | note-on, unison (docs/08 §Unison): the voice's place in its note's group, −1 to 1, and a start phase 0–1. Both 0 for a voice playing alone. A kernel whose oscillators free-run from 0 seeds them from `phase` while they are still exactly 0, which leaves unison-off renders unchanged. |
 
 - `Io` holds one sample's lanes: `out-l`, `out-r`, `in-l`, `in-r`,
   `det`. `out-l` is at offset 0, so a stage handed `io` can keep writing
@@ -80,7 +83,8 @@ f64 converted to f32 (D5). Only the master bus soft-clips.
 **Lanes.**
 
 - *Voices* accumulate into `io.out-l`; the host sums all voices and
-  copies L to R.
+  copies L to R. A unison voice renders into its own frames and the host
+  pans it into both sides (docs/08 §Unison).
 - *Effects* run dual-mono: one pass per channel against that channel's
   state region. Each pass sees its own input in `in-l` and writes
   `out-l`. `det` is `max(|L|, |R|)` of the input, the stereo-linked
@@ -145,8 +149,8 @@ first note-off of any pitch released the voice.
 
 **Still to do (docs/17 step 3):**
 
-- the rest of the voice service (D6): glide and unison, which land
-  with the mono bass synth and stereo pads (G4) that use them
+- glide as a voice service (D6); machines glide in their own kernels
+  for now. Unison is built (docs/08 §Unison).
 - host buffers and tables addressed through ctx instead of injected into
   state
 

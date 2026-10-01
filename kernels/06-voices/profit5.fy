@@ -201,6 +201,9 @@ dsp: p5-note-on | ctx:Ctx state:P5State params:P5Params -- |
   state.dra& v 1.0 f+ drift-seed-once
   state.drb& v 11.0 f+ drift-seed-once
   state.drc& v 23.0 f+ drift-seed-once
+  ( unison: a fresh voice's oscillators start at the host's phase, not 0 )
+  state.pha 0.0 f=  ctx.phase  state.pha  select -> state.pha
+  state.phb 0.0 f=  ctx.phase 2.618 f* ffrac  state.phb  select -> state.phb
   ( AGE: this voice's parts, the same way every time )
   params.age-amt | ag |
   v 1.0 spread 0.5 f* 0.5 f+  ag f* 0.35 f* -> state.curve-a

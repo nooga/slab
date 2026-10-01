@@ -23,6 +23,8 @@ ustruct: Ctx
   f64 pressure ( note-expr: per-note pressure 0..1 [docs/22] )
   f64 slide    ( note-expr: per-note slide 0..1 )
   f64 gain     ( note-expr: per-note gain, linear )
+  f64 uni      ( note-on: unison place in the note's group, -1..1; 0 alone )
+  f64 phase    ( note-on: unison start phase 0..1 for free-running oscillators; 0 alone )
 ;
 
 ustruct: Io

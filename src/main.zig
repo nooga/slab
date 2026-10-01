@@ -41,6 +41,7 @@ const machine_bay = @import("ui/machine_bay.zig");
 const mixer = @import("ui/mixer.zig");
 const dialog = @import("ui/dialog.zig");
 const render_dialog = @import("ui/render_dialog.zig");
+const unison_panel = @import("ui/unison_panel.zig");
 
 test {
     _ = @import("ui/sprites.zig");
@@ -563,6 +564,7 @@ pub fn main(init: std.process.Init) !void {
     var edit_snap: snap_mod.Setting = .note_16;
     var rename: RenameState = .{};
     var render_dlg: render_dialog.State = .{};
+    var uni_panel: unison_panel.State = .{};
     // A track awaiting the delete confirmation, and the dialog's text.
     var pending_delete: ?usize = null;
     var delete_msg: DeleteMsg = .{};
@@ -593,7 +595,7 @@ pub fn main(init: std.process.Init) !void {
         // One owner of the pointer at a time: a legacy menu, modal or drag
         // hides input from the new Ui, and a new-Ui drag hides it from the
         // legacy panes.
-        const modal = render_dlg.active or pending_delete != null;
+        const modal = render_dlg.active or pending_delete != null or uni_panel.active;
         if (menu.active() or modal or pane.hasActiveDrag()) ui.suppressInput();
 
         // While a menu is open it's modal for the mouse: panes get a
@@ -865,6 +867,11 @@ pub fn main(init: std.process.Init) !void {
         machine_bay.sample_rate = transport.sample_rate;
         const mbres = machine_bay.draw(ui, rects.machine_bay, bay_dev, bay_idx, bay_is_bus, layout.machine_bay_collapsed, &reg, tracks);
         if (mbres.key_menu_fx) |uid| if (bay_idx) |ti| @import("ui/route_menu.zig").openKey(ti, uid, mbres.key_menu_at[0], mbres.key_menu_at[1]);
+        if (mbres.unison_at) |at| if (bay_idx) |ti| if (!bay_is_bus) {
+            // One undo step for the panel's edits: the state it opened on.
+            pushHistorySnapshot(alloc, &history, tracks, &transport);
+            uni_panel.open(ti, at);
+        };
         if (mbres.minimize) layout.machine_bay_collapsed = !layout.machine_bay_collapsed;
         if (mbres.add_machine) |reg_idx| {
             if (bay_dev) |dev| {
@@ -1024,6 +1031,13 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
+        if (uni_panel.active) {
+            const u = if (uni_panel.track < tracks.len) tracks[uni_panel.track].machine.unison else null;
+            if (u) |uu| {
+                if (unison_panel.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &uni_panel, uu)) dirty = true;
+            } else uni_panel.active = false;
+        }
+
         splash.overlay(ui, screenRect());
         menu.draw(ui);
         ui.render();
@@ -1037,6 +1051,7 @@ pub fn main(init: std.process.Init) !void {
         if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_PLAY") != null) transport.play();
         if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_EXPR") != null) clip_editor.toggleExpressionMode();
         if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_MIXER") != null) layout.mixer_visible = true;
+        if (shot_frame == 200 and std.c.getenv("SLAB_SHOT_UNISON") != null) if (machine_bay.unison_chip_at) |at| uni_panel.open(selected_track orelse 0, at);
         if (shot_frame == 0) if (std.c.getenv("SLAB_SHOT_SELECT")) |sel| {
             // "track:clip" — open that clip in the editor (screenshots).
             var it = std.mem.splitScalar(u8, std.mem.span(sel), ':');
@@ -2004,7 +2019,8 @@ fn applyProjectBytes(
 /// after that when set. SLAB_SHOT_PLAY=1 starts the transport at load;
 /// SLAB_SHOT_SELECT=track:clip opens that clip in the editor;
 /// SLAB_SHOT_EXPR=1 starts the piano roll in expression mode;
-/// SLAB_SHOT_MIXER=1 opens the mixer page.
+/// SLAB_SHOT_MIXER=1 opens the mixer page; SLAB_SHOT_UNISON=1 opens the
+/// selected instrument's unison panel.
 fn devScreenshot(frame: *u32) void {
     frame.* +%= 1;
     const path = std.c.getenv("SLAB_SHOT") orelse return;

@@ -98,6 +98,10 @@ in docs/05 §Writing fast machines.
   projects; reordering struct fields doesn't.
 - Nothing on the audio thread allocates or locks. Buffers and assets are
   declared in the manifest and allocated by the host.
+- Host unison (docs/08 §Unison) clones voices by region. A voice kernel
+  must keep all its state per region, seed drift with `ctx.chan`, and
+  seed free-running oscillator phases from `ctx.phase` while they are
+  still 0.
 - `render-lite!` is legacy. Use `ifte` in new code.
 - The fy CLI crashes on some paths. Iterate through slab (the bench,
   `zig build kernel-probe`), not the fy CLI.

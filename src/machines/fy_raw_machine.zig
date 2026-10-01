@@ -33,7 +33,8 @@ const MAX_STATE = 2048;
 const MAX_PARAMS = 4096;
 // State regions: polyphonic voice machines get one per voice, effect
 // machines use two (L/R). The region index reaches kernels as ctx.chan.
-const MAX_REGIONS = 8;
+// Unison can grow a voice machine's pool up to Unison.MAX_POOL.
+const MAX_REGIONS: usize = machine.Unison.MAX_POOL;
 // Host-allocated buffers are sized in seconds at the highest sample rate we
 // run at; kernels read the element count back from state and clamp, so a
 // lower device rate just means extra headroom.
@@ -76,6 +77,11 @@ pub const KernelCtx = extern struct {
     pressure: f64 = 0.5,
     slide: f64 = 0,
     gain: f64 = 1,
+    // Unison (docs/08 §Unison), at note-on: the voice's place in its note's
+    // group (-1..1), and a start phase (0..1) for oscillators that free-run
+    // from 0. Both 0 for a voice playing alone.
+    uni: f64 = 0,
+    phase: f64 = 0,
 };
 
 /// One sample's audio lanes, mirrored by `Io` in ctx.fy. Render words get a
@@ -125,6 +131,8 @@ pub const FyRawMachine = struct {
     /// (chan = 1), beside `io` and `kctx` for the left.
     io_r: [MAX_BLOCK]IoFrame = [_]IoFrame{.{}} ** MAX_BLOCK,
     kctx_r: KernelCtx = .{},
+    /// A unison voice's own frames, panned into `io` after its pass.
+    io_u: [MAX_BLOCK]IoFrame = [_]IoFrame{.{}} ** MAX_BLOCK,
     render_lanes_slots: RawSlots = .{},
     render_lite_lanes_slots: RawSlots = .{},
     render_lanes_caller: ?RawCaller = null,
@@ -285,6 +293,25 @@ pub const FyRawMachine = struct {
     voice_peak: [MAX_REGIONS]f64 = [_]f64{0} ** MAX_REGIONS,
     // out_l before a voice's pass, to measure what that voice added.
     voice_snap: [MAX_BLOCK]f64 = [_]f64{0} ** MAX_BLOCK,
+    // Host unison (docs/08 §Unison). `unison` is the UI's settings; the
+    // rest is the audio thread's. `pool` is the regions in use. A note's
+    // voices share one voice_age; voice_uni_k/_n place each in its group
+    // (n 1: alone), voice_jit is its random detune nudge, and voice_expr
+    // its last pitch, pressure, slide and gain, to retune it when DETUNE
+    // moves.
+    unison: machine.Unison = machine.Unison.init(1),
+    pool: usize = 1,
+    uni_count: usize = 1,
+    uni_detune: f32 = machine.Unison.DEF_DETUNE,
+    uni_spread: f32 = machine.Unison.DEF_SPREAD,
+    uni_blend: f32 = machine.Unison.DEF_BLEND,
+    uni_rng: u64 = 0x9E37_79B9_7F4A_7C15,
+    // Some voice renders through the panned path this block.
+    uni_panned: bool = false,
+    voice_uni_k: [MAX_REGIONS]u8 = [_]u8{0} ** MAX_REGIONS,
+    voice_uni_n: [MAX_REGIONS]u8 = [_]u8{1} ** MAX_REGIONS,
+    voice_jit: [MAX_REGIONS]f32 = [_]f32{0} ** MAX_REGIONS,
+    voice_expr: [MAX_REGIONS][4]f64 = [_][4]f64{.{ 60, 0.5, 0, 1 }} ** MAX_REGIONS,
     // Per-frame meter ballistics (meter display kind). One per machine; a
     // limiter has a single meter. Updated on the UI thread from live state.
     meter_ui: MeterUi = .{},
@@ -321,6 +348,8 @@ pub const FyRawMachine = struct {
             .desc = desc,
             .panel_w = desc.panel_w,
             .alloc = alloc,
+            .unison = machine.Unison.init(@intCast(@max(desc.voices, 1))),
+            .pool = @max(desc.voices, 1),
         };
         if (presets_mod.dirFromMachinePath(self.preset_dir[0..], path)) |dir| {
             self.preset_dir_len = dir.len;
@@ -697,6 +726,7 @@ pub const FyRawMachine = struct {
             .note_labels_fn = noteLabelsImpl,
             .takes_expression = self.note_expr_caller != null,
             .takes_key = self.desc.sidechain,
+            .unison = if (self.canUnison()) &self.unison else null,
             .latency = if (self.desc.latency_sel > 0) latencyImpl else null,
             .tail = tailImpl,
             .take_wake = takeWakeImpl,
@@ -734,7 +764,14 @@ pub const FyRawMachine = struct {
     }
 
     fn regionCount(self: *const FyRawMachine) usize {
-        return if (self.desc.mode == .voice_sample) @max(self.desc.voices, 1) else 2;
+        return if (self.desc.mode == .voice_sample) self.pool else 2;
+    }
+
+    /// Melodic voice machines without host buffers or stereo voices can
+    /// stack voices (docs/08 §Unison).
+    fn canUnison(self: *const FyRawMachine) bool {
+        return self.desc.mode == .voice_sample and !self.desc.note_pitch and
+            self.desc.buffer_count == 0 and !self.desc.stereo;
     }
 
     fn paramsPtr(self: *FyRawMachine) usize {
@@ -1115,6 +1152,10 @@ fn applyPresetImpl(state: *anyopaque, index: machine.PresetIndex) void {
         if (parsed.value.object.get("zones")) |zv| applyZonesJsonImpl(self, zv) else resetZoneEdits(self);
     };
     if (parsed.value.object.get("assets") == null) if (parsed.value.object.get("zones")) |zv| applyZonesJsonImpl(self, zv);
+    // A preset without a stack plays one voice a note.
+    if (self.canUnison()) {
+        if (parsed.value.object.get("unison")) |uv| self.unison.applyJson(uv) else self.unison.reset();
+    }
     const params = parsed.value.object.get("params") orelse return;
     if (params != .object) return;
     var it = params.object.iterator();
@@ -1486,6 +1527,14 @@ fn buildPresetContent(self: *FyRawMachine, content: []u8) ?usize {
             used += zf.len;
         }
     }
+    // Unison travels with the preset: a supersaw lead is its stack.
+    if (self.canUnison() and !self.unison.isDefault()) {
+        var ul: std.ArrayList(u8) = .empty;
+        defer ul.deinit(self.alloc);
+        self.unison.writeJson(&ul, self.alloc) catch return null;
+        const uf = std.fmt.bufPrint(content[used..], ",\"unison\":{s}", .{ul.items}) catch return null;
+        used += uf.len;
+    }
     const tail = std.fmt.bufPrint(content[used..], "}}\n", .{}) catch return null;
     used += tail.len;
     return used;
@@ -1616,6 +1665,12 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
     self.kctx.beat = ctx.ppq_position;
     self.kctx.frames = @floatFromInt(frames);
     self.kctx.sr = ctx.sample_rate;
+    if (self.desc.mode == .voice_sample) syncUnison(self) catch {
+        self.failed = true;
+        @memset(l[0..frames], 0);
+        @memset(r[0..frames], 0);
+        return;
+    };
 
     // Steady knobs: one pass. Gliding or automated knobs: sub-blocks with
     // params re-synced between them; prepare still runs once per block (it
@@ -1719,7 +1774,7 @@ fn renderVoiceSample(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
 
     // No clamp: machines have headroom (docs/17 D5); only the master bus
     // soft-clips.
-    if (self.desc.stereo) {
+    if (self.desc.stereo or self.uni_panned) {
         for (l, r, self.io[0..l.len]) |*sl, *sr, f| {
             sl.* = @floatCast(f.out_l);
             sr.* = @floatCast(f.out_r);
@@ -1746,11 +1801,57 @@ fn renderVoiceSegment(self: *FyRawMachine, start: usize, end: usize) !void {
         active[n_active] = voice;
         n_active += 1;
     };
+    if (self.uni_panned) return renderVoicesPanned(self, caller, active[0..n_active], start, end);
     var i: usize = 0;
     if (neon_lanes) if (effectLanesCaller(self)) |lanes| {
         while (i + 1 < n_active) : (i += 2) try renderVoicePair(self, lanes, active[i], active[i + 1], start, end);
     };
-    while (i < n_active) : (i += 1) try renderVoice(self, caller, active[i], start, end);
+    while (i < n_active) : (i += 1) try renderVoice(self, caller, active[i], self.io[start..end]);
+}
+
+/// Unison (docs/08 §Unison): each voice renders alone into frames that
+/// start at -0.0, then adds into both sides of `io` at its pan gains
+/// (lane pairs as ever, each lane its own frames).
+fn renderVoicesPanned(self: *FyRawMachine, caller: *RawCaller, active: []const usize, start: usize, end: usize) !void {
+    const io = self.io[start..end];
+    const fa = self.io_u[0..io.len];
+    const fb = self.io_r[0..io.len];
+    var i: usize = 0;
+    if (neon_lanes) if (effectLanesCaller(self)) |lanes| {
+        while (i + 1 < active.len) : (i += 2) {
+            freshFrames(fa, io);
+            freshFrames(fb, io);
+            try renderPairPass(self, lanes, active[i], active[i + 1], fa, fb);
+            panVoice(self, active[i], fa, io);
+            panVoice(self, active[i + 1], fb, io);
+        }
+    };
+    while (i < active.len) : (i += 1) {
+        freshFrames(fa, io);
+        try renderVoice(self, caller, active[i], fa);
+        panVoice(self, active[i], fa, io);
+    }
+}
+
+fn freshFrames(dst: []IoFrame, src: []const IoFrame) void {
+    for (dst, src) |*d, f| {
+        d.* = f;
+        d.out_l = -0.0;
+        d.out_r = -0.0;
+    }
+}
+
+/// Add voice `v`'s own frames `y` into `io` at its pan gains; its peak is
+/// what it rendered, before gain.
+fn panVoice(self: *FyRawMachine, v: usize, y: []const IoFrame, io: []IoFrame) void {
+    const g = voiceGains(self, v);
+    var pk = self.voice_peak[v];
+    for (io, y) |*f, s| {
+        pk = @max(pk, @abs(s.out_l));
+        f.out_l += g[0] * s.out_l;
+        f.out_r += g[1] * s.out_l;
+    }
+    self.voice_peak[v] = pk;
 }
 
 /// Voices `a` then `b` over [start, end), in one lane-mode pass: `a` adds
@@ -1768,8 +1869,25 @@ fn renderVoicePair(self: *FyRawMachine, lanes: *RawCaller, a: usize, b: usize, s
         fb.out_l = -0.0;
         fb.out_r = -0.0;
     }
+    try renderPairPass(self, lanes, a, b, io, io_b);
+    var pk_a = self.voice_peak[a];
+    var pk_b = self.voice_peak[b];
+    for (io, io_b, snap) |*f, fb, s0| {
+        const after_a = f.out_l;
+        pk_a = @max(pk_a, @abs(after_a - s0));
+        f.out_l = after_a + fb.out_l;
+        pk_b = @max(pk_b, @abs(f.out_l - after_a));
+        f.out_r += fb.out_r;
+    }
+    self.voice_peak[a] = pk_a;
+    self.voice_peak[b] = pk_b;
+}
+
+/// Voices `a` into `io` and `b` into `io_b` in one lane-mode pass, split
+/// at both voices' control points.
+fn renderPairPass(self: *FyRawMachine, lanes: *RawCaller, a: usize, b: usize, io: []IoFrame, io_b: []IoFrame) !void {
     var at: usize = 0;
-    const len = end - start;
+    const len = io.len;
     while (at < len) {
         // Both voices' control points split the pass.
         var n = len - at;
@@ -1796,47 +1914,33 @@ fn renderVoicePair(self: *FyRawMachine, lanes: *RawCaller, a: usize, b: usize, s
         }
         at += n;
     }
-    var pk_a = self.voice_peak[a];
-    var pk_b = self.voice_peak[b];
-    for (io, io_b, snap) |*f, fb, s0| {
-        const after_a = f.out_l;
-        pk_a = @max(pk_a, @abs(after_a - s0));
-        f.out_l = after_a + fb.out_l;
-        pk_b = @max(pk_b, @abs(f.out_l - after_a));
-        f.out_r += fb.out_r;
-    }
-    self.voice_peak[a] = pk_a;
-    self.voice_peak[b] = pk_b;
 }
 
-fn renderVoice(self: *FyRawMachine, caller: *RawCaller, voice: usize, start: usize, end: usize) !void {
-    const io = self.io[start..end];
-    {
-        const snap = self.voice_snap[start..end];
-        for (snap, io) |*d, f| d.* = f.out_l;
-        const e = self.entryArgs(voice);
-        if (self.control_caller) |*ctl| {
-            // Slice the render at the voice's control points.
-            var at = start;
-            while (at < end) {
-                if (self.voice_ctl_left[voice] == 0) {
-                    _ = try ctl.call(1, &e);
-                    self.voice_ctl_left[voice] = self.desc.control_period;
-                }
-                const n = @min(end - at, self.voice_ctl_left[voice]);
-                const args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&self.io[at]) }, e[0], e[1], e[2] };
-                _ = try caller.call(@intCast(n), &args);
-                self.voice_ctl_left[voice] -= n;
-                at += n;
+fn renderVoice(self: *FyRawMachine, caller: *RawCaller, voice: usize, io: []IoFrame) !void {
+    const snap = self.voice_snap[0..io.len];
+    for (snap, io) |*d, f| d.* = f.out_l;
+    const e = self.entryArgs(voice);
+    if (self.control_caller) |*ctl| {
+        // Slice the render at the voice's control points.
+        var at: usize = 0;
+        while (at < io.len) {
+            if (self.voice_ctl_left[voice] == 0) {
+                _ = try ctl.call(1, &e);
+                self.voice_ctl_left[voice] = self.desc.control_period;
             }
-        } else {
-            const args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&io[0]) }, e[0], e[1], e[2] };
-            _ = try caller.call(@intCast(end - start), &args);
+            const n = @min(io.len - at, self.voice_ctl_left[voice]);
+            const args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&io[at]) }, e[0], e[1], e[2] };
+            _ = try caller.call(@intCast(n), &args);
+            self.voice_ctl_left[voice] -= n;
+            at += n;
         }
-        var pk = self.voice_peak[voice];
-        for (snap, io) |b, f| pk = @max(pk, @abs(f.out_l - b));
-        self.voice_peak[voice] = pk;
+    } else {
+        const args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&io[0]) }, e[0], e[1], e[2] };
+        _ = try caller.call(@intCast(io.len), &args);
     }
+    var pk = self.voice_peak[voice];
+    for (snap, io) |b, f| pk = @max(pk, @abs(f.out_l - b));
+    self.voice_peak[voice] = pk;
 }
 
 fn applyNoteEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
@@ -1862,14 +1966,17 @@ fn applyNoteEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
 }
 
 // Pick a voice: an idle one (oldest first), else the oldest released one
-// still ringing, else steal the oldest held one.
-fn allocVoice(self: *FyRawMachine) usize {
+// still ringing, else steal the oldest held one. `taken` voices are out
+// (a unison group being filled). A group's voices share an age, so a steal
+// takes the oldest group together.
+fn allocVoice(self: *FyRawMachine, taken: []const bool) usize {
     const n = self.regionCount();
     const Pass = enum { idle, released, any };
     for ([_]Pass{ .idle, .released, .any }) |pass| {
         var best: ?usize = null;
         var best_age: u64 = std.math.maxInt(u64);
         for (0..n) |v| {
+            if (taken[v]) continue;
             const ok = switch (pass) {
                 .idle => self.voice_idle[v],
                 .released => !self.voice_gate[v],
@@ -1885,8 +1992,10 @@ fn allocVoice(self: *FyRawMachine) usize {
     return 0;
 }
 
+/// One note at a time: a mono machine, or a poly one whose pool unison
+/// fills with a single note's voices.
 fn isMonoMelodic(self: *const FyRawMachine) bool {
-    return self.regionCount() == 1 and !self.desc.note_pitch;
+    return !self.desc.note_pitch and self.regionCount() / self.uni_count == 1;
 }
 
 /// Whether event `ev` refers to a note played as (pitch, id): by id when
@@ -1907,8 +2016,125 @@ fn monoForget(self: *FyRawMachine, ev: machine.NoteEvent) void {
     self.mono_held_n = w;
 }
 
+// ── Unison (docs/08 §Unison) ─────────────────────────────────────────
+
+/// Voice k of n spread over -1..1 (lowest to highest pitch); 0 alone.
+fn uniPos(k: usize, n: usize) f64 {
+    if (n <= 1) return 0;
+    return 2.0 * @as(f64, @floatFromInt(k)) / @as(f64, @floatFromInt(n - 1)) - 1.0;
+}
+
+/// Uniform 0..1 from the instance's generator (deterministic renders).
+fn uniRand(self: *FyRawMachine) f64 {
+    var x = self.uni_rng;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    self.uni_rng = x;
+    return @as(f64, @floatFromInt(x >> 11)) * (1.0 / 9007199254740992.0);
+}
+
+/// Voice `v`'s pitch offset in cents across DETUNE. Places bend outward
+/// (|p|^1.5: the inner voices close, the outer ones far, as the JP-8000
+/// spaces its seven saws) so the beat rates don't form an even ladder, and
+/// each note nudges its voices by up to a fifth of an even step so the
+/// beating never repeats exactly.
+fn uniCents(self: *const FyRawMachine, v: usize) f64 {
+    const n = self.voice_uni_n[v];
+    if (n <= 1) return 0;
+    const det: f64 = self.uni_detune;
+    const p = uniPos(self.voice_uni_k[v], n);
+    const bent = std.math.copysign(std.math.pow(f64, @abs(p), 1.5), p);
+    return 0.5 * det * bent + 0.2 * @as(f64, self.voice_jit[v]) * det / @as(f64, @floatFromInt(n - 1));
+}
+
+fn voiceHz(self: *const FyRawMachine, v: usize, pitch: f32) f64 {
+    if (self.voice_uni_n[v] <= 1) return midiToHz(pitch);
+    return midiToHz(pitch) * @exp2(uniCents(self, v) / 1200.0);
+}
+
+/// Left and right gain of voice `v`: the centre voice (or two) at 1, the
+/// sides at BLEND, the group's power at one voice's; outer pairs panned
+/// across SPREAD, alternating sides from one pair to the next so pitch
+/// and place don't line up. Equal power, 1/1 in the middle.
+fn voiceGains(self: *const FyRawMachine, v: usize) [2]f64 {
+    const n: usize = self.voice_uni_n[v];
+    if (n <= 1) return .{ 1, 1 };
+    const k: usize = self.voice_uni_k[v];
+    const j = @min(k, n - 1 - k);
+    const centres: f64 = if (n % 2 == 1) 1 else 2;
+    const b: f64 = self.uni_blend;
+    const w: f64 = if (j == (n - 1) / 2) 1 else b;
+    const g = w / @sqrt(centres + (@as(f64, @floatFromInt(n)) - centres) * b * b);
+    const side: f64 = if (j % 2 == 1) -1 else 1;
+    const pan = @as(f64, self.uni_spread) * uniPos(k, n) * side;
+    const th = (pan + 1.0) * (std.math.pi / 4.0);
+    return .{ g * std.math.sqrt2 * @cos(th), g * std.math.sqrt2 * @sin(th) };
+}
+
+/// Block start: adopt the UI's unison settings. A shrinking pool stops the
+/// voices it drops; a DETUNE move retunes sounding groups through the
+/// machine's note-expr word.
+fn syncUnison(self: *FyRawMachine) !void {
+    if (!self.canUnison()) return;
+    const u = &self.unison;
+    const pool: usize = u.poolSize();
+    if (pool < self.pool) for (pool..self.pool) |v| {
+        self.voice_gate[v] = false;
+        self.voice_idle[v] = true;
+        self.voice_peak[v] = 0;
+    };
+    self.pool = pool;
+    self.uni_count = @min(u.voices(), pool);
+    self.uni_spread = u.spread();
+    self.uni_blend = u.blend();
+    const det = u.detune();
+    if (det != self.uni_detune) {
+        self.uni_detune = det;
+        if (self.note_expr_caller) |*caller| for (0..pool) |v| {
+            if (self.voice_idle[v] or self.voice_uni_n[v] <= 1) continue;
+            const e = self.voice_expr[v];
+            self.kctx.pitch = e[0];
+            self.kctx.hz = voiceHz(self, v, @floatCast(e[0]));
+            self.kctx.pressure = e[1];
+            self.kctx.slide = e[2];
+            self.kctx.gain = e[3];
+            _ = try caller.call(1, &self.entryArgs(v));
+        };
+    }
+    var grouped = self.uni_count > 1;
+    for (0..pool) |v| {
+        if (!self.voice_idle[v] and self.voice_uni_n[v] > 1) grouped = true;
+    }
+    self.uni_panned = grouped;
+}
+
+/// (Re)start voice `v` as place k of an n-voice group playing `ev`.
+fn startVoice(self: *FyRawMachine, v: usize, k: usize, n: usize, ev: machine.NoteEvent) !void {
+    self.voice_age[v] = self.age_counter;
+    self.voice_pitch[v] = ev.pitch;
+    self.voice_note_id[v] = ev.note_id;
+    self.voice_gate[v] = true;
+    self.voice_idle[v] = false;
+    self.voice_peak[v] = 0;
+    self.voice_ctl_left[v] = 0; // control runs before the note's first sample
+    self.voice_uni_k[v] = @intCast(k);
+    self.voice_uni_n[v] = @intCast(n);
+    self.voice_jit[v] = if (n > 1) @floatCast(uniRand(self) * 2 - 1) else 0;
+    self.voice_expr[v] = .{ ev.pitch, 0.5, 0, 1 };
+    self.kctx.uni = uniPos(k, n);
+    self.kctx.phase = if (n > 1) uniRand(self) else 0;
+    // note-pitch machines (drums) address slots by raw MIDI pitch.
+    const note_arg = if (self.desc.note_pitch) @as(f64, ev.pitch) else voiceHz(self, v, ev.pitch);
+    self.kctx.pitch = ev.pitch;
+    try callNoteOn(self, v, note_arg, ev.velocity);
+    self.kctx.uni = 0;
+    self.kctx.phase = 0;
+}
+
 fn noteOnEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
-    if (isMonoMelodic(self)) {
+    const mono = isMonoMelodic(self);
+    if (mono) {
         monoForget(self, ev);
         if (self.mono_held_n == self.mono_held.len) {
             std.mem.copyForwards(f32, self.mono_held[0 .. self.mono_held.len - 1], self.mono_held[1..]);
@@ -1920,25 +2146,23 @@ fn noteOnEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
         self.mono_held_n += 1;
     }
     // Legato: a note arriving while the voice is still held (mono slide).
-    self.kctx.legato = if (isMonoMelodic(self) and self.voice_gate[0]) 1 else 0;
-    const voice = allocVoice(self);
+    self.kctx.legato = if (mono and self.voice_gate[0]) 1 else 0;
+    // The note's voices: a mono group is always the first regions.
+    const n = self.uni_count;
+    var group: [MAX_REGIONS]usize = undefined;
+    var taken = [_]bool{false} ** MAX_REGIONS;
+    for (0..n) |k| {
+        group[k] = if (mono) k else allocVoice(self, &taken);
+        taken[group[k]] = true;
+    }
     self.age_counter += 1;
-    self.voice_age[voice] = self.age_counter;
-    self.voice_pitch[voice] = ev.pitch;
-    self.voice_note_id[voice] = ev.note_id;
-    self.voice_gate[voice] = true;
-    self.voice_idle[voice] = false;
-    self.voice_peak[voice] = 0;
-    self.voice_ctl_left[voice] = 0; // control runs before the note's first sample
-    // note-pitch machines (drums) address slots by raw MIDI pitch.
-    const note_arg = if (self.desc.note_pitch) @as(f64, ev.pitch) else midiToHz(ev.pitch);
-    self.kctx.pitch = ev.pitch;
-    try callNoteOn(self, voice, note_arg, ev.velocity);
+    for (group[0..n], 0..) |v, k| try startVoice(self, v, k, n, ev);
     self.kctx.legato = 0;
 }
 
 // note_id is -1 throughout the sequencer, so note-off matches the newest
-// gated voice holding this pitch. Mono machines just release voice 0.
+// gated voice holding this pitch, and releases its unison group. Mono
+// machines release every held voice.
 fn noteOffEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
     const n = self.regionCount();
     if (isMonoMelodic(self)) {
@@ -1948,16 +2172,24 @@ fn noteOffEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
         if (self.mono_held_n > 0) {
             // Fall back to the newest held note, legato.
             const back = self.mono_held[self.mono_held_n - 1];
-            self.voice_pitch[0] = back;
-            self.voice_note_id[0] = self.mono_held_id[self.mono_held_n - 1];
+            const back_id = self.mono_held_id[self.mono_held_n - 1];
             self.kctx.legato = 1;
             self.kctx.pitch = back;
-            try callNoteOn(self, 0, midiToHz(back), self.kctx.vel);
+            for (0..self.uni_count) |v| {
+                self.voice_pitch[v] = back;
+                self.voice_note_id[v] = back_id;
+                self.voice_expr[v] = .{ back, 0.5, 0, 1 };
+                self.kctx.uni = uniPos(self.voice_uni_k[v], self.voice_uni_n[v]);
+                try callNoteOn(self, v, voiceHz(self, v, back), self.kctx.vel);
+            }
+            self.kctx.uni = 0;
             self.kctx.legato = 0;
             return;
         }
-        self.voice_gate[0] = false;
-        try callNoteOff(self, 0);
+        for (0..n) |v| if (self.voice_gate[v]) {
+            self.voice_gate[v] = false;
+            try callNoteOff(self, v);
+        };
         return;
     }
     if (n == 1) {
@@ -1975,25 +2207,29 @@ fn noteOffEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
             found = v;
         }
     }
-    if (found) |v| {
+    if (found) |f| for (0..n) |v| {
+        if (!self.voice_gate[v] or self.voice_age[v] != self.voice_age[f]) continue;
+        if (!sameNote(self.voice_pitch[v], self.voice_note_id[v], ev)) continue;
         self.voice_gate[v] = false;
         try callNoteOff(self, v);
-    }
+    };
 }
 
 /// Per-note expression (docs/22 §Note expression): retune the voice that
 /// plays `ev.note_id` to `ev.pitch` through the machine's `note-expr`
-/// word. Machines without one ignore it.
+/// word, each unison voice keeping its detune. Machines without one
+/// ignore it.
 fn noteExprEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
     const caller = if (self.note_expr_caller) |*c_| c_ else return;
     if (ev.note_id < 0 or self.desc.note_pitch) return;
     for (0..self.regionCount()) |v| {
         if (self.voice_note_id[v] != ev.note_id) continue;
         self.kctx.pitch = ev.pitch;
-        self.kctx.hz = midiToHz(ev.pitch);
+        self.kctx.hz = voiceHz(self, v, ev.pitch);
         self.kctx.pressure = ev.pressure;
         self.kctx.slide = ev.slide;
         self.kctx.gain = std.math.pow(f64, 10, @as(f64, ev.value) / 20);
+        self.voice_expr[v] = .{ ev.pitch, self.kctx.pressure, self.kctx.slide, self.kctx.gain };
         _ = try caller.call(1, &self.entryArgs(v));
     }
 }
@@ -4966,6 +5202,9 @@ test "kernel ABI: KernelCtx and IoFrame match ctx.fy's Ctx and Io" {
         .{ .name = "Ctx.pitch", .off = @offsetOf(KernelCtx, "pitch") },
         .{ .name = "Ctx.data", .off = @offsetOf(KernelCtx, "data") },
         .{ .name = "Ctx.legato", .off = @offsetOf(KernelCtx, "legato") },
+        .{ .name = "Ctx.gain", .off = @offsetOf(KernelCtx, "gain") },
+        .{ .name = "Ctx.uni", .off = @offsetOf(KernelCtx, "uni") },
+        .{ .name = "Ctx.phase", .off = @offsetOf(KernelCtx, "phase") },
         .{ .name = "Io.size", .off = @sizeOf(IoFrame) },
         .{ .name = "Io.out-l", .off = @offsetOf(IoFrame, "out_l") },
         .{ .name = "Io.out-r", .off = @offsetOf(IoFrame, "out_r") },
@@ -6823,4 +7062,209 @@ test "NEON lanes: voices rendered in pairs sum to the same samples as one at a t
         for (outs[1][0]) |x| peak = @max(peak, @abs(x));
         try testing.expect(peak > 0.01);
     }
+}
+
+// ── Unison (docs/08 §Unison) ─────────────────────────────────────────
+
+fn uniNote(kind: machine.NoteKind, pitch: f32) machine.NoteEvent {
+    return .{ .sample_offset = 0, .kind = kind, .channel = 0, .note_id = -1, .pitch = pitch, .velocity = if (kind == .note_on) 0.8 else 0 };
+}
+
+fn uniBlock(mach: machine.Machine, evs: []const machine.NoteEvent, l: []f32, r: []f32) void {
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.tempo_bpm = 120;
+    ctx.block_size = @intCast(l.len);
+    ctx.note_in = if (evs.len > 0) evs.ptr else null;
+    ctx.note_in_count = @intCast(evs.len);
+    testRender(mach, &ctx, l, r);
+}
+
+fn uniGroup(inst: *const FyRawMachine, pitch: f32) usize {
+    var n: usize = 0;
+    for (0..inst.pool) |v| {
+        if (inst.voice_gate[v] and inst.voice_pitch[v] == pitch) n += 1;
+    }
+    return n;
+}
+
+test "unison: a poly note takes a group from the pool, steals and releases whole groups" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/juno2/juno2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    const u = mach.unison.?;
+    try testing.expect(u.isDefault());
+    u.setCount(4);
+    try testing.expectEqual(@as(u8, 2), u.notes());
+
+    var l = [_]f32{0} ** 128;
+    var r = [_]f32{0} ** 128;
+    uniBlock(mach, &.{uniNote(.note_on, 60)}, &l, &r);
+    try testing.expectEqual(@as(usize, 4), uniGroup(inst, 60));
+    uniBlock(mach, &.{uniNote(.note_on, 64)}, &l, &r);
+    try testing.expectEqual(@as(usize, 4), uniGroup(inst, 64));
+    // A third note steals the oldest group whole.
+    uniBlock(mach, &.{uniNote(.note_on, 67)}, &l, &r);
+    try testing.expectEqual(@as(usize, 4), uniGroup(inst, 67));
+    try testing.expectEqual(@as(usize, 0), uniGroup(inst, 60));
+    try testing.expectEqual(@as(usize, 4), uniGroup(inst, 64));
+    // Each group holds places 0..3 of four.
+    var places = [_]bool{false} ** 4;
+    for (0..inst.pool) |v| if (inst.voice_gate[v] and inst.voice_pitch[v] == 67) {
+        try testing.expectEqual(@as(u8, 4), inst.voice_uni_n[v]);
+        places[inst.voice_uni_k[v]] = true;
+    };
+    for (places) |p| try testing.expect(p);
+    uniBlock(mach, &.{uniNote(.note_off, 64)}, &l, &r);
+    try testing.expectEqual(@as(usize, 0), uniGroup(inst, 64));
+    try testing.expectEqual(@as(usize, 4), uniGroup(inst, 67));
+
+    // VOICES grows the pool: 16 voices at 4 a note play 4 notes.
+    u.setPool(16);
+    uniBlock(mach, &.{}, &l, &r);
+    try testing.expectEqual(@as(usize, 16), inst.pool);
+    for ([_]f32{ 48, 52, 55 }) |p| uniBlock(mach, &.{uniNote(.note_on, p)}, &l, &r);
+    for ([_]f32{ 67, 48, 52, 55 }) |p| try testing.expectEqual(@as(usize, 4), uniGroup(inst, p));
+    // Shrinking it stops the voices it drops.
+    u.setPool(8);
+    uniBlock(mach, &.{}, &l, &r);
+    try testing.expectEqual(@as(usize, 8), inst.pool);
+    for (8..16) |v| try testing.expect(inst.voice_idle[v] and !inst.voice_gate[v]);
+}
+
+test "unison: DETUNE spreads a group's pitch and retunes it while held" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/juno2/juno2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    const u = mach.unison.?;
+    u.setCount(3);
+    u.setDetune(0);
+    const hz_off = try fyFieldOffset(inst, "JunoState.note-hz");
+    var l = [_]f32{0} ** 128;
+    var r = [_]f32{0} ** 128;
+    uniBlock(mach, &.{uniNote(.note_on, 69)}, &l, &r);
+    var hz: [3]f64 = undefined;
+    for (0..inst.pool) |v| if (inst.voice_gate[v]) {
+        hz[inst.voice_uni_k[v]] = inst.readStateF64(v, hz_off);
+    };
+    for (hz) |h| try testing.expectApproxEqAbs(@as(f64, 440), h, 1e-9);
+
+    u.setDetune(100);
+    uniBlock(mach, &.{}, &l, &r);
+    for (0..inst.pool) |v| if (inst.voice_gate[v]) {
+        hz[inst.voice_uni_k[v]] = inst.readStateF64(v, hz_off);
+    };
+    // Lowest to highest spans the 100 cents, each nudged by under a fifth
+    // of the 50-cent step.
+    const cents = struct {
+        fn of(h: f64) f64 {
+            return 1200 * @log2(h / 440);
+        }
+    }.of;
+    try testing.expectApproxEqAbs(@as(f64, -50), cents(hz[0]), 10.01);
+    try testing.expectApproxEqAbs(@as(f64, 0), cents(hz[1]), 10.01);
+    try testing.expectApproxEqAbs(@as(f64, 50), cents(hz[2]), 10.01);
+}
+
+fn uniRms(x: []const f32) f64 {
+    var acc: f64 = 0;
+    for (x) |v| acc += @as(f64, v) * v;
+    return @sqrt(acc / @as(f64, @floatFromInt(x.len)));
+}
+
+test "unison: SPREAD widens the stack, at 0 it stays centred, the level holds" {
+    const n = 48_128;
+    const block = 256;
+    var out: [3][2][]f32 = undefined;
+    for (0..3) |case| {
+        const inst = try FyRawMachine.create(testing.allocator, "machines/juno2/juno2.fy");
+        const mach = inst.machineInterface();
+        defer mach.deinit.?(mach.state, testing.allocator);
+        const u = mach.unison.?;
+        if (case > 0) {
+            u.setCount(4); // two notes of four
+            u.setSpread(if (case == 1) 0 else 1);
+        }
+        out[case] = .{ try testing.allocator.alloc(f32, n), try testing.allocator.alloc(f32, n) };
+        var at: usize = 0;
+        while (at < n) : (at += block) {
+            const on = [_]machine.NoteEvent{ uniNote(.note_on, 48), uniNote(.note_on, 55) };
+            uniBlock(mach, if (at == 0) &on else &.{}, out[case][0][at .. at + block], out[case][1][at .. at + block]);
+        }
+    }
+    defer for (out) |o| {
+        testing.allocator.free(o[0]);
+        testing.allocator.free(o[1]);
+    };
+    const tail = n / 4; // past the attack
+    const ref = uniRms(out[0][0][tail..]);
+    try testing.expect(ref > 1e-3);
+    // SPREAD 0: one channel twice, at about one voice's level.
+    try testing.expectEqualSlices(f32, out[1][0], out[1][1]);
+    const db_c = 20 * @log10(uniRms(out[1][0][tail..]) / ref);
+    try testing.expect(@abs(db_c) < 3);
+    // SPREAD 1: the sides differ, each still near the level.
+    var diff: f64 = 0;
+    for (out[2][0][tail..], out[2][1][tail..]) |a, b| diff = @max(diff, @abs(a - b));
+    try testing.expect(diff > 0.01);
+    for (0..2) |ch| {
+        const db = 20 * @log10(uniRms(out[2][ch][tail..]) / ref);
+        try testing.expect(@abs(db) < 3);
+    }
+}
+
+test "unison: a mono machine plays its clones as one voice, legato and all" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/cream/cream.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    const u = mach.unison.?;
+    try testing.expect(u.mono());
+    u.setCount(3);
+    var l = [_]f32{0} ** 128;
+    var r = [_]f32{0} ** 128;
+    uniBlock(mach, &.{uniNote(.note_on, 48)}, &l, &r);
+    try testing.expectEqual(@as(usize, 3), inst.pool);
+    try testing.expectEqual(@as(usize, 3), uniGroup(inst, 48));
+    // A second held note slides the whole stack; releasing it falls back.
+    uniBlock(mach, &.{uniNote(.note_on, 50)}, &l, &r);
+    try testing.expectEqual(@as(usize, 3), uniGroup(inst, 50));
+    uniBlock(mach, &.{uniNote(.note_off, 50)}, &l, &r);
+    try testing.expectEqual(@as(usize, 3), uniGroup(inst, 48));
+    uniBlock(mach, &.{uniNote(.note_off, 48)}, &l, &r);
+    for (0..3) |v| try testing.expect(!inst.voice_gate[v]);
+    // The clones drift apart: their drift generators were seeded apart.
+    const rng = try fyFieldOffset(inst, "CreamState.dr1");
+    try testing.expect(inst.readStateF64(0, rng) != inst.readStateF64(1, rng));
+}
+
+test "unison: presets and projects carry the stack; a preset without one plays single" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/juno2/juno2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    const u = mach.unison.?;
+    var content: [presets_mod.MAX_FILE]u8 = undefined;
+    const plain = buildPresetContent(inst, &content).?;
+    try testing.expect(std.mem.indexOf(u8, content[0..plain], "unison") == null);
+
+    u.setCount(6);
+    u.setDetune(33);
+    u.setPool(12);
+    const len = buildPresetContent(inst, &content).?;
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, content[0..len], .{});
+    defer parsed.deinit();
+    const uv = parsed.value.object.get("unison").?;
+    var copy = machine.Unison.init(8);
+    copy.applyJson(uv);
+    try testing.expectEqual(@as(u8, 6), copy.voices());
+    try testing.expectEqual(@as(u8, 12), copy.pool.load(.monotonic));
+    try testing.expectApproxEqAbs(@as(f32, 33), copy.detune(), 1e-4);
+
+    try testing.expect(inst.presets.count > 0);
+    mach.apply_preset.?(mach.state, 0);
+    try testing.expect(u.isDefault());
+    // Drums can't stack.
+    const drums = try FyRawMachine.create(testing.allocator, "machines/drum2/drum2.fy");
+    const dm = drums.machineInterface();
+    defer dm.deinit.?(dm.state, testing.allocator);
+    try testing.expect(dm.unison == null);
 }

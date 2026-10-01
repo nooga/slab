@@ -172,6 +172,7 @@ pub fn serialize(
             try appendPreset(alloc, &out, t.machine);
             try appendAssets(alloc, &out, t.machine);
             try appendZones(alloc, &out, t.machine);
+            try appendUnison(alloc, &out, t.machine);
             if (t.machine.write_state_json) |f| {
                 try out.appendSlice(alloc, ",\"state\":");
                 try f(t.machine.state, &out, alloc);
@@ -606,6 +607,7 @@ fn parseTrack(alloc: std.mem.Allocator, reg: *registry_mod.Registry, to: std.jso
                 if (objGet(iv.object, "params")) |pv| applyParams(mach, pv);
                 if (objGet(iv.object, "assets")) |av| applyAssets(mach, av);
                 if (objGet(iv.object, "zones")) |zv| if (mach.apply_zones_json) |f| f(mach.state, zv);
+                if (objGet(iv.object, "unison")) |uv| if (mach.unison) |u| u.applyJson(uv);
                 if (objGet(iv.object, "state")) |sv| if (mach.apply_state_json) |f| f(mach.state, sv);
                 markPreset(mach, objGet(iv.object, "preset"));
             }
@@ -805,6 +807,14 @@ fn appendZones(alloc: std.mem.Allocator, out: *std.ArrayList(u8), mach: machine_
     if (body.items.len == 0) return;
     try out.appendSlice(alloc, ",\"zones\":");
     try out.appendSlice(alloc, body.items);
+}
+
+// `,"unison":{...}` when the instrument stacks voices (docs/08 §Unison).
+fn appendUnison(alloc: std.mem.Allocator, out: *std.ArrayList(u8), mach: machine_mod.Machine) !void {
+    const u = mach.unison orelse return;
+    if (u.isDefault()) return;
+    try out.appendSlice(alloc, ",\"unison\":");
+    try u.writeJson(out, alloc);
 }
 
 // A missing file keeps the machine's default, like a missing clip source.
