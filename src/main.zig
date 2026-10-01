@@ -2819,10 +2819,13 @@ pub const Fy = struct {
             return makeInt(0); // No match, no default
         }
 
-        // Keep a pointer to the Fy instance for string operations
-        pub var fyPtr: usize = 0;
+        // The Fy instance whose code this thread is running, for builtins
+        // that need it (strings, the heap). Per thread: hosts run separate
+        // instances on separate threads at once (slab renders tracks in
+        // parallel).
+        pub threadlocal var fyPtr: usize = 0;
         // Pointer to the active Compiler during macro expansion (0 when not in macro)
-        var compilerPtr: usize = 0;
+        threadlocal var compilerPtr: usize = 0;
 
         fn allocCStr(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
             var buf = try allocator.alloc(u8, bytes.len + 1);
