@@ -48,6 +48,8 @@ ustruct: JunoState
   Drift drift     ( this voice's slow pitch wander )
   f64 t-spread    ( this voice's envelope-time multiplier, from AGE )
   f64 cut-spread  ( this voice's cutoff multiplier, from AGE )
+  f64 oc-x        ( the output coupling cap: last input, last output )
+  f64 oc-y
 ;
 
 ustruct: JunoParams
@@ -86,6 +88,7 @@ ustruct: JunoParams
   f64 lfo-oct     ( lfo-vcf * 3 )
   f64 vib-frac    ( vibrato * 0.03 - peak pitch deviation ratio )
   f64 drift-c
+  f64 oc-a        ( the output coupling cap's one-pole coefficient, 10 Hz )
   EnvRcCoefs co
 ;
 
@@ -107,6 +110,7 @@ dsp: juno-block-prepare
   params.co&  params.atk-s params.dec-s params.sus params.rel-s  0.0 0.0  inv env-rc-coefs
   params.vibrato 0.03 f* -> params.vib-frac
   0.3 inv drift-coef -> params.drift-c
+  1.0  1.0  6.283185307179586 10.0 f* inv f*  f+  f/ -> params.oc-a
 ;
 
 ( ctx state params -- : start this voice.  DCO phases free-run -
@@ -224,16 +228,19 @@ dsp: jn-hpf | state:JunoState params:JunoParams x -- y |
   x  lp params.hpf-on f* f-  lp params.boost f* f+
 ;
 
-( VCA - env or gate mode - ACCUMULATE into out. )
+( VCA - env or gate mode - then the output's 10 Hz coupling cap, which
+  takes out the pulse's DC [a narrow PWM sits far off centre] and the
+  thump it leaves at the attack; ACCUMULATE into out. )
 dsp: jn-vca | out state:JunoState params:JunoParams env y -- |
   params.vca-mode 0.5
     env
     state.env& env-rc-gate
   fsel-lt | amp |
-  out f@64
-  y amp f*
-  state.vel f* params.level f* 3.5 f* f+  ( +11 dB makeup )
-  out f!64
+  y amp f*  state.vel f* params.level f* 3.5 f* | v |  ( +11 dB makeup )
+  state.oc-y v f+ state.oc-x f-  params.oc-a f* | o |
+  v -> state.oc-x
+  o -> state.oc-y
+  out f@64 o f+ out f!64
 ;
 
 ( io ctx state params -- : one polyphonic voice tick. )

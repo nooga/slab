@@ -160,4 +160,6 @@ dsp: fm86-derive
   params.pms | ps |
   ps 0.5 0.0  ps 1.5 10.0  ps 2.5 20.0  ps 3.5 33.0  ps 4.5 55.0  ps 5.5 92.0  ps 6.5 153.0 255.0
     fsel-lt fsel-lt fsel-lt fsel-lt fsel-lt fsel-lt fsel-lt -> params.pmsv
+  ( the output's 10 Hz coupling cap, every engine )
+  1.0  1.0  6.283185307179586 10.0 f* sr f/  f+  f/ -> params.oc-a
 ;

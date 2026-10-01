@@ -78,6 +78,8 @@ ustruct: Fm86State
   ( the DX7 engines' feedback loop through OP4 [ALGO 4] or OP5 [ALGO 6]:
     the loop end's last two outputs )
   f64 lf1 f64 lf2
+  ( the output coupling cap: last input, last output )
+  f64 oc-x f64 oc-y
 ;
 
 ustruct: DxOpP
@@ -127,6 +129,8 @@ ustruct: Fm86Params
   f64 fbloop f64 fbl4   ( 1: OP6's feedback comes round a loop; 1: from OP4, else OP5 )
   f64 fa0 f64 fa1 f64 fa2 f64 fa3 f64 fa4
   f64 fb0q f64 fb1q f64 fb2q f64 fb3q f64 fb4q
+  ( the output coupling cap's one-pole coefficient, 10 Hz )
+  f64 oc-a
 ;
 
 :: DX-JUMP 6.703125 ;               ( the attack's floor, 1716 / 256 )
@@ -485,17 +489,34 @@ dsp: fm86-voice-step-dx | s:Fm86State p:Fm86Params -- out |
   s p d dxv-lpf
 ;
 
+( s p x -- y : the output coupling cap, a 10 Hz one-pole highpass.  FM
+  puts real energy at 0 Hz: a sideband lands there when the ratios line
+  up [c - k m = 0], and detuned operators beat a fraction of a hertz off
+  it.  The DX7's AC-coupled output never let that out; neither do we.
+  Once the voice is silent the cap's tail flushes to exactly 0 under the
+  host's idle floor [1e-6], sample by sample, so where a block boundary
+  lets the voice go idle can't change what it played. )
+dsp: dx-couple | s:Fm86State p:Fm86Params x -- y |
+  s.oc-y x f+ s.oc-x f-  p.oc-a f* | y0 |
+  x fabs 0.000000001 f<  y0 fabs 0.000001 f<  and  0.0 y0 select | y |
+  x -> s.oc-x
+  y -> s.oc-y
+  y
+;
+
 ( io ctx state params -- : one voice sample on the DX7 engines,
   ACCUMULATED into out; the manifest's render word, with the MODERN one
   as its render-lite for ENGINE 0. )
 dsp: k-fm86-voice-sample-dx | io ctx state params -- |
-  io f@64  state params fm86-voice-step-dx  f+  io f!64
+  state params fm86-voice-step-dx | x |
+  io f@64  state params x dx-couple  f+  io f!64
 ;
 
 ( io ctx state params -- : one FM-86 voice sample, ACCUMULATED into out.
   The host renders every voice into the same zeroed buffer. )
 dsp: k-fm86-voice-sample | io ctx state params -- |
-  io f@64  state params fm86-voice-step  f+  io f!64
+  state params fm86-voice-step | x |
+  io f@64  state params x dx-couple  f+  io f!64
 ;
 
 ( ── machine wiring: note-on / note-off / expression ────────────────── )
