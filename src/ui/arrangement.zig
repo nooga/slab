@@ -59,8 +59,9 @@ fn rowH(t: *const Track) f32 {
 
 // Display order (docs/23 §Arrangement, ui/track_order.zig): tracks with
 // their groups above them, then a RETURNS divider and the returns. Members
-// of a folded group aren't shown. Track indices never change; only where
-// a row is drawn does. Cheap enough (32 tracks) to rebuild on every call.
+// of a folded group aren't shown. It follows index order; a header drag
+// renumbers the tracks (headerDrop). Cheap enough (32 tracks) to rebuild
+// on every call.
 
 /// Height of the strip that opens the returns section.
 const BUS_DIV_H: f32 = 16;
@@ -71,6 +72,48 @@ fn order(tracks: []const Track) track_order.Order {
 
 fn isShown(tracks: []const Track, ti: usize) bool {
     return ti < tracks.len and order(tracks).shown[ti];
+}
+
+/// Where a header drag of `from` at content y `cy` drops: the new track
+/// order and the content y of the line showing it. Over a row that isn't
+/// a sibling of `from` (a group's member), the drop is beside the
+/// enclosing sibling, before or after by the middle of its block; a group
+/// row itself also splits at its block's middle. Null when there's no
+/// sibling there (a member can't leave its group by drag).
+fn headerDrop(tracks: []const Track, from: u8, cy: f32) ?struct { order: [routing.MAX_TRACKS]u8, line: f32 } {
+    const o = order(tracks);
+    if (o.n == 0) return null;
+    // The shown row under cy (the nearest end beyond them).
+    var tops: [routing.MAX_TRACKS + 1]f32 = undefined;
+    var y: f32 = 0;
+    var hov: usize = o.n - 1;
+    var found = false;
+    for (o.rows[0..o.n], 0..) |row, k| {
+        if (k == o.main_n) y += BUS_DIV_H;
+        tops[k] = y;
+        y += rowH(&tracks[row.ti]);
+        if (!found and cy < y) {
+            hov = k;
+            found = true;
+        }
+    }
+    tops[o.n] = y;
+    var target = o.rows[hov].ti;
+    var after = cy > tops[hov] + rowH(&tracks[target]) / 2;
+    var guard: usize = 0;
+    while (o.parent[target] != o.parent[from] and guard < routing.MAX_TRACKS) : (guard += 1) {
+        target = o.parent[target];
+        if (target == routing.NONE) return null;
+    }
+    // The target's block: its row and the shown rows inside it.
+    var at: usize = 0;
+    while (at < o.n and o.rows[at].ti != target) at += 1;
+    var end = at + 1;
+    while (end < o.n and end != o.main_n and o.within(o.rows[end].ti, target)) end += 1;
+    if (end - at > 1 or target != o.rows[hov].ti) after = cy > (tops[at] + tops[end]) / 2;
+    const new_order = track_order.moved(tracks, from, target, after) orelse return null;
+    const bottom = if (end == o.main_n) tops[end] - (if (o.hasReturns()) BUS_DIV_H else 0) else tops[end];
+    return .{ .order = new_order, .line = if (after) bottom else tops[at] };
 }
 
 fn hasBuses(tracks: []const Track) bool {
@@ -200,6 +243,10 @@ var scroll_x: f32 = 0;
 var follow: follow_mod.Follow = .{};
 var scroll_y: f32 = 0;
 var last_scroll_time: f64 = 0;
+// A press on a track header's name: a drag from it moves the track.
+var hdr_press: ?u8 = null;
+var hdr_press_y: f32 = 0;
+var hdr_dragging = false;
 
 var drag_mode: DragMode = .none;
 var drag_ref: ClipRef = .{ .track = 0, .clip = 0 };
@@ -262,6 +309,9 @@ pub const Result = struct {
     command_track: ?usize = null,
     rename_clip: ?ClipRef = null,
     rename_track: ?usize = null,
+    /// A header drag dropped: renumber the tracks to this order (position
+    /// k holds the track that goes there; docs/23 §Arrangement).
+    move_tracks: ?[routing.MAX_TRACKS]u8 = null,
     rename_rect: ?c.rl.Rectangle = null,
 };
 
@@ -729,6 +779,7 @@ pub fn draw(
 
     // ── Wheel input (scroll / zoom) ──────────────────────────────────
     handleWheel(pane.rect(timeline_x, r.y, timeline_w, r.height), m);
+    handleHeaderWheel(pane.rect(header_x, lanes_top, header_w, lanes_h), m);
 
     // ── Continue an in-progress clip drag ─────────────────────────────
     continueDrag(tracks, alloc, selected_clip, edit_snap, m, lanes_top);
@@ -988,6 +1039,9 @@ pub fn draw(
                 deselectAllClips(tracks);
                 selected_clip.* = null;
                 device_sel.* = .audio;
+                hdr_press = @intCast(ti);
+                hdr_press_y = m.y;
+                hdr_dragging = false;
             },
             .rename => {
                 selected_track.* = ti;
@@ -1005,6 +1059,28 @@ pub fn draw(
             _ = ui.engraved(&ui.fonts.legend, hr.x + 5, hr.y + 3, "RETURNS", ui_style.text_dim);
         }
     }
+    // A header drag: past a few pixels it moves the track, shown as a
+    // line where it would land; the lanes scroll near the edges.
+    var drop_line: ?f32 = null;
+    if (hdr_press) |from| {
+        if (from >= tracks.len) {
+            hdr_press = null;
+        } else if (!m.left_down) {
+            if (hdr_dragging) if (headerDrop(tracks, from, m.y - lanes_top + scroll_y)) |d| {
+                result.move_tracks = d.order;
+            };
+            hdr_press = null;
+            hdr_dragging = false;
+        } else {
+            if (!hdr_dragging and @abs(m.y - hdr_press_y) > 4) hdr_dragging = true;
+            if (hdr_dragging) {
+                if (m.y < lanes_top + 16) scroll_y -= 8;
+                if (m.y > lanes_bottom - 16) scroll_y += 8;
+                if (headerDrop(tracks, from, m.y - lanes_top + scroll_y)) |d| drop_line = lanes_top + d.line - scroll_y;
+            }
+        }
+    }
+
     // Below the last track the header column is a blank plate (nothing
     // shows bare chassis, docs/06 §Packing).
     {
@@ -1012,6 +1088,11 @@ pub fn draw(
         if (end_y < lanes_bottom) _ = ui.plate(bridge.fromRl(pane.rect(header_x, @max(end_y, lanes_top), header_w, lanes_bottom - @max(end_y, lanes_top))), .{});
     }
     ui.unclip();
+    if (drop_line) |ly| {
+        ui.clip(bridge.fromRl(pane.rect(r.x, lanes_top, r.width, lanes_bottom - lanes_top)));
+        ui.rect(Rect.xywh(ipx(r.x), ipx(ly) - 1, ipx(header_x + header_w - r.x), 2), ui_style.accent);
+        ui.unclip();
+    }
 
     // Lazy vertical scrollbar.
     const lanes_rect = pane.rect(r.x, lanes_top, r.width, lanes_bottom - lanes_top);
@@ -1107,6 +1188,15 @@ fn handleWheel(zone: c.rl.Rectangle, m: pane.Mouse) void {
         scroll_x -= m.wheel_x * 30;
         scroll_y -= m.wheel_y * 30;
     }
+    last_scroll_time = c.rl.GetTime();
+}
+
+/// Over the track headers the wheel scrolls the tracks up and down (the
+/// lanes beside them follow). ⌘ leaves it to the header's controls.
+fn handleHeaderWheel(zone: c.rl.Rectangle, m: pane.Mouse) void {
+    if (!pane.contains(zone, m.x, m.y) or m.wheel_y == 0) return;
+    if (c.rl.IsKeyDown(c.rl.KEY_LEFT_SUPER) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SUPER)) return;
+    scroll_y -= m.wheel_y * 30;
     last_scroll_time = c.rl.GetTime();
 }
 

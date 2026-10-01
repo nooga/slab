@@ -66,7 +66,8 @@ test {
     _ = @import("ui/follow.zig");
 }
 
-const MAX_TRACKS: usize = @import("routing.zig").MAX_TRACKS;
+const routing_mod = @import("routing.zig");
+const MAX_TRACKS: usize = routing_mod.MAX_TRACKS;
 const DEV_BOOT_AUDITION = true;
 const DEV_BOOT_AUTOPLAY = false;
 
@@ -792,6 +793,14 @@ pub fn main(init: std.process.Init) !void {
         }
         if (ares.rename_clip) |ref| beginRenameClip(&rename, tracks, ref);
         if (ares.rename_track) |ti| beginRenameTrack(&rename, tracks, ti);
+        if (ares.move_tracks) |new_order| {
+            if (recorder.isRecording()) {
+                status.set("Stop recording to move tracks", .{});
+            } else {
+                moveTracks(alloc, &history, &audio, &engine, &tracks_buf, track_count, &transport, &new_order, &selected_track, &selected_clip, &prev_selected_clip, &rename) catch |err| status.set("Move failed: {s}", .{@errorName(err)});
+                dirty = true;
+            }
+        }
         if (ares.rename_rect) |rr| rename.rect = rr;
         if (ares.command == .import_audio) {
             importAudioClip(alloc, &audio_pool, &history, &status, tracks, &transport, edit_snap, &selected_track, &selected_clip, &dirty, ares.command_beat, ares.command_track) catch |err| {
@@ -1869,6 +1878,65 @@ fn duplicateTrack(
     };
     selected_track.* = pos;
     status.set("Duplicated as {s}", .{tracks_buf[pos].name()});
+}
+
+/// Renumber the tracks to `new_order` (position k holds the old index of
+/// the track that goes there; docs/23 §Arrangement): outputs, sends, keys
+/// and the selection follow. One undo step.
+fn moveTracks(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    audio: *audio_mod.Audio,
+    engine: *engine_mod.Engine,
+    tracks_buf: *[MAX_TRACKS]track_mod.Track,
+    track_count: usize,
+    transport: *const transport_mod.Transport,
+    new_order: *const [routing_mod.MAX_TRACKS]u8,
+    selected_track: *?usize,
+    selected_clip: *?clip_mod.ClipRef,
+    prev_selected_clip: *?clip_mod.ClipRef,
+    rename: *RenameState,
+) !void {
+    const before = try document_mod.serialize(alloc, tracks_buf[0..track_count], transport);
+    errdefer alloc.free(before);
+    var map: [routing_mod.MAX_TRACKS]u8 = @splat(routing_mod.NONE);
+    for (new_order[0..track_count], 0..) |old, k| map[old] = @intCast(k);
+    for (map[0..track_count]) |m| if (m == routing_mod.NONE) return error.BadOrder;
+    {
+        audio.stop();
+        defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+        // In place, cycle by cycle: slot k takes the track from new_order[k].
+        var done: [MAX_TRACKS]bool = @splat(false);
+        for (0..track_count) |k| {
+            if (done[k]) continue;
+            const tmp = tracks_buf[k];
+            var j = k;
+            while (true) {
+                done[j] = true;
+                const src = new_order[j];
+                if (src == k) {
+                    tracks_buf[j] = tmp;
+                    break;
+                }
+                tracks_buf[j] = tracks_buf[src];
+                j = src;
+            }
+        }
+        for (tracks_buf[0..track_count]) |*t| t.remapTracks(&map);
+        engine.tracks = tracks_buf[0..track_count];
+        engine.send_prev = @splat(@splat(-1));
+        engine.clearPdc();
+        engine.publishRouting();
+    }
+    try history.pushUndo(alloc, before);
+
+    if (selected_track.*) |sel| if (sel < track_count) {
+        selected_track.* = map[sel];
+    };
+    inline for (.{ selected_clip, prev_selected_clip }) |ref| if (ref.*) |r| {
+        if (r.track < track_count) ref.*.?.track = map[r.track];
+    };
+    if (rename.kind != .none and rename.track < track_count) rename.track = map[rename.track];
 }
 
 /// Remove track `ti`: the tracks above it move down one, and every

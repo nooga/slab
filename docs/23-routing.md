@@ -326,9 +326,9 @@ connected, not a second model, and it doesn't draw a free graph.
 
 ### Arrangement
 
-*Built.* Rows are drawn in a display order, not index order. Indices
-never move, so routing references stay valid; only where a row is
-drawn does.
+*Built.* Rows are drawn in a display order derived from index order.
+Only a reorder renumbers the tracks, and it renumbers every routing
+reference with them.
 
 - **Groups** sit among the tracks. A bus is a *group* when some
   track's output goes to it (a *return* when only sends feed it, as
@@ -357,7 +357,25 @@ drawn does.
   mixer's and the arrangement's `+ BUS` make BUS 1, 2, ….
 
 Routing a track into a bus is what makes the group, so grouping needs
-no track reordering. Reordering by drag is still to come.
+no track reordering.
+
+- **Reordering.** Drag a header by its name. Past a few pixels an amber
+  line shows where it lands, and the lanes scroll at the edges. A row
+  moves among its siblings: the same group, or the top level of its
+  section (main or returns). A group moves with everything inside it.
+  Over a member of another group, the drop goes before or after that
+  whole group, split at its middle. A member can't be dragged out of
+  its group, since that would reroute it; route it out instead.
+  - The move renumbers the tracks to the new display order
+    (`track_order.moved`), and outputs, sends, keys and the selection
+    follow (`Track.remapTracks`).
+  - Nothing else moves on screen, but render order follows index order,
+    so sums can add in a new order: the output may differ in its last
+    bits.
+  - The PDC history is cleared. Refused while a take is recording. One
+    undo step.
+- **Scrolling.** The wheel over the headers scrolls the tracks, as it
+  does over the lanes. ⌘+wheel still goes to a header's controls.
 
 ### Duplicating a track
 

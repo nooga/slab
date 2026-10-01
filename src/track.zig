@@ -313,6 +313,16 @@ pub const Track = struct {
         }
     }
 
+    /// The tracks were renumbered, old index i to `map[i]`: renumber this
+    /// track's output, sends and keys.
+    pub fn remapTracks(self: *Track, map: *const [routing.MAX_TRACKS]u8) void {
+        if (self.output != routing.NONE) self.output = map[self.output];
+        for (self.sendSlots()) |*snd| snd.bus = map[snd.bus];
+        for (self.effects.items) |*fx| {
+            if (fx.key != routing.NONE) fx.key = map[fx.key];
+        }
+    }
+
     /// A track is being inserted at `pos` and every track from there on
     /// moves up one: renumber this track's output, sends and keys.
     pub fn makeRoomAt(self: *Track, pos: u8) void {
