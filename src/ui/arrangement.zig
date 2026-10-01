@@ -74,46 +74,129 @@ fn isShown(tracks: []const Track, ti: usize) bool {
     return ti < tracks.len and order(tracks).shown[ti];
 }
 
-/// Where a header drag of `from` at content y `cy` drops: the new track
-/// order and the content y of the line showing it. Over a row that isn't
-/// a sibling of `from` (a group's member), the drop is beside the
-/// enclosing sibling, before or after by the middle of its block; a group
-/// row itself also splits at its block's middle. Null when there's no
-/// sibling there (a member can't leave its group by drag).
-fn headerDrop(tracks: []const Track, from: u8, cy: f32) ?struct { order: [routing.MAX_TRACKS]u8, line: f32 } {
+/// Whether track `ti` is selected: in the header multi-selection while
+/// `sel` (the selected track) is in it, else just `sel`.
+fn inSet(tracks: []const Track, sel: ?usize, ti: usize) bool {
+    const s = sel orelse return false;
+    if (s >= tracks.len) return false;
+    if (!tracks[s].multi_sel) return s == ti;
+    return ti < tracks.len and tracks[ti].multi_sel;
+}
+
+/// A press on header `ti`: plain selects it alone (narrowing on release
+/// when it's already in a multi-selection, so the set can be dragged),
+/// shift selects the shown rows from the anchor to it, ⌘ toggles it.
+fn headerSelect(tracks: []Track, sel: *?usize, ti: u8, shift: bool, cmd: bool) void {
+    hdr_narrow = false;
+    if (cmd) {
+        // Start from what's selected now.
+        if (sel.*) |s| if (s < tracks.len and !tracks[s].multi_sel) {
+            for (tracks) |*t| t.multi_sel = false;
+            tracks[s].multi_sel = true;
+        };
+        if (sel.* == null) for (tracks) |*t| {
+            t.multi_sel = false;
+        };
+        tracks[ti].multi_sel = !tracks[ti].multi_sel;
+        if (tracks[ti].multi_sel) {
+            sel.* = ti;
+        } else {
+            // The selected track left the set: another member stands in.
+            sel.* = null;
+            for (tracks, 0..) |*t, k| if (t.multi_sel) {
+                sel.* = k;
+                break;
+            };
+        }
+        sel_anchor = ti;
+        return;
+    }
+    if (shift) if (sel_anchor orelse (if (sel.*) |s| @as(?u8, @intCast(s)) else null)) |anchor| if (anchor < tracks.len) {
+        const o = order(tracks);
+        var a: ?usize = null;
+        var b: ?usize = null;
+        for (o.rows[0..o.n], 0..) |row, k| {
+            if (row.ti == anchor) a = k;
+            if (row.ti == ti) b = k;
+        }
+        if (a != null and b != null) {
+            for (tracks) |*t| t.multi_sel = false;
+            for (o.rows[@min(a.?, b.?) .. @max(a.?, b.?) + 1]) |row| tracks[row.ti].multi_sel = true;
+            sel_anchor = anchor;
+            sel.* = ti;
+            return;
+        }
+    };
+    if (inSet(tracks, sel.*, ti) and tracks[ti].multi_sel) {
+        hdr_narrow = true;
+    } else {
+        for (tracks) |*t| t.multi_sel = false;
+    }
+    sel.* = ti;
+    sel_anchor = ti;
+}
+
+/// Where a header drag at content y `cy` drops: the upper half of a row
+/// goes before it, the lower half after it, or into an open group as its
+/// first member. Below the main rows is the top level's end. `line` is
+/// the content y of the line showing it, `depth` how far it's indented.
+fn headerDrop(tracks: []const Track, returns: bool, cy: f32) ?struct { drop: track_order.Drop, line: f32, depth: u8 } {
     const o = order(tracks);
     if (o.n == 0) return null;
-    // The shown row under cy (the nearest end beyond them).
     var tops: [routing.MAX_TRACKS + 1]f32 = undefined;
     var y: f32 = 0;
-    var hov: usize = o.n - 1;
-    var found = false;
     for (o.rows[0..o.n], 0..) |row, k| {
         if (k == o.main_n) y += BUS_DIV_H;
         tops[k] = y;
         y += rowH(&tracks[row.ti]);
-        if (!found and cy < y) {
-            hov = k;
-            found = true;
-        }
     }
     tops[o.n] = y;
-    var target = o.rows[hov].ti;
-    var after = cy > tops[hov] + rowH(&tracks[target]) / 2;
-    var guard: usize = 0;
-    while (o.parent[target] != o.parent[from] and guard < routing.MAX_TRACKS) : (guard += 1) {
-        target = o.parent[target];
-        if (target == routing.NONE) return null;
+    const main_end = if (o.main_n > 0) tops[o.main_n - 1] + rowH(&tracks[o.rows[o.main_n - 1].ti]) else 0;
+    const lo: usize = if (returns) o.main_n else 0;
+    const hi: usize = if (returns) o.n else o.main_n;
+    if (hi == lo) return if (returns) null else .{ .drop = .{}, .line = 0, .depth = 0 };
+    var k = lo;
+    while (k + 1 < hi and cy >= tops[k + 1]) k += 1;
+    const ti = o.rows[k].ti;
+    const bottom = tops[k] + rowH(&tracks[ti]);
+    if (cy >= bottom) {
+        // Past the section's last row: its end, at the top level.
+        return .{ .drop = .{ .returns = returns }, .line = if (returns) tops[o.n] else main_end, .depth = 0 };
     }
-    // The target's block: its row and the shown rows inside it.
-    var at: usize = 0;
-    while (at < o.n and o.rows[at].ti != target) at += 1;
-    var end = at + 1;
-    while (end < o.n and end != o.main_n and o.within(o.rows[end].ti, target)) end += 1;
-    if (end - at > 1 or target != o.rows[hov].ti) after = cy > (tops[at] + tops[end]) / 2;
-    const new_order = track_order.moved(tracks, from, target, after) orelse return null;
-    const bottom = if (end == o.main_n) tops[end] - (if (o.hasReturns()) BUS_DIV_H else 0) else tops[end];
-    return .{ .order = new_order, .line = if (after) bottom else tops[at] };
+    if (cy < tops[k] + rowH(&tracks[ti]) / 2) {
+        return .{ .drop = .{ .parent = o.parent[ti], .before = ti, .returns = returns }, .line = tops[k], .depth = o.depth[ti] };
+    }
+    const next: ?u8 = if (k + 1 < hi) o.rows[k + 1].ti else null;
+    if (next) |nx| if (o.parent[nx] == ti) {
+        return .{ .drop = .{ .parent = ti, .before = nx }, .line = bottom, .depth = o.depth[ti] + 1 };
+    };
+    // After the row: before its next sibling, or at its group's end.
+    const before: u8 = if (next) |nx| (if (o.parent[nx] == o.parent[ti]) nx else routing.NONE) else routing.NONE;
+    return .{ .drop = .{ .parent = o.parent[ti], .before = before, .returns = returns }, .line = bottom, .depth = o.depth[ti] };
+}
+
+/// The dragged header's ghost at `y`: its name on a lifted plate, with
+/// a count of the others moving with it.
+fn drawHeaderGhost(ui: *Ui, tracks: []const Track, sel: ?usize, from: u8, header_x: f32, header_w: f32, y: f32, top: f32, bottom: f32) void {
+    var others: usize = 0;
+    if (inSet(tracks, sel, from)) {
+        for (tracks, 0..) |_, k| {
+            if (k != from and inSet(tracks, sel, k)) others += 1;
+        }
+    }
+    const t = &tracks[from];
+    const g = Rect.xywh(ipx(header_x) - 12, ipx(y), ipx(header_w), 22);
+    ui.clip(bridge.fromRl(pane.rect(header_x - 12, top, header_w + 12, bottom - top)));
+    defer ui.unclip();
+    ui.rect(g, ui_style.face.shade(10).alpha(225));
+    ui.rect(Rect.xywh(g.x, g.y, g.w, 1), ui_style.accent);
+    ui.rect(Rect.xywh(g.x, g.bottom() - 1, g.w, 1), ui_style.accent);
+    ui.rect(Rect.xywh(g.x, g.y, 1, g.h), ui_style.accent);
+    ui.rect(Rect.xywh(g.right() - 1, g.y, 1, g.h), ui_style.accent);
+    ui.rect(Rect.xywh(g.x + 2, g.y + 2, 3, g.h - 4), trackColor(t.color));
+    var buf: [48]u8 = undefined;
+    const label = if (others > 0) std.fmt.bufPrint(&buf, "{s}  +{d}", .{ t.name(), others }) catch t.name() else t.name();
+    _ = ui.text(&ui.fonts.body, g.x + 10, g.y + 3, label, ui_style.text);
 }
 
 fn hasBuses(tracks: []const Track) bool {
@@ -243,10 +326,18 @@ var scroll_x: f32 = 0;
 var follow: follow_mod.Follow = .{};
 var scroll_y: f32 = 0;
 var last_scroll_time: f64 = 0;
-// A press on a track header's name: a drag from it moves the track.
+// A press on a track header's name: a drag from it moves the selected
+// tracks (or just it, when it isn't in the selection).
 var hdr_press: ?u8 = null;
 var hdr_press_y: f32 = 0;
 var hdr_dragging = false;
+/// The press's distance below its row's top, so the ghost keeps it.
+var hdr_grab_dy: f32 = 0;
+/// A plain press on a track already in a multi-selection: the selection
+/// narrows to it on release, unless the press became a drag.
+var hdr_narrow = false;
+/// The shift-click range's fixed end.
+var sel_anchor: ?u8 = null;
 
 var drag_mode: DragMode = .none;
 var drag_ref: ClipRef = .{ .track = 0, .clip = 0 };
@@ -309,9 +400,9 @@ pub const Result = struct {
     command_track: ?usize = null,
     rename_clip: ?ClipRef = null,
     rename_track: ?usize = null,
-    /// A header drag dropped: renumber the tracks to this order (position
-    /// k holds the track that goes there; docs/23 §Arrangement).
-    move_tracks: ?[routing.MAX_TRACKS]u8 = null,
+    /// A header drag dropped: reroute and renumber the tracks (docs/23
+    /// §Arrangement).
+    move_tracks: ?track_order.Move = null,
     rename_rect: ?c.rl.Rectangle = null,
 };
 
@@ -779,7 +870,11 @@ pub fn draw(
 
     // ── Wheel input (scroll / zoom) ──────────────────────────────────
     handleWheel(pane.rect(timeline_x, r.y, timeline_w, r.height), m);
-    handleHeaderWheel(pane.rect(header_x, lanes_top, header_w, lanes_h), m);
+    // The headers are Ui widgets, and main hides the pointer from the
+    // panes while one is hot or held; their wheel and drag read the Ui's
+    // own input, which a menu or dialog still suppresses.
+    const hm = pane.Mouse.fromInput(&ui.in);
+    handleHeaderWheel(pane.rect(header_x, lanes_top, header_w, lanes_h), hm);
 
     // ── Continue an in-progress clip drag ─────────────────────────────
     continueDrag(tracks, alloc, selected_clip, edit_snap, m, lanes_top);
@@ -830,7 +925,7 @@ pub fn draw(
         if (ly + LANE_H <= lanes_top) continue;
         if (ly >= lanes_bottom) continue; // display order isn't index order
         const lane_timeline = pane.rect(timeline_x, ly, timeline_w, LANE_H);
-        const lane_is_sel = selected_track.* != null and selected_track.*.? == ti;
+        const lane_is_sel = inSet(tracks, selected_track.*, ti);
         drawTimelineLane(ui, lane_timeline, t.*, ti, lane_is_sel, timeline_x0, edit_snap);
         if (t.isBus()) {
             drawGroupClips(ui, lane_timeline, tracks, ti, timeline_x0);
@@ -1015,7 +1110,7 @@ pub fn draw(
         if (ly >= lanes_bottom) continue; // display order isn't index order
         if (autoRows(t) > 0) drawAutomationHeaders(ui, alloc, t, ti, header_x, ly + LANE_H, header_w);
         const lane_header = pane.rect(header_x, ly, header_w, LANE_H);
-        const lane_is_sel = selected_track.* != null and selected_track.*.? == ti;
+        const lane_is_sel = inSet(tracks, selected_track.*, ti);
         const editing = rename_target.kind == .track and rename_target.track == ti;
         const o = order(tracks);
         var rails: [routing.MAX_TRACKS]ui_style.Color = undefined;
@@ -1035,12 +1130,13 @@ pub fn draw(
         switch (hres.action) {
             .none => {},
             .select => {
-                selected_track.* = ti;
+                headerSelect(tracks, selected_track, @intCast(ti), ui.in.shift, ui.in.cmd);
                 deselectAllClips(tracks);
                 selected_clip.* = null;
                 device_sel.* = .audio;
                 hdr_press = @intCast(ti);
-                hdr_press_y = m.y;
+                hdr_press_y = hm.y;
+                hdr_grab_dy = hm.y - ly;
                 hdr_dragging = false;
             },
             .rename => {
@@ -1059,24 +1155,56 @@ pub fn draw(
             _ = ui.engraved(&ui.fonts.legend, hr.x + 5, hr.y + 3, "RETURNS", ui_style.text_dim);
         }
     }
-    // A header drag: past a few pixels it moves the track, shown as a
-    // line where it would land; the lanes scroll near the edges.
-    var drop_line: ?f32 = null;
+    // A header drag: past a few pixels it moves the selected tracks (the
+    // pressed one alone when it isn't selected), shown as a ghost under
+    // the pointer and a line where they'd land, indented to the group
+    // they'd join; the lanes scroll near the edges.
+    var drop_line: ?struct { y: f32, depth: u8 } = null;
+    var ghost: ?u8 = null;
     if (hdr_press) |from| {
         if (from >= tracks.len) {
             hdr_press = null;
-        } else if (!m.left_down) {
-            if (hdr_dragging) if (headerDrop(tracks, from, m.y - lanes_top + scroll_y)) |d| {
-                result.move_tracks = d.order;
-            };
-            hdr_press = null;
-            hdr_dragging = false;
         } else {
-            if (!hdr_dragging and @abs(m.y - hdr_press_y) > 4) hdr_dragging = true;
-            if (hdr_dragging) {
-                if (m.y < lanes_top + 16) scroll_y -= 8;
-                if (m.y > lanes_bottom - 16) scroll_y += 8;
-                if (headerDrop(tracks, from, m.y - lanes_top + scroll_y)) |d| drop_line = lanes_top + d.line - scroll_y;
+            var set: [routing.MAX_TRACKS]bool = @splat(false);
+            if (inSet(tracks, selected_track.*, from)) {
+                for (0..tracks.len) |k| set[k] = inSet(tracks, selected_track.*, k);
+            } else set[from] = true;
+            const in_returns = blk: {
+                const o = order(tracks);
+                for (o.returns()) |row| if (row.ti == from) break :blk true;
+                break :blk false;
+            };
+            const at = hm.y - lanes_top + scroll_y;
+            if (!hm.left_down) {
+                if (hdr_dragging) {
+                    if (headerDrop(tracks, in_returns, at)) |d| result.move_tracks = track_order.moveSet(tracks, &set, d.drop);
+                } else if (hdr_narrow) {
+                    for (tracks) |*t| t.multi_sel = false;
+                }
+                hdr_press = null;
+                hdr_dragging = false;
+                hdr_narrow = false;
+            } else {
+                if (!hdr_dragging and @abs(hm.y - hdr_press_y) > 4) hdr_dragging = true;
+                if (hdr_dragging) {
+                    if (hm.y < lanes_top + 16) scroll_y -= 8;
+                    if (hm.y > lanes_bottom - 16) scroll_y += 8;
+                    scroll_y = std.math.clamp(scroll_y, 0, @max(0, contentH(tracks) - (lanes_bottom - lanes_top)));
+                    ghost = from;
+                    if (headerDrop(tracks, in_returns, at)) |d| if (track_order.moveSet(tracks, &set, d.drop) != null) {
+                        drop_line = .{ .y = lanes_top + d.line - scroll_y, .depth = d.depth };
+                    };
+                    // Dim the rows being moved.
+                    const o = order(tracks);
+                    for (o.rows[0..o.n]) |row| {
+                        var moving = set[row.ti];
+                        var a = o.parent[row.ti];
+                        while (a != routing.NONE) : (a = o.parent[a]) moving = moving or set[a];
+                        if (!moving) continue;
+                        const ry = lanes_top + rowTop(tracks, row.ti) - scroll_y;
+                        ui.rect(bridge.fromRl(pane.rect(header_x, ry, header_w, rowH(&tracks[row.ti]))), ui_style.chassis.alpha(150));
+                    }
+                }
             }
         }
     }
@@ -1088,11 +1216,15 @@ pub fn draw(
         if (end_y < lanes_bottom) _ = ui.plate(bridge.fromRl(pane.rect(header_x, @max(end_y, lanes_top), header_w, lanes_bottom - @max(end_y, lanes_top))), .{});
     }
     ui.unclip();
-    if (drop_line) |ly| {
+    if (drop_line) |dl| {
         ui.clip(bridge.fromRl(pane.rect(r.x, lanes_top, r.width, lanes_bottom - lanes_top)));
-        ui.rect(Rect.xywh(ipx(r.x), ipx(ly) - 1, ipx(header_x + header_w - r.x), 2), ui_style.accent);
+        const indent = ipx(header_x) + RAIL_W * @as(i32, dl.depth);
+        ui.rect(Rect.xywh(ipx(r.x), ipx(dl.y) - 1, ipx(header_x) - ipx(r.x), 2), ui_style.accent.alpha(110));
+        ui.rect(Rect.xywh(indent, ipx(dl.y) - 1, ipx(header_x + header_w) - indent, 2), ui_style.accent);
+        ui.rect(Rect.xywh(indent, ipx(dl.y) - 4, 2, 8), ui_style.accent);
         ui.unclip();
     }
+    if (ghost) |from| drawHeaderGhost(ui, tracks, selected_track.*, from, header_x, header_w, hm.y - hdr_grab_dy, lanes_top, lanes_bottom);
 
     // Lazy vertical scrollbar.
     const lanes_rect = pane.rect(r.x, lanes_top, r.width, lanes_bottom - lanes_top);

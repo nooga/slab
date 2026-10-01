@@ -67,6 +67,7 @@ test {
 }
 
 const routing_mod = @import("routing.zig");
+const track_order = @import("ui/track_order.zig");
 const MAX_TRACKS: usize = routing_mod.MAX_TRACKS;
 const DEV_BOOT_AUDITION = true;
 const DEV_BOOT_AUTOPLAY = false;
@@ -605,6 +606,7 @@ pub fn main(init: std.process.Init) !void {
         const sw: f32 = @floatFromInt(c.rl.GetScreenWidth());
         const sh: f32 = @floatFromInt(c.rl.GetScreenHeight());
         ui.beginFrame();
+        devDrag(ui, shot_frame);
         pane.beginFrame();
         const m = pane.Mouse.fromInput(&ui.raw_in);
         menu.beginFrame(ui, @intFromFloat(sw), @intFromFloat(sh));
@@ -793,11 +795,11 @@ pub fn main(init: std.process.Init) !void {
         }
         if (ares.rename_clip) |ref| beginRenameClip(&rename, tracks, ref);
         if (ares.rename_track) |ti| beginRenameTrack(&rename, tracks, ti);
-        if (ares.move_tracks) |new_order| {
+        if (ares.move_tracks) |mv| {
             if (recorder.isRecording()) {
                 status.set("Stop recording to move tracks", .{});
             } else {
-                moveTracks(alloc, &history, &audio, &engine, &tracks_buf, track_count, &transport, &new_order, &selected_track, &selected_clip, &prev_selected_clip, &rename) catch |err| status.set("Move failed: {s}", .{@errorName(err)});
+                moveTracks(alloc, &history, &audio, &engine, &tracks_buf, track_count, &transport, &mv, &selected_track, &selected_clip, &prev_selected_clip, &rename) catch |err| status.set("Move failed: {s}", .{@errorName(err)});
                 dirty = true;
             }
         }
@@ -1072,6 +1074,8 @@ pub fn main(init: std.process.Init) !void {
         for (tracks) |*t| t.publishSnapshot(&audio_pool);
         engine.publishRouting();
 
+        // Screenshots and scripted drags assume the default window.
+        if (shot_frame < 2 and std.c.getenv("SLAB_SHOT") != null) c.rl.SetWindowSize(1400, 860);
         if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_PLAY") != null) transport.play();
         if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_EXPR") != null) clip_editor.toggleExpressionMode();
         if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_MIXER") != null) layout.mixer_visible = true;
@@ -1880,9 +1884,10 @@ fn duplicateTrack(
     status.set("Duplicated as {s}", .{tracks_buf[pos].name()});
 }
 
-/// Renumber the tracks to `new_order` (position k holds the old index of
-/// the track that goes there; docs/23 §Arrangement): outputs, sends, keys
-/// and the selection follow. One undo step.
+/// Apply a header drag (docs/23 §Arrangement): set the moved tracks'
+/// outputs, then renumber the tracks to the new order (position k holds
+/// the old index of the track that goes there); outputs, sends, keys and
+/// the selection follow. One undo step.
 fn moveTracks(
     alloc: std.mem.Allocator,
     history: *history_mod.History,
@@ -1891,7 +1896,7 @@ fn moveTracks(
     tracks_buf: *[MAX_TRACKS]track_mod.Track,
     track_count: usize,
     transport: *const transport_mod.Transport,
-    new_order: *const [routing_mod.MAX_TRACKS]u8,
+    mv: *const track_order.Move,
     selected_track: *?usize,
     selected_clip: *?clip_mod.ClipRef,
     prev_selected_clip: *?clip_mod.ClipRef,
@@ -1899,12 +1904,16 @@ fn moveTracks(
 ) !void {
     const before = try document_mod.serialize(alloc, tracks_buf[0..track_count], transport);
     errdefer alloc.free(before);
+    const new_order = &mv.order;
     var map: [routing_mod.MAX_TRACKS]u8 = @splat(routing_mod.NONE);
     for (new_order[0..track_count], 0..) |old, k| map[old] = @intCast(k);
     for (map[0..track_count]) |m| if (m == routing_mod.NONE) return error.BadOrder;
     {
         audio.stop();
         defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+        for (tracks_buf[0..track_count], mv.output[0..track_count]) |*t, out| {
+            if (out != track_order.KEEP) t.output = out;
+        }
         // In place, cycle by cycle: slot k takes the track from new_order[k].
         var done: [MAX_TRACKS]bool = @splat(false);
         for (0..track_count) |k| {
@@ -2105,7 +2114,8 @@ fn applyProjectBytes(
 /// SLAB_SHOT_SELECT=track:clip opens that clip in the editor;
 /// SLAB_SHOT_EXPR=1 starts the piano roll in expression mode;
 /// SLAB_SHOT_MIXER=1 opens the mixer page; SLAB_SHOT_UNISON=1 opens the
-/// selected instrument's unison panel.
+/// selected instrument's unison panel. SLAB_SHOT_DRAG=x0,y0,x1,y1,frame
+/// scripts a left drag in logical pixels (see devDrag).
 fn devScreenshot(frame: *u32) void {
     frame.* +%= 1;
     const path = std.c.getenv("SLAB_SHOT") orelse return;
@@ -2117,6 +2127,32 @@ fn devScreenshot(frame: *u32) void {
     const img = c.rl.LoadImageFromScreen();
     defer c.rl.UnloadImage(img);
     _ = c.rl.ExportImage(img, path);
+}
+
+/// Dev hook: SLAB_SHOT_DRAG=x0,y0,x1,y1,f hovers (x0, y0) from frame f,
+/// presses the left button there on f + 5, moves to (x1, y1) over 20
+/// frames and releases on f + 26, overriding the real pointer (screenshots
+/// of drags). Logical pixels; the window is pinned to 1400x860.
+fn devDrag(ui: *ui_core.Ui, frame: u32) void {
+    const v = std.c.getenv("SLAB_SHOT_DRAG") orelse return;
+    var it = std.mem.splitScalar(u8, std.mem.span(v), ',');
+    var a: [5]f32 = undefined;
+    for (&a) |*x| x.* = std.fmt.parseFloat(f32, it.next() orelse return) catch return;
+    const f0: u32 = @intFromFloat(a[4]);
+    if (frame < f0 or frame > f0 + 26) return;
+    const k: i32 = @as(i32, @intCast(frame - f0)) - 5;
+    const t: f32 = std.math.clamp(@as(f32, @floatFromInt(k)) / 20, 0, 1);
+    inline for (.{ &ui.in, &ui.raw_in }) |in| {
+        const px = in.mx;
+        const py = in.my;
+        in.mx = a[0] + (a[2] - a[0]) * t;
+        in.my = a[1] + (a[3] - a[1]) * t;
+        in.dx = in.mx - px;
+        in.dy = in.my - py;
+        in.pressed = k == 0;
+        in.down = k >= 0 and k < 21;
+        in.released = k == 21;
+    }
 }
 
 fn envU32(name: [*:0]const u8) ?u32 {

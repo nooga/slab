@@ -359,19 +359,28 @@ reference with them.
 Routing a track into a bus is what makes the group, so grouping needs
 no track reordering.
 
-- **Reordering.** Drag a header by its name. Past a few pixels an amber
-  line shows where it lands, and the lanes scroll at the edges. A row
-  moves among its siblings: the same group, or the top level of its
-  section (main or returns). A group moves with everything inside it.
-  Over a member of another group, the drop goes before or after that
-  whole group, split at its middle. A member can't be dragged out of
-  its group, since that would reroute it; route it out instead.
+- **Selecting.** A click on a header's name selects the track,
+  shift-click selects the shown rows between it and the last click, and
+  ⌘-click adds or removes one.
+- **Reordering.** Drag a header by its name. Past a few pixels a ghost
+  of the header follows the pointer, the moved rows dim, and an amber
+  line shows where they land, indented to the group they'd join; the
+  lanes scroll at the edges.
+  - A drag moves the selection when it starts on a selected track, else
+    just that track. A group moves with everything inside it.
+  - The upper half of a row drops before it and the lower half after it,
+    or into an open group as its first member. Below the last row is the
+    end of the top level.
+  - A track dropped into another group is routed into that group's bus,
+    and one dropped at the top level goes to the master. A group left
+    with no members becomes a return. Drops that would put a group
+    inside itself or close a loop through sends are refused.
+  - Returns reorder among themselves only.
   - The move renumbers the tracks to the new display order
-    (`track_order.moved`), and outputs, sends, keys and the selection
+    (`track_order.moveSet`), and outputs, sends, keys and the selection
     follow (`Track.remapTracks`).
-  - Nothing else moves on screen, but render order follows index order,
-    so sums can add in a new order: the output may differ in its last
-    bits.
+  - Render order follows index order, so sums can add in a new order:
+    the output may differ in its last bits.
   - The PDC history is cleared. Refused while a take is recording. One
     undo step.
 - **Scrolling.** The wheel over the headers scrolls the tracks, as it

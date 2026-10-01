@@ -104,6 +104,9 @@ pub const Track = struct {
     lanes_shown: bool = false,
     /// A group's members are hidden in the arrangement and mixer (UI only).
     folded: bool = false,
+    /// In the arrangement's header multi-selection (UI only; it counts
+    /// while the selected track is in it, ui/arrangement.zig inSet).
+    multi_sel: bool = false,
     next_fx_uid: u16 = 1,
     /// Audio-thread-owned per-lane segment cursors (automation.evalCursor).
     auto_cursors: [snap_mod.MAX_LANES_PER_TRACK]u32 = [_]u32{0} ** snap_mod.MAX_LANES_PER_TRACK,

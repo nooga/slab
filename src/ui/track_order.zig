@@ -114,16 +114,6 @@ pub const Order = struct {
         return o.rows[o.main_n..o.n];
     }
 
-    /// Rows `ti` spans in `rows`: its own and, for a group, everything
-    /// inside it (they follow it).
-    fn span(o: *const Order, ti: u8) struct { at: usize, len: usize } {
-        var at: usize = 0;
-        while (at < o.n and o.rows[at].ti != ti) at += 1;
-        var end = at + 1;
-        while (end < o.n and end != o.main_n and o.within(o.rows[end].ti, ti)) end += 1;
-        return .{ .at = at, .len = end - at };
-    }
-
     /// Whether `ti` is `group` or sits inside it at any depth.
     pub fn within(o: *const Order, ti: usize, group: usize) bool {
         var a: u8 = @intCast(ti);
@@ -136,42 +126,142 @@ pub const Order = struct {
     }
 };
 
-/// A new track order (docs/23 §Arrangement): `ti`, with everything inside
-/// it, moved to just before `target`, or just after it and everything
-/// inside it, among `ti`'s siblings: the same group, or the same section at
-/// the top level. Position k holds the track index that goes there;
-/// renumbering the tracks to it keeps every other row where it was, since
-/// display order follows index order. Null when `target` isn't a sibling
-/// (a move out of a group would reroute it) or nothing would move.
-pub fn moved(tracks: []const Track, ti: u8, target: u8, after: bool) ?[MAX]u8 {
+/// Where a drag drops (docs/23 §Arrangement): into `parent` (a group, or
+/// NONE for the top level), before its child `before` (NONE: at its end).
+/// In the returns section only returns move, and only at the top level.
+pub const Drop = struct {
+    parent: u8 = NONE,
+    before: u8 = NONE,
+    returns: bool = false,
+};
+
+/// A reorder: renumber the tracks to `order` (position k holds the old
+/// index of the track that goes there) after setting `output` (per old
+/// index: a group's old index, NONE for the master, or KEEP).
+pub const Move = struct {
+    order: [MAX]u8,
+    output: [MAX]u8,
+};
+
+pub const KEEP: u8 = 0xfe;
+
+/// Move the rows in `set` (of the drop's section; a group carries
+/// everything inside it) to `drop`. A row that lands in another group is
+/// routed into it, or to the master at the top level; a group left empty
+/// is a group no more and joins the returns. The new order is the new
+/// display order, so nothing else moves on screen. Null when nothing would
+/// change, the drop is inside a moved group, or a reroute would close a
+/// loop.
+pub fn moveSet(tracks: []const Track, set: *const [MAX]bool, drop: Drop) ?Move {
     const o = Order.ofAll(tracks);
     const n = @min(tracks.len, MAX);
-    if (ti >= n or target >= n or ti == target) return null;
-    if (o.parent[ti] != o.parent[target]) return null;
-    const src = o.span(ti);
-    const dst = o.span(target);
-    // The same section: the main rows, or the returns.
-    if ((src.at < o.main_n) != (dst.at < o.main_n)) return null;
-    var rest: [MAX]u8 = undefined;
-    var m: usize = 0;
+    if (drop.returns and drop.parent != NONE) return null;
+    // The moved rows' roots in display order, and everything they carry.
+    var roots: [MAX]u8 = undefined;
+    var nr: usize = 0;
+    var moving: [MAX]bool = @splat(false);
     for (o.rows[0..o.n], 0..) |row, k| {
-        if (k >= src.at and k < src.at + src.len) continue;
-        rest[m] = row.ti;
-        m += 1;
+        if ((k >= o.main_n) != drop.returns or !set[row.ti]) continue;
+        var a = o.parent[row.ti];
+        var covered = false;
+        while (a != NONE) : (a = o.parent[a]) covered = covered or set[a];
+        if (covered) continue;
+        roots[nr] = row.ti;
+        nr += 1;
     }
-    // Where the target's rows start in what's left.
-    var t_at = dst.at;
-    if (dst.at > src.at) t_at -= src.len;
-    const ins = if (after) t_at + dst.len else t_at;
-    var out: [MAX]u8 = undefined;
-    @memcpy(out[0..ins], rest[0..ins]);
-    for (0..src.len) |k| out[ins + k] = o.rows[src.at + k].ti;
-    @memcpy(out[ins + src.len .. o.n], rest[ins..m]);
-    var same = true;
-    for (out[0..o.n], o.rows[0..o.n]) |a, row| same = same and a == row.ti;
-    if (same) return null;
-    return out;
+    if (nr == 0) return null;
+    for (o.rows[0..o.n]) |row| {
+        for (roots[0..nr]) |r| if (o.within(row.ti, r)) {
+            moving[row.ti] = true;
+        };
+    }
+    if (drop.parent != NONE and (drop.parent >= n or moving[drop.parent] or !o.is_group[drop.parent])) return null;
+
+    var out: Move = .{ .order = undefined, .output = @splat(KEEP) };
+    var nodes: [MAX]routing.Node = undefined;
+    for (tracks[0..n], 0..) |*t, i| nodes[i] = t.routingNode();
+    const graph = routing.Routing.build(nodes[0..n]);
+    var changed = false;
+    for (roots[0..nr]) |r| {
+        if (drop.returns or o.parent[r] == drop.parent) continue;
+        if (drop.parent != NONE and graph.wouldCycle(r, drop.parent)) return null;
+        out.output[r] = drop.parent;
+        changed = true;
+    }
+    // Groups left with no members.
+    var empty: [MAX]bool = @splat(false);
+    for (0..n) |g| {
+        if (!o.is_group[g]) continue;
+        var members = false;
+        for (tracks[0..n], 0..) |*t, i| {
+            const dest = if (out.output[i] == KEEP) t.output else out.output[i];
+            members = members or dest == g;
+        }
+        empty[g] = !members;
+    }
+
+    var w = Walk{ .o = &o, .roots = roots[0..nr], .moving = &moving, .empty = &empty, .drop = drop, .seq = &out.order };
+    w.emit(NONE);
+    for (0..n) |g| if (empty[g]) w.push(@intCast(g));
+    // The returns, in display order; the moved ones at the drop.
+    for (o.returns()) |row| {
+        if (drop.returns and row.ti == drop.before) for (roots[0..nr]) |r| w.push(r);
+        if (!(drop.returns and moving[row.ti])) w.push(row.ti);
+    }
+    if (drop.returns and (drop.before == NONE or !o.shown[drop.before] or moving[drop.before])) {
+        for (roots[0..nr]) |r| if (!w.has(r)) w.push(r);
+    }
+    if (w.n != o.n) return null;
+    for (out.order[0..o.n], o.rows[0..o.n]) |a, row| changed = changed or a != row.ti;
+    return if (changed) out else null;
 }
+
+/// The new main-section order, depth first.
+const Walk = struct {
+    o: *const Order,
+    roots: []const u8,
+    moving: *const [MAX]bool,
+    empty: *const [MAX]bool,
+    drop: Drop,
+    seq: *[MAX]u8,
+    n: usize = 0,
+
+    fn push(w: *Walk, ti: u8) void {
+        w.seq[w.n] = ti;
+        w.n += 1;
+    }
+
+    fn has(w: *const Walk, ti: u8) bool {
+        return std.mem.indexOfScalar(u8, w.seq[0..w.n], ti) != null;
+    }
+
+    fn isRoot(w: *const Walk, ti: u8) bool {
+        return std.mem.indexOfScalar(u8, w.roots, ti) != null;
+    }
+
+    /// `ti` and, for a group, its children.
+    fn row(w: *Walk, ti: u8) void {
+        if (w.empty[ti]) return; // joins the returns
+        w.push(ti);
+        if (w.o.is_group[ti] and !w.empty[ti]) w.emit(ti);
+    }
+
+    /// `parent`'s children in their order, the roots dropped among them.
+    fn emit(w: *Walk, parent: u8) void {
+        const here = !w.drop.returns and w.drop.parent == parent;
+        var placed = false;
+        for (w.o.main()) |r| {
+            if (w.o.parent[r.ti] != parent or w.empty[r.ti]) continue;
+            if (here and !placed and r.ti == w.drop.before) {
+                for (w.roots) |x| w.row(x);
+                placed = true;
+            }
+            if (w.isRoot(r.ti) and !w.drop.returns) continue;
+            w.row(r.ti);
+        }
+        if (here and !placed) for (w.roots) |x| w.row(x);
+    }
+};
 
 const testing = std.testing;
 const machine_mod = @import("../machine.zig");
@@ -227,7 +317,22 @@ test "groups sit above their members at the first member's place; returns come l
     try testing.expectEqual(@as(u8, 4), o.number[2]);
 }
 
-test "moved: a track, a whole group, and nothing out of its group" {
+fn seqOf(m: ?Move, len: usize) ![]const u8 {
+    const mv = m orelse return error.NoMove;
+    const S = struct {
+        var buf: [MAX]u8 = undefined;
+    };
+    @memcpy(S.buf[0..len], mv.order[0..len]);
+    return S.buf[0..len];
+}
+
+fn only(comptime tis: []const u8) [MAX]bool {
+    var set: [MAX]bool = @splat(false);
+    for (tis) |ti| set[ti] = true;
+    return set;
+}
+
+test "moveSet: tracks and groups, across groups, several at once" {
     // 0 A, 1 B→4, 2 C→4, 3 D, 4 GRP (group), 5 RET (return)
     var ts: [6]Track = undefined;
     const names = [_][]const u8{ "A", "B", "C", "D", "GRP", "RET" };
@@ -244,13 +349,47 @@ test "moved: a track, a whole group, and nothing out of its group" {
         break :blk &v;
     });
     // D above A.
-    try testing.expectEqualSlices(u8, &.{ 3, 0, 4, 1, 2, 5 }, moved(&ts, 3, 0, false).?[0..6]);
-    // The group, members and all, below D.
-    try testing.expectEqualSlices(u8, &.{ 0, 3, 4, 1, 2, 5 }, moved(&ts, 4, 3, true).?[0..6]);
-    // C above B, inside the group.
-    try testing.expectEqualSlices(u8, &.{ 0, 4, 2, 1, 3, 5 }, moved(&ts, 2, 1, false).?[0..6]);
-    // Out of the group, into the returns, or onto itself: no.
-    try testing.expect(moved(&ts, 1, 3, false) == null);
-    try testing.expect(moved(&ts, 3, 5, false) == null);
-    try testing.expect(moved(&ts, 0, 4, false) == null); // already just above it
+    try testing.expectEqualSlices(u8, &.{ 3, 0, 4, 1, 2, 5 }, try seqOf(moveSet(&ts, &only(&.{3}), .{ .before = 0 }), 6));
+    // The group, members and all, at the end.
+    try testing.expectEqualSlices(u8, &.{ 0, 3, 4, 1, 2, 5 }, try seqOf(moveSet(&ts, &only(&.{4}), .{}), 6));
+    // C above B, inside the group; no reroute.
+    const cb = moveSet(&ts, &only(&.{2}), .{ .parent = 4, .before = 1 }).?;
+    try testing.expectEqualSlices(u8, &.{ 0, 4, 2, 1, 3, 5 }, cb.order[0..6]);
+    try testing.expectEqual(KEEP, cb.output[2]);
+    // D into the group, at its end: routed into it.
+    const dg = moveSet(&ts, &only(&.{3}), .{ .parent = 4 }).?;
+    try testing.expectEqualSlices(u8, &.{ 0, 4, 1, 2, 3, 5 }, dg.order[0..6]);
+    try testing.expectEqual(@as(u8, 4), dg.output[3]);
+    try testing.expectEqual(KEEP, dg.output[1]);
+    // B out of the group, above A: to the master.
+    const bo = moveSet(&ts, &only(&.{1}), .{ .before = 0 }).?;
+    try testing.expectEqualSlices(u8, &.{ 1, 0, 4, 2, 3, 5 }, bo.order[0..6]);
+    try testing.expectEqual(NONE, bo.output[1]);
+    // A and D together into the group, before C.
+    const ad = moveSet(&ts, &only(&.{ 0, 3 }), .{ .parent = 4, .before = 2 }).?;
+    try testing.expectEqualSlices(u8, &.{ 4, 1, 0, 3, 2, 5 }, ad.order[0..6]);
+    try testing.expectEqual(@as(u8, 4), ad.output[0]);
+    try testing.expectEqual(@as(u8, 4), ad.output[3]);
+    // B and C both out: the group is left empty and joins the returns.
+    const bc = moveSet(&ts, &only(&.{ 1, 2 }), .{}).?;
+    try testing.expectEqualSlices(u8, &.{ 0, 3, 1, 2, 4, 5 }, bc.order[0..6]);
+    // Into the returns, into itself, or onto its own place: no.
+    try testing.expect(moveSet(&ts, &only(&.{3}), .{ .returns = true }) == null);
+    try testing.expect(moveSet(&ts, &only(&.{4}), .{ .parent = 4 }) == null);
+    try testing.expect(moveSet(&ts, &only(&.{0}), .{ .before = 4 }) == null);
+}
+
+test "moveSet: a reroute that would loop is refused" {
+    // 0 A→1, 1 G1 (group), 2 B→3, 3 G2 (group); G2 sends into G1's… no:
+    // G1 sends to G2, so G2 can't go into G1.
+    var ts: [4]Track = undefined;
+    const names = [_][]const u8{ "A", "G1", "B", "G2" };
+    for (&ts, 0..) |*t, i| t.* = try testTrack(names[i], i == 1 or i == 3);
+    defer for (&ts) |*t| t.deinit(testing.allocator);
+    ts[0].output = 1;
+    ts[2].output = 3;
+    try ts[1].addSend(3, false, 1);
+    try testing.expect(moveSet(&ts, &only(&.{3}), .{ .parent = 1 }) == null);
+    // The other way round is fine.
+    try testing.expect(moveSet(&ts, &only(&.{1}), .{ .parent = 3 }) != null);
 }
