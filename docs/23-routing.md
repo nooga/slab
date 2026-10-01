@@ -368,7 +368,15 @@ no track reordering.
 
 - **Selecting.** A click on a header's name selects the track,
   shift-click selects the shown rows between it and the last click, and
-  ⌘-click adds or removes one.
+  ⌘-click adds or removes one. On a selected track, the name menu's
+  *Group*, *Duplicate* and *Delete* take the whole selection (one undo
+  step each; deleting several asks first), and M, S and a color pick
+  switch them all.
+- **Grouping.** *Group* (⌘G) makes a new group bus where the first
+  selected row sits, inside that row's group, and routes the selected
+  rows into it (a group carries everything inside it). The tracks then
+  renumber to display order, the group is selected and its name opens
+  for editing. Refused when the route would close a loop.
 - **Reordering.** Drag a header by its name. Past a few pixels a ghost
   of the header follows the pointer, the moved rows dim, and an amber
   line shows where they land, indented to the group they'd join; the

@@ -1,5 +1,6 @@
-//! The track menu (docs/23 §UI): a track's output and sends, and Delete,
-//! opened from an arrangement header or a mixer strip. It edits nothing
+//! The track menu (docs/23 §UI): a track's output and sends, Group,
+//! Duplicate and Delete, opened from an arrangement header or a mixer
+//! strip; on a track in a multi-selection the last three take them all. It edits nothing
 //! itself: `tick` returns a `RouteEdit` that main applies with one undo
 //! step. Choices that would close a loop are disabled.
 
@@ -7,6 +8,8 @@ const std = @import("std");
 const menu = @import("menu.zig");
 const routing = @import("../routing.zig");
 const Track = @import("../track.zig").Track;
+const track_order = @import("track_order.zig");
+const arrangement = @import("arrangement.zig");
 
 /// A routing edit, applied by main with an undo step. The `new_bus`
 /// variants create the bus first.
@@ -26,7 +29,11 @@ pub const RouteEdit = struct {
         delete,
         /// Copy the track in right under itself.
         duplicate,
+        /// Make a group of the track (and the selection it's in).
+        group,
     },
+    /// Group, Duplicate and Delete act on the whole selection.
+    selection: bool = false,
 };
 
 /// What the menu shows at its root: both submenus (a header's name), the
@@ -40,6 +47,7 @@ const POST: u32 = 0x202;
 const REMOVE: u32 = 0x203;
 const DELETE: u32 = 0x204;
 const DUPLICATE: u32 = 0x205;
+const GROUP: u32 = 0x206;
 
 var track_idx: usize = 0;
 var mode: Mode = .all;
@@ -65,7 +73,9 @@ pub fn openKey(ti: usize, fx_uid: u16, x: i32, y: i32) void {
     open(ti, .key, x, y);
 }
 
-pub fn tick(tracks: []Track) ?RouteEdit {
+/// `sel` is the selected track: on a track in a multi-selection with it,
+/// Group, Duplicate and Delete name and take them all.
+pub fn tick(tracks: []Track, sel: ?usize) ?RouteEdit {
     if (!menu.isOpen(KEY)) return null;
     const ti = track_idx;
     if (ti >= tracks.len) {
@@ -74,16 +84,30 @@ pub fn tick(tracks: []Track) ?RouteEdit {
     }
     switch (mode) {
         .all => {
+            var n: usize = 0;
+            if (arrangement.inSet(tracks, sel, ti)) {
+                for (0..tracks.len) |k| n += @intFromBool(arrangement.inSet(tracks, sel, k));
+            }
+            const many = n > 1;
+            const o = track_order.Order.ofAll(tracks);
+            var is_return = true;
+            for (o.main()) |row| is_return = is_return and row.ti != ti;
+            var gbuf: [32]u8 = undefined;
+            var dbuf: [32]u8 = undefined;
+            var xbuf: [32]u8 = undefined;
+            const what = if (tracks[ti].isBus()) "bus" else "track";
             const top = [_]menu.Item{
                 .{ .label = "Output", .id = 1, .submenu = true },
                 .{ .label = "Sends", .id = 2, .submenu = true },
                 .{ .separator = true },
-                .{ .label = if (tracks[ti].isBus()) "Duplicate bus" else "Duplicate track", .id = DUPLICATE, .enabled = tracks.len < routing.MAX_TRACKS },
-                .{ .label = if (tracks[ti].isBus()) "Delete bus" else "Delete track", .id = DELETE },
+                .{ .label = if (many) std.fmt.bufPrint(&gbuf, "Group {d} tracks", .{n}) catch "Group" else "Group", .id = GROUP, .enabled = !is_return and tracks.len < routing.MAX_TRACKS, .shortcut = "\u{2318}G" },
+                .{ .label = if (many) std.fmt.bufPrint(&dbuf, "Duplicate {d} tracks", .{n}) catch "Duplicate" else std.fmt.bufPrint(&dbuf, "Duplicate {s}", .{what}) catch "Duplicate", .id = DUPLICATE, .enabled = tracks.len + (if (many) n else 1) <= routing.MAX_TRACKS },
+                .{ .label = if (many) std.fmt.bufPrint(&xbuf, "Delete {d} tracks", .{n}) catch "Delete" else std.fmt.bufPrint(&xbuf, "Delete {s}", .{what}) catch "Delete", .id = DELETE },
             };
             switch (menu.pick(KEY, &top) orelse 0) {
-                DELETE => return .{ .track = ti, .what = .delete },
-                DUPLICATE => return .{ .track = ti, .what = .duplicate },
+                DELETE => return .{ .track = ti, .what = .delete, .selection = many },
+                DUPLICATE => return .{ .track = ti, .what = .duplicate, .selection = many },
+                GROUP => return .{ .track = ti, .what = .group, .selection = many },
                 else => {},
             }
             const which = menu.subOpen(KEY, 0) orelse return null;

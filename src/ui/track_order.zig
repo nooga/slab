@@ -114,6 +114,23 @@ pub const Order = struct {
         return o.rows[o.main_n..o.n];
     }
 
+    /// The rows of `set` in a section (the returns, or the main rows) that
+    /// sit in no other row of it, in display order, into `out`: a group's
+    /// stands for everything inside it. Their count.
+    pub fn roots(o: *const Order, set: *const [MAX]bool, in_returns: bool, out: *[MAX]u8) usize {
+        var n: usize = 0;
+        for (o.rows[0..o.n], 0..) |row, k| {
+            if ((k >= o.main_n) != in_returns or !set[row.ti]) continue;
+            var a = o.parent[row.ti];
+            var covered = false;
+            while (a != NONE) : (a = o.parent[a]) covered = covered or set[a];
+            if (covered) continue;
+            out[n] = row.ti;
+            n += 1;
+        }
+        return n;
+    }
+
     /// Whether `ti` is `group` or sits inside it at any depth.
     pub fn within(o: *const Order, ti: usize, group: usize) bool {
         var a: u8 = @intCast(ti);
@@ -187,17 +204,8 @@ pub fn moveSet(tracks: []const Track, set: *const [MAX]bool, drop: Drop) ?Move {
     if (drop.returns and drop.parent != NONE) return null;
     // The moved rows' roots in display order, and everything they carry.
     var roots: [MAX]u8 = undefined;
-    var nr: usize = 0;
+    const nr = o.roots(set, drop.returns, &roots);
     var moving: [MAX]bool = @splat(false);
-    for (o.rows[0..o.n], 0..) |row, k| {
-        if ((k >= o.main_n) != drop.returns or !set[row.ti]) continue;
-        var a = o.parent[row.ti];
-        var covered = false;
-        while (a != NONE) : (a = o.parent[a]) covered = covered or set[a];
-        if (covered) continue;
-        roots[nr] = row.ti;
-        nr += 1;
-    }
     if (nr == 0) return null;
     for (o.rows[0..o.n]) |row| {
         for (roots[0..nr]) |r| if (o.within(row.ti, r)) {

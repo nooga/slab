@@ -150,7 +150,7 @@ pub fn draw(
 
     drawMasterStrip(ui, master_r, master, send_rows, device_sel);
     dragStrips(ui, tracks, &o, selected_track, band, strips_r, bus_x0, &res);
-    if (route_menu.tick(tracks)) |e| res.route = e;
+    if (route_menu.tick(tracks, selected_track.*)) |e| res.route = e;
     return res;
 }
 
@@ -302,9 +302,15 @@ fn drawStrip(
         var br = rows.buttons.insetXY(4, 2);
         const w = @divFloor(br.w, 3);
         var muted = t.mute.load(.monotonic);
-        if (ctl.button(ui, br.cutLeft(w), "mute", &muted, .{ .kind = .latch, .label = "M", .lit = ui_style.led_blue })) t.mute.store(muted, .monotonic);
+        // On a selected strip, M and S switch the whole selection.
+        const in_sel = arrangement.inSet(tracks, selected_track.*, ti);
+        if (ctl.button(ui, br.cutLeft(w), "mute", &muted, .{ .kind = .latch, .label = "M", .lit = ui_style.led_blue })) {
+            for (tracks, 0..) |*u, k| if (k == ti or (in_sel and arrangement.inSet(tracks, selected_track.*, k))) u.mute.store(muted, .monotonic);
+        }
         var solo = t.solo.load(.monotonic);
-        if (ctl.button(ui, br.cutLeft(w), "solo", &solo, .{ .kind = .latch, .label = "S", .lit = ui_style.led_yellow })) t.solo.store(solo, .monotonic);
+        if (ctl.button(ui, br.cutLeft(w), "solo", &solo, .{ .kind = .latch, .label = "S", .lit = ui_style.led_yellow })) {
+            for (tracks, 0..) |*u, k| if (k == ti or (in_sel and arrangement.inSet(tracks, selected_track.*, k))) u.solo.store(solo, .monotonic);
+        }
         if (!t.isBus()) {
             var armed = t.isArmed();
             if (ctl.button(ui, br, "arm", &armed, .{ .kind = .latch, .label = "R", .lit = ui_style.rec })) t.setArmed(armed);

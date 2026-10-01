@@ -331,6 +331,10 @@ var hdr_grab_dy: f32 = 0;
 var hdr_narrow = false;
 /// The shift-click range's fixed end.
 var sel_anchor: ?u8 = null;
+/// A header's M or S switched this frame (drawLaneHeader): the caller
+/// switches the rest of the selection with it.
+var hdr_mute_set: ?bool = null;
+var hdr_solo_set: ?bool = null;
 
 var drag_mode: DragMode = .none;
 var drag_ref: ClipRef = .{ .track = 0, .clip = 0 };
@@ -1123,8 +1127,14 @@ pub fn draw(
             n_rails -= k;
             if (k > 0) std.mem.copyForwards(ui_style.Color, rails[0..n_rails], rails[k .. k + n_rails]);
         }
+        hdr_mute_set = null;
+        hdr_solo_set = null;
         const hres = drawLaneHeader(ui, lane_header, t, ti, o.number[ti], if (t.isBus()) busLetter(tracks, ti) else null, lane_is_sel, editing, play_beat, .{ .rails = rails[0..n_rails], .group = o.is_group[ti] });
         if (editing) result.rename_rect = hres.name_rect;
+        if (inSet(tracks, selected_track.*, ti)) for (tracks, 0..) |*u, k| if (inSet(tracks, selected_track.*, k)) {
+            if (hdr_mute_set) |v| u.mute.store(v, .monotonic);
+            if (hdr_solo_set) |v| u.solo.store(v, .monotonic);
+        };
         switch (hres.action) {
             .none => {},
             .select => {
@@ -1251,7 +1261,7 @@ pub fn draw(
 
     targetMenuTick(tracks, alloc);
     headerAutoMenuTick(tracks, alloc);
-    result.route = route_menu.tick(tracks);
+    result.route = route_menu.tick(tracks, selected_track.*);
 
     // Overview strip on top (rendered last so nothing scissor-clips it).
     drawOverview(ui, overview_rect, timeline_w, tracks, content_beats, transport, m);
@@ -1909,11 +1919,17 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, numb
     }
     var muted = t.mute.load(.monotonic);
     const mute_r = btns.cutLeft(17).insetXY(0, 2);
-    if (ctl.button(ui, mute_r, "mute", &muted, .{ .kind = .latch, .label = "M", .lit = ui_style.led_blue })) t.mute.store(muted, .monotonic);
+    if (ctl.button(ui, mute_r, "mute", &muted, .{ .kind = .latch, .label = "M", .lit = ui_style.led_blue })) {
+        t.mute.store(muted, .monotonic);
+        hdr_mute_set = muted;
+    }
     menu.tip(ui, mute_r, if (muted) "Unmute track (\u{21E7}M clears all)" else "Mute track");
     var solo = t.solo.load(.monotonic);
     const solo_r = btns.insetXY(0, 2);
-    if (ctl.button(ui, solo_r, "solo", &solo, .{ .kind = .latch, .label = "S", .lit = ui_style.led_yellow })) t.solo.store(solo, .monotonic);
+    if (ctl.button(ui, solo_r, "solo", &solo, .{ .kind = .latch, .label = "S", .lit = ui_style.led_yellow })) {
+        t.solo.store(solo, .monotonic);
+        hdr_solo_set = solo;
+    }
     menu.tip(ui, solo_r, if (solo) "Unsolo track (\u{21E7}M clears all)" else "Solo track");
 
     // Index badge + name; the name row is also the select/rename target.

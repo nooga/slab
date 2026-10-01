@@ -587,6 +587,8 @@ pub fn main(init: std.process.Init) !void {
     // A track awaiting the delete confirmation, and the dialog's text.
     var pending_delete: ?usize = null;
     var delete_msg: DeleteMsg = .{};
+    // Several tracks to delete, once the dialog says so.
+    var pending_delete_set: ?[MAX_TRACKS]bool = null;
     var render_job: RenderJob = .{};
 
     if (cli.project) |path| {
@@ -615,7 +617,7 @@ pub fn main(init: std.process.Init) !void {
         // One owner of the pointer at a time: a legacy menu, modal or drag
         // hides input from the new Ui, and a new-Ui drag hides it from the
         // legacy panes.
-        const modal = render_dlg.active or pending_delete != null or uni_panel.active or color_pick.active;
+        const modal = render_dlg.active or pending_delete != null or pending_delete_set != null or uni_panel.active or color_pick.active;
         if (menu.active() or modal or pane.hasActiveDrag()) ui.suppressInput();
 
         // While a menu is open it's modal for the mouse: panes get a
@@ -833,8 +835,63 @@ pub fn main(init: std.process.Init) !void {
                 status.set("Added {s}", .{tracks[ti].name()});
             } else |err| status.set("Can't add: {s}", .{@errorName(err)});
         }
-        if (ares.route) |edit| if (edit.what == .duplicate) {
-            duplicateTrack(alloc, &history, &status, &audio, &engine, &reg, &tracks_buf, &track_count, &transport, edit.track, &selected_track, &selected_clip, &prev_selected_clip) catch |err| status.set("Duplicate failed: {s}", .{@errorName(err)});
+        // ⌘G groups the selection (or the selected track).
+        var route_edit = ares.route;
+        if (route_edit == null and !modal and !rename.active() and ui.in.cmd and c.rl.IsKeyPressed(c.rl.KEY_G)) if (selected_track) |st| {
+            route_edit = .{ .track = st, .what = .group, .selection = true };
+        };
+        // Dev hook: SLAB_SHOT_GROUP=NAME,NAME,… selects those tracks and
+        // groups them on frame 200, as ⌘G would.
+        if (route_edit == null and shot_frame == 200) if (std.c.getenv("SLAB_SHOT_GROUP")) |spec| {
+            var it = std.mem.splitScalar(u8, std.mem.span(spec), ',');
+            for (tracks) |*t| t.multi_sel = false;
+            while (it.next()) |name| for (tracks, 0..) |*t, k| if (std.mem.eql(u8, t.name(), name)) {
+                t.multi_sel = true;
+                selected_track = k;
+            };
+            if (selected_track) |st| route_edit = .{ .track = st, .what = .group, .selection = true };
+        };
+        if (route_edit) |edit| if (edit.what == .group) {
+            if (recorder.isRecording() or rec_finishing) {
+                status.set("Stop recording to group tracks", .{});
+            } else if (edit.track < track_count) {
+                const set = actionSet(tracks, selected_track, edit.track, edit.selection);
+                groupTracks(alloc, &history, &status, &audio, &engine, &tracks_buf, &track_count, &transport, &set, &selected_track, &selected_clip, &prev_selected_clip, &rename) catch |err| status.set("Can't group: {s}", .{@errorName(err)});
+                tracks = tracks_buf[0..track_count];
+                dirty = true;
+            }
+        } else if (edit.what == .duplicate and edit.selection) {
+            const set = actionSet(tracks, selected_track, edit.track, true);
+            if (document_mod.serialize(alloc, tracks, &transport)) |before| {
+                var n: usize = 0;
+                var k = track_count;
+                // From the bottom, so each copy leaves the rest in place.
+                while (k > 0) {
+                    k -= 1;
+                    if (!set[k]) continue;
+                    duplicateTrack(alloc, &history, &status, &audio, &engine, &reg, &tracks_buf, &track_count, &transport, k, &selected_track, &selected_clip, &prev_selected_clip, false) catch break;
+                    n += 1;
+                }
+                history.pushUndo(alloc, before) catch alloc.free(before);
+                for (tracks_buf[0..track_count]) |*t| t.multi_sel = false;
+                status.set("Duplicated {d} tracks", .{n});
+            } else |err| status.set("Duplicate failed: {s}", .{@errorName(err)});
+            tracks = tracks_buf[0..track_count];
+            dirty = true;
+        } else if (edit.what == .delete and edit.selection) {
+            if (recorder.isRecording() or rec_finishing) {
+                status.set("Stop recording before deleting a track", .{});
+            } else {
+                const set = actionSet(tracks, selected_track, edit.track, true);
+                var n: usize = 0;
+                for (set[0..track_count]) |b| n += @intFromBool(b);
+                delete_msg = .{};
+                delete_msg.add("{d} tracks and all on them go.", .{n});
+                delete_msg.add("Undo brings them back.", .{});
+                pending_delete_set = set;
+            }
+        } else if (edit.what == .duplicate) {
+            duplicateTrack(alloc, &history, &status, &audio, &engine, &reg, &tracks_buf, &track_count, &transport, edit.track, &selected_track, &selected_clip, &prev_selected_clip, true) catch |err| status.set("Duplicate failed: {s}", .{@errorName(err)});
             tracks = tracks_buf[0..track_count];
             dirty = true;
         } else if (edit.what == .delete) {
@@ -842,7 +899,7 @@ pub fn main(init: std.process.Init) !void {
                 status.set("Stop recording before deleting a track", .{});
             } else if (edit.track < track_count) {
                 if (trackContents(tracks, edit.track, &delete_msg)) pending_delete = edit.track else {
-                    deleteTrack(alloc, &history, &status, &audio, &engine, &tracks_buf, &track_count, &transport, edit.track, &selected_track, &selected_clip, &prev_selected_clip, &rename) catch |err| status.set("Delete failed: {s}", .{@errorName(err)});
+                    deleteTrack(alloc, &history, &status, &audio, &engine, &tracks_buf, &track_count, &transport, edit.track, &selected_track, &selected_clip, &prev_selected_clip, &rename, true) catch |err| status.set("Delete failed: {s}", .{@errorName(err)});
                     tracks = tracks_buf[0..track_count];
                     dirty = true;
                 }
@@ -1058,6 +1115,10 @@ pub fn main(init: std.process.Init) !void {
             render_action = render_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &render_dlg, loop_available, prog);
         }
         var delete_answer: ?bool = null;
+        var delete_set_answer: ?bool = null;
+        if (pending_delete_set != null) {
+            delete_set_answer = dialog.confirm(ui, uiRect(pane.rect(0, 0, sw, sh)), "delete-tracks", "DELETE TRACKS", delete_msg.lines(), "DELETE");
+        }
         if (pending_delete) |ti| {
             if (ti >= tracks.len) pending_delete = null else {
                 const bus = tracks[ti].isBus();
@@ -1079,7 +1140,11 @@ pub fn main(init: std.process.Init) !void {
                     if (document_mod.serialize(alloc, tracks, &transport)) |before| {
                         history.pushUndo(alloc, before) catch alloc.free(before);
                     } else |_| {}
-                    t.color = .{ .r = col.r, .g = col.g, .b = col.b, .a = 255 };
+                    // On a selected track: the whole selection.
+                    const set = actionSet(tracks, selected_track, color_pick.track, true);
+                    for (tracks, set[0..tracks.len]) |*u, on| if (on) {
+                        u.color = .{ .r = col.r, .g = col.g, .b = col.b, .a = 255 };
+                    };
                     dirty = true;
                 }
             } else color_pick.active = false;
@@ -1121,11 +1186,28 @@ pub fn main(init: std.process.Init) !void {
         devScreenshot(&shot_frame);
         c.rl.EndDrawing();
 
+        if (delete_set_answer) |yes| {
+            const set = pending_delete_set.?;
+            pending_delete_set = null;
+            if (yes) if (document_mod.serialize(alloc, tracks_buf[0..track_count], &transport)) |before| {
+                var n: usize = 0;
+                var k = track_count;
+                while (k > 0) {
+                    k -= 1;
+                    if (!set[k]) continue;
+                    deleteTrack(alloc, &history, &status, &audio, &engine, &tracks_buf, &track_count, &transport, k, &selected_track, &selected_clip, &prev_selected_clip, &rename, false) catch break;
+                    n += 1;
+                }
+                history.pushUndo(alloc, before) catch alloc.free(before);
+                status.set("Deleted {d} tracks", .{n});
+                dirty = true;
+            } else |err| status.set("Delete failed: {s}", .{@errorName(err)});
+        }
         if (delete_answer) |yes| {
             const ti = pending_delete.?;
             pending_delete = null;
             if (yes) {
-                deleteTrack(alloc, &history, &status, &audio, &engine, &tracks_buf, &track_count, &transport, ti, &selected_track, &selected_clip, &prev_selected_clip, &rename) catch |err| status.set("Delete failed: {s}", .{@errorName(err)});
+                deleteTrack(alloc, &history, &status, &audio, &engine, &tracks_buf, &track_count, &transport, ti, &selected_track, &selected_clip, &prev_selected_clip, &rename, true) catch |err| status.set("Delete failed: {s}", .{@errorName(err)});
                 dirty = true;
             }
         }
@@ -1660,7 +1742,7 @@ fn applyRouteEdit(
     transport: *const transport_mod.Transport,
 ) !void {
     const routing = @import("routing.zig");
-    if (edit.track >= track_count.* or edit.what == .delete or edit.what == .duplicate) return;
+    if (edit.track >= track_count.* or edit.what == .delete or edit.what == .duplicate or edit.what == .group) return;
     const before = try document_mod.serialize(alloc, tracks_buf[0..track_count.*], transport);
     errdefer alloc.free(before);
 
@@ -1676,7 +1758,7 @@ fn applyRouteEdit(
             defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
             target = @intCast(try newTrack(alloc, tracks_buf, track_count, true, if (edit.what == .output_new_bus) "Group" else "Return"));
         },
-        .delete, .duplicate => unreachable,
+        .delete, .duplicate, .group => unreachable,
     }
     const t = &tracks_buf[edit.track];
     switch (edit.what) {
@@ -1723,7 +1805,7 @@ fn applyRouteEdit(
             snd.pre = p.pre;
             status.set("{s}: send to {s} {s}-fader", .{ t.name(), tracks_buf[target].name(), if (p.pre) "pre" else "post" });
         },
-        .delete, .duplicate => unreachable,
+        .delete, .duplicate, .group => unreachable,
     }
     try history.pushUndo(alloc, before);
 }
@@ -1863,12 +1945,13 @@ fn duplicateTrack(
     selected_track: *?usize,
     selected_clip: *?clip_mod.ClipRef,
     prev_selected_clip: *?clip_mod.ClipRef,
+    undo: bool,
 ) !void {
     if (ti >= track_count.*) return;
     if (track_count.* >= MAX_TRACKS) return error.TooManyTracks;
     const tracks = tracks_buf[0..track_count.*];
-    const before = try document_mod.serialize(alloc, tracks, transport);
-    errdefer alloc.free(before);
+    const before: ?[]u8 = if (undo) try document_mod.serialize(alloc, tracks, transport) else null;
+    errdefer if (before) |b| alloc.free(b);
     var copy = try document_mod.cloneTrack(alloc, tracks, ti, transport, reg, silent_machine);
     // "KIT" → "KIT 2"; "Track 3" → the next free "Track N".
     {
@@ -1896,7 +1979,7 @@ fn duplicateTrack(
         engine.send_prev = @splat(@splat(-1));
         engine.publishRouting();
     }
-    try history.pushUndo(alloc, before);
+    if (before) |b| try history.pushUndo(alloc, b);
 
     inline for (.{ selected_clip, prev_selected_clip }) |ref| if (ref.*) |r| {
         if (r.track >= pos) ref.*.?.track = r.track + 1;
@@ -1925,13 +2008,30 @@ fn moveTracks(
 ) !void {
     const before = try document_mod.serialize(alloc, tracks_buf[0..track_count], transport);
     errdefer alloc.free(before);
+    const map = blk: {
+        audio.stop();
+        defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+        break :blk try applyMove(engine, tracks_buf, track_count, mv);
+    };
+    try history.pushUndo(alloc, before);
+
+    if (selected_track.*) |sel| if (sel < track_count) {
+        selected_track.* = map[sel];
+    };
+    inline for (.{ selected_clip, prev_selected_clip }) |ref| if (ref.*) |r| {
+        if (r.track < track_count) ref.*.?.track = map[r.track];
+    };
+    if (rename.kind != .none and rename.track < track_count) rename.track = map[rename.track];
+}
+
+/// Set a move's outputs and renumber the tracks to its order; the old →
+/// new index map. Audio stopped.
+fn applyMove(engine: *engine_mod.Engine, tracks_buf: *[MAX_TRACKS]track_mod.Track, track_count: usize, mv: *const track_order.Move) ![routing_mod.MAX_TRACKS]u8 {
     const new_order = &mv.order;
     var map: [routing_mod.MAX_TRACKS]u8 = @splat(routing_mod.NONE);
     for (new_order[0..track_count], 0..) |old, k| map[old] = @intCast(k);
     for (map[0..track_count]) |m| if (m == routing_mod.NONE) return error.BadOrder;
     {
-        audio.stop();
-        defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
         for (tracks_buf[0..track_count], mv.output[0..track_count]) |*t, out| {
             if (out != track_order.KEEP) t.output = out;
         }
@@ -1958,15 +2058,78 @@ fn moveTracks(
         engine.clearPdc();
         engine.publishRouting();
     }
+    return map;
+}
+
+/// Group tracks (docs/23 §Arrangement): a new group bus where the first
+/// row of `set` sits, inside that row's group, with the set's rows (a
+/// group carrying all it holds) routed into it; then the tracks renumber
+/// to display order. One undo step; the new group is selected and its
+/// name opens for editing.
+fn groupTracks(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    status: anytype,
+    audio: *audio_mod.Audio,
+    engine: *engine_mod.Engine,
+    tracks_buf: *[MAX_TRACKS]track_mod.Track,
+    track_count: *usize,
+    transport: *const transport_mod.Transport,
+    set: *const [MAX_TRACKS]bool,
+    selected_track: *?usize,
+    selected_clip: *?clip_mod.ClipRef,
+    prev_selected_clip: *?clip_mod.ClipRef,
+    rename: *RenameState,
+) !void {
+    const tracks = tracks_buf[0..track_count.*];
+    const o = track_order.Order.ofAll(tracks);
+    var roots: [MAX_TRACKS]u8 = undefined;
+    const n = o.roots(set, false, &roots);
+    if (n == 0) return error.NothingToGroup;
+    if (track_count.* >= MAX_TRACKS) return error.TooManyTracks;
+    const parent = o.parent[roots[0]];
+    if (parent != routing_mod.NONE) {
+        var nodes: [MAX_TRACKS]routing_mod.Node = undefined;
+        for (tracks, 0..) |*t, i| nodes[i] = t.routingNode();
+        const graph = routing_mod.Routing.build(nodes[0..tracks.len]);
+        for (roots[0..n]) |ti| if (graph.wouldCycle(ti, parent)) return error.WouldLoop;
+    }
+    const before = try document_mod.serialize(alloc, tracks, transport);
+    errdefer alloc.free(before);
+    var g: usize = 0;
+    const map = blk: {
+        audio.stop();
+        defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+        g = try newTrack(alloc, tracks_buf, track_count, true, "Group");
+        tracks_buf[g].output = parent;
+        for (roots[0..n]) |ti| tracks_buf[ti].output = @intCast(g);
+        // It sits where its first member did, so display order is index
+        // order again once renumbered to it.
+        const o2 = track_order.Order.ofAll(tracks_buf[0..track_count.*]);
+        var mv: track_order.Move = .{ .order = undefined, .output = @splat(track_order.KEEP) };
+        for (o2.rows[0..o2.n], 0..) |row, k| mv.order[k] = row.ti;
+        break :blk try applyMove(engine, tracks_buf, track_count.*, &mv);
+    };
     try history.pushUndo(alloc, before);
 
-    if (selected_track.*) |sel| if (sel < track_count) {
-        selected_track.* = map[sel];
+    for (tracks_buf[0..track_count.*]) |*t| t.multi_sel = false;
+    inline for (.{ selected_clip, prev_selected_clip }) |ref| if (ref.*) |cr| {
+        if (cr.track < track_count.*) ref.*.?.track = map[cr.track];
     };
-    inline for (.{ selected_clip, prev_selected_clip }) |ref| if (ref.*) |r| {
-        if (r.track < track_count) ref.*.?.track = map[r.track];
-    };
-    if (rename.kind != .none and rename.track < track_count) rename.track = map[rename.track];
+    selected_track.* = map[g];
+    if (rename.active()) rename.* = .{};
+    beginRenameTrack(rename, tracks_buf[0..track_count.*], map[g]);
+    status.set("Grouped {d} into {s}", .{ n, tracks_buf[map[g]].name() });
+}
+
+/// The tracks an action on `ti` takes: the selection when `whole` and
+/// `ti` is in it, else `ti` alone.
+fn actionSet(tracks: []const track_mod.Track, sel: ?usize, ti: usize, whole: bool) [MAX_TRACKS]bool {
+    var set: [MAX_TRACKS]bool = @splat(false);
+    if (whole and arrangement.inSet(tracks, sel, ti)) {
+        for (0..tracks.len) |k| set[k] = arrangement.inSet(tracks, sel, k);
+    } else if (ti < tracks.len) set[ti] = true;
+    return set;
 }
 
 /// Remove track `ti`: the tracks above it move down one, and every
@@ -1986,10 +2149,11 @@ fn deleteTrack(
     selected_clip: *?clip_mod.ClipRef,
     prev_selected_clip: *?clip_mod.ClipRef,
     rename: *RenameState,
+    undo: bool,
 ) !void {
     if (ti >= track_count.*) return;
-    const before = try document_mod.serialize(alloc, tracks_buf[0..track_count.*], transport);
-    errdefer alloc.free(before);
+    const before: ?[]u8 = if (undo) try document_mod.serialize(alloc, tracks_buf[0..track_count.*], transport) else null;
+    errdefer if (before) |b| alloc.free(b);
     var name_buf: [track_mod.MAX_NAME]u8 = undefined;
     const name = name_buf[0..tracks_buf[ti].name().len];
     @memcpy(name, tracks_buf[ti].name());
@@ -2005,7 +2169,7 @@ fn deleteTrack(
         engine.send_prev = @splat(@splat(-1));
         engine.publishRouting();
     }
-    try history.pushUndo(alloc, before);
+    if (before) |b| try history.pushUndo(alloc, b);
 
     if (selected_track.*) |s| {
         if (s > ti) selected_track.* = s - 1 else if (s == ti) selected_track.* = if (track_count.* == 0) null else @min(ti, track_count.* - 1);
@@ -2134,6 +2298,7 @@ fn applyProjectBytes(
 /// after that when set. SLAB_SHOT_PLAY=1 starts the transport at load;
 /// SLAB_SHOT_SELECT=track:clip opens that clip in the editor;
 /// SLAB_SHOT_EXPR=1 starts the piano roll in expression mode;
+/// SLAB_SHOT_GROUP=NAME,… groups those tracks on frame 200;
 /// SLAB_SHOT_MIXER=1 opens the mixer page; SLAB_SHOT_UNISON=1 opens the
 /// selected instrument's unison panel. SLAB_SHOT_DRAG=x0,y0,x1,y1,frame
 /// scripts a left drag in logical pixels (see devDrag).
