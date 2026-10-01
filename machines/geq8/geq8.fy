@@ -23,7 +23,7 @@ include "../lib/manifest.fy"
   "spec" GeqState.ring GeqState.ring-len 0.05 buffer
 
   ( one column per band: the strip's table fills eight columns a row, so
-    the rows are type, frequency, Q, gain and the on switch )
+    the rows are type, frequency, gain, Q and the on switch )
   "BANDS" "BAND 1" "geq-t1" GeqParams.t1 2.0 switch
     "LC48" 0.0 opt  "LC12" 1.0 opt  "LSHLF" 2.0 opt  "BELL" 3.0 opt  "NOTCH" 4.0 opt  "HSHLF" 5.0 opt  "HC12" 6.0 opt  "HC48" 7.0 opt  as-display
   "BANDS" "BAND 2" "geq-t2" GeqParams.t2 3.0 switch
@@ -48,6 +48,14 @@ include "../lib/manifest.fy"
   "BANDS" "FREQ" "geq-f6" GeqParams.f6 20.0 20000.0 4000.0 curve-exp knob
   "BANDS" "FREQ" "geq-f7" GeqParams.f7 20.0 20000.0 8000.0 curve-exp knob
   "BANDS" "FREQ" "geq-f8" GeqParams.f8 20.0 20000.0 12000.0 curve-exp knob
+  "BANDS" "GAIN" "geq-b1" GeqParams.g1 -15.0 15.0 0.0 curve-lin knob
+  "BANDS" "GAIN" "geq-b2" GeqParams.g2 -15.0 15.0 0.0 curve-lin knob
+  "BANDS" "GAIN" "geq-b3" GeqParams.g3 -15.0 15.0 0.0 curve-lin knob
+  "BANDS" "GAIN" "geq-b4" GeqParams.g4 -15.0 15.0 0.0 curve-lin knob
+  "BANDS" "GAIN" "geq-b5" GeqParams.g5 -15.0 15.0 0.0 curve-lin knob
+  "BANDS" "GAIN" "geq-b6" GeqParams.g6 -15.0 15.0 0.0 curve-lin knob
+  "BANDS" "GAIN" "geq-b7" GeqParams.g7 -15.0 15.0 0.0 curve-lin knob
+  "BANDS" "GAIN" "geq-b8" GeqParams.g8 -15.0 15.0 0.0 curve-lin knob
   "BANDS" "Q" "geq-q1" GeqParams.q1 0.1 18.0 0.71 curve-exp knob
   "BANDS" "Q" "geq-q2" GeqParams.q2 0.1 18.0 0.71 curve-exp knob
   "BANDS" "Q" "geq-q3" GeqParams.q3 0.1 18.0 0.71 curve-exp knob
@@ -56,14 +64,6 @@ include "../lib/manifest.fy"
   "BANDS" "Q" "geq-q6" GeqParams.q6 0.1 18.0 0.71 curve-exp knob
   "BANDS" "Q" "geq-q7" GeqParams.q7 0.1 18.0 0.71 curve-exp knob
   "BANDS" "Q" "geq-q8" GeqParams.q8 0.1 18.0 0.71 curve-exp knob
-  "BANDS" "GAIN" "geq-b1" GeqParams.g1 -15.0 15.0 0.0 curve-lin knob as-fader
-  "BANDS" "GAIN" "geq-b2" GeqParams.g2 -15.0 15.0 0.0 curve-lin knob as-fader
-  "BANDS" "GAIN" "geq-b3" GeqParams.g3 -15.0 15.0 0.0 curve-lin knob as-fader
-  "BANDS" "GAIN" "geq-b4" GeqParams.g4 -15.0 15.0 0.0 curve-lin knob as-fader
-  "BANDS" "GAIN" "geq-b5" GeqParams.g5 -15.0 15.0 0.0 curve-lin knob as-fader
-  "BANDS" "GAIN" "geq-b6" GeqParams.g6 -15.0 15.0 0.0 curve-lin knob as-fader
-  "BANDS" "GAIN" "geq-b7" GeqParams.g7 -15.0 15.0 0.0 curve-lin knob as-fader
-  "BANDS" "GAIN" "geq-b8" GeqParams.g8 -15.0 15.0 0.0 curve-lin knob as-fader
   "BANDS" "1" "geq-on1" GeqParams.on1 1.0 switch
     "OFF" 0.0 opt  "ON" 1.0 opt  as-button
   "BANDS" "2" "geq-on2" GeqParams.on2 1.0 switch
@@ -84,7 +84,7 @@ include "../lib/manifest.fy"
 
   "OUT" "ADAPT" "geq-adapt" GeqParams.adapt 1.0 switch
     "OFF" 0.0 opt  "ON" 1.0 opt  as-button
-  "OUT" "LEVEL" "geq-out" GeqParams.out-db -12.0 12.0 0.0 curve-lin knob as-fader
+  "OUT" "LEVEL" "geq-out" GeqParams.out-db -12.0 12.0 0.0 curve-lin knob
   "OUT" 1 strip
 
   "SPECTRUM" "geq,spec" GeqState.wpos graphic-display

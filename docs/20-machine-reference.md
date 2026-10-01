@@ -2540,14 +2540,6 @@ Presets:
 | `geq-f6` | BANDS | FREQ | 20 … 20000 | 4000 | exp |
 | `geq-f7` | BANDS | FREQ | 20 … 20000 | 8000 | exp |
 | `geq-f8` | BANDS | FREQ | 20 … 20000 | 12000 | exp |
-| `geq-q1` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
-| `geq-q2` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
-| `geq-q3` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
-| `geq-q4` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
-| `geq-q5` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
-| `geq-q6` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
-| `geq-q7` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
-| `geq-q8` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
 | `geq-b1` | BANDS | GAIN | -15 … 15 | 0 | linear |
 | `geq-b2` | BANDS | GAIN | -15 … 15 | 0 | linear |
 | `geq-b3` | BANDS | GAIN | -15 … 15 | 0 | linear |
@@ -2556,6 +2548,14 @@ Presets:
 | `geq-b6` | BANDS | GAIN | -15 … 15 | 0 | linear |
 | `geq-b7` | BANDS | GAIN | -15 … 15 | 0 | linear |
 | `geq-b8` | BANDS | GAIN | -15 … 15 | 0 | linear |
+| `geq-q1` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
+| `geq-q2` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
+| `geq-q3` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
+| `geq-q4` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
+| `geq-q5` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
+| `geq-q6` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
+| `geq-q7` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
+| `geq-q8` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
 | `geq-on1` | BANDS | 1 | 0 OFF / 1 ON | 1 | switch |
 | `geq-on2` | BANDS | 2 | 0 OFF / 1 ON | 1 | switch |
 | `geq-on3` | BANDS | 3 | 0 OFF / 1 ON | 1 | switch |
