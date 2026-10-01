@@ -240,7 +240,7 @@ pub const Strip = struct {
     }
 };
 
-pub const DisplayKind = enum { adsr, waveform, meter, response, algo, eg4, zones, segments, dynamics, taps, decay };
+pub const DisplayKind = enum { adsr, waveform, meter, response, algo, eg4, zones, segments, dynamics, taps, decay, graphic };
 
 /// Algo display slots in `Display.offsets`, in the order `algo-display`
 /// pushes them: operator count, row stride, then the row offsets (all in
@@ -726,6 +726,7 @@ pub fn read(host: *FyHost) !Desc {
             8 => .dynamics,
             9 => .taps,
             10 => .decay,
+            11 => .graphic,
             else => return error.InvalidMachineDesc,
         };
         out.source_len = try copyText(&out.source, cstrSlice(disp.sources));
@@ -737,6 +738,11 @@ pub fn read(host: *FyHost) !Desc {
                 if (off + 8 > d.state_size) return error.InvalidMachineDesc;
                 o.* = off;
             }
+        }
+        if (out.kind == .graphic) {
+            const off: usize = @intCast(asInt(disp.off0));
+            if (off + 8 > d.state_size) return error.InvalidMachineDesc;
+            out.offsets[0] = off;
         }
         if (out.kind == .meter) {
             const raw = [_]Fy.Value{ disp.off0, disp.off1, disp.off2, disp.off3, disp.off4, disp.off5, disp.off6 };

@@ -26,6 +26,7 @@ const ui_style = @import("../ui/style.zig");
 const ui_menu = @import("../ui/menu.zig");
 const automation = @import("../automation.zig");
 const snapshot = @import("../snapshot.zig");
+const analysis = @import("../bench/analysis.zig");
 const Ui = ui_core.Ui;
 const Rect = ui_core.Rect;
 
@@ -315,6 +316,8 @@ pub const FyRawMachine = struct {
     // Per-frame meter ballistics (meter display kind). One per machine; a
     // limiter has a single meter. Updated on the UI thread from live state.
     meter_ui: MeterUi = .{},
+    // Spectrum ballistics for the graphic EQ display. UI thread.
+    graphic_ui: GraphicUi = .{},
 
     pub fn create(alloc: std.mem.Allocator, path: []const u8) !*FyRawMachine {
         const self = try alloc.create(FyRawMachine);
@@ -2534,6 +2537,8 @@ fn walkPanel(self: *FyRawMachine, ui: *Ui, body: Rect, pass: PanelPass) bool {
 const DISPLAY_MIN = [2]i32{ 40, 32 };
 /// An operator graph needs room for its widest and tallest algorithm.
 const ALGO_MIN = [2]i32{ 112, 96 };
+/// A graphic EQ's analyser needs height for both its scales.
+const GRAPHIC_MIN = [2]i32{ 128, 72 };
 
 fn stripNatural(self: *const FyRawMachine, ui: *const Ui, view: StripView, tier: ui_ctl.Size) [2]i32 {
     const t = stripTable(self, ui, view, tier);
@@ -2544,7 +2549,11 @@ fn stripNatural(self: *const FyRawMachine, ui: *const Ui, view: StripView, tier:
 
 fn itemNatural(self: *const FyRawMachine, ui: *const Ui, it: machine_desc.LayoutItem, tier: ui_ctl.Size) [2]i32 {
     if (!it.is_display) return stripNatural(self, ui, stripViewAt(self, it.index), tier);
-    return if (self.desc.displays[it.index].kind == .algo) ALGO_MIN else DISPLAY_MIN;
+    return switch (self.desc.displays[it.index].kind) {
+        .algo => ALGO_MIN,
+        .graphic => GRAPHIC_MIN,
+        else => DISPLAY_MIN,
+    };
 }
 
 /// A cell stacks its items: width = widest, height = sum.
@@ -2967,6 +2976,7 @@ fn drawDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void
         .dynamics => drawDynamicsDisplay(self, ui, r, disp),
         .taps => drawTapsDisplay(self, ui, r, disp),
         .decay => drawDecayDisplay(self, ui, r, disp),
+        .graphic => drawGraphicDisplay(self, ui, r, disp),
         .algo => drawAlgoDisplay(self, ui, r, disp),
         .eg4 => drawEg4Display(self, ui, r, disp.sourceSlice()),
         .zones => drawZoneDisplay(self, ui, r, disp.sourceSlice()),
@@ -3624,6 +3634,357 @@ fn drawResponseDisplay(self: *FyRawMachine, ui: *Ui, r: Rect) void {
         const p = [2]f32{ fx + @as(f32, @floatCast(t)) * fw, fy + @as(f32, @floatCast(yn)) * fh };
         if (i > 0) ui.line(prev[0], prev[1], p[0], p[1], ui_style.vfd);
         prev = p;
+    }
+}
+
+// ── Graphic EQ: spectrum analyser under the response curve ────────────
+//
+// The kernel (kernels/07-effects/geq.fy) writes its output into a host
+// buffer ring. Each frame the panel windows the newest GRAPHIC_FFT samples
+// of each channel, sums their power spectra and draws them as filled
+// columns on a 20 Hz - 20 kHz log axis, with the band response computed
+// from the controls on top and a handle per band: drag it across for the
+// band's frequency, up and down for its gain.
+
+const GEQ_BANDS = 8;
+const GEQ_LO_HZ: f64 = 20.0;
+const GEQ_DECADES: f64 = 3.0; // 20 Hz .. 20 kHz
+const GEQ_DB_RANGE: f64 = 18.0; // the curve's half-range (gain is +-15)
+const GEQ_GAIN_MAX: f64 = 15.0;
+const GRAPHIC_FFT = 2048;
+const GRAPHIC_COLS = 1024;
+const SPEC_TOP_DB: f32 = 6.0;
+const SPEC_FLOOR_DB: f32 = -84.0;
+/// dB per octave around 1 kHz, so a mix's falling spectrum reads level.
+const SPEC_TILT_DB: f64 = 3.0;
+const SPEC_RELEASE_DB: f32 = 30.0; // per second
+/// The write head standing still this long means the machine isn't
+/// rendering (stopped, or idle-skipped): the analyser falls to silence.
+const SPEC_STILL_S: f32 = 0.08;
+
+const GraphicUi = struct {
+    db: [GRAPHIC_COLS]f32 = [_]f32{SPEC_FLOOR_DB} ** GRAPHIC_COLS,
+    last_wpos: f64 = -1,
+    still: f32 = 0,
+    // A band handle press: where it began, and whether it has moved far
+    // enough to be a drag (a click without one toggles the band).
+    press: [2]f32 = .{ 0, 0 },
+    dragging: bool = false,
+    re: [GRAPHIC_FFT]f64 = undefined,
+    im: [GRAPHIC_FFT]f64 = undefined,
+    pow: [GRAPHIC_FFT / 2 + 1]f64 = undefined,
+};
+
+/// Frequency at position t (0..1) across the graphic display, and back.
+fn geqAxisHz(t: f64) f64 {
+    return GEQ_LO_HZ * std.math.pow(f64, 10.0, GEQ_DECADES * t);
+}
+
+fn geqAxisT(hz: f64) f64 {
+    return std.math.log10(@max(hz, 1e-3) / GEQ_LO_HZ) / GEQ_DECADES;
+}
+
+/// Butterworth stage Qs for the 48 dB cuts (geq.fy).
+const GEQ_BW4 = [_]f64{ 0.5097955791041592, 0.6013448869350453, 0.8999762231364156, 2.5629154477415055 };
+
+/// geq.fy's band types, in option order.
+const GeqType = enum(u8) { lc48, lc12, lshelf, bell, notch, hshelf, hc12, hc48 };
+
+/// One band's biquad stages for its type, as geq-block-prepare designs
+/// them. Returns the stage count.
+fn geqBandStages(out: *[4]Biquad, t: GeqType, fc: f64, db: f64, q: f64, adapt: bool, sr: f64) usize {
+    switch (t) {
+        .bell => out[0] = rbjPeak(fc, db, if (adapt) q * (1 + @abs(db) / 12.0) else q, sr),
+        .lshelf => out[0] = rbjShelfQ(fc, db, q, sr, false),
+        .hshelf => out[0] = rbjShelfQ(fc, db, q, sr, true),
+        .notch => out[0] = rbjNotch(fc, q, sr),
+        .lc12, .hc12 => out[0] = rbjCut(fc, q, sr, t == .hc12),
+        .lc48, .hc48 => {
+            for (GEQ_BW4, 0..) |bq, k| {
+                out[k] = rbjCut(fc, if (k == 3) bq * q * std.math.sqrt2 else bq, sr, t == .hc48);
+            }
+            return 4;
+        },
+    }
+    return 1;
+}
+
+/// Gain moves the bell and the shelves; the cuts and the notch ignore it.
+fn geqTypeHasGain(t: GeqType) bool {
+    return t == .bell or t == .lshelf or t == .hshelf;
+}
+
+/// RBJ shelf with a Q (0.71 is the S = 1 shelf).
+fn rbjShelfQ(fc: f64, db: f64, q: f64, sr: f64, high: bool) Biquad {
+    const w = 2.0 * std.math.pi * fc / sr;
+    const cw = @cos(w);
+    const a = std.math.pow(f64, 10.0, db / 40.0);
+    const beta = 2.0 * @sqrt(a) * @sin(w) / (2.0 * q);
+    const ap1 = a + 1.0;
+    const am1 = a - 1.0;
+    if (high) return .{
+        .b0 = a * (ap1 + am1 * cw + beta),
+        .b1 = -2 * a * (am1 + ap1 * cw),
+        .b2 = a * (ap1 + am1 * cw - beta),
+        .a0 = ap1 - am1 * cw + beta,
+        .a1 = 2 * (am1 - ap1 * cw),
+        .a2 = ap1 - am1 * cw - beta,
+    };
+    return .{
+        .b0 = a * (ap1 - am1 * cw + beta),
+        .b1 = 2 * a * (am1 - ap1 * cw),
+        .b2 = a * (ap1 - am1 * cw - beta),
+        .a0 = ap1 + am1 * cw + beta,
+        .a1 = -2 * (am1 + ap1 * cw),
+        .a2 = ap1 + am1 * cw - beta,
+    };
+}
+
+/// RBJ high-pass (a LO CUT stage) or low-pass (HI CUT).
+fn rbjCut(fc: f64, q: f64, sr: f64, lowpass: bool) Biquad {
+    if (!lowpass) return rbjHpf(fc, q, sr);
+    const w = 2.0 * std.math.pi * fc / sr;
+    const cw = @cos(w);
+    const alpha = @sin(w) / (2.0 * q);
+    const omc = 1.0 - cw;
+    return .{ .b0 = omc / 2.0, .b1 = omc, .b2 = omc / 2.0, .a0 = 1 + alpha, .a1 = -2 * cw, .a2 = 1 - alpha };
+}
+
+fn rbjNotch(fc: f64, q: f64, sr: f64) Biquad {
+    const w = 2.0 * std.math.pi * fc / sr;
+    const cw = @cos(w);
+    const alpha = @sin(w) / (2.0 * q);
+    return .{ .b0 = 1, .b1 = -2 * cw, .b2 = 1, .a0 = 1 + alpha, .a1 = -2 * cw, .a2 = 1 - alpha };
+}
+
+/// Sum both channels' Hann-windowed power spectra of the newest samples
+/// in the ring into `g.pow` (per bin, scaled so a 0 dBFS sine reads 1).
+/// False when there is no ring to read.
+fn graphicSpectrum(self: *FyRawMachine, g: *GraphicUi, bi: usize, wpos_off: usize) bool {
+    const n = GRAPHIC_FFT;
+    if (self.buffer_mem[bi][0].len < n) return false;
+    @memset(g.pow[0..], 0);
+    var chans: f64 = 0;
+    for (0..2) |ch| {
+        const ring = self.buffer_mem[bi][ch];
+        if (ring.len < n) continue;
+        const w: usize = @intFromFloat(std.math.clamp(self.readStateF64(ch, wpos_off), 0, @as(f64, @floatFromInt(ring.len - 1))));
+        const start = (w + ring.len - n) % ring.len;
+        for (0..n) |i| {
+            const hann = 0.5 - 0.5 * @cos(2.0 * std.math.pi * @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(n)));
+            g.re[i] = ring[(start + i) % ring.len] * hann;
+            g.im[i] = 0;
+        }
+        analysis.fft(g.re[0..], g.im[0..]);
+        // Hann's coherent gain is 1/2: a full-scale sine peaks at n/4.
+        const norm = 16.0 / @as(f64, @floatFromInt(n * n));
+        for (g.pow[0..], 0..) |*p, k| p.* += (g.re[k] * g.re[k] + g.im[k] * g.im[k]) * norm;
+        chans += 1;
+    }
+    if (chans > 1) for (g.pow[0..]) |*p| {
+        p.* /= chans;
+    };
+    return chans > 0;
+}
+
+/// Spectrum level (dB, tilted) for the frequency span [f_lo, f_hi]: the
+/// mean power of the bins inside it, or the level interpolated at its
+/// centre where it holds fewer than two.
+fn graphicSpanDb(g: *const GraphicUi, f_lo: f64, f_hi: f64, sr: f64) f32 {
+    const bin_hz = sr / @as(f64, GRAPHIC_FFT);
+    const last: f64 = @floatFromInt(GRAPHIC_FFT / 2);
+    const b_lo = f_lo / bin_hz;
+    const b_hi = f_hi / bin_hz;
+    if (b_lo >= last) return SPEC_FLOOR_DB;
+    var p: f64 = 0;
+    if (b_hi - b_lo < 2.0) {
+        const b = std.math.clamp((b_lo + b_hi) * 0.5, 0, last);
+        const k: usize = @intFromFloat(@floor(b));
+        const k1 = @min(k + 1, GRAPHIC_FFT / 2);
+        const fr = b - @floor(b);
+        p = g.pow[k] * (1 - fr) + g.pow[k1] * fr;
+    } else {
+        var k: usize = @intFromFloat(@ceil(b_lo));
+        const k_end: usize = @intFromFloat(@min(@floor(b_hi), last));
+        var n: f64 = 0;
+        while (k <= k_end) : (k += 1) {
+            p += g.pow[k];
+            n += 1;
+        }
+        p /= @max(n, 1);
+    }
+    const fc = @sqrt(f_lo * f_hi);
+    const db = 10.0 * std.math.log10(@max(p, 1e-14)) + SPEC_TILT_DB * std.math.log2(fc / 1000.0);
+    return @floatCast(db);
+}
+
+fn drawGraphicDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void {
+    const field = ui.well(r, ui_style.well);
+    if (field.w < 16 or field.h < 16) return;
+    const g = &self.graphic_ui;
+    const sr = self.synced_sr;
+    const dt = ui.in.dt;
+    ui.animate();
+
+    // sources: "prefix,buffer"
+    var parts = std.mem.splitScalar(u8, disp.sourceSlice(), ',');
+    const prefix = std.mem.trim(u8, parts.next() orelse "", " ");
+    const buf_name = std.mem.trim(u8, parts.next() orelse "", " ");
+    var bi: ?usize = null;
+    for (self.desc.buffers[0..self.desc.buffer_count], 0..) |*b, i| {
+        if (std.mem.eql(u8, b.nameSlice(), buf_name)) bi = i;
+    }
+    const wpos_off = disp.offsets[0];
+
+    // The analyser falls to silence once the machine stops rendering.
+    const wpos = self.readStateF64(0, wpos_off);
+    if (wpos == g.last_wpos) g.still += dt else g.still = 0;
+    g.last_wpos = wpos;
+    const live = g.still < SPEC_STILL_S and bi != null and graphicSpectrum(self, g, bi.?, wpos_off);
+
+    // The band response, from the controls (as geq-block-prepare would).
+    const Band = struct { on: bool, t: GeqType, hz: f64, gain: f64 };
+    var band_ctl: [GEQ_BANDS]Band = undefined;
+    var stages: [GEQ_BANDS * 4]Biquad = undefined;
+    var n_stages: usize = 0;
+    const out_db = prefixedValue(self, prefix, "-out", 0);
+    const adapt = prefixedValue(self, prefix, "-adapt", 1) >= 0.5;
+    for (0..GEQ_BANDS) |i| {
+        var nb: [12]u8 = undefined;
+        const n1 = i + 1;
+        const b = &band_ctl[i];
+        b.on = prefixedValue(self, prefix, std.fmt.bufPrint(&nb, "-on{d}", .{n1}) catch "", 1) >= 0.5;
+        b.t = @enumFromInt(@as(u8, @intFromFloat(std.math.clamp(@round(prefixedValue(self, prefix, std.fmt.bufPrint(&nb, "-t{d}", .{n1}) catch "", 3)), 0, 7))));
+        b.hz = std.math.clamp(prefixedValue(self, prefix, std.fmt.bufPrint(&nb, "-f{d}", .{n1}) catch "", 1000), 10, 22000);
+        b.gain = prefixedValue(self, prefix, std.fmt.bufPrint(&nb, "-b{d}", .{n1}) catch "", 0);
+        const q = std.math.clamp(prefixedValue(self, prefix, std.fmt.bufPrint(&nb, "-q{d}", .{n1}) catch "", 0.71), 0.1, 18);
+        if (!b.on) continue;
+        var bq: [4]Biquad = undefined;
+        const n = geqBandStages(&bq, b.t, b.hz, b.gain, q, adapt, sr);
+        @memcpy(stages[n_stages..][0..n], bq[0..n]);
+        n_stages += n;
+    }
+    const bands = stages[0..n_stages];
+
+    ui.clip(field);
+    defer ui.unclip();
+    const fx: f32 = @floatFromInt(field.x);
+    const fy: f32 = @floatFromInt(field.y);
+    const fh: f32 = @floatFromInt(field.h);
+    const fwf: f64 = @floatFromInt(field.w);
+    const curveY = struct {
+        fn of(db: f64, top: f32, h: f32) f32 {
+            return top + @as(f32, @floatCast(std.math.clamp(0.5 - db / (2.0 * GEQ_DB_RANGE), 0.0, 1.0))) * (h - 1);
+        }
+    };
+    const specY = struct {
+        fn of(db: f32, top: i32, h: i32) i32 {
+            const frac = std.math.clamp((db - SPEC_FLOOR_DB) / (SPEC_TOP_DB - SPEC_FLOOR_DB), 0.0, 1.0);
+            return top + h - @as(i32, @intFromFloat(@round(frac * @as(f32, @floatFromInt(h)))));
+        }
+    };
+
+    // Spectrum: dim filled columns under a brighter edge.
+    const cols: usize = @intCast(@min(field.w, GRAPHIC_COLS));
+    const fill = ui_style.vfd.mix(ui_style.well, 0.9);
+    const edge = ui_style.vfd.mix(ui_style.well, 0.62);
+    for (0..cols) |x| {
+        const xf: f64 = @floatFromInt(x);
+        const target = if (live) graphicSpanDb(g, geqAxisHz(xf / fwf), geqAxisHz((xf + 1) / fwf), sr) else SPEC_FLOOR_DB;
+        const d = &g.db[x];
+        d.* = if (target >= d.*) target else @max(target, d.* - SPEC_RELEASE_DB * dt);
+        const xi = field.x + @as(i32, @intCast(x));
+        const top = specY.of(d.*, field.y, field.h);
+        if (top < field.bottom()) {
+            ui.rect(Rect.xywh(xi, top + 1, 1, field.bottom() - top - 1), fill);
+            ui.rect(Rect.xywh(xi, top, 1, 1), edge);
+        }
+    }
+
+    // Grid: the curve's 0 dB brighter, +-6 / +-12 dim; decades and their
+    // halves across, 100 / 1K / 10K labelled.
+    const grid = ui_style.vfd.alpha(24);
+    ui.rect(Rect.xywh(field.x, @intFromFloat(curveY.of(0, fy, fh)), field.w, 1), ui_style.vfd.alpha(56));
+    inline for (.{ -12.0, -6.0, 6.0, 12.0 }) |gl| {
+        ui.rect(Rect.xywh(field.x, @intFromFloat(curveY.of(gl, fy, fh)), field.w, 1), grid);
+    }
+    const lab = ui_style.vfd.alpha(110);
+    const lh = ui.fonts.legend.lineHeight();
+    inline for (.{ 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0 }) |gf| {
+        const gx = field.x + @as(i32, @intFromFloat(@as(f32, @floatCast(geqAxisT(gf) * fwf))));
+        const major = gf == 100.0 or gf == 1000.0 or gf == 10000.0;
+        ui.rect(Rect.xywh(gx, field.y, 1, field.h), if (major) ui_style.vfd.alpha(40) else grid);
+        if (major and field.h >= 48) {
+            const txt = if (gf == 100.0) "100" else if (gf == 1000.0) "1K" else "10K";
+            _ = ui.text(&ui.fonts.legend, gx + 2, field.bottom() - lh - 1, txt, lab);
+        }
+    }
+    if (field.h >= 64) {
+        _ = ui.text(&ui.fonts.legend, field.x + 2, @as(i32, @intFromFloat(curveY.of(12, fy, fh))) - @divFloor(lh, 2), "+12", lab);
+        _ = ui.text(&ui.fonts.legend, field.x + 2, @as(i32, @intFromFloat(curveY.of(-12, fy, fh))) - @divFloor(lh, 2), "-12", lab);
+    }
+
+    // The response curve, then a handle on each band's centre.
+    const respDb = struct {
+        fn at(bq: []const Biquad, f: f64, rate: f64, out: f64) f64 {
+            var db = out;
+            for (bq) |b| db += biquadMagDb(b, f, rate);
+            return db;
+        }
+    };
+    var prev: [2]f32 = .{ 0, 0 };
+    var x: i32 = 0;
+    while (x <= field.w) : (x += 2) {
+        const t = @as(f64, @floatFromInt(x)) / fwf;
+        const p = [2]f32{ fx + @as(f32, @floatFromInt(x)), curveY.of(respDb.at(bands, geqAxisHz(t), sr, out_db), fy, fh) };
+        if (x > 0) ui.line(prev[0], prev[1], p[0], p[1], ui_style.vfd);
+        prev = p;
+    }
+    // Handles: the band number at its frequency, on the curve for a band
+    // with gain, on the 0 dB line otherwise. Drag across for FREQ, up and
+    // down for GAIN; a click turns the band on or off.
+    for (band_ctl, 0..) |b, i| {
+        const has_gain = geqTypeHasGain(b.t);
+        const hx: i32 = field.x + @as(i32, @intFromFloat(@as(f32, @floatCast(geqAxisT(b.hz) * fwf))));
+        const hy: i32 = @intFromFloat(curveY.of(if (has_gain) b.gain else 0, fy, fh));
+        const wid = ui.id(.{ "geqband", i });
+        const hit = Rect.xywh(hx - 5, hy - 5, 11, 11);
+        const beh = ui.behaviorEx(wid, hit, .{ .prio = 2 });
+        var nb: [12]u8 = undefined;
+        if (beh.pressed) {
+            g.press = .{ ui.in.mx, ui.in.my };
+            g.dragging = false;
+        }
+        if (beh.held and !g.dragging and @abs(ui.in.mx - g.press[0]) + @abs(ui.in.my - g.press[1]) > 3) g.dragging = true;
+        if (beh.clicked and !g.dragging) {
+            applyControlValue(self, std.fmt.bufPrint(&nb, "{s}-on{d}", .{ prefix, i + 1 }) catch "", if (b.on) 0 else 1);
+        }
+        if (beh.held and g.dragging) {
+            const t = (ui.in.mx - fx) / @as(f32, @floatCast(fwf));
+            const hz = std.math.clamp(geqAxisHz(std.math.clamp(t, 0, 1)), 20, 20000);
+            applyControlValue(self, std.fmt.bufPrint(&nb, "{s}-f{d}", .{ prefix, i + 1 }) catch "", hz);
+            var vb: [24]u8 = undefined;
+            if (has_gain) {
+                const yn = (ui.in.my - fy) / fh;
+                const db = std.math.clamp((0.5 - @as(f64, yn)) * 2.0 * GEQ_DB_RANGE, -GEQ_GAIN_MAX, GEQ_GAIN_MAX);
+                applyControlValue(self, std.fmt.bufPrint(&nb, "{s}-b{d}", .{ prefix, i + 1 }) catch "", db);
+                ui.setTouch(std.fmt.bufPrint(&nb, "BAND {d}", .{i + 1}) catch "", std.fmt.bufPrint(&vb, "{d:.0} HZ {d:.1} DB", .{ hz, db }) catch "");
+            } else {
+                ui.setTouch(std.fmt.bufPrint(&nb, "BAND {d}", .{i + 1}) catch "", std.fmt.bufPrint(&vb, "{d:.0} HZ", .{hz}) catch "");
+            }
+        }
+        const hot = ui.isHot(wid) or beh.held;
+        if (hot) ui.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_ALL, 2);
+        const col = if (!b.on) ui_style.text_mute else if (hot) ui_style.text else ui_style.vfd_hi;
+        const box = Rect.xywh(hx - 4, hy - 5, 9, 11);
+        ui.rect(box, if (b.on) ui_style.well else ui_style.well.alpha(160));
+        ui.rect(Rect.xywh(box.x, box.y, box.w, 1), col);
+        ui.rect(Rect.xywh(box.x, box.bottom() - 1, box.w, 1), col);
+        ui.rect(Rect.xywh(box.x, box.y, 1, box.h), col);
+        ui.rect(Rect.xywh(box.right() - 1, box.y, 1, box.h), col);
+        var db: [2]u8 = undefined;
+        const digit = std.fmt.bufPrint(&db, "{d}", .{i + 1}) catch "";
+        _ = ui.text(&ui.fonts.legend, box.x + 2, box.y + @divFloor(box.h - lh, 2), digit, col);
     }
 }
 

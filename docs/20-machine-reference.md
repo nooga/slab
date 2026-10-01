@@ -23,6 +23,7 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`comp2`](#comp2) | Comp | effect | — | `comp-` |
 | [`delay2`](#delay2) | Delay | effect | — | `delay-` |
 | [`eq2`](#eq2) | EQ | effect | — | `eq-` |
+| [`geq8`](#geq8) | GEQ | effect | — | `geq-` |
 | [`era`](#era) | Era | effect | — | `era-` |
 | [`funk`](#funk) | Funk Overload | effect | — | `funk-` |
 | [`gate2`](#gate2) | Gate | effect | — | `gate-` |
@@ -2516,6 +2517,75 @@ Presets:
 | `eq-p2-q` | HI-MID | Q | 0.3 … 4 | 0.9 | exp |
 | `eq-hs-hz` | HI | FREQ | 1500 … 18000 | 8000 | exp |
 | `eq-hs-db` | HI | GAIN | -18 … 18 | 0 | linear |
+
+## geq8
+
+**GEQ**, stereo insert effect.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `geq-t1` | BANDS | BAND 1 | 0 LC48 / 1 LC12 / 2 LSHLF / 3 BELL / 4 NOTCH / 5 HSHLF / 6 HC12 / 7 HC48 | 2 | switch |
+| `geq-t2` | BANDS | BAND 2 | 0 LC48 / 1 LC12 / 2 LSHLF / 3 BELL / 4 NOTCH / 5 HSHLF / 6 HC12 / 7 HC48 | 3 | switch |
+| `geq-t3` | BANDS | BAND 3 | 0 LC48 / 1 LC12 / 2 LSHLF / 3 BELL / 4 NOTCH / 5 HSHLF / 6 HC12 / 7 HC48 | 3 | switch |
+| `geq-t4` | BANDS | BAND 4 | 0 LC48 / 1 LC12 / 2 LSHLF / 3 BELL / 4 NOTCH / 5 HSHLF / 6 HC12 / 7 HC48 | 3 | switch |
+| `geq-t5` | BANDS | BAND 5 | 0 LC48 / 1 LC12 / 2 LSHLF / 3 BELL / 4 NOTCH / 5 HSHLF / 6 HC12 / 7 HC48 | 3 | switch |
+| `geq-t6` | BANDS | BAND 6 | 0 LC48 / 1 LC12 / 2 LSHLF / 3 BELL / 4 NOTCH / 5 HSHLF / 6 HC12 / 7 HC48 | 3 | switch |
+| `geq-t7` | BANDS | BAND 7 | 0 LC48 / 1 LC12 / 2 LSHLF / 3 BELL / 4 NOTCH / 5 HSHLF / 6 HC12 / 7 HC48 | 3 | switch |
+| `geq-t8` | BANDS | BAND 8 | 0 LC48 / 1 LC12 / 2 LSHLF / 3 BELL / 4 NOTCH / 5 HSHLF / 6 HC12 / 7 HC48 | 5 | switch |
+| `geq-f1` | BANDS | FREQ | 20 … 20000 | 60 | exp |
+| `geq-f2` | BANDS | FREQ | 20 … 20000 | 150 | exp |
+| `geq-f3` | BANDS | FREQ | 20 … 20000 | 350 | exp |
+| `geq-f4` | BANDS | FREQ | 20 … 20000 | 800 | exp |
+| `geq-f5` | BANDS | FREQ | 20 … 20000 | 1800 | exp |
+| `geq-f6` | BANDS | FREQ | 20 … 20000 | 4000 | exp |
+| `geq-f7` | BANDS | FREQ | 20 … 20000 | 8000 | exp |
+| `geq-f8` | BANDS | FREQ | 20 … 20000 | 12000 | exp |
+| `geq-q1` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
+| `geq-q2` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
+| `geq-q3` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
+| `geq-q4` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
+| `geq-q5` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
+| `geq-q6` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
+| `geq-q7` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
+| `geq-q8` | BANDS | Q | 0.1 … 18 | 0.71 | exp |
+| `geq-b1` | BANDS | GAIN | -15 … 15 | 0 | linear |
+| `geq-b2` | BANDS | GAIN | -15 … 15 | 0 | linear |
+| `geq-b3` | BANDS | GAIN | -15 … 15 | 0 | linear |
+| `geq-b4` | BANDS | GAIN | -15 … 15 | 0 | linear |
+| `geq-b5` | BANDS | GAIN | -15 … 15 | 0 | linear |
+| `geq-b6` | BANDS | GAIN | -15 … 15 | 0 | linear |
+| `geq-b7` | BANDS | GAIN | -15 … 15 | 0 | linear |
+| `geq-b8` | BANDS | GAIN | -15 … 15 | 0 | linear |
+| `geq-on1` | BANDS | 1 | 0 OFF / 1 ON | 1 | switch |
+| `geq-on2` | BANDS | 2 | 0 OFF / 1 ON | 1 | switch |
+| `geq-on3` | BANDS | 3 | 0 OFF / 1 ON | 1 | switch |
+| `geq-on4` | BANDS | 4 | 0 OFF / 1 ON | 1 | switch |
+| `geq-on5` | BANDS | 5 | 0 OFF / 1 ON | 1 | switch |
+| `geq-on6` | BANDS | 6 | 0 OFF / 1 ON | 1 | switch |
+| `geq-on7` | BANDS | 7 | 0 OFF / 1 ON | 1 | switch |
+| `geq-on8` | BANDS | 8 | 0 OFF / 1 ON | 1 | switch |
+| `geq-adapt` | OUT | ADAPT | 0 OFF / 1 ON | 1 | switch |
+| `geq-out` | OUT | LEVEL | -12 … 12 | 0 | linear |
+
+Presets:
+
+- `am-radio` — AM radio: soft band-limit, midrange push
+- `bass-define` — Bass: subsonics out, warmth, mud out, growl for small speakers
+- `dark-room` — Muffled, through the wall: a resonant 48 dB high cut
+- `de-mud` — Two gentle dips where mixes go muddy
+- `drum-bus` — Drum bus: rumble out, thump, a little less mud, snap and air
+- `flat` — Every band on, flat: the init layout
+- `hat-tick` — Hats: lows gone, the tick up, the hiss down
+- `hum-50` — Mains hum out at 50 Hz and its harmonics (Europe)
+- `hum-60` — Mains hum out at 60 Hz and its harmonics (Americas)
+- `keys-bright` — Keys / EP: less low-mid fog, bark and sparkle
+- `kick-punch` — Kick: subsonic cut, weight at 60, boxiness out, beater click
+- `lead-forward` — Lead: thinned below, presence up so it cuts through
+- `mix-air` — Master: rumble out, a touch of weight and air
+- `pad-clear` — Pad: make room below 180, less boxiness, a sheen on top
+- `smile` — The classic V: lows and highs up, mids scooped
+- `snare-crack` — Snare: low cut, body, ring out, crack and air
+- `telephone` — Phone line: 400 Hz to 3 kHz, honky
 
 ## era
 

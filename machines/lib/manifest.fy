@@ -505,6 +505,20 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   _mf-last-disp !64
 ;
 
+( A graphic EQ's face [kind 11]: a spectrum analyser over the response
+  of the machine's `<prefix>-b1`..`-b8` band gains, `-q` mode and `-out`
+  trim.  sources is "prefix,buffer": the kernel writes its output into
+  host buffer `buffer` as a ring with its write head at state f64
+  `wpos`.  The log axis puts the bands evenly across the field. )
+: graphic-display  ( name sources wpos -- )
+  DisplayDesc.alloc
+  DisplayDesc.off0!
+  swap cstr-new swap DisplayDesc.sources!
+  swap cstr-new swap DisplayDesc.name!
+  11 swap DisplayDesc.kind!
+  _mf-append-disp
+;
+
 ( Open a named tab.  Rows declared after this belong to the page until the
   next `page`; the panel grows a tab bar.  Mixing top-level rows and pages is
   not supported — use one or the other. )

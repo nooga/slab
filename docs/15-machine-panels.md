@@ -224,7 +224,19 @@ cell|1.6|HPF*4/EG*1                    # short display under a taller HPF
   (DECAY) and 8 kHz (faster by the loop's damping lowpass per pass), and
   the gate's hold as a line when GATED. verb2 puts it beside SPACE.
 
-Both compute from the machine's controls on the UI thread, as the kernel's
+- `graphic-display ( name sources wpos -- )` draws an EQ Eight style
+  face: a live spectrum analyser under the response of the machine's
+  eight bands, 20 Hz to 20 kHz. `sources` is `"prefix,buffer"`: the band
+  controls are `<prefix>-t1..8` (type), `-f`, `-q`, `-b` (gain), `-on`,
+  plus `-adapt` and `-out`, and the kernel writes its output into host
+  buffer `buffer` as a ring with its write head at state f64 `wpos`. The
+  panel FFTs the newest 2048 samples of both channels each frame (Hann,
+  +3 dB/oct tilt so a mix reads level, falling at 30 dB/s), and falls to
+  silence once the write head stops. Each band has a numbered handle:
+  drag it across for FREQ and up and down for GAIN, click it to turn the
+  band on or off. geq8 puts it over its band columns.
+
+These compute from the machine's controls on the UI thread, as the kernel's
 block-prepare would, not from derived params: the engine renders nothing
 while the transport is stopped, so derived params would show the last
 played settings.
