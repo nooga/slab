@@ -278,6 +278,14 @@ A worker that wakes late finds the block closed. The audio thread
 renders anything no worker took, so a descheduled worker costs time,
 never output.
 
+**Thread lamps.** The transport bar's stats display shows a lamp per
+render thread (the audio thread first) beside CPU, lit by how much of the
+audio budget that thread spent rendering and mixing nodes, and red from
+85%. Each thread adds its ticks to its slot (`render_pool.slot`,
+`Engine.thread_busy`); the UI reads and clears them every frame
+(`takeThreadLoad`) and smooths them. CPU itself stays the callback's
+wall time against the budget.
+
 **fy.** Each machine owns its fy instance and JIT image; raw kernel
 calls touch only that instance and their own slots. `Builtins.fyPtr` is
 thread-local in fy. The callback lock that keeps hot-patch and runtime

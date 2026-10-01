@@ -23,6 +23,10 @@ const SYNC_POLICY_FIFO: c_int = 0;
 
 pub const MAX_WORKERS = 7;
 
+/// This thread's render slot: 0 on the audio thread (and any other that
+/// renders), 1… on the workers. For per-thread load (Engine.thread_busy).
+pub threadlocal var slot: usize = 0;
+
 /// Workers to run by default: one fewer than the performance cores (the
 /// audio thread is the other), at most MAX_WORKERS.
 pub fn defaultWorkers() usize {
@@ -61,7 +65,7 @@ pub fn Pool(comptime Ctx: type, comptime Scratch: type, comptime work: fn (*Ctx,
             const n = @min(workers, MAX_WORKERS);
             errdefer self.stopWorkers();
             while (self.n < n) : (self.n += 1) {
-                self.threads[self.n] = try std.Thread.spawn(.{}, run, .{self});
+                self.threads[self.n] = try std.Thread.spawn(.{}, run, .{ self, self.n + 1 });
             }
             return self;
         }
@@ -96,7 +100,8 @@ pub fn Pool(comptime Ctx: type, comptime Scratch: type, comptime work: fn (*Ctx,
             while (self.inflight.load(.seq_cst) != 0) std.atomic.spinLoopHint();
         }
 
-        fn run(self: *Self) void {
+        fn run(self: *Self, my_slot: usize) void {
+            slot = my_slot;
             _ = pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
             var scratch: Scratch = undefined;
             while (true) {

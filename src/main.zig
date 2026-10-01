@@ -706,6 +706,8 @@ pub fn main(init: std.process.Init) !void {
         }
 
         const cpu_load = audio.takeLoad();
+        var thread_load: [8]f32 = undefined;
+        const n_threads = engine.takeThreadLoad(&thread_load, audio_mod.SAMPLE_RATE);
         const tres = transport_bar.draw(ui, uiRect(rects.top_bar), .{
             .transport = &transport,
             .meter_state = &meter_state,
@@ -722,6 +724,7 @@ pub fn main(init: std.process.Init) !void {
             .auto_arm = auto_arm,
             .pdc_latency = engine.master_latency.load(.monotonic),
             .cpu_load = cpu_load.avg,
+            .thread_load = thread_load[0..n_threads],
             .cpu_peak = cpu_load.peak,
         });
         if (tres.auto_arm_toggle) {

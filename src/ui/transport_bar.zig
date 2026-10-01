@@ -61,6 +61,8 @@ pub const Args = struct {
     /// DSP load, render time over the callback budget: smoothed, and the
     /// worst callback since the last frame.
     cpu_load: f32 = 0,
+    /// Each render thread's load since the last frame (Engine.takeThreadLoad).
+    thread_load: []const f32 = &.{},
     cpu_peak: f32 = 0,
 };
 
@@ -140,8 +142,10 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     // Logo plate on the right, the master meter beside it, blank plate
     // between.
     logoTile(ui, bar.cutRight(logoW(bar.h)));
-    if (bar.w >= MASTER_MIN_W) masterTile(ui, bar.cutRight(@min(MASTER_W, bar.w)), a, &res);
-    if (bar.w >= STATS_W) statsTile(ui, bar.cutRight(STATS_W), a);
+    // The stats keep their room; the master meter gives way first.
+    const stats_w: i32 = if (bar.w >= MASTER_MIN_W + STATS_W) STATS_W else 0;
+    if (bar.w >= MASTER_MIN_W) masterTile(ui, bar.cutRight(@min(MASTER_W, bar.w - stats_w)), a, &res);
+    if (stats_w > 0) statsTile(ui, bar.cutRight(stats_w), a);
     _ = ui.plate(bar, .{});
     return res;
 }
@@ -185,8 +189,10 @@ fn masterTile(ui: *Ui, r: Rect, a: Args, res: *Result) void {
     menu.tip(ui, row, "Master output (peak, dBFS)");
 }
 
-const STATS_W: i32 = 76;
+const STATS_W: i32 = 112;
 var peak_hold: f32 = 0;
+/// The thread lamps, smoothed so they glow rather than flicker.
+var lamp_shown: [8]f32 = @splat(0);
 var cpu_shown: f32 = 0;
 var cpu_at: f64 = -1;
 var peak_at: f64 = 0;
@@ -213,9 +219,17 @@ fn statsTile(ui: *Ui, r: Rect, a: Args) void {
         peak_at = ui.in.time;
     }
     const hot = peak_hold >= 0.9;
-    ctl.displayLines(ui, r, &rows, .{ .align_ = .left, .flush = true, .color = if (hot) style.rec else style.vfd });
-    var tbuf: [140]u8 = undefined;
-    menu.tip(ui, r, std.fmt.bufPrint(&tbuf, "Delay compensation {d} smp ({d:.1} ms). DSP load {d:.0}%, peak {d:.0}% of the audio budget", .{ a.pdc_latency, ms, cpu, @round(@min(peak_hold, 9.99) * 100) }) catch "Engine stats");
+    const n = @min(a.thread_load.len, lamp_shown.len);
+    for (lamp_shown[0..n], a.thread_load[0..n]) |*s, v| s.* += (v - s.*) * 0.2;
+    ctl.displayLines(ui, r, &rows, .{ .align_ = .left, .flush = true, .color = if (hot) style.rec else style.vfd, .lamps = lamp_shown[0..n] });
+    var tbuf: [240]u8 = undefined;
+    var w = std.Io.Writer.fixed(&tbuf);
+    w.print("Delay compensation {d} smp ({d:.1} ms). DSP load {d:.0}%, peak {d:.0}% of the audio budget.", .{ a.pdc_latency, ms, cpu, @round(@min(peak_hold, 9.99) * 100) }) catch {};
+    if (n > 0) {
+        w.print(" Threads (a lamp each, the audio thread first):", .{}) catch {};
+        for (lamp_shown[0..n]) |v| w.print(" {d:.0}%", .{@round(@min(v, 9.99) * 100)}) catch {};
+    }
+    menu.tip(ui, r, w.buffered());
 }
 
 fn fileLabel(buf: []u8, path: []const u8, chosen: bool, dirty: bool) []const u8 {

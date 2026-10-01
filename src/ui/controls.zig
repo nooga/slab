@@ -1162,7 +1162,13 @@ pub const DisplayOpts = struct {
     /// Toolbar tile: the well spans the full rect and ends in the bar's
     /// right/bottom seam.
     flush: bool = false,
+    /// Lamps: whole lit cells right-aligned on the last row, one per value
+    /// in [0, 1], brighter as it rises and `rec` red from LAMP_HOT (the
+    /// render threads' load).
+    lamps: []const f32 = &.{},
 };
+
+pub const LAMP_HOT: f32 = 0.85;
 
 pub const CELL_W: i32 = 6;
 pub const CELL_H: i32 = 12;
@@ -1214,6 +1220,21 @@ pub fn displayLines(ui: *Ui, r: Rect, lines: []const []const u8, o: DisplayOpts)
             if (m.halo_alpha > 0 and halo.w > 0) ui.spriteScaled(halo, pen + (g.dx - 1) * k, y0 + (g.dy - 1) * k, k, o.color.alpha(m.halo_alpha));
             if (g.src.w > 0) ui.spriteScaled(g.src, pen + g.dx * k, y0 + g.dy * k, k, o.color);
             pen += g.advance * k;
+        }
+    }
+    if (o.lamps.len > 0 and rows > 0) {
+        const y0 = top + (rows - 1) * ch;
+        const first = cells - @as(i32, @intCast(o.lamps.len));
+        for (o.lamps, 0..) |v, i| {
+            const cell = first + @as(i32, @intCast(i));
+            if (cell < 0) continue;
+            const lr = Rect.xywh(inner.x + k + cell * cw, y0 + 2 * k, 5 * k, 7 * k);
+            const x = std.math.clamp(v, 0, 1);
+            const hot = x >= LAMP_HOT;
+            // Unlit glass, then the lamp: dim at idle, full at LAMP_HOT.
+            ui.rect(lr, o.color.alpha(@max(m.ghost_alpha, 13)));
+            const a: f32 = if (hot) 255 else 30 + 225 * @sqrt(x / LAMP_HOT);
+            ui.rect(lr, (if (hot) style.rec else o.color).alpha(@intFromFloat(a)));
         }
     }
     // Dot gaps: once a matrix dot spans 2+ device px, a 1-device-px

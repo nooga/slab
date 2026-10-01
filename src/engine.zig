@@ -188,6 +188,12 @@ pub const Engine = struct {
     /// Workers helping this thread render; null renders on it alone. The
     /// output is the same either way.
     pool: ?*RenderPool = null,
+    /// Per render thread (render_pool.slot: the audio thread, then the
+    /// workers): timebase ticks spent rendering and mixing nodes, and the
+    /// frames rendered beside them, for the UI's thread lamps
+    /// (takeThreadLoad).
+    thread_busy: [render_pool.MAX_WORKERS + 1]std.atomic.Value(u64) = @splat(.init(0)),
+    busy_frames: std.atomic.Value(u64) = .init(0),
 
     /// UI thread, before audio starts.
     pub fn initPdc(self: *Engine, alloc: std.mem.Allocator) !void {
@@ -202,6 +208,23 @@ pub const Engine = struct {
     pub fn initPool(self: *Engine, alloc: std.mem.Allocator, workers: usize) !void {
         if (workers == 0) return;
         self.pool = try RenderPool.create(alloc, self, workers);
+    }
+
+    /// UI thread: each render thread's load since the last call, as a
+    /// fraction of the audio those blocks lasted (1: a thread busy for
+    /// the whole budget), into `out`; the number of threads.
+    pub fn takeThreadLoad(self: *Engine, out: []f32, sample_rate: u32) usize {
+        const n = @min(out.len, 1 + if (self.pool) |p| p.n else 0);
+        const frames = self.busy_frames.swap(0, .monotonic);
+        var info: std.c.mach_timebase_info_data = undefined;
+        _ = std.c.mach_timebase_info(&info);
+        const budget_ns = @as(f64, @floatFromInt(frames)) * 1e9 / @as(f64, @floatFromInt(@max(sample_rate, 1)));
+        for (out[0..n], self.thread_busy[0..n]) |*o, *b| {
+            const ticks = b.swap(0, .monotonic);
+            const ns = @as(f64, @floatFromInt(ticks)) * @as(f64, @floatFromInt(info.numer)) / @as(f64, @floatFromInt(info.denom));
+            o.* = if (budget_ns > 0) @floatCast(ns / budget_ns) else 0;
+        }
+        return n;
     }
 
     pub fn deinitPool(self: *Engine, alloc: std.mem.Allocator) void {
@@ -638,6 +661,7 @@ pub const Engine = struct {
     }
 
     fn renderChunk(self: *Engine, out: []f32, frames: u32, block_start: u64) void {
+        _ = self.busy_frames.fetchAdd(frames, .monotonic);
         // Tracks accumulate into the master bus (planar), not into `out`,
         // so the master FX chain can process the sum in finishMaster.
         @memset(self.master_l[0..frames], 0);
@@ -839,7 +863,9 @@ pub const Engine = struct {
             if (self.node_state[ti].cmpxchgStrong(NODE_READY, NODE_RUNNING, .acquire, .monotonic) != null) continue;
             const t0 = std.c.mach_absolute_time();
             self.renderNode(ti, scratch);
-            const ns: f32 = @floatFromInt(std.c.mach_absolute_time() - t0);
+            const t1 = std.c.mach_absolute_time();
+            defer _ = self.thread_busy[render_pool.slot].fetchAdd(std.c.mach_absolute_time() - t0, .monotonic);
+            const ns: f32 = @floatFromInt(t1 - t0);
             // Its cost (in timebase ticks; only their ratios matter) for the next blocks' priorities, smoothed.
             self.node_cost[ti] += (ns - self.node_cost[ti]) * 0.125;
             self.node_state[ti].store(NODE_DONE, .seq_cst);
