@@ -154,7 +154,7 @@ multiplied into chassis and faceplates.
 
 Vertical only, faceplates only, at most 6 levels of brightness over the
 full height of the surface, lighter at the top. Implemented as per-vertex
-colour on the faceplate quad; no textures.
+color on the faceplate quad; no textures.
 
 ### Engraving
 
@@ -203,12 +203,14 @@ without gaps; accents are saturated but few. Values live in
 
 - **Accent amber means "active" and nothing else.** Selection, playhead,
   focus ring, lit latch LEDs. Displays glow `vfd`, a deeper orange that
-  only ever appears behind glass, so the two never read alike. Track colours never use amber/yellow hues;
-  project colours outside the track set are snapped to the nearest one.
-- **Track colours** are the fixed set `style.track`: rose, lime, green,
-  teal, sky, indigo, violet, pink. Saturated but controlled; none of them
-  amber or yellow.
-- Machines may override `vfd` and LED colours for their own panel.
+  only ever appears behind glass, so the two never read alike. Track colors never use amber/yellow hues;
+  project colors outside the track set are snapped to the nearest one.
+- **Track colors** are the fixed set `style.track`: rose, lime, green,
+  teal, sky, indigo, violet, pink, red, plum, steel, slate. Saturated but
+  controlled; none of them amber or yellow. Each comes light (40% toward
+  white), as is, and deep (40% toward black), `style.track_shades`; a
+  track takes any of them from the color picker its color strip opens.
+- Machines may override `vfd` and LED colors for their own panel.
   That is their personality inside the frame's rules.
 
 ## Displays
@@ -219,7 +221,7 @@ are the only things that emit light.
 - **Well:** sunken bevel into `well` (near-black, very slightly tinted).
 - **Face:** Tamzen 6×12, whose caps are exactly 5×7 (the classic LCD
   cell), laid out on a fixed 6-px cell grid. At device scale 2 and up a
-  1-device-px mesh in the well colour on every logical pixel boundary
+  1-device-px mesh in the well color on every logical pixel boundary
   turns the solid glyphs into dots: the matrix comes from the grid, not a
   filter.
 - **Ghost cells:** every cell's unlit 5×7 box shows at ~5% of `vfd`.
@@ -248,7 +250,7 @@ One family per call, variants as options. Every control:
 
 - comes in **fixed sizes** (S / M / L; a panel uses one tier, see Sizing),
 - shows **idle, hot, active, focused, disabled** and, where it has a
-  modulatable value, **modulated** (a thin `mod`-coloured arc/bar showing
+  modulatable value, **modulated** (a thin `mod`-colored arc/bar showing
   where modulation currently pushes it) and, where it can be automated,
   **automated**: it draws its effective (automated) value and lights a
   square 4 `auto` LED at the right end of its legend; hollow when
@@ -308,7 +310,7 @@ not its cap text: `BYPASS OFF`, `POWER ON`, `KEY KICK`.
 ### LEDs
 
 Shapes: **round** 3 / 5 / 7, **square** 4 / 6, **bar** (rect, any length on
-the grid), **triangle** (direction). Mono or bicolour. States: off (ghost),
+the grid), **triangle** (direction). Mono or bicolor. States: off (ghost),
 dim, on; **blink is driven by the host clock** so every blinking LED is in
 phase. Composites:
 
@@ -323,7 +325,7 @@ Audio level uses the pro bargraph (`meter`, `meterStereo`), not a ladder:
 - **dB scale, not linear:** -60…0 dBFS, piecewise so the top gets the
   resolution (0 → 100%, -6 → 78%, -12 → 61%, -18 → 48%, -48 → 10%).
 - **Zones:** green below -12, yellow -12…-3, red above -3. Unlit
-  segments show their zone colour as dark ghost glass; segments are 2px
+  segments show their zone color as dark ghost glass; segments are 2px
   with 1px gaps (1px + 1 on bars under 6px wide).
 - **Peak over RMS:** the RMS body is full brightness, the peak above it a
   step dimmer, so loudness and transients read at once.
@@ -591,16 +593,17 @@ the grid is quiet.
   ▼ marker for the playhead.
 - **Playhead:** a 1px `accent` line through every lane.
 - **Track header** (right of the lanes, one per lane): faceplate with a
-  3px full-height colour bar, name (body font), R/M/S as lit latch caps
+  5px full-height color spine (a click opens the color picker), a 6px
+  rail per enclosing group in its color, name (body font), R/M/S as lit latch caps
   (rec red, mute blue, solo yellow), a mini volume slider, and a ladder
   meter on the right edge. Standard lane: 40px (two 20px rows); each
   automation lane adds a 40px row under it with its own header
   (docs/22).
-- **Clip:** 1px edge in the track colour darkened, a 12px name band in
-  full track colour with dark legend text, a body tinted from the track
-  colour (72% toward `pane`) carrying a note or waveform preview in a
+- **Clip:** 1px edge in the track color darkened, a 12px name band in
+  full track color with dark legend text, a body tinted from the track
+  color (72% toward `pane`) carrying a note or waveform preview in a
   lighter tint. Selected: 1px amber outline.
-- **Automation:** breakpoint line in the track colour, 3×3 hollow point
+- **Automation:** breakpoint line in the track color, 3×3 hollow point
   handles (filled `accent` when selected), `hold` segments as steps,
   parameter name as a muted legend in the lane. Where a clip lane
   overrides, the track curve draws muted under the clip's (docs/22).
@@ -611,7 +614,7 @@ the grid is quiet.
   highlight, amber outline when selected. Velocity lane below: a 3px stem
   per note with a lit cap.
 - **Pane titles** (clip editor, machine bay) are 20px faceplates with the
-  same 3px colour bar and the name in bold body type. The clip editor's
+  same 3px color bar and the name in bold body type. The clip editor's
   head is a flush toolbar: DRAW latch, title (engraved NOTES/AUDIO + clip
   name), key/scale tile and swing, collapse and close.
 

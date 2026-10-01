@@ -87,7 +87,7 @@ pub const arc_off = Color.hex(0x15171a);
 pub const cap = Color.hex(0x3d4047);
 pub const pointer = Color.hex(0xf4f5f6);
 
-// ── LED colours ──────────────────────────────────────────────────────
+// ── LED colors ──────────────────────────────────────────────────────
 pub const led_red = Color.hex(0xff4d4d);
 pub const led_green = Color.hex(0x3ddc84);
 pub const led_amber = accent;
@@ -95,7 +95,7 @@ pub const led_blue = Color.hex(0x4aa8ff);
 /// Meter "hot" zone (between green and clip red).
 pub const led_yellow = Color.hex(0xf2d544);
 
-// ── Track colours ────────────────────────────────────────────────────
+// ── Track colors ────────────────────────────────────────────────────
 /// Saturated but controlled; no amber/yellow (reserved for "active").
 pub const track = [_]Color{
     Color.hex(0xec6a7a), // rose
@@ -106,14 +106,31 @@ pub const track = [_]Color{
     Color.hex(0x7b7ff0), // indigo
     Color.hex(0xb56ce6), // violet
     Color.hex(0xe46ab6), // pink
+    Color.hex(0xe0584c), // red
+    Color.hex(0xa0628e), // plum
+    Color.hex(0x8aa2c4), // steel
+    Color.hex(0x6f7f94), // slate
 };
 
-/// Track colour as drawn: any colour snaps to the nearest entry of `track`,
+/// Every color a track can take: each hue of `track` light, as is and
+/// deep, a row per shade (the color picker's grid).
+pub const track_shades: [track.len * 3]Color = blk: {
+    @setEvalBranchQuota(20000);
+    var out: [track.len * 3]Color = undefined;
+    for (track, 0..) |h, i| {
+        out[i] = h.mix(Color.hex(0xffffff), 0.4);
+        out[track.len + i] = h;
+        out[2 * track.len + i] = h.mix(Color.hex(0x000000), 0.4);
+    }
+    break :blk out;
+};
+
+/// Track color as drawn: any color snaps to the nearest entry of `track_shades`,
 /// so no track is ever amber/yellow whatever the project file says.
 pub fn nearestTrack(col: Color) Color {
     var best = track[0];
     var best_d: i32 = std.math.maxInt(i32);
-    for (track) |t| {
+    for (track_shades) |t| {
         const dr = @as(i32, t.r) - col.r;
         const dg = @as(i32, t.g) - col.g;
         const db = @as(i32, t.b) - col.b;
@@ -134,7 +151,7 @@ pub const Materials = struct {
     gradient: u8 = 6,
     /// Engraved legends on faceplates.
     engrave: bool = true,
-    /// Display ghost cells, as alpha of the display colour.
+    /// Display ghost cells, as alpha of the display color.
     ghost_alpha: u8 = 13,
     /// Display glyph halo alpha.
     halo_alpha: u8 = 60,

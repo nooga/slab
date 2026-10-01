@@ -76,7 +76,7 @@ fn isShown(tracks: []const Track, ti: usize) bool {
 
 /// Whether track `ti` is selected: in the header multi-selection while
 /// `sel` (the selected track) is in it, else just `sel`.
-fn inSet(tracks: []const Track, sel: ?usize, ti: usize) bool {
+pub fn inSet(tracks: []const Track, sel: ?usize, ti: usize) bool {
     const s = sel orelse return false;
     if (s >= tracks.len) return false;
     if (!tracks[s].multi_sel) return s == ti;
@@ -86,8 +86,9 @@ fn inSet(tracks: []const Track, sel: ?usize, ti: usize) bool {
 /// A press on header `ti`: plain selects it alone (narrowing on release
 /// when it's already in a multi-selection, so the set can be dragged),
 /// shift selects the shown rows from the anchor to it, ⌘ toggles it.
-fn headerSelect(tracks: []Track, sel: *?usize, ti: u8, shift: bool, cmd: bool) void {
-    hdr_narrow = false;
+/// True for a plain press inside a multi-selection: narrow it on release
+/// unless the press becomes a drag. Shared with the mixer.
+pub fn headerSelect(tracks: []Track, sel: *?usize, ti: u8, shift: bool, cmd: bool) bool {
     if (cmd) {
         // Start from what's selected now.
         if (sel.*) |s| if (s < tracks.len and !tracks[s].multi_sel) {
@@ -109,7 +110,7 @@ fn headerSelect(tracks: []Track, sel: *?usize, ti: u8, shift: bool, cmd: bool) v
             };
         }
         sel_anchor = ti;
-        return;
+        return false;
     }
     if (shift) if (sel_anchor orelse (if (sel.*) |s| @as(?u8, @intCast(s)) else null)) |anchor| if (anchor < tracks.len) {
         const o = order(tracks);
@@ -124,25 +125,24 @@ fn headerSelect(tracks: []Track, sel: *?usize, ti: u8, shift: bool, cmd: bool) v
             for (o.rows[@min(a.?, b.?) .. @max(a.?, b.?) + 1]) |row| tracks[row.ti].multi_sel = true;
             sel_anchor = anchor;
             sel.* = ti;
-            return;
+            return false;
         }
     };
-    if (inSet(tracks, sel.*, ti) and tracks[ti].multi_sel) {
-        hdr_narrow = true;
-    } else {
-        for (tracks) |*t| t.multi_sel = false;
-    }
+    const narrow = inSet(tracks, sel.*, ti) and tracks[ti].multi_sel;
+    if (!narrow) for (tracks) |*t| {
+        t.multi_sel = false;
+    };
     sel.* = ti;
     sel_anchor = ti;
+    return narrow;
 }
 
-/// Where a header drag at content y `cy` drops: the upper half of a row
-/// goes before it, the lower half after it, or into an open group as its
-/// first member. Below the main rows is the top level's end. `line` is
-/// the content y of the line showing it, `depth` how far it's indented.
+/// Where a header drag at content y `cy` drops (track_order.dropAt): the
+/// upper half of a row goes before it, the lower half after it, or into
+/// an open group as its first member; below the section's last row is its
+/// end. `line` is the content y of the line showing it.
 fn headerDrop(tracks: []const Track, returns: bool, cy: f32) ?struct { drop: track_order.Drop, line: f32, depth: u8 } {
     const o = order(tracks);
-    if (o.n == 0) return null;
     var tops: [routing.MAX_TRACKS + 1]f32 = undefined;
     var y: f32 = 0;
     for (o.rows[0..o.n], 0..) |row, k| {
@@ -151,28 +151,21 @@ fn headerDrop(tracks: []const Track, returns: bool, cy: f32) ?struct { drop: tra
         y += rowH(&tracks[row.ti]);
     }
     tops[o.n] = y;
-    const main_end = if (o.main_n > 0) tops[o.main_n - 1] + rowH(&tracks[o.rows[o.main_n - 1].ti]) else 0;
     const lo: usize = if (returns) o.main_n else 0;
     const hi: usize = if (returns) o.n else o.main_n;
-    if (hi == lo) return if (returns) null else .{ .drop = .{}, .line = 0, .depth = 0 };
+    if (hi == lo and returns) return null;
     var k = lo;
     while (k + 1 < hi and cy >= tops[k + 1]) k += 1;
-    const ti = o.rows[k].ti;
-    const bottom = tops[k] + rowH(&tracks[ti]);
-    if (cy >= bottom) {
-        // Past the section's last row: its end, at the top level.
-        return .{ .drop = .{ .returns = returns }, .line = if (returns) tops[o.n] else main_end, .depth = 0 };
-    }
-    if (cy < tops[k] + rowH(&tracks[ti]) / 2) {
-        return .{ .drop = .{ .parent = o.parent[ti], .before = ti, .returns = returns }, .line = tops[k], .depth = o.depth[ti] };
-    }
-    const next: ?u8 = if (k + 1 < hi) o.rows[k + 1].ti else null;
-    if (next) |nx| if (o.parent[nx] == ti) {
-        return .{ .drop = .{ .parent = ti, .before = nx }, .line = bottom, .depth = o.depth[ti] + 1 };
-    };
-    // After the row: before its next sibling, or at its group's end.
-    const before: u8 = if (next) |nx| (if (o.parent[nx] == o.parent[ti]) nx else routing.NONE) else routing.NONE;
-    return .{ .drop = .{ .parent = o.parent[ti], .before = before, .returns = returns }, .line = bottom, .depth = o.depth[ti] };
+    const d = if (hi == lo or cy >= tops[k] + rowH(&tracks[o.rows[k].ti]))
+        track_order.dropEnd(&o, returns)
+    else
+        track_order.dropAt(&o, k, cy >= tops[k] + rowH(&tracks[o.rows[k].ti]) / 2);
+    // The main section's end is above the RETURNS divider.
+    const line = if (d.gap == o.main_n and !returns and o.main_n > 0)
+        tops[o.main_n - 1] + rowH(&tracks[o.rows[o.main_n - 1].ti])
+    else
+        tops[d.gap];
+    return .{ .drop = d.drop, .line = line, .depth = d.depth };
 }
 
 /// The dragged header's ghost at `y`: its name on a lifted plate, with
@@ -403,8 +396,13 @@ pub const Result = struct {
     /// A header drag dropped: reroute and renumber the tracks (docs/23
     /// §Arrangement).
     move_tracks: ?track_order.Move = null,
+    /// A color strip was clicked: open the color picker for the track,
+    /// hung from this point.
+    color_pick: ?ColorPick = null,
     rename_rect: ?c.rl.Rectangle = null,
 };
+
+pub const ColorPick = struct { track: usize, at: [2]i32 };
 
 pub const RenameTarget = struct {
     kind: enum { none, track, clip } = .none,
@@ -1130,7 +1128,7 @@ pub fn draw(
         switch (hres.action) {
             .none => {},
             .select => {
-                headerSelect(tracks, selected_track, @intCast(ti), ui.in.shift, ui.in.cmd);
+                hdr_narrow = headerSelect(tracks, selected_track, @intCast(ti), ui.in.shift, ui.in.cmd);
                 deselectAllClips(tracks);
                 selected_clip.* = null;
                 device_sel.* = .audio;
@@ -1139,6 +1137,7 @@ pub fn draw(
                 hdr_grab_dy = hm.y - ly;
                 hdr_dragging = false;
             },
+            .color => result.color_pick = .{ .track = ti, .at = .{ hres.color_at[0], hres.color_at[1] } },
             .rename => {
                 selected_track.* = ti;
                 deselectAllClips(tracks);
@@ -1847,44 +1846,50 @@ fn clipRect(lane: c.rl.Rectangle, clip: Clip, timeline_x0: f32) c.rl.Rectangle {
 
 
 
-const HeaderAction = enum { none, select, rename };
+const HeaderAction = enum { none, select, rename, color };
 /// The header's pan mini, beside the volume mini on the bottom row.
 const HEADER_PAN_W: i32 = 48;
 const HeaderResult = struct {
     action: HeaderAction = .none,
     name_rect: c.rl.Rectangle,
+    color_at: [2]i32 = .{ 0, 0 },
 };
 
 
 /// Track header on the new Ui (docs/06 §Working surfaces): faceplate with
-/// the track-colour spine (+ amber selection stripe), index and name, R/M/S
+/// the track-color spine (+ amber selection stripe), index and name, R/M/S
 /// lit latches, pan and volume mini sliders, and a bare stereo meter.
 /// `number` is the track's place among the audio tracks (1-based); a bus
 /// shows its `bus_letter` instead.
-/// Where a header sits among groups: its enclosing groups' colours,
+/// Where a header sits among groups: its enclosing groups' colors,
 /// outermost first, and whether it heads a group itself.
 const Nest = struct {
     rails: []const ui_style.Color = &.{},
     group: bool = false,
 };
 
-const RAIL_W: i32 = 4;
+pub const RAIL_W: i32 = 6;
+/// The track-color spine; a click on it picks the color.
+pub const SPINE_W: i32 = 5;
 
 fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, number: usize, bus_letter: ?u8, selected: bool, editing_name: bool, beat: f64, nest: Nest) HeaderResult {
     const r = bridge.fromRl(r_legacy);
     ui.pushId(t);
     defer ui.popId();
     var body = ui.plate(r, .{ .fill = if (selected) ui_style.face.shade(8) else ui_style.face });
-    // Rails: one per enclosing group, in its colour, then this row's spine
-    // (full-height track colour) and an amber stripe when selected.
+    // Rails: one per enclosing group, in its color, then this row's spine
+    // (full-height track color) and an amber stripe when selected.
     var sx = r.x;
     for (nest.rails) |col| {
         ui.rect(Rect.xywh(sx, r.y, RAIL_W - 1, r.h - 1), col.mix(ui_style.face, 0.35));
         sx += RAIL_W;
     }
-    ui.rect(Rect.xywh(sx, r.y, 3, r.h - 1), trackColor(t.color));
-    if (selected) ui.rect(Rect.xywh(sx + 3, r.y, 2, r.h - 1), ui_style.accent);
-    _ = body.cutLeft(6 + sx - r.x);
+    const spine = Rect.xywh(sx, r.y, SPINE_W, r.h - 1);
+    const sb = ui.behaviorEx(ui.id("spine"), spine, .{ .focusable = false });
+    ui.rect(spine, if (sb.hover) trackColor(t.color).mix(ui_style.text, 0.25) else trackColor(t.color));
+    menu.tip(ui, spine, "Click to change the color");
+    if (selected) ui.rect(Rect.xywh(sx + SPINE_W, r.y, 2, r.h - 1), ui_style.accent);
+    _ = body.cutLeft(SPINE_W + 3 + sx - r.x);
 
     const peaks = t.meter();
     ctl.meterStereo(ui, body.cutRight(12).insetXY(0, 1), "meter", .{ peaks.l, peaks.r }, .{ peaks.l, peaks.r }, .{ .scale = .none });
@@ -1964,6 +1969,7 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, numb
     menu.tip(ui, name_hit, if (nest.group) "Group: right-click to route" else if (t.isBus()) "Return: right-click to route" else "Right-click to route");
     const b = ui.behaviorEx(ui.id("name"), name_hit, .{ .focusable = false });
     const name_rl = bridge.toRl(name_r);
+    if (sb.pressed) return .{ .action = .color, .name_rect = name_rl, .color_at = .{ spine.right(), spine.y } };
     if (b.pressed) return .{ .action = if (b.double) .rename else .select, .name_rect = name_rl };
     return .{ .action = .none, .name_rect = name_rl };
 }
@@ -2233,7 +2239,7 @@ fn drawMasterHeader(ui: *Ui, hdr_legacy: c.rl.Rectangle, master: *Track, selecte
     return ui.behaviorEx(ui.id("select"), Rect.xywh(r.x, r.y, r.w, 20), .{ .focusable = false }).pressed;
 }
 
-/// Track colour as drawn (docs/06 §Palette): snapped to the track palette.
+/// Track color as drawn (docs/06 §Palette): snapped to the track palette.
 pub fn trackColor(col: c.rl.Color) ui_style.Color {
     return ui_style.nearestTrack(.{ .r = col.r, .g = col.g, .b = col.b });
 }
@@ -2614,7 +2620,7 @@ fn drawBusFeeds(ui: *Ui, r_: c.rl.Rectangle, tracks: []Track, ti: usize) void {
 }
 
 /// A group's lane: every member's clips (nested ones too) as silhouettes
-/// in their track colours under the feeds line, one thin band per member
+/// in their track colors under the feeds line, one thin band per member
 /// in display order, folded or not.
 fn drawGroupClips(ui: *Ui, lane: c.rl.Rectangle, tracks: []Track, ti: usize, timeline_x0: f32) void {
     const o = order(tracks);
@@ -2712,8 +2718,8 @@ fn drawLiveRecordClip(ui: *Ui, lane: c.rl.Rectangle, rec: *const recorder_mod.Re
     }
 }
 
-/// Clip: 1px edge in the darkened track colour, a 12px name band in full
-/// colour with dark legend text, a tinted body with the note / waveform
+/// Clip: 1px edge in the darkened track color, a 12px name band in full
+/// color with dark legend text, a tinted body with the note / waveform
 /// preview; amber outline when selected.
 fn drawClip(ui: *Ui, r_: c.rl.Rectangle, clip: Clip, color_: c.rl.Color, selected: bool, editing_name: bool, pool: *const audio_pool_mod.AudioPool) void {
     const r = bridge.fromRl(r_);

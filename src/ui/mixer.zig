@@ -5,7 +5,10 @@
 //!
 //! A strip, top to bottom: title, inserts, a send knob per bus (turning
 //! one up from nothing creates the send), output selector, pan, fader with
-//! its meter and dB readout, then M/S/R. Routing edits go out as
+//! its meter and dB readout, then M/S/R. Groups show as bands across the
+//! top, a level per nesting depth, spanning each group's strip and its
+//! members'. A title drags its strip (with the selection) to a new place,
+//! as an arrangement header does (docs/23 §Mixer page). Routing edits go out as
 //! `route_menu.RouteEdit`s for main to apply with an undo step; levels,
 //! pan, mute and solo are the tracks' atomics, set directly as the header
 //! minis set them.
@@ -28,7 +31,11 @@ const Rect = ui_core.Rect;
 
 pub const STRIP_W: i32 = 84;
 const HEAD_H: i32 = 20;
-const TITLE_H: i32 = 20;
+const TITLE_H: i32 = 22;
+/// The color strip atop a title; a click on it picks the color.
+const COLOR_H: i32 = 5;
+/// One level of group bands.
+const BAND_H: i32 = 12;
 const INSERT_ROW_H: i32 = 12;
 const INSERT_ROWS: i32 = 4;
 const OUT_H: i32 = 16;
@@ -38,6 +45,13 @@ const BUS_GAP: i32 = 8;
 const FADER_W: i32 = 28;
 
 var scroll_x: i32 = 0;
+// A press on a strip's title: a drag from it moves the selected strips
+// (or just it, when it isn't in the selection).
+var press: ?u8 = null;
+var press_x: i32 = 0;
+var dragging = false;
+var grab_dx: i32 = 0;
+var narrow = false;
 
 pub const Result = struct {
     route: ?route_menu.RouteEdit = null,
@@ -45,6 +59,8 @@ pub const Result = struct {
     toggle: bool = false,
     add_track: bool = false,
     add_bus: bool = false,
+    move_tracks: ?track_order.Move = null,
+    color_pick: ?arrangement.ColorPick = null,
 };
 
 pub fn draw(
@@ -86,6 +102,10 @@ pub fn draw(
     const n_main: i32 = @intCast(o.main_n);
     const n_bus: i32 = @intCast(o.n - o.main_n);
     const send_rows: i32 = @divFloor(n_bus + 1, 2);
+    // Group bands: as many levels as the deepest group nests.
+    var levels: i32 = 0;
+    for (o.main()) |row| levels = @max(levels, @as(i32, o.depth[row.ti]) + @intFromBool(o.is_group[row.ti]));
+    const band = area.cutTop(levels * BAND_H);
 
     // Right to left: the master, then the returns beside it (pinned, like
     // a console's return section), then the tracks, which scroll sideways
@@ -93,6 +113,7 @@ pub fn draw(
     const master_r = area.cutRight(STRIP_W);
     const bus_w = @min(n_bus * STRIP_W, @max(0, area.w - STRIP_W - BUS_GAP));
     var bus_area = area.cutRight(bus_w);
+    const bus_x0 = bus_area.x;
     if (n_bus > 0) _ = ui.plate(area.cutRight(BUS_GAP), .{ .fill = ui_style.face.shade(-8) });
     const tracks_area = area;
 
@@ -110,6 +131,7 @@ pub fn draw(
     if (overflow) scrollBar(ui, bar_r, content_w, &scroll_x);
     scroll_x = std.math.clamp(scroll_x, 0, max_scroll);
 
+    if (levels > 0) drawBands(ui, band, strips_r, tracks, &o, levels);
     ui.clip(strips_r);
     var x = strips_r.x - scroll_x;
     for (o.main()) |row| {
@@ -127,6 +149,7 @@ pub fn draw(
     ui.unclip();
 
     drawMasterStrip(ui, master_r, master, send_rows, device_sel);
+    dragStrips(ui, tracks, &o, selected_track, band, strips_r, bus_x0, &res);
     if (route_menu.tick(tracks)) |e| res.route = e;
     return res;
 }
@@ -173,29 +196,24 @@ fn drawStrip(
     const t = &tracks[ti];
     ui.pushId(t);
     defer ui.popId();
-    const selected = device_sel.* == .audio and selected_track.* != null and selected_track.*.? == ti;
+    const selected = device_sel.* == .audio and arrangement.inSet(tracks, selected_track.*, ti);
     const body = ui.plate(r, .{ .fill = if (selected) ui_style.face.shade(8) else if (t.isBus() and !o.is_group[ti]) ui_style.face.shade(-4) else ui_style.face });
-    // Inside a group: a rail per enclosing group down the strip's left
-    // edge, in the group's colour, as the arrangement headers draw them.
-    {
-        var a = o.parent[ti];
-        var k: i32 = @as(i32, o.depth[ti]) - 1;
-        while (a != routing.NONE and k >= 0) : ({
-            a = o.parent[a];
-            k -= 1;
-        }) ui.rect(Rect.xywh(r.x + k * 3, r.y, 2, r.h - 1), arrangement.trackColor(tracks[a].color).mix(ui_style.face, 0.35));
-    }
     const rows = Rows.of(body, send_rows);
 
-    // Title: colour bar, number or bus letter, name. Click selects (the
+    // Title: color bar, number or bus letter, name. Click selects (the
     // bay follows), right-click routes.
     {
         const tr = rows.title;
-        ui.rect(Rect.xywh(tr.x, tr.y, tr.w, 3), arrangement.trackColor(t.color));
-        if (selected) ui.rect(Rect.xywh(tr.x, tr.y + 3, tr.w, 2), ui_style.accent);
+        // Edge to edge from the strip's top, so it joins the band above.
+        const strip = Rect.xywh(r.x, r.y, r.w - 1, COLOR_H + tr.y - r.y);
+        const cb = ui.behaviorEx(ui.id("color"), strip, .{ .focusable = false });
+        ui.rect(strip, if (cb.hover) arrangement.trackColor(t.color).mix(ui_style.text, 0.25) else arrangement.trackColor(t.color));
+        menu.tip(ui, strip, "Click to change the color");
+        if (cb.pressed) res.color_pick = .{ .track = ti, .at = .{ strip.x, strip.bottom() } };
+        if (selected) ui.rect(Rect.xywh(tr.x, tr.y + COLOR_H, tr.w, 2), ui_style.accent);
         var ibuf: [8]u8 = undefined;
         const tag = if (t.isBus()) std.fmt.bufPrint(&ibuf, "{c}", .{letterOf(tracks, ti)}) catch "?" else std.fmt.bufPrint(&ibuf, "{d}", .{o.number[ti]}) catch "?";
-        var line = Rect.xywh(tr.x + 3, tr.y + 5, tr.w - 6, tr.h - 5);
+        var line = Rect.xywh(tr.x + 3, tr.y + COLOR_H + 1, tr.w - 6, tr.h - COLOR_H - 1);
         var fold_r: Rect = .{};
         if (o.is_group[ti]) {
             fold_r = line.cutLeft(10);
@@ -206,11 +224,19 @@ fn drawStrip(
         }
         ui.textIn(&ui.fonts.legend, line.cutLeft(ui.fonts.legend.measure(tag) + 5), tag, ui_style.text_mute, .left, true);
         ui.marquee(&ui.fonts.body, line, t.name(), if (selected) ui_style.text else ui_style.text_dim, .left, true, tr.contains(ui.in.ix(), ui.in.iy()));
-        const title_hit = if (o.is_group[ti]) Rect.xywh(fold_r.right(), tr.y, tr.right() - fold_r.right(), tr.h) else tr;
+        const below = tr.y + COLOR_H;
+        const title_hit = if (o.is_group[ti]) Rect.xywh(fold_r.right(), below, tr.right() - fold_r.right(), tr.bottom() - below) else Rect.xywh(tr.x, below, tr.w, tr.bottom() - below);
         const b = ui.behaviorEx(ui.id("title"), title_hit, .{ .focusable = false });
-        if (b.pressed) select(device_sel, selected_track, ti);
-        if (ui.in.right_pressed and tr.contains(ui.in.ix(), ui.in.iy())) route_menu.open(ti, .all, ui.in.ix(), ui.in.iy());
-        menu.tip(ui, tr, "Click to edit in the bay, right-click to route");
+        if (b.pressed) {
+            narrow = arrangement.headerSelect(tracks, selected_track, @intCast(ti), ui.in.shift, ui.in.cmd);
+            device_sel.* = .audio;
+            press = @intCast(ti);
+            press_x = ui.in.ix();
+            grab_dx = ui.in.ix() - r.x;
+            dragging = false;
+        }
+        if (ui.in.right_pressed and title_hit.contains(ui.in.ix(), ui.in.iy())) route_menu.open(ti, .all, ui.in.ix(), ui.in.iy());
+        menu.tip(ui, title_hit, "Click to edit in the bay, drag to move, right-click to route");
     }
 
     drawInserts(ui, rows.inserts, t, tracks);
@@ -338,9 +364,9 @@ fn drawMasterStrip(ui: *Ui, r: Rect, master: *Track, send_rows: i32, device_sel:
     const rows = Rows.of(body, send_rows);
     {
         const tr = rows.title;
-        ui.rect(Rect.xywh(tr.x, tr.y, tr.w, 3), ui_style.face_hi);
-        if (selected) ui.rect(Rect.xywh(tr.x, tr.y + 3, tr.w, 2), ui_style.accent);
-        ui.textIn(&ui.fonts.body_bold, Rect.xywh(tr.x + 3, tr.y + 5, tr.w - 6, tr.h - 5), "MASTER", if (selected) ui_style.text else ui_style.text_dim, .left, true);
+        ui.rect(Rect.xywh(tr.x, tr.y, tr.w, COLOR_H), ui_style.face_hi);
+        if (selected) ui.rect(Rect.xywh(tr.x, tr.y + COLOR_H, tr.w, 2), ui_style.accent);
+        ui.textIn(&ui.fonts.body_bold, Rect.xywh(tr.x + 3, tr.y + COLOR_H + 1, tr.w - 6, tr.h - COLOR_H - 1), "MASTER", if (selected) ui_style.text else ui_style.text_dim, .left, true);
         if (ui.behaviorEx(ui.id("title"), tr, .{ .focusable = false }).pressed) device_sel.* = .master;
     }
     drawInserts(ui, rows.inserts, master, &.{});
@@ -367,6 +393,164 @@ fn drawMasterStrip(ui: *Ui, r: Rect, master: *Track, send_rows: i32, device_sel:
         if (ctl.button(ui, br, "subsonic", &on, .{ .kind = .latch, .label = "SUB 30" })) master.subsonic.store(on, .monotonic);
         menu.tip(ui, br, "Subsonic filter: 24 dB/oct highpass at 30 Hz before the master inserts");
     }
+}
+
+/// The group bands over the scrolling strips: per level, outermost on top,
+/// a span in each group's color over its strip and its members' with its
+/// name at the left. Below a strip's innermost group its color carries
+/// on down to the strip's color bar; an ungrouped strip's band is
+/// neutral.
+fn drawBands(ui: *Ui, band: Rect, strips_r: Rect, tracks: []const Track, o: *const track_order.Order, levels: i32) void {
+    ui.rect(band, ui_style.face.shade(-8));
+    ui.clip(Rect.xywh(strips_r.x, band.y, strips_r.w, band.h));
+    defer ui.unclip();
+    const main = o.main();
+    var lvl: i32 = 0;
+    while (lvl < levels) : (lvl += 1) {
+        const y = band.y + lvl * BAND_H;
+        for (main, 0..) |row, k| {
+            const at = bandAt(o, row.ti, lvl);
+            if (at.group == routing.NONE) continue;
+            const x0 = strips_r.x - scroll_x + @as(i32, @intCast(k)) * STRIP_W;
+            const same_next = k + 1 < main.len and bandAt(o, main[k + 1].ti, lvl).group == at.group;
+            const col = arrangement.trackColor(tracks[at.group].color);
+            // The innermost level and its carry-on join what's below; a
+            // group's span ends a pixel short of the next.
+            ui.rect(Rect.xywh(x0, y, if (same_next) STRIP_W else STRIP_W - 1, if (at.inner) BAND_H else BAND_H - 1), col.mix(ui_style.face, 0.2));
+            // The name once, where the group's span at its own level starts.
+            const starts = k == 0 or bandAt(o, main[k - 1].ti, lvl).group != at.group;
+            if (at.named and starts) {
+                var end = k + 1;
+                while (end < main.len and bandAt(o, main[end].ti, lvl).group == at.group) end += 1;
+                const nr = Rect.xywh(x0 + 4, y, @as(i32, @intCast(end - k)) * STRIP_W - 6, BAND_H - 1);
+                ui.clip(nr);
+                ui.textIn(&ui.fonts.legend, nr, tracks[at.group].name(), ui_style.chassis, .left, true);
+                ui.unclip();
+            }
+        }
+    }
+}
+
+const BandAt = struct {
+    group: u8,
+    /// The strip's innermost group or below it.
+    inner: bool,
+    /// The group's own level, where its name goes.
+    named: bool,
+};
+
+/// What strip `ti`'s band shows at level `lvl` (0: outermost): the group
+/// it sits under that deep, counting a group as under itself, then its
+/// innermost group carried on down; NONE for no group.
+fn bandAt(o: *const track_order.Order, ti: u8, lvl: i32) BandAt {
+    var chain: [routing.MAX_TRACKS]u8 = undefined;
+    var n: usize = 0;
+    if (o.is_group[ti]) {
+        chain[0] = ti;
+        n = 1;
+    }
+    var a = o.parent[ti];
+    while (a != routing.NONE and n < chain.len) : (a = o.parent[a]) {
+        chain[n] = a;
+        n += 1;
+    }
+    if (n == 0) return .{ .group = routing.NONE, .inner = true, .named = false };
+    // chain runs innermost first.
+    const l: usize = @intCast(lvl);
+    if (l >= n) return .{ .group = chain[0], .inner = true, .named = false };
+    return .{ .group = chain[n - 1 - l], .inner = l == n - 1, .named = true };
+}
+
+/// A title drag in progress: past a few pixels it moves the selected
+/// strips (or the pressed one alone), shown as a ghost of its title under
+/// the pointer, the moved strips dimmed and a line where they'd land,
+/// starting at the band level of the group they'd join. The strips scroll
+/// near the edges.
+fn dragStrips(ui: *Ui, tracks: []Track, o: *const track_order.Order, selected_track: *?usize, band: Rect, strips_r: Rect, bus_x0: i32, res: *Result) void {
+    const from = press orelse return;
+    if (from >= tracks.len) {
+        press = null;
+        return;
+    }
+    var set: [routing.MAX_TRACKS]bool = @splat(false);
+    if (arrangement.inSet(tracks, selected_track.*, from)) {
+        for (0..tracks.len) |k| set[k] = arrangement.inSet(tracks, selected_track.*, k);
+    } else set[from] = true;
+    var in_returns = false;
+    for (o.returns()) |row| in_returns = in_returns or row.ti == from;
+    const mx = ui.in.ix();
+    if (!ui.in.down) {
+        if (dragging) {
+            if (dropAtX(o, in_returns, mx, strips_r, bus_x0)) |d| res.move_tracks = track_order.moveSet(tracks, &set, d.drop);
+        } else if (narrow) {
+            for (tracks) |*t| t.multi_sel = false;
+        }
+        press = null;
+        dragging = false;
+        narrow = false;
+        return;
+    }
+    if (!dragging and @abs(mx - press_x) > 4) dragging = true;
+    if (!dragging) return;
+    if (!in_returns) {
+        if (mx < strips_r.x + 16) scroll_x -= 8;
+        if (mx > strips_r.right() - 16) scroll_x += 8;
+        scroll_x = std.math.clamp(scroll_x, 0, @max(0, @as(i32, @intCast(o.main_n)) * STRIP_W - strips_r.w));
+    }
+    const top = band.y;
+    const bottom = strips_r.bottom();
+    // Dim the strips being moved.
+    for (o.rows[0..o.n], 0..) |row, k| {
+        var moving = set[row.ti];
+        var a = o.parent[row.ti];
+        while (a != routing.NONE) : (a = o.parent[a]) moving = moving or set[a];
+        if (!moving) continue;
+        const sx = stripX(o, k, strips_r, bus_x0);
+        ui.rect(Rect.xywh(sx, strips_r.y, STRIP_W, strips_r.h), ui_style.chassis.alpha(150));
+    }
+    if (dropAtX(o, in_returns, mx, strips_r, bus_x0)) |d| if (track_order.moveSet(tracks, &set, d.drop) != null) {
+        const lx = stripX(o, d.gap, strips_r, bus_x0) - 1;
+        const ly = top + @as(i32, d.depth) * BAND_H;
+        ui.rect(Rect.xywh(lx, top, 2, ly - top), ui_style.accent.alpha(110));
+        ui.rect(Rect.xywh(lx, ly, 2, bottom - ly), ui_style.accent);
+        ui.rect(Rect.xywh(lx - 3, ly, 8, 2), ui_style.accent);
+    };
+    // The ghost: the pressed strip's title, lifted.
+    var others: usize = 0;
+    if (arrangement.inSet(tracks, selected_track.*, from)) {
+        for (0..tracks.len) |k| if (k != from and arrangement.inSet(tracks, selected_track.*, k)) {
+            others += 1;
+        };
+    }
+    const t = &tracks[from];
+    const g = Rect.xywh(mx - grab_dx, strips_r.y + 10, STRIP_W, TITLE_H);
+    ui.rect(g, ui_style.accent);
+    ui.rect(g.insetXY(1, 1), ui_style.face.shade(10).alpha(235));
+    ui.rect(Rect.xywh(g.x + 1, g.y + 1, g.w - 2, COLOR_H), arrangement.trackColor(t.color));
+    var buf: [48]u8 = undefined;
+    const label = if (others > 0) std.fmt.bufPrint(&buf, "{s} +{d}", .{ t.name(), others }) catch t.name() else t.name();
+    _ = ui.text(&ui.fonts.legend, g.x + 4, g.y + COLOR_H + 4, label, ui_style.text);
+}
+
+/// The left edge of shown row `k`'s strip (row n: past the returns).
+fn stripX(o: *const track_order.Order, k: usize, strips_r: Rect, bus_x0: i32) i32 {
+    if (k < o.main_n) return strips_r.x - scroll_x + @as(i32, @intCast(k)) * STRIP_W;
+    if (k == o.main_n) return if (o.n > o.main_n) bus_x0 else strips_r.x - scroll_x + @as(i32, @intCast(k)) * STRIP_W;
+    return bus_x0 + @as(i32, @intCast(k - o.main_n)) * STRIP_W;
+}
+
+/// Where a title drag at x drops: left half of a strip before it, right
+/// half after it (or into an open group, first); past the last, the end.
+fn dropAtX(o: *const track_order.Order, returns: bool, mx: i32, strips_r: Rect, bus_x0: i32) ?track_order.DropAt {
+    const lo: usize = if (returns) o.main_n else 0;
+    const hi: usize = if (returns) o.n else o.main_n;
+    if (hi == lo) return if (returns) null else track_order.dropEnd(o, false);
+    const x0 = if (returns) bus_x0 else strips_r.x - scroll_x;
+    const cx = mx - x0;
+    if (cx < 0) return track_order.dropAt(o, lo, false);
+    const k = lo + @as(usize, @intCast(@divFloor(cx, STRIP_W)));
+    if (k >= hi) return track_order.dropEnd(o, returns);
+    return track_order.dropAt(o, k, @mod(cx, STRIP_W) >= @divFloor(STRIP_W, 2));
 }
 
 /// A thin horizontal scroll bar: drag the thumb, or click the track to jump.

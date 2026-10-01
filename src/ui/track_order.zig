@@ -135,6 +135,35 @@ pub const Drop = struct {
     returns: bool = false,
 };
 
+/// A drop beside a shown row, with how deep it lands (for the drop
+/// line's indent) and the row boundary it's drawn at.
+pub const DropAt = struct {
+    drop: Drop,
+    depth: u8,
+    /// The line sits above row `gap` of `Order.of` (n: below the last).
+    gap: usize,
+};
+
+/// The drop beside shown row `k` of `o` (an `Order.of`): before it, or
+/// after it, which for an open group with members is into it, first.
+pub fn dropAt(o: *const Order, k: usize, after: bool) DropAt {
+    const returns = k >= o.main_n;
+    const hi = if (returns) o.n else o.main_n;
+    const ti = o.rows[k].ti;
+    if (!after) return .{ .drop = .{ .parent = o.parent[ti], .before = ti, .returns = returns }, .depth = o.depth[ti], .gap = k };
+    const next: ?u8 = if (k + 1 < hi) o.rows[k + 1].ti else null;
+    if (next) |nx| if (o.parent[nx] == ti) {
+        return .{ .drop = .{ .parent = ti, .before = nx }, .depth = o.depth[ti] + 1, .gap = k + 1 };
+    };
+    const before: u8 = if (next) |nx| (if (o.parent[nx] == o.parent[ti]) nx else NONE) else NONE;
+    return .{ .drop = .{ .parent = o.parent[ti], .before = before, .returns = returns }, .depth = o.depth[ti], .gap = k + 1 };
+}
+
+/// The end of a section, at the top level.
+pub fn dropEnd(o: *const Order, returns: bool) DropAt {
+    return .{ .drop = .{ .returns = returns }, .depth = 0, .gap = if (returns) o.n else o.main_n };
+}
+
 /// A reorder: renumber the tracks to `order` (position k holds the old
 /// index of the track that goes there) after setting `output` (per old
 /// index: a group's old index, NONE for the master, or KEEP).

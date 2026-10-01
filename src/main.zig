@@ -42,6 +42,7 @@ const mixer = @import("ui/mixer.zig");
 const dialog = @import("ui/dialog.zig");
 const render_dialog = @import("ui/render_dialog.zig");
 const unison_panel = @import("ui/unison_panel.zig");
+const color_picker = @import("ui/color_picker.zig");
 
 test {
     _ = @import("ui/sprites.zig");
@@ -582,6 +583,7 @@ pub fn main(init: std.process.Init) !void {
     var rename: RenameState = .{};
     var render_dlg: render_dialog.State = .{};
     var uni_panel: unison_panel.State = .{};
+    var color_pick: color_picker.State = .{};
     // A track awaiting the delete confirmation, and the dialog's text.
     var pending_delete: ?usize = null;
     var delete_msg: DeleteMsg = .{};
@@ -613,7 +615,7 @@ pub fn main(init: std.process.Init) !void {
         // One owner of the pointer at a time: a legacy menu, modal or drag
         // hides input from the new Ui, and a new-Ui drag hides it from the
         // legacy panes.
-        const modal = render_dlg.active or pending_delete != null or uni_panel.active;
+        const modal = render_dlg.active or pending_delete != null or uni_panel.active or color_pick.active;
         if (menu.active() or modal or pane.hasActiveDrag()) ui.suppressInput();
 
         // While a menu is open it's modal for the mouse: panes get a
@@ -788,6 +790,8 @@ pub fn main(init: std.process.Init) !void {
             ares.route = mres.route;
             ares.add_track = mres.add_track;
             ares.add_bus = mres.add_bus;
+            ares.move_tracks = mres.move_tracks;
+            ares.color_pick = mres.color_pick;
             if (mres.toggle) layout.mixer_visible = false;
         } else {
             ares = arrangement.draw(ui, rects.arrangement, tracks, &master, &device_sel, &audio_pool, alloc, &selected_track, &selected_clip, &transport, &meter_state, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), &recorder, pane_m);
@@ -795,6 +799,7 @@ pub fn main(init: std.process.Init) !void {
         }
         if (ares.rename_clip) |ref| beginRenameClip(&rename, tracks, ref);
         if (ares.rename_track) |ti| beginRenameTrack(&rename, tracks, ti);
+        if (ares.color_pick) |cp| color_pick.open(cp.track, cp.at);
         if (ares.move_tracks) |mv| {
             if (recorder.isRecording()) {
                 status.set("Stop recording to move tracks", .{});
@@ -1062,6 +1067,19 @@ pub fn main(init: std.process.Init) !void {
             if (u) |uu| {
                 if (unison_panel.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &uni_panel, uu)) dirty = true;
             } else uni_panel.active = false;
+        }
+
+        if (color_pick.active) {
+            if (color_pick.track < tracks.len) {
+                const t = &tracks[color_pick.track];
+                if (color_picker.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &color_pick, arrangement.trackColor(t.color))) |col| {
+                    if (document_mod.serialize(alloc, tracks, &transport)) |before| {
+                        history.pushUndo(alloc, before) catch alloc.free(before);
+                    } else |_| {}
+                    t.color = .{ .r = col.r, .g = col.g, .b = col.b, .a = 255 };
+                    dirty = true;
+                }
+            } else color_pick.active = false;
         }
 
         splash.overlay(ui, screenRect());
@@ -1612,7 +1630,7 @@ fn screenRect() ui_geom.Rect {
     return ui_geom.Rect.xywh(0, 0, c.rl.GetScreenWidth(), c.rl.GetScreenHeight());
 }
 
-/// Default colour for the n-th new track (the track palette, cycled).
+/// Default color for the n-th new track (the track palette, cycled).
 fn trackColor(n: usize) c.rl.Color {
     return @bitCast(ui_style.track[n % ui_style.track.len]);
 }

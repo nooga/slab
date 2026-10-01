@@ -271,16 +271,23 @@ bass.fx[1].key(kick)            # or key=kick in fx(...)
 arrangement's `+`) swaps the arrangement for the mixer; the mixer also
 takes the clip editor's room, and Tab still toggles the clip editor.
 Strips for the tracks and groups on the left, in the arrangement's
-display order (a group's strip before its members', each member with a
-rail in the group's colour; folding a group from its title's triangle
-hides its members here too); on the right, pinned like a console's
+display order (a group's strip before its members'; folding a group
+from its title's triangle hides its members here too); on the right, pinned like a console's
 return section, the returns and then the master. Only the left
 strips scroll: sideways with the wheel, or a thin bar under them once
-they overflow. Every strip has the same rows, so they line up:
+they overflow.
+
+Groups show as **bands** across the top, a 12 px level per nesting
+depth, outermost on top. A group's band spans its strip and its
+members', with its name at the left. Below a strip's innermost group the
+band carries that group's color on down, so every strip's color bar
+joins its group's band; strips in no group get a neutral band.
+
+Every strip has the same rows, so they line up:
 
 | Row | Control |
 |---|---|
-| title | colour bar, number or bus letter, name (scrolls while hovered when it doesn't fit). Click edits the strip in the bay; right-click is the routing menu |
+| title | color bar (a click opens the color picker), number or bus letter, name (scrolls while hovered when it doesn't fit). Click edits the strip in the bay, shift- and ⌘-click select as headers do, a drag moves the strips as a header drag does (a ghost, the moved strips dimmed, a line starting at the band level it joins); right-click is the routing menu |
 | inserts | the chain's machine names, bypassed ones dimmed, `+N more` past four; a name too long for the display scrolls |
 | sends | a small knob per return, lettered (A, B, …), two to a row (sends to a group are made from the menu). Half travel is 0 dB, full +6 dB. Turning one up from nothing creates the send (an undo step); right-click an existing one for pre/post and remove. A bus that would feed back is disabled |
 | output | `→ MASTER` or a bus; click for the output list |
@@ -334,14 +341,14 @@ reference with them.
   track's output goes to it (a *return* when only sends feed it, as
   §One bus kind names them). A group is drawn above its members, at
   the place of its first member, and its members follow it in index
-  order, each with a rail in the group's colour. A group whose output is
+  order, each with a rail in the group's color. A group whose output is
   another group nests inside it, one rail per level.
 - **Returns** follow in a section of their own under a RETURNS divider,
   above the pinned master strip.
 - **Folding.** A group's header has a fold triangle. A folded group
   hides its members' rows (in the mixer too) but keeps playing them;
   its lane shows every member's clips as silhouettes in their
-  colours, folded or not. The fold state is saved (`"folded": true`).
+  colors, folded or not. The fold state is saved (`"folded": true`).
 - Audio tracks are numbered 1, 2, … in display order, folded ones
   included, so the numbers don't jump as groups fold; buses are
   lettered A, B, … in index order, as Live letters its returns.
