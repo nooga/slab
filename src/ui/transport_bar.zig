@@ -27,6 +27,7 @@ pub const Result = struct {
     open_project: bool = false,
     save_project: bool = false,
     save_project_as: bool = false,
+    new_project: bool = false,
     clean_up_project: bool = false,
     render_audio: bool = false,
     record_toggle: bool = false,
@@ -263,6 +264,7 @@ fn fileTile(ui: *Ui, r: Rect, a: Args, res: *Result) void {
     ctl.led(ui, inner.right() - 7, r.y + @divFloor(r.h - 4, 2), .tri_down, .off, style.text_dim);
     menu.tip(ui, r, "Project file");
     const items = [_]menu.Item{
+        .{ .label = "New Project", .command = .file_new },
         .{ .label = "Open\u{2026}", .command = .file_open },
         .{ .label = "Save", .command = .file_save },
         .{ .label = "Save As\u{2026}", .command = .file_save_as },
@@ -271,6 +273,7 @@ fn fileTile(ui: *Ui, r: Rect, a: Args, res: *Result) void {
         .{ .label = "Render Audio\u{2026}", .command = .render_audio },
     };
     switch (menu.command(FILE_MENU_KEY, &items)) {
+        .file_new => res.new_project = true,
         .file_open => res.open_project = true,
         .file_save => res.save_project = true,
         .file_save_as => res.save_project_as = true,

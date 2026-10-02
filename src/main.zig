@@ -618,6 +618,10 @@ pub fn main(init: std.process.Init) !void {
     var pending_delete_set: ?[MAX_TRACKS]bool = null;
     var render_job: RenderJob = .{};
 
+    // What File > New Project starts from: the app as it boots.
+    blank_project = try document_mod.serialize(alloc, tracks_buf[0..track_count], &transport);
+    defer alloc.free(blank_project);
+
     if (cli.project) |path| {
         splash.bootFrame(ui, screenRect(), "LOADING PROJECT", 1);
         if (document_mod.readFile(alloc, path)) |data| {
@@ -1327,6 +1331,9 @@ pub fn main(init: std.process.Init) !void {
             try saveProject(alloc, tracks, &transport, &project_path, &project_path_chosen, &dirty, &status, false);
             if (project_path_chosen and !dirty) cleanUpProject(alloc, project_path, &status);
         }
+        if (tres.new_project) {
+            try newProject(alloc, &history, &tracks_buf, &track_count, &tracks, &transport, &engine, &audio, &reg, &selected_track, &selected_clip, &prev_selected_clip, &project_path, &project_path_chosen, &dirty, &status);
+        }
         if (tres.open_project) {
             try openProject(
                 alloc,
@@ -1520,6 +1527,11 @@ fn handleProjectShortcuts(
 
     if (c.rl.IsKeyPressed(c.rl.KEY_O)) {
         try openProject(alloc, history, tracks_buf, track_count, tracks, transport, engine, audio, reg, selected_track, selected_clip, prev_selected_clip, project_path, project_path_chosen, dirty, status);
+        return true;
+    }
+
+    if (c.rl.IsKeyPressed(c.rl.KEY_N)) {
+        try newProject(alloc, history, tracks_buf, track_count, tracks, transport, engine, audio, reg, selected_track, selected_clip, prev_selected_clip, project_path, project_path_chosen, dirty, status);
         return true;
     }
 
@@ -1828,6 +1840,46 @@ fn reportLoaded(alloc: std.mem.Allocator, status: *StatusMessage, data: []const 
     } else {
         status.set("Loaded {s}; {d} files missing: {s}", .{ basename(path), gone.count, std.fs.path.basename(gone.first[0]) });
     }
+}
+
+/// The document File > New Project applies: the app's state at boot.
+var blank_project: []u8 = &.{};
+
+/// Start an untitled project, as the app does at launch. Undoable, like
+/// opening one: the project it replaces is a step back.
+fn newProject(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    tracks_buf: *[MAX_TRACKS]track_mod.Track,
+    track_count: *usize,
+    tracks: *[]track_mod.Track,
+    transport: *transport_mod.Transport,
+    engine: *engine_mod.Engine,
+    audio: *audio_mod.Audio,
+    reg: *registry_mod.Registry,
+    selected_track: *?usize,
+    selected_clip: *?clip_mod.ClipRef,
+    prev_selected_clip: *?clip_mod.ClipRef,
+    project_path: *[]u8,
+    project_path_chosen: *bool,
+    dirty: *bool,
+    status: *StatusMessage,
+) !void {
+    const before = try document_mod.serialize(alloc, tracks.*, transport);
+    errdefer alloc.free(before);
+    storage.setProject(null);
+    applyProjectBytes(alloc, blank_project, reg, tracks_buf, track_count, tracks, transport, engine, audio, selected_track, selected_clip, prev_selected_clip) catch |err| {
+        std.log.err("new project failed: {s}", .{@errorName(err)});
+        status.set("New project failed", .{});
+        if (project_path_chosen.*) useProject(project_path.*);
+        alloc.free(before);
+        return;
+    };
+    try history.pushUndo(alloc, before);
+    replaceProjectPath(alloc, project_path, try alloc.dupe(u8, document_mod.SAVE_PATH));
+    project_path_chosen.* = false;
+    dirty.* = false;
+    status.set("New project", .{});
 }
 
 fn replaceProjectPath(alloc: std.mem.Allocator, project_path: *[]u8, next: []u8) void {
@@ -3175,7 +3227,7 @@ fn executeEditCommand(
         },
         // `import_audio` is intercepted in the arrangement-result handler
         // (it needs the audio pool + file dialog); never reaches here.
-        .none, .copy, .select_all, .clear_selection, .rename, .file_open, .file_save, .file_save_as, .file_clean_up, .render_audio, .import_audio => {},
+        .none, .copy, .select_all, .clear_selection, .rename, .file_new, .file_open, .file_save, .file_save_as, .file_clean_up, .render_audio, .import_audio => {},
     }
 
     if (changed) {
