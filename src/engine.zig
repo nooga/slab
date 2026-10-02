@@ -204,10 +204,10 @@ pub const Engine = struct {
 
     /// UI thread, before audio starts, with the engine at its final
     /// address: start `workers` render threads (0: render on the audio
-    /// thread alone).
-    pub fn initPool(self: *Engine, alloc: std.mem.Allocator, workers: usize) !void {
+    /// thread alone; `rt`: real-time workers, render_pool §Real-time).
+    pub fn initPool(self: *Engine, alloc: std.mem.Allocator, workers: usize, rt: ?render_pool.Rt) !void {
         if (workers == 0) return;
-        self.pool = try RenderPool.create(alloc, self, workers);
+        self.pool = try RenderPool.create(alloc, self, workers, rt);
     }
 
     /// UI thread: each render thread's load since the last call, as a
@@ -3127,12 +3127,19 @@ test "parallel rendering: workers render a routed project bit-identical to one t
     const parallel = try alloc.alloc(f32, frames * 2);
     defer alloc.free(parallel);
     eng.renderOffline(serial, frames, 0, null, null);
-    try eng.initPool(alloc, 4);
+    try eng.initPool(alloc, 4, null);
     defer eng.deinitPool(alloc);
     for (0..3) |_| {
         eng.renderOffline(parallel, frames, 0, null, null);
         try testing.expectEqualSlices(u32, @ptrCast(serial), @ptrCast(parallel));
     }
+    // Real-time workers, moved between workgroups (none here: no device).
+    eng.deinitPool(alloc);
+    try eng.initPool(alloc, 4, .{ .period_ns = 256 * std.time.ns_per_s / 48_000 });
+    eng.pool.?.setWorkgroup(null);
+    eng.renderOffline(parallel, frames, 0, null, null);
+    try testing.expectEqualSlices(u32, @ptrCast(serial), @ptrCast(parallel));
+    eng.pool.?.setWorkgroup(null);
     var peak: f32 = 0;
     for (serial) |x| peak = @max(peak, @abs(x));
     try testing.expect(peak > 0.1);

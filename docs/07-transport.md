@@ -278,6 +278,16 @@ A worker that wakes late finds the block closed. The audio thread
 renders anything no worker took, so a descheduled worker costs time,
 never output.
 
+**Real-time workers.** Each worker takes Mach's time-constraint policy
+(period one block, up to half of it computing) and joins the output
+device's I/O workgroup (`kAudioDevicePropertyIOThreadOSWorkgroup`), so
+it is scheduled like CoreAudio's own I/O thread. When the device is
+reopened (the mic armed, another input chosen) the workers move to the
+new workgroup as they next wake. `--no-rt-workers` leaves them at
+user-interactive QoS, which the scheduler may preempt or move to
+efficiency cores under load. Headless renders never use real-time
+workers.
+
 **Thread lamps.** The transport bar's stats display shows a lamp per
 render thread (the audio thread first) beside CPU, lit by how much of the
 audio budget that thread spent rendering and mixing nodes, and red from
@@ -297,8 +307,7 @@ sweat_geometry 66.7 s → 21.4 s, broken_glass 4.5 s → 1.0 s, the others
 1.8–2.8× faster. The slower ones are bound by their critical path: one
 heavy synth through its bus and the master.
 
-**Not yet:** joining CoreAudio's I/O workgroup (the workers run at user
-interactive QoS), and splitting one node's insert chain across threads.
+**Not yet:** splitting one node's insert chain across threads.
 
 ## UI-side scheduling (control-rate)
 

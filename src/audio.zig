@@ -27,6 +27,18 @@ pub const InputDevice = struct {
     name: [MA_NAME_CAP:0]u8 = [_:0]u8{0} ** MA_NAME_CAP,
 };
 
+const AudioObjectPropertyAddress = extern struct { selector: u32, scope: u32, element: u32 };
+extern "c" fn AudioObjectGetPropertyData(id: u32, addr: *const AudioObjectPropertyAddress, qual_size: u32, qual: ?*const anyopaque, size: *u32, data: *anyopaque) i32;
+
+fn fourcc(comptime s: *const [4]u8) u32 {
+    return std.mem.readInt(u32, s, .big);
+}
+
+/// The length of one callback block, for real-time scheduling.
+pub fn blockPeriodNs() u64 {
+    return @as(u64, requestedBlockFrames()) * std.time.ns_per_s / SAMPLE_RATE;
+}
+
 pub const Audio = struct {
     device: c.ma.ma_device,
     context: c.ma.ma_context = undefined,
@@ -42,6 +54,8 @@ pub const Audio = struct {
     /// Explicit capture device chosen by the user (else system default).
     capture_id: c.ma.ma_device_id = undefined,
     has_capture_id: bool = false,
+    /// Bumped each time a device starts: its I/O workgroup is new.
+    device_gen: u32 = 0,
     render_ctx: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     render_fn: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     capture_ctx: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
@@ -78,6 +92,7 @@ pub const Audio = struct {
         self.capture_available = false;
         self.want_capture = false;
         self.has_capture_id = false;
+        self.device_gen = 0;
 
         // A persistent context backs both device init and enumeration.
         if (c.ma.ma_context_init(null, 0, null, &self.context) != c.ma.MA_SUCCESS)
@@ -152,6 +167,24 @@ pub const Audio = struct {
             return error.AudioStartFailed;
         }
         self.initialized = true;
+        self.device_gen +%= 1;
+    }
+
+    /// The running device's I/O workgroup (os_workgroup_t, retained: the
+    /// caller releases it), for render workers to join (docs/07 §Parallel
+    /// rendering); null if there is none.
+    pub fn workgroup(self: *Audio) ?*anyopaque {
+        if (!self.initialized) return null;
+        const addr: AudioObjectPropertyAddress = .{
+            .selector = fourcc("oswg"),
+            .scope = fourcc("glob"),
+            .element = 0,
+        };
+        var wg: ?*anyopaque = null;
+        var size: u32 = @sizeOf(?*anyopaque);
+        const id = self.device.unnamed_0.coreaudio.deviceObjectIDPlayback;
+        if (AudioObjectGetPropertyData(id, &addr, 0, null, &size, @ptrCast(&wg)) != 0) return null;
+        return wg;
     }
 
     fn reopen(self: *Audio) !void {

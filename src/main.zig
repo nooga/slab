@@ -385,7 +385,9 @@ fn applyPresetTo(t: *track_mod.Track, preset_idx: u16) void {
 /// `--no-branches` computes both arms of every dsp `ifte` (docs/05
 /// §Branching). `--threads N` renders tracks on N threads, 1 on the audio
 /// thread alone (docs/07 §Parallel rendering; default: the performance
-/// cores).
+/// cores). The render workers get real-time scheduling and join the
+/// device's I/O workgroup (render_pool.zig); `--no-rt-workers` leaves them
+/// at user-interactive QoS.
 const Cli = struct {
     project: ?[]const u8 = null,
     render: ?[]const u8 = null,
@@ -394,6 +396,7 @@ const Cli = struct {
     idle_skip: bool = true,
     /// Render threads, the audio thread included; null: the default.
     threads: ?usize = null,
+    rt_workers: bool = true,
 
     /// Render workers beside the audio thread.
     fn workers(cli: Cli) usize {
@@ -418,6 +421,8 @@ pub fn main(init: std.process.Init) !void {
             } else if (std.mem.eql(u8, a, "--threads")) {
                 const v = args.next() orelse return error.MissingThreadCount;
                 cli.threads = @max(1, std.fmt.parseInt(usize, v, 10) catch return error.BadThreadCount);
+            } else if (std.mem.eql(u8, a, "--no-rt-workers")) {
+                cli.rt_workers = false;
             } else if (std.mem.eql(u8, a, "--no-idle-skip")) {
                 cli.idle_skip = false;
             } else if (std.mem.eql(u8, a, "--no-neon")) {
@@ -525,7 +530,7 @@ pub fn main(init: std.process.Init) !void {
     };
     try engine.initPdc(alloc);
     defer engine.deinitPdc(alloc);
-    try engine.initPool(alloc, cli.workers());
+    try engine.initPool(alloc, cli.workers(), if (cli.rt_workers) .{ .period_ns = audio_mod.blockPeriodNs() } else null);
     defer engine.deinitPool(alloc);
 
     // ── Audio device ─────────────────────────────────────────────────
@@ -536,6 +541,12 @@ pub fn main(init: std.process.Init) !void {
         audio.deinit();
     }
     audio.setRender(&engine, engine_mod.Engine.renderCallback);
+    var audio_gen = audio.device_gen;
+    if (engine.pool) |p| {
+        const wg = audio.workgroup();
+        if (cli.rt_workers) std.log.info("render workers: real-time, {s}", .{if (wg != null) "in the audio workgroup" else "no audio workgroup"});
+        p.setWorkgroup(wg);
+    }
 
     // ── Recorder ─────────────────────────────────────────────────────
     // Owns the SPSC ring + writer thread; the audio thread pushes input
@@ -691,6 +702,11 @@ pub fn main(init: std.process.Init) !void {
             std.log.err("audio device switch failed: {s}", .{@errorName(err)});
             status.set("Audio device failed", .{});
         };
+        // A reopened device has a new I/O workgroup for the workers.
+        if (audio.device_gen != audio_gen) {
+            audio_gen = audio.device_gen;
+            if (engine.pool) |p| p.setWorkgroup(audio.workgroup());
+        }
 
         // Refresh the input-device list ~once/sec and resolve the active one.
         if (input_refresh % 60 == 0) {
@@ -2221,7 +2237,7 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, out: []const u8
     };
     try engine.initPdc(alloc);
     defer engine.deinitPdc(alloc);
-    try engine.initPool(alloc, workers);
+    try engine.initPool(alloc, workers, null);
     defer engine.deinitPool(alloc);
     engine.publishRouting();
     var last_beat: f64 = 0;
