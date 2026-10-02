@@ -19,7 +19,7 @@ pub const MAX_NAME = 64;
 pub const MAX_WORD = 64;
 pub const MAX_TEXT = 24;
 pub const MAX_CONTROLS = 160;
-pub const MAX_OPTS = 16;
+pub const MAX_OPTS = 24;
 /// `sets` entries across a machine's switch options.
 pub const MAX_OPT_SETS = 256;
 pub const MAX_CONSTS = 16;

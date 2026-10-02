@@ -107,28 +107,28 @@ project or preset stores (docs/19): real units for knobs, the option
 | `cn-l2-mode` | LFO 2 | MODE | 0 FREE / 1 RETRIG / 2 ENV | 1 | switch |
 | `cn-l2-uni` | LFO 2 | UNI | 0 OFF / 1 ON | 0 | switch |
 | `cn-m1-src` | SLOT 1 | SRC | 0 OFF / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 VEL / 6 NOTE / 7 PRESS / 8 SLIDE / 9 RAND | 0 | switch |
-| `cn-m1-dst` | SLOT 1 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP | 0 | switch |
+| `cn-m1-dst` | SLOT 1 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP / 16 L1 RATE / 17 L2 RATE | 0 | switch |
 | `cn-m1-amt` | SLOT 1 | AMT | -1 … 1 | 0 | linear |
 | `cn-m2-src` | SLOT 2 | SRC | 0 OFF / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 VEL / 6 NOTE / 7 PRESS / 8 SLIDE / 9 RAND | 0 | switch |
-| `cn-m2-dst` | SLOT 2 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP | 0 | switch |
+| `cn-m2-dst` | SLOT 2 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP / 16 L1 RATE / 17 L2 RATE | 0 | switch |
 | `cn-m2-amt` | SLOT 2 | AMT | -1 … 1 | 0 | linear |
 | `cn-m3-src` | SLOT 3 | SRC | 0 OFF / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 VEL / 6 NOTE / 7 PRESS / 8 SLIDE / 9 RAND | 0 | switch |
-| `cn-m3-dst` | SLOT 3 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP | 0 | switch |
+| `cn-m3-dst` | SLOT 3 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP / 16 L1 RATE / 17 L2 RATE | 0 | switch |
 | `cn-m3-amt` | SLOT 3 | AMT | -1 … 1 | 0 | linear |
 | `cn-m4-src` | SLOT 4 | SRC | 0 OFF / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 VEL / 6 NOTE / 7 PRESS / 8 SLIDE / 9 RAND | 0 | switch |
-| `cn-m4-dst` | SLOT 4 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP | 0 | switch |
+| `cn-m4-dst` | SLOT 4 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP / 16 L1 RATE / 17 L2 RATE | 0 | switch |
 | `cn-m4-amt` | SLOT 4 | AMT | -1 … 1 | 0 | linear |
 | `cn-m5-src` | SLOT 5 | SRC | 0 OFF / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 VEL / 6 NOTE / 7 PRESS / 8 SLIDE / 9 RAND | 0 | switch |
-| `cn-m5-dst` | SLOT 5 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP | 0 | switch |
+| `cn-m5-dst` | SLOT 5 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP / 16 L1 RATE / 17 L2 RATE | 0 | switch |
 | `cn-m5-amt` | SLOT 5 | AMT | -1 … 1 | 0 | linear |
 | `cn-m6-src` | SLOT 6 | SRC | 0 OFF / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 VEL / 6 NOTE / 7 PRESS / 8 SLIDE / 9 RAND | 0 | switch |
-| `cn-m6-dst` | SLOT 6 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP | 0 | switch |
+| `cn-m6-dst` | SLOT 6 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP / 16 L1 RATE / 17 L2 RATE | 0 | switch |
 | `cn-m6-amt` | SLOT 6 | AMT | -1 … 1 | 0 | linear |
 | `cn-m7-src` | SLOT 7 | SRC | 0 OFF / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 VEL / 6 NOTE / 7 PRESS / 8 SLIDE / 9 RAND | 0 | switch |
-| `cn-m7-dst` | SLOT 7 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP | 0 | switch |
+| `cn-m7-dst` | SLOT 7 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP / 16 L1 RATE / 17 L2 RATE | 0 | switch |
 | `cn-m7-amt` | SLOT 7 | AMT | -1 … 1 | 0 | linear |
 | `cn-m8-src` | SLOT 8 | SRC | 0 OFF / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 VEL / 6 NOTE / 7 PRESS / 8 SLIDE / 9 RAND | 0 | switch |
-| `cn-m8-dst` | SLOT 8 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP | 0 | switch |
+| `cn-m8-dst` | SLOT 8 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP / 16 L1 RATE / 17 L2 RATE | 0 | switch |
 | `cn-m8-amt` | SLOT 8 | AMT | -1 … 1 | 0 | linear |
 
 Presets:

@@ -41,7 +41,8 @@
   Matrix sources: ENV2 ENV3 LFO1 LFO2 VEL NOTE PRESS SLIDE RAND.  Each
   slot adds AMT x the source to a destination: table position, warp,
   level [+-1], pitch [+-12 semitones], cutoff [+-8 octaves], resonance,
-  drive [+-1], AMP [x 1 + amt src: tremolo, the sidechain pump].
+  drive [+-1], AMP [x 1 + amt src: tremolo, the sidechain pump], an
+  LFO's rate [+-4 octaves].
 
   Variants [docs/05 §Branching]: USER on A, B on and USER on B, the
   filter on, the sub on - 24 bodies.  The warp and shape switches are
@@ -126,7 +127,7 @@ ustruct: ConcoctionState
   f64 gl        ( glide offset, octaves -> 0 )
   f64 l1-ph  f64 l1-sh  f64 l2-ph  f64 l2-sh
   f64 first     ( 1 until the first control step snaps the ramps )
-  f64 macc 16   ( matrix sums by destination )
+  f64 macc 18   ( matrix sums by destination )
   ( ramps: the value, its step per sample )
   f64 a-inc  f64 a-inc-d   f64 b-inc  f64 b-inc-d   f64 s-inc  f64 s-inc-d
   f64 a-pos  f64 a-pos-d   f64 b-pos  f64 b-pos-d
@@ -140,6 +141,7 @@ ustruct: ConcoctionState
   ( for the panel [docs/15 §Modulation]: the LFOs' values, and what the
     filter, drive and amp are modulated to, in their controls' units )
   f64 l1-v  f64 l2-v
+  f64 l1-hz  f64 l2-hz
   f64 cut-hz  f64 res-v  f64 drv-v  f64 amp-v
 ;
 
@@ -301,12 +303,18 @@ dsp: cn-ramp | r target first -- |
 dsp: k-concoction-control | ctx:Ctx state:ConcoctionState params:ConcoctionParams |
   state.e2& params.e2c& env-d-step | e2 |
   state.e3& params.e3c& env-d-step | e3 |
-  ( LFOs; S&H takes a new value on each wrap )
-  state.l1-ph params.l1-inc params.l1-mode cn-lfo-adv | p1 w1 |
+  ( LFOs; S&H takes a new value on each wrap.  Their rates take the
+    matrix's L1/L2 RATE [+-4 octaves] from the last control step, so an
+    LFO can move the other's rate, or its own. )
+  state.macc& 16.0 f@i 4.0 f* exp2 | r1 |
+  state.macc& 17.0 f@i 4.0 f* exp2 | r2 |
+  params.l1-rate r1 f* -> state.l1-hz
+  params.l2-rate r2 f* -> state.l2-hz
+  state.l1-ph params.l1-inc r1 f* params.l1-mode cn-lfo-adv | p1 w1 |
   p1 -> state.l1-ph
   state cn-rand | r1 |
   w1 0.5 f>  r1 2.0 f* 1.0 f-  state.l1-sh  select -> state.l1-sh
-  state.l2-ph params.l2-inc params.l2-mode cn-lfo-adv | p2 w2 |
+  state.l2-ph params.l2-inc r2 f* params.l2-mode cn-lfo-adv | p2 w2 |
   p2 -> state.l2-ph
   state cn-rand | r2 |
   w2 0.5 f>  r2 2.0 f* 1.0 f-  state.l2-sh  select -> state.l2-sh
@@ -320,11 +328,11 @@ dsp: k-concoction-control | ctx:Ctx state:ConcoctionState params:ConcoctionParam
   state.gl params.g-coef f* | gl |
   gl -> state.gl
   ( the matrix: each slot's AMT x source, summed by destination )
-  0.0 16 [ | j |  0.0 state.macc& j f!i  j 1.0 f+ ] times drop
+  0.0 18 [ | j |  0.0 state.macc& j f!i  j 1.0 f+ ] times drop
   0.0 8 [ | i |
     state  params.m-src& i f@i  e2 e3 l1 l2  cn-src  params.m-amt& i f@i f* | mv |
     params.m-dst& i f@i | dst |
-    1.0 15 [ | j |
+    1.0 17 [ | j |
       state.macc& j f@i  dst j f= mv 0.0 select  f+  state.macc& j f!i
       j 1.0 f+ ] times drop
     i 1.0 f+ ] times drop

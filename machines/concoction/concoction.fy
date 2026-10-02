@@ -44,7 +44,7 @@ include "../lib/manifest.fy"
   "OFF" 0.0 opt  "A POS" 1.0 opt  "B POS" 2.0 opt  "A WARP" 3.0 opt  "B WARP" 4.0 opt
   "A PITCH" 5.0 opt  "B PITCH" 6.0 opt  "PITCH" 7.0 opt  "A LVL" 8.0 opt  "B LVL" 9.0 opt
   "SUB LVL" 10.0 opt  "NOISE" 11.0 opt  "CUTOFF" 12.0 opt  "RES" 13.0 opt  "DRIVE" 14.0 opt
-  "AMP" 15.0 opt  as-display ;
+  "AMP" 15.0 opt  "L1 RATE" 16.0 opt  "L2 RATE" 17.0 opt  as-display ;
 
 : manifest
   "Concoction" voice-sample machine*
@@ -203,6 +203,8 @@ include "../lib/manifest.fy"
   "cn-f-res"     13 ConcoctionState.res-v mod-dest
   "cn-f-drive"   14 ConcoctionState.drv-v mod-dest
   "cn-level"     15 ConcoctionState.amp-v mod-dest
+  "cn-l1-rate"   16 ConcoctionState.l1-hz mod-dest
+  "cn-l2-rate"   17 ConcoctionState.l2-hz mod-dest
   ( built-in routes: the matrix display lists them as fixed rows )
   "cn-f-env" 1 12 mod-fixed   ( ENV2 -> CUTOFF, the FILTER ENV amount )
   "cn-f-key" 6 12 mod-fixed   ( NOTE -> CUTOFF, KEY tracking )
