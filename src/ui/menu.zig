@@ -16,6 +16,7 @@ const std = @import("std");
 const c = @import("../c.zig");
 const core = @import("core.zig");
 const style = @import("style.zig");
+const controls = @import("controls.zig");
 
 const Ui = core.Ui;
 const Rect = core.Rect;
@@ -193,6 +194,7 @@ pub fn openAt(k: u64, x: i32, y: i32) void {
         l.sel = null;
         l.want_first = false;
     }
+    grid_open = false;
     tip_blocked = true;
 }
 
@@ -398,7 +400,9 @@ fn levelRect(level: usize, l: *const Level) Rect {
 /// Draw the open menu and the pending tooltip. Call once per frame after
 /// every pane ran, right before `Ui.render`.
 pub fn draw(ui: *Ui) void {
-    if (key != 0) {
+    if (key != 0 and grid_open) {
+        drawGrid(ui);
+    } else if (key != 0) {
         for (levels[0..level_count], 0..) |*l, level| {
             if (l.len == 0) continue;
             drawLevel(ui, l, level);
@@ -432,6 +436,138 @@ fn drawLevel(ui: *Ui, l: *const Level, level: usize) void {
             ui.textIn(&ui.fonts.legend, hint_r, h, hint_col, .right, false);
         }
     }
+}
+
+// ── Option grids ─────────────────────────────────────────────────────
+//
+// A display select's options (docs/06 §Selectors): the choices printed on
+// the same glass as the field, under it, one column for a short list and
+// a grid for a long one. Hover lights a cell, release or ↩ picks it, the
+// arrows move, esc or a press outside closes. Same modal rules as a menu.
+
+const GRID_MAX = 64;
+const GRID_LABEL = 24;
+const GRID_ROW: i32 = 14;
+/// Options per column before the grid wraps into more columns.
+const GRID_COL_ROWS: usize = 10;
+
+var grid_open: bool = false;
+var grid_labels: [GRID_MAX][GRID_LABEL]u8 = undefined;
+var grid_lens: [GRID_MAX]usize = undefined;
+var grid_n: usize = 0;
+var grid_cur: usize = 0;
+var grid_sel: ?usize = null;
+var grid_field: Rect = .{};
+var grid_rect: Rect = .{};
+var grid_cols: usize = 1;
+var grid_cell_w: i32 = 0;
+
+/// Open option grid `k` under (or above, when cramped) `field`, with
+/// option `cur` marked as the current value.
+pub fn openGrid(k: u64, field: Rect, cur: usize) void {
+    openAt(k, field.x, field.bottom());
+    grid_open = true;
+    grid_field = field;
+    grid_cur = cur;
+    grid_sel = cur;
+    grid_n = 0;
+}
+
+fn gridRows() usize {
+    return (grid_n + grid_cols - 1) / grid_cols;
+}
+
+fn gridCell(i: usize) Rect {
+    const rows = gridRows();
+    const col: i32 = @intCast(i / rows);
+    const row: i32 = @intCast(i % rows);
+    return Rect.xywh(grid_rect.x + 2 + col * grid_cell_w, grid_rect.y + 2 + row * GRID_ROW, grid_cell_w, GRID_ROW);
+}
+
+/// Tick option grid `k` every frame while it's open: the picked option.
+pub fn grid(k: u64, options: []const []const u8) ?usize {
+    if (key != k or !grid_open) return null;
+    grid_n = @min(options.len, GRID_MAX);
+    if (grid_n == 0) return null;
+    var widest: i32 = 0;
+    for (options[0..grid_n], 0..) |o, i| {
+        const ln = @min(o.len, GRID_LABEL);
+        @memcpy(grid_labels[i][0..ln], o[0..ln]);
+        grid_lens[i] = ln;
+        if (hint_font) |f| widest = @max(widest, f.measure(o[0..ln]));
+    }
+    grid_cols = (grid_n + GRID_COL_ROWS - 1) / GRID_COL_ROWS;
+    const rows: i32 = @intCast(gridRows());
+    const cols: i32 = @intCast(grid_cols);
+    // A cell: marker, label, a spare dot cell each side.
+    grid_cell_w = widest + controls.CELL_W * 3;
+    if (cols == 1) grid_cell_w = @max(grid_cell_w, grid_field.w - 4);
+    const w = cols * grid_cell_w + 4;
+    const h = rows * GRID_ROW + 4;
+    const x = @max(2, @min(grid_field.x, screen_w - w - 2));
+    var y = grid_field.bottom() + 1;
+    if (y + h > screen_h - 2) y = @max(2, grid_field.y - h - 1);
+    grid_rect = Rect.xywh(x, y, w, h);
+
+    const px = raw.ix();
+    const py = raw.iy();
+    const moved = raw.dx != 0 or raw.dy != 0 or raw.pressed or raw.released;
+    var hit: ?usize = null;
+    for (0..grid_n) |i| {
+        if (gridCell(i).contains(px, py)) hit = i;
+    }
+    if (moved and hit != null) grid_sel = hit;
+    const dragged = @abs(raw.mx - open_mx) + @abs(raw.my - open_my) > DRAG_PICK;
+    if (raw.released and hit != null and (armed or dragged)) {
+        close();
+        return hit;
+    }
+    if (!armed and !raw.down) armed = true;
+
+    const n: i32 = @intCast(grid_n);
+    const r: i32 = rows;
+    var s: i32 = @intCast(grid_sel orelse grid_cur);
+    if (raw.keyPressed(c.rl.KEY_ESCAPE)) {
+        close();
+        return null;
+    }
+    if (raw.keyPressed(c.rl.KEY_DOWN)) s = @min(n - 1, s + 1);
+    if (raw.keyPressed(c.rl.KEY_UP)) s = @max(0, s - 1);
+    if (raw.keyPressed(c.rl.KEY_RIGHT) and s + r < n) s += r;
+    if (raw.keyPressed(c.rl.KEY_LEFT) and s - r >= 0) s -= r;
+    grid_sel = @intCast(s);
+    if (raw.keyPressed(c.rl.KEY_ENTER) or raw.keyPressed(c.rl.KEY_KP_ENTER)) {
+        close();
+        return @intCast(s);
+    }
+
+    if (just_opened) {
+        just_opened = false;
+    } else if ((raw.pressed or raw.right_pressed) and !grid_rect.contains(px, py)) {
+        close();
+    }
+    return null;
+}
+
+fn drawGrid(ui: *Ui) void {
+    if (grid_n == 0) return;
+    // Floating hardware: a hard edge, then the glass.
+    _ = ui.plate(grid_rect, .{ .outline = .all });
+    const glass = ui.well(grid_rect.inset(1), style.well);
+    ui.clip(glass);
+    for (0..grid_n) |i| {
+        const cell = gridCell(i);
+        const label = grid_labels[i][0..grid_lens[i]];
+        const lit = grid_sel == i;
+        const cur = grid_cur == i;
+        if (lit) ui.rect(cell.insetXY(0, 1), style.vfd.alpha(40));
+        const col = if (lit or cur) style.vfd else style.vfd.mix(style.well, 0.45);
+        // The current value carries a lit marker cell.
+        if (cur) ui.rect(Rect.xywh(cell.x + 2, cell.y + 5, 2, 4), style.vfd);
+        controls.vfdText(ui, cell.x + controls.CELL_W, cell.y + 1, label, col);
+    }
+    controls.dotMesh(ui, glass, glass.y, glass.h, 1);
+    ui.unclip();
 }
 
 // ── Tooltips ─────────────────────────────────────────────────────────

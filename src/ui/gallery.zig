@@ -12,6 +12,7 @@ const style = @import("style.zig");
 const ctl = @import("controls.zig");
 const surf = @import("surfaces.zig");
 const concoction = @import("gallery_concoction.zig");
+const menu = @import("menu.zig");
 
 const Ui = core.Ui;
 const Rect = core.Rect;
@@ -43,6 +44,8 @@ const State = struct {
     wave: u8 = 1,
     octave: u8 = 2,
     preset: u8 = 3,
+    sync_div: u8 = 6,
+    bpm: f32 = 124,
     steps: [16]bool = .{ true, false, false, false, true, false, false, true, true, false, true, false, true, false, false, false },
 
     // Machine mock.
@@ -93,6 +96,8 @@ pub fn run(alloc: std.mem.Allocator) !void {
     defer ui.deinit(alloc);
 
     var st = State{};
+    // SLAB_GALLERY_PAGE=0..2 opens on that page (screenshots, prototypes).
+    if (std.c.getenv("SLAB_GALLERY_PAGE")) |pg| st.page = std.fmt.parseInt(u8, std.mem.span(pg), 10) catch st.page;
     var cn = concoction.State.init(alloc);
     defer cn.deinit(alloc);
     genNotes();
@@ -102,7 +107,13 @@ pub fn run(alloc: std.mem.Allocator) !void {
         style.materials = if (st.materials_on) .{} else style.materials_off;
         const t0 = c.rl.GetTime();
         ui.beginFrame();
+        {
+            const z = ui.renderer.zoom;
+            menu.beginFrame(ui, @intFromFloat(@as(f32, @floatFromInt(c.rl.GetScreenWidth())) / z), @intFromFloat(@as(f32, @floatFromInt(c.rl.GetScreenHeight())) / z));
+        }
+        if (menu.active()) ui.suppressInput();
         frame(ui, &st, &cn, build_ms);
+        menu.draw(ui);
         if (st.running) ui.animate();
         build_ms = build_ms * 0.9 + (c.rl.GetTime() - t0) * 1000 * 0.1;
         // Idle screens wait for events instead of redrawing at 120 fps.
@@ -160,7 +171,7 @@ fn controlsPage(ui: *Ui, screen: Rect, st: *State) void {
     palettePanel(ui, col_a);
 
     switchesPanel(ui, col_b.cutTop(208), st);
-    selectorsPanel(ui, col_b.cutTop(96), st);
+    selectorsPanel(ui, col_b.cutTop(120), st);
     ledsPanel(ui, col_b, st);
 
     var mrow = col_c.cutTop(212);
@@ -271,6 +282,21 @@ fn selectorsPanel(ui: *Ui, r: Rect, st: *State) void {
     var col = body;
     ui.textIn(&ui.fonts.legend, col.cutTop(12), "PRESET", style.text_dim, .left, true);
     _ = ctl.displaySelect(ui, col.cutTop(ctl.displayHeight(false)).takeLeft(180), "preset", &st.preset, &presets);
+    _ = col.cutTop(4);
+    var pair = col.cutTop(ctl.LEGEND_H + ctl.displayHeight(false));
+    const syncs = [_][]const u8{ "8 BAR", "4 BAR", "2 BAR", "1 BAR", "1/2", "1/2T", "1/4", "1/4T", "1/8", "1/8T", "1/16", "1/16T", "1/32", "1/32T", "1/64" };
+    _ = ctl.displayField(ui, pair.cutLeft(ctl.displayFieldCell(ui, &syncs)[0]), "sync", &st.sync_div, &syncs, "SYNC");
+    _ = pair.cutLeft(12);
+    // Numeric readout: drag the glass, or the ▴▾ inside it.
+    const bpm_r = pair.cutLeft(72);
+    ui.textIn(&ui.fonts.legend, bpm_r.takeTop(ctl.LEGEND_H), "BPM", style.text_dim, .center, true);
+    const glass = Rect.xywh(bpm_r.x, bpm_r.y + ctl.LEGEND_H, bpm_r.w, ctl.displayHeight(false));
+    const wid = ui.id("bpm");
+    const b = ui.behavior(wid, glass, false);
+    if (b.held) st.bpm = std.math.clamp(st.bpm - ui.in.dy * 0.5, 20, 400);
+    var buf: [16]u8 = undefined;
+    ctl.display(ui, glass, std.fmt.bufPrint(&buf, "{d:.1}", .{st.bpm}) catch "?", .{ .align_ = .left });
+    st.bpm = std.math.clamp(@round(st.bpm) + @as(f32, @floatFromInt(ctl.glassSteps(ui, glass, "bpm-steps"))), 20, 400);
 }
 
 fn ledsPanel(ui: *Ui, r: Rect, st: *State) void {

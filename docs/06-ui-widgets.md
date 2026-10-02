@@ -115,7 +115,7 @@ Panels are bolted edge to edge like console modules. **No gaps, no
 margins, no padding between panels:** plates tile their region exactly
 and the chassis never shows between them. Adjacent plates share a single
 1px seam: every tiling plate draws its dark edge on its right and bottom
-only (`Outline.seam`); a free-standing object (a cap, a stepper) draws all
+only (`Outline.seam`); a free-standing object (a cap, a menu) draws all
 four (`Outline.all`). Content starts right inside the bevel; breathing
 room comes from the controls' own fixed cells, never from padding.
 Leftover space in a row is filled with a blank plate, not left as
@@ -304,8 +304,17 @@ not its cap text: `BYPASS OFF`, `POWER ON`, `KEY KICK`.
 |---|---|
 | `rotary` | the `stepped` knob |
 | `list` | vertical option column (octave, waveform); click or drag through |
-| `display` | value in a small display with ‹ ›; drag or click to step, click the display to open the list |
+| `display` | value on a small display with a ▾ in the glass; click it for the option grid, drag vertically or ⌘-scroll to step |
 | `dropdown` | opens a menu (menus are their own system) |
+
+The display select has no caps: the glass is the control. Its options
+open under it as an **option grid**, printed on the same glass (one
+column up to 10 options, then more columns): hover lights a cell, release
+or ↩ picks it, the arrows move, esc or a press outside closes, and the
+current value carries a lit marker. Numeric readouts that step (tempo,
+the rack's fields) put a ▴ over a ▾ inside their glass's right edge
+(`glassSteps`) instead of a separate stepper tile; dragging the readout
+still sets it.
 
 ### LEDs
 
@@ -384,8 +393,8 @@ The same everywhere, so nothing surprises.
 - **Hover** shows the value in the title-strip display and a tooltip after
   the delay (docs/12 §Tooltips).
 - **Focus:** value controls (knobs, sliders, selectors) take focus on
-  click so the arrow keys step them afterwards; buttons, caps and
-  steppers never take focus on click (Enter must not re-fire the last
+  click so the arrow keys step them afterwards; buttons and caps
+  never take focus on click (Enter must not re-fire the last
   clicked button). The 1px `accent` focus ring only shows once the
   keyboard is in use (focus-visible): any pointer press hides it again.
 - The cursor changes on hover for every draggable thing (resize for

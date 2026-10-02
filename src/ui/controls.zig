@@ -14,6 +14,7 @@ const geom = @import("geom.zig");
 const style = @import("style.zig");
 const sprites = @import("sprites.zig");
 const font_mod = @import("font.zig");
+const menu = @import("menu.zig");
 
 const Ui = core.Ui;
 const Rect = core.Rect;
@@ -25,7 +26,7 @@ pub const LedShape = sprites.LedShape;
 /// Pointer travel (window points) for a full 0→1 sweep.
 const DRAG_RANGE: f32 = 200;
 const FINE: f32 = 10;
-const LEGEND_H: i32 = 12;
+pub const LEGEND_H: i32 = 12;
 
 fn dragDelta(ui: *const Ui) f32 {
     // Up = increase, measured in window points so the feel doesn't change
@@ -563,21 +564,6 @@ fn cap(ui: *Ui, r: Rect, down: bool, is_on: bool, hot: bool, o: ButtonOpts) void
 }
 
 /// Joined caps, exactly one down.
-pub const STEPPER_W: i32 = 16;
-
-/// Up/down pair stacked in one narrow tile beside a readout (▲ on top,
-/// ▼ below, flush halves). Returns +1, -1 or 0.
-pub fn stepper(ui: *Ui, r: Rect, key: anytype) i32 {
-    ui.pushId(key);
-    defer ui.popId();
-    var col = r;
-    const up = col.cutTop(@divFloor(r.h, 2));
-    var d: i32 = 0;
-    if (button(ui, up, "up", null, .{ .glyph = .tri_up, .flush = true })) d += 1;
-    if (button(ui, col, "down", null, .{ .glyph = .tri_down, .flush = true })) d -= 1;
-    return d;
-}
-
 pub fn segmented(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8) bool {
     return segmentedEx(ui, r, key, v, labels, .{});
 }
@@ -744,59 +730,160 @@ pub fn list(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const []const u8,
     return v.* != before;
 }
 
-/// Value in a display with ‹ › steppers. Drag vertically to step too.
+/// Value on a display (docs/06 §Selectors). The glass is the control:
+/// click it for the option grid, drag vertically or ⌘-scroll to step, the
+/// arrows step when focused. A ▾ in the glass marks it as a select.
 pub fn displaySelect(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const []const u8) bool {
-    return displaySelectEx(ui, r, key, v, options, "");
+    return displaySelectEx(ui, r, key, v, options, "", .{});
 }
 
 /// Panel form: legend over a display select sized to its longest option.
 pub fn displayFieldCell(ui: *const Ui, options: []const []const u8) [2]i32 {
     var w: i32 = 0;
     for (options) |o| w = @max(w, ui.fonts.legend.measure(o));
-    // ‹ › caps, well bevel + margin, one spare cell.
-    return .{ 20 + w + CELL_W + 4, LEGEND_H + displayHeight(false) };
+    // Well bevel + margin, the ▾ cell, one spare cell.
+    return .{ w + CELL_W * 3 + 4, LEGEND_H + displayHeight(false) };
 }
 
 pub fn displayField(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const []const u8, label: []const u8) bool {
     var area = r;
     ui.textIn(&ui.fonts.legend, area.cutTop(LEGEND_H), label, style.text_dim, .center, true);
-    return displaySelectEx(ui, area.takeTop(displayHeight(false)), key, v, options, label);
+    return displaySelectEx(ui, area.takeTop(displayHeight(false)), key, v, options, label, .{});
 }
 
-fn displaySelectEx(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const []const u8, label: []const u8) bool {
+pub const SelectOpts = struct {
+    align_: Ui.Align = .center,
+    /// Toolbar tile (see `DisplayOpts.flush`).
+    flush: bool = false,
+    /// Dimmed text: an unset value (a matrix slot's OFF).
+    dim: bool = false,
+    /// No glass of its own: the caller drew it (a row of a larger display).
+    bare: bool = false,
+    /// 2×2 matrix dots (transport readouts).
+    large: bool = false,
+};
+
+/// The press began a drag, so its release doesn't open the grid.
+var select_dragged: bool = false;
+
+pub fn displaySelectEx(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const []const u8, label: []const u8, o: SelectOpts) bool {
     const wid = ui.id(key);
     const before = v.*;
     const n: i32 = @intCast(options.len);
-    var area = r;
-    const left = area.cutLeft(10);
-    const right = area.cutRight(10);
-    ui.pushId(key);
-    const bl = ui.behaviorEx(ui.id("prev"), left, .{ .focusable = false });
-    const br = ui.behaviorEx(ui.id("next"), right, .{ .focusable = false });
-    ui.popId();
-    const bm = ui.behavior(wid, area, false);
-    if (bl.clicked and v.* > 0) v.* -= 1;
-    if (br.clicked and @as(i32, v.*) < n - 1) v.* += 1;
-    if (bm.pressed) ui.drag_acc = 0;
-    if (bm.held) {
+    if (n == 0) return false;
+    const b = ui.behavior(wid, r, false);
+    if (b.pressed) select_dragged = false;
+    if (b.held) {
         ui.drag_acc += dragDelta(ui) / 24;
-        while (ui.drag_acc >= 1 and @as(i32, v.*) < n - 1) : (ui.drag_acc -= 1) v.* += 1;
-        while (ui.drag_acc <= -1 and v.* > 0) : (ui.drag_acc += 1) v.* -= 1;
+        while (ui.drag_acc >= 1) : (ui.drag_acc -= 1) {
+            select_dragged = true;
+            if (@as(i32, v.*) < n - 1) v.* += 1;
+        }
+        while (ui.drag_acc <= -1) : (ui.drag_acc += 1) {
+            select_dragged = true;
+            if (v.* > 0) v.* -= 1;
+        }
     }
-    const k = arrowSteps(ui, wid);
-    if (k > 0 and @as(i32, v.*) < n - 1) v.* += 1;
-    if (k < 0 and v.* > 0) v.* -= 1;
+    const gk = wid ^ 0x5E1E_C700_0000_0000;
+    if (b.clicked and !select_dragged) menu.openGrid(gk, r, v.*);
+    if (menu.grid(gk, options)) |i| v.* = @intCast(i);
+    const wheel = wheelSteps(ui, r);
+    if (wheel > 0 and @as(i32, v.*) < n - 1) v.* += 1;
+    if (wheel < 0 and v.* > 0) v.* -= 1;
+    const steps = arrowSteps(ui, wid);
+    if (steps > 0 and @as(i32, v.*) < n - 1) v.* += 1;
+    if (steps < 0 and v.* > 0) v.* -= 1;
 
-    _ = ui.plate(left, .{ .fill = style.cap, .outline = .all });
-    _ = ui.plate(right, .{ .fill = style.cap, .outline = .all });
-    ledShape(ui, left.x + 2, left.y + @divFloor(left.h - 7, 2), .tri_left, if (bl.held) style.text else style.text_dim);
-    ledShape(ui, right.x + 4, right.y + @divFloor(right.h - 7, 2), .tri_right, if (br.held) style.text else style.text_dim);
-    if (v.* < options.len) {
-        display(ui, area.insetXY(-1, 0), options[v.*], .{ .color = if (ui.isHot(wid)) style.vfd else style.vfd.mix(style.well, 0.15) });
-        if (ui.isHot(wid)) ui.setTouch(label, options[v.*]);
+    const hot = ui.isHot(wid) or menu.isOpen(gk);
+    const lit = if (o.dim) style.vfd.mix(style.well, 0.5) else style.vfd;
+    const col = if (hot) lit else lit.mix(style.well, 0.15);
+    const text = if (v.* < options.len) options[v.*] else "";
+    const inner = if (o.bare) r else ui.well(if (o.flush) seamed(ui, r) else r, style.well);
+    // Text on the cell grid, clear of the ▾ cell on the right.
+    const k: i32 = if (o.large) 2 else 1;
+    const cw = CELL_W * k;
+    const cells = @divFloor(inner.w - 2 * k, cw);
+    if (cells >= 2) {
+        const y0 = inner.y + @divFloor(inner.h - CELL_H * k, 2);
+        const x0 = inner.x + k;
+        ui.clip(inner);
+        if (!o.bare) ghostCellsK(ui, x0, y0, cells, style.vfd, k);
+        const room = cells - 1;
+        const tc = @min(room, @divFloor(ui.fonts.legend.measure(text) + CELL_W - 1, CELL_W));
+        const start = switch (o.align_) {
+            .left => 0,
+            .center => @divFloor(room - tc, 2),
+            .right => room - tc,
+        };
+        vfdTextK(ui, x0 + start * cw, y0, text, col, k);
+        chevronDownK(ui, x0 + (cells - 1) * cw, y0 + 5 * k, if (hot) style.vfd else style.vfd.mix(style.well, 0.6), k);
+        if (!o.bare) dotMesh(ui, inner, y0, CELL_H * k, k);
+        ui.unclip();
     }
-    focusRing(ui, wid, area);
+    if (hot) ui.setTouch(label, text);
+    focusRing(ui, wid, r);
     return v.* != before;
+}
+
+/// A 5×3 ▾ at (x, y), pixel stairs.
+pub fn chevronDown(ui: *Ui, x: i32, y: i32, col: Color) void {
+    chevronDownK(ui, x, y, col, 1);
+}
+
+fn chevronDownK(ui: *Ui, x: i32, y: i32, col: Color, k: i32) void {
+    ui.rect(Rect.xywh(x, y, 5 * k, k), col);
+    ui.rect(Rect.xywh(x + k, y + k, 3 * k, k), col);
+    ui.rect(Rect.xywh(x + 2 * k, y + 2 * k, k, k), col);
+}
+
+/// A 5×3 ▴ at (x, y).
+pub fn chevronUp(ui: *Ui, x: i32, y: i32, col: Color) void {
+    ui.rect(Rect.xywh(x + 2, y, 1, 1), col);
+    ui.rect(Rect.xywh(x + 1, y + 1, 3, 1), col);
+    ui.rect(Rect.xywh(x, y + 2, 5, 1), col);
+}
+
+/// Step zone inside a numeric readout's glass (replaces a ▲▼ stepper
+/// tile): a ▴ over a ▾ at the right edge of `r`, lit while `r` is
+/// hovered. Returns +1 / -1 when one is clicked.
+pub fn glassSteps(ui: *Ui, r: Rect, key: anytype) i32 {
+    ui.pushId(key);
+    defer ui.popId();
+    const zone_w = CELL_W + 4;
+    const zone = Rect.xywh(r.right() - zone_w - 1, r.y + 1, zone_w, r.h - 2);
+    const up = Rect.xywh(zone.x, zone.y, zone.w, @divFloor(zone.h, 2));
+    const dn = Rect.xywh(zone.x, up.bottom(), zone.w, zone.h - up.h);
+    const bu = ui.behaviorEx(ui.id("up"), up, .{ .prio = 2, .focusable = false });
+    const bd = ui.behaviorEx(ui.id("down"), dn, .{ .prio = 2, .focusable = false });
+    const over = r.contains(ui.in.ix(), ui.in.iy());
+    const idle = style.vfd.mix(style.well, if (over) 0.45 else 0.8);
+    const cx = zone.x + @divFloor(zone.w - 5, 2);
+    chevronUp(ui, cx, up.bottom() - 4, if (bu.held) style.vfd_hi else if (bu.hover) style.vfd else idle);
+    chevronDown(ui, cx, dn.y + 1, if (bd.held) style.vfd_hi else if (bd.hover) style.vfd else idle);
+    if (bu.clicked) return 1;
+    if (bd.clicked) return -1;
+    return 0;
+}
+
+/// Dot-matrix text at (x, y): `display`'s glyphs and halo, for callers
+/// that lay out their own glass (option grids, matrix rows).
+pub fn vfdText(ui: *Ui, x: i32, y: i32, s: []const u8, col: Color) void {
+    vfdTextK(ui, x, y, s, col, 1);
+}
+
+fn vfdTextK(ui: *Ui, x: i32, y: i32, s: []const u8, col: Color, k: i32) void {
+    const m = style.materials;
+    const f = &ui.fonts.legend;
+    var pen = x;
+    var it = font_mod.Utf8Iter{ .s = s };
+    while (it.next()) |cp| {
+        const idx = f.index(cp);
+        const g = &f.glyphs[idx];
+        const halo = ui.art.display_halo[idx];
+        if (m.halo_alpha > 0 and halo.w > 0) ui.spriteScaled(halo, pen + (g.dx - 1) * k, y + (g.dy - 1) * k, k, col.alpha(m.halo_alpha));
+        if (g.src.w > 0) ui.spriteScaled(g.src, pen + g.dx * k, y + g.dy * k, k, col);
+        pen += g.advance * k;
+    }
 }
 
 // ── LEDs ─────────────────────────────────────────────────────────────
@@ -1237,21 +1324,35 @@ pub fn displayLines(ui: *Ui, r: Rect, lines: []const []const u8, o: DisplayOpts)
             ui.rect(lr, (if (hot) style.rec else o.color).alpha(@intFromFloat(a)));
         }
     }
-    // Dot gaps: once a matrix dot spans 2+ device px, a 1-device-px
-    // well-colored mesh on every dot boundary turns solid glyphs into a
-    // dot matrix.
+    dotMesh(ui, inner, top, ch * rows, k);
+    ui.unclip();
+}
+
+/// Dot gaps: once a matrix dot spans 2+ device px, a 1-device-px
+/// well-colored mesh on every dot boundary turns solid glyphs into a dot
+/// matrix. Covers rows [top, top + h) of the glass `inner`.
+pub fn dotMesh(ui: *Ui, inner: Rect, top: i32, h: i32, k: i32) void {
     const ds = ui.deviceScale();
     const dot_dev = ds * @as(f32, @floatFromInt(k));
-    if (dot_dev >= 2) {
-        const gap = 1.0 / ds;
-        const gap_col = style.well.alpha(200);
-        const h = ch * rows;
-        var x: i32 = inner.x + k;
-        while (x < inner.right()) : (x += k) ui.frect(@as(f32, @floatFromInt(x + k)) - gap, @floatFromInt(top), gap, @floatFromInt(h), gap_col);
-        var y: i32 = top;
-        while (y < top + h) : (y += k) ui.frect(@floatFromInt(inner.x), @as(f32, @floatFromInt(y + k)) - gap, @floatFromInt(inner.w), gap, gap_col);
-    }
-    ui.unclip();
+    if (dot_dev < 2) return;
+    const gap = 1.0 / ds;
+    const gap_col = style.well.alpha(200);
+    var x: i32 = inner.x + k;
+    while (x < inner.right()) : (x += k) ui.frect(@as(f32, @floatFromInt(x + k)) - gap, @floatFromInt(top), gap, @floatFromInt(h), gap_col);
+    var y: i32 = top;
+    while (y < top + h) : (y += k) ui.frect(@floatFromInt(inner.x), @as(f32, @floatFromInt(y + k)) - gap, @floatFromInt(inner.w), gap, gap_col);
+}
+
+/// The unlit 5×7 cap box of `cells` cells from (x, y) (`display`'s ghost).
+pub fn ghostCells(ui: *Ui, x: i32, y: i32, cells: i32, col: Color) void {
+    ghostCellsK(ui, x, y, cells, col, 1);
+}
+
+fn ghostCellsK(ui: *Ui, x: i32, y: i32, cells: i32, col: Color, k: i32) void {
+    const a = style.materials.ghost_alpha;
+    if (a == 0) return;
+    var i: i32 = 0;
+    while (i < cells) : (i += 1) ui.rect(Rect.xywh(x + i * CELL_W * k, y + 2 * k, 5 * k, 7 * k), col.alpha(a));
 }
 
 /// Scope/curve display with afterglow: the last few frames' traces fade

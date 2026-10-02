@@ -534,17 +534,16 @@ fn noteName(buf: []u8, k: u8) []const u8 {
     return std.fmt.bufPrint(buf, "{s}{d}", .{ names[k % 12], oct }) catch "?";
 }
 
-/// A labelled readout with a stepper; returns the step (+/-1, x `big` with
-/// Shift).
+/// A labelled readout with ▴▾ steps in its glass; returns the step (+/-1,
+/// x `big` with Shift).
 fn field(ui: *Ui, r: Rect, key: []const u8, label: []const u8, value: []const u8, big: i32) i32 {
     ui.pushId(key);
     defer ui.popId();
     var row = r;
     const lab = row.cutLeft(28);
     ui.textIn(&ui.fonts.legend, lab, label, ui_style.text_dim, .left, true);
-    const st = row.cutRight(ctl.STEPPER_W);
     ctl.display(ui, row, value, .{ .flush = true });
-    const d = ctl.stepper(ui, st, "step");
+    const d = ctl.glassSteps(ui, row, "step");
     return if (ui.in.shift) d * big else d;
 }
 
