@@ -23,6 +23,7 @@ test {
     _ = @import("wavetable_edit.zig");
     _ = @import("wavetable_file.zig");
     _ = @import("wavetable_cache.zig");
+    _ = @import("storage.zig");
     _ = @import("waveform.zig");
     _ = @import("audio_pool.zig");
     _ = @import("fm_operator_test.zig");

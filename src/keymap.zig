@@ -363,55 +363,6 @@ pub fn load(alloc: std.mem.Allocator, path: []const u8) Error!Keymap {
     return b.finish();
 }
 
-// ── the sample library ─────────────────────────────────────────────────
-
-/// Presets and projects name library samples "lib:<path>", relative to the
-/// library root: $SLAB_LIBRARY, else ~/Music/Slab/Library. A preset that
-/// ships with Slab then finds its samples on any machine that fetched the
-/// library (tools/library/vcsl.py).
-pub const LIB_PREFIX = "lib:";
-
-pub fn libraryRoot(buf: []u8) []const u8 {
-    if (std.c.getenv("SLAB_LIBRARY")) |p| {
-        const s = std.mem.span(p);
-        if (s.len > 0 and s.len <= buf.len) {
-            @memcpy(buf[0..s.len], s);
-            return std.mem.trimEnd(u8, buf[0..s.len], "/");
-        }
-    }
-    const home = if (std.c.getenv("HOME")) |h| std.mem.span(h) else "";
-    return std.fmt.bufPrint(buf, "{s}/Music/Slab/Library", .{home}) catch "";
-}
-
-/// A "lib:" path as a file path; anything else unchanged.
-pub fn resolvePath(buf: []u8, path: []const u8) []const u8 {
-    if (!std.mem.startsWith(u8, path, LIB_PREFIX)) return path;
-    var rb: [512]u8 = undefined;
-    const root = libraryRoot(&rb);
-    return std.fmt.bufPrint(buf, "{s}/{s}", .{ root, path[LIB_PREFIX.len..] }) catch path;
-}
-
-/// A file under the library root as a "lib:" path; anything else unchanged.
-pub fn portablePath(buf: []u8, path: []const u8) []const u8 {
-    var rb: [512]u8 = undefined;
-    const root = libraryRoot(&rb);
-    if (root.len == 0 or path.len <= root.len + 1) return path;
-    if (!std.mem.startsWith(u8, path, root) or path[root.len] != '/') return path;
-    return std.fmt.bufPrint(buf, "{s}{s}", .{ LIB_PREFIX, path[root.len + 1 ..] }) catch path;
-}
-
-test "library paths round-trip through lib:" {
-    var rb: [512]u8 = undefined;
-    const root = libraryRoot(&rb);
-    var a: [1024]u8 = undefined;
-    var b: [1024]u8 = undefined;
-    const full = resolvePath(&a, "lib:vcsl/Marimba/marimba.sfz");
-    try std.testing.expect(std.mem.startsWith(u8, full, root));
-    try std.testing.expectEqualStrings("lib:vcsl/Marimba/marimba.sfz", portablePath(&b, full));
-    try std.testing.expectEqualStrings("/tmp/x.wav", resolvePath(&a, "/tmp/x.wav"));
-    try std.testing.expectEqualStrings("/tmp/x.wav", portablePath(&b, "/tmp/x.wav"));
-}
-
 // ── builder: samples loaded once, zones referring to them ───────────────
 
 const File = struct { path: []u8, s: wav.Sample };

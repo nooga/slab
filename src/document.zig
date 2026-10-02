@@ -4,6 +4,7 @@
 //! model is still changing.  It is also the undo snapshot format.
 
 const std = @import("std");
+const storage = @import("storage.zig");
 const c = @import("c.zig");
 const track_mod = @import("track.zig");
 const routing = @import("routing.zig");
@@ -194,10 +195,11 @@ pub fn serialize(
         for (t.clips.items, 0..) |*clip, ci| {
             if (ci > 0) try out.append(alloc, ',');
             if (clip.isAudio()) {
-                const src_path = if (active_pool) |p|
+                var rb: [storage.MAX_PATH]u8 = undefined;
+                const src_path = storage.ref(&rb, if (active_pool) |p|
                     (if (p.get(clip.audio.source)) |s| s.path() else "")
                 else
-                    "";
+                    "");
                 try out.appendSlice(alloc, "{\"type\":\"audio\",\"name\":");
                 try appendJsonString(alloc, &out, clip.name());
                 try appendFmt(alloc, &out, ",\"start\":{d},\"len\":{d},\"gain\":{d},\"start_sec\":{d},\"dur_sec\":{d},\"fade_in\":{d},\"fade_out\":{d},", .{
@@ -842,7 +844,8 @@ fn applyClip(alloc: std.mem.Allocator, t: *track_mod.Track, co: std.json.ObjectM
     const len = if (objGet(co, "len")) |x| asF64(x) else 0;
 
     if (std.mem.eql(u8, ctype, "audio")) {
-        const src_path = strOf(objGet(co, "source")) orelse "";
+        var rb: [storage.MAX_PATH]u8 = undefined;
+        const src_path = storage.resolve(&rb, strOf(objGet(co, "source")) orelse "");
         // A missing/failed source still keeps the clip (plays silent) so the
         // document round-trips losslessly.
         const source: u32 = if (src_path.len > 0)
@@ -1004,7 +1007,7 @@ test "JSON project round-trips a sampler's loaded keymap path" {
 
     const bytes = try serialize(alloc, tracks[0..], &transport);
     defer alloc.free(bytes);
-    try std.testing.expect(std.mem.indexOf(u8, bytes, "\"assets\":{\"smp\":\"machines/sampler/assets\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "\"assets\":{\"smp\":\"factory:machines/sampler/assets\"}") != null);
 
     var loaded_buf: [1]track_mod.Track = undefined;
     var loaded_count: usize = 0;
@@ -1015,7 +1018,7 @@ test "JSON project round-trips a sampler's loaded keymap path" {
     var got: std.ArrayList(u8) = .empty;
     defer got.deinit(alloc);
     try loaded_buf[0].machine.write_assets_json.?(loaded_buf[0].machine.state, &got, alloc);
-    try std.testing.expectEqualStrings("{\"smp\":\"machines/sampler/assets\"}", got.items);
+    try std.testing.expectEqualStrings("{\"smp\":\"factory:machines/sampler/assets\"}", got.items);
 }
 
 test "JSON project round-trips instrument-by-id, settings, and effect chain" {

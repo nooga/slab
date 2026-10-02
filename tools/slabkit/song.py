@@ -15,7 +15,7 @@ import wave
 import zlib
 
 from . import rhythm
-from .machines import ROOT, SLAB, SlabError, library_path, machine, preset as load_preset, preset_assets, preset_name
+from .machines import ROOT, SLAB, SlabError, library_path, machine, ref as file_ref, preset as load_preset, preset_assets, preset_name
 from .theory import Chord, Key, note, voice_lead
 
 MAX_TRACKS = 32  # buses count (docs/23)
@@ -949,7 +949,7 @@ class Song:
 
     def save(self, path=None, quiet=False):
         path = path or self.default_path()
-        project = self.build()
+        project = _with_refs(self.build(), os.path.dirname(os.path.abspath(path)))
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         with open(path, "w") as f:
             json.dump(project, f, indent=1)
@@ -975,7 +975,7 @@ class Song:
         mix = analyze_wav(wav, secs)
         stem_stats = []
         if stems:
-            base = self.build()
+            base = _with_refs(self.build(), os.path.dirname(os.path.abspath(path)))
             tmp = os.path.splitext(path)[0] + ".stem.slab"
             twav = os.path.splitext(path)[0] + ".stem.wav"
             # A stem is the track soloed in the whole project: itself, and
@@ -992,6 +992,24 @@ class Song:
         if report:
             print_report(wav, mix, stem_stats)
         return mix, stem_stats
+
+
+def _with_refs(node, project_dir):
+    """The project with every file written as a reference (docs/25 §Roots):
+    asset maps, a rack's parts' assets, audio clip sources."""
+    if isinstance(node, list):
+        return [_with_refs(x, project_dir) for x in node]
+    if not isinstance(node, dict):
+        return node
+    out = {}
+    for k, v in node.items():
+        if k == "assets" and isinstance(v, dict):
+            out[k] = {a: file_ref(p, project_dir) if isinstance(p, str) else p for a, p in v.items()}
+        elif k == "source" and isinstance(v, str) and node.get("type") == "audio":
+            out[k] = file_ref(v, project_dir)
+        else:
+            out[k] = _with_refs(v, project_dir)
+    return out
 
 
 def _bounce(project, wav):

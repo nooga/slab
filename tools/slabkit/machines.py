@@ -184,10 +184,58 @@ def preset_assets(mid, name):
     return dict(_preset_file(mid, name).get("assets") or {})
 
 
-def library_path(path):
-    """A "lib:" path as a file path under $SLAB_LIBRARY (default
-    ~/Music/Slab/Library); anything else unchanged."""
-    if not path.startswith("lib:"):
+# ── roots and references (docs/25 §Roots; src/storage.zig) ─────────────
+
+def home_dir():
+    """The home folder: $SLAB_HOME, else ~/Music/Slab."""
+    return (os.environ.get("SLAB_HOME") or os.path.expanduser("~/Music/Slab")).rstrip("/")
+
+
+def library_dir():
+    """Sample packs: $SLAB_LIBRARY, else <home>/Library."""
+    return (os.environ.get("SLAB_LIBRARY") or os.path.join(home_dir(), "Library")).rstrip("/")
+
+
+def factory_dir():
+    """What slab ships: $SLAB_FACTORY, else the repo (slab renders from it)."""
+    return os.path.abspath(os.environ.get("SLAB_FACTORY") or ROOT)
+
+
+def _roots(project_dir):
+    # Ties go to the earlier root, as in storage.zig.
+    roots = [("lib:", library_dir()), ("factory:", factory_dir()), ("user:", home_dir())]
+    if project_dir:
+        roots.append(("project:", os.path.abspath(project_dir)))
+    return roots
+
+
+def resolve(path, project_dir=None):
+    """A reference ("lib:…", "factory:…", "user:…", "project:…", or a path
+    relative to the project's folder) as an absolute file path."""
+    for pre, root in _roots(project_dir) + [("project:", os.path.abspath(project_dir or "."))]:
+        if path.startswith(pre):
+            return os.path.normpath(os.path.join(root, path[len(pre):].lstrip("/")))
+    return os.path.normpath(os.path.join(os.path.abspath(project_dir or "."), path))
+
+
+def ref(path, project_dir=None):
+    """How a project names a file: under the root that holds it most
+    closely, relative to `project_dir` when that's it, else absolute.
+    References pass through."""
+    if any(path.startswith(p) for p in ("lib:", "factory:", "user:", "project:")):
         return path
-    root = os.environ.get("SLAB_LIBRARY") or os.path.expanduser("~/Music/Slab/Library")
-    return os.path.join(root.rstrip("/"), path[4:])
+    # Song scripts name shipped files relative to the repo, where slab runs.
+    full = os.path.normpath(os.path.join(factory_dir(), path))
+    best = None
+    for pre, root in _roots(project_dir):
+        if full.startswith(root + "/") and (best is None or len(root) > len(best[1])):
+            best = (pre, root)
+    if best is None:
+        return full
+    rest = full[len(best[1]) + 1:]
+    return rest if best[0] == "project:" else best[0] + rest
+
+
+def library_path(path):
+    """A reference or a repo-relative path as a file path."""
+    return resolve(path, factory_dir())

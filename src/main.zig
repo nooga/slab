@@ -20,6 +20,7 @@ const wav_mod = @import("wav.zig");
 const registry_mod = @import("machine_registry.zig");
 const fy_host_mod = @import("fy_host.zig");
 const document_mod = @import("document.zig");
+const storage = @import("storage.zig");
 const describe_mod = @import("describe.zig");
 const history_mod = @import("history.zig");
 const automation = @import("automation.zig");
@@ -455,7 +456,11 @@ pub fn main(init: std.process.Init) !void {
 
     if (cli.gallery) return ui_gallery.run(alloc);
     if (cli.describe) |out| return describe_mod.run(alloc, out);
+    // Settings may move the home folder, which user: and lib: resolve in.
+    storage.loadSettings(alloc, cli.render == null);
     if (cli.render) |out| return renderHeadless(alloc, cli.project orelse return error.MissingProject, out, cli.idle_skip, cli.workers());
+
+    storage.ensureHome();
 
     c.rl.SetConfigFlags(c.rl.FLAG_WINDOW_RESIZABLE | c.rl.FLAG_VSYNC_HINT | c.rl.FLAG_WINDOW_HIGHDPI);
     c.rl.InitWindow(1400, 860, "slab");
@@ -616,6 +621,7 @@ pub fn main(init: std.process.Init) !void {
         splash.bootFrame(ui, screenRect(), "LOADING PROJECT", 1);
         if (document_mod.readFile(alloc, path)) |data| {
             defer alloc.free(data);
+            storage.setProject(path);
             var boot_tracks = tracks_buf[0..track_count];
             applyProjectBytes(alloc, data, &reg, &tracks_buf, &track_count, &boot_tracks, &transport, &engine, &audio, &selected_track, &selected_clip, &prev_selected_clip) catch |err| {
                 std.log.err("open {s} failed: {s}", .{ path, @errorName(err) });
@@ -1561,7 +1567,14 @@ fn saveProject(
     // Edited wavetables are written beside the project first, so the
     // project names their files.
     for (tracks) |*t| if (t.machine.save_files) |f| f(t.machine.state, project_path.*, t.name());
-    const snapshot = try document_mod.serialize(alloc, tracks, transport);
+    // Files in the project's folder are written relative to it (docs/25).
+    storage.setProject(project_path.*);
+    storage.beginProjectSave();
+    const snapshot = document_mod.serialize(alloc, tracks, transport) catch |err| {
+        storage.endProjectSave();
+        return err;
+    };
+    storage.endProjectSave();
     defer alloc.free(snapshot);
     document_mod.writeFile(alloc, project_path.*, snapshot) catch |err| {
         std.log.err("save failed: {s}", .{@errorName(err)});
@@ -1735,9 +1748,12 @@ fn openProject(
         return;
     };
     defer alloc.free(data);
+    // The new project's relative references resolve against its folder.
+    storage.setProject(path);
     applyProjectBytes(alloc, data, reg, tracks_buf, track_count, tracks, transport, engine, audio, selected_track, selected_clip, prev_selected_clip) catch |err| {
         std.log.err("load failed: {s}", .{@errorName(err)});
         status.set("Load failed", .{});
+        storage.setProject(if (project_path_chosen.*) project_path.* else null);
         return;
     };
     try history.pushUndo(alloc, before);
@@ -2247,6 +2263,7 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, out: []const u8
     document_mod.setMeterState(&meter_state);
 
     const data = try document_mod.readFile(alloc, project);
+    storage.setProject(project);
     defer alloc.free(data);
     var tracks_buf: [MAX_TRACKS]track_mod.Track = undefined;
     var track_count: usize = 0;

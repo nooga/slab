@@ -3,14 +3,14 @@
 Where slab keeps what it ships and what users make, how a project names
 the files it uses, how a project stays whole when it moves to another
 computer, and how anything a user makes becomes something others can
-open. **Status: design.** Built: the shared table cache, the shared
-machine hosts and fy's batched cache flush (§Load time).
+open. **Status: design; phases 1 and 2 built** (§Load time, §Roots:
+references, the home folder, settings).
 Code, as it lands: `src/storage.zig` (roots and references),
 `src/document.zig` (the project package), `src/wavetable_cache.zig`.
 
-This supersedes the path rules in [19-project-format.md](19-project-format.md)
-(paths relative to the working directory, `song.tables/` beside the
-project) once phase 2 lands; docs/19 then points here.
+docs/19 §File references describes the reference forms a project file
+uses today. `song.tables/` beside the project stays until phase 3
+(the package).
 
 Prior art: Ableton's User Library and Collect All and Save, Logic's
 project packages, Bitwig's package manager, Git's content addressing.
@@ -78,9 +78,13 @@ that is where macOS audio apps keep their content, and Time Machine and
 iCloud users expect to find it there.
 
 **Settings are not content.** They live in
-`~/Library/Application Support/Slab/settings.json`: the audio device,
-UI zoom, recent projects, a moved home folder, and the collect policy.
+`~/Library/Application Support/Slab/settings.json` (`$SLAB_SETTINGS`).
 They are never shared or published.
+- **Today it holds** `home`, a moved home folder.
+- **Planned:** the audio device, UI zoom, recent projects and the
+  collect policy.
+- **The app** writes the defaults on first launch, so the file is there
+  to edit. A headless render only reads it.
 
 ## Packs
 
@@ -479,11 +483,19 @@ the cache, this only matters for the first instance.
 
 1. **Load time.** The shared table cache, fy's batched flush and the
    shared machine hosts are built.
-2. **Roots and references.** `src/storage.zig` resolves `project:`,
-   `user:`, `factory:` and `lib:` (`lib:` moves here from
-   `keymap.resolvePath`). Paths with no prefix become project-relative.
-   Slab creates the home folder and writes `settings.json`. slabkit
-   writes `factory:` references for shipped assets.
+2. **Roots and references.** Built.
+   - `src/storage.zig` resolves `project:`, `user:`, `factory:` and
+     `lib:` (moved from `keymap.resolvePath`).
+   - Paths with no prefix are project-relative, and in memory every
+     file is its absolute path.
+   - A project save writes the most specific root, and the
+     project-relative form only for files in the project's folder.
+   - Slab creates the home folder and writes `settings.json` (its
+     `home` moves the home folder).
+   - slabkit writes references (`ref`, `resolve` in `machines.py`),
+     and `songs/` uses them.
+   - Not done here: recordings still go to `recordings/` in the working
+     directory. Phase 3 moves them into the package.
 3. **The project package.**
    - Save and load `Song.slab/`, with `tables/` and `recordings/` inside.
    - The asset table with hashes, and collect on save.

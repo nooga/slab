@@ -22,6 +22,7 @@ const waveform = @import("../waveform.zig");
 const keymap = @import("../keymap.zig");
 const wavetable = @import("../wavetable.zig");
 const wt_cache = @import("../wavetable_cache.zig");
+const storage = @import("../storage.zig");
 const wte = @import("../wavetable_edit.zig");
 const wavetable_file = @import("../wavetable_file.zig");
 const wt_editor = @import("../ui/wt_editor.zig");
@@ -435,7 +436,7 @@ pub const FyRawMachine = struct {
     empty_zones: [keymap.MAX_ZONES]keymap.Zone = [_]keymap.Zone{keymap.unused_zone} ** keymap.MAX_ZONES,
     // Each asset's current source path (the manifest default, or what LOAD
     // picked), for the project file.
-    asset_path: [machine_desc.MAX_ASSETS][512]u8 = undefined,
+    asset_path: [machine_desc.MAX_ASSETS][storage.MAX_PATH]u8 = undefined,
     asset_path_len: [machine_desc.MAX_ASSETS]usize = [_]usize{0} ** machine_desc.MAX_ASSETS,
     // Sampler zone editing, for the keymap asset: the per-zone edits the
     // voice reads through a params pointer, the zone the panel has
@@ -707,10 +708,11 @@ pub const FyRawMachine = struct {
     pub fn loadAssetRuntime(self: *FyRawMachine, ai: usize, path: []const u8) bool {
         if (ai >= self.desc.asset_count) return false;
         if (self.desc.assets[ai].keymap) return self.loadKeymapRuntime(ai, path);
-        var rb: [1024]u8 = undefined;
-        var pb: [1024]u8 = undefined;
-        const src = keymap.portablePath(&pb, path);
-        var loaded = wav.load(self.alloc, keymap.resolvePath(&rb, src)) catch return false;
+        // `path` may be a reference (a project's, a preset's); the
+        // machine keeps the real file, written back as one on save.
+        var rb: [storage.MAX_PATH]u8 = undefined;
+        const src = storage.resolve(&rb, path);
+        var loaded = wav.load(self.alloc, src) catch return false;
         var new_wt: wavetable.Table = .{};
         if (self.desc.assets[ai].wavetable) {
             new_wt = wt_cache.acquire(self.alloc, loaded.data, loaded.frame_size, !loaded.levels_kept) catch {
@@ -748,12 +750,9 @@ pub const FyRawMachine = struct {
     /// thread, swap the pool and zone pointers inside the fence, free the
     /// old map after.
     fn loadKeymapRuntime(self: *FyRawMachine, ai: usize, path: []const u8) bool {
-        // Library files are kept as "lib:" paths, so a saved project finds
-        // them wherever the library lives.
-        var rb: [1024]u8 = undefined;
-        var pb: [1024]u8 = undefined;
-        const src = keymap.portablePath(&pb, path);
-        const raw = keymap.load(self.alloc, keymap.resolvePath(&rb, src)) catch return false;
+        var rb: [storage.MAX_PATH]u8 = undefined;
+        const src = storage.resolve(&rb, path);
+        const raw = keymap.load(self.alloc, src) catch return false;
         var loaded = keymap.derive(self.alloc, raw, &self.zone_derive) catch return false;
         // Edits follow zones by name: a reloaded or swapped kit keeps the
         // clap you turned down.
@@ -1466,7 +1465,8 @@ fn writeAssetsJsonImpl(state: *anyopaque, out: *std.ArrayList(u8), alloc: std.me
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     var first = true;
     for (self.desc.assets[0..self.desc.asset_count], 0..) |*req, ai| {
-        const path = self.assetPath(ai);
+        var rb: [storage.MAX_PATH]u8 = undefined;
+        const path = storage.ref(&rb, self.assetPath(ai));
         if (path.len == 0) continue;
         try out.appendSlice(alloc, if (first) "{\"" else ",\"");
         first = false;
@@ -1715,8 +1715,7 @@ fn saveTableAs(self: *FyRawMachine, ai: usize) void {
     const path = (native_dialog.saveAudioFile(self.alloc, def) catch null) orelse return;
     defer self.alloc.free(path);
     if (!wavetable_file.save(self.alloc, doc, path)) return;
-    var pb: [1024]u8 = undefined;
-    self.setAssetSource(ai, keymap.portablePath(&pb, path));
+    self.setAssetSource(ai, path);
     self.asset_loaded[ai] = true;
     self.wt_unsaved[ai] = false;
 }
@@ -1736,10 +1735,12 @@ fn saveFilesImpl(state: *anyopaque, project_path: []const u8, track_name: []cons
         const doc = self.wt_docs[ai] orelse continue;
         if (!self.wt_unsaved[ai]) continue;
         var db: [1024]u8 = undefined;
-        const dir = wavetable_file.tablesDir(&db, project_path);
+        var ab: [storage.MAX_PATH]u8 = undefined;
+        const dir = wavetable_file.tablesDir(&db, storage.absolute(&ab, project_path));
         if (dir.len == 0) continue;
         var pb: [1024]u8 = undefined;
-        const cur = self.assetPath(ai);
+        var cb: [storage.MAX_PATH]u8 = undefined;
+        const cur = storage.absolute(&cb, self.assetPath(ai));
         const path = if (wavetable_file.inDir(cur, dir)) blk: {
             @memcpy(pb[0..cur.len], cur);
             break :blk pb[0..cur.len];
@@ -1930,7 +1931,8 @@ fn buildPresetContent(self: *FyRawMachine, content: []u8) ?usize {
     var first = true;
     for (self.desc.assets[0..self.desc.asset_count], 0..) |*req, ai| {
         if (!self.asset_loaded[ai]) continue;
-        const path = self.assetPath(ai);
+        var rb: [storage.MAX_PATH]u8 = undefined;
+        const path = storage.ref(&rb, self.assetPath(ai));
         if (path.len == 0 or std.mem.indexOfAny(u8, path, "\"\\") != null) continue;
         const frag = std.fmt.bufPrint(content[used..], "{s}\"{s}\":\"{s}\"", .{ if (first) ",\"assets\":{" else ",", req.nameSlice(), path }) catch return null;
         used += frag.len;
@@ -8639,7 +8641,9 @@ test "wavetable editor: an edited table plays at once, saves beside the project 
     const project = try std.fmt.bufPrint(&pb, ".zig-cache/tmp/{s}/song.slab", .{tmp.sub_path});
     saveFilesImpl(inst, project, "Acid Bass");
     var eb: [256]u8 = undefined;
-    const want = try std.fmt.bufPrint(&eb, ".zig-cache/tmp/{s}/song.tables/acid-bass-wt-a.wav", .{tmp.sub_path});
+    const rel = try std.fmt.bufPrint(&eb, ".zig-cache/tmp/{s}/song.tables/acid-bass-wt-a.wav", .{tmp.sub_path});
+    var wb: [storage.MAX_PATH]u8 = undefined;
+    const want = storage.absolute(&wb, rel);
     try testing.expectEqualStrings(want, inst.assetPath(ai));
     try testing.expect(!inst.wt_unsaved[ai]);
 

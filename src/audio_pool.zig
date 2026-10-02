@@ -15,10 +15,11 @@
 //! because sources are never freed mid-session.
 
 const std = @import("std");
+const storage = @import("storage.zig");
 const wav = @import("wav.zig");
 const waveform = @import("waveform.zig");
 
-pub const MAX_PATH = 512;
+pub const MAX_PATH = storage.MAX_PATH;
 
 pub const Source = struct {
     sample: wav.Sample,
@@ -76,7 +77,10 @@ pub const AudioPool = struct {
 
     /// Load `path` into the pool (or return the existing index if it is
     /// already loaded). Decodes the file and builds the peak pyramid.
-    pub fn loadFile(self: *AudioPool, path: []const u8) !u32 {
+    pub fn loadFile(self: *AudioPool, given: []const u8) !u32 {
+        // One file, one source, however it was named.
+        var ab: [storage.MAX_PATH]u8 = undefined;
+        const path = storage.absolute(&ab, given);
         if (path.len == 0 or path.len > MAX_PATH) return error.PathTooLong;
         if (self.indexOfPath(path)) |existing| return existing;
 
