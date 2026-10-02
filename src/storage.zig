@@ -77,6 +77,20 @@ pub fn projectDir() []const u8 {
     return project_dir_buf[0..project_dir_len];
 }
 
+/// Where a recording goes: the open package's audio/ folder, else (an
+/// unsaved project, or a bare .slab file) <home>/Cache/recordings, from
+/// where the next save collects it.
+pub fn recordingsDir(buf: []u8) []const u8 {
+    const pd = projectDir();
+    if (std.mem.endsWith(u8, pd, ".slab")) return std.fmt.bufPrint(buf, "{s}/audio", .{pd}) catch "";
+    var hb: [MAX_PATH]u8 = undefined;
+    return std.fmt.bufPrint(buf, "{s}/Cache/recordings", .{home(&hb)}) catch "";
+}
+
+/// Copy sample-pack files into a project when saving it (settings
+/// "collect_lib", default on; docs/25 §Collect on save).
+pub var collect_lib: bool = true;
+
 /// The project file whose folder `project:` and plain relative paths
 /// resolve against; null for an untitled project.
 pub fn setProject(project_path: ?[]const u8) void {
@@ -241,6 +255,8 @@ pub fn settingsPath(buf: []u8) []const u8 {
 pub const Settings = struct {
     /// The home folder, when it isn't ~/Music/Slab.
     home: []const u8 = "",
+    /// Copy the sample-pack files a project uses into it on save.
+    collect_lib: bool = true,
 };
 
 /// Read settings.json and apply it. A missing file is the defaults; the
@@ -258,6 +274,7 @@ pub fn loadSettings(alloc: std.mem.Allocator, write_missing: bool) void {
     const parsed = std.json.parseFromSlice(Settings, alloc, bytes, .{ .ignore_unknown_fields = true }) catch return;
     defer parsed.deinit();
     if (parsed.value.home.len > 0) setHomeSetting(parsed.value.home);
+    collect_lib = parsed.value.collect_lib;
 }
 
 pub fn writeSettings(alloc: std.mem.Allocator, s: Settings) void {

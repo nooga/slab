@@ -363,6 +363,73 @@ pub fn load(alloc: std.mem.Allocator, path: []const u8) Error!Keymap {
     return b.finish();
 }
 
+// ── the files a keymap reads ───────────────────────────────────────────
+
+/// Every file loading `path` reads (docs/25 §Collect on save): an SFZ and
+/// the samples its regions name that exist, a folder's WAVs and .VCs, or
+/// the file itself. The SFZ or the file comes first. Free with freeFiles.
+pub fn memberFiles(alloc: std.mem.Allocator, path: []const u8) Error![][]u8 {
+    var out: std.ArrayList([]u8) = .empty;
+    errdefer freeFiles(alloc, out.items);
+    errdefer out.deinit(alloc);
+    if (endsWithIgnoreCase(path, ".sfz")) {
+        try out.append(alloc, try alloc.dupe(u8, path));
+        const text = try readFile(alloc, path);
+        defer alloc.free(text);
+        var regions: [MAX_ZONES]SfzRegion = undefined;
+        var dpath_buf: [512]u8 = undefined;
+        const r = parseSfz(text, &regions, &dpath_buf);
+        const dir = std.fs.path.dirname(path) orelse ".";
+        for (regions[0..r.count]) |reg| {
+            var pbuf: [1024]u8 = undefined;
+            const full = std.fmt.bufPrint(&pbuf, "{s}/{s}{s}", .{ dir, r.default_path, reg.sample }) catch return Error.PathTooLong;
+            for (full) |*ch| if (ch.* == '\\') {
+                ch.* = '/';
+            };
+            if (!exists(full)) continue;
+            const seen = for (out.items) |f| {
+                if (std.mem.eql(u8, f, full)) break true;
+            } else false;
+            if (!seen) try out.append(alloc, try alloc.dupe(u8, full));
+        }
+    } else if (isDir(path)) {
+        var zbuf: [1024:0]u8 = undefined;
+        if (path.len >= zbuf.len) return Error.PathTooLong;
+        @memcpy(zbuf[0..path.len], path);
+        zbuf[path.len] = 0;
+        const d = opendir(@ptrCast(&zbuf[0])) orelse return Error.OpenFailed;
+        defer _ = closedir(d);
+        while (readdir(d)) |e| {
+            const name = e.d_name[0..e.d_namlen];
+            if (name.len == 0 or name[0] == '.' or e.d_type == DT_DIR) continue;
+            if (!(endsWithIgnoreCase(name, ".wav") or endsWithIgnoreCase(name, ".vc"))) continue;
+            try out.append(alloc, try std.fmt.allocPrint(alloc, "{s}/{s}", .{ path, name }));
+        }
+        std.mem.sort([]u8, out.items, {}, lessOwned);
+    } else {
+        try out.append(alloc, try alloc.dupe(u8, path));
+    }
+    return out.toOwnedSlice(alloc);
+}
+
+pub fn freeFiles(alloc: std.mem.Allocator, files: []const []u8) void {
+    for (files) |f| alloc.free(f);
+}
+
+fn lessOwned(_: void, a: []u8, b: []u8) bool {
+    return std.mem.order(u8, a, b) == .lt;
+}
+
+extern "c" fn access(path: [*:0]const u8, mode: c_int) c_int;
+
+fn exists(path: []const u8) bool {
+    var zbuf: [1024:0]u8 = undefined;
+    if (path.len >= zbuf.len) return false;
+    @memcpy(zbuf[0..path.len], path);
+    zbuf[path.len] = 0;
+    return access(&zbuf, 0) == 0;
+}
+
 // ── builder: samples loaded once, zones referring to them ───────────────
 
 const File = struct { path: []u8, s: wav.Sample };

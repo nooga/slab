@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const storage = @import("storage.zig");
+const package = @import("package.zig");
 const c = @import("c.zig");
 const track_mod = @import("track.zig");
 const routing = @import("routing.zig");
@@ -75,7 +76,11 @@ fn machineId(idx: u8) []const u8 {
     return reg.entries[idx].idSlice();
 }
 
-pub fn readFile(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
+/// A project's document: a package's project.json, or a bare .slab file
+/// (docs/25 §The project package).
+pub fn readFile(alloc: std.mem.Allocator, given: []const u8) ![]u8 {
+    var db: [storage.MAX_PATH]u8 = undefined;
+    const path = package.docPath(&db, given);
     const z = try alloc.dupeZ(u8, path);
     defer alloc.free(z);
     const fd = open(z, O_RDONLY);
@@ -975,6 +980,97 @@ test "project snapshot round-trips tracks clips notes and loop" {
     try std.testing.expectApproxEqAbs(@as(f64, 9.0), loaded_transport.loopEndBeats(), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 132.5), loaded_transport.bpm(), 0.001);
 }
+
+test "a project saved as a package carries the outside sample it loaded, and loads from it" {
+    const alloc = std.testing.allocator;
+    var reg = registry_mod.Registry.init(alloc);
+    defer reg.deinit();
+    try reg.loadFyMachine("machines/sampler/sampler.fy");
+    setRegistry(&reg);
+    defer active_reg = null;
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    setPool(&pool);
+    defer active_pool = null;
+    var master = try track_mod.Track.init(alloc, "Master", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, test_machine);
+    master.kind = .master;
+    defer master.deinit(alloc);
+    setMaster(&master);
+    defer active_master = null;
+    var transport: transport_mod.Transport = .{};
+    transport.sample_rate = 48_000;
+
+    // The test's files sit in the repo, which a dev build takes for the
+    // factory: give the factory a folder of its own.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var rb: [storage.MAX_PATH]u8 = undefined;
+    var root_buf: [storage.MAX_PATH]u8 = undefined;
+    const root_rel = try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    const root = storage.absolute(&root_buf, root_rel);
+    var fb: [storage.MAX_PATH]u8 = undefined;
+    const fac = try std.fmt.bufPrintZ(&fb, "{s}/factory", .{root});
+    storage.makeParents(fac);
+    _ = setenv("SLAB_FACTORY", fac.ptr, 1);
+    defer _ = unsetenv("SLAB_FACTORY");
+
+    // An outside sample.
+    const bundled = try readFile(alloc, "machines/sampler/assets/default.wav");
+    defer alloc.free(bundled);
+    var ob: [storage.MAX_PATH]u8 = undefined;
+    const outside = try std.fmt.bufPrint(&ob, "{s}/elsewhere/pluck.wav", .{root});
+    storage.makeParents(std.fs.path.dirname(outside).?);
+    try writeFile(alloc, outside, bundled);
+
+    const idx = reg.findById("sampler").?;
+    const inst = try reg.instantiate(idx);
+    try std.testing.expect(inst.load_asset.?(inst.state, "smp", outside));
+    var tracks = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "Pluck", .{ .r = 1, .g = 2, .b = 3, .a = 255 }, inst),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    tracks[0].machine_idx = @intCast(idx);
+
+    // Save as the app does.
+    var kb: [storage.MAX_PATH]u8 = undefined;
+    const pkg = try std.fmt.bufPrint(&kb, "{s}/Song.slab", .{root});
+    try package.prepare(pkg);
+    var db: [storage.MAX_PATH]u8 = undefined;
+    defer storage.setProject(null);
+    storage.setProject(package.docPath(&db, pkg));
+    storage.beginProjectSave();
+    const snap = serialize(alloc, tracks[0..], &transport);
+    storage.endProjectSave();
+    const snapshot = try snap;
+    defer alloc.free(snapshot);
+    var rep = package.Report{};
+    const doc = try package.collect(alloc, pkg, snapshot, .{}, &rep);
+    defer alloc.free(doc);
+    try package.writeDoc(pkg, doc);
+    try std.testing.expectEqual(@as(usize, 1), rep.copied);
+    try std.testing.expect(std.mem.indexOf(u8, doc, "\"smp\":\"samples/pluck.wav\"") != null);
+
+    // The original goes; the package still loads whole.
+    try std.testing.expectEqual(@as(c_int, 0), std.c.unlink(try std.fmt.bufPrintZ(&ob, "{s}/elsewhere/pluck.wav", .{root})));
+    const bytes = try readFile(alloc, pkg);
+    defer alloc.free(bytes);
+    try std.testing.expectEqual(@as(usize, 0), package.missing(alloc, bytes).count);
+    var loaded_buf: [1]track_mod.Track = undefined;
+    var loaded_count: usize = 0;
+    var lt: transport_mod.Transport = .{};
+    lt.sample_rate = 48_000;
+    try apply(alloc, bytes, &reg, loaded_buf[0..], &loaded_count, &lt, test_machine);
+    defer for (loaded_buf[0..loaded_count]) |*t| t.deinit(alloc);
+    var got: std.ArrayList(u8) = .empty;
+    defer got.deinit(alloc);
+    try loaded_buf[0].machine.write_assets_json.?(loaded_buf[0].machine.state, &got, alloc);
+    var want_buf: [storage.MAX_PATH]u8 = undefined;
+    const want = try std.fmt.bufPrint(&want_buf, "{{\"smp\":\"{s}/samples/pluck.wav\"}}", .{pkg});
+    try std.testing.expectEqualStrings(want, got.items);
+}
+
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 
 test "JSON project round-trips a sampler's loaded keymap path" {
     const alloc = std.testing.allocator;

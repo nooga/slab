@@ -948,10 +948,15 @@ class Song:
         return os.path.join(ROOT, "songs", slug + ".slab")
 
     def save(self, path=None, quiet=False):
-        path = path or self.default_path()
-        project = _with_refs(self.build(), os.path.dirname(os.path.abspath(path)))
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        with open(path, "w") as f:
+        """Write the project package (docs/25): `path` is the Song.slab
+        folder, the document its project.json. A bare .slab file there is
+        replaced by the package."""
+        path = os.path.abspath(path or self.default_path())
+        project = _with_refs(self.build(), path)
+        if os.path.isfile(path):
+            os.remove(path)
+        os.makedirs(path, exist_ok=True)
+        with open(os.path.join(path, "project.json"), "w") as f:
             json.dump(project, f, indent=1)
         if not quiet:
             n = sum(len(c.get("notes", ())) for t in project["tracks"] for c in t["clips"])
@@ -975,8 +980,9 @@ class Song:
         mix = analyze_wav(wav, secs)
         stem_stats = []
         if stems:
-            base = _with_refs(self.build(), os.path.dirname(os.path.abspath(path)))
-            tmp = os.path.splitext(path)[0] + ".stem.slab"
+            base = _with_refs(self.build(), path)
+            # A bare file inside the package: its folder is the package.
+            tmp = os.path.join(path, "stem.slab")
             twav = os.path.splitext(path)[0] + ".stem.wav"
             # A stem is the track soloed in the whole project: itself, and
             # the buses it feeds (docs/23 §Semantics), without the master chain.

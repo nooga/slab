@@ -11,7 +11,7 @@ and `tools/slabkit`.
 
 | Command | Does |
 |---|---|
-| `slab song.slab` | open a project |
+| `slab Song.slab` | open a project (a package or a bare file) |
 | `slab song.slab --render out.wav` | bounce headless (no window, no device) to 24-bit stereo 48 kHz WAV and print peak/RMS. Renders from beat 0 to the last clip's end plus a 3 s tail. |
 | `slab --describe out.json` | dump every builtin machine's params, switch options and drum note labels from the live manifests |
 
@@ -74,7 +74,13 @@ form:
 
 ## Project
 
-JSON. Top level:
+A project is a package, a `Song.slab/` folder: its document is
+`project.json`, beside the files it carries (`tables/`, `samples/`,
+`audio/`; [25-storage.md](25-storage.md) §The project package). A bare
+`.slab` file holding the same JSON still opens. The command line takes
+either.
+
+The document is JSON. Top level:
 
 ```json
 {
@@ -92,6 +98,7 @@ JSON. Top level:
 | `transport.loop` | loop region in **beats**; `on` sets whether playback loops. The render ignores it. |
 | `meter` | meter map: `{bar, num, den}` points. The first point is forced to bar 0. Missing = 4/4. It changes the bar grid and what machines get as `bar`/`beat_in_bar`; note times are always in beats. |
 | `tracks` | at most 16 |
+| `assets` | written on save: every file the project names, by its reference, with its `sha256`, the `origin` a collected copy came from, and an SFZ's or a folder's member `files` ([25-storage.md](25-storage.md) §The asset table). The loader doesn't need it. |
 | `master` | the master bus: `volume` (linear gain, default 1.0), `pan` (a balance control, not a pan law), `subsonic` (`true` turns on the 30 Hz subsonic filter, default `false`), `effects` |
 
 ### Track
@@ -112,7 +119,7 @@ JSON. Top level:
 | `pan` | −1 to 1, equal-power: centre is −3 dB per side, hard left/right is unity on one side |
 | `mute` / `solo` | any soloed track mutes all unsoloed ones |
 | `instrument.machine` | machine **id**: the folder name under `machines/` (`juno2`, not "Ju-Know"). Display names change; ids don't. |
-| `instrument.assets` | files the machine has loaded, by asset name, as references (§File references). The sampler has one, `{"smp": "lib:vcsl/Marimba/marimba.sfz"}`: a `.wav`, an `.sfz` or a folder of WAVs. Missing: the machine keeps its bundled sample. A wavetable synth's tables are assets too (Concoction: `{"wt-a": "…"}`); a table edited in the wavetable editor (docs/15) is written on save to `<project>.tables/<track>-<asset>.wav` beside the project, and the path names that file. |
+| `instrument.assets` | files the machine has loaded, by asset name, as references (§File references). The sampler has one, `{"smp": "lib:vcsl/Marimba/marimba.sfz"}`: a `.wav`, an `.sfz` or a folder of WAVs. Missing: the machine keeps its bundled sample. A wavetable synth's tables are assets too (Concoction: `{"wt-a": "…"}`); a table edited in the wavetable editor (docs/15) is written on save to `tables/<track>-<asset>.wav` in the package, and the path names that file. |
 | `instrument.zones` | the sampler's per-zone edits, by zone name (the sample's file stem): `{"clap": {"level": -6, "tune": 0, "decay": 0, "tone": 0, "cut": 0}}`. level in dB, tune in semitones, decay in seconds to −60 dB (0 = off), tone in octaves of filter offset, cut the choke: 0 the pack's (`group`/`off_by`), 1 none, n+1 choke group n (the zone joins it and is cut by it). Zones sharing a name (an SFZ label, a sample's layers and round robins) take the same edits. Only edited zones are written; names that don't match the loaded keymap are ignored. `"reverse": true` plays the sound backwards (a reversed copy of its samples, loop mirrored). A **copy** is a sound of its own, `"snare 2": {"copy": "snare", "key": 39, …}`: every zone of the named one-key sound on `key`, pitched as the original, with its own edits (sampler and Unfairlight kits). |
 | `instrument.preset` / effect `preset` | the preset the settings started from, by its full name (`rom1a/dx-bass`), for the panel's label. `params` stay authoritative: loading marks the preset current without applying it. Missing or unknown = no label ("init"). |
 | `instrument.unison` | host unison (docs/08 §Unison), when on or the pool is resized: `{"count": 4, "detune": 50, "spread": 0.7, "blend": 0.75, "voices": 8}`. count is voices per note (1–8), detune is cents from lowest to highest voice, spread and blend are 0–1, voices is a poly machine's pool (1–16). Missing fields take their defaults. |
@@ -228,7 +235,7 @@ Every file a project, preset or rack names is a reference
 | `factory:machines/concoction/assets/kick.wav` | what slab ships: `$SLAB_FACTORY`, else the working directory (a dev build runs from the repo) |
 | `lib:vcsl/Marimba/marimba.sfz` | a sample pack under `$SLAB_LIBRARY`, default `<home>/Library` |
 | `user:Wavetables/growl.wav` | the home folder, `$SLAB_HOME`, default `~/Music/Slab` |
-| `song.tables/bass-wt-a.wav` | relative to the project file's folder (`project:` says the same) |
+| `tables/bass-wt-a.wav` | relative to the project: inside the package, or a bare file's folder (`project:` says the same) |
 | `/Volumes/x/kick.wav` | absolute: under none of the roots |
 
 A project save writes each file under the root that holds it most

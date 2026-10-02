@@ -8,6 +8,14 @@ extern fn slab_open_audio_dialog() ?[*:0]u8;
 extern fn slab_open_keymap_dialog() ?[*:0]u8;
 extern fn slab_save_audio_dialog(default_name: [*:0]const u8) ?[*:0]u8;
 extern fn slab_free_dialog_path(path: ?[*:0]u8) void;
+extern fn slab_trash(path: [*:0]const u8) c_int;
+
+/// Move a file to the Trash. False if it couldn't.
+pub fn trash(path: []const u8) bool {
+    var zb: [1024]u8 = undefined;
+    const z = std.fmt.bufPrintZ(&zb, "{s}", .{path}) catch return false;
+    return slab_trash(z.ptr) == 1;
+}
 
 pub fn openProject(alloc: std.mem.Allocator) !?[]u8 {
     const raw = slab_open_project_dialog() orelse return null;

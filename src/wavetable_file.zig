@@ -4,8 +4,8 @@
 //! levels kept)", and slab then keeps the levels as drawn
 //! (wav.Sample.levels_kept) instead of normalizing the table.
 //!
-//! A project saves its edited tables beside itself: `song.slab` keeps
-//! them in `song.tables/`.
+//! A project saves its edited tables in its package (docs/25):
+//! `Song.slab/tables/`.
 
 const std = @import("std");
 const wte = @import("wavetable_edit.zig");
@@ -76,10 +76,9 @@ pub fn save(alloc: std.mem.Allocator, doc: *const wte.Doc, path: []const u8) boo
     return true;
 }
 
-/// Where a project keeps its tables: `song.slab` → `song.tables`.
+/// Where a project keeps its tables: `Song.slab` → `Song.slab/tables`.
 pub fn tablesDir(buf: []u8, project_path: []const u8) []const u8 {
-    const stem = if (std.mem.endsWith(u8, project_path, ".slab")) project_path[0 .. project_path.len - 5] else project_path;
-    return std.fmt.bufPrint(buf, "{s}.tables", .{stem}) catch "";
+    return std.fmt.bufPrint(buf, "{s}/tables", .{std.mem.trimEnd(u8, project_path, "/")}) catch "";
 }
 
 pub fn makeDir(path: []const u8) void {
@@ -165,9 +164,9 @@ test "wavetable file: frames, frame size and drawn levels survive a round trip" 
 
 test "wavetable file: names and places" {
     var b: [128]u8 = undefined;
-    try std.testing.expectEqualStrings("songs/pml.tables", tablesDir(&b, "songs/pml.slab"));
-    try std.testing.expect(inDir("songs/pml.tables/a.wav", "songs/pml.tables"));
-    try std.testing.expect(!inDir("songs/pml.tables/x/a.wav", "songs/pml.tables"));
-    try std.testing.expect(!inDir("other/a.wav", "songs/pml.tables"));
+    try std.testing.expectEqualStrings("songs/pml.slab/tables", tablesDir(&b, "songs/pml.slab"));
+    try std.testing.expect(inDir("songs/pml.slab/tables/a.wav", "songs/pml.slab/tables"));
+    try std.testing.expect(!inDir("songs/pml.slab/tables/x/a.wav", "songs/pml.slab/tables"));
+    try std.testing.expect(!inDir("other/a.wav", "songs/pml.slab/tables"));
     try std.testing.expectEqualStrings("acid-bass-wt-a", slug(&b, "Acid Bass · wt-a"));
 }

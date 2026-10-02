@@ -342,8 +342,8 @@ and the project is marked unsaved (the machine's `take_edited` hook).
 
 The table plays at the levels drawn. SAVE writes it to a file of your
 choosing, which the oscillator then reads. Saving the project writes
-every table edited since its file was written into `<project>.tables/`
-beside the `.slab` (docs/19), named for the track and the asset; an
+every table edited since its file was written into the package's
+`tables/` (docs/25), named for the track and the asset; an
 oscillator view marks an edited table not yet in a file with `*`. The
 files are 32-bit float WAVs of 2048-sample frames with Serum's `clm `
 chunk; the chunk says `(slab levels kept)`, so they load at those

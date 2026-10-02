@@ -13,16 +13,40 @@ static char *copy_path(NSString *path) {
     return out;
 }
 
+// A project is a .slab folder (a package) or a bare .slab file. Folders
+// stay enabled so the panel can navigate; the caller rejects a chosen
+// folder that isn't a .slab.
+@interface SlabProjectFilter : NSObject <NSOpenSavePanelDelegate>
+@end
+
+@implementation SlabProjectFilter
+- (BOOL)panel:(id)sender shouldEnableURL:(NSURL *)url {
+    NSNumber *dir = nil;
+    [url getResourceValue:&dir forKey:NSURLIsDirectoryKey error:nil];
+    if ([dir boolValue]) return YES;
+    return [[[url pathExtension] lowercaseString] isEqualToString:@"slab"];
+}
+@end
+
 char *slab_open_project_dialog(void) {
     @autoreleasepool {
         NSOpenPanel *panel = [NSOpenPanel openPanel];
+        SlabProjectFilter *filter = [SlabProjectFilter new];
+        [panel setDelegate:filter];
         [panel setCanChooseFiles:YES];
-        [panel setCanChooseDirectories:NO];
+        [panel setCanChooseDirectories:YES];
         [panel setAllowsMultipleSelection:NO];
-        [panel setAllowedFileTypes:@[@"slab"]];
         [panel setTitle:@"Open Slab Project"];
         if ([panel runModal] != NSModalResponseOK) return NULL;
         return copy_path([[panel URL] path]);
+    }
+}
+
+// Move a file to the Trash (Clean Up, docs/25); 1 when it went.
+int slab_trash(const char *path) {
+    @autoreleasepool {
+        NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
+        return [[NSFileManager defaultManager] trashItemAtURL:url resultingItemURL:nil error:nil] ? 1 : 0;
     }
 }
 

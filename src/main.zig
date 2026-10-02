@@ -21,6 +21,7 @@ const registry_mod = @import("machine_registry.zig");
 const fy_host_mod = @import("fy_host.zig");
 const document_mod = @import("document.zig");
 const storage = @import("storage.zig");
+const package = @import("package.zig");
 const describe_mod = @import("describe.zig");
 const history_mod = @import("history.zig");
 const automation = @import("automation.zig");
@@ -621,14 +622,14 @@ pub fn main(init: std.process.Init) !void {
         splash.bootFrame(ui, screenRect(), "LOADING PROJECT", 1);
         if (document_mod.readFile(alloc, path)) |data| {
             defer alloc.free(data);
-            storage.setProject(path);
+            useProject(path);
             var boot_tracks = tracks_buf[0..track_count];
             applyProjectBytes(alloc, data, &reg, &tracks_buf, &track_count, &boot_tracks, &transport, &engine, &audio, &selected_track, &selected_clip, &prev_selected_clip) catch |err| {
                 std.log.err("open {s} failed: {s}", .{ path, @errorName(err) });
             };
             replaceProjectPath(alloc, &project_path, try alloc.dupe(u8, path));
             project_path_chosen = true;
-            status.set("Loaded {s}", .{basename(project_path)});
+            reportLoaded(alloc, &status, data, project_path);
         } else |err| std.log.err("open {s} failed: {s}", .{ path, @errorName(err) });
     }
 
@@ -1320,6 +1321,12 @@ pub fn main(init: std.process.Init) !void {
                 true,
             );
         }
+        if (tres.clean_up_project) {
+            // Clean Up goes by the saved asset table, so it saves first:
+            // a take recorded since the last save is the project's too.
+            try saveProject(alloc, tracks, &transport, &project_path, &project_path_chosen, &dirty, &status, false);
+            if (project_path_chosen and !dirty) cleanUpProject(alloc, project_path, &status);
+        }
         if (tres.open_project) {
             try openProject(
                 alloc,
@@ -1564,11 +1571,21 @@ fn saveProject(
         }
     }
 
-    // Edited wavetables are written beside the project first, so the
+    // A project is a package (docs/25 §The project package); a bare
+    // .slab file there moves inside first.
+    var ab: [storage.MAX_PATH]u8 = undefined;
+    const pkg = storage.absolute(&ab, project_path.*);
+    package.prepare(pkg) catch |err| {
+        std.log.err("save failed: {s}: {s}", .{ pkg, @errorName(err) });
+        status.set("Save failed", .{});
+        return;
+    };
+    var db: [storage.MAX_PATH]u8 = undefined;
+    storage.setProject(package.docPath(&db, pkg));
+    // Edited wavetables are written into the package first, so the
     // project names their files.
-    for (tracks) |*t| if (t.machine.save_files) |f| f(t.machine.state, project_path.*, t.name());
-    // Files in the project's folder are written relative to it (docs/25).
-    storage.setProject(project_path.*);
+    for (tracks) |*t| if (t.machine.save_files) |f| f(t.machine.state, pkg, t.name());
+    // Files in the package are written relative to it.
     storage.beginProjectSave();
     const snapshot = document_mod.serialize(alloc, tracks, transport) catch |err| {
         storage.endProjectSave();
@@ -1576,15 +1593,28 @@ fn saveProject(
     };
     storage.endProjectSave();
     defer alloc.free(snapshot);
-    document_mod.writeFile(alloc, project_path.*, snapshot) catch |err| {
+    // Everything else it uses that slab doesn't ship is copied in.
+    var report: package.Report = .{};
+    const doc = package.collect(alloc, pkg, snapshot, .{ .collect_lib = storage.collect_lib }, &report) catch |err| {
+        std.log.err("save failed: collecting files: {s}", .{@errorName(err)});
+        status.set("Save failed (collecting files)", .{});
+        return;
+    };
+    defer alloc.free(doc);
+    package.writeDoc(pkg, doc) catch |err| {
         std.log.err("save failed: {s}", .{@errorName(err)});
         status.set("Save failed", .{});
         return;
     };
     project_path_chosen.* = true;
     dirty.* = false;
-    status.set("Saved {s}", .{basename(project_path.*)});
-    std.log.info("saved {s}", .{project_path.*});
+    if (report.missing > 0)
+        status.set("Saved {s}; {d} files missing", .{ basename(pkg), report.missing })
+    else if (report.copied > 0)
+        status.set("Saved {s}; copied {d} files in ({d} MB)", .{ basename(pkg), report.copied, report.bytes / (1024 * 1024) })
+    else
+        status.set("Saved {s}", .{basename(pkg)});
+    std.log.info("saved {s} (copied {d} files, {d} bytes; {d} missing)", .{ pkg, report.copied, report.bytes, report.missing });
 }
 
 /// Begin an offline project bounce → 24-bit stereo WAV. Resolves the range,
@@ -1740,6 +1770,12 @@ fn openProject(
     };
     const path = chosen orelse return;
     defer alloc.free(path);
+    // The panel lets folders through so it can navigate them; only a
+    // .slab folder is a project.
+    if (package.isPackage(path) and !std.mem.endsWith(u8, std.mem.trimEnd(u8, path, "/"), ".slab")) {
+        status.set("Not a Slab project: {s}", .{basename(path)});
+        return;
+    }
 
     const before = try document_mod.serialize(alloc, tracks.*, transport);
     errdefer alloc.free(before);
@@ -1749,19 +1785,49 @@ fn openProject(
     };
     defer alloc.free(data);
     // The new project's relative references resolve against its folder.
-    storage.setProject(path);
+    useProject(path);
     applyProjectBytes(alloc, data, reg, tracks_buf, track_count, tracks, transport, engine, audio, selected_track, selected_clip, prev_selected_clip) catch |err| {
         std.log.err("load failed: {s}", .{@errorName(err)});
         status.set("Load failed", .{});
-        storage.setProject(if (project_path_chosen.*) project_path.* else null);
+        if (project_path_chosen.*) useProject(project_path.*) else storage.setProject(null);
         return;
     };
     try history.pushUndo(alloc, before);
     replaceProjectPath(alloc, project_path, try alloc.dupe(u8, path));
     project_path_chosen.* = true;
     dirty.* = false;
-    status.set("Loaded {s}", .{basename(project_path.*)});
+    reportLoaded(alloc, status, data, project_path.*);
     std.log.info("loaded {s}", .{project_path.*});
+}
+
+/// Move the package's files the project no longer names to the Trash.
+fn cleanUpProject(alloc: std.mem.Allocator, project_path: []const u8, status: *StatusMessage) void {
+    var ab: [storage.MAX_PATH]u8 = undefined;
+    const pkg = storage.absolute(&ab, project_path);
+    if (!package.isPackage(pkg)) return;
+    const n = package.cleanUp(alloc, pkg, native_dialog.trash) catch |err| {
+        std.log.err("clean up failed: {s}", .{@errorName(err)});
+        status.set("Clean Up failed", .{});
+        return;
+    };
+    if (n == 0) status.set("Nothing to clean up", .{}) else status.set("Moved {d} unused files to the Trash", .{n});
+}
+
+/// Resolve the project's relative references against `path`: a package,
+/// or a bare .slab file's folder.
+fn useProject(path: []const u8) void {
+    var db: [storage.MAX_PATH]u8 = undefined;
+    storage.setProject(package.docPath(&db, path));
+}
+
+/// "Loaded …", or which files it names that aren't there.
+fn reportLoaded(alloc: std.mem.Allocator, status: *StatusMessage, data: []const u8, path: []const u8) void {
+    const gone = package.missing(alloc, data);
+    if (gone.count == 0) {
+        status.set("Loaded {s}", .{basename(path)});
+    } else {
+        status.set("Loaded {s}; {d} files missing: {s}", .{ basename(path), gone.count, std.fs.path.basename(gone.first[0]) });
+    }
 }
 
 fn replaceProjectPath(alloc: std.mem.Allocator, project_path: *[]u8, next: []u8) void {
@@ -2263,7 +2329,9 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, out: []const u8
     document_mod.setMeterState(&meter_state);
 
     const data = try document_mod.readFile(alloc, project);
-    storage.setProject(project);
+    useProject(project);
+    const gone = package.missing(alloc, data);
+    if (gone.count > 0) std.log.warn("{d} files missing", .{gone.count});
     defer alloc.free(data);
     var tracks_buf: [MAX_TRACKS]track_mod.Track = undefined;
     var track_count: usize = 0;
@@ -3107,7 +3175,7 @@ fn executeEditCommand(
         },
         // `import_audio` is intercepted in the arrangement-result handler
         // (it needs the audio pool + file dialog); never reaches here.
-        .none, .copy, .select_all, .clear_selection, .rename, .file_open, .file_save, .file_save_as, .render_audio, .import_audio => {},
+        .none, .copy, .select_all, .clear_selection, .rename, .file_open, .file_save, .file_save_as, .file_clean_up, .render_audio, .import_audio => {},
     }
 
     if (changed) {

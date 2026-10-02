@@ -37,6 +37,7 @@ pub const EditCommand = enum {
     file_open,
     file_save,
     file_save_as,
+    file_clean_up,
     render_audio,
     split_at_playhead,
     quantize,

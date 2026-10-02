@@ -3,8 +3,8 @@
 Where slab keeps what it ships and what users make, how a project names
 the files it uses, how a project stays whole when it moves to another
 computer, and how anything a user makes becomes something others can
-open. **Status: design; phases 1 and 2 built** (§Load time, §Roots:
-references, the home folder, settings).
+open. **Status: design; phases 1–3 built** (§Load time, §Roots, the
+project package; `src/package.zig`).
 Code, as it lands: `src/storage.zig` (roots and references),
 `src/document.zig` (the project package), `src/wavetable_cache.zig`.
 
@@ -191,28 +191,36 @@ A project is a folder that Finder shows as a single file:
 ```
 Song.slab/
   project.json    the document (docs/19's format, plus "assets")
-  tables/         wavetables edited in the project
-  samples/        samples and keymaps the project collected
-  recordings/     audio input takes
-  presets/        <machine id>/<name>.preset saved in the project
-  machines/       <id>/: machine sources edited for this project
-  clips/          .slabclip files the project saved or collected
+  tables/         wavetables edited in the project (the editor writes them)
+  samples/        files collected for instruments: samples, keymaps, tables
+  audio/          audio clips' files: takes recorded into the project, collected audio
+  presets/        <machine id>/<name>.preset saved in the project (phase 4)
+  machines/       <id>/: machine sources edited for this project (phase 6)
+  clips/          .slabclip files the project saved or collected (phase 4)
 ```
 
 - **Zipping the folder is the export.** Nothing else is needed.
-- **Finder treats it as one file** because the app's Info.plist
-  declares `.slab` as a document package (`com.apple.package`).
-  Double-clicking it opens slab.
+- **Finder will treat it as one file** once there is an app bundle: its
+  Info.plist declares `.slab` as a document package
+  (`com.apple.package`), and double-clicking opens slab. Until then
+  Finder shows a folder, and the open panel accepts `.slab` folders.
 - **It stays diffable:** `project.json` is plain JSON, so git and
   slabkit work on it as they do now.
-- **A bare `.slab` JSON file still opens.** slabkit writes these, and
-  so do the songs in `songs/`. Its relative paths are relative to its
-  folder. Saving it from the app writes a package.
+- **A bare `.slab` JSON file still opens.** Its relative paths are
+  relative to its folder. Saving it from the app makes it a package: the
+  file moves inside as `project.json` first, so a failed save loses
+  nothing. slabkit writes packages, and `songs/` and `demos/` are
+  packages.
 - **This replaces two earlier layouts:**
-  - `song.tables/`, the folder the wavetable editor writes today, becomes
-    the package's `tables/`.
-  - `recordings/` in the working directory (`src/recorder.zig`) becomes
-    the package's `recordings/`.
+  - The wavetable editor writes to `tables/` in the package, not to
+    `song.tables/` beside it. An old sidecar's tables are collected into
+    `samples/` on the next save.
+  - Takes are recorded into the package's `audio/`, or into
+    `<home>/Cache/recordings/` while the project is unsaved (or a bare
+    file), and collected from there. A take never overwrites an earlier
+    one.
+- **Saves are atomic:** `project.json` is written to
+  `project.json.saving` and renamed into place.
 
 ### The asset table
 
@@ -253,10 +261,19 @@ Saving makes the project complete:
 - **Copies are skipped when a file with the same hash is already in
   the package.** A second save copies nothing new.
 - **Saving leaves collected files in place when nothing references
-  them any more.** **Clean Up** removes them.
+  them any more.** **File → Clean Up Project Files** saves the project,
+  then moves the files in `tables/`, `samples/` and `audio/` that its
+  asset table doesn't name to the Trash.
+- **Where copies go:**
+  - A pack file keeps its pack path: `samples/vcsl/Marimba/…`.
+  - A single file goes by its name: `samples/hit.wav`.
+  - An SFZ or a folder kit goes in a folder of its own, with its layout
+    kept: `samples/kit/kit.sfz` and `samples/kit/smp/a.wav`.
+  - A different file under a name that's already taken goes beside it:
+    `samples/2/hit.wav`.
 - **Collecting is the default.** The settings can turn off collecting
-  for `lib:` (projects stay small, and only open where that pack is
-  installed). They can't turn it off for `user:`, because a project
+  for `lib:` (`"collect_lib": false` in settings.json): projects stay
+  small, and only open where that pack is installed. They can't turn it off for `user:`, because a project
   that points into someone's home folder never works for anyone else.
 - **Save stays fast:** hashing and copying happen only for references
   that changed since the last save.
@@ -267,21 +284,22 @@ wavetable editor's tables are written in `saveProject`, docs/15).
 
 ### Load
 
-For each asset, slab resolves the reference and checks it:
+Collecting rewrites each reference to the package's copy, so a moved
+project finds its files without a fallback. Loading checks that each
+referenced file exists:
+- **Missing files** load empty, as before (docs/19 §Where loading fails
+  silently).
+- **The status bar** says how many are missing and names the first.
+- **The log** lists them all.
 
-1. The file is there and its hash matches: use it.
-2. The file is missing or differs, and an `origin` is given: look for
-   a copy with that hash in the package. The project carries its copy,
-   so this is the normal case for a project that was moved.
-3. A `factory:` file has changed (it shouldn't, see below): look it up
-   by hash in the factory's retired files.
-4. Nothing matches: the asset loads empty, as a missing file does now
-   (docs/19 §Where loading fails silently), and slab lists what's
-   missing in the status bar and the project's info.
-
-Hashing is cheap next to decoding, but slab also keeps a hash cache in
-`Cache/hashes` keyed by path, size and modification time, so a large
-sample is hashed once.
+Planned:
+1. **Verify factory files by hash on load.** A `factory:` file whose
+   hash differs would be looked up among the factory's retired files
+   (§Factory files never change).
+2. **Fall back to a copy elsewhere** with the same hash.
+3. **A disk hash cache.** Hashes are cached for the session (by path,
+   size and modification time) so a save hashes each file once; a disk
+   cache in `Cache/hashes` would carry that across sessions.
 
 ### Factory files never change
 
@@ -494,14 +512,16 @@ the cache, this only matters for the first instance.
      `home` moves the home folder).
    - slabkit writes references (`ref`, `resolve` in `machines.py`),
      and `songs/` uses them.
-   - Not done here: recordings still go to `recordings/` in the working
-     directory. Phase 3 moves them into the package.
-3. **The project package.**
-   - Save and load `Song.slab/`, with `tables/` and `recordings/` inside.
-   - The asset table with hashes, and collect on save.
-   - The fallback on load, and the missing-files list.
+
+3. **The project package.** Built.
+   - `Song.slab/` with `tables/`, `samples/` and `audio/`, and bare
+     files converted on save.
+   - The asset table with hashes, collect on save, and the
+     missing-files report.
    - Clean Up.
-   - Convert `songs/`.
+   - `songs/` and `demos/` converted, and slabkit writes packages.
+   - Open: hash checks on load, the factory's retired files, and the
+     disk hash cache (§Load).
 4. **The user library.**
    - User presets in the preset menus.
    - Save to Library for presets, tables and clips.

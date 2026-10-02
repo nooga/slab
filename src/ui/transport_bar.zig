@@ -27,6 +27,7 @@ pub const Result = struct {
     open_project: bool = false,
     save_project: bool = false,
     save_project_as: bool = false,
+    clean_up_project: bool = false,
     render_audio: bool = false,
     record_toggle: bool = false,
     /// Index into `input_names` the user picked from the input-device menu.
@@ -265,6 +266,7 @@ fn fileTile(ui: *Ui, r: Rect, a: Args, res: *Result) void {
         .{ .label = "Open\u{2026}", .command = .file_open },
         .{ .label = "Save", .command = .file_save },
         .{ .label = "Save As\u{2026}", .command = .file_save_as },
+        .{ .label = "Clean Up Project Files", .command = .file_clean_up },
         .{ .separator = true },
         .{ .label = "Render Audio\u{2026}", .command = .render_audio },
     };
@@ -272,6 +274,7 @@ fn fileTile(ui: *Ui, r: Rect, a: Args, res: *Result) void {
         .file_open => res.open_project = true,
         .file_save => res.save_project = true,
         .file_save_as => res.save_project_as = true,
+        .file_clean_up => res.clean_up_project = true,
         .render_audio => res.render_audio = true,
         else => {},
     }

@@ -1745,7 +1745,7 @@ fn saveFilesImpl(state: *anyopaque, project_path: []const u8, track_name: []cons
             @memcpy(pb[0..cur.len], cur);
             break :blk pb[0..cur.len];
         } else blk: {
-            wavetable_file.makeDir(dir);
+            storage.makeParents(dir);
             var sb: [128]u8 = undefined;
             var raw: [160]u8 = undefined;
             const name = std.fmt.bufPrint(&raw, "{s} {s}", .{ track_name, self.desc.assets[ai].nameSlice() }) catch "table";
@@ -8634,14 +8634,14 @@ test "wavetable editor: an edited table plays at once, saves beside the project 
     syncTableDoc(inst, ai);
     try testing.expect(!mach.takeEdited());
 
-    // Project save writes it to song.tables/ and points the asset there.
+    // Project save writes it to the package's tables/ and points the asset there.
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     var pb: [256]u8 = undefined;
     const project = try std.fmt.bufPrint(&pb, ".zig-cache/tmp/{s}/song.slab", .{tmp.sub_path});
     saveFilesImpl(inst, project, "Acid Bass");
     var eb: [256]u8 = undefined;
-    const rel = try std.fmt.bufPrint(&eb, ".zig-cache/tmp/{s}/song.tables/acid-bass-wt-a.wav", .{tmp.sub_path});
+    const rel = try std.fmt.bufPrint(&eb, ".zig-cache/tmp/{s}/song.slab/tables/acid-bass-wt-a.wav", .{tmp.sub_path});
     var wb: [storage.MAX_PATH]u8 = undefined;
     const want = storage.absolute(&wb, rel);
     try testing.expectEqualStrings(want, inst.assetPath(ai));

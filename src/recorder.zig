@@ -9,10 +9,11 @@
 //! (start/finish) or the dedicated writer thread (disk IO).
 
 const std = @import("std");
+const storage = @import("storage.zig");
 const Transport = @import("transport.zig").Transport;
 
 pub const SAMPLE_RATE: u32 = 48_000;
-pub const MAX_PATH = 512;
+pub const MAX_PATH = 1024;
 
 /// Live-waveform summary granularity. One peak per bucket; the writer thread
 /// fills these as it drains the ring so the UI can draw the take growing in
@@ -26,7 +27,7 @@ extern fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
 extern fn close(fd: c_int) c_int;
 extern fn write(fd: c_int, buf: [*]const u8, count: usize) isize;
 extern fn lseek(fd: c_int, offset: i64, whence: c_int) i64;
-extern fn mkdir(path: [*:0]const u8, mode: c_uint) c_int;
+extern fn access(path: [*:0]const u8, mode: c_int) c_int;
 
 const timespec = extern struct { sec: i64, nsec: i64 };
 extern fn nanosleep(req: *const timespec, rem: ?*timespec) c_int;
@@ -37,7 +38,6 @@ const O_CREAT: c_int = 0x0200;
 const O_TRUNC: c_int = 0x0400;
 const SEEK_SET: c_int = 0;
 
-const RECORDINGS_DIR = "recordings";
 
 /// Single-producer / single-consumer lock-free ring of f32. The audio thread
 /// is the sole producer; the writer thread the sole consumer. Capacity is a
@@ -131,6 +131,11 @@ pub const Recorder = struct {
     take_counter: u32 = 0,
     path_buf: [MAX_PATH]u8 = [_]u8{0} ** MAX_PATH,
     path_len: usize = 0,
+    // A folder set with setDir; empty: storage.recordingsDir at each take.
+    dir_buf: [MAX_PATH]u8 = undefined,
+    dir_len: usize = 0,
+    take_dir_buf: [MAX_PATH]u8 = undefined,
+    take_dir_len: usize = 0,
 
     pub fn init(alloc: std.mem.Allocator, transport: *const Transport) !Recorder {
         // 2^18 mono frames ≈ 5.4 s of slack at 48 kHz — far more than the
@@ -195,7 +200,12 @@ pub const Recorder = struct {
     pub fn start(self: *Recorder) !void {
         if (self.isRecording() or self.writer != null) return error.AlreadyRecording;
 
-        _ = mkdir(RECORDINGS_DIR, 0o755); // ignore EEXIST / failures; open() reports
+        // Takes go to the open package's audio/ folder, or the home
+        // folder's Cache for an unsaved project (docs/25).
+        const d = if (self.dir_len > 0) self.dir_buf[0..self.dir_len] else storage.recordingsDir(&self.take_dir_buf);
+        if (d.ptr != &self.take_dir_buf) @memcpy(self.take_dir_buf[0..d.len], d);
+        self.take_dir_len = d.len;
+        storage.makeParents(self.dir()); // failures: open() reports
 
         self.buildTakePath();
         var zpath: [MAX_PATH:0]u8 = undefined;
@@ -361,14 +371,28 @@ pub const Recorder = struct {
         return write(self.fd, &h, h.len) == @as(isize, h.len);
     }
 
+    /// Send takes to `path` instead (tests). UI thread, between takes.
+    pub fn setDir(self: *Recorder, path: []const u8) void {
+        const n = @min(path.len, self.dir_buf.len);
+        @memcpy(self.dir_buf[0..n], path[0..n]);
+        self.dir_len = n;
+    }
+
+    fn dir(self: *const Recorder) []const u8 {
+        return self.take_dir_buf[0..self.take_dir_len];
+    }
+
+    /// The next take-NNN.wav not already there: the counter starts over
+    /// each session, the folder doesn't.
     fn buildTakePath(self: *Recorder) void {
-        self.take_counter += 1;
-        const s = std.fmt.bufPrint(&self.path_buf, "{s}/take-{d:0>3}.wav", .{ RECORDINGS_DIR, self.take_counter }) catch {
-            const fallback = RECORDINGS_DIR ++ "/take.wav";
-            @memcpy(self.path_buf[0..fallback.len], fallback);
-            self.path_len = fallback.len;
-            return;
-        };
+        while (self.take_counter < 9999) {
+            self.take_counter += 1;
+            const s = std.fmt.bufPrintZ(&self.path_buf, "{s}/take-{d:0>3}.wav", .{ self.dir(), self.take_counter }) catch break;
+            self.path_len = s.len;
+            if (access(s.ptr, 0) != 0) return;
+        }
+        const s = std.fmt.bufPrint(&self.path_buf, "{s}/take.wav", .{self.dir()}) catch "recordings/take.wav";
+        if (s.ptr != &self.path_buf) @memcpy(self.path_buf[0..s.len], s);
         self.path_len = s.len;
     }
 };
