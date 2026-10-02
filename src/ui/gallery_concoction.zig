@@ -170,9 +170,15 @@ pub const State = struct {
     ntargets: usize = 0,
     prev: [MAX_TARGETS]Target = undefined,
     nprev: usize = 0,
+    // The hovered knob's destination (this frame's, last frame's), and
+    // the slot a drop would fill now.
+    hot_next: u8 = 0,
+    hot_dst: u8 = 0,
+    drop_slot: u8 = NO_SLOT,
 
     pub fn init(alloc: std.mem.Allocator) State {
         var st = State{};
+        if (std.c.getenv("SLAB_GALLERY_CARD")) |c| st.card = std.fmt.parseInt(u8, std.mem.span(c), 10) catch 0;
         var smp = wav.load(alloc, BANK_PATH) catch return st;
         defer smp.deinit(alloc);
         st.bank = wavetable.build(alloc, smp.data, smp.frame_size) catch .{};
@@ -198,16 +204,22 @@ pub const State = struct {
     /// destination reuses the slot that already joins the two, else the
     /// first free one.
     fn drop(st: *State, src: u8, t: Target) void {
+        const si = st.dropSlot(src, t) orelse return;
+        const sl = &st.slots[si];
         if (t.slot != NO_SLOT) {
-            st.slots[t.slot].src = src;
-            if (st.slots[t.slot].amt == 0.5) st.slots[t.slot].amt = 0.75;
-            return;
+            sl.src = src;
+            if (sl.amt == 0.5) sl.amt = 0.75;
+        } else if (!(sl.src == src and sl.dst == t.dst)) {
+            sl.* = .{ .src = src, .dst = t.dst, .amt = 0.75 };
         }
-        for (&st.slots) |*s| if (s.src == src and s.dst == t.dst) return;
-        for (&st.slots) |*s| if (s.src == 0 or s.dst == 0) {
-            s.* = .{ .src = src, .dst = t.dst, .amt = 0.75 };
-            return;
-        };
+    }
+
+    /// The slot a drop of `src` on `t` fills.
+    fn dropSlot(st: *const State, src: u8, t: Target) ?u8 {
+        if (t.slot != NO_SLOT) return t.slot;
+        for (st.slots, 0..) |sl, i| if (sl.src == src and sl.dst == t.dst) return @intCast(i);
+        for (st.slots, 0..) |sl, i| if (sl.src == 0 or sl.dst == 0) return @intCast(i);
+        return null;
     }
 };
 
@@ -352,6 +364,12 @@ pub fn page(ui: *Ui, screen: Rect, st: *State) void {
     @memcpy(st.prev[0..st.ntargets], st.targets[0..st.ntargets]);
     st.nprev = st.ntargets;
     st.ntargets = 0;
+    st.hot_dst = st.hot_next;
+    st.hot_next = 0;
+    st.drop_slot = NO_SLOT;
+    if (st.drag_src != 0) {
+        if (st.hovered(ui)) |t| st.drop_slot = st.dropSlot(st.drag_src, t) orelse NO_SLOT;
+    }
     const m = model(st, ui.in.time);
     ui.animate();
 
@@ -469,6 +487,7 @@ fn modKnob(ui: *Ui, r: Rect, st: *State, m: *const Mods, key: anytype, v: *f32, 
         .mod = if (routed) eff(v.*, m, dst) else null,
     });
     st.target(kr, dst, NO_SLOT);
+    if (kr.contains(ui.in.ix(), ui.in.iy())) st.hot_next = dst;
 }
 
 fn hasRoute(st: *const State, dst: u8) bool {
@@ -765,7 +784,7 @@ fn outStrip(ui: *Ui, r: Rect, st: *State, m: *const Mods) void {
 
 fn modCard(ui: *Ui, r: Rect, st: *State, m: *const Mods) void {
     var p = r;
-    var row1 = p.cutTop(168);
+    var row1 = p.cutTop(p.h - MATRIX_H);
     lfoStrip(ui, row1.cutLeft(250), st, m, 0);
     lfoStrip(ui, row1.cutLeft(250), st, m, 1);
     modEnvStrip(ui, row1.cutLeft(250), st, m, 0);
@@ -804,51 +823,38 @@ fn modEnvStrip(ui: *Ui, r: Rect, st: *State, m: *const Mods, which: usize) void 
     envFaders(ui, body, e, false);
 }
 
-/// The matrix: eight rows of SRC → DEST × AMT, each source's live value
-/// and what the row adds to its destination right now.
+const MATRIX_H: i32 = 24 + 16 + 4 * sv.MATRIX_ROW + 8;
+
+/// The matrix on one display: slots 1-4 and 5-8 side by side.
 fn matrix(ui: *Ui, r: Rect, st: *State, m: *const Mods) void {
     ui.pushId("matrix");
     defer ui.popId();
-    var body = ctl.strip(ui, r, "MATRIX").insetXY(4, 0);
-    const halves = [_]Rect{ body.takeLeft(@divFloor(body.w, 2) - 4), Rect.xywh(body.x + @divFloor(body.w, 2) + 4, body.y, @divFloor(body.w, 2) - 4, body.h) };
-    for (halves, 0..) |half, hi| {
-        var col = half;
-        var head = col.cutTop(14);
-        const cols = [_]struct { w: i32, s: []const u8 }{ .{ .w = 18, .s = "#" }, .{ .w = 70, .s = "SOURCE" }, .{ .w = 56, .s = "NOW" }, .{ .w = 82, .s = "DESTINATION" }, .{ .w = 0, .s = "AMOUNT" } };
-        for (cols) |c| {
-            const cr = if (c.w > 0) head.cutLeft(c.w) else head;
-            _ = ui.engraved(&ui.fonts.legend, cr.x + 2, cr.y + 1, c.s, style.text_mute);
-        }
+    const body = ctl.strip(ui, r, "MATRIX").insetXY(4, 2);
+    const g = sv.matrixBegin(ui, body);
+    const half = @divFloor(g.w, 2);
+    for (0..2) |hi| {
+        var col = Rect.xywh(g.x + @as(i32, @intCast(hi)) * half, g.y + 2, half, g.h - 2);
+        if (hi == 1) ui.rect(Rect.xywh(col.x, col.y + 2, 1, col.h - 6), style.vfd.alpha(30));
+        sv.matrixHeader(ui, col.cutTop(16), &SRCS, &DSTS);
         for (0..4) |ri| {
             const si = hi * 4 + ri;
-            matrixRow(ui, col.cutTop(36), st, m, si);
+            const row = col.cutTop(sv.MATRIX_ROW);
+            const sl = &st.slots[si];
+            st.target(row, 0, @intCast(si));
+            const e = sv.matrixSlot(ui, row, .{ "slot", si }, si + 1, .{
+                .src = sl.src,
+                .dst = sl.dst,
+                .amt = sl.amt,
+                .src_val = m.src[sl.src],
+                .src_bipolar = bipolarSrc(st, sl.src),
+                .lit = st.hot_dst != 0 and sl.src != 0 and sl.dst == st.hot_dst,
+                .drop = st.drop_slot == si,
+            }, &SRCS, &DSTS);
+            if (e.src) |v| sl.src = v;
+            if (e.dst) |v| sl.dst = v;
+            if (e.amt) |v| sl.amt = v;
+            if (e.clear) sl.* = .{};
         }
     }
-}
-
-fn matrixRow(ui: *Ui, r: Rect, st: *State, m: *const Mods, si: usize) void {
-    ui.pushId(.{ "slot", si });
-    defer ui.popId();
-    const s = &st.slots[si];
-    const live = s.src != 0 and s.dst != 0;
-    var row = r.insetXY(0, 4);
-    st.target(r, 0, @intCast(si));
-    ui.rect(Rect.xywh(r.x, r.bottom() - 1, r.w, 1), style.face_lo);
-    var nb: [4]u8 = undefined;
-    const idx_r = row.cutLeft(18);
-    ctl.led(ui, idx_r.x + 1, idx_r.y + 6, .round3, if (live) .on else .off, style.mod);
-    ui.textIn(&ui.fonts.legend, idx_r.insetXY(6, 0).takeTop(16), std.fmt.bufPrint(&nb, "{d}", .{si + 1}) catch "", style.text_dim, .left, true);
-    const h = ctl.displayHeight(false);
-    _ = ctl.displaySelect(ui, row.cutLeft(70).insetXY(2, 0).takeTop(h), "src", &s.src, &SRCS);
-    const now = row.cutLeft(56).insetXY(4, 0).takeTop(h);
-    const meter = ui.well(now, style.well);
-    if (s.src != 0) meterBar(ui, meter.insetXY(2, @divFloor(meter.h - 4, 2)), m.src[s.src], bipolarSrc(st, s.src));
-    _ = ctl.displaySelect(ui, row.cutLeft(82).insetXY(2, 0).takeTop(h), "dst", &s.dst, &DSTS);
-    const amt_r = row.insetXY(4, 0);
-    _ = ctl.slider(ui, amt_r.takeTop(h + 2), "amt", &s.amt, .{ .kind = .mini, .horizontal = true, .bipolar = true, .default = 0.5, .show_readout = false, .ticks = 5 });
-    // What the row adds now, as a bar under the slider.
-    if (live) {
-        const add = m.src[s.src] * (s.amt * 2 - 1);
-        meterBar(ui, Rect.xywh(amt_r.x + 2, amt_r.y + h + 6, amt_r.w - 4, 2), add, true);
-    }
+    sv.matrixEnd(ui, g);
 }

@@ -263,6 +263,8 @@ shared with the gallery's CONCOCTION page:
   adsr-display of one module with the voice riding the curve, placed by
   its env_dig level and stage.
 - `mod-dock ( name -- )` is the modulation dock (§Modulation).
+- `matrix-display ( name -- )` is the mod matrix on one display
+  (§Modulation).
 - `scope-display ( name -- )` draws the machine's output: the engine
   appends each block, mono, to a ring, and the display shows two cycles
   of the newest voice's note from a rising zero crossing, scaled to fit.
@@ -283,6 +285,7 @@ reach, and the panel does the rest (Concoction is the reference):
 ```
 "LFO1" 3 MyState.l1-v 1 mod-source     ( label, SRC option, live value, bipolar )
 "cn-f-cut" 12 MyState.cut-hz mod-dest  ( control id, DEST option, live value )
+"cn-f-env" 1 12 mod-fixed              ( built-in route: amount knob, SRC, DEST )
 "cn-m" 8 mod-matrix                    ( slots: cn-m1-src / -dst / -amt ... )
 ```
 
@@ -297,6 +300,19 @@ reach, and the panel does the rest (Concoction is the reference):
   destination and half the amount. Drop it on a slot's SRC to set only
   that. The drop writes the slot's switches and knob through the normal
   control path, so presets, projects and automation see an ordinary edit.
+- `mod-fixed` declares a route the machine hard-wires outside the matrix
+  (a filter's ENV amount, KEY tracking, velocity to amp), so the matrix
+  display can show everything that moves a ring.
+- `matrix-display` shows the slots, then the built-in routes, on one
+  display, in up to three columns as the width allows: a row per slot, SOURCE → DEST as display selects and the
+  amount as a bipolar bar (drag it; double-click for none) with what the
+  row adds right now lit on it. The × clears a row. A built-in route is a fixed row: no number and
+  no selects, and its bar is its knob. A row lights while
+  its destination knob is hovered, and a dragged chip outlines the row
+  it would fill. Rows are drop targets too. The slot controls stay out of
+  the pages; the display edits them.
+- Right-click a destination knob: under the automation items, one
+  "Remove <source> modulation" per slot that routes to it.
 
 ## Escape hatch: fy-drawn custom displays (planned)
 
@@ -346,7 +362,7 @@ panel draws:
 | `as-radio` | joined LED caps, one down | options |
 | `as-vradio` | the same caps stacked top to bottom | options |
 | `as-button` | LED latch: option 0 off, 1 on | two options |
-| `as-display` | VFD value with ‹ › steppers | options, integer ranges ≤ 128 |
+| `as-display` | VFD display select: click for the option grid, drag to step | options, integer ranges ≤ 128 |
 
 Without one the panel picks from the kind (`Control.widgetFor`): knobs
 for values and integer ranges, an LED latch for an `OFF`/`ON` pair, a

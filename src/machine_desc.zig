@@ -244,7 +244,7 @@ pub const Strip = struct {
     }
 };
 
-pub const DisplayKind = enum { adsr, waveform, meter, response, algo, eg4, zones, segments, dynamics, taps, decay, graphic, wavetable, filter, lfo, env, dock, scope };
+pub const DisplayKind = enum { adsr, waveform, meter, response, algo, eg4, zones, segments, dynamics, taps, decay, graphic, wavetable, filter, lfo, env, dock, scope, matrix };
 
 /// Wavetable display slots: the newest voice's position and warp amount
 /// (state byte offsets), then the frames in each bank table.
@@ -259,7 +259,10 @@ pub const MAX_MODS = 32;
 /// A modulation source the dock offers, or a destination knob
 /// (docs/15 §Modulation).
 pub const Mod = struct {
-    kind: enum { source, dest } = .source,
+    /// A dock source, a destination knob, or a built-in route (a knob
+    /// that sets how much a source moves a destination outside the
+    /// matrix, like a filter's ENV amount).
+    kind: enum { source, dest, fixed } = .source,
     name: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
     name_len: usize = 0,
     /// The matrix's SRC or DEST option index.
@@ -267,8 +270,11 @@ pub const Mod = struct {
     /// State byte offset of the live value.
     offset: usize = 0,
     bipolar: bool = false,
-    /// Destinations: the control the id names.
+    /// Destinations: the control the id names; built-in routes: their
+    /// amount knob.
     control: usize = 0,
+    /// Built-in routes: the DEST option (`index` is the SRC option).
+    dst: usize = 0,
 
     pub fn nameSlice(self: *const Mod) []const u8 {
         return self.name[0..self.name_len];
@@ -787,6 +793,7 @@ pub fn read(host: *FyHost) !Desc {
             15 => .env,
             16 => .dock,
             17 => .scope,
+            18 => .matrix,
             else => return error.InvalidMachineDesc,
         };
         out.source_len = try copyText(&out.source, cstrSlice(disp.sources));
@@ -896,13 +903,22 @@ pub fn read(host: *FyHost) !Desc {
         if (d.mod_count >= MAX_MODS) return error.InvalidMachineDesc;
         const out = &d.mods[d.mod_count];
         out.* = .{};
-        out.kind = if (asInt(m.kind) == 1) .dest else .source;
+        out.kind = switch (asInt(m.kind)) {
+            0 => .source,
+            1 => .dest,
+            2 => .fixed,
+            else => return error.InvalidMachineDesc,
+        };
         out.name_len = try copyText(&out.name, cstrSlice(m.name));
         out.index = @intCast(@max(0, asInt(m.index)));
-        out.offset = @intCast(@max(0, asInt(m.offset)));
+        if (out.kind == .fixed) {
+            out.dst = @intCast(@max(0, asInt(m.offset)));
+        } else {
+            out.offset = @intCast(@max(0, asInt(m.offset)));
+            if (out.offset + 8 > d.state_size) return error.InvalidMachineDesc;
+        }
         out.bipolar = asInt(m.flag) != 0;
-        if (out.offset + 8 > d.state_size) return error.InvalidMachineDesc;
-        if (out.kind == .dest) {
+        if (out.kind != .source) {
             out.control = for (d.controls[0..d.control_count], 0..) |*ctl, i| {
                 if (std.mem.eql(u8, ctl.idSlice(), out.nameSlice())) break i;
             } else return error.InvalidMachineDesc;

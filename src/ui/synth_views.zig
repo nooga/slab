@@ -1,6 +1,6 @@
 //! Synth displays (docs/15 §Displays): a wavetable's frames in depth with
 //! the played cycle and its harmonics, a filter's response, an LFO's
-//! cycle, a modulation meter. Machine panels draw them from their
+//! cycle, a modulation meter, the mod matrix. Machine panels draw them from their
 //! controls and the newest voice's state (src/machines/fy_raw_machine.zig);
 //! the gallery's CONCOCTION page draws them from its own model. Pure
 //! drawing from plain values: the caller says what is live.
@@ -9,6 +9,7 @@ const std = @import("std");
 const core = @import("core.zig");
 const style = @import("style.zig");
 const wavetable = @import("../wavetable.zig");
+const ctl = @import("controls.zig");
 
 const Ui = core.Ui;
 const Rect = core.Rect;
@@ -460,4 +461,204 @@ pub fn dragChip(ui: *Ui, name: []const u8, v: f32, bipolar: bool) void {
     ui.rect(r, style.mod);
     ui.textIn(&ui.fonts.legend, r.insetXY(3, 0), name, style.well, .left, false);
     meterBar(ui, Rect.xywh(r.x + 2, r.bottom() - 3, r.w - 4, 2), v, bipolar);
+}
+
+// ── Mod matrix ───────────────────────────────────────────────────────
+//
+// The matrix on one display: a row per slot, SOURCE → DEST and the amount
+// as a bar with what the row adds right now lit on it. The source and
+// destination are display selects on the glass; drag the bar to set the
+// amount (double-click: 0); the × clears the row. A built-in route is a
+// fixed row: its source and destination are printed, not picked, and its
+// bar is the knob that sets it. A row lights while the hovered knob is its
+// destination, and outlines blue while a dragged source would land in it.
+
+pub const MATRIX_ROW: i32 = 18;
+const CW = ctl.CELL_W;
+
+pub const SlotView = struct {
+    src: u8,
+    dst: u8,
+    /// Normalized amount, 0.5 = none.
+    amt: f32,
+    /// The source's value now.
+    src_val: f32 = 0,
+    src_bipolar: bool = false,
+    /// The hovered knob is this row's destination.
+    lit: bool = false,
+    /// A dragged source would land here.
+    drop: bool = false,
+    /// A built-in route: no number, no selects, no ×.
+    fixed: bool = false,
+    /// The amount runs 0..1 from the left (a fixed row's unipolar knob).
+    unipolar: bool = false,
+    /// What the title display calls the amount ("FILTER ENV").
+    amt_name: []const u8 = "AMOUNT",
+};
+
+pub const SlotEdit = struct {
+    src: ?u8 = null,
+    dst: ?u8 = null,
+    amt: ?f32 = null,
+    clear: bool = false,
+};
+
+/// Column geometry shared by the header and the rows.
+pub const MatrixCols = struct {
+    idx: Rect,
+    src: Rect,
+    arrow: Rect,
+    dst: Rect,
+    amt: Rect,
+    bar: Rect,
+    x: Rect,
+};
+
+fn widest(ui: *const Ui, options: []const []const u8) i32 {
+    var w: i32 = 0;
+    for (options) |o| w = @max(w, ui.fonts.legend.measure(o));
+    return @divFloor(w + CW - 1, CW);
+}
+
+pub fn matrixCols(ui: *const Ui, r: Rect, srcs: []const []const u8, dsts: []const []const u8) MatrixCols {
+    var row = Rect.xywh(r.x + 1, r.y, r.w - 2, r.h);
+    const idx = row.cutLeft(CW * 2);
+    _ = row.cutLeft(CW);
+    const src = row.cutLeft(CW * (widest(ui, srcs) + 2));
+    const arrow = row.cutLeft(CW * 2);
+    const dst = row.cutLeft(CW * (widest(ui, dsts) + 2));
+    _ = row.cutLeft(CW);
+    const amt = row.cutLeft(CW * 4);
+    const x = row.cutRight(CW * 2);
+    _ = row.cutLeft(CW);
+    _ = row.cutRight(CW);
+    return .{ .idx = idx, .src = src, .arrow = arrow, .dst = dst, .amt = amt, .bar = row, .x = x };
+}
+
+/// The matrix glass; draw the header and rows inside it, then
+/// `matrixEnd`.
+pub fn matrixBegin(ui: *Ui, r: Rect) Rect {
+    const g = ui.well(r, style.well);
+    ui.clip(g);
+    return g;
+}
+
+pub fn matrixEnd(ui: *Ui, g: Rect) void {
+    ctl.dotMesh(ui, g, g.y, g.h, 1);
+    ui.unclip();
+}
+
+fn glassText(ui: *Ui, r: Rect, s: []const u8, col: Color) void {
+    ctl.vfdText(ui, r.x, r.y + @divFloor(r.h - ctl.CELL_H, 2), s, col);
+}
+
+pub fn matrixHeader(ui: *Ui, r: Rect, srcs: []const []const u8, dsts: []const []const u8) void {
+    const c = matrixCols(ui, r, srcs, dsts);
+    const col = style.vfd.mix(style.well, 0.6);
+    glassText(ui, c.idx, "#", col);
+    glassText(ui, c.src, "SOURCE", col);
+    glassText(ui, c.dst, "DEST", col);
+    glassText(ui, c.amt, "AMOUNT", col);
+    ui.rect(Rect.xywh(r.x + 2, r.bottom() - 1, r.w - 4, 1), style.vfd.alpha(30));
+}
+
+/// One slot's row.
+pub fn matrixSlot(ui: *Ui, r: Rect, key: anytype, n: usize, v: SlotView, srcs: []const []const u8, dsts: []const []const u8) SlotEdit {
+    ui.pushId(key);
+    defer ui.popId();
+    var e = SlotEdit{};
+    const c = matrixCols(ui, r, srcs, dsts);
+    const live = v.src != 0 and v.dst != 0;
+    const over = r.contains(ui.in.ix(), ui.in.iy());
+    if (v.lit) ui.rect(r, style.vfd.alpha(28)) else if (over) ui.rect(r, style.vfd.alpha(12));
+    if (v.drop) ui.bevel(r, style.mod, style.mod);
+
+    const lit = style.vfd;
+    const dim = style.vfd.mix(style.well, 0.55);
+    var nb: [4]u8 = undefined;
+    if (!v.fixed) glassText(ui, c.idx, std.fmt.bufPrint(&nb, "{d}", .{n}) catch "", if (live) lit else dim);
+
+    var src = v.src;
+    if (v.fixed) {
+        if (src < srcs.len) glassText(ui, c.src, srcs[src], lit.mix(style.well, 0.25));
+    } else if (ctl.displaySelectEx(ui, c.src, "src", &src, srcs, "SOURCE", .{ .bare = true, .align_ = .left, .dim = src == 0 })) e.src = src;
+    // → between them, lit while the row routes.
+    const ay = c.arrow.y + @divFloor(c.arrow.h, 2);
+    const acol = if (live) lit else dim;
+    ui.rect(Rect.xywh(c.arrow.x + 1, ay, 6, 1), acol);
+    ui.rect(Rect.xywh(c.arrow.x + 5, ay - 1, 1, 3), acol);
+    ui.rect(Rect.xywh(c.arrow.x + 4, ay - 2, 1, 1), acol);
+    ui.rect(Rect.xywh(c.arrow.x + 4, ay + 2, 1, 1), acol);
+    var dst = v.dst;
+    if (v.fixed) {
+        if (dst < dsts.len) glassText(ui, c.dst, dsts[dst], lit.mix(style.well, 0.25));
+    } else if (ctl.displaySelectEx(ui, c.dst, "dst", &dst, dsts, "DEST", .{ .bare = true, .align_ = .left, .dim = dst == 0 })) e.dst = dst;
+
+    // Amount: the text and the bar are one drag target.
+    const zone = Rect.xywh(c.amt.x, r.y, c.bar.right() - c.amt.x, r.h);
+    const wid = ui.id("amt");
+    const b = ui.behavior(wid, zone, false);
+    var amt = v.amt;
+    if (b.double) {
+        amt = if (v.unipolar) 0 else 0.5;
+    } else if (b.held) {
+        const fine: f32 = if (ui.in.shift) 0.1 else 1;
+        amt += ui.in.dx * ui.renderer.zoom * fine / @as(f32, @floatFromInt(@max(1, c.bar.w)));
+    }
+    if (ui.in.cmd and ui.in.wheel_y != 0 and over) amt += ui.in.wheel_y * 0.01;
+    amt = std.math.clamp(amt, 0, 1);
+    if (amt != v.amt) e.amt = amt;
+    const hot = ui.isHot(wid);
+    if (hot) ui.requestCursor(@import("../c.zig").rl.MOUSE_CURSOR_RESIZE_EW, 1);
+    const a = if (v.unipolar) amt else amt * 2 - 1;
+    var ab: [8]u8 = undefined;
+    const pct: i32 = @intFromFloat(@round(a * 100));
+    const at = if (pct == 0) "0" else std.fmt.bufPrint(&ab, "{s}{d}", .{ if (pct > 0) "+" else "", pct }) catch "";
+    const tcol = if (!live) dim else if (hot) style.vfd_hi else lit;
+    const tw = ui.fonts.legend.measure(at);
+    ctl.vfdText(ui, c.amt.right() - tw, c.amt.y + @divFloor(c.amt.h - ctl.CELL_H, 2), at, tcol);
+    if (hot) {
+        var vb: [8]u8 = undefined;
+        ui.setTouch(v.amt_name, std.fmt.bufPrint(&vb, "{s}%", .{at}) catch "");
+    }
+
+    // The bar: a hairline track, the amount filled from the center, and
+    // what the row adds now as a bright mark on it.
+    const bar = c.bar;
+    const cy = bar.y + @divFloor(bar.h, 2);
+    // A unipolar bar starts at its left end.
+    const mid = if (v.unipolar) bar.x else bar.x + @divFloor(bar.w, 2);
+    const half: f32 = @floatFromInt(if (v.unipolar) bar.w - 1 else @divFloor(bar.w, 2));
+    ui.rect(Rect.xywh(bar.x, cy, bar.w, 1), style.vfd.alpha(35));
+    ui.rect(Rect.xywh(mid, cy - 3, 1, 7), style.vfd.alpha(70));
+    const len: i32 = @intFromFloat(@round(a * half));
+    const fill = if (live) style.vfd.mix(style.well, 0.45) else style.vfd.mix(style.well, 0.75);
+    if (len > 0) ui.rect(Rect.xywh(mid + 1, cy - 2, len, 5), fill) else if (len < 0) ui.rect(Rect.xywh(mid + len, cy - 2, -len, 5), fill);
+    if (live) {
+        const add = std.math.clamp(v.src_val * a, @as(f32, if (v.unipolar) 0 else -1), 1);
+        const ax: i32 = mid + @as(i32, @intFromFloat(@round(add * half)));
+        const lo = @min(mid, ax);
+        ui.rect(Rect.xywh(lo, cy - 1, @max(1, @max(mid, ax) - lo), 3), style.vfd);
+        ui.rect(Rect.xywh(ax, cy - 3, 1, 7), style.vfd_hi);
+        ui.animate();
+    }
+
+    // × clears a row that holds anything.
+    if (!v.fixed and (v.src != 0 or v.dst != 0 or v.amt != 0.5)) {
+        const xr = c.x;
+        const xb = ui.behaviorEx(ui.id("clear"), xr, .{ .focusable = false });
+        if (xb.clicked) e.clear = true;
+        if (over or xb.hover) {
+            const xc = if (xb.hover) style.vfd_hi else dim;
+            const x0 = xr.x + @divFloor(xr.w - 5, 2);
+            const y0 = xr.y + @divFloor(xr.h - 5, 2);
+            var i: i32 = 0;
+            while (i < 5) : (i += 1) {
+                ui.rect(Rect.xywh(x0 + i, y0 + i, 1, 1), xc);
+                ui.rect(Rect.xywh(x0 + 4 - i, y0 + i, 1, 1), xc);
+            }
+            if (xb.hover) ui.setTouch("SLOT", "CLEAR");
+        }
+    }
+    return e;
 }

@@ -611,6 +611,17 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   _mf-append-disp
 ;
 
+( The mod matrix on one display [kind 18]: a row per `mod-matrix` slot,
+  SOURCE -> DEST and the amount, with what the row adds now.  Edits go
+  to the slots' own controls. )
+: matrix-display  ( name -- )
+  DisplayDesc.alloc
+  0 swap DisplayDesc.sources!
+  swap cstr-new swap DisplayDesc.name!
+  18 swap DisplayDesc.kind!
+  _mf-append-disp
+;
+
 ( --- modulation [docs/15 §Modulation] ------------------------------- )
 : _mf-append-mod  ( m -- )
   _mf-last-mod @64 0 =
@@ -643,6 +654,19 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   ModDesc.index!
   swap cstr-new swap ModDesc.name!
   1 swap ModDesc.kind!
+  _mf-append-mod
+;
+
+( A built-in route: knob `control-id` sets how much SRC option `src`
+  moves DEST option `dst` outside the matrix [a filter's ENV amount, its
+  KEY tracking].  The matrix display lists it as a fixed row whose amount
+  is that knob. )
+: mod-fixed  ( control-id src dst -- )
+  ModDesc.alloc
+  ModDesc.offset!
+  ModDesc.index!
+  swap cstr-new swap ModDesc.name!
+  2 swap ModDesc.kind!
   _mf-append-mod
 ;
 

@@ -237,6 +237,10 @@ pub const FyRawMachine = struct {
     mod_target_n: usize = 0,
     mod_prev: [MOD_TARGETS]ModTarget = undefined,
     mod_prev_n: usize = 0,
+    // The hovered destination knob's index (this frame's, last frame's;
+    // 0 none): the matrix display lights the rows that reach it.
+    mod_hot_next: usize = 0,
+    mod_hot: usize = 0,
     // A scope-display's ring: the audio thread appends each block's
     // output, mono, and moves the head; the panel reads behind it.
     has_scope: bool = false,
@@ -2499,6 +2503,8 @@ fn drawPanelImpl(state: *anyopaque, ui: *Ui, rect: Rect) void {
     @memcpy(self.mod_prev[0..self.mod_target_n], self.mod_targets[0..self.mod_target_n]);
     self.mod_prev_n = self.mod_target_n;
     self.mod_target_n = 0;
+    self.mod_hot = self.mod_hot_next;
+    self.mod_hot_next = 0;
     _ = walkPanel(self, ui, rect, .{ .draw = tier });
     modDragTick(self, ui);
     autoMenuTick(self);
@@ -2672,6 +2678,7 @@ fn itemNatural(self: *const FyRawMachine, ui: *const Ui, it: machine_desc.Layout
         .graphic => GRAPHIC_MIN,
         .wavetable => WAVETABLE_MIN,
         .dock => DOCK_MIN,
+        .matrix => MATRIX_MIN,
         else => DISPLAY_MIN,
     };
 }
@@ -2921,6 +2928,9 @@ fn drawAutomatable(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *cons
     const was_pressed = ui.in.pressed;
     drawControl(self, ui, kr, gi, ctl, tier);
     modTarget(self, kr, gi);
+    if (kr.contains(ui.in.ix(), ui.in.iy())) {
+        if (modDestFor(self, gi)) |m| self.mod_hot_next = m.index;
+    }
     const wid = ui.id(gi);
     if (ui.active == wid) self.touch = .{ .control = @intCast(gi), .knob = self.controlNorm(gi) };
     // Right-click a control (any widget: the whole cell): the automation
@@ -2954,24 +2964,43 @@ const AUTO_SHOW: u32 = 1;
 const AUTO_CLEAR: u32 = 2;
 const AUTO_REENABLE: u32 = 3;
 
-/// The per-control automation context menu.
+/// Items past this id remove matrix slot `id - AUTO_UNMOD`.
+const AUTO_UNMOD: u32 = 100;
+const MENU_SLOTS = 16;
+
+/// The per-control context menu: automation, and for a modulation
+/// destination one "Remove" per slot that routes to it.
 fn autoMenuTick(self: *FyRawMachine) void {
     const key = autoMenuKey(self);
     if (!ui_menu.isOpen(key)) return;
     const gi = self.ctx_control;
     const automated = self.ui_auto[gi] != null;
     const overridden = self.auto_override[gi].load(.monotonic) != 0;
-    const items = [_]ui_menu.Item{
-        .{ .label = "Show automation", .id = AUTO_SHOW },
-        .{ .label = "Clear automation", .id = AUTO_CLEAR, .enabled = automated },
-        .{ .label = "Re-enable automation", .id = AUTO_REENABLE, .enabled = overridden },
-    };
-    const picked = ui_menu.pick(key, &items) orelse return;
+    var items: [4 + MENU_SLOTS]ui_menu.Item = undefined;
+    items[0] = .{ .label = "Show automation", .id = AUTO_SHOW };
+    items[1] = .{ .label = "Clear automation", .id = AUTO_CLEAR, .enabled = automated };
+    items[2] = .{ .label = "Re-enable automation", .id = AUTO_REENABLE, .enabled = overridden };
+    var n: usize = 3;
+    var labels: [MENU_SLOTS][48]u8 = undefined;
+    if (modDestFor(self, gi)) |dm| {
+        for (0..@min(self.desc.matrix_slots, MENU_SLOTS)) |s| {
+            const src = slotOption(self, s, "src");
+            if (src == 0 or slotOption(self, s, "dst") != dm.index) continue;
+            if (n == 3) {
+                items[n] = .{ .separator = true };
+                n += 1;
+            }
+            const name = if (modSource(self, src)) |m| m.nameSlice() else "?";
+            items[n] = .{ .label = std.fmt.bufPrint(&labels[s], "Remove {s} modulation", .{name}) catch "Remove modulation", .id = AUTO_UNMOD + @as(u32, @intCast(s)) };
+            n += 1;
+        }
+    }
+    const picked = ui_menu.pick(key, items[0..n]) orelse return;
     switch (picked) {
         AUTO_SHOW => self.auto_request = .{ .control = @intCast(gi), .action = .show },
         AUTO_CLEAR => self.auto_request = .{ .control = @intCast(gi), .action = .clear },
         AUTO_REENABLE => self.auto_override[gi].store(0, .monotonic),
-        else => {},
+        else => if (picked >= AUTO_UNMOD) clearSlot(self, picked - AUTO_UNMOD),
     }
 }
 
@@ -3110,6 +3139,7 @@ fn drawDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void
         .env => drawEnvDisplay(self, ui, r, disp),
         .dock => drawDockDisplay(self, ui, r),
         .scope => drawScopeDisplay(self, ui, r),
+        .matrix => drawMatrixDisplay(self, ui, r),
     }
 }
 
@@ -3233,13 +3263,134 @@ fn setSlot(self: *FyRawMachine, s: usize, src: usize, dst: ?usize) void {
 /// Route `src` to a target: a slot takes the source; a destination reuses
 /// the slot that already joins the two, else the first free one.
 fn routeSource(self: *FyRawMachine, src: usize, t: ModTarget) void {
-    if (t.slot != NO_SLOT) return setSlot(self, t.slot, src, null);
+    const s = dropSlot(self, src, t) orelse return;
+    if (t.slot != NO_SLOT) return setSlot(self, s, src, null);
+    if (slotOption(self, s, "src") == src and slotOption(self, s, "dst") == t.dst) return;
+    setSlot(self, s, src, t.dst);
+}
+
+/// The slot a drop of `src` on `t` fills.
+fn dropSlot(self: *const FyRawMachine, src: usize, t: ModTarget) ?usize {
+    if (t.slot != NO_SLOT) return t.slot;
     for (0..self.desc.matrix_slots) |s| {
-        if (slotOption(self, s, "src") == src and slotOption(self, s, "dst") == t.dst) return;
+        if (slotOption(self, s, "src") == src and slotOption(self, s, "dst") == t.dst) return s;
     }
     for (0..self.desc.matrix_slots) |s| {
-        if (slotOption(self, s, "src") == 0 or slotOption(self, s, "dst") == 0) return setSlot(self, s, src, t.dst);
+        if (slotOption(self, s, "src") == 0 or slotOption(self, s, "dst") == 0) return s;
     }
+    return null;
+}
+
+/// Empty slot `s`: no source, no destination, no amount.
+fn clearSlot(self: *FyRawMachine, s: usize) void {
+    if (matrixCtl(self, s, "src")) |i| pickOption(self, i, 0);
+    if (matrixCtl(self, s, "dst")) |i| pickOption(self, i, 0);
+    if (matrixCtl(self, s, "amt")) |i| {
+        const ctl = self.desc.controls[i];
+        if (ctl.kind == .direct_f64) self.setControlNorm(i, valueToNorm(ctl, 0));
+    }
+}
+
+/// The source whose option index is `src`.
+fn modSource(self: *const FyRawMachine, src: usize) ?*const machine_desc.Mod {
+    for (self.desc.mods[0..self.desc.mod_count]) |*m| {
+        if (m.kind == .source and m.index == src) return m;
+    }
+    return null;
+}
+
+const MATRIX_MIN = [2]i32{ 480, 104 };
+/// The matrix display adds a column of rows per this much width (to 3).
+const MATRIX_COL_MIN: i32 = 300;
+
+fn matrixSlotRow(self: *FyRawMachine, ui: *Ui, row: Rect, s: usize, drop: usize, srcs: []const []const u8, dsts: []const []const u8) void {
+    const src = slotOption(self, s, "src");
+    const dst = slotOption(self, s, "dst");
+    const ai = matrixCtl(self, s, "amt");
+    // The row takes a dropped source.
+    if (self.mod_target_n < MOD_TARGETS) {
+        self.mod_targets[self.mod_target_n] = .{ .r = row, .slot = s };
+        self.mod_target_n += 1;
+    }
+    const m = modSource(self, src);
+    const e = synth_views.matrixSlot(ui, row, .{ "mx", s }, s + 1, .{
+        .src = @intCast(src),
+        .dst = @intCast(dst),
+        .amt = if (ai) |i| self.shownNorm(i) else 0.5,
+        .src_val = if (m) |mm| sourceValue(self, mm) else 0,
+        .src_bipolar = if (m) |mm| mm.bipolar else false,
+        .lit = self.mod_hot != 0 and src != 0 and dst == self.mod_hot,
+        .drop = drop == s,
+    }, srcs, dsts);
+    if (e.src) |v| if (matrixCtl(self, s, "src")) |i| pickOption(self, i, v);
+    if (e.dst) |v| if (matrixCtl(self, s, "dst")) |i| pickOption(self, i, v);
+    if (e.amt) |v| if (ai) |i| self.setControlNorm(i, v);
+    if (e.clear) clearSlot(self, s);
+}
+
+/// A built-in route's row: its amount is its knob.
+fn matrixFixedRow(self: *FyRawMachine, ui: *Ui, row: Rect, f: *const machine_desc.Mod, srcs: []const []const u8, dsts: []const []const u8) void {
+    const ctl = &self.desc.controls[f.control];
+    const m = modSource(self, f.index);
+    const e = synth_views.matrixSlot(ui, row, .{ "mxf", f.control }, 0, .{
+        .src = @intCast(f.index),
+        .dst = @intCast(f.dst),
+        .amt = self.shownNorm(f.control),
+        .src_val = if (m) |mm| sourceValue(self, mm) else 0,
+        .src_bipolar = if (m) |mm| mm.bipolar else false,
+        .lit = self.mod_hot != 0 and f.dst == self.mod_hot,
+        .fixed = true,
+        .unipolar = ctl.min >= 0,
+        .amt_name = ctl.module[0..ctl.module_len],
+    }, srcs, dsts);
+    if (e.amt) |v| self.setControlNorm(f.control, v);
+}
+
+/// The matrix on one display (matrix-display): a row per slot, two
+/// columns of them when there's room.
+fn drawMatrixDisplay(self: *FyRawMachine, ui: *Ui, r: Rect) void {
+    const n = self.desc.matrix_slots;
+    const si = matrixCtl(self, 0, "src") orelse return;
+    const di = matrixCtl(self, 0, "dst") orelse return;
+    var sb: [MAX_OPTS][]const u8 = undefined;
+    var db: [MAX_OPTS][]const u8 = undefined;
+    const srcs = optionSlices(&self.desc.controls[si], &sb);
+    const dsts = optionSlices(&self.desc.controls[di], &db);
+    // A drop in flight: the slot it would fill.
+    var drop: usize = NO_SLOT;
+    if (self.mod_drag != 0 and self.mod_drag <= self.desc.mod_count) {
+        const src = self.desc.mods[self.mod_drag - 1].index;
+        for (self.mod_prev[0..self.mod_prev_n]) |t| {
+            if (t.r.contains(ui.in.ix(), ui.in.iy())) {
+                drop = dropSlot(self, src, t) orelse NO_SLOT;
+                break;
+            }
+        }
+    }
+    // Rows: the slots, then the built-in routes, in up to three columns.
+    var fixed: [machine_desc.MAX_MODS]*const machine_desc.Mod = undefined;
+    var nf: usize = 0;
+    for (self.desc.mods[0..self.desc.mod_count]) |*m| {
+        if (m.kind == .fixed) {
+            fixed[nf] = m;
+            nf += 1;
+        }
+    }
+    const total = n + nf;
+    const g = synth_views.matrixBegin(ui, r);
+    const ncol: usize = std.math.clamp(@as(usize, @intCast(@divFloor(g.w, MATRIX_COL_MIN))), 1, @min(3, total));
+    const per = (total + ncol - 1) / ncol;
+    const cw = @divFloor(g.w, @as(i32, @intCast(ncol)));
+    for (0..ncol) |ci| {
+        var col = Rect.xywh(g.x + @as(i32, @intCast(ci)) * cw, g.y + 2, cw, g.h - 2);
+        if (ci > 0) ui.rect(Rect.xywh(col.x, col.y + 2, 1, col.h - 6), ui_style.vfd.alpha(30));
+        synth_views.matrixHeader(ui, col.cutTop(16), srcs, dsts);
+        for (ci * per..@min(total, (ci + 1) * per)) |ri| {
+            const row = col.cutTop(synth_views.MATRIX_ROW);
+            if (ri < n) matrixSlotRow(self, ui, row, ri, drop, srcs, dsts) else matrixFixedRow(self, ui, row, fixed[ri - n], srcs, dsts);
+        }
+    }
+    synth_views.matrixEnd(ui, g);
 }
 
 fn sourceValue(self: *const FyRawMachine, m: *const machine_desc.Mod) f32 {
@@ -3316,15 +3467,27 @@ fn drawWavetableDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Disp
     const on = prefixedValue(self, prefix, "-on", 1) > 0.5;
     const live_pos = liveF64(self, disp.wtOffset(.pos));
     if (live_pos != null) ui.animate();
+    // A USER table names its file; LOAD sits in the view's corner.
+    const user_ai = if (is_user) self.assetIndexByName(user) else null;
+    var nbuf: [64]u8 = undefined;
+    const name = if (user_ai) |ai| std.ascii.upperString(&nbuf, self.asset_label[ai][0..@min(self.asset_label_len[ai], nbuf.len)]) else sel.label;
     synth_views.wavetableView(ui, r, .{
         .table = table,
-        .name = sel.label,
+        .name = name,
         .pos = if (live_pos) |p| @floatCast(p) else knob_pos,
         .base_pos = knob_pos,
         .warp = @enumFromInt(@min(warp, 4)),
         .amt = if (liveF64(self, disp.wtOffset(.warp))) |w| @floatCast(w) else amt,
         .dim = !on,
     });
+    if (user_ai) |ai| {
+        if (ui_ctl.button(ui, Rect.xywh(r.right() - 44, r.y, 44, 18), .{ "wtload", ai }, null, .{ .label = "LOAD" })) {
+            if (native_dialog.openAudioFile(self.alloc) catch null) |path| {
+                defer self.alloc.free(path);
+                _ = self.loadAssetRuntime(ai, path);
+            }
+        }
+    }
 }
 
 /// A filter's response (filter-display), lit where the newest voice has

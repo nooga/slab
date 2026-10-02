@@ -3,16 +3,18 @@
   The voice lives in kernels/06-voices/concoction.fy.  Two wavetable
   oscillators read the built-in bank [assets/bank.wav, the TABLE switch]
   or their own USER file: any Serum wavetable [2048-sample frames, the
-  `clm ` chunk], loaded with LOAD on the WAVES page.  Nothing drifts and
+  `clm ` chunk], loaded with LOAD on the oscillator's view.  Nothing drifts and
   every note starts each oscillator at its PHASE, which is what makes a
   digital bass hit the same way every time.
 
   Pages: OSC [the sound: the oscillators over their wavetables, the
-  filter's response, the scope], MOD [what moves it: the LFOs, the
-  FILTER and MOD envelopes, the 8-slot matrix], WAVES [the USER tables].
-  Both first pages carry the modulation dock: drag a source onto a knob
-  with a ring, or onto a slot's SRC, to route it.  Every display follows
-  the newest voice. )
+  filter over its response], MOD [what moves it: the LFOs, the FILTER
+  and MOD envelopes, the 8-slot matrix and the built-in routes on one
+  display], VOICE [how a note plays: the AMP envelope, pitch and glide,
+  the output and its scope].  Every
+  page carries the modulation dock: drag a source onto a knob with a
+  ring, or onto a matrix row, to route it; right-click the knob to remove
+  it.  Every display follows the newest voice. )
 
 include "../../kernels/06-voices/concoction.fy"
 include "../lib/manifest.fy"
@@ -55,7 +57,7 @@ include "../lib/manifest.fy"
   8 voices!
   ConcoctionState.size  state-size!
   ConcoctionParams.size params-size!
-  780.0 panel-w!
+  1240.0 panel-w!
 
   "bank" ConcoctionParams.bank ConcoctionParams.bank-frames "assets/bank.wav" wavetable
   "wt-a" ConcoctionParams.wt-a ConcoctionParams.wt-a-frames "assets/kick.wav" wavetable
@@ -201,6 +203,10 @@ include "../lib/manifest.fy"
   "cn-f-res"     13 ConcoctionState.res-v mod-dest
   "cn-f-drive"   14 ConcoctionState.drv-v mod-dest
   "cn-level"     15 ConcoctionState.amp-v mod-dest
+  ( built-in routes: the matrix display lists them as fixed rows )
+  "cn-f-env" 1 12 mod-fixed   ( ENV2 -> CUTOFF, the FILTER ENV amount )
+  "cn-f-key" 6 12 mod-fixed   ( NOTE -> CUTOFF, KEY tracking )
+  "cn-vel"   5 15 mod-fixed   ( VEL -> AMP )
   "cn-m" 8 mod-matrix
 
   ( ── displays: the newest voice drives them ── )
@@ -214,30 +220,27 @@ include "../lib/manifest.fy"
   "FILTER ADSR" "FILTER ENV" ConcoctionState.e2 EnvD.level + ConcoctionState.e2 EnvD.stage + env-display
   "MOD ADSR" "MOD ENV" ConcoctionState.e3 EnvD.level + ConcoctionState.e3 EnvD.stage + env-display
   "SCOPE" scope-display
-  "USER A" "wt-a" waveform-display
-  "USER B" "wt-b" waveform-display
+  "MATRIX" matrix-display
 
-  ( ── pages: OSC the sound, MOD what moves it ── )
+  ( ── pages: OSC the sound, MOD what moves it, VOICE how a note plays ── )
   "OSC" page
     0.2 row  1.0 cell  "MOD DOCK" 1.0 item
-    1.6 row  1.0 cell  "OSC A" 1.0 item  "OSC A VIEW" 1.6 item
-             1.0 cell  "OSC B" 1.0 item  "OSC B VIEW" 1.6 item
+    1.0 row  1.0 cell  "OSC A" 1.0 item  "OSC A VIEW" 1.2 item
+             1.0 cell  "OSC B" 1.0 item  "OSC B VIEW" 1.2 item
              0.5 cell  "SUB" 1.0 item  "NOISE" 1.0 item
-    1.0 row  0.8 cell  "FILTER" 1.0 item  "FILTER VIEW" 1.4 item
-             0.8 cell  "AMP" 1.0 item  "AMP ADSR" 0.5 item
-             0.6 cell  "PITCH" 1.0 item
-             0.8 cell  "OUT" 1.0 item  "SCOPE" 1.4 item
+             0.9 cell  "FILTER" 1.0 item  "FILTER VIEW" 1.2 item
   "MOD" page
     0.2 row  1.0 cell  "MOD DOCK" 1.0 item
     1.0 row  1.0 cell  "LFO 1" 1.0 item  "LFO 1 VIEW" 1.0 item
              1.0 cell  "LFO 2" 1.0 item  "LFO 2 VIEW" 1.0 item
-             1.0 cell  "FILTER ENV" 1.0 item  "FILTER ADSR" 0.6 item
-             1.0 cell  "MOD ENV" 1.0 item  "MOD ADSR" 0.6 item
-    0.6 row  1.0 cell  "SLOT 1" 1.0 item  1.0 cell  "SLOT 2" 1.0 item  1.0 cell  "SLOT 3" 1.0 item  1.0 cell  "SLOT 4" 1.0 item
-    0.6 row  1.0 cell  "SLOT 5" 1.0 item  1.0 cell  "SLOT 6" 1.0 item  1.0 cell  "SLOT 7" 1.0 item  1.0 cell  "SLOT 8" 1.0 item
-  "WAVES" page
-    1.0 row  1.0 cell  "USER A" 1.0 item
-    1.0 row  1.0 cell  "USER B" 1.0 item
+             1.0 cell  "FILTER ENV" 1.0 item  "FILTER ADSR" 0.8 item
+             1.0 cell  "MOD ENV" 1.0 item  "MOD ADSR" 0.8 item
+    0.6 row  1.0 cell  "MATRIX" 1.0 item
+  "VOICE" page
+    0.2 row  1.0 cell  "MOD DOCK" 1.0 item
+    1.0 row  1.0 cell  "AMP" 1.0 item  "AMP ADSR" 0.8 item
+             0.9 cell  "PITCH" 1.0 item  "OUT" 1.0 item
+             1.3 cell  "SCOPE" 1.0 item
 
   machine-desc
 ;
