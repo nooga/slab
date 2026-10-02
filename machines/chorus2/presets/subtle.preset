@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "chorus2", "note": "Slow, narrow, understated", "params": {"chorus-mode": 0, "chorus-rate": 0.6, "chorus-depth": 0.4, "chorus-tone": 7000, "chorus-spread": 0.6, "chorus-mix": 0.3}}
+{"slab": "preset", "schema": 1, "machine": "chorus2", "note": "Slow, narrow, understated", "params": {"chorus-mode": 0, "chorus-rate": 0.6, "chorus-depth": 0.4, "chorus-tone": 7000, "chorus-spread": 0.6, "chorus-mix": 0.3}}

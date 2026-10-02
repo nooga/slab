@@ -101,7 +101,7 @@ def build(name, note, adapt, out_db, filters):
         params[f"geq-on{n}"] = on
     params["geq-adapt"] = adapt
     params["geq-out"] = out_db
-    return {"schema": 1, "machine": "geq8", "note": note, "params": params}
+    return {"slab": "preset", "schema": 1, "machine": "geq8", "note": note, "params": params}
 
 
 def main():

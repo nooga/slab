@@ -20,11 +20,23 @@ soft-clip, so what it writes is what you'd hear.
 
 ## Preset
 
-`machines/<id>/presets/<name>.preset`, or `presets/<bank>/<name>.preset`
-for a bank (the panel shows banks as submenus):
+A machine's presets come from three places ([25-storage.md](25-storage.md)
+§Save to Library), each a folder of `<name>.preset` files, with
+`<bank>/<name>.preset` for a bank (the panel shows banks as submenus):
+
+| Where | Shown as | Written by |
+|---|---|---|
+| `machines/<id>/presets/` (the factory) | `name`, `bank/name` | the repo and its tools; read-only in the app |
+| `<project>.slab/presets/<id>/` | `Project/name` | Save preset… in a saved project |
+| `~/Music/Slab/Presets/<id>/` | `User/name` | Save to Library…, and Save preset… before the project is saved |
+
+Only Project and User presets rename. A preset saved to the project names
+the package's files relative to it. One saved to the library takes
+copies of the files only the project has: into the home folder's
+`Wavetables/` or `Samples/`.
 
 ```json
-{"schema": 1, "machine": "juno2", "note": "Bittersweet minor loop pad",
+{"slab": "preset", "schema": 1, "machine": "juno2", "note": "Bittersweet minor loop pad",
  "params": {"jn-cutoff": 950, "jn-res": 0.1, "jn-pwmod": 1}}
 ```
 
@@ -38,7 +50,8 @@ for a bank (the panel shows banks as submenus):
   is the manifest default on a fresh instance.
 - `unison` (top level, same form as `instrument.unison`) is the stack
   the sound needs. A preset without one plays one voice a note.
-- `machine` and `note` are metadata; the loader ignores them.
+- `slab` and `schema` tag the format (docs/25 §Formats). `machine` and
+  `note` are metadata; the loader ignores them.
 - The panel shows the current preset's name, with a `*` once any
   control the preset sets has moved off its value (moving it back
   clears it). A project's `"preset"` marks which preset its settings
@@ -53,7 +66,7 @@ params, each part a machine with its settings in that machine's own
 form:
 
 ```json
-{"schema": 1, "machine": "rack", "note": "CMI tour / gabriel2 / FISHINET",
+{"slab": "preset", "schema": 1, "machine": "rack", "note": "CMI tour / gabriel2 / FISHINET",
  "parts": [{"machine": "unfairlight", "name": "VOC1", "lo": 0, "hi": 40,
             "vlo": 1, "vhi": 127, "transpose": 12, "level": 0, "pan": 0,
             "poly": 2, "mute": false,

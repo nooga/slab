@@ -169,6 +169,7 @@ arp = preset("juno2", "pluck-keys")
 arp.update({"jn-cutoff": 3400, "jn-level": 0.5, "jn-age": 0.4})
 
 project = {
+    "slab": "project",
     "schema": 1,
     "transport": {"bpm": float(BPM), "loop": {"on": True, "start": 0.0, "end": float(BEATS)}},
     "tracks": [

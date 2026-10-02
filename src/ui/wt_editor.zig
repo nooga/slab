@@ -69,9 +69,11 @@ pub const Opts = struct {
     name: []const u8 = "",
     /// Offer SAVE (write the table to a file).
     can_save: bool = false,
+    /// Offer LIBRARY (a copy into the home folder's Wavetables, docs/25).
+    can_library: bool = false,
 };
 
-pub const Result = struct { done: bool = false, save: bool = false };
+pub const Result = struct { done: bool = false, save: bool = false, library: bool = false };
 
 pub fn editor(ui: *Ui, r: Rect, doc: *Doc, v: *View, o: Opts) Result {
     ui.pushId("wted");
@@ -83,6 +85,9 @@ pub fn editor(ui: *Ui, r: Rect, doc: *Doc, v: *View, o: Opts) Result {
     if (ctl.button(ui, head.cutRight(56), "done", null, .{ .label = "DONE", .flush = true })) res.done = true;
     if (o.can_save) {
         if (ctl.button(ui, head.cutRight(56), "save", null, .{ .label = "SAVE", .flush = true })) res.save = true;
+    }
+    if (o.can_library) {
+        if (ctl.button(ui, head.cutRight(64), "library", null, .{ .label = "LIBRARY", .flush = true })) res.library = true;
     }
     if (ctl.button(ui, head.cutRight(56), "redo", null, .{ .label = "REDO", .flush = true, .disabled = !doc.canRedo() })) doc.redo();
     if (ctl.button(ui, head.cutRight(56), "undo", null, .{ .label = "UNDO", .flush = true, .disabled = !doc.canUndo() })) doc.undo();

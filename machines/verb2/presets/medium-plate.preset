@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "verb2", "note": "Hotel lobby: classy medium verb", "params": {"verb-predelay": 0.02, "verb-decay": 3.51, "verb-damp": 5500, "verb-tone": 9500, "verb-mix": 0.28, "verb-mod": 9}}
+{"slab": "preset", "schema": 1, "machine": "verb2", "note": "Hotel lobby: classy medium verb", "params": {"verb-predelay": 0.02, "verb-decay": 3.51, "verb-damp": 5500, "verb-tone": 9500, "verb-mix": 0.28, "verb-mod": 9}}

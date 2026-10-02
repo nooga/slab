@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "funk", "note": "Thin bandpass quack for e-piano and organ stabs", "params": {"funk-macro": 0.5, "funk-range": 2}}
+{"slab": "preset", "schema": 1, "machine": "funk", "note": "Thin bandpass quack for e-piano and organ stabs", "params": {"funk-macro": 0.5, "funk-range": 2}}

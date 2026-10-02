@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "delay2", "note": "Quarter-note ping that ducks under the vocal and blooms in the gaps", "params": {"delay-mode": 1, "delay-sync": 1, "delay-div": 4, "delay-fb": 0.4, "delay-duck": 0.8, "delay-lowcut": 200, "delay-damp": 6000, "delay-mix": 0.4}}
+{"slab": "preset", "schema": 1, "machine": "delay2", "note": "Quarter-note ping that ducks under the vocal and blooms in the gaps", "params": {"delay-mode": 1, "delay-sync": 1, "delay-div": 4, "delay-fb": 0.4, "delay-duck": 0.8, "delay-lowcut": 200, "delay-damp": 6000, "delay-mix": 0.4}}

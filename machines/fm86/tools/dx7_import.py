@@ -90,7 +90,7 @@ def main():
         seen[stem] = seen.get(stem, 0) + 1
         if seen[stem] > 1:
             stem = f"{stem}-{seen[stem]}"
-        doc = {"schema": 1, "machine": "fm86",
+        doc = {"slab": "preset", "schema": 1, "machine": "fm86",
                "note": f"DX7 import: {name.strip()} (alg {params['algo']})",
                "params": params}
         with open(os.path.join(out, stem + ".preset"), "w") as f:

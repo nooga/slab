@@ -166,6 +166,31 @@ fn copyFile(src: []const u8, dst: []const u8) !u64 {
     return total;
 }
 
+/// Copy the files under `src` into `dst`, keeping their layout; files
+/// already at `dst` stay. Save As uses it for a package's own folders
+/// (presets/) that no reference names. Returns how many it copied.
+pub fn copyTree(src: []const u8, dst: []const u8) usize {
+    var zb: [MAX_PATH]u8 = undefined;
+    const d = opendir(z(&zb, src) orelse return 0) orelse return 0;
+    defer _ = closedir(d);
+    var n: usize = 0;
+    while (readdir(d)) |e| {
+        const name = e.d_name[0..e.d_namlen];
+        if (name.len == 0 or name[0] == '.') continue;
+        var sb: [MAX_PATH]u8 = undefined;
+        var db: [MAX_PATH]u8 = undefined;
+        const s = std.fmt.bufPrint(&sb, "{s}/{s}", .{ src, name }) catch continue;
+        const t = std.fmt.bufPrint(&db, "{s}/{s}", .{ dst, name }) catch continue;
+        if (e.d_type == DT_DIR) {
+            n += copyTree(s, t);
+        } else if (!exists(t)) {
+            _ = copyFile(s, t) catch continue;
+            n += 1;
+        }
+    }
+    return n;
+}
+
 // ── content identity ───────────────────────────────────────────────────
 
 pub const Sha = [32]u8;
@@ -307,15 +332,14 @@ const Collector = struct {
             keymap.freeFiles(self.alloc, files);
             self.alloc.free(files);
         }
-        const rel = try self.collect(abs, files, use, is_lib);
+        const rel = try self.collect(abs, files, if (use == .audio) AUDIO else SAMPLES, is_lib);
         try self.entry(rel, abs, rooted, files);
         return rel;
     }
 
     /// Copy `files` (the reference's file first) into the package; returns
     /// the copy of `abs`, project-relative.
-    fn collect(self: *Collector, abs: []const u8, files: []const []u8, use: Use, is_lib: bool) ![]const u8 {
-        const kind = if (use == .audio) AUDIO else SAMPLES;
+    fn collect(self: *Collector, abs: []const u8, files: []const []u8, kind: []const u8, is_lib: bool) ![]const u8 {
         var lb: [MAX_PATH]u8 = undefined;
         const lib = storage.library(&lb);
         const dir_asset = isDir(abs);
@@ -424,6 +448,24 @@ fn under(path: []const u8, root: []const u8) bool {
     return root.len > 0 and path.len > root.len + 1 and std.mem.startsWith(u8, path, root) and path[root.len] == '/';
 }
 
+/// Copy a file the project carries (and an SFZ's or a folder's members)
+/// into `root`/`folder` — the home folder's Samples or Wavetables, for
+/// Save to Library — the way a save collects it. Returns the copy's path
+/// in `out`.
+pub fn copyInto(alloc: std.mem.Allocator, out: []u8, root: []const u8, folder: []const u8, abs: []const u8) ![]const u8 {
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    var report = Report{};
+    var c = Collector{ .arena = arena_state.allocator(), .alloc = alloc, .pkg = root, .opts = .{}, .report = &report, .table = .empty };
+    const files = try keymap.memberFiles(alloc, abs);
+    defer {
+        keymap.freeFiles(alloc, files);
+        alloc.free(files);
+    }
+    const rel = try c.collect(abs, files, folder, false);
+    return std.fmt.bufPrint(out, "{s}/{s}", .{ root, rel });
+}
+
 /// Collect `json`'s files into the package at `pkg` (absolute, the
 /// project folder storage resolves against) and return the document to
 /// write: references rewritten to the copies, and the "assets" table.
@@ -454,7 +496,7 @@ pub const Missing = struct {
         var rb: [MAX_PATH]u8 = undefined;
         if (exists(storage.resolve(&rb, reference))) return null;
         self.count += 1;
-        std.log.warn("missing file: {s}", .{reference});
+        std.log.info("missing file: {s}", .{reference});
         if (self.shown < self.first.len and reference.len <= MAX_PATH) {
             @memcpy(self.names[self.shown][0..reference.len], reference);
             self.first[self.shown] = self.names[self.shown][0..reference.len];

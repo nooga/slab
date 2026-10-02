@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "funk", "note": "Squeezed, resonant quack for 16th-note clav and rhythm guitar", "params": {"funk-macro": 0.55, "funk-range": 1}}
+{"slab": "preset", "schema": 1, "machine": "funk", "note": "Squeezed, resonant quack for 16th-note clav and rhythm guitar", "params": {"funk-macro": 0.55, "funk-range": 1}}

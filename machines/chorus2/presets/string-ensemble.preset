@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "chorus2", "note": "Solina-ish string ensemble", "params": {"chorus-mode": 2, "chorus-rate": 0.7, "chorus-depth": 1.4, "chorus-tone": 9000, "chorus-spread": 1, "chorus-mix": 0.6}}
+{"slab": "preset", "schema": 1, "machine": "chorus2", "note": "Solina-ish string ensemble", "params": {"chorus-mode": 2, "chorus-rate": 0.7, "chorus-depth": 1.4, "chorus-tone": 9000, "chorus-spread": 1, "chorus-mix": 0.6}}

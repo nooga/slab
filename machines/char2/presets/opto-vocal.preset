@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "char2", "note": "LA-2A on a vocal: OPTO 3:1, the two-stage release, light warmth", "params": {"char-mode": 1, "char-ratio": 3, "char-atk": 0.01, "char-rel": 1.0, "char-drive": 0.3, "char-mix": 1, "char-makeup": 3.4, "char-thresh": -13.5}}
+{"slab": "preset", "schema": 1, "machine": "char2", "note": "LA-2A on a vocal: OPTO 3:1, the two-stage release, light warmth", "params": {"char-mode": 1, "char-ratio": 3, "char-atk": 0.01, "char-rel": 1.0, "char-drive": 0.3, "char-mix": 1, "char-makeup": 3.4, "char-thresh": -13.5}}

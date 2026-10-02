@@ -212,6 +212,39 @@ pub fn absolute(buf: []u8, path: []const u8) []const u8 {
     return buf[0..n];
 }
 
+/// A name for a file: lower case letters, digits and dashes.
+pub fn slug(buf: []u8, s: []const u8) []const u8 {
+    var n: usize = 0;
+    var dash = false;
+    for (s) |ch| {
+        if (n == buf.len) break;
+        if (std.ascii.isAlphanumeric(ch)) {
+            if (dash and n > 0 and n < buf.len) {
+                buf[n] = '-';
+                n += 1;
+            }
+            if (n == buf.len) break;
+            buf[n] = std.ascii.toLower(ch);
+            n += 1;
+            dash = false;
+        } else dash = true;
+    }
+    return buf[0..n];
+}
+
+/// `<dir>/<stem><ext>`, or `<stem>-2<ext>` and on: the first not taken.
+pub fn freshPath(buf: []u8, dir: []const u8, stem: []const u8, ext: []const u8) []const u8 {
+    var n: usize = 1;
+    while (n < 1000) : (n += 1) {
+        const p = if (n == 1)
+            std.fmt.bufPrintZ(buf, "{s}/{s}{s}", .{ dir, stem, ext }) catch return ""
+        else
+            std.fmt.bufPrintZ(buf, "{s}/{s}-{d}{s}", .{ dir, stem, n, ext }) catch return "";
+        if (access(p.ptr, 0) != 0) return p;
+    }
+    return "";
+}
+
 // ── the home folder and settings ──────────────────────────────────────
 
 /// The folders of the home folder (docs/25 §The home folder).

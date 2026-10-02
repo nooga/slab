@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "char2", "note": "LA-2A on bass: OPTO 4:1, holds the line even", "params": {"char-mode": 1, "char-ratio": 4, "char-atk": 0.01, "char-rel": 0.8, "char-drive": 0.35, "char-mix": 1, "char-makeup": 3.3, "char-thresh": -11.1}}
+{"slab": "preset", "schema": 1, "machine": "char2", "note": "LA-2A on bass: OPTO 4:1, holds the line even", "params": {"char-mode": 1, "char-ratio": 4, "char-atk": 0.01, "char-rel": 0.8, "char-drive": 0.35, "char-mix": 1, "char-makeup": 3.3, "char-thresh": -11.1}}

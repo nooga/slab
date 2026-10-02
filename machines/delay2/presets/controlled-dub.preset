@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "delay2", "note": "Feedback-heavy but controlled dub", "params": {"delay-time": 0.4, "delay-fb": 0.78, "delay-damp": 3500, "delay-mix": 0.4, "delay-char": 1, "delay-drive": 0.3, "delay-lowcut": 120}}
+{"slab": "preset", "schema": 1, "machine": "delay2", "note": "Feedback-heavy but controlled dub", "params": {"delay-time": 0.4, "delay-fb": 0.78, "delay-damp": 3500, "delay-mix": 0.4, "delay-char": 1, "delay-drive": 0.3, "delay-lowcut": 120}}

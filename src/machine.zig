@@ -420,6 +420,8 @@ pub const Machine = struct {
     apply_preset: ?ApplyPresetFn = null,
     save_preset: ?SavePresetFn = null,
     save_preset_named: ?SavePresetNamedFn = null,
+    /// Save to the library (the home folder's User bank), not the project.
+    save_preset_library: ?SavePresetNamedFn = null,
     rename_preset: ?RenamePresetFn = null,
     current_preset: ?CurrentPresetFn = null,
     mark_preset: ?MarkPresetFn = null,

@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "verb2", "note": "Tight, natural small room", "params": {"verb-predelay": 0.005, "verb-decay": 0.6, "verb-damp": 3200, "verb-tone": 7500, "verb-mix": 0.22, "verb-mod": 6, "verb-algo": 1, "verb-size": 0.7, "verb-early": 0.6}}
+{"slab": "preset", "schema": 1, "machine": "verb2", "note": "Tight, natural small room", "params": {"verb-predelay": 0.005, "verb-decay": 0.6, "verb-damp": 3200, "verb-tone": 7500, "verb-mix": 0.22, "verb-mod": 6, "verb-algo": 1, "verb-size": 0.7, "verb-early": 0.6}}

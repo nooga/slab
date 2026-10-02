@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "era", "note": "Fairlight CMI Series II: 8-bit linear, ~24 kHz, SSM2045 output filter", "params": {"era-in": 0, "era-aa": 1, "era-rate": 24000, "era-bits": 8, "era-mode": 0, "era-filter": 8000, "era-res": 0.15, "era-mix": 1, "era-out": 0}}
+{"slab": "preset", "schema": 1, "machine": "era", "note": "Fairlight CMI Series II: 8-bit linear, ~24 kHz, SSM2045 output filter", "params": {"era-in": 0, "era-aa": 1, "era-rate": 24000, "era-bits": 8, "era-mode": 0, "era-filter": 8000, "era-res": 0.15, "era-mix": 1, "era-out": 0}}

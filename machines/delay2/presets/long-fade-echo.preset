@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "delay2", "note": "Long fading transition echo", "params": {"delay-time": 0.7, "delay-fb": 0.7, "delay-damp": 4000, "delay-mix": 0.4, "delay-mode": 2, "delay-offset": 0.015, "delay-mod": 0.15, "delay-rate": 0.3}}
+{"slab": "preset", "schema": 1, "machine": "delay2", "note": "Long fading transition echo", "params": {"delay-time": 0.7, "delay-fb": 0.7, "delay-damp": 4000, "delay-mix": 0.4, "delay-mode": 2, "delay-offset": 0.015, "delay-mod": 0.15, "delay-rate": 0.3}}

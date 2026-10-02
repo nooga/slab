@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "comp2", "note": "Dry, forward drums", "params": {"comp-thresh": -15.8, "comp-ratio": 4, "comp-knee": 4, "comp-atk": 0.01, "comp-rel": 0.06, "comp-hpf": 20, "comp-det": 0, "comp-makeup": 3.4, "comp-mix": 1}}
+{"slab": "preset", "schema": 1, "machine": "comp2", "note": "Dry, forward drums", "params": {"comp-thresh": -15.8, "comp-ratio": 4, "comp-knee": 4, "comp-atk": 0.01, "comp-rel": 0.06, "comp-hpf": 20, "comp-det": 0, "comp-makeup": 3.4, "comp-mix": 1}}

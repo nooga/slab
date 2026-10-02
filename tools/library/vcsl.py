@@ -618,7 +618,7 @@ def preset_params(folder, kind, layered, has_rel=False):
 def write_preset(bank_name, name, note, lib_path, params):
     path = os.path.join(PRESETS, bank_name, name + ".preset")
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    d = {"schema": 1, "machine": "sampler", "note": note, "params": params, "assets": {"smp": lib_path}}
+    d = {"slab": "preset", "schema": 1, "machine": "sampler", "note": note, "params": params, "assets": {"smp": lib_path}}
     with open(path, "w") as f:
         f.write(json.dumps(d) + "\n")
 

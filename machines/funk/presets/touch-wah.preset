@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "funk", "note": "Gentle touch wah on guitar or clav: each note opens by how hard it hits", "params": {"funk-macro": 0.3, "funk-range": 1}}
+{"slab": "preset", "schema": 1, "machine": "funk", "note": "Gentle touch wah on guitar or clav: each note opens by how hard it hits", "params": {"funk-macro": 0.3, "funk-range": 1}}

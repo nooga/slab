@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "sat2", "note": "VALVE 12 dB with sag: heavy bass - H2 weight, the loud notes bloom and sag", "params": {"sat-drive": 12, "sat-mode": 5, "sat-sag": 0.5, "sat-tone": 6000, "sat-mix": 1.0, "sat-out": -3.5, "sat-color": 1.0}}
+{"slab": "preset", "schema": 1, "machine": "sat2", "note": "VALVE 12 dB with sag: heavy bass - H2 weight, the loud notes bloom and sag", "params": {"sat-drive": 12, "sat-mode": 5, "sat-sag": 0.5, "sat-tone": 6000, "sat-mix": 1.0, "sat-out": -3.5, "sat-color": 1.0}}

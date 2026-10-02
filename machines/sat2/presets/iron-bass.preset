@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "sat2", "note": "XFMR 12 dB, 70% wet: thick bass under a clean top", "params": {"sat-drive": 12, "sat-mode": 2, "sat-sag": 0.2, "sat-tone": 7000, "sat-mix": 0.7, "sat-out": -1.5, "sat-color": 1.0}}
+{"slab": "preset", "schema": 1, "machine": "sat2", "note": "XFMR 12 dB, 70% wet: thick bass under a clean top", "params": {"sat-drive": 12, "sat-mode": 2, "sat-sag": 0.2, "sat-tone": 7000, "sat-mix": 0.7, "sat-out": -1.5, "sat-color": 1.0}}

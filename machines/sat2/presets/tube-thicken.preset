@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "sat2", "note": "TUBE half wet with some sag: synths and pads thicken on the loud notes", "params": {"sat-drive": 10, "sat-mode": 0, "sat-sag": 0.3, "sat-tone": 10000, "sat-mix": 0.5, "sat-out": -1.0, "sat-color": 1.0}}
+{"slab": "preset", "schema": 1, "machine": "sat2", "note": "TUBE half wet with some sag: synths and pads thicken on the loud notes", "params": {"sat-drive": 10, "sat-mode": 0, "sat-sag": 0.3, "sat-tone": 10000, "sat-mix": 0.5, "sat-out": -1.0, "sat-color": 1.0}}

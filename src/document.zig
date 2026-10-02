@@ -205,54 +205,7 @@ pub fn serialize(
         try out.appendSlice(alloc, ",\"clips\":[");
         for (t.clips.items, 0..) |*clip, ci| {
             if (ci > 0) try out.append(alloc, ',');
-            if (clip.isAudio()) {
-                var rb: [storage.MAX_PATH]u8 = undefined;
-                const src_path = storage.ref(&rb, if (active_pool) |p|
-                    (if (p.get(clip.audio.source)) |s| s.path() else "")
-                else
-                    "");
-                try out.appendSlice(alloc, "{\"type\":\"audio\",\"name\":");
-                try appendJsonString(alloc, &out, clip.name());
-                try appendFmt(alloc, &out, ",\"start\":{d},\"len\":{d},\"gain\":{d},\"start_sec\":{d},\"dur_sec\":{d},\"fade_in\":{d},\"fade_out\":{d},", .{
-                    clip.start_beat, clip.length_beats, clip.audio.gain,
-                    clip.audio.start_sec, clip.audio.dur_sec, clip.audio.fade_in_sec, clip.audio.fade_out_sec,
-                });
-                if (clip.audio.reversed) try out.appendSlice(alloc, "\"reversed\":true,");
-                try out.appendSlice(alloc, "\"source\":");
-                try appendJsonString(alloc, &out, src_path);
-                try out.append(alloc, '}');
-                continue;
-            }
-            try out.appendSlice(alloc, "{\"type\":\"note\",\"name\":");
-            try appendJsonString(alloc, &out, clip.name());
-            try appendFmt(alloc, &out, ",\"start\":{d},\"len\":{d},\"notes\":[", .{ clip.start_beat, clip.length_beats });
-            for (clip.notes.items, 0..) |note, ni| {
-                if (ni > 0) try out.append(alloc, ',');
-                try appendFmt(alloc, &out, "{{\"pitch\":{d},\"start\":{d},\"len\":{d},\"vel\":{d}", .{
-                    note.pitch, note.start_beat, note.length_beats, note.velocity,
-                });
-                if (note.hasExpression()) {
-                    try out.appendSlice(alloc, ",\"expr\":{");
-                    var first_dim = true;
-                    if (note.bend_n > 0) {
-                        try out.appendSlice(alloc, "\"pitch\":");
-                        try appendPoints(alloc, &out, note.bendPoints());
-                        first_dim = false;
-                    }
-                    for (note.dims, 0..) |cv, d| {
-                        if (cv.n == 0) continue;
-                        if (!first_dim) try out.append(alloc, ',');
-                        first_dim = false;
-                        try appendFmt(alloc, &out, "\"{s}\":", .{@tagName(@as(clip_mod.ExprDim, @enumFromInt(d)))});
-                        try appendPoints(alloc, &out, cv.points());
-                    }
-                    try out.append(alloc, '}');
-                }
-                try out.append(alloc, '}');
-            }
-            try out.append(alloc, ']');
-            try appendLaneList(alloc, &out, t, clip.lanes.items);
-            try out.append(alloc, '}');
+            try appendClip(alloc, &out, t, clip, null);
         }
         try out.appendSlice(alloc, "]}");
     }
@@ -267,6 +220,108 @@ pub fn serialize(
     try out.append(alloc, '}');
 
     return try out.toOwnedSlice(alloc);
+}
+
+/// One clip as the project writes it. `source` overrides an audio clip's
+/// file reference (a library clip names its own copy).
+fn appendClip(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track_mod.Track, clip: *const clip_mod.Clip, source: ?[]const u8) !void {
+    if (clip.isAudio()) {
+        var rb: [storage.MAX_PATH]u8 = undefined;
+        const src_path = source orelse storage.ref(&rb, if (active_pool) |p|
+            (if (p.get(clip.audio.source)) |s| s.path() else "")
+        else
+            "");
+        try out.appendSlice(alloc, "{\"type\":\"audio\",\"name\":");
+        try appendJsonString(alloc, out, clip.name());
+        try appendFmt(alloc, out, ",\"start\":{d},\"len\":{d},\"gain\":{d},\"start_sec\":{d},\"dur_sec\":{d},\"fade_in\":{d},\"fade_out\":{d},", .{
+            clip.start_beat, clip.length_beats, clip.audio.gain,
+            clip.audio.start_sec, clip.audio.dur_sec, clip.audio.fade_in_sec, clip.audio.fade_out_sec,
+        });
+        if (clip.audio.reversed) try out.appendSlice(alloc, "\"reversed\":true,");
+        try out.appendSlice(alloc, "\"source\":");
+        try appendJsonString(alloc, out, src_path);
+        try out.append(alloc, '}');
+        return;
+    }
+    try out.appendSlice(alloc, "{\"type\":\"note\",\"name\":");
+    try appendJsonString(alloc, out, clip.name());
+    try appendFmt(alloc, out, ",\"start\":{d},\"len\":{d},\"notes\":[", .{ clip.start_beat, clip.length_beats });
+    for (clip.notes.items, 0..) |note, ni| {
+        if (ni > 0) try out.append(alloc, ',');
+        try appendFmt(alloc, out, "{{\"pitch\":{d},\"start\":{d},\"len\":{d},\"vel\":{d}", .{
+            note.pitch, note.start_beat, note.length_beats, note.velocity,
+        });
+        if (note.hasExpression()) {
+            try out.appendSlice(alloc, ",\"expr\":{");
+            var first_dim = true;
+            if (note.bend_n > 0) {
+                try out.appendSlice(alloc, "\"pitch\":");
+                try appendPoints(alloc, out, note.bendPoints());
+                first_dim = false;
+            }
+            for (note.dims, 0..) |cv, d| {
+                if (cv.n == 0) continue;
+                if (!first_dim) try out.append(alloc, ',');
+                first_dim = false;
+                try appendFmt(alloc, out, "\"{s}\":", .{@tagName(@as(clip_mod.ExprDim, @enumFromInt(d)))});
+                try appendPoints(alloc, out, cv.points());
+            }
+            try out.append(alloc, '}');
+        }
+        try out.append(alloc, '}');
+    }
+    try out.append(alloc, ']');
+    try appendLaneList(alloc, out, t, clip.lanes.items);
+    try out.append(alloc, '}');
+}
+
+// ── clip files (docs/25 §Items) ────────────────────────────────────────
+
+pub const CLIP_KIND = "clip";
+pub const CLIP_EXT = ".slabclip";
+
+/// One clip of track `t` as a `.slabclip`: {"slab":"clip","schema":1,
+/// "clip":{…}}, the clip as a project writes it, at beat 0. An audio
+/// clip's file that only the project has is copied into the home folder's
+/// Samples, so the clip works from the library.
+pub fn clipFile(alloc: std.mem.Allocator, t: *const track_mod.Track, clip: *const clip_mod.Clip) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    try out.appendSlice(alloc, "{\"slab\":\"" ++ CLIP_KIND ++ "\",\"schema\":1,\"clip\":");
+    var at_zero = clip.*;
+    at_zero.start_beat = 0;
+    var rb: [storage.MAX_PATH]u8 = undefined;
+    var cb: [storage.MAX_PATH]u8 = undefined;
+    var source: ?[]const u8 = null;
+    if (clip.isAudio()) if (active_pool) |p| if (p.get(clip.audio.source)) |src| {
+        const file = src.path();
+        const pd = storage.projectDir();
+        const in_package = std.mem.endsWith(u8, pd, ".slab") and file.len > pd.len + 1 and
+            std.mem.startsWith(u8, file, pd) and file[pd.len] == '/';
+        const lib_file = if (in_package) blk: {
+            var hb: [storage.MAX_PATH]u8 = undefined;
+            break :blk try package.copyInto(alloc, &cb, storage.home(&hb), "Samples", file);
+        } else file;
+        source = storage.ref(&rb, lib_file);
+    };
+    try appendClip(alloc, &out, t, &at_zero, source);
+    try out.appendSlice(alloc, "}\n");
+    return out.toOwnedSlice(alloc);
+}
+
+/// Put the clip a `.slabclip` holds on track `t` at `start` beats.
+pub fn insertClipFile(alloc: std.mem.Allocator, t: *track_mod.Track, data: []const u8, start: f64) !void {
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, data, .{}) catch return error.InvalidClip;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidClip;
+    const root = parsed.value.object;
+    if (objGet(root, "slab")) |k| if (k != .string or !std.mem.eql(u8, k.string, CLIP_KIND)) return error.NotAClip;
+    const cv = objGet(root, "clip") orelse return error.InvalidClip;
+    if (cv != .object) return error.InvalidClip;
+    const before = t.clips.items.len;
+    try applyClip(alloc, t, cv.object);
+    if (t.clips.items.len == before) return error.InvalidClip;
+    t.clips.items[t.clips.items.len - 1].start_beat = start;
 }
 
 fn boolStr(b: bool) []const u8 {
@@ -990,6 +1045,70 @@ test "project snapshot round-trips tracks clips notes and loop" {
     try std.testing.expectApproxEqAbs(@as(f64, 1.0), loaded_transport.loopStartBeats(), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f64, 9.0), loaded_transport.loopEndBeats(), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 132.5), loaded_transport.bpm(), 0.001);
+}
+
+test "a clip saved as a .slabclip comes back on another track where it's put; a package's audio is copied to the library" {
+    const alloc = std.testing.allocator;
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    setPool(&pool);
+    defer active_pool = null;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var rb: [storage.MAX_PATH]u8 = undefined;
+    var root_buf: [storage.MAX_PATH]u8 = undefined;
+    const root = storage.absolute(&root_buf, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
+    var hb: [storage.MAX_PATH]u8 = undefined;
+    const home = try std.fmt.bufPrintZ(&hb, "{s}/home", .{root});
+    _ = setenv("SLAB_HOME", home.ptr, 1);
+    defer _ = unsetenv("SLAB_HOME");
+
+    var a = try track_mod.Track.init(alloc, "A", .{ .r = 1, .g = 2, .b = 3, .a = 255 }, test_machine);
+    defer a.deinit(alloc);
+    var b = try track_mod.Track.init(alloc, "B", .{ .r = 1, .g = 2, .b = 3, .a = 255 }, test_machine);
+    defer b.deinit(alloc);
+
+    // A note clip with a bent note.
+    var nc = clip_mod.Clip.init("riff", 8, 4);
+    var note = clip_mod.Note{ .pitch = 60, .start_beat = 0.5, .length_beats = 1, .velocity = 90 };
+    _ = note.addBend(.{ .beat = 0.5, .value = 2 });
+    try nc.addNote(alloc, note);
+    try a.addClip(alloc, nc);
+    const bytes = try clipFile(alloc, &a, &a.clips.items[0]);
+    defer alloc.free(bytes);
+    try std.testing.expect(std.mem.startsWith(u8, bytes, "{\"slab\":\"clip\",\"schema\":1,"));
+    try insertClipFile(alloc, &b, bytes, 16);
+    const got = &b.clips.items[0];
+    try std.testing.expectEqualStrings("riff", got.name());
+    try std.testing.expectEqual(@as(f64, 16), got.start_beat);
+    try std.testing.expectEqual(@as(f64, 4), got.length_beats);
+    try std.testing.expectEqual(@as(u8, 90), got.notes.items[0].velocity);
+    try std.testing.expectEqual(@as(usize, 1), got.notes.items[0].bendPoints().len);
+
+    // An audio clip whose file lives in the project's package.
+    var pkb: [storage.MAX_PATH]u8 = undefined;
+    const pkg = try std.fmt.bufPrint(&pkb, "{s}/Song.slab", .{root});
+    try package.prepare(pkg);
+    var db: [storage.MAX_PATH]u8 = undefined;
+    defer storage.setProject(null);
+    storage.setProject(package.docPath(&db, pkg));
+    const wav_bytes = try readFile(alloc, "machines/sampler/assets/default.wav");
+    defer alloc.free(wav_bytes);
+    var wb: [storage.MAX_PATH]u8 = undefined;
+    const take = try std.fmt.bufPrint(&wb, "{s}/audio/take-001.wav", .{pkg});
+    storage.makeParents(std.fs.path.dirname(take).?);
+    try writeFile(alloc, take, wav_bytes);
+    const src = try pool.loadFile(take);
+    try a.addClip(alloc, clip_mod.Clip.initAudio("take", 0, 2, src));
+    const abytes = try clipFile(alloc, &a, &a.clips.items[1]);
+    defer alloc.free(abytes);
+    try std.testing.expect(std.mem.indexOf(u8, abytes, "\"source\":\"user:Samples/take-001.wav\"") != null);
+    var cb: [storage.MAX_PATH]u8 = undefined;
+    try std.testing.expect(package.exists(try std.fmt.bufPrint(&cb, "{s}/Samples/take-001.wav", .{home})));
+
+    // Not a clip: refused.
+    try std.testing.expectError(error.NotAClip, insertClipFile(alloc, &b, "{\"slab\":\"preset\",\"clip\":{}}", 0));
 }
 
 test "a project saved as a package carries the outside sample it loaded, and loads from it" {

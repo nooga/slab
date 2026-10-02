@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "era", "note": "Ensoniq Mirage: 8-bit, ~30 kHz, resonant 4-pole", "params": {"era-in": 0, "era-aa": 1, "era-rate": 30000, "era-bits": 8, "era-mode": 0, "era-filter": 11000, "era-res": 0.3, "era-mix": 1, "era-out": 0}}
+{"slab": "preset", "schema": 1, "machine": "era", "note": "Ensoniq Mirage: 8-bit, ~30 kHz, resonant 4-pole", "params": {"era-in": 0, "era-aa": 1, "era-rate": 30000, "era-bits": 8, "era-mode": 0, "era-filter": 11000, "era-res": 0.3, "era-mix": 1, "era-out": 0}}

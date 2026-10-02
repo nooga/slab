@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "chorus2", "note": "Subtle bass chorus, safe low end", "params": {"chorus-mode": 0, "chorus-rate": 0.6, "chorus-depth": 0.5, "chorus-tone": 5000, "chorus-spread": 0.4, "chorus-mix": 0.3}}
+{"slab": "preset", "schema": 1, "machine": "chorus2", "note": "Subtle bass chorus, safe low end", "params": {"chorus-mode": 0, "chorus-rate": 0.6, "chorus-depth": 0.5, "chorus-tone": 5000, "chorus-spread": 0.4, "chorus-mix": 0.3}}

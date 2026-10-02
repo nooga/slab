@@ -20,6 +20,7 @@
 //! inside it; it never holds both locks.
 
 const std = @import("std");
+const storage = @import("../storage.zig");
 const machine = @import("../machine.zig");
 const registry_mod = @import("../machine_registry.zig");
 const presets_mod = @import("../presets.zig");
@@ -127,6 +128,7 @@ pub const Rack = struct {
             .preset_name = presetNameImpl,
             .apply_preset = applyPresetImpl,
             .save_preset_named = savePresetNamedImpl,
+            .save_preset_library = savePresetLibraryImpl,
             .current_preset = currentPresetImpl,
             .mark_preset = markPresetImpl,
             .write_state_json = writeStateJsonImpl,
@@ -148,7 +150,7 @@ pub const Rack = struct {
     }
 
     fn rescan(self: *Rack) void {
-        self.presets = presets_mod.scan(presetDir());
+        self.presets = presets_mod.scanMachine(presetDir(), "rack");
     }
 
     fn presetDir() []const u8 {
@@ -461,7 +463,7 @@ fn applyPresetImpl(state: *anyopaque, index: machine.PresetIndex) void {
     if (index >= self.presets.count) return;
     const buf = self.alloc.alloc(u8, PRESET_FILE) catch return;
     defer self.alloc.free(buf);
-    const data = presets_mod.readFileBuf(buf, Rack.presetDir(), self.presets.names[index].slice()) orelse return;
+    const data = presets_mod.readPreset(buf, Rack.presetDir(), "rack", self.presets.names[index].slice()) orelse return;
     var parsed = std.json.parseFromSlice(std.json.Value, self.alloc, data, .{}) catch return;
     defer parsed.deinit();
     self.applyJson(parsed.value);
@@ -469,19 +471,36 @@ fn applyPresetImpl(state: *anyopaque, index: machine.PresetIndex) void {
 }
 
 fn savePresetNamedImpl(state: *anyopaque, name_z: [*:0]const u8) ?machine.PresetIndex {
+    const bank: presets_mod.Bank = if (std.mem.endsWith(u8, storage.projectDir(), ".slab")) .project else .user;
+    return savePresetIn(state, name_z, bank);
+}
+
+fn savePresetLibraryImpl(state: *anyopaque, name_z: [*:0]const u8) ?machine.PresetIndex {
+    return savePresetIn(state, name_z, .user);
+}
+
+/// Save the rack as preset `name` in `bank` (docs/25 §Save to Library).
+/// A project's preset names the package's files relative to it.
+fn savePresetIn(state: *anyopaque, name_z: [*:0]const u8, bank: presets_mod.Bank) ?machine.PresetIndex {
     const self: *Rack = @ptrCast(@alignCast(state));
-    const name = std.mem.trim(u8, std.mem.span(name_z), " \t\r\n");
-    if (name.len == 0 or name.len > presets_mod.MAX_NAME or std.mem.indexOfScalar(u8, name, '/') != null) return null;
+    const bare = std.mem.trim(u8, std.mem.span(name_z), " \t\r\n");
+    if (bare.len == 0 or bare.len > presets_mod.MAX_NAME or std.mem.indexOfScalar(u8, bare, '/') != null) return null;
+    var nb: [presets_mod.MAX_NAME + 16]u8 = undefined;
+    const name = presets_mod.inBank(&nb, bank, bare) orelse return null;
+    if (name.len > presets_mod.MAX_NAME) return null;
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(self.alloc);
-    out.appendSlice(self.alloc, "{\"schema\":1,\"machine\":\"rack\",") catch return null;
+    out.appendSlice(self.alloc, "{\"slab\":\"preset\",\"schema\":1,\"machine\":\"rack\",") catch return null;
     const at = out.items.len;
-    self.writeJson(&out, self.alloc) catch return null;
+    if (bank == .project) storage.beginProjectSave();
+    const wrote = self.writeJson(&out, self.alloc);
+    if (bank == .project) storage.endProjectSave();
+    wrote catch return null;
     // splice the parts object's body into the preset object
     std.mem.copyForwards(u8, out.items[at..], out.items[at + 1 ..]);
     out.shrinkRetainingCapacity(out.items.len - 1);
     out.append(self.alloc, '\n') catch return null;
-    if (!presets_mod.writeFile(Rack.presetDir(), name, out.items)) return null;
+    if (!presets_mod.writePreset(Rack.presetDir(), "rack", name, out.items)) return null;
     self.rescan();
     for (self.presets.names[0..self.presets.count], 0..) |*pn, i| {
         if (std.mem.eql(u8, pn.slice(), name)) {

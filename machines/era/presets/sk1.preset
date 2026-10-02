@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "era", "note": "Casio SK-1: 9.38 kHz, 8-bit, no input filter, harsh", "params": {"era-in": 0, "era-aa": 0, "era-rate": 9380, "era-bits": 8, "era-mode": 1, "era-filter": 9000, "era-res": 0, "era-mix": 1, "era-out": 0}}
+{"slab": "preset", "schema": 1, "machine": "era", "note": "Casio SK-1: 9.38 kHz, 8-bit, no input filter, harsh", "params": {"era-in": 0, "era-aa": 0, "era-rate": 9380, "era-bits": 8, "era-mode": 1, "era-filter": 9000, "era-res": 0, "era-mix": 1, "era-out": 0}}

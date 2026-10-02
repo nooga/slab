@@ -50,6 +50,7 @@ pub const EditCommand = enum {
     import_audio,
     reverse,
     clear_solo_mute,
+    save_to_library,
 };
 
 pub const Item = struct {

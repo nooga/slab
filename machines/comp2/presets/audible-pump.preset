@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "comp2", "note": "Audible dance pump", "params": {"comp-thresh": -17.8, "comp-ratio": 8, "comp-knee": 2, "comp-atk": 0.008, "comp-rel": 0.22, "comp-hpf": 20, "comp-det": 0, "comp-makeup": 7.7, "comp-mix": 1}}
+{"slab": "preset", "schema": 1, "machine": "comp2", "note": "Audible dance pump", "params": {"comp-thresh": -17.8, "comp-ratio": 8, "comp-knee": 2, "comp-atk": 0.008, "comp-rel": 0.22, "comp-hpf": 20, "comp-det": 0, "comp-makeup": 7.7, "comp-mix": 1}}

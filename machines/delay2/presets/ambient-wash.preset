@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "delay2", "note": "Long, dark feedback wash", "params": {"delay-time": 0.55, "delay-fb": 0.8, "delay-damp": 2000, "delay-mix": 0.5, "delay-char": 1, "delay-mode": 2, "delay-offset": 0.02, "delay-mod": 0.25, "delay-rate": 0.4, "delay-width": 1.2}}
+{"slab": "preset", "schema": 1, "machine": "delay2", "note": "Long, dark feedback wash", "params": {"delay-time": 0.55, "delay-fb": 0.8, "delay-damp": 2000, "delay-mix": 0.5, "delay-char": 1, "delay-mode": 2, "delay-offset": 0.02, "delay-mod": 0.25, "delay-rate": 0.4, "delay-width": 1.2}}

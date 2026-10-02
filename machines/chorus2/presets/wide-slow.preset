@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "chorus2", "note": "Wide, slow stereo swirl", "params": {"chorus-mode": 0, "chorus-rate": 0.5, "chorus-depth": 1.8, "chorus-tone": 6000, "chorus-spread": 1, "chorus-mix": 0.55}}
+{"slab": "preset", "schema": 1, "machine": "chorus2", "note": "Wide, slow stereo swirl", "params": {"chorus-mode": 0, "chorus-rate": 0.5, "chorus-depth": 1.8, "chorus-tone": 6000, "chorus-spread": 1, "chorus-mix": 0.55}}

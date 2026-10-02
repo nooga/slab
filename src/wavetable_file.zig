@@ -113,24 +113,7 @@ pub fn freshPath(buf: []u8, dir: []const u8, stem: []const u8) []const u8 {
 }
 
 /// A name for a file: lower case letters, digits and dashes.
-pub fn slug(buf: []u8, s: []const u8) []const u8 {
-    var n: usize = 0;
-    var dash = false;
-    for (s) |ch| {
-        if (n == buf.len) break;
-        if (std.ascii.isAlphanumeric(ch)) {
-            if (dash and n > 0 and n < buf.len) {
-                buf[n] = '-';
-                n += 1;
-            }
-            if (n == buf.len) break;
-            buf[n] = std.ascii.toLower(ch);
-            n += 1;
-            dash = false;
-        } else dash = true;
-    }
-    return buf[0..n];
-}
+pub const slug = @import("storage.zig").slug;
 
 fn put32(b: []u8, o: usize, v: u32) void {
     std.mem.writeInt(u32, b[o..][0..4], v, .little);

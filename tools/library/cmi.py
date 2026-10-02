@@ -404,7 +404,7 @@ def multisample_racks(root, index, collections=None):
             os.makedirs(pdir, exist_ok=True)
             names = ", ".join(f"{r['name']} {v['root']:.1f}" for r, v in mem)
             with open(os.path.join(pdir, safe(stem).lower() + ".preset"), "w") as fh:
-                fh.write(json.dumps({"schema": 1, "machine": "rack",
+                fh.write(json.dumps({"slab": "preset", "schema": 1, "machine": "rack",
                                      "note": f"Multisample guessed by cmi.py, not a CMI instrument: {names}",
                                      "parts": parts}) + "\n")
             done += 1
@@ -496,7 +496,7 @@ def drum_kits(root, index):
                   "cmi-loop-end": 127, "cmi-start": 0, "cmi-filter": 255, "cmi-atk": 0, "cmi-damp": 0.05,
                   "cmi-vib-depth": 0, "cmi-vib-rate": 5.5, "cmi-vel": 1, "cmi-vol": 0.6}
         with open(os.path.join(pdir, kit + ".preset"), "w") as fh:
-            fh.write(json.dumps({"schema": 1, "machine": "unfairlight", "note": f"CMI kit: {title}",
+            fh.write(json.dumps({"slab": "preset", "schema": 1, "machine": "unfairlight", "note": f"CMI kit: {title}",
                                  "params": params, "assets": {"voice": f"lib:cmi/kits/{kit}.sfz"}}) + "\n")
         done += 1
     return done
@@ -549,7 +549,7 @@ def page7(vc, co):
 def preset(vc, lib_path, note, root, co=None):
     params = {"cmi-rate": RATE, "cmi-root": round(root, 3), "cmi-tune": 0}
     params.update(page7(vc, co))
-    return {"schema": 1, "machine": "unfairlight", "note": note,
+    return {"slab": "preset", "schema": 1, "machine": "unfairlight", "note": note,
             "params": params, "assets": {"voice": lib_path}}
 
 
@@ -683,7 +683,7 @@ def rack_preset(disk, collection, inst, regs, voice_preset):
                           "params": params, "assets": vp["assets"]})
     if not parts:
         return None
-    return {"schema": 1, "machine": "rack", "note": f"CMI {collection} / {disk} / {inst}", "parts": parts}
+    return {"slab": "preset", "schema": 1, "machine": "rack", "note": f"CMI {collection} / {disk} / {inst}", "parts": parts}
 
 
 # ── the library index and catalog ───────────────────────────────────────

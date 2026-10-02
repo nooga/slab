@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "era", "note": "E-mu Emulator II: 27.7 kHz, 8-bit companded, resonant SSM lowpass", "params": {"era-in": 0, "era-aa": 1, "era-rate": 27700, "era-bits": 8, "era-mode": 2, "era-filter": 12000, "era-res": 0.35, "era-mix": 1, "era-out": 0}}
+{"slab": "preset", "schema": 1, "machine": "era", "note": "E-mu Emulator II: 27.7 kHz, 8-bit companded, resonant SSM lowpass", "params": {"era-in": 0, "era-aa": 1, "era-rate": 27700, "era-bits": 8, "era-mode": 2, "era-filter": 12000, "era-res": 0.35, "era-mix": 1, "era-out": 0}}

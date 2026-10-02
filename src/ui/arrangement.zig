@@ -1287,6 +1287,7 @@ pub fn draw(
         .{ .label = "Delete", .command = .delete, .enabled = has_selection },
         .{ .separator = true },
         .{ .label = "Rename", .command = .rename, .enabled = has_selection },
+        .{ .label = "Save to Library", .command = .save_to_library, .enabled = has_selection },
         .{ .label = "Select all", .command = .select_all, .enabled = has_clips },
         .{ .label = "Clear selection", .command = .clear_selection, .enabled = has_selection },
         .{ .separator = true },

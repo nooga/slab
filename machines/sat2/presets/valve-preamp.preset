@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "sat2", "note": "VALVE barely driven: a clean triode preamp, second harmonic only", "params": {"sat-drive": 3, "sat-mode": 5, "sat-sag": 0.1, "sat-tone": 18000, "sat-mix": 1.0, "sat-out": 4.0, "sat-color": 0.8}}
+{"slab": "preset", "schema": 1, "machine": "sat2", "note": "VALVE barely driven: a clean triode preamp, second harmonic only", "params": {"sat-drive": 3, "sat-mode": 5, "sat-sag": 0.1, "sat-tone": 18000, "sat-mix": 1.0, "sat-out": 4.0, "sat-color": 0.8}}

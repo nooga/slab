@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "verb2", "note": "Marble bar: reflective small room", "params": {"verb-predelay": 0.005, "verb-decay": 0.9, "verb-damp": 8000, "verb-tone": 12000, "verb-mix": 0.3, "verb-mod": 4, "verb-algo": 1, "verb-size": 0.8, "verb-early": 0.8}}
+{"slab": "preset", "schema": 1, "machine": "verb2", "note": "Marble bar: reflective small room", "params": {"verb-predelay": 0.005, "verb-decay": 0.9, "verb-damp": 8000, "verb-tone": 12000, "verb-mix": 0.3, "verb-mod": 4, "verb-algo": 1, "verb-size": 0.8, "verb-early": 0.8}}

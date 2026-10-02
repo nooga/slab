@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "char2", "note": "vari-mu on drums: VARI 4:1, thick and warm", "params": {"char-mode": 2, "char-ratio": 4, "char-atk": 0.003, "char-rel": 0.3, "char-drive": 0.5, "char-hpf": 60, "char-mix": 1, "char-makeup": 3.3, "char-thresh": -13.2}}
+{"slab": "preset", "schema": 1, "machine": "char2", "note": "vari-mu on drums: VARI 4:1, thick and warm", "params": {"char-mode": 2, "char-ratio": 4, "char-atk": 0.003, "char-rel": 0.3, "char-drive": 0.5, "char-hpf": 60, "char-mix": 1, "char-makeup": 3.3, "char-thresh": -13.2}}

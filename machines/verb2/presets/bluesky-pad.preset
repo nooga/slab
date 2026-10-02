@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "verb2", "note": "Vast, bright pad space", "params": {"verb-predelay": 0.025, "verb-decay": 11.89, "verb-damp": 6000, "verb-tone": 12000, "verb-mix": 0.5, "verb-mod": 18}}
+{"slab": "preset", "schema": 1, "machine": "verb2", "note": "Vast, bright pad space", "params": {"verb-predelay": 0.025, "verb-decay": 11.89, "verb-damp": 6000, "verb-tone": 12000, "verb-mix": 0.5, "verb-mod": 18}}

@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "chorus2", "note": "Seasick heavy-depth wobble", "params": {"chorus-mode": 2, "chorus-rate": 1, "chorus-depth": 1.6, "chorus-tone": 10000, "chorus-spread": 0.6, "chorus-mix": 0.6}}
+{"slab": "preset", "schema": 1, "machine": "chorus2", "note": "Seasick heavy-depth wobble", "params": {"chorus-mode": 2, "chorus-rate": 1, "chorus-depth": 1.6, "chorus-tone": 10000, "chorus-spread": 0.6, "chorus-mix": 0.6}}

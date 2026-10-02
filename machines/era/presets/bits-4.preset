@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "era", "note": "4-bit, 48 kHz: quantization alone", "params": {"era-in": 0, "era-aa": 0, "era-rate": 48000, "era-bits": 4, "era-mode": 0, "era-filter": 20000, "era-res": 0, "era-mix": 1, "era-out": -3}}
+{"slab": "preset", "schema": 1, "machine": "era", "note": "4-bit, 48 kHz: quantization alone", "params": {"era-in": 0, "era-aa": 0, "era-rate": 48000, "era-bits": 4, "era-mode": 0, "era-filter": 20000, "era-res": 0, "era-mix": 1, "era-out": -3}}

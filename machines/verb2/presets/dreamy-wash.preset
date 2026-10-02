@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "verb2", "note": "String-lights dreamy background wash", "params": {"verb-predelay": 0.05, "verb-decay": 24.42, "verb-damp": 3500, "verb-tone": 7000, "verb-mix": 0.4, "verb-mod": 16}}
+{"slab": "preset", "schema": 1, "machine": "verb2", "note": "String-lights dreamy background wash", "params": {"verb-predelay": 0.05, "verb-decay": 24.42, "verb-damp": 3500, "verb-tone": 7000, "verb-mix": 0.4, "verb-mod": 16}}

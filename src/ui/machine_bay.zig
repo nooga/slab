@@ -54,6 +54,7 @@ pub const Result = struct {
     preset_apply_ref: ?DeviceRef = null,
     preset_apply: ?u16 = null,
     preset_save_ref: ?DeviceRef = null, // open name entry to save a new preset
+    preset_save_library: bool = false, // ... to the library, not the project
     preset_rename_ref: ?DeviceRef = null,
     preset_rename_index: ?u16 = null, // current preset to rename
     preset_anchor: c.rl.Rectangle = .{ .x = 0, .y = 0, .width = 0, .height = 0 }, // where to float the name-entry field
@@ -92,6 +93,7 @@ const SAVE_ITEM_ID: u32 = 9001;
 const RENAME_ITEM_ID: u32 = 9002;
 const DEFAULT_ITEM_ID: u32 = 9000;
 const BROWSE_ITEM_ID: u32 = 9003;
+const SAVE_LIBRARY_ITEM_ID: u32 = 9004;
 const CONFIRM_DELETE_ID: u32 = 1;
 
 // Preset lists per registry machine, scanned when the add/replace menu opens
@@ -444,8 +446,9 @@ fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, fx: ?*const E
             result.preset_apply = p;
         }
         if (pa.browse) preset_browser.open(mach.state, if (mach.current_preset) |cf| cf(mach.state) else -1);
-        if (pa.save) {
+        if (pa.save or pa.save_library) {
             result.preset_save_ref = ref;
+            result.preset_save_library = pa.save_library;
             result.preset_anchor = bridge.toRl(disp);
         }
         if (pa.rename) |idx| {
@@ -504,7 +507,7 @@ pub fn scanRegistryPresets(reg: *const Registry) void {
     for (reg.entries[0..menu_count], 0..) |*e, i| {
         var dbuf: [512]u8 = undefined;
         add_scan_cache[i] = if (presets_mod.dirFromMachinePath(&dbuf, e.pathSlice())) |dir|
-            presets_mod.scan(dir)
+            presets_mod.scanMachine(dir, e.idSlice())
         else
             presets_mod.List{};
     }
@@ -584,6 +587,7 @@ const PresetAction = struct {
     apply: ?u16 = null,
     browse: bool = false,
     save: bool = false,
+    save_library: bool = false,
     rename: ?u16 = null, // index of the preset to rename (the current one)
 };
 
@@ -748,7 +752,14 @@ fn presetMenu(preset_rect: Rect, clicked: bool, mach: *const Machine) PresetActi
     const count: usize = if (mach.preset_count) |cf| cf(mach.state) else 0;
     const can_save = mach.save_preset != null or mach.save_preset_named != null;
     const cur_idx: i32 = if (mach.current_preset) |cf| cf(mach.state) else -1;
-    const can_rename = mach.rename_preset != null and cur_idx >= 0;
+    // Factory presets are read-only (docs/25): only the project's and the
+    // library's rename.
+    const cur_factory = cur_idx >= 0 and if (mach.preset_name) |nf|
+        presets_mod.bankOf(std.mem.span(nf(mach.state, @intCast(cur_idx)))) == .factory
+    else
+        true;
+    const can_rename = mach.rename_preset != null and cur_idx >= 0 and !cur_factory;
+    const can_save_library = mach.save_preset_library != null;
     if (count == 0 and !can_save) return .{};
 
     const key = pane.keyFromIds(PRESET_MENU_KEY, @intFromPtr(mach.state), 1);
@@ -768,7 +779,7 @@ fn presetMenu(preset_rect: Rect, clicked: bool, mach: *const Machine) PresetActi
         }
     }
 
-    var items: [presets_mod.MAX_PRESETS + 5]menu.Item = undefined;
+    var items: [presets_mod.MAX_PRESETS + 6]menu.Item = undefined;
     var n: usize = 0;
     if (count > 0) {
         items[0] = .{ .label = "Browse\u{2026}", .id = BROWSE_ITEM_ID };
@@ -785,6 +796,10 @@ fn presetMenu(preset_rect: Rect, clicked: bool, mach: *const Machine) PresetActi
             items[n] = .{ .label = "Save preset…", .id = SAVE_ITEM_ID };
             n += 1;
         }
+        if (can_save_library) {
+            items[n] = .{ .label = "Save to Library…", .id = SAVE_LIBRARY_ITEM_ID };
+            n += 1;
+        }
         if (can_rename) {
             items[n] = .{ .label = "Rename…", .id = RENAME_ITEM_ID };
             n += 1;
@@ -792,6 +807,7 @@ fn presetMenu(preset_rect: Rect, clicked: bool, mach: *const Machine) PresetActi
     }
     if (menu.pick(key, items[0..n])) |id| {
         if (id == SAVE_ITEM_ID) return .{ .save = true };
+        if (id == SAVE_LIBRARY_ITEM_ID) return .{ .save_library = true };
         if (id == BROWSE_ITEM_ID) return .{ .browse = true };
         if (id == RENAME_ITEM_ID) return .{ .rename = @intCast(cur_idx) };
         return .{ .apply = @intCast(id) };

@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "chorus2", "note": "FM-bell widening shimmer", "params": {"chorus-mode": 2, "chorus-rate": 1.6, "chorus-depth": 0.9, "chorus-tone": 12000, "chorus-spread": 1, "chorus-mix": 0.5}}
+{"slab": "preset", "schema": 1, "machine": "chorus2", "note": "FM-bell widening shimmer", "params": {"chorus-mode": 2, "chorus-rate": 1.6, "chorus-depth": 0.9, "chorus-tone": 12000, "chorus-spread": 1, "chorus-mix": 0.5}}

@@ -3,8 +3,9 @@
 Where slab keeps what it ships and what users make, how a project names
 the files it uses, how a project stays whole when it moves to another
 computer, and how anything a user makes becomes something others can
-open. **Status: design; phases 1–3 built** (§Load time, §Roots, the
-project package; `src/package.zig`).
+open. **Status: design; phases 1–3 built, phase 4 under way**
+(§Load time, §Roots, the project package in `src/package.zig`, project
+and library presets, Save to Library for presets, tables and clips).
 Code, as it lands: `src/storage.zig` (roots and references),
 `src/document.zig` (the project package), `src/wavetable_cache.zig`.
 
@@ -351,11 +352,36 @@ Library**:
 - **The project's own references don't change:** the project keeps its
   copy, and the `origin` becomes the new library file.
 
-Preset menus list factory and user presets together: user presets come
-from `user:Presets/<machine>/`, in a bank of their own. Saving a preset
-from the panel defaults to the project's `presets/`, with a "Save to
-Library" option. A preset made for one song stays with the song unless
-the user says otherwise.
+Preset menus list three sources together (`src/presets.zig`):
+- **Factory presets:** by their own names and banks, read-only in the
+  app.
+- **The Project bank:** the open package's `presets/<machine>/`.
+- **The User bank:** `user:Presets/<machine>/`.
+
+Saving:
+- **Save preset…** writes to the project's bank, so a sound made for one
+  song stays with the song. A project that isn't saved yet has no
+  package, so its presets go to the User bank instead, and the status
+  line says so.
+- **Save to Library…** writes to the User bank.
+- **Rename** works only in the Project and User banks.
+- **Save As** to another package copies `presets/` along.
+- **A Project-bank preset** names the package's files relative to it.
+- **A library preset** takes copies of the files only the project has,
+  into `Wavetables/` or `Samples/`.
+
+Built so far:
+- **Presets:** above.
+- **Wavetables:** the editor's LIBRARY button writes a copy to
+  `user:Wavetables/<name>.wav`, never over another. The oscillator keeps
+  the project's table.
+- **Clips:** the arrangement's **Save to Library** writes each selected
+  clip to `user:Clips/<name>.slabclip`, as
+  `{"slab": "clip", "schema": 1, "clip": {…}}`. The clip is in docs/19's
+  form at beat 0; an audio clip's package-only file is copied to
+  `user:Samples/`. `document.insertClipFile` puts one on a track; the
+  browser will call it.
+- **Not yet:** machines (phase 6), and the browser.
 
 ### Licenses
 
@@ -433,8 +459,8 @@ it uses.
 |---|---|---|---|
 | `project.json`, a bare `.slab` | `"slab": "project"` | 1 | built |
 | `settings.json` | `"slab": "settings"` | 1 | built |
-| `.preset` | `"slab": "preset"` | 1 | phase 4. Until then, `schema` only |
-| `.slabclip` | `"slab": "clip"` | 1 | phase 4 |
+| `.preset` | `"slab": "preset"` | 1 | built (shipped and generated presets tagged) |
+| `.slabclip` | `"slab": "clip"` | 1 | built |
 | `<id>.pack.json` | `"slab": "pack"` | 1 | phase 5 |
 | `item.json` (published items) | `"slab": "item"` | 1 | phase 7 |
 | editor wavetables (`.wav`) | the `clm ` chunk's `(slab levels kept)` | — | built |
@@ -560,10 +586,10 @@ the cache, this only matters for the first instance.
    - Open: hash checks on load, the factory's retired files, and the
      disk hash cache (§Load).
 4. **The user library.**
-   - User presets in the preset menus.
-   - Save to Library for presets, tables and clips.
-   - `.slabclip`.
-   - The browser with Project, User and Factory sources.
+   - Project and User presets in the preset menus. Built.
+   - Save to Library for presets, tables and clips. Built.
+   - `.slabclip`. Built.
+   - The browser with Project, User and Factory sources: open.
 5. **Packs.**
    - Pack manifests in `factory:packs/`, and the Library page with
      download, supply and instructions.

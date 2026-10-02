@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "delay2", "note": "Hook echo \u2014 bouncy mid feedback", "params": {"delay-time": 0.3, "delay-fb": 0.5, "delay-damp": 5000, "delay-mix": 0.35, "delay-mode": 1}}
+{"slab": "preset", "schema": 1, "machine": "delay2", "note": "Hook echo \u2014 bouncy mid feedback", "params": {"delay-time": 0.3, "delay-fb": 0.5, "delay-damp": 5000, "delay-mix": 0.35, "delay-mode": 1}}

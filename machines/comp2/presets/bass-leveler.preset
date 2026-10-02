@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "comp2", "note": "Keeps rubber bass even", "params": {"comp-thresh": -10.7, "comp-ratio": 4, "comp-knee": 6, "comp-atk": 0.003, "comp-rel": 0.25, "comp-hpf": 20, "comp-det": 0, "comp-makeup": 3.8, "comp-mix": 1}}
+{"slab": "preset", "schema": 1, "machine": "comp2", "note": "Keeps rubber bass even", "params": {"comp-thresh": -10.7, "comp-ratio": 4, "comp-knee": 6, "comp-atk": 0.003, "comp-rel": 0.25, "comp-hpf": 20, "comp-det": 0, "comp-makeup": 3.8, "comp-mix": 1}}

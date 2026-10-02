@@ -23,6 +23,7 @@ const keymap = @import("../keymap.zig");
 const wavetable = @import("../wavetable.zig");
 const wt_cache = @import("../wavetable_cache.zig");
 const storage = @import("../storage.zig");
+const package = @import("../package.zig");
 const wte = @import("../wavetable_edit.zig");
 const wavetable_file = @import("../wavetable_file.zig");
 const wt_editor = @import("../ui/wt_editor.zig");
@@ -483,6 +484,10 @@ pub const FyRawMachine = struct {
     wt_editing: ?usize = null,
     wt_osc: [32]u8 = undefined,
     wt_osc_len: usize = 0,
+    // The library name the editing table was last copied to (LIBRARY),
+    // shown until the next edit.
+    wt_lib: [48]u8 = undefined,
+    wt_lib_len: usize = 0,
     wt_view: wt_editor.View = .{},
     // Stored so runtime sample loads can (re)allocate without a passed alloc.
     alloc: std.mem.Allocator = undefined,
@@ -589,7 +594,7 @@ pub const FyRawMachine = struct {
         }
         if (presets_mod.dirFromMachinePath(self.preset_dir[0..], path)) |dir| {
             self.preset_dir_len = dir.len;
-            self.presets = presets_mod.scan(dir);
+            self.presets = presets_mod.scanMachine(dir, self.machineId());
         }
         try self.allocBuffers(alloc);
         errdefer self.freeBuffersUpTo(alloc, self.desc.buffer_count);
@@ -982,6 +987,7 @@ pub const FyRawMachine = struct {
             .apply_preset = applyPresetImpl,
             .save_preset = savePresetImpl,
             .save_preset_named = savePresetNamedImpl,
+            .save_preset_library = savePresetLibraryImpl,
             .rename_preset = renamePresetImpl,
             .current_preset = currentPresetImpl,
             .mark_preset = markPresetImpl,
@@ -1341,7 +1347,7 @@ fn refFromControls(self: *FyRawMachine) void {
 fn refFromFile(self: *FyRawMachine, index: usize) void {
     @memset(self.preset_ref_on[0..], false);
     var fbuf: [presets_mod.MAX_FILE]u8 = undefined;
-    const data = presets_mod.readFileBuf(&fbuf, self.presetDir(), self.presets.names[index].slice()) orelse return;
+    const data = presets_mod.readPreset(&fbuf, self.presetDir(), self.machineId(), self.presets.names[index].slice()) orelse return;
     var parsed = std.json.parseFromSlice(std.json.Value, self.alloc, data, .{}) catch return;
     defer parsed.deinit();
     if (parsed.value != .object) return;
@@ -1412,7 +1418,7 @@ fn applyPresetImpl(state: *anyopaque, index: machine.PresetIndex) void {
     if (index >= self.presets.count) return;
     self.current_preset_idx = index;
     var fbuf: [presets_mod.MAX_FILE]u8 = undefined;
-    const data = presets_mod.readFileBuf(&fbuf, self.presetDir(), self.presets.names[index].slice()) orelse return;
+    const data = presets_mod.readPreset(&fbuf, self.presetDir(), self.machineId(), self.presets.names[index].slice()) orelse return;
 
     var parsed = std.json.parseFromSlice(std.json.Value, self.alloc, data, .{}) catch return;
     defer parsed.deinit();
@@ -1669,6 +1675,7 @@ fn syncTableDoc(self: *FyRawMachine, ai: usize) void {
     const doc = self.wt_docs[ai] orelse return;
     const d = doc.takeDirty() orelse return;
     self.wt_unsaved[ai] = true;
+    self.wt_lib_len = 0; // the library's copy is the table before this edit
     self.wt_edited = true;
     // A shared table is rebuilt as this instance's own before any edit lands.
     if (d.resized or self.asset_wt[ai].frames != doc.count or wt_cache.isShared(self.asset_wt[ai])) {
@@ -1698,10 +1705,14 @@ fn drawTableEditor(self: *FyRawMachine, ui: *Ui, r: Rect, ai: usize) void {
     var lb: [96]u8 = undefined;
     const label = std.ascii.upperString(&lb, self.asset_label[ai][0..self.asset_label_len[ai]]);
     var nb: [160]u8 = undefined;
-    const name = std.fmt.bufPrint(&nb, "{s} · {s}{s}", .{ self.wt_osc[0..self.wt_osc_len], label, if (self.wt_unsaved[ai]) " *" else "" }) catch "";
-    const res = wt_editor.editor(ui, r, doc, &self.wt_view, .{ .name = name, .can_save = true });
+    var lu: [48]u8 = undefined;
+    var ub: [80]u8 = undefined;
+    const lib_note = if (self.wt_lib_len > 0) std.fmt.bufPrint(&ub, " · IN LIBRARY AS {s}", .{std.ascii.upperString(&lu, self.wt_lib[0..self.wt_lib_len])}) catch "" else "";
+    const name = std.fmt.bufPrint(&nb, "{s} · {s}{s}{s}", .{ self.wt_osc[0..self.wt_osc_len], label, if (self.wt_unsaved[ai]) " *" else "", lib_note }) catch "";
+    const res = wt_editor.editor(ui, r, doc, &self.wt_view, .{ .name = name, .can_save = true, .can_library = true });
     syncTableDoc(self, ai);
     if (res.save) saveTableAs(self, ai);
+    if (res.library) saveTableToLibrary(self, ai);
     if (res.done) self.wt_editing = null;
 }
 
@@ -1718,6 +1729,30 @@ fn saveTableAs(self: *FyRawMachine, ai: usize) void {
     self.setAssetSource(ai, path);
     self.asset_loaded[ai] = true;
     self.wt_unsaved[ai] = false;
+}
+
+/// LIBRARY: a copy of the table in the home folder's Wavetables
+/// (docs/25 §Save to Library), under a name not taken. The oscillator
+/// keeps reading the project's own table.
+fn saveTableToLibrary(self: *FyRawMachine, ai: usize) void {
+    const doc = self.wt_docs[ai] orelse return;
+    var hb: [storage.MAX_PATH]u8 = undefined;
+    var db: [storage.MAX_PATH]u8 = undefined;
+    const dir = std.fmt.bufPrint(&db, "{s}/Wavetables", .{storage.home(&hb)}) catch return;
+    storage.makeParents(dir);
+    var sb: [64]u8 = undefined;
+    const stem = wavetable_file.slug(&sb, std.fs.path.stem(self.asset_label[ai][0..self.asset_label_len[ai]]));
+    var pb: [storage.MAX_PATH]u8 = undefined;
+    const path = wavetable_file.freshPath(&pb, dir, if (stem.len > 0) stem else "wavetable");
+    if (path.len == 0 or !wavetable_file.save(self.alloc, doc, path)) {
+        std.log.err("wavetable: could not write {s} to the library", .{path});
+        return;
+    }
+    const base = std.fs.path.stem(path);
+    const n = @min(base.len, self.wt_lib.len);
+    @memcpy(self.wt_lib[0..n], base[0..n]);
+    self.wt_lib_len = n;
+    std.log.info("wavetable saved to the library: {s}", .{path});
 }
 
 /// Project save: every table edited since its file was written goes to
@@ -1907,12 +1942,15 @@ fn writeParamsJsonImpl(state: *anyopaque, out: *std.ArrayList(u8), alloc: std.me
 }
 
 // Serialize the current control values to a JSON preset body:
-// {"schema":1,"machine":"<id>","params":{"id":value,...}}.
-// Control ids are [a-z0-9-] so no JSON escaping is needed.
-fn buildPresetContent(self: *FyRawMachine, content: []u8) ?usize {
+// {"slab":"preset","schema":1,"machine":"<id>","params":{"id":value,...}}.
+// Control ids are [a-z0-9-] so no JSON escaping is needed. Its files are
+// named for where the preset goes (docs/25 §Save to Library): a project's
+// preset names the package's files relative to it; one saved to the
+// library takes copies of the files only the project has.
+fn buildPresetContent(self: *FyRawMachine, content: []u8, bank: presets_mod.Bank) ?usize {
     var used: usize = 0;
     {
-        const head = std.fmt.bufPrint(content[used..], "{{\"schema\":1,\"machine\":\"{s}\",\"params\":{{", .{self.machineId()}) catch return null;
+        const head = std.fmt.bufPrint(content[used..], "{{\"slab\":\"preset\",\"schema\":1,\"machine\":\"{s}\",\"params\":{{", .{self.machineId()}) catch return null;
         used += head.len;
     }
     for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
@@ -1932,7 +1970,8 @@ fn buildPresetContent(self: *FyRawMachine, content: []u8) ?usize {
     for (self.desc.assets[0..self.desc.asset_count], 0..) |*req, ai| {
         if (!self.asset_loaded[ai]) continue;
         var rb: [storage.MAX_PATH]u8 = undefined;
-        const path = storage.ref(&rb, self.assetPath(ai));
+        var cb: [storage.MAX_PATH]u8 = undefined;
+        const path = presetAssetRef(self, &rb, &cb, ai, bank) orelse continue;
         if (path.len == 0 or std.mem.indexOfAny(u8, path, "\"\\") != null) continue;
         const frag = std.fmt.bufPrint(content[used..], "{s}\"{s}\":\"{s}\"", .{ if (first) ",\"assets\":{" else ",", req.nameSlice(), path }) catch return null;
         used += frag.len;
@@ -1964,10 +2003,37 @@ fn buildPresetContent(self: *FyRawMachine, content: []u8) ?usize {
     return used;
 }
 
+/// How a preset going to `bank` names asset `ai`'s file.
+fn presetAssetRef(self: *FyRawMachine, rb: []u8, cb: []u8, ai: usize, bank: presets_mod.Bank) ?[]const u8 {
+    const file = self.assetPath(ai);
+    const pd = storage.projectDir();
+    const in_package = std.mem.endsWith(u8, pd, ".slab") and file.len > pd.len + 1 and
+        std.mem.startsWith(u8, file, pd) and file[pd.len] == '/';
+    switch (bank) {
+        .project => {
+            storage.beginProjectSave();
+            defer storage.endProjectSave();
+            return storage.ref(rb, file);
+        },
+        .user => if (in_package) {
+            // The library can't point into a project: it takes a copy.
+            var hb: [storage.MAX_PATH]u8 = undefined;
+            const folder = if (self.desc.assets[ai].wavetable) "Wavetables" else "Samples";
+            const copy = package.copyInto(self.alloc, cb, storage.home(&hb), folder, file) catch |err| {
+                std.log.err("preset: could not copy {s} to the library: {s}", .{ file, @errorName(err) });
+                return null;
+            };
+            return storage.ref(rb, copy);
+        },
+        .factory => {},
+    }
+    return storage.ref(rb, file);
+}
+
 // Rescan the preset directory and re-find `name` as the current preset.
 // Returns its sorted index, or null if it didn't reappear.
 fn rescanAndSelect(self: *FyRawMachine, name: []const u8) ?machine.PresetIndex {
-    self.presets = presets_mod.scan(self.presetDir());
+    self.presets = presets_mod.scanMachine(self.presetDir(), self.machineId());
     for (self.presets.names[0..self.presets.count], 0..) |*pn, i| {
         if (std.mem.eql(u8, pn.slice(), name)) {
             self.current_preset_idx = @intCast(i);
@@ -1978,37 +2044,57 @@ fn rescanAndSelect(self: *FyRawMachine, name: []const u8) ?machine.PresetIndex {
     return null;
 }
 
-// Write the current control values to `<name>.preset`, rescan, and select
-// it. Returns the new sorted index. Shared by auto- and named-save paths.
-fn writePreset(self: *FyRawMachine, name: []const u8) ?machine.PresetIndex {
+// Write the current control values to preset `name` in `bank`, rescan,
+// and select it. Returns the new sorted index.
+fn writePreset(self: *FyRawMachine, name: []const u8, bank: presets_mod.Bank) ?machine.PresetIndex {
     if (self.preset_dir_len == 0) return null;
+    var nb: [presets_mod.MAX_NAME + 16]u8 = undefined;
+    const full = presets_mod.inBank(&nb, bank, name) orelse return null;
+    if (full.len > presets_mod.MAX_NAME) return null;
     var content: [presets_mod.MAX_FILE]u8 = undefined;
-    const used = buildPresetContent(self, &content) orelse return null;
-    if (!presets_mod.writeFile(self.presetDir(), name, content[0..used])) return null;
-    return rescanAndSelect(self, name);
+    const used = buildPresetContent(self, &content, bank) orelse return null;
+    if (!presets_mod.writePreset(self.presetDir(), self.machineId(), full, content[0..used])) return null;
+    return rescanAndSelect(self, full);
 }
 
-// Save the current control values as `user-N.preset` (first free N) and
-// rescan so the new preset shows up immediately.
+/// Where Save puts a preset: the project's bank when the project is a
+/// package, else the home folder's (an unsaved project has nowhere else).
+fn defaultBank() presets_mod.Bank {
+    return if (std.mem.endsWith(u8, storage.projectDir(), ".slab")) .project else .user;
+}
+
+// Save the current control values as `user-N` (first free N) in the
+// default bank and rescan so the new preset shows up immediately.
 fn savePresetImpl(state: *anyopaque) ?machine.PresetIndex {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     if (self.preset_dir_len == 0) return null;
+    const bank = defaultBank();
     var name_buf: [presets_mod.MAX_NAME]u8 = undefined;
+    var full_buf: [presets_mod.MAX_NAME + 16]u8 = undefined;
     var n: usize = 1;
     const name = blk: while (n < 100) : (n += 1) {
         const candidate = std.fmt.bufPrint(&name_buf, "user-{d}", .{n}) catch return null;
-        if (!self.presets.contains(candidate)) break :blk candidate;
+        const full = presets_mod.inBank(&full_buf, bank, candidate) orelse return null;
+        if (!self.presets.contains(full)) break :blk candidate;
     } else return null;
-    return writePreset(self, name);
+    return writePreset(self, name, bank);
 }
 
-// Save under a caller-supplied name. Sanitizes to the preset name limits;
-// an empty/oversized name fails. Overwrites an existing preset of the same
-// name (the rescan picks up the single file either way).
+// Save under a caller-supplied name in the default bank. Sanitizes to the
+// preset name limits; an empty/oversized name fails. Overwrites an
+// existing preset of the same name.
 fn savePresetNamedImpl(state: *anyopaque, name_z: [*:0]const u8) ?machine.PresetIndex {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     const name = presetSanitize(std.mem.span(name_z)) orelse return null;
-    return writePreset(self, name);
+    return writePreset(self, name, defaultBank());
+}
+
+// Save to the library (the home folder's User bank), with copies of the
+// files only the project has.
+fn savePresetLibraryImpl(state: *anyopaque, name_z: [*:0]const u8) ?machine.PresetIndex {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    const name = presetSanitize(std.mem.span(name_z)) orelse return null;
+    return writePreset(self, name, .user);
 }
 
 // Rename preset `index` to `new_name`: rename the file on disk, rescan, and
@@ -2021,8 +2107,10 @@ fn renamePresetImpl(state: *anyopaque, index: machine.PresetIndex, new_name_z: [
     const old = self.presets.names[index].slice();
     if (old.len > old_buf.len) return null;
     @memcpy(old_buf[0..old.len], old);
-    if (!presets_mod.renameFile(self.presetDir(), old_buf[0..old.len], new_name)) return null;
-    return rescanAndSelect(self, new_name);
+    // Factory presets are read-only: only Project and User ones rename.
+    var nb: [presets_mod.MAX_NAME * 2]u8 = undefined;
+    const full = presets_mod.renameIn(&nb, self.presetDir(), self.machineId(), old_buf[0..old.len], new_name) orelse return null;
+    return rescanAndSelect(self, full);
 }
 
 // Trim surrounding space and reject empty / oversized / path-bearing names
@@ -5781,7 +5869,7 @@ test "FM-86 plays an imported DX7 preset (E.PIANO 1)" {
     if (idx < 0) return error.SkipZigTest;
     {
         var fbuf: [presets_mod.MAX_FILE]u8 = undefined;
-        const data = presets_mod.readFileBuf(&fbuf, inst.presetDir(), inst.presets.names[@intCast(idx)].slice()) orelse return error.SkipZigTest;
+        const data = presets_mod.readPreset(&fbuf, inst.presetDir(), inst.machineId(), inst.presets.names[@intCast(idx)].slice()) orelse return error.SkipZigTest;
         if (std.mem.indexOf(u8, data, "\"op1-ol\"") == null) return error.SkipZigTest;
     }
     mach.apply_preset.?(mach.state, @intCast(idx));
@@ -7799,19 +7887,87 @@ test "raw machine presets: scan factory, save round-trip, apply restores" {
     try testing.expect(inst.presets.contains("808-boom"));
     try testing.expect(inst.presets.contains("909-punch"));
 
-    // Move a knob, save, perturb, apply — value comes back.
+    // Move a knob, save, perturb, apply — value comes back. Without a
+    // project the save goes to the library: a home folder of the test's.
+    var home = try TestHome.init();
+    defer home.deinit();
     inst.setControlNorm(0, 0.25);
     const before = normToValue(inst.desc.controls[0], inst.controlNorm(0));
     const idx = savePresetImpl(inst) orelse return error.PresetSaveFailed;
+    try testing.expectEqualStrings("User/user-1", inst.presets.names[idx].slice());
     inst.setControlNorm(0, 0.9);
     applyPresetImpl(inst, idx);
     const after = normToValue(inst.desc.controls[0], inst.controlNorm(0));
     try testing.expectApproxEqAbs(before, after, 0.001);
+    try testing.expect(inst.presets.contains("808-boom"));
+}
 
-    // Clean up the user-N file the save created.
-    var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/{s}.preset", .{ inst.presetDir(), inst.presets.names[idx].slice() });
-    fy_host_mod.deleteFilePosix(path);
+/// A home folder of the test's own, so preset saves stay out of the
+/// user's (docs/25: Save goes to the library without a project).
+const TestHome = struct {
+    tmp: std.testing.TmpDir,
+    buf: [storage.MAX_PATH]u8 = undefined,
+    len: usize = 0,
+
+    extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+    extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+
+    fn init() !TestHome {
+        var h = TestHome{ .tmp = std.testing.tmpDir(.{}) };
+        var rb: [storage.MAX_PATH]u8 = undefined;
+        const rel = try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{h.tmp.sub_path});
+        const abs = storage.absolute(&h.buf, rel);
+        h.len = abs.len;
+        var zb: [storage.MAX_PATH]u8 = undefined;
+        _ = setenv("SLAB_HOME", (try std.fmt.bufPrintZ(&zb, "{s}", .{abs})).ptr, 1);
+        return h;
+    }
+
+    fn path(self: *const TestHome) []const u8 {
+        return self.buf[0..self.len];
+    }
+
+    fn deinit(self: *TestHome) void {
+        _ = unsetenv("SLAB_HOME");
+        self.tmp.cleanup();
+    }
+};
+
+test "raw machine presets: a project's presets live in its package, the library's in the home folder" {
+    var home = try TestHome.init();
+    defer home.deinit();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var pb: [storage.MAX_PATH]u8 = undefined;
+    const rel = try std.fmt.bufPrint(&pb, ".zig-cache/tmp/{s}/Song.slab/project.json", .{tmp.sub_path});
+    var ab: [storage.MAX_PATH]u8 = undefined;
+    defer storage.setProject(null);
+    storage.setProject(storage.absolute(&ab, rel));
+
+    const inst = try FyRawMachine.create(testing.allocator, "machines/drum2/drum2.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    inst.setControlNorm(0, 0.4);
+    const p = savePresetNamedImpl(inst, "kick-fat") orelse return error.PresetSaveFailed;
+    try testing.expectEqualStrings("Project/kick-fat", inst.presets.names[p].slice());
+    const l = savePresetLibraryImpl(inst, "kick-fat") orelse return error.PresetSaveFailed;
+    try testing.expectEqualStrings("User/kick-fat", inst.presets.names[l].slice());
+
+    var fb: [storage.MAX_PATH]u8 = undefined;
+    const in_pkg = try std.fmt.bufPrintZ(&fb, "{s}/presets/drum2/kick-fat.preset", .{storage.projectDir()});
+    try testing.expect(std.c.access(in_pkg.ptr, 0) == 0);
+    var hb: [storage.MAX_PATH]u8 = undefined;
+    const in_home = try std.fmt.bufPrintZ(&hb, "{s}/Presets/drum2/kick-fat.preset", .{home.path()});
+    try testing.expect(std.c.access(in_home.ptr, 0) == 0);
+
+    // A new instance sees both banks; factory presets can't be renamed.
+    const other = try FyRawMachine.create(testing.allocator, "machines/drum2/drum2.fy");
+    const om = other.machineInterface();
+    defer om.deinit.?(om.state, testing.allocator);
+    try testing.expect(other.presets.contains("Project/kick-fat") and other.presets.contains("User/kick-fat"));
+    var fi: machine.PresetIndex = 0;
+    while (!std.mem.eql(u8, other.presets.names[fi].slice(), "808-boom")) fi += 1;
+    try testing.expectEqual(@as(?machine.PresetIndex, null), renamePresetImpl(other, fi, "mine"));
 }
 
 test "raw machine presets: modified once a knob leaves the preset, clean when it returns" {
@@ -7847,6 +8003,8 @@ test "raw machine presets: modified once a knob leaves the preset, clean when it
 }
 
 test "raw machine presets: named save + rename round-trip" {
+    var home = try TestHome.init();
+    defer home.deinit();
     const inst = try FyRawMachine.create(testing.allocator, "machines/drum2/drum2.fy");
     const mach = inst.machineInterface();
     defer mach.deinit.?(mach.state, testing.allocator);
@@ -7855,7 +8013,7 @@ test "raw machine presets: named save + rename round-trip" {
     inst.setControlNorm(0, 0.3);
     const before = normToValue(inst.desc.controls[0], inst.controlNorm(0));
     const idx = savePresetNamedImpl(inst, "zz-test-named") orelse return error.PresetSaveFailed;
-    try testing.expectEqualStrings("zz-test-named", inst.presets.names[idx].slice());
+    try testing.expectEqualStrings("User/zz-test-named", inst.presets.names[idx].slice());
 
     // Invalid names are refused.
     try testing.expectEqual(@as(?machine.PresetIndex, null), savePresetNamedImpl(inst, "   "));
@@ -7863,15 +8021,11 @@ test "raw machine presets: named save + rename round-trip" {
 
     // Rename moves the file; the value survives an apply afterwards.
     const ridx = renamePresetImpl(inst, idx, "zz-test-renamed") orelse return error.PresetRenameFailed;
-    try testing.expectEqualStrings("zz-test-renamed", inst.presets.names[ridx].slice());
-    try testing.expect(!inst.presets.contains("zz-test-named"));
+    try testing.expectEqualStrings("User/zz-test-renamed", inst.presets.names[ridx].slice());
+    try testing.expect(!inst.presets.contains("User/zz-test-named"));
     inst.setControlNorm(0, 0.95);
     applyPresetImpl(inst, ridx);
     try testing.expectApproxEqAbs(before, normToValue(inst.desc.controls[0], inst.controlNorm(0)), 0.001);
-
-    var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/zz-test-renamed.preset", .{inst.presetDir()});
-    fy_host_mod.deleteFilePosix(path);
 }
 
 test "automation drives a knob per chunk, follows the curve, and yields to a hand override" {
@@ -8580,13 +8734,13 @@ test "unison: presets and projects carry the stack; a preset without one plays s
     defer mach.deinit.?(mach.state, testing.allocator);
     const u = mach.unison.?;
     var content: [presets_mod.MAX_FILE]u8 = undefined;
-    const plain = buildPresetContent(inst, &content).?;
+    const plain = buildPresetContent(inst, &content, .user).?;
     try testing.expect(std.mem.indexOf(u8, content[0..plain], "unison") == null);
 
     u.setCount(6);
     u.setDetune(33);
     u.setPool(12);
-    const len = buildPresetContent(inst, &content).?;
+    const len = buildPresetContent(inst, &content, .user).?;
     var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, content[0..len], .{});
     defer parsed.deinit();
     const uv = parsed.value.object.get("unison").?;
@@ -8604,6 +8758,33 @@ test "unison: presets and projects carry the stack; a preset without one plays s
     const dm = drums.machineInterface();
     defer dm.deinit.?(dm.state, testing.allocator);
     try testing.expect(dm.unison == null);
+}
+
+test "wavetable editor: LIBRARY copies the table into the home folder, the project keeps its own" {
+    const alloc = testing.allocator;
+    var home = try TestHome.init();
+    defer home.deinit();
+    const inst = try FyRawMachine.create(alloc, "machines/concoction/concoction.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, alloc);
+    const ai = inst.assetIndexByName("wt-a").?;
+    const bank = inst.assetIndexByName("bank").?;
+    openTableEditor(inst, ai, "OSC A", .{ .data = inst.asset_wt[bank].data, .first = 32, .count = 16 }, "SYNC");
+    syncTableDoc(inst, ai);
+
+    saveTableToLibrary(inst, ai);
+    saveTableToLibrary(inst, ai); // a second copy doesn't overwrite the first
+    var pb: [storage.MAX_PATH]u8 = undefined;
+    const first = try std.fmt.bufPrintZ(&pb, "{s}/Wavetables/sync.wav", .{home.path()});
+    try testing.expect(std.c.access(first.ptr, 0) == 0);
+    var qb: [storage.MAX_PATH]u8 = undefined;
+    const second = try std.fmt.bufPrintZ(&qb, "{s}/Wavetables/sync-2.wav", .{home.path()});
+    try testing.expect(std.c.access(second.ptr, 0) == 0);
+    try testing.expectEqualStrings("sync-2", inst.wt_lib[0..inst.wt_lib_len]);
+    // Still the project's table, still to be written with the project.
+    try testing.expect(inst.wt_unsaved[ai]);
+    try testing.expect(inst.loadAssetRuntime(bank, first));
+    try testing.expectEqual(@as(usize, 16), inst.asset_wt[bank].frames);
 }
 
 test "wavetable editor: an edited table plays at once, saves beside the project and loads back" {

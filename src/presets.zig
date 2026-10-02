@@ -1,13 +1,18 @@
-//! Machine presets: one JSON file per preset at
-//! `<machine-dir>/presets/<name>.preset`:
-//! `{"schema":1,"machine":"<id>","note":"…","params":{"<id>":value,…}}`.
+//! Machine presets: one JSON file per preset,
+//! `{"slab":"preset","schema":1,"machine":"<id>","note":"…","params":{"<id>":value,…}}`.
+//!
+//! A machine's presets come from three places (docs/25 §Save to Library):
+//! the factory's `machines/<id>/presets/`, read-only; the open project's
+//! `presets/<id>/`, shown as the "Project" bank; and the home folder's
+//! `Presets/<id>/`, the "User" bank. A preset's name says where it lives:
+//! `rom1a/dx-bass` is the factory's, `Project/lead` the project's.
 //! Param values are real (Hz, seconds, an option index for switches) — not
 //! 0..1 norms — so retuning a knob range later doesn't move saved sounds;
 //! they clamp into range on apply. `machine`/`note` are hub forward-compat
-//! metadata the loader ignores. Factory presets are checked-in files; user
-//! saves land in the same directory. All IO runs on the UI thread.
+//! metadata the loader ignores. All IO runs on the UI thread.
 
 const std = @import("std");
+const storage = @import("storage.zig");
 
 // POSIX file/dir IO — the std.fs surface moved in zig 0.16; the codebase
 // convention is direct libc externs (see machine_registry, kernel_probe).
@@ -92,7 +97,7 @@ pub fn dirFromMachinePath(buf: []u8, machine_path: []const u8) ?[]const u8 {
 const DT_DIR: u8 = 4;
 
 fn scanInto(list: *List, dir_path: []const u8, prefix: []const u8, depth: u8) void {
-    var zbuf: [512:0]u8 = undefined;
+    var zbuf: [1024:0]u8 = undefined;
     if (dir_path.len >= zbuf.len) return;
     @memcpy(zbuf[0..dir_path.len], dir_path);
     zbuf[dir_path.len] = 0;
@@ -105,7 +110,7 @@ fn scanInto(list: *List, dir_path: []const u8, prefix: []const u8, depth: u8) vo
             // Two levels of grouping subdirectories: "bank/name" and
             // "bank/sub/name" (a collection's disks).
             if (depth >= 2) continue;
-            var sub_buf: [512]u8 = undefined;
+            var sub_buf: [1024]u8 = undefined;
             const sub = std.fmt.bufPrint(&sub_buf, "{s}/{s}", .{ dir_path, name_full }) catch continue;
             var pre_buf: [128]u8 = undefined;
             const pre = if (prefix.len > 0)
@@ -137,6 +142,108 @@ fn scanInto(list: *List, dir_path: []const u8, prefix: []const u8, depth: u8) vo
 pub fn scan(dir_path: []const u8) List {
     var list = List{};
     scanInto(&list, dir_path, "", 0);
+    sortList(&list);
+    return list;
+}
+
+// ── where presets live ───────────────────────────────────────────────
+
+pub const PROJECT_BANK = "Project";
+pub const USER_BANK = "User";
+
+pub const Bank = enum { factory, project, user };
+
+/// The open project's presets for machine `id`: `<package>/presets/<id>`.
+/// Null without a package (an untitled project, a bare .slab file).
+pub fn projectDir(buf: []u8, id: []const u8) ?[]const u8 {
+    const pd = storage.projectDir();
+    if (!std.mem.endsWith(u8, pd, ".slab") or id.len == 0) return null;
+    return std.fmt.bufPrint(buf, "{s}/presets/{s}", .{ pd, id }) catch null;
+}
+
+/// The home folder's presets for machine `id`: `<home>/Presets/<id>`.
+pub fn userDir(buf: []u8, id: []const u8) ?[]const u8 {
+    if (id.len == 0) return null;
+    var hb: [storage.MAX_PATH]u8 = undefined;
+    const h = storage.home(&hb);
+    if (h.len == 0) return null;
+    return std.fmt.bufPrint(buf, "{s}/Presets/{s}", .{ h, id }) catch null;
+}
+
+/// Which source a preset name belongs to.
+pub fn bankOf(name: []const u8) Bank {
+    if (std.mem.startsWith(u8, name, PROJECT_BANK ++ "/")) return .project;
+    if (std.mem.startsWith(u8, name, USER_BANK ++ "/")) return .user;
+    return .factory;
+}
+
+/// `name` under `bank`: "Project/lead".
+pub fn inBank(buf: []u8, bank: Bank, name: []const u8) ?[]const u8 {
+    return switch (bank) {
+        .factory => name,
+        .project => std.fmt.bufPrint(buf, PROJECT_BANK ++ "/{s}", .{name}) catch null,
+        .user => std.fmt.bufPrint(buf, USER_BANK ++ "/{s}", .{name}) catch null,
+    };
+}
+
+pub const Where = struct { dir: []const u8, name: []const u8 };
+
+/// The folder and file stem a preset name maps to. `factory_dir` is the
+/// machine's own presets folder; `buf` backs the folder path.
+pub fn locate(buf: []u8, factory_dir: []const u8, id: []const u8, name: []const u8) ?Where {
+    return switch (bankOf(name)) {
+        .factory => .{ .dir = factory_dir, .name = name },
+        .project => .{ .dir = projectDir(buf, id) orelse return null, .name = name[PROJECT_BANK.len + 1 ..] },
+        .user => .{ .dir = userDir(buf, id) orelse return null, .name = name[USER_BANK.len + 1 ..] },
+    };
+}
+
+/// Every preset of machine `id`: the factory's, then the project's and the
+/// home folder's as banks of their own.
+pub fn scanMachine(factory_dir: []const u8, id: []const u8) List {
+    var list = List{};
+    scanInto(&list, factory_dir, "", 0);
+    var pb: [storage.MAX_PATH]u8 = undefined;
+    if (projectDir(&pb, id)) |d| scanInto(&list, d, PROJECT_BANK, 1);
+    var ub: [storage.MAX_PATH]u8 = undefined;
+    if (userDir(&ub, id)) |d| scanInto(&list, d, USER_BANK, 1);
+    sortList(&list);
+    return list;
+}
+
+/// Read preset `name` of machine `id` into `buf`.
+pub fn readPreset(buf: []u8, factory_dir: []const u8, id: []const u8, name: []const u8) ?[]const u8 {
+    var db: [storage.MAX_PATH]u8 = undefined;
+    const w = locate(&db, factory_dir, id, name) orelse return null;
+    return readFileBuf(buf, w.dir, w.name);
+}
+
+/// Write preset `name` of machine `id`. The factory's folder is read-only
+/// from the app: only a Project or User name writes.
+pub fn writePreset(factory_dir: []const u8, id: []const u8, name: []const u8, content: []const u8) bool {
+    if (bankOf(name) == .factory) return false;
+    var db: [storage.MAX_PATH]u8 = undefined;
+    const w = locate(&db, factory_dir, id, name) orelse return false;
+    storage.makeParents(w.dir);
+    return writeFile(w.dir, w.name, content);
+}
+
+/// Rename a Project or User preset within its bank; `new_name` is the bare
+/// name. Returns the full new name in `out`.
+pub fn renameIn(out: []u8, factory_dir: []const u8, id: []const u8, old_name: []const u8, new_name: []const u8) ?[]const u8 {
+    const bank = bankOf(old_name);
+    if (bank == .factory) return null;
+    var db: [storage.MAX_PATH]u8 = undefined;
+    const w = locate(&db, factory_dir, id, old_name) orelse return null;
+    // A preset inside a bank's subfolder stays in it.
+    const sub = if (std.mem.lastIndexOfScalar(u8, w.name, '/')) |i| w.name[0 .. i + 1] else "";
+    var nb: [MAX_NAME * 2]u8 = undefined;
+    const stem = std.fmt.bufPrint(&nb, "{s}{s}", .{ sub, new_name }) catch return null;
+    if (!renameFile(w.dir, w.name, stem)) return null;
+    return inBank(out, bank, stem);
+}
+
+fn sortList(list: *List) void {
     // Insertion sort — stable, allocation-free, and tiny n. Sorted order is
     // the index contract between the picker menus and apply-by-index.
     var i: usize = 1;
@@ -146,12 +253,11 @@ pub fn scan(dir_path: []const u8) List {
             std.mem.swap(Name, &list.names[j], &list.names[j - 1]);
         }
     }
-    return list;
 }
 
 /// Read `<dir>/<name>.preset` into buf; null on any failure.
 pub fn readFileBuf(buf: []u8, dir_path: []const u8, name: []const u8) ?[]const u8 {
-    var path_buf: [512:0]u8 = undefined;
+    var path_buf: [1024:0]u8 = undefined;
     const path = std.fmt.bufPrintZ(&path_buf, "{s}/{s}.preset", .{ dir_path, name }) catch return null;
     const fd = open(path.ptr, O_RDONLY);
     if (fd < 0) return null;
@@ -169,18 +275,18 @@ pub fn readFileBuf(buf: []u8, dir_path: []const u8, name: []const u8) ?[]const u
 
 /// Write `<dir>/<name>.preset`, creating the directory if needed.
 pub fn writeFile(dir_path: []const u8, name: []const u8, content: []const u8) bool {
-    var dir_z: [512:0]u8 = undefined;
+    var dir_z: [1024:0]u8 = undefined;
     if (dir_path.len >= dir_z.len) return false;
     @memcpy(dir_z[0..dir_path.len], dir_path);
     dir_z[dir_path.len] = 0;
     _ = mkdir(@ptrCast(&dir_z[0]), 0o755); // EEXIST is fine
     if (std.mem.indexOfScalar(u8, name, '/')) |slash| {
-        var sub_z: [512:0]u8 = undefined;
+        var sub_z: [1024:0]u8 = undefined;
         const sub = std.fmt.bufPrintZ(&sub_z, "{s}/{s}", .{ dir_path, name[0..slash] }) catch return false;
         _ = mkdir(sub.ptr, 0o755);
     }
 
-    var path_buf: [512:0]u8 = undefined;
+    var path_buf: [1024:0]u8 = undefined;
     const path = std.fmt.bufPrintZ(&path_buf, "{s}/{s}.preset", .{ dir_path, name }) catch return false;
     const fd = open(path.ptr, O_WRONLY | O_CREAT | O_TRUNC, @as(c_uint, 0o644));
     if (fd < 0) return false;
@@ -199,8 +305,8 @@ pub fn writeFile(dir_path: []const u8, name: []const u8, content: []const u8) bo
 /// existing `<new>.preset` — the caller validates collisions up front, but
 /// this is the last line of defense.
 pub fn renameFile(dir_path: []const u8, old_name: []const u8, new_name: []const u8) bool {
-    var old_z: [512:0]u8 = undefined;
-    var new_z: [512:0]u8 = undefined;
+    var old_z: [1024:0]u8 = undefined;
+    var new_z: [1024:0]u8 = undefined;
     const old_p = std.fmt.bufPrintZ(&old_z, "{s}/{s}.preset", .{ dir_path, old_name }) catch return false;
     const new_p = std.fmt.bufPrintZ(&new_z, "{s}/{s}.preset", .{ dir_path, new_name }) catch return false;
     // Don't overwrite a different existing preset.

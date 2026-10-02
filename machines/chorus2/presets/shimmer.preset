@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "chorus2", "note": "Fast, bright shimmer", "params": {"chorus-mode": 1, "chorus-rate": 2.5, "chorus-depth": 0.7, "chorus-tone": 9000, "chorus-spread": 1, "chorus-mix": 0.45}}
+{"slab": "preset", "schema": 1, "machine": "chorus2", "note": "Fast, bright shimmer", "params": {"chorus-mode": 1, "chorus-rate": 2.5, "chorus-depth": 0.7, "chorus-tone": 9000, "chorus-spread": 1, "chorus-mix": 0.45}}

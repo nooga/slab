@@ -158,7 +158,7 @@ fn nowNs() i128 {
     return @divTrunc(@as(i128, @intCast(std.c.mach_absolute_time())) * @as(i128, @intCast(info.numer)), @as(i128, @intCast(info.denom)));
 }
 
-const RenameKind = enum { none, track, clip, preset_save, preset_rename };
+const RenameKind = enum { none, track, clip, preset_save, preset_save_library, preset_rename };
 
 const RenameState = struct {
     kind: RenameKind = .none,
@@ -1132,13 +1132,15 @@ pub fn main(init: std.process.Init) !void {
             };
         };
         if (mbres.preset_save_ref) |ref| if (bay_dev) |dev| {
-            beginPresetSave(&rename, dev, refEffect(ref), mbres.preset_anchor);
+            beginPresetSave(&rename, dev, refEffect(ref), mbres.preset_anchor, mbres.preset_save_library);
         };
         if (mbres.preset_rename_ref) |ref| if (mbres.preset_rename_index) |idx| if (bay_dev) |dev| {
             const eff = refEffect(ref);
             if (deviceMachineOf(dev, eff)) |mach| {
                 var cur: []const u8 = "";
                 if (mach.preset_name) |nf| cur = std.mem.span(nf(mach.state, idx));
+                // The field edits the bare name; the preset stays in its bank.
+                if (std.mem.lastIndexOfScalar(u8, cur, '/')) |slash| cur = cur[slash + 1 ..];
                 beginPresetRename(&rename, dev, eff, idx, cur, mbres.preset_anchor);
             }
         };
@@ -1592,6 +1594,18 @@ fn saveProject(
         status.set("Save failed", .{});
         return;
     };
+    // Save As to another package takes the project's presets along; its
+    // files come by collecting.
+    var old_buf: [storage.MAX_PATH]u8 = undefined;
+    const old_dir = old_buf[0..storage.projectDir().len];
+    @memcpy(old_dir, storage.projectDir());
+    if (std.mem.endsWith(u8, old_dir, ".slab") and !std.mem.eql(u8, old_dir, pkg)) {
+        var sb: [storage.MAX_PATH]u8 = undefined;
+        var tb: [storage.MAX_PATH]u8 = undefined;
+        const from = std.fmt.bufPrint(&sb, "{s}/presets", .{old_dir}) catch "";
+        const to = std.fmt.bufPrint(&tb, "{s}/presets", .{pkg}) catch "";
+        if (from.len > 0 and to.len > 0) _ = package.copyTree(from, to);
+    }
     var db: [storage.MAX_PATH]u8 = undefined;
     storage.setProject(package.docPath(&db, pkg));
     // Edited wavetables are written into the package first, so the
@@ -1810,6 +1824,37 @@ fn openProject(
     dirty.* = false;
     reportLoaded(alloc, status, data, project_path.*);
     std.log.info("loaded {s}", .{project_path.*});
+}
+
+/// Every selected clip as a `.slabclip` in the home folder's Clips
+/// (docs/25 §Save to Library), under its name, never over another.
+fn saveClipsToLibrary(alloc: std.mem.Allocator, tracks: []track_mod.Track, status: *StatusMessage) void {
+    var hb: [storage.MAX_PATH]u8 = undefined;
+    var db: [storage.MAX_PATH]u8 = undefined;
+    const dir = std.fmt.bufPrint(&db, "{s}/Clips", .{storage.home(&hb)}) catch return;
+    storage.makeParents(dir);
+    var saved: usize = 0;
+    var last: [storage.MAX_PATH]u8 = undefined;
+    var last_len: usize = 0;
+    for (tracks) |*t| for (t.clips.items) |*clip| {
+        if (!clip.selected) continue;
+        const bytes = document_mod.clipFile(alloc, t, clip) catch |err| {
+            std.log.err("clip to library: {s}", .{@errorName(err)});
+            continue;
+        };
+        defer alloc.free(bytes);
+        var sb: [64]u8 = undefined;
+        const stem = storage.slug(&sb, if (clip.name().len > 0) clip.name() else "clip");
+        var pb: [storage.MAX_PATH]u8 = undefined;
+        const path = storage.freshPath(&pb, dir, if (stem.len > 0) stem else "clip", document_mod.CLIP_EXT);
+        if (path.len == 0) continue;
+        document_mod.writeFile(alloc, path, bytes) catch continue;
+        saved += 1;
+        const base = std.fs.path.basename(path);
+        @memcpy(last[0..base.len], base);
+        last_len = base.len;
+    };
+    if (saved == 1) status.set("Saved {s} to the library", .{last[0..last_len]}) else if (saved > 1) status.set("Saved {d} clips to the library", .{saved}) else status.set("Nothing saved", .{});
 }
 
 /// Move the package's files the project no longer names to the Trash.
@@ -2763,8 +2808,8 @@ fn anchorRenameRect(rename: *RenameState, anchor: c.rl.Rectangle) void {
     rename.rect = .{ .x = anchor.x, .y = anchor.y, .width = @max(anchor.width, 120), .height = @max(anchor.height, 18) };
 }
 
-fn beginPresetSave(rename: *RenameState, dev: *track_mod.Track, effect: ?usize, anchor: c.rl.Rectangle) void {
-    rename.* = .{ .kind = .preset_save, .device_track = dev, .device_effect = effect };
+fn beginPresetSave(rename: *RenameState, dev: *track_mod.Track, effect: ?usize, anchor: c.rl.Rectangle, library: bool) void {
+    rename.* = .{ .kind = if (library) .preset_save_library else .preset_save, .device_track = dev, .device_effect = effect };
     anchorRenameRect(rename, anchor);
 }
 
@@ -2819,7 +2864,7 @@ fn commitRename(
 ) !void {
     // Preset save/rename act on machine preset files, not the document.
     switch (rename.kind) {
-        .preset_save, .preset_rename => {
+        .preset_save, .preset_save_library, .preset_rename => {
             commitPreset(rename, tracks, dirty, status);
             rename.kind = .none;
             return;
@@ -2846,7 +2891,7 @@ fn commitRename(
             changed = true;
         },
         // Preset kinds are handled above and returned early.
-        .preset_save, .preset_rename, .none => {},
+        .preset_save, .preset_save_library, .preset_rename, .none => {},
     }
     if (changed) {
         try history.pushUndo(alloc, before);
@@ -2883,8 +2928,16 @@ fn commitPreset(rename: *RenameState, tracks: []track_mod.Track, dirty: *bool, s
             const f = mach.save_preset_named orelse return;
             if (f(mach.state, name_z) != null) {
                 dirty.* = true;
-                status.set("Saved preset {s}", .{name});
+                const where = if (std.mem.endsWith(u8, storage.projectDir(), ".slab")) "the project" else "the library (save the project to keep presets in it)";
+                status.set("Saved preset {s} to {s}", .{ name, where });
             } else status.set("Preset save failed (name in use?)", .{});
+        },
+        .preset_save_library => {
+            const f = mach.save_preset_library orelse return;
+            if (f(mach.state, name_z) != null) {
+                dirty.* = true;
+                status.set("Saved preset {s} to the library", .{name});
+            } else status.set("Preset save failed", .{});
         },
         .preset_rename => {
             const f = mach.rename_preset orelse return;
@@ -2901,7 +2954,7 @@ fn arrangementRenameTarget(rename: *const RenameState) arrangement.RenameTarget 
     return switch (rename.kind) {
         .track => .{ .kind = .track, .track = rename.track },
         .clip => .{ .kind = .clip, .track = rename.track, .clip = rename.clip },
-        .preset_save, .preset_rename, .none => .{},
+        .preset_save, .preset_save_library, .preset_rename, .none => .{},
     };
 }
 
@@ -3115,6 +3168,10 @@ fn executeEditCommand(
             _ = copyFocusedSelection(alloc, clipboard, status, focus, tracks, selected_clip.*);
             return;
         },
+        .save_to_library => {
+            saveClipsToLibrary(alloc, tracks, status);
+            return;
+        },
         .select_all => {
             const changed = switch (focus) {
                 .arrangement => arrangement.selectAllClips(tracks, selected_track, selected_clip),
@@ -3229,7 +3286,7 @@ fn executeEditCommand(
         },
         // `import_audio` is intercepted in the arrangement-result handler
         // (it needs the audio pool + file dialog); never reaches here.
-        .none, .copy, .select_all, .clear_selection, .rename, .file_new, .file_open, .file_save, .file_save_as, .file_clean_up, .render_audio, .import_audio => {},
+        .none, .copy, .select_all, .clear_selection, .rename, .file_new, .file_open, .file_save, .file_save_as, .file_clean_up, .render_audio, .import_audio, .save_to_library => {},
     }
 
     if (changed) {

@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "chorus2", "note": "Juno II \u2014 deep obvious chorus", "params": {"chorus-mode": 1, "chorus-rate": 1.4, "chorus-depth": 1.6, "chorus-tone": 7500, "chorus-spread": 1, "chorus-mix": 0.6}}
+{"slab": "preset", "schema": 1, "machine": "chorus2", "note": "Juno II \u2014 deep obvious chorus", "params": {"chorus-mode": 1, "chorus-rate": 1.4, "chorus-depth": 1.6, "chorus-tone": 7500, "chorus-spread": 1, "chorus-mix": 0.6}}
