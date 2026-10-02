@@ -174,10 +174,14 @@ pub const Registry = struct {
     pub fn loadFyMachine(self: *Registry, path: []const u8) !void {
         try self.ensureRoom();
 
-        var host = FyHost.init(self.alloc);
-        defer host.deinit();
-        try host.compileFile(path);
-        const desc = try machine_desc.read(&host);
+        // Test builds read the manifest off the host the instances share.
+        const shared = @import("builtin").is_test;
+        var own: FyHost = undefined;
+        if (!shared) own = FyHost.init(self.alloc);
+        defer if (!shared) own.deinit();
+        const host = if (shared) try fy_raw_machine_mod.test_hosts.get(path, fy_raw_machine_mod.dsp_versioning) else &own;
+        if (!shared) try host.compileFile(path);
+        const desc = try machine_desc.read(host);
         // The descriptor's derive-data is a libc-malloc'd table built by the
         // throwaway manifest; only the instance keeps it, so free it here.
         defer if (desc.derive_data != 0) std.c.free(@ptrFromInt(desc.derive_data));

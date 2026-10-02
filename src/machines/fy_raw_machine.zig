@@ -8,6 +8,7 @@
 //! adapter is generic: adding a machine never requires a Zig wrapper.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Fy = @import("fy").Fy;
 const c = @import("../c.zig");
 const machine = @import("../machine.zig");
@@ -55,6 +56,40 @@ pub var neon_lanes: bool = true;
 /// Off: every `ifte` if-converts, both arms computed. `--no-branches`.
 pub var dsp_versioning: bool = true;
 const RawSlots = Fy.Dsp2RawRepeatedSlots;
+
+/// Tests build hundreds of instances of a few machines, and compiling one
+/// costs about a second in a Debug build. Test builds compile each
+/// (path, versioning) once per run and share the host; an instance still
+/// gets its own descriptor, state, buffers and callers on it. Hosts live on
+/// the C allocator for the whole run, out of the leak check.
+pub const test_hosts = struct {
+    const MAX = 64;
+    var paths: [MAX][256]u8 = undefined;
+    var path_lens: [MAX]usize = undefined;
+    var versionings: [MAX]bool = undefined;
+    var hosts: [MAX]*FyHost = undefined;
+    var count: usize = 0;
+
+    pub fn get(path: []const u8, versioning: bool) !*FyHost {
+        for (0..count) |i| {
+            if (versionings[i] == versioning and std.mem.eql(u8, paths[i][0..path_lens[i]], path)) return hosts[i];
+        }
+        if (count == MAX or path.len > paths[0].len) return error.TestHostCacheFull;
+        const alloc = std.heap.c_allocator;
+        const host = try alloc.create(FyHost);
+        errdefer alloc.destroy(host);
+        host.* = FyHost.init(alloc);
+        host.fy.dsp2_versioning = versioning;
+        errdefer host.deinit();
+        try host.compileFile(path);
+        @memcpy(paths[count][0..path.len], path);
+        path_lens[count] = path.len;
+        versionings[count] = versioning;
+        hosts[count] = host;
+        count += 1;
+        return host;
+    }
+};
 
 pub const Mode = machine_desc.Mode;
 
@@ -120,6 +155,8 @@ const Display = machine_desc.Display;
 
 pub const FyRawMachine = struct {
     host: *FyHost,
+    // The host is test_hosts' (test builds): deinit leaves it alone.
+    host_shared: bool = false,
     desc: machine_desc.Desc,
     // Per-region state: effect machines run L through region 0 and R through
     // region 1 so per-channel state never cross-talks; polyphonic voice
@@ -322,13 +359,16 @@ pub const FyRawMachine = struct {
     pub fn create(alloc: std.mem.Allocator, path: []const u8) !*FyRawMachine {
         const self = try alloc.create(FyRawMachine);
         errdefer alloc.destroy(self);
-        const host = try alloc.create(FyHost);
-        errdefer alloc.destroy(host);
-        host.* = FyHost.init(alloc);
-        host.fy.dsp2_versioning = dsp_versioning;
-        errdefer host.deinit();
+        const shared = builtin.is_test;
+        const host = if (shared) try test_hosts.get(path, dsp_versioning) else try alloc.create(FyHost);
+        errdefer if (!shared) alloc.destroy(host);
+        if (!shared) {
+            host.* = FyHost.init(alloc);
+            host.fy.dsp2_versioning = dsp_versioning;
+        }
+        errdefer if (!shared) host.deinit();
 
-        try host.compileFile(path);
+        if (!shared) try host.compileFile(path);
         const desc = try machine_desc.read(host);
         if (desc.state_size > MAX_STATE or desc.params_size > MAX_PARAMS) return error.RawMachineStorageTooLarge;
         if (desc.voices > MAX_REGIONS) return error.RawMachineTooManyVoices;
@@ -348,6 +388,7 @@ pub const FyRawMachine = struct {
 
         self.* = .{
             .host = host,
+            .host_shared = shared,
             .desc = desc,
             .panel_w = desc.panel_w,
             .alloc = alloc,
@@ -2367,8 +2408,10 @@ fn deinitImpl(state: *anyopaque, alloc: std.mem.Allocator) void {
     self.freeAssets(alloc);
     // derive-data is libc-malloc'd by fy's `alloc`; fy doesn't track it.
     if (self.desc.derive_data != 0) std.c.free(@ptrFromInt(self.desc.derive_data));
-    self.host.deinit();
-    alloc.destroy(self.host);
+    if (!self.host_shared) {
+        self.host.deinit();
+        alloc.destroy(self.host);
+    }
     alloc.destroy(self);
 }
 

@@ -877,11 +877,14 @@ fn parseRows(d: *const Desc, head: ?*const RowRaw, out: []LayoutRow) !usize {
 
 const testing = std.testing;
 
+/// The compiled machine the fy_raw_machine tests share (test_hosts).
+fn testHost(path: []const u8) !*FyHost {
+    const raw = @import("machines/fy_raw_machine.zig");
+    return raw.test_hosts.get(path, raw.dsp_versioning);
+}
+
 test "descriptor walker reads the FM-86 manifest (8 tabs, 147 controls)" {
-    var host = FyHost.init(testing.allocator);
-    defer host.deinit();
-    try host.compileFile("machines/fm86/fm86.fy");
-    const d = try read(&host);
+    const d = try read(try testHost("machines/fm86/fm86.fy"));
 
     try testing.expectEqualStrings("FM-7.11", d.nameSlice());
     try testing.expectEqual(Mode.voice_sample, d.mode);
@@ -922,10 +925,7 @@ test "descriptor walker reads the FM-86 manifest (8 tabs, 147 controls)" {
 }
 
 test "descriptor walker reads a tabbed (paged) panel" {
-    var host = FyHost.init(testing.allocator);
-    defer host.deinit();
-    try host.compileFile("machines/raw_fixtures/pages.fy");
-    const d = try read(&host);
+    const d = try read(try testHost("machines/raw_fixtures/pages.fy"));
 
     try testing.expectEqualStrings("raw-pages", d.nameSlice());
     // Pages replace the top-level rows.
@@ -944,10 +944,7 @@ test "descriptor walker reads a tabbed (paged) panel" {
 }
 
 test "descriptor walker reads panel widgets (Ju-Know)" {
-    var host = FyHost.init(testing.allocator);
-    defer host.deinit();
-    try host.compileFile("machines/juno2/juno2.fy");
-    const d = try read(&host);
+    const d = try read(try testHost("machines/juno2/juno2.fy"));
 
     const Case = struct { id: []const u8, widget: Widget };
     const cases = [_]Case{
@@ -970,10 +967,7 @@ test "descriptor walker reads panel widgets (Ju-Know)" {
 }
 
 test "descriptor walker reads the drum2 note map" {
-    var host = FyHost.init(testing.allocator);
-    defer host.deinit();
-    try host.compileFile("machines/drum2/drum2.fy");
-    const d = try read(&host);
+    const d = try read(try testHost("machines/drum2/drum2.fy"));
 
     try testing.expectEqualStrings("DS-404 Drums", d.nameSlice());
     try testing.expect(d.note_pitch);
@@ -1002,10 +996,7 @@ test "descriptor walker reads the drum2 note map" {
 }
 
 test "descriptor walker reads the MS-20 manifest from fy" {
-    var host = FyHost.init(testing.allocator);
-    defer host.deinit();
-    try host.compileFile("machines/ms20/ms20.fy");
-    const d = try read(&host);
+    const d = try read(try testHost("machines/ms20/ms20.fy"));
 
     try testing.expectEqualStrings("SM-24 Mono", d.nameSlice());
     try testing.expectEqual(Mode.voice_sample, d.mode);
@@ -1046,10 +1037,7 @@ test "descriptor walker reads the MS-20 manifest from fy" {
 
 test "latency! names the params f64 holding a machine's latency (limiter2, sat2)" {
     inline for (.{ "machines/limiter2/limiter2.fy", "machines/sat2/sat2.fy" }) |path| {
-        var host = FyHost.init(testing.allocator);
-        defer host.deinit();
-        try host.compileFile(path);
-        const d = try read(&host);
+        const d = try read(try testHost(path));
         try testing.expect(d.latency_sel > 0);
         try testing.expect(d.latency_sel - 1 + 8 <= d.params_size);
     }
