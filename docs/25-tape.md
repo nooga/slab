@@ -51,13 +51,14 @@ shapes it.
 |---|---|---|
 | `02-shapers/hysteresis.fy` | algebraic soft shoulder; a loop opened by the direction of motion, zero at rest, widest mid-curve, closed at saturation; a crossover dead zone at low BIAS; a magnetization offset for even harmonics | tape2 |
 | `04-filters/tone.fy` | TPT one-pole, shelves whose cut and boost cancel exactly, Simper bell (moved out of `saturator.fy`, sat2 bit-exact) | sat2, tape2, compand |
-| `07-effects/wow.fy` | Hermite read on one modulated head: wow + flutter sines, FLUTTER extra, RND (noise through two one-poles, normalized to unit deviation: drift at the wow rate, jitter at the flutter rate), SKEW (right channel later: azimuth) | char2, tape2 |
-| `07-effects/dropout.fy` | Poisson events, 1–40 ms raised-cosine dips to −20 dB with a gap low-pass 16 k → 1.2 k; returns the dip for the owner | tape2 |
+| `07-effects/wow.fy` | Hermite read on one modulated head: wow + flutter sines (depth 1 = 2.5 % / 0.4 %), FLUTTER extra (1.2 % at 1), RND (noise through two one-poles, normalized to unit deviation: drift at the wow rate, jitter at the flutter rate), SKEW (right channel later: azimuth) | char2, tape2 |
+| `07-effects/dropout.fy` | Poisson events, 3–80 ms raised-cosine dips to −26 dB with a gap low-pass 16 k → 1.2 k; returns the dip for the owner | tape2 |
+| `00-primitives/rand.fy` | Park–Miller (a 48271, m 2³¹ − 1) in exact f64 integer math, period 2³¹ − 2 | lofi, wow, dropout |
 | `07-effects/hum.fy` | 50/60 Hz: 0.7 sin + 0.6 (\|sin\| − 2/π), transformer plus rectifier buzz; head-switch spikes at 50 / 59.94 per second, audio-modulated; gated | tape2 |
 | `07-effects/compand.fy` | NR out of alignment: the band above SPLIT followed (2 / 80 ms), AMT dB per dB under REF on it | tape2 |
 | `07-effects/lofi.fy` | hold, bits, crunch, coupling cap, band limit, gated hiss; tape2 borrows its SVF low-pass, cap and noise | char2, tape2 |
 
-Two lessons from building the hysteresis:
+Three lessons from the build:
 - With a gentle direction term, `tanh(k·Δu)` grows with frequency, so
   the loop turned into a treble boost: Hi-Fi measured +1.8 dB at
   10 kHz. With k = 400 the term is nearly the sign of the motion and
@@ -65,6 +66,10 @@ Two lessons from building the hysteresis:
 - A fixed-width loop is a square wave in quadrature: −23.6 dB THD at
   −6 dBFS. Scaling the width by level (2.6·a·(1 − a²)) and keeping
   HYST-W at 0.06 brought type I to 1.8 %.
+- The float hash `frac(x·1103515245 + c)` that the instruments use
+  for noise falls into a cycle of 3,143 values and never comes within
+  4.8e−4 of 0. The hiss repeated every 65 ms, and dropouts (p ≈ 8e−5
+  per sample) never fired. `rand.fy` replaces it in the tape kernels.
 
 ## Controls
 
@@ -75,7 +80,7 @@ Two lessons from building the hysteresis:
 | `tape-nr` | OFF / ON | OFF | Dolby B (Hi-Fi's compander is always on) |
 | `tape-drive` | −12…18 dB | 0 | into the curve; 0 dBFS sits 6 dB over its knee |
 | `tape-bias` | 0…1 | 0.6 | low: wide loop and dead zone (grit); high: clean, duller |
-| `tape-wow`, `tape-flutter` | 0…1 | 0.25 | 0.25 is the format's own; 0 is a perfect transport |
+| `tape-wow`, `tape-flutter` | 0…1 | 0.25 | 0.25 is the format's own, then on to 2.5 % wow and 1.2 % extra flutter at 1 (seasick); 0 is a perfect transport |
 | `tape-drops` | 0…1 | 0 | dropouts, on top of WEAR's |
 | `tape-hiss` | 0…1 | 0.5 | 0.5 is the format's own, ±12 dB across the knob, 0 off |
 | `tape-hum` | 0…1 | 0 | −80 → −40 dB |
@@ -86,16 +91,16 @@ Formats:
 
 | MODE | band | emphasis | hiss | sens | bump | wow / flutter | other |
 |---|---|---|---|---|---|---|---|
-| CASS I | 12 kHz | 1.3 k +6 dB | −52 | +3 dB | 80 Hz +2 | 0.15 / 0.10 | |
-| CASS II | 15 kHz | 2.3 k +6 | −57 | 0 | 80 Hz +2 | 0.12 / 0.08 | |
-| CASS IV | 17 kHz | 2.3 k +5 | −60 | −4 | 70 Hz +1.5 | 0.10 / 0.06 | |
-| VHS LIN | 8 kHz | 1.3 k +4 | −44 | +2 | 100 Hz +1 | 0.50 / 0.30 | mono, cap 60 Hz, buzz |
-| VHS HIFI | 20 kHz | — | −78 | −6 | — | 0.03 / 0.02 | no loop (FM), compander always, buzz, dropouts burst into hiss (×30) |
+| CASS I | 12 kHz | 1.3 k +6 dB | −52 | +3 dB | 80 Hz +2 | 0.5 % / 0.3 % | |
+| CASS II | 15 kHz | 2.3 k +6 | −57 | 0 | 80 Hz +2 | 0.4 % / 0.24 % | |
+| CASS IV | 17 kHz | 2.3 k +5 | −60 | −4 | 70 Hz +1.5 | 0.3 % / 0.2 % | |
+| VHS LIN | 8 kHz | 1.3 k +4 | −44 | +2 | 100 Hz +1 | 1.6 % / 1.0 % | mono, cap 60 Hz, buzz |
+| VHS HIFI | 20 kHz | — | −78 | −6 | — | 0.1 % / 0.05 % | no loop (FM), compander always, buzz, dropouts burst into hiss (×30) |
 
 WEAR 0 → 1:
 - band ×0.4 (Hi-Fi ×0.75), and BIAS takes up to 15 % more;
 - hiss +10 dB, bump +1.5 dB;
-- wow and flutter +0.4 each, randomness 0.2 → 1;
+- wow +0.4 %, flutter +0.25 %, randomness 0.2 → 1;
 - dropouts at 6·(DROPS + 0.6·WEAR)² per second;
 - azimuth skew up to 1.5 samples (cassette);
 - head magnetization 0.02 → 0.14 (2nd harmonic);
@@ -143,9 +148,9 @@ OUT is solved for level-neutral output on each preset's material.
 | `four-track` | type I demo, pushed, a little worn | drums | crest 15.7 → 13.6 |
 | `metal-hot` | type IV +12 dB on drums | drums | crest 15.7 → 13.9, t/b 11.6 → 10.5 |
 | `walkman` | tired belt: wobble, hiss, Dolby mistrack | pads | OUT +0.7 |
-| `chewed` | WEAR 1, dropouts, hum | pads | OUT +1.2 |
-| `vhs-rental` | mono linear, dull, hum and buzz | mixes | OUT +3.4 |
-| `vhs-hifi-dub` | Hi-Fi, the compander breathing | mixes | OUT +0.1 |
+| `chewed` | WEAR 1, dropouts, hum | pads | OUT +1.9, gain p01 −14 dB (the dropouts) |
+| `vhs-rental` | mono linear, dull, hum and buzz | mixes | OUT +3.5 |
+| `vhs-hifi-dub` | Hi-Fi, the compander breathing | mixes | OUT +0.2 |
 
 ## Open
 

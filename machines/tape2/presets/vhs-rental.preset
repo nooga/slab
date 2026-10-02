@@ -1,1 +1,1 @@
-{"schema": 1, "machine": "tape2", "note": "a rental VHS: mono linear track, dull, hum and head-switch buzz", "params": {"tape-mode": 3, "tape-wear": 0.6, "tape-drive": 3, "tape-hiss": 0.5, "tape-hum": 0.35, "tape-out": 3.4, "tape-mix": 1}}
+{"schema": 1, "machine": "tape2", "note": "a rental VHS: mono linear track, dull, hum and head-switch buzz", "params": {"tape-mode": 3, "tape-wear": 0.6, "tape-drive": 3, "tape-hiss": 0.5, "tape-hum": 0.35, "tape-out": 3.5, "tape-mix": 1}}

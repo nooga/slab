@@ -12,17 +12,17 @@
   MODE sets the format, WEAR how far gone it is.  The derive word maps
   both [and the knobs] onto each stage's settings once a block:
 
-    MODE        band      emphasis     hiss  sens  bump      wow  NR
-    CASS I      12 kHz    1.3 k +6 dB  -52   +3    80 Hz +2  .15  B
-    CASS II     15 kHz    2.3 k +6     -57    0    80    +2  .12  B
-    CASS IV     17 kHz    2.3 k +5     -60   -4    70  +1.5  .10  B
-    VHS LINEAR  8 kHz     1.3 k +4     -44   +2   100    +1  .50  B,
+    MODE        band      emphasis     hiss  sens  bump      wow    NR
+    CASS I      12 kHz    1.3 k +6 dB  -52   +3    80 Hz +2  0.5 %  B
+    CASS II     15 kHz    2.3 k +6     -57    0    80    +2  0.4 %  B
+    CASS IV     17 kHz    2.3 k +5     -60   -4    70  +1.5  0.3 %  B
+    VHS LINEAR  8 kHz     1.3 k +4     -44   +2   100    +1  1.6 %  B,
                 mono, HP 60 Hz
-    VHS HI-FI   20 kHz    -            -78   -6    -         .03  compander,
+    VHS HI-FI   20 kHz    -            -78   -6    -         0.1 %  compander,
                 head-switch buzz, dropouts burst into hiss  always
 
     WEAR  0 -> 1:  band x 0.4 [Hi-Fi x 0.75], hiss +10 dB, bump +1.5 dB,
-                   wow +0.4, flutter +0.4, randomness 0.2 -> 1,
+                   wow +0.4 %, flutter +0.25 %, randomness 0.2 -> 1,
                    dropouts [6 [DROPS + 0.6 WEAR]^2 a second], azimuth
                    skew up to 1.5 samples, head magnetization [even
                    harmonics], coupling cap x 4 [not Hi-Fi],
@@ -40,7 +40,7 @@ include "../00-primitives/math.fy"
 include "../00-primitives/oversample.fy"
 include "../02-shapers/hysteresis.fy"
 include "../04-filters/tone.fy"
-include "lofi.fy"      ( lofi-lp-step, lofi-cap, lofi-rand )
+include "lofi.fy"      ( lofi-lp-step, lofi-cap, rand-b )
 include "wow.fy"
 include "dropout.fy"
 include "hum.fy"
@@ -143,8 +143,14 @@ dsp: tape-derive | ctx:Ctx state params:TapeParams |
   m 3.0 3.0 3.0 3.0 30.0 tape-pick -> params.burst
   m 2.5 f<  0.0  m 3.5 f< 1.0 0.0 select  select -> params.mono
   ( transport )
-  m 0.15 0.12 0.1 0.5 0.03 tape-pick  params.wow 4.0 f* f*  w 0.4 f* f+ -> wp.depth
-  m 0.1 0.08 0.06 0.3 0.02 tape-pick  params.flutter 4.0 f* f*  w 0.4 f* f+ -> wp.flutter
+  ( WOW and FLUTTER: the format's own at 0.25, then on to seasick at 1
+    [wow.fy depth 1 = 2.5 %, flutter 1 = 1.2 % more] )
+  m 0.05 0.04 0.03 0.16 0.01 tape-pick | wb |
+  params.wow 0.25 f- 0.0 fmax 1.3333333333333333 f* | wx |
+  wb 4.0 f* params.wow f*  1.0 wb 4.0 f* f- wx wx f* f*  f+  w 0.15 f* f+ -> wp.depth
+  m 0.06 0.05 0.04 0.2 0.01 tape-pick | fb |
+  params.flutter 0.25 f- 0.0 fmax 1.3333333333333333 f* | fx |
+  fb 4.0 f* params.flutter f*  1.0 fb 4.0 f* f- fx fx f* f*  f+  w 0.2 f* f+ -> wp.flutter
   m 0.9 0.9 0.9 0.5 0.5 tape-pick -> wp.rate
   0.2 w 0.8 f* f+ -> wp.rnd
   m 1.0 1.0 1.0 0.0 0.0 tape-pick  0.05 w 1.5 f* f+  f*  ctx.sr f*  0.00002083333333333333 f* -> wp.skew
@@ -223,8 +229,8 @@ dsp: k-tape-tick | io:Io ctx state:TapeState params:TapeParams -- |
     n1 1.0e-7 f<  0.0 n1 select -> state.nenv
     n0 TAPE-OPEN f* 1.0 fmin  params.hiss-lvl f*  1.0 params.burst e f* f+  f* | na |
     state.hum& params.hp& lvl hum-tick | h |
-    el  state.nzl& 0.31337 lofi-rand na f*  f+  h f+
-    er  state.nzr& 0.71993 lofi-rand na f*  f+  h f+ ]
+    el  state.nzl& 12345.0 rand-b na f*  f+  h f+
+    er  state.nzr& 67891.0 rand-b na f*  f+  h f+ ]
   ifte | fl fr |
   ( playback head: bump, bandwidth, coupling cap )
   state.bumpl& params.bump& fl bell-tick | gl |

@@ -8,10 +8,12 @@
     yr  = the same at t + skew                                  azimuth
 
   A pitch deviation dev at f Hz is a delay swing of dev / [2 pi f]
-  seconds, so the depths set deviation, not time: DEPTH 1 is 0.8 % at
-  the wow rate and 0.15 % at flutter [12x the wow rate - a record's
-  turn and its rumble, a capstan and its idler]; FLUTTER adds up to
-  0.3 % more at the flutter rate on its own.  RND mixes in noise twice
+  seconds, so the depths set deviation, not time: DEPTH 1 is 2.5 % at
+  the wow rate [a warped record, a dying belt: 40 cents] and 0.4 % at
+  flutter [12x the wow rate - a record's turn and its rumble, a capstan
+  and its idler]; FLUTTER adds up to 1.2 % more at the flutter rate on
+  its own.  A good deck is around 0.1 % [depth 0.04]: real, and
+  inaudible on drums, so the owners' knobs reach well past it.  RND mixes in noise twice
   low-passed [an Ornstein-Uhlenbeck-like drift at the wow rate and a
   jitter at the flutter rate, each normalized to unit deviation], so a
   worn transport wanders instead of ticking like an LFO.  SKEW reads the
@@ -21,13 +23,14 @@
   The centre sits just past the deepest swing, so the head never reads
   ahead of itself.  The owner declares the two rings [manifest `buffer`;
   20 ms covers a 33 RPM record at full depth, 50 ms a worn tape with
-  skew] at WowState.bl / bl-len and br / br-len, calls wow-prepare per
+  randomness and skew] at WowState.bl / bl-len and br / br-len, calls wow-prepare per
   block, wow-seed in its prepare and wow-run per sample.  With every
   depth at 0 the read is skipped [ifte] and the rings are only fed, so
   turning it up never replays stale audio.  At FLUTTER, RND and SKEW 0
   the output is exactly the plain two-sine read. )
 
 include "delay.fy"   ( dl-read, dl-osc, dl-osc-seed )
+include "../00-primitives/rand.fy"
 
 ustruct: WowState
   f64 bl       ( host-injected ring pointers and lengths )
@@ -66,9 +69,9 @@ ustruct: WowParams
   f64 jn
 ;
 
-:: WOW-DEV 0.008 ;        ( pitch deviation at depth 1 )
-:: WOW-FL-DEV 0.0015 ;
-:: WOW-FL-EXTRA 0.003 ;   ( FLUTTER 1 adds this )
+:: WOW-DEV 0.025 ;        ( pitch deviation at depth 1: seasick )
+:: WOW-FL-DEV 0.004 ;
+:: WOW-FL-EXTRA 0.012 ;   ( FLUTTER 1 adds this )
 :: WOW-FL-MULT 12.0 ;     ( flutter rate, x the wow rate )
 
 ( a -- n : 1 / the deviation of uniform noise [-1, 1] through two
@@ -128,9 +131,7 @@ dsp: wow-run | ws:WowState wp:WowParams xl xr -- yl yr |
     s1 -> ws.ws  c1 -> ws.wc
     ws.fs ws.fc wp.fk dl-osc | s2 c2 |
     s2 -> ws.fs  c2 -> ws.fc
-    ws.rng 1103515245.0 f* 0.41421 f+ ffrac | r |
-    r -> ws.rng
-    r 2.0 f* 1.0 f- | u |
+    ws.rng& 13579.0 rand-b | u |
     ws.d1  u ws.d1 f-  wp.da f*  f+ | d1 |
     ws.d2  d1 ws.d2 f-  wp.da f*  f+ | d2 |
     ws.j1  u ws.j1 f-  wp.ja f*  f+ | j1 |

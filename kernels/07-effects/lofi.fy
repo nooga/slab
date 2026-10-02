@@ -26,6 +26,7 @@
 
 include "../00-primitives/math.fy"
 include "../04-filters/coeffs.fy"   ( svf-g )
+include "../00-primitives/rand.fy"
 
 ustruct: LofiState
   f64 nzl      ( noise generators, left and right )
@@ -111,14 +112,6 @@ dsp: lofi-prepare | sr lp:LofiParams |
   ty  20000.0 0.25 a pow f*  fh 0.45 f*  fh 0.45 f*  lofi-pick  sr svf-g -> lp.lp-g
 ;
 
-( p add -- v : -1..1 noise from the LCG cell at p; add decorrelates
-  channels. )
-dsp: lofi-rand | p add -- v |
-  p f@64 1103515245.0 f* add f+ ffrac | r |
-  r p f!64
-  r 2.0 f* 1.0 f-
-;
-
 ( ls lp lvl xl xr -- yl yr : the gated hiss added to a pair; lvl is
   the level that opens the gate [a detector, an envelope]. )
 dsp: lofi-noise | ls:LofiState lp:LofiParams lvl xl xr -- yl yr |
@@ -127,8 +120,8 @@ dsp: lofi-noise | ls:LofiState lp:LofiParams lvl xl xr -- yl yr |
   [ ls.nenv LOFI-NOISE-OPEN f* 1.0 fmin lp.n-lvl f* | na |
     lvl  ls.nenv lp.nenv-c f*  fmax | ne |
     ne 1.0e-7 f<  0.0 ne select -> ls.nenv
-    xl  ls.nzl& 0.31337 lofi-rand na f*  f+
-    xr  ls.nzr& 0.71993 lofi-rand na f*  f+ ]
+    xl  ls.nzl& 12345.0 rand-b na f*  f+
+    xr  ls.nzr& 67891.0 rand-b na f*  f+ ]
   ifte
 ;
 
