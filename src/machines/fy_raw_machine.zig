@@ -1164,6 +1164,11 @@ fn refFromFile(self: *FyRawMachine, index: usize) void {
     if (parsed.value != .object) return;
     const params = parsed.value.object.get("params") orelse return;
     if (params != .object) return;
+    // Unnamed controls are the patch's defaults (applyPresetImpl).
+    for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
+        self.preset_ref[i] = storedValue(ctl.*, ctl.default);
+        self.preset_ref_on[i] = true;
+    }
     var it = params.object.iterator();
     while (it.next()) |kv| {
         for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
@@ -1246,6 +1251,16 @@ fn applyPresetImpl(state: *anyopaque, index: machine.PresetIndex) void {
     }
     const params = parsed.value.object.get("params") orelse return;
     if (params != .object) return;
+    // A preset is a whole patch: what it doesn't name goes back to its
+    // default, so nothing of the last patch (a matrix route, a switch)
+    // lingers.
+    for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
+        const v = storedValue(ctl.*, ctl.default);
+        switch (ctl.kind) {
+            .switch_sel, .int_range => self.setControlRaw(i, v),
+            .direct_f64 => self.setControlNormSnap(i, v),
+        }
+    }
     var it = params.object.iterator();
     while (it.next()) |kv| applyControlValue(self, kv.key_ptr.*, jsonF64(kv.value_ptr.*));
     refFromControls(self);
