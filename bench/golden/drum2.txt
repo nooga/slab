@@ -1,2 +1,2 @@
 # bench goldens for drum2: case sha256(f32 L ++ f32 R) [nonharm_db thd_db]
-hits 78337a32cac9e32de3d503d3c5ed03346f1bc65d2a69845277e9255838bf7935
+hits 2c76cde5a8768c36fb8b5d8f20013efeefa8766ebfb25bbe49f5e9a9e65aa9c2

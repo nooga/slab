@@ -131,7 +131,7 @@ dsp: wow-run | ws:WowState wp:WowParams xl xr -- yl yr |
     s1 -> ws.ws  c1 -> ws.wc
     ws.fs ws.fc wp.fk dl-osc | s2 c2 |
     s2 -> ws.fs  c2 -> ws.fc
-    ws.rng& 13579.0 rand-b | u |
+    ws.rng& rand-b | u |
     ws.d1  u ws.d1 f-  wp.da f*  f+ | d1 |
     ws.d2  d1 ws.d2 f-  wp.da f*  f+ | d2 |
     ws.j1  u ws.j1 f-  wp.ja f*  f+ | j1 |

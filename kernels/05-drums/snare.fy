@@ -66,7 +66,7 @@ dsp: snare-trigger
   0.5 gate 1.0 state.snap-env fsel-lt -> state.snap-env
   0.5 gate 0.0  state.phase1 fsel-lt -> state.phase1
   0.5 gate 0.31 state.phase2 fsel-lt -> state.phase2
-  0.5 gate 0.7654321 state.noise-rng fsel-lt -> state.noise-rng
+  0.5 gate 0.5898951205890626 state.noise-rng fsel-lt -> state.noise-rng
   0.5 gate 1.0 state.pitch-env fsel-lt -> state.pitch-env
 ;
 

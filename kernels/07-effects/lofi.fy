@@ -112,6 +112,10 @@ dsp: lofi-prepare | sr lp:LofiParams |
   ty  20000.0 0.25 a pow f*  fh 0.45 f*  fh 0.45 f*  lofi-pick  sr svf-g -> lp.lp-g
 ;
 
+( ls -- : the right channel's noise apart from the left's; safe to
+  run every block [the owner's prepare]. )
+dsp: lofi-seed | ls:LofiState |  ls.nzr& 7.0 rand-seed-once ;
+
 ( ls lp lvl xl xr -- yl yr : the gated hiss added to a pair; lvl is
   the level that opens the gate [a detector, an envelope]. )
 dsp: lofi-noise | ls:LofiState lp:LofiParams lvl xl xr -- yl yr |
@@ -120,8 +124,8 @@ dsp: lofi-noise | ls:LofiState lp:LofiParams lvl xl xr -- yl yr |
   [ ls.nenv LOFI-NOISE-OPEN f* 1.0 fmin lp.n-lvl f* | na |
     lvl  ls.nenv lp.nenv-c f*  fmax | ne |
     ne 1.0e-7 f<  0.0 ne select -> ls.nenv
-    xl  ls.nzl& 12345.0 rand-b na f*  f+
-    xr  ls.nzr& 67891.0 rand-b na f*  f+ ]
+    xl  ls.nzl& rand-b na f*  f+
+    xr  ls.nzr& rand-b na f*  f+ ]
   ifte
 ;
 

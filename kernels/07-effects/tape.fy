@@ -193,6 +193,7 @@ dsp: tape-block-prepare | ctx:Ctx state params:TapeParams |
 dsp: tape-seed | ctx state:TapeState params |
   state.wow& wow-seed
   state.hum& hum-seed
+  state.nzr& 7.0 rand-seed-once
 ;
 
 ( up dn st hp x -- y : the hysteresis at 2x. )
@@ -229,8 +230,8 @@ dsp: k-tape-tick | io:Io ctx state:TapeState params:TapeParams -- |
     n1 1.0e-7 f<  0.0 n1 select -> state.nenv
     n0 TAPE-OPEN f* 1.0 fmin  params.hiss-lvl f*  1.0 params.burst e f* f+  f* | na |
     state.hum& params.hp& lvl hum-tick | h |
-    el  state.nzl& 12345.0 rand-b na f*  f+  h f+
-    er  state.nzr& 67891.0 rand-b na f*  f+  h f+ ]
+    el  state.nzl& rand-b na f*  f+  h f+
+    er  state.nzr& rand-b na f*  f+  h f+ ]
   ifte | fl fr |
   ( playback head: bump, bandwidth, coupling cap )
   state.bumpl& params.bump& fl bell-tick | gl |

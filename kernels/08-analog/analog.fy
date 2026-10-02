@@ -10,6 +10,8 @@
   One AGE knob per machine scales all of it: 0 is a factory-fresh unit
   still warming up, 1 a well-used one. )
 
+include "../00-primitives/rand.fy"
+
 ustruct: Drift
   f64 rng
   f64 a
@@ -20,9 +22,7 @@ ustruct: Drift
   Two one-poles cascaded pass white noise of variance 1/3 with variance
   ~ c/8 ... the sqrt[3/c] normalizes it. )
 dsp: drift-step | s:Drift c -- d |
-  s.rng 1103515245.0 f* 0.31337 f+ ffrac | r |
-  r -> s.rng
-  r 2.0 f* 1.0 f- | n |
+  s.rng& rand-b | n |
   s.a  n s.a f- c f*  f+ | a |
   s.b  a s.b f- c f*  f+ | b |
   a -> s.a
@@ -42,9 +42,4 @@ dsp: spread | v salt -- x |
 
 ( s seed -- : seed a drift generator that has never run [rng still 0],
   so parts of a voice, and voices, wander independently. )
-dsp: drift-seed-once | s:Drift seed -- |
-  s.rng 0.0 f=
-    seed 0.6180339887498949 f* 0.1234567 f+ ffrac
-    s.rng
-  select -> s.rng
-;
+dsp: drift-seed-once | s:Drift seed -- |  s.rng& seed rand-seed-once ;

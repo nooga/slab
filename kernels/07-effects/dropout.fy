@@ -48,7 +48,7 @@ dsp: drop-prepare | sr dp:DropParams |
 
 ( ds dp xl xr -- yl yr e : one stereo sample and the dip's depth. )
 dsp: drop-tick | ds:DropState dp:DropParams xl xr -- yl yr e |
-  ds.rng& 24680.0 rand-u | r |
+  ds.rng& rand-u | r |
   ds.t ds.len f>= | idle |
   idle  r dp.p f<  and | go |
   ( a trigger means r < p, so r / p is a fresh uniform draw - r itself

@@ -124,6 +124,7 @@ dsp: juno-note-on
   0.0 -> state.age
   state.env& params.co& 0.0 env-rc-trigger
   state.drift& ctx.chan 1.0 f+ drift-seed-once
+  state.noise-rng& ctx.chan 37.0 f+ rand-seed-once
   ( unison: a fresh voice's DCO starts at the host's phase, not 0 )
   state.phase 0.0 f=  ctx.phase  state.phase  select -> state.phase
   state.sub-phase 0.0 f=  ctx.phase 0.5 f*  state.sub-phase  select -> state.sub-phase
@@ -188,10 +189,8 @@ dsp: jn-dco | ctx:Ctx state:JunoState params:JunoParams lfo env -- osc |
   state.sub-phase dt 0.5 f* phase-advance01 | sph |
   sph -> state.sub-phase
   params.sub-level 0.0 f=  [ 0.0 ]  [ sph  dt 0.5 f*  0.5 pulse-polyblep params.sub-level f* ]  ifte f+
-  ( noise: float LCG )
-  state.noise-rng 1103515245.0 f* 0.31337 f+ ffrac | rng |
-  rng -> state.noise-rng
-  rng 2.0 f* 1.0 f-  params.noise-level f* f+
+  ( noise )
+  state.noise-rng& rand-b  params.noise-level f* f+
   0.32 f*
 ;
 

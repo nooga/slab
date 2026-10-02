@@ -1,32 +1,47 @@
 ( rand.fy - a uniform random generator for dsp: words that is actually
-  random: Park-Miller's minimal standard with a = 48271, m = 2^31 - 1,
-  period 2^31 - 2.  Every product a x stays under 2^47, so the f64s
-  hold it exactly and x mod m is exact: floor by the reciprocal can be
-  off by one at a boundary, and the two selects put it back.
+  random: the full-period LCG mod 2^32 of Numerical Recipes,
+  x' = [1664525 x + 1013904223] mod 2^32, period 2^32, kept as the
+  fraction f = x / 2^32:
 
-  The float hash frac[x * 1103515245 + c] that noise.fy uses is not
-  this: it falls into a cycle a few thousand samples long [3143 for
-  c = 0.27183 from 0, which never comes within 4.8e-4 of 0], so hiss
-  repeats as a buzz and a rare-event trigger never fires.
+    f' = frac[1664525 f + 1013904223 / 2^32]
 
-  The state cell starts at 0 [machine state is zeroed]; 0 is the one
-  fixed point, so rand-u seeds it with the caller's seed on first use.
-  Give each stream its own seed. )
+  f is a multiple of 2^-32, so 1664525 f fits 53 bits, the sum is
+  exact and frac is exact: the same sequence as the integer LCG, in
+  three native ops and no floor.  That matters: inlined into the
+  MS-20's large voice word, a version with floor and two correcting
+  selects [Park-Miller] tipped it over fy's frame-corruption limit and
+  the voice turned to crackle; this one doesn't.
 
-:: RAND-A 48271.0 ;
-:: RAND-M 2147483647.0 ;
-:: RAND-IM 4.656612875245797e-10 ;   ( 1 / m )
+  It replaced the float hash frac[x * 1103515245 + c] everywhere: that
+  falls into a cycle a few thousand samples long [3143 values for
+  c = 0.27183 from 0, never within 4.8e-4 of 0], so noise repeated as a
+  buzz every ~65 ms, every voice of a poly played the same noise, and a
+  rare-event trigger never fired.
 
-( p seed -- u : the next value in 0..1 [never 1] from the cell at p. )
-dsp: rand-u | p seed -- u |
+  The low bits of a power-of-two LCG are weak; the values here use all
+  32, as a fraction, which is fine for audio noise and event draws.  A
+  zeroed cell is a valid start; streams that must differ [voices,
+  channels] seed their cells with rand-seed-once, or a constant that is
+  a multiple of 2^-32 [k / 4294967296]. )
+
+:: RAND-A 1664525.0 ;
+:: RAND-CF 0.23606797284446657 ;   ( 1013904223 / 2^32, exact )
+
+( f -- f' : the next state, pure - for callers that keep it in a field
+  and store it themselves [the MS-20]. )
+dsp: rand-next  RAND-A f* RAND-CF f+ ffrac ;
+
+( p -- u : the next value in 0..1 [never 1] from the cell at p. )
+dsp: rand-u | p -- u |  p f@64 rand-next  dup p f!64 ;
+
+( p -- v : the next value in -1..1 [never 1]. )
+dsp: rand-b | p -- v |  p rand-u 2.0 f* 1.0 f- ;
+
+( p salt -- : seed a cell that has never run [still 0] from a salt
+  [a voice index plus a part number]: golden-ratio spaced, so nearby
+  salts land far apart, and rounded to a multiple of 2^-32. )
+dsp: rand-seed-once | p salt -- |
   p f@64 | s0 |
-  s0 1.0 f<  seed s0  select RAND-A f* | x |
-  x  x RAND-IM f* floor RAND-M f*  f- | r0 |
-  r0 0.0 f<  r0 RAND-M f+  r0  select | r1 |
-  r1 RAND-M f>=  r1 RAND-M f-  r1  select | r |
-  r p f!64
-  r RAND-IM f*
+  salt 0.6180339887498949 f* 0.1234567 f+ ffrac  4294967296.0 f* floor  2.3283064365386963e-10 f* | seed |
+  s0 0.0 f=  seed s0  select  p f!64
 ;
-
-( p seed -- v : the next value in -1..1 [never 1]. )
-dsp: rand-b | p seed -- v |  p seed rand-u 2.0 f* 1.0 f- ;

@@ -151,6 +151,7 @@ dsp: char-block-prepare | ctx:Ctx state params:CompParams |
 dsp: char-seed | ctx state params |
   state CompState.size ptr+ | cs:CharState |
   cs.wow& wow-seed
+  cs.lofi& lofi-seed
 ;
 
 ( cs cp gt -- g : both followers, the mode's mix of them [log2], the

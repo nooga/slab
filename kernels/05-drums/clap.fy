@@ -59,7 +59,7 @@ dsp: clap-trigger
   0.5 gate 1.0 state.env fsel-lt -> state.env
   0.5 gate 0.0 state.repeat-phase fsel-lt -> state.repeat-phase
   0.5 gate 3.0 state.repeats-left fsel-lt -> state.repeats-left
-  0.5 gate 0.5551212 state.noise-rng fsel-lt -> state.noise-rng
+  0.5 gate 0.745768035762012 state.noise-rng fsel-lt -> state.noise-rng
 ;
 
 ( Advance the retrigger envelope machinery; returns the new env. )

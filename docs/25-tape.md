@@ -53,7 +53,7 @@ shapes it.
 | `04-filters/tone.fy` | TPT one-pole, shelves whose cut and boost cancel exactly, Simper bell (moved out of `saturator.fy`, sat2 bit-exact) | sat2, tape2, compand |
 | `07-effects/wow.fy` | Hermite read on one modulated head: wow + flutter sines (depth 1 = 2.5 % / 0.4 %), FLUTTER extra (1.2 % at 1), RND (noise through two one-poles, normalized to unit deviation: drift at the wow rate, jitter at the flutter rate), SKEW (right channel later: azimuth) | char2, tape2 |
 | `07-effects/dropout.fy` | Poisson events, 3–80 ms raised-cosine dips to −26 dB with a gap low-pass 16 k → 1.2 k; returns the dip for the owner | tape2 |
-| `00-primitives/rand.fy` | Park–Miller (a 48271, m 2³¹ − 1) in exact f64 integer math, period 2³¹ − 2 | lofi, wow, dropout |
+| `00-primitives/rand.fy` | the Numerical Recipes LCG mod 2³² kept as a fraction, `f' = frac(1664525·f + 1013904223/2³²)`: exact in f64, period 2³², three native ops | every noise source: lofi, wow, dropout, tape hiss, drums, juno, profit5, cream, ms20, rhodes, analog drift |
 | `07-effects/hum.fy` | 50/60 Hz: 0.7 sin + 0.6 (\|sin\| − 2/π), transformer plus rectifier buzz; head-switch spikes at 50 / 59.94 per second, audio-modulated; gated | tape2 |
 | `07-effects/compand.fy` | NR out of alignment: the band above SPLIT followed (2 / 80 ms), AMT dB per dB under REF on it | tape2 |
 | `07-effects/lofi.fy` | hold, bits, crunch, coupling cap, band limit, gated hiss; tape2 borrows its SVF low-pass, cap and noise | char2, tape2 |
@@ -66,10 +66,22 @@ Three lessons from the build:
 - A fixed-width loop is a square wave in quadrature: −23.6 dB THD at
   −6 dBFS. Scaling the width by level (2.6·a·(1 − a²)) and keeping
   HYST-W at 0.06 brought type I to 1.8 %.
-- The float hash `frac(x·1103515245 + c)` that the instruments use
-  for noise falls into a cycle of 3,143 values and never comes within
-  4.8e−4 of 0. The hiss repeated every 65 ms, and dropouts (p ≈ 8e−5
-  per sample) never fired. `rand.fy` replaces it in the tape kernels.
+- The float hash `frac(x·1103515245 + c)` used for noise across the
+  repo falls into a cycle of 3,143 values and never comes within 4.8e−4
+  of 0. The consequences:
+  - Hiss repeated every 65 ms.
+  - Dropouts (p ≈ 8e−5 per sample) never fired.
+  - Every voice of a poly synth played the same noise.
+  - Because a 65 ms cycle has nothing below about 15 Hz, the analog
+    drift (analog.fy: that noise low-passed at 0.15–0.35 Hz) was
+    almost silent in profit5, juno, cream and ms20. With `rand.fy` it
+    runs as designed: about 2.4 cents RMS at AGE 0.4. FM presets need a
+    low AGE now (`poly-mod-bell` 0.3 → 0.05, nonharm −37 → −54 dB).
+
+  A first Park–Miller version (floor plus two correcting selects)
+  turned ms20 to crackle: inlined into its large voice word, the few
+  extra ops hit fy's frame-corruption limit. The fractional LCG is
+  three ops and doesn't.
 
 ## Controls
 
