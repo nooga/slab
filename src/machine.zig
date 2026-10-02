@@ -197,6 +197,10 @@ pub const WriteAssetsJsonFn = *const fn (state: *anyopaque, out: *std.ArrayList(
 /// Load one named asset from `path` when restoring a project. False on a
 /// missing or bad file; the machine keeps what it had.
 pub const LoadAssetFn = *const fn (state: *anyopaque, name: []const u8, path: []const u8) bool;
+/// A wavetable file dropped on the machine (the browser): oscillator
+/// `osc` (0 = the first) plays it as its USER table. False when the
+/// machine has no such oscillator or the file won't load.
+pub const LoadTableFn = *const fn (state: *anyopaque, path: []const u8, osc: usize) bool;
 /// Write files the machine made (an edited wavetable) beside the project
 /// being saved to `project_path`, before its assets are serialized; the
 /// track's name names them.
@@ -431,6 +435,7 @@ pub const Machine = struct {
     set_param: ?SetParamFn = null,
     write_assets_json: ?WriteAssetsJsonFn = null,
     load_asset: ?LoadAssetFn = null,
+    load_table: ?LoadTableFn = null,
     save_files: ?SaveFilesFn = null,
     take_edited: ?TakeEditedFn = null,
     write_zones_json: ?WriteZonesJsonFn = null,

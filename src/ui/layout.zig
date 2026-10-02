@@ -3,7 +3,9 @@
 //! splitters.
 //!
 //!   ┌──────────── transport bar ────────────┐
-//!   │ arrangement                           │
+//!   │ browser* │ arrangement                │
+//!   │          │ (clip editor, machine bay  │
+//!   │          │  below, as here)           │
 //!   ├──────────────────────────────── seam ─┤  clip_top  (if visible)
 //!   │ clip editor*                          │
 //!   ├──────────────────────────────── seam ─┤  bay_top
@@ -15,6 +17,7 @@
 //! seam lines. Both use the same arithmetic, so seams land where the
 //! splitters put them. Rects are handed to the legacy panes as f32.
 
+const std = @import("std");
 const c = @import("../c.zig");
 const pane = @import("pane_input.zig");
 const transport_bar = @import("transport_bar.zig");
@@ -41,12 +44,18 @@ pub const Rects = struct {
 const MIN_ARRANGE: i32 = 120;
 const MIN_CLIP: i32 = 96;
 const MIN_BAY: i32 = 140;
+const MIN_BROWSER: i32 = 240;
+const MIN_MAIN_W: i32 = 480;
 
 pub const State = struct {
     /// Machine bay height (logical px) when expanded.
     bay_h: i32 = 300,
     /// Clip editor height when visible.
     clip_h: i32 = 240,
+
+    /// The library browser down the left (docs/25 §The browser).
+    browser_visible: bool = true,
+    browser_w: i32 = 300,
 
     machine_bay_collapsed: bool = false,
     clip_editor_visible: bool = false,
@@ -62,17 +71,19 @@ pub const State = struct {
         return if (self.machine_bay_collapsed) machine_bay.TITLE_H else self.bay_h;
     }
 
-    const Split = struct { top: Rect, main: Rect, arr: Rect, clip: Rect, bay: Rect };
+    const Split = struct { top: Rect, below: Rect, browser: Rect, main: Rect, arr: Rect, clip: Rect, bay: Rect };
 
     fn split(self: *const State, sw: i32, sh: i32) Split {
         var screen = Rect.xywh(0, 0, sw, sh);
         const top = screen.cutTop(transport_bar.HEIGHT);
+        const below = screen;
+        const browser = if (self.browser_visible) screen.cutLeft(std.math.clamp(self.browser_w, MIN_BROWSER, @max(MIN_BROWSER, screen.w - MIN_MAIN_W))) else Rect{};
         const main = screen;
         var rest = screen;
         const bay = rest.cutBottom(@min(self.effBayH(), @max(0, rest.h - MIN_ARRANGE)));
         // The mixer page takes the clip editor's room as well.
         const clip = if (self.clipShown()) rest.cutBottom(@min(self.clip_h, @max(0, rest.h - MIN_ARRANGE))) else Rect{};
-        return .{ .top = top, .main = main, .arr = rest, .clip = clip, .bay = bay };
+        return .{ .top = top, .below = below, .browser = browser, .main = main, .arr = rest, .clip = clip, .bay = bay };
     }
 
     pub fn compute(self: *const State, sw_f: f32, sh_f: f32) Rects {
@@ -80,7 +91,7 @@ pub const State = struct {
         return .{
             .top_bar = rl(s.top),
             .status_bar = Rects.zeroRect(),
-            .browser = Rects.zeroRect(),
+            .browser = rl(s.browser),
             .arrangement = rl(s.arr),
             .clip_editor = rl(s.clip),
             .machine_bay = rl(s.bay),
@@ -90,6 +101,11 @@ pub const State = struct {
     /// Seam interactions (drag, double-click fold) and the seam lines. Call
     /// once per frame, before `compute` is used for the panes.
     pub fn splitters(self: *State, ui: *ui_core.Ui, sw_f: f32, sh_f: f32) void {
+        // Browser seam: its right edge.
+        if (self.browser_visible) {
+            const b = self.split(@intFromFloat(sw_f), @intFromFloat(sh_f));
+            _ = ctl.split(ui, b.below, "browser", &self.browser_w, .{ .axis = .cols, .min = MIN_BROWSER, .min_other = MIN_MAIN_W });
+        }
         const s = self.split(@intFromFloat(sw_f), @intFromFloat(sh_f));
         // Bay seam: its top edge. Double-click folds it to its title strip.
         if (!self.machine_bay_collapsed) {

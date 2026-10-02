@@ -3,7 +3,7 @@
 Where slab keeps what it ships and what users make, how a project names
 the files it uses, how a project stays whole when it moves to another
 computer, and how anything a user makes becomes something others can
-open. **Status: design; phases 1–3 built, phase 4 under way**
+open. **Status: design; phases 1–4 built**
 (§Load time, §Roots, the project package in `src/package.zig`, project
 and library presets, Save to Library for presets, tables and clips).
 Code, as it lands: `src/storage.zig` (roots and references),
@@ -408,11 +408,49 @@ One browser panel lists items by kind, with four sources:
 | Factory | what slab ships |
 | Online | the repository: search, then open or drag in |
 
-The prototype is the gallery's BROWSER page (`slab --gallery`,
-src/ui/gallery_browser.zig): search from anywhere, kind chips with live
-counts, folders with a sticky header, multi-select, hover audition and
-favorites, a preview pane, drag onto a track, a header, the machine or
-a new track, a right-click menu, Undo on a toast, and the pack cards.
+The browser is the app's left column (BROWSE in the transport bar,
+⌘⌥B; ⌘F searches). src/library.zig finds the items, src/ui/browser.zig
+lists them; the gallery's BROWSER page is where its look was tried out.
+
+| Kind | Project | User | Factory | Pack |
+|---|---|---|---|---|
+| preset | `presets/<id>/` | `Presets/<id>/` | `machines/<id>/presets` | the generated `cmi-*`, `vcsl-*` banks, until packs carry their own |
+| wavetable | `tables/` | `Wavetables/` | machine assets with a `clm ` chunk | |
+| clip | | `Clips/` | `clips/` | |
+| sample | `audio/` | `Samples/`, a group per folder | | `Library/<pack>/`, a group per folder |
+| song | | `Projects/` | `demos/`, `songs/` | |
+
+- **Finding.** Search as you type: any letter while the browser has
+  focus, or ⌘F. Every word must match the name, the folder or the kind.
+  Source tabs and kind chips narrow it; the chips count what matches.
+  ★ narrows to favorites, kept in `favorites.txt` beside settings.json.
+- **Moving.** Folders fold (⌥-click folds all); ↑↓ ←→ ↩ Esc; click,
+  ⇧-click and ⌘-click select.
+- **Previewing.** A sample plays through the engine's preview voice
+  (src/preview.zig), on ▶ or as it's selected while AUTO is on. The
+  preview pane draws a sample's waveform, a table's frames or a clip's
+  notes, with the item's reference (a click copies it).
+- **Dropping.** Every drop is one Undo step:
+
+  | Item | Lane | Header, or the machine bay | Below the tracks |
+  |---|---|---|---|
+  | preset | loads on the track | loads on the track | a new track with it |
+  | wavetable | | the first oscillator plays it (an empty track gets Concoction) | |
+  | clip, sample | at the beat under the pointer, one after another | at the track's end | a new track with them |
+  | song | opens it (undoable, like Open) | | |
+
+  An instrument preset replaces the track's machine when it is another;
+  an effect preset joins the chain. ↩, a double-click or LOAD drops on
+  the selected track.
+
+Clips dragged from the arrangement onto the browser are saved to
+`Clips/` (Save to Library) and stay where they were. Rows show an
+item's own name; the path is in the tooltip and the preview's
+reference.
+
+The PACKS tab lists the packs in `Library/` with Finder; the cards for
+downloads and supplied files come with phase 5. ONLINE waits for
+phase 7.
 
 Dragging an item onto a track works the same from every source. An
 online item is downloaded into `Cache/` and checked against its hash
@@ -595,7 +633,8 @@ the cache, this only matters for the first instance.
    - Project and User presets in the preset menus. Built.
    - Save to Library for presets, tables and clips. Built.
    - `.slabclip`. Built.
-   - The browser with Project, User and Factory sources: open.
+   - The browser with Project, User and Factory sources, sample
+     audition and drops onto the arrangement and the machine bay. Built.
 5. **Packs.**
    - Pack manifests in `factory:packs/`, and the Library page with
      download, supply and instructions.

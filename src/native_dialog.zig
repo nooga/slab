@@ -9,6 +9,14 @@ extern fn slab_open_keymap_dialog() ?[*:0]u8;
 extern fn slab_save_audio_dialog(default_name: [*:0]const u8) ?[*:0]u8;
 extern fn slab_free_dialog_path(path: ?[*:0]u8) void;
 extern fn slab_trash(path: [*:0]const u8) c_int;
+extern fn slab_reveal(path: [*:0]const u8) void;
+
+/// Show a file selected in a Finder window.
+pub fn reveal(path: []const u8) void {
+    var zb: [1024]u8 = undefined;
+    const z = std.fmt.bufPrintZ(&zb, "{s}", .{path}) catch return;
+    slab_reveal(z.ptr);
+}
 
 /// Move a file to the Trash. False if it couldn't.
 pub fn trash(path: []const u8) bool {

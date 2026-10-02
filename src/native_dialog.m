@@ -43,6 +43,13 @@ char *slab_open_project_dialog(void) {
 }
 
 // Move a file to the Trash (Clean Up, docs/25); 1 when it went.
+void slab_reveal(const char *path) {
+    @autoreleasepool {
+        NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
+        [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[url]];
+    }
+}
+
 int slab_trash(const char *path) {
     @autoreleasepool {
         NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];

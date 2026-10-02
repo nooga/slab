@@ -39,6 +39,8 @@ pub const Result = struct {
     panic: bool = false,
     /// AUTO: arm/disarm automation recording.
     auto_arm_toggle: bool = false,
+    /// BROWSE: show or hide the library browser (⌘⌥B).
+    toggle_browser: bool = false,
 };
 
 pub const Args = struct {
@@ -66,6 +68,8 @@ pub const Args = struct {
     /// Each render thread's load since the last frame (Engine.takeThreadLoad).
     thread_load: []const f32 = &.{},
     cpu_peak: f32 = 0,
+    /// The library browser is showing.
+    browser_visible: bool = false,
 };
 
 const FILE_MENU_KEY: u64 = 0x5346494c45; // "SFILE"
@@ -93,6 +97,10 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     const map = a.meter_state.liveMap();
 
     fileTile(ui, bar.cutLeft(fileTileW(ui, a)), a, &res);
+    const browse_r = bar.cutLeft(64);
+    var browse_on = a.browser_visible;
+    if (ctl.button(ui, browse_r, "browse", &browse_on, .{ .kind = .latch, .label = "BROWSE", .led = style.led_amber, .flush = true })) res.toggle_browser = true;
+    menu.tip(ui, browse_r, "Browser (\u{2318}\u{2325}B)");
 
     // Transport.
     var playing = t.isPlaying();

@@ -79,6 +79,16 @@ fn renderWork(e: *Engine, s: *Scratch) bool {
 }
 pub const RenderPool = render_pool.Pool(Engine, Scratch, renderWork);
 
+/// One sample the preview voice plays (Engine.previewSample).
+pub const Preview = struct {
+    data: []const f64 = &.{},
+    /// Source frames per output frame.
+    step: f64 = 1,
+};
+
+/// The preview sits under a full mix: −6 dB.
+const PREVIEW_GAIN: f64 = 0.5;
+
 pub const Engine = struct {
     transport: *Transport,
     tracks: []Track,
@@ -108,6 +118,23 @@ pub const Engine = struct {
     audition_remaining: u32 = 0,
     audition_pitch: f32 = 60,
     audition_track_local: usize = 0,
+    /// The browser's audition (docs/25 §The browser): a sample played
+    /// straight to the output, over whatever plays. The UI fills the slot
+    /// it isn't publishing and bumps the request; the audio thread copies
+    /// the slot at its next block. Pool sources are never freed, so the
+    /// data stays valid however long it plays.
+    preview_req: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    preview_slots: [2]Preview = .{ .{}, .{} },
+    preview_slot: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    preview_seen: u32 = 0,
+    /// The last request the audio thread took: data an older request
+    /// published is no longer read once this passes it.
+    preview_ack: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    preview: Preview = .{},
+    preview_pos: f64 = 0,
+    /// Where the preview is, in source frames (for the browser's playhead);
+    /// maxInt once it has ended.
+    preview_at: std.atomic.Value(u32) = std.atomic.Value(u32).init(std.math.maxInt(u32)),
     /// Panic request from the UI thread, served at the top of the next
     /// render (machine state belongs to the audio thread).
     panic_request: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -299,6 +326,57 @@ pub const Engine = struct {
         self.routing_published.store(1 - published, .release);
     }
 
+    /// Play `data` (mono, at `rate` Hz) through the preview voice; empty
+    /// stops it. UI thread.
+    /// Returns the request's number (see `preview_ack`).
+    pub fn previewSample(self: *Engine, data: []const f64, rate: f64) u32 {
+        const slot = 1 - self.preview_slot.load(.monotonic);
+        const sr: f64 = @floatFromInt(@max(1, self.transport.sample_rate));
+        self.preview_slots[slot] = .{ .data = data, .step = if (rate > 0) rate / sr else 1 };
+        self.preview_slot.store(slot, .release);
+        return self.preview_req.fetchAdd(1, .release) +% 1;
+    }
+
+    pub fn stopPreview(self: *Engine) u32 {
+        return self.previewSample(&.{}, 1);
+    }
+
+    /// The preview's position in source frames, or null once it ended.
+    pub fn previewFrame(self: *const Engine) ?u32 {
+        const at = self.preview_at.load(.monotonic);
+        return if (at == std.math.maxInt(u32)) null else at;
+    }
+
+    fn mixPreview(self: *Engine, out: []f32, frames: usize) void {
+        const req = self.preview_req.load(.acquire);
+        if (req != self.preview_seen) {
+            self.preview_seen = req;
+            self.preview = self.preview_slots[self.preview_slot.load(.acquire)];
+            self.preview_pos = 0;
+            self.preview_ack.store(req, .release);
+        }
+        const d = self.preview.data;
+        if (d.len == 0) {
+            self.preview_at.store(std.math.maxInt(u32), .monotonic);
+            return;
+        }
+        // A short fade in, so a sample cut mid-file doesn't click in.
+        for (0..frames) |i| {
+            const p = self.preview_pos;
+            const k: usize = @intFromFloat(p);
+            if (k + 1 >= d.len) {
+                self.preview.data = &.{};
+                break;
+            }
+            const f = p - @as(f64, @floatFromInt(k));
+            const v: f32 = @floatCast((d[k] * (1 - f) + d[k + 1] * f) * PREVIEW_GAIN * @min(1.0, p / 64.0));
+            out[i * audio.CHANNELS] += v;
+            out[i * audio.CHANNELS + 1] += v;
+            self.preview_pos = p + self.preview.step;
+        }
+        self.preview_at.store(if (self.preview.data.len == 0) std.math.maxInt(u32) else @intFromFloat(self.preview_pos), .monotonic);
+    }
+
     pub fn auditionNote(self: *Engine, track_idx: usize, pitch: u8) void {
         self.audition_track.store(@intCast(@min(track_idx, std.math.maxInt(u32))), .monotonic);
         self.audition_pitch_bits.store(@bitCast(@as(f32, @floatFromInt(pitch))), .monotonic);
@@ -455,6 +533,8 @@ pub const Engine = struct {
             self.played_to = pos;
             _ = self.transport.sample_pos.cmpxchgStrong(start_pos, pos, .monotonic, .monotonic);
         }
+
+        self.mixPreview(out_slice, n);
 
         // Master output stage [MasterClip]: the float mix has no headroom
         // limit; this decides only what happens past full scale.

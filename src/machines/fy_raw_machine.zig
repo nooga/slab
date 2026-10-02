@@ -996,6 +996,7 @@ pub const FyRawMachine = struct {
             .set_param = setParamImpl,
             .write_assets_json = writeAssetsJsonImpl,
             .load_asset = loadAssetImpl,
+            .load_table = loadTableImpl,
             .save_files = saveFilesImpl,
             .take_edited = takeEditedImpl,
             .write_zones_json = writeZonesJsonImpl,
@@ -1629,6 +1630,35 @@ fn loadAssetImpl(state: *anyopaque, name: []const u8, path: []const u8) bool {
     const ai = self.assetIndexByName(name) orelse return false;
     if (std.mem.eql(u8, self.assetPath(ai), path)) return true;
     return self.loadAssetRuntime(ai, path);
+}
+
+/// The browser drops a wavetable: the `osc`-th oscillator view's USER
+/// table loads it and its TABLE switch moves to USER.
+fn loadTableImpl(state: *anyopaque, path: []const u8, osc: usize) bool {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    var n: usize = 0;
+    for (self.desc.displays[0..self.desc.display_count]) |*d| {
+        if (d.kind != .wavetable) continue;
+        if (n < osc) {
+            n += 1;
+            continue;
+        }
+        var it = std.mem.splitScalar(u8, d.sourceSlice(), ',');
+        const prefix = it.next() orelse return false;
+        _ = it.next();
+        const user = it.next() orelse return false;
+        const ai = self.assetIndexByName(user) orelse return false;
+        if (!self.desc.assets[ai].wavetable) return false;
+        if (!self.loadAssetRuntime(ai, path)) return false;
+        if (prefixedCtl(self, prefix, "-table")) |ti| {
+            const ctl = &self.desc.controls[ti];
+            for (0..ctl.option_count) |oi| {
+                if (std.mem.eql(u8, std.mem.span(ctl.optionLabelZ(oi)), "USER")) pickOption(self, ti, oi);
+            }
+        }
+        return true;
+    }
+    return false;
 }
 
 // ── Wavetable editor (docs/15 §Wavetable editor) ─────────────────────

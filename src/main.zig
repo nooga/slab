@@ -28,6 +28,8 @@ const automation = @import("automation.zig");
 const auto_lane = @import("ui/automation_lane.zig");
 const recorder_mod = @import("recorder.zig");
 const native_dialog = @import("native_dialog.zig");
+const library_mod = @import("library.zig");
+const preview_mod = @import("preview.zig");
 
 const pane = @import("ui/pane_input.zig");
 const ui_style = @import("ui/style.zig");
@@ -49,6 +51,7 @@ const dialog = @import("ui/dialog.zig");
 const render_dialog = @import("ui/render_dialog.zig");
 const unison_panel = @import("ui/unison_panel.zig");
 const color_picker = @import("ui/color_picker.zig");
+const browser = @import("ui/browser.zig");
 
 test {
     _ = @import("ui/sprites.zig");
@@ -71,6 +74,8 @@ test {
     _ = @import("ui/lane_targets.zig");
     _ = @import("ui/arrangement.zig");
     _ = @import("ui/follow.zig");
+    _ = @import("library.zig");
+    _ = @import("ui/browser.zig");
 }
 
 const routing_mod = @import("routing.zig");
@@ -549,6 +554,11 @@ pub fn main(init: std.process.Init) !void {
     try engine.initPool(alloc, cli.workers(), if (cli.rt_workers) .{ .period_ns = audio_mod.blockPeriodNs() } else null);
     defer engine.deinitPool(alloc);
 
+    // The browser's preview data: declared before the device so it is
+    // freed after the audio thread stops.
+    var previewer = preview_mod.Previewer.init(alloc);
+    defer previewer.deinit();
+
     // ── Audio device ─────────────────────────────────────────────────
     var audio: audio_mod.Audio = undefined;
     try audio.init();
@@ -617,6 +627,15 @@ pub fn main(init: std.process.Init) !void {
     // Several tracks to delete, once the dialog says so.
     var pending_delete_set: ?[MAX_TRACKS]bool = null;
     var render_job: RenderJob = .{};
+    // The library browser (docs/25 §The browser): scanned on first show
+    // and whenever what it lists may have changed.
+    var lib = library_mod.Library.init(alloc);
+    defer lib.deinit();
+    var br: browser.State = .{};
+    defer br.deinit(alloc);
+    var lib_stale = true;
+    var drop_ok = false;
+    br.devSetup();
 
     // What File > New Project starts from: the app as it boots.
     blank_project = try document_mod.serialize(alloc, tracks_buf[0..track_count], &transport);
@@ -671,12 +690,17 @@ pub fn main(init: std.process.Init) !void {
         var tracks = tracks_buf[0..track_count];
         if (!layout.clipShown() and focus == .piano_roll) focus = .arrangement;
         if (pane_m.left_pressed) focus = focusFromPoint(rects, pane_m, layout.clipShown());
+        // The browser is all Ui widgets, which hide the press from the
+        // panes: a press there, or one leaving it, moves the focus too.
+        if (m.left_pressed and !menu.active() and !modal) {
+            if (pane.contains(rects.browser, m.x, m.y)) focus = .browser else if (focus == .browser) focus = focusFromPoint(rects, m, layout.clipShown());
+        }
 
         if (modal) {
             // Modal: only Esc/Enter act, handled after the dialog draws below.
         } else if (menu.active()) {
             // An open menu owns the keyboard (arrows, enter, esc).
-        } else if (rename.active() or auto_lane.entryActive()) {
+        } else if (rename.active() or auto_lane.entryActive() or browser.typing(ui)) {
             // The rename field owns the keyboard (runs after the panes).
         } else if (try handleProjectShortcuts(
             alloc,
@@ -702,14 +726,25 @@ pub fn main(init: std.process.Init) !void {
                 pushHistorySnapshot(alloc, &history, tracks, &transport);
                 dirty = true;
             }
-            handleSnapKeys(&edit_snap, &status);
-            try handleFocusedEditCommands(alloc, &history, &clipboard, &status, focus, edit_snap, tracks, &transport, &selected_track, &selected_clip, &rename, &dirty);
-            try handleFocusedDelete(alloc, &history, &status, focus, tracks, &transport, &selected_clip, &dirty);
+            // With the browser focused, letters search and arrows move in
+            // it: the panes' editing keys stand down.
+            const in_browser = focus == .browser and layout.browser_visible;
+            if (!in_browser) {
+                handleSnapKeys(&edit_snap, &status);
+                try handleFocusedEditCommands(alloc, &history, &clipboard, &status, focus, edit_snap, tracks, &transport, &selected_track, &selected_clip, &rename, &dirty);
+                try handleFocusedDelete(alloc, &history, &status, focus, tracks, &transport, &selected_clip, &dirty);
+            }
             if (commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_R)) render_dlg.active = true;
+            if (commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_F)) {
+                layout.browser_visible = true;
+                focus = .browser;
+                br.focusSearch();
+            }
+            if (commandModifierDown() and ui.in.alt and c.rl.IsKeyPressed(c.rl.KEY_B)) layout.browser_visible = !layout.browser_visible;
             if (c.rl.IsKeyPressed(c.rl.KEY_SPACE)) transport.toggle();
             if (c.rl.IsKeyPressed(c.rl.KEY_HOME)) transport.rewind();
-            if (c.rl.IsKeyPressed(c.rl.KEY_TAB)) layout.clip_editor_visible = !layout.clip_editor_visible;
-            if (!commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_M)) {
+            if (!in_browser and c.rl.IsKeyPressed(c.rl.KEY_TAB)) layout.clip_editor_visible = !layout.clip_editor_visible;
+            if (!in_browser and !commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_M)) {
                 if (shiftDown()) {
                     try executeEditCommand(alloc, &history, &clipboard, &status, focus, edit_snap, .clear_solo_mute, .{}, tracks, &transport, &selected_track, &selected_clip, &rename, &dirty);
                 } else layout.mixer_visible = !layout.mixer_visible;
@@ -769,7 +804,12 @@ pub fn main(init: std.process.Init) !void {
             .cpu_load = cpu_load.avg,
             .thread_load = thread_load[0..n_threads],
             .cpu_peak = cpu_load.peak,
+            .browser_visible = layout.browser_visible,
         });
+        if (tres.toggle_browser) {
+            layout.browser_visible = !layout.browser_visible;
+            rects = layout.compute(sw, sh);
+        }
         if (tres.auto_arm_toggle) {
             auto_arm = !auto_arm;
             status.set("{s}", .{if (auto_arm) "Automation recording armed" else "Automation recording off"});
@@ -819,8 +859,57 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        // (Side browser removed — machines are added via the "+" in the
-        // machine-bay titlebar; see mbres.add_machine below.)
+        // The library browser (docs/25 §The browser).
+        previewer.collect(&engine);
+        if (layout.browser_visible) {
+            if (lib_stale) {
+                lib.scan(&reg);
+                lib_stale = false;
+            }
+            const items = lib.items.items;
+            br.play_at = previewer.at(&engine);
+            br.playing = if (br.play_at == null) null else br.playing;
+            br.wave = .{};
+            if (br.current()) |cur| if (cur < items.len) if (previewer.cur) |*s| {
+                if (std.mem.eql(u8, previewer.path(), items[cur].path)) br.wave = .{ .data = s.data, .frame = if (items[cur].kind == .table) (if (s.frame_size > 0) s.frame_size else 2048) else 0 };
+            };
+            const bres = browser.draw(ui, uiRect(rects.browser), &br, &lib, focus == .browser);
+            // Clips dragged from the arrangement onto the browser are saved
+            // to the library (docs/25 §Save to Library); they stay put.
+            if (arrangement.clipMoveActive() and pane.contains(rects.browser, m.x, m.y)) {
+                browser.drawTarget(ui, uiRect(rects.browser), true, "SAVE TO LIBRARY");
+                if (!ui.raw_in.down) {
+                    arrangement.abortClipMove(tracks);
+                    saveClipsToLibrary(alloc, tracks, &status);
+                    lib_stale = true;
+                }
+            }
+            if (bres.rescan) lib_stale = true;
+            if (bres.status) |msg| status.set("{s}", .{msg});
+            if (bres.reveal) |p| native_dialog.reveal(p);
+            if (bres.selected) |sel| if (sel < items.len) {
+                const k = items[sel].kind;
+                if (k == .sample or k == .table) _ = previewer.select(&engine, items[sel].path);
+            };
+            if (bres.stop_audition) previewer.stop(&engine);
+            if (bres.audition) |a| if (a < items.len and items[a].kind == .sample) {
+                if (previewer.select(&engine, items[a].path) != null) {
+                    previewer.play(&engine);
+                    br.playing = a;
+                } else status.set("Can't play {s}", .{items[a].name});
+            };
+            if (bres.load) if (br.current()) |cur| {
+                const sel_t: ?usize = if (selected_track) |t| (if (t < tracks.len) t else null) else null;
+                const target: BrowserDrop = switch (items[cur].kind) {
+                    .song => .open_song,
+                    .preset, .table => if (sel_t) |t| .{ .header = t } else .new_track,
+                    else => if (sel_t) |t| .{ .lane = .{ .track = t, .beat = trackEnd(&tracks[t]) } } else .new_track,
+                };
+                const app = App{ .alloc = alloc, .history = &history, .tracks_buf = &tracks_buf, .track_count = &track_count, .tracks = &tracks, .transport = &transport, .engine = &engine, .audio = &audio, .reg = &reg, .pool = &audio_pool, .selected_track = &selected_track, .selected_clip = &selected_clip, .prev_selected_clip = &prev_selected_clip, .project_path = &project_path, .project_path_chosen = &project_path_chosen, .dirty = &dirty, .status = &status, .edit_snap = edit_snap };
+                if (browserDrop(app, &lib, br.selection(), cur, target)) lib_stale = true;
+                rects = layout.compute(sw, sh);
+            };
+        }
 
         // Automation (docs/22): sticky overrides end when the transport
         // starts; every machine control shows its lane's value at the
@@ -1145,6 +1234,56 @@ pub fn main(init: std.process.Init) !void {
             }
         };
 
+        // A drag from the browser: light the target under the pointer, and
+        // do the drop on release.
+        drop_ok = false;
+        if (browser.dragging(&br)) {
+            const items = lib.items.items;
+            const cur = br.current() orelse 0;
+            const kind = if (cur < items.len) items[cur].kind else .preset;
+            const mx = ui.raw_in.mx;
+            const my = ui.raw_in.my;
+            var target: BrowserDrop = .none;
+            const bay = uiRect(rects.machine_bay);
+            if (kind == .song and pane.contains(rects.arrangement, mx, my)) {
+                target = .open_song;
+                browser.drawTarget(ui, uiRect(rects.arrangement), true, "OPEN THIS SONG");
+            } else if (!layout.mixer_visible and arrangement.dropHit(tracks, mx, my) != null) {
+                const hit = arrangement.dropHit(tracks, mx, my).?;
+                if (hit.track) |ti| {
+                    if (hit.header) target = .{ .header = ti } else {
+                        const beat = snap_mod.snapDownPositive(edit_snap, hit.beat, ui.in.alt);
+                        target = .{ .lane = .{ .track = ti, .beat = beat } };
+                    }
+                } else target = .new_track;
+                drop_ok = dropAccepts(kind, target, tracks);
+                switch (target) {
+                    .header => browser.drawTarget(ui, hit.head, drop_ok, if (kind == .table) "LOAD TABLE" else if (kind == .preset) "LOAD PRESET" else ""),
+                    .lane => |l| if (drop_ok and (kind == .clip or kind == .sample)) {
+                        const len = dragBeats(&lib, &br, &previewer, transport.bpm());
+                        browser.drawLanding(ui, hit.lane, @intFromFloat(arrangement.beatX(l.beat)), @intFromFloat(arrangement.beatX(l.beat + len)));
+                    } else browser.drawTarget(ui, hit.lane, drop_ok, if (drop_ok and kind == .table) "LOAD TABLE" else if (drop_ok) "LOAD PRESET" else ""),
+                    .new_track => browser.drawNewTrack(ui, hit.lane, drop_ok),
+                    else => {},
+                }
+            } else if (bay.contains(@intFromFloat(mx), @intFromFloat(my)) and selected_track != null) {
+                target = .{ .header = selected_track.? };
+                drop_ok = dropAccepts(kind, target, tracks);
+                browser.drawTarget(ui, bay, drop_ok, if (kind == .table) "LOAD TABLE" else if (kind == .preset) "LOAD PRESET" else "");
+            }
+            if (target == .open_song) drop_ok = kind == .song;
+            if (ui.in.keyPressed(c.rl.KEY_ESCAPE)) {
+                browser.endDrag(ui, &br);
+            } else if (!ui.raw_in.down) {
+                browser.endDrag(ui, &br);
+                if (drop_ok) {
+                    const app = App{ .alloc = alloc, .history = &history, .tracks_buf = &tracks_buf, .track_count = &track_count, .tracks = &tracks, .transport = &transport, .engine = &engine, .audio = &audio, .reg = &reg, .pool = &audio_pool, .selected_track = &selected_track, .selected_clip = &selected_clip, .prev_selected_clip = &prev_selected_clip, .project_path = &project_path, .project_path_chosen = &project_path_chosen, .dirty = &dirty, .status = &status, .edit_snap = edit_snap };
+                    if (browserDrop(app, &lib, br.selection(), cur, target)) lib_stale = true;
+                    rects = layout.compute(sw, sh);
+                }
+            }
+        }
+
         if (serviceAutomationRequests(alloc, &history, tracks, &transport, &selected_track, &status)) dirty = true;
         // Edits no control holds (a wavetable drawn in the editor).
         for (tracks) |*t| if (t.machine.takeEdited()) {
@@ -1197,6 +1336,7 @@ pub fn main(init: std.process.Init) !void {
             } else color_pick.active = false;
         }
 
+        if (browser.dragging(&br)) browser.drawGhost(ui, &br, lib.items.items, drop_ok);
         splash.overlay(ui, screenRect());
         menu.draw(ui);
         ui.render();
@@ -1303,6 +1443,7 @@ pub fn main(init: std.process.Init) !void {
             rec_finishing = false;
             rec_track = null;
         }
+        if (tres.save_project or tres.save_project_as or tres.new_project or tres.open_project or tres.clean_up_project) lib_stale = true;
         if (tres.save_project) {
             try saveProject(
                 alloc,
@@ -1796,6 +1937,30 @@ fn openProject(
     };
     const path = chosen orelse return;
     defer alloc.free(path);
+    try openProjectPath(alloc, history, tracks_buf, track_count, tracks, transport, engine, audio, reg, selected_track, selected_clip, prev_selected_clip, project_path, project_path_chosen, dirty, status, path);
+}
+
+/// Open the project at `path` (the Open panel's pick, a song from the
+/// browser). Undoable, like New Project.
+fn openProjectPath(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    tracks_buf: *[MAX_TRACKS]track_mod.Track,
+    track_count: *usize,
+    tracks: *[]track_mod.Track,
+    transport: *transport_mod.Transport,
+    engine: *engine_mod.Engine,
+    audio: *audio_mod.Audio,
+    reg: *registry_mod.Registry,
+    selected_track: *?usize,
+    selected_clip: *?clip_mod.ClipRef,
+    prev_selected_clip: *?clip_mod.ClipRef,
+    project_path: *[]u8,
+    project_path_chosen: *bool,
+    dirty: *bool,
+    status: *StatusMessage,
+    path: []const u8,
+) !void {
     // The panel lets folders through so it can navigate them; only a
     // .slab folder is a project.
     if (package.isPackage(path) and !std.mem.endsWith(u8, std.mem.trimEnd(u8, path, "/"), ".slab")) {
@@ -1824,6 +1989,271 @@ fn openProject(
     dirty.* = false;
     reportLoaded(alloc, status, data, project_path.*);
     std.log.info("loaded {s}", .{project_path.*});
+}
+
+// ── The browser's drops (docs/25 §The browser) ───────────────────────
+
+/// Where a browser item lands.
+const BrowserDrop = union(enum) {
+    none,
+    /// A track's lane at a beat: clips and samples go there, a preset
+    /// loads on the track.
+    lane: struct { track: usize, beat: f64 },
+    /// A track's header (or the machine bay showing it): presets and
+    /// wavetables load on its machine.
+    header: usize,
+    /// Below the tracks: a new track with the item on it.
+    new_track,
+    open_song,
+};
+
+/// What a drop needs of the app: the same state the menus act on.
+const App = struct {
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    tracks_buf: *[MAX_TRACKS]track_mod.Track,
+    track_count: *usize,
+    tracks: *[]track_mod.Track,
+    transport: *transport_mod.Transport,
+    engine: *engine_mod.Engine,
+    audio: *audio_mod.Audio,
+    reg: *registry_mod.Registry,
+    pool: *audio_pool_mod.AudioPool,
+    selected_track: *?usize,
+    selected_clip: *?clip_mod.ClipRef,
+    prev_selected_clip: *?clip_mod.ClipRef,
+    project_path: *[]u8,
+    project_path_chosen: *bool,
+    dirty: *bool,
+    status: *StatusMessage,
+    edit_snap: snap_mod.Setting,
+};
+
+/// The beat after a track's last clip.
+fn trackEnd(t: *const track_mod.Track) f64 {
+    var e: f64 = 0;
+    for (t.clips.items) |*cl| e = @max(e, cl.start_beat + cl.length_beats);
+    return e;
+}
+
+fn dropAccepts(kind: library_mod.Kind, d: BrowserDrop, tracks: []const track_mod.Track) bool {
+    return switch (d) {
+        .none => false,
+        .open_song => kind == .song,
+        .new_track => kind != .song,
+        .lane => |l| switch (kind) {
+            .clip, .sample => l.track < tracks.len and !tracks[l.track].isBus(),
+            .preset => true,
+            else => false,
+        },
+        .header => kind == .preset or kind == .table,
+    };
+}
+
+/// How long the dragged clips and samples run, for the landing outline.
+fn dragBeats(lib: *const library_mod.Library, br: *const browser.State, pv: *const preview_mod.Previewer, bpm: f64) f64 {
+    var len: f64 = 0;
+    for (br.selection()) |i| {
+        if (i >= lib.items.items.len) continue;
+        const it = &lib.items.items[i];
+        switch (it.kind) {
+            .clip => len += if (br.clip_for != null and br.clip_for.? == i) @max(1, br.clip_len) else 4,
+            .sample => len += if (pv.cur != null and std.mem.eql(u8, pv.path(), it.path)) @max(0.25, @as(f64, @floatFromInt(pv.cur.?.data.len)) / @max(1, pv.cur.?.sample_rate) * bpm / 60) else 4,
+            else => {},
+        }
+    }
+    return if (len > 0) len else 4;
+}
+
+/// Do a drop: `first` is the item under the drag (the cursor), `sel`
+/// everything selected. Returns true when the library changed.
+fn browserDrop(app: App, lib: *library_mod.Library, sel: []const u32, first: u32, target: BrowserDrop) bool {
+    const items = lib.items.items;
+    if (first >= items.len) return false;
+    const it = &items[first];
+    if (target == .open_song) {
+        openProjectPath(app.alloc, app.history, app.tracks_buf, app.track_count, app.tracks, app.transport, app.engine, app.audio, app.reg, app.selected_track, app.selected_clip, app.prev_selected_clip, app.project_path, app.project_path_chosen, app.dirty, app.status, it.path) catch |err| {
+            app.status.set("Open failed: {s}", .{@errorName(err)});
+        };
+        return true;
+    }
+    // One undo step for the whole drop, a new track included.
+    const before = document_mod.serialize(app.alloc, app.tracks.*, app.transport) catch return false;
+    var ti: usize = 0;
+    var beat: f64 = 0;
+    switch (target) {
+        .lane => |l| {
+            ti = l.track;
+            beat = l.beat;
+        },
+        .header => |h| {
+            ti = h;
+            beat = trackEnd(&app.tracks.*[h]);
+        },
+        .new_track => {
+            if (app.track_count.* >= MAX_TRACKS) {
+                app.alloc.free(before);
+                app.status.set("No room for another track", .{});
+                return false;
+            }
+            ti = blk: {
+                app.audio.stop();
+                defer app.audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+                break :blk newTrack(app.alloc, app.tracks_buf, app.track_count, false, "Track") catch {
+                    app.alloc.free(before);
+                    return false;
+                };
+            };
+            app.tracks.* = app.tracks_buf[0..app.track_count.*];
+            app.engine.tracks = app.tracks.*;
+        },
+        else => {
+            app.alloc.free(before);
+            return false;
+        },
+    }
+    const t = &app.tracks.*[ti];
+    const ok = switch (it.kind) {
+        .preset => dropPreset(app, t, it, target == .new_track),
+        .table => dropTable(app, t, it),
+        .clip, .sample => dropClips(app, t, ti, lib, sel, beat),
+        .song => false,
+    };
+    if (!ok and target != .new_track) {
+        app.alloc.free(before);
+        return false;
+    }
+    // A new track stays even when nothing landed on it; Undo takes it.
+    if (ok and target == .new_track) setTrackName(t, it.name);
+    app.history.pushUndo(app.alloc, before) catch app.alloc.free(before);
+    app.selected_track.* = ti;
+    app.dirty.* = true;
+    return false;
+}
+
+/// A preset onto a track: its machine first (an instrument replaces the
+/// track's, an effect joins the chain), then the preset by name.
+fn dropPreset(app: App, t: *track_mod.Track, it: *const library_mod.Item, fresh: bool) bool {
+    const reg_idx = app.reg.findById(it.machine) orelse {
+        app.status.set("No machine {s}", .{it.machine});
+        return false;
+    };
+    const entry = &app.reg.entries[reg_idx];
+    const is_effect = entry.in_audio and entry.out_audio and !entry.in_notes;
+    var mach: *@import("machine.zig").Machine = undefined;
+    if (is_effect) {
+        addEffectToTrack(app.alloc, app.audio, app.reg, t, reg_idx) catch |err| {
+            app.status.set("Effect failed: {s}", .{@errorName(err)});
+            return false;
+        };
+        mach = &t.effects.items[t.effects.items.len - 1].mach;
+    } else {
+        if (t.isBus()) {
+            app.status.set("A bus takes effects, not {s}", .{entry.nameSlice()});
+            return false;
+        }
+        if (t.machine_idx == null or t.machine_idx.? != reg_idx) {
+            assignMachineToTrack(app.alloc, app.audio, app.reg, t, reg_idx) catch |err| {
+                app.status.set("Load failed: {s}", .{@errorName(err)});
+                return false;
+            };
+        }
+        mach = &t.machine;
+    }
+    _ = fresh;
+    const count: usize = if (mach.preset_count) |f| f(mach.state) else 0;
+    const name_of = mach.preset_name orelse return true;
+    const apply = mach.apply_preset orelse return true;
+    for (0..count) |i| {
+        if (!std.mem.eql(u8, std.mem.span(name_of(mach.state, @intCast(i))), it.preset)) continue;
+        app.audio.stop();
+        defer app.audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+        apply(mach.state, @intCast(i));
+        app.status.set("{s}: {s}", .{ entry.nameSlice(), it.name });
+        return true;
+    }
+    app.status.set("{s} has no preset {s}", .{ entry.nameSlice(), it.name });
+    return true;
+}
+
+/// A wavetable onto a track: the first oscillator plays it. An empty
+/// track gets Concoction to play it on.
+fn dropTable(app: App, t: *track_mod.Track, it: *const library_mod.Item) bool {
+    if (t.machine_idx == null and !t.isBus()) {
+        if (app.reg.findById("concoction")) |ci| {
+            assignMachineToTrack(app.alloc, app.audio, app.reg, t, ci) catch {};
+        }
+    }
+    const load = t.machine.load_table orelse {
+        app.status.set("{s} has no wavetable oscillator", .{t.name()});
+        return false;
+    };
+    if (!load(t.machine.state, it.path, 0)) {
+        app.status.set("{s} won't take {s}", .{ t.name(), it.name });
+        return false;
+    }
+    app.status.set("Table {s} on {s}", .{ it.name, t.name() });
+    return true;
+}
+
+/// Clips and samples onto a lane, one after another from `beat`.
+fn dropClips(app: App, t: *track_mod.Track, ti: usize, lib: *const library_mod.Library, sel: []const u32, beat: f64) bool {
+    if (t.isBus()) {
+        app.status.set("A bus takes no clips", .{});
+        return false;
+    }
+    _ = arrangement.clearSelection(app.tracks.*, app.selected_clip);
+    var at = beat;
+    var n: usize = 0;
+    var last: []const u8 = "";
+    for (sel) |i| {
+        if (i >= lib.items.items.len) continue;
+        const it = &lib.items.items[i];
+        switch (it.kind) {
+            .clip => {
+                const data = document_mod.readFile(app.alloc, it.path) catch continue;
+                defer app.alloc.free(data);
+                document_mod.insertClipFile(app.alloc, t, data, at) catch |err| {
+                    app.status.set("{s}: {s}", .{ it.name, @errorName(err) });
+                    continue;
+                };
+                const cl = &t.clips.items[t.clips.items.len - 1];
+                at += cl.length_beats;
+            },
+            .sample => {
+                const source = app.pool.loadFile(it.path) catch |err| {
+                    app.status.set("{s}: {s}", .{ it.name, @errorName(err) });
+                    continue;
+                };
+                const src = app.pool.get(source) orelse continue;
+                const dur = src.seconds();
+                const len = @max(0.25, dur * app.transport.bpm() / 60.0);
+                var clip = clip_mod.Clip.initAudio(src.name(), at, len, source);
+                clip.audio.start_sec = 0;
+                clip.audio.dur_sec = dur;
+                t.addClip(app.alloc, clip) catch {
+                    clip.deinit(app.alloc);
+                    continue;
+                };
+                at += len;
+            },
+            else => continue,
+        }
+        t.clips.items[t.clips.items.len - 1].selected = true;
+        app.selected_clip.* = .{ .track = @intCast(ti), .clip = @intCast(t.clips.items.len - 1) };
+        last = it.name;
+        n += 1;
+    }
+    if (n == 0) return false;
+    if (n == 1) app.status.set("Inserted {s} on {s}", .{ last, t.name() }) else app.status.set("Inserted {d} clips on {s}", .{ n, t.name() });
+    return true;
+}
+
+fn setTrackName(t: *track_mod.Track, name: []const u8) void {
+    const base = if (std.mem.lastIndexOfScalar(u8, name, '/')) |i| name[i + 1 ..] else name;
+    const n = @min(base.len, track_mod.MAX_NAME);
+    @memcpy(t.name_buf[0..n], base[0..n]);
+    t.name_len = @intCast(n);
 }
 
 /// Every selected clip as a `.slabclip` in the home folder's Clips

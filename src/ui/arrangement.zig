@@ -431,6 +431,82 @@ const ContextTarget = struct {
 
 var context_target: ContextTarget = .{};
 
+// ── Drops from the browser (docs/25 §The browser) ────────────────────
+
+/// Where the last `draw` put things, for `dropHit`.
+var geo: struct {
+    timeline_x: f32 = 0,
+    timeline_w: f32 = 0,
+    timeline_x0: f32 = 0,
+    header_x: f32 = 0,
+    header_w: f32 = 0,
+    lanes_top: f32 = 0,
+    lanes_bottom: f32 = 0,
+    drawn: bool = false,
+} = .{};
+
+pub const DropHit = struct {
+    /// The track under the pointer; null below the last one (a new track).
+    track: ?usize,
+    /// Over the track's header rather than its lane.
+    header: bool,
+    /// The beat under the pointer (lanes; 0 elsewhere).
+    beat: f64,
+    /// The row's lane and header (or the empty area below the tracks).
+    lane: Rect,
+    head: Rect,
+};
+
+/// What a drop at (x, y) would land on, from the last drawn frame.
+pub fn dropHit(tracks: []const Track, x: f32, y: f32) ?DropHit {
+    const g = geo;
+    if (!g.drawn or y < g.lanes_top or y >= g.lanes_bottom) return null;
+    if (x < g.timeline_x or x >= g.header_x + g.header_w) return null;
+    const on_head = x >= g.header_x;
+    const beat: f64 = @max(0, (x - g.timeline_x0 + scroll_x) / px_per_beat);
+    for (tracks, 0..) |*t, ti| {
+        if (!isShown(tracks, ti)) continue;
+        const ly = g.lanes_top + rowTop(tracks, ti) - scroll_y;
+        const h = rowH(t);
+        if (y < ly or y >= ly + h) continue;
+        return .{
+            .track = ti,
+            .header = on_head,
+            .beat = beat,
+            .lane = bridge.fromRl(pane.rect(g.timeline_x, ly, g.timeline_w, LANE_H)),
+            .head = bridge.fromRl(pane.rect(g.header_x, ly, g.header_w, LANE_H)),
+        };
+    }
+    const end_y = g.lanes_top + contentH(tracks) - scroll_y;
+    if (y < end_y) return null; // the returns divider
+    const below = bridge.fromRl(pane.rect(g.timeline_x, end_y, g.timeline_w + g.header_w, g.lanes_bottom - end_y));
+    return .{ .track = null, .header = false, .beat = beat, .lane = below, .head = below };
+}
+
+/// Screen x of `beat` in the last drawn frame.
+pub fn beatX(beat: f64) f32 {
+    return geo.timeline_x0 + @as(f32, @floatCast(beat)) * px_per_beat - scroll_x;
+}
+
+/// Clip bodies are being dragged (the browser takes them to save).
+pub fn clipMoveActive() bool {
+    return drag_mode == .move;
+}
+
+/// Put the dragged clips back where the drag found them and end it.
+pub fn abortClipMove(tracks: []Track) void {
+    if (drag_mode != .move) return;
+    if (drag_snap_count > 0) {
+        for (drag_snaps[0..drag_snap_count]) |s| {
+            if (s.track >= tracks.len or s.clip >= tracks[s.track].clips.items.len) continue;
+            tracks[s.track].clips.items[s.clip].start_beat = s.start_beat;
+        }
+    } else if (drag_ref.track < tracks.len and drag_ref.clip < tracks[drag_ref.track].clips.items.len) {
+        tracks[drag_ref.track].clips.items[drag_ref.clip].start_beat = drag_start_beat;
+    }
+    _ = cancelInteractions();
+}
+
 pub fn cancelInteractions() bool {
     const had_active = drag_mode != .none or box_active or ov_drag or ruler_drag or loop_start_drag or loop_end_drag or sbv_drag;
     drag_mode = .none;
@@ -869,6 +945,16 @@ pub fn draw(
     const content_beats = contentBeats(tracks);
     const lanes_top = r.y + overviewH() + rulerH();
     const lanes_h = @max(0, lanes_bottom - lanes_top);
+    geo = .{
+        .timeline_x = timeline_x,
+        .timeline_w = timeline_w,
+        .timeline_x0 = timeline_x0,
+        .header_x = header_x,
+        .header_w = header_w,
+        .lanes_top = lanes_top,
+        .lanes_bottom = lanes_bottom,
+        .drawn = true,
+    };
 
     // ── Wheel input (scroll / zoom) ──────────────────────────────────
     handleWheel(pane.rect(timeline_x, r.y, timeline_w, r.height), m);
