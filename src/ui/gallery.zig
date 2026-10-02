@@ -1,8 +1,9 @@
-//! `slab --gallery` (docs/06 §The gallery). Two pages:
+//! `slab --gallery` (docs/06 §The gallery). The pages:
 //! CONTROLS — every material, token, type strike, display and control
 //! family × size × state; DAW — the working surfaces assembled the way
 //! the app will be (transport, arrangement, piano roll, machine bay);
 //! CONCOCTION — the prototype of that machine's panel cards.
+//! BROWSER — the library browser prototype (gallery_browser.zig).
 //! Everything is packed: plates tile the window with shared 1px seams.
 
 const std = @import("std");
@@ -12,6 +13,7 @@ const style = @import("style.zig");
 const ctl = @import("controls.zig");
 const surf = @import("surfaces.zig");
 const concoction = @import("gallery_concoction.zig");
+const browser = @import("gallery_browser.zig");
 const menu = @import("menu.zig");
 
 const Ui = core.Ui;
@@ -96,10 +98,12 @@ pub fn run(alloc: std.mem.Allocator) !void {
     defer ui.deinit(alloc);
 
     var st = State{};
-    // SLAB_GALLERY_PAGE=0..2 opens on that page (screenshots, prototypes).
+    // SLAB_GALLERY_PAGE=0..3 opens on that page (screenshots, prototypes).
     if (std.c.getenv("SLAB_GALLERY_PAGE")) |pg| st.page = std.fmt.parseInt(u8, std.mem.span(pg), 10) catch st.page;
     var cn = concoction.State.init(alloc);
     defer cn.deinit(alloc);
+    var br = try browser.State.init(alloc);
+    defer br.deinit(alloc);
     genNotes();
     var build_ms: f64 = 0;
     while (!c.rl.WindowShouldClose()) {
@@ -112,7 +116,7 @@ pub fn run(alloc: std.mem.Allocator) !void {
             menu.beginFrame(ui, @intFromFloat(@as(f32, @floatFromInt(c.rl.GetScreenWidth())) / z), @intFromFloat(@as(f32, @floatFromInt(c.rl.GetScreenHeight())) / z));
         }
         if (menu.active()) ui.suppressInput();
-        frame(ui, &st, &cn, build_ms);
+        frame(ui, &st, &cn, &br, build_ms);
         menu.draw(ui);
         if (st.running) ui.animate();
         build_ms = build_ms * 0.9 + (c.rl.GetTime() - t0) * 1000 * 0.1;
@@ -123,7 +127,7 @@ pub fn run(alloc: std.mem.Allocator) !void {
     }
 }
 
-fn frame(ui: *Ui, st: *State, cn: *concoction.State, build_ms: f64) void {
+fn frame(ui: *Ui, st: *State, cn: *concoction.State, br: *browser.State, build_ms: f64) void {
     const z = ui.renderer.zoom;
     const sw: i32 = @intFromFloat(@as(f32, @floatFromInt(c.rl.GetScreenWidth())) / z);
     const sh: i32 = @intFromFloat(@as(f32, @floatFromInt(c.rl.GetScreenHeight())) / z);
@@ -133,7 +137,8 @@ fn frame(ui: *Ui, st: *State, cn: *concoction.State, build_ms: f64) void {
     switch (st.page) {
         0 => controlsPage(ui, screen, st),
         1 => dawPage(ui, screen, st),
-        else => concoction.page(ui, screen, cn),
+        2 => concoction.page(ui, screen, cn),
+        else => browser.page(ui, screen, br),
     }
 }
 
@@ -145,7 +150,7 @@ fn header(ui: *Ui, r: Rect, st: *State, build_ms: f64) void {
     var bar = r;
     const logo = ui.plate(bar.cutLeft(52), .{});
     ui.textIn(&ui.fonts.body_bold, logo.insetXY(4, 0), "SLAB", style.accent, .left, true);
-    _ = ctl.segmentedFlush(ui, bar.cutLeft(280), "page", &st.page, &.{ "CONTROLS", "DAW", "CONCOCTION" });
+    _ = ctl.segmentedFlush(ui, bar.cutLeft(372), "page", &st.page, &.{ "CONTROLS", "DAW", "CONCOCTION", "BROWSER" });
 
     var buf: [48]u8 = undefined;
     const s = std.fmt.bufPrint(&buf, "UI {d:.2}MS {d}CMD", .{ build_ms, ui.dl.len }) catch "";

@@ -408,6 +408,12 @@ One browser panel lists items by kind, with four sources:
 | Factory | what slab ships |
 | Online | the repository: search, then open or drag in |
 
+The prototype is the gallery's BROWSER page (`slab --gallery`,
+src/ui/gallery_browser.zig): search from anywhere, kind chips with live
+counts, folders with a sticky header, multi-select, hover audition and
+favorites, a preview pane, drag onto a track, a header, the machine or
+a new track, a right-click menu, Undo on a toast, and the pack cards.
+
 Dragging an item onto a track works the same from every source. An
 online item is downloaded into `Cache/` and checked against its hash
 first. Opening an online project downloads it and opens it as an
