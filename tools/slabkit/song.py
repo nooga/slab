@@ -506,8 +506,10 @@ def _lanes_json(lanes):
 
 class Track:
     def __init__(self, song, name, machine_id, preset=None, params=None, volume=0.8, pan=0.0,
-                 fx=(), color=None, mute=False, samples=None, output=None):
+                 fx=(), color=None, mute=False, samples=None, output=None, unison=None, assets=None):
         self.song = song
+        # Host unison (docs/08 §Unison): dict(count=, voices=, detune= cents, spread=, blend=).
+        self.unison = dict(unison) if unison else None
         self.name = name
         # Routing (docs/23): a Bus for the post-fader signal (None = master),
         # and sends as (bus, linear level, pre).
@@ -540,6 +542,9 @@ class Track:
             if not os.path.exists(library_path(samples)):
                 song.warn(f"track {name}: samples {samples!r} not found; the track keeps the bundled pluck")
             self.assets["smp"] = samples
+        # Files to load by asset name, e.g. a wavetable: assets={"wt-a": "machines/concoction/assets/skill.wav"}.
+        if assets:
+            self.assets.update(assets)
         for aname, apath in self.assets.items():
             if samples is None and not os.path.exists(library_path(apath)):
                 song.warn(f"track {name}: preset {preset!r} loads {apath!r}, which isn't here (fetch the library?)")
@@ -765,6 +770,7 @@ class Track:
             "instrument": {"machine": self.machine.id, "params": self.params,
                            **({"preset": self.preset} if self.preset else {}),
                            **({"assets": self.assets} if self.assets else {}),
+                           **({"unison": self.unison} if self.unison else {}),
                            **({"zones": self.zones} if self.zones else {})},
             "effects": [f.build(f"{where} fx {i}", index) for i, f in enumerate(self.fx)],
             "clips": [c.to_json() for c in sorted(self.clips, key=lambda c: c.start)],
@@ -872,10 +878,10 @@ class Song:
         return s
 
     def track(self, name, machine_id, preset=None, params=None, volume=0.8, pan=0.0, fx=(), color=None, mute=False,
-              samples=None, output=None):
+              samples=None, output=None, unison=None, assets=None):
         if len(self.tracks) >= MAX_TRACKS:
             raise SlabError(f"max {MAX_TRACKS} tracks (buses count)")
-        t = Track(self, name, machine_id, preset, params, volume, pan, fx, color, mute, samples, output)
+        t = Track(self, name, machine_id, preset, params, volume, pan, fx, color, mute, samples, output, unison, assets)
         self.tracks.append(t)
         return t
 
