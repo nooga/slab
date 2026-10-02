@@ -69,6 +69,9 @@ self-contained but assumes the vocabulary established in earlier ones.
 23. [22-automation.md](22-automation.md) — track lanes, clip lanes and
     per-note expression on one curve type; automated controls, editing
     gestures, engine and format (design)
+24. [25-storage.md](25-storage.md) — where things live: factory, the
+    home folder, project packages, references by content, collect on
+    save, Save to Library, publishing; load time
 
 ## Terminology crib sheet
 

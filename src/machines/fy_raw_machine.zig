@@ -21,6 +21,7 @@ const wav = @import("../wav.zig");
 const waveform = @import("../waveform.zig");
 const keymap = @import("../keymap.zig");
 const wavetable = @import("../wavetable.zig");
+const wt_cache = @import("../wavetable_cache.zig");
 const wte = @import("../wavetable_edit.zig");
 const wavetable_file = @import("../wavetable_file.zig");
 const wt_editor = @import("../ui/wt_editor.zig");
@@ -466,7 +467,7 @@ pub const FyRawMachine = struct {
                 self.asset_mem[ai] = wav.load(alloc, full) catch wav.Sample{ .data = &.{}, .sample_rate = 0 };
                 self.asset_cache[ai].build(alloc, self.asset_mem[ai].data) catch {};
                 if (req.wavetable and self.asset_mem[ai].data.len > 0) {
-                    self.asset_wt[ai] = wavetable.build(alloc, self.asset_mem[ai].data, self.asset_mem[ai].frame_size, !self.asset_mem[ai].levels_kept) catch .{};
+                    self.asset_wt[ai] = wt_cache.acquire(alloc, self.asset_mem[ai].data, self.asset_mem[ai].frame_size, !self.asset_mem[ai].levels_kept) catch .{};
                 }
             }
             self.setAssetSource(ai, full);
@@ -501,7 +502,7 @@ pub const FyRawMachine = struct {
             if (s.data.len > 0) alloc.free(s.data);
             s.* = .{ .data = &.{}, .sample_rate = 0 };
             self.asset_keymap[ai].deinit(alloc);
-            self.asset_wt[ai].deinit(alloc);
+            wt_cache.release(alloc, &self.asset_wt[ai]);
             if (self.aa_pool[ai].len > 0) alloc.free(self.aa_pool[ai]);
             self.aa_pool[ai] = &.{};
             self.asset_cache[ai].deinit(alloc);
@@ -563,7 +564,7 @@ pub const FyRawMachine = struct {
         var loaded = wav.load(self.alloc, keymap.resolvePath(&rb, src)) catch return false;
         var new_wt: wavetable.Table = .{};
         if (self.desc.assets[ai].wavetable) {
-            new_wt = wavetable.build(self.alloc, loaded.data, loaded.frame_size, !loaded.levels_kept) catch {
+            new_wt = wt_cache.acquire(self.alloc, loaded.data, loaded.frame_size, !loaded.levels_kept) catch {
                 loaded.deinit(self.alloc);
                 return false;
             };
@@ -571,7 +572,7 @@ pub const FyRawMachine = struct {
         var new_cache = waveform.PeakCache{};
         new_cache.build(self.alloc, loaded.data) catch {
             loaded.deinit(self.alloc);
-            new_wt.deinit(self.alloc);
+            wt_cache.release(self.alloc, &new_wt);
             return false;
         };
 
@@ -585,7 +586,7 @@ pub const FyRawMachine = struct {
         fy_host_mod.unlockCallbacks();
 
         if (old.data.len > 0) self.alloc.free(old.data);
-        old_wt.deinit(self.alloc);
+        wt_cache.release(self.alloc, &old_wt);
         self.asset_cache[ai].deinit(self.alloc);
         self.asset_cache[ai] = new_cache;
         self.setAssetSource(ai, src);
@@ -1520,13 +1521,14 @@ fn syncTableDoc(self: *FyRawMachine, ai: usize) void {
     const d = doc.takeDirty() orelse return;
     self.wt_unsaved[ai] = true;
     self.wt_edited = true;
-    if (d.resized or self.asset_wt[ai].frames != doc.count) {
+    // A shared table is rebuilt as this instance's own before any edit lands.
+    if (d.resized or self.asset_wt[ai].frames != doc.count or wt_cache.isShared(self.asset_wt[ai])) {
         var t = doc.build(self.alloc) catch return;
         fy_host_mod.lockCallbacks();
         std.mem.swap(wavetable.Table, &self.asset_wt[ai], &t);
         self.injectAssets();
         fy_host_mod.unlockCallbacks();
-        t.deinit(self.alloc);
+        wt_cache.release(self.alloc, &t);
         return;
     }
     const cells = (d.hi - d.lo + 1) * wavetable.STRIDE;
