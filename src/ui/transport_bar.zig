@@ -111,9 +111,10 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     if (ctl.button(ui, arm_r, "autoarm", &arm, .{ .label = "AUTO", .lit = style.rec, .flush = true })) res.auto_arm_toggle = true;
     menu.tip(ui, arm_r, if (a.auto_arm) "Automation recording armed: drags while playing write lanes" else "Arm automation recording");
 
-    // Tempo: [LED 124.0][▲▼]  TAP
-    bpmTile(ui, bar.cutLeft(108), t, map);
-    const bpm_step = ctl.stepper(ui, bar.cutLeft(ctl.STEPPER_W), "bpm-step");
+    // Tempo: [LED 124.0 ▴▾]  TAP
+    const bpm_r = bar.cutLeft(124);
+    bpmTile(ui, bpm_r, t, map);
+    const bpm_step = ctl.glassSteps(ui, bpm_r, "bpm-step");
     if (bpm_step != 0) t.setBpm(@round(t.bpm()) + @as(f32, @floatFromInt(bpm_step)));
     const tap_r = bar.cutLeft(48);
     if (ctl.button(ui, tap_r, "tap", null, .{ .label = "TAP", .flush = true })) handleTap(t, ui.in.time);
@@ -129,15 +130,11 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     menu.tip(ui, pos_r, "Position  bar.beat.sub");
     meterTile(ui, bar.cutLeft(76), a.meter_state);
 
-    // Snap: [1/16][▲▼] (▲ = finer)
-    const snap_r = bar.cutLeft(76);
-    ctl.display(ui, snap_r, std.mem.span(a.edit_snap.label()), .{ .align_ = .center, .large = true, .flush = true });
+    // Snap: a select, finer upward.
+    const snap_r = bar.cutLeft(92);
+    var snap: u8 = @intFromEnum(a.edit_snap.*);
+    if (ctl.displaySelectEx(ui, snap_r, "snap", &snap, &SNAP_LABELS, "SNAP", .{ .large = true, .flush = true })) a.edit_snap.* = @enumFromInt(snap);
     menu.tip(ui, snap_r, std.mem.span(a.edit_snap.tooltip()));
-    switch (ctl.stepper(ui, bar.cutLeft(ctl.STEPPER_W), "snap-step")) {
-        1 => a.edit_snap.* = a.edit_snap.finer(),
-        -1 => a.edit_snap.* = a.edit_snap.coarser(),
-        else => {},
-    }
 
     // Logo plate on the right, the master meter beside it, blank plate
     // between.
@@ -149,6 +146,13 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     _ = ui.plate(bar, .{});
     return res;
 }
+
+const SNAP_LABELS = blk: {
+    const fields = @typeInfo(snap_mod.Setting).@"enum".fields;
+    var out: [fields.len][]const u8 = undefined;
+    for (fields, 0..) |f, i| out[i] = std.mem.span(@as(snap_mod.Setting, @enumFromInt(f.value)).label());
+    break :blk out;
+};
 
 // ── Tiles ────────────────────────────────────────────────────────────
 
@@ -310,7 +314,8 @@ fn bpmTile(ui: *Ui, r: Rect, t: *Transport, map: meter_mod.MeterMap) void {
     if (ui.isHot(wid)) ui.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 1);
 
     var buf: [16]u8 = undefined;
-    const s = std.fmt.bufPrint(&buf, "{d:.1}", .{t.bpm()}) catch "?";
+    // A spare cell on the right for the ▴▾ steps.
+    const s = std.fmt.bufPrint(&buf, "{d:.1} ", .{t.bpm()}) catch "?";
     ctl.display(ui, r, s, .{ .align_ = .right, .large = true, .flush = true, .color = if (ui.active == wid) style.vfd_hi else style.vfd });
     const mb = map.meterBeat(t.beats());
     const on = t.isPlaying() and mb.phase < 0.12;
@@ -321,7 +326,7 @@ fn bpmTile(ui: *Ui, r: Rect, t: *Transport, map: meter_mod.MeterMap) void {
     };
     ctl.led(ui, r.x + 5, r.y + @divFloor(r.h - 1 - 5, 2), .round5, if (on) .on else .off, col);
     if (t.isPlaying()) ui.animate();
-    menu.tip(ui, r, "Tempo: drag, \u{2318}-scroll, double-click 120");
+    menu.tip(ui, r, "Tempo: drag, \u{2318}-scroll, \u{25B4}\u{25BE} step, double-click 120");
 }
 
 /// Time signature of bar 0: drag the numerator, right-click for the

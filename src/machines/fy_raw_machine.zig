@@ -20,11 +20,16 @@ const presets_mod = @import("../presets.zig");
 const wav = @import("../wav.zig");
 const waveform = @import("../waveform.zig");
 const keymap = @import("../keymap.zig");
+const wavetable = @import("../wavetable.zig");
+const wte = @import("../wavetable_edit.zig");
+const wavetable_file = @import("../wavetable_file.zig");
+const wt_editor = @import("../ui/wt_editor.zig");
 const native_dialog = @import("../native_dialog.zig");
 const ui_core = @import("../ui/core.zig");
 const ui_ctl = @import("../ui/controls.zig");
 const ui_style = @import("../ui/style.zig");
 const ui_menu = @import("../ui/menu.zig");
+const synth_views = @import("../ui/synth_views.zig");
 const automation = @import("../automation.zig");
 const snapshot = @import("../snapshot.zig");
 const analysis = @import("../bench/analysis.zig");
@@ -226,6 +231,24 @@ pub const FyRawMachine = struct {
     // Active panel tab for paged machines (index into desc.pages). Per
     // instance, UI-thread only.
     ui_tab: usize = 0,
+    // Modulation (docs/15 §Modulation), UI thread: the source dragged from
+    // the dock (desc.mods index + 1, 0 none), and the places a drop can
+    // land, drawn this frame and the last (a drop lands on the last
+    // frame's, which covers the whole panel).
+    mod_drag: usize = 0,
+    mod_targets: [MOD_TARGETS]ModTarget = undefined,
+    mod_target_n: usize = 0,
+    mod_prev: [MOD_TARGETS]ModTarget = undefined,
+    mod_prev_n: usize = 0,
+    // The hovered destination knob's index (this frame's, last frame's;
+    // 0 none): the matrix display lights the rows that reach it.
+    mod_hot_next: usize = 0,
+    mod_hot: usize = 0,
+    // A scope-display's ring: the audio thread appends each block's
+    // output, mono, and moves the head; the panel reads behind it.
+    has_scope: bool = false,
+    scope_buf: [SCOPE_LEN]f32 = [_]f32{0} ** SCOPE_LEN,
+    scope_head: std.atomic.Value(usize) = .init(0),
     // Generic derived-params hook (params derive-data --): a machine-declared
     // dsp2 word run each block to compute params from controls + opaque data.
     derive_slots: RawSlots = .{},
@@ -249,6 +272,9 @@ pub const FyRawMachine = struct {
     // Read-only audio assets loaded from disk at create (manifest `asset`),
     // shared across voices via params.
     asset_mem: [machine_desc.MAX_ASSETS]wav.Sample = [_]wav.Sample{.{ .data = &.{}, .sample_rate = 0 }} ** machine_desc.MAX_ASSETS,
+    // Wavetable assets (manifest `wavetable`): the mipmapped frames built
+    // from asset_mem, which stays loaded for the waveform display.
+    asset_wt: [machine_desc.MAX_ASSETS]wavetable.Table = [_]wavetable.Table{.{}} ** machine_desc.MAX_ASSETS,
     // Keymap assets (manifest `keymap`): the loaded pool + zone table.
     asset_keymap: [machine_desc.MAX_ASSETS]keymap.Keymap = [_]keymap.Keymap{.{}} ** machine_desc.MAX_ASSETS,
     /// A keymap's pool low-passed ahead of its stored rate
@@ -300,6 +326,18 @@ pub const FyRawMachine = struct {
     // Display name (basename) of each asset's currently loaded file.
     asset_label: [machine_desc.MAX_ASSETS][96]u8 = undefined,
     asset_label_len: [machine_desc.MAX_ASSETS]usize = [_]usize{0} ** machine_desc.MAX_ASSETS,
+    // The wavetable editor (docs/15 §Wavetable editor): a doc for each
+    // wavetable asset EDIT has opened, whether it changed since its file
+    // was written, and the asset the editor has open over the panel (with
+    // its oscillator's name for the caption).
+    wt_docs: [machine_desc.MAX_ASSETS]?*wte.Doc = [_]?*wte.Doc{null} ** machine_desc.MAX_ASSETS,
+    wt_unsaved: [machine_desc.MAX_ASSETS]bool = [_]bool{false} ** machine_desc.MAX_ASSETS,
+    /// A table edit since the host last asked (take_edited).
+    wt_edited: bool = false,
+    wt_editing: ?usize = null,
+    wt_osc: [32]u8 = undefined,
+    wt_osc_len: usize = 0,
+    wt_view: wt_editor.View = .{},
     // Stored so runtime sample loads can (re)allocate without a passed alloc.
     alloc: std.mem.Allocator = undefined,
     // Voice allocator (voice machines with desc.voices > 1). Voices are
@@ -395,6 +433,9 @@ pub const FyRawMachine = struct {
             .unison = machine.Unison.init(@intCast(@max(desc.voices, 1))),
             .pool = @max(desc.voices, 1),
         };
+        for (desc.displays[0..desc.display_count]) |*d| {
+            if (d.kind == .scope) self.has_scope = true;
+        }
         if (presets_mod.dirFromMachinePath(self.preset_dir[0..], path)) |dir| {
             self.preset_dir_len = dir.len;
             self.presets = presets_mod.scan(dir);
@@ -424,6 +465,9 @@ pub const FyRawMachine = struct {
             } else {
                 self.asset_mem[ai] = wav.load(alloc, full) catch wav.Sample{ .data = &.{}, .sample_rate = 0 };
                 self.asset_cache[ai].build(alloc, self.asset_mem[ai].data) catch {};
+                if (req.wavetable and self.asset_mem[ai].data.len > 0) {
+                    self.asset_wt[ai] = wavetable.build(alloc, self.asset_mem[ai].data, self.asset_mem[ai].frame_size, !self.asset_mem[ai].levels_kept) catch .{};
+                }
             }
             self.setAssetSource(ai, full);
         }
@@ -457,10 +501,23 @@ pub const FyRawMachine = struct {
             if (s.data.len > 0) alloc.free(s.data);
             s.* = .{ .data = &.{}, .sample_rate = 0 };
             self.asset_keymap[ai].deinit(alloc);
+            self.asset_wt[ai].deinit(alloc);
             if (self.aa_pool[ai].len > 0) alloc.free(self.aa_pool[ai]);
             self.aa_pool[ai] = &.{};
             self.asset_cache[ai].deinit(alloc);
+            self.dropTableDoc(ai);
         }
+    }
+
+    /// Forget the editor's doc for asset `ai` (a new file replaced it).
+    fn dropTableDoc(self: *FyRawMachine, ai: usize) void {
+        if (self.wt_docs[ai]) |d| {
+            d.deinit();
+            self.alloc.destroy(d);
+        }
+        self.wt_docs[ai] = null;
+        self.wt_unsaved[ai] = false;
+        if (self.wt_editing == ai) self.wt_editing = null;
     }
 
     /// The anti-aliased pool for keymap `ai` as `km`, at its control's
@@ -504,24 +561,36 @@ pub const FyRawMachine = struct {
         var pb: [1024]u8 = undefined;
         const src = keymap.portablePath(&pb, path);
         var loaded = wav.load(self.alloc, keymap.resolvePath(&rb, src)) catch return false;
+        var new_wt: wavetable.Table = .{};
+        if (self.desc.assets[ai].wavetable) {
+            new_wt = wavetable.build(self.alloc, loaded.data, loaded.frame_size, !loaded.levels_kept) catch {
+                loaded.deinit(self.alloc);
+                return false;
+            };
+        }
         var new_cache = waveform.PeakCache{};
         new_cache.build(self.alloc, loaded.data) catch {
             loaded.deinit(self.alloc);
+            new_wt.deinit(self.alloc);
             return false;
         };
 
         fy_host_mod.lockCallbacks();
         const old = self.asset_mem[ai];
+        var old_wt = self.asset_wt[ai];
         self.asset_mem[ai] = loaded;
+        self.asset_wt[ai] = new_wt;
         self.injectAssets();
         self.silenceVoices();
         fy_host_mod.unlockCallbacks();
 
         if (old.data.len > 0) self.alloc.free(old.data);
+        old_wt.deinit(self.alloc);
         self.asset_cache[ai].deinit(self.alloc);
         self.asset_cache[ai] = new_cache;
         self.setAssetSource(ai, src);
         self.asset_loaded[ai] = true;
+        self.dropTableDoc(ai);
         return true;
     }
 
@@ -673,6 +742,13 @@ pub const FyRawMachine = struct {
                 self.writeParamUsize(req.edits_offset, @intFromPtr(&self.zone_edits));
                 continue;
             }
+            if (req.wavetable) {
+                const t = self.asset_wt[ai];
+                const ptr: usize = if (t.frames > 0) @intFromPtr(t.data.ptr) else @intFromPtr(&wavetable.silent_frame[0]);
+                self.writeParamUsize(req.ptr_offset, ptr);
+                self.writeParamF64(req.len_offset, @floatFromInt(t.frames));
+                continue;
+            }
             const s = self.asset_mem[ai];
             const ptr: usize = if (s.data.len > 0) @intFromPtr(s.data.ptr) else @intFromPtr(&self.asset_silence[0]);
             self.writeParamUsize(req.ptr_offset, ptr);
@@ -765,6 +841,8 @@ pub const FyRawMachine = struct {
             .set_param = setParamImpl,
             .write_assets_json = writeAssetsJsonImpl,
             .load_asset = loadAssetImpl,
+            .save_files = saveFilesImpl,
+            .take_edited = takeEditedImpl,
             .write_zones_json = writeZonesJsonImpl,
             .apply_zones_json = applyZonesJsonImpl,
             .note_labels_fn = noteLabelsImpl,
@@ -1120,6 +1198,11 @@ fn refFromFile(self: *FyRawMachine, index: usize) void {
     if (parsed.value != .object) return;
     const params = parsed.value.object.get("params") orelse return;
     if (params != .object) return;
+    // Unnamed controls are the patch's defaults (applyPresetImpl).
+    for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
+        self.preset_ref[i] = storedValue(ctl.*, ctl.default);
+        self.preset_ref_on[i] = true;
+    }
     var it = params.object.iterator();
     while (it.next()) |kv| {
         for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
@@ -1202,6 +1285,16 @@ fn applyPresetImpl(state: *anyopaque, index: machine.PresetIndex) void {
     }
     const params = parsed.value.object.get("params") orelse return;
     if (params != .object) return;
+    // A preset is a whole patch: what it doesn't name goes back to its
+    // default, so nothing of the last patch (a matrix route, a switch)
+    // lingers.
+    for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
+        const v = storedValue(ctl.*, ctl.default);
+        switch (ctl.kind) {
+            .switch_sel, .int_range => self.setControlRaw(i, v),
+            .direct_f64 => self.setControlNormSnap(i, v),
+        }
+    }
     var it = params.object.iterator();
     while (it.next()) |kv| applyControlValue(self, kv.key_ptr.*, jsonF64(kv.value_ptr.*));
     refFromControls(self);
@@ -1380,6 +1473,140 @@ fn loadAssetImpl(state: *anyopaque, name: []const u8, path: []const u8) bool {
     const ai = self.assetIndexByName(name) orelse return false;
     if (std.mem.eql(u8, self.assetPath(ai), path)) return true;
     return self.loadAssetRuntime(ai, path);
+}
+
+// ── Wavetable editor (docs/15 §Wavetable editor) ─────────────────────
+
+/// EDIT on an oscillator's view opens the editor on its USER table
+/// (asset `ai`). A bank table (`copy`) is copied in first; the caller
+/// switches the oscillator to USER, so the bank stays as it ships.
+fn openTableEditor(self: *FyRawMachine, ai: usize, osc: []const u8, copy: ?synth_views.Table, copy_name: []const u8) void {
+    const doc = self.wt_docs[ai] orelse blk: {
+        const d = self.alloc.create(wte.Doc) catch return;
+        d.* = wte.Doc.init(self.alloc) catch {
+            self.alloc.destroy(d);
+            return;
+        };
+        // What plays now, read back from its fullest levels.
+        const t = self.asset_wt[ai];
+        if (t.frames > 0) d.loadBuilt(t.data, 0, t.frames);
+        _ = d.takeDirty();
+        self.wt_docs[ai] = d;
+        break :blk d;
+    };
+    if (copy) |t| {
+        if (t.count > 0) doc.loadBuilt(t.data, t.first, t.count);
+        setAssetLabel(self, ai, copy_name);
+        syncTableDoc(self, ai);
+    }
+    const n = @min(osc.len, self.wt_osc.len);
+    @memcpy(self.wt_osc[0..n], osc[0..n]);
+    self.wt_osc_len = n;
+    self.wt_editing = ai;
+    self.wt_view = .{};
+}
+
+fn setAssetLabel(self: *FyRawMachine, ai: usize, label: []const u8) void {
+    const n = @min(label.len, self.asset_label[ai].len);
+    std.mem.copyForwards(u8, self.asset_label[ai][0..n], label[0..n]);
+    self.asset_label_len[ai] = n;
+}
+
+/// Rebuild what the doc changed into the table the voices play. The
+/// levels are built off the audio thread; only the swap or the copy
+/// happens inside the fence.
+fn syncTableDoc(self: *FyRawMachine, ai: usize) void {
+    const doc = self.wt_docs[ai] orelse return;
+    const d = doc.takeDirty() orelse return;
+    self.wt_unsaved[ai] = true;
+    self.wt_edited = true;
+    if (d.resized or self.asset_wt[ai].frames != doc.count) {
+        var t = doc.build(self.alloc) catch return;
+        fy_host_mod.lockCallbacks();
+        std.mem.swap(wavetable.Table, &self.asset_wt[ai], &t);
+        self.injectAssets();
+        fy_host_mod.unlockCallbacks();
+        t.deinit(self.alloc);
+        return;
+    }
+    const cells = (d.hi - d.lo + 1) * wavetable.STRIDE;
+    const tmp = self.alloc.alloc(f64, cells) catch return;
+    defer self.alloc.free(tmp);
+    doc.writeFrames(tmp, d.lo, d.hi);
+    fy_host_mod.lockCallbacks();
+    @memcpy(self.asset_wt[ai].data[d.lo * wavetable.STRIDE ..][0..cells], tmp);
+    fy_host_mod.unlockCallbacks();
+}
+
+/// The editor in place of the panel's pages, until DONE.
+fn drawTableEditor(self: *FyRawMachine, ui: *Ui, r: Rect, ai: usize) void {
+    const doc = self.wt_docs[ai] orelse {
+        self.wt_editing = null;
+        return;
+    };
+    var lb: [96]u8 = undefined;
+    const label = std.ascii.upperString(&lb, self.asset_label[ai][0..self.asset_label_len[ai]]);
+    var nb: [160]u8 = undefined;
+    const name = std.fmt.bufPrint(&nb, "{s} · {s}{s}", .{ self.wt_osc[0..self.wt_osc_len], label, if (self.wt_unsaved[ai]) " *" else "" }) catch "";
+    const res = wt_editor.editor(ui, r, doc, &self.wt_view, .{ .name = name, .can_save = true });
+    syncTableDoc(self, ai);
+    if (res.save) saveTableAs(self, ai);
+    if (res.done) self.wt_editing = null;
+}
+
+/// SAVE: the table to a file of the user's choosing, which the
+/// oscillator then reads.
+fn saveTableAs(self: *FyRawMachine, ai: usize) void {
+    const doc = self.wt_docs[ai] orelse return;
+    var nb: [100]u8 = undefined;
+    const stem = std.fs.path.stem(self.asset_label[ai][0..self.asset_label_len[ai]]);
+    const def = std.fmt.bufPrint(&nb, "{s}.wav", .{if (stem.len > 0) stem else "wavetable"}) catch "wavetable.wav";
+    const path = (native_dialog.saveAudioFile(self.alloc, def) catch null) orelse return;
+    defer self.alloc.free(path);
+    if (!wavetable_file.save(self.alloc, doc, path)) return;
+    var pb: [1024]u8 = undefined;
+    self.setAssetSource(ai, keymap.portablePath(&pb, path));
+    self.asset_loaded[ai] = true;
+    self.wt_unsaved[ai] = false;
+}
+
+/// Project save: every table edited since its file was written goes to
+/// the project's tables folder, under the file it already has there or
+/// a new one named for the track and the asset.
+fn takeEditedImpl(state: *anyopaque) bool {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    defer self.wt_edited = false;
+    return self.wt_edited;
+}
+
+fn saveFilesImpl(state: *anyopaque, project_path: []const u8, track_name: []const u8) void {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    for (0..self.desc.asset_count) |ai| {
+        const doc = self.wt_docs[ai] orelse continue;
+        if (!self.wt_unsaved[ai]) continue;
+        var db: [1024]u8 = undefined;
+        const dir = wavetable_file.tablesDir(&db, project_path);
+        if (dir.len == 0) continue;
+        var pb: [1024]u8 = undefined;
+        const cur = self.assetPath(ai);
+        const path = if (wavetable_file.inDir(cur, dir)) blk: {
+            @memcpy(pb[0..cur.len], cur);
+            break :blk pb[0..cur.len];
+        } else blk: {
+            wavetable_file.makeDir(dir);
+            var sb: [128]u8 = undefined;
+            var raw: [160]u8 = undefined;
+            const name = std.fmt.bufPrint(&raw, "{s} {s}", .{ track_name, self.desc.assets[ai].nameSlice() }) catch "table";
+            break :blk wavetable_file.freshPath(&pb, dir, wavetable_file.slug(&sb, name));
+        };
+        if (path.len == 0 or !wavetable_file.save(self.alloc, doc, path)) {
+            std.log.err("wavetable: could not write {s}", .{path});
+            continue;
+        }
+        self.setAssetSource(ai, path);
+        self.asset_loaded[ai] = true;
+        self.wt_unsaved[ai] = false;
+    }
 }
 
 // ── Automation hooks (docs/22) ───────────────────────────────────────
@@ -1753,6 +1980,14 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
         };
     }
     if (self.desc.mode == .voice_sample) self.updateIdle();
+    if (self.has_scope) {
+        var h = self.scope_head.load(.monotonic);
+        for (l[0..frames], r[0..frames]) |a, b| {
+            self.scope_buf[h % SCOPE_LEN] = (a + b) * 0.5;
+            h +%= 1;
+        }
+        self.scope_head.store(h, .release);
+    }
 }
 
 /// A view of `ctx` covering frames [pos, pos+n): events re-based into the
@@ -2347,9 +2582,9 @@ fn renderEffectBlock(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
         self.kctx_r = self.kctx;
         self.kctx_r.chan = 1;
         const args = [_]Fy.Dsp2RawArg{
-            .{ .ptr = @intFromPtr(&io[0]) },            .{ .ptr = @intFromPtr(&io_r[0]) },
-            .{ .ptr = @intFromPtr(&self.kctx) },        .{ .ptr = @intFromPtr(&self.kctx_r) },
-            .{ .ptr = self.statePtrCh(0) },             .{ .ptr = self.statePtrCh(1) },
+            .{ .ptr = @intFromPtr(&io[0]) },     .{ .ptr = @intFromPtr(&io_r[0]) },
+            .{ .ptr = @intFromPtr(&self.kctx) }, .{ .ptr = @intFromPtr(&self.kctx_r) },
+            .{ .ptr = self.statePtrCh(0) },      .{ .ptr = self.statePtrCh(1) },
             .{ .ptr = self.paramsPtr() },
         };
         _ = try lanes.call(l.len, &args);
@@ -2428,8 +2663,18 @@ fn drawPanelImpl(state: *anyopaque, ui: *Ui, rect: Rect) void {
         drawFixtureInfo(self, ui, rect);
         return;
     }
+    if (self.wt_editing) |ai| {
+        drawTableEditor(self, ui, rect, ai);
+        return;
+    }
     const tier = chooseTier(self, ui, rect);
+    @memcpy(self.mod_prev[0..self.mod_target_n], self.mod_targets[0..self.mod_target_n]);
+    self.mod_prev_n = self.mod_target_n;
+    self.mod_target_n = 0;
+    self.mod_hot = self.mod_hot_next;
+    self.mod_hot_next = 0;
     _ = walkPanel(self, ui, rect, .{ .draw = tier });
+    modDragTick(self, ui);
     autoMenuTick(self);
     // a stored rate moved: re-filter once the knob is let go
     if (ui.active == 0) self.refreshAntialias();
@@ -2582,6 +2827,10 @@ const DISPLAY_MIN = [2]i32{ 40, 32 };
 const ALGO_MIN = [2]i32{ 112, 96 };
 /// A graphic EQ's analyser needs height for both its scales.
 const GRAPHIC_MIN = [2]i32{ 128, 72 };
+/// A wavetable's frames in depth beside the played cycle.
+const WAVETABLE_MIN = [2]i32{ 200, 84 };
+/// The dock: one row of source chips.
+const DOCK_MIN = [2]i32{ 120, 24 };
 
 fn stripNatural(self: *const FyRawMachine, ui: *const Ui, view: StripView, tier: ui_ctl.Size) [2]i32 {
     const t = stripTable(self, ui, view, tier);
@@ -2595,6 +2844,9 @@ fn itemNatural(self: *const FyRawMachine, ui: *const Ui, it: machine_desc.Layout
     return switch (self.desc.displays[it.index].kind) {
         .algo => ALGO_MIN,
         .graphic => GRAPHIC_MIN,
+        .wavetable => WAVETABLE_MIN,
+        .dock => DOCK_MIN,
+        .matrix => MATRIX_MIN,
         else => DISPLAY_MIN,
     };
 }
@@ -2843,6 +3095,10 @@ fn drawAutomatable(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *cons
     const base_before = self.controlNorm(gi);
     const was_pressed = ui.in.pressed;
     drawControl(self, ui, kr, gi, ctl, tier);
+    modTarget(self, kr, gi);
+    if (kr.contains(ui.in.ix(), ui.in.iy())) {
+        if (modDestFor(self, gi)) |m| self.mod_hot_next = m.index;
+    }
     const wid = ui.id(gi);
     if (ui.active == wid) self.touch = .{ .control = @intCast(gi), .knob = self.controlNorm(gi) };
     // Right-click a control (any widget: the whole cell): the automation
@@ -2876,24 +3132,43 @@ const AUTO_SHOW: u32 = 1;
 const AUTO_CLEAR: u32 = 2;
 const AUTO_REENABLE: u32 = 3;
 
-/// The per-control automation context menu.
+/// Items past this id remove matrix slot `id - AUTO_UNMOD`.
+const AUTO_UNMOD: u32 = 100;
+const MENU_SLOTS = 16;
+
+/// The per-control context menu: automation, and for a modulation
+/// destination one "Remove" per slot that routes to it.
 fn autoMenuTick(self: *FyRawMachine) void {
     const key = autoMenuKey(self);
     if (!ui_menu.isOpen(key)) return;
     const gi = self.ctx_control;
     const automated = self.ui_auto[gi] != null;
     const overridden = self.auto_override[gi].load(.monotonic) != 0;
-    const items = [_]ui_menu.Item{
-        .{ .label = "Show automation", .id = AUTO_SHOW },
-        .{ .label = "Clear automation", .id = AUTO_CLEAR, .enabled = automated },
-        .{ .label = "Re-enable automation", .id = AUTO_REENABLE, .enabled = overridden },
-    };
-    const picked = ui_menu.pick(key, &items) orelse return;
+    var items: [4 + MENU_SLOTS]ui_menu.Item = undefined;
+    items[0] = .{ .label = "Show automation", .id = AUTO_SHOW };
+    items[1] = .{ .label = "Clear automation", .id = AUTO_CLEAR, .enabled = automated };
+    items[2] = .{ .label = "Re-enable automation", .id = AUTO_REENABLE, .enabled = overridden };
+    var n: usize = 3;
+    var labels: [MENU_SLOTS][48]u8 = undefined;
+    if (modDestFor(self, gi)) |dm| {
+        for (0..@min(self.desc.matrix_slots, MENU_SLOTS)) |s| {
+            const src = slotOption(self, s, "src");
+            if (src == 0 or slotOption(self, s, "dst") != dm.index) continue;
+            if (n == 3) {
+                items[n] = .{ .separator = true };
+                n += 1;
+            }
+            const name = if (modSource(self, src)) |m| m.nameSlice() else "?";
+            items[n] = .{ .label = std.fmt.bufPrint(&labels[s], "Remove {s} modulation", .{name}) catch "Remove modulation", .id = AUTO_UNMOD + @as(u32, @intCast(s)) };
+            n += 1;
+        }
+    }
+    const picked = ui_menu.pick(key, items[0..n]) orelse return;
     switch (picked) {
         AUTO_SHOW => self.auto_request = .{ .control = @intCast(gi), .action = .show },
         AUTO_CLEAR => self.auto_request = .{ .control = @intCast(gi), .action = .clear },
         AUTO_REENABLE => self.auto_override[gi].store(0, .monotonic),
-        else => {},
+        else => if (picked >= AUTO_UNMOD) clearSlot(self, picked - AUTO_UNMOD),
     }
 }
 
@@ -2983,6 +3258,8 @@ fn drawKnob(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Contr
             var value = self.shownNorm(gi);
             var vbuf: [16:0]u8 = undefined;
             const readout = std.mem.span(formatControlValue(&vbuf, normToValue(ctl.*, value)));
+            const ring = modRing(self, gi, ctl);
+            if (ring != null) ui.animate();
             if (ui_ctl.knob(ui, kr, gi, &value, .{
                 .size = tier,
                 .variant = if (ctl.bipolar()) .bipolar else .plain,
@@ -2990,6 +3267,7 @@ fn drawKnob(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *const Contr
                 .readout = readout,
                 .show_readout = false,
                 .default = valueToNorm(ctl.*, ctl.default),
+                .mod = ring,
             })) self.setControlNorm(gi, value);
         },
     }
@@ -3023,6 +3301,500 @@ fn drawDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void
         .algo => drawAlgoDisplay(self, ui, r, disp),
         .eg4 => drawEg4Display(self, ui, r, disp.sourceSlice()),
         .zones => drawZoneDisplay(self, ui, r, disp.sourceSlice()),
+        .wavetable => drawWavetableDisplay(self, ui, r, disp),
+        .filter => drawFilterDisplay(self, ui, r, disp),
+        .lfo => drawLfoDisplay(self, ui, r, disp),
+        .env => drawEnvDisplay(self, ui, r, disp),
+        .dock => drawDockDisplay(self, ui, r),
+        .scope => drawScopeDisplay(self, ui, r),
+        .matrix => drawMatrixDisplay(self, ui, r),
+    }
+}
+
+// ── Modulation and the newest voice (docs/15 §Modulation) ────────────
+//
+// A voice machine's displays follow its newest sounding voice: the
+// wavetable lights the frame it plays, the filter where its cutoff is,
+// LFOs and envelopes ride a dot, and knobs a `mod-dest` names show a
+// ring at the value the voice has. Sources in the dock drag onto those
+// knobs, or onto a matrix slot's SRC, to route them.
+
+const MOD_TARGETS = 48;
+const SCOPE_LEN = 4096;
+const NO_SLOT = std.math.maxInt(usize);
+
+/// A place a dragged source can land: a destination knob, or a slot.
+const ModTarget = struct { r: Rect, dst: usize = 0, slot: usize = NO_SLOT };
+
+/// The voice the displays follow: the newest one still sounding (a
+/// unison group's first).
+fn newestVoice(self: *const FyRawMachine) ?usize {
+    if (self.desc.mode != .voice_sample) return null;
+    var best: ?usize = null;
+    var age: u64 = 0;
+    for (0..self.regionCount()) |v| {
+        if (self.voice_idle[v]) continue;
+        if (best == null or self.voice_age[v] > age) {
+            best = v;
+            age = self.voice_age[v];
+        }
+    }
+    return best;
+}
+
+/// The newest voice's state f64 at `off`, null when nothing sounds.
+fn liveF64(self: *const FyRawMachine, off: usize) ?f64 {
+    const v = newestVoice(self) orelse return null;
+    return self.readStateF64(v, off);
+}
+
+fn prefixedCtl(self: *const FyRawMachine, prefix: []const u8, suffix: []const u8) ?usize {
+    var buf: [64]u8 = undefined;
+    const id = std.fmt.bufPrint(&buf, "{s}{s}", .{ prefix, suffix }) catch return null;
+    return controlIndexById(self, id);
+}
+
+/// A switch's option index and name, by id prefix + suffix.
+fn prefixedOption(self: *const FyRawMachine, prefix: []const u8, suffix: []const u8) ?struct { index: usize, label: []const u8 } {
+    const i = prefixedCtl(self, prefix, suffix) orelse return null;
+    const ctl = &self.desc.controls[i];
+    if (ctl.kind != .switch_sel) return null;
+    const idx = switchIndex(ctl.*, self.shownNorm(i));
+    return .{ .index = idx, .label = std.mem.span(ctl.optionLabelZ(idx)) };
+}
+
+/// Matrix slot `s`'s control `-src`, `-dst` or `-amt`.
+fn matrixCtl(self: *const FyRawMachine, s: usize, suffix: []const u8) ?usize {
+    if (self.desc.matrix_len == 0) return null;
+    var buf: [64]u8 = undefined;
+    const id = std.fmt.bufPrint(&buf, "{s}{d}-{s}", .{ self.desc.matrixPrefix(), s + 1, suffix }) catch return null;
+    return controlIndexById(self, id);
+}
+
+fn slotOption(self: *const FyRawMachine, s: usize, suffix: []const u8) usize {
+    const i = matrixCtl(self, s, suffix) orelse return 0;
+    return switchIndex(self.desc.controls[i], self.controlNorm(i));
+}
+
+/// Some slot routes a source to destination `dst`.
+fn routedTo(self: *const FyRawMachine, dst: usize) bool {
+    for (0..self.desc.matrix_slots) |s| {
+        if (slotOption(self, s, "src") != 0 and slotOption(self, s, "dst") == dst) return true;
+    }
+    return false;
+}
+
+fn modDestFor(self: *const FyRawMachine, gi: usize) ?*const machine_desc.Mod {
+    for (self.desc.mods[0..self.desc.mod_count]) |*m| {
+        if (m.kind == .dest and m.control == gi) return m;
+    }
+    return null;
+}
+
+/// A destination knob's ring: where the newest voice has it, while
+/// something routes to it or it sits off the knob.
+fn modRing(self: *const FyRawMachine, gi: usize, ctl: *const Control) ?f32 {
+    const m = modDestFor(self, gi) orelse return null;
+    const live = liveF64(self, m.offset) orelse return null;
+    const ring = std.math.clamp(valueToNorm(ctl.*, live), 0, 1);
+    if (!routedTo(self, m.index) and @abs(ring - self.shownNorm(gi)) < 0.004) return null;
+    return ring;
+}
+
+/// Record control `gi`'s cell as a drop target if it is a destination or
+/// a slot's SRC.
+fn modTarget(self: *FyRawMachine, r: Rect, gi: usize) void {
+    if (self.desc.mod_count == 0 or self.mod_target_n == MOD_TARGETS) return;
+    var t = ModTarget{ .r = r };
+    if (modDestFor(self, gi)) |m| {
+        t.dst = m.index;
+    } else {
+        t.slot = for (0..self.desc.matrix_slots) |s| {
+            if (matrixCtl(self, s, "src") == gi) break s;
+        } else return;
+    }
+    self.mod_targets[self.mod_target_n] = t;
+    self.mod_target_n += 1;
+}
+
+/// Set slot `s` to `src` (and `dst`), giving it half the amount if it
+/// had none.
+fn setSlot(self: *FyRawMachine, s: usize, src: usize, dst: ?usize) void {
+    if (matrixCtl(self, s, "src")) |i| if (src < self.desc.controls[i].option_count) pickOption(self, i, src);
+    if (dst) |d| if (matrixCtl(self, s, "dst")) |i| if (d < self.desc.controls[i].option_count) pickOption(self, i, d);
+    if (matrixCtl(self, s, "amt")) |i| {
+        const ctl = self.desc.controls[i];
+        if (ctl.kind == .direct_f64 and normToValue(ctl, self.controlNorm(i)) == 0) self.setControlNorm(i, valueToNorm(ctl, ctl.max * 0.5));
+    }
+}
+
+/// Route `src` to a target: a slot takes the source; a destination reuses
+/// the slot that already joins the two, else the first free one.
+fn routeSource(self: *FyRawMachine, src: usize, t: ModTarget) void {
+    const s = dropSlot(self, src, t) orelse return;
+    if (t.slot != NO_SLOT) return setSlot(self, s, src, null);
+    if (slotOption(self, s, "src") == src and slotOption(self, s, "dst") == t.dst) return;
+    setSlot(self, s, src, t.dst);
+}
+
+/// The slot a drop of `src` on `t` fills.
+fn dropSlot(self: *const FyRawMachine, src: usize, t: ModTarget) ?usize {
+    if (t.slot != NO_SLOT) return t.slot;
+    for (0..self.desc.matrix_slots) |s| {
+        if (slotOption(self, s, "src") == src and slotOption(self, s, "dst") == t.dst) return s;
+    }
+    for (0..self.desc.matrix_slots) |s| {
+        if (slotOption(self, s, "src") == 0 or slotOption(self, s, "dst") == 0) return s;
+    }
+    return null;
+}
+
+/// Empty slot `s`: no source, no destination, no amount.
+fn clearSlot(self: *FyRawMachine, s: usize) void {
+    if (matrixCtl(self, s, "src")) |i| pickOption(self, i, 0);
+    if (matrixCtl(self, s, "dst")) |i| pickOption(self, i, 0);
+    if (matrixCtl(self, s, "amt")) |i| {
+        const ctl = self.desc.controls[i];
+        if (ctl.kind == .direct_f64) self.setControlNorm(i, valueToNorm(ctl, 0));
+    }
+}
+
+/// The source whose option index is `src`.
+fn modSource(self: *const FyRawMachine, src: usize) ?*const machine_desc.Mod {
+    for (self.desc.mods[0..self.desc.mod_count]) |*m| {
+        if (m.kind == .source and m.index == src) return m;
+    }
+    return null;
+}
+
+const MATRIX_MIN = [2]i32{ 480, 104 };
+/// The matrix display adds a column of rows per this much width (to 3).
+const MATRIX_COL_MIN: i32 = 300;
+
+fn matrixSlotRow(self: *FyRawMachine, ui: *Ui, row: Rect, s: usize, drop: usize, srcs: []const []const u8, dsts: []const []const u8) void {
+    const src = slotOption(self, s, "src");
+    const dst = slotOption(self, s, "dst");
+    const ai = matrixCtl(self, s, "amt");
+    // The row takes a dropped source.
+    if (self.mod_target_n < MOD_TARGETS) {
+        self.mod_targets[self.mod_target_n] = .{ .r = row, .slot = s };
+        self.mod_target_n += 1;
+    }
+    const m = modSource(self, src);
+    const e = synth_views.matrixSlot(ui, row, .{ "mx", s }, s + 1, .{
+        .src = @intCast(src),
+        .dst = @intCast(dst),
+        .amt = if (ai) |i| self.shownNorm(i) else 0.5,
+        .src_val = if (m) |mm| sourceValue(self, mm) else 0,
+        .src_bipolar = if (m) |mm| mm.bipolar else false,
+        .lit = self.mod_hot != 0 and src != 0 and dst == self.mod_hot,
+        .drop = drop == s,
+    }, srcs, dsts);
+    if (e.src) |v| if (matrixCtl(self, s, "src")) |i| pickOption(self, i, v);
+    if (e.dst) |v| if (matrixCtl(self, s, "dst")) |i| pickOption(self, i, v);
+    if (e.amt) |v| if (ai) |i| self.setControlNorm(i, v);
+    if (e.clear) clearSlot(self, s);
+}
+
+/// A built-in route's row: its amount is its knob.
+fn matrixFixedRow(self: *FyRawMachine, ui: *Ui, row: Rect, f: *const machine_desc.Mod, srcs: []const []const u8, dsts: []const []const u8) void {
+    const ctl = &self.desc.controls[f.control];
+    const m = modSource(self, f.index);
+    const e = synth_views.matrixSlot(ui, row, .{ "mxf", f.control }, 0, .{
+        .src = @intCast(f.index),
+        .dst = @intCast(f.dst),
+        .amt = self.shownNorm(f.control),
+        .src_val = if (m) |mm| sourceValue(self, mm) else 0,
+        .src_bipolar = if (m) |mm| mm.bipolar else false,
+        .lit = self.mod_hot != 0 and f.dst == self.mod_hot,
+        .fixed = true,
+        .unipolar = ctl.min >= 0,
+        .amt_name = ctl.module[0..ctl.module_len],
+    }, srcs, dsts);
+    if (e.amt) |v| self.setControlNorm(f.control, v);
+}
+
+/// The matrix on one display (matrix-display): a row per slot, two
+/// columns of them when there's room.
+fn drawMatrixDisplay(self: *FyRawMachine, ui: *Ui, r: Rect) void {
+    const n = self.desc.matrix_slots;
+    const si = matrixCtl(self, 0, "src") orelse return;
+    const di = matrixCtl(self, 0, "dst") orelse return;
+    var sb: [MAX_OPTS][]const u8 = undefined;
+    var db: [MAX_OPTS][]const u8 = undefined;
+    const srcs = optionSlices(&self.desc.controls[si], &sb);
+    const dsts = optionSlices(&self.desc.controls[di], &db);
+    // A drop in flight: the slot it would fill.
+    var drop: usize = NO_SLOT;
+    if (self.mod_drag != 0 and self.mod_drag <= self.desc.mod_count) {
+        const src = self.desc.mods[self.mod_drag - 1].index;
+        for (self.mod_prev[0..self.mod_prev_n]) |t| {
+            if (t.r.contains(ui.in.ix(), ui.in.iy())) {
+                drop = dropSlot(self, src, t) orelse NO_SLOT;
+                break;
+            }
+        }
+    }
+    // Rows: the slots, then the built-in routes, in up to three columns.
+    var fixed: [machine_desc.MAX_MODS]*const machine_desc.Mod = undefined;
+    var nf: usize = 0;
+    for (self.desc.mods[0..self.desc.mod_count]) |*m| {
+        if (m.kind == .fixed) {
+            fixed[nf] = m;
+            nf += 1;
+        }
+    }
+    const total = n + nf;
+    const g = synth_views.matrixBegin(ui, r);
+    const ncol: usize = std.math.clamp(@as(usize, @intCast(@divFloor(g.w, MATRIX_COL_MIN))), 1, @min(3, total));
+    const per = (total + ncol - 1) / ncol;
+    const cw = @divFloor(g.w, @as(i32, @intCast(ncol)));
+    for (0..ncol) |ci| {
+        var col = Rect.xywh(g.x + @as(i32, @intCast(ci)) * cw, g.y + 2, cw, g.h - 2);
+        if (ci > 0) ui.rect(Rect.xywh(col.x, col.y + 2, 1, col.h - 6), ui_style.vfd.alpha(30));
+        synth_views.matrixHeader(ui, col.cutTop(16), srcs, dsts);
+        for (ci * per..@min(total, (ci + 1) * per)) |ri| {
+            const row = col.cutTop(synth_views.MATRIX_ROW);
+            if (ri < n) matrixSlotRow(self, ui, row, ri, drop, srcs, dsts) else matrixFixedRow(self, ui, row, fixed[ri - n], srcs, dsts);
+        }
+    }
+    synth_views.matrixEnd(ui, g);
+}
+
+fn sourceValue(self: *const FyRawMachine, m: *const machine_desc.Mod) f32 {
+    return @floatCast(liveF64(self, m.offset) orelse 0);
+}
+
+/// End of the panel: the dragged chip follows the pointer, the target
+/// under it lights, and letting go routes the source.
+fn modDragTick(self: *FyRawMachine, ui: *Ui) void {
+    if (self.mod_drag == 0 or self.mod_drag > self.desc.mod_count) {
+        self.mod_drag = 0;
+        return;
+    }
+    const src = &self.desc.mods[self.mod_drag - 1];
+    const over: ?ModTarget = for (self.mod_prev[0..self.mod_prev_n]) |t| {
+        if (t.r.contains(ui.in.ix(), ui.in.iy())) break t;
+    } else null;
+    if (over) |t| ui.bevel(t.r.inset(-1), ui_style.mod, ui_style.mod);
+    if (ui.in.down) {
+        synth_views.dragChip(ui, src.nameSlice(), sourceValue(self, src), src.bipolar);
+        ui.animate();
+        return;
+    }
+    if (over) |t| routeSource(self, src.index, t);
+    self.mod_drag = 0;
+}
+
+/// The dock: a chip per source with its live value, then the voice the
+/// panel follows.
+fn drawDockDisplay(self: *FyRawMachine, ui: *Ui, r: Rect) void {
+    var body = ui.plate(r, .{});
+    _ = ui.engraved(&ui.fonts.legend, body.x + 3, body.y + @divFloor(body.h - 12, 2), "MOD", ui_style.text_dim);
+    _ = body.cutLeft(28);
+    for (self.desc.mods[0..self.desc.mod_count], 0..) |*m, i| {
+        if (m.kind != .source or body.w < 64) continue;
+        if (synth_views.modChip(ui, body.cutLeft(68).insetXY(2, 3), .{ "modsrc", i }, m.nameSlice(), sourceValue(self, m), m.bipolar, self.mod_drag == i + 1)) {
+            self.mod_drag = i + 1;
+        }
+    }
+    var buf: [32]u8 = undefined;
+    const s = if (newestVoice(self)) |v| blk: {
+        ui.animate();
+        const k: u8 = @intFromFloat(std.math.clamp(@round(self.voice_pitch[v]), 0, 127));
+        const names = [_][]const u8{ "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+        break :blk std.fmt.bufPrint(&buf, "VOICE {d} {s}{d}", .{ v + 1, names[k % 12], @as(i32, k / 12) - 1 }) catch "";
+    } else "";
+    if (body.w > 16) ui_ctl.display(ui, body.insetXY(4, 3), s, .{ .align_ = .right });
+}
+
+/// An oscillator's wavetable (wavetable-display): the bank table or the
+/// USER file its TABLE switch picks, at the newest voice's position.
+fn drawWavetableDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void {
+    var it = std.mem.splitScalar(u8, disp.sourceSlice(), ',');
+    const prefix = it.next() orelse return;
+    const bank = it.next() orelse "";
+    const user = it.next() orelse "";
+    const sel = prefixedOption(self, prefix, "-table") orelse return;
+    const is_user = std.mem.eql(u8, sel.label, "USER");
+    var table = synth_views.Table{};
+    if (self.assetIndexByName(if (is_user) user else bank)) |ai| {
+        const t = &self.asset_wt[ai];
+        table.data = t.data;
+        if (is_user) {
+            table.count = t.frames;
+        } else {
+            const per = disp.wtOffset(.frames);
+            table.first = sel.index * per;
+            table.count = @min(per, t.frames -| table.first);
+        }
+    }
+    const knob_pos: f32 = @floatCast(prefixedValue(self, prefix, "-pos", 0));
+    const warp = if (prefixedOption(self, prefix, "-warp")) |w| w.index else 0;
+    const amt: f32 = @floatCast(prefixedValue(self, prefix, "-wamt", 0));
+    const on = prefixedValue(self, prefix, "-on", 1) > 0.5;
+    const live_pos = liveF64(self, disp.wtOffset(.pos));
+    if (live_pos != null) ui.animate();
+    // A USER table names its file; LOAD sits in the view's corner.
+    const user_ai = if (is_user) self.assetIndexByName(user) else null;
+    var nbuf: [64]u8 = undefined;
+    var name: []const u8 = sel.label;
+    if (user_ai) |ai| {
+        // An edited table not yet written to a file wears a star.
+        const lab = self.asset_label[ai][0..@min(self.asset_label_len[ai], nbuf.len - 2)];
+        name = std.ascii.upperString(&nbuf, lab);
+        if (self.wt_unsaved[ai]) {
+            nbuf[lab.len] = ' ';
+            nbuf[lab.len + 1] = '*';
+            name = nbuf[0 .. lab.len + 2];
+        }
+    }
+    synth_views.wavetableView(ui, r, .{
+        .table = table,
+        .name = name,
+        .pos = if (live_pos) |p| @floatCast(p) else knob_pos,
+        .base_pos = knob_pos,
+        .warp = @enumFromInt(@min(warp, 4)),
+        .amt = if (liveF64(self, disp.wtOffset(.warp))) |w| @floatCast(w) else amt,
+        .dim = !on,
+    });
+    if (user_ai) |ai| {
+        if (ui_ctl.button(ui, Rect.xywh(r.right() - 44, r.y, 44, 18), .{ "wtload", ai }, null, .{ .label = "LOAD" })) {
+            if (native_dialog.openAudioFile(self.alloc) catch null) |path| {
+                defer self.alloc.free(path);
+                _ = self.loadAssetRuntime(ai, path);
+            }
+        }
+    }
+    // EDIT opens the editor on the USER table; a bank table is copied
+    // into it and the oscillator switched to USER.
+    const uai = self.assetIndexByName(user) orelse return;
+    if (!self.desc.assets[uai].wavetable) return;
+    const edit_x = r.right() - if (user_ai != null) @as(i32, 88) else 44;
+    if (ui_ctl.button(ui, Rect.xywh(edit_x, r.y, 44, 18), .{ "wtedit", uai }, null, .{ .label = "EDIT" })) {
+        var ob: [32]u8 = undefined;
+        const dn = disp.nameSlice();
+        const osc = std.ascii.upperString(&ob, dn[0..@min(if (std.mem.endsWith(u8, dn, " VIEW")) dn.len - 5 else dn.len, ob.len)]);
+        if (is_user) {
+            openTableEditor(self, uai, osc, null, "");
+        } else {
+            openTableEditor(self, uai, osc, table, sel.label);
+            if (prefixedCtl(self, prefix, "-table")) |ti| {
+                const ctl = &self.desc.controls[ti];
+                for (0..ctl.option_count) |oi| {
+                    if (std.mem.eql(u8, std.mem.span(ctl.optionLabelZ(oi)), "USER")) pickOption(self, ti, oi);
+                }
+            }
+        }
+    }
+}
+
+/// A filter's response (filter-display), lit where the newest voice has
+/// its cutoff and resonance.
+fn drawFilterDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void {
+    const prefix = disp.sourceSlice();
+    const mode = prefixedOption(self, prefix, "-mode");
+    const label = if (mode) |m| m.label else "";
+    const knob = [2]f32{ @floatCast(prefixedValue(self, prefix, "-cut", 1000)), @floatCast(prefixedValue(self, prefix, "-res", 0)) };
+    var live: ?[2]f32 = null;
+    if (liveF64(self, disp.liveOffset(.a))) |hz| {
+        live = .{ @floatCast(@max(hz, 1)), @floatCast(liveF64(self, disp.liveOffset(.b)) orelse knob[1]) };
+        ui.animate();
+    }
+    synth_views.filterView(ui, r, synth_views.filterKind(label), label, knob, live);
+}
+
+/// An LFO (lfo-display), with the newest voice's phase and value.
+fn drawLfoDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void {
+    const prefix = disp.sourceSlice();
+    const shape = if (prefixedOption(self, prefix, "-shape")) |o| synth_views.lfoShape(o.label) else .sine;
+    const uni = prefixedValue(self, prefix, "-uni", 0) > 0.5;
+    var buf: [32]u8 = undefined;
+    const mode = if (prefixedOption(self, prefix, "-mode")) |o| o.label else "";
+    const sync = prefixedOption(self, prefix, "-sync");
+    const caption = if (sync != null and sync.?.index > 0)
+        std.fmt.bufPrint(&buf, "{s} {s}", .{ sync.?.label, mode }) catch ""
+    else
+        std.fmt.bufPrint(&buf, "{d:.2}HZ {s}", .{ prefixedValue(self, prefix, "-rate", 1), mode }) catch "";
+    var live: ?[2]f32 = null;
+    if (liveF64(self, disp.liveOffset(.a))) |ph| {
+        live = .{ @floatCast(ph), @floatCast(liveF64(self, disp.liveOffset(.b)) orelse 0) };
+        ui.animate();
+    }
+    synth_views.lfoView(ui, r, shape, uni, caption, live);
+}
+
+/// An envelope (env-display): the adsr-display curve, and the newest
+/// voice riding it, placed by its env_dig stage and level.
+fn drawEnvDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Display) void {
+    const field = ui.well(r, ui_style.well);
+    ui.clip(field);
+    defer ui.unclip();
+    const module = disp.sourceSlice();
+    drawAdsrCurve(self, ui, field, module, ui_style.vfd, 0);
+    const level: f32 = @floatCast(liveF64(self, disp.liveOffset(.a)) orelse return);
+    const stage: f32 = @floatCast(liveF64(self, disp.liveOffset(.b)) orelse return);
+    ui.animate();
+    const g = adsrGeom(self, field, module) orelse return;
+    // The segment the voice is in, and how far along it (the fraction s of
+    // its level change); the dot sits on the drawn curve there.
+    const K: f32 = 4;
+    const seg: struct { xa: f32, xb: f32, la: f32, lb: f32, s: f32 } = if (stage < 0.5)
+        .{ .xa = g.xh1, .xb = g.xr1, .la = g.sus, .lb = 0, .s = if (g.sus > 0.001) (g.sus - level) / g.sus else 1 }
+    else if (stage < 1.5)
+        .{ .xa = g.x0, .xb = g.xa1, .la = 0, .lb = 1, .s = level }
+    else if (stage < 2.5)
+        .{ .xa = g.xa1, .xb = g.xa1, .la = 1, .lb = 1, .s = 0 }
+    else
+        .{ .xa = g.xa1, .xb = g.xd1, .la = 1, .lb = g.sus, .s = if (g.sus < 0.999) (1 - level) / (1 - g.sus) else 1 };
+    const s = std.math.clamp(seg.s, 0, 0.999);
+    const t = -@log(1 - s * (1 - @exp(-K))) / K; // capShape(t) = s
+    const x = seg.xa + (seg.xb - seg.xa) * t;
+    const y = g.base - (seg.la + (seg.lb - seg.la) * capShape(t)) * g.h;
+    ui.rect(Rect.xywh(@intFromFloat(x), field.y, 1, field.h), ui_style.vfd.alpha(40));
+    ui.rect(Rect.xywh(@as(i32, @intFromFloat(x)) - 1, @as(i32, @intFromFloat(y)) - 1, 3, 3), ui_style.text);
+}
+
+/// The machine's output (scope-display): two cycles of the newest
+/// voice's note, from a rising zero crossing, scaled to fit.
+fn drawScopeDisplay(self: *FyRawMachine, ui: *Ui, r: Rect) void {
+    const inner = ui.well(r, ui_style.well);
+    if (inner.w < 8 or inner.h < 8) return;
+    ui.clip(inner);
+    defer ui.unclip();
+    const mid = inner.y + @divFloor(inner.h, 2);
+    ui.rect(Rect.xywh(inner.x, mid, inner.w, 1), ui_style.vfd.alpha(30));
+    const v = newestVoice(self);
+    if (v != null) ui.animate();
+    const pitch: f64 = if (v) |vi| self.voice_pitch[vi] else 48;
+    const hz = 440.0 * std.math.pow(f64, 2, (pitch - 69) / 12);
+    const cycle: usize = @intFromFloat(std.math.clamp(self.kctx.sr / hz, 16, SCOPE_LEN / 6));
+    const span = 2 * cycle;
+    const head = self.scope_head.load(.acquire);
+    if (head < span + cycle) return;
+    const buf = &self.scope_buf;
+    // The newest rising zero crossing that leaves a whole span after it.
+    var start = head - span;
+    var back: usize = 0;
+    while (back < cycle) : (back += 1) {
+        const i = head - span - back;
+        if (buf[(i - 1) % SCOPE_LEN] < 0 and buf[i % SCOPE_LEN] >= 0) {
+            start = i;
+            break;
+        }
+    }
+    var peak: f32 = 0.05;
+    for (0..span) |k| peak = @max(peak, @abs(buf[(start + k) % SCOPE_LEN]));
+    const g = (@as(f32, @floatFromInt(inner.h)) / 2 - 2) / peak;
+    const pen = if (v != null) ui_style.vfd_hi else ui_style.vfd.alpha(90);
+    var prev: [2]f32 = undefined;
+    var px: i32 = 0;
+    while (px <= inner.w) : (px += 1) {
+        const k: usize = @intCast(@divFloor(px * @as(i32, @intCast(span)), @max(inner.w, 1)));
+        const y = buf[(start + @min(k, span - 1)) % SCOPE_LEN];
+        const pt = [2]f32{ @floatFromInt(inner.x + px), @as(f32, @floatFromInt(mid)) - y * g };
+        if (px > 0) ui.line(prev[0], prev[1], pt[0], pt[1], pen);
+        prev = pt;
     }
 }
 
@@ -4611,25 +5383,15 @@ fn drawMarker(self: *FyRawMachine, ui: *Ui, area: Rect, id: []const u8, col: ui_
 // A/D/S/R shape (segment widths from the knob norms, a fixed sustain
 // hold), reacting live to the source module's ATK/DEC/SUS/REL knobs.
 fn drawAdsrCurve(self: *FyRawMachine, ui: *Ui, area: Rect, source: []const u8, col: ui_style.Color, label_idx: usize) void {
-    // Envelope knobs by legend: ATK/DEC/SUS/REL, or the 106's A/D/S/R.
-    const atk = controlNormByLabel(self, source, "ATK") orelse controlNormByLabel(self, source, "A") orelse 0.3;
-    const dec = controlNormByLabel(self, source, "DEC") orelse controlNormByLabel(self, source, "D") orelse 0.3;
-    const sus = controlNormByLabel(self, source, "SUS") orelse controlNormByLabel(self, source, "S") orelse 0.5;
-    const rel = controlNormByLabel(self, source, "REL") orelse controlNormByLabel(self, source, "R") orelse 0.3;
-
-    const x0: f32 = @as(f32, @floatFromInt(area.x)) + 2.5;
-    const w: f32 = @as(f32, @floatFromInt(area.w)) - 5;
-    const top: f32 = @as(f32, @floatFromInt(area.y)) + 12.5; // leave the label row
-    const h: f32 = @as(f32, @floatFromInt(area.h)) - 15;
-    if (w <= 1 or h <= 1) return;
-    const base = top + h;
-
-    const hold: f32 = 0.5;
-    const wsum = atk + dec + hold + rel + 0.0001;
-    const xa1 = x0 + w * atk / wsum;
-    const xd1 = xa1 + w * dec / wsum;
-    const xh1 = xd1 + w * hold / wsum;
-    const xr1 = xh1 + w * rel / wsum;
+    const g = adsrGeom(self, area, source) orelse return;
+    const x0 = g.x0;
+    const xa1 = g.xa1;
+    const xd1 = g.xd1;
+    const xh1 = g.xh1;
+    const xr1 = g.xr1;
+    const base = g.base;
+    const h = g.h;
+    const sus = g.sus;
 
     capSeg(ui, x0, 0.0, xa1, 1.0, base, h, col);
     capSeg(ui, xa1, 1.0, xd1, sus, base, h, col);
@@ -4640,6 +5402,28 @@ fn drawAdsrCurve(self: *FyRawMachine, ui: *Ui, area: Rect, source: []const u8, c
     // of overlaid sources sit side by side.
     const tok = source[0 .. std.mem.indexOfScalar(u8, source, ' ') orelse source.len];
     _ = ui.text(&ui.fonts.legend, area.x + 2 + @as(i32, @intCast(label_idx)) * 40, area.y, tok[0..@min(tok.len, 11)], col);
+}
+
+/// Where an adsr-display puts its segments in `area`.
+const AdsrGeom = struct { x0: f32, xa1: f32, xd1: f32, xh1: f32, xr1: f32, base: f32, h: f32, sus: f32 };
+
+fn adsrGeom(self: *const FyRawMachine, area: Rect, source: []const u8) ?AdsrGeom {
+    // Envelope knobs by legend: ATK/DEC/SUS/REL, or the 106's A/D/S/R.
+    const atk = controlNormByLabel(self, source, "ATK") orelse controlNormByLabel(self, source, "A") orelse 0.3;
+    const dec = controlNormByLabel(self, source, "DEC") orelse controlNormByLabel(self, source, "D") orelse 0.3;
+    const sus = controlNormByLabel(self, source, "SUS") orelse controlNormByLabel(self, source, "S") orelse 0.5;
+    const rel = controlNormByLabel(self, source, "REL") orelse controlNormByLabel(self, source, "R") orelse 0.3;
+    const x0: f32 = @as(f32, @floatFromInt(area.x)) + 2.5;
+    const w: f32 = @as(f32, @floatFromInt(area.w)) - 5;
+    const top: f32 = @as(f32, @floatFromInt(area.y)) + 12.5; // leave the label row
+    const h: f32 = @as(f32, @floatFromInt(area.h)) - 15;
+    if (w <= 1 or h <= 1) return null;
+    const hold: f32 = 0.5;
+    const wsum = atk + dec + hold + rel + 0.0001;
+    const xa1 = x0 + w * atk / wsum;
+    const xd1 = xa1 + w * dec / wsum;
+    const xh1 = xd1 + w * hold / wsum;
+    return .{ .x0 = x0, .xa1 = xa1, .xd1 = xd1, .xh1 = xh1, .xr1 = xh1 + w * rel / wsum, .base = top + h, .h = h, .sus = sus };
 }
 
 fn capSeg(ui: *Ui, xa: f32, la: f32, xb: f32, lb: f32, base: f32, h: f32, col: ui_style.Color) void {
@@ -7045,10 +7829,10 @@ test "note ids: a note-off finds its voice by id after the voice was bent" {
 
 test "every pitched voice machine takes note expression" {
     const files = [_][]const u8{
-        "machines/sampler/sampler.fy",   "machines/unfairlight/unfairlight.fy",
-        "machines/juno2/juno2.fy",       "machines/fm86/fm86.fy",
-        "machines/rhodes/rhodes.fy",     "machines/ms20/ms20.fy",
-        "machines/cream/cream.fy",       "machines/profit5/profit5.fy",
+        "machines/sampler/sampler.fy", "machines/unfairlight/unfairlight.fy",
+        "machines/juno2/juno2.fy",     "machines/fm86/fm86.fy",
+        "machines/rhodes/rhodes.fy",   "machines/ms20/ms20.fy",
+        "machines/cream/cream.fy",     "machines/profit5/profit5.fy",
     };
     for (files) |f| {
         const inst = try FyRawMachine.create(testing.allocator, f);
@@ -7356,9 +8140,8 @@ test "a reset keeps the latency a machine reports" {
 
 test "NEON lanes: every dual-mono effect renders the same samples as its two scalar passes" {
     const effects = [_][]const u8{
-        "machines/eq2/eq2.fy",         "machines/sat2/sat2.fy",     "machines/chorus2/chorus2.fy",
-        "machines/limiter2/limiter2.fy",
-        "machines/gate2/gate2.fy",     "machines/era/era.fy",
+        "machines/eq2/eq2.fy",           "machines/sat2/sat2.fy",   "machines/chorus2/chorus2.fy",
+        "machines/limiter2/limiter2.fy", "machines/gate2/gate2.fy", "machines/era/era.fy",
     };
     const block = 256;
     const blocks = 24;
@@ -7671,4 +8454,61 @@ test "unison: presets and projects carry the stack; a preset without one plays s
     const dm = drums.machineInterface();
     defer dm.deinit.?(dm.state, testing.allocator);
     try testing.expect(dm.unison == null);
+}
+
+test "wavetable editor: an edited table plays at once, saves beside the project and loads back" {
+    const alloc = testing.allocator;
+    const inst = try FyRawMachine.create(alloc, "machines/concoction/concoction.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, alloc);
+    const ai = inst.assetIndexByName("wt-a").?;
+    const bank = inst.assetIndexByName("bank").?;
+    const S = wavetable.STRIDE;
+
+    // EDIT on a bank table: its 16 frames become the USER table.
+    openTableEditor(inst, ai, "OSC A", .{ .data = inst.asset_wt[bank].data, .first = 32, .count = 16 }, "SYNC");
+    try testing.expectEqual(@as(usize, 16), inst.asset_wt[ai].frames);
+    try testing.expect(inst.wt_unsaved[ai]);
+    try testing.expectApproxEqAbs(inst.asset_wt[bank].data[37 * S + 100], inst.asset_wt[ai].data[5 * S + 100], 1e-5);
+
+    // An edit reaches the played table: frame 5's top level is now a
+    // square's fundamental, 4/π.
+    const doc = inst.wt_docs[ai].?;
+    doc.setShape(5, .square);
+    syncTableDoc(inst, ai);
+    const top = wavetable.mipOffset(10);
+    try testing.expectApproxEqAbs(4.0 / std.math.pi, inst.asset_wt[ai].data[5 * S + top + 4], 1e-3);
+    // The host hears of it once: the project is unsaved.
+    try testing.expect(mach.takeEdited());
+    try testing.expect(!mach.takeEdited());
+    syncTableDoc(inst, ai);
+    try testing.expect(!mach.takeEdited());
+
+    // Project save writes it to song.tables/ and points the asset there.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var pb: [256]u8 = undefined;
+    const project = try std.fmt.bufPrint(&pb, ".zig-cache/tmp/{s}/song.slab", .{tmp.sub_path});
+    saveFilesImpl(inst, project, "Acid Bass");
+    var eb: [256]u8 = undefined;
+    const want = try std.fmt.bufPrint(&eb, ".zig-cache/tmp/{s}/song.tables/acid-bass-wt-a.wav", .{tmp.sub_path});
+    try testing.expectEqualStrings(want, inst.assetPath(ai));
+    try testing.expect(!inst.wt_unsaved[ai]);
+
+    // A second edit overwrites the same file.
+    doc.setShape(6, .saw);
+    syncTableDoc(inst, ai);
+    saveFilesImpl(inst, project, "Acid Bass");
+    try testing.expectEqualStrings(want, inst.assetPath(ai));
+
+    // Another instance loads it at the drawn levels.
+    const other = try FyRawMachine.create(alloc, "machines/concoction/concoction.fy");
+    const om = other.machineInterface();
+    defer om.deinit.?(om.state, alloc);
+    try testing.expect(other.loadAssetRuntime(ai, want));
+    try testing.expectEqual(@as(usize, 16), other.asset_wt[ai].frames);
+    for ([_]usize{ 5, 6, 9 }) |f| {
+        try testing.expectApproxEqAbs(inst.asset_wt[ai].data[f * S + top + 4], other.asset_wt[ai].data[f * S + top + 4], 1e-5);
+        try testing.expectApproxEqAbs(inst.asset_wt[ai].data[f * S + 300], other.asset_wt[ai].data[f * S + 300], 1e-5);
+    }
 }

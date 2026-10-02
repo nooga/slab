@@ -81,6 +81,10 @@ struct: MachineDesc
                        machine still holds sound it will play unprompted,
                        beyond its buffers; negative = never idle-skip it;
                        0 = none [docs/04 Idle skipping] )
+  ptr mods           ( ModDesc chain or 0 - modulation sources and
+                       destinations the panel shows [docs/15 §Modulation] )
+  ptr matrix         ( cstr or 0 - the mod matrix's control-id prefix )
+  ptr matrix-slots   ( int slot count )
 ;
 
 struct: ControlDesc
@@ -110,6 +114,10 @@ struct: DisplayDesc
   ptr next  ptr name  ptr kind  ptr sources
   ptr off0  ptr off1  ptr off2  ptr off3  ptr off4  ptr off5  ptr off6
 ;
+( kind 0 a source [index = its SRC option, flag 1 = bipolar], 1 a
+  destination [name = the control id, index = its DEST option]; offset is
+  the state f64 holding its live value. )
+struct: ModDesc  ptr next  ptr kind  ptr name  ptr index  ptr offset  ptr flag ;
 struct: PageDesc    ptr next  ptr name  ptr rows ;
 struct: RowDesc     ptr next  ptr weight  ptr cells ;
 struct: CellDesc    ptr next  ptr weight  ptr items ;
@@ -134,6 +142,7 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
 :: _mf-last-nl    8 alloc ;
 :: _mf-last-buf   8 alloc ;
 :: _mf-last-asset 8 alloc ;
+:: _mf-last-mod   8 alloc ;
 
 : _mf-md@ _mf-md @64 ;
 
@@ -162,6 +171,7 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   0 _mf-last-nl !64
   0 _mf-last-buf !64
   0 _mf-last-asset !64
+  0 _mf-last-mod !64
 ;
 
 : render!        ( str -- ) cstr-new _mf-md@ MachineDesc.render! drop ;
@@ -519,6 +529,154 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   _mf-append-disp
 ;
 
+( An oscillator's wavetable [kind 12]: every frame of the table it plays
+  stacked in depth, the played frame lit with its warp, and beside it the
+  played cycle over its first 32 harmonics.  sources is
+  "prefix,bank,user": controls `<prefix>-table` [an option named USER
+  reads asset `user`, the others `frames`-frame tables of asset `bank`],
+  -pos, -warp [OFF SYNC PWM BEND FM], -wamt and -on if there is one.  The
+  newest voice's position and warp amount are the state f64s at pos-off
+  and warp-off. )
+: wavetable-display  ( name sources pos-off warp-off frames -- )
+  DisplayDesc.alloc
+  DisplayDesc.off2!
+  DisplayDesc.off1!
+  DisplayDesc.off0!
+  swap cstr-new swap DisplayDesc.sources!
+  swap cstr-new swap DisplayDesc.name!
+  12 swap DisplayDesc.kind!
+  _mf-append-disp
+;
+
+( A filter's response [kind 13], 20 Hz to 20 kHz: `<prefix>-mode` [by
+  option name: LP24 LP18 LP12 BP HP12 HP24 NOTCH, else flat], -cut
+  and -res as the knobs set them, and lit where the newest voice has
+  them: cutoff Hz at state f64 cut-off, resonance [-res's units] at
+  res-off. )
+: filter-display  ( name prefix cut-off res-off -- )
+  DisplayDesc.alloc
+  DisplayDesc.off1!
+  DisplayDesc.off0!
+  swap cstr-new swap DisplayDesc.sources!
+  swap cstr-new swap DisplayDesc.name!
+  13 swap DisplayDesc.kind!
+  _mf-append-disp
+;
+
+( An LFO [kind 14]: one cycle of `<prefix>-shape` [SINE TRI SAW UP
+  SAW DN SQUARE S&H] with -uni, -rate / -sync and -mode in its caption,
+  and the newest voice's phase [state ph-off, 0..1] and value [val-off]
+  riding it. )
+: lfo-display  ( name prefix ph-off val-off -- )
+  DisplayDesc.alloc
+  DisplayDesc.off1!
+  DisplayDesc.off0!
+  swap cstr-new swap DisplayDesc.sources!
+  swap cstr-new swap DisplayDesc.name!
+  14 swap DisplayDesc.kind!
+  _mf-append-disp
+;
+
+( An envelope [kind 15]: an adsr-display of `module` with the newest
+  voice riding it, from its env_dig level and stage at state level-off
+  and stage-off. )
+: env-display  ( name module level-off stage-off -- )
+  DisplayDesc.alloc
+  DisplayDesc.off1!
+  DisplayDesc.off0!
+  swap cstr-new swap DisplayDesc.sources!
+  swap cstr-new swap DisplayDesc.name!
+  15 swap DisplayDesc.kind!
+  _mf-append-disp
+;
+
+( The modulation dock [kind 16]: a chip per `mod-source`, each with its
+  live value; drag one onto a `mod-dest` knob or a matrix slot's SRC to
+  route it. )
+: mod-dock  ( name -- )
+  DisplayDesc.alloc
+  0 swap DisplayDesc.sources!
+  swap cstr-new swap DisplayDesc.name!
+  16 swap DisplayDesc.kind!
+  _mf-append-disp
+;
+
+( The machine's output as a scope [kind 17], two cycles of the newest
+  voice's note, triggered on a rising zero crossing. )
+: scope-display  ( name -- )
+  DisplayDesc.alloc
+  0 swap DisplayDesc.sources!
+  swap cstr-new swap DisplayDesc.name!
+  17 swap DisplayDesc.kind!
+  _mf-append-disp
+;
+
+( The mod matrix on one display [kind 18]: a row per `mod-matrix` slot,
+  SOURCE -> DEST and the amount, with what the row adds now.  Edits go
+  to the slots' own controls. )
+: matrix-display  ( name -- )
+  DisplayDesc.alloc
+  0 swap DisplayDesc.sources!
+  swap cstr-new swap DisplayDesc.name!
+  18 swap DisplayDesc.kind!
+  _mf-append-disp
+;
+
+( --- modulation [docs/15 §Modulation] ------------------------------- )
+: _mf-append-mod  ( m -- )
+  _mf-last-mod @64 0 =
+  [ dup _mf-md@ MachineDesc.mods! drop ]
+  [ dup _mf-last-mod @64 ModDesc.next! drop ]
+  ifte
+  _mf-last-mod !64
+;
+
+( A modulation source for the dock: its label, its index among the
+  matrix's SRC options, the state f64 with its live value, 1 if it
+  swings both ways. )
+: mod-source  ( label src state-off bipolar -- )
+  ModDesc.alloc
+  ModDesc.flag!
+  ModDesc.offset!
+  ModDesc.index!
+  swap cstr-new swap ModDesc.name!
+  0 swap ModDesc.kind!
+  _mf-append-mod
+;
+
+( Control `id` is a modulation destination: index `dst` among the
+  matrix's DEST options; the state f64 at `state-off` is what the newest
+  voice has it at, in the control's units.  Its knob shows a ring there
+  and takes dropped sources. )
+: mod-dest  ( control-id dst state-off -- )
+  ModDesc.alloc
+  ModDesc.offset!
+  ModDesc.index!
+  swap cstr-new swap ModDesc.name!
+  1 swap ModDesc.kind!
+  _mf-append-mod
+;
+
+( A built-in route: knob `control-id` sets how much SRC option `src`
+  moves DEST option `dst` outside the matrix [a filter's ENV amount, its
+  KEY tracking].  The matrix display lists it as a fixed row whose amount
+  is that knob. )
+: mod-fixed  ( control-id src dst -- )
+  ModDesc.alloc
+  ModDesc.offset!
+  ModDesc.index!
+  swap cstr-new swap ModDesc.name!
+  2 swap ModDesc.kind!
+  _mf-append-mod
+;
+
+( The mod matrix: `slots` slots of controls `<prefix><n>-src`, -dst and
+  -amt, n from 1. )
+: mod-matrix  ( prefix slots -- )
+  _mf-md@ MachineDesc.matrix-slots! drop
+  cstr-new _mf-md@ MachineDesc.matrix! drop
+;
+
 ( Open a named tab.  Rows declared after this belong to the page until the
   next `page`; the panel grows a tab bar.  Mixing top-level rows and pages is
   not supported — use one or the other. )
@@ -613,6 +771,18 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   [ dup _mf-last-asset @64 AssetDesc.next! drop ]
   ifte
   _mf-last-asset !64
+;
+
+( Request a wavetable: a WAV of single-cycle frames [2048 samples each,
+  or what a Serum `clm ` chunk says; a shorter file is one frame],
+  relative to the machine's directory.  The host band-limits every frame
+  into octave mip levels [src/wavetable.zig] and writes the table's
+  pointer at ptr-offset and its frame count [f64] at frames-offset, both
+  in PARAMS.  kernels/01-oscillators/wavetable.fy reads it.  LOAD on a
+  waveform-display of it swaps the file while playing. )
+: wavetable  ( name ptr-offset frames-offset file -- )
+  over swap asset
+  2 _mf-last-asset @64 AssetDesc.kind! drop
 ;
 
 ( Request a keymap: a .wav, a .sfz or a folder of WAVs [relative to the

@@ -236,6 +236,41 @@ cell|1.6|HPF*4/EG*1                    # short display under a taller HPF
   drag it across for FREQ and up and down for GAIN, click it to turn the
   band on or off. geq8 puts it over its band columns.
 
+Synth displays follow the machine's **newest sounding voice** (a voice
+machine's displays read that voice's state; with nothing sounding they
+show the knobs alone). Their drawing lives in `src/ui/synth_views.zig`,
+shared with the gallery's CONCOCTION page:
+
+- `wavetable-display ( name sources pos-off warp-off frames -- )` draws an
+  oscillator's table: every frame stacked in depth (the nearer hiding the
+  farther, at most 24 shown), the played frame lit at its depth with its
+  warp, the knob's position as a blue ghost when modulation moves it, and
+  beside it the played cycle over its first 32 harmonics. `sources` is
+  `"prefix,bank,user"`: `<prefix>-table` picks a `frames`-frame table of
+  wavetable asset `bank`, or its USER option the whole of asset `user`;
+  `-pos`, `-warp` (OFF SYNC PWM BEND FM), `-wamt` and `-on` if present.
+  The voice's position and warp amount are the state f64s at `pos-off`
+  and `warp-off`.
+  A USER table names its file and has LOAD; every view has EDIT, which
+  opens the wavetable editor (below).
+- `filter-display ( name prefix cut-off res-off -- )` draws the response
+  of `<prefix>-mode` (LP24 LP18 LP12 BP HP12 HP24 NOTCH by option name)
+  at `-cut` / `-res`, and lit where the voice has them (cutoff Hz,
+  resonance in `-res` units); the knobs' curve stays in blue while the
+  two differ.
+- `lfo-display ( name prefix ph-off val-off -- )` draws one cycle of
+  `<prefix>-shape` (`-uni` sits it on the floor), `-sync` or `-rate` and
+  `-mode` in its caption, and the voice's phase and value riding it.
+- `env-display ( name module level-off stage-off -- )` is an
+  adsr-display of one module with the voice riding the curve, placed by
+  its env_dig level and stage.
+- `mod-dock ( name -- )` is the modulation dock (§Modulation).
+- `matrix-display ( name -- )` is the mod matrix on one display
+  (§Modulation).
+- `scope-display ( name -- )` draws the machine's output: the engine
+  appends each block, mono, to a ring, and the display shows two cycles
+  of the newest voice's note from a rising zero crossing, scaled to fit.
+
 These compute from the machine's controls on the UI thread, as the kernel's
 block-prepare would, not from derived params: the engine renders nothing
 while the transport is stopped, so derived params would show the last
@@ -243,6 +278,78 @@ played settings.
 
 These visualizers are **drawn in Zig today** (selected by the manifest kind).
 They are the visual reference for the planned fy-drawn displays.
+
+## Modulation
+
+A machine with a mod matrix declares it, its sources and the knobs they
+reach, and the panel does the rest (Concoction is the reference):
+
+```
+"LFO1" 3 MyState.l1-v 1 mod-source     ( label, SRC option, live value, bipolar )
+"cn-f-cut" 12 MyState.cut-hz mod-dest  ( control id, DEST option, live value )
+"cn-f-env" 1 12 mod-fixed              ( built-in route: amount knob, SRC, DEST )
+"cn-m" 8 mod-matrix                    ( slots: cn-m1-src / -dst / -amt ... )
+```
+
+- Each `mod-source` is a chip in the dock (`mod-dock`) with a live meter
+  of the newest voice's value.
+- A `mod-dest` knob shows a modulation ring (blue) at the value the
+  newest voice has it at, in the control's units, while a slot routes to
+  it or the two differ. The kernel stores those values in its state at
+  control rate; they cost nothing at audio rate.
+- Drag a chip onto a ringed knob: the slot that already joins the two is
+  kept, else the first free slot (SRC or DEST OFF) takes the source, the
+  destination and half the amount. Drop it on a slot's SRC to set only
+  that. The drop writes the slot's switches and knob through the normal
+  control path, so presets, projects and automation see an ordinary edit.
+- `mod-fixed` declares a route the machine hard-wires outside the matrix
+  (a filter's ENV amount, KEY tracking, velocity to amp), so the matrix
+  display can show everything that moves a ring.
+- `matrix-display` shows the slots, then the built-in routes, on one
+  display, in up to three columns as the width allows: a row per slot, SOURCE → DEST as display selects and the
+  amount as a bipolar bar (drag it; double-click for none) with what the
+  row adds right now lit on it. The × clears a row. A built-in route is a fixed row: no number and
+  no selects, and its bar is its knob. A row lights while
+  its destination knob is hovered, and a dragged chip outlines the row
+  it would fill. Rows are drop targets too. The slot controls stay out of
+  the pages; the display edits them.
+- Right-click a destination knob: under the automation items, one
+  "Remove <source> modulation" per slot that routes to it.
+
+## Wavetable editor
+
+EDIT on a `wavetable-display` opens the editor over the panel's pages
+until DONE. It edits the oscillator's USER table: on a bank table, EDIT
+copies that table into USER first and switches the oscillator to it, so
+the bank stays as it ships. Every edit plays at once: the changed frames
+are rebuilt into their mip levels off the audio thread and copied in,
+and the project is marked unsaved (the machine's `take_edited` hook).
+
+- **Frames**: one cell per frame; click selects, double-click makes a
+  keyframe (◆; the first and the last always are). COUNT sets 1 … 256
+  frames (more repeat the last); DUP, DEL, KEY act on the selected one.
+- **Wave**: draw on the selected frame, its neighbours faint behind it.
+  Pens DRAW (freehand), LINE (drag from start to end) and STEP (one level
+  per grid cell). GRID snaps levels to eighths and LINE ends to columns.
+- **Harmonics**: the first 64, −60 … 0 dB. Drag across the bars to set
+  their levels; a harmonic that was silent comes in as a sine.
+  Double-click a bar to silence it.
+- **Tools**: FILL (SINE TRI SAW SQR NOISE) and PROCESS (NORM, DC, INV,
+  REV, SMTH) act on the frame or, with APPLY TO ALL, every frame. MORPH
+  refills the frames between keyframes by XFADE (the waves crossfaded)
+  or SPECTRAL (each harmonic's level and phase moved apart).
+- UNDO / REDO step through the editor's own history, a step per gesture.
+
+The table plays at the levels drawn. SAVE writes it to a file of your
+choosing, which the oscillator then reads. Saving the project writes
+every table edited since its file was written into `<project>.tables/`
+beside the `.slab` (docs/19), named for the track and the asset; an
+oscillator view marks an edited table not yet in a file with `*`. The
+files are 32-bit float WAVs of 2048-sample frames with Serum's `clm `
+chunk; the chunk says `(slab levels kept)`, so they load at those
+levels (other wavetables are normalized). The document and its operations are
+`src/wavetable_edit.zig`, the editor `src/ui/wt_editor.zig`, the files
+`src/wavetable_file.zig`; the gallery's CONCOCTION page has it on EDIT.
 
 ## Escape hatch: fy-drawn custom displays (planned)
 
@@ -292,7 +399,7 @@ panel draws:
 | `as-radio` | joined LED caps, one down | options |
 | `as-vradio` | the same caps stacked top to bottom | options |
 | `as-button` | LED latch: option 0 off, 1 on | two options |
-| `as-display` | VFD value with ‹ › steppers | options, integer ranges ≤ 128 |
+| `as-display` | VFD display select: click for the option grid, drag to step | options, integer ranges ≤ 128 |
 
 Without one the panel picks from the kind (`Control.widgetFor`): knobs
 for values and integer ranges, an LED latch for an `OFF`/`ON` pair, a
