@@ -199,6 +199,25 @@ pub const Fy = struct {
         return fy;
     }
 
+    /// Hold instruction-cache flushes while compiling a batch (a file, a
+    /// machine): each linked word then only widens one pending range, and
+    /// releaseFlush() invalidates it in a single pass. Nests. Anything fy
+    /// runs or patches meanwhile is flushed first, so holding is safe.
+    pub fn holdFlush(self: *Fy) void {
+        self.image.hold += 1;
+    }
+
+    pub fn releaseFlush(self: *Fy) void {
+        std.debug.assert(self.image.hold > 0);
+        self.image.hold -= 1;
+        if (self.image.hold == 0) self.image.flushPending();
+    }
+
+    /// Flush what's pending now, held or not.
+    pub fn flushCode(self: *Fy) void {
+        self.image.flushPending();
+    }
+
     pub fn deinit(self: *Fy) void {
         {
             var it = self.dsp2_caller_cache.iterator();
@@ -1526,7 +1545,7 @@ pub const Fy = struct {
         try code.append(Asm.ret);
 
         const wrapper_code = try code.toOwnedSlice();
-        const executable = self.image.link(wrapper_code);
+        const executable = self.image.linkRun(wrapper_code);
         self.fyalloc.free(wrapper_code);
 
         const fun: *const fn () Value = @ptrCast(@alignCast(executable));
@@ -1899,7 +1918,7 @@ pub const Fy = struct {
         code.items[bl_pos] = Asm.@"bl offset"(@intCast(@divExact(offset_bytes, 4)));
 
         const wrapper_code = try code.toOwnedSlice();
-        const executable = self.image.link(wrapper_code);
+        const executable = self.image.linkRun(wrapper_code);
         self.fyalloc.free(wrapper_code);
         return @ptrCast(@alignCast(executable));
     }
@@ -1955,7 +1974,7 @@ pub const Fy = struct {
         code.items[bl_pos] = Asm.@"bl offset"(offset_words);
 
         const wrapper_code = try code.toOwnedSlice();
-        const executable = self.image.link(wrapper_code);
+        const executable = self.image.linkRun(wrapper_code);
         self.fyalloc.free(wrapper_code);
 
         Builtins.fyPtr = @intFromPtr(self);
@@ -2013,7 +2032,7 @@ pub const Fy = struct {
         code.items[bl_pos] = Asm.@"bl offset"(offset_words);
 
         const wrapper_code = try code.toOwnedSlice();
-        const executable = self.image.link(wrapper_code);
+        const executable = self.image.linkRun(wrapper_code);
         self.fyalloc.free(wrapper_code);
 
         Builtins.fyPtr = @intFromPtr(self);
@@ -2084,7 +2103,7 @@ pub const Fy = struct {
         }
 
         const wrapper_code = try code.toOwnedSlice();
-        const executable = self.image.link(wrapper_code);
+        const executable = self.image.linkRun(wrapper_code);
         self.fyalloc.free(wrapper_code);
 
         Builtins.fyPtr = @intFromPtr(self);
@@ -2177,7 +2196,7 @@ pub const Fy = struct {
         try code.append(Asm.ret);
 
         const wrapper_code = try code.toOwnedSlice();
-        const executable = self.image.link(wrapper_code);
+        const executable = self.image.linkRun(wrapper_code);
         self.fyalloc.free(wrapper_code);
 
         const fun: *const fn () Value = @ptrCast(@alignCast(executable));
@@ -2258,7 +2277,7 @@ pub const Fy = struct {
         try code.append(Asm.ret);
 
         const wrapper_code = try code.toOwnedSlice();
-        const executable = self.image.link(wrapper_code);
+        const executable = self.image.linkRun(wrapper_code);
         self.fyalloc.free(wrapper_code);
 
         const fun: *const fn () Value = @ptrCast(@alignCast(executable));
@@ -2412,7 +2431,7 @@ pub const Fy = struct {
         code.items[bl_pos] = Asm.@"bl offset"(offset_words);
 
         const wrapper_code = try code.toOwnedSlice();
-        const executable = self.image.link(wrapper_code);
+        const executable = self.image.linkRun(wrapper_code);
         self.fyalloc.free(wrapper_code);
 
         Builtins.fyPtr = @intFromPtr(self);
@@ -4606,6 +4625,7 @@ pub const Fy = struct {
                             Builtins.fyPtr = @intFromPtr(self.fy);
                             const saved = Builtins.compilerPtr;
                             Builtins.compilerPtr = @intFromPtr(self);
+                            self.fy.image.flushPending(); // a macro may be newly linked
                             const macro_fn: *const fn () Value = @ptrFromInt(addr);
                             _ = macro_fn();
                             Builtins.compilerPtr = saved;
@@ -5566,7 +5586,7 @@ pub const Fy = struct {
             body_compiler.resolveRelocations(link_base, body_code);
 
             // Link body into executable memory and call it
-            const body_exe = self.fy.image.link(body_code);
+            const body_exe = self.fy.image.linkRun(body_code);
             self.fy.fyalloc.free(body_code);
             Builtins.fyPtr = @intFromPtr(self.fy);
             const body_fn: *const fn () Value = @ptrCast(@alignCast(body_exe));
@@ -7457,6 +7477,7 @@ pub const Fy = struct {
                                 Builtins.fyPtr = @intFromPtr(self.fy);
                                 const saved = Builtins.compilerPtr;
                                 Builtins.compilerPtr = @intFromPtr(self);
+                                self.fy.image.flushPending(); // a macro may be newly linked
                                 const macro_fn: *const fn () Value = @ptrFromInt(addr);
                                 _ = macro_fn();
                                 Builtins.compilerPtr = saved;
@@ -7522,6 +7543,15 @@ pub const Fy = struct {
         mem: []align(std.heap.page_size_min) u8, // full reserved range
         committed: usize, // bytes that are usable (multiple of page_size)
         end: usize, // write cursor (bytes written so far)
+        rwx: bool = false, // darwin: the range is mapped RWX (once, not per link)
+        // While hold > 0, link() leaves the icache alone and widens the
+        // pending range [pending_lo, pending_hi) instead; flushPending()
+        // invalidates it in one pass. Code that is about to run (wrappers,
+        // jit(), a patched trampoline) flushes first, so a held image never
+        // executes stale instructions.
+        hold: u32 = 0,
+        pending_lo: usize = 0,
+        pending_hi: usize = 0,
 
         // Reserve 64MB of virtual address space. Only committed pages use physical memory.
         const RESERVE_SIZE: usize = 64 * 1024 * 1024;
@@ -7597,15 +7627,52 @@ pub const Fy = struct {
                 // Set pages RWX so both write and execute are allowed process-wide.
                 // pthread_jit_write_protect_np controls per-thread W^X mode.
                 _ = darwin_c.pthread_jit_write_protect_np(0);
-                _ = darwin_c.mprotect(self.mem.ptr, self.committed, darwin_c.PROT_READ | darwin_c.PROT_WRITE | darwin_c.PROT_EXEC);
+                self.mapRwx();
                 @memcpy(self.mem[new..self.end], std.mem.sliceAsBytes(code));
                 _ = darwin_c.pthread_jit_write_protect_np(1);
             } else {
                 @memcpy(self.mem[new..self.end], std.mem.sliceAsBytes(code));
                 self.protect(true) catch @panic("failed to set image executable");
             }
-            __clear_cache(@intFromPtr(self.mem.ptr), @intFromPtr(self.mem.ptr) + self.end);
+            self.invalidate(new, self.end);
             return self.mem[new..self.end];
+        }
+
+        /// link() for code that runs right away: everything pending is
+        /// flushed with it.
+        fn linkRun(self: *Image, code: []u32) []u8 {
+            const out = self.link(code);
+            self.flushPending();
+            return out;
+        }
+
+        fn mapRwx(self: *Image) void {
+            if (self.rwx) return;
+            _ = darwin_c.mprotect(self.mem.ptr, self.committed, darwin_c.PROT_READ | darwin_c.PROT_WRITE | darwin_c.PROT_EXEC);
+            self.rwx = true;
+        }
+
+        /// Make bytes [lo, hi) of the image visible to instruction fetch,
+        /// now or, while held, at the next flushPending().
+        fn invalidate(self: *Image, lo: usize, hi: usize) void {
+            if (self.hold > 0) {
+                if (self.pending_hi == self.pending_lo) {
+                    self.pending_lo = lo;
+                    self.pending_hi = hi;
+                } else {
+                    self.pending_lo = @min(self.pending_lo, lo);
+                    self.pending_hi = @max(self.pending_hi, hi);
+                }
+                return;
+            }
+            __clear_cache(@intFromPtr(self.mem.ptr) + lo, @intFromPtr(self.mem.ptr) + hi);
+        }
+
+        fn flushPending(self: *Image) void {
+            if (self.pending_hi == self.pending_lo) return;
+            __clear_cache(@intFromPtr(self.mem.ptr) + self.pending_lo, @intFromPtr(self.mem.ptr) + self.pending_hi);
+            self.pending_lo = 0;
+            self.pending_hi = 0;
         }
 
         /// Patch a single instruction at the given byte address in the image.
@@ -7615,9 +7682,12 @@ pub const Fy = struct {
             const offset = addr - @intFromPtr(self.mem.ptr);
             std.debug.assert(offset + 4 <= self.end);
             std.debug.assert(offset % 4 == 0);
+            // The patch makes code linked since the last flush reachable
+            // from code that may be running: flush it before the jump lands.
+            self.flushPending();
             if (darwin) {
                 _ = darwin_c.pthread_jit_write_protect_np(0);
-                _ = darwin_c.mprotect(self.mem.ptr, self.committed, darwin_c.PROT_READ | darwin_c.PROT_WRITE | darwin_c.PROT_EXEC);
+                self.mapRwx();
                 const ptr: *u32 = @ptrCast(@alignCast(self.mem.ptr + offset));
                 ptr.* = instr;
                 _ = darwin_c.pthread_jit_write_protect_np(1);
@@ -7651,7 +7721,7 @@ pub const Fy = struct {
     };
 
     fn jit(self: *Fy, code: []u32) !Fn {
-        const executable: []u8 = self.image.link(code);
+        const executable: []u8 = self.image.linkRun(code);
         // free the original code buffer as we already have machine code in executable memory
         self.fyalloc.free(code);
         // cast the memory to a function pointer and call
@@ -7854,6 +7924,7 @@ pub const Fy = struct {
                             Builtins.fyPtr = @intFromPtr(self);
                             const saved = Builtins.compilerPtr;
                             Builtins.compilerPtr = @intFromPtr(&c);
+                            self.image.flushPending(); // a macro may be newly linked
                             const macro_fn: *const fn () Value = @ptrFromInt(addr);
                             _ = macro_fn();
                             Builtins.compilerPtr = saved;
