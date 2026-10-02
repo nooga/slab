@@ -32,6 +32,9 @@ pub const Sample = struct {
     root_key: f64 = -1,
     loop_start: usize = 0,
     loop_end: usize = 0,
+    // From a Serum `clm ` chunk ("<!>2048 …"): samples per wavetable
+    // frame. 0 when the file doesn't say.
+    frame_size: usize = 0,
 
     pub fn deinit(self: *Sample, alloc: std.mem.Allocator) void {
         alloc.free(self.data);
@@ -105,6 +108,7 @@ pub fn parse(alloc: std.mem.Allocator, buf: []const u8) Error!Sample {
     var root_key: f64 = -1;
     var loop_start: usize = 0;
     var loop_end: usize = 0;
+    var frame_size: usize = 0;
 
     var pos: usize = 12;
     while (pos + 8 <= buf.len) {
@@ -136,6 +140,13 @@ pub fn parse(alloc: std.mem.Allocator, buf: []const u8) Error!Sample {
                     loop_start = ls;
                     loop_end = @as(usize, le) + 1;
                 }
+            }
+        } else if (std.mem.eql(u8, id, "clm ") and body + 3 <= buf.len) {
+            const text = buf[body..@min(buf.len, body + size)];
+            if (std.mem.startsWith(u8, text, "<!>")) {
+                var end: usize = 3;
+                while (end < text.len and std.ascii.isDigit(text[end])) end += 1;
+                frame_size = std.fmt.parseInt(usize, text[3..end], 10) catch 0;
             }
         } else if (std.mem.eql(u8, id, "data")) {
             data_off = body;
@@ -184,6 +195,7 @@ pub fn parse(alloc: std.mem.Allocator, buf: []const u8) Error!Sample {
         .root_key = root_key,
         .loop_start = @min(loop_start, frames),
         .loop_end = @min(loop_end, frames),
+        .frame_size = frame_size,
     };
 }
 

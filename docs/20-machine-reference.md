@@ -8,6 +8,7 @@ project or preset stores (docs/19): real units for knobs, the option
 
 | id | name | kind | voices | prefix |
 |---|---|---|---|---|
+| [`concoction`](#concoction) | Concoction | instrument | 8 | `cn-` |
 | [`cream`](#cream) | Mog Passenger | instrument | mono | `cr-` |
 | [`drum2`](#drum2) | DS-404 Drums | instrument | mono | `—` |
 | [`fm86`](#fm86) | FM-7.11 | instrument | 8 | `—` |
@@ -23,14 +24,132 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`comp2`](#comp2) | Comp | effect | — | `comp-` |
 | [`delay2`](#delay2) | Delay | effect | — | `delay-` |
 | [`eq2`](#eq2) | EQ | effect | — | `eq-` |
-| [`geq8`](#geq8) | GEQ | effect | — | `geq-` |
 | [`era`](#era) | Era | effect | — | `era-` |
 | [`funk`](#funk) | Funk Overload | effect | — | `funk-` |
 | [`gate2`](#gate2) | Gate | effect | — | `gate-` |
+| [`geq8`](#geq8) | GEQ | effect | — | `geq-` |
 | [`limiter2`](#limiter2) | Limiter | effect | — | `lim-` |
 | [`multi2`](#multi2) | Multi | effect | — | `—` |
 | [`sat2`](#sat2) | Saturator | effect | — | `sat-` |
 | [`verb2`](#verb2) | Verb | effect | — | `verb-` |
+
+## concoction
+
+**Concoction**, instrument, 8 voices.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `cn-a-table` | OSC A | TABLE | 0 BASIC / 1 PWM / 2 SYNC / 3 FM / 4 PD / 5 DRIVE / 6 FOLD / 7 HARM / 8 RESO / 9 VOWEL / 10 USER | 0 | switch |
+| `cn-a-pos` | OSC A | POS | 0 … 1 | 0 | linear |
+| `cn-a-oct` | OSC A | OCT | -4 … 4 | 0 | integer |
+| `cn-a-semi` | OSC A | SEMI | -12 … 12 | 0 | integer |
+| `cn-a-fine` | OSC A | FINE | -100 … 100 | 0 | linear |
+| `cn-a-level` | OSC A | LEVEL | 0 … 1 | 0.75 | pow |
+| `cn-a-warp` | OSC A | WARP | 0 OFF / 1 SYNC / 2 PWM / 3 BEND / 4 FM | 0 | switch |
+| `cn-a-wamt` | OSC A | AMT | 0 … 1 | 0 | linear |
+| `cn-a-phase` | OSC A | PHASE | 0 … 1 | 0.5 | linear |
+| `cn-a-rand` | OSC A | RAND | 0 … 1 | 0 | linear |
+| `cn-a-filt` | OSC A | FILT | 0 OFF / 1 ON | 1 | switch |
+| `cn-b-on` | OSC B | ON | 0 OFF / 1 ON | 0 | switch |
+| `cn-b-table` | OSC B | TABLE | 0 BASIC / 1 PWM / 2 SYNC / 3 FM / 4 PD / 5 DRIVE / 6 FOLD / 7 HARM / 8 RESO / 9 VOWEL / 10 USER | 0 | switch |
+| `cn-b-pos` | OSC B | POS | 0 … 1 | 0 | linear |
+| `cn-b-oct` | OSC B | OCT | -4 … 4 | 0 | integer |
+| `cn-b-semi` | OSC B | SEMI | -12 … 12 | 0 | integer |
+| `cn-b-fine` | OSC B | FINE | -100 … 100 | 0 | linear |
+| `cn-b-level` | OSC B | LEVEL | 0 … 1 | 0.75 | pow |
+| `cn-b-warp` | OSC B | WARP | 0 OFF / 1 SYNC / 2 PWM / 3 BEND / 4 FM | 0 | switch |
+| `cn-b-wamt` | OSC B | AMT | 0 … 1 | 0 | linear |
+| `cn-b-phase` | OSC B | PHASE | 0 … 1 | 0.5 | linear |
+| `cn-b-rand` | OSC B | RAND | 0 … 1 | 0 | linear |
+| `cn-b-filt` | OSC B | FILT | 0 OFF / 1 ON | 1 | switch |
+| `cn-sub-on` | SUB | ON | 0 OFF / 1 ON | 0 | switch |
+| `cn-sub-shape` | SUB | SHAPE | 0 SINE / 1 TRI / 2 SAW / 3 SQUARE | 0 | switch |
+| `cn-sub-oct` | SUB | OCT | -3 … 1 | -1 | integer |
+| `cn-sub-level` | SUB | LEVEL | 0 … 1 | 0.75 | pow |
+| `cn-sub-filt` | SUB | FILT | 0 OFF / 1 ON | 0 | switch |
+| `cn-n-level` | NOISE | LEVEL | 0 … 1 | 0 | pow |
+| `cn-n-color` | NOISE | COLOR | -1 … 1 | 0 | linear |
+| `cn-n-filt` | NOISE | FILT | 0 OFF / 1 ON | 1 | switch |
+| `cn-f-mode` | FILTER | MODE | 0 OFF / 1 LP24 / 2 LP18 / 3 LP12 / 4 BP / 5 HP12 / 6 HP24 / 7 NOTCH | 1 | switch |
+| `cn-f-cut` | FILTER | CUTOFF | 20 … 20000 | 20000 | exp |
+| `cn-f-res` | FILTER | RES | 0 … 1 | 0 | linear |
+| `cn-f-drive` | FILTER | DRIVE | 0 … 1 | 0 | linear |
+| `cn-f-key` | FILTER | KEY | 0 … 1 | 0 | linear |
+| `cn-f-env` | FILTER | ENV | -1 … 1 | 0 | linear |
+| `cn-e1-a` | AMP | ATK | 0.0005 … 10 | 0.0005 | exp |
+| `cn-e1-h` | AMP | HOLD | 0 … 2 | 0 | pow |
+| `cn-e1-d` | AMP | DEC | 0.001 … 20 | 1 | exp |
+| `cn-e1-s` | AMP | SUS | 0 … 1 | 1 | linear |
+| `cn-e1-r` | AMP | REL | 0.001 … 20 | 0.015 | exp |
+| `cn-e2-a` | FILTER ENV | ATK | 0.0005 … 10 | 0.0005 | exp |
+| `cn-e2-d` | FILTER ENV | DEC | 0.001 … 20 | 0.3 | exp |
+| `cn-e2-s` | FILTER ENV | SUS | 0 … 1 | 0 | linear |
+| `cn-e2-r` | FILTER ENV | REL | 0.001 … 20 | 0.1 | exp |
+| `cn-e3-a` | MOD ENV | ATK | 0.0005 … 10 | 0.0005 | exp |
+| `cn-e3-d` | MOD ENV | DEC | 0.001 … 20 | 0.5 | exp |
+| `cn-e3-s` | MOD ENV | SUS | 0 … 1 | 0 | linear |
+| `cn-e3-r` | MOD ENV | REL | 0.001 … 20 | 0.1 | exp |
+| `cn-p-amt` | PITCH | P.ENV | -48 … 48 | 0 | linear |
+| `cn-p-time` | PITCH | TIME | 0.001 … 2 | 0.05 | exp |
+| `cn-p-dest` | PITCH | TO | 0 ALL / 1 A+B | 0 | switch |
+| `cn-glide` | PITCH | GLIDE | 0 … 2 | 0 | pow |
+| `cn-g-mode` | PITCH | MODE | 0 ALWAYS / 1 LEGATO | 1 | switch |
+| `cn-vel` | OUT | VEL | 0 … 1 | 0.3 | linear |
+| `cn-level` | OUT | LEVEL | 0 … 1 | 0.7 | pow |
+| `cn-l1-shape` | LFO 1 | SHAPE | 0 SINE / 1 TRI / 2 SAW UP / 3 SAW DN / 4 SQUARE / 5 S&H | 0 | switch |
+| `cn-l1-rate` | LFO 1 | RATE | 0.01 … 40 | 2 | exp |
+| `cn-l1-sync` | LFO 1 | SYNC | 0 HZ / 1 4 BAR / 2 2 BAR / 3 1 BAR / 4 1/2 / 5 1/4 / 6 1/8 / 7 1/16 / 8 1/32 / 9 1/4D / 10 1/8D / 11 1/16D / 12 1/4T / 13 1/8T / 14 1/16T | 0 | switch |
+| `cn-l1-mode` | LFO 1 | MODE | 0 FREE / 1 RETRIG / 2 ENV | 1 | switch |
+| `cn-l1-uni` | LFO 1 | UNI | 0 OFF / 1 ON | 0 | switch |
+| `cn-l2-shape` | LFO 2 | SHAPE | 0 SINE / 1 TRI / 2 SAW UP / 3 SAW DN / 4 SQUARE / 5 S&H | 0 | switch |
+| `cn-l2-rate` | LFO 2 | RATE | 0.01 … 40 | 2 | exp |
+| `cn-l2-sync` | LFO 2 | SYNC | 0 HZ / 1 4 BAR / 2 2 BAR / 3 1 BAR / 4 1/2 / 5 1/4 / 6 1/8 / 7 1/16 / 8 1/32 / 9 1/4D / 10 1/8D / 11 1/16D / 12 1/4T / 13 1/8T / 14 1/16T | 0 | switch |
+| `cn-l2-mode` | LFO 2 | MODE | 0 FREE / 1 RETRIG / 2 ENV | 1 | switch |
+| `cn-l2-uni` | LFO 2 | UNI | 0 OFF / 1 ON | 0 | switch |
+| `cn-m1-src` | SLOT 1 | SRC | 0 OFF / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 VEL / 6 NOTE / 7 PRESS / 8 SLIDE / 9 RAND | 0 | switch |
+| `cn-m1-dst` | SLOT 1 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP | 0 | switch |
+| `cn-m1-amt` | SLOT 1 | AMT | -1 … 1 | 0 | linear |
+| `cn-m2-src` | SLOT 2 | SRC | 0 OFF / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 VEL / 6 NOTE / 7 PRESS / 8 SLIDE / 9 RAND | 0 | switch |
+| `cn-m2-dst` | SLOT 2 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP | 0 | switch |
+| `cn-m2-amt` | SLOT 2 | AMT | -1 … 1 | 0 | linear |
+| `cn-m3-src` | SLOT 3 | SRC | 0 OFF / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 VEL / 6 NOTE / 7 PRESS / 8 SLIDE / 9 RAND | 0 | switch |
+| `cn-m3-dst` | SLOT 3 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP | 0 | switch |
+| `cn-m3-amt` | SLOT 3 | AMT | -1 … 1 | 0 | linear |
+| `cn-m4-src` | SLOT 4 | SRC | 0 OFF / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 VEL / 6 NOTE / 7 PRESS / 8 SLIDE / 9 RAND | 0 | switch |
+| `cn-m4-dst` | SLOT 4 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP | 0 | switch |
+| `cn-m4-amt` | SLOT 4 | AMT | -1 … 1 | 0 | linear |
+| `cn-m5-src` | SLOT 5 | SRC | 0 OFF / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 VEL / 6 NOTE / 7 PRESS / 8 SLIDE / 9 RAND | 0 | switch |
+| `cn-m5-dst` | SLOT 5 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP | 0 | switch |
+| `cn-m5-amt` | SLOT 5 | AMT | -1 … 1 | 0 | linear |
+| `cn-m6-src` | SLOT 6 | SRC | 0 OFF / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 VEL / 6 NOTE / 7 PRESS / 8 SLIDE / 9 RAND | 0 | switch |
+| `cn-m6-dst` | SLOT 6 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP | 0 | switch |
+| `cn-m6-amt` | SLOT 6 | AMT | -1 … 1 | 0 | linear |
+| `cn-m7-src` | SLOT 7 | SRC | 0 OFF / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 VEL / 6 NOTE / 7 PRESS / 8 SLIDE / 9 RAND | 0 | switch |
+| `cn-m7-dst` | SLOT 7 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP | 0 | switch |
+| `cn-m7-amt` | SLOT 7 | AMT | -1 … 1 | 0 | linear |
+| `cn-m8-src` | SLOT 8 | SRC | 0 OFF / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 VEL / 6 NOTE / 7 PRESS / 8 SLIDE / 9 RAND | 0 | switch |
+| `cn-m8-dst` | SLOT 8 | DEST | 0 OFF / 1 A POS / 2 B POS / 3 A WARP / 4 B WARP / 5 A PITCH / 6 B PITCH / 7 PITCH / 8 A LVL / 9 B LVL / 10 SUB LVL / 11 NOISE / 12 CUTOFF / 13 RES / 14 DRIVE / 15 AMP | 0 | switch |
+| `cn-m8-amt` | SLOT 8 | AMT | -1 … 1 | 0 | linear |
+
+Presets:
+
+- `clean-sine-bass` — Pure sine, fixed phase, gate envelope: the sub that hits the same every time
+- `crisp-saw-bass` — Saw plus a fifth up through LP18, a short filter pluck, sine sub straight past the filter
+- `fm-growl` — A sine phase-modulated by B an octave up; the MOD envelope pulls the FM down
+- `fold-stab` — FOLD table opened by the MOD envelope and velocity: a bright digital stab
+- `harm-keys` — HARM table: harmonics added with velocity and lost as the note decays
+- `kick-bass` — The KICK table low in its range with a pitch thump: a bass that is half kick
+- `noise-sweep` — Filtered noise riser: the MOD envelope opens a resonant bandpass over seconds
+- `pd-bass` — PD table: a cosine bending into a resonant edge as the MOD envelope falls
+- `pluck-bass` — Saw bass, LP24 snapped shut by the filter envelope, sub under it
+- `pumped-bass` — Saw bass ducked by a rising saw LFO on quarter notes: the sidechain shape built in
+- `pwm-pad` — Two PWM tables drifting on slow LFOs, soft attack and release
+- `reese` — Two saws a few cents apart, LP24 breathing on a slow LFO
+- `square-bass` — Square through LP12: hollow and round, a touch of drive
+- `sync-lead` — Hard-sync warp swept by the MOD envelope, a fifth on B, glide when legato
+- `thump-sub` — Sine sub with a fast pitch drop at the front: the second kick under the kick
+- `vowel-pad` — The VOWEL table walking A-E-I-O-U on a slow triangle
+- `wobble` — RESO table and LP24 swept by an LFO on eighth notes
 
 ## cream
 
@@ -2527,6 +2646,71 @@ Presets:
 | `eq-hs-hz` | HI | FREQ | 1500 … 18000 | 8000 | exp |
 | `eq-hs-db` | HI | GAIN | -18 … 18 | 0 | linear |
 
+## era
+
+**Era**, stereo insert effect.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `era-in` | ADC | IN | -12 … 24 | 0 | linear |
+| `era-aa` | ADC | AA | 0 OFF / 1 ON | 0 | switch |
+| `era-rate` | ADC | RATE | 1000 … 48000 | 26040 | exp |
+| `era-bits` | ADC | BITS | 1 … 16 | 12 | linear |
+| `era-mode` | ADC | MODE | 0 ROUND / 1 TRUNC / 2 MULAW | 0 | switch |
+| `era-filter` | DAC | FILTER | 1000 … 20000 | 12000 | exp |
+| `era-res` | DAC | RES | 0 … 1 | 0 | linear |
+| `era-mix` | DAC | MIX | 0 … 1 | 1 | pow |
+| `era-out` | DAC | OUT | -24 … 24 | 0 | linear |
+
+Presets:
+
+- `bits-4` — 4-bit, 48 kHz: quantization alone
+- `cmi-i` — Fairlight CMI Series I: 8-bit linear, ~16 kHz, darker filter
+- `cmi-ii` — Fairlight CMI Series II: 8-bit linear, ~24 kHz, SSM2045 output filter
+- `crunch` — Aliasing grit: 11 kHz, 8-bit truncated, no filters
+- `dmx` — Oberheim DMX: ~25 kHz, 8-bit mu-law [AM6070]
+- `emulator-ii` — E-mu Emulator II: 27.7 kHz, 8-bit companded, resonant SSM lowpass
+- `linndrum` — LM-1 / LinnDrum: ~28 kHz, 8-bit mu-law [AM6070]
+- `lofi-12` — Soft 12-bit 22 kHz, parallel for drum buses
+- `mirage` — Ensoniq Mirage: 8-bit, ~30 kHz, resonant 4-pole
+- `mpc60` — Akai MPC60: 12-bit, 40 kHz
+- `s612` — Akai S612: 12-bit, 32 kHz
+- `s900` — Akai S900: 12-bit, 40 kHz
+- `sk1` — Casio SK-1: 9.38 kHz, 8-bit, no input filter, harsh
+- `sp1200` — E-mu SP-1200, channels 3-6: 26.04 kHz, 12-bit, fixed output lowpass
+- `sp1200-open` — E-mu SP-1200, channels 7-8: 26.04 kHz, 12-bit, unfiltered
+
+## funk
+
+**Funk Overload**, stereo insert effect.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `funk-macro` | FUNK | OVERLOAD | 0 … 1 | 0.35 | linear |
+| `funk-range` | FUNK | RANGE | 0 BASS / 1 GTR / 2 KEYS | 1 | switch |
+
+Presets:
+
+- `clav-quack` — Squeezed, resonant quack for 16th-note clav and rhythm guitar
+- `keys-quack` — Thin bandpass quack for e-piano and organ stabs
+- `meltdown` — FUNK OVERLOAD: the MS-20 screaming at the edge of oscillation
+- `overload` — Into the MS-20: driven, barking wah on anything
+- `rubber-bass` — Round envelope-filter bass, the notes bloom and close
+- `squelch-bass` — Tight squeezed bass wah, every note the same bite
+- `touch-wah` — Gentle touch wah on guitar or clav: each note opens by how hard it hits
+
+## gate2
+
+**Gate**, stereo insert effect.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `gate-thresh` | GATE | THRESH | -60 … 0 | -40 | linear |
+| `gate-range` | GATE | RANGE | -80 … 0 | -60 | linear |
+| `gate-atk` | GATE | ATK | 0.0002 … 0.05 | 0.001 | exp |
+| `gate-hold` | GATE | HOLD | 0 … 0.5 | 0.05 | linear |
+| `gate-rel` | GATE | REL | 0.005 … 1 | 0.12 | exp |
+
 ## geq8
 
 **GEQ**, stereo insert effect.
@@ -2595,71 +2779,6 @@ Presets:
 - `smile` — The classic V: lows and highs up, mids scooped
 - `snare-crack` — Snare: low cut, body, ring out, crack and air
 - `telephone` — Phone line: 400 Hz to 3 kHz, honky
-
-## era
-
-**Era**, stereo insert effect.
-
-| param | section | label | range | default | notes |
-|---|---|---|---|---|---|
-| `era-in` | ADC | IN | -12 … 24 | 0 | linear |
-| `era-aa` | ADC | AA | 0 OFF / 1 ON | 0 | switch |
-| `era-rate` | ADC | RATE | 1000 … 48000 | 26040 | exp |
-| `era-bits` | ADC | BITS | 1 … 16 | 12 | linear |
-| `era-mode` | ADC | MODE | 0 ROUND / 1 TRUNC / 2 MULAW | 0 | switch |
-| `era-filter` | DAC | FILTER | 1000 … 20000 | 12000 | exp |
-| `era-res` | DAC | RES | 0 … 1 | 0 | linear |
-| `era-mix` | DAC | MIX | 0 … 1 | 1 | pow |
-| `era-out` | DAC | OUT | -24 … 24 | 0 | linear |
-
-Presets:
-
-- `bits-4` — 4-bit, 48 kHz: quantization alone
-- `cmi-i` — Fairlight CMI Series I: 8-bit linear, ~16 kHz, darker filter
-- `cmi-ii` — Fairlight CMI Series II: 8-bit linear, ~24 kHz, SSM2045 output filter
-- `crunch` — Aliasing grit: 11 kHz, 8-bit truncated, no filters
-- `dmx` — Oberheim DMX: ~25 kHz, 8-bit mu-law [AM6070]
-- `emulator-ii` — E-mu Emulator II: 27.7 kHz, 8-bit companded, resonant SSM lowpass
-- `linndrum` — LM-1 / LinnDrum: ~28 kHz, 8-bit mu-law [AM6070]
-- `lofi-12` — Soft 12-bit 22 kHz, parallel for drum buses
-- `mirage` — Ensoniq Mirage: 8-bit, ~30 kHz, resonant 4-pole
-- `mpc60` — Akai MPC60: 12-bit, 40 kHz
-- `s612` — Akai S612: 12-bit, 32 kHz
-- `s900` — Akai S900: 12-bit, 40 kHz
-- `sk1` — Casio SK-1: 9.38 kHz, 8-bit, no input filter, harsh
-- `sp1200` — E-mu SP-1200, channels 3-6: 26.04 kHz, 12-bit, fixed output lowpass
-- `sp1200-open` — E-mu SP-1200, channels 7-8: 26.04 kHz, 12-bit, unfiltered
-
-## funk
-
-**Funk Overload**, stereo insert effect.
-
-| param | section | label | range | default | notes |
-|---|---|---|---|---|---|
-| `funk-macro` | FUNK | OVERLOAD | 0 … 1 | 0.35 | linear |
-| `funk-range` | FUNK | RANGE | 0 BASS / 1 GTR / 2 KEYS | 1 | switch |
-
-Presets:
-
-- `clav-quack` — Squeezed, resonant quack for 16th-note clav and rhythm guitar
-- `keys-quack` — Thin bandpass quack for e-piano and organ stabs
-- `meltdown` — FUNK OVERLOAD: the MS-20 screaming at the edge of oscillation
-- `overload` — Into the MS-20: driven, barking wah on anything
-- `rubber-bass` — Round envelope-filter bass, the notes bloom and close
-- `squelch-bass` — Tight squeezed bass wah, every note the same bite
-- `touch-wah` — Gentle touch wah on guitar or clav: each note opens by how hard it hits
-
-## gate2
-
-**Gate**, stereo insert effect.
-
-| param | section | label | range | default | notes |
-|---|---|---|---|---|---|
-| `gate-thresh` | GATE | THRESH | -60 … 0 | -40 | linear |
-| `gate-range` | GATE | RANGE | -80 … 0 | -60 | linear |
-| `gate-atk` | GATE | ATK | 0.0002 … 0.05 | 0.001 | exp |
-| `gate-hold` | GATE | HOLD | 0 … 0.5 | 0.05 | linear |
-| `gate-rel` | GATE | REL | 0.005 … 1 | 0.12 | exp |
 
 ## limiter2
 

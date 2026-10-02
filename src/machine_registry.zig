@@ -19,6 +19,7 @@ test {
     _ = @import("presets.zig");
     _ = @import("wav.zig");
     _ = @import("keymap.zig");
+    _ = @import("wavetable.zig");
     _ = @import("waveform.zig");
     _ = @import("audio_pool.zig");
     _ = @import("fm_operator_test.zig");
@@ -58,6 +59,7 @@ pub const builtin_machines = [_][]const u8{
     "machines/rhodes/rhodes.fy",
     "machines/funk/funk.fy",
     "machines/sampler/sampler.fy",
+    "machines/concoction/concoction.fy",
     "machines/unfairlight/unfairlight.fy",
 };
 

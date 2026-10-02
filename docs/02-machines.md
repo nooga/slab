@@ -68,6 +68,19 @@ instance
 of the asset-arena idea in docs/03 — a read-only `asset` sibling for
 samples/IRs/wavetables follows the same pointer-injection shape.
 
+**Wavetables (implemented):** `"name" Params.ptr Params.frames "file.wav"
+wavetable` loads a WAV in Serum's format: single-cycle frames of 2048
+samples, or the size its `clm ` chunk gives; a shorter file is one
+frame; up to 256 frames. The host (src/wavetable.zig) splits each frame
+into its harmonics and rebuilds it at 11 octave levels, level m keeping
+harmonics up to 1024 >> m, stored at 16 cells a harmonic. It writes the
+table's pointer and frame count into params.
+`kernels/01-oscillators/wavetable.fy` `wt-read` crossfades two frames
+(the position) and two levels (picked from the phase increment so that
+nothing folds back below ~19 kHz). LOAD on a `waveform-display` of the
+asset swaps the file while playing. Concoction is the consumer
+(`tools/wavetables/gen.py` writes its built-in bank).
+
 ## The manifest
 
 The machine file defines a word called `manifest`. At load the host
@@ -121,6 +134,7 @@ The entry words and their stack effects are in docs/04 §Kernel ABI.
 | `strip`, `row`, `cell`, `item`, `page` | the panel layout | docs/15 |
 | `buffer` | host-allocated per-channel audio storage | below |
 | `asset` | a host-loaded read-only WAV | below |
+| `wavetable` | a host-loaded wavetable, band-limited into mip levels | below |
 | `sidechain`, `key-flag!` | the detector can be keyed from another track | docs/23 |
 | `offset latency!` | latency in samples, read from a params field | docs/04, docs/07 PDC |
 | `seconds tail!` | stored sound beyond the buffers (`-1.0` = never idle-skip) | docs/04 §Idle skipping |

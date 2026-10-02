@@ -236,6 +236,37 @@ cell|1.6|HPF*4/EG*1                    # short display under a taller HPF
   drag it across for FREQ and up and down for GAIN, click it to turn the
   band on or off. geq8 puts it over its band columns.
 
+Synth displays follow the machine's **newest sounding voice** (a voice
+machine's displays read that voice's state; with nothing sounding they
+show the knobs alone). Their drawing lives in `src/ui/synth_views.zig`,
+shared with the gallery's CONCOCTION page:
+
+- `wavetable-display ( name sources pos-off warp-off frames -- )` draws an
+  oscillator's table: every frame stacked in depth (the nearer hiding the
+  farther, at most 24 shown), the played frame lit at its depth with its
+  warp, the knob's position as a blue ghost when modulation moves it, and
+  beside it the played cycle over its first 32 harmonics. `sources` is
+  `"prefix,bank,user"`: `<prefix>-table` picks a `frames`-frame table of
+  wavetable asset `bank`, or its USER option the whole of asset `user`;
+  `-pos`, `-warp` (OFF SYNC PWM BEND FM), `-wamt` and `-on` if present.
+  The voice's position and warp amount are the state f64s at `pos-off`
+  and `warp-off`.
+- `filter-display ( name prefix cut-off res-off -- )` draws the response
+  of `<prefix>-mode` (LP24 LP18 LP12 BP HP12 HP24 NOTCH by option name)
+  at `-cut` / `-res`, and lit where the voice has them (cutoff Hz,
+  resonance in `-res` units); the knobs' curve stays in blue while the
+  two differ.
+- `lfo-display ( name prefix ph-off val-off -- )` draws one cycle of
+  `<prefix>-shape` (`-uni` sits it on the floor), `-sync` or `-rate` and
+  `-mode` in its caption, and the voice's phase and value riding it.
+- `env-display ( name module level-off stage-off -- )` is an
+  adsr-display of one module with the voice riding the curve, placed by
+  its env_dig level and stage.
+- `mod-dock ( name -- )` is the modulation dock (§Modulation).
+- `scope-display ( name -- )` draws the machine's output: the engine
+  appends each block, mono, to a ring, and the display shows two cycles
+  of the newest voice's note from a rising zero crossing, scaled to fit.
+
 These compute from the machine's controls on the UI thread, as the kernel's
 block-prepare would, not from derived params: the engine renders nothing
 while the transport is stopped, so derived params would show the last
@@ -243,6 +274,29 @@ played settings.
 
 These visualizers are **drawn in Zig today** (selected by the manifest kind).
 They are the visual reference for the planned fy-drawn displays.
+
+## Modulation
+
+A machine with a mod matrix declares it, its sources and the knobs they
+reach, and the panel does the rest (Concoction is the reference):
+
+```
+"LFO1" 3 MyState.l1-v 1 mod-source     ( label, SRC option, live value, bipolar )
+"cn-f-cut" 12 MyState.cut-hz mod-dest  ( control id, DEST option, live value )
+"cn-m" 8 mod-matrix                    ( slots: cn-m1-src / -dst / -amt ... )
+```
+
+- Each `mod-source` is a chip in the dock (`mod-dock`) with a live meter
+  of the newest voice's value.
+- A `mod-dest` knob shows a modulation ring (blue) at the value the
+  newest voice has it at, in the control's units, while a slot routes to
+  it or the two differ. The kernel stores those values in its state at
+  control rate; they cost nothing at audio rate.
+- Drag a chip onto a ringed knob: the slot that already joins the two is
+  kept, else the first free slot (SRC or DEST OFF) takes the source, the
+  destination and half the amount. Drop it on a slot's SRC to set only
+  that. The drop writes the slot's switches and knob through the normal
+  control path, so presets, projects and automation see an ordinary edit.
 
 ## Escape hatch: fy-drawn custom displays (planned)
 

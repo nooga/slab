@@ -204,6 +204,10 @@ pub const AssetReq = struct {
     /// `keymap` instead of `asset`: the three offsets take the sample
     /// pool's pointer, the zone table's pointer and the zone count.
     keymap: bool = false,
+    /// `wavetable` instead of `asset`: the host band-limits the file into
+    /// mipmapped frames (src/wavetable.zig) and writes the table's pointer
+    /// at ptr_offset and its frame count at len_offset (sr_offset unused).
+    wavetable: bool = false,
     /// Keymaps: where the per-zone edits pointer goes in PARAMS.
     edits_offset: usize = 0,
     /// Keymaps: low-pass the pool at `aa_ratio` x this control's value
@@ -240,7 +244,36 @@ pub const Strip = struct {
     }
 };
 
-pub const DisplayKind = enum { adsr, waveform, meter, response, algo, eg4, zones, segments, dynamics, taps, decay, graphic };
+pub const DisplayKind = enum { adsr, waveform, meter, response, algo, eg4, zones, segments, dynamics, taps, decay, graphic, wavetable, filter, lfo, env, dock, scope };
+
+/// Wavetable display slots: the newest voice's position and warp amount
+/// (state byte offsets), then the frames in each bank table.
+pub const WavetableOffset = enum(usize) { pos = 0, warp, frames };
+
+/// Filter, LFO and envelope displays read two state f64s of the newest
+/// voice: cutoff Hz and resonance, phase and value, level and stage.
+pub const LiveOffset = enum(usize) { a = 0, b };
+
+pub const MAX_MODS = 32;
+
+/// A modulation source the dock offers, or a destination knob
+/// (docs/15 §Modulation).
+pub const Mod = struct {
+    kind: enum { source, dest } = .source,
+    name: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
+    name_len: usize = 0,
+    /// The matrix's SRC or DEST option index.
+    index: usize = 0,
+    /// State byte offset of the live value.
+    offset: usize = 0,
+    bipolar: bool = false,
+    /// Destinations: the control the id names.
+    control: usize = 0,
+
+    pub fn nameSlice(self: *const Mod) []const u8 {
+        return self.name[0..self.name_len];
+    }
+};
 
 /// Algo display slots in `Display.offsets`, in the order `algo-display`
 /// pushes them: operator count, row stride, then the row offsets (all in
@@ -257,8 +290,6 @@ pub const MeterOffset = enum(usize) { gmin = 0, ipk, opk, msm, mss, msum, mn };
 /// Dynamics display state-offset slots, in `dyn-display`'s order; `knee`
 /// is 0 unless `dyn-display-knee` set it.
 pub const DynOffset = enum(usize) { gr = 0, lvl, knee };
-
-
 
 pub const Display = struct {
     name: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
@@ -286,6 +317,14 @@ pub const Display = struct {
     }
 
     pub fn algoOffset(self: *const Display, o: AlgoOffset) usize {
+        return self.offsets[@intFromEnum(o)];
+    }
+
+    pub fn wtOffset(self: *const Display, o: WavetableOffset) usize {
+        return self.offsets[@intFromEnum(o)];
+    }
+
+    pub fn liveOffset(self: *const Display, o: LiveOffset) usize {
         return self.offsets[@intFromEnum(o)];
     }
 };
@@ -397,6 +436,16 @@ pub const Desc = struct {
     voices: usize = 1,
     assets: [MAX_ASSETS]AssetReq = undefined,
     asset_count: usize = 0,
+    mods: [MAX_MODS]Mod = undefined,
+    mod_count: usize = 0,
+    /// The mod matrix: slots of `<prefix><n>-src`, -dst, -amt controls.
+    matrix: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
+    matrix_len: usize = 0,
+    matrix_slots: usize = 0,
+
+    pub fn matrixPrefix(self: *const Desc) []const u8 {
+        return self.matrix[0..self.matrix_len];
+    }
 
     pub fn noteLabels(self: *const Desc) []const machine.NoteLabel {
         return self.note_labels[0..self.note_label_count];
@@ -493,7 +542,12 @@ const MachineDescRaw = extern struct {
     control_period: Fy.Value,
     latency: Fy.Value,
     tail: Fy.Value,
+    mods: Fy.Value,
+    matrix: Fy.Value,
+    matrix_slots: Fy.Value,
 };
+
+const ModRaw = extern struct { next: Fy.Value, kind: Fy.Value, name: Fy.Value, index: Fy.Value, offset: Fy.Value, flag: Fy.Value };
 
 const PageRaw = extern struct { next: Fy.Value, name: Fy.Value, rows: Fy.Value };
 
@@ -727,6 +781,12 @@ pub fn read(host: *FyHost) !Desc {
             9 => .taps,
             10 => .decay,
             11 => .graphic,
+            12 => .wavetable,
+            13 => .filter,
+            14 => .lfo,
+            15 => .env,
+            16 => .dock,
+            17 => .scope,
             else => return error.InvalidMachineDesc,
         };
         out.source_len = try copyText(&out.source, cstrSlice(disp.sources));
@@ -738,6 +798,18 @@ pub fn read(host: *FyHost) !Desc {
                 if (off + 8 > d.state_size) return error.InvalidMachineDesc;
                 o.* = off;
             }
+        }
+        switch (out.kind) {
+            .wavetable, .filter, .lfo, .env => {
+                const raw = [_]Fy.Value{ disp.off0, disp.off1 };
+                for (out.offsets[0..2], raw) |*o, v| {
+                    const off: usize = @intCast(asInt(v));
+                    if (off + 8 > d.state_size) return error.InvalidMachineDesc;
+                    o.* = off;
+                }
+                if (out.kind == .wavetable) out.offsets[2] = @intCast(@max(1, asInt(disp.off2)));
+            },
+            else => {},
         }
         if (out.kind == .graphic) {
             const off: usize = @intCast(asInt(disp.off0));
@@ -799,6 +871,7 @@ pub fn read(host: *FyHost) !Desc {
         out.len_offset = @intCast(asInt(as.len_offset));
         out.sr_offset = @intCast(asInt(as.sr_offset));
         out.keymap = asInt(as.kind) == 1;
+        out.wavetable = asInt(as.kind) == 2;
         if (out.keymap) {
             out.edits_offset = @intCast(asInt(as.edits_offset));
             if (out.edits_offset + 8 > d.params_size) return error.InvalidMachineDesc;
@@ -816,6 +889,29 @@ pub fn read(host: *FyHost) !Desc {
             return error.InvalidMachineDesc;
         }
         d.asset_count += 1;
+    }
+
+    var mod_it = rawPtr(ModRaw, md.mods);
+    while (mod_it) |m| : (mod_it = rawPtr(ModRaw, m.next)) {
+        if (d.mod_count >= MAX_MODS) return error.InvalidMachineDesc;
+        const out = &d.mods[d.mod_count];
+        out.* = .{};
+        out.kind = if (asInt(m.kind) == 1) .dest else .source;
+        out.name_len = try copyText(&out.name, cstrSlice(m.name));
+        out.index = @intCast(@max(0, asInt(m.index)));
+        out.offset = @intCast(@max(0, asInt(m.offset)));
+        out.bipolar = asInt(m.flag) != 0;
+        if (out.offset + 8 > d.state_size) return error.InvalidMachineDesc;
+        if (out.kind == .dest) {
+            out.control = for (d.controls[0..d.control_count], 0..) |*ctl, i| {
+                if (std.mem.eql(u8, ctl.idSlice(), out.nameSlice())) break i;
+            } else return error.InvalidMachineDesc;
+        }
+        d.mod_count += 1;
+    }
+    if (md.matrix != 0 and asInt(md.matrix) != 0) {
+        d.matrix_len = try copyText(&d.matrix, cstrSlice(md.matrix));
+        d.matrix_slots = @intCast(@max(0, asInt(md.matrix_slots)));
     }
 
     d.row_count = try parseRows(&d, rawPtr(RowRaw, md.rows), &d.rows);
@@ -1033,7 +1129,6 @@ test "descriptor walker reads the MS-20 manifest from fy" {
     }
     try testing.expect(found);
 }
-
 
 test "latency! names the params f64 holding a machine's latency (limiter2, sat2)" {
     inline for (.{ "machines/limiter2/limiter2.fy", "machines/sat2/sat2.fy" }) |path| {

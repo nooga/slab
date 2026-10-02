@@ -1,7 +1,8 @@
 //! `slab --gallery` (docs/06 §The gallery). Two pages:
 //! CONTROLS — every material, token, type strike, display and control
 //! family × size × state; DAW — the working surfaces assembled the way
-//! the app will be (transport, arrangement, piano roll, machine bay).
+//! the app will be (transport, arrangement, piano roll, machine bay);
+//! CONCOCTION — the prototype of that machine's panel cards.
 //! Everything is packed: plates tile the window with shared 1px seams.
 
 const std = @import("std");
@@ -10,6 +11,7 @@ const core = @import("core.zig");
 const style = @import("style.zig");
 const ctl = @import("controls.zig");
 const surf = @import("surfaces.zig");
+const concoction = @import("gallery_concoction.zig");
 
 const Ui = core.Ui;
 const Rect = core.Rect;
@@ -91,6 +93,8 @@ pub fn run(alloc: std.mem.Allocator) !void {
     defer ui.deinit(alloc);
 
     var st = State{};
+    var cn = concoction.State.init(alloc);
+    defer cn.deinit(alloc);
     genNotes();
     var build_ms: f64 = 0;
     while (!c.rl.WindowShouldClose()) {
@@ -98,7 +102,7 @@ pub fn run(alloc: std.mem.Allocator) !void {
         style.materials = if (st.materials_on) .{} else style.materials_off;
         const t0 = c.rl.GetTime();
         ui.beginFrame();
-        frame(ui, &st, build_ms);
+        frame(ui, &st, &cn, build_ms);
         if (st.running) ui.animate();
         build_ms = build_ms * 0.9 + (c.rl.GetTime() - t0) * 1000 * 0.1;
         // Idle screens wait for events instead of redrawing at 120 fps.
@@ -108,7 +112,7 @@ pub fn run(alloc: std.mem.Allocator) !void {
     }
 }
 
-fn frame(ui: *Ui, st: *State, build_ms: f64) void {
+fn frame(ui: *Ui, st: *State, cn: *concoction.State, build_ms: f64) void {
     const z = ui.renderer.zoom;
     const sw: i32 = @intFromFloat(@as(f32, @floatFromInt(c.rl.GetScreenWidth())) / z);
     const sh: i32 = @intFromFloat(@as(f32, @floatFromInt(c.rl.GetScreenHeight())) / z);
@@ -117,7 +121,8 @@ fn frame(ui: *Ui, st: *State, build_ms: f64) void {
     header(ui, screen.cutTop(24), st, build_ms);
     switch (st.page) {
         0 => controlsPage(ui, screen, st),
-        else => dawPage(ui, screen, st),
+        1 => dawPage(ui, screen, st),
+        else => concoction.page(ui, screen, cn),
     }
 }
 
@@ -129,7 +134,7 @@ fn header(ui: *Ui, r: Rect, st: *State, build_ms: f64) void {
     var bar = r;
     const logo = ui.plate(bar.cutLeft(52), .{});
     ui.textIn(&ui.fonts.body_bold, logo.insetXY(4, 0), "SLAB", style.accent, .left, true);
-    _ = ctl.segmentedFlush(ui, bar.cutLeft(176), "page", &st.page, &.{ "CONTROLS", "DAW" });
+    _ = ctl.segmentedFlush(ui, bar.cutLeft(280), "page", &st.page, &.{ "CONTROLS", "DAW", "CONCOCTION" });
 
     var buf: [48]u8 = undefined;
     const s = std.fmt.bufPrint(&buf, "UI {d:.2}MS {d}CMD", .{ build_ms, ui.dl.len }) catch "";
@@ -582,7 +587,7 @@ fn arrangement(ui: *Ui, r: Rect, st: *State) void {
             _ = ui.text(&ui.fonts.legend, auto_r.x + 3, auto_r.y + 1, "CUTOFF", style.text_mute);
             ui.rect(Rect.xywh(auto_r.x, auto_r.bottom() - 1, auto_r.w, 1), style.chassis);
         }
-        t.level = if (st.playing and !t.mute) @floatCast(0.4 + 0.35 * @abs(@sin(ui.in.time * (3 + @as(f64, @floatFromInt(i))))) ) else 0;
+        t.level = if (st.playing and !t.mute) @floatCast(0.4 + 0.35 * @abs(@sin(ui.in.time * (3 + @as(f64, @floatFromInt(i)))))) else 0;
         surf.trackHeader(ui, hr, i, t);
     }
     // Empty lane space below the tracks keeps the grid; headers column
