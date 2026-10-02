@@ -197,6 +197,14 @@ pub const WriteAssetsJsonFn = *const fn (state: *anyopaque, out: *std.ArrayList(
 /// Load one named asset from `path` when restoring a project. False on a
 /// missing or bad file; the machine keeps what it had.
 pub const LoadAssetFn = *const fn (state: *anyopaque, name: []const u8, path: []const u8) bool;
+/// Write files the machine made (an edited wavetable) beside the project
+/// being saved to `project_path`, before its assets are serialized; the
+/// track's name names them.
+pub const SaveFilesFn = *const fn (state: *anyopaque, project_path: []const u8, track_name: []const u8) void;
+/// True once after the machine changed something a project saves that no
+/// control holds (an edited wavetable), so the host marks the project
+/// unsaved (UI thread).
+pub const TakeEditedFn = *const fn (state: *anyopaque) bool;
 /// Per-zone edits (a sampler's level/tune/decay/tone), keyed by zone name,
 /// as a JSON object; write nothing when every zone is flat.
 pub const WriteZonesJsonFn = *const fn (state: *anyopaque, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void;
@@ -421,6 +429,8 @@ pub const Machine = struct {
     set_param: ?SetParamFn = null,
     write_assets_json: ?WriteAssetsJsonFn = null,
     load_asset: ?LoadAssetFn = null,
+    save_files: ?SaveFilesFn = null,
+    take_edited: ?TakeEditedFn = null,
     write_zones_json: ?WriteZonesJsonFn = null,
     apply_zones_json: ?ApplyZonesJsonFn = null,
     write_state_json: ?WriteStateJsonFn = null,
@@ -482,6 +492,12 @@ pub const Machine = struct {
         const tail = if (self.tail) |f| f(self.state, sample_rate) else 0;
         if (tail == TAIL_FOREVER) return TAIL_FOREVER;
         return @max(default_hold, self.latencySamples() +| tail);
+    }
+
+    /// Consume a pending "project changed" report (UI thread).
+    pub fn takeEdited(self: *const Machine) bool {
+        const f = self.take_edited orelse return false;
+        return f(self.state);
     }
 
     /// Consume a pending wake request (audio thread).

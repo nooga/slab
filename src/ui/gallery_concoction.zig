@@ -7,7 +7,9 @@
 //! onto a blue-ringed knob (or a matrix row) to route it.
 //!
 //! The tables are the machine's own bank (machines/concoction/assets/
-//! bank.wav, mip 0 of each frame). A UI-side model of the modulation runs
+//! bank.wav, mip 0 of each frame). EDIT on an oscillator opens the
+//! wavetable editor (src/ui/wt_editor.zig) on its USER table, a copy of
+//! the bank table it had; SLAB_GALLERY_CARD=2 opens it on OSC A. A UI-side model of the modulation runs
 //! off the clock, one note every two beats at 125 BPM, so the displays
 //! move the way the voice would. Nothing here touches audio.
 
@@ -18,6 +20,8 @@ const ctl = @import("controls.zig");
 const wav = @import("../wav.zig");
 const wavetable = @import("../wavetable.zig");
 const sv = @import("synth_views.zig");
+const wte = @import("../wavetable_edit.zig");
+const wt_editor = @import("wt_editor.zig");
 
 const Ui = core.Ui;
 const Rect = core.Rect;
@@ -32,7 +36,8 @@ const GATE_S: f32 = @floatCast(GATE);
 const NOTES = [_]i32{ 0, 12, 0, 7, 0, 10, 0, 3 };
 const F0: f32 = 55; // the scope's note, A1
 
-const TABLES = [_][]const u8{ "BASIC", "PWM", "SYNC", "FM", "PD", "DRIVE", "FOLD", "HARM", "RESO", "VOWEL" };
+const TABLES = [_][]const u8{ "BASIC", "PWM", "SYNC", "FM", "PD", "DRIVE", "FOLD", "HARM", "RESO", "VOWEL", "USER" };
+const USER: u8 = 10;
 const WARPS = [_][]const u8{ "OFF", "SYNC", "PWM", "BEND", "FM" };
 const SHAPES = [_][]const u8{ "SINE", "TRI", "SAW UP", "SAW DN", "SQUARE", "S&H" };
 const SUB_SHAPES = [_][]const u8{ "SINE", "TRI", "SAW", "SQUARE" };
@@ -117,7 +122,14 @@ const NO_SLOT: u8 = 0xff;
 const MAX_TARGETS = 48;
 
 pub const State = struct {
+    alloc: std.mem.Allocator = undefined,
     bank: wavetable.Table = .{},
+    // Each oscillator's USER table, the doc the editor holds for it, and
+    // which one the editor has open (0: none, 1: A, 2: B).
+    user: [2]wavetable.Table = .{ .{}, .{} },
+    docs: [2]?wte.Doc = .{ null, null },
+    editing: u8 = 0,
+    ed_view: wt_editor.View = .{},
     card: u8 = 0,
     preset: u8 = 0,
 
@@ -177,16 +189,53 @@ pub const State = struct {
     drop_slot: u8 = NO_SLOT,
 
     pub fn init(alloc: std.mem.Allocator) State {
-        var st = State{};
+        var st = State{ .alloc = alloc };
         if (std.c.getenv("SLAB_GALLERY_CARD")) |c| st.card = std.fmt.parseInt(u8, std.mem.span(c), 10) catch 0;
         var smp = wav.load(alloc, BANK_PATH) catch return st;
         defer smp.deinit(alloc);
-        st.bank = wavetable.build(alloc, smp.data, smp.frame_size) catch .{};
+        st.bank = wavetable.build(alloc, smp.data, smp.frame_size, !smp.levels_kept) catch .{};
+        // Card 2: the editor open on OSC A.
+        if (st.card == 2) {
+            st.card = 0;
+            st.openEditor(0);
+        }
         return st;
     }
 
     pub fn deinit(st: *State, alloc: std.mem.Allocator) void {
         st.bank.deinit(alloc);
+        for (&st.user, &st.docs) |*u, *d| {
+            u.deinit(alloc);
+            if (d.*) |*doc| doc.deinit();
+        }
+    }
+
+    /// EDIT on an oscillator: a bank table is copied into its USER table
+    /// first, so the bank stays as it ships.
+    fn openEditor(st: *State, which: u1) void {
+        const o = if (which == 0) &st.a else &st.b;
+        if (st.docs[which] == null) st.docs[which] = wte.Doc.init(st.alloc) catch return;
+        const doc = &st.docs[which].?;
+        if (o.table != USER) {
+            const t = table(st, which);
+            if (t.count > 0) doc.loadBuilt(t.data, t.first, t.count);
+            o.table = USER;
+        }
+        st.syncUser(which);
+        st.editing = @as(u8, which) + 1;
+        st.ed_view = .{};
+    }
+
+    /// Rebuild what the doc changed into the oscillator's USER table.
+    fn syncUser(st: *State, which: u1) void {
+        const doc = &(st.docs[which] orelse return);
+        const d = doc.takeDirty() orelse return;
+        const u = &st.user[which];
+        if (d.resized or u.frames != doc.count) {
+            const t = doc.build(st.alloc) catch return;
+            u.deinit(st.alloc);
+            u.* = t;
+        } else doc.writeFrames(u.data[d.lo * wavetable.STRIDE ..], d.lo, d.hi);
     }
 
     fn target(st: *State, r: Rect, dst: u8, slot: u8) void {
@@ -305,15 +354,21 @@ fn eff(base: f32, m: *const Mods, dst: u8) f32 {
 
 // ── Oscillator math, as the voice does it ────────────────────────────
 
-/// Table `t` of the bank: its 16 frames.
-fn table(st: *const State, t: u8) sv.Table {
+/// The table an oscillator plays: 16 frames of the bank, or its USER
+/// table.
+fn table(st: *const State, which: u1) sv.Table {
+    const t = if (which == 0) st.a.table else st.b.table;
+    if (t == USER) {
+        const u = st.user[which];
+        return .{ .data = u.data, .count = u.frames };
+    }
     if (st.bank.frames == 0) return .{};
     const first = @as(usize, t) * BANK_FRAMES;
     return .{ .data = st.bank.data, .first = first, .count = @min(BANK_FRAMES, st.bank.frames -| first) };
 }
 
-fn waveAt(st: *const State, t: u8, pos: f32, p: f32) f32 {
-    return table(st, t).at(pos, p);
+fn waveAt(st: *const State, which: u1, pos: f32, p: f32) f32 {
+    return table(st, which).at(pos, p);
 }
 
 fn warp(p: f32, mode: u8, w: f32, fm: f32) f32 {
@@ -342,13 +397,13 @@ fn voiceNow(st: *const State, m: *const Mods) Voice {
 
 fn oscB(st: *const State, v: Voice, p: f32) f32 {
     const pb = p * v.b_ratio;
-    return waveAt(st, st.b.table, v.b_pos, warp(pb - @floor(pb), st.b.warp, v.b_w, 0));
+    return waveAt(st, 1, v.b_pos, warp(pb - @floor(pb), st.b.warp, v.b_w, 0));
 }
 
 fn oscSample(st: *const State, v: Voice, which: u1, p: f32) f32 {
     if (which == 1) return oscB(st, v, p);
     const fm = if (st.a.warp == 4) oscB(st, v, p) else 0;
-    return waveAt(st, st.a.table, v.a_pos, warp(p, st.a.warp, v.a_w, fm));
+    return waveAt(st, 0, v.a_pos, warp(p, st.a.warp, v.a_w, fm));
 }
 
 // ── Page ─────────────────────────────────────────────────────────────
@@ -382,6 +437,16 @@ pub fn page(ui: *Ui, screen: Rect, st: *State) void {
     var title = panel.cutTop(TITLE_H);
     _ = ctl.segmentedFlush(ui, title.cutRight(128), "card", &st.card, &.{ "OSC", "MOD" });
     ctl.titleStrip(ui, title, "CONCOCTION", PRESETS[st.preset]);
+    if (st.editing != 0) {
+        // The editor takes the cards' place until DONE.
+        const which: u1 = @intCast(st.editing - 1);
+        var buf: [32]u8 = undefined;
+        const name = std.fmt.bufPrint(&buf, "OSC {s} · USER", .{if (which == 0) "A" else "B"}) catch "";
+        const res = wt_editor.editor(ui, panel, &st.docs[which].?, &st.ed_view, .{ .name = name });
+        st.syncUser(which);
+        if (res.done) st.editing = 0;
+        return;
+    }
     dock(ui, panel.cutTop(DOCK_H), st, &m);
     switch (st.card) {
         0 => oscCard(ui, panel, st, &m),
@@ -561,8 +626,9 @@ fn oscStrip(ui: *Ui, r: Rect, st: *State, m: *const Mods, which: u1) void {
 
     const v = voiceNow(st, m);
     const pos_eff = if (which == 0) v.a_pos else v.b_pos;
-    sv.wavetableView(ui, body.insetXY(0, 2), .{
-        .table = table(st, o.table),
+    const view_r = body.insetXY(0, 2);
+    sv.wavetableView(ui, view_r, .{
+        .table = table(st, which),
         .name = TABLES[o.table],
         .pos = pos_eff,
         .base_pos = o.pos,
@@ -570,6 +636,7 @@ fn oscStrip(ui: *Ui, r: Rect, st: *State, m: *const Mods, which: u1) void {
         .amt = if (which == 0) v.a_w else v.b_w,
         .dim = which == 1 and !o.on,
     });
+    if (ctl.button(ui, Rect.xywh(view_r.right() - 44, view_r.y, 44, 18), "edit", null, .{ .label = "EDIT" })) st.openEditor(which);
 }
 
 fn subNoise(ui: *Ui, r: Rect, st: *State, m: *const Mods) void {

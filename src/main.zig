@@ -1119,6 +1119,10 @@ pub fn main(init: std.process.Init) !void {
         };
 
         if (serviceAutomationRequests(alloc, &history, tracks, &transport, &selected_track, &status)) dirty = true;
+        // Edits no control holds (a wavetable drawn in the editor).
+        for (tracks) |*t| if (t.machine.takeEdited()) {
+            dirty = true;
+        };
         if (auto_rec.tick(alloc, &history, tracks, &transport, auto_arm and transport.isPlaying())) dirty = true;
 
         try runRename(ui, alloc, &history, &rename, tracks, &transport, &dirty, &status);
@@ -1533,6 +1537,9 @@ fn saveProject(
         }
     }
 
+    // Edited wavetables are written beside the project first, so the
+    // project names their files.
+    for (tracks) |*t| if (t.machine.save_files) |f| f(t.machine.state, project_path.*, t.name());
     const snapshot = try document_mod.serialize(alloc, tracks, transport);
     defer alloc.free(snapshot);
     document_mod.writeFile(alloc, project_path.*, snapshot) catch |err| {

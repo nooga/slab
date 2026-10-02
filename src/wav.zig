@@ -35,6 +35,10 @@ pub const Sample = struct {
     // From a Serum `clm ` chunk ("<!>2048 …"): samples per wavetable
     // frame. 0 when the file doesn't say.
     frame_size: usize = 0,
+    // The `clm ` chunk says "(slab levels kept)": the wavetable editor
+    // wrote it, its frames are at the levels drawn, and the table keeps
+    // them instead of being normalized (src/wavetable_file.zig).
+    levels_kept: bool = false,
 
     pub fn deinit(self: *Sample, alloc: std.mem.Allocator) void {
         alloc.free(self.data);
@@ -109,6 +113,7 @@ pub fn parse(alloc: std.mem.Allocator, buf: []const u8) Error!Sample {
     var loop_start: usize = 0;
     var loop_end: usize = 0;
     var frame_size: usize = 0;
+    var levels_kept = false;
 
     var pos: usize = 12;
     while (pos + 8 <= buf.len) {
@@ -147,6 +152,7 @@ pub fn parse(alloc: std.mem.Allocator, buf: []const u8) Error!Sample {
                 var end: usize = 3;
                 while (end < text.len and std.ascii.isDigit(text[end])) end += 1;
                 frame_size = std.fmt.parseInt(usize, text[3..end], 10) catch 0;
+                levels_kept = std.mem.indexOf(u8, text, "(slab levels kept)") != null;
             }
         } else if (std.mem.eql(u8, id, "data")) {
             data_off = body;
@@ -196,6 +202,7 @@ pub fn parse(alloc: std.mem.Allocator, buf: []const u8) Error!Sample {
         .loop_start = @min(loop_start, frames),
         .loop_end = @min(loop_end, frames),
         .frame_size = frame_size,
+        .levels_kept = levels_kept,
     };
 }
 

@@ -20,6 +20,8 @@ test {
     _ = @import("wav.zig");
     _ = @import("keymap.zig");
     _ = @import("wavetable.zig");
+    _ = @import("wavetable_edit.zig");
+    _ = @import("wavetable_file.zig");
     _ = @import("waveform.zig");
     _ = @import("audio_pool.zig");
     _ = @import("fm_operator_test.zig");

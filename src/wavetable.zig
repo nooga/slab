@@ -61,8 +61,10 @@ pub const Table = struct {
 pub const Error = error{ Empty, OutOfMemory };
 
 /// Build the mipmapped table from a loaded file's samples. `frame_hint`
-/// is the `clm ` frame size, 0 when the file doesn't say.
-pub fn build(alloc: std.mem.Allocator, samples: []const f64, frame_hint: usize) Error!Table {
+/// is the `clm ` frame size, 0 when the file doesn't say. `normalize`
+/// scales the whole table so its loudest frame peaks at 1; a table saved
+/// by the editor keeps its drawn levels.
+pub fn build(alloc: std.mem.Allocator, samples: []const f64, frame_hint: usize, normalize: bool) Error!Table {
     if (samples.len == 0) return Error.Empty;
     const fsize: usize = if (frame_hint > 0 and frame_hint <= samples.len)
         frame_hint
@@ -83,19 +85,13 @@ pub fn build(alloc: std.mem.Allocator, samples: []const f64, frame_hint: usize) 
     defer alloc.free(work);
 
     for (0..frames) |f| {
-        const src = samples[f * fsize ..][0..fsize];
-        spectrum(src, spec, work);
-        const out = data[f * STRIDE ..][0..STRIDE];
-        for (0..MIPS) |m| {
-            const len = mipLen(m);
-            const level = out[mipOffset(m)..][0 .. len + 1];
-            synth(spec, @min(max_h, mipHarmonics(m)), level[0..len], work[0..len]);
-            level[len] = level[0];
-        }
+        spectrum(samples[f * fsize ..][0..fsize], spec, work);
+        writeLevels(data[f * STRIDE ..][0..STRIDE], spec, max_h, work);
     }
 
     // One gain for the whole table, from the fullest level: frames keep
     // their relative levels, the loudest peaks at 1.
+    if (!normalize) return .{ .data = data, .frames = frames };
     var peak: f64 = 0;
     for (0..frames) |f| {
         for (data[f * STRIDE ..][0..mipLen(0)]) |v| peak = @max(peak, @abs(v));
@@ -107,7 +103,27 @@ pub fn build(alloc: std.mem.Allocator, samples: []const f64, frame_hint: usize) 
     return .{ .data = data, .frames = frames };
 }
 
-const Complex = std.math.Complex(f64);
+/// Rebuild one frame's levels in place from a 2048-sample cycle, at the
+/// cycle's own level (no table gain). The wavetable editor
+/// (src/wavetable_edit.zig) writes its frames through this.
+pub fn writeFrame(out: []f64, src: *const [SOURCE_FRAME]f64) void {
+    var spec: [SOURCE_FRAME / 2]Complex = undefined;
+    var work: [SOURCE_FRAME]Complex = undefined;
+    spectrum(src, &spec, &work);
+    writeLevels(out[0..STRIDE], &spec, spec.len - 1, &work);
+}
+
+/// Every mip level of one frame from its spectrum, each with its guard.
+fn writeLevels(out: []f64, spec: []const Complex, max_h: usize, work: []Complex) void {
+    for (0..MIPS) |m| {
+        const len = mipLen(m);
+        const level = out[mipOffset(m)..][0 .. len + 1];
+        synth(spec, @min(max_h, mipHarmonics(m)), level[0..len], work[0..len]);
+        level[len] = level[0];
+    }
+}
+
+pub const Complex = std.math.Complex(f64);
 
 /// Harmonics 1 … spec.len − 1 of one cycle, scaled so a harmonic of
 /// amplitude a comes back as a when synth() resynthesizes it.
@@ -151,7 +167,7 @@ fn synth(spec: []const Complex, top: usize, out: []f64, work: []Complex) void {
 }
 
 /// In-place radix-2 FFT; `inverse` uses e^{+i}, unscaled.
-fn fft(x: []Complex, inverse: bool) void {
+pub fn fft(x: []Complex, inverse: bool) void {
     const n = x.len;
     var j: usize = 0;
     for (1..n) |i| {
@@ -199,7 +215,7 @@ test "wavetable: a saw keeps its harmonics per level and wraps" {
         src[i] = @sin(2 * std.math.pi * p); // frame 0: sine
         src[2048 + i] = if (i == 0) 0 else 1.0 - 2.0 * p; // frame 1: saw, the jump at its midpoint
     }
-    var t = try build(alloc, &src, 0);
+    var t = try build(alloc, &src, 0, true);
     defer t.deinit(alloc);
     try std.testing.expectEqual(@as(usize, 2), t.frames);
     // The sine survives every level unchanged but for the table gain.
@@ -220,7 +236,7 @@ test "wavetable: a short file is one frame of its own length" {
     const alloc = std.testing.allocator;
     var src: [600]f64 = undefined;
     for (&src, 0..) |*v, i| v.* = @sin(2 * std.math.pi * @as(f64, @floatFromInt(i)) / 600.0);
-    var t = try build(alloc, &src, 0);
+    var t = try build(alloc, &src, 0, true);
     defer t.deinit(alloc);
     try std.testing.expectEqual(@as(usize, 1), t.frames);
     const lv = t.data[mipOffset(2)..][0..2048];

@@ -21,6 +21,9 @@ const wav = @import("../wav.zig");
 const waveform = @import("../waveform.zig");
 const keymap = @import("../keymap.zig");
 const wavetable = @import("../wavetable.zig");
+const wte = @import("../wavetable_edit.zig");
+const wavetable_file = @import("../wavetable_file.zig");
+const wt_editor = @import("../ui/wt_editor.zig");
 const native_dialog = @import("../native_dialog.zig");
 const ui_core = @import("../ui/core.zig");
 const ui_ctl = @import("../ui/controls.zig");
@@ -323,6 +326,18 @@ pub const FyRawMachine = struct {
     // Display name (basename) of each asset's currently loaded file.
     asset_label: [machine_desc.MAX_ASSETS][96]u8 = undefined,
     asset_label_len: [machine_desc.MAX_ASSETS]usize = [_]usize{0} ** machine_desc.MAX_ASSETS,
+    // The wavetable editor (docs/15 §Wavetable editor): a doc for each
+    // wavetable asset EDIT has opened, whether it changed since its file
+    // was written, and the asset the editor has open over the panel (with
+    // its oscillator's name for the caption).
+    wt_docs: [machine_desc.MAX_ASSETS]?*wte.Doc = [_]?*wte.Doc{null} ** machine_desc.MAX_ASSETS,
+    wt_unsaved: [machine_desc.MAX_ASSETS]bool = [_]bool{false} ** machine_desc.MAX_ASSETS,
+    /// A table edit since the host last asked (take_edited).
+    wt_edited: bool = false,
+    wt_editing: ?usize = null,
+    wt_osc: [32]u8 = undefined,
+    wt_osc_len: usize = 0,
+    wt_view: wt_editor.View = .{},
     // Stored so runtime sample loads can (re)allocate without a passed alloc.
     alloc: std.mem.Allocator = undefined,
     // Voice allocator (voice machines with desc.voices > 1). Voices are
@@ -451,7 +466,7 @@ pub const FyRawMachine = struct {
                 self.asset_mem[ai] = wav.load(alloc, full) catch wav.Sample{ .data = &.{}, .sample_rate = 0 };
                 self.asset_cache[ai].build(alloc, self.asset_mem[ai].data) catch {};
                 if (req.wavetable and self.asset_mem[ai].data.len > 0) {
-                    self.asset_wt[ai] = wavetable.build(alloc, self.asset_mem[ai].data, self.asset_mem[ai].frame_size) catch .{};
+                    self.asset_wt[ai] = wavetable.build(alloc, self.asset_mem[ai].data, self.asset_mem[ai].frame_size, !self.asset_mem[ai].levels_kept) catch .{};
                 }
             }
             self.setAssetSource(ai, full);
@@ -490,7 +505,19 @@ pub const FyRawMachine = struct {
             if (self.aa_pool[ai].len > 0) alloc.free(self.aa_pool[ai]);
             self.aa_pool[ai] = &.{};
             self.asset_cache[ai].deinit(alloc);
+            self.dropTableDoc(ai);
         }
+    }
+
+    /// Forget the editor's doc for asset `ai` (a new file replaced it).
+    fn dropTableDoc(self: *FyRawMachine, ai: usize) void {
+        if (self.wt_docs[ai]) |d| {
+            d.deinit();
+            self.alloc.destroy(d);
+        }
+        self.wt_docs[ai] = null;
+        self.wt_unsaved[ai] = false;
+        if (self.wt_editing == ai) self.wt_editing = null;
     }
 
     /// The anti-aliased pool for keymap `ai` as `km`, at its control's
@@ -536,7 +563,7 @@ pub const FyRawMachine = struct {
         var loaded = wav.load(self.alloc, keymap.resolvePath(&rb, src)) catch return false;
         var new_wt: wavetable.Table = .{};
         if (self.desc.assets[ai].wavetable) {
-            new_wt = wavetable.build(self.alloc, loaded.data, loaded.frame_size) catch {
+            new_wt = wavetable.build(self.alloc, loaded.data, loaded.frame_size, !loaded.levels_kept) catch {
                 loaded.deinit(self.alloc);
                 return false;
             };
@@ -563,6 +590,7 @@ pub const FyRawMachine = struct {
         self.asset_cache[ai] = new_cache;
         self.setAssetSource(ai, src);
         self.asset_loaded[ai] = true;
+        self.dropTableDoc(ai);
         return true;
     }
 
@@ -813,6 +841,8 @@ pub const FyRawMachine = struct {
             .set_param = setParamImpl,
             .write_assets_json = writeAssetsJsonImpl,
             .load_asset = loadAssetImpl,
+            .save_files = saveFilesImpl,
+            .take_edited = takeEditedImpl,
             .write_zones_json = writeZonesJsonImpl,
             .apply_zones_json = applyZonesJsonImpl,
             .note_labels_fn = noteLabelsImpl,
@@ -1443,6 +1473,140 @@ fn loadAssetImpl(state: *anyopaque, name: []const u8, path: []const u8) bool {
     const ai = self.assetIndexByName(name) orelse return false;
     if (std.mem.eql(u8, self.assetPath(ai), path)) return true;
     return self.loadAssetRuntime(ai, path);
+}
+
+// ── Wavetable editor (docs/15 §Wavetable editor) ─────────────────────
+
+/// EDIT on an oscillator's view opens the editor on its USER table
+/// (asset `ai`). A bank table (`copy`) is copied in first; the caller
+/// switches the oscillator to USER, so the bank stays as it ships.
+fn openTableEditor(self: *FyRawMachine, ai: usize, osc: []const u8, copy: ?synth_views.Table, copy_name: []const u8) void {
+    const doc = self.wt_docs[ai] orelse blk: {
+        const d = self.alloc.create(wte.Doc) catch return;
+        d.* = wte.Doc.init(self.alloc) catch {
+            self.alloc.destroy(d);
+            return;
+        };
+        // What plays now, read back from its fullest levels.
+        const t = self.asset_wt[ai];
+        if (t.frames > 0) d.loadBuilt(t.data, 0, t.frames);
+        _ = d.takeDirty();
+        self.wt_docs[ai] = d;
+        break :blk d;
+    };
+    if (copy) |t| {
+        if (t.count > 0) doc.loadBuilt(t.data, t.first, t.count);
+        setAssetLabel(self, ai, copy_name);
+        syncTableDoc(self, ai);
+    }
+    const n = @min(osc.len, self.wt_osc.len);
+    @memcpy(self.wt_osc[0..n], osc[0..n]);
+    self.wt_osc_len = n;
+    self.wt_editing = ai;
+    self.wt_view = .{};
+}
+
+fn setAssetLabel(self: *FyRawMachine, ai: usize, label: []const u8) void {
+    const n = @min(label.len, self.asset_label[ai].len);
+    std.mem.copyForwards(u8, self.asset_label[ai][0..n], label[0..n]);
+    self.asset_label_len[ai] = n;
+}
+
+/// Rebuild what the doc changed into the table the voices play. The
+/// levels are built off the audio thread; only the swap or the copy
+/// happens inside the fence.
+fn syncTableDoc(self: *FyRawMachine, ai: usize) void {
+    const doc = self.wt_docs[ai] orelse return;
+    const d = doc.takeDirty() orelse return;
+    self.wt_unsaved[ai] = true;
+    self.wt_edited = true;
+    if (d.resized or self.asset_wt[ai].frames != doc.count) {
+        var t = doc.build(self.alloc) catch return;
+        fy_host_mod.lockCallbacks();
+        std.mem.swap(wavetable.Table, &self.asset_wt[ai], &t);
+        self.injectAssets();
+        fy_host_mod.unlockCallbacks();
+        t.deinit(self.alloc);
+        return;
+    }
+    const cells = (d.hi - d.lo + 1) * wavetable.STRIDE;
+    const tmp = self.alloc.alloc(f64, cells) catch return;
+    defer self.alloc.free(tmp);
+    doc.writeFrames(tmp, d.lo, d.hi);
+    fy_host_mod.lockCallbacks();
+    @memcpy(self.asset_wt[ai].data[d.lo * wavetable.STRIDE ..][0..cells], tmp);
+    fy_host_mod.unlockCallbacks();
+}
+
+/// The editor in place of the panel's pages, until DONE.
+fn drawTableEditor(self: *FyRawMachine, ui: *Ui, r: Rect, ai: usize) void {
+    const doc = self.wt_docs[ai] orelse {
+        self.wt_editing = null;
+        return;
+    };
+    var lb: [96]u8 = undefined;
+    const label = std.ascii.upperString(&lb, self.asset_label[ai][0..self.asset_label_len[ai]]);
+    var nb: [160]u8 = undefined;
+    const name = std.fmt.bufPrint(&nb, "{s} · {s}{s}", .{ self.wt_osc[0..self.wt_osc_len], label, if (self.wt_unsaved[ai]) " *" else "" }) catch "";
+    const res = wt_editor.editor(ui, r, doc, &self.wt_view, .{ .name = name, .can_save = true });
+    syncTableDoc(self, ai);
+    if (res.save) saveTableAs(self, ai);
+    if (res.done) self.wt_editing = null;
+}
+
+/// SAVE: the table to a file of the user's choosing, which the
+/// oscillator then reads.
+fn saveTableAs(self: *FyRawMachine, ai: usize) void {
+    const doc = self.wt_docs[ai] orelse return;
+    var nb: [100]u8 = undefined;
+    const stem = std.fs.path.stem(self.asset_label[ai][0..self.asset_label_len[ai]]);
+    const def = std.fmt.bufPrint(&nb, "{s}.wav", .{if (stem.len > 0) stem else "wavetable"}) catch "wavetable.wav";
+    const path = (native_dialog.saveAudioFile(self.alloc, def) catch null) orelse return;
+    defer self.alloc.free(path);
+    if (!wavetable_file.save(self.alloc, doc, path)) return;
+    var pb: [1024]u8 = undefined;
+    self.setAssetSource(ai, keymap.portablePath(&pb, path));
+    self.asset_loaded[ai] = true;
+    self.wt_unsaved[ai] = false;
+}
+
+/// Project save: every table edited since its file was written goes to
+/// the project's tables folder, under the file it already has there or
+/// a new one named for the track and the asset.
+fn takeEditedImpl(state: *anyopaque) bool {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    defer self.wt_edited = false;
+    return self.wt_edited;
+}
+
+fn saveFilesImpl(state: *anyopaque, project_path: []const u8, track_name: []const u8) void {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    for (0..self.desc.asset_count) |ai| {
+        const doc = self.wt_docs[ai] orelse continue;
+        if (!self.wt_unsaved[ai]) continue;
+        var db: [1024]u8 = undefined;
+        const dir = wavetable_file.tablesDir(&db, project_path);
+        if (dir.len == 0) continue;
+        var pb: [1024]u8 = undefined;
+        const cur = self.assetPath(ai);
+        const path = if (wavetable_file.inDir(cur, dir)) blk: {
+            @memcpy(pb[0..cur.len], cur);
+            break :blk pb[0..cur.len];
+        } else blk: {
+            wavetable_file.makeDir(dir);
+            var sb: [128]u8 = undefined;
+            var raw: [160]u8 = undefined;
+            const name = std.fmt.bufPrint(&raw, "{s} {s}", .{ track_name, self.desc.assets[ai].nameSlice() }) catch "table";
+            break :blk wavetable_file.freshPath(&pb, dir, wavetable_file.slug(&sb, name));
+        };
+        if (path.len == 0 or !wavetable_file.save(self.alloc, doc, path)) {
+            std.log.err("wavetable: could not write {s}", .{path});
+            continue;
+        }
+        self.setAssetSource(ai, path);
+        self.asset_loaded[ai] = true;
+        self.wt_unsaved[ai] = false;
+    }
 }
 
 // ── Automation hooks (docs/22) ───────────────────────────────────────
@@ -2499,6 +2663,10 @@ fn drawPanelImpl(state: *anyopaque, ui: *Ui, rect: Rect) void {
         drawFixtureInfo(self, ui, rect);
         return;
     }
+    if (self.wt_editing) |ai| {
+        drawTableEditor(self, ui, rect, ai);
+        return;
+    }
     const tier = chooseTier(self, ui, rect);
     @memcpy(self.mod_prev[0..self.mod_target_n], self.mod_targets[0..self.mod_target_n]);
     self.mod_prev_n = self.mod_target_n;
@@ -3470,7 +3638,17 @@ fn drawWavetableDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Disp
     // A USER table names its file; LOAD sits in the view's corner.
     const user_ai = if (is_user) self.assetIndexByName(user) else null;
     var nbuf: [64]u8 = undefined;
-    const name = if (user_ai) |ai| std.ascii.upperString(&nbuf, self.asset_label[ai][0..@min(self.asset_label_len[ai], nbuf.len)]) else sel.label;
+    var name: []const u8 = sel.label;
+    if (user_ai) |ai| {
+        // An edited table not yet written to a file wears a star.
+        const lab = self.asset_label[ai][0..@min(self.asset_label_len[ai], nbuf.len - 2)];
+        name = std.ascii.upperString(&nbuf, lab);
+        if (self.wt_unsaved[ai]) {
+            nbuf[lab.len] = ' ';
+            nbuf[lab.len + 1] = '*';
+            name = nbuf[0 .. lab.len + 2];
+        }
+    }
     synth_views.wavetableView(ui, r, .{
         .table = table,
         .name = name,
@@ -3485,6 +3663,27 @@ fn drawWavetableDisplay(self: *FyRawMachine, ui: *Ui, r: Rect, disp: *const Disp
             if (native_dialog.openAudioFile(self.alloc) catch null) |path| {
                 defer self.alloc.free(path);
                 _ = self.loadAssetRuntime(ai, path);
+            }
+        }
+    }
+    // EDIT opens the editor on the USER table; a bank table is copied
+    // into it and the oscillator switched to USER.
+    const uai = self.assetIndexByName(user) orelse return;
+    if (!self.desc.assets[uai].wavetable) return;
+    const edit_x = r.right() - if (user_ai != null) @as(i32, 88) else 44;
+    if (ui_ctl.button(ui, Rect.xywh(edit_x, r.y, 44, 18), .{ "wtedit", uai }, null, .{ .label = "EDIT" })) {
+        var ob: [32]u8 = undefined;
+        const dn = disp.nameSlice();
+        const osc = std.ascii.upperString(&ob, dn[0..@min(if (std.mem.endsWith(u8, dn, " VIEW")) dn.len - 5 else dn.len, ob.len)]);
+        if (is_user) {
+            openTableEditor(self, uai, osc, null, "");
+        } else {
+            openTableEditor(self, uai, osc, table, sel.label);
+            if (prefixedCtl(self, prefix, "-table")) |ti| {
+                const ctl = &self.desc.controls[ti];
+                for (0..ctl.option_count) |oi| {
+                    if (std.mem.eql(u8, std.mem.span(ctl.optionLabelZ(oi)), "USER")) pickOption(self, ti, oi);
+                }
             }
         }
     }
@@ -8255,4 +8454,61 @@ test "unison: presets and projects carry the stack; a preset without one plays s
     const dm = drums.machineInterface();
     defer dm.deinit.?(dm.state, testing.allocator);
     try testing.expect(dm.unison == null);
+}
+
+test "wavetable editor: an edited table plays at once, saves beside the project and loads back" {
+    const alloc = testing.allocator;
+    const inst = try FyRawMachine.create(alloc, "machines/concoction/concoction.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, alloc);
+    const ai = inst.assetIndexByName("wt-a").?;
+    const bank = inst.assetIndexByName("bank").?;
+    const S = wavetable.STRIDE;
+
+    // EDIT on a bank table: its 16 frames become the USER table.
+    openTableEditor(inst, ai, "OSC A", .{ .data = inst.asset_wt[bank].data, .first = 32, .count = 16 }, "SYNC");
+    try testing.expectEqual(@as(usize, 16), inst.asset_wt[ai].frames);
+    try testing.expect(inst.wt_unsaved[ai]);
+    try testing.expectApproxEqAbs(inst.asset_wt[bank].data[37 * S + 100], inst.asset_wt[ai].data[5 * S + 100], 1e-5);
+
+    // An edit reaches the played table: frame 5's top level is now a
+    // square's fundamental, 4/π.
+    const doc = inst.wt_docs[ai].?;
+    doc.setShape(5, .square);
+    syncTableDoc(inst, ai);
+    const top = wavetable.mipOffset(10);
+    try testing.expectApproxEqAbs(4.0 / std.math.pi, inst.asset_wt[ai].data[5 * S + top + 4], 1e-3);
+    // The host hears of it once: the project is unsaved.
+    try testing.expect(mach.takeEdited());
+    try testing.expect(!mach.takeEdited());
+    syncTableDoc(inst, ai);
+    try testing.expect(!mach.takeEdited());
+
+    // Project save writes it to song.tables/ and points the asset there.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var pb: [256]u8 = undefined;
+    const project = try std.fmt.bufPrint(&pb, ".zig-cache/tmp/{s}/song.slab", .{tmp.sub_path});
+    saveFilesImpl(inst, project, "Acid Bass");
+    var eb: [256]u8 = undefined;
+    const want = try std.fmt.bufPrint(&eb, ".zig-cache/tmp/{s}/song.tables/acid-bass-wt-a.wav", .{tmp.sub_path});
+    try testing.expectEqualStrings(want, inst.assetPath(ai));
+    try testing.expect(!inst.wt_unsaved[ai]);
+
+    // A second edit overwrites the same file.
+    doc.setShape(6, .saw);
+    syncTableDoc(inst, ai);
+    saveFilesImpl(inst, project, "Acid Bass");
+    try testing.expectEqualStrings(want, inst.assetPath(ai));
+
+    // Another instance loads it at the drawn levels.
+    const other = try FyRawMachine.create(alloc, "machines/concoction/concoction.fy");
+    const om = other.machineInterface();
+    defer om.deinit.?(om.state, alloc);
+    try testing.expect(other.loadAssetRuntime(ai, want));
+    try testing.expectEqual(@as(usize, 16), other.asset_wt[ai].frames);
+    for ([_]usize{ 5, 6, 9 }) |f| {
+        try testing.expectApproxEqAbs(inst.asset_wt[ai].data[f * S + top + 4], other.asset_wt[ai].data[f * S + top + 4], 1e-5);
+        try testing.expectApproxEqAbs(inst.asset_wt[ai].data[f * S + 300], other.asset_wt[ai].data[f * S + 300], 1e-5);
+    }
 }
