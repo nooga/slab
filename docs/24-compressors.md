@@ -416,7 +416,7 @@ raises transient-to-body (6.6 → 11–15 dB) and crest. Reviews of the
 plugin say the same: it "exaggerates ambience and transients".
 
 LO-FI and WOW work in every mode, after the color. They are separate
-reusable kernels, meant to be shared with a future tape machine:
+reusable kernels, shared with tape2 (docs/25):
 
 | kernel | what | numbers |
 |---|---|---|

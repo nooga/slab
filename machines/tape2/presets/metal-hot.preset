@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "tape2", "note": "metal tape driven hard on drums: compression before the top goes", "params": {"tape-mode": 2, "tape-wear": 0.1, "tape-drive": 12, "tape-bias": 0.65, "tape-hiss": 0.3, "tape-out": 0.1, "tape-mix": 1}}

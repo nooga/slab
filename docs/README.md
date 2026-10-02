@@ -69,6 +69,9 @@ self-contained but assumes the vocabulary established in earlier ones.
 23. [22-automation.md](22-automation.md) — track lanes, clip lanes and
     per-note expression on one curve type; automated controls, editing
     gestures, engine and format (design)
+24. [25-tape.md](25-tape.md) — tape2: cassette and VHS audio, the WEAR
+    macro, and the shared transport kernels (wow, dropouts, hum,
+    hysteresis, compand)
 
 ## Terminology crib sheet
 
