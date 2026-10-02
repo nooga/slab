@@ -27,6 +27,12 @@ const O_TRUNC: c_int = 0x400;
 
 pub const SAVE_PATH = "slab-project.slab";
 
+/// The project format's tag and version (docs/25 §Formats).
+pub const KIND = "project";
+pub const SCHEMA = 1;
+/// Set by apply(): the document came from a newer slab.
+pub var newer_schema: bool = false;
+
 /// The process-wide audio pool, registered once at startup. serialize()
 /// resolves an audio clip's source index → file path through it; apply()
 /// resolves a saved path → pool index (loading on demand). It is a host
@@ -130,7 +136,7 @@ pub fn serialize(
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(alloc);
 
-    try out.appendSlice(alloc, "{\"schema\":1,\"transport\":{\"bpm\":");
+    try out.appendSlice(alloc, "{\"slab\":\"" ++ KIND ++ "\",\"schema\":" ++ std.fmt.comptimePrint("{d}", .{SCHEMA}) ++ ",\"transport\":{\"bpm\":");
     try appendFmt(alloc, &out, "{d}", .{transport.bpm()});
     try appendFmt(alloc, &out, ",\"loop\":{{\"on\":{s},\"start\":{d},\"end\":{d}}}}}", .{
         boolStr(transport.loopEnabled()), transport.loopStartBeats(), transport.loopEndBeats(),
@@ -514,6 +520,11 @@ pub fn apply(
     defer parsed.deinit();
     if (parsed.value != .object) return error.InvalidProject;
     const root = parsed.value.object;
+    // The format tag (docs/25 §Formats): another kind of slab file isn't a
+    // project; a newer schema loads what this slab knows of it.
+    if (objGet(root, "slab")) |k| if (k != .string or !std.mem.eql(u8, k.string, KIND)) return error.NotAProject;
+    newer_schema = if (objGet(root, "schema")) |v| asF64(v) > SCHEMA else false;
+    if (newer_schema) std.log.warn("project schema {d} is newer than this slab's {d}", .{ asF64(objGet(root, "schema").?), SCHEMA });
 
     if (objGet(root, "transport")) |tv| if (tv == .object) {
         const to = tv.object;

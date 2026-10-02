@@ -935,6 +935,7 @@ class Song:
         end = max([self.bars * self.bar_beats] + [c.start + c.length for t in self.tracks for c in t.clips])
         num, den = self.meter
         return {
+            "slab": "project",
             "schema": 1,
             "transport": {"bpm": float(self.bpm), "loop": {"on": self.loop, "start": 0.0, "end": float(end)}},
             "meter": [dict({"bar": 0, "num": num, "den": den}, **({"groups": list(self.groups)} if self.groups else {}))],

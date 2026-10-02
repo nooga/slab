@@ -421,6 +421,43 @@ design. This doc only fixes what slab sends and receives, so that
 local projects and libraries can be built now without changing their
 format when the online part lands.
 
+## Formats
+
+Every file slab writes says what it is and which version of its format
+it uses.
+- **JSON files** open with `"slab": "<kind>"` and `"schema": <n>`, in
+  that order.
+- **Binary files** carry a marker of their own.
+
+| File | Tag | Schema | Since |
+|---|---|---|---|
+| `project.json`, a bare `.slab` | `"slab": "project"` | 1 | built |
+| `settings.json` | `"slab": "settings"` | 1 | built |
+| `.preset` | `"slab": "preset"` | 1 | phase 4. Until then, `schema` only |
+| `.slabclip` | `"slab": "clip"` | 1 | phase 4 |
+| `<id>.pack.json` | `"slab": "pack"` | 1 | phase 5 |
+| `item.json` (published items) | `"slab": "item"` | 1 | phase 7 |
+| editor wavetables (`.wav`) | the `clm ` chunk's `(slab levels kept)` | — | built |
+
+Loaders:
+- **A tag naming another kind:** the file is refused. A preset opened as
+  a project fails to open; it doesn't load as an empty song.
+- **No tag:** the file is taken as the kind it was opened as. This
+  covers hand-written files and the examples in these docs.
+- **A newer schema:** slab loads what it understands and says so: a
+  project's status line reads "made by a newer slab".
+- **An older schema:** a loader-side migration in one place per format
+  brings it up to date. None exists yet, because every format is still
+  at 1.
+- **When to bump:** a schema goes up when a field changes meaning. A new
+  optional field doesn't need a bump, since older loaders ignore what
+  they don't know.
+- **Pre-1.0:** we still change formats freely and rewrite the shipped
+  files rather than carry migrations (CLAUDE.md).
+
+The asset table and a Rack's state are parts of a project or a preset
+and carry no version of their own.
+
 ## Load time
 
 Measured on 2026-10-02 with debug builds and `--render` (load = total

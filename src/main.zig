@@ -1835,7 +1835,9 @@ fn useProject(path: []const u8) void {
 /// "Loaded …", or which files it names that aren't there.
 fn reportLoaded(alloc: std.mem.Allocator, status: *StatusMessage, data: []const u8, path: []const u8) void {
     const gone = package.missing(alloc, data);
-    if (gone.count == 0) {
+    if (document_mod.newer_schema) {
+        status.set("Loaded {s}: made by a newer slab, some settings may be missing", .{basename(path)});
+    } else if (gone.count == 0) {
         status.set("Loaded {s}", .{basename(path)});
     } else {
         status.set("Loaded {s}; {d} files missing: {s}", .{ basename(path), gone.count, std.fs.path.basename(gone.first[0]) });

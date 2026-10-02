@@ -253,6 +253,9 @@ pub fn settingsPath(buf: []u8) []const u8 {
 /// What settings.json holds. Settings are not content: never shared or
 /// published (docs/25 §The home folder).
 pub const Settings = struct {
+    /// The format's tag and version (docs/25 §Formats).
+    slab: []const u8 = "settings",
+    schema: u32 = 1,
     /// The home folder, when it isn't ~/Music/Slab.
     home: []const u8 = "",
     /// Copy the sample-pack files a project uses into it on save.
