@@ -5,6 +5,10 @@
 const std = @import("std");
 const c = @import("c.zig");
 
+/// Redraw rate once the UI has been quiet for IDLE_AFTER_FRAMES frames.
+const IDLE_FPS = 20;
+const IDLE_AFTER_FRAMES = 60;
+
 const audio_mod = @import("audio.zig");
 const transport_mod = @import("transport.zig");
 const engine_mod = @import("engine.zig");
@@ -617,6 +621,10 @@ pub fn main(init: std.process.Init) !void {
     }
 
     splash.finishBoot();
+    // Idle throttle: once the UI has been quiet (no input, no drag, stopped
+    // transport) for a moment, redraw at IDLE_FPS instead of 120.
+    var quiet_frames: u32 = 0;
+    var fps_idle = false;
     while (!c.rl.WindowShouldClose()) {
         const sw: f32 = @floatFromInt(c.rl.GetScreenWidth());
         const sh: f32 = @floatFromInt(c.rl.GetScreenHeight());
@@ -1176,6 +1184,13 @@ pub fn main(init: std.process.Init) !void {
 
         pane.applyCursor(ui);
         ui.endFrame();
+
+        quiet_frames = if (ui.wants_frame or transport.isPlaying() or modal) 0 else quiet_frames +| 1;
+        const want_idle = quiet_frames > IDLE_AFTER_FRAMES;
+        if (want_idle != fps_idle) {
+            fps_idle = want_idle;
+            c.rl.SetTargetFPS(if (fps_idle) IDLE_FPS else 120);
+        }
 
         for (tracks) |*t| t.publishSnapshot(&audio_pool);
         engine.publishRouting();
