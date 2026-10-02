@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "char2", "note": "SP-1200 crunch: 12-bit 26 kHz grit under a hard SMUSH squash, no wow", "params": {"char-mode": 3, "char-ratio": 20, "char-atk": 0.001, "char-rel": 0.06, "char-drive": 0.2, "char-mix": 1, "char-lofi": 0.4, "char-ltype": 2, "char-noise": 0.15, "char-wow": 0, "char-thresh": -19.6, "char-makeup": 0.0}}

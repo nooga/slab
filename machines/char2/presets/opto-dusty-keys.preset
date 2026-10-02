@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "char2", "note": "gentle opto levelling into a worn 45 RPM record with 90s grit, for keys and pads", "params": {"char-mode": 1, "char-ratio": 3, "char-atk": 0.01, "char-rel": 1.0, "char-drive": 0.2, "char-mix": 1, "char-lofi": 0.35, "char-ltype": 1, "char-noise": 0.35, "char-wow": 0.45, "char-rpm": 1, "char-thresh": -16.4, "char-makeup": 2.5}}

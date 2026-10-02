@@ -3,7 +3,7 @@
 Which compressors Slab should have beyond `comp2`, how the classic
 designs make their sound, and how each new machine gets measured.
 **Status:** all built: (0) prerequisites, (1) bus2, (2) the comp2
-revision, (3) multi2 and (4) the character modes as `char2` (§comp2 /
+revision, (3) multi2 and (4) the character modes as `char2`, with SMUSH, LO-FI and WOW (§comp2 /
 bus2 / multi2 / char2 as built). The
 survey's numbers marked *measured* are the old comp2 and come from
 `zig build bench` on comp2 (Debug, 2026-09-28) and from a numpy mirror
@@ -359,8 +359,8 @@ detector and gain computer and bus.fy's 2× color stage and output.
 - **Knee on the display** comes from a state cell (`dyn-display-knee`),
   since it follows MODE rather than a control. A `derive` word writes the
   mode's knee and detector into comp.fy's params before block-prepare.
-- **DRIVE 0 is clean** (THD < −94 dB, all modes) and runs
-  `k-char-tick-clean` (`render-lite`, docs/04).
+- **DRIVE 0 is clean** (THD < −94 dB, all modes) and skips the color
+  stage (an `ifte` arm; it was `render-lite` until §SMUSH).
 
 Measured (Debug): FET release τ63 966 ms at REL 1 s; OPTO release 331 ms
 after a 50 ms burst and 488 ms after a 2 s block (1.47×); VARI after the
@@ -381,6 +381,74 @@ floor, with and without DRIVE. Cost (ReleaseFast) 38 ns/sample at DRIVE
 | `opto-smooth` | OPTO 2.5:1, 1.5 s, drive 0.15 | pads and keys, 2.5 dB p90 | pump 0.62 |
 | `vari-glue` | VARI 2:1, 10 ms / 0.4 s, HPF 60, drive 0.25 | mixes, 2 dB p90 | pump 0.56 |
 | `vari-drums` | VARI 4:1, 3 ms / 0.3 s, HPF 60, drive 0.5 | drums, 5 dB on hits | t/b +0.5 |
+
+### SMUSH, LO-FI and WOW (2026-10-02)
+
+A fourth char2 mode after the Boss SP-303's "Vinyl Sim" compressor
+(c. 2000, the J Dilla / Madlib pump), as Goodhertz's Vulf Compressor
+extends it. Goodhertz publishes no detector or timing numbers. Its manual
+says there is "no traditional fixed attack time", that small release
+values pump, and that compression never fully turns off. The plugin
+is one AMOUNT knob plus Wow/Flutter and Lo-Fi stages (Analog, 1990s
+digital, 1980s digital). Vinyl Sim itself is compression, wow, a
+low-pass and noise. SMUSH keeps char2's knobs honest and gets the rest
+from the mode:
+
+- **Knee 3 dB, PEAK.**
+- **Program-dependent attack.** The attack coefficient becomes
+  `c' = c − (1 − c)·k·over`, where `over` is how far the target gain is
+  below the current one (log2 units) and k = 1. A hit 12 dB over clamps
+  about 3× faster than ATK; a small one breathes at ATK. In the other
+  modes k = 0, so the result is c exactly and the old goldens hold bit
+  for bit. Measured with THRESH −30, 20:1 and ATK 4 ms: attack τ63 is
+  1.65 ms, where FET with the same knobs measures 4.21 ms.
+- **Auto makeup** of half the static GR at 0 dBFS:
+  `0.5·(−T)·(1 − 1/R)`, on top of MAKEUP. As the gain recovers between
+  hits, the room, the tails and the LO-FI hiss come up. That is the
+  "breathing".
+- **Picking SMUSH on the panel** sets THRESH −30, RATIO 20, ATK 1.5 ms,
+  REL 70 ms, LOFI 0.5 and WOW 0.15. The last two are the plugin's own
+  defaults.
+
+Without lookahead, any fast compressor lets the first milliseconds of
+a hit through and clamps the body. On the bench `drums` loop SMUSH
+raises transient-to-body (6.6 → 11–15 dB) and crest. Reviews of the
+plugin say the same: it "exaggerates ambience and transients".
+
+LO-FI and WOW work in every mode, after the color. They are separate
+reusable kernels, meant to be shared with a future tape machine:
+
+| kernel | what | numbers |
+|---|---|---|
+| `kernels/07-effects/wow.fy` | stereo Hermite read on one head, wow + flutter magic-circle LFOs | rate = the record's turn (RPM switch 33/45/78 → 0.556/0.75/1.3 Hz), flutter 12× that; 0.8 % / 0.15 % pitch deviation at depth 1; delay swing = dev / 2πf |
+| `kernels/07-effects/lofi.fy` | gated hiss, sample-and-hold, bits, crunch, coupling cap, band limit | ANALOG: biased cubic soft clip `f(u+b) − f(b)` (b 0.15: odd and even harmonics), HP 7 → 63 Hz, LP 20 → 5 kHz. 90s: hold 32 → 16 kHz, 16 → 12 bits. 80s: 26.04 → 13 kHz (SP-1200), 12 → 8 bits. The digital types have no anti-alias filter and reconstruct at 0.45 × the hold rate. NOISE runs −72 → −30 dB, gated by a 0.5 s follower of the detector |
+
+The hiss goes in **before** the gain, so the compressor pumps it.
+Gated, it reaches exact zero (it flushes below 1e−7), so the machine
+still goes idle. Each stage sits behind an `ifte` on its own param.
+WOW at 0 only feeds its ring, so turning it up never replays stale
+audio. `render-lite` is gone: DRIVE 0 is an `ifte` arm now.
+
+Measured, SMUSH with the preset settings and LOFI 0.5, WOW 0.15:
+- 1 kHz −6 dBFS THD: −37.8 dB ANALOG, −36.0 90s, −37.0 80s.
+- NONHARM: −58.6 dB ANALOG; −30.9 and −28.6 dB for 90s and 80s, which
+  is the intended aliasing.
+
+Cost, ReleaseFast:
+- 42 ns/sample clean (before: 38).
+- 150 ns with DRIVE (before: 155).
+- 202 ns for the full 80s SMUSH chain with WOW.
+
+**Presets.** THRESH is solved with LO-FI and WOW off, because their delay
+and filtering break the bench's sample-wise gain. The GR target is the
+reduction under the auto makeup.
+
+| preset | character | material, target | measured |
+|---|---|---|---|
+| `smush-vinyl` | SMUSH 20:1, 1.5 / 70 ms, drive 0.3, ANALOG 0.5, noise 0.3, wow 0.15 | drums, 15 dB on hits | spread 6.3 → 3.6, pump 3.9, +0.3 dB |
+| `smush-1200` | SMUSH 20:1, 1 / 60 ms, 80s 0.4, noise 0.15 | drums, 12 dB on hits | spread 6.3 → 4.2, +2.2 dB at MAKEUP 0 (the auto makeup alone overshoots) |
+| `smush-slam` | SMUSH 20:1, 0.5 / 50 ms, drive 0.6, mix 0.5 | drums, 20 dB wet on hits | spread 6.3 → 3.7, t/b −1.6 |
+| `opto-dusty-keys` | OPTO 3:1, 90s 0.35, noise 0.35, wow 0.45 at 45 | pads and keys, 3 dB p90 | spread 4.7 → 4.1 |
 
 ### (0) Prerequisites
 

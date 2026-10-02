@@ -11,7 +11,12 @@ BASS = ["glass_horizon.BASS", "paper_boulevard.BASS", "voltage_riot.BASS"]
 PADS = ["glass_horizon.PAD", "paper_boulevard.PAD", "glass_horizon.CHOIR", "paper_boulevard.E.PIANO"]
 VOICE = ["glass_horizon.VOICE"]
 MIX = ["glass_horizon.MIX", "paper_boulevard.MIX", "voltage_riot.MIX"]
-FET, OPTO, VARI = 0, 1, 2
+FET, OPTO, VARI, SMUSH = 0, 1, 2, 3
+ANALOG, D90S, D80S = 0, 1, 2   # switches take the option index: rpm 0 33, 1 45, 2 78
+# LO-FI and WOW: off while THRESH is solved [their delay and filtering
+# break the bench's sample-wise gain], on for the level solve and the
+# final measurement
+FX = ("lofi", "ltype", "noise", "wow", "rpm")
 D = {
  # 1176 all-buttons flavour for parallel smash: 20:1, fastest, dirty, under the dry kit
  "fet-smash":  dict(p=dict(mode=FET, ratio=20, atk=0.00005, rel=0.15, drive=0.7, mix=0.4), mat=DRUMS, key="g01", gr=14.0, lvl=1.5),
@@ -27,6 +32,14 @@ D = {
  "vari-glue":  dict(p=dict(mode=VARI, ratio=2, atk=0.01, rel=0.4, drive=0.25, hpf=60, mix=1), mat=MIX, key="g10", gr=2.0, lvl=0),
  # vari-mu on drums: thick and warm, 4:1 at the top of its knee
  "vari-drums": dict(p=dict(mode=VARI, ratio=4, atk=0.003, rel=0.3, drive=0.5, hpf=60, mix=1), mat=DRUMS, key="g01", gr=5.0, lvl=0),
+ # the SP-303 Vinyl Sim on a drum loop: deep squash, the room and hiss breathe up, a little wow
+ "smush-vinyl": dict(p=dict(mode=SMUSH, ratio=20, atk=0.0015, rel=0.07, drive=0.3, mix=1, lofi=0.5, ltype=ANALOG, noise=0.3, wow=0.15), mat=DRUMS, key="g01", gr=15.0, lvl=0),
+ # SP-1200 crunch: 12-bit 26 kHz grit under a hard squash, no wow
+ "smush-1200": dict(p=dict(mode=SMUSH, ratio=20, atk=0.001, rel=0.06, drive=0.2, mix=1, lofi=0.4, ltype=D80S, noise=0.15), mat=DRUMS, key="g01", gr=12.0, lvl=0),
+ # slam: everything flattened, dirty, for a parallel bus under the kit
+ "smush-slam": dict(p=dict(mode=SMUSH, ratio=20, atk=0.0005, rel=0.05, drive=0.6, mix=0.5), mat=DRUMS, key="g01", gr=20.0, lvl=1.5),
+ # dusty keys: gentle opto levelling into a worn 45 with 90s grit
+ "opto-dusty-keys": dict(p=dict(mode=OPTO, ratio=3, atk=0.01, rel=1.0, drive=0.2, mix=1, lofi=0.35, ltype=D90S, noise=0.35, wow=0.45, rpm=1), mat=PADS, key="g10", gr=3.0, lvl=0),
 }
 
 def run(params, mat):
@@ -34,12 +47,15 @@ def run(params, mat):
 
 def solve(d):
     p = dict(d["p"], makeup=0)
-    wet = dict(p, mix=1, makeup=0)
+    wet = {k: v for k, v in dict(p, mix=1, makeup=0).items() if k not in FX}
     lo, hi = -40.0, 0.0
     for _ in range(9):
         mid = (lo + hi) / 2
         m, _ = run(dict(wet, thresh=mid), d["mat"])
-        if -m[d["key"]] > d["gr"]: lo = mid
+        # SMUSH's auto makeup [char.fy CHAR-SMUSH-AUTO] is in the
+        # measured gain; the target is the reduction under it
+        auto = 0.5 * -mid * (1 - 1 / p["ratio"]) if p["mode"] == SMUSH else 0.0
+        if -m[d["key"]] + auto > d["gr"]: lo = mid
         else: hi = mid
     p["thresh"] = round((lo + hi) / 2, 1)
     for _ in range(4):

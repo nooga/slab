@@ -2372,7 +2372,7 @@ Presets:
 
 | param | section | label | range | default | notes |
 |---|---|---|---|---|---|
-| `char-mode` | COMP | MODE | 0 FET / 1 OPTO / 2 VARI | 0 | switch |
+| `char-mode` | COMP | MODE | 0 FET / 1 OPTO / 2 VARI / 3 SMUSH | 0 | switch |
 | `char-thresh` | COMP | THRESH | -40 … 0 | -18 | linear |
 | `char-ratio` | COMP | RATIO | 1 … 20 | 4 | pow |
 | `char-atk` | TIME | ATK | 2e-05 … 0.05 | 0.001 | exp |
@@ -2381,14 +2381,23 @@ Presets:
 | `char-drive` | OUT | DRIVE | 0 … 1 | 0.3 | linear |
 | `char-makeup` | OUT | MAKEUP | 0 … 24 | 0 | linear |
 | `char-mix` | OUT | MIX | 0 … 1 | 1 | pow |
+| `char-ltype` | LO-FI | TYPE | 0 ANALOG / 1 90s / 2 80s | 0 | switch |
+| `char-lofi` | LO-FI | LOFI | 0 … 1 | 0 | linear |
+| `char-noise` | LO-FI | NOISE | 0 … 1 | 0.3 | linear |
+| `char-rpm` | WOW | RPM | 0 33 / 1 45 / 2 78 | 0 | switch |
+| `char-wow` | WOW | WOW | 0 … 1 | 0 | pow |
 
 Presets:
 
 - `fet-punch` — FET 4:1, 3 ms lets the stick through, 0.1 s, a little grit - drums
 - `fet-smash` — 1176 all-buttons flavour for parallel smash: FET 20:1, 50 us, dirty, 40% under the dry kit
 - `opto-bass` — LA-2A on bass: OPTO 4:1, holds the line even
+- `opto-dusty-keys` — gentle opto levelling into a worn 45 RPM record with 90s grit, for keys and pads
 - `opto-smooth` — gentle opto levelling for pads and keys, 2.5:1, long release
 - `opto-vocal` — LA-2A on a vocal: OPTO 3:1, the two-stage release, light warmth
+- `smush-1200` — SP-1200 crunch: 12-bit 26 kHz grit under a hard SMUSH squash, no wow
+- `smush-slam` — SMUSH slam: everything flattened and dirty, 50% under the dry kit
+- `smush-vinyl` — SP-303 Vinyl Sim pump on a drum loop: SMUSH 20:1, the room and hiss breathe up between hits, LO-FI analog, a little wow
 - `vari-drums` — vari-mu on drums: VARI 4:1, thick and warm
 - `vari-glue` — Fairchild on the mix bus: VARI 2:1 over its wide knee, slow floor, warm
 
