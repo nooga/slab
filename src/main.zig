@@ -391,7 +391,9 @@ fn applyPresetTo(t: *track_mod.Track, preset_idx: u16) void {
 /// thread alone (docs/07 §Parallel rendering; default: the performance
 /// cores). The render workers get real-time scheduling and join the
 /// device's I/O workgroup (render_pool.zig); `--no-rt-workers` leaves them
-/// at user-interactive QoS.
+/// at user-interactive QoS. `--no-machine-cache` compiles every machine
+/// instance in a host of its own; `--flush-each` flushes fy's instruction
+/// cache per linked word instead of once per file (docs/25 §Load time).
 const Cli = struct {
     project: ?[]const u8 = null,
     render: ?[]const u8 = null,
@@ -433,6 +435,10 @@ pub fn main(init: std.process.Init) !void {
                 @import("machines/fy_raw_machine.zig").neon_lanes = false;
             } else if (std.mem.eql(u8, a, "--no-branches")) {
                 @import("machines/fy_raw_machine.zig").dsp_versioning = false;
+            } else if (std.mem.eql(u8, a, "--no-machine-cache")) {
+                @import("machines/fy_raw_machine.zig").share_hosts = false;
+            } else if (std.mem.eql(u8, a, "--flush-each")) {
+                @import("fy_host.zig").batch_flush = false;
             } else cli.project = a;
         }
     }

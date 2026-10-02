@@ -23,6 +23,11 @@ const c = @import("c.zig");
 /// in fy, only one Slab fy callback may execute at a time.
 pub var callback_mutex: std.atomic.Mutex = .unlocked;
 
+/// Compile a file with fy's instruction-cache flushes held, invalidating
+/// what it linked in one pass at the end instead of once per word
+/// (docs/25 §Load time). `--flush-each` turns it off.
+pub var batch_flush: bool = true;
+
 pub fn lockCallbacks() void {
     while (!callback_mutex.tryLock()) {
         std.Thread.yield() catch {};
@@ -344,6 +349,8 @@ pub const FyHost = struct {
     /// Compile a fy file; definitions persist. Imports resolve relative
     /// to the file's directory (uses the now-public runWithBaseDir).
     pub fn compileFile(self: *FyHost, path: []const u8) !void {
+        if (batch_flush) self.fy.holdFlush();
+        defer if (batch_flush) self.fy.releaseFlush();
         const src = try readFilePosix(self.alloc, path);
         defer self.alloc.free(src);
         const base_dir = dirName(path);

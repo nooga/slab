@@ -97,6 +97,150 @@ pub const test_hosts = struct {
     }
 };
 
+/// Where an instance's compiled host comes from: its own compile, the
+/// app's host cache, or the test builds' shared hosts.
+pub const HostSource = enum { own, cache, tests };
+
+fn releaseHost(alloc: std.mem.Allocator, host: *FyHost, source: HostSource) void {
+    switch (source) {
+        .own => {
+            host.deinit();
+            alloc.destroy(host);
+        },
+        .cache => host_cache.release(host),
+        .tests => {},
+    }
+}
+
+/// Instances of one machine share one compiled host (docs/25 §Load time):
+/// compiling a machine costs ~100 ms in a Debug build, and a song makes
+/// dozens of instances of a few machines. Each instance still gets its own
+/// descriptor, state, params, buffers and callers on it. `--no-machine-cache`
+/// compiles every instance in a host of its own.
+pub var share_hosts: bool = true;
+
+/// The app's compiled hosts, by (machine path, versioning). A host is kept
+/// after its last instance goes, so the registry's manifest compile and a
+/// project reload reuse it; it is recompiled once any file it compiled (the
+/// machine and everything it includes) changes on disk, so a livecoded edit
+/// reaches the next instance. Hosts live on the C allocator for the whole
+/// run; a stale host is freed when its last instance is.
+pub const host_cache = struct {
+    const MAX = 64;
+    const MAX_FILES = 128;
+
+    const Stamp = struct { path: []const u8 = "", sec: i64 = 0, nsec: i64 = 0 };
+
+    const Entry = struct {
+        path: [256]u8 = undefined,
+        path_len: usize = 0,
+        versioning: bool = true,
+        host: ?*FyHost = null,
+        refs: usize = 0,
+        stale: bool = false,
+        main: [256]u8 = undefined,
+        files: [MAX_FILES]Stamp = undefined,
+        file_count: usize = 0,
+        /// Some file it compiled is beyond MAX_FILES: never trust it.
+        overflow: bool = false,
+    };
+
+    var entries: [MAX]Entry = [_]Entry{.{}} ** MAX;
+
+    // std.c.stat names a symbol std doesn't declare on aarch64 macOS.
+    extern "c" fn stat(path: [*:0]const u8, buf: *std.c.Stat) c_int;
+
+    fn stamp(path: []const u8) ?Stamp {
+        var zb: [1024]u8 = undefined;
+        const z = std.fmt.bufPrintZ(&zb, "{s}", .{path}) catch return null;
+        var st: std.c.Stat = undefined;
+        if (stat(z.ptr, &st) != 0) return null;
+        const t = st.mtime();
+        return .{ .path = path, .sec = t.sec, .nsec = t.nsec };
+    }
+
+    fn fresh(e: *const Entry) bool {
+        if (e.overflow) return false;
+        for (e.files[0..e.file_count]) |f| {
+            const now = stamp(f.path) orelse return false;
+            if (now.sec != f.sec or now.nsec != f.nsec) return false;
+        }
+        return true;
+    }
+
+    fn drop(e: *Entry) void {
+        if (e.host) |h| {
+            h.deinit();
+            std.heap.c_allocator.destroy(h);
+        }
+        e.* = .{};
+    }
+
+    pub fn acquire(path: []const u8, versioning: bool) !*FyHost {
+        for (&entries) |*e| {
+            const h = e.host orelse continue;
+            if (e.stale or e.versioning != versioning or !std.mem.eql(u8, e.path[0..e.path_len], path)) continue;
+            if (fresh(e)) {
+                e.refs += 1;
+                return h;
+            }
+            e.stale = true;
+            if (e.refs == 0) drop(e);
+        }
+        if (path.len > 256) return error.MachinePathTooLong;
+        const slot = for (&entries) |*e| {
+            if (e.host == null) break e;
+        } else for (&entries) |*e| {
+            if (e.refs == 0) {
+                drop(e);
+                break e;
+            }
+        } else return error.HostCacheFull;
+
+        // Stamp before compiling, so an edit that lands mid-compile shows
+        // as a change next time.
+        @memcpy(slot.main[0..path.len], path);
+        slot.files[0] = stamp(path) orelse return error.FileNotFound;
+        slot.files[0].path = slot.main[0..path.len];
+        const alloc = std.heap.c_allocator;
+        const host = try alloc.create(FyHost);
+        errdefer alloc.destroy(host);
+        host.* = FyHost.init(alloc);
+        host.fy.dsp2_versioning = versioning;
+        errdefer host.deinit();
+        try host.compileFile(path);
+
+        slot.file_count = 1;
+        slot.overflow = false;
+        // Included files' paths are the keys of fy's file map, owned by
+        // the host for as long as it lives.
+        var it = host.fy.file_ns_map.keyIterator();
+        while (it.next()) |k| {
+            if (slot.file_count == MAX_FILES) {
+                slot.overflow = true;
+                break;
+            }
+            slot.files[slot.file_count] = stamp(k.*) orelse Stamp{ .path = k.*, .sec = -1 };
+            slot.file_count += 1;
+        }
+        @memcpy(slot.path[0..path.len], path);
+        slot.path_len = path.len;
+        slot.versioning = versioning;
+        slot.host = host;
+        slot.refs = 1;
+        slot.stale = false;
+        return host;
+    }
+
+    pub fn release(host: *FyHost) void {
+        for (&entries) |*e| if (e.host == host) {
+            e.refs -|= 1;
+            if (e.stale and e.refs == 0) drop(e);
+            return;
+        };
+    }
+};
+
 pub const Mode = machine_desc.Mode;
 
 /// Kernel ABI context (docs/04 §Kernel ABI), mirrored by `Ctx` in
@@ -162,7 +306,7 @@ const Display = machine_desc.Display;
 pub const FyRawMachine = struct {
     host: *FyHost,
     // The host is test_hosts' (test builds): deinit leaves it alone.
-    host_shared: bool = false,
+    host_source: HostSource = .own,
     desc: machine_desc.Desc,
     // Per-region state: effect machines run L through region 0 and R through
     // region 1 so per-channel state never cross-talks; polyphonic voice
@@ -398,16 +542,21 @@ pub const FyRawMachine = struct {
     pub fn create(alloc: std.mem.Allocator, path: []const u8) !*FyRawMachine {
         const self = try alloc.create(FyRawMachine);
         errdefer alloc.destroy(self);
-        const shared = builtin.is_test;
-        const host = if (shared) try test_hosts.get(path, dsp_versioning) else try alloc.create(FyHost);
-        errdefer if (!shared) alloc.destroy(host);
-        if (!shared) {
-            host.* = FyHost.init(alloc);
-            host.fy.dsp2_versioning = dsp_versioning;
-        }
-        errdefer if (!shared) host.deinit();
-
-        if (!shared) try host.compileFile(path);
+        const source: HostSource = if (builtin.is_test) .tests else if (share_hosts) .cache else .own;
+        const host = switch (source) {
+            .tests => try test_hosts.get(path, dsp_versioning),
+            .cache => try host_cache.acquire(path, dsp_versioning),
+            .own => blk: {
+                const h = try alloc.create(FyHost);
+                errdefer alloc.destroy(h);
+                h.* = FyHost.init(alloc);
+                h.fy.dsp2_versioning = dsp_versioning;
+                errdefer h.deinit();
+                try h.compileFile(path);
+                break :blk h;
+            },
+        };
+        errdefer releaseHost(alloc, host, source);
         const desc = try machine_desc.read(host);
         if (desc.state_size > MAX_STATE or desc.params_size > MAX_PARAMS) return error.RawMachineStorageTooLarge;
         if (desc.voices > MAX_REGIONS) return error.RawMachineTooManyVoices;
@@ -427,7 +576,7 @@ pub const FyRawMachine = struct {
 
         self.* = .{
             .host = host,
-            .host_shared = shared,
+            .host_source = source,
             .desc = desc,
             .panel_w = desc.panel_w,
             .alloc = alloc,
@@ -2645,10 +2794,7 @@ fn deinitImpl(state: *anyopaque, alloc: std.mem.Allocator) void {
     self.freeAssets(alloc);
     // derive-data is libc-malloc'd by fy's `alloc`; fy doesn't track it.
     if (self.desc.derive_data != 0) std.c.free(@ptrFromInt(self.desc.derive_data));
-    if (!self.host_shared) {
-        self.host.deinit();
-        alloc.destroy(self.host);
-    }
+    releaseHost(alloc, self.host, self.host_source);
     alloc.destroy(self);
 }
 

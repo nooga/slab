@@ -3,7 +3,8 @@
 Where slab keeps what it ships and what users make, how a project names
 the files it uses, how a project stays whole when it moves to another
 computer, and how anything a user makes becomes something others can
-open. **Status: design.** Built: the shared table cache (§Load time).
+open. **Status: design.** Built: the shared table cache, the shared
+machine hosts and fy's batched cache flush (§Load time).
 Code, as it lands: `src/storage.zig` (roots and references),
 `src/document.zig` (the project package), `src/wavetable_cache.zig`.
 
@@ -80,6 +81,104 @@ iCloud users expect to find it there.
 `~/Library/Application Support/Slab/settings.json`: the audio device,
 UI zoom, recent projects, a moved home folder, and the collect policy.
 They are never shared or published.
+
+## Packs
+
+A **pack** is a set of samples too large to ship with slab, or not
+slab's to ship. Examples:
+- **Free:** VCSL, about 6 GB.
+- **Yours to own:** the Fairlight CMI disks, the Reverb drum machine
+  collection, a commercial library.
+
+A pack lives in `Library/<pack id>/`, with the layout its importer
+expects, and shows up in slab as presets and kits like anything that
+ships.
+
+### The pack manifest
+
+Slab knows a pack by its manifest, `<id>.pack.json`. Manifests ship
+with slab in `factory:packs/`, and more can come from the online
+repository:
+
+```json
+{"id": "vcsl", "name": "Versilian Community Sample Library", "version": "2024.1",
+ "license": "CC0-1.0", "redistributable": true, "size": 6100000000,
+ "get": {"download": [{"url": "https://github.com/sgossner/VCSL/archive/<commit>.zip", "sha256": "…"}]},
+ "index": {"url": "slab:@slab/vcsl-index@3", "sha256": "…"}}
+```
+
+```json
+{"id": "cmi", "name": "Fairlight CMI disks", "redistributable": false,
+ "get": {"supply": {"into": "_sources",
+   "expect": [{"name": "IIx v1.4 library", "glob": "**/*.VC", "min": 100},
+              {"name": "Series II WAV dumps", "glob": "**/*.wav"}],
+   "help": "Copy your disk images, or the folders you have them in, here."}},
+ "import": "cmi"}
+```
+
+- **`get`** says how the files arrive, in one of three ways:
+  - `download`: URLs, each pinned by hash. A URL can be https, a git
+    archive, or a `slab:` item. Mirrors are listed in order.
+  - `supply`: the user brings the files. The manifest lists what
+    slab should find, and where to put it.
+  - `instructions`: text and a link, for packs bought elsewhere. After
+    buying, the pack is a `supply` pack.
+- **`index`** holds the files that make a pack playable:
+  - **What's in it:** the generated SFZs, kits, presets and catalog,
+    everything `tools/library/*.py` writes today.
+  - **Where it comes from:** for a known collection, the index ships
+    ready-made, keyed to the files' hashes. Installing then means only
+    fetching or finding the samples, with nothing to run on the
+    user's machine.
+- **`import`** names a slab importer, built into the app (not Python),
+  for files the index can't predict. Examples: a supply pack whose
+  hashes don't match a known collection, or the user's own folder of
+  disks. The importer writes the same index that a ready-made one
+  would.
+
+References in projects and presets never use URLs: they stay
+`lib:<id>/…`. URLs appear only in pack manifests, so a project never
+breaks because a server moved.
+
+### Installing
+
+The browser's Library page lists every pack slab knows of, one card
+each, in one of these states:
+
+| State | The card offers |
+|---|---|
+| Available (download) | **Download** with the size. Slab fetches, checks hashes, unpacks into `Library/<id>/`, and installs the index. Progress is on the card, and a cancelled or broken download resumes. |
+| Needs your files (supply) | **Show Folder** (creates `Library/<id>/_sources/` and opens it in Finder), the `help` text, and a list of what slab expects and has found so far. Dropping a folder or a zip on the card copies it there. Once the expected files are found, slab imports on its own. |
+| Instructions | the text and the link. The card then turns into "Needs your files". |
+| Installed | the version, size on disk, **Reveal**, **Remove**, and **Update** when a newer index or version exists |
+
+The layout under `Library/<id>/` is the one the pack's importer writes,
+so a pack that is already set up by hand keeps working unchanged. The
+CMI and drum-machine folders in the library now are exactly what their
+`supply` pack expects: slab finds them and marks the packs installed.
+
+### Pack presets
+
+A pack's presets live in the pack, in
+`Library/<id>/presets/<machine id>/…`. Each machine's preset menu adds
+installed packs as banks, next to factory and user presets.
+
+This replaces the gitignored generated presets in the repo
+(`machines/sampler/presets/vcsl-*`, `machines/unfairlight/presets/cmi-*`,
+`machines/rack/presets/cmi-*`, …). Those are presets that exist only
+on machines that ran a script, and only inside a checkout.
+
+### Missing packs
+
+A project's asset entry for a `lib:` file names its pack and version.
+Collect on save copies only the files a project uses, so a moved project
+normally plays anyway. When a file is missing, the track says which pack
+to install, with a button that opens its card. It never just goes
+silent.
+
+A project that collected files from a pack that isn't redistributable
+still plays on its owner's machines. Sending that project to someone
+else is the user's call, but Publish refuses those files (§Licenses).
 
 ## The project package
 
@@ -305,10 +404,10 @@ format when the online part lands.
 Measured on 2026-10-02 with debug builds and `--render` (load = total
 time − render time):
 
-| Song | Load before | Load after the table cache |
-|---|---|---|
-| `pml_basses` (23 Concoctions) | 20.9 s | 7.7 s |
-| `voltage_riot`, `paper_boulevard` | ~4.5 s | unchanged |
+| Song | Before | Table cache | + fy flush range | + shared hosts |
+|---|---|---|---|---|
+| `pml_basses` (23 Concoctions) | 20.9 s | 7.7 s | 6.2 s | 4.0 s |
+| `voltage_riot` | ~4.5 s | ~4.5 s | 4.1 s | 2.3 s |
 
 **Wavetables (fixed).** Every Concoction built its own copy of every
 table it declares, at 12 FFTs a frame. For `pml_basses` that was 46
@@ -326,16 +425,51 @@ counts its users:
 
 The render is bit-identical.
 
-**fy compilation (open).** The rest of every load compiles each
-instance's machine source in its own host. Most of that time goes to
-clearing the instruction cache once per linked word (`Image.link`,
-`registerGeneratedWord`) instead of once per compile. Two steps:
-1. **One flush per compile.** This is a change in fy.
-2. **Compile once per machine type** and give each instance its own
-   state, as the test builds' shared hosts already do
-   (`test_hosts`). This first needs a check of what livecoding expects:
-   a shared host means that editing the source changes every instance
-   of that machine type at once.
+**fy's instruction-cache flush (fixed in fy).** fy flushed the whole
+image, from its start to the newest word, after every word it linked.
+It also re-protected the whole 64 MB range each time. That made a
+compile quadratic in the code already linked. Now:
+- **Each link flushes only what it wrote,** and the image is mapped
+  RWX once.
+- **Fy.holdFlush / releaseFlush** defer flushes across a batch.
+  Linking then only widens a pending range, and the release flushes it
+  in one pass.
+- **Code is never run stale:**
+  - Anything fy runs while held flushes first: wrappers, `jit`,
+    constants, macros.
+  - A trampoline patch also flushes first, so new code is never
+    reachable before it is flushed.
+- **Slab holds flushes around each `compileFile`.** `--flush-each`
+  turns this off.
+
+The range fix did the work. Holding saves almost nothing on top of it
+(3.8 s vs 4.0 s for `pml_basses` with `--flush-each`, within the
+noise). It stays because it costs nothing and helps on larger images.
+
+**Shared machine hosts (built).** Every instance used to compile its
+machine source in a host of its own. Now instances of one machine type
+share one compiled host from `host_cache`
+(`src/machines/fy_raw_machine.zig`):
+- **What stays per instance:** each instance still has its own
+  descriptor, state, params, buffers and callers.
+- **The registry's manifest read** comes off the same host, so slab
+  compiles each machine type once.
+- **Hosts are kept after their last instance goes,** so reopening a
+  project compiles nothing.
+- **Livecoding still works:** a host is recompiled when any file it
+  compiled changes on disk (the machine file, and everything it
+  includes, from fy's `file_ns_map`). An edit then reaches the next
+  instance. Instances made before the edit keep the old host until
+  they go.
+- **Concurrent rendering is safe:** a dsp body uses only the machine
+  stack and its own slots, and the current-instance pointer is
+  thread-local. Renders with the cache are bit-identical to renders
+  without it, on the worker pool.
+- **`--no-machine-cache`** compiles every instance on its own, as
+  before.
+
+**What's left** is compiling each machine type once, about 100 ms each
+in Debug. A release build is several times faster.
 
 **FFT (open).** The table build itself could use precomputed rotation
 factors and an optimized build of `wavetable.zig` even in Debug. Since
@@ -343,7 +477,8 @@ the cache, this only matters for the first instance.
 
 ## Phases
 
-1. **Shared table cache.** Built.
+1. **Load time.** The shared table cache, fy's batched flush and the
+   shared machine hosts are built.
 2. **Roots and references.** `src/storage.zig` resolves `project:`,
    `user:`, `factory:` and `lib:` (`lib:` moves here from
    `keymap.resolvePath`). Paths with no prefix become project-relative.
@@ -360,8 +495,15 @@ the cache, this only matters for the first instance.
    - Save to Library for presets, tables and clips.
    - `.slabclip`.
    - The browser with Project, User and Factory sources.
-5. **Machines in projects and the home folder.** Machine ids resolve
+5. **Packs.**
+   - Pack manifests in `factory:packs/`, and the Library page with
+     download, supply and instructions.
+   - Ready-made indexes for VCSL, the CMI disks and the drum machines.
+   - Importers in slab.
+   - Pack presets in the preset menus, replacing the gitignored
+     generated presets.
+6. **Machines in projects and the home folder.** Machine ids resolve
    project → user → factory, and Save to Library works from the code
    view.
-6. **Online.** Item manifests, the cache, Publish, and the browser's
+7. **Online.** Item manifests, the cache, Publish, and the browser's
    Online source, against the repository once it exists.

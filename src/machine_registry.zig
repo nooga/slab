@@ -179,13 +179,20 @@ pub const Registry = struct {
     pub fn loadFyMachine(self: *Registry, path: []const u8) !void {
         try self.ensureRoom();
 
-        // Test builds read the manifest off the host the instances share.
-        const shared = @import("builtin").is_test;
+        // Read the manifest off the host the instances will share (the
+        // test builds' hosts, or the app's host cache), else a throwaway.
+        const raw = fy_raw_machine_mod;
+        const source: raw.HostSource = if (@import("builtin").is_test) .tests else if (raw.share_hosts) .cache else .own;
         var own: FyHost = undefined;
-        if (!shared) own = FyHost.init(self.alloc);
-        defer if (!shared) own.deinit();
-        const host = if (shared) try fy_raw_machine_mod.test_hosts.get(path, fy_raw_machine_mod.dsp_versioning) else &own;
-        if (!shared) try host.compileFile(path);
+        if (source == .own) own = FyHost.init(self.alloc);
+        defer if (source == .own) own.deinit();
+        const host = switch (source) {
+            .tests => try raw.test_hosts.get(path, raw.dsp_versioning),
+            .cache => try raw.host_cache.acquire(path, raw.dsp_versioning),
+            .own => &own,
+        };
+        defer if (source == .cache) raw.host_cache.release(host);
+        if (source == .own) try host.compileFile(path);
         const desc = try machine_desc.read(host);
         // The descriptor's derive-data is a libc-malloc'd table built by the
         // throwaway manifest; only the instance keeps it, so free it here.
