@@ -2,9 +2,11 @@
 
 Thank you for contributing to Slab. This agreement lets the project
 accept your contribution and keep Slab's licensing options open: Slab is
-GPL-3.0-or-later today, and the maintainer may need to license it
-differently later (for example to ship it in an app store whose terms
-conflict with the GPL). You keep the copyright in what you contribute.
+GPL-3.0-or-later today, and the Maintainer may license it differently
+later, including under terms that are not open source (for example to
+ship it in an app store whose terms conflict with the GPL). Versions
+already released under the GPL stay available under it. You keep the
+copyright in what you contribute.
 
 *This is a plain-language agreement drafted for the project. It has not
 been reviewed by a lawyer yet; until it has, treat it as the project's
@@ -27,10 +29,6 @@ Maintainer, a perpetual, worldwide, non-exclusive, royalty-free,
 irrevocable license to use, copy, modify, publish, distribute and
 sublicense your Contributions, and to license them under any terms,
 including terms other than the GPL.
-
-The Maintainer agrees that every version of Slab that includes your
-Contribution will also be available under a free software license
-approved by the Free Software Foundation or the Open Source Initiative.
 
 ## 3. Patent license
 

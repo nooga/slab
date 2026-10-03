@@ -7,8 +7,10 @@ the design docs are the plan, and code follows them.
 
 Sign the [Contributor License Agreement](CLA.md). The CLA bot asks you
 on your first pull request. Slab is GPL-3.0-or-later (see
-[COPYING.md](COPYING.md)); the CLA lets the project keep that and still
-ship builds where the GPL alone wouldn't allow it.
+[COPYING.md](COPYING.md)). The CLA lets the Maintainer license Slab,
+your contributions included, under other terms too, including terms
+that are not open source; releases already made under the GPL stay
+available under it. You keep your copyright.
 
 ## What can go in
 
