@@ -1,0 +1,62 @@
+Slab
+Copyright (C) 2026 Marcin Gasperowicz and the Slab contributors.
+Licensed under the GNU General Public License v3.0 or later, with the
+Slab Machine Exception; factory presets, sounds and demos under CC0 1.0.
+See COPYING.md.
+
+Slab includes or is derived from the following third-party work.
+
+------------------------------------------------------------------------
+msfa (the DX7 engine in Dexed)
+https://github.com/asb2m10/dexed (Source/msfa)
+Copyright 2012 Google Inc.
+Copyright 2017 Pascal Gauthier
+Licensed under the Apache License, Version 2.0 (LICENSES/Apache-2.0.txt).
+
+FM-7.11's voice follows msfa's envelope, level-scaling, velocity, LFO and
+pitch-envelope behavior, its lookup tables and its algorithm table. These
+files were translated from msfa's C++ into fy and Zig and changed for
+Slab (floating point, block-rate control, the DX7 and DX7 II engine
+modes):
+  kernels/06-voices/fm86_voice.fy
+  kernels/06-voices/dx7_tables.fy
+  kernels/06-voices/dx7_chip.fy
+  machines/fm86/fm86.fy
+  machines/fm86/fm86_algo.fy
+  machines/fm86/tools/dx7_import.py
+  src/dx7_algorithms.zig
+
+------------------------------------------------------------------------
+fy
+https://github.com/nooga/fy
+Copyright (c) 2023 Marcin Gasperowicz
+MIT License. The language runtime and JIT, compiled into the app.
+
+------------------------------------------------------------------------
+raylib
+https://www.raylib.com
+Copyright (c) 2013-2024 Ramon Santamaria (@raysan5)
+zlib License. Shipped in the app as Contents/Frameworks/libraylib.dylib.
+
+------------------------------------------------------------------------
+miniaudio
+https://miniaud.io
+Copyright 2026 David Reid
+Public domain (Unlicense) or MIT No Attribution, at your choice.
+vendor/miniaudio.c, vendor/miniaudio.h
+
+------------------------------------------------------------------------
+Tamzen font
+https://github.com/sunaku/tamzen-font
+Copyright 2011 Suraj N. Kurapati; based on Tamsyn,
+Copyright 2010 Scott Fial
+"Tamzen font is free. You are hereby granted permission to use, copy,
+modify, and distribute it as you see fit." See vendor/tamzen/LICENSE.
+
+------------------------------------------------------------------------
+Versilian Community Sample Library (VCSL)
+https://github.com/sgossner/VCSL
+CC0 1.0 / public domain. Not shipped: the VCSL pack downloads it into the
+user's library, and some factory presets play its samples from there.
+Factory sounds made from VCSL recordings are credited in their assets'
+notes.

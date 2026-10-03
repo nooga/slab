@@ -23,6 +23,20 @@ if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
     exit 1
 fi
 
+# The app compiles fy in (../fy). A GPL binary owes its complete source,
+# so the fy commit must be on GitHub before the app built from it ships.
+FY_DIR="$(cd .. && pwd)/fy"
+FY=$(git -C "$FY_DIR" rev-parse HEAD)
+git -C "$FY_DIR" fetch -q origin
+if [[ -z "$(git -C "$FY_DIR" branch -r --contains "$FY")" ]]; then
+    echo "fy $FY isn't on GitHub; push it first (the release's source must be public)." >&2
+    exit 1
+fi
+if [[ -n "$(git -C "$FY_DIR" status --porcelain --untracked-files=no)" ]]; then
+    echo "fy has uncommitted changes; commit and push them first." >&2
+    exit 1
+fi
+
 BUILD="$(cd .. && pwd)/.slab-release"
 git worktree remove --force "$BUILD" 2>/dev/null || rm -rf "$BUILD"
 git worktree add --detach "$BUILD" HEAD
@@ -35,7 +49,7 @@ git push origin "$TAG"
 
 gh release create "$TAG" -R "$REPO" \
     --title "Slab $VERSION" \
-    --notes "Apple Silicon, macOS 13 or later.
+    --notes "Apple Silicon, macOS 13 or later. Built from $TAG with fy [\`${FY:0:7}\`](https://github.com/nooga/fy/commit/$FY); those two are the complete source (GPL-3.0-or-later, see COPYING.md).
 
 Install:
 

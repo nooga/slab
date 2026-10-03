@@ -12,7 +12,7 @@ Brutalist grey, 1px bevels, serious tool.
 
 - Domain: [slab.audio](https://slab.audio) *(to be registered)*
 - Platform: macOS on Apple Silicon only (fy's JIT is aarch64-specific)
-- License: open source *(license TBD)*
+- License: GPL-3.0-or-later; factory presets and sounds CC0 (see [Licensing](#licensing))
 
 ## Status
 
@@ -89,3 +89,14 @@ missing libc stubs for that OS.
 
 Plenty. See [docs/10-roadmap.md](docs/10-roadmap.md) for what we're
 building first vs. what we're explicitly deferring.
+
+## Licensing
+
+Slab is free software: [GPL-3.0-or-later](LICENSE), with the Slab Machine
+Exception, which lets people share the machines, presets, projects and
+packs they make under terms of their choice. Factory presets, sounds and
+demos are [CC0](LICENSES/CC0-1.0.txt): use them in any music, no credit
+owed. The name "Slab", the wordmark and the icon are not licensed; a fork
+needs its own. [COPYING.md](COPYING.md) has the details,
+[NOTICE](NOTICE) the third-party credits, and
+[CONTRIBUTING.md](CONTRIBUTING.md) the contributor agreement.

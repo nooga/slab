@@ -535,6 +535,26 @@ A published item is a **manifest plus content-addressed files**:
   manifests in `Cache/items/`. Anything in it can be deleted and
   downloaded again.
 
+### Licenses for shared items
+
+Every published item names its license as an SPDX id in its manifest,
+and Publish refuses a license its kind doesn't allow. The rules keep
+everything shared usable in anyone's music:
+
+| Kind | License | Why |
+|---|---|---|
+| machine (fy code) | `GPL-3.0-or-later` | It's code: the best ones can become factory machines, and improvements stay open. The Slab Machine Exception (COPYING.md) means a machine's author could choose otherwise, but the repository takes GPL only. |
+| preset | `CC0-1.0` | Settings: they flow into anyone's music and into the factory banks. |
+| sample, table, pack | `CC0-1.0` (default) or `CC-BY-4.0` | Any release can use them. No NC, SA or ND: a non-commercial sample can't go on a record, and share-alike would reach the song. A CC-BY pack's credit line shows on its card, and exporting a project that uses one lists the credits it owes. |
+| project | `CC-BY-4.0` (default), `CC-BY-SA-4.0`, `CC-BY-NC-4.0`, `CC-BY-NC-SA-4.0` or `CC0-1.0` | A song is its author's. They decide whether others may release remixes; anyone may open it and learn from it. |
+
+- **The name and look are not licensed:** an item may say it is "for
+  Slab" but not use the Slab name or logo as its own branding.
+- **What can't be published at all:** files from a pack that isn't
+  redistributable (§Licenses), hardware ROMs, commercial libraries, and
+  AI-generated sounds whose service forbids redistributing them as
+  sounds (ElevenLabs Sound Effects, among others).
+
 The repository itself (accounts, search, the server API) is a separate
 design. This doc only fixes what slab sends and receives, so that
 local projects and libraries can be built now without changing their
@@ -584,11 +604,11 @@ time − render time):
 
 | Song | Before | Table cache | + fy flush range | + shared hosts |
 |---|---|---|---|---|
-| `pml_basses` (23 Concoctions) | 20.9 s | 7.7 s | 6.2 s | 4.0 s |
+| a bass study (23 Concoctions) | 20.9 s | 7.7 s | 6.2 s | 4.0 s |
 | `voltage_riot` | ~4.5 s | ~4.5 s | 4.1 s | 2.3 s |
 
 **Wavetables (fixed).** Every Concoction built its own copy of every
-table it declares, at 12 FFTs a frame. For `pml_basses` that was 46
+table it declares, at 12 FFTs a frame. For the bass study that was 46
 builds of the same few files, about 120 MB of duplicate tables.
 
 `src/wavetable_cache.zig` now keeps one read-only table per content and
@@ -621,7 +641,7 @@ compile quadratic in the code already linked. Now:
   turns this off.
 
 The range fix did the work. Holding saves almost nothing on top of it
-(3.8 s vs 4.0 s for `pml_basses` with `--flush-each`, within the
+(3.8 s vs 4.0 s for the bass study with `--flush-each`, within the
 noise). It stays because it costs nothing and helps on larger images.
 
 **Shared machine hosts (built).** Every instance used to compile its

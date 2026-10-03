@@ -30,6 +30,8 @@
     <string>public.app-category.music</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>© 2026 Marcin Gasperowicz and the Slab contributors. Free software under the GNU GPL v3 or later.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Slab records audio input onto tracks.</string>
     <!-- A project is a Song.slab package, or an older bare .slab file
