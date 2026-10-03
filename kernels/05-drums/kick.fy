@@ -61,7 +61,7 @@ dsp: kick-trigger
   0.5 gate 1.0 state.pitch-env fsel-lt -> state.pitch-env
   0.5 gate 1.0 state.click-env fsel-lt -> state.click-env
   0.5 gate 0.0 state.phase     fsel-lt -> state.phase
-  0.5 gate 0.1234567 state.noise-rng fsel-lt -> state.noise-rng
+  0.5 gate 0.29348137485794723 state.noise-rng fsel-lt -> state.noise-rng
 ;
 
 ( Swept sine body: pitch envelope -> instantaneous frequency -> phase

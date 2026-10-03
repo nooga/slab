@@ -201,6 +201,7 @@ dsp: p5-note-on | ctx:Ctx state:P5State params:P5Params -- |
   state.dra& v 1.0 f+ drift-seed-once
   state.drb& v 11.0 f+ drift-seed-once
   state.drc& v 23.0 f+ drift-seed-once
+  state.noise-rng& v 37.0 f+ rand-seed-once
   ( unison: a fresh voice's oscillators start at the host's phase, not 0 )
   state.pha 0.0 f=  ctx.phase  state.pha  select -> state.pha
   state.phb 0.0 f=  ctx.phase 2.618 f* ffrac  state.phb  select -> state.phb
@@ -273,9 +274,7 @@ dsp: k-p5-voice | io ctx state:P5State params:P5Params -- |
   ( WHEEL-MOD: SAW TRI SQR, crossfaded into noise )
   state.lfo-ph params.lfo-inc f+ ffrac | lp |
   lp -> state.lfo-ph
-  state.noise-rng 1103515245.0 f* 0.31337 f+ ffrac | r |
-  r -> state.noise-rng
-  r 2.0 f* 1.0 f- | nz |
+  state.noise-rng& rand-b | nz |
   params.lfo-wave 0.5
     lp 2.0 f* 1.0 f-
     params.lfo-wave 1.5

@@ -51,7 +51,7 @@ ustruct: Ms20VoiceState
   f64 phase2
   f64 dc-prev-x
   f64 dc-prev-y
-  f64 noise-rng        ( float-LCG noise state )
+  f64 noise-rng        ( noise state [rand.fy] )
   f64 hpf-lp           ( HPF Chamberlin state {lp, bp}: must stay contiguous )
   f64 hpf-bp
   f64 mg-phase         ( free-running MG/LFO phase )
@@ -135,6 +135,7 @@ dsp: ms20-voice-note-on
   state.dr2& ch 2.0 f+ drift-seed-once
   state.drc& ch 3.0 f+ drift-seed-once
   state.drv& ch 4.0 f+ drift-seed-once
+  state.noise-rng& ch 5.0 f+ rand-seed-once
   state.phase1 0.0 f=  ctx.phase  state.phase1  select -> state.phase1
   state.phase2 0.0 f=  ctx.phase 2.618 f* ffrac  state.phase2  select -> state.phase2
   state.amp-env& params.amp-co& ctx.legato env-rc-trigger
@@ -197,14 +198,9 @@ dsp: v-vco2 | state:Ms20VoiceState params:Ms20VoiceParams pmod pw -- y |
     sq f* -1.0 f* ]  ifte
 ;
 
-( Float-LCG white-ish noise in -1..1, advancing the rng state. )
+( White noise in -1..1 [rand.fy], advancing the rng state. )
 dsp: v-noise-raw | state:Ms20VoiceState -- y |
-  state.noise-rng
-  1103515245.0 f*
-  0.31337 f+
-  ffrac
-  dup -> state.noise-rng
-  2.0 f* 1.0 f-
+  state.noise-rng rand-next  dup -> state.noise-rng  2.0 f* 1.0 f-
 ;
 
 ( VCO1*lvl + VCO2*lvl + noise*lvl at 0.62 per unit: clean. )

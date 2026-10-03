@@ -416,11 +416,11 @@ raises transient-to-body (6.6 → 11–15 dB) and crest. Reviews of the
 plugin say the same: it "exaggerates ambience and transients".
 
 LO-FI and WOW work in every mode, after the color. They are separate
-reusable kernels, meant to be shared with a future tape machine:
+reusable kernels, shared with tape2 (docs/26):
 
 | kernel | what | numbers |
 |---|---|---|
-| `kernels/07-effects/wow.fy` | stereo Hermite read on one head, wow + flutter magic-circle LFOs | rate = the record's turn (RPM switch 33/45/78 → 0.556/0.75/1.3 Hz), flutter 12× that; 0.8 % / 0.15 % pitch deviation at depth 1; delay swing = dev / 2πf |
+| `kernels/07-effects/wow.fy` | stereo Hermite read on one head, wow + flutter magic-circle LFOs | rate = the record's turn (RPM switch 33/45/78 → 0.556/0.75/1.3 Hz), flutter 12× that; 2.5 % / 0.4 % pitch deviation at depth 1 (first built at 0.8 / 0.15 %, which was accurate and inaudible on drums); delay swing = dev / 2πf |
 | `kernels/07-effects/lofi.fy` | gated hiss, sample-and-hold, bits, crunch, coupling cap, band limit | ANALOG: biased cubic soft clip `f(u+b) − f(b)` (b 0.15: odd and even harmonics), HP 7 → 63 Hz, LP 20 → 5 kHz. 90s: hold 32 → 16 kHz, 16 → 12 bits. 80s: 26.04 → 13 kHz (SP-1200), 12 → 8 bits. The digital types have no anti-alias filter and reconstruct at 0.45 × the hold rate. NOISE runs −72 → −30 dB, gated by a 0.5 s follower of the detector |
 
 The hiss goes in **before** the gain, so the compressor pumps it.

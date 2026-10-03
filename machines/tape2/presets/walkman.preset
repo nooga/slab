@@ -1,0 +1,1 @@
+{"schema": 1, "machine": "tape2", "note": "a walkman with a tired belt: wobble, hiss, Dolby out of step", "params": {"tape-mode": 0, "tape-wear": 0.6, "tape-drive": 2, "tape-bias": 0.45, "tape-wow": 0.55, "tape-flutter": 0.5, "tape-hiss": 0.6, "tape-nr": 1, "tape-out": 0.7, "tape-mix": 1}}

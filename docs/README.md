@@ -72,6 +72,9 @@ self-contained but assumes the vocabulary established in earlier ones.
 24. [25-storage.md](25-storage.md) — where things live: factory, the
     home folder, project packages, references by content, collect on
     save, Save to Library, publishing; load time
+25. [26-tape.md](26-tape.md) — tape2: cassette and VHS audio, the WEAR
+    macro, and the shared transport kernels (wow, dropouts, hum,
+    hysteresis, compand)
 
 ## Terminology crib sheet
 

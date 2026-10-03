@@ -46,7 +46,7 @@ ustruct: RhodesState
   f64 phaseA      ( fundamental mode A phase )
   f64 phaseB      ( fundamental mode B phase, detuned )
   f64 tine-phase  ( 6.267x tine overtone phase )
-  f64 noise-rng   ( LCG state for the hammer chiff )
+  f64 noise-rng   ( noise state for the hammer chiff [rand.fy] )
   f64 warm-lp     ( warmth one-pole lowpass state )
   f64 phi-prev    ( pickup flux last sample - the output is its derivative )
   f64 vel-amp     ( tine displacement scale for this strike: vel^1.4 * drive )
@@ -143,7 +143,7 @@ dsp: rhodes-note-on | ctx:Ctx state:RhodesState params:RhodesParams -- |
   0.0 -> state.phaseA
   0.0 -> state.phaseB
   0.0 -> state.tine-phase
-  12345.0 -> state.noise-rng
+  2.8742942959070206e-06 -> state.noise-rng   ( 12345 * 2^-32: rand.fy states are fractions )
   0.0 -> state.warm-lp
   ( a strike from rest: flux starts at the tine's rest position )
   1.0  1.0 params.pickup-off dup f* f+  f/  -> state.phi-prev

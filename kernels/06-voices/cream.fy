@@ -197,6 +197,7 @@ dsp: cream-note-on | ctx:Ctx state:CreamState params:CreamParams -- |
   state.dr2& ch 2.0 f+ drift-seed-once
   state.dr3& ch 3.0 f+ drift-seed-once
   state.drc& ch 4.0 f+ drift-seed-once
+  state.noise-rng& ch 5.0 f+ rand-seed-once
   state.ph1 0.0 f=  ctx.phase  state.ph1  select -> state.ph1
   state.ph2 0.0 f=  ctx.phase 2.618 f* ffrac  state.ph2  select -> state.ph2
   state.ph3 0.0 f=  ctx.phase 4.236 f* ffrac  state.ph3  select -> state.ph3
@@ -311,9 +312,7 @@ dsp: k-cream-voice | io ctx state:CreamState params:CreamParams -- |
   exp2 params.cutoff f*
   params.osr params.emphasis moog-coeffs | g k |
   ( one noise sample, held across the substeps )
-  state.noise-rng 1103515245.0 f* 0.31337 f+ ffrac | r |
-  r -> state.noise-rng
-  r 2.0 f* 1.0 f- | nz |
+  state.noise-rng& rand-b | nz |
   state.y-prev params.fb-g f* | fbx |
   fenv params.bleed f*  nz 0.0001 f* f+ | extra |
   state.dec&

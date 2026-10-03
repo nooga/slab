@@ -31,6 +31,7 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`limiter2`](#limiter2) | Limiter | effect | — | `lim-` |
 | [`multi2`](#multi2) | Multi | effect | — | `—` |
 | [`sat2`](#sat2) | Saturator | effect | — | `sat-` |
+| [`tape2`](#tape2) | Tape | effect | — | `tape-` |
 | [`verb2`](#verb2) | Verb | effect | — | `verb-` |
 
 ## concoction
@@ -2857,6 +2858,36 @@ Presets:
 - `valve-crunch` — VALVE pushed into the top: crunch for guitars, Rhodes and bass leads
 - `valve-hot` — VALVE cranked: hard top, and the sag blocks and blooms under loud notes
 - `valve-preamp` — VALVE barely driven: a clean triode preamp, second harmonic only
+
+## tape2
+
+**Tape**, stereo insert effect.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `tape-mode` | TAPE | MODE | 0 CASS I / 1 CASS II / 2 CASS IV / 3 VHS LIN / 4 VHS HIFI | 0 | switch |
+| `tape-wear` | TAPE | WEAR | 0 … 1 | 0.2 | linear |
+| `tape-nr` | TAPE | NR | 0 OFF / 1 ON | 0 | switch |
+| `tape-drive` | REC | DRIVE | -12 … 18 | 0 | linear |
+| `tape-bias` | REC | BIAS | 0 … 1 | 0.6 | linear |
+| `tape-wow` | TRANSPORT | WOW | 0 … 1 | 0.25 | pow |
+| `tape-flutter` | TRANSPORT | FLUTTER | 0 … 1 | 0.25 | pow |
+| `tape-drops` | TRANSPORT | DROPS | 0 … 1 | 0 | pow |
+| `tape-hiss` | NOISE | HISS | 0 … 1 | 0.5 | linear |
+| `tape-hum` | NOISE | HUM | 0 … 1 | 0 | linear |
+| `tape-mains` | NOISE | MAINS | 0 50 / 1 60 | 0 | switch |
+| `tape-out` | OUT | OUT | -12 … 12 | 0 | linear |
+| `tape-mix` | OUT | MIX | 0 … 1 | 1 | pow |
+
+Presets:
+
+- `chewed` — a tape that went through the washing machine: dropouts, wander, hum
+- `chrome-glue` — a fresh chrome tape on a good deck, Dolby B on: glue and a soft top for a mix
+- `four-track` — a four-track demo: type I pushed, a little worn
+- `metal-hot` — metal tape driven hard on drums: compression before the top goes
+- `vhs-hifi-dub` — a Hi-Fi dub of a dub: full band, the compander breathing, buzz
+- `vhs-rental` — a rental VHS: mono linear track, dull, hum and head-switch buzz
+- `walkman` — a walkman with a tired belt: wobble, hiss, Dolby out of step
 
 ## verb2
 
