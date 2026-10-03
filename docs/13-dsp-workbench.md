@@ -39,9 +39,9 @@ If those are true, the DAW frame becomes a powerful shell around a real
 instrument workshop. If they are false, more piano-roll and mixer polish
 will not save the product.
 
-## Compiler work in `../fy`
+## Compiler work in `fy/`
 
-Slab links Fy from the sibling checkout `../fy`. The DSP compiler work
+Slab builds Fy from its in-tree fork, `fy/`. The DSP compiler work
 belongs mostly there, behind generic modes and flags where possible so
 Fy remains a standalone language.
 
@@ -1116,7 +1116,7 @@ exists.
 
 The next useful milestone is not "more DAW features". It is:
 
-1. A `dsp:`/`noalloc:` compiler mode in `../fy` with formal forbidden
+1. A `dsp:`/`noalloc:` compiler mode in `fy/` with formal forbidden
    operations and static call checks.
 2. A minimal workbench runner that renders one Fy word offline and emits
    WAV, metrics JSON, disassembly, and a report.

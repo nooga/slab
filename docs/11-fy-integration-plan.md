@@ -362,7 +362,7 @@ smoothing) builds on top of this substrate.
 
 ## Parallel upstream work
 
-Two changes to `../fy` are candidates for upstream regardless of Slab:
+Two changes to fy (now `fy/`, Slab's fork) were once candidates for upstream:
 
 1. **`noalloc:` directive** (stage 5). Generic feature; any embedder
    wanting realtime-safe words benefits.

@@ -6,7 +6,7 @@ Orientation for AI coding agents working in this repo.
 
 **Slab Audio Workstation (SAW).** An open-source macOS DAW where the
 frame is Zig and every "machine" inside the frame (synths, effects,
-note transformers, panels) is authored in [fy](../fy) — a
+note transformers, panels) is authored in [fy](fy/) — a
 concatenative, JIT-to-ARM64 language with word-level hot-patch.
 
 The signature capability: users edit a machine's source (filter, osc,
@@ -36,42 +36,32 @@ Read in order on your first session:
 Everything else in this file assumes you've read at least the vision,
 architecture, and memory-model docs.
 
-## Sibling repositories
+## fy, in tree, and the sibling repositories
 
-### `../fy` — language runtime (WE LINK TO THIS)
+### `fy/` — the language runtime (Slab's DSP fork, IN TREE)
 
-Slab embeds fy's runtime as a library. Read this when:
+`fy/` is a DSP-geared fork of [nooga/fy](https://github.com/nooga/fy),
+vendored with its history (`git subtree`, from upstream's f33bee8). Slab
+imports it as a Zig module (`build.zig.zon`: `.path = "fy"`), never
+through a C ABI. The fork is GPL-3.0-or-later like the rest of Slab;
+upstream nooga/fy stays MIT and is left alone, and nothing flows back
+to it.
 
-- Looking at `dsp:` mode implementation (`src/main.zig` in fy — the
-  `Compiler` struct)
-- Extending the assembler with NEON (`src/asm.zig` in fy, currently
-  ~365 lines — needs ~300-500 lines added for the NEON subset in
-  [docs/05-kernels.md](docs/05-kernels.md#neon-instruction-set))
-- Understanding the hot-patch trampoline model (see `fy/docs/editor.md`
-  and the `userWords` + trampoline machinery in `Fy`)
-- Wiring in new C-ABI entry points for the host to call
+Change fy here, in the same commit as the Slab code that needs it
+(`area` = `fy`), and run fy's own tests too (`cd fy && zig build test`).
+Read it when:
 
-**We will modify fy** to add things Slab needs:
+- Working on the `dsp:` compiler: `fy/src/dsp2.zig` (value graph and
+  codegen) and `compileDsp2` in `fy/src/main.zig`; the language is
+  [docs/18-fy-dsp-language.md](docs/18-fy-dsp-language.md)
+- Extending the assembler (NEON, scalar float): `fy/src/asm.zig`
+- Understanding hot-patch: the `userWords` + trampoline machinery in
+  `Fy`, and `fy/docs/editor.md`
+- Calling between Zig and fy: `fy/docs/ffi.md` (`bind:`, `callback:`)
 
-- `dsp:` compile mode (parallel to `macro:`, `callback:`): heap-access
-  blacklist, default inlining, stack-effect snapshot, NEON available
-- NEON instruction set in `asm.zig`
-- Library target in `build.zig` plus a C-ABI header (`init`, `load`,
-  `lookup`, `call`, `patch`, `is_dsp_word`)
-- Stack-effect verification on hot-patch
-- Possibly: inline-site registry for ship-mode kernel hot-patch
-
-Coordinate fy changes carefully — fy stands alone as a project, so
-Slab-specific additions should land behind opt-in flags or as clean
-extensions that don't destabilize the existing language.
-
-fy's relevant docs:
-- `fy/AGENTS.md` — architecture + dev guidelines
-- `fy/docs/builtins.md` — word reference
-- `fy/docs/macros.md` — compile-time execution (basis for combinators)
-- `fy/docs/ffi.md` — `bind:` + `callback:` (how Zig↔fy calls happen)
-- `fy/examples/funky.fy` and `funky_demo.fy` — existing DSP patterns
-  in fy; the block-rate/combinator work in Slab generalizes this
+fy's docs: `fy/docs/builtins.md` (word reference), `fy/docs/macros.md`
+(compile-time execution, the basis for combinators),
+`fy/docs/language-guide.md`.
 
 ### `../fuvid` — video editor (INSPIRATION ONLY, NOT LINKED)
 
@@ -154,7 +144,7 @@ Brutalist grey, 1px bevels, bitmap fonts. Don't soften this. See
 
 ### fy-side style (when we start writing fy)
 
-Follow the conventions in `fy/AGENTS.md` and look at
+Follow the conventions in `fy/docs/language-guide.md` and look at
 `fy/examples/funky.fy` for idiomatic DSP. For Slab-specific fy:
 
 - `dsp:` words always — never `:` — for anything on the audio path.

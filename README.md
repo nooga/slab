@@ -4,7 +4,7 @@
 
 An eclectic, livecodable DAW. Zig owns the frame (transport, mixer,
 timeline, piano roll, automation, UI widget library, audio I/O, final
-mix). [fy](../fy) owns every machine inside the frame — synths, effects,
+mix). [fy](fy/) owns every machine inside the frame — synths, effects,
 note transformers, custom panels. Edit a machine's source while it
 plays and the next audio block runs the new code.
 

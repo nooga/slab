@@ -9,7 +9,7 @@ pop the face off an oscillator, a compressor, a panel, and you see the
 code that makes it. You edit the code, hit a key, and the running
 audio immediately plays the new version.
 
-The frame is Zig. The machines are [fy](../../fy).
+The frame is Zig. The machines are [fy](../fy/).
 
 ## What "machine" means
 

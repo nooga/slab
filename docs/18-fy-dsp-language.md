@@ -1,8 +1,8 @@
 # 18 — The fy `dsp:` language
 
 Reference for writing kernels in fy's `dsp:` mode, as implemented in
-`../fy/src/dsp2.zig` (value-graph builder and codegen) and
-`../fy/src/main.zig` (`compileDsp2`, the parser side). docs/17 Track A
+`fy/src/dsp2.zig` (value-graph builder and codegen) and
+`fy/src/main.zig` (`compileDsp2`, the parser side). docs/17 Track A
 is the plan this implements; docs/04 §Kernel ABI covers what the host
 passes in.
 

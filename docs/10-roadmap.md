@@ -72,7 +72,7 @@ See [13-dsp-workbench.md](13-dsp-workbench.md) for the full plan.
 
 Near-term objective:
 
-1. Formalize `noalloc:` and `dsp:` in `../fy`.
+1. Formalize `noalloc:` and `dsp:` in `fy/`.
 2. Lower `dsp:` through typed/static analysis, inlining, macro-time
    quote fusion, and registerized AArch64/NEON codegen.
 3. Ban runtime quotations in `dsp:` while preserving compile-time quote
@@ -119,7 +119,7 @@ save, and hear the pitch shift within a block. Single-file, no UI.
 build a simple synth with evidence before returning to more DAW frame
 work.
 
-1. **Formal `noalloc:` / `dsp:` modes in `../fy`.** `noalloc:` bans
+1. **Formal `noalloc:` / `dsp:` modes in `fy/`.** `noalloc:` bans
    heap/ambient I/O/transitive unsafe calls. `dsp:` adds static
    type/effect checks, runtime-quote bans, macro-time quote fusion,
    compiler metadata, and audio-kernel restrictions.
@@ -134,7 +134,7 @@ work.
    output, waveform/spectrum/spectrogram/control plots, metrics JSON,
    perf JSON, disassembly, and report markdown.
 5. **NEON asm extension.** Add the instruction subset from
-   [05-kernels.md](05-kernels.md) to `../fy/src/asm.zig`.
+   [05-kernels.md](05-kernels.md) to `fy/src/asm.zig`.
 6. **`vec-each` macro.** 4-wide unrolled loop + scalar tail. Prove
    it emits sane code; compare a `vec-each`-based gain against a
    hand-written scalar loop and a Zig/C reference in the workbench.

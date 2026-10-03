@@ -11,6 +11,7 @@ Copyright (C) 2026 Marcin Gasperowicz and the Slab contributors.
 | Part | License |
 |---|---|
 | Everything not listed below: the frame (`src/`), the kernels (`kernels/`), the machines' code (`machines/*/*.fy`, `machines/lib/`), tools, docs, tests | [GPL-3.0-or-later](LICENSE), with the [Slab Machine Exception](#slab-machine-exception) |
+| The fy runtime: `fy/`, Slab's DSP fork of [nooga/fy](https://github.com/nooga/fy) | [GPL-3.0-or-later](LICENSE). Upstream fy is MIT and stays separate; see [NOTICE](NOTICE) |
 | Factory presets: `machines/*/presets/` | [CC0-1.0](LICENSES/CC0-1.0.txt) |
 | Factory sounds and tables: `machines/*/assets/` | [CC0-1.0](LICENSES/CC0-1.0.txt) |
 | Demo projects: `demos/` | [CC0-1.0](LICENSES/CC0-1.0.txt) |
@@ -62,9 +63,8 @@ and look. Saying that a machine, preset or pack is "for Slab" is fine.
 ## Source for the app
 
 Each release of the app is built from a tag in this repository
-(`tools/release.sh`), together with the fy runtime at the commit named in
-the release notes (https://github.com/nooga/fy, MIT). Those two
-repositories at those commits are the complete corresponding source.
+(`tools/release.sh`). The fy runtime is in tree (`fy/`), so that tag is
+the complete corresponding source.
 
 ## Contributing
 

@@ -1,3 +1,9 @@
+> **This is Slab's fork of fy.** `fy/` is a DSP-geared fork of
+> [nooga/fy](https://github.com/nooga/fy), vendored into Slab with its
+> history. It adds the `dsp:` compiler, NEON lanes and branching that
+> Slab's machines run on, and it is GPL-3.0-or-later (see `LICENSE`).
+> Upstream fy is MIT and separate. The rest of this README is upstream's.
+
 # fy
 
 ![ZigZig Top guys enjoying fy](./fy.png)

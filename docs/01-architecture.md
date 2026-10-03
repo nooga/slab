@@ -23,7 +23,7 @@
 │                            │ ctx (per block)                 │
 │                            ▼                                 │
 │  ┌────────────────────────────────────────────────────────┐  │
-│  │  fy runtime (linked in from ../fy/src)                 │  │
+│  │  fy runtime (compiled in from fy/src)                  │  │
 │  │                                                        │  │
 │  │  • JIT compiler → ARM64 + NEON                         │  │
 │  │  • Trampoline indirection for hot-patch                │  │
@@ -48,7 +48,7 @@ hot-loaded fy files, not plugins.
 
 ## Why embed fy rather than spawn it
 
-fy is ~4k lines of Zig. The `Fy` struct in `../fy/src/main.zig` is
+fy is ~4k lines of Zig. The `Fy` struct in `fy/src/main.zig` is
 self-contained; the heap, JIT image, and userWords table are all
 fields of one struct. Linking it into the host as a library gives us:
 

@@ -30,7 +30,11 @@ modes):
 fy
 https://github.com/nooga/fy
 Copyright (c) 2023 Marcin Gasperowicz
-MIT License. The language runtime and JIT, compiled into the app.
+fy/ is Slab's DSP-geared fork of fy, vendored with its history from
+upstream commit f33bee8. Upstream fy is MIT; the fork in this repository,
+including everything it adds (the dsp: compiler, NEON lanes, branching,
+the raw wrappers), is GPL-3.0-or-later with the rest of Slab. The
+language runtime and JIT are compiled into the app.
 
 ------------------------------------------------------------------------
 raylib

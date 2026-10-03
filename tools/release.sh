@@ -6,9 +6,9 @@
 #
 #   tools/release.sh
 #
-# Builds here, not in CI: fy is a path dependency (../fy). HEAD is checked
-# out beside this repo so ../fy resolves the same, and uncommitted work
-# stays out of the release.
+# HEAD is checked out clean into zig-out/release-build and built there, so
+# uncommitted work stays out of the release. fy is in tree (fy/), so the
+# tag alone is the release's complete source.
 
 set -euo pipefail
 
@@ -23,21 +23,7 @@ if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
     exit 1
 fi
 
-# The app compiles fy in (../fy). A GPL binary owes its complete source,
-# so the fy commit must be on GitHub before the app built from it ships.
-FY_DIR="$(cd .. && pwd)/fy"
-FY=$(git -C "$FY_DIR" rev-parse HEAD)
-git -C "$FY_DIR" fetch -q origin
-if [[ -z "$(git -C "$FY_DIR" branch -r --contains "$FY")" ]]; then
-    echo "fy $FY isn't on GitHub; push it first (the release's source must be public)." >&2
-    exit 1
-fi
-if [[ -n "$(git -C "$FY_DIR" status --porcelain --untracked-files=no)" ]]; then
-    echo "fy has uncommitted changes; commit and push them first." >&2
-    exit 1
-fi
-
-BUILD="$(cd .. && pwd)/.slab-release"
+BUILD="$PWD/zig-out/release-build"
 git worktree remove --force "$BUILD" 2>/dev/null || rm -rf "$BUILD"
 git worktree add --detach "$BUILD" HEAD
 trap 'git worktree remove --force "$BUILD"' EXIT
@@ -49,7 +35,7 @@ git push origin "$TAG"
 
 gh release create "$TAG" -R "$REPO" \
     --title "Slab $VERSION" \
-    --notes "Apple Silicon, macOS 13 or later. Built from $TAG with fy [\`${FY:0:7}\`](https://github.com/nooga/fy/commit/$FY); those two are the complete source (GPL-3.0-or-later, see COPYING.md).
+    --notes "Apple Silicon, macOS 13 or later. Built from $TAG, which is its complete source (GPL-3.0-or-later, see COPYING.md).
 
 Install:
 
