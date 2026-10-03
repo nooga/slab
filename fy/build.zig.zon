@@ -1,0 +1,11 @@
+.{
+    .name = .fy,
+    .version = "0.0.1",
+    .fingerprint = 0x5ba71746e1bb417b,
+    .minimum_zig_version = "0.16.0",
+    .paths = .{ "src/", "build.zig", "build.zig.zon" },
+    // zigline was used by the REPL (src/main.zig `repl` fn). It hasn't been
+    // ported to zig 0.16 yet. When the CLI is revived, re-add it here and
+    // flip the `want_exe` option in build.zig.
+    .dependencies = .{},
+}

@@ -1,0 +1,65 @@
+# Raylib core bindings for fy
+/opt/homebrew/lib/libraylib.dylib
+
+# Window management
+InitWindow       iis:v
+CloseWindow      :v
+WindowShouldClose :i
+SetTargetFPS     i:v
+SetConfigFlags   i:v
+GetScreenWidth   :i
+GetScreenHeight  :i
+
+# Drawing
+BeginDrawing     :v
+EndDrawing       :v
+ClearBackground  4:v
+
+# Shapes
+DrawLine         iiii4:v
+DrawCircle       iif4:v
+DrawCircleLines  iif4:v
+DrawRectangle    iiii4:v
+DrawRectangleLines iiii4:v
+
+# Text
+DrawText         siii4:v
+DrawTextEx       psffff4:v
+DrawFPS          ii:v
+
+# Fonts (Font struct is 48 bytes, passed by hidden ref on AArch64)
+LoadFontEx       sipi:S
+UnloadFont       p:v
+
+# Textures (Texture2D is 20 bytes, passed by hidden ref on AArch64)
+SetTextureFilter pi:v
+
+# 3D Camera
+BeginMode3D      i:v
+EndMode3D        :v
+
+# 3D Shapes (Vector3 is HFA: 3 floats in s0-s2)
+DrawCube         ffffff4:v
+DrawCubeWires    ffffff4:v
+DrawGrid         if:v
+
+# Timing
+GetTime          :d
+GetFrameTime     :f
+
+# Input
+IsKeyDown        i:i
+IsKeyPressed     i:i
+
+# Audio
+InitAudioDevice  :v
+CloseAudioDevice :v
+SetMasterVolume  f:v
+SetAudioStreamBufferSizeDefault i:v
+SetAudioStreamCallback ip:v
+LoadAudioStream  iii:S
+UnloadAudioStream i:v
+PlayAudioStream  i:v
+StopAudioStream  i:v
+IsAudioStreamProcessed i:i
+UpdateAudioStream ipi:v
