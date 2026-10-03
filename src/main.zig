@@ -28,6 +28,7 @@ const automation = @import("automation.zig");
 const auto_lane = @import("ui/automation_lane.zig");
 const recorder_mod = @import("recorder.zig");
 const native_dialog = @import("native_dialog.zig");
+const native_app = @import("native_app.zig");
 const library_mod = @import("library.zig");
 const preview_mod = @import("preview.zig");
 
@@ -418,7 +419,25 @@ const Cli = struct {
     }
 };
 
+extern "c" fn _NSGetExecutablePath(buf: [*]u8, size: *u32) c_int;
+extern "c" fn chdir(path: [*:0]const u8) c_int;
+
+/// Run from Slab.app (tools/package_app.sh), the factory files live in
+/// Contents/Resources: work from there, as a dev build works from the repo.
+fn enterBundleResources() void {
+    var buf: [storage.MAX_PATH]u8 = undefined;
+    var n: u32 = buf.len;
+    if (_NSGetExecutablePath(&buf, &n) != 0) return;
+    const exe = std.mem.sliceTo(&buf, 0);
+    const macos = std.fs.path.dirname(exe) orelse return;
+    if (!std.mem.endsWith(u8, macos, ".app/Contents/MacOS")) return;
+    var rb: [storage.MAX_PATH]u8 = undefined;
+    const res = std.fmt.bufPrintZ(&rb, "{s}/../Resources", .{macos}) catch return;
+    _ = chdir(res);
+}
+
 pub fn main(init: std.process.Init) !void {
+    enterBundleResources();
     var cli: Cli = .{};
     {
         var args = std.process.Args.Iterator.init(init.minimal.args);
@@ -468,9 +487,12 @@ pub fn main(init: std.process.Init) !void {
 
     storage.ensureHome();
 
+    native_app.installOpenHandler();
     c.rl.SetConfigFlags(c.rl.FLAG_WINDOW_RESIZABLE | c.rl.FLAG_VSYNC_HINT | c.rl.FLAG_WINDOW_HIGHDPI);
-    c.rl.InitWindow(1400, 860, "slab");
+    c.rl.InitWindow(1400, 860, "SLAB");
     defer c.rl.CloseWindow();
+    native_app.installMenus();
+    var title_bar: native_app.TitleBar = .{};
     c.rl.SetTargetFPS(120);
     c.rl.SetExitKey(c.rl.KEY_NULL);
 
@@ -641,7 +663,10 @@ pub fn main(init: std.process.Init) !void {
     blank_project = try document_mod.serialize(alloc, tracks_buf[0..track_count], &transport);
     defer alloc.free(blank_project);
 
-    if (cli.project) |path| {
+    // A double-click that launched slab names the project in place of argv.
+    const finder_project = try native_app.takeOpenedPath(alloc);
+    defer if (finder_project) |p| alloc.free(p);
+    if (cli.project orelse finder_project) |path| {
         splash.bootFrame(ui, screenRect(), "LOADING PROJECT", 1);
         if (document_mod.readFile(alloc, path)) |data| {
             defer alloc.free(data);
@@ -786,7 +811,7 @@ pub fn main(init: std.process.Init) !void {
         const cpu_load = audio.takeLoad();
         var thread_load: [8]f32 = undefined;
         const n_threads = engine.takeThreadLoad(&thread_load, audio_mod.SAMPLE_RATE);
-        const tres = transport_bar.draw(ui, uiRect(rects.top_bar), .{
+        var tres = transport_bar.draw(ui, uiRect(rects.top_bar), .{
             .transport = &transport,
             .meter_state = &meter_state,
             .edit_snap = &edit_snap,
@@ -806,6 +831,18 @@ pub fn main(init: std.process.Init) !void {
             .cpu_peak = cpu_load.peak,
             .browser_visible = layout.browser_visible,
         });
+        // The menu bar's commands run as the in-app File menu's do.
+        const menu_cmds = native_app.takeCommands();
+        tres.new_project = tres.new_project or menu_cmds.has(.new_project);
+        tres.open_project = tres.open_project or menu_cmds.has(.open_project);
+        tres.save_project = tres.save_project or menu_cmds.has(.save_project);
+        tres.save_project_as = tres.save_project_as or menu_cmds.has(.save_project_as);
+        tres.clean_up_project = tres.clean_up_project or menu_cmds.has(.clean_up_project);
+        tres.render_audio = tres.render_audio or menu_cmds.has(.render_audio);
+        tres.toggle_browser = tres.toggle_browser or menu_cmds.has(.toggle_browser);
+        if (menu_cmds.has(.undo) or menu_cmds.has(.redo)) {
+            try undoRedo(alloc, &history, &tracks_buf, &track_count, &tracks, &transport, &engine, &audio, &reg, &selected_track, &selected_clip, &prev_selected_clip, &dirty, &status, menu_cmds.has(.redo));
+        }
         if (tres.toggle_browser) {
             layout.browser_visible = !layout.browser_visible;
             rects = layout.compute(sw, sh);
@@ -1477,6 +1514,11 @@ pub fn main(init: std.process.Init) !void {
         if (tres.new_project) {
             try newProject(alloc, &history, &tracks_buf, &track_count, &tracks, &transport, &engine, &audio, &reg, &selected_track, &selected_clip, &prev_selected_clip, &project_path, &project_path_chosen, &dirty, &status);
         }
+        if (try native_app.takeOpenedPath(alloc)) |path| {
+            defer alloc.free(path);
+            lib_stale = true;
+            try openProjectPath(alloc, &history, &tracks_buf, &track_count, &tracks, &transport, &engine, &audio, &reg, &selected_track, &selected_clip, &prev_selected_clip, &project_path, &project_path_chosen, &dirty, &status, path);
+        }
         if (tres.open_project) {
             try openProject(
                 alloc,
@@ -1498,6 +1540,8 @@ pub fn main(init: std.process.Init) !void {
             );
         }
         prev_selected_clip = selected_clip;
+        title_bar.update(c.rl.GetWindowHandle(), project_path, project_path_chosen, dirty);
+        native_app.setBrowserChecked(layout.browser_visible);
     }
 
     // Window closing mid-render: stop the worker and free its buffers before
@@ -1679,28 +1723,48 @@ fn handleProjectShortcuts(
     }
 
     if (c.rl.IsKeyPressed(c.rl.KEY_Z)) {
-        const current = try document_mod.serialize(alloc, tracks.*, transport);
         const shifted = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
-        const target = if (shifted)
-            try history.redo(alloc, current)
-        else
-            try history.undo(alloc, current);
-        if (target) |snapshot| {
-            defer alloc.free(snapshot);
-            applyProjectBytes(alloc, snapshot, reg, tracks_buf, track_count, tracks, transport, engine, audio, selected_track, selected_clip, prev_selected_clip) catch |err| {
-                std.log.err("history apply failed: {s}", .{@errorName(err)});
-            };
-            dirty.* = true;
-            if (shifted) {
-                status.set("Redone", .{});
-            } else {
-                status.set("Undone", .{});
-            }
-        }
+        try undoRedo(alloc, history, tracks_buf, track_count, tracks, transport, engine, audio, reg, selected_track, selected_clip, prev_selected_clip, dirty, status, shifted);
         return true;
     }
 
     return false;
+}
+
+fn undoRedo(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    tracks_buf: *[MAX_TRACKS]track_mod.Track,
+    track_count: *usize,
+    tracks: *[]track_mod.Track,
+    transport: *transport_mod.Transport,
+    engine: *engine_mod.Engine,
+    audio: *audio_mod.Audio,
+    reg: *registry_mod.Registry,
+    selected_track: *?usize,
+    selected_clip: *?clip_mod.ClipRef,
+    prev_selected_clip: *?clip_mod.ClipRef,
+    dirty: *bool,
+    status: *StatusMessage,
+    redo: bool,
+) !void {
+    const current = try document_mod.serialize(alloc, tracks.*, transport);
+    const target = if (redo)
+        try history.redo(alloc, current)
+    else
+        try history.undo(alloc, current);
+    if (target) |snapshot| {
+        defer alloc.free(snapshot);
+        applyProjectBytes(alloc, snapshot, reg, tracks_buf, track_count, tracks, transport, engine, audio, selected_track, selected_clip, prev_selected_clip) catch |err| {
+            std.log.err("history apply failed: {s}", .{@errorName(err)});
+        };
+        dirty.* = true;
+        if (redo) {
+            status.set("Redone", .{});
+        } else {
+            status.set("Undone", .{});
+        }
+    }
 }
 
 fn saveProject(
@@ -1941,7 +2005,7 @@ fn openProject(
 }
 
 /// Open the project at `path` (the Open panel's pick, a song from the
-/// browser). Undoable, like New Project.
+/// browser, a double-click in Finder). Undoable, like New Project.
 fn openProjectPath(
     alloc: std.mem.Allocator,
     history: *history_mod.History,

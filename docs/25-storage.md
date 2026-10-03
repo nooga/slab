@@ -201,9 +201,10 @@ Song.slab/
 ```
 
 - **Zipping the folder is the export.** Nothing else is needed.
-- **Finder will treat it as one file** once there is an app bundle: its
-  Info.plist declares `.slab` as a document package
-  (`com.apple.package`), and double-clicking opens slab. Until then
+- **Finder treats it as one file** once Slab.app is on the Mac
+  (`tools/package_app.sh`): its Info.plist exports `.slab` as a document
+  package (`com.nooga.slab.project`, conforming to `com.apple.package`),
+  and double-clicking opens slab (`src/native_app.m`). Without the app
   Finder shows a folder, and the open panel accepts `.slab` folders.
 - **It stays diffable:** `project.json` is plain JSON, so git and
   slabkit work on it as they do now.

@@ -46,6 +46,28 @@ zig build run          # build and run Slab
 zig build test         # run unit tests
 ```
 
+### The app
+
+```sh
+tools/package_app.sh          # zig-out/Slab.app
+tools/package_app.sh --dmg    # and zig-out/Slab-<version>.dmg
+tools/package_app.sh --zip    # and zig-out/Slab.zip
+tools/release.sh              # GitHub release v<build.zig.zon version>
+```
+
+A ReleaseFast build bundled with the factory files (machines, kernels,
+packs, demos), raylib in `Contents/Frameworks`, and the icon from
+`tools/app/icon.png` (drawn by `tools/app/make_icon.py`). Ad-hoc signed
+with the JIT entitlements in `tools/app/entitlements.plist`, so it opens
+on this Mac; a downloaded copy has to be allowed once under System
+Settings > Privacy & Security > Open Anyway (no Developer ID or
+notarization yet). Installing with curl skips that, since curl doesn't
+quarantine what it downloads:
+
+```sh
+curl -fsSL https://github.com/nooga/slab/releases/latest/download/install.sh | bash
+```
+
 ### Zig version
 
 Needs **zig >= 0.16** (see `build.zig.zon`). Earlier 0.15.x on macOS 26

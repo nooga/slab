@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>slab</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.nooga.slab</string>
+    <key>CFBundleName</key>
+    <string>Slab</string>
+    <key>CFBundleDisplayName</key>
+    <string>Slab</string>
+    <key>CFBundleVersion</key>
+    <string>@VERSION@</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@VERSION@</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>CFBundleIconFile</key>
+    <string>icon</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSArchitecturePriority</key>
+    <array>
+        <string>arm64</string>
+    </array>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.music</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Slab records audio input onto tracks.</string>
+    <!-- A project is a Song.slab package, or an older bare .slab file
+         (docs/25 §The project package). -->
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.nooga.slab.project</string>
+            <key>UTTypeDescription</key>
+            <string>Slab Project</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>com.apple.package</string>
+                <string>public.composite-content</string>
+            </array>
+            <key>UTTypeIconFile</key>
+            <string>icon</string>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>slab</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Slab Project</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSTypeIsPackage</key>
+            <true/>
+            <key>CFBundleTypeIconFile</key>
+            <string>icon</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.nooga.slab.project</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>
