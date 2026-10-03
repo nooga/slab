@@ -841,7 +841,7 @@ pub fn main(init: std.process.Init) !void {
         tres.render_audio = tres.render_audio or menu_cmds.has(.render_audio);
         tres.toggle_browser = tres.toggle_browser or menu_cmds.has(.toggle_browser);
         if (menu_cmds.has(.undo) or menu_cmds.has(.redo)) {
-            try undoRedo(alloc, &history, &tracks_buf, &track_count, &tracks, &transport, &engine, &audio, &reg, &selected_track, &selected_clip, &prev_selected_clip, &dirty, &status, menu_cmds.has(.redo));
+            try undoRedo(alloc, &history, &tracks_buf, &track_count, &tracks, &transport, &engine, &audio, &reg, &selected_track, &selected_clip, &prev_selected_clip, &project_path, &project_path_chosen, &dirty, &status, menu_cmds.has(.redo));
         }
         if (tres.toggle_browser) {
             layout.browser_visible = !layout.browser_visible;
@@ -1724,7 +1724,7 @@ fn handleProjectShortcuts(
 
     if (c.rl.IsKeyPressed(c.rl.KEY_Z)) {
         const shifted = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
-        try undoRedo(alloc, history, tracks_buf, track_count, tracks, transport, engine, audio, reg, selected_track, selected_clip, prev_selected_clip, dirty, status, shifted);
+        try undoRedo(alloc, history, tracks_buf, track_count, tracks, transport, engine, audio, reg, selected_track, selected_clip, prev_selected_clip, project_path, project_path_chosen, dirty, status, shifted);
         return true;
     }
 
@@ -1744,18 +1744,16 @@ fn undoRedo(
     selected_track: *?usize,
     selected_clip: *?clip_mod.ClipRef,
     prev_selected_clip: *?clip_mod.ClipRef,
+    project_path: *[]u8,
+    project_path_chosen: *bool,
     dirty: *bool,
     status: *StatusMessage,
     redo: bool,
 ) !void {
     const current = try document_mod.serialize(alloc, tracks.*, transport);
-    const target = if (redo)
-        try history.redo(alloc, current)
-    else
-        try history.undo(alloc, current);
-    if (target) |snapshot| {
-        defer alloc.free(snapshot);
-        applyProjectBytes(alloc, snapshot, reg, tracks_buf, track_count, tracks, transport, engine, audio, selected_track, selected_clip, prev_selected_clip) catch |err| {
+    if (try stepHistory(alloc, history, current, project_path, project_path_chosen, redo)) |entry| {
+        defer entry.deinit(alloc);
+        applyProjectBytes(alloc, entry.doc, reg, tracks_buf, track_count, tracks, transport, engine, audio, selected_track, selected_clip, prev_selected_clip) catch |err| {
             std.log.err("history apply failed: {s}", .{@errorName(err)});
         };
         dirty.* = true;
@@ -1765,6 +1763,33 @@ fn undoRedo(
             status.set("Undone", .{});
         }
     }
+}
+
+/// Undo (or redo) from `current` (owned), returning the document to
+/// apply. A step over Open or New Project goes back to that project
+/// first: its path and chosen flag, so the title and ⌘S follow, and the
+/// storage root, so its references resolve against its folder as the
+/// document is applied.
+fn stepHistory(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    current: []u8,
+    project_path: *[]u8,
+    project_path_chosen: *bool,
+    redo: bool,
+) !?history_mod.Entry {
+    const here: history_mod.Project = .{ .path = project_path.*, .chosen = project_path_chosen.* };
+    const entry = (if (redo) try history.redo(alloc, current, here) else try history.undo(alloc, current, here)) orelse return null;
+    if (entry.project) |p| {
+        const path = alloc.dupe(u8, p.path) catch |err| {
+            entry.deinit(alloc);
+            return err;
+        };
+        replaceProjectPath(alloc, project_path, path);
+        project_path_chosen.* = p.chosen;
+        useProjectOf(p);
+    }
+    return entry;
 }
 
 fn saveProject(
@@ -2044,10 +2069,10 @@ fn openProjectPath(
     applyProjectBytes(alloc, data, reg, tracks_buf, track_count, tracks, transport, engine, audio, selected_track, selected_clip, prev_selected_clip) catch |err| {
         std.log.err("load failed: {s}", .{@errorName(err)});
         status.set("Load failed", .{});
-        if (project_path_chosen.*) useProject(project_path.*) else storage.setProject(null);
+        useProjectOf(.{ .path = project_path.*, .chosen = project_path_chosen.* });
         return;
     };
-    try history.pushUndo(alloc, before);
+    try history.pushSwitch(alloc, before, .{ .path = project_path.*, .chosen = project_path_chosen.* });
     replaceProjectPath(alloc, project_path, try alloc.dupe(u8, path));
     project_path_chosen.* = true;
     dirty.* = false;
@@ -2371,6 +2396,12 @@ fn useProject(path: []const u8) void {
     storage.setProject(package.docPath(&db, path));
 }
 
+/// Resolve references for `p`: its folder, or none for the untitled
+/// project.
+fn useProjectOf(p: history_mod.Project) void {
+    if (p.chosen) useProject(p.path) else storage.setProject(null);
+}
+
 /// "Loaded …", or which files it names that aren't there.
 fn reportLoaded(alloc: std.mem.Allocator, status: *StatusMessage, data: []const u8, path: []const u8) void {
     const gone = package.missing(alloc, data);
@@ -2416,7 +2447,7 @@ fn newProject(
         alloc.free(before);
         return;
     };
-    try history.pushUndo(alloc, before);
+    try history.pushSwitch(alloc, before, .{ .path = project_path.*, .chosen = project_path_chosen.* });
     replaceProjectPath(alloc, project_path, try alloc.dupe(u8, document_mod.SAVE_PATH));
     project_path_chosen.* = false;
     dirty.* = false;
@@ -3949,6 +3980,60 @@ test "synthpop_8bar demo loads as JSON with expected note counts" {
 }
 
 const _fy_host = @import("fy_host.zig");
+
+test "undoing Open goes back to the project it left, redo to the one it opened" {
+    const alloc = std.testing.allocator;
+    var history: history_mod.History = .{};
+    defer history.deinit(alloc);
+    var project_path = try alloc.dupe(u8, document_mod.SAVE_PATH);
+    defer alloc.free(project_path);
+    var chosen = false;
+    defer storage.setProject(null);
+
+    // What openProjectPath and newProject record: the document before, in
+    // the project before.
+    const open = struct {
+        fn f(a: std.mem.Allocator, h: *history_mod.History, path: *[]u8, ch: *bool, doc: []const u8, next: ?[]const u8) !void {
+            try h.pushSwitch(a, try a.dupe(u8, doc), .{ .path = path.*, .chosen = ch.* });
+            replaceProjectPath(a, path, try a.dupe(u8, next orelse document_mod.SAVE_PATH));
+            ch.* = next != null;
+            useProjectOf(.{ .path = path.*, .chosen = ch.* });
+        }
+    }.f;
+    try open(alloc, &history, &project_path, &chosen, "untitled", "songs/voltage_riot.slab");
+    try history.pushUndo(alloc, try alloc.dupe(u8, "riot")); // an edit in the riot
+    try open(alloc, &history, &project_path, &chosen, "riot edited", "demos/night_drive.slab");
+    try std.testing.expect(std.mem.endsWith(u8, storage.projectDir(), "demos/night_drive.slab"));
+
+    // ⌘Z: the riot's tracks, title, save path and references.
+    const back = (try stepHistory(alloc, &history, try alloc.dupe(u8, "night"), &project_path, &chosen, false)).?;
+    defer back.deinit(alloc);
+    try std.testing.expectEqualStrings("riot edited", back.doc);
+    try std.testing.expectEqualStrings("songs/voltage_riot.slab", project_path);
+    try std.testing.expect(chosen);
+    try std.testing.expect(std.mem.endsWith(u8, storage.projectDir(), "songs/voltage_riot.slab"));
+
+    // The edit before it stays in the riot.
+    const edit = (try stepHistory(alloc, &history, try alloc.dupe(u8, "riot edited"), &project_path, &chosen, false)).?;
+    defer edit.deinit(alloc);
+    try std.testing.expectEqualStrings("songs/voltage_riot.slab", project_path);
+
+    // Back past the first Open: untitled, nothing to resolve against.
+    const first = (try stepHistory(alloc, &history, try alloc.dupe(u8, "riot"), &project_path, &chosen, false)).?;
+    defer first.deinit(alloc);
+    try std.testing.expectEqualStrings(document_mod.SAVE_PATH, project_path);
+    try std.testing.expect(!chosen);
+    try std.testing.expectEqualStrings("", storage.projectDir());
+
+    // ⇧⌘Z all the way: night_drive again.
+    for (0..3) |_| {
+        const e = (try stepHistory(alloc, &history, try alloc.dupe(u8, "x"), &project_path, &chosen, true)).?;
+        e.deinit(alloc);
+    }
+    try std.testing.expectEqualStrings("demos/night_drive.slab", project_path);
+    try std.testing.expect(chosen);
+    try std.testing.expect(std.mem.endsWith(u8, storage.projectDir(), "demos/night_drive.slab"));
+}
 
 test "automation recording writes a thinned pass over the span it covered" {
     const alloc = std.testing.allocator;

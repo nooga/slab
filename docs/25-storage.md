@@ -303,6 +303,22 @@ Planned:
    size and modification time) so a save hashes each file once; a disk
    cache in `Cache/hashes` would carry that across sessions.
 
+### Undo across projects
+
+Open and New Project are undoable: ⌘Z after opening B brings back A,
+the project it replaced. A step that switches projects carries the
+project it left (src/history.zig `pushSwitch`), its path and whether
+it was chosen or untitled, so undoing it restores all of A, not only
+its tracks:
+- **The title and file tile** name A again.
+- **⌘S** saves to A's path, or asks where for an untitled project.
+- **References** resolve against A's folder (`storage.setProject`),
+  set before the snapshot is applied.
+
+Redo carries the project undo left, so ⇧⌘Z opens B again. Edits keep
+their plain snapshots: history is linear, so an edit's step always
+belongs to the project that's open when it's reached.
+
 ### Factory files never change
 
 What slab ships is append-only. A factory file that a new version
@@ -438,7 +454,7 @@ lists them; the gallery's BROWSER page is where its look was tried out.
   | preset | loads on the track | loads on the track | a new track with it |
   | wavetable | | the first oscillator plays it (an empty track gets Concoction) | |
   | clip, sample | at the beat under the pointer, one after another | at the track's end | a new track with them |
-  | song | opens it (undoable, like Open) | | |
+  | song | opens it (undoable, like Open: §Undo across projects) | | |
 
   An instrument preset replaces the track's machine when it is another;
   an effect preset joins the chain. ↩, a double-click or LOAD drops on
