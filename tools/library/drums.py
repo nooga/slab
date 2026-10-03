@@ -23,7 +23,7 @@ For each machine with one-shots (loop-only packs are skipped):
            and decay grids): every variant, one a key from 36
 
 SFZ files land in lib:drum-machines/kits/<machine>/, sampler presets in
-machines/sampler/presets/drums/<machine>/ (gitignored). A kit's level is
+the pack, drum-machines/presets/sampler/drums/<machine>/. A kit's level is
 set so its loudest main sound peaks at -6 dBFS; the balance inside a kit
 is the machine's own. Levels are cached in drum-machines/analysis.json.
 """
@@ -82,6 +82,9 @@ LEVELS = {"soft": 0, "mid": 1, "med": 1, "hard": 2, "loud": 2}
 ROLE_TITLE = {"kick": "kicks", "snare": "snares", "rim": "rims", "clap": "claps", "chh": "closed-hats",
               "ohh": "open-hats", "tom": "toms", "crash": "cymbals", "ride": "rides", "cowbell": "cowbells",
               "tamb": "tambourines", "conga": "congas", "shaker": "shakers", "perc": "percussion"}
+
+
+PACK = "drum-machines"
 
 
 def library_root():
@@ -327,7 +330,7 @@ def build(machine, sounds, root, write=True):
         write_kit(os.path.join(kdir, "kit.sfz"), f"{machine} kit on GM keys", keys, gain)
         layered = any(len(s.layers) > 1 for s in keys.values())
         vcsl.write_preset(os.path.join("drums", ms), "kit", f"{machine}: kit on GM keys",
-                          f"lib:drum-machines/kits/{ms}/kit.sfz", preset_params(layered))
+                          f"lib:drum-machines/kits/{ms}/kit.sfz", preset_params(layered), pack=PACK)
     out.append(("kit", len(keys), len(dropped)))
     by_role = {}
     for s in sounds:
@@ -343,7 +346,7 @@ def build(machine, sounds, root, write=True):
                       gain_for(lst))
             vcsl.write_preset(os.path.join("drums", ms), name, f"{machine}: every {name[:-1]} from C2",
                               f"lib:drum-machines/kits/{ms}/{name}.sfz",
-                              preset_params(any(len(s.layers) > 1 for s in lst)))
+                              preset_params(any(len(s.layers) > 1 for s in lst)), pack=PACK)
         out.append((name, len(pal), 0))
     return out
 
@@ -360,7 +363,7 @@ def main():
     cache = json.load(open(cache_path)) if os.path.exists(cache_path) else {}
     if not args.list:
         import shutil
-        shutil.rmtree(os.path.join(vcsl.PRESETS, "drums"), ignore_errors=True)
+        shutil.rmtree(os.path.join(vcsl.pack_presets(PACK, "sampler"), "drums"), ignore_errors=True)
         shutil.rmtree(os.path.join(root, "kits"), ignore_errors=True)
     kits = 0
     for pack in sorted(os.listdir(src)):
@@ -388,7 +391,7 @@ def main():
     with open(cache_path, "w") as f:
         json.dump(cache, f)
     if not args.list:
-        print(f"{kits} kits in {os.path.join(root, 'kits')}, presets in machines/sampler/presets/drums/")
+        print(f"{kits} kits in {os.path.join(root, 'kits')}, presets in {vcsl.pack_presets(PACK, 'sampler')}/drums/")
 
 
 if __name__ == "__main__":

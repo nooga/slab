@@ -6,15 +6,14 @@
 //!
 //! | Kind   | Project                | User (home)        | Factory               | Pack (lib:)    |
 //! |--------|------------------------|--------------------|-----------------------|----------------|
-//! | preset | presets/<id>/          | Presets/<id>/      | machines/<id>/presets | cmi-*, vcsl-*  |
+//! | preset | presets/<id>/          | Presets/<id>/      | machines/<id>/presets | <pack>/presets/<id> |
 //! | table  | tables/*.wav           | Wavetables/*.wav   | machines/*/assets (clm)|               |
 //! | clip   |                        | Clips/*.slabclip   | clips/*.slabclip      |                |
 //! | sample | audio/*.wav            | Samples/**.wav     |                       | Library/**.wav |
 //! | song   |                        | Projects/*.slab    | demos/, songs/        |                |
 //!
-//! Generated pack presets still live in the repo's machines/*/presets
-//! (gitignored) until packs carry their own (docs/25 §Pack presets); they
-//! are listed as the pack's by their bank name.
+//! Packs (`packs.zig`) say which library folders may be shared; the scan
+//! also counts each pack's presets and samples for its card.
 //!
 //! Favorites are a list of references in favorites.txt beside
 //! settings.json: a per-user convenience, like settings, never shared.
@@ -23,6 +22,7 @@ const std = @import("std");
 const storage = @import("storage.zig");
 const presets_mod = @import("presets.zig");
 const registry_mod = @import("machine_registry.zig");
+const packs_mod = @import("packs.zig");
 
 pub const Kind = enum(u8) { preset, table, clip, sample, song };
 pub const Source = enum(u8) { project, user, factory, pack };
@@ -54,15 +54,18 @@ pub const Library = struct {
     items: std.ArrayList(Item) = .empty,
     favs: std.ArrayList([]u8) = .empty,
     favs_loaded: bool = false,
+    /// What slab knows of the library's packs.
+    packs: packs_mod.Catalog,
     /// Bumped by every scan, so views can tell their indices went stale.
     generation: u32 = 0,
     scanned: bool = false,
 
     pub fn init(alloc: std.mem.Allocator) Library {
-        return .{ .alloc = alloc, .arena = std.heap.ArenaAllocator.init(alloc) };
+        return .{ .alloc = alloc, .arena = std.heap.ArenaAllocator.init(alloc), .packs = packs_mod.Catalog.init(alloc) };
     }
 
     pub fn deinit(self: *Library) void {
+        self.packs.deinit();
         self.items.deinit(self.alloc);
         for (self.favs.items) |f| self.alloc.free(f);
         self.favs.deinit(self.alloc);
@@ -74,9 +77,11 @@ pub const Library = struct {
         if (!self.favs_loaded) self.loadFavs();
         self.items.clearRetainingCapacity();
         _ = self.arena.reset(.retain_capacity);
+        self.packs.scan();
         self.scanPresets(reg);
         self.scanFiles();
         std.mem.sort(Item, self.items.items, {}, itemLess);
+        self.countPacks();
         for (self.items.items) |*it| it.fav = self.isFav(it);
         self.generation +%= 1;
         self.scanned = true;
@@ -116,13 +121,13 @@ pub const Library = struct {
                     .user => name[presets_mod.USER_BANK.len + 1 ..],
                     .factory => name,
                 };
-                var shareable = true;
-                if (src == .factory and (std.mem.startsWith(u8, name, "cmi") or std.mem.startsWith(u8, name, "vcsl"))) {
-                    src = .pack;
-                    shareable = !std.mem.startsWith(u8, name, "cmi");
-                }
                 var lb: [storage.MAX_PATH]u8 = undefined;
                 const w = presets_mod.locate(&lb, factory_dir, id, name) orelse continue;
+                var shareable = true;
+                if (src == .factory) if (self.packOf(w.dir)) |pack| {
+                    src = .pack;
+                    shareable = self.packs.redistributable(pack);
+                };
                 var pb: [storage.MAX_PATH]u8 = undefined;
                 const file = std.fmt.bufPrint(&pb, "{s}/{s}.preset", .{ w.dir, w.name }) catch continue;
                 self.add(.{
@@ -168,7 +173,7 @@ pub const Library = struct {
             self.walk(.song, .factory, sub(&b, factory, "songs"), "SONGS", 0, ".slab");
             self.factoryTables(factory);
         }
-        if (lib.len > 0) self.packs(lib);
+        if (lib.len > 0) self.packSamples(lib);
     }
 
     /// Wavetables that ship with machines: the assets carrying a clm chunk,
@@ -195,16 +200,14 @@ pub const Library = struct {
     }
 
     /// Every pack folder's samples, grouped by the pack's own folders.
-    fn packs(self: *Library, lib: []const u8) void {
+    fn packSamples(self: *Library, lib: []const u8) void {
         var d = Dir.open(lib) orelse return;
         defer d.close();
         while (d.next()) |e| {
             if (!e.dir or e.name[0] == '.') continue;
             var pb: [storage.MAX_PATH]u8 = undefined;
             const root = std.fmt.bufPrint(&pb, "{s}/{s}", .{ lib, e.name }) catch continue;
-            // The CMI disks and the drum machines are yours, not to share.
-            const shareable = std.mem.eql(u8, e.name, "vcsl");
-            self.walkPack(root, e.name, shareable);
+            self.walkPack(root, e.name, self.packs.redistributable(e.name));
         }
     }
 
@@ -213,6 +216,7 @@ pub const Library = struct {
         defer d.close();
         while (d.next()) |e| {
             if (!e.dir or e.name[0] == '.') continue;
+            if (std.mem.eql(u8, e.name, "presets")) continue; // listed as presets
             var pb: [storage.MAX_PATH]u8 = undefined;
             const top = std.fmt.bufPrint(&pb, "{s}/{s}", .{ root, e.name }) catch continue;
             // A pack's raw folder (_sources) and its sorted ones both
@@ -289,6 +293,32 @@ pub const Library = struct {
             // Named by its path below the group's folder.
             const rel = if (path.len > root.len + 1) path[root.len + 1 ..] else e.name;
             self.add(.{ .kind = .sample, .source = source, .name = self.dupe(rel[0 .. rel.len - 4]), .folder = group, .path = self.dupe(path), .shareable = shareable });
+        }
+    }
+
+    /// The pack a file under the library belongs to, or null.
+    fn packOf(self: *Library, path: []const u8) ?[]const u8 {
+        _ = self;
+        var lb: [storage.MAX_PATH]u8 = undefined;
+        const lib = storage.library(&lb);
+        if (lib.len == 0 or path.len <= lib.len + 1 or !std.mem.startsWith(u8, path, lib) or path[lib.len] != '/') return null;
+        const rest = path[lib.len + 1 ..];
+        return rest[0 .. std.mem.indexOfScalar(u8, rest, '/') orelse rest.len];
+    }
+
+    fn countPacks(self: *Library) void {
+        for (self.packs.packs.items) |*p| {
+            p.presets = 0;
+            p.samples = 0;
+        }
+        for (self.items.items) |*it| {
+            if (it.source != .pack) continue;
+            const p = self.packs.find(self.packOf(it.path) orelse continue) orelse continue;
+            switch (it.kind) {
+                .preset => p.presets += 1,
+                .sample => p.samples += 1,
+                else => {},
+            }
         }
     }
 

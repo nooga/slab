@@ -11,7 +11,7 @@ and a lot of percussion.  This script
      velocity layers and round robins from the file names, tuning each
      sample to its measured pitch and levelling each instrument;
   3. composes GM drum kits from the percussion;
-  4. writes a sampler preset per SFZ into machines/sampler/presets/vcsl-*/,
+  4. writes a sampler preset per SFZ into the pack, vcsl/presets/sampler/vcsl-*/,
      pointing at "lib:vcsl/...", so the presets work on any machine that
      ran this script.
 
@@ -47,7 +47,6 @@ RAW = f"https://raw.githubusercontent.com/{REPO}/{COMMIT}/"
 TREE = f"https://api.github.com/repos/{REPO}/git/trees/{COMMIT}?recursive=1"
 
 SLAB = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-PRESETS = os.path.join(SLAB, "machines", "sampler", "presets")
 
 MAX_ZONES = 256  # src/keymap.zig MAX_ZONES
 TARGET_PEAK_DB = -6.0
@@ -62,10 +61,17 @@ except ImportError:  # measuring is optional
 
 
 def library_root():
+    """Sample packs: $SLAB_LIBRARY, else <home>/Library (src/storage.zig)."""
     root = os.environ.get("SLAB_LIBRARY")
     if root:
         return root.rstrip("/")
-    return os.path.join(os.path.expanduser("~"), "Music", "Slab", "Library")
+    home = os.environ.get("SLAB_HOME") or os.path.join(os.path.expanduser("~"), "Music", "Slab")
+    return os.path.join(home.rstrip("/"), "Library")
+
+
+def pack_presets(pack, machine):
+    """A pack's presets for a machine: lib:<pack>/presets/<machine>/ (docs/25 §Pack presets)."""
+    return os.path.join(library_root(), pack, "presets", machine)
 
 
 def release_of(folder):
@@ -615,8 +621,8 @@ def preset_params(folder, kind, layered, has_rel=False):
     return p
 
 
-def write_preset(bank_name, name, note, lib_path, params):
-    path = os.path.join(PRESETS, bank_name, name + ".preset")
+def write_preset(bank_name, name, note, lib_path, params, pack="vcsl"):
+    path = os.path.join(pack_presets(pack, "sampler"), bank_name, name + ".preset")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     d = {"slab": "preset", "schema": 1, "machine": "sampler", "note": note, "params": params, "assets": {"smp": lib_path}}
     with open(path, "w") as f:

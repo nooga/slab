@@ -4,8 +4,11 @@
 //! A machine's presets come from three places (docs/25 §Save to Library):
 //! the factory's `machines/<id>/presets/`, read-only; the open project's
 //! `presets/<id>/`, shown as the "Project" bank; and the home folder's
-//! `Presets/<id>/`, the "User" bank. A preset's name says where it lives:
-//! `rom1a/dx-bass` is the factory's, `Project/lead` the project's.
+//! `Presets/<id>/`, the "User" bank. Installed packs add theirs from
+//! `<library>/<pack>/presets/<id>/` (docs/25 §Pack presets), banks named
+//! like the factory's. A preset's name says where it lives:
+//! `rom1a/dx-bass` is the factory's (or a pack's), `Project/lead` the
+//! project's.
 //! Param values are real (Hz, seconds, an option index for switches) — not
 //! 0..1 norms — so retuning a knob range later doesn't move saved sounds;
 //! they clamp into range on apply. `machine`/`note` are hub forward-compat
@@ -22,6 +25,7 @@ extern fn read(fd: c_int, buf: [*]u8, count: usize) isize;
 extern fn write(fd: c_int, buf: [*]const u8, count: usize) isize;
 extern fn mkdir(path: [*:0]const u8, mode: c_uint) c_int;
 extern fn rename(old: [*:0]const u8, new: [*:0]const u8) c_int;
+extern fn access(path: [*:0]const u8, mode: c_int) c_int;
 const O_RDONLY: c_int = 0;
 const O_WRONLY: c_int = 1;
 const O_CREAT: c_int = 0x200;
@@ -186,23 +190,90 @@ pub fn inBank(buf: []u8, bank: Bank, name: []const u8) ?[]const u8 {
     };
 }
 
+/// Every installed pack's presets folder for machine `id`, in turn.
+pub const PackDirs = struct {
+    dir: ?*DIR,
+    id: []const u8,
+    lib: [storage.MAX_PATH]u8 = undefined,
+    lib_len: usize = 0,
+
+    pub fn init(id: []const u8) PackDirs {
+        var it = PackDirs{ .dir = null, .id = id };
+        const lib = storage.library(&it.lib);
+        it.lib_len = lib.len;
+        var zb: [storage.MAX_PATH:0]u8 = undefined;
+        if (id.len == 0 or lib.len == 0 or lib.len >= zb.len) return it;
+        @memcpy(zb[0..lib.len], lib);
+        zb[lib.len] = 0;
+        it.dir = opendir(&zb);
+        return it;
+    }
+
+    /// The next pack's folder, written into `buf`; `pack` gets its id.
+    pub fn next(self: *PackDirs, buf: []u8, pack: ?*[]const u8) ?[]const u8 {
+        const d = self.dir orelse return null;
+        while (readdir(d)) |e| {
+            const nm = e.d_name[0..e.d_namlen];
+            if (nm.len == 0 or nm[0] == '.' or e.d_type != DT_DIR) continue;
+            const path = std.fmt.bufPrint(buf, "{s}/{s}/presets/{s}", .{ self.lib[0..self.lib_len], nm, self.id }) catch continue;
+            if (!exists(path)) continue;
+            if (pack) |p| p.* = path[self.lib_len + 1 ..][0..nm.len];
+            return path;
+        }
+        return null;
+    }
+
+    pub fn deinit(self: *PackDirs) void {
+        if (self.dir) |d| _ = closedir(d);
+        self.dir = null;
+    }
+};
+
+fn exists(path: []const u8) bool {
+    var zb: [storage.MAX_PATH:0]u8 = undefined;
+    if (path.len >= zb.len) return false;
+    @memcpy(zb[0..path.len], path);
+    zb[path.len] = 0;
+    return access(&zb, 0) == 0;
+}
+
 pub const Where = struct { dir: []const u8, name: []const u8 };
 
 /// The folder and file stem a preset name maps to. `factory_dir` is the
-/// machine's own presets folder; `buf` backs the folder path.
+/// machine's own presets folder; `buf` backs the folder path. A name the
+/// factory doesn't have is looked for in the installed packs.
 pub fn locate(buf: []u8, factory_dir: []const u8, id: []const u8, name: []const u8) ?Where {
     return switch (bankOf(name)) {
-        .factory => .{ .dir = factory_dir, .name = name },
+        .factory => .{ .dir = packFor(buf, factory_dir, id, name), .name = name },
         .project => .{ .dir = projectDir(buf, id) orelse return null, .name = name[PROJECT_BANK.len + 1 ..] },
         .user => .{ .dir = userDir(buf, id) orelse return null, .name = name[USER_BANK.len + 1 ..] },
     };
 }
 
-/// Every preset of machine `id`: the factory's, then the project's and the
-/// home folder's as banks of their own.
+/// The folder holding factory-bank preset `name`: the factory's, else the
+/// first installed pack that has it, else the factory's (to report missing).
+fn packFor(buf: []u8, factory_dir: []const u8, id: []const u8, name: []const u8) []const u8 {
+    var fb: [storage.MAX_PATH]u8 = undefined;
+    const f = std.fmt.bufPrint(&fb, "{s}/{s}.preset", .{ factory_dir, name }) catch return factory_dir;
+    if (exists(f)) return factory_dir;
+    var packs = PackDirs.init(id);
+    defer packs.deinit();
+    while (packs.next(buf, null)) |d| {
+        const p = std.fmt.bufPrint(&fb, "{s}/{s}.preset", .{ d, name }) catch continue;
+        if (exists(p)) return d;
+    }
+    return factory_dir;
+}
+
+/// Every preset of machine `id`: the factory's and the installed packs',
+/// then the project's and the home folder's as banks of their own.
 pub fn scanMachine(factory_dir: []const u8, id: []const u8) List {
     var list = List{};
     scanInto(&list, factory_dir, "", 0);
+    var packs = PackDirs.init(id);
+    defer packs.deinit();
+    var kb: [storage.MAX_PATH]u8 = undefined;
+    while (packs.next(&kb, null)) |d| scanInto(&list, d, "", 0);
     var pb: [storage.MAX_PATH]u8 = undefined;
     if (projectDir(&pb, id)) |d| scanInto(&list, d, PROJECT_BANK, 1);
     var ub: [storage.MAX_PATH]u8 = undefined;

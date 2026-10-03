@@ -1,0 +1,7 @@
+{"slab": "pack", "schema": 1,
+ "id": "vcsl", "name": "Versilian (VCSL)", "version": "c1ea7bc",
+ "license": "CC0-1.0", "redistributable": true, "size": 6100000000,
+ "about": "The Versilian Community Sample Library: pianos, organs, winds, mallets, percussion and two drum kits",
+ "link": "https://github.com/sgossner/VCSL",
+ "get": {"download": [{"url": "https://github.com/sgossner/VCSL/archive/c1ea7bcc3c7309650ab0da9d15c9cd1fbc4a4c7e.zip"}]},
+ "import": "vcsl"}

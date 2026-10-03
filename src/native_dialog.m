@@ -50,6 +50,14 @@ void slab_reveal(const char *path) {
     }
 }
 
+void slab_open(const char *target) {
+    @autoreleasepool {
+        NSString *s = [NSString stringWithUTF8String:target];
+        NSURL *url = [s hasPrefix:@"/"] ? [NSURL fileURLWithPath:s] : [NSURL URLWithString:s];
+        if (url) [[NSWorkspace sharedWorkspace] openURL:url];
+    }
+}
+
 int slab_trash(const char *path) {
     @autoreleasepool {
         NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];

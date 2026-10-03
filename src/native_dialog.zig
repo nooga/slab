@@ -10,6 +10,14 @@ extern fn slab_save_audio_dialog(default_name: [*:0]const u8) ?[*:0]u8;
 extern fn slab_free_dialog_path(path: ?[*:0]u8) void;
 extern fn slab_trash(path: [*:0]const u8) c_int;
 extern fn slab_reveal(path: [*:0]const u8) void;
+extern fn slab_open(target: [*:0]const u8) void;
+
+/// Open a folder in Finder, or a link in the browser.
+pub fn open(target: []const u8) void {
+    var zb: [2048]u8 = undefined;
+    const z = std.fmt.bufPrintZ(&zb, "{s}", .{target}) catch return;
+    slab_open(z.ptr);
+}
 
 /// Show a file selected in a Finder window.
 pub fn reveal(path: []const u8) void {

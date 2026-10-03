@@ -76,6 +76,7 @@ test {
     _ = @import("ui/arrangement.zig");
     _ = @import("ui/follow.zig");
     _ = @import("library.zig");
+    _ = @import("packs.zig");
     _ = @import("ui/browser.zig");
 }
 
@@ -898,6 +899,11 @@ pub fn main(init: std.process.Init) !void {
 
         // The library browser (docs/25 §The browser).
         previewer.collect(&engine);
+        // A pack import that finished brings its presets and samples.
+        if (lib.packs.poll()) {
+            lib_stale = true;
+            status.set("Pack import finished", .{});
+        }
         if (layout.browser_visible) {
             if (lib_stale) {
                 lib.scan(&reg);
@@ -924,6 +930,13 @@ pub fn main(init: std.process.Init) !void {
             if (bres.rescan) lib_stale = true;
             if (bres.status) |msg| status.set("{s}", .{msg});
             if (bres.reveal) |p| native_dialog.reveal(p);
+            if (bres.open) |p| native_dialog.open(p);
+            if (bres.remove_pack) |p| {
+                if (native_dialog.trash(p)) {
+                    status.set("Moved {s} to the Trash", .{std.fs.path.basename(p)});
+                    lib_stale = true;
+                } else status.set("Couldn't move {s} to the Trash", .{p});
+            }
             if (bres.selected) |sel| if (sel < items.len) {
                 const k = items[sel].kind;
                 if (k == .sample or k == .table) _ = previewer.select(&engine, items[sel].path);

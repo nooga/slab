@@ -24,6 +24,7 @@ const menu = @import("menu.zig");
 const text_field = @import("text_field.zig");
 const library = @import("../library.zig");
 const storage = @import("../storage.zig");
+const packs_mod = @import("../packs.zig");
 
 const Ui = core.Ui;
 const Rect = core.Rect;
@@ -67,6 +68,10 @@ pub const Result = struct {
     rescan: bool = false,
     /// A line for the status bar.
     status: ?[]const u8 = null,
+    /// Open this folder or link (a pack card's SHOW FOLDER, OPEN LINK).
+    open: ?[]const u8 = null,
+    /// Move this pack folder to the Trash (REMOVE, confirmed).
+    remove_pack: ?[]const u8 = null,
 };
 
 /// What the preview pane draws for the selection, filled by main.
@@ -118,6 +123,13 @@ pub const State = struct {
 
     preview_h: i32 = 184,
     msg: [160]u8 = undefined,
+
+    /// The pack cards: when they last looked for files, a REMOVE waiting
+    /// for its second click, and the path a Result points into.
+    packs_t: f64 = -10,
+    pack_confirm: ?usize = null,
+    pack_confirm_t: f64 = 0,
+    path_buf: [storage.MAX_PATH]u8 = undefined,
 
     pub fn deinit(st: *State, alloc: std.mem.Allocator) void {
         st.rows.deinit(alloc);
@@ -354,7 +366,7 @@ pub fn draw(ui: *Ui, r: Rect, st: *State, lib: *library.Library, focused: bool) 
         return res;
     }
     if (st.tab == TAB_PACKS) {
-        packsView(ui, col, items, &res);
+        packsView(ui, col, st, lib, &res);
         return res;
     }
     if (st.tab == TAB_ONLINE) {
@@ -1091,69 +1103,260 @@ fn readFile(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
 
 // ── Packs and online ─────────────────────────────────────────────────
 
-/// The library's packs: one card each, from what `library` found.
-fn packsView(ui: *Ui, r: Rect, items: []const Item, res: *Result) void {
+/// The library's packs, one card each (docs/25 §Installing): installed,
+/// to download, to buy elsewhere, or waiting for the user's files.
+fn packsView(ui: *Ui, r: Rect, st: *State, lib: *library.Library, res: *Result) void {
     ui.pushId("packs");
     defer ui.popId();
+    const cat = &lib.packs;
+    // Packs waiting for files look again now and then, so files copied in
+    // Finder show up on the card.
+    if (ui.in.time - st.packs_t > 1.5) {
+        st.packs_t = ui.in.time;
+        for (cat.packs.items) |*p| if (p.state == .needs_files or p.state == .ready) cat.refresh(p);
+    }
+    if (cat.anyRunning()) ui.animate();
     const area = ui.well(r, style.pane);
     var col = area.inset(6);
-    var lb: [storage.MAX_PATH]u8 = undefined;
-    const lib_dir = storage.library(&lb);
-    ui.textIn(&ui.fonts.legend, col.cutTop(14), "SAMPLE PACKS IN YOUR LIBRARY", style.text_mute, .left, false);
+    ui.textIn(&ui.fonts.legend, col.cutTop(14), "SAMPLES TOO BIG TO SHIP, OR YOURS ALONE", style.text_mute, .left, false);
     _ = col.cutTop(4);
-    // Packs are the lib folders that samples came from.
-    var seen: [16][]const u8 = undefined;
-    var counts: [16]u32 = undefined;
-    var shareable: [16]bool = undefined;
-    var n: usize = 0;
-    for (items) |*it| {
-        if (it.source != .pack or it.kind != .sample) continue;
-        if (it.path.len <= lib_dir.len + 1) continue;
-        const rest = it.path[lib_dir.len + 1 ..];
-        const id = rest[0 .. std.mem.indexOfScalar(u8, rest, '/') orelse rest.len];
-        var k: usize = 0;
-        while (k < n and !std.mem.eql(u8, seen[k], id)) k += 1;
-        if (k == n) {
-            if (n == seen.len) continue;
-            seen[n] = id;
-            counts[n] = 0;
-            shareable[n] = it.shareable;
-            n += 1;
-        }
-        counts[k] += 1;
-    }
-    for (0..n) |k| {
-        if (col.h < 60) break;
-        ui.pushId(k);
+    for (cat.packs.items, 0..) |*p, i| {
+        const h = cardHeight(ui, col.w - 12, cat, p);
+        if (col.h < h) break;
+        ui.pushId(i);
         defer ui.popId();
-        var card = ui.plate(col.cutTop(60), .{ .outline = .all, .chamfer = 2 }).insetXY(6, 4);
+        packCard(ui, col.cutTop(h), st, cat, p, i, res);
         _ = col.cutTop(6);
-        var top = card.cutTop(18);
-        ctl.led(ui, top.x, top.y + 6, .round5, .on, style.led_green);
-        _ = top.cutLeft(10);
-        var nb: [64]u8 = undefined;
-        ui.textIn(&ui.fonts.body_bold, top, upper(&nb, seen[k]), style.text, .left, true);
-        var mb: [96]u8 = undefined;
-        const meta = std.fmt.bufPrint(&mb, "INSTALLED \u{B7} {d} SAMPLES \u{B7} {s}", .{ counts[k], if (shareable[k]) "FREE TO SHARE" else "YOURS, NOT TO SHARE" }) catch "";
-        ui.textIn(&ui.fonts.legend, card.cutTop(14), meta, style.text_dim, .left, false);
-        const acts = card.cutBottom(20);
-        if (ctl.button(ui, acts.takeLeft(64), "reveal", null, .{ .label = "FINDER" })) {
-            // The pack's folder: the first sample's path up to it.
-            for (items) |*it| if (it.source == .pack and it.path.len > lib_dir.len + 1 + seen[k].len and std.mem.startsWith(u8, it.path[lib_dir.len + 1 ..], seen[k])) {
-                res.reveal = it.path[0 .. lib_dir.len + 1 + seen[k].len];
-                break;
-            };
-        }
     }
-    if (n == 0) ui.textIn(&ui.fonts.legend, col.takeTop(14), "NONE YET", style.text_mute, .left, false);
-    _ = col.cutTop(8);
-    const lines = [_][]const u8{
-        "DOWNLOADS, AND PACKS YOU BRING YOUR",
-        "OWN FILES FOR, ARRIVE WITH PHASE 5",
-        "(DOCS/25 \u{A7}PACKS).",
-    };
-    for (lines) |l| ui.textIn(&ui.fonts.legend, col.cutTop(13), l, style.text_mute, .left, false);
+    if (cat.packs.items.len == 0) ui.textIn(&ui.fonts.legend, col.takeTop(14), "NO PACKS KNOWN", style.text_mute, .left, false);
 }
+
+/// An import ran this session and the pack still isn't installed: the
+/// card says how it ended.
+fn lastRun(cat: *packs_mod.Catalog, p: *const packs_mod.Pack) ?*packs_mod.Job {
+    const j = cat.jobOf(p) orelse return null;
+    return if (!j.running and p.state != .installed) j else null;
+}
+
+fn cardHeight(ui: *Ui, w: i32, cat: *packs_mod.Catalog, p: *const packs_mod.Pack) i32 {
+    const failed = lastRun(cat, p) != null;
+    const base: i32 = 18 + 14 + 4 + 20 + 8;
+    return base + switch (p.state) {
+        .installed => 13,
+        .available => 13,
+        .running => 13 + 10,
+        .instructions => 13 * @as(i32, @intCast(wrapCount(&ui.fonts.legend, instructionsText(p), w, 3))),
+        .needs_files, .ready => blk: {
+            const s = p.m.get.supply.?;
+            break :blk 13 * @as(i32, @intCast(wrapCount(&ui.fonts.legend, s.help, w, 3))) + 3 + 14 * @as(i32, @intCast(@min(s.expect.len, packs_mod.MAX_EXPECT)));
+        },
+    } + (if (failed) @as(i32, 13) else 0);
+}
+
+fn instructionsText(p: *const packs_mod.Pack) []const u8 {
+    return if (p.m.get.instructions) |ins| ins.text else "";
+}
+
+fn packCard(ui: *Ui, r: Rect, st: *State, cat: *packs_mod.Catalog, p: *packs_mod.Pack, i: usize, res: *Result) void {
+    var body = ui.plate(r, .{ .outline = .all, .chamfer = 2 }).insetXY(6, 4);
+    const f = &ui.fonts.legend;
+    const job = cat.jobOf(p);
+    var top = body.cutTop(18);
+    const Look = struct { col: Color, status: []const u8 };
+    const look: Look = switch (p.state) {
+        .available => .{ .col = style.led_blue, .status = "AVAILABLE" },
+        .running => .{ .col = style.accent, .status = if (p.m.get.download != null and p.m.get.supply == null) "DOWNLOADING" else "IMPORTING" },
+        .installed => .{ .col = style.led_green, .status = "INSTALLED" },
+        .needs_files => .{ .col = style.led_yellow, .status = "NEEDS YOUR FILES" },
+        .ready => .{ .col = style.led_yellow, .status = "FILES FOUND" },
+        .instructions => .{ .col = style.text_dim, .status = "GET IT ELSEWHERE" },
+    };
+    ctl.led(ui, top.x, top.y + 6, .round5, if (p.state == .running) .blink else .on, look.col);
+    _ = top.cutLeft(10);
+    var nb: [96]u8 = undefined;
+    ui.textIn(&ui.fonts.body_bold, top, ellipsizeEnd(&nb, &ui.fonts.body_bold, p.m.name, top.w), style.text, .left, true);
+    var mb: [160]u8 = undefined;
+    var sb: [24]u8 = undefined;
+    const license = if (!p.known) "YOURS" else if (p.m.redistributable) "FREE TO SHARE" else "YOURS, NOT TO SHARE";
+    // The download's size, until it's on disk.
+    const size = p.m.size > 0 and p.state != .installed;
+    const meta = std.fmt.bufPrint(&mb, "{s} \u{B7} {s}{s}{s}", .{ look.status, license, if (size) " \u{B7} " else "", if (size) sizeText(&sb, p.m.size) else "" }) catch "";
+    var mb2: [160]u8 = undefined;
+    ui.textIn(f, body.cutTop(14), upper(&mb2, meta), style.text_dim, .left, false);
+    _ = body.cutTop(4);
+    var acts = body.cutBottom(20);
+
+    if (lastRun(cat, p)) |j| {
+        var lb: [192]u8 = undefined;
+        var ub: [192]u8 = undefined;
+        const how = if (j.cancelled) "CANCELLED" else if (j.ok) "LAST RUN" else "FAILED";
+        const line = std.fmt.bufPrint(&lb, "{s}: {s}", .{ how, j.lastLine() }) catch "";
+        const lr = body.cutTop(13);
+        ui.textIn(f, lr, ellipsizeEnd(&ub, f, upper(&mb2, line), body.w), if (j.ok or j.cancelled) style.text_mute else style.rec, .left, false);
+        if (ui.behaviorEx(ui.id("lastrun"), lr, .{ .focusable = false }).clicked) res.reveal = j.logPath();
+        menu.tip(ui, lr, "Click to show the log in Finder");
+    }
+
+    switch (p.state) {
+        .installed => {
+            var cb: [96]u8 = undefined;
+            const counts = std.fmt.bufPrint(&cb, "{d} PRESETS \u{B7} {d} SAMPLES", .{ p.presets, p.samples }) catch "";
+            ui.textIn(f, body.cutTop(13), counts, style.text_mute, .left, false);
+            if (ctl.button(ui, acts.cutLeft(64), "reveal", null, .{ .label = "REVEAL" })) {
+                res.reveal = packs_mod.Catalog.packDir(&st.path_buf, p.m.id);
+            }
+            _ = acts.cutLeft(4);
+            const confirming = st.pack_confirm == i and ui.in.time - st.pack_confirm_t < 3;
+            if (confirming) ui.animate();
+            if (ctl.button(ui, acts.cutLeft(64), "remove", null, .{ .label = if (confirming) "REALLY?" else "REMOVE" })) {
+                if (confirming) {
+                    res.remove_pack = packs_mod.Catalog.packDir(&st.path_buf, p.m.id);
+                    st.pack_confirm = null;
+                } else {
+                    st.pack_confirm = i;
+                    st.pack_confirm_t = ui.in.time;
+                }
+            }
+            menu.tip(ui, Rect.xywh(acts.x - 64, acts.y, 64, acts.h), "Moves the pack's folder to the Trash");
+            if (p.canImport()) {
+                _ = acts.cutLeft(4);
+                if (ctl.button(ui, acts.cutLeft(f.measure("IMPORT AGAIN") + 16), "again", null, .{ .label = "IMPORT AGAIN" })) startImport(cat, p, res);
+            }
+        },
+        .available => {
+            var ab: [128]u8 = undefined;
+            ui.textIn(f, body.cutTop(13), ellipsizeEnd(&ab, f, upper(&mb2, p.m.about), body.w), style.text_mute, .left, false);
+            var lb: [32]u8 = undefined;
+            const label = std.fmt.bufPrint(&lb, "DOWNLOAD {s}", .{sizeText(&sb, p.m.size)}) catch "DOWNLOAD";
+            const br = acts.cutLeft(@max(96, f.measure(label) + 20));
+            if (ctl.button(ui, br, "get", null, .{ .label = label })) startImport(cat, p, res);
+            menu.tip(ui, br, "Fetches the pack into your library and makes its presets");
+        },
+        .running => {
+            const j = job.?;
+            var lb: [192]u8 = undefined;
+            var ub: [192]u8 = undefined;
+            ui.textIn(f, body.cutTop(13), ellipsizeEnd(&ub, f, upper(&lb, j.lastLine()), body.w), style.text_dim, .left, false);
+            // No measure of how far along: a sweep says it's alive.
+            const bar = ui.well(body.cutTop(10).insetXY(0, 2), style.well);
+            const span = @divFloor(bar.w, 4);
+            const t: f32 = @floatCast(@mod(ui.in.time, 1.6) / 1.6);
+            const x0 = bar.x - span + @as(i32, @intFromFloat(t * @as(f32, @floatFromInt(bar.w + span))));
+            const x1 = @min(bar.right(), x0 + span);
+            const xs = @max(bar.x, x0);
+            if (x1 > xs) ui.rect(Rect.xywh(xs, bar.y, x1 - xs, bar.h), style.accent);
+            if (ctl.button(ui, acts.cutLeft(64), "cancel", null, .{ .label = "CANCEL" })) cat.cancel(p);
+            _ = acts.cutLeft(4);
+            if (ctl.button(ui, acts.cutLeft(48), "log", null, .{ .label = "LOG" })) res.reveal = j.logPath();
+        },
+        .instructions => {
+            const ins = p.m.get.instructions.?;
+            wrapText(ui, f, &body, ins.text, style.text_dim, 3);
+            const link = if (ins.link.len > 0) ins.link else p.m.link;
+            if (link.len > 0) {
+                if (ctl.button(ui, acts.cutLeft(80), "link", null, .{ .label = "OPEN LINK" })) res.open = link;
+                menu.tip(ui, Rect.xywh(acts.x - 80, acts.y, 80, acts.h), link);
+                _ = acts.cutLeft(4);
+            }
+            if (p.m.get.supply != null and ctl.button(ui, acts.cutLeft(112), "have", null, .{ .label = "I HAVE THE FILES" })) {
+                cat.markHave(p.m.id);
+                cat.refresh(p);
+            }
+        },
+        .needs_files, .ready => {
+            const s = p.m.get.supply.?;
+            wrapText(ui, f, &body, s.help, style.text_dim, 3);
+            _ = body.cutTop(3);
+            for (s.expect, 0..) |x, k| {
+                if (k == packs_mod.MAX_EXPECT) break;
+                expectRow(ui, body.cutTop(14), x.name, x.glob, p.found[k]);
+            }
+            if (ctl.button(ui, acts.cutLeft(88), "folder", null, .{ .label = "SHOW FOLDER" })) {
+                res.open = cat.sourcesDir(&st.path_buf, p);
+            }
+            menu.tip(ui, Rect.xywh(acts.x - 88, acts.y, 88, acts.h), "Opens the folder the pack's files go in");
+            _ = acts.cutLeft(4);
+            if (p.state == .ready) {
+                if (ctl.button(ui, acts.cutLeft(64), "import", null, .{ .label = "IMPORT" })) startImport(cat, p, res);
+            } else ui.textIn(f, acts.insetXY(4, 0), "IMPORT ONCE FOUND", style.text_mute, .left, false);
+        },
+    }
+}
+
+fn startImport(cat: *packs_mod.Catalog, p: *packs_mod.Pack, res: *Result) void {
+    if (cat.startImport(p)) |why| res.status = why;
+}
+
+fn expectRow(ui: *Ui, r: Rect, name: []const u8, pattern: []const u8, found: u32) void {
+    const f = &ui.fonts.legend;
+    const ok = found > 0;
+    ui.textIn(f, Rect.xywh(r.x, r.y, 12, r.h), if (ok) "\u{2713}" else "\u{2013}", if (ok) style.play else style.text_mute, .left, false);
+    var buf: [24]u8 = undefined;
+    const s = if (ok) std.fmt.bufPrint(&buf, "{d} FOUND", .{found}) catch "" else "NONE YET";
+    const sw = f.measure(s) + 6;
+    var lb: [96]u8 = undefined;
+    var ub: [96]u8 = undefined;
+    const ext = if (std.mem.lastIndexOfScalar(u8, pattern, '.')) |d| pattern[d..] else "";
+    const label = std.fmt.bufPrint(&lb, "{s} ({s})", .{ name, ext }) catch name;
+    ui.textIn(f, Rect.xywh(r.x + 12, r.y, r.w - 12 - sw, r.h), ellipsizeEnd(&ub, f, upper(&lb, label), r.w - 12 - sw), style.text_dim, .left, false);
+    ui.textIn(f, r, s, if (ok) style.play else style.text_mute, .right, false);
+}
+
+fn sizeText(buf: []u8, bytes: u64) []const u8 {
+    const gb = @as(f64, @floatFromInt(bytes)) / 1e9;
+    if (gb >= 1) return std.fmt.bufPrint(buf, "{d:.1} GB", .{gb}) catch "";
+    return std.fmt.bufPrint(buf, "{d} MB", .{bytes / 1_000_000}) catch "";
+}
+
+/// Words of `s` in lines that fit `w`, at most `max` (the last ends in …).
+fn wrapCount(f: *const core.Font, s: []const u8, w: i32, max: usize) usize {
+    var n: usize = 0;
+    var it = Wrap{ .f = f, .s = s, .w = w };
+    while (it.next()) |_| n += 1;
+    return @min(@max(n, 1), max);
+}
+
+fn wrapText(ui: *Ui, f: *const core.Font, body: *Rect, s: []const u8, col: Color, max: usize) void {
+    var it = Wrap{ .f = f, .s = s, .w = body.w };
+    var n: usize = 0;
+    while (it.next()) |line| : (n += 1) {
+        if (n == max) break;
+        var ub: [192]u8 = undefined;
+        var eb: [192]u8 = undefined;
+        const last = n + 1 == max and it.rest().len > 0;
+        const text = if (last) ellipsizeEnd(&eb, f, std.fmt.bufPrint(&ub, "{s}\u{2026}", .{upper(&eb, line)}) catch line, body.w) else upper(&ub, line);
+        ui.textIn(f, body.cutTop(13), text, col, .left, false);
+    }
+}
+
+const Wrap = struct {
+    f: *const core.Font,
+    s: []const u8,
+    w: i32,
+    at: usize = 0,
+
+    fn rest(self: *const Wrap) []const u8 {
+        return self.s[self.at..];
+    }
+
+    fn next(self: *Wrap) ?[]const u8 {
+        while (self.at < self.s.len and self.s[self.at] == ' ') self.at += 1;
+        if (self.at >= self.s.len) return null;
+        const start = self.at;
+        var end = start;
+        var i = start;
+        while (i <= self.s.len) : (i += 1) {
+            if (i == self.s.len or self.s[i] == ' ') {
+                if (end > start and self.f.measure(self.s[start..i]) > self.w) break;
+                end = i;
+                if (i == self.s.len) break;
+            }
+        }
+        if (end == start) end = self.s.len; // one word wider than the line
+        self.at = end;
+        return self.s[start..end];
+    }
+};
 
 fn onlineView(ui: *Ui, r: Rect) void {
     const area = ui.well(r, style.pane);

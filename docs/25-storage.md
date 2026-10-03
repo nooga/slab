@@ -102,8 +102,8 @@ ships.
 ### The pack manifest
 
 Slab knows a pack by its manifest, `<id>.pack.json`. Manifests ship
-with slab in `factory:packs/`, and more can come from the online
-repository:
+with slab in `factory:packs/` (`vcsl`, `drum-machines`, `cmi` today,
+read by src/packs.zig), and more can come from the online repository:
 
 ```json
 {"id": "vcsl", "name": "Versilian Community Sample Library", "version": "2024.1",
@@ -141,6 +141,11 @@ repository:
   disks. The importer writes the same index that a ready-made one
   would.
 
+Besides these, a manifest has `about` (a line for its card), `link`
+(the maker's page) and `size` (the download, in bytes). An expectation
+can list more patterns in `also`, and `"any": true` makes the pack
+ready when any one is met rather than all.
+
 References in projects and presets never use URLs: they stay
 `lib:<id>/…`. URLs appear only in pack manifests, so a project never
 breaks because a server moved.
@@ -162,16 +167,44 @@ so a pack that is already set up by hand keeps working unchanged. The
 CMI and drum-machine folders in the library now are exactly what their
 `supply` pack expects: slab finds them and marks the packs installed.
 
+What's built (the PACKS tab, src/packs.zig):
+- **Installed** means `Library/<id>/presets/` exists. A library folder
+  no manifest names is listed as installed and the user's own.
+- **Needs your files** looks for the expected files in `_sources/`
+  every second and a half while the tab is open, and shows the count
+  for each. Once they are found, **IMPORT** appears; slab doesn't start
+  an import on its own.
+- **Importing** still runs the pack's tool from `tools/library/`
+  (`vcsl.py`, `drums.py`, `cmi.py --collection disks _sources`) with
+  Python 3, as a child process. Its output goes to
+  `Cache/packs/<id>.log`, and the card shows the last line, with CANCEL
+  and LOG. **DOWNLOAD** on VCSL runs `vcsl.py`, which fetches the
+  library at its pinned commit and resumes where it stopped. Slab's own
+  downloader (the manifest's `download` URLs, checked by hash) and
+  importers replace the tools later in this phase.
+- **Installed** cards count the pack's presets and samples and offer
+  REVEAL, REMOVE (a second click within three seconds moves the folder
+  to the Trash) and IMPORT AGAIN.
+- **Not yet:** dropping a folder or zip on a card, Update, and the size
+  on disk.
+
 ### Pack presets
 
 A pack's presets live in the pack, in
 `Library/<id>/presets/<machine id>/…`. Each machine's preset menu adds
 installed packs as banks, next to factory and user presets.
 
-This replaces the gitignored generated presets in the repo
+A pack's banks keep the names they had when they lived in the repo
+(`vcsl-keys/…`, `drums/roland-cr-78/kit`, `cmi-iix/<disk>/<voice>`), so
+projects and slabkit songs that name them still find them. A name the
+factory doesn't have is looked for in each installed pack
+(`presets.locate`), and slabkit's `presets()` reads the packs too.
+
+This replaced the gitignored generated presets in the repo
 (`machines/sampler/presets/vcsl-*`, `machines/unfairlight/presets/cmi-*`,
-`machines/rack/presets/cmi-*`, …). Those are presets that exist only
-on machines that ran a script, and only inside a checkout.
+`machines/rack/presets/cmi-*`, …), which existed only on machines that
+ran a script, and only inside a checkout. The tools in
+`tools/library/` now write into the pack.
 
 ### Missing packs
 
@@ -431,7 +464,7 @@ lists them; the gallery's BROWSER page is where its look was tried out.
 
 | Kind | Project | User | Factory | Pack |
 |---|---|---|---|---|
-| preset | `presets/<id>/` | `Presets/<id>/` | `machines/<id>/presets` | the generated `cmi-*`, `vcsl-*` banks, until packs carry their own |
+| preset | `presets/<id>/` | `Presets/<id>/` | `machines/<id>/presets` | `Library/<pack>/presets/<id>/` |
 | wavetable | `tables/` | `Wavetables/` | machine assets with a `clm ` chunk | |
 | clip | | `Clips/` | `clips/` | |
 | sample | `audio/` | `Samples/`, a group per folder | | `Library/<pack>/`, a group per folder |
@@ -465,8 +498,7 @@ Clips dragged from the arrangement onto the browser are saved to
 item's own name; the path is in the tooltip and the preview's
 reference.
 
-The PACKS tab lists the packs in `Library/` with Finder; the cards for
-downloads and supplied files come with phase 5. ONLINE waits for
+The PACKS tab has a card for each pack (§Installing). ONLINE waits for
 phase 7.
 
 Dragging an item onto a track works the same from every source. An
@@ -522,7 +554,7 @@ it uses.
 | `settings.json` | `"slab": "settings"` | 1 | built |
 | `.preset` | `"slab": "preset"` | 1 | built (shipped and generated presets tagged) |
 | `.slabclip` | `"slab": "clip"` | 1 | built |
-| `<id>.pack.json` | `"slab": "pack"` | 1 | phase 5 |
+| `<id>.pack.json` | `"slab": "pack"` | 1 | built |
 | `item.json` (published items) | `"slab": "item"` | 1 | phase 7 |
 | editor wavetables (`.wav`) | the `clm ` chunk's `(slab levels kept)` | — | built |
 
@@ -654,11 +686,13 @@ the cache, this only matters for the first instance.
      audition and drops onto the arrangement and the machine bay. Built.
 5. **Packs.**
    - Pack manifests in `factory:packs/`, and the Library page with
-     download, supply and instructions.
+     download, supply and instructions. Built, with the Python tools as
+     the importers (§Installing).
+   - Pack presets in the preset menus, replacing the gitignored
+     generated presets. Built.
+   - Slab's own downloader: the manifest's URLs, hashes, resume.
    - Ready-made indexes for VCSL, the CMI disks and the drum machines.
    - Importers in slab.
-   - Pack presets in the preset menus, replacing the gitignored
-     generated presets.
 6. **Machines in projects and the home folder.** Machine ids resolve
    project → user → factory, and Save to Library works from the code
    view.

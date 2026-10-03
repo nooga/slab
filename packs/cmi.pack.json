@@ -1,0 +1,11 @@
+{"slab": "pack", "schema": 1,
+ "id": "cmi", "name": "Fairlight CMI disks", "version": "1",
+ "license": "Yours alone", "redistributable": false,
+ "about": "Series II and IIx voices, as Unfairlight and Rack presets",
+ "get": {"supply": {"into": "_sources",
+                    "expect": [{"name": "Disk images", "glob": "**/*.IMG", "also": ["**/*.IMD"]},
+                               {"name": "Voice files", "glob": "**/*.VC"},
+                               {"name": "Voice RAM dumps", "glob": "**/*.wav"}],
+                    "any": true,
+                    "help": "Copy your disk images, or the folders you keep them in, here."}},
+ "import": "cmi"}

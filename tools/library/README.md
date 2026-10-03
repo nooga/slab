@@ -3,7 +3,11 @@
 Slab keeps downloaded sample libraries in one place, `$SLAB_LIBRARY`
 (default `~/Music/Slab/Library`). Presets and projects name files there
 as `lib:<path>`, so the same preset works on every machine that fetched
-the library.
+the library. Each pack keeps its presets in `<pack>/presets/<machine>/`,
+and slab lists them as banks of that machine's presets.
+
+The app's PACKS tab (docs/25 §Installing) runs these tools for you: its
+DOWNLOAD and IMPORT buttons start them and show their output.
 
 ## VCSL
 
@@ -33,8 +37,9 @@ instrument into `vcsl/<bank>/`:
 - **kits**: `acoustic-kit` and `latin-kit`, composed from the percussion
   on General MIDI keys, each piece levelled on its own.
 
-Every instrument is levelled to a -6 dBFS peak. Presets go into
-`machines/sampler/presets/vcsl-{keys,strings,winds,mallets,perc,kits}/`.
+Every instrument is levelled to a -6 dBFS peak. Presets go into the
+pack, `vcsl/presets/sampler/vcsl-{keys,strings,winds,mallets,perc,kits}/`
+(docs/25 §Pack presets).
 Release samples (pianos, harpsichords, harmonicas, ocarinas, wine
 glasses) become `trigger=release` regions of their instrument: the
 sampler starts them at note-off in the same voice, beside the body's
@@ -63,8 +68,8 @@ Accent takes of one sound as its velocity layers, other variants on keys
 84 and up. A sound with four or more variants (the 808's and 909's tone
 and decay grids) also gets a palette, `kicks`, `snares`, `toms`, ...:
 every variant, one a key from C2. Kits land in
-`lib:drum-machines/kits/<machine>/`, presets in
-`machines/sampler/presets/drums/<machine>/` (gitignored). A kit's level
+`lib:drum-machines/kits/<machine>/`, presets in the pack,
+`drum-machines/presets/sampler/drums/<machine>/`. A kit's level
 puts its loudest main sound at -6 dBFS; the balance inside it is the
 machine's. The 808 pack has no closed hat, so its shortest open hat
 plays on 42.
@@ -73,9 +78,9 @@ plays on 42.
 
 `tools/library/cmi.py` imports CMI Series II / IIx voices into
 `$SLAB_LIBRARY/cmi/<collection>/<disk>/<VOICE>.vc` and writes an
-Unfairlight TMI preset per voice into
-`machines/unfairlight/presets/cmi-<collection>/<disk>/` (gitignored; the
-preset menu nests collection → disk → voice). It reads ImageDisk `.IMD`
+Unfairlight TMI preset per voice into the pack,
+`cmi/presets/unfairlight/cmi-<collection>/<disk>/` (the preset menu
+nests collection → disk → voice). It reads ImageDisk `.IMD`
 and raw 512,512-byte `.IMG` floppy images, loose `.VC` files with their
 `.CO` control files, and 8-bit WAV dumps of voice RAM. Slab ships no Fairlight sounds; bring your own.
 
@@ -109,7 +114,7 @@ What the tool takes from a voice, and how sure it is:
   scalings are guesses. Voices without one get the library's usual
   settings: ATTACK 10, DAMPING 50, FILTER 8.
 - **Instruments** (`NAME.IN`, Page 3) become Rack presets in
-  `machines/rack/presets/cmi-<collection>/<disk>/` (gitignored): each run
+  `cmi/presets/rack/cmi-<collection>/<disk>/`: each run
   of keys the keyboard's key table gives a register becomes a part per
   voice that register layers, capped at its polyphony and tuned by the
   table. The outermost parts reach to MIDI 0 and 127.
@@ -117,7 +122,7 @@ What the tool takes from a voice, and how sure it is:
   alike but for a number (GUITAR1-3), tonal, at pitches at least two
   semitones apart that YIN and a harmonic product spectrum agree on, and
   not on a drum/percussion/FX disk, get a Rack in
-  `machines/rack/presets/multi-<collection>/<disk>/`, each voice over the
+  `cmi/presets/rack/multi-<collection>/<disk>/`, each voice over the
   keys nearest its pitch. Same-pitch families are variants and skipped.
   `--multisample` rewrites them from the index; an import does it too.
 - **Drum kits**: `KITS` in cmi.py picks voices from the drum and

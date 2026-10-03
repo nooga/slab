@@ -1,0 +1,10 @@
+{"slab": "pack", "schema": 1,
+ "id": "drum-machines", "name": "Reverb Drum Machines", "version": "1",
+ "license": "Reverb, for your own music", "redistributable": false, "size": 2300000000,
+ "about": "Drum Machines: The Complete Collection, 53 classic drum machines from Reverb, as General MIDI kits",
+ "link": "https://reverb.com/item/15980096-reverb-drum-machines-the-complete-collection",
+ "get": {"instructions": {"text": "Free with a Reverb account. Download it, unzip it, then bring the files here."},
+         "supply": {"into": "_sources",
+                    "expect": [{"name": "Reverb sample packs", "glob": "**/*.wav", "min": 100}],
+                    "help": "Copy the unzipped collection, one folder per machine, here."}},
+ "import": "drums"}

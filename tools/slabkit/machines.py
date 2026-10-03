@@ -144,16 +144,34 @@ def machine(mid):
     return db[mid]
 
 
+def _preset_dirs(mid):
+    """Where a machine's presets live: the factory's folder, then each
+    installed pack's <library>/<pack>/presets/<mid> (docs/25 §Pack presets)."""
+    dirs = [os.path.join(MACHINES_DIR, mid, "presets")]
+    lib = library_dir()
+    if os.path.isdir(lib):
+        for pack in sorted(os.listdir(lib)):
+            d = os.path.join(lib, pack, "presets", mid)
+            if os.path.isdir(d):
+                dirs.append(d)
+    return dirs
+
+
+def _preset_files(mid):
+    """{name: file} for every preset of a machine, bank presets as "bank/name"."""
+    out = {}
+    for base in _preset_dirs(mid):
+        for dirpath, _, files in os.walk(base):
+            for f in files:
+                if f.endswith(".preset"):
+                    path = os.path.join(dirpath, f)
+                    out.setdefault(os.path.relpath(path, base)[: -len(".preset")], path)
+    return out
+
+
 def presets(mid):
     """Preset names for a machine, bank presets as "bank/name"."""
-    base = os.path.join(MACHINES_DIR, mid, "presets")
-    out = []
-    for dirpath, _, files in os.walk(base):
-        for f in files:
-            if f.endswith(".preset"):
-                rel = os.path.relpath(os.path.join(dirpath, f), base)
-                out.append(rel[: -len(".preset")])
-    return sorted(out, key=lambda n: (n.count("/"), n))
+    return sorted(_preset_files(mid), key=lambda n: (n.count("/"), n))
 
 
 def preset_name(mid, name):
@@ -169,7 +187,7 @@ def preset_name(mid, name):
 
 
 def _preset_file(mid, name):
-    with open(os.path.join(MACHINES_DIR, mid, "presets", preset_name(mid, name) + ".preset")) as f:
+    with open(_preset_files(mid)[preset_name(mid, name)]) as f:
         return json.load(f)
 
 
