@@ -175,7 +175,7 @@ def presets(mid):
 
 
 def preset_name(mid, name):
-    """The preset's full name as the host lists it ("rom1a/dx-bass")."""
+    """The preset's full name as the host lists it ("slab/glass-lead")."""
     names = presets(mid)
     hits = [n for n in names if n == name] or [n for n in names if n.split("/")[-1] == name]
     if len(hits) != 1:
@@ -193,7 +193,7 @@ def _preset_file(mid, name):
 
 def preset(mid, name):
     """A preset's params, keyed by param id. `name` may omit the bank when
-    it is unique ("dx-bass" finds "rom1a/dx-bass")."""
+    it is unique ("glass-lead" finds "slab/glass-lead")."""
     return dict(_preset_file(mid, name)["params"])
 
 

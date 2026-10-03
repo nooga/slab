@@ -7,7 +7,7 @@
 //! `Presets/<id>/`, the "User" bank. Installed packs add theirs from
 //! `<library>/<pack>/presets/<id>/` (docs/25 §Pack presets), banks named
 //! like the factory's. A preset's name says where it lives:
-//! `rom1a/dx-bass` is the factory's (or a pack's), `Project/lead` the
+//! `slab/glass-lead` is the factory's (or a pack's), `Project/lead` the
 //! project's.
 //! Param values are real (Hz, seconds, an option index for switches) — not
 //! 0..1 norms — so retuning a knob range later doesn't move saved sounds;

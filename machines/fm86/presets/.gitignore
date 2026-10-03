@@ -1,7 +1,6 @@
-# FM-86 presets hold the DX7's own parameter values as JSON (FM-86's
-# controls are the DX7's), imported from the factory cartridges; the banks
-# live in subfolders and ARE committed:
-#   presets/rom1a/ … presets/rom4b/  (import: tools/dx7_import.py rom1a.syx presets/rom1a)
-# Loose imports dropped straight into presets/ stay local scratch — the
-# leading-slash anchor ignores only this directory's top level, not subfolders.
+# Factory presets here are Slab's own designs (CC0, COPYING.md).
+# DX7 cartridge imports never go in the repository: Yamaha's voices are
+# theirs. tools/dx7_import.py writes them into your library instead,
+# Library/dx7/presets/fm86/<bank>/, where the preset menus find them.
 /*.preset
+/rom*/

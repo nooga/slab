@@ -9,6 +9,10 @@ the DX7 did with them, after Dexed's msfa.
 
     python3 dx7_import.py BANK.syx OUT-DIR
 
+Import cartridges into your library, never the repository: Yamaha's
+voices are theirs (COPYING.md). For example
+    python3 dx7_import.py rom1a.syx ~/Music/Slab/Library/dx7/presets/fm86/rom1a
+
 Packed voice layout (128 bytes; operators stored OP6 first, 17 bytes
 each; then the globals at 102): see voice_params.
 """

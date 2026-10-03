@@ -4,8 +4,8 @@
 bank.wav holds the tables the TABLE switch picks, FRAMES frames each, in
 the order of BANK below; kick.wav is the default USER table [an
 ICanHasKick-style chirp table, 64 frames: Serum position x / 4]; skill,
-relish, bite and law are single cycles drawn in the bass patches
-songs/pml_basses.py remakes. Both are
+relish, bite and law are simple single cycles for bass: a rounded ramp,
+an accelerating ramp, a bent sine and a raised-cosine pulse. Both are
 Serum-style: 2048-sample frames, a `clm ` chunk saying so, 16-bit PCM.
 
 Every frame is built from its harmonics (1..1023), so the file is
@@ -198,7 +198,7 @@ def kick(t):
     return from_shape(f)
 
 
-# Single cycles drawn in the video's patches, for USER slots.
+# Simple single cycles for USER slots.
 def skill(p):
     # rounded rise to a peak just before mid-cycle, a hard drop, a rounded
     # climb back

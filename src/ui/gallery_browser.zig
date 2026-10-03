@@ -452,7 +452,7 @@ fn addMocks(st: *State) void {
         .{ .k = .sample, .s = .pack, .f = "drum-machines", .n = "linndrum/clap", .z = 1 },
         .{ .k = .song, .s = .factory, .f = "demos", .n = "night_drive", .z = 0 },
         .{ .k = .song, .s = .factory, .f = "demos", .n = "synthpop_8bar", .z = 0 },
-        .{ .k = .song, .s = .user, .f = "projects", .n = "pml_basses", .z = 0 },
+        .{ .k = .song, .s = .user, .f = "projects", .n = "bass_study", .z = 0 },
         .{ .k = .song, .s = .user, .f = "projects", .n = "paper_boulevard", .z = 0 },
         .{ .k = .song, .s = .user, .f = "projects", .n = "voltage_riot", .z = 0 },
         .{ .k = .song, .s = .user, .f = "projects", .n = "glass_horizon", .z = 0 },

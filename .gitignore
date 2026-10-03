@@ -18,3 +18,6 @@ songs/*.slab/stem.slab
 # tributes read their notes from a MIDI file the user owns; the rendered
 # project carries those notes, so it stays local
 songs/*_tribute.slab
+# remakes transcribed from someone else's material stay local
+songs/pml_basses.py
+songs/pml_basses.slab/

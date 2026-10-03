@@ -11,6 +11,17 @@ from slabkit.machines import ROOT, MACHINES_DIR, machines, presets
 OUT = os.path.join(ROOT, "docs", "20-machine-reference.md")
 
 
+def factory_presets(mid):
+    """The factory's presets only: the reference documents what ships,
+    not the packs in whoever runs this script's library."""
+    base = os.path.join(MACHINES_DIR, mid, "presets")
+    names = []
+    for dirpath, _, files in os.walk(base):
+        names += [os.path.relpath(os.path.join(dirpath, f), base)[: -len(".preset")]
+                  for f in files if f.endswith(".preset")]
+    return sorted(names, key=lambda n: (n.count("/"), n))
+
+
 def preset_note(mid, name):
     with open(os.path.join(MACHINES_DIR, mid, "presets", name + ".preset")) as f:
         return json.load(f).get("note", "")
@@ -47,7 +58,7 @@ def main():
             else:
                 lines.append(f"| `{p.id}` | {p.module} | {p.label} | {p.min:g} … {p.max:g} | {p.default:g} | "
                              f"{'integer' if p.type == 'int' else p.curve} |")
-        ps = presets(m.id)
+        ps = factory_presets(m.id)
         if ps:
             lines += ["", "Presets:", ""]
             for name in ps:
