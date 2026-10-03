@@ -68,6 +68,17 @@ quarantine what it downloads:
 curl -fsSL https://github.com/nooga/slab/releases/latest/download/install.sh | bash
 ```
 
+or with Homebrew (the cask clears the quarantine flag the same way):
+
+```sh
+brew install --cask nooga/tap/slab
+```
+
+`tools/release.sh` updates the cask in nooga/homebrew-tap. The DMG opens
+on a Slab faceplate (`tools/app/make_dmg_background.py`), laid out by
+dmgbuild (`tools/app/dmg_settings.py`), which `package_app.sh` installs
+into a venv under `zig-out/` on first use.
+
 ### Zig version
 
 Needs **zig >= 0.16** (see `build.zig.zon`). Earlier 0.15.x on macOS 26

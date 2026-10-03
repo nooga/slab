@@ -1,7 +1,8 @@
 #!/bin/bash
 # Publish a Slab release on GitHub: package HEAD and attach Slab.zip,
 # Slab-<version>.dmg and install.sh to release v<version>, with the
-# version from build.zig.zon. Bump that version and commit first.
+# version from build.zig.zon, then point the Homebrew cask in
+# nooga/homebrew-tap at it. Bump that version and commit first.
 #
 #   tools/release.sh
 #
@@ -40,7 +41,21 @@ Install:
 
     curl -fsSL https://github.com/$REPO/releases/latest/download/install.sh | bash
 
+Or with Homebrew: \`brew install --cask nooga/tap/slab\`
+
 Or open the DMG and drag Slab to Applications. It is not notarized, so the first launch needs System Settings > Privacy & Security > Open Anyway." \
     "$OUT/Slab.zip" "$OUT/Slab-$VERSION.dmg" tools/install.sh
 
 echo "released $TAG: https://github.com/$REPO/releases/tag/$TAG"
+
+# The Homebrew cask in nooga/homebrew-tap: brew install nooga/tap/slab.
+SHA=$(shasum -a 256 "$OUT/Slab.zip" | cut -d' ' -f1)
+TAP=$(mktemp -d)
+gh repo clone nooga/homebrew-tap "$TAP" -- -q
+mkdir -p "$TAP/Casks"
+sed -e "s/@VERSION@/$VERSION/" -e "s/@SHA256@/$SHA/" tools/app/slab.rb.in > "$TAP/Casks/slab.rb"
+git -C "$TAP" add Casks/slab.rb
+git -C "$TAP" commit -q -m "Update slab to $TAG"
+git -C "$TAP" push -q
+rm -rf "$TAP"
+echo "cask: nooga/homebrew-tap Casks/slab.rb at $VERSION"

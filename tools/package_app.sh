@@ -82,13 +82,21 @@ codesign --verify --deep --strict "$APP"
 echo "$APP: $(du -sh "$APP" | cut -f1)"
 
 if [[ $DMG == 1 ]]; then
+    # The window is a Slab faceplate (tools/app/make_dmg_background.py),
+    # laid out by dmgbuild, which writes Finder's .DS_Store itself: no
+    # Finder scripting, so it runs headless.
+    VENV=zig-out/.dmgbuild
+    if [[ ! -x $VENV/bin/dmgbuild ]]; then
+        python3 -m venv "$VENV"
+        "$VENV/bin/pip" install -q dmgbuild
+    fi
     OUT="zig-out/$NAME-$VERSION.dmg"
-    STAGE=$(mktemp -d)
-    cp -R "$APP" "$STAGE/"
-    ln -s /Applications "$STAGE/Applications"
+    BG=zig-out/dmg-background.tiff
+    tiffutil -cathidpicheck tools/app/dmg-background.png tools/app/dmg-background@2x.png -out "$BG" 2>/dev/null
     rm -f "$OUT"
-    hdiutil create -volname "$NAME" -srcfolder "$STAGE" -ov -format UDZO "$OUT" >/dev/null
-    rm -rf "$STAGE"
+    "$VENV/bin/dmgbuild" -s tools/app/dmg_settings.py \
+        -D app="$APP" -D background="$BG" -D icon="$RES/icon.icns" \
+        "$NAME $VERSION" "$OUT" >/dev/null
     echo "$OUT: $(du -sh "$OUT" | cut -f1)"
 fi
 
