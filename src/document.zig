@@ -16,6 +16,7 @@ const machine_mod = @import("machine.zig");
 const audio_pool_mod = @import("audio_pool.zig");
 const meter_mod = @import("meter.zig");
 const tempo_mod = @import("tempo.zig");
+const markers_mod = @import("markers.zig");
 const automation = @import("automation.zig");
 const export_settings = @import("export_settings.zig");
 
@@ -76,6 +77,14 @@ var active_meter: ?*meter_mod.MeterState = null;
 
 pub fn setMeterState(m: *meter_mod.MeterState) void {
     active_meter = m;
+}
+
+/// Process-wide locators and sections (docs/28 §Locators and sections),
+/// registered at startup like the meter.
+var active_markers: ?*markers_mod.Markers = null;
+
+pub fn setMarkers(m: *markers_mod.Markers) void {
+    active_markers = m;
 }
 
 /// Process-wide export settings (docs/27 §Export), saved with the project
@@ -186,6 +195,8 @@ pub fn serialize(
         }
         try out.append(alloc, ']');
     }
+
+    if (active_markers) |mk| try appendMarkers(alloc, &out, mk);
 
     try out.appendSlice(alloc, ",\"tracks\":[");
     for (tracks, 0..) |*t, ti| {
@@ -682,6 +693,49 @@ fn appendParams(alloc: std.mem.Allocator, out: *std.ArrayList(u8), mach: machine
     } else try out.appendSlice(alloc, "{}");
 }
 
+/// Locators, sections and END, each only when there are any.
+fn appendMarkers(alloc: std.mem.Allocator, out: *std.ArrayList(u8), mk: *const markers_mod.Markers) !void {
+    if (mk.locator_n > 0) {
+        try out.appendSlice(alloc, ",\"locators\":[");
+        for (mk.locatorSlice(), 0..) |l, i| {
+            if (i > 0) try out.append(alloc, ',');
+            try appendFmt(alloc, out, "{{\"beat\":{d},\"name\":", .{l.beat});
+            try appendJsonString(alloc, out, l.name.get());
+            try out.append(alloc, '}');
+        }
+        try out.append(alloc, ']');
+    }
+    if (mk.section_n > 0) {
+        try out.appendSlice(alloc, ",\"sections\":[");
+        for (mk.sectionSlice(), 0..) |sec, i| {
+            if (i > 0) try out.append(alloc, ',');
+            try appendFmt(alloc, out, "{{\"beat\":{d},\"name\":", .{sec.beat});
+            try appendJsonString(alloc, out, sec.name.get());
+            try appendFmt(alloc, out, ",\"color\":{d}}}", .{sec.color});
+        }
+        try out.append(alloc, ']');
+    }
+    if (mk.end) |e| try appendFmt(alloc, out, ",\"end\":{d}", .{e});
+}
+
+fn applyMarkers(root: std.json.ObjectMap, mk: *markers_mod.Markers) void {
+    mk.clear();
+    if (objGet(root, "locators")) |v| if (v == .array) for (v.array.items) |lv| {
+        if (lv != .object) continue;
+        const beat = asF64(objGet(lv.object, "beat") orelse continue);
+        _ = mk.addLocator(beat, strOf(objGet(lv.object, "name")) orelse "") orelse break;
+    };
+    if (objGet(root, "sections")) |v| if (v == .array) for (v.array.items) |sv| {
+        if (sv != .object) continue;
+        const beat = asF64(objGet(sv.object, "beat") orelse continue);
+        const i = mk.addSection(beat, strOf(objGet(sv.object, "name")) orelse "") orelse break;
+        if (objGet(sv.object, "color")) |cv| mk.sections[i].color = @intFromFloat(std.math.clamp(asF64(cv), 0, markers_mod.COLORS - 1));
+    };
+    if (objGet(root, "end")) |e| if (asF64(e) > 0) {
+        mk.end = asF64(e);
+    };
+}
+
 pub fn appendJsonString(alloc: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) !void {
     try out.append(alloc, '"');
     for (s) |ch| switch (ch) {
@@ -779,6 +833,7 @@ pub fn apply(
         if (ms.len == 0) ms.reset();
         st.commitImmediate();
     }
+    if (active_markers) |mk| applyMarkers(root, mk);
 
     for (tracks_buf[0..track_count.*]) |*t| t.deinit(alloc);
     track_count.* = 0;
@@ -1840,4 +1895,46 @@ test "routing a file can't mean is dropped on load" {
     try std.testing.expectEqual(routing.NONE, loaded[1].output);
     try std.testing.expectEqual(@as(u8, 3), loaded[2].output); // first edge wins
     try std.testing.expectEqual(routing.NONE, loaded[3].output); // would close the loop
+}
+
+test "locators, sections and END round-trip through serialize/apply" {
+    const alloc = std.testing.allocator;
+    var transport: transport_mod.Transport = .{};
+    var src: markers_mod.Markers = .{};
+    _ = src.addSection(0, "INTRO");
+    _ = src.addSection(32, "VERSE \"A\"");
+    src.sections[1].color = 7;
+    _ = src.addLocator(12.5, "VOCAL IN");
+    src.end = 96;
+    setMarkers(&src);
+    defer active_markers = null;
+
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    setPool(&pool);
+    defer active_pool = null;
+    var tracks = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "T", .{ .r = 1, .g = 2, .b = 3, .a = 255 }, test_machine),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    const bytes = try serialize(alloc, tracks[0..], &transport);
+    defer alloc.free(bytes);
+
+    var dst: markers_mod.Markers = .{};
+    _ = dst.addLocator(1, "STALE");
+    setMarkers(&dst);
+    var reg = registry_mod.Registry.init(alloc);
+    defer reg.deinit();
+    var lt: transport_mod.Transport = .{};
+    var loaded_buf: [2]track_mod.Track = undefined;
+    var loaded_count: usize = 0;
+    try apply(alloc, bytes, &reg, loaded_buf[0..], &loaded_count, &lt, test_machine);
+    defer for (loaded_buf[0..loaded_count]) |*t| t.deinit(alloc);
+
+    try std.testing.expectEqual(@as(usize, 2), dst.section_n);
+    try std.testing.expectEqualStrings("VERSE \"A\"", dst.sections[1].name.get());
+    try std.testing.expectEqual(@as(u8, 7), dst.sections[1].color);
+    try std.testing.expectEqual(@as(usize, 1), dst.locator_n);
+    try std.testing.expectEqual(@as(f64, 12.5), dst.locators[0].beat);
+    try std.testing.expectEqual(@as(?f64, 96), dst.end);
 }

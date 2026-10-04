@@ -13,6 +13,7 @@ const audio_mod = @import("audio.zig");
 const transport_mod = @import("transport.zig");
 const engine_mod = @import("engine.zig");
 const meter_mod = @import("meter.zig");
+const markers_mod = @import("markers.zig");
 const track_mod = @import("track.zig");
 const clip_mod = @import("clip.zig");
 const audio_pool_mod = @import("audio_pool.zig");
@@ -72,6 +73,7 @@ test {
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
     _ = @import("tempo.zig");
+    _ = @import("markers.zig");
     _ = @import("routing.zig");
     _ = @import("export.zig");
     _ = @import("exporter.zig");
@@ -672,6 +674,8 @@ pub fn main(init: std.process.Init) !void {
     // staged edits at bar boundaries.
     var meter_state: meter_mod.MeterState = .{};
     document_mod.setMeterState(&meter_state);
+    var markers: markers_mod.Markers = .{};
+    document_mod.setMarkers(&markers);
     // The project's export settings (docs/27 §Export), and the presets
     // saved beside settings.json.
     var export_cfg: export_settings.Settings = .{};
@@ -3852,6 +3856,8 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
     document_mod.setMaster(&master);
     var meter_state: meter_mod.MeterState = .{};
     document_mod.setMeterState(&meter_state);
+    var markers: markers_mod.Markers = .{};
+    document_mod.setMarkers(&markers);
 
     const data = try document_mod.readFile(alloc, project);
     useProject(project);
