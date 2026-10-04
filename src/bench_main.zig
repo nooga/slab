@@ -52,7 +52,7 @@ const Cli = struct {
     case_filter: ?[]const u8 = null,
     sweep: ?[]const u8 = null,
     preset: ?[]const u8 = null,
-    params: [32]ParamSet = undefined,
+    params: [256]ParamSet = undefined,
     param_count: usize = 0,
     out: []const u8 = "scratch/bench",
     golden: GoldenMode = .none,
@@ -114,6 +114,7 @@ pub fn main(init: std.process.Init) !void {
             const kv_z = args.next() orelse return usage();
             const kv = kv_z[0..kv_z.len];
             const eq = std.mem.indexOfScalar(u8, kv, '=') orelse return usage();
+            if (cli.param_count == cli.params.len) return usage();
             cli.params[cli.param_count] = .{ .id = kv[0..eq], .value = std.fmt.parseFloat(f64, kv[eq + 1 ..]) catch return usage() };
             cli.param_count += 1;
         } else if (std.mem.startsWith(u8, a, "-")) {
