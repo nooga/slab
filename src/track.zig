@@ -54,6 +54,21 @@ pub const Effect = struct {
 /// `master` is the final bus and lives outside the track list.
 pub const Kind = enum(u8) { audio, bus, master };
 
+/// A track's stem in an export (docs/27 §Export): whether it's written,
+/// where its signal is taken and its channels. Saved with the project.
+pub const StemPlan = struct {
+    /// null: the default rule (a track that plays, not a bus).
+    on: ?bool = null,
+    /// 0: the export's default; else 1 + export_settings.Signal.
+    signal: u8 = 0,
+    /// 0: the export's default; else 1 + exporter.Channels.
+    channels: u8 = 0,
+
+    pub fn isDefault(p: StemPlan) bool {
+        return p.on == null and p.signal == 0 and p.channels == 0;
+    }
+};
+
 /// A copy of the track's signal into a bus (docs/23 §Model). The target and
 /// tap are routing (published through `routing.Routing`); the level is an
 /// atomic the engine reads per block, so dragging it publishes nothing.
@@ -113,6 +128,8 @@ pub const Track = struct {
     /// With play_selected: muted selected clips play too (a re-bounce of
     /// muted originals).
     play_muted: bool = false,
+    /// Export (docs/27 §Export): this track's stem.
+    stem: StemPlan = .{},
     next_fx_uid: u16 = 1,
     /// Audio-thread-owned per-lane segment cursors (automation.evalCursor).
     auto_cursors: [snap_mod.MAX_LANES_PER_TRACK]u32 = [_]u32{0} ** snap_mod.MAX_LANES_PER_TRACK,

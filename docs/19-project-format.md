@@ -116,6 +116,7 @@ The document is JSON. Top level:
 | `tracks` | at most 16 |
 | `assets` | written on save: every file the project names, by its reference, with its `sha256`, the `origin` a collected copy came from, and an SFZ's or a folder's member `files` ([25-storage.md](25-storage.md) §The asset table). The loader doesn't need it. |
 | `master` | the master bus: `volume` (linear gain, default 1.0), `pan` (a balance control, not a pan law), `subsonic` (`true` turns on the 30 Hz subsonic filter, default `false`), `effects` |
+| `export` | the Export sheet's last settings ([27-bounce-export.md](27-bounce-export.md) §Export): `preset` (its name, or `CUSTOM`), what's written (`mix`, `mix_channels`, `stems`, `stem_signal` `instr`\|`fx`\|`fader`, `stem_channels` `stereo`\|`mono`\|`auto`), the range (`range`, `tail_auto`, `tail_sec`, `wrap`), the format (`container`, `bits`, `rate`, `flac_level`, `aac_kbps`, `dither`), the level (`normalize`, `lufs_target`, `peak_target`, `ceiling`, `stem_gain`), the names (`folder`, `mix_name`, `stem_name`, `exists`) and the tags (`title`, `artist`, `album`, `year`), and `reveal`. Indexes pick from the sheet's lists. Missing = the defaults (MASTER). |
 
 ### Track
 
@@ -147,6 +148,7 @@ The document is JSON. Top level:
 | `sends` | `[{"to": 10, "level": 0.5, "pre": false}]`: copies into buses, `level` linear gain 0–2 (1 = 0 dB), `pre` true taps before the fader. |
 | `automation` | track automation lanes, see below. Optional. |
 | `show_automation` | `true` shows the lanes under the track in the arrangement. |
+| `stem` | the track's stem in an export, when set by hand: `on` (missing: every track that plays writes one, buses don't), `signal` `instr`\|`fx`\|`fader` and `channels` `stereo`\|`mono`\|`auto` (missing: the export's default). |
 
 Signal flow per track: instrument (a bus: its routed input) → audio
 clips summed in → effects in order → volume → pan → its output (the

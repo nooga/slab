@@ -16,6 +16,7 @@ const machine_mod = @import("machine.zig");
 const audio_pool_mod = @import("audio_pool.zig");
 const meter_mod = @import("meter.zig");
 const automation = @import("automation.zig");
+const export_settings = @import("export_settings.zig");
 
 extern fn close(fd: c_int) c_int;
 extern fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
@@ -74,6 +75,14 @@ var active_meter: ?*meter_mod.MeterState = null;
 
 pub fn setMeterState(m: *meter_mod.MeterState) void {
     active_meter = m;
+}
+
+/// Process-wide export settings (docs/27 §Export), saved with the project
+/// like the master bus; a project without them gets the defaults.
+var active_export: ?*export_settings.Settings = null;
+
+pub fn setExportSettings(s: *export_settings.Settings) void {
+    active_export = s;
 }
 
 fn machineId(idx: u8) []const u8 {
@@ -199,6 +208,7 @@ pub fn serialize(
         // Automation lanes (docs/22 §Project format).
         try appendLanes(alloc, &out, t);
         if (t.lanes_shown) try out.appendSlice(alloc, ",\"show_automation\":true");
+        if (!t.stem.isDefault()) try appendStem(alloc, &out, t.stem);
         if (t.folded and t.isBus()) try out.appendSlice(alloc, ",\"folded\":true");
 
         // Clips.
@@ -217,9 +227,40 @@ pub fn serialize(
         try appendEffects(alloc, &out, m);
         try out.append(alloc, '}');
     }
+    if (active_export) |st| try export_settings.append(alloc, &out, st);
     try out.append(alloc, '}');
 
     return try out.toOwnedSlice(alloc);
+}
+
+/// A track's stem choices (docs/27 §Export): `"stem":{"on":…,"signal":…,
+/// "channels":…}`, each only when set.
+fn appendStem(alloc: std.mem.Allocator, out: *std.ArrayList(u8), p: track_mod.StemPlan) !void {
+    try out.appendSlice(alloc, ",\"stem\":{");
+    var sep: []const u8 = "";
+    if (p.on) |on| {
+        try appendFmt(alloc, out, "\"on\":{s}", .{boolStr(on)});
+        sep = ",";
+    }
+    if (p.signal > 0) {
+        try appendFmt(alloc, out, "{s}\"signal\":\"{s}\"", .{ sep, @tagName(@as(export_settings.Signal, @enumFromInt(p.signal - 1))) });
+        sep = ",";
+    }
+    if (p.channels > 0) try appendFmt(alloc, out, "{s}\"channels\":\"{s}\"", .{ sep, @tagName(@as(@import("exporter.zig").Channels, @enumFromInt(p.channels - 1))) });
+    try out.append(alloc, '}');
+}
+
+fn parseStem(v: std.json.Value) track_mod.StemPlan {
+    var p = track_mod.StemPlan{};
+    if (v != .object) return p;
+    if (objGet(v.object, "on")) |x| p.on = asBool(x);
+    if (strOf(objGet(v.object, "signal"))) |x| if (std.meta.stringToEnum(export_settings.Signal, x)) |e| {
+        p.signal = @intFromEnum(e) + 1;
+    };
+    if (strOf(objGet(v.object, "channels"))) |x| if (std.meta.stringToEnum(@import("exporter.zig").Channels, x)) |e| {
+        p.channels = @intFromEnum(e) + 1;
+    };
+    return p;
 }
 
 /// One clip as the project writes it. `source` overrides an audio clip's
@@ -732,6 +773,11 @@ pub fn apply(
     }
     sanitizeRouting(tracks_buf[0..track_count.*]);
 
+    if (active_export) |st| {
+        st.* = .{};
+        if (objGet(root, "export")) |ev| if (ev == .object) export_settings.read(st, ev.object);
+    }
+
     // Master bus — volume + effect chain into the registered master.
     if (active_master) |m| if (objGet(root, "master")) |mv| if (mv == .object) {
         const mo = mv.object;
@@ -802,6 +848,7 @@ fn parseTrack(alloc: std.mem.Allocator, reg: *registry_mod.Registry, to: std.jso
 
     if (objGet(to, "automation")) |av| try applyLanes(alloc, &t, av);
     if (objGet(to, "show_automation")) |x| t.lanes_shown = asBool(x);
+    if (objGet(to, "stem")) |x| t.stem = parseStem(x);
 
     // Clips.
     if (objGet(to, "clips")) |cv| if (cv == .array) {
@@ -1103,6 +1150,12 @@ test "project snapshot round-trips tracks clips notes and loop" {
     defer for (&tracks) |*t| t.deinit(alloc);
     tracks[0].setVolume(0.625);
     tracks[0].mute.store(true, .monotonic);
+    tracks[0].stem = .{ .on = false, .channels = 2 };
+    var xs = export_settings.Settings{};
+    xs.recipe.container = .flac;
+    xs.artist.set("nooga");
+    setExportSettings(&xs);
+    defer active_export = null;
     var clip = clip_mod.Clip.init("Clip A", 2.0, 4.0);
     clip.muted = true;
     try clip.addNote(alloc, .{ .pitch = 64, .start_beat = 0.5, .length_beats = 1.25, .velocity = 91 });
@@ -1141,7 +1194,17 @@ test "project snapshot round-trips tracks clips notes and loop" {
     try std.testing.expectApproxEqAbs(@as(f64, 1.0), loaded_transport.loopStartBeats(), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f64, 9.0), loaded_transport.loopEndBeats(), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 132.5), loaded_transport.bpm(), 0.001);
+    try std.testing.expectEqual(track_mod.StemPlan{ .on = false, .channels = 2 }, loaded_buf[0].stem);
+    // The export settings come back; a project without them gets defaults.
+    xs = .{};
+    try apply(alloc, bytes, &reg, loaded_buf[0..], &loaded_count, &loaded_transport, test_machine);
+    try std.testing.expectEqual(export_mod_test.Container.flac, xs.recipe.container);
+    try std.testing.expectEqualStrings("nooga", xs.artist.get());
+    try apply(alloc, "{\"tracks\":[]}", &reg, loaded_buf[0..], &loaded_count, &loaded_transport, test_machine);
+    try std.testing.expectEqualStrings("", xs.artist.get());
 }
+
+const export_mod_test = @import("export.zig");
 
 test "a clip saved as a .slabclip comes back on another track where it's put; a package's audio is copied to the library" {
     const alloc = std.testing.allocator;
