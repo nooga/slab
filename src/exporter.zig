@@ -13,6 +13,7 @@ const export_mod = @import("export.zig");
 const loudness = @import("loudness.zig");
 const resample = @import("resample.zig");
 
+/// Which tracks `stemsOf` takes: tracks that play, audible buses, or both.
 pub const Stems = enum { none, tracks, buses, all };
 
 /// One gain for every file of an export (docs/27 §Normalize): none, the
@@ -20,16 +21,42 @@ pub const Stems = enum { none, tracks, buses, all };
 /// `target` LUFS, lowered if that would push the true peak past `ceiling`.
 pub const Normalize = enum { off, peak, loudness };
 
+/// A file's channels: as rendered, summed to mono ((L + R) / 2), or mono
+/// only when its two sides are the same (a mono source panned center).
+pub const Channels = enum(u8) { stereo = 0, mono = 1, auto = 2 };
+
+/// The stems' gain under Normalize: the mix's (they keep their balance
+/// and still sum to the written mix), or none (as mixed).
+pub const StemGain = enum(u8) { mix = 0, none = 1 };
+
+/// One track's stem: where its signal is taken (none: no stem), and its
+/// channels.
+pub const Stem = struct {
+    tap: engine_mod.CaptureTap = .none,
+    channels: Channels = .stereo,
+};
+
 pub const Options = struct {
-    /// Where the mix goes; null writes no mix.
-    mix_path: ?[]const u8 = null,
-    stems: Stems = .none,
-    stem_tap: engine_mod.CaptureTap = .post,
-    /// Stems go to `<stem_dir>/<name><ext>`, `name` from `stem_name` with
-    /// {project}, {nn} (the stem's number) and {track}.
-    stem_dir: []const u8 = "",
+    /// Every file goes under `folder` (made if missing), named by a
+    /// template (export.fillName; a `/` in it makes a subfolder) and the
+    /// format's extension.
+    folder: []const u8 = "",
+    /// The mix's name template; null writes no mix.
+    mix_name: ?[]const u8 = null,
+    mix_channels: Channels = .stereo,
+    /// Per track (by index): its stem, if any.
+    stems: [routing.MAX_TRACKS]Stem = @splat(.{}),
     stem_name: []const u8 = "{project}-{nn}-{track}",
+    /// Where the stems go instead of `folder` (the command line's
+    /// --stems <dir>).
+    stem_folder: ?[]const u8 = null,
+    stem_gain: StemGain = .mix,
+    /// An existing file is replaced; otherwise the new one is numbered
+    /// ("Song 2.wav"). Two files of one export never share a name.
+    replace: bool = true,
+    /// The name fields (the tempo is the format's).
     project: []const u8 = "",
+    date: []const u8 = "",
     /// The range, samples; the transport stops at `end` and the tail
     /// rings out past it.
     start: u64 = 0,
@@ -44,6 +71,11 @@ pub const Options = struct {
     /// LOOP-WRAP (docs/27 §Range): the tail is added back onto the start
     /// and every file is exactly the range long, so it loops seamlessly.
     loop_wrap: bool = false,
+
+    fn hasStems(o: *const Options) bool {
+        for (o.stems) |st| if (st.tap != .none) return true;
+        return false;
+    }
 };
 
 /// Fold everything past `range` frames back onto the start, round and
@@ -74,6 +106,14 @@ pub const StemLevel = struct {
 };
 
 pub const Report = struct {
+    fn noteFile(self: *Report, path: []const u8) void {
+        if (self.files == 0) {
+            self.first_len = @min(path.len, self.first_buf.len);
+            @memcpy(self.first_buf[0..self.first_len], path[0..self.first_len]);
+        }
+        self.files += 1;
+    }
+
     files: usize = 0,
     /// Each file's length.
     frames: usize = 0,
@@ -88,10 +128,27 @@ pub const Report = struct {
     /// Each stem's integrated loudness, as written.
     stems: [routing.MAX_TRACKS]StemLevel = undefined,
     stem_count: usize = 0,
+    /// The first file written (the mix when there is one).
+    first_buf: [storage.MAX_PATH]u8 = undefined,
+    first_len: usize = 0,
+
+    pub fn first(self: *const Report) []const u8 {
+        return self.first_buf[0..self.first_len];
+    }
 };
 
-/// The tracks `opts.stems` takes: tracks that sound (audible, with clips
-/// that play) and/or buses that are audible.
+/// Stems at `tap` for every track `kind` takes (`stemSet`).
+pub fn stemsOf(tracks: []track_mod.Track, kind: Stems, tap: engine_mod.CaptureTap) [routing.MAX_TRACKS]Stem {
+    var out: [routing.MAX_TRACKS]Stem = @splat(.{});
+    const set = stemSet(tracks, kind);
+    for (0..tracks.len) |ti| if (set & routing.bit(@intCast(ti)) != 0) {
+        out[ti].tap = tap;
+    };
+    return out;
+}
+
+/// The tracks `kind` takes: tracks that sound (audible, with clips that
+/// play) and/or buses that are audible.
 pub fn stemSet(tracks: []track_mod.Track, stems: Stems) u32 {
     if (stems == .none) return 0;
     var nodes: [routing.MAX_TRACKS]routing.Node = undefined;
@@ -113,7 +170,7 @@ pub fn stemSet(tracks: []track_mod.Track, stems: Stems) u32 {
     return set;
 }
 
-fn hasPlayingClips(t: *const track_mod.Track) bool {
+pub fn hasPlayingClips(t: *const track_mod.Track) bool {
     for (t.clips.items) |*cl| if (!cl.muted) return true;
     return false;
 }
@@ -132,26 +189,25 @@ pub fn run(
     if (opts.end <= opts.start) return error.EmptyRange;
     const range: usize = @intCast(opts.end - opts.start);
     const total = range + opts.tail_frames;
-    const set = stemSet(tracks, opts.stems);
-    if (opts.mix_path == null and set == 0) return error.NothingToExport;
+    if (opts.mix_name == null and !opts.hasStems()) return error.NothingToExport;
 
     var cap = engine_mod.Capture{
         .min_frames = range,
         .hold = if (opts.tail_auto) opts.format.sample_rate / 2 else 0,
-        .watch_master = opts.mix_path != null,
+        .watch_master = opts.mix_name != null,
     };
     defer for (&cap.l, &cap.r) |l, r| {
         if (l.len > 0) alloc.free(l);
         if (r.len > 0) alloc.free(r);
     };
-    for (0..tracks.len) |ti| if (set & routing.bit(@intCast(ti)) != 0) {
-        cap.tap[ti] = opts.stem_tap;
+    for (0..tracks.len) |ti| if (opts.stems[ti].tap != .none) {
+        cap.tap[ti] = opts.stems[ti].tap;
         cap.l[ti] = try alloc.alloc(f32, total + engine_mod.PDC_MAX);
         cap.r[ti] = try alloc.alloc(f32, total + engine_mod.PDC_MAX);
         @memset(cap.l[ti], 0);
         @memset(cap.r[ti], 0);
     };
-    const mix: []f32 = if (opts.mix_path != null) try alloc.alloc(f32, total * 2) else &.{};
+    const mix: []f32 = if (opts.mix_name != null) try alloc.alloc(f32, total * 2) else &.{};
     defer if (mix.len > 0) alloc.free(mix);
     @memset(mix, 0);
 
@@ -177,8 +233,9 @@ pub fn run(
     const out_rate = opts.format.sample_rate;
     const file_len = if (opts.loop_wrap) range else len;
     var report = Report{ .frames = (file_len * out_rate + rate - 1) / rate, .sample_rate = out_rate };
+    var names = Names{ .opts = &opts };
     var gain: f32 = 1;
-    if (opts.mix_path) |path| {
+    if (opts.mix_name) |template| {
         const src = if (opts.loop_wrap) wrap(mix[0 .. len * 2], range) else mix[0 .. len * 2];
         const m = try convert(alloc, src, rate, out_rate, opts.loop_wrap);
         defer alloc.free(m);
@@ -204,11 +261,13 @@ pub fn run(
             if (@abs(v) >= 0.999) report.over += 1;
         }
         report.rms = if (m.len > 0) @sqrt(sq / @as(f64, @floatFromInt(m.len))) else 0;
-        try write(alloc, path, m, opts.format);
-        report.files += 1;
+        var path_buf: [storage.MAX_PATH]u8 = undefined;
+        const path = try names.next(&path_buf, template, 0, "");
+        try writeAs(alloc, path, m, opts.format, opts.mix_channels);
+        report.noteFile(path);
     }
-    if (set != 0) {
-        storage.makeParents(opts.stem_dir);
+    if (opts.hasStems()) {
+        const stem_gain: f32 = if (opts.stem_gain == .mix) gain else 1;
         const buf = try alloc.alloc(f32, len * 2);
         defer alloc.free(buf);
         var nn: usize = 0;
@@ -219,8 +278,8 @@ pub fn run(
             @memset(buf, 0);
             const avail = @min(len, cap.l[ti].len -| lat);
             for (0..avail) |i| {
-                buf[i * 2] = cap.l[ti][lat + i] * gain;
-                buf[i * 2 + 1] = cap.r[ti][lat + i] * gain;
+                buf[i * 2] = cap.l[ti][lat + i] * stem_gain;
+                buf[i * 2 + 1] = cap.r[ti][lat + i] * stem_gain;
             }
             var lv = &report.stems[report.stem_count];
             lv.name_len = @min(t.name().len, lv.name_buf.len);
@@ -229,18 +288,78 @@ pub fn run(
             defer alloc.free(out);
             lv.lufs = (try loudness.measure(alloc, out, out_rate)).integrated;
             report.stem_count += 1;
-            var name_buf: [256]u8 = undefined;
-            const name = export_mod.fillName(&name_buf, opts.stem_name, .{ .project = opts.project, .nn = nn, .track = t.name() });
             var path_buf: [storage.MAX_PATH]u8 = undefined;
-            const path = try std.fmt.bufPrint(&path_buf, "{s}/{s}{s}", .{ opts.stem_dir, name, opts.format.container.ext() });
+            const path = try names.next(&path_buf, opts.stem_name, nn, t.name());
             var sf = opts.format;
             var title_buf: [256]u8 = undefined;
-            sf.title = std.fmt.bufPrint(&title_buf, "{s} - {s}", .{ opts.format.title, t.name() }) catch t.name();
-            try write(alloc, path, out, sf);
-            report.files += 1;
+            sf.title = if (opts.format.title.len > 0) std.fmt.bufPrint(&title_buf, "{s} - {s}", .{ opts.format.title, t.name() }) catch t.name() else t.name();
+            try writeAs(alloc, path, out, sf, opts.stems[ti].channels);
+            report.noteFile(path);
         }
     }
     return report;
+}
+
+/// Each file's path: the folder, its filled template, a number when the
+/// name is taken, the extension.
+const Names = struct {
+    opts: *const Options,
+    /// Hashes of the paths this export wrote.
+    taken: [routing.MAX_TRACKS + 1]u64 = undefined,
+    count: usize = 0,
+
+    fn next(self: *Names, buf: []u8, template: []const u8, nn: usize, track: []const u8) ![]const u8 {
+        const o = self.opts;
+        const folder = if (nn > 0) o.stem_folder orelse o.folder else o.folder;
+        var name_buf: [256]u8 = undefined;
+        var name = export_mod.fillName(&name_buf, template, .{ .project = o.project, .nn = nn, .track = track, .date = o.date, .bpm = o.format.bpm });
+        if (name.len == 0 or name[name.len - 1] == '/') name = if (track.len > 0) track else "export";
+        const ext = o.format.container.ext();
+        var k: usize = 1;
+        while (true) : (k += 1) {
+            var num_buf: [8]u8 = undefined;
+            const num = if (k == 1) "" else std.fmt.bufPrint(&num_buf, " {d}", .{k}) catch "";
+            const path = try std.fmt.bufPrint(buf, "{s}/{s}{s}{s}", .{ folder, name, num, ext });
+            const h = std.hash.Wyhash.hash(0, path);
+            const mine = std.mem.indexOfScalar(u64, self.taken[0..self.count], h) != null;
+            if (mine or (!o.replace and exists(path))) continue;
+            if (self.count < self.taken.len) {
+                self.taken[self.count] = h;
+                self.count += 1;
+            }
+            if (std.fs.path.dirname(path)) |dir| storage.makeParents(dir);
+            return path;
+        }
+    }
+};
+
+fn exists(path: []const u8) bool {
+    var z: [storage.MAX_PATH + 1]u8 = undefined;
+    const p = std.fmt.bufPrintZ(&z, "{s}", .{path}) catch return false;
+    return std.c.access(p, 0) == 0;
+}
+
+/// Write interleaved stereo `x`, summed to mono when `ch` asks for it.
+fn writeAs(alloc: std.mem.Allocator, path: []const u8, x: []const f32, f: export_mod.Format, ch: Channels) !void {
+    const mono = switch (ch) {
+        .stereo => false,
+        .mono => true,
+        .auto => sidesMatch(x),
+    };
+    if (!mono) return write(alloc, path, x, f);
+    const m = try alloc.alloc(f32, x.len / 2);
+    defer alloc.free(m);
+    for (m, 0..) |*v, i| v.* = (x[i * 2] + x[i * 2 + 1]) * 0.5;
+    var g = f;
+    g.channels = 1;
+    try write(alloc, path, m, g);
+}
+
+/// L and R within -100 dBFS of each other everywhere.
+fn sidesMatch(x: []const f32) bool {
+    var i: usize = 0;
+    while (i + 1 < x.len) : (i += 2) if (@abs(x[i] - x[i + 1]) > 1e-5) return false;
+    return true;
 }
 
 fn write(alloc: std.mem.Allocator, path: []const u8, samples: []const f32, f: export_mod.Format) !void {
@@ -311,9 +430,10 @@ test "run: the mix and a stem per playing track, every file one length" {
     var sb: [storage.MAX_PATH]u8 = undefined;
     const stem_dir = try std.fmt.bufPrint(&sb, "{s}/song stems", .{dir});
     const r = try run(alloc, eng, &tracks, .{
-        .mix_path = mix_path,
-        .stems = .tracks,
-        .stem_dir = stem_dir,
+        .folder = dir,
+        .mix_name = "{project}",
+        .stems = stemsOf(&tracks, .tracks, .post),
+        .stem_name = "{project} stems/{project}-{nn}-{track}",
         .project = "song",
         .end = 4800,
         .tail_frames = 2400,
@@ -321,6 +441,7 @@ test "run: the mix and a stem per playing track, every file one length" {
     }, null, null);
     try testing.expectEqual(@as(usize, 3), r.files);
     try testing.expectEqual(@as(usize, 7200), r.frames);
+    try testing.expectEqualStrings(mix_path, r.first());
 
     const c = @cos(@as(f64, std.math.pi / 4.0));
     var mix = try wav.loadStereo(alloc, mix_path);
@@ -393,10 +514,12 @@ test "run: LOUDNESS normalize takes the mix to its target and the stems by the s
     var sb: [storage.MAX_PATH]u8 = undefined;
     const stem_dir = try std.fmt.bufPrint(&sb, "{s}/stems", .{dir});
     // The tone, centre-panned: -20 dBFS -3 dB on each side, about -23 LUFS.
+    _ = stem_dir;
     const r = try run(alloc, eng, &tracks, .{
-        .mix_path = mix_path,
-        .stems = .tracks,
-        .stem_dir = stem_dir,
+        .folder = dir,
+        .mix_name = "n",
+        .stems = stemsOf(&tracks, .tracks, .post),
+        .stem_name = "stems/{track}",
         .project = "n",
         .end = 48_000 * 10,
         .format = .{ .bits = .float32 },
@@ -413,4 +536,31 @@ test "run: LOUDNESS normalize takes the mix to its target and the stems by the s
     var peak: f64 = 0;
     for (mix.data) |v| peak = @max(peak, @abs(v));
     try testing.expectApproxEqAbs(want, peak, 1e-3);
+
+    // Again, not replacing: the files are numbered; the stem, as mixed
+    // and summed to mono (the tone is centered), has one channel.
+    var stems = stemsOf(&tracks, .tracks, .post);
+    stems[0].channels = .auto;
+    const r2 = try run(alloc, eng, &tracks, .{
+        .folder = dir,
+        .mix_name = "n",
+        .stems = stems,
+        .stem_name = "stems/{track}",
+        .stem_gain = .none,
+        .replace = false,
+        .end = 48_000,
+        .format = .{ .bits = .float32 },
+        .normalize = .loudness,
+        .target = -16,
+    }, null, null);
+    try testing.expectEqual(@as(usize, 2), r2.files);
+    var nb: [storage.MAX_PATH]u8 = undefined;
+    try testing.expectEqualStrings(try std.fmt.bufPrint(&nb, "{s}/n 2.wav", .{dir}), r2.first());
+    var tb: [storage.MAX_PATH]u8 = undefined;
+    var tone = try wav.loadStereo(alloc, try std.fmt.bufPrint(&tb, "{s}/stems/Tone 2.wav", .{dir}));
+    defer tone.deinit(alloc);
+    try testing.expect(!tone.isStereo());
+    var tpeak: f64 = 0;
+    for (tone.data) |v| tpeak = @max(tpeak, @abs(v));
+    try testing.expectApproxEqAbs(0.1 * @cos(std.math.pi / 4.0), tpeak, 1e-3);
 }

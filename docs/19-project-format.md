@@ -12,7 +12,7 @@ and `tools/slabkit`.
 | Command | Does |
 |---|---|
 | `slab Song.slab` | open a project (a package or a bare file) |
-| `slab song.slab --render out.wav` | export headless (no window, no device) to 24-bit stereo 48 kHz WAV and print peak/RMS. Renders from beat 0 to the last playing clip's end plus a 3 s tail that rings out. `.aif` writes AIFF, `.flac` FLAC, `.m4a` AAC (`--kbps`, `--alac` for Apple Lossless); `--bits 16\|24\|32f`, `--no-dither`, `--tail <s>\|auto`, `--normalize <LUFS>\|peak:<dBTP>`, `--rate 44100\|48000\|88200\|96000`, `--range <beat>:<beat>`, `--loop-wrap`; prints integrated loudness, LRA and true peak too (docs/27 §Command line). |
+| `slab song.slab --render out.wav` | export headless (no window, no device) to 24-bit stereo 48 kHz WAV and print peak/RMS. Renders from beat 0 to the last playing clip's end plus a 3 s tail that rings out. `.aif` writes AIFF, `.flac` FLAC, `.m4a` AAC (`--kbps`, `--alac` for Apple Lossless); `--bits 16\|24\|32f`, `--no-dither`, `--tail <s>\|auto`, `--normalize <LUFS>\|peak:<dBTP>`, `--rate 44100\|48000\|88200\|96000`, `--range <beat>:<beat>`, `--loop-wrap`, `--mono`, `--flac-level 0-8`, tags `--title`/`--artist`/`--album`/`--year`; prints integrated loudness, LRA and true peak too (docs/27 §Command line). |
 | `slab song.slab --stems dir/` | a stem per playing track into `dir/` (`<project>-<nn>-<track>`), from the same render as `--render` when both are given. `--stem-kind tracks\|buses\|all`, `--tap fx\|fader`. |
 | `slab --describe out.json` | dump every builtin machine's params, switch options and drum note labels from the live manifests |
 

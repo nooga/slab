@@ -353,6 +353,8 @@ slab song.slab --render out.m4a --kbps 320       # AAC; --alac for Apple Lossles
 slab song.slab --render out.wav --stems stems/   # the mix and stems, one render
 slab song.slab --stems stems/ --stem-kind all --tap fx --tail auto
 slab song.slab --render out.wav --normalize -14  # or peak:-1
+slab song.slab --render out.flac --flac-level 8 --artist nooga --album Slabs --year 2026
+slab song.slab --render demo.m4a --mono           # the mix summed to mono
 ```
 
 The format comes from the extension. slabkit's `render(stems=True)`

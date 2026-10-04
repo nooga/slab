@@ -442,6 +442,14 @@ const Cli = struct {
     /// --range <beat>:<beat>; null: the project.
     range: ?[2]f64 = null,
     loop_wrap: bool = false,
+    /// The mix summed to mono.
+    mono: bool = false,
+    flac_level: u4 = 5,
+    /// Tags; the title defaults to the project's name.
+    title: ?[]const u8 = null,
+    artist: []const u8 = "",
+    album: []const u8 = "",
+    year: []const u8 = "",
     /// Seconds; null: AUTO.
     tail: ?f32 = 3,
     describe: ?[]const u8 = null,
@@ -496,6 +504,20 @@ pub fn main(init: std.process.Init) !void {
             } else if (std.mem.eql(u8, a, "--bits")) {
                 const v = args.next() orelse return error.MissingBits;
                 cli.bits = if (std.mem.eql(u8, v, "16")) .pcm16 else if (std.mem.eql(u8, v, "24")) .pcm24 else if (std.mem.eql(u8, v, "32f")) .float32 else return error.BadBits;
+            } else if (std.mem.eql(u8, a, "--mono")) {
+                cli.mono = true;
+            } else if (std.mem.eql(u8, a, "--flac-level")) {
+                const v = args.next() orelse return error.MissingFlacLevel;
+                cli.flac_level = std.fmt.parseInt(u4, v, 10) catch return error.BadFlacLevel;
+                if (cli.flac_level > 8) return error.BadFlacLevel;
+            } else if (std.mem.eql(u8, a, "--title")) {
+                cli.title = args.next() orelse return error.MissingTitle;
+            } else if (std.mem.eql(u8, a, "--artist")) {
+                cli.artist = args.next() orelse return error.MissingArtist;
+            } else if (std.mem.eql(u8, a, "--album")) {
+                cli.album = args.next() orelse return error.MissingAlbum;
+            } else if (std.mem.eql(u8, a, "--year")) {
+                cli.year = args.next() orelse return error.MissingYear;
             } else if (std.mem.eql(u8, a, "--no-dither")) {
                 cli.dither = false;
             } else if (std.mem.eql(u8, a, "--normalize")) {
@@ -2080,14 +2102,15 @@ fn startRender(
         .start_ns = nowNs(),
     };
     job.opts = .{
-        .mix_path = if (what != .stems) path else null,
-        .stems = if (what == .mix) .none else switch (dlg.stemsMode()) {
+        .folder = dir,
+        .mix_name = if (what != .stems) project else null,
+        .stems = if (what == .mix) @splat(.{}) else exporter.stemsOf(tracks, switch (dlg.stemsMode()) {
             .tracks => .tracks,
             .buses => .buses,
             .all => .all,
-        },
-        .stem_tap = if (dlg.stemTap() == .fx) .pre else .post,
-        .stem_dir = stem_dir,
+        }, if (dlg.stemTap() == .fx) .pre else .post),
+        .stem_folder = stem_dir,
+        .stem_name = "{project}-{nn}-{track}",
         .project = project,
         .start = range.start,
         .end = range.end,
@@ -2176,7 +2199,7 @@ fn finishRender(alloc: std.mem.Allocator, audio: *audio_mod.Audio, job: *RenderJ
     audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
     if (job.result) |*r| {
         var card = export_dialog.Card{
-            .has_mix = job.opts.mix_path != null,
+            .has_mix = job.opts.mix_name != null,
             .lufs = r.loudness.integrated,
             .lra = r.loudness.lra,
             .true_peak = r.loudness.true_peak,
@@ -2187,7 +2210,7 @@ fn finishRender(alloc: std.mem.Allocator, audio: *audio_mod.Audio, job: *RenderJ
         for (r.stems[0..r.stem_count]) |*st| card.addStem(st.name(), st.lufs);
         dlg.card = card;
         const secs = @as(f64, @floatFromInt(r.frames)) / @as(f64, @floatFromInt(r.sample_rate));
-        if (r.files == 1) status.set("Exported {s} ({d:.1}s)", .{ basename(job.opts.mix_path orelse job.stem_dir), secs }) else status.set("Exported {d} files ({d:.1}s)", .{ r.files, secs });
+        if (r.files == 1) status.set("Exported {s} ({d:.1}s)", .{ basename(r.first()), secs }) else status.set("Exported {d} files ({d:.1}s)", .{ r.files, secs });
     } else if (job.err) |err| {
         if (err == error.Cancelled) status.set("Export cancelled", .{}) else status.set("Export failed: {s}", .{@errorName(err)});
         std.log.err("export failed: {s}", .{@errorName(err)});
@@ -3805,11 +3828,13 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
     var container = if (cli.render) |out| export_mod.Container.ofPath(out) orelse return error.UnknownAudioExtension else export_mod.Container.wav;
     if (container == .aac and cli.alac) container = .alac;
     const tail_s = cli.tail orelse export_dialog.TAIL_MAX;
+    const out_dir = if (cli.render) |out| std.fs.path.dirname(out) orelse "." else ".";
     const opts = exporter.Options{
-        .mix_path = cli.render,
-        .stems = if (cli.stems != null) cli.stems_kind else .none,
-        .stem_tap = cli.stem_tap,
-        .stem_dir = cli.stems orelse "",
+        .folder = out_dir,
+        .mix_name = if (cli.render) |out| projectStem(out) else null,
+        .mix_channels = if (cli.mono) .mono else .stereo,
+        .stems = if (cli.stems != null) exporter.stemsOf(tracks, cli.stems_kind, cli.stem_tap) else @splat(.{}),
+        .stem_folder = cli.stems,
         .project = projectStem(project),
         .start = if (cli.range) |r| transport.beatsToSamples(r[0]) else 0,
         .end = transport.beatsToSamples(if (cli.range) |r| r[1] else last_beat),
@@ -3822,7 +3847,11 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
             .dither = cli.dither,
             .sample_rate = cli.rate orelse sr,
             .aac_kbps = cli.kbps,
-            .title = projectStem(project),
+            .title = cli.title orelse projectStem(project),
+            .artist = cli.artist,
+            .album = cli.album,
+            .year = cli.year,
+            .flac_level = cli.flac_level,
             .comment = exportComment(&comment_buf, data),
             .bpm = transport.bpm(),
         },
