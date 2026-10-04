@@ -20,6 +20,8 @@ pub const Options = struct {
     channels: u2 = 2,
     level: u4 = 5,
     vendor: []const u8 = "slab",
+    /// Vorbis comments, NAME and value.
+    tags: []const [2][]const u8 = &.{},
 };
 
 /// What a level searches.
@@ -68,13 +70,21 @@ pub fn encode(alloc: std.mem.Allocator, samples: []const i32, o: Options) ![]u8 
     try w.bits(frames, 36);
     try w.bytes(&@as([16]u8, @splat(0)));
 
-    // VORBIS_COMMENT: the vendor, no comments. Little-endian lengths.
+    // VORBIS_COMMENT: the vendor and NAME=value tags. Little-endian lengths.
+    var tags_len: usize = 0;
+    for (o.tags) |t| tags_len += 4 + t[0].len + 1 + t[1].len;
     try w.bits(1, 1); // last
     try w.bits(4, 7);
-    try w.bits(4 + o.vendor.len + 4, 24);
+    try w.bits(4 + o.vendor.len + 4 + tags_len, 24);
     try w.le32(@intCast(o.vendor.len));
     try w.bytes(o.vendor);
-    try w.le32(0);
+    try w.le32(@intCast(o.tags.len));
+    for (o.tags) |t| {
+        try w.le32(@intCast(t[0].len + 1 + t[1].len));
+        try w.bytes(t[0]);
+        try w.bytes("=");
+        try w.bytes(t[1]);
+    }
 
     // Frames are independent: encoded on several threads, joined in order.
     const nframes = (frames + BLOCK - 1) / BLOCK;

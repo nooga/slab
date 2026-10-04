@@ -53,6 +53,7 @@ const export_dialog = @import("ui/export_dialog.zig");
 const bounce_dialog = @import("ui/bounce_dialog.zig");
 const export_mod = @import("export.zig");
 const recipe_mod = @import("recipe.zig");
+const build_options = @import("build_options");
 const exporter = @import("exporter.zig");
 const about = @import("ui/about.zig");
 const unison_panel = @import("ui/unison_panel.zig");
@@ -158,6 +159,7 @@ const RenderJob = struct {
     mix_path: []u8 = &.{},
     stem_dir: []u8 = &.{},
     project: []u8 = &.{},
+    comment: []u8 = &.{},
     tracks: []track_mod.Track = &.{},
     total_frames: usize = 0,
     sample_rate: u32 = 48_000,
@@ -437,6 +439,9 @@ const Cli = struct {
     norm_target: f64 = -14,
     /// The file's sample rate; null: the engine's.
     rate: ?u32 = null,
+    /// --range <beat>:<beat>; null: the project.
+    range: ?[2]f64 = null,
+    loop_wrap: bool = false,
     /// Seconds; null: AUTO.
     tail: ?f32 = 3,
     describe: ?[]const u8 = null,
@@ -502,6 +507,15 @@ pub fn main(init: std.process.Init) !void {
                     cli.normalize = .loudness;
                     cli.norm_target = std.fmt.parseFloat(f64, v) catch return error.BadNormalizeTarget;
                 }
+            } else if (std.mem.eql(u8, a, "--range")) {
+                const v = args.next() orelse return error.MissingRange;
+                const colon = std.mem.indexOfScalar(u8, v, ':') orelse return error.BadRange;
+                cli.range = .{
+                    std.fmt.parseFloat(f64, v[0..colon]) catch return error.BadRange,
+                    std.fmt.parseFloat(f64, v[colon + 1 ..]) catch return error.BadRange,
+                };
+            } else if (std.mem.eql(u8, a, "--loop-wrap")) {
+                cli.loop_wrap = true;
             } else if (std.mem.eql(u8, a, "--rate")) {
                 const v = args.next() orelse return error.MissingRate;
                 cli.rate = std.fmt.parseInt(u32, v, 10) catch return error.BadRate;
@@ -1674,6 +1688,7 @@ pub fn main(init: std.process.Init) !void {
         alloc.free(render_job.mix_path);
         alloc.free(render_job.stem_dir);
         alloc.free(render_job.project);
+        alloc.free(render_job.comment);
         render_job = .{};
     }
     if (bounce_job.active) {
@@ -2025,7 +2040,15 @@ fn startRender(
     };
 
     // The save panel names the mix; stems go in "<name> stems" beside it.
-    const fmt = dlg.format();
+    var fmt = dlg.format();
+    // Tags: the name, the tempo, and what made it (docs/27 §Names and metadata).
+    var comment_buf: [96]u8 = undefined;
+    fmt.bpm = transport.bpm();
+    fmt.comment = blk: {
+        const doc = document_mod.serialize(alloc, tracks, transport) catch break :blk "";
+        defer alloc.free(doc);
+        break :blk exportComment(&comment_buf, doc);
+    };
     const ext = fmt.container.ext();
     var name_buf: [128]u8 = undefined;
     const stem_name = projectStem(project_path);
@@ -2036,6 +2059,11 @@ fn startRender(
     const dir = std.fs.path.dirname(path) orelse ".";
     const project = try alloc.dupe(u8, chosen);
     errdefer alloc.free(project);
+    fmt.title = project;
+    // Copied: the worker outlives this frame.
+    const comment = try alloc.dupe(u8, fmt.comment);
+    errdefer alloc.free(comment);
+    fmt.comment = comment;
     const stem_dir = try std.fmt.allocPrint(alloc, "{s}/{s} stems", .{ dir, chosen });
     errdefer alloc.free(stem_dir);
 
@@ -2046,6 +2074,7 @@ fn startRender(
         .mix_path = path,
         .stem_dir = stem_dir,
         .project = project,
+        .comment = comment,
         .tracks = tracks,
         .sample_rate = sr,
         .start_ns = nowNs(),
@@ -2071,6 +2100,7 @@ fn startRender(
             else => .off,
         },
         .target = dlg.normalizeTarget(),
+        .loop_wrap = dlg.loop_wrap and dlg.rangeMode() != .project,
     };
     job.total_frames = @intCast(range.end - range.start + job.opts.tail_frames);
 
@@ -2108,6 +2138,12 @@ fn exportRange(transport: *const transport_mod.Transport, tracks: []const track_
     }
     if (!(hi > lo)) return null;
     return .{ .start = transport.beatsToSamples(lo), .end = transport.beatsToSamples(hi) };
+}
+
+/// The comment an export carries: the Slab version and a hash of the
+/// project as it was rendered, so a file traces back to its render.
+fn exportComment(buf: []u8, doc: []const u8) []const u8 {
+    return std.fmt.bufPrint(buf, "Slab {s}, project {x:0>16}", .{ build_options.version, std.hash.Wyhash.hash(0, doc) }) catch "";
 }
 
 /// A path's file name without its extension.
@@ -2159,6 +2195,7 @@ fn finishRender(alloc: std.mem.Allocator, audio: *audio_mod.Audio, job: *RenderJ
     alloc.free(job.mix_path);
     alloc.free(job.stem_dir);
     alloc.free(job.project);
+    alloc.free(job.comment);
     job.* = .{};
 }
 
@@ -3764,6 +3801,7 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
         last_beat = @max(last_beat, clip.endBeat());
     };
     const sr = audio_mod.SAMPLE_RATE;
+    var comment_buf: [96]u8 = undefined;
     var container = if (cli.render) |out| export_mod.Container.ofPath(out) orelse return error.UnknownAudioExtension else export_mod.Container.wav;
     if (container == .aac and cli.alac) container = .alac;
     const tail_s = cli.tail orelse export_dialog.TAIL_MAX;
@@ -3773,11 +3811,21 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
         .stem_tap = cli.stem_tap,
         .stem_dir = cli.stems orelse "",
         .project = projectStem(project),
-        .start = 0,
-        .end = transport.beatsToSamples(last_beat),
+        .start = if (cli.range) |r| transport.beatsToSamples(r[0]) else 0,
+        .end = transport.beatsToSamples(if (cli.range) |r| r[1] else last_beat),
+        .loop_wrap = cli.loop_wrap,
         .tail_auto = cli.tail == null,
         .tail_frames = @intFromFloat(tail_s * @as(f32, @floatFromInt(sr))),
-        .format = .{ .container = container, .bits = cli.bits, .dither = cli.dither, .sample_rate = cli.rate orelse sr, .aac_kbps = cli.kbps },
+        .format = .{
+            .container = container,
+            .bits = cli.bits,
+            .dither = cli.dither,
+            .sample_rate = cli.rate orelse sr,
+            .aac_kbps = cli.kbps,
+            .title = projectStem(project),
+            .comment = exportComment(&comment_buf, data),
+            .bpm = transport.bpm(),
+        },
         .normalize = cli.normalize,
         .target = cli.norm_target,
     };

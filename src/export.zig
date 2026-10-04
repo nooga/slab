@@ -64,6 +64,11 @@ pub const Format = struct {
     flac_level: u4 = 5,
     /// AAC's bitrate.
     aac_kbps: u16 = 256,
+    /// Tags (docs/27 §Names and metadata): WAV's LIST/INFO, AIFF's NAME
+    /// and ANNO, FLAC's Vorbis comments (BPM only there). Empty: none.
+    title: []const u8 = "",
+    comment: []const u8 = "",
+    bpm: f64 = 0,
 };
 
 extern fn slab_write_m4a(path: [*:0]const u8, ints: ?[*]const c_int, floats: ?[*]const f32, frames: c_ulong, rate: f64, alac: c_int, bits: c_int, bitrate: c_int) c_int;
@@ -108,10 +113,26 @@ pub fn encode(alloc: std.mem.Allocator, samples: []const f32, f: Format) ![]u8 {
         defer alloc.free(ints);
         var q = Quantizer.init(g);
         for (ints, samples) |*o, x| o.* = q.next(x);
+        var tags: [3][2][]const u8 = undefined;
+        var nt: usize = 0;
+        var bpm_buf: [16]u8 = undefined;
+        if (f.title.len > 0) {
+            tags[nt] = .{ "TITLE", f.title };
+            nt += 1;
+        }
+        if (f.comment.len > 0) {
+            tags[nt] = .{ "COMMENT", f.comment };
+            nt += 1;
+        }
+        if (f.bpm > 0) {
+            tags[nt] = .{ "BPM", std.fmt.bufPrint(&bpm_buf, "{d}", .{@round(f.bpm * 100) / 100}) catch "" };
+            nt += 1;
+        }
         return flac.encode(alloc, ints, .{
             .sample_rate = g.sample_rate,
             .bits = if (g.bits == .pcm16) 16 else 24,
             .level = g.flac_level,
+            .tags = tags[0..nt],
         });
     }
     const nb = f.bits.bytes();
@@ -135,6 +156,17 @@ pub fn encode(alloc: std.mem.Allocator, samples: []const f32, f: Format) ![]u8 {
             out.appendSliceAssumeCapacity("data");
             le32(&out, @intCast(data_len));
             writeSamples(&out, samples, f, .little);
+            if (data_len & 1 != 0) try out.append(alloc, 0);
+            // LIST/INFO after the data; the RIFF size grows to cover it.
+            if (f.title.len > 0 or f.comment.len > 0) {
+                const at = out.items.len;
+                try out.appendSlice(alloc, "LIST\x00\x00\x00\x00INFO");
+                if (f.title.len > 0) try infoChunk(alloc, &out, "INAM", f.title);
+                if (f.comment.len > 0) try infoChunk(alloc, &out, "ICMT", f.comment);
+                try infoChunk(alloc, &out, "ISFT", "Slab");
+                std.mem.writeInt(u32, out.items[at + 4 ..][0..4], @intCast(out.items.len - at - 8), .little);
+                std.mem.writeInt(u32, out.items[4..8], @intCast(out.items.len - 8), .little);
+            }
         },
         .flac, .alac, .aac => unreachable,
         .aiff => {
@@ -169,6 +201,9 @@ pub fn encode(alloc: std.mem.Allocator, samples: []const f32, f: Format) ![]u8 {
             be32(&out, 0); // block size
             writeSamples(&out, samples, f, .big);
             if (data_len & 1 != 0) out.appendAssumeCapacity(0);
+            if (f.title.len > 0) try textChunk(alloc, &out, "NAME", f.title, .big);
+            if (f.comment.len > 0) try textChunk(alloc, &out, "ANNO", f.comment, .big);
+            std.mem.writeInt(u32, out.items[4..8], @intCast(out.items.len - 8), .big);
         },
     }
     return out.toOwnedSlice(alloc);
@@ -216,6 +251,27 @@ fn writeSamples(out: *std.ArrayList(u8), samples: []const f32, f: Format, endian
             if (endian == .little) out.appendSliceAssumeCapacity(&b) else out.appendSliceAssumeCapacity(&.{ b[2], b[1], b[0] });
         },
     };
+}
+
+/// A RIFF INFO entry: the text NUL-terminated, padded to even.
+fn infoChunk(alloc: std.mem.Allocator, out: *std.ArrayList(u8), id: []const u8, text: []const u8) !void {
+    try out.appendSlice(alloc, id);
+    var b: [4]u8 = undefined;
+    std.mem.writeInt(u32, &b, @intCast(text.len + 1), .little);
+    try out.appendSlice(alloc, &b);
+    try out.appendSlice(alloc, text);
+    try out.append(alloc, 0);
+    if ((text.len + 1) & 1 != 0) try out.append(alloc, 0);
+}
+
+/// An IFF text chunk, padded to even.
+fn textChunk(alloc: std.mem.Allocator, out: *std.ArrayList(u8), id: []const u8, text: []const u8, endian: std.builtin.Endian) !void {
+    try out.appendSlice(alloc, id);
+    var b: [4]u8 = undefined;
+    std.mem.writeInt(u32, &b, @intCast(text.len), endian);
+    try out.appendSlice(alloc, &b);
+    try out.appendSlice(alloc, text);
+    if (text.len & 1 != 0) try out.append(alloc, 0);
 }
 
 fn le16(out: *std.ArrayList(u8), v: u16) void {

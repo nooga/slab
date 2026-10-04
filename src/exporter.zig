@@ -41,7 +41,27 @@ pub const Options = struct {
     normalize: Normalize = .off,
     target: f64 = -14,
     ceiling: f64 = -1,
+    /// LOOP-WRAP (docs/27 §Range): the tail is added back onto the start
+    /// and every file is exactly the range long, so it loops seamlessly.
+    loop_wrap: bool = false,
 };
+
+/// Fold everything past `range` frames back onto the start, round and
+/// round; the result is the first `range` frames of `x`.
+fn wrap(x: []f32, range: usize) []f32 {
+    const n = x.len / 2;
+    var i = range;
+    while (i < n) : (i += 1) {
+        const k = i % range;
+        x[k * 2] += x[i * 2];
+        x[k * 2 + 1] += x[i * 2 + 1];
+    }
+    return x[0 .. @min(n, range) * 2];
+}
+
+fn convert(alloc: std.mem.Allocator, x: []const f32, from: u32, to: u32, looped: bool) ![]f32 {
+    return if (looped) resample.loop(alloc, x, from, to) else resample.stereo(alloc, x, from, to);
+}
 
 pub const StemLevel = struct {
     name_buf: [track_mod.MAX_NAME]u8 = undefined,
@@ -155,10 +175,12 @@ pub fn run(
     // The engine's rate, and the file's (resampled when they differ).
     const rate = engine.transport.sample_rate;
     const out_rate = opts.format.sample_rate;
-    var report = Report{ .frames = (len * out_rate + rate - 1) / rate, .sample_rate = out_rate };
+    const file_len = if (opts.loop_wrap) range else len;
+    var report = Report{ .frames = (file_len * out_rate + rate - 1) / rate, .sample_rate = out_rate };
     var gain: f32 = 1;
     if (opts.mix_path) |path| {
-        const m = try resample.stereo(alloc, mix[0 .. len * 2], rate, out_rate);
+        const src = if (opts.loop_wrap) wrap(mix[0 .. len * 2], range) else mix[0 .. len * 2];
+        const m = try convert(alloc, src, rate, out_rate, opts.loop_wrap);
         defer alloc.free(m);
         const before = try loudness.measure(alloc, m, out_rate);
         report.gain_db = switch (opts.normalize) {
@@ -203,7 +225,7 @@ pub fn run(
             var lv = &report.stems[report.stem_count];
             lv.name_len = @min(t.name().len, lv.name_buf.len);
             @memcpy(lv.name_buf[0..lv.name_len], t.name()[0..lv.name_len]);
-            const out = try resample.stereo(alloc, buf, rate, out_rate);
+            const out = try convert(alloc, if (opts.loop_wrap) wrap(buf, range) else buf, rate, out_rate, opts.loop_wrap);
             defer alloc.free(out);
             lv.lufs = (try loudness.measure(alloc, out, out_rate)).integrated;
             report.stem_count += 1;
@@ -211,7 +233,10 @@ pub fn run(
             const name = export_mod.fillName(&name_buf, opts.stem_name, .{ .project = opts.project, .nn = nn, .track = t.name() });
             var path_buf: [storage.MAX_PATH]u8 = undefined;
             const path = try std.fmt.bufPrint(&path_buf, "{s}/{s}{s}", .{ opts.stem_dir, name, opts.format.container.ext() });
-            try write(alloc, path, out, opts.format);
+            var sf = opts.format;
+            var title_buf: [256]u8 = undefined;
+            sf.title = std.fmt.bufPrint(&title_buf, "{s} - {s}", .{ opts.format.title, t.name() }) catch t.name();
+            try write(alloc, path, out, sf);
             report.files += 1;
         }
     }

@@ -18,6 +18,16 @@ fn ratio(from: u32, to: u32) Ratio {
 
 /// Interleaved stereo `x` at `from` Hz, at `to` Hz. Caller owns it.
 pub fn stereo(alloc: std.mem.Allocator, x: []const f32, from: u32, to: u32) ![]f32 {
+    return convert(alloc, x, from, to, false);
+}
+
+/// As `stereo`, for a loop: past either end it reads round from the
+/// other, so the seam stays seamless.
+pub fn loop(alloc: std.mem.Allocator, x: []const f32, from: u32, to: u32) ![]f32 {
+    return convert(alloc, x, from, to, true);
+}
+
+fn convert(alloc: std.mem.Allocator, x: []const f32, from: u32, to: u32, circular: bool) ![]f32 {
     if (from == to) return alloc.dupe(f32, x);
     const r = ratio(from, to);
     const k = try Kernel.init(alloc, from, to, r);
@@ -36,8 +46,10 @@ pub fn stereo(alloc: std.mem.Allocator, x: []const f32, from: u32, to: u32) ![]f
         // Input samples base - half + 1 .. base + half.
         const lo = base - half + 1;
         for (taps, 0..) |h, j| {
-            const s = lo + @as(isize, @intCast(j));
-            if (s < 0 or s >= n) continue;
+            var s = lo + @as(isize, @intCast(j));
+            if (circular) {
+                s = @mod(s, @as(isize, @intCast(n)));
+            } else if (s < 0 or s >= n) continue;
             const u: usize = @intCast(s);
             acc_l += h * x[u * 2];
             acc_r += h * x[u * 2 + 1];
@@ -160,6 +172,22 @@ test "48 kHz to 44.1, 88.2 and 96 kHz keeps a tone's level and timing" {
             // Within 0.001 of the ideal sine (−66 dB re its 0.5).
             try testing.expect(sineError(y, hz, to, 0.5) < 1e-3);
         }
+    }
+}
+
+test "a loop resamples round its seam" {
+    // 1 kHz fits 48 kHz in 48 samples and 44.1 kHz in 44.1: a loop of
+    // 480 samples is ten periods at both, so the circular output is the
+    // sine everywhere, ends included.
+    const alloc = testing.allocator;
+    const x = try sine(alloc, 1000, 48_000, 0.01);
+    defer alloc.free(x);
+    const y = try loop(alloc, x, 48_000, 44_100);
+    defer alloc.free(y);
+    try testing.expectEqual(@as(usize, 441), y.len / 2);
+    for (0..441) |i| {
+        const want = 0.5 * @sin(2 * std.math.pi * 1000 * @as(f64, @floatFromInt(i)) / 44_100.0);
+        try testing.expectApproxEqAbs(want, y[i * 2], 1e-3);
     }
 }
 

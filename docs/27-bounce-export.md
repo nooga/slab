@@ -13,10 +13,11 @@ write is what playback sounds like, bit-exact at any `--threads`
 
 **Status:** 2026-10-04, branch `feat/bounce-export`. Built: clip mute,
 stereo audio clips, the engine's capture and ring-out stop, Bounce
-selection with thawable recipes, Export (mix and one-pass stems, project/loop/selection, WAV
-and AIFF at 16/24/32f with dither, FLAC, ALAC, AAC, loudness and
-normalize with a report card, 44.1/48/88.2/96 kHz, the command line). Each section
-below says what of it is still design.
+selection with thawable recipes, Export (mix and one-pass stems,
+project/loop/selection, WAV and AIFF at 16/24/32f with dither, FLAC,
+ALAC, AAC, loudness and normalize with a report card, 44.1/48/88.2/96
+kHz, the command line). Each section below says what of it is still
+design.
 
 ## Bounce selection
 
@@ -258,11 +259,15 @@ exactly that long.
 **SECTIONS** (one file per stretch between locator markers) waits for
 locator markers (docs/07 §Markers), which aren't built.
 
-**LOOP-WRAP**, for LOOP and SECTIONS (not built): the tail is rendered,
-then added back onto the start of the file, and the file is cut to the
-range's exact length. Played in a loop it continues seamlessly, with a
-reverb carrying over into bar 1. That's what a sample pack loop or a
-game music loop needs, and DAWs leave it to manual editing.
+**LOOP-WRAP** (WRAP beside the range, for LOOP and SELECTION; built):
+everything rendered past the range's end is folded back onto its start,
+round and round, and every file is exactly the range long. Played in a
+loop it continues seamlessly, with a reverb carrying over into bar 1;
+a resampled loop is resampled circularly so its seam stays clean. On a
+rendered loop it cut the jump across the seam tenfold. The fold is a sum
+after the master chain, so the start can peak past its limiter's
+ceiling. That's what a sample pack loop or a game music loop needs, and
+DAWs leave it to manual editing.
 
 ### Format
 
@@ -324,13 +329,17 @@ numbers. `--render` prints the mix's numbers.
 
 ### Names and metadata
 
+Built: every format but M4A carries the title (the save panel's name;
+`<name> - <track>` for a stem) and a comment, `Slab <version>, project
+<hash>`, the hash of the project as it was rendered, so a file traces
+back to its render. WAV writes them as LIST/INFO (INAM, ICMT, ISFT)
+after the data, AIFF as NAME and ANNO, FLAC as Vorbis comments with the
+BPM as well.
+
 Planned: an editable name template (`export.fillName` already fills
-`{project}`, `{nn}`, `{track}` and `{section}`). WAV and AIFF get the
-project's locator markers as cue points, and the tempo and meter in an
-`acid` chunk when the tempo is constant. FLAC and M4A get title,
-artist and BPM tags. Every format gets a `slab` comment with the
-version and a hash of the project, so a file can be traced back to the
-exact render.
+`{project}`, `{nn}`, `{track}` and `{section}`); the project's locator
+markers as WAV cue points, and an `acid` chunk with tempo and meter,
+once locator markers exist; M4A tags.
 
 ### Command line
 
@@ -339,6 +348,7 @@ slab song.slab --render out.wav                  # 24-bit, 3 s tail, as before
 slab song.slab --render out.aif --bits 16        # AIFF, dithered
 slab song.slab --render out.flac                 # FLAC, 24-bit, level 5
 slab song.slab --render cd.wav --rate 44100 --bits 16
+slab song.slab --render loop.wav --range 16:32 --loop-wrap --tail auto
 slab song.slab --render out.m4a --kbps 320       # AAC; --alac for Apple Lossless
 slab song.slab --render out.wav --stems stems/   # the mix and stems, one render
 slab song.slab --stems stems/ --stem-kind all --tap fx --tail auto
@@ -395,7 +405,8 @@ came out 0.2 % and 1.6 % smaller than `flac -5`, within 0.3 % of
 5. **Loudness**: `loudness.zig`, NORMALIZE, the report card (built).
 6. **Resampler** for 44.1/88.2/96 kHz (built).
 7. **Provenance**: recipe, hash, stale, Re-bounce, Thaw (built).
-8. **LOOP-WRAP** and metadata (cue points, `acid`, tags).
+8. **LOOP-WRAP** and tags (built; cue points and `acid` wait for
+   locator markers).
 
 Later, not designed here:
 

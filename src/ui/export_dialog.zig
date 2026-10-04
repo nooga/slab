@@ -33,6 +33,8 @@ pub const State = struct {
     aac_rate: u8 = 2,
     /// The file's sample rate, an index into RATES (48 kHz).
     rate: u8 = 1,
+    /// LOOP-WRAP, for a LOOP or SELECTION range.
+    loop_wrap: bool = false,
     dither: bool = true,
     /// NORMALIZE: OFF, PEAK (to PEAK_TARGETS dBTP) or LUFS (to
     /// LUFS_TARGETS, under a -1 dBTP ceiling).
@@ -185,7 +187,15 @@ fn drawOptions(ui: *Ui, body_in: Rect, state: *State, avail: Avail) void {
     choice(ui, dialog.row(ui, &body, "WRITE", ROW_H), &.{ "MIX", "STEMS", "BOTH" }, &state.what, &.{});
     choice(ui, dialog.row(ui, &body, "STEMS", ROW_H), &.{ "TRACKS", "BUSES", "ALL" }, &state.stems, &.{ no_stems, no_stems, no_stems });
     choice(ui, dialog.row(ui, &body, "STEM TAP", ROW_H), &.{ "FX", "FADER" }, &state.stem_tap, &.{ no_stems, no_stems });
-    choice(ui, dialog.row(ui, &body, "RANGE", ROW_H), &.{ "PROJECT", "LOOP", "SELECTION" }, &state.range, &.{ false, !avail.loop, !avail.selection });
+    {
+        var r = dialog.row(ui, &body, "RANGE", ROW_H);
+        const wrappable = state.rangeMode() != .project;
+        var w = r.cutRight(52);
+        _ = r.cutRight(6);
+        choice(ui, r, &.{ "PROJECT", "LOOP", "SELECT" }, &state.range, &.{ false, !avail.loop, !avail.selection });
+        var on = state.loop_wrap and wrappable;
+        if (ctl.button(ui, w.cutLeft(w.w), "WRAP", &on, .{ .kind = .latch, .label = "WRAP", .lit = style.accent, .disabled = !wrappable })) state.loop_wrap = !state.loop_wrap;
+    }
     tailRow(ui, dialog.row(ui, &body, "TAIL", ROW_H), &state.tail_auto, &state.tail_sec);
     choice(ui, dialog.row(ui, &body, "FORMAT", ROW_H), &.{ "WAV", "AIFF", "FLAC", "ALAC", "AAC" }, &state.container, &.{});
     const container: export_mod.Container = @enumFromInt(state.container);
