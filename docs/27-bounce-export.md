@@ -10,9 +10,11 @@ Two ways audio leaves the live graph:
 Both run the offline renderer `Render Audio` uses today
 (`Engine.renderOffline`), so what they write is what playback sounds
 like, bit-exact at any `--threads` (docs/07 §Parallel rendering).
-**Status:** design, 2026-10-04. Today there is Render Audio (project or
-loop range, a tail, 24-bit stereo WAV) and `--render`; stems exist only
-in slabkit, which re-renders the project once per soloed track.
+**Status:** 2026-10-04, branch `feat/bounce-export`. Built: clip mute,
+stereo audio clips, the engine's capture, Bounce selection. The rest is
+design: Render Audio still renders a project or loop range with a tail to
+24-bit stereo WAV, and stems exist only in slabkit, which re-renders the
+project once per soloed track.
 
 ## Bounce selection
 
@@ -72,15 +74,22 @@ With clips on more than one track:
 ### The new track and the originals
 
 The new track is an audio track inserted below the lowest source
-track, named `<source> bounce` (`bounce` when TOGETHER spans several
-tracks), with its output on the master. Its fader is at 0 dB and its
-pan at center. For the FX tap, the source's fader and pan are copied
-onto it, so the bounce plays at the level the source did.
+track, named `<source> bounce` (`Bounce N` when TOGETHER spans several
+tracks), in its first source's color. Its output is where its sources'
+outputs go when they all agree (a group stays a group), else the
+master. When the tap printed the fader (FADER, +SENDS), its fader is at
+0 dB and its pan at center. When it didn't (INSTR, FX) and the clip has
+one source, it stands in for that source: it copies its fader, pan and
+sends, so the bounce sits in the mix where the source did. Volume and
+pan automation isn't copied; FADER prints it.
 
 The file is a 32-bit float stereo WAV, so a bounce that peaks above
-0 dBFS before the master isn't clipped. It goes to the
-package's `audio/` as `bounce-NNN.wav`, or to `Cache/recordings/` while
-the project is unsaved, as takes do (docs/25 §The project package).
+0 dBFS before the master isn't clipped. It goes to the package's
+`audio/` as `<source>-bounce.wav` (`bounce.wav` for several sources;
+`-2`, `-3`… when taken), or to `Cache/recordings/` while the project is
+unsaved, as takes do (docs/25 §The project package). Audio clips play
+stereo sources in stereo (`wav.loadStereo`; imports used to fold to
+mono).
 
 The originals are **muted**: they stay where they were, drawn dimmed,
 and don't play, so the song doesn't play the part twice (the bounce and
@@ -89,10 +98,27 @@ them once you're happy with the bounce. The whole bounce is one undo
 step. The dialog also offers **KEEP** (the originals stay audible, for
 a layer you want doubled) and **DELETE**.
 
-That needs **clip mute**, which doesn't exist yet: a `muted` flag on
-`Clip`, persisted as `"muted": true`, skipped by the engine and drawn
-dimmed. `0` toggles it on the selection. It's useful on its own, for
-trying a part with and without a clip without losing it.
+**Clip mute**: a `muted` flag on `Clip`, persisted as `"muted": true`,
+skipped by the engine (`Track.publishSnapshot`) and drawn without its
+track color. `0` or the clip menu toggles it on the selection. It's
+useful on its own, for trying a part with and without a clip.
+
+### How it renders
+
+`Engine.capture` (`Capture` in src/engine.zig): before `renderOffline`, the
+caller names a tap per track and gives each its buffers. Each node
+copies its tap as it renders (its own buffers only, so the parallel
+render is untouched) and notes where its signal last rose above
+−90 dBFS. `sources` makes the render hear only those tracks: every
+other track is muted (still rendering when it keys something, so a
+bass ducked by the kick still pumps), buses keep their own mute, solos
+are ignored. The source tracks publish only their selected clips while
+it runs (`Track.play_selected`). With a hold, the render stops once
+every tap has been quiet that long past the range; each tap is read
+from its own latency on, so PDC lines the parts up.
+
+EACH with +SENDS takes one pass per source, since a return must hear
+one source at a time; everything else is one pass.
 
 ### Provenance: a bounce you can thaw
 
@@ -266,9 +292,8 @@ a DC offset.
 
 ## Phasing
 
-1. **Clip mute**: flag, engine skip, dimmed drawing, `0`, format.
-2. **Bounce selection**: render mask, taps, TOGETHER/EACH, the new
-   track, MUTE/KEEP/DELETE, AUTO tail, one undo step.
+1. **Clip mute** (built).
+2. **Bounce selection** (built).
 3. **Export dialog and one-pass stems**: MIX/STEMS, ranges incl.
    SECTIONS, WAV/AIFF at 16/24/32f, dither, naming. `--render` options.
    slabkit moves to `--stems`.
