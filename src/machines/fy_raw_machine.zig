@@ -1753,7 +1753,7 @@ fn saveTableAs(self: *FyRawMachine, ai: usize) void {
     var nb: [100]u8 = undefined;
     const stem = std.fs.path.stem(self.asset_label[ai][0..self.asset_label_len[ai]]);
     const def = std.fmt.bufPrint(&nb, "{s}.wav", .{if (stem.len > 0) stem else "wavetable"}) catch "wavetable.wav";
-    const path = (native_dialog.saveAudioFile(self.alloc, def) catch null) orelse return;
+    const path = (native_dialog.saveAudioFile(self.alloc, def, "wav") catch null) orelse return;
     defer self.alloc.free(path);
     if (!wavetable_file.save(self.alloc, doc, path)) return;
     self.setAssetSource(ai, path);

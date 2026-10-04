@@ -432,9 +432,12 @@ fader is final. A stem whose track rides reads its average.
 
 ### Mixing by numbers: the stem report
 
-`song.render(stems=True)` bounces every track on its own, through its
-own inserts but without the master chain, and prints each stem's
-integrated loudness. Compared with each other, those numbers are the
+`song.render(stems=True)` exports every track that plays as a stem
+(`slab --stems`, docs/27): its post-fader signal, through its own
+inserts but before its group bus, its sends' returns and the master
+chain. It prints each stem's integrated loudness. A track inside a
+compressed group reads louder here than it sounds in the mix: the
+group's compressor takes more off it. Compared with each other, those numbers are the
 balance. Starting targets for a vocal-led pop mix, relative to the
 loudest part:
 

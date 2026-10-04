@@ -115,7 +115,7 @@ void slab_install_menus(void) {
         add_item(file, @"Save As…", CMD_SAVE_AS, @"s", shift_cmd);
         add_item(file, @"Clean Up Project", CMD_CLEAN_UP, @"", 0);
         [file addItem:[NSMenuItem separatorItem]];
-        add_item(file, @"Render Audio…", CMD_RENDER, @"", 0);
+        add_item(file, @"Export Audio…", CMD_RENDER, @"", 0);
 
         NSMenu *edit = add_menu(bar, @"Edit", 2);
         add_item(edit, @"Undo", CMD_UNDO, @"z", cmd);

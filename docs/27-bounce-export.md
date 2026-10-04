@@ -7,14 +7,15 @@ Two ways audio leaves the live graph:
 - **Export** writes the project, or part of it, to files outside it:
   a mix, stems, sections, in WAV, AIFF, FLAC, ALAC or AAC.
 
-Both run the offline renderer `Render Audio` uses today
-(`Engine.renderOffline`), so what they write is what playback sounds
-like, bit-exact at any `--threads` (docs/07 §Parallel rendering).
+Both run the offline renderer (`Engine.renderOffline`), so what they
+write is what playback sounds like, bit-exact at any `--threads`
+(docs/07 §Parallel rendering).
+
 **Status:** 2026-10-04, branch `feat/bounce-export`. Built: clip mute,
-stereo audio clips, the engine's capture, Bounce selection. The rest is
-design: Render Audio still renders a project or loop range with a tail to
-24-bit stereo WAV, and stems exist only in slabkit, which re-renders the
-project once per soloed track.
+stereo audio clips, the engine's capture and ring-out stop, Bounce
+selection, and Export (mix and one-pass stems, project/loop/selection,
+WAV and AIFF at 16/24/32f with dither, the command line). Each section
+below says what of it is still design.
 
 ## Bounce selection
 
@@ -27,7 +28,7 @@ Audio.
 
 From the earliest selected clip's start to the latest one's end, plus
 a tail. The tail is **AUTO** by default: the render keeps going until
-the output stays below −90 dBFS for 0.5 s, up to 30 s. A fixed tail in
+the output stays below −80 dBFS for 0.5 s, up to 30 s. A fixed tail in
 seconds is the alternative. The new clip starts at the range's start,
 and its length is whatever was rendered, so a reverb's decay is part
 of the clip.
@@ -38,7 +39,7 @@ Only the selected clips. Every other clip, on any track, is silent
 for the render, including other clips on the selected tracks, so an
 earlier clip's reverb tail can't leak in. Track automation and the
 selected clips' own lanes play as usual. Machines are reset and
-chased at the range's start, as Render Audio does now.
+chased at the range's start, as an export does.
 
 The engine gets a **render mask**: a per-clip bit the offline pass
 consults instead of the clip list's normal triggering. Live playback
@@ -109,7 +110,7 @@ useful on its own, for trying a part with and without a clip.
 caller names a tap per track and gives each its buffers. Each node
 copies its tap as it renders (its own buffers only, so the parallel
 render is untouched) and notes where its signal last rose above
-−90 dBFS. `sources` makes the render hear only those tracks: every
+−80 dBFS. `sources` makes the render hear only those tracks: every
 other track is muted (still rendering when it keys something, so a
 bass ducked by the kick still pumps), buses keep their own mute, solos
 are ignored. The source tracks publish only their selected clips while
@@ -155,44 +156,71 @@ thread, never on the audio thread.
 
 ## Export
 
-**File > Export…** (`cmd+shift+E`) replaces Render Audio. It's one
-dialog with the options below. The last settings are kept per project.
+**File > Export Audio…** (`cmd+R`) replaced Render Audio. One dialog
+with the options below, then a save panel that names the mix; the last
+settings are kept for the session.
 
 ### What
 
-- **MIX**: the master, as Render Audio writes it now.
-- **STEMS**: one file per track, with a choice of **TRACKS**, **BUSES**
-  or both, and of tap: FX, FADER (default), or FADER through the
-  master chain ("MASTER FX"), for a mastering engineer or a remix pack
-  that should sound like the record. Muted tracks are skipped. A track
-  that only feeds a bus still gets its own stem.
-- **MIX + STEMS** writes both from the same pass.
+- **MIX**: the master, as Render Audio wrote it.
+- **STEMS**: one file per **TRACKS** (tracks that play: audible, with a
+  clip that isn't muted), **BUSES** (audible buses) or **ALL**, at the
+  **FX** tap (after the inserts) or **FADER** (default, after volume and
+  pan). A track's stem is its own signal: before its group bus, its
+  sends' returns and the master chain. A return or group is a stem of
+  its own with BUSES.
+- **BOTH** writes the mix and the stems from the same pass.
 
-Stems come from **one render pass**. The engine already computes every
-track's taps each block, so the offline pass copies the requested taps
-out alongside the master instead of re-rendering per track. Exporting
-24 stems costs about one mix render plus the writes, not 24 renders.
-slabkit's stem report moves onto this path.
+Stems come from **one render pass**: the engine's capture (§How it
+renders) copies each stem's tap while the mix renders, so 24 stems
+cost about one mix render plus the writes. `src/exporter.zig` does a
+whole export and is shared by the dialog's worker thread and the
+command line. Every file of an export has the same length, so they
+line up from zero in any DAW; each stem is read from its own latency
+on (PDC).
+
+They go in a folder beside the mix, `<name> stems/`, named
+`<name>-<nn>-<track>` where `<name>` is the save panel's.
+
+Not built yet: stems through the master chain (MASTER FX), which needs
+a render per stem.
 
 ### Range
 
-PROJECT (beat 0 to the last clip's end), LOOP, SELECTION (as in
-Bounce, without the mask: everything plays), or **SECTIONS**: one file
-per stretch between consecutive locator markers (docs/07 §Markers),
-named after the marker. A tail (AUTO or seconds) applies to each file.
+PROJECT (beat 0 to the last playing clip's end), LOOP or SELECTION
+(the selected clips' span; everything plays). The transport **stops**
+at the range's end (`Engine.offline_stop`): no note starts past it and
+audio clips fall silent there, the notes sounding are released, and the
+tail is what rings out. AUTO stops once the master and every stem have
+stayed below −80 dBFS for 0.5 s, up to 30 s; a fixed tail renders
+exactly that long.
 
-**LOOP-WRAP**, for LOOP and SECTIONS: the tail is rendered, then added
-back onto the start of the file, and the file is cut to the range's
-exact length. Played in a loop it continues seamlessly, with a reverb
-carrying over into bar 1. That's what a sample pack loop or a game
-music loop needs, and DAWs leave it to manual editing.
+**SECTIONS** (one file per stretch between locator markers) waits for
+locator markers (docs/07 §Markers), which aren't built.
+
+**LOOP-WRAP**, for LOOP and SECTIONS (not built): the tail is rendered,
+then added back onto the start of the file, and the file is cut to the
+range's exact length. Played in a loop it continues seamlessly, with a
+reverb carrying over into bar 1. That's what a sample pack loop or a
+game music loop needs, and DAWs leave it to manual editing.
 
 ### Format
 
+Built:
+
+| Format | Bits |
+|---|---|
+| WAV | 16, 24 (default), 32f |
+| AIFF | 16, 24, 32f (AIFF-C `fl32`) |
+
+`src/export.zig`. PCM is clamped to full scale, float written as is.
+**Dither**: TPDF at ±1 LSB for 16-bit, on by default, seeded so an
+export is reproducible; off for 24-bit and float.
+
+Planned:
+
 | Format | Bits | Notes |
 |---|---|---|
-| WAV | 16, 24, 32f | default 24 |
-| AIFF | 16, 24, 32f | |
 | FLAC | 16, 24 | our encoder, below; level 0–8, default 5 |
 | ALAC | 16, 24 | AudioToolbox (`ExtAudioFile`), in `.m4a` |
 | AAC | 128–320 kb/s | AudioToolbox, in `.m4a`; default 256 |
@@ -200,25 +228,19 @@ music loop needs, and DAWs leave it to manual editing.
 MP3 isn't planned: AAC covers lossy delivery and MP3 encoding would
 mean vendoring LAME.
 
-**Sample rate**: 44.1, 48 (default), 88.2, 96 kHz. The engine runs at
-48 kHz (`audio.SAMPLE_RATE`), so other rates are produced by an
+**Sample rate** (planned): 44.1, 48 (default), 88.2, 96 kHz. The engine
+runs at 48 kHz (`audio.SAMPLE_RATE`), so other rates are produced by an
 offline, high-quality resampler (polyphase windowed sinc, ≥ 120 dB
 stopband) on the rendered buffer. Rendering natively at the target rate
 would need every machine to be rate-independent, which isn't verified.
-If it is one day, 96 kHz exports become free oversampling, but the
-resampler doesn't wait on that.
 
-**Dither**: TPDF at ±1 LSB, on by default whenever the output is
-16-bit, off for 24-bit and float. One seed per export, so exports stay
-reproducible.
-
-**Channels**: STEREO, or MONO (L+R at −3 dB) for a mono stem.
+**Channels** (planned): STEREO, or MONO (L+R at −3 dB) for a mono stem.
 
 ### Normalize and the loudness report
 
-**NORMALIZE**: OFF (default), PEAK (to a dBFS ceiling), or LOUDNESS
-(to an integrated LUFS target, −14 by default, with a true-peak ceiling
-of −1 dBTP). LOUDNESS applies one gain to the whole file. If the
+Planned. **NORMALIZE**: OFF (default), PEAK (to a dBFS ceiling), or
+LOUDNESS (to an integrated LUFS target, −14 by default, with a true-peak
+ceiling of −1 dBTP). LOUDNESS applies one gain to the whole file. If the
 ceiling would be exceeded, the gain is lowered instead of limiting.
 The master chain is where limiting belongs. Stems take the mix's gain,
 so their balance is preserved.
@@ -235,32 +257,25 @@ stem report from docs/21 §Mixing by numbers, now in the app.
 
 ### Names and metadata
 
-Files are named by a template, default `{project}` for the mix and
-`{project}-{nn}-{track}` for stems (`{section}` for SECTIONS). They
-go into a folder picked once. A name that already exists asks before
-overwriting, once for the whole export.
-
-WAV and AIFF get the project's locator markers as cue points, and the
-tempo and meter in an `acid` chunk when the tempo is constant. FLAC
-and M4A get title, artist and BPM tags. Every format gets a `slab`
-comment with the version and a hash of the project, so a file can be
-traced back to the exact render.
+Planned: an editable name template (`export.fillName` already fills
+`{project}`, `{nn}`, `{track}` and `{section}`). WAV and AIFF get the
+project's locator markers as cue points, and the tempo and meter in an
+`acid` chunk when the tempo is constant. FLAC and M4A get title,
+artist and BPM tags. Every format gets a `slab` comment with the
+version and a hash of the project, so a file can be traced back to the
+exact render.
 
 ### Command line
 
-`--render` grows the same options, so slabkit and scripts get them:
-
 ```
-slab song.slab --render out.flac --bits 24 --rate 44100
-slab song.slab --render stems/ --stems tracks --tap fader
-slab song.slab --render loops/ --sections --loop-wrap
-slab song.slab --render out.wav --normalize -14
+slab song.slab --render out.wav                  # 24-bit, 3 s tail, as before
+slab song.slab --render out.aif --bits 16        # AIFF, dithered
+slab song.slab --render out.wav --stems stems/   # the mix and stems, one render
+slab song.slab --stems stems/ --stem-kind all --tap fx --tail auto
 ```
 
-The format comes from the extension. A directory means one file per
-stem or section. The report card is printed as today's peak/RMS line
-is. slabkit's `render(stems=True)` calls `--stems` once instead of
-writing a project per track.
+The format comes from the extension. slabkit's `render(stems=True)`
+calls `--stems` once instead of writing a project per track.
 
 ## FLAC encoder
 
@@ -294,9 +309,9 @@ a DC offset.
 
 1. **Clip mute** (built).
 2. **Bounce selection** (built).
-3. **Export dialog and one-pass stems**: MIX/STEMS, ranges incl.
-   SECTIONS, WAV/AIFF at 16/24/32f, dither, naming. `--render` options.
-   slabkit moves to `--stems`.
+3. **Export dialog and one-pass stems** (built; SECTIONS waits for
+   locator markers, an editable name template and MASTER FX stems are
+   open).
 4. **FLAC encoder**, then ALAC and AAC through AudioToolbox.
 5. **Loudness**: `loudness.zig`, NORMALIZE, the report card.
 6. **Resampler** for 44.1/88.2/96 kHz.

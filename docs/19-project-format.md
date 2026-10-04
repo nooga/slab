@@ -12,7 +12,8 @@ and `tools/slabkit`.
 | Command | Does |
 |---|---|
 | `slab Song.slab` | open a project (a package or a bare file) |
-| `slab song.slab --render out.wav` | bounce headless (no window, no device) to 24-bit stereo 48 kHz WAV and print peak/RMS. Renders from beat 0 to the last clip's end plus a 3 s tail. |
+| `slab song.slab --render out.wav` | export headless (no window, no device) to 24-bit stereo 48 kHz WAV and print peak/RMS. Renders from beat 0 to the last playing clip's end plus a 3 s tail that rings out. `.aif` writes AIFF; `--bits 16\|24\|32f`, `--no-dither`, `--tail <s>\|auto` (docs/27 §Command line). |
+| `slab song.slab --stems dir/` | a stem per playing track into `dir/` (`<project>-<nn>-<track>`), from the same render as `--render` when both are given. `--stem-kind tracks\|buses\|all`, `--tap fx\|fader`. |
 | `slab --describe out.json` | dump every builtin machine's params, switch options and drum note labels from the live manifests |
 
 The render runs the same engine as playback, including the master

@@ -130,8 +130,8 @@ pub const Capture = struct {
     loud_end: [routing.MAX_TRACKS]usize = @splat(0),
     rendered: usize = 0,
 
-    /// −90 dBFS.
-    pub const QUIET: f32 = 3.1623e-5;
+    /// −80 dBFS: under a 16-bit file's dither, and where slabkit trims.
+    pub const QUIET: f32 = 1e-4;
 
     fn done(self: *const Capture, rendered: usize, out_frames: usize) bool {
         if (self.hold == 0 or rendered < self.min_frames) return false;

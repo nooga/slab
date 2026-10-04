@@ -9,7 +9,7 @@ const core = @import("core.zig");
 const style = @import("style.zig");
 const ctl = @import("controls.zig");
 const dialog = @import("dialog.zig");
-const render_dialog = @import("render_dialog.zig");
+const export_dialog = @import("export_dialog.zig");
 
 const Ui = core.Ui;
 const Rect = core.Rect;
@@ -43,18 +43,18 @@ const W: i32 = 320;
 const H: i32 = 172;
 const ROW_H: i32 = 20;
 /// The longest tail: AUTO renders up to this and stops at silence.
-pub const TAIL_MAX: f32 = 30;
+pub const TAIL_MAX = export_dialog.TAIL_MAX;
 
 /// Draw the dialog centered in `screen`. `tracks` is how many tracks the
 /// selection spans (EACH needs two).
 ///   - `progress == null`  → options (CANCEL / BOUNCE).
 ///   - `progress != null`  → bouncing (LED bar + stats; CANCEL).
-pub fn draw(ui: *Ui, screen: Rect, state: *State, tracks: usize, progress: ?render_dialog.Progress) Result {
+pub fn draw(ui: *Ui, screen: Rect, state: *State, tracks: usize, progress: ?export_dialog.Progress) Result {
     if (!state.active) return .none;
     const f = dialog.begin(ui, screen, "bounce-dialog", "BOUNCE SELECTION", W, H);
     defer dialog.end(ui);
     if (progress) |p| {
-        render_dialog.drawProgress(ui, f.body, p);
+        export_dialog.drawProgress(ui, f.body, p);
         if (dialog.buttons(ui, f.buttons, &.{"CANCEL"}, null) != null or f.escape) return .cancel;
         return .none;
     }
@@ -65,42 +65,14 @@ pub fn draw(ui: *Ui, screen: Rect, state: *State, tracks: usize, progress: ?rend
     return .none;
 }
 
-/// A row of latching caps, the chosen one lit.
-fn choice(ui: *Ui, r_: Rect, labels: []const []const u8, value: *u8, disabled: ?usize) void {
-    var r = r_;
-    const n: i32 = @intCast(labels.len);
-    const cw = @divFloor(r.w, n);
-    for (labels, 0..) |lab, i| {
-        const cr = if (i + 1 < labels.len) r.cutLeft(cw) else r;
-        var on = value.* == i;
-        const off = disabled != null and disabled.? == i;
-        if (ctl.button(ui, cr, lab, &on, .{ .kind = .latch, .label = lab, .lit = style.accent, .disabled = off })) value.* = @intCast(i);
-    }
-}
-
 fn drawOptions(ui: *Ui, body_in: Rect, state: *State, tracks: usize) void {
     var body = body_in;
     if (tracks < 2) state.mode = @intFromEnum(Mode.together);
-    choice(ui, dialog.row(ui, &body, "TAP", ROW_H), &.{ "INSTR", "FX", "FADER", "+SENDS" }, &state.tap, null);
-    choice(ui, dialog.row(ui, &body, "CLIPS", ROW_H), &.{ "TOGETHER", "EACH" }, &state.mode, if (tracks < 2) @as(?usize, 1) else null);
-    choice(ui, dialog.row(ui, &body, "ORIGINALS", ROW_H), &.{ "MUTE", "KEEP", "DELETE" }, &state.originals, null);
-    // TAIL: AUTO (until silent) or a slider in seconds.
-    {
-        var r = dialog.row(ui, &body, "TAIL", ROW_H);
-        var on = state.tail_auto;
-        if (ctl.button(ui, r.cutLeft(48), "AUTO", &on, .{ .kind = .latch, .label = "AUTO", .lit = style.accent })) state.tail_auto = !state.tail_auto;
-        _ = r.cutLeft(6);
-        var buf: [16]u8 = undefined;
-        const s = if (state.tail_auto) "SILENCE" else std.fmt.bufPrint(&buf, "{d:.1} S", .{state.tail_sec}) catch "";
-        ctl.display(ui, r.cutRight(7 * ctl.CELL_W + 4).center(7 * ctl.CELL_W + 4, ctl.displayHeight(false)), s, .{ .align_ = .right, .color = if (state.tail_auto) style.text_dim else style.text });
-        _ = r.cutRight(6);
-        if (!state.tail_auto) {
-            var v = state.tail_sec / TAIL_MAX;
-            if (ctl.slider(ui, r.center(r.w, 14), "bounce-tail", &v, .{ .kind = .mini, .horizontal = true, .show_readout = false, .ticks = 0, .default = 2.0 / TAIL_MAX })) {
-                state.tail_sec = @round(v * TAIL_MAX * 10) / 10;
-            }
-        }
-    }
+    const choice = export_dialog.choice;
+    choice(ui, dialog.row(ui, &body, "TAP", ROW_H), &.{ "INSTR", "FX", "FADER", "+SENDS" }, &state.tap, &.{});
+    choice(ui, dialog.row(ui, &body, "CLIPS", ROW_H), &.{ "TOGETHER", "EACH" }, &state.mode, &.{ false, tracks < 2 });
+    choice(ui, dialog.row(ui, &body, "SOURCE", ROW_H), &.{ "MUTE", "KEEP", "DELETE" }, &state.originals, &.{});
+    export_dialog.tailRow(ui, dialog.row(ui, &body, "TAIL", ROW_H), &state.tail_auto, &state.tail_sec);
     {
         const r = dialog.row(ui, &body, "FORMAT", ROW_H);
         ctl.display(ui, r.center(r.w, ctl.displayHeight(false)), "32-BIT FLOAT WAV", .{ .color = style.text_dim });

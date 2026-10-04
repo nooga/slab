@@ -49,8 +49,10 @@ const audio_clip_editor = @import("ui/audio_clip_editor.zig");
 const machine_bay = @import("ui/machine_bay.zig");
 const mixer = @import("ui/mixer.zig");
 const dialog = @import("ui/dialog.zig");
-const render_dialog = @import("ui/render_dialog.zig");
+const export_dialog = @import("ui/export_dialog.zig");
 const bounce_dialog = @import("ui/bounce_dialog.zig");
+const export_mod = @import("export.zig");
+const exporter = @import("exporter.zig");
 const about = @import("ui/about.zig");
 const unison_panel = @import("ui/unison_panel.zig");
 const color_picker = @import("ui/color_picker.zig");
@@ -67,6 +69,8 @@ test {
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
     _ = @import("routing.zig");
+    _ = @import("export.zig");
+    _ = @import("exporter.zig");
     _ = @import("ui/track_order.zig");
     _ = @import("engine.zig");
     _ = @import("track.zig");
@@ -139,25 +143,32 @@ const EditTarget = struct {
     pitch: ?u8 = null,
 };
 
-/// An in-flight offline bounce running on a worker thread. The UI thread
-/// polls `progress`/`done` to draw the progress bar and finalizes the WAV
-/// once the worker signals completion.
+/// An export running on a worker thread (docs/27 §Export): the worker
+/// renders and writes every file; the UI thread polls `progress`/`done`
+/// for the progress bar and reports the result.
 const RenderJob = struct {
     active: bool = false,
     thread: ?std.Thread = null,
-    buf: []f32 = &.{},
-    path: []u8 = &.{},
+    opts: exporter.Options = .{},
+    /// Owned strings `opts` points into.
+    mix_path: []u8 = &.{},
+    stem_dir: []u8 = &.{},
+    project: []u8 = &.{},
+    tracks: []track_mod.Track = &.{},
     total_frames: usize = 0,
-    start_sample: u64 = 0,
     sample_rate: u32 = 48_000,
     start_ns: i128 = 0,
+    result: ?exporter.Report = null,
+    err: ?anyerror = null,
     progress: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     cancel: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 };
 
-fn renderWorker(engine: *engine_mod.Engine, job: *RenderJob) void {
-    engine.renderOffline(job.buf, job.total_frames, job.start_sample, &job.progress, &job.cancel);
+fn renderWorker(alloc: std.mem.Allocator, engine: *engine_mod.Engine, job: *RenderJob) void {
+    if (exporter.run(alloc, engine, job.tracks, job.opts, &job.progress, &job.cancel)) |r| {
+        job.result = r;
+    } else |err| job.err = err;
     job.done.store(true, .release);
 }
 
@@ -408,6 +419,14 @@ fn applyPresetTo(t: *track_mod.Track, preset_idx: u16) void {
 const Cli = struct {
     project: ?[]const u8 = null,
     render: ?[]const u8 = null,
+    /// Export options for --render / --stems (docs/27 §Command line).
+    stems: ?[]const u8 = null,
+    stems_kind: exporter.Stems = .tracks,
+    stem_tap: engine_mod.CaptureTap = .post,
+    bits: export_mod.Bits = .pcm24,
+    dither: bool = true,
+    /// Seconds; null: AUTO.
+    tail: ?f32 = 3,
     describe: ?[]const u8 = null,
     gallery: bool = false,
     idle_skip: bool = true,
@@ -449,6 +468,22 @@ pub fn main(init: std.process.Init) !void {
             const a: []const u8 = a_z;
             if (std.mem.eql(u8, a, "--render")) {
                 cli.render = args.next() orelse return error.MissingRenderPath;
+            } else if (std.mem.eql(u8, a, "--stems")) {
+                cli.stems = args.next() orelse return error.MissingStemsDir;
+            } else if (std.mem.eql(u8, a, "--stem-kind")) {
+                const v = args.next() orelse return error.MissingStemKind;
+                cli.stems_kind = std.meta.stringToEnum(exporter.Stems, v) orelse return error.BadStemKind;
+            } else if (std.mem.eql(u8, a, "--tap")) {
+                const v = args.next() orelse return error.MissingTap;
+                cli.stem_tap = if (std.mem.eql(u8, v, "fx")) .pre else if (std.mem.eql(u8, v, "fader")) .post else return error.BadTap;
+            } else if (std.mem.eql(u8, a, "--bits")) {
+                const v = args.next() orelse return error.MissingBits;
+                cli.bits = if (std.mem.eql(u8, v, "16")) .pcm16 else if (std.mem.eql(u8, v, "24")) .pcm24 else if (std.mem.eql(u8, v, "32f")) .float32 else return error.BadBits;
+            } else if (std.mem.eql(u8, a, "--no-dither")) {
+                cli.dither = false;
+            } else if (std.mem.eql(u8, a, "--tail")) {
+                const v = args.next() orelse return error.MissingTail;
+                cli.tail = if (std.mem.eql(u8, v, "auto")) null else std.fmt.parseFloat(f32, v) catch return error.BadTail;
             } else if (std.mem.eql(u8, a, "--describe")) {
                 cli.describe = args.next() orelse return error.MissingDescribePath;
             } else if (std.mem.eql(u8, a, "--gallery")) {
@@ -485,8 +520,8 @@ pub fn main(init: std.process.Init) !void {
     if (cli.gallery) return ui_gallery.run(alloc);
     if (cli.describe) |out| return describe_mod.run(alloc, out);
     // Settings may move the home folder, which user: and lib: resolve in.
-    storage.loadSettings(alloc, cli.render == null);
-    if (cli.render) |out| return renderHeadless(alloc, cli.project orelse return error.MissingProject, out, cli.idle_skip, cli.workers());
+    storage.loadSettings(alloc, cli.render == null and cli.stems == null);
+    if (cli.render != null or cli.stems != null) return renderHeadless(alloc, cli.project orelse return error.MissingProject, cli);
 
     storage.ensureHome();
 
@@ -643,7 +678,7 @@ pub fn main(init: std.process.Init) !void {
     var status: StatusMessage = .{};
     var edit_snap: snap_mod.Setting = .note_16;
     var rename: RenameState = .{};
-    var render_dlg: render_dialog.State = .{};
+    var render_dlg: export_dialog.State = .{};
     var bounce_dlg: bounce_dialog.State = .{};
     var about_card: about.State = .{};
     var uni_panel: unison_panel.State = .{};
@@ -1366,16 +1401,19 @@ pub fn main(init: std.process.Init) !void {
 
         try runRename(ui, alloc, &history, &rename, tracks, &transport, &dirty, &status);
 
-        // Render Audio dialog (modal: input behind it is suppressed above).
-        var render_action: render_dialog.Result = .none;
+        // Export dialog (modal: input behind it is suppressed above).
+        var render_action: export_dialog.Result = .none;
         if (render_dlg.active) {
-            const loop_available = transport.loopEnabled() and transport.loopEndBeats() > transport.loopStartBeats();
-            const prog: ?render_dialog.Progress = if (render_job.active) renderProgress(&render_job) else null;
-            render_action = render_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &render_dlg, loop_available, prog);
+            const avail = export_dialog.Avail{
+                .loop = transport.loopEnabled() and transport.loopEndBeats() > transport.loopStartBeats(),
+                .selection = arrangement.hasSelectedClips(tracks),
+            };
+            const prog: ?export_dialog.Progress = if (render_job.active) renderProgress(&render_job) else null;
+            render_action = export_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &render_dlg, avail, prog);
         }
         var bounce_action: bounce_dialog.Result = .none;
         if (bounce_dlg.active) {
-            const prog: ?render_dialog.Progress = if (bounce_job.active) bounceProgress(&bounce_job) else null;
+            const prog: ?export_dialog.Progress = if (bounce_job.active) bounceProgress(&bounce_job) else null;
             bounce_action = bounce_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &bounce_dlg, @popCount(bounceSources(tracks)), prog);
         }
         var delete_answer: ?bool = null;
@@ -1595,9 +1633,17 @@ pub fn main(init: std.process.Init) !void {
     if (render_job.active) {
         render_job.cancel.store(true, .monotonic);
         if (render_job.thread) |t| t.join();
-        alloc.free(render_job.buf);
-        alloc.free(render_job.path);
+        alloc.free(render_job.mix_path);
+        alloc.free(render_job.stem_dir);
+        alloc.free(render_job.project);
         render_job = .{};
+    }
+    if (bounce_job.active) {
+        bounce_job.cancel.store(true, .monotonic);
+        if (bounce_job.thread) |t| t.join();
+        engine.capture = null;
+        freeBounceBuffers(alloc, &bounce_job.cap);
+        bounce_job = .{};
     }
 }
 
@@ -1919,83 +1965,119 @@ fn saveProject(
     std.log.info("saved {s} (copied {d} files, {d} bytes; {d} missing)", .{ pkg, report.copied, report.bytes, report.missing });
 }
 
-/// Begin an offline project bounce → 24-bit stereo WAV. Resolves the range,
-/// prompts for a path, stops the device, and spawns a worker thread that
-/// renders into `job.buf`. The UI thread polls progress and calls
-/// finishRender once the worker is done. The device stays stopped for the
-/// (brief, faster-than-realtime) duration because the offline render shares
-/// the engine's scratch/machine state with the live callback.
+/// Begin an export: resolve the range, ask where, stop the device and
+/// start the worker. finishRender reports once it's done. The device stays
+/// stopped meanwhile because the offline render shares the engine's
+/// scratch and machine state with the live callback.
 fn startRender(
     alloc: std.mem.Allocator,
     engine: *engine_mod.Engine,
     audio: *audio_mod.Audio,
     transport: *transport_mod.Transport,
     tracks: []track_mod.Track,
-    dlg: render_dialog.State,
+    dlg: export_dialog.State,
     project_path: []const u8,
     job: *RenderJob,
     status: *StatusMessage,
 ) !void {
-    const sr: u64 = transport.sample_rate;
-
-    // Resolve the render range in samples.
-    var start: u64 = 0;
-    var end: u64 = 0;
-    const loop_available = transport.loopEnabled() and transport.loopEndBeats() > transport.loopStartBeats();
-    if (dlg.rangeMode() == .loop and loop_available) {
-        start = transport.beatsToSamples(transport.loopStartBeats());
-        end = transport.beatsToSamples(transport.loopEndBeats());
-    } else {
-        var last_beat: f64 = 0;
-        for (tracks) |*t| {
-            for (t.clips.items) |*clip| if (!clip.muted) {
-                last_beat = @max(last_beat, clip.endBeat());
-            };
-        }
-        end = transport.beatsToSamples(last_beat);
-    }
-    if (end <= start) {
-        status.set("Nothing to render", .{});
+    const sr = transport.sample_rate;
+    const range = exportRange(transport, tracks, dlg.rangeMode()) orelse {
+        status.set("Nothing to export", .{});
         return;
-    }
-
-    const tail_frames: u64 = @intFromFloat(@max(0.0, dlg.tail_sec) * @as(f32, @floatFromInt(sr)));
-    const total_frames: usize = @intCast((end - start) + tail_frames);
-
-    // Native save panel — default name derived from the project file.
-    var name_buf: [128]u8 = undefined;
-    const default_name = defaultBounceName(&name_buf, project_path);
-    const path = (try native_dialog.saveAudioFile(alloc, default_name)) orelse return; // cancelled
-
-    // Render buffer (interleaved stereo). ~46 MB per minute of stereo f32.
-    const buf = alloc.alloc(f32, total_frames * audio_mod.CHANNELS) catch |err| {
-        alloc.free(path);
-        return err;
     };
 
+    // The save panel names the mix; stems go in "<name> stems" beside it.
+    const fmt = blk: {
+        var f = dlg.format();
+        f.sample_rate = sr;
+        break :blk f;
+    };
+    const ext = fmt.container.ext();
+    var name_buf: [128]u8 = undefined;
+    const stem_name = projectStem(project_path);
+    const default_name = std.fmt.bufPrint(&name_buf, "{s}{s}", .{ if (stem_name.len > 0) stem_name else "export", ext }) catch "export.wav";
+    const path = (try native_dialog.saveAudioFile(alloc, default_name, ext[1..])) orelse return; // cancelled
+    errdefer alloc.free(path);
+    const chosen = projectStem(path);
+    const dir = std.fs.path.dirname(path) orelse ".";
+    const project = try alloc.dupe(u8, chosen);
+    errdefer alloc.free(project);
+    const stem_dir = try std.fmt.allocPrint(alloc, "{s}/{s} stems", .{ dir, chosen });
+    errdefer alloc.free(stem_dir);
+
+    const what = dlg.whatMode();
+    const tail_s: f32 = if (dlg.tail_auto) export_dialog.TAIL_MAX else @max(0, dlg.tail_sec);
     job.* = .{
         .active = true,
-        .buf = buf,
-        .path = path,
-        .total_frames = total_frames,
-        .start_sample = start,
-        .sample_rate = @intCast(sr),
+        .mix_path = path,
+        .stem_dir = stem_dir,
+        .project = project,
+        .tracks = tracks,
+        .sample_rate = sr,
         .start_ns = nowNs(),
     };
+    job.opts = .{
+        .mix_path = if (what != .stems) path else null,
+        .stems = if (what == .mix) .none else switch (dlg.stemsMode()) {
+            .tracks => .tracks,
+            .buses => .buses,
+            .all => .all,
+        },
+        .stem_tap = if (dlg.stemTap() == .fx) .pre else .post,
+        .stem_dir = stem_dir,
+        .project = project,
+        .start = range.start,
+        .end = range.end,
+        .tail_auto = dlg.tail_auto,
+        .tail_frames = @intFromFloat(tail_s * @as(f32, @floatFromInt(sr))),
+        .format = fmt,
+    };
+    job.total_frames = @intCast(range.end - range.start + job.opts.tail_frames);
 
-    // The device must be stopped while the worker renders.
     audio.stop();
-    job.thread = std.Thread.spawn(.{}, renderWorker, .{ engine, job }) catch |err| {
-        // Spawn failed — fall back to a synchronous render so we still produce output.
-        engine.renderOffline(buf, total_frames, start, &job.progress, &job.cancel);
-        job.done.store(true, .release);
-        std.log.warn("render thread spawn failed ({s}); ran synchronously", .{@errorName(err)});
-        return;
+    job.thread = std.Thread.spawn(.{}, renderWorker, .{ alloc, engine, job }) catch |err| blk: {
+        std.log.warn("export thread spawn failed ({s}); ran synchronously", .{@errorName(err)});
+        renderWorker(alloc, engine, job);
+        break :blk null;
     };
 }
 
-/// Build the live Progress telemetry from a running job.
-fn renderProgress(job: *RenderJob) render_dialog.Progress {
+const SampleRange = struct { start: u64, end: u64 };
+
+/// An export's range in samples: the project (beat 0 to the last clip
+/// that plays), the loop, or the selected clips.
+fn exportRange(transport: *const transport_mod.Transport, tracks: []const track_mod.Track, mode: export_dialog.Range) ?SampleRange {
+    var lo: f64 = 0;
+    var hi: f64 = 0;
+    switch (mode) {
+        .project => for (tracks) |*t| for (t.clips.items) |*cl| if (!cl.muted) {
+            hi = @max(hi, cl.endBeat());
+        },
+        .loop => {
+            if (!transport.loopEnabled()) return null;
+            lo = transport.loopStartBeats();
+            hi = transport.loopEndBeats();
+        },
+        .selection => {
+            lo = std.math.inf(f64);
+            for (tracks) |*t| for (t.clips.items) |*cl| if (cl.selected) {
+                lo = @min(lo, cl.start_beat);
+                hi = @max(hi, cl.endBeat());
+            };
+        },
+    }
+    if (!(hi > lo)) return null;
+    return .{ .start = transport.beatsToSamples(lo), .end = transport.beatsToSamples(hi) };
+}
+
+/// A path's file name without its extension.
+fn projectStem(path: []const u8) []const u8 {
+    const base = basename(path);
+    return if (std.mem.lastIndexOfScalar(u8, base, '.')) |i| base[0..i] else base;
+}
+
+/// Live Progress telemetry from a running export.
+fn renderProgress(job: *RenderJob) export_dialog.Progress {
     const sr_f: f64 = @floatFromInt(job.sample_rate);
     const done_f: f64 = @floatFromInt(job.progress.load(.monotonic));
     const total_f: f64 = @floatFromInt(job.total_frames);
@@ -2010,35 +2092,21 @@ fn renderProgress(job: *RenderJob) render_dialog.Progress {
     };
 }
 
-/// Join the worker, restart the device, and (unless cancelled) encode + write
-/// the WAV. Frees the job's buffers and clears it.
+/// Join the worker, restart the device and report.
 fn finishRender(alloc: std.mem.Allocator, audio: *audio_mod.Audio, job: *RenderJob, status: *StatusMessage) void {
     if (job.thread) |t| t.join();
     job.thread = null;
     audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
-
-    const cancelled = job.cancel.load(.monotonic);
-    if (!cancelled) {
-        if (wav_mod.encodeStereo24(alloc, job.buf, job.sample_rate)) |wav_bytes| {
-            defer alloc.free(wav_bytes);
-            if (document_mod.writeFile(alloc, job.path, wav_bytes)) |_| {
-                const secs = @as(f64, @floatFromInt(job.total_frames)) / @as(f64, @floatFromInt(job.sample_rate));
-                status.set("Rendered {s} ({d:.1}s)", .{ basename(job.path), secs });
-                std.log.info("rendered {s} ({d} frames)", .{ job.path, job.total_frames });
-            } else |err| {
-                std.log.err("wav write failed: {s}", .{@errorName(err)});
-                status.set("Render failed (write)", .{});
-            }
-        } else |err| {
-            std.log.err("wav encode failed: {s}", .{@errorName(err)});
-            status.set("Render failed (encode)", .{});
-        }
-    } else {
-        status.set("Render cancelled", .{});
+    if (job.result) |r| {
+        const secs = @as(f64, @floatFromInt(r.frames)) / @as(f64, @floatFromInt(r.sample_rate));
+        if (r.files == 1) status.set("Exported {s} ({d:.1}s)", .{ basename(job.opts.mix_path orelse job.stem_dir), secs }) else status.set("Exported {d} files ({d:.1}s)", .{ r.files, secs });
+    } else if (job.err) |err| {
+        if (err == error.Cancelled) status.set("Export cancelled", .{}) else status.set("Export failed: {s}", .{@errorName(err)});
+        std.log.err("export failed: {s}", .{@errorName(err)});
     }
-
-    alloc.free(job.buf);
-    alloc.free(job.path);
+    alloc.free(job.mix_path);
+    alloc.free(job.stem_dir);
+    alloc.free(job.project);
     job.* = .{};
 }
 
@@ -2471,7 +2539,7 @@ fn insertTrackAt(engine: *engine_mod.Engine, tracks_buf: *[MAX_TRACKS]track_mod.
     engine.publishRouting();
 }
 
-fn bounceProgress(job: *BounceJob) render_dialog.Progress {
+fn bounceProgress(job: *BounceJob) export_dialog.Progress {
     const sr_f: f64 = @floatFromInt(job.sample_rate);
     const per: f64 = @floatFromInt(job.total_frames);
     const done_f: f64 = @as(f64, @floatFromInt(job.pass)) * per + @as(f64, @floatFromInt(job.progress.load(.monotonic)));
@@ -2493,14 +2561,6 @@ fn openBounce(dlg: *bounce_dialog.State, tracks: []const track_mod.Track, status
         return;
     }
     dlg.active = true;
-}
-
-/// Build a default ".wav" file name from the project path basename.
-fn defaultBounceName(buf: []u8, project_path: []const u8) []const u8 {
-    const base = basename(project_path);
-    const stem = if (std.mem.lastIndexOfScalar(u8, base, '.')) |i| base[0..i] else base;
-    if (stem.len == 0) return "bounce.wav";
-    return std.fmt.bufPrint(buf, "{s}.wav", .{stem}) catch "bounce.wav";
 }
 
 /// File > Open: the Open panel, then the pick is opened at the top of the
@@ -3439,7 +3499,9 @@ fn deleteTrack(
 
 /// Bounce `project` to `out` (24-bit WAV): every clip plus a 3 s tail,
 /// through the same engine and master soft clip as a DAW render.
-fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, out: []const u8, idle_skip: bool, workers: usize) !void {
+/// `--render` / `--stems`: export a project without a window or device
+/// (docs/27 §Command line).
+fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void {
     var reg = registry_mod.Registry.init(alloc);
     defer reg.deinit();
     for (registry_mod.builtin_machines) |path| try reg.loadFyMachine(path);
@@ -3476,40 +3538,42 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, out: []const u8
         .tracks = tracks,
         .master = &master,
         .meter_state = &meter_state,
-        .idle_skip = idle_skip,
+        .idle_skip = cli.idle_skip,
     };
     try engine.initPdc(alloc);
     defer engine.deinitPdc(alloc);
-    try engine.initPool(alloc, workers, null);
+    try engine.initPool(alloc, cli.workers(), null);
     defer engine.deinitPool(alloc);
     engine.publishRouting();
     var last_beat: f64 = 0;
     for (tracks) |*t| for (t.clips.items) |*clip| if (!clip.muted) {
         last_beat = @max(last_beat, clip.endBeat());
     };
-    const frames: usize = @intCast(transport.beatsToSamples(last_beat) + 3 * audio_mod.SAMPLE_RATE);
-    const buf = try alloc.alloc(f32, frames * audio_mod.CHANNELS);
-    defer alloc.free(buf);
+    const sr = audio_mod.SAMPLE_RATE;
+    const container = if (cli.render) |out| export_mod.Container.ofPath(out) orelse return error.UnknownAudioExtension else .wav;
+    const tail_s = cli.tail orelse export_dialog.TAIL_MAX;
+    const opts = exporter.Options{
+        .mix_path = cli.render,
+        .stems = if (cli.stems != null) cli.stems_kind else .none,
+        .stem_tap = cli.stem_tap,
+        .stem_dir = cli.stems orelse "",
+        .project = projectStem(project),
+        .start = 0,
+        .end = transport.beatsToSamples(last_beat),
+        .tail_auto = cli.tail == null,
+        .tail_frames = @intFromFloat(tail_s * @as(f32, @floatFromInt(sr))),
+        .format = .{ .container = container, .bits = cli.bits, .dither = cli.dither, .sample_rate = sr },
+    };
     const t0 = nowNs();
-    engine.renderOffline(buf, frames, 0, null, null);
-    const secs = @as(f64, @floatFromInt(frames)) / @as(f64, @floatFromInt(audio_mod.SAMPLE_RATE));
+    const r = try exporter.run(alloc, &engine, tracks, opts, null, null);
+    const secs = @as(f64, @floatFromInt(r.frames)) / @as(f64, @floatFromInt(sr));
     const took = @as(f64, @floatFromInt(nowNs() - t0)) / 1e9;
-
-    var peak: f32 = 0;
-    var sq: f64 = 0;
-    var over: usize = 0;
-    for (buf) |v| {
-        peak = @max(peak, @abs(v));
-        sq += @as(f64, v) * v;
-        if (@abs(v) >= 0.999) over += 1;
+    if (cli.render) |out| {
+        std.debug.print("rendered {s} -> {s}: {d:.1} s in {d:.2} s ({d:.1}x real time), peak {d:.1} dBFS, rms {d:.1} dBFS, {d} samples at the rail\n", .{
+            project, out, secs, took, secs / took, 20 * std.math.log10(@max(r.peak, 1e-9)), 20 * std.math.log10(@max(r.rms, 1e-12)), r.over,
+        });
     }
-    const rms = @sqrt(sq / @as(f64, @floatFromInt(buf.len)));
-    const bytes = try wav_mod.encodeStereo24(alloc, buf, audio_mod.SAMPLE_RATE);
-    defer alloc.free(bytes);
-    try document_mod.writeFile(alloc, out, bytes);
-    std.debug.print("rendered {s} -> {s}: {d:.1} s in {d:.2} s ({d:.1}x real time), peak {d:.1} dBFS, rms {d:.1} dBFS, {d} samples at the rail\n", .{
-        project, out, secs, took, secs / took, 20 * std.math.log10(@max(peak, 1e-9)), 20 * std.math.log10(@max(rms, 1e-12)), over,
-    });
+    if (cli.stems) |dir| std.debug.print("stems {s} -> {s}/: {d} files, {d:.1} s each\n", .{ project, dir, r.files - @intFromBool(cli.render != null), secs });
 }
 
 fn applyProjectBytes(

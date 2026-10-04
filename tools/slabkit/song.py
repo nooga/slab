@@ -971,9 +971,10 @@ class Song:
 
     def render(self, wav=None, stems=False, report=True):
         """Save, bounce headless with `slab --render`, and analyze. With
-        stems=True every track is also bounced alone (through its own
-        inserts, no master chain) to show how loud each part sits. It saves
-        where the last save() did, else to songs/."""
+        stems=True every track that plays is also exported as a stem (its
+        post-fader signal: its own inserts, no send returns, no master
+        chain) to show how loud each part sits. It saves where the last
+        save() did, else to songs/."""
         from .analyze import analyze_wav, print_report
         path = self.save(getattr(self, "_path", None), quiet=not report)
         wav = wav or os.path.splitext(path)[0] + ".wav"
@@ -982,21 +983,18 @@ class Song:
         mix = analyze_wav(wav, secs)
         stem_stats = []
         if stems:
-            base = _with_refs(self.build(), path)
-            # A bare file inside the package: its folder is the package.
-            tmp = os.path.join(path, "stem.slab")
-            twav = os.path.splitext(path)[0] + ".stem.wav"
-            # A stem is the track soloed in the whole project: itself, and
-            # the buses it feeds (docs/23 §Semantics), without the master chain.
-            for i, t in enumerate(base["tracks"]):
-                one = dict(base, tracks=[dict(u, mute=False, solo=(j == i)) for j, u in enumerate(base["tracks"])],
-                           master={"volume": 1.0, "pan": 0.0, "effects": []})
-                with open(tmp, "w") as f:
-                    json.dump(one, f)
-                _bounce(tmp, twav)
-                stem_stats.append((t["name"], analyze_wav(twav, secs)))
-            os.remove(tmp)
-            os.remove(twav)
+            # One render: each track's post-fader signal, captured while
+            # the mix plays (docs/27 §Export), so no master chain and no
+            # send returns.
+            import glob, shutil, tempfile
+            d = tempfile.mkdtemp(prefix="slab-stems-")
+            try:
+                _bounce(path, None, ["--stems", d, "--stem-kind", "tracks", "--tap", "fader"])
+                for f in sorted(glob.glob(os.path.join(d, "*.wav"))):
+                    name = re.sub(r"^.*?-\d\d-", "", os.path.splitext(os.path.basename(f))[0])
+                    stem_stats.append((name, analyze_wav(f, secs)))
+            finally:
+                shutil.rmtree(d, ignore_errors=True)
         if report:
             print_report(wav, mix, stem_stats)
         return mix, stem_stats
@@ -1020,12 +1018,13 @@ def _with_refs(node, project_dir):
     return out
 
 
-def _bounce(project, wav):
+def _bounce(project, wav, extra=()):
     if not os.path.exists(SLAB):
         raise SlabError(f"{SLAB} not found — run `zig build` first")
     # Own session: the headless render has been seen to take its caller's
     # process group down with it on exit.
-    r = subprocess.run([SLAB, project, "--render", wav], cwd=ROOT, capture_output=True, text=True,
+    args = [SLAB, project] + (["--render", wav] if wav else []) + list(extra)
+    r = subprocess.run(args, cwd=ROOT, capture_output=True, text=True,
                        start_new_session=True)
     if r.returncode != 0:
         raise SlabError(f"render failed:\n{r.stderr[-2000:]}")
