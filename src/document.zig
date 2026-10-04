@@ -87,6 +87,10 @@ pub fn setMarkers(m: *markers_mod.Markers) void {
     active_markers = m;
 }
 
+pub fn markers() ?*markers_mod.Markers {
+    return active_markers;
+}
+
 /// Process-wide export settings (docs/27 §Export), saved with the project
 /// like the master bus; a project without them gets the defaults.
 var active_export: ?*export_settings.Settings = null;

@@ -993,6 +993,10 @@ class Song:
                                             for b, t, r in self.tempos]} if self.tempos else {}),
                               **({"ramp": True} if self.ramp and self.tempos else {})),
             "meter": [dict({"bar": 0, "num": num, "den": den}, **({"groups": list(self.groups)} if self.groups else {}))],
+            # Sections run back to back and END closes the last (docs/28).
+            "sections": [{"beat": float(sec.start), "name": sec.name, "color": (4 + i) % 12}
+                         for i, sec in enumerate(self.sections)],
+            "end": float(end),
             "tracks": [t.build(index) for t in self.tracks],
             "master": {"volume": self.master_volume, "pan": self.master_pan, "subsonic": self.master_subsonic,
                        "effects": [f.build(f"master fx {i}") for i, f in enumerate(self.master_fx)]},

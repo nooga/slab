@@ -53,6 +53,7 @@ const dialog = @import("ui/dialog.zig");
 const export_dialog = @import("ui/export_dialog.zig");
 const export_settings = @import("export_settings.zig");
 const bounce_dialog = @import("ui/bounce_dialog.zig");
+const marker_dialog = @import("ui/marker_dialog.zig");
 const export_mod = @import("export.zig");
 const recipe_mod = @import("recipe.zig");
 const build_options = @import("build_options");
@@ -74,6 +75,7 @@ test {
     _ = @import("meter.zig");
     _ = @import("tempo.zig");
     _ = @import("markers.zig");
+    _ = @import("ui/marker_dialog.zig");
     _ = @import("routing.zig");
     _ = @import("export.zig");
     _ = @import("exporter.zig");
@@ -761,6 +763,7 @@ pub fn main(init: std.process.Init) !void {
     var rename: RenameState = .{};
     var render_dlg: export_dialog.State = .{};
     var bounce_dlg: bounce_dialog.State = .{};
+    var marker_dlg: marker_dialog.State = .{};
     var about_card: about.State = .{};
     var uni_panel: unison_panel.State = .{};
     var color_pick: color_picker.State = .{};
@@ -833,7 +836,7 @@ pub fn main(init: std.process.Init) !void {
         // One owner of the pointer at a time: a legacy menu, modal or drag
         // hides input from the new Ui, and a new-Ui drag hides it from the
         // legacy panes.
-        const modal = render_dlg.active or bounce_dlg.active or about_card.active or pending_delete != null or pending_delete_set != null or uni_panel.active or color_pick.active;
+        const modal = render_dlg.active or bounce_dlg.active or marker_dlg.active or about_card.active or pending_delete != null or pending_delete_set != null or uni_panel.active or color_pick.active;
         if (menu.active() or modal or pane.hasActiveDrag()) ui.suppressInput();
 
         // While a menu is open it's modal for the mouse: panes get a
@@ -904,6 +907,9 @@ pub fn main(init: std.process.Init) !void {
             if (commandModifierDown() and ui.in.alt and c.rl.IsKeyPressed(c.rl.KEY_B)) layout.browser_visible = !layout.browser_visible;
             if (c.rl.IsKeyPressed(c.rl.KEY_SPACE)) transport.toggle();
             if (c.rl.IsKeyPressed(c.rl.KEY_HOME)) transport.rewind();
+            // ⌘← / ⌘→: the previous / next section, locator or END.
+            if (commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_LEFT)) transport.seekToBeats(markers.prev(transport.beats()));
+            if (commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_RIGHT)) if (markers.next(transport.beats())) |b| transport.seekToBeats(b);
             if (!in_browser and c.rl.IsKeyPressed(c.rl.KEY_TAB)) layout.clip_editor_visible = !layout.clip_editor_visible;
             if (!in_browser and !commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_M)) {
                 if (shiftDown()) {
@@ -1116,7 +1122,7 @@ pub fn main(init: std.process.Init) !void {
             ares.color_pick = mres.color_pick;
             if (mres.toggle) layout.mixer_visible = false;
         } else {
-            ares = arrangement.draw(ui, rects.arrangement, tracks, &master, &device_sel, &audio_pool, alloc, &selected_track, &selected_clip, &transport, &meter_state, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), &recorder, pane_m);
+            ares = arrangement.draw(ui, rects.arrangement, tracks, &master, &device_sel, &audio_pool, alloc, &selected_track, &selected_clip, &transport, &meter_state, &markers, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), &recorder, pane_m);
             if (ares.toggle_mixer) layout.mixer_visible = true;
         }
         if (ares.rename_clip) |ref| beginRenameClip(&rename, tracks, ref);
@@ -1131,12 +1137,19 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         if (ares.rename_rect) |rr| rename.rect = rr;
-        // Tempo changes on the ruler: one undo step each, a drag included.
-        if (ares.tempo_edit != null or ares.tempo_drag_start) {
+        // Tempo and marker edits from the ruler menus: one undo step each
+        // (drags took theirs on the press).
+        if (ares.tempo_edit) |te| {
             pushHistorySnapshot(alloc, &history, tracks, &transport);
-            if (ares.tempo_edit) |te| arrangement.applyTempoEdit(&transport, te);
+            arrangement.applyTempoEdit(&transport, te);
             dirty = true;
         }
+        if (ares.marker_edit) |me| {
+            pushHistorySnapshot(alloc, &history, tracks, &transport);
+            arrangement.applyMarkerEdit(&markers, me);
+            dirty = true;
+        }
+        if (ares.marker_open) |mo| marker_dialog.open(&marker_dlg, &markers, mo.kind, mo.index, transport.map(), meter_state.liveMap());
         if (ares.command == .bounce) {
             openBounce(&bounce_dlg, tracks, &status);
         } else if (ares.command == .rebounce) {
@@ -1531,6 +1544,22 @@ pub fn main(init: std.process.Init) !void {
             const prog: ?export_dialog.Progress = if (bounce_job.active) bounceProgress(&bounce_job) else null;
             bounce_action = bounce_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &bounce_dlg, bounceInfo(&transport, tracks, bounce_job.replace != 0), prog);
         }
+        if (marker_dlg.active) switch (marker_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &marker_dlg)) {
+            .none => {},
+            .cancel => marker_dlg.active = false,
+            .ok => {
+                pushHistorySnapshot(alloc, &history, tracks, &transport);
+                marker_dialog.apply(&marker_dlg, &markers, &transport.tempo, &meter_state);
+                marker_dlg.active = false;
+                dirty = true;
+            },
+            .delete => {
+                pushHistorySnapshot(alloc, &history, tracks, &transport);
+                markers.remove(marker_dlg.kind, marker_dlg.index);
+                marker_dlg.active = false;
+                dirty = true;
+            },
+        };
         var delete_answer: ?bool = null;
         var delete_set_answer: ?bool = null;
         if (pending_delete_set != null) {
@@ -2180,7 +2209,10 @@ fn exportRange(transport: *const transport_mod.Transport, tracks: []const track_
     var lo: f64 = 0;
     var hi: f64 = 0;
     switch (mode) {
-        .project => for (tracks) |*t| for (t.clips.items) |*cl| if (!cl.muted) {
+        // The song: to END when it's set, else the last clip that plays.
+        .project => if (if (document_mod.markers()) |mk| mk.end else null) |e| {
+            hi = e;
+        } else for (tracks) |*t| for (t.clips.items) |*cl| if (!cl.muted) {
             hi = @max(hi, cl.endBeat());
         },
         .loop => {
@@ -3888,6 +3920,7 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
     for (tracks) |*t| for (t.clips.items) |*clip| if (!clip.muted) {
         last_beat = @max(last_beat, clip.endBeat());
     };
+    if (markers.end) |e| last_beat = e;
     const sr = audio_mod.SAMPLE_RATE;
     var comment_buf: [96]u8 = undefined;
     var container = if (cli.render) |out| export_mod.Container.ofPath(out) orelse return error.UnknownAudioExtension else export_mod.Container.wav;

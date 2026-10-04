@@ -103,34 +103,50 @@ under the playhead should be heard now).
 
 ## Locators and sections
 
-The ruler gets two kinds of marker besides the tempo and meter
-changes (which are handles on their maps, docs/07 §Markers):
+Above the ruler (and its tempo and meter changes, which are handles on
+their maps, docs/07 §Markers) runs the **section lane**. It holds:
 
-- **Locators** — named points: *CUE A*, *vocal in*, *fix this*. No
-  effect on timing or the grid. Jump targets (next/prev locator), and
-  written into WAV exports as cue points.
-- **Sections** — a lane of their own above the ruler, back to back:
-  INTRO, VERSE, DROP. A section starts on a bar and lasts until the
-  next one starts; the last ends at the **END** marker (the song's end,
-  which is also the Export sheet's PROJECT range when set).
+- **Sections** — tabs in their colors, back to back: INTRO, VERSE,
+  DROP. A section starts on a bar and lasts until the next one starts;
+  the last ends at the **END** marker, or at the last clip without one.
+- **Locators** — named flags: *CUE A*, *vocal in*, *fix this*. No
+  effect on timing or the grid. Jump targets, and written into WAV
+  exports as cue points.
+- **END** — the song's end: past it the lane goes dark, and it is the
+  Export sheet's PROJECT range (and `--render`'s) when set.
+
+In the lane:
+
+- **Click** a section's tab: the playhead goes to its start.
+- **Double-click** a tab or a flag: its dialog (below). On empty lane:
+  a new section at that bar.
+- **Drag** a section's start edge (to the downbeats between its
+  neighbors), a locator's flag (on the grid, ⌥ free) or END (to a
+  downbeat).
+- **Right-click**: *Add section here* (at the bar), *Add locator here*
+  (on the grid), *Edit section…*, *Loop section*, *Remove section*,
+  *Edit locator…*, *Remove locator*, *Set end here*, *Remove end*.
+- **⌘← / ⌘→** jump to the previous / next section, locator or END.
+
+Every edit is one undo step.
 
 ```zig
 pub const Locator = struct { beat: f64, name: Name };
 pub const Section = struct { beat: f64, name: Name, color: u8 };
-// Document: locators [256], sections [128], end_beat: ?f64
+// src/markers.zig, on the Document: locators [256], sections [128], end: ?f64
 ```
 
-A section has no tempo or meter of its own to keep in sync. Its
-inspector shows **TEMPO** and **METER** fields that *edit the maps at
-the section's start*: setting VERSE to 7/8 at 140 puts a meter change
-and a tempo change on its first bar; clearing a field removes the
-change, and the section follows the one before it. The maps stay the
-only truth; the section is how you reach them.
+A section has no tempo or meter of its own to keep in sync. Its dialog
+(NAME, COLOR, TEMPO, METER) shows **TEMPO** and **METER** fields that
+*edit the maps at the section's start*: setting VERSE to 7/8 at 140
+puts a meter change and a tempo change on its first bar; turning TEMPO
+off or METER to FOLLOW removes the change, and the section carries on
+from the one before it. The maps stay the only truth; the section is
+how you reach them. A locator's dialog has its NAME; both have DELETE.
 
 What sections give:
 
-- Click a section's tab to select its span: loop it, bounce it, export
-  it. ⌥←/⌥→ jump section to section.
+- Loop a section, jump between them, and the song's end for export.
 - **Export SECTIONS**: one file per section, `{section}` in the name
   template, the section's tempo and length in the `acid` chunk for
   loops.
@@ -138,7 +154,8 @@ What sections give:
   and its clips, automation, tempo and meter changes come with it
   (clips crossing a boundary split there).
 
-Saved as
+Saved at the project's top level, each only when there are any (slabkit
+writes its `Song.section`s and END):
 
 ```json
 "locators": [{"beat": 32, "name": "VOCAL IN"}],

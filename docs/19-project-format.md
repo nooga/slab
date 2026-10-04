@@ -115,6 +115,9 @@ The document is JSON. Top level:
 | `transport.ramp` | the starting tempo glides to the first change |
 | `transport.loop` | loop region in **beats**; `on` sets whether playback loops. The render ignores it. |
 | `meter` | meter map: `{bar, num, den}` points. The first point is forced to bar 0. Missing = 4/4. It changes the bar grid and what machines get as `bar`/`beat_in_bar`; note times are always in beats. |
+| `sections` | the section lane, `[{"beat": 0, "name": "INTRO", "color": 4}]`, back to back; `color` indexes the twelve track hues (docs/28 §Locators and sections) |
+| `locators` | named points, `[{"beat": 32, "name": "VOCAL IN"}]` |
+| `end` | the END marker in beats: the song's end and the export's PROJECT range |
 | `tracks` | at most 16 |
 | `assets` | written on save: every file the project names, by its reference, with its `sha256`, the `origin` a collected copy came from, and an SFZ's or a folder's member `files` ([25-storage.md](25-storage.md) §The asset table). The loader doesn't need it. |
 | `master` | the master bus: `volume` (linear gain, default 1.0), `pan` (a balance control, not a pan law), `subsonic` (`true` turns on the 30 Hz subsonic filter, default `false`), `effects` |
