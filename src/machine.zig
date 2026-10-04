@@ -160,6 +160,8 @@ pub const DrawPanelFn = *const fn (
 /// machine to drop any sustained voices and reset to silence.
 pub const ResetFn = *const fn (state: *anyopaque) void;
 pub const DeinitFn = *const fn (state: *anyopaque, alloc: std.mem.Allocator) void;
+/// A fingerprint of the code the machine runs (docs/27 §Provenance).
+pub const CodeHashFn = *const fn (state: *anyopaque) u64;
 pub const SyncParamsFn = *const fn (dst: *anyopaque, src: *anyopaque) void;
 /// Preset indices are u16: a machine can carry a disk library's worth.
 pub const PresetIndex = u16;
@@ -418,6 +420,8 @@ pub const Machine = struct {
     draw_panel: DrawPanelFn,
     reset: ResetFn,
     deinit: ?DeinitFn = null,
+    /// Its code's fingerprint; null for machines whose code is the host's.
+    code_hash: ?CodeHashFn = null,
     sync_params: ?SyncParamsFn = null,
     preset_count: ?PresetCountFn = null,
     preset_name: ?PresetNameFn = null,

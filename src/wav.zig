@@ -41,10 +41,19 @@ pub const Sample = struct {
     // wrote it, its frames are at the levels drawn, and the table keeps
     // them instead of being normalized (src/wavetable_file.zig).
     levels_kept: bool = false,
+    /// A stereo load (`loadStereo`) of a file with two or more channels:
+    /// `data` is the left channel and this the right. Empty otherwise.
+    right: []f64 = &.{},
 
     pub fn deinit(self: *Sample, alloc: std.mem.Allocator) void {
         alloc.free(self.data);
         self.data = &.{};
+        if (self.right.len > 0) alloc.free(self.right);
+        self.right = &.{};
+    }
+
+    pub fn isStereo(self: *const Sample) bool {
+        return self.right.len > 0;
     }
 };
 
@@ -70,11 +79,21 @@ fn rdU32(b: []const u8, o: usize) u32 {
 /// Load `path` into a freshly allocated f64 mono buffer. Caller owns the
 /// returned `data` (free via Sample.deinit).
 pub fn load(alloc: std.mem.Allocator, path: []const u8) Error!Sample {
+    return loadAs(alloc, path, false);
+}
+
+/// Load `path` keeping its first two channels apart (`Sample.right`), as
+/// audio clips play them; a mono file loads as mono.
+pub fn loadStereo(alloc: std.mem.Allocator, path: []const u8) Error!Sample {
+    return loadAs(alloc, path, true);
+}
+
+fn loadAs(alloc: std.mem.Allocator, path: []const u8, stereo: bool) Error!Sample {
     var zbuf: [1024:0]u8 = undefined;
     if (path.len >= zbuf.len) return Error.OpenFailed;
     @memcpy(zbuf[0..path.len], path);
     zbuf[path.len] = 0;
-    if (std.ascii.endsWithIgnoreCase(path, ".flac")) return loadFlac(alloc, &zbuf);
+    if (std.ascii.endsWithIgnoreCase(path, ".flac")) return loadFlac(alloc, &zbuf, stereo);
 
     const fd = open(@ptrCast(&zbuf[0]), O_RDONLY);
     if (fd < 0) return Error.OpenFailed;
@@ -97,12 +116,12 @@ pub fn load(alloc: std.mem.Allocator, path: []const u8) Error!Sample {
     }
     if (done < 44) return Error.NotRiffWave;
 
-    return parse(alloc, raw[0..done]);
+    return parseAs(alloc, raw[0..done], stereo);
 }
 
-/// Decode a FLAC file into f64 mono at its own rate (channels averaged,
-/// like a WAV).
-fn loadFlac(alloc: std.mem.Allocator, zpath: [*:0]const u8) Error!Sample {
+/// Decode a FLAC file into f64 at its own rate: mono (channels averaged,
+/// like a WAV), or its first two channels with `stereo`.
+fn loadFlac(alloc: std.mem.Allocator, zpath: [*:0]const u8, stereo: bool) Error!Sample {
     var cfg = ma.ma_decoder_config_init(ma.ma_format_f32, 0, 0);
     cfg.encodingFormat = ma.ma_encoding_format_flac;
     var dec: ma.ma_decoder = undefined;
@@ -122,6 +141,15 @@ fn loadFlac(alloc: std.mem.Allocator, zpath: [*:0]const u8) Error!Sample {
     if (got == 0) return Error.ReadFailed;
     const len: usize = @intCast(got);
     const data = alloc.alloc(f64, len) catch return Error.OutOfMemory;
+    errdefer alloc.free(data);
+    if (stereo and ch >= 2) {
+        const right = alloc.alloc(f64, len) catch return Error.OutOfMemory;
+        for (0..len) |i| {
+            data[i] = tmp[i * ch];
+            right[i] = tmp[i * ch + 1];
+        }
+        return .{ .data = data, .right = right, .sample_rate = @floatFromInt(dec.outputSampleRate) };
+    }
     for (0..len) |i| {
         var acc: f64 = 0;
         for (0..ch) |c| acc += tmp[i * ch + c];
@@ -132,6 +160,10 @@ fn loadFlac(alloc: std.mem.Allocator, zpath: [*:0]const u8) Error!Sample {
 
 /// Parse an in-memory RIFF/WAVE image into f64 mono. Exposed for tests.
 pub fn parse(alloc: std.mem.Allocator, buf: []const u8) Error!Sample {
+    return parseAs(alloc, buf, false);
+}
+
+fn parseAs(alloc: std.mem.Allocator, buf: []const u8, stereo: bool) Error!Sample {
     if (buf.len < 12) return Error.NotRiffWave;
     if (!std.mem.eql(u8, buf[0..4], "RIFF") or !std.mem.eql(u8, buf[8..12], "WAVE")) return Error.NotRiffWave;
 
@@ -217,7 +249,16 @@ pub fn parse(alloc: std.mem.Allocator, buf: []const u8) Error!Sample {
     errdefer alloc.free(out);
 
     const data = buf[data_off..][0..data_len];
-    var fi: usize = 0;
+    var right: []f64 = &.{};
+    errdefer if (right.len > 0) alloc.free(right);
+    if (stereo and channels >= 2) {
+        right = alloc.alloc(f64, frames) catch return Error.OutOfMemory;
+        for (0..frames) |i| {
+            out[i] = decodeSample(data, i * frame_bytes, audio_format, bits) catch return Error.UnsupportedFormat;
+            right[i] = decodeSample(data, i * frame_bytes + bytes_per, audio_format, bits) catch return Error.UnsupportedFormat;
+        }
+    }
+    var fi: usize = if (right.len > 0) frames else 0;
     while (fi < frames) : (fi += 1) {
         var acc: f64 = 0;
         var ch: usize = 0;
@@ -236,6 +277,7 @@ pub fn parse(alloc: std.mem.Allocator, buf: []const u8) Error!Sample {
         .loop_end = @min(loop_end, frames),
         .frame_size = frame_size,
         .levels_kept = levels_kept,
+        .right = right,
     };
 }
 
@@ -271,6 +313,33 @@ fn decodeSample(d: []const u8, o: usize, fmt: u16, bits: u16) Error!f64 {
         }
     }
     return Error.UnsupportedFormat;
+}
+
+// ── 32-bit float stereo encoder (bounces) ──────────────────────────────
+//
+// Interleaved L R L R… f32 into a WAVE_FORMAT_IEEE_FLOAT stereo WAV, as is:
+// no clamping, so a bounce that peaks over full scale before the master
+// keeps its peaks (docs/27 §The new track and the originals).
+pub fn encodeStereoF32(alloc: std.mem.Allocator, interleaved: []const f32, sample_rate: u32) Error![]u8 {
+    const block_align: u32 = 2 * 4;
+    const data_len: usize = interleaved.len * 4;
+    const buf = try alloc.alloc(u8, 44 + data_len);
+    errdefer alloc.free(buf);
+    @memcpy(buf[0..4], "RIFF");
+    writeU32(buf, 4, @intCast(36 + data_len));
+    @memcpy(buf[8..12], "WAVE");
+    @memcpy(buf[12..16], "fmt ");
+    writeU32(buf, 16, 16);
+    writeU16(buf, 20, 3); // IEEE float
+    writeU16(buf, 22, 2);
+    writeU32(buf, 24, sample_rate);
+    writeU32(buf, 28, sample_rate * block_align);
+    writeU16(buf, 32, @intCast(block_align));
+    writeU16(buf, 34, 32);
+    @memcpy(buf[36..40], "data");
+    writeU32(buf, 40, @intCast(data_len));
+    for (interleaved, 0..) |x, k| writeU32(buf, 44 + k * 4, @bitCast(x));
+    return buf;
 }
 
 // ── 24-bit PCM stereo encoder (project bounce) ─────────────────────────
@@ -449,6 +518,26 @@ test "encodeStereo24 round-trips through parse" {
     try testing.expectEqual(@as(usize, 2), s.data.len);
     try testing.expectApproxEqAbs(@as(f64, 0.0), s.data[0], 1e-4);
     try testing.expectApproxEqAbs(@as(f64, 0.5), s.data[1], 1e-4);
+}
+
+test "encodeStereoF32 round-trips through a stereo parse, over full scale too" {
+    const interleaved = [_]f32{ 0.25, -0.5, 1.5, 0.0, -2.0, 0.125 };
+    const bytes = try encodeStereoF32(testing.allocator, &interleaved, 48_000);
+    defer testing.allocator.free(bytes);
+    var s = try parseAs(testing.allocator, bytes, true);
+    defer s.deinit(testing.allocator);
+    try testing.expect(s.isStereo());
+    try testing.expectEqual(@as(usize, 3), s.data.len);
+    try testing.expectEqual(@as(f64, 0.25), s.data[0]);
+    try testing.expectEqual(@as(f64, -0.5), s.right[0]);
+    try testing.expectEqual(@as(f64, 1.5), s.data[1]);
+    try testing.expectEqual(@as(f64, -2.0), s.data[2]);
+    try testing.expectEqual(@as(f64, 0.125), s.right[2]);
+    // A plain load still folds it.
+    var m = try parse(testing.allocator, bytes);
+    defer m.deinit(testing.allocator);
+    try testing.expect(!m.isStereo());
+    try testing.expectApproxEqAbs(@as(f64, -0.125), m.data[0], 1e-9);
 }
 
 test "loads a FLAC: the factory kalimba's first sample" {

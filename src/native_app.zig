@@ -40,6 +40,7 @@ pub const Command = enum(u5) {
     redo,
     toggle_browser,
     about,
+    bounce,
 };
 
 pub const Commands = struct {

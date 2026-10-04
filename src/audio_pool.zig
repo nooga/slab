@@ -84,11 +84,17 @@ pub const AudioPool = struct {
         if (path.len == 0 or path.len > MAX_PATH) return error.PathTooLong;
         if (self.indexOfPath(path)) |existing| return existing;
 
-        var sample = try wav.load(self.alloc, path);
+        var sample = try wav.loadStereo(self.alloc, path);
         errdefer sample.deinit(self.alloc);
 
         var src = Source{ .sample = sample };
-        try src.cache.build(self.alloc, sample.data);
+        if (sample.isStereo()) {
+            // The waveform draws the mid.
+            const mid = try self.alloc.alloc(f64, sample.data.len);
+            defer self.alloc.free(mid);
+            for (mid, sample.data, sample.right) |*m, l, r| m.* = (l + r) * 0.5;
+            try src.cache.build(self.alloc, mid);
+        } else try src.cache.build(self.alloc, sample.data);
         errdefer src.cache.deinit(self.alloc);
 
         @memcpy(src.path_buf[0..path.len], path);

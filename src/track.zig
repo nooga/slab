@@ -54,6 +54,21 @@ pub const Effect = struct {
 /// `master` is the final bus and lives outside the track list.
 pub const Kind = enum(u8) { audio, bus, master };
 
+/// A track's stem in an export (docs/27 §Export): whether it's written,
+/// where its signal is taken and its channels. Saved with the project.
+pub const StemPlan = struct {
+    /// null: the default rule (a track that plays, not a bus).
+    on: ?bool = null,
+    /// 0: the export's default; else 1 + export_settings.Signal.
+    signal: u8 = 0,
+    /// 0: the export's default; else 1 + exporter.Channels.
+    channels: u8 = 0,
+
+    pub fn isDefault(p: StemPlan) bool {
+        return p.on == null and p.signal == 0 and p.channels == 0;
+    }
+};
+
 /// A copy of the track's signal into a bus (docs/23 §Model). The target and
 /// tap are routing (published through `routing.Routing`); the level is an
 /// atomic the engine reads per block, so dragging it publishes nothing.
@@ -107,6 +122,14 @@ pub const Track = struct {
     /// In the arrangement's header multi-selection (UI only; it counts
     /// while the selected track is in it, ui/arrangement.zig inSet).
     multi_sel: bool = false,
+    /// While a bounce renders (docs/27 §What plays): publish only the
+    /// selected clips. Transient, UI-owned.
+    play_selected: bool = false,
+    /// With play_selected: muted selected clips play too (a re-bounce of
+    /// muted originals).
+    play_muted: bool = false,
+    /// Export (docs/27 §Export): this track's stem.
+    stem: StemPlan = .{},
     next_fx_uid: u16 = 1,
     /// Audio-thread-owned per-lane segment cursors (automation.evalCursor).
     auto_cursors: [snap_mod.MAX_LANES_PER_TRACK]u32 = [_]u32{0} ** snap_mod.MAX_LANES_PER_TRACK,
@@ -477,6 +500,7 @@ pub const Track = struct {
         self.publishLanes(dst);
 
         for (self.clips.items) |*clip| {
+            if (!self.plays(clip)) continue;
             if (clip.isAudio()) {
                 if (dst.audio_clip_count >= snap_mod.MAX_AUDIO_CLIPS_PER_TRACK) {
                     std.debug.assert(false); // bump MAX_AUDIO_CLIPS_PER_TRACK
@@ -491,6 +515,7 @@ pub const Track = struct {
                 if (pool.get(clip.audio.source)) |src| {
                     const rate = src.sample.sample_rate;
                     snap.data = src.sample.data.ptr;
+                    if (src.sample.isStereo()) snap.data_r = src.sample.right.ptr;
                     snap.len = @intCast(src.sample.data.len);
                     snap.source_rate = rate;
                     snap.start_sample = clip.audio.start_sec * rate;
@@ -551,6 +576,13 @@ pub const Track = struct {
         self.snap_published.store(write_idx, .release);
     }
 
+    /// Whether `clip` reaches the audio thread: not muted, and selected
+    /// while a bounce renders.
+    fn plays(self: *const Track, clip: *const clip_mod.Clip) bool {
+        if (!self.play_selected) return !clip.muted;
+        return clip.selected and (!clip.muted or self.play_muted);
+    }
+
     /// Resolve lanes to (slot, control index) and copy their points: track
     /// lanes, then clip lanes ordered by clip start, so the audio thread's
     /// "last lane that applies wins" is the precedence of docs/22. Lanes
@@ -564,7 +596,7 @@ pub const Track = struct {
         var order: [snap_mod.MAX_CLIPS_PER_TRACK]u16 = undefined;
         var n: usize = 0;
         for (self.clips.items, 0..) |*clip, ci| {
-            if (clip.isAudio() or clip.lanes.items.len == 0 or n >= order.len) continue;
+            if (clip.isAudio() or !self.plays(clip) or clip.lanes.items.len == 0 or n >= order.len) continue;
             order[n] = @intCast(ci);
             n += 1;
         }
@@ -714,6 +746,33 @@ pub fn testMachine() machine.Machine {
             fn f(_: *anyopaque) void {}
         }.f,
     };
+}
+
+test "a muted clip publishes nothing: no notes, no audio, no lanes" {
+    const alloc = testing.allocator;
+    var t = try Track.init(alloc, "test", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, testMachine());
+    defer t.deinit(alloc);
+
+    var clip = clip_mod.Clip.init("A", 0, 4.0);
+    try clip.addNote(alloc, .{ .pitch = 60, .start_beat = 0, .length_beats = 1.0, .velocity = 80 });
+    clip.muted = true;
+    try t.addClip(alloc, clip);
+    var live = clip_mod.Clip.init("B", 4.0, 4.0);
+    try live.addNote(alloc, .{ .pitch = 62, .start_beat = 0, .length_beats = 1.0, .velocity = 80 });
+    try t.addClip(alloc, live);
+    var aclip = clip_mod.Clip.initAudio("C", 0, 4.0, 0);
+    aclip.muted = true;
+    try t.addClip(alloc, aclip);
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    t.publishSnapshot(&pool);
+
+    const s = t.currentSnapshot();
+    try testing.expectEqual(@as(u32, 1), s.clip_count);
+    try testing.expectEqual(@as(f64, 4.0), s.clips[0].start_beat);
+    try testing.expectEqual(@as(u32, 1), s.note_count);
+    try testing.expectEqual(@as(u8, 62), s.notes[0].pitch);
+    try testing.expectEqual(@as(u32, 0), s.audio_clip_count);
 }
 
 test "forgetTrack drops references to the deleted track and renumbers the rest" {

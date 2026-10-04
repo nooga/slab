@@ -168,6 +168,34 @@ pub const Curve = struct {
 /// Bend range, fixed (docs/22): enough to fold a wide chord onto one note.
 pub const MAX_BEND_SEMIS: f32 = 48;
 
+/// The next clip id (`Clip.uid`). UI thread.
+pub var next_uid: u32 = 1;
+
+/// A clip with id `uid` exists: later fresh ids stay above it.
+pub fn claimUid(uid: u32) void {
+    if (uid >= next_uid) next_uid = uid + 1;
+}
+
+/// How a bounced clip was made (docs/27 §Provenance): the clips it was
+/// rendered from, by id, how, and a fingerprint of everything the render
+/// depended on (recipe.zig). Fresh while the fingerprint still matches.
+pub const Recipe = struct {
+    pub const MAX_SOURCES = 32;
+    sources: [MAX_SOURCES]u32 = undefined,
+    source_count: u8 = 0,
+    /// bounce_dialog.Tap.
+    tap: u8 = 1,
+    tail_auto: bool = true,
+    tail_sec: f32 = 2,
+    hash: u64 = 0,
+    /// The fingerprint no longer matches (transient; recipe.zig checks).
+    stale: bool = false,
+
+    pub fn ids(self: *const Recipe) []const u32 {
+        return self.sources[0..self.source_count];
+    }
+};
+
 pub const Clip = struct {
     /// Start time on the track timeline, in beats.
     start_beat: f64,
@@ -178,6 +206,9 @@ pub const Clip = struct {
     name_len: u8 = 0,
     /// Transient UI flag — not persisted, not consumed by the engine.
     selected: bool = false,
+    /// Muted: kept on the timeline, drawn dimmed, but not played: no notes,
+    /// no audio, no clip lanes (docs/27 §The new track and the originals).
+    muted: bool = false,
     /// note vs audio. `notes` is meaningful only for `.note`; `audio`
     /// only for `.audio`.
     kind: ClipKind = .note,
@@ -187,12 +218,19 @@ pub const Clip = struct {
     /// move and copy with the clip and override the track's lane for the
     /// same target while the clip plays.
     lanes: std.ArrayList(automation.Lane) = .empty,
+    /// Stable id: kept by save, load and undo, fresh for a copy. A bounce's
+    /// recipe finds its sources by it.
+    uid: u32 = 0,
+    /// A bounced clip's recipe (docs/27 §Provenance).
+    recipe: ?Recipe = null,
 
     pub fn init(display_name: []const u8, start_beat: f64, length_beats: f64) Clip {
         var c = Clip{
             .start_beat = start_beat,
             .length_beats = length_beats,
+            .uid = next_uid,
         };
+        next_uid += 1;
         const n = @min(display_name.len, MAX_NAME);
         @memcpy(c.name_buf[0..n], display_name[0..n]);
         c.name_len = @intCast(n);
@@ -221,6 +259,8 @@ pub const Clip = struct {
     pub fn clone(self: *const Clip, alloc: std.mem.Allocator) !Clip {
         var c = Clip.init(self.name(), self.start_beat, self.length_beats);
         c.selected = self.selected;
+        c.muted = self.muted;
+        c.recipe = self.recipe;
         c.kind = self.kind;
         c.audio = self.audio;
         errdefer c.deinit(alloc);

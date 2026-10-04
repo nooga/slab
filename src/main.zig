@@ -49,7 +49,13 @@ const audio_clip_editor = @import("ui/audio_clip_editor.zig");
 const machine_bay = @import("ui/machine_bay.zig");
 const mixer = @import("ui/mixer.zig");
 const dialog = @import("ui/dialog.zig");
-const render_dialog = @import("ui/render_dialog.zig");
+const export_dialog = @import("ui/export_dialog.zig");
+const export_settings = @import("export_settings.zig");
+const bounce_dialog = @import("ui/bounce_dialog.zig");
+const export_mod = @import("export.zig");
+const recipe_mod = @import("recipe.zig");
+const build_options = @import("build_options");
+const exporter = @import("exporter.zig");
 const about = @import("ui/about.zig");
 const unison_panel = @import("ui/unison_panel.zig");
 const color_picker = @import("ui/color_picker.zig");
@@ -66,6 +72,13 @@ test {
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
     _ = @import("routing.zig");
+    _ = @import("export.zig");
+    _ = @import("exporter.zig");
+    _ = @import("flac.zig");
+    _ = @import("loudness.zig");
+    _ = @import("export_settings.zig");
+    _ = @import("ui/export_dialog.zig");
+    _ = @import("resample.zig");
     _ = @import("ui/track_order.zig");
     _ = @import("engine.zig");
     _ = @import("track.zig");
@@ -138,25 +151,35 @@ const EditTarget = struct {
     pitch: ?u8 = null,
 };
 
-/// An in-flight offline bounce running on a worker thread. The UI thread
-/// polls `progress`/`done` to draw the progress bar and finalizes the WAV
-/// once the worker signals completion.
+/// An export running on a worker thread (docs/27 §Export): the worker
+/// renders and writes every file; the UI thread polls `progress`/`done`
+/// for the progress bar and reports the result.
 const RenderJob = struct {
     active: bool = false,
     thread: ?std.Thread = null,
-    buf: []f32 = &.{},
-    path: []u8 = &.{},
+    opts: exporter.Options = .{},
+    /// What `opts` points into: the settings as they were, the folder,
+    /// the names and the comment.
+    settings: export_settings.Settings = .{},
+    folder_buf: [storage.MAX_PATH]u8 = undefined,
+    project_buf: [128]u8 = undefined,
+    date_buf: [10]u8 = undefined,
+    comment_buf: [96]u8 = undefined,
+    tracks: []track_mod.Track = &.{},
     total_frames: usize = 0,
-    start_sample: u64 = 0,
     sample_rate: u32 = 48_000,
     start_ns: i128 = 0,
+    result: ?exporter.Report = null,
+    err: ?anyerror = null,
     progress: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     cancel: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 };
 
-fn renderWorker(engine: *engine_mod.Engine, job: *RenderJob) void {
-    engine.renderOffline(job.buf, job.total_frames, job.start_sample, &job.progress, &job.cancel);
+fn renderWorker(alloc: std.mem.Allocator, engine: *engine_mod.Engine, job: *RenderJob) void {
+    if (exporter.run(alloc, engine, job.tracks, job.opts, &job.progress, &job.cancel)) |r| {
+        job.result = r;
+    } else |err| job.err = err;
     job.done.store(true, .release);
 }
 
@@ -407,6 +430,33 @@ fn applyPresetTo(t: *track_mod.Track, preset_idx: u16) void {
 const Cli = struct {
     project: ?[]const u8 = null,
     render: ?[]const u8 = null,
+    /// Export options for --render / --stems (docs/27 §Command line).
+    stems: ?[]const u8 = null,
+    stems_kind: exporter.Stems = .tracks,
+    stem_tap: engine_mod.CaptureTap = .post,
+    bits: export_mod.Bits = .pcm24,
+    dither: bool = true,
+    /// .m4a: ALAC instead of AAC, and AAC's bitrate.
+    alac: bool = false,
+    kbps: u16 = 256,
+    /// --normalize <LUFS> or peak:<dBTP>.
+    normalize: exporter.Normalize = .off,
+    norm_target: f64 = -14,
+    /// The file's sample rate; null: the engine's.
+    rate: ?u32 = null,
+    /// --range <beat>:<beat>; null: the project.
+    range: ?[2]f64 = null,
+    loop_wrap: bool = false,
+    /// The mix summed to mono.
+    mono: bool = false,
+    flac_level: u4 = 5,
+    /// Tags; the title defaults to the project's name.
+    title: ?[]const u8 = null,
+    artist: []const u8 = "",
+    album: []const u8 = "",
+    year: []const u8 = "",
+    /// Seconds; null: AUTO.
+    tail: ?f32 = 3,
     describe: ?[]const u8 = null,
     gallery: bool = false,
     idle_skip: bool = true,
@@ -448,6 +498,62 @@ pub fn main(init: std.process.Init) !void {
             const a: []const u8 = a_z;
             if (std.mem.eql(u8, a, "--render")) {
                 cli.render = args.next() orelse return error.MissingRenderPath;
+            } else if (std.mem.eql(u8, a, "--stems")) {
+                cli.stems = args.next() orelse return error.MissingStemsDir;
+            } else if (std.mem.eql(u8, a, "--stem-kind")) {
+                const v = args.next() orelse return error.MissingStemKind;
+                cli.stems_kind = std.meta.stringToEnum(exporter.Stems, v) orelse return error.BadStemKind;
+            } else if (std.mem.eql(u8, a, "--tap")) {
+                const v = args.next() orelse return error.MissingTap;
+                cli.stem_tap = if (std.mem.eql(u8, v, "fx")) .pre else if (std.mem.eql(u8, v, "fader")) .post else return error.BadTap;
+            } else if (std.mem.eql(u8, a, "--bits")) {
+                const v = args.next() orelse return error.MissingBits;
+                cli.bits = if (std.mem.eql(u8, v, "16")) .pcm16 else if (std.mem.eql(u8, v, "24")) .pcm24 else if (std.mem.eql(u8, v, "32f")) .float32 else return error.BadBits;
+            } else if (std.mem.eql(u8, a, "--mono")) {
+                cli.mono = true;
+            } else if (std.mem.eql(u8, a, "--flac-level")) {
+                const v = args.next() orelse return error.MissingFlacLevel;
+                cli.flac_level = std.fmt.parseInt(u4, v, 10) catch return error.BadFlacLevel;
+                if (cli.flac_level > 8) return error.BadFlacLevel;
+            } else if (std.mem.eql(u8, a, "--title")) {
+                cli.title = args.next() orelse return error.MissingTitle;
+            } else if (std.mem.eql(u8, a, "--artist")) {
+                cli.artist = args.next() orelse return error.MissingArtist;
+            } else if (std.mem.eql(u8, a, "--album")) {
+                cli.album = args.next() orelse return error.MissingAlbum;
+            } else if (std.mem.eql(u8, a, "--year")) {
+                cli.year = args.next() orelse return error.MissingYear;
+            } else if (std.mem.eql(u8, a, "--no-dither")) {
+                cli.dither = false;
+            } else if (std.mem.eql(u8, a, "--normalize")) {
+                const v = args.next() orelse return error.MissingNormalizeTarget;
+                if (std.mem.startsWith(u8, v, "peak:")) {
+                    cli.normalize = .peak;
+                    cli.norm_target = std.fmt.parseFloat(f64, v[5..]) catch return error.BadNormalizeTarget;
+                } else {
+                    cli.normalize = .loudness;
+                    cli.norm_target = std.fmt.parseFloat(f64, v) catch return error.BadNormalizeTarget;
+                }
+            } else if (std.mem.eql(u8, a, "--range")) {
+                const v = args.next() orelse return error.MissingRange;
+                const colon = std.mem.indexOfScalar(u8, v, ':') orelse return error.BadRange;
+                cli.range = .{
+                    std.fmt.parseFloat(f64, v[0..colon]) catch return error.BadRange,
+                    std.fmt.parseFloat(f64, v[colon + 1 ..]) catch return error.BadRange,
+                };
+            } else if (std.mem.eql(u8, a, "--loop-wrap")) {
+                cli.loop_wrap = true;
+            } else if (std.mem.eql(u8, a, "--rate")) {
+                const v = args.next() orelse return error.MissingRate;
+                cli.rate = std.fmt.parseInt(u32, v, 10) catch return error.BadRate;
+            } else if (std.mem.eql(u8, a, "--alac")) {
+                cli.alac = true;
+            } else if (std.mem.eql(u8, a, "--kbps")) {
+                const v = args.next() orelse return error.MissingKbps;
+                cli.kbps = std.fmt.parseInt(u16, v, 10) catch return error.BadKbps;
+            } else if (std.mem.eql(u8, a, "--tail")) {
+                const v = args.next() orelse return error.MissingTail;
+                cli.tail = if (std.mem.eql(u8, v, "auto")) null else std.fmt.parseFloat(f32, v) catch return error.BadTail;
             } else if (std.mem.eql(u8, a, "--describe")) {
                 cli.describe = args.next() orelse return error.MissingDescribePath;
             } else if (std.mem.eql(u8, a, "--gallery")) {
@@ -484,8 +590,8 @@ pub fn main(init: std.process.Init) !void {
     if (cli.gallery) return ui_gallery.run(alloc);
     if (cli.describe) |out| return describe_mod.run(alloc, out);
     // Settings may move the home folder, which user: and lib: resolve in.
-    storage.loadSettings(alloc, cli.render == null);
-    if (cli.render) |out| return renderHeadless(alloc, cli.project orelse return error.MissingProject, out, cli.idle_skip, cli.workers());
+    storage.loadSettings(alloc, cli.render == null and cli.stems == null);
+    if (cli.render != null or cli.stems != null) return renderHeadless(alloc, cli.project orelse return error.MissingProject, cli);
 
     storage.ensureHome();
 
@@ -565,6 +671,12 @@ pub fn main(init: std.process.Init) !void {
     // staged edits at bar boundaries.
     var meter_state: meter_mod.MeterState = .{};
     document_mod.setMeterState(&meter_state);
+    // The project's export settings (docs/27 §Export), and the presets
+    // saved beside settings.json.
+    var export_cfg: export_settings.Settings = .{};
+    document_mod.setExportSettings(&export_cfg);
+    var export_presets: export_settings.UserPresets = .{};
+    export_presets.load(alloc);
 
     var engine = engine_mod.Engine{
         .transport = &transport,
@@ -642,7 +754,8 @@ pub fn main(init: std.process.Init) !void {
     var status: StatusMessage = .{};
     var edit_snap: snap_mod.Setting = .note_16;
     var rename: RenameState = .{};
-    var render_dlg: render_dialog.State = .{};
+    var render_dlg: export_dialog.State = .{};
+    var bounce_dlg: bounce_dialog.State = .{};
     var about_card: about.State = .{};
     var uni_panel: unison_panel.State = .{};
     var color_pick: color_picker.State = .{};
@@ -652,6 +765,8 @@ pub fn main(init: std.process.Init) !void {
     // Several tracks to delete, once the dialog says so.
     var pending_delete_set: ?[MAX_TRACKS]bool = null;
     var render_job: RenderJob = .{};
+    var bounce_job: BounceJob = .{};
+    var next_recipe_check: f64 = 0;
     // The library browser (docs/25 §The browser): scanned on first show
     // and whenever what it lists may have changed.
     var lib = library_mod.Library.init(alloc);
@@ -713,7 +828,7 @@ pub fn main(init: std.process.Init) !void {
         // One owner of the pointer at a time: a legacy menu, modal or drag
         // hides input from the new Ui, and a new-Ui drag hides it from the
         // legacy panes.
-        const modal = render_dlg.active or about_card.active or pending_delete != null or pending_delete_set != null or uni_panel.active or color_pick.active;
+        const modal = render_dlg.active or bounce_dlg.active or about_card.active or pending_delete != null or pending_delete_set != null or uni_panel.active or color_pick.active;
         if (menu.active() or modal or pane.hasActiveDrag()) ui.suppressInput();
 
         // While a menu is open it's modal for the mouse: panes get a
@@ -723,7 +838,6 @@ pub fn main(init: std.process.Init) !void {
         // tile) hides it from the legacy panes, so one press never lands in
         // both UIs.
         const pane_m = if (menu.active() or modal or ui.active != 0 or ui.hot != 0) pane.neutral() else m;
-
 
         layout.splitters(ui, sw, sh);
 
@@ -775,7 +889,8 @@ pub fn main(init: std.process.Init) !void {
                 try handleFocusedEditCommands(alloc, &history, &clipboard, &status, focus, edit_snap, tracks, &transport, &selected_track, &selected_clip, &rename, &dirty);
                 try handleFocusedDelete(alloc, &history, &status, focus, tracks, &transport, &selected_clip, &dirty);
             }
-            if (commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_R)) render_dlg.active = true;
+            if (commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_R)) export_dialog.open(&render_dlg);
+            if (commandModifierDown() and !ui.in.alt and c.rl.IsKeyPressed(c.rl.KEY_B)) openBounce(&bounce_dlg, tracks, &status);
             if (commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_F)) {
                 layout.browser_visible = true;
                 focus = .browser;
@@ -867,7 +982,8 @@ pub fn main(init: std.process.Init) !void {
             auto_arm = !auto_arm;
             status.set("{s}", .{if (auto_arm) "Automation recording armed" else "Automation recording off"});
         }
-        if (tres.render_audio) render_dlg.active = true;
+        if (tres.render_audio) export_dialog.open(&render_dlg);
+        if (menu_cmds.has(.bounce)) openBounce(&bounce_dlg, tracks, &status);
         if (tres.about or menu_cmds.has(.about)) about_card.active = true;
         if (tres.master_volume) |v| {
             master.setVolume(v);
@@ -1010,7 +1126,13 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         if (ares.rename_rect) |rr| rename.rect = rr;
-        if (ares.command == .import_audio) {
+        if (ares.command == .bounce) {
+            openBounce(&bounce_dlg, tracks, &status);
+        } else if (ares.command == .rebounce) {
+            startRebounce(alloc, &engine, &audio, &audio_pool, &transport, tracks, &selected_clip, &bounce_job, &bounce_dlg, &status);
+        } else if (ares.command == .thaw) {
+            thawBounce(alloc, &history, &status, tracks, &transport, &selected_clip, &dirty) catch |err| status.set("Thaw failed: {s}", .{@errorName(err)});
+        } else if (ares.command == .import_audio) {
             importAudioClip(alloc, &audio_pool, &history, &status, tracks, &transport, edit_snap, &selected_track, &selected_clip, &dirty, ares.command_beat, ares.command_track) catch |err| {
                 std.log.err("import audio failed: {s}", .{@errorName(err)});
                 status.set("Audio import failed", .{});
@@ -1359,12 +1481,44 @@ pub fn main(init: std.process.Init) !void {
 
         try runRename(ui, alloc, &history, &rename, tracks, &transport, &dirty, &status);
 
-        // Render Audio dialog (modal: input behind it is suppressed above).
-        var render_action: render_dialog.Result = .none;
+        // Export dialog (modal: input behind it is suppressed above).
+        var render_action: export_dialog.Result = .none;
         if (render_dlg.active) {
-            const loop_available = transport.loopEnabled() and transport.loopEndBeats() > transport.loopStartBeats();
-            const prog: ?render_dialog.Progress = if (render_job.active) renderProgress(&render_job) else null;
-            render_action = render_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &render_dlg, loop_available, prog);
+            const prog: ?export_dialog.Progress = if (render_job.active) renderProgress(&render_job) else null;
+            render_action = export_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &render_dlg, .{
+                .settings = &export_cfg,
+                .presets = &export_presets,
+                .tracks = tracks,
+                .project = blk: {
+                    const st = projectStem(project_path);
+                    break :blk if (st.len > 0) st else "untitled";
+                },
+                .bpm = transport.bpm(),
+                .range_secs = rangeSeconds(&transport, tracks),
+            }, prog);
+            if (render_dlg.changed) {
+                render_dlg.changed = false;
+                dirty = true;
+            }
+            if (render_dlg.presets_changed) {
+                render_dlg.presets_changed = false;
+                export_presets.save(alloc) catch |err| status.set("Presets not saved: {s}", .{@errorName(err)});
+            }
+            if (render_dlg.want_folder) {
+                render_dlg.want_folder = false;
+                var fb: [storage.MAX_PATH]u8 = undefined;
+                const start = export_settings.resolveFolder(&fb, export_cfg.folder.get(), .{ .project = projectStem(project_path) });
+                if (native_dialog.chooseFolder(alloc, start) catch null) |dir| {
+                    defer alloc.free(dir);
+                    export_cfg.folder.set(homeShort(&fb, dir));
+                    dirty = true;
+                }
+            }
+        }
+        var bounce_action: bounce_dialog.Result = .none;
+        if (bounce_dlg.active) {
+            const prog: ?export_dialog.Progress = if (bounce_job.active) bounceProgress(&bounce_job) else null;
+            bounce_action = bounce_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &bounce_dlg, bounceInfo(&transport, tracks, bounce_job.replace != 0), prog);
         }
         var delete_answer: ?bool = null;
         var delete_set_answer: ?bool = null;
@@ -1420,6 +1574,11 @@ pub fn main(init: std.process.Init) !void {
         }
 
         for (tracks) |*t| t.publishSnapshot(&audio_pool);
+        // Bounces go stale as their sources change (docs/27 §Provenance).
+        if (c.rl.GetTime() >= next_recipe_check and !bounce_job.active) {
+            next_recipe_check = c.rl.GetTime() + 0.5;
+            recipe_mod.checkAll(alloc, tracks, &transport);
+        }
         engine.publishRouting();
 
         // Screenshots and scripted drags assume the default window.
@@ -1484,9 +1643,10 @@ pub fn main(init: std.process.Init) !void {
                     render_dlg.active = false;
                 }
             },
+            .reveal => if (render_dlg.last().len > 0) native_dialog.reveal(render_dlg.last()),
             .render => {
                 if (!render_job.active) {
-                    startRender(alloc, &engine, &audio, &transport, tracks, render_dlg, project_path, &render_job, &status) catch |err| {
+                    startRender(alloc, &engine, &audio, &transport, tracks, &export_cfg, project_path, &render_job, &status) catch |err| {
                         std.log.err("render start failed: {s}", .{@errorName(err)});
                         status.set("Render failed", .{});
                         render_dlg.active = false;
@@ -1495,10 +1655,31 @@ pub fn main(init: std.process.Init) !void {
             },
         }
 
+        switch (bounce_action) {
+            .none => {},
+            .cancel => {
+                if (bounce_job.active) {
+                    bounce_job.cancel.store(true, .monotonic);
+                } else bounce_dlg.active = false;
+            },
+            .bounce => if (!bounce_job.active) {
+                startBounce(alloc, &engine, &audio, &audio_pool, &transport, tracks, bounce_dlg, &bounce_job, &status, 0) catch |err| {
+                    std.log.err("bounce start failed: {s}", .{@errorName(err)});
+                    status.set("Bounce failed", .{});
+                };
+                if (!bounce_job.active) bounce_dlg.active = false;
+            },
+        }
+        if (bounce_job.active and bounce_job.done.load(.acquire)) {
+            finishBouncePass(alloc, &history, &status, &audio, &engine, &audio_pool, &tracks_buf, &track_count, &transport, &bounce_job, &selected_track, &selected_clip, &prev_selected_clip, &dirty);
+            tracks = tracks_buf[0..track_count];
+            if (!bounce_job.active) bounce_dlg.active = false;
+        }
+
         // Finalize a worker render once it signals done (or after a cancel).
         if (render_job.active and render_job.done.load(.acquire)) {
-            finishRender(alloc, &audio, &render_job, &status);
-            render_dlg.active = false;
+            finishRender(alloc, &audio, &render_job, &status, &render_dlg);
+            render_dlg.active = render_dlg.showing_card;
         }
 
         // Finalize a recording once the writer thread has flushed and closed
@@ -1562,9 +1743,14 @@ pub fn main(init: std.process.Init) !void {
     if (render_job.active) {
         render_job.cancel.store(true, .monotonic);
         if (render_job.thread) |t| t.join();
-        alloc.free(render_job.buf);
-        alloc.free(render_job.path);
         render_job = .{};
+    }
+    if (bounce_job.active) {
+        bounce_job.cancel.store(true, .monotonic);
+        if (bounce_job.thread) |t| t.join();
+        engine.capture = null;
+        freeBounceBuffers(alloc, &bounce_job.cap);
+        bounce_job = .{};
     }
 }
 
@@ -1886,81 +2072,147 @@ fn saveProject(
     std.log.info("saved {s} (copied {d} files, {d} bytes; {d} missing)", .{ pkg, report.copied, report.bytes, report.missing });
 }
 
-/// Begin an offline project bounce → 24-bit stereo WAV. Resolves the range,
-/// prompts for a path, stops the device, and spawns a worker thread that
-/// renders into `job.buf`. The UI thread polls progress and calls
-/// finishRender once the worker is done. The device stays stopped for the
-/// (brief, faster-than-realtime) duration because the offline render shares
-/// the engine's scratch/machine state with the live callback.
+/// Begin an export from the project's export settings: resolve the
+/// range, the folder and the stems, stop the device and start the worker.
+/// finishRender reports once it's done. The device stays stopped
+/// meanwhile because the offline render shares the engine's scratch and
+/// machine state with the live callback.
 fn startRender(
     alloc: std.mem.Allocator,
     engine: *engine_mod.Engine,
     audio: *audio_mod.Audio,
     transport: *transport_mod.Transport,
     tracks: []track_mod.Track,
-    dlg: render_dialog.State,
+    settings: *const export_settings.Settings,
     project_path: []const u8,
     job: *RenderJob,
     status: *StatusMessage,
 ) !void {
-    const sr: u64 = transport.sample_rate;
-
-    // Resolve the render range in samples.
-    var start: u64 = 0;
-    var end: u64 = 0;
-    const loop_available = transport.loopEnabled() and transport.loopEndBeats() > transport.loopStartBeats();
-    if (dlg.rangeMode() == .loop and loop_available) {
-        start = transport.beatsToSamples(transport.loopStartBeats());
-        end = transport.beatsToSamples(transport.loopEndBeats());
-    } else {
-        var last_beat: f64 = 0;
-        for (tracks) |*t| {
-            for (t.clips.items) |*clip| last_beat = @max(last_beat, clip.endBeat());
-        }
-        end = transport.beatsToSamples(last_beat);
-    }
-    if (end <= start) {
-        status.set("Nothing to render", .{});
+    const sr = transport.sample_rate;
+    const rec = &settings.recipe;
+    const range = exportRange(transport, tracks, rec.range) orelse {
+        status.set("Nothing to export", .{});
         return;
-    }
-
-    const tail_frames: u64 = @intFromFloat(@max(0.0, dlg.tail_sec) * @as(f32, @floatFromInt(sr)));
-    const total_frames: usize = @intCast((end - start) + tail_frames);
-
-    // Native save panel — default name derived from the project file.
-    var name_buf: [128]u8 = undefined;
-    const default_name = defaultBounceName(&name_buf, project_path);
-    const path = (try native_dialog.saveAudioFile(alloc, default_name)) orelse return; // cancelled
-
-    // Render buffer (interleaved stereo). ~46 MB per minute of stereo f32.
-    const buf = alloc.alloc(f32, total_frames * audio_mod.CHANNELS) catch |err| {
-        alloc.free(path);
-        return err;
     };
-
     job.* = .{
         .active = true,
-        .buf = buf,
-        .path = path,
-        .total_frames = total_frames,
-        .start_sample = start,
-        .sample_rate = @intCast(sr),
+        .tracks = tracks,
+        .sample_rate = sr,
         .start_ns = nowNs(),
+        .settings = settings.*,
     };
+    const s = &job.settings;
+    const stem_name = projectStem(project_path);
+    const project = std.fmt.bufPrint(&job.project_buf, "{s}", .{if (stem_name.len > 0) stem_name else "untitled"}) catch "untitled";
+    const date = export_mod.today(&job.date_buf);
+    const folder = export_settings.resolveFolder(&job.folder_buf, s.folder.get(), .{ .project = project, .date = date, .bpm = transport.bpm() });
+    if (folder.len == 0) return error.NoFolder;
 
-    // The device must be stopped while the worker renders.
+    // Tags: the name, the tempo, and what made it (docs/27 §Names and metadata).
+    var fmt = s.recipe.format();
+    fmt.bpm = transport.bpm();
+    fmt.comment = blk: {
+        const doc = document_mod.serialize(alloc, tracks, transport) catch break :blk "";
+        defer alloc.free(doc);
+        break :blk exportComment(&job.comment_buf, doc);
+    };
+    fmt.title = if (s.title.len > 0) s.title.get() else project;
+    fmt.artist = s.artist.get();
+    fmt.album = s.album.get();
+    fmt.year = s.year.get();
+
+    const tail_s: f32 = if (s.recipe.tail_auto) export_settings.TAIL_MAX else @max(0, s.recipe.tail_sec);
+    job.opts = .{
+        .folder = folder,
+        .mix_name = if (s.recipe.mix) s.recipe.mix_name.get() else null,
+        .mix_channels = s.recipe.mix_channels,
+        .stems = export_settings.stems(&s.recipe, tracks),
+        .stem_name = s.recipe.stem_name.get(),
+        .stem_gain = s.recipe.stem_gain,
+        .replace = s.recipe.exists == .replace,
+        .project = project,
+        .date = date,
+        .start = range.start,
+        .end = range.end,
+        .tail_auto = s.recipe.tail_auto,
+        .tail_frames = @intFromFloat(tail_s * @as(f32, @floatFromInt(sr))),
+        .format = fmt,
+        .normalize = if (s.recipe.mix) s.recipe.normalize else .off,
+        .target = s.recipe.target(),
+        .ceiling = s.recipe.ceilingDb(),
+        .loop_wrap = s.recipe.wrap,
+    };
+    job.total_frames = @intCast(range.end - range.start + job.opts.tail_frames);
+
     audio.stop();
-    job.thread = std.Thread.spawn(.{}, renderWorker, .{ engine, job }) catch |err| {
-        // Spawn failed — fall back to a synchronous render so we still produce output.
-        engine.renderOffline(buf, total_frames, start, &job.progress, &job.cancel);
-        job.done.store(true, .release);
-        std.log.warn("render thread spawn failed ({s}); ran synchronously", .{@errorName(err)});
-        return;
+    job.thread = std.Thread.spawn(.{}, renderWorker, .{ alloc, engine, job }) catch |err| blk: {
+        std.log.warn("export thread spawn failed ({s}); ran synchronously", .{@errorName(err)});
+        renderWorker(alloc, engine, job);
+        break :blk null;
     };
 }
 
-/// Build the live Progress telemetry from a running job.
-fn renderProgress(job: *RenderJob) render_dialog.Progress {
+/// Each range's length in seconds, for the Export sheet; null where it's
+/// empty.
+fn rangeSeconds(transport: *const transport_mod.Transport, tracks: []const track_mod.Track) [3]?f64 {
+    var out: [3]?f64 = undefined;
+    for (0..3) |i| out[i] = if (exportRange(transport, tracks, @enumFromInt(i))) |r|
+        @as(f64, @floatFromInt(r.end - r.start)) / @as(f64, @floatFromInt(transport.sample_rate))
+    else
+        null;
+    return out;
+}
+
+const SampleRange = struct { start: u64, end: u64 };
+
+/// An export's range in samples: the project (beat 0 to the last clip
+/// that plays), the loop, or the selected clips.
+fn exportRange(transport: *const transport_mod.Transport, tracks: []const track_mod.Track, mode: export_settings.Range) ?SampleRange {
+    var lo: f64 = 0;
+    var hi: f64 = 0;
+    switch (mode) {
+        .project => for (tracks) |*t| for (t.clips.items) |*cl| if (!cl.muted) {
+            hi = @max(hi, cl.endBeat());
+        },
+        .loop => {
+            if (!transport.loopEnabled()) return null;
+            lo = transport.loopStartBeats();
+            hi = transport.loopEndBeats();
+        },
+        .selection => {
+            lo = std.math.inf(f64);
+            for (tracks) |*t| for (t.clips.items) |*cl| if (cl.selected) {
+                lo = @min(lo, cl.start_beat);
+                hi = @max(hi, cl.endBeat());
+            };
+        },
+    }
+    if (!(hi > lo)) return null;
+    return .{ .start = transport.beatsToSamples(lo), .end = transport.beatsToSamples(hi) };
+}
+
+/// The comment an export carries: the Slab version and a hash of the
+/// project as it was rendered, so a file traces back to its render.
+fn exportComment(buf: []u8, doc: []const u8) []const u8 {
+    return std.fmt.bufPrint(buf, "Slab {s}, project {x:0>16}", .{ build_options.version, std.hash.Wyhash.hash(0, doc) }) catch "";
+}
+
+/// `path` with the home folder as `~`, as the Export sheet shows it.
+fn homeShort(buf: []u8, path: []const u8) []const u8 {
+    const home = std.mem.sliceTo(std.c.getenv("HOME") orelse "", 0);
+    if (home.len > 0 and std.mem.startsWith(u8, path, home) and (path.len == home.len or path[home.len] == '/'))
+        return std.fmt.bufPrint(buf, "~{s}", .{path[home.len..]}) catch path;
+    return path;
+}
+
+/// A path's file name without its extension.
+fn projectStem(path: []const u8) []const u8 {
+    const base = basename(path);
+    return if (std.mem.lastIndexOfScalar(u8, base, '.')) |i| base[0..i] else base;
+}
+
+/// Live Progress telemetry from a running export.
+fn renderProgress(job: *RenderJob) export_dialog.Progress {
     const sr_f: f64 = @floatFromInt(job.sample_rate);
     const done_f: f64 = @floatFromInt(job.progress.load(.monotonic));
     const total_f: f64 = @floatFromInt(job.total_frames);
@@ -1975,44 +2227,668 @@ fn renderProgress(job: *RenderJob) render_dialog.Progress {
     };
 }
 
-/// Join the worker, restart the device, and (unless cancelled) encode + write
-/// the WAV. Frees the job's buffers and clears it.
-fn finishRender(alloc: std.mem.Allocator, audio: *audio_mod.Audio, job: *RenderJob, status: *StatusMessage) void {
+/// Join the worker, restart the device and report: the status line, and
+/// the sheet's report; Finder shows the files when the settings ask.
+fn finishRender(alloc: std.mem.Allocator, audio: *audio_mod.Audio, job: *RenderJob, status: *StatusMessage, dlg: *export_dialog.State) void {
+    _ = alloc;
     if (job.thread) |t| t.join();
     job.thread = null;
     audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
-
-    const cancelled = job.cancel.load(.monotonic);
-    if (!cancelled) {
-        if (wav_mod.encodeStereo24(alloc, job.buf, job.sample_rate)) |wav_bytes| {
-            defer alloc.free(wav_bytes);
-            if (document_mod.writeFile(alloc, job.path, wav_bytes)) |_| {
-                const secs = @as(f64, @floatFromInt(job.total_frames)) / @as(f64, @floatFromInt(job.sample_rate));
-                status.set("Rendered {s} ({d:.1}s)", .{ basename(job.path), secs });
-                std.log.info("rendered {s} ({d} frames)", .{ job.path, job.total_frames });
-            } else |err| {
-                std.log.err("wav write failed: {s}", .{@errorName(err)});
-                status.set("Render failed (write)", .{});
-            }
-        } else |err| {
-            std.log.err("wav encode failed: {s}", .{@errorName(err)});
-            status.set("Render failed (encode)", .{});
-        }
-    } else {
-        status.set("Render cancelled", .{});
+    if (job.result) |*r| {
+        var card = export_dialog.Card{
+            .has_mix = job.opts.mix_name != null,
+            .lufs = r.loudness.integrated,
+            .lra = r.loudness.lra,
+            .true_peak = r.loudness.true_peak,
+            .gain_db = r.gain_db,
+            .files = r.files,
+            .secs = @as(f64, @floatFromInt(r.frames)) / @as(f64, @floatFromInt(r.sample_rate)),
+        };
+        for (r.stems[0..r.stem_count]) |*st| card.addStem(st.name(), st.lufs);
+        dlg.card = card;
+        dlg.showing_card = true;
+        dlg.setLast(r.first());
+        if (job.settings.reveal) native_dialog.reveal(r.first());
+        if (r.files == 1) status.set("Exported {s} ({d:.1}s)", .{ basename(r.first()), card.secs }) else status.set("Exported {d} files ({d:.1}s)", .{ r.files, card.secs });
+    } else if (job.err) |err| {
+        if (err == error.Cancelled) status.set("Export cancelled", .{}) else status.set("Export failed: {s}", .{@errorName(err)});
+        std.log.err("export failed: {s}", .{@errorName(err)});
     }
-
-    alloc.free(job.buf);
-    alloc.free(job.path);
     job.* = .{};
 }
 
-/// Build a default ".wav" file name from the project path basename.
-fn defaultBounceName(buf: []u8, project_path: []const u8) []const u8 {
-    const base = basename(project_path);
-    const stem = if (std.mem.lastIndexOfScalar(u8, base, '.')) |i| base[0..i] else base;
-    if (stem.len == 0) return "bounce.wav";
-    return std.fmt.bufPrint(buf, "{s}.wav", .{stem}) catch "bounce.wav";
+// ── Bounce selection (docs/27 §Bounce selection) ──────────────────────
+
+/// One bounced clip written to disk, waiting to be placed: the source
+/// tracks it holds and its file.
+const BounceOut = struct {
+    sources: u32 = 0,
+    path_buf: [storage.MAX_PATH]u8 = undefined,
+    path_len: usize = 0,
+
+    fn path(self: *const BounceOut) []const u8 {
+        return self.path_buf[0..self.path_len];
+    }
+};
+
+/// A bounce in flight: one capture render per pass on a worker thread
+/// (one pass, or one per source track for EACH with +SENDS, whose buses
+/// must hear one source at a time). Each pass's clips are written as it
+/// ends; the last places them in the project as one undo step.
+const BounceJob = struct {
+    active: bool = false,
+    thread: ?std.Thread = null,
+    opts: bounce_dialog.State = .{},
+    /// Tracks with selected clips.
+    sources: u32 = 0,
+    /// A re-bounce (docs/27 §Provenance): the bounced clip it renders
+    /// into again, by id; its muted originals play. 0 for a bounce.
+    replace: u32 = 0,
+    passes: [MAX_TRACKS]u32 = undefined,
+    pass_count: usize = 0,
+    pass: usize = 0,
+    start_sample: u64 = 0,
+    start_beat: f64 = 0,
+    range_frames: usize = 0,
+    total_frames: usize = 0,
+    sample_rate: u32 = 48_000,
+    cap: engine_mod.Capture = .{},
+    outs: [MAX_TRACKS]BounceOut = undefined,
+    out_count: usize = 0,
+    start_ns: i128 = 0,
+    progress: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    cancel: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+};
+
+fn bounceWorker(engine: *engine_mod.Engine, job: *BounceJob) void {
+    engine.renderOffline(&.{}, job.total_frames, job.start_sample, &job.progress, &job.cancel);
+    job.done.store(true, .release);
+}
+
+fn bit(i: usize) u32 {
+    return @as(u32, 1) << @intCast(i);
+}
+
+/// The tracks a bounce takes: those with selected clips, unmuted unless
+/// `muted` (a re-bounce).
+fn bounceSources(tracks: []const track_mod.Track, muted: bool) u32 {
+    var set: u32 = 0;
+    for (tracks, 0..) |*t, ti| {
+        if (t.isBus()) continue;
+        for (t.clips.items) |*cl| if (cl.selected and (muted or !cl.muted)) {
+            set |= bit(ti);
+        };
+    }
+    return set;
+}
+
+/// The buses the sends of the tracks in `set` reach.
+fn sendBuses(tracks: []const track_mod.Track, set: u32) u32 {
+    var buses: u32 = 0;
+    for (tracks, 0..) |*t, ti| if (set & bit(ti) != 0) {
+        for (t.sends[0..t.send_count]) |s| buses |= bit(s.bus);
+    };
+    return buses;
+}
+
+/// Resolve the selection and start the first pass. The device stays
+/// stopped until the last pass is placed (or the bounce is cancelled).
+fn startBounce(
+    alloc: std.mem.Allocator,
+    engine: *engine_mod.Engine,
+    audio: ?*audio_mod.Audio,
+    pool: *audio_pool_mod.AudioPool,
+    transport: *transport_mod.Transport,
+    tracks: []track_mod.Track,
+    opts: bounce_dialog.State,
+    job: *BounceJob,
+    status: *StatusMessage,
+    replace: u32,
+) !void {
+    const muted = replace != 0;
+    const sources = bounceSources(tracks, muted);
+    if (sources == 0) {
+        status.set("Select clips to bounce", .{});
+        return;
+    }
+    var lo: f64 = std.math.inf(f64);
+    var hi: f64 = 0;
+    for (tracks, 0..) |*t, ti| if (sources & bit(ti) != 0) {
+        for (t.clips.items) |*cl| if (cl.selected and (muted or !cl.muted)) {
+            lo = @min(lo, cl.start_beat);
+            hi = @max(hi, cl.endBeat());
+        };
+    };
+    const sr = transport.sample_rate;
+    const start = transport.beatsToSamples(lo);
+    const end = transport.beatsToSamples(hi);
+    if (end <= start) {
+        status.set("Nothing to bounce", .{});
+        return;
+    }
+
+    job.* = .{
+        .active = true,
+        .opts = opts,
+        .sources = sources,
+        .replace = replace,
+        .start_sample = start,
+        .start_beat = lo,
+        .range_frames = @intCast(end - start),
+        .sample_rate = sr,
+        .start_ns = nowNs(),
+    };
+    const tail_s: f32 = if (opts.tail_auto) bounce_dialog.TAIL_MAX else @max(0, opts.tail_sec);
+    job.total_frames = job.range_frames + @as(usize, @intFromFloat(tail_s * @as(f32, @floatFromInt(sr))));
+    if (opts.mixMode() == .each and opts.tapMode() == .sends) {
+        for (0..tracks.len) |ti| if (sources & bit(ti) != 0) {
+            job.passes[job.pass_count] = bit(ti);
+            job.pass_count += 1;
+        };
+    } else {
+        job.passes[0] = sources;
+        job.pass_count = 1;
+    }
+
+    // Only the selected clips play on the source tracks.
+    for (tracks, 0..) |*t, ti| {
+        t.play_selected = sources & bit(ti) != 0;
+        t.play_muted = muted;
+        t.publishSnapshot(pool);
+    }
+    if (audio) |a| a.stop();
+    beginBouncePass(alloc, engine, tracks, job) catch |err| {
+        endBounce(audio, engine, pool, tracks, job, alloc);
+        return err;
+    };
+}
+
+/// Set up the capture for the job's current pass and start its worker.
+fn beginBouncePass(alloc: std.mem.Allocator, engine: *engine_mod.Engine, tracks: []track_mod.Track, job: *BounceJob) !void {
+    const heard = job.passes[job.pass];
+    const opts = job.opts;
+    job.cap = .{ .sources = heard, .min_frames = job.range_frames };
+    if (opts.tail_auto) job.cap.hold = job.sample_rate / 2;
+    const tap: engine_mod.CaptureTap = switch (opts.tapMode()) {
+        .instr => .input,
+        .fx => .pre,
+        .fader, .sends => .post,
+    };
+    const buses = if (opts.tapMode() == .sends) sendBuses(tracks, heard) else 0;
+    const len = job.total_frames + engine_mod.PDC_MAX;
+    for (0..tracks.len) |ti| {
+        const t: engine_mod.CaptureTap = if (heard & bit(ti) != 0) tap else if (buses & bit(ti) != 0) .post else .none;
+        if (t == .none) continue;
+        job.cap.tap[ti] = t;
+        job.cap.l[ti] = try alloc.alloc(f32, len);
+        job.cap.r[ti] = try alloc.alloc(f32, len);
+        @memset(job.cap.l[ti], 0);
+        @memset(job.cap.r[ti], 0);
+    }
+    job.progress.store(0, .monotonic);
+    job.done.store(false, .monotonic);
+    engine.capture = &job.cap;
+    job.thread = std.Thread.spawn(.{}, bounceWorker, .{ engine, job }) catch |err| blk: {
+        std.log.warn("bounce thread spawn failed ({s}); ran synchronously", .{@errorName(err)});
+        bounceWorker(engine, job);
+        break :blk null;
+    };
+}
+
+fn freeBounceBuffers(alloc: std.mem.Allocator, cap: *engine_mod.Capture) void {
+    for (&cap.l, &cap.r) |*l, *r| {
+        if (l.len > 0) alloc.free(l.*);
+        if (r.len > 0) alloc.free(r.*);
+        l.* = &.{};
+        r.* = &.{};
+    }
+}
+
+/// Back to playing: masks off, buffers freed, the device restarted.
+fn endBounce(audio: ?*audio_mod.Audio, engine: *engine_mod.Engine, pool: *audio_pool_mod.AudioPool, tracks: []track_mod.Track, job: *BounceJob, alloc: std.mem.Allocator) void {
+    engine.capture = null;
+    freeBounceBuffers(alloc, &job.cap);
+    for (tracks) |*t| {
+        t.play_selected = false;
+        t.play_muted = false;
+        t.publishSnapshot(pool);
+    }
+    if (audio) |a| a.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+    job.* = .{};
+}
+
+/// The groups of tapped tracks that each become one clip this pass.
+fn bounceGroups(job: *const BounceJob, tracks: []const track_mod.Track, out: *[MAX_TRACKS]u32) usize {
+    var tapped: u32 = 0;
+    for (job.cap.tap[0..tracks.len], 0..) |tp, ti| {
+        if (tp != .none) tapped |= bit(ti);
+    }
+    // TOGETHER, or EACH with +SENDS (a pass is one source and its buses).
+    if (job.opts.mixMode() == .together or job.opts.tapMode() == .sends) {
+        out[0] = tapped;
+        return 1;
+    }
+    var n: usize = 0;
+    for (0..tracks.len) |ti| if (tapped & bit(ti) != 0) {
+        out[n] = bit(ti);
+        n += 1;
+    };
+    return n;
+}
+
+/// The worker is done: write this pass's clips, then start the next pass
+/// or place them all. Returns true once the bounce is over.
+fn finishBouncePass(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    status: *StatusMessage,
+    audio: ?*audio_mod.Audio,
+    engine: *engine_mod.Engine,
+    pool: *audio_pool_mod.AudioPool,
+    tracks_buf: *[MAX_TRACKS]track_mod.Track,
+    track_count: *usize,
+    transport: *transport_mod.Transport,
+    job: *BounceJob,
+    selected_track: *?usize,
+    selected_clip: *?clip_mod.ClipRef,
+    prev_selected_clip: *?clip_mod.ClipRef,
+    dirty: *bool,
+) void {
+    if (job.thread) |t| t.join();
+    job.thread = null;
+    engine.capture = null;
+    const tracks = tracks_buf[0..track_count.*];
+    if (job.cancel.load(.monotonic)) {
+        endBounce(audio, engine, pool, tracks, job, alloc);
+        status.set("Bounce cancelled", .{});
+        return;
+    }
+    writeBounceClips(alloc, tracks, job) catch |err| {
+        std.log.err("bounce write failed: {s}", .{@errorName(err)});
+        endBounce(audio, engine, pool, tracks, job, alloc);
+        status.set("Bounce failed (write)", .{});
+        return;
+    };
+    freeBounceBuffers(alloc, &job.cap);
+    job.pass += 1;
+    if (job.pass < job.pass_count) {
+        beginBouncePass(alloc, engine, tracks, job) catch |err| {
+            std.log.err("bounce pass failed: {s}", .{@errorName(err)});
+            endBounce(audio, engine, pool, tracks, job, alloc);
+            status.set("Bounce failed", .{});
+        };
+        return;
+    }
+    // Masks off before placing, so the new clips publish as they are.
+    for (tracks) |*t| t.play_selected = false;
+    if (job.replace != 0) {
+        replaceBounce(alloc, history, status, pool, tracks, transport, job, selected_track, selected_clip) catch |err| {
+            std.log.err("re-bounce place failed: {s}", .{@errorName(err)});
+            status.set("Re-bounce failed: {s}", .{@errorName(err)});
+        };
+        dirty.* = true;
+        endBounce(audio, engine, pool, tracks, job, alloc);
+        return;
+    }
+    placeBounce(alloc, history, status, engine, pool, tracks_buf, track_count, transport, job, selected_track, selected_clip, prev_selected_clip) catch |err| {
+        std.log.err("bounce place failed: {s}", .{@errorName(err)});
+        status.set("Bounce failed: {s}", .{@errorName(err)});
+    };
+    dirty.* = true;
+    endBounce(audio, engine, pool, tracks_buf[0..track_count.*], job, alloc);
+}
+
+/// Sum each group's taps, each read from its own latency on, trimmed to
+/// the range plus the tail that sounds, into a 32-bit float WAV in the
+/// project's audio folder.
+fn writeBounceClips(alloc: std.mem.Allocator, tracks: []const track_mod.Track, job: *BounceJob) !void {
+    const cap = &job.cap;
+    var groups: [MAX_TRACKS]u32 = undefined;
+    const n = bounceGroups(job, tracks, &groups);
+    var dir_buf: [storage.MAX_PATH]u8 = undefined;
+    const dir = storage.recordingsDir(&dir_buf);
+    if (dir.len == 0) return error.NoAudioFolder;
+    storage.makeParents(dir);
+    for (groups[0..n]) |g| {
+        // Its length: the range and, past it, what still sounds.
+        var len: usize = job.range_frames;
+        for (0..tracks.len) |ti| if (g & bit(ti) != 0) {
+            const lat = cap.lat[ti];
+            const avail = cap.rendered -| lat;
+            const sounds = if (cap.hold > 0) cap.loud_end[ti] -| lat else job.total_frames;
+            len = @max(len, @min(sounds, avail));
+        };
+        len = @min(len, job.total_frames);
+        const buf = try alloc.alloc(f32, len * 2);
+        defer alloc.free(buf);
+        @memset(buf, 0);
+        for (0..tracks.len) |ti| if (g & bit(ti) != 0) {
+            const lat = cap.lat[ti];
+            const l = cap.l[ti];
+            const r = cap.r[ti];
+            const m = @min(len, l.len -| lat);
+            for (0..m) |i| {
+                buf[i * 2] += l[lat + i];
+                buf[i * 2 + 1] += r[lat + i];
+            }
+        };
+        const mono = switch (job.opts.channels) {
+            .stereo => false,
+            .mono => true,
+            .auto => exporter.sidesMatch(buf),
+        };
+        if (mono) for (0..len) |i| {
+            buf[i] = (buf[i * 2] + buf[i * 2 + 1]) * 0.5;
+        };
+        const bytes = try export_mod.encode(alloc, if (mono) buf[0..len] else buf, .{ .bits = .float32, .channels = if (mono) 1 else 2, .sample_rate = job.sample_rate });
+        defer alloc.free(bytes);
+
+        // Named after its source, or "bounce" for several.
+        const src_set = g & job.sources;
+        var stem_buf: [64]u8 = undefined;
+        var slug_buf: [48]u8 = undefined;
+        const stem = if (@popCount(src_set) == 1)
+            std.fmt.bufPrint(&stem_buf, "{s}-bounce", .{storage.slug(&slug_buf, tracks[@ctz(src_set)].name())}) catch "bounce"
+        else
+            "bounce";
+        var out = &job.outs[job.out_count];
+        out.* = .{ .sources = src_set };
+        const path = storage.freshPath(&out.path_buf, dir, stem, ".wav");
+        if (path.len == 0) return error.NoFreeName;
+        out.path_len = path.len;
+        try document_mod.writeFile(alloc, path, bytes);
+        job.out_count += 1;
+    }
+}
+
+/// Put each bounced clip on a new track below the lowest source, and
+/// mute, keep or delete the originals. One undo step; the new clips end
+/// up selected.
+fn placeBounce(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    status: *StatusMessage,
+    engine: *engine_mod.Engine,
+    pool: *audio_pool_mod.AudioPool,
+    tracks_buf: *[MAX_TRACKS]track_mod.Track,
+    track_count: *usize,
+    transport: *transport_mod.Transport,
+    job: *const BounceJob,
+    selected_track: *?usize,
+    selected_clip: *?clip_mod.ClipRef,
+    prev_selected_clip: *?clip_mod.ClipRef,
+) !void {
+    const n = job.out_count;
+    if (n == 0) return;
+    if (track_count.* + n > MAX_TRACKS) return error.TooManyTracks;
+    var sources: [MAX_TRACKS]u32 = undefined;
+    var srcs: [MAX_TRACKS]u32 = undefined;
+    for (job.outs[0..n], 0..) |*o, k| {
+        srcs[k] = try pool.loadFile(o.path());
+        sources[k] = o.sources;
+    }
+
+    const before = try document_mod.serialize(alloc, tracks_buf[0..track_count.*], transport);
+    errdefer alloc.free(before);
+
+    // Each clip's recipe: the selected clips on its source tracks. Deleted
+    // originals leave nothing to re-bounce or thaw.
+    var recipes: [MAX_TRACKS]?clip_mod.Recipe = @splat(null);
+    if (job.opts.originalsMode() != .delete) for (0..n) |k| {
+        var r = clip_mod.Recipe{ .tap = job.opts.tap, .tail_auto = job.opts.tail_auto, .tail_sec = job.opts.tail_sec };
+        var fits = true;
+        for (tracks_buf[0..track_count.*], 0..) |*t, ti| if (sources[k] & bit(ti) != 0) {
+            for (t.clips.items) |*cl| if (cl.selected and !cl.muted) {
+                if (r.source_count == clip_mod.Recipe.MAX_SOURCES) {
+                    fits = false;
+                    break;
+                }
+                r.sources[r.source_count] = cl.uid;
+                r.source_count += 1;
+            };
+        };
+        if (fits) recipes[k] = r;
+    };
+
+    switch (job.opts.originalsMode()) {
+        .mute => for (tracks_buf[0..track_count.*]) |*t| for (t.clips.items) |*cl| {
+            if (cl.selected) cl.muted = true;
+        },
+        .keep => {},
+        .delete => _ = arrangement.deleteSelectedClips(tracks_buf[0..track_count.*], alloc, selected_clip),
+    }
+    _ = arrangement.clearSelection(tracks_buf[0..track_count.*], selected_clip);
+
+    // Below the lowest source.
+    var last: usize = 0;
+    for (0..track_count.*) |ti| if (job.sources & bit(ti) != 0) {
+        last = ti;
+    };
+    const pos: usize = last + 1;
+    const printed = job.opts.tapMode() == .fader or job.opts.tapMode() == .sends;
+    for (0..n) |k| {
+        const o_src = sources[k];
+        const first: usize = @ctz(o_src);
+        var name_buf: [track_mod.MAX_NAME]u8 = undefined;
+        var fill_buf: [96]u8 = undefined;
+        const source_name = if (@popCount(o_src) == 1) tracks_buf[first].name() else freeName(&name_buf, tracks_buf[0..track_count.*], "Bounce", 1);
+        const filled = export_mod.fillName(&fill_buf, job.opts.name.text(), .{ .track = source_name });
+        const name = if (filled.len > 0) filled[0..@min(filled.len, track_mod.MAX_NAME)] else source_name;
+        var t = try track_mod.Track.init(alloc, name, tracks_buf[first].color, silent_machine);
+        // Where its sources went, when they agree; else the master.
+        var output: u8 = tracks_buf[first].output;
+        for (0..track_count.*) |ti| if (o_src & bit(ti) != 0 and tracks_buf[ti].output != output) {
+            output = routing_mod.NONE;
+        };
+        t.output = output;
+        if (printed) {
+            t.setVolume(1.0);
+        } else if (@popCount(o_src) == 1) {
+            // Unprinted, it stands in for its source: same fader, pan, sends.
+            const s = &tracks_buf[first];
+            t.setVolume(s.volume());
+            t.setPan(s.pan());
+            for (s.sends[0..s.send_count]) |*snd| t.addSend(snd.bus, snd.pre, snd.level()) catch break;
+        }
+        const src = pool.get(srcs[k]).?;
+        const dur = src.seconds();
+        const end_sample = job.start_sample + @as(u64, @intFromFloat(dur * @as(f64, @floatFromInt(job.sample_rate))));
+        var clip = clip_mod.Clip.initAudio(src.name(), job.start_beat, transport.samplesToBeats(end_sample) - job.start_beat, srcs[k]);
+        clip.audio.dur_sec = dur;
+        clip.selected = true;
+        clip.recipe = recipes[k];
+        t.addClip(alloc, clip) catch |err| {
+            clip.deinit(alloc);
+            t.deinit(alloc);
+            return err;
+        };
+        insertTrackAt(engine, tracks_buf, track_count, @intCast(pos + k), t);
+    }
+    try history.pushUndo(alloc, before);
+    // Fingerprints once the originals are muted (which they don't count).
+    for (0..n) |k| {
+        const cl = &tracks_buf[pos + k].clips.items[0];
+        if (cl.recipe) |*r| r.hash = (recipe_mod.fingerprint(alloc, tracks_buf[0..track_count.*], transport, r) catch null) orelse 0;
+    }
+
+    if (prev_selected_clip.*) |r| if (r.track >= pos) {
+        prev_selected_clip.*.?.track = r.track + @as(u32, @intCast(n));
+    };
+    selected_track.* = pos;
+    selected_clip.* = .{ .track = @intCast(pos), .clip = 0 };
+    if (n == 1) status.set("Bounced to {s}", .{tracks_buf[pos].name()}) else status.set("Bounced to {d} tracks", .{n});
+}
+
+/// A re-bounce's result: the clip it was asked for gets the new file and
+/// length and a fresh fingerprint; its originals stay as they are. One
+/// undo step.
+fn replaceBounce(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    status: *StatusMessage,
+    pool: *audio_pool_mod.AudioPool,
+    tracks: []track_mod.Track,
+    transport: *transport_mod.Transport,
+    job: *const BounceJob,
+    selected_track: *?usize,
+    selected_clip: *?clip_mod.ClipRef,
+) !void {
+    if (job.out_count == 0) return;
+    const f = recipe_mod.find(tracks, job.replace) orelse return error.ClipGone;
+    const source = try pool.loadFile(job.outs[0].path());
+    const src = pool.get(source).?;
+    const before = try document_mod.serialize(alloc, tracks, transport);
+    errdefer alloc.free(before);
+    _ = arrangement.clearSelection(tracks, selected_clip);
+    const cl = &tracks[f.track].clips.items[f.clip];
+    const dur = src.seconds();
+    const end_sample = job.start_sample + @as(u64, @intFromFloat(dur * @as(f64, @floatFromInt(job.sample_rate))));
+    cl.audio = .{ .source = source, .dur_sec = dur, .gain = cl.audio.gain };
+    cl.start_beat = job.start_beat;
+    cl.length_beats = transport.samplesToBeats(end_sample) - job.start_beat;
+    cl.setName(src.name());
+    cl.selected = true;
+    if (cl.recipe) |*r| {
+        r.hash = (try recipe_mod.fingerprint(alloc, tracks, transport, r)) orelse r.hash;
+        r.stale = false;
+    }
+    try history.pushUndo(alloc, before);
+    selected_track.* = f.track;
+    selected_clip.* = .{ .track = @intCast(f.track), .clip = @intCast(f.clip) };
+    status.set("Re-bounced {s}", .{tracks[f.track].name()});
+}
+
+/// The focused clip's recipe and where the clip is, if it has one.
+fn focusedRecipe(tracks: []track_mod.Track, focused: ?clip_mod.ClipRef) ?struct { ref: clip_mod.ClipRef, recipe: clip_mod.Recipe } {
+    const f = focused orelse return null;
+    if (f.track >= tracks.len or f.clip >= tracks[f.track].clips.items.len) return null;
+    const r = tracks[f.track].clips.items[f.clip].recipe orelse return null;
+    return .{ .ref = f, .recipe = r };
+}
+
+/// Re-bounce the focused clip from its recipe: its originals selected,
+/// rendered as they were bounced, into the same clip.
+fn startRebounce(
+    alloc: std.mem.Allocator,
+    engine: *engine_mod.Engine,
+    audio: *audio_mod.Audio,
+    pool: *audio_pool_mod.AudioPool,
+    transport: *transport_mod.Transport,
+    tracks: []track_mod.Track,
+    focused: *?clip_mod.ClipRef,
+    job: *BounceJob,
+    dlg: *bounce_dialog.State,
+    status: *StatusMessage,
+) void {
+    const fr = focusedRecipe(tracks, focused.*) orelse {
+        status.set("Not a bounce", .{});
+        return;
+    };
+    if (recipe_mod.sourceTracks(tracks, &fr.recipe) == null) {
+        status.set("Its source clips are gone", .{});
+        return;
+    }
+    const uid = tracks[fr.ref.track].clips.items[fr.ref.clip].uid;
+    _ = arrangement.clearSelection(tracks, focused);
+    for (fr.recipe.ids()) |id| {
+        const f = recipe_mod.find(tracks, id).?;
+        tracks[f.track].clips.items[f.clip].selected = true;
+    }
+    const opts = bounce_dialog.State{
+        .active = true,
+        .tap = fr.recipe.tap,
+        .mode = @intFromEnum(bounce_dialog.Mode.together),
+        .originals = @intFromEnum(bounce_dialog.Originals.keep),
+        .tail_auto = fr.recipe.tail_auto,
+        .tail_sec = fr.recipe.tail_sec,
+    };
+    startBounce(alloc, engine, audio, pool, transport, tracks, opts, job, status, uid) catch |err| {
+        status.set("Re-bounce failed: {s}", .{@errorName(err)});
+        return;
+    };
+    // The dialog shows its progress.
+    if (job.active) dlg.* = opts;
+}
+
+/// Thaw the focused bounce: its originals unmuted, the bounce gone. One
+/// undo step.
+fn thawBounce(alloc: std.mem.Allocator, history: *history_mod.History, status: *StatusMessage, tracks: []track_mod.Track, transport: *transport_mod.Transport, focused: *?clip_mod.ClipRef, dirty: *bool) !void {
+    const fr = focusedRecipe(tracks, focused.*) orelse {
+        status.set("Not a bounce", .{});
+        return;
+    };
+    if (recipe_mod.sourceTracks(tracks, &fr.recipe) == null) {
+        status.set("Its source clips are gone", .{});
+        return;
+    }
+    const before = try document_mod.serialize(alloc, tracks, transport);
+    errdefer alloc.free(before);
+    _ = arrangement.clearSelection(tracks, focused);
+    // The bounce first: removing it moves later clips on its track.
+    var gone = tracks[fr.ref.track].clips.orderedRemove(fr.ref.clip);
+    gone.deinit(alloc);
+    for (fr.recipe.ids()) |id| {
+        const f = recipe_mod.find(tracks, id).?;
+        const cl = &tracks[f.track].clips.items[f.clip];
+        cl.muted = false;
+        cl.selected = true;
+    }
+    try history.pushUndo(alloc, before);
+    dirty.* = true;
+    status.set("Thawed", .{});
+}
+
+/// Insert `t` at `pos`, the tracks from there moving up one; outputs,
+/// sends and keys follow. Audio stopped.
+fn insertTrackAt(engine: *engine_mod.Engine, tracks_buf: *[MAX_TRACKS]track_mod.Track, track_count: *usize, pos: u8, t: track_mod.Track) void {
+    var i = track_count.*;
+    while (i > pos) : (i -= 1) tracks_buf[i] = tracks_buf[i - 1];
+    track_count.* += 1;
+    for (tracks_buf[0..track_count.*], 0..) |*u, j| {
+        if (j != pos) u.makeRoomAt(pos);
+    }
+    tracks_buf[pos] = t;
+    tracks_buf[pos].makeRoomAt(pos);
+    engine.tracks = tracks_buf[0..track_count.*];
+    engine.send_prev = @splat(@splat(-1));
+    engine.clearPdc();
+    engine.publishRouting();
+}
+
+fn bounceProgress(job: *BounceJob) export_dialog.Progress {
+    const sr_f: f64 = @floatFromInt(job.sample_rate);
+    const per: f64 = @floatFromInt(job.total_frames);
+    const done_f: f64 = @as(f64, @floatFromInt(job.pass)) * per + @as(f64, @floatFromInt(job.progress.load(.monotonic)));
+    const total_f: f64 = per * @as(f64, @floatFromInt(@max(job.pass_count, 1)));
+    const elapsed: f64 = @as(f64, @floatFromInt(nowNs() - job.start_ns)) / 1_000_000_000.0;
+    return .{
+        .fraction = if (total_f > 0) @floatCast(done_f / total_f) else 0,
+        .elapsed_s = elapsed,
+        .speed_x = if (elapsed > 0.001) done_f / sr_f / elapsed else 0,
+        .rendered_s = done_f / sr_f,
+        .total_s = total_f / sr_f,
+    };
+}
+
+/// Open the Bounce dialog when clips are selected.
+/// What the Bounce dialog names: the selected clips, the tracks they're
+/// on and how long they run.
+fn bounceInfo(transport: *const transport_mod.Transport, tracks: []const track_mod.Track, muted: bool) bounce_dialog.Info {
+    var clips: usize = 0;
+    for (tracks) |*t| for (t.clips.items) |*cl| {
+        if (cl.selected) clips += 1;
+    };
+    const secs = (rangeSeconds(transport, tracks))[2] orelse 0;
+    return .{ .clips = clips, .tracks = @popCount(bounceSources(tracks, muted)), .seconds = secs };
+}
+
+fn openBounce(dlg: *bounce_dialog.State, tracks: []const track_mod.Track, status: *StatusMessage) void {
+    if (bounceSources(tracks, false) == 0) {
+        status.set("Select clips to bounce", .{});
+        return;
+    }
+    dlg.active = true;
 }
 
 /// File > Open: the Open panel, then the pick is opened at the top of the
@@ -2951,7 +3827,9 @@ fn deleteTrack(
 
 /// Bounce `project` to `out` (24-bit WAV): every clip plus a 3 s tail,
 /// through the same engine and master soft clip as a DAW render.
-fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, out: []const u8, idle_skip: bool, workers: usize) !void {
+/// `--render` / `--stems`: export a project without a window or device
+/// (docs/27 §Command line).
+fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void {
     var reg = registry_mod.Registry.init(alloc);
     defer reg.deinit();
     for (registry_mod.builtin_machines) |path| try reg.loadFyMachine(path);
@@ -2988,40 +3866,63 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, out: []const u8
         .tracks = tracks,
         .master = &master,
         .meter_state = &meter_state,
-        .idle_skip = idle_skip,
+        .idle_skip = cli.idle_skip,
     };
     try engine.initPdc(alloc);
     defer engine.deinitPdc(alloc);
-    try engine.initPool(alloc, workers, null);
+    try engine.initPool(alloc, cli.workers(), null);
     defer engine.deinitPool(alloc);
     engine.publishRouting();
     var last_beat: f64 = 0;
-    for (tracks) |*t| for (t.clips.items) |*clip| {
+    for (tracks) |*t| for (t.clips.items) |*clip| if (!clip.muted) {
         last_beat = @max(last_beat, clip.endBeat());
     };
-    const frames: usize = @intCast(transport.beatsToSamples(last_beat) + 3 * audio_mod.SAMPLE_RATE);
-    const buf = try alloc.alloc(f32, frames * audio_mod.CHANNELS);
-    defer alloc.free(buf);
+    const sr = audio_mod.SAMPLE_RATE;
+    var comment_buf: [96]u8 = undefined;
+    var container = if (cli.render) |out| export_mod.Container.ofPath(out) orelse return error.UnknownAudioExtension else export_mod.Container.wav;
+    if (container == .aac and cli.alac) container = .alac;
+    const tail_s = cli.tail orelse export_settings.TAIL_MAX;
+    const out_dir = if (cli.render) |out| std.fs.path.dirname(out) orelse "." else ".";
+    const opts = exporter.Options{
+        .folder = out_dir,
+        .mix_name = if (cli.render) |out| projectStem(out) else null,
+        .mix_channels = if (cli.mono) .mono else .stereo,
+        .stems = if (cli.stems != null) exporter.stemsOf(tracks, cli.stems_kind, cli.stem_tap) else @splat(.{}),
+        .stem_folder = cli.stems,
+        .project = projectStem(project),
+        .start = if (cli.range) |r| transport.beatsToSamples(r[0]) else 0,
+        .end = transport.beatsToSamples(if (cli.range) |r| r[1] else last_beat),
+        .loop_wrap = cli.loop_wrap,
+        .tail_auto = cli.tail == null,
+        .tail_frames = @intFromFloat(tail_s * @as(f32, @floatFromInt(sr))),
+        .format = .{
+            .container = container,
+            .bits = cli.bits,
+            .dither = cli.dither,
+            .sample_rate = cli.rate orelse sr,
+            .aac_kbps = cli.kbps,
+            .title = cli.title orelse projectStem(project),
+            .artist = cli.artist,
+            .album = cli.album,
+            .year = cli.year,
+            .flac_level = cli.flac_level,
+            .comment = exportComment(&comment_buf, data),
+            .bpm = transport.bpm(),
+        },
+        .normalize = cli.normalize,
+        .target = cli.norm_target,
+    };
     const t0 = nowNs();
-    engine.renderOffline(buf, frames, 0, null, null);
-    const secs = @as(f64, @floatFromInt(frames)) / @as(f64, @floatFromInt(audio_mod.SAMPLE_RATE));
+    const r = try exporter.run(alloc, &engine, tracks, opts, null, null);
+    const secs = @as(f64, @floatFromInt(r.frames)) / @as(f64, @floatFromInt(r.sample_rate));
     const took = @as(f64, @floatFromInt(nowNs() - t0)) / 1e9;
-
-    var peak: f32 = 0;
-    var sq: f64 = 0;
-    var over: usize = 0;
-    for (buf) |v| {
-        peak = @max(peak, @abs(v));
-        sq += @as(f64, v) * v;
-        if (@abs(v) >= 0.999) over += 1;
+    if (cli.render) |out| {
+        std.debug.print("rendered {s} -> {s}: {d:.1} s in {d:.2} s ({d:.1}x real time), peak {d:.1} dBFS, rms {d:.1} dBFS, {d} samples at the rail, {d:.1} LUFS, LRA {d:.1} LU, true peak {d:.1} dBTP{s}\n", .{
+            project, out, secs, took, secs / took, 20 * std.math.log10(@max(r.peak, 1e-9)), 20 * std.math.log10(@max(r.rms, 1e-12)), r.over,
+            r.loudness.integrated, r.loudness.lra, r.loudness.true_peak, if (r.gain_db != 0) " (normalized)" else "",
+        });
     }
-    const rms = @sqrt(sq / @as(f64, @floatFromInt(buf.len)));
-    const bytes = try wav_mod.encodeStereo24(alloc, buf, audio_mod.SAMPLE_RATE);
-    defer alloc.free(bytes);
-    try document_mod.writeFile(alloc, out, bytes);
-    std.debug.print("rendered {s} -> {s}: {d:.1} s in {d:.2} s ({d:.1}x real time), peak {d:.1} dBFS, rms {d:.1} dBFS, {d} samples at the rail\n", .{
-        project, out, secs, took, secs / took, 20 * std.math.log10(@max(peak, 1e-9)), 20 * std.math.log10(@max(rms, 1e-12)), over,
-    });
+    if (cli.stems) |dir| std.debug.print("stems {s} -> {s}/: {d} files, {d:.1} s each\n", .{ project, dir, r.files - @intFromBool(cli.render != null), secs });
 }
 
 fn applyProjectBytes(
@@ -3586,6 +4487,12 @@ fn handleFocusedEditCommands(
             .piano_roll => clip_editor.duplicateSelectedNotes(tracks, selected_clip.*, alloc, edit_snap),
             .browser, .machine_bay, .top_bar => false,
         };
+    } else if (!cmd and (c.rl.IsKeyPressed(c.rl.KEY_ZERO) or c.rl.IsKeyPressed(c.rl.KEY_KP_0))) {
+        changed = switch (focus) {
+            .arrangement => arrangement.toggleClipMute(tracks, selected_clip.*, true),
+            .piano_roll => arrangement.toggleClipMute(tracks, selected_clip.*, false),
+            .browser, .machine_bay, .top_bar => false,
+        };
     } else if (!cmd and focus == .piano_roll and c.rl.IsKeyPressed(c.rl.KEY_Q)) {
         changed = clip_editor.quantizeSelectedNotes(tracks, selected_clip.*, edit_snap);
     } else if (!cmd and focus == .piano_roll and c.rl.IsKeyPressed(c.rl.KEY_H)) {
@@ -3799,6 +4706,13 @@ fn executeEditCommand(
             };
             if (changed) status.set("Reversed", .{});
         },
+        .mute_clips => {
+            changed = switch (focus) {
+                .arrangement => arrangement.toggleClipMute(tracks, selected_clip.*, true),
+                .piano_roll => arrangement.toggleClipMute(tracks, selected_clip.*, false),
+                else => false,
+            };
+        },
         .clear_solo_mute => {
             changed = arrangement.clearSolosAndMutes(tracks);
             if (changed) status.set("Solos and mutes cleared", .{});
@@ -3829,7 +4743,7 @@ fn executeEditCommand(
         },
         // `import_audio` is intercepted in the arrangement-result handler
         // (it needs the audio pool + file dialog); never reaches here.
-        .none, .copy, .select_all, .clear_selection, .rename, .file_new, .file_open, .file_save, .file_save_as, .file_clean_up, .render_audio, .import_audio, .save_to_library => {},
+        .none, .copy, .select_all, .clear_selection, .rename, .file_new, .file_open, .file_save, .file_save_as, .file_clean_up, .render_audio, .import_audio, .bounce, .rebounce, .thaw, .save_to_library => {},
     }
 
     if (changed) {
@@ -3844,6 +4758,7 @@ fn executeEditCommand(
 fn editMutationKeyPressed(focus: FocusPane) bool {
     if (commandModifierDown()) return false;
     if (c.rl.IsKeyPressed(c.rl.KEY_D) or arrowKeyPressed()) return true;
+    if (c.rl.IsKeyPressed(c.rl.KEY_ZERO) or c.rl.IsKeyPressed(c.rl.KEY_KP_0)) return true;
     return focus == .piano_roll and (c.rl.IsKeyPressed(c.rl.KEY_Q) or
         c.rl.IsKeyPressed(c.rl.KEY_H) or c.rl.IsKeyPressed(c.rl.KEY_S));
 }
@@ -4051,6 +4966,198 @@ test "undoing Open goes back to the project it left, redo to the one it opened" 
     try std.testing.expectEqualStrings("demos/night_drive.slab", project_path);
     try std.testing.expect(chosen);
     try std.testing.expect(std.mem.endsWith(u8, storage.projectDir(), "demos/night_drive.slab"));
+}
+
+test "bounce: the selected clip lands on a new track below its source, the original muted" {
+    const alloc = std.testing.allocator;
+    const env = struct {
+        extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+        extern fn unsetenv(name: [*:0]const u8) c_int;
+    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var rb: [storage.MAX_PATH]u8 = undefined;
+    var root_buf: [storage.MAX_PATH]u8 = undefined;
+    const root = storage.absolute(&root_buf, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
+    var hb: [storage.MAX_PATH]u8 = undefined;
+    _ = env.setenv("SLAB_HOME", (try std.fmt.bufPrintZ(&hb, "{s}/home", .{root})).ptr, 1);
+    defer _ = env.unsetenv("SLAB_HOME");
+    storage.setProject(null);
+
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    document_mod.setPool(&pool);
+    const src = try pool.loadFile("machines/sampler/assets/default.wav");
+
+    const col = c.rl.Color{ .r = 10, .g = 20, .b = 30, .a = 255 };
+    var tracks_buf: [MAX_TRACKS]track_mod.Track = undefined;
+    var track_count: usize = 2;
+    tracks_buf[0] = try track_mod.Track.init(alloc, "Bass", col, silent_machine);
+    tracks_buf[1] = try track_mod.Track.init(alloc, "Keys", col, silent_machine);
+    defer for (tracks_buf[0..track_count]) |*t| t.deinit(alloc);
+    tracks_buf[0].setVolume(0.5);
+    var picked = clip_mod.Clip.initAudio("hit", 0, 1, src);
+    picked.audio.dur_sec = pool.get(src).?.seconds();
+    picked.selected = true;
+    try tracks_buf[0].addClip(alloc, picked);
+    var other = clip_mod.Clip.initAudio("other", 0, 1, src);
+    other.audio.dur_sec = pool.get(src).?.seconds();
+    try tracks_buf[1].addClip(alloc, other);
+
+    var transport = transport_mod.Transport{};
+    transport.sample_rate = 48_000;
+    const eng = try alloc.create(engine_mod.Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = tracks_buf[0..track_count] };
+    eng.publishRouting();
+    var history: history_mod.History = .{};
+    defer history.deinit(alloc);
+    var status: StatusMessage = .{};
+    const job = try alloc.create(BounceJob);
+    defer alloc.destroy(job);
+    job.* = .{};
+    var sel_track: ?usize = 0;
+    var sel_clip: ?clip_mod.ClipRef = null;
+    var prev_clip: ?clip_mod.ClipRef = null;
+    var dirty = false;
+
+    try startBounce(alloc, eng, null, &pool, &transport, tracks_buf[0..track_count], .{}, job, &status, 0);
+    try std.testing.expect(job.active);
+    finishBouncePass(alloc, &history, &status, null, eng, &pool, &tracks_buf, &track_count, &transport, job, &sel_track, &sel_clip, &prev_clip, &dirty);
+    try std.testing.expect(!job.active);
+
+    try std.testing.expectEqual(@as(usize, 3), track_count);
+    try std.testing.expectEqualStrings("Bass bounce", tracks_buf[1].name());
+    try std.testing.expectEqualStrings("Keys", tracks_buf[2].name());
+    try std.testing.expect(tracks_buf[0].clips.items[0].muted);
+    try std.testing.expect(!tracks_buf[2].clips.items[0].muted);
+    // The FX tap is before the fader: the bounce keeps its source's.
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), tracks_buf[1].volume(), 1e-6);
+    try std.testing.expect(!tracks_buf[1].play_selected and !tracks_buf[0].play_selected);
+    try std.testing.expectEqual(@as(usize, 1), history.undo_stack.items.len);
+    try std.testing.expect(dirty);
+
+    // The clip: the hit as it played, from beat 0; mono, as AUTO writes
+    // a file whose sides match.
+    const b = &tracks_buf[1].clips.items[0];
+    try std.testing.expect(b.isAudio() and b.selected);
+    try std.testing.expectEqual(@as(f64, 0), b.start_beat);
+    try std.testing.expect(b.length_beats >= 1);
+    const out = pool.get(b.audio.source).?;
+    try std.testing.expect(!out.sample.isStereo());
+    try std.testing.expect(out.seconds() >= 0.5);
+    const hit = pool.get(src).?.sample;
+    var peak: f64 = 0;
+    for (out.sample.data[0..1000]) |x| peak = @max(peak, @abs(x));
+    try std.testing.expect(peak > 0);
+    if (hit.sample_rate == 48_000) {
+        for (0..1000) |i| try std.testing.expectApproxEqAbs(hit.data[i], out.sample.data[i], 1e-6);
+    }
+}
+
+test "bounce provenance: a recipe stays fresh, goes stale with its source, re-bounces and thaws" {
+    const alloc = std.testing.allocator;
+    const env = struct {
+        extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+        extern fn unsetenv(name: [*:0]const u8) c_int;
+    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var rb: [storage.MAX_PATH]u8 = undefined;
+    var root_buf: [storage.MAX_PATH]u8 = undefined;
+    const root = storage.absolute(&root_buf, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
+    var hb: [storage.MAX_PATH]u8 = undefined;
+    _ = env.setenv("SLAB_HOME", (try std.fmt.bufPrintZ(&hb, "{s}/home", .{root})).ptr, 1);
+    defer _ = env.unsetenv("SLAB_HOME");
+    storage.setProject(null);
+
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    document_mod.setPool(&pool);
+    const src = try pool.loadFile("machines/sampler/assets/default.wav");
+    const col = c.rl.Color{ .r = 10, .g = 20, .b = 30, .a = 255 };
+    var tracks_buf: [MAX_TRACKS]track_mod.Track = undefined;
+    var track_count: usize = 1;
+    tracks_buf[0] = try track_mod.Track.init(alloc, "Drums", col, silent_machine);
+    defer for (tracks_buf[0..track_count]) |*t| t.deinit(alloc);
+    var hit = clip_mod.Clip.initAudio("hit", 0, 1, src);
+    hit.audio.dur_sec = pool.get(src).?.seconds();
+    hit.selected = true;
+    try tracks_buf[0].addClip(alloc, hit);
+    const hit_uid = tracks_buf[0].clips.items[0].uid;
+
+    var transport = transport_mod.Transport{};
+    transport.sample_rate = 48_000;
+    const eng = try alloc.create(engine_mod.Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = tracks_buf[0..track_count] };
+    eng.publishRouting();
+    var history: history_mod.History = .{};
+    defer history.deinit(alloc);
+    var status: StatusMessage = .{};
+    const job = try alloc.create(BounceJob);
+    defer alloc.destroy(job);
+    job.* = .{};
+    var sel_track: ?usize = 0;
+    var sel_clip: ?clip_mod.ClipRef = null;
+    var prev_clip: ?clip_mod.ClipRef = null;
+    var dirty = false;
+
+    try startBounce(alloc, eng, null, &pool, &transport, tracks_buf[0..track_count], .{}, job, &status, 0);
+    finishBouncePass(alloc, &history, &status, null, eng, &pool, &tracks_buf, &track_count, &transport, job, &sel_track, &sel_clip, &prev_clip, &dirty);
+    var tracks = tracks_buf[0..track_count];
+    const bounced = &tracks[1].clips.items[0];
+    const r = bounced.recipe.?;
+    try std.testing.expectEqualSlices(u32, &.{hit_uid}, r.ids());
+    try std.testing.expect(r.hash != 0);
+    recipe_mod.checkAll(alloc, tracks, &transport);
+    try std.testing.expect(!tracks[1].clips.items[0].recipe.?.stale);
+
+    // Saved and loaded, it keeps its id and recipe.
+    {
+        const bytes = try document_mod.serialize(alloc, tracks, &transport);
+        defer alloc.free(bytes);
+        try std.testing.expect(std.mem.indexOf(u8, bytes, "\"recipe\":{\"clips\":[") != null);
+    }
+
+    // Moving the source makes it stale; moving it back, fresh again.
+    tracks[0].clips.items[0].start_beat = 0.5;
+    recipe_mod.checkAll(alloc, tracks, &transport);
+    try std.testing.expect(tracks[1].clips.items[0].recipe.?.stale);
+    tracks[0].clips.items[0].start_beat = 0;
+    recipe_mod.checkAll(alloc, tracks, &transport);
+    try std.testing.expect(!tracks[1].clips.items[0].recipe.?.stale);
+
+    // Re-bounce after a change: the same clip, fresh, the original still muted.
+    tracks[0].clips.items[0].audio.gain = 0.5;
+    recipe_mod.checkAll(alloc, tracks, &transport);
+    try std.testing.expect(tracks[1].clips.items[0].recipe.?.stale);
+    sel_clip = .{ .track = 1, .clip = 0 };
+    {
+        const fr = focusedRecipe(tracks, sel_clip).?;
+        _ = arrangement.clearSelection(tracks, &sel_clip);
+        for (fr.recipe.ids()) |id| {
+            const f = recipe_mod.find(tracks, id).?;
+            tracks[f.track].clips.items[f.clip].selected = true;
+        }
+        try startBounce(alloc, eng, null, &pool, &transport, tracks, .{ .tap = fr.recipe.tap, .originals = 1 }, job, &status, tracks[1].clips.items[0].uid);
+    }
+    finishBouncePass(alloc, &history, &status, null, eng, &pool, &tracks_buf, &track_count, &transport, job, &sel_track, &sel_clip, &prev_clip, &dirty);
+    tracks = tracks_buf[0..track_count];
+    try std.testing.expectEqual(@as(usize, 2), track_count);
+    try std.testing.expectEqual(@as(usize, 1), tracks[1].clips.items.len);
+    try std.testing.expect(!tracks[1].clips.items[0].recipe.?.stale);
+    try std.testing.expect(tracks[0].clips.items[0].muted);
+    const out = pool.get(tracks[1].clips.items[0].audio.source).?;
+    const hit_data = pool.get(src).?.sample.data;
+    for (0..500) |i| try std.testing.expectApproxEqAbs(hit_data[i] * 0.5, out.sample.data[i], 1e-6);
+
+    // Thaw: the original plays again and the bounce is gone.
+    sel_clip = .{ .track = 1, .clip = 0 };
+    try thawBounce(alloc, &history, &status, tracks, &transport, &sel_clip, &dirty);
+    try std.testing.expect(!tracks[0].clips.items[0].muted);
+    try std.testing.expectEqual(@as(usize, 0), tracks[1].clips.items.len);
+    try std.testing.expectEqual(@as(usize, 3), history.undo_stack.items.len);
 }
 
 test "automation recording writes a thinned pass over the span it covered" {

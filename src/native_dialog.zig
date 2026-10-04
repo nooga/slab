@@ -6,7 +6,8 @@ extern fn slab_open_project_dialog() ?[*:0]u8;
 extern fn slab_save_project_dialog(default_name: [*:0]const u8) ?[*:0]u8;
 extern fn slab_open_audio_dialog() ?[*:0]u8;
 extern fn slab_open_keymap_dialog() ?[*:0]u8;
-extern fn slab_save_audio_dialog(default_name: [*:0]const u8) ?[*:0]u8;
+extern fn slab_save_audio_dialog(default_name: [*:0]const u8, ext: [*:0]const u8) ?[*:0]u8;
+extern fn slab_choose_folder_dialog(start: [*:0]const u8) ?[*:0]u8;
 extern fn slab_free_dialog_path(path: ?[*:0]u8) void;
 extern fn slab_trash(path: [*:0]const u8) c_int;
 extern fn slab_reveal(path: [*:0]const u8) void;
@@ -62,12 +63,25 @@ pub fn openKeymap(alloc: std.mem.Allocator) !?[]u8 {
     return try alloc.dupe(u8, std.mem.sliceTo(raw, 0));
 }
 
-/// Native save panel for a rendered .wav bounce. Returns the chosen path,
-/// or null if cancelled. Caller owns the returned slice.
-pub fn saveAudioFile(alloc: std.mem.Allocator, default_name: []const u8) !?[]u8 {
+/// Native folder panel (an export's destination), opening at `start`.
+/// Returns the chosen folder, or null if cancelled. Caller owns it.
+pub fn chooseFolder(alloc: std.mem.Allocator, start: []const u8) !?[]u8 {
+    const z = try alloc.dupeZ(u8, start);
+    defer alloc.free(z);
+    const raw = slab_choose_folder_dialog(z) orelse return null;
+    defer slab_free_dialog_path(raw);
+    return try alloc.dupe(u8, std.mem.sliceTo(raw, 0));
+}
+
+/// Native save panel for an audio file of type `ext` ("wav", "aif").
+/// Returns the chosen path, or null if cancelled. Caller owns the
+/// returned slice.
+pub fn saveAudioFile(alloc: std.mem.Allocator, default_name: []const u8, ext: []const u8) !?[]u8 {
     const z = try alloc.dupeZ(u8, default_name);
     defer alloc.free(z);
-    const raw = slab_save_audio_dialog(z) orelse return null;
+    const ez = try alloc.dupeZ(u8, ext);
+    defer alloc.free(ez);
+    const raw = slab_save_audio_dialog(z, ez) orelse return null;
     defer slab_free_dialog_path(raw);
     return try alloc.dupe(u8, std.mem.sliceTo(raw, 0));
 }

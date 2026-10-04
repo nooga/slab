@@ -687,6 +687,36 @@ pub fn reverseAudioClips(tracks: []Track, focused: ?ClipRef, selection: bool) bo
     return true;
 }
 
+/// Mute the selected clips, or unmute them when all of them already are
+/// (with `selection` false, or none selected: the focused clip). Muted
+/// clips stay on the timeline but don't play (docs/27).
+pub fn toggleClipMute(tracks: []Track, focused: ?ClipRef, selection: bool) bool {
+    if (selection and hasSelectedClips(tracks)) {
+        const mute = !allSelectedMuted(tracks);
+        for (tracks) |*t| for (t.clips.items) |*clip| if (clip.selected) {
+            clip.muted = mute;
+        };
+        return true;
+    }
+    const f = focused orelse return false;
+    if (f.track >= tracks.len or f.clip >= tracks[f.track].clips.items.len) return false;
+    const clip = &tracks[f.track].clips.items[f.clip];
+    clip.muted = !clip.muted;
+    return true;
+}
+
+fn allSelectedMuted(tracks: []Track) bool {
+    for (tracks) |t| for (t.clips.items) |clip| if (clip.selected and !clip.muted) return false;
+    return true;
+}
+
+/// The focused clip is a bounce with a recipe (docs/27 §Provenance).
+fn focusedIsBounce(tracks: []Track, focused: ?ClipRef) bool {
+    const f = focused orelse return false;
+    if (f.track >= tracks.len or f.clip >= tracks[f.track].clips.items.len) return false;
+    return tracks[f.track].clips.items[f.clip].recipe != null;
+}
+
 fn hasSelectedAudioClips(tracks: []Track) bool {
     for (tracks) |t| for (t.clips.items) |clip| if (clip.selected and clip.isAudio()) return true;
     return false;
@@ -710,6 +740,7 @@ pub fn splitSelectedClipsAt(tracks: []Track, alloc: std.mem.Allocator, focused_c
                 const split_sec = local * 60.0 / @max(1.0, bpm);
                 var right_a = Clip.initAudio(clip.name(), beat, clip.start_beat + clip.length_beats - beat, clip.audio.source);
                 right_a.selected = true;
+                right_a.muted = clip.muted;
                 right_a.audio.gain = clip.audio.gain;
                 right_a.audio.reversed = clip.audio.reversed;
                 right_a.audio.dur_sec = @max(0.0, clip.audio.dur_sec - split_sec);
@@ -735,6 +766,7 @@ pub fn splitSelectedClipsAt(tracks: []Track, alloc: std.mem.Allocator, focused_c
 
             var right = Clip.init(clip.name(), beat, clip.start_beat + clip.length_beats - beat);
             right.selected = true;
+            right.muted = clip.muted;
             errdefer right.deinit(alloc);
 
             var ni: usize = 0;
@@ -1370,7 +1402,11 @@ pub fn draw(
         .{ .label = "Duplicate", .command = .duplicate, .enabled = has_selection },
         .{ .label = "Split at playhead", .command = .split_at_playhead, .enabled = has_selection },
         .{ .label = "Reverse", .command = .reverse, .enabled = hasSelectedAudioClips(tracks) },
+        .{ .label = if (has_selection and allSelectedMuted(tracks)) "Unmute" else "Mute", .command = .mute_clips, .enabled = has_selection },
         .{ .label = "Delete", .command = .delete, .enabled = has_selection },
+        .{ .label = "Bounce\u{2026}", .command = .bounce, .enabled = has_selection },
+        .{ .label = "Re-bounce", .command = .rebounce, .enabled = focusedIsBounce(tracks, selected_clip.*) },
+        .{ .label = "Thaw", .command = .thaw, .enabled = focusedIsBounce(tracks, selected_clip.*) },
         .{ .separator = true },
         .{ .label = "Rename", .command = .rename, .enabled = has_selection },
         .{ .label = "Save to Library", .command = .save_to_library, .enabled = has_selection },
@@ -2827,7 +2863,8 @@ fn drawLiveRecordClip(ui: *Ui, lane: c.rl.Rectangle, rec: *const recorder_mod.Re
 fn drawClip(ui: *Ui, r_: c.rl.Rectangle, clip: Clip, color_: c.rl.Color, selected: bool, editing_name: bool, pool: *const audio_pool_mod.AudioPool) void {
     const r = bridge.fromRl(r_);
     if (r.w < 1 or r.h < 1) return;
-    const color = uiColor(color_);
+    // A muted clip loses its track color.
+    const color = if (clip.muted) uiColor(color_).mix(ui_style.face_lo, 0.75) else uiColor(color_);
     ui.rect(r, color.mix(ui_style.chassis, 0.6));
     const inner = r.inset(1);
     var body = inner;
@@ -2883,6 +2920,14 @@ fn drawClip(ui: *Ui, r_: c.rl.Rectangle, clip: Clip, color_: c.rl.Color, selecte
             ui.rect(Rect.xywh(x0, ny, @max(1, x1 - x0 - 1), 1), preview);
         }
     }
+    // A stale bounce (docs/27 §Provenance): a notch cut in the band's
+    // right corner, until it's re-bounced.
+    if (clip.recipe) |rc| if (rc.stale and band.w > 12) {
+        var k: i32 = 0;
+        while (k < 6) : (k += 1) ui.rect(Rect.xywh(band.right() - 6 + k, band.y, 6 - k, 1), ui_style.led_yellow);
+        var j: i32 = 1;
+        while (j < 6) : (j += 1) ui.rect(Rect.xywh(band.right() - 6 + j, band.y + j, 6 - j, 1), ui_style.led_yellow);
+    };
     if (selected) ui.bevel(r, ui_style.accent, ui_style.accent);
 }
 

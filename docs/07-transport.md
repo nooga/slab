@@ -131,8 +131,10 @@ outside any clip, the track is silent (or looping, per settings).
 
 **As built (Phase C).** Audio clips are implemented and play back in
 the arrangement. The host owns an **AudioPool** (`src/audio_pool.zig`):
-decoded f64 mono sources (via `wav.zig`) each paired with a
-`waveform.PeakCache` for zoomable waveform drawing. A `Clip` carries a
+decoded f64 sources (via `wav.zig`), mono or stereo (a file's first two
+channels, `wav.loadStereo`), each paired with a `waveform.PeakCache`
+(of the mid, for a stereo source) for zoomable waveform drawing. A
+stereo source plays its channels to L and R; a mono one plays to both. A `Clip` carries a
 `kind` (`note` | `audio`); audio clips hold an `AudioRef { source, gain }`
 indexing the pool. `Track.publishSnapshot` freezes each audio clip's raw
 `data` pointer + length + native rate into the `TrackSnapshot`; the audio

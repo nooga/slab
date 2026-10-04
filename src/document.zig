@@ -16,6 +16,7 @@ const machine_mod = @import("machine.zig");
 const audio_pool_mod = @import("audio_pool.zig");
 const meter_mod = @import("meter.zig");
 const automation = @import("automation.zig");
+const export_settings = @import("export_settings.zig");
 
 extern fn close(fd: c_int) c_int;
 extern fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
@@ -74,6 +75,14 @@ var active_meter: ?*meter_mod.MeterState = null;
 
 pub fn setMeterState(m: *meter_mod.MeterState) void {
     active_meter = m;
+}
+
+/// Process-wide export settings (docs/27 §Export), saved with the project
+/// like the master bus; a project without them gets the defaults.
+var active_export: ?*export_settings.Settings = null;
+
+pub fn setExportSettings(s: *export_settings.Settings) void {
+    active_export = s;
 }
 
 fn machineId(idx: u8) []const u8 {
@@ -199,13 +208,14 @@ pub fn serialize(
         // Automation lanes (docs/22 §Project format).
         try appendLanes(alloc, &out, t);
         if (t.lanes_shown) try out.appendSlice(alloc, ",\"show_automation\":true");
+        if (!t.stem.isDefault()) try appendStem(alloc, &out, t.stem);
         if (t.folded and t.isBus()) try out.appendSlice(alloc, ",\"folded\":true");
 
         // Clips.
         try out.appendSlice(alloc, ",\"clips\":[");
         for (t.clips.items, 0..) |*clip, ci| {
             if (ci > 0) try out.append(alloc, ',');
-            try appendClip(alloc, &out, t, clip, null);
+            try appendClip(alloc, &out, t, clip, .{});
         }
         try out.appendSlice(alloc, "]}");
     }
@@ -217,14 +227,54 @@ pub fn serialize(
         try appendEffects(alloc, &out, m);
         try out.append(alloc, '}');
     }
+    if (active_export) |st| try export_settings.append(alloc, &out, st);
     try out.append(alloc, '}');
 
     return try out.toOwnedSlice(alloc);
 }
 
+/// A track's stem choices (docs/27 §Export): `"stem":{"on":…,"signal":…,
+/// "channels":…}`, each only when set.
+fn appendStem(alloc: std.mem.Allocator, out: *std.ArrayList(u8), p: track_mod.StemPlan) !void {
+    try out.appendSlice(alloc, ",\"stem\":{");
+    var sep: []const u8 = "";
+    if (p.on) |on| {
+        try appendFmt(alloc, out, "\"on\":{s}", .{boolStr(on)});
+        sep = ",";
+    }
+    if (p.signal > 0) {
+        try appendFmt(alloc, out, "{s}\"signal\":\"{s}\"", .{ sep, @tagName(@as(export_settings.Signal, @enumFromInt(p.signal - 1))) });
+        sep = ",";
+    }
+    if (p.channels > 0) try appendFmt(alloc, out, "{s}\"channels\":\"{s}\"", .{ sep, @tagName(@as(@import("exporter.zig").Channels, @enumFromInt(p.channels - 1))) });
+    try out.append(alloc, '}');
+}
+
+fn parseStem(v: std.json.Value) track_mod.StemPlan {
+    var p = track_mod.StemPlan{};
+    if (v != .object) return p;
+    if (objGet(v.object, "on")) |x| p.on = asBool(x);
+    if (strOf(objGet(v.object, "signal"))) |x| if (std.meta.stringToEnum(export_settings.Signal, x)) |e| {
+        p.signal = @intFromEnum(e) + 1;
+    };
+    if (strOf(objGet(v.object, "channels"))) |x| if (std.meta.stringToEnum(@import("exporter.zig").Channels, x)) |e| {
+        p.channels = @intFromEnum(e) + 1;
+    };
+    return p;
+}
+
 /// One clip as the project writes it. `source` overrides an audio clip's
 /// file reference (a library clip names its own copy).
-fn appendClip(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track_mod.Track, clip: *const clip_mod.Clip, source: ?[]const u8) !void {
+pub const ClipOut = struct {
+    /// Overrides an audio clip's file reference.
+    source: ?[]const u8 = null,
+    /// Write its id, mute and recipe; off for what a render hears
+    /// (recipe.zig's fingerprint).
+    identity: bool = true,
+};
+
+pub fn appendClip(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track_mod.Track, clip: *const clip_mod.Clip, o: ClipOut) !void {
+    const source = o.source;
     if (clip.isAudio()) {
         var rb: [storage.MAX_PATH]u8 = undefined;
         const src_path = source orelse storage.ref(&rb, if (active_pool) |p|
@@ -238,6 +288,7 @@ fn appendClip(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track
             clip.audio.start_sec, clip.audio.dur_sec, clip.audio.fade_in_sec, clip.audio.fade_out_sec,
         });
         if (clip.audio.reversed) try out.appendSlice(alloc, "\"reversed\":true,");
+        if (o.identity) try appendIdentity(alloc, out, clip);
         try out.appendSlice(alloc, "\"source\":");
         try appendJsonString(alloc, out, src_path);
         try out.append(alloc, '}');
@@ -245,7 +296,9 @@ fn appendClip(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track
     }
     try out.appendSlice(alloc, "{\"type\":\"note\",\"name\":");
     try appendJsonString(alloc, out, clip.name());
-    try appendFmt(alloc, out, ",\"start\":{d},\"len\":{d},\"notes\":[", .{ clip.start_beat, clip.length_beats });
+    try appendFmt(alloc, out, ",\"start\":{d},\"len\":{d},", .{ clip.start_beat, clip.length_beats });
+    if (o.identity) try appendIdentity(alloc, out, clip);
+    try out.appendSlice(alloc, "\"notes\":[");
     for (clip.notes.items, 0..) |note, ni| {
         if (ni > 0) try out.append(alloc, ',');
         try appendFmt(alloc, out, "{{\"pitch\":{d},\"start\":{d},\"len\":{d},\"vel\":{d}", .{
@@ -280,6 +333,69 @@ fn appendClip(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track
 pub const CLIP_KIND = "clip";
 pub const CLIP_EXT = ".slabclip";
 
+/// What a render hears of track `t` (docs/27 §Provenance): its instrument
+/// and settings, inserts and lanes; its fader and pan with `fader`, its
+/// sends with `sends`. Not its name, color, mute or solo.
+pub fn appendRenderSettings(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track_mod.Track, fader: bool, sends: bool) !void {
+    try out.appendSlice(alloc, "{\"instrument\":");
+    if (t.machine_idx) |idx| {
+        try out.appendSlice(alloc, "{\"machine\":");
+        try appendJsonString(alloc, out, machineId(idx));
+        try out.appendSlice(alloc, ",\"params\":");
+        try appendParams(alloc, out, t.machine);
+        try appendAssets(alloc, out, t.machine);
+        try appendZones(alloc, out, t.machine);
+        try appendUnison(alloc, out, t.machine);
+        if (t.machine.write_state_json) |f| {
+            try out.appendSlice(alloc, ",\"state\":");
+            try f(t.machine.state, out, alloc);
+        }
+        try out.append(alloc, '}');
+    } else try out.appendSlice(alloc, "null");
+    try out.appendSlice(alloc, ",\"effects\":");
+    try appendEffects(alloc, out, t);
+    try appendLanes(alloc, out, t);
+    if (fader) try appendFmt(alloc, out, ",\"volume\":{d},\"pan\":{d}", .{ t.volume(), t.pan() });
+    if (sends) try appendRouting(alloc, out, t);
+    try out.append(alloc, '}');
+}
+
+/// A clip's id, mute and recipe, each followed by a comma.
+fn appendIdentity(alloc: std.mem.Allocator, out: *std.ArrayList(u8), clip: *const clip_mod.Clip) !void {
+    try appendFmt(alloc, out, "\"id\":{d},", .{clip.uid});
+    if (clip.muted) try out.appendSlice(alloc, "\"muted\":true,");
+    if (clip.recipe) |r| {
+        try out.appendSlice(alloc, "\"recipe\":{\"clips\":[");
+        for (r.ids(), 0..) |id, i| try appendFmt(alloc, out, "{s}{d}", .{ if (i > 0) "," else "", id });
+        try appendFmt(alloc, out, "],\"tap\":{d},", .{r.tap});
+        if (r.tail_auto) try out.appendSlice(alloc, "\"tail\":\"auto\",") else try appendFmt(alloc, out, "\"tail\":{d},", .{r.tail_sec});
+        try appendFmt(alloc, out, "\"hash\":\"{x:0>16}\"}},", .{r.hash});
+    }
+}
+
+/// A clip's id and recipe as `applyClip` reads them.
+fn readIdentity(clip: *clip_mod.Clip, co: std.json.ObjectMap) void {
+    if (objGet(co, "id")) |v| if (v == .integer and v.integer > 0 and v.integer <= std.math.maxInt(u32)) {
+        clip.uid = @intCast(v.integer);
+        clip_mod.claimUid(clip.uid);
+    };
+    const rv = objGet(co, "recipe") orelse return;
+    if (rv != .object) return;
+    var r = clip_mod.Recipe{};
+    if (objGet(rv.object, "clips")) |cv| if (cv == .array) for (cv.array.items) |x| {
+        if (x != .integer or r.source_count == clip_mod.Recipe.MAX_SOURCES) continue;
+        r.sources[r.source_count] = @intCast(std.math.clamp(x.integer, 0, std.math.maxInt(u32)));
+        r.source_count += 1;
+    };
+    if (objGet(rv.object, "tap")) |x| r.tap = asU8(x);
+    if (objGet(rv.object, "tail")) |x| {
+        r.tail_auto = x == .string;
+        if (!r.tail_auto) r.tail_sec = @floatCast(asF64(x));
+    }
+    if (strOf(objGet(rv.object, "hash"))) |h| r.hash = std.fmt.parseInt(u64, h, 16) catch 0;
+    clip.recipe = r;
+}
+
 /// One clip of track `t` as a `.slabclip`: {"slab":"clip","schema":1,
 /// "clip":{…}}, the clip as a project writes it, at beat 0. An audio
 /// clip's file that only the project has is copied into the home folder's
@@ -304,7 +420,7 @@ pub fn clipFile(alloc: std.mem.Allocator, t: *const track_mod.Track, clip: *cons
         } else file;
         source = storage.ref(&rb, lib_file);
     };
-    try appendClip(alloc, &out, t, &at_zero, source);
+    try appendClip(alloc, &out, t, &at_zero, .{ .source = source });
     try out.appendSlice(alloc, "}\n");
     return out.toOwnedSlice(alloc);
 }
@@ -321,7 +437,12 @@ pub fn insertClipFile(alloc: std.mem.Allocator, t: *track_mod.Track, data: []con
     const before = t.clips.items.len;
     try applyClip(alloc, t, cv.object);
     if (t.clips.items.len == before) return error.InvalidClip;
-    t.clips.items[t.clips.items.len - 1].start_beat = start;
+    // A clip from a file is a new clip here: its own id, no recipe.
+    const placed = &t.clips.items[t.clips.items.len - 1];
+    placed.start_beat = start;
+    placed.uid = clip_mod.next_uid;
+    clip_mod.next_uid += 1;
+    placed.recipe = null;
 }
 
 fn boolStr(b: bool) []const u8 {
@@ -652,6 +773,11 @@ pub fn apply(
     }
     sanitizeRouting(tracks_buf[0..track_count.*]);
 
+    if (active_export) |st| {
+        st.* = .{};
+        if (objGet(root, "export")) |ev| if (ev == .object) export_settings.read(st, ev.object);
+    }
+
     // Master bus — volume + effect chain into the registered master.
     if (active_master) |m| if (objGet(root, "master")) |mv| if (mv == .object) {
         const mo = mv.object;
@@ -722,6 +848,7 @@ fn parseTrack(alloc: std.mem.Allocator, reg: *registry_mod.Registry, to: std.jso
 
     if (objGet(to, "automation")) |av| try applyLanes(alloc, &t, av);
     if (objGet(to, "show_automation")) |x| t.lanes_shown = asBool(x);
+    if (objGet(to, "stem")) |x| t.stem = parseStem(x);
 
     // Clips.
     if (objGet(to, "clips")) |cv| if (cv == .array) {
@@ -940,12 +1067,16 @@ fn applyClip(alloc: std.mem.Allocator, t: *track_mod.Track, co: std.json.ObjectM
         aclip.audio.fade_in_sec = if (objGet(co, "fade_in")) |x| asF64(x) else 0;
         aclip.audio.fade_out_sec = if (objGet(co, "fade_out")) |x| asF64(x) else 0;
         aclip.audio.reversed = if (objGet(co, "reversed")) |x| x == .bool and x.bool else false;
+        aclip.muted = if (objGet(co, "muted")) |x| x == .bool and x.bool else false;
+        readIdentity(&aclip, co);
         try t.addClip(alloc, aclip);
         return;
     }
 
     var clip = clip_mod.Clip.init(name, start, len);
     errdefer clip.deinit(alloc);
+    clip.muted = if (objGet(co, "muted")) |x| x == .bool and x.bool else false;
+    readIdentity(&clip, co);
     if (objGet(co, "notes")) |nv| if (nv == .array) {
         for (nv.array.items) |note_v| {
             if (note_v != .object) continue;
@@ -1019,7 +1150,14 @@ test "project snapshot round-trips tracks clips notes and loop" {
     defer for (&tracks) |*t| t.deinit(alloc);
     tracks[0].setVolume(0.625);
     tracks[0].mute.store(true, .monotonic);
+    tracks[0].stem = .{ .on = false, .channels = 2 };
+    var xs = export_settings.Settings{};
+    xs.recipe.container = .flac;
+    xs.artist.set("nooga");
+    setExportSettings(&xs);
+    defer active_export = null;
     var clip = clip_mod.Clip.init("Clip A", 2.0, 4.0);
+    clip.muted = true;
     try clip.addNote(alloc, .{ .pitch = 64, .start_beat = 0.5, .length_beats = 1.25, .velocity = 91 });
     try tracks[0].addClip(alloc, clip);
 
@@ -1048,6 +1186,7 @@ test "project snapshot round-trips tracks clips notes and loop" {
     try std.testing.expectEqual(@as(usize, 1), loaded_buf[0].clips.items.len);
     try std.testing.expectEqualStrings("Clip A", loaded_buf[0].clips.items[0].name());
     try std.testing.expectApproxEqAbs(@as(f64, 2.0), loaded_buf[0].clips.items[0].start_beat, 0.0001);
+    try std.testing.expect(loaded_buf[0].clips.items[0].muted);
     try std.testing.expectEqual(@as(usize, 1), loaded_buf[0].clips.items[0].notes.items.len);
     try std.testing.expectEqual(@as(u8, 64), loaded_buf[0].clips.items[0].notes.items[0].pitch);
     try std.testing.expectEqual(@as(u8, 91), loaded_buf[0].clips.items[0].notes.items[0].velocity);
@@ -1055,7 +1194,17 @@ test "project snapshot round-trips tracks clips notes and loop" {
     try std.testing.expectApproxEqAbs(@as(f64, 1.0), loaded_transport.loopStartBeats(), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f64, 9.0), loaded_transport.loopEndBeats(), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 132.5), loaded_transport.bpm(), 0.001);
+    try std.testing.expectEqual(track_mod.StemPlan{ .on = false, .channels = 2 }, loaded_buf[0].stem);
+    // The export settings come back; a project without them gets defaults.
+    xs = .{};
+    try apply(alloc, bytes, &reg, loaded_buf[0..], &loaded_count, &loaded_transport, test_machine);
+    try std.testing.expectEqual(export_mod_test.Container.flac, xs.recipe.container);
+    try std.testing.expectEqualStrings("nooga", xs.artist.get());
+    try apply(alloc, "{\"tracks\":[]}", &reg, loaded_buf[0..], &loaded_count, &loaded_transport, test_machine);
+    try std.testing.expectEqualStrings("", xs.artist.get());
 }
+
+const export_mod_test = @import("export.zig");
 
 test "a clip saved as a .slabclip comes back on another track where it's put; a package's audio is copied to the library" {
     const alloc = std.testing.allocator;
@@ -1490,6 +1639,7 @@ test "audio clips round-trip through the pool by path" {
     try std.testing.expectApproxEqAbs(@as(f64, 0.1), got.audio.fade_in_sec, 1e-4);
     try std.testing.expectApproxEqAbs(@as(f64, 0.2), got.audio.fade_out_sec, 1e-4);
     try std.testing.expect(got.audio.reversed);
+    try std.testing.expect(!got.muted);
     try std.testing.expectEqual(src, got.audio.source);
 }
 

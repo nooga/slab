@@ -307,6 +307,9 @@ const Display = machine_desc.Display;
 
 pub const FyRawMachine = struct {
     host: *FyHost,
+    /// The contents of every file its host compiled, hashed at creation
+    /// (docs/27 §Provenance): a livecoded edit changes it.
+    code_hash: u64 = 0,
     // The host is test_hosts' (test builds): deinit leaves it alone.
     host_source: HostSource = .own,
     desc: machine_desc.Desc,
@@ -582,6 +585,7 @@ pub const FyRawMachine = struct {
 
         self.* = .{
             .host = host,
+            .code_hash = codeHashOf(host, path),
             .host_source = source,
             .desc = desc,
             .panel_w = desc.panel_w,
@@ -979,6 +983,7 @@ pub const FyRawMachine = struct {
             .draw_panel = drawPanelImpl,
             .reset = resetImpl,
             .deinit = deinitImpl,
+            .code_hash = codeHashImpl,
             .panel_w = self.panel_w,
             .host_titlebar = true,
             .note_labels = self.desc.noteLabels(),
@@ -1753,7 +1758,7 @@ fn saveTableAs(self: *FyRawMachine, ai: usize) void {
     var nb: [100]u8 = undefined;
     const stem = std.fs.path.stem(self.asset_label[ai][0..self.asset_label_len[ai]]);
     const def = std.fmt.bufPrint(&nb, "{s}.wav", .{if (stem.len > 0) stem else "wavetable"}) catch "wavetable.wav";
-    const path = (native_dialog.saveAudioFile(self.alloc, def) catch null) orelse return;
+    const path = (native_dialog.saveAudioFile(self.alloc, def, "wav") catch null) orelse return;
     defer self.alloc.free(path);
     if (!wavetable_file.save(self.alloc, doc, path)) return;
     self.setAssetSource(ai, path);
@@ -2150,6 +2155,47 @@ fn presetSanitize(raw: []const u8) ?[]const u8 {
     if (trimmed.len == 0 or trimmed.len > presets_mod.MAX_NAME) return null;
     if (std.mem.indexOfScalar(u8, trimmed, '/') != null) return null;
     return trimmed;
+}
+
+fn codeHashImpl(state: *anyopaque) u64 {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    return self.code_hash;
+}
+
+/// Hash the machine's file and everything it included, in path order.
+fn codeHashOf(host: *FyHost, path: []const u8) u64 {
+    var paths: [129][]const u8 = undefined;
+    var n: usize = 0;
+    paths[n] = path;
+    n += 1;
+    var it = host.fy.file_ns_map.keyIterator();
+    while (it.next()) |k| {
+        if (n == paths.len) break;
+        if (std.mem.endsWith(u8, k.*, path) or std.mem.endsWith(u8, path, k.*)) continue;
+        paths[n] = k.*;
+        n += 1;
+    }
+    std.sort.pdq([]const u8, paths[1..n], {}, struct {
+        fn lt(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lt);
+    var h = std.hash.Wyhash.init(0);
+    for (paths[0..n]) |p| {
+        h.update(std.fs.path.basename(p));
+        var zb: [1024]u8 = undefined;
+        const z = std.fmt.bufPrintZ(&zb, "{s}", .{p}) catch continue;
+        const fd = std.c.open(z.ptr, .{});
+        if (fd < 0) continue;
+        defer _ = std.c.close(fd);
+        var buf: [16384]u8 = undefined;
+        while (true) {
+            const got = std.c.read(fd, &buf, buf.len);
+            if (got <= 0) break;
+            h.update(buf[0..@intCast(got)]);
+        }
+    }
+    return h.final();
 }
 
 fn validateWord(host: *FyHost, word: []const u8) !void {

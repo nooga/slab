@@ -71,6 +71,9 @@ const Block = struct {
     beat_end: f64 = 0,
     chase: bool = false,
     release_at: ?f64 = null,
+    /// Past an offline render's stop [Engine.offline_stop]: no notes or
+    /// audio clips, only what still rings.
+    ring_out: bool = false,
     bar_info: meter.MeterMap.BarInfo = undefined,
 };
 
@@ -84,6 +87,61 @@ pub const Preview = struct {
     data: []const f64 = &.{},
     /// Source frames per output frame.
     step: f64 = 1,
+};
+
+/// Where an offline render copies a track's signal (docs/27 §Tap).
+pub const CaptureTap = enum(u8) {
+    none,
+    /// The instrument and audio clips, before the inserts.
+    input,
+    /// After the inserts, before volume and pan.
+    pre,
+    /// After volume and pan.
+    post,
+};
+
+/// An offline render's taps (docs/27 §Bounce selection): each tapped
+/// track's signal is copied into its own buffers as the render runs, and
+/// the render can stop itself once they all fall quiet. Set
+/// `Engine.capture` before `renderOffline`; buffers are the caller's,
+/// zeroed, `frames + PDC_MAX` long (a tap is up to the project's latency
+/// late, `lat`).
+pub const Capture = struct {
+    tap: [routing.MAX_TRACKS]CaptureTap = @splat(.none),
+    l: [routing.MAX_TRACKS][]f32 = @splat(&.{}),
+    r: [routing.MAX_TRACKS][]f32 = @splat(&.{}),
+    /// Non-zero: only these tracks are heard. Every other track is muted
+    /// (still rendering when it keys something), buses keep their mute,
+    /// solos are ignored, and these render even if their mute is on.
+    sources: u32 = 0,
+    /// Stop the render once every tap (and the master, with
+    /// `watch_master`) has stayed below `QUIET` for `hold` frames past the
+    /// first `min_frames`; `hold` 0 renders it all.
+    min_frames: usize = 0,
+    hold: usize = 0,
+    watch_master: bool = false,
+    /// The master's end of signal, in output frames (after the project's
+    /// latency is dropped).
+    master_loud_end: usize = 0,
+    /// Written by the render: each track's latency at its tap (its signal
+    /// starts that many frames into its buffer), each tap's end of signal
+    /// (the frame after its last loud one), and the frames rendered.
+    lat: [routing.MAX_TRACKS]u32 = @splat(0),
+    loud_end: [routing.MAX_TRACKS]usize = @splat(0),
+    rendered: usize = 0,
+
+    /// −80 dBFS: under a 16-bit file's dither, and where slabkit trims.
+    pub const QUIET: f32 = 1e-4;
+
+    fn done(self: *const Capture, rendered: usize, out_frames: usize) bool {
+        if (self.hold == 0 or rendered < self.min_frames) return false;
+        if (self.watch_master and @max(self.master_loud_end, self.min_frames) + self.hold > out_frames) return false;
+        for (self.tap, 0..) |tp, ti| {
+            if (tp == .none) continue;
+            if (@max(self.loud_end[ti], self.min_frames + self.lat[ti]) + self.hold > rendered) return false;
+        }
+        return true;
+    }
 };
 
 /// The preview sits under a full mix: −6 dB.
@@ -139,6 +197,17 @@ pub const Engine = struct {
     /// render (machine state belongs to the audio thread).
     panic_request: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     trace_counter: u32 = 0,
+    /// An offline render's taps [Capture]; null otherwise. Only
+    /// `renderOffline` reads it, with the device stopped.
+    capture: ?*Capture = null,
+    /// The first sample of the offline render the capture belongs to.
+    capture_start: u64 = 0,
+    /// Offline only: the transport stops here. Past it no notes start and
+    /// audio clips are silent; the sounding notes are released and what
+    /// they leave rings out (an export's tail, docs/27 §Range). Cleared
+    /// by `renderOffline`.
+    offline_stop: ?u64 = null,
+    stop_released: bool = false,
 
     /// Master bus. Audio tracks accumulate (planar) into master_l/r, then
     /// the master Track's FX chain + fader run before the interleaved
@@ -426,6 +495,9 @@ pub const Engine = struct {
             self.resetAllMachines();
         }
         self.chase_pending = true;
+        self.capture_start = start_sample;
+        self.stop_released = false;
+        defer self.offline_stop = null;
         var pos = start_sample;
         // The master is late by the project's latency: its first `skip`
         // frames are dropped, so the bounce lines up with the timeline. The
@@ -434,14 +506,28 @@ pub const Engine = struct {
         var fallback: routing.Routing = undefined;
         self.computeLatencies(self.currentGraph(&fallback));
         const skip: usize = self.master_latency.load(.monotonic);
+        if (self.capture) |cap| for (self.tracks, 0..) |*t, ti| {
+            cap.lat[ti] = switch (cap.tap[ti]) {
+                .none => 0,
+                .input => self.lat_in[ti] + instLatency(t, t.isBus()),
+                .pre, .post => self.lat_out[ti],
+            };
+            cap.loud_end[ti] = 0;
+        };
+        if (self.capture) |cap| cap.master_loud_end = 0;
         var scratch: [MAX_BLOCK * audio.CHANNELS]f32 = undefined;
         var rendered: usize = 0;
         var done: usize = 0;
         while (done < total_frames) {
             if (cancel) |c| if (c.load(.monotonic)) break;
-            const chunk: u32 = @intCast(@min(@as(usize, MAX_BLOCK), total_frames + skip - rendered));
+            var chunk: u32 = @intCast(@min(@as(usize, MAX_BLOCK), total_frames + skip - rendered));
+            // A block ends on the stop.
+            if (self.offline_stop) |stop| if (pos < stop) {
+                chunk = @intCast(@min(@as(u64, chunk), stop - pos));
+            };
             const dropped = if (rendered < skip) @min(chunk, skip - rendered) else 0;
-            const direct = dropped == 0;
+            // An empty `out` keeps only the capture.
+            const direct = dropped == 0 and out.len > 0;
             const slice = if (direct) out[done * audio.CHANNELS ..][0 .. chunk * audio.CHANNELS] else scratch[0 .. chunk * audio.CHANNELS];
             {
                 fy_host.lockCallbacks();
@@ -449,7 +535,7 @@ pub const Engine = struct {
                 self.renderChunk(slice, chunk, pos);
             }
             self.master_clip.apply(slice);
-            if (!direct) {
+            if (!direct and out.len > 0) {
                 const keep = slice[dropped * audio.CHANNELS ..];
                 @memcpy(out[done * audio.CHANNELS ..][0..keep.len], keep);
             }
@@ -457,6 +543,22 @@ pub const Engine = struct {
             rendered += chunk;
             pos += chunk;
             if (progress) |p| p.store(done, .monotonic);
+            if (self.capture) |cap| {
+                cap.rendered = rendered;
+                if (cap.watch_master) {
+                    const kept = chunk - dropped;
+                    const keep = slice[dropped * audio.CHANNELS ..][0 .. kept * audio.CHANNELS];
+                    var k = keep.len;
+                    while (k > 0) {
+                        k -= 1;
+                        if (@abs(keep[k]) > Capture.QUIET) {
+                            cap.master_loud_end = done - kept + k / audio.CHANNELS + 1;
+                            break;
+                        }
+                    }
+                }
+                if (cap.done(rendered, done)) break;
+            }
         }
         fy_host.lockCallbacks();
         defer fy_host.unlockCallbacks();
@@ -751,12 +853,25 @@ pub const Engine = struct {
         const graph = self.currentGraph(&fallback);
         var muted: u32 = 0;
         var soloed: u32 = 0;
+        const sources: u32 = if (self.capture) |cap| cap.sources else 0;
         for (self.tracks[0..graph.count], 0..) |*t, i| {
-            if (t.mute.load(.monotonic)) muted |= routing.bit(@intCast(i));
-            if (t.solo.load(.monotonic)) soloed |= routing.bit(@intCast(i));
+            const b = routing.bit(@intCast(i));
+            if (sources != 0) {
+                // A capture hears its sources alone [Capture.sources].
+                if (if (t.isBus()) t.mute.load(.monotonic) else sources & b == 0) muted |= b;
+                continue;
+            }
+            if (t.mute.load(.monotonic)) muted |= b;
+            if (t.solo.load(.monotonic)) soloed |= b;
         }
         const heard = graph.audible(muted, soloed);
-        const live = graph.rendered(heard);
+        var live = graph.rendered(heard);
+        if (self.capture) |cap| {
+            live |= sources;
+            for (cap.tap[0..graph.count], 0..) |tp, i| {
+                if (tp != .none) live |= routing.bit(@intCast(i));
+            }
+        }
         self.computeLatencies(graph);
         for (graph.nodes[0..graph.count], 0..) |nd, i| if (nd.is_bus) {
             @memset(self.bus_l[i][0..frames], 0);
@@ -766,12 +881,23 @@ pub const Engine = struct {
         const sr = self.transport.sample_rate;
         const bpm = self.transport.bpm();
         const spb = self.transport.samplesPerBeat();
-        const beat_start = self.transport.samplesToBeats(block_start);
-        const beat_end = self.transport.samplesToBeats(block_start + frames);
+        var beat_start = self.transport.samplesToBeats(block_start);
+        var beat_end = self.transport.samplesToBeats(block_start + frames);
         const chase = self.chase_pending;
         self.chase_pending = false;
-        const release_at = self.release_from;
+        var release_at = self.release_from;
         self.release_from = null;
+        // Past an offline stop the playhead holds there: the first block
+        // releases what sounds, none starts anything.
+        var ring_out = false;
+        if (self.offline_stop) |stop| if (block_start >= stop) {
+            const sb = self.transport.samplesToBeats(stop);
+            beat_start = sb;
+            beat_end = sb;
+            ring_out = true;
+            if (!self.stop_released) release_at = sb;
+            self.stop_released = true;
+        };
         // Meter position for this block (homogeneous within the block).
         // Adopt a staged meter edit only when we cross into a new bar, so
         // bars never re-lay under the playhead mid-bar (docs/07).
@@ -806,6 +932,7 @@ pub const Engine = struct {
             .beat_end = beat_end,
             .chase = chase,
             .release_at = release_at,
+            .ring_out = ring_out,
             .bar_info = bar_info,
         };
         const order = graph.renderOrder();
@@ -1059,13 +1186,14 @@ pub const Engine = struct {
             }
             // Audio clips mix on top of the instrument output, into the
             // same planar L/R, so the track's insert chain processes the sum.
-            mixAudioClips(snap, block_start, frames, spb, sr, l, r);
+            if (!b.ring_out) mixAudioClips(snap, block_start, frames, spb, sr, l, r);
             // Late for a key that arrives later still (PDC).
             if (self.pdc) |h| {
                 h.put(ti, .input, l, r);
                 const d = self.lat_in[ti];
                 if (d > 0) h.read(ti, .input, h.w[ti], d, l, r);
             }
+            self.captureTap(ti, .input, block_start, l, r);
         }
         const inst_ns = if (track_probe) probeNowNs() - inst_start else 0;
         const fx_start = if (track_probe) probeNowNs() else 0;
@@ -1088,6 +1216,7 @@ pub const Engine = struct {
         }
         const final_l: []const f32 = l;
         const final_r: []const f32 = r;
+        self.captureTap(ti, .pre, block_start, final_l, final_r);
 
         // Fader gains at the block's ends; automated volume/pan ramp
         // between them per sample (docs/22 §Track volume and pan).
@@ -1115,6 +1244,7 @@ pub const Engine = struct {
             if (al > peak_l) peak_l = al;
             if (ar > peak_r) peak_r = ar;
         }
+        self.captureTap(ti, .post, block_start, post_l, post_r);
         // The taps' history, for paths that must arrive later (PDC).
         const hist_at = if (self.pdc) |h| h.write(ti, final_l, final_r, post_l, post_r) else 0;
         self.hist_at[ti] = hist_at;
@@ -1165,6 +1295,29 @@ pub const Engine = struct {
                 "audio track \"{s}\" beat={d:.3}..{d:.3} events={} peak=({d:.3},{d:.3}) vol={d:.3}\n",
                 .{ t.name(), beat_start, beat_end, n_events, peak_l, peak_r, v },
             );
+        }
+    }
+
+    /// Copy track `ti`'s `tap` for this block into the capture, if that's
+    /// the tap it wants. Each track writes only its own buffers, so nodes
+    /// still render on any thread.
+    fn captureTap(self: *Engine, ti: u8, tap: CaptureTap, block_start: u64, l: []const f32, r: []const f32) void {
+        const cap = self.capture orelse return;
+        if (cap.tap[ti] != tap) return;
+        const at: usize = @intCast(block_start - self.capture_start);
+        const dst_l = cap.l[ti];
+        const dst_r = cap.r[ti];
+        if (at >= dst_l.len or at >= dst_r.len) return;
+        const n = @min(l.len, dst_l.len - at, dst_r.len - at);
+        @memcpy(dst_l[at..][0..n], l[0..n]);
+        @memcpy(dst_r[at..][0..n], r[0..n]);
+        var k = n;
+        while (k > 0) {
+            k -= 1;
+            if (@abs(l[k]) > Capture.QUIET or @abs(r[k]) > Capture.QUIET) {
+                cap.loud_end[ti] = at + k + 1;
+                break;
+            }
         }
     }
 
@@ -1773,6 +1926,9 @@ fn mixAudioClips(
             const frac: f32 = @floatCast(src_pos - idx0f);
             const s0: f32 = @floatCast(data[idx0]);
             const s1: f32 = if (idx0 + 1 < len) @floatCast(data[idx0 + 1]) else s0;
+            const d_r = clip.data_r orelse data;
+            const r0: f32 = @floatCast(d_r[idx0]);
+            const r1: f32 = if (idx0 + 1 < len) @floatCast(d_r[idx0 + 1]) else r0;
             // Linear fade-in/out envelope over the played window.
             var fade: f64 = 1.0;
             if (clip.fade_in_samples > 0 and pos < clip.fade_in_samples)
@@ -1782,9 +1938,9 @@ fn mixAudioClips(
                 if (remaining < clip.fade_out_samples)
                     fade = @min(fade, @max(0.0, remaining) / clip.fade_out_samples);
             }
-            const v = (s0 + (s1 - s0) * frac) * clip.gain * @as(f32, @floatCast(fade));
-            l[i] += v;
-            r[i] += v;
+            const g = clip.gain * @as(f32, @floatCast(fade));
+            l[i] += (s0 + (s1 - s0) * frac) * g;
+            r[i] += (r0 + (r1 - r0) * frac) * g;
         }
     }
 }
@@ -2276,6 +2432,30 @@ test "mixAudioClips: a reversed clip reads its window end to start, fades in cli
     try testing.expectApproxEqAbs(@as(f32, 2), l[5], 1e-5);
 }
 
+test "mixAudioClips: a stereo source plays its channels apart" {
+    var dl = [_]f64{ 1, 2, 3, 4 };
+    var dr = [_]f64{ -1, -2, -3, -4 };
+    var snap = snap_mod.TrackSnapshot{};
+    snap.audio_clip_count = 1;
+    snap.audio_clips[0] = .{
+        .start_beat = 0,
+        .length_beats = 1,
+        .data = &dl,
+        .data_r = &dr,
+        .len = dl.len,
+        .source_rate = 48_000,
+        .dur_samples = 4,
+        .gain = 0.5,
+    };
+    var l = [_]f32{0} ** 4;
+    var r = [_]f32{0} ** 4;
+    mixAudioClips(&snap, 0, 4, 4.0, 48_000, &l, &r);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), l[0], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, -0.5), r[0], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 2.0), l[3], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, -2.0), r[3], 1e-6);
+}
+
 test "mixAudioClips: missing source data is skipped" {
     var snap = snap_mod.TrackSnapshot{};
     snap.audio_clip_count = 1;
@@ -2566,6 +2746,117 @@ test "routing: a group, a pre-fader send and a return sum as their paths" {
     tracks[0].solo.store(true, .monotonic);
     eng.renderOffline(&out, 64, 0, null, null);
     try testing.expectApproxEqAbs(kit, out[10], 1e-6);
+}
+
+test "capture: taps copy each track's signal, only the sources are heard, a quiet capture stops" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var tenth: f32 = 0.1;
+    var zero: f32 = 0;
+    var four: f32 = 4;
+    var tracks = [_]Track{
+        try Track.init(alloc, "kit", col, RouteTestMachines.dc(&tenth)),
+        try Track.init(alloc, "bass", col, RouteTestMachines.dc(&tenth)),
+        try Track.init(alloc, "verb", col, RouteTestMachines.dc(&zero)),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    for (&tracks) |*t| t.setVolume(1.0);
+    try tracks[0].addSend(2, true, 0.5);
+    try tracks[1].addSend(2, true, 0.5);
+    tracks[2].kind = .bus;
+    try tracks[1].addEffect(alloc, RouteTestMachines.gain(&four), 0);
+    try tracks[2].addEffect(alloc, RouteTestMachines.gain(&four), 0);
+    // A muted source still renders for its capture.
+    tracks[1].mute.store(true, .monotonic);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+
+    var transport = Transport{};
+    transport.sample_rate = 48_000;
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+
+    const N = 256;
+    var bufs: [4][N]f32 = @splat(@splat(0));
+    var cap = Capture{ .sources = routing.bit(1) };
+    cap.tap[1] = .input;
+    cap.l[1] = &bufs[0];
+    cap.r[1] = &bufs[1];
+    cap.tap[2] = .post;
+    cap.l[2] = &bufs[2];
+    cap.r[2] = &bufs[3];
+    eng.capture = &cap;
+    defer eng.capture = null;
+    eng.renderOffline(&.{}, 128, 0, null, null);
+
+    const c = @cos(@as(f32, std.math.pi / 4.0));
+    try testing.expectEqual(@as(usize, 128), cap.rendered);
+    try testing.expectApproxEqAbs(@as(f32, 0.1), bufs[0][10], 1e-6); // bass before its ×4
+    // The return hears the bass alone (the kit is muted for the capture).
+    try testing.expectApproxEqAbs(0.1 * 4 * 0.5 * 4 * c, bufs[2][10], 1e-6);
+    try testing.expectEqual(@as(usize, 128), cap.loud_end[1]);
+
+    // A silent source with a hold stops the render past min_frames, at
+    // the first block boundary after the hold.
+    const M = MAX_BLOCK * 8;
+    const ql = try alloc.alloc(f32, M);
+    defer alloc.free(ql);
+    const qr = try alloc.alloc(f32, M);
+    defer alloc.free(qr);
+    var quiet = Capture{ .sources = routing.bit(2), .min_frames = MAX_BLOCK, .hold = MAX_BLOCK / 2 };
+    quiet.tap[2] = .pre;
+    quiet.l[2] = ql;
+    quiet.r[2] = qr;
+    eng.capture = &quiet;
+    eng.renderOffline(&.{}, M, 0, null, null);
+    try testing.expectEqual(@as(usize, MAX_BLOCK * 2), quiet.rendered);
+}
+
+test "offline stop: audio clips fall silent at the stop, the master watch ends the render" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var zero: f32 = 0;
+    var tracks = [_]Track{try Track.init(alloc, "loop", col, RouteTestMachines.dc(&zero))};
+    defer tracks[0].deinit(alloc);
+    tracks[0].setVolume(1.0);
+    var transport = Transport{};
+    transport.sample_rate = 48_000;
+    // A constant 0.5 for 8 beats (2 s at 120 BPM): long past the stop.
+    const data = try alloc.alloc(f64, 96_000);
+    defer alloc.free(data);
+    @memset(data, 0.5);
+    tracks[0].publishSnapshot(&@import("audio_pool.zig").AudioPool.init(alloc));
+    const snap = tracks[0].snap[1 - tracks[0].snap_published.load(.monotonic)];
+    snap.* = tracks[0].currentSnapshot().*;
+    snap.audio_clip_count = 1;
+    snap.audio_clips[0] = .{ .start_beat = 0, .length_beats = 4, .data = data.ptr, .len = @intCast(data.len), .source_rate = 48_000, .dur_samples = 96_000, .gain = 1 };
+    tracks[0].snap_published.store(1 - tracks[0].snap_published.load(.monotonic), .release);
+
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+    const stop: usize = MAX_BLOCK * 3 + 17; // mid-block: the render splits there
+    const total = MAX_BLOCK * 12;
+    const out = try alloc.alloc(f32, total * 2);
+    defer alloc.free(out);
+    @memset(out, 9);
+    var cap = Capture{ .min_frames = stop, .hold = MAX_BLOCK, .watch_master = true };
+    eng.capture = &cap;
+    defer eng.capture = null;
+    eng.offline_stop = stop;
+    eng.renderOffline(out, total, 0, null, null);
+    try testing.expect(eng.offline_stop == null);
+    const c = @cos(@as(f32, std.math.pi / 4.0));
+    try testing.expectApproxEqAbs(0.5 * c, out[(stop - 1) * 2], 1e-6);
+    try testing.expectEqual(@as(f32, 0), out[stop * 2]);
+    try testing.expectEqual(stop, cap.master_loud_end);
+    // Quiet for a hold past the stop: it ends well before `total`.
+    try testing.expect(cap.rendered >= stop + MAX_BLOCK);
+    try testing.expect(cap.rendered < stop + MAX_BLOCK * 3);
 }
 
 test "routing: a send level change ramps across the block" {

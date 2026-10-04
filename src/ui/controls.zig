@@ -761,6 +761,10 @@ pub const SelectOpts = struct {
     bare: bool = false,
     /// 2×2 matrix dots (transport readouts).
     large: bool = false,
+    /// Shown instead of the chosen option (a "default" entry shows what
+    /// it stands for).
+    shown: ?[]const u8 = null,
+    disabled: bool = false,
 };
 
 /// The press began a drag, so its release doesn't open the grid.
@@ -771,33 +775,35 @@ pub fn displaySelectEx(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const 
     const before = v.*;
     const n: i32 = @intCast(options.len);
     if (n == 0) return false;
-    const b = ui.behavior(wid, r, false);
-    if (b.pressed) select_dragged = false;
-    if (b.held) {
-        ui.drag_acc += dragDelta(ui) / 24;
-        while (ui.drag_acc >= 1) : (ui.drag_acc -= 1) {
-            select_dragged = true;
-            if (@as(i32, v.*) < n - 1) v.* += 1;
-        }
-        while (ui.drag_acc <= -1) : (ui.drag_acc += 1) {
-            select_dragged = true;
-            if (v.* > 0) v.* -= 1;
-        }
-    }
+    const b = ui.behavior(wid, r, o.disabled);
     const gk = wid ^ 0x5E1E_C700_0000_0000;
-    if (b.clicked and !select_dragged) menu.openGrid(gk, r, v.*);
-    if (menu.grid(gk, options)) |i| v.* = @intCast(i);
-    const wheel = wheelSteps(ui, r);
-    if (wheel > 0 and @as(i32, v.*) < n - 1) v.* += 1;
-    if (wheel < 0 and v.* > 0) v.* -= 1;
-    const steps = arrowSteps(ui, wid);
-    if (steps > 0 and @as(i32, v.*) < n - 1) v.* += 1;
-    if (steps < 0 and v.* > 0) v.* -= 1;
+    if (!o.disabled) {
+        if (b.pressed) select_dragged = false;
+        if (b.held) {
+            ui.drag_acc += dragDelta(ui) / 24;
+            while (ui.drag_acc >= 1) : (ui.drag_acc -= 1) {
+                select_dragged = true;
+                if (@as(i32, v.*) < n - 1) v.* += 1;
+            }
+            while (ui.drag_acc <= -1) : (ui.drag_acc += 1) {
+                select_dragged = true;
+                if (v.* > 0) v.* -= 1;
+            }
+        }
+        if (b.clicked and !select_dragged) menu.openGrid(gk, r, v.*);
+        if (menu.grid(gk, options)) |i| v.* = @intCast(i);
+        const wheel = wheelSteps(ui, r);
+        if (wheel > 0 and @as(i32, v.*) < n - 1) v.* += 1;
+        if (wheel < 0 and v.* > 0) v.* -= 1;
+        const steps = arrowSteps(ui, wid);
+        if (steps > 0 and @as(i32, v.*) < n - 1) v.* += 1;
+        if (steps < 0 and v.* > 0) v.* -= 1;
+    }
 
-    const hot = ui.isHot(wid) or menu.isOpen(gk);
-    const lit = if (o.dim) style.vfd.mix(style.well, 0.5) else style.vfd;
+    const hot = !o.disabled and (ui.isHot(wid) or menu.isOpen(gk));
+    const lit = if (o.disabled) style.vfd.mix(style.well, 0.75) else if (o.dim) style.vfd.mix(style.well, 0.5) else style.vfd;
     const col = if (hot) lit else lit.mix(style.well, 0.15);
-    const text = if (v.* < options.len) options[v.*] else "";
+    const text = o.shown orelse if (v.* < options.len) options[v.*] else "";
     const inner = if (o.bare) r else ui.well(if (o.flush) seamed(ui, r) else r, style.well);
     // Text on the cell grid, clear of the ▾ cell on the right.
     const k: i32 = if (o.large) 2 else 1;
@@ -823,6 +829,57 @@ pub fn displaySelectEx(ui: *Ui, r: Rect, key: anytype, v: *u8, options: []const 
     if (hot) ui.setTouch(label, text);
     focusRing(ui, wid, r);
     return v.* != before;
+}
+
+/// Tab strip: flush tiles `tab_w` wide from the left of `r`. The chosen
+/// tab is the plate below it, open at its foot, with an amber top edge;
+/// the others sit back, a step darker. ⌘1… pick them when `keys`.
+pub fn tabs(ui: *Ui, r: Rect, key: anytype, v: *u8, labels: []const []const u8, tab_w: i32, keys: bool) bool {
+    const before = v.*;
+    ui.pushId(key);
+    defer ui.popId();
+    // The strip, its foot a seam except under the chosen tab.
+    ui.rect(r, style.face.shade(-10));
+    ui.rect(Rect.xywh(r.x, r.bottom() - 1, r.w, 1), style.edge);
+    if (keys and ui.in.cmd) for (0..labels.len) |i| {
+        if (i < 9 and ui.in.keyPressed(c.rl.KEY_ONE + @as(c_int, @intCast(i)))) v.* = @intCast(i);
+    };
+    for (labels, 0..) |lab, i| {
+        const cr = Rect.xywh(r.x + @as(i32, @intCast(i)) * tab_w, r.y, tab_w, r.h);
+        const wid = ui.id(i);
+        const b = ui.behaviorEx(wid, cr, .{ .focusable = false });
+        if (b.pressed) v.* = @intCast(i);
+        const on = v.* == i;
+        const hot = ui.isHot(wid);
+        if (on) {
+            const body = Rect.xywh(cr.x, cr.y, cr.w - 1, cr.h);
+            ui.rect(body, style.face);
+            ui.rect(Rect.xywh(cr.right() - 1, cr.y, 1, cr.h - 1), style.edge);
+            ui.rect(Rect.xywh(body.x, body.y, 1, body.h), style.face_hi);
+            ui.rect(Rect.xywh(body.x, body.y, body.w, 2), style.accent);
+            ui.textIn(&ui.fonts.legend, body.insetXY(4, 0), lab, style.text, .center, true);
+        } else {
+            const body = Rect.xywh(cr.x, cr.y, cr.w - 1, cr.h - 1);
+            ui.vgrad(body, style.face.shade(-6), style.face.shade(-12));
+            ui.rect(Rect.xywh(cr.right() - 1, cr.y, 1, cr.h - 1), style.edge);
+            ui.textIn(&ui.fonts.legend, body.insetXY(4, 0), lab, if (hot) style.text else style.text_dim, .center, true);
+        }
+        if (hot) ui.setTouch("", lab);
+    }
+    return v.* != before;
+}
+
+/// A round LED that is its own switch (a row's on/off in a list).
+pub fn ledToggle(ui: *Ui, r: Rect, key: anytype, on: *bool, disabled: bool) bool {
+    const wid = ui.id(key);
+    const b = ui.behaviorEx(wid, r, .{ .disabled = disabled, .focusable = false });
+    if (b.clicked) on.* = !on.*;
+    const hot = ui.isHot(wid);
+    const x = r.x + @divFloor(r.w - 7, 2);
+    const y = r.y + @divFloor(r.h - 7, 2);
+    if (hot) ui.rect(Rect.xywh(x - 2, y - 2, 11, 11), style.face_hi.alpha(60));
+    led(ui, x, y, .round7, if (on.* and !disabled) .on else if (on.*) .dim else .off, style.led_amber);
+    return b.clicked;
 }
 
 /// A 5×3 ▾ at (x, y), pixel stairs.

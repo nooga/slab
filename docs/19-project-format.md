@@ -12,7 +12,8 @@ and `tools/slabkit`.
 | Command | Does |
 |---|---|
 | `slab Song.slab` | open a project (a package or a bare file) |
-| `slab song.slab --render out.wav` | bounce headless (no window, no device) to 24-bit stereo 48 kHz WAV and print peak/RMS. Renders from beat 0 to the last clip's end plus a 3 s tail. |
+| `slab song.slab --render out.wav` | export headless (no window, no device) to 24-bit stereo 48 kHz WAV and print peak/RMS. Renders from beat 0 to the last playing clip's end plus a 3 s tail that rings out. `.aif` writes AIFF, `.flac` FLAC, `.m4a` AAC (`--kbps`, `--alac` for Apple Lossless); `--bits 16\|24\|32f`, `--no-dither`, `--tail <s>\|auto`, `--normalize <LUFS>\|peak:<dBTP>`, `--rate 44100\|48000\|88200\|96000`, `--range <beat>:<beat>`, `--loop-wrap`, `--mono`, `--flac-level 0-8`, tags `--title`/`--artist`/`--album`/`--year`; prints integrated loudness, LRA and true peak too (docs/27 §Command line). |
+| `slab song.slab --stems dir/` | a stem per playing track into `dir/` (`<project>-<nn>-<track>`), from the same render as `--render` when both are given. `--stem-kind tracks\|buses\|all`, `--tap fx\|fader`. |
 | `slab --describe out.json` | dump every builtin machine's params, switch options and drum note labels from the live manifests |
 
 The render runs the same engine as playback, including the master
@@ -115,6 +116,7 @@ The document is JSON. Top level:
 | `tracks` | at most 16 |
 | `assets` | written on save: every file the project names, by its reference, with its `sha256`, the `origin` a collected copy came from, and an SFZ's or a folder's member `files` ([25-storage.md](25-storage.md) §The asset table). The loader doesn't need it. |
 | `master` | the master bus: `volume` (linear gain, default 1.0), `pan` (a balance control, not a pan law), `subsonic` (`true` turns on the 30 Hz subsonic filter, default `false`), `effects` |
+| `export` | the Export sheet's last settings ([27-bounce-export.md](27-bounce-export.md) §Export): `preset` (its name, or `CUSTOM`), what's written (`mix`, `mix_channels`, `stems`, `stem_signal` `instr`\|`fx`\|`fader`, `stem_channels` `stereo`\|`mono`\|`auto`), the range (`range`, `tail_auto`, `tail_sec`, `wrap`), the format (`container`, `bits`, `rate`, `flac_level`, `aac_kbps`, `dither`), the level (`normalize`, `lufs_target`, `peak_target`, `ceiling`, `stem_gain`), the names (`folder`, `mix_name`, `stem_name`, `exists`) and the tags (`title`, `artist`, `album`, `year`), and `reveal`. Indexes pick from the sheet's lists. Missing = the defaults (MASTER). |
 
 ### Track
 
@@ -146,6 +148,7 @@ The document is JSON. Top level:
 | `sends` | `[{"to": 10, "level": 0.5, "pre": false}]`: copies into buses, `level` linear gain 0–2 (1 = 0 dB), `pre` true taps before the fader. |
 | `automation` | track automation lanes, see below. Optional. |
 | `show_automation` | `true` shows the lanes under the track in the arrangement. |
+| `stem` | the track's stem in an export, when set by hand: `on` (missing: every track that plays writes one, buses don't), `signal` `instr`\|`fx`\|`fader` and `channels` `stereo`\|`mono`\|`auto` (missing: the export's default). |
 
 Signal flow per track: instrument (a bus: its routed input) → audio
 clips summed in → effects in order → volume → pan → its output (the
@@ -224,6 +227,13 @@ A **note clip**:
   the track's lane for the same target; where clips overlap, the one
   that starts later wins. Points past the clip's end are kept but
   don't play.
+- `"id"` (either kind): the clip's stable id; a bounce's recipe names its
+  source clips by it. A clip without one gets a fresh one.
+- `"recipe"` (a bounced audio clip): how it was made, docs/27
+  §Provenance.
+- `"muted": true` (either kind of clip): the clip stays on the
+  timeline but doesn't play: no notes, no audio, no clip lanes. A
+  render's range ignores muted clips. `0` toggles it on the selection.
 - At most 64 clips and 2048 notes per track.
 - Clips on one track may overlap, and both play.
 
