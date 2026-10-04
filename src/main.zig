@@ -1127,6 +1127,12 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         if (ares.rename_rect) |rr| rename.rect = rr;
+        // Tempo changes on the ruler: one undo step each, a drag included.
+        if (ares.tempo_edit != null or ares.tempo_drag_start) {
+            pushHistorySnapshot(alloc, &history, tracks, &transport);
+            if (ares.tempo_edit) |te| arrangement.applyTempoEdit(&transport, te);
+            dirty = true;
+        }
         if (ares.command == .bounce) {
             openBounce(&bounce_dlg, tracks, &status);
         } else if (ares.command == .rebounce) {

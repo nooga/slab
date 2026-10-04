@@ -407,7 +407,33 @@ pub const Result = struct {
     /// hung from this point.
     color_pick: ?ColorPick = null,
     rename_rect: ?c.rl.Rectangle = null,
+    /// A tempo change picked from the ruler menu: main takes the undo
+    /// snapshot and applies it (`applyTempoEdit`).
+    tempo_edit: ?TempoEdit = null,
+    /// A tempo value drag began (the edits start next frame): one undo
+    /// snapshot for the drag.
+    tempo_drag_start: bool = false,
 };
+
+/// A ruler edit of the tempo map (docs/28 §Tempo map), at `beat`.
+pub const TempoEdit = struct {
+    kind: enum { add, remove, toggle_ramp },
+    beat: f64,
+};
+
+/// Apply a ruler tempo edit to the live map.
+pub fn applyTempoEdit(transport: *Transport, e: TempoEdit) void {
+    const m = transport.tempo.edit();
+    switch (e.kind) {
+        .add => _ = m.put(e.beat, m.bpmAt(e.beat)),
+        .remove => if (m.find(e.beat)) |i| m.remove(i),
+        .toggle_ramp => {
+            const i = m.segment(e.beat);
+            m.points[i].ramp = !m.points[i].ramp;
+        },
+    }
+    transport.tempo.publish();
+}
 
 pub const ColorPick = struct { track: usize, at: [2]i32 };
 
@@ -511,11 +537,12 @@ pub fn abortClipMove(tracks: []Track) void {
 }
 
 pub fn cancelInteractions() bool {
-    const had_active = drag_mode != .none or box_active or ov_drag or ruler_drag or loop_start_drag or loop_end_drag or sbv_drag;
+    const had_active = drag_mode != .none or box_active or ov_drag or ruler_drag or tempo_drag != null or loop_start_drag or loop_end_drag or sbv_drag;
     drag_mode = .none;
     box_active = false;
     ov_drag = false;
     ruler_drag = false;
+    tempo_drag = null;
     loop_start_drag = false;
     loop_end_drag = false;
     sbv_drag = false;
@@ -1020,8 +1047,10 @@ pub fn draw(
     _ = ui.plate(bridge.fromRl(ruler_rect), .{});
     drawLoopRegion(ui, ruler_rect, timeline_x0, transport);
     drawBeatTicks(ui, ruler_rect, timeline_x, timeline_w, timeline_x0, edit_snap);
+    drawTempoMarks(ui, ruler_rect, timeline_x, timeline_w, timeline_x0);
     ui.unclip();
 
+    handleTempoDrag(transport, m, &result);
     handleLoopBounds(ruler_rect, timeline_x0, transport, edit_snap, m);
     // Click / drag the ruler to scrub the playhead.
     if (!loop_start_drag and !loop_end_drag) handleRulerScrub(ruler_rect, timeline_x0, transport, m);
@@ -1032,7 +1061,7 @@ pub fn draw(
         meter_menu_bar = cur_meter.beatToBarPos(b).bar;
         menu.openAt(METER_MENU_KEY, ipx(m.x), ipx(m.y));
     }
-    meterMenuTick(meter_state);
+    meterMenuTick(meter_state, &result);
 
     // ── Per-track lane + clips ───────────────────────────────────────
     var press_consumed = false;
@@ -1860,6 +1889,9 @@ fn moveSelectedClipsBetweenTracks(tracks: []Track, alloc: std.mem.Allocator, sel
 const METER_MENU_KEY: u64 = 0x4d_45_54_52_4d_4e_55_01; // "METRMNU"
 const METER_REMOVE_ID: u32 = 1000;
 const METER_GROUPS_ID: u32 = 1001;
+const TEMPO_ADD_ID: u32 = 3000;
+const TEMPO_RAMP_ID: u32 = 3001;
+const TEMPO_REMOVE_ID: u32 = 3002;
 // Grouping submenu rows: DEFAULT, then GROUP_BASE + choice index.
 const GROUP_DEFAULT_ID: u32 = 3000;
 const GROUP_BASE: u32 = 3001;
@@ -1915,9 +1947,9 @@ const METER_GENS = [_]MeterGen{
 var gen_pts: [meter_mod.MAX_POINTS]meter_mod.MeterPoint = undefined;
 var gen_nums: [64]u8 = undefined;
 
-fn meterMenuTick(meter_state: *meter_mod.MeterState) void {
+fn meterMenuTick(meter_state: *meter_mod.MeterState, result: *Result) void {
     if (!menu.isOpen(METER_MENU_KEY)) return;
-    var items: [METER_CHOICES.len + 3 + METER_GENS.len]menu.Item = undefined;
+    var items: [METER_CHOICES.len + 3 + METER_GENS.len + 4]menu.Item = undefined;
     inline for (METER_CHOICES, 0..) |ch, i| items[i] = .{ .label = ch.label, .id = @intCast(i) };
     // A change can be removed only if one starts exactly on the target bar
     // (and never bar 0, the base meter).
@@ -1930,9 +1962,26 @@ fn meterMenuTick(meter_state: *meter_mod.MeterState) void {
     items[METER_CHOICES.len + 1] = .{ .label = title, .id = METER_GROUPS_ID, .submenu = true, .enabled = n_groups > 0 };
     items[METER_CHOICES.len + 2] = .{ .label = "Remove change here", .id = METER_REMOVE_ID, .enabled = can_remove };
     inline for (METER_GENS, 0..) |g, i| items[METER_CHOICES.len + 3 + i] = .{ .label = g.label, .id = METER_GEN_BASE + @as(u32, @intCast(i)) };
+    // Tempo at the bar's downbeat: add a change, ramp the segment into the
+    // next, remove the change starting here.
+    const tb = cur_meter.barStartBeat(meter_menu_bar);
+    const tm = cur_tempo;
+    const at = tm.find(tb);
+    const seg_i = tm.segment(tb);
+    const t0 = METER_CHOICES.len + 3 + METER_GENS.len;
+    items[t0] = .{ .separator = true };
+    items[t0 + 1] = .{ .label = "Tempo change here", .id = TEMPO_ADD_ID, .enabled = at == null };
+    items[t0 + 2] = .{ .label = if (tm.points[seg_i].ramp) "\u{2022} Ramp to next tempo" else "Ramp to next tempo", .id = TEMPO_RAMP_ID, .enabled = seg_i + 1 < tm.len };
+    items[t0 + 3] = .{ .label = "Remove tempo change", .id = TEMPO_REMOVE_ID, .enabled = if (at) |i| i > 0 else false };
 
     if (menu.pick(METER_MENU_KEY, &items)) |id| {
-        if (id == METER_REMOVE_ID) {
+        if (id == TEMPO_ADD_ID or id == TEMPO_RAMP_ID or id == TEMPO_REMOVE_ID) {
+            result.tempo_edit = .{ .kind = switch (id) {
+                TEMPO_ADD_ID => .add,
+                TEMPO_RAMP_ID => .toggle_ramp,
+                else => .remove,
+            }, .beat = tb };
+        } else if (id == METER_REMOVE_ID) {
             meter_state.removeChange(meter_menu_bar);
         } else if (id >= METER_GEN_BASE) {
             const g = METER_GENS[id - METER_GEN_BASE];
@@ -2738,6 +2787,104 @@ fn drawBeatTicks(ui: *Ui, ruler: c.rl.Rectangle, timeline_x: f32, timeline_w: f3
     }
 }
 
+// ── Tempo changes on the ruler (docs/28 §Tempo map) ─────────────────
+
+const TEMPO_DRAG_KEY: u64 = 0x5C0B_0001_7E70_0001;
+/// The tempo labels drawn this frame, for dragging.
+const TempoHit = struct { r: Rect, index: usize };
+var tempo_hits: [64]TempoHit = undefined;
+var tempo_hit_n: usize = 0;
+var tempo_drag: ?usize = null;
+var tempo_drag_y: f32 = 0;
+var tempo_drag_bpm: f64 = 0;
+/// The drag's first frame only takes main's undo snapshot.
+var tempo_drag_armed = false;
+
+/// "140", "→140" where a ramp arrives, tenths when it isn't whole.
+fn tempoLabel(buf: []u8, m: *const tempo_mod.TempoMap, i: usize) []const u8 {
+    const p = m.points[i];
+    const arrow: []const u8 = if (i > 0 and m.points[i - 1].ramp) "\u{2192}" else "";
+    const whole = @round(p.bpm) == p.bpm;
+    return if (whole)
+        std.fmt.bufPrint(buf, "{s}{d}", .{ arrow, @as(i32, @intFromFloat(p.bpm)) }) catch "?"
+    else
+        std.fmt.bufPrint(buf, "{s}{d:.1}", .{ arrow, p.bpm }) catch "?";
+}
+
+/// Each tempo change after the start: a hairline and its value, after
+/// the bar number and meter when it falls on a downbeat. Drag a value up
+/// or down to change it.
+fn drawTempoMarks(ui: *Ui, ruler: c.rl.Rectangle, timeline_x: f32, timeline_w: f32, timeline_x0: f32) void {
+    tempo_hit_n = 0;
+    const m = cur_tempo;
+    if (m.len < 2) return;
+    const right = timeline_x + timeline_w - 2;
+    const ry = ipx(ruler.y);
+    const rh = ipx(ruler.height);
+    const f = &ui.fonts.legend;
+    for (m.points[1..m.len], 1..) |p, i| {
+        const x = beatToX(timeline_x0, p.beat);
+        if (x > right) break;
+        if (x < timeline_x - 40) continue;
+        // On a downbeat, step past the bar number and its meter label.
+        var off: i32 = 3;
+        const pos = cur_meter.beatToBarPos(p.beat);
+        if (@abs(cur_meter.barStartBeat(pos.bar) - p.beat) < 1e-6) {
+            var nb: [8]u8 = undefined;
+            off += f.measure(std.fmt.bufPrint(&nb, "{d}", .{pos.bar + 1}) catch "") + 4;
+            const seg = cur_meter.segmentForBar(pos.bar);
+            if (seg.start_bar == pos.bar) {
+                var mb: [12]u8 = undefined;
+                off += f.measure(std.fmt.bufPrint(&mb, "{d}/{d}", .{ seg.numerator, seg.denominator }) catch "") + 4;
+            }
+        }
+        const xi = ipx(x);
+        const lit = tempo_drag != null and tempo_drag.? == i;
+        const col = if (lit) ui_style.accent else ui_style.vfd;
+        ui.rect(Rect.xywh(xi, ry, 1, rh), col.alpha(140));
+        var buf: [16]u8 = undefined;
+        const s = tempoLabel(&buf, m, i);
+        const w = ui.engraved(f, xi + off, ry + 1, s, col) - (xi + off);
+        if (tempo_hit_n < tempo_hits.len) {
+            tempo_hits[tempo_hit_n] = .{ .r = Rect.xywh(xi + off - 2, ry, w + 4, rh), .index = i };
+            tempo_hit_n += 1;
+        }
+    }
+}
+
+/// Drag a tempo value: 1 BPM per 2 px, tenths with shift.
+fn handleTempoDrag(transport: *Transport, m: pane.Mouse, result: *Result) void {
+    if (tempo_drag) |i| {
+        pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 3);
+        if (!pane.isDraggingKey(TEMPO_DRAG_KEY) or !m.left_down) {
+            tempo_drag = null;
+            pane.cancelDrag();
+            return;
+        }
+        if (tempo_drag_armed) {
+            tempo_drag_armed = false;
+            return;
+        }
+        const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
+        const dy: f64 = @floatCast(tempo_drag_y - m.y);
+        const v = if (shift) @round((tempo_drag_bpm + dy * 0.1) * 10) / 10 else @round(tempo_drag_bpm + dy * 0.5);
+        if (i < transport.map().len and transport.map().points[i].bpm != tempo_mod.clampBpm(v)) transport.setBpmAt(i, @floatCast(v));
+        return;
+    }
+    for (tempo_hits[0..tempo_hit_n]) |h| {
+        if (!pane.contains(bridge.toRl(h.r), m.x, m.y)) continue;
+        pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 2);
+        if (!m.left_pressed or pane.hasActiveDrag()) return;
+        if (!pane.tryStartDrag(TEMPO_DRAG_KEY)) return;
+        tempo_drag = h.index;
+        tempo_drag_y = m.y;
+        tempo_drag_bpm = transport.map().points[h.index].bpm;
+        tempo_drag_armed = true;
+        result.tempo_drag_start = true;
+        return;
+    }
+}
+
 /// The strip opening the bus section: a flat bar across the timeline.
 fn drawBusDivider(ui: *Ui, r_: c.rl.Rectangle) void {
     const r = bridge.fromRl(r_);
@@ -3019,4 +3166,21 @@ test "splitting a reversed audio clip: the left part plays the window's tail" {
     try std.testing.expectApproxEqAbs(@as(f64, 1.0), right.start_sec, 1e-9);
     try std.testing.expectApproxEqAbs(@as(f64, 1.5), right.dur_sec, 1e-9);
     try std.testing.expect(left.reversed and right.reversed);
+}
+
+test "ruler tempo edits: add at the tempo in effect, ramp the segment, remove" {
+    var transport = Transport{};
+    transport.setBpm(100);
+    applyTempoEdit(&transport, .{ .kind = .add, .beat = 16 });
+    try std.testing.expectEqual(@as(usize, 2), transport.map().len);
+    try std.testing.expectEqual(@as(f64, 100), transport.map().points[1].bpm);
+    transport.setBpmAt(1, 140);
+    applyTempoEdit(&transport, .{ .kind = .toggle_ramp, .beat = 4 });
+    try std.testing.expect(transport.map().points[0].ramp);
+    try std.testing.expectApproxEqAbs(@as(f64, 120), transport.map().bpmAt(8), 1e-9);
+    applyTempoEdit(&transport, .{ .kind = .remove, .beat = 16 });
+    try std.testing.expectEqual(@as(usize, 1), transport.map().len);
+    // The first point stays.
+    applyTempoEdit(&transport, .{ .kind = .remove, .beat = 0 });
+    try std.testing.expectEqual(@as(usize, 1), transport.map().len);
 }

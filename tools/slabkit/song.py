@@ -7,6 +7,7 @@ bars laid end to end — and clips are normally placed on a section, so
 the arrangement reads like the song form.
 """
 import json
+import math
 import os
 import random
 import re
@@ -467,7 +468,8 @@ class AudioClip:
 
     @property
     def length(self):
-        return self.dur_sec * self.track.song.bpm / 60.0
+        song = self.track.song
+        return song.beat_at(song.seconds_at(self.start) + self.dur_sec) - self.start
 
     def to_json(self):
         return {"type": "audio", "name": self.name, "start": round(self.start, 6), "len": round(self.length, 6),
@@ -851,6 +853,8 @@ class Song:
         self.meter = meter
         self.loop = loop
         self.sections = []
+        self.tempos = []  # (beat, bpm, ramp) after the start, sorted
+        self.ramp = False
         self.tracks = []
         self.master_volume = 1.0
         self.master_subsonic = False
@@ -870,6 +874,53 @@ class Song:
     def warn(self, msg):
         if msg not in self.warnings:
             self.warnings.append(msg)
+
+    def tempo(self, bar, bpm, ramp=False):
+        """A tempo change at the start of `bar` (0-based; 0 sets the
+        song's tempo). ramp=True glides linearly from here to the next
+        change (docs/28 §Tempo map)."""
+        if bar == 0:
+            self.bpm, self.ramp = bpm, ramp
+            return self
+        beat = bar * self.bar_beats
+        self.tempos = sorted([t for t in self.tempos if t[0] != beat] + [(beat, bpm, ramp)])
+        return self
+
+    def _points(self):
+        return [(0.0, float(self.bpm), self.ramp)] + [(float(b), float(t), r) for b, t, r in self.tempos]
+
+    def _seg_seconds(self, pts, i, beat):
+        b0, t0, ramp = pts[i]
+        db = beat - b0
+        k = (pts[i + 1][1] - t0) / (pts[i + 1][0] - b0) if ramp and i + 1 < len(pts) else 0.0
+        if abs(k) < 1e-9:
+            return db * 60.0 / t0
+        return 60.0 / k * math.log((t0 + k * db) / t0)
+
+    def seconds_at(self, beat):
+        """Seconds from the start to `beat`, through the tempo changes."""
+        pts = self._points()
+        if beat <= 0:
+            return beat * 60.0 / pts[0][1]
+        t = 0.0
+        for i in range(len(pts)):
+            end = pts[i + 1][0] if i + 1 < len(pts) else math.inf
+            if beat <= end:
+                return t + self._seg_seconds(pts, i, beat)
+            t += self._seg_seconds(pts, i, end)
+
+    def beat_at(self, secs):
+        """The beat `secs` seconds in (bisection over seconds_at)."""
+        lo, hi = -1.0, 1.0
+        while self.seconds_at(hi) < secs:
+            hi *= 2
+        for _ in range(80):
+            mid = (lo + hi) / 2
+            if self.seconds_at(mid) < secs:
+                lo = mid
+            else:
+                hi = mid
+        return (lo + hi) / 2
 
     def section(self, name, bars):
         """Append a section of `bars` bars after the last one."""
@@ -937,7 +988,10 @@ class Song:
         return {
             "slab": "project",
             "schema": 1,
-            "transport": {"bpm": float(self.bpm), "loop": {"on": self.loop, "start": 0.0, "end": float(end)}},
+            "transport": dict({"bpm": float(self.bpm), "loop": {"on": self.loop, "start": 0.0, "end": float(end)}},
+                              **({"tempo": [dict({"beat": b, "bpm": float(t)}, **({"ramp": True} if r else {}))
+                                            for b, t, r in self.tempos]} if self.tempos else {}),
+                              **({"ramp": True} if self.ramp and self.tempos else {})),
             "meter": [dict({"bar": 0, "num": num, "den": den}, **({"groups": list(self.groups)} if self.groups else {}))],
             "tracks": [t.build(index) for t in self.tracks],
             "master": {"volume": self.master_volume, "pan": self.master_pan, "subsonic": self.master_subsonic,
@@ -961,7 +1015,7 @@ class Song:
             json.dump(project, f, indent=1)
         if not quiet:
             n = sum(len(c.get("notes", ())) for t in project["tracks"] for c in t["clips"])
-            secs = self.bars * self.bar_beats * 60 / self.bpm
+            secs = self.seconds_at(self.bars * self.bar_beats)
             print(f"saved {os.path.relpath(path)}: {len(project['tracks'])} tracks, {n} notes, "
                   f"{self.bars} bars, {int(secs // 60)}:{int(secs % 60):02d}")
             for w in self.warnings:
@@ -979,7 +1033,7 @@ class Song:
         path = self.save(getattr(self, "_path", None), quiet=not report)
         wav = wav or os.path.splitext(path)[0] + ".wav"
         _bounce(path, wav)
-        secs = [(s.name, s.start * 60 / self.bpm, s.end * 60 / self.bpm) for s in self.sections]
+        secs = [(s.name, self.seconds_at(s.start), self.seconds_at(s.end)) for s in self.sections]
         mix = analyze_wav(wav, secs)
         stem_stats = []
         if stems:
