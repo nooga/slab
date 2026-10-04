@@ -442,7 +442,7 @@ came out 0.2 % and 1.6 % smaller than `flac -5`, within 0.3 % of
 1. **Clip mute** (built).
 2. **Bounce selection** (built).
 3. **Export dialog and one-pass stems** (built; SECTIONS waits for
-   locator markers, MASTER FX stems are open).
+   sections, docs/28, MASTER FX stems are open).
 4. **FLAC encoder**, **ALAC and AAC** (built).
 5. **Loudness**: `loudness.zig`, NORMALIZE, the report card (built).
 6. **Resampler** for 44.1/88.2/96 kHz (built).
@@ -460,7 +460,8 @@ Later, not designed here:
 - **Bounce to sampler**: the selection becomes a sampler instrument,
   sliced at its notes or as one chromatic sample.
 - **Freeze**: a whole track rendered to replace its instrument and
-  inserts for CPU, built on the same recipe and render mask.
+  inserts for CPU, built on the same recipe and render mask
+  ([docs/28](28-time.md#freeze)).
 - **Resample input**: record the master or another track live, as a
   track's input (docs/07 §Recording, Deferred).
 - **Recipes without the audio**: since a fresh recipe reproduces its
