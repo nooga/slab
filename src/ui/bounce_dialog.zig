@@ -40,7 +40,7 @@ pub const State = struct {
 pub const Result = enum { none, cancel, bounce };
 
 const W: i32 = 320;
-const H: i32 = 172;
+const H: i32 = 190;
 const ROW_H: i32 = 20;
 /// The longest tail: AUTO renders up to this and stops at silence.
 pub const TAIL_MAX = export_dialog.TAIL_MAX;

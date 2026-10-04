@@ -306,7 +306,7 @@ isn't verified.
 
 ### Normalize and the loudness report
 
-**NORMALIZE**: OFF (default, as mixed), PEAK (the mix's true peak to
+**LEVEL** (normalize): OFF (default, as mixed), PEAK (the mix's true peak to
 −0.1, −1 or −3 dBTP) or LUFS (its integrated loudness to −9, −14, −16
 or −23 LUFS, lowered if that would push the true peak past −1 dBTP). It
 is one gain for the whole file, never limiting: the master chain is

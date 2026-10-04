@@ -4,6 +4,7 @@
 //! the app will be (transport, arrangement, piano roll, machine bay);
 //! CONCOCTION — the prototype of that machine's panel cards.
 //! BROWSER — the library browser prototype (gallery_browser.zig).
+//! DIALOGS — Export Audio, its report card, and Bounce (docs/27).
 //! Everything is packed: plates tile the window with shared 1px seams.
 
 const std = @import("std");
@@ -15,6 +16,8 @@ const surf = @import("surfaces.zig");
 const concoction = @import("gallery_concoction.zig");
 const browser = @import("gallery_browser.zig");
 const menu = @import("menu.zig");
+const export_dialog = @import("export_dialog.zig");
+const bounce_dialog = @import("bounce_dialog.zig");
 
 const Ui = core.Ui;
 const Rect = core.Rect;
@@ -22,6 +25,9 @@ const Color = style.Color;
 
 const State = struct {
     page: u8 = 1,
+    export_dlg: export_dialog.State = .{ .active = true, .what = 2, .normalize = 2, .loop_wrap = true, .range = 1 },
+    export_card: export_dialog.State = .{},
+    bounce_dlg: bounce_dialog.State = .{ .active = true },
     zoom: u8 = 0, // index into ZOOMS
     materials_on: bool = true,
     running: bool = true,
@@ -138,8 +144,25 @@ fn frame(ui: *Ui, st: *State, cn: *concoction.State, br: *browser.State, build_m
         0 => controlsPage(ui, screen, st),
         1 => dawPage(ui, screen, st),
         2 => concoction.page(ui, screen, cn),
-        else => browser.page(ui, screen, br),
+        3 => browser.page(ui, screen, br),
+        else => dialogsPage(ui, screen, st),
     }
+}
+
+/// The export and bounce dialogs side by side, each centered in its third
+/// of the page as it would be in the window.
+fn dialogsPage(ui: *Ui, screen_in: Rect, st: *State) void {
+    var screen = screen_in;
+    const w = @divFloor(screen.w, 3);
+    _ = export_dialog.draw(ui, screen.cutLeft(w), &st.export_dlg, .{ .loop = true, .selection = true }, null);
+    if (st.export_card.card == null) {
+        var card = export_dialog.Card{ .has_mix = true, .lufs = -12.4, .lra = 3.4, .true_peak = -0.6, .gain_db = 1.6, .files = 7, .secs = 20.9 };
+        const names = [_][]const u8{ "PIANO", "BITE", "PAD", "SPARKLE L", "LEAD", "SYNTH BASS", "KICK", "SNARE", "PERC", "HATS" };
+        for (names, 0..) |n, i| card.addStem(n, -18 - @as(f64, @floatFromInt(i)) * 1.3);
+        st.export_card = .{ .active = true, .card = card };
+    }
+    _ = export_dialog.draw(ui, screen.cutLeft(w), &st.export_card, .{ .loop = true, .selection = true }, null);
+    _ = bounce_dialog.draw(ui, screen, &st.bounce_dlg, 2, null);
 }
 
 fn header(ui: *Ui, r: Rect, st: *State, build_ms: f64) void {
@@ -150,7 +173,7 @@ fn header(ui: *Ui, r: Rect, st: *State, build_ms: f64) void {
     var bar = r;
     const logo = ui.plate(bar.cutLeft(52), .{});
     ui.textIn(&ui.fonts.body_bold, logo.insetXY(4, 0), "SLAB", style.accent, .left, true);
-    _ = ctl.segmentedFlush(ui, bar.cutLeft(372), "page", &st.page, &.{ "CONTROLS", "DAW", "CONCOCTION", "BROWSER" });
+    _ = ctl.segmentedFlush(ui, bar.cutLeft(450), "page", &st.page, &.{ "CONTROLS", "DAW", "CONCOCTION", "BROWSER", "DIALOGS" });
 
     var buf: [48]u8 = undefined;
     const s = std.fmt.bufPrint(&buf, "UI {d:.2}MS {d}CMD", .{ build_ms, ui.dl.len }) catch "";

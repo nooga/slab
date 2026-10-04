@@ -113,7 +113,7 @@ pub const Card = struct {
 pub const Result = enum { none, cancel, render };
 
 const W: i32 = 340;
-const H: i32 = 314;
+const H: i32 = 290;
 const ROW_H: i32 = 20;
 /// The longest tail: AUTO renders up to this and stops at silence.
 pub const TAIL_MAX: f32 = 30;
@@ -214,7 +214,7 @@ fn drawOptions(ui: *Ui, body_in: Rect, state: *State, avail: Avail) void {
     }
     choice(ui, dialog.row(ui, &body, "RATE", ROW_H), &.{ "44.1", "48", "88.2", "96" }, &state.rate, &.{});
     {
-        var r = dialog.row(ui, &body, "NORMALIZE", ROW_H);
+        var r = dialog.row(ui, &body, "LEVEL", ROW_H);
         choice(ui, r.cutLeft(126), &.{ "OFF", "PEAK", "LUFS" }, &state.normalize, &.{ false, state.whatMode() == .stems, state.whatMode() == .stems });
         _ = r.cutLeft(8);
         ui.pushId("target");
@@ -246,7 +246,7 @@ fn drawCard(ui: *Ui, screen: Rect, card: *const Card) bool {
     row(ui, &body, "FILES", std.fmt.bufPrint(&buf, "{d}  {d:.1} S", .{ card.files, card.secs }) catch "", style.text);
     if (card.has_mix) {
         row(ui, &body, "LOUDNESS", std.fmt.bufPrint(&buf, "{d:.1} LUFS  LRA {d:.1} LU", .{ card.lufs, card.lra }) catch "", style.text);
-        row(ui, &body, "TRUE PEAK", std.fmt.bufPrint(&buf, "{d:.1} DBTP", .{card.true_peak}) catch "", if (card.true_peak > -1) style.vfd else style.text);
+        row(ui, &body, "PEAK", std.fmt.bufPrint(&buf, "{d:.1} DBTP", .{card.true_peak}) catch "", if (card.true_peak > -1) style.vfd else style.text);
         row(ui, &body, "GAIN", std.fmt.bufPrint(&buf, "{s}{d:.1} DB", .{ if (card.gain_db >= 0) "+" else "", card.gain_db }) catch "", style.text);
     }
     if (card.stem_count > 0) {
