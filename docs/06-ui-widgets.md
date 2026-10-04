@@ -557,7 +557,19 @@ engraved rule; it returns the body, the button row, and whether Enter or
 Esc was pressed. Bodies are packed rows (`row(ui, &body, "LABEL", h)`:
 engraved legend, then catalogue controls: latches, sliders, dot-matrix
 displays). `buttons(ui, r, labels, default)` is a right-aligned row of
-76px caps; the default (Enter's action) is lit green. Dialogs are modal:
+76px caps; the default (Enter's action) is lit green. `Frame.title` is
+the title bar right of the title, for a dialog's own controls (the
+Export sheet's preset). Longer dialogs are **sections**, not walls of
+caps: `section` heads one with an engraved legend and a rule,
+`rowW` is a row with a wider label column, and `hint` puts a dim line
+of explanation under a control. Choices of more than three options
+are display selects (dropdowns), not rows of latches; a select can show
+what a DEFAULT entry stands for, dimmed (`SelectOpts.shown`, `dim`) and
+can be `disabled`. A dialog with more than one page uses **tabs**
+(`ctl.tabs`): flush tiles across the dialog under its title, the chosen
+one the plate below it with an amber top edge, ⌘1… to pick; whatever
+belongs to every page sits beside them. A list of on/off rows uses
+`ctl.ledToggle`, a round LED that is its own switch. Dialogs are modal:
 the host calls `Ui.suppressInput()` while one is open, and `begin` hands
 the input back to the dialog's widgets (`Ui.unsuppressInput`) unless a
 menu opened from the dialog owns it.

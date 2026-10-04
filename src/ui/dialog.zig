@@ -25,6 +25,8 @@ const BUTTON_W: i32 = 76;
 const BUTTON_H: i32 = 20;
 
 pub const Frame = struct {
+    /// The title bar right of the title, for controls of its own.
+    title: Rect,
     /// Content area between the title and the button row.
     body: Rect,
     /// Button row (pass to `buttons`).
@@ -43,13 +45,14 @@ pub fn begin(ui: *Ui, screen: Rect, key: anytype, title: []const u8, w: i32, h: 
     const r = screen.center(w, h);
     var body = ui.plate(r, .{ .outline = .all, .chamfer = 3 });
     const head = body.cutTop(TITLE_H - 2);
-    _ = ui.engraved(&ui.fonts.body_bold, head.x + 7, head.y + @divFloor(head.h - 16, 2) + 1, title, style.text);
+    const tw = ui.engraved(&ui.fonts.body_bold, head.x + 7, head.y + @divFloor(head.h - 16, 2) + 1, title, style.text);
     ui.rect(Rect.xywh(body.x + 4, body.y, body.w - 8, 1), style.face_lo);
     ui.rect(Rect.xywh(body.x + 4, body.y + 1, body.w - 8, 1), style.face_hi);
     _ = body.cutTop(2);
     const btns = body.cutBottom(BUTTONS_H);
     const in = &ui.in;
     return .{
+        .title = Rect.xywh(tw + 12, head.y, head.right() - tw - 16, head.h),
         .body = body.insetXY(8, 6),
         .buttons = btns.insetXY(8, 0),
         .enter = in.keyPressed(c.rl.KEY_ENTER) or in.keyPressed(c.rl.KEY_KP_ENTER),
@@ -86,6 +89,34 @@ pub fn row(ui: *Ui, body: *Rect, label: []const u8, h: i32) Rect {
     const lab = r.cutLeft(52);
     ui.textIn(&ui.fonts.legend, lab, label, style.text_dim, .left, true);
     return r;
+}
+
+/// `row` with a label column `lw` wide.
+pub fn rowW(ui: *Ui, body: *Rect, label: []const u8, h: i32, lw: i32) Rect {
+    var r = body.cutTop(h);
+    _ = body.cutTop(6);
+    const lab = r.cutLeft(lw);
+    ui.textIn(&ui.fonts.legend, lab, label, style.text_dim, .left, true);
+    return r;
+}
+
+/// A section's head: an engraved legend and a rule to its right.
+pub fn section(ui: *Ui, body: *Rect, label: []const u8) void {
+    const r = body.cutTop(14);
+    _ = body.cutTop(4);
+    const w = ui.fonts.legend.measure(label);
+    ui.textIn(&ui.fonts.legend, Rect.xywh(r.x, r.y, w + 2, r.h), label, style.text, .left, true);
+    const y = r.y + @divFloor(r.h, 2);
+    ui.rect(Rect.xywh(r.x + w + 8, y, r.w - w - 8, 1), style.face_lo);
+    ui.rect(Rect.xywh(r.x + w + 8, y + 1, r.w - w - 8, 1), style.face_hi);
+}
+
+/// A line of explanation under a control, indented to the controls'
+/// column (`indent`).
+pub fn hint(ui: *Ui, body: *Rect, text: []const u8, indent: i32) void {
+    const r = body.cutTop(12);
+    _ = body.cutTop(6);
+    ui.textIn(&ui.fonts.legend, Rect.xywh(r.x + indent, r.y, r.w - indent, r.h), text, style.text_mute, .left, false);
 }
 
 /// A yes/no question: `lines` of text over CANCEL and `ok`. Enter picks
