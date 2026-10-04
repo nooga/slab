@@ -76,10 +76,29 @@ pub const Format = struct {
     year: []const u8 = "",
     comment: []const u8 = "",
     bpm: f64 = 0,
+    /// WAV only (docs/28 §Locators and sections): cue points (the
+    /// locators and section starts in the file, a `cue ` chunk named by
+    /// `adtl` labels) and the `acid` chunk that tells a loop's tempo and
+    /// length to the apps that sync loops.
+    cues: []const Cue = &.{},
+    acid: ?Acid = null,
 
     fn hasTags(f: Format) bool {
         return f.title.len > 0 or f.artist.len > 0 or f.album.len > 0 or f.year.len > 0 or f.comment.len > 0 or f.bpm > 0;
     }
+};
+
+pub const Cue = struct {
+    /// Frames from the file's start, at its rate.
+    frame: u32,
+    name: []const u8,
+};
+
+pub const Acid = struct {
+    beats: u32,
+    num: u16 = 4,
+    den: u16 = 4,
+    bpm: f32,
 };
 
 extern fn slab_write_m4a(path: [*:0]const u8, ints: ?[*]const c_int, floats: ?[*]const f32, frames: c_ulong, channels: c_int, rate: f64, alac: c_int, bits: c_int, bitrate: c_int) c_int;
@@ -193,8 +212,10 @@ pub fn encode(alloc: std.mem.Allocator, samples: []const f32, f: Format) ![]u8 {
                 try infoChunk(alloc, &out, "ISFT", "Slab");
                 std.mem.writeInt(u32, out.items[at + 4 ..][0..4], @intCast(out.items.len - at - 8), .little);
                 try id3Chunk(alloc, &out, "id3 ", f, .little);
-                std.mem.writeInt(u32, out.items[4..8], @intCast(out.items.len - 8), .little);
             }
+            try cueChunks(alloc, &out, f.cues);
+            if (f.acid) |a| try acidChunk(alloc, &out, a);
+            std.mem.writeInt(u32, out.items[4..8], @intCast(out.items.len - 8), .little);
         },
         .flac, .alac, .aac => unreachable,
         .aiff => {
@@ -281,6 +302,59 @@ fn writeSamples(out: *std.ArrayList(u8), samples: []const f32, f: Format, endian
             if (endian == .little) out.appendSliceAssumeCapacity(&b) else out.appendSliceAssumeCapacity(&.{ b[2], b[1], b[0] });
         },
     };
+}
+
+/// A `cue ` chunk with a point per cue and a LIST/adtl of their `labl`
+/// names. Nothing when there are none.
+fn cueChunks(alloc: std.mem.Allocator, out: *std.ArrayList(u8), cues: []const Cue) !void {
+    if (cues.len == 0) return;
+    var b: [4]u8 = undefined;
+    try out.appendSlice(alloc, "cue ");
+    std.mem.writeInt(u32, &b, @intCast(4 + 24 * cues.len), .little);
+    try out.appendSlice(alloc, &b);
+    std.mem.writeInt(u32, &b, @intCast(cues.len), .little);
+    try out.appendSlice(alloc, &b);
+    for (cues, 1..) |cue, id| {
+        for ([_]u32{ @intCast(id), cue.frame }) |v| {
+            std.mem.writeInt(u32, &b, v, .little);
+            try out.appendSlice(alloc, &b);
+        }
+        try out.appendSlice(alloc, "data");
+        for ([_]u32{ 0, 0, cue.frame }) |v| {
+            std.mem.writeInt(u32, &b, v, .little);
+            try out.appendSlice(alloc, &b);
+        }
+    }
+    const at = out.items.len;
+    try out.appendSlice(alloc, "LIST\x00\x00\x00\x00adtl");
+    for (cues, 1..) |cue, id| {
+        try out.appendSlice(alloc, "labl");
+        std.mem.writeInt(u32, &b, @intCast(4 + cue.name.len + 1), .little);
+        try out.appendSlice(alloc, &b);
+        std.mem.writeInt(u32, &b, @intCast(id), .little);
+        try out.appendSlice(alloc, &b);
+        try out.appendSlice(alloc, cue.name);
+        try out.append(alloc, 0);
+        if ((cue.name.len + 1) & 1 != 0) try out.append(alloc, 0);
+    }
+    std.mem.writeInt(u32, out.items[at + 4 ..][0..4], @intCast(out.items.len - at - 8), .little);
+}
+
+/// The `acid` chunk: a loop (stretchable, not a one-shot), root C4, its
+/// length in beats, meter and tempo.
+fn acidChunk(alloc: std.mem.Allocator, out: *std.ArrayList(u8), a: Acid) !void {
+    var c: [32]u8 = undefined;
+    @memcpy(c[0..4], "acid");
+    std.mem.writeInt(u32, c[4..8], 24, .little);
+    std.mem.writeInt(u32, c[8..12], 0x04, .little); // stretch
+    std.mem.writeInt(u16, c[12..14], 60, .little); // root note
+    std.mem.writeInt(u16, c[14..16], 0x8000, .little);
+    std.mem.writeInt(u32, c[16..20], 0, .little);
+    std.mem.writeInt(u32, c[20..24], a.beats, .little);
+    std.mem.writeInt(u16, c[24..26], a.den, .little);
+    std.mem.writeInt(u16, c[26..28], a.num, .little);
+    std.mem.writeInt(u32, c[28..32], @bitCast(a.bpm), .little);
+    try out.appendSlice(alloc, &c);
 }
 
 /// A RIFF INFO entry: the text NUL-terminated, padded to even.
@@ -470,15 +544,17 @@ pub const NameFields = struct {
     nn: usize = 0,
     track: []const u8 = "",
     section: []const u8 = "",
+    /// The section's place in the song, 1-based, two digits.
+    sn: usize = 0,
     /// YYYY-MM-DD.
     date: []const u8 = "",
     bpm: f64 = 0,
 };
 
 /// The template fields, as the name field's token menu offers them.
-pub const NAME_TOKENS = [_][]const u8{ "{project}", "{track}", "{nn}", "{date}", "{bpm}" };
+pub const NAME_TOKENS = [_][]const u8{ "{project}", "{track}", "{nn}", "{section}", "{sn}", "{date}", "{bpm}" };
 
-/// Fill `template`'s `{project}`, `{track}`, `{nn}`, `{section}`, `{date}`
+/// Fill `template`'s `{project}`, `{track}`, `{nn}`, `{section}`, `{sn}`, `{date}`
 /// and `{bpm}`. A `/` in the template makes a folder; in a field's value
 /// it, like other characters a file name can't hold, becomes `-`.
 pub fn fillName(buf: []u8, template: []const u8, f: NameFields) []const u8 {
@@ -503,6 +579,8 @@ pub fn fillName(buf: []u8, template: []const u8, f: NameFields) []const u8 {
                 std.fmt.bufPrint(&num_buf, "{d}", .{@round(f.bpm * 100) / 100}) catch ""
             else if (std.mem.eql(u8, key, "nn"))
                 std.fmt.bufPrint(&num_buf, "{d:0>2}", .{f.nn}) catch ""
+            else if (std.mem.eql(u8, key, "sn"))
+                std.fmt.bufPrint(&num_buf, "{d:0>2}", .{f.sn}) catch ""
             else
                 null;
             if (field) |v| {
@@ -530,6 +608,27 @@ pub fn fillName(buf: []u8, template: []const u8, f: NameFields) []const u8 {
         }
     }
     return buf[0..n];
+}
+
+/// A name template for one file per section (docs/28 §Export by
+/// section): as it is when it names `{section}` or `{sn}`; else the mix
+/// gets " {sn} {section}" after its name, and a stem a "{sn} {section}"
+/// folder before its own.
+pub fn sectionTemplate(buf: []u8, template: []const u8, stem: bool) []const u8 {
+    if (std.mem.indexOf(u8, template, "{section}") != null or std.mem.indexOf(u8, template, "{sn}") != null) return template;
+    if (!stem) return std.fmt.bufPrint(buf, "{s} {{sn}} {{section}}", .{template}) catch template;
+    const cut = if (std.mem.lastIndexOfScalar(u8, template, '/')) |i| i + 1 else 0;
+    return std.fmt.bufPrint(buf, "{s}{{sn}} {{section}}/{s}", .{ template[0..cut], template[cut..] }) catch template;
+}
+
+test "section templates" {
+    var b: [128]u8 = undefined;
+    try std.testing.expectEqualStrings("{project} {sn} {section}", sectionTemplate(&b, "{project}", false));
+    try std.testing.expectEqualStrings("{project} stems/{sn} {section}/{nn} {track}", sectionTemplate(&b, "{project} stems/{nn} {track}", true));
+    try std.testing.expectEqualStrings("{sn} {section}/{track}", sectionTemplate(&b, "{track}", true));
+    try std.testing.expectEqualStrings("{section}-{track}", sectionTemplate(&b, "{section}-{track}", true));
+    var nb: [128]u8 = undefined;
+    try std.testing.expectEqualStrings("Song 02 verse", fillName(&nb, sectionTemplate(&b, "{project}", false), .{ .project = "Song", .sn = 2, .section = "verse" }));
 }
 
 const Tm = extern struct {
@@ -709,4 +808,39 @@ test "fillName fills the fields and keeps paths flat" {
     try testing.expectEqualStrings("stems/03 Kick-Snare", fillName(&buf, "/stems//{nn} {track}", .{ .nn = 3, .track = "Kick/Snare" }));
     try testing.expectEqualStrings("--/x", fillName(&buf, "../x", .{}));
     try testing.expectEqualStrings("Song 124 2026-10-04", fillName(&buf, "{project} {bpm} {date}", .{ .project = "Song", .bpm = 124, .date = "2026-10-04" }));
+}
+
+test "WAV cue points and the acid chunk" {
+    const alloc = std.testing.allocator;
+    const x = [_]f32{0} ** 64;
+    const bytes = try encode(alloc, &x, .{ .bits = .pcm16, .cues = &.{ .{ .frame = 0, .name = "intro" }, .{ .frame = 20, .name = "drop!" } }, .acid = .{ .beats = 16, .num = 7, .den = 8, .bpm = 140 } });
+    defer alloc.free(bytes);
+    try std.testing.expectEqual(@as(u32, @intCast(bytes.len - 8)), std.mem.readInt(u32, bytes[4..8], .little));
+    // Walk the chunks.
+    var at: usize = 12;
+    var seen_cue = false;
+    var seen_acid = false;
+    var labels: usize = 0;
+    while (at + 8 <= bytes.len) {
+        const id = bytes[at..][0..4];
+        const len = std.mem.readInt(u32, bytes[at + 4 ..][0..4], .little);
+        const body = bytes[at + 8 ..][0..len];
+        if (std.mem.eql(u8, id, "cue ")) {
+            seen_cue = true;
+            try std.testing.expectEqual(@as(u32, 2), std.mem.readInt(u32, body[0..4], .little));
+            try std.testing.expectEqual(@as(u32, 20), std.mem.readInt(u32, body[4 + 24 + 4 ..][0..4], .little));
+        } else if (std.mem.eql(u8, id, "LIST") and std.mem.eql(u8, body[0..4], "adtl")) {
+            labels = std.mem.count(u8, body, "labl");
+            try std.testing.expect(std.mem.indexOf(u8, body, "drop!\x00") != null);
+        } else if (std.mem.eql(u8, id, "acid")) {
+            seen_acid = true;
+            try std.testing.expectEqual(@as(u32, 16), std.mem.readInt(u32, body[12..16], .little));
+            try std.testing.expectEqual(@as(u16, 8), std.mem.readInt(u16, body[16..18], .little));
+            try std.testing.expectEqual(@as(u16, 7), std.mem.readInt(u16, body[18..20], .little));
+            try std.testing.expectEqual(@as(f32, 140), @as(f32, @bitCast(std.mem.readInt(u32, body[20..24], .little))));
+        }
+        at += 8 + len + (len & 1);
+    }
+    try std.testing.expect(seen_cue and seen_acid);
+    try std.testing.expectEqual(@as(usize, 2), labels);
 }

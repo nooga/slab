@@ -36,6 +36,22 @@ pub const Stem = struct {
     channels: Channels = .stereo,
 };
 
+/// One section's file (docs/28 §Export by section): engine samples from
+/// `Options.start`.
+pub const Cut = struct {
+    name: []const u8,
+    start: u64,
+    end: u64,
+    /// Its tempo and length for loop apps; null when the tempo moves.
+    acid: ?export_mod.Acid = null,
+};
+
+/// A cue point: engine samples from `Options.start`.
+pub const Mark = struct {
+    at: u64,
+    name: []const u8,
+};
+
 pub const Options = struct {
     /// Every file goes under `folder` (made if missing), named by a
     /// template (export.fillName; a `/` in it makes a subfolder) and the
@@ -71,6 +87,12 @@ pub const Options = struct {
     /// LOOP-WRAP (docs/27 §Range): the tail is added back onto the start
     /// and every file is exactly the range long, so it loops seamlessly.
     loop_wrap: bool = false,
+    /// One file per section instead of one per mix and stem: each cut at
+    /// its section's bounds so they join back into the song, the last
+    /// with the tail. Empty: whole files.
+    sections: []const Cut = &.{},
+    /// WAV cue points: the locators and section starts in a file.
+    marks: []const Mark = &.{},
 
     fn hasStems(o: *const Options) bool {
         for (o.stems) |st| if (st.tap != .none) return true;
@@ -261,10 +283,7 @@ pub fn run(
             if (@abs(v) >= 0.999) report.over += 1;
         }
         report.rms = if (m.len > 0) @sqrt(sq / @as(f64, @floatFromInt(m.len))) else 0;
-        var path_buf: [storage.MAX_PATH]u8 = undefined;
-        const path = try names.next(&path_buf, template, 0, "");
-        try writeAs(alloc, path, m, opts.format, opts.mix_channels);
-        report.noteFile(path);
+        try emit(alloc, &opts, &names, &report, template, 0, "", m, opts.format, opts.mix_channels, rate);
     }
     if (opts.hasStems()) {
         const stem_gain: f32 = if (opts.stem_gain == .mix) gain else 1;
@@ -288,13 +307,10 @@ pub fn run(
             defer alloc.free(out);
             lv.lufs = (try loudness.measure(alloc, out, out_rate)).integrated;
             report.stem_count += 1;
-            var path_buf: [storage.MAX_PATH]u8 = undefined;
-            const path = try names.next(&path_buf, opts.stem_name, nn, t.name());
             var sf = opts.format;
             var title_buf: [256]u8 = undefined;
             sf.title = if (opts.format.title.len > 0) std.fmt.bufPrint(&title_buf, "{s} - {s}", .{ opts.format.title, t.name() }) catch t.name() else t.name();
-            try writeAs(alloc, path, out, sf, opts.stems[ti].channels);
-            report.noteFile(path);
+            try emit(alloc, &opts, &names, &report, opts.stem_name, nn, t.name(), out, sf, opts.stems[ti].channels, rate);
         }
     }
     return report;
@@ -305,14 +321,14 @@ pub fn run(
 const Names = struct {
     opts: *const Options,
     /// Hashes of the paths this export wrote.
-    taken: [routing.MAX_TRACKS + 1]u64 = undefined,
+    taken: [(routing.MAX_TRACKS + 1) * @import("markers.zig").MAX_SECTIONS]u64 = undefined,
     count: usize = 0,
 
-    fn next(self: *Names, buf: []u8, template: []const u8, nn: usize, track: []const u8) ![]const u8 {
+    fn next(self: *Names, buf: []u8, template: []const u8, nn: usize, track: []const u8, sn: usize, section: []const u8) ![]const u8 {
         const o = self.opts;
         const folder = if (nn > 0) o.stem_folder orelse o.folder else o.folder;
         var name_buf: [256]u8 = undefined;
-        var name = export_mod.fillName(&name_buf, template, .{ .project = o.project, .nn = nn, .track = track, .date = o.date, .bpm = o.format.bpm });
+        var name = export_mod.fillName(&name_buf, template, .{ .project = o.project, .nn = nn, .track = track, .sn = sn, .section = section, .date = o.date, .bpm = o.format.bpm });
         if (name.len == 0 or name[name.len - 1] == '/') name = if (track.len > 0) track else "export";
         const ext = o.format.container.ext();
         var k: usize = 1;
@@ -332,6 +348,58 @@ const Names = struct {
         }
     }
 };
+
+/// Engine samples `at` as a frame of the file, clamped to its `n`.
+fn toOut(at: u64, from: u32, to: u32, n: usize) usize {
+    return @min(n, @as(usize, @intCast(at * to / from)));
+}
+
+/// Write one output (the mix or a stem, interleaved stereo at the file's
+/// rate): whole, or one file per section. Each file gets the cue points
+/// that fall in it.
+fn emit(alloc: std.mem.Allocator, opts: *const Options, names: *Names, report: *Report, template: []const u8, nn: usize, track: []const u8, x: []const f32, f: export_mod.Format, ch: Channels, rate: u32) !void {
+    const frames = x.len / 2;
+    const out_rate = f.sample_rate;
+    const cues = try alloc.alloc(export_mod.Cue, opts.marks.len);
+    defer alloc.free(cues);
+    var path_buf: [storage.MAX_PATH]u8 = undefined;
+    if (opts.sections.len == 0) {
+        var g = f;
+        var n: usize = 0;
+        for (opts.marks) |mk| {
+            const at = toOut(mk.at, rate, out_rate, frames);
+            if (at >= frames) continue;
+            cues[n] = .{ .frame = @intCast(at), .name = mk.name };
+            n += 1;
+        }
+        g.cues = cues[0..n];
+        const path = try names.next(&path_buf, template, nn, track, 0, "");
+        try writeAs(alloc, path, x, g, ch);
+        report.noteFile(path);
+        return;
+    }
+    var tb: [256]u8 = undefined;
+    const tmpl = export_mod.sectionTemplate(&tb, template, nn > 0);
+    for (opts.sections, 0..) |cut, k| {
+        const a = toOut(cut.start, rate, out_rate, frames);
+        // The last section keeps the tail.
+        const b = if (k + 1 == opts.sections.len) frames else toOut(cut.end, rate, out_rate, frames);
+        if (b <= a) continue;
+        var g = f;
+        g.acid = cut.acid;
+        var n: usize = 0;
+        for (opts.marks) |mk| {
+            const at = toOut(mk.at, rate, out_rate, frames);
+            if (at < a or at >= b) continue;
+            cues[n] = .{ .frame = @intCast(at - a), .name = mk.name };
+            n += 1;
+        }
+        g.cues = cues[0..n];
+        const path = try names.next(&path_buf, tmpl, nn, track, k + 1, cut.name);
+        try writeAs(alloc, path, x[a * 2 .. b * 2], g, ch);
+        report.noteFile(path);
+    }
+}
 
 fn exists(path: []const u8) bool {
     var z: [storage.MAX_PATH + 1]u8 = undefined;
@@ -563,4 +631,65 @@ test "run: LOUDNESS normalize takes the mix to its target and the stems by the s
     var tpeak: f64 = 0;
     for (tone.data) |v| tpeak = @max(tpeak, @abs(v));
     try testing.expectApproxEqAbs(0.1 * @cos(std.math.pi / 4.0), tpeak, 1e-3);
+}
+
+test "run: SECTIONS writes a file per section that join back into the song, with their cues and acid" {
+    const alloc = testing.allocator;
+    const wav = @import("wav.zig");
+    const clip_mod = @import("clip.zig");
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var a: f32 = 0.25;
+    var tracks = [_]track_mod.Track{try track_mod.Track.init(alloc, "A", col, dcMachine(&a))};
+    defer for (&tracks) |*t| t.deinit(alloc);
+    try tracks[0].addClip(alloc, clip_mod.Clip.init("a", 0, 1));
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+    var transport = @import("transport.zig").Transport{};
+    const eng = try alloc.create(engine_mod.Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var rb: [storage.MAX_PATH]u8 = undefined;
+    var db: [storage.MAX_PATH]u8 = undefined;
+    const dir = storage.absolute(&db, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
+    const r = try run(alloc, eng, &tracks, .{
+        .folder = dir,
+        .mix_name = "{project}",
+        .stems = stemsOf(&tracks, .tracks, .post),
+        .stem_name = "{project} stems/{nn} {track}",
+        .project = "song",
+        .end = 4800,
+        .tail_frames = 2400,
+        .format = .{ .bits = .float32 },
+        .sections = &.{
+            .{ .name = "intro", .start = 0, .end = 2000, .acid = .{ .beats = 8, .bpm = 120 } },
+            .{ .name = "verse", .start = 2000, .end = 4800 },
+        },
+        .marks = &.{ .{ .at = 1000, .name = "cue" }, .{ .at = 2000, .name = "verse" } },
+    }, null, null);
+    try testing.expectEqual(@as(usize, 4), r.files);
+    var pb: [storage.MAX_PATH]u8 = undefined;
+    var intro = try wav.loadStereo(alloc, try std.fmt.bufPrint(&pb, "{s}/song 01 intro.wav", .{dir}));
+    defer intro.deinit(alloc);
+    var verse = try wav.loadStereo(alloc, try std.fmt.bufPrint(&pb, "{s}/song 02 verse.wav", .{dir}));
+    defer verse.deinit(alloc);
+    // Cut at the boundary; the last keeps the tail.
+    try testing.expectEqual(@as(usize, 2000), intro.data.len);
+    try testing.expectEqual(@as(usize, 2800 + 2400), verse.data.len);
+    var stem = try wav.loadStereo(alloc, try std.fmt.bufPrint(&pb, "{s}/song stems/02 verse/01 A.wav", .{dir}));
+    defer stem.deinit(alloc);
+    try testing.expectEqual(@as(usize, 5200), stem.data.len);
+    // The intro's cue at 1000 and its acid; the verse's cue at its start.
+    const ib = try @import("document.zig").readFile(alloc, try std.fmt.bufPrint(&pb, "{s}/song 01 intro.wav", .{dir}));
+    defer alloc.free(ib);
+    try testing.expect(std.mem.indexOf(u8, ib, "acid") != null);
+    try testing.expect(std.mem.indexOf(u8, ib, "cue\x00") != null);
+    const vb = try @import("document.zig").readFile(alloc, try std.fmt.bufPrint(&pb, "{s}/song 02 verse.wav", .{dir}));
+    defer alloc.free(vb);
+    try testing.expect(std.mem.indexOf(u8, vb, "acid") == null);
+    try testing.expect(std.mem.indexOf(u8, vb, "verse\x00") != null);
 }
