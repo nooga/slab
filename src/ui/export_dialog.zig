@@ -567,8 +567,8 @@ fn formatTab(ui: *Ui, body_in: Rect, cx: Context) void {
     var dither: u8 = if (rec.dither) 0 else 1;
     if (select(ui, &right, "dither", "DITHER", &dither, &.{ "TPDF", "OFF" }, .{ .disabled = !sixteen })) rec.dither = dither == 0;
     dialog.hint(ui, &right, if (sixteen) "MASKS THE ROUNDING TO 16 BITS" else "ONLY FOR 16-BIT FILES", LABEL_W);
-    dialog.hint(ui, &right, "THE ENGINE RUNS AT 48 KHZ; OTHER RATES ARE", LABEL_W);
-    dialog.hint(ui, &right, "CONVERTED AFTER THE RENDER", LABEL_W);
+    dialog.hint(ui, &right, "RENDERED AT 48 KHZ; OTHER RATES", LABEL_W);
+    dialog.hint(ui, &right, "ARE CONVERTED AFTERWARDS", LABEL_W);
 
     dialog.section(ui, &right, "SIZE");
     var buf: [64]u8 = undefined;
@@ -747,7 +747,7 @@ fn summary(buf: []u8, cx: Context) []const u8 {
     const fmt = switch (rec.container) {
         .aac => std.fmt.bufPrint(&fb, "AAC {d}", .{f.aac_kbps}) catch "",
         else => std.fmt.bufPrint(&fb, "{s} {s}/{s}", .{
-            FORMATS[@intFromEnum(rec.container)][0..@min(4, std.mem.indexOfScalar(u8, FORMATS[@intFromEnum(rec.container)], ' ') orelse 4)],
+            ([_][]const u8{ "WAV", "AIFF", "FLAC", "ALAC", "AAC" })[@intFromEnum(rec.container)],
             ([_][]const u8{ "16", "24", "32F" })[@intFromEnum(f.bits)],
             ([_][]const u8{ "44.1", "48", "88.2", "96" })[@min(rec.rate, 3)],
         }) catch "",
@@ -807,7 +807,12 @@ pub fn drawProgress(ui: *Ui, body_in: Rect, p: Progress) void {
 /// The report: the mix's numbers on a strip of readouts, then each stem's
 /// loudness as a bar against the loudest.
 fn drawCard(ui: *Ui, screen: Rect, state: *State, card: *const Card) Result {
-    const f = dialog.begin(ui, screen, "export-card", "EXPORTED", W, H);
+    // Sized to what it shows.
+    const stem_rows: i32 = @intCast((card.stem_count + 1) / 2);
+    const h = dialog.TITLE_H + dialog.BUTTONS_H + 12 + ROW_H + 8 +
+        (if (card.has_mix) 18 + ctl.LEGEND_H + ctl.displayHeight(true) + 12 else 0) +
+        (if (stem_rows > 0) 18 + stem_rows * 16 else 0) + 8;
+    const f = dialog.begin(ui, screen, "export-card", "EXPORTED", W, @min(H, h));
     defer dialog.end(ui);
     var body = f.body;
     var buf: [48]u8 = undefined;
@@ -875,4 +880,21 @@ fn drawCard(ui: *Ui, screen: Rect, state: *State, card: *const Card) Result {
         state.active = false;
     }
     return .none;
+}
+
+test "the footer sums up every format" {
+    var s = xs.Settings{};
+    var presets = xs.UserPresets{};
+    const cx = Context{ .settings = &s, .presets = &presets, .tracks = &.{}, .project = "song", .bpm = 120, .range_secs = .{ 192.4, null, null } };
+    var buf: [160]u8 = undefined;
+    inline for (std.meta.fields(export_mod.Container)) |f| {
+        s.recipe.container = @enumFromInt(f.value);
+        inline for (std.meta.fields(export_mod.Bits)) |b| {
+            s.recipe.bits = @enumFromInt(b.value);
+            const out = summary(&buf, cx);
+            try std.testing.expect(std.mem.startsWith(u8, out, "1 FILE · "));
+        }
+    }
+    s.recipe.container = .wav;
+    try std.testing.expect(std.mem.indexOf(u8, summary(&buf, cx), "WAV 32F/48") != null);
 }

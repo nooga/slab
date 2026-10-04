@@ -77,6 +77,7 @@ test {
     _ = @import("flac.zig");
     _ = @import("loudness.zig");
     _ = @import("export_settings.zig");
+    _ = @import("ui/export_dialog.zig");
     _ = @import("resample.zig");
     _ = @import("ui/track_order.zig");
     _ = @import("engine.zig");

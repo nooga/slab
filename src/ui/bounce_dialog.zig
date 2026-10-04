@@ -58,7 +58,7 @@ pub const Info = struct {
 pub const Result = enum { none, cancel, bounce };
 
 const W: i32 = 460;
-const H: i32 = 330;
+const H: i32 = 260;
 const ROW_H: i32 = 20;
 const LABEL_W: i32 = 84;
 /// The longest tail: AUTO renders up to this and stops at silence.
@@ -130,7 +130,7 @@ pub fn draw(ui: *Ui, screen: Rect, state: *State, info: Info, progress: ?export_
     var bar = f.buttons;
     var sum_buf: [96]u8 = undefined;
     const n = if (state.mixMode() == .each) info.tracks else 1;
-    const what = std.fmt.bufPrint(&sum_buf, "{d} NEW TRACK{s} UNDER THE SOURCES · 32-BIT FLOAT WAV IN THE PROJECT", .{ n, if (n == 1) "" else "S" }) catch "";
+    const what = std.fmt.bufPrint(&sum_buf, "{d} NEW TRACK{s}, 32-BIT FLOAT", .{ n, if (n == 1) "" else "S" }) catch "";
     ui.marquee(&ui.fonts.legend, bar.cutLeft(bar.w - 2 * 76 - 12), what, style.text_dim, .left, false, false);
     if (dialog.buttons(ui, bar, &.{ "CANCEL", "BOUNCE" }, 1)) |i| return if (i == 0) .cancel else .bounce;
     if (editing) return .none;
