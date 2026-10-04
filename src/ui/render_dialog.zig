@@ -96,7 +96,7 @@ fn drawOptions(ui: *Ui, body_in: Rect, state: *State, loop_available: bool) void
     }
 }
 
-fn drawProgress(ui: *Ui, body_in: Rect, p: Progress) void {
+pub fn drawProgress(ui: *Ui, body_in: Rect, p: Progress) void {
     var body = body_in;
     const frac = std.math.clamp(p.fraction, 0, 1);
     // LED bargraph + percent.

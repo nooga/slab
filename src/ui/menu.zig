@@ -50,6 +50,7 @@ pub const EditCommand = enum {
     import_audio,
     reverse,
     mute_clips,
+    bounce,
     clear_solo_mute,
     save_to_library,
 };
@@ -90,6 +91,7 @@ fn commandShortcut(cmd: EditCommand) ?[]const u8 {
         .render_audio => "\u{2318}R",
         .clear_solo_mute => "\u{21E7}M",
         .mute_clips => "0",
+        .bounce => "\u{2318}B",
         else => null,
     };
 }

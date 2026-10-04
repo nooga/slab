@@ -1397,6 +1397,7 @@ pub fn draw(
         .{ .label = "Reverse", .command = .reverse, .enabled = hasSelectedAudioClips(tracks) },
         .{ .label = if (has_selection and allSelectedMuted(tracks)) "Unmute" else "Mute", .command = .mute_clips, .enabled = has_selection },
         .{ .label = "Delete", .command = .delete, .enabled = has_selection },
+        .{ .label = "Bounce\u{2026}", .command = .bounce, .enabled = has_selection },
         .{ .separator = true },
         .{ .label = "Rename", .command = .rename, .enabled = has_selection },
         .{ .label = "Save to Library", .command = .save_to_library, .enabled = has_selection },

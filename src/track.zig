@@ -107,6 +107,9 @@ pub const Track = struct {
     /// In the arrangement's header multi-selection (UI only; it counts
     /// while the selected track is in it, ui/arrangement.zig inSet).
     multi_sel: bool = false,
+    /// While a bounce renders (docs/27 §What plays): publish only the
+    /// selected clips. Transient, UI-owned.
+    play_selected: bool = false,
     next_fx_uid: u16 = 1,
     /// Audio-thread-owned per-lane segment cursors (automation.evalCursor).
     auto_cursors: [snap_mod.MAX_LANES_PER_TRACK]u32 = [_]u32{0} ** snap_mod.MAX_LANES_PER_TRACK,
@@ -477,7 +480,7 @@ pub const Track = struct {
         self.publishLanes(dst);
 
         for (self.clips.items) |*clip| {
-            if (clip.muted) continue;
+            if (!self.plays(clip)) continue;
             if (clip.isAudio()) {
                 if (dst.audio_clip_count >= snap_mod.MAX_AUDIO_CLIPS_PER_TRACK) {
                     std.debug.assert(false); // bump MAX_AUDIO_CLIPS_PER_TRACK
@@ -553,6 +556,12 @@ pub const Track = struct {
         self.snap_published.store(write_idx, .release);
     }
 
+    /// Whether `clip` reaches the audio thread: not muted, and selected
+    /// while a bounce renders.
+    fn plays(self: *const Track, clip: *const clip_mod.Clip) bool {
+        return !clip.muted and (!self.play_selected or clip.selected);
+    }
+
     /// Resolve lanes to (slot, control index) and copy their points: track
     /// lanes, then clip lanes ordered by clip start, so the audio thread's
     /// "last lane that applies wins" is the precedence of docs/22. Lanes
@@ -566,7 +575,7 @@ pub const Track = struct {
         var order: [snap_mod.MAX_CLIPS_PER_TRACK]u16 = undefined;
         var n: usize = 0;
         for (self.clips.items, 0..) |*clip, ci| {
-            if (clip.isAudio() or clip.muted or clip.lanes.items.len == 0 or n >= order.len) continue;
+            if (clip.isAudio() or !self.plays(clip) or clip.lanes.items.len == 0 or n >= order.len) continue;
             order[n] = @intCast(ci);
             n += 1;
         }

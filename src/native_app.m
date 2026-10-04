@@ -85,7 +85,7 @@ static NSMenu *add_menu(NSMenu *bar, NSString *title, NSInteger index) {
 // Commands, as in native_app.zig.
 enum {
     CMD_NEW, CMD_OPEN, CMD_SAVE, CMD_SAVE_AS, CMD_CLEAN_UP, CMD_RENDER,
-    CMD_UNDO, CMD_REDO, CMD_TOGGLE_BROWSER, CMD_ABOUT,
+    CMD_UNDO, CMD_REDO, CMD_TOGGLE_BROWSER, CMD_ABOUT, CMD_BOUNCE,
 };
 
 // After InitWindow, once GLFW has made the menu bar.
@@ -120,6 +120,8 @@ void slab_install_menus(void) {
         NSMenu *edit = add_menu(bar, @"Edit", 2);
         add_item(edit, @"Undo", CMD_UNDO, @"z", cmd);
         add_item(edit, @"Redo", CMD_REDO, @"z", shift_cmd);
+        [edit addItem:[NSMenuItem separatorItem]];
+        add_item(edit, @"Bounce Selection…", CMD_BOUNCE, @"", 0);
 
         NSMenu *view = add_menu(bar, @"View", 3);
         browser_item = add_item(view, @"Library Browser", CMD_TOGGLE_BROWSER, @"b", alt_cmd);
