@@ -128,6 +128,23 @@ PRESETS = {
         targets=dict(bark=(1.4, 4.0), vel_db=(9, 22), vel_bright=(1.25, 4.0), t20=(0.8, 4.0),
                      rise=(0, 0.03), flat=(0, 8)),
     ),
+    # The classic FM ballad tine piano, the alternative to ours: a 1:1
+    # carrier whose high modulator is the tine only hard keys reach, two
+    # 1:1 bodies with a feedback edge, detuned apart for the chorus.
+    # Fitted to the measured sound of the best-known FM e-piano, not
+    # copied from it.
+    "e-piano-2": dict(
+        note="Slab: classic FM e-piano. The glassy ballad tine piano: soft keys are round and chorused, hard keys ring with a bright tine.",
+        voice=voice(5, [
+            op(1, 99, (99, 10, 28, 51, 99, 80, 0, 0), kvs=2, rs=3, det=+2),
+            op(14, 59, (99, 50, 30, 51, 99, 66, 0, 0), kvs=7, rs=3),
+            op(1, 84, (99, 30, 11, 51, 99, 88, 0, 0), kvs=2, rs=3, det=-3),
+            op(1, 97, (99, 28, 30, 51, 99, 50, 0, 0), kvs=6, rs=3),
+            op(1, 98, (99, 30, 11, 51, 99, 88, 0, 0), kvs=1, rs=3, det=+4),
+            op(1, 72, (99, 28, 30, 51, 99, 50, 0, 0), kvs=6, rs=3),
+        ], fb=7, lfo=(30, 0, 0, 0, 0, 4)),
+        targets=dict(bark=(1.2, 6.0), vel_bright=(1.2, 6.0), rise=(0, 0.03), flat=(0, 9)),
+    ),
     # A plucked bass that holds: one carrier fed by three chains.  A
     # 7:1 click on the attack, a 1:1 thump that falls to a low sustain,
     # and a 2:1 feedback pair that keeps a moderate body while held.
@@ -223,120 +240,128 @@ PRESETS = {
         ], fb=2),
         targets=dict(bark=(1.3, 4.0), vel_db=(8, 22), vel_bright=(1.2, 4.0), t20=(0.8, 4.0), rise=(0, 0.02), flat=(0, 8)),
     ),
-    # A soft acoustic-style piano: two 1:1 stacks detuned against each
-    # other for the unison strings, a 2:1 pair for body, and a short 14:1
-    # knock for the hammer.  Most of its brightness comes from velocity.
+    # A piano: two 1:1 strings detuned apart, one struck by a 1:1
+    # modulator and one by a 7:1 that holds for the bright string tone, and
+    # a third string struck by an inharmonic 1.58:1 knock for the hammer.
     "piano": dict(
-        note="Slab: FM piano. A rounder, darker piano: two slightly detuned string pairs, a soft hammer knock, brightness mostly from velocity; long decay.",
+        note="Slab: FM piano. A bright, glassy piano that holds its tone while the key is down; a hammer knock on the strike.",
         voice=voice(5, [
-            op(1, 99, (97, 20, 18, 58, 99, 88, 0, 0), kvs=3, rs=3, det=+2),
-            op(1, 70, (99, 50, 34, 66, 99, 52, 0, 0), kvs=7, rs=3),
-            op(1, 96, (97, 21, 19, 58, 99, 86, 0, 0), kvs=3, rs=3, det=-2),
-            op(2, 64, (99, 52, 36, 66, 99, 50, 0, 0), kvs=7, rs=3),
-            op(1, 72, (98, 60, 40, 60, 99, 40, 0, 0), kvs=4, rs=3),
-            op(14, 58, (99, 85, 60, 80, 99, 0, 0, 0), kvs=7, rs=4),
-        ], fb=0),
-        targets=dict(bark=(1.15, 3.0), vel_db=(9, 24), vel_bright=(1.2, 4.0), t20=(1.0, 6.0), rise=(0, 0.02), flat=(0, 8)),
+            op(1, 99, (99, 26, 19, 47, 99, 82, 0, 0), kvs=2, rs=4, det=-2),
+            op(1, 87, (99, 16, 25, 47, 99, 70, 0, 0), kvs=1, rs=5),
+            op(1, 99, (99, 26, 19, 47, 99, 82, 0, 0), kvs=2, rs=5, det=+2),
+            op(7, 62, (99, 34, 25, 47, 99, 99, 60, 0), kvs=2, rs=5),
+            op(1, 72, (99, 52, 25, 47, 99, 77, 0, 0), kvs=1, rs=5, det=+1),
+            op(1.58, 93, (99, 57, 30, 47, 99, 3, 0, 0), kvs=1, rs=5),
+        ], fb=4),
+        targets=dict(bark=(1.15, 3.0), vel_db=(6, 24), vel_bright=(1.2, 4.0), rise=(0, 0.02), flat=(0, 8)),
     ),
-    # A clav: buzzy feedback stacks at 1:1 over carriers at 1, 2 and 3, a
-    # fast pluck that settles to a quieter sustain, cut short on release.
+    # A clav: two three-operator chains.  Each carrier is struck by a
+    # high modulator (8:1, 7:1) through a steady low one, the bite of a
+    # plucked string through a pickup; the first chain's middle modulator
+    # at half pitch makes it hollow.  Velocity opens the bite a lot.
     "clav": dict(
-        note="Slab: clav. A bright, buzzy pluck that settles to a thin sustain and stops dead on release; velocity opens the buzz.",
-        voice=voice(5, [
-            op(1, 99, (99, 58, 38, 88, 99, 82, 66, 0), kvs=3, rs=2),
-            op(1, 86, (99, 64, 40, 88, 99, 58, 40, 0), kvs=5, rs=2),
-            op(2, 84, (99, 60, 40, 88, 99, 78, 60, 0), kvs=3, rs=2),
-            op(1, 80, (99, 66, 42, 88, 99, 54, 36, 0), kvs=5, rs=2),
-            op(3, 70, (99, 66, 44, 88, 99, 70, 50, 0), kvs=3, rs=2),
-            op(1, 76, (99, 66, 42, 88, 99, 56, 36, 0), kvs=5, rs=2),
-        ], fb=6),
-        targets=dict(bark=(1.05, 3.0), vel_bright=(1.15, 4.0), t20=(0.2, 2.0), rise=(0, 0.01), flat=(0, 9)),
+        note="Slab: clav. A hollow, funky pluck with a bright bite that velocity opens wide; it holds while the key is down.",
+        voice=voice(3, [
+            op(1, 99, (99, 27, 19, 60, 99, 81, 0, 0), kvs=3, rs=3),
+            op(0.5, 91, (99, 92, 10, 60, 99, 90, 80, 0), kvs=1, rs=3),
+            op(8, 88, (99, 95, 30, 60, 99, 80, 0, 0), kvs=2, rs=3),
+            op(1, 99, (99, 27, 19, 60, 99, 81, 0, 0), kvs=2, rs=3),
+            op(1, 99, (99, 74, 10, 60, 99, 98, 80, 0), kvs=5, rs=3),
+            op(7, 82, (99, 76, 30, 60, 99, 84, 0, 0), kvs=7, rs=3),
+        ], fb=0),
+        targets=dict(bark=(1.05, 4.0), vel_bright=(3.0, 25.0), rise=(0, 0.01), flat=(0, 9)),
     ),
-    # A harpsichord: bright and even (it barely answers velocity), a 1:1
-    # stack for the string, 2:1 and 4:1 carriers with 5:1 and 1:1
-    # modulators for the jack's nasal edge.
+    # A harpsichord: its brightness comes from high carriers (4:1, 5:1)
+    # beside a 1:1 one, each driven by a steady low modulator (0.5:1, 3:1,
+    # 6:1) that dips and comes back while the key is held.
     "harpsichord": dict(
-        note="Slab: harpsichord. A bright, nasal pluck that hardly changes with velocity and rings for a second or two.",
+        note="Slab: harpsichord. A bright, nasal pluck with a long, even ring while the key is held; harder keys are a little louder.",
         voice=voice(5, [
-            op(1, 99, (99, 38, 30, 78, 99, 80, 0, 0), kvs=1, rs=3),
-            op(1, 88, (99, 52, 36, 78, 99, 62, 0, 0), kvs=1, rs=3),
-            op(2, 86, (99, 40, 30, 78, 99, 76, 0, 0), kvs=1, rs=3),
-            op(5, 60, (99, 62, 40, 78, 99, 40, 0, 0), kvs=1, rs=3),
-            op(4, 74, (99, 44, 32, 78, 99, 66, 0, 0), kvs=1, rs=3),
-            op(1, 72, (99, 56, 38, 78, 99, 56, 0, 0), kvs=1, rs=3),
-        ], fb=3),
-        targets=dict(vel_db=(0, 5), bark=(1.0, 2.5), t20=(0.4, 3.0), rise=(0, 0.01), flat=(0, 8)),
+            op(4, 91, (99, 30, 11, 46, 99, 84, 0, 0), kvs=2, rs=3),
+            op(0.5, 99, (99, 28, 70, 46, 99, 50, 90, 0), rs=1),
+            op(1, 93, (99, 30, 11, 46, 99, 84, 0, 0), kvs=2, rs=3, det=-1),
+            op(3, 91, (99, 28, 70, 46, 99, 50, 90, 0), rs=1),
+            op(5, 63, (99, 30, 11, 46, 99, 84, 0, 0), kvs=3, rs=3, det=-1),
+            op(6, 85, (99, 28, 70, 46, 99, 50, 90, 0), rs=1),
+        ], fb=0),
+        targets=dict(vel_db=(3, 14), bark=(1.0, 2.5), rise=(0, 0.01), flat=(0, 8)),
     ),
-    # An organ: six carriers as six drawbars (16', 8', 5 1/3', 4',
-    # 2 2/3', 2'), full sustain, no velocity, a quick key-click release,
-    # and a slow chorus-like vibrato.
+    # An organ: six carriers as drawbars (16', 8', 5 1/3', a second 16'
+    # and 8') detuned a few cents apart for the tonewheel shimmer, and a
+    # 3:1 that falls to a low level for the percussion; no velocity, a
+    # gentle vibrato.
     "organ": dict(
-        note="Slab: drawbar organ. Six operators as six drawbars, full sustain, no velocity, and a gentle vibrato; plays like a tonewheel organ.",
+        note="Slab: electric organ. Full, shimmering drawbars with a percussive click on each note; no velocity, a gentle vibrato.",
         voice=voice(32, [
-            op(0.5, 92, (99, 99, 99, 88, 99, 99, 99, 0)),
-            op(1, 99, (99, 99, 99, 88, 99, 99, 99, 0)),
-            op(1.5, 88, (99, 99, 99, 88, 99, 99, 99, 0)),
-            op(2, 86, (99, 99, 99, 88, 99, 99, 99, 0), det=+1),
-            op(3, 80, (99, 60, 99, 88, 99, 82, 82, 0)),
-            op(4, 78, (99, 99, 99, 88, 99, 99, 99, 0), det=-1),
+            op(0.5, 95, (99, 99, 99, 90, 99, 99, 99, 0), det=-3),
+            op(1, 92, (99, 99, 99, 90, 99, 99, 99, 0), det=-4),
+            op(1.5, 82, (99, 99, 99, 90, 99, 99, 99, 0), det=+3),
+            op(0.5, 89, (99, 99, 99, 90, 99, 99, 99, 0), det=+4),
+            op(1, 79, (99, 99, 99, 90, 99, 99, 99, 0), det=+3),
+            op(3, 86, (99, 54, 22, 90, 99, 28, 20, 0)),
         ], fb=0, lfo=(44, 0, 5, 0, 0, 4), pms=2),
-        targets=dict(sustain_db=(-3, 0.5), rise=(0, 0.02), vel_db=(0, 1.5), flat=(0, 8)),
+        targets=dict(sustain_db=(-9, 0.5), rise=(0, 0.02), vel_db=(0, 1.5), flat=(0, 8)),
     ),
     # ── mallets and bells ──────────────────────────────────────────────
-    # Tubular bells: a 1:1 carrier struck by a 3.5:1 modulator, a 2.76:1
-    # carrier for the bell's clang partial and a quick 5.4:1 strike tone;
-    # everything rings for many seconds.
+    # Tubular bells: two detuned 1:1 carriers struck by 3.5:1 modulators
+    # that drop away and come back quietly, so the clang settles into a
+    # held hum; a 4.2:1 carrier under a 2:1 feedback modulator is the
+    # strike's metal.
     "tubular-bells": dict(
-        note="Slab: tubular bells. A clangorous strike that rings for many seconds, settling to the bell's hum and its sour partials.",
+        note="Slab: tubular bells. A clangorous strike that settles into a long, slightly sour hum while the key is held.",
         voice=voice(5, [
-            op(1, 99, (99, 24, 16, 26, 99, 72, 0, 0), kvs=2, rs=2),
-            op(3.5, 76, (99, 32, 20, 36, 99, 48, 0, 0), kvs=4, rs=2),
-            op(2.76, 86, (99, 28, 18, 30, 99, 60, 0, 0), kvs=2, rs=2),
-            op(1, 60, (99, 36, 22, 36, 99, 40, 0, 0), kvs=3, rs=2),
-            op(5.4, 72, (99, 44, 28, 40, 99, 30, 0, 0), kvs=3, rs=3),
-            op(1, 50, (99, 50, 30, 40, 99, 20, 0, 0), kvs=3, rs=3),
-        ], fb=0),
-        targets=dict(bark=(1.2, 5.0), t20=(2.0, float("inf")), inharm=(0.15, 1.0), rise=(0, 0.02)),
+            op(1, 99, (99, 42, 31, 40, 99, 86, 30, 0), rs=2, det=+2),
+            op(3.5, 78, (99, 10, 70, 40, 99, 10, 12, 0), rs=2),
+            op(1, 89, (99, 42, 31, 40, 99, 86, 30, 0), rs=2, det=-4),
+            op(3.5, 67, (99, 47, 70, 40, 99, 10, 12, 0), rs=2),
+            op(4.2, 99, (99, 54, 28, 40, 99, 80, 0, 0), kvs=4, rs=2),
+            op(2, 90, (99, 83, 30, 40, 99, 2, 0, 0), rs=2, det=-6),
+        ], fb=4),
+        targets=dict(bark=(0.8, 5.0), t20=(0.8, float("inf")), inharm=(0.15, 1.0), rise=(0, 0.02)),
     ),
-    # A celesta: a soft 1:1 body, a 4:1 carrier for the bar's overtone
-    # that dies first, and a 7:1 'tink' on the strike.
+    # A celesta, an octave up: three 1:1 carriers, one struck by a 5:1
+    # modulator for the glassy overtone, one by a 1:1 that only hard keys
+    # reach and that dies at once.
     "celesta": dict(
-        note="Slab: celesta. A soft, sweet bell-piano: a gentle body, a glassy overtone that fades first, and a tiny tink on the strike.",
+        note="Slab: celesta. A sweet, glassy bell-piano an octave up; hard keys add a short bright tink.",
         voice=voice(5, [
-            op(1, 99, (99, 36, 28, 50, 99, 74, 0, 0), kvs=1, rs=3),
-            op(1, 58, (99, 50, 34, 56, 99, 50, 0, 0), kvs=7, rs=3),
-            op(4, 80, (99, 56, 40, 56, 99, 46, 0, 0), kvs=3, rs=4),
-            op(1, 48, (99, 60, 40, 56, 99, 40, 0, 0), kvs=4, rs=4),
-            op(1, 84, (99, 36, 28, 50, 99, 74, 0, 0), kvs=1, rs=3, det=+4),
-            op(7, 62, (99, 80, 50, 60, 99, 0, 0, 0), kvs=7, rs=4),
-        ], fb=0),
-        targets=dict(bark=(1.2, 5.0), t20=(0.5, 3.0), rise=(0, 0.01), vel_bright=(1.1, 4.0)),
+            op(1, 99, (99, 30, 22, 40, 99, 78, 0, 0), kvs=3, rs=3),
+            op(1, 30, (99, 79, 30, 40, 99, 66, 0, 0), kvs=3, rs=3),
+            op(1, 73, (99, 30, 22, 40, 99, 78, 0, 0), kvs=3, rs=3, det=-5),
+            op(5, 70, (99, 37, 30, 40, 99, 96, 0, 0), kvs=7, rs=3),
+            op(1, 90, (99, 30, 22, 40, 99, 78, 0, 0), rs=3),
+            op(1, 85, (99, 98, 30, 40, 99, 4, 0, 0), kvs=7, rs=3),
+        ], fb=0, transpose=12),
+        targets=dict(bark=(1.2, 5.0), t20=(0.5, 3.0), rise=(0, 0.015), vel_bright=(1.1, 4.0)),
     ),
-    # Vibes: a 1:1 bar tone and its 4:1 partial, a 10:1 strike, and the
-    # motor: the LFO's amplitude tremolo on the carriers.
+    # Vibes: a 1:1 bar tone and a 4:1 partial that rings longer, each
+    # struck by a 3:1 modulator, a detuned 1:1 twin with a 14:1 tink on
+    # the strike, and the motor: the LFO's amplitude tremolo on the
+    # carriers.
     "vibes": dict(
-        note="Slab: vibraphone. A mellow bar with its high partial, a soft mallet strike and a steady motor tremolo; rings for a few seconds.",
+        note="Slab: vibraphone. A bright mallet bar with a ringing high partial, a tink on the strike and a steady motor tremolo.",
         voice=voice(5, [
-            op(1, 99, (99, 30, 24, 46, 99, 76, 0, 0), kvs=3, rs=2, ams=2),
-            op(1, 44, (99, 46, 30, 50, 99, 50, 0, 0), kvs=4, rs=2),
-            op(4, 70, (99, 40, 30, 50, 99, 64, 0, 0), kvs=3, rs=3, ams=2),
-            op(1, 40, (99, 56, 36, 50, 99, 40, 0, 0), kvs=4, rs=3),
-            op(1, 86, (99, 30, 24, 46, 99, 76, 0, 0), kvs=3, rs=2, det=+3, ams=2),
-            op(10, 54, (99, 82, 56, 60, 99, 0, 0, 0), kvs=5, rs=3),
-        ], fb=0, lfo=(36, 0, 0, 56, 1, 4), pms=0),
-        targets=dict(trem=(0.8, 6.0), t20=(1.0, 6.0), rise=(0, 0.15), bark=(1.0, 4.0)),
+            op(1, 99, (99, 30, 38, 53, 99, 80, 0, 0), kvs=1, rs=2, ams=2),
+            op(3, 54, (99, 53, 30, 53, 99, 49, 0, 0), kvs=2, rs=2),
+            op(4, 56, (99, 27, 69, 53, 99, 90, 0, 0), kvs=6, rs=2, ams=2),
+            op(3, 63, (99, 61, 30, 53, 99, 22, 0, 0), kvs=7, rs=5),
+            op(1, 98, (99, 30, 38, 53, 99, 80, 0, 0), kvs=4, rs=3, det=+7, ams=2),
+            op(14, 65, (99, 57, 30, 53, 99, 64, 0, 0), kvs=5, rs=3),
+        ], fb=3, lfo=(36, 0, 0, 56, 1, 4)),
+        targets=dict(trem=(0.8, 6.0), t20=(0.3, 6.0), rise=(0, 0.15), bark=(1.0, 4.0)),
     ),
-    # Marimba: the bar's tone with its tuned 4:1 and 10:1 partials, each
-    # dying faster than the one below; a short soft mallet.
+    # Marimba: the bar an octave below the key, two half-pitch carriers
+    # struck by 2:1 modulators that fall away fast, and a quiet 1:1
+    # carrier with a 4.5:1 knock for the mallet.
     "marimba": dict(
-        note="Slab: marimba. A woody mallet bar: a warm tone with its tuned overtones dying fast, gone within half a second.",
+        note="Slab: marimba. A deep, woody bar an octave down with a soft knock on the strike, gone within half a second.",
         voice=voice(5, [
-            op(1, 99, (99, 48, 38, 60, 99, 56, 0, 0), kvs=2, rs=3),
-            op(1, 76, (99, 64, 44, 60, 99, 50, 0, 0), kvs=7, rs=3),
-            op(4, 76, (99, 66, 46, 60, 99, 30, 0, 0), kvs=3, rs=4),
-            op(1, 36, (99, 70, 50, 60, 99, 20, 0, 0), kvs=4, rs=4),
-            op(10, 60, (99, 80, 56, 70, 99, 0, 0, 0), kvs=7, rs=4),
-            op(1, 30, (99, 80, 56, 70, 99, 0, 0, 0), kvs=4, rs=4),
+            op(0.5, 99, (99, 39, 51, 45, 99, 89, 0, 0), kvs=1, rs=3),
+            op(2, 78, (99, 72, 30, 45, 99, 72, 0, 0), kvs=2, rs=1),
+            op(0.5, 50, (99, 89, 38, 45, 99, 82, 0, 0), kvs=1, rs=3),
+            op(2, 97, (99, 80, 30, 45, 99, 75, 0, 0), kvs=2, rs=1),
+            op(1, 43, (99, 64, 44, 45, 99, 99, 0, 0), kvs=2, rs=4),
+            op(4.5, 80, (99, 66, 30, 45, 99, 78, 0, 0), kvs=2, rs=1),
         ], fb=0),
         targets=dict(t20=(0.15, 0.9), rise=(0, 0.025), vel_bright=(1.05, 4.0)),
     ),
@@ -354,20 +379,20 @@ PRESETS = {
         ], fb=0),
         targets=dict(t20=(0.3, 1.8), bark=(1.2, 6.0), rise=(0, 0.01), inharm=(0.02, 0.8)),
     ),
-    # Steel drum: a 1:1 carrier with a 2:1 modulator, an octave carrier,
-    # and a stretched 4.08:1 overtone struck by a 1.41:1 modulator for the
-    # pan's metal.
+    # Steel drum: three pairs on the pan's 1, 2 and 3 partials; the 1:1
+    # carrier is struck by an inharmonic 1.7:1 modulator, the top one by a
+    # 5.32:1 for the metal, and feedback adds the ring.
     "steel-drum": dict(
-        note="Slab: steel drum. A bright, metallic pan note with a quick swell into the tone and a ring of about a second.",
+        note="Slab: steel drum. A bright, metallic pan note with a quick ring of about a second.",
         voice=voice(5, [
-            op(1, 99, (92, 38, 30, 60, 99, 70, 0, 0), kvs=3, rs=3),
-            op(2, 80, (95, 56, 40, 60, 99, 50, 0, 0), kvs=5, rs=3),
-            op(2, 84, (92, 42, 32, 60, 99, 64, 0, 0), kvs=3, rs=3),
-            op(1, 50, (95, 60, 40, 60, 99, 30, 0, 0), kvs=4, rs=3),
-            op(4.08, 86, (92, 44, 34, 60, 99, 74, 0, 0), kvs=3, rs=4),
-            op(1.41, 90, (95, 46, 36, 60, 99, 80, 0, 0), kvs=4, rs=4),
-        ], fb=0),
-        targets=dict(t20=(0.35, 2.5), bark=(1.0, 4.0), inharm=(0.01, 0.7), rise=(0, 0.03)),
+            op(1, 99, (99, 30, 35, 40, 99, 82, 0, 0), kvs=1, rs=4),
+            op(1.7, 59, (99, 36, 30, 40, 99, 86, 0, 0), kvs=2, rs=2),
+            op(2, 83, (99, 43, 52, 40, 99, 88, 0, 0), kvs=2, rs=3),
+            op(2, 95, (99, 47, 30, 40, 99, 78, 0, 0), kvs=1, rs=3, det=+7),
+            op(3, 87, (99, 43, 52, 40, 99, 88, 0, 0), kvs=2, rs=3),
+            op(5.32, 58, (99, 36, 30, 40, 99, 88, 0, 0), rs=3),
+        ], fb=7),
+        targets=dict(t20=(0.35, 2.5), bark=(1.0, 6.0), inharm=(0.01, 0.7), rise=(0, 0.03)),
     ),
     # ── bass ──────────────────────────────────────────────────────────
     # Slap bass in the classic FM style, an octave below the key
@@ -421,33 +446,52 @@ PRESETS = {
         targets=dict(bark=(1.3, 5.0), rise=(0, 0.015), vel_bright=(1.1, 4.0), flat=(0, 9)),
     ),
     # ── plucked, reed, pad ─────────────────────────────────────────────
-    # Koto: a 3:1 modulator gives the silk string's metallic pluck, a 1:1
-    # pair the body, a 5:1 snap on the attack.
+    # Koto: a 1:1 carrier with a 3:1 twang modulator, and a second 1:1
+    # carrier at the end of a long 1:1 / 4:1 / 5:1 chain with feedback
+    # for the silk string's buzz.  Decays faster up the keyboard.
     "koto": dict(
-        note="Slab: koto. A twangy, metallic silk-string pluck that rings for a second or so; harder plucks twang more.",
-        voice=voice(5, [
-            op(1, 99, (99, 38, 30, 60, 99, 72, 0, 0), kvs=3, rs=3),
-            op(3, 76, (99, 60, 40, 60, 99, 40, 0, 0), kvs=6, rs=3),
-            op(1, 88, (99, 40, 30, 60, 99, 68, 0, 0), kvs=3, rs=3, det=+3),
-            op(1, 66, (99, 56, 38, 60, 99, 44, 0, 0), kvs=4, rs=3),
-            op(2, 70, (99, 56, 40, 60, 99, 40, 0, 0), kvs=3, rs=4),
-            op(5, 56, (99, 76, 50, 60, 99, 0, 0, 0), kvs=6, rs=4),
-        ], fb=1),
-        targets=dict(t20=(0.4, 3.0), bark=(1.3, 5.0), vel_bright=(1.2, 4.0), rise=(0, 0.025)),
+        note="Slab: koto. A twangy, buzzy silk-string pluck that rings for a second or so; harder plucks twang more.",
+        voice=voice(1, [
+            op(1, 84, (99, 32, 37, 40, 99, 76, 0, 0), kvs=3, rs=6),
+            op(3, 98, (99, 89, 30, 40, 99, 80, 0, 0), rs=6),
+            op(1, 99, (99, 42, 28, 40, 99, 88, 0, 0), kvs=3, rs=5),
+            op(1, 82, (99, 30, 30, 40, 99, 68, 0, 0), kvs=1, rs=6),
+            op(4, 78, (99, 36, 30, 40, 99, 94, 0, 0), kvs=1, rs=6),
+            op(5, 70, (99, 50, 30, 40, 99, 76, 0, 0), kvs=1, rs=6),
+        ], fb=3, lfo=(30, 40, 0, 0, 0, 4)),
+        targets=dict(t20=(0.4, 3.0), bark=(1.3, 14.0), vel_bright=(1.2, 4.0), rise=(0, 0.025)),
     ),
-    # Harmonica: reedy 1:1 stacks with feedback, a 2:1 carrier for the
-    # nasal edge, a short breathy swell in and a delayed vibrato.
+    # Harmonica, an octave up: one reed chain whose 1:1 carrier is fed by
+    # a half-ratio modulator for the reed's hollow, a 5:1 that breathes in
+    # and a 7:1 with full feedback for the breath; a faint second voice
+    # and a delayed vibrato.
     "harmonica": dict(
-        note="Slab: harmonica. A reedy, nasal tone that breathes in over a few tens of milliseconds and grows a vibrato on held notes.",
-        voice=voice(5, [
-            op(1, 99, (60, 50, 40, 70, 99, 96, 95, 0), kvs=2, rs=1),
-            op(1, 80, (56, 50, 40, 70, 99, 90, 88, 0), kvs=3, rs=1),
-            op(2, 82, (60, 50, 40, 70, 99, 95, 94, 0), kvs=2, rs=1),
-            op(1, 74, (56, 50, 40, 70, 99, 88, 86, 0), kvs=3, rs=1),
-            op(1, 80, (60, 50, 40, 70, 99, 96, 95, 0), kvs=2, rs=1, det=+2),
-            op(1, 72, (56, 50, 40, 70, 99, 88, 86, 0), kvs=3, rs=1),
-        ], fb=5, lfo=(38, 52, 10, 0, 0, 4), pms=3),
+        note="Slab: harmonica. A reedy, breathy tone an octave up that breathes in over a few tens of milliseconds and grows a vibrato on held notes.",
+        voice=voice(1, [
+            op(1, 25, (55, 55, 30, 64, 92, 88, 0, 0)),
+            op(1, 7, (40, 23, 30, 64, 99, 50, 0, 0), kvs=4, rs=3),
+            op(1, 99, (55, 60, 30, 64, 92, 81, 88, 0)),
+            op(0.5, 64, (40, 23, 99, 64, 99, 40, 40, 0)),
+            op(5, 64, (65, 86, 98, 64, 99, 0, 94, 0)),
+            op(7, 41, (99, 26, 98, 64, 99, 67, 50, 0), kvs=7),
+        ], fb=7, transpose=12, lfo=(42, 56, 6, 0, 0, 4), pms=2),
         targets=dict(rise=(0.02, 0.25), sustain_db=(-6, 0.5), bark=(0.5, 1.4), flat=(0, 9)),
+    ),
+    # A synth lead: one carrier fed by a 1:1 pair, a 2:1 chain and a
+    # feedback chain with a high top for the buzz, an octave up; it holds
+    # at full level and grows a vibrato.  Fitted to the measured sound of
+    # a classic FM lead, not copied from it.
+    "lead": dict(
+        note="Slab: synth lead. A bright, buzzy lead an octave up that holds at full level and grows a vibrato on long notes.",
+        voice=voice(16, [
+            op(1, 99, (99, 33, 30, 66, 99, 95, 95, 0), rs=1),
+            op(1, 77, (99, 78, 20, 66, 99, 96, 90, 0), rs=2, det=-1),
+            op(2, 72, (99, 68, 20, 66, 99, 90, 40, 0), rs=4),
+            op(1, 69, (99, 91, 60, 66, 99, 54, 70, 0), rs=1),
+            op(1, 59, (99, 80, 30, 66, 99, 80, 74, 0), rs=2),
+            op(7, 46, (99, 43, 40, 66, 99, 99, 92, 0), rs=3),
+        ], fb=7, transpose=12, lfo=(36, 50, 6, 0, 0, 4), pms=3),
+        targets=dict(sustain_db=(-6, 0.5), rise=(0, 1.0), flat=(0, 9)),
     ),
     # Bell pad: a struck 3.5:1 bell over two 1:1 stacks that swell in
     # slowly, detuned apart.
