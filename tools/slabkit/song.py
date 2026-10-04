@@ -972,9 +972,10 @@ class Song:
     def render(self, wav=None, stems=False, report=True):
         """Save, bounce headless with `slab --render`, and analyze. With
         stems=True every track is also bounced alone (through its own
-        inserts, no master chain) to show how loud each part sits."""
+        inserts, no master chain) to show how loud each part sits. It saves
+        where the last save() did, else to songs/."""
         from .analyze import analyze_wav, print_report
-        path = self.save(quiet=not report)
+        path = self.save(getattr(self, "_path", None), quiet=not report)
         wav = wav or os.path.splitext(path)[0] + ".wav"
         _bounce(path, wav)
         secs = [(s.name, s.start * 60 / self.bpm, s.end * 60 / self.bpm) for s in self.sections]
