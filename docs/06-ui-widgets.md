@@ -566,10 +566,22 @@ menu opened from the dialog owns it.
 
 The 2000s way: a 720x426 card centred in the main window, `splash.png`
 above a packed status strip (wordmark, dot-matrix status naming the
-machine being compiled, LED progress), a hard 1px frame, no shadow. It is
+machine being compiled, the version as "BETA 0.0.5", LED progress), a hard 1px frame, no shadow. It is
 redrawn on the empty chassis between machine compiles; once the workbench
 is up the card stays over the live UI for 1.2s and then vanishes, at once
-on any click or key. It never takes the input.
+on any click or key. It never takes the input. Opening a project later
+brings the card back the same way: the open runs between frames, and the
+card names each track as it is built.
+
+## About
+
+The splash card again, with the credits over the photo: a dark glass
+panel down its left side lists the author, thanks, the third-party work
+built in (with its license) and the sounds, and the strip carries the
+version, LICENSES (the app's license files in Finder) and CLOSE. It
+opens from the transport bar's logo and from Slab > About Slab, which
+replaces AppKit's panel. Modal like a dialog; a click outside the card,
+Esc or Enter closes it.
 
 ## Escape hatch: push pixels
 

@@ -47,7 +47,7 @@ void slab_free_path(char *p) {
 // ── The menu bar ───────────────────────────────────────────────────────
 //
 // GLFW builds the app menu (About, Hide, Quit) and the Window menu; we add
-// File, Edit and View between them. An item sets its command's bit (the
+// File, Edit and View between them, and point About at Slab's own card. An item sets its command's bit (the
 // item's tag, native_app.zig Command) for the main loop to take. Items
 // with a key equivalent take that key before the window sees it, so the
 // main loop runs each command once, from here.
@@ -85,7 +85,7 @@ static NSMenu *add_menu(NSMenu *bar, NSString *title, NSInteger index) {
 // Commands, as in native_app.zig.
 enum {
     CMD_NEW, CMD_OPEN, CMD_SAVE, CMD_SAVE_AS, CMD_CLEAN_UP, CMD_RENDER,
-    CMD_UNDO, CMD_REDO, CMD_TOGGLE_BROWSER,
+    CMD_UNDO, CMD_REDO, CMD_TOGGLE_BROWSER, CMD_ABOUT,
 };
 
 // After InitWindow, once GLFW has made the menu bar.
@@ -97,6 +97,15 @@ void slab_install_menus(void) {
         const NSEventModifierFlags cmd = NSEventModifierFlagCommand;
         const NSEventModifierFlags shift_cmd = NSEventModifierFlagCommand | NSEventModifierFlagShift;
         const NSEventModifierFlags alt_cmd = NSEventModifierFlagCommand | NSEventModifierFlagOption;
+
+        // About Slab opens the About card instead of AppKit's panel.
+        NSMenu *app = [[bar itemAtIndex:0] submenu];
+        for (NSMenuItem *item in [app itemArray]) {
+            if ([item action] != @selector(orderFrontStandardAboutPanel:)) continue;
+            [item setAction:@selector(command:)];
+            [item setTarget:menu_target];
+            [item setTag:CMD_ABOUT];
+        }
 
         NSMenu *file = add_menu(bar, @"File", 1);
         add_item(file, @"New Project", CMD_NEW, @"n", cmd);
@@ -142,5 +151,22 @@ void slab_set_window_document(void *window, const char *title, const char *path,
         [w setTitle:[NSString stringWithUTF8String:title]];
         [w setRepresentedFilename:path != NULL ? [NSString stringWithUTF8String:path] : @""];
         [w setDocumentEdited:edited != 0];
+    }
+}
+
+// ── Licenses ───────────────────────────────────────────────────────────
+
+// Show the license files in Finder: the app's Contents/Resources/Licenses,
+// or NOTICE in a dev build (both relative to the working directory).
+void slab_show_licenses(void) {
+    @autoreleasepool {
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSString *cwd = [fm currentDirectoryPath];
+        for (NSString *name in @[ @"Licenses", @"NOTICE" ]) {
+            NSString *path = [cwd stringByAppendingPathComponent:name];
+            if (![fm fileExistsAtPath:path]) continue;
+            [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:path]];
+            return;
+        }
     }
 }

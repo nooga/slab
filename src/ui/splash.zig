@@ -1,22 +1,24 @@
 //! Startup splash (docs/06 §Splash), the 2000s way: a card centred in the
 //! main window, splash.png above a packed status strip (wordmark,
-//! dot-matrix status, LED progress). Redrawn on the empty chassis between
-//! machine compiles; once the workbench is up it stays over the UI for a
-//! moment and then vanishes (at once on any click or key).
+//! dot-matrix status, version, LED progress). Redrawn on the empty
+//! chassis between machine compiles; once the workbench is up it stays
+//! over the UI for a moment and then vanishes (at once on any click or
+//! key).
 
 const std = @import("std");
 const c = @import("../c.zig");
 const core = @import("core.zig");
 const style = @import("style.zig");
 const ctl = @import("controls.zig");
+const build_options = @import("build_options");
 
 const Ui = core.Ui;
 const Rect = core.Rect;
 
 /// Card size (logical px): the image's aspect plus the strip.
-const W: i32 = 720;
-const H: i32 = 426;
-const STRIP_H: i32 = 20;
+pub const W: i32 = 720;
+pub const H: i32 = 426;
+pub const STRIP_H: i32 = 20;
 const SEGS: i32 = 24;
 /// How long the card stays over the live workbench.
 const HOLD_S: f32 = 1.2;
@@ -79,23 +81,27 @@ pub fn overlay(ui: *Ui, screen: Rect) void {
     ui.animate();
 }
 
+/// splash.png covering `r`: scaled to fill, centered, cropped. The About
+/// card prints its credits over it.
+pub fn photo(ui: *Ui, r: Rect) void {
+    const t = texture() orelse return;
+    const aw: f32 = @floatFromInt(r.w);
+    const ah: f32 = @floatFromInt(r.h);
+    const tw: f32 = @floatFromInt(t.width);
+    const th: f32 = @floatFromInt(t.height);
+    const k = @max(aw / tw, ah / th);
+    const w: i32 = @intFromFloat(@ceil(tw * k));
+    const h: i32 = @intFromFloat(@ceil(th * k));
+    ui.clip(r);
+    ui.texture(t, Rect.xywh(r.x + @divFloor(r.w - w, 2), r.y + @divFloor(r.h - h, 2), w, h), style.Color.hex(0xffffff));
+    ui.unclip();
+}
+
 fn card(ui: *Ui, r: Rect, status: []const u8, progress: f32) void {
     ui.rect(r, style.chassis);
     var img = r.inset(1);
     const strip = img.cutBottom(STRIP_H);
-    if (texture()) |t| {
-        // Cover the area above the strip: scale to fill, centre, crop.
-        const aw: f32 = @floatFromInt(img.w);
-        const ah: f32 = @floatFromInt(img.h);
-        const tw: f32 = @floatFromInt(t.width);
-        const th: f32 = @floatFromInt(t.height);
-        const k = @max(aw / tw, ah / th);
-        const w: i32 = @intFromFloat(@ceil(tw * k));
-        const h: i32 = @intFromFloat(@ceil(th * k));
-        ui.clip(img);
-        ui.texture(t, Rect.xywh(img.x + @divFloor(img.w - w, 2), img.y + @divFloor(img.h - h, 2), w, h), style.Color.hex(0xffffff));
-        ui.unclip();
-    }
+    photo(ui, img);
 
     // Status strip: a faceplate under the picture.
     var body = ui.plate(strip, .{ .outline = .none });
@@ -103,6 +109,8 @@ fn card(ui: *Ui, r: Rect, status: []const u8, progress: f32) void {
     const name = body.cutLeft(52);
     ui.textIn(&ui.fonts.body_bold, name.insetXY(6, 0), "SLAB", style.text, .left, true);
     const bar = body.cutRight(SEGS * 5 + 12);
+    const ver = "BETA " ++ build_options.version;
+    ui.textIn(&ui.fonts.legend, body.cutRight(ui.fonts.legend.measure(ver) + 6), ver, style.text_dim, .left, true);
     _ = body.cutRight(6);
     ctl.display(ui, body.center(body.w, ctl.displayHeight(false)), status, .{});
     const inner = ui.well(bar.center(bar.w - 8, 10), style.well).inset(1);

@@ -19,6 +19,10 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.addImport("fy", fy_mod);
     exe_mod.addImport("tamzen", b.createModule(.{ .root_source_file = b.path("vendor/tamzen/tamzen.zig") }));
+    // The version About shows, from build.zig.zon.
+    const options = b.addOptions();
+    options.addOption([]const u8, "version", @import("build.zig.zon").version);
+    exe_mod.addOptions("build_options", options);
 
     const exe = b.addExecutable(.{
         .name = "slab",

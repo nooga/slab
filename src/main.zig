@@ -50,6 +50,7 @@ const machine_bay = @import("ui/machine_bay.zig");
 const mixer = @import("ui/mixer.zig");
 const dialog = @import("ui/dialog.zig");
 const render_dialog = @import("ui/render_dialog.zig");
+const about = @import("ui/about.zig");
 const unison_panel = @import("ui/unison_panel.zig");
 const color_picker = @import("ui/color_picker.zig");
 const browser = @import("ui/browser.zig");
@@ -642,6 +643,7 @@ pub fn main(init: std.process.Init) !void {
     var edit_snap: snap_mod.Setting = .note_16;
     var rename: RenameState = .{};
     var render_dlg: render_dialog.State = .{};
+    var about_card: about.State = .{};
     var uni_panel: unison_panel.State = .{};
     var color_pick: color_picker.State = .{};
     // A track awaiting the delete confirmation, and the dialog's text.
@@ -668,7 +670,9 @@ pub fn main(init: std.process.Init) !void {
     const finder_project = try native_app.takeOpenedPath(alloc);
     defer if (finder_project) |p| alloc.free(p);
     if (cli.project orelse finder_project) |path| {
-        splash.bootFrame(ui, screenRect(), "LOADING PROJECT", 1);
+        splash.bootFrame(ui, screenRect(), "LOADING PROJECT", 0);
+        document_mod.progress = .{ .ctx = ui, .step = loadingStep };
+        defer document_mod.progress = null;
         if (document_mod.readFile(alloc, path)) |data| {
             defer alloc.free(data);
             useProject(path);
@@ -688,6 +692,17 @@ pub fn main(init: std.process.Init) !void {
     var quiet_frames: u32 = 0;
     var fps_idle = false;
     while (!c.rl.WindowShouldClose()) {
+        // A queued open runs here, between frames, behind the loading card.
+        if (pending_open) |path| {
+            pending_open = null;
+            defer alloc.free(path);
+            splash.bootFrame(ui, screenRect(), "LOADING PROJECT", 0);
+            document_mod.progress = .{ .ctx = ui, .step = loadingStep };
+            defer document_mod.progress = null;
+            var open_tracks = tracks_buf[0..track_count];
+            try openProjectPath(alloc, &history, &tracks_buf, &track_count, &open_tracks, &transport, &engine, &audio, &reg, &selected_track, &selected_clip, &prev_selected_clip, &project_path, &project_path_chosen, &dirty, &status, path);
+            splash.finishBoot();
+        }
         const sw: f32 = @floatFromInt(c.rl.GetScreenWidth());
         const sh: f32 = @floatFromInt(c.rl.GetScreenHeight());
         ui.beginFrame();
@@ -698,7 +713,7 @@ pub fn main(init: std.process.Init) !void {
         // One owner of the pointer at a time: a legacy menu, modal or drag
         // hides input from the new Ui, and a new-Ui drag hides it from the
         // legacy panes.
-        const modal = render_dlg.active or pending_delete != null or pending_delete_set != null or uni_panel.active or color_pick.active;
+        const modal = render_dlg.active or about_card.active or pending_delete != null or pending_delete_set != null or uni_panel.active or color_pick.active;
         if (menu.active() or modal or pane.hasActiveDrag()) ui.suppressInput();
 
         // While a menu is open it's modal for the mouse: panes get a
@@ -853,6 +868,7 @@ pub fn main(init: std.process.Init) !void {
             status.set("{s}", .{if (auto_arm) "Automation recording armed" else "Automation recording off"});
         }
         if (tres.render_audio) render_dlg.active = true;
+        if (tres.about or menu_cmds.has(.about)) about_card.active = true;
         if (tres.master_volume) |v| {
             master.setVolume(v);
             dirty = true;
@@ -1386,6 +1402,8 @@ pub fn main(init: std.process.Init) !void {
             } else color_pick.active = false;
         }
 
+        if (about.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &about_card) == .licenses) native_app.showLicenses();
+
         if (browser.dragging(&br)) browser.drawGhost(ui, &br, lib.items.items, drop_ok);
         splash.overlay(ui, screenRect());
         menu.draw(ui);
@@ -1409,6 +1427,7 @@ pub fn main(init: std.process.Init) !void {
         if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_PLAY") != null) transport.play();
         if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_EXPR") != null) clip_editor.toggleExpressionMode();
         if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_MIXER") != null) layout.mixer_visible = true;
+        if (shot_frame == 0 and std.c.getenv("SLAB_SHOT_ABOUT") != null) about_card.active = true;
         if (shot_frame == 200 and std.c.getenv("SLAB_SHOT_UNISON") != null) if (machine_bay.unison_chip_at) |at| uni_panel.open(selected_track orelse 0, at);
         if (shot_frame == 0) if (std.c.getenv("SLAB_SHOT_SELECT")) |sel| {
             // "track:clip" — open that clip in the editor (screenshots).
@@ -1530,28 +1549,9 @@ pub fn main(init: std.process.Init) !void {
         if (try native_app.takeOpenedPath(alloc)) |path| {
             defer alloc.free(path);
             lib_stale = true;
-            try openProjectPath(alloc, &history, &tracks_buf, &track_count, &tracks, &transport, &engine, &audio, &reg, &selected_track, &selected_clip, &prev_selected_clip, &project_path, &project_path_chosen, &dirty, &status, path);
+            queueOpen(alloc, path);
         }
-        if (tres.open_project) {
-            try openProject(
-                alloc,
-                &history,
-                &tracks_buf,
-                &track_count,
-                &tracks,
-                &transport,
-                &engine,
-                &audio,
-                &reg,
-                &selected_track,
-                &selected_clip,
-                &prev_selected_clip,
-                &project_path,
-                &project_path_chosen,
-                &dirty,
-                &status,
-            );
-        }
+        if (tres.open_project) openProject(alloc);
         prev_selected_clip = selected_clip;
         title_bar.update(c.rl.GetWindowHandle(), project_path, project_path_chosen, dirty);
         native_app.setBrowserChecked(layout.browser_visible);
@@ -1726,7 +1726,7 @@ fn handleProjectShortcuts(
     }
 
     if (c.rl.IsKeyPressed(c.rl.KEY_O)) {
-        try openProject(alloc, history, tracks_buf, track_count, tracks, transport, engine, audio, reg, selected_track, selected_clip, prev_selected_clip, project_path, project_path_chosen, dirty, status);
+        openProject(alloc);
         return true;
     }
 
@@ -2015,31 +2015,38 @@ fn defaultBounceName(buf: []u8, project_path: []const u8) []const u8 {
     return std.fmt.bufPrint(buf, "{s}.wav", .{stem}) catch "bounce.wav";
 }
 
-fn openProject(
-    alloc: std.mem.Allocator,
-    history: *history_mod.History,
-    tracks_buf: *[MAX_TRACKS]track_mod.Track,
-    track_count: *usize,
-    tracks: *[]track_mod.Track,
-    transport: *transport_mod.Transport,
-    engine: *engine_mod.Engine,
-    audio: *audio_mod.Audio,
-    reg: *registry_mod.Registry,
-    selected_track: *?usize,
-    selected_clip: *?clip_mod.ClipRef,
-    prev_selected_clip: *?clip_mod.ClipRef,
-    project_path: *[]u8,
-    project_path_chosen: *bool,
-    dirty: *bool,
-    status: *StatusMessage,
-) !void {
+/// File > Open: the Open panel, then the pick is opened at the top of the
+/// next frame (queueOpen).
+fn openProject(alloc: std.mem.Allocator) void {
     const chosen = native_dialog.openProject(alloc) catch |err| {
         std.log.err("open dialog failed: {s}", .{@errorName(err)});
         return;
     };
     const path = chosen orelse return;
     defer alloc.free(path);
-    try openProjectPath(alloc, history, tracks_buf, track_count, tracks, transport, engine, audio, reg, selected_track, selected_clip, prev_selected_clip, project_path, project_path_chosen, dirty, status, path);
+    queueOpen(alloc, path);
+}
+
+/// The project to open at the top of the next frame. Opens are asked for
+/// mid-frame (a menu, the Open panel, a Finder double-click, a song from
+/// the browser); loading between frames lets the loading card draw.
+var pending_open: ?[]u8 = null;
+
+fn queueOpen(alloc: std.mem.Allocator, path: []const u8) void {
+    const p = alloc.dupe(u8, path) catch return;
+    if (pending_open) |old| alloc.free(old);
+    pending_open = p;
+}
+
+/// The loading card while a project's tracks are built: the splash over
+/// the empty chassis, naming each track, as at boot.
+fn loadingStep(ctx: *anyopaque, done: usize, total: usize, name: []const u8) void {
+    const ui: *ui_core.Ui = @ptrCast(@alignCast(ctx));
+    var sbuf: [48]u8 = undefined;
+    var ubuf: [48]u8 = undefined;
+    const msg = std.ascii.upperString(&ubuf, std.fmt.bufPrint(&sbuf, "LOADING {s}", .{name}) catch "LOADING PROJECT");
+    const frac = @as(f32, @floatFromInt(done)) / @as(f32, @floatFromInt(@max(total, 1)));
+    splash.bootFrame(ui, screenRect(), msg, frac);
 }
 
 /// Open the project at `path` (the Open panel's pick, a song from the
@@ -2174,9 +2181,7 @@ fn browserDrop(app: App, lib: *library_mod.Library, sel: []const u32, first: u32
     if (first >= items.len) return false;
     const it = &items[first];
     if (target == .open_song) {
-        openProjectPath(app.alloc, app.history, app.tracks_buf, app.track_count, app.tracks, app.transport, app.engine, app.audio, app.reg, app.selected_track, app.selected_clip, app.prev_selected_clip, app.project_path, app.project_path_chosen, app.dirty, app.status, it.path) catch |err| {
-            app.status.set("Open failed: {s}", .{@errorName(err)});
-        };
+        queueOpen(app.alloc, it.path);
         return true;
     }
     // One undo step for the whole drop, a new track included.

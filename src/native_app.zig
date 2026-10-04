@@ -1,5 +1,6 @@
 //! The macOS app around the raylib window (native_app.m): projects Finder
-//! opens, the menu bar, the window's title and document state. UI thread.
+//! opens, the menu bar, the window's title and document state, the license
+//! files. UI thread.
 
 const std = @import("std");
 
@@ -9,6 +10,7 @@ extern fn slab_free_path(p: ?[*:0]u8) void;
 extern fn slab_install_menus() void;
 extern fn slab_take_menu_commands() c_uint;
 extern fn slab_set_browser_checked(on: c_int) void;
+extern fn slab_show_licenses() void;
 extern fn slab_set_window_document(window: ?*anyopaque, title: [*:0]const u8, path: ?[*:0]const u8, edited: c_int) void;
 
 /// Receive the projects Finder opens with slab (double-click, Open With,
@@ -37,6 +39,7 @@ pub const Command = enum(u5) {
     undo,
     redo,
     toggle_browser,
+    about,
 };
 
 pub const Commands = struct {
@@ -59,6 +62,12 @@ pub fn takeCommands() Commands {
 
 pub fn setBrowserChecked(on: bool) void {
     slab_set_browser_checked(@intFromBool(on));
+}
+
+/// Open the license files (the app's Licenses folder, or NOTICE in a dev
+/// build) in Finder.
+pub fn showLicenses() void {
+    slab_show_licenses();
 }
 
 /// The window's title bar: "SLAB — <project>", the project behind the

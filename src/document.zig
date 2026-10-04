@@ -562,6 +562,15 @@ pub fn appendJsonString(alloc: std.mem.Allocator, out: *std.ArrayList(u8), s: []
     try out.append(alloc, '"');
 }
 
+/// Called before each track is built while `apply` runs, for a loading
+/// display: `done` of `total` tracks built, `name` the next one's. Set
+/// only around a project open (undo applies snapshots without it).
+pub const Progress = struct {
+    ctx: *anyopaque,
+    step: *const fn (ctx: *anyopaque, done: usize, total: usize, name: []const u8) void,
+};
+pub var progress: ?Progress = null;
+
 pub fn apply(
     alloc: std.mem.Allocator,
     data: []const u8,
@@ -635,8 +644,9 @@ pub fn apply(
     if (tracks_v != .array) return error.InvalidProject;
     if (tracks_v.array.items.len > tracks_buf.len) return error.TooManyTracks;
 
-    for (tracks_v.array.items) |trk_v| {
+    for (tracks_v.array.items, 0..) |trk_v, i| {
         if (trk_v != .object) return error.InvalidProject;
+        if (progress) |p| p.step(p.ctx, i, tracks_v.array.items.len, strOf(objGet(trk_v.object, "name")) orelse "");
         tracks_buf[track_count.*] = try parseTrack(alloc, reg, trk_v.object, silent_machine);
         track_count.* += 1;
     }

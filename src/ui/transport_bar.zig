@@ -41,6 +41,8 @@ pub const Result = struct {
     auto_arm_toggle: bool = false,
     /// BROWSE: show or hide the library browser (⌘⌥B).
     toggle_browser: bool = false,
+    /// The logo was clicked: open About.
+    about: bool = false,
 };
 
 pub const Args = struct {
@@ -148,7 +150,7 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
 
     // Logo plate on the right, the master meter beside it, blank plate
     // between.
-    logoTile(ui, bar.cutRight(logoW(bar.h)));
+    if (logoTile(ui, bar.cutRight(logoW(bar.h)))) res.about = true;
     // The stats keep their room; the master meter gives way first.
     const stats_w: i32 = if (bar.w >= MASTER_MIN_W + STATS_W) STATS_W else 0;
     if (bar.w >= MASTER_MIN_W) masterTile(ui, bar.cutRight(@min(MASTER_W, bar.w - stats_w)), a, &res);
@@ -401,7 +403,10 @@ fn logoW(h: i32) i32 {
     return @divFloor(ih * tex.width, tex.height) + 2 * LOGO_PAD + 2;
 }
 
-fn logoTile(ui: *Ui, r: Rect) void {
+/// The logo plate; returns true when clicked (About).
+fn logoTile(ui: *Ui, r: Rect) bool {
+    const b = ui.behaviorEx(ui.id("logo"), r, .{ .focusable = false });
+    menu.tip(ui, r, "About Slab");
     const body = ui.plate(r, .{});
     if (logoTexture()) |tex| {
         const ih = r.h - 1 - 2 * LOGO_PAD;
@@ -410,6 +415,7 @@ fn logoTile(ui: *Ui, r: Rect) void {
     } else {
         ui.textIn(&ui.fonts.body_bold, body, "SLAB", style.accent, .center, true);
     }
+    return b.clicked;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
