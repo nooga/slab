@@ -152,9 +152,12 @@ dsp: sampler-block-prepare | ctx:Ctx state params:SamplerParams |
 
 ( zt key vel cnt trig -- k : the first zone of trigger trig [0 attack,
   1 release] holding key and vel [0..127] whose round-robin slot is cnt
-  [the key's note count] mod rr-len, or -1.
+  [the key's note count] mod rr-len, or -1.  vel is rounded first: the
+  ranges are whole numbers [an SFZ's lovel/hivel], so 101.6 must not fall
+  between hivel=101 and lovel=102.
   Unrolled over every zone; `best 0.0 f<` keeps the first match. )
-dsp: zone-find | zt key vel cnt trig -- k |
+dsp: zone-find | zt key vel0 cnt trig -- k |
+  vel0 0.5 f+ floor | vel |
   -1.0 0.0 MAX-ZONES [ | best i |
     i 19.0 f* | c |
     zt c 3.0 f+ f@i key f<=   key zt c 4.0 f+ f@i f<=  and
