@@ -72,6 +72,7 @@ test {
     _ = @import("export.zig");
     _ = @import("exporter.zig");
     _ = @import("flac.zig");
+    _ = @import("loudness.zig");
     _ = @import("ui/track_order.zig");
     _ = @import("engine.zig");
     _ = @import("track.zig");
@@ -429,6 +430,9 @@ const Cli = struct {
     /// .m4a: ALAC instead of AAC, and AAC's bitrate.
     alac: bool = false,
     kbps: u16 = 256,
+    /// --normalize <LUFS> or peak:<dBTP>.
+    normalize: exporter.Normalize = .off,
+    norm_target: f64 = -14,
     /// Seconds; null: AUTO.
     tail: ?f32 = 3,
     describe: ?[]const u8 = null,
@@ -485,6 +489,15 @@ pub fn main(init: std.process.Init) !void {
                 cli.bits = if (std.mem.eql(u8, v, "16")) .pcm16 else if (std.mem.eql(u8, v, "24")) .pcm24 else if (std.mem.eql(u8, v, "32f")) .float32 else return error.BadBits;
             } else if (std.mem.eql(u8, a, "--no-dither")) {
                 cli.dither = false;
+            } else if (std.mem.eql(u8, a, "--normalize")) {
+                const v = args.next() orelse return error.MissingNormalizeTarget;
+                if (std.mem.startsWith(u8, v, "peak:")) {
+                    cli.normalize = .peak;
+                    cli.norm_target = std.fmt.parseFloat(f64, v[5..]) catch return error.BadNormalizeTarget;
+                } else {
+                    cli.normalize = .loudness;
+                    cli.norm_target = std.fmt.parseFloat(f64, v) catch return error.BadNormalizeTarget;
+                }
             } else if (std.mem.eql(u8, a, "--alac")) {
                 cli.alac = true;
             } else if (std.mem.eql(u8, a, "--kbps")) {
@@ -770,7 +783,6 @@ pub fn main(init: std.process.Init) !void {
         // tile) hides it from the legacy panes, so one press never lands in
         // both UIs.
         const pane_m = if (menu.active() or modal or ui.active != 0 or ui.hot != 0) pane.neutral() else m;
-
 
         layout.splitters(ui, sw, sh);
 
@@ -1577,8 +1589,8 @@ pub fn main(init: std.process.Init) !void {
 
         // Finalize a worker render once it signals done (or after a cancel).
         if (render_job.active and render_job.done.load(.acquire)) {
-            finishRender(alloc, &audio, &render_job, &status);
-            render_dlg.active = false;
+            finishRender(alloc, &audio, &render_job, &status, &render_dlg);
+            render_dlg.active = render_dlg.card != null;
         }
 
         // Finalize a recording once the writer thread has flushed and closed
@@ -2040,6 +2052,12 @@ fn startRender(
         .tail_auto = dlg.tail_auto,
         .tail_frames = @intFromFloat(tail_s * @as(f32, @floatFromInt(sr))),
         .format = fmt,
+        .normalize = switch (dlg.normalize) {
+            1 => .peak,
+            2 => .loudness,
+            else => .off,
+        },
+        .target = dlg.normalizeTarget(),
     };
     job.total_frames = @intCast(range.end - range.start + job.opts.tail_frames);
 
@@ -2101,12 +2119,24 @@ fn renderProgress(job: *RenderJob) export_dialog.Progress {
     };
 }
 
-/// Join the worker, restart the device and report.
-fn finishRender(alloc: std.mem.Allocator, audio: *audio_mod.Audio, job: *RenderJob, status: *StatusMessage) void {
+/// Join the worker, restart the device and report: the status line, and
+/// the dialog's report card.
+fn finishRender(alloc: std.mem.Allocator, audio: *audio_mod.Audio, job: *RenderJob, status: *StatusMessage, dlg: *export_dialog.State) void {
     if (job.thread) |t| t.join();
     job.thread = null;
     audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
-    if (job.result) |r| {
+    if (job.result) |*r| {
+        var card = export_dialog.Card{
+            .has_mix = job.opts.mix_path != null,
+            .lufs = r.loudness.integrated,
+            .lra = r.loudness.lra,
+            .true_peak = r.loudness.true_peak,
+            .gain_db = r.gain_db,
+            .files = r.files,
+            .secs = @as(f64, @floatFromInt(r.frames)) / @as(f64, @floatFromInt(r.sample_rate)),
+        };
+        for (r.stems[0..r.stem_count]) |*st| card.addStem(st.name(), st.lufs);
+        dlg.card = card;
         const secs = @as(f64, @floatFromInt(r.frames)) / @as(f64, @floatFromInt(r.sample_rate));
         if (r.files == 1) status.set("Exported {s} ({d:.1}s)", .{ basename(job.opts.mix_path orelse job.stem_dir), secs }) else status.set("Exported {d} files ({d:.1}s)", .{ r.files, secs });
     } else if (job.err) |err| {
@@ -3573,14 +3603,17 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
         .tail_auto = cli.tail == null,
         .tail_frames = @intFromFloat(tail_s * @as(f32, @floatFromInt(sr))),
         .format = .{ .container = container, .bits = cli.bits, .dither = cli.dither, .sample_rate = sr, .aac_kbps = cli.kbps },
+        .normalize = cli.normalize,
+        .target = cli.norm_target,
     };
     const t0 = nowNs();
     const r = try exporter.run(alloc, &engine, tracks, opts, null, null);
     const secs = @as(f64, @floatFromInt(r.frames)) / @as(f64, @floatFromInt(sr));
     const took = @as(f64, @floatFromInt(nowNs() - t0)) / 1e9;
     if (cli.render) |out| {
-        std.debug.print("rendered {s} -> {s}: {d:.1} s in {d:.2} s ({d:.1}x real time), peak {d:.1} dBFS, rms {d:.1} dBFS, {d} samples at the rail\n", .{
+        std.debug.print("rendered {s} -> {s}: {d:.1} s in {d:.2} s ({d:.1}x real time), peak {d:.1} dBFS, rms {d:.1} dBFS, {d} samples at the rail, {d:.1} LUFS, LRA {d:.1} LU, true peak {d:.1} dBTP{s}\n", .{
             project, out, secs, took, secs / took, 20 * std.math.log10(@max(r.peak, 1e-9)), 20 * std.math.log10(@max(r.rms, 1e-12)), r.over,
+            r.loudness.integrated, r.loudness.lra, r.loudness.true_peak, if (r.gain_db != 0) " (normalized)" else "",
         });
     }
     if (cli.stems) |dir| std.debug.print("stems {s} -> {s}/: {d} files, {d:.1} s each\n", .{ project, dir, r.files - @intFromBool(cli.render != null), secs });

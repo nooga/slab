@@ -32,6 +32,13 @@ pub const State = struct {
     /// AAC: 128, 192, 256 (default) or 320 kb/s.
     aac_rate: u8 = 2,
     dither: bool = true,
+    /// NORMALIZE: OFF, PEAK (to PEAK_TARGETS dBTP) or LUFS (to
+    /// LUFS_TARGETS, under a -1 dBTP ceiling).
+    normalize: u8 = 0,
+    peak_target: u8 = 1,
+    lufs_target: u8 = 1,
+    /// The last export's report, shown until OK.
+    card: ?Card = null,
 
     pub fn whatMode(self: State) What {
         return @enumFromInt(self.what);
@@ -45,6 +52,10 @@ pub const State = struct {
     pub fn rangeMode(self: State) Range {
         return @enumFromInt(self.range);
     }
+    pub fn normalizeTarget(self: State) f64 {
+        return if (self.normalize == 1) PEAK_TARGETS[@min(self.peak_target, 2)] else LUFS_TARGETS[@min(self.lufs_target, 3)];
+    }
+
     pub fn format(self: State) export_mod.Format {
         return .{
             .container = @enumFromInt(self.container),
@@ -64,10 +75,39 @@ pub const Progress = struct {
     total_s: f64, // audio seconds total
 };
 
+pub const PEAK_TARGETS = [_]f64{ -0.1, -1, -3 };
+pub const LUFS_TARGETS = [_]f64{ -9, -14, -16, -23 };
+
+/// An export's report card (docs/27 §Normalize and the loudness report).
+pub const Card = struct {
+    has_mix: bool = false,
+    lufs: f64 = -70,
+    lra: f64 = 0,
+    true_peak: f64 = -180,
+    gain_db: f64 = 0,
+    files: usize = 0,
+    secs: f64 = 0,
+    stem_names: [MAX_STEMS][24]u8 = undefined,
+    stem_name_len: [MAX_STEMS]u8 = undefined,
+    stem_lufs: [MAX_STEMS]f64 = undefined,
+    stem_count: usize = 0,
+
+    pub const MAX_STEMS = 32;
+
+    pub fn addStem(self: *Card, name: []const u8, lufs: f64) void {
+        if (self.stem_count == MAX_STEMS) return;
+        const n = @min(name.len, 24);
+        @memcpy(self.stem_names[self.stem_count][0..n], name[0..n]);
+        self.stem_name_len[self.stem_count] = @intCast(n);
+        self.stem_lufs[self.stem_count] = lufs;
+        self.stem_count += 1;
+    }
+};
+
 pub const Result = enum { none, cancel, render };
 
 const W: i32 = 340;
-const H: i32 = 262;
+const H: i32 = 288;
 const ROW_H: i32 = 20;
 /// The longest tail: AUTO renders up to this and stops at silence.
 pub const TAIL_MAX: f32 = 30;
@@ -81,6 +121,13 @@ pub const Avail = struct { loop: bool, selection: bool };
 ///   - `progress != null`  → rendering (LED bar + stats; CANCEL).
 pub fn draw(ui: *Ui, screen: Rect, state: *State, avail: Avail, progress: ?Progress) Result {
     if (!state.active) return .none;
+    if (state.card) |*card| {
+        if (drawCard(ui, screen, card)) {
+            state.card = null;
+            state.active = false;
+        }
+        return .none;
+    }
     const f = dialog.begin(ui, screen, "export-dialog", "EXPORT AUDIO", W, H);
     defer dialog.end(ui);
     if (progress) |p| {
@@ -151,6 +198,60 @@ fn drawOptions(ui: *Ui, body_in: Rect, state: *State, avail: Avail) void {
         var on = state.dither and sixteen;
         if (ctl.button(ui, d.cutLeft(d.w), "DITHER", &on, .{ .kind = .latch, .label = "DITHER", .lit = style.accent, .disabled = !sixteen or container == .aac })) state.dither = !state.dither;
     }
+    {
+        var r = dialog.row(ui, &body, "NORMALIZE", ROW_H);
+        choice(ui, r.cutLeft(126), &.{ "OFF", "PEAK", "LUFS" }, &state.normalize, &.{ false, state.whatMode() == .stems, state.whatMode() == .stems });
+        _ = r.cutLeft(8);
+        ui.pushId("target");
+        defer ui.popId();
+        switch (state.normalize) {
+            1 => choice(ui, r, &.{ "-0.1", "-1", "-3" }, &state.peak_target, &.{}),
+            2 => choice(ui, r, &.{ "-9", "-14", "-16", "-23" }, &state.lufs_target, &.{}),
+            else => ctl.display(ui, r.center(r.w, ctl.displayHeight(false)), "AS MIXED", .{ .color = style.text_dim }),
+        }
+    }
+}
+
+fn cardRow(u: *Ui, b: *Rect, label: []const u8, s: []const u8, col: core.Color) void {
+    const r = dialog.row(u, b, label, ROW_H);
+    ctl.display(u, r.center(r.w, ctl.displayHeight(false)), s, .{ .color = col });
+}
+
+/// The report: the mix's loudness, range, true peak and gain, and each
+/// stem's loudness against the loudest. True once OK is pressed.
+fn drawCard(ui: *Ui, screen: Rect, card: *const Card) bool {
+    const stem_rows: i32 = @intCast((card.stem_count + 1) / 2);
+    const mix_rows: i32 = if (card.has_mix) 4 else 1;
+    const h = 56 + mix_rows * (ROW_H + 6) + if (stem_rows > 0) 18 + stem_rows * 14 else 0;
+    const f = dialog.begin(ui, screen, "export-card", "EXPORTED", W, h);
+    defer dialog.end(ui);
+    var body = f.body;
+    var buf: [48]u8 = undefined;
+    const row = cardRow;
+    row(ui, &body, "FILES", std.fmt.bufPrint(&buf, "{d}  {d:.1} S", .{ card.files, card.secs }) catch "", style.text);
+    if (card.has_mix) {
+        row(ui, &body, "LOUDNESS", std.fmt.bufPrint(&buf, "{d:.1} LUFS  LRA {d:.1} LU", .{ card.lufs, card.lra }) catch "", style.text);
+        row(ui, &body, "TRUE PEAK", std.fmt.bufPrint(&buf, "{d:.1} DBTP", .{card.true_peak}) catch "", if (card.true_peak > -1) style.vfd else style.text);
+        row(ui, &body, "GAIN", std.fmt.bufPrint(&buf, "{s}{d:.1} DB", .{ if (card.gain_db >= 0) "+" else "", card.gain_db }) catch "", style.text);
+    }
+    if (card.stem_count > 0) {
+        var loudest: f64 = -70;
+        for (card.stem_lufs[0..card.stem_count]) |l| loudest = @max(loudest, l);
+        const head = body.cutTop(14);
+        ui.textIn(&ui.fonts.legend, head, "STEMS, LU UNDER THE LOUDEST", style.text_dim, .left, true);
+        _ = body.cutTop(4);
+        const col_w = @divFloor(body.w, 2);
+        for (0..card.stem_count) |i| {
+            const k: i32 = @intCast(i);
+            const x = body.x + @mod(k, 2) * col_w;
+            const y = body.y + @divFloor(k, 2) * 14;
+            const name = card.stem_names[i][0..card.stem_name_len[i]];
+            ui.textIn(&ui.fonts.legend, Rect.xywh(x, y, col_w - 52, 14), name, style.text, .left, false);
+            const v = if (card.stem_lufs[i] <= -70) "-" else std.fmt.bufPrint(&buf, "{d:.1}", .{card.stem_lufs[i] - loudest}) catch "";
+            ui.textIn(&ui.fonts.legend, Rect.xywh(x + col_w - 52, y, 44, 14), v, style.text_dim, .right, false);
+        }
+    }
+    return dialog.buttons(ui, f.buttons, &.{"OK"}, 0) != null or f.escape or f.enter;
 }
 
 pub fn drawProgress(ui: *Ui, body_in: Rect, p: Progress) void {

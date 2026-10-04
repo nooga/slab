@@ -10,9 +10,14 @@ const track_mod = @import("track.zig");
 const routing = @import("routing.zig");
 const storage = @import("storage.zig");
 const export_mod = @import("export.zig");
-const document = @import("document.zig");
+const loudness = @import("loudness.zig");
 
 pub const Stems = enum { none, tracks, buses, all };
+
+/// One gain for every file of an export (docs/27 §Normalize): none, the
+/// mix's true peak to `target` dBTP, or its integrated loudness to
+/// `target` LUFS, lowered if that would push the true peak past `ceiling`.
+pub const Normalize = enum { off, peak, loudness };
 
 pub const Options = struct {
     /// Where the mix goes; null writes no mix.
@@ -32,6 +37,19 @@ pub const Options = struct {
     tail_auto: bool = false,
     tail_frames: usize = 0,
     format: export_mod.Format = .{},
+    normalize: Normalize = .off,
+    target: f64 = -14,
+    ceiling: f64 = -1,
+};
+
+pub const StemLevel = struct {
+    name_buf: [track_mod.MAX_NAME]u8 = undefined,
+    name_len: usize = 0,
+    lufs: f64 = -70,
+
+    pub fn name(self: *const StemLevel) []const u8 {
+        return self.name_buf[0..self.name_len];
+    }
 };
 
 pub const Report = struct {
@@ -39,10 +57,16 @@ pub const Report = struct {
     /// Each file's length.
     frames: usize = 0,
     sample_rate: u32 = 0,
-    /// The mix's.
+    /// The mix's, as written (after the gain).
     peak: f32 = 0,
     rms: f64 = 0,
     over: usize = 0,
+    loudness: loudness.Stats = .{},
+    /// What Normalize applied, dB.
+    gain_db: f64 = 0,
+    /// Each stem's integrated loudness, as written.
+    stems: [routing.MAX_TRACKS]StemLevel = undefined,
+    stem_count: usize = 0,
 };
 
 /// The tracks `opts.stems` takes: tracks that sound (audible, with clips
@@ -128,8 +152,24 @@ pub fn run(
     len = @min(len, if (mix.len > 0) out_frames else total);
 
     var report = Report{ .frames = len, .sample_rate = opts.format.sample_rate };
+    var gain: f32 = 1;
     if (opts.mix_path) |path| {
         const m = mix[0 .. len * 2];
+        const before = try loudness.measure(alloc, m, opts.format.sample_rate);
+        report.gain_db = switch (opts.normalize) {
+            .off => 0,
+            .peak => opts.target - before.true_peak,
+            .loudness => if (before.integrated <= -70) 0 else @min(opts.target - before.integrated, opts.ceiling - before.true_peak),
+        };
+        gain = @floatCast(std.math.pow(f64, 10, report.gain_db / 20));
+        if (gain != 1) for (m) |*v| {
+            v.* *= gain;
+        };
+        report.loudness = before;
+        report.loudness.integrated += if (before.integrated > -70) report.gain_db else 0;
+        report.loudness.short_term_max += report.gain_db;
+        report.loudness.sample_peak += report.gain_db;
+        report.loudness.true_peak += report.gain_db;
         var sq: f64 = 0;
         for (m) |v| {
             report.peak = @max(report.peak, @abs(v));
@@ -152,9 +192,14 @@ pub fn run(
             @memset(buf, 0);
             const avail = @min(len, cap.l[ti].len -| lat);
             for (0..avail) |i| {
-                buf[i * 2] = cap.l[ti][lat + i];
-                buf[i * 2 + 1] = cap.r[ti][lat + i];
+                buf[i * 2] = cap.l[ti][lat + i] * gain;
+                buf[i * 2 + 1] = cap.r[ti][lat + i] * gain;
             }
+            var lv = &report.stems[report.stem_count];
+            lv.name_len = @min(t.name().len, lv.name_buf.len);
+            @memcpy(lv.name_buf[0..lv.name_len], t.name()[0..lv.name_len]);
+            lv.lufs = (try loudness.measure(alloc, buf, opts.format.sample_rate)).integrated;
+            report.stem_count += 1;
             var name_buf: [256]u8 = undefined;
             const name = export_mod.fillName(&name_buf, opts.stem_name, .{ .project = opts.project, .nn = nn, .track = t.name() });
             var path_buf: [storage.MAX_PATH]u8 = undefined;
@@ -255,4 +300,85 @@ test "run: the mix and a stem per playing track, every file one length" {
     defer stem.deinit(alloc);
     try testing.expectEqual(@as(usize, 7200), stem.data.len);
     try testing.expectApproxEqAbs(0.5 * c, stem.right[100], 1e-6);
+}
+
+/// A 1 kHz sine at 0.1, for loudness.
+const TestSine = struct {
+    phase: f64 = 0,
+
+    fn render(st: *anyopaque, _: *const @import("machine.zig").MachineCtx, l: []f32, r: []f32) void {
+        const me: *TestSine = @ptrCast(@alignCast(st));
+        for (l, r) |*a, *b| {
+            const v: f32 = @floatCast(0.1 * @sin(me.phase));
+            me.phase += 2 * std.math.pi * 1000.0 / 48_000.0;
+            a.* = v;
+            b.* = v;
+        }
+    }
+
+    fn reset(st: *anyopaque) void {
+        const me: *TestSine = @ptrCast(@alignCast(st));
+        me.phase = 0;
+    }
+
+    fn mach(self: *TestSine) @import("machine.zig").Machine {
+        var m = dcMachine(undefined);
+        m.name = "sine";
+        m.state = self;
+        m.render = render;
+        m.reset = reset;
+        return m;
+    }
+};
+
+test "run: LOUDNESS normalize takes the mix to its target and the stems by the same gain" {
+    const alloc = testing.allocator;
+    const wav = @import("wav.zig");
+    const clip_mod = @import("clip.zig");
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var sine = TestSine{};
+    var tracks = [_]track_mod.Track{try track_mod.Track.init(alloc, "Tone", col, sine.mach())};
+    defer tracks[0].deinit(alloc);
+    tracks[0].setVolume(1.0);
+    try tracks[0].addClip(alloc, clip_mod.Clip.init("t", 0, 20));
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    tracks[0].publishSnapshot(&pool);
+    var transport = @import("transport.zig").Transport{};
+    transport.sample_rate = 48_000;
+    const eng = try alloc.create(engine_mod.Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var rb: [storage.MAX_PATH]u8 = undefined;
+    var db: [storage.MAX_PATH]u8 = undefined;
+    const dir = storage.absolute(&db, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
+    var mb: [storage.MAX_PATH]u8 = undefined;
+    const mix_path = try std.fmt.bufPrint(&mb, "{s}/n.wav", .{dir});
+    var sb: [storage.MAX_PATH]u8 = undefined;
+    const stem_dir = try std.fmt.bufPrint(&sb, "{s}/stems", .{dir});
+    // The tone, centre-panned: -20 dBFS -3 dB on each side, about -23 LUFS.
+    const r = try run(alloc, eng, &tracks, .{
+        .mix_path = mix_path,
+        .stems = .tracks,
+        .stem_dir = stem_dir,
+        .project = "n",
+        .end = 48_000 * 10,
+        .format = .{ .bits = .float32 },
+        .normalize = .loudness,
+        .target = -16,
+    }, null, null);
+    try testing.expectApproxEqAbs(@as(f64, -16), r.loudness.integrated, 0.05);
+    try testing.expect(r.gain_db > 6 and r.gain_db < 8);
+    try testing.expectEqual(@as(usize, 1), r.stem_count);
+    try testing.expectApproxEqAbs(@as(f64, -16), r.stems[0].lufs, 0.05);
+    var mix = try wav.loadStereo(alloc, mix_path);
+    defer mix.deinit(alloc);
+    const want: f64 = 0.1 * @cos(std.math.pi / 4.0) * std.math.pow(f64, 10, r.gain_db / 20);
+    var peak: f64 = 0;
+    for (mix.data) |v| peak = @max(peak, @abs(v));
+    try testing.expectApproxEqAbs(want, peak, 1e-3);
 }

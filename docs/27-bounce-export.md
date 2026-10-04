@@ -14,7 +14,8 @@ write is what playback sounds like, bit-exact at any `--threads`
 **Status:** 2026-10-04, branch `feat/bounce-export`. Built: clip mute,
 stereo audio clips, the engine's capture and ring-out stop, Bounce
 selection, Export (mix and one-pass stems, project/loop/selection, WAV
-and AIFF at 16/24/32f with dither, FLAC, ALAC, AAC, the command line). Each section
+and AIFF at 16/24/32f with dither, FLAC, ALAC, AAC, loudness and
+normalize with a report card, the command line). Each section
 below says what of it is still design.
 
 ## Bounce selection
@@ -238,22 +239,26 @@ would need every machine to be rate-independent, which isn't verified.
 
 ### Normalize and the loudness report
 
-Planned. **NORMALIZE**: OFF (default), PEAK (to a dBFS ceiling), or
-LOUDNESS (to an integrated LUFS target, −14 by default, with a true-peak
-ceiling of −1 dBTP). LOUDNESS applies one gain to the whole file. If the
-ceiling would be exceeded, the gain is lowered instead of limiting.
-The master chain is where limiting belongs. Stems take the mix's gain,
-so their balance is preserved.
+**NORMALIZE**: OFF (default, as mixed), PEAK (the mix's true peak to
+−0.1, −1 or −3 dBTP) or LUFS (its integrated loudness to −9, −14, −16
+or −23 LUFS, lowered if that would push the true peak past −1 dBTP). It
+is one gain for the whole file, never limiting: the master chain is
+where limiting belongs. Stems take the mix's gain, so their balance is
+kept; a stems-only export isn't normalized.
 
-The meter is ITU-R BS.1770-4 in Zig (`src/loudness.zig`): K-weighting,
-400 ms gated blocks, LRA from 3 s blocks, true peak from 4×
-oversampling. slabkit's Python version (`tools/slabkit/analyze.py`) is
-the reference it's tested against.
+The meter is `src/loudness.zig`: ITU-R BS.1770-4 K-weighting (shelf and
+RLB highpass, derived for any rate), integrated loudness from 400 ms
+blocks at 75 % overlap gated at −70 LUFS and 10 LU under, LRA per EBU
+Tech 3342 (3 s blocks at 10 Hz, gated at −70 and 20 LU under, 10th to
+95th percentile), true peak from a 4× oversampled copy (a 48-tap
+Blackman-windowed sinc). On three rendered songs its integrated
+loudness is within 0.05 LU of slabkit's (`tools/slabkit/analyze.py`).
 
-After every export, the dialog shows a **report card**: integrated
-LUFS, LRA, true peak and the gain applied for the mix, and for stems
-each one's integrated loudness relative to the loudest. That's the
-stem report from docs/21 §Mixing by numbers, now in the app.
+After an export the dialog turns into a **report card**: the files and
+their length; for a mix, its integrated loudness, LRA, true peak (amber
+past −1 dBTP) and the gain applied; and each stem's loudness in LU
+under the loudest stem, the stem report from docs/21 §Mixing by
+numbers. `--render` prints the mix's numbers.
 
 ### Names and metadata
 
@@ -274,6 +279,7 @@ slab song.slab --render out.flac                 # FLAC, 24-bit, level 5
 slab song.slab --render out.m4a --kbps 320       # AAC; --alac for Apple Lossless
 slab song.slab --render out.wav --stems stems/   # the mix and stems, one render
 slab song.slab --stems stems/ --stem-kind all --tap fx --tail auto
+slab song.slab --render out.wav --normalize -14  # or peak:-1
 ```
 
 The format comes from the extension. slabkit's `render(stems=True)`
@@ -323,7 +329,7 @@ came out 0.2 % and 1.6 % smaller than `flac -5`, within 0.3 % of
    open).
 4. **FLAC encoder**, **ALAC and AAC** (built; no FLAC level choice in
    the dialog yet).
-5. **Loudness**: `loudness.zig`, NORMALIZE, the report card.
+5. **Loudness**: `loudness.zig`, NORMALIZE, the report card (built).
 6. **Resampler** for 44.1/88.2/96 kHz.
 7. **Provenance**: recipe, hash, stale, Re-bounce, Thaw.
 8. **LOOP-WRAP** and metadata (cue points, `acid`, tags).
