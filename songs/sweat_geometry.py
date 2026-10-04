@@ -203,42 +203,41 @@ zap = song.track("ZAP", "ms20", "aggressive-fill-lead", volume=0.3, pan=0.45, ou
 ])
 zap.send(dub, -4)
 
-# ── CMI: warped washes and industrial hits ─────────────────────────────
-# The Tibetan chant loop, clocked down to 11 kHz: an octave-ish lower,
-# grainy, the loop seam turned into a slow pulse. Long attack, drowned in
+# ── Unfairlight: warped washes and industrial hits ─────────────────────
+# The chanting monks, grainy, the loop seam a slow pulse. Long attack, drowned in
 # the cathedral: a reverb wash, not a pad you hear as notes.
-wash = song.track("WASH", "unfairlight", "cmi-classic/choral/tibet", volume=0.22, output=mix, params=dict(
-    rate=11000, atk=2.5, damp=4.0, filter=120, vib_depth=0.15, vib_rate=0.3, vol=0.8), fx=[
+wash = song.track("WASH", "unfairlight", "slab/monks", volume=0.22, output=mix, params=dict(
+    atk=2.5, damp=4.0, filter=120, vib_depth=0.15, vib_rate=0.3, vol=0.8), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=220, p1_hz=600, p1_db=-3, hs_hz=7000, hs_db=-3),
     fx("chorus2", "slow-woozy-mod"),
     fx("comp2", key=kick, thresh=-30, ratio=4, atk=0.002, rel=0.25),
     fx("verb2", "cathedral", mix=0.55),
 ])
 # a choir "ahh" held and looped, warped slow, for the breakdown's top
-choir = song.track("CHOIR", "unfairlight", "cmi-classic/choral/ahh1", volume=0.05, pan=0.2, output=mix, params=dict(
-    rate=16000, loop="ON", loop_start=40, loop_end=118, atk=1.8, damp=5.0, vib_depth=0.2, vib_rate=4.5, vol=0.8), fx=[
+choir = song.track("CHOIR", "unfairlight", "slab/choir-aah", volume=0.05, pan=0.2, output=mix, params=dict(
+    atk=1.8, damp=5.0, vib_depth=0.2, vib_rate=4.5, vol=0.8), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=300, hs_hz=8000, hs_db=-3),
     fx("chorus2", "string-ensemble"),
     fx("verb2", "long-melancholy-verb", mix=0.5),
 ])
 choir.send(dub, -12)
-# factory loop, tuned down and filtered: machinery under drop 2
-factory = song.track("FACTORY", "unfairlight", "cmi-iix/34-construction/factry01", volume=0.85, pan=-0.2, output=mix, params=dict(
-    rate=14000, atk=0.8, damp=2.0, vol=0.8), fx=[
+# a clanking metal loop, filtered: machinery under drop 2
+factory = song.track("FACTORY", "unfairlight", "slab/metal-loop", volume=0.85, pan=-0.2, output=mix, params=dict(
+    atk=0.8, damp=2.0, vol=0.8), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=350, p2_hz=2500, p2_db=2, hs_hz=8000, hs_db=-4),
     fx("comp2", key=kick, thresh=-32, ratio=6, atk=0.001, rel=0.14),
     fx("delay2", sync="SYNC", div="1/4", fb=0.3, damp=3000, mix=0.2),
 ])
-# steel door slammed and pitched up: an industrial hit on an 11-step cycle
-metal = song.track("METAL", "unfairlight", "cmi-iix/41-misc-fx-2/steeldor", volume=0.23, pan=0.4, output=drums, params=dict(
-    rate=28000, damp=0.25, vol=0.8), fx=[
+# a hammer on steel: an industrial hit on an 11-step cycle
+metal = song.track("METAL", "unfairlight", "slab/anvil", volume=0.23, pan=0.4, output=drums, params=dict(
+    damp=0.25, vol=0.8), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=400, hs_hz=9000, hs_db=-4),
 ])
 metal.send(dub, -10)
 metal.send(space, -14)
-# the big slams: the jail door into the hall at the breakdown and drop 2
-slam = song.track("SLAM", "unfairlight", "cmi-iix/41-misc-fx-2/jaildoor", volume=0.22, output=mix, params=dict(
-    rate=18000, damp=3.0, vol=0.8), fx=[
+# the big slams: a metal door into the hall at the breakdown and drop 2
+slam = song.track("SLAM", "unfairlight", "slab/door-slam", volume=0.22, output=mix, params=dict(
+    damp=3.0, vol=0.8), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=90, hs_hz=8000, hs_db=-3),
     fx("verb2", "cathedral", mix=0.45),
 ])
@@ -429,7 +428,7 @@ bells(bell_r, outro, 4, 8, BELL_B, vel=66)
 for c in (kick.clips[-1], perc.clips[-1]):
     c.velocities(lambda n, c=c: n["vel"] * (1 - 0.35 * n["start"] / c.length))
 
-# ── CMI layers, ride, drone ────────────────────────────────────────────
+# ── Unfairlight layers, ride, drone ────────────────────────────────────────────
 A1, A2, E3, A3 = 33, 45, 52, 57
 wash.clip(intro, at_bar=4, bars=12).chord([A2, E3], 0, 12 * BAR - 1, 84)
 wash.clip(brk, bars=24).chord([A2, E3, A3], 0, 24 * BAR - 2, 90)

@@ -7,11 +7,11 @@ instrument choices are ignored: each part gets the sound the record is
 known or measured to use.
 
   part (MIDI track)        the record              here
-  stabs  (Rhythm Guitar)   Emax sampled piano      PIANO 2 + SYN-CLAV bite, harpsichords an octave up
-  riff   (Strings)         D-50 hook layer         slab/glass-lead + ROM BELLS an octave up
-  tines  (Music Box)       Fairlight / DX tines    Fairlight RHODES7 left, E.PIANO 1 right, alternating
+  stabs  (Rhythm Guitar)   Emax sampled piano      slab/piano + slab/clav bite, harpsichords an octave up
+  riff   (Strings)         D-50 hook layer         slab/glass-lead + slab/bells an octave up
+  tines  (Music Box)       Fairlight / DX tines    slab/e-piano left, slab/e-piano-2 right, alternating
   chords (Sawtooth Lead)   Jupiter 8               juno2 pad
-  bass   (Bass)            Jupiter / CZ synth bass cream + ROM SYN-BASS 2, an octave up
+  bass   (Bass)            Jupiter / CZ synth bass cream + slab/solid-bass, an octave up
   drums  (Drums)           Linn 2 / 9000           LinnDrum, sampled snare into a gated room
   voice  (Melody)          the vocal               the lead, an octave up, from the verse's pickup
 
@@ -68,27 +68,27 @@ bass_bus = song.bus("BASS")
 drums = song.bus("DRUMS", volume=1.1, fx=[fx("bus2", "drum-bus", thresh=-22, makeup=4.0)])
 
 # ── keys ───────────────────────────────────────────────────────────────
-piano = song.track("PIANO", "fm86", "rom1a/piano-2", volume=1.2, pan=-0.5, params=dict(volume=2.0), output=keys_bus, fx=[
+piano = song.track("PIANO", "fm86", "slab/piano", volume=1.2, pan=-0.5, params=dict(volume=2.0), output=keys_bus, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=90, ls_hz=200, ls_db=2, p1_hz=500, p1_db=-4, p1_q=1.0, p2_hz=5000, p2_db=5, hs_hz=10000, hs_db=4),
     fx("chorus2", "wide-keys", mix=0.5),
     fx("verb2", "bright-plate", decay=11.89, predelay=0.018, mix=0.14, damp=9000),
 ])
-bite = song.track("BITE", "fm86", "rom2b/syn-clav-1", volume=0.9, pan=0.6, params=dict(volume=2.0), output=keys_bus, fx=[
+bite = song.track("BITE", "fm86", "slab/clav", volume=0.9, pan=0.6, params=dict(volume=2.0), output=keys_bus, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=800, p2_hz=3000, p2_db=-2, hs_hz=6500, hs_db=5),
 ])
-spark_l = song.track("SPARKLE L", "fm86", "rom1a/harpsich-1", volume=1.3, pan=-0.85, params=dict(volume=2.0), output=keys_bus, fx=[
+spark_l = song.track("SPARKLE L", "fm86", "slab/harpsichord", volume=1.3, pan=-0.85, params=dict(volume=2.0), output=keys_bus, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=1000, p1_hz=1600, p1_db=-3, p2_hz=6000, p2_db=3, hs_hz=12000, hs_db=2),
     fx("chorus2", "bell-widener", mix=0.35),
 ])
-spark_r = song.track("SPARKLE R", "fm86", "rom4b/harpsi-stg", volume=1.15, pan=0.85, params=dict(volume=2.0), output=keys_bus, fx=[
+spark_r = song.track("SPARKLE R", "fm86", "slab/harpsichord", volume=1.15, pan=0.85, params=dict(volume=2.0), output=keys_bus, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=1000, p1_hz=1600, p1_db=-3, p2_hz=7000, p2_db=3, hs_hz=12000, hs_db=2),
     fx("chorus2", "bell-widener", mix=0.35),
 ])
-tine_l = song.track("TINES L", "unfairlight", "cmi-classic/electkbd/rhodes7", volume=0.3, pan=-0.9, output=keys_bus, fx=[
+tine_l = song.track("TINES L", "fm86", "slab/e-piano", volume=0.3, pan=-0.9, output=keys_bus, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=350, p1_hz=600, p1_db=-2, p2_hz=3500, p2_db=3, hs_hz=9000, hs_db=2),
     fx("delay2", sync="SYNC", div="1/8.", fb=0.2, damp=5000, mix=0.18),
 ])
-tine_r = song.track("TINES R", "fm86", "rom1a/e-piano-1", volume=0.75, pan=0.9, output=keys_bus, fx=[
+tine_r = song.track("TINES R", "fm86", "slab/e-piano-2", volume=0.75, pan=0.9, output=keys_bus, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=350, p1_hz=600, p1_db=-2, p2_hz=4000, p2_db=3, hs_hz=9000, hs_db=2),
     fx("delay2", sync="SYNC", div="1/8.", fb=0.2, damp=5000, mix=0.18),
 ])
@@ -106,7 +106,7 @@ lead = song.track("LEAD", "fm86", "slab/glass-lead", volume=1.25, pan=0.05, para
     fx("delay2", sync="SYNC", div="1/8.", fb=0.3, damp=6500, mix=0.22),
     fx("verb2", "bright-plate", decay=17.26, predelay=0.02, mix=0.16, damp=10000),
 ])
-glass = song.track("GLASS", "fm86", "rom2a/bells", volume=0.7, pan=0.6, output=lead_bus, fx=[
+glass = song.track("GLASS", "fm86", "slab/bells", volume=0.7, pan=0.6, output=lead_bus, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=900, hs_hz=9000, hs_db=2),
     fx("delay2", sync="SYNC", div="1/4.", fb=0.25, damp=6000, mix=0.25),
 ])
@@ -117,7 +117,7 @@ bass = song.track("SYNTH BASS", "cream", "outstanding-funk-bass", volume=0.5, pa
     # the growl at 750 says "bass" on small speakers; the sub stays lean
     fx("eq2", hpf_on="ON", hpf_hz=40, ls_hz=70, ls_db=-3, p1_hz=750, p1_db=4.5, p1_q=0.9, p2_hz=2200, p2_db=3),
 ])
-bass_dx = song.track("DX BASS", "fm86", "rom2b/syn-bass-2", volume=0.8, output=bass_bus, fx=[
+bass_dx = song.track("DX BASS", "fm86", "slab/solid-bass", volume=0.8, output=bass_bus, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=90, p1_hz=200, p1_db=3.5, p1_q=0.9, p2_hz=1400, p2_db=2),
 ])
 

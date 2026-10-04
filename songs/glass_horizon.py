@@ -2,7 +2,7 @@
 "I Don't Care Anymore", Genesis' "Mama"). Original material.
 
 93 BPM, E minor. A CR-78 loop that never stops, a dark poly pad, a
-breathy Fairlight voice singing the line, fretless-ish synth bass with
+breathy Unfairlight voice singing the line, fretless-ish synth bass with
 glide. No real drums for two and a half minutes: the bridge's pad chord
 folds onto one note under a reversed crash, the room goes quiet, and a
 descending five-tom fill brings in the kit through verb2's gated room
@@ -97,13 +97,13 @@ pad = song.track("PAD", "juno2", "bittersweet-minor-pad", volume=0.23, params=di
     fx("comp2", key=drums, thresh=-12, ratio=3, knee=6, atk=0.002, rel=0.12),
     fx("verb2", "big-plate-hall", mix=0.32),
 ])
-voice = song.track("VOICE", "unfairlight", "sararr", volume=0.538, params=dict(vib_depth=0.12, filter=215, vol=0.95), fx=[
+voice = song.track("VOICE", "unfairlight", "slab/folk-women", volume=0.538, params=dict(vib_depth=0.12, filter=215, vol=0.95), fx=[
     fx("eq2", hpf_on="ON", hpf_hz=150, p1_hz=400, p1_db=-2, p2_hz=2600, p2_db=4, hs_hz=7000, hs_db=3),
     fx("comp2", "vocal-leveler"),
     fx("delay2", sync="SYNC", div="1/4", fb=0.28, damp=3500, mix=0.16),
     fx("verb2", "vocal-plate", mix=0.26),
 ])
-choir = song.track("CHOIR", "unfairlight", "choir05", volume=0.193, pan=-0.15, fx=[
+choir = song.track("CHOIR", "unfairlight", "slab/choir-aah", volume=0.193, pan=-0.15, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=320, p1_hz=500, p1_db=-3),
     fx("chorus2", "string-ensemble"),
     fx("verb2", "big-hall", mix=0.35),

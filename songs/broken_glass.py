@@ -50,17 +50,16 @@ bass_bus = song.bus("BASS", volume=1.0)
 drums = song.bus("DRUMS", volume=1.1, fx=[fx("bus2", "drum-bus", thresh=-22, makeup=4.0)])
 
 # ── keys ───────────────────────────────────────────────────────────────
-# PIANO 2 is the ROM's CP-80-ish grand: 5 ms attack, the brightest
-# sustained key voice in the banks. Pulsing 8ths, accented 3-3-2, voiced
+# slab/piano: an FM grand with a fast attack and a bright sustain. Pulsing 8ths, accented 3-3-2, voiced
 # low enough to carry the 125-500 Hz weight; a DI chorus spreads it.
-piano = song.track("PIANO", "fm86", "rom1a/piano-2", volume=0.95, pan=-0.65, output=keys_bus, fx=[
+piano = song.track("PIANO", "fm86", "slab/piano", volume=0.95, pan=-0.65, output=keys_bus, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=90, ls_hz=240, ls_db=3, p1_hz=480, p1_db=-3, p1_q=1.4, p2_hz=4500, p2_db=4, hs_hz=10000, hs_db=2),
     fx("chorus2", "wide-keys", mix=0.5),
     fx("verb2", "bright-plate", decay=11.89, predelay=0.018, mix=0.14, damp=9000),
 ])
-# the bite: SYN-CLAV 1 doubling the stabs on the other side, the click
-# the ROM pianos lack above 4 kHz (4-8k -17 dB of its own spectrum)
-bite = song.track("BITE", "fm86", "rom2b/syn-clav-1", volume=0.62, pan=0.7, output=keys_bus, fx=[
+# the bite: the clav doubling the stabs on the other side, the click
+# the piano lacks above 4 kHz
+bite = song.track("BITE", "fm86", "slab/clav", volume=0.62, pan=0.7, output=keys_bus, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=800, p2_hz=3000, p2_db=-2, hs_hz=7000, hs_db=2),
 ])
 pad = song.track("PAD", "juno2", "bittersweet-minor-pad", volume=0.27, params=dict(level=0.5, age=0.2),
@@ -69,29 +68,27 @@ pad = song.track("PAD", "juno2", "bittersweet-minor-pad", volume=0.27, params=di
     fx("chorus2", "juno-ii"),
 ])
 # The sparkle: two harpsichords, one per side, playing the stabs up an
-# octave. They are what the ROM holds brightest for longest: HARPSICH 1
-# and HARPSI-STG keep 5-14 kHz at -5 dB of their own spectrum a full
-# second after the hit, all of it harmonic lines, not noise. Different
-# voices and voicings on each side, so the pair decorrelates into width.
-spark_l = song.track("SPARKLE L", "fm86", "rom1a/harpsich-1", volume=0.8, pan=-0.85, output=keys_bus, fx=[
+# octave: the harpsichord holds its 5-14 kHz harmonics for a full
+# second after the hit, bright lines, not noise. Different voicings on each side, so the pair decorrelates into width.
+spark_l = song.track("SPARKLE L", "fm86", "slab/harpsichord", volume=0.8, pan=-0.85, output=keys_bus, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=1000, p1_hz=1600, p1_db=-3, p2_hz=6000, p2_db=3, hs_hz=12000, hs_db=2),
     fx("chorus2", "bell-widener", mix=0.35),
 ])
-spark_r = song.track("SPARKLE R", "fm86", "rom4b/harpsi-stg", volume=0.8, pan=0.85, output=keys_bus, fx=[
+spark_r = song.track("SPARKLE R", "fm86", "slab/harpsichord", volume=0.8, pan=0.85, output=keys_bus, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=1000, p1_hz=1600, p1_db=-3, p2_hz=7000, p2_db=3, hs_hz=12000, hs_db=2),
     fx("chorus2", "bell-widener", mix=0.35),
 ])
 
 # The tines: the reference's side channel is full of short bright
 # plucks between 400 Hz and 2 kHz that live only in the stereo image.
-# A pair interlocking in 16ths: the Fairlight's RHODES7 sample left
-# (10 ms attack, -20 dB in 160 ms), the ROM's E.PIANO 1 right.
-tine_l = song.track("TINES L", "unfairlight", "cmi-classic/electkbd/rhodes7", volume=0.5, pan=-0.9,
+# A pair interlocking in 16ths: our own tine e-piano left, the classic
+# FM ballad tine right.
+tine_l = song.track("TINES L", "fm86", "slab/e-piano", volume=0.5, pan=-0.9,
                     output=keys_bus, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=350, p1_hz=600, p1_db=-2, p2_hz=3500, p2_db=3, hs_hz=9000, hs_db=2),
     fx("delay2", sync="SYNC", div="1/8.", fb=0.2, damp=5000, mix=0.18),
 ])
-tine_r = song.track("TINES R", "fm86", "rom1a/e-piano-1", volume=0.5, pan=0.9, output=keys_bus, fx=[
+tine_r = song.track("TINES R", "fm86", "slab/e-piano-2", volume=0.5, pan=0.9, output=keys_bus, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=350, p1_hz=600, p1_db=-2, p2_hz=4000, p2_db=3, hs_hz=9000, hs_db=2),
     fx("delay2", sync="SYNC", div="1/8.", fb=0.2, damp=5000, mix=0.18),
 ])
@@ -107,8 +104,8 @@ lead = song.track("LEAD", "fm86", "slab/glass-lead", volume=1.25, pan=0.05, para
     fx("delay2", sync="SYNC", div="1/8.", fb=0.3, damp=6500, mix=0.22),
     fx("verb2", "bright-plate", decay=17.26, predelay=0.02, mix=0.16, damp=10000),
 ])
-# the glass: ROM BELLS an octave over the lead, quiet, wide
-glass = song.track("GLASS", "fm86", "rom2a/bells", volume=0.5, pan=0.6, output=lead_bus, fx=[
+# the glass: bells an octave over the lead, quiet, wide
+glass = song.track("GLASS", "fm86", "slab/bells", volume=0.5, pan=0.6, output=lead_bus, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=900, hs_hz=9000, hs_db=2),
     fx("delay2", sync="SYNC", div="1/4.", fb=0.25, damp=6000, mix=0.25),
 ])
@@ -119,8 +116,8 @@ bass = song.track("SYNTH BASS", "cream", "outstanding-funk-bass", volume=0.5, pa
     # weight at 90, the growl at 800 that says "bass" on small speakers
     fx("eq2", hpf_on="ON", hpf_hz=40, ls_hz=70, ls_db=-3, p1_hz=750, p1_db=4.5, p1_q=0.9, p2_hz=2200, p2_db=3),
 ])
-# the bass's edge: the ROM's SYN-BASS 2 an octave up, all 100-2k snarl
-bass_dx = song.track("DX BASS", "fm86", "rom2b/syn-bass-2", volume=0.8, output=bass_bus, fx=[
+# the bass's edge: the solid FM bass an octave up, all 100-2k snarl
+bass_dx = song.track("DX BASS", "fm86", "slab/solid-bass", volume=0.8, output=bass_bus, fx=[
     fx("eq2", hpf_on="ON", hpf_hz=90, p1_hz=200, p1_db=3.5, p1_q=0.9, p2_hz=1400, p2_db=2),
 ])
 
