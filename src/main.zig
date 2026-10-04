@@ -50,6 +50,7 @@ const machine_bay = @import("ui/machine_bay.zig");
 const mixer = @import("ui/mixer.zig");
 const dialog = @import("ui/dialog.zig");
 const export_dialog = @import("ui/export_dialog.zig");
+const export_settings = @import("export_settings.zig");
 const bounce_dialog = @import("ui/bounce_dialog.zig");
 const export_mod = @import("export.zig");
 const recipe_mod = @import("recipe.zig");
@@ -156,11 +157,13 @@ const RenderJob = struct {
     active: bool = false,
     thread: ?std.Thread = null,
     opts: exporter.Options = .{},
-    /// Owned strings `opts` points into.
-    mix_path: []u8 = &.{},
-    stem_dir: []u8 = &.{},
-    project: []u8 = &.{},
-    comment: []u8 = &.{},
+    /// What `opts` points into: the settings as they were, the folder,
+    /// the names and the comment.
+    settings: export_settings.Settings = .{},
+    folder_buf: [storage.MAX_PATH]u8 = undefined,
+    project_buf: [128]u8 = undefined,
+    date_buf: [10]u8 = undefined,
+    comment_buf: [96]u8 = undefined,
     tracks: []track_mod.Track = &.{},
     total_frames: usize = 0,
     sample_rate: u32 = 48_000,
@@ -667,6 +670,12 @@ pub fn main(init: std.process.Init) !void {
     // staged edits at bar boundaries.
     var meter_state: meter_mod.MeterState = .{};
     document_mod.setMeterState(&meter_state);
+    // The project's export settings (docs/27 §Export), and the presets
+    // saved beside settings.json.
+    var export_cfg: export_settings.Settings = .{};
+    document_mod.setExportSettings(&export_cfg);
+    var export_presets: export_settings.UserPresets = .{};
+    export_presets.load(alloc);
 
     var engine = engine_mod.Engine{
         .transport = &transport,
@@ -879,7 +888,7 @@ pub fn main(init: std.process.Init) !void {
                 try handleFocusedEditCommands(alloc, &history, &clipboard, &status, focus, edit_snap, tracks, &transport, &selected_track, &selected_clip, &rename, &dirty);
                 try handleFocusedDelete(alloc, &history, &status, focus, tracks, &transport, &selected_clip, &dirty);
             }
-            if (commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_R)) render_dlg.active = true;
+            if (commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_R)) export_dialog.open(&render_dlg);
             if (commandModifierDown() and !ui.in.alt and c.rl.IsKeyPressed(c.rl.KEY_B)) openBounce(&bounce_dlg, tracks, &status);
             if (commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_F)) {
                 layout.browser_visible = true;
@@ -972,7 +981,7 @@ pub fn main(init: std.process.Init) !void {
             auto_arm = !auto_arm;
             status.set("{s}", .{if (auto_arm) "Automation recording armed" else "Automation recording off"});
         }
-        if (tres.render_audio) render_dlg.active = true;
+        if (tres.render_audio) export_dialog.open(&render_dlg);
         if (menu_cmds.has(.bounce)) openBounce(&bounce_dlg, tracks, &status);
         if (tres.about or menu_cmds.has(.about)) about_card.active = true;
         if (tres.master_volume) |v| {
@@ -1474,17 +1483,41 @@ pub fn main(init: std.process.Init) !void {
         // Export dialog (modal: input behind it is suppressed above).
         var render_action: export_dialog.Result = .none;
         if (render_dlg.active) {
-            const avail = export_dialog.Avail{
-                .loop = transport.loopEnabled() and transport.loopEndBeats() > transport.loopStartBeats(),
-                .selection = arrangement.hasSelectedClips(tracks),
-            };
             const prog: ?export_dialog.Progress = if (render_job.active) renderProgress(&render_job) else null;
-            render_action = export_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &render_dlg, avail, prog);
+            render_action = export_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &render_dlg, .{
+                .settings = &export_cfg,
+                .presets = &export_presets,
+                .tracks = tracks,
+                .project = blk: {
+                    const st = projectStem(project_path);
+                    break :blk if (st.len > 0) st else "untitled";
+                },
+                .bpm = transport.bpm(),
+                .range_secs = rangeSeconds(&transport, tracks),
+            }, prog);
+            if (render_dlg.changed) {
+                render_dlg.changed = false;
+                dirty = true;
+            }
+            if (render_dlg.presets_changed) {
+                render_dlg.presets_changed = false;
+                export_presets.save(alloc) catch |err| status.set("Presets not saved: {s}", .{@errorName(err)});
+            }
+            if (render_dlg.want_folder) {
+                render_dlg.want_folder = false;
+                var fb: [storage.MAX_PATH]u8 = undefined;
+                const start = export_settings.resolveFolder(&fb, export_cfg.folder.get(), .{ .project = projectStem(project_path) });
+                if (native_dialog.chooseFolder(alloc, start) catch null) |dir| {
+                    defer alloc.free(dir);
+                    export_cfg.folder.set(homeShort(&fb, dir));
+                    dirty = true;
+                }
+            }
         }
         var bounce_action: bounce_dialog.Result = .none;
         if (bounce_dlg.active) {
             const prog: ?export_dialog.Progress = if (bounce_job.active) bounceProgress(&bounce_job) else null;
-            bounce_action = bounce_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &bounce_dlg, @popCount(bounceSources(tracks, bounce_job.replace != 0)), prog);
+            bounce_action = bounce_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &bounce_dlg, bounceInfo(&transport, tracks, bounce_job.replace != 0), prog);
         }
         var delete_answer: ?bool = null;
         var delete_set_answer: ?bool = null;
@@ -1609,9 +1642,10 @@ pub fn main(init: std.process.Init) !void {
                     render_dlg.active = false;
                 }
             },
+            .reveal => if (render_dlg.last().len > 0) native_dialog.reveal(render_dlg.last()),
             .render => {
                 if (!render_job.active) {
-                    startRender(alloc, &engine, &audio, &transport, tracks, render_dlg, project_path, &render_job, &status) catch |err| {
+                    startRender(alloc, &engine, &audio, &transport, tracks, &export_cfg, project_path, &render_job, &status) catch |err| {
                         std.log.err("render start failed: {s}", .{@errorName(err)});
                         status.set("Render failed", .{});
                         render_dlg.active = false;
@@ -1644,7 +1678,7 @@ pub fn main(init: std.process.Init) !void {
         // Finalize a worker render once it signals done (or after a cancel).
         if (render_job.active and render_job.done.load(.acquire)) {
             finishRender(alloc, &audio, &render_job, &status, &render_dlg);
-            render_dlg.active = render_dlg.card != null;
+            render_dlg.active = render_dlg.showing_card;
         }
 
         // Finalize a recording once the writer thread has flushed and closed
@@ -1708,10 +1742,6 @@ pub fn main(init: std.process.Init) !void {
     if (render_job.active) {
         render_job.cancel.store(true, .monotonic);
         if (render_job.thread) |t| t.join();
-        alloc.free(render_job.mix_path);
-        alloc.free(render_job.stem_dir);
-        alloc.free(render_job.project);
-        alloc.free(render_job.comment);
         render_job = .{};
     }
     if (bounce_job.active) {
@@ -2041,90 +2071,75 @@ fn saveProject(
     std.log.info("saved {s} (copied {d} files, {d} bytes; {d} missing)", .{ pkg, report.copied, report.bytes, report.missing });
 }
 
-/// Begin an export: resolve the range, ask where, stop the device and
-/// start the worker. finishRender reports once it's done. The device stays
-/// stopped meanwhile because the offline render shares the engine's
-/// scratch and machine state with the live callback.
+/// Begin an export from the project's export settings: resolve the
+/// range, the folder and the stems, stop the device and start the worker.
+/// finishRender reports once it's done. The device stays stopped
+/// meanwhile because the offline render shares the engine's scratch and
+/// machine state with the live callback.
 fn startRender(
     alloc: std.mem.Allocator,
     engine: *engine_mod.Engine,
     audio: *audio_mod.Audio,
     transport: *transport_mod.Transport,
     tracks: []track_mod.Track,
-    dlg: export_dialog.State,
+    settings: *const export_settings.Settings,
     project_path: []const u8,
     job: *RenderJob,
     status: *StatusMessage,
 ) !void {
     const sr = transport.sample_rate;
-    const range = exportRange(transport, tracks, dlg.rangeMode()) orelse {
+    const rec = &settings.recipe;
+    const range = exportRange(transport, tracks, rec.range) orelse {
         status.set("Nothing to export", .{});
         return;
     };
+    job.* = .{
+        .active = true,
+        .tracks = tracks,
+        .sample_rate = sr,
+        .start_ns = nowNs(),
+        .settings = settings.*,
+    };
+    const s = &job.settings;
+    const stem_name = projectStem(project_path);
+    const project = std.fmt.bufPrint(&job.project_buf, "{s}", .{if (stem_name.len > 0) stem_name else "untitled"}) catch "untitled";
+    const date = export_mod.today(&job.date_buf);
+    const folder = export_settings.resolveFolder(&job.folder_buf, s.folder.get(), .{ .project = project, .date = date, .bpm = transport.bpm() });
+    if (folder.len == 0) return error.NoFolder;
 
-    // The save panel names the mix; stems go in "<name> stems" beside it.
-    var fmt = dlg.format();
     // Tags: the name, the tempo, and what made it (docs/27 §Names and metadata).
-    var comment_buf: [96]u8 = undefined;
+    var fmt = s.recipe.format();
     fmt.bpm = transport.bpm();
     fmt.comment = blk: {
         const doc = document_mod.serialize(alloc, tracks, transport) catch break :blk "";
         defer alloc.free(doc);
-        break :blk exportComment(&comment_buf, doc);
+        break :blk exportComment(&job.comment_buf, doc);
     };
-    const ext = fmt.container.ext();
-    var name_buf: [128]u8 = undefined;
-    const stem_name = projectStem(project_path);
-    const default_name = std.fmt.bufPrint(&name_buf, "{s}{s}", .{ if (stem_name.len > 0) stem_name else "export", ext }) catch "export.wav";
-    const path = (try native_dialog.saveAudioFile(alloc, default_name, ext[1..])) orelse return; // cancelled
-    errdefer alloc.free(path);
-    const chosen = projectStem(path);
-    const dir = std.fs.path.dirname(path) orelse ".";
-    const project = try alloc.dupe(u8, chosen);
-    errdefer alloc.free(project);
-    fmt.title = project;
-    // Copied: the worker outlives this frame.
-    const comment = try alloc.dupe(u8, fmt.comment);
-    errdefer alloc.free(comment);
-    fmt.comment = comment;
-    const stem_dir = try std.fmt.allocPrint(alloc, "{s}/{s} stems", .{ dir, chosen });
-    errdefer alloc.free(stem_dir);
+    fmt.title = if (s.title.len > 0) s.title.get() else project;
+    fmt.artist = s.artist.get();
+    fmt.album = s.album.get();
+    fmt.year = s.year.get();
 
-    const what = dlg.whatMode();
-    const tail_s: f32 = if (dlg.tail_auto) export_dialog.TAIL_MAX else @max(0, dlg.tail_sec);
-    job.* = .{
-        .active = true,
-        .mix_path = path,
-        .stem_dir = stem_dir,
-        .project = project,
-        .comment = comment,
-        .tracks = tracks,
-        .sample_rate = sr,
-        .start_ns = nowNs(),
-    };
+    const tail_s: f32 = if (s.recipe.tail_auto) export_settings.TAIL_MAX else @max(0, s.recipe.tail_sec);
     job.opts = .{
-        .folder = dir,
-        .mix_name = if (what != .stems) project else null,
-        .stems = if (what == .mix) @splat(.{}) else exporter.stemsOf(tracks, switch (dlg.stemsMode()) {
-            .tracks => .tracks,
-            .buses => .buses,
-            .all => .all,
-        }, if (dlg.stemTap() == .fx) .pre else .post),
-        .stem_folder = stem_dir,
-        .stem_name = "{project}-{nn}-{track}",
+        .folder = folder,
+        .mix_name = if (s.recipe.mix) s.recipe.mix_name.get() else null,
+        .mix_channels = s.recipe.mix_channels,
+        .stems = export_settings.stems(&s.recipe, tracks),
+        .stem_name = s.recipe.stem_name.get(),
+        .stem_gain = s.recipe.stem_gain,
+        .replace = s.recipe.exists == .replace,
         .project = project,
+        .date = date,
         .start = range.start,
         .end = range.end,
-        .tail_auto = dlg.tail_auto,
+        .tail_auto = s.recipe.tail_auto,
         .tail_frames = @intFromFloat(tail_s * @as(f32, @floatFromInt(sr))),
         .format = fmt,
-        .normalize = switch (dlg.normalize) {
-            1 => .peak,
-            2 => .loudness,
-            else => .off,
-        },
-        .target = dlg.normalizeTarget(),
-        .loop_wrap = dlg.loop_wrap and dlg.rangeMode() != .project,
+        .normalize = if (s.recipe.mix) s.recipe.normalize else .off,
+        .target = s.recipe.target(),
+        .ceiling = s.recipe.ceilingDb(),
+        .loop_wrap = s.recipe.wrap,
     };
     job.total_frames = @intCast(range.end - range.start + job.opts.tail_frames);
 
@@ -2136,11 +2151,22 @@ fn startRender(
     };
 }
 
+/// Each range's length in seconds, for the Export sheet; null where it's
+/// empty.
+fn rangeSeconds(transport: *const transport_mod.Transport, tracks: []const track_mod.Track) [3]?f64 {
+    var out: [3]?f64 = undefined;
+    for (0..3) |i| out[i] = if (exportRange(transport, tracks, @enumFromInt(i))) |r|
+        @as(f64, @floatFromInt(r.end - r.start)) / @as(f64, @floatFromInt(transport.sample_rate))
+    else
+        null;
+    return out;
+}
+
 const SampleRange = struct { start: u64, end: u64 };
 
 /// An export's range in samples: the project (beat 0 to the last clip
 /// that plays), the loop, or the selected clips.
-fn exportRange(transport: *const transport_mod.Transport, tracks: []const track_mod.Track, mode: export_dialog.Range) ?SampleRange {
+fn exportRange(transport: *const transport_mod.Transport, tracks: []const track_mod.Track, mode: export_settings.Range) ?SampleRange {
     var lo: f64 = 0;
     var hi: f64 = 0;
     switch (mode) {
@@ -2170,6 +2196,14 @@ fn exportComment(buf: []u8, doc: []const u8) []const u8 {
     return std.fmt.bufPrint(buf, "Slab {s}, project {x:0>16}", .{ build_options.version, std.hash.Wyhash.hash(0, doc) }) catch "";
 }
 
+/// `path` with the home folder as `~`, as the Export sheet shows it.
+fn homeShort(buf: []u8, path: []const u8) []const u8 {
+    const home = std.mem.sliceTo(std.c.getenv("HOME") orelse "", 0);
+    if (home.len > 0 and std.mem.startsWith(u8, path, home) and (path.len == home.len or path[home.len] == '/'))
+        return std.fmt.bufPrint(buf, "~{s}", .{path[home.len..]}) catch path;
+    return path;
+}
+
 /// A path's file name without its extension.
 fn projectStem(path: []const u8) []const u8 {
     const base = basename(path);
@@ -2193,8 +2227,9 @@ fn renderProgress(job: *RenderJob) export_dialog.Progress {
 }
 
 /// Join the worker, restart the device and report: the status line, and
-/// the dialog's report card.
+/// the sheet's report; Finder shows the files when the settings ask.
 fn finishRender(alloc: std.mem.Allocator, audio: *audio_mod.Audio, job: *RenderJob, status: *StatusMessage, dlg: *export_dialog.State) void {
+    _ = alloc;
     if (job.thread) |t| t.join();
     job.thread = null;
     audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
@@ -2210,16 +2245,14 @@ fn finishRender(alloc: std.mem.Allocator, audio: *audio_mod.Audio, job: *RenderJ
         };
         for (r.stems[0..r.stem_count]) |*st| card.addStem(st.name(), st.lufs);
         dlg.card = card;
-        const secs = @as(f64, @floatFromInt(r.frames)) / @as(f64, @floatFromInt(r.sample_rate));
-        if (r.files == 1) status.set("Exported {s} ({d:.1}s)", .{ basename(r.first()), secs }) else status.set("Exported {d} files ({d:.1}s)", .{ r.files, secs });
+        dlg.showing_card = true;
+        dlg.setLast(r.first());
+        if (job.settings.reveal) native_dialog.reveal(r.first());
+        if (r.files == 1) status.set("Exported {s} ({d:.1}s)", .{ basename(r.first()), card.secs }) else status.set("Exported {d} files ({d:.1}s)", .{ r.files, card.secs });
     } else if (job.err) |err| {
         if (err == error.Cancelled) status.set("Export cancelled", .{}) else status.set("Export failed: {s}", .{@errorName(err)});
         std.log.err("export failed: {s}", .{@errorName(err)});
     }
-    alloc.free(job.mix_path);
-    alloc.free(job.stem_dir);
-    alloc.free(job.project);
-    alloc.free(job.comment);
     job.* = .{};
 }
 
@@ -2539,7 +2572,15 @@ fn writeBounceClips(alloc: std.mem.Allocator, tracks: []const track_mod.Track, j
                 buf[i * 2 + 1] += r[lat + i];
             }
         };
-        const bytes = try wav_mod.encodeStereoF32(alloc, buf, job.sample_rate);
+        const mono = switch (job.opts.channels) {
+            .stereo => false,
+            .mono => true,
+            .auto => exporter.sidesMatch(buf),
+        };
+        if (mono) for (0..len) |i| {
+            buf[i] = (buf[i * 2] + buf[i * 2 + 1]) * 0.5;
+        };
+        const bytes = try export_mod.encode(alloc, if (mono) buf[0..len] else buf, .{ .bits = .float32, .channels = if (mono) 1 else 2, .sample_rate = job.sample_rate });
         defer alloc.free(bytes);
 
         // Named after its source, or "bounce" for several.
@@ -2629,10 +2670,10 @@ fn placeBounce(
         const o_src = sources[k];
         const first: usize = @ctz(o_src);
         var name_buf: [track_mod.MAX_NAME]u8 = undefined;
-        const name = if (@popCount(o_src) == 1)
-            std.fmt.bufPrint(&name_buf, "{s} bounce", .{tracks_buf[first].name()}) catch "Bounce"
-        else
-            freeName(&name_buf, tracks_buf[0..track_count.*], "Bounce", 1);
+        var fill_buf: [96]u8 = undefined;
+        const source_name = if (@popCount(o_src) == 1) tracks_buf[first].name() else freeName(&name_buf, tracks_buf[0..track_count.*], "Bounce", 1);
+        const filled = export_mod.fillName(&fill_buf, job.opts.name.text(), .{ .track = source_name });
+        const name = if (filled.len > 0) filled[0..@min(filled.len, track_mod.MAX_NAME)] else source_name;
         var t = try track_mod.Track.init(alloc, name, tracks_buf[first].color, silent_machine);
         // Where its sources went, when they agree; else the master.
         var output: u8 = tracks_buf[first].output;
@@ -2830,6 +2871,17 @@ fn bounceProgress(job: *BounceJob) export_dialog.Progress {
 }
 
 /// Open the Bounce dialog when clips are selected.
+/// What the Bounce dialog names: the selected clips, the tracks they're
+/// on and how long they run.
+fn bounceInfo(transport: *const transport_mod.Transport, tracks: []const track_mod.Track, muted: bool) bounce_dialog.Info {
+    var clips: usize = 0;
+    for (tracks) |*t| for (t.clips.items) |*cl| {
+        if (cl.selected) clips += 1;
+    };
+    const secs = (rangeSeconds(transport, tracks))[2] orelse 0;
+    return .{ .clips = clips, .tracks = @popCount(bounceSources(tracks, muted)), .seconds = secs };
+}
+
 fn openBounce(dlg: *bounce_dialog.State, tracks: []const track_mod.Track, status: *StatusMessage) void {
     if (bounceSources(tracks, false) == 0) {
         status.set("Select clips to bounce", .{});
@@ -3828,7 +3880,7 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
     var comment_buf: [96]u8 = undefined;
     var container = if (cli.render) |out| export_mod.Container.ofPath(out) orelse return error.UnknownAudioExtension else export_mod.Container.wav;
     if (container == .aac and cli.alac) container = .alac;
-    const tail_s = cli.tail orelse export_dialog.TAIL_MAX;
+    const tail_s = cli.tail orelse export_settings.TAIL_MAX;
     const out_dir = if (cli.render) |out| std.fs.path.dirname(out) orelse "." else ".";
     const opts = exporter.Options{
         .folder = out_dir,
@@ -4984,13 +5036,14 @@ test "bounce: the selected clip lands on a new track below its source, the origi
     try std.testing.expectEqual(@as(usize, 1), history.undo_stack.items.len);
     try std.testing.expect(dirty);
 
-    // The clip: the hit as it played, from beat 0, in stereo.
+    // The clip: the hit as it played, from beat 0; mono, as AUTO writes
+    // a file whose sides match.
     const b = &tracks_buf[1].clips.items[0];
     try std.testing.expect(b.isAudio() and b.selected);
     try std.testing.expectEqual(@as(f64, 0), b.start_beat);
     try std.testing.expect(b.length_beats >= 1);
     const out = pool.get(b.audio.source).?;
-    try std.testing.expect(out.sample.isStereo());
+    try std.testing.expect(!out.sample.isStereo());
     try std.testing.expect(out.seconds() >= 0.5);
     const hit = pool.get(src).?.sample;
     var peak: f64 = 0;
@@ -4999,7 +5052,6 @@ test "bounce: the selected clip lands on a new track below its source, the origi
     if (hit.sample_rate == 48_000) {
         for (0..1000) |i| try std.testing.expectApproxEqAbs(hit.data[i], out.sample.data[i], 1e-6);
     }
-    try std.testing.expectEqualSlices(f64, out.sample.data[0..1000], out.sample.right[0..1000]);
 }
 
 test "bounce provenance: a recipe stays fresh, goes stale with its source, re-bounces and thaws" {

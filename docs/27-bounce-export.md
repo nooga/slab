@@ -13,18 +13,33 @@ write is what playback sounds like, bit-exact at any `--threads`
 
 **Status:** 2026-10-04, branch `feat/bounce-export`. Built: clip mute,
 stereo audio clips, the engine's capture and ring-out stop, Bounce
-selection with thawable recipes, Export (mix and one-pass stems,
-project/loop/selection, WAV and AIFF at 16/24/32f with dither, FLAC,
-ALAC, AAC, loudness and normalize with a report card, 44.1/48/88.2/96
-kHz, the command line). Each section below says what of it is still
-design.
+selection with thawable recipes, Export (the Export sheet with presets,
+a per-track stem list, mix and one-pass stems, mono, project/loop/
+selection, WAV and AIFF at 16/24/32f with dither, FLAC, ALAC, AAC,
+loudness and normalize with a report, 44.1/48/88.2/96 kHz, name
+templates, tags, settings saved with the project, the command line).
+Each section below says what of it is still design.
 
 ## Bounce selection
 
 Select clips (on one track or many, note or audio clips) and choose
-**Bounce** (arrangement right-click menu, `cmd+B`). A small dialog
-asks three things, then renders with the same progress bar as Render
-Audio.
+**Bounce** (arrangement right-click menu, `cmd+B`). One page, in
+sections (`src/ui/bounce_dialog.zig`):
+
+- the title bar names the selection: "3 CLIPS ON 2 TRACKS · 15.9 S";
+- **TAKE THE SIGNAL AFTER**: the chain drawn as four caps, INSTRUMENT →
+  EFFECTS → FADER → + SENDS, the arrows the signal passes lit, a line
+  under it saying what that tap is for (§Tap);
+- **RESULT**: MAKE (ONE CLIP, or ONE CLIP PER TRACK when the selection
+  spans two or more), ORIGINALS (MUTE, CAN THAW; KEEP PLAYING; DELETE),
+  TAIL (AUTO, NONE, 1–30 S), CHANNELS (STEREO, MONO, or AUTO: mono when
+  the two sides are the same, the default) and NAME, the new tracks'
+  name template (`{track} bounce`; `{track}` is the source's name);
+- the footer says what will happen: "2 NEW TRACKS UNDER THE SOURCES ·
+  32-BIT FLOAT WAV IN THE PROJECT".
+
+Enter bounces, Esc cancels (unless the name field is being edited).
+Then it renders with the Export sheet's progress bar.
 
 ### Range
 
@@ -70,14 +85,16 @@ master processes.
 
 With clips on more than one track:
 
-- **TOGETHER**: one clip on one new track, the sum of the taps.
-- **EACH**: one new track per source track, each clip at the range's
-  start so they stay aligned.
+- **ONE CLIP** (together): one clip on one new track, the sum of the
+  taps.
+- **ONE CLIP PER TRACK** (each): one new track per source track, each
+  clip at the range's start so they stay aligned.
 
 ### The new track and the originals
 
 The new track is an audio track inserted below the lowest source
-track, named `<source> bounce` (`Bounce N` when TOGETHER spans several
+track, named by the NAME template, `{track} bounce` by default, where
+`{track}` is its source's name (`Bounce N` when one clip spans several
 tracks), in its first source's color. Its output is where its sources'
 outputs go when they all agree (a group stays a group), else the
 master. When the tap printed the fader (FADER, +SENDS), its fader is at
@@ -86,8 +103,9 @@ one source, it stands in for that source: it copies its fader, pan and
 sends, so the bounce sits in the mix where the source did. Volume and
 pan automation isn't copied; FADER prints it.
 
-The file is a 32-bit float stereo WAV, so a bounce that peaks above
-0 dBFS before the master isn't clipped. It goes to the package's
+The file is a 32-bit float WAV, so a bounce that peaks above 0 dBFS
+before the master isn't clipped; stereo, or mono when CHANNELS asks
+(AUTO: when its two sides are the same). A re-bounce uses AUTO. It goes to the package's
 `audio/` as `<source>-bounce.wav` (`bounce.wav` for several sources;
 `-2`, `-3`… when taken), or to `Cache/recordings/` while the project is
 unsaved, as takes do (docs/25 §The project package). Audio clips play
@@ -98,8 +116,8 @@ The originals are **muted**: they stay where they were, drawn dimmed,
 and don't play, so the song doesn't play the part twice (the bounce and
 its source on top of each other). Unmute them to compare, or delete
 them once you're happy with the bounce. The whole bounce is one undo
-step. The dialog also offers **KEEP** (the originals stay audible, for
-a layer you want doubled) and **DELETE**.
+step. The dialog also offers **KEEP PLAYING** (the originals stay
+audible, for a layer you want doubled) and **DELETE**.
 
 **Clip mute**: a `muted` flag on `Clip`, persisted as `"muted": true`,
 skipped by the engine (`Track.publishSnapshot`) and drawn without its
@@ -165,72 +183,78 @@ DAWs treat a bounce as a fork. Here it's a cache of a render you can
 always redo, which is what makes bouncing safe in a livecoding DAW,
 where the source keeps changing under it.
 
-### How it renders
-
-`Engine.capture` (`Capture` in src/engine.zig): before `renderOffline`, the
-caller names a tap per track and gives each its buffers. Each node
-copies its tap as it renders (its own buffers only, so the parallel
-render is untouched) and notes where its signal last rose above
-−80 dBFS. `sources` makes the render hear only those tracks: every
-other track is muted (still rendering when it keys something, so a
-bass ducked by the kick still pumps), buses keep their own mute, solos
-are ignored. The source tracks publish only their selected clips while
-it runs (`Track.play_selected`). With a hold, the render stops once
-every tap has been quiet that long past the range; each tap is read
-from its own latency on, so PDC lines the parts up.
-
-EACH with +SENDS takes one pass per source, since a return must hear
-one source at a time; everything else is one pass.
-
-### Provenance: a bounce you can thaw
-
-A bounced clip keeps a **recipe**:
-
-```json
-{"type": "audio", "name": "pad bounce", "source": "audio/bounce-003.wav", "...": "...",
- "recipe": {"clips": [[4, 2], [4, 3]], "tap": "fx", "mode": "together", "tail": "auto",
-            "hash": "9f2c41e0b7a3d815"}}
-```
-
-`clips` are `[track, clip]` pairs naming the muted originals (rewritten
-when tracks or clips are reordered, dropped when an original is
-deleted). `hash` covers everything the render depended on: the
-originals' notes, audio and lanes, each source track's machine source
-text (after includes), params, inserts and their params, automation in
-the range, the tempo map over it, the sends' buses for +SENDS, and the
-Slab version.
-
-Slab renders deterministically, so a recipe whose hash still matches
-would reproduce the clip exactly. When it doesn't match, because a
-kernel was edited, a knob moved, or a note changed, the clip shows a
-**stale** corner and its menu offers:
-
-- **Re-bounce**: render the recipe again into the same clip.
-- **Thaw**: unmute the originals and delete the bounce, back to where
-  you started.
-
-DAWs treat a bounce as a fork. Here it's a cache of a render you can
-always redo, which is what makes bouncing safe in a livecoding DAW,
-where the source keeps changing under it. The hash is computed when
-the project is saved and on edits to the tracks involved, on the main
-thread, never on the audio thread.
-
 ## Export
 
-**File > Export Audio…** (`cmd+R`) replaced Render Audio. One dialog
-with the options below, then a save panel that names the mix; the last
-settings are kept for the session.
+**File > Export Audio…** (`cmd+R`) replaced Render Audio. It opens the
+**Export sheet**; its settings are the project's (`"export"` in the
+project file, `src/export_settings.zig`), so `cmd+R`, Enter repeats the
+last export.
+
+### The Export sheet
+
+`src/ui/export_dialog.zig`, 640×460, a dialog in sections rather than a
+wall of buttons:
+
+- **Title bar**: the PRESET dropdown, what the preset is for, SAVE…
+  (names the current settings as a preset of your own) and, on one of
+  your own, X to delete it. Editing anything makes it CUSTOM until the
+  settings match a preset again.
+- **Tabs** (`ctl.tabs`, `cmd+1`…`4`): TRACKS, FORMAT, LEVEL, FILES &
+  TAGS. **RANGE** (PROJECT, LOOP, SELECTION) and **TAIL** (AUTO, WRAP,
+  1–30 S) sit beside them, on every tab.
+- **Footer**: what the export will be, "11 FILES · WAV 24/48 · AS MIXED
+  · 3:12 + TAIL · ABOUT 270 MB", or in red why it can't run (no loop
+  set, nothing selected, nothing to write); EXPORT and CANCEL.
+
+**TRACKS** is the list of what's written. Its first row is the **MIX**
+(on/off, CHANNELS), the second **STEMS** (on/off, and the defaults
+every track follows: SIGNAL INSTR, FX or FADER, and CHANNELS), then a
+row per track and bus: an on/off LED, its color and name, its kind
+(TRACK, GROUP, RETURN, BUS), its SIGNAL and CHANNELS (DEFAULT shows the
+default it follows, dimmed; picking a value overrides it for that track
+only) and the file it will write. Each track's choices are saved on the
+track (`"stem"`). By default every track that plays (audible, with a
+clip that isn't muted) writes a stem and buses don't; the LED overrides
+that per track, and SELECT ALL, NONE, TRACKS, BUSES or DEFAULT sets the
+whole list. The list scrolls.
+
+**FORMAT**: FORMAT (WAV, AIFF, FLAC, ALAC, AAC, each with a line on
+what it's for), DEPTH or BITRATE, SAMPLE RATE, and for FLAC its
+COMPRESSION level, 0–8; DITHER (only for 16-bit) and a size estimate.
+
+**LEVEL**: NORMALIZE the mix (OFF, TO A PEAK, TO A LOUDNESS), its
+TARGET (named: −9 club, −14 streaming, −16 Apple, −23 broadcast) and
+CEILING; the stems' GAIN (§Normalize); and the last export's numbers.
+
+**FILES & TAGS**: the FOLDER (a template too; `~` is home; CHOOSE…
+opens a folder panel), the MIX NAME and STEM NAME templates (§Names
+and metadata), IF IT EXISTS (ADD A NUMBER, REPLACE IT), SHOW IN FINDER,
+where the first file will land, and the TAGS: title (the project's name
+when empty), artist, album, year.
+
+While it renders the sheet shows the progress; then the **report**
+(§Normalize and the loudness report), with SHOW FILES and DONE.
+
+**Presets** (`export_settings.BUILTIN`): MASTER (WAV 24/48, as mixed),
+STREAMING (FLAC at −14 LUFS), CD (WAV 16/44.1, dithered), STEMS FOR
+MIXING (the mix and stems, channels AUTO), LOOP (the loop, wrapped),
+PREVIEW (AAC 256 at −14 LUFS, dated), BROADCAST (−23 LUFS), ARCHIVE
+(FLAC level 8, mix and stems). A preset holds what's written, the
+range and tail, the format, the level and the name templates, not the
+folder, the tags or the tracks' choices. Yours are kept in
+`export-presets.json` beside settings.json, for every project.
 
 ### What
 
-- **MIX**: the master, as Render Audio wrote it.
-- **STEMS**: one file per **TRACKS** (tracks that play: audible, with a
-  clip that isn't muted), **BUSES** (audible buses) or **ALL**, at the
-  **FX** tap (after the inserts) or **FADER** (default, after volume and
-  pan). A track's stem is its own signal: before its group bus, its
-  sends' returns and the master chain. A return or group is a stem of
-  its own with BUSES.
-- **BOTH** writes the mix and the stems from the same pass.
+- **MIX**: the master, as Render Audio wrote it; STEREO, MONO or AUTO.
+- **STEMS**: a file per chosen track or bus, at its SIGNAL: **INSTR**
+  (the instrument and audio clips, before the inserts), **FX** (after
+  the inserts) or **FADER** (after volume and pan). A track's stem is
+  its own signal: before its group bus, its sends' returns and the
+  master chain. A group or return is a stem of its own.
+- **Channels**: STEREO, MONO ((L + R) / 2) or AUTO (mono only when the
+  two sides are the same, within −100 dBFS: a mono source panned
+  center, a kick or a bass), per file.
 
 Stems come from **one render pass**: the engine's capture (§How it
 renders) copies each stem's tap while the mix renders, so 24 stems
@@ -239,9 +263,6 @@ whole export and is shared by the dialog's worker thread and the
 command line. Every file of an export has the same length, so they
 line up from zero in any DAW; each stem is read from its own latency
 on (PDC).
-
-They go in a folder beside the mix, `<name> stems/`, named
-`<name>-<nn>-<track>` where `<name>` is the save panel's.
 
 Not built yet: stems through the master chain (MASTER FX), which needs
 a render per stem.
@@ -259,7 +280,7 @@ exactly that long.
 **SECTIONS** (one file per stretch between locator markers) waits for
 locator markers (docs/07 §Markers), which aren't built.
 
-**LOOP-WRAP** (WRAP beside the range, for LOOP and SELECTION; built):
+**LOOP-WRAP** (TAIL WRAP; built):
 everything rendered past the range's end is folded back onto its start,
 round and round, and every file is exactly the range long. Played in a
 loop it continues seamlessly, with a reverb carrying over into bar 1;
@@ -277,7 +298,7 @@ Built:
 |---|---|
 | WAV | 16, 24 (default), 32f |
 | AIFF | 16, 24, 32f (AIFF-C `fl32`) |
-| FLAC | 16, 24 (level 5) |
+| FLAC | 16, 24 (level 0–8, 5 default) |
 | ALAC | 16, 24, in `.m4a` |
 | AAC | 128, 192, 256 (default), 320 kb/s, in `.m4a` |
 
@@ -302,16 +323,19 @@ Loudness is measured on the resampled file. Rendering natively at the
 target rate would need every machine to be rate-independent, which
 isn't verified.
 
-**Channels** (planned): STEREO, or MONO (L+R at −3 dB) for a mono stem.
+**Channels**: STEREO, MONO or AUTO, per file (§What). Every format
+writes mono.
 
 ### Normalize and the loudness report
 
-**LEVEL** (normalize): OFF (default, as mixed), PEAK (the mix's true peak to
-−0.1, −1 or −3 dBTP) or LUFS (its integrated loudness to −9, −14, −16
-or −23 LUFS, lowered if that would push the true peak past −1 dBTP). It
-is one gain for the whole file, never limiting: the master chain is
-where limiting belongs. Stems take the mix's gain, so their balance is
-kept; a stems-only export isn't normalized.
+**NORMALIZE**: OFF (default, as mixed), TO A PEAK (the mix's true peak
+to −0.1, −1 or −3 dBTP) or TO A LOUDNESS (its integrated loudness to
+−9, −14, −16 or −23 LUFS, lowered if that would push the true peak past
+the CEILING, −1, −2 or −0.3 dBTP). It is one gain for the whole file,
+never limiting: the master chain is where limiting belongs. The stems'
+GAIN is SAME AS THE MIX (default: their balance is kept and they still
+sum to the written mix) or AS MIXED; a stems-only export isn't
+normalized.
 
 The meter is `src/loudness.zig`: ITU-R BS.1770-4 K-weighting (shelf and
 RLB highpass, derived for any rate), integrated loudness from 400 ms
@@ -321,25 +345,43 @@ Tech 3342 (3 s blocks at 10 Hz, gated at −70 and 20 LU under, 10th to
 Blackman-windowed sinc). On three rendered songs its integrated
 loudness is within 0.05 LU of slabkit's (`tools/slabkit/analyze.py`).
 
-After an export the dialog turns into a **report card**: the files and
-their length; for a mix, its integrated loudness, LRA, true peak (amber
-past −1 dBTP) and the gain applied; and each stem's loudness in LU
-under the loudest stem, the stem report from docs/21 §Mixing by
-numbers. `--render` prints the mix's numbers.
+After an export the sheet turns into a **report**: the files and their
+length; for a mix, a strip of large readouts, its integrated loudness,
+LRA, true peak (red past −1 dBTP) and the gain applied; and each stem's
+loudness as a bar against the loudest stem (full at 0 LU, empty at −30)
+with its LU under it, the stem report from docs/21 §Mixing by numbers.
+LEVEL keeps the last export's numbers. `--render` prints the mix's.
 
 ### Names and metadata
 
-Built: every format but M4A carries the title (the save panel's name;
-`<name> - <track>` for a stem) and a comment, `Slab <version>, project
-<hash>`, the hash of the project as it was rendered, so a file traces
-back to its render. WAV writes them as LIST/INFO (INAM, ICMT, ISFT)
-after the data, AIFF as NAME and ANNO, FLAC as Vorbis comments with the
-BPM as well.
+**Names** are templates (`export.fillName`): `{project}`, `{track}`,
+`{nn}` (the stem's number, two digits), `{date}` (YYYY-MM-DD) and
+`{bpm}`. A `/` in a template makes a folder, so the default stem name,
+`{project} stems/{nn} {track}`, puts the stems in a folder beside the
+mix; in a field's value it, `:` and control characters become `-`, and
+a template can't climb out of the folder (`..`) or start at the root.
+The FOLDER is a template as well, `~/Music/Slab/Exports/{project}` by
+default. IF IT EXISTS: ADD A NUMBER ("Song 2.wav", the default) or
+REPLACE IT; two files of one export never share a name.
 
-Planned: an editable name template (`export.fillName` already fills
-`{project}`, `{nn}`, `{track}` and `{section}`); the project's locator
-markers as WAV cue points, and an `acid` chunk with tempo and meter,
-once locator markers exist; M4A tags.
+**Tags**: title (the project's name unless set; `<title> - <track>` for
+a stem), artist, album, year, the tempo, and a comment, `Slab
+<version>, project <hash>`, the hash of the project as it was rendered,
+so a file traces back to its render.
+
+- WAV: LIST/INFO (INAM, IART, IPRD, ICRD, ICMT, ISFT) and an `id3 `
+  chunk, after the data.
+- AIFF: NAME, AUTH, ANNO and an `ID3 ` chunk.
+- FLAC: Vorbis comments (TITLE, ARTIST, ALBUM, DATE, COMMENT, BPM).
+- M4A: iTunes atoms (©nam, ©ART, ©alb, ©day, ©cmt, ©too, tmpo).
+  AudioToolbox won't write them into an .m4a, so `export.tagM4a` adds
+  them to the file's `moov/udta/meta/ilst` afterwards, in the `free`
+  room AudioToolbox leaves before the audio: nothing moves.
+
+The ID3 frames are v2.3 Latin-1; other characters become `?`.
+
+Planned: the project's locator markers as WAV cue points, and an
+`acid` chunk with tempo and meter, once locator markers exist.
 
 ### Command line
 
@@ -400,15 +442,15 @@ came out 0.2 % and 1.6 % smaller than `flac -5`, within 0.3 % of
 1. **Clip mute** (built).
 2. **Bounce selection** (built).
 3. **Export dialog and one-pass stems** (built; SECTIONS waits for
-   locator markers, an editable name template and MASTER FX stems are
-   open).
-4. **FLAC encoder**, **ALAC and AAC** (built; no FLAC level choice in
-   the dialog yet).
+   locator markers, MASTER FX stems are open).
+4. **FLAC encoder**, **ALAC and AAC** (built).
 5. **Loudness**: `loudness.zig`, NORMALIZE, the report card (built).
 6. **Resampler** for 44.1/88.2/96 kHz (built).
 7. **Provenance**: recipe, hash, stale, Re-bounce, Thaw (built).
 8. **LOOP-WRAP** and tags (built; cue points and `acid` wait for
    locator markers).
+9. **The Export sheet** (presets, tabs, the stem list, templates, tags,
+   mono, saved settings) and the sectioned Bounce dialog (built).
 
 Later, not designed here:
 

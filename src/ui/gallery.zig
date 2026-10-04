@@ -4,7 +4,8 @@
 //! the app will be (transport, arrangement, piano roll, machine bay);
 //! CONCOCTION — the prototype of that machine's panel cards.
 //! BROWSER — the library browser prototype (gallery_browser.zig).
-//! DIALOGS — Export Audio, its report card, and Bounce (docs/27).
+//! DIALOGS — the Export sheet (each tab), its report, and Bounce (docs/27),
+//! one at a time over mock tracks; SLAB_GALLERY_DIALOG=0..5 picks one.
 //! Everything is packed: plates tile the window with shared 1px seams.
 
 const std = @import("std");
@@ -18,6 +19,9 @@ const browser = @import("gallery_browser.zig");
 const menu = @import("menu.zig");
 const export_dialog = @import("export_dialog.zig");
 const bounce_dialog = @import("bounce_dialog.zig");
+const export_settings = @import("../export_settings.zig");
+const track_mod = @import("../track.zig");
+const machine_mod = @import("../machine.zig");
 
 const Ui = core.Ui;
 const Rect = core.Rect;
@@ -25,9 +29,14 @@ const Color = style.Color;
 
 const State = struct {
     page: u8 = 1,
-    export_dlg: export_dialog.State = .{ .active = true, .what = 2, .normalize = 2, .loop_wrap = true, .range = 1 },
+    /// DIALOGS: which one is up: the Export tabs, the report, Bounce.
+    dialog: u8 = 0,
+    export_dlg: export_dialog.State = .{ .active = true },
     export_card: export_dialog.State = .{},
     bounce_dlg: bounce_dialog.State = .{ .active = true },
+    export_cfg: export_settings.Settings = .{},
+    export_presets: export_settings.UserPresets = .{},
+    mock_tracks: []track_mod.Track = &.{},
     zoom: u8 = 0, // index into ZOOMS
     materials_on: bool = true,
     running: bool = true,
@@ -110,6 +119,16 @@ pub fn run(alloc: std.mem.Allocator) !void {
     defer cn.deinit(alloc);
     var br = try browser.State.init(alloc);
     defer br.deinit(alloc);
+    if (std.c.getenv("SLAB_GALLERY_DIALOG")) |d| st.dialog = std.fmt.parseInt(u8, std.mem.span(d), 10) catch 0;
+    var mock: [10]track_mod.Track = undefined;
+    try mockTracks(alloc, &mock);
+    defer for (&mock) |*t| t.deinit(alloc);
+    st.mock_tracks = &mock;
+    st.export_cfg.recipe = export_settings.BUILTIN[3].recipe;
+    st.export_cfg.preset.set("STEMS FOR MIXING");
+    st.export_cfg.artist.set("nooga");
+    st.export_cfg.year.set("2026");
+    st.export_presets.put("CLUB MASTER", export_settings.BUILTIN[1].recipe);
     genNotes();
     var build_ms: f64 = 0;
     while (!c.rl.WindowShouldClose()) {
@@ -149,20 +168,73 @@ fn frame(ui: *Ui, st: *State, cn: *concoction.State, br: *browser.State, build_m
     }
 }
 
-/// The export and bounce dialogs side by side, each centered in its third
-/// of the page as it would be in the window.
+fn silentRender(_: *anyopaque, _: *const machine_mod.MachineCtx, l: []f32, r: []f32) void {
+    @memset(l, 0);
+    @memset(r, 0);
+}
+fn silentPanel(_: *anyopaque, _: *Ui, _: Rect) void {}
+fn silentReset(_: *anyopaque) void {}
+var silent_state: u8 = 0;
+
+/// A song's tracks for the Export sheet: drums into a group, a return
+/// the pad sends to.
+fn mockTracks(alloc: std.mem.Allocator, out: *[10]track_mod.Track) !void {
+    const m = machine_mod.Machine{ .name = "(mock)", .state = &silent_state, .render = silentRender, .draw_panel = silentPanel, .reset = silentReset };
+    const names = [_][]const u8{ "KICK", "SNARE", "HATS", "PERC", "DRUMS", "SYNTH BASS", "PAD", "PIANO", "LEAD", "VERB" };
+    const cols = [_]u24{ 0xe0607c, 0xe0607c, 0xe0607c, 0xe0607c, 0xd85a30, 0x3ddc84, 0x8a7fe0, 0x5aa9e6, 0xd65cff, 0x4fb3bf };
+    for (names, 0..) |n, i| {
+        const col = Color.hex(cols[i]);
+        out[i] = try track_mod.Track.init(alloc, n, .{ .r = col.r, .g = col.g, .b = col.b, .a = 255 }, m);
+        out[i].stem.on = !(i == 4 or i == 9);
+    }
+    for (0..4) |i| out[i].output = 4;
+    out[4].kind = .bus;
+    out[9].kind = .bus;
+    try out[6].addSend(9, false, 0.4);
+    out[0].stem.channels = 2;
+    out[5].stem.channels = 2;
+    out[4].stem = .{ .on = true, .signal = 2 };
+}
+
+/// One dialog at a time, centered: a strip picks it.
 fn dialogsPage(ui: *Ui, screen_in: Rect, st: *State) void {
     var screen = screen_in;
-    const w = @divFloor(screen.w, 3);
-    _ = export_dialog.draw(ui, screen.cutLeft(w), &st.export_dlg, .{ .loop = true, .selection = true }, null);
-    if (st.export_card.card == null) {
-        var card = export_dialog.Card{ .has_mix = true, .lufs = -12.4, .lra = 3.4, .true_peak = -0.6, .gain_db = 1.6, .files = 7, .secs = 20.9 };
-        const names = [_][]const u8{ "PIANO", "BITE", "PAD", "SPARKLE L", "LEAD", "SYNTH BASS", "KICK", "SNARE", "PERC", "HATS" };
-        for (names, 0..) |n, i| card.addStem(n, -18 - @as(f64, @floatFromInt(i)) * 1.3);
-        st.export_card = .{ .active = true, .card = card };
+    {
+        ui.pushId("pick");
+        defer ui.popId();
+        var strip = screen.cutTop(22);
+        _ = ctl.segmentedFlush(ui, strip.cutLeft(600), "dialog", &st.dialog, &.{ "TRACKS", "FORMAT", "LEVEL", "FILES", "REPORT", "BOUNCE" });
+        _ = ui.plate(strip, .{});
     }
-    _ = export_dialog.draw(ui, screen.cutLeft(w), &st.export_card, .{ .loop = true, .selection = true }, null);
-    _ = bounce_dialog.draw(ui, screen, &st.bounce_dlg, 2, null);
+    const cx = export_dialog.Context{
+        .settings = &st.export_cfg,
+        .presets = &st.export_presets,
+        .tracks = st.mock_tracks,
+        .project = "broken_glass",
+        .bpm = 121,
+        .range_secs = .{ 192.4, 16, null },
+    };
+    switch (st.dialog) {
+        0...3 => {
+            if (!st.export_dlg.active) export_dialog.open(&st.export_dlg);
+            if (ui.in.cmd == false) st.export_dlg.tab = st.dialog;
+            _ = export_dialog.draw(ui, screen, &st.export_dlg, cx, null);
+            st.dialog = st.export_dlg.tab;
+        },
+        4 => {
+            if (st.export_card.card == null or !st.export_card.active) {
+                var card = export_dialog.Card{ .has_mix = true, .lufs = -12.4, .lra = 3.4, .true_peak = -0.6, .gain_db = 1.6, .files = 11, .secs = 196.9 };
+                const names = [_][]const u8{ "PIANO", "BITE", "PAD", "SPARKLE L", "LEAD", "SYNTH BASS", "KICK", "SNARE", "PERC", "HATS" };
+                for (names, 0..) |n, i| card.addStem(n, -18 - @as(f64, @floatFromInt(i)) * 1.3);
+                st.export_card = .{ .active = true, .card = card, .showing_card = true };
+            }
+            _ = export_dialog.draw(ui, screen, &st.export_card, cx, null);
+        },
+        else => {
+            st.bounce_dlg.active = true;
+            _ = bounce_dialog.draw(ui, screen, &st.bounce_dlg, .{ .clips = 3, .tracks = 2, .seconds = 15.9 }, null);
+        },
+    }
 }
 
 fn header(ui: *Ui, r: Rect, st: *State, build_ms: f64) void {

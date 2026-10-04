@@ -532,11 +532,27 @@ pub fn fillName(buf: []u8, template: []const u8, f: NameFields) []const u8 {
     return buf[0..n];
 }
 
+const Tm = extern struct {
+    sec: c_int,
+    min: c_int,
+    hour: c_int,
+    mday: c_int,
+    mon: c_int,
+    year: c_int,
+    wday: c_int,
+    yday: c_int,
+    isdst: c_int,
+    gmtoff: c_long,
+    zone: ?[*:0]const u8,
+};
+extern "c" fn time(t: ?*c_long) c_long;
+extern "c" fn localtime_r(t: *const c_long, out: *Tm) ?*Tm;
+
 /// Today's date as YYYY-MM-DD, local time.
 pub fn today(buf: *[10]u8) []const u8 {
-    const t = std.c.time(null);
-    var tm: std.c.tm = undefined;
-    _ = std.c.localtime_r(&t, &tm);
+    const t = time(null);
+    var tm: Tm = undefined;
+    if (localtime_r(&t, &tm) == null) return "";
     return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{ @as(u32, @intCast(tm.year + 1900)), @as(u32, @intCast(tm.mon + 1)), @as(u32, @intCast(tm.mday)) }) catch "";
 }
 

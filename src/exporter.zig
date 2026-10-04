@@ -356,7 +356,7 @@ fn writeAs(alloc: std.mem.Allocator, path: []const u8, x: []const f32, f: export
 }
 
 /// L and R within -100 dBFS of each other everywhere.
-fn sidesMatch(x: []const f32) bool {
+pub fn sidesMatch(x: []const f32) bool {
     var i: usize = 0;
     while (i + 1 < x.len) : (i += 2) if (@abs(x[i] - x[i + 1]) > 1e-5) return false;
     return true;
