@@ -71,6 +71,9 @@ const Block = struct {
     beat_end: f64 = 0,
     chase: bool = false,
     release_at: ?f64 = null,
+    /// Past an offline render's stop [Engine.offline_stop]: no notes or
+    /// audio clips, only what still rings.
+    ring_out: bool = false,
     bar_info: meter.MeterMap.BarInfo = undefined,
 };
 
@@ -111,10 +114,15 @@ pub const Capture = struct {
     /// (still rendering when it keys something), buses keep their mute,
     /// solos are ignored, and these render even if their mute is on.
     sources: u32 = 0,
-    /// Stop the render once every tap has stayed below `QUIET` for `hold`
-    /// frames past the first `min_frames`; `hold` 0 renders it all.
+    /// Stop the render once every tap (and the master, with
+    /// `watch_master`) has stayed below `QUIET` for `hold` frames past the
+    /// first `min_frames`; `hold` 0 renders it all.
     min_frames: usize = 0,
     hold: usize = 0,
+    watch_master: bool = false,
+    /// The master's end of signal, in output frames (after the project's
+    /// latency is dropped).
+    master_loud_end: usize = 0,
     /// Written by the render: each track's latency at its tap (its signal
     /// starts that many frames into its buffer), each tap's end of signal
     /// (the frame after its last loud one), and the frames rendered.
@@ -125,8 +133,9 @@ pub const Capture = struct {
     /// −90 dBFS.
     pub const QUIET: f32 = 3.1623e-5;
 
-    fn done(self: *const Capture, rendered: usize) bool {
+    fn done(self: *const Capture, rendered: usize, out_frames: usize) bool {
         if (self.hold == 0 or rendered < self.min_frames) return false;
+        if (self.watch_master and @max(self.master_loud_end, self.min_frames) + self.hold > out_frames) return false;
         for (self.tap, 0..) |tp, ti| {
             if (tp == .none) continue;
             if (@max(self.loud_end[ti], self.min_frames + self.lat[ti]) + self.hold > rendered) return false;
@@ -193,6 +202,12 @@ pub const Engine = struct {
     capture: ?*Capture = null,
     /// The first sample of the offline render the capture belongs to.
     capture_start: u64 = 0,
+    /// Offline only: the transport stops here. Past it no notes start and
+    /// audio clips are silent; the sounding notes are released and what
+    /// they leave rings out (an export's tail, docs/27 §Range). Cleared
+    /// by `renderOffline`.
+    offline_stop: ?u64 = null,
+    stop_released: bool = false,
 
     /// Master bus. Audio tracks accumulate (planar) into master_l/r, then
     /// the master Track's FX chain + fader run before the interleaved
@@ -481,6 +496,8 @@ pub const Engine = struct {
         }
         self.chase_pending = true;
         self.capture_start = start_sample;
+        self.stop_released = false;
+        defer self.offline_stop = null;
         var pos = start_sample;
         // The master is late by the project's latency: its first `skip`
         // frames are dropped, so the bounce lines up with the timeline. The
@@ -497,12 +514,17 @@ pub const Engine = struct {
             };
             cap.loud_end[ti] = 0;
         };
+        if (self.capture) |cap| cap.master_loud_end = 0;
         var scratch: [MAX_BLOCK * audio.CHANNELS]f32 = undefined;
         var rendered: usize = 0;
         var done: usize = 0;
         while (done < total_frames) {
             if (cancel) |c| if (c.load(.monotonic)) break;
-            const chunk: u32 = @intCast(@min(@as(usize, MAX_BLOCK), total_frames + skip - rendered));
+            var chunk: u32 = @intCast(@min(@as(usize, MAX_BLOCK), total_frames + skip - rendered));
+            // A block ends on the stop.
+            if (self.offline_stop) |stop| if (pos < stop) {
+                chunk = @intCast(@min(@as(u64, chunk), stop - pos));
+            };
             const dropped = if (rendered < skip) @min(chunk, skip - rendered) else 0;
             // An empty `out` keeps only the capture.
             const direct = dropped == 0 and out.len > 0;
@@ -523,7 +545,19 @@ pub const Engine = struct {
             if (progress) |p| p.store(done, .monotonic);
             if (self.capture) |cap| {
                 cap.rendered = rendered;
-                if (cap.done(rendered)) break;
+                if (cap.watch_master) {
+                    const kept = chunk - dropped;
+                    const keep = slice[dropped * audio.CHANNELS ..][0 .. kept * audio.CHANNELS];
+                    var k = keep.len;
+                    while (k > 0) {
+                        k -= 1;
+                        if (@abs(keep[k]) > Capture.QUIET) {
+                            cap.master_loud_end = done - kept + k / audio.CHANNELS + 1;
+                            break;
+                        }
+                    }
+                }
+                if (cap.done(rendered, done)) break;
             }
         }
         fy_host.lockCallbacks();
@@ -847,12 +881,23 @@ pub const Engine = struct {
         const sr = self.transport.sample_rate;
         const bpm = self.transport.bpm();
         const spb = self.transport.samplesPerBeat();
-        const beat_start = self.transport.samplesToBeats(block_start);
-        const beat_end = self.transport.samplesToBeats(block_start + frames);
+        var beat_start = self.transport.samplesToBeats(block_start);
+        var beat_end = self.transport.samplesToBeats(block_start + frames);
         const chase = self.chase_pending;
         self.chase_pending = false;
-        const release_at = self.release_from;
+        var release_at = self.release_from;
         self.release_from = null;
+        // Past an offline stop the playhead holds there: the first block
+        // releases what sounds, none starts anything.
+        var ring_out = false;
+        if (self.offline_stop) |stop| if (block_start >= stop) {
+            const sb = self.transport.samplesToBeats(stop);
+            beat_start = sb;
+            beat_end = sb;
+            ring_out = true;
+            if (!self.stop_released) release_at = sb;
+            self.stop_released = true;
+        };
         // Meter position for this block (homogeneous within the block).
         // Adopt a staged meter edit only when we cross into a new bar, so
         // bars never re-lay under the playhead mid-bar (docs/07).
@@ -887,6 +932,7 @@ pub const Engine = struct {
             .beat_end = beat_end,
             .chase = chase,
             .release_at = release_at,
+            .ring_out = ring_out,
             .bar_info = bar_info,
         };
         const order = graph.renderOrder();
@@ -1140,7 +1186,7 @@ pub const Engine = struct {
             }
             // Audio clips mix on top of the instrument output, into the
             // same planar L/R, so the track's insert chain processes the sum.
-            mixAudioClips(snap, block_start, frames, spb, sr, l, r);
+            if (!b.ring_out) mixAudioClips(snap, block_start, frames, spb, sr, l, r);
             // Late for a key that arrives later still (PDC).
             if (self.pdc) |h| {
                 h.put(ti, .input, l, r);
@@ -2767,6 +2813,50 @@ test "capture: taps copy each track's signal, only the sources are heard, a quie
     eng.capture = &quiet;
     eng.renderOffline(&.{}, M, 0, null, null);
     try testing.expectEqual(@as(usize, MAX_BLOCK * 2), quiet.rendered);
+}
+
+test "offline stop: audio clips fall silent at the stop, the master watch ends the render" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var zero: f32 = 0;
+    var tracks = [_]Track{try Track.init(alloc, "loop", col, RouteTestMachines.dc(&zero))};
+    defer tracks[0].deinit(alloc);
+    tracks[0].setVolume(1.0);
+    var transport = Transport{};
+    transport.sample_rate = 48_000;
+    // A constant 0.5 for 8 beats (2 s at 120 BPM): long past the stop.
+    const data = try alloc.alloc(f64, 96_000);
+    defer alloc.free(data);
+    @memset(data, 0.5);
+    tracks[0].publishSnapshot(&@import("audio_pool.zig").AudioPool.init(alloc));
+    const snap = tracks[0].snap[1 - tracks[0].snap_published.load(.monotonic)];
+    snap.* = tracks[0].currentSnapshot().*;
+    snap.audio_clip_count = 1;
+    snap.audio_clips[0] = .{ .start_beat = 0, .length_beats = 4, .data = data.ptr, .len = @intCast(data.len), .source_rate = 48_000, .dur_samples = 96_000, .gain = 1 };
+    tracks[0].snap_published.store(1 - tracks[0].snap_published.load(.monotonic), .release);
+
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+    const stop: usize = MAX_BLOCK * 3 + 17; // mid-block: the render splits there
+    const total = MAX_BLOCK * 12;
+    const out = try alloc.alloc(f32, total * 2);
+    defer alloc.free(out);
+    @memset(out, 9);
+    var cap = Capture{ .min_frames = stop, .hold = MAX_BLOCK, .watch_master = true };
+    eng.capture = &cap;
+    defer eng.capture = null;
+    eng.offline_stop = stop;
+    eng.renderOffline(out, total, 0, null, null);
+    try testing.expect(eng.offline_stop == null);
+    const c = @cos(@as(f32, std.math.pi / 4.0));
+    try testing.expectApproxEqAbs(0.5 * c, out[(stop - 1) * 2], 1e-6);
+    try testing.expectEqual(@as(f32, 0), out[stop * 2]);
+    try testing.expectEqual(stop, cap.master_loud_end);
+    // Quiet for a hold past the stop: it ends well before `total`.
+    try testing.expect(cap.rendered >= stop + MAX_BLOCK);
+    try testing.expect(cap.rendered < stop + MAX_BLOCK * 3);
 }
 
 test "routing: a send level change ramps across the block" {
