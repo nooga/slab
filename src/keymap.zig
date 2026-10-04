@@ -1017,7 +1017,8 @@ fn isDir(path: []const u8) bool {
 /// A copy of `km`'s pool with each zone low-passed at `fc` Hz, as a
 /// sampler's input filter does before it samples at `rate`: an 8-pole
 /// Butterworth, causal like the hardware's. A zone whose rate is 0 (a .VC,
-/// already voice RAM) or already below 2.2 x fc stays as it is. With `cap`,
+/// already voice RAM), at or under `rate` (stored at that rate already, as
+/// the factory voices are), or under 2.2 x fc stays as it is. With `cap`,
 /// only the first `cap` stored samples' worth (at `rate`) of each zone is
 /// filtered, which is all a machine that stores that many ever plays.
 pub fn antialias(alloc: std.mem.Allocator, km: *const Keymap, fc: f64, rate: f64, cap: usize) ![]f64 {
@@ -1026,7 +1027,7 @@ pub fn antialias(alloc: std.mem.Allocator, km: *const Keymap, fc: f64, rate: f64
     // the four sections' Q of an 8th-order Butterworth
     const qs = [_]f64{ 0.5097955791041592, 0.6013448869350453, 0.8999762231364156, 2.5629154477415055 };
     for (km.zones[0..km.count]) |z| {
-        if (z.sr < 0.5 or fc * 2.2 >= z.sr) continue;
+        if (z.sr < 0.5 or (rate > 0 and z.sr <= rate) or fc * 2.2 >= z.sr) continue;
         const start: usize = @intFromFloat(z.start);
         var n: usize = @intFromFloat(z.len);
         if (cap > 0 and rate > 0) n = @min(n, @as(usize, @intFromFloat(@ceil(@as(f64, @floatFromInt(cap)) * z.sr / rate))) + 64);
@@ -1082,10 +1083,12 @@ test "antialias passes the band and stops what would fold" {
         if (pass) try std.testing.expect(r > 0.97) else try std.testing.expect(r < 0.032);
     }
     // a zone already at or under the rate isn't touched
-    zones[0].sr = 12_000;
-    const o = try antialias(a, &km, 0.45 * 16_000, 16_000, 0);
-    defer a.free(o);
-    try std.testing.expectEqualSlices(f64, pool, o);
+    for ([_]f64{ 12_000, 16_000 }) |sr| {
+        zones[0].sr = sr;
+        const o = try antialias(a, &km, 0.45 * 16_000, 16_000, 0);
+        defer a.free(o);
+        try std.testing.expectEqualSlices(f64, pool, o);
+    }
 }
 
 // ── Fairlight CMI voice files ───────────────────────────────────────────
