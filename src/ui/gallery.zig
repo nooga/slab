@@ -5,7 +5,7 @@
 //! CONCOCTION — the prototype of that machine's panel cards.
 //! BROWSER — the library browser prototype (gallery_browser.zig).
 //! DIALOGS — the Export sheet (each tab), its report, and Bounce (docs/27),
-//! one at a time over mock tracks; SLAB_GALLERY_DIALOG=0..5 picks one.
+//! one at a time over mock tracks; SLAB_GALLERY_DIALOG=0..6 picks one.
 //! Everything is packed: plates tile the window with shared 1px seams.
 
 const std = @import("std");
@@ -19,6 +19,10 @@ const browser = @import("gallery_browser.zig");
 const menu = @import("menu.zig");
 const export_dialog = @import("export_dialog.zig");
 const bounce_dialog = @import("bounce_dialog.zig");
+const marker_dialog = @import("marker_dialog.zig");
+const markers_mod = @import("../markers.zig");
+const tempo_mod = @import("../tempo.zig");
+const meter_mod = @import("../meter.zig");
 const export_settings = @import("../export_settings.zig");
 const track_mod = @import("../track.zig");
 const machine_mod = @import("../machine.zig");
@@ -34,6 +38,7 @@ const State = struct {
     export_dlg: export_dialog.State = .{ .active = true },
     export_card: export_dialog.State = .{},
     bounce_dlg: bounce_dialog.State = .{ .active = true },
+    marker_dlg: marker_dialog.State = .{},
     export_cfg: export_settings.Settings = .{},
     export_presets: export_settings.UserPresets = .{},
     mock_tracks: []track_mod.Track = &.{},
@@ -203,7 +208,7 @@ fn dialogsPage(ui: *Ui, screen_in: Rect, st: *State) void {
         ui.pushId("pick");
         defer ui.popId();
         var strip = screen.cutTop(22);
-        _ = ctl.segmentedFlush(ui, strip.cutLeft(600), "dialog", &st.dialog, &.{ "TRACKS", "FORMAT", "LEVEL", "FILES", "REPORT", "BOUNCE" });
+        _ = ctl.segmentedFlush(ui, strip.cutLeft(600), "dialog", &st.dialog, &.{ "TRACKS", "FORMAT", "LEVEL", "FILES", "REPORT", "BOUNCE", "SECTION" });
         _ = ui.plate(strip, .{});
     }
     const cx = export_dialog.Context{
@@ -229,6 +234,20 @@ fn dialogsPage(ui: *Ui, screen_in: Rect, st: *State) void {
                 st.export_card = .{ .active = true, .card = card, .showing_card = true };
             }
             _ = export_dialog.draw(ui, screen, &st.export_card, cx, null);
+        },
+        6 => {
+            if (!st.marker_dlg.active) {
+                var mk: markers_mod.Markers = .{};
+                _ = mk.addSection(0, "intro");
+                _ = mk.addSection(32, "verse");
+                var tm = tempo_mod.TempoMap.constant(121);
+                _ = tm.put(32, 140);
+                tm.rebuild();
+                const pts = [_]meter_mod.MeterPoint{ .{ .start_bar = 0, .numerator = 4, .denominator = 4 }, .{ .start_bar = 8, .numerator = 7, .denominator = 8 } };
+                const mm = meter_mod.MeterMap{ .points = &pts };
+                marker_dialog.open(&st.marker_dlg, &mk, .section, 1, &tm, mm);
+            }
+            _ = marker_dialog.draw(ui, screen, &st.marker_dlg);
         },
         else => {
             st.bounce_dlg.active = true;
