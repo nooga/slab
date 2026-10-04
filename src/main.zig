@@ -426,6 +426,9 @@ const Cli = struct {
     stem_tap: engine_mod.CaptureTap = .post,
     bits: export_mod.Bits = .pcm24,
     dither: bool = true,
+    /// .m4a: ALAC instead of AAC, and AAC's bitrate.
+    alac: bool = false,
+    kbps: u16 = 256,
     /// Seconds; null: AUTO.
     tail: ?f32 = 3,
     describe: ?[]const u8 = null,
@@ -482,6 +485,11 @@ pub fn main(init: std.process.Init) !void {
                 cli.bits = if (std.mem.eql(u8, v, "16")) .pcm16 else if (std.mem.eql(u8, v, "24")) .pcm24 else if (std.mem.eql(u8, v, "32f")) .float32 else return error.BadBits;
             } else if (std.mem.eql(u8, a, "--no-dither")) {
                 cli.dither = false;
+            } else if (std.mem.eql(u8, a, "--alac")) {
+                cli.alac = true;
+            } else if (std.mem.eql(u8, a, "--kbps")) {
+                const v = args.next() orelse return error.MissingKbps;
+                cli.kbps = std.fmt.parseInt(u16, v, 10) catch return error.BadKbps;
             } else if (std.mem.eql(u8, a, "--tail")) {
                 const v = args.next() orelse return error.MissingTail;
                 cli.tail = if (std.mem.eql(u8, v, "auto")) null else std.fmt.parseFloat(f32, v) catch return error.BadTail;
@@ -3551,7 +3559,8 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
         last_beat = @max(last_beat, clip.endBeat());
     };
     const sr = audio_mod.SAMPLE_RATE;
-    const container = if (cli.render) |out| export_mod.Container.ofPath(out) orelse return error.UnknownAudioExtension else .wav;
+    var container = if (cli.render) |out| export_mod.Container.ofPath(out) orelse return error.UnknownAudioExtension else export_mod.Container.wav;
+    if (container == .aac and cli.alac) container = .alac;
     const tail_s = cli.tail orelse export_dialog.TAIL_MAX;
     const opts = exporter.Options{
         .mix_path = cli.render,
@@ -3563,7 +3572,7 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
         .end = transport.beatsToSamples(last_beat),
         .tail_auto = cli.tail == null,
         .tail_frames = @intFromFloat(tail_s * @as(f32, @floatFromInt(sr))),
-        .format = .{ .container = container, .bits = cli.bits, .dither = cli.dither, .sample_rate = sr },
+        .format = .{ .container = container, .bits = cli.bits, .dither = cli.dither, .sample_rate = sr, .aac_kbps = cli.kbps },
     };
     const t0 = nowNs();
     const r = try exporter.run(alloc, &engine, tracks, opts, null, null);

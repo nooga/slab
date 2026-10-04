@@ -167,9 +167,7 @@ pub fn run(
 }
 
 fn write(alloc: std.mem.Allocator, path: []const u8, samples: []const f32, f: export_mod.Format) !void {
-    const bytes = try export_mod.encode(alloc, samples, f);
-    defer alloc.free(bytes);
-    try document.writeFile(alloc, path, bytes);
+    try export_mod.writeFile(alloc, path, samples, f);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────

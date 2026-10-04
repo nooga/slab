@@ -10,13 +10,22 @@ pub const Container = enum(u8) {
     wav = 0,
     aiff = 1,
     flac = 2,
+    /// Apple Lossless and AAC, in .m4a through AudioToolbox.
+    alac = 3,
+    aac = 4,
 
     pub fn ext(self: Container) []const u8 {
         return switch (self) {
             .wav => ".wav",
             .aiff => ".aif",
             .flac => ".flac",
+            .alac, .aac => ".m4a",
         };
+    }
+
+    /// Holds integer samples of 16 or 24 bits only.
+    pub fn intOnly(self: Container) bool {
+        return self == .flac or self == .alac;
     }
 
     /// The container a path's extension names, if any.
@@ -24,6 +33,7 @@ pub const Container = enum(u8) {
         if (std.ascii.endsWithIgnoreCase(path, ".wav")) return .wav;
         if (std.ascii.endsWithIgnoreCase(path, ".aif") or std.ascii.endsWithIgnoreCase(path, ".aiff")) return .aiff;
         if (std.ascii.endsWithIgnoreCase(path, ".flac")) return .flac;
+        if (std.ascii.endsWithIgnoreCase(path, ".m4a")) return .aac;
         return null;
     }
 };
@@ -52,7 +62,40 @@ pub const Format = struct {
     seed: u64 = 0x5eed,
     /// FLAC's compression level, 0–8.
     flac_level: u4 = 5,
+    /// AAC's bitrate.
+    aac_kbps: u16 = 256,
 };
+
+extern fn slab_write_m4a(path: [*:0]const u8, ints: ?[*]const c_int, floats: ?[*]const f32, frames: c_ulong, rate: f64, alac: c_int, bits: c_int, bitrate: c_int) c_int;
+
+/// Write interleaved stereo `samples` to `path` in format `f`.
+pub fn writeFile(alloc: std.mem.Allocator, path: []const u8, samples: []const f32, f: Format) !void {
+    if (f.container == .alac or f.container == .aac) {
+        const z = try alloc.dupeZ(u8, path);
+        defer alloc.free(z);
+        const frames = samples.len / 2;
+        var st: c_int = 0;
+        if (f.container == .alac) {
+            var g = f;
+            if (g.bits == .float32) g.bits = .pcm24;
+            const ints = try alloc.alloc(c_int, samples.len);
+            defer alloc.free(ints);
+            var q = Quantizer.init(g);
+            for (ints, samples) |*o, x| o.* = q.next(x);
+            st = slab_write_m4a(z.ptr, ints.ptr, null, frames, @floatFromInt(f.sample_rate), 1, if (g.bits == .pcm16) 16 else 24, 0);
+        } else {
+            st = slab_write_m4a(z.ptr, null, samples.ptr, frames, @floatFromInt(f.sample_rate), 0, 0, @as(c_int, f.aac_kbps) * 1000);
+        }
+        if (st != 0) {
+            std.log.err("m4a write failed: OSStatus {d}", .{st});
+            return error.EncodeFailed;
+        }
+        return;
+    }
+    const bytes = try encode(alloc, samples, f);
+    defer alloc.free(bytes);
+    try @import("document.zig").writeFile(alloc, path, bytes);
+}
 
 /// Encode interleaved stereo `samples` (L R L R…) as a file image. PCM is
 /// clamped to full scale; float is written as is. FLAC holds 16 or 24
@@ -93,7 +136,7 @@ pub fn encode(alloc: std.mem.Allocator, samples: []const f32, f: Format) ![]u8 {
             le32(&out, @intCast(data_len));
             writeSamples(&out, samples, f, .little);
         },
-        .flac => unreachable,
+        .flac, .alac, .aac => unreachable,
         .aiff => {
             // Float needs AIFF-C ('fl32'); PCM is plain AIFF.
             const aifc = f.bits == .float32;

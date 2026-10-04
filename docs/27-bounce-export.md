@@ -14,7 +14,7 @@ write is what playback sounds like, bit-exact at any `--threads`
 **Status:** 2026-10-04, branch `feat/bounce-export`. Built: clip mute,
 stereo audio clips, the engine's capture and ring-out stop, Bounce
 selection, Export (mix and one-pass stems, project/loop/selection, WAV
-and AIFF at 16/24/32f with dither, FLAC, the command line). Each section
+and AIFF at 16/24/32f with dither, FLAC, ALAC, AAC, the command line). Each section
 below says what of it is still design.
 
 ## Bounce selection
@@ -213,17 +213,17 @@ Built:
 | WAV | 16, 24 (default), 32f |
 | AIFF | 16, 24, 32f (AIFF-C `fl32`) |
 | FLAC | 16, 24 (level 5) |
+| ALAC | 16, 24, in `.m4a` |
+| AAC | 128, 192, 256 (default), 320 kb/s, in `.m4a` |
 
 `src/export.zig`. PCM is clamped to full scale, float written as is.
 **Dither**: TPDF at ±1 LSB for 16-bit, on by default, seeded so an
 export is reproducible; off for 24-bit and float.
 
-Planned:
-
-| Format | Bits | Notes |
-|---|---|---|
-| ALAC | 16, 24 | AudioToolbox (`ExtAudioFile`), in `.m4a` |
-| AAC | 128–320 kb/s | AudioToolbox, in `.m4a`; default 256 |
+ALAC and AAC are Apple's encoders through AudioToolbox's `ExtAudioFile`
+(`src/native_audio.c`). ALAC is fed our quantized integers in the top
+bits of 32, so it decodes to exactly the WAV export's samples (checked
+with `afconvert`).
 
 MP3 isn't planned: AAC covers lossy delivery and MP3 encoding would
 mean vendoring LAME.
@@ -271,6 +271,7 @@ exact render.
 slab song.slab --render out.wav                  # 24-bit, 3 s tail, as before
 slab song.slab --render out.aif --bits 16        # AIFF, dithered
 slab song.slab --render out.flac                 # FLAC, 24-bit, level 5
+slab song.slab --render out.m4a --kbps 320       # AAC; --alac for Apple Lossless
 slab song.slab --render out.wav --stems stems/   # the mix and stems, one render
 slab song.slab --stems stems/ --stem-kind all --tap fx --tail auto
 ```
@@ -320,8 +321,8 @@ came out 0.2 % and 1.6 % smaller than `flac -5`, within 0.3 % of
 3. **Export dialog and one-pass stems** (built; SECTIONS waits for
    locator markers, an editable name template and MASTER FX stems are
    open).
-4. **FLAC encoder** (built; no level choice in the dialog yet), then
-   ALAC and AAC through AudioToolbox.
+4. **FLAC encoder**, **ALAC and AAC** (built; no FLAC level choice in
+   the dialog yet).
 5. **Loudness**: `loudness.zig`, NORMALIZE, the report card.
 6. **Resampler** for 44.1/88.2/96 kHz.
 7. **Provenance**: recipe, hash, stale, Re-bounce, Thaw.

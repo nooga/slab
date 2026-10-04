@@ -29,6 +29,8 @@ pub const State = struct {
     tail_sec: f32 = 2.0,
     container: u8 = @intFromEnum(export_mod.Container.wav),
     bits: u8 = @intFromEnum(export_mod.Bits.pcm24),
+    /// AAC: 128, 192, 256 (default) or 320 kb/s.
+    aac_rate: u8 = 2,
     dither: bool = true,
 
     pub fn whatMode(self: State) What {
@@ -48,6 +50,7 @@ pub const State = struct {
             .container = @enumFromInt(self.container),
             .bits = @enumFromInt(self.bits),
             .dither = self.dither,
+            .aac_kbps = ([_]u16{ 128, 192, 256, 320 })[@min(self.aac_rate, 3)],
         };
     }
 };
@@ -133,17 +136,20 @@ fn drawOptions(ui: *Ui, body_in: Rect, state: *State, avail: Avail) void {
     choice(ui, dialog.row(ui, &body, "STEM TAP", ROW_H), &.{ "FX", "FADER" }, &state.stem_tap, &.{ no_stems, no_stems });
     choice(ui, dialog.row(ui, &body, "RANGE", ROW_H), &.{ "PROJECT", "LOOP", "SELECTION" }, &state.range, &.{ false, !avail.loop, !avail.selection });
     tailRow(ui, dialog.row(ui, &body, "TAIL", ROW_H), &state.tail_auto, &state.tail_sec);
-    choice(ui, dialog.row(ui, &body, "FORMAT", ROW_H), &.{ "WAV", "AIFF", "FLAC" }, &state.container, &.{});
-    if (state.container == @intFromEnum(export_mod.Container.flac) and state.bits == @intFromEnum(export_mod.Bits.float32)) state.bits = @intFromEnum(export_mod.Bits.pcm24);
+    choice(ui, dialog.row(ui, &body, "FORMAT", ROW_H), &.{ "WAV", "AIFF", "FLAC", "ALAC", "AAC" }, &state.container, &.{});
+    const container: export_mod.Container = @enumFromInt(state.container);
+    if (container.intOnly() and state.bits == @intFromEnum(export_mod.Bits.float32)) state.bits = @intFromEnum(export_mod.Bits.pcm24);
     {
         var r = dialog.row(ui, &body, "BITS", ROW_H);
         const sixteen = state.bits == @intFromEnum(export_mod.Bits.pcm16);
         var d = r.cutRight(64);
         _ = r.cutRight(6);
-        const is_flac = state.container == @intFromEnum(export_mod.Container.flac);
-        choice(ui, r, &.{ "16", "24", "32F" }, &state.bits, &.{ false, false, is_flac });
+        if (container == .aac) {
+            // AAC has a bitrate, not a depth.
+            choice(ui, r, &.{ "128", "192", "256", "320" }, &state.aac_rate, &.{});
+        } else choice(ui, r, &.{ "16", "24", "32F" }, &state.bits, &.{ false, false, container.intOnly() });
         var on = state.dither and sixteen;
-        if (ctl.button(ui, d.cutLeft(d.w), "DITHER", &on, .{ .kind = .latch, .label = "DITHER", .lit = style.accent, .disabled = !sixteen })) state.dither = !state.dither;
+        if (ctl.button(ui, d.cutLeft(d.w), "DITHER", &on, .{ .kind = .latch, .label = "DITHER", .lit = style.accent, .disabled = !sixteen or container == .aac })) state.dither = !state.dither;
     }
 }
 
