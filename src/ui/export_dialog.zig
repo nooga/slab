@@ -173,7 +173,9 @@ pub fn draw(ui: *Ui, screen: Rect, state: *State, cx: Context, progress: ?Progre
     if (!std.mem.eql(u8, &before, &snapshot(cx))) {
         state.changed = true;
         // An edit leaves the preset: it reads CUSTOM until one matches.
-        if (presetIndex(cx) == null) cx.settings.preset.set("CUSTOM");
+        if (presetIndex(cx)) |i| {
+            cx.settings.preset.set(if (i < xs.BUILTIN.len) xs.BUILTIN[i].name else cx.presets.names[i - xs.BUILTIN.len].get());
+        } else cx.settings.preset.set("CUSTOM");
     }
 
     var bar = f.buttons;

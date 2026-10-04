@@ -447,3 +447,41 @@ test "resolveFolder expands ~ and fills the fields" {
     try testing.expectEqualStrings(try std.fmt.bufPrint(&want, "{s}/Music/Song", .{home}), resolveFolder(&b, "~/Music/{project}/", .{ .project = "Song" }));
     try testing.expectEqualStrings("/tmp/x", resolveFolder(&b, "/tmp/x", .{}));
 }
+
+test "stems: the default rule, a track's own choices, and STEMS off" {
+    const alloc = testing.allocator;
+    const machine = @import("machine.zig");
+    const quiet = struct {
+        fn render(_: *anyopaque, _: *const machine.MachineCtx, l: []f32, r: []f32) void {
+            @memset(l, 0);
+            @memset(r, 0);
+        }
+        fn panel(_: *anyopaque, _: *@import("ui/core.zig").Ui, _: @import("ui/geom.zig").Rect) void {}
+        fn reset(_: *anyopaque) void {}
+    };
+    var st: u8 = 0;
+    const m = machine.Machine{ .name = "q", .state = &st, .render = quiet.render, .draw_panel = quiet.panel, .reset = quiet.reset };
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var tracks = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "Plays", col, m),
+        try track_mod.Track.init(alloc, "Empty", col, m),
+        try track_mod.Track.init(alloc, "Bus", col, m),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    tracks[2].kind = .bus;
+    try tracks[0].addClip(alloc, @import("clip.zig").Clip.init("c", 0, 1));
+    var r = Recipe{ .stems = true, .stem_signal = .fx, .stem_channels = .auto };
+    var s = stems(&r, &tracks);
+    try testing.expectEqual(exporter.Stem{ .tap = .pre, .channels = .auto }, s[0]);
+    try testing.expectEqual(engine_mod.CaptureTap.none, s[1].tap);
+    try testing.expectEqual(engine_mod.CaptureTap.none, s[2].tap);
+    // By hand: the bus on at the fader in mono, the playing track off.
+    tracks[2].stem = .{ .on = true, .signal = 1 + @intFromEnum(Signal.fader), .channels = 1 + @intFromEnum(exporter.Channels.mono) };
+    tracks[0].stem.on = false;
+    s = stems(&r, &tracks);
+    try testing.expectEqual(engine_mod.CaptureTap.none, s[0].tap);
+    try testing.expectEqual(exporter.Stem{ .tap = .post, .channels = .mono }, s[2]);
+    try testing.expectEqual(@as(usize, 1), stemCount(&r, &tracks));
+    r.stems = false;
+    try testing.expectEqual(@as(usize, 0), stemCount(&r, &tracks));
+}
