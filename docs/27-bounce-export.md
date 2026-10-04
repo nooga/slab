@@ -269,16 +269,17 @@ a render per stem.
 
 ### Range
 
-PROJECT (beat 0 to the last playing clip's end), LOOP or SELECTION
-(the selected clips' span; everything plays). The transport **stops**
+PROJECT (beat 0 to END, else to the last playing clip's end), LOOP,
+SELECTION (the selected clips' span; everything plays) or SECTIONS. The transport **stops**
 at the range's end (`Engine.offline_stop`): no note starts past it and
 audio clips fall silent there, the notes sounding are released, and the
 tail is what rings out. AUTO stops once the master and every stem have
 stayed below −80 dBFS for 0.5 s, up to 30 s; a fixed tail renders
 exactly that long.
 
-**SECTIONS** (one file per stretch between locator markers) waits for
-locator markers (docs/07 §Markers), which aren't built.
+**SECTIONS** renders from the first section to the last one's end and
+writes every output (the mix, each stem) as a file per section
+([docs/28](28-time.md#export-by-section)).
 
 **LOOP-WRAP** (TAIL WRAP; built):
 everything rendered past the range's end is folded back onto its start,
@@ -380,8 +381,11 @@ so a file traces back to its render.
 
 The ID3 frames are v2.3 Latin-1; other characters become `?`.
 
-Planned: the project's locator markers as WAV cue points, and an
-`acid` chunk with tempo and meter, once locator markers exist.
+A WAV also carries **cue points**, the section starts and locators that
+fall in it, named (`cue ` and LIST/`adtl` labels), and, when it is a
+loop or a section whose tempo holds still, an **`acid` chunk** (a
+stretchable loop, its length in the meter's units, the meter and the
+tempo) for the apps that sync loops (docs/28 §Export by section).
 
 ### Command line
 
@@ -441,14 +445,13 @@ came out 0.2 % and 1.6 % smaller than `flac -5`, within 0.3 % of
 
 1. **Clip mute** (built).
 2. **Bounce selection** (built).
-3. **Export dialog and one-pass stems** (built; SECTIONS waits for
-   sections, docs/28, MASTER FX stems are open).
+3. **Export dialog and one-pass stems** (built; SECTIONS per docs/28;
+   MASTER FX stems are open).
 4. **FLAC encoder**, **ALAC and AAC** (built).
 5. **Loudness**: `loudness.zig`, NORMALIZE, the report card (built).
 6. **Resampler** for 44.1/88.2/96 kHz (built).
 7. **Provenance**: recipe, hash, stale, Re-bounce, Thaw (built).
-8. **LOOP-WRAP** and tags (built; cue points and `acid` wait for
-   locator markers).
+8. **LOOP-WRAP** and tags, cue points and `acid` (built).
 9. **The Export sheet** (presets, tabs, the stem list, templates, tags,
    mono, saved settings) and the sectioned Bounce dialog (built).
 

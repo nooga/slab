@@ -14,6 +14,7 @@ const dialog = @import("dialog.zig");
 const text_field = @import("text_field.zig");
 const export_mod = @import("../export.zig");
 const exporter = @import("../exporter.zig");
+const markers_mod = @import("../markers.zig");
 const xs = @import("../export_settings.zig");
 const track_mod = @import("../track.zig");
 const routing = @import("../routing.zig");
@@ -78,8 +79,10 @@ pub const Context = struct {
     project: []const u8,
     bpm: f64,
     /// Each range's length in seconds; null where there's none (no loop,
-    /// nothing selected).
-    range_secs: [3]?f64,
+    /// nothing selected, no sections).
+    range_secs: [4]?f64,
+    /// The song's sections, for SECTIONS: a file each.
+    sections: []const markers_mod.Section = &.{},
 };
 
 /// Live render telemetry, sampled by main each frame from the worker job.
@@ -314,7 +317,7 @@ fn rangeBar(ui: *Ui, r_: Rect, cx: Context) void {
     const range_r = r.cutRight(88).center(88, h);
     _ = r.cutRight(4);
     ui.textIn(&ui.fonts.legend, r.cutRight(40), "RANGE", style.text_dim, .right, true);
-    if (ctl.displaySelectEx(ui, range_r, "range", &range, &.{ "PROJECT", "LOOP", "SELECTION" }, "RANGE", .{ .align_ = .left })) rec.range = @enumFromInt(range);
+    if (ctl.displaySelectEx(ui, range_r, "range", &range, &.{ "PROJECT", "LOOP", "SELECTION", "SECTIONS" }, "RANGE", .{ .align_ = .left })) rec.range = @enumFromInt(range);
 }
 
 /// Why the chosen range can't render, if it can't.
@@ -323,6 +326,7 @@ fn rangeMissing(cx: Context) ?[]const u8 {
         .project => if (cx.range_secs[0] == null) "THE PROJECT HAS NO CLIPS TO EXPORT" else null,
         .loop => if (cx.range_secs[1] == null) "NO LOOP: SET ONE ON THE RULER, OR PICK ANOTHER RANGE" else null,
         .selection => if (cx.range_secs[2] == null) "NOTHING SELECTED: SELECT CLIPS, OR PICK ANOTHER RANGE" else null,
+        .sections => if (cx.range_secs[3] == null) "NO SECTIONS: ADD THEM IN THE LANE ABOVE THE RULER" else null,
     };
 }
 
@@ -495,21 +499,31 @@ fn fileCell(ui: *Ui, r: Rect, s: []const u8, on: bool) void {
     ui.marquee(&ui.fonts.legend, r, s, if (on) style.text_dim else style.text_mute, .left, false, ui.in.ix() >= r.x and ui.in.ix() < r.right() and ui.in.iy() >= r.y and ui.in.iy() < r.bottom());
 }
 
+/// The fields a file's name is filled from; with SECTIONS, the first
+/// section's.
 fn nameFields(cx: Context, nn: usize, track: []const u8, date: []const u8) export_mod.NameFields {
-    return .{ .project = cx.project, .nn = nn, .track = track, .date = date, .bpm = cx.bpm };
+    const sec = cx.settings.recipe.range == .sections and cx.sections.len > 0;
+    return .{ .project = cx.project, .nn = nn, .track = track, .date = date, .bpm = cx.bpm, .sn = if (sec) 1 else 0, .section = if (sec) cx.sections[0].name.get() else "" };
+}
+
+/// The template a file is named by: with SECTIONS, a file per section.
+fn template(buf: []u8, cx: Context, t: []const u8, stem: bool) []const u8 {
+    return if (cx.settings.recipe.range == .sections) export_mod.sectionTemplate(buf, t, stem) else t;
 }
 
 fn mixFile(buf: []u8, cx: Context) []const u8 {
     var db: [10]u8 = undefined;
     var nb: [200]u8 = undefined;
-    const name = export_mod.fillName(&nb, cx.settings.recipe.mix_name.get(), nameFields(cx, 0, "", export_mod.today(&db)));
+    var tb: [256]u8 = undefined;
+    const name = export_mod.fillName(&nb, template(&tb, cx, cx.settings.recipe.mix_name.get(), false), nameFields(cx, 0, "", export_mod.today(&db)));
     return std.fmt.bufPrint(buf, "{s}{s}", .{ name, cx.settings.recipe.container.ext() }) catch "";
 }
 
 fn stemFile(buf: []u8, cx: Context, nn: usize, track: []const u8) []const u8 {
     var db: [10]u8 = undefined;
     var nb: [200]u8 = undefined;
-    const name = export_mod.fillName(&nb, cx.settings.recipe.stem_name.get(), nameFields(cx, nn, track, export_mod.today(&db)));
+    var tb: [256]u8 = undefined;
+    const name = export_mod.fillName(&nb, template(&tb, cx, cx.settings.recipe.stem_name.get(), true), nameFields(cx, nn, track, export_mod.today(&db)));
     return std.fmt.bufPrint(buf, "{s}{s}", .{ name, cx.settings.recipe.container.ext() }) catch "";
 }
 
@@ -577,7 +591,7 @@ fn formatTab(ui: *Ui, body_in: Rect, cx: Context) void {
     const files = fileCount(cx);
     const row = dialog.rowW(ui, &right, "ESTIMATE", ROW_H, LABEL_W);
     var sb: [16]u8 = undefined;
-    ctl.display(ui, row.center(row.w, ctl.displayHeight(false)), std.fmt.bufPrint(&buf, "{d} FILE{s}  {s}", .{ files, if (files == 1) "" else "S", sizeText(&sb, per * secs * @as(f64, @floatFromInt(files))) }) catch "", .{ .align_ = .left });
+    ctl.display(ui, row.center(row.w, ctl.displayHeight(false)), std.fmt.bufPrint(&buf, "{d} FILE{s}  {s}", .{ files, if (files == 1) "" else "S", sizeText(&sb, per * secs * @as(f64, @floatFromInt(outputCount(cx)))) }) catch "", .{ .align_ = .left });
 }
 
 /// Stereo bytes per second, about (FLAC and ALAC at their typical ratio).
@@ -597,9 +611,17 @@ fn sizeText(buf: []u8, bytes: f64) []const u8 {
     return std.fmt.bufPrint(buf, "{d:.0} KB", .{bytes / 1e3}) catch "";
 }
 
-fn fileCount(cx: Context) usize {
+/// The mix and the stems: what the song is written as.
+fn outputCount(cx: Context) usize {
     const rec = &cx.settings.recipe;
     return @intFromBool(rec.mix) + xs.stemCount(rec, cx.tracks);
+}
+
+/// Files written: SECTIONS cuts each output into a file per section (the
+/// same audio, so the same size).
+fn fileCount(cx: Context) usize {
+    const n = outputCount(cx);
+    return if (cx.settings.recipe.range == .sections) n * @max(1, cx.sections.len) else n;
 }
 
 // ── LEVEL ────────────────────────────────────────────────────────────
@@ -690,7 +712,7 @@ fn filesTab(ui: *Ui, body_in: Rect, state: *State, cx: Context) void {
     }
     textRow(ui, dialog.rowW(ui, &body, "MIX NAME", ROW_H, LABEL_W), "mix", &state.mix_name, &rec.mix_name, "{project}", state);
     textRow(ui, dialog.rowW(ui, &body, "STEM NAME", ROW_H, LABEL_W), "stem", &state.stem_name, &rec.stem_name, "{nn} {track}", state);
-    dialog.hint(ui, &body, "{project} {track} {nn} {date} {bpm}   A / MAKES A FOLDER", LABEL_W);
+    dialog.hint(ui, &body, "{project} {track} {nn} {section} {sn} {date} {bpm}   / MAKES A FOLDER", LABEL_W);
     {
         var r = dialog.rowW(ui, &body, "IF IT EXISTS", ROW_H, LABEL_W);
         var ex: u8 = @intFromEnum(rec.exists);
@@ -765,7 +787,7 @@ fn summary(buf: []u8, cx: Context) []const u8 {
     const tail = if (rec.wrap) " WRAPPED" else if (rec.tail_auto) " + TAIL" else std.fmt.bufPrint(&tail_b, " + {d} S", .{rec.tail_sec}) catch "";
     return std.fmt.bufPrint(buf, "{d} FILE{s} · {s} · {s} · {d}:{d:0>2}{s} · ABOUT {s}", .{
         files,                                                                   if (files == 1) "" else "S", fmt, level, total / 60, total % 60, tail,
-        sizeText(&sb, bytesPerSec(rec) * secs * @as(f64, @floatFromInt(files))),
+        sizeText(&sb, bytesPerSec(rec) * secs * @as(f64, @floatFromInt(outputCount(cx)))),
     }) catch "";
 }
 
@@ -885,7 +907,7 @@ fn drawCard(ui: *Ui, screen: Rect, state: *State, card: *const Card) Result {
 test "the footer sums up every format" {
     var s = xs.Settings{};
     var presets = xs.UserPresets{};
-    const cx = Context{ .settings = &s, .presets = &presets, .tracks = &.{}, .project = "song", .bpm = 120, .range_secs = .{ 192.4, null, null } };
+    const cx = Context{ .settings = &s, .presets = &presets, .tracks = &.{}, .project = "song", .bpm = 120, .range_secs = .{ 192.4, null, null, null } };
     var buf: [160]u8 = undefined;
     inline for (std.meta.fields(export_mod.Container)) |f| {
         s.recipe.container = @enumFromInt(f.value);

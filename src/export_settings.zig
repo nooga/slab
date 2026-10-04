@@ -13,7 +13,9 @@ const track_mod = @import("track.zig");
 const routing = @import("routing.zig");
 const storage = @import("storage.zig");
 
-pub const Range = enum(u8) { project = 0, loop = 1, selection = 2 };
+/// SECTIONS: the song from its first section to its end, a file per
+/// section (docs/28 §Export by section).
+pub const Range = enum(u8) { project = 0, loop = 1, selection = 2, sections = 3 };
 /// Where a stem's signal is taken: the instrument, after the effects,
 /// after the fader.
 pub const Signal = enum(u8) { instr = 0, fx = 1, fader = 2 };
@@ -146,6 +148,7 @@ pub const BUILTIN = [_]Preset{
     .{ .name = "STREAMING", .about = "FLAC 24/48 at -14 LUFS", .recipe = .{ .container = .flac, .normalize = .loudness, .lufs_target = 1 } },
     .{ .name = "CD", .about = "WAV 16/44.1, dithered", .recipe = .{ .bits = .pcm16, .rate = 0 } },
     .{ .name = "STEMS FOR MIXING", .about = "mix and stems, WAV 24/48", .recipe = .{ .stems = true, .stem_channels = .auto } },
+    .{ .name = "SECTIONS", .about = "a WAV per section, cut to join up", .recipe = .{ .range = .sections } },
     .{ .name = "LOOP", .about = "the loop, its tail wrapped", .recipe = .{ .range = .loop, .wrap = true, .mix_name = Field.init("{project} loop") } },
     .{ .name = "PREVIEW", .about = "AAC 256 at -14 LUFS", .recipe = .{ .container = .aac, .normalize = .loudness, .lufs_target = 1, .mix_name = Field.init("{project} {date}") } },
     .{ .name = "BROADCAST", .about = "WAV 24/48 at -23 LUFS", .recipe = .{ .normalize = .loudness, .lufs_target = 3 } },

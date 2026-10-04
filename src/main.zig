@@ -170,6 +170,7 @@ const RenderJob = struct {
     project_buf: [128]u8 = undefined,
     date_buf: [10]u8 = undefined,
     comment_buf: [96]u8 = undefined,
+    marks: ExportMarks = .{},
     tracks: []track_mod.Track = &.{},
     total_frames: usize = 0,
     sample_rate: u32 = 48_000,
@@ -180,6 +181,87 @@ const RenderJob = struct {
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     cancel: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 };
+
+/// An export's sections and cue points (docs/28 §Export by section), with
+/// the names they point into.
+const ExportMarks = struct {
+    const N = markers_mod.MAX_SECTIONS + markers_mod.MAX_LOCATORS;
+    cuts: [markers_mod.MAX_SECTIONS]exporter.Cut = undefined,
+    cut_n: usize = 0,
+    marks: [N]exporter.Mark = undefined,
+    mark_n: usize = 0,
+    names: [N]markers_mod.Name = undefined,
+
+    /// Cue points for the section starts and locators inside `range`;
+    /// with `cut`, a cut per section too, each with its `acid` when its
+    /// tempo holds still.
+    fn fill(self: *ExportMarks, mk: *const markers_mod.Markers, transport: *const transport_mod.Transport, range: SampleRange, song_end: f64, cut: bool) void {
+        self.* = .{};
+        const meter = if (document_mod.meterState()) |ms| ms.liveMap() else null;
+        for (mk.sectionSlice(), 0..) |sec, i| {
+            self.names[i] = sec.name;
+            const a = transport.beatsToSamples(sec.beat);
+            const b = transport.beatsToSamples(mk.sectionEnd(i, song_end));
+            if (a >= range.end or b <= range.start) continue;
+            if (a >= range.start) {
+                self.marks[self.mark_n] = .{ .at = a - range.start, .name = self.names[i].get() };
+                self.mark_n += 1;
+            }
+            if (!cut) continue;
+            self.cuts[self.cut_n] = .{
+                .name = self.names[i].get(),
+                .start = @max(a, range.start) - range.start,
+                .end = @min(b, range.end) - range.start,
+                .acid = acidFor(transport, meter, sec.beat, mk.sectionEnd(i, song_end)),
+            };
+            self.cut_n += 1;
+        }
+        for (mk.locatorSlice(), 0..) |l, j| {
+            const at = transport.beatsToSamples(l.beat);
+            if (at < range.start or at >= range.end) continue;
+            self.names[mk.section_n + j] = l.name;
+            self.marks[self.mark_n] = .{ .at = at - range.start, .name = self.names[mk.section_n + j].get() };
+            self.mark_n += 1;
+        }
+        std.mem.sort(exporter.Mark, self.marks[0..self.mark_n], {}, struct {
+            fn lt(_: void, x: exporter.Mark, y: exporter.Mark) bool {
+                return x.at < y.at;
+            }
+        }.lt);
+    }
+};
+
+/// A loop's tempo and length for the apps that sync loops, when the tempo
+/// holds still over `lo`..`hi` beats: its length counted in the meter's
+/// units (eighths in 7/8).
+fn acidFor(transport: *const transport_mod.Transport, meter: ?meter_mod.MeterMap, lo: f64, hi: f64) ?export_mod.Acid {
+    const m = transport.map();
+    const i = m.segment(lo);
+    if (m.segment(hi - 1e-6) != i) return null;
+    if (m.points[i].ramp and i + 1 < m.len) return null;
+    var num: u16 = 4;
+    var den: u16 = 4;
+    if (meter) |mm| {
+        const seg = mm.segmentForBar(mm.beatToBarPos(lo).bar);
+        num = seg.numerator;
+        den = seg.denominator;
+    }
+    return .{
+        .beats = @intFromFloat(@round((hi - lo) * @as(f64, @floatFromInt(den)) / 4)),
+        .num = num,
+        .den = den,
+        .bpm = @floatCast(m.points[i].bpm),
+    };
+}
+
+/// Where the last clip that plays ends.
+fn lastClipEnd(tracks: []const track_mod.Track) f64 {
+    var hi: f64 = 0;
+    for (tracks) |*t| for (t.clips.items) |*cl| if (!cl.muted) {
+        hi = @max(hi, cl.endBeat());
+    };
+    return hi;
+}
 
 fn renderWorker(alloc: std.mem.Allocator, engine: *engine_mod.Engine, job: *RenderJob) void {
     if (exporter.run(alloc, engine, job.tracks, job.opts, &job.progress, &job.cancel)) |r| {
@@ -454,6 +536,8 @@ const Cli = struct {
     loop_wrap: bool = false,
     /// The mix summed to mono.
     mono: bool = false,
+    /// A file per section (docs/28 §Export by section).
+    sections: bool = false,
     flac_level: u4 = 5,
     /// Tags; the title defaults to the project's name.
     title: ?[]const u8 = null,
@@ -516,6 +600,8 @@ pub fn main(init: std.process.Init) !void {
                 cli.bits = if (std.mem.eql(u8, v, "16")) .pcm16 else if (std.mem.eql(u8, v, "24")) .pcm24 else if (std.mem.eql(u8, v, "32f")) .float32 else return error.BadBits;
             } else if (std.mem.eql(u8, a, "--mono")) {
                 cli.mono = true;
+            } else if (std.mem.eql(u8, a, "--sections")) {
+                cli.sections = true;
             } else if (std.mem.eql(u8, a, "--flac-level")) {
                 const v = args.next() orelse return error.MissingFlacLevel;
                 cli.flac_level = std.fmt.parseInt(u4, v, 10) catch return error.BadFlacLevel;
@@ -1519,6 +1605,7 @@ pub fn main(init: std.process.Init) !void {
                 },
                 .bpm = transport.baseBpm(),
                 .range_secs = rangeSeconds(&transport, tracks),
+                .sections = markers.sectionSlice(),
             }, prog);
             if (render_dlg.changed) {
                 render_dlg.changed = false;
@@ -2154,6 +2241,10 @@ fn startRender(
         defer alloc.free(doc);
         break :blk exportComment(&job.comment_buf, doc);
     };
+    // Cue points, and a file per section for SECTIONS; a loop's tempo.
+    const sections = s.recipe.range == .sections;
+    if (document_mod.markers()) |mk| job.marks.fill(mk, transport, range, lastClipEnd(tracks), sections);
+    if (s.recipe.range == .loop) fmt.acid = acidFor(transport, if (document_mod.meterState()) |ms| ms.liveMap() else null, transport.loopStartBeats(), transport.loopEndBeats());
     fmt.title = if (s.title.len > 0) s.title.get() else project;
     fmt.artist = s.artist.get();
     fmt.album = s.album.get();
@@ -2178,7 +2269,9 @@ fn startRender(
         .normalize = if (s.recipe.mix) s.recipe.normalize else .off,
         .target = s.recipe.target(),
         .ceiling = s.recipe.ceilingDb(),
-        .loop_wrap = s.recipe.wrap,
+        .loop_wrap = s.recipe.wrap and !sections,
+        .sections = job.marks.cuts[0..job.marks.cut_n],
+        .marks = job.marks.marks[0..job.marks.mark_n],
     };
     job.total_frames = @intCast(range.end - range.start + job.opts.tail_frames);
 
@@ -2192,9 +2285,9 @@ fn startRender(
 
 /// Each range's length in seconds, for the Export sheet; null where it's
 /// empty.
-fn rangeSeconds(transport: *const transport_mod.Transport, tracks: []const track_mod.Track) [3]?f64 {
-    var out: [3]?f64 = undefined;
-    for (0..3) |i| out[i] = if (exportRange(transport, tracks, @enumFromInt(i))) |r|
+fn rangeSeconds(transport: *const transport_mod.Transport, tracks: []const track_mod.Track) [4]?f64 {
+    var out: [4]?f64 = undefined;
+    for (0..4) |i| out[i] = if (exportRange(transport, tracks, @enumFromInt(i))) |r|
         @as(f64, @floatFromInt(r.end - r.start)) / @as(f64, @floatFromInt(transport.sample_rate))
     else
         null;
@@ -2210,10 +2303,13 @@ fn exportRange(transport: *const transport_mod.Transport, tracks: []const track_
     var hi: f64 = 0;
     switch (mode) {
         // The song: to END when it's set, else the last clip that plays.
-        .project => if (if (document_mod.markers()) |mk| mk.end else null) |e| {
-            hi = e;
-        } else for (tracks) |*t| for (t.clips.items) |*cl| if (!cl.muted) {
-            hi = @max(hi, cl.endBeat());
+        .project => hi = if (if (document_mod.markers()) |mk| mk.end else null) |e| e else lastClipEnd(tracks),
+        // From the first section to the last one's end.
+        .sections => {
+            const mk = document_mod.markers() orelse return null;
+            if (mk.section_n == 0) return null;
+            lo = mk.sections[0].beat;
+            hi = mk.sectionEnd(mk.section_n - 1, lastClipEnd(tracks));
         },
         .loop => {
             if (!transport.loopEnabled()) return null;
@@ -3927,6 +4023,21 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
     if (container == .aac and cli.alac) container = .alac;
     const tail_s = cli.tail orelse export_settings.TAIL_MAX;
     const out_dir = if (cli.render) |out| std.fs.path.dirname(out) orelse "." else ".";
+    // --sections: from the first section to the last one's end, a file
+    // each; cue points either way.
+    var range = SampleRange{
+        .start = if (cli.range) |r| transport.beatsToSamples(r[0]) else 0,
+        .end = transport.beatsToSamples(if (cli.range) |r| r[1] else last_beat),
+    };
+    if (cli.sections) {
+        if (markers.section_n == 0) return error.NoSections;
+        range = .{
+            .start = transport.beatsToSamples(markers.sections[0].beat),
+            .end = transport.beatsToSamples(markers.sectionEnd(markers.section_n - 1, lastClipEnd(tracks))),
+        };
+    }
+    var marks: ExportMarks = .{};
+    marks.fill(&markers, &transport, range, lastClipEnd(tracks), cli.sections);
     const opts = exporter.Options{
         .folder = out_dir,
         .mix_name = if (cli.render) |out| projectStem(out) else null,
@@ -3934,9 +4045,11 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
         .stems = if (cli.stems != null) exporter.stemsOf(tracks, cli.stems_kind, cli.stem_tap) else @splat(.{}),
         .stem_folder = cli.stems,
         .project = projectStem(project),
-        .start = if (cli.range) |r| transport.beatsToSamples(r[0]) else 0,
-        .end = transport.beatsToSamples(if (cli.range) |r| r[1] else last_beat),
-        .loop_wrap = cli.loop_wrap,
+        .start = range.start,
+        .end = range.end,
+        .loop_wrap = cli.loop_wrap and !cli.sections,
+        .sections = marks.cuts[0..marks.cut_n],
+        .marks = marks.marks[0..marks.mark_n],
         .tail_auto = cli.tail == null,
         .tail_frames = @intFromFloat(tail_s * @as(f32, @floatFromInt(sr))),
         .format = .{

@@ -201,6 +201,13 @@ fn mockTracks(alloc: std.mem.Allocator, out: *[10]track_mod.Track) !void {
     out[4].stem = .{ .on = true, .signal = 2 };
 }
 
+const mock_sections = [_]markers_mod.Section{
+    .{ .beat = 0, .name = markers_mod.Name.init("intro") },
+    .{ .beat = 32, .name = markers_mod.Name.init("verse") },
+    .{ .beat = 96, .name = markers_mod.Name.init("chorus") },
+    .{ .beat = 160, .name = markers_mod.Name.init("outro") },
+};
+
 /// One dialog at a time, centered: a strip picks it.
 fn dialogsPage(ui: *Ui, screen_in: Rect, st: *State) void {
     var screen = screen_in;
@@ -217,7 +224,8 @@ fn dialogsPage(ui: *Ui, screen_in: Rect, st: *State) void {
         .tracks = st.mock_tracks,
         .project = "broken_glass",
         .bpm = 121,
-        .range_secs = .{ 192.4, 16, null },
+        .range_secs = .{ 192.4, 16, null, 180.2 },
+        .sections = &mock_sections,
     };
     switch (st.dialog) {
         0...3 => {

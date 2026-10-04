@@ -4,8 +4,9 @@ How a written beat becomes a played sample, and everything that bends
 that path: the tempo map, locators and sections, grooves, polymeter and
 polytempo, and the freeze that has to know when any of them changed.
 
-Status: design (2026-10-04). The meter map is built (docs/07 §Meter
-map); the rest is built in the order of [Phasing](#phasing).
+Status: the meter map (docs/07 §Meter map), the tempo map, locators and
+sections, and export by section are built (2026-10-05); the rest is
+design, built in the order of [Phasing](#phasing).
 
 ## The beat axis
 
@@ -147,9 +148,7 @@ how you reach them. A locator's dialog has its NAME; both have DELETE.
 What sections give:
 
 - Loop a section, jump between them, and the song's end for export.
-- **Export SECTIONS**: one file per section, `{section}` in the name
-  template, the section's tempo and length in the `acid` chunk for
-  loops.
+- **Export SECTIONS**: a file per section (below).
 - Later, **arranging by section**: duplicate, move or delete a section
   and its clips, automation, tempo and meter changes come with it
   (clips crossing a boundary split there).
@@ -162,6 +161,29 @@ writes its `Song.section`s and END):
 "sections": [{"beat": 0, "name": "INTRO"}, {"beat": 32, "name": "VERSE", "color": 2}],
 "end": 192
 ```
+
+## Export by section
+
+The Export sheet's RANGE has **SECTIONS** (and the SECTIONS preset, a
+WAV per section; `--sections` on the command line):
+
+- One render from the first section's start to the last one's end;
+  every output (the mix, each stem) is then **cut at the section
+  bounds**. Each file stops where the next section starts, the last
+  keeps the tail, and the files laid end to end are the song, sample for
+  sample. Normalize measures the whole song and applies one gain to
+  every piece. (A section with its own tail would need a render per
+  section; not built.)
+- Names: `{section}` is its name and `{sn}` its place (two digits). A
+  template that names neither gets them: the mix as `{project} {sn}
+  {section}`, a stem in a `{sn} {section}` folder (`Song stems/02 verse/01
+  KICK.wav`), so the files sort in song order and two CHORUSes don't
+  collide.
+- Every WAV export, sectioned or not, carries the section starts and
+  locators that fall in it as **cue points**.
+- A section whose tempo holds still (one segment, no ramp) gets an
+  **`acid` chunk**: its tempo, meter, and length in the meter's units
+  (eighths in 7/8). So does a LOOP export.
 
 ## Groove
 
@@ -302,10 +324,11 @@ does not save CPU. **Freeze** does:
 
 1. **Tempo map**: `tempo.zig`, the transport and engine on the map
    (block splits, rebase on edit, audio clip ends), BPM and the ruler's
-   tempo changes, saved in the project, slabkit.
+   tempo changes, saved in the project, slabkit (built).
 2. **Locators and sections**: the section lane, the END marker,
-   jump/loop/select, TEMPO and METER on a section.
-3. **Export by section**: SECTIONS, `{section}`, cue points, `acid`.
+   jump/loop/select, TEMPO and METER on a section (built).
+3. **Export by section**: SECTIONS, `{section}`, cue points, `acid`
+   (built).
 4. **Groove**: the pool, per-track groove/AMOUNT/SHIFT, playback,
    the ctx table and the fy word, extract, commit, sections' default.
 5. **Freeze**: freeze, unfreeze, flatten, stale.
