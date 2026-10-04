@@ -1,0 +1,46 @@
+# The CLA bot (CLA Assistant Lite): on a pull request it checks that every
+# committer has signed CLA.md, comments how to sign if not, and records a
+# signature when its author comments the sentence below. Signatures live
+# in signatures/cla.json on the cla-signatures branch, not on master.
+name: CLA
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, closed, synchronize]
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  cla:
+    runs-on: ubuntu-latest
+    steps:
+      - name: CLA Assistant
+        if: >-
+          github.event_name == 'pull_request_target' ||
+          (github.event.issue.pull_request &&
+           (github.event.comment.body == 'recheck' ||
+            github.event.comment.body == 'I have read the Slab CLA and I agree to it.'))
+        # v2.6.1, pinned: this job runs with write access on pull requests from forks
+        uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path-to-signatures: signatures/cla.json
+          path-to-document: https://github.com/nooga/slab/blob/master/CLA.md
+          branch: cla-signatures
+          allowlist: nooga,dependabot[bot],github-actions[bot]
+          custom-pr-sign-comment: I have read the Slab CLA and I agree to it.
+          custom-notsigned-prcomment: >-
+            Thank you for contributing to Slab. Before we can merge this, please
+            read the [Contributor License Agreement](https://github.com/nooga/slab/blob/master/CLA.md)
+            and sign it by posting the comment below on this pull request. You
+            only sign once; it covers your future contributions too.
+          custom-allsigned-prcomment: Everyone in this pull request has signed the CLA. Thank you.
+          create-file-commit-message: "cla: the signatures file"
+          signed-commit-message: "cla: $contributorName signed in #$pullRequestNo"
+          lock-pullrequest-aftermerge: false

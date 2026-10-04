@@ -62,7 +62,12 @@ your Contributions.
 
 ## How to sign
 
-Open a pull request. The CLA bot comments with a link; signing there
-with your GitHub account records your agreement for all your future
+Open a pull request. The CLA bot comments with this agreement's link;
+read it, then sign by posting this comment on the pull request:
+
+    I have read the Slab CLA and I agree to it.
+
+The bot records your GitHub account and the date (on the repository's
+`cla-signatures` branch), and that covers all your future
 Contributions. If you contribute on behalf of a company, ask for the
 entity agreement first.
