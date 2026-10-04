@@ -1915,7 +1915,9 @@ fn startRender(
     } else {
         var last_beat: f64 = 0;
         for (tracks) |*t| {
-            for (t.clips.items) |*clip| last_beat = @max(last_beat, clip.endBeat());
+            for (t.clips.items) |*clip| if (!clip.muted) {
+                last_beat = @max(last_beat, clip.endBeat());
+            };
         }
         end = transport.beatsToSamples(last_beat);
     }
@@ -2996,7 +2998,7 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, out: []const u8
     defer engine.deinitPool(alloc);
     engine.publishRouting();
     var last_beat: f64 = 0;
-    for (tracks) |*t| for (t.clips.items) |*clip| {
+    for (tracks) |*t| for (t.clips.items) |*clip| if (!clip.muted) {
         last_beat = @max(last_beat, clip.endBeat());
     };
     const frames: usize = @intCast(transport.beatsToSamples(last_beat) + 3 * audio_mod.SAMPLE_RATE);
@@ -3586,6 +3588,12 @@ fn handleFocusedEditCommands(
             .piano_roll => clip_editor.duplicateSelectedNotes(tracks, selected_clip.*, alloc, edit_snap),
             .browser, .machine_bay, .top_bar => false,
         };
+    } else if (!cmd and (c.rl.IsKeyPressed(c.rl.KEY_ZERO) or c.rl.IsKeyPressed(c.rl.KEY_KP_0))) {
+        changed = switch (focus) {
+            .arrangement => arrangement.toggleClipMute(tracks, selected_clip.*, true),
+            .piano_roll => arrangement.toggleClipMute(tracks, selected_clip.*, false),
+            .browser, .machine_bay, .top_bar => false,
+        };
     } else if (!cmd and focus == .piano_roll and c.rl.IsKeyPressed(c.rl.KEY_Q)) {
         changed = clip_editor.quantizeSelectedNotes(tracks, selected_clip.*, edit_snap);
     } else if (!cmd and focus == .piano_roll and c.rl.IsKeyPressed(c.rl.KEY_H)) {
@@ -3799,6 +3807,13 @@ fn executeEditCommand(
             };
             if (changed) status.set("Reversed", .{});
         },
+        .mute_clips => {
+            changed = switch (focus) {
+                .arrangement => arrangement.toggleClipMute(tracks, selected_clip.*, true),
+                .piano_roll => arrangement.toggleClipMute(tracks, selected_clip.*, false),
+                else => false,
+            };
+        },
         .clear_solo_mute => {
             changed = arrangement.clearSolosAndMutes(tracks);
             if (changed) status.set("Solos and mutes cleared", .{});
@@ -3844,6 +3859,7 @@ fn executeEditCommand(
 fn editMutationKeyPressed(focus: FocusPane) bool {
     if (commandModifierDown()) return false;
     if (c.rl.IsKeyPressed(c.rl.KEY_D) or arrowKeyPressed()) return true;
+    if (c.rl.IsKeyPressed(c.rl.KEY_ZERO) or c.rl.IsKeyPressed(c.rl.KEY_KP_0)) return true;
     return focus == .piano_roll and (c.rl.IsKeyPressed(c.rl.KEY_Q) or
         c.rl.IsKeyPressed(c.rl.KEY_H) or c.rl.IsKeyPressed(c.rl.KEY_S));
 }

@@ -238,6 +238,7 @@ fn appendClip(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track
             clip.audio.start_sec, clip.audio.dur_sec, clip.audio.fade_in_sec, clip.audio.fade_out_sec,
         });
         if (clip.audio.reversed) try out.appendSlice(alloc, "\"reversed\":true,");
+        if (clip.muted) try out.appendSlice(alloc, "\"muted\":true,");
         try out.appendSlice(alloc, "\"source\":");
         try appendJsonString(alloc, out, src_path);
         try out.append(alloc, '}');
@@ -245,7 +246,9 @@ fn appendClip(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track
     }
     try out.appendSlice(alloc, "{\"type\":\"note\",\"name\":");
     try appendJsonString(alloc, out, clip.name());
-    try appendFmt(alloc, out, ",\"start\":{d},\"len\":{d},\"notes\":[", .{ clip.start_beat, clip.length_beats });
+    try appendFmt(alloc, out, ",\"start\":{d},\"len\":{d},", .{ clip.start_beat, clip.length_beats });
+    if (clip.muted) try out.appendSlice(alloc, "\"muted\":true,");
+    try out.appendSlice(alloc, "\"notes\":[");
     for (clip.notes.items, 0..) |note, ni| {
         if (ni > 0) try out.append(alloc, ',');
         try appendFmt(alloc, out, "{{\"pitch\":{d},\"start\":{d},\"len\":{d},\"vel\":{d}", .{
@@ -940,12 +943,14 @@ fn applyClip(alloc: std.mem.Allocator, t: *track_mod.Track, co: std.json.ObjectM
         aclip.audio.fade_in_sec = if (objGet(co, "fade_in")) |x| asF64(x) else 0;
         aclip.audio.fade_out_sec = if (objGet(co, "fade_out")) |x| asF64(x) else 0;
         aclip.audio.reversed = if (objGet(co, "reversed")) |x| x == .bool and x.bool else false;
+        aclip.muted = if (objGet(co, "muted")) |x| x == .bool and x.bool else false;
         try t.addClip(alloc, aclip);
         return;
     }
 
     var clip = clip_mod.Clip.init(name, start, len);
     errdefer clip.deinit(alloc);
+    clip.muted = if (objGet(co, "muted")) |x| x == .bool and x.bool else false;
     if (objGet(co, "notes")) |nv| if (nv == .array) {
         for (nv.array.items) |note_v| {
             if (note_v != .object) continue;
@@ -1020,6 +1025,7 @@ test "project snapshot round-trips tracks clips notes and loop" {
     tracks[0].setVolume(0.625);
     tracks[0].mute.store(true, .monotonic);
     var clip = clip_mod.Clip.init("Clip A", 2.0, 4.0);
+    clip.muted = true;
     try clip.addNote(alloc, .{ .pitch = 64, .start_beat = 0.5, .length_beats = 1.25, .velocity = 91 });
     try tracks[0].addClip(alloc, clip);
 
@@ -1048,6 +1054,7 @@ test "project snapshot round-trips tracks clips notes and loop" {
     try std.testing.expectEqual(@as(usize, 1), loaded_buf[0].clips.items.len);
     try std.testing.expectEqualStrings("Clip A", loaded_buf[0].clips.items[0].name());
     try std.testing.expectApproxEqAbs(@as(f64, 2.0), loaded_buf[0].clips.items[0].start_beat, 0.0001);
+    try std.testing.expect(loaded_buf[0].clips.items[0].muted);
     try std.testing.expectEqual(@as(usize, 1), loaded_buf[0].clips.items[0].notes.items.len);
     try std.testing.expectEqual(@as(u8, 64), loaded_buf[0].clips.items[0].notes.items[0].pitch);
     try std.testing.expectEqual(@as(u8, 91), loaded_buf[0].clips.items[0].notes.items[0].velocity);
@@ -1490,6 +1497,7 @@ test "audio clips round-trip through the pool by path" {
     try std.testing.expectApproxEqAbs(@as(f64, 0.1), got.audio.fade_in_sec, 1e-4);
     try std.testing.expectApproxEqAbs(@as(f64, 0.2), got.audio.fade_out_sec, 1e-4);
     try std.testing.expect(got.audio.reversed);
+    try std.testing.expect(!got.muted);
     try std.testing.expectEqual(src, got.audio.source);
 }
 

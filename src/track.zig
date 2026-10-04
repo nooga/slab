@@ -477,6 +477,7 @@ pub const Track = struct {
         self.publishLanes(dst);
 
         for (self.clips.items) |*clip| {
+            if (clip.muted) continue;
             if (clip.isAudio()) {
                 if (dst.audio_clip_count >= snap_mod.MAX_AUDIO_CLIPS_PER_TRACK) {
                     std.debug.assert(false); // bump MAX_AUDIO_CLIPS_PER_TRACK
@@ -564,7 +565,7 @@ pub const Track = struct {
         var order: [snap_mod.MAX_CLIPS_PER_TRACK]u16 = undefined;
         var n: usize = 0;
         for (self.clips.items, 0..) |*clip, ci| {
-            if (clip.isAudio() or clip.lanes.items.len == 0 or n >= order.len) continue;
+            if (clip.isAudio() or clip.muted or clip.lanes.items.len == 0 or n >= order.len) continue;
             order[n] = @intCast(ci);
             n += 1;
         }
@@ -714,6 +715,33 @@ pub fn testMachine() machine.Machine {
             fn f(_: *anyopaque) void {}
         }.f,
     };
+}
+
+test "a muted clip publishes nothing: no notes, no audio, no lanes" {
+    const alloc = testing.allocator;
+    var t = try Track.init(alloc, "test", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, testMachine());
+    defer t.deinit(alloc);
+
+    var clip = clip_mod.Clip.init("A", 0, 4.0);
+    try clip.addNote(alloc, .{ .pitch = 60, .start_beat = 0, .length_beats = 1.0, .velocity = 80 });
+    clip.muted = true;
+    try t.addClip(alloc, clip);
+    var live = clip_mod.Clip.init("B", 4.0, 4.0);
+    try live.addNote(alloc, .{ .pitch = 62, .start_beat = 0, .length_beats = 1.0, .velocity = 80 });
+    try t.addClip(alloc, live);
+    var aclip = clip_mod.Clip.initAudio("C", 0, 4.0, 0);
+    aclip.muted = true;
+    try t.addClip(alloc, aclip);
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    t.publishSnapshot(&pool);
+
+    const s = t.currentSnapshot();
+    try testing.expectEqual(@as(u32, 1), s.clip_count);
+    try testing.expectEqual(@as(f64, 4.0), s.clips[0].start_beat);
+    try testing.expectEqual(@as(u32, 1), s.note_count);
+    try testing.expectEqual(@as(u8, 62), s.notes[0].pitch);
+    try testing.expectEqual(@as(u32, 0), s.audio_clip_count);
 }
 
 test "forgetTrack drops references to the deleted track and renumbers the rest" {

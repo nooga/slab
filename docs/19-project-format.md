@@ -224,6 +224,9 @@ A **note clip**:
   the track's lane for the same target; where clips overlap, the one
   that starts later wins. Points past the clip's end are kept but
   don't play.
+- `"muted": true` (either kind of clip): the clip stays on the
+  timeline but doesn't play: no notes, no audio, no clip lanes. A
+  render's range ignores muted clips. `0` toggles it on the selection.
 - At most 64 clips and 2048 notes per track.
 - Clips on one track may overlap, and both play.
 

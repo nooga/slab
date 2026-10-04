@@ -178,6 +178,9 @@ pub const Clip = struct {
     name_len: u8 = 0,
     /// Transient UI flag — not persisted, not consumed by the engine.
     selected: bool = false,
+    /// Muted: kept on the timeline, drawn dimmed, but not played: no notes,
+    /// no audio, no clip lanes (docs/27 §The new track and the originals).
+    muted: bool = false,
     /// note vs audio. `notes` is meaningful only for `.note`; `audio`
     /// only for `.audio`.
     kind: ClipKind = .note,
@@ -221,6 +224,7 @@ pub const Clip = struct {
     pub fn clone(self: *const Clip, alloc: std.mem.Allocator) !Clip {
         var c = Clip.init(self.name(), self.start_beat, self.length_beats);
         c.selected = self.selected;
+        c.muted = self.muted;
         c.kind = self.kind;
         c.audio = self.audio;
         errdefer c.deinit(alloc);
