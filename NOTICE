@@ -70,7 +70,9 @@ Stability AI model or code is part of Slab.
 ------------------------------------------------------------------------
 Versilian Community Sample Library (VCSL)
 https://github.com/sgossner/VCSL
-CC0 1.0 / public domain. Not shipped: the VCSL pack downloads it into the
-user's library, and some factory presets play its samples from there.
-Factory sounds made from VCSL recordings are credited in their assets'
-notes.
+CC0 1.0 / public domain. A few instruments ship with Slab as 16-bit mono
+FLAC (machines/sampler/assets/vcsl/: two pianos, the TX81Z FM piano, a
+harpsichord, marimba, kalimba, ocarina and three drum kits made from its
+percussion); the rest is the VCSL pack, which downloads it into the user's
+library. Factory sounds made from VCSL recordings are credited in their
+assets' notes.

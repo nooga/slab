@@ -402,7 +402,7 @@ pub fn memberFiles(alloc: std.mem.Allocator, path: []const u8) Error![][]u8 {
         while (readdir(d)) |e| {
             const name = e.d_name[0..e.d_namlen];
             if (name.len == 0 or name[0] == '.' or e.d_type == DT_DIR) continue;
-            if (!(endsWithIgnoreCase(name, ".wav") or endsWithIgnoreCase(name, ".vc"))) continue;
+            if (!(endsWithIgnoreCase(name, ".wav") or endsWithIgnoreCase(name, ".flac") or endsWithIgnoreCase(name, ".vc"))) continue;
             try out.append(alloc, try std.fmt.allocPrint(alloc, "{s}/{s}", .{ path, name }));
         }
         std.mem.sort([]u8, out.items, {}, lessOwned);
@@ -532,7 +532,7 @@ fn loadFolder(b: *Builder, dir: []const u8) Error!void {
         while (readdir(d)) |e| {
             const name = e.d_name[0..e.d_namlen];
             if (name.len == 0 or name[0] == '.' or e.d_type == DT_DIR) continue;
-            if (!(endsWithIgnoreCase(name, ".wav") or endsWithIgnoreCase(name, ".vc")) or name.len > 255) continue;
+            if (!(endsWithIgnoreCase(name, ".wav") or endsWithIgnoreCase(name, ".flac") or endsWithIgnoreCase(name, ".vc")) or name.len > 255) continue;
             if (n == MAX_FILES) break;
             @memcpy(names_buf[n][0..name.len], name);
             names_len[n] = name.len;

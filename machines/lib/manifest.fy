@@ -785,7 +785,7 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   2 _mf-last-asset @64 AssetDesc.kind! drop
 ;
 
-( Request a keymap: a .wav, a .sfz or a folder of WAVs [relative to the
+( Request a keymap: a .wav or .flac, a .sfz or a folder of them [relative to the
   machine's directory; src/keymap.zig says how each maps], loaded into
   one sample pool and a table of 128 zones.  The host writes the pool's
   pointer at pool-offset, the zone table's pointer at zones-offset, the

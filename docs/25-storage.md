@@ -65,7 +65,7 @@ one. Every other project keeps the factory machine.
   Presets/       <machine id>/<bank>/<name>.preset
   Wavetables/    .wav, Serum-compatible, 2048-sample frames
   Clips/         .slabclip
-  Samples/       the user's own samples, kits, keymaps (.wav, .sfz, folders)
+  Samples/       the user's own samples, kits, keymaps (.wav, .flac, .sfz, folders)
   Machines/      <id>/<id>.fy, with presets/ and assets/ like machines/ in the repo
   Library/       lib: packs (VCSL, the drum machines, …), one folder each
   Cache/         slab: downloads and anything slab can rebuild
@@ -91,7 +91,12 @@ They are never shared or published.
 
 A **pack** is a set of samples too large to ship with slab, or not
 slab's to ship. Examples:
-- **Free:** VCSL, about 6 GB.
+- **Free:** VCSL, about 6 GB. A few basics from it ship with slab
+  instead (two pianos, the FM piano, harpsichord, marimba, kalimba,
+  ocarina and three kits, 76 MB of 16-bit mono FLAC in
+  `machines/sampler/assets/vcsl/`, made by `tools/library/vcsl_factory.py`):
+  the sampler's `vcsl/` bank, and Unfairlight's VCSL presets load the
+  same SFZs.
 - **Yours to own:** the Fairlight CMI disks, the Reverb drum machine
   collection, a commercial library.
 

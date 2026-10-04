@@ -4,11 +4,13 @@
 //! can read it with `p@64` / `f@i`. Read-only and shared across voices.
 //!
 //! Supports PCM 8/16/24/32-bit and IEEE-float 32/64-bit, mono or multi-
-//! channel (folded to mono by averaging). The std.fs surface moved in zig
+//! channel (folded to mono by averaging), and FLAC (a .flac path, decoded
+//! by miniaudio; the factory sample sets ship as FLAC). The std.fs surface moved in zig
 //! 0.16, so IO is direct libc externs (the codebase convention; see
 //! presets.zig, machine_registry.zig).
 
 const std = @import("std");
+const ma = @import("c.zig").ma;
 
 extern fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
 extern fn close(fd: c_int) c_int;
@@ -72,6 +74,7 @@ pub fn load(alloc: std.mem.Allocator, path: []const u8) Error!Sample {
     if (path.len >= zbuf.len) return Error.OpenFailed;
     @memcpy(zbuf[0..path.len], path);
     zbuf[path.len] = 0;
+    if (std.ascii.endsWithIgnoreCase(path, ".flac")) return loadFlac(alloc, &zbuf);
 
     const fd = open(@ptrCast(&zbuf[0]), O_RDONLY);
     if (fd < 0) return Error.OpenFailed;
@@ -95,6 +98,36 @@ pub fn load(alloc: std.mem.Allocator, path: []const u8) Error!Sample {
     if (done < 44) return Error.NotRiffWave;
 
     return parse(alloc, raw[0..done]);
+}
+
+/// Decode a FLAC file into f64 mono at its own rate (channels averaged,
+/// like a WAV).
+fn loadFlac(alloc: std.mem.Allocator, zpath: [*:0]const u8) Error!Sample {
+    var cfg = ma.ma_decoder_config_init(ma.ma_format_f32, 0, 0);
+    cfg.encodingFormat = ma.ma_encoding_format_flac;
+    var dec: ma.ma_decoder = undefined;
+    if (ma.ma_decoder_init_file(zpath, &cfg, &dec) != ma.MA_SUCCESS) return Error.OpenFailed;
+    defer _ = ma.ma_decoder_uninit(&dec);
+    const ch: usize = dec.outputChannels;
+    if (ch == 0) return Error.UnsupportedFormat;
+    var frames: ma.ma_uint64 = 0;
+    if (ma.ma_decoder_get_length_in_pcm_frames(&dec, &frames) != ma.MA_SUCCESS) return Error.ReadFailed;
+    if (frames == 0) return Error.Empty;
+    if (frames > MAX_SAMPLES) return Error.TooLarge;
+    const n: usize = @intCast(frames);
+    const tmp = alloc.alloc(f32, n * ch) catch return Error.OutOfMemory;
+    defer alloc.free(tmp);
+    var got: ma.ma_uint64 = 0;
+    _ = ma.ma_decoder_read_pcm_frames(&dec, tmp.ptr, frames, &got);
+    if (got == 0) return Error.ReadFailed;
+    const len: usize = @intCast(got);
+    const data = alloc.alloc(f64, len) catch return Error.OutOfMemory;
+    for (0..len) |i| {
+        var acc: f64 = 0;
+        for (0..ch) |c| acc += tmp[i * ch + c];
+        data[i] = acc / @as(f64, @floatFromInt(ch));
+    }
+    return .{ .data = data, .sample_rate = @floatFromInt(dec.outputSampleRate) };
 }
 
 /// Parse an in-memory RIFF/WAVE image into f64 mono. Exposed for tests.
@@ -416,4 +449,14 @@ test "encodeStereo24 round-trips through parse" {
     try testing.expectEqual(@as(usize, 2), s.data.len);
     try testing.expectApproxEqAbs(@as(f64, 0.0), s.data[0], 1e-4);
     try testing.expectApproxEqAbs(@as(f64, 0.5), s.data[1], 1e-4);
+}
+
+test "loads a FLAC: the factory kalimba's first sample" {
+    var s = try load(std.testing.allocator, "machines/sampler/assets/vcsl/kalimba/001-Mbira6_Normal_MainSpirit_B2_k8_vl3_rr2.flac");
+    defer s.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(f64, 44100), s.sample_rate);
+    try std.testing.expect(s.data.len > 1000);
+    var peak: f64 = 0;
+    for (s.data) |x| peak = @max(peak, @abs(x));
+    try std.testing.expect(peak > 0.01 and peak <= 1.0);
 }

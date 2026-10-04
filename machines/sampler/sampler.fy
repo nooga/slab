@@ -5,7 +5,7 @@
   TONE, kept by zone name in presets and projects], and a kit's keys
   get its zones' names in the piano roll.
 
-  The host loads a keymap - one WAV, an SFZ, or a folder of WAVs [note
+  The host loads a keymap - one WAV or FLAC, an SFZ, or a folder of them [note
   names in the file names make a multisample, a folder without them a
   drum kit] - and injects the sample pool and zone table [manifest
   `keymap`, src/keymap.zig].  LOAD on the waveform swaps it while

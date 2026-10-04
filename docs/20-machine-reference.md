@@ -695,6 +695,16 @@ Presets:
 - `octave-down` — Pitched an octave down, longer tail
 - `raw` — Clean one-shot, no loop
 - `sp1200-kit` — SP-1200 drums: 12-bit drop-sample, pitched-down grit, fixed filter
+- `vcsl/acoustic-kit` — VCSL acoustic kit on GM keys
+- `vcsl/fm-piano` — VCSL FM Piano
+- `vcsl/grand-piano` — VCSL Grand Piano, Kawai / Sustains, with release samples
+- `vcsl/harpsichord` — VCSL Harpsichord, French / Sustains, with release samples
+- `vcsl/kalimba` — VCSL Kalimba, Kenya
+- `vcsl/latin-kit` — VCSL hand percussion on GM keys
+- `vcsl/marimba` — VCSL Marimba
+- `vcsl/ocarina` — VCSL Ocarina, Typical / Sustains / Sus, with release samples
+- `vcsl/studio-kit` — VCSL concert drums as a kit on GM keys
+- `vcsl/upright-piano` — VCSL Upright Piano, Yamaha / Sustains, with release samples
 
 ## unfairlight
 

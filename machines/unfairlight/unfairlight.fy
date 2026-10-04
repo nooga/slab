@@ -1,6 +1,6 @@
 ( unfairlight.fy - Unfairlight TMI: a Fairlight CMI Series II / IIx voice.
 
-  Eight voice cards [kernels/06-voices/cmi.fy]: any WAV, SFZ or folder
+  Eight voice cards [kernels/06-voices/cmi.fy]: any WAV, FLAC, SFZ or folder
   of samples becomes CMI voice RAM - sampled at RATE, 8-bit, 16,384
   bytes at most, so a long sample is cut where the RAM runs out, as it
   was.  Each note plays on the card's own clock with no interpolation,

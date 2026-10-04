@@ -21,6 +21,11 @@ tools/library/vcsl.py                 # all of it: ~6 GB
 tools/library/vcsl.py --only marimba --only kits
 ```
 
+`vcsl_factory.py` builds the instruments that ship with slab (two
+pianos, the FM piano, harpsichord, marimba, kalimba, ocarina, three kits)
+from those SFZs: 16-bit mono FLAC in `machines/sampler/assets/vcsl/` and
+the sampler's `vcsl/` presets. Run `vcsl.py --only` for them first.
+
 It downloads the library at a pinned commit into `vcsl/samples/`
 (resumable: files already there are skipped), then writes one SFZ per
 instrument into `vcsl/<bank>/`:
