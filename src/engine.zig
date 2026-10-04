@@ -1773,6 +1773,9 @@ fn mixAudioClips(
             const frac: f32 = @floatCast(src_pos - idx0f);
             const s0: f32 = @floatCast(data[idx0]);
             const s1: f32 = if (idx0 + 1 < len) @floatCast(data[idx0 + 1]) else s0;
+            const d_r = clip.data_r orelse data;
+            const r0: f32 = @floatCast(d_r[idx0]);
+            const r1: f32 = if (idx0 + 1 < len) @floatCast(d_r[idx0 + 1]) else r0;
             // Linear fade-in/out envelope over the played window.
             var fade: f64 = 1.0;
             if (clip.fade_in_samples > 0 and pos < clip.fade_in_samples)
@@ -1782,9 +1785,9 @@ fn mixAudioClips(
                 if (remaining < clip.fade_out_samples)
                     fade = @min(fade, @max(0.0, remaining) / clip.fade_out_samples);
             }
-            const v = (s0 + (s1 - s0) * frac) * clip.gain * @as(f32, @floatCast(fade));
-            l[i] += v;
-            r[i] += v;
+            const g = clip.gain * @as(f32, @floatCast(fade));
+            l[i] += (s0 + (s1 - s0) * frac) * g;
+            r[i] += (r0 + (r1 - r0) * frac) * g;
         }
     }
 }
@@ -2274,6 +2277,30 @@ test "mixAudioClips: a reversed clip reads its window end to start, fades in cli
     try testing.expectApproxEqAbs(@as(f32, 3), l[1], 1e-5);
     try testing.expectApproxEqAbs(@as(f32, 5), l[2], 1e-5);
     try testing.expectApproxEqAbs(@as(f32, 2), l[5], 1e-5);
+}
+
+test "mixAudioClips: a stereo source plays its channels apart" {
+    var dl = [_]f64{ 1, 2, 3, 4 };
+    var dr = [_]f64{ -1, -2, -3, -4 };
+    var snap = snap_mod.TrackSnapshot{};
+    snap.audio_clip_count = 1;
+    snap.audio_clips[0] = .{
+        .start_beat = 0,
+        .length_beats = 1,
+        .data = &dl,
+        .data_r = &dr,
+        .len = dl.len,
+        .source_rate = 48_000,
+        .dur_samples = 4,
+        .gain = 0.5,
+    };
+    var l = [_]f32{0} ** 4;
+    var r = [_]f32{0} ** 4;
+    mixAudioClips(&snap, 0, 4, 4.0, 48_000, &l, &r);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), l[0], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, -0.5), r[0], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 2.0), l[3], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, -2.0), r[3], 1e-6);
 }
 
 test "mixAudioClips: missing source data is skipped" {

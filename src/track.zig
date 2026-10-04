@@ -492,6 +492,7 @@ pub const Track = struct {
                 if (pool.get(clip.audio.source)) |src| {
                     const rate = src.sample.sample_rate;
                     snap.data = src.sample.data.ptr;
+                    if (src.sample.isStereo()) snap.data_r = src.sample.right.ptr;
                     snap.len = @intCast(src.sample.data.len);
                     snap.source_rate = rate;
                     snap.start_sample = clip.audio.start_sec * rate;

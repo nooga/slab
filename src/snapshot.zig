@@ -59,6 +59,9 @@ pub const AudioClipSnap = struct {
     start_beat: f64,
     length_beats: f64,
     data: ?[*]const f64 = null,
+    /// The right channel of a stereo source (`data` is then the left);
+    /// null plays `data` on both sides.
+    data_r: ?[*]const f64 = null,
     len: u32 = 0,
     source_rate: f64 = 0,
     /// First source sample this clip reads (= start_sec * source_rate).
