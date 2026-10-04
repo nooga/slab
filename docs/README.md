@@ -75,6 +75,9 @@ self-contained but assumes the vocabulary established in earlier ones.
 25. [26-tape.md](26-tape.md) — tape2: cassette and VHS audio, the WEAR
     macro, and the shared transport kernels (wow, dropouts, hum,
     hysteresis, compand)
+26. [27-bounce-export.md](27-bounce-export.md) — bounce a selection to
+    a new track (taps, clip mute, thawable recipes) and export: stems
+    in one pass, sections, FLAC/ALAC/AAC, dither, loudness report
 
 ## Terminology crib sheet
 
