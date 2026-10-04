@@ -64,21 +64,33 @@ pub const Format = struct {
     flac_level: u4 = 5,
     /// AAC's bitrate.
     aac_kbps: u16 = 256,
-    /// Tags (docs/27 §Names and metadata): WAV's LIST/INFO, AIFF's NAME
-    /// and ANNO, FLAC's Vorbis comments (BPM only there). Empty: none.
+    /// 1 or 2: the samples handed to `writeFile` and `encode` are
+    /// interleaved by this many channels.
+    channels: u8 = 2,
+    /// Tags (docs/27 §Names and metadata): WAV's LIST/INFO and AIFF's
+    /// NAME/AUTH/ANNO, plus an ID3 chunk in both; FLAC's Vorbis comments;
+    /// the .m4a's iTunes atoms. Empty: none.
     title: []const u8 = "",
+    artist: []const u8 = "",
+    album: []const u8 = "",
+    year: []const u8 = "",
     comment: []const u8 = "",
     bpm: f64 = 0,
+
+    fn hasTags(f: Format) bool {
+        return f.title.len > 0 or f.artist.len > 0 or f.album.len > 0 or f.year.len > 0 or f.comment.len > 0 or f.bpm > 0;
+    }
 };
 
-extern fn slab_write_m4a(path: [*:0]const u8, ints: ?[*]const c_int, floats: ?[*]const f32, frames: c_ulong, rate: f64, alac: c_int, bits: c_int, bitrate: c_int) c_int;
+extern fn slab_write_m4a(path: [*:0]const u8, ints: ?[*]const c_int, floats: ?[*]const f32, frames: c_ulong, channels: c_int, rate: f64, alac: c_int, bits: c_int, bitrate: c_int) c_int;
 
-/// Write interleaved stereo `samples` to `path` in format `f`.
+/// Write `samples` (interleaved by `f.channels`) to `path` in format `f`.
 pub fn writeFile(alloc: std.mem.Allocator, path: []const u8, samples: []const f32, f: Format) !void {
     if (f.container == .alac or f.container == .aac) {
         const z = try alloc.dupeZ(u8, path);
         defer alloc.free(z);
-        const frames = samples.len / 2;
+        const ch: usize = f.channels;
+        const frames = samples.len / ch;
         var st: c_int = 0;
         if (f.container == .alac) {
             var g = f;
@@ -87,13 +99,22 @@ pub fn writeFile(alloc: std.mem.Allocator, path: []const u8, samples: []const f3
             defer alloc.free(ints);
             var q = Quantizer.init(g);
             for (ints, samples) |*o, x| o.* = q.next(x);
-            st = slab_write_m4a(z.ptr, ints.ptr, null, frames, @floatFromInt(f.sample_rate), 1, if (g.bits == .pcm16) 16 else 24, 0);
+            st = slab_write_m4a(z.ptr, ints.ptr, null, frames, @intCast(ch), @floatFromInt(f.sample_rate), 1, if (g.bits == .pcm16) 16 else 24, 0);
         } else {
-            st = slab_write_m4a(z.ptr, null, samples.ptr, frames, @floatFromInt(f.sample_rate), 0, 0, @as(c_int, f.aac_kbps) * 1000);
+            st = slab_write_m4a(z.ptr, null, samples.ptr, frames, @intCast(ch), @floatFromInt(f.sample_rate), 0, 0, @as(c_int, f.aac_kbps) * 1000);
         }
         if (st != 0) {
             std.log.err("m4a write failed: OSStatus {d}", .{st});
             return error.EncodeFailed;
+        }
+        if (f.hasTags()) {
+            const doc = @import("document.zig");
+            const bytes = try doc.readFile(alloc, path);
+            defer alloc.free(bytes);
+            if (try tagM4a(alloc, bytes, f)) |tagged| {
+                defer alloc.free(tagged);
+                try doc.writeFile(alloc, path, tagged);
+            } else std.log.warn("{s}: no room for tags", .{path});
         }
         return;
     }
@@ -102,7 +123,7 @@ pub fn writeFile(alloc: std.mem.Allocator, path: []const u8, samples: []const f3
     try @import("document.zig").writeFile(alloc, path, bytes);
 }
 
-/// Encode interleaved stereo `samples` (L R L R…) as a file image. PCM is
+/// Encode `samples` (interleaved by `f.channels`) as a file image. PCM is
 /// clamped to full scale; float is written as is. FLAC holds 16 or 24
 /// bits: float asks it for 24.
 pub fn encode(alloc: std.mem.Allocator, samples: []const f32, f: Format) ![]u8 {
@@ -113,31 +134,33 @@ pub fn encode(alloc: std.mem.Allocator, samples: []const f32, f: Format) ![]u8 {
         defer alloc.free(ints);
         var q = Quantizer.init(g);
         for (ints, samples) |*o, x| o.* = q.next(x);
-        var tags: [3][2][]const u8 = undefined;
+        var tags: [6][2][]const u8 = undefined;
         var nt: usize = 0;
         var bpm_buf: [16]u8 = undefined;
-        if (f.title.len > 0) {
-            tags[nt] = .{ "TITLE", f.title };
+        const fields = [_][2][]const u8{
+            .{ "TITLE", f.title },
+            .{ "ARTIST", f.artist },
+            .{ "ALBUM", f.album },
+            .{ "DATE", f.year },
+            .{ "COMMENT", f.comment },
+            .{ "BPM", if (f.bpm > 0) bpmText(&bpm_buf, f.bpm) else "" },
+        };
+        for (fields) |kv| if (kv[1].len > 0) {
+            tags[nt] = kv;
             nt += 1;
-        }
-        if (f.comment.len > 0) {
-            tags[nt] = .{ "COMMENT", f.comment };
-            nt += 1;
-        }
-        if (f.bpm > 0) {
-            tags[nt] = .{ "BPM", std.fmt.bufPrint(&bpm_buf, "{d}", .{@round(f.bpm * 100) / 100}) catch "" };
-            nt += 1;
-        }
+        };
         return flac.encode(alloc, ints, .{
             .sample_rate = g.sample_rate,
+            .channels = @intCast(f.channels),
             .bits = if (g.bits == .pcm16) 16 else 24,
             .level = g.flac_level,
             .tags = tags[0..nt],
         });
     }
     const nb = f.bits.bytes();
+    const ch: u32 = f.channels;
     const data_len = samples.len * nb;
-    const frames: u32 = @intCast(samples.len / 2);
+    const frames: u32 = @intCast(samples.len / ch);
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(alloc);
     switch (f.container) {
@@ -148,23 +171,28 @@ pub fn encode(alloc: std.mem.Allocator, samples: []const f32, f: Format) ![]u8 {
             out.appendSliceAssumeCapacity("WAVEfmt ");
             le32(&out, 16);
             le16(&out, if (f.bits == .float32) 3 else 1);
-            le16(&out, 2);
+            le16(&out, @intCast(ch));
             le32(&out, f.sample_rate);
-            le32(&out, f.sample_rate * 2 * nb);
-            le16(&out, @intCast(2 * nb));
+            le32(&out, f.sample_rate * ch * nb);
+            le16(&out, @intCast(ch * nb));
             le16(&out, @intCast(nb * 8));
             out.appendSliceAssumeCapacity("data");
             le32(&out, @intCast(data_len));
             writeSamples(&out, samples, f, .little);
             if (data_len & 1 != 0) try out.append(alloc, 0);
-            // LIST/INFO after the data; the RIFF size grows to cover it.
-            if (f.title.len > 0 or f.comment.len > 0) {
+            // LIST/INFO and ID3 after the data; the RIFF size grows to
+            // cover them.
+            if (f.hasTags()) {
                 const at = out.items.len;
                 try out.appendSlice(alloc, "LIST\x00\x00\x00\x00INFO");
                 if (f.title.len > 0) try infoChunk(alloc, &out, "INAM", f.title);
+                if (f.artist.len > 0) try infoChunk(alloc, &out, "IART", f.artist);
+                if (f.album.len > 0) try infoChunk(alloc, &out, "IPRD", f.album);
+                if (f.year.len > 0) try infoChunk(alloc, &out, "ICRD", f.year);
                 if (f.comment.len > 0) try infoChunk(alloc, &out, "ICMT", f.comment);
                 try infoChunk(alloc, &out, "ISFT", "Slab");
                 std.mem.writeInt(u32, out.items[at + 4 ..][0..4], @intCast(out.items.len - at - 8), .little);
+                try id3Chunk(alloc, &out, "id3 ", f, .little);
                 std.mem.writeInt(u32, out.items[4..8], @intCast(out.items.len - 8), .little);
             }
         },
@@ -187,7 +215,7 @@ pub fn encode(alloc: std.mem.Allocator, samples: []const f32, f: Format) ![]u8 {
             }
             out.appendSliceAssumeCapacity("COMM");
             be32(&out, comm_len);
-            be16(&out, 2);
+            be16(&out, @intCast(ch));
             be32(&out, frames);
             be16(&out, @intCast(nb * 8));
             extended80(&out, @floatFromInt(f.sample_rate));
@@ -202,7 +230,9 @@ pub fn encode(alloc: std.mem.Allocator, samples: []const f32, f: Format) ![]u8 {
             writeSamples(&out, samples, f, .big);
             if (data_len & 1 != 0) out.appendAssumeCapacity(0);
             if (f.title.len > 0) try textChunk(alloc, &out, "NAME", f.title, .big);
+            if (f.artist.len > 0) try textChunk(alloc, &out, "AUTH", f.artist, .big);
             if (f.comment.len > 0) try textChunk(alloc, &out, "ANNO", f.comment, .big);
+            if (f.hasTags()) try id3Chunk(alloc, &out, "ID3 ", f, .big);
             std.mem.writeInt(u32, out.items[4..8], @intCast(out.items.len - 8), .big);
         },
     }
@@ -264,6 +294,131 @@ fn infoChunk(alloc: std.mem.Allocator, out: *std.ArrayList(u8), id: []const u8, 
     if ((text.len + 1) & 1 != 0) try out.append(alloc, 0);
 }
 
+/// `m4a` with iTunes tags (title, artist, album, year, comment, tempo,
+/// encoder) added to its moov/udta/meta/ilst. AudioToolbox writes the
+/// moov first and pads it with a `free` atom before the audio, so the
+/// tags take that room: the audio doesn't move and no chunk offset
+/// changes. Null when the file isn't laid out that way.
+pub fn tagM4a(alloc: std.mem.Allocator, m4a: []const u8, f: Format) !?[]u8 {
+    var items: std.ArrayList(u8) = .empty;
+    defer items.deinit(alloc);
+    const texts = [_][2][]const u8{
+        .{ "\xa9nam", f.title },
+        .{ "\xa9ART", f.artist },
+        .{ "\xa9alb", f.album },
+        .{ "\xa9day", f.year },
+        .{ "\xa9cmt", f.comment },
+        .{ "\xa9too", "Slab" },
+    };
+    for (texts) |kv| if (kv[1].len > 0) try m4aItem(alloc, &items, kv[0], 1, kv[1]);
+    if (f.bpm > 0) {
+        var b: [2]u8 = undefined;
+        std.mem.writeInt(u16, &b, @intFromFloat(@min(@round(f.bpm), 65535)), .big);
+        try m4aItem(alloc, &items, "tmpo", 21, &b);
+    }
+    const n = items.items.len;
+
+    // The path to ilst; each box on it grows by n.
+    const moov = findBox(m4a, 0, m4a.len, "moov") orelse return null;
+    const udta = findBox(m4a, moov + 8, moov + boxSize(m4a, moov), "udta") orelse return null;
+    const meta = findBox(m4a, udta + 8, udta + boxSize(m4a, udta), "meta") orelse return null;
+    // meta is a full box: version and flags before its children.
+    const ilst = findBox(m4a, meta + 12, meta + boxSize(m4a, meta), "ilst") orelse return null;
+    const free = moov + boxSize(m4a, moov);
+    if (free + 8 > m4a.len or !std.mem.eql(u8, m4a[free + 4 .. free + 8], "free")) return null;
+    const free_size = boxSize(m4a, free);
+    if (free_size < n + 8) return null;
+
+    const ilst_end = ilst + boxSize(m4a, ilst);
+    const out = try alloc.alloc(u8, m4a.len);
+    @memcpy(out[0..ilst_end], m4a[0..ilst_end]);
+    @memcpy(out[ilst_end..][0..n], items.items);
+    @memcpy(out[ilst_end + n .. free + n], m4a[ilst_end..free]);
+    for ([_]usize{ moov, udta, meta, ilst }) |at| std.mem.writeInt(u32, out[at..][0..4], @intCast(boxSize(m4a, at) + n), .big);
+    std.mem.writeInt(u32, out[free + n ..][0..4], @intCast(free_size - n), .big);
+    @memcpy(out[free + n + 4 ..][0..4], "free");
+    @memset(out[free + n + 8 .. free + free_size], 0);
+    @memcpy(out[free + free_size ..], m4a[free + free_size ..]);
+    return out;
+}
+
+fn boxSize(b: []const u8, at: usize) usize {
+    return std.mem.readInt(u32, b[at..][0..4], .big);
+}
+
+/// The first box of type `kind` among the boxes from `start` to `end`.
+fn findBox(b: []const u8, start: usize, end: usize, kind: []const u8) ?usize {
+    var at = start;
+    while (at + 8 <= @min(end, b.len)) {
+        const size = boxSize(b, at);
+        if (size < 8) return null;
+        if (std.mem.eql(u8, b[at + 4 .. at + 8], kind)) return at;
+        at += size;
+    }
+    return null;
+}
+
+/// An ilst item: the box, then its `data` box (type, locale, value).
+fn m4aItem(alloc: std.mem.Allocator, out: *std.ArrayList(u8), kind: []const u8, data_type: u32, value: []const u8) !void {
+    var b: [4]u8 = undefined;
+    std.mem.writeInt(u32, &b, @intCast(8 + 16 + value.len), .big);
+    try out.appendSlice(alloc, &b);
+    try out.appendSlice(alloc, kind);
+    std.mem.writeInt(u32, &b, @intCast(16 + value.len), .big);
+    try out.appendSlice(alloc, &b);
+    try out.appendSlice(alloc, "data");
+    std.mem.writeInt(u32, &b, data_type, .big);
+    try out.appendSlice(alloc, &b);
+    try out.appendSlice(alloc, &.{ 0, 0, 0, 0 });
+    try out.appendSlice(alloc, value);
+}
+
+fn bpmText(buf: []u8, bpm: f64) []const u8 {
+    return std.fmt.bufPrint(buf, "{d}", .{@round(bpm * 100) / 100}) catch "";
+}
+
+/// An ID3v2.3 tag in a chunk `id` (WAV's "id3 ", AIFF's "ID3 "), which
+/// Music, Finder and most players read from both: title, artist, album,
+/// year, BPM, comment and the encoder. Latin-1 text; other bytes as `?`.
+fn id3Chunk(alloc: std.mem.Allocator, out: *std.ArrayList(u8), id: []const u8, f: Format, endian: std.builtin.Endian) !void {
+    var tag: std.ArrayList(u8) = .empty;
+    defer tag.deinit(alloc);
+    var bpm_buf: [16]u8 = undefined;
+    const frames = [_][2][]const u8{
+        .{ "TIT2", f.title },
+        .{ "TPE1", f.artist },
+        .{ "TALB", f.album },
+        .{ "TYER", f.year },
+        .{ "TBPM", if (f.bpm > 0) std.fmt.bufPrint(&bpm_buf, "{d}", .{@round(f.bpm)}) catch "" else "" },
+        .{ "TSSE", "Slab" },
+    };
+    for (frames) |fr| if (fr[1].len > 0) try id3Frame(alloc, &tag, fr[0], "", fr[1]);
+    // COMM: encoding, language, an empty description, the text.
+    if (f.comment.len > 0) try id3Frame(alloc, &tag, "COMM", "eng\x00", f.comment);
+    const n = tag.items.len;
+    var head = [10]u8{ 'I', 'D', '3', 3, 0, 0, 0, 0, 0, 0 };
+    // Synchsafe size: 7 bits a byte.
+    for (0..4) |k| head[6 + k] = @intCast((n >> @intCast(7 * (3 - k))) & 0x7f);
+    try out.appendSlice(alloc, id);
+    var b: [4]u8 = undefined;
+    std.mem.writeInt(u32, &b, @intCast(10 + n), endian);
+    try out.appendSlice(alloc, &b);
+    try out.appendSlice(alloc, &head);
+    try out.appendSlice(alloc, tag.items);
+    if ((10 + n) & 1 != 0) try out.append(alloc, 0);
+}
+
+fn id3Frame(alloc: std.mem.Allocator, tag: *std.ArrayList(u8), id: []const u8, prefix: []const u8, text: []const u8) !void {
+    try tag.appendSlice(alloc, id);
+    var b: [4]u8 = undefined;
+    std.mem.writeInt(u32, &b, @intCast(1 + prefix.len + text.len), .big);
+    try tag.appendSlice(alloc, &b);
+    try tag.appendSlice(alloc, &.{ 0, 0 }); // flags
+    try tag.append(alloc, 0); // ISO-8859-1
+    try tag.appendSlice(alloc, prefix);
+    for (text) |ch| try tag.append(alloc, if (ch < 0x20 or ch >= 0x80) '?' else ch);
+}
+
 /// An IFF text chunk, padded to even.
 fn textChunk(alloc: std.mem.Allocator, out: *std.ArrayList(u8), id: []const u8, text: []const u8, endian: std.builtin.Endian) !void {
     try out.appendSlice(alloc, id);
@@ -315,16 +470,24 @@ pub const NameFields = struct {
     nn: usize = 0,
     track: []const u8 = "",
     section: []const u8 = "",
+    /// YYYY-MM-DD.
+    date: []const u8 = "",
+    bpm: f64 = 0,
 };
 
-/// Fill `template`'s `{project}`, `{nn}`, `{track}` and `{section}`.
-/// Characters a file name can't hold become `-`.
+/// The template fields, as the name field's token menu offers them.
+pub const NAME_TOKENS = [_][]const u8{ "{project}", "{track}", "{nn}", "{date}", "{bpm}" };
+
+/// Fill `template`'s `{project}`, `{track}`, `{nn}`, `{section}`, `{date}`
+/// and `{bpm}`. A `/` in the template makes a folder; in a field's value
+/// it, like other characters a file name can't hold, becomes `-`.
 pub fn fillName(buf: []u8, template: []const u8, f: NameFields) []const u8 {
     var n: usize = 0;
     var i: usize = 0;
-    var num_buf: [8]u8 = undefined;
+    var num_buf: [16]u8 = undefined;
     while (i < template.len) {
         var piece = template[i .. i + 1];
+        var is_field = false;
         i += 1;
         if (piece[0] == '{') if (std.mem.indexOfScalarPos(u8, template, i, '}')) |j| {
             const key = template[i..j];
@@ -334,22 +497,47 @@ pub fn fillName(buf: []u8, template: []const u8, f: NameFields) []const u8 {
                 f.track
             else if (std.mem.eql(u8, key, "section"))
                 f.section
+            else if (std.mem.eql(u8, key, "date"))
+                f.date
+            else if (std.mem.eql(u8, key, "bpm"))
+                std.fmt.bufPrint(&num_buf, "{d}", .{@round(f.bpm * 100) / 100}) catch ""
             else if (std.mem.eql(u8, key, "nn"))
                 std.fmt.bufPrint(&num_buf, "{d:0>2}", .{f.nn}) catch ""
             else
                 null;
             if (field) |v| {
                 piece = v;
+                is_field = true;
                 i = j + 1;
             }
         };
         for (piece) |ch| {
             if (n == buf.len) return buf[0..n];
-            buf[n] = if (ch == '/' or ch == ':' or ch < 0x20) '-' else ch;
+            // No absolute paths and no empty folders.
+            if (ch == '/' and !is_field and (n == 0 or buf[n - 1] == '/')) continue;
+            buf[n] = if ((ch == '/' and is_field) or ch == ':' or ch < 0x20) '-' else ch;
             n += 1;
         }
     }
+    // No ".." folders either.
+    var k: usize = 0;
+    while (std.mem.indexOfPos(u8, buf[0..n], k, "..")) |at| : (k = at + 2) {
+        const starts = at == 0 or buf[at - 1] == '/';
+        const ends = at + 2 == n or buf[at + 2] == '/';
+        if (starts and ends) {
+            buf[at] = '-';
+            buf[at + 1] = '-';
+        }
+    }
     return buf[0..n];
+}
+
+/// Today's date as YYYY-MM-DD, local time.
+pub fn today(buf: *[10]u8) []const u8 {
+    const t = std.c.time(null);
+    var tm: std.c.tm = undefined;
+    _ = std.c.localtime_r(&t, &tm);
+    return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{ @as(u32, @intCast(tm.year + 1900)), @as(u32, @intCast(tm.mon + 1)), @as(u32, @intCast(tm.mday)) }) catch "";
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -419,9 +607,90 @@ test "AIFF: big-endian PCM with an 80-bit rate, AIFF-C for float" {
     try testing.expectEqual(@as(u32, @bitCast(@as(f32, -0.5))), std.mem.readInt(u32, f[f.len - 4 ..][0..4], .big));
 }
 
+test "mono files: one channel in WAV, AIFF and FLAC" {
+    const s = [_]f32{ 0.5, -0.25, 0.125, 0 };
+    const w = try encode(testing.allocator, &s, .{ .channels = 1, .bits = .float32 });
+    defer testing.allocator.free(w);
+    try testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, w[22..24], .little));
+    try testing.expectEqual(@as(usize, 44 + 16), w.len);
+    var got = try wav.parse(testing.allocator, w);
+    defer got.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 4), got.data.len);
+    try testing.expectApproxEqAbs(@as(f64, -0.25), got.data[1], 1e-6);
+    const a = try encode(testing.allocator, &s, .{ .container = .aiff, .channels = 1, .bits = .pcm16, .dither = false });
+    defer testing.allocator.free(a);
+    try testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, a[20..22], .big));
+    try testing.expectEqual(@as(u32, 4), std.mem.readInt(u32, a[22..26], .big));
+    const f = try encode(testing.allocator, &s, .{ .container = .flac, .channels = 1, .bits = .pcm16 });
+    defer testing.allocator.free(f);
+    try testing.expectEqualSlices(u8, "fLaC", f[0..4]);
+}
+
+test "tags: INFO and ID3 in a WAV, Vorbis comments in a FLAC" {
+    const s = [_]f32{ 0, 0 };
+    const tags = Format{ .title = "Broken Glass", .artist = "nooga", .album = "Slabs", .year = "2026", .bpm = 124, .comment = "Slab 0.0.7" };
+    var f = tags;
+    const w = try encode(testing.allocator, &s, f);
+    defer testing.allocator.free(w);
+    try testing.expectEqual(@as(u32, @intCast(w.len - 8)), std.mem.readInt(u32, w[4..8], .little));
+    for ([_][]const u8{ "IART", "IPRD", "ICRD", "id3 ", "ID3\x03", "TPE1", "TALB", "TYER", "TBPM", "COMM", "nooga" }) |want| {
+        try testing.expect(std.mem.indexOf(u8, w, want) != null);
+    }
+    f.container = .aiff;
+    const a = try encode(testing.allocator, &s, f);
+    defer testing.allocator.free(a);
+    try testing.expect(std.mem.indexOf(u8, a, "AUTH") != null and std.mem.indexOf(u8, a, "ID3 ") != null);
+    try testing.expectEqual(@as(u32, @intCast(a.len - 8)), std.mem.readInt(u32, a[4..8], .big));
+    f.container = .flac;
+    const fl = try encode(testing.allocator, &s, f);
+    defer testing.allocator.free(fl);
+    for ([_][]const u8{ "ARTIST=nooga", "ALBUM=Slabs", "DATE=2026", "BPM=124" }) |want| try testing.expect(std.mem.indexOf(u8, fl, want) != null);
+}
+
+test "tagM4a fills the ilst from the free room; the audio stays put" {
+    const alloc = testing.allocator;
+    var b: std.ArrayList(u8) = .empty;
+    defer b.deinit(alloc);
+    const box = struct {
+        fn put(a: std.mem.Allocator, out: *std.ArrayList(u8), kind: []const u8, size: u32) !void {
+            var s4: [4]u8 = undefined;
+            std.mem.writeInt(u32, &s4, size, .big);
+            try out.appendSlice(a, &s4);
+            try out.appendSlice(a, kind);
+        }
+    }.put;
+    try box(alloc, &b, "ftyp", 8);
+    try box(alloc, &b, "moov", 8 + 8 + 12 + 8);
+    try box(alloc, &b, "udta", 8 + 12 + 8);
+    try box(alloc, &b, "meta", 12 + 8);
+    try b.appendSlice(alloc, &.{ 0, 0, 0, 0 });
+    try box(alloc, &b, "ilst", 8);
+    try box(alloc, &b, "free", 200);
+    try b.appendNTimes(alloc, 0, 192);
+    try box(alloc, &b, "mdat", 12);
+    try b.appendSlice(alloc, "AUDI");
+    const out = (try tagM4a(alloc, b.items, .{ .title = "Song", .artist = "nooga", .bpm = 124 })).?;
+    defer alloc.free(out);
+    try testing.expectEqual(b.items.len, out.len);
+    try testing.expectEqualSlices(u8, "AUDI", out[out.len - 4 ..]);
+    const moov = findBox(out, 0, out.len, "moov").?;
+    const grown = boxSize(out, moov) - 36;
+    try testing.expect(grown > 0);
+    try testing.expectEqualSlices(u8, "free", out[moov + boxSize(out, moov) + 4 ..][0..4]);
+    try testing.expectEqual(200 - grown, boxSize(out, moov + boxSize(out, moov)));
+    try testing.expect(std.mem.indexOf(u8, out, "\xa9ARTnooga") == null); // inside a data box
+    try testing.expect(std.mem.indexOf(u8, out, "nooga") != null and std.mem.indexOf(u8, out, "tmpo") != null);
+    // No free atom to take: no tags.
+    try testing.expect((try tagM4a(alloc, b.items[0 .. 8 + 36], .{ .title = "x" })) == null);
+}
+
 test "fillName fills the fields and keeps paths flat" {
     var buf: [64]u8 = undefined;
     try testing.expectEqualStrings("Song-03-Kick", fillName(&buf, "{project}-{nn}-{track}", .{ .project = "Song", .nn = 3, .track = "Kick" }));
     try testing.expectEqualStrings("Song - verse-a-b", fillName(&buf, "{project} - {section}", .{ .project = "Song", .section = "verse/a:b" }));
     try testing.expectEqualStrings("x{odd}", fillName(&buf, "x{odd}", .{}));
+    // Folders from the template, not from a field; never absolute or up.
+    try testing.expectEqualStrings("stems/03 Kick-Snare", fillName(&buf, "/stems//{nn} {track}", .{ .nn = 3, .track = "Kick/Snare" }));
+    try testing.expectEqualStrings("--/x", fillName(&buf, "../x", .{}));
+    try testing.expectEqualStrings("Song 124 2026-10-04", fillName(&buf, "{project} {bpm} {date}", .{ .project = "Song", .bpm = 124, .date = "2026-10-04" }));
 }
