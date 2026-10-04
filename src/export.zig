@@ -4,15 +4,18 @@
 //! feed them live in main (the export job) and engine (`Capture`).
 
 const std = @import("std");
+const flac = @import("flac.zig");
 
 pub const Container = enum(u8) {
     wav = 0,
     aiff = 1,
+    flac = 2,
 
     pub fn ext(self: Container) []const u8 {
         return switch (self) {
             .wav => ".wav",
             .aiff => ".aif",
+            .flac => ".flac",
         };
     }
 
@@ -20,6 +23,7 @@ pub const Container = enum(u8) {
     pub fn ofPath(path: []const u8) ?Container {
         if (std.ascii.endsWithIgnoreCase(path, ".wav")) return .wav;
         if (std.ascii.endsWithIgnoreCase(path, ".aif") or std.ascii.endsWithIgnoreCase(path, ".aiff")) return .aiff;
+        if (std.ascii.endsWithIgnoreCase(path, ".flac")) return .flac;
         return null;
     }
 };
@@ -46,11 +50,27 @@ pub const Format = struct {
     /// and float. Seeded, so an export is reproducible.
     dither: bool = true,
     seed: u64 = 0x5eed,
+    /// FLAC's compression level, 0–8.
+    flac_level: u4 = 5,
 };
 
 /// Encode interleaved stereo `samples` (L R L R…) as a file image. PCM is
-/// clamped to full scale; float is written as is.
+/// clamped to full scale; float is written as is. FLAC holds 16 or 24
+/// bits: float asks it for 24.
 pub fn encode(alloc: std.mem.Allocator, samples: []const f32, f: Format) ![]u8 {
+    if (f.container == .flac) {
+        var g = f;
+        if (g.bits == .float32) g.bits = .pcm24;
+        const ints = try alloc.alloc(i32, samples.len);
+        defer alloc.free(ints);
+        var q = Quantizer.init(g);
+        for (ints, samples) |*o, x| o.* = q.next(x);
+        return flac.encode(alloc, ints, .{
+            .sample_rate = g.sample_rate,
+            .bits = if (g.bits == .pcm16) 16 else 24,
+            .level = g.flac_level,
+        });
+    }
     const nb = f.bits.bytes();
     const data_len = samples.len * nb;
     const frames: u32 = @intCast(samples.len / 2);
@@ -73,6 +93,7 @@ pub fn encode(alloc: std.mem.Allocator, samples: []const f32, f: Format) ![]u8 {
             le32(&out, @intCast(data_len));
             writeSamples(&out, samples, f, .little);
         },
+        .flac => unreachable,
         .aiff => {
             // Float needs AIFF-C ('fl32'); PCM is plain AIFF.
             const aifc = f.bits == .float32;
@@ -110,9 +131,31 @@ pub fn encode(alloc: std.mem.Allocator, samples: []const f32, f: Format) ![]u8 {
     return out.toOwnedSlice(alloc);
 }
 
+/// Float samples to `bits`-bit integers, as every PCM format and FLAC
+/// store them: clamped to full scale, rounded, TPDF-dithered at 16 bits
+/// when `dither`.
+pub const Quantizer = struct {
+    prng: std.Random.DefaultPrng,
+    bits: Bits,
+    dither: bool,
+
+    pub fn init(f: Format) Quantizer {
+        return .{ .prng = std.Random.DefaultPrng.init(f.seed), .bits = f.bits, .dither = f.dither and f.bits == .pcm16 };
+    }
+
+    pub fn next(self: *Quantizer, x: f32) i32 {
+        const full: f64 = if (self.bits == .pcm16) 32767.0 else 8_388_607.0;
+        var v = std.math.clamp(@as(f64, x), -1, 1) * full;
+        if (self.dither) {
+            const rnd = self.prng.random();
+            v += rnd.float(f64) - rnd.float(f64);
+        }
+        return @intFromFloat(std.math.clamp(@round(v), -full - 1, full));
+    }
+};
+
 fn writeSamples(out: *std.ArrayList(u8), samples: []const f32, f: Format, endian: std.builtin.Endian) void {
-    var prng = std.Random.DefaultPrng.init(f.seed);
-    const rnd = prng.random();
+    var q = Quantizer.init(f);
     for (samples) |x| switch (f.bits) {
         .float32 => {
             var b: [4]u8 = undefined;
@@ -120,17 +163,12 @@ fn writeSamples(out: *std.ArrayList(u8), samples: []const f32, f: Format, endian
             out.appendSliceAssumeCapacity(&b);
         },
         .pcm16 => {
-            var v = std.math.clamp(@as(f64, x), -1, 1) * 32767.0;
-            if (f.dither) v += rnd.float(f64) - rnd.float(f64);
-            const q: i16 = @intFromFloat(std.math.clamp(@round(v), -32768, 32767));
             var b: [2]u8 = undefined;
-            std.mem.writeInt(i16, &b, q, endian);
+            std.mem.writeInt(i16, &b, @intCast(q.next(x)), endian);
             out.appendSliceAssumeCapacity(&b);
         },
         .pcm24 => {
-            const v = std.math.clamp(@as(f64, x), -1, 1) * 8_388_607.0;
-            const q: i32 = @intFromFloat(std.math.clamp(@round(v), -8_388_608, 8_388_607));
-            const u: u32 = @bitCast(q);
+            const u: u32 = @bitCast(q.next(x));
             const b = [3]u8{ @truncate(u), @truncate(u >> 8), @truncate(u >> 16) };
             if (endian == .little) out.appendSliceAssumeCapacity(&b) else out.appendSliceAssumeCapacity(&.{ b[2], b[1], b[0] });
         },

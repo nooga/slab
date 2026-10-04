@@ -133,13 +133,15 @@ fn drawOptions(ui: *Ui, body_in: Rect, state: *State, avail: Avail) void {
     choice(ui, dialog.row(ui, &body, "STEM TAP", ROW_H), &.{ "FX", "FADER" }, &state.stem_tap, &.{ no_stems, no_stems });
     choice(ui, dialog.row(ui, &body, "RANGE", ROW_H), &.{ "PROJECT", "LOOP", "SELECTION" }, &state.range, &.{ false, !avail.loop, !avail.selection });
     tailRow(ui, dialog.row(ui, &body, "TAIL", ROW_H), &state.tail_auto, &state.tail_sec);
-    choice(ui, dialog.row(ui, &body, "FORMAT", ROW_H), &.{ "WAV", "AIFF" }, &state.container, &.{});
+    choice(ui, dialog.row(ui, &body, "FORMAT", ROW_H), &.{ "WAV", "AIFF", "FLAC" }, &state.container, &.{});
+    if (state.container == @intFromEnum(export_mod.Container.flac) and state.bits == @intFromEnum(export_mod.Bits.float32)) state.bits = @intFromEnum(export_mod.Bits.pcm24);
     {
         var r = dialog.row(ui, &body, "BITS", ROW_H);
         const sixteen = state.bits == @intFromEnum(export_mod.Bits.pcm16);
         var d = r.cutRight(64);
         _ = r.cutRight(6);
-        choice(ui, r, &.{ "16", "24", "32F" }, &state.bits, &.{});
+        const is_flac = state.container == @intFromEnum(export_mod.Container.flac);
+        choice(ui, r, &.{ "16", "24", "32F" }, &state.bits, &.{ false, false, is_flac });
         var on = state.dither and sixteen;
         if (ctl.button(ui, d.cutLeft(d.w), "DITHER", &on, .{ .kind = .latch, .label = "DITHER", .lit = style.accent, .disabled = !sixteen })) state.dither = !state.dither;
     }

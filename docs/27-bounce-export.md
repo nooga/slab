@@ -13,8 +13,8 @@ write is what playback sounds like, bit-exact at any `--threads`
 
 **Status:** 2026-10-04, branch `feat/bounce-export`. Built: clip mute,
 stereo audio clips, the engine's capture and ring-out stop, Bounce
-selection, and Export (mix and one-pass stems, project/loop/selection,
-WAV and AIFF at 16/24/32f with dither, the command line). Each section
+selection, Export (mix and one-pass stems, project/loop/selection, WAV
+and AIFF at 16/24/32f with dither, FLAC, the command line). Each section
 below says what of it is still design.
 
 ## Bounce selection
@@ -212,6 +212,7 @@ Built:
 |---|---|
 | WAV | 16, 24 (default), 32f |
 | AIFF | 16, 24, 32f (AIFF-C `fl32`) |
+| FLAC | 16, 24 (level 5) |
 
 `src/export.zig`. PCM is clamped to full scale, float written as is.
 **Dither**: TPDF at ±1 LSB for 16-bit, on by default, seeded so an
@@ -221,7 +222,6 @@ Planned:
 
 | Format | Bits | Notes |
 |---|---|---|
-| FLAC | 16, 24 | our encoder, below; level 0–8, default 5 |
 | ALAC | 16, 24 | AudioToolbox (`ExtAudioFile`), in `.m4a` |
 | AAC | 128–320 kb/s | AudioToolbox, in `.m4a`; default 256 |
 
@@ -270,6 +270,7 @@ exact render.
 ```
 slab song.slab --render out.wav                  # 24-bit, 3 s tail, as before
 slab song.slab --render out.aif --bits 16        # AIFF, dithered
+slab song.slab --render out.flac                 # FLAC, 24-bit, level 5
 slab song.slab --render out.wav --stems stems/   # the mix and stems, one render
 slab song.slab --stems stems/ --stem-kind all --tap fx --tail auto
 ```
@@ -279,31 +280,38 @@ calls `--stems` once instead of writing a project per track.
 
 ## FLAC encoder
 
-`src/flac.zig`: an encoder of our own, no libFLAC. It covers the subset
-a renderer needs:
+`src/flac.zig`: an encoder of our own, no libFLAC. **Built.**
 
-- Fixed blocksize, 4096 frames; 16 or 24 bits; 1 or 2 channels; any
-  of the export rates.
-- **Stereo decorrelation**: try independent, left/side, right/side and
-  mid/side per frame, and keep the smallest.
+- Fixed blocksize, 4096 frames (a short last frame); 16 or 24 bits; 1
+  or 2 channels; any rate (the common ones coded in the frame header).
+- **Stereo decorrelation**: independent, left/side, right/side and
+  mid/side are all encoded per frame, and the smallest kept.
 - **Subframes**: CONSTANT (silence costs a few bytes), VERBATIM as the
-  fallback, FIXED orders 0–4, and LPC orders up to 12 (levels 6–8 up
-  to 32 coefficients), with Levinson-Durbin on a windowed
-  autocorrelation and quantized coefficients at 15-bit precision.
-- **Residual**: partitioned Rice coding, partition order chosen per
-  subframe, Rice parameter per partition.
-- STREAMINFO with the MD5 of the unencoded audio, frame and subframe
-  CRC-8/CRC-16, a VORBIS_COMMENT block for the tags, a SEEKTABLE.
+  fallback, FIXED orders 0–4, and LPC up to order 12, from Levinson-
+  Durbin on a Welch-windowed autocorrelation, coefficients quantized
+  with error feedback at 15 bits (13 past 17-bit samples, so 64-bit
+  free decoders stay exact). A residual that wouldn't fit 32 bits
+  rejects its predictor.
+- **Residual**: partitioned Rice coding (RICE2 when a parameter passes
+  14), partition order chosen per subframe, the parameter per partition
+  from the exact cost around the mean's log2.
+- STREAMINFO with the MD5 of the samples and the real min/max frame
+  sizes, CRC-8 headers and CRC-16 frames, a VORBIS_COMMENT with the
+  vendor. No SEEKTABLE yet.
 
-The level picks how hard to search (LPC on or off, max order, partition
-orders tried), the same idea as `flac -0..-8`. Encoding runs on the
-render pool's workers, a frame per job, since frames are independent.
+The level picks how hard it searches, as `flac -0..-8` does: 0–2 FIXED
+only (partition order up to 3–5), 3–6 LPC at one order (6, 8, 8, 12),
+7–8 every LPC order up to 12; 5 is the default. Frames are encoded on
+up to 8 threads and joined in order; the output is the same bytes.
 
-It's verified against miniaudio's FLAC decoder, which Slab already
-links: every test file round-trips bit-exact, and sizes are compared
-to `flac -5` on the same input (target: within 3 %). Inputs: silence,
-full-scale noise, a sine sweep, a rendered song, a 24-bit file with
-a DC offset.
+FLAC holds 16 or 24 bits, so a 32-bit float export asks it for 24.
+
+Verified: every test signal (silence, full-scale noise, a sine sweep,
+a DC offset; 16 and 24-bit; levels 0, 5, 8; a short last frame; mono)
+round-trips bit-exact through miniaudio's decoder (dr_flac), and the
+reference `flac -t` passes the files. On two rendered songs, level 5
+came out 0.2 % and 1.6 % smaller than `flac -5`, within 0.3 % of
+`flac -8`, and decodes to exactly the 24-bit WAV export's samples.
 
 ## Phasing
 
@@ -312,7 +320,8 @@ a DC offset.
 3. **Export dialog and one-pass stems** (built; SECTIONS waits for
    locator markers, an editable name template and MASTER FX stems are
    open).
-4. **FLAC encoder**, then ALAC and AAC through AudioToolbox.
+4. **FLAC encoder** (built; no level choice in the dialog yet), then
+   ALAC and AAC through AudioToolbox.
 5. **Loudness**: `loudness.zig`, NORMALIZE, the report card.
 6. **Resampler** for 44.1/88.2/96 kHz.
 7. **Provenance**: recipe, hash, stale, Re-bounce, Thaw.

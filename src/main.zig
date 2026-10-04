@@ -71,6 +71,7 @@ test {
     _ = @import("routing.zig");
     _ = @import("export.zig");
     _ = @import("exporter.zig");
+    _ = @import("flac.zig");
     _ = @import("ui/track_order.zig");
     _ = @import("engine.zig");
     _ = @import("track.zig");
