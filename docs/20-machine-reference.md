@@ -424,12 +424,29 @@ Presets:
 Presets:
 
 - `slab/bass` — Slab: rubber bass. A pick click and a thump on the attack, then a round, slightly hollow sustain that holds while the key is down; velocity opens the thump.
+- `slab/bell-pad` — Slab: bell pad. A soft bell strike that fades into a slow, detuned swell; hold chords.
 - `slab/bells` — Slab: struck bells. A clangorous, inharmonic strike that fades to a nearly pure ring over several seconds; the third carrier adds a high shimmer.
 - `slab/brass` — Slab: synth brass. Notes bloom from dark to bright over 150 ms with a small upward scoop; three detuned carriers and a late vibrato on held notes.
+- `slab/celesta` — Slab: celesta. A soft, sweet bell-piano: a gentle body, a glassy overtone that fades first, and a tiny tink on the strike.
+- `slab/clav` — Slab: clav. A bright, buzzy pluck that settles to a thin sustain and stops dead on release; velocity opens the buzz.
 - `slab/e-piano` — Slab: tine e-piano. Soft keys give a round, bell-less body; hard keys bark with a 13:1 tine that dies in a quarter second. Two detuned 1:1 bodies beat slowly.
+- `slab/electric-grand` — Slab: electric grand. A bright, hammered piano with a percussive bark on hard keys and an octave shimmer; decays like a struck string.
+- `slab/finger-bass` — Slab: finger bass. A round, warm bass guitar: a soft pluck, a little growl from velocity, a held body.
 - `slab/glass-lead` — Slab: glass lead — a sine body (1:1 pair + a detuned twin) under a two-octave sparkle (4:3 pair) that bursts on the attack and holds a bright sustain; the late-80s 'attack over body' lead
+- `slab/harmonica` — Slab: harmonica. A reedy, nasal tone that breathes in over a few tens of milliseconds and grows a vibrato on held notes.
+- `slab/harpsichord` — Slab: harpsichord. A bright, nasal pluck that hardly changes with velocity and rings for a second or two.
+- `slab/kalimba` — Slab: kalimba. A plucked metal tine: a round tone with a bright, slightly sour overtone on the pluck; rings for about a second.
+- `slab/koto` — Slab: koto. A twangy, metallic silk-string pluck that rings for a second or so; harder plucks twang more.
+- `slab/marimba` — Slab: marimba. A woody mallet bar: a warm tone with its tuned overtones dying fast, gone within half a second.
+- `slab/organ` — Slab: drawbar organ. Six operators as six drawbars, full sustain, no velocity, and a gentle vibrato; plays like a tonewheel organ.
+- `slab/piano` — Slab: FM piano. A rounder, darker piano: two slightly detuned string pairs, a soft hammer knock, brightness mostly from velocity; long decay.
 - `slab/sample-hold-glass` — Slab: sample-and-hold glass. A held chord's brightness steps to a new random value six times a second over a glassy body and a fixed 1.2 kHz formant; play it under a slow pad or alone as a texture.
+- `slab/slap-bass` — Slab: slap bass. The classic FM bass, an octave below the key: a deep, hollow body that holds at one level while velocity alone decides how hard the bright crack hits.
+- `slab/solid-bass` — Slab: solid synth bass. A punchy, saw-like bass that closes from bright to dark in a quarter second, over a steady sub.
+- `slab/steel-drum` — Slab: steel drum. A bright, metallic pan note with a quick swell into the tone and a ring of about a second.
 - `slab/strings` — Slab: string ensemble. Two saw-like voices detuned apart swell in over 300 ms and fade on release; a slow vibrato arrives on held chords.
+- `slab/tubular-bells` — Slab: tubular bells. A clangorous strike that rings for many seconds, settling to the bell's hum and its sour partials.
+- `slab/vibes` — Slab: vibraphone. A mellow bar with its high partial, a soft mallet strike and a steady motor tremolo; rings for a few seconds.
 
 ## juno2
 
