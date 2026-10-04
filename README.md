@@ -1,5 +1,7 @@
 # Slab
 
+> 💬 Come talk about Slab in `#slab` on [The Fixpoint](https://discord.gg/Ky535CQ9pj) Discord.
+
 **A free music studio for Apple Silicon Macs, where every instrument and
 effect is a short file you can open and change.**
 
