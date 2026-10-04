@@ -1,102 +1,145 @@
 # Slab
 
-**Slab Audio Workstation — SAW.**
+**A free music studio for Apple Silicon Macs, where every instrument and
+effect is a short file you can open and change.**
 
-An eclectic, livecodable DAW. Zig owns the frame (transport, mixer,
-timeline, piano roll, automation, UI widget library, audio I/O, final
-mix). [fy](fy/) owns every machine inside the frame — synths, effects,
-note transformers, custom panels. Edit a machine's source while it
-plays and the next audio block runs the new code.
+![Slab: the arrangement, the piano roll and the Mog Passenger synth](docs/images/slab.png)
 
-Brutalist grey, 1px bevels, serious tool.
+Slab (the Slab Audio Workstation) is a complete place to make music: lay
+out a song, write parts in the piano roll, play ten instruments through
+fifteen effects, automate anything, and mix it down to a WAV. It looks
+like a rack of 2000s studio hardware and runs like native code, because
+it is.
 
-- Domain: [slab.audio](https://slab.audio) *(to be registered)*
-- Platform: macOS on Apple Silicon only (fy's JIT is aarch64-specific)
-- License: GPL-3.0-or-later; factory presets and sounds CC0 (see [Licensing](#licensing))
+## What you get
 
-## Status
+- **Ten instruments with a lineage.** Each is modeled on the instrument
+  it's named after:
+  - **Mog Passenger**, after the Moog Prodigy and Messenger: three
+    oscillators into a driven transistor ladder
+  - **FM-7.11**, after the Yamaha DX7: six operators and 32 algorithms;
+    it opens your own `.syx` cartridges
+  - **Ju-Know**, after the Juno: a DCO polysynth with its chorus
+  - **Profit-5**, after the Prophet-5, with POLY-MOD
+  - **SM-24 Mono**, after the MS-20 and its screaming filters
+  - **Concoction**, a wavetable synth that reads Serum tables, with a
+    wavetable editor
+  - **Unfairlight TMI**, after the Fairlight CMI: any sample becomes
+    8-bit voice RAM, grit included
+  - **DS-404**, an 808/909-style drum machine
+  - **Rhodes**, a modeled electric piano
+  - **Sampler**, for WAV, FLAC, SFZ and folder kits
+- **Fifteen effects:** EQ, graphic EQ, compressor, bus compressor,
+  multiband, a character compressor, saturator, tape, chorus, delay,
+  reverb, gate, limiter, an era (lo-fi) box and a funk overdrive.
+- **Sounds that are yours to use.** Factory presets, an FM bank designed
+  from scratch, a sampled-voice bank for the Unfairlight, two pianos and
+  three drum kits. All CC0: use them in any music, no credit owed.
+- **A real studio around them.** Arrangement with clips and folding
+  groups, a piano roll with velocity, per-note pitch, pressure and
+  slide, automation lanes you can record, buses, sends, sidechain,
+  delay compensation, unison on any synth, undo, and export.
+- **Sound quality first.** 64-bit audio from oscillator to master,
+  filters oversampled where they distort, and renders that come out
+  bit-identical however many cores they use.
+- **Light on your Mac.** Concoction plays eight voices with everything
+  switched on for 3.4% of one M1 Pro core.
+- **Change anything.** Every instrument and effect is a text file in
+  Slab's own language, fy. Open one, change the filter, save, and the
+  next copy you load has the new filter, without restarting Slab and
+  without a plugin SDK. Changing one while it plays is on the way.
+- **More sounds when you want them.** Download the Versilian Community
+  Sample Library (6 GB, free) or classic drum machine packs from inside
+  the app, or bring your own Fairlight disks.
 
-Working prototype. The Zig host now has audio I/O, transport,
-arrangement clips, piano-roll editing, a compact immediate-mode UI,
-fy-authored machines, per-track machine instantiation, and basic loop
-playback. It is still early and intentionally rough: save/load and
-undo/redo exist for the arrangement document, but fy panel parameter
-state is not serialized yet; loop wrapping is not sample-accurate, and
-livecoding propagation to per-track fy instances is not complete.
+![The mixer: 29 tracks into buses, with an EQ open](docs/images/mixer.png)
 
-Start at [docs/README.md](docs/README.md), especially the current
-status in [docs/10-roadmap.md](docs/10-roadmap.md) and session notes in
-[docs/sessions/](docs/sessions/).
+## Get it
 
-## Layout
+Slab is in beta. It needs a Mac with Apple Silicon (M1 or later) and
+macOS 13 or later.
 
-```
-build.zig, build.zig.zon     zig build system
-src/                         zig host: audio, transport, UI, engine
-machines/                    fy machine sources and shared fy helpers
-docs/                        design docs and session notes
-vendor/                      miniaudio + icon font assets
-```
-
-## Building
-
-```sh
-zig build              # build
-zig build run          # build and run Slab
-zig build test         # run unit tests
-```
-
-### The app
-
-```sh
-tools/package_app.sh          # zig-out/Slab.app
-tools/package_app.sh --dmg    # and zig-out/Slab-<version>.dmg
-tools/package_app.sh --zip    # and zig-out/Slab.zip
-tools/release.sh              # GitHub release v<build.zig.zon version>
-```
-
-A ReleaseFast build bundled with the factory files (machines, kernels,
-packs, demos), raylib in `Contents/Frameworks`, and the icon from
-`tools/app/icon.png` (drawn by `tools/app/make_icon.py`). Ad-hoc signed
-with the JIT entitlements in `tools/app/entitlements.plist`, so it opens
-on this Mac; a downloaded copy has to be allowed once under System
-Settings > Privacy & Security > Open Anyway (no Developer ID or
-notarization yet). Installing with curl skips that, since curl doesn't
-quarantine what it downloads:
-
-```sh
-curl -fsSL https://github.com/nooga/slab/releases/latest/download/install.sh | bash
-```
-
-or with Homebrew (the cask clears the quarantine flag the same way):
-
-```sh
+```bash
 brew install --cask nooga/tap/slab
 ```
 
-`tools/release.sh` updates the cask in nooga/homebrew-tap. The DMG opens
-on a Slab faceplate (`tools/app/make_dmg_background.py`), laid out by
-dmgbuild (`tools/app/dmg_settings.py`), which `package_app.sh` installs
-into a venv under `zig-out/` on first use.
+Or, without Homebrew:
 
-### Zig version
+```bash
+curl -fsSL https://github.com/nooga/slab/releases/latest/download/install.sh | bash
+```
 
-Needs **zig >= 0.16** (see `build.zig.zon`). Earlier 0.15.x on macOS 26
-fails to link its own build runner against libSystem because of
-missing libc stubs for that OS.
+Or download the DMG from the
+[latest release](https://github.com/nooga/slab/releases/latest) and
+drag Slab to Applications. Slab isn't notarized yet, so the first time
+you open the DMG version, allow it under System Settings > Privacy &
+Security > Open Anyway. The two commands above don't need that step.
 
-## Not in scope (yet)
+## Under the hood
 
-Plenty. See [docs/10-roadmap.md](docs/10-roadmap.md) for what we're
-building first vs. what we're explicitly deferring.
+Slab is two programs in one. A host written in [Zig](https://ziglang.org)
+owns everything that has to be solid: audio I/O, the transport and
+clock, the arrangement and piano roll, the mixer and routing, the UI,
+projects and undo. Everything that makes sound is a **machine** written
+in [fy](fy/), a small concatenative language that lives in this repo.
 
-## Licensing
+- **fy compiles to native code as it loads.** A machine's audio path is
+  written as `dsp:` words, which fy compiles straight to ARM64, with
+  NEON for paired voices and stereo effects. There's no interpreter on
+  the audio path and no garbage collector.
+- **Hot-patching is a branch swap.** Every fy word sits behind a
+  trampoline. Redefining one writes new code and repoints a single
+  branch, so the next call runs the new version and every caller
+  follows. Today Slab recompiles a machine when its files change on
+  disk, and new instances pick it up; carrying the patch into the
+  instances already playing is the next step
+  ([docs/09-hot-reload.md](docs/09-hot-reload.md)).
+- **The audio thread never allocates or locks.** Memory comes from four
+  arenas (block, persistent, voice, asset) set up ahead of time, and the
+  UI talks to the audio thread over lock-free rings.
+- **A machine is a declaration over kernels.** Its file lists
+  parameters, panel layout and presets on top of shared kernels:
+  oscillators, filters, envelopes, oversamplers. A panel is laid out
+  declaratively and drawn by the host in the 1px-bevel house style.
+- **Tracks render in parallel, deterministically.** Each track renders
+  on a worker pool, and buses are summed in a fixed order, so a render
+  is bit-identical at any thread count. A headless bench renders every
+  machine against golden hashes on every change.
+- **Songs can be code too.** `tools/slabkit` is a Python library for
+  writing songs as scripts, rendered offline with `slab --render`. The
+  demos in `songs/` are made that way.
+
+### Build from source
+
+You need [Zig](https://ziglang.org) 0.16 or later and raylib
+(`brew install raylib`).
+
+```bash
+zig build run     # build and run Slab
+zig build test    # the unit tests
+zig build bench -- machines/fm86   # render a machine headless, with a report
+```
+
+`tools/package_app.sh` builds `Slab.app` (and `--dmg`, `--zip`);
+`tools/release.sh` publishes a release and updates the Homebrew cask.
+
+To go deeper, start with [docs/README.md](docs/README.md): the design
+docs are the plan, and code follows them. The fy language for machines
+is in [docs/18-fy-dsp-language.md](docs/18-fy-dsp-language.md), and
+writing a machine in [docs/02-machines.md](docs/02-machines.md).
+
+## Contributing
+
+Pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md)
+first; the CLA bot asks you to sign the
+[Contributor License Agreement](CLA.md) on your first one.
+
+## License
 
 Slab is free software: [GPL-3.0-or-later](LICENSE), with the Slab Machine
 Exception, which lets people share the machines, presets, projects and
 packs they make under terms of their choice. Factory presets, sounds and
-demos are [CC0](LICENSES/CC0-1.0.txt): use them in any music, no credit
-owed. The name "Slab", the wordmark and the icon are not licensed; a fork
-needs its own. [COPYING.md](COPYING.md) has the details,
-[NOTICE](NOTICE) the third-party credits, and
-[CONTRIBUTING.md](CONTRIBUTING.md) the contributor agreement.
+demos are [CC0](LICENSES/CC0-1.0.txt). The name "Slab", the wordmark and
+the icon are not licensed; a fork needs its own.
+[COPYING.md](COPYING.md) has the details and [NOTICE](NOTICE) the
+third-party credits.
