@@ -110,6 +110,9 @@ pub const Track = struct {
     /// While a bounce renders (docs/27 §What plays): publish only the
     /// selected clips. Transient, UI-owned.
     play_selected: bool = false,
+    /// With play_selected: muted selected clips play too (a re-bounce of
+    /// muted originals).
+    play_muted: bool = false,
     next_fx_uid: u16 = 1,
     /// Audio-thread-owned per-lane segment cursors (automation.evalCursor).
     auto_cursors: [snap_mod.MAX_LANES_PER_TRACK]u32 = [_]u32{0} ** snap_mod.MAX_LANES_PER_TRACK,
@@ -559,7 +562,8 @@ pub const Track = struct {
     /// Whether `clip` reaches the audio thread: not muted, and selected
     /// while a bounce renders.
     fn plays(self: *const Track, clip: *const clip_mod.Clip) bool {
-        return !clip.muted and (!self.play_selected or clip.selected);
+        if (!self.play_selected) return !clip.muted;
+        return clip.selected and (!clip.muted or self.play_muted);
     }
 
     /// Resolve lanes to (slot, control index) and copy their points: track

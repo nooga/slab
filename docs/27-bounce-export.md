@@ -13,7 +13,7 @@ write is what playback sounds like, bit-exact at any `--threads`
 
 **Status:** 2026-10-04, branch `feat/bounce-export`. Built: clip mute,
 stereo audio clips, the engine's capture and ring-out stop, Bounce
-selection, Export (mix and one-pass stems, project/loop/selection, WAV
+selection with thawable recipes, Export (mix and one-pass stems, project/loop/selection, WAV
 and AIFF at 16/24/32f with dither, FLAC, ALAC, AAC, loudness and
 normalize with a report card, 44.1/48/88.2/96 kHz, the command line). Each section
 below says what of it is still design.
@@ -104,6 +104,65 @@ a layer you want doubled) and **DELETE**.
 skipped by the engine (`Track.publishSnapshot`) and drawn without its
 track color. `0` or the clip menu toggles it on the selection. It's
 useful on its own, for trying a part with and without a clip.
+
+### How it renders
+
+`Engine.capture` (`Capture` in src/engine.zig): before `renderOffline`, the
+caller names a tap per track and gives each its buffers. Each node
+copies its tap as it renders (its own buffers only, so the parallel
+render is untouched) and notes where its signal last rose above
+−80 dBFS. `sources` makes the render hear only those tracks: every
+other track is muted (still rendering when it keys something, so a
+bass ducked by the kick still pumps), buses keep their own mute, solos
+are ignored. The source tracks publish only their selected clips while
+it runs (`Track.play_selected`). With a hold, the render stops once
+every tap has been quiet that long past the range; each tap is read
+from its own latency on, so PDC lines the parts up.
+
+EACH with +SENDS takes one pass per source, since a return must hear
+one source at a time; everything else is one pass.
+
+### Provenance: a bounce you can thaw
+
+Every clip has a stable **id** (`Clip.uid`, saved as `"id"`): kept by
+save, load and undo, fresh for a copy, a paste from a file or a split's
+new half. A bounced clip keeps a **recipe** (`Clip.recipe`):
+
+```json
+{"type": "audio", "name": "pad-bounce.wav", "id": 41, "...": "...",
+ "recipe": {"clips": [12, 13], "tap": 1, "tail": "auto", "hash": "9f2c41e0b7a3d815"}}
+```
+
+`clips` are the ids of the clips it was rendered from (at most 32; a
+bounce of more keeps no recipe, nor does one whose originals were
+deleted). `tap` is the bounce dialog's (0 INSTR, 1 FX, 2 FADER,
+3 +SENDS), `tail` "auto" or seconds. `hash` is a fingerprint
+(`src/recipe.zig`) of everything the render heard:
+
+- each source track's instrument, its settings and state, its inserts
+  and their settings, and its lanes; its fader and pan when the tap
+  printed them, its sends with +SENDS (`document.appendRenderSettings`);
+- the code each of those machines runs: an fy machine hashes the
+  contents of its file and every file it included when it was compiled
+  (`FyRawMachine.code_hash`), so a livecoded kernel edit counts;
+- with +SENDS, the buses its sends reach, the same way;
+- the source clips themselves, where they sit and what they hold (not
+  whether they're muted or selected);
+- the tempo, the tap and tail, and the Slab version.
+
+Slab renders deterministically, so a recipe whose fingerprint still
+matches would make the same clip. The UI thread re-checks every recipe
+twice a second (`recipe.checkAll`); one that no longer matches draws a
+yellow **stale** notch in its clip's corner, and the clip menu offers:
+
+- **Re-bounce**: select its originals and render them again as they
+  were bounced (muted originals play for it), into the same clip: a new
+  file, the length it now has, a fresh fingerprint. One undo step.
+- **Thaw**: unmute the originals and delete the bounce. One undo step.
+
+DAWs treat a bounce as a fork. Here it's a cache of a render you can
+always redo, which is what makes bouncing safe in a livecoding DAW,
+where the source keeps changing under it.
 
 ### How it renders
 
@@ -335,7 +394,7 @@ came out 0.2 % and 1.6 % smaller than `flac -5`, within 0.3 % of
    the dialog yet).
 5. **Loudness**: `loudness.zig`, NORMALIZE, the report card (built).
 6. **Resampler** for 44.1/88.2/96 kHz (built).
-7. **Provenance**: recipe, hash, stale, Re-bounce, Thaw.
+7. **Provenance**: recipe, hash, stale, Re-bounce, Thaw (built).
 8. **LOOP-WRAP** and metadata (cue points, `acid`, tags).
 
 Later, not designed here:

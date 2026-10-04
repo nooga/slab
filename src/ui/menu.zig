@@ -51,6 +51,8 @@ pub const EditCommand = enum {
     reverse,
     mute_clips,
     bounce,
+    rebounce,
+    thaw,
     clear_solo_mute,
     save_to_library,
 };

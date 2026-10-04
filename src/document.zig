@@ -205,7 +205,7 @@ pub fn serialize(
         try out.appendSlice(alloc, ",\"clips\":[");
         for (t.clips.items, 0..) |*clip, ci| {
             if (ci > 0) try out.append(alloc, ',');
-            try appendClip(alloc, &out, t, clip, null);
+            try appendClip(alloc, &out, t, clip, .{});
         }
         try out.appendSlice(alloc, "]}");
     }
@@ -224,7 +224,16 @@ pub fn serialize(
 
 /// One clip as the project writes it. `source` overrides an audio clip's
 /// file reference (a library clip names its own copy).
-fn appendClip(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track_mod.Track, clip: *const clip_mod.Clip, source: ?[]const u8) !void {
+pub const ClipOut = struct {
+    /// Overrides an audio clip's file reference.
+    source: ?[]const u8 = null,
+    /// Write its id, mute and recipe; off for what a render hears
+    /// (recipe.zig's fingerprint).
+    identity: bool = true,
+};
+
+pub fn appendClip(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track_mod.Track, clip: *const clip_mod.Clip, o: ClipOut) !void {
+    const source = o.source;
     if (clip.isAudio()) {
         var rb: [storage.MAX_PATH]u8 = undefined;
         const src_path = source orelse storage.ref(&rb, if (active_pool) |p|
@@ -238,7 +247,7 @@ fn appendClip(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track
             clip.audio.start_sec, clip.audio.dur_sec, clip.audio.fade_in_sec, clip.audio.fade_out_sec,
         });
         if (clip.audio.reversed) try out.appendSlice(alloc, "\"reversed\":true,");
-        if (clip.muted) try out.appendSlice(alloc, "\"muted\":true,");
+        if (o.identity) try appendIdentity(alloc, out, clip);
         try out.appendSlice(alloc, "\"source\":");
         try appendJsonString(alloc, out, src_path);
         try out.append(alloc, '}');
@@ -247,7 +256,7 @@ fn appendClip(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track
     try out.appendSlice(alloc, "{\"type\":\"note\",\"name\":");
     try appendJsonString(alloc, out, clip.name());
     try appendFmt(alloc, out, ",\"start\":{d},\"len\":{d},", .{ clip.start_beat, clip.length_beats });
-    if (clip.muted) try out.appendSlice(alloc, "\"muted\":true,");
+    if (o.identity) try appendIdentity(alloc, out, clip);
     try out.appendSlice(alloc, "\"notes\":[");
     for (clip.notes.items, 0..) |note, ni| {
         if (ni > 0) try out.append(alloc, ',');
@@ -283,6 +292,69 @@ fn appendClip(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track
 pub const CLIP_KIND = "clip";
 pub const CLIP_EXT = ".slabclip";
 
+/// What a render hears of track `t` (docs/27 §Provenance): its instrument
+/// and settings, inserts and lanes; its fader and pan with `fader`, its
+/// sends with `sends`. Not its name, color, mute or solo.
+pub fn appendRenderSettings(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track_mod.Track, fader: bool, sends: bool) !void {
+    try out.appendSlice(alloc, "{\"instrument\":");
+    if (t.machine_idx) |idx| {
+        try out.appendSlice(alloc, "{\"machine\":");
+        try appendJsonString(alloc, out, machineId(idx));
+        try out.appendSlice(alloc, ",\"params\":");
+        try appendParams(alloc, out, t.machine);
+        try appendAssets(alloc, out, t.machine);
+        try appendZones(alloc, out, t.machine);
+        try appendUnison(alloc, out, t.machine);
+        if (t.machine.write_state_json) |f| {
+            try out.appendSlice(alloc, ",\"state\":");
+            try f(t.machine.state, out, alloc);
+        }
+        try out.append(alloc, '}');
+    } else try out.appendSlice(alloc, "null");
+    try out.appendSlice(alloc, ",\"effects\":");
+    try appendEffects(alloc, out, t);
+    try appendLanes(alloc, out, t);
+    if (fader) try appendFmt(alloc, out, ",\"volume\":{d},\"pan\":{d}", .{ t.volume(), t.pan() });
+    if (sends) try appendRouting(alloc, out, t);
+    try out.append(alloc, '}');
+}
+
+/// A clip's id, mute and recipe, each followed by a comma.
+fn appendIdentity(alloc: std.mem.Allocator, out: *std.ArrayList(u8), clip: *const clip_mod.Clip) !void {
+    try appendFmt(alloc, out, "\"id\":{d},", .{clip.uid});
+    if (clip.muted) try out.appendSlice(alloc, "\"muted\":true,");
+    if (clip.recipe) |r| {
+        try out.appendSlice(alloc, "\"recipe\":{\"clips\":[");
+        for (r.ids(), 0..) |id, i| try appendFmt(alloc, out, "{s}{d}", .{ if (i > 0) "," else "", id });
+        try appendFmt(alloc, out, "],\"tap\":{d},", .{r.tap});
+        if (r.tail_auto) try out.appendSlice(alloc, "\"tail\":\"auto\",") else try appendFmt(alloc, out, "\"tail\":{d},", .{r.tail_sec});
+        try appendFmt(alloc, out, "\"hash\":\"{x:0>16}\"}},", .{r.hash});
+    }
+}
+
+/// A clip's id and recipe as `applyClip` reads them.
+fn readIdentity(clip: *clip_mod.Clip, co: std.json.ObjectMap) void {
+    if (objGet(co, "id")) |v| if (v == .integer and v.integer > 0 and v.integer <= std.math.maxInt(u32)) {
+        clip.uid = @intCast(v.integer);
+        clip_mod.claimUid(clip.uid);
+    };
+    const rv = objGet(co, "recipe") orelse return;
+    if (rv != .object) return;
+    var r = clip_mod.Recipe{};
+    if (objGet(rv.object, "clips")) |cv| if (cv == .array) for (cv.array.items) |x| {
+        if (x != .integer or r.source_count == clip_mod.Recipe.MAX_SOURCES) continue;
+        r.sources[r.source_count] = @intCast(std.math.clamp(x.integer, 0, std.math.maxInt(u32)));
+        r.source_count += 1;
+    };
+    if (objGet(rv.object, "tap")) |x| r.tap = asU8(x);
+    if (objGet(rv.object, "tail")) |x| {
+        r.tail_auto = x == .string;
+        if (!r.tail_auto) r.tail_sec = @floatCast(asF64(x));
+    }
+    if (strOf(objGet(rv.object, "hash"))) |h| r.hash = std.fmt.parseInt(u64, h, 16) catch 0;
+    clip.recipe = r;
+}
+
 /// One clip of track `t` as a `.slabclip`: {"slab":"clip","schema":1,
 /// "clip":{…}}, the clip as a project writes it, at beat 0. An audio
 /// clip's file that only the project has is copied into the home folder's
@@ -307,7 +379,7 @@ pub fn clipFile(alloc: std.mem.Allocator, t: *const track_mod.Track, clip: *cons
         } else file;
         source = storage.ref(&rb, lib_file);
     };
-    try appendClip(alloc, &out, t, &at_zero, source);
+    try appendClip(alloc, &out, t, &at_zero, .{ .source = source });
     try out.appendSlice(alloc, "}\n");
     return out.toOwnedSlice(alloc);
 }
@@ -324,7 +396,12 @@ pub fn insertClipFile(alloc: std.mem.Allocator, t: *track_mod.Track, data: []con
     const before = t.clips.items.len;
     try applyClip(alloc, t, cv.object);
     if (t.clips.items.len == before) return error.InvalidClip;
-    t.clips.items[t.clips.items.len - 1].start_beat = start;
+    // A clip from a file is a new clip here: its own id, no recipe.
+    const placed = &t.clips.items[t.clips.items.len - 1];
+    placed.start_beat = start;
+    placed.uid = clip_mod.next_uid;
+    clip_mod.next_uid += 1;
+    placed.recipe = null;
 }
 
 fn boolStr(b: bool) []const u8 {
@@ -944,6 +1021,7 @@ fn applyClip(alloc: std.mem.Allocator, t: *track_mod.Track, co: std.json.ObjectM
         aclip.audio.fade_out_sec = if (objGet(co, "fade_out")) |x| asF64(x) else 0;
         aclip.audio.reversed = if (objGet(co, "reversed")) |x| x == .bool and x.bool else false;
         aclip.muted = if (objGet(co, "muted")) |x| x == .bool and x.bool else false;
+        readIdentity(&aclip, co);
         try t.addClip(alloc, aclip);
         return;
     }
@@ -951,6 +1029,7 @@ fn applyClip(alloc: std.mem.Allocator, t: *track_mod.Track, co: std.json.ObjectM
     var clip = clip_mod.Clip.init(name, start, len);
     errdefer clip.deinit(alloc);
     clip.muted = if (objGet(co, "muted")) |x| x == .bool and x.bool else false;
+    readIdentity(&clip, co);
     if (objGet(co, "notes")) |nv| if (nv == .array) {
         for (nv.array.items) |note_v| {
             if (note_v != .object) continue;

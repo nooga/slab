@@ -225,6 +225,10 @@ A **note clip**:
   the track's lane for the same target; where clips overlap, the one
   that starts later wins. Points past the clip's end are kept but
   don't play.
+- `"id"` (either kind): the clip's stable id; a bounce's recipe names its
+  source clips by it. A clip without one gets a fresh one.
+- `"recipe"` (a bounced audio clip): how it was made, docs/27
+  §Provenance.
 - `"muted": true` (either kind of clip): the clip stays on the
   timeline but doesn't play: no notes, no audio, no clip lanes. A
   render's range ignores muted clips. `0` toggles it on the selection.

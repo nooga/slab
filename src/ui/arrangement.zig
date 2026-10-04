@@ -710,6 +710,13 @@ fn allSelectedMuted(tracks: []Track) bool {
     return true;
 }
 
+/// The focused clip is a bounce with a recipe (docs/27 §Provenance).
+fn focusedIsBounce(tracks: []Track, focused: ?ClipRef) bool {
+    const f = focused orelse return false;
+    if (f.track >= tracks.len or f.clip >= tracks[f.track].clips.items.len) return false;
+    return tracks[f.track].clips.items[f.clip].recipe != null;
+}
+
 fn hasSelectedAudioClips(tracks: []Track) bool {
     for (tracks) |t| for (t.clips.items) |clip| if (clip.selected and clip.isAudio()) return true;
     return false;
@@ -1398,6 +1405,8 @@ pub fn draw(
         .{ .label = if (has_selection and allSelectedMuted(tracks)) "Unmute" else "Mute", .command = .mute_clips, .enabled = has_selection },
         .{ .label = "Delete", .command = .delete, .enabled = has_selection },
         .{ .label = "Bounce\u{2026}", .command = .bounce, .enabled = has_selection },
+        .{ .label = "Re-bounce", .command = .rebounce, .enabled = focusedIsBounce(tracks, selected_clip.*) },
+        .{ .label = "Thaw", .command = .thaw, .enabled = focusedIsBounce(tracks, selected_clip.*) },
         .{ .separator = true },
         .{ .label = "Rename", .command = .rename, .enabled = has_selection },
         .{ .label = "Save to Library", .command = .save_to_library, .enabled = has_selection },
@@ -2911,6 +2920,14 @@ fn drawClip(ui: *Ui, r_: c.rl.Rectangle, clip: Clip, color_: c.rl.Color, selecte
             ui.rect(Rect.xywh(x0, ny, @max(1, x1 - x0 - 1), 1), preview);
         }
     }
+    // A stale bounce (docs/27 §Provenance): a notch cut in the band's
+    // right corner, until it's re-bounced.
+    if (clip.recipe) |rc| if (rc.stale and band.w > 12) {
+        var k: i32 = 0;
+        while (k < 6) : (k += 1) ui.rect(Rect.xywh(band.right() - 6 + k, band.y, 6 - k, 1), ui_style.led_yellow);
+        var j: i32 = 1;
+        while (j < 6) : (j += 1) ui.rect(Rect.xywh(band.right() - 6 + j, band.y + j, 6 - j, 1), ui_style.led_yellow);
+    };
     if (selected) ui.bevel(r, ui_style.accent, ui_style.accent);
 }
 
