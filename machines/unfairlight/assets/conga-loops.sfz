@@ -1,0 +1,3 @@
+// conga-loops: two bars of congas and bongos at 120 BPM on C4 D4, looped. CC0.
+<region> sample=conga-loop-1.wav lokey=60 hikey=60 pitch_keycenter=60
+<region> sample=conga-loop-2.wav lokey=62 hikey=62 pitch_keycenter=62

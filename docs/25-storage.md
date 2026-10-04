@@ -554,6 +554,10 @@ everything shared usable in anyone's music:
   redistributable (§Licenses), hardware ROMs, commercial libraries, and
   AI-generated sounds whose service forbids redistributing them as
   sounds (ElevenLabs Sound Effects, among others).
+- **AI-made sounds that may be shared** are those whose tool lets the
+  maker own the output and redistribute it (Stable Audio 3 run locally,
+  which made the Unfairlight factory voices, for one). The item's note
+  names the tool, the prompt and the seed.
 
 The repository itself (accounts, search, the server API) is a separate
 design. This doc only fixes what slab sends and receives, so that

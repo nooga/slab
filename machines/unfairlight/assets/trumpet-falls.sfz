@@ -1,0 +1,4 @@
+// trumpet-falls: three trumpet falls on C4 D4 E4. CC0.
+<region> sample=trumpet-fall-1.wav lokey=60 hikey=60 pitch_keycenter=60
+<region> sample=trumpet-fall-2.wav lokey=62 hikey=62 pitch_keycenter=62
+<region> sample=trumpet-fall-3.wav lokey=64 hikey=64 pitch_keycenter=64

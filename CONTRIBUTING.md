@@ -20,7 +20,10 @@ available under it. You keep your copyright.
   sources such as VCSL. Never commercial libraries, hardware ROMs, sounds
   ripped from records or games, or AI-generated audio whose service
   forbids redistributing it as sounds (ElevenLabs Sound Effects, for
-  one).
+  one). AI-made sounds are fine when the tool lets you own the output
+  and redistribute it (the Unfairlight factory voices come from Stable
+  Audio 3, run locally): name the tool, prompt and seed in the preset's
+  note.
 - **Songs**: your own compositions. Name the license in the file.
 
 Sharing machines, presets, packs and projects with other Slab users

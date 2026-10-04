@@ -58,6 +58,16 @@ Copyright 2010 Scott Fial
 modify, and distribute it as you see fit." See vendor/tamzen/LICENSE.
 
 ------------------------------------------------------------------------
+Stable Audio 3 (Stability AI)
+https://huggingface.co/stabilityai
+The sources of the Unfairlight factory voices (machines/unfairlight/assets/)
+were made with Stable Audio 3 Small SFX and Small Music, run locally, under
+the Stability AI Community License, which gives the maker the outputs. They
+were then cut, looped and stored as 8-bit CMI voice RAM, and are released
+under CC0 1.0. Each voice's preset names the model, prompt and seed. No
+Stability AI model or code is part of Slab.
+
+------------------------------------------------------------------------
 Versilian Community Sample Library (VCSL)
 https://github.com/sgossner/VCSL
 CC0 1.0 / public domain. Not shipped: the VCSL pack downloads it into the

@@ -1,0 +1,5 @@
+// tabla-loops: four bars of tabla at 120 BPM on C4 D4 E4 F4, looped. CC0.
+<region> sample=tabla-loop-1.wav lokey=60 hikey=60 pitch_keycenter=60
+<region> sample=tabla-loop-2.wav lokey=62 hikey=62 pitch_keycenter=62
+<region> sample=tabla-loop-3.wav lokey=64 hikey=64 pitch_keycenter=64
+<region> sample=tabla-loop-4.wav lokey=65 hikey=65 pitch_keycenter=65
