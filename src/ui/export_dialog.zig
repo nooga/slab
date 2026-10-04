@@ -31,6 +31,8 @@ pub const State = struct {
     bits: u8 = @intFromEnum(export_mod.Bits.pcm24),
     /// AAC: 128, 192, 256 (default) or 320 kb/s.
     aac_rate: u8 = 2,
+    /// The file's sample rate, an index into RATES (48 kHz).
+    rate: u8 = 1,
     dither: bool = true,
     /// NORMALIZE: OFF, PEAK (to PEAK_TARGETS dBTP) or LUFS (to
     /// LUFS_TARGETS, under a -1 dBTP ceiling).
@@ -62,6 +64,7 @@ pub const State = struct {
             .bits = @enumFromInt(self.bits),
             .dither = self.dither,
             .aac_kbps = ([_]u16{ 128, 192, 256, 320 })[@min(self.aac_rate, 3)],
+            .sample_rate = RATES[@min(self.rate, 3)],
         };
     }
 };
@@ -76,6 +79,7 @@ pub const Progress = struct {
 };
 
 pub const PEAK_TARGETS = [_]f64{ -0.1, -1, -3 };
+pub const RATES = [_]u32{ 44_100, 48_000, 88_200, 96_000 };
 pub const LUFS_TARGETS = [_]f64{ -9, -14, -16, -23 };
 
 /// An export's report card (docs/27 §Normalize and the loudness report).
@@ -107,7 +111,7 @@ pub const Card = struct {
 pub const Result = enum { none, cancel, render };
 
 const W: i32 = 340;
-const H: i32 = 288;
+const H: i32 = 314;
 const ROW_H: i32 = 20;
 /// The longest tail: AUTO renders up to this and stops at silence.
 pub const TAIL_MAX: f32 = 30;
@@ -198,6 +202,7 @@ fn drawOptions(ui: *Ui, body_in: Rect, state: *State, avail: Avail) void {
         var on = state.dither and sixteen;
         if (ctl.button(ui, d.cutLeft(d.w), "DITHER", &on, .{ .kind = .latch, .label = "DITHER", .lit = style.accent, .disabled = !sixteen or container == .aac })) state.dither = !state.dither;
     }
+    choice(ui, dialog.row(ui, &body, "RATE", ROW_H), &.{ "44.1", "48", "88.2", "96" }, &state.rate, &.{});
     {
         var r = dialog.row(ui, &body, "NORMALIZE", ROW_H);
         choice(ui, r.cutLeft(126), &.{ "OFF", "PEAK", "LUFS" }, &state.normalize, &.{ false, state.whatMode() == .stems, state.whatMode() == .stems });

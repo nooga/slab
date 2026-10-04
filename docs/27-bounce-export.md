@@ -15,7 +15,7 @@ write is what playback sounds like, bit-exact at any `--threads`
 stereo audio clips, the engine's capture and ring-out stop, Bounce
 selection, Export (mix and one-pass stems, project/loop/selection, WAV
 and AIFF at 16/24/32f with dither, FLAC, ALAC, AAC, loudness and
-normalize with a report card, the command line). Each section
+normalize with a report card, 44.1/48/88.2/96 kHz, the command line). Each section
 below says what of it is still design.
 
 ## Bounce selection
@@ -229,11 +229,14 @@ with `afconvert`).
 MP3 isn't planned: AAC covers lossy delivery and MP3 encoding would
 mean vendoring LAME.
 
-**Sample rate** (planned): 44.1, 48 (default), 88.2, 96 kHz. The engine
-runs at 48 kHz (`audio.SAMPLE_RATE`), so other rates are produced by an
-offline, high-quality resampler (polyphase windowed sinc, ≥ 120 dB
-stopband) on the rendered buffer. Rendering natively at the target rate
-would need every machine to be rate-independent, which isn't verified.
+**Sample rate**: 44.1, 48 (default), 88.2 or 96 kHz. The engine runs
+at 48 kHz (`audio.SAMPLE_RATE`), so other rates go through an offline
+resampler (`src/resample.zig`): polyphase windowed sinc at the exact
+rational ratio, Kaiser β 12.3 (about 120 dB of stopband), passband to
+20 kHz going down and to 21.6 kHz going up, centered so timing holds.
+Loudness is measured on the resampled file. Rendering natively at the
+target rate would need every machine to be rate-independent, which
+isn't verified.
 
 **Channels** (planned): STEREO, or MONO (L+R at −3 dB) for a mono stem.
 
@@ -276,6 +279,7 @@ exact render.
 slab song.slab --render out.wav                  # 24-bit, 3 s tail, as before
 slab song.slab --render out.aif --bits 16        # AIFF, dithered
 slab song.slab --render out.flac                 # FLAC, 24-bit, level 5
+slab song.slab --render cd.wav --rate 44100 --bits 16
 slab song.slab --render out.m4a --kbps 320       # AAC; --alac for Apple Lossless
 slab song.slab --render out.wav --stems stems/   # the mix and stems, one render
 slab song.slab --stems stems/ --stem-kind all --tap fx --tail auto
@@ -330,7 +334,7 @@ came out 0.2 % and 1.6 % smaller than `flac -5`, within 0.3 % of
 4. **FLAC encoder**, **ALAC and AAC** (built; no FLAC level choice in
    the dialog yet).
 5. **Loudness**: `loudness.zig`, NORMALIZE, the report card (built).
-6. **Resampler** for 44.1/88.2/96 kHz.
+6. **Resampler** for 44.1/88.2/96 kHz (built).
 7. **Provenance**: recipe, hash, stale, Re-bounce, Thaw.
 8. **LOOP-WRAP** and metadata (cue points, `acid`, tags).
 

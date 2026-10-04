@@ -73,6 +73,7 @@ test {
     _ = @import("exporter.zig");
     _ = @import("flac.zig");
     _ = @import("loudness.zig");
+    _ = @import("resample.zig");
     _ = @import("ui/track_order.zig");
     _ = @import("engine.zig");
     _ = @import("track.zig");
@@ -433,6 +434,8 @@ const Cli = struct {
     /// --normalize <LUFS> or peak:<dBTP>.
     normalize: exporter.Normalize = .off,
     norm_target: f64 = -14,
+    /// The file's sample rate; null: the engine's.
+    rate: ?u32 = null,
     /// Seconds; null: AUTO.
     tail: ?f32 = 3,
     describe: ?[]const u8 = null,
@@ -498,6 +501,9 @@ pub fn main(init: std.process.Init) !void {
                     cli.normalize = .loudness;
                     cli.norm_target = std.fmt.parseFloat(f64, v) catch return error.BadNormalizeTarget;
                 }
+            } else if (std.mem.eql(u8, a, "--rate")) {
+                const v = args.next() orelse return error.MissingRate;
+                cli.rate = std.fmt.parseInt(u32, v, 10) catch return error.BadRate;
             } else if (std.mem.eql(u8, a, "--alac")) {
                 cli.alac = true;
             } else if (std.mem.eql(u8, a, "--kbps")) {
@@ -2008,11 +2014,7 @@ fn startRender(
     };
 
     // The save panel names the mix; stems go in "<name> stems" beside it.
-    const fmt = blk: {
-        var f = dlg.format();
-        f.sample_rate = sr;
-        break :blk f;
-    };
+    const fmt = dlg.format();
     const ext = fmt.container.ext();
     var name_buf: [128]u8 = undefined;
     const stem_name = projectStem(project_path);
@@ -3602,13 +3604,13 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
         .end = transport.beatsToSamples(last_beat),
         .tail_auto = cli.tail == null,
         .tail_frames = @intFromFloat(tail_s * @as(f32, @floatFromInt(sr))),
-        .format = .{ .container = container, .bits = cli.bits, .dither = cli.dither, .sample_rate = sr, .aac_kbps = cli.kbps },
+        .format = .{ .container = container, .bits = cli.bits, .dither = cli.dither, .sample_rate = cli.rate orelse sr, .aac_kbps = cli.kbps },
         .normalize = cli.normalize,
         .target = cli.norm_target,
     };
     const t0 = nowNs();
     const r = try exporter.run(alloc, &engine, tracks, opts, null, null);
-    const secs = @as(f64, @floatFromInt(r.frames)) / @as(f64, @floatFromInt(sr));
+    const secs = @as(f64, @floatFromInt(r.frames)) / @as(f64, @floatFromInt(r.sample_rate));
     const took = @as(f64, @floatFromInt(nowNs() - t0)) / 1e9;
     if (cli.render) |out| {
         std.debug.print("rendered {s} -> {s}: {d:.1} s in {d:.2} s ({d:.1}x real time), peak {d:.1} dBFS, rms {d:.1} dBFS, {d} samples at the rail, {d:.1} LUFS, LRA {d:.1} LU, true peak {d:.1} dBTP{s}\n", .{

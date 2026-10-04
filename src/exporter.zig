@@ -11,6 +11,7 @@ const routing = @import("routing.zig");
 const storage = @import("storage.zig");
 const export_mod = @import("export.zig");
 const loudness = @import("loudness.zig");
+const resample = @import("resample.zig");
 
 pub const Stems = enum { none, tracks, buses, all };
 
@@ -151,11 +152,15 @@ pub fn run(
     }
     len = @min(len, if (mix.len > 0) out_frames else total);
 
-    var report = Report{ .frames = len, .sample_rate = opts.format.sample_rate };
+    // The engine's rate, and the file's (resampled when they differ).
+    const rate = engine.transport.sample_rate;
+    const out_rate = opts.format.sample_rate;
+    var report = Report{ .frames = (len * out_rate + rate - 1) / rate, .sample_rate = out_rate };
     var gain: f32 = 1;
     if (opts.mix_path) |path| {
-        const m = mix[0 .. len * 2];
-        const before = try loudness.measure(alloc, m, opts.format.sample_rate);
+        const m = try resample.stereo(alloc, mix[0 .. len * 2], rate, out_rate);
+        defer alloc.free(m);
+        const before = try loudness.measure(alloc, m, out_rate);
         report.gain_db = switch (opts.normalize) {
             .off => 0,
             .peak => opts.target - before.true_peak,
@@ -198,13 +203,15 @@ pub fn run(
             var lv = &report.stems[report.stem_count];
             lv.name_len = @min(t.name().len, lv.name_buf.len);
             @memcpy(lv.name_buf[0..lv.name_len], t.name()[0..lv.name_len]);
-            lv.lufs = (try loudness.measure(alloc, buf, opts.format.sample_rate)).integrated;
+            const out = try resample.stereo(alloc, buf, rate, out_rate);
+            defer alloc.free(out);
+            lv.lufs = (try loudness.measure(alloc, out, out_rate)).integrated;
             report.stem_count += 1;
             var name_buf: [256]u8 = undefined;
             const name = export_mod.fillName(&name_buf, opts.stem_name, .{ .project = opts.project, .nn = nn, .track = t.name() });
             var path_buf: [storage.MAX_PATH]u8 = undefined;
             const path = try std.fmt.bufPrint(&path_buf, "{s}/{s}{s}", .{ opts.stem_dir, name, opts.format.container.ext() });
-            try write(alloc, path, buf, opts.format);
+            try write(alloc, path, out, opts.format);
             report.files += 1;
         }
     }
