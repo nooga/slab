@@ -71,6 +71,7 @@ test {
     _ = @import("ui/text_field.zig");
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
+    _ = @import("tempo.zig");
     _ = @import("routing.zig");
     _ = @import("export.zig");
     _ = @import("exporter.zig");
@@ -1238,7 +1239,7 @@ pub fn main(init: std.process.Init) !void {
         if (layout.clipShown()) {
             const play_beat: ?f64 = if (transport.isPlaying()) transport.beats() else null;
             const cres = if (selectedClipIsAudio(tracks, selected_clip))
-                audio_clip_editor.draw(ui, rects.clip_editor, tracks, &audio_pool, selected_clip, transport.bpm(), play_beat, pane_m)
+                audio_clip_editor.draw(ui, rects.clip_editor, tracks, &audio_pool, selected_clip, transport.map(), play_beat, pane_m)
             else
                 clip_editor.draw(ui, rects.clip_editor, tracks, alloc, selected_clip, meter_state.liveMap(), edit_snap, clipboard.mode == .notes, play_beat, pane_m);
             if (rename.active() and rename.kind == .clip) {
@@ -1493,7 +1494,7 @@ pub fn main(init: std.process.Init) !void {
                     const st = projectStem(project_path);
                     break :blk if (st.len > 0) st else "untitled";
                 },
-                .bpm = transport.bpm(),
+                .bpm = transport.baseBpm(),
                 .range_secs = rangeSeconds(&transport, tracks),
             }, prog);
             if (render_dlg.changed) {
@@ -1784,11 +1785,10 @@ fn importAudioClip(
     const source = try pool.loadFile(path);
     const src = pool.get(source) orelse return;
 
-    const bpm: f64 = transport.bpm();
     const dur_sec = src.seconds();
-    const len_beats = @max(0.25, dur_sec * bpm / 60.0);
     const raw_start = target_beat orelse transport.beats();
     const start = snap_mod.snapDownPositive(edit_snap, @max(0.0, raw_start), false);
+    const len_beats = @max(0.25, transport.secondsToBeats(start, dur_sec));
 
     const before = try document_mod.serialize(alloc, tracks, transport);
     errdefer alloc.free(before);
@@ -1847,8 +1847,6 @@ fn placeRecordedClip(
     const src = pool.get(source) orelse return;
 
     const dur_sec = src.seconds();
-    const bpm: f64 = transport.bpm();
-    const len_beats = @max(0.25, dur_sec * bpm / 60.0);
 
     // Latency-compensate: captured audio arrives a round-trip late, and the
     // playback it was played against was late by the project's own latency
@@ -1856,6 +1854,7 @@ fn placeRecordedClip(
     const latency: u64 = @as(u64, audio.roundTripLatencyFrames()) + pdc_latency;
     const adj_sample = if (res.start_sample > latency) res.start_sample - latency else 0;
     const start = transport.samplesToBeats(adj_sample);
+    const len_beats = @max(0.25, transport.secondsToBeats(start, dur_sec));
 
     const before = try document_mod.serialize(alloc, tracks, transport);
     errdefer alloc.free(before);
@@ -2105,12 +2104,12 @@ fn startRender(
     const stem_name = projectStem(project_path);
     const project = std.fmt.bufPrint(&job.project_buf, "{s}", .{if (stem_name.len > 0) stem_name else "untitled"}) catch "untitled";
     const date = export_mod.today(&job.date_buf);
-    const folder = export_settings.resolveFolder(&job.folder_buf, s.folder.get(), .{ .project = project, .date = date, .bpm = transport.bpm() });
+    const folder = export_settings.resolveFolder(&job.folder_buf, s.folder.get(), .{ .project = project, .date = date, .bpm = transport.baseBpm() });
     if (folder.len == 0) return error.NoFolder;
 
     // Tags: the name, the tempo, and what made it (docs/27 §Names and metadata).
     var fmt = s.recipe.format();
-    fmt.bpm = transport.bpm();
+    fmt.bpm = transport.baseBpm();
     fmt.comment = blk: {
         const doc = document_mod.serialize(alloc, tracks, transport) catch break :blk "";
         defer alloc.free(doc);
@@ -3210,7 +3209,7 @@ fn dropClips(app: App, t: *track_mod.Track, ti: usize, lib: *const library_mod.L
                 };
                 const src = app.pool.get(source) orelse continue;
                 const dur = src.seconds();
-                const len = @max(0.25, dur * app.transport.bpm() / 60.0);
+                const len = @max(0.25, app.transport.secondsToBeats(at, dur));
                 var clip = clip_mod.Clip.initAudio(src.name(), at, len, source);
                 clip.audio.start_sec = 0;
                 clip.audio.dur_sec = dur;
@@ -3907,7 +3906,7 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
             .year = cli.year,
             .flac_level = cli.flac_level,
             .comment = exportComment(&comment_buf, data),
-            .bpm = transport.bpm(),
+            .bpm = transport.baseBpm(),
         },
         .normalize = cli.normalize,
         .target = cli.norm_target,
@@ -4718,7 +4717,7 @@ fn executeEditCommand(
             if (changed) status.set("Solos and mutes cleared", .{});
         },
         .split_at_playhead => {
-            changed = if (focus == .arrangement) arrangement.splitSelectedClipsAt(tracks, alloc, selected_clip, transport.beats(), transport.bpm()) else false;
+            changed = if (focus == .arrangement) arrangement.splitSelectedClipsAt(tracks, alloc, selected_clip, transport.beats(), transport.map()) else false;
             if (changed) status.set("Split clips", .{});
         },
         .quantize => {

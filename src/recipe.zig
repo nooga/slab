@@ -46,8 +46,10 @@ pub fn fingerprint(alloc: std.mem.Allocator, tracks: []const track_mod.Track, tr
     var h = std.hash.Wyhash.init(0);
     var head: [96]u8 = undefined;
     h.update(std.fmt.bufPrint(&head, "slab {s} tap {d} tail {d} bpm {d}", .{
-        build_options.version, r.tap, if (r.tail_auto) -1 else r.tail_sec, transport.bpm(),
+        build_options.version, r.tap, if (r.tail_auto) -1 else r.tail_sec, transport.baseBpm(),
     }) catch "");
+    // Tempo changes after the first (a constant tempo hashes as it always did).
+    for (transport.map().slice()[1..]) |p| h.update(std.mem.asBytes(&[_]f64{ p.beat, p.bpm, @floatFromInt(@intFromBool(p.ramp)) }));
     var buses: u32 = 0;
     for (tracks, 0..) |*t, ti| if (set & (@as(u32, 1) << @intCast(ti)) != 0) {
         try hashTrack(alloc, &out, &h, t, tap != .instr and tap != .fx, tap == .sends);

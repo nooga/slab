@@ -33,6 +33,7 @@ const audio_pool_mod = @import("../audio_pool.zig");
 const waveform = @import("../waveform.zig");
 const meter_mod = @import("../meter.zig");
 const meter_gen = @import("../meter_gen.zig");
+const tempo_mod = @import("../tempo.zig");
 const recorder_mod = @import("../recorder.zig");
 const automation = @import("../automation.zig");
 const auto_lane = @import("automation_lane.zig");
@@ -311,7 +312,9 @@ const ClipDragSnap = struct {
 var px_per_beat: f32 = 24;
 // Current project tempo, captured at the top of draw() so drag handlers
 // (which don't take the transport) can convert beats↔source-seconds.
-var cur_bpm: f64 = 120;
+/// The tempo map this frame (audio clips convert their seconds through it).
+var cur_tempo: *const tempo_mod.TempoMap = &default_tempo;
+const default_tempo = tempo_mod.TempoMap.constant(120);
 // Live meter map for this frame's grid, captured at the top of draw().
 var default_meter_pts = [_]meter_mod.MeterPoint{.{ .start_bar = 0, .numerator = 4, .denominator = 4 }};
 var cur_meter: meter_mod.MeterMap = .{ .points = &default_meter_pts };
@@ -722,7 +725,7 @@ fn hasSelectedAudioClips(tracks: []Track) bool {
     return false;
 }
 
-pub fn splitSelectedClipsAt(tracks: []Track, alloc: std.mem.Allocator, focused_clip: *?ClipRef, beat: f64, bpm: f64) bool {
+pub fn splitSelectedClipsAt(tracks: []Track, alloc: std.mem.Allocator, focused_clip: *?ClipRef, beat: f64, tmap: *const tempo_mod.TempoMap) bool {
     var changed = false;
     var first: ?ClipRef = null;
     for (tracks, 0..) |*t, ti| {
@@ -737,7 +740,7 @@ pub fn splitSelectedClipsAt(tracks: []Track, alloc: std.mem.Allocator, focused_c
             // Audio clip: carve the source window at the split point. The
             // right part reads from where the left part stopped.
             if (clip.isAudio()) {
-                const split_sec = local * 60.0 / @max(1.0, bpm);
+                const split_sec = tmap.secondsAt(beat) - tmap.secondsAt(clip.start_beat);
                 var right_a = Clip.initAudio(clip.name(), beat, clip.start_beat + clip.length_beats - beat, clip.audio.source);
                 right_a.selected = true;
                 right_a.muted = clip.muted;
@@ -925,10 +928,10 @@ pub fn draw(
     ui.rect(bridge.fromRl(r), ui_style.pane);
 
     // Audio clips are unwarped: their beat-length is derived from the source
-    // window at the current tempo, so changing bpm rescales them against the
-    // bar grid. Do this before any interaction/draw uses length_beats.
-    cur_bpm = @max(1.0, @as(f64, transport.bpm()));
-    reflowAudioClips(tracks, cur_bpm);
+    // window through the tempo map, so a tempo edit rescales them against
+    // the bar grid. Do this before any interaction/draw uses length_beats.
+    cur_tempo = transport.map();
+    reflowAudioClips(tracks, cur_tempo);
 
     var master_clicked = false;
 
@@ -1538,6 +1541,11 @@ fn clampScrollY(content_h: f32, lanes_h: f32) void {
     if (scroll_y > max_sy) scroll_y = max_sy;
 }
 
+/// Seconds an audio clip spans from `start` for `len` beats.
+fn clipSeconds(start: f64, len: f64) f64 {
+    return cur_tempo.secondsAt(start + len) - cur_tempo.secondsAt(start);
+}
+
 // ── Clip selection ───────────────────────────────────────────────────
 
 fn deselectAllClips(tracks: []Track) void {
@@ -1546,14 +1554,14 @@ fn deselectAllClips(tracks: []Track) void {
     }
 }
 
-/// Recompute every audio clip's `length_beats` from its source window at
-/// `bpm`. The window (`dur_sec`) is tempo-independent, so this keeps the
-/// clip's bar-span correct as the project tempo changes.
-pub fn reflowAudioClips(tracks: []Track, bpm: f64) void {
+/// Recompute every audio clip's `length_beats` from its source window
+/// through the tempo map. The window (`dur_sec`) is tempo-independent, so
+/// this keeps the clip's bar-span correct as the tempo changes.
+pub fn reflowAudioClips(tracks: []Track, tmap: *const tempo_mod.TempoMap) void {
     for (tracks) |*t| {
         for (t.clips.items) |*clip| {
             if (!clip.isAudio()) continue;
-            clip.length_beats = @max(MIN_CLIP_BEATS, clip.audio.dur_sec * bpm / 60.0);
+            clip.length_beats = @max(MIN_CLIP_BEATS, tmap.beatAfter(clip.start_beat, clip.audio.dur_sec) - clip.start_beat);
         }
     }
 }
@@ -1715,17 +1723,17 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
             if (clip.isAudio()) {
                 if (clip.audio.reversed) {
                     const tail = drag_start_audio_start_sec + drag_start_audio_dur_sec;
-                    clip.length_beats = @min(clip.length_beats, tail * cur_bpm / 60.0); // can't read before the source start
-                    clip.audio.dur_sec = clip.length_beats * 60.0 / cur_bpm;
+                    clip.length_beats = @min(clip.length_beats, cur_tempo.beatAfter(clip.start_beat, tail) - clip.start_beat); // can't read before the source start
+                    clip.audio.dur_sec = clipSeconds(clip.start_beat, clip.length_beats);
                     clip.audio.start_sec = @max(0.0, tail - clip.audio.dur_sec);
-                } else clip.audio.dur_sec = clip.length_beats * 60.0 / cur_bpm;
+                } else clip.audio.dur_sec = clipSeconds(clip.start_beat, clip.length_beats);
             }
         },
         .fade_in, .fade_out => {
             // Fades drag unsnapped in seconds, clamped to the window length.
             pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
             const raw_beats = @as(f64, dx / px_per_beat);
-            const delta_sec = raw_beats * 60.0 / cur_bpm;
+            const delta_sec = raw_beats * 60.0 / cur_tempo.bpmAt(clip.start_beat);
             const dur = clip.audio.dur_sec;
             if (drag_mode == .fade_in) {
                 clip.audio.fade_in_sec = std.math.clamp(drag_start_fade_sec + delta_sec, 0, dur);
@@ -1741,11 +1749,10 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
             const right_beat = drag_start_beat + drag_start_length;
             // Clamp the move so the window stays within [0, source] and the
             // clip keeps a minimum length.
-            const sec_per_beat = 60.0 / cur_bpm;
             // Reversed, the left edge plays the window's tail, so the head
             // stays put and only the length changes.
             const rev = clip.audio.reversed;
-            const max_back = if (rev) std.math.inf(f64) else drag_start_audio_start_sec / sec_per_beat; // can't trim before source start
+            const max_back = if (rev) std.math.inf(f64) else drag_start_beat - cur_tempo.beatAfter(drag_start_beat, -drag_start_audio_start_sec); // can't trim before source start
             var delta = d_beats;
             if (delta < -max_back) delta = -max_back; // expanding left limited by source head
             if (delta > drag_start_length - min_len) delta = drag_start_length - min_len;
@@ -1753,7 +1760,7 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
             const new_start = drag_start_beat + delta;
             clip.start_beat = new_start;
             clip.length_beats = right_beat - new_start;
-            const delta_sec = delta * sec_per_beat;
+            const delta_sec = cur_tempo.secondsAt(new_start) - cur_tempo.secondsAt(drag_start_beat);
             if (!rev) clip.audio.start_sec = @max(0.0, drag_start_audio_start_sec + delta_sec);
             clip.audio.dur_sec = @max(0.0, drag_start_audio_dur_sec - delta_sec);
         },
@@ -3003,7 +3010,7 @@ test "splitting a reversed audio clip: the left part plays the window's tail" {
     clip.selected = true;
     try tracks[0].addClip(alloc, clip);
     var focused: ?ClipRef = null;
-    try std.testing.expect(splitSelectedClipsAt(tracks[0..], alloc, &focused, 1, 120));
+    try std.testing.expect(splitSelectedClipsAt(tracks[0..], alloc, &focused, 1, &tempo_mod.TempoMap.constant(120)));
     const left = tracks[0].clips.items[0].audio;
     const right = tracks[0].clips.items[1].audio;
     // left: 1 beat = 0.5 s, the window's last half second

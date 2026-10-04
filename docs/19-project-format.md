@@ -110,7 +110,9 @@ The document is JSON. Top level:
 | Field | Meaning |
 |---|---|
 | `slab`, `schema` | the format's tag and version ([25-storage.md](25-storage.md) §Formats). A file tagged as another kind doesn't open; one without a tag is read as a project. |
-| `transport.bpm` | tempo; one tempo per song (no tempo map yet) |
+| `transport.bpm` | the tempo the song starts at |
+| `transport.tempo` | tempo changes after the start, `[{"beat": 64, "bpm": 140, "ramp": true}]`; `ramp` glides linearly to the next change (docs/28 §Tempo map); left out for a constant tempo |
+| `transport.ramp` | the starting tempo glides to the first change |
 | `transport.loop` | loop region in **beats**; `on` sets whether playback loops. The render ignores it. |
 | `meter` | meter map: `{bar, num, den}` points. The first point is forced to bar 0. Missing = 4/4. It changes the bar grid and what machines get as `bar`/`beat_in_bar`; note times are always in beats. |
 | `tracks` | at most 16 |

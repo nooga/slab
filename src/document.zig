@@ -15,6 +15,7 @@ const transport_mod = @import("transport.zig");
 const machine_mod = @import("machine.zig");
 const audio_pool_mod = @import("audio_pool.zig");
 const meter_mod = @import("meter.zig");
+const tempo_mod = @import("tempo.zig");
 const automation = @import("automation.zig");
 const export_settings = @import("export_settings.zig");
 
@@ -146,7 +147,21 @@ pub fn serialize(
     errdefer out.deinit(alloc);
 
     try out.appendSlice(alloc, "{\"slab\":\"" ++ KIND ++ "\",\"schema\":" ++ std.fmt.comptimePrint("{d}", .{SCHEMA}) ++ ",\"transport\":{\"bpm\":");
-    try appendFmt(alloc, &out, "{d}", .{transport.bpm()});
+    try appendFmt(alloc, &out, "{d}", .{transport.map().base()});
+    // Tempo changes after the first point (docs/28 §Tempo map).
+    const tempo_points = transport.map().slice();
+    if (tempo_points.len > 1) {
+        try out.appendSlice(alloc, ",\"tempo\":[");
+        for (tempo_points[1..], 0..) |p, i| {
+            if (i > 0) try out.append(alloc, ',');
+            try appendFmt(alloc, &out, "{{\"beat\":{d},\"bpm\":{d}", .{ p.beat, p.bpm });
+            if (p.ramp) try out.appendSlice(alloc, ",\"ramp\":true");
+            try out.append(alloc, '}');
+        }
+        try out.append(alloc, ']');
+    }
+    // The first point's ramp glides to the second.
+    if (tempo_points.len > 1 and tempo_points[0].ramp) try out.appendSlice(alloc, ",\"ramp\":true");
     try appendFmt(alloc, &out, ",\"loop\":{{\"on\":{s},\"start\":{d},\"end\":{d}}}}}", .{
         boolStr(transport.loopEnabled()), transport.loopStartBeats(), transport.loopEndBeats(),
     });
@@ -713,7 +728,18 @@ pub fn apply(
 
     if (objGet(root, "transport")) |tv| if (tv == .object) {
         const to = tv.object;
-        if (objGet(to, "bpm")) |b| transport.setBpm(@floatCast(asF64(b)));
+        var m = tempo_mod.TempoMap.constant(if (objGet(to, "bpm")) |b| asF64(b) else 120);
+        m.points[0].ramp = if (objGet(to, "ramp")) |x| asBool(x) else false;
+        if (objGet(to, "tempo")) |tv2| if (tv2 == .array) for (tv2.array.items) |pv| {
+            if (pv != .object) continue;
+            const beat = asF64(objGet(pv.object, "beat") orelse continue);
+            if (!(beat > 0)) continue;
+            const i = m.put(beat, asF64(objGet(pv.object, "bpm") orelse continue)) orelse break;
+            m.points[i].ramp = if (objGet(pv.object, "ramp")) |x| asBool(x) else false;
+        };
+        m.rebuild();
+        // Adopted at the next block (an undo may land while playing).
+        transport.tempo.set(&m);
         if (objGet(to, "loop")) |lv| if (lv == .object) {
             const lo = lv.object;
             const st = if (objGet(lo, "start")) |x| asF64(x) else 0;
@@ -1142,6 +1168,13 @@ test "project snapshot round-trips tracks clips notes and loop" {
     var transport: transport_mod.Transport = .{};
     transport.sample_rate = 48_000;
     transport.setBpm(132.5);
+    {
+        const m = transport.tempo.edit();
+        _ = m.put(16, 90);
+        m.points[1].ramp = true;
+        _ = m.put(32, 150);
+        transport.tempo.publish();
+    }
     transport.setLoopBeats(1.0, 9.0);
 
     var tracks = [_]track_mod.Track{
@@ -1194,6 +1227,7 @@ test "project snapshot round-trips tracks clips notes and loop" {
     try std.testing.expectApproxEqAbs(@as(f64, 1.0), loaded_transport.loopStartBeats(), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f64, 9.0), loaded_transport.loopEndBeats(), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 132.5), loaded_transport.bpm(), 0.001);
+    try std.testing.expect(loaded_transport.map().eql(transport.map()));
     try std.testing.expectEqual(track_mod.StemPlan{ .on = false, .channels = 2 }, loaded_buf[0].stem);
     // The export settings come back; a project without them gets defaults.
     xs = .{};
