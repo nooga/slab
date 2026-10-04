@@ -86,6 +86,55 @@ pub const Preview = struct {
     step: f64 = 1,
 };
 
+/// Where an offline render copies a track's signal (docs/27 §Tap).
+pub const CaptureTap = enum(u8) {
+    none,
+    /// The instrument and audio clips, before the inserts.
+    input,
+    /// After the inserts, before volume and pan.
+    pre,
+    /// After volume and pan.
+    post,
+};
+
+/// An offline render's taps (docs/27 §Bounce selection): each tapped
+/// track's signal is copied into its own buffers as the render runs, and
+/// the render can stop itself once they all fall quiet. Set
+/// `Engine.capture` before `renderOffline`; buffers are the caller's,
+/// zeroed, `frames + PDC_MAX` long (a tap is up to the project's latency
+/// late, `lat`).
+pub const Capture = struct {
+    tap: [routing.MAX_TRACKS]CaptureTap = @splat(.none),
+    l: [routing.MAX_TRACKS][]f32 = @splat(&.{}),
+    r: [routing.MAX_TRACKS][]f32 = @splat(&.{}),
+    /// Non-zero: only these tracks are heard. Every other track is muted
+    /// (still rendering when it keys something), buses keep their mute,
+    /// solos are ignored, and these render even if their mute is on.
+    sources: u32 = 0,
+    /// Stop the render once every tap has stayed below `QUIET` for `hold`
+    /// frames past the first `min_frames`; `hold` 0 renders it all.
+    min_frames: usize = 0,
+    hold: usize = 0,
+    /// Written by the render: each track's latency at its tap (its signal
+    /// starts that many frames into its buffer), each tap's end of signal
+    /// (the frame after its last loud one), and the frames rendered.
+    lat: [routing.MAX_TRACKS]u32 = @splat(0),
+    loud_end: [routing.MAX_TRACKS]usize = @splat(0),
+    rendered: usize = 0,
+
+    /// −90 dBFS.
+    pub const QUIET: f32 = 3.1623e-5;
+
+    fn done(self: *const Capture, rendered: usize) bool {
+        if (self.hold == 0 or rendered < self.min_frames) return false;
+        for (self.tap, 0..) |tp, ti| {
+            if (tp == .none) continue;
+            if (@max(self.loud_end[ti], self.min_frames + self.lat[ti]) + self.hold > rendered) return false;
+        }
+        return true;
+    }
+};
+
 /// The preview sits under a full mix: −6 dB.
 const PREVIEW_GAIN: f64 = 0.5;
 
@@ -139,6 +188,11 @@ pub const Engine = struct {
     /// render (machine state belongs to the audio thread).
     panic_request: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     trace_counter: u32 = 0,
+    /// An offline render's taps [Capture]; null otherwise. Only
+    /// `renderOffline` reads it, with the device stopped.
+    capture: ?*Capture = null,
+    /// The first sample of the offline render the capture belongs to.
+    capture_start: u64 = 0,
 
     /// Master bus. Audio tracks accumulate (planar) into master_l/r, then
     /// the master Track's FX chain + fader run before the interleaved
@@ -426,6 +480,7 @@ pub const Engine = struct {
             self.resetAllMachines();
         }
         self.chase_pending = true;
+        self.capture_start = start_sample;
         var pos = start_sample;
         // The master is late by the project's latency: its first `skip`
         // frames are dropped, so the bounce lines up with the timeline. The
@@ -434,6 +489,14 @@ pub const Engine = struct {
         var fallback: routing.Routing = undefined;
         self.computeLatencies(self.currentGraph(&fallback));
         const skip: usize = self.master_latency.load(.monotonic);
+        if (self.capture) |cap| for (self.tracks, 0..) |*t, ti| {
+            cap.lat[ti] = switch (cap.tap[ti]) {
+                .none => 0,
+                .input => self.lat_in[ti] + instLatency(t, t.isBus()),
+                .pre, .post => self.lat_out[ti],
+            };
+            cap.loud_end[ti] = 0;
+        };
         var scratch: [MAX_BLOCK * audio.CHANNELS]f32 = undefined;
         var rendered: usize = 0;
         var done: usize = 0;
@@ -441,7 +504,8 @@ pub const Engine = struct {
             if (cancel) |c| if (c.load(.monotonic)) break;
             const chunk: u32 = @intCast(@min(@as(usize, MAX_BLOCK), total_frames + skip - rendered));
             const dropped = if (rendered < skip) @min(chunk, skip - rendered) else 0;
-            const direct = dropped == 0;
+            // An empty `out` keeps only the capture.
+            const direct = dropped == 0 and out.len > 0;
             const slice = if (direct) out[done * audio.CHANNELS ..][0 .. chunk * audio.CHANNELS] else scratch[0 .. chunk * audio.CHANNELS];
             {
                 fy_host.lockCallbacks();
@@ -449,7 +513,7 @@ pub const Engine = struct {
                 self.renderChunk(slice, chunk, pos);
             }
             self.master_clip.apply(slice);
-            if (!direct) {
+            if (!direct and out.len > 0) {
                 const keep = slice[dropped * audio.CHANNELS ..];
                 @memcpy(out[done * audio.CHANNELS ..][0..keep.len], keep);
             }
@@ -457,6 +521,10 @@ pub const Engine = struct {
             rendered += chunk;
             pos += chunk;
             if (progress) |p| p.store(done, .monotonic);
+            if (self.capture) |cap| {
+                cap.rendered = rendered;
+                if (cap.done(rendered)) break;
+            }
         }
         fy_host.lockCallbacks();
         defer fy_host.unlockCallbacks();
@@ -751,12 +819,25 @@ pub const Engine = struct {
         const graph = self.currentGraph(&fallback);
         var muted: u32 = 0;
         var soloed: u32 = 0;
+        const sources: u32 = if (self.capture) |cap| cap.sources else 0;
         for (self.tracks[0..graph.count], 0..) |*t, i| {
-            if (t.mute.load(.monotonic)) muted |= routing.bit(@intCast(i));
-            if (t.solo.load(.monotonic)) soloed |= routing.bit(@intCast(i));
+            const b = routing.bit(@intCast(i));
+            if (sources != 0) {
+                // A capture hears its sources alone [Capture.sources].
+                if (if (t.isBus()) t.mute.load(.monotonic) else sources & b == 0) muted |= b;
+                continue;
+            }
+            if (t.mute.load(.monotonic)) muted |= b;
+            if (t.solo.load(.monotonic)) soloed |= b;
         }
         const heard = graph.audible(muted, soloed);
-        const live = graph.rendered(heard);
+        var live = graph.rendered(heard);
+        if (self.capture) |cap| {
+            live |= sources;
+            for (cap.tap[0..graph.count], 0..) |tp, i| {
+                if (tp != .none) live |= routing.bit(@intCast(i));
+            }
+        }
         self.computeLatencies(graph);
         for (graph.nodes[0..graph.count], 0..) |nd, i| if (nd.is_bus) {
             @memset(self.bus_l[i][0..frames], 0);
@@ -1066,6 +1147,7 @@ pub const Engine = struct {
                 const d = self.lat_in[ti];
                 if (d > 0) h.read(ti, .input, h.w[ti], d, l, r);
             }
+            self.captureTap(ti, .input, block_start, l, r);
         }
         const inst_ns = if (track_probe) probeNowNs() - inst_start else 0;
         const fx_start = if (track_probe) probeNowNs() else 0;
@@ -1088,6 +1170,7 @@ pub const Engine = struct {
         }
         const final_l: []const f32 = l;
         const final_r: []const f32 = r;
+        self.captureTap(ti, .pre, block_start, final_l, final_r);
 
         // Fader gains at the block's ends; automated volume/pan ramp
         // between them per sample (docs/22 §Track volume and pan).
@@ -1115,6 +1198,7 @@ pub const Engine = struct {
             if (al > peak_l) peak_l = al;
             if (ar > peak_r) peak_r = ar;
         }
+        self.captureTap(ti, .post, block_start, post_l, post_r);
         // The taps' history, for paths that must arrive later (PDC).
         const hist_at = if (self.pdc) |h| h.write(ti, final_l, final_r, post_l, post_r) else 0;
         self.hist_at[ti] = hist_at;
@@ -1165,6 +1249,29 @@ pub const Engine = struct {
                 "audio track \"{s}\" beat={d:.3}..{d:.3} events={} peak=({d:.3},{d:.3}) vol={d:.3}\n",
                 .{ t.name(), beat_start, beat_end, n_events, peak_l, peak_r, v },
             );
+        }
+    }
+
+    /// Copy track `ti`'s `tap` for this block into the capture, if that's
+    /// the tap it wants. Each track writes only its own buffers, so nodes
+    /// still render on any thread.
+    fn captureTap(self: *Engine, ti: u8, tap: CaptureTap, block_start: u64, l: []const f32, r: []const f32) void {
+        const cap = self.capture orelse return;
+        if (cap.tap[ti] != tap) return;
+        const at: usize = @intCast(block_start - self.capture_start);
+        const dst_l = cap.l[ti];
+        const dst_r = cap.r[ti];
+        if (at >= dst_l.len or at >= dst_r.len) return;
+        const n = @min(l.len, dst_l.len - at, dst_r.len - at);
+        @memcpy(dst_l[at..][0..n], l[0..n]);
+        @memcpy(dst_r[at..][0..n], r[0..n]);
+        var k = n;
+        while (k > 0) {
+            k -= 1;
+            if (@abs(l[k]) > Capture.QUIET or @abs(r[k]) > Capture.QUIET) {
+                cap.loud_end[ti] = at + k + 1;
+                break;
+            }
         }
     }
 
@@ -2593,6 +2700,73 @@ test "routing: a group, a pre-fader send and a return sum as their paths" {
     tracks[0].solo.store(true, .monotonic);
     eng.renderOffline(&out, 64, 0, null, null);
     try testing.expectApproxEqAbs(kit, out[10], 1e-6);
+}
+
+test "capture: taps copy each track's signal, only the sources are heard, a quiet capture stops" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var tenth: f32 = 0.1;
+    var zero: f32 = 0;
+    var four: f32 = 4;
+    var tracks = [_]Track{
+        try Track.init(alloc, "kit", col, RouteTestMachines.dc(&tenth)),
+        try Track.init(alloc, "bass", col, RouteTestMachines.dc(&tenth)),
+        try Track.init(alloc, "verb", col, RouteTestMachines.dc(&zero)),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    for (&tracks) |*t| t.setVolume(1.0);
+    try tracks[0].addSend(2, true, 0.5);
+    try tracks[1].addSend(2, true, 0.5);
+    tracks[2].kind = .bus;
+    try tracks[1].addEffect(alloc, RouteTestMachines.gain(&four), 0);
+    try tracks[2].addEffect(alloc, RouteTestMachines.gain(&four), 0);
+    // A muted source still renders for its capture.
+    tracks[1].mute.store(true, .monotonic);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+
+    var transport = Transport{};
+    transport.sample_rate = 48_000;
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+
+    const N = 256;
+    var bufs: [4][N]f32 = @splat(@splat(0));
+    var cap = Capture{ .sources = routing.bit(1) };
+    cap.tap[1] = .input;
+    cap.l[1] = &bufs[0];
+    cap.r[1] = &bufs[1];
+    cap.tap[2] = .post;
+    cap.l[2] = &bufs[2];
+    cap.r[2] = &bufs[3];
+    eng.capture = &cap;
+    defer eng.capture = null;
+    eng.renderOffline(&.{}, 128, 0, null, null);
+
+    const c = @cos(@as(f32, std.math.pi / 4.0));
+    try testing.expectEqual(@as(usize, 128), cap.rendered);
+    try testing.expectApproxEqAbs(@as(f32, 0.1), bufs[0][10], 1e-6); // bass before its ×4
+    // The return hears the bass alone (the kit is muted for the capture).
+    try testing.expectApproxEqAbs(0.1 * 4 * 0.5 * 4 * c, bufs[2][10], 1e-6);
+    try testing.expectEqual(@as(usize, 128), cap.loud_end[1]);
+
+    // A silent source with a hold stops the render past min_frames, at
+    // the first block boundary after the hold.
+    const M = MAX_BLOCK * 8;
+    const ql = try alloc.alloc(f32, M);
+    defer alloc.free(ql);
+    const qr = try alloc.alloc(f32, M);
+    defer alloc.free(qr);
+    var quiet = Capture{ .sources = routing.bit(2), .min_frames = MAX_BLOCK, .hold = MAX_BLOCK / 2 };
+    quiet.tap[2] = .pre;
+    quiet.l[2] = ql;
+    quiet.r[2] = qr;
+    eng.capture = &quiet;
+    eng.renderOffline(&.{}, M, 0, null, null);
+    try testing.expectEqual(@as(usize, MAX_BLOCK * 2), quiet.rendered);
 }
 
 test "routing: a send level change ramps across the block" {
