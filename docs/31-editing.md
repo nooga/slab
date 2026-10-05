@@ -7,13 +7,14 @@ instrument: the same gesture means the same thing everywhere, the code
 behind it exists once, and three new abilities are built on top: time
 selection, better note editing, and editing several clips at once.
 
-Status: phases 1 and 2 built (2026-10-05) on `feat/editing`: one view,
+Status: phases 1–4 built (2026-10-05) on `feat/editing`: one view,
 wheel, minimap, ruler, box select, edges, snap, focus, command table and
 menu order across the editors; time selection in the arrangement and the
 piano roll, join, insert and delete time, ⌥-drag duplicate, ⌘-drag to
 draw a clip; hearing notes as they are pressed and dragged, playing or
 not, a playable keyboard column, keys and notes lit while they sound.
-docs/12 states those rules. Phase 4 planned. docs/12 stays the interaction contract; as each phase lands,
+editing several note clips at once: tabs, ghosts, one song-time axis.
+docs/12 states those rules. Phase 5 (cross-clip tools, pinch) is later. docs/12 stays the interaction contract; as each phase lands,
 its rules move there and this doc keeps the plan and the reasons.
 
 ## What musicians expect (and other DAWs do)
@@ -257,20 +258,27 @@ an empty lane draws a clip (a click makes one bar).
 - New notes come out selected, so a drawn note can be nudged at once
   (built in phase 1).
 
-## Multi-clip editing (phase 4)
+## Multi-clip editing (phase 4, built)
 
-- With several clips selected, the editor head shows a tab per clip
-  (track color, name); the focused one is edited, the others draw as
-  ghosts at their place in the song, dimmed.
-- The editor's time axis is the song's when more than one clip is
-  shown: each clip's start and loop show as brackets in the ruler.
-- Clicking a ghost note focuses its clip; ⌘A selects in the focused
-  clip only; box select stays in the focused clip.
-- Audio and note clips can be shown together: audio as a dimmed
-  waveform band under the notes, to write against.
-- Later, on top of it (not designed here): take the chords from one
-  clip and arpeggiate them into another, fit a bassline to chords,
-  harmonize a melody, copy a groove across.
+- With several note clips selected (⇧/⌘-click, a box, a time
+  selection), the piano roll shows them all: a **tab** per clip under
+  the head (track color, name; the edited one lit), the others' notes as
+  **ghosts** in their tracks' colors, dimmed, where they play against the
+  edited clip.
+- The axis is the song's: the edited clip's beats, spanning from the
+  first shown clip's start to the last's end, so the view, the minimap
+  and the follow cover them all; outside the edited clip the grid is
+  dimmed, not hidden, its start and end red lines. Each clip's stretch
+  shows as a bar along the ruler's top.
+- Clicking a tab or a ghost note edits that clip; the view stays on the
+  same song time. Selecting, ⌘A, box select, the time selection and every
+  command act in the edited clip only.
+- Tracks with their own tempo (docs/28 §Polytempo) count in their own
+  beats and are edited alone.
+- Later: audio clips shown with the notes (a dimmed waveform band to
+  write against), and the cross-clip tools built on this: take the
+  chords from one clip and arpeggiate them into another, fit a bassline
+  to chords, harmonize a melody, copy a groove across.
 
 ## Phasing
 
@@ -290,7 +298,8 @@ an empty lane draws a clip (a click makes one bar).
 3. **Note editing** (built): held notes while pressing and dragging,
    playing or not, the HEAR latch, the keyboard column, lit keys and
    notes.
-4. **Multi-clip editing:** tabs, ghosts, song-time axis.
+4. **Multi-clip editing** (built): tabs, ghosts, the song-time axis,
+   focus by tab or ghost. Audio clips among them are later.
 5. Later: pinch zoom through a native gesture hook, cross-clip tools.
 
 The accessibility tree (docs/32) leans on phase 1: one command table

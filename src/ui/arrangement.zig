@@ -3142,8 +3142,8 @@ fn handleLoopBounds(ruler: c.rl.Rectangle, timeline_x0: f32, transport: *Transpo
 
 fn handleRulerScrub(ruler: c.rl.Rectangle, timeline_x0: f32, transport: *Transport, edit_snap: snap_mod.Setting, m: pane.Mouse) void {
     if (scrub.run(ruler, &view, timeline_x0, m, RULER_KEY, edit_snap)) |out| switch (out) {
-        .seek => |b| transport.seekToBeats(b),
-        .loop => |l| transport.setLoopBeats(l[0], l[1]),
+        .seek => |b| transport.seekToBeats(@max(0, b)),
+        .loop => |l| transport.setLoopBeats(@max(0, l[0]), l[1]),
     };
 }
 
@@ -3188,7 +3188,7 @@ fn drawOverview(
         }
     }
 
-    minimap.run(ui, inner, &view, content_beats, timeline_w - 2, limits(content_beats, timeline_w), transport.beats(), m, OVERVIEW_KEY, c.rl.GetTime());
+    minimap.run(ui, inner, &view, .{ 0, content_beats }, timeline_w - 2, limits(content_beats, timeline_w), transport.beats(), m, OVERVIEW_KEY, c.rl.GetTime());
 }
 
 fn dim(color: c.rl.Color, factor: f32) c.rl.Color {

@@ -89,6 +89,7 @@ test {
     _ = @import("ui/gesture.zig");
     _ = @import("ui/timeline.zig");
     _ = @import("ui/commands.zig");
+    _ = @import("ui/clip_editor.zig");
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
     _ = @import("tempo.zig");
@@ -1572,8 +1573,12 @@ pub fn main(init: std.process.Init) !void {
                 if (cres.rename_rect) |rr| rename.rect = rr;
             }
             if (cres.minimize or cres.close) layout.clip_editor_visible = false;
-            if (cres.seek) |b| transport.seekToBeats(b);
-            if (cres.loop) |l| transport.setLoopBeats(l[0], l[1]);
+            if (cres.seek) |b| transport.seekToBeats(@max(0, b));
+            if (cres.loop) |l| transport.setLoopBeats(@max(0, l[0]), l[1]);
+            if (cres.focus) |f| {
+                selected_clip = f;
+                selected_track = f.track;
+            }
             holdNotes(&engine, &held, if (selected_clip) |s| s.track else null, cres.hear);
             if (cres.command == .slice_to_sampler) {
                 sliceToSampler(alloc, &history, &status, &engine, &audio, &reg, &audio_pool, &tracks_buf, &track_count, &transport, &selected_track, &selected_clip, &dirty);

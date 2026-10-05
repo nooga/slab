@@ -119,6 +119,10 @@ it.
   as long as the button is down, playing or not; dragging to a new pitch
   moves the sound; drawing a note holds its pitch; a box select plays
   nothing. The HEAR latch turns this off.
+- Several note clips selected: a tab per clip under the head, the
+  others' notes as dimmed ghosts in their tracks' colors on one song-time
+  axis; click a tab or a ghost to edit that clip (the view stays put).
+  Edits act on the edited clip only.
 - The keyboard column plays: press a key, drag across keys to glide;
   ⇧-click selects every note of that pitch. Keys light in the track's
   color while they sound, and so do the notes under the playhead.

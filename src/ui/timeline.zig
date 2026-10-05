@@ -143,7 +143,8 @@ pub const Overview = struct {
         ui: *Ui,
         inner: FRect,
         v: *View,
-        content_beats: f64,
+        /// The beats the strip spans (a clip editor's can start before 0).
+        content: [2]f64,
         view_w: f32,
         lim: Limits,
         play: ?f64,
@@ -152,10 +153,11 @@ pub const Overview = struct {
         now: f64,
     ) void {
         if (inner.width <= 0 or view_w <= 0) return;
-        const cb: f32 = @max(@as(f32, @floatCast(content_beats)), 1.0);
+        const lo: f32 = @floatCast(content[0]);
+        const cb: f32 = @max(@as(f32, @floatCast(content[1] - content[0])), 1.0);
         const k = inner.width / cb; // overview px per beat
         const vr = v.range(view_w);
-        const vx = inner.x + @as(f32, @floatCast(vr[0])) * k;
+        const vx = inner.x + (@as(f32, @floatCast(vr[0])) - lo) * k;
         const vw = @max(2.0, @as(f32, @floatCast(vr[1] - vr[0])) * k);
 
         // Window.
@@ -167,7 +169,7 @@ pub const Overview = struct {
             ui.bevel(wr, style.accent, style.accent);
         }
         if (play) |pb| {
-            const px = inner.x + @as(f32, @floatCast(pb)) * k;
+            const px = inner.x + (@as(f32, @floatCast(pb)) - lo) * k;
             if (px >= inner.x and px < inner.x + inner.width) ui.rect(Rect.xywh(@intFromFloat(@floor(px)), @intFromFloat(inner.y), 1, @intFromFloat(inner.height)), style.accent);
         }
 
@@ -179,7 +181,7 @@ pub const Overview = struct {
 
         if (over and (m.wheel_x != 0 or m.wheel_y != 0) and o.grab == .none) {
             const w: f32 = if (m.wheel_y != 0) m.wheel_y else m.wheel_x;
-            const beat = (m.x - inner.x) / k;
+            const beat = lo + (m.x - inner.x) / k;
             v.px_per_beat = std.math.clamp(v.px_per_beat * zoomFactor(w), lim.min_ppb, @max(lim.min_ppb, lim.max_ppb));
             v.scroll_x = beat * v.px_per_beat - (m.x - vx) / vw * view_w;
             v.last_scroll = now;
@@ -192,9 +194,9 @@ pub const Overview = struct {
                 o.grab = .none;
                 return;
             }
-            const beat: f64 = @max(0, (m.x - inner.x) / k);
+            const beat: f64 = @max(lo, lo + (m.x - inner.x) / k);
             switch (o.grab) {
-                .pan => v.scroll_x = (m.x - o.offset - inner.x) / k * v.px_per_beat,
+                .pan => v.scroll_x = (lo + (m.x - o.offset - inner.x) / k) * v.px_per_beat,
                 .left => if (o.fixed - beat > 1e-3) v.zoomTo(beat, o.fixed, view_w, lim),
                 .right => if (beat - o.fixed > 1e-3) v.zoomTo(o.fixed, beat, view_w, lim),
                 .none => {},
@@ -217,7 +219,7 @@ pub const Overview = struct {
         } else {
             o.grab = .pan;
             o.offset = vw / 2;
-            v.scroll_x = (m.x - o.offset - inner.x) / k * v.px_per_beat;
+            v.scroll_x = (lo + (m.x - o.offset - inner.x) / k) * v.px_per_beat;
         }
         v.last_scroll = now;
     }
@@ -307,7 +309,8 @@ pub const Scrub = struct {
 
     pub fn run(sc: *Scrub, ruler: FRect, v: *const View, x0: f32, m: pane.Mouse, key: u64, edit_snap: snap_mod.Setting) ?Out {
         const md = gesture.mods();
-        const beat = @max(0, v.xToBeat(x0, m.x));
+        // Axis beats, unclamped: a clip editor's axis can start before 0.
+        const beat = v.xToBeat(x0, m.x);
         if (!sc.active) {
             if (!m.left_pressed or !pane.contains(ruler, m.x, m.y) or pane.hasActiveDrag()) return null;
             if (!pane.tryStartDrag(key)) return null;

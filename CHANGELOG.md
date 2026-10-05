@@ -52,6 +52,10 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   the keys to glide; ⇧-click a key selects every note of that pitch.
   Keys light up while they sound, and so do the notes under the
   playhead.
+- **Edit several clips together**: select a few note clips and the
+  piano roll shows them all on the song's timeline: a tab for each, the
+  others' notes as faint ghosts in their tracks' colors. Click a tab or a
+  ghost note to edit that clip; the view stays where it is.
 - **Menus** list their items in the same order in every editor, and an
   unwarped audio clip's editor has a right-click menu too.
 

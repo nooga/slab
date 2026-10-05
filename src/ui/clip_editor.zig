@@ -192,6 +192,147 @@ const SCRUB_KEY: u64 = 0x5C2B_C11E_0000_0001;
 /// Zoom to the selection on the next frame (Z).
 var zoom_req = false;
 
+// ── Several clips (docs/31 §Multi-clip editing) ──────────────────────
+
+const MAX_SHOWN = 16;
+const TAB_H: i32 = 16;
+/// The clips the editor shows: the edited one and the other selected
+/// note clips, by start. One unless several are selected.
+var shown: [MAX_SHOWN]ClipRef = undefined;
+var shown_n: usize = 0;
+/// This frame's tracks, and a clip a ghost click asks to edit.
+var ce_tracks: ?[]track_mod.Track = null;
+var focus_req: ?ClipRef = null;
+/// The beats the editor spans, in the edited clip's beats: the clip, or
+/// every shown clip from the first's start to the last's end.
+var view_span: [2]f64 = .{ 0, 1 };
+/// The shown set last frame, to keep the view when the focus moves
+/// within it, and the edited clip's start then.
+var prev_shown: [MAX_SHOWN]ClipRef = undefined;
+var prev_shown_n: usize = 0;
+var prev_start: f64 = 0;
+
+fn gatherShown(tracks: []track_mod.Track, focus: ClipRef, clip: *const Clip) void {
+    @memcpy(prev_shown[0..shown_n], shown[0..shown_n]);
+    prev_shown_n = shown_n;
+    shown[0] = focus;
+    shown_n = 1;
+    view_span = .{ 0, clipLen(clip.length_beats) };
+    // A track with its own tempo counts in its own beats: alone.
+    if (cur_rate != 1) return;
+    for (tracks, 0..) |*t, ti| {
+        if (t.time.rate() != 1) continue;
+        for (t.clips.items, 0..) |*o, ci| {
+            if (!o.selected or o.isAudio() or (ti == focus.track and ci == focus.clip)) continue;
+            if (shown_n >= MAX_SHOWN) break;
+            shown[shown_n] = .{ .track = @intCast(ti), .clip = @intCast(ci) };
+            shown_n += 1;
+            view_span[0] = @min(view_span[0], o.start_beat - clip.start_beat);
+            view_span[1] = @max(view_span[1], o.start_beat + o.length_beats - clip.start_beat);
+        }
+    }
+    if (shown_n < 2) return;
+    const Ctx = struct { tracks: []track_mod.Track };
+    std.mem.sort(ClipRef, shown[0..shown_n], Ctx{ .tracks = tracks }, struct {
+        fn lt(cx: Ctx, a: ClipRef, b: ClipRef) bool {
+            const sa = cx.tracks[a.track].clips.items[a.clip].start_beat;
+            const sb = cx.tracks[b.track].clips.items[b.clip].start_beat;
+            return if (sa != sb) sa < sb else a.track < b.track;
+        }
+    }.lt);
+}
+
+fn wasShown(ref: ClipRef) bool {
+    for (prev_shown[0..prev_shown_n]) |p| if (p.track == ref.track and p.clip == ref.clip) return true;
+    return false;
+}
+
+fn clipAt(tracks: []track_mod.Track, ref: ClipRef) *const Clip {
+    return &tracks[ref.track].clips.items[ref.clip];
+}
+
+fn colorOf(t: *const track_mod.Track) ui_style.Color {
+    return ui_style.nearestTrack(.{ .r = t.color.r, .g = t.color.g, .b = t.color.b });
+}
+
+/// A tab per shown clip, in its track's color; the edited one lit.
+fn drawTabs(ui: *Ui, r: Rect, tracks: []track_mod.Track, focus: ClipRef) ?ClipRef {
+    var row = ui.plate(r, .{});
+    const w = @max(40, @min(140, @divFloor(row.w, @as(i32, @intCast(shown_n)))));
+    var picked: ?ClipRef = null;
+    for (shown[0..shown_n]) |ref| {
+        if (row.w < 24) break;
+        const tr = row.cutLeft(@min(w, row.w));
+        const on = ref.track == focus.track and ref.clip == focus.clip;
+        ui.pushId(ref.track);
+        defer ui.popId();
+        const b = ui.behaviorEx(ui.id(ref.clip), tr, .{ .focusable = false });
+        if (b.clicked and !on) picked = ref;
+        const t = &tracks[ref.track];
+        var inner = tr;
+        if (on) ui.rect(tr, ui_style.face_hi.alpha(60));
+        ui.rect(inner.cutLeft(3), colorOf(t));
+        ui.textIn(&ui.fonts.legend, inner.insetXY(3, 0), clipAt(tracks, ref).name(), if (on) ui_style.text else ui_style.text_dim, .left, false);
+        if (on) ui.rect(Rect.xywh(tr.x, tr.bottom() - 1, tr.w, 1), ui_style.accent);
+        ui.rect(Rect.xywh(tr.right() - 1, tr.y, 1, tr.h), ui_style.edge);
+        menu.tip(ui, tr, if (on) "The clip being edited" else "Edit this clip");
+    }
+    return picked;
+}
+
+/// The other shown clips' notes, dimmed in their tracks' colors, where
+/// they play against the edited clip.
+fn drawGhosts(ui: *Ui, grid: c.rl.Rectangle, tracks: []track_mod.Track, clip: Clip) void {
+    if (shown_n < 2) return;
+    for (shown[0..shown_n]) |ref| {
+        const o = clipAt(tracks, ref);
+        if (o == &clip or (o.start_beat == clip.start_beat and o.notes.items.ptr == clip.notes.items.ptr)) continue;
+        const off = o.start_beat - clip.start_beat;
+        const col = colorOf(&tracks[ref.track]).mix(ui_style.pane, 0.55);
+        for (o.notes.items) |n| {
+            var g = n;
+            g.start_beat += off;
+            const fr = noteRect(grid, g);
+            if (fr.x + fr.width < grid.x or fr.x > grid.x + grid.width) continue;
+            if (fr.y + fr.height < grid.y or fr.y > grid.y + grid.height) continue;
+            const nr = frectRl(fr);
+            ui.rect(nr, col);
+            if (nr.w > 2 and nr.h > 2) ui.rect(nr.inset(1), col.mix(ui_style.pane, 0.4));
+        }
+    }
+}
+
+/// The shown clip whose ghost note is under the pointer.
+fn ghostAt(grid: c.rl.Rectangle, tracks: []track_mod.Track, clip: *const Clip, x: f32, y: f32) ?ClipRef {
+    if (shown_n < 2) return null;
+    for (shown[0..shown_n]) |ref| {
+        const o = clipAt(tracks, ref);
+        if (o.notes.items.ptr == clip.notes.items.ptr and o.start_beat == clip.start_beat) continue;
+        const off = o.start_beat - clip.start_beat;
+        for (o.notes.items) |n| {
+            var g = n;
+            g.start_beat += off;
+            if (pane.contains(noteRect(grid, g), x, y)) return ref;
+        }
+    }
+    return null;
+}
+
+/// Each shown clip's stretch along the ruler's top, the edited one bright.
+fn drawClipBrackets(ui: *Ui, ruler: c.rl.Rectangle, grid: c.rl.Rectangle, tracks: []track_mod.Track, clip: *const Clip) void {
+    if (shown_n < 2) return;
+    for (shown[0..shown_n]) |ref| {
+        const o = clipAt(tracks, ref);
+        const a = o.start_beat - clip.start_beat;
+        const x0 = std.math.clamp(view.beatToX(grid.x, a), grid.x, grid.x + grid.width);
+        const x1 = std.math.clamp(view.beatToX(grid.x, a + o.length_beats), grid.x, grid.x + grid.width);
+        if (x1 <= x0) continue;
+        const own = o.notes.items.ptr == clip.notes.items.ptr and o.start_beat == clip.start_beat;
+        const col = colorOf(&tracks[ref.track]);
+        ui.rect(frect(x0, ruler.y, x1 - x0, 2), if (own) col else col.alpha(110));
+    }
+}
+
 /// Hear notes as they are pressed and dragged (the HEAR latch).
 var hear_notes = true;
 /// The key the keyboard column is held on (a drag glides across keys).
@@ -405,6 +546,8 @@ pub const Result = struct {
     hear: u128 = 0,
     /// The ruler was ⇧-dragged: loop these song beats.
     loop: ?[2]f64 = null,
+    /// A tab or a ghost note was clicked: edit that clip.
+    focus: ?ClipRef = null,
 };
 
 const ContextTarget = struct {
@@ -850,14 +993,20 @@ pub fn draw(
     }
     drawHeaderTools(ui, head.tools, resolved.track);
     cur_groove = resolved.track.groove;
+    ce_tracks = tracks;
+    focus_req = null;
+    gatherShown(tracks, selected.?, resolved.clip);
     maybeResetOnClipChange(selected, resolved.clip);
-    const pres = drawPianoRoll(ui, bridge.toRl(head.body), resolved.clip, resolved.track, resolved.color, alloc, edit_snap, can_paste_notes, play_beat, m);
+    var body = head.body;
+    const tab_focus = if (shown_n > 1) drawTabs(ui, body.cutTop(TAB_H), tracks, selected.?) else null;
+    const pres = drawPianoRoll(ui, bridge.toRl(body), tracks, resolved.clip, resolved.track, resolved.color, alloc, edit_snap, can_paste_notes, play_beat, m);
 
     return .{
         .minimize = head.minimize,
         .close = head.close,
         .seek = pres.seek,
         .hear = pres.hear,
+        .focus = tab_focus orelse focus_req,
         .loop = pres.loop,
         .command = pres.command,
         .command_beat = pres.command_beat,
@@ -889,6 +1038,7 @@ fn resolveClip(tracks: []track_mod.Track, selected: ?ClipRef) ?Resolved {
 }
 
 fn maybeResetOnClipChange(selected: ?ClipRef, clip: *Clip) void {
+    defer prev_start = clip.start_beat;
     const key = if (selected) |s| pane.keyFromIds(0xC11EC011, s.track, s.clip) else 0;
     if (key != last_clip_key) {
         last_clip_key = key;
@@ -896,7 +1046,11 @@ fn maybeResetOnClipChange(selected: ?ClipRef, clip: *Clip) void {
         note_range = null;
         clip.deselectAll();
         env_lane = 0;
-        initialized_scroll = false;
+        // Focus moving among clips shown together: the view stays on the
+        // same song time (its origin moves with the edited clip's start).
+        if (selected != null and wasShown(selected.?) and shown_n > 1) {
+            view.scroll_x += @as(f32, @floatCast(prev_start - clip.start_beat)) * view.px_per_beat;
+        } else initialized_scroll = false;
         // Cancel any in-progress drag state.
         cancelAllDrags();
     }
@@ -921,6 +1075,7 @@ fn cancelAllDrags() void {
 // ── Piano roll draw + input ──────────────────────────────────────────
 
 const PianoRollResult = struct {
+    focus: ?ClipRef = null,
     hear: u128 = 0,
     seek: ?f64 = null,
     loop: ?[2]f64 = null,
@@ -932,6 +1087,7 @@ const PianoRollResult = struct {
 fn drawPianoRoll(
     ui: *Ui,
     r: c.rl.Rectangle,
+    tracks: []track_mod.Track,
     clip: *Clip,
     track: *track_mod.Track,
     track_color_rl: c.rl.Color,
@@ -966,23 +1122,29 @@ fn drawPianoRoll(
     initScrollIfNeeded(grid_rect, clip.*);
     if (zoom_req) {
         zoom_req = false;
-        const span = selectedSpan(clip.*) orelse [2]f64{ 0, clipLen(clip.length_beats) };
-        view.zoomTo(span[0], span[1], grid_rect.width, limits(grid_rect, clip.*));
+        const zs = selectedSpan(clip.*) orelse view_span;
+        view.zoomTo(zs[0], zs[1], grid_rect.width, limits(grid_rect, clip.*));
     }
     handleWheel(grid_rect, clip.*, m);
     clampScroll(grid_rect, clip.*);
     const local_play: ?f64 = if (play_beat) |b| (b - clip.start_beat) * cur_rate else null;
     const in_clip = if (local_play) |lb| lb >= 0 and lb < clipLen(clip.length_beats) else false;
+    // Follow counts from the span's start (it may start before the clip).
+    const in_span = if (local_play) |lb| lb >= view_span[0] and lb < view_span[1] else false;
+    const lo_px = @as(f32, @floatCast(view_span[0])) * view.px_per_beat;
+    var follow_x = view.scroll_x - lo_px;
     view.follow.step(
-        &view.scroll_x,
-        if (in_clip) @as(f32, @floatCast(local_play.?)) * view.px_per_beat else null,
+        &follow_x,
+        if (in_span) @as(f32, @floatCast(local_play.?)) * view.px_per_beat - lo_px else null,
         grid_rect.width,
-        @max(0, @as(f32, @floatCast(clipLen(clip.length_beats))) * view.px_per_beat - grid_rect.width),
+        @max(0, @as(f32, @floatCast(view_span[1] - view_span[0])) * view.px_per_beat - grid_rect.width),
         c.rl.GetFrameTime(),
         pane.hasActiveDrag() and pane.contains(r, m.x, m.y),
     );
+    view.scroll_x = follow_x + lo_px;
 
     drawRuler(ui, ruler_rect, grid_rect, edit_snap);
+    drawClipBrackets(ui, ruler_rect, grid_rect, tracks, clip);
     var seek: ?f64 = null;
     var loop: ?[2]f64 = null;
     if (scrub.run(ruler_rect, &view, grid_rect.x, m, SCRUB_KEY, edit_snap)) |out| switch (out) {
@@ -996,6 +1158,7 @@ fn drawPianoRoll(
     // draw-previews never bleed into the keyboard or the adjacent panes.
     ui.clip(bridge.fromRl(grid_rect));
     drawGrid(ui, grid_rect, edit_snap);
+    drawGhosts(ui, grid_rect, tracks, clip.*);
     drawExistingNotes(ui, grid_rect, clip.*, track_color, if (in_clip) local_play else null, track.sounding128());
     drawBends(ui, grid_rect, clip.*, track_color, track.machine.takes_expression, m);
     drawClipEndOverlay(ui, grid_rect, clip.*);
@@ -1023,7 +1186,7 @@ fn drawPianoRoll(
     drawEnvelopeStrip(ui, alloc, pane.rect(r.x, env_rect.y, keyboardW(), env_h), env_rect, clip, track, edit_snap, track_color, m);
 
     drawOverview(ui, overview_rect, grid_rect, clip.*, track_color, if (in_clip) local_play else null, m);
-    if (play_beat) |b| drawPlayhead(ui, grid_rect, ruler_rect.y, env_rect.y + env_h, (b - clip.start_beat) * cur_rate, clipLen(clip.length_beats));
+    if (play_beat) |b| drawPlayhead(ui, grid_rect, ruler_rect.y, env_rect.y + env_h, (b - clip.start_beat) * cur_rate, view_span);
 
     const in_expr = expr_mode and !collapsed();
     if (in_expr and !velocity_consumed) handleExpression(ui, grid_rect, clip, edit_snap, m);
@@ -1072,6 +1235,7 @@ fn initScrollIfNeeded(grid: c.rl.Rectangle, clip: Clip) void {
     view.follow.reset();
     const rows = @as(f32, @floatFromInt(rowCount()));
     view.px_per_beat = minPxPerBeat(grid, clip);
+    view.scroll_x = @as(f32, @floatCast(view_span[0])) * view.px_per_beat;
     if (collapsed()) {
         // Folded drum lanes: fit them all, top down.
         view.row_h = std.math.clamp(grid.height / rows, ROW_H_MIN, ROW_H_MAX);
@@ -1129,7 +1293,8 @@ fn initScrollIfNeeded(grid: c.rl.Rectangle, clip: Clip) void {
 }
 
 fn minPxPerBeat(grid: c.rl.Rectangle, clip: Clip) f32 {
-    return @max(1.0, grid.width / @max(@as(f32, @floatCast(clipLen(clip.length_beats))), 1.0));
+    _ = clip;
+    return @max(1.0, grid.width / @max(@as(f32, @floatCast(view_span[1] - view_span[0])), 1.0));
 }
 
 fn clampPxPerBeat(v: f32, grid: c.rl.Rectangle, clip: Clip) f32 {
@@ -1145,10 +1310,10 @@ fn clampScroll(grid: c.rl.Rectangle, clip: Clip) void {
     if (view.scroll_y < 0) view.scroll_y = 0;
     if (view.scroll_y > max_sy) view.scroll_y = max_sy;
     view.px_per_beat = clampPxPerBeat(view.px_per_beat, grid, clip);
-    if (view.scroll_x < 0) view.scroll_x = 0;
-    const content_w = @as(f32, @floatCast(clipLen(clip.length_beats))) * view.px_per_beat;
-    const max_sx = @max(0, content_w - grid.width);
-    if (view.scroll_x > max_sx) view.scroll_x = max_sx;
+    // Within the span the editor shows (several clips: all of them).
+    const lo_sx = @as(f32, @floatCast(view_span[0])) * view.px_per_beat;
+    const hi_sx = @max(lo_sx, @as(f32, @floatCast(view_span[1])) * view.px_per_beat - grid.width);
+    view.scroll_x = std.math.clamp(view.scroll_x, lo_sx, hi_sx);
 }
 
 fn limits(grid: c.rl.Rectangle, clip: Clip) timeline.Limits {
@@ -1307,8 +1472,8 @@ fn drawGrid(ui: *Ui, r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
 
 /// The transport's position while it plays inside the clip: one amber
 /// line from the ruler down through the lanes, like the arrangement's.
-fn drawPlayhead(ui: *Ui, grid: c.rl.Rectangle, top: f32, bottom: f32, local_beat: f64, length: f64) void {
-    if (local_beat < 0 or local_beat >= length) return;
+fn drawPlayhead(ui: *Ui, grid: c.rl.Rectangle, top: f32, bottom: f32, local_beat: f64, within: [2]f64) void {
+    if (local_beat < within[0] or local_beat >= within[1]) return;
     const x = ceBeatToX(grid.x, local_beat);
     if (x < grid.x or x >= grid.x + grid.width) return;
     ui.rect(Rect.xywh(ipx(x), ipx(top), 1, ipx(bottom - top)), ui_style.accent);
@@ -1316,10 +1481,16 @@ fn drawPlayhead(ui: *Ui, grid: c.rl.Rectangle, top: f32, bottom: f32, local_beat
 
 /// Past the clip end the glass goes to chassis; the end itself is a red line.
 fn drawClipEndOverlay(ui: *Ui, r: c.rl.Rectangle, clip: Clip) void {
+    // Several clips shown: outside the edited one is dimmed, not hidden,
+    // so the others' ghosts read through.
+    const shade = if (shown_n > 1) ui_style.chassis.alpha(150) else ui_style.chassis;
+    const start_x = r.x - view.scroll_x;
+    if (start_x > r.x) ui.rect(frect(r.x, r.y, @min(start_x, r.x + r.width) - r.x, r.height), shade);
+    if (shown_n > 1 and start_x >= r.x and start_x < r.x + r.width) ui.rect(frect(start_x, r.y, 1, r.height), ui_style.rec);
     const end_x = r.x + @as(f32, @floatCast(clipLen(clip.length_beats))) * view.px_per_beat - view.scroll_x;
     if (end_x >= r.x + r.width) return;
     const x0 = @max(end_x, r.x);
-    ui.rect(frect(x0, r.y, r.x + r.width - x0, r.height), ui_style.chassis);
+    ui.rect(frect(x0, r.y, r.x + r.width - x0, r.height), shade);
     if (end_x >= r.x) ui.rect(frect(end_x, r.y, 1, r.height), ui_style.rec);
 }
 
@@ -1768,6 +1939,12 @@ fn handleInput(
         return;
     }
 
+    // A ghost note (another shown clip's): edit that clip.
+    if (m.left_pressed and !md.cmd) if (ce_tracks) |ts| if (ghostAt(grid, ts, clip, m.x, m.y)) |ref| {
+        focus_req = ref;
+        return;
+    };
+
     // Empty grid: draw (DRAW on, or ⌘) or box select.
     if (mode == .draw or md.cmd) {
         if (!pane.tryStartDrag(DRAW_KEY)) return;
@@ -2017,21 +2194,23 @@ fn drawOverview(
 
     // The strip represents the clip [0 .. length_beats] horizontally.
     // Pitch compresses into the strip's vertical span.
-    const clip_beats: f32 = @max(@as(f32, @floatCast(clipLen(clip.length_beats))), 1.0);
+    // The strip spans what the editor shows (several clips: all of them).
+    const clip_beats: f32 = @max(@as(f32, @floatCast(view_span[1] - view_span[0])), 1.0);
+    const ov_lo: f32 = @floatCast(view_span[0]);
     const px_per_beat_ov = inner.width / clip_beats;
     const rows: f32 = @floatFromInt(rowCount() - 1);
     const px_per_row_ov = inner.height / (rows + 1);
 
     // Notes as short horizontal dashes.
     for (clip.notes.items) |note| {
-        const n_x = inner.x + @as(f32, @floatCast(note.start_beat)) * px_per_beat_ov;
+        const n_x = inner.x + (@as(f32, @floatCast(note.start_beat)) - ov_lo) * px_per_beat_ov;
         const n_w = @max(@as(f32, @floatCast(note.length_beats)) * px_per_beat_ov, 1.0);
         const pitch_idx: f32 = @floatFromInt(rowOf(note.pitch) orelse continue);
         const n_y = inner.y + pitch_idx * px_per_row_ov;
         ui.rect(frect(@max(n_x, inner.x), std.math.clamp(n_y, inner.y, inner.y + inner.height - 1), @min(n_w, inner.x + inner.width - n_x), 1), track_color);
     }
 
-    minimap.run(ui, inner, &view, clip_beats, grid.width, limits(grid, clip), play, m, OVERVIEW_KEY, c.rl.GetTime());
+    minimap.run(ui, inner, &view, view_span, grid.width, limits(grid, clip), play, m, OVERVIEW_KEY, c.rl.GetTime());
 }
 
 
@@ -2433,4 +2612,34 @@ test "option resize can go below sixteenth" {
     try std.testing.expectApproxEqAbs(@as(f64, 0.25), resizeMinNoteBeats(.note_16, false), 1e-9);
     try std.testing.expectApproxEqAbs(@as(f64, 0.0625), resizeMinNoteBeats(.note_16, true), 1e-9);
     try std.testing.expectApproxEqAbs(@as(f64, 0.0625), resizeMinNoteBeats(.note_64, true), 1e-9);
+}
+
+test "several selected note clips show together, the span covering them all" {
+    const alloc = std.testing.allocator;
+    const col = c.rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var tracks = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "a", col, track_mod.testMachine()),
+        try track_mod.Track.init(alloc, "b", col, track_mod.testMachine()),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    var a = Clip.init("a", 8, 4);
+    a.selected = true;
+    try tracks[0].addClip(alloc, a);
+    var b = Clip.init("b", 4, 12);
+    b.selected = true;
+    try tracks[1].addClip(alloc, b);
+    try tracks[1].addClip(alloc, Clip.init("c", 0, 4)); // not selected
+    cur_rate = 1;
+    defer shown_n = 0;
+    gatherShown(&tracks, .{ .track = 0, .clip = 0 }, &tracks[0].clips.items[0]);
+    try std.testing.expectEqual(@as(usize, 2), shown_n);
+    // By start: b (4) then a (8); the span from b's start to b's end, in a's beats.
+    try std.testing.expectEqual(@as(u32, 1), shown[0].track);
+    try std.testing.expectEqual(@as(f64, -4), view_span[0]);
+    try std.testing.expectEqual(@as(f64, 8), view_span[1]);
+    // Alone when the other isn't selected.
+    tracks[1].clips.items[0].selected = false;
+    gatherShown(&tracks, .{ .track = 0, .clip = 0 }, &tracks[0].clips.items[0]);
+    try std.testing.expectEqual(@as(usize, 1), shown_n);
+    try std.testing.expectEqual(@as(f64, 0), view_span[0]);
 }

@@ -861,7 +861,7 @@ fn drawOverview(ui: *Ui, strip: c.rl.Rectangle, grid: c.rl.Rectangle, src: *cons
     const inner_r = ui.well(bridge.fromRl(strip), ui_style.well);
     if (inner_r.w < 2 or inner_r.h < 2) return;
     surf.waveformDir(ui, inner_r, &src.cache, 0, @floatFromInt(src.cache.sample_count), track_color.mix(ui_style.well, 0.35), rev);
-    minimap.run(ui, bridge.toRl(inner_r), &view, source_beats, grid.width, limits(grid, source_beats), play, m, OV_KEY, c.rl.GetTime());
+    minimap.run(ui, bridge.toRl(inner_r), &view, .{ 0, source_beats }, grid.width, limits(grid, source_beats), play, m, OV_KEY, c.rl.GetTime());
 }
 
 // ── Handles ──────────────────────────────────────────────────────────
