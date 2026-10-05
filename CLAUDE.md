@@ -199,6 +199,9 @@ Pre-code. When code lands:
 - `area` examples: `fy-embed`, `audio`, `arena`, `ui`, `machine`,
   `kernel`, `docs`
 - One logical change per commit
+- A change users will notice gets a line under **Unreleased** in
+  [CHANGELOG.md](CHANGELOG.md), in the same commit; a release renames that
+  section to its version (`tools/release.sh` publishes it as the notes)
 - No "WIP", "fix typo", "more stuff" — squash before merging
 - Reference doc sections when a commit implements them:
   `kernel: implement vec-each combinator (docs/05 §combinators)`

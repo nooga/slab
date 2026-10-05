@@ -1,8 +1,9 @@
 #!/bin/bash
 # Publish a Slab release on GitHub: package HEAD and attach Slab.zip,
 # Slab-<version>.dmg and install.sh to release v<version>, with the
-# version from build.zig.zon, then point the Homebrew cask in
-# nooga/homebrew-tap at it. Bump that version and commit first.
+# version from build.zig.zon and its CHANGELOG.md section as the notes,
+# then point the Homebrew cask in nooga/homebrew-tap at it. Bump that
+# version, give it a section in CHANGELOG.md and commit first.
 #
 #   tools/release.sh
 #
@@ -23,6 +24,15 @@ if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
     exit 1
 fi
 
+# The release's notes: its section of CHANGELOG.md (## <version> — date).
+NOTES=$(awk -v v="$VERSION" '
+    /^## / { on = ($2 == v) ; next }
+    on { print }' CHANGELOG.md)
+if [ -z "$(echo "$NOTES" | tr -d '[:space:]')" ]; then
+    echo "CHANGELOG.md has no section for $VERSION (## $VERSION — date)." >&2
+    exit 1
+fi
+
 BUILD="$PWD/zig-out/release-build"
 git worktree remove --force "$BUILD" 2>/dev/null || rm -rf "$BUILD"
 git worktree add --detach "$BUILD" HEAD
@@ -35,7 +45,11 @@ git push origin "$TAG"
 
 gh release create "$TAG" -R "$REPO" \
     --title "Slab $VERSION" \
-    --notes "Apple Silicon, macOS 13 or later. Built from $TAG, which is its complete source (GPL-3.0-or-later, see COPYING.md).
+    --notes "$NOTES
+
+---
+
+Apple Silicon, macOS 13 or later. Built from $TAG, which is its complete source (GPL-3.0-or-later, see COPYING.md).
 
 Install:
 
