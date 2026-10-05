@@ -462,9 +462,9 @@ Later, not designed here:
   robin.
 - **Bounce to sampler**: the selection becomes a sampler instrument,
   sliced at its notes or as one chromatic sample.
-- **Freeze**: a whole track rendered to replace its instrument and
-  inserts for CPU, built on the same recipe and render mask
-  ([docs/28](28-time.md#freeze)).
+- **Freeze** (built, [docs/28](28-time.md#freeze)): a whole track
+  rendered to replace its instrument and inserts for CPU, on Bounce's
+  job and FX tap.
 - **Resample input**: record the master or another track live, as a
   track's input (docs/07 §Recording, Deferred).
 - **Recipes without the audio**: since a fresh recipe reproduces its
