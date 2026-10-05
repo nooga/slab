@@ -33,6 +33,17 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   you last clicked on empty space. Keys follow the pane you last clicked
   in, track headers and editor buttons included, and the audio editor no
   longer takes note keys.
+- **Time selection**: drag across empty lanes to select a stretch of
+  time on the tracks you cross. **⌘D** repeats it right after itself
+  (press again to keep going), **⌫** empties it, **⌘C / ⌘V** copy it and
+  lay it down where you click, **⌘L** loops it, **⌘E** cuts the clips at
+  its edges. **⌘I Insert time** and **⌘⇧⌫ Delete time** open or close
+  that much time across the whole song, tempo, meter and sections
+  included. In the piano roll, ⌘D on a box selection repeats the whole
+  stretch, gaps and all.
+- **⌘J joins** the selected note clips on a track into one.
+- **⌥-drag** a clip or a note to copy it; **⌘-drag** on an empty lane
+  draws a clip as long as you drag.
 - **Menus** list their items in the same order in every editor, and an
   unwarped audio clip's editor has a right-click menu too.
 

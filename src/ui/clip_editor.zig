@@ -192,6 +192,16 @@ const SCRUB_KEY: u64 = 0x5C2B_C11E_0000_0001;
 /// Zoom to the selection on the next frame (Z).
 var zoom_req = false;
 
+/// The time selection the last box drew, in the clip's beats.
+var note_range: ?[2]f64 = null;
+
+/// The time selection in song beats (⌘L loops it).
+pub fn timeRange(tracks: []track_mod.Track, selected: ?ClipRef) ?[2]f64 {
+    const nr = note_range orelse return null;
+    const res = resolveClip(tracks, selected) orelse return null;
+    return .{ res.clip.start_beat + nr[0] / cur_rate, res.clip.start_beat + nr[1] / cur_rate };
+}
+
 /// The last click on empty grid, in song beats (docs/31 §Keys).
 var cursor: ?timeline.Cursor = null;
 
@@ -205,6 +215,7 @@ pub fn zoomToSelection() void {
 }
 
 fn selectedSpan(clip: Clip) ?[2]f64 {
+    if (note_range) |nr| return nr;
     var lo: f64 = std.math.inf(f64);
     var hi: f64 = -std.math.inf(f64);
     for (clip.notes.items) |n| {
@@ -261,6 +272,13 @@ var box: gesture.Box = .{};
 // Move drag.
 const MoveSnap = struct { idx: u32, start_beat: f64, pitch: u8 };
 var move_active: bool = false;
+/// Past the drag threshold yet.
+var move_moved = false;
+/// ⌥ at the press: the drag leaves copies behind (docs/31 §Pointer).
+var move_dup = false;
+var move_alloc: std.mem.Allocator = undefined;
+/// The note count before an ⌥-drag appended its copies.
+var move_notes_before: usize = 0;
 var move_start_mouse_x: f32 = 0;
 var move_start_mouse_y: f32 = 0;
 var move_snaps: std.ArrayList(MoveSnap) = .empty;
@@ -308,6 +326,9 @@ pub fn cancelInteractions(tracks: []track_mod.Track, selected: ?ClipRef) bool {
             notes[sn.idx].start_beat = sn.start_beat;
             notes[sn.idx].pitch = sn.pitch;
         };
+        // An ⌥-drag's copies go again.
+        if (move_active and move_dup and move_moved and res.clip.notes.items.len > move_notes_before)
+            res.clip.notes.shrinkRetainingCapacity(move_notes_before);
         if (resize_active) for (resize_snaps.items) |sn| if (sn.idx < notes.len) {
             notes[sn.idx].start_beat = sn.start;
             notes[sn.idx].length_beats = sn.length;
@@ -347,7 +368,8 @@ pub fn deleteSelectedNotes(tracks: []track_mod.Track, selected: ?ClipRef) bool {
 
 pub fn clearSelection(tracks: []track_mod.Track, selected: ?ClipRef) bool {
     const resolved = resolveClip(tracks, selected) orelse return false;
-    const changed = resolved.clip.selectedCount() > 0;
+    const changed = resolved.clip.selectedCount() > 0 or note_range != null;
+    note_range = null;
     resolved.clip.deselectAll();
     return changed;
 }
@@ -438,7 +460,10 @@ pub fn duplicateSelectedNotes(tracks: []track_mod.Track, selected: ?ClipRef, all
     }
     const raw_offset = @max(last_end - first_start, MIN_NOTE_BEATS);
     const snapped_offset = snap_mod.snapNearest(edit_snap, raw_offset, false);
-    const offset = if (snapped_offset >= minNoteBeats(edit_snap)) snapped_offset else raw_offset;
+    // With a time selection, by its length (gaps and all), and it moves
+    // onto the copy (docs/31 §Time selection).
+    const offset = if (note_range) |nr| nr[1] - nr[0] else if (snapped_offset >= minNoteBeats(edit_snap)) snapped_offset else raw_offset;
+    if (note_range) |nr| note_range = .{ nr[1], nr[1] + offset };
     const original_len = resolved.clip.notes.items.len;
 
     var i: usize = 0;
@@ -807,6 +832,7 @@ fn maybeResetOnClipChange(selected: ?ClipRef, clip: *Clip) void {
     if (key != last_clip_key) {
         last_clip_key = key;
         cursor = null;
+        note_range = null;
         clip.deselectAll();
         env_lane = 0;
         initialized_scroll = false;
@@ -923,6 +949,7 @@ fn drawPianoRoll(
         ui.rect(nr, track_color.mix(ui_style.text, 0.3));
         ui.bevel(nr, ui_style.text, ui_style.text);
     }
+    drawNoteRange(ui, grid_rect);
     box.draw(ui, m);
     ui.unclip();
 
@@ -962,6 +989,8 @@ fn drawPianoRoll(
         .{ .label = "Select all", .command = .select_all, .enabled = has_notes },
         .{ .label = "Clear selection", .command = .clear_selection, .enabled = has_selection },
         .{ .label = "Zoom to selection", .command = .zoom_to_selection },
+        .{ .separator = true },
+        .{ .label = "Loop selection", .command = .loop_selection, .enabled = note_range != null },
         .{ .separator = true },
         .{ .label = "Rename clip", .command = .rename },
     };
@@ -1639,6 +1668,7 @@ fn handleInput(
     // A note: click selects (⇧/⌘ toggles), drag moves, an edge resizes
     // from that end; the same in both modes.
     if (hit) |h| {
+        if (!toggle) note_range = null;
         const n = &clip.notes.items[h.idx];
         if (h.part != .body) {
             if (!n.selected) {
@@ -1705,7 +1735,7 @@ fn updateInProgressDrag(
         return true;
     }
     if (box.active) {
-        updateBox(grid, clip, m);
+        updateBox(grid, clip, edit_snap, m);
         return true;
     }
     if (move_active) {
@@ -1742,17 +1772,40 @@ fn updateDraw(grid: c.rl.Rectangle, clip: *Clip, alloc: std.mem.Allocator, edit_
     }
 }
 
-fn updateBox(grid: c.rl.Rectangle, clip: *Clip, m: pane.Mouse) void {
+fn updateBox(grid: c.rl.Rectangle, clip: *Clip, edit_snap: snap_mod.Setting, m: pane.Mouse) void {
+    if (box.active and box.moved(m)) {
+        // The box's stretch of time is the time selection (docs/31).
+        const a = snap_mod.snapNearest(edit_snap, @max(0, beatAtX(grid, box.x0)), altBypassSnap());
+        const b = snap_mod.snapNearest(edit_snap, @max(0, beatAtX(grid, m.x)), altBypassSnap());
+        note_range = if (@abs(b - a) > 1e-9) .{ @min(a, b), @max(a, b) } else null;
+    }
     switch (box.finish(m)) {
         .rect => |box_r| for (clip.notes.items) |*n| {
             if (gesture.overlaps(noteRect(grid, n.*), box_r)) n.selected = true;
         },
-        else => {},
+        .click => note_range = null,
+        .none => {},
     }
+}
+
+/// The time selection over the grid: a light wash, its edges marked.
+fn drawNoteRange(ui: *Ui, grid: c.rl.Rectangle) void {
+    const nr = note_range orelse return;
+    const x0 = beatAtXInv(grid, nr[0]);
+    const x1 = beatAtXInv(grid, nr[1]);
+    const r = frect(x0, grid.y, x1 - x0, grid.height);
+    ui.rect(r, ui_style.text.alpha(20));
+    ui.rect(Rect.xywh(r.x, r.y, 1, r.h), ui_style.text_dim);
+    ui.rect(Rect.xywh(r.right() - 1, r.y, 1, r.h), ui_style.text_dim);
+}
+
+fn beatAtXInv(grid: c.rl.Rectangle, beat: f64) f32 {
+    return view.beatToX(grid.x, beat);
 }
 
 fn beginMove(alloc: std.mem.Allocator, clip: Clip, m: pane.Mouse) !void {
     if (!pane.tryStartDrag(MOVE_KEY)) return;
+    move_alloc = alloc;
     move_snaps.clearRetainingCapacity();
     for (clip.notes.items, 0..) |n, i| {
         if (n.selected) {
@@ -1768,6 +1821,8 @@ fn beginMove(alloc: std.mem.Allocator, clip: Clip, m: pane.Mouse) !void {
         return;
     }
     move_active = true;
+    move_moved = false;
+    move_dup = gesture.mods().alt;
     move_start_mouse_x = m.x;
     move_start_mouse_y = m.y;
 }
@@ -1780,7 +1835,20 @@ fn updateMove(grid: c.rl.Rectangle, clip: *Clip, edit_snap: snap_mod.Setting, m:
         return;
     }
     pane.requestCursor(c.rl.MOUSE_CURSOR_POINTING_HAND, 3);
-    const d_beats = snap_mod.snapNearest(edit_snap, @as(f64, (m.x - move_start_mouse_x) / view.px_per_beat), altBypassSnap());
+    if (!move_moved) {
+        if (@abs(m.x - move_start_mouse_x) < gesture.DRAG_THRESHOLD and @abs(m.y - move_start_mouse_y) < gesture.DRAG_THRESHOLD) return;
+        move_moved = true;
+        move_notes_before = clip.notes.items.len;
+        // ⌥-drag: copies stay where the notes were (appended, so the
+        // drag's indexes hold) and the originals move.
+        if (move_dup) for (move_snaps.items) |sn| if (sn.idx < clip.notes.items.len) {
+            var cp = clip.notes.items[sn.idx];
+            cp.selected = false;
+            clip.notes.append(move_alloc, cp) catch {};
+        };
+    }
+    // ⌥ that started a duplicate keeps the grid; held later, it frees it.
+    const d_beats = snap_mod.snapNearest(edit_snap, @as(f64, (m.x - move_start_mouse_x) / view.px_per_beat), altBypassSnap() and !move_dup);
     const d_rows = std.math.clamp(@as(i32, @intFromFloat(@round((m.y - move_start_mouse_y) / view.row_h))), -127, 127);
     for (move_snaps.items) |s| {
         if (s.idx >= clip.notes.items.len) continue;

@@ -148,6 +148,9 @@ const ClipboardMode = enum { empty, clips, notes };
 
 const EditClipboard = struct {
     mode: ClipboardMode = .empty,
+    /// A copied time selection's length (0: plain clips): pasting it
+    /// replaces that much of the tracks (docs/31 §Time selection).
+    span: f64 = 0,
     clips: std.ArrayList(arrangement.CopiedClip) = .empty,
     notes: std.ArrayList(clip_mod.Note) = .empty,
 
@@ -162,6 +165,7 @@ const EditClipboard = struct {
         self.clips.clearRetainingCapacity();
         self.notes.clearRetainingCapacity();
         self.mode = .empty;
+        self.span = 0;
     }
 };
 
@@ -180,6 +184,10 @@ const StatusMessage = struct {
         return "";
     }
 };
+
+/// The song-wide state Insert and Delete time move (docs/31 §Time
+/// selection), set once the app's state exists.
+var arrange_ctx: ?struct { meter: *meter_mod.MeterState, markers: *markers_mod.Markers } = null;
 
 const EditTarget = struct {
     beat: ?f64 = null,
@@ -838,6 +846,8 @@ pub fn main(init: std.process.Init) !void {
     document_mod.setMeterState(&meter_state);
     var markers: markers_mod.Markers = .{};
     document_mod.setMarkers(&markers);
+    arrange_ctx = .{ .meter = &meter_state, .markers = &markers };
+    defer arrange_ctx = null;
     // Grooves (docs/28 §Groove): the pool and the song's settings, read
     // where tracks publish their notes; set before a project loads.
     var groove_pool = groove_mod.Pool.init();
@@ -1244,7 +1254,7 @@ pub fn main(init: std.process.Init) !void {
             if (arrangement.clipMoveActive() and pane.contains(rects.browser, m.x, m.y)) {
                 browser.drawTarget(ui, uiRect(rects.browser), true, "SAVE TO LIBRARY");
                 if (!ui.raw_in.down) {
-                    _ = arrangement.abortClipMove(tracks);
+                    _ = arrangement.abortClipMove(tracks, alloc);
                     saveClipsToLibrary(alloc, tracks, &status);
                     lib_stale = true;
                 }
@@ -6526,7 +6536,7 @@ fn handleFocusedEditCommands(
 
     if (c.rl.IsKeyPressed(c.rl.KEY_ESCAPE)) {
         const cancelled = switch (focus) {
-            .arrangement => arrangement.abortClipMove(tracks) or arrangement.cancelInteractions(),
+            .arrangement => arrangement.abortClipMove(tracks, alloc) or arrangement.cancelInteractions(),
             .piano_roll => clip_editor.cancelInteractions(tracks, selected_clip.*),
             .browser, .machine_bay, .top_bar => false,
         };
@@ -6594,6 +6604,12 @@ fn copyFocusedSelection(
     clipboard.clear(alloc);
     switch (focus) {
         .arrangement => {
+            if (arrangement.timeRange() != null) if (arrangement.copyRange(tracks, alloc, &clipboard.clips)) |len| {
+                clipboard.mode = .clips;
+                clipboard.span = len;
+                status.set("Copied {d:.2} beats", .{len});
+                return true;
+            };
             if (arrangement.copySelectedClips(tracks, alloc, &clipboard.clips)) {
                 clipboard.mode = .clips;
                 status.set("Copied {d} clip{s}", .{ clipboard.clips.items.len, plural(clipboard.clips.items.len) });
@@ -6627,7 +6643,9 @@ fn pasteFocusedClipboard(
 ) bool {
     const target_beat = target.beat orelse fallback_beat;
     const changed = switch (focus) {
-        .arrangement => if (clipboard.mode == .clips)
+        .arrangement => if (clipboard.mode == .clips and clipboard.span > 0)
+            arrangement.pasteRange(tracks, alloc, selected_track, selected_clip, clipboard.clips.items, clipboard.span, target_beat, target.track orelse selected_track.* orelse 0)
+        else if (clipboard.mode == .clips)
             arrangement.pasteClips(tracks, alloc, selected_track, selected_clip, clipboard.clips.items, target_beat, target.track, edit_snap)
         else
             false,
@@ -6718,7 +6736,7 @@ fn executeEditCommand(
         .cut => {
             if (copyFocusedSelection(alloc, clipboard, status, focus, tracks, selected_clip.*)) {
                 changed = switch (focus) {
-                    .arrangement => arrangement.deleteSelectedClips(tracks, alloc, selected_clip),
+                    .arrangement => if (arrangement.timeRange() != null) arrangement.clearRange(tracks, alloc, selected_clip) else arrangement.deleteSelectedClips(tracks, alloc, selected_clip),
                     .piano_roll => clip_editor.deleteSelectedPoints(tracks, selected_clip.*) or clip_editor.deleteSelectedNotes(tracks, selected_clip.*),
                     .browser, .machine_bay, .top_bar => false,
                 };
@@ -6730,7 +6748,7 @@ fn executeEditCommand(
         },
         .duplicate => {
             changed = switch (focus) {
-                .arrangement => arrangement.duplicateSelectedClips(tracks, alloc, selected_track, selected_clip, edit_snap),
+                .arrangement => if (arrangement.timeRange() != null) arrangement.duplicateRange(tracks, alloc, selected_track, selected_clip) else arrangement.duplicateSelectedClips(tracks, alloc, selected_track, selected_clip, edit_snap),
                 .piano_roll => clip_editor.duplicateSelectedNotes(tracks, selected_clip.*, alloc, edit_snap),
                 .browser, .machine_bay, .top_bar => false,
             };
@@ -6738,14 +6756,21 @@ fn executeEditCommand(
         },
         .delete => {
             changed = switch (focus) {
-                .arrangement => arrangement.deleteSelectedPoints(tracks) or arrangement.deleteSelectedClips(tracks, alloc, selected_clip),
+                .arrangement => arrangement.deleteSelectedPoints(tracks) or (if (arrangement.timeRange() != null) arrangement.clearRange(tracks, alloc, selected_clip) else arrangement.deleteSelectedClips(tracks, alloc, selected_clip)),
                 .piano_roll => clip_editor.deleteSelectedPoints(tracks, selected_clip.*) or clip_editor.deleteSelectedNotes(tracks, selected_clip.*),
                 .browser, .machine_bay, .top_bar => false,
             };
             if (changed) status.set("Deleted", .{});
         },
         .loop_selection => {
-            changed = if (focus == .arrangement) arrangement.loopSelectedClips(tracks, transport) else false;
+            changed = if (focus == .piano_roll) blk: {
+                const r = clip_editor.timeRange(tracks, selected_clip.*) orelse break :blk false;
+                transport.setLoopBeats(r[0], r[1]);
+                break :blk true;
+            } else if (focus != .arrangement) false else if (arrangement.timeRange()) |r| blk: {
+                transport.setLoopBeats(r.a, r.b);
+                break :blk true;
+            } else arrangement.loopSelectedClips(tracks, transport);
             if (changed) status.set("Looped selection", .{});
         },
         .loop_arrangement => {
@@ -6793,8 +6818,27 @@ fn executeEditCommand(
             if (changed) status.set("Solos and mutes cleared", .{});
         },
         .split_at_playhead => {
-            changed = if (focus == .arrangement) arrangement.splitSelectedClipsAt(tracks, alloc, selected_clip, transport.beats(), transport.map()) else false;
+            changed = if (focus != .arrangement) false else if (arrangement.timeRange() != null) arrangement.splitRange(tracks, alloc, selected_track, selected_clip) else if (focus == .arrangement) arrangement.splitSelectedClipsAt(tracks, alloc, selected_clip, transport.beats(), transport.map()) else false;
             if (changed) status.set("Split clips", .{});
+        },
+        .join => {
+            changed = focus == .arrangement and arrangement.joinSelectedClips(tracks, alloc, selected_track, selected_clip);
+            if (changed) status.set("Joined", .{}) else status.set("Select two or more note clips on a track to join", .{});
+        },
+        .insert_time, .delete_time => if (focus == .arrangement) if (arrange_ctx) |ctx| {
+            const r = arrangement.timeRange() orelse {
+                status.set("Drag across the lanes to pick the time first", .{});
+                alloc.free(before);
+                return;
+            };
+            const song = arrange_mod.Song{ .alloc = alloc, .tracks = tracks, .tempo = &transport.tempo, .meter = ctx.meter, .markers = ctx.markers, .song_end = lastClipEnd(tracks) };
+            const res = if (command == .insert_time) arrange_mod.insertTime(&song, r.a, r.len()) else arrange_mod.remove(&song, r.a, r.b);
+            res catch |err| status.set("Edit failed: {s}", .{@errorName(err)});
+            // Clip indexes moved: nothing stays selected.
+            _ = arrangement.clearSelection(tracks, selected_clip);
+            if (document_mod.audioPool()) |ap| for (tracks) |*t| t.publishSnapshot(ap);
+            changed = true;
+            status.set("{s} {d:.2} beats", .{ if (command == .insert_time) "Inserted" else "Deleted", r.len() });
         },
         .quantize => {
             changed = if (focus == .piano_roll) clip_editor.quantizeSelectedNotes(tracks, selected_clip.*, edit_snap) else false;

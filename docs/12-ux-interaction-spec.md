@@ -54,13 +54,17 @@ note expression) shares one grammar (`ui/gesture.zig`, docs/31
   ends up before the new start is cut when the drag ends; on audio it
   trims the source window (⌘: stretch).
 - **Empty space:** a press clears the selection (unless ⇧) and sets the
-  edit cursor; a drag draws a box that selects every object it touches;
-  a click within 3 px only clears.
+  edit cursor; a drag draws a box that selects every object it touches,
+  and its stretch of time becomes the **time selection** (below); a
+  click within 3 px only clears.
+- **⌥-drag** an object: copies stay where the selection was and it
+  moves; the grid stays on (⌥ pressed after the drag started frees it).
+  Escape takes the copies back.
 - **Double-click:** on empty grid, create (a one-bar clip, a note of the
   grid's length, a point, a warp marker); on a note or point, delete it;
   on a clip, rename it.
-- **⌘-drag** on empty space draws: notes in the piano roll, points in a
-  lane. The piano roll's DRAW latch makes a plain drag draw.
+- **⌘-drag** on empty space draws: a clip on an arrangement lane (a
+  click makes one bar), notes in the piano roll, points in a lane. The piano roll's DRAW latch makes a plain drag draw.
 - **Right-click:** selects the object if it isn't, sets the edit
   cursor, opens the menu.
 - **Escape:** ends a drag with everything back where it started, else
@@ -73,6 +77,19 @@ note expression) shares one grammar (`ui/gesture.zig`, docs/31
 - **Minimaps** (all of them): drag the window to pan, press outside it
   to jump there and keep dragging, drag its edges to zoom, wheel over it
   to zoom.
+
+### Time selection
+
+docs/31 §Time selection. In the arrangement a drag on empty lanes
+selects a stretch of time across the tracks it spans (snapped; ⌥ off
+the grid), shown as a light wash and a bar along the ruler, and the
+clips it touches. ⌘D duplicates it after itself (over what was there;
+the selection moves onto the copy), ⌫ empties it, ⌘C/⌘X/⌘V copy, cut
+and lay it over the tracks from the edit cursor down, ⌘L loops it, ⌘E
+cuts at its edges, Z zooms to it, ⌘I inserts its length of time and
+⌘⇧⌫ deletes it, song-wide. In the piano roll the box's stretch is the
+selection: ⌘D duplicates the selected notes by its length, ⌘L loops
+it.
 
 ### Arrangement
 
@@ -126,7 +143,7 @@ pane can't use does nothing there.
 | key | does |
 |---|---|
 | ⌘C ⌘X ⌘V | copy, cut, paste: a key's paste lands at the edit cursor (the last click on empty space), else the playhead; a menu's at the click |
-| D, ⌘D | duplicate the selection after itself |
+| D, ⌘D | duplicate the time selection, else the selection, after itself |
 | ⌫ | delete: selected lane or expression points first, then the selection |
 | ⌘A | select all |
 | Esc | cancel the drag, else clear the selection |
@@ -135,8 +152,10 @@ pane can't use does nothing there.
 | ↩ | rename the clip (or the track) |
 | 0 | mute the selection |
 | Z | zoom to the selection, or the whole clip/song |
-| ⌘L | loop the selected clips (arrangement) |
-| ⌘E | split the selected clips at the playhead (arrangement) |
+| ⌘L | loop the time selection, else the selected clips |
+| ⌘E | split at the time selection's edges, else the selected clips at the playhead (arrangement) |
+| ⌘J | join the selected note clips on each track |
+| ⌘I / ⌘⇧⌫ | insert / delete the time selection's time, song-wide |
 | Q H S | quantize, humanize, snap to scale (notes) |
 | E | expression mode (notes) |
 | [ ] | coarser / finer snap |

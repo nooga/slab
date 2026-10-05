@@ -70,6 +70,9 @@ pub const EditCommand = enum {
     section_tempo_to_clip,
     tune,
     zoom_to_selection,
+    join,
+    insert_time,
+    delete_time,
 };
 
 pub const Item = struct {

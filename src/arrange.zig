@@ -42,9 +42,19 @@ pub const Song = struct {
 /// end there; lanes and audio windows split so each part plays what it
 /// played.
 pub fn splitClip(alloc: std.mem.Allocator, t: *Track, ci: usize, beat: f64, tmap: *const tempo_mod.TempoMap) !bool {
-    const clip = &t.clips.items[ci];
+    var right = (try splitOff(alloc, &t.clips.items[ci], beat, tmap)) orelse return false;
+    t.addClip(alloc, right) catch |err| {
+        right.deinit(alloc);
+        return err;
+    };
+    return true;
+}
+
+/// Cut `clip` at song beat `beat`, if it crosses it: it keeps the left
+/// part and the right part is returned.
+pub fn splitOff(alloc: std.mem.Allocator, clip: *Clip, beat: f64, tmap: *const tempo_mod.TempoMap) !?Clip {
     const local = beat - clip.start_beat;
-    if (local <= EPS or local >= clip.length_beats - EPS) return false;
+    if (local <= EPS or local >= clip.length_beats - EPS) return null;
     if (clip.isAudio() and clip.audio.warp) {
         // Warped (docs/29): both halves keep the whole map; the right one
         // starts that many content beats in.
@@ -58,8 +68,7 @@ pub fn splitClip(alloc: std.mem.Allocator, t: *Track, ci: usize, beat: f64, tmap
         try right.warp_markers.appendSlice(alloc, clip.warp_markers.items);
         clip.audio.fade_out_sec = 0;
         clip.length_beats = local;
-        try t.addClip(alloc, right);
-        return true;
+        return right;
     }
     if (clip.isAudio()) {
         const split_sec = tmap.secondsAt(beat) - tmap.secondsAt(clip.start_beat);
@@ -77,8 +86,7 @@ pub fn splitClip(alloc: std.mem.Allocator, t: *Track, ci: usize, beat: f64, tmap
         clip.audio.dur_sec = split_sec;
         clip.audio.fade_out_sec = 0;
         clip.length_beats = local;
-        try t.addClip(alloc, right);
-        return true;
+        return right;
     }
     var right = Clip.init(clip.name(), beat, clip.start_beat + clip.length_beats - beat);
     errdefer right.deinit(alloc);
@@ -98,8 +106,7 @@ pub fn splitClip(alloc: std.mem.Allocator, t: *Track, ci: usize, beat: f64, tmap
     }
     try clip.splitLanes(alloc, &right, local);
     clip.length_beats = local;
-    try t.addClip(alloc, right);
-    return true;
+    return right;
 }
 
 /// Cut every clip crossing `beat`.
@@ -108,6 +115,70 @@ pub fn splitAll(s: *const Song, beat: f64) !void {
         const n = t.clips.items.len;
         for (0..n) |ci| _ = try splitClip(s.alloc, t, ci, beat, &s.tempo.live);
     }
+}
+
+// ── A stretch of some tracks (docs/31 §Time selection) ───────────────
+
+/// Copies of what of `clips` plays in [a, b), cut at its edges, their
+/// starts counted from `a`. The clips themselves are left as they are.
+pub fn copySpan(alloc: std.mem.Allocator, clips: []const Clip, a: f64, b: f64, tmap: *const tempo_mod.TempoMap, out: *std.ArrayList(Clip)) !void {
+    for (clips) |*c| {
+        if (c.start_beat >= b - EPS or c.start_beat + c.length_beats <= a + EPS) continue;
+        var piece = try c.clone(alloc);
+        if (try splitOff(alloc, &piece, a, tmap)) |right| {
+            piece.deinit(alloc);
+            piece = right;
+        }
+        if (try splitOff(alloc, &piece, b, tmap)) |right| {
+            var r = right;
+            r.deinit(alloc);
+        }
+        piece.start_beat -= a;
+        out.append(alloc, piece) catch |err| {
+            piece.deinit(alloc);
+            return err;
+        };
+    }
+}
+
+/// Empty [a, b) on `t`: clips crossing its edges are cut there, what is
+/// inside goes. Nothing moves.
+pub fn clearSpan(alloc: std.mem.Allocator, t: *Track, a: f64, b: f64, tmap: *const tempo_mod.TempoMap) !void {
+    var n = t.clips.items.len;
+    for (0..n) |ci| _ = try splitClip(alloc, t, ci, a, tmap);
+    n = t.clips.items.len;
+    for (0..n) |ci| _ = try splitClip(alloc, t, ci, b, tmap);
+    var ci: usize = 0;
+    while (ci < t.clips.items.len) {
+        const c = &t.clips.items[ci];
+        if (c.start_beat >= a - EPS and c.start_beat < b - EPS) {
+            var gone = t.clips.orderedRemove(ci);
+            gone.deinit(alloc);
+        } else ci += 1;
+    }
+}
+
+/// Open `len` beats of nothing at `at` across the song: clips are cut
+/// there and everything after moves later, the tempo there held through
+/// the gap; whole bars from a downbeat move the meter map too.
+pub fn insertTime(s: *const Song, at: f64, len: f64) !void {
+    if (len <= EPS) return;
+    const mm = s.meter.liveMap();
+    const bar_at = barOf(s, at);
+    const end_pos = mm.beatToBarPos(at + len);
+    const whole = onBar(s, at) and @abs(mm.barStartBeat(end_pos.bar) - (at + len)) < EPS;
+    var p = Piece{ .len = len, .bars = if (whole) end_pos.bar - bar_at else 0, .whole_bars = whole };
+    defer p.deinit(s.alloc);
+    var t0 = tempoPin(&s.tempo.live, at);
+    t0.beat = 0;
+    t0.ramp = false;
+    try p.tempo.append(s.alloc, t0);
+    if (whole) {
+        var m0 = meterPin(mm, bar_at);
+        m0.start_bar = 0;
+        try p.meter.append(s.alloc, m0);
+    }
+    try put(s, at, &p);
 }
 
 // ── Curves ─────────────────────────────────────────────────────────────
@@ -736,4 +807,66 @@ test "a pickup section (off the bar) moves its content to the beat and leaves th
     const pts = f.meter.liveMap().points;
     try testing.expectEqual(@as(usize, 2), pts.len);
     try testing.expectEqual(@as(u32, 12), pts[1].start_bar);
+}
+
+test "copy a stretch: pieces cut at its edges, the clip untouched" {
+    const alloc = testing.allocator;
+    var f: Fixture = undefined;
+    try f.init(alloc);
+    defer f.deinit(alloc);
+    var out: std.ArrayList(Clip) = .empty;
+    defer {
+        for (out.items) |*c| c.deinit(alloc);
+        out.deinit(alloc);
+    }
+    try copySpan(alloc, f.tracks[0].clips.items, 6, 14, &f.tempo.live, &out);
+    try testing.expectEqual(@as(usize, 1), out.items.len);
+    const c = out.items[0];
+    try testing.expectEqual(@as(f64, 0), c.start_beat);
+    try testing.expectEqual(@as(f64, 8), c.length_beats);
+    // The notes at 8 and 12 land at 2 and 6.
+    try testing.expectEqual(@as(usize, 2), c.notes.items.len);
+    try testing.expectEqual(@as(f64, 2), c.notes.items[0].start_beat);
+    try testing.expectEqual(@as(f64, 6), c.notes.items[1].start_beat);
+    try testing.expectEqual(@as(usize, 1), f.tracks[0].clips.items.len);
+    try testing.expectEqual(@as(f64, 32), f.tracks[0].clips.items[0].length_beats);
+}
+
+test "clear a stretch: the clip cut around a gap, nothing moves" {
+    const alloc = testing.allocator;
+    var f: Fixture = undefined;
+    try f.init(alloc);
+    defer f.deinit(alloc);
+    try clearSpan(alloc, &f.tracks[0], 6, 14, &f.tempo.live);
+    const cs = f.tracks[0].clips.items;
+    try testing.expectEqual(@as(usize, 2), cs.len);
+    try testing.expectEqual(@as(f64, 6), cs[0].length_beats);
+    try testing.expectEqual(@as(f64, 14), cs[1].start_beat);
+    var ns: [32][2]f64 = undefined;
+    try testing.expectEqual(@as(usize, 6), f.notes(&ns));
+}
+
+test "insert time: everything after moves later, a bar of 4/4 keeps the meter" {
+    const alloc = testing.allocator;
+    var f: Fixture = undefined;
+    try f.init(alloc);
+    defer f.deinit(alloc);
+    const s = f.song(alloc);
+    try insertTime(&s, 16, 4);
+    try testing.expectEqual(@as(f64, 20), f.markers.sections[1].beat);
+    try testing.expectEqual(@as(?f64, 52), f.markers.end);
+    var ns: [32][2]f64 = undefined;
+    const n = f.notes(&ns);
+    try testing.expectEqual(@as(usize, 8), n);
+    try testing.expectEqual(@as(f64, 12), ns[3][0]);
+    try testing.expectEqual(@as(f64, 20), ns[4][0]);
+    try testing.expectEqual(@as(f64, 120), f.tempo.live.bpmAt(35));
+    try testing.expectEqual(@as(f64, 140), f.tempo.live.bpmAt(36));
+    // Delete it again: back as it was.
+    try remove(&s, 16, 20);
+    try testing.expectEqual(@as(f64, 16), f.markers.sections[1].beat);
+    const n2 = f.notes(&ns);
+    try testing.expectEqual(@as(usize, 8), n2);
+    try testing.expectEqual(@as(f64, 16), ns[4][0]);
+    try testing.expectEqual(@as(f64, 140), f.tempo.live.bpmAt(32));
 }
