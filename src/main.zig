@@ -18,6 +18,7 @@ const groove_mod = @import("groove.zig");
 const arrange_mod = @import("arrange.zig");
 const warp_mod = @import("warp.zig");
 const tempo_detect = @import("tempo_detect.zig");
+const tempo_mod = @import("tempo.zig");
 const track_mod = @import("track.zig");
 const clip_mod = @import("clip.zig");
 const audio_pool_mod = @import("audio_pool.zig");
@@ -2087,6 +2088,71 @@ fn importAudioClip(
     selected_clip.* = .{ .track = @intCast(ti), .clip = @intCast(tracks[ti].clips.items.len - 1) };
     dirty.* = true;
     if (warped) |bpm| status.set("Imported {s}, warped from {d:.2} BPM", .{ src.name(), bpm }) else status.set("Imported {s}", .{src.name()});
+}
+
+/// The song's tempo over a warped clip set so it plays at its own speed
+/// (docs/29 §Audio on the time axis): its markers become tempo changes,
+/// and the tempo after it is what it was.
+fn songFollowsClip(tracks: []track_mod.Track, sel: ?clip_mod.ClipRef, transport: *transport_mod.Transport) bool {
+    const ref = sel orelse return false;
+    if (ref.track >= tracks.len or ref.clip >= tracks[ref.track].clips.items.len) return false;
+    const t = &tracks[ref.track];
+    const clip = &t.clips.items[ref.clip];
+    if (!clip.isAudio() or !clip.audio.warp) return false;
+    const rate = t.time.rate();
+    var pts: [tempo_mod.MAX_POINTS]tempo_mod.TempoPoint = undefined;
+    const n = warp_mod.songTempo(clip, rate, &pts);
+    if (n == 0) return false;
+    const start = clip.start_beat;
+    const end = start + clip.length_beats / rate;
+    const m = transport.tempo.edit();
+    const after = m.bpmAt(end);
+    var i = m.len;
+    while (i > 1) {
+        i -= 1;
+        if (m.points[i].beat >= start - 1e-6 and m.points[i].beat <= end + 1e-6) m.remove(i);
+    }
+    for (pts[0..n]) |p| if (m.put(p.beat, p.bpm)) |k| {
+        m.points[k].ramp = false;
+    };
+    if (m.find(end) == null) _ = m.put(end, after);
+    transport.tempo.publish();
+    return true;
+}
+
+/// A groove from an audio clip's hits (docs/28 §Groove): where they fall
+/// against the grid, their strengths as accents. Into the pool, not onto
+/// the clip's own track (it would play it twice).
+fn audioGroove(tracks: []track_mod.Track, sel: ?clip_mod.ClipRef, edit_snap: snap_mod.Setting) ?[]const u8 {
+    const cx = groove_mod.active orelse return null;
+    const pool = document_mod.audioPool() orelse return null;
+    const ref = sel orelse return null;
+    if (ref.track >= tracks.len or ref.clip >= tracks[ref.track].clips.items.len) return null;
+    const t = &tracks[ref.track];
+    const clip = &t.clips.items[ref.clip];
+    if (!clip.audio.warp or clip.audio.reversed or !warp_mod.valid(clip.warp_markers.items)) return null;
+    const hits = (pool.get(clip.audio.source) orelse return null).hits() orelse return null;
+    const map = warp_mod.Map.init(clip.warp_markers.items);
+    const rate = t.time.rate();
+    const step = @min(0.5, snap_mod.activeStep(edit_snap, false) orelse 0.25);
+    const steps: u8 = @intFromFloat(std.math.clamp(@round(1 / step), 2, @as(f64, groove_mod.MAX_STEPS)));
+    var starts: [1024]f64 = undefined;
+    var vels: [1024]u8 = undefined;
+    var n: usize = 0;
+    for (hits.sec, hits.strength) |s, st| {
+        const b = map.beatAt(s);
+        if (b < clip.audio.offset_beats or b >= clip.audio.offset_beats + clip.length_beats or st < 0.1) continue;
+        if (n == starts.len) break;
+        starts[n] = clip.start_beat + (b - clip.audio.offset_beats) / rate;
+        vels[n] = @intFromFloat(std.math.clamp(40 + st * 87, 1, 127));
+        n += 1;
+    }
+    if (n < 2) return null;
+    var nb: [32]u8 = undefined;
+    const name = std.ascii.upperString(&nb, clip.name()[0..@min(32, clip.name().len)]);
+    const g = groove_mod.extract(if (name.len > 0) name else "EXTRACTED", starts[0..n], vels[0..n], 1.0 / @as(f64, @floatFromInt(steps)), steps);
+    const i = cx.pool.put(g) orelse return null;
+    return cx.pool.grooves[i].name.get();
 }
 
 /// A loop coming in (docs/29 §Transients): 30 s or shorter and sure of
@@ -5211,10 +5277,19 @@ fn executeEditCommand(
             if (changed) status.set("Humanized", .{});
         },
         .extract_groove => {
-            if (clip_editor.extractGroove(tracks, selected_clip.*, edit_snap)) |name| {
+            if (selectedClipIsAudio(tracks, selected_clip.*)) {
+                if (audioGroove(tracks, selected_clip.*, edit_snap)) |name| {
+                    changed = true;
+                    status.set("Groove {s} taken from the hits; pick it on any track", .{name});
+                }
+            } else if (clip_editor.extractGroove(tracks, selected_clip.*, edit_snap)) |name| {
                 changed = true;
                 status.set("Groove {s} extracted; the track plays it", .{name});
             }
+        },
+        .song_follows_clip => {
+            changed = songFollowsClip(tracks, selected_clip.*, transport);
+            if (changed) status.set("The song's tempo follows the clip", .{});
         },
         .commit_groove => {
             changed = clip_editor.commitGroove(tracks, selected_clip.*);

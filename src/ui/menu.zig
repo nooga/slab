@@ -58,6 +58,7 @@ pub const EditCommand = enum {
     save_to_library,
     extract_groove,
     commit_groove,
+    song_follows_clip,
 };
 
 pub const Item = struct {

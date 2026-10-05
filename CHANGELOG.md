@@ -43,6 +43,14 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   menu.
 - **Quantize hits to grid** for audio: a live take's hits pulled onto
   the edit grid.
+- **Warped audio plays the groove**: swing a drum loop with the song's
+  or the track's groove, like the notes.
+- **Extract groove** from an audio clip's hits: a drummer's feel for
+  your MIDI tracks.
+- **Follow its beats**: a take that drifts gets a marker on every bar,
+  so it stays on the grid.
+- **Song follows this clip**: the song's tempo map from a warped take, so
+  a performance played without a click sets the tempo for everything.
 - **TRANSPOSE and FINE** in every mode but TAPE: pitch apart from time.
 - Slab finds the hits in every audio file, shown as ticks in the audio
   clip editor.

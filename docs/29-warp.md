@@ -5,10 +5,10 @@ the grid: warp markers, the stretch algorithms that play it at any
 tempo and pitch, transients, and audio that follows the tempo map, the
 groove and a track's own tempo.
 
-Status: phases 1–5 built (2026-10-05): the model, TAPE, ⌘-stretch, the
+Status: phases 1–6 built (2026-10-05): the model, TAPE, ⌘-stretch, the
 band-limited reader; transients and BEATS; the stretch core, MIX,
 TRANSPOSE and FINE; VOICE and SMEAR; warp editing, quantize, tempo
-detection and auto-warp. Before it, an audio clip only played a window of
+detection and auto-warp; groove, extract, follow, song follows. Before it, an audio clip only played a window of
 its source at native rate (docs/28 §The beat axis), and that is still
 what an unwarped clip does.
 
@@ -325,6 +325,40 @@ next block, and there is no cache to invalidate or go stale.
   percent of a core. SMEAR's long windows are the most expensive and
   only run when chosen.
 
+## Audio on the time axis
+
+**Groove.** A warped clip plays its track's groove (docs/28 §Groove): the
+track's own, or the song's and its sections' when it follows them, at
+its AMOUNT. A groove's map from written to played beats is linear
+between its steps, and so is the warp map between markers, so where the
+track publishes (`Track.grooved`) the two are composed into markers:
+at every groove step and every marker in the clip (and 2 beats either
+side), the source second its written beat reads, on the content beat its
+played beat falls on. The engine plays them like any markers, in any
+mode: BEATS moves whole hits, MIX and VOICE stretch between them, TAPE
+bends the pitch with the swing. A groove's random timing and accents
+are for notes; audio takes its timing only. Up to 8192 composed markers
+a track; past that the clip plays straight. *Quantize to groove* isn't
+needed: quantize the hits to the grid and the groove plays them swung.
+
+**Extract groove** (the audio clip editor's right-click): a groove from
+the clip's hits (stronger than 0.1), their distance from the edit grid
+and their strengths as accents, into the pool, for any track to pick.
+Not onto the clip's own track, which would play it twice.
+
+**Follow its beats.** For a take that drifts, *Follow its beats* finds the
+tempo and downbeat, then tracks the beat through it (each next beat the
+hit within 15 % of where the period says, the period following each
+beat found), and lays a marker on every bar: the take stays on the grid
+where it sped up or slowed down.
+
+**Song follows this clip** (Logic's Smart Tempo, the other way round):
+the song's tempo over the clip becomes a step at each of its markers at
+that segment's SEG BPM (over the track's ratio), the tempo after it what
+it was, so the clip plays at its own speed and everything else (notes,
+grid, other clips) follows the take. Followed by *Follow its beats*, a
+take played without a click becomes the song's tempo map. One undo step.
+
 ## In the project and slabkit
 
 Saved per audio clip: `"warp": {"mode": "mix", "offset": 0.0,
@@ -351,8 +385,8 @@ with `warp=True` meaning "detect".
 5. **Warp editing**: markers and pseudo-markers in the audio clip
    editor, quantize to the grid, tempo detection and auto-warp on
    import (built).
-6. **Audio on the time axis**: warped clips follow the groove (the
-   groove's warp before the markers), *Quantize to groove*, *Song
-   follows this clip* (a tempo map from a clip's markers).
+6. **Audio on the time axis**: warped clips follow the groove (composed
+   into their markers), *Extract groove* from hits, *Follow its beats*,
+   *Song follows this clip* (built).
 7. **Slice to drum machine**: a BEATS clip's slices to sampler pads and
    a pattern that plays them.

@@ -271,7 +271,7 @@ pub fn draw(
     ui.unclip();
 
     // ── Warp markers (docs/29 §Editing) ──────────────────────────────
-    if (wmap != null) warpEdit(ui, alloc, clip, src, grid, strip, axis0, .{ .xs = xs, .xe = xe, .in_x = in_x, .out_x = out_x }, edit_snap, m);
+    if (wmap != null) warpEdit(ui, alloc, clip, src, grid, strip, axis0, .{ .xs = xs, .xe = xe, .in_x = in_x, .out_x = out_x }, edit_snap, m, &res);
 
     // The transport's position while it plays inside the clip, mapped
     // into the played window (ruler through grid).
@@ -457,7 +457,7 @@ fn snapContent(clip: *const clip_mod.Clip, cb: f64, edit_snap: snap_mod.Setting)
 /// beats (the audio around it stretches), ⌘-drag to slide the audio under
 /// it, double-click the strip to add one, right-click for more. A hit in
 /// the waveform can be dragged too: it becomes a marker.
-fn warpEdit(ui: *Ui, alloc: std.mem.Allocator, clip: *clip_mod.Clip, src: *const audio_pool_mod.Source, grid: c.rl.Rectangle, strip: c.rl.Rectangle, axis0: f64, hd: Handles, edit_snap: snap_mod.Setting, m: pane.Mouse) void {
+fn warpEdit(ui: *Ui, alloc: std.mem.Allocator, clip: *clip_mod.Clip, src: *const audio_pool_mod.Source, grid: c.rl.Rectangle, strip: c.rl.Rectangle, axis0: f64, hd: Handles, edit_snap: snap_mod.Setting, m: pane.Mouse, res: *Result) void {
     const source_sec = src.seconds();
     const rev = clip.audio.reversed;
     const cmd = c.rl.IsKeyDown(c.rl.KEY_LEFT_SUPER) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SUPER);
@@ -574,12 +574,16 @@ fn warpEdit(ui: *Ui, alloc: std.mem.Allocator, clip: *clip_mod.Clip, src: *const
     const has_hits = src.hits() != null;
     const w_items = [_]menu.Item{
         .{ .label = "Detect tempo", .id = 1, .enabled = has_hits and !rev },
+        .{ .label = "Follow its beats (a take that drifts)", .id = 7, .enabled = has_hits and !rev },
         .{ .label = "Tempo \u{00D7}2", .id = 2 },
         .{ .label = "Tempo \u{00F7}2", .id = 3 },
         .{ .separator = true },
         .{ .label = "Add marker here", .id = 4 },
         .{ .label = "Quantize hits to grid", .id = 5, .enabled = has_hits and edit_snap.beats() != null },
         .{ .label = "Clear warp markers", .id = 6, .enabled = n > 2 },
+        .{ .separator = true },
+        .{ .label = "Extract groove", .id = 8, .enabled = has_hits and !rev },
+        .{ .label = "Song follows this clip", .id = 9 },
     };
     if (menu.pick(WARP_MENU_KEY, &w_items)) |id| {
         const map = warp_mod.Map.init(clip.warp_markers.items);
@@ -596,6 +600,11 @@ fn warpEdit(ui: *Ui, alloc: std.mem.Allocator, clip: *clip_mod.Clip, src: *const
                 if (!rev) warp_mod.quantize(alloc, clip, h.sec, h.strength, 0.1, edit_snap.beats().?, clip.start_beat - clip.audio.offset_beats, 1) catch {};
             },
             6 => warp_mod.clearMarkers(alloc, clip) catch {},
+            7 => if (src.hits()) |h| {
+                _ = warp_mod.detectAndFollow(alloc, clip, h, source_sec) catch false;
+            },
+            8 => res.command = .extract_groove,
+            9 => res.command = .song_follows_clip,
             else => {},
         }
     }

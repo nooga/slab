@@ -220,6 +220,59 @@ pub const Track = struct {
         return t;
     }
 
+    // Scratch for `grooved` (UI thread only: publishing).
+    var groove_brk: [snap_mod.MAX_WARP_POINTS_PER_TRACK]f64 = undefined;
+    var groove_out: [snap_mod.MAX_WARP_POINTS_PER_TRACK]warp_mod.Marker = undefined;
+
+    /// A warped clip's markers with the track's groove composed in: at
+    /// every groove step and every marker (the breakpoints of both maps,
+    /// which are linear between them), the source second its written beat
+    /// reads, on the content beat its played beat falls on. The markers as
+    /// they are when no groove plays or it doesn't fit.
+    fn grooved(clip: *const clip_mod.Clip, tg: groove_mod.TrackGroove, rate: f64, wm: []const warp_mod.Marker) []const warp_mod.Marker {
+        const cx = groove_mod.active orelse return wm;
+        if (!groove_mod.anyFor(cx, tg)) return wm;
+        const map = warp_mod.Map.init(wm);
+        const o = clip.audio.offset_beats;
+        const start = clip.start_beat;
+        const lo = start - groove_mod.MAX_MOVE_BEATS;
+        const hi = start + clip.length_beats / rate + groove_mod.MAX_MOVE_BEATS;
+        const cap = groove_brk.len;
+        var n: usize = 0;
+        var b = lo;
+        while (b < hi) {
+            if (groove_mod.resolve(cx, tg, b)) |g| {
+                const a = groove_mod.anchorsAt(g, b, cx.meter, groove_brk[n..]);
+                for (groove_brk[n..][0..a.n]) |w| if (w >= lo and w <= hi) {
+                    groove_brk[n] = w;
+                    n += 1;
+                };
+                b = a.next;
+            } else b = @floor(b) + 1;
+            if (n + 64 >= cap) return wm;
+        }
+        for (wm) |mk| {
+            const w = start + (mk.beat - o) / rate;
+            if (w <= lo or w >= hi) continue;
+            if (n == cap) return wm;
+            groove_brk[n] = w;
+            n += 1;
+        }
+        groove_brk[n] = lo;
+        groove_brk[n + 1] = hi;
+        n += 2;
+        std.mem.sort(f64, groove_brk[0..n], {}, std.sort.asc(f64));
+        var m: usize = 0;
+        for (groove_brk[0..n]) |w| {
+            const p = if (groove_mod.resolve(cx, tg, w)) |g| groove_mod.warp(g, tg.amount, w, cx.meter) else w;
+            const mk = warp_mod.Marker{ .sec = map.secAt((w - start) * rate + o), .beat = (p - start) * rate + o };
+            if (m > 0 and (mk.beat <= groove_out[m - 1].beat + 1e-9 or mk.sec <= groove_out[m - 1].sec + 1e-12)) continue;
+            groove_out[m] = mk;
+            m += 1;
+        }
+        return if (m >= 2) groove_out[0..m] else wm;
+    }
+
     pub fn deinit(self: *Track, alloc: std.mem.Allocator) void {
         if (self.machine.deinit) |deinit_fn| {
             deinit_fn(self.machine.state, alloc);
@@ -572,7 +625,10 @@ pub const Track = struct {
                 }
                 // Warped (docs/29): its markers ride along; a clip whose map
                 // doesn't fit or isn't valid plays as a window.
-                const wm = clip.warp_markers.items;
+                const wm0 = clip.warp_markers.items;
+                // On a groove (docs/29 §Audio on the time axis): the groove's
+                // map composed with the markers, as markers.
+                const wm = if (clip.audio.warp and warp_mod.valid(wm0)) grooved(clip, self.groove, time_rate, wm0) else wm0;
                 if (clip.audio.warp and warp_mod.valid(wm) and dst.warp_point_count + wm.len <= snap_mod.MAX_WARP_POINTS_PER_TRACK) {
                     snap.warped = true;
                     snap.mode = clip.audio.mode;

@@ -176,8 +176,9 @@ fn refine(l: []const f64, r: ?[]const f64, rate: f64, t: f64) f64 {
         s0 += @abs(mid(l, r, i + e)) - @abs(mid(l, r, i));
         s1 += @abs(mid(l, r, i + 2 * e)) - @abs(mid(l, r, i + e));
     }
-    // `best` is where the quiet window ends and the loud one begins.
-    return @floatFromInt(best);
+    // `best` is where the quiet window ends and the loud one begins; never
+    // before the file.
+    return @floatFromInt(@max(0, best));
 }
 
 // ── Tests ────────────────────────────────────────────────────────────

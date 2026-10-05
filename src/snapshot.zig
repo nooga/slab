@@ -20,7 +20,7 @@ pub const MAX_NOTES_PER_TRACK: usize = 2048;
 pub const MAX_AUDIO_CLIPS_PER_TRACK: usize = 64;
 
 pub const MAX_EXPR_POINTS_PER_TRACK: usize = 4096;
-pub const MAX_WARP_POINTS_PER_TRACK: usize = 2048;
+pub const MAX_WARP_POINTS_PER_TRACK: usize = 8192;
 
 pub const NoteSnap = struct {
     start_beat: f64,

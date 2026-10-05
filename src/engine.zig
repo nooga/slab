@@ -2340,13 +2340,14 @@ const Slicer = struct {
         const own = (sl.s1 - sl.s0) * c.source_rate;
         var p = e;
         var g: f32 = 1;
+        // CUT: out over its own last 2 ms (past them is the next hit).
+        if (c.gap == .cut) {
+            const fade = @min(0.002 * c.source_rate, own / 2);
+            if (e >= own) return .{ 0, 0 };
+            if (e > own - fade) g = @floatCast((own - e) / fade);
+        }
         if (e > own) switch (c.gap) {
-            .cut => {
-                // 2 ms out past its end.
-                const over = (e - own) / (0.002 * c.source_rate);
-                if (over >= 1) return .{ 0, 0 };
-                g = @floatCast(1 - over);
-            },
+            .cut => unreachable,
             .loop => {
                 // Back and forth over its last half (at most 50 ms).
                 const span = @max(1, @min(own / 2, 0.05 * c.source_rate));

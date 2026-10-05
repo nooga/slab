@@ -260,6 +260,28 @@ pub fn warp(g: *const Groove, amount: f32, beat: f64, meter: ?meter_mod.MeterMap
     return sp.start + step * (a0 + frac * (a1 - a0));
 }
 
+/// The step anchors of the cycle holding `beat`, into `out` (a groove's
+/// warp is linear between them), and where the next cycle starts.
+pub fn anchorsAt(g: *const Groove, beat: f64, meter: ?meter_mod.MeterMap, out: []f64) struct { n: usize, next: f64 } {
+    const sp = spanAt(g, beat, meter);
+    const steps: usize = @max(1, sp.cell.steps);
+    const step = sp.len / @as(f64, @floatFromInt(steps));
+    const n = @min(steps, out.len);
+    for (out[0..n], 0..) |*v, k| v.* = sp.start + step * @as(f64, @floatFromInt(k));
+    return .{ .n = n, .next = sp.start + @max(sp.len, 1.0 / 64.0) };
+}
+
+/// Whether a track can play any groove: its own, or the song's or a
+/// section's when it follows them.
+pub fn anyFor(cx: *const Context, tg: TrackGroove) bool {
+    if (tg.amount <= 0) return false;
+    if (tg.pick == PICK_NONE) return false;
+    if (tg.pick >= PICK_POOL) return true;
+    if (cx.song >= PICK_POOL) return true;
+    if (cx.markers) |mk| for (mk.sections[0..mk.section_n]) |s| if (s.groove >= PICK_POOL) return true;
+    return false;
+}
+
 /// The nearest step to `beat`: its velocity scale and random spread
 /// (beats), at `amount`.
 pub fn stepAt(g: *const Groove, amount: f32, beat: f64, meter: ?meter_mod.MeterMap) struct { vel: f32, rand: f64 } {

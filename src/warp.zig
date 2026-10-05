@@ -279,6 +279,59 @@ pub fn detectAndFit(alloc: std.mem.Allocator, clip: *clip_mod.Clip, hits: *const
     return true;
 }
 
+/// Lay a clip on beats tracked through it (`beats`, source seconds, the
+/// first a downbeat): a marker on every bar's first beat and the last
+/// one, so a take that drifts stays on the grid. The window keeps its
+/// seconds. Warps it on.
+pub fn followBeats(alloc: std.mem.Allocator, clip: *clip_mod.Clip, beats: []const f64, len: f64) !void {
+    if (beats.len < 2) return;
+    const s0 = if (clip.audio.warp and valid(clip.warp_markers.items)) Map.init(clip.warp_markers.items).secAt(clip.audio.offset_beats) else clip.audio.start_sec;
+    const s1 = if (clip.audio.warp and valid(clip.warp_markers.items)) Map.init(clip.warp_markers.items).secAt(clip.audio.offset_beats + clip.length_beats) else clip.audio.start_sec + clip.audio.dur_sec;
+    clip.warp_markers.clearRetainingCapacity();
+    for (beats, 0..) |t, k| if (k % 4 == 0 or k + 1 == beats.len) {
+        try clip.warp_markers.append(alloc, .{ .sec = t, .beat = @floatFromInt(k) });
+    };
+    if (!valid(clip.warp_markers.items)) return;
+    const map = Map.init(clip.warp_markers.items);
+    clip.audio.offset_beats = @max(0, map.beatAt(s0));
+    clip.length_beats = @max(MIN_BEATS, map.beatAt(@min(s1, len)) - clip.audio.offset_beats);
+    clip.audio.warp = true;
+}
+
+/// Warp a take onto its beats as they drift: detect, then follow them. True
+/// if it did.
+pub fn detectAndFollow(alloc: std.mem.Allocator, clip: *clip_mod.Clip, hits: *const transients.Onsets, len: f64) !bool {
+    if (clip.audio.reversed) return false;
+    const g = (try tempo_detect.detect(alloc, hits.sec, hits.strength, hits.low, len)) orelse return false;
+    const beats = try tempo_detect.trackBeats(alloc, hits.sec, hits.strength, len, g);
+    defer alloc.free(beats);
+    if (!clip.audio.warp) clip.audio.mode = defaultMode(hits.sec, len);
+    try followBeats(alloc, clip, beats, len);
+    return clip.audio.warp;
+}
+
+/// The song's tempo that plays a warped clip at its own speed (docs/29
+/// §Audio on the time axis): a step at each marker inside it, at that
+/// segment's SEG BPM over the track's ratio. Song beats and tempos into
+/// `out`; how many.
+pub fn songTempo(clip: *const clip_mod.Clip, rate: f64, out: []tempo_mod.TempoPoint) usize {
+    const m = clip.warp_markers.items;
+    if (!valid(m)) return 0;
+    const map = Map.init(m);
+    const o = clip.audio.offset_beats;
+    const end = o + clip.length_beats;
+    var n: usize = 0;
+    var b = o;
+    while (b < end - 1e-9 and n < out.len) {
+        const i = map.segAtBeat(b);
+        out[n] = .{ .beat = clip.start_beat + (b - o) / rate, .bpm = std.math.clamp(map.bpmAt(b) / rate, 20, 400), .ramp = false };
+        n += 1;
+        if (i + 2 >= m.len or m[i + 1].beat >= end) break;
+        b = m[i + 1].beat;
+    }
+    return n;
+}
+
 /// Back to straight at the tempo where the clip starts: two markers.
 pub fn clearMarkers(alloc: std.mem.Allocator, clip: *clip_mod.Clip) !void {
     const map = Map{ .m = clip.warp_markers.items };
@@ -537,6 +590,26 @@ test "edits: tempo, fit, quantize" {
     try std.testing.expectApproxEqAbs(@as(f64, 1.0), qm.beatAt(0.49), 1e-9);
     try std.testing.expectApproxEqAbs(@as(f64, 1.5), qm.beatAt(0.77), 1e-9);
     try std.testing.expectEqual(@as(usize, 5), q.warp_markers.items.len); // the weak one left be
+}
+
+test "songTempo: a step per marker inside the clip, at its own speed" {
+    const alloc = std.testing.allocator;
+    var c = clip_mod.Clip.initAudio("t", 4, 10, 0);
+    defer c.deinit(alloc);
+    c.audio.warp = true;
+    c.audio.offset_beats = 1;
+    // 120 BPM for 4 beats, then 240.
+    try c.warp_markers.appendSlice(alloc, &.{ .{ .sec = 0, .beat = 0 }, .{ .sec = 2, .beat = 4 }, .{ .sec = 3, .beat = 8 } });
+    var pts: [8]tempo_mod.TempoPoint = undefined;
+    const n = songTempo(&c, 1, &pts);
+    try std.testing.expectEqual(@as(usize, 2), n);
+    try std.testing.expectApproxEqAbs(@as(f64, 4), pts[0].beat, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 120), pts[0].bpm, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 7), pts[1].beat, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 240), pts[1].bpm, 1e-9);
+    // On a track at 3:2 the song runs at 2/3 of that.
+    _ = songTempo(&c, 1.5, &pts);
+    try std.testing.expectApproxEqAbs(@as(f64, 80), pts[0].bpm, 1e-9);
 }
 
 test "reader: integer positions are the samples, between them it interpolates" {

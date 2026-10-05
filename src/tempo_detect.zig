@@ -135,6 +135,42 @@ pub fn detect(alloc: std.mem.Allocator, onsets: []const f64, strength: []const f
     return .{ .bpm = best_bpm, .first = first, .confidence = best / (total / count) };
 }
 
+/// Follow the beat through a take whose tempo drifts (docs/29 §Audio on
+/// the time axis): from the guess's downbeat, each next beat is the hit
+/// near where the last period says (within 15 % of it, the stronger and
+/// nearer the likelier), else where it says; the period follows each beat
+/// found, slowly. Beats in source seconds, from the first downbeat to
+/// the end; the caller owns them.
+pub fn trackBeats(alloc: std.mem.Allocator, onsets: []const f64, strength: []const f32, len: f64, g: Guess) ![]f64 {
+    var out: std.ArrayList(f64) = .empty;
+    errdefer out.deinit(alloc);
+    var period = 60 / g.bpm;
+    var t = g.first;
+    try out.append(alloc, t);
+    var i: usize = 0;
+    while (t + period < len) {
+        const want = t + period;
+        const reach = 0.15 * period;
+        while (i < onsets.len and onsets[i] < want - reach) i += 1;
+        var best: ?f64 = null;
+        var best_s: f64 = 0;
+        var j = i;
+        while (j < onsets.len and onsets[j] <= want + reach) : (j += 1) {
+            const d = (onsets[j] - want) / (0.07 * period);
+            const sc = (0.3 + strength[j]) * @exp(-d * d);
+            if (sc > best_s) {
+                best_s = sc;
+                best = onsets[j];
+            }
+        }
+        const next = best orelse want;
+        if (best != null) period = 0.85 * period + 0.15 * (next - t);
+        t = next;
+        try out.append(alloc, t);
+    }
+    return out.toOwnedSlice(alloc);
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 fn pattern(alloc: std.mem.Allocator, bpm: f64, first: f64, len: f64, on: *std.ArrayList(f64), st: *std.ArrayList(f32)) !void {
@@ -220,4 +256,28 @@ test "detect: from audio, through the transient finder" {
     try std.testing.expectApproxEqAbs(bpm, g.bpm, 0.01);
     try std.testing.expect(g.first < 0.005);
     try std.testing.expect(g.sure());
+}
+
+test "trackBeats: follows a take that speeds up" {
+    const alloc = std.testing.allocator;
+    // 32 beats from 100 to 110 BPM, a hit on each and a ghost between.
+    var on: std.ArrayList(f64) = .empty;
+    defer on.deinit(alloc);
+    var st: std.ArrayList(f32) = .empty;
+    defer st.deinit(alloc);
+    var beats: [33]f64 = undefined;
+    var t: f64 = 0;
+    for (0..33) |k| {
+        beats[k] = t;
+        const bpm = 100 + 10 * @as(f64, @floatFromInt(k)) / 32;
+        try on.append(alloc, t);
+        try st.append(alloc, 0.8);
+        try on.append(alloc, t + 30 / bpm);
+        try st.append(alloc, 0.1);
+        t += 60 / bpm;
+    }
+    const got = try trackBeats(alloc, on.items, st.items, t - 0.01, .{ .bpm = 100, .first = 0, .confidence = 3 });
+    defer alloc.free(got);
+    try std.testing.expect(got.len >= 32);
+    for (got[0..32], beats[0..32]) |a, b| try std.testing.expectApproxEqAbs(b, a, 1e-9);
 }
