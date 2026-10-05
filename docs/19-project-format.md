@@ -158,6 +158,7 @@ The document is JSON. Top level:
 | `stem` | the track's stem in an export, when set by hand: `on` (missing: every track that plays writes one, buses don't), `signal` `instr`\|`fx`\|`fader` and `channels` `stereo`\|`mono`\|`auto` (missing: the export's default). |
 | `groove` | how the track plays its notes (docs/28 §Groove): `name` (`""` follows the song and its sections, `"NONE"` straight, or a groove), `amount` 0–1, `shift_ms` −50..50; missing: follows the song at 100 % |
 | `freeze` | frozen (docs/28 §Freeze): `{"type": "audio", "source": <file>, "hash": "<hex>"}`, the audio that plays instead of its instrument, audio clips and inserts, and the fingerprint it was rendered at; a missing file loads it unfrozen |
+| `time` | its own meter and tempo ratio (docs/28 §Polymeter and polytempo): `meter` `[num, den]` (its bars), `ratio` `[p, q]` (its beats run p/q as fast from each clip's start; clip content is in them); missing: the song's |
 
 Signal flow per track: instrument (a bus: its routed input) → audio
 clips summed in → effects in order → volume → pan → its output (the

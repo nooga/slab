@@ -5,9 +5,9 @@ that path: the tempo map, locators and sections, grooves, polymeter and
 polytempo, and the freeze that has to know when any of them changed.
 
 Status: the meter map (docs/07 §Meter map), the tempo map, locators and
-sections, export by section, groove, freeze and arranging by section
-are built (2026-10-05); the rest is
-design, built in the order of [Phasing](#phasing).
+sections, export by section, groove, freeze, arranging by section, and
+polymeter and polytempo are built (2026-10-05), in the order of
+[Phasing](#phasing).
 
 ## The beat axis
 
@@ -326,23 +326,37 @@ follows the song, `"NONE"` plays straight). slabkit: `Song(groove=)`,
 
 ## Polymeter and polytempo
 
-- **Polymeter** — same pulse, different bar lengths (5/4 over 4/4).
-  Meter is only a grid, so a track may have **its own meter**: its
-  piano-roll grid, one-bar lengths and the bar position its machines
-  see follow it; nothing else changes.
-- **Polytempo** — a track plays at a **ratio** p:q of the project
-  tempo (3:2, 4:3, 5:4; p, q ≤ 16). Its local beat is
-  `anchor + (beat − anchor) · p/q`, with the anchor at the start of the
-  section it's in (or 0), so it realigns with the project every q bars
-  and at every section. Clips sit on the arrangement in project beats;
-  their notes are in local beats, and the piano roll shows the local
-  grid. The machine gets `tempo · p/q` and its local position. Each
-  track already renders on its own, so the engine only needs a beat
-  position per track instead of per block.
+A track can keep **its own time** (right-click its name → *Meter*,
+*Tempo ratio*; a selection takes them all; its header shows `5/4 3:2`):
 
-A free tempo per track is deliberately left out: a ratio covers the
-musical cases and keeps every track locked to one clock. A section could
-later switch a track's ratio, which is a polyrhythmic arrangement.
+- **Polymeter** — same pulse, different bars (5/4 over 4/4). Meter is
+  only a grid, so a track's own meter changes only its grid and what its
+  machines see: its piano roll's bars, `clip.bar` in slabkit, and
+  MachineCtx's `bar`/`beat_in_bar`/`bar_len_beats`, counted from the
+  song's start in its meter.
+- **Polytempo** — a tempo ratio p:q (3:2, 2:3, 4:3, 3:4, 5:4, 4:5, 5:3,
+  3:5, 7:4, 2:1, 1:2): the track's beats run p/q as fast as the song's,
+  **from each clip's start**. A clip sits on the arrangement in song
+  beats as ever; its content is in the track's beats, so a clip four song
+  beats long holds six at 3:2 and starts in step with the song. The
+  piano roll shows the clip in the track's beats (its length ×p/q, the
+  playhead at the ratio, the grid from the clip's start); the
+  arrangement draws its notes where they play. Its machines get the
+  tempo ×p/q and their position in the clip, in the track's beats. Clip
+  automation and note expression run at the ratio too.
+
+Applied where the track publishes its notes, like a groove (the ratio
+first, then the groove, in song beats): note starts, lengths and
+expression ÷(p/q) from the clip's start. Audio clips keep their own
+time. Anchoring at clips (rather than the sections the first design
+had) puts the track back in step wherever a clip starts, which is where
+a part starts anyway. A free tempo per track is left out: a ratio covers
+the musical cases and keeps every track locked to one clock.
+
+Saved on the track as `"time": {"meter": [5, 4], "ratio": [3, 2]}` (the
+parts set). slabkit: `track.time(meter=(5, 4), ratio=(3, 2))`, and
+`clip.span` is the clip's length in the track's beats, which the
+pattern helpers fill.
 
 ## Freeze
 
@@ -395,4 +409,4 @@ does not save CPU. **Freeze** does:
    table and fy word wait for a machine that sequences).
 5. **Freeze**: freeze, unfreeze, flatten, stale (built).
 6. **Arranging by section**: duplicate, move, delete (built).
-7. **Polymeter and polytempo** per track.
+7. **Polymeter and polytempo** per track (built).
