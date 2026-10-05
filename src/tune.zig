@@ -246,14 +246,21 @@ fn smooth(t: *const Tuning, k: usize, tau: f32, key: u8, mask: u12, one_note: bo
 }
 
 /// The key a take is sung in, from how long each pitch class is held
-/// against the Krumhansl–Kessler profiles: major or minor.
+/// (docs/30 §Tune).
 pub fn detectKey(t: *const Tuning) struct { key: u8, scale: Scale } {
-    const major = [12]f32{ 6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88 };
-    const minor = [12]f32{ 6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17 };
     var hist = [_]f32{0} ** 12;
     for (t.held) |h| if (h != 0) {
         hist[@intCast(@mod(@as(i32, @intFromFloat(@round(h))), 12))] += 1;
     };
+    const k = keyOf(hist);
+    return .{ .key = k.key, .scale = k.scale };
+}
+
+/// The key of a pitch-class profile, C first: the best correlation with
+/// the Krumhansl–Kessler major and minor profiles over the twelve roots.
+pub fn keyOf(hist: [12]f32) struct { key: u8, scale: Scale } {
+    const major = [12]f32{ 6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88 };
+    const minor = [12]f32{ 6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17 };
     var best: struct { key: u8, scale: Scale } = .{ .key = 0, .scale = .chromatic };
     var best_r: f32 = -2;
     for (0..12) |key| for ([_]Scale{ .major, .minor }) |sc| {

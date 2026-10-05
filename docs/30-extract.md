@@ -7,9 +7,10 @@ Everything comes out as something you edit in Slab (pattern clips,
 groove templates, sampler kits, audio clips), placed on the song's
 beats through the clip's warp (docs/29).
 
-Status: phases 1 and 2 built (2026-10-05) on `feat/extract`: the pitch
-tracker, notes, *Audio to notes*, hum to notes, and Tune. The rest is
-designed.
+Status: phases 1–3 built (2026-10-05) on `feat/extract`: the pitch
+tracker, notes, *Audio to notes*, hum to notes, Tune, *Chords to notes*
+and *Drums to a kit*. Stems, *Explode…*, polyphonic notes and sound
+matching are designed.
 
 ## What musicians expect (and other tools do)
 
@@ -36,7 +37,7 @@ designed.
 |---|---|---|---|
 | Pitch (one voice) | pYIN: YIN's dip, candidates under a threshold prior, Viterbi over pitch and voicing | none | voice, hum, whistle, bass, lead |
 | Notes (one voice) | the pitch track cut at semitone changes and onsets, tuned to the take | none | same |
-| Chords and key | chroma per beat from a constant-Q spectrum, matched to chord templates, smoothed by an HMM; key by Krumhansl profiles | none | pop, electronic, rock |
+| Chords and key | chroma per beat from the spectrum's peaks, matched to chord templates, smoothed by Viterbi; key by Krumhansl profiles | none | pop, electronic, rock |
 | Drums | onsets (docs/29 §Transients), each hit classed kick/snare/hat/other by its spectrum; slices to a kit | none (a model on mixes) | loops, drum stems |
 | Groove | built (docs/29 §Extract groove) | none | loops, takes |
 | Stems | a source-separation network (HTDemucs: drums, bass, vocals, other) | CoreML | whole songs |
@@ -129,29 +130,127 @@ it. Like arming, the switch is not saved.
 
 ## Chords and key
 
-`chords.zig`: a constant-Q spectrum (36 bins an octave, 55 Hz–5 kHz)
-folded to a 12-bin chroma, tuned by the same reference as notes,
-averaged per beat through the clip's map. Templates: major, minor,
-7, maj7, m7, sus2, sus4, dim, aug, on 12 roots, plus no-chord. An HMM
-with a strong self-transition (chords change on beats, rarely) and
-Viterbi over the beats gives one chord per span. The key comes from the
-whole chroma against Krumhansl–Kessler profiles.
+*Chords to notes* is on an audio clip's right-click (in the arrangement,
+and in the audio clip editor's warp menu). The chords are in
+`chords.zig` and the command is `chordsToNotesOr` in `main.zig`.
 
-Out: a *Chords* pattern clip with the chords voiced close (root in
-octave 3, the rest above), on a Juno track with a pad; the chord names
-shown on the clip. The key goes into the scale used by tuning.
+**The chroma**: how much of each pitch class sounds, from the whole
+source.
+
+- The source is read at 11.025 kHz through the band-limited reader,
+  with 4096-point frames 93 ms apart.
+- It uses each frame's spectral peaks from A1 to 5 kHz, each refined
+  by a parabola. A peak counts fully at its semitone and not at all a
+  quarter tone off.
+- Two passes. The first finds the take's tuning, the circular mean of
+  every peak's distance from its nearest semitone, so a band 30 cents
+  sharp reads right. The second folds the peaks into pitch classes:
+  the treble from A2 up, the bass below about E3.
+- The bass's upper limit matters. At C4 it took a low-voiced chord's
+  A3 for the bass and read an F bar as Am.
+
+**Per beat.** The chroma is averaged over each song beat of the clip
+(`extract.sourceSec` maps beats to source seconds, through the warp
+when warped).
+
+**Chords.** Templates on 12 roots: major, minor, 7, maj7, m7, sus2,
+sus4, dim and aug, plus no chord.
+
+- Each template carries its tones' first harmonics (the octave, the
+  twelfth, two octaves). That way a played chord's overtones count as
+  the chord and not as other notes.
+- A beat's fit to a template is the cosine of the two, times a small
+  prior: 0.97 for sevenths and 0.94 for sus, dim and aug, so plain
+  triads win ties. The bass adds 0.2 times its share at the template's
+  root.
+- Each beat counts by how much its best fit stands out from the
+  average. A beat full of drums, or a chord's release, where
+  everything fits about as well, hardly counts.
+- A Viterbi pass over the beats then smooths the sequence:
+  - A change costs 4 against 20 times the fit, so a chord that fits
+    clearly better takes over within two beats.
+  - A beat 2% as loud as the loudest, or where nothing fits better
+    than 0.55, is no chord.
+
+**The key** is the whole chroma's best match against the
+Krumhansl–Kessler major and minor profiles (`tune.keyOf`, shared with
+Tune).
+
+**What it makes:**
+
+- A track under the clip on the Juno with *Lush Pad*.
+- A pattern where the clip is: each run of one chord is a chord, its
+  root in octave 3 and the rest close in octave 4.
+- The clip is named after its first chords ("C Am F G7").
+- The source clip gets the key in its Tune settings, if they were
+  never set.
+- The source clip keeps playing, since the chords are an
+  accompaniment. One undo step.
+- The status line gives the count and the key.
+
+**Measured.** It gets right:
+
+- a synthesized I–vi–IV–V on every beat;
+- m7–7–maj7–m played 30 cents sharp;
+- a rendered band, Juno pad and FM e-piano comping over a Cream bass
+  and drum2, at C Am F G C Am Dm7 G7: 32 of 32 beats.
 
 ## Drums to pattern and kit
 
-The clip's hits (docs/29 §Transients) are classed by each hit's first
-60 ms: low share (kickness, already found), spectral centroid, and
-noisiness (spectral flatness). Kick, snare/clap, closed hat, open hat
-and other are found by clustering hits into up to 8 groups in that
-space and naming them by their centroids. Each group's cleanest hit
-(strongest, least overlapped by the next) becomes its pad. Out: a
-sampler track with one pad per group (kick on C1, snare on D1, hats on
-F♯1/A♯1, as GM), a pattern with every hit on its group's key, and the
-groove extracted along with it.
+*Drums to a kit* is on an audio clip's right-click, like *Chords to
+notes*. The classifier is in `drums.zig` and the command is
+`drumsToKitOr` in `main.zig`.
+
+**What each hit is.** Each of the clip's hits (docs/29 §Transients) is
+described by four things:
+
+- its low share (how much of its first 60 ms is under 150 Hz, already
+  found with the hits);
+- its spectral centroid and flatness over its first 43 ms (a half Hann
+  from the onset, 40 Hz–16 kHz);
+- how long it rings: 5 ms steps until 20 dB under its peak, cut at the
+  next hit.
+
+**Grouping.**
+
+- The hits are clustered by k-means, seeded farthest-first. The
+  centroid counts double, because it tells drums apart most.
+- A group is added only while it explains at least a third of what is
+  still unexplained, up to 8 groups.
+- Each group is named by its median hit:
+  - **kick**: low share ≥ 0.45;
+  - **hat**: centroid ≥ 4.5 kHz, and an **open hat** if it rings
+    120 ms or more;
+  - **snare**: flatness ≥ 0.12 and centroid ≥ 900 Hz;
+  - **tom**: tonal and under 900 Hz;
+  - **perc**: anything else.
+- Each group gets its class's General MIDI key: kick 36 then 35, snare
+  38/40/39, hat 42/44, open hat 46/49, toms 45 and up, perc 37 and up.
+  A key two groups would share goes to the next free one.
+- Each group's pad is its strongest hit that has 150 ms or more before
+  the next.
+- A hit is one drum: a hat played with a kick counts as the kick.
+
+**What it makes:**
+
+- Each pad written as a WAV (from 1 ms before its hit, up to the next
+  hit or 1.5 s, 5 ms out) into a folder beside the project's
+  recordings.
+- An SFZ putting each pad on its key, one shot, labeled.
+- A sampler track under the clip loading it.
+- A pattern where the clip is, with every hit inside the clip on its
+  drum's key, at its place through the clip's warp or the tempo map,
+  its velocity from the hit's strength.
+- The clip is muted, as with *Slice to a sampler track*. One undo step.
+- The status line names the drums it found.
+
+**Measured.**
+
+- A synthesized beat sorts into kick, snare, hat and open hat, every
+  hit right, each on 36/38/42/46, the pattern on the eighths.
+- drum2's kit gives the same: 32 of 32 hits.
+- Before the centroid counted double, snares played with hats were
+  merged into the hats.
 
 ## Stems (models)
 
@@ -300,7 +399,7 @@ Later:
    synthesized and recorded lines (built).
 2. **Tune**: the scale snapper, PSOLA as a stretcher kind, the editor's
    tune row and pitch curves, key detection, slabkit (built).
-3. **Chords and key; drums to pattern and kit.**
+3. **Chords and key; drums to pattern and kit** (built).
 4. **CoreML and the Extract pack**: stems, then *Explode…* with
    everything.
 5. **Polyphonic notes and sound matching.**

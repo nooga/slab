@@ -1567,6 +1567,8 @@ pub fn draw(
         .{ .label = if (allSelectedAudioWarped(tracks)) "Unwarp" else "Warp", .command = .warp, .enabled = hasSelectedAudioClips(tracks) },
         .{ .label = "Slice to a sampler track", .command = .slice_to_sampler, .enabled = focusedWarped(tracks, selected_clip.*) },
         .{ .label = "Audio to notes", .command = .audio_to_notes, .enabled = focusedForward(tracks, selected_clip.*) },
+        .{ .label = "Chords to notes", .command = .chords_to_notes, .enabled = focusedForward(tracks, selected_clip.*) },
+        .{ .label = "Drums to a kit", .command = .drums_to_kit, .enabled = focusedForward(tracks, selected_clip.*) },
         .{ .label = if (focusedTuned(tracks, selected_clip.*)) "Untune" else "Tune", .command = .tune, .enabled = focusedForward(tracks, selected_clip.*) },
         .{ .label = if (has_selection and allSelectedMuted(tracks)) "Unmute" else "Mute", .command = .mute_clips, .enabled = has_selection },
         .{ .label = "Delete", .command = .delete, .enabled = has_selection },

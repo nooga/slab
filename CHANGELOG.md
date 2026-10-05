@@ -24,6 +24,15 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   The voice keeps its own character because its formants stay put. It
   works on warped and unwarped clips, and in slabkit as
   `audio(…, tune="A", scale="minor")`.
+- **Chords to notes**: right-click an audio clip to hear its chords
+  back on a pad. Chords, sevenths and the key are found beat by beat,
+  even from a full band with drums, and land as a pattern on a new Juno
+  track. The clip is named after them ("C Am F G7"), and its Tune key
+  is set to the song's.
+- **Drums to a kit**: right-click a drum loop or take and it becomes a
+  sampler kit and a pattern. Its hits are sorted into kick, snare, hats,
+  toms and percussion on General MIDI keys, and the cleanest hit of
+  each becomes its pad.
 
 ## 0.0.8 — 2026-10-05
 

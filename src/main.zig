@@ -21,6 +21,8 @@ const tempo_detect = @import("tempo_detect.zig");
 const tempo_mod = @import("tempo.zig");
 const pitch_mod = @import("pitch.zig");
 const extract_mod = @import("extract.zig");
+const chords_mod = @import("chords.zig");
+const drums_mod = @import("drums.zig");
 const track_mod = @import("track.zig");
 const clip_mod = @import("clip.zig");
 const audio_pool_mod = @import("audio_pool.zig");
@@ -91,6 +93,9 @@ test {
     _ = @import("tempo_detect.zig");
     _ = @import("pitch.zig");
     _ = @import("extract.zig");
+    _ = @import("tune.zig");
+    _ = @import("chords.zig");
+    _ = @import("drums.zig");
     _ = @import("ui/marker_dialog.zig");
     _ = @import("routing.zig");
     _ = @import("export.zig");
@@ -1361,6 +1366,10 @@ pub fn main(init: std.process.Init) !void {
             engine.tracks = tracks;
         } else if (ares.command == .audio_to_notes) {
             notes_job = startAudioToNotes(&audio_pool, tracks, selected_clip, &status);
+        } else if (ares.command == .chords_to_notes or ares.command == .drums_to_kit) {
+            extractTrack(alloc, ares.command, &history, &status, &engine, &audio, &reg, &audio_pool, &tracks_buf, &track_count, &transport, &selected_track, &selected_clip, &dirty);
+            tracks = tracks_buf[0..track_count];
+            engine.tracks = tracks;
         } else if (ares.command != .none) {
             try executeEditCommand(alloc, &history, &clipboard, &status, .arrangement, edit_snap, ares.command, .{
                 .beat = ares.command_beat,
@@ -1515,6 +1524,10 @@ pub fn main(init: std.process.Init) !void {
                 engine.tracks = tracks;
             } else if (cres.command == .audio_to_notes) {
                 notes_job = startAudioToNotes(&audio_pool, tracks, selected_clip, &status);
+            } else if (cres.command == .chords_to_notes or cres.command == .drums_to_kit) {
+                extractTrack(alloc, cres.command, &history, &status, &engine, &audio, &reg, &audio_pool, &tracks_buf, &track_count, &transport, &selected_track, &selected_clip, &dirty);
+                tracks = tracks_buf[0..track_count];
+                engine.tracks = tracks;
             } else if (cres.command != .none) {
                 try executeEditCommand(alloc, &history, &clipboard, &status, .piano_roll, edit_snap, cres.command, .{
                     .beat = cres.command_beat,
@@ -2536,6 +2549,440 @@ test "audio to notes: a sung line lands as notes on its beats, on a track under 
     try std.testing.expect(@abs(pat.notes.items[1].length_beats - 0.9) < 0.1);
     try std.testing.expectEqual(@as(usize, 1), history.undo_stack.items.len);
     try std.testing.expectEqual(@as(?clip_mod.ClipRef, .{ .track = 1, .clip = 0 }), sel_clip);
+}
+
+/// Chords to notes and Drums to a kit (docs/30 §Chords and key, §Drums
+/// to pattern and kit) on the focused clip, with the machine its track
+/// plays them on.
+fn extractTrack(
+    alloc: std.mem.Allocator,
+    command: menu.EditCommand,
+    history: *history_mod.History,
+    status: *StatusMessage,
+    engine: *engine_mod.Engine,
+    audio: *audio_mod.Audio,
+    reg: *registry_mod.Registry,
+    pool: *audio_pool_mod.AudioPool,
+    tracks_buf: *[MAX_TRACKS]track_mod.Track,
+    track_count: *usize,
+    transport: *transport_mod.Transport,
+    selected_track: *?usize,
+    selected_clip: *?clip_mod.ClipRef,
+    dirty: *bool,
+) void {
+    var kit_path: [storage.MAX_PATH]u8 = undefined;
+    const made = (if (command == .chords_to_notes)
+        chordsToNotesOr(alloc, history, status, engine, pool, tracks_buf, track_count, transport, selected_track, selected_clip, dirty)
+    else
+        drumsToKitOr(alloc, history, status, engine, pool, tracks_buf, track_count, transport, selected_track, selected_clip, dirty, &kit_path)) catch |err| {
+        status.set("{s} failed: {s}", .{ if (command == .chords_to_notes) "Chords to notes" else "Drums to a kit", @errorName(err) });
+        return;
+    } orelse return;
+    const nt = &tracks_buf[made.pos];
+    if (made.kit) |sfz| {
+        const sampler = reg.findById("sampler") orelse return;
+        assignMachineToTrack(alloc, audio, reg, nt, sampler) catch return;
+        if (nt.machine.load_asset) |load| _ = load(nt.machine.state, "smp", sfz);
+        return;
+    }
+    const juno = reg.findById("juno2") orelse return;
+    assignMachineToTrack(alloc, audio, reg, nt, juno) catch return;
+    if (presetNamed(&nt.machine, "lush-pad")) |pi| applyPresetTo(nt, pi);
+}
+
+const Extracted = struct {
+    pos: u8,
+    /// Drums: the kit's SFZ, for the sampler to load.
+    kit: ?[]const u8 = null,
+};
+
+/// The focused clip, if it is audio played forward, with its source and
+/// hits found.
+fn focusedAudio(pool: *audio_pool_mod.AudioPool, tracks: []track_mod.Track, sel: ?clip_mod.ClipRef, status: *StatusMessage) ?struct { ref: clip_mod.ClipRef, src: *const audio_pool_mod.Source } {
+    const ref = sel orelse return null;
+    if (ref.track >= tracks.len or ref.clip >= tracks[ref.track].clips.items.len) return null;
+    const clip = &tracks[ref.track].clips.items[ref.clip];
+    if (!clip.isAudio() or clip.audio.reversed) {
+        status.set("Pick an audio clip playing forward", .{});
+        return null;
+    }
+    pool.waitFor(clip.audio.source);
+    const src = pool.get(clip.audio.source) orelse return null;
+    return .{ .ref = ref, .src = src };
+}
+
+/// A new track under `ti` holding `pattern`, on its output and groove;
+/// selected. The track's machine is the caller's.
+fn insertExtracted(alloc: std.mem.Allocator, engine: *engine_mod.Engine, tracks_buf: *[MAX_TRACKS]track_mod.Track, track_count: *usize, ti: usize, name: []const u8, pattern: clip_mod.Clip, selected_track: *?usize, selected_clip: *?clip_mod.ClipRef) !u8 {
+    var p = pattern;
+    p.selected = true;
+    var t = try track_mod.Track.init(alloc, name, tracks_buf[ti].color, silent_machine);
+    t.output = tracks_buf[ti].output;
+    t.groove = tracks_buf[ti].groove;
+    t.addClip(alloc, p) catch |err| {
+        t.deinit(alloc);
+        return err;
+    };
+    _ = arrangement.clearSelection(tracks_buf[0..track_count.*], selected_clip);
+    const pos: u8 = @intCast(ti + 1);
+    insertTrackAt(engine, tracks_buf, track_count, pos, t);
+    tracks_buf[pos].clips.items[0].selected = true;
+    selected_track.* = pos;
+    selected_clip.* = .{ .track = pos, .clip = 0 };
+    return pos;
+}
+
+/// Chords to notes: the clip's chords, beat by beat, voiced close (the
+/// root in octave 3, the rest in 4) on a pad track under it, the clip's
+/// name its first chords; the key into the clip's Tune when unset. The
+/// clip keeps playing: the chords are an accompaniment. One undo step.
+fn chordsToNotesOr(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    status: *StatusMessage,
+    engine: *engine_mod.Engine,
+    pool: *audio_pool_mod.AudioPool,
+    tracks_buf: *[MAX_TRACKS]track_mod.Track,
+    track_count: *usize,
+    transport: *transport_mod.Transport,
+    selected_track: *?usize,
+    selected_clip: *?clip_mod.ClipRef,
+    dirty: *bool,
+) !?Extracted {
+    const fa = focusedAudio(pool, tracks_buf[0..track_count.*], selected_clip.*, status) orelse return null;
+    if (track_count.* >= MAX_TRACKS) return error.TooManyTracks;
+    const ti = fa.ref.track;
+    const src = fa.src;
+    var ch = try chords_mod.chroma(alloc, src.sample.data, if (src.sample.isStereo()) src.sample.right else null, src.sample.sample_rate);
+    defer ch.deinit(alloc);
+
+    const clip = &tracks_buf[ti].clips.items[fa.ref.clip];
+    const rate = tracks_buf[ti].time.rate();
+    const tmap = transport.map();
+    // A span per song beat of the clip; the last may be short.
+    const beats: usize = @intFromFloat(@ceil(clip.length_beats - 1e-6));
+    if (beats == 0) return null;
+    const edges = try alloc.alloc(f64, beats + 1);
+    defer alloc.free(edges);
+    for (edges, 0..) |*e, i| e.* = extract_mod.sourceSec(clip, rate, tmap, @min(clip.length_beats, @as(f64, @floatFromInt(i))));
+    const ps = try chords_mod.perSpan(alloc, &ch, edges);
+    defer alloc.free(ps.treble);
+    defer alloc.free(ps.bass);
+    const got = try chords_mod.decode(alloc, ps.treble, ps.bass);
+    defer alloc.free(got);
+
+    var pattern = clip_mod.Clip.init("Chords", clip.start_beat, clip.length_beats);
+    errdefer pattern.deinit(alloc);
+    var names: [clip_mod.MAX_NAME]u8 = undefined;
+    var nlen: usize = 0;
+    var count: usize = 0;
+    var i: usize = 0;
+    while (i < got.len) {
+        var j = i + 1;
+        while (j < got.len and std.meta.eql(got[j], got[i])) j += 1;
+        if (got[i]) |cd| {
+            const b0: f64 = @floatFromInt(i);
+            const b1 = @min(clip.length_beats, @as(f64, @floatFromInt(j)));
+            try pattern.addNote(alloc, .{ .pitch = 48 + cd.root, .start_beat = b0, .length_beats = b1 - b0, .velocity = 84 });
+            for (cd.quality.intervals()[1..]) |iv| {
+                try pattern.addNote(alloc, .{ .pitch = 60 + (cd.root + iv) % 12, .start_beat = b0, .length_beats = b1 - b0, .velocity = 72 });
+            }
+            var nb: [8]u8 = undefined;
+            const nm = cd.name(&nb);
+            if (nlen + nm.len + 1 <= names.len) {
+                if (nlen > 0) {
+                    names[nlen] = ' ';
+                    nlen += 1;
+                }
+                @memcpy(names[nlen..][0..nm.len], nm);
+                nlen += nm.len;
+            }
+            count += 1;
+        }
+        i = j;
+    }
+    if (count == 0) {
+        pattern.deinit(alloc);
+        status.set("No chords heard in {s}", .{clip.name()});
+        return null;
+    }
+    pattern.setName(names[0..nlen]);
+    const k = chords_mod.key(&ch);
+
+    const before = try document_mod.serialize(alloc, tracks_buf[0..track_count.*], transport);
+    errdefer alloc.free(before);
+    const tn = &clip.audio.tune;
+    if (tn.key == 0 and tn.scale == .chromatic) {
+        tn.key = k.key;
+        tn.scale = k.scale;
+    }
+    var name_buf: [track_mod.MAX_NAME]u8 = undefined;
+    const tname = std.fmt.bufPrint(&name_buf, "{s} chords", .{clip.name()[0..@min(clip.name().len, track_mod.MAX_NAME - 7)]}) catch "Chords";
+    const pos = try insertExtracted(alloc, engine, tracks_buf, track_count, ti, tname, pattern, selected_track, selected_clip);
+    try history.pushUndo(alloc, before);
+    dirty.* = true;
+    status.set("{d} chords in {s} {s}", .{ count, @import("tune.zig").KEYS[k.key], if (k.scale == .minor) "minor" else "major" });
+    return .{ .pos = pos };
+}
+
+/// Drums to a kit: the clip's hits sorted into drums, each drum's
+/// cleanest hit cut as a pad (WAVs and an SFZ on GM keys beside the
+/// recordings), a sampler track under the clip playing every hit on its
+/// drum's key, and the clip muted. One undo step.
+fn drumsToKitOr(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    status: *StatusMessage,
+    engine: *engine_mod.Engine,
+    pool: *audio_pool_mod.AudioPool,
+    tracks_buf: *[MAX_TRACKS]track_mod.Track,
+    track_count: *usize,
+    transport: *transport_mod.Transport,
+    selected_track: *?usize,
+    selected_clip: *?clip_mod.ClipRef,
+    dirty: *bool,
+    kit_path: *[storage.MAX_PATH]u8,
+) !?Extracted {
+    const fa = focusedAudio(pool, tracks_buf[0..track_count.*], selected_clip.*, status) orelse return null;
+    if (track_count.* >= MAX_TRACKS) return error.TooManyTracks;
+    const ti = fa.ref.track;
+    const src = fa.src;
+    const hits = src.hits() orelse return error.NoHits;
+    const right: ?[]const f64 = if (src.sample.isStereo()) src.sample.right else null;
+    var kit = try drums_mod.kit(alloc, src.sample.data, right, src.sample.sample_rate, hits);
+    defer kit.deinit(alloc);
+    if (kit.n == 0) {
+        status.set("No hits in {s}", .{tracks_buf[ti].clips.items[fa.ref.clip].name()});
+        return null;
+    }
+
+    // ── The pads: a WAV each, and the SFZ ──
+    const clip0 = &tracks_buf[ti].clips.items[fa.ref.clip];
+    var dir_buf: [storage.MAX_PATH]u8 = undefined;
+    const base = storage.recordingsDir(&dir_buf);
+    if (base.len == 0) return error.NoAudioFolder;
+    var slug_buf: [40]u8 = undefined;
+    var stem_buf: [64]u8 = undefined;
+    const stem = std.fmt.bufPrint(&stem_buf, "{s}-kit", .{storage.slug(&slug_buf, clip0.name())}) catch "kit";
+    var folder_buf: [storage.MAX_PATH]u8 = undefined;
+    const folder = storage.freshPath(&folder_buf, base, stem, "");
+    if (folder.len == 0) return error.NoFreeName;
+    storage.makeParents(folder);
+    const rate = src.sample.sample_rate;
+    const len_sec = src.seconds();
+    var sfz: std.ArrayList(u8) = .empty;
+    defer sfz.deinit(alloc);
+    try sfz.appendSlice(alloc, "// A kit from an audio clip's hits (Slab, docs/30).\n");
+    for (0..kit.n) |g| {
+        const h = kit.pad[g];
+        const s0 = @max(0, hits.sec[h] - 0.001);
+        const s1 = @min(len_sec, @min(if (h + 1 < hits.sec.len) hits.sec[h + 1] else len_sec, hits.sec[h] + 1.5));
+        var lb: [24]u8 = undefined;
+        const label = std.ascii.lowerString(&lb, kit.class[g].label());
+        for (label) |*ch| if (ch.* == ' ') {
+            ch.* = '-';
+        };
+        var nb: [40]u8 = undefined;
+        const file = std.fmt.bufPrint(&nb, "{s}-{d}.wav", .{ label, kit.key[g] }) catch continue;
+        var pb: [storage.MAX_PATH]u8 = undefined;
+        const path = std.fmt.bufPrint(&pb, "{s}/{s}", .{ folder, file }) catch continue;
+        try writePad(alloc, src, s0 * rate, s1 * rate, path);
+        var line: [200]u8 = undefined;
+        try sfz.appendSlice(alloc, std.fmt.bufPrint(&line, "<region> sample={s} key={d} pitch_keycenter={d} loop_mode=one_shot region_label={s}\n", .{ file, kit.key[g], kit.key[g], kit.class[g].label() }) catch "");
+    }
+    const sfz_path = std.fmt.bufPrint(kit_path, "{s}/{s}.sfz", .{ folder, stem }) catch return error.NoFreeName;
+    try document_mod.writeFile(alloc, sfz_path, sfz.items);
+
+    // ── The pattern: every hit inside the clip on its drum's key ──
+    const clip = &tracks_buf[ti].clips.items[fa.ref.clip];
+    const trate = tracks_buf[ti].time.rate();
+    const tmap = transport.map();
+    var pattern = clip_mod.Clip.init(clip.name(), clip.start_beat, clip.length_beats);
+    errdefer pattern.deinit(alloc);
+    for (hits.sec, 0..) |s, i| {
+        const b = extract_mod.songBeat(clip, trate, tmap, s);
+        if (b < -1e-6 or b >= clip.length_beats) continue;
+        try pattern.addNote(alloc, .{
+            .pitch = kit.key[kit.group[i]],
+            .start_beat = @max(0, b),
+            .length_beats = 0.25,
+            .velocity = @intFromFloat(std.math.clamp(40 + hits.strength[i] * 87, 1, 127)),
+        });
+    }
+
+    const before = try document_mod.serialize(alloc, tracks_buf[0..track_count.*], transport);
+    errdefer alloc.free(before);
+    clip.muted = true;
+    var name_buf: [track_mod.MAX_NAME]u8 = undefined;
+    const tname = std.fmt.bufPrint(&name_buf, "{s} kit", .{clip.name()[0..@min(clip.name().len, track_mod.MAX_NAME - 4)]}) catch "Kit";
+    const pos = try insertExtracted(alloc, engine, tracks_buf, track_count, ti, tname, pattern, selected_track, selected_clip);
+    try history.pushUndo(alloc, before);
+    dirty.* = true;
+    var what: [96]u8 = undefined;
+    var wl: usize = 0;
+    for (0..kit.n) |g| {
+        const lbl = kit.class[g].label();
+        if (wl + lbl.len + 2 > what.len) break;
+        if (wl > 0) {
+            @memcpy(what[wl..][0..2], ", ");
+            wl += 2;
+        }
+        @memcpy(what[wl..][0..lbl.len], lbl);
+        wl += lbl.len;
+    }
+    status.set("Kit: {s}; the clip is muted", .{what[0..wl]});
+    return .{ .pos = pos, .kit = sfz_path };
+}
+
+/// Source samples `a..b` as a WAV at the source's rate and channels, 5 ms
+/// out at its end.
+fn writePad(alloc: std.mem.Allocator, src: *const audio_pool_mod.Source, a_f: f64, b_f: f64, path: []const u8) !void {
+    const a: usize = @intFromFloat(@max(0, @round(a_f)));
+    const b: usize = @min(src.sample.data.len, @as(usize, @intFromFloat(@max(0, @round(b_f)))));
+    if (b <= a) return;
+    const frames = b - a;
+    const stereo = src.sample.isStereo();
+    const ch: usize = if (stereo) 2 else 1;
+    const buf = try alloc.alloc(f32, frames * ch);
+    defer alloc.free(buf);
+    const fade: usize = @min(frames / 2, @as(usize, @intFromFloat(0.005 * src.sample.sample_rate)));
+    for (0..frames) |i| {
+        const g: f32 = if (i + fade >= frames) @as(f32, @floatFromInt(frames - i)) / @as(f32, @floatFromInt(@max(1, fade))) else 1;
+        if (stereo) {
+            buf[i * 2] = @as(f32, @floatCast(src.sample.data[a + i])) * g;
+            buf[i * 2 + 1] = @as(f32, @floatCast(src.sample.right[a + i])) * g;
+        } else buf[i] = @as(f32, @floatCast(src.sample.data[a + i])) * g;
+    }
+    try export_mod.writeFile(alloc, path, buf, .{ .bits = .float32, .channels = @intCast(ch), .sample_rate = @intFromFloat(@round(src.sample.sample_rate)) });
+}
+
+/// A test bench for the extractors: a home in a temp folder, a pool with
+/// `x` (48 kHz mono) loaded from a WAV, two tracks, the first holding it
+/// as a clip from beat 2, focused, at 120 BPM.
+const ExtractBench = struct {
+    tmp: std.testing.TmpDir,
+    root_buf: [storage.MAX_PATH]u8 = undefined,
+    pool: audio_pool_mod.AudioPool,
+    tracks_buf: [MAX_TRACKS]track_mod.Track = undefined,
+    track_count: usize = 2,
+    transport: transport_mod.Transport = .{},
+    eng: *engine_mod.Engine,
+    history: history_mod.History = .{},
+    status: StatusMessage = .{},
+    sel_track: ?usize = 0,
+    sel_clip: ?clip_mod.ClipRef = .{ .track = 0, .clip = 0 },
+    dirty: bool = false,
+
+    const env = struct {
+        extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+        extern fn unsetenv(name: [*:0]const u8) c_int;
+    };
+
+    fn init(self: *ExtractBench, alloc: std.mem.Allocator, x: []const f64) !void {
+        self.* = .{ .tmp = std.testing.tmpDir(.{}), .pool = audio_pool_mod.AudioPool.init(alloc), .eng = try alloc.create(engine_mod.Engine) };
+        var rb: [storage.MAX_PATH]u8 = undefined;
+        const root = storage.absolute(&self.root_buf, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{self.tmp.sub_path}));
+        var hb: [storage.MAX_PATH]u8 = undefined;
+        _ = env.setenv("SLAB_HOME", (try std.fmt.bufPrintZ(&hb, "{s}/home", .{root})).ptr, 1);
+        storage.setProject(null);
+        const buf = try alloc.alloc(f32, x.len);
+        defer alloc.free(buf);
+        for (buf, x) |*o, v| o.* = @floatCast(v);
+        var pb: [storage.MAX_PATH]u8 = undefined;
+        const path = try std.fmt.bufPrint(&pb, "{s}/take.wav", .{root});
+        try export_mod.writeFile(alloc, path, buf, .{ .bits = .float32, .channels = 1, .sample_rate = 48_000 });
+        const src = try self.pool.loadFile(path);
+        self.pool.waitFor(src);
+        const col = c.rl.Color{ .r = 10, .g = 20, .b = 30, .a = 255 };
+        self.tracks_buf[0] = try track_mod.Track.init(alloc, "Band", col, silent_machine);
+        self.tracks_buf[1] = try track_mod.Track.init(alloc, "Keys", col, silent_machine);
+        const secs = @as(f64, @floatFromInt(x.len)) / 48_000;
+        var clip = clip_mod.Clip.initAudio("take", 2, secs * 2, src);
+        clip.audio.dur_sec = secs;
+        clip.selected = true;
+        try self.tracks_buf[0].addClip(alloc, clip);
+        self.transport.sample_rate = 48_000;
+        self.transport.tempo.set(&tempo_mod.TempoMap.constant(120));
+        self.eng.* = .{ .transport = &self.transport, .tracks = self.tracks_buf[0..self.track_count] };
+        self.eng.publishRouting();
+    }
+
+    fn deinit(self: *ExtractBench, alloc: std.mem.Allocator) void {
+        for (self.tracks_buf[0..self.track_count]) |*t| t.deinit(alloc);
+        self.history.deinit(alloc);
+        alloc.destroy(self.eng);
+        self.pool.deinit();
+        _ = env.unsetenv("SLAB_HOME");
+        self.tmp.cleanup();
+    }
+};
+
+test "chords to notes: a progression lands chord by chord on a track under the clip" {
+    const alloc = std.testing.allocator;
+    const x = try chords_mod.play(alloc, &.{
+        .{ .root = 0, .quality = .maj },
+        .{ .root = 9, .quality = .min },
+        .{ .root = 5, .quality = .maj },
+        .{ .root = 7, .quality = .dom7 },
+    }, 0.5, 0);
+    defer alloc.free(x);
+    var b: ExtractBench = undefined;
+    try b.init(alloc, x);
+    defer b.deinit(alloc);
+    const made = (try chordsToNotesOr(alloc, &b.history, &b.status, b.eng, &b.pool, &b.tracks_buf, &b.track_count, &b.transport, &b.sel_track, &b.sel_clip, &b.dirty)).?;
+    try std.testing.expectEqual(@as(u8, 1), made.pos);
+    try std.testing.expectEqual(@as(usize, 3), b.track_count);
+    try std.testing.expectEqualStrings("take chords", b.tracks_buf[1].name());
+    const pat = &b.tracks_buf[1].clips.items[0];
+    try std.testing.expectEqualStrings("C Am F G7", pat.name());
+    try std.testing.expectEqual(@as(f64, 2), pat.start_beat);
+    // Roots in octave 3, two beats each.
+    var roots: [4]u8 = undefined;
+    var nr: usize = 0;
+    for (pat.notes.items) |n| if (n.pitch < 60) {
+        roots[nr] = n.pitch;
+        try std.testing.expectApproxEqAbs(@as(f64, 2), n.length_beats, 1e-9);
+        try std.testing.expectApproxEqAbs(@as(f64, @floatFromInt(nr * 2)), n.start_beat, 1e-9);
+        nr += 1;
+    };
+    try std.testing.expectEqualSlices(u8, &.{ 48, 57, 53, 55 }, roots[0..nr]);
+    // The clip keeps playing and knows its key.
+    const take = &b.tracks_buf[0].clips.items[0];
+    try std.testing.expect(!take.muted);
+    try std.testing.expectEqual(@as(u8, 0), take.audio.tune.key);
+    try std.testing.expectEqual(@import("tune.zig").Scale.major, take.audio.tune.scale);
+    try std.testing.expectEqual(@as(usize, 1), b.history.undo_stack.items.len);
+}
+
+test "drums to a kit: pads on GM keys, every hit on its drum's key, the clip muted" {
+    const alloc = std.testing.allocator;
+    const keymap = @import("keymap.zig");
+    const x = try alloc.alloc(f64, 48_000 * 6);
+    defer alloc.free(x);
+    @memset(x, 0);
+    // At 120 BPM, so the hits land on eighths of the song.
+    drums_mod.beat(x, 120);
+    var b: ExtractBench = undefined;
+    try b.init(alloc, x);
+    defer b.deinit(alloc);
+    var kit_path: [storage.MAX_PATH]u8 = undefined;
+    const made = (try drumsToKitOr(alloc, &b.history, &b.status, b.eng, &b.pool, &b.tracks_buf, &b.track_count, &b.transport, &b.sel_track, &b.sel_clip, &b.dirty, &kit_path)).?;
+    try std.testing.expectEqual(@as(u8, 1), made.pos);
+    try std.testing.expect(b.tracks_buf[0].clips.items[0].muted);
+    var km = try keymap.load(alloc, made.kit.?);
+    defer km.deinit(alloc);
+    var keys: [8]f64 = undefined;
+    for (km.zones[0..km.count], 0..) |z, i| keys[i] = z.root;
+    std.mem.sort(f64, keys[0..km.count], {}, std.sort.asc(f64));
+    try std.testing.expectEqualSlices(f64, &.{ 36, 38, 42, 46 }, keys[0..km.count]);
+    const pat = &b.tracks_buf[1].clips.items[0];
+    try std.testing.expectEqual(@as(usize, 16), pat.notes.items.len);
+    for (pat.notes.items, 0..) |n, i| {
+        const pos = i % 8;
+        const want: u8 = if (pos == 0 or pos == 3) 36 else if (pos == 2 or pos == 6) 38 else if (i == 15) 46 else 42;
+        try std.testing.expectEqual(want, n.pitch);
+        try std.testing.expect(@abs(n.start_beat - @as(f64, @floatFromInt(i)) * 0.5) < 0.01);
+    }
 }
 
 /// The song's tempo over a warped clip set so it plays at its own speed
@@ -5765,7 +6212,7 @@ fn executeEditCommand(
         },
         // `import_audio` is intercepted in the arrangement-result handler
         // (it needs the audio pool + file dialog); never reaches here.
-        .none, .copy, .select_all, .clear_selection, .rename, .file_new, .file_open, .file_save, .file_save_as, .file_clean_up, .render_audio, .import_audio, .bounce, .rebounce, .thaw, .save_to_library, .slice_to_sampler, .audio_to_notes => {},
+        .none, .copy, .select_all, .clear_selection, .rename, .file_new, .file_open, .file_save, .file_save_as, .file_clean_up, .render_audio, .import_audio, .bounce, .rebounce, .thaw, .save_to_library, .slice_to_sampler, .audio_to_notes, .chords_to_notes, .drums_to_kit => {},
     }
 
     if (changed) {

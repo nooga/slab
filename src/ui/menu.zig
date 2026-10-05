@@ -61,6 +61,8 @@ pub const EditCommand = enum {
     song_follows_clip,
     slice_to_sampler,
     audio_to_notes,
+    chords_to_notes,
+    drums_to_kit,
     tune,
 };
 
