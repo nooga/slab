@@ -57,6 +57,15 @@ pub const Kind = enum(u8) { audio, bus, master };
 
 /// A track's stem in an export (docs/27 §Export): whether it's written,
 /// where its signal is taken and its channels. Saved with the project.
+pub const Freeze = struct {
+    /// The rendered audio in the pool, from the song's start.
+    source: u32,
+    /// The fingerprint of what it was rendered from (`freeze.zig`).
+    hash: u64 = 0,
+    /// The project changed under it: a refreeze would sound different.
+    stale: bool = false,
+};
+
 pub const StemPlan = struct {
     /// null: the default rule (a track that plays, not a bus).
     on: ?bool = null,
@@ -129,11 +138,19 @@ pub const Track = struct {
     /// With play_selected: muted selected clips play too (a re-bounce of
     /// muted originals).
     play_muted: bool = false,
+    /// While it freezes again: its machines play, not its frozen audio.
+    /// Transient, UI-owned.
+    play_live: bool = false,
     /// Export (docs/27 §Export): this track's stem.
     stem: StemPlan = .{},
     /// Its groove, AMOUNT and SHIFT (docs/28 §Groove), applied as the
     /// notes publish.
     groove: groove_mod.TrackGroove = .{},
+    /// Frozen (docs/28 §Freeze): the audio that plays instead of its
+    /// instrument, audio clips and inserts.
+    freeze: ?Freeze = null,
+    /// The audio thread's view: no instrument or insert latency.
+    frozen: std.atomic.Value(bool) = .init(false),
     next_fx_uid: u16 = 1,
     /// Audio-thread-owned per-lane segment cursors (automation.evalCursor).
     auto_cursors: [snap_mod.MAX_LANES_PER_TRACK]u32 = [_]u32{0} ** snap_mod.MAX_LANES_PER_TRACK,
@@ -497,6 +514,16 @@ pub const Track = struct {
         const write_idx: u32 = 1 - published;
         const dst = self.snap[write_idx];
 
+        dst.frozen = null;
+        if (!self.play_live) if (self.freeze) |f| if (pool.get(f.source)) |src| if (src.sample.data.len > 0) {
+            dst.frozen = .{
+                .data = src.sample.data.ptr,
+                .data_r = if (src.sample.isStereo()) src.sample.right.ptr else null,
+                .len = @intCast(src.sample.data.len),
+                .step = src.sample.sample_rate / 48_000.0,
+            };
+        };
+        self.frozen.store(dst.frozen != null, .release);
         dst.clip_count = 0;
         dst.note_count = 0;
         dst.audio_clip_count = 0;

@@ -127,7 +127,19 @@ pub const AutoView = struct {
     }
 };
 
+/// A frozen track's audio (docs/28 §Freeze): its instrument and inserts
+/// rendered from the song's start, played instead of them.
+pub const FrozenSnap = struct {
+    data: [*]const f64,
+    /// The right channel; null plays `data` on both sides.
+    data_r: ?[*]const f64 = null,
+    len: u32,
+    /// Source samples per engine sample.
+    step: f64 = 1,
+};
+
 pub const TrackSnapshot = struct {
+    frozen: ?FrozenSnap = null,
     clips: [MAX_CLIPS_PER_TRACK]ClipHeader = undefined,
     clip_count: u32 = 0,
     notes: [MAX_NOTES_PER_TRACK]NoteSnap = undefined,

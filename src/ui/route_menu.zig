@@ -31,6 +31,11 @@ pub const RouteEdit = struct {
         duplicate,
         /// Make a group of the track (and the selection it's in).
         group,
+        /// Freeze (or freeze again), unfreeze, or flatten it to an audio
+        /// track (docs/28 §Freeze); a selection takes them all.
+        freeze,
+        unfreeze,
+        flatten,
     },
     /// Group, Duplicate and Delete act on the whole selection.
     selection: bool = false,
@@ -48,6 +53,9 @@ const REMOVE: u32 = 0x203;
 const DELETE: u32 = 0x204;
 const DUPLICATE: u32 = 0x205;
 const GROUP: u32 = 0x206;
+const FREEZE: u32 = 0x207;
+const UNFREEZE: u32 = 0x208;
+const FLATTEN: u32 = 0x209;
 
 var track_idx: usize = 0;
 var mode: Mode = .all;
@@ -96,6 +104,7 @@ pub fn tick(tracks: []Track, sel: ?usize) ?RouteEdit {
             var dbuf: [32]u8 = undefined;
             var xbuf: [32]u8 = undefined;
             const what = if (tracks[ti].isBus()) "bus" else "track";
+            const fz = tracks[ti].freeze;
             const top = [_]menu.Item{
                 .{ .label = "Output", .id = 1, .submenu = true },
                 .{ .label = "Sends", .id = 2, .submenu = true },
@@ -103,11 +112,18 @@ pub fn tick(tracks: []Track, sel: ?usize) ?RouteEdit {
                 .{ .label = if (many) std.fmt.bufPrint(&gbuf, "Group {d} tracks", .{n}) catch "Group" else "Group", .id = GROUP, .enabled = !is_return and tracks.len < routing.MAX_TRACKS, .shortcut = "\u{2318}G" },
                 .{ .label = if (many) std.fmt.bufPrint(&dbuf, "Duplicate {d} tracks", .{n}) catch "Duplicate" else std.fmt.bufPrint(&dbuf, "Duplicate {s}", .{what}) catch "Duplicate", .id = DUPLICATE, .enabled = tracks.len + (if (many) n else 1) <= routing.MAX_TRACKS },
                 .{ .label = if (many) std.fmt.bufPrint(&xbuf, "Delete {d} tracks", .{n}) catch "Delete" else std.fmt.bufPrint(&xbuf, "Delete {s}", .{what}) catch "Delete", .id = DELETE },
+                .{ .separator = true },
+                .{ .label = if (fz == null) "Freeze" else if (fz.?.stale) "Freeze again (stale)" else "Freeze again", .id = FREEZE, .enabled = !tracks[ti].isBus() },
+                .{ .label = "Unfreeze", .id = UNFREEZE, .enabled = fz != null },
+                .{ .label = "Flatten to audio", .id = FLATTEN, .enabled = fz != null },
             };
             switch (menu.pick(KEY, &top) orelse 0) {
                 DELETE => return .{ .track = ti, .what = .delete, .selection = many },
                 DUPLICATE => return .{ .track = ti, .what = .duplicate, .selection = many },
                 GROUP => return .{ .track = ti, .what = .group, .selection = many },
+                FREEZE => return .{ .track = ti, .what = .freeze, .selection = many },
+                UNFREEZE => return .{ .track = ti, .what = .unfreeze, .selection = many },
+                FLATTEN => return .{ .track = ti, .what = .flatten, .selection = many },
                 else => {},
             }
             const which = menu.subOpen(KEY, 0) orelse return null;

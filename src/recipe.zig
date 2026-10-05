@@ -118,3 +118,47 @@ pub fn checkAll(alloc: std.mem.Allocator, tracks: []track_mod.Track, transport: 
         r.stale = if (now) |fp| fp != r.hash else false;
     };
 }
+
+/// What a frozen track was rendered from (docs/28 §Freeze): the
+/// instrument, settings, inserts, lanes and code, every clip that plays,
+/// its groove, and the tempo, meter and song grooves around it. A match
+/// means a refreeze would render the same audio.
+pub fn freezeFingerprint(alloc: std.mem.Allocator, tracks: []const track_mod.Track, transport: *const transport_mod.Transport, ti: usize) !u64 {
+    const t = &tracks[ti];
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    var h = std.hash.Wyhash.init(0);
+    var head: [64]u8 = undefined;
+    h.update(std.fmt.bufPrint(&head, "slab {s} freeze", .{build_options.version}) catch "");
+    for (transport.map().slice()) |p| h.update(std.mem.asBytes(&[_]f64{ p.beat, p.bpm, @floatFromInt(@intFromBool(p.ramp)) }));
+    if (document.meterState()) |ms| for (ms.liveMap().points) |p| {
+        h.update(std.mem.asBytes(&p.start_bar));
+        h.update(&.{ p.numerator, p.denominator });
+        h.update(p.groups.slice());
+    };
+    if (@import("groove.zig").active) |cx| {
+        h.update(&.{cx.song});
+        h.update(std.mem.asBytes(&cx.seed));
+        if (cx.markers) |mk| for (mk.sectionSlice()) |sec| if (sec.groove != 0) {
+            h.update(std.mem.asBytes(&sec.beat));
+            h.update(&.{sec.groove});
+        };
+    }
+    try hashTrack(alloc, &out, &h, t, false, false);
+    for (t.clips.items) |*cl| if (!cl.muted) {
+        out.clearRetainingCapacity();
+        var c = cl.*;
+        c.selected = false;
+        try document.appendClip(alloc, &out, t, &c, .{ .identity = false });
+        h.update(out.items);
+    };
+    return h.final();
+}
+
+/// Mark each frozen track stale or fresh. UI thread.
+pub fn checkFrozen(alloc: std.mem.Allocator, tracks: []track_mod.Track, transport: *const transport_mod.Transport) void {
+    for (tracks, 0..) |*t, ti| if (t.freeze) |*f| {
+        const now = freezeFingerprint(alloc, tracks, transport, ti) catch continue;
+        f.stale = now != f.hash;
+    };
+}

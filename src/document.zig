@@ -245,6 +245,14 @@ pub fn serialize(
         try appendLanes(alloc, &out, t);
         if (t.lanes_shown) try out.appendSlice(alloc, ",\"show_automation\":true");
         if (!t.stem.isDefault()) try appendStem(alloc, &out, t.stem);
+        // Frozen (docs/28 §Freeze): an audio reference, so a package
+        // collects the file like a clip's.
+        if (t.freeze) |f| if (active_pool) |p| if (p.get(f.source)) |src| {
+            var rb: [storage.MAX_PATH]u8 = undefined;
+            try out.appendSlice(alloc, ",\"freeze\":{\"type\":\"audio\",\"source\":");
+            try appendJsonString(alloc, &out, storage.ref(&rb, src.path()));
+            try appendFmt(alloc, &out, ",\"hash\":\"{x:0>16}\"}}", .{f.hash});
+        };
         if (!t.groove.isDefault()) if (groove_mod.active) |cx| {
             try out.appendSlice(alloc, ",\"groove\":{\"name\":");
             try appendJsonString(alloc, &out, cx.pool.pickName(t.groove.pick));
@@ -1016,6 +1024,16 @@ fn parseTrack(alloc: std.mem.Allocator, reg: *registry_mod.Registry, to: std.jso
     if (objGet(to, "automation")) |av| try applyLanes(alloc, &t, av);
     if (objGet(to, "show_automation")) |x| t.lanes_shown = asBool(x);
     if (objGet(to, "stem")) |x| t.stem = parseStem(x);
+    t.freeze = null;
+    if (objGet(to, "freeze")) |fv| if (fv == .object) if (active_pool) |p| {
+        var rb: [storage.MAX_PATH]u8 = undefined;
+        const path = storage.resolve(&rb, strOf(objGet(fv.object, "source")) orelse "");
+        // A missing file thaws the track: its machines play.
+        if (path.len > 0) if (p.loadFile(path)) |src| {
+            const hash = std.fmt.parseInt(u64, strOf(objGet(fv.object, "hash")) orelse "0", 16) catch 0;
+            t.freeze = .{ .source = src, .hash = hash };
+        } else |_| {};
+    };
     t.groove = .{};
     if (objGet(to, "groove")) |gv| if (gv == .object) if (groove_mod.active) |cx| {
         t.groove.pick = cx.pool.pickOf(strOf(objGet(gv.object, "name")) orelse "");

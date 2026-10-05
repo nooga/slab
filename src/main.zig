@@ -1352,6 +1352,25 @@ pub fn main(init: std.process.Init) !void {
                 tracks = tracks_buf[0..track_count];
                 dirty = true;
             }
+        } else if (edit.what == .freeze) {
+            if (bounce_job.active or render_job.active) {
+                status.set("Wait for the render to finish", .{});
+            } else {
+                const set = actionSet(tracks, selected_track, edit.track, edit.selection);
+                startFreeze(alloc, &engine, &audio, &audio_pool, &transport, tracks, &set, &bounce_job, &status) catch |err| status.set("Freeze failed: {s}", .{@errorName(err)});
+            }
+        } else if (edit.what == .unfreeze or edit.what == .flatten) {
+            const set = actionSet(tracks, selected_track, edit.track, edit.selection);
+            pushHistorySnapshot(alloc, &history, tracks, &transport);
+            var n: usize = 0;
+            for (tracks, 0..) |*t, k| if (set[k] and t.freeze != null) {
+                if (edit.what == .flatten) flattenTrack(alloc, &audio, &audio_pool, &transport, t) catch continue else t.freeze = null;
+                t.publishSnapshot(&audio_pool);
+                n += 1;
+            };
+            engine.publishRouting();
+            status.set("{s} {d} track{s}", .{ if (edit.what == .flatten) "Flattened" else "Unfroze", n, if (n == 1) "" else "s" });
+            dirty = true;
         } else if (edit.what == .duplicate and edit.selection) {
             const set = actionSet(tracks, selected_track, edit.track, true);
             if (document_mod.serialize(alloc, tracks, &transport)) |before| {
@@ -1769,6 +1788,7 @@ pub fn main(init: std.process.Init) !void {
         if (c.rl.GetTime() >= next_recipe_check and !bounce_job.active) {
             next_recipe_check = c.rl.GetTime() + 0.5;
             recipe_mod.checkAll(alloc, tracks, &transport);
+            recipe_mod.checkFrozen(alloc, tracks, &transport);
         }
         engine.publishRouting();
 
@@ -1860,6 +1880,11 @@ pub fn main(init: std.process.Init) !void {
                 };
                 if (!bounce_job.active) bounce_dlg.active = false;
             },
+        }
+        // Freezing has no dialog: the status line counts it up.
+        if (bounce_job.active and bounce_job.freeze and !bounce_job.done.load(.acquire)) {
+            const total = @max(1, bounce_job.total_frames);
+            status.set("Freezing\u{2026} {d}%", .{bounce_job.progress.load(.monotonic) * 100 / total});
         }
         if (bounce_job.active and bounce_job.done.load(.acquire)) {
             finishBouncePass(alloc, &history, &status, &audio, &engine, &audio_pool, &tracks_buf, &track_count, &transport, &bounce_job, &selected_track, &selected_clip, &prev_selected_clip, &dirty);
@@ -2485,6 +2510,9 @@ const BounceJob = struct {
     /// A re-bounce (docs/27 §Provenance): the bounced clip it renders
     /// into again, by id; its muted originals play. 0 for a bounce.
     replace: u32 = 0,
+    /// Freezing (docs/28 §Freeze): every source's audio after its inserts
+    /// from the song's start, becoming its frozen audio.
+    freeze: bool = false,
     passes: [MAX_TRACKS]u32 = undefined,
     pass_count: usize = 0,
     pass: usize = 0,
@@ -2653,8 +2681,10 @@ fn endBounce(audio: ?*audio_mod.Audio, engine: *engine_mod.Engine, pool: *audio_
     for (tracks) |*t| {
         t.play_selected = false;
         t.play_muted = false;
+        t.play_live = false;
         t.publishSnapshot(pool);
     }
+    engine.publishRouting();
     if (audio) |a| a.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
     job.* = .{};
 }
@@ -2723,6 +2753,15 @@ fn finishBouncePass(
     }
     // Masks off before placing, so the new clips publish as they are.
     for (tracks) |*t| t.play_selected = false;
+    if (job.freeze) {
+        placeFreeze(alloc, history, status, pool, tracks, transport, job) catch |err| {
+            std.log.err("freeze place failed: {s}", .{@errorName(err)});
+            status.set("Freeze failed: {s}", .{@errorName(err)});
+        };
+        dirty.* = true;
+        endBounce(audio, engine, pool, tracks, job, alloc);
+        return;
+    }
     if (job.replace != 0) {
         replaceBounce(alloc, history, status, pool, tracks, transport, job, selected_track, selected_clip) catch |err| {
             std.log.err("re-bounce place failed: {s}", .{@errorName(err)});
@@ -2790,7 +2829,7 @@ fn writeBounceClips(alloc: std.mem.Allocator, tracks: []const track_mod.Track, j
         var stem_buf: [64]u8 = undefined;
         var slug_buf: [48]u8 = undefined;
         const stem = if (@popCount(src_set) == 1)
-            std.fmt.bufPrint(&stem_buf, "{s}-bounce", .{storage.slug(&slug_buf, tracks[@ctz(src_set)].name())}) catch "bounce"
+            std.fmt.bufPrint(&stem_buf, "{s}-{s}", .{ storage.slug(&slug_buf, tracks[@ctz(src_set)].name()), if (job.freeze) "freeze" else "bounce" }) catch "bounce"
         else
             "bounce";
         var out = &job.outs[job.out_count];
@@ -2801,6 +2840,123 @@ fn writeBounceClips(alloc: std.mem.Allocator, tracks: []const track_mod.Track, j
         try document_mod.writeFile(alloc, path, bytes);
         job.out_count += 1;
     }
+}
+
+/// Freeze the tracks in `set` (docs/28 §Freeze): one render from the
+/// song's start to its end (END, or the last clip) plus the tail, each
+/// track's signal after its inserts into a file of its own. Tracks frozen
+/// already play their machines for it. Bounce's job does the rendering;
+/// placeFreeze takes over at the end.
+fn startFreeze(
+    alloc: std.mem.Allocator,
+    engine: *engine_mod.Engine,
+    audio: ?*audio_mod.Audio,
+    pool: *audio_pool_mod.AudioPool,
+    transport: *transport_mod.Transport,
+    tracks: []track_mod.Track,
+    set: *const [MAX_TRACKS]bool,
+    job: *BounceJob,
+    status: *StatusMessage,
+) !void {
+    var sources: u32 = 0;
+    for (tracks, 0..) |*t, ti| if (set[ti] and !t.isBus()) {
+        sources |= bit(ti);
+    };
+    if (sources == 0) {
+        status.set("Nothing to freeze", .{});
+        return;
+    }
+    const end_beat = if (document_mod.markers()) |mk| mk.end orelse lastClipEnd(tracks) else lastClipEnd(tracks);
+    const end = transport.beatsToSamples(end_beat);
+    if (end == 0) {
+        status.set("Nothing plays to freeze", .{});
+        return;
+    }
+    const sr = transport.sample_rate;
+    var opts: bounce_dialog.State = .{};
+    opts.tap = @intFromEnum(bounce_dialog.Tap.fx);
+    opts.mode = @intFromEnum(bounce_dialog.Mode.each);
+    opts.tail_auto = true;
+    opts.channels = .auto;
+    job.* = .{
+        .active = true,
+        .opts = opts,
+        .sources = sources,
+        .freeze = true,
+        .start_sample = 0,
+        .start_beat = 0,
+        .range_frames = @intCast(end),
+        .sample_rate = sr,
+        .start_ns = nowNs(),
+    };
+    job.total_frames = job.range_frames + @as(usize, @intFromFloat(bounce_dialog.TAIL_MAX * @as(f32, @floatFromInt(sr))));
+    job.passes[0] = sources;
+    job.pass_count = 1;
+    for (tracks, 0..) |*t, ti| if (sources & bit(ti) != 0) {
+        t.play_live = true;
+        t.publishSnapshot(pool);
+    };
+    engine.publishRouting();
+    if (audio) |a| a.stop();
+    beginBouncePass(alloc, engine, tracks, job) catch |err| {
+        endBounce(audio, engine, pool, tracks, job, alloc);
+        return err;
+    };
+    status.set("Freezing {d} track{s}", .{ @popCount(sources), if (@popCount(sources) == 1) "" else "s" });
+}
+
+/// Each written file becomes its track's frozen audio, with the
+/// fingerprint of what it was rendered from. One undo step.
+fn placeFreeze(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    status: *StatusMessage,
+    pool: *audio_pool_mod.AudioPool,
+    tracks: []track_mod.Track,
+    transport: *transport_mod.Transport,
+    job: *const BounceJob,
+) !void {
+    const before = try document_mod.serialize(alloc, tracks, transport);
+    errdefer alloc.free(before);
+    var n: usize = 0;
+    for (job.outs[0..job.out_count]) |*o| {
+        if (@popCount(o.sources) != 1) continue;
+        const ti: usize = @ctz(o.sources);
+        const src = try pool.loadFile(o.path());
+        tracks[ti].freeze = .{ .source = src, .hash = try recipe_mod.freezeFingerprint(alloc, tracks, transport, ti) };
+        n += 1;
+    }
+    try history.pushUndo(alloc, before);
+    status.set("Froze {d} track{s}", .{ n, if (n == 1) "" else "s" });
+}
+
+/// A frozen track becomes an audio track for good: its frozen audio as
+/// one clip from the song's start, no instrument, no inserts, no clips or
+/// lanes of theirs; its fader, pan, sends and their lanes stay.
+fn flattenTrack(alloc: std.mem.Allocator, audio: *audio_mod.Audio, pool: *audio_pool_mod.AudioPool, transport: *transport_mod.Transport, t: *track_mod.Track) !void {
+    const f = t.freeze orelse return;
+    const src = pool.get(f.source) orelse return error.MissingAudio;
+    const dur = src.seconds();
+    var clip = clip_mod.Clip.initAudio(src.name(), 0, transport.secondsToBeats(0, dur), f.source);
+    clip.audio.dur_sec = dur;
+    errdefer clip.deinit(alloc);
+    audio.stop();
+    defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+    t.replaceMachine(alloc, silent_machine);
+    t.machine_idx = null;
+    t.setEnabled(true);
+    while (t.effects.items.len > 0) t.removeEffect(alloc, t.effects.items.len - 1);
+    for (t.clips.items) |*cl| cl.deinit(alloc);
+    t.clips.clearRetainingCapacity();
+    var li = t.lanes.items.len;
+    while (li > 0) {
+        li -= 1;
+        const k = t.lanes.items[li].target.kind;
+        if (k != .volume and k != .pan) t.removeLane(alloc, li);
+    }
+    try t.addClip(alloc, clip);
+    t.freeze = null;
+    t.groove = .{};
 }
 
 /// Put each bounced clip on a new track below the lowest source, and
@@ -3587,7 +3743,8 @@ fn applyRouteEdit(
     transport: *const transport_mod.Transport,
 ) !void {
     const routing = @import("routing.zig");
-    if (edit.track >= track_count.* or edit.what == .delete or edit.what == .duplicate or edit.what == .group) return;
+    if (edit.track >= track_count.* or edit.what == .delete or edit.what == .duplicate or edit.what == .group or
+        edit.what == .freeze or edit.what == .unfreeze or edit.what == .flatten) return;
     const before = try document_mod.serialize(alloc, tracks_buf[0..track_count.*], transport);
     errdefer alloc.free(before);
 
@@ -3603,7 +3760,7 @@ fn applyRouteEdit(
             defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
             target = @intCast(try newTrack(alloc, tracks_buf, track_count, true, if (edit.what == .output_new_bus) "Group" else "Return"));
         },
-        .delete, .duplicate, .group => unreachable,
+        .delete, .duplicate, .group, .freeze, .unfreeze, .flatten => unreachable,
     }
     const t = &tracks_buf[edit.track];
     switch (edit.what) {
@@ -3650,7 +3807,7 @@ fn applyRouteEdit(
             snd.pre = p.pre;
             status.set("{s}: send to {s} {s}-fader", .{ t.name(), tracks_buf[target].name(), if (p.pre) "pre" else "post" });
         },
-        .delete, .duplicate, .group => unreachable,
+        .delete, .duplicate, .group, .freeze, .unfreeze, .flatten => unreachable,
     }
     try history.pushUndo(alloc, before);
 }
@@ -5429,4 +5586,89 @@ test "automation recording writes a thinned pass over the span it covered" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.6), pts[1].value, 1e-3);
     try std.testing.expectEqual(@as(f64, 10), pts[2].beat);
     try std.testing.expectEqual(@as(usize, 1), history.undo_stack.items.len);
+}
+
+test "freeze: a track renders to its frozen audio, plays the same frozen, and goes stale on an edit" {
+    const alloc = std.testing.allocator;
+    const env = struct {
+        extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+        extern fn unsetenv(name: [*:0]const u8) c_int;
+    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var rb: [storage.MAX_PATH]u8 = undefined;
+    var root_buf: [storage.MAX_PATH]u8 = undefined;
+    const root = storage.absolute(&root_buf, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
+    var hb: [storage.MAX_PATH]u8 = undefined;
+    _ = env.setenv("SLAB_HOME", (try std.fmt.bufPrintZ(&hb, "{s}/home", .{root})).ptr, 1);
+    defer _ = env.unsetenv("SLAB_HOME");
+    storage.setProject(null);
+
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    document_mod.setPool(&pool);
+    const src = try pool.loadFile("machines/sampler/assets/default.wav");
+
+    const col = c.rl.Color{ .r = 10, .g = 20, .b = 30, .a = 255 };
+    var tracks_buf: [MAX_TRACKS]track_mod.Track = undefined;
+    var track_count: usize = 1;
+    tracks_buf[0] = try track_mod.Track.init(alloc, "Hits", col, silent_machine);
+    defer for (tracks_buf[0..track_count]) |*t| t.deinit(alloc);
+    tracks_buf[0].setVolume(0.5);
+    var hit = clip_mod.Clip.initAudio("hit", 0, 1, src);
+    hit.audio.dur_sec = pool.get(src).?.seconds();
+    try tracks_buf[0].addClip(alloc, hit);
+    const tracks = tracks_buf[0..track_count];
+    for (tracks) |*t| t.publishSnapshot(&pool);
+
+    var transport = transport_mod.Transport{};
+    const eng = try alloc.create(engine_mod.Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = tracks };
+    eng.publishRouting();
+    var history: history_mod.History = .{};
+    defer history.deinit(alloc);
+    var status: StatusMessage = .{};
+    const job = try alloc.create(BounceJob);
+    defer alloc.destroy(job);
+    job.* = .{};
+    var sel_track: ?usize = 0;
+    var sel_clip: ?clip_mod.ClipRef = null;
+    var prev_clip: ?clip_mod.ClipRef = null;
+    var dirty = false;
+
+    // Live, for reference.
+    const n = 24_000;
+    const live = try alloc.alloc(f32, n * 2);
+    defer alloc.free(live);
+    eng.renderOffline(live, n, 0, null, null);
+
+    var set: [MAX_TRACKS]bool = @splat(false);
+    set[0] = true;
+    try startFreeze(alloc, eng, null, &pool, &transport, tracks, &set, job, &status);
+    try std.testing.expect(job.active and tracks[0].play_live);
+    finishBouncePass(alloc, &history, &status, null, eng, &pool, &tracks_buf, &track_count, &transport, job, &sel_track, &sel_clip, &prev_clip, &dirty);
+    try std.testing.expect(!job.active and !tracks[0].play_live);
+    const f = tracks[0].freeze orelse return error.NotFrozen;
+    try std.testing.expectEqual(try recipe_mod.freezeFingerprint(alloc, tracks, &transport, 0), f.hash);
+    try std.testing.expect(tracks[0].currentSnapshot().frozen != null);
+    try std.testing.expectEqual(@as(usize, 1), history.undo_stack.items.len);
+
+    // Frozen, the same out of the fader.
+    const frozen = try alloc.alloc(f32, n * 2);
+    defer alloc.free(frozen);
+    eng.renderOffline(frozen, n, 0, null, null);
+    var worst: f32 = 0;
+    for (live, frozen) |a, b| worst = @max(worst, @abs(a - b));
+    try std.testing.expect(worst < 1e-6);
+    var peak: f32 = 0;
+    for (frozen) |x| peak = @max(peak, @abs(x));
+    try std.testing.expect(peak > 0.01);
+
+    // An edit makes it stale.
+    recipe_mod.checkFrozen(alloc, tracks, &transport);
+    try std.testing.expect(!tracks[0].freeze.?.stale);
+    tracks[0].clips.items[0].audio.gain = 0.5;
+    recipe_mod.checkFrozen(alloc, tracks, &transport);
+    try std.testing.expect(tracks[0].freeze.?.stale);
 }

@@ -350,7 +350,7 @@ pub const Engine = struct {
             const nd = &graph.nodes[ti];
             // A keyed effect's input must be at least as late as its key
             // (the source's pre tap), so a late key makes the track later.
-            if (nd.key_count > 0) {
+            if (nd.key_count > 0 and !self.tracks[ti].frozen.load(.acquire)) {
                 const t = &self.tracks[ti];
                 var p = instLatency(t, nd.is_bus);
                 for (t.effects.items, 0..) |*fx, i| {
@@ -1185,6 +1185,9 @@ pub const Engine = struct {
         // See snapshot.zig for the double-buffer invariant.
         const snap = t.currentSnapshot();
         const n_events = gatherEvents(snap, beat_start, beat_end, spb, frames, chase, release_at, &scratch.events);
+        // Frozen: its audio stands in for the instrument, audio clips and
+        // inserts (docs/28 §Freeze); the fader on is as ever.
+        const frozen = if (node.is_bus) null else snap.frozen;
 
         const inst_view = snap_mod.AutoView{ .snap = snap, .cursors = &t.auto_cursors, .kind = .inst };
         const ctx = machine.MachineCtx{
@@ -1214,7 +1217,12 @@ pub const Engine = struct {
         const inst_start = if (track_probe) probeNowNs() else 0;
         // A note sounding or close keeps the whole track awake.
         var wake = false;
-        if (!node.is_bus) {
+        if (frozen) |fz| {
+            // Past an export's stop it falls silent like the rest would
+            // have, its tail too (unfreeze to export a part with tails).
+            if (!b.ring_out) playFrozen(fz, block_start, frames, sr, l, r);
+            self.captureTap(ti, .input, block_start, l, r);
+        } else if (!node.is_bus) {
             // Disabled instrument → feed silence into the effect chain.
             if (t.isEnabled()) {
                 if (!self.idle_skip) {
@@ -1258,13 +1266,15 @@ pub const Engine = struct {
             .lat_out = &self.lat_out,
             .lat = self.lat_in[ti] + instLatency(t, node.is_bus),
         } else null;
-        const rendered = renderEffectsKeyed(t, ctx, l, r, scratch.fx_l[0..frames], scratch.fx_r[0..frames], keys, .{ .on = self.idle_skip, .wake = wake });
-        const fx_ns = if (track_probe) probeNowNs() - fx_start else 0;
-        // The chain may end in the scratch pair; the pre tap is `l`/`r`.
-        if (rendered.l.ptr != l.ptr) {
-            @memcpy(l, rendered.l);
-            @memcpy(r, rendered.r);
+        if (frozen == null) {
+            const rendered = renderEffectsKeyed(t, ctx, l, r, scratch.fx_l[0..frames], scratch.fx_r[0..frames], keys, .{ .on = self.idle_skip, .wake = wake });
+            // The chain may end in the scratch pair; the pre tap is `l`/`r`.
+            if (rendered.l.ptr != l.ptr) {
+                @memcpy(l, rendered.l);
+                @memcpy(r, rendered.r);
+            }
         }
+        const fx_ns = if (track_probe) probeNowNs() - fx_start else 0;
         const final_l: []const f32 = l;
         const final_r: []const f32 = r;
         self.captureTap(ti, .pre, block_start, final_l, final_r);
@@ -1775,6 +1785,7 @@ pub const PdcHistory = struct {
 /// Samples a track's signal is late at its taps: its instrument's (not a
 /// bus's) and its active inserts'.
 fn chainLatency(t: *const Track, is_bus: bool) u32 {
+    if (!is_bus and t.frozen.load(.acquire)) return 0;
     var n = instLatency(t, is_bus);
     for (t.effects.items, 0..) |*fx, i| {
         if (!t.effectBypassed(i)) n += fx.mach.latencySamples();
@@ -1783,7 +1794,28 @@ fn chainLatency(t: *const Track, is_bus: bool) u32 {
 }
 
 fn instLatency(t: *const Track, is_bus: bool) u32 {
-    return if (!is_bus and t.isEnabled()) t.machine.latencySamples() else 0;
+    return if (!is_bus and t.isEnabled() and !t.frozen.load(.acquire)) t.machine.latencySamples() else 0;
+}
+
+/// A frozen track's audio for the block at `block_start` (it starts at
+/// the song's start), linear between source samples.
+fn playFrozen(fz: snap_mod.FrozenSnap, block_start: u64, frames: u32, sample_rate: u32, l: []f32, r: []f32) void {
+    const step = fz.step * 48_000.0 / @as(f64, @floatFromInt(sample_rate));
+    const rd = fz.data_r orelse fz.data;
+    for (0..frames) |i| {
+        const pos = @as(f64, @floatFromInt(block_start + i)) * step;
+        const k: usize = @intFromFloat(@floor(pos));
+        if (k + 1 >= fz.len) {
+            if (k < fz.len) {
+                l[i] = @floatCast(fz.data[k]);
+                r[i] = @floatCast(rd[k]);
+            }
+            continue;
+        }
+        const f = pos - @floor(pos);
+        l[i] = @floatCast(fz.data[k] + (fz.data[k + 1] - fz.data[k]) * f);
+        r[i] = @floatCast(rd[k] + (rd[k + 1] - rd[k]) * f);
+    }
 }
 
 /// Idle skipping for one chain (docs/04 §Idle skipping).
