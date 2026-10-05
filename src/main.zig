@@ -19,6 +19,8 @@ const arrange_mod = @import("arrange.zig");
 const warp_mod = @import("warp.zig");
 const tempo_detect = @import("tempo_detect.zig");
 const tempo_mod = @import("tempo.zig");
+const pitch_mod = @import("pitch.zig");
+const extract_mod = @import("extract.zig");
 const track_mod = @import("track.zig");
 const clip_mod = @import("clip.zig");
 const audio_pool_mod = @import("audio_pool.zig");
@@ -87,6 +89,8 @@ test {
     _ = @import("stretch.zig");
     _ = @import("fft.zig");
     _ = @import("tempo_detect.zig");
+    _ = @import("pitch.zig");
+    _ = @import("extract.zig");
     _ = @import("ui/marker_dialog.zig");
     _ = @import("routing.zig");
     _ = @import("export.zig");
@@ -876,6 +880,8 @@ pub fn main(init: std.process.Init) !void {
     audio.setCapture(&recorder, recorder_mod.Recorder.captureFn);
     var rec_finishing = false;
     var rec_track: ?usize = null;
+    // Audio to notes waiting on its source's pitch (docs/30).
+    var notes_job: ?NotesJob = null;
 
     // Input-device picker state. Re-enumerated periodically (picks up hotplug
     // within ~1s). `input_name_ptrs` are C-string views into `input_devices`.
@@ -1353,6 +1359,8 @@ pub fn main(init: std.process.Init) !void {
             sliceToSampler(alloc, &history, &status, &engine, &audio, &reg, &audio_pool, &tracks_buf, &track_count, &transport, &selected_track, &selected_clip, &dirty);
             tracks = tracks_buf[0..track_count];
             engine.tracks = tracks;
+        } else if (ares.command == .audio_to_notes) {
+            notes_job = startAudioToNotes(&audio_pool, tracks, selected_clip, &status);
         } else if (ares.command != .none) {
             try executeEditCommand(alloc, &history, &clipboard, &status, .arrangement, edit_snap, ares.command, .{
                 .beat = ares.command_beat,
@@ -1505,6 +1513,8 @@ pub fn main(init: std.process.Init) !void {
                 sliceToSampler(alloc, &history, &status, &engine, &audio, &reg, &audio_pool, &tracks_buf, &track_count, &transport, &selected_track, &selected_clip, &dirty);
                 tracks = tracks_buf[0..track_count];
                 engine.tracks = tracks;
+            } else if (cres.command == .audio_to_notes) {
+                notes_job = startAudioToNotes(&audio_pool, tracks, selected_clip, &status);
             } else if (cres.command != .none) {
                 try executeEditCommand(alloc, &history, &clipboard, &status, .piano_roll, edit_snap, cres.command, .{
                     .beat = cres.command_beat,
@@ -1974,13 +1984,26 @@ pub fn main(init: std.process.Init) !void {
         // the take file: turn it into a pooled source + clip on the armed track.
         if (rec_finishing and recorder.isFinished()) {
             const res = recorder.finish();
-            placeRecordedClip(alloc, &audio_pool, &history, &status, tracks, &transport, &recorder, &audio, engine.master_latency.load(.monotonic), res, rec_track, &selected_track, &selected_clip, &dirty) catch |err| {
+            const placed = placeRecordedClip(alloc, &audio_pool, &history, &status, tracks, &transport, &recorder, &audio, engine.master_latency.load(.monotonic), res, rec_track, &selected_track, &selected_clip, &dirty) catch |err| blk: {
                 std.log.err("record finalize failed: {s}", .{@errorName(err)});
                 status.set("Recording finalize failed", .{});
+                break :blk false;
+            };
+            // Hum to notes: the take, just landed and focused, becomes notes.
+            if (placed) if (selected_clip) |s| if (s.track < tracks.len and tracks[s.track].rec_notes) {
+                notes_job = startAudioToNotes(&audio_pool, tracks, selected_clip, &status);
             };
             rec_finishing = false;
             rec_track = null;
         }
+
+        // Audio to notes, once its source's pitch is found.
+        if (notes_job) |job| if (audio_pool.get(job.source)) |src| if (src.pitch() != null) {
+            notes_job = null;
+            audioToNotes(alloc, &history, &status, &engine, &audio, &reg, &audio_pool, &tracks_buf, &track_count, &transport, &selected_track, &selected_clip, &dirty, job);
+            tracks = tracks_buf[0..track_count];
+            engine.tracks = tracks;
+        };
         if (tres.save_project or tres.save_project_as or tres.new_project or tres.open_project or tres.clean_up_project) lib_stale = true;
         if (tres.save_project) {
             try saveProject(
@@ -2288,6 +2311,230 @@ fn sliceToSamplerOr(
     status.set("Sliced into {d} pads on C1 up; the clip is muted", .{n});
 }
 
+/// Audio to notes (docs/30 §Audio to notes) on a clip: which clip, and
+/// the source whose pitch it waits for.
+const NotesJob = struct { ref: clip_mod.ClipRef, source: u32 };
+
+fn startAudioToNotes(pool: *audio_pool_mod.AudioPool, tracks: []track_mod.Track, sel: ?clip_mod.ClipRef, status: *StatusMessage) ?NotesJob {
+    const ref = sel orelse return null;
+    if (ref.track >= tracks.len or ref.clip >= tracks[ref.track].clips.items.len) return null;
+    const clip = &tracks[ref.track].clips.items[ref.clip];
+    if (!clip.isAudio() or clip.audio.reversed) return null;
+    pool.requestPitch(clip.audio.source);
+    status.set("Listening for notes\u{2026}", .{});
+    return .{ .ref = ref, .source = clip.audio.source };
+}
+
+/// The preset of `m` called `want`, ignoring case, spaces and dashes.
+fn presetNamed(m: *const @import("machine.zig").Machine, want: []const u8) ?u16 {
+    const count = m.preset_count orelse return null;
+    const name_of = m.preset_name orelse return null;
+    const n = count(m.state);
+    var i: u16 = 0;
+    while (i < n) : (i += 1) {
+        const got = std.mem.span(name_of(m.state, i));
+        var a: usize = 0;
+        var b: usize = 0;
+        while (true) {
+            while (a < got.len and !std.ascii.isAlphanumeric(got[a])) a += 1;
+            while (b < want.len and !std.ascii.isAlphanumeric(want[b])) b += 1;
+            if (a == got.len or b == want.len) {
+                if (a == got.len and b == want.len) return i;
+                break;
+            }
+            if (std.ascii.toLower(got[a]) != std.ascii.toLower(want[b])) break;
+            a += 1;
+            b += 1;
+        }
+    }
+    return null;
+}
+
+fn audioToNotes(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    status: *StatusMessage,
+    engine: *engine_mod.Engine,
+    audio: *audio_mod.Audio,
+    reg: *registry_mod.Registry,
+    pool: *audio_pool_mod.AudioPool,
+    tracks_buf: *[MAX_TRACKS]track_mod.Track,
+    track_count: *usize,
+    transport: *transport_mod.Transport,
+    selected_track: *?usize,
+    selected_clip: *?clip_mod.ClipRef,
+    dirty: *bool,
+    job: NotesJob,
+) void {
+    const made = audioToNotesOr(alloc, history, status, engine, pool, tracks_buf, track_count, transport, selected_track, selected_clip, dirty, job) catch |err| {
+        status.set("Audio to notes failed: {s}", .{@errorName(err)});
+        return;
+    } orelse return;
+    // A Cream to play them: a lead, or a bass under C3.
+    const nt = &tracks_buf[made.pos];
+    const cream = reg.findById("cream") orelse return;
+    assignMachineToTrack(alloc, audio, reg, nt, cream) catch return;
+    if (presetNamed(&nt.machine, if (made.bass) "bass-mog" else "cream-lead")) |pi| applyPresetTo(nt, pi);
+}
+
+/// The clip's sung or played line as notes on a new track under it (its
+/// index, and whether it's a bass), the clip muted. One undo step.
+fn audioToNotesOr(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    status: *StatusMessage,
+    engine: *engine_mod.Engine,
+    pool: *audio_pool_mod.AudioPool,
+    tracks_buf: *[MAX_TRACKS]track_mod.Track,
+    track_count: *usize,
+    transport: *transport_mod.Transport,
+    selected_track: *?usize,
+    selected_clip: *?clip_mod.ClipRef,
+    dirty: *bool,
+    job: NotesJob,
+) !?struct { pos: u8, bass: bool } {
+    // The clip may have moved or gone while its pitch was being found.
+    const ti = job.ref.track;
+    if (ti >= track_count.* or job.ref.clip >= tracks_buf[ti].clips.items.len) return null;
+    if (track_count.* >= MAX_TRACKS) return error.TooManyTracks;
+    {
+        const c0 = &tracks_buf[ti].clips.items[job.ref.clip];
+        if (!c0.isAudio() or c0.audio.source != job.source or c0.audio.reversed) return null;
+    }
+    const src = pool.get(job.source) orelse return error.MissingSource;
+    const tr = src.pitch() orelse return null;
+    const hits = src.hits();
+    var ns = try pitch_mod.notes(alloc, tr, if (hits) |h| h.sec else null, if (hits) |h| h.strength else null, false);
+    defer ns.deinit(alloc);
+
+    const clip = &tracks_buf[ti].clips.items[job.ref.clip];
+    var pattern = clip_mod.Clip.init(clip.name(), clip.start_beat, clip.length_beats);
+    errdefer pattern.deinit(alloc);
+    const n = try extract_mod.placeNotes(alloc, clip, tracks_buf[ti].time.rate(), transport.map(), ns.notes, &pattern);
+    if (n == 0) {
+        pattern.deinit(alloc);
+        status.set("No notes found in {s}", .{clip.name()});
+        return null;
+    }
+    const bass = extract_mod.medianPitch(pattern.notes.items) < 48;
+
+    const before = try document_mod.serialize(alloc, tracks_buf[0..track_count.*], transport);
+    errdefer alloc.free(before);
+
+    var name_buf: [track_mod.MAX_NAME]u8 = undefined;
+    const tname = std.fmt.bufPrint(&name_buf, "{s} notes", .{clip.name()[0..@min(clip.name().len, track_mod.MAX_NAME - 6)]}) catch "Notes";
+    pattern.selected = true;
+    var t = try track_mod.Track.init(alloc, tname, tracks_buf[ti].color, silent_machine);
+    t.output = tracks_buf[ti].output;
+    t.groove = tracks_buf[ti].groove;
+    t.addClip(alloc, pattern) catch |err| {
+        t.deinit(alloc);
+        return err;
+    };
+    clip.muted = true;
+    _ = arrangement.clearSelection(tracks_buf[0..track_count.*], selected_clip);
+    const pos: u8 = @intCast(ti + 1);
+    insertTrackAt(engine, tracks_buf, track_count, pos, t);
+    const nt = &tracks_buf[pos];
+    nt.clips.items[0].selected = true;
+    selected_track.* = pos;
+    selected_clip.* = .{ .track = pos, .clip = 0 };
+    try history.pushUndo(alloc, before);
+    dirty.* = true;
+    const cents: i32 = @intFromFloat(@round(ns.cents));
+    if (cents != 0) {
+        status.set("{d} notes, tuned {s}{d} ct; the clip is muted", .{ n, if (cents > 0) "+" else "", cents });
+    } else status.set("{d} notes; the clip is muted", .{n});
+    return .{ .pos = pos, .bass = bass };
+}
+
+test "audio to notes: a sung line lands as notes on its beats, on a track under it" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var rb: [storage.MAX_PATH]u8 = undefined;
+    var root_buf: [storage.MAX_PATH]u8 = undefined;
+    const root = storage.absolute(&root_buf, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
+
+    // A, C, E, a beat each at 120 BPM, a breath between, 20 cents sharp.
+    const sr = 44_100;
+    const line = [_]f64{ 57, 60, 64 };
+    const x = try alloc.alloc(f32, sr * 2);
+    defer alloc.free(x);
+    @memset(x, 0);
+    var ph: f64 = 0;
+    for (line, 0..) |p, k| {
+        const hz = 440 * std.math.pow(f64, 2, (p + 0.2 - 69) / 12);
+        const a = k * sr / 2;
+        const b = a + sr / 2 - sr / 20;
+        for (a..b) |i| {
+            ph += hz / sr;
+            const edge = @min(1, @as(f64, @floatFromInt(@min(i - a, b - i))) / (0.01 * sr));
+            var v: f64 = 0;
+            for (1..8) |h| v += @sin(2 * std.math.pi * @as(f64, @floatFromInt(h)) * ph) / @as(f64, @floatFromInt(h));
+            x[i] = @floatCast(0.2 * v * edge);
+        }
+    }
+    var pb: [storage.MAX_PATH]u8 = undefined;
+    const path = try std.fmt.bufPrint(&pb, "{s}/hum.wav", .{root});
+    try export_mod.writeFile(alloc, path, x, .{ .bits = .float32, .channels = 1, .sample_rate = sr });
+
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    const src = try pool.loadFile(path);
+    pool.waitFor(src);
+
+    const col = c.rl.Color{ .r = 10, .g = 20, .b = 30, .a = 255 };
+    var tracks_buf: [MAX_TRACKS]track_mod.Track = undefined;
+    var track_count: usize = 2;
+    tracks_buf[0] = try track_mod.Track.init(alloc, "Voice", col, silent_machine);
+    tracks_buf[1] = try track_mod.Track.init(alloc, "Keys", col, silent_machine);
+    defer for (tracks_buf[0..track_count]) |*t| t.deinit(alloc);
+    // From beat 4, the take's first half second trimmed off.
+    var hum = clip_mod.Clip.initAudio("hum", 4, 3, src);
+    hum.audio.start_sec = 0.5;
+    hum.audio.dur_sec = 1.5;
+    hum.selected = true;
+    try tracks_buf[0].addClip(alloc, hum);
+
+    var transport = transport_mod.Transport{};
+    transport.sample_rate = 48_000;
+    transport.tempo.set(&tempo_mod.TempoMap.constant(120));
+    const eng = try alloc.create(engine_mod.Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = tracks_buf[0..track_count] };
+    eng.publishRouting();
+    var history: history_mod.History = .{};
+    defer history.deinit(alloc);
+    var status: StatusMessage = .{};
+    var sel_track: ?usize = 0;
+    var sel_clip: ?clip_mod.ClipRef = .{ .track = 0, .clip = 0 };
+    var dirty = false;
+
+    const job = startAudioToNotes(&pool, tracks_buf[0..track_count], sel_clip, &status).?;
+    pool.waitPitch(src);
+    const made = (try audioToNotesOr(alloc, &history, &status, eng, &pool, &tracks_buf, &track_count, &transport, &sel_track, &sel_clip, &dirty, job)).?;
+
+    try std.testing.expectEqual(@as(u8, 1), made.pos);
+    try std.testing.expect(!made.bass);
+    try std.testing.expectEqual(@as(usize, 3), track_count);
+    try std.testing.expectEqualStrings("hum notes", tracks_buf[1].name());
+    try std.testing.expectEqualStrings("Keys", tracks_buf[2].name());
+    try std.testing.expect(tracks_buf[0].clips.items[0].muted);
+    const pat = &tracks_buf[1].clips.items[0];
+    try std.testing.expectEqual(@as(f64, 4), pat.start_beat);
+    try std.testing.expectEqual(@as(f64, 3), pat.length_beats);
+    // The A is trimmed off; C and E on the clip's beats 0 and 1.
+    try std.testing.expectEqual(@as(usize, 2), pat.notes.items.len);
+    try std.testing.expectEqual(@as(u8, 60), pat.notes.items[0].pitch);
+    try std.testing.expectEqual(@as(u8, 64), pat.notes.items[1].pitch);
+    try std.testing.expect(@abs(pat.notes.items[0].start_beat) < 0.06);
+    try std.testing.expect(@abs(pat.notes.items[1].start_beat - 1) < 0.06);
+    try std.testing.expect(@abs(pat.notes.items[1].length_beats - 0.9) < 0.1);
+    try std.testing.expectEqual(@as(usize, 1), history.undo_stack.items.len);
+    try std.testing.expectEqual(@as(?clip_mod.ClipRef, .{ .track = 1, .clip = 0 }), sel_clip);
+}
+
 /// The song's tempo over a warped clip set so it plays at its own speed
 /// (docs/29 §Audio on the time axis): its markers become tempo changes,
 /// and the tempo after it is what it was.
@@ -2391,16 +2638,16 @@ fn placeRecordedClip(
     selected_track: *?usize,
     selected_clip: *?clip_mod.ClipRef,
     dirty: *bool,
-) !void {
+) !bool {
     if (res.frames == 0) {
         status.set("Recording was empty", .{});
-        return;
+        return false;
     }
-    const ti = (rec_track orelse firstArmedAudioTrack(tracks)) orelse return;
-    if (ti >= tracks.len) return;
+    const ti = (rec_track orelse firstArmedAudioTrack(tracks)) orelse return false;
+    if (ti >= tracks.len) return false;
 
     const source = try pool.loadFile(res.path);
-    const src = pool.get(source) orelse return;
+    const src = pool.get(source) orelse return false;
 
     const dur_sec = src.seconds();
 
@@ -2437,6 +2684,7 @@ fn placeRecordedClip(
     } else {
         status.set("Recorded {d:.1}s", .{secs});
     }
+    return true;
 }
 
 fn handleProjectShortcuts(
@@ -5507,7 +5755,7 @@ fn executeEditCommand(
         },
         // `import_audio` is intercepted in the arrangement-result handler
         // (it needs the audio pool + file dialog); never reaches here.
-        .none, .copy, .select_all, .clear_selection, .rename, .file_new, .file_open, .file_save, .file_save_as, .file_clean_up, .render_audio, .import_audio, .bounce, .rebounce, .thaw, .save_to_library, .slice_to_sampler => {},
+        .none, .copy, .select_all, .clear_selection, .rename, .file_new, .file_open, .file_save, .file_save_as, .file_clean_up, .render_audio, .import_audio, .bounce, .rebounce, .thaw, .save_to_library, .slice_to_sampler, .audio_to_notes => {},
     }
 
     if (changed) {

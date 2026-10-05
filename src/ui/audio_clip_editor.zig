@@ -585,6 +585,7 @@ fn warpEdit(ui: *Ui, alloc: std.mem.Allocator, clip: *clip_mod.Clip, src: *const
         .{ .label = "Extract groove", .id = 8, .enabled = has_hits and !rev },
         .{ .label = "Song follows this clip", .id = 9 },
         .{ .label = "Slice to a sampler track", .id = 10, .enabled = !rev },
+        .{ .label = "Audio to notes", .id = 11, .enabled = !rev },
     };
     if (menu.pick(WARP_MENU_KEY, &w_items)) |id| {
         const map = warp_mod.Map.init(clip.warp_markers.items);
@@ -607,6 +608,7 @@ fn warpEdit(ui: *Ui, alloc: std.mem.Allocator, clip: *clip_mod.Clip, src: *const
             8 => res.command = .extract_groove,
             9 => res.command = .song_follows_clip,
             10 => res.command = .slice_to_sampler,
+            11 => res.command = .audio_to_notes,
             else => {},
         }
     }

@@ -780,6 +780,14 @@ fn focusedWarped(tracks: []const Track, focused: ?ClipRef) bool {
     return cl.isAudio() and cl.audio.warp and !cl.audio.reversed;
 }
 
+/// The focused clip is audio, played forward.
+fn focusedForward(tracks: []const Track, focused: ?ClipRef) bool {
+    const f = focused orelse return false;
+    if (f.track >= tracks.len or f.clip >= tracks[f.track].clips.items.len) return false;
+    const cl = &tracks[f.track].clips.items[f.clip];
+    return cl.isAudio() and !cl.audio.reversed;
+}
+
 fn allSelectedAudioWarped(tracks: []const Track) bool {
     var any = false;
     for (tracks) |*t| for (t.clips.items) |*clip| if (clip.selected and clip.isAudio()) {
@@ -1497,6 +1505,7 @@ pub fn draw(
         .{ .label = "Reverse", .command = .reverse, .enabled = hasSelectedAudioClips(tracks) },
         .{ .label = if (allSelectedAudioWarped(tracks)) "Unwarp" else "Warp", .command = .warp, .enabled = hasSelectedAudioClips(tracks) },
         .{ .label = "Slice to a sampler track", .command = .slice_to_sampler, .enabled = focusedWarped(tracks, selected_clip.*) },
+        .{ .label = "Audio to notes", .command = .audio_to_notes, .enabled = focusedForward(tracks, selected_clip.*) },
         .{ .label = if (has_selection and allSelectedMuted(tracks)) "Unmute" else "Mute", .command = .mute_clips, .enabled = has_selection },
         .{ .label = "Delete", .command = .delete, .enabled = has_selection },
         .{ .label = "Bounce\u{2026}", .command = .bounce, .enabled = has_selection },
@@ -2221,8 +2230,12 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, numb
     const arm_r = btns.cutLeft(17).insetXY(0, 2);
     if (!t.isBus()) {
         var armed = t.isArmed();
-        if (ctl.button(ui, arm_r, "arm", &armed, .{ .kind = .latch, .label = "R", .lit = ui_style.rec, .disabled = t.kind != .audio })) t.setArmed(armed);
-        menu.tip(ui, arm_r, if (t.isArmed()) "Disarm (record)" else "Arm for recording");
+        if (ctl.button(ui, arm_r, "arm", &armed, .{ .kind = .latch, .label = if (t.rec_notes) "N" else "R", .lit = ui_style.rec, .disabled = t.kind != .audio })) t.setArmed(armed);
+        // Right-click: a take here becomes notes (hum to notes, docs/30).
+        if (ui.in.right_pressed and t.kind == .audio and arm_r.contains(ui.in.ix(), ui.in.iy())) t.rec_notes = !t.rec_notes;
+        menu.tip(ui, arm_r, if (t.isArmed())
+            (if (t.rec_notes) "Disarm (record to notes)" else "Disarm (record)")
+        else if (t.rec_notes) "Arm to record notes (right-click: audio)" else "Arm for recording (right-click: to notes)");
     }
     var muted = t.mute.load(.monotonic);
     const mute_r = btns.cutLeft(17).insetXY(0, 2);

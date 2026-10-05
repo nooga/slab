@@ -184,6 +184,9 @@ pub const Track = struct {
     /// Record-arm. UI-owned; the recorder records into the armed audio
     /// track. Not persisted (a transient performance state).
     armed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// A take recorded here becomes notes when it stops (docs/30 §Audio
+    /// to notes: hum to notes). UI-only, not persisted, like `armed`.
+    rec_notes: bool = false,
     /// Master only: the subsonic filter [engine.Subsonic] on the master's
     /// input. UI-owned, read by the audio thread; saved with the project.
     subsonic: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),

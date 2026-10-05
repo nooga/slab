@@ -6,6 +6,17 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+### Audio into notes
+
+- **Audio to notes**: right-click an audio clip and its sung, hummed,
+  whistled or played line comes out as notes on a new Cream track under
+  it, with a lead sound, or a bass when the line sits under C3. The notes
+  land on the song's beats, follow the clip's warp, and are corrected
+  for a take that isn't tuned to A440. The clip is muted.
+- **Hum to notes**: right-click a track's arm button to switch it from
+  **R** to **N**, and a take recorded there turns into notes as soon as
+  you stop.
+
 ## 0.0.8 — 2026-10-05
 
 ### Warp: audio on the beat
