@@ -116,6 +116,10 @@ fn configureNativeDeps(b: *std.Build, mod: *std.Build.Module) void {
         .file = b.path("src/native_app.m"),
         .flags = &.{"-fobjc-arc"},
     });
+    mod.addCSourceFile(.{
+        .file = b.path("src/native_ml.m"),
+        .flags = &.{"-fobjc-arc"},
+    });
     mod.addCSourceFile(.{ .file = b.path("src/native_audio.c") });
     mod.addIncludePath(b.path("vendor"));
 
@@ -126,5 +130,7 @@ fn configureNativeDeps(b: *std.Build, mod: *std.Build.Module) void {
     mod.linkFramework("Cocoa", .{});
     mod.linkFramework("IOKit", .{});
     mod.linkFramework("OpenGL", .{});
+    // The extractors' models (docs/30 §Stems).
+    mod.linkFramework("CoreML", .{});
     mod.link_libc = true;
 }

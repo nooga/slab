@@ -107,8 +107,8 @@ ships.
 ### The pack manifest
 
 Slab knows a pack by its manifest, `<id>.pack.json`. Manifests ship
-with slab in `factory:packs/` (`vcsl`, `drum-machines`, `cmi` today,
-read by src/packs.zig), and more can come from the online repository:
+with slab in `factory:packs/` (`vcsl`, `drum-machines`, `cmi` and
+`extract`, the stems model, docs/30 §Stems, read by src/packs.zig), and more can come from the online repository:
 
 ```json
 {"id": "vcsl", "name": "Versilian Community Sample Library", "version": "2024.1",
@@ -173,8 +173,9 @@ CMI and drum-machine folders in the library now are exactly what their
 `supply` pack expects: slab finds them and marks the packs installed.
 
 What's built (the PACKS tab, src/packs.zig):
-- **Installed** means `Library/<id>/presets/` exists. A library folder
-  no manifest names is listed as installed and the user's own.
+- **Installed** means `Library/<id>/presets/` exists, or `models/` for a
+  pack of models (`extract`). A library folder no manifest names is
+  listed as installed and the user's own.
 - **Needs your files** looks for the expected files in `_sources/`
   every second and a half while the tab is open, and shows the count
   for each. Once they are found, **IMPORT** appears; slab doesn't start

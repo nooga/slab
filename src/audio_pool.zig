@@ -19,6 +19,8 @@ const storage = @import("storage.zig");
 const wav = @import("wav.zig");
 const waveform = @import("waveform.zig");
 const transients = @import("transients.zig");
+const pitch_mod = @import("pitch.zig");
+const tune_mod = @import("tune.zig");
 
 /// A source's transients (docs/29 §Transients), found on a worker thread.
 /// `onsets` is written once, before `ready` is set, and never again, so
@@ -30,6 +32,23 @@ pub const Analysis = struct {
 
     fn run(self: *Analysis, alloc: std.mem.Allocator, l: []const f64, r: ?[]const f64, rate: f64) void {
         self.onsets = transients.detect(alloc, l, r, rate) catch .{};
+        self.ready.store(true, .release);
+    }
+};
+
+/// A source's pitch track (docs/30 §The pitch tracker), found on a
+/// worker thread when first asked for. Like `Analysis`, `track` is
+/// written once before `ready` and never again.
+pub const PitchJob = struct {
+    ready: std.atomic.Value(bool) = .init(false),
+    track: pitch_mod.Track = .{},
+    /// What Tune plays from (docs/30 §Tune), made from the track.
+    tuning: tune_mod.Tuning = .{},
+    thread: ?std.Thread = null,
+
+    fn run(self: *PitchJob, alloc: std.mem.Allocator, l: []const f64, r: ?[]const f64, rate: f64) void {
+        self.track = pitch_mod.track(alloc, l, r, rate, .any) catch .{};
+        self.tuning = tune_mod.prepare(alloc, &self.track, l, r, rate) catch .{};
         self.ready.store(true, .release);
     }
 };
@@ -47,6 +66,22 @@ pub const Source = struct {
     name_off: u16 = 0, // basename start within path_buf
     /// Heap-owned so it stays put when the pool's list grows.
     analysis: ?*Analysis = null,
+    pitch_job: ?*PitchJob = null,
+
+    /// The pitch track, once found (null until asked for and while the
+    /// worker runs; see `AudioPool.requestPitch`).
+    pub fn pitch(self: *const Source) ?*const pitch_mod.Track {
+        const j = self.pitch_job orelse return null;
+        if (!j.ready.load(.acquire)) return null;
+        return &j.track;
+    }
+
+    /// What Tune reads, once the pitch is found.
+    pub fn tuning(self: *const Source) ?*const tune_mod.Tuning {
+        const j = self.pitch_job orelse return null;
+        if (!j.ready.load(.acquire)) return null;
+        return &j.tuning;
+    }
 
     /// The transients with their strengths, once found.
     pub fn hits(self: *const Source) ?*const transients.Onsets {
@@ -98,6 +133,11 @@ pub const AudioPool = struct {
                 a.onsets.deinit(self.alloc);
                 self.alloc.destroy(a);
             }
+            if (s.pitch_job) |j| {
+                j.track.deinit(self.alloc);
+                j.tuning.deinit(self.alloc);
+                self.alloc.destroy(j);
+            }
             s.sample.deinit(self.alloc);
             s.cache.deinit(self.alloc);
             s.cache_l.deinit(self.alloc);
@@ -106,8 +146,6 @@ pub const AudioPool = struct {
         self.sources.deinit(self.alloc);
     }
 
-    /// Wait for every source's transients: before a render that must not
-    /// depend on how fast they were found (docs/29 §On the audio thread).
     /// Wait for one source's transients (a short file being imported).
     pub fn waitFor(self: *AudioPool, idx: u32) void {
         if (idx >= self.sources.items.len) return;
@@ -117,10 +155,45 @@ pub const AudioPool = struct {
         };
     }
 
+    /// Wait for every source's transients and pitch: before a render that
+    /// must not depend on how fast they were found (docs/29 §On the audio
+    /// thread), and before the pool goes.
     pub fn waitAnalyses(self: *AudioPool) void {
-        for (self.sources.items) |*s| if (s.analysis) |a| if (a.thread) |t| {
+        for (self.sources.items) |*s| {
+            if (s.analysis) |a| if (a.thread) |t| {
+                t.join();
+                a.thread = null;
+            };
+            if (s.pitch_job) |j| if (j.thread) |t| {
+                t.join();
+                j.thread = null;
+            };
+        }
+    }
+
+    /// Start finding a source's pitch, once; `Source.pitch` has it when
+    /// done. A failed spawn finds it here.
+    pub fn requestPitch(self: *AudioPool, idx: u32) void {
+        if (idx >= self.sources.items.len) return;
+        const s = &self.sources.items[idx];
+        if (s.pitch_job != null) return;
+        const j = self.alloc.create(PitchJob) catch return;
+        j.* = .{};
+        s.pitch_job = j;
+        const r: ?[]const f64 = if (s.sample.isStereo()) s.sample.right else null;
+        j.thread = std.Thread.spawn(.{}, PitchJob.run, .{ j, self.alloc, s.sample.data, r, s.sample.sample_rate }) catch blk: {
+            j.run(self.alloc, s.sample.data, r, s.sample.sample_rate);
+            break :blk null;
+        };
+    }
+
+    /// Wait for one source's pitch, asking for it first.
+    pub fn waitPitch(self: *AudioPool, idx: u32) void {
+        self.requestPitch(idx);
+        if (idx >= self.sources.items.len) return;
+        if (self.sources.items[idx].pitch_job) |j| if (j.thread) |t| {
             t.join();
-            a.thread = null;
+            j.thread = null;
         };
     }
 

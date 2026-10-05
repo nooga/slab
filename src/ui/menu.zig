@@ -60,6 +60,14 @@ pub const EditCommand = enum {
     commit_groove,
     song_follows_clip,
     slice_to_sampler,
+    audio_to_notes,
+    chords_to_notes,
+    drums_to_kit,
+    explode,
+    split_stems,
+    song_tempo_to_clip,
+    section_tempo_to_clip,
+    tune,
 };
 
 pub const Item = struct {

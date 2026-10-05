@@ -312,14 +312,15 @@ pub fn detectAndFollow(alloc: std.mem.Allocator, clip: *clip_mod.Clip, hits: *co
 
 /// The song's tempo that plays a warped clip at its own speed (docs/29
 /// §Audio on the time axis): a step at each marker inside it, at that
-/// segment's SEG BPM over the track's ratio. Song beats and tempos into
+/// segment's SEG BPM over the track's ratio `rate` (the clip's song beats
+/// hold `length_beats · rate` content beats). Song beats and tempos into
 /// `out`; how many.
 pub fn songTempo(clip: *const clip_mod.Clip, rate: f64, out: []tempo_mod.TempoPoint) usize {
     const m = clip.warp_markers.items;
     if (!valid(m)) return 0;
     const map = Map.init(m);
     const o = clip.audio.offset_beats;
-    const end = o + clip.length_beats;
+    const end = o + clip.length_beats * rate;
     var n: usize = 0;
     var b = o;
     while (b < end - 1e-9 and n < out.len) {
@@ -339,13 +340,15 @@ pub const Slice = struct { s0: f64, s1: f64, beat: f64, strength: f32 };
 
 /// The clip's played region cut as BEATS cuts it (its PRESERVE): at the
 /// hits inside it, or on its grid of content beats, the first slice from
-/// the clip's start. At most `out.len`; none shorter than 30 ms.
-pub fn slices(clip: *const clip_mod.Clip, hits: ?*const transients.Onsets, out: []Slice) usize {
+/// the clip's start. `rate` is its track's tempo ratio: the clip's song
+/// beats hold `length_beats · rate` content beats. At most `out.len`;
+/// none shorter than 30 ms.
+pub fn slices(clip: *const clip_mod.Clip, rate: f64, hits: ?*const transients.Onsets, out: []Slice) usize {
     const m = clip.warp_markers.items;
     if (!valid(m) or out.len == 0) return 0;
     const map = Map.init(m);
     const lo = clip.audio.offset_beats;
-    const hi = lo + clip.length_beats;
+    const hi = lo + clip.length_beats * rate;
     var n: usize = 0;
     out[0] = .{ .s0 = map.secAt(lo), .s1 = 0, .beat = lo, .strength = 0.8 };
     n = 1;
@@ -671,7 +674,7 @@ test "slices: at the hits inside the clip, or on its grid" {
     var on_low = [_]f32{ 0, 0, 0, 0, 0, 0 };
     const h = transients.Onsets{ .sec = &on_sec, .strength = &on_st, .low = &on_low };
     var out: [16]Slice = undefined;
-    const n = slices(&c, &h, &out);
+    const n = slices(&c, 1, &h, &out);
     // From the clip's start (the hit right on it), 1.0 (1.01 merged), 1.75.
     try std.testing.expectEqual(@as(usize, 3), n);
     try std.testing.expectApproxEqAbs(@as(f64, 0.5), out[0].s0, 1e-9);
@@ -681,7 +684,7 @@ test "slices: at the hits inside the clip, or on its grid" {
     try std.testing.expectApproxEqAbs(@as(f64, 2.5), out[2].s1, 1e-9);
     try std.testing.expectApproxEqAbs(@as(f64, 3.5), out[2].beat, 1e-9);
     c.audio.preserve = .d4;
-    try std.testing.expectEqual(@as(usize, 4), slices(&c, null, &out));
+    try std.testing.expectEqual(@as(usize, 4), slices(&c, 1, null, &out));
     try std.testing.expectApproxEqAbs(@as(f64, 2), out[1].beat, 1e-9);
 }
 

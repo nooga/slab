@@ -5,7 +5,9 @@
 //! about the stretch ratio has to be remembered: it may change every
 //! frame, and a jump costs one frame and a phase reset. Phases are locked
 //! to the spectrum's peaks (identity locking), reset at transients, and
-//! both channels turn with the mid so the image stays put.
+//! both channels turn with the mid so the image stays put. The same
+//! stretcher runs VOICE's grains (docs/29 §VOICE) and Tune's
+//! pitch-synchronous ones (docs/30 §Tune).
 //!
 //! A `Stretcher` is plain memory: the UI thread allocates a `Bank` of
 //! them for a track (`Track.publishSnapshot`) and frees it with the track;
@@ -56,8 +58,18 @@ pub const Source = struct {
     }
 };
 
-/// What a stretcher runs: MIX's vocoder frames or VOICE's grains.
-pub const Kind = enum(u8) { mix, voice };
+/// What a stretcher runs: MIX's vocoder frames, VOICE's grains, or
+/// Tune's pitch-synchronous ones (docs/30 §Tune).
+pub const Kind = enum(u8) { mix, voice, tune };
+
+/// Tune: how far ahead of the playhead its grains are made, which bounds
+/// a grain's half (a period of 47 Hz at 48 kHz).
+pub const TUNE_REACH = 1024;
+
+/// Where Tune's next grain comes from (`ctx.tuneAt`): its center in the
+/// source (a pitch mark when sung), a period there in source samples, and
+/// the pitch it plays at against the source's (1: as sung).
+pub const TuneGrain = struct { center: f64, period: f64, beta: f64 };
 
 /// VOICE's grains, in output samples (10–80 ms at 48 kHz, even, within
 /// the ring).
@@ -74,6 +86,8 @@ pub const Stretcher = struct {
     hop: i64 = H,
     /// VOICE: where the last grain was read, centered (source samples).
     q_prev: f64 = 0,
+    /// Tune: the output sample its next grain is centered on.
+    next_t: f64 = 0,
     used: u64 = 0,
     live: bool = false,
     /// The output sample it expects next, the frame grid's origin, and
@@ -98,14 +112,18 @@ pub const Stretcher = struct {
         self.uid = uid;
         self.t0 = t0;
         self.kind = kind;
-        self.span = if (kind == .mix) N else std.math.clamp(grain & ~@as(i64, 1), MIN_GRAIN, MAX_GRAIN);
+        self.span = switch (kind) {
+            .mix => N,
+            .voice => std.math.clamp(grain & ~@as(i64, 1), MIN_GRAIN, MAX_GRAIN),
+            .tune => 2 * TUNE_REACH,
+        };
         self.hop = if (kind == .mix) H else @divExact(self.span, 2);
         self.live = false;
     }
 
     fn fits(self: *const Stretcher, t0: i64, kind: Kind, grain: i64) bool {
         if (self.t0 != t0 or self.kind != kind) return false;
-        return kind == .mix or self.span == std.math.clamp(grain & ~@as(i64, 1), MIN_GRAIN, MAX_GRAIN);
+        return kind != .voice or self.span == std.math.clamp(grain & ~@as(i64, 1), MIN_GRAIN, MAX_GRAIN);
     }
 
     fn frameT(self: *const Stretcher, m: i64) i64 {
@@ -117,6 +135,7 @@ pub const Stretcher = struct {
         @memset(&self.ring_r, 0);
         // The first frame whose window still reaches `a`.
         self.m = @divFloor(a - @divExact(self.span, 2) - self.t0, self.hop) + 1;
+        self.next_t = @floatFromInt(a - TUNE_REACH);
         self.reset_phase = true;
         self.live = true;
     }
@@ -130,9 +149,15 @@ pub const Stretcher = struct {
         if (!self.live or a0 != self.next_a) self.restart(a0);
         for (out_l, out_r, gain, 0..) |*ol, *or_, g, k| {
             const a = a0 + @as(i64, @intCast(k));
-            while (self.frameT(self.m) - @divExact(self.span, 2) <= a) : (self.m += 1) switch (self.kind) {
+            if (self.kind == .tune) {
+                // Only a context that tunes can play Tune's grains.
+                if (comptime @hasDecl(@TypeOf(ctx), "tuneAt")) {
+                    while (self.next_t - TUNE_REACH <= @as(f64, @floatFromInt(a))) self.tuneGrain(src, ctx, a);
+                }
+            } else while (self.frameT(self.m) - @divExact(self.span, 2) <= a) : (self.m += 1) switch (self.kind) {
                 .mix => self.synth(src, ctx, self.frameT(self.m), a),
                 .voice => self.voiceGrain(src, ctx, self.frameT(self.m), a),
+                .tune => unreachable,
             };
             const slot: usize = @intCast(@mod(a, N));
             ol.* += self.ring_l[slot] * g;
@@ -308,6 +333,39 @@ pub const Stretcher = struct {
             const slot: usize = @intCast(@mod(s0 + @as(i64, @intCast(i)), N));
             self.ring_l[slot] += v[0] * win;
             self.ring_r[slot] += v[1] * win;
+        }
+    }
+
+    /// Tune (docs/30 §Tune): TD-PSOLA. A grain two source periods long,
+    /// centered on the pitch mark nearest where the maps put output sample
+    /// `next_t`, read at the source's own speed (so its formants stay),
+    /// laid down at `next_t`; the next grain a period at the pitch it
+    /// should be later. Unsung, grains are 10 ms, 5 ms apart, as they are.
+    fn tuneGrain(self: *Stretcher, src: Source, ctx: anytype, a: i64) void {
+        const t = self.next_t;
+        const g: TuneGrain = ctx.tuneAt(ctx.pos(t));
+        const base: f64 = ctx.base;
+        // Output samples: half a grain (a source period) and the hop.
+        const half = @min(@as(f64, TUNE_REACH), g.period / base);
+        const hop = @max(16, g.period / base / std.math.clamp(g.beta, 0.5, 2));
+        self.next_t = t + hop;
+        // Hann grains of length 2·half a hop apart sum to half/hop.
+        const norm: f32 = @floatCast(hop / half);
+        const h: i64 = @intFromFloat(@floor(half));
+        const tc: i64 = @intFromFloat(@round(t));
+        const frac = t - @as(f64, @floatFromInt(tc));
+        const exact = @abs(base - 1) < 1e-9 and @abs(frac) < 1e-9 and @abs(g.center - @round(g.center)) < 1e-9;
+        var i: i64 = -h;
+        while (i <= h) : (i += 1) {
+            const at = tc + i;
+            if (at < a) continue;
+            const off = @as(f64, @floatFromInt(i)) - frac;
+            const w: f32 = @floatCast(0.5 + 0.5 * @cos(std.math.pi * off / half));
+            if (w <= 0) continue;
+            const v = if (exact) src.exact(@as(i64, @intFromFloat(g.center)) + i) else src.at(g.center + off * base, base);
+            const slot: usize = @intCast(@mod(at, N));
+            self.ring_l[slot] += v[0] * w * norm;
+            self.ring_r[slot] += v[1] * w * norm;
         }
     }
 };
@@ -687,4 +745,75 @@ test "smear: keeps the spectrum and the level, renders the same from anywhere" {
     sm.claim(7, 0, SMEAR_SIZES[0]);
     sm.render(src, Lin{ .rate = 0.25, .p0 = 60_000 }, 25_000, l[0..10_000], r[0..10_000], g[0..10_000]);
     try std.testing.expectApproxEqAbs(mid, l[5_000], 1e-4);
+}
+
+/// Tune's context in tests: a straight map, marks every `period` samples
+/// from `mark0`, and a fixed pitch ratio.
+const Psola = struct {
+    rate: f64,
+    p0: f64 = 0,
+    base: f64 = 1,
+    step: f64 = 1,
+    period: f64,
+    mark0: f64,
+    beta: f64,
+    fn pos(self: Psola, t: f64) f64 {
+        return t * self.rate + self.p0;
+    }
+    fn hit(_: Psola, _: f64, _: f64) bool {
+        return false;
+    }
+    fn tuneAt(self: Psola, s: f64) TuneGrain {
+        const k = @round((s - self.mark0) / self.period);
+        return .{ .center = self.mark0 + k * self.period, .period = self.period, .beta = self.beta };
+    }
+};
+
+test "tune: grains move the pitch, keep the level, and stretch time" {
+    const alloc = std.testing.allocator;
+    const pitch = @import("pitch.zig");
+    // A voice-ish 200 Hz: harmonics falling, a formant near 800 Hz.
+    const x = try alloc.alloc(f64, 96_000);
+    defer alloc.free(x);
+    for (x, 0..) |*v, i| {
+        const ph = 2 * std.math.pi * 200 * @as(f64, @floatFromInt(i)) / 48_000.0;
+        var s: f64 = 0;
+        for (1..12) |h| {
+            const f: f64 = @floatFromInt(h * 200);
+            s += (1 + 2 * @exp(-std.math.pow(f64, (f - 800) / 250, 2))) / @as(f64, @floatFromInt(h)) * @sin(@as(f64, @floatFromInt(h)) * ph);
+        }
+        v.* = 0.15 * s;
+    }
+    var mark0: usize = 0;
+    for (0..240) |i| if (x[i] > x[mark0]) {
+        mark0 = i;
+    };
+    const st = try alloc.create(Stretcher);
+    defer alloc.destroy(st);
+    const n = 47 * 512;
+    var l = [_]f32{0} ** n;
+    var r = [_]f32{0} ** n;
+    const g = [_]f32{1} ** n;
+    const Case = struct { rate: f64, beta: f64 };
+    for ([_]Case{ .{ .rate = 1, .beta = 1 }, .{ .rate = 1, .beta = std.math.pow(f64, 2, 2.0 / 12.0) }, .{ .rate = 0.5, .beta = std.math.pow(f64, 2, -1.0 / 12.0) } }) |cs| {
+        st.* = .{};
+        st.claim(1, 0, .tune, 0);
+        @memset(&l, 0);
+        const src = Source{ .l = x.ptr, .r = null, .len = x.len, .reversed = false };
+        var a: usize = 0;
+        while (a < n) : (a += 512) st.render(src, Psola{ .rate = cs.rate, .p0 = 20_000, .period = 240, .mark0 = @floatFromInt(mark0), .beta = cs.beta }, @intCast(a), l[a..][0..512], r[a..][0..512], g[0..512]);
+        const y = try alloc.alloc(f64, n - 2048);
+        defer alloc.free(y);
+        for (y, l[2048..]) |*o, v| o.* = v;
+        var tr = try pitch.track(alloc, y, null, 48_000, .voice);
+        defer tr.deinit(alloc);
+        const f = tr.f0[tr.len() / 2];
+        try std.testing.expectApproxEqRel(@as(f32, @floatCast(200 * cs.beta)), f, 0.006);
+        // The level of the source, within 1 dB.
+        var e0: f64 = 0;
+        for (x[20_000..40_000]) |v| e0 += v * v;
+        var e1: f64 = 0;
+        for (y[0..20_000]) |v| e1 += v * v;
+        try std.testing.expect(@abs(10 * std.math.log10(e1 / e0)) < 1);
+    }
 }

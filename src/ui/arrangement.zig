@@ -38,6 +38,7 @@ const arrange = @import("../arrange.zig");
 const markers_mod = @import("../markers.zig");
 const groove_mod = @import("../groove.zig");
 const warp_mod = @import("../warp.zig");
+const tune_mod = @import("../tune.zig");
 const recorder_mod = @import("../recorder.zig");
 const automation = @import("../automation.zig");
 const auto_lane = @import("automation_lane.zig");
@@ -780,6 +781,45 @@ fn focusedWarped(tracks: []const Track, focused: ?ClipRef) bool {
     return cl.isAudio() and cl.audio.warp and !cl.audio.reversed;
 }
 
+fn focusedTuned(tracks: []const Track, focused: ?ClipRef) bool {
+    const f = focused orelse return false;
+    if (f.track >= tracks.len or f.clip >= tracks[f.track].clips.items.len) return false;
+    const cl = &tracks[f.track].clips.items[f.clip];
+    return cl.isAudio() and cl.audio.tune.on;
+}
+
+const EXTRACT_SUB: u32 = 0xE7;
+const TEMPO_SUB: u32 = 0xE8;
+
+/// Extract's items (docs/30), ids their index; slicing wants a warp.
+pub fn extractItems(warped: bool) [6]menu.Item {
+    return .{
+        .{ .label = "Audio to notes", .id = 0, .command = .audio_to_notes },
+        .{ .label = "Chords to notes", .id = 1, .command = .chords_to_notes },
+        .{ .label = "Drums to a kit", .id = 2, .command = .drums_to_kit },
+        .{ .label = "Slice to a sampler track", .id = 3, .command = .slice_to_sampler, .enabled = warped },
+        .{ .label = "Split into stems", .id = 4, .command = .split_stems },
+        .{ .label = "Explode\u{2026}", .id = 5, .command = .explode },
+    };
+}
+
+/// The tempo from a clip; following its changes wants a warp.
+pub fn tempoItems(warped: bool) [3]menu.Item {
+    return .{
+        .{ .label = "Song tempo to clip", .id = 0, .command = .song_tempo_to_clip },
+        .{ .label = "Section tempo to clip", .id = 1, .command = .section_tempo_to_clip },
+        .{ .label = "Song follows the clip's changes", .id = 2, .command = .song_follows_clip, .enabled = warped },
+    };
+}
+
+/// The focused clip is audio, played forward.
+fn focusedForward(tracks: []const Track, focused: ?ClipRef) bool {
+    const f = focused orelse return false;
+    if (f.track >= tracks.len or f.clip >= tracks[f.track].clips.items.len) return false;
+    const cl = &tracks[f.track].clips.items[f.clip];
+    return cl.isAudio() and !cl.audio.reversed;
+}
+
 fn allSelectedAudioWarped(tracks: []const Track) bool {
     var any = false;
     for (tracks) |*t| for (t.clips.items) |*clip| if (clip.selected and clip.isAudio()) {
@@ -792,6 +832,59 @@ fn allSelectedAudioWarped(tracks: []const Track) bool {
 /// Warp the selected audio clips on, or off when all of them already are
 /// (with `selection` false, or none selected: the focused clip), keeping
 /// each where it sits (docs/29 §The model).
+/// The clip whose key Tune finds once its pitch is (docs/30 §Tune), by uid.
+var tune_key_pending: u32 = 0;
+
+/// Tune on or off for the selected audio clips (or the focused one). On
+/// asks for the source's pitch, and a clip whose key was never set gets
+/// the take's own.
+pub fn toggleTune(tracks: []Track, pool: ?*audio_pool_mod.AudioPool, focused: ?ClipRef, selection: bool) bool {
+    const p = pool orelse return false;
+    const Set = struct {
+        fn one(pl: *audio_pool_mod.AudioPool, clip: *Clip, on: bool) bool {
+            if (on and clip.audio.reversed) return false;
+            clip.audio.tune.on = on;
+            if (!on) return true;
+            pl.requestPitch(clip.audio.source);
+            const t = &clip.audio.tune;
+            if (t.key == 0 and t.scale == .chromatic) tune_key_pending = clip.uid;
+            return true;
+        }
+    };
+    var changed = false;
+    if (selection and hasSelectedAudioClips(tracks)) {
+        var all = true;
+        for (tracks) |*t| for (t.clips.items) |*clip| if (clip.selected and clip.isAudio() and !clip.audio.tune.on) {
+            all = false;
+        };
+        for (tracks) |*t| for (t.clips.items) |*clip| if (clip.selected and clip.isAudio()) {
+            changed = Set.one(p, clip, !all) or changed;
+        };
+    } else {
+        const f = focused orelse return false;
+        if (f.track >= tracks.len or f.clip >= tracks[f.track].clips.items.len) return false;
+        const clip = &tracks[f.track].clips.items[f.clip];
+        if (!clip.isAudio()) return false;
+        changed = Set.one(p, clip, !clip.audio.tune.on);
+    }
+    settleTuneKey(tracks, p);
+    return changed;
+}
+
+/// Once per frame: the key of a clip just tuned, when its pitch is in.
+pub fn settleTuneKey(tracks: []Track, pool: *const audio_pool_mod.AudioPool) void {
+    if (tune_key_pending == 0) return;
+    for (tracks) |*t| for (t.clips.items) |*clip| if (clip.uid == tune_key_pending and clip.isAudio()) {
+        const src = pool.get(clip.audio.source) orelse break;
+        const tn = src.tuning() orelse return;
+        const k = tune_mod.detectKey(tn);
+        clip.audio.tune.key = k.key;
+        clip.audio.tune.scale = k.scale;
+        break;
+    };
+    tune_key_pending = 0;
+}
+
 pub fn toggleWarp(tracks: []Track, alloc: std.mem.Allocator, pool: ?*const audio_pool_mod.AudioPool, tmap: *const tempo_mod.TempoMap, focused: ?ClipRef, selection: bool) bool {
     const p = pool orelse return false;
     const Set = struct {
@@ -1496,7 +1589,9 @@ pub fn draw(
         .{ .label = "Split at playhead", .command = .split_at_playhead, .enabled = has_selection },
         .{ .label = "Reverse", .command = .reverse, .enabled = hasSelectedAudioClips(tracks) },
         .{ .label = if (allSelectedAudioWarped(tracks)) "Unwarp" else "Warp", .command = .warp, .enabled = hasSelectedAudioClips(tracks) },
-        .{ .label = "Slice to a sampler track", .command = .slice_to_sampler, .enabled = focusedWarped(tracks, selected_clip.*) },
+        .{ .label = "Extract", .id = EXTRACT_SUB, .submenu = true, .enabled = focusedForward(tracks, selected_clip.*) },
+        .{ .label = "Tempo from clip", .id = TEMPO_SUB, .submenu = true, .enabled = focusedForward(tracks, selected_clip.*) },
+        .{ .label = if (focusedTuned(tracks, selected_clip.*)) "Untune" else "Tune", .command = .tune, .enabled = focusedForward(tracks, selected_clip.*) },
         .{ .label = if (has_selection and allSelectedMuted(tracks)) "Unmute" else "Mute", .command = .mute_clips, .enabled = has_selection },
         .{ .label = "Delete", .command = .delete, .enabled = has_selection },
         .{ .label = "Bounce\u{2026}", .command = .bounce, .enabled = has_selection },
@@ -1515,6 +1610,14 @@ pub fn draw(
         .{ .label = "Clear solos & mutes", .command = .clear_solo_mute, .enabled = anySoloOrMute(tracks) },
     };
     result.command = menu.command(ARR_CONTEXT_KEY, &arr_context_items);
+    // The audio clip's submenus: what to take out of it, and the tempo.
+    if (menu.subOpen(ARR_CONTEXT_KEY, 0)) |sub| {
+        const warped = focusedWarped(tracks, selected_clip.*);
+        const ex = extractItems(warped);
+        const te = tempoItems(warped);
+        const items: []const menu.Item = if (sub == EXTRACT_SUB) &ex else &te;
+        if (menu.subPick(ARR_CONTEXT_KEY, 1, items)) |i| result.command = items[i].command;
+    }
     if (result.command != .none) {
         result.command_beat = context_target.beat;
         result.command_track = context_target.track;
@@ -2221,8 +2324,12 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, numb
     const arm_r = btns.cutLeft(17).insetXY(0, 2);
     if (!t.isBus()) {
         var armed = t.isArmed();
-        if (ctl.button(ui, arm_r, "arm", &armed, .{ .kind = .latch, .label = "R", .lit = ui_style.rec, .disabled = t.kind != .audio })) t.setArmed(armed);
-        menu.tip(ui, arm_r, if (t.isArmed()) "Disarm (record)" else "Arm for recording");
+        if (ctl.button(ui, arm_r, "arm", &armed, .{ .kind = .latch, .label = if (t.rec_notes) "N" else "R", .lit = ui_style.rec, .disabled = t.kind != .audio })) t.setArmed(armed);
+        // Right-click: a take here becomes notes (hum to notes, docs/30).
+        if (ui.in.right_pressed and t.kind == .audio and arm_r.contains(ui.in.ix(), ui.in.iy())) t.rec_notes = !t.rec_notes;
+        menu.tip(ui, arm_r, if (t.isArmed())
+            (if (t.rec_notes) "Disarm (record to notes)" else "Disarm (record)")
+        else if (t.rec_notes) "Arm to record notes (right-click: audio)" else "Arm for recording (right-click: to notes)");
     }
     var muted = t.mute.load(.monotonic);
     const mute_r = btns.cutLeft(17).insetXY(0, 2);
