@@ -554,6 +554,14 @@ class Track:
     def __repr__(self):
         return f"Track({self.name}: {self.machine.id}, {len(self.clips)} clips)"
 
+    def groove(self, name=None, amount=1.0, shift_ms=0.0):
+        """How this track plays its notes (docs/28 §Groove): a groove by
+        name ("MPC 58 1/16", "SAMBA 1/16", "AKSAK"…), "NONE" to play
+        straight, or None to follow the song and its sections; amount
+        0..1 of it; shift_ms −50..50 pushes (−) or drags (+) the track."""
+        self.groove_json = {"name": name or "", "amount": float(amount), "shift_ms": float(shift_ms)}
+        return self
+
     def set(self, **params):
         """Tweak instrument params after the preset: set(cutoff=900)."""
         self.params.update(self.machine.params_from(params, f"track {self.name}"))
@@ -777,6 +785,7 @@ class Track:
             "effects": [f.build(f"{where} fx {i}", index) for i, f in enumerate(self.fx)],
             "clips": [c.to_json() for c in sorted(self.clips, key=lambda c: c.start)],
             **({"automation": _lanes_json(self.lanes)} if self.lanes else {}),
+            **({"groove": self.groove_json} if getattr(self, "groove_json", None) else {}),
             **self._routing_json(index or {}),
         }
 
@@ -838,10 +847,15 @@ class Bus(Track):
 
 
 class Song:
-    def __init__(self, title, bpm=120, key="C major", meter=(4, 4), loop=False, groups=None):
+    def __init__(self, title, bpm=120, key="C major", meter=(4, 4), loop=False, groups=None, groove=None, groove_seed=None):
         """meter=(7, 8), groups=(2, 2, 3): the grouping sets the metronome's
         and the grid's accents (docs/07 §meter-map); None is the default
-        (7/8 -> 2+2+3, 9/8 -> 3+3+3, /4 meters downbeat only)."""
+        (7/8 -> 2+2+3, 9/8 -> 3+3+3, /4 meters downbeat only).
+        groove="MPC 58 1/16": the song's groove, which tracks follow unless
+        they pick their own (Track.groove); groove_seed fixes its random
+        timing (docs/28 §Groove)."""
+        self.groove = groove
+        self.groove_seed = groove_seed
         if groups is not None:
             groups = tuple(int(g) for g in groups)
             if sum(groups) != meter[0] or min(groups) < 1 or len(groups) > 16:
@@ -922,9 +936,12 @@ class Song:
                 hi = mid
         return (lo + hi) / 2
 
-    def section(self, name, bars):
-        """Append a section of `bars` bars after the last one."""
+    def section(self, name, bars, groove=None):
+        """Append a section of `bars` bars after the last one. groove= a
+        groove's name (or "NONE") for the tracks that follow the song,
+        from here until a section sets another."""
         s = Section(self, name, self.bars, bars)
+        s.groove = groove
         self.sections.append(s)
         return s
 
@@ -994,8 +1011,12 @@ class Song:
                               **({"ramp": True} if self.ramp and self.tempos else {})),
             "meter": [dict({"bar": 0, "num": num, "den": den}, **({"groups": list(self.groups)} if self.groups else {}))],
             # Sections run back to back and END closes the last (docs/28).
-            "sections": [{"beat": float(sec.start), "name": sec.name, "color": (4 + i) % 12}
+            "sections": [dict({"beat": float(sec.start), "name": sec.name, "color": (4 + i) % 12},
+                              **({"groove": sec.groove} if getattr(sec, "groove", None) else {}))
                          for i, sec in enumerate(self.sections)],
+            **({"groove": dict({"song": self.groove or "NONE"},
+                               **({"seed": int(self.groove_seed)} if self.groove_seed is not None else {}))}
+               if self.groove or self.groove_seed is not None else {}),
             "end": float(end),
             "tracks": [t.build(index) for t in self.tracks],
             "master": {"volume": self.master_volume, "pan": self.master_pan, "subsonic": self.master_subsonic,
