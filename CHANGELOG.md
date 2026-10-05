@@ -6,6 +6,14 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+## 0.0.10 — 2026-10-06
+
+The editors become one instrument: the arrangement, the piano roll and
+the audio editor scroll, zoom, select and resize the same way, a
+stretch of time can be selected and repeated, notes sound as you touch
+them, and several clips can be edited together. Plus a synthwave
+factory bank and a new demo song to hear it with.
+
 ### Editing feels the same everywhere
 
 - **One way to scroll and zoom** in the arrangement, the piano roll and
