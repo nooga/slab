@@ -573,6 +573,16 @@ pub const Track = struct {
         };
     }
 
+    /// The track's stretchers, made the first time a clip needs one.
+    fn ensureBank(self: *Track, dst: *snap_mod.TrackSnapshot) void {
+        if (self.stretch != null) return;
+        if (std.heap.page_allocator.create(stretch_mod.Bank)) |b| {
+            b.* = .{};
+            self.stretch = b;
+            dst.stretch = b;
+        } else |_| {}
+    }
+
     /// Called by the UI thread once per frame (after all mutations) to
     /// publish a frozen snapshot for the audio thread. Writes to the
     /// non-published slot, then flips the atomic index with Release ordering.
@@ -625,6 +635,13 @@ pub const Track = struct {
                     snap.dur_samples = clip.audio.dur_sec * rate;
                     snap.fade_in_samples = clip.audio.fade_in_sec * rate;
                     snap.fade_out_samples = clip.audio.fade_out_sec * rate;
+                    // Tuned (docs/30 §Tune): its grains need a stretcher.
+                    if (clip.audio.tune.on and !clip.audio.reversed) if (src.tuning()) |tn| if (tn.midi.len > 0) {
+                        snap.tuning = tn;
+                        snap.tune = clip.audio.tune;
+                        snap.uid = clip.uid;
+                        self.ensureBank(dst);
+                    };
                 }
                 // Warped (docs/29): its markers ride along; a clip whose map
                 // doesn't fit or isn't valid plays as a window.
@@ -646,13 +663,7 @@ pub const Track = struct {
                     snap.uid = clip.uid;
                     snap.grain_ms = clip.audio.grain_ms;
                     snap.smear_size = clip.audio.smear_size;
-                    if (warp_mod.stretches(clip.audio.mode) and self.stretch == null) {
-                        if (std.heap.page_allocator.create(stretch_mod.Bank)) |b| {
-                            b.* = .{};
-                            self.stretch = b;
-                            dst.stretch = b;
-                        } else |_| {}
-                    }
+                    if (warp_mod.stretches(clip.audio.mode)) self.ensureBank(dst);
                     if (clip.audio.mode == .smear) if (self.stretch) |b| b.needSmear();
                     if (pool.get(clip.audio.source)) |src| if (src.onsets()) |on| {
                         snap.onsets = on.ptr;

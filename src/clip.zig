@@ -10,6 +10,7 @@
 const std = @import("std");
 const automation = @import("automation.zig");
 const warp = @import("warp.zig");
+const tune = @import("tune.zig");
 
 pub const MAX_NAME = 32;
 
@@ -61,6 +62,8 @@ pub const AudioRef = struct {
     /// index: 0.34, 0.68, 1.37, 2.73 s).
     grain_ms: u8 = 40,
     smear_size: u8 = 1,
+    /// Put in key (docs/30 §Tune), warped or not.
+    tune: tune.Settings = .{},
 
     pub fn pitch(self: AudioRef) f64 {
         if (self.mode == .tape) return 1;

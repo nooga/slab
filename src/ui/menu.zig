@@ -61,6 +61,7 @@ pub const EditCommand = enum {
     song_follows_clip,
     slice_to_sampler,
     audio_to_notes,
+    tune,
 };
 
 pub const Item = struct {

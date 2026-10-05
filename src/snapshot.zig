@@ -12,6 +12,7 @@
 const automation = @import("automation.zig");
 const warp = @import("warp.zig");
 const stretch = @import("stretch.zig");
+const tune = @import("tune.zig");
 
 pub const MAX_CLIPS_PER_TRACK: usize = 64;
 pub const MAX_LANES_PER_TRACK: usize = 128; // track + clip lanes
@@ -97,6 +98,10 @@ pub const AudioClipSnap = struct {
     uid: u32 = 0,
     grain_ms: u8 = 40,
     smear_size: u8 = 1,
+    /// Tuned (docs/30 §Tune): the source's pitch (the pool's, read-only
+    /// once found) and the clip's settings. Null plays it as it is.
+    tuning: ?*const tune.Tuning = null,
+    tune: tune.Settings = .{},
 };
 
 /// A lane resolved for the audio thread: the target machine slot and its

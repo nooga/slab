@@ -14,6 +14,8 @@ const tempo = @import("tempo.zig");
 const groove_mod = @import("groove.zig");
 const warp_mod = @import("warp.zig");
 const stretch_mod = @import("stretch.zig");
+const tune_mod = @import("tune.zig");
+const pitch_mod = @import("pitch.zig");
 const automation = @import("automation.zig");
 const routing = @import("routing.zig");
 const render_pool = @import("render_pool.zig");
@@ -2011,6 +2013,15 @@ fn mixAudioClips(
         const lo = @max(block_lo, clip_start);
         const hi = @min(block_hi, clip_end);
         if (hi <= lo) continue;
+        // Tuned (docs/30 §Tune): its own grains, through the warp or the
+        // window; with no stretcher free it plays as it is.
+        if (clip.tuning != null) if (snap.stretch) |bank| {
+            if (bank.get(clip.uid, @intFromFloat(@floor(clip_start)), .tune, 0)) |st| {
+                const wmap: ?warp_mod.Map = if (clip.warped) .{ .m = snap.warp_points[clip.warp_start..][0..clip.warp_count] } else null;
+                mixStretched(st, clip, wmap, data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r);
+                continue;
+            }
+        };
         if (clip.warped) {
             mixWarped(snap, clip, data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r);
             continue;
@@ -2086,14 +2097,14 @@ fn mixWarped(
         if (clip.mode == .smear) {
             const n = stretch_mod.SMEAR_SIZES[@min(clip.smear_size, stretch_mod.SMEAR_SIZES.len - 1)];
             if (bank.getSmear(clip.uid, t0, n)) |sm| {
-                mixStretched(sm, clip, wmap, data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r);
+                mixStretched(sm, clip, @as(?warp_mod.Map, wmap), data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r);
                 return;
             }
         } else {
             const kind: stretch_mod.Kind = if (clip.mode == .voice) .voice else .mix;
             const grain: i64 = @intFromFloat(@as(f64, @floatFromInt(clip.grain_ms)) * @as(f64, @floatFromInt(sample_rate)) / 1000);
             if (bank.get(clip.uid, t0, kind, grain)) |st| {
-                mixStretched(st, clip, wmap, data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r);
+                mixStretched(st, clip, @as(?warp_mod.Map, wmap), data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r);
                 return;
             }
         }
@@ -2130,13 +2141,14 @@ fn mixWarped(
     }
 }
 
-/// MIX, VOICE and SMEAR (docs/29 §The algorithms): the clip through its
-/// stretcher or smearer, whose frames ask the maps where the source is at
-/// each output time.
+/// MIX, VOICE and SMEAR (docs/29 §The algorithms), and Tune (docs/30):
+/// the clip through its stretcher or smearer, whose frames ask the maps
+/// where the source is at each output time — through the warp, or (an
+/// unwarped clip, tuned) through its window at the source's own speed.
 fn mixStretched(
     st: anytype,
     clip: snap_mod.AudioClipSnap,
-    wmap: warp_mod.Map,
+    wmap: ?warp_mod.Map,
     data: [*]const f64,
     block_lo: f64,
     lo: f64,
@@ -2152,14 +2164,50 @@ fn mixStretched(
     const engine_rate: f64 = @floatFromInt(sample_rate);
     const Ctx = struct {
         clip: snap_mod.AudioClipSnap,
-        wmap: warp_mod.Map,
+        wmap: ?warp_mod.Map,
         map: *const tempo.TempoMap,
         sr: u32,
         step: f64,
+        /// Source samples per output sample at the source's own pitch, and
+        /// where the clip starts (output samples).
+        base: f64,
+        clip_start: f64,
 
         pub fn pos(self: @This(), t: f64) f64 {
+            const wm = self.wmap orelse return self.clip.start_sample + (t - self.clip_start) * self.base;
             const b = self.map.beatAtSample(t, self.sr);
-            return self.wmap.secAt((b - self.clip.start_beat) * self.clip.rate + self.clip.offset_beats) * self.clip.source_rate;
+            return wm.secAt((b - self.clip.start_beat) * self.clip.rate + self.clip.offset_beats) * self.clip.source_rate;
+        }
+
+        /// Tune's grain at source position `s`: on the nearest pitch mark
+        /// when sung, a period long, at the corrected pitch (and the clip's
+        /// TRANSPOSE and FINE when warped).
+        pub fn tuneAt(self: @This(), s: f64) stretch_mod.TuneGrain {
+            const rate = self.clip.source_rate;
+            const unsung = stretch_mod.TuneGrain{ .center = s, .period = 0.005 * rate, .beta = 1 };
+            const tn = self.clip.tuning orelse return unsung;
+            const kf = @round(s / rate / pitch_mod.HOP_SEC);
+            if (kf < 0 or kf >= @as(f64, @floatFromInt(tn.midi.len))) return unsung;
+            const k: usize = @intFromFloat(kf);
+            const m = tn.midi[k];
+            if (m == 0) return unsung;
+            const period = rate / (440 * std.math.pow(f64, 2, (@as(f64, m) - 69) / 12));
+            const c = tune_mod.correction(tn, k, self.clip.tune);
+            const beta = std.math.pow(f64, 2, @as(f64, c) / 12) * self.clip.pitch;
+            // The nearest mark, if it is one of this period's.
+            var lo_i: usize = 0;
+            var hi_i: usize = tn.marks.len;
+            while (lo_i < hi_i) {
+                const md = (lo_i + hi_i) / 2;
+                if (tn.marks[md] < s) lo_i = md + 1 else hi_i = md;
+            }
+            var center = s;
+            var best = period * 0.75;
+            for ([_]usize{ lo_i -| 1, lo_i }) |i| if (i < tn.marks.len and @abs(tn.marks[i] - s) < best) {
+                best = @abs(tn.marks[i] - s);
+                center = tn.marks[i];
+            };
+            return .{ .center = center, .period = period, .beta = beta };
         }
 
         /// A transient between two source positions: a phase reset. Reversed
@@ -2179,7 +2227,7 @@ fn mixStretched(
             return lo_i < xs.len and xs[lo_i] <= s1;
         }
     };
-    const ctx = Ctx{ .clip = clip, .wmap = wmap, .map = map, .sr = sample_rate, .step = clip.source_rate / engine_rate * clip.pitch };
+    const ctx = Ctx{ .clip = clip, .wmap = wmap, .map = map, .sr = sample_rate, .step = clip.source_rate / engine_rate * clip.pitch, .base = clip.source_rate / engine_rate, .clip_start = clip_start };
     const src = stretch_mod.Source{ .l = data, .r = clip.data_r, .len = clip.len, .reversed = clip.reversed, .rate = clip.source_rate };
     const fade_in = clip.fade_in_samples / clip.source_rate * engine_rate;
     const fade_out = clip.fade_out_samples / clip.source_rate * engine_rate;
@@ -2924,6 +2972,67 @@ test "mixAudioClips: a warped clip reads through its markers, offset and reverse
     @memset(&r, 0);
     mixAudioClips(&snap, 0, 16, &spbMap(4.0), 48_000, &l, &r);
     for (l, 0..) |v, k| try testing.expectApproxEqAbs(@as(f32, @floatCast(data[511 - 128 - 2 * k])), v, 2e-3);
+}
+
+test "mixAudioClips: a tuned clip sings 40 cents flat A as A440" {
+    const alloc = testing.allocator;
+    const sr = 48_000;
+    const data = try alloc.alloc(f64, sr * 2);
+    defer alloc.free(data);
+    const f0 = 440 * std.math.pow(f64, 2, -0.4 / 12.0);
+    for (data, 0..) |*v, i| {
+        const ph = 2 * std.math.pi * f0 * @as(f64, @floatFromInt(i)) / sr;
+        var s: f64 = 0;
+        for (1..8) |h| s += @sin(@as(f64, @floatFromInt(h)) * ph) / @as(f64, @floatFromInt(h));
+        v.* = 0.2 * s;
+    }
+    var tr = try pitch_mod.track(alloc, data, null, sr, .voice);
+    defer tr.deinit(alloc);
+    var tn = try tune_mod.prepare(alloc, &tr, data, null, sr);
+    defer tn.deinit(alloc);
+    const bank = try std.heap.page_allocator.create(stretch_mod.Bank);
+    defer std.heap.page_allocator.destroy(bank);
+    bank.* = .{};
+    var snap = snap_mod.TrackSnapshot{};
+    snap.stretch = bank;
+    snap.audio_clip_count = 1;
+    snap.audio_clips[0] = .{
+        .start_beat = 0,
+        .length_beats = 4,
+        .data = data.ptr,
+        .len = @intCast(data.len),
+        .source_rate = sr,
+        .dur_samples = sr * 2,
+        .gain = 1.0,
+        .uid = 1,
+        .tuning = &tn,
+        .tune = .{ .on = true, .key = 9, .speed_ms = 0 },
+    };
+    const n = 70 * 1024;
+    const l = try alloc.alloc(f32, n);
+    defer alloc.free(l);
+    const r = try alloc.alloc(f32, n);
+    defer alloc.free(r);
+    @memset(l, 0);
+    @memset(r, 0);
+    var a: usize = 0;
+    // 120 BPM: 24000 samples a beat.
+    while (a < n) : (a += 512) mixAudioClips(&snap, a, 512, &spbMap(24_000), sr, l[a..][0..512], r[a..][0..512]);
+    const y = try alloc.alloc(f64, n - 4096);
+    defer alloc.free(y);
+    for (y, l[4096..]) |*o, v| o.* = v;
+    var out = try pitch_mod.track(alloc, y, null, sr, .voice);
+    defer out.deinit(alloc);
+    try testing.expectApproxEqRel(@as(f32, 440), out.f0[out.len() / 2], 0.003);
+    // Untuned, it stays where it was sung.
+    snap.audio_clips[0].tuning = null;
+    @memset(l, 0);
+    a = 0;
+    while (a < n) : (a += 512) mixAudioClips(&snap, a, 512, &spbMap(24_000), sr, l[a..][0..512], r[a..][0..512]);
+    for (y, l[4096..]) |*o, v| o.* = v;
+    var raw = try pitch_mod.track(alloc, y, null, sr, .voice);
+    defer raw.deinit(alloc);
+    try testing.expectApproxEqRel(@as(f32, @floatCast(f0)), raw.f0[raw.len() / 2], 0.003);
 }
 
 test "mixAudioClips: BEATS plays each slice at native speed from where its hit lands" {

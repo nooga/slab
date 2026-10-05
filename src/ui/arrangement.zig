@@ -38,6 +38,7 @@ const arrange = @import("../arrange.zig");
 const markers_mod = @import("../markers.zig");
 const groove_mod = @import("../groove.zig");
 const warp_mod = @import("../warp.zig");
+const tune_mod = @import("../tune.zig");
 const recorder_mod = @import("../recorder.zig");
 const automation = @import("../automation.zig");
 const auto_lane = @import("automation_lane.zig");
@@ -780,6 +781,13 @@ fn focusedWarped(tracks: []const Track, focused: ?ClipRef) bool {
     return cl.isAudio() and cl.audio.warp and !cl.audio.reversed;
 }
 
+fn focusedTuned(tracks: []const Track, focused: ?ClipRef) bool {
+    const f = focused orelse return false;
+    if (f.track >= tracks.len or f.clip >= tracks[f.track].clips.items.len) return false;
+    const cl = &tracks[f.track].clips.items[f.clip];
+    return cl.isAudio() and cl.audio.tune.on;
+}
+
 /// The focused clip is audio, played forward.
 fn focusedForward(tracks: []const Track, focused: ?ClipRef) bool {
     const f = focused orelse return false;
@@ -800,6 +808,59 @@ fn allSelectedAudioWarped(tracks: []const Track) bool {
 /// Warp the selected audio clips on, or off when all of them already are
 /// (with `selection` false, or none selected: the focused clip), keeping
 /// each where it sits (docs/29 §The model).
+/// The clip whose key Tune finds once its pitch is (docs/30 §Tune), by uid.
+var tune_key_pending: u32 = 0;
+
+/// Tune on or off for the selected audio clips (or the focused one). On
+/// asks for the source's pitch, and a clip whose key was never set gets
+/// the take's own.
+pub fn toggleTune(tracks: []Track, pool: ?*audio_pool_mod.AudioPool, focused: ?ClipRef, selection: bool) bool {
+    const p = pool orelse return false;
+    const Set = struct {
+        fn one(pl: *audio_pool_mod.AudioPool, clip: *Clip, on: bool) bool {
+            if (on and clip.audio.reversed) return false;
+            clip.audio.tune.on = on;
+            if (!on) return true;
+            pl.requestPitch(clip.audio.source);
+            const t = &clip.audio.tune;
+            if (t.key == 0 and t.scale == .chromatic) tune_key_pending = clip.uid;
+            return true;
+        }
+    };
+    var changed = false;
+    if (selection and hasSelectedAudioClips(tracks)) {
+        var all = true;
+        for (tracks) |*t| for (t.clips.items) |*clip| if (clip.selected and clip.isAudio() and !clip.audio.tune.on) {
+            all = false;
+        };
+        for (tracks) |*t| for (t.clips.items) |*clip| if (clip.selected and clip.isAudio()) {
+            changed = Set.one(p, clip, !all) or changed;
+        };
+    } else {
+        const f = focused orelse return false;
+        if (f.track >= tracks.len or f.clip >= tracks[f.track].clips.items.len) return false;
+        const clip = &tracks[f.track].clips.items[f.clip];
+        if (!clip.isAudio()) return false;
+        changed = Set.one(p, clip, !clip.audio.tune.on);
+    }
+    settleTuneKey(tracks, p);
+    return changed;
+}
+
+/// Once per frame: the key of a clip just tuned, when its pitch is in.
+pub fn settleTuneKey(tracks: []Track, pool: *const audio_pool_mod.AudioPool) void {
+    if (tune_key_pending == 0) return;
+    for (tracks) |*t| for (t.clips.items) |*clip| if (clip.uid == tune_key_pending and clip.isAudio()) {
+        const src = pool.get(clip.audio.source) orelse break;
+        const tn = src.tuning() orelse return;
+        const k = tune_mod.detectKey(tn);
+        clip.audio.tune.key = k.key;
+        clip.audio.tune.scale = k.scale;
+        break;
+    };
+    tune_key_pending = 0;
+}
+
 pub fn toggleWarp(tracks: []Track, alloc: std.mem.Allocator, pool: ?*const audio_pool_mod.AudioPool, tmap: *const tempo_mod.TempoMap, focused: ?ClipRef, selection: bool) bool {
     const p = pool orelse return false;
     const Set = struct {
@@ -1506,6 +1567,7 @@ pub fn draw(
         .{ .label = if (allSelectedAudioWarped(tracks)) "Unwarp" else "Warp", .command = .warp, .enabled = hasSelectedAudioClips(tracks) },
         .{ .label = "Slice to a sampler track", .command = .slice_to_sampler, .enabled = focusedWarped(tracks, selected_clip.*) },
         .{ .label = "Audio to notes", .command = .audio_to_notes, .enabled = focusedForward(tracks, selected_clip.*) },
+        .{ .label = if (focusedTuned(tracks, selected_clip.*)) "Untune" else "Tune", .command = .tune, .enabled = focusedForward(tracks, selected_clip.*) },
         .{ .label = if (has_selection and allSelectedMuted(tracks)) "Unmute" else "Mute", .command = .mute_clips, .enabled = has_selection },
         .{ .label = "Delete", .command = .delete, .enabled = has_selection },
         .{ .label = "Bounce\u{2026}", .command = .bounce, .enabled = has_selection },

@@ -1997,6 +1997,9 @@ pub fn main(init: std.process.Init) !void {
             rec_track = null;
         }
 
+        // A clip just tuned gets its take's key once its pitch is found.
+        arrangement.settleTuneKey(tracks, &audio_pool);
+
         // Audio to notes, once its source's pitch is found.
         if (notes_job) |job| if (audio_pool.get(job.source)) |src| if (src.pitch() != null) {
             notes_job = null;
@@ -5691,6 +5694,13 @@ fn executeEditCommand(
                 else => false,
             };
             if (changed) status.set("Reversed", .{});
+        },
+        .tune => {
+            changed = switch (focus) {
+                .arrangement => arrangement.toggleTune(tracks, document_mod.audioPool(), selected_clip.*, true),
+                .piano_roll => arrangement.toggleTune(tracks, document_mod.audioPool(), selected_clip.*, false),
+                else => false,
+            };
         },
         .warp => {
             changed = switch (focus) {

@@ -492,7 +492,8 @@ class AudioClip:
                 "gain": self.gain, "start_sec": self.start_sec, "dur_sec": self.dur_sec,
                 "fade_in": self.fade_in, "fade_out": self.fade_out,
                 **({"reversed": True} if self.reverse else {}),
-                **({"warp": self._warp_json()} if self.warp_bpm else {}), "source": self.path}
+                **({"warp": self._warp_json()} if self.warp_bpm else {}),
+                **({"tune": self.tune} if getattr(self, "tune", None) else {}), "source": self.path}
 
     def _warp_json(self):
         bps = self.warp_bpm / 60
@@ -726,7 +727,8 @@ class Track:
     def audio(self, path, section=None, at_bar=0, at_beat=None, start_sec=0.0, dur_sec=None,
               gain=1.0, fade_in=0.0, fade_out=0.0, reverse=False, name=None,
               warp=None, fit_beats=None, mode="tape", preserve="hits", gap="cut", decay=100,
-              transpose=0, fine=0, grain=40, size=0.7):
+              transpose=0, fine=0, grain=40, size=0.7, tune=None, scale="chromatic", speed=20,
+              humanize=0):
         """Place a WAV: at a section's start plus `at_bar` bars, or at
         `at_beat`. dur_sec defaults to the rest of the file. reverse=True
         plays it backwards (a swell into the downbeat: end it on the bar).
@@ -739,7 +741,11 @@ class Track:
         "voice" (one note at a time, grain= 10..80 ms) or "smear" (extreme
         stretch into texture, size= 0.3 | 0.7 | 1.4 | 2.7 s windows).
         transpose= semitones and fine= cents move the pitch apart from time
-        (not in "tape")."""
+        (not in "tape"). tune="A" puts a voice in that key (docs/30 §Tune):
+        scale= "chromatic", "major", "minor", "harmonic", "dorian",
+        "mixolydian", "penta_major", "penta_minor" or "blues", speed= ms a
+        correction takes (0: the hard effect), humanize= 0..100 (% of vibrato
+        and slides kept)."""
         where = f"track {self.name} audio {path}"
         if not os.path.exists(path):
             raise SlabError(f"{where}: file not found")
@@ -787,8 +793,24 @@ class Track:
             warp = fit_beats * 60 / dur_sec
         if warp is not None and not 20 <= warp <= 999:
             raise SlabError(f"{where}: warp={warp} bpm is out of range")
+        tuned = None
+        if tune is not None:
+            keys = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+            flats = {"Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "Bb": "A#"}
+            key = flats.get(tune, tune)
+            if key not in keys:
+                raise SlabError(f"{where}: tune {tune!r}: a key, C..B (sharps or flats)")
+            scales = ("chromatic", "major", "minor", "harmonic", "dorian", "mixolydian", "penta_major", "penta_minor", "blues")
+            if scale not in scales:
+                raise SlabError(f"{where}: scale {scale!r}: one of {', '.join(scales)}")
+            if not 0 <= speed <= 400 or not 0 <= humanize <= 100:
+                raise SlabError(f"{where}: speed 0..400 ms, humanize 0..100")
+            if reverse:
+                raise SlabError(f"{where}: a reversed clip can't be tuned")
+            tuned = {"key": key, "scale": scale, "speed": int(speed), "humanize": int(humanize)}
         c = AudioClip(self, path, start, start_sec, dur_sec, gain, fade_in, fade_out, reverse,
                       name or os.path.splitext(os.path.basename(path))[0], warp, mode, total, beats)
+        c.tune = tuned
         self.clips.append(c)
         return c
 

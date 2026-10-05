@@ -16,6 +16,14 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 - **Hum to notes**: right-click a track's arm button to switch it from
   **R** to **N**, and a take recorded there turns into notes as soon as
   you stop.
+- **Tune**: put a voice in key. Press **TUNE** in the audio clip editor,
+  or choose *Tune* from a clip's right-click menu. The key comes from
+  the take itself; change it, pick a scale, set **SPEED** (0 for the
+  hard effect, slower for gentle correction) and **HUMAN** (keep the
+  singer's vibrato). The waveform shows the sung and the tuned pitch.
+  The voice keeps its own character because its formants stay put. It
+  works on warped and unwarped clips, and in slabkit as
+  `audio(…, tune="A", scale="minor")`.
 
 ## 0.0.8 — 2026-10-05
 

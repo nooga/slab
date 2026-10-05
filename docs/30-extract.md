@@ -7,8 +7,9 @@ Everything comes out as something you edit in Slab (pattern clips,
 groove templates, sampler kits, audio clips), placed on the song's
 beats through the clip's warp (docs/29).
 
-Status: phase 1 built (2026-10-05) on `feat/extract`: the pitch
-tracker, notes, *Audio to notes* and hum to notes. The rest is designed.
+Status: phases 1 and 2 built (2026-10-05) on `feat/extract`: the pitch
+tracker, notes, *Audio to notes*, hum to notes, and Tune. The rest is
+designed.
 
 ## What musicians expect (and other tools do)
 
@@ -204,24 +205,81 @@ in a group named after it, the clip muted. One undo step.
 
 ## Tune
 
-A pitch mode for audio clips, beside the warp modes (docs/29 §The
-algorithms), set in the audio clip editor:
+Puts a voice in key (`tune.zig`; the grains in `stretch.zig`). It works
+on any audio clip played forward, warped or not:
 
-- **KEY** and **SCALE** (from Chords' key when found), **SPEED** (0 =
-  hard, the effect; 200 ms = gentle correction), **HUMANIZE** (let
-  held notes drift as sung), **FORMANT** keep on.
-- The correction is a pitch curve: per frame, the tracked f0 to the
-  nearest scale note, slewed by SPEED. It is rendered as a ratio per
-  grain by **TD-PSOLA**: pitch marks from the f0 track, grains two
-  periods long re-spaced at the target period. That keeps the formants
-  of a single voice, which a phase vocoder doesn't. It runs on the
-  Stretcher's grain machinery, under a `tune` stretcher kind, so a
-  tuned clip plays live like any warped one.
-- Later, **per-note editing** (Melodyne-style): the notes from *Audio to
-  notes* drawn over the waveform, each draggable in pitch, with drift
-  and vibrato amount per note.
-- A **live** tune effect on an input is a separate machine. It needs
+- **Turning it on**: the **TUNE** button in the audio clip editor's
+  control row, or *Tune* / *Untune* on the arrangement's right-click
+  (the selection, or the focused clip). Turning it on asks for the
+  source's pitch. Until that is found the tune row shows *LISTENING…*
+  and the clip plays as it is. A clip whose key was never set gets the
+  take's own key: how long each pitch class is held, against the
+  Krumhansl–Kessler major and minor profiles.
+- **The tune row**, above the control row while Tune is on:
+  - **KEY** (C…B).
+  - **SCALE**: CHROM (any semitone), MAJOR, MINOR, HARM (harmonic
+    minor), DOR, MIXO, PENT+, PENT−, BLUES.
+  - **SPEED**, 0–400 ms: 0 snaps at once (the effect), 100 and up is a
+    gentle correction.
+  - **HUMAN**, 0–100%.
+- **On the waveform**: the sung pitch is drawn dim and the tuned pitch
+  bright, on a semitone scale fitted to what's in view. The scale's
+  notes are ruled, and the key's root is ruled brighter.
+
+**The correction.** It is computed from the source's pitch with no
+state, so a seek or a loop costs nothing. Per 10 ms frame:
+
+1. The frame's held pitch (its five-frame median) goes to the nearest
+   note of the scale. The difference from the frame's own pitch is the
+   raw correction.
+2. **SPEED** smooths it with an exponential look back of SPEED (sung
+   frames only). A breath ends the look back, so a phrase starts in
+   tune, and a pitch change glides at SPEED.
+3. **HUMAN** mixes toward the same correction smoothed over 300 ms of
+   *this note only*. That fixes where each note sits at once and keeps
+   its vibrato and slides.
+
+**The sound: TD-PSOLA**, a third stretcher kind (`tune`) beside MIX
+and VOICE, so a tuned clip plays live like a warped one:
+
+- Output grains are spaced a period apart, at the period the note
+  should have.
+- Each grain is two source periods long (Hann), centered on the pitch
+  mark nearest where the maps put it, and read at the source's own
+  speed. That is why the formants stay where they were and the voice
+  doesn't turn into a chipmunk.
+- Pitch marks are found on the worker with the pitch: one a period,
+  each on the waveform's highest peak within a quarter period of where
+  the last one's period puts it, refined between samples by a
+  parabola. Without that refinement the grains jitter by up to half a
+  sample, and the noise between the harmonics rises to −34 dB.
+- Unsung frames get 10 ms grains 5 ms apart, at the source's pitch.
+- A warped clip's time comes from its map, so Tune replaces its MODE's
+  stretching while it is on, and TRANSPOSE and FINE still apply. An
+  unwarped clip reads its window at the source's own speed.
+- A grain's half is at most 1024 samples (a period of 47 Hz at 48 kHz).
+  The pitch is moved by at most an octave either way.
+
+Measured on rendered songs (slabkit, `slab --render`):
+
+- A tone sung 40 cents flat comes out at 0 cents, its level within
+  0.1 dB.
+- The noise between its harmonics is −68.7 dB, against −70.8 for the
+  take untouched.
+- On a sung line with notes 30–45 cents off and ±21 cents of vibrato:
+  - SPEED 0 puts every note within 1 cent and flattens the vibrato to
+    ±1 (the effect);
+  - SPEED 120 with HUMAN 60% puts them within 3 cents and keeps ±16 of
+    the vibrato.
+
+Later:
+
+- **Per-note editing** (Melodyne-style): the notes from *Audio to notes*
+  drawn over the waveform, each draggable in pitch, with drift and
+  vibrato amount per note.
+- A **live** tune effect on an input, as a separate machine. It needs
   pitch detection inside a `dsp:` kernel, and that waits.
+- A reversed clip can't be tuned.
 
 ## In the project
 
@@ -229,16 +287,19 @@ algorithms), set in the audio clip editor:
   saved.
 - Extracted results are ordinary clips, tracks and files, and save as
   they always do.
-- A clip's tune settings save beside its warp: `"tune": {"key": "A",
-  "scale": "minor", "speed": 20, …}`.
+- A tuned clip saves `"tune": {"key": "A", "scale": "minor", "speed":
+  20, "humanize": 0}` beside its warp (omitted when off). Opening it
+  asks for the source's pitch, and a headless render waits for it, like
+  hits. slabkit: `audio(…, tune="A", scale="minor", speed=20,
+  humanize=0)`.
 
 ## Phasing
 
 1. **Pitch and notes**: `pitch.zig` (pYIN), the note cutter and
    tuning, *Audio to notes* on a clip, hum to notes on record, tests on
-   synthesized and recorded lines.
+   synthesized and recorded lines (built).
 2. **Tune**: the scale snapper, PSOLA as a stretcher kind, the editor's
-   tune strip.
+   tune row and pitch curves, key detection, slabkit (built).
 3. **Chords and key; drums to pattern and kit.**
 4. **CoreML and the Extract pack**: stems, then *Explode…* with
    everything.

@@ -20,6 +20,7 @@ const wav = @import("wav.zig");
 const waveform = @import("waveform.zig");
 const transients = @import("transients.zig");
 const pitch_mod = @import("pitch.zig");
+const tune_mod = @import("tune.zig");
 
 /// A source's transients (docs/29 §Transients), found on a worker thread.
 /// `onsets` is written once, before `ready` is set, and never again, so
@@ -41,10 +42,13 @@ pub const Analysis = struct {
 pub const PitchJob = struct {
     ready: std.atomic.Value(bool) = .init(false),
     track: pitch_mod.Track = .{},
+    /// What Tune plays from (docs/30 §Tune), made from the track.
+    tuning: tune_mod.Tuning = .{},
     thread: ?std.Thread = null,
 
     fn run(self: *PitchJob, alloc: std.mem.Allocator, l: []const f64, r: ?[]const f64, rate: f64) void {
         self.track = pitch_mod.track(alloc, l, r, rate, .any) catch .{};
+        self.tuning = tune_mod.prepare(alloc, &self.track, l, r, rate) catch .{};
         self.ready.store(true, .release);
     }
 };
@@ -70,6 +74,13 @@ pub const Source = struct {
         const j = self.pitch_job orelse return null;
         if (!j.ready.load(.acquire)) return null;
         return &j.track;
+    }
+
+    /// What Tune reads, once the pitch is found.
+    pub fn tuning(self: *const Source) ?*const tune_mod.Tuning {
+        const j = self.pitch_job orelse return null;
+        if (!j.ready.load(.acquire)) return null;
+        return &j.tuning;
     }
 
     /// The transients with their strengths, once found.
@@ -124,6 +135,7 @@ pub const AudioPool = struct {
             }
             if (s.pitch_job) |j| {
                 j.track.deinit(self.alloc);
+                j.tuning.deinit(self.alloc);
                 self.alloc.destroy(j);
             }
             s.sample.deinit(self.alloc);

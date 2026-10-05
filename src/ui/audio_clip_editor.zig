@@ -28,6 +28,8 @@ const ClipRef = clip_mod.ClipRef;
 const audio_pool_mod = @import("../audio_pool.zig");
 const clip_editor = @import("clip_editor.zig");
 const warp_mod = @import("../warp.zig");
+const tune_mod = @import("../tune.zig");
+const pitch_mod = @import("../pitch.zig");
 
 const Result = clip_editor.Result;
 
@@ -115,7 +117,10 @@ pub fn draw(
     // ── Layout: overview · ruler · grid · control row ────────────────
     const ov_rect = pane.rect(body.x, body.y, body.width, overviewH());
     const ruler_rect = pane.rect(body.x, ov_rect.y + ov_rect.height, body.width, rulerH());
-    const ctrl_rect = pane.rect(body.x, body.y + body.height - ctrlH(), body.width, ctrlH());
+    // Tuned (docs/30 §Tune): a row of its own above the controls.
+    const tuned = clip.audio.tune.on and !clip.audio.reversed;
+    const ctrl_h = ctrlH() * @as(f32, if (tuned) 2 else 1);
+    const ctrl_rect = pane.rect(body.x, body.y + body.height - ctrl_h, body.width, ctrl_h);
     // Warped: a strip for the markers under the ruler.
     const strip_h: f32 = if (wmap != null) MARK_H else 0;
     const strip = pane.rect(body.x, ruler_rect.y + ruler_rect.height, body.width, strip_h);
@@ -213,6 +218,9 @@ pub fn draw(
         }
     };
 
+    // Tuned: the sung pitch, and where Tune puts it.
+    if (tuned) if (src.tuning()) |tn| drawPitch(ui, grid, tn, clip, wmap, axis0, sec_per_beat);
+
     // Dim the trimmed-off regions (outside the played window).
     const dimcol = ui_style.chassis.alpha(160);
     const xs = beatToX(grid, ws_b);
@@ -285,7 +293,12 @@ pub fn draw(
     drawOverview(ui, ov_rect, grid, src, track_color, source_beats, rev, m);
 
     // ── Control row: gain slider + dot-matrix readout ────────────────
-    var row = ui.plate(bridge.fromRl(ctrl_rect), .{});
+    var ctrl_all = bridge.fromRl(ctrl_rect);
+    if (tuned) {
+        var trow = ui.plate(ctrl_all.cutTop(@intFromFloat(ctrlH())), .{});
+        tuneTools(ui, &trow, clip, src);
+    }
+    var row = ui.plate(ctrl_all, .{});
     const lbl = row.cutLeft(34);
     ui.textIn(&ui.fonts.legend, lbl, "GAIN", ui_style.text_dim, .center, true);
     const gain_r = row.cutLeft(@min(140, @divFloor(row.w * 2, 5))).insetXY(0, @divFloor(row.h - 14, 2));
@@ -304,6 +317,11 @@ pub fn draw(
     var warp_on = wmap != null;
     if (ctl.button(ui, warp_r, "warp", &warp_on, .{ .kind = .latch, .label = "WARP", .led = ui_style.accent, .flush = true })) res.command = .warp;
     menu.tip(ui, warp_r, "Lock the audio to the beat: it follows the tempo (\u{2318}-drag an edge in the arrangement to stretch)");
+    _ = row.cutLeft(6);
+    const tune_r = row.cutLeft(44);
+    var tune_on = clip.audio.tune.on;
+    if (ctl.button(ui, tune_r, "tune", &tune_on, .{ .kind = .latch, .label = "TUNE", .led = ui_style.accent, .flush = true, .disabled = rev })) res.command = .tune;
+    menu.tip(ui, tune_r, "Put the voice in key: each note pulled to the scale, its formants kept");
     _ = row.cutLeft(6);
     if (wmap != null and clip.audio.warp) warpTools(ui, &row, clip, alloc, src);
     var buf: [96]u8 = undefined;
@@ -395,6 +413,102 @@ fn warpTools(ui: *Ui, row: *Rect, clip: *clip_mod.Clip, alloc: std.mem.Allocator
     if (ui.isHot(wid)) ui.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 1);
     menu.tip(ui, dr, "Decay: how much of each slice sounds before it fades; drag, double-click 100%");
     _ = row.cutLeft(6);
+}
+
+/// The tune row (docs/30 §Tune): KEY, SCALE, SPEED, HUMAN.
+fn tuneTools(ui: *Ui, row: *Rect, clip: *clip_mod.Clip, src: *const audio_pool_mod.Source) void {
+    const t = &clip.audio.tune;
+    const lbl = row.cutLeft(34);
+    ui.textIn(&ui.fonts.legend, lbl, "TUNE", ui_style.text_dim, .center, true);
+    if (src.tuning() == null) {
+        const r = row.cutLeft(@min(row.w, 13 * ctl.CELL_W + 4));
+        ctl.display(ui, r.insetXY(0, @divFloor(r.h - ctl.displayHeight(false), 2)), "LISTENING\u{2026}", .{});
+        return;
+    }
+    const kr = row.cutLeft(36);
+    var key: u8 = t.key;
+    _ = ctl.displaySelectEx(ui, kr.insetXY(0, @divFloor(kr.h - ctl.displayHeight(false), 2)), "key", &key, &tune_mod.KEYS, "", .{ .align_ = .left });
+    t.key = key;
+    menu.tip(ui, kr, "Key: the scale's root (found from the take when Tune turns on)");
+    _ = row.cutLeft(4);
+    const sr = row.cutLeft(56);
+    var scale: u8 = @intFromEnum(t.scale);
+    _ = ctl.displaySelectEx(ui, sr.insetXY(0, @divFloor(sr.h - ctl.displayHeight(false), 2)), "scale", &scale, &SCALES, "", .{ .align_ = .left });
+    t.scale = @enumFromInt(scale);
+    menu.tip(ui, sr, "Scale: the notes a sung pitch is pulled to (CHROM: any semitone)");
+    _ = row.cutLeft(6);
+    dragNum(ui, row, "speed", &t.speed_ms, 0, tune_mod.MAX_SPEED_MS, 2, "MS", "Speed: how long a correction takes; 0 snaps at once (the effect), 100+ is gentle; double-click 0");
+    dragNum(ui, row, "human", &t.humanize, 0, 100, 0.5, "%", "Humanize: how much vibrato and slides are kept, only where each note sits is fixed; double-click 0");
+}
+
+const SCALES = blk: {
+    var out: [@typeInfo(tune_mod.Scale).@"enum".fields.len][]const u8 = undefined;
+    for (&out, 0..) |*o, i| o.* = @as(tune_mod.Scale, @enumFromInt(i)).label();
+    break :blk out;
+};
+
+/// The sung pitch (dim) and the tuned one (bright) across the grid, on a
+/// semitone scale fitted to what's in view, with the scale's notes ruled.
+fn drawPitch(ui: *Ui, grid: c.rl.Rectangle, tn: *const tune_mod.Tuning, clip: *const clip_mod.Clip, wmap: ?warp_mod.Map, axis0: f64, sec_per_beat: f64) void {
+    const n = tn.midi.len;
+    if (n == 0) return;
+    const secAt = struct {
+        fn f(wm: ?warp_mod.Map, a0: f64, spb: f64, b: f64) f64 {
+            return if (wm) |w| w.secAt(b + a0) else b * spb;
+        }
+    }.f;
+    const s0 = secAt(wmap, axis0, sec_per_beat, xToBeat(grid, grid.x));
+    const s1 = secAt(wmap, axis0, sec_per_beat, xToBeat(grid, grid.x + grid.width));
+    const k0: usize = @intFromFloat(std.math.clamp(@floor(s0 / pitch_mod.HOP_SEC), 0, @as(f64, @floatFromInt(n - 1))));
+    const k1: usize = @intFromFloat(std.math.clamp(@ceil(s1 / pitch_mod.HOP_SEC) + 1, 0, @as(f64, @floatFromInt(n))));
+    if (k1 <= k0) return;
+    var lo: f32 = 200;
+    var hi: f32 = -1;
+    for (tn.held[k0..k1]) |h| if (h != 0) {
+        lo = @min(lo, h);
+        hi = @max(hi, h);
+    };
+    if (hi < lo) return;
+    lo = @floor(lo) - 2;
+    hi = @ceil(hi) + 2;
+    if (hi - lo < 12) {
+        const mid = (hi + lo) / 2;
+        lo = mid - 6;
+        hi = mid + 6;
+    }
+    const yOf = struct {
+        fn f(g: c.rl.Rectangle, l: f32, h: f32, m: f32) f32 {
+            return g.y + g.height - 2 - (m - l) / (h - l) * (g.height - 4);
+        }
+    }.f;
+    const set = clip.audio.tune;
+    const mask = set.scale.mask();
+    var p: f32 = @ceil(lo);
+    while (p <= hi) : (p += 1) {
+        const pc: u4 = @intCast(@mod(@as(i32, @intFromFloat(p)) - @as(i32, set.key), 12));
+        if (mask & (@as(u12, 1) << pc) == 0) continue;
+        ui.rect(.{ .x = @intFromFloat(grid.x), .y = @intFromFloat(@floor(yOf(grid, lo, hi, p))), .w = @intFromFloat(grid.width), .h = 1 }, if (pc == 0) ui_style.text_dim.alpha(90) else ui_style.text_dim.alpha(40));
+    }
+    // A frame a pixel at most.
+    const px_per_frame = @as(f64, @floatCast(grid.width)) / @as(f64, @floatFromInt(k1 - k0));
+    const stride: usize = @max(1, @as(usize, @intFromFloat(@ceil(1 / @max(1e-6, px_per_frame)))));
+    const xOf = struct {
+        fn f(g: c.rl.Rectangle, wm: ?warp_mod.Map, a0: f64, spb: f64, k: usize) f32 {
+            const s = @as(f64, @floatFromInt(k)) * pitch_mod.HOP_SEC;
+            return beatToX(g, if (wm) |w| w.beatAt(s) - a0 else s / spb);
+        }
+    }.f;
+    var k = k0;
+    while (k + stride < k1) : (k += stride) {
+        const j = k + stride;
+        if (tn.midi[k] == 0 or tn.midi[j] == 0) continue;
+        const x0 = xOf(grid, wmap, axis0, sec_per_beat, k);
+        const x1 = xOf(grid, wmap, axis0, sec_per_beat, j);
+        ui.line(x0, yOf(grid, lo, hi, tn.midi[k]), x1, yOf(grid, lo, hi, tn.midi[j]), ui_style.text_dim);
+        const ck = tn.midi[k] + tune_mod.correction(tn, k, set);
+        const cj = tn.midi[j] + tune_mod.correction(tn, j, set);
+        ui.line(x0, yOf(grid, lo, hi, ck), x1, yOf(grid, lo, hi, cj), ui_style.vfd_hi);
+    }
 }
 
 /// A number dragged up and down; double-click resets it (to 0, which
