@@ -7,10 +7,11 @@ Everything comes out as something you edit in Slab (pattern clips,
 groove templates, sampler kits, audio clips), placed on the song's
 beats through the clip's warp (docs/29).
 
-Status: phases 1–4 built (2026-10-05) on `feat/extract`: the pitch
+Status: phases 1–4 built and released in 0.0.9 (2026-10-05): the pitch
 tracker, notes, *Audio to notes*, hum to notes, Tune, *Chords to notes*,
 *Drums to a kit*, stems through CoreML and the Extract pack, and
-*Explode…*. Polyphonic notes and sound matching are designed.
+*Explode…*. Phase 5 (polyphonic notes and sound matching) is parked for
+later; its design below stands.
 
 ## What musicians expect (and other tools do)
 
@@ -511,4 +512,4 @@ Later:
 3. **Chords and key; drums to pattern and kit** (built).
 4. **CoreML and the Extract pack**: stems, then *Explode…* with
    everything (built).
-5. **Polyphonic notes and sound matching.**
+5. **Polyphonic notes and sound matching** (parked: future development).
