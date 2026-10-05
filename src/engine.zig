@@ -11,6 +11,7 @@ const Track = @import("track.zig").Track;
 const snap_mod = @import("snapshot.zig");
 const meter = @import("meter.zig");
 const tempo = @import("tempo.zig");
+const groove_mod = @import("groove.zig");
 const automation = @import("automation.zig");
 const routing = @import("routing.zig");
 const render_pool = @import("render_pool.zig");
@@ -2016,7 +2017,8 @@ fn gatherEvents(
 
     for (snap.clips[0..snap.clip_count]) |clip| {
         const clip_end = clip.start_beat + clip.length_beats;
-        const in_block = clip_end > beat_start and clip.start_beat < beat_end;
+        // A grooved note may play a little before its clip (docs/28 §Groove).
+        const in_block = clip_end > beat_start and clip.start_beat - groove_mod.MAX_MOVE_BEATS < beat_end;
         const at_release = if (release_at) |rb| clip.start_beat < rb and clip_end > rb else false;
         if (!in_block and !at_release) continue;
 
@@ -2100,7 +2102,7 @@ fn gatherEvents(
 fn notesNear(snap: *const snap_mod.TrackSnapshot, lo: f64, hi: f64) bool {
     for (snap.clips[0..snap.clip_count]) |clip| {
         const clip_end = clip.start_beat + clip.length_beats;
-        if (clip_end <= lo or clip.start_beat >= hi) continue;
+        if (clip_end <= lo or clip.start_beat - groove_mod.MAX_MOVE_BEATS >= hi) continue;
         for (snap.notes[clip.notes_start..][0..clip.notes_count]) |note| {
             if (note.start_beat >= clip.length_beats) continue;
             const on = clip.start_beat + note.start_beat;

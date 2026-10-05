@@ -7,6 +7,7 @@ const c = @import("c.zig");
 const machine = @import("machine.zig");
 const clip_mod = @import("clip.zig");
 const snap_mod = @import("snapshot.zig");
+const groove_mod = @import("groove.zig");
 const audio_pool_mod = @import("audio_pool.zig");
 const automation = @import("automation.zig");
 const routing = @import("routing.zig");
@@ -130,6 +131,9 @@ pub const Track = struct {
     play_muted: bool = false,
     /// Export (docs/27 §Export): this track's stem.
     stem: StemPlan = .{},
+    /// Its groove, AMOUNT and SHIFT (docs/28 §Groove), applied as the
+    /// notes publish.
+    groove: groove_mod.TrackGroove = .{},
     next_fx_uid: u16 = 1,
     /// Audio-thread-owned per-lane segment cursors (automation.evalCursor).
     auto_cursors: [snap_mod.MAX_LANES_PER_TRACK]u32 = [_]u32{0} ** snap_mod.MAX_LANES_PER_TRACK,
@@ -507,7 +511,8 @@ pub const Track = struct {
                     continue;
                 }
                 var snap = snap_mod.AudioClipSnap{
-                    .start_beat = clip.start_beat,
+                    // Audio moves only by SHIFT (no stretching onto a groove).
+                    .start_beat = clip.start_beat + if (groove_mod.active) |cx| groove_mod.shiftBeats(cx, self.groove, clip.start_beat) else 0,
                     .length_beats = clip.length_beats,
                     .gain = clip.audio.gain,
                     .reversed = clip.audio.reversed,
@@ -544,6 +549,16 @@ pub const Track = struct {
                     .pitch = note.pitch,
                     .velocity = note.velocity,
                 };
+                // Played where the groove puts it (it may land a little
+                // before the clip; the engine looks that far).
+                if (groove_mod.active) |cx| {
+                    const on = clip.start_beat + note.start_beat;
+                    const p = groove_mod.play(cx, self.groove, on, on + note.length_beats, note.pitch, note.velocity);
+                    const ns = &dst.notes[dst.note_count];
+                    ns.start_beat = p.on - clip.start_beat;
+                    ns.length_beats = p.off - p.on;
+                    ns.velocity = p.velocity;
+                }
                 if (note.bend_n > 0 and dst.expr_point_count + note.bend_n <= snap_mod.MAX_EXPR_POINTS_PER_TRACK) {
                     dst.notes[dst.note_count].expr_start = dst.expr_point_count;
                     dst.notes[dst.note_count].expr_count = note.bend_n;

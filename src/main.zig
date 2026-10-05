@@ -14,6 +14,7 @@ const transport_mod = @import("transport.zig");
 const engine_mod = @import("engine.zig");
 const meter_mod = @import("meter.zig");
 const markers_mod = @import("markers.zig");
+const groove_mod = @import("groove.zig");
 const track_mod = @import("track.zig");
 const clip_mod = @import("clip.zig");
 const audio_pool_mod = @import("audio_pool.zig");
@@ -75,6 +76,7 @@ test {
     _ = @import("meter.zig");
     _ = @import("tempo.zig");
     _ = @import("markers.zig");
+    _ = @import("groove.zig");
     _ = @import("ui/marker_dialog.zig");
     _ = @import("routing.zig");
     _ = @import("export.zig");
@@ -252,6 +254,47 @@ fn acidFor(transport: *const transport_mod.Transport, meter: ?meter_mod.MeterMap
         .den = den,
         .bpm = @floatCast(m.points[i].bpm),
     };
+}
+
+/// Everything the tracks' grooves depend on: the pool, the song's groove
+/// and seed, the sections' grooves, the tempo and meter maps, each
+/// track's groove. A change republishes the tracks' notes.
+fn grooveHash(cx: *const groove_mod.Context, tracks: []const track_mod.Track) u64 {
+    // Field by field: struct padding isn't data.
+    var h = std.hash.Wyhash.init(0);
+    for (cx.pool.slice()) |*g| {
+        h.update(g.name.get());
+        h.update(std.mem.asBytes(&g.cycle));
+        h.update(&.{g.sub});
+        for (&g.cells) |*cl| {
+            h.update(&.{cl.steps});
+            h.update(std.mem.sliceAsBytes(cl.shift[0..cl.steps]));
+            h.update(std.mem.sliceAsBytes(cl.vel[0..cl.steps]));
+            h.update(std.mem.sliceAsBytes(cl.rand[0..cl.steps]));
+        }
+    }
+    h.update(&.{cx.song});
+    h.update(std.mem.asBytes(&cx.seed));
+    if (cx.markers) |mk| for (mk.sectionSlice()) |sec| {
+        h.update(std.mem.asBytes(&sec.beat));
+        h.update(&.{sec.groove});
+    };
+    if (cx.tempo) |t| for (t.slice()) |p| {
+        h.update(std.mem.asBytes(&p.beat));
+        h.update(std.mem.asBytes(&p.bpm));
+        h.update(&.{@intFromBool(p.ramp)});
+    };
+    if (cx.meter) |m| for (m.points) |p| {
+        h.update(std.mem.asBytes(&p.start_bar));
+        h.update(&.{ p.numerator, p.denominator });
+        h.update(p.groups.slice());
+    };
+    for (tracks) |*t| {
+        h.update(&.{t.groove.pick});
+        h.update(std.mem.asBytes(&t.groove.amount));
+        h.update(std.mem.asBytes(&t.groove.shift_ms));
+    }
+    return h.final();
 }
 
 /// Where the last clip that plays ends.
@@ -764,6 +807,13 @@ pub fn main(init: std.process.Init) !void {
     document_mod.setMeterState(&meter_state);
     var markers: markers_mod.Markers = .{};
     document_mod.setMarkers(&markers);
+    // Grooves (docs/28 §Groove): the pool and the song's settings, read
+    // where tracks publish their notes; set before a project loads.
+    var groove_pool = groove_mod.Pool.init();
+    var groove_cx = groove_mod.Context{ .pool = &groove_pool, .markers = &markers, .tempo = &transport.tempo.live, .meter = meter_state.liveMap() };
+    groove_mod.active = &groove_cx;
+    defer groove_mod.active = null;
+    var groove_hash: u64 = 0;
     // The project's export settings (docs/27 §Export), and the presets
     // saved beside settings.json.
     var export_cfg: export_settings.Settings = .{};
@@ -937,6 +987,15 @@ pub fn main(init: std.process.Init) !void {
 
         var rects = layout.compute(sw, sh);
         var tracks = tracks_buf[0..track_count];
+        // Anything a groove depends on changed: the tracks play it anew.
+        groove_cx.meter = meter_state.liveMap();
+        {
+            const h = grooveHash(&groove_cx, tracks);
+            if (h != groove_hash) {
+                groove_hash = h;
+                for (tracks) |*t| t.publishSnapshot(&audio_pool);
+            }
+        }
         if (!layout.clipShown() and focus == .piano_roll) focus = .arrangement;
         if (pane_m.left_pressed) focus = focusFromPoint(rects, pane_m, layout.clipShown());
         // The browser is all Ui widgets, which hide the press from the
@@ -3986,6 +4045,10 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
     document_mod.setMeterState(&meter_state);
     var markers: markers_mod.Markers = .{};
     document_mod.setMarkers(&markers);
+    var groove_pool = groove_mod.Pool.init();
+    var groove_cx = groove_mod.Context{ .pool = &groove_pool, .markers = &markers, .tempo = &transport.tempo.live };
+    groove_mod.active = &groove_cx;
+    defer groove_mod.active = null;
 
     const data = try document_mod.readFile(alloc, project);
     useProject(project);
@@ -3997,6 +4060,7 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
     try document_mod.apply(alloc, data, &reg, &tracks_buf, &track_count, &transport, silent_machine);
     defer for (tracks_buf[0..track_count]) |*t| t.deinit(alloc);
     const tracks = tracks_buf[0..track_count];
+    groove_cx.meter = meter_state.liveMap();
     for (tracks) |*t| t.publishSnapshot(&pool);
     master.publishSnapshot(&pool);
 

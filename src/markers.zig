@@ -18,6 +18,9 @@ pub const Section = struct {
     beat: f64,
     name: Name = .{},
     color: u8 = 0,
+    /// The groove tracks that follow the song play here (groove.zig's
+    /// picks: FOLLOW the section before, NONE, or a pool groove).
+    groove: u8 = 0,
 };
 
 pub const Locator = struct {
