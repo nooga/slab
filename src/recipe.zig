@@ -50,6 +50,19 @@ pub fn fingerprint(alloc: std.mem.Allocator, tracks: []const track_mod.Track, tr
     }) catch "");
     // Tempo changes after the first (a constant tempo hashes as it always did).
     for (transport.map().slice()[1..]) |p| h.update(std.mem.asBytes(&[_]f64{ p.beat, p.bpm, @floatFromInt(@intFromBool(p.ramp)) }));
+    // The song's and the sections' grooves (a track's own is in the track).
+    // Only when set, so bounces made without them keep their hash.
+    if (@import("groove.zig").active) |cx| {
+        const groove_mod = @import("groove.zig");
+        if (cx.song != groove_mod.PICK_NONE or cx.seed != (groove_mod.Context{ .pool = cx.pool }).seed) {
+            h.update(&.{cx.song});
+            h.update(std.mem.asBytes(&cx.seed));
+        }
+        if (cx.markers) |mk| for (mk.sectionSlice()) |sec| if (sec.groove != 0) {
+            h.update(std.mem.asBytes(&sec.beat));
+            h.update(&.{sec.groove});
+        };
+    }
     var buses: u32 = 0;
     for (tracks, 0..) |*t, ti| if (set & (@as(u32, 1) << @intCast(ti)) != 0) {
         try hashTrack(alloc, &out, &h, t, tap != .instr and tap != .fx, tap == .sends);
@@ -88,6 +101,12 @@ fn hashTrack(alloc: std.mem.Allocator, out: *std.ArrayList(u8), h: *std.hash.Wyh
         n += 1;
     };
     h.update(std.mem.sliceAsBytes(codes[0..n]));
+    // How it plays its notes (docs/28 §Groove), only when set.
+    if (!t.groove.isDefault()) {
+        h.update(&.{t.groove.pick});
+        h.update(std.mem.asBytes(&t.groove.amount));
+        h.update(std.mem.asBytes(&t.groove.shift_ms));
+    }
 }
 
 /// Mark each recipe clip stale or fresh. UI thread.
