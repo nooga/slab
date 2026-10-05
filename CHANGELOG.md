@@ -6,6 +6,61 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+### Warp
+
+- **Warp an audio clip** (right-click → *Warp*, or WARP in the audio clip
+  editor): it locks to the beat and follows the tempo, tempo changes and
+  ramps included. TAPE mode plays it like a tape: speed and pitch move
+  together.
+- **⌘-drag a clip's edge to stretch it**; a plain drag still trims.
+- Unwarped clips no longer drag past the end of their audio, and the
+  waveform no longer stretches across silence.
+- Stereo audio clips draw both channels, left over right, in the
+  arrangement and the audio clip editor.
+- Audio clips play through a band-limited resampler: cleaner rate
+  changes, no aliasing when sped up.
+- **BEATS mode** for drums and loops (MODE in the audio clip editor):
+  the audio is cut at its hits, each played at its own speed from where
+  it lands on the grid, so hits stay sharp at any tempo. PRESERVE cuts at
+  the hits or every 1/16, 1/8, 1/4; GAP fills a stretched slice with
+  silence or its looped tail; DECAY shortens each slice.
+- **MIX mode** keeps the pitch for anything (full mixes, pads, vocals):
+  a phase vocoder locked to the spectrum's peaks, resetting on hits,
+  holding the stereo image. Warping a clip now picks BEATS for short
+  loops full of hits and MIX for everything else.
+- **VOICE mode** for vocals, bass and leads (one note at a time): grains
+  matched to each other, so no phasing; GRAIN sets their length.
+- **SMEAR mode**: Paulstretch-style extreme stretching into texture, with
+  a SIZE for how much it smears; renders the same every time.
+- **Warp markers** in the audio clip editor: drag a marker and the audio
+  around it stretches; ⌘-drag slides the audio under it; drag a hit
+  straight onto the beat. Double-click the strip to add one; right-click
+  for *Warp straight from here* and more.
+- **Tempo detection**: a loop's tempo and downbeat from its hits. Short
+  files (30 s or less) are warped onto it as they're imported, so they
+  play in the song's tempo right away; *Warp* uses it too. SEG BPM in the
+  editor: drag it, double-click to detect, ×2 / ÷2 from the right-click
+  menu.
+- **Quantize hits to grid** for audio: a live take's hits pulled onto
+  the edit grid.
+- **Warped audio plays the groove**: swing a drum loop with the song's
+  or the track's groove, like the notes.
+- **Extract groove** from an audio clip's hits: a drummer's feel for
+  your MIDI tracks.
+- **Follow its beats**: a take that drifts gets a marker on every bar,
+  so it stays on the grid.
+- **Song follows this clip**: the song's tempo map from a warped take, so
+  a performance played without a click sets the tempo for everything.
+- **Slice to a sampler track**: a loop cut at its hits onto sampler pads
+  from C1 up, with a pattern playing them where they played; rearrange
+  the break as notes.
+- **TRANSPOSE and FINE** in every mode but TAPE: pitch apart from time.
+- Slab finds the hits in every audio file, shown as ticks in the audio
+  clip editor.
+- slabkit: `track.audio(..., warp=bpm)` and `fit_beats=`, `mode="beats"`
+  with `preserve=`, `gap=`, `decay=`, `mode="mix"`, `"voice"` with
+  `grain=`, `"smear"` with `size=`, `transpose=`, `fine=`.
+
 ## 0.0.7 — 2026-10-05
 
 ### Time: tempo, sections, groove

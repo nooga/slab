@@ -49,6 +49,7 @@ pub const EditCommand = enum {
     rename,
     import_audio,
     reverse,
+    warp,
     mute_clips,
     bounce,
     rebounce,
@@ -57,6 +58,8 @@ pub const EditCommand = enum {
     save_to_library,
     extract_groove,
     commit_groove,
+    song_follows_clip,
+    slice_to_sampler,
 };
 
 pub const Item = struct {

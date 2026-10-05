@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const automation = @import("automation.zig");
+const warp = @import("warp.zig");
 
 pub const MAX_NAME = 32;
 
@@ -24,7 +25,9 @@ pub const ClipKind = enum(u8) { note, audio };
 /// bpm-independent source of truth; the clip's `length_beats` is *derived*
 /// from it at the current tempo (`dur_sec * bpm / 60`), so changing the
 /// project tempo rescales the clip against the bar grid and splitting carves
-/// the window in two. Speed/warp lands in a later phase.
+/// the window in two. A *warped* clip (docs/29) instead maps its own
+/// beats to source seconds through `Clip.warp_markers`: its length is in
+/// beats and it follows the tempo; the window fields are unused then.
 pub const AudioRef = struct {
     /// Index into the document's AudioPool. Stable for the doc lifetime.
     source: u32 = 0,
@@ -40,6 +43,29 @@ pub const AudioRef = struct {
     /// Plays the window end to start. The window stays the source region
     /// `[start_sec, start_sec+dur_sec)`; fades and gain stay in clip time.
     reversed: bool = false,
+    /// Warped (docs/29 §The model): content beats through the markers.
+    warp: bool = false,
+    mode: warp.Mode = .tape,
+    /// The content beat at the clip's start (the trimmed-off head).
+    offset_beats: f64 = 0,
+    /// BEATS (docs/29 §BEATS): where it slices, what fills a gap, and how
+    /// much of each slice sounds before it fades (100: all of it).
+    preserve: warp.Preserve = .hits,
+    gap: warp.Gap = .cut,
+    decay: u8 = 100,
+    /// Pitch apart from time (docs/29 §The algorithms), in every mode but
+    /// TAPE: semitones and cents.
+    transpose: i8 = 0,
+    fine: i8 = 0,
+    /// VOICE's grain in ms (10–80), SMEAR's window (stretch.SMEAR_SIZES
+    /// index: 0.34, 0.68, 1.37, 2.73 s).
+    grain_ms: u8 = 40,
+    smear_size: u8 = 1,
+
+    pub fn pitch(self: AudioRef) f64 {
+        if (self.mode == .tape) return 1;
+        return std.math.pow(f64, 2, (@as(f64, @floatFromInt(self.transpose)) + @as(f64, @floatFromInt(self.fine)) / 100) / 12);
+    }
 };
 
 pub const Note = struct {
@@ -218,6 +244,9 @@ pub const Clip = struct {
     /// move and copy with the clip and override the track's lane for the
     /// same target while the clip plays.
     lanes: std.ArrayList(automation.Lane) = .empty,
+    /// A warped audio clip's map (docs/29): source seconds pinned to
+    /// content beats, strictly increasing, two or more.
+    warp_markers: std.ArrayList(warp.Marker) = .empty,
     /// Stable id: kept by save, load and undo, fresh for a copy. A bounce's
     /// recipe finds its sources by it.
     uid: u32 = 0,
@@ -252,6 +281,7 @@ pub const Clip = struct {
 
     pub fn deinit(self: *Clip, alloc: std.mem.Allocator) void {
         self.notes.deinit(alloc);
+        self.warp_markers.deinit(alloc);
         for (self.lanes.items) |*l| l.deinit(alloc);
         self.lanes.deinit(alloc);
     }
@@ -265,6 +295,7 @@ pub const Clip = struct {
         c.audio = self.audio;
         errdefer c.deinit(alloc);
         try c.notes.appendSlice(alloc, self.notes.items);
+        try c.warp_markers.appendSlice(alloc, self.warp_markers.items);
         for (self.lanes.items) |*l| {
             var lc = try l.clone(alloc);
             c.lanes.append(alloc, lc) catch |err| {

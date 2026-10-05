@@ -309,6 +309,19 @@ pub fn waveform(ui: *Ui, r: Rect, cache: *const waveform_mod.PeakCache, win_star
     waveformDir(ui, r, cache, win_start, win_end, col, false);
 }
 
+/// A source's waveform: a stereo one as two lanes, left over right, when
+/// there's room for both (8 px each), else its mid.
+pub fn waveformLanes(ui: *Ui, r: Rect, w: waveform_mod.Waves, win_start: f64, win_end: f64, col: Color, reversed: bool) void {
+    if (w.l != null and w.r != null and r.h >= 17) {
+        const top = @divFloor(r.h - 1, 2);
+        waveformDir(ui, Rect.xywh(r.x, r.y, r.w, top), w.l.?, win_start, win_end, col, reversed);
+        ui.rect(Rect.xywh(r.x, r.y + top, r.w, 1), col.alpha(40));
+        waveformDir(ui, Rect.xywh(r.x, r.y + top + 1, r.w, r.h - top - 1), w.r.?, win_start, win_end, col, reversed);
+        return;
+    }
+    waveformDir(ui, r, w.mid, win_start, win_end, col, reversed);
+}
+
 /// `waveform`, drawn right to left when `reversed` (a reversed clip).
 pub fn waveformDir(ui: *Ui, r: Rect, cache: *const waveform_mod.PeakCache, win_start: f64, win_end: f64, col: Color, reversed: bool) void {
     if (r.w < 1 or r.h < 1 or cache.sample_count == 0) return;

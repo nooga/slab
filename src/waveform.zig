@@ -12,6 +12,13 @@ const c = @import("c.zig");
 
 pub const Peak = struct { min: f32 = 0, max: f32 = 0 };
 
+/// A source's caches for drawing: the mid, and each side when stereo.
+pub const Waves = struct {
+    mid: *const PeakCache,
+    l: ?*const PeakCache = null,
+    r: ?*const PeakCache = null,
+};
+
 // Level 0 bucket size. Small enough that a fully zoomed-in oscillogram still
 // has detail, big enough that the pyramid is a few % of the audio size.
 const BASE: usize = 64;

@@ -8,6 +8,8 @@ const machine = @import("machine.zig");
 const clip_mod = @import("clip.zig");
 const snap_mod = @import("snapshot.zig");
 const groove_mod = @import("groove.zig");
+const warp_mod = @import("warp.zig");
+const stretch_mod = @import("stretch.zig");
 const audio_pool_mod = @import("audio_pool.zig");
 const automation = @import("automation.zig");
 const routing = @import("routing.zig");
@@ -153,6 +155,9 @@ pub const Track = struct {
     freeze: ?Freeze = null,
     /// The audio thread's view: no instrument or insert latency.
     frozen: std.atomic.Value(bool) = .init(false),
+    /// Its stretchers (docs/29 §On the audio thread), made when a warped
+    /// clip first needs them, freed with the track.
+    stretch: ?*stretch_mod.Bank = null,
     next_fx_uid: u16 = 1,
     /// Audio-thread-owned per-lane segment cursors (automation.evalCursor).
     auto_cursors: [snap_mod.MAX_LANES_PER_TRACK]u32 = [_]u32{0} ** snap_mod.MAX_LANES_PER_TRACK,
@@ -215,6 +220,59 @@ pub const Track = struct {
         return t;
     }
 
+    // Scratch for `grooved` (UI thread only: publishing).
+    var groove_brk: [snap_mod.MAX_WARP_POINTS_PER_TRACK]f64 = undefined;
+    var groove_out: [snap_mod.MAX_WARP_POINTS_PER_TRACK]warp_mod.Marker = undefined;
+
+    /// A warped clip's markers with the track's groove composed in: at
+    /// every groove step and every marker (the breakpoints of both maps,
+    /// which are linear between them), the source second its written beat
+    /// reads, on the content beat its played beat falls on. The markers as
+    /// they are when no groove plays or it doesn't fit.
+    fn grooved(clip: *const clip_mod.Clip, tg: groove_mod.TrackGroove, rate: f64, wm: []const warp_mod.Marker) []const warp_mod.Marker {
+        const cx = groove_mod.active orelse return wm;
+        if (!groove_mod.anyFor(cx, tg)) return wm;
+        const map = warp_mod.Map.init(wm);
+        const o = clip.audio.offset_beats;
+        const start = clip.start_beat;
+        const lo = start - groove_mod.MAX_MOVE_BEATS;
+        const hi = start + clip.length_beats / rate + groove_mod.MAX_MOVE_BEATS;
+        const cap = groove_brk.len;
+        var n: usize = 0;
+        var b = lo;
+        while (b < hi) {
+            if (groove_mod.resolve(cx, tg, b)) |g| {
+                const a = groove_mod.anchorsAt(g, b, cx.meter, groove_brk[n..]);
+                for (groove_brk[n..][0..a.n]) |w| if (w >= lo and w <= hi) {
+                    groove_brk[n] = w;
+                    n += 1;
+                };
+                b = a.next;
+            } else b = @floor(b) + 1;
+            if (n + 64 >= cap) return wm;
+        }
+        for (wm) |mk| {
+            const w = start + (mk.beat - o) / rate;
+            if (w <= lo or w >= hi) continue;
+            if (n == cap) return wm;
+            groove_brk[n] = w;
+            n += 1;
+        }
+        groove_brk[n] = lo;
+        groove_brk[n + 1] = hi;
+        n += 2;
+        std.mem.sort(f64, groove_brk[0..n], {}, std.sort.asc(f64));
+        var m: usize = 0;
+        for (groove_brk[0..n]) |w| {
+            const p = if (groove_mod.resolve(cx, tg, w)) |g| groove_mod.warp(g, tg.amount, w, cx.meter) else w;
+            const mk = warp_mod.Marker{ .sec = map.secAt((w - start) * rate + o), .beat = (p - start) * rate + o };
+            if (m > 0 and (mk.beat <= groove_out[m - 1].beat + 1e-9 or mk.sec <= groove_out[m - 1].sec + 1e-12)) continue;
+            groove_out[m] = mk;
+            m += 1;
+        }
+        return if (m >= 2) groove_out[0..m] else wm;
+    }
+
     pub fn deinit(self: *Track, alloc: std.mem.Allocator) void {
         if (self.machine.deinit) |deinit_fn| {
             deinit_fn(self.machine.state, alloc);
@@ -231,6 +289,10 @@ pub const Track = struct {
         self.lanes.deinit(alloc);
         alloc.destroy(self.snap[0]);
         alloc.destroy(self.snap[1]);
+        if (self.stretch) |b| {
+            b.deinit();
+            std.heap.page_allocator.destroy(b);
+        }
     }
 
     pub fn replaceMachine(self: *Track, alloc: std.mem.Allocator, mach: machine.Machine) void {
@@ -532,6 +594,8 @@ pub const Track = struct {
         dst.note_count = 0;
         dst.audio_clip_count = 0;
         dst.expr_point_count = 0;
+        dst.warp_point_count = 0;
+        dst.stretch = self.stretch;
         self.publishLanes(dst);
 
         for (self.clips.items) |*clip| {
@@ -558,6 +622,41 @@ pub const Track = struct {
                     snap.dur_samples = clip.audio.dur_sec * rate;
                     snap.fade_in_samples = clip.audio.fade_in_sec * rate;
                     snap.fade_out_samples = clip.audio.fade_out_sec * rate;
+                }
+                // Warped (docs/29): its markers ride along; a clip whose map
+                // doesn't fit or isn't valid plays as a window.
+                const wm0 = clip.warp_markers.items;
+                // On a groove (docs/29 §Audio on the time axis): the groove's
+                // map composed with the markers, as markers.
+                const wm = if (clip.audio.warp and warp_mod.valid(wm0)) grooved(clip, self.groove, time_rate, wm0) else wm0;
+                if (clip.audio.warp and warp_mod.valid(wm) and dst.warp_point_count + wm.len <= snap_mod.MAX_WARP_POINTS_PER_TRACK) {
+                    snap.warped = true;
+                    snap.mode = clip.audio.mode;
+                    snap.offset_beats = clip.audio.offset_beats;
+                    snap.rate = time_rate;
+                    snap.warp_start = dst.warp_point_count;
+                    snap.warp_count = @intCast(wm.len);
+                    snap.preserve = clip.audio.preserve;
+                    snap.gap = clip.audio.gap;
+                    snap.decay = @as(f32, @floatFromInt(@min(clip.audio.decay, 100))) / 100;
+                    snap.pitch = clip.audio.pitch();
+                    snap.uid = clip.uid;
+                    snap.grain_ms = clip.audio.grain_ms;
+                    snap.smear_size = clip.audio.smear_size;
+                    if (warp_mod.stretches(clip.audio.mode) and self.stretch == null) {
+                        if (std.heap.page_allocator.create(stretch_mod.Bank)) |b| {
+                            b.* = .{};
+                            self.stretch = b;
+                            dst.stretch = b;
+                        } else |_| {}
+                    }
+                    if (clip.audio.mode == .smear) if (self.stretch) |b| b.needSmear();
+                    if (pool.get(clip.audio.source)) |src| if (src.onsets()) |on| {
+                        snap.onsets = on.ptr;
+                        snap.onset_count = @intCast(on.len);
+                    };
+                    @memcpy(dst.warp_points[dst.warp_point_count..][0..wm.len], wm);
+                    dst.warp_point_count += @intCast(wm.len);
                 }
                 dst.audio_clips[dst.audio_clip_count] = snap;
                 dst.audio_clip_count += 1;

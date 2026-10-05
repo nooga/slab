@@ -10,6 +10,8 @@
 //! giving the audio thread well over one block of headroom.
 
 const automation = @import("automation.zig");
+const warp = @import("warp.zig");
+const stretch = @import("stretch.zig");
 
 pub const MAX_CLIPS_PER_TRACK: usize = 64;
 pub const MAX_LANES_PER_TRACK: usize = 128; // track + clip lanes
@@ -18,6 +20,7 @@ pub const MAX_NOTES_PER_TRACK: usize = 2048;
 pub const MAX_AUDIO_CLIPS_PER_TRACK: usize = 64;
 
 pub const MAX_EXPR_POINTS_PER_TRACK: usize = 4096;
+pub const MAX_WARP_POINTS_PER_TRACK: usize = 8192;
 
 pub const NoteSnap = struct {
     start_beat: f64,
@@ -73,6 +76,27 @@ pub const AudioClipSnap = struct {
     gain: f32 = 1.0,
     /// Read the window from its end back to its start.
     reversed: bool = false,
+    /// Warped (docs/29): content beats through `warp_points[warp_start..]`
+    /// instead of the window; `reversed` then reads the source mirrored.
+    warped: bool = false,
+    mode: warp.Mode = .tape,
+    offset_beats: f64 = 0,
+    /// The track's tempo ratio (docs/28 §Polymeter and polytempo).
+    rate: f64 = 1,
+    warp_start: u32 = 0,
+    warp_count: u32 = 0,
+    /// BEATS: the source's transients in seconds (the pool's, read-only
+    /// once found; null while they're being found), and its settings.
+    onsets: ?[*]const f64 = null,
+    onset_count: u32 = 0,
+    preserve: warp.Preserve = .hits,
+    gap: warp.Gap = .cut,
+    decay: f32 = 1,
+    /// TRANSPOSE and FINE as a ratio; the clip's id, for its stretcher.
+    pitch: f64 = 1,
+    uid: u32 = 0,
+    grain_ms: u8 = 40,
+    smear_size: u8 = 1,
 };
 
 /// A lane resolved for the audio thread: the target machine slot and its
@@ -183,6 +207,11 @@ pub const TrackSnapshot = struct {
     auto_point_count: u32 = 0,
     expr_points: [MAX_EXPR_POINTS_PER_TRACK]automation.Point = undefined,
     expr_point_count: u32 = 0,
+    warp_points: [MAX_WARP_POINTS_PER_TRACK]warp.Marker = undefined,
+    warp_point_count: u32 = 0,
+    /// The track's stretchers (MIX), when it has warped clips that need
+    /// them; the audio thread reuses them, the track owns them.
+    stretch: ?*stretch.Bank = null,
 
     /// Track volume or pan at `beat`, or null when no lane speaks. Lanes
     /// are published track lanes first, then clip lanes by clip start, so
