@@ -16,6 +16,8 @@ const meter_mod = @import("meter.zig");
 const markers_mod = @import("markers.zig");
 const groove_mod = @import("groove.zig");
 const arrange_mod = @import("arrange.zig");
+const warp_mod = @import("warp.zig");
+const tempo_detect = @import("tempo_detect.zig");
 const track_mod = @import("track.zig");
 const clip_mod = @import("clip.zig");
 const audio_pool_mod = @import("audio_pool.zig");
@@ -83,6 +85,7 @@ test {
     _ = @import("transients.zig");
     _ = @import("stretch.zig");
     _ = @import("fft.zig");
+    _ = @import("tempo_detect.zig");
     _ = @import("ui/marker_dialog.zig");
     _ = @import("routing.zig");
     _ = @import("export.zig");
@@ -1483,7 +1486,7 @@ pub fn main(init: std.process.Init) !void {
         if (layout.clipShown()) {
             const play_beat: ?f64 = if (transport.isPlaying()) transport.beats() else null;
             const cres = if (selectedClipIsAudio(tracks, selected_clip))
-                audio_clip_editor.draw(ui, rects.clip_editor, tracks, &audio_pool, selected_clip, transport.map(), play_beat, pane_m)
+                audio_clip_editor.draw(ui, rects.clip_editor, tracks, &audio_pool, alloc, selected_clip, transport.map(), edit_snap, play_beat, pane_m)
             else
                 clip_editor.draw(ui, rects.clip_editor, tracks, alloc, selected_clip, meter_state.liveMap(), edit_snap, clipboard.mode == .notes, play_beat, pane_m);
             if (rename.active() and rename.kind == .clip) {
@@ -2073,6 +2076,7 @@ fn importAudioClip(
     clip.audio.start_sec = 0;
     clip.audio.dur_sec = dur_sec;
     clip.selected = true;
+    const warped = autoWarp(alloc, pool, &clip);
     tracks[ti].addClip(alloc, clip) catch |err| {
         clip.deinit(alloc);
         return err;
@@ -2082,7 +2086,20 @@ fn importAudioClip(
     selected_track.* = ti;
     selected_clip.* = .{ .track = @intCast(ti), .clip = @intCast(tracks[ti].clips.items.len - 1) };
     dirty.* = true;
-    status.set("Imported {s}", .{src.name()});
+    if (warped) |bpm| status.set("Imported {s}, warped from {d:.2} BPM", .{ src.name(), bpm }) else status.set("Imported {s}", .{src.name()});
+}
+
+/// A loop coming in (docs/29 §Transients): 30 s or shorter and sure of
+/// its tempo, it's warped onto it, so it plays in the song's. Its SEG BPM
+/// when it was.
+fn autoWarp(alloc: std.mem.Allocator, pool: *audio_pool_mod.AudioPool, clip: *clip_mod.Clip) ?f64 {
+    const src0 = pool.get(clip.audio.source) orelse return null;
+    if (src0.seconds() > tempo_detect.LOOP_MAX_SEC) return null;
+    pool.waitFor(clip.audio.source);
+    const src = pool.get(clip.audio.source) orelse return null;
+    const hits = src.hits() orelse return null;
+    if (!(warp_mod.detectAndFit(alloc, clip, hits, src.seconds()) catch false)) return null;
+    return warp_mod.Map.init(clip.warp_markers.items).bpmAt(clip.audio.offset_beats);
 }
 
 /// First record-armed audio track, or null. Buses can't be armed.
@@ -3643,11 +3660,12 @@ fn dropClips(app: App, t: *track_mod.Track, ti: usize, lib: *const library_mod.L
                 var clip = clip_mod.Clip.initAudio(src.name(), at, len, source);
                 clip.audio.start_sec = 0;
                 clip.audio.dur_sec = dur;
+                _ = autoWarp(app.alloc, app.pool, &clip);
                 t.addClip(app.alloc, clip) catch {
                     clip.deinit(app.alloc);
                     continue;
                 };
-                at += len;
+                at += clip.length_beats;
             },
             else => continue,
         }

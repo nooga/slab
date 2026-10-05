@@ -14,10 +14,14 @@ pub const Onsets = struct {
     /// How strong each one is, 0..1 (the normalized flux above its
     /// threshold).
     strength: []f32 = &.{},
+    /// How much of its first 60 ms is below about 150 Hz, 0..1: a kick's
+    /// is high, a hat's none (downbeats are found by it).
+    low: []f32 = &.{},
 
     pub fn deinit(self: *Onsets, alloc: std.mem.Allocator) void {
         alloc.free(self.sec);
         alloc.free(self.strength);
+        alloc.free(self.low);
         self.* = .{};
     }
 };
@@ -44,7 +48,7 @@ fn mid(l: []const f64, r: ?[]const f64, i: isize) f64 {
 /// The onsets of `l` (and `r`, its right channel, when stereo) at `rate`.
 pub fn detect(alloc: std.mem.Allocator, l: []const f64, r: ?[]const f64, rate: f64) !Onsets {
     const frames = l.len / HOP + 1;
-    if (l.len < N / 4) return .{ .sec = try alloc.alloc(f64, 0), .strength = try alloc.alloc(f32, 0) };
+    if (l.len < N / 4) return .{ .sec = try alloc.alloc(f64, 0), .strength = try alloc.alloc(f32, 0), .low = try alloc.alloc(f32, 0) };
 
     // ── The onset envelope ──
     const odf = try alloc.alloc(f32, frames);
@@ -66,7 +70,6 @@ pub fn detect(alloc: std.mem.Allocator, l: []const f64, r: ?[]const f64, rate: f
         }
         odf[k] = flux;
     }
-    odf[0] = 0; // the first frame rises from silence by construction
 
     // Normalize to the 99th percentile, so loud and quiet files pick alike.
     {
@@ -85,9 +88,9 @@ pub fn detect(alloc: std.mem.Allocator, l: []const f64, r: ?[]const f64, rate: f
     var strs: std.ArrayList(f32) = .empty;
     defer strs.deinit(alloc);
     const min_gap: f64 = MIN_GAP_SEC * rate;
-    // The source's start is always a slice's start; a hit right there is
-    // it, and a window running off the end sees the cut as a click.
-    var last: f64 = 0;
+    // A window running off the end sees the cut as a click. A sound that
+    // starts with the file is a hit at 0.
+    var last: f64 = -std.math.inf(f64);
     const end_frame = (l.len -| N / 2) / HOP;
     for (0..@min(frames, end_frame + 1)) |k| {
         const v = odf[k];
@@ -115,7 +118,31 @@ pub fn detect(alloc: std.mem.Allocator, l: []const f64, r: ?[]const f64, rate: f
         try strs.append(alloc, @min(1, v - th));
         last = at;
     }
-    return .{ .sec = try secs.toOwnedSlice(alloc), .strength = try strs.toOwnedSlice(alloc) };
+    const low = try alloc.alloc(f32, secs.items.len);
+    errdefer alloc.free(low);
+    for (secs.items, low) |t, *v| v.* = lowShare(l, r, rate, t * rate);
+    return .{ .sec = try secs.toOwnedSlice(alloc), .strength = try strs.toOwnedSlice(alloc), .low = low };
+}
+
+/// The share of the 60 ms from sample `t` below about 150 Hz (two one-pole
+/// lowpasses).
+fn lowShare(l: []const f64, r: ?[]const f64, rate: f64, t: f64) f32 {
+    const a = 1 - @exp(-2 * std.math.pi * 150 / rate);
+    var y1: f64 = 0;
+    var y2: f64 = 0;
+    var lo: f64 = 0;
+    var all: f64 = 0;
+    const t0: isize = @intFromFloat(t);
+    const n: isize = @intFromFloat(0.06 * rate);
+    var i: isize = 0;
+    while (i < n) : (i += 1) {
+        const x = mid(l, r, t0 + i);
+        y1 += a * (x - y1);
+        y2 += a * (y1 - y2);
+        lo += y2 * y2;
+        all += x * x;
+    }
+    return if (all > 0) @floatCast(@min(1, 2 * lo / all)) else 0;
 }
 
 /// The start of the steepest 1 ms rise of the rectified signal near
@@ -124,7 +151,9 @@ fn refine(l: []const f64, r: ?[]const f64, rate: f64, t: f64) f64 {
     const e: isize = @max(1, @as(isize, @intFromFloat(ENV_SEC * rate)));
     const reach: isize = @intFromFloat(SEARCH_SEC * rate);
     const ti: isize = @intFromFloat(t);
-    const a: isize = @max(0, ti - reach);
+    // From a window before the file's start, so a sound starting with it
+    // rises at 0.
+    const a: isize = @max(-e, ti - reach);
     const b = @min(@as(isize, @intCast(l.len)) - 2 * e, ti + reach);
     if (b <= a) return @floatFromInt(@max(0, ti));
     // Sliding sums of |x| over [i, i+e) and [i+e, i+2e).
@@ -182,7 +211,7 @@ test "detect: finds each hit within half a millisecond, and nothing else" {
     for (o.strength) |s| try std.testing.expect(s > 0 and s <= 1);
 }
 
-test "detect: a sustained tone has none, not even at its edges" {
+test "detect: a sustained tone starts once and ends without one" {
     const alloc = std.testing.allocator;
     const rate = 48_000.0;
     const x = try alloc.alloc(f64, 48_000);
@@ -190,6 +219,8 @@ test "detect: a sustained tone has none, not even at its edges" {
     for (x, 0..) |*v, i| v.* = 0.5 * @sin(2 * std.math.pi * 440 * @as(f64, @floatFromInt(i)) / rate);
     var o = try detect(alloc, x, null, rate);
     defer o.deinit(alloc);
-    try std.testing.expectEqual(@as(usize, 0), o.sec.len);
+    // Only where it starts.
+    try std.testing.expect(o.sec.len <= 1);
+    if (o.sec.len == 1) try std.testing.expect(o.sec[0] < 0.005);
 }
 

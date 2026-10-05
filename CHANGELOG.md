@@ -32,6 +32,17 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   matched to each other, so no phasing; GRAIN sets their length.
 - **SMEAR mode**: Paulstretch-style extreme stretching into texture, with
   a SIZE for how much it smears; renders the same every time.
+- **Warp markers** in the audio clip editor: drag a marker and the audio
+  around it stretches; ⌘-drag slides the audio under it; drag a hit
+  straight onto the beat. Double-click the strip to add one; right-click
+  for *Warp straight from here* and more.
+- **Tempo detection**: a loop's tempo and downbeat from its hits. Short
+  files (30 s or less) are warped onto it as they're imported, so they
+  play in the song's tempo right away; *Warp* uses it too. SEG BPM in the
+  editor: drag it, double-click to detect, ×2 / ÷2 from the right-click
+  menu.
+- **Quantize hits to grid** for audio: a live take's hits pulled onto
+  the edit grid.
 - **TRANSPOSE and FINE** in every mode but TAPE: pitch apart from time.
 - Slab finds the hits in every audio file, shown as ticks in the audio
   clip editor.

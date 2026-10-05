@@ -7,6 +7,8 @@
 const std = @import("std");
 const tempo_mod = @import("tempo.zig");
 const clip_mod = @import("clip.zig");
+const tempo_detect = @import("tempo_detect.zig");
+const transients = @import("transients.zig");
 
 /// A moment of the source pinned to a content beat.
 pub const Marker = struct {
@@ -97,6 +99,10 @@ pub fn parseEnum(comptime E: type, s: []const u8) ?E {
 /// at the nearest segment's rate.
 pub const Map = struct {
     m: []const Marker,
+
+    pub fn init(m: []const Marker) Map {
+        return .{ .m = m };
+    }
 
     /// The segment (its first marker's index) holding content beat `b`,
     /// the first or last one past the ends.
@@ -241,6 +247,147 @@ pub fn mirror(clip: *clip_mod.Clip, len: f64) void {
     clip.audio.reversed = !clip.audio.reversed;
 }
 
+/// Lay a clip on a detected tempo (docs/29 §Transients): the downbeat
+/// `first` on content beat 0, `bpm` from there, the pickup before it
+/// trimmed off unless the window starts later. Warps it on.
+pub fn fitTempo(alloc: std.mem.Allocator, clip: *clip_mod.Clip, bpm: f64, first: f64, len: f64) !void {
+    const p = 60 / bpm;
+    const n = @max(1, @floor((len - first) / p));
+    clip.warp_markers.clearRetainingCapacity();
+    try clip.warp_markers.appendSlice(alloc, &.{
+        .{ .sec = first, .beat = 0 },
+        .{ .sec = first + n * p, .beat = n },
+    });
+    const map = Map{ .m = clip.warp_markers.items };
+    const s0 = if (clip.audio.warp) map.secAt(clip.audio.offset_beats) else clip.audio.start_sec;
+    const s1 = if (clip.audio.warp) map.secAt(clip.audio.offset_beats + clip.length_beats) else clip.audio.start_sec + clip.audio.dur_sec;
+    clip.audio.offset_beats = @max(0, map.beatAt(s0));
+    clip.length_beats = @max(MIN_BEATS, map.beatAt(@min(s1, len)) - clip.audio.offset_beats);
+    clip.audio.warp = true;
+}
+
+/// Warp a clip onto the tempo its hits say, when the guess is sure (and
+/// it isn't reversed): true if it did. Off or on, the clip ends up warped
+/// only if so.
+pub fn detectAndFit(alloc: std.mem.Allocator, clip: *clip_mod.Clip, hits: *const transients.Onsets, len: f64) !bool {
+    if (clip.audio.reversed) return false;
+    const g = (try tempo_detect.detect(alloc, hits.sec, hits.strength, hits.low, len)) orelse return false;
+    if (!g.sure()) return false;
+    const was = clip.audio.warp;
+    if (!was) clip.audio.mode = defaultMode(hits.sec, len);
+    try fitTempo(alloc, clip, g.bpm, g.first, len);
+    return true;
+}
+
+/// Back to straight at the tempo where the clip starts: two markers.
+pub fn clearMarkers(alloc: std.mem.Allocator, clip: *clip_mod.Clip) !void {
+    const map = Map{ .m = clip.warp_markers.items };
+    if (!valid(map.m)) return;
+    const o = clip.audio.offset_beats;
+    const s = map.secAt(o);
+    const bps = map.bpmAt(o) / 60;
+    clip.warp_markers.clearRetainingCapacity();
+    try clip.warp_markers.appendSlice(alloc, &.{ .{ .sec = s, .beat = o }, .{ .sec = s + 1, .beat = o + bps } });
+}
+
+/// Set the SEG BPM of the whole map: every beat scaled, so the same audio
+/// fills more or fewer of them (×2, ÷2, a typed tempo).
+pub fn setTempo(clip: *clip_mod.Clip, bpm: f64) void {
+    const map = Map{ .m = clip.warp_markers.items };
+    if (!valid(map.m) or bpm <= 0) return;
+    stretch(clip, bpm / map.bpmAt(clip.audio.offset_beats));
+}
+
+const EPS = 1e-4;
+
+/// A marker at content beat `beat`, on the audio that plays there now.
+/// Its index, or null when one is already there.
+pub fn addMarker(alloc: std.mem.Allocator, clip: *clip_mod.Clip, beat: f64) !?usize {
+    const m = clip.warp_markers.items;
+    const map = Map{ .m = m };
+    var i: usize = 0;
+    while (i < m.len and m[i].beat < beat) : (i += 1) {}
+    if ((i < m.len and m[i].beat - beat < EPS) or (i > 0 and beat - m[i - 1].beat < EPS)) return null;
+    try clip.warp_markers.insert(alloc, i, .{ .sec = map.secAt(beat), .beat = beat });
+    return i;
+}
+
+/// A marker on the moment at `sec` (a transient), where it plays now.
+pub fn addMarkerAt(alloc: std.mem.Allocator, clip: *clip_mod.Clip, sec: f64) !?usize {
+    const map = Map{ .m = clip.warp_markers.items };
+    for (clip.warp_markers.items, 0..) |mk, i| if (@abs(mk.sec - sec) < EPS) return i;
+    return addMarker(alloc, clip, map.beatAt(sec));
+}
+
+/// Move marker `i` to content beat `beat`, its audio with it: the
+/// segments on either side stretch. Kept between its neighbors.
+pub fn moveMarker(clip: *clip_mod.Clip, i: usize, beat: f64) void {
+    const m = clip.warp_markers.items;
+    const lo = if (i > 0) m[i - 1].beat + EPS else -std.math.inf(f64);
+    const hi = if (i + 1 < m.len) m[i + 1].beat - EPS else std.math.inf(f64);
+    m[i].beat = std.math.clamp(beat, lo, hi);
+}
+
+/// Slide the audio under marker `i`: it stays on its beat and pins the
+/// source at `sec` instead. Kept between its neighbors.
+pub fn slideMarker(clip: *clip_mod.Clip, i: usize, sec: f64) void {
+    const m = clip.warp_markers.items;
+    const lo = if (i > 0) m[i - 1].sec + EPS else -std.math.inf(f64);
+    const hi = if (i + 1 < m.len) m[i + 1].sec - EPS else std.math.inf(f64);
+    m[i].sec = std.math.clamp(sec, lo, hi);
+}
+
+/// Remove marker `i`, keeping two.
+pub fn removeMarker(clip: *clip_mod.Clip, i: usize) void {
+    if (clip.warp_markers.items.len <= 2) return;
+    _ = clip.warp_markers.orderedRemove(i);
+}
+
+/// Warp straight from marker `i` on: the markers after it go, and the
+/// audio carries on at the tempo it came in with.
+pub fn straightFrom(clip: *clip_mod.Clip, i: usize) void {
+    const m = clip.warp_markers.items;
+    if (i + 1 >= m.len) return;
+    const map = Map{ .m = m };
+    const slope = map.slope(if (i > 0) i - 1 else 0);
+    const at = m[i];
+    clip.warp_markers.items.len = i + 1;
+    if (i == 0) {
+        clip.warp_markers.appendAssumeCapacity(.{ .sec = at.sec + 1, .beat = at.beat + 1 / slope });
+    }
+}
+
+/// Quantize to the grid (docs/29 §Editing): a marker on every transient
+/// (stronger than `min_strength`) that plays inside the clip, moved by
+/// `amount` (0..1) toward the nearest `div` of the song's grid. `song0`
+/// is the song beat the clip's content beat 0 plays on.
+pub fn quantize(alloc: std.mem.Allocator, clip: *clip_mod.Clip, onsets: []const f64, strength: []const f32, min_strength: f32, div: f64, song0: f64, amount: f64) !void {
+    const old = try alloc.dupe(Marker, clip.warp_markers.items);
+    defer alloc.free(old);
+    const map = Map{ .m = old };
+    const lo = clip.audio.offset_beats;
+    const hi = lo + clip.length_beats;
+    var out: std.ArrayList(Marker) = .empty;
+    defer out.deinit(alloc);
+    // The clip's edges stay where they play.
+    try out.append(alloc, .{ .sec = map.secAt(lo), .beat = lo });
+    for (onsets, strength) |t, st| {
+        if (st < min_strength) continue;
+        const b = map.beatAt(t);
+        if (b <= lo + EPS or b >= hi - EPS) continue;
+        const q = @round((song0 + b) / div) * div - song0;
+        const nb = b + (q - b) * amount;
+        const last = out.items[out.items.len - 1];
+        if (nb <= last.beat + EPS or t <= last.sec + EPS or nb >= hi - EPS) continue;
+        try out.append(alloc, .{ .sec = t, .beat = nb });
+    }
+    const end = Marker{ .sec = map.secAt(hi), .beat = hi };
+    if (end.sec > out.items[out.items.len - 1].sec + EPS) try out.append(alloc, end);
+    if (!valid(out.items)) return;
+    clip.warp_markers.clearRetainingCapacity();
+    try clip.warp_markers.appendSlice(alloc, out.items);
+}
+
 // ── The band-limited reader (docs/29 §The band-limited reader) ──────
 
 /// Zero crossings each side, and table points per crossing.
@@ -336,6 +483,60 @@ test "map: linear between markers, extrapolated past them" {
     try std.testing.expectApproxEqAbs(@as(f64, 4), sp[0].b1, 1e-12);
     try std.testing.expectApproxEqAbs(@as(f64, 10), sp[1].b1, 1e-12);
     try std.testing.expectApproxEqAbs(@as(f64, 3.5), sp[1].s1, 1e-12);
+}
+
+fn testClip(alloc: std.mem.Allocator) !clip_mod.Clip {
+    var c = clip_mod.Clip.initAudio("t", 0, 8, 0);
+    c.audio.warp = true;
+    try c.warp_markers.appendSlice(alloc, &.{ .{ .sec = 0, .beat = 0 }, .{ .sec = 4, .beat = 8 } });
+    return c;
+}
+
+test "edits: add, move, slide, remove, straight" {
+    const alloc = std.testing.allocator;
+    var c = try testClip(alloc);
+    defer c.deinit(alloc);
+    const i = (try addMarker(alloc, &c, 4)).?;
+    try std.testing.expectEqual(@as(usize, 1), i);
+    try std.testing.expectApproxEqAbs(@as(f64, 2), c.warp_markers.items[1].sec, 1e-12);
+    try std.testing.expect((try addMarker(alloc, &c, 4)) == null);
+    moveMarker(&c, 1, 5); // 5 beats in the first 2 s, 3 in the next
+    const map = Map{ .m = c.warp_markers.items };
+    try std.testing.expectApproxEqAbs(@as(f64, 150), map.bpmAt(1), 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 90), map.bpmAt(6), 1e-9);
+    moveMarker(&c, 1, 20); // kept before its neighbor
+    try std.testing.expect(c.warp_markers.items[1].beat < 8);
+    slideMarker(&c, 1, 1);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), c.warp_markers.items[1].sec, 1e-12);
+    straightFrom(&c, 1);
+    try std.testing.expectEqual(@as(usize, 2), c.warp_markers.items.len);
+    removeMarker(&c, 0); // two stay
+    try std.testing.expectEqual(@as(usize, 2), c.warp_markers.items.len);
+}
+
+test "edits: tempo, fit, quantize" {
+    const alloc = std.testing.allocator;
+    var c = try testClip(alloc);
+    defer c.deinit(alloc);
+    setTempo(&c, 60); // 120 → 60: the same audio on half the beats
+    try std.testing.expectApproxEqAbs(@as(f64, 4), c.length_beats, 1e-9);
+    try fitTempo(alloc, &c, 100, 0.3, 4);
+    const map = Map{ .m = c.warp_markers.items };
+    try std.testing.expectApproxEqAbs(@as(f64, 0), map.beatAt(0.3), 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 100), map.bpmAt(1), 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), c.audio.offset_beats, 1e-9); // the pickup trimmed
+
+    var q = try testClip(alloc);
+    defer q.deinit(alloc);
+    // Hits a little off the eighths (0.25 s at 120): pulled onto them.
+    const on = [_]f64{ 0.27, 0.49, 0.77, 1.02 };
+    const st = [_]f32{ 1, 1, 1, 0.01 };
+    try quantize(alloc, &q, &on, &st, 0.05, 0.5, 0, 1);
+    const qm = Map{ .m = q.warp_markers.items };
+    try std.testing.expectApproxEqAbs(@as(f64, 0.5), qm.beatAt(0.27), 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), qm.beatAt(0.49), 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.5), qm.beatAt(0.77), 1e-9);
+    try std.testing.expectEqual(@as(usize, 5), q.warp_markers.items.len); // the weak one left be
 }
 
 test "reader: integer positions are the samples, between them it interpolates" {

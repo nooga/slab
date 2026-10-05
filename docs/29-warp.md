@@ -5,9 +5,10 @@ the grid: warp markers, the stretch algorithms that play it at any
 tempo and pitch, transients, and audio that follows the tempo map, the
 groove and a track's own tempo.
 
-Status: phases 1–4 built (2026-10-05): the model, TAPE, ⌘-stretch, the
+Status: phases 1–5 built (2026-10-05): the model, TAPE, ⌘-stretch, the
 band-limited reader; transients and BEATS; the stretch core, MIX,
-TRANSPOSE and FINE; VOICE and SMEAR. Before it, an audio clip only played a window of
+TRANSPOSE and FINE; VOICE and SMEAR; warp editing, quantize, tempo
+detection and auto-warp. Before it, an audio clip only played a window of
 its source at native rate (docs/28 §The beat axis), and that is still
 what an unwarped clip does.
 
@@ -122,18 +123,34 @@ In the arrangement:
 - The clip shows its **waveform through the map**, segment by segment,
   and a small mode badge (TAPE, BEATS, VOICE, MIX, SMEAR) when warped.
 
-In the audio clip editor (phase 5):
+In the audio clip editor (built, `warpEdit` in `ui/audio_clip_editor.zig`;
+operations in `warp.zig`):
 
-- **WARP**, **MODE**, **SEG BPM** (drag; ×2 ÷2), **TRANSPOSE**, **FINE**
-  in its header, and the mode's own controls.
-- **Markers** on a strip above the waveform: double-click to add, drag
-  to move one along the beats (the audio around it stretches), ⌘-drag to
-  slide the audio under a marker without moving it on the grid,
-  right-click to remove, *Warp from here straight*, *Set 1.1.1 here*.
-- **Transients** as ticks; dragging one makes it a marker (the
-  pseudo-marker) and moves it, snapping to the grid unless ⌥.
-- *Quantize to grid* (or to the groove): a marker at every transient,
-  moved to the nearest grid line, with a strength.
+- The header: **WARP**, **SEG BPM** (the source's tempo under the clip's
+  start; drag it, shift for hundredths, double-click to detect it),
+  **MODE**, **TRANSPOSE**, **FINE** and the mode's own controls.
+- A warped clip's grid and ruler are the song's bars, and a strip under
+  the ruler holds its **markers**:
+  - drag one along the beats: the audio around it stretches, snapping
+    to the grid unless ⌥;
+  - ⌘-drag to slide the audio under it, the marker staying on its beat;
+  - double-click the strip to add one;
+  - right-click: *Remove marker*, *Warp straight from here* (the
+    markers after it go, the audio carries on at the tempo it came in
+    with), *Start the clip here*.
+- **Hits** show as ticks. Pointing at one lights it; dragging it makes it
+  a marker and moves it (the pseudo-marker), so a late snare is pulled
+  onto the beat in one move.
+- Right-click the waveform: *Detect tempo*, *Tempo ×2*, *Tempo ÷2*, *Add
+  marker here*, *Quantize hits to grid* (a marker on every hit stronger
+  than 0.1 inside the clip, moved onto the edit grid's nearest line; the
+  clip's edges stay where they play), *Clear warp markers* (straight at
+  the tempo under the clip's start).
+- *Warp* (the arrangement's menu) and the WARP button lay the clip on its
+  detected tempo when the guess is sure; otherwise it keeps sounding as
+  it did. **Importing** a file of 30 s or less, from the menu or the
+  browser, warps it the same way, so a loop plays in the song's tempo as
+  it lands (the status line says from what tempo). Recordings aren't.
 
 ## Transients
 
@@ -145,8 +162,9 @@ Each source is analyzed once on a worker thread when it enters the pool
 - normalized to its 99th percentile, floored at 0.3 of its strongest
   rise so a file with few hits doesn't magnify its flutter;
 - peaks: a local maximum over ±3 frames, at least 0.07 above the median
-  of ±8 frames, 30 ms apart; none within 30 ms of the start (the source's
-  start is always a slice's) or where the window runs off the end;
+  of ±8 frames, 30 ms apart; a sound starting with the file is a hit at
+  0, and none where the window runs off the end (it sees the cut as a
+  click);
 - each refined in the sample domain to where the steepest 1 ms rise of
   the rectified signal begins, within ±25 ms: the hit's first sample,
   within a tenth of a millisecond on clean material.
@@ -159,12 +177,19 @@ plays never depends on how fast they were found; live playback plays
 TAPE until they are. Transients drive BEATS slices, MIX's phase resets,
 the editor's ticks (taller for stronger), quantize and tempo detection.
 
-**Tempo detection** (phase 5): autocorrelate the onset envelope over
-60–200 BPM, weight toward 120 and toward a whole number of bars for the
-source's length (a loop of 4 bars at 92.3 BPM, not 3.7 at 85), and pick
-the downbeat as the strongest onset whose beat phase best explains the
-rest. A long recording is warped piecewise: a marker per bar where the
-local tempo estimate moves.
+**Tempo detection** (`src/tempo_detect.zig`, built): the hits make an
+envelope at 200 Hz; its autocorrelation, read at each candidate tempo's
+beat and twice and four times it, scores 60–200 BPM in 0.05 steps,
+weighted toward 120 (a log-normal, 0.7 octave) and, for a file of 30 s
+or less, toward a whole number of bars (×1.3 within 3 %); a loop's tempo
+is then exactly its bars. A comb over the envelope finds the beat's
+phase. The downbeat is the beat of the four whose hits are most like
+kicks: each hit's **low share** (how much of its first 60 ms is below
+about 150 Hz) plus a fifth of its strength, a loop's first beat liked
+×1.5; it's then snapped onto the nearest hit within 40 ms. The guess is
+*sure* when the best score is 1.6 times the mean or more. A long
+recording warped piecewise (a marker per bar where the local tempo
+moves) is later.
 
 ## The algorithms
 
@@ -325,7 +350,7 @@ with `warp=True` meaning "detect".
 4. **VOICE and SMEAR** (built).
 5. **Warp editing**: markers and pseudo-markers in the audio clip
    editor, quantize to the grid, tempo detection and auto-warp on
-   import.
+   import (built).
 6. **Audio on the time axis**: warped clips follow the groove (the
    groove's warp before the markers), *Quantize to groove*, *Song
    follows this clip* (a tempo map from a clip's markers).

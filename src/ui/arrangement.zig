@@ -791,6 +791,8 @@ pub fn toggleWarp(tracks: []Track, alloc: std.mem.Allocator, pool: ?*const audio
         fn one(a: std.mem.Allocator, clip: *Clip, pl: *const audio_pool_mod.AudioPool, m: *const tempo_mod.TempoMap, on: bool) bool {
             const src = pl.get(clip.audio.source) orelse return false;
             if (on) {
+                // On the tempo its hits say, when sure; else as it sounds now.
+                if (src.hits()) |h| if (warp_mod.detectAndFit(a, clip, h, src.seconds()) catch false) return true;
                 warp_mod.warpOn(a, clip, m, src.seconds(), src.onsets()) catch return false;
             } else {
                 warp_mod.warpOff(clip, src.seconds());

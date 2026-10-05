@@ -48,6 +48,13 @@ pub const Source = struct {
     /// Heap-owned so it stays put when the pool's list grows.
     analysis: ?*Analysis = null,
 
+    /// The transients with their strengths, once found.
+    pub fn hits(self: *const Source) ?*const transients.Onsets {
+        const a = self.analysis orelse return null;
+        if (!a.ready.load(.acquire)) return null;
+        return &a.onsets;
+    }
+
     /// The transients, once found (null while the worker runs).
     pub fn onsets(self: *const Source) ?[]const f64 {
         const a = self.analysis orelse return null;
@@ -101,6 +108,15 @@ pub const AudioPool = struct {
 
     /// Wait for every source's transients: before a render that must not
     /// depend on how fast they were found (docs/29 §On the audio thread).
+    /// Wait for one source's transients (a short file being imported).
+    pub fn waitFor(self: *AudioPool, idx: u32) void {
+        if (idx >= self.sources.items.len) return;
+        if (self.sources.items[idx].analysis) |a| if (a.thread) |t| {
+            t.join();
+            a.thread = null;
+        };
+    }
+
     pub fn waitAnalyses(self: *AudioPool) void {
         for (self.sources.items) |*s| if (s.analysis) |a| if (a.thread) |t| {
             t.join();
