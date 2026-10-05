@@ -6,6 +6,36 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+### Editing feels the same everywhere
+
+- **One way to scroll and zoom** in the arrangement, the piano roll and
+  the audio editor: the wheel or a swipe scrolls, **⌘-wheel zooms
+  time** around the pointer, ⌥-wheel zooms the piano roll's rows, ⇧-wheel
+  scrolls time with a mouse. (⇧-wheel used to zoom.)
+- **Minimaps** work the same in every editor; drag the window's edges to
+  zoom.
+- **Rulers**: click or drag any ruler to scrub, the clip editors' too;
+  **⇧-drag across a ruler to set the loop**. The audio editor's ruler
+  now shows the song's bars and meter.
+- **Both ends of every clip and note resize**, and a resize changes the
+  whole selection. Dragging a note clip's left edge keeps its notes where
+  they sound. Edge grab zones scale with the object, so short notes can
+  still be moved.
+- **Box select** works the same everywhere: a press on empty space
+  clears the selection (⇧ adds), the box selects what it touches.
+- **Notes**: double-click empty grid to add a note, double-click a note
+  to delete it, ⌘-drag to draw without the DRAW latch; a drawn note
+  comes out selected; ⇧- or ⌘-click toggles a note or a clip.
+- **Escape** during a drag puts everything back.
+- **Keys**: **Z** zooms to the selection, **⌘D** duplicates (D still
+  does), **⌘L** loops the selected clips, **⌘E** splits them at the
+  playhead; ⌥-arrow nudges by 1/64 on any grid; a pasted selection lands where
+  you last clicked on empty space. Keys follow the pane you last clicked
+  in, track headers and editor buttons included, and the audio editor no
+  longer takes note keys.
+- **Menus** list their items in the same order in every editor, and an
+  unwarped audio clip's editor has a right-click menu too.
+
 ## 0.0.9 — 2026-10-05
 
 Audio into music: hum a line and get notes, put a voice in key, hear a

@@ -17,6 +17,7 @@ const c = @import("../c.zig");
 const core = @import("core.zig");
 const style = @import("style.zig");
 const controls = @import("controls.zig");
+const commands = @import("commands.zig");
 
 const Ui = core.Ui;
 const Rect = core.Rect;
@@ -68,6 +69,7 @@ pub const EditCommand = enum {
     song_tempo_to_clip,
     section_tempo_to_clip,
     tune,
+    zoom_to_selection,
 };
 
 pub const Item = struct {
@@ -83,32 +85,10 @@ pub const Item = struct {
     shortcut: ?[]const u8 = null,
 };
 
-/// Keybind hints, derived from the command (key symbols are synthesized
-/// into the Tamzen legend face, see font.zig).
+/// Keybind hints come from the command table (key symbols are
+/// synthesized into the Tamzen legend face, see font.zig).
 fn commandShortcut(cmd: EditCommand) ?[]const u8 {
-    return switch (cmd) {
-        .copy => "\u{2318}C",
-        .cut => "\u{2318}X",
-        .paste => "\u{2318}V",
-        .select_all => "\u{2318}A",
-        .duplicate => "D",
-        .delete => "\u{232B}",
-        .rename => "\u{21A9}",
-        .quantize => "Q",
-        .humanize => "H",
-        .snap_to_scale => "S",
-        .octave_up => "\u{21E7}\u{2191}",
-        .octave_down => "\u{21E7}\u{2193}",
-        .file_save => "\u{2318}S",
-        .file_save_as => "\u{2318}\u{21E7}S",
-        .file_open => "\u{2318}O",
-        .file_new => "\u{2318}N",
-        .render_audio => "\u{2318}R",
-        .clear_solo_mute => "\u{21E7}M",
-        .mute_clips => "0",
-        .bounce => "\u{2318}B",
-        else => null,
-    };
+    return commands.hint(cmd);
 }
 
 // ── Metrics ──────────────────────────────────────────────────────────

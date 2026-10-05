@@ -17,12 +17,15 @@ these rules.
 - **Minimap controls navigate, not edit.** Click and drag move the
   viewport window. Wheel zooms the controlled content around the cursor
   beat/time represented by the minimap.
-- **Plain wheel scrolls. Modified wheel zooms.**
-  - Wheel: pan/scroll the focused pane.
-  - Shift-wheel: horizontal time zoom around cursor.
-  - Alt-wheel: vertical zoom where the pane has a vertical scale
-    (piano-roll pitch rows, future track-height zoom).
-  - Wheel over minimap: time zoom around cursor, no modifier required.
+- **The wheel scrolls; ⌘ zooms.** One rule in every timeline
+  (`ui/timeline.zig`, docs/31 §View):
+  - Wheel / two-finger swipe: scroll both axes. An editor with no
+    vertical axis (the audio editor) scrolls time with either.
+  - ⇧-wheel: scroll time (a mouse wheel's horizontal).
+  - ⌘-wheel: time zoom around the pointer.
+  - ⌥-wheel: height zoom around the pointer where rows zoom (the piano
+    roll's pitch rows; track height is later).
+  - Wheel over a minimap: time zoom around the beat under the pointer.
 - **Selection is cheap, editing is explicit.** A single click selects.
   Drag edits only after the drag owner is claimed. Double-click creates
   or opens. Destructive actions require an explicit key or command.
@@ -33,35 +36,51 @@ these rules.
 
 ## Pointer behavior
 
+Every timeline (arrangement, piano roll, audio editor, automation lanes,
+note expression) shares one grammar (`ui/gesture.zig`, docs/31
+§Pointer). "Object": a clip, a note, a point.
+
+- **Click** an object: select only it. **⇧- or ⌘-click**: add it to or
+  take it from the selection (on a track header ⇧ selects a range and ⌘
+  toggles).
+- **Drag** an object (past 3 px): move the selection, the delta snapped
+  so off-grid things stay off-grid. Clips can be dropped on another lane.
+- **Edges:** both ends of every clip and note resize, the whole
+  selection at once. Each end's zone is `min(6 px, width/4)` inside the
+  object, so the middle half is always body; in the piano roll it also
+  reaches 2 px outside, so a sliver of a note can still be grabbed. The
+  cursor shows ↔ over an edge. The left edge keeps the right one put: on
+  a note clip the notes and lane points stay where they sound and what
+  ends up before the new start is cut when the drag ends; on audio it
+  trims the source window (⌘: stretch).
+- **Empty space:** a press clears the selection (unless ⇧) and sets the
+  edit cursor; a drag draws a box that selects every object it touches;
+  a click within 3 px only clears.
+- **Double-click:** on empty grid, create (a one-bar clip, a note of the
+  grid's length, a point, a warp marker); on a note or point, delete it;
+  on a clip, rename it.
+- **⌘-drag** on empty space draws: notes in the piano roll, points in a
+  lane. The piano roll's DRAW latch makes a plain drag draw.
+- **Right-click:** selects the object if it isn't, sets the edit
+  cursor, opens the menu.
+- **Escape:** ends a drag with everything back where it started, else
+  clears the selection.
+- **⌥** bypasses snap for every gesture and for the nudge keys.
+- **Rulers** (all of them): click or drag to scrub (a clip editor's
+  ruler seeks the song inside that clip); ⇧-drag across one sets the
+  loop; the arrangement's loop edges drag where the loop shows. Ticks and
+  bar numbers come from the meter map in every editor.
+- **Minimaps** (all of them): drag the window to pan, press outside it
+  to jump there and keep dragging, drag its edges to zoom, wheel over it
+  to zoom.
+
 ### Arrangement
 
-- Click a clip: select clip and its track.
-- Shift-click a clip: toggle it in the multi-selection.
-- Drag any selected clip: move all selected clips in time.
-- Drop selected clips on another lane: move them to the target track,
-  preserving their relative track offsets when possible.
-- Drag empty lane: box-select clips.
-- Click empty lane: select track and clear clip selection.
-- Double-click empty lane: create a one-bar clip at the snapped beat,
-  select it, and open the piano roll.
-- Drag clip body: move the clip, snapped to the grid.
-- Drag clip right edge: resize the clip, snapped to the grid.
-- Click/drag ruler: scrub the playhead.
-- Wheel: horizontal and vertical scroll.
-- Shift-wheel: time zoom around cursor beat.
-- Wheel over overview strip: time zoom around cursor beat.
-- Drag overview viewport: pan time.
-- Transport loop button toggles loop playback.
-- Arrangement header loop actions:
-  - loop selected clips
-  - loop entire arrangement
-  - clear loop
-- Drag loop start/end handles in the ruler to edit loop bounds.
-- Click overview outside viewport: center viewport on that beat and
-  begin dragging.
-- Double-click ruler (no clip under cursor): drop a locator marker at
-  the snapped beat; type to name it.
-- Right-click ruler: insert a tempo change, signature change, or
+- Selecting a clip selects its track and opens it in the clip editor.
+- Fades: drag the knees in an audio clip's top corners (unsnapped).
+- Double-click the ruler (no clip under the cursor): drop a locator
+  marker at the snapped beat; type to name it.
+- Right-click the ruler: insert a tempo change, signature change, or
   locator marker at the snapped beat.
 - Drag a marker: move it along the ruler, snapped to the grid. Moving
   a binding marker edits its tempo/meter map point; moving a locator
@@ -76,27 +95,18 @@ these rules.
   fit-to-clip scale is the minimum horizontal zoom-out.
 - If the clip has notes, default vertical view fits the note pitch range
   with padding. Empty clips center around middle C.
-- Click note: select note.
-- Drag note body: move note in time and pitch.
-- Drag note right edge: resize note.
-- Alt-drag note right edge: resize note with snap bypassed and a 1/64-note
-  minimum.
-- Drag empty grid in draw mode: create a note.
-- Drag empty grid in select mode: box select.
-- Delete/Backspace: remove selected notes.
-- Arrow keys: nudge selected notes by grid step or semitone.
-- Shift-Up/Shift-Down: move selected notes up/down one octave.
-- Context menu includes Octave up and Octave down for selected notes.
-- `Q`: quantize selected notes.
-- `H`: humanize selected notes.
-- `S`: snap selected notes to the active scale.
-- `E`: toggle expression mode (pitch curves on the notes, the converge
-  drag; docs/22 §Note expression).
-- Wheel: pan time and pitch.
-- Shift-wheel: time zoom around cursor beat.
-- Alt-wheel: vertical pitch zoom around cursor pitch row.
-- Wheel over piano-roll overview: time zoom around cursor beat.
-- Drag overview viewport: pan time.
+- Moving notes changes time and pitch; resizing keeps a 1/64-note
+  minimum with ⌥.
+- A drawn note comes out selected, alone.
+- Pressing a note plays it (while stopped); a box select plays nothing.
+
+### Audio editor
+
+- The clip's window edges and fades are handles on the waveform.
+- Warped: drag markers, ⌘-drag to slide the audio under one, drag a
+  transient to make it a marker, double-click the strip to add one.
+- Its menu (warped or not) ends with the clip's own commands: Extract,
+  Tempo from clip, Reverse, Warp, Tune, Zoom, Rename.
 
 ### Automation lanes and note expression
 
@@ -106,16 +116,40 @@ converge drag are specified in
 
 ## Keyboard behavior
 
-- Space: play/stop.
-- Home: rewind to start.
+Edit keys come from one command table (`ui/commands.zig`, docs/31
+§Keys); a menu item and its key run the same command. They act on the
+focused pane, and focus follows the last press anywhere in a pane, its
+head and track headers included. The clip editor counts as the piano
+roll on a note clip and as the audio editor on an audio clip; a key a
+pane can't use does nothing there.
+
+| key | does |
+|---|---|
+| ⌘C ⌘X ⌘V | copy, cut, paste: a key's paste lands at the edit cursor (the last click on empty space), else the playhead; a menu's at the click |
+| D, ⌘D | duplicate the selection after itself |
+| ⌫ | delete: selected lane or expression points first, then the selection |
+| ⌘A | select all |
+| Esc | cancel the drag, else clear the selection |
+| ← → | nudge by the grid; ⇧ a beat; ⌥ 1/64 (never rounded back to the grid) |
+| ↑ ↓ | notes: a semitone, ⇧ an octave; clips: to the next track |
+| ↩ | rename the clip (or the track) |
+| 0 | mute the selection |
+| Z | zoom to the selection, or the whole clip/song |
+| ⌘L | loop the selected clips (arrangement) |
+| ⌘E | split the selected clips at the playhead (arrangement) |
+| Q H S | quantize, humanize, snap to scale (notes) |
+| E | expression mode (notes) |
+| [ ] | coarser / finer snap |
+
+Global:
+
+- Space: play/stop. Home: rewind to start.
+- ⌘← / ⌘→: previous / next section, locator or END.
 - Tab: show/hide the clip editor.
 - M: swap the arrangement for the mixer page and back
-  ([23-routing.md](23-routing.md) §Mixer page).
-- Cmd/Ctrl `+`: increase UI zoom.
-- Cmd/Ctrl `-`: decrease UI zoom.
-- Cmd/Ctrl `0`: reset UI zoom.
-- Escape: cancel active drag or modal tool state.
-- Delete/Backspace: delete the active selection in the focused editor.
+  ([23-routing.md](23-routing.md) §Mixer page); ⇧M clears solos and
+  mutes.
+- Cmd/Ctrl `+` / `-` / `0`: UI zoom.
 
 ## Looping
 
@@ -162,8 +196,8 @@ contract in the frame.
 
 ### Time zoom
 
-Time zoom always changes `px_per_beat` and then recomputes `scroll_x`
-from an anchor:
+Time zoom (`View.zoomTime`) always changes `px_per_beat` and then
+recomputes `scroll_x` from an anchor:
 
 ```text
 anchor_beat = beat under cursor, playhead, or viewport center

@@ -10,7 +10,7 @@
 
 const std = @import("std");
 const tempo_mod = @import("../tempo.zig");
-const follow_mod = @import("follow.zig");
+const meter_mod = @import("../meter.zig");
 const c = @import("../c.zig");
 const pane = @import("pane_input.zig");
 const menu = @import("menu.zig");
@@ -28,6 +28,8 @@ const ClipRef = clip_mod.ClipRef;
 const audio_pool_mod = @import("../audio_pool.zig");
 const clip_editor = @import("clip_editor.zig");
 const arrangement = @import("arrangement.zig");
+const timeline = @import("timeline.zig");
+const gesture = @import("gesture.zig");
 const warp_mod = @import("../warp.zig");
 const tune_mod = @import("../tune.zig");
 const pitch_mod = @import("../pitch.zig");
@@ -42,6 +44,7 @@ const MARK_H: f32 = 12;
 const MARK_KEY: u64 = 0xA0D0_3A2C_0000_0005;
 const MARK_MENU_KEY: u64 = 0xA0D0_3A2C_0000_0006;
 const WARP_MENU_KEY: u64 = 0xA0D0_3A2C_0000_0007;
+const PLAIN_MENU_KEY: u64 = 0xA0D0_3A2C_0000_0008;
 const EXTRACT_SUB: u32 = 0xE7;
 const TEMPO_SUB: u32 = 0xE8;
 const MAX_GAIN: f64 = 2.0;
@@ -58,9 +61,17 @@ fn ctrlH() f32 {
 }
 
 // Beat-axis view state (persisted across frames, refit when the clip changes).
-var px_per_beat: f32 = 48;
-var scroll_x: f32 = 0;
-var follow: follow_mod.Follow = .{};
+var view = timeline.View{ .px_per_beat = 48 };
+var minimap: timeline.Overview = .{};
+var cur_meter: meter_mod.MeterMap = undefined;
+/// Zoom out to the whole source on the next frame (Z).
+var zoom_req = false;
+var scrub: timeline.Scrub = .{};
+const SCRUB_KEY: u64 = 0x5C2B_A0D0_0000_0001;
+
+pub fn zoomToSelection() void {
+    zoom_req = true;
+}
 var view_key: u64 = 0;
 /// The axis beat the song's beat 0 falls on, so a warped clip's grid is the
 /// song's bars (0 for an unwarped clip: its source's start).
@@ -74,10 +85,12 @@ pub fn draw(
     alloc: std.mem.Allocator,
     selected: ?ClipRef,
     tmap: *const tempo_mod.TempoMap,
+    meter_map: meter_mod.MeterMap,
     edit_snap: snap_mod.Setting,
     play_beat: ?f64,
     m: pane.Mouse,
 ) Result {
+    cur_meter = meter_map;
     ui.pushId("audio-editor");
     defer ui.popId();
     const resolved_opt = resolveAudioClip(tracks, selected);
@@ -135,11 +148,15 @@ pub fn draw(
     const key = @intFromPtr(clip) ^ (@as(u64, clip.audio.source) << 1);
     if (key != view_key) {
         view_key = key;
-        px_per_beat = fitPx(grid, source_beats);
-        scroll_x = 0;
-        follow.reset();
+        view.px_per_beat = fitPx(grid, source_beats);
+        view.scroll_x = 0;
+        view.follow.reset();
     }
-    handleWheel(grid, source_beats, m);
+    if (zoom_req) {
+        zoom_req = false;
+        view.zoomTo(0, source_beats, grid.width, limits(grid, source_beats));
+    }
+    if (pane.contains(grid, m.x, m.y)) view.wheel(grid.x, grid.y, m, gesture.mods(), limits(grid, source_beats), c.rl.GetTime());
     clampView(grid, source_beats);
 
     // Conversions. A reversed clip shows its source mirrored, so the grid
@@ -156,24 +173,32 @@ pub fn draw(
         if (local < 0 or local >= clip.length_beats) break :blk null;
         break :blk ws_b + (we_b - ws_b) * local / @max(0.001, clip.length_beats);
     } else null;
-    follow.step(
-        &scroll_x,
-        if (play_src_b) |pb| @as(f32, @floatCast(pb)) * px_per_beat else null,
+    view.follow.step(
+        &view.scroll_x,
+        if (play_src_b) |pb| @as(f32, @floatCast(pb)) * view.px_per_beat else null,
         grid.width,
-        @max(0, @as(f32, @floatCast(source_beats)) * px_per_beat - grid.width),
+        @max(0, @as(f32, @floatCast(source_beats)) * view.px_per_beat - grid.width),
         c.rl.GetFrameTime(),
         pane.hasActiveDrag() and pane.contains(r, m.x, m.y),
     );
 
     // ── Ruler ────────────────────────────────────────────────────────
     ui.clip(bridge.fromRl(ruler_rect));
-    drawRulerTicks(ui, ruler_rect, grid);
+    timeline.rulerTicks(ui, ui.plate(bridge.fromRl(ruler_rect), .{}), grid.x, grid.x + grid.width - 2, axis(grid), edit_snap);
+    // A click on the ruler seeks the song to that moment of the clip.
+    {
+        const k = clip.length_beats / @max(1e-9, we_b - ws_b);
+        if (scrub.run(ruler_rect, &view, grid.x, m, SCRUB_KEY, edit_snap)) |out| switch (out) {
+            .seek => |b| res.seek = clip.start_beat + (b - ws_b) * k,
+            .loop => |l| res.loop = .{ clip.start_beat + (l[0] - ws_b) * k, clip.start_beat + (l[1] - ws_b) * k },
+        };
+    }
     ui.unclip();
 
     // ── Grid + waveform ──────────────────────────────────────────────
     ui.rect(bridge.fromRl(grid), ui_style.pane);
     ui.clip(bridge.fromRl(grid));
-    drawGridLines(ui, grid);
+    timeline.gridLines(ui, grid, axis(grid), edit_snap);
 
     // Waveform across the source's beat extent, clipped to the visible grid
     // so a long/zoomed clip doesn't walk thousands of off-screen columns.
@@ -282,18 +307,14 @@ pub fn draw(
     ui.unclip();
 
     // ── Warp markers (docs/29 §Editing) ──────────────────────────────
-    if (wmap != null) warpEdit(ui, alloc, clip, src, grid, strip, axis0, .{ .xs = xs, .xe = xe, .in_x = in_x, .out_x = out_x }, edit_snap, m, &res);
+    if (wmap != null) warpEdit(ui, alloc, clip, src, grid, strip, axis0, .{ .xs = xs, .xe = xe, .in_x = in_x, .out_x = out_x }, edit_snap, m, &res) else plainMenu(ui, grid, clip, src, m, &res);
 
     // The transport's position while it plays inside the clip, mapped
     // into the played window (ruler through grid).
-    if (play_src_b) |pb| {
-        const px = beatToX(grid, pb);
-        if (px >= grid.x and px < grid.x + grid.width)
-            ui.rect(frect(@floor(px), ruler_rect.y, 1, grid.y + grid.height - ruler_rect.y), ui_style.accent);
-    }
+    if (play_src_b) |pb| timeline.playhead(ui, beatToX(grid, pb), grid.x, grid.x + grid.width, ruler_rect.y, grid.y + grid.height);
 
     // ── Minimap overview ─────────────────────────────────────────────
-    drawOverview(ui, ov_rect, grid, src, track_color, source_beats, rev, m);
+    drawOverview(ui, ov_rect, grid, src, track_color, source_beats, rev, play_src_b, m);
 
     // ── Control row: gain slider + dot-matrix readout ────────────────
     var ctrl_all = bridge.fromRl(ctrl_rect);
@@ -587,7 +608,7 @@ fn warpEdit(ui: *Ui, alloc: std.mem.Allocator, clip: *clip_mod.Clip, src: *const
             mark_drag = null;
         } else if (markerIndex(clip, d.sec)) |i| {
             pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
-            const db = @as(f64, (m.x - d.mx) / px_per_beat);
+            const db = @as(f64, (m.x - d.mx) / view.px_per_beat);
             if (d.slide) {
                 // The audio moves with the pointer; the marker keeps its beat.
                 const map = warp_mod.Map.init(clip.warp_markers.items);
@@ -699,10 +720,7 @@ fn warpEdit(ui: *Ui, alloc: std.mem.Allocator, clip: *clip_mod.Clip, src: *const
         .{ .label = "Quantize hits to grid", .id = 5, .enabled = has_hits and edit_snap.beats() != null },
         .{ .label = "Clear warp markers", .id = 6, .enabled = n > 2 },
         .{ .separator = true },
-        .{ .label = "Extract groove", .id = 8, .enabled = has_hits and !rev },
-        .{ .label = "Extract", .id = EXTRACT_SUB, .submenu = true, .enabled = !rev },
-        .{ .label = "Tempo from clip", .id = TEMPO_SUB, .submenu = true, .enabled = !rev },
-    };
+    } ++ clipItems(clip, has_hits);
     // The submenus, as the arrangement's (its commands go to main).
     if (menu.subOpen(WARP_MENU_KEY, 0)) |sub| {
         const ex = arrangement.extractItems(true);
@@ -728,19 +746,60 @@ fn warpEdit(ui: *Ui, alloc: std.mem.Allocator, clip: *clip_mod.Clip, src: *const
             7 => if (src.hits()) |h| {
                 _ = warp_mod.detectAndFollow(alloc, clip, h, source_sec) catch false;
             },
-            8 => res.command = .extract_groove,
-            else => {},
+            else => res.command = clipCommand(id),
         }
     }
+}
+
+// The clip's own commands, the same in both menus (docs/31 §Menus); ids
+// from CLIP_ID index CLIP_COMMANDS.
+const CLIP_ID: u32 = 20;
+const CLIP_COMMANDS = [_]menu.EditCommand{ .extract_groove, .reverse, .warp, .tune, .zoom_to_selection, .rename };
+
+fn clipItems(clip: *const clip_mod.Clip, has_hits: bool) [12]menu.Item {
+    const rev = clip.audio.reversed;
+    return .{
+        .{ .separator = true },
+        .{ .label = "Extract groove", .id = CLIP_ID, .command = .extract_groove, .enabled = has_hits and !rev },
+        .{ .label = "Extract", .id = EXTRACT_SUB, .submenu = true, .enabled = !rev },
+        .{ .label = "Tempo from clip", .id = TEMPO_SUB, .submenu = true, .enabled = !rev },
+        .{ .separator = true },
+        .{ .label = "Reverse", .id = CLIP_ID + 1, .command = .reverse },
+        .{ .label = if (clip.audio.warp) "Unwarp" else "Warp", .id = CLIP_ID + 2, .command = .warp },
+        .{ .label = if (clip.audio.tune.on) "Untune" else "Tune", .id = CLIP_ID + 3, .command = .tune, .enabled = !rev },
+        .{ .separator = true },
+        .{ .label = "Zoom to selection", .id = CLIP_ID + 4, .command = .zoom_to_selection },
+        .{ .separator = true },
+        .{ .label = "Rename clip", .id = CLIP_ID + 5, .command = .rename },
+    };
+}
+
+fn clipCommand(id: u32) menu.EditCommand {
+    if (id < CLIP_ID or id >= CLIP_ID + CLIP_COMMANDS.len) return .none;
+    return CLIP_COMMANDS[id - CLIP_ID];
+}
+
+/// An unwarped clip's menu: the clip's own commands.
+fn plainMenu(ui: *Ui, grid: c.rl.Rectangle, clip: *const clip_mod.Clip, src: *const audio_pool_mod.Source, m: pane.Mouse, res: *Result) void {
+    if (pane.contains(grid, m.x, m.y)) _ = menu.openContext(ui, PLAIN_MENU_KEY, bridge.fromRl(grid));
+    const tail = clipItems(clip, src.hits() != null);
+    const items = tail[1..];
+    if (menu.subOpen(PLAIN_MENU_KEY, 0)) |sub| {
+        const ex = arrangement.extractItems(false);
+        const te = arrangement.tempoItems(false);
+        const subs: []const menu.Item = if (sub == EXTRACT_SUB) &ex else &te;
+        if (menu.subPick(PLAIN_MENU_KEY, 1, subs)) |i| res.command = subs[i].command;
+    }
+    if (menu.pick(PLAIN_MENU_KEY, items)) |id| res.command = clipCommand(id);
 }
 
 // ── Axis helpers ─────────────────────────────────────────────────────
 
 fn beatToX(grid: c.rl.Rectangle, beat: f64) f32 {
-    return grid.x + @as(f32, @floatCast(beat)) * px_per_beat - scroll_x;
+    return grid.x + @as(f32, @floatCast(beat)) * view.px_per_beat - view.scroll_x;
 }
 fn xToBeat(grid: c.rl.Rectangle, x: f32) f64 {
-    return @as(f64, (x - grid.x + scroll_x) / px_per_beat);
+    return @as(f64, (x - grid.x + view.scroll_x) / view.px_per_beat);
 }
 fn beatAtX(grid: c.rl.Rectangle, x: f32) f64 {
     return @max(0, xToBeat(grid, x));
@@ -752,28 +811,20 @@ fn fitPx(grid: c.rl.Rectangle, source_beats: f64) f32 {
 
 fn clampView(grid: c.rl.Rectangle, source_beats: f64) void {
     const min_px = fitPx(grid, source_beats);
-    px_per_beat = std.math.clamp(px_per_beat, min_px, @max(min_px, PX_PER_BEAT_MAX));
-    const content_w = @as(f32, @floatCast(source_beats)) * px_per_beat;
+    view.px_per_beat = std.math.clamp(view.px_per_beat, min_px, @max(min_px, PX_PER_BEAT_MAX));
+    const content_w = @as(f32, @floatCast(source_beats)) * view.px_per_beat;
     const max_sx = @max(0, content_w - grid.width);
-    scroll_x = std.math.clamp(scroll_x, 0, max_sx);
+    view.scroll_x = std.math.clamp(view.scroll_x, 0, max_sx);
 }
 
-fn handleWheel(grid: c.rl.Rectangle, source_beats: f64, m: pane.Mouse) void {
-    if (!pane.contains(grid, m.x, m.y)) return;
-    if (m.wheel_x == 0 and m.wheel_y == 0) return;
-    const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
-    if (shift) {
-        const w: f32 = if (m.wheel_y != 0) m.wheel_y else m.wheel_x;
-        if (w != 0) {
-            const mouse_beat = (m.x - grid.x + scroll_x) / px_per_beat;
-            const factor: f32 = std.math.clamp(1.0 + w * 0.12, 0.5, 2.0);
-            const min_px = fitPx(grid, source_beats);
-            px_per_beat = std.math.clamp(px_per_beat * factor, min_px, @max(min_px, PX_PER_BEAT_MAX));
-            scroll_x = mouse_beat * px_per_beat - (m.x - grid.x);
-        }
-    } else {
-        scroll_x -= (if (m.wheel_x != 0) m.wheel_x else m.wheel_y) * 30;
-    }
+fn limits(grid: c.rl.Rectangle, source_beats: f64) timeline.Limits {
+    const min_px = fitPx(grid, source_beats);
+    return .{ .min_ppb = min_px, .max_ppb = @max(min_px, PX_PER_BEAT_MAX), .vertical = false };
+}
+
+/// Song bars across the axis: the song's beat 0 sits at axis beat `grid0`.
+fn axis(grid: c.rl.Rectangle) timeline.Axis {
+    return .{ .view = &view, .x0 = grid.x, .origin = -grid0, .meter = cur_meter };
 }
 
 // ── Drawing ──────────────────────────────────────────────────────────
@@ -786,47 +837,6 @@ fn frect(x: f32, y: f32, w: f32, h: f32) Rect {
     const x0 = ipx(x);
     const y0 = ipx(y);
     return Rect.xywh(x0, y0, ipx(x + w) - x0, ipx(y + h) - y0);
-}
-
-/// Ruler faceplate: sixteenth / beat / bar ticks and bar numbers.
-fn drawRulerTicks(ui: *Ui, ruler: c.rl.Rectangle, grid: c.rl.Rectangle) void {
-    const body = ui.plate(bridge.fromRl(ruler), .{});
-    const bot = body.bottom();
-    const step = snap_mod.visualStep(.note_16, px_per_beat);
-    var beat: f64 = grid0 - @ceil(grid0 / 4) * 4;
-    while (true) {
-        const bx = beatToX(grid, beat);
-        if (bx > ruler.x + ruler.width - 2) break;
-        if (bx >= ruler.x - 4) {
-            const is_bar = snap_mod.isBar(beat - grid0);
-            const is_beat = snap_mod.isBeat(beat - grid0);
-            const th: i32 = if (is_bar) 7 else if (is_beat) 4 else 2;
-            ui.rect(Rect.xywh(ipx(bx), bot - th, 1, th), if (is_bar) ui_style.text_dim else if (is_beat) ui_style.text_mute else ui_style.face_lo);
-            if (is_bar and beat - grid0 > -0.5) {
-                var b: [8]u8 = undefined;
-                const s = std.fmt.bufPrint(&b, "{d}", .{@as(u32, @intFromFloat(@round((beat - grid0) / 4.0))) + 1}) catch "?";
-                _ = ui.engraved(&ui.fonts.legend, ipx(bx) + 3, body.y, s, ui_style.text_dim);
-            }
-        }
-        beat += step;
-    }
-}
-
-fn drawGridLines(ui: *Ui, grid: c.rl.Rectangle) void {
-    const step = snap_mod.visualStep(.note_16, px_per_beat);
-    const gy = ipx(grid.y);
-    const gh = ipx(grid.height);
-    var beat: f64 = grid0 - @ceil(grid0 / 4) * 4;
-    while (true) {
-        const bx = beatToX(grid, beat);
-        if (bx > grid.x + grid.width - 1) break;
-        if (bx >= grid.x) {
-            const is_bar = snap_mod.isBar(beat - grid0);
-            const is_beat = snap_mod.isBeat(beat - grid0);
-            ui.rect(Rect.xywh(ipx(bx), gy, 1, gh), if (is_bar) ui_style.grid_bar else if (is_beat) ui_style.grid_beat else ui_style.grid_sub);
-        }
-        beat += step;
-    }
 }
 
 /// Shade the attenuated wedge of a fade as per-column bars (a filled
@@ -847,26 +857,11 @@ fn shadeFade(ui: *Ui, grid: c.rl.Rectangle, x0: f32, x1: f32, fade_in: bool) voi
     }
 }
 
-fn drawOverview(ui: *Ui, strip: c.rl.Rectangle, grid: c.rl.Rectangle, src: *const audio_pool_mod.Source, track_color: ui_style.Color, source_beats: f64, rev: bool, m: pane.Mouse) void {
+fn drawOverview(ui: *Ui, strip: c.rl.Rectangle, grid: c.rl.Rectangle, src: *const audio_pool_mod.Source, track_color: ui_style.Color, source_beats: f64, rev: bool, play: ?f64, m: pane.Mouse) void {
     const inner_r = ui.well(bridge.fromRl(strip), ui_style.well);
     if (inner_r.w < 2 or inner_r.h < 2) return;
-    const inner = bridge.toRl(inner_r);
     surf.waveformDir(ui, inner_r, &src.cache, 0, @floatFromInt(src.cache.sample_count), track_color.mix(ui_style.well, 0.35), rev);
-
-    // Viewport window.
-    const content_w = @as(f32, @floatCast(source_beats)) * px_per_beat;
-    if (content_w <= 0) return;
-    const vx = inner.x + (scroll_x / content_w) * inner.width;
-    const vw = @max(2.0, (grid.width / content_w) * inner.width);
-    const vp = frect(std.math.clamp(vx, inner.x, inner.x + inner.width), inner.y, @min(vw, inner.x + inner.width - vx), inner.height);
-    ui.rect(vp, ui_style.accent.alpha(40));
-    ui.bevel(vp, ui_style.accent, ui_style.accent);
-
-    // Click / drag to centre the viewport on the cursor.
-    if (pane.contains(strip, m.x, m.y) and m.left_down) {
-        const frac = std.math.clamp((m.x - inner.x) / inner.width, 0, 1);
-        scroll_x = frac * content_w - grid.width / 2;
-    }
+    minimap.run(ui, bridge.toRl(inner_r), &view, source_beats, grid.width, limits(grid, source_beats), play, m, OV_KEY, c.rl.GetTime());
 }
 
 // ── Handles ──────────────────────────────────────────────────────────

@@ -7,9 +7,11 @@ instrument: the same gesture means the same thing everywhere, the code
 behind it exists once, and three new abilities are built on top: time
 selection, better note editing, and editing several clips at once.
 
-Status: planned (2026-10-05). Phase 1 in progress on `feat/editing`.
-docs/12 stays the interaction contract; as each phase lands, its rules
-move into docs/12 and this doc keeps the plan and the reasons.
+Status: phase 1 built (2026-10-05) on `feat/editing`: one view, wheel,
+minimap, ruler, box select, edges, snap, focus, command table and menu
+order across the editors; docs/12 now states those rules. Phases 2–4
+planned. docs/12 stays the interaction contract; as each phase lands,
+its rules move there and this doc keeps the plan and the reasons.
 
 ## What musicians expect (and other DAWs do)
 
@@ -75,7 +77,7 @@ note, a point, a warp marker.
 | wheel / two-finger swipe | scroll both axes (an editor with no vertical axis scrolls time with either) |
 | ⇧-wheel | scroll time (a mouse wheel's horizontal) |
 | ⌘-wheel, pinch | zoom time around the pointer |
-| ⌥-wheel | zoom height around the pointer: piano-roll rows, track height |
+| ⌥-wheel | zoom height around the pointer: piano-roll rows (track height later) |
 | wheel over the minimap | zoom time around the beat under the pointer |
 | drag the minimap's window | pan; press outside it jumps there and keeps dragging |
 | drag the minimap window's edges | zoom by setting the visible range |
@@ -128,7 +130,7 @@ greyed in its menu and its key does nothing there.
 | ↑ ↓ | notes: a semitone, ⇧ an octave; clips: to the next track |
 | ⌘L | loop the selection |
 | ⌘E | split at the edit cursor (phase 2: at the time selection's edges) |
-| ⌘J | join (consolidate) the selection |
+| ⌘J | join (consolidate) the selection (phase 2) |
 | ↩ | rename |
 | 0 | mute the selection |
 | Q H S | quantize, humanize, snap to scale (notes; audio: quantize hits) |
@@ -204,8 +206,8 @@ the objects inside, the way Live's is.
 
 ## Note editing (phase 3)
 
-- **Left edge:** drag moves the start, keeps the end; on every selected
-  note.
+- **Left edge** (built in phase 1): drag moves the start, keeps the end;
+  on every selected note.
 - **⌥-drag duplicates.** ⌘-drag on an edge scales the selection in time
   around its other end.
 - **Audition:**
@@ -222,7 +224,8 @@ the objects inside, the way Live's is.
     128-bit held-note set per track the engine publishes each block
     (atomics, no allocation; docs/04's discipline);
   - the same lit set marks notes that sound under the playhead.
-- New notes come out selected, so a drawn note can be nudged at once.
+- New notes come out selected, so a drawn note can be nudged at once
+  (built in phase 1).
 
 ## Multi-clip editing (phase 4)
 
@@ -241,14 +244,20 @@ the objects inside, the way Live's is.
 
 ## Phasing
 
-1. **One grammar.** `timeline.zig`, `gesture.zig`, `commands.zig`;
-   all four timelines on them; the wheel, minimap, box select, edges,
-   snap and ⌥, focus, menus, rulers and keys of §The grammar (not yet
-   ⌘-drag draw on the arrangement, ⌥-drag duplicate, time selection).
-   docs/12 rewritten to match. Exit: the inconsistencies listed in
-   §Where we are are gone, and each module has unit tests.
-2. **Time selection** in the arrangement, then the editors.
-3. **Note editing:** left edges, ⌥-drag duplicate, audition, the
+1. **One grammar** (built). `timeline.zig`, `gesture.zig`,
+   `commands.zig`; the arrangement, piano roll and audio editor on them,
+   the lanes on the same box and modifier rules; the wheel, minimap,
+   ruler (scrub, ⇧-drag loop, meter ticks), box select, both edges of
+   every clip and note over the whole selection, double-click create
+   and delete, ⌘-drag draw in the piano roll, snap and ⌥ (nudge
+   included), Escape restoring a drag, focus on any press, the edit
+   cursor for pastes, Z, ⌘L, ⌘E, the menus' order, and a menu for
+   unwarped audio. docs/12 rewritten to match. Left for later phases:
+   ⌘-drag draw on the arrangement, ⌥-drag duplicate, ⌘J, ⌥-wheel track
+   height, the audio editor's handles on the shared edge zones.
+2. **Time selection** in the arrangement, then the editors; ⌘J join,
+   ⌥-drag duplicate, ⌘-drag to draw a clip.
+3. **Note editing:** audition while dragging and while playing, the
    keyboard column, held-note lighting.
 4. **Multi-clip editing:** tabs, ghosts, song-time axis.
 5. Later: pinch zoom through a native gesture hook, cross-clip tools.
