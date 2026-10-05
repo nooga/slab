@@ -34,6 +34,7 @@ const waveform = @import("../waveform.zig");
 const meter_mod = @import("../meter.zig");
 const meter_gen = @import("../meter_gen.zig");
 const tempo_mod = @import("../tempo.zig");
+const arrange = @import("../arrange.zig");
 const markers_mod = @import("../markers.zig");
 const groove_mod = @import("../groove.zig");
 const recorder_mod = @import("../recorder.zig");
@@ -792,74 +793,17 @@ pub fn splitSelectedClipsAt(tracks: []Track, alloc: std.mem.Allocator, focused_c
         const original_len = t.clips.items.len;
         var ci: usize = 0;
         while (ci < original_len) : (ci += 1) {
-            var clip = &t.clips.items[ci];
+            const clip = &t.clips.items[ci];
             if (!clip.selected) continue;
             const local = beat - clip.start_beat;
             if (local <= minClipBeats(.note_16) or local >= clip.length_beats - minClipBeats(.note_16)) continue;
-
-            // Audio clip: carve the source window at the split point. The
-            // right part reads from where the left part stopped.
-            if (clip.isAudio()) {
-                const split_sec = tmap.secondsAt(beat) - tmap.secondsAt(clip.start_beat);
-                var right_a = Clip.initAudio(clip.name(), beat, clip.start_beat + clip.length_beats - beat, clip.audio.source);
-                right_a.selected = true;
-                right_a.muted = clip.muted;
-                right_a.audio.gain = clip.audio.gain;
-                right_a.audio.reversed = clip.audio.reversed;
-                right_a.audio.dur_sec = @max(0.0, clip.audio.dur_sec - split_sec);
-                if (clip.audio.reversed) {
-                    // Reversed, the left part plays the window's tail and
-                    // the right part the head.
-                    right_a.audio.start_sec = clip.audio.start_sec;
-                    clip.audio.start_sec += right_a.audio.dur_sec;
-                } else {
-                    right_a.audio.start_sec = clip.audio.start_sec + split_sec;
-                }
-                clip.audio.dur_sec = split_sec;
-                clip.length_beats = local;
-                clip.selected = false;
-                t.addClip(alloc, right_a) catch |err| {
-                    std.log.err("split audio clip append failed: {s}", .{@errorName(err)});
-                    continue;
-                };
-                changed = true;
-                if (first == null) first = .{ .track = @intCast(ti), .clip = @intCast(t.clips.items.len - 1) };
-                continue;
-            }
-
-            var right = Clip.init(clip.name(), beat, clip.start_beat + clip.length_beats - beat);
-            right.selected = true;
-            right.muted = clip.muted;
-            errdefer right.deinit(alloc);
-
-            var ni: usize = 0;
-            while (ni < clip.notes.items.len) {
-                var note = clip.notes.items[ni];
-                if (note.start_beat >= local) {
-                    _ = clip.notes.orderedRemove(ni);
-                    note.start_beat -= local;
-                    note.selected = false;
-                    right.addNote(alloc, note) catch |err| {
-                        std.log.err("split clip note move failed: {s}", .{@errorName(err)});
-                        continue;
-                    };
-                } else {
-                    const note_end = note.start_beat + note.length_beats;
-                    if (note_end > local) {
-                        clip.notes.items[ni].length_beats = @max(minClipBeats(.note_16), local - note.start_beat);
-                    }
-                    ni += 1;
-                }
-            }
-
-            clip.splitLanes(alloc, &right, local) catch |err| std.log.err("split clip lanes failed: {s}", .{@errorName(err)});
-            clip.length_beats = local;
-            clip.selected = false;
-            t.addClip(alloc, right) catch |err| {
-                std.log.err("split clip append failed: {s}", .{@errorName(err)});
-                right.deinit(alloc);
+            // The right part (appended, selected) reads on from the cut.
+            const did = arrange.splitClip(alloc, t, ci, beat, tmap) catch |err| {
+                std.log.err("split clip failed: {s}", .{@errorName(err)});
                 continue;
             };
+            if (!did) continue;
+            t.clips.items[ci].selected = false;
             changed = true;
             if (first == null) first = .{ .track = @intCast(ti), .clip = @intCast(t.clips.items.len - 1) };
         }

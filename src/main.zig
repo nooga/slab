@@ -77,6 +77,7 @@ test {
     _ = @import("tempo.zig");
     _ = @import("markers.zig");
     _ = @import("groove.zig");
+    _ = @import("arrange.zig");
     _ = @import("ui/marker_dialog.zig");
     _ = @import("routing.zig");
     _ = @import("export.zig");
