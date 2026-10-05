@@ -1,0 +1,39 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "juno2",
+  "note": "Slow detuned pad without sub, with two-voice stereo unison; Afterimage Express. Upper chord voicings leave space for bass.",
+  "params": {
+    "jn-lfo-rate": 0.34,
+    "jn-lfo-delay": 0,
+    "jn-vib": 0.016,
+    "jn-range": 1,
+    "jn-saw": 1,
+    "jn-pulse": 1,
+    "jn-pwm": 0.55,
+    "jn-pwmod": 1,
+    "jn-sub": 0,
+    "jn-noise": 0,
+    "jn-detune": 0.22,
+    "jn-hpf": 1,
+    "jn-cutoff": 1200,
+    "jn-res": 0.05,
+    "jn-env": 0.12,
+    "jn-lfovcf": 0.018,
+    "jn-kybd": 0.22,
+    "jn-atk": 0.38,
+    "jn-dec": 1.2,
+    "jn-sus": 0.75,
+    "jn-rel": 0.85,
+    "jn-vca-mode": 0,
+    "jn-level": 0.19,
+    "jn-age": 0.23
+  },
+  "unison": {
+    "count": 2,
+    "voices": 16,
+    "detune": 13,
+    "spread": 0.8,
+    "blend": 0.8
+  }
+}

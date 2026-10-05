@@ -6,6 +6,12 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Afterimage factory bank:** eleven instrument presets for outrun and
+  synthwave: four drum kits focused on kick, snare, hats and toms, a bass,
+  plucked arp, FM glass, wide pad, brass, mono lead and noise sweep. Find
+  `afterimage` in each instrument's preset menu. These are dry instrument
+  sounds; the song's insert chains and shared effects are separate.
+
 ## 0.0.9 — 2026-10-05
 
 Audio into music: hum a line and get notes, put a voice in key, hear a

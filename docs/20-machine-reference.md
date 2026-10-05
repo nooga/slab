@@ -151,6 +151,7 @@ Presets:
 - `thump-sub` — Sine sub with a fast pitch drop at the front: the second kick under the kick
 - `vowel-pad` — The VOWEL table walking A-E-I-O-U on a slow triangle
 - `wobble` — RESO table and LP24 swept by an LFO on eighth notes
+- `afterimage/aerodynamics` — Resonant noise transition with a slow envelope-driven filter sweep; Afterimage Express. Hold a note for the rise.
 
 ## cream
 
@@ -208,6 +209,7 @@ Presets:
 - `sync-scream` — Hard-sync lead: OSC 2 synced and swept by the filter contour
 - `synthwave-bass` — Driving 16th-note bass: saw + square, snappy contour, resonant bite
 - `whistle` — The ladder alone: oscillators off, emphasis past 1, full keyboard tracking - a pure sine that follows the keys
+- `afterimage/v8-bass` — Short saw/pulse octave bass with a restrained sub and snappy filter; Afterimage Express. Dry, before saturation and ducking.
 
 ## drum2
 
@@ -265,6 +267,10 @@ Presets:
 - `tom-fill-kit` — Casello: tom-heavy transition kit
 - `tough-night-kit` — DMX-ish tougher night-drive kit
 - `trap-808` — Long booming trap 808 kit, tight hats
+- `afterimage/chrome-hats` — Short bright closed hats and restrained open hats; Afterimage Express. Hat-focused full kit; no song EQ or gain inserts.
+- `afterimage/kick` — 55 Hz outrun kick with a short body and firm attack; Afterimage Express. Other kit voices remain available.
+- `afterimage/snare` — Snappy 194 Hz synth snare; Afterimage Express. Dry patch: the song adds a keyed gated-room return.
+- `afterimage/toms-and-rim` — Low synthetic toms and a short high snare for rim-like accents; Afterimage Express. Full kit.
 - `kits/tight-room` — Dry, tight, mid-velocity kit for busy patterns
 
 ## fm86
@@ -423,6 +429,7 @@ Presets:
 
 Presets:
 
+- `afterimage/prism-answer` — Sparse FM glass accents with restrained feedback; Afterimage Express. Dry, before chorus, EQ and makeup gain.
 - `slab/bass` — Slab: rubber bass. A pick click and a thump on the attack, then a round, slightly hollow sustain that holds while the key is down; velocity opens the thump.
 - `slab/bell-pad` — Slab: bell pad. A soft bell strike that fades into a slow, detuned swell; hold chords.
 - `slab/bells` — Slab: struck bells. A clangorous, inharmonic strike that fades to a nearly pure ring over several seconds; the third carrier adds a high shimmer.
@@ -500,6 +507,7 @@ Presets:
 - `tv-intro-brass` — Optimistic TV-intro poly brass
 - `warm-chord-plucks` — Warm short chord plucks
 - `wide-sunny-pad` — Wide sunny melancholic pad
+- `afterimage/horizon` — Slow detuned pad without sub, with two-voice stereo unison; Afterimage Express. Upper chord voicings leave space for bass.
 
 ## ms20
 
@@ -561,6 +569,7 @@ Presets:
 - `squelchy-boogie-bass` — Low squelchy boogie bass
 - `tight-pulse-bass` — Tight tollgate pulse bass
 - `vibrato-lead` — Vibrato + portamento lead
+- `afterimage/ion-trail` — Resonant mono call with brief portamento and a soft onset; Afterimage Express. Overlap notes for glide.
 
 ## profit5
 
@@ -632,6 +641,8 @@ Presets:
 - `prophet-brass` — Classic 5-voice brass: two detuned saws, slow filter swell
 - `shred-lead` — Serious shred: FEEDBACK past unity, hot DRIVE and HEAT, sputtering lead
 - `sync-lead` — Sync sweep lead: filter env sweeps synced OSC A through POLY-MOD
+- `afterimage/solar-brass` — Short Oberheim-mode brass with a soft attack and detuned oscillators; Afterimage Express.
+- `afterimage/vector-arp` — Narrow-pulse pluck with two-voice unison; Afterimage Express. Try sixteenths above middle C; delay is not included.
 
 ## rhodes
 
