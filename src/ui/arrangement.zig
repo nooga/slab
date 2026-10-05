@@ -773,6 +773,13 @@ pub fn reverseAudioClips(tracks: []Track, pool: ?*const audio_pool_mod.AudioPool
     return true;
 }
 
+fn focusedWarped(tracks: []const Track, focused: ?ClipRef) bool {
+    const f = focused orelse return false;
+    if (f.track >= tracks.len or f.clip >= tracks[f.track].clips.items.len) return false;
+    const cl = &tracks[f.track].clips.items[f.clip];
+    return cl.isAudio() and cl.audio.warp and !cl.audio.reversed;
+}
+
 fn allSelectedAudioWarped(tracks: []const Track) bool {
     var any = false;
     for (tracks) |*t| for (t.clips.items) |*clip| if (clip.selected and clip.isAudio()) {
@@ -1489,6 +1496,7 @@ pub fn draw(
         .{ .label = "Split at playhead", .command = .split_at_playhead, .enabled = has_selection },
         .{ .label = "Reverse", .command = .reverse, .enabled = hasSelectedAudioClips(tracks) },
         .{ .label = if (allSelectedAudioWarped(tracks)) "Unwarp" else "Warp", .command = .warp, .enabled = hasSelectedAudioClips(tracks) },
+        .{ .label = "Slice to a sampler track", .command = .slice_to_sampler, .enabled = focusedWarped(tracks, selected_clip.*) },
         .{ .label = if (has_selection and allSelectedMuted(tracks)) "Unmute" else "Mute", .command = .mute_clips, .enabled = has_selection },
         .{ .label = "Delete", .command = .delete, .enabled = has_selection },
         .{ .label = "Bounce\u{2026}", .command = .bounce, .enabled = has_selection },

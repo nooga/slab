@@ -5,10 +5,11 @@ the grid: warp markers, the stretch algorithms that play it at any
 tempo and pitch, transients, and audio that follows the tempo map, the
 groove and a track's own tempo.
 
-Status: phases 1–6 built (2026-10-05): the model, TAPE, ⌘-stretch, the
+Status: built (2026-10-05), all seven phases: the model, TAPE, ⌘-stretch, the
 band-limited reader; transients and BEATS; the stretch core, MIX,
 TRANSPOSE and FINE; VOICE and SMEAR; warp editing, quantize, tempo
-detection and auto-warp; groove, extract, follow, song follows. Before it, an audio clip only played a window of
+detection and auto-warp; groove, extract, follow, song follows; slice
+to a sampler track. Before it, an audio clip only played a window of
 its source at native rate (docs/28 §The beat axis), and that is still
 what an unwarped clip does.
 
@@ -359,6 +360,29 @@ it was, so the clip plays at its own speed and everything else (notes,
 grid, other clips) follows the take. Followed by *Follow its beats*, a
 take played without a click becomes the song's tempo map. One undo step.
 
+## Slice to drum machine
+
+*Slice to a sampler track* (the arrangement's and the audio clip
+editor's right-click, for a warped clip not reversed; `sliceToSampler`
+in `main.zig`) turns a loop into pads and a pattern:
+
+- the clip's played region is cut as BEATS cuts it (`warp.slices`): at
+  its hits, or on its PRESERVE grid, the first slice from the clip's
+  start, none under 30 ms, at most 64;
+- each slice is written as its own WAV (the source's rate and channels,
+  2 ms out at its end) into a folder beside the project's recordings,
+  with an SFZ putting slice k on key C1 + k at its own pitch, one shot,
+  named S01, S02, … The sampler can't play part of a file, so the files
+  are the slices; the folder travels with the project like any keymap's;
+- a sampler track is added under the clip's, loading the SFZ, on the
+  same output and groove, with a clip in the same place playing each
+  slice where it played (its velocity from the hit's strength, its
+  length to the next slice);
+- the clip is muted, and the new pattern selected. One undo step.
+
+From there the pattern is notes: rearrange the break, swap hits, change
+the swing, play the pads.
+
 ## In the project and slabkit
 
 Saved per audio clip: `"warp": {"mode": "mix", "offset": 0.0,
@@ -388,5 +412,5 @@ with `warp=True` meaning "detect".
 6. **Audio on the time axis**: warped clips follow the groove (composed
    into their markers), *Extract groove* from hits, *Follow its beats*,
    *Song follows this clip* (built).
-7. **Slice to drum machine**: a BEATS clip's slices to sampler pads and
-   a pattern that plays them.
+7. **Slice to drum machine**: a warped clip's slices to sampler pads and
+   a pattern that plays them (built).

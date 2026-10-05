@@ -51,6 +51,9 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   so it stays on the grid.
 - **Song follows this clip**: the song's tempo map from a warped take, so
   a performance played without a click sets the tempo for everything.
+- **Slice to a sampler track**: a loop cut at its hits onto sampler pads
+  from C1 up, with a pattern playing them where they played; rearrange
+  the break as notes.
 - **TRANSPOSE and FINE** in every mode but TAPE: pitch apart from time.
 - Slab finds the hits in every audio file, shown as ticks in the audio
   clip editor.

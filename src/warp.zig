@@ -332,6 +332,54 @@ pub fn songTempo(clip: *const clip_mod.Clip, rate: f64, out: []tempo_mod.TempoPo
     return n;
 }
 
+/// A slice of a clip for the sampler (docs/29 §Slice to drum machine):
+/// the source seconds it holds, the content beat it starts on, and how
+/// hard its hit is (0..1).
+pub const Slice = struct { s0: f64, s1: f64, beat: f64, strength: f32 };
+
+/// The clip's played region cut as BEATS cuts it (its PRESERVE): at the
+/// hits inside it, or on its grid of content beats, the first slice from
+/// the clip's start. At most `out.len`; none shorter than 30 ms.
+pub fn slices(clip: *const clip_mod.Clip, hits: ?*const transients.Onsets, out: []Slice) usize {
+    const m = clip.warp_markers.items;
+    if (!valid(m) or out.len == 0) return 0;
+    const map = Map.init(m);
+    const lo = clip.audio.offset_beats;
+    const hi = lo + clip.length_beats;
+    var n: usize = 0;
+    out[0] = .{ .s0 = map.secAt(lo), .s1 = 0, .beat = lo, .strength = 0.8 };
+    n = 1;
+    const Add = struct {
+        fn one(o: []Slice, k: *usize, mp: Map, b: f64, st: f32) void {
+            if (k.* == o.len) return;
+            const sec = mp.secAt(b);
+            if (sec - o[k.* - 1].s0 < 0.03) {
+                // Too close: it's the same hit (a stronger one wins).
+                if (k.* > 1 or b - o[0].beat < 1e-9) o[k.* - 1].strength = @max(o[k.* - 1].strength, st);
+                return;
+            }
+            o[k.*] = .{ .s0 = sec, .s1 = 0, .beat = b, .strength = st };
+            k.* += 1;
+        }
+    };
+    if (clip.audio.preserve.beats()) |div| {
+        var b = (@floor(lo / div) + 1) * div;
+        while (b < hi - 1e-9) : (b += div) Add.one(out, &n, map, b, 0.8);
+    } else if (hits) |h| {
+        for (h.sec, h.strength) |t, st| {
+            const b = map.beatAt(t);
+            if (b <= lo + 1e-9) {
+                if (b > lo - 0.01) out[0].strength = @max(out[0].strength, st);
+                continue;
+            }
+            if (b >= hi - 1e-9) break;
+            Add.one(out, &n, map, b, st);
+        }
+    }
+    for (out[0..n], 0..) |*sl, k| sl.s1 = if (k + 1 < n) out[k + 1].s0 else map.secAt(hi);
+    return n;
+}
+
 /// Back to straight at the tempo where the clip starts: two markers.
 pub fn clearMarkers(alloc: std.mem.Allocator, clip: *clip_mod.Clip) !void {
     const map = Map{ .m = clip.warp_markers.items };
@@ -610,6 +658,31 @@ test "songTempo: a step per marker inside the clip, at its own speed" {
     // On a track at 3:2 the song runs at 2/3 of that.
     _ = songTempo(&c, 1.5, &pts);
     try std.testing.expectApproxEqAbs(@as(f64, 80), pts[0].bpm, 1e-9);
+}
+
+test "slices: at the hits inside the clip, or on its grid" {
+    const alloc = std.testing.allocator;
+    var c = try testClip(alloc); // 120 BPM, 8 beats over 4 s
+    defer c.deinit(alloc);
+    c.audio.offset_beats = 1;
+    c.length_beats = 4; // 0.5 s .. 2.5 s
+    var on_sec = [_]f64{ 0.2, 0.5, 1.0, 1.01, 1.75, 2.6 };
+    var on_st = [_]f32{ 1, 0.5, 0.9, 0.3, 0.7, 1 };
+    var on_low = [_]f32{ 0, 0, 0, 0, 0, 0 };
+    const h = transients.Onsets{ .sec = &on_sec, .strength = &on_st, .low = &on_low };
+    var out: [16]Slice = undefined;
+    const n = slices(&c, &h, &out);
+    // From the clip's start (the hit right on it), 1.0 (1.01 merged), 1.75.
+    try std.testing.expectEqual(@as(usize, 3), n);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.5), out[0].s0, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.8), out[0].strength, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), out[1].s0, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.75), out[1].s1, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.5), out[2].s1, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.5), out[2].beat, 1e-9);
+    c.audio.preserve = .d4;
+    try std.testing.expectEqual(@as(usize, 4), slices(&c, null, &out));
+    try std.testing.expectApproxEqAbs(@as(f64, 2), out[1].beat, 1e-9);
 }
 
 test "reader: integer positions are the samples, between them it interpolates" {

@@ -59,6 +59,7 @@ pub const EditCommand = enum {
     extract_groove,
     commit_groove,
     song_follows_clip,
+    slice_to_sampler,
 };
 
 pub const Item = struct {
