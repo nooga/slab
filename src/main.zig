@@ -1556,6 +1556,14 @@ pub fn main(init: std.process.Init) !void {
                 }
             };
         }
+        if (mbres.unfreeze) if (bay_dev) |dev| {
+            pushHistorySnapshot(alloc, &history, tracks, &transport);
+            dev.freeze = null;
+            dev.publishSnapshot(&audio_pool);
+            engine.publishRouting();
+            status.set("Unfroze {s}", .{dev.name()});
+            dirty = true;
+        };
         // Delete (confirmed) → remove the targeted device.
         if (mbres.remove_ref) |ref| if (bay_dev) |dev| {
             switch (ref) {

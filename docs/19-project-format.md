@@ -157,6 +157,7 @@ The document is JSON. Top level:
 | `show_automation` | `true` shows the lanes under the track in the arrangement. |
 | `stem` | the track's stem in an export, when set by hand: `on` (missing: every track that plays writes one, buses don't), `signal` `instr`\|`fx`\|`fader` and `channels` `stereo`\|`mono`\|`auto` (missing: the export's default). |
 | `groove` | how the track plays its notes (docs/28 §Groove): `name` (`""` follows the song and its sections, `"NONE"` straight, or a groove), `amount` 0–1, `shift_ms` −50..50; missing: follows the song at 100 % |
+| `freeze` | frozen (docs/28 §Freeze): `{"type": "audio", "source": <file>, "hash": "<hex>"}`, the audio that plays instead of its instrument, audio clips and inserts, and the fingerprint it was rendered at; a missing file loads it unfrozen |
 
 Signal flow per track: instrument (a bus: its routed input) → audio
 clips summed in → effects in order → volume → pan → its output (the

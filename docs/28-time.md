@@ -5,7 +5,7 @@ that path: the tempo map, locators and sections, grooves, polymeter and
 polytempo, and the freeze that has to know when any of them changed.
 
 Status: the meter map (docs/07 §Meter map), the tempo map, locators and
-sections, export by section and groove are built (2026-10-05); the rest is
+sections, export by section, groove and freeze are built (2026-10-05); the rest is
 design, built in the order of [Phasing](#phasing).
 
 ## The beat axis
@@ -322,20 +322,37 @@ later switch a track's ratio, which is a polyrhythmic arrangement.
 Bounce makes new clips from a selection and mutes the originals; it
 does not save CPU. **Freeze** does:
 
-- The whole track is rendered through its instrument and inserts, before
-  the fader (Bounce's FX tap), over the song plus its tail, into the
-  project's package.
-- While frozen the engine **plays that audio instead of running the
-  machines** (indexed by the transport's sample position). Fader, pan,
-  sends and their automation stay live; keys taken from the track still
-  work, since its audio exists.
-- The track looks the same with a **FROZEN** badge; its instrument and
-  inserts are locked. **Unfreeze** brings them back; **Flatten** turns
-  the track into an audio track with one clip, for good.
-- The frozen audio depends on the track, its machines' state, the tempo
-  map, the meter (machines read bar position), the groove, its keys.
-  Their hash is the freeze's recipe, as with Bounce; when it no longer
-  matches the badge says **STALE** and offers REFREEZE.
+- **Freeze** (right-click a track's name; a selection takes them all):
+  one render from the song's start to its end (END, or the last clip)
+  plus the tail that still sounds (AUTO, up to 30 s), each track's
+  signal after its inserts (Bounce's FX tap, PDC removed) into a 32-bit
+  float file of its own, in the project's audio folder. The status line
+  counts it up.
+- While frozen, the engine **plays that audio instead of the track's
+  instrument, audio clips and inserts**, read at the transport's sample
+  (`TrackSnapshot.frozen`); the track adds no latency. Fader, pan,
+  sends and their lanes stay live, and keys taken from it hear the
+  frozen audio. Its notes still light the activity LED.
+- The track header shows **FROZEN**; the machine bay shows its
+  machines dimmed and untouchable under a banner with **UNFREEZE**.
+  Notes and clips stay editable (an edit makes it stale).
+- **Freeze again** renders it anew, its machines playing for the render.
+  **Unfreeze** brings the machines back. **Flatten to audio** makes it an
+  audio track for good: the frozen audio as one clip from the song's
+  start, no instrument, inserts, clips or their lanes; fader, pan, sends
+  and their lanes stay. Each is one undo step.
+- The freeze keeps a **fingerprint** of what it was rendered from: the
+  instrument, settings, inserts, lanes and code, every clip that plays,
+  the track's groove, and the tempo map, meter map and the song's and
+  sections' grooves. Checked twice a second; when it no longer matches,
+  the header says **STALE** (red) and the bay banner says why. A key
+  from another track isn't in it.
+- An export whose range stops inside the song cuts a frozen track's
+  tail at the stop (its audio past there holds later notes); unfreeze to
+  export a part with its tails.
+- Saved on the track as `"freeze": {"type": "audio", "source": "audio/
+  keys-freeze.wav", "hash": "…"}`, collected into packages like a clip's
+  file; a missing file loads the track unfrozen.
 
 ## Phasing
 
@@ -349,6 +366,6 @@ does not save CPU. **Freeze** does:
 4. **Groove**: the pool, per-track groove/AMOUNT/SHIFT, playback,
    extract, commit, the song's and sections' grooves (built; the ctx
    table and fy word wait for a machine that sequences).
-5. **Freeze**: freeze, unfreeze, flatten, stale.
+5. **Freeze**: freeze, unfreeze, flatten, stale (built).
 6. **Arranging by section**: duplicate, move, delete.
 7. **Polymeter and polytempo** per track.

@@ -2181,6 +2181,14 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, numb
     }
     const idx_r = row1.cutLeft(14);
     ui.textIn(&ui.fonts.legend, idx_r, idx_s, ui_style.text_mute, .left, true);
+    // Frozen (docs/28 §Freeze): a plate saying so, red once it's stale.
+    if (t.freeze) |f| {
+        const label = if (f.stale) "STALE" else "FROZEN";
+        const br = row1.cutRight(ui.fonts.legend.measure(label) + 8).insetXY(2, 4);
+        ui.rect(br, ui_style.well);
+        ui.textIn(&ui.fonts.legend, br, label, if (f.stale) ui_style.rec else ui_style.led_blue, .center, false);
+        menu.tip(ui, br, if (f.stale) "Frozen, but it changed since: right-click the name, Freeze again" else "Frozen: its audio plays instead of its machines (right-click the name to unfreeze)");
+    }
     const name_r = row1;
     if (!editing_name) ui.marquee(&ui.fonts.body, name_r, t.name(), if (selected) ui_style.text else ui_style.text_dim, .left, true, name_r.contains(ui.in.ix(), ui.in.iy()));
 
