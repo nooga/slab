@@ -20,6 +20,9 @@ const menu = @import("menu.zig");
 const export_dialog = @import("export_dialog.zig");
 const bounce_dialog = @import("bounce_dialog.zig");
 const marker_dialog = @import("marker_dialog.zig");
+const groove_mod = @import("../groove.zig");
+var gallery_groove_pool = groove_mod.Pool.init();
+var gallery_groove_cx = groove_mod.Context{ .pool = &gallery_groove_pool };
 const markers_mod = @import("../markers.zig");
 const tempo_mod = @import("../tempo.zig");
 const meter_mod = @import("../meter.zig");
@@ -244,6 +247,8 @@ fn dialogsPage(ui: *Ui, screen_in: Rect, st: *State) void {
             _ = export_dialog.draw(ui, screen, &st.export_card, cx, null);
         },
         6 => {
+            // The grooves the dialog lists.
+            if (groove_mod.active == null) groove_mod.active = &gallery_groove_cx;
             if (!st.marker_dlg.active) {
                 var mk: markers_mod.Markers = .{};
                 _ = mk.addSection(0, "intro");
