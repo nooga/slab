@@ -292,6 +292,8 @@ fn grooveHash(cx: *const groove_mod.Context, tracks: []const track_mod.Track) u6
         h.update(p.groups.slice());
     };
     for (tracks) |*t| {
+        // Its time shapes its notes the same way.
+        h.update(&.{ t.time.num, t.time.den, t.time.p, t.time.q });
         h.update(&.{t.groove.pick});
         h.update(std.mem.asBytes(&t.groove.amount));
         h.update(std.mem.asBytes(&t.groove.shift_ms));
@@ -1387,6 +1389,24 @@ pub fn main(init: std.process.Init) !void {
                 const set = actionSet(tracks, selected_track, edit.track, edit.selection);
                 startFreeze(alloc, &engine, &audio, &audio_pool, &transport, tracks, &set, &bounce_job, &status) catch |err| status.set("Freeze failed: {s}", .{@errorName(err)});
             }
+        } else if (edit.what == .time) {
+            // Every track it takes gets the meter or ratio picked (the other
+            // part of each track's time stays its own).
+            const set = actionSet(tracks, selected_track, edit.track, edit.selection);
+            const picked = edit.what.time;
+            const old = tracks[edit.track].time;
+            pushHistorySnapshot(alloc, &history, tracks, &transport);
+            for (tracks, 0..) |*t, k| if (set[k] and !t.isBus()) {
+                if (picked.num != old.num or picked.den != old.den) {
+                    t.time.num = picked.num;
+                    t.time.den = picked.den;
+                }
+                if (picked.p != old.p or picked.q != old.q) {
+                    t.time.p = picked.p;
+                    t.time.q = picked.q;
+                }
+            };
+            dirty = true;
         } else if (edit.what == .unfreeze or edit.what == .flatten) {
             const set = actionSet(tracks, selected_track, edit.track, edit.selection);
             pushHistorySnapshot(alloc, &history, tracks, &transport);
@@ -3780,7 +3800,7 @@ fn applyRouteEdit(
 ) !void {
     const routing = @import("routing.zig");
     if (edit.track >= track_count.* or edit.what == .delete or edit.what == .duplicate or edit.what == .group or
-        edit.what == .freeze or edit.what == .unfreeze or edit.what == .flatten) return;
+        edit.what == .freeze or edit.what == .unfreeze or edit.what == .flatten or edit.what == .time) return;
     const before = try document_mod.serialize(alloc, tracks_buf[0..track_count.*], transport);
     errdefer alloc.free(before);
 
@@ -3796,7 +3816,7 @@ fn applyRouteEdit(
             defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
             target = @intCast(try newTrack(alloc, tracks_buf, track_count, true, if (edit.what == .output_new_bus) "Group" else "Return"));
         },
-        .delete, .duplicate, .group, .freeze, .unfreeze, .flatten => unreachable,
+        .delete, .duplicate, .group, .freeze, .unfreeze, .flatten, .time => unreachable,
     }
     const t = &tracks_buf[edit.track];
     switch (edit.what) {
@@ -3843,7 +3863,7 @@ fn applyRouteEdit(
             snd.pre = p.pre;
             status.set("{s}: send to {s} {s}-fader", .{ t.name(), tracks_buf[target].name(), if (p.pre) "pre" else "post" });
         },
-        .delete, .duplicate, .group, .freeze, .unfreeze, .flatten => unreachable,
+        .delete, .duplicate, .group, .freeze, .unfreeze, .flatten, .time => unreachable,
     }
     try history.pushUndo(alloc, before);
 }

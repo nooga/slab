@@ -101,6 +101,8 @@ fn hashTrack(alloc: std.mem.Allocator, out: *std.ArrayList(u8), h: *std.hash.Wyh
         n += 1;
     };
     h.update(std.mem.sliceAsBytes(codes[0..n]));
+    // Its own time (docs/28 §Polymeter and polytempo), only when set.
+    if (!t.time.isDefault()) h.update(&.{ t.time.num, t.time.den, t.time.p, t.time.q });
     // How it plays its notes (docs/28 §Groove), only when set.
     if (!t.groove.isDefault()) {
         h.update(&.{t.groove.pick});

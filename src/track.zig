@@ -146,6 +146,8 @@ pub const Track = struct {
     /// Its groove, AMOUNT and SHIFT (docs/28 §Groove), applied as the
     /// notes publish.
     groove: groove_mod.TrackGroove = .{},
+    /// Its own meter and tempo ratio (docs/28 §Polymeter and polytempo).
+    time: snap_mod.TrackTime = .{},
     /// Frozen (docs/28 §Freeze): the audio that plays instead of its
     /// instrument, audio clips and inserts.
     freeze: ?Freeze = null,
@@ -524,6 +526,8 @@ pub const Track = struct {
             };
         };
         self.frozen.store(dst.frozen != null, .release);
+        dst.time = self.time;
+        const time_rate = self.time.rate();
         dst.clip_count = 0;
         dst.note_count = 0;
         dst.audio_clip_count = 0;
@@ -576,16 +580,24 @@ pub const Track = struct {
                     .pitch = note.pitch,
                     .velocity = note.velocity,
                 };
-                // Played where the groove puts it (it may land a little
-                // before the clip; the engine looks that far).
+                // A tempo ratio: the clip's content, in the track's beats from
+                // its start, plays at p/q (docs/28 §Polymeter and polytempo).
+                if (time_rate != 1) {
+                    dst.notes[dst.note_count].start_beat = note.start_beat / time_rate;
+                    dst.notes[dst.note_count].length_beats = note.length_beats / time_rate;
+                }
+                // Then where the groove puts it (it may land a little before
+                // the clip; the engine looks that far).
                 if (groove_mod.active) |cx| {
-                    const on = clip.start_beat + note.start_beat;
-                    const p = groove_mod.play(cx, self.groove, on, on + note.length_beats, note.pitch, note.velocity);
+                    const ns0 = dst.notes[dst.note_count];
+                    const on = clip.start_beat + ns0.start_beat;
+                    const p = groove_mod.play(cx, self.groove, on, on + ns0.length_beats, note.pitch, note.velocity);
                     const ns = &dst.notes[dst.note_count];
                     ns.start_beat = p.on - clip.start_beat;
                     ns.length_beats = p.off - p.on;
                     ns.velocity = p.velocity;
                 }
+                const expr_from = dst.expr_point_count;
                 if (note.bend_n > 0 and dst.expr_point_count + note.bend_n <= snap_mod.MAX_EXPR_POINTS_PER_TRACK) {
                     dst.notes[dst.note_count].expr_start = dst.expr_point_count;
                     dst.notes[dst.note_count].expr_count = note.bend_n;
@@ -603,6 +615,9 @@ pub const Track = struct {
                         dst.expr_point_count += cv.n;
                     }
                 }
+                if (time_rate != 1) for (dst.expr_points[expr_from..dst.expr_point_count]) |*pt| {
+                    pt.beat /= time_rate;
+                };
                 dst.note_count += 1;
                 notes_added += 1;
             }
@@ -667,6 +682,7 @@ pub const Track = struct {
         if (clip) |cl| {
             ls.clip_start = cl.start_beat;
             ls.clip_len = cl.length_beats;
+            ls.rate = self.time.rate();
         }
         if (self.targetMachine(lane.target)) |m| {
             const ci = m.controlIndex(lane.target.param()) orelse return;

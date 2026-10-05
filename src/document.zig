@@ -245,6 +245,13 @@ pub fn serialize(
         try appendLanes(alloc, &out, t);
         if (t.lanes_shown) try out.appendSlice(alloc, ",\"show_automation\":true");
         if (!t.stem.isDefault()) try appendStem(alloc, &out, t.stem);
+        // Its own time (docs/28 §Polymeter and polytempo), the parts set.
+        if (!t.time.isDefault()) {
+            try out.appendSlice(alloc, ",\"time\":{");
+            if (t.time.hasMeter()) try appendFmt(alloc, &out, "\"meter\":[{d},{d}]", .{ t.time.num, t.time.den });
+            if (t.time.p != t.time.q) try appendFmt(alloc, &out, "{s}\"ratio\":[{d},{d}]", .{ if (t.time.hasMeter()) "," else "", t.time.p, t.time.q });
+            try out.append(alloc, '}');
+        }
         // Frozen (docs/28 §Freeze): an audio reference, so a package
         // collects the file like a clip's.
         if (t.freeze) |f| if (active_pool) |p| if (p.get(f.source)) |src| {
@@ -1024,6 +1031,17 @@ fn parseTrack(alloc: std.mem.Allocator, reg: *registry_mod.Registry, to: std.jso
     if (objGet(to, "automation")) |av| try applyLanes(alloc, &t, av);
     if (objGet(to, "show_automation")) |x| t.lanes_shown = asBool(x);
     if (objGet(to, "stem")) |x| t.stem = parseStem(x);
+    t.time = .{};
+    if (objGet(to, "time")) |tv| if (tv == .object) {
+        if (objGet(tv.object, "meter")) |m| if (m == .array and m.array.items.len == 2) {
+            t.time.num = @intFromFloat(std.math.clamp(asF64(m.array.items[0]), 1, 32));
+            t.time.den = @intFromFloat(std.math.clamp(asF64(m.array.items[1]), 1, 32));
+        };
+        if (objGet(tv.object, "ratio")) |m| if (m == .array and m.array.items.len == 2) {
+            t.time.p = @intFromFloat(std.math.clamp(asF64(m.array.items[0]), 1, 16));
+            t.time.q = @intFromFloat(std.math.clamp(asF64(m.array.items[1]), 1, 16));
+        };
+    };
     t.freeze = null;
     if (objGet(to, "freeze")) |fv| if (fv == .object) if (active_pool) |p| {
         var rb: [storage.MAX_PATH]u8 = undefined;

@@ -1177,7 +1177,7 @@ pub fn draw(
         for (t.clips.items, 0..) |*clip, ci| {
             const clip_rect = clipRect(lane_timeline, clip.*, timeline_x0);
             const editing = rename_target.kind == .clip and rename_target.track == ti and rename_target.clip == ci;
-            drawClip(ui, clip_rect, clip.*, t.color, clip.selected, editing, pool);
+            drawClip(ui, clip_rect, clip.*, t.color, clip.selected, editing, pool, t.time.rate());
             if (editing) result.rename_rect = clipNameRect(clip_rect);
         }
 
@@ -2140,6 +2140,18 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, numb
         ui.rect(br, ui_style.well);
         ui.textIn(&ui.fonts.legend, br, label, if (f.stale) ui_style.rec else ui_style.led_blue, .center, false);
         menu.tip(ui, br, if (f.stale) "Frozen, but it changed since: right-click the name, Freeze again" else "Frozen: its audio plays instead of its machines (right-click the name to unfreeze)");
+    }
+    // Its own time (docs/28 §Polymeter and polytempo): "5/4", "3:2".
+    if (!t.time.isDefault()) {
+        var tb: [16]u8 = undefined;
+        const meter_s: []const u8 = if (t.time.hasMeter()) (std.fmt.bufPrint(tb[0..8], "{d}/{d}", .{ t.time.num, t.time.den }) catch "") else "";
+        const ratio_s: []const u8 = if (t.time.p != t.time.q) (std.fmt.bufPrint(tb[8..], "{d}:{d}", .{ t.time.p, t.time.q }) catch "") else "";
+        var lb: [24]u8 = undefined;
+        const label = std.fmt.bufPrint(&lb, "{s}{s}{s}", .{ meter_s, if (meter_s.len > 0 and ratio_s.len > 0) " " else "", ratio_s }) catch "";
+        const br = row1.cutRight(ui.fonts.legend.measure(label) + 8).insetXY(2, 4);
+        ui.rect(br, ui_style.well);
+        ui.textIn(&ui.fonts.legend, br, label, ui_style.vfd, .center, false);
+        menu.tip(ui, br, "Its own meter or tempo ratio: right-click the name, Meter / Tempo ratio");
     }
     const name_r = row1;
     if (!editing_name) ui.marquee(&ui.fonts.body, name_r, t.name(), if (selected) ui_style.text else ui_style.text_dim, .left, true, name_r.contains(ui.in.ix(), ui.in.iy()));
@@ -3257,7 +3269,8 @@ fn drawLiveRecordClip(ui: *Ui, lane: c.rl.Rectangle, rec: *const recorder_mod.Re
 /// Clip: 1px edge in the darkened track color, a 12px name band in full
 /// color with dark legend text, a tinted body with the note / waveform
 /// preview; amber outline when selected.
-fn drawClip(ui: *Ui, r_: c.rl.Rectangle, clip: Clip, color_: c.rl.Color, selected: bool, editing_name: bool, pool: *const audio_pool_mod.AudioPool) void {
+/// `note_rate`: the track's tempo ratio; its notes are in its own beats.
+fn drawClip(ui: *Ui, r_: c.rl.Rectangle, clip: Clip, color_: c.rl.Color, selected: bool, editing_name: bool, pool: *const audio_pool_mod.AudioPool, note_rate: f64) void {
     const r = bridge.fromRl(r_);
     if (r.w < 1 or r.h < 1) return;
     // A muted clip loses its track color.
@@ -3307,8 +3320,8 @@ fn drawClip(ui: *Ui, r_: c.rl.Rectangle, clip: Clip, color_: c.rl.Color, selecte
         const pitch_hi: f32 = 84;
         const bh: f32 = @floatFromInt(body.h);
         for (clip.notes.items) |note| {
-            const nx = r_.x + @as(f32, @floatCast(note.start_beat)) * px_per_beat;
-            const nw = @max(@as(f32, @floatCast(note.length_beats)) * px_per_beat, 1);
+            const nx = r_.x + @as(f32, @floatCast(note.start_beat / note_rate)) * px_per_beat;
+            const nw = @max(@as(f32, @floatCast(note.length_beats / note_rate)) * px_per_beat, 1);
             const x0 = @max(ipx(nx), body.x);
             const x1 = @min(ipx(nx + nw), body.right());
             if (x1 <= x0) continue;

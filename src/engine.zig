@@ -1190,18 +1190,20 @@ pub const Engine = struct {
         const frozen = if (node.is_bus) null else snap.frozen;
 
         const inst_view = snap_mod.AutoView{ .snap = snap, .cursors = &t.auto_cursors, .kind = .inst };
+        // The track's own time (docs/28 §Polymeter and polytempo).
+        const lt = localTime(snap, beat_start, bpm, bar_info, self.meter_state.map());
         const ctx = machine.MachineCtx{
             .sample_rate = @floatFromInt(sr),
             .block_size = frames,
             .block_start = block_start,
-            .tempo_bpm = @floatCast(bpm),
-            .ppq_position = beat_start,
+            .tempo_bpm = @floatCast(lt.bpm),
+            .ppq_position = lt.beat,
             .transport_state = .playing,
             .note_in = if (n_events > 0) @ptrCast(&scratch.events[0]) else null,
             .note_in_count = @intCast(n_events),
-            .bar = bar_info.bar,
-            .beat_in_bar = beat_start - bar_info.bar_start_beat,
-            .bar_len_beats = bar_info.bar_len_beats,
+            .bar = lt.bar,
+            .beat_in_bar = lt.beat_in_bar,
+            .bar_len_beats = lt.bar_len,
             .automation = if (snap.lane_count > 0) &inst_view else null,
         };
 
@@ -1791,6 +1793,32 @@ fn chainLatency(t: *const Track, is_bus: bool) u32 {
         if (!t.effectBypassed(i)) n += fx.mach.latencySamples();
     }
     return n;
+}
+
+const LocalTime = struct { bpm: f64, beat: f64, bar: u32, beat_in_bar: f64, bar_len: f64 };
+
+/// Where a track is in its own time (docs/28 §Polymeter and polytempo):
+/// with a tempo ratio, its beats run p/q as fast from the start of the
+/// clip playing (from the song's start between clips); with a meter of
+/// its own, its bars are counted in it. Else the song's.
+fn localTime(snap: *const snap_mod.TrackSnapshot, beat: f64, bpm: f64, song_bar: meter.MeterMap.BarInfo, song_meter: meter.MeterMap) LocalTime {
+    const tt = snap.time;
+    if (tt.isDefault()) return .{ .bpm = bpm, .beat = beat, .bar = song_bar.bar, .beat_in_bar = beat - song_bar.bar_start_beat, .bar_len = song_bar.bar_len_beats };
+    const r = tt.rate();
+    var lb = beat * r;
+    if (r != 1) for (snap.clips[0..snap.clip_count]) |c| {
+        if (beat >= c.start_beat and beat < c.start_beat + c.length_beats) {
+            lb = (beat - c.start_beat) * r;
+            break;
+        }
+    };
+    if (tt.hasMeter()) {
+        const len = @as(f64, @floatFromInt(tt.num)) * 4 / @as(f64, @floatFromInt(@max(1, tt.den)));
+        const bar = @floor(@max(0, lb) / len);
+        return .{ .bpm = bpm * r, .beat = lb, .bar = @intFromFloat(bar), .beat_in_bar = lb - bar * len, .bar_len = len };
+    }
+    const info = song_meter.barInfoAtBeat(lb);
+    return .{ .bpm = bpm * r, .beat = lb, .bar = info.bar, .beat_in_bar = lb - info.bar_start_beat, .bar_len = info.bar_len_beats };
 }
 
 fn instLatency(t: *const Track, is_bus: bool) u32 {
@@ -3674,4 +3702,37 @@ test "parallel rendering: workers render a routed project bit-identical to one t
     var peak: f32 = 0;
     for (serial) |x| peak = @max(peak, @abs(x));
     try testing.expect(peak > 0.1);
+}
+
+test "polytempo and polymeter: a 3:2 track plays its clip's beats 1.5x as fast, its machines in 5/4 at 180" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var level: f32 = 0;
+    var t = try Track.init(alloc, "poly", col, RouteTestMachines.dc(&level));
+    defer t.deinit(alloc);
+    t.time = .{ .num = 5, .den = 4, .p = 3, .q = 2 };
+    var clip = @import("clip.zig").Clip.init("A", 8, 4);
+    for (0..6) |k| try clip.addNote(alloc, .{ .pitch = 60, .start_beat = @floatFromInt(k), .length_beats = 0.5, .velocity = 100 });
+    try t.addClip(alloc, clip);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    t.publishSnapshot(&pool);
+    const snap = t.currentSnapshot();
+    // Six of its beats in four of the song's.
+    for (snap.notes[0..snap.note_count], 0..) |n, k| {
+        try testing.expectApproxEqAbs(@as(f64, @floatFromInt(k)) / 1.5, n.start_beat, 1e-12);
+        try testing.expectApproxEqAbs(@as(f64, 0.5 / 1.5), n.length_beats, 1e-12);
+    }
+    var pts = meter.MeterMap.singlePoint(4, 4);
+    const mm = meter.MeterMap{ .points = &pts };
+    // Song beat 10 is two beats into the clip: its beat 3, in its own bars
+    // of five.
+    const lt = localTime(snap, 10, 120, mm.barInfoAtBeat(10), mm);
+    try testing.expectApproxEqAbs(@as(f64, 180), lt.bpm, 1e-12);
+    try testing.expectApproxEqAbs(@as(f64, 3), lt.beat, 1e-12);
+    try testing.expectEqual(@as(u32, 0), lt.bar);
+    try testing.expectApproxEqAbs(@as(f64, 5), lt.bar_len, 1e-12);
+    const lt2 = localTime(snap, 12 - 1e-9, 120, mm.barInfoAtBeat(12), mm);
+    try testing.expectEqual(@as(u32, 1), lt2.bar);
+    try testing.expectApproxEqAbs(@as(f64, 1), lt2.beat_in_bar, 1e-6);
 }

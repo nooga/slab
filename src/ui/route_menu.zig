@@ -8,6 +8,8 @@ const std = @import("std");
 const menu = @import("menu.zig");
 const routing = @import("../routing.zig");
 const Track = @import("../track.zig").Track;
+const snap_mod = @import("../snapshot.zig");
+const METERS = @import("marker_dialog.zig").METERS;
 const track_order = @import("track_order.zig");
 const arrangement = @import("arrangement.zig");
 
@@ -36,6 +38,9 @@ pub const RouteEdit = struct {
         freeze,
         unfreeze,
         flatten,
+        /// Its own meter and tempo ratio (docs/28 §Polymeter and
+        /// polytempo); a selection takes them all.
+        time: snap_mod.TrackTime,
     },
     /// Group, Duplicate and Delete act on the whole selection.
     selection: bool = false,
@@ -116,6 +121,9 @@ pub fn tick(tracks: []Track, sel: ?usize) ?RouteEdit {
                 .{ .label = if (fz == null) "Freeze" else if (fz.?.stale) "Freeze again (stale)" else "Freeze again", .id = FREEZE, .enabled = !tracks[ti].isBus() },
                 .{ .label = "Unfreeze", .id = UNFREEZE, .enabled = fz != null },
                 .{ .label = "Flatten to audio", .id = FLATTEN, .enabled = fz != null },
+                .{ .separator = true },
+                .{ .label = "Meter", .id = 3, .submenu = true, .enabled = !tracks[ti].isBus() },
+                .{ .label = "Tempo ratio", .id = 4, .submenu = true, .enabled = !tracks[ti].isBus() },
             };
             switch (menu.pick(KEY, &top) orelse 0) {
                 DELETE => return .{ .track = ti, .what = .delete, .selection = many },
@@ -127,6 +135,7 @@ pub fn tick(tracks: []Track, sel: ?usize) ?RouteEdit {
                 else => {},
             }
             const which = menu.subOpen(KEY, 0) orelse return null;
+            if (which == 3 or which == 4) return timeList(&tracks[ti], ti, which == 3, many);
             return list(tracks, ti, which == 1, 1);
         },
         .output => return list(tracks, ti, true, 0),
@@ -188,6 +197,42 @@ fn list(tracks: []Track, ti: usize, outputs: bool, level: usize) ?RouteEdit {
     }
     if (id == NEW_BUS) return .{ .track = ti, .what = .send_new_bus };
     return .{ .track = ti, .what = .{ .send_toggle = @intCast(id) } };
+}
+
+/// The tempo ratios offered, p:q.
+const RATIOS = [_][2]u8{ .{ 1, 1 }, .{ 3, 2 }, .{ 2, 3 }, .{ 4, 3 }, .{ 3, 4 }, .{ 5, 4 }, .{ 4, 5 }, .{ 5, 3 }, .{ 3, 5 }, .{ 7, 4 }, .{ 2, 1 }, .{ 1, 2 } };
+var time_labels: [RATIOS.len + METERS.len + 1][24]u8 = undefined;
+
+/// The track's own meter (the song's, or one of the dialog's list) or its
+/// tempo ratio; the current one bulleted.
+fn timeList(t: *const Track, ti: usize, meters: bool, many: bool) ?RouteEdit {
+    var items: [@max(RATIOS.len, METERS.len + 1)]menu.Item = undefined;
+    var k: usize = 0;
+    if (meters) {
+        items[0] = .{ .label = if (!t.time.hasMeter()) "\u{2022} The song's" else "The song's", .id = 0 };
+        k = 1;
+        for (METERS, 0..) |m, i| {
+            const on = t.time.hasMeter() and t.time.num == m.num and t.time.den == m.den;
+            items[k] = .{ .label = std.fmt.bufPrint(&time_labels[k], "{s}{s}", .{ if (on) "\u{2022} " else "", m.label }) catch m.label, .id = @intCast(i + 1) };
+            k += 1;
+        }
+    } else for (RATIOS, 0..) |r, i| {
+        const on = (t.time.p == r[0] and t.time.q == r[1]) or (r[0] == 1 and r[1] == 1 and t.time.p == t.time.q);
+        items[k] = .{ .label = std.fmt.bufPrint(&time_labels[k], "{s}{d}:{d}{s}", .{ if (on) "\u{2022} " else "", r[0], r[1], if (i == 0) " (the song's)" else "" }) catch "?", .id = @intCast(i) };
+        k += 1;
+    }
+    const id = menu.subPick(KEY, 1, items[0..k]) orelse return null;
+    var tt = t.time;
+    if (meters) {
+        if (id == 0) tt.num = 0 else {
+            tt.num = METERS[id - 1].num;
+            tt.den = METERS[id - 1].den;
+        }
+    } else {
+        tt.p = RATIOS[id][0];
+        tt.q = RATIOS[id][1];
+    }
+    return .{ .track = ti, .what = .{ .time = tt }, .selection = many };
 }
 
 const KEY_NONE: u32 = 0x300;

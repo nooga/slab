@@ -198,6 +198,16 @@ var initialized_scroll: bool = false;
 var ce_default_meter_pts = [_]meter_mod.MeterPoint{.{ .start_bar = 0, .numerator = 4, .denominator = 4 }};
 var cur_meter: meter_mod.MeterMap = .{ .points = &ce_default_meter_pts };
 var cur_clip_start: f64 = 0;
+/// The clip's track's tempo ratio, p/q: its content runs in the track's
+/// beats, the clip's song length times this.
+var cur_rate: f64 = 1;
+/// A track's own meter, as a map.
+var track_meter_pts: [1]meter_mod.MeterPoint = undefined;
+
+/// A clip's length as the editor shows it, in its track's beats.
+fn clipLen(len: f64) f64 {
+    return len * cur_rate;
+}
 var last_clip_key: u64 = 0; // to detect clip switch → clear selection
 
 fn overviewH() f32 {
@@ -351,7 +361,7 @@ pub fn copySelectedNotes(tracks: []track_mod.Track, selected: ?ClipRef, alloc: s
 pub fn pasteNotes(tracks: []track_mod.Track, selected: ?ClipRef, alloc: std.mem.Allocator, notes: []const Note, arrangement_beat: f64, target_pitch: ?u8, edit_snap: snap_mod.Setting) bool {
     const resolved = resolveClip(tracks, selected) orelse return false;
     if (notes.len == 0) return false;
-    const local_target = snap_mod.snapPositive(edit_snap, @max(0.0, arrangement_beat - resolved.clip.start_beat), false);
+    const local_target = snap_mod.snapPositive(edit_snap, @max(0.0, (arrangement_beat - resolved.clip.start_beat) * resolved.track.time.rate()), false);
     const pitch_delta: i32 = if (target_pitch) |pitch| blk: {
         var min_pitch: u8 = notes[0].pitch;
         for (notes) |note| min_pitch = @min(min_pitch, note.pitch);
@@ -720,6 +730,11 @@ pub fn draw(
     };
 
     setNoteMap(resolved.note_labels, resolved.clip);
+    cur_rate = resolved.track.time.rate();
+    if (resolved.track.time.hasMeter()) {
+        track_meter_pts[0] = .{ .start_bar = 0, .numerator = resolved.track.time.num, .denominator = resolved.track.time.den };
+        cur_meter = .{ .points = &track_meter_pts };
+    }
     drawHeaderTools(ui, head.tools, resolved.track);
     cur_groove = resolved.track.groove;
     maybeResetOnClipChange(selected, resolved.clip);
@@ -823,17 +838,20 @@ fn drawPianoRoll(
         for (clip.lanes.items) |*l| l.deselectAll();
     }
 
-    cur_clip_start = clip.start_beat;
+    // A tempo ratio: the clip's content in the track's beats from its
+    // start, its own meter's grid from there (docs/28 §Polymeter and
+    // polytempo); a meter alone counts from the song's start.
+    cur_clip_start = if (cur_rate != 1) 0 else clip.start_beat;
     initScrollIfNeeded(grid_rect, clip.*);
     handleWheel(grid_rect, clip.*, m);
     clampScroll(grid_rect, clip.*);
-    const local_play: ?f64 = if (play_beat) |b| b - clip.start_beat else null;
-    const in_clip = if (local_play) |lb| lb >= 0 and lb < clip.length_beats else false;
+    const local_play: ?f64 = if (play_beat) |b| (b - clip.start_beat) * cur_rate else null;
+    const in_clip = if (local_play) |lb| lb >= 0 and lb < clipLen(clip.length_beats) else false;
     follow.step(
         &scroll_x,
         if (in_clip) @as(f32, @floatCast(local_play.?)) * px_per_beat else null,
         grid_rect.width,
-        @max(0, @as(f32, @floatCast(clip.length_beats)) * px_per_beat - grid_rect.width),
+        @max(0, @as(f32, @floatCast(clipLen(clip.length_beats))) * px_per_beat - grid_rect.width),
         c.rl.GetFrameTime(),
         pane.hasActiveDrag() and pane.contains(r, m.x, m.y),
     );
@@ -873,7 +891,7 @@ fn drawPianoRoll(
     drawEnvelopeStrip(ui, alloc, pane.rect(r.x, env_rect.y, keyboardW(), env_h), env_rect, clip, track, edit_snap, track_color, m);
 
     drawOverview(ui, overview_rect, grid_rect, clip.*, track_color, m);
-    if (play_beat) |b| drawPlayhead(ui, grid_rect, ruler_rect.y, env_rect.y + env_h, b - clip.start_beat, clip.length_beats);
+    if (play_beat) |b| drawPlayhead(ui, grid_rect, ruler_rect.y, env_rect.y + env_h, (b - clip.start_beat) * cur_rate, clipLen(clip.length_beats));
 
     const in_expr = expr_mode and !collapsed();
     if (in_expr and !velocity_consumed) handleExpression(ui, grid_rect, clip, edit_snap, m);
@@ -903,7 +921,7 @@ fn drawPianoRoll(
     };
     result.command = menu.command(PR_CONTEXT_KEY, &pr_context_items);
     if (result.command != .none) {
-        result.command_beat = context_target.beat + clip.start_beat;
+        result.command_beat = context_target.beat / cur_rate + clip.start_beat;
         result.command_pitch = context_target.pitch;
     }
     return result;
@@ -971,7 +989,7 @@ fn initScrollIfNeeded(grid: c.rl.Rectangle, clip: Clip) void {
 }
 
 fn minPxPerBeat(grid: c.rl.Rectangle, clip: Clip) f32 {
-    return @max(1.0, grid.width / @max(@as(f32, @floatCast(clip.length_beats)), 1.0));
+    return @max(1.0, grid.width / @max(@as(f32, @floatCast(clipLen(clip.length_beats))), 1.0));
 }
 
 fn clampPxPerBeat(v: f32, grid: c.rl.Rectangle, clip: Clip) f32 {
@@ -988,7 +1006,7 @@ fn clampScroll(grid: c.rl.Rectangle, clip: Clip) void {
     if (scroll_y > max_sy) scroll_y = max_sy;
     px_per_beat = clampPxPerBeat(px_per_beat, grid, clip);
     if (scroll_x < 0) scroll_x = 0;
-    const content_w = @as(f32, @floatCast(clip.length_beats)) * px_per_beat;
+    const content_w = @as(f32, @floatCast(clipLen(clip.length_beats))) * px_per_beat;
     const max_sx = @max(0, content_w - grid.width);
     if (scroll_x > max_sx) scroll_x = max_sx;
 }
@@ -1240,7 +1258,7 @@ fn drawPlayhead(ui: *Ui, grid: c.rl.Rectangle, top: f32, bottom: f32, local_beat
 
 /// Past the clip end the glass goes to chassis; the end itself is a red line.
 fn drawClipEndOverlay(ui: *Ui, r: c.rl.Rectangle, clip: Clip) void {
-    const end_x = r.x + @as(f32, @floatCast(clip.length_beats)) * px_per_beat - scroll_x;
+    const end_x = r.x + @as(f32, @floatCast(clipLen(clip.length_beats))) * px_per_beat - scroll_x;
     if (end_x >= r.x + r.width) return;
     const x0 = @max(end_x, r.x);
     ui.rect(frect(x0, r.y, r.x + r.width - x0, r.height), ui_style.chassis);
@@ -1265,7 +1283,7 @@ fn drawExistingNotes(ui: *Ui, grid: c.rl.Rectangle, clip: Clip, col: ui_style.Co
         }
         if (note.selected) ui.bevel(nr, ui_style.accent, ui_style.accent);
         // Where the groove plays it, when that isn't where it's written.
-        if (groove_mod.active) |cx| {
+        if (cur_rate == 1) if (groove_mod.active) |cx| {
             const on = clip.start_beat + note.start_beat;
             const p = groove_mod.play(cx, cur_groove, on, on + note.length_beats, note.pitch, note.velocity);
             const dx = (p.on - on) * px_per_beat;
@@ -1273,7 +1291,7 @@ fn drawExistingNotes(ui: *Ui, grid: c.rl.Rectangle, clip: Clip, col: ui_style.Co
                 const tx = ipx(fr.x + @as(f32, @floatCast(dx)));
                 ui.rect(Rect.xywh(tx, nr.y - 1, 1, nr.h + 2), ui_style.text);
             }
-        }
+        };
     }
 }
 
@@ -1358,7 +1376,7 @@ fn drawEnvelopeStrip(
         }, m);
         if (res.pressed) clip.deselectAll();
         // Past the clip's end nothing plays.
-        const end_x = ceBeatToX(r.x, clip.length_beats);
+        const end_x = ceBeatToX(r.x, clipLen(clip.length_beats));
         if (end_x < r.x + r.width) {
             const x0 = @max(end_x, r.x);
             ui.rect(frect(x0, r.y, r.x + r.width - x0, r.height), ui_style.chassis.alpha(150));
@@ -1961,7 +1979,7 @@ fn drawOverview(
 
     // The strip represents the clip [0 .. length_beats] horizontally.
     // Pitch compresses into the strip's vertical span.
-    const clip_beats: f32 = @max(@as(f32, @floatCast(clip.length_beats)), 1.0);
+    const clip_beats: f32 = @max(@as(f32, @floatCast(clipLen(clip.length_beats))), 1.0);
     const px_per_beat_ov = inner.width / clip_beats;
     const rows: f32 = @floatFromInt(rowCount() - 1);
     const px_per_row_ov = inner.height / (rows + 1);
@@ -1995,7 +2013,7 @@ fn handleOverviewInput(
     clip: Clip,
     m: pane.Mouse,
 ) void {
-    const clip_beats: f32 = @max(@as(f32, @floatCast(clip.length_beats)), 1.0);
+    const clip_beats: f32 = @max(@as(f32, @floatCast(clipLen(clip.length_beats))), 1.0);
     const px_per_beat_ov = inner.width / clip_beats;
     const view_beat_l = scroll_x / px_per_beat;
     const vp_x = inner.x + view_beat_l * px_per_beat_ov;
