@@ -197,7 +197,11 @@ pub const Catalog = struct {
         var lb: [storage.MAX_PATH]u8 = undefined;
         const lib = storage.library(&lb);
         var b: [storage.MAX_PATH]u8 = undefined;
-        if (!p.known or exists(std.fmt.bufPrint(&b, "{s}/{s}/presets", .{ lib, p.m.id }) catch "")) {
+        // Installed: its presets are there (a sample pack), or its models
+        // (the Extract pack, docs/30 §Stems).
+        if (!p.known or exists(std.fmt.bufPrint(&b, "{s}/{s}/presets", .{ lib, p.m.id }) catch "") or
+            exists(std.fmt.bufPrint(&b, "{s}/{s}/models", .{ lib, p.m.id }) catch ""))
+        {
             p.state = .installed;
             return;
         }
@@ -398,6 +402,7 @@ fn command(import: []const u8) ?Command {
     if (std.mem.eql(u8, import, "vcsl")) return .{ .tool = "tools/library/vcsl.py" };
     if (std.mem.eql(u8, import, "drums")) return .{ .tool = "tools/library/drums.py" };
     if (std.mem.eql(u8, import, "cmi")) return .{ .tool = "tools/library/cmi.py", .args = &.{ "--collection", "disks", "$sources" } };
+    if (std.mem.eql(u8, import, "extract")) return .{ .tool = "tools/extract/extract.py" };
     return null;
 }
 

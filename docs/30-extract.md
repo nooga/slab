@@ -7,10 +7,10 @@ Everything comes out as something you edit in Slab (pattern clips,
 groove templates, sampler kits, audio clips), placed on the song's
 beats through the clip's warp (docs/29).
 
-Status: phases 1–3 built (2026-10-05) on `feat/extract`: the pitch
-tracker, notes, *Audio to notes*, hum to notes, Tune, *Chords to notes*
-and *Drums to a kit*. Stems, *Explode…*, polyphonic notes and sound
-matching are designed.
+Status: phases 1–4 built (2026-10-05) on `feat/extract`: the pitch
+tracker, notes, *Audio to notes*, hum to notes, Tune, *Chords to notes*,
+*Drums to a kit*, stems through CoreML and the Extract pack, and
+*Explode…*. Polyphonic notes and sound matching are designed.
 
 ## What musicians expect (and other tools do)
 
@@ -40,7 +40,7 @@ matching are designed.
 | Chords and key | chroma per beat from the spectrum's peaks, matched to chord templates, smoothed by Viterbi; key by Krumhansl profiles | none | pop, electronic, rock |
 | Drums | onsets (docs/29 §Transients), each hit classed kick/snare/hat/other by its spectrum; slices to a kit | none (a model on mixes) | loops, drum stems |
 | Groove | built (docs/29 §Extract groove) | none | loops, takes |
-| Stems | a source-separation network (HTDemucs: drums, bass, vocals, other) | CoreML | whole songs |
+| Stems | a source-separation network (HTDemucs: drums, bass, other, vocals); Slab does its STFT | CoreML | whole songs |
 | Notes (polyphonic) | Basic Pitch (Spotify): frames, onsets and contours to notes | CoreML | keys, guitar, a stem |
 | Sound match | nearest library sample by spectral features; preset and parameter search by headless render | none (search) | drums easily; synths as research |
 | Tune | the pitch track snapped to a scale, with retune speed, rendered by a formant-keeping pitch mode | none | voice |
@@ -254,40 +254,112 @@ described by four things:
 
 ## Stems (models)
 
-`ml.zig` and `native_ml.m`: a bridge to CoreML (Apple's runtime,
-running on the Neural Engine). It is compiled with the app like
-`native_app.m` and loads compiled models (`.mlmodelc`) from a pack.
+*Split into stems* is on an audio clip's right-click, and so is
+*Explode…*. Stems take a song apart into **drums, bass, other and
+vocals** with HTDemucs (Défossez et al., Meta, MIT), run through Apple's
+CoreML.
 
-- **The pack**: *Slab Extract* (docs/25 §Packs), downloaded once, about
-  100 MB: HTDemucs (MIT) converted with coremltools, and Basic Pitch
-  (Apache-2.0). Both licenses allow shipping them with a GPL app; the
-  pack's README carries the notices. Without the pack, the
-  model-backed extractors are greyed, with a *Get the Extract pack*
-  item.
-- **Separation**: 44.1 kHz stereo, in overlapping 7.8 s segments
-  (HTDemucs' own) crossfaded, on a worker. A song takes seconds on an
-  M-series chip. Stems are written as WAVs beside the recordings and
-  laid on four new audio tracks under the clip, warped as the clip is,
-  in a group.
-- **Polyphonic notes**: Basic Pitch on 22.05 kHz mono gives note,
-  onset and contour frames; its own note decoding (thresholds on
-  onsets, then frames) gives notes. These go through the same placing
-  as *Audio to notes*.
+**The model.** CoreML can't run Demucs' STFT and its inverse, so the
+model is the network's core (`forward()` in demucs/htdemucs.py between
+`_magnitude` and `_mask`, and its time branch):
+
+- In: the mix's spectrogram (1, 4, 2048, 336; complex as channels) and
+  its waveform (1, 2, 343980; HTDemucs' 7.8 s at 44.1 kHz).
+- Out: each stem's spectrogram and waveform.
+- It runs in 32-bit floats. In 16-bit the network's normalizations
+  overflow to NaN, and 32-bit takes only 0.3 s per segment on the GPU.
+- Converted, it matches PyTorch to 119 dB.
+
+**The pack.** *Extract: stems* (`packs/extract.pack.json`, docs/25
+§Packs) installs it. Its IMPORT runs `tools/extract/extract.py`:
+
+- It makes its own Python 3.12 with `uv`, in `<home>/Cache/extract-venv`
+  (about 1 GB, once), and installs PyTorch, Demucs and coremltools.
+- It downloads the weights (80 MB) and converts the core with
+  coremltools. Two workarounds are needed: sizes as constants, since a
+  traced `int()` of a shape breaks the conversion under NumPy 2, and
+  PyTorch's fused attention turned off, since CoreML can't convert it.
+- It checks the result against PyTorch on a test signal and refuses to
+  install below 25 dB.
+- It compiles the model and installs it as
+  `<library>/extract/models/htdemucs.mlmodelc` (205 MB), with a README
+  carrying the MIT notice.
+- The pack shows as installed once `models/` is there. Without it,
+  Explode's STEMS is greyed and *Split into stems* says to get the
+  pack.
+- Slab doesn't ship the weights: each machine fetches its own.
+
+**The bridge.** `native_ml.m` and `ml.zig`:
+
+- `MLModel` loads with all compute units.
+- Inputs are wrapped without a copy (`initWithDataPointer`).
+- Outputs are copied out whatever their strides, since CoreML pads
+  some.
+- It runs on the stems worker, never the audio thread.
+
+**Separation** (`stems.zig`) does what demucs' `separate` and
+`apply_model` do:
+
+- The source goes to 44.1 kHz stereo (`resample.stereo`) and is
+  normalized by its mono mean and deviation.
+- It is cut into 7.8 s segments a quarter overlapping. A short last
+  chunk is centered in a full segment of what's around it, and its
+  middle is kept.
+- Each segment's STFT is Demucs' own: 1.5 hops of reflection each
+  side, a periodic Hann, `normalized=True`, frames 2–337. Both
+  channels go through one complex FFT.
+- After the model, each stem's spectrogram goes through the inverse
+  (`torch.istft`'s overlap divided out, empty frames at the edges as
+  `_ispec` lays them) and is added to its waveform.
+- The segments are crossfaded with `apply_model`'s triangle and the
+  result denormalized.
+- Checked against Python Demucs on 30 s of a rendered song, with no
+  random shifts and the same overlap: every stem within 55–57 dB.
+  Unit tests pin the STFT's scale and its round trip (to PyTorch's
+  values, edges included).
+- 30 s takes 2.5 s on an M-series Mac, a three-minute song about 15 s.
+
+**What it makes** (`finishStems`, `placeStems` in `main.zig`):
+
+- The four stems as 44.1 kHz float WAVs in a `<clip>-stems` folder
+  beside the recordings.
+- Four tracks under the clip, each holding a copy of the clip (its
+  place, window, fades and warp) playing its stem. Only the vocals
+  keep the clip's Tune.
+- The clip is muted. One undo step.
+- While it works, the status line (or Explode's sheet) counts the
+  segments, and CANCEL stops it between segments.
+- One separation runs at a time.
 
 ## Explode
 
-*Explode…* (the right-click on an audio clip) opens a sheet with
-checkboxes: **Stems**, **Drums**, **Bass**, **Chords**, **Melody**,
-**Groove**, and **Match sounds**. With the pack:
+*Explode…* opens a sheet (`ui/explode_dialog.zig`) with a switch for
+each part:
 
-- Stems lays out the four stems.
-- Drums runs on the drum stem, Bass's notes come from the bass stem
-  (range *bass*), Melody from vocals (or *other* without vocals), and
-  Chords from bass plus other.
+- **STEMS**: the four stem tracks. Greyed without the pack.
+- **DRUMS**: *Drums to a kit* on the drum stem.
+- **BASS**: *Audio to notes* on the bass stem. Greyed without stems,
+  since a whole clip has only one line to give.
+- **CHORDS**: *Chords to notes*, hearing the bass and other stems
+  summed (`harmony.wav`, written with the stems, never placed): no
+  drums, no voice. It lands under the *other* stem's clip.
+- **MELODY**: *Audio to notes* on the vocals.
 
-Without the pack, each one runs on the clip itself, which is right for
-a loop or a solo take. Everything lands under the clip as new tracks
-in a group named after it, the clip muted. One undo step.
+How it runs:
+
+- With stems, the separation runs first and the rest follows when it
+  is done.
+- Without stems, each part runs on the clip itself, and BASS and MELODY
+  are the one line.
+- The kit and the chords are made at once. The lines arrive as their
+  pitch is found; audio-to-notes jobs wait in a queue and find their
+  clip by id, since tracks are added above them meanwhile.
+- Each part is its own undo step.
+- Measured on a synthesized band (four chords twice, a bass, a beat):
+  - the stems sum back to the mix within 29 dB;
+  - the kit comes from the drum stem;
+  - the chords from bass and other read "C Am F G C Am F G", every one
+    right.
 
 ## Sound matching
 
@@ -401,5 +473,5 @@ Later:
    tune row and pitch curves, key detection, slabkit (built).
 3. **Chords and key; drums to pattern and kit** (built).
 4. **CoreML and the Extract pack**: stems, then *Explode…* with
-   everything.
+   everything (built).
 5. **Polyphonic notes and sound matching.**

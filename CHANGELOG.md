@@ -33,6 +33,14 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   sampler kit and a pattern. Its hits are sorted into kick, snare, hats,
   toms and percussion on General MIDI keys, and the cleanest hit of
   each becomes its pad.
+- **Split into stems**: take a song apart into drums, bass, other and
+  vocals, each on its own track under the clip and playing in its place.
+  It uses HTDemucs, a neural network, running on your Mac through
+  CoreML: a three-minute song takes about 15 s. It needs the **Extract**
+  pack (Browser, Packs), which downloads and sets up the model once.
+- **Explode…**: one sheet for all of it. Pick stems, drums, bass,
+  chords and melody, and a song comes back as stems, a drum kit with its
+  pattern, the bassline and melody as notes, and the chords on a pad.
 
 ### Fixes
 

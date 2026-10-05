@@ -45,6 +45,7 @@ for d in machines kernels packs demos; do
 done
 mkdir -p "$RES/tools"
 rsync -a --exclude '.DS_Store' --exclude '__pycache__' tools/library "$RES/tools/"
+rsync -a --exclude '.DS_Store' --exclude '__pycache__' tools/extract "$RES/tools/"
 cp splash.png slab.png "$RES/"
 # The licenses travel with the binary (COPYING.md §Source for the app).
 mkdir -p "$RES/Licenses"

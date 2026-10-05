@@ -63,6 +63,8 @@ pub const EditCommand = enum {
     audio_to_notes,
     chords_to_notes,
     drums_to_kit,
+    explode,
+    split_stems,
     tune,
 };
 

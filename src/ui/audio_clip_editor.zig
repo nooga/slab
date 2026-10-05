@@ -702,6 +702,8 @@ fn warpEdit(ui: *Ui, alloc: std.mem.Allocator, clip: *clip_mod.Clip, src: *const
         .{ .label = "Audio to notes", .id = 11, .enabled = !rev },
         .{ .label = "Chords to notes", .id = 12, .enabled = !rev },
         .{ .label = "Drums to a kit", .id = 13, .enabled = !rev },
+        .{ .label = "Split into stems", .id = 14, .enabled = !rev },
+        .{ .label = "Explode\u{2026}", .id = 15, .enabled = !rev },
     };
     if (menu.pick(WARP_MENU_KEY, &w_items)) |id| {
         const map = warp_mod.Map.init(clip.warp_markers.items);
@@ -727,6 +729,8 @@ fn warpEdit(ui: *Ui, alloc: std.mem.Allocator, clip: *clip_mod.Clip, src: *const
             11 => res.command = .audio_to_notes,
             12 => res.command = .chords_to_notes,
             13 => res.command = .drums_to_kit,
+            14 => res.command = .split_stems,
+            15 => res.command = .explode,
             else => {},
         }
     }

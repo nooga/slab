@@ -1,0 +1,7 @@
+{"slab": "pack", "schema": 1,
+ "id": "extract", "name": "Extract: stems", "version": "1",
+ "license": "MIT (HTDemucs, Meta Platforms)", "redistributable": true, "size": 215000000,
+ "about": "HTDemucs as a CoreML model: takes a song apart into drums, bass, other and vocals for Explode (docs/30)",
+ "link": "https://github.com/facebookresearch/demucs",
+ "get": {"download": [{"url": "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/955717e8-8726e21a.th"}]},
+ "import": "extract"}
