@@ -10,6 +10,8 @@ const Transport = @import("transport.zig").Transport;
 const Track = @import("track.zig").Track;
 const snap_mod = @import("snapshot.zig");
 const meter = @import("meter.zig");
+const tempo = @import("tempo.zig");
+const groove_mod = @import("groove.zig");
 const automation = @import("automation.zig");
 const routing = @import("routing.zig");
 const render_pool = @import("render_pool.zig");
@@ -65,7 +67,7 @@ const Block = struct {
     frames: u32 = 0,
     block_start: u64 = 0,
     sr: u32 = 48_000,
-    bpm: f32 = 120,
+    bpm: f64 = 120,
     spb: f64 = 0,
     beat_start: f64 = 0,
     beat_end: f64 = 0,
@@ -348,7 +350,7 @@ pub const Engine = struct {
             const nd = &graph.nodes[ti];
             // A keyed effect's input must be at least as late as its key
             // (the source's pre tap), so a late key makes the track later.
-            if (nd.key_count > 0) {
+            if (nd.key_count > 0 and !self.tracks[ti].frozen.load(.acquire)) {
                 const t = &self.tracks[ti];
                 var p = instLatency(t, nd.is_bus);
                 for (t.effects.items, 0..) |*fx, i| {
@@ -494,6 +496,7 @@ pub const Engine = struct {
             defer fy_host.unlockCallbacks();
             self.resetAllMachines();
         }
+        self.transport.tempo.commitImmediate();
         self.chase_pending = true;
         self.capture_start = start_sample;
         self.stop_released = false;
@@ -520,7 +523,7 @@ pub const Engine = struct {
         var done: usize = 0;
         while (done < total_frames) {
             if (cancel) |c| if (c.load(.monotonic)) break;
-            var chunk: u32 = @intCast(@min(@as(usize, MAX_BLOCK), total_frames + skip - rendered));
+            var chunk: u32 = self.tempoChunk(@intCast(@min(@as(usize, MAX_BLOCK), total_frames + skip - rendered)), pos);
             // A block ends on the stop.
             if (self.offline_stop) |stop| if (pos < stop) {
                 chunk = @intCast(@min(@as(u64, chunk), stop - pos));
@@ -583,6 +586,7 @@ pub const Engine = struct {
             self.audition_seen = self.audition_request.load(.acquire);
         }
 
+        self.adoptTempo();
         const playing = self.transport.isPlaying();
         if (!playing) {
             if (self.was_playing) {
@@ -610,7 +614,7 @@ pub const Engine = struct {
             // never see their note-offs, so the instruments let go. Effects
             // keep their tails.
             if (self.was_playing and start_pos != self.played_to) {
-                self.release_from = self.transport.samplesToBeats(self.played_to);
+                self.release_from = self.beatAtSample(self.played_to);
                 self.chase_pending = true;
             }
             if (!self.was_playing) self.chase_pending = true;
@@ -701,17 +705,59 @@ pub const Engine = struct {
         return .{ .l = buf_l[0..n], .r = buf_r[0..n] };
     }
 
+    /// The audio thread's tempo map.
+    fn tmap(self: *const Engine) *const tempo.TempoMap {
+        return &self.transport.tempo.audio;
+    }
+
+    fn beatAtSample(self: *const Engine, s: u64) f64 {
+        return self.tmap().beatAtSample(@floatFromInt(s), self.transport.sample_rate);
+    }
+
+    fn sampleAtBeat(self: *const Engine, b: f64) u64 {
+        return @intFromFloat(@max(0, self.tmap().sampleAt(b, self.transport.sample_rate)));
+    }
+
+    /// The tempo at the playhead.
+    fn bpmNow(self: *const Engine) f64 {
+        return self.tmap().bpmAt(self.beatAtSample(self.transport.samples()));
+    }
+
+    /// Take a tempo edit the UI published. The playhead keeps its beat:
+    /// the sample counter (and where the last block stopped) move to where
+    /// that beat now falls (docs/28 §Edits while playing).
+    fn adoptTempo(self: *Engine) void {
+        if (!self.transport.tempo.pending()) return;
+        const pos = self.transport.samples();
+        const beat = self.beatAtSample(pos);
+        const played = self.beatAtSample(self.played_to);
+        if (!self.transport.tempo.adopt()) return;
+        const moved = self.sampleAtBeat(beat);
+        if (self.transport.sample_pos.cmpxchgStrong(pos, moved, .monotonic, .monotonic) == null) {
+            if (self.played_to == pos) self.played_to = moved else self.played_to = self.sampleAtBeat(played);
+        }
+    }
+
+    /// Frames until the next tempo point, so a block never spans one.
+    fn tempoChunk(self: *const Engine, max_frames: u32, pos: u64) u32 {
+        const at = self.tmap().nextChangeSample(self.beatAtSample(pos), self.transport.sample_rate) orelse return max_frames;
+        const next: u64 = @intFromFloat(@ceil(at));
+        if (next <= pos) return max_frames;
+        return @intCast(@min(@as(u64, max_frames), next - pos));
+    }
+
     fn nextRenderChunk(self: *Engine, max_frames: u32, pos: u64) usize {
-        if (!self.transport.loopEnabled()) return max_frames;
+        const frames = self.tempoChunk(max_frames, pos);
+        if (!self.transport.loopEnabled()) return frames;
         const start_b = self.transport.loopStartBeats();
         const end_b = self.transport.loopEndBeats();
-        if (end_b <= start_b) return max_frames;
-        const start_s = self.transport.beatsToSamples(start_b);
-        const end_s = self.transport.beatsToSamples(end_b);
-        if (end_s <= start_s or pos < start_s or pos >= end_s) return max_frames;
+        if (end_b <= start_b) return frames;
+        const start_s = self.sampleAtBeat(start_b);
+        const end_s = self.sampleAtBeat(end_b);
+        if (end_s <= start_s or pos < start_s or pos >= end_s) return frames;
         const to_end = end_s - pos;
-        if (to_end == 0) return max_frames;
-        return @intCast(@min(@as(u64, max_frames), to_end));
+        if (to_end == 0) return frames;
+        return @intCast(@min(@as(u64, frames), to_end));
     }
 
     fn advanceRenderPos(self: *Engine, pos: u64, frames: u32) u64 {
@@ -720,8 +766,8 @@ pub const Engine = struct {
         const start_b = self.transport.loopStartBeats();
         const end_b = self.transport.loopEndBeats();
         if (end_b <= start_b) return next;
-        const start_s = self.transport.beatsToSamples(start_b);
-        const end_s = self.transport.beatsToSamples(end_b);
+        const start_s = self.sampleAtBeat(start_b);
+        const end_s = self.sampleAtBeat(end_b);
         if (end_s <= start_s or next < end_s) return next;
 
         const len = end_s - start_s;
@@ -734,7 +780,7 @@ pub const Engine = struct {
         }
         // Where the rendered stream stopped: the loop end rounded to a sample,
         // or past it when the playhead was seeked beyond the loop.
-        self.release_from = self.transport.samplesToBeats(pos + frames);
+        self.release_from = self.beatAtSample(pos + frames);
         self.chase_pending = true;
         return next;
     }
@@ -797,13 +843,13 @@ pub const Engine = struct {
         // Stopped: automation holds its value at the playhead.
         const t = &self.tracks[self.audition_track_local];
         const snap = t.currentSnapshot();
-        const beat = self.transport.beats();
+        const beat = self.beatAtSample(self.transport.samples());
         const inst_view = snap_mod.AutoView{ .snap = snap, .cursors = &t.auto_cursors, .kind = .inst };
         const ctx = machine.MachineCtx{
             .sample_rate = @floatFromInt(self.transport.sample_rate),
             .block_size = @intCast(n),
             .block_start = 0,
-            .tempo_bpm = @floatCast(self.transport.bpm()),
+            .tempo_bpm = @floatCast(self.tmap().bpmAt(beat)),
             .ppq_position = beat,
             .transport_state = .stopped,
             .note_in = if (event_count > 0) @ptrCast(&events[0]) else null,
@@ -879,10 +925,15 @@ pub const Engine = struct {
         };
 
         const sr = self.transport.sample_rate;
-        const bpm = self.transport.bpm();
-        const spb = self.transport.samplesPerBeat();
-        var beat_start = self.transport.samplesToBeats(block_start);
-        var beat_end = self.transport.samplesToBeats(block_start + frames);
+        // The block never spans a tempo point (tempoChunk): on a step the
+        // beats are linear in samples; over a ramp, near enough for a block.
+        var beat_start = self.beatAtSample(block_start);
+        var beat_end = self.beatAtSample(block_start + frames);
+        const bpm = self.tmap().bpmAt(beat_start);
+        const spb = if (beat_end > beat_start)
+            @as(f64, @floatFromInt(frames)) / (beat_end - beat_start)
+        else
+            60.0 * @as(f64, @floatFromInt(sr)) / bpm;
         const chase = self.chase_pending;
         self.chase_pending = false;
         var release_at = self.release_from;
@@ -891,7 +942,7 @@ pub const Engine = struct {
         // releases what sounds, none starts anything.
         var ring_out = false;
         if (self.offline_stop) |stop| if (block_start >= stop) {
-            const sb = self.transport.samplesToBeats(stop);
+            const sb = self.beatAtSample(stop);
             beat_start = sb;
             beat_end = sb;
             ring_out = true;
@@ -1134,20 +1185,25 @@ pub const Engine = struct {
         // See snapshot.zig for the double-buffer invariant.
         const snap = t.currentSnapshot();
         const n_events = gatherEvents(snap, beat_start, beat_end, spb, frames, chase, release_at, &scratch.events);
+        // Frozen: its audio stands in for the instrument, audio clips and
+        // inserts (docs/28 §Freeze); the fader on is as ever.
+        const frozen = if (node.is_bus) null else snap.frozen;
 
         const inst_view = snap_mod.AutoView{ .snap = snap, .cursors = &t.auto_cursors, .kind = .inst };
+        // The track's own time (docs/28 §Polymeter and polytempo).
+        const lt = localTime(snap, beat_start, bpm, bar_info, self.meter_state.map());
         const ctx = machine.MachineCtx{
             .sample_rate = @floatFromInt(sr),
             .block_size = frames,
             .block_start = block_start,
-            .tempo_bpm = @floatCast(bpm),
-            .ppq_position = beat_start,
+            .tempo_bpm = @floatCast(lt.bpm),
+            .ppq_position = lt.beat,
             .transport_state = .playing,
             .note_in = if (n_events > 0) @ptrCast(&scratch.events[0]) else null,
             .note_in_count = @intCast(n_events),
-            .bar = bar_info.bar,
-            .beat_in_bar = beat_start - bar_info.bar_start_beat,
-            .bar_len_beats = bar_info.bar_len_beats,
+            .bar = lt.bar,
+            .beat_in_bar = lt.beat_in_bar,
+            .bar_len_beats = lt.bar_len,
             .automation = if (snap.lane_count > 0) &inst_view else null,
         };
 
@@ -1163,7 +1219,12 @@ pub const Engine = struct {
         const inst_start = if (track_probe) probeNowNs() else 0;
         // A note sounding or close keeps the whole track awake.
         var wake = false;
-        if (!node.is_bus) {
+        if (frozen) |fz| {
+            // Past an export's stop it falls silent like the rest would
+            // have, its tail too (unfreeze to export a part with tails).
+            if (!b.ring_out) playFrozen(fz, block_start, frames, sr, l, r);
+            self.captureTap(ti, .input, block_start, l, r);
+        } else if (!node.is_bus) {
             // Disabled instrument → feed silence into the effect chain.
             if (t.isEnabled()) {
                 if (!self.idle_skip) {
@@ -1186,7 +1247,7 @@ pub const Engine = struct {
             }
             // Audio clips mix on top of the instrument output, into the
             // same planar L/R, so the track's insert chain processes the sum.
-            if (!b.ring_out) mixAudioClips(snap, block_start, frames, spb, sr, l, r);
+            if (!b.ring_out) mixAudioClips(snap, block_start, frames, self.tmap(), sr, l, r);
             // Late for a key that arrives later still (PDC).
             if (self.pdc) |h| {
                 h.put(ti, .input, l, r);
@@ -1207,13 +1268,15 @@ pub const Engine = struct {
             .lat_out = &self.lat_out,
             .lat = self.lat_in[ti] + instLatency(t, node.is_bus),
         } else null;
-        const rendered = renderEffectsKeyed(t, ctx, l, r, scratch.fx_l[0..frames], scratch.fx_r[0..frames], keys, .{ .on = self.idle_skip, .wake = wake });
-        const fx_ns = if (track_probe) probeNowNs() - fx_start else 0;
-        // The chain may end in the scratch pair; the pre tap is `l`/`r`.
-        if (rendered.l.ptr != l.ptr) {
-            @memcpy(l, rendered.l);
-            @memcpy(r, rendered.r);
+        if (frozen == null) {
+            const rendered = renderEffectsKeyed(t, ctx, l, r, scratch.fx_l[0..frames], scratch.fx_r[0..frames], keys, .{ .on = self.idle_skip, .wake = wake });
+            // The chain may end in the scratch pair; the pre tap is `l`/`r`.
+            if (rendered.l.ptr != l.ptr) {
+                @memcpy(l, rendered.l);
+                @memcpy(r, rendered.r);
+            }
         }
+        const fx_ns = if (track_probe) probeNowNs() - fx_start else 0;
         const final_l: []const f32 = l;
         const final_r: []const f32 = r;
         self.captureTap(ti, .pre, block_start, final_l, final_r);
@@ -1389,7 +1452,7 @@ pub const Engine = struct {
                     .sample_rate = @floatFromInt(self.transport.sample_rate),
                     .block_size = frames,
                     .block_start = 0,
-                    .tempo_bpm = @floatCast(self.transport.bpm()),
+                    .tempo_bpm = @floatCast(self.bpmNow()),
                     .ppq_position = 0,
                     .transport_state = if (self.transport.isPlaying()) .playing else .stopped,
                 };
@@ -1724,6 +1787,7 @@ pub const PdcHistory = struct {
 /// Samples a track's signal is late at its taps: its instrument's (not a
 /// bus's) and its active inserts'.
 fn chainLatency(t: *const Track, is_bus: bool) u32 {
+    if (!is_bus and t.frozen.load(.acquire)) return 0;
     var n = instLatency(t, is_bus);
     for (t.effects.items, 0..) |*fx, i| {
         if (!t.effectBypassed(i)) n += fx.mach.latencySamples();
@@ -1731,8 +1795,55 @@ fn chainLatency(t: *const Track, is_bus: bool) u32 {
     return n;
 }
 
+const LocalTime = struct { bpm: f64, beat: f64, bar: u32, beat_in_bar: f64, bar_len: f64 };
+
+/// Where a track is in its own time (docs/28 §Polymeter and polytempo):
+/// with a tempo ratio, its beats run p/q as fast from the start of the
+/// clip playing (from the song's start between clips); with a meter of
+/// its own, its bars are counted in it. Else the song's.
+fn localTime(snap: *const snap_mod.TrackSnapshot, beat: f64, bpm: f64, song_bar: meter.MeterMap.BarInfo, song_meter: meter.MeterMap) LocalTime {
+    const tt = snap.time;
+    if (tt.isDefault()) return .{ .bpm = bpm, .beat = beat, .bar = song_bar.bar, .beat_in_bar = beat - song_bar.bar_start_beat, .bar_len = song_bar.bar_len_beats };
+    const r = tt.rate();
+    var lb = beat * r;
+    if (r != 1) for (snap.clips[0..snap.clip_count]) |c| {
+        if (beat >= c.start_beat and beat < c.start_beat + c.length_beats) {
+            lb = (beat - c.start_beat) * r;
+            break;
+        }
+    };
+    if (tt.hasMeter()) {
+        const len = @as(f64, @floatFromInt(tt.num)) * 4 / @as(f64, @floatFromInt(@max(1, tt.den)));
+        const bar = @floor(@max(0, lb) / len);
+        return .{ .bpm = bpm * r, .beat = lb, .bar = @intFromFloat(bar), .beat_in_bar = lb - bar * len, .bar_len = len };
+    }
+    const info = song_meter.barInfoAtBeat(lb);
+    return .{ .bpm = bpm * r, .beat = lb, .bar = info.bar, .beat_in_bar = lb - info.bar_start_beat, .bar_len = info.bar_len_beats };
+}
+
 fn instLatency(t: *const Track, is_bus: bool) u32 {
-    return if (!is_bus and t.isEnabled()) t.machine.latencySamples() else 0;
+    return if (!is_bus and t.isEnabled() and !t.frozen.load(.acquire)) t.machine.latencySamples() else 0;
+}
+
+/// A frozen track's audio for the block at `block_start` (it starts at
+/// the song's start), linear between source samples.
+fn playFrozen(fz: snap_mod.FrozenSnap, block_start: u64, frames: u32, sample_rate: u32, l: []f32, r: []f32) void {
+    const step = fz.step * 48_000.0 / @as(f64, @floatFromInt(sample_rate));
+    const rd = fz.data_r orelse fz.data;
+    for (0..frames) |i| {
+        const pos = @as(f64, @floatFromInt(block_start + i)) * step;
+        const k: usize = @intFromFloat(@floor(pos));
+        if (k + 1 >= fz.len) {
+            if (k < fz.len) {
+                l[i] = @floatCast(fz.data[k]);
+                r[i] = @floatCast(rd[k]);
+            }
+            continue;
+        }
+        const f = pos - @floor(pos);
+        l[i] = @floatCast(fz.data[k] + (fz.data[k + 1] - fz.data[k]) * f);
+        r[i] = @floatCast(rd[k] + (rd[k + 1] - rd[k]) * f);
+    }
 }
 
 /// Idle skipping for one chain (docs/04 §Idle skipping).
@@ -1880,7 +1991,7 @@ fn mixAudioClips(
     snap: *const snap_mod.TrackSnapshot,
     block_start: u64,
     frames: u32,
-    samples_per_beat: f64,
+    map: *const tempo.TempoMap,
     sample_rate: u32,
     l: []f32,
     r: []f32,
@@ -1892,8 +2003,8 @@ fn mixAudioClips(
         const data = clip.data orelse continue;
         if (clip.len == 0 or clip.source_rate <= 0) continue;
 
-        const clip_start = clip.start_beat * samples_per_beat;
-        const clip_end = (clip.start_beat + clip.length_beats) * samples_per_beat;
+        const clip_start = map.sampleAt(clip.start_beat, sample_rate);
+        const clip_end = map.sampleAt(clip.start_beat + clip.length_beats, sample_rate);
         const lo = @max(block_lo, clip_start);
         const hi = @min(block_hi, clip_end);
         if (hi <= lo) continue;
@@ -1966,7 +2077,8 @@ fn gatherEvents(
 
     for (snap.clips[0..snap.clip_count]) |clip| {
         const clip_end = clip.start_beat + clip.length_beats;
-        const in_block = clip_end > beat_start and clip.start_beat < beat_end;
+        // A grooved note may play a little before its clip (docs/28 §Groove).
+        const in_block = clip_end > beat_start and clip.start_beat - groove_mod.MAX_MOVE_BEATS < beat_end;
         const at_release = if (release_at) |rb| clip.start_beat < rb and clip_end > rb else false;
         if (!in_block and !at_release) continue;
 
@@ -2050,7 +2162,7 @@ fn gatherEvents(
 fn notesNear(snap: *const snap_mod.TrackSnapshot, lo: f64, hi: f64) bool {
     for (snap.clips[0..snap.clip_count]) |clip| {
         const clip_end = clip.start_beat + clip.length_beats;
-        if (clip_end <= lo or clip.start_beat >= hi) continue;
+        if (clip_end <= lo or clip.start_beat - groove_mod.MAX_MOVE_BEATS >= hi) continue;
         for (snap.notes[clip.notes_start..][0..clip.notes_count]) |note| {
             if (note.start_beat >= clip.length_beats) continue;
             const on = clip.start_beat + note.start_beat;
@@ -2294,6 +2406,14 @@ test "gatherEvents: note clamped to clip end" {
     try testing.expectEqual(@as(u32, 48), events[1].sample_offset);
 }
 
+/// A constant tempo of `spb` samples per beat at 48 kHz (past the BPM
+/// limits, as the tests like round numbers).
+fn spbMap(spb: f64) tempo.TempoMap {
+    var m = tempo.TempoMap.constant(120);
+    m.points[0].bpm = 60.0 * 48_000.0 / spb;
+    return m;
+}
+
 test "mixAudioClips: places source at clip start and resamples by rate" {
     // Source: a ramp 0,1,2,3,... at 24 kHz; engine at 48 kHz → step 0.5.
     var data: [8]f64 = undefined;
@@ -2314,7 +2434,7 @@ test "mixAudioClips: places source at clip start and resamples by rate" {
     var l = [_]f32{0} ** 8;
     var r = [_]f32{0} ** 8;
     // Block starting exactly at the clip's first sample.
-    mixAudioClips(&snap, 100, 8, spb, 48_000, &l, &r);
+    mixAudioClips(&snap, 100, 8, &spbMap(spb), 48_000, &l, &r);
 
     // step = 24000/48000 = 0.5 → src positions 0,0.5,1,1.5,... interpolated.
     try testing.expectApproxEqAbs(@as(f32, 0.0), l[0], 1e-5);
@@ -2343,7 +2463,7 @@ test "mixAudioClips: silent before clip start and after source ends" {
     var r = [_]f32{0} ** 8;
     // Block [0,8): samples 0..3 are before the clip, 4..5 read the source,
     // 6..7 are past the 2-sample source (silent).
-    mixAudioClips(&snap, 0, 8, spb, 48_000, &l, &r);
+    mixAudioClips(&snap, 0, 8, &spbMap(spb), 48_000, &l, &r);
     try testing.expectEqual(@as(f32, 0), l[0]);
     try testing.expectEqual(@as(f32, 0), l[3]);
     try testing.expectApproxEqAbs(@as(f32, 0.5), l[4], 1e-5);
@@ -2370,7 +2490,7 @@ test "mixAudioClips: start_sample offsets into the source (split clips)" {
     var l = [_]f32{0} ** 4;
     var r = [_]f32{0} ** 4;
     // Engine rate == source rate → step 1, so out[i] = data[3+i].
-    mixAudioClips(&snap, 0, 4, 100.0, 48_000, &l, &r);
+    mixAudioClips(&snap, 0, 4, &spbMap(100.0), 48_000, &l, &r);
     try testing.expectApproxEqAbs(@as(f32, 3), l[0], 1e-5);
     try testing.expectApproxEqAbs(@as(f32, 4), l[1], 1e-5);
     try testing.expectApproxEqAbs(@as(f32, 5), l[2], 1e-5);
@@ -2396,7 +2516,7 @@ test "mixAudioClips: linear fade-in/out ramps the window edges" {
     };
     var l = [_]f32{0} ** 8;
     var r = [_]f32{0} ** 8;
-    mixAudioClips(&snap, 0, 8, 100.0, 48_000, &l, &r);
+    mixAudioClips(&snap, 0, 8, &spbMap(100.0), 48_000, &l, &r);
     // fade-in: pos 0 → 0.0, pos 1 → 0.5; middle → 1.0; fade-out near the end.
     try testing.expectApproxEqAbs(@as(f32, 0.0), l[0], 1e-5);
     try testing.expectApproxEqAbs(@as(f32, 0.5), l[1], 1e-5);
@@ -2424,7 +2544,7 @@ test "mixAudioClips: a reversed clip reads its window end to start, fades in cli
     };
     var l = [_]f32{0} ** 6;
     var r = [_]f32{0} ** 6;
-    mixAudioClips(&snap, 0, 6, 6.0, 48_000, &l, &r);
+    mixAudioClips(&snap, 0, 6, &spbMap(6.0), 48_000, &l, &r);
     // 7, 6, 5, 4, 3, 2 with the fade-in on the first two (0, 0.5).
     try testing.expectApproxEqAbs(@as(f32, 0), l[0], 1e-5);
     try testing.expectApproxEqAbs(@as(f32, 3), l[1], 1e-5);
@@ -2449,7 +2569,7 @@ test "mixAudioClips: a stereo source plays its channels apart" {
     };
     var l = [_]f32{0} ** 4;
     var r = [_]f32{0} ** 4;
-    mixAudioClips(&snap, 0, 4, 4.0, 48_000, &l, &r);
+    mixAudioClips(&snap, 0, 4, &spbMap(4.0), 48_000, &l, &r);
     try testing.expectApproxEqAbs(@as(f32, 0.5), l[0], 1e-6);
     try testing.expectApproxEqAbs(@as(f32, -0.5), r[0], 1e-6);
     try testing.expectApproxEqAbs(@as(f32, 2.0), l[3], 1e-6);
@@ -2462,7 +2582,7 @@ test "mixAudioClips: missing source data is skipped" {
     snap.audio_clips[0] = .{ .start_beat = 0, .length_beats = 4, .data = null };
     var l = [_]f32{0} ** 4;
     var r = [_]f32{0} ** 4;
-    mixAudioClips(&snap, 0, 4, 10.0, 48_000, &l, &r);
+    mixAudioClips(&snap, 0, 4, &spbMap(10.0), 48_000, &l, &r);
     for (l) |v| try testing.expectEqual(@as(f32, 0), v);
 }
 
@@ -3009,6 +3129,74 @@ test "a seek releases the notes it leaves, starts the ones it lands in, and keep
     try testing.expectEqual(@as(usize, 0), Rec.resets); // released, never cut
 }
 
+test "tempo map: notes land where the map puts them, blocks split at a change, and an edit keeps the beat" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const Rec = struct {
+        var ons: [8]u64 = undefined;
+        var n: usize = 0;
+        var crossed = false; // a block ran across sample 24000
+        var slow_from: ?u64 = null; // first block start at 60 BPM
+        fn machine_() machine.Machine {
+            var level: f32 = 0;
+            var m = RouteTestMachines.dc(&level);
+            m.render = struct {
+                fn f(_: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []f32) void {
+                    if (ctx.block_start < 24000 and ctx.block_start + ctx.block_size > 24000) crossed = true;
+                    if (ctx.tempo_bpm == 60 and slow_from == null) slow_from = ctx.block_start;
+                    if (ctx.note_in) |ev| for (ev[0..ctx.note_in_count]) |e| {
+                        if (e.kind != .note_on) continue;
+                        if (n < ons.len) ons[n] = ctx.block_start + e.sample_offset;
+                        n += 1;
+                    };
+                    @memset(l, 0);
+                    @memset(r, 0);
+                }
+            }.f;
+            return m;
+        }
+    };
+    var tracks = [_]Track{try Track.init(alloc, "keys", col, Rec.machine_())};
+    defer for (&tracks) |*t| t.deinit(alloc);
+    var clip = @import("clip.zig").Clip.init("A", 0, 8);
+    try clip.addNote(alloc, .{ .pitch = 60, .start_beat = 0.5, .length_beats = 0.25, .velocity = 100 });
+    try clip.addNote(alloc, .{ .pitch = 62, .start_beat = 1.5, .length_beats = 0.25, .velocity = 100 });
+    try clip.addNote(alloc, .{ .pitch = 64, .start_beat = 2, .length_beats = 0.25, .velocity = 100 });
+    try tracks[0].addClip(alloc, clip);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+
+    // 120 BPM for a beat (24000 samples), then 60 (48000 a beat).
+    var transport = Transport{};
+    _ = transport.tempo.edit().put(1, 60);
+    transport.tempo.publish();
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+
+    var out: [512 * 2]f32 = undefined;
+    transport.play();
+    while (transport.samples() < 80000) eng.render(&out, 512);
+    try testing.expectEqual(@as(usize, 3), Rec.n);
+    try testing.expectEqual(@as(u64, 12000), Rec.ons[0]);
+    try testing.expectEqual(@as(u64, 48000), Rec.ons[1]);
+    try testing.expectEqual(@as(u64, 72000), Rec.ons[2]);
+    try testing.expect(!Rec.crossed);
+    try testing.expectEqual(@as(?u64, 24000), Rec.slow_from);
+
+    // Halve the tempo under the playhead: it stays on its beat.
+    transport.stop();
+    transport.seekToBeats(3);
+    try testing.expectEqual(@as(u64, 120000), transport.samples());
+    transport.play();
+    transport.setBpm(30);
+    eng.render(&out, 64);
+    try testing.expectApproxEqAbs(@as(f64, 3), transport.beats(), 64.0 / 96000.0 + 1e-9);
+    try testing.expectEqual(@as(u64, 24000 + 2 * 96000 + 64), transport.samples());
+}
+
 test "a loop wrap releases the note ending on the loop end, and the ones past it after a seek" {
     const alloc = testing.allocator;
     const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
@@ -3514,4 +3702,37 @@ test "parallel rendering: workers render a routed project bit-identical to one t
     var peak: f32 = 0;
     for (serial) |x| peak = @max(peak, @abs(x));
     try testing.expect(peak > 0.1);
+}
+
+test "polytempo and polymeter: a 3:2 track plays its clip's beats 1.5x as fast, its machines in 5/4 at 180" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var level: f32 = 0;
+    var t = try Track.init(alloc, "poly", col, RouteTestMachines.dc(&level));
+    defer t.deinit(alloc);
+    t.time = .{ .num = 5, .den = 4, .p = 3, .q = 2 };
+    var clip = @import("clip.zig").Clip.init("A", 8, 4);
+    for (0..6) |k| try clip.addNote(alloc, .{ .pitch = 60, .start_beat = @floatFromInt(k), .length_beats = 0.5, .velocity = 100 });
+    try t.addClip(alloc, clip);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    t.publishSnapshot(&pool);
+    const snap = t.currentSnapshot();
+    // Six of its beats in four of the song's.
+    for (snap.notes[0..snap.note_count], 0..) |n, k| {
+        try testing.expectApproxEqAbs(@as(f64, @floatFromInt(k)) / 1.5, n.start_beat, 1e-12);
+        try testing.expectApproxEqAbs(@as(f64, 0.5 / 1.5), n.length_beats, 1e-12);
+    }
+    var pts = meter.MeterMap.singlePoint(4, 4);
+    const mm = meter.MeterMap{ .points = &pts };
+    // Song beat 10 is two beats into the clip: its beat 3, in its own bars
+    // of five.
+    const lt = localTime(snap, 10, 120, mm.barInfoAtBeat(10), mm);
+    try testing.expectApproxEqAbs(@as(f64, 180), lt.bpm, 1e-12);
+    try testing.expectApproxEqAbs(@as(f64, 3), lt.beat, 1e-12);
+    try testing.expectEqual(@as(u32, 0), lt.bar);
+    try testing.expectApproxEqAbs(@as(f64, 5), lt.bar_len, 1e-12);
+    const lt2 = localTime(snap, 12 - 1e-9, 120, mm.barInfoAtBeat(12), mm);
+    try testing.expectEqual(@as(u32, 1), lt2.bar);
+    try testing.expectApproxEqAbs(@as(f64, 1), lt2.beat_in_bar, 1e-6);
 }

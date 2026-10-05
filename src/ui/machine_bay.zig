@@ -37,6 +37,8 @@ pub const DeviceRef = union(enum) {
 
 pub const Result = struct {
     minimize: bool = false,
+    /// The frozen bay's UNFREEZE (docs/28 §Freeze).
+    unfreeze: bool = false,
 
     // Trailing "+" — add a brand-new device to the chain.
     add_machine: ?usize = null, // registry index to add
@@ -191,6 +193,11 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
     }
     bay_scroll_x = std.math.clamp(bay_scroll_x, 0, max_scroll);
 
+    // Frozen: its machines don't play, so they don't take edits either
+    // (docs/28 §Freeze); a banner over them says so and unfreezes.
+    const frozen = !is_bus and t.freeze != null;
+    const saved_in = ui.in;
+    if (frozen) ui.suppressInput();
     ui.clip(area);
     var x = area.x - bay_scroll_x;
 
@@ -274,6 +281,20 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
         result.add_preset = pick.preset;
     }
     ui.unclip();
+    if (frozen) {
+        ui.in = saved_in;
+        ui.rect(area, ui_style.chassis.alpha(150));
+        const stale = t.freeze.?.stale;
+        const msg = if (stale) "FROZEN, AND STALE: THE TRACK CHANGED SINCE" else "FROZEN: ITS AUDIO PLAYS INSTEAD OF THESE MACHINES";
+        const bw = ui.fonts.legend.measure(msg) + 16 + 96;
+        var banner = area.center(@min(area.w - 8, bw), 28);
+        const plate = ui.plate(banner, .{ .outline = .all });
+        _ = plate;
+        const btn = banner.cutRight(96).insetXY(4, 4);
+        ui.textIn(&ui.fonts.legend, banner.insetXY(8, 0), msg, if (stale) ui_style.rec else ui_style.text, .left, true);
+        if (ctl.button(ui, btn, "unfreeze", null, .{ .label = "UNFREEZE" })) result.unfreeze = true;
+        menu.tip(ui, btn, "Play the machines again (right-click the track's name: Freeze again)");
+    }
 
     if (overflow) drawMinimap(ui, minimap, area.w, content_w, max_scroll, inst_w, t, is_bus);
     return result;

@@ -5,7 +5,7 @@
 //! CONCOCTION — the prototype of that machine's panel cards.
 //! BROWSER — the library browser prototype (gallery_browser.zig).
 //! DIALOGS — the Export sheet (each tab), its report, and Bounce (docs/27),
-//! one at a time over mock tracks; SLAB_GALLERY_DIALOG=0..5 picks one.
+//! one at a time over mock tracks; SLAB_GALLERY_DIALOG=0..6 picks one.
 //! Everything is packed: plates tile the window with shared 1px seams.
 
 const std = @import("std");
@@ -19,6 +19,13 @@ const browser = @import("gallery_browser.zig");
 const menu = @import("menu.zig");
 const export_dialog = @import("export_dialog.zig");
 const bounce_dialog = @import("bounce_dialog.zig");
+const marker_dialog = @import("marker_dialog.zig");
+const groove_mod = @import("../groove.zig");
+var gallery_groove_pool = groove_mod.Pool.init();
+var gallery_groove_cx = groove_mod.Context{ .pool = &gallery_groove_pool };
+const markers_mod = @import("../markers.zig");
+const tempo_mod = @import("../tempo.zig");
+const meter_mod = @import("../meter.zig");
 const export_settings = @import("../export_settings.zig");
 const track_mod = @import("../track.zig");
 const machine_mod = @import("../machine.zig");
@@ -34,6 +41,7 @@ const State = struct {
     export_dlg: export_dialog.State = .{ .active = true },
     export_card: export_dialog.State = .{},
     bounce_dlg: bounce_dialog.State = .{ .active = true },
+    marker_dlg: marker_dialog.State = .{},
     export_cfg: export_settings.Settings = .{},
     export_presets: export_settings.UserPresets = .{},
     mock_tracks: []track_mod.Track = &.{},
@@ -196,6 +204,13 @@ fn mockTracks(alloc: std.mem.Allocator, out: *[10]track_mod.Track) !void {
     out[4].stem = .{ .on = true, .signal = 2 };
 }
 
+const mock_sections = [_]markers_mod.Section{
+    .{ .beat = 0, .name = markers_mod.Name.init("intro") },
+    .{ .beat = 32, .name = markers_mod.Name.init("verse") },
+    .{ .beat = 96, .name = markers_mod.Name.init("chorus") },
+    .{ .beat = 160, .name = markers_mod.Name.init("outro") },
+};
+
 /// One dialog at a time, centered: a strip picks it.
 fn dialogsPage(ui: *Ui, screen_in: Rect, st: *State) void {
     var screen = screen_in;
@@ -203,7 +218,7 @@ fn dialogsPage(ui: *Ui, screen_in: Rect, st: *State) void {
         ui.pushId("pick");
         defer ui.popId();
         var strip = screen.cutTop(22);
-        _ = ctl.segmentedFlush(ui, strip.cutLeft(600), "dialog", &st.dialog, &.{ "TRACKS", "FORMAT", "LEVEL", "FILES", "REPORT", "BOUNCE" });
+        _ = ctl.segmentedFlush(ui, strip.cutLeft(600), "dialog", &st.dialog, &.{ "TRACKS", "FORMAT", "LEVEL", "FILES", "REPORT", "BOUNCE", "SECTION" });
         _ = ui.plate(strip, .{});
     }
     const cx = export_dialog.Context{
@@ -212,7 +227,8 @@ fn dialogsPage(ui: *Ui, screen_in: Rect, st: *State) void {
         .tracks = st.mock_tracks,
         .project = "broken_glass",
         .bpm = 121,
-        .range_secs = .{ 192.4, 16, null },
+        .range_secs = .{ 192.4, 16, null, 180.2 },
+        .sections = &mock_sections,
     };
     switch (st.dialog) {
         0...3 => {
@@ -229,6 +245,22 @@ fn dialogsPage(ui: *Ui, screen_in: Rect, st: *State) void {
                 st.export_card = .{ .active = true, .card = card, .showing_card = true };
             }
             _ = export_dialog.draw(ui, screen, &st.export_card, cx, null);
+        },
+        6 => {
+            // The grooves the dialog lists.
+            if (groove_mod.active == null) groove_mod.active = &gallery_groove_cx;
+            if (!st.marker_dlg.active) {
+                var mk: markers_mod.Markers = .{};
+                _ = mk.addSection(0, "intro");
+                _ = mk.addSection(32, "verse");
+                var tm = tempo_mod.TempoMap.constant(121);
+                _ = tm.put(32, 140);
+                tm.rebuild();
+                const pts = [_]meter_mod.MeterPoint{ .{ .start_bar = 0, .numerator = 4, .denominator = 4 }, .{ .start_bar = 8, .numerator = 7, .denominator = 8 } };
+                const mm = meter_mod.MeterMap{ .points = &pts };
+                marker_dialog.open(&st.marker_dlg, &mk, .section, 1, &tm, mm);
+            }
+            _ = marker_dialog.draw(ui, screen, &st.marker_dlg);
         },
         else => {
             st.bounce_dlg.active = true;

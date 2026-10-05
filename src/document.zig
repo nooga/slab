@@ -15,6 +15,9 @@ const transport_mod = @import("transport.zig");
 const machine_mod = @import("machine.zig");
 const audio_pool_mod = @import("audio_pool.zig");
 const meter_mod = @import("meter.zig");
+const tempo_mod = @import("tempo.zig");
+const markers_mod = @import("markers.zig");
+const groove_mod = @import("groove.zig");
 const automation = @import("automation.zig");
 const export_settings = @import("export_settings.zig");
 
@@ -75,6 +78,22 @@ var active_meter: ?*meter_mod.MeterState = null;
 
 pub fn setMeterState(m: *meter_mod.MeterState) void {
     active_meter = m;
+}
+
+/// Process-wide locators and sections (docs/28 §Locators and sections),
+/// registered at startup like the meter.
+var active_markers: ?*markers_mod.Markers = null;
+
+pub fn setMarkers(m: *markers_mod.Markers) void {
+    active_markers = m;
+}
+
+pub fn markers() ?*markers_mod.Markers {
+    return active_markers;
+}
+
+pub fn meterState() ?*meter_mod.MeterState {
+    return active_meter;
 }
 
 /// Process-wide export settings (docs/27 §Export), saved with the project
@@ -146,7 +165,21 @@ pub fn serialize(
     errdefer out.deinit(alloc);
 
     try out.appendSlice(alloc, "{\"slab\":\"" ++ KIND ++ "\",\"schema\":" ++ std.fmt.comptimePrint("{d}", .{SCHEMA}) ++ ",\"transport\":{\"bpm\":");
-    try appendFmt(alloc, &out, "{d}", .{transport.bpm()});
+    try appendFmt(alloc, &out, "{d}", .{transport.map().base()});
+    // Tempo changes after the first point (docs/28 §Tempo map).
+    const tempo_points = transport.map().slice();
+    if (tempo_points.len > 1) {
+        try out.appendSlice(alloc, ",\"tempo\":[");
+        for (tempo_points[1..], 0..) |p, i| {
+            if (i > 0) try out.append(alloc, ',');
+            try appendFmt(alloc, &out, "{{\"beat\":{d},\"bpm\":{d}", .{ p.beat, p.bpm });
+            if (p.ramp) try out.appendSlice(alloc, ",\"ramp\":true");
+            try out.append(alloc, '}');
+        }
+        try out.append(alloc, ']');
+    }
+    // The first point's ramp glides to the second.
+    if (tempo_points.len > 1 and tempo_points[0].ramp) try out.appendSlice(alloc, ",\"ramp\":true");
     try appendFmt(alloc, &out, ",\"loop\":{{\"on\":{s},\"start\":{d},\"end\":{d}}}}}", .{
         boolStr(transport.loopEnabled()), transport.loopStartBeats(), transport.loopEndBeats(),
     });
@@ -171,6 +204,9 @@ pub fn serialize(
         }
         try out.append(alloc, ']');
     }
+
+    if (groove_mod.active) |cx| try appendGrooves(alloc, &out, cx);
+    if (active_markers) |mk| try appendMarkers(alloc, &out, mk);
 
     try out.appendSlice(alloc, ",\"tracks\":[");
     for (tracks, 0..) |*t, ti| {
@@ -209,6 +245,26 @@ pub fn serialize(
         try appendLanes(alloc, &out, t);
         if (t.lanes_shown) try out.appendSlice(alloc, ",\"show_automation\":true");
         if (!t.stem.isDefault()) try appendStem(alloc, &out, t.stem);
+        // Its own time (docs/28 §Polymeter and polytempo), the parts set.
+        if (!t.time.isDefault()) {
+            try out.appendSlice(alloc, ",\"time\":{");
+            if (t.time.hasMeter()) try appendFmt(alloc, &out, "\"meter\":[{d},{d}]", .{ t.time.num, t.time.den });
+            if (t.time.p != t.time.q) try appendFmt(alloc, &out, "{s}\"ratio\":[{d},{d}]", .{ if (t.time.hasMeter()) "," else "", t.time.p, t.time.q });
+            try out.append(alloc, '}');
+        }
+        // Frozen (docs/28 §Freeze): an audio reference, so a package
+        // collects the file like a clip's.
+        if (t.freeze) |f| if (active_pool) |p| if (p.get(f.source)) |src| {
+            var rb: [storage.MAX_PATH]u8 = undefined;
+            try out.appendSlice(alloc, ",\"freeze\":{\"type\":\"audio\",\"source\":");
+            try appendJsonString(alloc, &out, storage.ref(&rb, src.path()));
+            try appendFmt(alloc, &out, ",\"hash\":\"{x:0>16}\"}}", .{f.hash});
+        };
+        if (!t.groove.isDefault()) if (groove_mod.active) |cx| {
+            try out.appendSlice(alloc, ",\"groove\":{\"name\":");
+            try appendJsonString(alloc, &out, cx.pool.pickName(t.groove.pick));
+            try appendFmt(alloc, &out, ",\"amount\":{d},\"shift_ms\":{d}}}", .{ t.groove.amount, t.groove.shift_ms });
+        };
         if (t.folded and t.isBus()) try out.appendSlice(alloc, ",\"folded\":true");
 
         // Clips.
@@ -667,6 +723,118 @@ fn appendParams(alloc: std.mem.Allocator, out: *std.ArrayList(u8), mach: machine
     } else try out.appendSlice(alloc, "{}");
 }
 
+/// The song's groove and seed, and the project's own grooves (docs/28
+/// §Groove), when they aren't the defaults.
+fn appendGrooves(alloc: std.mem.Allocator, out: *std.ArrayList(u8), cx: *const groove_mod.Context) !void {
+    if (cx.song != groove_mod.PICK_NONE or cx.seed != (groove_mod.Context{ .pool = cx.pool }).seed) {
+        try out.appendSlice(alloc, ",\"groove\":{\"song\":");
+        try appendJsonString(alloc, out, cx.pool.pickName(cx.song));
+        try appendFmt(alloc, out, ",\"seed\":{d}}}", .{cx.seed});
+    }
+    if (cx.pool.count <= groove_mod.BUILTIN.len) return;
+    try out.appendSlice(alloc, ",\"grooves\":[");
+    for (cx.pool.slice()[groove_mod.BUILTIN.len..], 0..) |*g, i| {
+        if (i > 0) try out.append(alloc, ',');
+        try out.appendSlice(alloc, "{\"name\":");
+        try appendJsonString(alloc, out, g.name.get());
+        try appendFmt(alloc, out, ",\"cycle\":{d},\"sub\":{d},\"cells\":[", .{ g.cycle, g.sub });
+        const ncells: usize = if (g.isGroup()) 2 else 1;
+        for (g.cells[0..ncells], 0..) |*cl, ci| {
+            if (ci > 0) try out.append(alloc, ',');
+            try appendFmt(alloc, out, "{{\"steps\":{d}", .{cl.steps});
+            for ([_][]const u8{ "shift", "vel", "rand" }, [_]*const [groove_mod.MAX_STEPS]f32{ &cl.shift, &cl.vel, &cl.rand }) |key, arr| {
+                try appendFmt(alloc, out, ",\"{s}\":[", .{key});
+                for (arr[0..cl.steps], 0..) |v, k| {
+                    if (k > 0) try out.append(alloc, ',');
+                    try appendFmt(alloc, out, "{d}", .{v});
+                }
+                try out.append(alloc, ']');
+            }
+            try out.append(alloc, '}');
+        }
+        try out.appendSlice(alloc, "]}");
+    }
+    try out.append(alloc, ']');
+}
+
+fn applyGrooves(root: std.json.ObjectMap, cx: *groove_mod.Context) void {
+    const pool = cx.pool;
+    pool.reset();
+    if (objGet(root, "grooves")) |v| if (v == .array) for (v.array.items) |gv| {
+        if (gv != .object) continue;
+        var g = groove_mod.Groove{ .name = groove_mod.Name.init(strOf(objGet(gv.object, "name")) orelse continue) };
+        g.cycle = @floatCast(std.math.clamp(asF64(objGet(gv.object, "cycle") orelse .{ .float = 1 }), 0, 16));
+        g.sub = @intFromFloat(std.math.clamp(asF64(objGet(gv.object, "sub") orelse .{ .float = 1 }), 1, 8));
+        if (objGet(gv.object, "cells")) |cs| if (cs == .array) for (cs.array.items[0..@min(2, cs.array.items.len)], 0..) |cv, ci| {
+            if (cv != .object) continue;
+            const cl = &g.cells[ci];
+            cl.steps = @intFromFloat(std.math.clamp(asF64(objGet(cv.object, "steps") orelse .{ .float = 2 }), 1, @as(f64, groove_mod.MAX_STEPS)));
+            for ([_][]const u8{ "shift", "vel", "rand" }, [_]*[groove_mod.MAX_STEPS]f32{ &cl.shift, &cl.vel, &cl.rand }) |key, arr| {
+                if (objGet(cv.object, key)) |av| if (av == .array) for (av.array.items[0..@min(cl.steps, av.array.items.len)], 0..) |x, k| {
+                    arr[k] = @floatCast(asF64(x));
+                };
+            }
+        };
+        _ = pool.put(g) orelse break;
+    };
+    cx.song = groove_mod.PICK_NONE;
+    cx.seed = (groove_mod.Context{ .pool = cx.pool }).seed;
+    if (objGet(root, "groove")) |v| if (v == .object) {
+        const p = pool.pickOf(strOf(objGet(v.object, "song")) orelse "");
+        cx.song = if (p == groove_mod.PICK_FOLLOW) groove_mod.PICK_NONE else p;
+        if (objGet(v.object, "seed")) |x| cx.seed = @intFromFloat(@max(0, asF64(x)));
+    };
+}
+
+/// Locators, sections and END, each only when there are any.
+fn appendMarkers(alloc: std.mem.Allocator, out: *std.ArrayList(u8), mk: *const markers_mod.Markers) !void {
+    if (mk.locator_n > 0) {
+        try out.appendSlice(alloc, ",\"locators\":[");
+        for (mk.locatorSlice(), 0..) |l, i| {
+            if (i > 0) try out.append(alloc, ',');
+            try appendFmt(alloc, out, "{{\"beat\":{d},\"name\":", .{l.beat});
+            try appendJsonString(alloc, out, l.name.get());
+            try out.append(alloc, '}');
+        }
+        try out.append(alloc, ']');
+    }
+    if (mk.section_n > 0) {
+        try out.appendSlice(alloc, ",\"sections\":[");
+        for (mk.sectionSlice(), 0..) |sec, i| {
+            if (i > 0) try out.append(alloc, ',');
+            try appendFmt(alloc, out, "{{\"beat\":{d},\"name\":", .{sec.beat});
+            try appendJsonString(alloc, out, sec.name.get());
+            try appendFmt(alloc, out, ",\"color\":{d}", .{sec.color});
+            if (sec.groove != groove_mod.PICK_FOLLOW) if (groove_mod.active) |cx| {
+                try out.appendSlice(alloc, ",\"groove\":");
+                try appendJsonString(alloc, out, cx.pool.pickName(sec.groove));
+            };
+            try out.append(alloc, '}');
+        }
+        try out.append(alloc, ']');
+    }
+    if (mk.end) |e| try appendFmt(alloc, out, ",\"end\":{d}", .{e});
+}
+
+fn applyMarkers(root: std.json.ObjectMap, mk: *markers_mod.Markers) void {
+    mk.clear();
+    if (objGet(root, "locators")) |v| if (v == .array) for (v.array.items) |lv| {
+        if (lv != .object) continue;
+        const beat = asF64(objGet(lv.object, "beat") orelse continue);
+        _ = mk.addLocator(beat, strOf(objGet(lv.object, "name")) orelse "") orelse break;
+    };
+    if (objGet(root, "sections")) |v| if (v == .array) for (v.array.items) |sv| {
+        if (sv != .object) continue;
+        const beat = asF64(objGet(sv.object, "beat") orelse continue);
+        const i = mk.addSection(beat, strOf(objGet(sv.object, "name")) orelse "") orelse break;
+        if (objGet(sv.object, "color")) |cv| mk.sections[i].color = @intFromFloat(std.math.clamp(asF64(cv), 0, markers_mod.COLORS - 1));
+        if (groove_mod.active) |cx| mk.sections[i].groove = cx.pool.pickOf(strOf(objGet(sv.object, "groove")) orelse "");
+    };
+    if (objGet(root, "end")) |e| if (asF64(e) > 0) {
+        mk.end = asF64(e);
+    };
+}
+
 pub fn appendJsonString(alloc: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) !void {
     try out.append(alloc, '"');
     for (s) |ch| switch (ch) {
@@ -713,7 +881,18 @@ pub fn apply(
 
     if (objGet(root, "transport")) |tv| if (tv == .object) {
         const to = tv.object;
-        if (objGet(to, "bpm")) |b| transport.setBpm(@floatCast(asF64(b)));
+        var m = tempo_mod.TempoMap.constant(if (objGet(to, "bpm")) |b| asF64(b) else 120);
+        m.points[0].ramp = if (objGet(to, "ramp")) |x| asBool(x) else false;
+        if (objGet(to, "tempo")) |tv2| if (tv2 == .array) for (tv2.array.items) |pv| {
+            if (pv != .object) continue;
+            const beat = asF64(objGet(pv.object, "beat") orelse continue);
+            if (!(beat > 0)) continue;
+            const i = m.put(beat, asF64(objGet(pv.object, "bpm") orelse continue)) orelse break;
+            m.points[i].ramp = if (objGet(pv.object, "ramp")) |x| asBool(x) else false;
+        };
+        m.rebuild();
+        // Adopted at the next block (an undo may land while playing).
+        transport.tempo.set(&m);
         if (objGet(to, "loop")) |lv| if (lv == .object) {
             const lo = lv.object;
             const st = if (objGet(lo, "start")) |x| asF64(x) else 0;
@@ -753,6 +932,9 @@ pub fn apply(
         if (ms.len == 0) ms.reset();
         st.commitImmediate();
     }
+    // The grooves before the sections and tracks that name them.
+    if (groove_mod.active) |cx| applyGrooves(root, cx);
+    if (active_markers) |mk| applyMarkers(root, mk);
 
     for (tracks_buf[0..track_count.*]) |*t| t.deinit(alloc);
     track_count.* = 0;
@@ -849,6 +1031,33 @@ fn parseTrack(alloc: std.mem.Allocator, reg: *registry_mod.Registry, to: std.jso
     if (objGet(to, "automation")) |av| try applyLanes(alloc, &t, av);
     if (objGet(to, "show_automation")) |x| t.lanes_shown = asBool(x);
     if (objGet(to, "stem")) |x| t.stem = parseStem(x);
+    t.time = .{};
+    if (objGet(to, "time")) |tv| if (tv == .object) {
+        if (objGet(tv.object, "meter")) |m| if (m == .array and m.array.items.len == 2) {
+            t.time.num = @intFromFloat(std.math.clamp(asF64(m.array.items[0]), 1, 32));
+            t.time.den = @intFromFloat(std.math.clamp(asF64(m.array.items[1]), 1, 32));
+        };
+        if (objGet(tv.object, "ratio")) |m| if (m == .array and m.array.items.len == 2) {
+            t.time.p = @intFromFloat(std.math.clamp(asF64(m.array.items[0]), 1, 16));
+            t.time.q = @intFromFloat(std.math.clamp(asF64(m.array.items[1]), 1, 16));
+        };
+    };
+    t.freeze = null;
+    if (objGet(to, "freeze")) |fv| if (fv == .object) if (active_pool) |p| {
+        var rb: [storage.MAX_PATH]u8 = undefined;
+        const path = storage.resolve(&rb, strOf(objGet(fv.object, "source")) orelse "");
+        // A missing file thaws the track: its machines play.
+        if (path.len > 0) if (p.loadFile(path)) |src| {
+            const hash = std.fmt.parseInt(u64, strOf(objGet(fv.object, "hash")) orelse "0", 16) catch 0;
+            t.freeze = .{ .source = src, .hash = hash };
+        } else |_| {};
+    };
+    t.groove = .{};
+    if (objGet(to, "groove")) |gv| if (gv == .object) if (groove_mod.active) |cx| {
+        t.groove.pick = cx.pool.pickOf(strOf(objGet(gv.object, "name")) orelse "");
+        if (objGet(gv.object, "amount")) |x| t.groove.amount = @floatCast(std.math.clamp(asF64(x), 0, 1));
+        if (objGet(gv.object, "shift_ms")) |x| t.groove.shift_ms = @floatCast(std.math.clamp(asF64(x), -50, 50));
+    };
 
     // Clips.
     if (objGet(to, "clips")) |cv| if (cv == .array) {
@@ -1142,6 +1351,13 @@ test "project snapshot round-trips tracks clips notes and loop" {
     var transport: transport_mod.Transport = .{};
     transport.sample_rate = 48_000;
     transport.setBpm(132.5);
+    {
+        const m = transport.tempo.edit();
+        _ = m.put(16, 90);
+        m.points[1].ramp = true;
+        _ = m.put(32, 150);
+        transport.tempo.publish();
+    }
     transport.setLoopBeats(1.0, 9.0);
 
     var tracks = [_]track_mod.Track{
@@ -1194,6 +1410,7 @@ test "project snapshot round-trips tracks clips notes and loop" {
     try std.testing.expectApproxEqAbs(@as(f64, 1.0), loaded_transport.loopStartBeats(), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f64, 9.0), loaded_transport.loopEndBeats(), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 132.5), loaded_transport.bpm(), 0.001);
+    try std.testing.expect(loaded_transport.map().eql(transport.map()));
     try std.testing.expectEqual(track_mod.StemPlan{ .on = false, .channels = 2 }, loaded_buf[0].stem);
     // The export settings come back; a project without them gets defaults.
     xs = .{};
@@ -1806,4 +2023,96 @@ test "routing a file can't mean is dropped on load" {
     try std.testing.expectEqual(routing.NONE, loaded[1].output);
     try std.testing.expectEqual(@as(u8, 3), loaded[2].output); // first edge wins
     try std.testing.expectEqual(routing.NONE, loaded[3].output); // would close the loop
+}
+
+test "locators, sections and END round-trip through serialize/apply" {
+    const alloc = std.testing.allocator;
+    var transport: transport_mod.Transport = .{};
+    var src: markers_mod.Markers = .{};
+    _ = src.addSection(0, "INTRO");
+    _ = src.addSection(32, "VERSE \"A\"");
+    src.sections[1].color = 7;
+    _ = src.addLocator(12.5, "VOCAL IN");
+    src.end = 96;
+    setMarkers(&src);
+    defer active_markers = null;
+
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    setPool(&pool);
+    defer active_pool = null;
+    var tracks = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "T", .{ .r = 1, .g = 2, .b = 3, .a = 255 }, test_machine),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    const bytes = try serialize(alloc, tracks[0..], &transport);
+    defer alloc.free(bytes);
+
+    var dst: markers_mod.Markers = .{};
+    _ = dst.addLocator(1, "STALE");
+    setMarkers(&dst);
+    var reg = registry_mod.Registry.init(alloc);
+    defer reg.deinit();
+    var lt: transport_mod.Transport = .{};
+    var loaded_buf: [2]track_mod.Track = undefined;
+    var loaded_count: usize = 0;
+    try apply(alloc, bytes, &reg, loaded_buf[0..], &loaded_count, &lt, test_machine);
+    defer for (loaded_buf[0..loaded_count]) |*t| t.deinit(alloc);
+
+    try std.testing.expectEqual(@as(usize, 2), dst.section_n);
+    try std.testing.expectEqualStrings("VERSE \"A\"", dst.sections[1].name.get());
+    try std.testing.expectEqual(@as(u8, 7), dst.sections[1].color);
+    try std.testing.expectEqual(@as(usize, 1), dst.locator_n);
+    try std.testing.expectEqual(@as(f64, 12.5), dst.locators[0].beat);
+    try std.testing.expectEqual(@as(?f64, 96), dst.end);
+}
+
+test "grooves round-trip: the project's own, the song's, a section's and a track's" {
+    const alloc = std.testing.allocator;
+    var transport: transport_mod.Transport = .{};
+    var pool = groove_mod.Pool.init();
+    var mine = groove_mod.extract("MY FEEL", &.{ 0, 0.3, 0.5, 0.8 }, &.{ 100, 70, 100, 70 }, 0.25, 2);
+    mine.cells[0].rand[1] = 0.05;
+    const mi = pool.put(mine).?;
+    var cx = groove_mod.Context{ .pool = &pool, .song = groove_mod.PICK_POOL + 1, .seed = 77 };
+    groove_mod.active = &cx;
+    defer groove_mod.active = null;
+    var mk: markers_mod.Markers = .{};
+    _ = mk.addSection(0, "A");
+    mk.sections[0].groove = @intCast(groove_mod.PICK_POOL + mi);
+    setMarkers(&mk);
+    defer active_markers = null;
+    var apool = audio_pool_mod.AudioPool.init(alloc);
+    defer apool.deinit();
+    setPool(&apool);
+    defer active_pool = null;
+    var tracks = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "T", .{ .r = 1, .g = 2, .b = 3, .a = 255 }, test_machine),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    tracks[0].groove = .{ .pick = groove_mod.PICK_NONE, .amount = 0.5, .shift_ms = -8 };
+    const bytes = try serialize(alloc, tracks[0..], &transport);
+    defer alloc.free(bytes);
+
+    pool.reset();
+    cx.song = groove_mod.PICK_NONE;
+    cx.seed = 1;
+    var reg = registry_mod.Registry.init(alloc);
+    defer reg.deinit();
+    var lt: transport_mod.Transport = .{};
+    var loaded_buf: [2]track_mod.Track = undefined;
+    var loaded_count: usize = 0;
+    try apply(alloc, bytes, &reg, loaded_buf[0..], &loaded_count, &lt, test_machine);
+    defer for (loaded_buf[0..loaded_count]) |*t| t.deinit(alloc);
+    try std.testing.expectEqual(groove_mod.BUILTIN.len + 1, pool.count);
+    const g = pool.grooves[mi];
+    try std.testing.expectEqualStrings("MY FEEL", g.name.get());
+    try std.testing.expectApproxEqAbs(mine.cells[0].shift[1], g.cells[0].shift[1], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.05), g.cells[0].rand[1], 1e-6);
+    try std.testing.expectEqual(@as(u8, groove_mod.PICK_POOL + 1), cx.song);
+    try std.testing.expectEqual(@as(u64, 77), cx.seed);
+    try std.testing.expectEqual(@as(u8, @intCast(groove_mod.PICK_POOL + mi)), mk.sections[0].groove);
+    try std.testing.expectEqual(groove_mod.PICK_NONE, loaded_buf[0].groove.pick);
+    try std.testing.expectEqual(@as(f32, 0.5), loaded_buf[0].groove.amount);
+    try std.testing.expectEqual(@as(f32, -8), loaded_buf[0].groove.shift_ms);
 }

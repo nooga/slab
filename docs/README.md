@@ -78,6 +78,8 @@ self-contained but assumes the vocabulary established in earlier ones.
 26. [27-bounce-export.md](27-bounce-export.md) — bounce a selection to
     a new track (taps, clip mute, thawable recipes) and export: stems
     in one pass, sections, FLAC/ALAC/AAC, dither, loudness report
+27. [28-time.md](28-time.md) — how a beat becomes a sample: the tempo
+    map, locators and sections, groove, polymeter and polytempo, freeze
 
 ## Terminology crib sheet
 

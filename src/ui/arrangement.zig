@@ -33,6 +33,10 @@ const audio_pool_mod = @import("../audio_pool.zig");
 const waveform = @import("../waveform.zig");
 const meter_mod = @import("../meter.zig");
 const meter_gen = @import("../meter_gen.zig");
+const tempo_mod = @import("../tempo.zig");
+const arrange = @import("../arrange.zig");
+const markers_mod = @import("../markers.zig");
+const groove_mod = @import("../groove.zig");
 const recorder_mod = @import("../recorder.zig");
 const automation = @import("../automation.zig");
 const auto_lane = @import("automation_lane.zig");
@@ -283,6 +287,11 @@ fn rulerH() f32 {
 fn overviewH() f32 {
     return 24;
 }
+/// The section lane between the overview and the ruler (docs/28
+/// §Locators and sections).
+fn markerH() f32 {
+    return 16;
+}
 fn resizeEdgeW() f32 {
     return 5;
 }
@@ -311,7 +320,9 @@ const ClipDragSnap = struct {
 var px_per_beat: f32 = 24;
 // Current project tempo, captured at the top of draw() so drag handlers
 // (which don't take the transport) can convert beats↔source-seconds.
-var cur_bpm: f64 = 120;
+/// The tempo map this frame (audio clips convert their seconds through it).
+var cur_tempo: *const tempo_mod.TempoMap = &default_tempo;
+const default_tempo = tempo_mod.TempoMap.constant(120);
 // Live meter map for this frame's grid, captured at the top of draw().
 var default_meter_pts = [_]meter_mod.MeterPoint{.{ .start_bar = 0, .numerator = 4, .denominator = 4 }};
 var cur_meter: meter_mod.MeterMap = .{ .points = &default_meter_pts };
@@ -404,7 +415,66 @@ pub const Result = struct {
     /// hung from this point.
     color_pick: ?ColorPick = null,
     rename_rect: ?c.rl.Rectangle = null,
+    /// A tempo change picked from the ruler menu: main takes the undo
+    /// snapshot and applies it (`applyTempoEdit`).
+    tempo_edit: ?TempoEdit = null,
+    /// A section/locator/END edit from the lane's menu: main takes the undo
+    /// snapshot and applies it (`applyMarkerEdit`).
+    marker_edit: ?MarkerEdit = null,
+    /// Double-click or "Edit…": open the marker dialog on this one.
+    marker_open: ?MarkerRef = null,
+    /// The lane menu's section edits (docs/28 §Arranging by section): main
+    /// takes the undo snapshot and runs it (arrange.zig).
+    section_op: ?SectionOp = null,
+    /// The ruler menu's Song groove: main takes the undo snapshot and
+    /// sets it (a groove.zig pick: NONE or the pool's).
+    song_groove: ?u8 = null,
 };
+
+pub const MarkerRef = struct { kind: markers_mod.Kind, index: usize };
+
+pub const SectionOp = struct {
+    kind: enum { duplicate, delete, earlier, later },
+    index: usize,
+};
+
+pub const MarkerEdit = union(enum) {
+    add_section: f64,
+    add_locator: f64,
+    remove: MarkerRef,
+    set_end: f64,
+    clear_end,
+};
+
+pub fn applyMarkerEdit(mk: *markers_mod.Markers, e: MarkerEdit) void {
+    switch (e) {
+        .add_section => |b| _ = mk.addSection(b, ""),
+        .add_locator => |b| _ = mk.addLocator(b, ""),
+        .remove => |r| mk.remove(r.kind, r.index),
+        .set_end => |b| mk.end = b,
+        .clear_end => mk.end = null,
+    }
+}
+
+/// A ruler edit of the tempo map (docs/28 §Tempo map), at `beat`.
+pub const TempoEdit = struct {
+    kind: enum { add, remove, toggle_ramp },
+    beat: f64,
+};
+
+/// Apply a ruler tempo edit to the live map.
+pub fn applyTempoEdit(transport: *Transport, e: TempoEdit) void {
+    const m = transport.tempo.edit();
+    switch (e.kind) {
+        .add => _ = m.put(e.beat, m.bpmAt(e.beat)),
+        .remove => if (m.find(e.beat)) |i| m.remove(i),
+        .toggle_ramp => {
+            const i = m.segment(e.beat);
+            m.points[i].ramp = !m.points[i].ramp;
+        },
+    }
+    transport.tempo.publish();
+}
 
 pub const ColorPick = struct { track: usize, at: [2]i32 };
 
@@ -508,11 +578,13 @@ pub fn abortClipMove(tracks: []Track) void {
 }
 
 pub fn cancelInteractions() bool {
-    const had_active = drag_mode != .none or box_active or ov_drag or ruler_drag or loop_start_drag or loop_end_drag or sbv_drag;
+    const had_active = drag_mode != .none or box_active or ov_drag or ruler_drag or tempo_drag != null or marker_drag != null or loop_start_drag or loop_end_drag or sbv_drag;
     drag_mode = .none;
     box_active = false;
     ov_drag = false;
     ruler_drag = false;
+    tempo_drag = null;
+    marker_drag = null;
     loop_start_drag = false;
     loop_end_drag = false;
     sbv_drag = false;
@@ -722,81 +794,24 @@ fn hasSelectedAudioClips(tracks: []Track) bool {
     return false;
 }
 
-pub fn splitSelectedClipsAt(tracks: []Track, alloc: std.mem.Allocator, focused_clip: *?ClipRef, beat: f64, bpm: f64) bool {
+pub fn splitSelectedClipsAt(tracks: []Track, alloc: std.mem.Allocator, focused_clip: *?ClipRef, beat: f64, tmap: *const tempo_mod.TempoMap) bool {
     var changed = false;
     var first: ?ClipRef = null;
     for (tracks, 0..) |*t, ti| {
         const original_len = t.clips.items.len;
         var ci: usize = 0;
         while (ci < original_len) : (ci += 1) {
-            var clip = &t.clips.items[ci];
+            const clip = &t.clips.items[ci];
             if (!clip.selected) continue;
             const local = beat - clip.start_beat;
             if (local <= minClipBeats(.note_16) or local >= clip.length_beats - minClipBeats(.note_16)) continue;
-
-            // Audio clip: carve the source window at the split point. The
-            // right part reads from where the left part stopped.
-            if (clip.isAudio()) {
-                const split_sec = local * 60.0 / @max(1.0, bpm);
-                var right_a = Clip.initAudio(clip.name(), beat, clip.start_beat + clip.length_beats - beat, clip.audio.source);
-                right_a.selected = true;
-                right_a.muted = clip.muted;
-                right_a.audio.gain = clip.audio.gain;
-                right_a.audio.reversed = clip.audio.reversed;
-                right_a.audio.dur_sec = @max(0.0, clip.audio.dur_sec - split_sec);
-                if (clip.audio.reversed) {
-                    // Reversed, the left part plays the window's tail and
-                    // the right part the head.
-                    right_a.audio.start_sec = clip.audio.start_sec;
-                    clip.audio.start_sec += right_a.audio.dur_sec;
-                } else {
-                    right_a.audio.start_sec = clip.audio.start_sec + split_sec;
-                }
-                clip.audio.dur_sec = split_sec;
-                clip.length_beats = local;
-                clip.selected = false;
-                t.addClip(alloc, right_a) catch |err| {
-                    std.log.err("split audio clip append failed: {s}", .{@errorName(err)});
-                    continue;
-                };
-                changed = true;
-                if (first == null) first = .{ .track = @intCast(ti), .clip = @intCast(t.clips.items.len - 1) };
-                continue;
-            }
-
-            var right = Clip.init(clip.name(), beat, clip.start_beat + clip.length_beats - beat);
-            right.selected = true;
-            right.muted = clip.muted;
-            errdefer right.deinit(alloc);
-
-            var ni: usize = 0;
-            while (ni < clip.notes.items.len) {
-                var note = clip.notes.items[ni];
-                if (note.start_beat >= local) {
-                    _ = clip.notes.orderedRemove(ni);
-                    note.start_beat -= local;
-                    note.selected = false;
-                    right.addNote(alloc, note) catch |err| {
-                        std.log.err("split clip note move failed: {s}", .{@errorName(err)});
-                        continue;
-                    };
-                } else {
-                    const note_end = note.start_beat + note.length_beats;
-                    if (note_end > local) {
-                        clip.notes.items[ni].length_beats = @max(minClipBeats(.note_16), local - note.start_beat);
-                    }
-                    ni += 1;
-                }
-            }
-
-            clip.splitLanes(alloc, &right, local) catch |err| std.log.err("split clip lanes failed: {s}", .{@errorName(err)});
-            clip.length_beats = local;
-            clip.selected = false;
-            t.addClip(alloc, right) catch |err| {
-                std.log.err("split clip append failed: {s}", .{@errorName(err)});
-                right.deinit(alloc);
+            // The right part (appended, selected) reads on from the cut.
+            const did = arrange.splitClip(alloc, t, ci, beat, tmap) catch |err| {
+                std.log.err("split clip failed: {s}", .{@errorName(err)});
                 continue;
             };
+            if (!did) continue;
+            t.clips.items[ci].selected = false;
             changed = true;
             if (first == null) first = .{ .track = @intCast(ti), .clip = @intCast(t.clips.items.len - 1) };
         }
@@ -904,6 +919,7 @@ pub fn draw(
     selected_clip: *?ClipRef,
     transport: *Transport,
     meter_state: *meter_mod.MeterState,
+    markers: *markers_mod.Markers,
     edit_snap: snap_mod.Setting,
     can_paste_clips: bool,
     rename_target: RenameTarget,
@@ -925,10 +941,10 @@ pub fn draw(
     ui.rect(bridge.fromRl(r), ui_style.pane);
 
     // Audio clips are unwarped: their beat-length is derived from the source
-    // window at the current tempo, so changing bpm rescales them against the
-    // bar grid. Do this before any interaction/draw uses length_beats.
-    cur_bpm = @max(1.0, @as(f64, transport.bpm()));
-    reflowAudioClips(tracks, cur_bpm);
+    // window through the tempo map, so a tempo edit rescales them against
+    // the bar grid. Do this before any interaction/draw uses length_beats.
+    cur_tempo = transport.map();
+    reflowAudioClips(tracks, cur_tempo);
 
     var master_clicked = false;
 
@@ -945,8 +961,9 @@ pub fn draw(
 
     // ── Layout slices ────────────────────────────────────────────────
     const overview_rect = pane.rect(timeline_x, r.y, timeline_w, overviewH());
-    const ruler_rect = pane.rect(timeline_x, r.y + overviewH(), timeline_w, rulerH());
-    const hdr_top = pane.rect(header_x, r.y, header_w, overviewH() + rulerH());
+    const marker_rect = pane.rect(timeline_x, r.y + overviewH(), timeline_w, markerH());
+    const ruler_rect = pane.rect(timeline_x, r.y + overviewH() + markerH(), timeline_w, rulerH());
+    const hdr_top = pane.rect(header_x, r.y, header_w, overviewH() + markerH() + rulerH());
 
     // Header column block over the overview + ruler rows: TRACKS + add.
     {
@@ -975,7 +992,7 @@ pub fn draw(
 
     // Clamp scrolls once we know content extent.
     const content_beats = contentBeats(tracks);
-    const lanes_top = r.y + overviewH() + rulerH();
+    const lanes_top = r.y + overviewH() + markerH() + rulerH();
     const lanes_h = @max(0, lanes_bottom - lanes_top);
     geo = .{
         .timeline_x = timeline_x,
@@ -1017,8 +1034,10 @@ pub fn draw(
     _ = ui.plate(bridge.fromRl(ruler_rect), .{});
     drawLoopRegion(ui, ruler_rect, timeline_x0, transport);
     drawBeatTicks(ui, ruler_rect, timeline_x, timeline_w, timeline_x0, edit_snap);
+    drawTempoMarks(ui, ruler_rect, timeline_x, timeline_w, timeline_x0);
     ui.unclip();
 
+    handleTempoDrag(transport, m);
     handleLoopBounds(ruler_rect, timeline_x0, transport, edit_snap, m);
     // Click / drag the ruler to scrub the playhead.
     if (!loop_start_drag and !loop_end_drag) handleRulerScrub(ruler_rect, timeline_x0, transport, m);
@@ -1029,7 +1048,15 @@ pub fn draw(
         meter_menu_bar = cur_meter.beatToBarPos(b).bar;
         menu.openAt(METER_MENU_KEY, ipx(m.x), ipx(m.y));
     }
-    meterMenuTick(meter_state);
+    meterMenuTick(meter_state, &result);
+
+    // ── Section lane ─────────────────────────────────────────────────
+    const song_end = lastClipEnd(tracks);
+    ui.clip(bridge.fromRl(marker_rect));
+    drawMarkerLane(ui, marker_rect, timeline_x, timeline_w, timeline_x0, markers, song_end);
+    ui.unclip();
+    handleMarkerLane(ui, marker_rect, timeline_x0, transport, markers, song_end, edit_snap, m, &result);
+    markerMenuTick(transport, markers, song_end, &result);
 
     // ── Per-track lane + clips ───────────────────────────────────────
     var press_consumed = false;
@@ -1150,7 +1177,7 @@ pub fn draw(
         for (t.clips.items, 0..) |*clip, ci| {
             const clip_rect = clipRect(lane_timeline, clip.*, timeline_x0);
             const editing = rename_target.kind == .clip and rename_target.track == ti and rename_target.clip == ci;
-            drawClip(ui, clip_rect, clip.*, t.color, clip.selected, editing, pool);
+            drawClip(ui, clip_rect, clip.*, t.color, clip.selected, editing, pool, t.time.rate());
             if (editing) result.rename_rect = clipNameRect(clip_rect);
         }
 
@@ -1384,7 +1411,7 @@ pub fn draw(
     // Overview strip on top (rendered last so nothing scissor-clips it).
     drawOverview(ui, overview_rect, timeline_w, tracks, content_beats, transport, m);
     // The ruler owns right-click (meter menu); keep the arrangement menu off it.
-    const rclick_on_ruler = m.right_pressed and pane.contains(ruler_rect, m.x, m.y);
+    const rclick_on_ruler = m.right_pressed and (pane.contains(ruler_rect, m.x, m.y) or pane.contains(marker_rect, m.x, m.y));
     // A lane point's menu opened this frame keeps the press.
     const lane_menu_open = menu.active() and !menu.isOpen(ARR_CONTEXT_KEY);
     if (!rclick_on_ruler and !lane_menu_open and menu.openContext(ui, ARR_CONTEXT_KEY, bridge.fromRl(r))) {
@@ -1538,6 +1565,11 @@ fn clampScrollY(content_h: f32, lanes_h: f32) void {
     if (scroll_y > max_sy) scroll_y = max_sy;
 }
 
+/// Seconds an audio clip spans from `start` for `len` beats.
+fn clipSeconds(start: f64, len: f64) f64 {
+    return cur_tempo.secondsAt(start + len) - cur_tempo.secondsAt(start);
+}
+
 // ── Clip selection ───────────────────────────────────────────────────
 
 fn deselectAllClips(tracks: []Track) void {
@@ -1546,14 +1578,14 @@ fn deselectAllClips(tracks: []Track) void {
     }
 }
 
-/// Recompute every audio clip's `length_beats` from its source window at
-/// `bpm`. The window (`dur_sec`) is tempo-independent, so this keeps the
-/// clip's bar-span correct as the project tempo changes.
-pub fn reflowAudioClips(tracks: []Track, bpm: f64) void {
+/// Recompute every audio clip's `length_beats` from its source window
+/// through the tempo map. The window (`dur_sec`) is tempo-independent, so
+/// this keeps the clip's bar-span correct as the tempo changes.
+pub fn reflowAudioClips(tracks: []Track, tmap: *const tempo_mod.TempoMap) void {
     for (tracks) |*t| {
         for (t.clips.items) |*clip| {
             if (!clip.isAudio()) continue;
-            clip.length_beats = @max(MIN_CLIP_BEATS, clip.audio.dur_sec * bpm / 60.0);
+            clip.length_beats = @max(MIN_CLIP_BEATS, tmap.beatAfter(clip.start_beat, clip.audio.dur_sec) - clip.start_beat);
         }
     }
 }
@@ -1715,17 +1747,17 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
             if (clip.isAudio()) {
                 if (clip.audio.reversed) {
                     const tail = drag_start_audio_start_sec + drag_start_audio_dur_sec;
-                    clip.length_beats = @min(clip.length_beats, tail * cur_bpm / 60.0); // can't read before the source start
-                    clip.audio.dur_sec = clip.length_beats * 60.0 / cur_bpm;
+                    clip.length_beats = @min(clip.length_beats, cur_tempo.beatAfter(clip.start_beat, tail) - clip.start_beat); // can't read before the source start
+                    clip.audio.dur_sec = clipSeconds(clip.start_beat, clip.length_beats);
                     clip.audio.start_sec = @max(0.0, tail - clip.audio.dur_sec);
-                } else clip.audio.dur_sec = clip.length_beats * 60.0 / cur_bpm;
+                } else clip.audio.dur_sec = clipSeconds(clip.start_beat, clip.length_beats);
             }
         },
         .fade_in, .fade_out => {
             // Fades drag unsnapped in seconds, clamped to the window length.
             pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
             const raw_beats = @as(f64, dx / px_per_beat);
-            const delta_sec = raw_beats * 60.0 / cur_bpm;
+            const delta_sec = raw_beats * 60.0 / cur_tempo.bpmAt(clip.start_beat);
             const dur = clip.audio.dur_sec;
             if (drag_mode == .fade_in) {
                 clip.audio.fade_in_sec = std.math.clamp(drag_start_fade_sec + delta_sec, 0, dur);
@@ -1741,11 +1773,10 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
             const right_beat = drag_start_beat + drag_start_length;
             // Clamp the move so the window stays within [0, source] and the
             // clip keeps a minimum length.
-            const sec_per_beat = 60.0 / cur_bpm;
             // Reversed, the left edge plays the window's tail, so the head
             // stays put and only the length changes.
             const rev = clip.audio.reversed;
-            const max_back = if (rev) std.math.inf(f64) else drag_start_audio_start_sec / sec_per_beat; // can't trim before source start
+            const max_back = if (rev) std.math.inf(f64) else drag_start_beat - cur_tempo.beatAfter(drag_start_beat, -drag_start_audio_start_sec); // can't trim before source start
             var delta = d_beats;
             if (delta < -max_back) delta = -max_back; // expanding left limited by source head
             if (delta > drag_start_length - min_len) delta = drag_start_length - min_len;
@@ -1753,7 +1784,7 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
             const new_start = drag_start_beat + delta;
             clip.start_beat = new_start;
             clip.length_beats = right_beat - new_start;
-            const delta_sec = delta * sec_per_beat;
+            const delta_sec = cur_tempo.secondsAt(new_start) - cur_tempo.secondsAt(drag_start_beat);
             if (!rev) clip.audio.start_sec = @max(0.0, drag_start_audio_start_sec + delta_sec);
             clip.audio.dur_sec = @max(0.0, drag_start_audio_dur_sec - delta_sec);
         },
@@ -1853,6 +1884,11 @@ fn moveSelectedClipsBetweenTracks(tracks: []Track, alloc: std.mem.Allocator, sel
 const METER_MENU_KEY: u64 = 0x4d_45_54_52_4d_4e_55_01; // "METRMNU"
 const METER_REMOVE_ID: u32 = 1000;
 const METER_GROUPS_ID: u32 = 1001;
+const TEMPO_ADD_ID: u32 = 3000;
+const TEMPO_RAMP_ID: u32 = 3001;
+const TEMPO_REMOVE_ID: u32 = 3002;
+const SONG_GROOVE_ID: u32 = 3003;
+var song_groove_labels: [groove_mod.MAX_GROOVES + 1][40]u8 = undefined;
 // Grouping submenu rows: DEFAULT, then GROUP_BASE + choice index.
 const GROUP_DEFAULT_ID: u32 = 3000;
 const GROUP_BASE: u32 = 3001;
@@ -1908,9 +1944,9 @@ const METER_GENS = [_]MeterGen{
 var gen_pts: [meter_mod.MAX_POINTS]meter_mod.MeterPoint = undefined;
 var gen_nums: [64]u8 = undefined;
 
-fn meterMenuTick(meter_state: *meter_mod.MeterState) void {
+fn meterMenuTick(meter_state: *meter_mod.MeterState, result: *Result) void {
     if (!menu.isOpen(METER_MENU_KEY)) return;
-    var items: [METER_CHOICES.len + 3 + METER_GENS.len]menu.Item = undefined;
+    var items: [METER_CHOICES.len + 3 + METER_GENS.len + 5]menu.Item = undefined;
     inline for (METER_CHOICES, 0..) |ch, i| items[i] = .{ .label = ch.label, .id = @intCast(i) };
     // A change can be removed only if one starts exactly on the target bar
     // (and never bar 0, the base meter).
@@ -1923,9 +1959,27 @@ fn meterMenuTick(meter_state: *meter_mod.MeterState) void {
     items[METER_CHOICES.len + 1] = .{ .label = title, .id = METER_GROUPS_ID, .submenu = true, .enabled = n_groups > 0 };
     items[METER_CHOICES.len + 2] = .{ .label = "Remove change here", .id = METER_REMOVE_ID, .enabled = can_remove };
     inline for (METER_GENS, 0..) |g, i| items[METER_CHOICES.len + 3 + i] = .{ .label = g.label, .id = METER_GEN_BASE + @as(u32, @intCast(i)) };
+    // Tempo at the bar's downbeat: add a change, ramp the segment into the
+    // next, remove the change starting here.
+    const tb = cur_meter.barStartBeat(meter_menu_bar);
+    const tm = cur_tempo;
+    const at = tm.find(tb);
+    const seg_i = tm.segment(tb);
+    const t0 = METER_CHOICES.len + 3 + METER_GENS.len;
+    items[t0] = .{ .separator = true };
+    items[t0 + 1] = .{ .label = "Tempo change here", .id = TEMPO_ADD_ID, .enabled = at == null };
+    items[t0 + 2] = .{ .label = if (tm.points[seg_i].ramp) "\u{2022} Ramp to next tempo" else "Ramp to next tempo", .id = TEMPO_RAMP_ID, .enabled = seg_i + 1 < tm.len };
+    items[t0 + 3] = .{ .label = "Remove tempo change", .id = TEMPO_REMOVE_ID, .enabled = if (at) |i| i > 0 else false };
+    items[t0 + 4] = .{ .label = "Song groove", .id = SONG_GROOVE_ID, .submenu = true, .enabled = groove_mod.active != null };
 
     if (menu.pick(METER_MENU_KEY, &items)) |id| {
-        if (id == METER_REMOVE_ID) {
+        if (id == TEMPO_ADD_ID or id == TEMPO_RAMP_ID or id == TEMPO_REMOVE_ID) {
+            result.tempo_edit = .{ .kind = switch (id) {
+                TEMPO_ADD_ID => .add,
+                TEMPO_RAMP_ID => .toggle_ramp,
+                else => .remove,
+            }, .beat = tb };
+        } else if (id == METER_REMOVE_ID) {
             meter_state.removeChange(meter_menu_bar);
         } else if (id >= METER_GEN_BASE) {
             const g = METER_GENS[id - METER_GEN_BASE];
@@ -1942,6 +1996,17 @@ fn meterMenuTick(meter_state: *meter_mod.MeterState) void {
             meter_state.insertChange(meter_menu_bar, ch.num, ch.den);
         }
     }
+    if (menu.subOpen(METER_MENU_KEY, 0)) |sid| if (sid == SONG_GROOVE_ID) if (groove_mod.active) |cx| {
+        // STRAIGHT, then the pool; the current one bulleted.
+        var sub: [groove_mod.MAX_GROOVES + 1]menu.Item = undefined;
+        const n = cx.pool.count + 1;
+        for (0..n) |i| {
+            const pick: u8 = if (i == 0) groove_mod.PICK_NONE else @intCast(groove_mod.PICK_POOL + i - 1);
+            const name = if (i == 0) "STRAIGHT" else cx.pool.grooves[i - 1].name.get();
+            sub[i] = .{ .label = if (cx.song == pick) (std.fmt.bufPrint(&song_groove_labels[i], "\u{2022} {s}", .{name}) catch name) else name, .id = pick };
+        }
+        if (menu.subPick(METER_MENU_KEY, 1, sub[0..n])) |pick| result.song_groove = @intCast(pick);
+    };
     if (menu.subOpen(METER_MENU_KEY, 0)) |sid| if (sid == METER_GROUPS_ID) {
         var sub: [meter_mod.MAX_CHOICES + 1]menu.Item = undefined;
         var dbuf: [meter_mod.MAX_GROUPS]u8 = undefined;
@@ -2068,6 +2133,26 @@ fn drawLaneHeader(ui: *Ui, r_legacy: c.rl.Rectangle, t: *Track, idx: usize, numb
     }
     const idx_r = row1.cutLeft(14);
     ui.textIn(&ui.fonts.legend, idx_r, idx_s, ui_style.text_mute, .left, true);
+    // Frozen (docs/28 §Freeze): a plate saying so, red once it's stale.
+    if (t.freeze) |f| {
+        const label = if (f.stale) "STALE" else "FROZEN";
+        const br = row1.cutRight(ui.fonts.legend.measure(label) + 8).insetXY(2, 4);
+        ui.rect(br, ui_style.well);
+        ui.textIn(&ui.fonts.legend, br, label, if (f.stale) ui_style.rec else ui_style.led_blue, .center, false);
+        menu.tip(ui, br, if (f.stale) "Frozen, but it changed since: right-click the name, Freeze again" else "Frozen: its audio plays instead of its machines (right-click the name to unfreeze)");
+    }
+    // Its own time (docs/28 §Polymeter and polytempo): "5/4", "3:2".
+    if (!t.time.isDefault()) {
+        var tb: [16]u8 = undefined;
+        const meter_s: []const u8 = if (t.time.hasMeter()) (std.fmt.bufPrint(tb[0..8], "{d}/{d}", .{ t.time.num, t.time.den }) catch "") else "";
+        const ratio_s: []const u8 = if (t.time.p != t.time.q) (std.fmt.bufPrint(tb[8..], "{d}:{d}", .{ t.time.p, t.time.q }) catch "") else "";
+        var lb: [24]u8 = undefined;
+        const label = std.fmt.bufPrint(&lb, "{s}{s}{s}", .{ meter_s, if (meter_s.len > 0 and ratio_s.len > 0) " " else "", ratio_s }) catch "";
+        const br = row1.cutRight(ui.fonts.legend.measure(label) + 8).insetXY(2, 4);
+        ui.rect(br, ui_style.well);
+        ui.textIn(&ui.fonts.legend, br, label, ui_style.vfd, .center, false);
+        menu.tip(ui, br, "Its own meter or tempo ratio: right-click the name, Meter / Tempo ratio");
+    }
     const name_r = row1;
     if (!editing_name) ui.marquee(&ui.fonts.body, name_r, t.name(), if (selected) ui_style.text else ui_style.text_dim, .left, true, name_r.contains(ui.in.ix(), ui.in.iy()));
 
@@ -2731,6 +2816,330 @@ fn drawBeatTicks(ui: *Ui, ruler: c.rl.Rectangle, timeline_x: f32, timeline_w: f3
     }
 }
 
+// ── Tempo changes on the ruler (docs/28 §Tempo map) ─────────────────
+
+const TEMPO_DRAG_KEY: u64 = 0x5C0B_0001_7E70_0001;
+/// The tempo labels drawn this frame, for dragging.
+const TempoHit = struct { r: Rect, index: usize };
+var tempo_hits: [64]TempoHit = undefined;
+var tempo_hit_n: usize = 0;
+var tempo_drag: ?usize = null;
+var tempo_drag_y: f32 = 0;
+var tempo_drag_bpm: f64 = 0;
+
+/// "140", "→140" where a ramp arrives, tenths when it isn't whole.
+fn tempoLabel(buf: []u8, m: *const tempo_mod.TempoMap, i: usize) []const u8 {
+    const p = m.points[i];
+    const arrow: []const u8 = if (i > 0 and m.points[i - 1].ramp) "\u{2192}" else "";
+    const whole = @round(p.bpm) == p.bpm;
+    return if (whole)
+        std.fmt.bufPrint(buf, "{s}{d}", .{ arrow, @as(i32, @intFromFloat(p.bpm)) }) catch "?"
+    else
+        std.fmt.bufPrint(buf, "{s}{d:.1}", .{ arrow, p.bpm }) catch "?";
+}
+
+/// Each tempo change after the start: a hairline and its value, after
+/// the bar number and meter when it falls on a downbeat. Drag a value up
+/// or down to change it.
+fn drawTempoMarks(ui: *Ui, ruler: c.rl.Rectangle, timeline_x: f32, timeline_w: f32, timeline_x0: f32) void {
+    tempo_hit_n = 0;
+    const m = cur_tempo;
+    if (m.len < 2) return;
+    const right = timeline_x + timeline_w - 2;
+    const ry = ipx(ruler.y);
+    const rh = ipx(ruler.height);
+    const f = &ui.fonts.legend;
+    for (m.points[1..m.len], 1..) |p, i| {
+        const x = beatToX(timeline_x0, p.beat);
+        if (x > right) break;
+        if (x < timeline_x - 40) continue;
+        // On a downbeat, step past the bar number and its meter label.
+        var off: i32 = 3;
+        const pos = cur_meter.beatToBarPos(p.beat);
+        if (@abs(cur_meter.barStartBeat(pos.bar) - p.beat) < 1e-6) {
+            var nb: [8]u8 = undefined;
+            off += f.measure(std.fmt.bufPrint(&nb, "{d}", .{pos.bar + 1}) catch "") + 4;
+            const seg = cur_meter.segmentForBar(pos.bar);
+            if (seg.start_bar == pos.bar) {
+                var mb: [12]u8 = undefined;
+                off += f.measure(std.fmt.bufPrint(&mb, "{d}/{d}", .{ seg.numerator, seg.denominator }) catch "") + 4;
+            }
+        }
+        const xi = ipx(x);
+        const lit = tempo_drag != null and tempo_drag.? == i;
+        const col = if (lit) ui_style.accent else ui_style.vfd;
+        ui.rect(Rect.xywh(xi, ry, 1, rh), col.alpha(140));
+        var buf: [16]u8 = undefined;
+        const s = tempoLabel(&buf, m, i);
+        const w = ui.engraved(f, xi + off, ry + 1, s, col) - (xi + off);
+        if (tempo_hit_n < tempo_hits.len) {
+            tempo_hits[tempo_hit_n] = .{ .r = Rect.xywh(xi + off - 2, ry, w + 4, rh), .index = i };
+            tempo_hit_n += 1;
+        }
+    }
+}
+
+/// Drag a tempo value: 1 BPM per 2 px, tenths with shift.
+/// (The press took main's undo snapshot.)
+fn handleTempoDrag(transport: *Transport, m: pane.Mouse) void {
+    if (tempo_drag) |i| {
+        pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 3);
+        if (!pane.isDraggingKey(TEMPO_DRAG_KEY) or !m.left_down) {
+            tempo_drag = null;
+            pane.cancelDrag();
+            return;
+        }
+        const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
+        const dy: f64 = @floatCast(tempo_drag_y - m.y);
+        const v = if (shift) @round((tempo_drag_bpm + dy * 0.1) * 10) / 10 else @round(tempo_drag_bpm + dy * 0.5);
+        if (i < transport.map().len and transport.map().points[i].bpm != tempo_mod.clampBpm(v)) transport.setBpmAt(i, @floatCast(v));
+        return;
+    }
+    for (tempo_hits[0..tempo_hit_n]) |h| {
+        if (!pane.contains(bridge.toRl(h.r), m.x, m.y)) continue;
+        pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 2);
+        if (!m.left_pressed or pane.hasActiveDrag()) return;
+        if (!pane.tryStartDrag(TEMPO_DRAG_KEY)) return;
+        tempo_drag = h.index;
+        tempo_drag_y = m.y;
+        tempo_drag_bpm = transport.map().points[h.index].bpm;
+        return;
+    }
+}
+
+// ── The section lane (docs/28 §Locators and sections) ───────────────
+
+const MARKER_DRAG_KEY: u64 = 0x5C0B_0001_3A4B_0001;
+const MARKER_MENU_KEY: u64 = 0x5C0B_0001_3A4B_0002;
+const MarkerGrab = union(enum) { section: usize, locator: usize, end };
+var marker_drag: ?MarkerGrab = null;
+/// What the lane's menu was opened on.
+var marker_menu_beat: f64 = 0;
+var marker_menu_bar_beat: f64 = 0;
+var marker_menu_section: ?usize = null;
+var marker_menu_locator: ?usize = null;
+
+/// The end of the last clip (0 when there are none): where the last
+/// section ends without an END marker.
+fn lastClipEnd(tracks: []Track) f64 {
+    var e: f64 = 0;
+    for (tracks) |t| for (t.clips.items) |clip| {
+        e = @max(e, clip.start_beat + clip.length_beats);
+    };
+    return e;
+}
+
+fn sectionColor(sec: markers_mod.Section) ui_style.Color {
+    return ui_style.track[sec.color % ui_style.track.len];
+}
+
+/// A locator's or END's flag: the hairline and the label beside it.
+fn flagRect(ui: *Ui, lane: Rect, x: i32, name: []const u8) Rect {
+    return Rect.xywh(x, lane.y, ui.fonts.legend.measure(name) + 6, lane.h);
+}
+
+fn drawMarkerLane(ui: *Ui, lane_rl: c.rl.Rectangle, timeline_x: f32, timeline_w: f32, timeline_x0: f32, mk: *const markers_mod.Markers, song_end: f64) void {
+    const lane = bridge.fromRl(lane_rl);
+    ui.rect(lane, ui_style.well);
+    ui.rect(Rect.xywh(lane.x, lane.bottom() - 1, lane.w, 1), ui_style.edge);
+    const right = timeline_x + timeline_w;
+    const f = &ui.fonts.legend;
+    // Sections: tabs in their colors, the name on the left.
+    for (mk.sectionSlice(), 0..) |sec, i| {
+        const x0 = beatToX(timeline_x0, sec.beat);
+        const x1 = beatToX(timeline_x0, mk.sectionEnd(i, song_end));
+        if (x1 < timeline_x or x0 > right) continue;
+        const a = ipx(@max(x0, timeline_x - 2));
+        const b = ipx(@min(x1, right + 2));
+        const col = sectionColor(sec);
+        const tab = Rect.xywh(a, lane.y + 1, @max(1, b - a - 1), lane.h - 2);
+        ui.rect(tab, col.mix(ui_style.chassis, 0.35));
+        ui.rect(Rect.xywh(tab.x, tab.y, tab.w, 1), col);
+        ui.rect(Rect.xywh(ipx(x0), lane.y, 1, lane.h), col);
+        var buf: [40]u8 = undefined;
+        // The name stays in view while the tab starts off-screen.
+        const lx = @max(ipx(x0), ipx(timeline_x)) + 4;
+        _ = ui.text(f, lx, lane.y + 3, fitLabel(ui, &buf, sec.name.get(), b - lx - 2), ui_style.chassis);
+    }
+    // Past END the lane goes dark.
+    if (mk.end) |e| {
+        const x = beatToX(timeline_x0, e);
+        if (x < right) {
+            const xi = ipx(@max(x, timeline_x));
+            ui.rect(Rect.xywh(xi, lane.y, ipx(right) - xi, lane.h - 1), ui_style.chassis.alpha(160));
+            if (x >= timeline_x - 40) {
+                ui.rect(Rect.xywh(ipx(x), lane.y, 1, lane.h), ui_style.text);
+                const fr = flagRect(ui, lane, ipx(x), "END");
+                ui.rect(Rect.xywh(fr.x + 1, fr.y + 1, fr.w - 1, fr.h - 2), ui_style.face_lo);
+                _ = ui.text(f, fr.x + 4, lane.y + 3, "END", ui_style.text);
+            }
+        }
+    }
+    // Locators: a hairline and a dark flag with the name.
+    for (mk.locatorSlice()) |l| {
+        const x = beatToX(timeline_x0, l.beat);
+        if (x > right or x < timeline_x - 120) continue;
+        const fr = flagRect(ui, lane, ipx(x), l.name.get());
+        ui.rect(Rect.xywh(fr.x + 1, fr.y + 2, fr.w - 1, fr.h - 4), ui_style.face_lo);
+        ui.rect(Rect.xywh(ipx(x), lane.y, 1, lane.h), ui_style.text);
+        _ = ui.text(f, fr.x + 4, lane.y + 3, l.name.get(), ui_style.text);
+    }
+}
+
+/// What the pointer is over: a locator's flag, END, a section's start
+/// edge, or a section's body.
+const MarkerHit = union(enum) { none, locator: usize, end, section_edge: usize, section: usize };
+
+fn markerHit(ui: *Ui, lane: Rect, timeline_x0: f32, mk: *const markers_mod.Markers, song_end: f64, mx: f32) MarkerHit {
+    const x: i32 = @intFromFloat(mx);
+    var k = mk.locator_n;
+    while (k > 0) {
+        k -= 1;
+        const l = mk.locators[k];
+        const fr = flagRect(ui, lane, ipx(beatToX(timeline_x0, l.beat)), l.name.get());
+        if (x >= fr.x - 2 and x < fr.right()) return .{ .locator = k };
+    }
+    if (mk.end) |e| {
+        const fr = flagRect(ui, lane, ipx(beatToX(timeline_x0, e)), "END");
+        if (x >= fr.x - 2 and x < fr.right()) return .end;
+    }
+    for (mk.sectionSlice(), 0..) |sec, i| {
+        const sx = ipx(beatToX(timeline_x0, sec.beat));
+        if (i > 0 and x >= sx - 3 and x <= sx + 3) return .{ .section_edge = i };
+        const ex = ipx(beatToX(timeline_x0, mk.sectionEnd(i, song_end)));
+        if (x >= sx and x < ex) return .{ .section = i };
+    }
+    return .none;
+}
+
+/// The bar start nearest `beat`.
+fn nearestBarBeat(beat: f64) f64 {
+    const pos = cur_meter.beatToBarPos(@max(0, beat));
+    const a = cur_meter.barStartBeat(pos.bar);
+    const b = cur_meter.barStartBeat(pos.bar + 1);
+    return if (beat - a < b - beat) a else b;
+}
+
+fn handleMarkerLane(ui: *Ui, lane_rl: c.rl.Rectangle, timeline_x0: f32, transport: *Transport, mk: *markers_mod.Markers, song_end: f64, edit_snap: snap_mod.Setting, m: pane.Mouse, result: *Result) void {
+    const lane = bridge.fromRl(lane_rl);
+    if (marker_drag) |g| {
+        pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
+        if (!pane.isDraggingKey(MARKER_DRAG_KEY) or !m.left_down) {
+            marker_drag = null;
+            pane.cancelDrag();
+            return;
+        }
+        const raw = @max(0, beatAtX(timeline_x0, m.x));
+        switch (g) {
+            // Sections and END sit on downbeats; locators on the grid.
+            .section => |i| _ = mk.moveSection(i, nearestBarBeat(raw)),
+            .end => mk.end = @max(nearestBarBeat(raw), if (mk.section_n > 0) mk.sections[mk.section_n - 1].beat + 1 else 0),
+            .locator => |i| marker_drag = .{ .locator = mk.moveLocator(i, snap_mod.snapNearest(edit_snap, raw, altBypassSnap())) },
+        }
+        return;
+    }
+    if (!pane.contains(lane_rl, m.x, m.y)) return;
+    const hit = markerHit(ui, lane, timeline_x0, mk, song_end, m.x);
+    switch (hit) {
+        .locator, .end, .section_edge => pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 2),
+        .section => |i| menu.tip(ui, Rect.xywh(@intFromFloat(m.x), lane.y, 1, lane.h), mk.sections[i].name.get()),
+        .none => {},
+    }
+    if (m.right_pressed and !pane.hasActiveDrag()) {
+        const b = @max(0, beatAtX(timeline_x0, m.x));
+        marker_menu_beat = snap_mod.snapNearest(edit_snap, b, altBypassSnap());
+        marker_menu_bar_beat = cur_meter.barStartBeat(cur_meter.beatToBarPos(b).bar);
+        marker_menu_section = switch (hit) {
+            .section, .section_edge => |i| i,
+            else => mk.sectionAt(b, song_end),
+        };
+        marker_menu_locator = switch (hit) {
+            .locator => |i| i,
+            else => null,
+        };
+        menu.openAt(MARKER_MENU_KEY, ipx(m.x), ipx(m.y));
+        return;
+    }
+    if (m.double_clicked) {
+        switch (hit) {
+            .locator => |i| result.marker_open = .{ .kind = .locator, .index = i },
+            .section, .section_edge => |i| result.marker_open = .{ .kind = .section, .index = i },
+            // The press took main's undo snapshot.
+            .none => applyMarkerEdit(mk, .{ .add_section = cur_meter.barStartBeat(cur_meter.beatToBarPos(@max(0, beatAtX(timeline_x0, m.x))).bar) }),
+            .end => {},
+        }
+        return;
+    }
+    if (!m.left_pressed or pane.hasActiveDrag()) return;
+    switch (hit) {
+        .section => |i| transport.seekToBeats(mk.sections[i].beat),
+        .none => {},
+        .locator, .end, .section_edge => {
+            if (!pane.tryStartDrag(MARKER_DRAG_KEY)) return;
+            marker_drag = switch (hit) {
+                .locator => |i| .{ .locator = i },
+                .section_edge => |i| .{ .section = i },
+                else => .end,
+            };
+        },
+    }
+}
+
+const MK_ADD_SECTION: u32 = 1;
+const MK_ADD_LOCATOR: u32 = 2;
+const MK_EDIT_SECTION: u32 = 3;
+const MK_LOOP_SECTION: u32 = 4;
+const MK_REMOVE_SECTION: u32 = 5;
+const MK_EDIT_LOCATOR: u32 = 6;
+const MK_REMOVE_LOCATOR: u32 = 7;
+const MK_SET_END: u32 = 8;
+const MK_CLEAR_END: u32 = 9;
+const MK_DUPLICATE: u32 = 10;
+const MK_EARLIER: u32 = 11;
+const MK_LATER: u32 = 12;
+const MK_DELETE_ALL: u32 = 13;
+
+fn markerMenuTick(transport: *Transport, mk: *markers_mod.Markers, song_end: f64, result: *Result) void {
+    if (!menu.isOpen(MARKER_MENU_KEY)) return;
+    const sec = marker_menu_section;
+    const loc = marker_menu_locator;
+    const items = [_]menu.Item{
+        .{ .label = "Add section here", .id = MK_ADD_SECTION, .enabled = mk.section_n < markers_mod.MAX_SECTIONS },
+        .{ .label = "Add locator here", .id = MK_ADD_LOCATOR, .enabled = mk.locator_n < markers_mod.MAX_LOCATORS },
+        .{ .separator = true },
+        .{ .label = "Edit section\u{2026}", .id = MK_EDIT_SECTION, .enabled = sec != null },
+        .{ .label = "Loop section", .id = MK_LOOP_SECTION, .enabled = sec != null },
+        .{ .label = "Duplicate section", .id = MK_DUPLICATE, .enabled = sec != null },
+        .{ .label = "Move section earlier", .id = MK_EARLIER, .enabled = sec != null and sec.? > 0 },
+        .{ .label = "Move section later", .id = MK_LATER, .enabled = sec != null and sec.? + 1 < mk.section_n },
+        .{ .label = "Delete section and its content", .id = MK_DELETE_ALL, .enabled = sec != null },
+        .{ .label = "Remove section marker", .id = MK_REMOVE_SECTION, .enabled = sec != null },
+        .{ .separator = true },
+        .{ .label = "Edit locator\u{2026}", .id = MK_EDIT_LOCATOR, .enabled = loc != null },
+        .{ .label = "Remove locator", .id = MK_REMOVE_LOCATOR, .enabled = loc != null },
+        .{ .separator = true },
+        .{ .label = "Set end here", .id = MK_SET_END },
+        .{ .label = "Remove end", .id = MK_CLEAR_END, .enabled = mk.end != null },
+    };
+    const id = menu.pick(MARKER_MENU_KEY, &items) orelse return;
+    switch (id) {
+        MK_ADD_SECTION => result.marker_edit = .{ .add_section = marker_menu_bar_beat },
+        MK_ADD_LOCATOR => result.marker_edit = .{ .add_locator = marker_menu_beat },
+        MK_EDIT_SECTION => result.marker_open = .{ .kind = .section, .index = sec.? },
+        MK_LOOP_SECTION => transport.setLoopBeats(mk.sections[sec.?].beat, mk.sectionEnd(sec.?, song_end)),
+        MK_REMOVE_SECTION => result.marker_edit = .{ .remove = .{ .kind = .section, .index = sec.? } },
+        MK_EDIT_LOCATOR => result.marker_open = .{ .kind = .locator, .index = loc.? },
+        MK_REMOVE_LOCATOR => result.marker_edit = .{ .remove = .{ .kind = .locator, .index = loc.? } },
+        MK_DUPLICATE => result.section_op = .{ .kind = .duplicate, .index = sec.? },
+        MK_EARLIER => result.section_op = .{ .kind = .earlier, .index = sec.? },
+        MK_LATER => result.section_op = .{ .kind = .later, .index = sec.? },
+        MK_DELETE_ALL => result.section_op = .{ .kind = .delete, .index = sec.? },
+        MK_SET_END => result.marker_edit = .{ .set_end = @max(marker_menu_bar_beat, if (mk.section_n > 0) mk.sections[mk.section_n - 1].beat + 1 else 0) },
+        MK_CLEAR_END => result.marker_edit = .clear_end,
+        else => {},
+    }
+}
+
 /// The strip opening the bus section: a flat bar across the timeline.
 fn drawBusDivider(ui: *Ui, r_: c.rl.Rectangle) void {
     const r = bridge.fromRl(r_);
@@ -2860,7 +3269,8 @@ fn drawLiveRecordClip(ui: *Ui, lane: c.rl.Rectangle, rec: *const recorder_mod.Re
 /// Clip: 1px edge in the darkened track color, a 12px name band in full
 /// color with dark legend text, a tinted body with the note / waveform
 /// preview; amber outline when selected.
-fn drawClip(ui: *Ui, r_: c.rl.Rectangle, clip: Clip, color_: c.rl.Color, selected: bool, editing_name: bool, pool: *const audio_pool_mod.AudioPool) void {
+/// `note_rate`: the track's tempo ratio; its notes are in its own beats.
+fn drawClip(ui: *Ui, r_: c.rl.Rectangle, clip: Clip, color_: c.rl.Color, selected: bool, editing_name: bool, pool: *const audio_pool_mod.AudioPool, note_rate: f64) void {
     const r = bridge.fromRl(r_);
     if (r.w < 1 or r.h < 1) return;
     // A muted clip loses its track color.
@@ -2910,8 +3320,8 @@ fn drawClip(ui: *Ui, r_: c.rl.Rectangle, clip: Clip, color_: c.rl.Color, selecte
         const pitch_hi: f32 = 84;
         const bh: f32 = @floatFromInt(body.h);
         for (clip.notes.items) |note| {
-            const nx = r_.x + @as(f32, @floatCast(note.start_beat)) * px_per_beat;
-            const nw = @max(@as(f32, @floatCast(note.length_beats)) * px_per_beat, 1);
+            const nx = r_.x + @as(f32, @floatCast(note.start_beat / note_rate)) * px_per_beat;
+            const nw = @max(@as(f32, @floatCast(note.length_beats / note_rate)) * px_per_beat, 1);
             const x0 = @max(ipx(nx), body.x);
             const x1 = @min(ipx(nx + nw), body.right());
             if (x1 <= x0) continue;
@@ -3003,7 +3413,7 @@ test "splitting a reversed audio clip: the left part plays the window's tail" {
     clip.selected = true;
     try tracks[0].addClip(alloc, clip);
     var focused: ?ClipRef = null;
-    try std.testing.expect(splitSelectedClipsAt(tracks[0..], alloc, &focused, 1, 120));
+    try std.testing.expect(splitSelectedClipsAt(tracks[0..], alloc, &focused, 1, &tempo_mod.TempoMap.constant(120)));
     const left = tracks[0].clips.items[0].audio;
     const right = tracks[0].clips.items[1].audio;
     // left: 1 beat = 0.5 s, the window's last half second
@@ -3012,4 +3422,21 @@ test "splitting a reversed audio clip: the left part plays the window's tail" {
     try std.testing.expectApproxEqAbs(@as(f64, 1.0), right.start_sec, 1e-9);
     try std.testing.expectApproxEqAbs(@as(f64, 1.5), right.dur_sec, 1e-9);
     try std.testing.expect(left.reversed and right.reversed);
+}
+
+test "ruler tempo edits: add at the tempo in effect, ramp the segment, remove" {
+    var transport = Transport{};
+    transport.setBpm(100);
+    applyTempoEdit(&transport, .{ .kind = .add, .beat = 16 });
+    try std.testing.expectEqual(@as(usize, 2), transport.map().len);
+    try std.testing.expectEqual(@as(f64, 100), transport.map().points[1].bpm);
+    transport.setBpmAt(1, 140);
+    applyTempoEdit(&transport, .{ .kind = .toggle_ramp, .beat = 4 });
+    try std.testing.expect(transport.map().points[0].ramp);
+    try std.testing.expectApproxEqAbs(@as(f64, 120), transport.map().bpmAt(8), 1e-9);
+    applyTempoEdit(&transport, .{ .kind = .remove, .beat = 16 });
+    try std.testing.expectEqual(@as(usize, 1), transport.map().len);
+    // The first point stays.
+    applyTempoEdit(&transport, .{ .kind = .remove, .beat = 0 });
+    try std.testing.expectEqual(@as(usize, 1), transport.map().len);
 }

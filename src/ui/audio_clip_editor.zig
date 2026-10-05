@@ -7,6 +7,7 @@
 //! with on-waveform handles, and the trimmed + faded regions are shaded.
 
 const std = @import("std");
+const tempo_mod = @import("../tempo.zig");
 const follow_mod = @import("follow.zig");
 const c = @import("../c.zig");
 const pane = @import("pane_input.zig");
@@ -55,7 +56,7 @@ pub fn draw(
     tracks: []track_mod.Track,
     pool: *const audio_pool_mod.AudioPool,
     selected: ?ClipRef,
-    bpm: f64,
+    tmap: *const tempo_mod.TempoMap,
     play_beat: ?f64,
     m: pane.Mouse,
 ) Result {
@@ -87,7 +88,8 @@ pub fn draw(
     }
 
     const rate = src.sample.sample_rate;
-    const sec_per_beat = 60.0 / @max(1.0, bpm);
+    // The editor's grid runs at the tempo where the clip starts.
+    const sec_per_beat = 60.0 / tmap.bpmAt(clip.start_beat);
     const source_beats: f64 = @max(0.001, source_sec / sec_per_beat);
 
     // ── Layout: overview · ruler · grid · control row ────────────────

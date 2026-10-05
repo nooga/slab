@@ -31,6 +31,7 @@ const ctl = @import("controls.zig");
 const Ui = ui_core.Ui;
 const Rect = ui_core.Rect;
 const snap_mod = @import("snap.zig");
+const groove_mod = @import("../groove.zig");
 const track_mod = @import("../track.zig");
 const machine_mod = @import("../machine.zig");
 const automation = @import("../automation.zig");
@@ -111,10 +112,9 @@ fn pitchOfRow(row: i32) ?u8 {
 
 // ── Feel & key state (persistent across the session) ─────────────────
 //
-// swing delays odd grid steps on quantize (0 = straight); key_root + scale
-// constrain edits and shade the in-key rows. scale_idx 0 is Off (chromatic).
+// key_root + scale constrain edits and shade the in-key rows. scale_idx 0
+// is Off (chromatic).
 
-pub var swing: f32 = 0; // 0..1 → up to half a grid step of delay on off-beats
 pub var key_root: u8 = 0; // 0=C .. 11=B
 pub var scale_idx: usize = 0;
 
@@ -198,6 +198,16 @@ var initialized_scroll: bool = false;
 var ce_default_meter_pts = [_]meter_mod.MeterPoint{.{ .start_bar = 0, .numerator = 4, .denominator = 4 }};
 var cur_meter: meter_mod.MeterMap = .{ .points = &ce_default_meter_pts };
 var cur_clip_start: f64 = 0;
+/// The clip's track's tempo ratio, p/q: its content runs in the track's
+/// beats, the clip's song length times this.
+var cur_rate: f64 = 1;
+/// A track's own meter, as a map.
+var track_meter_pts: [1]meter_mod.MeterPoint = undefined;
+
+/// A clip's length as the editor shows it, in its track's beats.
+fn clipLen(len: f64) f64 {
+    return len * cur_rate;
+}
 var last_clip_key: u64 = 0; // to detect clip switch → clear selection
 
 fn overviewH() f32 {
@@ -351,7 +361,7 @@ pub fn copySelectedNotes(tracks: []track_mod.Track, selected: ?ClipRef, alloc: s
 pub fn pasteNotes(tracks: []track_mod.Track, selected: ?ClipRef, alloc: std.mem.Allocator, notes: []const Note, arrangement_beat: f64, target_pitch: ?u8, edit_snap: snap_mod.Setting) bool {
     const resolved = resolveClip(tracks, selected) orelse return false;
     if (notes.len == 0) return false;
-    const local_target = snap_mod.snapPositive(edit_snap, @max(0.0, arrangement_beat - resolved.clip.start_beat), false);
+    const local_target = snap_mod.snapPositive(edit_snap, @max(0.0, (arrangement_beat - resolved.clip.start_beat) * resolved.track.time.rate()), false);
     const pitch_delta: i32 = if (target_pitch) |pitch| blk: {
         var min_pitch: u8 = notes[0].pitch;
         for (notes) |note| min_pitch = @min(min_pitch, note.pitch);
@@ -418,17 +428,52 @@ pub fn duplicateSelectedNotes(tracks: []track_mod.Track, selected: ?ClipRef, all
     return true;
 }
 
-// Apply swing to a grid-snapped beat: delay odd grid steps toward the next
-// one (0 = straight). Only acts on an 8th-note grid or finer. Shared by the
-// grid lines, note drawing, and Quantize so the groove is consistent and
-// visible everywhere.
-fn applySwing(snapped: f64, edit_snap: snap_mod.Setting) f64 {
-    if (swing <= 0) return snapped;
-    const g = snap_mod.activeStep(edit_snap, false) orelse return snapped;
-    if (g > 0.5001) return snapped; // swing is meaningless coarser than 1/8
-    const idx = @round(snapped / g);
-    if (@mod(@as(i64, @intFromFloat(idx)), 2) != 0) return snapped + @as(f64, swing) * 0.5 * g;
-    return snapped;
+/// A groove from the clip's timing and accents (the selected notes, or
+/// all), on the edit grid (1/16 by default), over a beat; added to the
+/// pool under the clip's name and given to its track.
+pub fn extractGroove(tracks: []track_mod.Track, selected: ?ClipRef, edit_snap: snap_mod.Setting) ?[]const u8 {
+    const cx = groove_mod.active orelse return null;
+    const res = resolveClip(tracks, selected) orelse return null;
+    const step = @min(0.5, snap_mod.activeStep(edit_snap, false) orelse 0.25);
+    const steps: u8 = @intFromFloat(std.math.clamp(@round(1 / step), 2, @as(f64, groove_mod.MAX_STEPS)));
+    var starts: [512]f64 = undefined;
+    var vels: [512]u8 = undefined;
+    var n: usize = 0;
+    const only_sel = res.clip.selectedCount() > 0;
+    for (res.clip.notes.items) |note| {
+        if (only_sel and !note.selected) continue;
+        if (n == starts.len) break;
+        starts[n] = res.clip.start_beat + note.start_beat;
+        vels[n] = note.velocity;
+        n += 1;
+    }
+    if (n == 0) return null;
+    var nb: [32]u8 = undefined;
+    const name = std.ascii.upperString(&nb, res.clip.name()[0..@min(32, res.clip.name().len)]);
+    const g = groove_mod.extract(if (name.len > 0) name else "EXTRACTED", starts[0..n], vels[0..n], 1.0 / @as(f64, @floatFromInt(steps)), steps);
+    const i = cx.pool.put(g) orelse return null;
+    res.track.groove.pick = @intCast(groove_mod.PICK_POOL + i);
+    return cx.pool.grooves[i].name.get();
+}
+
+/// Write the track's groove into its notes (every clip), as they play, and
+/// set it to play straight.
+pub fn commitGroove(tracks: []track_mod.Track, selected: ?ClipRef) bool {
+    const cx = groove_mod.active orelse return false;
+    const res = resolveClip(tracks, selected) orelse return false;
+    const t = res.track;
+    for (t.clips.items) |*cl| {
+        if (cl.isAudio()) continue;
+        for (cl.notes.items) |*note| {
+            const on = cl.start_beat + note.start_beat;
+            const p = groove_mod.play(cx, t.groove, on, on + note.length_beats, note.pitch, note.velocity);
+            note.start_beat = @max(0, p.on - cl.start_beat);
+            note.length_beats = p.off - p.on;
+            note.velocity = p.velocity;
+        }
+    }
+    t.groove = .{ .pick = groove_mod.PICK_NONE };
+    return true;
 }
 
 pub fn quantizeSelectedNotes(tracks: []track_mod.Track, selected: ?ClipRef, edit_snap: snap_mod.Setting) bool {
@@ -436,7 +481,8 @@ pub fn quantizeSelectedNotes(tracks: []track_mod.Track, selected: ?ClipRef, edit
     var changed = false;
     for (resolved.clip.notes.items) |*note| {
         if (!note.selected) continue;
-        const next_start = applySwing(snap_mod.snapPositive(edit_snap, note.start_beat, false), edit_snap);
+        // The straight grid: the groove moves it as it plays.
+        const next_start = snap_mod.snapPositive(edit_snap, note.start_beat, false);
         const next_len = @max(minNoteBeats(edit_snap), snap_mod.snapNearest(edit_snap, note.length_beats, false));
         if (next_start != note.start_beat or next_len != note.length_beats) changed = true;
         note.start_beat = next_start;
@@ -541,13 +587,16 @@ pub fn emptyBody(ui: *Ui, r: Rect, msg: []const u8) void {
     ui.textIn(&ui.fonts.legend, r, msg, ui_style.text_mute, .center, false);
 }
 
-const TOOLS_W: i32 = 196 + EXPR_W;
+const TOOLS_W: i32 = EXPR_W + KS_W + GROOVE_W + AMOUNT_W + SHIFT_W;
+const GROOVE_W: i32 = 128;
+const AMOUNT_W: i32 = 40;
+const SHIFT_W: i32 = 52;
 const EXPR_W: i32 = 48;
 const KS_W: i32 = 92;
 
-// One combined "C Major" picker (root → scale submenu sets both) + a swing
-// fader, flush tiles at the right end of the head.
-fn drawHeaderTools(ui: *Ui, tools: Rect) void {
+// One combined "C Major" picker (root → scale submenu sets both) and the
+// track's groove, flush tiles at the right end of the head.
+fn drawHeaderTools(ui: *Ui, tools: Rect, track: ?*track_mod.Track) void {
     // Key/scale picker menu (modal) — ticked unconditionally so it stays live
     // even if the strip is hidden by a narrow header. Top level is the 12
     // roots (each a submenu); a root expanded shows the scales. Clicking a
@@ -597,19 +646,55 @@ fn drawHeaderTools(ui: *Ui, tools: Rect) void {
         }
         menu.tip(ui, ks_r, "Key & scale: pick a root, then a scale");
     }
+    if (track) |tr| grooveTools(ui, t, tr);
+}
+
+/// The groove names GROOVE lists: the song's, none, then the pool's.
+var groove_labels: [groove_mod.MAX_GROOVES + 2][]const u8 = undefined;
+
+/// GROOVE (the track's: SONG follows the song and its sections, NONE
+/// plays straight), AMOUNT and SHIFT, for the clip's track (docs/28
+/// §Groove). The press took main's undo snapshot.
+fn grooveTools(ui: *Ui, r_: Rect, tr: *track_mod.Track) void {
+    const cx = groove_mod.active orelse return;
+    var r = r_;
+    ui.pushId("groove");
+    defer ui.popId();
+    const g = &tr.groove;
     {
-        var body = ui.plate(t, .{});
-        const lbl = body.cutLeft(18);
-        ui.textIn(&ui.fonts.legend, lbl, "SW", ui_style.text_dim, .center, true);
+        const gr = r.cutLeft(GROOVE_W);
+        groove_labels[0] = "SONG";
+        groove_labels[1] = "STRAIGHT";
+        for (cx.pool.slice(), 0..) |*gv, i| groove_labels[i + 2] = gv.name.get();
+        const body = ui.plate(gr, .{});
+        var v = g.pick;
+        _ = ctl.displaySelectEx(ui, body.insetXY(2, @divFloor(body.h - ctl.displayHeight(false), 2)), "pick", &v, groove_labels[0 .. cx.pool.count + 2], "GROOVE", .{ .align_ = .left });
+        g.pick = v;
+        menu.tip(ui, gr, "Groove: SONG follows the song's and its sections'; played, not written");
+    }
+    // AMOUNT and SHIFT drag like the tempo: up for more.
+    {
+        const ar = r.cutLeft(AMOUNT_W);
+        const wid = ui.id("amount");
+        const b = ui.behavior(wid, ar, g.pick == groove_mod.PICK_NONE);
+        if (b.double) g.amount = 1 else if (b.held) g.amount = std.math.clamp(g.amount - ui.in.dy * ui.renderer.zoom * 0.005, 0, 1);
         var buf: [8]u8 = undefined;
-        const pct: i32 = @intFromFloat(@round(swing * 100));
-        const s = std.fmt.bufPrint(&buf, "{d}%", .{pct}) catch "0%";
-        ctl.display(ui, body.cutRight(4 * ctl.CELL_W + 4).insetXY(0, @divFloor(body.h - ctl.displayHeight(false), 2)), s, .{ .align_ = .right });
-        _ = body.cutRight(2);
-        const fr = body.insetXY(0, @divFloor(body.h - 14, 2));
-        var v: f32 = swing;
-        if (ctl.slider(ui, fr, "swing", &v, .{ .kind = .mini, .horizontal = true, .show_readout = false, .ticks = 0 })) swing = v;
-        menu.tip(ui, fr, "Swing: shifts off-beats on the grid, draw, and Quantize");
+        const s = std.fmt.bufPrint(&buf, "{d}%", .{@as(i32, @intFromFloat(@round(g.amount * 100)))}) catch "";
+        ctl.display(ui, ar, s, .{ .align_ = .right, .flush = true, .color = if (g.pick == groove_mod.PICK_NONE) ui_style.text_mute else if (ui.active == wid) ui_style.vfd_hi else ui_style.vfd });
+        if (ui.isHot(wid)) ui.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 1);
+        menu.tip(ui, ar, "Amount of the groove: drag, double-click 100%");
+    }
+    {
+        const sr = r.cutLeft(SHIFT_W);
+        const wid = ui.id("shift");
+        const b = ui.behavior(wid, sr, false);
+        if (b.double) g.shift_ms = 0 else if (b.held) g.shift_ms = std.math.clamp(@round((g.shift_ms - ui.in.dy * ui.renderer.zoom * 0.25) * 4) / 4, -50, 50);
+        var buf: [12]u8 = undefined;
+        const ms: i32 = @intFromFloat(@round(g.shift_ms));
+        const s = std.fmt.bufPrint(&buf, "{s}{d}MS", .{ if (ms > 0) "+" else "", ms }) catch "";
+        ctl.display(ui, sr, s, .{ .align_ = .right, .flush = true, .color = if (ui.active == wid) ui_style.vfd_hi else ui_style.vfd });
+        if (ui.isHot(wid)) ui.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 1);
+        menu.tip(ui, sr, "Shift: early (-) or late (+), the whole track; double-click 0");
     }
 }
 
@@ -645,7 +730,13 @@ pub fn draw(
     };
 
     setNoteMap(resolved.note_labels, resolved.clip);
-    drawHeaderTools(ui, head.tools);
+    cur_rate = resolved.track.time.rate();
+    if (resolved.track.time.hasMeter()) {
+        track_meter_pts[0] = .{ .start_bar = 0, .numerator = resolved.track.time.num, .denominator = resolved.track.time.den };
+        cur_meter = .{ .points = &track_meter_pts };
+    }
+    drawHeaderTools(ui, head.tools, resolved.track);
+    cur_groove = resolved.track.groove;
     maybeResetOnClipChange(selected, resolved.clip);
     const pres = drawPianoRoll(ui, bridge.toRl(head.body), resolved.clip, resolved.track, resolved.color, alloc, edit_snap, can_paste_notes, play_beat, m);
 
@@ -747,17 +838,20 @@ fn drawPianoRoll(
         for (clip.lanes.items) |*l| l.deselectAll();
     }
 
-    cur_clip_start = clip.start_beat;
+    // A tempo ratio: the clip's content in the track's beats from its
+    // start, its own meter's grid from there (docs/28 §Polymeter and
+    // polytempo); a meter alone counts from the song's start.
+    cur_clip_start = if (cur_rate != 1) 0 else clip.start_beat;
     initScrollIfNeeded(grid_rect, clip.*);
     handleWheel(grid_rect, clip.*, m);
     clampScroll(grid_rect, clip.*);
-    const local_play: ?f64 = if (play_beat) |b| b - clip.start_beat else null;
-    const in_clip = if (local_play) |lb| lb >= 0 and lb < clip.length_beats else false;
+    const local_play: ?f64 = if (play_beat) |b| (b - clip.start_beat) * cur_rate else null;
+    const in_clip = if (local_play) |lb| lb >= 0 and lb < clipLen(clip.length_beats) else false;
     follow.step(
         &scroll_x,
         if (in_clip) @as(f32, @floatCast(local_play.?)) * px_per_beat else null,
         grid_rect.width,
-        @max(0, @as(f32, @floatCast(clip.length_beats)) * px_per_beat - grid_rect.width),
+        @max(0, @as(f32, @floatCast(clipLen(clip.length_beats))) * px_per_beat - grid_rect.width),
         c.rl.GetFrameTime(),
         pane.hasActiveDrag() and pane.contains(r, m.x, m.y),
     );
@@ -797,7 +891,7 @@ fn drawPianoRoll(
     drawEnvelopeStrip(ui, alloc, pane.rect(r.x, env_rect.y, keyboardW(), env_h), env_rect, clip, track, edit_snap, track_color, m);
 
     drawOverview(ui, overview_rect, grid_rect, clip.*, track_color, m);
-    if (play_beat) |b| drawPlayhead(ui, grid_rect, ruler_rect.y, env_rect.y + env_h, b - clip.start_beat, clip.length_beats);
+    if (play_beat) |b| drawPlayhead(ui, grid_rect, ruler_rect.y, env_rect.y + env_h, (b - clip.start_beat) * cur_rate, clipLen(clip.length_beats));
 
     const in_expr = expr_mode and !collapsed();
     if (in_expr and !velocity_consumed) handleExpression(ui, grid_rect, clip, edit_snap, m);
@@ -816,6 +910,8 @@ fn drawPianoRoll(
         .{ .label = "Octave down", .command = .octave_down, .enabled = has_selection },
         .{ .label = "Quantize", .command = .quantize, .enabled = has_selection },
         .{ .label = "Humanize", .command = .humanize, .enabled = has_selection },
+        .{ .label = "Extract groove", .command = .extract_groove, .enabled = has_notes },
+        .{ .label = "Commit groove", .command = .commit_groove, .enabled = has_notes },
         .{ .label = "Snap to scale", .command = .snap_to_scale, .enabled = has_selection and scaleActive() },
         .{ .label = "Delete", .command = .delete, .enabled = has_selection },
         .{ .separator = true },
@@ -825,7 +921,7 @@ fn drawPianoRoll(
     };
     result.command = menu.command(PR_CONTEXT_KEY, &pr_context_items);
     if (result.command != .none) {
-        result.command_beat = context_target.beat + clip.start_beat;
+        result.command_beat = context_target.beat / cur_rate + clip.start_beat;
         result.command_pitch = context_target.pitch;
     }
     return result;
@@ -893,7 +989,7 @@ fn initScrollIfNeeded(grid: c.rl.Rectangle, clip: Clip) void {
 }
 
 fn minPxPerBeat(grid: c.rl.Rectangle, clip: Clip) f32 {
-    return @max(1.0, grid.width / @max(@as(f32, @floatCast(clip.length_beats)), 1.0));
+    return @max(1.0, grid.width / @max(@as(f32, @floatCast(clipLen(clip.length_beats))), 1.0));
 }
 
 fn clampPxPerBeat(v: f32, grid: c.rl.Rectangle, clip: Clip) f32 {
@@ -910,7 +1006,7 @@ fn clampScroll(grid: c.rl.Rectangle, clip: Clip) void {
     if (scroll_y > max_sy) scroll_y = max_sy;
     px_per_beat = clampPxPerBeat(px_per_beat, grid, clip);
     if (scroll_x < 0) scroll_x = 0;
-    const content_w = @as(f32, @floatCast(clip.length_beats)) * px_per_beat;
+    const content_w = @as(f32, @floatCast(clipLen(clip.length_beats))) * px_per_beat;
     const max_sx = @max(0, content_w - grid.width);
     if (scroll_x > max_sx) scroll_x = max_sx;
 }
@@ -1121,12 +1217,12 @@ fn drawGrid(ui: *Ui, r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
 
     const right = r.x + r.width - 1;
 
-    // Fine sub-grid (uniform, swing applied so off-beat lines match where
-    // drawn/quantized notes land; applySwing no-ops on beats/bars).
+    // Fine sub-grid (uniform: notes are written straight and the groove
+    // moves them as they play; a tick marks where).
     const grid_step = snap_mod.visualStep(edit_snap, px_per_beat);
     var beat: f64 = 0;
     while (true) {
-        const bx = ceBeatToX(r.x, applySwing(beat, edit_snap));
+        const bx = ceBeatToX(r.x, beat);
         if (bx > right) break;
         if (bx >= r.x) ui.rect(Rect.xywh(ipx(bx), gr.y, 1, gr.h), ui_style.grid_sub);
         beat += grid_step;
@@ -1162,7 +1258,7 @@ fn drawPlayhead(ui: *Ui, grid: c.rl.Rectangle, top: f32, bottom: f32, local_beat
 
 /// Past the clip end the glass goes to chassis; the end itself is a red line.
 fn drawClipEndOverlay(ui: *Ui, r: c.rl.Rectangle, clip: Clip) void {
-    const end_x = r.x + @as(f32, @floatCast(clip.length_beats)) * px_per_beat - scroll_x;
+    const end_x = r.x + @as(f32, @floatCast(clipLen(clip.length_beats))) * px_per_beat - scroll_x;
     if (end_x >= r.x + r.width) return;
     const x0 = @max(end_x, r.x);
     ui.rect(frect(x0, r.y, r.x + r.width - x0, r.height), ui_style.chassis);
@@ -1186,8 +1282,21 @@ fn drawExistingNotes(ui: *Ui, grid: c.rl.Rectangle, clip: Clip, col: ui_style.Co
             ui.rect(Rect.xywh(nr.x + 1, nr.y + 1, nr.w - 2, 1), fill.mix(ui_style.text, 0.35));
         }
         if (note.selected) ui.bevel(nr, ui_style.accent, ui_style.accent);
+        // Where the groove plays it, when that isn't where it's written.
+        if (cur_rate == 1) if (groove_mod.active) |cx| {
+            const on = clip.start_beat + note.start_beat;
+            const p = groove_mod.play(cx, cur_groove, on, on + note.length_beats, note.pitch, note.velocity);
+            const dx = (p.on - on) * px_per_beat;
+            if (@abs(dx) >= 1) {
+                const tx = ipx(fr.x + @as(f32, @floatCast(dx)));
+                ui.rect(Rect.xywh(tx, nr.y - 1, 1, nr.h + 2), ui_style.text);
+            }
+        };
     }
 }
+
+/// The track's groove, for the played-position ticks.
+var cur_groove: groove_mod.TrackGroove = .{};
 
 /// Velocity lane: a faceplate label tile under the keyboard, then a 3px
 /// stem per note (height = velocity) with a lit cap over flat glass;
@@ -1267,7 +1376,7 @@ fn drawEnvelopeStrip(
         }, m);
         if (res.pressed) clip.deselectAll();
         // Past the clip's end nothing plays.
-        const end_x = ceBeatToX(r.x, clip.length_beats);
+        const end_x = ceBeatToX(r.x, clipLen(clip.length_beats));
         if (end_x < r.x + r.width) {
             const x0 = @max(end_x, r.x);
             ui.rect(frect(x0, r.y, r.x + r.width - x0, r.height), ui_style.chassis.alpha(150));
@@ -1567,7 +1676,7 @@ fn handleInput(
     // Drawn notes land on the swung grid (matches the shifted off-beat lines).
     const beat = blk: {
         const snapped = snap_mod.snapDownPositive(edit_snap, beatAtX(grid, m.x), altBypassSnap());
-        break :blk if (altBypassSnap()) snapped else applySwing(snapped, edit_snap);
+        break :blk snapped;
     };
     const hit = findNoteAt(grid, clip.*, m.x, m.y);
     const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
@@ -1870,7 +1979,7 @@ fn drawOverview(
 
     // The strip represents the clip [0 .. length_beats] horizontally.
     // Pitch compresses into the strip's vertical span.
-    const clip_beats: f32 = @max(@as(f32, @floatCast(clip.length_beats)), 1.0);
+    const clip_beats: f32 = @max(@as(f32, @floatCast(clipLen(clip.length_beats))), 1.0);
     const px_per_beat_ov = inner.width / clip_beats;
     const rows: f32 = @floatFromInt(rowCount() - 1);
     const px_per_row_ov = inner.height / (rows + 1);
@@ -1904,7 +2013,7 @@ fn handleOverviewInput(
     clip: Clip,
     m: pane.Mouse,
 ) void {
-    const clip_beats: f32 = @max(@as(f32, @floatCast(clip.length_beats)), 1.0);
+    const clip_beats: f32 = @max(@as(f32, @floatCast(clipLen(clip.length_beats))), 1.0);
     const px_per_beat_ov = inner.width / clip_beats;
     const view_beat_l = scroll_x / px_per_beat;
     const vp_x = inner.x + view_beat_l * px_per_beat_ov;
@@ -2351,18 +2460,6 @@ test "scale membership, root, and snap" {
     scale_idx = 0;
 }
 
-test "swing delays off-beats on a fine grid only" {
-    swing = 0.5;
-    // 1/8 grid: off-beats (idx odd) shift; downbeats stay put.
-    try std.testing.expectApproxEqAbs(@as(f64, 0.0), applySwing(0.0, .note_8), 1e-9);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.625), applySwing(0.5, .note_8), 1e-9); // 0.5 + 0.5*0.5*0.5
-    try std.testing.expectApproxEqAbs(@as(f64, 1.0), applySwing(1.0, .note_8), 1e-9);
-    // 1/4 grid is too coarse — no swing.
-    try std.testing.expectApproxEqAbs(@as(f64, 1.0), applySwing(1.0, .note_4), 1e-9);
-    // swing off → identity.
-    swing = 0;
-    try std.testing.expectApproxEqAbs(@as(f64, 0.5), applySwing(0.5, .note_8), 1e-9);
-}
 
 test "option resize can go below sixteenth" {
     try std.testing.expectApproxEqAbs(@as(f64, 0.25), resizeMinNoteBeats(.note_16, false), 1e-9);

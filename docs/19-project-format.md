@@ -12,7 +12,7 @@ and `tools/slabkit`.
 | Command | Does |
 |---|---|
 | `slab Song.slab` | open a project (a package or a bare file) |
-| `slab song.slab --render out.wav` | export headless (no window, no device) to 24-bit stereo 48 kHz WAV and print peak/RMS. Renders from beat 0 to the last playing clip's end plus a 3 s tail that rings out. `.aif` writes AIFF, `.flac` FLAC, `.m4a` AAC (`--kbps`, `--alac` for Apple Lossless); `--bits 16\|24\|32f`, `--no-dither`, `--tail <s>\|auto`, `--normalize <LUFS>\|peak:<dBTP>`, `--rate 44100\|48000\|88200\|96000`, `--range <beat>:<beat>`, `--loop-wrap`, `--mono`, `--flac-level 0-8`, tags `--title`/`--artist`/`--album`/`--year`; prints integrated loudness, LRA and true peak too (docs/27 §Command line). |
+| `slab song.slab --render out.wav` | export headless (no window, no device) to 24-bit stereo 48 kHz WAV and print peak/RMS. Renders from beat 0 to the last playing clip's end plus a 3 s tail that rings out. `.aif` writes AIFF, `.flac` FLAC, `.m4a` AAC (`--kbps`, `--alac` for Apple Lossless); `--bits 16\|24\|32f`, `--no-dither`, `--tail <s>\|auto`, `--normalize <LUFS>\|peak:<dBTP>`, `--rate 44100\|48000\|88200\|96000`, `--range <beat>:<beat>`, `--sections` (a file per section, named `<out> 01 intro.wav`…), `--loop-wrap`, `--mono`, `--flac-level 0-8`, tags `--title`/`--artist`/`--album`/`--year`; prints integrated loudness, LRA and true peak too (docs/27 §Command line). |
 | `slab song.slab --stems dir/` | a stem per playing track into `dir/` (`<project>-<nn>-<track>`), from the same render as `--render` when both are given. `--stem-kind tracks\|buses\|all`, `--tap fx\|fader`. |
 | `slab --describe out.json` | dump every builtin machine's params, switch options and drum note labels from the live manifests |
 
@@ -110,9 +110,16 @@ The document is JSON. Top level:
 | Field | Meaning |
 |---|---|
 | `slab`, `schema` | the format's tag and version ([25-storage.md](25-storage.md) §Formats). A file tagged as another kind doesn't open; one without a tag is read as a project. |
-| `transport.bpm` | tempo; one tempo per song (no tempo map yet) |
+| `transport.bpm` | the tempo the song starts at |
+| `transport.tempo` | tempo changes after the start, `[{"beat": 64, "bpm": 140, "ramp": true}]`; `ramp` glides linearly to the next change (docs/28 §Tempo map); left out for a constant tempo |
+| `transport.ramp` | the starting tempo glides to the first change |
 | `transport.loop` | loop region in **beats**; `on` sets whether playback loops. The render ignores it. |
 | `meter` | meter map: `{bar, num, den}` points. The first point is forced to bar 0. Missing = 4/4. It changes the bar grid and what machines get as `bar`/`beat_in_bar`; note times are always in beats. |
+| `sections` | the section lane, `[{"beat": 0, "name": "INTRO", "color": 4}]`, back to back; `color` indexes the twelve track hues (docs/28 §Locators and sections) |
+| `locators` | named points, `[{"beat": 32, "name": "VOCAL IN"}]` |
+| `end` | the END marker in beats: the song's end and the export's PROJECT range |
+| `groove` | the song's groove and the seed of its random timing, `{"song": "MPC 58 1/16", "seed": 1234}` (docs/28 §Groove); missing: straight |
+| `grooves` | the project's own grooves (extracted from clips): `name`, `cycle` (beats; 0 follows the meter's groups), `sub`, `cells` of `steps` with per-step `shift`, `vel`, `rand` |
 | `tracks` | at most 16 |
 | `assets` | written on save: every file the project names, by its reference, with its `sha256`, the `origin` a collected copy came from, and an SFZ's or a folder's member `files` ([25-storage.md](25-storage.md) §The asset table). The loader doesn't need it. |
 | `master` | the master bus: `volume` (linear gain, default 1.0), `pan` (a balance control, not a pan law), `subsonic` (`true` turns on the 30 Hz subsonic filter, default `false`), `effects` |
@@ -149,6 +156,9 @@ The document is JSON. Top level:
 | `automation` | track automation lanes, see below. Optional. |
 | `show_automation` | `true` shows the lanes under the track in the arrangement. |
 | `stem` | the track's stem in an export, when set by hand: `on` (missing: every track that plays writes one, buses don't), `signal` `instr`\|`fx`\|`fader` and `channels` `stereo`\|`mono`\|`auto` (missing: the export's default). |
+| `groove` | how the track plays its notes (docs/28 §Groove): `name` (`""` follows the song and its sections, `"NONE"` straight, or a groove), `amount` 0–1, `shift_ms` −50..50; missing: follows the song at 100 % |
+| `freeze` | frozen (docs/28 §Freeze): `{"type": "audio", "source": <file>, "hash": "<hex>"}`, the audio that plays instead of its instrument, audio clips and inserts, and the fingerprint it was rendered at; a missing file loads it unfrozen |
+| `time` | its own meter and tempo ratio (docs/28 §Polymeter and polytempo): `meter` `[num, den]` (its bars), `ratio` `[p, q]` (its beats run p/q as fast from each clip's start; clip content is in them); missing: the song's |
 
 Signal flow per track: instrument (a bus: its routed input) → audio
 clips summed in → effects in order → volume → pan → its output (the

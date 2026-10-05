@@ -155,7 +155,8 @@ contract in the frame.
   document keeps the materialized map; the chosen generator word and
   its seed are stored alongside so it can be re-run.
 - Locator markers are navigation only and never affect the grid,
-  snapping, or timing.
+  snapping, or timing. Tempo changes, sections and grooves are edited
+  as [docs/28](28-time.md) describes.
 
 ## Zoom rules
 

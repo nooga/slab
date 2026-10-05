@@ -361,29 +361,14 @@ with a compare-exchange.
 
 ## Tempo map
 
-Tempo is not just a scalar — it's a **map**: piecewise-linear curve
-vs. musical time, or vs. sample time. Click-based tempo changes
-(Ableton-style warp) live here too.
-
-```zig
-pub const TempoMap = struct {
-    points: []TempoPoint,   // sorted by sample
-    pub fn tempoAt(sample: u64) f64;
-    pub fn beatAt(sample: u64) f64;
-    pub fn sampleAt(beat: f64) u64;
-};
-
-pub const TempoPoint = struct {
-    sample: u64,
-    tempo_bpm: f64,
-    beat_at_point: f64,
-};
-```
-
-At block start, the host computes `(tempo_bpm, ppq_position)` from
-the map for the block's start sample and puts them in ctx. Within a
-block, tempo is constant — if the map has a change inside this
-block, the host splits the block.
+Tempo is a **map** over the beat axis: points at beats, each a step or a
+linear ramp to the next, with the time each point starts cached so
+beats↔seconds is one lookup and a closed-form formula. Blocks split at
+tempo points (as they do at the loop end), `MachineCtx.tempo_bpm` is the
+tempo at the chunk's start, and an edit while playing rebases the
+sample counter so the playhead keeps its beat. The design, with
+sections, groove, polytempo and freeze, is
+[docs/28](28-time.md#tempo-map).
 
 ## Meter map
 
@@ -499,8 +484,11 @@ beats. Two families:
   the source of truth, the marker is just its visual handle on the
   ruler.
 - **Locator markers** are a standalone list on the Document — named
-  cue points ("verse", "drop", "B section") with no audio or grid
-  effect. They exist for navigation and structure.
+  cue points ("vocal in", "fix this") with no audio or grid effect.
+  They exist for navigation. **Sections** (INTRO, VERSE, DROP) are a
+  lane of their own, back to back; their TEMPO and METER fields edit
+  the maps at the section's start
+  ([docs/28](28-time.md#locators-and-sections)).
 
 ```zig
 pub const Marker = struct {

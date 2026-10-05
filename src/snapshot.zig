@@ -87,6 +87,8 @@ pub const LaneSnap = struct {
     points_count: u32,
     clip_start: f64 = 0,
     clip_len: f64 = -1,
+    /// A clip lane on a track with a tempo ratio: its beats run at it.
+    rate: f64 = 1,
 
     pub fn isClip(self: LaneSnap) bool {
         return self.clip_len >= 0;
@@ -97,7 +99,7 @@ pub const LaneSnap = struct {
     pub fn localBeat(self: LaneSnap, beat: f64) ?f64 {
         if (!self.isClip()) return beat;
         if (beat < self.clip_start or beat >= self.clip_start + self.clip_len) return null;
-        return beat - self.clip_start;
+        return (beat - self.clip_start) * self.rate;
     }
 };
 
@@ -127,7 +129,48 @@ pub const AutoView = struct {
     }
 };
 
+/// A track's own time (docs/28 §Polymeter and polytempo): a meter of its
+/// own (num 0: the song's), and a tempo ratio p:q, its beats running p/q
+/// as fast as the song's from each clip's start.
+pub const TrackTime = struct {
+    num: u8 = 0,
+    den: u8 = 4,
+    p: u8 = 1,
+    q: u8 = 1,
+
+    pub fn rate(t: TrackTime) f64 {
+        return @as(f64, @floatFromInt(t.p)) / @as(f64, @floatFromInt(@max(1, t.q)));
+    }
+
+    pub fn hasMeter(t: TrackTime) bool {
+        return t.num > 0;
+    }
+
+    pub fn isDefault(t: TrackTime) bool {
+        return t.num == 0 and t.p == t.q;
+    }
+
+    pub fn eql(a: TrackTime, b: TrackTime) bool {
+        return a.num == b.num and a.den == b.den and a.p == b.p and a.q == b.q;
+    }
+};
+
+/// A frozen track's audio (docs/28 §Freeze): its instrument and inserts
+/// rendered from the song's start, played instead of them.
+pub const FrozenSnap = struct {
+    data: [*]const f64,
+    /// The right channel; null plays `data` on both sides.
+    data_r: ?[*]const f64 = null,
+    len: u32,
+    /// Source samples per engine sample.
+    step: f64 = 1,
+};
+
 pub const TrackSnapshot = struct {
+    frozen: ?FrozenSnap = null,
+    /// The track's own meter and tempo ratio (docs/28 §Polymeter and
+    /// polytempo), for what its machines see.
+    time: TrackTime = .{},
     clips: [MAX_CLIPS_PER_TRACK]ClipHeader = undefined,
     clip_count: u32 = 0,
     notes: [MAX_NOTES_PER_TRACK]NoteSnap = undefined,

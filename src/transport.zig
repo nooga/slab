@@ -1,18 +1,17 @@
 //! Minimal audio-clock-authoritative transport. Sample counter advances
-//! on the audio thread; UI reads it with relaxed atomics. BPM is stored
-//! as bpm*1000 in a u32 so it can sit in an atomic (Zig atomics only
-//! support integer types; bit-casting f32 into u32 works too but the
-//! milli-BPM form is easier for UI display).
+//! on the audio thread; UI reads it with relaxed atomics. Tempo is a map
+//! (docs/28 §Tempo map): the conversions here read the UI's live copy;
+//! the engine reads `tempo.audio`.
 
 const std = @import("std");
+const tempo_mod = @import("tempo.zig");
 
 pub const Transport = struct {
     sample_rate: u32 = 48_000,
     playing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// Monotonic sample counter; only advanced by the audio thread.
     sample_pos: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
-    /// BPM × 1000.
-    bpm_milli: std.atomic.Value(u32) = std.atomic.Value(u32).init(120_000),
+    tempo: tempo_mod.TempoState = .{},
     loop_enabled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// Loop bounds in beats × 1000.
     loop_start_milli: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -35,36 +34,37 @@ pub const Transport = struct {
         return self.playing.load(.acquire);
     }
 
-    /// Audio-thread only.
-    pub fn advance(self: *Transport, frames: u32) void {
-        const cur = self.sample_pos.load(.monotonic);
-        var next = cur + frames;
-        if (self.loop_enabled.load(.monotonic)) {
-            const start_b = self.loopStartBeats();
-            const end_b = self.loopEndBeats();
-            if (end_b > start_b) {
-                const start_s = self.beatsToSamples(start_b);
-                const end_s = self.beatsToSamples(end_b);
-                if (end_s > start_s and next >= end_s) {
-                    const len = end_s - start_s;
-                    next = start_s + ((next - end_s) % len);
-                }
-            }
-        }
-        self.sample_pos.store(next, .monotonic);
-    }
-
     pub fn samples(self: *const Transport) u64 {
         return self.sample_pos.load(.monotonic);
     }
 
-    pub fn bpm(self: *const Transport) f32 {
-        return @as(f32, @floatFromInt(self.bpm_milli.load(.monotonic))) / 1000.0;
+    /// UI thread: the live tempo map.
+    pub fn map(self: *const Transport) *const tempo_mod.TempoMap {
+        return &self.tempo.live;
     }
 
+    /// The tempo at the playhead.
+    pub fn bpm(self: *const Transport) f32 {
+        return @floatCast(self.map().bpmAt(self.beats()));
+    }
+
+    /// The tempo the song starts at.
+    pub fn baseBpm(self: *const Transport) f32 {
+        return @floatCast(self.map().base());
+    }
+
+    /// Set the tempo of the segment under the playhead (with one point,
+    /// the song's). A ramp's end follows the next point.
     pub fn setBpm(self: *Transport, v: f32) void {
-        const clamped = std.math.clamp(v, 20.0, 400.0);
-        self.bpm_milli.store(@intFromFloat(clamped * 1000.0), .monotonic);
+        const i = self.map().segment(self.beats());
+        self.setBpmAt(i, v);
+    }
+
+    /// Set point `i`'s tempo.
+    pub fn setBpmAt(self: *Transport, i: usize, v: f32) void {
+        const m = self.tempo.edit();
+        if (i < m.len) m.points[i].bpm = tempo_mod.clampBpm(v);
+        self.tempo.publish();
     }
 
     pub fn beats(self: *const Transport) f64 {
@@ -72,22 +72,24 @@ pub const Transport = struct {
     }
 
     pub fn samplesToBeats(self: *const Transport, s: u64) f64 {
-        const sp: f64 = @floatFromInt(s);
-        const b: f64 = @as(f64, @floatFromInt(self.bpm_milli.load(.monotonic))) / 1000.0;
-        const sr: f64 = @floatFromInt(self.sample_rate);
-        return sp * b / (60.0 * sr);
-    }
-
-    /// Samples per beat at the current BPM.
-    pub fn samplesPerBeat(self: *const Transport) f64 {
-        const b: f64 = @as(f64, @floatFromInt(self.bpm_milli.load(.monotonic))) / 1000.0;
-        const sr: f64 = @floatFromInt(self.sample_rate);
-        return 60.0 * sr / b;
+        return self.map().beatAtSample(@floatFromInt(s), self.sample_rate);
     }
 
     pub fn beatsToSamples(self: *const Transport, b: f64) u64 {
         const clamped = if (b < 0) 0 else b;
-        return @intFromFloat(clamped * self.samplesPerBeat());
+        return @intFromFloat(self.map().sampleAt(clamped, self.sample_rate));
+    }
+
+    /// Seconds from `beat` for `seconds`, in beats (an audio clip's
+    /// length where it sits).
+    pub fn secondsToBeats(self: *const Transport, beat: f64, seconds: f64) f64 {
+        return self.map().beatAfter(beat, seconds) - beat;
+    }
+
+    /// Beats from `beat`, in seconds.
+    pub fn beatsToSeconds(self: *const Transport, beat: f64, len: f64) f64 {
+        const m = self.map();
+        return m.secondsAt(beat + len) - m.secondsAt(beat);
     }
 
     pub fn loopEnabled(self: *const Transport) bool {
@@ -133,8 +135,6 @@ pub const Transport = struct {
     }
 
     pub fn seekToBeats(self: *Transport, b: f64) void {
-        const clamped = if (b < 0) 0 else b;
-        const s = clamped * self.samplesPerBeat();
-        self.sample_pos.store(@intFromFloat(s), .monotonic);
+        self.sample_pos.store(self.beatsToSamples(b), .monotonic);
     }
 };

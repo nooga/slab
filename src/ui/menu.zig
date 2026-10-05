@@ -55,6 +55,8 @@ pub const EditCommand = enum {
     thaw,
     clear_solo_mute,
     save_to_library,
+    extract_groove,
+    commit_groove,
 };
 
 pub const Item = struct {

@@ -7,6 +7,7 @@ const c = @import("c.zig");
 const machine = @import("machine.zig");
 const clip_mod = @import("clip.zig");
 const snap_mod = @import("snapshot.zig");
+const groove_mod = @import("groove.zig");
 const audio_pool_mod = @import("audio_pool.zig");
 const automation = @import("automation.zig");
 const routing = @import("routing.zig");
@@ -56,6 +57,15 @@ pub const Kind = enum(u8) { audio, bus, master };
 
 /// A track's stem in an export (docs/27 §Export): whether it's written,
 /// where its signal is taken and its channels. Saved with the project.
+pub const Freeze = struct {
+    /// The rendered audio in the pool, from the song's start.
+    source: u32,
+    /// The fingerprint of what it was rendered from (`freeze.zig`).
+    hash: u64 = 0,
+    /// The project changed under it: a refreeze would sound different.
+    stale: bool = false,
+};
+
 pub const StemPlan = struct {
     /// null: the default rule (a track that plays, not a bus).
     on: ?bool = null,
@@ -128,8 +138,21 @@ pub const Track = struct {
     /// With play_selected: muted selected clips play too (a re-bounce of
     /// muted originals).
     play_muted: bool = false,
+    /// While it freezes again: its machines play, not its frozen audio.
+    /// Transient, UI-owned.
+    play_live: bool = false,
     /// Export (docs/27 §Export): this track's stem.
     stem: StemPlan = .{},
+    /// Its groove, AMOUNT and SHIFT (docs/28 §Groove), applied as the
+    /// notes publish.
+    groove: groove_mod.TrackGroove = .{},
+    /// Its own meter and tempo ratio (docs/28 §Polymeter and polytempo).
+    time: snap_mod.TrackTime = .{},
+    /// Frozen (docs/28 §Freeze): the audio that plays instead of its
+    /// instrument, audio clips and inserts.
+    freeze: ?Freeze = null,
+    /// The audio thread's view: no instrument or insert latency.
+    frozen: std.atomic.Value(bool) = .init(false),
     next_fx_uid: u16 = 1,
     /// Audio-thread-owned per-lane segment cursors (automation.evalCursor).
     auto_cursors: [snap_mod.MAX_LANES_PER_TRACK]u32 = [_]u32{0} ** snap_mod.MAX_LANES_PER_TRACK,
@@ -493,6 +516,18 @@ pub const Track = struct {
         const write_idx: u32 = 1 - published;
         const dst = self.snap[write_idx];
 
+        dst.frozen = null;
+        if (!self.play_live) if (self.freeze) |f| if (pool.get(f.source)) |src| if (src.sample.data.len > 0) {
+            dst.frozen = .{
+                .data = src.sample.data.ptr,
+                .data_r = if (src.sample.isStereo()) src.sample.right.ptr else null,
+                .len = @intCast(src.sample.data.len),
+                .step = src.sample.sample_rate / 48_000.0,
+            };
+        };
+        self.frozen.store(dst.frozen != null, .release);
+        dst.time = self.time;
+        const time_rate = self.time.rate();
         dst.clip_count = 0;
         dst.note_count = 0;
         dst.audio_clip_count = 0;
@@ -507,7 +542,8 @@ pub const Track = struct {
                     continue;
                 }
                 var snap = snap_mod.AudioClipSnap{
-                    .start_beat = clip.start_beat,
+                    // Audio moves only by SHIFT (no stretching onto a groove).
+                    .start_beat = clip.start_beat + if (groove_mod.active) |cx| groove_mod.shiftBeats(cx, self.groove, clip.start_beat) else 0,
                     .length_beats = clip.length_beats,
                     .gain = clip.audio.gain,
                     .reversed = clip.audio.reversed,
@@ -544,6 +580,24 @@ pub const Track = struct {
                     .pitch = note.pitch,
                     .velocity = note.velocity,
                 };
+                // A tempo ratio: the clip's content, in the track's beats from
+                // its start, plays at p/q (docs/28 §Polymeter and polytempo).
+                if (time_rate != 1) {
+                    dst.notes[dst.note_count].start_beat = note.start_beat / time_rate;
+                    dst.notes[dst.note_count].length_beats = note.length_beats / time_rate;
+                }
+                // Then where the groove puts it (it may land a little before
+                // the clip; the engine looks that far).
+                if (groove_mod.active) |cx| {
+                    const ns0 = dst.notes[dst.note_count];
+                    const on = clip.start_beat + ns0.start_beat;
+                    const p = groove_mod.play(cx, self.groove, on, on + ns0.length_beats, note.pitch, note.velocity);
+                    const ns = &dst.notes[dst.note_count];
+                    ns.start_beat = p.on - clip.start_beat;
+                    ns.length_beats = p.off - p.on;
+                    ns.velocity = p.velocity;
+                }
+                const expr_from = dst.expr_point_count;
                 if (note.bend_n > 0 and dst.expr_point_count + note.bend_n <= snap_mod.MAX_EXPR_POINTS_PER_TRACK) {
                     dst.notes[dst.note_count].expr_start = dst.expr_point_count;
                     dst.notes[dst.note_count].expr_count = note.bend_n;
@@ -561,6 +615,9 @@ pub const Track = struct {
                         dst.expr_point_count += cv.n;
                     }
                 }
+                if (time_rate != 1) for (dst.expr_points[expr_from..dst.expr_point_count]) |*pt| {
+                    pt.beat /= time_rate;
+                };
                 dst.note_count += 1;
                 notes_added += 1;
             }
@@ -625,6 +682,7 @@ pub const Track = struct {
         if (clip) |cl| {
             ls.clip_start = cl.start_beat;
             ls.clip_len = cl.length_beats;
+            ls.rate = self.time.rate();
         }
         if (self.targetMachine(lane.target)) |m| {
             const ci = m.controlIndex(lane.target.param()) orelse return;

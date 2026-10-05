@@ -13,6 +13,9 @@ const audio_mod = @import("audio.zig");
 const transport_mod = @import("transport.zig");
 const engine_mod = @import("engine.zig");
 const meter_mod = @import("meter.zig");
+const markers_mod = @import("markers.zig");
+const groove_mod = @import("groove.zig");
+const arrange_mod = @import("arrange.zig");
 const track_mod = @import("track.zig");
 const clip_mod = @import("clip.zig");
 const audio_pool_mod = @import("audio_pool.zig");
@@ -52,6 +55,7 @@ const dialog = @import("ui/dialog.zig");
 const export_dialog = @import("ui/export_dialog.zig");
 const export_settings = @import("export_settings.zig");
 const bounce_dialog = @import("ui/bounce_dialog.zig");
+const marker_dialog = @import("ui/marker_dialog.zig");
 const export_mod = @import("export.zig");
 const recipe_mod = @import("recipe.zig");
 const build_options = @import("build_options");
@@ -71,6 +75,11 @@ test {
     _ = @import("ui/text_field.zig");
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
+    _ = @import("tempo.zig");
+    _ = @import("markers.zig");
+    _ = @import("groove.zig");
+    _ = @import("arrange.zig");
+    _ = @import("ui/marker_dialog.zig");
     _ = @import("routing.zig");
     _ = @import("export.zig");
     _ = @import("exporter.zig");
@@ -165,6 +174,7 @@ const RenderJob = struct {
     project_buf: [128]u8 = undefined,
     date_buf: [10]u8 = undefined,
     comment_buf: [96]u8 = undefined,
+    marks: ExportMarks = .{},
     tracks: []track_mod.Track = &.{},
     total_frames: usize = 0,
     sample_rate: u32 = 48_000,
@@ -175,6 +185,130 @@ const RenderJob = struct {
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     cancel: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 };
+
+/// An export's sections and cue points (docs/28 §Export by section), with
+/// the names they point into.
+const ExportMarks = struct {
+    const N = markers_mod.MAX_SECTIONS + markers_mod.MAX_LOCATORS;
+    cuts: [markers_mod.MAX_SECTIONS]exporter.Cut = undefined,
+    cut_n: usize = 0,
+    marks: [N]exporter.Mark = undefined,
+    mark_n: usize = 0,
+    names: [N]markers_mod.Name = undefined,
+
+    /// Cue points for the section starts and locators inside `range`;
+    /// with `cut`, a cut per section too, each with its `acid` when its
+    /// tempo holds still.
+    fn fill(self: *ExportMarks, mk: *const markers_mod.Markers, transport: *const transport_mod.Transport, range: SampleRange, song_end: f64, cut: bool) void {
+        self.* = .{};
+        const meter = if (document_mod.meterState()) |ms| ms.liveMap() else null;
+        for (mk.sectionSlice(), 0..) |sec, i| {
+            self.names[i] = sec.name;
+            const a = transport.beatsToSamples(sec.beat);
+            const b = transport.beatsToSamples(mk.sectionEnd(i, song_end));
+            if (a >= range.end or b <= range.start) continue;
+            if (a >= range.start) {
+                self.marks[self.mark_n] = .{ .at = a - range.start, .name = self.names[i].get() };
+                self.mark_n += 1;
+            }
+            if (!cut) continue;
+            self.cuts[self.cut_n] = .{
+                .name = self.names[i].get(),
+                .start = @max(a, range.start) - range.start,
+                .end = @min(b, range.end) - range.start,
+                .acid = acidFor(transport, meter, sec.beat, mk.sectionEnd(i, song_end)),
+            };
+            self.cut_n += 1;
+        }
+        for (mk.locatorSlice(), 0..) |l, j| {
+            const at = transport.beatsToSamples(l.beat);
+            if (at < range.start or at >= range.end) continue;
+            self.names[mk.section_n + j] = l.name;
+            self.marks[self.mark_n] = .{ .at = at - range.start, .name = self.names[mk.section_n + j].get() };
+            self.mark_n += 1;
+        }
+        std.mem.sort(exporter.Mark, self.marks[0..self.mark_n], {}, struct {
+            fn lt(_: void, x: exporter.Mark, y: exporter.Mark) bool {
+                return x.at < y.at;
+            }
+        }.lt);
+    }
+};
+
+/// A loop's tempo and length for the apps that sync loops, when the tempo
+/// holds still over `lo`..`hi` beats: its length counted in the meter's
+/// units (eighths in 7/8).
+fn acidFor(transport: *const transport_mod.Transport, meter: ?meter_mod.MeterMap, lo: f64, hi: f64) ?export_mod.Acid {
+    const m = transport.map();
+    const i = m.segment(lo);
+    if (m.segment(hi - 1e-6) != i) return null;
+    if (m.points[i].ramp and i + 1 < m.len) return null;
+    var num: u16 = 4;
+    var den: u16 = 4;
+    if (meter) |mm| {
+        const seg = mm.segmentForBar(mm.beatToBarPos(lo).bar);
+        num = seg.numerator;
+        den = seg.denominator;
+    }
+    return .{
+        .beats = @intFromFloat(@round((hi - lo) * @as(f64, @floatFromInt(den)) / 4)),
+        .num = num,
+        .den = den,
+        .bpm = @floatCast(m.points[i].bpm),
+    };
+}
+
+/// Everything the tracks' grooves depend on: the pool, the song's groove
+/// and seed, the sections' grooves, the tempo and meter maps, each
+/// track's groove. A change republishes the tracks' notes.
+fn grooveHash(cx: *const groove_mod.Context, tracks: []const track_mod.Track) u64 {
+    // Field by field: struct padding isn't data.
+    var h = std.hash.Wyhash.init(0);
+    for (cx.pool.slice()) |*g| {
+        h.update(g.name.get());
+        h.update(std.mem.asBytes(&g.cycle));
+        h.update(&.{g.sub});
+        for (&g.cells) |*cl| {
+            h.update(&.{cl.steps});
+            h.update(std.mem.sliceAsBytes(cl.shift[0..cl.steps]));
+            h.update(std.mem.sliceAsBytes(cl.vel[0..cl.steps]));
+            h.update(std.mem.sliceAsBytes(cl.rand[0..cl.steps]));
+        }
+    }
+    h.update(&.{cx.song});
+    h.update(std.mem.asBytes(&cx.seed));
+    if (cx.markers) |mk| for (mk.sectionSlice()) |sec| {
+        h.update(std.mem.asBytes(&sec.beat));
+        h.update(&.{sec.groove});
+    };
+    if (cx.tempo) |t| for (t.slice()) |p| {
+        h.update(std.mem.asBytes(&p.beat));
+        h.update(std.mem.asBytes(&p.bpm));
+        h.update(&.{@intFromBool(p.ramp)});
+    };
+    if (cx.meter) |m| for (m.points) |p| {
+        h.update(std.mem.asBytes(&p.start_bar));
+        h.update(&.{ p.numerator, p.denominator });
+        h.update(p.groups.slice());
+    };
+    for (tracks) |*t| {
+        // Its time shapes its notes the same way.
+        h.update(&.{ t.time.num, t.time.den, t.time.p, t.time.q });
+        h.update(&.{t.groove.pick});
+        h.update(std.mem.asBytes(&t.groove.amount));
+        h.update(std.mem.asBytes(&t.groove.shift_ms));
+    }
+    return h.final();
+}
+
+/// Where the last clip that plays ends.
+fn lastClipEnd(tracks: []const track_mod.Track) f64 {
+    var hi: f64 = 0;
+    for (tracks) |*t| for (t.clips.items) |*cl| if (!cl.muted) {
+        hi = @max(hi, cl.endBeat());
+    };
+    return hi;
+}
 
 fn renderWorker(alloc: std.mem.Allocator, engine: *engine_mod.Engine, job: *RenderJob) void {
     if (exporter.run(alloc, engine, job.tracks, job.opts, &job.progress, &job.cancel)) |r| {
@@ -449,6 +583,8 @@ const Cli = struct {
     loop_wrap: bool = false,
     /// The mix summed to mono.
     mono: bool = false,
+    /// A file per section (docs/28 §Export by section).
+    sections: bool = false,
     flac_level: u4 = 5,
     /// Tags; the title defaults to the project's name.
     title: ?[]const u8 = null,
@@ -511,6 +647,8 @@ pub fn main(init: std.process.Init) !void {
                 cli.bits = if (std.mem.eql(u8, v, "16")) .pcm16 else if (std.mem.eql(u8, v, "24")) .pcm24 else if (std.mem.eql(u8, v, "32f")) .float32 else return error.BadBits;
             } else if (std.mem.eql(u8, a, "--mono")) {
                 cli.mono = true;
+            } else if (std.mem.eql(u8, a, "--sections")) {
+                cli.sections = true;
             } else if (std.mem.eql(u8, a, "--flac-level")) {
                 const v = args.next() orelse return error.MissingFlacLevel;
                 cli.flac_level = std.fmt.parseInt(u4, v, 10) catch return error.BadFlacLevel;
@@ -671,6 +809,15 @@ pub fn main(init: std.process.Init) !void {
     // staged edits at bar boundaries.
     var meter_state: meter_mod.MeterState = .{};
     document_mod.setMeterState(&meter_state);
+    var markers: markers_mod.Markers = .{};
+    document_mod.setMarkers(&markers);
+    // Grooves (docs/28 §Groove): the pool and the song's settings, read
+    // where tracks publish their notes; set before a project loads.
+    var groove_pool = groove_mod.Pool.init();
+    var groove_cx = groove_mod.Context{ .pool = &groove_pool, .markers = &markers, .tempo = &transport.tempo.live, .meter = meter_state.liveMap() };
+    groove_mod.active = &groove_cx;
+    defer groove_mod.active = null;
+    var groove_hash: u64 = 0;
     // The project's export settings (docs/27 §Export), and the presets
     // saved beside settings.json.
     var export_cfg: export_settings.Settings = .{};
@@ -756,6 +903,7 @@ pub fn main(init: std.process.Init) !void {
     var rename: RenameState = .{};
     var render_dlg: export_dialog.State = .{};
     var bounce_dlg: bounce_dialog.State = .{};
+    var marker_dlg: marker_dialog.State = .{};
     var about_card: about.State = .{};
     var uni_panel: unison_panel.State = .{};
     var color_pick: color_picker.State = .{};
@@ -828,7 +976,7 @@ pub fn main(init: std.process.Init) !void {
         // One owner of the pointer at a time: a legacy menu, modal or drag
         // hides input from the new Ui, and a new-Ui drag hides it from the
         // legacy panes.
-        const modal = render_dlg.active or bounce_dlg.active or about_card.active or pending_delete != null or pending_delete_set != null or uni_panel.active or color_pick.active;
+        const modal = render_dlg.active or bounce_dlg.active or marker_dlg.active or about_card.active or pending_delete != null or pending_delete_set != null or uni_panel.active or color_pick.active;
         if (menu.active() or modal or pane.hasActiveDrag()) ui.suppressInput();
 
         // While a menu is open it's modal for the mouse: panes get a
@@ -843,6 +991,15 @@ pub fn main(init: std.process.Init) !void {
 
         var rects = layout.compute(sw, sh);
         var tracks = tracks_buf[0..track_count];
+        // Anything a groove depends on changed: the tracks play it anew.
+        groove_cx.meter = meter_state.liveMap();
+        {
+            const h = grooveHash(&groove_cx, tracks);
+            if (h != groove_hash) {
+                groove_hash = h;
+                for (tracks) |*t| t.publishSnapshot(&audio_pool);
+            }
+        }
         if (!layout.clipShown() and focus == .piano_roll) focus = .arrangement;
         if (pane_m.left_pressed) focus = focusFromPoint(rects, pane_m, layout.clipShown());
         // The browser is all Ui widgets, which hide the press from the
@@ -899,6 +1056,9 @@ pub fn main(init: std.process.Init) !void {
             if (commandModifierDown() and ui.in.alt and c.rl.IsKeyPressed(c.rl.KEY_B)) layout.browser_visible = !layout.browser_visible;
             if (c.rl.IsKeyPressed(c.rl.KEY_SPACE)) transport.toggle();
             if (c.rl.IsKeyPressed(c.rl.KEY_HOME)) transport.rewind();
+            // ⌘← / ⌘→: the previous / next section, locator or END.
+            if (commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_LEFT)) transport.seekToBeats(markers.prev(transport.beats()));
+            if (commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_RIGHT)) if (markers.next(transport.beats())) |b| transport.seekToBeats(b);
             if (!in_browser and c.rl.IsKeyPressed(c.rl.KEY_TAB)) layout.clip_editor_visible = !layout.clip_editor_visible;
             if (!in_browser and !commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_M)) {
                 if (shiftDown()) {
@@ -1111,7 +1271,7 @@ pub fn main(init: std.process.Init) !void {
             ares.color_pick = mres.color_pick;
             if (mres.toggle) layout.mixer_visible = false;
         } else {
-            ares = arrangement.draw(ui, rects.arrangement, tracks, &master, &device_sel, &audio_pool, alloc, &selected_track, &selected_clip, &transport, &meter_state, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), &recorder, pane_m);
+            ares = arrangement.draw(ui, rects.arrangement, tracks, &master, &device_sel, &audio_pool, alloc, &selected_track, &selected_clip, &transport, &meter_state, &markers, edit_snap, clipboard.mode == .clips, arrangementRenameTarget(&rename), &recorder, pane_m);
             if (ares.toggle_mixer) layout.mixer_visible = true;
         }
         if (ares.rename_clip) |ref| beginRenameClip(&rename, tracks, ref);
@@ -1126,6 +1286,50 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         if (ares.rename_rect) |rr| rename.rect = rr;
+        // Tempo and marker edits from the ruler menus: one undo step each
+        // (drags took theirs on the press).
+        if (ares.tempo_edit) |te| {
+            pushHistorySnapshot(alloc, &history, tracks, &transport);
+            arrangement.applyTempoEdit(&transport, te);
+            dirty = true;
+        }
+        if (ares.marker_edit) |me| {
+            pushHistorySnapshot(alloc, &history, tracks, &transport);
+            arrangement.applyMarkerEdit(&markers, me);
+            dirty = true;
+        }
+        if (ares.section_op) |op| {
+            if (recorder.isRecording() or rec_finishing or bounce_job.active or render_job.active) {
+                status.set("Wait for the recording or render to finish", .{});
+            } else {
+                pushHistorySnapshot(alloc, &history, tracks, &transport);
+                const song = arrange_mod.Song{ .alloc = alloc, .tracks = tracks, .tempo = &transport.tempo, .meter = &meter_state, .markers = &markers, .song_end = lastClipEnd(tracks) };
+                const name = markers.sections[op.index].name;
+                (switch (op.kind) {
+                    .duplicate => arrange_mod.duplicate(&song, op.index),
+                    .delete => arrange_mod.delete(&song, op.index),
+                    .earlier => arrange_mod.moveEarlier(&song, op.index),
+                    .later => arrange_mod.moveEarlier(&song, op.index + 1),
+                }) catch |err| status.set("Section edit failed: {s}", .{@errorName(err)});
+                // Clip indexes moved: nothing stays selected.
+                _ = arrangement.clearSelection(tracks, &selected_clip);
+                prev_selected_clip = null;
+                for (tracks) |*t| t.publishSnapshot(&audio_pool);
+                status.set("{s} {s}", .{ switch (op.kind) {
+                    .duplicate => "Duplicated",
+                    .delete => "Deleted",
+                    .earlier => "Moved earlier:",
+                    .later => "Moved later:",
+                }, name.get() });
+                dirty = true;
+            }
+        }
+        if (ares.song_groove) |sg| {
+            pushHistorySnapshot(alloc, &history, tracks, &transport);
+            groove_cx.song = sg;
+            dirty = true;
+        }
+        if (ares.marker_open) |mo| marker_dialog.open(&marker_dlg, &markers, mo.kind, mo.index, transport.map(), meter_state.liveMap());
         if (ares.command == .bounce) {
             openBounce(&bounce_dlg, tracks, &status);
         } else if (ares.command == .rebounce) {
@@ -1178,6 +1382,43 @@ pub fn main(init: std.process.Init) !void {
                 tracks = tracks_buf[0..track_count];
                 dirty = true;
             }
+        } else if (edit.what == .freeze) {
+            if (bounce_job.active or render_job.active) {
+                status.set("Wait for the render to finish", .{});
+            } else {
+                const set = actionSet(tracks, selected_track, edit.track, edit.selection);
+                startFreeze(alloc, &engine, &audio, &audio_pool, &transport, tracks, &set, &bounce_job, &status) catch |err| status.set("Freeze failed: {s}", .{@errorName(err)});
+            }
+        } else if (edit.what == .time) {
+            // Every track it takes gets the meter or ratio picked (the other
+            // part of each track's time stays its own).
+            const set = actionSet(tracks, selected_track, edit.track, edit.selection);
+            const picked = edit.what.time;
+            const old = tracks[edit.track].time;
+            pushHistorySnapshot(alloc, &history, tracks, &transport);
+            for (tracks, 0..) |*t, k| if (set[k] and !t.isBus()) {
+                if (picked.num != old.num or picked.den != old.den) {
+                    t.time.num = picked.num;
+                    t.time.den = picked.den;
+                }
+                if (picked.p != old.p or picked.q != old.q) {
+                    t.time.p = picked.p;
+                    t.time.q = picked.q;
+                }
+            };
+            dirty = true;
+        } else if (edit.what == .unfreeze or edit.what == .flatten) {
+            const set = actionSet(tracks, selected_track, edit.track, edit.selection);
+            pushHistorySnapshot(alloc, &history, tracks, &transport);
+            var n: usize = 0;
+            for (tracks, 0..) |*t, k| if (set[k] and t.freeze != null) {
+                if (edit.what == .flatten) flattenTrack(alloc, &audio, &audio_pool, &transport, t) catch continue else t.freeze = null;
+                t.publishSnapshot(&audio_pool);
+                n += 1;
+            };
+            engine.publishRouting();
+            status.set("{s} {d} track{s}", .{ if (edit.what == .flatten) "Flattened" else "Unfroze", n, if (n == 1) "" else "s" });
+            dirty = true;
         } else if (edit.what == .duplicate and edit.selection) {
             const set = actionSet(tracks, selected_track, edit.track, true);
             if (document_mod.serialize(alloc, tracks, &transport)) |before| {
@@ -1238,7 +1479,7 @@ pub fn main(init: std.process.Init) !void {
         if (layout.clipShown()) {
             const play_beat: ?f64 = if (transport.isPlaying()) transport.beats() else null;
             const cres = if (selectedClipIsAudio(tracks, selected_clip))
-                audio_clip_editor.draw(ui, rects.clip_editor, tracks, &audio_pool, selected_clip, transport.bpm(), play_beat, pane_m)
+                audio_clip_editor.draw(ui, rects.clip_editor, tracks, &audio_pool, selected_clip, transport.map(), play_beat, pane_m)
             else
                 clip_editor.draw(ui, rects.clip_editor, tracks, alloc, selected_clip, meter_state.liveMap(), edit_snap, clipboard.mode == .notes, play_beat, pane_m);
             if (rename.active() and rename.kind == .clip) {
@@ -1363,6 +1604,14 @@ pub fn main(init: std.process.Init) !void {
                 }
             };
         }
+        if (mbres.unfreeze) if (bay_dev) |dev| {
+            pushHistorySnapshot(alloc, &history, tracks, &transport);
+            dev.freeze = null;
+            dev.publishSnapshot(&audio_pool);
+            engine.publishRouting();
+            status.set("Unfroze {s}", .{dev.name()});
+            dirty = true;
+        };
         // Delete (confirmed) → remove the targeted device.
         if (mbres.remove_ref) |ref| if (bay_dev) |dev| {
             switch (ref) {
@@ -1493,8 +1742,9 @@ pub fn main(init: std.process.Init) !void {
                     const st = projectStem(project_path);
                     break :blk if (st.len > 0) st else "untitled";
                 },
-                .bpm = transport.bpm(),
+                .bpm = transport.baseBpm(),
                 .range_secs = rangeSeconds(&transport, tracks),
+                .sections = markers.sectionSlice(),
             }, prog);
             if (render_dlg.changed) {
                 render_dlg.changed = false;
@@ -1520,6 +1770,22 @@ pub fn main(init: std.process.Init) !void {
             const prog: ?export_dialog.Progress = if (bounce_job.active) bounceProgress(&bounce_job) else null;
             bounce_action = bounce_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &bounce_dlg, bounceInfo(&transport, tracks, bounce_job.replace != 0), prog);
         }
+        if (marker_dlg.active) switch (marker_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &marker_dlg)) {
+            .none => {},
+            .cancel => marker_dlg.active = false,
+            .ok => {
+                pushHistorySnapshot(alloc, &history, tracks, &transport);
+                marker_dialog.apply(&marker_dlg, &markers, &transport.tempo, &meter_state);
+                marker_dlg.active = false;
+                dirty = true;
+            },
+            .delete => {
+                pushHistorySnapshot(alloc, &history, tracks, &transport);
+                markers.remove(marker_dlg.kind, marker_dlg.index);
+                marker_dlg.active = false;
+                dirty = true;
+            },
+        };
         var delete_answer: ?bool = null;
         var delete_set_answer: ?bool = null;
         if (pending_delete_set != null) {
@@ -1578,6 +1844,7 @@ pub fn main(init: std.process.Init) !void {
         if (c.rl.GetTime() >= next_recipe_check and !bounce_job.active) {
             next_recipe_check = c.rl.GetTime() + 0.5;
             recipe_mod.checkAll(alloc, tracks, &transport);
+            recipe_mod.checkFrozen(alloc, tracks, &transport);
         }
         engine.publishRouting();
 
@@ -1669,6 +1936,11 @@ pub fn main(init: std.process.Init) !void {
                 };
                 if (!bounce_job.active) bounce_dlg.active = false;
             },
+        }
+        // Freezing has no dialog: the status line counts it up.
+        if (bounce_job.active and bounce_job.freeze and !bounce_job.done.load(.acquire)) {
+            const total = @max(1, bounce_job.total_frames);
+            status.set("Freezing\u{2026} {d}%", .{bounce_job.progress.load(.monotonic) * 100 / total});
         }
         if (bounce_job.active and bounce_job.done.load(.acquire)) {
             finishBouncePass(alloc, &history, &status, &audio, &engine, &audio_pool, &tracks_buf, &track_count, &transport, &bounce_job, &selected_track, &selected_clip, &prev_selected_clip, &dirty);
@@ -1784,11 +2056,10 @@ fn importAudioClip(
     const source = try pool.loadFile(path);
     const src = pool.get(source) orelse return;
 
-    const bpm: f64 = transport.bpm();
     const dur_sec = src.seconds();
-    const len_beats = @max(0.25, dur_sec * bpm / 60.0);
     const raw_start = target_beat orelse transport.beats();
     const start = snap_mod.snapDownPositive(edit_snap, @max(0.0, raw_start), false);
+    const len_beats = @max(0.25, transport.secondsToBeats(start, dur_sec));
 
     const before = try document_mod.serialize(alloc, tracks, transport);
     errdefer alloc.free(before);
@@ -1847,8 +2118,6 @@ fn placeRecordedClip(
     const src = pool.get(source) orelse return;
 
     const dur_sec = src.seconds();
-    const bpm: f64 = transport.bpm();
-    const len_beats = @max(0.25, dur_sec * bpm / 60.0);
 
     // Latency-compensate: captured audio arrives a round-trip late, and the
     // playback it was played against was late by the project's own latency
@@ -1856,6 +2125,7 @@ fn placeRecordedClip(
     const latency: u64 = @as(u64, audio.roundTripLatencyFrames()) + pdc_latency;
     const adj_sample = if (res.start_sample > latency) res.start_sample - latency else 0;
     const start = transport.samplesToBeats(adj_sample);
+    const len_beats = @max(0.25, transport.secondsToBeats(start, dur_sec));
 
     const before = try document_mod.serialize(alloc, tracks, transport);
     errdefer alloc.free(before);
@@ -2105,17 +2375,21 @@ fn startRender(
     const stem_name = projectStem(project_path);
     const project = std.fmt.bufPrint(&job.project_buf, "{s}", .{if (stem_name.len > 0) stem_name else "untitled"}) catch "untitled";
     const date = export_mod.today(&job.date_buf);
-    const folder = export_settings.resolveFolder(&job.folder_buf, s.folder.get(), .{ .project = project, .date = date, .bpm = transport.bpm() });
+    const folder = export_settings.resolveFolder(&job.folder_buf, s.folder.get(), .{ .project = project, .date = date, .bpm = transport.baseBpm() });
     if (folder.len == 0) return error.NoFolder;
 
     // Tags: the name, the tempo, and what made it (docs/27 §Names and metadata).
     var fmt = s.recipe.format();
-    fmt.bpm = transport.bpm();
+    fmt.bpm = transport.baseBpm();
     fmt.comment = blk: {
         const doc = document_mod.serialize(alloc, tracks, transport) catch break :blk "";
         defer alloc.free(doc);
         break :blk exportComment(&job.comment_buf, doc);
     };
+    // Cue points, and a file per section for SECTIONS; a loop's tempo.
+    const sections = s.recipe.range == .sections;
+    if (document_mod.markers()) |mk| job.marks.fill(mk, transport, range, lastClipEnd(tracks), sections);
+    if (s.recipe.range == .loop) fmt.acid = acidFor(transport, if (document_mod.meterState()) |ms| ms.liveMap() else null, transport.loopStartBeats(), transport.loopEndBeats());
     fmt.title = if (s.title.len > 0) s.title.get() else project;
     fmt.artist = s.artist.get();
     fmt.album = s.album.get();
@@ -2140,7 +2414,9 @@ fn startRender(
         .normalize = if (s.recipe.mix) s.recipe.normalize else .off,
         .target = s.recipe.target(),
         .ceiling = s.recipe.ceilingDb(),
-        .loop_wrap = s.recipe.wrap,
+        .loop_wrap = s.recipe.wrap and !sections,
+        .sections = job.marks.cuts[0..job.marks.cut_n],
+        .marks = job.marks.marks[0..job.marks.mark_n],
     };
     job.total_frames = @intCast(range.end - range.start + job.opts.tail_frames);
 
@@ -2154,9 +2430,9 @@ fn startRender(
 
 /// Each range's length in seconds, for the Export sheet; null where it's
 /// empty.
-fn rangeSeconds(transport: *const transport_mod.Transport, tracks: []const track_mod.Track) [3]?f64 {
-    var out: [3]?f64 = undefined;
-    for (0..3) |i| out[i] = if (exportRange(transport, tracks, @enumFromInt(i))) |r|
+fn rangeSeconds(transport: *const transport_mod.Transport, tracks: []const track_mod.Track) [4]?f64 {
+    var out: [4]?f64 = undefined;
+    for (0..4) |i| out[i] = if (exportRange(transport, tracks, @enumFromInt(i))) |r|
         @as(f64, @floatFromInt(r.end - r.start)) / @as(f64, @floatFromInt(transport.sample_rate))
     else
         null;
@@ -2171,8 +2447,14 @@ fn exportRange(transport: *const transport_mod.Transport, tracks: []const track_
     var lo: f64 = 0;
     var hi: f64 = 0;
     switch (mode) {
-        .project => for (tracks) |*t| for (t.clips.items) |*cl| if (!cl.muted) {
-            hi = @max(hi, cl.endBeat());
+        // The song: to END when it's set, else the last clip that plays.
+        .project => hi = if (if (document_mod.markers()) |mk| mk.end else null) |e| e else lastClipEnd(tracks),
+        // From the first section to the last one's end.
+        .sections => {
+            const mk = document_mod.markers() orelse return null;
+            if (mk.section_n == 0) return null;
+            lo = mk.sections[0].beat;
+            hi = mk.sectionEnd(mk.section_n - 1, lastClipEnd(tracks));
         },
         .loop => {
             if (!transport.loopEnabled()) return null;
@@ -2284,6 +2566,9 @@ const BounceJob = struct {
     /// A re-bounce (docs/27 §Provenance): the bounced clip it renders
     /// into again, by id; its muted originals play. 0 for a bounce.
     replace: u32 = 0,
+    /// Freezing (docs/28 §Freeze): every source's audio after its inserts
+    /// from the song's start, becoming its frozen audio.
+    freeze: bool = false,
     passes: [MAX_TRACKS]u32 = undefined,
     pass_count: usize = 0,
     pass: usize = 0,
@@ -2452,8 +2737,10 @@ fn endBounce(audio: ?*audio_mod.Audio, engine: *engine_mod.Engine, pool: *audio_
     for (tracks) |*t| {
         t.play_selected = false;
         t.play_muted = false;
+        t.play_live = false;
         t.publishSnapshot(pool);
     }
+    engine.publishRouting();
     if (audio) |a| a.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
     job.* = .{};
 }
@@ -2522,6 +2809,15 @@ fn finishBouncePass(
     }
     // Masks off before placing, so the new clips publish as they are.
     for (tracks) |*t| t.play_selected = false;
+    if (job.freeze) {
+        placeFreeze(alloc, history, status, pool, tracks, transport, job) catch |err| {
+            std.log.err("freeze place failed: {s}", .{@errorName(err)});
+            status.set("Freeze failed: {s}", .{@errorName(err)});
+        };
+        dirty.* = true;
+        endBounce(audio, engine, pool, tracks, job, alloc);
+        return;
+    }
     if (job.replace != 0) {
         replaceBounce(alloc, history, status, pool, tracks, transport, job, selected_track, selected_clip) catch |err| {
             std.log.err("re-bounce place failed: {s}", .{@errorName(err)});
@@ -2589,7 +2885,7 @@ fn writeBounceClips(alloc: std.mem.Allocator, tracks: []const track_mod.Track, j
         var stem_buf: [64]u8 = undefined;
         var slug_buf: [48]u8 = undefined;
         const stem = if (@popCount(src_set) == 1)
-            std.fmt.bufPrint(&stem_buf, "{s}-bounce", .{storage.slug(&slug_buf, tracks[@ctz(src_set)].name())}) catch "bounce"
+            std.fmt.bufPrint(&stem_buf, "{s}-{s}", .{ storage.slug(&slug_buf, tracks[@ctz(src_set)].name()), if (job.freeze) "freeze" else "bounce" }) catch "bounce"
         else
             "bounce";
         var out = &job.outs[job.out_count];
@@ -2600,6 +2896,123 @@ fn writeBounceClips(alloc: std.mem.Allocator, tracks: []const track_mod.Track, j
         try document_mod.writeFile(alloc, path, bytes);
         job.out_count += 1;
     }
+}
+
+/// Freeze the tracks in `set` (docs/28 §Freeze): one render from the
+/// song's start to its end (END, or the last clip) plus the tail, each
+/// track's signal after its inserts into a file of its own. Tracks frozen
+/// already play their machines for it. Bounce's job does the rendering;
+/// placeFreeze takes over at the end.
+fn startFreeze(
+    alloc: std.mem.Allocator,
+    engine: *engine_mod.Engine,
+    audio: ?*audio_mod.Audio,
+    pool: *audio_pool_mod.AudioPool,
+    transport: *transport_mod.Transport,
+    tracks: []track_mod.Track,
+    set: *const [MAX_TRACKS]bool,
+    job: *BounceJob,
+    status: *StatusMessage,
+) !void {
+    var sources: u32 = 0;
+    for (tracks, 0..) |*t, ti| if (set[ti] and !t.isBus()) {
+        sources |= bit(ti);
+    };
+    if (sources == 0) {
+        status.set("Nothing to freeze", .{});
+        return;
+    }
+    const end_beat = if (document_mod.markers()) |mk| mk.end orelse lastClipEnd(tracks) else lastClipEnd(tracks);
+    const end = transport.beatsToSamples(end_beat);
+    if (end == 0) {
+        status.set("Nothing plays to freeze", .{});
+        return;
+    }
+    const sr = transport.sample_rate;
+    var opts: bounce_dialog.State = .{};
+    opts.tap = @intFromEnum(bounce_dialog.Tap.fx);
+    opts.mode = @intFromEnum(bounce_dialog.Mode.each);
+    opts.tail_auto = true;
+    opts.channels = .auto;
+    job.* = .{
+        .active = true,
+        .opts = opts,
+        .sources = sources,
+        .freeze = true,
+        .start_sample = 0,
+        .start_beat = 0,
+        .range_frames = @intCast(end),
+        .sample_rate = sr,
+        .start_ns = nowNs(),
+    };
+    job.total_frames = job.range_frames + @as(usize, @intFromFloat(bounce_dialog.TAIL_MAX * @as(f32, @floatFromInt(sr))));
+    job.passes[0] = sources;
+    job.pass_count = 1;
+    for (tracks, 0..) |*t, ti| if (sources & bit(ti) != 0) {
+        t.play_live = true;
+        t.publishSnapshot(pool);
+    };
+    engine.publishRouting();
+    if (audio) |a| a.stop();
+    beginBouncePass(alloc, engine, tracks, job) catch |err| {
+        endBounce(audio, engine, pool, tracks, job, alloc);
+        return err;
+    };
+    status.set("Freezing {d} track{s}", .{ @popCount(sources), if (@popCount(sources) == 1) "" else "s" });
+}
+
+/// Each written file becomes its track's frozen audio, with the
+/// fingerprint of what it was rendered from. One undo step.
+fn placeFreeze(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    status: *StatusMessage,
+    pool: *audio_pool_mod.AudioPool,
+    tracks: []track_mod.Track,
+    transport: *transport_mod.Transport,
+    job: *const BounceJob,
+) !void {
+    const before = try document_mod.serialize(alloc, tracks, transport);
+    errdefer alloc.free(before);
+    var n: usize = 0;
+    for (job.outs[0..job.out_count]) |*o| {
+        if (@popCount(o.sources) != 1) continue;
+        const ti: usize = @ctz(o.sources);
+        const src = try pool.loadFile(o.path());
+        tracks[ti].freeze = .{ .source = src, .hash = try recipe_mod.freezeFingerprint(alloc, tracks, transport, ti) };
+        n += 1;
+    }
+    try history.pushUndo(alloc, before);
+    status.set("Froze {d} track{s}", .{ n, if (n == 1) "" else "s" });
+}
+
+/// A frozen track becomes an audio track for good: its frozen audio as
+/// one clip from the song's start, no instrument, no inserts, no clips or
+/// lanes of theirs; its fader, pan, sends and their lanes stay.
+fn flattenTrack(alloc: std.mem.Allocator, audio: *audio_mod.Audio, pool: *audio_pool_mod.AudioPool, transport: *transport_mod.Transport, t: *track_mod.Track) !void {
+    const f = t.freeze orelse return;
+    const src = pool.get(f.source) orelse return error.MissingAudio;
+    const dur = src.seconds();
+    var clip = clip_mod.Clip.initAudio(src.name(), 0, transport.secondsToBeats(0, dur), f.source);
+    clip.audio.dur_sec = dur;
+    errdefer clip.deinit(alloc);
+    audio.stop();
+    defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+    t.replaceMachine(alloc, silent_machine);
+    t.machine_idx = null;
+    t.setEnabled(true);
+    while (t.effects.items.len > 0) t.removeEffect(alloc, t.effects.items.len - 1);
+    for (t.clips.items) |*cl| cl.deinit(alloc);
+    t.clips.clearRetainingCapacity();
+    var li = t.lanes.items.len;
+    while (li > 0) {
+        li -= 1;
+        const k = t.lanes.items[li].target.kind;
+        if (k != .volume and k != .pan) t.removeLane(alloc, li);
+    }
+    try t.addClip(alloc, clip);
+    t.freeze = null;
+    t.groove = .{};
 }
 
 /// Put each bounced clip on a new track below the lowest source, and
@@ -3210,7 +3623,7 @@ fn dropClips(app: App, t: *track_mod.Track, ti: usize, lib: *const library_mod.L
                 };
                 const src = app.pool.get(source) orelse continue;
                 const dur = src.seconds();
-                const len = @max(0.25, dur * app.transport.bpm() / 60.0);
+                const len = @max(0.25, app.transport.secondsToBeats(at, dur));
                 var clip = clip_mod.Clip.initAudio(src.name(), at, len, source);
                 clip.audio.start_sec = 0;
                 clip.audio.dur_sec = dur;
@@ -3386,7 +3799,8 @@ fn applyRouteEdit(
     transport: *const transport_mod.Transport,
 ) !void {
     const routing = @import("routing.zig");
-    if (edit.track >= track_count.* or edit.what == .delete or edit.what == .duplicate or edit.what == .group) return;
+    if (edit.track >= track_count.* or edit.what == .delete or edit.what == .duplicate or edit.what == .group or
+        edit.what == .freeze or edit.what == .unfreeze or edit.what == .flatten or edit.what == .time) return;
     const before = try document_mod.serialize(alloc, tracks_buf[0..track_count.*], transport);
     errdefer alloc.free(before);
 
@@ -3402,7 +3816,7 @@ fn applyRouteEdit(
             defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
             target = @intCast(try newTrack(alloc, tracks_buf, track_count, true, if (edit.what == .output_new_bus) "Group" else "Return"));
         },
-        .delete, .duplicate, .group => unreachable,
+        .delete, .duplicate, .group, .freeze, .unfreeze, .flatten, .time => unreachable,
     }
     const t = &tracks_buf[edit.track];
     switch (edit.what) {
@@ -3449,7 +3863,7 @@ fn applyRouteEdit(
             snd.pre = p.pre;
             status.set("{s}: send to {s} {s}-fader", .{ t.name(), tracks_buf[target].name(), if (p.pre) "pre" else "post" });
         },
-        .delete, .duplicate, .group => unreachable,
+        .delete, .duplicate, .group, .freeze, .unfreeze, .flatten, .time => unreachable,
     }
     try history.pushUndo(alloc, before);
 }
@@ -3847,6 +4261,12 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
     document_mod.setMaster(&master);
     var meter_state: meter_mod.MeterState = .{};
     document_mod.setMeterState(&meter_state);
+    var markers: markers_mod.Markers = .{};
+    document_mod.setMarkers(&markers);
+    var groove_pool = groove_mod.Pool.init();
+    var groove_cx = groove_mod.Context{ .pool = &groove_pool, .markers = &markers, .tempo = &transport.tempo.live };
+    groove_mod.active = &groove_cx;
+    defer groove_mod.active = null;
 
     const data = try document_mod.readFile(alloc, project);
     useProject(project);
@@ -3858,6 +4278,7 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
     try document_mod.apply(alloc, data, &reg, &tracks_buf, &track_count, &transport, silent_machine);
     defer for (tracks_buf[0..track_count]) |*t| t.deinit(alloc);
     const tracks = tracks_buf[0..track_count];
+    groove_cx.meter = meter_state.liveMap();
     for (tracks) |*t| t.publishSnapshot(&pool);
     master.publishSnapshot(&pool);
 
@@ -3877,12 +4298,28 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
     for (tracks) |*t| for (t.clips.items) |*clip| if (!clip.muted) {
         last_beat = @max(last_beat, clip.endBeat());
     };
+    if (markers.end) |e| last_beat = e;
     const sr = audio_mod.SAMPLE_RATE;
     var comment_buf: [96]u8 = undefined;
     var container = if (cli.render) |out| export_mod.Container.ofPath(out) orelse return error.UnknownAudioExtension else export_mod.Container.wav;
     if (container == .aac and cli.alac) container = .alac;
     const tail_s = cli.tail orelse export_settings.TAIL_MAX;
     const out_dir = if (cli.render) |out| std.fs.path.dirname(out) orelse "." else ".";
+    // --sections: from the first section to the last one's end, a file
+    // each; cue points either way.
+    var range = SampleRange{
+        .start = if (cli.range) |r| transport.beatsToSamples(r[0]) else 0,
+        .end = transport.beatsToSamples(if (cli.range) |r| r[1] else last_beat),
+    };
+    if (cli.sections) {
+        if (markers.section_n == 0) return error.NoSections;
+        range = .{
+            .start = transport.beatsToSamples(markers.sections[0].beat),
+            .end = transport.beatsToSamples(markers.sectionEnd(markers.section_n - 1, lastClipEnd(tracks))),
+        };
+    }
+    var marks: ExportMarks = .{};
+    marks.fill(&markers, &transport, range, lastClipEnd(tracks), cli.sections);
     const opts = exporter.Options{
         .folder = out_dir,
         .mix_name = if (cli.render) |out| projectStem(out) else null,
@@ -3890,9 +4327,11 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
         .stems = if (cli.stems != null) exporter.stemsOf(tracks, cli.stems_kind, cli.stem_tap) else @splat(.{}),
         .stem_folder = cli.stems,
         .project = projectStem(project),
-        .start = if (cli.range) |r| transport.beatsToSamples(r[0]) else 0,
-        .end = transport.beatsToSamples(if (cli.range) |r| r[1] else last_beat),
-        .loop_wrap = cli.loop_wrap,
+        .start = range.start,
+        .end = range.end,
+        .loop_wrap = cli.loop_wrap and !cli.sections,
+        .sections = marks.cuts[0..marks.cut_n],
+        .marks = marks.marks[0..marks.mark_n],
         .tail_auto = cli.tail == null,
         .tail_frames = @intFromFloat(tail_s * @as(f32, @floatFromInt(sr))),
         .format = .{
@@ -3907,7 +4346,7 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
             .year = cli.year,
             .flac_level = cli.flac_level,
             .comment = exportComment(&comment_buf, data),
-            .bpm = transport.bpm(),
+            .bpm = transport.baseBpm(),
         },
         .normalize = cli.normalize,
         .target = cli.norm_target,
@@ -4718,7 +5157,7 @@ fn executeEditCommand(
             if (changed) status.set("Solos and mutes cleared", .{});
         },
         .split_at_playhead => {
-            changed = if (focus == .arrangement) arrangement.splitSelectedClipsAt(tracks, alloc, selected_clip, transport.beats(), transport.bpm()) else false;
+            changed = if (focus == .arrangement) arrangement.splitSelectedClipsAt(tracks, alloc, selected_clip, transport.beats(), transport.map()) else false;
             if (changed) status.set("Split clips", .{});
         },
         .quantize => {
@@ -4728,6 +5167,16 @@ fn executeEditCommand(
         .humanize => {
             changed = if (focus == .piano_roll) clip_editor.humanizeSelectedNotes(tracks, selected_clip.*, edit_snap) else false;
             if (changed) status.set("Humanized", .{});
+        },
+        .extract_groove => {
+            if (clip_editor.extractGroove(tracks, selected_clip.*, edit_snap)) |name| {
+                changed = true;
+                status.set("Groove {s} extracted; the track plays it", .{name});
+            }
+        },
+        .commit_groove => {
+            changed = clip_editor.commitGroove(tracks, selected_clip.*);
+            if (changed) status.set("Groove written into the notes", .{});
         },
         .snap_to_scale => {
             changed = if (focus == .piano_roll) clip_editor.snapSelectedToScale(tracks, selected_clip.*) else false;
@@ -5193,4 +5642,89 @@ test "automation recording writes a thinned pass over the span it covered" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.6), pts[1].value, 1e-3);
     try std.testing.expectEqual(@as(f64, 10), pts[2].beat);
     try std.testing.expectEqual(@as(usize, 1), history.undo_stack.items.len);
+}
+
+test "freeze: a track renders to its frozen audio, plays the same frozen, and goes stale on an edit" {
+    const alloc = std.testing.allocator;
+    const env = struct {
+        extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+        extern fn unsetenv(name: [*:0]const u8) c_int;
+    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var rb: [storage.MAX_PATH]u8 = undefined;
+    var root_buf: [storage.MAX_PATH]u8 = undefined;
+    const root = storage.absolute(&root_buf, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
+    var hb: [storage.MAX_PATH]u8 = undefined;
+    _ = env.setenv("SLAB_HOME", (try std.fmt.bufPrintZ(&hb, "{s}/home", .{root})).ptr, 1);
+    defer _ = env.unsetenv("SLAB_HOME");
+    storage.setProject(null);
+
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    document_mod.setPool(&pool);
+    const src = try pool.loadFile("machines/sampler/assets/default.wav");
+
+    const col = c.rl.Color{ .r = 10, .g = 20, .b = 30, .a = 255 };
+    var tracks_buf: [MAX_TRACKS]track_mod.Track = undefined;
+    var track_count: usize = 1;
+    tracks_buf[0] = try track_mod.Track.init(alloc, "Hits", col, silent_machine);
+    defer for (tracks_buf[0..track_count]) |*t| t.deinit(alloc);
+    tracks_buf[0].setVolume(0.5);
+    var hit = clip_mod.Clip.initAudio("hit", 0, 1, src);
+    hit.audio.dur_sec = pool.get(src).?.seconds();
+    try tracks_buf[0].addClip(alloc, hit);
+    const tracks = tracks_buf[0..track_count];
+    for (tracks) |*t| t.publishSnapshot(&pool);
+
+    var transport = transport_mod.Transport{};
+    const eng = try alloc.create(engine_mod.Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = tracks };
+    eng.publishRouting();
+    var history: history_mod.History = .{};
+    defer history.deinit(alloc);
+    var status: StatusMessage = .{};
+    const job = try alloc.create(BounceJob);
+    defer alloc.destroy(job);
+    job.* = .{};
+    var sel_track: ?usize = 0;
+    var sel_clip: ?clip_mod.ClipRef = null;
+    var prev_clip: ?clip_mod.ClipRef = null;
+    var dirty = false;
+
+    // Live, for reference.
+    const n = 24_000;
+    const live = try alloc.alloc(f32, n * 2);
+    defer alloc.free(live);
+    eng.renderOffline(live, n, 0, null, null);
+
+    var set: [MAX_TRACKS]bool = @splat(false);
+    set[0] = true;
+    try startFreeze(alloc, eng, null, &pool, &transport, tracks, &set, job, &status);
+    try std.testing.expect(job.active and tracks[0].play_live);
+    finishBouncePass(alloc, &history, &status, null, eng, &pool, &tracks_buf, &track_count, &transport, job, &sel_track, &sel_clip, &prev_clip, &dirty);
+    try std.testing.expect(!job.active and !tracks[0].play_live);
+    const f = tracks[0].freeze orelse return error.NotFrozen;
+    try std.testing.expectEqual(try recipe_mod.freezeFingerprint(alloc, tracks, &transport, 0), f.hash);
+    try std.testing.expect(tracks[0].currentSnapshot().frozen != null);
+    try std.testing.expectEqual(@as(usize, 1), history.undo_stack.items.len);
+
+    // Frozen, the same out of the fader.
+    const frozen = try alloc.alloc(f32, n * 2);
+    defer alloc.free(frozen);
+    eng.renderOffline(frozen, n, 0, null, null);
+    var worst: f32 = 0;
+    for (live, frozen) |a, b| worst = @max(worst, @abs(a - b));
+    try std.testing.expect(worst < 1e-6);
+    var peak: f32 = 0;
+    for (frozen) |x| peak = @max(peak, @abs(x));
+    try std.testing.expect(peak > 0.01);
+
+    // An edit makes it stale.
+    recipe_mod.checkFrozen(alloc, tracks, &transport);
+    try std.testing.expect(!tracks[0].freeze.?.stale);
+    tracks[0].clips.items[0].audio.gain = 0.5;
+    recipe_mod.checkFrozen(alloc, tracks, &transport);
+    try std.testing.expect(tracks[0].freeze.?.stale);
 }
