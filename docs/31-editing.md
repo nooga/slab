@@ -11,7 +11,9 @@ Status: phases 1 and 2 built (2026-10-05) on `feat/editing`: one view,
 wheel, minimap, ruler, box select, edges, snap, focus, command table and
 menu order across the editors; time selection in the arrangement and the
 piano roll, join, insert and delete time, ⌥-drag duplicate, ⌘-drag to
-draw a clip. docs/12 states those rules. Phases 3–4 planned. docs/12 stays the interaction contract; as each phase lands,
+draw a clip; hearing notes as they are pressed and dragged, playing or
+not, a playable keyboard column, keys and notes lit while they sound.
+docs/12 states those rules. Phase 4 planned. docs/12 stays the interaction contract; as each phase lands,
 its rules move there and this doc keeps the plan and the reasons.
 
 ## What musicians expect (and other DAWs do)
@@ -226,26 +228,32 @@ notes were and moves the originals (the grid stays on; ⌥ pressed after
 the drag starts frees it), Escape takes the copies back; **⌘-drag** on
 an empty lane draws a clip (a click makes one bar).
 
-## Note editing (phase 3)
+## Note editing (phase 3, built)
 
 - **Left edge** (built in phase 1): drag moves the start, keeps the end;
   on every selected note.
 - **⌥-drag duplicates.** ⌘-drag on an edge scales the selection in time
   around its other end.
-- **Audition:**
-  - pressing a note plays it; moving the selection to a new pitch plays
-    the new pitches (the chord when several are selected); a box select
-    plays nothing;
-  - plays while the transport runs too, through the track, as long as
-    the button is held (not a fixed 200 ms);
-  - a headphone latch in the editor head turns it off.
+- **Hearing notes:**
+  - pressing a note holds it (the selection's pitches, up to eight, so
+    a chord sounds as one), moving it to a new pitch moves the sound,
+    drawing a note holds its pitch; a box select plays nothing;
+  - held for as long as the button is, through the track's instrument
+    and inserts, while the transport runs too (the held notes go in with
+    the track's own events); stopped, the track plays alone until its
+    tail has rung out;
+  - the **HEAR** latch in the editor head turns it off for notes (the
+    keyboard always plays).
+  - Main sends the difference between what the editor wants held and
+    what is (`Engine.holdNote`, a ring the audio thread drains each
+    block), so the editor only states a set of pitches.
 - **The keyboard column:**
   - click plays the key while held, drag plays a glissando;
   - ⇧-click selects every note of that pitch;
   - keys that sound right now light up in the track color, from a
-    128-bit held-note set per track the engine publishes each block
-    (atomics, no allocation; docs/04's discipline);
-  - the same lit set marks notes that sound under the playhead.
+    128-bit set per track the audio thread updates from the note events
+    it plays (`Track.sounding`, two atomics, no allocation);
+  - the same set lights the notes under the playhead.
 - New notes come out selected, so a drawn note can be nudged at once
   (built in phase 1).
 
@@ -279,8 +287,9 @@ an empty lane draws a clip (a click makes one bar).
 2. **Time selection** (built): the arrangement's range and its commands,
    Insert and Delete time, ⌘J, ⌥-drag duplicate, ⌘-drag to draw a clip,
    the piano roll's range. The audio editor's range is later.
-3. **Note editing:** audition while dragging and while playing, the
-   keyboard column, held-note lighting.
+3. **Note editing** (built): held notes while pressing and dragging,
+   playing or not, the HEAR latch, the keyboard column, lit keys and
+   notes.
 4. **Multi-clip editing:** tabs, ghosts, song-time axis.
 5. Later: pinch zoom through a native gesture hook, cross-clip tools.
 

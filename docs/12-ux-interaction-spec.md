@@ -115,7 +115,13 @@ it.
 - Moving notes changes time and pitch; resizing keeps a 1/64-note
   minimum with ⌥.
 - A drawn note comes out selected, alone.
-- Pressing a note plays it (while stopped); a box select plays nothing.
+- Pressing a note holds it (the selection's pitches, up to eight) for
+  as long as the button is down, playing or not; dragging to a new pitch
+  moves the sound; drawing a note holds its pitch; a box select plays
+  nothing. The HEAR latch turns this off.
+- The keyboard column plays: press a key, drag across keys to glide;
+  ⇧-click selects every note of that pitch. Keys light in the track's
+  color while they sound, and so do the notes under the playhead.
 
 ### Audio editor
 

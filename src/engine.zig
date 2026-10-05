@@ -23,6 +23,16 @@ const fy_host = @import("fy_host.zig");
 
 pub const MAX_BLOCK = audio.BLOCK_FRAMES * 4;
 pub const MAX_EVENTS_PER_TRACK = 1024;
+/// Held-note requests in flight from the UI (docs/31 §Note editing).
+const AUD_Q = 64;
+/// A block's held-note events: the requests plus releasing every held
+/// pitch of a track the editor left.
+const AUD_EV = AUD_Q + 128;
+/// How long a stopped track keeps rendering after its last release.
+const AUD_TAIL_S = 3;
+
+/// Hold or release a note on a track, from an editor.
+pub const AudEvent = struct { track: u8, pitch: u8, on: bool };
 /// Expression events for a bent note go out every this many samples while
 /// it sounds (docs/22 §Note expression): 0.67 ms at 48 kHz.
 pub const EXPR_STEP: u32 = 32;
@@ -174,14 +184,21 @@ pub const Engine = struct {
     /// next block sends note-offs to the notes that were sounding there,
     /// so their voices release instead of hanging or being cut (a click).
     release_from: ?f64 = null,
-    audition_request: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
-    audition_track: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
-    audition_pitch_bits: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 60))),
-    audition_seen: u32 = 0,
-    audition_active: bool = false,
-    audition_remaining: u32 = 0,
-    audition_pitch: f32 = 60,
-    audition_track_local: usize = 0,
+    /// Notes the editors hold (docs/31 §Note editing): a ring the UI
+    /// thread writes and the audio thread drains at each block's start.
+    aud_q: [AUD_Q]AudEvent = undefined,
+    aud_w: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    aud_r: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    /// Audio thread: the track the held notes play on, which they are,
+    /// and this block's note events for it.
+    aud_track: ?u8 = null,
+    aud_held: [2]u64 = .{ 0, 0 },
+    aud_ev: [AUD_EV]machine.NoteEvent = undefined,
+    aud_ev_track: [AUD_EV]u8 = undefined,
+    aud_n: usize = 0,
+    /// Stopped: samples to go on rendering the track after the last
+    /// release, so its tail is heard.
+    aud_tail: u32 = 0,
     /// The browser's audition (docs/25 §The browser): a sample played
     /// straight to the output, over whatever plays. The UI fills the slot
     /// it isn't publishing and bumps the request; the audio thread copies
@@ -452,10 +469,78 @@ pub const Engine = struct {
         self.preview_at.store(if (self.preview.data.len == 0) std.math.maxInt(u32) else @intFromFloat(self.preview_pos), .monotonic);
     }
 
-    pub fn auditionNote(self: *Engine, track_idx: usize, pitch: u8) void {
-        self.audition_track.store(@intCast(@min(track_idx, std.math.maxInt(u32))), .monotonic);
-        self.audition_pitch_bits.store(@bitCast(@as(f32, @floatFromInt(pitch))), .monotonic);
-        _ = self.audition_request.fetchAdd(1, .release);
+    /// Start (`on`) or release a held note on a track, playing or not
+    /// (docs/31 §Note editing). UI thread; dropped when the ring is full.
+    pub fn holdNote(self: *Engine, track_idx: usize, pitch: u8, on: bool) void {
+        if (track_idx > std.math.maxInt(u8) or pitch > 127) return;
+        const w = self.aud_w.load(.monotonic);
+        if (w -% self.aud_r.load(.acquire) >= AUD_Q) return;
+        self.aud_q[w % AUD_Q] = .{ .track = @intCast(track_idx), .pitch = pitch, .on = on };
+        self.aud_w.store(w +% 1, .release);
+    }
+
+    /// Audio thread, once per callback: this block's held-note events.
+    fn drainHeld(self: *Engine) void {
+        self.aud_n = 0;
+        var r = self.aud_r.load(.monotonic);
+        const w = self.aud_w.load(.acquire);
+        while (r != w) : (r +%= 1) {
+            const e = self.aud_q[r % AUD_Q];
+            if (e.track >= self.tracks.len) continue;
+            if (self.aud_track) |cur| if (cur != e.track) self.releaseHeld();
+            self.aud_track = e.track;
+            const word = e.pitch / 64;
+            const bit = @as(u64, 1) << @intCast(e.pitch % 64);
+            const was = self.aud_held[word] & bit != 0;
+            if (e.on == was) continue;
+            if (e.on) self.aud_held[word] |= bit else self.aud_held[word] &= ~bit;
+            self.pushHeld(e.track, e.pitch, e.on);
+        }
+        self.aud_r.store(r, .release);
+        if (self.aud_held[0] | self.aud_held[1] != 0 or self.aud_n > 0) self.aud_tail = AUD_TAIL_S * self.transport.sample_rate;
+    }
+
+    fn pushHeld(self: *Engine, track: u8, pitch: u8, on: bool) void {
+        if (self.aud_n >= AUD_EV) return;
+        self.aud_ev[self.aud_n] = .{
+            .sample_offset = 0,
+            .kind = if (on) .note_on else .note_off,
+            .channel = 0,
+            .note_id = -1,
+            .pitch = @floatFromInt(pitch),
+            .velocity = if (on) 0.8 else 0,
+        };
+        self.aud_ev_track[self.aud_n] = track;
+        self.aud_n += 1;
+    }
+
+    /// Let go of every held note (the editor moved to another track).
+    fn releaseHeld(self: *Engine) void {
+        const t = self.aud_track orelse return;
+        for (0..128) |pi| {
+            const bit = @as(u64, 1) << @intCast(pi % 64);
+            if (self.aud_held[pi / 64] & bit == 0) continue;
+            self.pushHeld(t, @intCast(pi), false);
+        }
+        self.aud_held = .{ 0, 0 };
+    }
+
+    /// Put this block's held-note events for track `ti` ahead of its own.
+    fn injectHeld(self: *const Engine, ti: u8, events: []machine.NoteEvent, n: usize) usize {
+        var k: usize = 0;
+        for (self.aud_ev_track[0..self.aud_n]) |tt| {
+            if (tt == ti) k += 1;
+        }
+        if (k == 0) return n;
+        const keep = @min(n, events.len - @min(events.len, k));
+        std.mem.copyBackwards(machine.NoteEvent, events[k..][0..keep], events[0..keep]);
+        var j: usize = 0;
+        for (self.aud_ev[0..self.aud_n], self.aud_ev_track[0..self.aud_n]) |ev, tt| {
+            if (tt != ti or j >= events.len) continue;
+            events[j] = ev;
+            j += 1;
+        }
+        return j + keep;
     }
 
     /// Kill all sound: every machine and effect is reset on the audio
@@ -586,11 +671,13 @@ pub const Engine = struct {
 
         if (self.panic_request.swap(false, .acquire)) {
             self.resetAllMachines();
-            self.audition_active = false;
-            self.audition_seen = self.audition_request.load(.acquire);
+            self.aud_held = .{ 0, 0 };
+            self.aud_tail = 0;
+            for (self.tracks) |*t| t.clearSounding();
         }
 
         self.adoptTempo();
+        self.drainHeld();
         const playing = self.transport.isPlaying();
         if (!playing) {
             if (self.was_playing) {
@@ -599,7 +686,12 @@ pub const Engine = struct {
                     t.machine.reset(t.machine.state);
                     for (t.effects.items) |*fx| fx.mach.reset(fx.mach.state);
                     t.setMeter(0, 0);
+                    t.clearSounding();
                 }
+                // Whatever the editor still holds sounds again from here.
+                if (self.aud_track) |at| for (0..128) |pi| {
+                    if (self.aud_held[pi / 64] & (@as(u64, 1) << @intCast(pi % 64)) != 0) self.pushHeld(at, @intCast(pi), true);
+                };
                 if (self.master) |mb| {
                     for (mb.effects.items) |*fx| fx.mach.reset(fx.mach.state);
                 }
@@ -634,6 +726,7 @@ pub const Engine = struct {
                     @intCast(chunk),
                     pos,
                 );
+                self.aud_n = 0; // the first chunk took them
                 done += chunk;
                 pos = self.advanceRenderPos(pos, @intCast(chunk));
             }
@@ -789,23 +882,12 @@ pub const Engine = struct {
         return next;
     }
 
+    /// Stopped: the track the editor holds notes on plays alone, with
+    /// its inserts and fader, until its tail has rung out.
     fn renderAudition(self: *Engine, out: []f32, frames: u32) bool {
-        const req = self.audition_request.load(.acquire);
-        var send_on = false;
-        if (req != self.audition_seen) {
-            if (self.audition_active and self.audition_track_local < self.tracks.len) {
-                const old = &self.tracks[self.audition_track_local];
-                old.machine.reset(old.machine.state);
-                for (old.effects.items) |*fx| fx.mach.reset(fx.mach.state);
-            }
-            self.audition_seen = req;
-            self.audition_active = true;
-            self.audition_remaining = self.transport.sample_rate / 5;
-            self.audition_pitch = @bitCast(self.audition_pitch_bits.load(.monotonic));
-            self.audition_track_local = @min(@as(usize, @intCast(self.audition_track.load(.monotonic))), if (self.tracks.len > 0) self.tracks.len - 1 else 0);
-            send_on = true;
-        }
-        if (!self.audition_active or self.tracks.len == 0) return false;
+        const ti = self.aud_track orelse return false;
+        if (ti >= self.tracks.len) return false;
+        if (self.aud_tail == 0 and self.aud_n == 0) return false;
 
         var l_buf: [MAX_BLOCK]f32 = undefined;
         var r_buf: [MAX_BLOCK]f32 = undefined;
@@ -819,33 +901,12 @@ pub const Engine = struct {
         @memset(self.master_l[0..n], 0);
         @memset(self.master_r[0..n], 0);
 
-        var events: [2]machine.NoteEvent = undefined;
-        var event_count: usize = 0;
-        if (send_on) {
-            events[event_count] = .{
-                .sample_offset = 0,
-                .kind = .note_on,
-                .channel = 0,
-                .note_id = -1,
-                .pitch = self.audition_pitch,
-                .velocity = 0.9,
-            };
-            event_count += 1;
-        }
-        if (self.audition_remaining <= frames) {
-            events[event_count] = .{
-                .sample_offset = if (self.audition_remaining > 0) self.audition_remaining - 1 else 0,
-                .kind = .note_off,
-                .channel = 0,
-                .note_id = -1,
-                .pitch = self.audition_pitch,
-                .velocity = 0,
-            };
-            event_count += 1;
-        }
+        var events: [AUD_EV]machine.NoteEvent = undefined;
+        const event_count = self.injectHeld(ti, &events, 0);
+        self.aud_n = 0;
 
         // Stopped: automation holds its value at the playhead.
-        const t = &self.tracks[self.audition_track_local];
+        const t = &self.tracks[ti];
         const snap = t.currentSnapshot();
         const beat = self.beatAtSample(self.transport.samples());
         const inst_view = snap_mod.AutoView{ .snap = snap, .cursors = &t.auto_cursors, .kind = .inst };
@@ -861,20 +922,22 @@ pub const Engine = struct {
             .automation = if (snap.lane_count > 0) &inst_view else null,
         };
 
-        if (send_on) t.pulseNote();
+        for (events[0..event_count]) |ev| if (ev.kind == .note_on) {
+            t.pulseNote();
+            break;
+        };
+        t.noteSounding(events[0..event_count]);
         t.machine.render(t.machine.state, &ctx, l, r);
         const rendered = renderEffects(t, ctx, l, r, fx_l_buf[0..n], fx_r_buf[0..n], .{});
         const final_l = rendered.l;
         const final_r = rendered.r;
         const g = faderGains(t, snap, beat);
-        const vl = g.l;
-        const vr = g.r;
         var peak_l: f32 = 0;
         var peak_r: f32 = 0;
         var i: usize = 0;
         while (i < n) : (i += 1) {
-            const sl = final_l[i] * vl;
-            const sr = final_r[i] * vr;
+            const sl = final_l[i] * g.l;
+            const sr = final_r[i] * g.r;
             self.master_l[i] += sl;
             self.master_r[i] += sr;
             peak_l = @max(peak_l, @abs(sl));
@@ -883,12 +946,8 @@ pub const Engine = struct {
         t.setMeter(peak_l, peak_r);
         self.finishMaster(out, @intCast(n));
 
-        if (self.audition_remaining <= frames) {
-            self.audition_active = false;
-            self.audition_remaining = 0;
-        } else {
-            self.audition_remaining -= frames;
-        }
+        // Held, it rings on; released, until the tail is done.
+        if (self.aud_held[0] | self.aud_held[1] == 0) self.aud_tail -|= frames;
         return true;
     }
 
@@ -1188,7 +1247,9 @@ pub const Engine = struct {
         // Load the snapshot pointer once per track per block.
         // See snapshot.zig for the double-buffer invariant.
         const snap = t.currentSnapshot();
-        const n_events = gatherEvents(snap, beat_start, beat_end, spb, frames, chase, release_at, &scratch.events);
+        const n_events = self.injectHeld(ti, &scratch.events, gatherEvents(snap, beat_start, beat_end, spb, frames, chase, release_at, &scratch.events));
+        t.noteSounding(scratch.events[0..n_events]);
+        const held_here = if (self.aud_track) |at| at == ti and self.aud_held[0] | self.aud_held[1] != 0 else false;
         // Frozen: its audio stands in for the instrument, audio clips and
         // inserts (docs/28 §Freeze); the fader on is as ever.
         const frozen = if (node.is_bus) null else snap.frozen;
@@ -1238,7 +1299,7 @@ pub const Engine = struct {
                     // A control edit wakes it too, so its params and
                     // displays catch up (the edit may be all there is).
                     const edited = t.machine.takeWake();
-                    wake = n_events > 0 or notesNear(snap, beat_start, beat_end + ahead);
+                    wake = n_events > 0 or held_here or notesNear(snap, beat_start, beat_end + ahead);
                     if (edited) t.inst_quiet = 0;
                     const hold = t.machine.idleHold(@floatFromInt(sr), idleHoldSamples(sr));
                     // Asleep: `l`/`r` stay silent.
@@ -4253,4 +4314,66 @@ test "polytempo and polymeter: a 3:2 track plays its clip's beats 1.5x as fast, 
     const lt2 = localTime(snap, 12 - 1e-9, 120, mm.barInfoAtBeat(12), mm);
     try testing.expectEqual(@as(u32, 1), lt2.bar);
     try testing.expectApproxEqAbs(@as(f64, 1), lt2.beat_in_bar, 1e-6);
+}
+
+test "held notes: the editor's keys play stopped and playing, and light the track's sounding set" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const Rec = struct {
+        var log: [16]struct { on: bool, pitch: f32 } = undefined;
+        var n: usize = 0;
+        fn machine_() machine.Machine {
+            var level: f32 = 0;
+            var m = RouteTestMachines.dc(&level);
+            m.render = struct {
+                fn f(_: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []f32) void {
+                    if (ctx.note_in) |ev| for (ev[0..ctx.note_in_count]) |e| {
+                        if (e.kind != .note_on and e.kind != .note_off) continue;
+                        if (n < log.len) log[n] = .{ .on = e.kind == .note_on, .pitch = e.pitch };
+                        n += 1;
+                    };
+                    @memset(l, 0);
+                    @memset(r, 0);
+                }
+            }.f;
+            return m;
+        }
+    };
+    var tracks = [_]Track{try Track.init(alloc, "keys", col, Rec.machine_())};
+    defer for (&tracks) |*t| t.deinit(alloc);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+    var transport = Transport{};
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+    var out: [64 * 2]f32 = undefined;
+
+    // Stopped: held until released, then the key goes dark.
+    eng.holdNote(0, 60, true);
+    eng.render(&out, 64);
+    eng.render(&out, 64);
+    try testing.expectEqual(@as(usize, 1), Rec.n);
+    try testing.expect(Rec.log[0].on and Rec.log[0].pitch == 60);
+    try testing.expect(tracks[0].sounding128() & (@as(u128, 1) << 60) != 0);
+    eng.holdNote(0, 60, false);
+    eng.render(&out, 64);
+    try testing.expectEqual(@as(usize, 2), Rec.n);
+    try testing.expect(!Rec.log[1].on);
+    try testing.expectEqual(@as(u128, 0), tracks[0].sounding128());
+
+    // Playing: the held note goes in with the track's own.
+    transport.play();
+    eng.render(&out, 64);
+    eng.holdNote(0, 64, true);
+    eng.render(&out, 64);
+    try testing.expectEqual(@as(usize, 3), Rec.n);
+    try testing.expect(Rec.log[2].on and Rec.log[2].pitch == 64);
+    try testing.expect(tracks[0].sounding128() & (@as(u128, 1) << 64) != 0);
+    eng.holdNote(0, 64, false);
+    eng.render(&out, 64);
+    try testing.expectEqual(@as(usize, 4), Rec.n);
+    try testing.expectEqual(@as(u128, 0), tracks[0].sounding128());
 }

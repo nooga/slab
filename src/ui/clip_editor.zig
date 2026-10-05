@@ -192,6 +192,58 @@ const SCRUB_KEY: u64 = 0x5C2B_C11E_0000_0001;
 /// Zoom to the selection on the next frame (Z).
 var zoom_req = false;
 
+/// Hear notes as they are pressed and dragged (the HEAR latch).
+var hear_notes = true;
+/// The key the keyboard column is held on (a drag glides across keys).
+var kbd_pitch: ?u8 = null;
+const KBD_KEY: u64 = 0x4B42_D0C1_0000_0001;
+
+/// The pitches to hold this frame: the keyboard's key, and with HEAR the
+/// notes being pressed, dragged or drawn (at most eight, lowest first).
+fn hearSet(clip: *const Clip) u128 {
+    var set: u128 = 0;
+    if (kbd_pitch) |kp| set |= @as(u128, 1) << @intCast(kp);
+    if (!hear_notes) return set;
+    if (draw_active) set |= @as(u128, 1) << @intCast(draw_pitch);
+    if (move_active or resize_active) {
+        var n: usize = 0;
+        var pi: u8 = 0;
+        while (pi < 128 and n < 8) : (pi += 1) {
+            for (clip.notes.items) |note| if (note.selected and note.pitch == pi) {
+                set |= @as(u128, 1) << @intCast(pi);
+                n += 1;
+                break;
+            };
+        }
+    }
+    return set;
+}
+
+/// The keyboard column: press a key to play it, drag to glide across
+/// keys; ⇧-click selects every note of that pitch.
+fn handleKeyboard(kbd: c.rl.Rectangle, grid: c.rl.Rectangle, clip: *Clip, m: pane.Mouse) void {
+    if (kbd_pitch != null) {
+        if (!pane.isDraggingKey(KBD_KEY) or !m.left_down) {
+            if (pane.isDraggingKey(KBD_KEY)) pane.cancelDrag();
+            kbd_pitch = null;
+            return;
+        }
+        if (pitchAtY(grid, std.math.clamp(m.y, grid.y, grid.y + grid.height - 1))) |p| kbd_pitch = p;
+        return;
+    }
+    if (pane.contains(kbd, m.x, m.y) and !pane.hasActiveDrag()) pane.requestCursor(c.rl.MOUSE_CURSOR_POINTING_HAND, 1);
+    if (!m.left_pressed or !pane.contains(kbd, m.x, m.y) or pane.hasActiveDrag()) return;
+    const p = pitchAtY(grid, m.y) orelse return;
+    if (gesture.mods().shift) {
+        clip.deselectAll();
+        for (clip.notes.items) |*n| {
+            if (n.pitch == p) n.selected = true;
+        }
+    }
+    if (!pane.tryStartDrag(KBD_KEY)) return;
+    kbd_pitch = p;
+}
+
 /// The time selection the last box drew, in the clip's beats.
 var note_range: ?[2]f64 = null;
 
@@ -341,13 +393,16 @@ pub fn cancelInteractions(tracks: []track_mod.Track, selected: ?ClipRef) bool {
 pub const Result = struct {
     minimize: bool = false,
     close: bool = false,
-    audition_pitch: ?u8 = null,
     command: menu.EditCommand = .none,
     command_beat: ?f64 = null,
     command_pitch: ?u8 = null,
     rename_rect: ?c.rl.Rectangle = null,
     /// The ruler was clicked or dragged: seek the song here.
     seek: ?f64 = null,
+    /// The pitches the editor wants held on the clip's track this frame
+    /// (pressed or dragged notes, the keyboard); main starts and releases
+    /// the difference (docs/31 §Note editing).
+    hear: u128 = 0,
     /// The ruler was ⇧-dragged: loop these song beats.
     loop: ?[2]f64 = null,
 };
@@ -639,7 +694,8 @@ pub fn emptyBody(ui: *Ui, r: Rect, msg: []const u8) void {
     ui.textIn(&ui.fonts.legend, r, msg, ui_style.text_mute, .center, false);
 }
 
-const TOOLS_W: i32 = EXPR_W + KS_W + GROOVE_W + AMOUNT_W + SHIFT_W;
+const TOOLS_W: i32 = EXPR_W + HEAR_W + KS_W + GROOVE_W + AMOUNT_W + SHIFT_W;
+const HEAR_W: i32 = 48;
 const GROOVE_W: i32 = 128;
 const AMOUNT_W: i32 = 40;
 const SHIFT_W: i32 = 52;
@@ -674,6 +730,11 @@ fn drawHeaderTools(ui: *Ui, tools: Rect, track: ?*track_mod.Track) void {
         var on = expr_mode;
         if (ctl.button(ui, er, "expr", &on, .{ .kind = .latch, .label = "EXPR", .led = ui_style.auto, .flush = true })) toggleExpressionMode();
         menu.tip(ui, er, "Expression (E): drag notes to bend them, edit their pitch curves");
+    }
+    {
+        const hr = t.cutLeft(HEAR_W);
+        _ = ctl.button(ui, hr, "hear", &hear_notes, .{ .kind = .latch, .label = "HEAR", .led = ui_style.accent, .flush = true });
+        menu.tip(ui, hr, "Hear notes as you press and drag them (the keyboard always plays)");
     }
     if (note_map.len > 0) {
         // Drum lanes have no key; the slot folds the roll to the mapped keys.
@@ -795,8 +856,8 @@ pub fn draw(
     return .{
         .minimize = head.minimize,
         .close = head.close,
-        .audition_pitch = pres.audition_pitch,
         .seek = pres.seek,
+        .hear = pres.hear,
         .loop = pres.loop,
         .command = pres.command,
         .command_beat = pres.command_beat,
@@ -852,6 +913,7 @@ fn cancelAllDrags() void {
     minimap.cancel();
     vbar.cancel();
     scrub.cancel();
+    kbd_pitch = null;
     pane.cancelDrag();
 }
 
@@ -859,9 +921,9 @@ fn cancelAllDrags() void {
 // ── Piano roll draw + input ──────────────────────────────────────────
 
 const PianoRollResult = struct {
+    hear: u128 = 0,
     seek: ?f64 = null,
     loop: ?[2]f64 = null,
-    audition_pitch: ?u8 = null,
     command: menu.EditCommand = .none,
     command_beat: ?f64 = null,
     command_pitch: ?u8 = null,
@@ -927,13 +989,14 @@ fn drawPianoRoll(
         .seek => |local| seek = clip.start_beat + local / cur_rate,
         .loop => |l| loop = .{ clip.start_beat + l[0] / cur_rate, clip.start_beat + l[1] / cur_rate },
     };
-    drawKeyboard(ui, kbd_rect);
+    handleKeyboard(kbd_rect, grid_rect, clip, m);
+    drawKeyboard(ui, kbd_rect, track.sounding128() | if (kbd_pitch) |kp| @as(u128, 1) << @intCast(kp) else 0, track_color);
 
     // Everything that scrolls is clipped to the grid viewport so notes and
     // draw-previews never bleed into the keyboard or the adjacent panes.
     ui.clip(bridge.fromRl(grid_rect));
     drawGrid(ui, grid_rect, edit_snap);
-    drawExistingNotes(ui, grid_rect, clip.*, track_color);
+    drawExistingNotes(ui, grid_rect, clip.*, track_color, if (in_clip) local_play else null, track.sounding128());
     drawBends(ui, grid_rect, clip.*, track_color, track.machine.takes_expression, m);
     drawClipEndOverlay(ui, grid_rect, clip.*);
 
@@ -964,7 +1027,9 @@ fn drawPianoRoll(
 
     const in_expr = expr_mode and !collapsed();
     if (in_expr and !velocity_consumed) handleExpression(ui, grid_rect, clip, edit_snap, m);
-    var result = PianoRollResult{ .seek = seek, .loop = loop, .audition_pitch = if (velocity_consumed or in_expr) null else handleInput(ui, grid_rect, clip, alloc, edit_snap, m) };
+    if (!velocity_consumed and !in_expr) handleInput(ui, grid_rect, clip, alloc, edit_snap, m);
+    var result = PianoRollResult{ .seek = seek, .loop = loop };
+    result.hear = if (in_expr) (if (kbd_pitch) |kp| @as(u128, 1) << @intCast(kp) else 0) else hearSet(clip);
     exprMenuTick(clip);
     if (!in_expr) _ = menu.openContext(ui, PR_CONTEXT_KEY, bridge.fromRl(grid_rect));
     const has_selection = clip.selectedCount() > 0;
@@ -1141,7 +1206,7 @@ fn drawRuler(ui: *Ui, ruler: c.rl.Rectangle, grid: c.rl.Rectangle, edit_snap: sn
 /// Key column (hardware): white bed with black-key bars and octave labels
 /// on the Cs; with a drum note map, labelled lanes on faceplate and unmapped
 /// rows dark.
-fn drawKeyboard(ui: *Ui, r: c.rl.Rectangle) void {
+fn drawKeyboard(ui: *Ui, r: c.rl.Rectangle, lit: u128, col: ui_style.Color) void {
     const kr = bridge.fromRl(r);
     ui.clip(kr);
     defer ui.unclip();
@@ -1191,6 +1256,19 @@ fn drawKeyboard(ui: *Ui, r: c.rl.Rectangle) void {
                     }
                 }
             }
+        }
+    }
+    // Keys sounding now, in the track's color (docs/31 §Note editing).
+    if (lit != 0) {
+        var rj: i32 = 0;
+        while (pitchOfRow(rj)) |pitch| : (rj += 1) {
+            if (lit & (@as(u128, 1) << @intCast(pitch)) == 0) continue;
+            const fy = pitchTopY(r, pitch);
+            if (fy + view.row_h < r.y or fy > r.y + r.height) continue;
+            const y = ipx(fy);
+            const h = ipx(fy + view.row_h) - y;
+            const w = if (!drum and isBlackKey(pitch)) bw else kr.w - 1;
+            ui.rect(Rect.xywh(kr.x, y, w, h), col.alpha(200));
         }
     }
     // Seam against the grid.
@@ -1247,15 +1325,17 @@ fn drawClipEndOverlay(ui: *Ui, r: c.rl.Rectangle, clip: Clip) void {
 
 /// Notes: dark rim, body brightness follows velocity, a lit top line;
 /// amber outline when selected.
-fn drawExistingNotes(ui: *Ui, grid: c.rl.Rectangle, clip: Clip, col: ui_style.Color) void {
+fn drawExistingNotes(ui: *Ui, grid: c.rl.Rectangle, clip: Clip, col: ui_style.Color, play: ?f64, lit: u128) void {
     const rim = col.mix(ui_style.chassis, 0.55);
     for (clip.notes.items) |note| {
+        // Sounding under the playhead: lit (docs/31 §Note editing).
+        const now = if (play) |pb| pb >= note.start_beat and pb < note.start_beat + note.length_beats and lit & (@as(u128, 1) << @intCast(note.pitch)) != 0 else false;
         const fr = noteRect(grid, note);
         if (fr.x + fr.width < grid.x or fr.x > grid.x + grid.width) continue;
         if (fr.y + fr.height < grid.y or fr.y > grid.y + grid.height) continue;
         const nr = frectRl(fr);
         const vel = @as(f32, @floatFromInt(note.velocity)) / 127.0;
-        const fill = col.mix(ui_style.pane, 0.55 * (1 - vel));
+        const fill = if (now) col.mix(ui_style.text, 0.45) else col.mix(ui_style.pane, 0.55 * (1 - vel));
         ui.rect(nr, rim);
         if (nr.w > 2 and nr.h > 2) {
             ui.rect(nr.inset(1), fill);
@@ -1609,8 +1689,8 @@ fn handleInput(
     alloc: std.mem.Allocator,
     edit_snap: snap_mod.Setting,
     m: pane.Mouse,
-) ?u8 {
-    if (updateInProgressDrag(grid, clip, alloc, edit_snap, m)) return null;
+) void {
+    if (updateInProgressDrag(grid, clip, alloc, edit_snap, m)) return;
 
     if (pane.contains(grid, m.x, m.y) and !pane.hasActiveDrag()) {
         if (findNoteAt(grid, clip.*, m.x, m.y)) |h| {
@@ -1618,9 +1698,9 @@ fn handleInput(
         }
     }
 
-    if (!m.left_pressed and !m.right_pressed) return null;
-    if (!pane.contains(grid, m.x, m.y)) return null;
-    if (pane.hasActiveDrag()) return null;
+    if (!m.left_pressed and !m.right_pressed) return;
+    if (!pane.contains(grid, m.x, m.y)) return;
+    if (pane.hasActiveDrag()) return;
 
     if (m.right_pressed) {
         context_target = .{
@@ -1634,10 +1714,10 @@ fn handleInput(
             }
         }
         _ = menu.openContext(ui, PR_CONTEXT_KEY, bridge.fromRl(grid));
-        return null;
+        return;
     }
 
-    const pitch = pitchAtY(grid, m.y) orelse return null;
+    const pitch = pitchAtY(grid, m.y) orelse return;
     // Drawn notes land on the swung grid (matches the shifted off-beat lines).
     const beat = blk: {
         const snapped = snap_mod.snapDownPositive(edit_snap, beatAtX(grid, m.x), altBypassSnap());
@@ -1656,12 +1736,12 @@ fn handleInput(
             if (drawn == null or drawn.? != h.idx) {
                 cancelAllDrags();
                 clip.removeNoteAt(h.idx);
-                return null;
+                return;
             }
         } else {
             clip.deselectAll();
             clip.addNote(alloc, .{ .pitch = snapPitchToScale(pitch), .start_beat = beat, .length_beats = defaultNoteBeats(edit_snap), .selected = true }) catch {};
-            return snapPitchToScale(pitch);
+            return;
         }
     }
 
@@ -1685,23 +1765,22 @@ fn handleInput(
             }
             beginMove(alloc, clip.*, m) catch {};
         }
-        return clip.notes.items[h.idx].pitch;
+        return;
     }
 
     // Empty grid: draw (DRAW on, or ⌘) or box select.
     if (mode == .draw or md.cmd) {
-        if (!pane.tryStartDrag(DRAW_KEY)) return null;
+        if (!pane.tryStartDrag(DRAW_KEY)) return;
         draw_active = true;
         draw_pitch = snapPitchToScale(pitch);
         draw_start_beat = beat;
         draw_current_beat = beat + defaultNoteBeats(edit_snap);
         draw_start_x = m.x;
-        return pitch;
+        return;
     }
     if (!md.shift) clip.deselectAll();
     cursor = .{ .beat = beat / cur_rate + clip.start_beat, .pitch = pitch };
     _ = box.begin(BOX_KEY, m, md.shift);
-    return null;
 }
 
 const Hit = struct { idx: u32, part: gesture.Part };

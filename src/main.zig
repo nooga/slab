@@ -185,6 +185,35 @@ const StatusMessage = struct {
     }
 };
 
+/// The notes the clip editor holds on a track (docs/31 §Note editing):
+/// main starts and releases the difference each frame.
+const HeldNotes = struct { track: ?usize = null, set: u128 = 0 };
+
+fn holdNotes(engine: *engine_mod.Engine, held: *HeldNotes, track: ?usize, want_in: u128) void {
+    const want = if (track == null) 0 else want_in;
+    if (held.track != track and held.set != 0) {
+        // Another clip: let go of the old track's notes first.
+        if (held.track) |ot| for (0..128) |pi| {
+            if (held.set & (@as(u128, 1) << @intCast(pi)) != 0) engine.holdNote(ot, @intCast(pi), false);
+        };
+        held.set = 0;
+    }
+    held.track = track;
+    const t = track orelse return;
+    const diff = held.set ^ want;
+    if (diff == 0) return;
+    // Releases first, so a glide from key to key doesn't overlap.
+    for (0..128) |pi| {
+        const mask = @as(u128, 1) << @intCast(pi);
+        if (diff & mask != 0 and want & mask == 0) engine.holdNote(t, @intCast(pi), false);
+    }
+    for (0..128) |pi| {
+        const mask = @as(u128, 1) << @intCast(pi);
+        if (diff & mask != 0 and want & mask != 0) engine.holdNote(t, @intCast(pi), true);
+    }
+    held.set = want;
+}
+
 /// The song-wide state Insert and Delete time move (docs/31 §Time
 /// selection), set once the app's state exists.
 var arrange_ctx: ?struct { meter: *meter_mod.MeterState, markers: *markers_mod.Markers } = null;
@@ -862,6 +891,7 @@ pub fn main(init: std.process.Init) !void {
     var export_presets: export_settings.UserPresets = .{};
     export_presets.load(alloc);
 
+    var held: HeldNotes = .{};
     var engine = engine_mod.Engine{
         .transport = &transport,
         .tracks = tracks_buf[0..track_count],
@@ -1530,6 +1560,8 @@ pub fn main(init: std.process.Init) !void {
             layout.clip_editor_visible = true;
             rects = layout.compute(sw, sh);
         }
+        // The clip editor closed: nothing stays held.
+        if (!layout.clipShown()) holdNotes(&engine, &held, null, 0);
         if (layout.clipShown()) {
             const play_beat: ?f64 = if (transport.isPlaying()) transport.beats() else null;
             const cres = if (selectedClipIsAudio(tracks, selected_clip))
@@ -1542,9 +1574,7 @@ pub fn main(init: std.process.Init) !void {
             if (cres.minimize or cres.close) layout.clip_editor_visible = false;
             if (cres.seek) |b| transport.seekToBeats(b);
             if (cres.loop) |l| transport.setLoopBeats(l[0], l[1]);
-            if (cres.audition_pitch) |pitch| {
-                if (selected_clip) |s| engine.auditionNote(s.track, pitch);
-            }
+            holdNotes(&engine, &held, if (selected_clip) |s| s.track else null, cres.hear);
             if (cres.command == .slice_to_sampler) {
                 sliceToSampler(alloc, &history, &status, &engine, &audio, &reg, &audio_pool, &tracks_buf, &track_count, &transport, &selected_track, &selected_clip, &dirty);
                 tracks = tracks_buf[0..track_count];

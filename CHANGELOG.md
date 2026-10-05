@@ -44,6 +44,14 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 - **⌘J joins** the selected note clips on a track into one.
 - **⌥-drag** a clip or a note to copy it; **⌘-drag** on an empty lane
   draws a clip as long as you drag.
+- **Hear notes as you edit**: pressing a note holds it until you let go,
+  dragging it to a new pitch plays the new pitch, a selected chord sounds
+  as a chord, and it works while the song plays too. **HEAR** in the
+  piano roll's head turns it off.
+- **Play the piano roll's keyboard**: press a key to hear it, drag along
+  the keys to glide; ⇧-click a key selects every note of that pitch.
+  Keys light up while they sound, and so do the notes under the
+  playhead.
 - **Menus** list their items in the same order in every editor, and an
   unwarped audio clip's editor has a right-click menu too.
 
