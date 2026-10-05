@@ -9,16 +9,28 @@ frame is Zig and every "machine" inside the frame (synths, effects,
 note transformers, panels) is authored in [fy](fy/) — a
 concatenative, JIT-to-ARM64 language with word-level hot-patch.
 
-The signature capability: users edit a machine's source (filter, osc,
-panel code) while audio plays and the next block runs the new code.
-Everything else about the product follows from making that promise hold.
+The signature goal is editing a machine's source while audio plays and
+running the new code on the next block. Currently, source changes take
+effect when a new machine instance is loaded; live replacement while
+playing remains a goal. See the current README and implementation before
+assuming a design document's planned behavior has landed.
 
-**Status: pre-code.** Design documents only. `src/main.zig` is a
-stub. The plan is in `docs/`; read those before writing code.
+**Status: working beta.** Slab has native instruments and effects,
+arrangement and piano-roll editing, automation, buses, sends, sidechains,
+audio recording and processing, and headless export. Read [CHANGELOG.md](CHANGELOG.md)
+for released changes and [docs/README.md](docs/README.md) for the map of
+implemented features and historical design plans.
 
 ## Where to start
 
-Read in order on your first session:
+For music production, start with [docs/33-composing.md](docs/33-composing.md),
+[docs/21-production-guide.md](docs/21-production-guide.md), and
+[tools/slabkit/README.md](tools/slabkit/README.md). Current formats and
+machine controls are in docs/19 and docs/20; `slab --describe` reads the
+live manifests. Production improvement proposals live in
+[docs/34-production-wishlist.md](docs/34-production-wishlist.md).
+
+For architecture work, read in order on your first session:
 
 1. [docs/README.md](docs/README.md) — doc index + terminology
 2. [docs/00-vision.md](docs/00-vision.md) — what and why
@@ -96,7 +108,8 @@ Reference docs in fuvid:
 
 ```sh
 zig build              # build
-zig build run          # build and run the stub
+zig build run          # build and open Slab
+zig-out/bin/slab songs/paper_boulevard.slab  # open a saved project
 zig build test         # run unit tests
 ```
 
@@ -142,7 +155,7 @@ Brutalist grey, 1px bevels, bitmap fonts. Don't soften this. See
 - Palette is fixed: five greys + three accents (in the doc).
 - Bitmap fonts only — vector fonts at 11px look wrong.
 
-### fy-side style (when we start writing fy)
+### fy-side style
 
 Follow the conventions in `fy/docs/language-guide.md` and look at
 `fy/examples/funky.fy` for idiomatic DSP. For Slab-specific fy:
@@ -153,8 +166,10 @@ Follow the conventions in `fy/docs/language-guide.md` and look at
   [docs/05-kernels.md](docs/05-kernels.md#combinators).
 - One concept per kernel. A filter is a filter; a shaper is a shaper.
   Compose.
-- Machines live in `machines/<category>/<name>/` directories
-  (planned layout; see [docs/02-machines.md](docs/02-machines.md)).
+- Machines live in `machines/<id>/<id>.fy`, with `presets/` and optional
+  assets beside them. Shared DSP lives under `kernels/`. Follow an
+  existing machine and the implemented language in docs/18; earlier
+  combinator and ABI documents include design proposals.
 
 ## What not to do
 
@@ -166,26 +181,22 @@ Follow the conventions in `fy/docs/language-guide.md` and look at
 - **Don't build a free-node-graph editor** (Reaktor-style) before the
   Live-style graph works end-to-end. Later, on top of the same
   scheduler, fine.
-- **Don't add backward-compatibility cruft** while the project is
-  pre-1.0. Breaking a design doc is free; breaking a user's project
-  file becomes expensive fast — but we have no users yet, so keep
-  the design fluid.
+- **Keep pre-1.0 design changes deliberate.** Saved projects and presets
+  exist. When changing their interpretation, document the effect and
+  handle existing files explicitly; don't assume there are no users.
 - **Don't invent a new language for machines.** It's fy. The reason
   for that is in [docs/00-vision.md](docs/00-vision.md).
 
 ## When to modify docs vs code
 
-Right now: **docs only** until Phase 0 begins. If you find a design
-contradiction or a better approach while reading, update the relevant
-doc before writing code against the old design. The docs are the
-plan; keep them tight.
-
-Once code lands, docs follow code: when behavior changes, the
-relevant doc is part of the change.
+Docs follow the implementation: when behavior changes, update the
+relevant reference or guide in the same change. Label proposals and
+historical milestones clearly. When a plan contradicts the source,
+verify the behavior before changing either; don't implement against a
+stale status paragraph.
 
 ## Commit style
 
-Pre-code. When code lands:
 - Conventional-ish: `area: short imperative summary`
 - `area` examples: `fy-embed`, `audio`, `arena`, `ui`, `machine`,
   `kernel`, `docs`

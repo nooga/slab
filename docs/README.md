@@ -1,17 +1,29 @@
-# Slab — design docs
+# Slab documentation
 
 **Slab Audio Workstation (SAW)** — livecodable DAW with a Zig frame
-and fy-scripted machines. These design documents describe what we're
-building and what the current prototype has proven.
+and fy-scripted machines. These pages cover composing, current formats
+and features, and the architectural plans behind them.
 
-**Current direction:** [17-direction.md](17-direction.md).
-**Current status:** see
-[10-roadmap.md § Current status](10-roadmap.md#current-status-2026-04-24),
-[sessions/session-01.md](sessions/session-01.md), and
-[sessions/session-02.md](sessions/session-02.md).
+**Start composing:** [33-composing.md](33-composing.md) walks from a
+musical brief through a runnable sketch, GEQ, routing, automation and export.
+[21-production-guide.md](21-production-guide.md) covers arrangement and mixing
+in more depth; [slabkit](../tools/slabkit/README.md) is the Python API cheat sheet.
 
-Read in order the first time; skim thereafter. Each doc is
-self-contained but assumes the vocabulary established in earlier ones.
+**Current releases:** [CHANGELOG.md](../CHANGELOG.md). The working beta has
+32 tracks including buses, shared sends, sidechains, clip automation,
+per-note expression and headless mix/stem export. For current machine
+controls use [20-machine-reference.md](20-machine-reference.md) or
+`slab --describe`; limits and serialization are in docs/19 and the source.
+
+**Design history:** [17-direction.md](17-direction.md), the dated milestones
+in [10-roadmap.md](10-roadmap.md), and [sessions](sessions/) record plans
+and earlier results. They are not a complete inventory of today's features.
+[34-production-wishlist.md](34-production-wishlist.md) collects production
+improvements with existing capabilities and acceptance criteria.
+
+For architecture, read the numbered foundations in order. Later feature
+documents contain both implementation notes and proposals; check their
+status and the source before assuming a feature is absent or complete.
 
 1. [00-vision.md](00-vision.md) — what this product is and why it
    could be good
@@ -68,29 +80,36 @@ self-contained but assumes the vocabulary established in earlier ones.
     channel setup, compression, master, the stem report; `tools/slabkit`
 23. [22-automation.md](22-automation.md) — track lanes, clip lanes and
     per-note expression on one curve type; automated controls, editing
-    gestures, engine and format (design)
-24. [25-storage.md](25-storage.md) — where things live: factory, the
+    gestures, engine and format
+24. [23-routing.md](23-routing.md) — groups, returns, sends, sidechain
+    keys, mixer and delay compensation
+25. [24-compressors.md](24-compressors.md) — dynamics design and implemented
+    compressor families
+26. [25-storage.md](25-storage.md) — where things live: factory, the
     home folder, project packages, references by content, collect on
     save, Save to Library, publishing; load time
-25. [26-tape.md](26-tape.md) — tape2: cassette and VHS audio, the WEAR
+27. [26-tape.md](26-tape.md) — tape2: cassette and VHS audio, the WEAR
     macro, and the shared transport kernels (wow, dropouts, hum,
     hysteresis, compand)
-26. [27-bounce-export.md](27-bounce-export.md) — bounce a selection to
+28. [27-bounce-export.md](27-bounce-export.md) — bounce a selection to
     a new track (taps, clip mute, thawable recipes) and export: stems
     in one pass, sections, FLAC/ALAC/AAC, dither, loudness report
-27. [28-time.md](28-time.md) — how a beat becomes a sample: the tempo
+29. [28-time.md](28-time.md) — how a beat becomes a sample: the tempo
     map, locators and sections, groove, polymeter and polytempo, freeze
-28. [29-warp.md](29-warp.md) — audio on the beat axis: warp markers,
+30. [29-warp.md](29-warp.md) — audio on the beat axis: warp markers,
     TAPE/BEATS/VOICE/MIX/SMEAR stretching, transients, tempo detection
-29. [30-extract.md](30-extract.md) — audio into music: hum to notes,
+31. [30-extract.md](30-extract.md) — audio into music: hum to notes,
     chords, drums to a kit, stems, sound matching, tune
-30. [31-editing.md](31-editing.md) — one way to edit across the
+32. [31-editing.md](31-editing.md) — one way to edit across the
     arrangement, piano roll, audio editor and lanes: shared view and
     gestures, one command table, time selection, note editing,
     multi-clip editing
-31. [32-accessibility.md](32-accessibility.md) — the UI as a tree:
+33. [32-accessibility.md](32-accessibility.md) — the UI as a tree:
     nodes from every control, a VoiceOver bridge, keyboard operation,
     `--ax-dump` for tests and agents
+34. [33-composing.md](33-composing.md) — practical composing walkthrough
+35. [34-production-wishlist.md](34-production-wishlist.md) — production
+    improvements, evidence and acceptance criteria
 
 ## Terminology crib sheet
 

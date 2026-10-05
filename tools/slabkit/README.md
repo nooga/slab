@@ -3,12 +3,25 @@
 Write Slab songs as Python scripts. It checks machine ids and params
 against the live manifests, handles the music theory, bounces the song
 headless and reports on the mix. Background: docs/19 (format), docs/20
-(machines), docs/21 (how to write and mix).
+(machines), docs/21 (how to write and mix). Start with the runnable
+[composing walkthrough](../../docs/33-composing.md) for a first session,
+including GEQ, shared returns and permanent exports.
 
 ```sh
 zig build                                   # slabkit calls zig-out/bin/slab
 PYTHONPATH=tools python3 songs/paper_boulevard.py --render --stems
 ```
+
+For permanent stems and the mix in one pass:
+
+```sh
+zig-out/bin/slab songs/paper_boulevard.slab --render /tmp/paper.wav \
+  --stems /tmp/paper-stems --stem-kind tracks --tap fader --tail 4
+```
+
+`Song.render(stems=True)` currently bounces the mix and stems separately,
+then deletes the temporary stems after analysis. Generating a project again
+also overwrites its JSON: save UI edits under another name first.
 
 ## Cheat sheet
 
@@ -45,7 +58,7 @@ song.track("CR-78", "sampler", "drums/roland-cr-78/kit")
 song.track("VOICE", "unfairlight", "sararr")
 
 song.save()                    # songs/title.slab, prints warnings
-song.render(stems=True)        # bounce + mix report
+song.render(stems=True)        # mix + report; temporary stems are deleted
 ```
 
 | Clip method | Does |

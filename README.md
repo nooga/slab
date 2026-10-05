@@ -77,6 +77,15 @@ drag Slab to Applications. Slab isn't notarized yet, so the first time
 you open the DMG version, allow it under System Settings > Privacy &
 Security > Open Anyway. The two commands above don't need that step.
 
+## Compose a song
+
+Follow the [composing walkthrough](docs/33-composing.md) for an editable
+sketch with jazzy chords, an arp, GEQ, shared delay and a mix/stem export.
+The [production guide](docs/21-production-guide.md) covers arrangement and
+mixing, and the [slabkit cheat sheet](tools/slabkit/README.md) lists the
+Python helpers. See the [production wishlist](docs/34-production-wishlist.md)
+for proposed workflow improvements and how to evaluate them.
+
 ## Under the hood
 
 Slab is two programs in one. A host written in [Zig](https://ziglang.org)

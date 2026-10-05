@@ -1,11 +1,12 @@
 # 21 — Writing and mixing a song in Slab
 
-A working guide for composing in Slab, by hand or with Claude driving
+A working guide for composing in Slab, by hand or with an assistant using
 `tools/slabkit`. It covers finding references, song form, harmony,
 melody, groove, choosing sounds, channel setup, compression, space, the
-master chain, and how to read the render report. Where general
-production advice meets a Slab limit (no sends, the master
-soft-clip), the Slab way is spelled out.
+master chain, and how to read the render report. For a runnable first
+session, start with [33-composing.md](33-composing.md). Where general
+production advice meets Slab's routing, automation and master
+soft-clip, the Slab behavior is spelled out.
 
 File format: [19-project-format.md](19-project-format.md). Params and
 presets: [20-machine-reference.md](20-machine-reference.md). Worked
@@ -21,8 +22,9 @@ example: `songs/paper_boulevard.py`.
    groove and the bass, with one sound per role. Render it. If the
    loop doesn't feel good, a full arrangement won't either.
 4. **Lay out the form** as sections, then fill clips section by section.
-5. **Mix by numbers** (§8): render with stems, fix the balance until
-   each stem sits in its target band, then set the master.
+5. **Balance and measure** (§8): audition the parts together, use stem
+   measurements to investigate masking and level problems, then set the
+   master. Suggested level bands are starting points, not acceptance tests.
 6. **Listen and note.** Numbers catch balance and loudness. Taste,
    groove and whether the hook lands need ears. Write feedback in plain
    words ("snare too roomy", "chorus doesn't lift") and map it to
@@ -99,13 +101,17 @@ every section reads the same (the report flags spreads under 2 LU),
 parts aren't entering and leaving.
 
 **Automate the long moves, arrange the rest.** Track automation
-([22-automation.md](22-automation.md)) rides faders, filters and effect
-sends: `track.ramp("cutoff", verse.start, chorus.start, 400, 3000,
+([22-automation.md](22-automation.md)) rides faders, filters and insert
+parameters: `track.ramp("cutoff", verse.start, chorus.start, 400, 3000,
 tension=-0.4)` opens a filter into the chorus, `track.automate("volume",
 …)` rides a fader, `track.automate("fx1:mix", …)` swells a reverb. A
 slow-start curve (negative tension) sounds more natural on a filter
-open than a straight line. Automation can't yet follow a clip or bend
-single notes, so contour also comes from:
+open than a straight line. `clip.ramp()` and `clip.automate()` use beats
+from the clip's start and override the track lane while the clip plays.
+`clip.bend()` adds per-note pitch expression (up to eight points per
+note and dimension). An insert's `mix` is distinct from a routing send:
+`fx1:mix` controls the second insert, not a send level. Contour also comes from:
+
 - parts entering and leaving section by section (the main tool);
 - clip velocities: `clip.velocities(fn)` for fades and swells; drum2
   and most synths respond to velocity;
@@ -242,9 +248,11 @@ env amount, `age` (analog drift on juno2, cream and profit5) and level.
 
 ### Gain structure in Slab
 
-- Machines have headroom and nothing clips inside the mix. The only
-  nonlinearity is the **master soft-clip above −0.45 dBFS**, a safety
-  net; the master meter's clip LED lights at 0 dBFS.
+- The floating-point mix has headroom, but instruments and effects can
+  intentionally distort: driven filters, saturators and limiters are
+  nonlinear before the master. Watch their input and output levels.
+  The final **master soft-clip above −0.45 dBFS** is a safety net;
+  the master meter's clip LED lights at 0 dBFS.
 - Track `volume` is linear gain: 0.5 ≈ −6 dB, 0.25 ≈ −12 dB, 1.25 max.
   Pan is equal-power, so centred tracks are 3 dB down per side.
 - Balance first with `volume`. Use instrument `level` params only when
@@ -280,9 +288,17 @@ stem report.
 
 ### EQ
 
-- **High-pass everything except kick and bass.** It's the single biggest
-  clarity win. Pads at 250 Hz and keys at 150–200 Hz sound thin solo
-  and correct in the mix.
+`eq2` offers a high-pass, two shelves and two bell bands. `geq8` (GEQ)
+offers eight independently switchable bands with selectable types,
+12/48 dB-per-octave cuts, adaptive Q, an output spectrum display and a
+−12..+12 dB output trim. Use GEQ when you need flexible band placement,
+steeper cuts or the spectrum display; `eq2` remains useful for simple
+broad shaping. Neither is a prerequisite for a good mix. See
+[33-composing.md](33-composing.md#choose-and-use-eq) for a working GEQ example.
+
+- **High-pass where low energy masks another part.** Pads at 250 Hz and
+  keys at 150–200 Hz can leave room for bass, but these are starting
+  points. Keep the fundamental when the part needs its own body.
 - **Mud lives at 250–500 Hz.** Cut 2–3 dB there on pads, keys and the
   kit rather than boosting everything else.
 - **Presence at 2–4 kHz** for the lead. **Air above 8 kHz** is better
@@ -378,13 +394,13 @@ Leave pads alone; they're already even.
   `out` compensating so the stem level doesn't jump.
 - `chorus2`: `juno-i` / `juno-ii` for pads and keys. Never on bass or
   kick; it smears the low end out of mono.
-- **Space without sends.** Every reverb is an insert with a `mix`, so
-  pick **two or three spaces** and reuse the same `verb2` presets across
-  tracks, varying only the mix:
-  - a **room** (`small-room`, `short-plate-room`) for drums and hats;
-  - a **plate** (`bright-plate`, `medium-plate`, `plate`) for the snare,
-    keys and lead;
-  - a **hall** (`big-plate-hall`, `dreamy-wash`) for pads only.
+- **Share spaces with sends.** Put a fully wet reverb on a bus and send
+  several tracks into it: `hall = song.bus("HALL", fx=[fx("verb2",
+  "big-hall", mix=1)])`, then `pad.send(hall, -12)`. Sends take dB in
+  slabkit and default to post-fader. A short room, a plate and a dark
+  hall are useful distinct roles; use only what the arrangement needs.
+  An insert reverb with a lower `mix` is still useful for a sound's own
+  space. See [23-routing.md](23-routing.md) for groups, returns and keys.
 - **Pre-delay** (10–40 ms) keeps a sound dry and upfront with a tail
   behind it. **Damp** darkens tails so they sit behind the dry sound.
 - **Delays** synced (`sync="SYNC"`, `div="1/8."`) are the lead's
@@ -395,8 +411,9 @@ Leave pads alone; they're already even.
 Keep kick, snare, bass and lead in the centre. Spread keys and brass
 opposite each other (±0.2–0.3), hats slightly off-centre, bells and arps
 wide. Pads get width from chorus spread, not pan. The report's
-correlation should stay above about 0.3; below 0.2 the mix will
-collapse in mono.
+correlation is a clue, not a pass/fail threshold. Check the mix in mono
+and listen for disappearing parts; a whole-song average can hide local
+cancellation.
 
 ### The master
 
@@ -409,18 +426,19 @@ eq2 (hpf 25 Hz, gentle air shelf) → comp2 gentle-bus-glue → limiter2 (ceil �
   preset or an FM bass written low puts real energy under 20 Hz: the
   meters, the glue comp and the limiter all react to it, and nobody
   hears it. The eq2 hpf above still shapes what's left.
-- **Limiter ceiling at −1 dB** keeps the output below the soft-clip
-  knee (−0.45 dBFS) with room for inter-sample peaks. Existing songs
-  that use −3.2 were written for the old −3.1 dBFS knee; they still work,
-  2 dB quieter than they could be.
+- **Limiter ceiling is a sample ceiling.** −1 dBFS stays below the
+  soft-clip knee, but reconstructed inter-sample peaks can be higher.
+  Check the final export's true peak and lower the ceiling if needed;
+  don't raise an older project's ceiling solely because the soft-clip
+  knee changed. Compare meters on the same WAV before encoding.
 - **Limiter gain**: raise it until the integrated loudness reaches the
   target, then stop.
 
 | Target | Integrated |
 |---|---|
-| streaming-safe, dynamic | −14 LUFS |
+| dynamic starting point | around −14 LUFS |
 | modern pop / dance | −10 to −12 LUFS |
-| too loud (squashed, crest under 8 dB) | above −9 LUFS |
+| very dense; listen for lost transients and fatigue | above −9 LUFS |
 
 ### Rides
 
@@ -432,9 +450,12 @@ fader is final. A stem whose track rides reads its average.
 
 ### Mixing by numbers: the stem report
 
-`song.render(stems=True)` exports every track that plays as a stem
-(`slab --stems`, docs/27): its post-fader signal, through its own
-inserts but before its group bus, its sends' returns and the master
+`song.render(stems=True)` renders the mix, then performs a second render
+for temporary stems, analyzes them and deletes those stem files. For
+persistent mix and stems from one pass, use the combined CLI command in
+[33-composing.md](33-composing.md#render-and-listen). The helper measures
+each playing audio track's stem (`slab --stems`, docs/27): its post-fader
+signal, through its own inserts but before its group bus, its sends' returns and the master
 chain. It prints each stem's integrated loudness. A track inside a
 compressed group reads louder here than it sounds in the mix: the
 group's compressor takes more off it. Compared with each other, those numbers are the
@@ -480,7 +501,7 @@ Report flags and what to do:
 | too washy | reverb mix down, pre-delay up, damp lower; keep the hall on pads only |
 | everything the same | more section contrast (§3); key change for the last chorus |
 
-## 10. Working with Claude
+## 10. Working with an assistant
 
 Ask for a song by reference, form and mood:
 
@@ -488,9 +509,14 @@ Ask for a song by reference, form and mood:
 > key change for the last chorus. Render with stems and tell me what
 > the mix report says.
 
-Claude researches the reference (§2), writes a script under `songs/`,
-renders with stems, fixes the balance until the stems sit in the §8
-targets, and reports the numbers. You listen and reply in plain words
-(§9). Each round is a script edit plus a re-render. The `.py` file is
-the source of truth and the `.slab` file is its output, so edits made in
-the Slab UI will be overwritten by the next run of the script.
+The assistant researches the reference (§2), writes a script under
+`songs/`, renders and investigates balance using stems. It should say
+whether it actually auditioned the audio; measurements alone cannot
+establish that the tone or groove is good. You listen and reply in plain
+words (§9). Each round is a script edit plus a re-render.
+
+The `.py` file owns the generated project. Save UI changes under another
+project name before regenerating, then transfer the edits you want back
+to the script. `Song.save()` writes a package but is not the app's asset
+collection workflow: for sample-based projects use collect-on-save and
+verify the copied project opens, as described in [25-storage.md](25-storage.md).

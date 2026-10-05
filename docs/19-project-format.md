@@ -120,7 +120,7 @@ The document is JSON. Top level:
 | `end` | the END marker in beats: the song's end and the export's PROJECT range |
 | `groove` | the song's groove and the seed of its random timing, `{"song": "MPC 58 1/16", "seed": 1234}` (docs/28 §Groove); missing: straight |
 | `grooves` | the project's own grooves (extracted from clips): `name`, `cycle` (beats; 0 follows the meter's groups), `sub`, `cells` of `steps` with per-step `shift`, `vel`, `rand` |
-| `tracks` | at most 16 |
+| `tracks` | at most 32, including buses; the master is separate (`src/routing.zig`) |
 | `assets` | written on save: every file the project names, by its reference, with its `sha256`, the `origin` a collected copy came from, and an SFZ's or a folder's member `files` ([25-storage.md](25-storage.md) §The asset table). The loader doesn't need it. |
 | `master` | the master bus: `volume` (linear gain, default 1.0), `pan` (a balance control, not a pan law), `subsonic` (`true` turns on the 30 Hz subsonic filter, default `false`), `effects` |
 | `export` | the Export sheet's last settings ([27-bounce-export.md](27-bounce-export.md) §Export): `preset` (its name, or `CUSTOM`), what's written (`mix`, `mix_channels`, `stems`, `stem_signal` `instr`\|`fx`\|`fader`, `stem_channels` `stereo`\|`mono`\|`auto`), the range (`range`, `tail_auto`, `tail_sec`, `wrap`), the format (`container`, `bits`, `rate`, `flac_level`, `aac_kbps`, `dither`), the level (`normalize`, `lufs_target`, `peak_target`, `ceiling`, `stem_gain`), the names (`folder`, `mix_name`, `stem_name`, `exists`) and the tags (`title`, `artist`, `album`, `year`), and `reveal`. Indexes pick from the sheet's lists. Missing = the defaults (MASTER). |
@@ -176,8 +176,9 @@ master effects so their detectors never react to energy nobody hears.
 The master soft-clip is linear up to ±0.95 (−0.45 dBFS) and bends
 smoothly toward ±1.0 above that (`src/engine.zig`, `MasterClip`; the
 mode, soft, hard or off, and the knee are engine fields). It is a safety
-net: everything under full scale passes untouched. A limiter on the
-master with its ceiling at −0.5 dB keeps the output clean. (Until
+net: samples at or below the knee pass untouched. A limiter ceiling
+below the knee avoids this final saturation, but a sample ceiling does
+not guarantee the same true-peak ceiling; check the exported file. (Until
 2026-09-30 the knee sat at 0.7, −3.1 dBFS, where the memoryless curve
 compressed quiet tracks under any loud one.)
 

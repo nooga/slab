@@ -6,6 +6,10 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- A composing walkthrough (docs/33) takes you from a musical brief to an
+  editable sketch with GEQ, a shared delay and a mix and stem export; the
+  production guide is updated for sends, clip automation and GEQ.
+
 ## 0.0.10 — 2026-10-06
 
 The editors become one instrument: the arrangement, the piano roll and
