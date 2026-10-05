@@ -8826,8 +8826,11 @@ test "unison: presets and projects carry the stack; a preset without one plays s
     try testing.expectEqual(@as(u8, 12), copy.pool.load(.monotonic));
     try testing.expectApproxEqAbs(@as(f32, 33), copy.detune(), 1e-4);
 
-    try testing.expect(inst.presets.count > 0);
-    mach.apply_preset.?(mach.state, 0);
+    // A preset that has no stack (lush-pad) plays single.
+    const plain_i = for (inst.presets.names[0..inst.presets.count], 0..) |*pn, i| {
+        if (std.mem.endsWith(u8, pn.slice(), "lush-pad")) break i;
+    } else return error.TestUnexpectedResult;
+    mach.apply_preset.?(mach.state, @intCast(plain_i));
     try testing.expect(u.isDefault());
     // Drums can't stack.
     const drums = try FyRawMachine.create(testing.allocator, "machines/drum2/drum2.fy");
