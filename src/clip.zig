@@ -48,6 +48,11 @@ pub const AudioRef = struct {
     mode: warp.Mode = .tape,
     /// The content beat at the clip's start (the trimmed-off head).
     offset_beats: f64 = 0,
+    /// BEATS (docs/29 §BEATS): where it slices, what fills a gap, and how
+    /// much of each slice sounds before it fades (100: all of it).
+    preserve: warp.Preserve = .hits,
+    gap: warp.Gap = .cut,
+    decay: u8 = 100,
 };
 
 pub const Note = struct {

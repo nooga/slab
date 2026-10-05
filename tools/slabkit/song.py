@@ -464,7 +464,8 @@ class AudioClip:
     lanes = {}
 
     def __init__(self, track, path, start, start_sec, dur_sec, gain, fade_in, fade_out, reverse, name,
-                 warp_bpm=None, mode="tape", total=None):
+                 warp_bpm=None, mode="tape", total=None, beats=None):
+        self.beats = beats or {}
         self.warp_bpm = warp_bpm
         self.mode = mode
         self.total = total
@@ -497,7 +498,7 @@ class AudioClip:
         bps = self.warp_bpm / 60
         total = max(self.total or 0, self.start_sec + self.dur_sec)
         head = total - (self.start_sec + self.dur_sec) if self.reverse else self.start_sec
-        return {"mode": self.mode, "offset": round(head * bps, 9),
+        return {"mode": self.mode, "offset": round(head * bps, 9), **self.beats,
                 "markers": [[0, 0], [round(total, 9), round(total * bps, 9)]]}
 
 
@@ -724,13 +725,16 @@ class Track:
 
     def audio(self, path, section=None, at_bar=0, at_beat=None, start_sec=0.0, dur_sec=None,
               gain=1.0, fade_in=0.0, fade_out=0.0, reverse=False, name=None,
-              warp=None, fit_beats=None, mode="tape"):
+              warp=None, fit_beats=None, mode="tape", preserve="hits", gap="cut", decay=100):
         """Place a WAV: at a section's start plus `at_bar` bars, or at
         `at_beat`. dur_sec defaults to the rest of the file. reverse=True
         plays it backwards (a swell into the downbeat: end it on the bar).
         warp=bpm locks it to the beat at the tempo it was played in, so it
         follows the song's (docs/29); fit_beats=n stretches the window to n
-        beats instead. mode: "tape" (speed and pitch together)."""
+        beats instead. mode: "tape" (speed and pitch together) or "beats"
+        (cut at the hits, each at its own speed: drums), with preserve=
+        "hits" | "1/16" | "1/8" | "1/4", gap="cut" | "loop" and decay=1..100
+        (% of each slice that sounds)."""
         where = f"track {self.name} audio {path}"
         if not os.path.exists(path):
             raise SlabError(f"{where}: file not found")
@@ -743,8 +747,18 @@ class Track:
             raise SlabError(f"{where}: nothing to play (start_sec {start_sec} past the end)")
         bb = self.song.bar_beats
         start = at_beat if at_beat is not None else (section.start if section else 0) + at_bar * bb
-        if mode not in ("tape",):
-            raise SlabError(f"{where}: mode {mode!r}: only \"tape\" so far")
+        if mode not in ("tape", "beats"):
+            raise SlabError(f"{where}: mode {mode!r}: \"tape\" or \"beats\" so far")
+        preserves = {"hits": "hits", "1/16": "d16", "1/8": "d8", "1/4": "d4"}
+        if preserve not in preserves:
+            raise SlabError(f"{where}: preserve {preserve!r}: one of {', '.join(preserves)}")
+        if gap not in ("cut", "loop"):
+            raise SlabError(f"{where}: gap {gap!r}: \"cut\" or \"loop\"")
+        if not 1 <= decay <= 100:
+            raise SlabError(f"{where}: decay {decay} must be 1..100")
+        beats = {"preserve": preserves[preserve], "gap": gap, "decay": int(decay)} if mode == "beats" else None
+        if mode != "tape" and warp is None and fit_beats is None:
+            raise SlabError(f"{where}: mode={mode!r} needs warp= or fit_beats=")
         if warp is True:
             raise SlabError(f"{where}: tempo detection isn't built yet; pass warp=<bpm> or fit_beats=")
         if fit_beats is not None:
@@ -754,7 +768,7 @@ class Track:
         if warp is not None and not 20 <= warp <= 999:
             raise SlabError(f"{where}: warp={warp} bpm is out of range")
         c = AudioClip(self, path, start, start_sec, dur_sec, gain, fade_in, fade_out, reverse,
-                      name or os.path.splitext(os.path.basename(path))[0], warp, mode, total)
+                      name or os.path.splitext(os.path.basename(path))[0], warp, mode, total, beats)
         self.clips.append(c)
         return c
 

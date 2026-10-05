@@ -69,7 +69,7 @@ song.render(stems=True)        # bounce + mix report
 |---|---|
 | `automate(target, (beat, value[, shape[, tension]]), …)` | an automation lane (docs/22): target `"volume"`, `"pan"`, an instrument param (`"cutoff"`) or `"fx1:mix"`; values in the param's units; shape `linear`/`curve`/`hold` shapes the segment to the next point |
 | `ramp(target, frm, to, v0, v1, tension=0)` | one sweep from `v0` to `v1` between two beats; tension + = fast start |
-| `audio(path, section=None, at_bar=0, at_beat=None, start_sec=0, dur_sec=None, gain=1, fade_in=0, fade_out=0, reverse=False, warp=None, fit_beats=None, mode="tape")` | a WAV clip mixed straight into the track; `reverse=True` plays it backwards (end it on the downbeat for a swell); `warp=bpm` locks it to the beat (it follows the song's tempo), `fit_beats=n` stretches it to n beats, `mode="tape"` |
+| `audio(path, section=None, at_bar=0, at_beat=None, start_sec=0, dur_sec=None, gain=1, fade_in=0, fade_out=0, reverse=False, warp=None, fit_beats=None, mode="tape", preserve="hits", gap="cut", decay=100)` | a WAV clip mixed straight into the track; `reverse=True` plays it backwards (end it on the downbeat for a swell); `warp=bpm` locks it to the beat (it follows the song's tempo), `fit_beats=n` stretches it to n beats, `mode="tape"` (speed and pitch together) or `"beats"` (sliced at the hits, for drums) with `preserve="hits"|"1/16"|"1/8"|"1/4"`, `gap="cut"|"loop"`, `decay=1..100` |
 | `zone(name, level, tune, decay, tone, reverse)` | sampler/Unfairlight: edit one sound of the keymap by name |
 | `duplicate_zone(name, key, as_name=None, reverse=False, **edits)` | copy a kit sound onto `key` (a note or number) as its own sound, e.g. a reversed snare next to the snare; returns the copy's name |
 

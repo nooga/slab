@@ -5,8 +5,8 @@ the grid: warp markers, the stretch algorithms that play it at any
 tempo and pitch, transients, and audio that follows the tempo map, the
 groove and a track's own tempo.
 
-Status: phase 1 built (2026-10-05): the model, TAPE, ⌘-stretch, the
-band-limited reader. Before it, an audio clip only played a window of
+Status: phases 1 and 2 built (2026-10-05): the model, TAPE, ⌘-stretch,
+the band-limited reader; transients and BEATS. Before it, an audio clip only played a window of
 its source at native rate (docs/28 §The beat axis), and that is still
 what an unwarped clip does.
 
@@ -136,14 +136,27 @@ In the audio clip editor (phase 5):
 
 ## Transients
 
-Each source is analysed once on a worker thread, when it enters the
-pool, alongside its peak cache: a spectral-flux onset envelope (2048
-window, hop 256, log-magnitude, half-wave rectified, summed over bins),
-peaks picked with an adaptive median threshold and a 30 ms minimum gap,
-each refined to the steepest sample-domain rise within ±5 ms. The
-result, onset seconds and their strength, is kept with the source (not
-saved; it's cheap to redo). Transients drive BEATS slices, MIX's phase
-resets, the editor's ticks, quantize and tempo detection.
+Each source is analyzed once on a worker thread when it enters the pool
+(`src/transients.zig`, `AudioPool.loadFile`):
+
+- a spectral-flux onset envelope: Hann window of 1024, hop 128, log
+  magnitude `log(1 + 100·|X|)`, rises summed over the bins;
+- normalized to its 99th percentile, floored at 0.3 of its strongest
+  rise so a file with few hits doesn't magnify its flutter;
+- peaks: a local maximum over ±3 frames, at least 0.07 above the median
+  of ±8 frames, 30 ms apart; none within 30 ms of the start (the source's
+  start is always a slice's) or where the window runs off the end;
+- each refined in the sample domain to where the steepest 1 ms rise of
+  the rectified signal begins, within ±25 ms: the hit's first sample,
+  within a tenth of a millisecond on clean material.
+
+The result, onset seconds and a 0–1 strength, is written once and read
+by the UI and the audio thread alike (`Source.onsets()`, null while the
+worker runs). It isn't saved; it's cheap to redo. Every render (export,
+bounce, freeze, `--render`) first waits for all of them, so what BEATS
+plays never depends on how fast they were found; live playback plays
+TAPE until they are. Transients drive BEATS slices, MIX's phase resets,
+the editor's ticks (taller for stronger), quantize and tempo detection.
 
 **Tempo detection** (phase 5): autocorrelate the onset envelope over
 60–200 BPM, weight toward 120 and toward a whole number of bars for the
@@ -179,14 +192,20 @@ sample itself. Unwarped clips use it too, for their source-rate change
 
 ### BEATS
 
-The source is cut at its transients (or at a fixed division: 1/16, 1/8,
-1/4, a PRESERVE setting). Each slice starts at the output time its first
-sample maps to and plays at native speed (re-pitched by TRANSPOSE, with
-the reader). When the clip is stretched, a slice ends before the next
-one starts, and **GAP** decides what fills it: FADE (the slice decays
-with a ENVELOPE time), LOOP (its tail loops, crossfaded), or nothing.
-Compressed, a slice is cut at the next one's start with a 2 ms fade.
-Transients come through untouched, which is why drums want this.
+The source is cut at its transients (**PRESERVE** HITS) or on a grid of
+content beats (1/16, 1/8, 1/4). Each slice starts at the output time its
+first moment maps to and plays at native speed. When the clip is
+stretched a slice runs out before the next one starts, and **GAP**
+decides what fills it: CUT (2 ms out, then silence) or LOOP (its last
+half, at most 50 ms, back and forth). **DECAY** (1–100 %) fades each
+slice out over that share of its time on the grid, for tighter drums.
+Squeezed, a slice is cut where the next begins. Slices meet in a 1 ms
+crossfade that *ends* on the next one's hit, so the hit itself is the
+source sample for sample, which is why drums want this. It's stateless:
+every sample is computed from the maps (`mixBeats` in the engine), so it
+seeks and loops for free. TRANSPOSE (re-pitching the slices with the
+reader) comes with phase 3. A reversed clip slices at its transients
+mirrored.
 
 ### VOICE (WSOLA)
 
@@ -281,7 +300,7 @@ with `warp=True` meaning "detect".
    clips stopped at their source's end, saved in the project, slabkit
    (built).
 2. **Transients and BEATS**: onset analysis on a worker, ticks on the
-   waveform, slices with GAP and PRESERVE.
+   waveform, slices with PRESERVE, GAP and DECAY (built).
 3. **The stretch core and MIX**: the real FFT, the stretcher bank, the
    phase-locked vocoder with twin frames, transient resets, stereo,
    TRANSPOSE and FINE.

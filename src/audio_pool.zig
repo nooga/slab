@@ -18,6 +18,21 @@ const std = @import("std");
 const storage = @import("storage.zig");
 const wav = @import("wav.zig");
 const waveform = @import("waveform.zig");
+const transients = @import("transients.zig");
+
+/// A source's transients (docs/29 §Transients), found on a worker thread.
+/// `onsets` is written once, before `ready` is set, and never again, so
+/// any thread that sees `ready` may read it.
+pub const Analysis = struct {
+    ready: std.atomic.Value(bool) = .init(false),
+    onsets: transients.Onsets = .{},
+    thread: ?std.Thread = null,
+
+    fn run(self: *Analysis, alloc: std.mem.Allocator, l: []const f64, r: ?[]const f64, rate: f64) void {
+        self.onsets = transients.detect(alloc, l, r, rate) catch .{};
+        self.ready.store(true, .release);
+    }
+};
 
 pub const MAX_PATH = storage.MAX_PATH;
 
@@ -27,6 +42,15 @@ pub const Source = struct {
     path_buf: [MAX_PATH]u8 = [_]u8{0} ** MAX_PATH,
     path_len: u16 = 0,
     name_off: u16 = 0, // basename start within path_buf
+    /// Heap-owned so it stays put when the pool's list grows.
+    analysis: ?*Analysis = null,
+
+    /// The transients, once found (null while the worker runs).
+    pub fn onsets(self: *const Source) ?[]const f64 {
+        const a = self.analysis orelse return null;
+        if (!a.ready.load(.acquire)) return null;
+        return a.onsets.sec;
+    }
 
     pub fn path(self: *const Source) []const u8 {
         return self.path_buf[0..self.path_len];
@@ -52,11 +76,25 @@ pub const AudioPool = struct {
     }
 
     pub fn deinit(self: *AudioPool) void {
+        self.waitAnalyses();
         for (self.sources.items) |*s| {
+            if (s.analysis) |a| {
+                a.onsets.deinit(self.alloc);
+                self.alloc.destroy(a);
+            }
             s.sample.deinit(self.alloc);
             s.cache.deinit(self.alloc);
         }
         self.sources.deinit(self.alloc);
+    }
+
+    /// Wait for every source's transients: before a render that must not
+    /// depend on how fast they were found (docs/29 §On the audio thread).
+    pub fn waitAnalyses(self: *AudioPool) void {
+        for (self.sources.items) |*s| if (s.analysis) |a| if (a.thread) |t| {
+            t.join();
+            a.thread = null;
+        };
     }
 
     pub fn count(self: *const AudioPool) usize {
@@ -102,6 +140,17 @@ pub const AudioPool = struct {
         src.name_off = @intCast(basenameStart(path));
 
         try self.sources.append(self.alloc, src);
+        const s = &self.sources.items[self.sources.items.len - 1];
+        // Find its transients on the side; a failed spawn finds them here.
+        if (self.alloc.create(Analysis)) |a| {
+            a.* = .{};
+            s.analysis = a;
+            const r: ?[]const f64 = if (sample.isStereo()) sample.right else null;
+            a.thread = std.Thread.spawn(.{}, Analysis.run, .{ a, self.alloc, sample.data, r, sample.sample_rate }) catch blk: {
+                a.run(self.alloc, sample.data, r, sample.sample_rate);
+                break :blk null;
+            };
+        } else |_| {}
         return @intCast(self.sources.items.len - 1);
     }
 };

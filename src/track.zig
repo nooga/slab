@@ -571,6 +571,13 @@ pub const Track = struct {
                     snap.rate = time_rate;
                     snap.warp_start = dst.warp_point_count;
                     snap.warp_count = @intCast(wm.len);
+                    snap.preserve = clip.audio.preserve;
+                    snap.gap = clip.audio.gap;
+                    snap.decay = @as(f32, @floatFromInt(@min(clip.audio.decay, 100))) / 100;
+                    if (pool.get(clip.audio.source)) |src| if (src.onsets()) |on| {
+                        snap.onsets = on.ptr;
+                        snap.onset_count = @intCast(on.len);
+                    };
                     @memcpy(dst.warp_points[dst.warp_point_count..][0..wm.len], wm);
                     dst.warp_point_count += @intCast(wm.len);
                 }

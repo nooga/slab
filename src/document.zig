@@ -351,7 +351,9 @@ pub fn appendClip(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const t
         });
         if (clip.audio.reversed) try out.appendSlice(alloc, "\"reversed\":true,");
         if (clip.audio.warp) {
-            try appendFmt(alloc, out, "\"warp\":{{\"mode\":\"{s}\",\"offset\":{d},\"markers\":[", .{ @tagName(clip.audio.mode), clip.audio.offset_beats });
+            try appendFmt(alloc, out, "\"warp\":{{\"mode\":\"{s}\",\"offset\":{d},", .{ @tagName(clip.audio.mode), clip.audio.offset_beats });
+            if (clip.audio.mode == .beats) try appendFmt(alloc, out, "\"preserve\":\"{s}\",\"gap\":\"{s}\",\"decay\":{d},", .{ @tagName(clip.audio.preserve), @tagName(clip.audio.gap), clip.audio.decay });
+            try out.appendSlice(alloc, "\"markers\":[");
             for (clip.warp_markers.items, 0..) |mk, i| {
                 if (i > 0) try out.append(alloc, ',');
                 try appendFmt(alloc, out, "[{d},{d}]", .{ mk.sec, mk.beat });
@@ -1297,6 +1299,9 @@ fn applyClip(alloc: std.mem.Allocator, t: *track_mod.Track, co: std.json.ObjectM
             const wo = wv.object;
             aclip.audio.mode = warp_mod.Mode.parse(strOf(objGet(wo, "mode")) orelse "") orelse .tape;
             aclip.audio.offset_beats = if (objGet(wo, "offset")) |x| asF64(x) else 0;
+            aclip.audio.preserve = warp_mod.parseEnum(warp_mod.Preserve, strOf(objGet(wo, "preserve")) orelse "") orelse .hits;
+            aclip.audio.gap = warp_mod.parseEnum(warp_mod.Gap, strOf(objGet(wo, "gap")) orelse "") orelse .cut;
+            aclip.audio.decay = if (objGet(wo, "decay")) |x| asU8(x) else 100;
             if (objGet(wo, "markers")) |mv| if (mv == .array) for (mv.array.items) |pv| {
                 if (pv != .array or pv.array.items.len < 2) continue;
                 try aclip.warp_markers.append(alloc, .{ .sec = asF64(pv.array.items[0]), .beat = asF64(pv.array.items[1]) });
@@ -1858,6 +1863,10 @@ test "audio clips round-trip through the pool by path" {
     var wclip = clip_mod.Clip.initAudio("Warped", 8.0, 4.0, src);
     wclip.audio.warp = true;
     wclip.audio.offset_beats = 0.5;
+    wclip.audio.mode = .beats;
+    wclip.audio.preserve = .d8;
+    wclip.audio.gap = .loop;
+    wclip.audio.decay = 40;
     try wclip.warp_markers.appendSlice(alloc, &.{ .{ .sec = 0, .beat = 0 }, .{ .sec = 0.75, .beat = 2 }, .{ .sec = 1.5, .beat = 3.5 } });
     try tracks[0].addClip(alloc, wclip);
 
@@ -1878,7 +1887,10 @@ test "audio clips round-trip through the pool by path" {
     try std.testing.expectEqual(@as(usize, 2), loaded_buf[0].clips.items.len);
     const w = &loaded_buf[0].clips.items[1];
     try std.testing.expect(w.audio.warp and !loaded_buf[0].clips.items[0].audio.warp);
-    try std.testing.expectEqual(warp_mod.Mode.tape, w.audio.mode);
+    try std.testing.expectEqual(warp_mod.Mode.beats, w.audio.mode);
+    try std.testing.expectEqual(warp_mod.Preserve.d8, w.audio.preserve);
+    try std.testing.expectEqual(warp_mod.Gap.loop, w.audio.gap);
+    try std.testing.expectEqual(@as(u8, 40), w.audio.decay);
     try std.testing.expectApproxEqAbs(@as(f64, 0.5), w.audio.offset_beats, 1e-9);
     try std.testing.expectEqual(@as(usize, 3), w.warp_markers.items.len);
     try std.testing.expectApproxEqAbs(@as(f64, 0.75), w.warp_markers.items[1].sec, 1e-9);

@@ -186,6 +186,19 @@ pub fn draw(
         }
     }
 
+    // The source's transients (docs/29 §Transients), as ticks hanging
+    // from the top: taller for stronger hits.
+    if (src.analysis) |an| if (src.onsets()) |on| {
+        for (on, an.onsets.strength) |s_fwd, strength| {
+            const s = if (rev) source_sec - s_fwd else s_fwd;
+            const b = if (wmap) |wm| wm.beatAt(s) - axis0 else s / sec_per_beat;
+            const x = beatToX(grid, b);
+            if (x < grid.x or x >= grid.x + grid.width) continue;
+            const h: f32 = 4 + 8 * strength;
+            ui.rect(frect(@floor(x), grid.y, 1, h), ui_style.text_dim);
+        }
+    };
+
     // Dim the trimmed-off regions (outside the played window).
     const dimcol = ui_style.chassis.alpha(160);
     const xs = beatToX(grid, ws_b);
@@ -275,9 +288,10 @@ pub fn draw(
     if (ctl.button(ui, warp_r, "warp", &warp_on, .{ .kind = .latch, .label = "WARP", .led = ui_style.accent, .flush = true })) res.command = .warp;
     menu.tip(ui, warp_r, "Lock the audio to the beat: it follows the tempo (\u{2318}-drag an edge in the arrangement to stretch)");
     _ = row.cutLeft(6);
+    if (wmap != null) warpTools(ui, &row, clip);
     var buf: [96]u8 = undefined;
-    const info = if (wmap) |wm| std.fmt.bufPrint(&buf, "{s}  SEG {d:.2} BPM  START {d:.2}  LEN {d:.2} BEATS  GAIN {d:.2}X", .{
-        clip.audio.mode.label(), wm.bpmAt(clip.audio.offset_beats), clip.audio.offset_beats, clip.length_beats, clip.audio.gain,
+    const info = if (wmap) |wm| std.fmt.bufPrint(&buf, "SEG {d:.2} BPM  START {d:.2}  LEN {d:.2} BEATS  GAIN {d:.2}X", .{
+        wm.bpmAt(clip.audio.offset_beats), clip.audio.offset_beats, clip.length_beats, clip.audio.gain,
     }) catch "" else std.fmt.bufPrint(&buf, "START {d:.2}S  LEN {d:.2}S  FADE {d:.2}/{d:.2}S  GAIN {d:.2}X", .{
         clip.audio.start_sec, clip.audio.dur_sec, clip.audio.fade_in_sec, clip.audio.fade_out_sec, clip.audio.gain,
     }) catch "";
@@ -285,6 +299,47 @@ pub fn draw(
     if (disp_w > 8) ctl.display(ui, Rect.xywh(row.x, row.y + @divFloor(row.h - ctl.displayHeight(false), 2), disp_w, ctl.displayHeight(false)), info, .{});
 
     return res;
+}
+
+/// The warp mode, and BEATS' own settings (docs/29 §BEATS).
+const MODES = [_][]const u8{ "TAPE", "BEATS" };
+const PRESERVES = [_][]const u8{ "HITS", "1/16", "1/8", "1/4" };
+const GAPS = [_][]const u8{ "CUT", "LOOP" };
+
+fn warpTools(ui: *Ui, row: *Rect, clip: *clip_mod.Clip) void {
+    const a = &clip.audio;
+    const sel = struct {
+        fn one(u: *Ui, rw: *Rect, w: i32, key: []const u8, v: *u8, opts: []const []const u8, tip: []const u8) void {
+            const r = rw.cutLeft(w);
+            _ = ctl.displaySelectEx(u, r.insetXY(0, @divFloor(r.h - ctl.displayHeight(false), 2)), key, v, opts, "", .{ .align_ = .left });
+            menu.tip(u, r, tip);
+            _ = rw.cutLeft(4);
+        }
+    };
+    var mode: u8 = if (a.mode == .beats) 1 else 0;
+    sel.one(ui, row, 56, "mode", &mode, &MODES, "TAPE: speed and pitch together. BEATS: cut at the hits, each at its own speed");
+    a.mode = if (mode == 1) .beats else .tape;
+    if (a.mode != .beats) return;
+    var p: u8 = @intFromEnum(a.preserve);
+    sel.one(ui, row, 48, "preserve", &p, &PRESERVES, "Where BEATS cuts: at the hits, or every 1/16, 1/8, 1/4");
+    a.preserve = @enumFromInt(p);
+    var g: u8 = @intFromEnum(a.gap);
+    sel.one(ui, row, 48, "gap", &g, &GAPS, "When a slice runs out before the next: CUT to silence, or LOOP its tail");
+    a.gap = @enumFromInt(g);
+    // DECAY drags like the groove's AMOUNT: up for more.
+    const dr = row.cutLeft(48);
+    const wid = ui.id("decay");
+    const b = ui.behavior(wid, dr, false);
+    if (b.double) a.decay = 100 else if (b.held) {
+        const v = @as(f32, @floatFromInt(a.decay)) - ui.in.dy * ui.renderer.zoom * 0.5;
+        a.decay = @intFromFloat(std.math.clamp(@round(v), 1, 100));
+    }
+    var buf: [8]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "{d}%", .{a.decay}) catch "";
+    ctl.display(ui, dr.insetXY(0, @divFloor(dr.h - ctl.displayHeight(false), 2)), s, .{ .align_ = .right, .flush = true, .color = if (ui.active == wid) ui_style.vfd_hi else ui_style.vfd });
+    if (ui.isHot(wid)) ui.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 1);
+    menu.tip(ui, dr, "Decay: how much of each slice sounds before it fades; drag, double-click 100%");
+    _ = row.cutLeft(6);
 }
 
 // ── Axis helpers ─────────────────────────────────────────────────────

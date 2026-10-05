@@ -80,6 +80,7 @@ test {
     _ = @import("groove.zig");
     _ = @import("arrange.zig");
     _ = @import("warp.zig");
+    _ = @import("transients.zig");
     _ = @import("ui/marker_dialog.zig");
     _ = @import("routing.zig");
     _ = @import("export.zig");
@@ -2348,6 +2349,15 @@ fn saveProject(
 /// finishRender reports once it's done. The device stays stopped
 /// meanwhile because the offline render shares the engine's scratch and
 /// machine state with the live callback.
+/// Before a render: every source's transients found and published, so
+/// what BEATS plays doesn't depend on how fast they were (docs/29 §On the
+/// audio thread).
+fn settleAnalyses(tracks: []track_mod.Track) void {
+    const pool = document_mod.audioPool() orelse return;
+    pool.waitAnalyses();
+    for (tracks) |*t| t.publishSnapshot(pool);
+}
+
 fn startRender(
     alloc: std.mem.Allocator,
     engine: *engine_mod.Engine,
@@ -2361,6 +2371,7 @@ fn startRender(
 ) !void {
     const sr = transport.sample_rate;
     const rec = &settings.recipe;
+    settleAnalyses(tracks);
     const range = exportRange(transport, tracks, rec.range) orelse {
         status.set("Nothing to export", .{});
         return;
@@ -2633,6 +2644,7 @@ fn startBounce(
     replace: u32,
 ) !void {
     const muted = replace != 0;
+    settleAnalyses(tracks);
     const sources = bounceSources(tracks, muted);
     if (sources == 0) {
         status.set("Select clips to bounce", .{});
@@ -2916,6 +2928,7 @@ fn startFreeze(
     status: *StatusMessage,
 ) !void {
     var sources: u32 = 0;
+    settleAnalyses(tracks);
     for (tracks, 0..) |*t, ti| if (set[ti] and !t.isBus()) {
         sources |= bit(ti);
     };
@@ -4280,6 +4293,7 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
     defer for (tracks_buf[0..track_count]) |*t| t.deinit(alloc);
     const tracks = tracks_buf[0..track_count];
     groove_cx.meter = meter_state.liveMap();
+    pool.waitAnalyses();
     for (tracks) |*t| t.publishSnapshot(&pool);
     master.publishSnapshot(&pool);
 

@@ -16,7 +16,15 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   waveform no longer stretches across silence.
 - Audio clips play through a band-limited resampler: cleaner rate
   changes, no aliasing when sped up.
-- slabkit: `track.audio(..., warp=bpm)` and `fit_beats=`.
+- **BEATS mode** for drums and loops (MODE in the audio clip editor):
+  the audio is cut at its hits, each played at its own speed from where
+  it lands on the grid, so hits stay sharp at any tempo. PRESERVE cuts at
+  the hits or every 1/16, 1/8, 1/4; GAP fills a stretched slice with
+  silence or its looped tail; DECAY shortens each slice.
+- Slab finds the hits in every audio file, shown as ticks in the audio
+  clip editor.
+- slabkit: `track.audio(..., warp=bpm)` and `fit_beats=`, `mode="beats"`
+  with `preserve=`, `gap=`, `decay=`.
 
 ## 0.0.7 — 2026-10-05
 

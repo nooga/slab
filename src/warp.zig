@@ -14,8 +14,8 @@ pub const Marker = struct {
     beat: f64,
 };
 
-/// How a warped clip keeps time (docs/29 §The algorithms). Only TAPE is
-/// built; the others play as TAPE until they are.
+/// How a warped clip keeps time (docs/29 §The algorithms). TAPE and BEATS
+/// are built; the others play as TAPE until they are.
 pub const Mode = enum(u8) {
     tape,
     beats,
@@ -38,6 +38,53 @@ pub const Mode = enum(u8) {
         return null;
     }
 };
+
+/// Where BEATS cuts (docs/29 §BEATS): at the transients, or on a grid of
+/// content beats.
+pub const Preserve = enum(u8) {
+    hits,
+    d16,
+    d8,
+    d4,
+
+    pub fn label(p: Preserve) []const u8 {
+        return switch (p) {
+            .hits => "HITS",
+            .d16 => "1/16",
+            .d8 => "1/8",
+            .d4 => "1/4",
+        };
+    }
+
+    /// The grid in beats, null for the transients.
+    pub fn beats(p: Preserve) ?f64 {
+        return switch (p) {
+            .hits => null,
+            .d16 => 0.25,
+            .d8 => 0.5,
+            .d4 => 1,
+        };
+    }
+};
+
+/// What fills a stretched slice after its own audio: silence, or its
+/// tail looped back and forth.
+pub const Gap = enum(u8) {
+    cut,
+    loop,
+
+    pub fn label(g: Gap) []const u8 {
+        return switch (g) {
+            .cut => "CUT",
+            .loop => "LOOP",
+        };
+    }
+};
+
+pub fn parseEnum(comptime E: type, s: []const u8) ?E {
+    inline for (std.meta.fields(E)) |f| if (std.mem.eql(u8, s, f.name)) return @field(E, f.name);
+    return null;
+}
 
 // ── The map ──────────────────────────────────────────────────────────
 

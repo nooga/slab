@@ -84,6 +84,13 @@ pub const AudioClipSnap = struct {
     rate: f64 = 1,
     warp_start: u32 = 0,
     warp_count: u32 = 0,
+    /// BEATS: the source's transients in seconds (the pool's, read-only
+    /// once found; null while they're being found), and its settings.
+    onsets: ?[*]const f64 = null,
+    onset_count: u32 = 0,
+    preserve: warp.Preserve = .hits,
+    gap: warp.Gap = .cut,
+    decay: f32 = 1,
 };
 
 /// A lane resolved for the audio thread: the target machine slot and its
