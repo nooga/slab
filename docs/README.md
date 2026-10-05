@@ -80,6 +80,8 @@ self-contained but assumes the vocabulary established in earlier ones.
     in one pass, sections, FLAC/ALAC/AAC, dither, loudness report
 27. [28-time.md](28-time.md) — how a beat becomes a sample: the tempo
     map, locators and sections, groove, polymeter and polytempo, freeze
+28. [29-warp.md](29-warp.md) — audio on the beat axis: warp markers,
+    TAPE/BEATS/VOICE/MIX/SMEAR stretching, transients, tempo detection
 
 ## Terminology crib sheet
 

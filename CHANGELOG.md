@@ -6,6 +6,18 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+### Warp
+
+- **Warp an audio clip** (right-click → *Warp*, or WARP in the audio clip
+  editor): it locks to the beat and follows the tempo, tempo changes and
+  ramps included. TAPE mode for now: speed and pitch move together.
+- **⌘-drag a clip's edge to stretch it**; a plain drag still trims.
+- Unwarped clips no longer drag past the end of their audio, and the
+  waveform no longer stretches across silence.
+- Audio clips play through a band-limited resampler: cleaner rate
+  changes, no aliasing when sped up.
+- slabkit: `track.audio(..., warp=bpm)` and `fit_beats=`.
+
 ## 0.0.7 — 2026-10-05
 
 ### Time: tempo, sections, groove

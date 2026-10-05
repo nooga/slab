@@ -5,6 +5,8 @@
 //! beat axis (source seconds → beats at the project tempo, since playback is
 //! unwarped). The played window's start/end and the fade-in/out are editable
 //! with on-waveform handles, and the trimmed + faded regions are shaded.
+//! A warped clip (docs/29) is drawn on its own content beats instead,
+//! through its markers, and its edges trim in beats.
 
 const std = @import("std");
 const tempo_mod = @import("../tempo.zig");
@@ -25,12 +27,14 @@ const clip_mod = @import("../clip.zig");
 const ClipRef = clip_mod.ClipRef;
 const audio_pool_mod = @import("../audio_pool.zig");
 const clip_editor = @import("clip_editor.zig");
+const warp_mod = @import("../warp.zig");
 
 const Result = clip_editor.Result;
 
 const EDGE_SALT: u64 = 0xA0D0_C11E_ED17_0001;
 const OV_KEY: u64 = 0xA0D0_0FE0_7A6C_0003;
 const MIN_SEC: f64 = 0.01;
+const MIN_WARP_BEATS: f64 = 1.0 / 16.0;
 const MAX_GAIN: f64 = 2.0;
 const PX_PER_BEAT_MAX: f32 = 400;
 
@@ -90,7 +94,14 @@ pub fn draw(
     const rate = src.sample.sample_rate;
     // The editor's grid runs at the tempo where the clip starts.
     const sec_per_beat = 60.0 / tmap.bpmAt(clip.start_beat);
-    const source_beats: f64 = @max(0.001, source_sec / sec_per_beat);
+    // Warped: the axis is content beats from `axis0` (the source's start
+    // or the clip's, whichever is first).
+    const wmap: ?warp_mod.Map = if (clip.audio.warp and warp_mod.valid(clip.warp_markers.items)) .{ .m = clip.warp_markers.items } else null;
+    const axis0: f64 = if (wmap) |wm| @min(wm.beatAt(0), clip.audio.offset_beats) else 0;
+    const source_beats: f64 = if (wmap) |wm|
+        @max(0.001, @max(wm.beatAt(source_sec), clip.audio.offset_beats + clip.length_beats) - axis0)
+    else
+        @max(0.001, source_sec / sec_per_beat);
 
     // ── Layout: overview · ruler · grid · control row ────────────────
     const ov_rect = pane.rect(body.x, body.y, body.width, overviewH());
@@ -114,8 +125,8 @@ pub fn draw(
     const rev = clip.audio.reversed;
     const win_d0 = if (rev) source_sec - (clip.audio.start_sec + clip.audio.dur_sec) else clip.audio.start_sec;
     const win_d1 = win_d0 + clip.audio.dur_sec;
-    const ws_b = win_d0 / sec_per_beat;
-    const we_b = win_d1 / sec_per_beat;
+    const ws_b = if (wmap != null) clip.audio.offset_beats - axis0 else win_d0 / sec_per_beat;
+    const we_b = if (wmap != null) ws_b + clip.length_beats else win_d1 / sec_per_beat;
 
     // Where the transport is in the source, while it plays inside the clip.
     const play_src_b: ?f64 = if (play_beat) |b| blk: {
@@ -149,7 +160,21 @@ pub fn draw(
         const src_x1 = beatToX(grid, source_beats);
         const vx0 = @max(src_x0, grid.x);
         const vx1 = @min(src_x1, grid.x + grid.width);
-        if (vx1 > vx0 + 1) {
+        if (wmap) |wm| {
+            var buf: [64]warp_mod.Map.Span = undefined;
+            const bl = xToBeat(grid, vx0) + axis0;
+            const br = xToBeat(grid, vx1) + axis0;
+            for (wm.spans(bl, br, source_sec, &buf)) |sp| {
+                const x0 = beatToX(grid, sp.b0 - axis0);
+                const x1 = beatToX(grid, sp.b1 - axis0);
+                if (x1 <= x0 + 1) continue;
+                const wr = frect(x0, grid.y + 2, x1 - x0, grid.height - 4);
+                if (rev)
+                    surf.waveformDir(ui, wr, &src.cache, (source_sec - sp.s1) * rate, (source_sec - sp.s0) * rate, track_color, true)
+                else
+                    surf.waveformDir(ui, wr, &src.cache, sp.s0 * rate, sp.s1 * rate, track_color, false);
+            }
+        } else if (vx1 > vx0 + 1) {
             const bl = xToBeat(grid, vx0);
             const br = xToBeat(grid, vx1);
             const total: f64 = @floatFromInt(src.cache.sample_count);
@@ -169,8 +194,8 @@ pub fn draw(
     if (xe < grid.x + grid.width) ui.rect(frect(@max(xe, grid.x), grid.y, grid.x + grid.width - @max(xe, grid.x), grid.height), dimcol);
 
     // Fade ramps + shaded (attenuated) wedges.
-    const fi_b = @min(clip.audio.fade_in_sec, clip.audio.dur_sec) / sec_per_beat;
-    const fo_b = @min(clip.audio.fade_out_sec, clip.audio.dur_sec) / sec_per_beat;
+    const fi_b = @min(clip.audio.fade_in_sec / sec_per_beat, we_b - ws_b);
+    const fo_b = @min(clip.audio.fade_out_sec / sec_per_beat, we_b - ws_b);
     const in_x = beatToX(grid, ws_b + fi_b);
     const out_x = beatToX(grid, we_b - fo_b);
     if (fi_b > 0) shadeFade(ui, grid, xs, in_x, true);
@@ -179,12 +204,27 @@ pub fn draw(
     if (fo_b > 0) ui.line(out_x, grid.y, xe, grid.y + grid.height, ui_style.text_dim);
 
     // ── Window edge handles (full height, below the fade strip) ──────
+    if (wmap != null) {
+        // Warped: the edges trim in content beats; the clip stays put.
+        var b0 = ws_b;
+        var b1 = we_b;
+        if (edgeHandle(ui, clip, grid, xs, EDGE_SALT, 0, m)) |nx|
+            b0 = std.math.clamp(beatAtX(grid, nx), 0, b1 - MIN_WARP_BEATS);
+        if (edgeHandle(ui, clip, grid, xe, EDGE_SALT, 1, m)) |nx|
+            b1 = @max(beatAtX(grid, nx), b0 + MIN_WARP_BEATS);
+        if (b0 != ws_b or b1 != we_b) {
+            clip.audio.offset_beats = axis0 + b0;
+            clip.length_beats = b1 - b0;
+        }
+    }
     var s0 = win_d0;
     var s1 = win_d1;
-    if (edgeHandle(ui, clip, grid, xs, EDGE_SALT, 0, m)) |nx|
+    if (wmap == null) if (edgeHandle(ui, clip, grid, xs, EDGE_SALT, 0, m)) |nx| {
         s0 = std.math.clamp(beatAtX(grid, nx) * sec_per_beat, 0, s1 - MIN_SEC);
-    if (edgeHandle(ui, clip, grid, xe, EDGE_SALT, 1, m)) |nx|
+    };
+    if (wmap == null) if (edgeHandle(ui, clip, grid, xe, EDGE_SALT, 1, m)) |nx| {
         s1 = std.math.clamp(beatAtX(grid, nx) * sec_per_beat, s0 + MIN_SEC, source_sec);
+    };
     if (s0 != win_d0 or s1 != win_d1) {
         clip.audio.start_sec = if (rev) source_sec - s1 else s0;
         clip.audio.dur_sec = s1 - s0;
@@ -192,7 +232,7 @@ pub fn draw(
     }
 
     // ── Fade handles (top strip) ─────────────────────────────────────
-    const dur = clip.audio.dur_sec;
+    const dur = (we_b - ws_b) * sec_per_beat;
     if (fadeHandle(ui, clip, grid, in_x, EDGE_SALT, 2, m)) |nx| {
         const v = (beatAtX(grid, nx) - ws_b) * sec_per_beat;
         clip.audio.fade_in_sec = std.math.clamp(v, 0, dur);
@@ -230,8 +270,15 @@ pub fn draw(
     if (ctl.button(ui, rev_r, "rev", &rev_on, .{ .kind = .latch, .label = "REV", .led = ui_style.accent, .flush = true })) res.command = .reverse;
     menu.tip(ui, rev_r, "Play the clip backwards");
     _ = row.cutLeft(6);
+    const warp_r = row.cutLeft(44);
+    var warp_on = wmap != null;
+    if (ctl.button(ui, warp_r, "warp", &warp_on, .{ .kind = .latch, .label = "WARP", .led = ui_style.accent, .flush = true })) res.command = .warp;
+    menu.tip(ui, warp_r, "Lock the audio to the beat: it follows the tempo (\u{2318}-drag an edge in the arrangement to stretch)");
+    _ = row.cutLeft(6);
     var buf: [96]u8 = undefined;
-    const info = std.fmt.bufPrint(&buf, "START {d:.2}S  LEN {d:.2}S  FADE {d:.2}/{d:.2}S  GAIN {d:.2}X", .{
+    const info = if (wmap) |wm| std.fmt.bufPrint(&buf, "{s}  SEG {d:.2} BPM  START {d:.2}  LEN {d:.2} BEATS  GAIN {d:.2}X", .{
+        clip.audio.mode.label(), wm.bpmAt(clip.audio.offset_beats), clip.audio.offset_beats, clip.length_beats, clip.audio.gain,
+    }) catch "" else std.fmt.bufPrint(&buf, "START {d:.2}S  LEN {d:.2}S  FADE {d:.2}/{d:.2}S  GAIN {d:.2}X", .{
         clip.audio.start_sec, clip.audio.dur_sec, clip.audio.fade_in_sec, clip.audio.fade_out_sec, clip.audio.gain,
     }) catch "";
     const disp_w = @min(row.w, @as(i32, @intCast(info.len)) * ctl.CELL_W + 4);

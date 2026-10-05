@@ -12,6 +12,7 @@ const snap_mod = @import("snapshot.zig");
 const meter = @import("meter.zig");
 const tempo = @import("tempo.zig");
 const groove_mod = @import("groove.zig");
+const warp_mod = @import("warp.zig");
 const automation = @import("automation.zig");
 const routing = @import("routing.zig");
 const render_pool = @import("render_pool.zig");
@@ -2008,11 +2009,16 @@ fn mixAudioClips(
         const lo = @max(block_lo, clip_start);
         const hi = @min(block_hi, clip_end);
         if (hi <= lo) continue;
+        if (clip.warped) {
+            mixWarped(snap, clip, data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r);
+            continue;
+        }
 
         // Source samples advanced per engine output sample.
         const engine_rate: f64 = @floatFromInt(sample_rate);
         const step = clip.source_rate / engine_rate;
         const len = clip.len;
+        const flen: f64 = @floatFromInt(len);
 
         var a = lo;
         while (a < hi) : (a += 1) {
@@ -2024,22 +2030,15 @@ fn mixAudioClips(
                 clip.start_sample + clip.dur_samples - 1 - pos
             else
                 clip.start_sample + pos;
-            if (src_pos < 0) {
+            if (src_pos <= -1) {
                 if (clip.reversed) break; // read past the source head
                 continue;
             }
-            const idx0f = @floor(src_pos);
-            const idx0: usize = @intFromFloat(idx0f);
-            if (idx0 >= len) {
+            if (src_pos >= flen) {
                 if (clip.reversed) continue; // window runs past the source end: silent until it's back in
                 break; // source exhausted — rest of clip is silent
             }
-            const frac: f32 = @floatCast(src_pos - idx0f);
-            const s0: f32 = @floatCast(data[idx0]);
-            const s1: f32 = if (idx0 + 1 < len) @floatCast(data[idx0 + 1]) else s0;
-            const d_r = clip.data_r orelse data;
-            const r0: f32 = @floatCast(d_r[idx0]);
-            const r1: f32 = if (idx0 + 1 < len) @floatCast(d_r[idx0 + 1]) else r0;
+            const v = warp_mod.read(data, clip.data_r, len, src_pos, step);
             // Linear fade-in/out envelope over the played window.
             var fade: f64 = 1.0;
             if (clip.fade_in_samples > 0 and pos < clip.fade_in_samples)
@@ -2050,9 +2049,60 @@ fn mixAudioClips(
                     fade = @min(fade, @max(0.0, remaining) / clip.fade_out_samples);
             }
             const g = clip.gain * @as(f32, @floatCast(fade));
-            l[i] += (s0 + (s1 - s0) * frac) * g;
-            r[i] += (r0 + (r1 - r0) * frac) * g;
+            l[i] += v[0] * g;
+            r[i] += v[1] * g;
         }
+    }
+}
+
+/// A warped clip (docs/29 §The path to the source): each output sample's
+/// song beat through the track's ratio and the clip's offset to a content
+/// beat, through the markers to a source second, read band-limited at the
+/// local ratio. TAPE; the other modes play as it until they're built.
+fn mixWarped(
+    snap: *const snap_mod.TrackSnapshot,
+    clip: snap_mod.AudioClipSnap,
+    data: [*]const f64,
+    block_lo: f64,
+    lo: f64,
+    hi: f64,
+    clip_start: f64,
+    clip_end: f64,
+    frames: u32,
+    map: *const tempo.TempoMap,
+    sample_rate: u32,
+    l: []f32,
+    r: []f32,
+) void {
+    const wmap = warp_mod.Map{ .m = snap.warp_points[clip.warp_start..][0..clip.warp_count] };
+    const engine_rate: f64 = @floatFromInt(sample_rate);
+    const flen: f64 = @floatFromInt(clip.len);
+    const fade_in = clip.fade_in_samples / clip.source_rate * engine_rate;
+    const fade_out = clip.fade_out_samples / clip.source_rate * engine_rate;
+    const Pos = struct {
+        fn at(c: snap_mod.AudioClipSnap, wm: warp_mod.Map, m: *const tempo.TempoMap, sr: u32, n: f64, a: f64) f64 {
+            const b = m.beatAtSample(a, sr);
+            const s = wm.secAt((b - c.start_beat) * c.rate + c.offset_beats) * c.source_rate;
+            return if (c.reversed) n - 1 - s else s;
+        }
+    };
+    var prev = Pos.at(clip, wmap, map, sample_rate, flen, lo - 1);
+    var a = lo;
+    while (a < hi) : (a += 1) {
+        const i: usize = @intFromFloat(a - block_lo);
+        if (i >= frames) break;
+        const pos = Pos.at(clip, wmap, map, sample_rate, flen, a);
+        const ratio = @abs(pos - prev);
+        prev = pos;
+        const v = warp_mod.read(data, clip.data_r, clip.len, pos, ratio);
+        var fade: f64 = 1.0;
+        const from_start = a - clip_start;
+        const to_end = clip_end - a;
+        if (fade_in > 0 and from_start < fade_in) fade = from_start / fade_in;
+        if (fade_out > 0 and to_end < fade_out) fade = @min(fade, @max(0.0, to_end) / fade_out);
+        const g = clip.gain * @as(f32, @floatCast(fade));
+        l[i] += v[0] * g;
+        r[i] += v[1] * g;
     }
 }
 
@@ -2415,9 +2465,10 @@ fn spbMap(spb: f64) tempo.TempoMap {
 }
 
 test "mixAudioClips: places source at clip start and resamples by rate" {
-    // Source: a ramp 0,1,2,3,... at 24 kHz; engine at 48 kHz → step 0.5.
-    var data: [8]f64 = undefined;
-    for (&data, 0..) |*s, i| s.* = @floatFromInt(i);
+    // A slow sine at 24 kHz, read from sample 64 so the kernel sees source
+    // on both sides.
+    var data: [256]f64 = undefined;
+    for (&data, 0..) |*s, i| s.* = @sin(@as(f64, @floatFromInt(i)) * 0.05);
 
     var snap = snap_mod.TrackSnapshot{};
     snap.audio_clip_count = 1;
@@ -2427,6 +2478,7 @@ test "mixAudioClips: places source at clip start and resamples by rate" {
         .data = &data,
         .len = data.len,
         .source_rate = 24_000,
+        .start_sample = 64,
         .gain = 1.0,
     };
 
@@ -2436,11 +2488,12 @@ test "mixAudioClips: places source at clip start and resamples by rate" {
     // Block starting exactly at the clip's first sample.
     mixAudioClips(&snap, 100, 8, &spbMap(spb), 48_000, &l, &r);
 
-    // step = 24000/48000 = 0.5 → src positions 0,0.5,1,1.5,... interpolated.
-    try testing.expectApproxEqAbs(@as(f32, 0.0), l[0], 1e-5);
-    try testing.expectApproxEqAbs(@as(f32, 0.5), l[1], 1e-5);
-    try testing.expectApproxEqAbs(@as(f32, 1.0), l[2], 1e-5);
-    try testing.expectApproxEqAbs(@as(f32, 1.5), l[3], 1e-5);
+    // step = 24000/48000 = 0.5 → src positions 64, 64.5, 65, ... band-limited.
+    for (l, 0..) |v, k| {
+        const want = @sin((64 + @as(f64, @floatFromInt(k)) * 0.5) * 0.05);
+        try testing.expectApproxEqAbs(@as(f32, @floatCast(want)), v, 1e-3);
+    }
+    try testing.expectEqual(@as(f32, @floatCast(data[64])), l[0]);
     // L and R are fed identically (mono source).
     for (l, r) |lv, rv| try testing.expectEqual(lv, rv);
 }
@@ -2574,6 +2627,40 @@ test "mixAudioClips: a stereo source plays its channels apart" {
     try testing.expectApproxEqAbs(@as(f32, -0.5), r[0], 1e-6);
     try testing.expectApproxEqAbs(@as(f32, 2.0), l[3], 1e-6);
     try testing.expectApproxEqAbs(@as(f32, -2.0), r[3], 1e-6);
+}
+
+test "mixAudioClips: a warped clip reads through its markers, offset and reversed" {
+    var data: [512]f64 = undefined;
+    for (&data, 0..) |*s, i| s.* = @sin(@as(f64, @floatFromInt(i)) * 0.02);
+    var snap = snap_mod.TrackSnapshot{};
+    // 8 source samples per beat; at 4 output samples per beat that's 2×.
+    snap.warp_points[0] = .{ .sec = 0, .beat = 0 };
+    snap.warp_points[1] = .{ .sec = 8.0 / 48_000.0, .beat = 1 };
+    snap.warp_point_count = 2;
+    snap.audio_clip_count = 1;
+    snap.audio_clips[0] = .{
+        .start_beat = 0,
+        .length_beats = 16,
+        .data = &data,
+        .len = data.len,
+        .source_rate = 48_000,
+        .gain = 1.0,
+        .warped = true,
+        .offset_beats = 16, // from source sample 128
+        .warp_start = 0,
+        .warp_count = 2,
+    };
+    var l = [_]f32{0} ** 16;
+    var r = [_]f32{0} ** 16;
+    mixAudioClips(&snap, 0, 16, &spbMap(4.0), 48_000, &l, &r);
+    for (l, 0..) |v, k| try testing.expectApproxEqAbs(@as(f32, @floatCast(data[128 + 2 * k])), v, 2e-3);
+
+    // Reversed: the source mirrored, sample n−1−s.
+    snap.audio_clips[0].reversed = true;
+    @memset(&l, 0);
+    @memset(&r, 0);
+    mixAudioClips(&snap, 0, 16, &spbMap(4.0), 48_000, &l, &r);
+    for (l, 0..) |v, k| try testing.expectApproxEqAbs(@as(f32, @floatCast(data[511 - 128 - 2 * k])), v, 2e-3);
 }
 
 test "mixAudioClips: missing source data is skipped" {

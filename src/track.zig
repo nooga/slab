@@ -8,6 +8,7 @@ const machine = @import("machine.zig");
 const clip_mod = @import("clip.zig");
 const snap_mod = @import("snapshot.zig");
 const groove_mod = @import("groove.zig");
+const warp_mod = @import("warp.zig");
 const audio_pool_mod = @import("audio_pool.zig");
 const automation = @import("automation.zig");
 const routing = @import("routing.zig");
@@ -532,6 +533,7 @@ pub const Track = struct {
         dst.note_count = 0;
         dst.audio_clip_count = 0;
         dst.expr_point_count = 0;
+        dst.warp_point_count = 0;
         self.publishLanes(dst);
 
         for (self.clips.items) |*clip| {
@@ -558,6 +560,19 @@ pub const Track = struct {
                     snap.dur_samples = clip.audio.dur_sec * rate;
                     snap.fade_in_samples = clip.audio.fade_in_sec * rate;
                     snap.fade_out_samples = clip.audio.fade_out_sec * rate;
+                }
+                // Warped (docs/29): its markers ride along; a clip whose map
+                // doesn't fit or isn't valid plays as a window.
+                const wm = clip.warp_markers.items;
+                if (clip.audio.warp and warp_mod.valid(wm) and dst.warp_point_count + wm.len <= snap_mod.MAX_WARP_POINTS_PER_TRACK) {
+                    snap.warped = true;
+                    snap.mode = clip.audio.mode;
+                    snap.offset_beats = clip.audio.offset_beats;
+                    snap.rate = time_rate;
+                    snap.warp_start = dst.warp_point_count;
+                    snap.warp_count = @intCast(wm.len);
+                    @memcpy(dst.warp_points[dst.warp_point_count..][0..wm.len], wm);
+                    dst.warp_point_count += @intCast(wm.len);
                 }
                 dst.audio_clips[dst.audio_clip_count] = snap;
                 dst.audio_clip_count += 1;

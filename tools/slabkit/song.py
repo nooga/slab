@@ -457,12 +457,17 @@ class AudioClip:
     """A WAV placed on a track and mixed in directly (docs/19 audio clips).
     It plays the source window [start_sec, start_sec + dur_sec) at native
     rate; reverse=True plays that window end to start. Fades are seconds,
-    in clip time."""
+    in clip time. Warped (docs/29), the source is laid on beats at
+    `warp_bpm` and the clip follows the tempo, in `mode`."""
 
     notes = ()
     lanes = {}
 
-    def __init__(self, track, path, start, start_sec, dur_sec, gain, fade_in, fade_out, reverse, name):
+    def __init__(self, track, path, start, start_sec, dur_sec, gain, fade_in, fade_out, reverse, name,
+                 warp_bpm=None, mode="tape", total=None):
+        self.warp_bpm = warp_bpm
+        self.mode = mode
+        self.total = total
         self.track = track
         self.path = os.path.abspath(path)
         self.start = start
@@ -476,6 +481,8 @@ class AudioClip:
 
     @property
     def length(self):
+        if self.warp_bpm:
+            return self.dur_sec * self.warp_bpm / 60
         song = self.track.song
         return song.beat_at(song.seconds_at(self.start) + self.dur_sec) - self.start
 
@@ -483,7 +490,15 @@ class AudioClip:
         return {"type": "audio", "name": self.name, "start": round(self.start, 6), "len": round(self.length, 6),
                 "gain": self.gain, "start_sec": self.start_sec, "dur_sec": self.dur_sec,
                 "fade_in": self.fade_in, "fade_out": self.fade_out,
-                **({"reversed": True} if self.reverse else {}), "source": self.path}
+                **({"reversed": True} if self.reverse else {}),
+                **({"warp": self._warp_json()} if self.warp_bpm else {}), "source": self.path}
+
+    def _warp_json(self):
+        bps = self.warp_bpm / 60
+        total = max(self.total or 0, self.start_sec + self.dur_sec)
+        head = total - (self.start_sec + self.dur_sec) if self.reverse else self.start_sec
+        return {"mode": self.mode, "offset": round(head * bps, 9),
+                "markers": [[0, 0], [round(total, 9), round(total * bps, 9)]]}
 
 
 def _add_points(lanes, resolved, where, points):
@@ -708,10 +723,14 @@ class Track:
         return self.automate("volume", *clean)
 
     def audio(self, path, section=None, at_bar=0, at_beat=None, start_sec=0.0, dur_sec=None,
-              gain=1.0, fade_in=0.0, fade_out=0.0, reverse=False, name=None):
+              gain=1.0, fade_in=0.0, fade_out=0.0, reverse=False, name=None,
+              warp=None, fit_beats=None, mode="tape"):
         """Place a WAV: at a section's start plus `at_bar` bars, or at
         `at_beat`. dur_sec defaults to the rest of the file. reverse=True
-        plays it backwards (a swell into the downbeat: end it on the bar)."""
+        plays it backwards (a swell into the downbeat: end it on the bar).
+        warp=bpm locks it to the beat at the tempo it was played in, so it
+        follows the song's (docs/29); fit_beats=n stretches the window to n
+        beats instead. mode: "tape" (speed and pitch together)."""
         where = f"track {self.name} audio {path}"
         if not os.path.exists(path):
             raise SlabError(f"{where}: file not found")
@@ -724,8 +743,18 @@ class Track:
             raise SlabError(f"{where}: nothing to play (start_sec {start_sec} past the end)")
         bb = self.song.bar_beats
         start = at_beat if at_beat is not None else (section.start if section else 0) + at_bar * bb
+        if mode not in ("tape",):
+            raise SlabError(f"{where}: mode {mode!r}: only \"tape\" so far")
+        if warp is True:
+            raise SlabError(f"{where}: tempo detection isn't built yet; pass warp=<bpm> or fit_beats=")
+        if fit_beats is not None:
+            if fit_beats <= 0:
+                raise SlabError(f"{where}: fit_beats must be positive")
+            warp = fit_beats * 60 / dur_sec
+        if warp is not None and not 20 <= warp <= 999:
+            raise SlabError(f"{where}: warp={warp} bpm is out of range")
         c = AudioClip(self, path, start, start_sec, dur_sec, gain, fade_in, fade_out, reverse,
-                      name or os.path.splitext(os.path.basename(path))[0])
+                      name or os.path.splitext(os.path.basename(path))[0], warp, mode, total)
         self.clips.append(c)
         return c
 

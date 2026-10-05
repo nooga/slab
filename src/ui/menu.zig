@@ -49,6 +49,7 @@ pub const EditCommand = enum {
     rename,
     import_audio,
     reverse,
+    warp,
     mute_clips,
     bounce,
     rebounce,

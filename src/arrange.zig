@@ -45,6 +45,22 @@ pub fn splitClip(alloc: std.mem.Allocator, t: *Track, ci: usize, beat: f64, tmap
     const clip = &t.clips.items[ci];
     const local = beat - clip.start_beat;
     if (local <= EPS or local >= clip.length_beats - EPS) return false;
+    if (clip.isAudio() and clip.audio.warp) {
+        // Warped (docs/29): both halves keep the whole map; the right one
+        // starts that many content beats in.
+        var right = Clip.initAudio(clip.name(), beat, clip.start_beat + clip.length_beats - beat, clip.audio.source);
+        errdefer right.deinit(alloc);
+        right.selected = clip.selected;
+        right.muted = clip.muted;
+        right.audio = clip.audio;
+        right.audio.offset_beats += local;
+        right.audio.fade_in_sec = 0;
+        try right.warp_markers.appendSlice(alloc, clip.warp_markers.items);
+        clip.audio.fade_out_sec = 0;
+        clip.length_beats = local;
+        try t.addClip(alloc, right);
+        return true;
+    }
     if (clip.isAudio()) {
         const split_sec = tmap.secondsAt(beat) - tmap.secondsAt(clip.start_beat);
         var right = Clip.initAudio(clip.name(), beat, clip.start_beat + clip.length_beats - beat, clip.audio.source);

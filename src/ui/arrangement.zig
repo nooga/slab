@@ -37,6 +37,7 @@ const tempo_mod = @import("../tempo.zig");
 const arrange = @import("../arrange.zig");
 const markers_mod = @import("../markers.zig");
 const groove_mod = @import("../groove.zig");
+const warp_mod = @import("../warp.zig");
 const recorder_mod = @import("../recorder.zig");
 const automation = @import("../automation.zig");
 const auto_lane = @import("automation_lane.zig");
@@ -322,6 +323,7 @@ var px_per_beat: f32 = 24;
 // (which don't take the transport) can convert beats↔source-seconds.
 /// The tempo map this frame (audio clips convert their seconds through it).
 var cur_tempo: *const tempo_mod.TempoMap = &default_tempo;
+var cur_pool: ?*const audio_pool_mod.AudioPool = null;
 const default_tempo = tempo_mod.TempoMap.constant(120);
 // Live meter map for this frame's grid, captured at the top of draw().
 var default_meter_pts = [_]meter_mod.MeterPoint{.{ .start_bar = 0, .numerator = 4, .denominator = 4 }};
@@ -355,8 +357,12 @@ var drag_start_mouse_x: f32 = 0;
 // Audio source window captured at the start of a left-edge trim.
 var drag_start_audio_start_sec: f64 = 0;
 var drag_start_audio_dur_sec: f64 = 0;
+var drag_start_audio_offset: f64 = 0;
 // Fade length captured at the start of a fade-handle drag.
 var drag_start_fade_sec: f64 = 0;
+// ⌘ held when an edge drag began: it stretches instead of trimming
+// (docs/29 §Editing).
+var drag_stretch: bool = false;
 var drag_snaps: [MAX_DRAG_CLIPS]ClipDragSnap = undefined;
 var drag_snap_count: usize = 0;
 var drag_track_delta: i32 = 0;
@@ -743,11 +749,19 @@ pub fn loopArrangement(tracks: []Track, transport: *Transport) bool {
 
 /// Flip the selected audio clips' playback direction (with `selection`
 /// false, or none selected: the focused clip). The window and fades stay
-/// where they are.
-pub fn reverseAudioClips(tracks: []Track, focused: ?ClipRef, selection: bool) bool {
+/// where they are; a warped clip mirrors its map (docs/29 §The model).
+pub fn reverseAudioClips(tracks: []Track, pool: ?*const audio_pool_mod.AudioPool, focused: ?ClipRef, selection: bool) bool {
+    const Flip = struct {
+        fn one(clip: *Clip, p: ?*const audio_pool_mod.AudioPool) void {
+            if (clip.audio.warp) {
+                const src = (p orelse return).get(clip.audio.source) orelse return;
+                warp_mod.mirror(clip, src.seconds());
+            } else clip.audio.reversed = !clip.audio.reversed;
+        }
+    };
     var changed = false;
     if (selection) for (tracks) |*t| for (t.clips.items) |*clip| if (clip.selected and clip.isAudio()) {
-        clip.audio.reversed = !clip.audio.reversed;
+        Flip.one(clip, pool);
         changed = true;
     };
     if (changed) return true;
@@ -755,8 +769,49 @@ pub fn reverseAudioClips(tracks: []Track, focused: ?ClipRef, selection: bool) bo
     if (f.track >= tracks.len or f.clip >= tracks[f.track].clips.items.len) return false;
     const clip = &tracks[f.track].clips.items[f.clip];
     if (!clip.isAudio()) return false;
-    clip.audio.reversed = !clip.audio.reversed;
+    Flip.one(clip, pool);
     return true;
+}
+
+fn allSelectedAudioWarped(tracks: []const Track) bool {
+    var any = false;
+    for (tracks) |*t| for (t.clips.items) |*clip| if (clip.selected and clip.isAudio()) {
+        if (!clip.audio.warp) return false;
+        any = true;
+    };
+    return any;
+}
+
+/// Warp the selected audio clips on, or off when all of them already are
+/// (with `selection` false, or none selected: the focused clip), keeping
+/// each where it sits (docs/29 §The model).
+pub fn toggleWarp(tracks: []Track, alloc: std.mem.Allocator, pool: ?*const audio_pool_mod.AudioPool, tmap: *const tempo_mod.TempoMap, focused: ?ClipRef, selection: bool) bool {
+    const p = pool orelse return false;
+    const Set = struct {
+        fn one(a: std.mem.Allocator, clip: *Clip, pl: *const audio_pool_mod.AudioPool, m: *const tempo_mod.TempoMap, on: bool) bool {
+            const src = pl.get(clip.audio.source) orelse return false;
+            if (on) {
+                warp_mod.warpOn(a, clip, m, src.seconds()) catch return false;
+            } else {
+                warp_mod.warpOff(clip, src.seconds());
+                clip.length_beats = @max(MIN_CLIP_BEATS, m.beatAfter(clip.start_beat, clip.audio.dur_sec) - clip.start_beat);
+            }
+            return true;
+        }
+    };
+    var changed = false;
+    if (selection and hasSelectedAudioClips(tracks)) {
+        const on = !allSelectedAudioWarped(tracks);
+        for (tracks) |*t| for (t.clips.items) |*clip| if (clip.selected and clip.isAudio()) {
+            changed = Set.one(alloc, clip, p, tmap, on) or changed;
+        };
+        return changed;
+    }
+    const f = focused orelse return false;
+    if (f.track >= tracks.len or f.clip >= tracks[f.track].clips.items.len) return false;
+    const clip = &tracks[f.track].clips.items[f.clip];
+    if (!clip.isAudio()) return false;
+    return Set.one(alloc, clip, p, tmap, !clip.audio.warp);
 }
 
 /// Mute the selected clips, or unmute them when all of them already are
@@ -940,10 +995,12 @@ pub fn draw(
     cur_meter = meter_state.liveMap();
     ui.rect(bridge.fromRl(r), ui_style.pane);
 
-    // Audio clips are unwarped: their beat-length is derived from the source
-    // window through the tempo map, so a tempo edit rescales them against
-    // the bar grid. Do this before any interaction/draw uses length_beats.
+    // Unwarped audio clips' beat-length is derived from the source window
+    // through the tempo map, so a tempo edit rescales them against the bar
+    // grid (warped ones keep theirs). Do this before any interaction/draw
+    // uses length_beats.
     cur_tempo = transport.map();
+    cur_pool = pool;
     reflowAudioClips(tracks, cur_tempo);
 
     var master_clicked = false;
@@ -1429,6 +1486,7 @@ pub fn draw(
         .{ .label = "Duplicate", .command = .duplicate, .enabled = has_selection },
         .{ .label = "Split at playhead", .command = .split_at_playhead, .enabled = has_selection },
         .{ .label = "Reverse", .command = .reverse, .enabled = hasSelectedAudioClips(tracks) },
+        .{ .label = if (allSelectedAudioWarped(tracks)) "Unwarp" else "Warp", .command = .warp, .enabled = hasSelectedAudioClips(tracks) },
         .{ .label = if (has_selection and allSelectedMuted(tracks)) "Unmute" else "Mute", .command = .mute_clips, .enabled = has_selection },
         .{ .label = "Delete", .command = .delete, .enabled = has_selection },
         .{ .label = "Bounce\u{2026}", .command = .bounce, .enabled = has_selection },
@@ -1566,6 +1624,29 @@ fn clampScrollY(content_h: f32, lanes_h: f32) void {
 }
 
 /// Seconds an audio clip spans from `start` for `len` beats.
+fn cmdDown() bool {
+    return c.rl.IsKeyDown(c.rl.KEY_LEFT_SUPER) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SUPER);
+}
+
+/// The length of an audio clip's source in seconds, if it has one.
+fn sourceSeconds(clip: *const Clip) ?f64 {
+    const pool = cur_pool orelse return null;
+    const src = pool.get(clip.audio.source) orelse return null;
+    const s = src.seconds();
+    return if (s > 0) s else null;
+}
+
+/// ⌘-edge drag (docs/29 §Editing): the content scales to `new_len` beats,
+/// warping the clip on first.
+fn stretchClip(alloc: std.mem.Allocator, clip: *Clip, new_len: f64) void {
+    if (!clip.audio.warp) {
+        const len = sourceSeconds(clip) orelse return;
+        warp_mod.warpOn(alloc, clip, cur_tempo, len) catch return;
+    }
+    if (clip.length_beats <= 0) return;
+    warp_mod.stretch(clip, new_len / clip.length_beats);
+}
+
 fn clipSeconds(start: f64, len: f64) f64 {
     return cur_tempo.secondsAt(start + len) - cur_tempo.secondsAt(start);
 }
@@ -1584,7 +1665,7 @@ fn deselectAllClips(tracks: []Track) void {
 pub fn reflowAudioClips(tracks: []Track, tmap: *const tempo_mod.TempoMap) void {
     for (tracks) |*t| {
         for (t.clips.items) |*clip| {
-            if (!clip.isAudio()) continue;
+            if (!clip.isAudio() or clip.audio.warp) continue;
             clip.length_beats = @max(MIN_CLIP_BEATS, tmap.beatAfter(clip.start_beat, clip.audio.dur_sec) - clip.start_beat);
         }
     }
@@ -1677,6 +1758,7 @@ fn beginDrag(tracks: []Track, ref: ClipRef, clip: Clip, m: pane.Mouse, mode: Dra
     drag_start_mouse_x = m.x;
     drag_start_audio_start_sec = clip.audio.start_sec;
     drag_start_audio_dur_sec = clip.audio.dur_sec;
+    drag_start_audio_offset = clip.audio.offset_beats;
     drag_start_fade_sec = switch (mode) {
         .fade_in => clip.audio.fade_in_sec,
         .fade_out => clip.audio.fade_out_sec,
@@ -1684,6 +1766,7 @@ fn beginDrag(tracks: []Track, ref: ClipRef, clip: Clip, m: pane.Mouse, mode: Dra
     };
     drag_track_delta = 0;
     drag_snap_count = 0;
+    drag_stretch = (mode == .resize_r or mode == .resize_l) and clip.isAudio() and cmdDown();
     if (mode == .move) {
         snapshotSelectedClips(tracks);
     }
@@ -1740,11 +1823,21 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
         },
         .resize_r => {
             pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
-            const new_len = drag_start_length + d_beats;
-            clip.length_beats = if (new_len < minClipBeats(edit_snap)) minClipBeats(edit_snap) else new_len;
-            // For audio, resizing trims the source window so reflow keeps it.
-            // Reversed, the right edge plays the window's head: it moves.
-            if (clip.isAudio()) {
+            const new_len = @max(drag_start_length + d_beats, minClipBeats(edit_snap));
+            if (drag_stretch) {
+                stretchClip(alloc, clip, new_len);
+                return;
+            }
+            clip.length_beats = new_len;
+            // Warped, the content runs on past either end: a plain trim.
+            // Unwarped, resizing trims the source window so reflow keeps it,
+            // up to the source's end. Reversed, the right edge plays the
+            // window's head: it moves.
+            if (clip.isAudio() and !clip.audio.warp) {
+                if (!clip.audio.reversed) if (sourceSeconds(clip)) |len| {
+                    const room = cur_tempo.beatAfter(clip.start_beat, len - clip.audio.start_sec) - clip.start_beat;
+                    clip.length_beats = @max(@min(clip.length_beats, room), @min(MIN_CLIP_BEATS, room));
+                };
                 if (clip.audio.reversed) {
                     const tail = drag_start_audio_start_sec + drag_start_audio_dur_sec;
                     clip.length_beats = @min(clip.length_beats, cur_tempo.beatAfter(clip.start_beat, tail) - clip.start_beat); // can't read before the source start
@@ -1771,6 +1864,21 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
             pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
             const min_len = minClipBeats(edit_snap);
             const right_beat = drag_start_beat + drag_start_length;
+            if (drag_stretch) {
+                const new_start = std.math.clamp(drag_start_beat + d_beats, 0, right_beat - min_len);
+                stretchClip(alloc, clip, right_beat - new_start);
+                clip.start_beat = right_beat - clip.length_beats;
+                return;
+            }
+            if (clip.audio.warp) {
+                // Warped: trim in content beats; the audio stays on the grid.
+                var delta = @min(d_beats, drag_start_length - min_len);
+                if (drag_start_beat + delta < 0) delta = -drag_start_beat;
+                clip.start_beat = drag_start_beat + delta;
+                clip.length_beats = right_beat - clip.start_beat;
+                clip.audio.offset_beats = drag_start_audio_offset + delta;
+                return;
+            }
             // Clamp the move so the window stays within [0, source] and the
             // clip keeps a minimum length.
             // Reversed, the left edge plays the window's tail, so the head
@@ -3281,6 +3389,27 @@ fn drawLiveRecordClip(ui: *Ui, lane: c.rl.Rectangle, rec: *const recorder_mod.Re
 /// color with dark legend text, a tinted body with the note / waveform
 /// preview; amber outline when selected.
 /// `note_rate`: the track's tempo ratio; its notes are in its own beats.
+/// A warped clip's waveform, span by span through its markers (docs/29
+/// §Editing): each linear stretch of content beats draws its source
+/// seconds.
+fn drawWarpedWave(ui: *Ui, body: Rect, clip: Clip, cache: *const waveform.PeakCache, rate: f64, total: f64, col: ui_style.Color) void {
+    const map = warp_mod.Map{ .m = clip.warp_markers.items };
+    const len_sec = total / rate;
+    const o = clip.audio.offset_beats;
+    const bw: f64 = @floatFromInt(body.w);
+    var buf: [64]warp_mod.Map.Span = undefined;
+    for (map.spans(o, o + clip.length_beats, len_sec, &buf)) |sp| {
+        const x0 = body.x + @as(i32, @intFromFloat(@round((sp.b0 - o) / clip.length_beats * bw)));
+        const x1 = body.x + @as(i32, @intFromFloat(@round((sp.b1 - o) / clip.length_beats * bw)));
+        if (x1 <= x0) continue;
+        const r = Rect.xywh(x0, body.y, x1 - x0, body.h);
+        if (clip.audio.reversed)
+            surf.waveformDir(ui, r, cache, (len_sec - sp.s1) * rate, (len_sec - sp.s0) * rate, col, true)
+        else
+            surf.waveformDir(ui, r, cache, sp.s0 * rate, sp.s1 * rate, col, false);
+    }
+}
+
 fn drawClip(ui: *Ui, r_: c.rl.Rectangle, clip: Clip, color_: c.rl.Color, selected: bool, editing_name: bool, pool: *const audio_pool_mod.AudioPool, note_rate: f64) void {
     const r = bridge.fromRl(r_);
     if (r.w < 1 or r.h < 1) return;
@@ -3305,10 +3434,29 @@ fn drawClip(ui: *Ui, r_: c.rl.Rectangle, clip: Clip, color_: c.rl.Color, selecte
             if (pool.get(clip.audio.source)) |src| {
                 if (src.cache.sample_count > 0) {
                     const rate = src.sample.sample_rate;
-                    const win_start = clip.audio.start_sec * rate;
                     const total: f64 = @floatFromInt(src.cache.sample_count);
-                    const win_end = @min(total, win_start + clip.audio.dur_sec * rate);
-                    surf.waveformDir(ui, body, &src.cache, win_start, win_end, preview, clip.audio.reversed);
+                    if (clip.audio.warp and warp_mod.valid(clip.warp_markers.items)) {
+                        drawWarpedWave(ui, body, clip, &src.cache, rate, total, preview);
+                    } else {
+                        const win_start = clip.audio.start_sec * rate;
+                        const want = clip.audio.dur_sec * rate;
+                        const win_end = @min(total, win_start + want);
+                        // A window past the source's end draws only what
+                        // the source has, not stretched across the clip.
+                        var wr = body;
+                        if (want > 0 and win_end - win_start < want)
+                            wr.w = @intFromFloat(@as(f64, @floatFromInt(body.w)) * @max(0.0, win_end - win_start) / want);
+                        surf.waveformDir(ui, wr, &src.cache, win_start, win_end, preview, clip.audio.reversed);
+                    }
+                }
+            }
+            if (clip.audio.warp) {
+                const lbl = clip.audio.mode.label();
+                const bw: i32 = @as(i32, @intCast(lbl.len)) * 6 + 4;
+                if (band.w > bw + 40) {
+                    const br = Rect.xywh(band.right() - bw - 1, band.y + 1, bw, band.h - 2);
+                    ui.rect(br, ui_style.chassis);
+                    ui.textIn(&ui.fonts.legend, br, lbl, color, .center, true);
                 }
             }
             // Fade wedges + grab handles in the top corners (hit zones

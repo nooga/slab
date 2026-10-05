@@ -79,6 +79,7 @@ test {
     _ = @import("markers.zig");
     _ = @import("groove.zig");
     _ = @import("arrange.zig");
+    _ = @import("warp.zig");
     _ = @import("ui/marker_dialog.zig");
     _ = @import("routing.zig");
     _ = @import("export.zig");
@@ -5139,11 +5140,18 @@ fn executeEditCommand(
         },
         .reverse => {
             changed = switch (focus) {
-                .arrangement => arrangement.reverseAudioClips(tracks, selected_clip.*, true),
-                .piano_roll => arrangement.reverseAudioClips(tracks, selected_clip.*, false),
+                .arrangement => arrangement.reverseAudioClips(tracks, document_mod.audioPool(), selected_clip.*, true),
+                .piano_roll => arrangement.reverseAudioClips(tracks, document_mod.audioPool(), selected_clip.*, false),
                 else => false,
             };
             if (changed) status.set("Reversed", .{});
+        },
+        .warp => {
+            changed = switch (focus) {
+                .arrangement => arrangement.toggleWarp(tracks, alloc, document_mod.audioPool(), transport.map(), selected_clip.*, true),
+                .piano_roll => arrangement.toggleWarp(tracks, alloc, document_mod.audioPool(), transport.map(), selected_clip.*, false),
+                else => false,
+            };
         },
         .mute_clips => {
             changed = switch (focus) {
