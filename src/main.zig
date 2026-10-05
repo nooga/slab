@@ -47,6 +47,8 @@ const library_mod = @import("library.zig");
 const preview_mod = @import("preview.zig");
 
 const pane = @import("ui/pane_input.zig");
+const gesture = @import("ui/gesture.zig");
+const commands = @import("ui/commands.zig");
 const ui_style = @import("ui/style.zig");
 const ui_gallery = @import("ui/gallery.zig");
 const layout_mod = @import("ui/layout.zig");
@@ -84,6 +86,10 @@ test {
     _ = @import("ui/atlas.zig");
     _ = @import("ui/font.zig");
     _ = @import("ui/text_field.zig");
+    _ = @import("ui/gesture.zig");
+    _ = @import("ui/timeline.zig");
+    _ = @import("ui/commands.zig");
+    _ = @import("ui/clip_editor.zig");
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
     _ = @import("tempo.zig");
@@ -143,6 +149,9 @@ const ClipboardMode = enum { empty, clips, notes };
 
 const EditClipboard = struct {
     mode: ClipboardMode = .empty,
+    /// A copied time selection's length (0: plain clips): pasting it
+    /// replaces that much of the tracks (docs/31 §Time selection).
+    span: f64 = 0,
     clips: std.ArrayList(arrangement.CopiedClip) = .empty,
     notes: std.ArrayList(clip_mod.Note) = .empty,
 
@@ -157,6 +166,7 @@ const EditClipboard = struct {
         self.clips.clearRetainingCapacity();
         self.notes.clearRetainingCapacity();
         self.mode = .empty;
+        self.span = 0;
     }
 };
 
@@ -175,6 +185,39 @@ const StatusMessage = struct {
         return "";
     }
 };
+
+/// The notes the clip editor holds on a track (docs/31 §Note editing):
+/// main starts and releases the difference each frame.
+const HeldNotes = struct { track: ?usize = null, set: u128 = 0 };
+
+fn holdNotes(engine: *engine_mod.Engine, held: *HeldNotes, track: ?usize, want_in: u128) void {
+    const want = if (track == null) 0 else want_in;
+    if (held.track != track and held.set != 0) {
+        // Another clip: let go of the old track's notes first.
+        if (held.track) |ot| for (0..128) |pi| {
+            if (held.set & (@as(u128, 1) << @intCast(pi)) != 0) engine.holdNote(ot, @intCast(pi), false);
+        };
+        held.set = 0;
+    }
+    held.track = track;
+    const t = track orelse return;
+    const diff = held.set ^ want;
+    if (diff == 0) return;
+    // Releases first, so a glide from key to key doesn't overlap.
+    for (0..128) |pi| {
+        const mask = @as(u128, 1) << @intCast(pi);
+        if (diff & mask != 0 and want & mask == 0) engine.holdNote(t, @intCast(pi), false);
+    }
+    for (0..128) |pi| {
+        const mask = @as(u128, 1) << @intCast(pi);
+        if (diff & mask != 0 and want & mask != 0) engine.holdNote(t, @intCast(pi), true);
+    }
+    held.set = want;
+}
+
+/// The song-wide state Insert and Delete time move (docs/31 §Time
+/// selection), set once the app's state exists.
+var arrange_ctx: ?struct { meter: *meter_mod.MeterState, markers: *markers_mod.Markers } = null;
 
 const EditTarget = struct {
     beat: ?f64 = null,
@@ -833,6 +876,8 @@ pub fn main(init: std.process.Init) !void {
     document_mod.setMeterState(&meter_state);
     var markers: markers_mod.Markers = .{};
     document_mod.setMarkers(&markers);
+    arrange_ctx = .{ .meter = &meter_state, .markers = &markers };
+    defer arrange_ctx = null;
     // Grooves (docs/28 §Groove): the pool and the song's settings, read
     // where tracks publish their notes; set before a project loads.
     var groove_pool = groove_mod.Pool.init();
@@ -847,6 +892,7 @@ pub fn main(init: std.process.Init) !void {
     var export_presets: export_settings.UserPresets = .{};
     export_presets.load(alloc);
 
+    var held: HeldNotes = .{};
     var engine = engine_mod.Engine{
         .transport = &transport,
         .tracks = tracks_buf[0..track_count],
@@ -1030,12 +1076,9 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         if (!layout.clipShown() and focus == .piano_roll) focus = .arrangement;
-        if (pane_m.left_pressed) focus = focusFromPoint(rects, pane_m, layout.clipShown());
-        // The browser is all Ui widgets, which hide the press from the
-        // panes: a press there, or one leaving it, moves the focus too.
-        if (m.left_pressed and !menu.active() and !modal) {
-            if (pane.contains(rects.browser, m.x, m.y)) focus = .browser else if (focus == .browser) focus = focusFromPoint(rects, m, layout.clipShown());
-        }
+        // Focus follows any press in a pane, on its widgets too (a track
+        // header, the clip editor's head): docs/31 §Keys.
+        if ((m.left_pressed or m.right_pressed) and !menu.active() and !modal) focus = focusFromPoint(rects, m, layout.clipShown());
 
         if (modal) {
             // Modal: only Esc/Enter act, handled after the dialog draws below.
@@ -1073,7 +1116,6 @@ pub fn main(init: std.process.Init) !void {
             if (!in_browser) {
                 handleSnapKeys(&edit_snap, &status);
                 try handleFocusedEditCommands(alloc, &history, &clipboard, &status, focus, edit_snap, tracks, &transport, &selected_track, &selected_clip, &rename, &dirty);
-                try handleFocusedDelete(alloc, &history, &status, focus, tracks, &transport, &selected_clip, &dirty);
             }
             if (commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_R)) export_dialog.open(&render_dlg);
             if (commandModifierDown() and !ui.in.alt and c.rl.IsKeyPressed(c.rl.KEY_B)) openBounce(&bounce_dlg, tracks, &status);
@@ -1243,7 +1285,7 @@ pub fn main(init: std.process.Init) !void {
             if (arrangement.clipMoveActive() and pane.contains(rects.browser, m.x, m.y)) {
                 browser.drawTarget(ui, uiRect(rects.browser), true, "SAVE TO LIBRARY");
                 if (!ui.raw_in.down) {
-                    arrangement.abortClipMove(tracks);
+                    _ = arrangement.abortClipMove(tracks, alloc);
                     saveClipsToLibrary(alloc, tracks, &status);
                     lib_stale = true;
                 }
@@ -1519,19 +1561,25 @@ pub fn main(init: std.process.Init) !void {
             layout.clip_editor_visible = true;
             rects = layout.compute(sw, sh);
         }
+        // The clip editor closed: nothing stays held.
+        if (!layout.clipShown()) holdNotes(&engine, &held, null, 0);
         if (layout.clipShown()) {
             const play_beat: ?f64 = if (transport.isPlaying()) transport.beats() else null;
             const cres = if (selectedClipIsAudio(tracks, selected_clip))
-                audio_clip_editor.draw(ui, rects.clip_editor, tracks, &audio_pool, alloc, selected_clip, transport.map(), edit_snap, play_beat, pane_m)
+                audio_clip_editor.draw(ui, rects.clip_editor, tracks, &audio_pool, alloc, selected_clip, transport.map(), meter_state.liveMap(), edit_snap, play_beat, pane_m)
             else
                 clip_editor.draw(ui, rects.clip_editor, tracks, alloc, selected_clip, meter_state.liveMap(), edit_snap, clipboard.mode == .notes, play_beat, pane_m);
             if (rename.active() and rename.kind == .clip) {
                 if (cres.rename_rect) |rr| rename.rect = rr;
             }
             if (cres.minimize or cres.close) layout.clip_editor_visible = false;
-            if (cres.audition_pitch) |pitch| {
-                if (selected_clip) |s| engine.auditionNote(s.track, pitch);
+            if (cres.seek) |b| transport.seekToBeats(@max(0, b));
+            if (cres.loop) |l| transport.setLoopBeats(@max(0, l[0]), l[1]);
+            if (cres.focus) |f| {
+                selected_clip = f;
+                selected_track = f.track;
             }
+            holdNotes(&engine, &held, if (selected_clip) |s| s.track else null, cres.hear);
             if (cres.command == .slice_to_sampler) {
                 sliceToSampler(alloc, &history, &status, &engine, &audio, &reg, &audio_pool, &tracks_buf, &track_count, &transport, &selected_track, &selected_clip, &dirty);
                 tracks = tracks_buf[0..track_count];
@@ -6523,8 +6571,8 @@ fn handleFocusedEditCommands(
 
     if (c.rl.IsKeyPressed(c.rl.KEY_ESCAPE)) {
         const cancelled = switch (focus) {
-            .arrangement => arrangement.cancelInteractions(),
-            .piano_roll => clip_editor.cancelInteractions(),
+            .arrangement => arrangement.abortClipMove(tracks, alloc) or arrangement.cancelInteractions(),
+            .piano_roll => clip_editor.cancelInteractions(tracks, selected_clip.*),
             .browser, .machine_bay, .top_bar => false,
         };
         if (cancelled) return;
@@ -6537,89 +6585,36 @@ fn handleFocusedEditCommands(
         return;
     }
 
-    if (cmd and c.rl.IsKeyPressed(c.rl.KEY_C)) {
-        _ = copyFocusedSelection(alloc, clipboard, status, focus, tracks, selected_clip.*);
-        return;
-    }
-
-    if (cmd and c.rl.IsKeyPressed(c.rl.KEY_X)) {
-        const copied = copyFocusedSelection(alloc, clipboard, status, focus, tracks, selected_clip.*);
-        if (!copied) return;
-        try handleFocusedDelete(alloc, history, status, focus, tracks, transport, selected_clip, dirty);
-        return;
-    }
-
-    if (cmd and c.rl.IsKeyPressed(c.rl.KEY_V)) {
-        const before = try document_mod.serialize(alloc, tracks, transport);
-        const changed = pasteFocusedClipboard(alloc, clipboard, status, focus, edit_snap, .{ .beat = transport.beats() }, tracks, selected_track, selected_clip, transport.beats());
-        if (changed) {
-            try history.pushUndo(alloc, before);
-            dirty.* = true;
-        } else {
-            alloc.free(before);
+    // The command table (docs/31 §Keys): the same command a menu runs.
+    if (editWhere(focus, tracks, selected_clip.*)) |where| {
+        if (commands.pressed(where, gesture.mods(), &c.rl.IsKeyPressed)) |command| {
+            try executeEditCommand(alloc, history, clipboard, status, focus, edit_snap, command, editCursor(focus, transport), tracks, transport, selected_track, selected_clip, rename, dirty);
+            return;
         }
-        return;
-    }
-
-    if (cmd and c.rl.IsKeyPressed(c.rl.KEY_A)) {
-        const changed = switch (focus) {
-            .arrangement => arrangement.selectAllClips(tracks, selected_track, selected_clip),
-            .piano_roll => clip_editor.selectAllNotes(tracks, selected_clip.*),
-            .browser, .machine_bay, .top_bar => false,
-        };
-        if (changed) status.set("Selected all", .{});
-        return;
-    }
-
-    if (!cmd and c.rl.IsKeyPressed(c.rl.KEY_ENTER)) {
-        if (focus == .piano_roll or selected_clip.* != null) {
-            if (selected_clip.*) |s| beginRenameClip(rename, tracks, s);
-        } else if (selected_track.*) |ti| {
-            beginRenameTrack(rename, tracks, ti);
-        }
-        return;
     }
 
     var changed = false;
     const before = if (editMutationKeyPressed(focus)) try document_mod.serialize(alloc, tracks, transport) else null;
     defer if (before) |snapshot| if (!changed) alloc.free(snapshot);
 
-    if (!cmd and c.rl.IsKeyPressed(c.rl.KEY_D)) {
-        changed = switch (focus) {
-            .arrangement => arrangement.duplicateSelectedClips(tracks, alloc, selected_track, selected_clip, edit_snap),
-            .piano_roll => clip_editor.duplicateSelectedNotes(tracks, selected_clip.*, alloc, edit_snap),
-            .browser, .machine_bay, .top_bar => false,
-        };
-    } else if (!cmd and (c.rl.IsKeyPressed(c.rl.KEY_ZERO) or c.rl.IsKeyPressed(c.rl.KEY_KP_0))) {
-        changed = switch (focus) {
-            .arrangement => arrangement.toggleClipMute(tracks, selected_clip.*, true),
-            .piano_roll => arrangement.toggleClipMute(tracks, selected_clip.*, false),
-            .browser, .machine_bay, .top_bar => false,
-        };
-    } else if (!cmd and focus == .piano_roll and c.rl.IsKeyPressed(c.rl.KEY_Q)) {
-        changed = clip_editor.quantizeSelectedNotes(tracks, selected_clip.*, edit_snap);
-    } else if (!cmd and focus == .piano_roll and c.rl.IsKeyPressed(c.rl.KEY_H)) {
-        changed = clip_editor.humanizeSelectedNotes(tracks, selected_clip.*, edit_snap);
-    } else if (!cmd and focus == .piano_roll and c.rl.IsKeyPressed(c.rl.KEY_S)) {
-        changed = clip_editor.snapSelectedToScale(tracks, selected_clip.*);
-    } else if (!cmd and arrowKeyPressed()) {
+    if (!cmd and arrowKeyPressed()) {
         const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
         const alt = c.rl.IsKeyDown(c.rl.KEY_LEFT_ALT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_ALT);
         const beat_step = snap_mod.nudgeStep(edit_snap, alt, shift);
         const octave = if (shift) @as(i32, 12) else @as(i32, 1);
         changed = switch (focus) {
             .arrangement => blk: {
-                if (c.rl.IsKeyPressed(c.rl.KEY_LEFT)) break :blk arrangement.nudgeSelectedClips(tracks, alloc, selected_clip, -beat_step, 0, edit_snap);
-                if (c.rl.IsKeyPressed(c.rl.KEY_RIGHT)) break :blk arrangement.nudgeSelectedClips(tracks, alloc, selected_clip, beat_step, 0, edit_snap);
-                if (c.rl.IsKeyPressed(c.rl.KEY_UP)) break :blk arrangement.nudgeSelectedClips(tracks, alloc, selected_clip, 0, -1, edit_snap);
-                if (c.rl.IsKeyPressed(c.rl.KEY_DOWN)) break :blk arrangement.nudgeSelectedClips(tracks, alloc, selected_clip, 0, 1, edit_snap);
+                if (c.rl.IsKeyPressed(c.rl.KEY_LEFT)) break :blk arrangement.nudgeSelectedClips(tracks, alloc, selected_clip, -beat_step, 0);
+                if (c.rl.IsKeyPressed(c.rl.KEY_RIGHT)) break :blk arrangement.nudgeSelectedClips(tracks, alloc, selected_clip, beat_step, 0);
+                if (c.rl.IsKeyPressed(c.rl.KEY_UP)) break :blk arrangement.nudgeSelectedClips(tracks, alloc, selected_clip, 0, -1);
+                if (c.rl.IsKeyPressed(c.rl.KEY_DOWN)) break :blk arrangement.nudgeSelectedClips(tracks, alloc, selected_clip, 0, 1);
                 break :blk false;
             },
             .piano_roll => blk: {
-                if (c.rl.IsKeyPressed(c.rl.KEY_LEFT)) break :blk clip_editor.nudgeSelectedNotes(tracks, selected_clip.*, -beat_step, 0, edit_snap);
-                if (c.rl.IsKeyPressed(c.rl.KEY_RIGHT)) break :blk clip_editor.nudgeSelectedNotes(tracks, selected_clip.*, beat_step, 0, edit_snap);
-                if (c.rl.IsKeyPressed(c.rl.KEY_UP)) break :blk clip_editor.nudgeSelectedNotes(tracks, selected_clip.*, 0, octave, edit_snap);
-                if (c.rl.IsKeyPressed(c.rl.KEY_DOWN)) break :blk clip_editor.nudgeSelectedNotes(tracks, selected_clip.*, 0, -octave, edit_snap);
+                if (c.rl.IsKeyPressed(c.rl.KEY_LEFT)) break :blk clip_editor.nudgeSelectedNotes(tracks, selected_clip.*, -beat_step, 0);
+                if (c.rl.IsKeyPressed(c.rl.KEY_RIGHT)) break :blk clip_editor.nudgeSelectedNotes(tracks, selected_clip.*, beat_step, 0);
+                if (c.rl.IsKeyPressed(c.rl.KEY_UP)) break :blk clip_editor.nudgeSelectedNotes(tracks, selected_clip.*, 0, octave);
+                if (c.rl.IsKeyPressed(c.rl.KEY_DOWN)) break :blk clip_editor.nudgeSelectedNotes(tracks, selected_clip.*, 0, -octave);
                 break :blk false;
             },
             .browser, .machine_bay, .top_bar => false,
@@ -6644,6 +6639,12 @@ fn copyFocusedSelection(
     clipboard.clear(alloc);
     switch (focus) {
         .arrangement => {
+            if (arrangement.timeRange() != null) if (arrangement.copyRange(tracks, alloc, &clipboard.clips)) |len| {
+                clipboard.mode = .clips;
+                clipboard.span = len;
+                status.set("Copied {d:.2} beats", .{len});
+                return true;
+            };
             if (arrangement.copySelectedClips(tracks, alloc, &clipboard.clips)) {
                 clipboard.mode = .clips;
                 status.set("Copied {d} clip{s}", .{ clipboard.clips.items.len, plural(clipboard.clips.items.len) });
@@ -6677,7 +6678,9 @@ fn pasteFocusedClipboard(
 ) bool {
     const target_beat = target.beat orelse fallback_beat;
     const changed = switch (focus) {
-        .arrangement => if (clipboard.mode == .clips)
+        .arrangement => if (clipboard.mode == .clips and clipboard.span > 0)
+            arrangement.pasteRange(tracks, alloc, selected_track, selected_clip, clipboard.clips.items, clipboard.span, target_beat, target.track orelse selected_track.* orelse 0)
+        else if (clipboard.mode == .clips)
             arrangement.pasteClips(tracks, alloc, selected_track, selected_clip, clipboard.clips.items, target_beat, target.track, edit_snap)
         else
             false,
@@ -6743,6 +6746,14 @@ fn executeEditCommand(
             if (changed) status.set("Selection cleared", .{});
             return;
         },
+        .zoom_to_selection => {
+            switch (focus) {
+                .arrangement => arrangement.zoomToSelection(),
+                .piano_roll => if (selectedClipIsAudio(tracks, selected_clip.*)) audio_clip_editor.zoomToSelection() else clip_editor.zoomToSelection(),
+                .browser, .machine_bay, .top_bar => {},
+            }
+            return;
+        },
         .rename => {
             if (focus == .piano_roll or selected_clip.* != null) {
                 if (selected_clip.*) |s| beginRenameClip(rename, tracks, s);
@@ -6760,7 +6771,7 @@ fn executeEditCommand(
         .cut => {
             if (copyFocusedSelection(alloc, clipboard, status, focus, tracks, selected_clip.*)) {
                 changed = switch (focus) {
-                    .arrangement => arrangement.deleteSelectedClips(tracks, alloc, selected_clip),
+                    .arrangement => if (arrangement.timeRange() != null) arrangement.clearRange(tracks, alloc, selected_clip) else arrangement.deleteSelectedClips(tracks, alloc, selected_clip),
                     .piano_roll => clip_editor.deleteSelectedPoints(tracks, selected_clip.*) or clip_editor.deleteSelectedNotes(tracks, selected_clip.*),
                     .browser, .machine_bay, .top_bar => false,
                 };
@@ -6772,7 +6783,7 @@ fn executeEditCommand(
         },
         .duplicate => {
             changed = switch (focus) {
-                .arrangement => arrangement.duplicateSelectedClips(tracks, alloc, selected_track, selected_clip, edit_snap),
+                .arrangement => if (arrangement.timeRange() != null) arrangement.duplicateRange(tracks, alloc, selected_track, selected_clip) else arrangement.duplicateSelectedClips(tracks, alloc, selected_track, selected_clip, edit_snap),
                 .piano_roll => clip_editor.duplicateSelectedNotes(tracks, selected_clip.*, alloc, edit_snap),
                 .browser, .machine_bay, .top_bar => false,
             };
@@ -6780,14 +6791,21 @@ fn executeEditCommand(
         },
         .delete => {
             changed = switch (focus) {
-                .arrangement => arrangement.deleteSelectedClips(tracks, alloc, selected_clip),
+                .arrangement => arrangement.deleteSelectedPoints(tracks) or (if (arrangement.timeRange() != null) arrangement.clearRange(tracks, alloc, selected_clip) else arrangement.deleteSelectedClips(tracks, alloc, selected_clip)),
                 .piano_roll => clip_editor.deleteSelectedPoints(tracks, selected_clip.*) or clip_editor.deleteSelectedNotes(tracks, selected_clip.*),
                 .browser, .machine_bay, .top_bar => false,
             };
             if (changed) status.set("Deleted", .{});
         },
         .loop_selection => {
-            changed = if (focus == .arrangement) arrangement.loopSelectedClips(tracks, transport) else false;
+            changed = if (focus == .piano_roll) blk: {
+                const r = clip_editor.timeRange(tracks, selected_clip.*) orelse break :blk false;
+                transport.setLoopBeats(r[0], r[1]);
+                break :blk true;
+            } else if (focus != .arrangement) false else if (arrangement.timeRange()) |r| blk: {
+                transport.setLoopBeats(r.a, r.b);
+                break :blk true;
+            } else arrangement.loopSelectedClips(tracks, transport);
             if (changed) status.set("Looped selection", .{});
         },
         .loop_arrangement => {
@@ -6835,8 +6853,27 @@ fn executeEditCommand(
             if (changed) status.set("Solos and mutes cleared", .{});
         },
         .split_at_playhead => {
-            changed = if (focus == .arrangement) arrangement.splitSelectedClipsAt(tracks, alloc, selected_clip, transport.beats(), transport.map()) else false;
+            changed = if (focus != .arrangement) false else if (arrangement.timeRange() != null) arrangement.splitRange(tracks, alloc, selected_track, selected_clip) else if (focus == .arrangement) arrangement.splitSelectedClipsAt(tracks, alloc, selected_clip, transport.beats(), transport.map()) else false;
             if (changed) status.set("Split clips", .{});
+        },
+        .join => {
+            changed = focus == .arrangement and arrangement.joinSelectedClips(tracks, alloc, selected_track, selected_clip);
+            if (changed) status.set("Joined", .{}) else status.set("Select two or more note clips on a track to join", .{});
+        },
+        .insert_time, .delete_time => if (focus == .arrangement) if (arrange_ctx) |ctx| {
+            const r = arrangement.timeRange() orelse {
+                status.set("Drag across the lanes to pick the time first", .{});
+                alloc.free(before);
+                return;
+            };
+            const song = arrange_mod.Song{ .alloc = alloc, .tracks = tracks, .tempo = &transport.tempo, .meter = ctx.meter, .markers = ctx.markers, .song_end = lastClipEnd(tracks) };
+            const res = if (command == .insert_time) arrange_mod.insertTime(&song, r.a, r.len()) else arrange_mod.remove(&song, r.a, r.b);
+            res catch |err| status.set("Edit failed: {s}", .{@errorName(err)});
+            // Clip indexes moved: nothing stays selected.
+            _ = arrangement.clearSelection(tracks, selected_clip);
+            if (document_mod.audioPool()) |ap| for (tracks) |*t| t.publishSnapshot(ap);
+            changed = true;
+            status.set("{s} {d:.2} beats", .{ if (command == .insert_time) "Inserted" else "Deleted", r.len() });
         },
         .quantize => {
             changed = if (focus == .piano_roll) clip_editor.quantizeSelectedNotes(tracks, selected_clip.*, edit_snap) else false;
@@ -6870,16 +6907,16 @@ fn executeEditCommand(
             if (changed) status.set("Snapped to scale", .{});
         },
         .octave_up => {
-            changed = if (focus == .piano_roll) clip_editor.nudgeSelectedNotes(tracks, selected_clip.*, 0, 12, edit_snap) else false;
+            changed = if (focus == .piano_roll) clip_editor.nudgeSelectedNotes(tracks, selected_clip.*, 0, 12) else false;
             if (changed) status.set("Octave up", .{});
         },
         .octave_down => {
-            changed = if (focus == .piano_roll) clip_editor.nudgeSelectedNotes(tracks, selected_clip.*, 0, -12, edit_snap) else false;
+            changed = if (focus == .piano_roll) clip_editor.nudgeSelectedNotes(tracks, selected_clip.*, 0, -12) else false;
             if (changed) status.set("Octave down", .{});
         },
         // `import_audio` is intercepted in the arrangement-result handler
         // (it needs the audio pool + file dialog); never reaches here.
-        .none, .copy, .select_all, .clear_selection, .rename, .file_new, .file_open, .file_save, .file_save_as, .file_clean_up, .render_audio, .import_audio, .bounce, .rebounce, .thaw, .save_to_library, .slice_to_sampler, .audio_to_notes, .chords_to_notes, .drums_to_kit, .explode, .split_stems, .song_tempo_to_clip, .section_tempo_to_clip => {},
+        .none, .copy, .select_all, .clear_selection, .rename, .file_new, .file_open, .file_save, .file_save_as, .file_clean_up, .render_audio, .import_audio, .bounce, .rebounce, .thaw, .save_to_library, .slice_to_sampler, .audio_to_notes, .chords_to_notes, .drums_to_kit, .explode, .split_stems, .song_tempo_to_clip, .section_tempo_to_clip, .zoom_to_selection => {},
     }
 
     if (changed) {
@@ -6892,11 +6929,30 @@ fn executeEditCommand(
 }
 
 fn editMutationKeyPressed(focus: FocusPane) bool {
-    if (commandModifierDown()) return false;
-    if (c.rl.IsKeyPressed(c.rl.KEY_D) or arrowKeyPressed()) return true;
-    if (c.rl.IsKeyPressed(c.rl.KEY_ZERO) or c.rl.IsKeyPressed(c.rl.KEY_KP_0)) return true;
-    return focus == .piano_roll and (c.rl.IsKeyPressed(c.rl.KEY_Q) or
-        c.rl.IsKeyPressed(c.rl.KEY_H) or c.rl.IsKeyPressed(c.rl.KEY_S));
+    _ = focus;
+    return !commandModifierDown() and arrowKeyPressed();
+}
+
+/// Which editor the keys act in: the arrangement, or the clip editor on a
+/// note clip or an audio clip.
+fn editWhere(focus: FocusPane, tracks: []track_mod.Track, selected: ?clip_mod.ClipRef) ?commands.Where {
+    return switch (focus) {
+        .arrangement => .arrangement,
+        .piano_roll => if (selectedClipIsAudio(tracks, selected)) .audio else .notes,
+        .browser, .machine_bay, .top_bar => null,
+    };
+}
+
+/// Where a key's paste lands: the edit cursor (the last click on empty
+/// space in the focused pane), else the playhead (docs/31 §Keys).
+fn editCursor(focus: FocusPane, transport: *transport_mod.Transport) EditTarget {
+    const cur = switch (focus) {
+        .arrangement => arrangement.editCursor(),
+        .piano_roll => clip_editor.editCursor(),
+        .browser, .machine_bay, .top_bar => null,
+    };
+    if (cur) |t| return .{ .beat = t.beat, .track = t.track, .pitch = t.pitch };
+    return .{ .beat = transport.beats() };
 }
 
 fn arrowKeyPressed() bool {
@@ -6904,32 +6960,6 @@ fn arrowKeyPressed() bool {
         c.rl.IsKeyPressed(c.rl.KEY_UP) or c.rl.IsKeyPressed(c.rl.KEY_DOWN);
 }
 
-fn handleFocusedDelete(
-    alloc: std.mem.Allocator,
-    history: *history_mod.History,
-    status: *StatusMessage,
-    focus: FocusPane,
-    tracks: []track_mod.Track,
-    transport: *transport_mod.Transport,
-    selected_clip: *?clip_mod.ClipRef,
-    dirty: *bool,
-) !void {
-    if (!deletePressed()) return;
-    const before = try document_mod.serialize(alloc, tracks, transport);
-    const changed = switch (focus) {
-        .piano_roll => clip_editor.deleteSelectedPoints(tracks, selected_clip.*) or clip_editor.deleteSelectedNotes(tracks, selected_clip.*),
-        .arrangement => arrangement.deleteSelectedPoints(tracks) or arrangement.deleteSelectedClips(tracks, alloc, selected_clip),
-        .browser, .machine_bay, .top_bar => false,
-    };
-    if (changed) {
-        try history.pushUndo(alloc, before);
-        dirty.* = true;
-        status.set("Deleted", .{});
-    } else {
-        alloc.free(before);
-        status.set("Nothing to delete", .{});
-    }
-}
 
 fn deletePressed() bool {
     return c.rl.IsKeyPressed(c.rl.KEY_DELETE) or c.rl.IsKeyPressed(c.rl.KEY_BACKSPACE);

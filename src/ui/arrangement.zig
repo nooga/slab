@@ -44,7 +44,8 @@ const automation = @import("../automation.zig");
 const auto_lane = @import("automation_lane.zig");
 const machine_mod = @import("../machine.zig");
 const lane_targets = @import("lane_targets.zig");
-const follow_mod = @import("follow.zig");
+const timeline = @import("timeline.zig");
+const gesture = @import("gesture.zig");
 
 /// Lane height and track-header width (logical px).
 pub const LANE_H: f32 = 52;
@@ -294,9 +295,6 @@ fn overviewH() f32 {
 fn markerH() f32 {
     return 16;
 }
-fn resizeEdgeW() f32 {
-    return 5;
-}
 const MIN_CLIP_BEATS: f64 = 0.25;
 const PX_PER_BEAT_MIN: f32 = 6;
 const PX_PER_BEAT_MAX: f32 = 96;
@@ -308,18 +306,296 @@ const OVERVIEW_KEY: u64 = 0xCAFE_F00D_1234_5678;
 const BOX_KEY: u64 = 0xB02B_51EC_7AAA_0001;
 const LOOP_START_KEY: u64 = 0x1009_570A_AAAA_0001;
 const LOOP_END_KEY: u64 = 0x1009_E0D0_AAAA_0001;
-const BOX_MIN_DRAG: f32 = 3;
 const MAX_DRAG_CLIPS: usize = 256;
 
 const DragMode = enum { none, move, resize_r, resize_l, fade_in, fade_out };
+/// A selected clip as the drag found it.
 const ClipDragSnap = struct {
     track: u32,
     clip: u32,
     start_beat: f64,
+    length: f64 = 0,
+    a_start: f64 = 0,
+    a_dur: f64 = 0,
+    a_off: f64 = 0,
+    /// How far a note clip's content has moved under a left-edge drag.
+    shifted: f64 = 0,
+    /// The copy an ⌥-drag left behind, by index on the same track.
+    copy: ?u32 = null,
+
+    fn of(ti: usize, ci: usize, clip: *const Clip) ClipDragSnap {
+        return .{
+            .track = @intCast(ti),
+            .clip = @intCast(ci),
+            .start_beat = clip.start_beat,
+            .length = clip.length_beats,
+            .a_start = clip.audio.start_sec,
+            .a_dur = clip.audio.dur_sec,
+            .a_off = clip.audio.offset_beats,
+        };
+    }
 };
 
 // Module-scope state.
-var px_per_beat: f32 = 24;
+var view = timeline.View{ .px_per_beat = 24 };
+var minimap: timeline.Overview = .{};
+var vbar: timeline.Scrollbar = .{};
+/// Zoom to the selection on the next frame (Z; the frame knows the width).
+var zoom_req = false;
+
+/// The last click on empty lanes (docs/31 §Keys).
+var cursor: ?timeline.Cursor = null;
+/// A clip being drawn by ⌘-drag: its track and the beats so far.
+var draw_clip: ?struct { track: usize, a: f64, b: f64 } = null;
+const DRAW_CLIP_KEY: u64 = 0xD2A3_C11E_0000_0001;
+/// This frame's tracks (for the edit cursor's track lookup).
+var cur_tracks: ?[]const Track = null;
+
+pub fn editCursor() ?timeline.Cursor {
+    // A paste lands at the start of the time selection, when there is one.
+    if (time_range) |r| if (cur_tracks) |ts| {
+        return .{ .beat = r.a, .track = audioAt(ts, r.lo) };
+    };
+    return cursor;
+}
+
+/// Show the selected clips, or the whole song (docs/31 §Keys: Z).
+pub fn zoomToSelection() void {
+    zoom_req = true;
+}
+
+// ── Time selection (docs/31 §Time selection) ─────────────────────────
+
+/// A stretch of time across a run of tracks (audio ranks lo..hi, the
+/// tracks as the lanes list them, buses skipped).
+pub const Range = struct {
+    a: f64,
+    b: f64,
+    lo: i32,
+    hi: i32,
+
+    pub fn len(r: Range) f64 {
+        return r.b - r.a;
+    }
+};
+
+/// The time selection, drawn by dragging on empty lanes.
+var time_range: ?Range = null;
+
+pub fn timeRange() ?Range {
+    return time_range;
+}
+
+pub fn clearTimeRange() void {
+    time_range = null;
+}
+
+const MAX_RANGE_TRACKS = 256;
+
+/// The tracks a range covers, top down.
+fn rangeTracks(tracks: []const Track, r: Range, buf: *[MAX_RANGE_TRACKS]usize) []usize {
+    var n: usize = 0;
+    var k = r.lo;
+    while (k <= r.hi and n < buf.len) : (k += 1) {
+        if (audioAt(tracks, k)) |ti| {
+            buf[n] = ti;
+            n += 1;
+        }
+    }
+    return buf[0..n];
+}
+
+/// Select the clips a range touches (and only them).
+fn selectInRange(tracks: []Track, r: Range, selected_track: *?usize, focused_clip: *?ClipRef) void {
+    deselectAllClips(tracks);
+    var buf: [MAX_RANGE_TRACKS]usize = undefined;
+    var first: ?ClipRef = null;
+    for (rangeTracks(tracks, r, &buf)) |ti| for (tracks[ti].clips.items, 0..) |*cl, ci| {
+        if (cl.start_beat < r.b - 1e-9 and cl.start_beat + cl.length_beats > r.a + 1e-9) {
+            cl.selected = true;
+            if (first == null) first = .{ .track = @intCast(ti), .clip = @intCast(ci) };
+        }
+    };
+    focused_clip.* = first;
+    if (first) |f| selected_track.* = f.track else if (rangeTracks(tracks, r, &buf).len > 0) {
+        selected_track.* = buf[0];
+    }
+}
+
+/// ⌘D on a range: what plays in it again right after it, over whatever
+/// was there; the range moves onto the copy.
+pub fn duplicateRange(tracks: []Track, alloc: std.mem.Allocator, selected_track: *?usize, focused_clip: *?ClipRef) bool {
+    const r = time_range orelse return false;
+    var buf: [MAX_RANGE_TRACKS]usize = undefined;
+    const ts = rangeTracks(tracks, r, &buf);
+    var pieces: std.ArrayList(Clip) = .empty;
+    defer {
+        for (pieces.items) |*pc| pc.deinit(alloc);
+        pieces.deinit(alloc);
+    }
+    for (ts) |ti| {
+        pieces.clearRetainingCapacity();
+        arrange.copySpan(alloc, tracks[ti].clips.items, r.a, r.b, cur_tempo, &pieces) catch return false;
+        arrange.clearSpan(alloc, &tracks[ti], r.b, r.b + r.len(), cur_tempo) catch return false;
+        for (pieces.items) |*pc| {
+            pc.start_beat += r.b;
+            tracks[ti].addClip(alloc, pc.*) catch continue;
+            pc.* = Clip.init("", 0, 0); // moved into the track
+        }
+    }
+    time_range = .{ .a = r.b, .b = r.b + r.len(), .lo = r.lo, .hi = r.hi };
+    selectInRange(tracks, time_range.?, selected_track, focused_clip);
+    return true;
+}
+
+/// ⌫ on a range: empty it on its tracks; nothing moves.
+pub fn clearRange(tracks: []Track, alloc: std.mem.Allocator, focused_clip: *?ClipRef) bool {
+    const r = time_range orelse return false;
+    var buf: [MAX_RANGE_TRACKS]usize = undefined;
+    for (rangeTracks(tracks, r, &buf)) |ti| arrange.clearSpan(alloc, &tracks[ti], r.a, r.b, cur_tempo) catch return false;
+    deselectAllClips(tracks);
+    focused_clip.* = null;
+    return true;
+}
+
+/// ⌘E on a range: cut its tracks' clips at both its edges.
+pub fn splitRange(tracks: []Track, alloc: std.mem.Allocator, selected_track: *?usize, focused_clip: *?ClipRef) bool {
+    const r = time_range orelse return false;
+    var buf: [MAX_RANGE_TRACKS]usize = undefined;
+    var changed = false;
+    for (rangeTracks(tracks, r, &buf)) |ti| for ([_]f64{ r.a, r.b }) |at| {
+        const n = tracks[ti].clips.items.len;
+        for (0..n) |ci| changed = (arrange.splitClip(alloc, &tracks[ti], ci, at, cur_tempo) catch false) or changed;
+    };
+    selectInRange(tracks, r, selected_track, focused_clip);
+    return changed;
+}
+
+/// ⌘C on a range: its pieces, each with its track's place below the
+/// range's top track and its start from the range's start. Returns the
+/// range's length.
+pub fn copyRange(tracks: []Track, alloc: std.mem.Allocator, out: *std.ArrayList(CopiedClip)) ?f64 {
+    const r = time_range orelse return null;
+    out.clearRetainingCapacity();
+    var buf: [MAX_RANGE_TRACKS]usize = undefined;
+    var pieces: std.ArrayList(Clip) = .empty;
+    defer pieces.deinit(alloc);
+    for (rangeTracks(tracks, r, &buf)) |ti| {
+        pieces.clearRetainingCapacity();
+        arrange.copySpan(alloc, tracks[ti].clips.items, r.a, r.b, cur_tempo, &pieces) catch return null;
+        for (pieces.items) |pc| {
+            var cc = pc;
+            cc.selected = true;
+            out.append(alloc, .{ .rel_track = audioRank(tracks, ti) - r.lo, .clip = cc }) catch {
+                cc.deinit(alloc);
+            };
+        }
+    }
+    return r.len();
+}
+
+/// ⌘V of a copied range: laid over `len` beats from `at` on the tracks
+/// from `base` down, replacing what was there; the range moves there.
+pub fn pasteRange(tracks: []Track, alloc: std.mem.Allocator, selected_track: *?usize, focused_clip: *?ClipRef, items: []const CopiedClip, len: f64, at: f64, base: usize) bool {
+    if (base >= tracks.len or len <= 0) return false;
+    const base_rank = audioRank(tracks, base);
+    var max_rel: i32 = 0;
+    for (items) |it| max_rel = @max(max_rel, it.rel_track);
+    var k: i32 = 0;
+    while (k <= max_rel) : (k += 1) {
+        const ti = audioAt(tracks, base_rank + k) orelse continue;
+        arrange.clearSpan(alloc, &tracks[ti], at, at + len, cur_tempo) catch return false;
+    }
+    for (items) |*it| {
+        const ti = audioAt(tracks, base_rank + it.rel_track) orelse continue;
+        var cc = it.clip.clone(alloc) catch continue;
+        cc.start_beat += at;
+        tracks[ti].addClip(alloc, cc) catch cc.deinit(alloc);
+    }
+    time_range = .{ .a = at, .b = at + len, .lo = base_rank, .hi = base_rank + max_rel };
+    selectInRange(tracks, time_range.?, selected_track, focused_clip);
+    return true;
+}
+
+/// ⌘J: the selected note clips on each track joined into one, from the
+/// first's start to the last's end, notes and clip lanes where they
+/// played. Audio clips are left alone (bounce joins them).
+pub fn joinSelectedClips(tracks: []Track, alloc: std.mem.Allocator, selected_track: *?usize, focused_clip: *?ClipRef) bool {
+    var changed = false;
+    var first: ?ClipRef = null;
+    for (tracks, 0..) |*t, ti| {
+        var lo: f64 = std.math.inf(f64);
+        var hi: f64 = -std.math.inf(f64);
+        var count: usize = 0;
+        for (t.clips.items) |*cl| if (cl.selected and !cl.isAudio()) {
+            lo = @min(lo, cl.start_beat);
+            hi = @max(hi, cl.start_beat + cl.length_beats);
+            count += 1;
+        };
+        if (count < 2) continue;
+        var joined: ?usize = null;
+        var ci: usize = 0;
+        while (ci < t.clips.items.len) {
+            const cl = &t.clips.items[ci];
+            if (!cl.selected or cl.isAudio()) {
+                ci += 1;
+                continue;
+            }
+            if (joined == null) {
+                // The earliest-found one becomes the joined clip.
+                joined = ci;
+                const shift = cl.start_beat - lo;
+                for (cl.notes.items) |*n| n.start_beat += shift;
+                for (cl.lanes.items) |*l| for (l.points.items) |*pt| {
+                    pt.beat += shift;
+                };
+                cl.start_beat = lo;
+                cl.length_beats = hi - lo;
+                ci += 1;
+                continue;
+            }
+            var other = t.clips.orderedRemove(ci);
+            defer other.deinit(alloc);
+            const dst = &t.clips.items[joined.?];
+            const shift = other.start_beat - lo;
+            for (other.notes.items) |n| {
+                var q = n;
+                q.start_beat += shift;
+                dst.addNote(alloc, q) catch {};
+            }
+            for (other.lanes.items) |*l| {
+                const dl = dst.laneFor(alloc, l.target, l.stepped) catch continue;
+                for (l.points.items) |pt| {
+                    var q = pt;
+                    q.beat += shift;
+                    _ = dl.insert(alloc, q) catch {};
+                }
+            }
+        }
+        if (joined) |j| {
+            changed = true;
+            if (first == null) first = .{ .track = @intCast(ti), .clip = @intCast(j) };
+        }
+    }
+    if (first) |f| {
+        focused_clip.* = f;
+        selected_track.* = f.track;
+    }
+    return changed;
+}
+
+/// The beats the selected clips span.
+fn selectionSpan(tracks: []const Track) ?[2]f64 {
+    if (time_range) |r| return .{ r.a, r.b };
+    var lo: f64 = std.math.inf(f64);
+    var hi: f64 = -std.math.inf(f64);
+    for (tracks) |*t| for (t.clips.items) |*cl| {
+        if (!cl.selected) continue;
+        lo = @min(lo, cl.start_beat);
+        hi = @max(hi, cl.start_beat + cl.length_beats);
+    };
+    return if (hi > lo) .{ lo, hi } else null;
+}
 // Current project tempo, captured at the top of draw() so drag handlers
 // (which don't take the transport) can convert beats↔source-seconds.
 /// The tempo map this frame (audio clips convert their seconds through it).
@@ -329,10 +605,6 @@ const default_tempo = tempo_mod.TempoMap.constant(120);
 // Live meter map for this frame's grid, captured at the top of draw().
 var default_meter_pts = [_]meter_mod.MeterPoint{.{ .start_bar = 0, .numerator = 4, .denominator = 4 }};
 var cur_meter: meter_mod.MeterMap = .{ .points = &default_meter_pts };
-var scroll_x: f32 = 0;
-var follow: follow_mod.Follow = .{};
-var scroll_y: f32 = 0;
-var last_scroll_time: f64 = 0;
 // A press on a track header's name: a drag from it moves the selected
 // tracks (or just it, when it isn't in the selection).
 var hdr_press: ?u8 = null;
@@ -355,6 +627,11 @@ var drag_ref: ClipRef = .{ .track = 0, .clip = 0 };
 var drag_start_beat: f64 = 0;
 var drag_start_length: f64 = 0;
 var drag_start_mouse_x: f32 = 0;
+var drag_start_mouse_y: f32 = 0;
+/// The pointer has gone past the drag threshold.
+var drag_moved = false;
+/// ⌥ at the press: the drag leaves copies behind (docs/31 §Pointer).
+var drag_dup = false;
 // Audio source window captured at the start of a left-edge trim.
 var drag_start_audio_start_sec: f64 = 0;
 var drag_start_audio_dur_sec: f64 = 0;
@@ -368,33 +645,17 @@ var drag_snaps: [MAX_DRAG_CLIPS]ClipDragSnap = undefined;
 var drag_snap_count: usize = 0;
 var drag_track_delta: i32 = 0;
 
-var box_active: bool = false;
-var box_start_x: f32 = 0;
-var box_start_y: f32 = 0;
-var box_start_track: ?usize = null;
-var box_shift: bool = false;
+var box: gesture.Box = .{};
 
 // Overview-strip drag.
-var ov_drag: bool = false;
-var ov_drag_offset: f32 = 0;
 
 // Ruler scrub.
 const RULER_KEY: u64 = 0x5C0B_0001_AAAA_BBBB;
-var ruler_drag: bool = false;
+var scrub: timeline.Scrub = .{};
 var loop_start_drag: bool = false;
 var loop_end_drag: bool = false;
 
-// Vertical scrollbar (lazy) — mirrors clip_editor.
-fn scrollbarW() f32 {
-    return 7;
-}
-const SCROLLBAR_HOVER_RANGE: f32 = 28;
-const SCROLLBAR_FADE_VISIBLE: f64 = 0.9;
-const SCROLLBAR_FADE_LINGER: f64 = 0.6;
 const SBV_KEY: u64 = 0xACAB_1234_AAAA_9999;
-var sbv_drag: bool = false;
-var sbv_drag_start_mouse_y: f32 = 0;
-var sbv_drag_start_scroll_y: f32 = 0;
 const ARR_CONTEXT_KEY: u64 = 0xC077_7E17_AAAA_0001;
 
 pub const CopiedClip = struct {
@@ -540,10 +801,10 @@ pub fn dropHit(tracks: []const Track, x: f32, y: f32) ?DropHit {
     if (!g.drawn or y < g.lanes_top or y >= g.lanes_bottom) return null;
     if (x < g.timeline_x or x >= g.header_x + g.header_w) return null;
     const on_head = x >= g.header_x;
-    const beat: f64 = @max(0, (x - g.timeline_x0 + scroll_x) / px_per_beat);
+    const beat: f64 = @max(0, (x - g.timeline_x0 + view.scroll_x) / view.px_per_beat);
     for (tracks, 0..) |*t, ti| {
         if (!isShown(tracks, ti)) continue;
-        const ly = g.lanes_top + rowTop(tracks, ti) - scroll_y;
+        const ly = g.lanes_top + rowTop(tracks, ti) - view.scroll_y;
         const h = rowH(t);
         if (y < ly or y >= ly + h) continue;
         return .{
@@ -554,7 +815,7 @@ pub fn dropHit(tracks: []const Track, x: f32, y: f32) ?DropHit {
             .head = bridge.fromRl(pane.rect(g.header_x, ly, g.header_w, LANE_H)),
         };
     }
-    const end_y = g.lanes_top + contentH(tracks) - scroll_y;
+    const end_y = g.lanes_top + contentH(tracks) - view.scroll_y;
     if (y < end_y) return null; // the returns divider
     const below = bridge.fromRl(pane.rect(g.timeline_x, end_y, g.timeline_w + g.header_w, g.lanes_bottom - end_y));
     return .{ .track = null, .header = false, .beat = beat, .lane = below, .head = below };
@@ -562,7 +823,7 @@ pub fn dropHit(tracks: []const Track, x: f32, y: f32) ?DropHit {
 
 /// Screen x of `beat` in the last drawn frame.
 pub fn beatX(beat: f64) f32 {
-    return geo.timeline_x0 + @as(f32, @floatCast(beat)) * px_per_beat - scroll_x;
+    return geo.timeline_x0 + @as(f32, @floatCast(beat)) * view.px_per_beat - view.scroll_x;
 }
 
 /// Clip bodies are being dragged (the browser takes them to save).
@@ -570,31 +831,50 @@ pub fn clipMoveActive() bool {
     return drag_mode == .move;
 }
 
-/// Put the dragged clips back where the drag found them and end it.
-pub fn abortClipMove(tracks: []Track) void {
-    if (drag_mode != .move) return;
-    if (drag_snap_count > 0) {
-        for (drag_snaps[0..drag_snap_count]) |s| {
-            if (s.track >= tracks.len or s.clip >= tracks[s.track].clips.items.len) continue;
-            tracks[s.track].clips.items[s.clip].start_beat = s.start_beat;
-        }
-    } else if (drag_ref.track < tracks.len and drag_ref.clip < tracks[drag_ref.track].clips.items.len) {
-        tracks[drag_ref.track].clips.items[drag_ref.clip].start_beat = drag_start_beat;
+/// Put the dragged clips back where the drag found them and end it
+/// (Escape, or the browser taking the drag; docs/31 §Pointer).
+pub fn abortClipMove(tracks: []Track, alloc: std.mem.Allocator) bool {
+    switch (drag_mode) {
+        .move, .resize_l, .resize_r => {},
+        else => return false,
+    }
+    for (drag_snaps[0..drag_snap_count]) |sn| {
+        if (sn.track >= tracks.len or sn.clip >= tracks[sn.track].clips.items.len) continue;
+        const cl = &tracks[sn.track].clips.items[sn.clip];
+        cl.start_beat = sn.start_beat;
+        if (drag_mode == .move) continue;
+        cl.length_beats = sn.length;
+        cl.audio.start_sec = sn.a_start;
+        cl.audio.dur_sec = sn.a_dur;
+        cl.audio.offset_beats = sn.a_off;
+        shiftContent(cl, sn.shifted);
+    }
+    // An ⌥-drag's copies go again, last first so the indexes hold.
+    var k = drag_snap_count;
+    while (k > 0) {
+        k -= 1;
+        const sn = drag_snaps[k];
+        const ci = sn.copy orelse continue;
+        if (sn.track >= tracks.len or ci >= tracks[sn.track].clips.items.len) continue;
+        var gone = tracks[sn.track].clips.orderedRemove(ci);
+        gone.deinit(alloc);
     }
     _ = cancelInteractions();
+    return true;
 }
 
 pub fn cancelInteractions() bool {
-    const had_active = drag_mode != .none or box_active or ov_drag or ruler_drag or tempo_drag != null or marker_drag != null or loop_start_drag or loop_end_drag or sbv_drag;
+    const had_active = drag_mode != .none or box.active or draw_clip != null or minimap.grab != .none or scrub.active or tempo_drag != null or marker_drag != null or loop_start_drag or loop_end_drag or vbar.dragging;
     drag_mode = .none;
-    box_active = false;
-    ov_drag = false;
-    ruler_drag = false;
+    box.cancel();
+    draw_clip = null;
+    minimap.cancel();
+    scrub.cancel();
     tempo_drag = null;
     marker_drag = null;
     loop_start_drag = false;
     loop_end_drag = false;
-    sbv_drag = false;
+    vbar.cancel();
     pane.cancelDrag();
     return had_active;
 }
@@ -618,7 +898,8 @@ pub fn deleteSelectedClips(tracks: []Track, alloc: std.mem.Allocator, focused_cl
 }
 
 pub fn clearSelection(tracks: []Track, focused_clip: *?ClipRef) bool {
-    var changed = false;
+    var changed = time_range != null;
+    time_range = null;
     for (tracks) |*t| {
         for (t.clips.items) |*clip| {
             if (clip.selected) changed = true;
@@ -977,7 +1258,7 @@ pub fn splitSelectedClipsAt(tracks: []Track, alloc: std.mem.Allocator, focused_c
     return changed;
 }
 
-pub fn nudgeSelectedClips(tracks: []Track, alloc: std.mem.Allocator, focused_clip: *?ClipRef, beat_delta: f64, track_delta: i32, edit_snap: snap_mod.Setting) bool {
+pub fn nudgeSelectedClips(tracks: []Track, alloc: std.mem.Allocator, focused_clip: *?ClipRef, beat_delta: f64, track_delta: i32) bool {
     if (track_delta != 0) {
         return nudgeSelectedClipsTracks(tracks, alloc, focused_clip, track_delta);
     }
@@ -986,7 +1267,7 @@ pub fn nudgeSelectedClips(tracks: []Track, alloc: std.mem.Allocator, focused_cli
     for (tracks) |*t| {
         for (t.clips.items) |*clip| {
             if (!clip.selected) continue;
-            const next = snap_mod.snapPositive(edit_snap, clip.start_beat + beat_delta, false);
+            const next = @max(0, clip.start_beat + beat_delta); // by the step (docs/31 §Keys)
             if (next != clip.start_beat) changed = true;
             clip.start_beat = next;
         }
@@ -1103,6 +1384,7 @@ pub fn draw(
     // uses length_beats.
     cur_tempo = transport.map();
     cur_pool = pool;
+    cur_tracks = tracks;
     reflowAudioClips(tracks, cur_tempo);
 
     var master_clicked = false;
@@ -1165,7 +1447,7 @@ pub fn draw(
     };
 
     // ── Wheel input (scroll / zoom) ──────────────────────────────────
-    handleWheel(pane.rect(timeline_x, r.y, timeline_w, r.height), m);
+    handleWheel(pane.rect(timeline_x, r.y, timeline_w, r.height), timeline_x0, content_beats, timeline_w, m);
     // The headers are Ui widgets, and main hides the pointer from the
     // panes while one is hot or held; their wheel and drag read the Ui's
     // own input, which a menu or dialog still suppresses.
@@ -1174,14 +1456,20 @@ pub fn draw(
 
     // ── Continue an in-progress clip drag ─────────────────────────────
     continueDrag(tracks, alloc, selected_clip, edit_snap, m, lanes_top);
-    updateBoxSelect(tracks, selected_track, selected_clip, m, timeline_x, timeline_w, timeline_x0, lanes_top);
+    updateDrawClip(tracks, alloc, selected_track, selected_clip, timeline_x0, edit_snap, m);
+    updateBoxSelect(tracks, selected_track, selected_clip, m, timeline_x, timeline_w, timeline_x0, lanes_top, edit_snap);
 
+    if (zoom_req) {
+        zoom_req = false;
+        const span = selectionSpan(tracks) orelse [2]f64{ 0, content_beats };
+        view.zoomTo(span[0], span[1], timeline_w - 2, limits(content_beats, timeline_w));
+    }
     clampScroll(content_beats, timeline_w);
     clampScrollY(contentH(tracks), lanes_h);
     const timeline_zone = pane.rect(timeline_x, r.y, timeline_w, lanes_bottom - r.y);
-    follow.step(
-        &scroll_x,
-        if (transport.isPlaying()) @as(f32, @floatCast(transport.beats())) * px_per_beat else null,
+    view.follow.step(
+        &view.scroll_x,
+        if (transport.isPlaying()) @as(f32, @floatCast(transport.beats())) * view.px_per_beat else null,
         timeline_w - (timeline_x0 - timeline_x),
         maxScrollX(content_beats, timeline_w),
         c.rl.GetFrameTime(),
@@ -1190,16 +1478,22 @@ pub fn draw(
 
     // ── Ruler ────────────────────────────────────────────────────────
     ui.clip(bridge.fromRl(ruler_rect));
-    _ = ui.plate(bridge.fromRl(ruler_rect), .{});
+    const ruler_body = ui.plate(bridge.fromRl(ruler_rect), .{});
     drawLoopRegion(ui, ruler_rect, timeline_x0, transport);
-    drawBeatTicks(ui, ruler_rect, timeline_x, timeline_w, timeline_x0, edit_snap);
+    timeline.rulerTicks(ui, ruler_body, timeline_x, timeline_x + timeline_w - 2, axis(timeline_x0), edit_snap);
+    // The time selection's stretch along the ruler's top edge.
+    if (time_range) |tr| {
+        const rx0 = std.math.clamp(beatToX(timeline_x0, tr.a), timeline_x, timeline_x + timeline_w);
+        const rx1 = std.math.clamp(beatToX(timeline_x0, tr.b), timeline_x, timeline_x + timeline_w);
+        if (rx1 > rx0) ui.rect(frect(rx0, ruler_rect.y, rx1 - rx0, 2), ui_style.text_dim);
+    }
     drawTempoMarks(ui, ruler_rect, timeline_x, timeline_w, timeline_x0);
     ui.unclip();
 
     handleTempoDrag(transport, m);
     handleLoopBounds(ruler_rect, timeline_x0, transport, edit_snap, m);
     // Click / drag the ruler to scrub the playhead.
-    if (!loop_start_drag and !loop_end_drag) handleRulerScrub(ruler_rect, timeline_x0, transport, m);
+    if (!loop_start_drag and !loop_end_drag) handleRulerScrub(ruler_rect, timeline_x0, transport, edit_snap, m);
 
     // Right-click the ruler → meter-change menu at the bar under the cursor.
     if (m.right_pressed and pane.contains(ruler_rect, m.x, m.y) and !pane.hasActiveDrag()) {
@@ -1227,7 +1521,7 @@ pub fn draw(
     // behind the clips (drawn below).
     for (tracks, 0..) |*t, ti| {
         if (!isShown(tracks, ti)) continue;
-        const ly = lanes_top + rowTop(tracks, ti) - scroll_y;
+        const ly = lanes_top + rowTop(tracks, ti) - view.scroll_y;
         if (ly + LANE_H <= lanes_top) continue;
         if (ly >= lanes_bottom) continue; // display order isn't index order
         const lane_timeline = pane.rect(timeline_x, ly, timeline_w, LANE_H);
@@ -1239,12 +1533,12 @@ pub fn draw(
         }
     }
     if (hasBuses(tracks)) {
-        const dy = lanes_top + busDividerTop(tracks) - scroll_y;
+        const dy = lanes_top + busDividerTop(tracks) - view.scroll_y;
         if (dy + BUS_DIV_H > lanes_top and dy < lanes_bottom) drawBusDivider(ui, pane.rect(timeline_x, dy, timeline_w, BUS_DIV_H));
     }
     for (tracks, 0..) |*t, ti| {
         if (!isShown(tracks, ti)) continue;
-        const ly = lanes_top + rowTop(tracks, ti) - scroll_y;
+        const ly = lanes_top + rowTop(tracks, ti) - view.scroll_y;
         if (ly + rowH(t) <= lanes_top) continue;
         if (ly >= lanes_bottom) continue; // display order isn't index order
         // Automation rows under the clip row.
@@ -1277,10 +1571,12 @@ pub fn draw(
                     fade_in_hover = @abs(m.x - in_x) <= hit;
                     fade_out_hover = !fade_in_hover and @abs(m.x - out_x) <= hit;
                 }
-                const edge_hover = !fade_out_hover and m.x >= clip_rect.x + clip_rect.width - resizeEdgeW();
-                // Audio clips can be trimmed from the left edge (carving into
-                // the source window); note clips only resize on the right.
-                const left_edge_hover = clip.isAudio() and !fade_in_hover and m.x <= clip_rect.x + resizeEdgeW() and !edge_hover;
+                // Both ends of every clip resize (docs/31 §Pointer); the
+                // fade knees win in their corners.
+                const part = gesture.rectPart(clip_rect, m.x, m.y) orelse .body;
+                const on_fade = fade_in_hover or fade_out_hover;
+                const edge_hover = !on_fade and part == .right;
+                const left_edge_hover = !on_fade and part == .left;
                 if (!pane.hasActiveDrag()) {
                     pane.requestCursor(if (edge_hover or left_edge_hover or fade_in_hover or fade_out_hover) c.rl.MOUSE_CURSOR_RESIZE_EW else c.rl.MOUSE_CURSOR_POINTING_HAND, 1);
                     // Full clip name on hover-and-pause (the body label is truncated).
@@ -1299,7 +1595,8 @@ pub fn draw(
                 if (m.left_pressed and !pane.hasActiveDrag()) {
                     const ref: ClipRef = .{ .track = @intCast(ti), .clip = @intCast(i) };
                     deselectAllPoints(tracks);
-                    if (shift) {
+                    time_range = null;
+                    if (shift or (gesture.mods().cmd and part == .body)) {
                         clip.selected = !clip.selected;
                     } else if (!clip.selected) {
                         deselectAllClips(tracks);
@@ -1347,7 +1644,7 @@ pub fn draw(
 
         // Double-click on empty timeline area → create clip.
         if (!press_consumed and m.double_clicked and pane.contains(lane_timeline, m.x, m.y)) {
-            const beat = snap_mod.snapDownPositive(edit_snap, @as(f64, (m.x - timeline_x0 + scroll_x) / px_per_beat), altBypassSnap());
+            const beat = snap_mod.snapDownPositive(edit_snap, @as(f64, (m.x - timeline_x0 + view.scroll_x) / view.px_per_beat), altBypassSnap());
             const start = if (beat < 0) 0 else beat;
             deselectAllClips(tracks);
             createClipOnTrack(t, alloc, ti, start, selected_clip);
@@ -1358,7 +1655,11 @@ pub fn draw(
         // Single click on empty timeline area → track-only selection.
         if (!press_consumed and m.left_pressed and pane.contains(lane_timeline, m.x, m.y) and !pane.hasActiveDrag()) {
             deselectAllPoints(tracks);
-            beginBoxSelect(ti, m, shift);
+            cursor = .{ .beat = snap_mod.snapDownPositive(edit_snap, beatAtX(timeline_x0, m.x), altBypassSnap()), .track = ti };
+            if (gesture.mods().cmd and !t.isBus()) {
+                // ⌘-drag draws a clip (docs/31 §Pointer).
+                if (pane.tryStartDrag(DRAW_CLIP_KEY)) draw_clip = .{ .track = ti, .a = cursor.?.beat, .b = cursor.?.beat };
+            } else beginBoxSelect(tracks, selected_track, selected_clip, ti, m, shift);
             press_consumed = true;
         }
 
@@ -1367,6 +1668,7 @@ pub fn draw(
             selected_clip.* = null;
             deselectAllClips(tracks);
             context_target = .{ .beat = beatAtX(timeline_x0, m.x), .track = ti };
+            cursor = .{ .beat = snap_mod.snapDownPositive(edit_snap, context_target.beat, altBypassSnap()), .track = ti };
             _ = menu.openContext(ui, ARR_CONTEXT_KEY, bridge.fromRl(r));
             press_consumed = true;
         }
@@ -1380,7 +1682,8 @@ pub fn draw(
         if (pane.contains(lanes_zone, m.x, m.y)) {
             const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
             if (m.left_pressed) {
-                beginBoxSelect(null, m, shift);
+                cursor = null;
+                beginBoxSelect(tracks, selected_track, selected_clip, null, m, shift);
                 press_consumed = true;
             } else if (m.right_pressed) {
                 selected_track.* = null;
@@ -1394,13 +1697,13 @@ pub fn draw(
     }
 
     ui.unclip();
-    drawBoxSelectOverlay(ui, timeline_x, timeline_w, lanes_top, lanes_bottom, m);
+    drawBoxSelectOverlay(ui, tracks, timeline_x, timeline_w, timeline_x0, lanes_top, lanes_bottom);
 
     // Playhead spans the ruler and all lanes (stops above the master strip).
     const playhead_top = r.y + overviewH();
     ui.clip(bridge.fromRl(pane.rect(timeline_x, playhead_top, timeline_w, lanes_bottom - playhead_top)));
     const beats_pos: f32 = @floatCast(transport.beats());
-    const playhead_x = timeline_x0 + beats_pos * px_per_beat - scroll_x;
+    const playhead_x = timeline_x0 + beats_pos * view.px_per_beat - view.scroll_x;
     ui.rect(Rect.xywh(ipx(playhead_x), ipx(playhead_top), 1, ipx(lanes_bottom - playhead_top)), ui_style.accent);
     ui.unclip();
 
@@ -1411,7 +1714,7 @@ pub fn draw(
     const play_beat = transport.beats();
     for (tracks, 0..) |*t, ti| {
         if (!isShown(tracks, ti)) continue;
-        const ly = lanes_top + rowTop(tracks, ti) - scroll_y;
+        const ly = lanes_top + rowTop(tracks, ti) - view.scroll_y;
         if (ly + rowH(t) <= lanes_top) continue;
         if (ly >= lanes_bottom) continue; // display order isn't index order
         if (autoRows(t) > 0) drawAutomationHeaders(ui, alloc, t, ti, header_x, ly + LANE_H, header_w);
@@ -1462,7 +1765,7 @@ pub fn draw(
         }
     }
     if (hasBuses(tracks)) {
-        const dy = lanes_top + busDividerTop(tracks) - scroll_y;
+        const dy = lanes_top + busDividerTop(tracks) - view.scroll_y;
         if (dy + BUS_DIV_H > lanes_top and dy < lanes_bottom) {
             const hr = ui.plate(bridge.fromRl(pane.rect(header_x, dy, header_w, BUS_DIV_H)), .{ .fill = ui_style.face.shade(-4) });
             _ = ui.engraved(&ui.fonts.legend, hr.x + 5, hr.y + 3, "RETURNS", ui_style.text_dim);
@@ -1487,7 +1790,7 @@ pub fn draw(
                 for (o.returns()) |row| if (row.ti == from) break :blk true;
                 break :blk false;
             };
-            const at = hm.y - lanes_top + scroll_y;
+            const at = hm.y - lanes_top + view.scroll_y;
             if (!hm.left_down) {
                 if (hdr_dragging) {
                     if (headerDrop(tracks, in_returns, at)) |d| result.move_tracks = track_order.moveSet(tracks, &set, d.drop);
@@ -1500,12 +1803,12 @@ pub fn draw(
             } else {
                 if (!hdr_dragging and @abs(hm.y - hdr_press_y) > 4) hdr_dragging = true;
                 if (hdr_dragging) {
-                    if (hm.y < lanes_top + 16) scroll_y -= 8;
-                    if (hm.y > lanes_bottom - 16) scroll_y += 8;
-                    scroll_y = std.math.clamp(scroll_y, 0, @max(0, contentH(tracks) - (lanes_bottom - lanes_top)));
+                    if (hm.y < lanes_top + 16) view.scroll_y -= 8;
+                    if (hm.y > lanes_bottom - 16) view.scroll_y += 8;
+                    view.scroll_y = std.math.clamp(view.scroll_y, 0, @max(0, contentH(tracks) - (lanes_bottom - lanes_top)));
                     ghost = from;
                     if (headerDrop(tracks, in_returns, at)) |d| if (track_order.moveSet(tracks, &set, d.drop) != null) {
-                        drop_line = .{ .y = lanes_top + d.line - scroll_y, .depth = d.depth };
+                        drop_line = .{ .y = lanes_top + d.line - view.scroll_y, .depth = d.depth };
                     };
                     // Dim the rows being moved.
                     const o = order(tracks);
@@ -1514,7 +1817,7 @@ pub fn draw(
                         var a = o.parent[row.ti];
                         while (a != routing.NONE) : (a = o.parent[a]) moving = moving or set[a];
                         if (!moving) continue;
-                        const ry = lanes_top + rowTop(tracks, row.ti) - scroll_y;
+                        const ry = lanes_top + rowTop(tracks, row.ti) - view.scroll_y;
                         ui.rect(bridge.fromRl(pane.rect(header_x, ry, header_w, rowH(&tracks[row.ti]))), ui_style.chassis.alpha(150));
                     }
                 }
@@ -1525,7 +1828,7 @@ pub fn draw(
     // Below the last track the header column is a blank plate (nothing
     // shows bare chassis, docs/06 §Packing).
     {
-        const end_y = lanes_top + contentH(tracks) - scroll_y;
+        const end_y = lanes_top + contentH(tracks) - view.scroll_y;
         if (end_y < lanes_bottom) _ = ui.plate(bridge.fromRl(pane.rect(header_x, @max(end_y, lanes_top), header_w, lanes_bottom - @max(end_y, lanes_top))), .{});
     }
     ui.unclip();
@@ -1578,35 +1881,40 @@ pub fn draw(
     }
     const has_selection = hasSelectedClips(tracks);
     const has_clips = hasAnyClips(tracks);
+    // The shared order (docs/31 §Menus): edit, the clips' own, selection,
+    // loop, name.
     const arr_context_items = [_]menu.Item{
-        .{ .label = "Import audio\u{2026}", .command = .import_audio, .enabled = tracks.len > 0 },
-        .{ .separator = true },
-        .{ .label = "Copy", .command = .copy, .enabled = has_selection },
-        .{ .label = "Cut", .command = .cut, .enabled = has_selection },
+        .{ .label = "Cut", .command = .cut, .enabled = has_selection or time_range != null },
+        .{ .label = "Copy", .command = .copy, .enabled = has_selection or time_range != null },
         .{ .label = "Paste", .command = .paste, .enabled = can_paste_clips },
+        .{ .label = "Duplicate", .command = .duplicate, .enabled = has_selection or time_range != null },
+        .{ .label = "Delete", .command = .delete, .enabled = has_selection or time_range != null },
         .{ .separator = true },
-        .{ .label = "Duplicate", .command = .duplicate, .enabled = has_selection },
-        .{ .label = "Split at playhead", .command = .split_at_playhead, .enabled = has_selection },
+        .{ .label = if (time_range != null) "Split at selection" else "Split at playhead", .command = .split_at_playhead, .enabled = has_selection or time_range != null },
+        .{ .label = "Join", .command = .join, .enabled = has_selection },
         .{ .label = "Reverse", .command = .reverse, .enabled = hasSelectedAudioClips(tracks) },
         .{ .label = if (allSelectedAudioWarped(tracks)) "Unwarp" else "Warp", .command = .warp, .enabled = hasSelectedAudioClips(tracks) },
-        .{ .label = "Extract", .id = EXTRACT_SUB, .submenu = true, .enabled = focusedForward(tracks, selected_clip.*) },
-        .{ .label = "Tempo from clip", .id = TEMPO_SUB, .submenu = true, .enabled = focusedForward(tracks, selected_clip.*) },
         .{ .label = if (focusedTuned(tracks, selected_clip.*)) "Untune" else "Tune", .command = .tune, .enabled = focusedForward(tracks, selected_clip.*) },
         .{ .label = if (has_selection and allSelectedMuted(tracks)) "Unmute" else "Mute", .command = .mute_clips, .enabled = has_selection },
-        .{ .label = "Delete", .command = .delete, .enabled = has_selection },
+        .{ .label = "Extract", .id = EXTRACT_SUB, .submenu = true, .enabled = focusedForward(tracks, selected_clip.*) },
+        .{ .label = "Tempo from clip", .id = TEMPO_SUB, .submenu = true, .enabled = focusedForward(tracks, selected_clip.*) },
         .{ .label = "Bounce\u{2026}", .command = .bounce, .enabled = has_selection },
         .{ .label = "Re-bounce", .command = .rebounce, .enabled = focusedIsBounce(tracks, selected_clip.*) },
         .{ .label = "Thaw", .command = .thaw, .enabled = focusedIsBounce(tracks, selected_clip.*) },
+        .{ .label = "Import audio\u{2026}", .command = .import_audio, .enabled = tracks.len > 0 },
         .{ .separator = true },
-        .{ .label = "Rename", .command = .rename, .enabled = has_selection },
-        .{ .label = "Save to Library", .command = .save_to_library, .enabled = has_selection },
         .{ .label = "Select all", .command = .select_all, .enabled = has_clips },
         .{ .label = "Clear selection", .command = .clear_selection, .enabled = has_selection },
+        .{ .label = "Zoom to selection", .command = .zoom_to_selection },
         .{ .separator = true },
-        .{ .label = "Loop selection", .command = .loop_selection, .enabled = has_selection },
+        .{ .label = "Loop selection", .command = .loop_selection, .enabled = has_selection or time_range != null },
+        .{ .label = "Insert time", .command = .insert_time, .enabled = time_range != null },
+        .{ .label = "Delete time", .command = .delete_time, .enabled = time_range != null },
         .{ .label = "Loop arrangement", .command = .loop_arrangement, .enabled = has_clips },
         .{ .label = "Clear loop", .command = .clear_loop, .enabled = true },
         .{ .separator = true },
+        .{ .label = "Rename", .command = .rename, .enabled = has_selection },
+        .{ .label = "Save to Library", .command = .save_to_library, .enabled = has_selection },
         .{ .label = "Clear solos & mutes", .command = .clear_solo_mute, .enabled = anySoloOrMute(tracks) },
     };
     result.command = menu.command(ARR_CONTEXT_KEY, &arr_context_items);
@@ -1625,32 +1933,16 @@ pub fn draw(
     return result;
 }
 
-fn handleWheel(zone: c.rl.Rectangle, m: pane.Mouse) void {
-    if (!pane.contains(zone, m.x, m.y)) return;
-    if (m.wheel_x == 0 and m.wheel_y == 0) return;
-    if (m.y < zone.y + overviewH()) return;
-    const shift = c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
-    const alt = c.rl.IsKeyDown(c.rl.KEY_LEFT_ALT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_ALT);
+fn limits(content_beats: f64, timeline_w: f32) timeline.Limits {
+    // Out far enough to see the whole song, whichever is further.
+    const fit = timeline_w / @max(@as(f32, @floatCast(content_beats)), 1.0);
+    return .{ .min_ppb = @max(1.0, @min(PX_PER_BEAT_MIN, fit)), .max_ppb = PX_PER_BEAT_MAX };
+}
 
-    if (shift) {
-        // macOS flips Shift+wheel onto the horizontal axis — take
-        // whichever is non-zero.
-        const w: f32 = if (m.wheel_y != 0) m.wheel_y else m.wheel_x;
-        if (w != 0) {
-            const timeline_x0 = zone.x + 2;
-            const mouse_beat = (m.x - timeline_x0 + scroll_x) / px_per_beat;
-            const factor: f32 = std.math.clamp(1.0 + w * 0.12, 0.5, 2.0);
-            px_per_beat = std.math.clamp(px_per_beat * factor, PX_PER_BEAT_MIN, PX_PER_BEAT_MAX);
-            scroll_x = mouse_beat * px_per_beat - (m.x - timeline_x0);
-        }
-    } else if (alt) {
-        // No vertical track-zoom yet — swallow so it doesn't fall
-        // through to plain scroll.
-    } else {
-        scroll_x -= m.wheel_x * 30;
-        scroll_y -= m.wheel_y * 30;
-    }
-    last_scroll_time = c.rl.GetTime();
+fn handleWheel(zone: c.rl.Rectangle, timeline_x0: f32, content_beats: f64, timeline_w: f32, m: pane.Mouse) void {
+    if (!pane.contains(zone, m.x, m.y)) return;
+    if (m.y < zone.y + overviewH()) return;
+    view.wheel(timeline_x0, zone.y, m, gesture.mods(), limits(content_beats, timeline_w), c.rl.GetTime());
 }
 
 /// Over the track headers the wheel scrolls the tracks up and down (the
@@ -1658,8 +1950,8 @@ fn handleWheel(zone: c.rl.Rectangle, m: pane.Mouse) void {
 fn handleHeaderWheel(zone: c.rl.Rectangle, m: pane.Mouse) void {
     if (!pane.contains(zone, m.x, m.y) or m.wheel_y == 0) return;
     if (c.rl.IsKeyDown(c.rl.KEY_LEFT_SUPER) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SUPER)) return;
-    scroll_y -= m.wheel_y * 30;
-    last_scroll_time = c.rl.GetTime();
+    view.scroll_y -= m.wheel_y * 30;
+    view.last_scroll = c.rl.GetTime();
 }
 
 fn altBypassSnap() bool {
@@ -1721,19 +2013,19 @@ pub fn clearSolosAndMutes(tracks: []Track) bool {
 }
 
 fn maxScrollX(content_beats: f64, timeline_w: f32) f32 {
-    return @max(0.0, @as(f32, @floatCast(content_beats)) * px_per_beat - timeline_w);
+    return @max(0.0, @as(f32, @floatCast(content_beats)) * view.px_per_beat - timeline_w);
 }
 
 fn clampScroll(content_beats: f64, timeline_w: f32) void {
     const max_sx = maxScrollX(content_beats, timeline_w);
-    if (scroll_x < 0) scroll_x = 0;
-    if (scroll_x > max_sx) scroll_x = max_sx;
+    if (view.scroll_x < 0) view.scroll_x = 0;
+    if (view.scroll_x > max_sx) view.scroll_x = max_sx;
 }
 
 fn clampScrollY(content_h: f32, lanes_h: f32) void {
     const max_sy = @max(0.0, content_h - lanes_h);
-    if (scroll_y < 0) scroll_y = 0;
-    if (scroll_y > max_sy) scroll_y = max_sy;
+    if (view.scroll_y < 0) view.scroll_y = 0;
+    if (view.scroll_y > max_sy) view.scroll_y = max_sy;
 }
 
 /// Seconds an audio clip spans from `start` for `len` beats.
@@ -1751,6 +2043,148 @@ fn sourceSeconds(clip: *const Clip) ?f64 {
 
 /// ⌘-edge drag (docs/29 §Editing): the content scales to `new_len` beats,
 /// warping the clip on first.
+/// Drag a clip's right edge by `d` beats from where the drag found it.
+fn resizeRight(alloc: std.mem.Allocator, clip: *Clip, sn: *const ClipDragSnap, d: f64, edit_snap: snap_mod.Setting) void {
+    const new_len = @max(sn.length + d, minClipBeats(edit_snap));
+    if (drag_stretch and clip.isAudio()) {
+        stretchClip(alloc, clip, new_len);
+        return;
+    }
+    clip.length_beats = new_len;
+    // Warped, the content runs on past either end: a plain trim.
+    // Unwarped, resizing trims the source window so reflow keeps it,
+    // up to the source's end. Reversed, the right edge plays the
+    // window's head: it moves.
+    if (clip.isAudio() and !clip.audio.warp) {
+        if (!clip.audio.reversed) if (sourceSeconds(clip)) |len| {
+            const room = cur_tempo.beatAfter(clip.start_beat, len - clip.audio.start_sec) - clip.start_beat;
+            clip.length_beats = @max(@min(clip.length_beats, room), @min(MIN_CLIP_BEATS, room));
+        };
+        if (clip.audio.reversed) {
+            const tail = sn.a_start + sn.a_dur;
+            clip.length_beats = @min(clip.length_beats, cur_tempo.beatAfter(clip.start_beat, tail) - clip.start_beat); // can't read before the source start
+            clip.audio.dur_sec = clipSeconds(clip.start_beat, clip.length_beats);
+            clip.audio.start_sec = @max(0.0, tail - clip.audio.dur_sec);
+        } else clip.audio.dur_sec = clipSeconds(clip.start_beat, clip.length_beats);
+    }
+}
+
+/// Drag a clip's left edge by `d` beats: the right edge stays put.
+fn resizeLeft(alloc: std.mem.Allocator, clip: *Clip, sn: *ClipDragSnap, d: f64, edit_snap: snap_mod.Setting) void {
+    const min_len = minClipBeats(edit_snap);
+    const right_beat = sn.start_beat + sn.length;
+    if (!clip.isAudio()) {
+        // Notes and clip lanes stay where they sound in the song; what
+        // ends up before the new start is cut when the drag ends.
+        const new_start = std.math.clamp(sn.start_beat + d, 0, right_beat - min_len);
+        clip.start_beat = new_start;
+        clip.length_beats = right_beat - new_start;
+        const shift = new_start - sn.start_beat;
+        shiftContent(clip, sn.shifted - shift);
+        sn.shifted = shift;
+        return;
+    }
+    if (drag_stretch) {
+        const new_start = std.math.clamp(sn.start_beat + d, 0, right_beat - min_len);
+        stretchClip(alloc, clip, right_beat - new_start);
+        clip.start_beat = right_beat - clip.length_beats;
+        return;
+    }
+    if (clip.audio.warp) {
+        // Warped: trim in content beats; the audio stays on the grid.
+        var delta = @min(d, sn.length - min_len);
+        if (sn.start_beat + delta < 0) delta = -sn.start_beat;
+        clip.start_beat = sn.start_beat + delta;
+        clip.length_beats = right_beat - clip.start_beat;
+        clip.audio.offset_beats = sn.a_off + delta;
+        return;
+    }
+    // Clamp the move so the window stays within [0, source] and the clip
+    // keeps a minimum length. Reversed, the left edge plays the window's
+    // tail, so the head stays put and only the length changes.
+    const rev = clip.audio.reversed;
+    const max_back = if (rev) std.math.inf(f64) else sn.start_beat - cur_tempo.beatAfter(sn.start_beat, -sn.a_start); // can't trim before source start
+    var delta = d;
+    if (delta < -max_back) delta = -max_back; // expanding left limited by source head
+    if (delta > sn.length - min_len) delta = sn.length - min_len;
+    if (sn.start_beat + delta < 0) delta = -sn.start_beat;
+    const new_start = sn.start_beat + delta;
+    clip.start_beat = new_start;
+    clip.length_beats = right_beat - new_start;
+    const delta_sec = cur_tempo.secondsAt(new_start) - cur_tempo.secondsAt(sn.start_beat);
+    if (!rev) clip.audio.start_sec = @max(0.0, sn.a_start + delta_sec);
+    clip.audio.dur_sec = @max(0.0, sn.a_dur - delta_sec);
+}
+
+/// A ⌘-drag on an empty lane: the clip follows the pointer, snapped; on
+/// release it is made (a click makes one bar).
+fn updateDrawClip(tracks: []Track, alloc: std.mem.Allocator, selected_track: *?usize, selected_clip: *?ClipRef, timeline_x0: f32, edit_snap: snap_mod.Setting, m: pane.Mouse) void {
+    const dc = &(draw_clip orelse return);
+    if (!pane.isDraggingKey(DRAW_CLIP_KEY)) {
+        draw_clip = null;
+        return;
+    }
+    dc.b = snap_mod.snapNearest(edit_snap, @max(0, beatAtX(timeline_x0, m.x)), altBypassSnap());
+    if (m.left_down) return;
+    pane.cancelDrag();
+    const d = draw_clip.?;
+    draw_clip = null;
+    if (d.track >= tracks.len) return;
+    const lo = @min(d.a, d.b);
+    const hi = @max(d.a, d.b);
+    deselectAllClips(tracks);
+    time_range = null;
+    createClipSized(&tracks[d.track], alloc, d.track, lo, if (hi - lo > 1e-9) hi - lo else null, selected_clip);
+    selected_track.* = d.track;
+}
+
+/// An ⌥-drag has started: copies of the dragged clips stay where they
+/// were (appended, so the drag's indexes hold) and the originals move.
+fn leaveCopies(tracks: []Track, alloc: std.mem.Allocator) void {
+    for (drag_snaps[0..drag_snap_count]) |*sn| {
+        if (sn.track >= tracks.len or sn.clip >= tracks[sn.track].clips.items.len) continue;
+        var cp = tracks[sn.track].clips.items[sn.clip].clone(alloc) catch continue;
+        cp.selected = false;
+        tracks[sn.track].addClip(alloc, cp) catch {
+            cp.deinit(alloc);
+            continue;
+        };
+        sn.copy = @intCast(tracks[sn.track].clips.items.len - 1);
+    }
+}
+
+/// Move a note clip's notes and lane points `by` beats within it.
+fn shiftContent(clip: *Clip, by: f64) void {
+    if (by == 0) return;
+    for (clip.notes.items) |*n| n.start_beat += by;
+    for (clip.lanes.items) |*l| for (l.points.items) |*p| {
+        p.beat += by;
+    };
+}
+
+/// After a left-edge drag: notes that now start before the clip are cut
+/// to its start (or dropped when they end before it), lane points before
+/// it dropped.
+fn trimFront(clip: *Clip) void {
+    var i: usize = 0;
+    while (i < clip.notes.items.len) {
+        const n = &clip.notes.items[i];
+        if (n.start_beat >= 0) {
+            i += 1;
+        } else if (n.start_beat + n.length_beats > 1e-9) {
+            n.length_beats += n.start_beat;
+            n.start_beat = 0;
+            i += 1;
+        } else clip.removeNoteAt(i);
+    }
+    for (clip.lanes.items) |*l| {
+        var k: usize = 0;
+        while (k < l.points.items.len) {
+            if (l.points.items[k].beat < 0) _ = l.points.orderedRemove(k) else k += 1;
+        }
+    }
+}
+
 fn stretchClip(alloc: std.mem.Allocator, clip: *Clip, new_len: f64) void {
     if (!clip.audio.warp) {
         const len = sourceSeconds(clip) orelse return;
@@ -1785,13 +2219,14 @@ pub fn reflowAudioClips(tracks: []Track, tmap: *const tempo_mod.TempoMap) void {
     }
 }
 
-fn beginBoxSelect(track_idx: ?usize, m: pane.Mouse, shift: bool) void {
-    if (!pane.tryStartDrag(BOX_KEY)) return;
-    box_active = true;
-    box_start_x = m.x;
-    box_start_y = m.y;
-    box_start_track = track_idx;
-    box_shift = shift;
+/// A press on empty lanes: the selection clears (unless ⇧) and a box
+/// starts (docs/31 §Pointer).
+fn beginBoxSelect(tracks: []Track, selected_track: *?usize, selected_clip: *?ClipRef, track_idx: ?usize, m: pane.Mouse, shift: bool) void {
+    if (!box.begin(BOX_KEY, m, shift)) return;
+    if (shift) return;
+    deselectAllClips(tracks);
+    selected_clip.* = null;
+    selected_track.* = track_idx;
 }
 
 fn updateBoxSelect(
@@ -1803,62 +2238,44 @@ fn updateBoxSelect(
     timeline_w: f32,
     timeline_x0: f32,
     lanes_top: f32,
+    edit_snap: snap_mod.Setting,
 ) void {
-    if (!box_active) return;
-    if (pane.isDraggingKey(BOX_KEY) and m.left_down) return;
-
-    const dx = m.x - box_start_x;
-    const dy = m.y - box_start_y;
-    if (@abs(dx) < BOX_MIN_DRAG and @abs(dy) < BOX_MIN_DRAG) {
-        deselectAllClips(tracks);
-        selected_track.* = box_start_track;
-        selected_clip.* = null;
-    } else {
-        if (!box_shift) deselectAllClips(tracks);
-        const box_r = normalizedRect(box_start_x, box_start_y, m.x, m.y);
-        var primary: ?ClipRef = null;
-        for (tracks, 0..) |*t, ti| {
-            if (!isShown(tracks, ti)) continue;
-            const ly = lanes_top + rowTop(tracks, ti) - scroll_y;
-            const lane = pane.rect(timeline_x, ly, timeline_w, LANE_H);
-            for (t.clips.items, 0..) |*clip, ci| {
-                const clip_r = clipRect(lane, clip.*, timeline_x0);
-                if (rectsOverlap(clip_r, box_r)) {
-                    clip.selected = true;
-                    primary = .{ .track = @intCast(ti), .clip = @intCast(ci) };
-                }
-            }
-        }
-        selected_clip.* = primary;
-        if (primary) |p| selected_track.* = p.track;
+    _ = timeline_x;
+    _ = timeline_w;
+    // The drag draws a time selection across the tracks it spans (docs/31
+    // §Time selection), its edges on the grid unless ⌥.
+    if (box.active and box.moved(m)) {
+        const bypass = altBypassSnap();
+        const b0 = snap_mod.snapNearest(edit_snap, @max(0, beatAtX(timeline_x0, box.x0)), bypass);
+        const b1 = snap_mod.snapNearest(edit_snap, @max(0, beatAtX(timeline_x0, m.x)), bypass);
+        const r0 = audioRankAtY(tracks, box.y0 - lanes_top + view.scroll_y);
+        const r1 = audioRankAtY(tracks, m.y - lanes_top + view.scroll_y);
+        const last: i32 = audioRank(tracks, tracks.len) - 1;
+        time_range = if (@abs(b1 - b0) > 1e-9 and last >= 0) .{
+            .a = @min(b0, b1),
+            .b = @max(b0, b1),
+            .lo = std.math.clamp(@min(r0, r1), 0, last),
+            .hi = std.math.clamp(@max(r0, r1), 0, last),
+        } else null;
     }
-    box_active = false;
-    box_start_track = null;
-    pane.cancelDrag();
+    switch (box.finish(m)) {
+        .rect => if (time_range) |r| {
+            if (box.add) {
+                // ⇧: add what it touches to the selection.
+                var buf: [MAX_RANGE_TRACKS]usize = undefined;
+                for (rangeTracks(tracks, r, &buf)) |ti| for (tracks[ti].clips.items) |*cl| {
+                    if (cl.start_beat < r.b - 1e-9 and cl.start_beat + cl.length_beats > r.a + 1e-9) cl.selected = true;
+                };
+            } else selectInRange(tracks, r, selected_track, selected_clip);
+        },
+        .click => time_range = null,
+        .none => {},
+    }
 }
 
 
-fn normalizedRect(x0: f32, y0: f32, x1: f32, y1: f32) c.rl.Rectangle {
-    const nx0 = @min(x0, x1);
-    const ny0 = @min(y0, y1);
-    const nx1 = @max(x0, x1);
-    const ny1 = @max(y0, y1);
-    return pane.rect(nx0, ny0, nx1 - nx0, ny1 - ny0);
-}
 
-fn rectsOverlap(a: c.rl.Rectangle, b: c.rl.Rectangle) bool {
-    return a.x < b.x + b.width and a.x + a.width > b.x and
-        a.y < b.y + b.height and a.y + a.height > b.y;
-}
 
-fn intersectRect(a: c.rl.Rectangle, b: c.rl.Rectangle) ?c.rl.Rectangle {
-    const x0 = @max(a.x, b.x);
-    const y0 = @max(a.y, b.y);
-    const x1 = @min(a.x + a.width, b.x + b.width);
-    const y1 = @min(a.y + a.height, b.y + b.height);
-    if (x1 <= x0 or y1 <= y0) return null;
-    return pane.rect(x0, y0, x1 - x0, y1 - y0);
-}
 
 // ── Clip drag ────────────────────────────────────────────────────────
 
@@ -1870,6 +2287,9 @@ fn beginDrag(tracks: []Track, ref: ClipRef, clip: Clip, m: pane.Mouse, mode: Dra
     drag_start_beat = clip.start_beat;
     drag_start_length = clip.length_beats;
     drag_start_mouse_x = m.x;
+    drag_start_mouse_y = m.y;
+    drag_moved = false;
+    drag_dup = mode == .move and gesture.mods().alt;
     drag_start_audio_start_sec = clip.audio.start_sec;
     drag_start_audio_dur_sec = clip.audio.dur_sec;
     drag_start_audio_offset = clip.audio.offset_beats;
@@ -1881,9 +2301,8 @@ fn beginDrag(tracks: []Track, ref: ClipRef, clip: Clip, m: pane.Mouse, mode: Dra
     drag_track_delta = 0;
     drag_snap_count = 0;
     drag_stretch = (mode == .resize_r or mode == .resize_l) and clip.isAudio() and cmdDown();
-    if (mode == .move) {
-        snapshotSelectedClips(tracks);
-    }
+    // A move or a resize acts on the whole selection (docs/31 §Pointer).
+    if (mode == .move or mode == .resize_l or mode == .resize_r) snapshotSelectedClips(tracks);
 }
 
 fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?ClipRef, edit_snap: snap_mod.Setting, m: pane.Mouse, lanes_top: f32) void {
@@ -1915,8 +2334,14 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
     const clip = &t.clips.items[drag_ref.clip];
 
     const dx = m.x - drag_start_mouse_x;
-    const d_beats = snap_mod.snapNearest(edit_snap, @as(f64, dx / px_per_beat), altBypassSnap());
-    drag_track_delta = audioRankAtY(tracks, m.y - lanes_top + scroll_y) - audioRank(tracks, drag_ref.track);
+    if (!drag_moved) {
+        if (@abs(dx) < gesture.DRAG_THRESHOLD and @abs(m.y - drag_start_mouse_y) < gesture.DRAG_THRESHOLD) return;
+        drag_moved = true;
+        if (drag_dup) leaveCopies(tracks, alloc);
+    }
+    // ⌥ that started a duplicate keeps the grid; held later, it frees it.
+    const d_beats = snap_mod.snapNearest(edit_snap, @as(f64, dx / view.px_per_beat), altBypassSnap() and !drag_dup);
+    drag_track_delta = audioRankAtY(tracks, m.y - lanes_top + view.scroll_y) - audioRank(tracks, drag_ref.track);
 
     switch (drag_mode) {
         .none => {},
@@ -1935,35 +2360,20 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
                 clip.start_beat = if (new_start < 0) 0 else new_start;
             }
         },
-        .resize_r => {
+        .resize_r, .resize_l => {
             pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
-            const new_len = @max(drag_start_length + d_beats, minClipBeats(edit_snap));
-            if (drag_stretch) {
-                stretchClip(alloc, clip, new_len);
-                return;
-            }
-            clip.length_beats = new_len;
-            // Warped, the content runs on past either end: a plain trim.
-            // Unwarped, resizing trims the source window so reflow keeps it,
-            // up to the source's end. Reversed, the right edge plays the
-            // window's head: it moves.
-            if (clip.isAudio() and !clip.audio.warp) {
-                if (!clip.audio.reversed) if (sourceSeconds(clip)) |len| {
-                    const room = cur_tempo.beatAfter(clip.start_beat, len - clip.audio.start_sec) - clip.start_beat;
-                    clip.length_beats = @max(@min(clip.length_beats, room), @min(MIN_CLIP_BEATS, room));
-                };
-                if (clip.audio.reversed) {
-                    const tail = drag_start_audio_start_sec + drag_start_audio_dur_sec;
-                    clip.length_beats = @min(clip.length_beats, cur_tempo.beatAfter(clip.start_beat, tail) - clip.start_beat); // can't read before the source start
-                    clip.audio.dur_sec = clipSeconds(clip.start_beat, clip.length_beats);
-                    clip.audio.start_sec = @max(0.0, tail - clip.audio.dur_sec);
-                } else clip.audio.dur_sec = clipSeconds(clip.start_beat, clip.length_beats);
+            for (drag_snaps[0..drag_snap_count]) |*sn| {
+                if (sn.track >= tracks.len) continue;
+                const st = &tracks[sn.track];
+                if (sn.clip >= st.clips.items.len) continue;
+                const cl = &st.clips.items[sn.clip];
+                if (drag_mode == .resize_r) resizeRight(alloc, cl, sn, d_beats, edit_snap) else resizeLeft(alloc, cl, sn, d_beats, edit_snap);
             }
         },
         .fade_in, .fade_out => {
             // Fades drag unsnapped in seconds, clamped to the window length.
             pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
-            const raw_beats = @as(f64, dx / px_per_beat);
+            const raw_beats = @as(f64, dx / view.px_per_beat);
             const delta_sec = raw_beats * 60.0 / cur_tempo.bpmAt(clip.start_beat);
             const dur = clip.audio.dur_sec;
             if (drag_mode == .fade_in) {
@@ -1972,56 +2382,22 @@ fn continueDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?Clip
                 clip.audio.fade_out_sec = std.math.clamp(drag_start_fade_sec - delta_sec, 0, dur);
             }
         },
-        .resize_l => {
-            // Audio only: move the left edge while the right edge stays fixed,
-            // carving into (or back out of) the front of the source window.
-            pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_EW, 3);
-            const min_len = minClipBeats(edit_snap);
-            const right_beat = drag_start_beat + drag_start_length;
-            if (drag_stretch) {
-                const new_start = std.math.clamp(drag_start_beat + d_beats, 0, right_beat - min_len);
-                stretchClip(alloc, clip, right_beat - new_start);
-                clip.start_beat = right_beat - clip.length_beats;
-                return;
-            }
-            if (clip.audio.warp) {
-                // Warped: trim in content beats; the audio stays on the grid.
-                var delta = @min(d_beats, drag_start_length - min_len);
-                if (drag_start_beat + delta < 0) delta = -drag_start_beat;
-                clip.start_beat = drag_start_beat + delta;
-                clip.length_beats = right_beat - clip.start_beat;
-                clip.audio.offset_beats = drag_start_audio_offset + delta;
-                return;
-            }
-            // Clamp the move so the window stays within [0, source] and the
-            // clip keeps a minimum length.
-            // Reversed, the left edge plays the window's tail, so the head
-            // stays put and only the length changes.
-            const rev = clip.audio.reversed;
-            const max_back = if (rev) std.math.inf(f64) else drag_start_beat - cur_tempo.beatAfter(drag_start_beat, -drag_start_audio_start_sec); // can't trim before source start
-            var delta = d_beats;
-            if (delta < -max_back) delta = -max_back; // expanding left limited by source head
-            if (delta > drag_start_length - min_len) delta = drag_start_length - min_len;
-            if (drag_start_beat + delta < 0) delta = -drag_start_beat;
-            const new_start = drag_start_beat + delta;
-            clip.start_beat = new_start;
-            clip.length_beats = right_beat - new_start;
-            const delta_sec = cur_tempo.secondsAt(new_start) - cur_tempo.secondsAt(drag_start_beat);
-            if (!rev) clip.audio.start_sec = @max(0.0, drag_start_audio_start_sec + delta_sec);
-            clip.audio.dur_sec = @max(0.0, drag_start_audio_dur_sec - delta_sec);
-        },
     }
 }
 
 fn finishClipDrag(tracks: []Track, alloc: std.mem.Allocator, selected_clip: *?ClipRef, m: pane.Mouse, lanes_top: f32) void {
     if (drag_mode == .none) return;
+    if (drag_mode == .resize_l) for (drag_snaps[0..drag_snap_count]) |sn| {
+        if (sn.shifted == 0 or sn.track >= tracks.len or sn.clip >= tracks[sn.track].clips.items.len) continue;
+        trimFront(&tracks[sn.track].clips.items[sn.clip]);
+    };
     // Only a body move relocates between tracks; resizes stay on their lane.
     if (drag_mode != .move) return;
     if (drag_ref.track >= tracks.len) return;
     const src_t = &tracks[drag_ref.track];
     if (drag_ref.clip >= src_t.clips.items.len) return;
 
-    const target_rank = audioRankAtY(tracks, m.y - lanes_top + scroll_y);
+    const target_rank = audioRankAtY(tracks, m.y - lanes_top + view.scroll_y);
     const target_i = audioAt(tracks, target_rank) orelse return;
     if (target_i == drag_ref.track) return;
 
@@ -2049,11 +2425,7 @@ fn snapshotSelectedClips(tracks: []Track) void {
         for (t.clips.items, 0..) |clip, ci| {
             if (!clip.selected) continue;
             if (drag_snap_count >= MAX_DRAG_CLIPS) return;
-            drag_snaps[drag_snap_count] = .{
-                .track = @intCast(ti),
-                .clip = @intCast(ci),
-                .start_beat = clip.start_beat,
-            };
+            drag_snaps[drag_snap_count] = ClipDragSnap.of(ti, ci, &clip);
             drag_snap_count += 1;
         }
     }
@@ -2257,8 +2629,8 @@ fn meterMenuTick(meter_state: *meter_mod.MeterState, result: *Result) void {
 
 
 fn clipRect(lane: c.rl.Rectangle, clip: Clip, timeline_x0: f32) c.rl.Rectangle {
-    const x = timeline_x0 + @as(f32, @floatCast(clip.start_beat)) * px_per_beat - scroll_x;
-    const w = @as(f32, @floatCast(clip.length_beats)) * px_per_beat;
+    const x = timeline_x0 + @as(f32, @floatCast(clip.start_beat)) * view.px_per_beat - view.scroll_x;
+    const w = @as(f32, @floatCast(clip.length_beats)) * view.px_per_beat;
     return pane.rect(x, lane.y + 2, w, lane.height - 4);
 }
 
@@ -2482,7 +2854,7 @@ fn headerOverride(ui: *Ui, ov: *std.atomic.Value(u8), key: []const u8, changed: 
 /// Beat ↔ pixel scale of the arrangement (automation recording thins its
 /// strokes to 1 px at this zoom).
 pub fn pxPerBeat() f32 {
-    return px_per_beat;
+    return view.px_per_beat;
 }
 
 pub fn deselectAllPoints(tracks: []Track) void {
@@ -2543,8 +2915,8 @@ fn drawAutomationRows(
         const res = auto_lane.draw(ui, alloc, lane, .{
             .rect = r,
             .timeline_x0 = timeline_x0,
-            .scroll_x = scroll_x,
-            .px_per_beat = px_per_beat,
+            .scroll_x = view.scroll_x,
+            .px_per_beat = view.px_per_beat,
             .edit_snap = edit_snap,
             .color = trackColor(t.color),
             .lo = info.lo,
@@ -2561,8 +2933,8 @@ fn drawAutomationRows(
             auto_lane.drawOverlay(ui, .{
                 .rect = r,
                 .timeline_x0 = timeline_x0,
-                .scroll_x = scroll_x,
-                .px_per_beat = px_per_beat,
+                .scroll_x = view.scroll_x,
+                .px_per_beat = view.px_per_beat,
                 .edit_snap = edit_snap,
                 .color = trackColor(t.color),
                 .lo = info.lo,
@@ -2699,12 +3071,17 @@ fn clipNameRect(r: c.rl.Rectangle) c.rl.Rectangle {
 }
 
 fn createClipOnTrack(t: *Track, alloc: std.mem.Allocator, track_idx: usize, start_beat: f64, selected: *?ClipRef) void {
+    createClipSized(t, alloc, track_idx, start_beat, null, selected);
+}
+
+/// A new empty clip, `len` beats long or one bar of the meter there.
+fn createClipSized(t: *Track, alloc: std.mem.Allocator, track_idx: usize, start_beat: f64, len: ?f64, selected: *?ClipRef) void {
     if (t.isBus()) return; // a bus plays what's routed to it, not clips
     var buf: [clip_mod.MAX_NAME]u8 = undefined;
     const name_str = std.fmt.bufPrint(&buf, "Clip {d}", .{t.clips.items.len + 1}) catch "Clip";
     // A "one-bar clip" is one bar of the current meter (3 beats in 3/4,
     // 3.5 in 7/8), not a fixed 4 beats.
-    const len_beats = cur_meter.barLenBeats(cur_meter.beatToBarPos(start_beat).bar);
+    const len_beats = len orelse cur_meter.barLenBeats(cur_meter.beatToBarPos(start_beat).bar);
     var new_clip = Clip.init(name_str, start_beat, len_beats);
     new_clip.selected = true;
     t.addClip(alloc, new_clip) catch |err| {
@@ -2715,11 +3092,11 @@ fn createClipOnTrack(t: *Track, alloc: std.mem.Allocator, track_idx: usize, star
 }
 
 fn beatToX(timeline_x0: f32, beat: f64) f32 {
-    return timeline_x0 + @as(f32, @floatCast(beat)) * px_per_beat - scroll_x;
+    return timeline_x0 + @as(f32, @floatCast(beat)) * view.px_per_beat - view.scroll_x;
 }
 
 fn beatAtX(timeline_x0: f32, x: f32) f64 {
-    return @as(f64, (x - timeline_x0 + scroll_x) / px_per_beat);
+    return @as(f64, (x - timeline_x0 + view.scroll_x) / view.px_per_beat);
 }
 
 
@@ -2763,93 +3140,17 @@ fn handleLoopBounds(ruler: c.rl.Rectangle, timeline_x0: f32, transport: *Transpo
     }
 }
 
-fn handleRulerScrub(ruler: c.rl.Rectangle, timeline_x0: f32, transport: *Transport, m: pane.Mouse) void {
-    if (ruler_drag) {
-        if (!pane.isDraggingKey(RULER_KEY) or !m.left_down) {
-            ruler_drag = false;
-            pane.cancelDrag();
-            return;
-        }
-        const beat = beatAtX(timeline_x0, m.x);
-        transport.seekToBeats(beat);
-        return;
-    }
-
-    if (!m.left_pressed) return;
-    if (!pane.contains(ruler, m.x, m.y)) return;
-    if (pane.hasActiveDrag()) return;
-
-    if (!pane.tryStartDrag(RULER_KEY)) return;
-    ruler_drag = true;
-    const beat = beatAtX(timeline_x0, m.x);
-    transport.seekToBeats(beat);
+fn handleRulerScrub(ruler: c.rl.Rectangle, timeline_x0: f32, transport: *Transport, edit_snap: snap_mod.Setting, m: pane.Mouse) void {
+    if (scrub.run(ruler, &view, timeline_x0, m, RULER_KEY, edit_snap)) |out| switch (out) {
+        .seek => |b| transport.seekToBeats(@max(0, b)),
+        .loop => |l| transport.setLoopBeats(@max(0, l[0]), l[1]),
+    };
 }
 
 // ── Lazy vertical scrollbar ──────────────────────────────────────────
 
 fn drawAndHandleScrollbar(ui: *Ui, area: c.rl.Rectangle, content_h: f32, m: pane.Mouse) void {
-    if (content_h <= area.height) return;
-
-    const now = c.rl.GetTime();
-    const since_scroll = now - last_scroll_time;
-    const near_right = m.x >= area.x + area.width - SCROLLBAR_HOVER_RANGE and
-        m.x <= area.x + area.width and
-        m.y >= area.y and m.y <= area.y + area.height;
-
-    var alpha: f32 = 0;
-    if (near_right or sbv_drag) {
-        alpha = 1.0;
-    } else if (since_scroll < SCROLLBAR_FADE_LINGER) {
-        alpha = 1.0;
-    } else if (since_scroll < SCROLLBAR_FADE_LINGER + SCROLLBAR_FADE_VISIBLE) {
-        const t = (since_scroll - SCROLLBAR_FADE_LINGER) / SCROLLBAR_FADE_VISIBLE;
-        alpha = 1.0 - @as(f32, @floatCast(t));
-    }
-    if (alpha <= 0 and !sbv_drag) return;
-
-    const bar_x = area.x + area.width - scrollbarW();
-    const track = pane.rect(bar_x, area.y, scrollbarW(), area.height);
-    ui.rect(bridge.fromRl(track), ui_style.chassis.alpha(@intFromFloat(alpha * 160)));
-
-    const thumb_h = @max(16.0, (area.height / content_h) * area.height);
-    const scroll_range = content_h - area.height;
-    const track_range = area.height - thumb_h;
-    const thumb_y = area.y + (scroll_y / scroll_range) * track_range;
-    const thumb = pane.rect(bar_x + 1, thumb_y, scrollbarW() - 2, thumb_h);
-
-    const hover_thumb = pane.contains(thumb, m.x, m.y);
-    const thumb_color = if (sbv_drag or hover_thumb) ui_style.accent else ui_style.face_hi;
-    ui.rect(bridge.fromRl(thumb), thumb_color.alpha(@intFromFloat(alpha * 255)));
-
-    if (sbv_drag) {
-        if (!pane.isDraggingKey(SBV_KEY) or !m.left_down) {
-            sbv_drag = false;
-            pane.cancelDrag();
-            return;
-        }
-        const dy = m.y - sbv_drag_start_mouse_y;
-        scroll_y = sbv_drag_start_scroll_y + dy * (scroll_range / track_range);
-        last_scroll_time = now;
-        return;
-    }
-
-    if (!m.left_pressed) return;
-    if (pane.hasActiveDrag()) return;
-
-    if (hover_thumb) {
-        if (!pane.tryStartDrag(SBV_KEY)) return;
-        sbv_drag = true;
-        sbv_drag_start_mouse_y = m.y;
-        sbv_drag_start_scroll_y = scroll_y;
-    } else if (pane.contains(track, m.x, m.y)) {
-        const page: f32 = area.height * 0.8;
-        if (m.y < thumb.y) {
-            scroll_y -= page;
-        } else {
-            scroll_y += page;
-        }
-        last_scroll_time = now;
-    }
+    vbar.run(ui, area, &view, content_h, m, SBV_KEY, c.rl.GetTime());
 }
 
 // ── Overview / minimap strip ─────────────────────────────────────────
@@ -2863,7 +3164,6 @@ fn drawOverview(
     transport: *const Transport,
     m: pane.Mouse,
 ) void {
-    _ = timeline_w;
     _ = ui.well(bridge.fromRl(strip), ui_style.well);
     const inner = pane.rect(strip.x + 2, strip.y + 2, strip.width - 4, strip.height - 4);
 
@@ -2888,81 +3188,7 @@ fn drawOverview(
         }
     }
 
-    // Viewport window.
-    const view_beat_l = scroll_x / px_per_beat;
-    const visible_beats = inner.width * 0 + (strip.width / px_per_beat); // nb: inner.width of strip equals timeline_w-4, close enough
-    _ = visible_beats;
-    const actual_visible_beats = (strip.width - 4) / px_per_beat;
-    const view_beat_r = view_beat_l + actual_visible_beats;
-    const vp_x = inner.x + view_beat_l * px_per_beat_ov;
-    const vp_w = @max(1.0, (view_beat_r - view_beat_l) * px_per_beat_ov);
-    const vp_x_cl = std.math.clamp(vp_x, inner.x, inner.x + inner.width);
-    const vp_right_cl = std.math.clamp(vp_x + vp_w, inner.x, inner.x + inner.width);
-    const vp = pane.rect(vp_x_cl, inner.y, vp_right_cl - vp_x_cl, inner.height);
-    ui.rect(bridge.fromRl(vp), ui_style.accent.alpha(40));
-    ui.bevel(bridge.fromRl(vp), ui_style.accent, ui_style.accent);
-
-    // Playhead tick on the minimap.
-    const beats_pos: f32 = @floatCast(transport.beats());
-    const ph_x = inner.x + beats_pos * px_per_beat_ov;
-    if (ph_x >= inner.x and ph_x <= inner.x + inner.width) ui.rect(frect(ph_x, inner.y, 1, inner.height), ui_style.accent);
-
-    handleOverviewInput(inner, vp_w, px_per_beat_ov, cb, strip.width - 4, m);
-}
-
-fn handleOverviewInput(
-    inner: c.rl.Rectangle,
-    vp_w: f32,
-    px_per_beat_ov: f32,
-    content_beats: f32,
-    viewport_w: f32,
-    m: pane.Mouse,
-) void {
-    if (pane.contains(inner, m.x, m.y) and (m.wheel_x != 0 or m.wheel_y != 0)) {
-        const w: f32 = if (m.wheel_y != 0) m.wheel_y else m.wheel_x;
-        const anchor_beat = (m.x - inner.x) / px_per_beat_ov;
-        const factor: f32 = std.math.clamp(1.0 + w * 0.12, 0.5, 2.0);
-        const min_px = @max(1.0, viewport_w / @max(content_beats, 1.0));
-        px_per_beat = std.math.clamp(px_per_beat * factor, min_px, PX_PER_BEAT_MAX);
-        scroll_x = anchor_beat * px_per_beat - viewport_w / 2.0;
-        if (scroll_x < 0) scroll_x = 0;
-        last_scroll_time = c.rl.GetTime();
-        return;
-    }
-
-    if (ov_drag) {
-        if (!pane.isDraggingKey(OVERVIEW_KEY) or !m.left_down) {
-            ov_drag = false;
-            pane.cancelDrag();
-            return;
-        }
-        const want_vp_x = m.x - ov_drag_offset;
-        const want_beat_l = (want_vp_x - inner.x) / px_per_beat_ov;
-        scroll_x = want_beat_l * px_per_beat;
-        if (scroll_x < 0) scroll_x = 0;
-        last_scroll_time = c.rl.GetTime();
-        return;
-    }
-
-    if (!m.left_pressed) return;
-    if (!pane.contains(inner, m.x, m.y)) return;
-    if (pane.hasActiveDrag()) return;
-
-    const view_beat_l = scroll_x / px_per_beat;
-    const vp_x = inner.x + view_beat_l * px_per_beat_ov;
-    const on_vp = m.x >= vp_x and m.x <= vp_x + vp_w;
-
-    if (!pane.tryStartDrag(OVERVIEW_KEY)) return;
-    ov_drag = true;
-    if (on_vp) {
-        ov_drag_offset = m.x - vp_x;
-    } else {
-        const want_vp_x = m.x - vp_w / 2;
-        const want_beat_l = (want_vp_x - inner.x) / px_per_beat_ov;
-        scroll_x = want_beat_l * px_per_beat;
-        if (scroll_x < 0) scroll_x = 0;
-        ov_drag_offset = vp_w / 2;
-    }
+    minimap.run(ui, inner, &view, .{ 0, content_beats }, timeline_w - 2, limits(content_beats, timeline_w), transport.beats(), m, OVERVIEW_KEY, c.rl.GetTime());
 }
 
 fn dim(color: c.rl.Color, factor: f32) c.rl.Color {
@@ -2990,56 +3216,9 @@ fn uiColor(col: c.rl.Color) ui_style.Color {
     return trackColor(col);
 }
 
-fn drawBeatTicks(ui: *Ui, ruler: c.rl.Rectangle, timeline_x: f32, timeline_w: f32, timeline_x0: f32, edit_snap: snap_mod.Setting) void {
-    const right = timeline_x + timeline_w - 2;
-    const ry = ipx(ruler.y);
-    const rh = ipx(ruler.height);
-
-    // Fine sub-grid (uniform snap guide), under the meter lines.
-    const step = snap_mod.visualStep(edit_snap, px_per_beat);
-    var beat: f64 = 0;
-    while (true) {
-        const bx = beatToX(timeline_x0, beat);
-        if (bx > right) break;
-        if (bx >= timeline_x) ui.rect(Rect.xywh(ipx(bx), ry + rh - 4, 1, 2), ui_style.text_mute.alpha(120));
-        beat += step;
-    }
-
-    // Meter-driven bar lines + numbers and per-bar beat ticks.
-    const first_beat = @max(0.0, beatAtX(timeline_x0, timeline_x));
-    var bar = cur_meter.beatToBarPos(first_beat).bar;
-    while (true) {
-        const bstart = cur_meter.barStartBeat(bar);
-        const bx = beatToX(timeline_x0, bstart);
-        if (bx > right) break;
-        const seg = cur_meter.segmentForBar(bar);
-        const unit = seg.unitBeats();
-        var k: u8 = 0;
-        while (k < seg.numerator) : (k += 1) {
-            const x = beatToX(timeline_x0, bstart + @as(f64, @floatFromInt(k)) * unit);
-            if (x > right) break;
-            if (x < timeline_x) continue;
-            const acc = seg.accentAt(k);
-            const h: i32 = switch (acc) {
-                .downbeat => 8,
-                .group => 5,
-                .weak => 3,
-            };
-            ui.rect(Rect.xywh(ipx(x), ry + rh - 1 - h, 1, h), if (acc == .weak) ui_style.text_mute else ui_style.text_dim);
-        }
-        if (bx >= timeline_x - 20) {
-            var buf: [8]u8 = undefined;
-            const s = std.fmt.bufPrint(&buf, "{d}", .{bar + 1}) catch "?";
-            const w = ui.engraved(&ui.fonts.legend, ipx(bx) + 3, ry + 1, s, ui_style.text_dim);
-            // Where the meter changes, label the new signature.
-            if (seg.start_bar == bar) {
-                var mbuf: [12]u8 = undefined;
-                const ms = std.fmt.bufPrint(&mbuf, "{d}/{d}", .{ seg.numerator, seg.denominator }) catch "?";
-                _ = ui.engraved(&ui.fonts.legend, ipx(bx) + 3 + w + 4, ry + 1, ms, ui_style.vfd);
-            }
-        }
-        bar += 1;
-    }
+/// The song's bars across the timeline.
+fn axis(timeline_x0: f32) timeline.Axis {
+    return .{ .view = &view, .x0 = timeline_x0, .meter = cur_meter };
 }
 
 // ── Tempo changes on the ruler (docs/28 §Tempo map) ─────────────────
@@ -3442,35 +3621,7 @@ fn drawTimelineLane(ui: *Ui, r_: c.rl.Rectangle, t: Track, idx: usize, selected:
     _ = idx;
     // A bus has no clips: a flat dark well, bar lines kept for its lanes.
     ui.rect(r, if (t.isBus()) (if (selected) ui_style.well.shade(6) else ui_style.well) else if (selected) ui_style.pane_alt else ui_style.pane);
-    const right = r_.x + r_.width - 1;
-
-    // Fine sub-grid (uniform), then meter-driven beat and bar lines.
-    const step = snap_mod.visualStep(edit_snap, px_per_beat);
-    if (step * px_per_beat >= 6) {
-        var beat: f64 = 0;
-        while (true) {
-            const bx = beatToX(timeline_x0, beat);
-            if (bx > right) break;
-            if (bx >= r_.x) ui.rect(Rect.xywh(ipx(bx), r.y, 1, r.h), ui_style.grid_sub);
-            beat += step;
-        }
-    }
-    const first_beat = @max(0.0, beatAtX(timeline_x0, r_.x));
-    var bar = cur_meter.beatToBarPos(first_beat).bar;
-    while (true) {
-        const bstart = cur_meter.barStartBeat(bar);
-        if (beatToX(timeline_x0, bstart) > right) break;
-        const seg = cur_meter.segmentForBar(bar);
-        const unit = seg.unitBeats();
-        var k: u8 = 0;
-        while (k < seg.numerator) : (k += 1) {
-            const x = beatToX(timeline_x0, bstart + @as(f64, @floatFromInt(k)) * unit);
-            if (x > right) break;
-            if (x < r_.x) continue;
-            ui.rect(Rect.xywh(ipx(x), r.y, 1, r.h), if (seg.accentAt(k) == .weak) ui_style.grid_beat else ui_style.grid_bar);
-        }
-        bar += 1;
-    }
+    timeline.gridLines(ui, r_, axis(timeline_x0), edit_snap);
     ui.rect(Rect.xywh(r.x, r.bottom() - 1, r.w, 1), ui_style.chassis);
 }
 
@@ -3480,8 +3631,8 @@ fn drawLiveRecordClip(ui: *Ui, lane: c.rl.Rectangle, rec: *const recorder_mod.Re
     const start_b = transport.samplesToBeats(rec.startSampleValue());
     const end_b = transport.beats();
     if (end_b <= start_b) return;
-    const x = timeline_x0 + @as(f32, @floatCast(start_b)) * px_per_beat - scroll_x;
-    const w = @as(f32, @floatCast(end_b - start_b)) * px_per_beat;
+    const x = timeline_x0 + @as(f32, @floatCast(start_b)) * view.px_per_beat - view.scroll_x;
+    const w = @as(f32, @floatCast(end_b - start_b)) * view.px_per_beat;
     if (w < 1) return;
     const r = frect(x, lane.y + 2, w, lane.height - 4);
     ui.rect(r, ui_style.rec.mix(ui_style.pane, 0.7));
@@ -3597,8 +3748,8 @@ fn drawClip(ui: *Ui, r_: c.rl.Rectangle, clip: Clip, color_: c.rl.Color, selecte
         const pitch_hi: f32 = 84;
         const bh: f32 = @floatFromInt(body.h);
         for (clip.notes.items) |note| {
-            const nx = r_.x + @as(f32, @floatCast(note.start_beat / note_rate)) * px_per_beat;
-            const nw = @max(@as(f32, @floatCast(note.length_beats / note_rate)) * px_per_beat, 1);
+            const nx = r_.x + @as(f32, @floatCast(note.start_beat / note_rate)) * view.px_per_beat;
+            const nw = @max(@as(f32, @floatCast(note.length_beats / note_rate)) * view.px_per_beat, 1);
             const x0 = @max(ipx(nx), body.x);
             const x1 = @min(ipx(nx + nw), body.right());
             if (x1 <= x0) continue;
@@ -3668,14 +3819,32 @@ fn drawLoopRegion(ui: *Ui, r_: c.rl.Rectangle, timeline_x0: f32, transport: *con
     if (x1 >= r.x and x1 < r.right()) ui.rect(Rect.xywh(x1 - 1, r.bottom() - 6, 1, 5), ui_style.accent);
 }
 
-fn drawBoxSelectOverlay(ui: *Ui, timeline_x: f32, timeline_w: f32, lanes_top: f32, lanes_bottom: f32, m: pane.Mouse) void {
-    if (!box_active) return;
-    if (@abs(m.x - box_start_x) < BOX_MIN_DRAG and @abs(m.y - box_start_y) < BOX_MIN_DRAG) return;
-    const rr = normalizedRect(box_start_x, box_start_y, m.x, m.y);
-    const clipped = intersectRect(rr, pane.rect(timeline_x, lanes_top, timeline_w, lanes_bottom - lanes_top)) orelse return;
-    const b = bridge.fromRl(clipped);
-    ui.rect(b, ui_style.accent.alpha(40));
-    ui.bevel(b, ui_style.accent, ui_style.accent);
+/// The time selection: a light wash over its stretch of each of its
+/// tracks, its edges marked down the lanes.
+fn drawBoxSelectOverlay(ui: *Ui, tracks: []const Track, timeline_x: f32, timeline_w: f32, timeline_x0: f32, lanes_top: f32, lanes_bottom: f32) void {
+    ui.clip(bridge.fromRl(pane.rect(timeline_x, lanes_top, timeline_w, lanes_bottom - lanes_top)));
+    defer ui.unclip();
+    if (draw_clip) |d| if (d.track < tracks.len) {
+        // The clip being drawn.
+        const ly = lanes_top + rowTop(tracks, d.track) - view.scroll_y;
+        const gx0 = beatToX(timeline_x0, @min(d.a, d.b));
+        const gx1 = beatToX(timeline_x0, @max(d.a, d.b));
+        const g = frect(gx0, ly + 1, @max(2, gx1 - gx0), LANE_H - 2);
+        ui.rect(g, ui_style.text.alpha(40));
+        ui.bevel(g, ui_style.text, ui_style.text);
+    };
+    const r = time_range orelse return;
+    const x0 = beatToX(timeline_x0, r.a);
+    const x1 = beatToX(timeline_x0, r.b);
+    var buf: [MAX_RANGE_TRACKS]usize = undefined;
+    for (rangeTracks(tracks, r, &buf)) |ti| {
+        if (!isShown(tracks, ti)) continue;
+        const ly = lanes_top + rowTop(tracks, ti) - view.scroll_y;
+        const band = frect(x0, ly, x1 - x0, LANE_H);
+        ui.rect(band, ui_style.text.alpha(36));
+        ui.rect(Rect.xywh(band.x, band.y, 1, band.h), ui_style.text_dim);
+        ui.rect(Rect.xywh(band.right() - 1, band.y, 1, band.h), ui_style.text_dim);
+    }
 }
 
 
@@ -3716,4 +3885,89 @@ test "ruler tempo edits: add at the tempo in effect, ramp the segment, remove" {
     // The first point stays.
     applyTempoEdit(&transport, .{ .kind = .remove, .beat = 0 });
     try std.testing.expectEqual(@as(usize, 1), transport.map().len);
+}
+
+test "a time selection: duplicate after itself over what was there, clear, paste" {
+    const alloc = std.testing.allocator;
+    var tracks = [_]Track{
+        try Track.init(alloc, "a", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, track_mod.testMachine()),
+        try Track.init(alloc, "b", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, track_mod.testMachine()),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    // Track a: one 8-beat clip with a note on every beat; b: a clip at 4..12.
+    var x = Clip.init("x", 0, 8);
+    for (0..8) |k| try x.addNote(alloc, .{ .pitch = 60, .start_beat = @floatFromInt(k), .length_beats = 0.5 });
+    try tracks[0].addClip(alloc, x);
+    try tracks[1].addClip(alloc, Clip.init("y", 4, 8));
+    const tm = tempo_mod.TempoMap.constant(120);
+    cur_tempo = &tm;
+    defer cur_tempo = &default_tempo;
+    defer time_range = null;
+    var st: ?usize = null;
+    var fc: ?ClipRef = null;
+
+    // Beats 2..4 of track a only: a copy at 4..6, the original's 4..6 gone.
+    time_range = .{ .a = 2, .b = 4, .lo = 0, .hi = 0 };
+    try std.testing.expect(duplicateRange(tracks[0..], alloc, &st, &fc));
+    try std.testing.expectEqual(@as(f64, 4), time_range.?.a);
+    var notes_at: [16]f64 = undefined;
+    var n: usize = 0;
+    for (tracks[0].clips.items) |*cl| for (cl.notes.items) |nt| {
+        notes_at[n] = cl.start_beat + nt.start_beat;
+        n += 1;
+    };
+    std.mem.sort(f64, notes_at[0..n], {}, std.sort.asc(f64));
+    try std.testing.expectEqual(@as(usize, 8), n);
+    try std.testing.expectEqualSlices(f64, &.{ 0, 1, 2, 3, 4, 5, 6, 7 }, notes_at[0..n]);
+    // Track b untouched.
+    try std.testing.expectEqual(@as(usize, 1), tracks[1].clips.items.len);
+
+    // Copy 4..6 of both tracks, paste it at 10 on track a down.
+    time_range = .{ .a = 4, .b = 6, .lo = 0, .hi = 1 };
+    var copied: std.ArrayList(CopiedClip) = .empty;
+    defer {
+        for (copied.items) |*it| it.clip.deinit(alloc);
+        copied.deinit(alloc);
+    }
+    try std.testing.expectEqual(@as(?f64, 2), copyRange(tracks[0..], alloc, &copied));
+    try std.testing.expect(pasteRange(tracks[0..], alloc, &st, &fc, copied.items, 2, 10, 0));
+    var on_b: usize = 0;
+    for (tracks[1].clips.items) |cl| {
+        if (cl.start_beat >= 10 - 1e-9 and cl.start_beat < 12) on_b += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), on_b);
+
+    // Clear 0..2 on a: two notes fewer, nothing moved.
+    time_range = .{ .a = 0, .b = 2, .lo = 0, .hi = 0 };
+    try std.testing.expect(clearRange(tracks[0..], alloc, &fc));
+    n = 0;
+    for (tracks[0].clips.items) |*cl| for (cl.notes.items) |nt| {
+        if (cl.start_beat + nt.start_beat < 8) n += 1;
+    };
+    try std.testing.expectEqual(@as(usize, 6), n);
+}
+
+test "join: the selected note clips on a track become one" {
+    const alloc = std.testing.allocator;
+    var tracks = [_]Track{try Track.init(alloc, "a", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, track_mod.testMachine())};
+    defer tracks[0].deinit(alloc);
+    var a = Clip.init("a", 0, 4);
+    try a.addNote(alloc, .{ .pitch = 60, .start_beat = 1, .length_beats = 1 });
+    a.selected = true;
+    var b = Clip.init("b", 8, 4);
+    try b.addNote(alloc, .{ .pitch = 62, .start_beat = 2, .length_beats = 1 });
+    b.selected = true;
+    try tracks[0].addClip(alloc, b);
+    try tracks[0].addClip(alloc, a);
+    var st: ?usize = null;
+    var fc: ?ClipRef = null;
+    try std.testing.expect(joinSelectedClips(tracks[0..], alloc, &st, &fc));
+    try std.testing.expectEqual(@as(usize, 1), tracks[0].clips.items.len);
+    const j = tracks[0].clips.items[0];
+    try std.testing.expectEqual(@as(f64, 0), j.start_beat);
+    try std.testing.expectEqual(@as(f64, 12), j.length_beats);
+    try std.testing.expectEqual(@as(usize, 2), j.notes.items.len);
+    var at: [2]f64 = .{ j.notes.items[0].start_beat, j.notes.items[1].start_beat };
+    std.mem.sort(f64, &at, {}, std.sort.asc(f64));
+    try std.testing.expectEqualSlices(f64, &.{ 1, 10 }, &at);
 }

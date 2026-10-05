@@ -204,6 +204,8 @@ pub const Track = struct {
     /// instrument. The UI reads the sequence to drive the note-activity
     /// LED — no timestamps on the audio thread.
     note_pulse: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    /// The pitches sounding now (see `noteSounding`).
+    sounding: [2]std.atomic.Value(u64) = .{ std.atomic.Value(u64).init(0), std.atomic.Value(u64).init(0) },
 
     pub fn init(alloc: std.mem.Allocator, track_name: []const u8, color: c.rl.Color, mach: machine.Machine) !Track {
         const s0 = try alloc.create(snap_mod.TrackSnapshot);
@@ -504,6 +506,36 @@ pub const Track = struct {
     }
 
     /// Audio thread: signal that a note-on hit the instrument this block.
+    /// Which pitches sound on this track right now: the audio thread sets
+    /// them from the note events it plays, the UI lights the keys
+    /// (docs/31 §Note editing).
+    pub fn noteSounding(self: *Track, events: []const machine.NoteEvent) void {
+        if (events.len == 0) return;
+        var bits = [2]u64{ self.sounding[0].load(.monotonic), self.sounding[1].load(.monotonic) };
+        for (events) |ev| {
+            if (ev.pitch < 0 or ev.pitch > 127) continue;
+            const pi: u7 = @intFromFloat(@round(ev.pitch));
+            const bit = @as(u64, 1) << @intCast(pi % 64);
+            switch (ev.kind) {
+                .note_on => bits[pi / 64] |= bit,
+                .note_off => bits[pi / 64] &= ~bit,
+                else => {},
+            }
+        }
+        self.sounding[0].store(bits[0], .monotonic);
+        self.sounding[1].store(bits[1], .monotonic);
+    }
+
+    pub fn clearSounding(self: *Track) void {
+        self.sounding[0].store(0, .monotonic);
+        self.sounding[1].store(0, .monotonic);
+    }
+
+    /// The pitches sounding, for the UI.
+    pub fn sounding128(self: *const Track) u128 {
+        return @as(u128, self.sounding[1].load(.monotonic)) << 64 | self.sounding[0].load(.monotonic);
+    }
+
     pub fn pulseNote(self: *Track) void {
         _ = self.note_pulse.fetchAdd(1, .release);
     }

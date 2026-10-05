@@ -7,6 +7,7 @@
 const std = @import("std");
 const c = @import("../c.zig");
 const pane = @import("pane_input.zig");
+const gesture = @import("gesture.zig");
 const menu = @import("menu.zig");
 const ui_core = @import("core.zig");
 const ui_style = @import("style.zig");
@@ -120,15 +121,15 @@ fn valueDelta(v: *const View, dy: f32) f32 {
 }
 
 fn shiftDown() bool {
-    return c.rl.IsKeyDown(c.rl.KEY_LEFT_SHIFT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SHIFT);
+    return gesture.mods().shift;
 }
 
 fn altDown() bool {
-    return c.rl.IsKeyDown(c.rl.KEY_LEFT_ALT) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_ALT);
+    return gesture.mods().alt;
 }
 
 fn cmdDown() bool {
-    return c.rl.IsKeyDown(c.rl.KEY_LEFT_SUPER) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_SUPER);
+    return gesture.mods().cmd;
 }
 
 // ── Hit testing ──────────────────────────────────────────────────────
@@ -389,12 +390,13 @@ pub fn draw(ui: *Ui, alloc: std.mem.Allocator, lane: *Lane, v: View, m: pane.Mou
         }
         if (!m.left_down) {
             switch (mode) {
-                .box => {
+                // The selection cleared on press (docs/31 §Pointer); a
+                // click within the threshold selects nothing more.
+                .box => if (@abs(dx) >= gesture.DRAG_THRESHOLD or @abs(dy) >= gesture.DRAG_THRESHOLD) {
                     const bx0 = @min(start_x, m.x);
                     const bx1 = @max(start_x, m.x);
                     const by0 = @min(start_y, m.y);
                     const by1 = @max(start_y, m.y);
-                    if (!shiftDown()) lane.deselectAll();
                     for (lane.points.items) |*p| {
                         const px = xOf(&v, p.beat);
                         const py = yOf(&v, p.value);
@@ -462,6 +464,7 @@ pub fn draw(ui: *Ui, alloc: std.mem.Allocator, lane: *Lane, v: View, m: pane.Mou
                     draw_n = 0;
                 } else {
                     mode = .box;
+                    if (!shiftDown()) lane.deselectAll();
                 }
             }
         } else if (m.right_pressed) {

@@ -84,6 +84,13 @@ self-contained but assumes the vocabulary established in earlier ones.
     TAPE/BEATS/VOICE/MIX/SMEAR stretching, transients, tempo detection
 29. [30-extract.md](30-extract.md) — audio into music: hum to notes,
     chords, drums to a kit, stems, sound matching, tune
+30. [31-editing.md](31-editing.md) — one way to edit across the
+    arrangement, piano roll, audio editor and lanes: shared view and
+    gestures, one command table, time selection, note editing,
+    multi-clip editing
+31. [32-accessibility.md](32-accessibility.md) — the UI as a tree:
+    nodes from every control, a VoiceOver bridge, keyboard operation,
+    `--ax-dump` for tests and agents
 
 ## Terminology crib sheet
 

@@ -6,6 +6,59 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+### Editing feels the same everywhere
+
+- **One way to scroll and zoom** in the arrangement, the piano roll and
+  the audio editor: the wheel or a swipe scrolls, **⌘-wheel zooms
+  time** around the pointer, ⌥-wheel zooms the piano roll's rows, ⇧-wheel
+  scrolls time with a mouse. (⇧-wheel used to zoom.)
+- **Minimaps** work the same in every editor; drag the window's edges to
+  zoom.
+- **Rulers**: click or drag any ruler to scrub, the clip editors' too;
+  **⇧-drag across a ruler to set the loop**. The audio editor's ruler
+  now shows the song's bars and meter.
+- **Both ends of every clip and note resize**, and a resize changes the
+  whole selection. Dragging a note clip's left edge keeps its notes where
+  they sound. Edge grab zones scale with the object, so short notes can
+  still be moved.
+- **Box select** works the same everywhere: a press on empty space
+  clears the selection (⇧ adds), the box selects what it touches.
+- **Notes**: double-click empty grid to add a note, double-click a note
+  to delete it, ⌘-drag to draw without the DRAW latch; a drawn note
+  comes out selected; ⇧- or ⌘-click toggles a note or a clip.
+- **Escape** during a drag puts everything back.
+- **Keys**: **Z** zooms to the selection, **⌘D** duplicates (D still
+  does), **⌘L** loops the selected clips, **⌘E** splits them at the
+  playhead; ⌥-arrow nudges by 1/64 on any grid; a pasted selection lands where
+  you last clicked on empty space. Keys follow the pane you last clicked
+  in, track headers and editor buttons included, and the audio editor no
+  longer takes note keys.
+- **Time selection**: drag across empty lanes to select a stretch of
+  time on the tracks you cross. **⌘D** repeats it right after itself
+  (press again to keep going), **⌫** empties it, **⌘C / ⌘V** copy it and
+  lay it down where you click, **⌘L** loops it, **⌘E** cuts the clips at
+  its edges. **⌘I Insert time** and **⌘⇧⌫ Delete time** open or close
+  that much time across the whole song, tempo, meter and sections
+  included. In the piano roll, ⌘D on a box selection repeats the whole
+  stretch, gaps and all.
+- **⌘J joins** the selected note clips on a track into one.
+- **⌥-drag** a clip or a note to copy it; **⌘-drag** on an empty lane
+  draws a clip as long as you drag.
+- **Hear notes as you edit**: pressing a note holds it until you let go,
+  dragging it to a new pitch plays the new pitch, a selected chord sounds
+  as a chord, and it works while the song plays too. **HEAR** in the
+  piano roll's head turns it off.
+- **Play the piano roll's keyboard**: press a key to hear it, drag along
+  the keys to glide; ⇧-click a key selects every note of that pitch.
+  Keys light up while they sound, and so do the notes under the
+  playhead.
+- **Edit several clips together**: select a few note clips and the
+  piano roll shows them all on the song's timeline: a tab for each, the
+  others' notes as faint ghosts in their tracks' colors. Click a tab or a
+  ghost note to edit that clip; the view stays where it is.
+- **Menus** list their items in the same order in every editor, and an
+  unwarped audio clip's editor has a right-click menu too.
+
 ## 0.0.9 — 2026-10-05
 
 Audio into music: hum a line and get notes, put a voice in key, hear a
