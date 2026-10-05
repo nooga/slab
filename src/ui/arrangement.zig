@@ -423,12 +423,20 @@ pub const Result = struct {
     marker_edit: ?MarkerEdit = null,
     /// Double-click or "Edit…": open the marker dialog on this one.
     marker_open: ?MarkerRef = null,
+    /// The lane menu's section edits (docs/28 §Arranging by section): main
+    /// takes the undo snapshot and runs it (arrange.zig).
+    section_op: ?SectionOp = null,
     /// The ruler menu's Song groove: main takes the undo snapshot and
     /// sets it (a groove.zig pick: NONE or the pool's).
     song_groove: ?u8 = null,
 };
 
 pub const MarkerRef = struct { kind: markers_mod.Kind, index: usize };
+
+pub const SectionOp = struct {
+    kind: enum { duplicate, delete, earlier, later },
+    index: usize,
+};
 
 pub const MarkerEdit = union(enum) {
     add_section: f64,
@@ -3074,6 +3082,10 @@ const MK_EDIT_LOCATOR: u32 = 6;
 const MK_REMOVE_LOCATOR: u32 = 7;
 const MK_SET_END: u32 = 8;
 const MK_CLEAR_END: u32 = 9;
+const MK_DUPLICATE: u32 = 10;
+const MK_EARLIER: u32 = 11;
+const MK_LATER: u32 = 12;
+const MK_DELETE_ALL: u32 = 13;
 
 fn markerMenuTick(transport: *Transport, mk: *markers_mod.Markers, song_end: f64, result: *Result) void {
     if (!menu.isOpen(MARKER_MENU_KEY)) return;
@@ -3085,7 +3097,11 @@ fn markerMenuTick(transport: *Transport, mk: *markers_mod.Markers, song_end: f64
         .{ .separator = true },
         .{ .label = "Edit section\u{2026}", .id = MK_EDIT_SECTION, .enabled = sec != null },
         .{ .label = "Loop section", .id = MK_LOOP_SECTION, .enabled = sec != null },
-        .{ .label = "Remove section", .id = MK_REMOVE_SECTION, .enabled = sec != null },
+        .{ .label = "Duplicate section", .id = MK_DUPLICATE, .enabled = sec != null },
+        .{ .label = "Move section earlier", .id = MK_EARLIER, .enabled = sec != null and sec.? > 0 },
+        .{ .label = "Move section later", .id = MK_LATER, .enabled = sec != null and sec.? + 1 < mk.section_n },
+        .{ .label = "Delete section and its content", .id = MK_DELETE_ALL, .enabled = sec != null },
+        .{ .label = "Remove section marker", .id = MK_REMOVE_SECTION, .enabled = sec != null },
         .{ .separator = true },
         .{ .label = "Edit locator\u{2026}", .id = MK_EDIT_LOCATOR, .enabled = loc != null },
         .{ .label = "Remove locator", .id = MK_REMOVE_LOCATOR, .enabled = loc != null },
@@ -3102,6 +3118,10 @@ fn markerMenuTick(transport: *Transport, mk: *markers_mod.Markers, song_end: f64
         MK_REMOVE_SECTION => result.marker_edit = .{ .remove = .{ .kind = .section, .index = sec.? } },
         MK_EDIT_LOCATOR => result.marker_open = .{ .kind = .locator, .index = loc.? },
         MK_REMOVE_LOCATOR => result.marker_edit = .{ .remove = .{ .kind = .locator, .index = loc.? } },
+        MK_DUPLICATE => result.section_op = .{ .kind = .duplicate, .index = sec.? },
+        MK_EARLIER => result.section_op = .{ .kind = .earlier, .index = sec.? },
+        MK_LATER => result.section_op = .{ .kind = .later, .index = sec.? },
+        MK_DELETE_ALL => result.section_op = .{ .kind = .delete, .index = sec.? },
         MK_SET_END => result.marker_edit = .{ .set_end = @max(marker_menu_bar_beat, if (mk.section_n > 0) mk.sections[mk.section_n - 1].beat + 1 else 0) },
         MK_CLEAR_END => result.marker_edit = .clear_end,
         else => {},

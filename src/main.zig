@@ -15,6 +15,7 @@ const engine_mod = @import("engine.zig");
 const meter_mod = @import("meter.zig");
 const markers_mod = @import("markers.zig");
 const groove_mod = @import("groove.zig");
+const arrange_mod = @import("arrange.zig");
 const track_mod = @import("track.zig");
 const clip_mod = @import("clip.zig");
 const audio_pool_mod = @import("audio_pool.zig");
@@ -1294,6 +1295,32 @@ pub fn main(init: std.process.Init) !void {
             pushHistorySnapshot(alloc, &history, tracks, &transport);
             arrangement.applyMarkerEdit(&markers, me);
             dirty = true;
+        }
+        if (ares.section_op) |op| {
+            if (recorder.isRecording() or rec_finishing or bounce_job.active or render_job.active) {
+                status.set("Wait for the recording or render to finish", .{});
+            } else {
+                pushHistorySnapshot(alloc, &history, tracks, &transport);
+                const song = arrange_mod.Song{ .alloc = alloc, .tracks = tracks, .tempo = &transport.tempo, .meter = &meter_state, .markers = &markers, .song_end = lastClipEnd(tracks) };
+                const name = markers.sections[op.index].name;
+                (switch (op.kind) {
+                    .duplicate => arrange_mod.duplicate(&song, op.index),
+                    .delete => arrange_mod.delete(&song, op.index),
+                    .earlier => arrange_mod.moveEarlier(&song, op.index),
+                    .later => arrange_mod.moveEarlier(&song, op.index + 1),
+                }) catch |err| status.set("Section edit failed: {s}", .{@errorName(err)});
+                // Clip indexes moved: nothing stays selected.
+                _ = arrangement.clearSelection(tracks, &selected_clip);
+                prev_selected_clip = null;
+                for (tracks) |*t| t.publishSnapshot(&audio_pool);
+                status.set("{s} {s}", .{ switch (op.kind) {
+                    .duplicate => "Duplicated",
+                    .delete => "Deleted",
+                    .earlier => "Moved earlier:",
+                    .later => "Moved later:",
+                }, name.get() });
+                dirty = true;
+            }
         }
         if (ares.song_groove) |sg| {
             pushHistorySnapshot(alloc, &history, tracks, &transport);

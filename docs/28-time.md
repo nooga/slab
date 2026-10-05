@@ -5,7 +5,8 @@ that path: the tempo map, locators and sections, grooves, polymeter and
 polytempo, and the freeze that has to know when any of them changed.
 
 Status: the meter map (docs/07 §Meter map), the tempo map, locators and
-sections, export by section, groove and freeze are built (2026-10-05); the rest is
+sections, export by section, groove, freeze and arranging by section
+are built (2026-10-05); the rest is
 design, built in the order of [Phasing](#phasing).
 
 ## The beat axis
@@ -126,7 +127,9 @@ In the lane:
   downbeat).
 - **Right-click**: *Add section here* (at the bar), *Add locator here*
   (on the grid), *Edit section…*, *Loop section*, *Remove section*,
-  *Edit locator…*, *Remove locator*, *Set end here*, *Remove end*.
+  *Duplicate section*, *Move section earlier/later*, *Delete section and
+  its content*, *Remove section marker*, *Edit locator…*, *Remove
+  locator*, *Set end here*, *Remove end*.
 - **⌘← / ⌘→** jump to the previous / next section, locator or END.
 
 Every edit is one undo step.
@@ -149,9 +152,8 @@ What sections give:
 
 - Loop a section, jump between them, and the song's end for export.
 - **Export SECTIONS**: a file per section (below).
-- Later, **arranging by section**: duplicate, move or delete a section
-  and its clips, automation, tempo and meter changes come with it
-  (clips crossing a boundary split there).
+- **Arranging by section** (below): duplicate, move or delete a section
+  with everything in it.
 
 Saved at the project's top level, each only when there are any (slabkit
 writes its `Song.section`s and END):
@@ -184,6 +186,31 @@ WAV per section; `--sections` on the command line):
 - A section whose tempo holds still (one segment, no ramp) gets an
   **`acid` chunk**: its tempo, meter, and length in the meter's units
   (eighths in 7/8). So does a LOOP export.
+
+## Arranging by section
+
+Right-click a section in the lane:
+
+- **Duplicate section**: a copy of it and all in it right after it; the
+  song after it moves later to make room.
+- **Move section earlier / later**: it swaps places with its neighbor.
+- **Delete section and its content**: it and all in it go; the song after
+  it moves up. (*Remove section marker* only takes the tab away.)
+
+"All in it" is everything between its start and the next section's
+(or END, or the last clip, rounded up to a downbeat): the clips, cut
+where they cross its edges (notes crossing a cut end there; audio clips
+split their windows; clip lanes split); track automation; tempo and
+meter changes; locators; the section itself with its name, color and
+groove. At each cut a curve (an automation lane, the tempo map) gets a
+point holding its value there, so both sides play what they played, and
+where two stretches now meet it steps from one to the other. A tempo
+ramp leading into a cut still ends where it did. Spans start and end on
+downbeats, so the meter map moves by whole bars; a meter that played on
+after a moved section comes back after it. Each edit is one undo step;
+the clip selection clears. Built on three operations in
+`src/arrange.zig` — take a copy of a span, remove a span, put a piece in
+at a downbeat.
 
 ## Groove
 
@@ -367,5 +394,5 @@ does not save CPU. **Freeze** does:
    extract, commit, the song's and sections' grooves (built; the ctx
    table and fy word wait for a machine that sequences).
 5. **Freeze**: freeze, unfreeze, flatten, stale (built).
-6. **Arranging by section**: duplicate, move, delete.
+6. **Arranging by section**: duplicate, move, delete (built).
 7. **Polymeter and polytempo** per track.
