@@ -82,6 +82,8 @@ self-contained but assumes the vocabulary established in earlier ones.
     map, locators and sections, groove, polymeter and polytempo, freeze
 28. [29-warp.md](29-warp.md) — audio on the beat axis: warp markers,
     TAPE/BEATS/VOICE/MIX/SMEAR stretching, transients, tempo detection
+29. [30-extract.md](30-extract.md) — audio into music: hum to notes,
+    chords, drums to a kit, stems, sound matching, tune
 
 ## Terminology crib sheet
 
