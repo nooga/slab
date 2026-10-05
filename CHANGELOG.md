@@ -34,6 +34,12 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   toms and percussion on General MIDI keys, and the cleanest hit of
   each becomes its pad.
 
+### Fixes
+
+- **Slice to sampler on a track at its own tempo ratio** (3:2 and the
+  like): the new pattern is as long as the clip, and the slices cover all
+  of it, the last one included.
+
 ## 0.0.8 — 2026-10-05
 
 ### Warp: audio on the beat

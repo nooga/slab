@@ -2204,6 +2204,57 @@ test "slices' SFZ: each on its key, at its pitch, one shot" {
     }
 }
 
+/// The pattern playing a warped clip's slices where they played, for a
+/// new track at rate 1 (docs/29 §Slice to drum machine). The clip's track
+/// runs at `rate_t` (docs/28 §Polymeter and polytempo), so its song beat
+/// `b` is content beat `(b − start_beat) · rate_t + offset_beats`: the
+/// pattern spans the clip's song beats, its notes the slices' content
+/// beats back in song beats.
+fn slicePattern(alloc: std.mem.Allocator, clip: *const clip_mod.Clip, rate_t: f64, sl: []const warp_mod.Slice) !clip_mod.Clip {
+    var pattern = clip_mod.Clip.init(clip.name(), clip.start_beat, clip.length_beats);
+    errdefer pattern.deinit(alloc);
+    const o = clip.audio.offset_beats;
+    const end = o + clip.length_beats * rate_t;
+    for (sl, 0..) |s, k| {
+        const nxt = if (k + 1 < sl.len) sl[k + 1].beat else end;
+        try pattern.addNote(alloc, .{
+            .pitch = SLICE_KEY0 + @as(u8, @intCast(k)),
+            .start_beat = (s.beat - o) / rate_t,
+            .length_beats = @max(1.0 / 64.0, (nxt - s.beat) / rate_t),
+            .velocity = @intFromFloat(std.math.clamp(60 + s.strength * 67, 1, 127)),
+        });
+    }
+    return pattern;
+}
+
+test "slicePattern: a track at 3:2 slices into a pattern in song beats" {
+    const alloc = std.testing.allocator;
+    var clip = clip_mod.Clip.initAudio("loop", 8, 4, 0);
+    defer clip.deinit(alloc);
+    clip.audio.warp = true;
+    clip.audio.offset_beats = 2;
+    try clip.warp_markers.appendSlice(alloc, &.{ .{ .sec = 0, .beat = 0 }, .{ .sec = 8, .beat = 16 } });
+    const time = @import("snapshot.zig").TrackTime{ .p = 3, .q = 2 };
+    // Four song beats at 3:2 hold six content beats, 2 .. 8: slices on
+    // its quarter grid at 2, 3, …, 7.
+    clip.audio.preserve = .d4;
+    var sl: [MAX_SLICES]warp_mod.Slice = undefined;
+    const n = warp_mod.slices(&clip, time.rate(), null, &sl);
+    try std.testing.expectEqual(@as(usize, 6), n);
+    try std.testing.expectApproxEqAbs(@as(f64, 4), sl[n - 1].s1, 1e-9); // content beat 8 at 120 BPM
+    var p = try slicePattern(alloc, &clip, time.rate(), sl[0..n]);
+    defer p.deinit(alloc);
+    try std.testing.expectApproxEqAbs(@as(f64, 8), p.start_beat, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 4), p.length_beats, 1e-12);
+    try std.testing.expectEqual(@as(usize, 6), p.notes.items.len);
+    const last = p.notes.items[n - 1];
+    // Content beat 7 is 10/3 song beats into the clip; one content beat
+    // to the end is 2/3 of a song beat, ending with the pattern.
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0 / 3.0), last.start_beat, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0 / 3.0), last.length_beats, 1e-9);
+    try std.testing.expectApproxEqAbs(p.length_beats, last.start_beat + last.length_beats, 1e-9);
+}
+
 fn sliceToSamplerOr(
     alloc: std.mem.Allocator,
     history: *history_mod.History,
@@ -2235,7 +2286,7 @@ fn sliceToSamplerOr(
     pool.waitFor(clip0.audio.source);
     const src = pool.get(clip0.audio.source) orelse return error.MissingSource;
     var sl: [MAX_SLICES]warp_mod.Slice = undefined;
-    const n = warp_mod.slices(clip0, src.hits(), &sl);
+    const n = warp_mod.slices(clip0, tracks_buf[ti].time.rate(), src.hits(), &sl);
     if (n == 0) return;
 
     // ── The files: a folder of slices and the SFZ that maps them ──
@@ -2288,22 +2339,10 @@ fn sliceToSamplerOr(
 
     // ── The track, its sampler and its pattern ──
     const clip = &tracks_buf[ti].clips.items[ref.clip];
-    const rate_t = tracks_buf[ti].time.rate();
     var name_buf: [track_mod.MAX_NAME]u8 = undefined;
     const tname = std.fmt.bufPrint(&name_buf, "{s} slices", .{clip.name()[0..@min(clip.name().len, track_mod.MAX_NAME - 7)]}) catch "Slices";
-    var pattern = clip_mod.Clip.init(clip.name(), clip.start_beat, clip.length_beats / rate_t);
+    var pattern = try slicePattern(alloc, clip, tracks_buf[ti].time.rate(), sl[0..n]);
     errdefer pattern.deinit(alloc);
-    const o = clip.audio.offset_beats;
-    const end = o + clip.length_beats;
-    for (sl[0..n], 0..) |s, k| {
-        const nxt = if (k + 1 < n) sl[k + 1].beat else end;
-        try pattern.addNote(alloc, .{
-            .pitch = SLICE_KEY0 + @as(u8, @intCast(k)),
-            .start_beat = (s.beat - o) / rate_t,
-            .length_beats = @max(1.0 / 64.0, (nxt - s.beat) / rate_t),
-            .velocity = @intFromFloat(std.math.clamp(60 + s.strength * 67, 1, 127)),
-        });
-    }
     pattern.selected = true;
     var t = try track_mod.Track.init(alloc, tname, tracks_buf[ti].color, silent_machine);
     t.output = tracks_buf[ti].output;
