@@ -57,6 +57,9 @@ pub const State = struct {
     beat: f64 = 0,
     /// The section starts the song: it can't FOLLOW anything.
     first: bool = false,
+    /// It starts on a downbeat: meter changes happen only there, so off
+    /// the bar METER is out.
+    on_bar: bool = true,
     name: text_field.TextBuf = text_field.TextBuf.init("", 32),
     color: u8 = 0,
     /// A tempo change starts the section.
@@ -93,6 +96,7 @@ pub fn open(state: *State, mk: *const markers_mod.Markers, kind: markers_mod.Kin
             state.tempo_on = state.first or tempo.find(s.beat) != null;
             state.bpm = tempo.bpmAt(s.beat);
             const bar = meter.beatToBarPos(s.beat).bar;
+            state.on_bar = @abs(meter.barStartBeat(bar) - s.beat) < 1e-6;
             const seg = meter.segmentForBar(bar);
             state.meter = if (seg.start_bar == bar or state.first) blk: {
                 for (METERS, 1..) |m, i| if (m.num == seg.numerator and m.den == seg.denominator) break :blk @intCast(i);
@@ -143,7 +147,7 @@ pub fn draw(ui: *Ui, screen: Rect, state: *State) Result {
             const hh = ctl.displayHeight(false);
             var v: u8 = if (state.meter == METER_KEEP) 0 else state.meter;
             const shown: ?[]const u8 = if (state.meter == METER_KEEP) state.meter_buf[0..state.meter_len] else if (state.first and state.meter == 0) "4/4" else null;
-            if (ctl.displaySelectEx(ui, r.cutLeft(88).center(88, hh), "meter", &v, &METER_LABELS, "METER", .{ .align_ = .left, .shown = shown })) state.meter = v;
+            if (ctl.displaySelectEx(ui, r.cutLeft(88).center(88, hh), "meter", &v, &METER_LABELS, "METER", .{ .align_ = .left, .shown = if (state.on_bar) shown else "OFF THE BAR", .disabled = !state.on_bar })) state.meter = v;
         }
         if (groove_mod.active) |cx| {
             var r = dialog.rowW(ui, &body, "GROOVE", ROW_H, LABEL_W);
@@ -153,7 +157,7 @@ pub fn draw(ui: *Ui, screen: Rect, state: *State) Result {
             const hh = ctl.displayHeight(false);
             _ = ctl.displaySelectEx(ui, r.cutLeft(160).center(160, hh), "groove", &state.groove, groove_labels[0 .. cx.pool.count + 2], "GROOVE", .{ .align_ = .left });
         }
-        dialog.hint(ui, &body, if (state.first) "THE SONG STARTS WITH THESE" else "OFF AND FOLLOW CARRY ON FROM THE SECTION BEFORE", 0);
+        dialog.hint(ui, &body, if (state.first) "THE SONG STARTS WITH THESE" else if (!state.on_bar) "OFF THE BAR: METER CHANGES ONLY ON A DOWNBEAT" else "OFF AND FOLLOW CARRY ON FROM THE SECTION BEFORE", 0);
     }
     var bar = f.buttons;
     if (ctl.button(ui, bar.cutLeft(76).center(76, 20), "delete", null, .{ .label = "DELETE" })) return .delete;
@@ -216,7 +220,7 @@ pub fn apply(state: *const State, mk: *markers_mod.Markers, tempo: *tempo_mod.Te
             } else if (m.find(sec.beat)) |i| m.remove(i);
             tempo.publish();
             const bar = meter.liveMap().beatToBarPos(sec.beat).bar;
-            if (state.meter != METER_KEEP) {
+            if (state.on_bar and state.meter != METER_KEEP) {
                 if (state.meter > 0) {
                     const ch = METERS[state.meter - 1];
                     meter.insertChange(bar, ch.num, ch.den);

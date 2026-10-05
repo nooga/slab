@@ -7,8 +7,9 @@
 //!
 //! At every cut each curve (a lane, the tempo map) gets a point holding
 //! its value there, so what plays on either side doesn't change; where two
-//! stretches meet the curve steps from one to the other. Spans start and
-//! end on downbeats, so the meter map moves by whole bars. UI thread.
+//! stretches meet the curve steps from one to the other. A span that
+//! starts and ends on downbeats moves the meter map by whole bars with it;
+//! one off the bar (a pickup) leaves the meter map as it is. UI thread.
 
 const std = @import("std");
 const track_mod = @import("track.zig");
@@ -160,6 +161,8 @@ const LanePiece = struct { lane: usize, points: std.ArrayList(automation.Point) 
 pub const Piece = struct {
     len: f64,
     bars: u32,
+    /// It starts and ends on downbeats: its meter changes come with it.
+    whole_bars: bool = true,
     clips: [routing.MAX_TRACKS]std.ArrayList(Clip) = @splat(.empty),
     lanes: [routing.MAX_TRACKS]std.ArrayList(LanePiece) = @splat(.empty),
     /// From its start's tempo to its end's, ramps and all.
@@ -189,6 +192,12 @@ fn barOf(s: *const Song, beat: f64) u32 {
     return s.meter.liveMap().beatToBarPos(beat).bar;
 }
 
+/// `beat` is a downbeat.
+fn onBar(s: *const Song, beat: f64) bool {
+    const mm = s.meter.liveMap();
+    return @abs(mm.barStartBeat(mm.beatToBarPos(beat).bar) - beat) < EPS;
+}
+
 /// A copy of [a, b): a and b are downbeats. Clips crossing the edges are
 /// cut there first.
 pub fn take(s: *const Song, a: f64, b: f64) !Piece {
@@ -198,7 +207,7 @@ pub fn take(s: *const Song, a: f64, b: f64) !Piece {
     const mm = s.meter.liveMap();
     const bar_a = barOf(s, a);
     const bar_b = barOf(s, b);
-    var p = Piece{ .len = b - a, .bars = bar_b - bar_a };
+    var p = Piece{ .len = b - a, .bars = bar_b - bar_a, .whole_bars = onBar(s, a) and onBar(s, b) };
     errdefer p.deinit(alloc);
     for (s.tracks, 0..) |*t, ti| {
         for (t.clips.items) |*c| {
@@ -235,14 +244,16 @@ pub fn take(s: *const Song, a: f64, b: f64) !Piece {
         try p.tempo.append(alloc, r);
     };
     try p.tempo.append(alloc, .{ .beat = b - a, .bpm = tm.bpmAt(b - EPS) });
-    var m0 = meterPin(mm, bar_a);
-    m0.start_bar = 0;
-    try p.meter.append(alloc, m0);
-    for (mm.points) |q| if (q.start_bar > bar_a and q.start_bar < bar_b) {
-        var r = q;
-        r.start_bar -= bar_a;
-        try p.meter.append(alloc, r);
-    };
+    if (p.whole_bars) {
+        var m0 = meterPin(mm, bar_a);
+        m0.start_bar = 0;
+        try p.meter.append(alloc, m0);
+        for (mm.points) |q| if (q.start_bar > bar_a and q.start_bar < bar_b) {
+            var r = q;
+            r.start_bar -= bar_a;
+            try p.meter.append(alloc, r);
+        };
+    }
     for (s.markers.locatorSlice()) |l| if (l.beat >= a - EPS and l.beat < b - EPS) {
         var r = l;
         r.beat -= a;
@@ -265,6 +276,7 @@ pub fn remove(s: *const Song, a: f64, b: f64) !void {
     const bar_a = barOf(s, a);
     const bar_b = barOf(s, b);
     const nb = bar_b - bar_a;
+    const whole_bars = onBar(s, a) and onBar(s, b);
     for (s.tracks) |*t| {
         var ci: usize = 0;
         while (ci < t.clips.items.len) {
@@ -325,7 +337,8 @@ pub fn remove(s: *const Song, a: f64, b: f64) !void {
         tidyTempo(&m);
         s.tempo.set(&m);
     }
-    {
+    // Off the bar the meter map stays: the bars after re-lay over what moved.
+    if (whole_bars) {
         const mm = s.meter.liveMap();
         var pts: [meter_mod.MAX_POINTS]meter_mod.MeterPoint = undefined;
         var n: usize = 0;
@@ -441,7 +454,7 @@ pub fn put(s: *const Song, at: f64, p: *const Piece) !void {
         tidyTempo(&m);
         s.tempo.set(&m);
     }
-    {
+    if (p.whole_bars and onBar(s, at)) {
         const mm = s.meter.liveMap();
         var pts: [meter_mod.MAX_POINTS]meter_mod.MeterPoint = undefined;
         var n: usize = 0;
@@ -486,12 +499,13 @@ pub fn put(s: *const Song, at: f64, p: *const Piece) !void {
 
 // ── By section ─────────────────────────────────────────────────────────
 
-/// Section `i`'s span: its start to the next's, or END (the last clip
-/// without one) rounded up to a downbeat.
+/// Section `i`'s span: its start to the next's, or END; without END, to
+/// the last clip rounded up to a downbeat.
 pub fn span(s: *const Song, i: usize) [2]f64 {
     const mk = s.markers;
     const a = mk.sections[i].beat;
     const e = mk.sectionEnd(i, s.song_end);
+    if (i + 1 < mk.section_n or mk.end != null) return .{ a, @max(e, a + EPS) };
     const mm = s.meter.liveMap();
     const pos = mm.beatToBarPos(e);
     const at = mm.barStartBeat(pos.bar);
@@ -678,4 +692,32 @@ test "move a section earlier: two sections swap, notes and meter with them" {
     try testing.expectEqual(@as(f64, 28), ns[4][0]);
     try testing.expectEqual(@as(f64, 64), ns[4][1]);
     try testing.expectEqual(@as(?f64, 44), f.markers.end);
+}
+
+test "a pickup section (off the bar) moves its content to the beat and leaves the meter map be" {
+    const alloc = testing.allocator;
+    var f: Fixture = undefined;
+    try f.init(alloc);
+    defer f.deinit(alloc);
+    f.meter.insertChange(12, 3, 4);
+    f.meter.commitImmediate();
+    // B starts two beats early: 14..32.
+    f.markers.sections[1].beat = 14;
+    const s = f.song(alloc);
+    try testing.expectEqual([2]f64{ 14, 32 }, span(&s, 1));
+    try duplicate(&s, 1);
+    // B's notes (16..28) again 18 beats later; C and its tempo after them.
+    var ns: [32][2]f64 = undefined;
+    const n = f.notes(&ns);
+    try testing.expectEqual(@as(usize, 12), n);
+    try testing.expectEqual(@as(f64, 34), ns[8][0]);
+    try testing.expectEqual(@as(f64, 64), ns[8][1]);
+    try testing.expectEqual(@as(f64, 32), f.markers.sections[2].beat);
+    try testing.expectEqual(@as(f64, 50), f.markers.sections[3].beat);
+    try testing.expectEqual(@as(f64, 120), f.tempo.live.bpmAt(49));
+    try testing.expectEqual(@as(f64, 140), f.tempo.live.bpmAt(50));
+    // The meter map is as it was.
+    const pts = f.meter.liveMap().points;
+    try testing.expectEqual(@as(usize, 2), pts.len);
+    try testing.expectEqual(@as(u32, 12), pts[1].start_bar);
 }

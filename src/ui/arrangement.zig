@@ -3013,6 +3013,12 @@ fn markerHit(ui: *Ui, lane: Rect, timeline_x0: f32, mk: *const markers_mod.Marke
 }
 
 /// The bar start nearest `beat`.
+/// Where a section edge or END lands: the nearest downbeat, or with ⌥
+/// the nearest line of the edit grid (a pickup, a section off the bar).
+fn sectionBeat(raw: f64, edit_snap: snap_mod.Setting) f64 {
+    return if (altBypassSnap()) snap_mod.snapNearest(edit_snap, raw, false) else nearestBarBeat(raw);
+}
+
 fn nearestBarBeat(beat: f64) f64 {
     const pos = cur_meter.beatToBarPos(@max(0, beat));
     const a = cur_meter.barStartBeat(pos.bar);
@@ -3032,8 +3038,8 @@ fn handleMarkerLane(ui: *Ui, lane_rl: c.rl.Rectangle, timeline_x0: f32, transpor
         const raw = @max(0, beatAtX(timeline_x0, m.x));
         switch (g) {
             // Sections and END sit on downbeats; locators on the grid.
-            .section => |i| _ = mk.moveSection(i, nearestBarBeat(raw)),
-            .end => mk.end = @max(nearestBarBeat(raw), if (mk.section_n > 0) mk.sections[mk.section_n - 1].beat + 1 else 0),
+            .section => |i| _ = mk.moveSection(i, sectionBeat(raw, edit_snap)),
+            .end => mk.end = @max(sectionBeat(raw, edit_snap), if (mk.section_n > 0) mk.sections[mk.section_n - 1].beat + 1 else 0),
             .locator => |i| marker_drag = .{ .locator = mk.moveLocator(i, snap_mod.snapNearest(edit_snap, raw, altBypassSnap())) },
         }
         return;
@@ -3048,7 +3054,8 @@ fn handleMarkerLane(ui: *Ui, lane_rl: c.rl.Rectangle, timeline_x0: f32, transpor
     if (m.right_pressed and !pane.hasActiveDrag()) {
         const b = @max(0, beatAtX(timeline_x0, m.x));
         marker_menu_beat = snap_mod.snapNearest(edit_snap, b, altBypassSnap());
-        marker_menu_bar_beat = cur_meter.barStartBeat(cur_meter.beatToBarPos(b).bar);
+        // The bar it's in, or with ⌥ the grid line (off the bar).
+        marker_menu_bar_beat = if (altBypassSnap()) snap_mod.snapNearest(edit_snap, b, false) else cur_meter.barStartBeat(cur_meter.beatToBarPos(b).bar);
         marker_menu_section = switch (hit) {
             .section, .section_edge => |i| i,
             else => mk.sectionAt(b, song_end),
@@ -3065,7 +3072,11 @@ fn handleMarkerLane(ui: *Ui, lane_rl: c.rl.Rectangle, timeline_x0: f32, transpor
             .locator => |i| result.marker_open = .{ .kind = .locator, .index = i },
             .section, .section_edge => |i| result.marker_open = .{ .kind = .section, .index = i },
             // The press took main's undo snapshot.
-            .none => applyMarkerEdit(mk, .{ .add_section = cur_meter.barStartBeat(cur_meter.beatToBarPos(@max(0, beatAtX(timeline_x0, m.x))).bar) }),
+            .none => {
+                const b = @max(0, beatAtX(timeline_x0, m.x));
+                const at = if (altBypassSnap()) snap_mod.snapNearest(edit_snap, b, false) else cur_meter.barStartBeat(cur_meter.beatToBarPos(b).bar);
+                applyMarkerEdit(mk, .{ .add_section = at });
+            },
             .end => {},
         }
         return;

@@ -109,7 +109,8 @@ Above the ruler (and its tempo and meter changes, which are handles on
 their maps, docs/07 §Markers) runs the **section lane**. It holds:
 
 - **Sections** — tabs in their colors, back to back: INTRO, VERSE,
-  DROP. A section starts on a bar and lasts until the next one starts;
+  DROP. A section starts on a bar (with ⌥, on any line of the edit
+  grid: a pickup) and lasts until the next one starts;
   the last ends at the **END** marker, or at the last clip without one.
 - **Locators** — named flags: *CUE A*, *vocal in*, *fix this*. No
   effect on timing or the grid. Jump targets, and written into WAV
@@ -121,10 +122,12 @@ In the lane:
 
 - **Click** a section's tab: the playhead goes to its start.
 - **Double-click** a tab or a flag: its dialog (below). On empty lane:
-  a new section at that bar.
+  a new section at that bar (⌥: at that grid line).
 - **Drag** a section's start edge (to the downbeats between its
-  neighbors), a locator's flag (on the grid, ⌥ free) or END (to a
-  downbeat).
+  neighbors; ⌥ to the edit grid), a locator's flag (on the grid, ⌥
+  free) or END (to a downbeat; ⌥ to the grid).
+- *Add section here* and *Set end here* take the bar under the pointer,
+  or with ⌥ held as you right-click, the grid line.
 - **Right-click**: *Add section here* (at the bar), *Add locator here*
   (on the grid), *Edit section…*, *Loop section*, *Remove section*,
   *Duplicate section*, *Move section earlier/later*, *Delete section and
@@ -146,7 +149,10 @@ A section has no tempo or meter of its own to keep in sync. Its dialog
 puts a meter change and a tempo change on its first bar; turning TEMPO
 off or METER to FOLLOW removes the change, and the section carries on
 from the one before it. The maps stay the only truth; the section is
-how you reach them. A locator's dialog has its NAME; both have DELETE.
+how you reach them. Meter changes happen only on downbeats, so a section
+that starts off the bar has METER off ("OFF THE BAR"); its TEMPO still
+lands on its first beat. A locator's dialog has its NAME; both have
+DELETE.
 
 What sections give:
 
@@ -202,12 +208,17 @@ Right-click a section in the lane:
 where they cross its edges (notes crossing a cut end there; audio clips
 split their windows; clip lanes split); track automation; tempo and
 meter changes; locators; the section itself with its name, color and
-groove. At each cut a curve (an automation lane, the tempo map) gets a
+groove. A section's span is exact — its start to the next section's or
+END (without END, to the last clip rounded up to a downbeat). At each
+cut a curve (an automation lane, the tempo map) gets a
 point holding its value there, so both sides play what they played, and
 where two stretches now meet it steps from one to the other. A tempo
-ramp leading into a cut still ends where it did. Spans start and end on
-downbeats, so the meter map moves by whole bars; a meter that played on
-after a moved section comes back after it. Each edit is one undo step;
+ramp leading into a cut still ends where it did. A span that starts and
+ends on downbeats moves the meter map by whole bars with it (a meter
+that played on after a moved section comes back after it); one off the
+bar (a pickup) moves its clips, automation and tempo to the beat and
+leaves the meter map as it is, so the bars after it re-lay over what
+moved. Each edit is one undo step;
 the clip selection clears. Built on three operations in
 `src/arrange.zig` — take a copy of a span, remove a span, put a piece in
 at a downbeat.
