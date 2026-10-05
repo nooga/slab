@@ -145,9 +145,26 @@ fn lowShare(l: []const f64, r: ?[]const f64, rate: f64, t: f64) f32 {
     return if (all > 0) @floatCast(@min(1, 2 * lo / all)) else 0;
 }
 
-/// The start of the steepest 1 ms rise of the rectified signal near
-/// sample `t`: where the hit begins.
+/// The start of the steepest 1 ms rise near sample `t`: where the hit
+/// begins. Looked for twice, in the rectified signal and in its first
+/// difference (a high-pass: a held bass or a pad hardly moves it), and
+/// taken from whichever rise stands out more over its own level around
+/// it, so a hat over a loud bass is found on its own edge, a kick on its
+/// body.
 fn refine(l: []const f64, r: ?[]const f64, rate: f64, t: f64) f64 {
+    const plain = refineOn(l, r, rate, t, false);
+    const edge = refineOn(l, r, rate, t, true);
+    return if (edge.score > plain.score) edge.at else plain.at;
+}
+
+const Rise = struct { at: f64, score: f64 };
+
+fn level(l: []const f64, r: ?[]const f64, i: isize, diff: bool) f64 {
+    const x = mid(l, r, i);
+    return @abs(if (diff) x - mid(l, r, i - 1) else x);
+}
+
+fn refineOn(l: []const f64, r: ?[]const f64, rate: f64, t: f64, diff: bool) Rise {
     const e: isize = @max(1, @as(isize, @intFromFloat(ENV_SEC * rate)));
     const reach: isize = @intFromFloat(SEARCH_SEC * rate);
     const ti: isize = @intFromFloat(t);
@@ -155,17 +172,18 @@ fn refine(l: []const f64, r: ?[]const f64, rate: f64, t: f64) f64 {
     // rises at 0.
     const a: isize = @max(-e, ti - reach);
     const b = @min(@as(isize, @intCast(l.len)) - 2 * e, ti + reach);
-    if (b <= a) return @floatFromInt(@max(0, ti));
-    // Sliding sums of |x| over [i, i+e) and [i+e, i+2e).
+    if (b <= a) return .{ .at = @floatFromInt(@max(0, ti)), .score = 0 };
+    // Sliding sums over [i, i+e) and [i+e, i+2e).
     var s0: f64 = 0;
     var s1: f64 = 0;
     var j: isize = 0;
     while (j < e) : (j += 1) {
-        s0 += @abs(mid(l, r, a + j));
-        s1 += @abs(mid(l, r, a + e + j));
+        s0 += level(l, r, a + j, diff);
+        s1 += level(l, r, a + e + j, diff);
     }
     var best: isize = a;
     var best_rise = s1 - s0;
+    var total: f64 = 0;
     var i: isize = a;
     while (i < b) : (i += 1) {
         const rise = s1 - s0;
@@ -173,12 +191,14 @@ fn refine(l: []const f64, r: ?[]const f64, rate: f64, t: f64) f64 {
             best_rise = rise;
             best = i + e;
         }
-        s0 += @abs(mid(l, r, i + e)) - @abs(mid(l, r, i));
-        s1 += @abs(mid(l, r, i + 2 * e)) - @abs(mid(l, r, i + e));
+        total += s0;
+        s0 += level(l, r, i + e, diff) - level(l, r, i, diff);
+        s1 += level(l, r, i + 2 * e, diff) - level(l, r, i + e, diff);
     }
     // `best` is where the quiet window ends and the loud one begins; never
     // before the file.
-    return @floatFromInt(@max(0, best));
+    const mean = total / @as(f64, @floatFromInt(b - a));
+    return .{ .at = @floatFromInt(@max(0, best)), .score = best_rise / (mean + 1e-9) };
 }
 
 // ── Tests ────────────────────────────────────────────────────────────

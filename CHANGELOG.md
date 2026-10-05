@@ -29,10 +29,13 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   even from a full band with drums, and land as a pattern on a new Juno
   track. The clip is named after them ("C Am F G7"), and its Tune key
   is set to the song's.
-- **Drums to a kit**: right-click a drum loop or take and it becomes a
-  sampler kit and a pattern. Its hits are sorted into kick, snare, hats,
-  toms and percussion on General MIDI keys, and the cleanest hit of
-  each becomes its pad.
+- **Drums to a kit**: right-click a drum loop, take or stem and it
+  becomes a sampler kit and a pattern. Its hits are sorted into kick,
+  snare, hats, toms and percussion on General MIDI keys, and the cleanest
+  hit of each becomes its pad. Each hit is judged by what it adds over
+  what was already sounding, so bleed under it doesn't fool it. On a
+  whole song, Explode runs it on the separated drums: about 87% of hits
+  were named right on rendered songs.
 - **Split into stems**: take a song apart into drums, bass, other and
   vocals, each on its own track under the clip and playing in its place.
   It uses HTDemucs, a neural network, running on your Mac through
@@ -41,9 +44,21 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 - **Explode…**: one sheet for all of it. Pick stems, drums, bass,
   chords and melody, and a song comes back as stems, a drum kit with its
   pattern, the bassline and melody as notes, and the chords on a pad.
+- **Extract** and **Tempo from clip** submenus: an audio clip's
+  right-click gathers Audio to notes, Chords to notes, Drums to a kit,
+  Slice to a sampler track, Split into stems and Explode under
+  *Extract*.
+- **Song tempo to clip** and **Section tempo to clip** set the whole
+  song, or the clip's section, to the tempo the clip was played in. The
+  tempo comes from a warped clip's markers, or is detected from an
+  unwarped clip's hits. *Song follows the clip's changes* joins them
+  under *Tempo from clip*.
 
 ### Fixes
 
+- **Hits under a loud bass** are found on the hit, not up to 16 ms
+  off. That makes warp markers, BEATS slices and grooves from such
+  takes sit tighter.
 - **Slice to sampler on a track at its own tempo ratio** (3:2 and the
   like): the new pattern is as long as the clip, and the slices cover all
   of it, the last one included.

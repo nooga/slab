@@ -1376,6 +1376,8 @@ pub fn main(init: std.process.Init) !void {
             engine.tracks = tracks;
         } else if (ares.command == .audio_to_notes) {
             if (startAudioToNotes(&audio_pool, tracks, selected_clip, &status)) |j| notes_jobs.push(j);
+        } else if (ares.command == .song_tempo_to_clip or ares.command == .section_tempo_to_clip) {
+            tempoToClip(alloc, ares.command == .section_tempo_to_clip, &history, &status, &audio_pool, tracks, &transport, &markers, selected_clip, &dirty);
         } else if (ares.command == .explode or ares.command == .split_stems) {
             openExplode(&explode_dlg, &explode_uid, &stems_job, alloc, &audio_pool, tracks, selected_clip, ares.command == .split_stems, &status);
         } else if (ares.command == .chords_to_notes or ares.command == .drums_to_kit) {
@@ -1536,6 +1538,8 @@ pub fn main(init: std.process.Init) !void {
                 engine.tracks = tracks;
             } else if (cres.command == .audio_to_notes) {
                 if (startAudioToNotes(&audio_pool, tracks, selected_clip, &status)) |j| notes_jobs.push(j);
+            } else if (cres.command == .song_tempo_to_clip or cres.command == .section_tempo_to_clip) {
+                tempoToClip(alloc, cres.command == .section_tempo_to_clip, &history, &status, &audio_pool, tracks, &transport, &markers, selected_clip, &dirty);
             } else if (cres.command == .explode or cres.command == .split_stems) {
                 openExplode(&explode_dlg, &explode_uid, &stems_job, alloc, &audio_pool, tracks, selected_clip, cres.command == .split_stems, &status);
             } else if (cres.command == .chords_to_notes or cres.command == .drums_to_kit) {
@@ -3244,6 +3248,7 @@ fn drumsToKitOr(
     var pattern = clip_mod.Clip.init(clip.name(), clip.start_beat, clip.length_beats);
     errdefer pattern.deinit(alloc);
     for (hits.sec, 0..) |s, i| {
+        if (kit.group[i] == drums_mod.NONE) continue;
         const b = extract_mod.songBeat(clip, trate, tmap, s);
         if (b < -1e-6 or b >= clip.length_beats) continue;
         try pattern.addNote(alloc, .{
@@ -3505,6 +3510,120 @@ test "drums to a kit: pads on GM keys, every hit on its drum's key, the clip mut
         try std.testing.expectEqual(want, n.pitch);
         try std.testing.expect(@abs(n.start_beat - @as(f64, @floatFromInt(i)) * 0.5) < 0.01);
     }
+}
+
+/// The tempo a clip was played in: a warped clip's, from its markers over
+/// the part it plays (content beats over source seconds); an unwarped
+/// one's, detected from its hits.
+fn clipTempo(alloc: std.mem.Allocator, pool: *audio_pool_mod.AudioPool, t: *const track_mod.Track, clip: *const clip_mod.Clip) ?f64 {
+    if (clip.audio.warp and warp_mod.valid(clip.warp_markers.items)) {
+        const map = warp_mod.Map.init(clip.warp_markers.items);
+        const b0 = clip.audio.offset_beats;
+        const b1 = b0 + clip.length_beats * t.time.rate();
+        const secs = map.secAt(b1) - map.secAt(b0);
+        if (secs <= 0) return null;
+        return (b1 - b0) / secs * 60;
+    }
+    pool.waitFor(clip.audio.source);
+    const src = pool.get(clip.audio.source) orelse return null;
+    const h = src.hits() orelse return null;
+    const g = (tempo_detect.detect(alloc, h.sec, h.strength, h.low, src.seconds()) catch null) orelse return null;
+    return g.bpm;
+}
+
+/// Song (or section) tempo to the focused audio clip's: the song in one
+/// tempo, or the clip's section in it with the tempo after the section
+/// kept. One undo step.
+fn tempoToClip(
+    alloc: std.mem.Allocator,
+    section: bool,
+    history: *history_mod.History,
+    status: *StatusMessage,
+    pool: *audio_pool_mod.AudioPool,
+    tracks: []track_mod.Track,
+    transport: *transport_mod.Transport,
+    markers: *const markers_mod.Markers,
+    sel: ?clip_mod.ClipRef,
+    dirty: *bool,
+) void {
+    const ref = sel orelse return;
+    if (ref.track >= tracks.len or ref.clip >= tracks[ref.track].clips.items.len) return;
+    const clip = &tracks[ref.track].clips.items[ref.clip];
+    if (!clip.isAudio()) return;
+    const raw = clipTempo(alloc, pool, &tracks[ref.track], clip) orelse {
+        status.set("No tempo heard in {s}", .{clip.name()});
+        return;
+    };
+    // A ratio the song's tempo runs at for this track (docs/28 §Polytempo).
+    const bpm = @round(raw / tracks[ref.track].time.rate() * 100) / 100;
+    const before = document_mod.serialize(alloc, tracks, transport) catch return;
+    if (section) {
+        const end_song = lastClipEnd(tracks);
+        const i = markers.sectionAt(clip.start_beat, end_song) orelse {
+            alloc.free(before);
+            status.set("{s} isn't in a section", .{clip.name()});
+            return;
+        };
+        setTempoOver(transport, markers.sections[i].beat, markers.sectionEnd(i, end_song), bpm);
+        status.set("Section {s} at {d:.2} BPM, as {s}", .{ markers.sections[i].name.get(), bpm, clip.name() });
+    } else {
+        transport.tempo.set(&tempo_mod.TempoMap.constant(bpm));
+        status.set("The song at {d:.2} BPM, as {s}", .{ bpm, clip.name() });
+    }
+    history.pushUndo(alloc, before) catch alloc.free(before);
+    dirty.* = true;
+}
+
+/// One tempo from beat `a` to `b`, the tempo after `b` as it was.
+fn setTempoOver(transport: *transport_mod.Transport, a: f64, b: f64, bpm: f64) void {
+    const m = transport.tempo.edit();
+    const after = m.bpmAt(b);
+    var i = m.len;
+    while (i > 1) {
+        i -= 1;
+        if (m.points[i].beat >= a - 1e-6 and m.points[i].beat <= b + 1e-6) m.remove(i);
+    }
+    if (m.put(a, bpm)) |k| m.points[k].ramp = false;
+    if (m.find(b) == null) {
+        if (m.put(b, after)) |k| m.points[k].ramp = false;
+    }
+    transport.tempo.publish();
+}
+
+test "tempo to a clip: a warped clip's own tempo, over the song or over its section" {
+    const alloc = std.testing.allocator;
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    const col = c.rl.Color{ .r = 10, .g = 20, .b = 30, .a = 255 };
+    var tracks = [_]track_mod.Track{try track_mod.Track.init(alloc, "Loop", col, silent_machine)};
+    defer tracks[0].deinit(alloc);
+    // 8 beats in 5 s: played at 96 BPM.
+    var clip = clip_mod.Clip.initAudio("loop", 8, 8, 0);
+    clip.audio.warp = true;
+    try clip.warp_markers.appendSlice(alloc, &.{ .{ .sec = 0, .beat = 0 }, .{ .sec = 5, .beat = 8 } });
+    try tracks[0].addClip(alloc, clip);
+    try std.testing.expectApproxEqAbs(@as(f64, 96), clipTempo(alloc, &pool, &tracks[0], &tracks[0].clips.items[0]).?, 1e-9);
+
+    var transport = transport_mod.Transport{};
+    transport.tempo.set(&tempo_mod.TempoMap.constant(120));
+    var markers: markers_mod.Markers = .{};
+    _ = markers.addSection(0, "INTRO");
+    _ = markers.addSection(8, "VERSE");
+    _ = markers.addSection(24, "CHORUS");
+    var history: history_mod.History = .{};
+    defer history.deinit(alloc);
+    var status: StatusMessage = .{};
+    var dirty = false;
+    tempoToClip(alloc, true, &history, &status, &pool, &tracks, &transport, &markers, .{ .track = 0, .clip = 0 }, &dirty);
+    const m = transport.map();
+    try std.testing.expectApproxEqAbs(@as(f64, 120), m.bpmAt(4), 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 96), m.bpmAt(8), 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 96), m.bpmAt(23.9), 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 120), m.bpmAt(24), 1e-9);
+    try std.testing.expectEqual(@as(usize, 1), history.undo_stack.items.len);
+    tempoToClip(alloc, false, &history, &status, &pool, &tracks, &transport, &markers, .{ .track = 0, .clip = 0 }, &dirty);
+    try std.testing.expectApproxEqAbs(@as(f64, 96), transport.map().bpmAt(30), 1e-9);
+    try std.testing.expectEqual(@as(usize, 1), transport.map().len);
 }
 
 /// The song's tempo over a warped clip set so it plays at its own speed
@@ -6760,7 +6879,7 @@ fn executeEditCommand(
         },
         // `import_audio` is intercepted in the arrangement-result handler
         // (it needs the audio pool + file dialog); never reaches here.
-        .none, .copy, .select_all, .clear_selection, .rename, .file_new, .file_open, .file_save, .file_save_as, .file_clean_up, .render_audio, .import_audio, .bounce, .rebounce, .thaw, .save_to_library, .slice_to_sampler, .audio_to_notes, .chords_to_notes, .drums_to_kit, .explode, .split_stems => {},
+        .none, .copy, .select_all, .clear_selection, .rename, .file_new, .file_open, .file_save, .file_save_as, .file_clean_up, .render_audio, .import_audio, .bounce, .rebounce, .thaw, .save_to_library, .slice_to_sampler, .audio_to_notes, .chords_to_notes, .drums_to_kit, .explode, .split_stems, .song_tempo_to_clip, .section_tempo_to_clip => {},
     }
 
     if (changed) {

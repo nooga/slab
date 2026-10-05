@@ -27,6 +27,7 @@ const clip_mod = @import("../clip.zig");
 const ClipRef = clip_mod.ClipRef;
 const audio_pool_mod = @import("../audio_pool.zig");
 const clip_editor = @import("clip_editor.zig");
+const arrangement = @import("arrangement.zig");
 const warp_mod = @import("../warp.zig");
 const tune_mod = @import("../tune.zig");
 const pitch_mod = @import("../pitch.zig");
@@ -41,6 +42,8 @@ const MARK_H: f32 = 12;
 const MARK_KEY: u64 = 0xA0D0_3A2C_0000_0005;
 const MARK_MENU_KEY: u64 = 0xA0D0_3A2C_0000_0006;
 const WARP_MENU_KEY: u64 = 0xA0D0_3A2C_0000_0007;
+const EXTRACT_SUB: u32 = 0xE7;
+const TEMPO_SUB: u32 = 0xE8;
 const MAX_GAIN: f64 = 2.0;
 const PX_PER_BEAT_MAX: f32 = 400;
 
@@ -697,14 +700,16 @@ fn warpEdit(ui: *Ui, alloc: std.mem.Allocator, clip: *clip_mod.Clip, src: *const
         .{ .label = "Clear warp markers", .id = 6, .enabled = n > 2 },
         .{ .separator = true },
         .{ .label = "Extract groove", .id = 8, .enabled = has_hits and !rev },
-        .{ .label = "Song follows this clip", .id = 9 },
-        .{ .label = "Slice to a sampler track", .id = 10, .enabled = !rev },
-        .{ .label = "Audio to notes", .id = 11, .enabled = !rev },
-        .{ .label = "Chords to notes", .id = 12, .enabled = !rev },
-        .{ .label = "Drums to a kit", .id = 13, .enabled = !rev },
-        .{ .label = "Split into stems", .id = 14, .enabled = !rev },
-        .{ .label = "Explode\u{2026}", .id = 15, .enabled = !rev },
+        .{ .label = "Extract", .id = EXTRACT_SUB, .submenu = true, .enabled = !rev },
+        .{ .label = "Tempo from clip", .id = TEMPO_SUB, .submenu = true, .enabled = !rev },
     };
+    // The submenus, as the arrangement's (its commands go to main).
+    if (menu.subOpen(WARP_MENU_KEY, 0)) |sub| {
+        const ex = arrangement.extractItems(true);
+        const te = arrangement.tempoItems(true);
+        const items: []const menu.Item = if (sub == EXTRACT_SUB) &ex else &te;
+        if (menu.subPick(WARP_MENU_KEY, 1, items)) |i| res.command = items[i].command;
+    }
     if (menu.pick(WARP_MENU_KEY, &w_items)) |id| {
         const map = warp_mod.Map.init(clip.warp_markers.items);
         const bpm = map.bpmAt(clip.audio.offset_beats);
@@ -724,13 +729,6 @@ fn warpEdit(ui: *Ui, alloc: std.mem.Allocator, clip: *clip_mod.Clip, src: *const
                 _ = warp_mod.detectAndFollow(alloc, clip, h, source_sec) catch false;
             },
             8 => res.command = .extract_groove,
-            9 => res.command = .song_follows_clip,
-            10 => res.command = .slice_to_sampler,
-            11 => res.command = .audio_to_notes,
-            12 => res.command = .chords_to_notes,
-            13 => res.command = .drums_to_kit,
-            14 => res.command = .split_stems,
-            15 => res.command = .explode,
             else => {},
         }
     }

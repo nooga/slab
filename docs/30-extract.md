@@ -103,9 +103,8 @@ that. A three-minute song takes about 1.3 s.
 
 ## Audio to notes
 
-*Audio to notes* (the arrangement's right-click on an audio clip not
-reversed, and the audio clip editor's warp menu; `audioToNotes` in
-`main.zig`) works like *Slice to a sampler track* (docs/29):
+*Audio to notes* (an audio clip's **Extract** submenu, not reversed;
+`audioToNotes` in `main.zig`) works like *Slice to a sampler track* (docs/29):
 
 - the source is tracked once and cached on the source, like its hits.
   While that runs the status line says *Listening for notes…*, and the
@@ -130,8 +129,8 @@ it. Like arming, the switch is not saved.
 
 ## Chords and key
 
-*Chords to notes* is on an audio clip's right-click (in the arrangement,
-and in the audio clip editor's warp menu). The chords are in
+*Chords to notes* is in an audio clip's **Extract** submenu (its
+right-click in the arrangement, and the audio clip editor's warp menu). The chords are in
 `chords.zig` and the command is `chordsToNotesOr` in `main.zig`.
 
 **The chroma**: how much of each pitch class sounds, from the whole
@@ -197,38 +196,72 @@ Tune).
 
 ## Drums to pattern and kit
 
-*Drums to a kit* is on an audio clip's right-click, like *Chords to
-notes*. The classifier is in `drums.zig` and the command is
-`drumsToKitOr` in `main.zig`.
+*Drums to a kit* is in an audio clip's **Extract** submenu. The
+classifier is in `drums.zig` and the command is `drumsToKitOr` in
+`main.zig`. It works on the clip as it is, which is right for a drum
+loop or a drum stem. For a whole song, *Explode…* runs it on the drum
+stem Demucs separates.
 
-**What each hit is.** Each of the clip's hits (docs/29 §Transients) is
-described by four things:
+**What each hit adds.** Each hit (docs/29 §Transients) is described by
+what it adds to what was already sounding. A real drum stem always
+carries some low end (the last kick's tail, bass bleeding in) and a
+mix carries everything. Measured as plain content, a snare there reads
+as all bass; the first version did exactly that.
 
-- its low share (how much of its first 60 ms is under 150 Hz, already
-  found with the hits);
-- its spectral centroid and flatness over its first 43 ms (a half Hann
-  from the onset, 40 Hz–16 kHz);
-- how long it rings: 5 ms steps until 20 dB under its peak, cut at the
-  next hit.
+- **The spectra.** The spectrum over a full-Hann 2048-sample window
+  starting 256 samples before the hit, against the most each bin held
+  over four windows before it (0–12 ms apart). Per bin, so two notes
+  beating in a band don't count. The maximum over four, so a beat or a
+  partial's phase can't make a steady sound look like it gained. A bin
+  counts what it gained past 125% of that.
+- **Its features,** from those gains summed into third-octave bands
+  (40 Hz–16 kHz):
+  - the low share (under 150 Hz);
+  - the body share (150–600 Hz);
+  - where it centers (geometric, energy-weighted), and where above
+    150 Hz;
+  - how evenly it spreads over the top above 1 kHz (computed, but it
+    didn't tell drums apart: drum2's hats are metallic);
+  - how much louder the band under 150 Hz got.
+- **How long it rings**: 5 ms steps until what it added is 20 dB under
+  its peak, above the level before it. Cut at the next hit at least
+  half as strong, so a flicker in its own tail doesn't cut it. A bright
+  hit (center ≥ 2 kHz) is followed in the first difference, a
+  high-pass a bass under it hardly shows in.
+- **The hits themselves** are placed better too. `transients.refine`
+  now looks for the steepest rise both in the signal and in its first
+  difference, and takes the one that stands out more over its own
+  level. A hat over a loud bass used to land 7–16 ms off, its edge
+  lost in the bass's waveform, and now lands within 0.2 ms.
+
+**Naming.** Each hit is named on its own:
+
+- **kick**: low share ≥ 0.4, and the low band got at least 1.5×
+  louder (a new kick, not one still ringing with its pitch falling);
+- otherwise judged on what it adds above 150 Hz when the low share
+  came from a tail:
+  - **hat**: centered ≥ 4.5 kHz with little body; **open** if it rings
+    90 ms or more;
+  - **tom**: centered under 700 Hz;
+  - **snare**: body ≥ 0.15, or centered ≥ 900 Hz and ringing 30 ms or
+    more;
+  - **hat**: anything else centered ≥ 2 kHz;
+  - **perc**: the rest.
 
 **Grouping.**
 
-- The hits are clustered by k-means, seeded farthest-first. The
-  centroid counts double, because it tells drums apart most.
-- A group is added only while it explains at least a third of what is
-  still unexplained, up to 8 groups.
-- Each group is named by its median hit:
-  - **kick**: low share ≥ 0.45;
-  - **hat**: centroid ≥ 4.5 kHz, and an **open hat** if it rings
-    120 ms or more;
-  - **snare**: flatness ≥ 0.12 and centroid ≥ 900 Hz;
-  - **tom**: tonal and under 900 Hz;
-  - **perc**: anything else.
-- Each group gets its class's General MIDI key: kick 36 then 35, snare
+- A hit with onset strength under 0.06 is a flicker, not a drum: no
+  group, no note. A kick on a held bass hardly moves the flux and sits
+  at 0.08; Demucs' drum stems' flickers sit near 0.03.
+- A name's hits are split into two drums by k-means (on low share,
+  center, body and ring time) when that leaves a third of their spread
+  or less and both halves are played at least three times: a second
+  kick, a rim beside a snare. Up to 8 groups.
+- Each group gets its General MIDI key: kick 36 then 35, snare
   38/40/39, hat 42/44, open hat 46/49, toms 45 and up, perc 37 and up.
   A key two groups would share goes to the next free one.
-- Each group's pad is its strongest hit that has 150 ms or more before
-  the next.
+- Each group's pad is its strongest hit with 150 ms or more before the
+  next.
 - A hit is one drum: a hat played with a kick counts as the kick.
 
 **What it makes:**
@@ -246,16 +279,20 @@ described by four things:
 
 **Measured.**
 
-- A synthesized beat sorts into kick, snare, hat and open hat, every
-  hit right, each on 36/38/42/46, the pattern on the eighths.
-- drum2's kit gives the same: 32 of 32 hits.
-- Before the centroid counted double, snares played with hats were
-  merged into the hats.
+- A synthesized beat sorts every hit right, on 36/38/42/46, both alone
+  and over a held 55 Hz bass and a three-note chord.
+- Against the drum notes of two rendered songs (30 s each, Demucs' drum
+  stem):
+  - paper_boulevard: 185 of 212 hits right (87%), up from 138 (65%);
+  - voltage_riot: 182 of 211 (86%), up from 126 (59%).
+- Junk hits kept in the pattern on voltage_riot went from 83 to 24, at
+  the cost of 1 real hit.
+- What's still wrong is mostly quiet hats, called kick, snare or perc.
 
 ## Stems (models)
 
-*Split into stems* is on an audio clip's right-click, and so is
-*Explode…*. Stems take a song apart into **drums, bass, other and
+*Split into stems* is in an audio clip's **Extract** submenu, and so
+is *Explode…*. Stems take a song apart into **drums, bass, other and
 vocals** with HTDemucs (Défossez et al., Meta, MIT), run through Apple's
 CoreML.
 

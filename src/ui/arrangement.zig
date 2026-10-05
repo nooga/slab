@@ -788,6 +788,30 @@ fn focusedTuned(tracks: []const Track, focused: ?ClipRef) bool {
     return cl.isAudio() and cl.audio.tune.on;
 }
 
+const EXTRACT_SUB: u32 = 0xE7;
+const TEMPO_SUB: u32 = 0xE8;
+
+/// Extract's items (docs/30), ids their index; slicing wants a warp.
+pub fn extractItems(warped: bool) [6]menu.Item {
+    return .{
+        .{ .label = "Audio to notes", .id = 0, .command = .audio_to_notes },
+        .{ .label = "Chords to notes", .id = 1, .command = .chords_to_notes },
+        .{ .label = "Drums to a kit", .id = 2, .command = .drums_to_kit },
+        .{ .label = "Slice to a sampler track", .id = 3, .command = .slice_to_sampler, .enabled = warped },
+        .{ .label = "Split into stems", .id = 4, .command = .split_stems },
+        .{ .label = "Explode\u{2026}", .id = 5, .command = .explode },
+    };
+}
+
+/// The tempo from a clip; following its changes wants a warp.
+pub fn tempoItems(warped: bool) [3]menu.Item {
+    return .{
+        .{ .label = "Song tempo to clip", .id = 0, .command = .song_tempo_to_clip },
+        .{ .label = "Section tempo to clip", .id = 1, .command = .section_tempo_to_clip },
+        .{ .label = "Song follows the clip's changes", .id = 2, .command = .song_follows_clip, .enabled = warped },
+    };
+}
+
 /// The focused clip is audio, played forward.
 fn focusedForward(tracks: []const Track, focused: ?ClipRef) bool {
     const f = focused orelse return false;
@@ -1565,12 +1589,8 @@ pub fn draw(
         .{ .label = "Split at playhead", .command = .split_at_playhead, .enabled = has_selection },
         .{ .label = "Reverse", .command = .reverse, .enabled = hasSelectedAudioClips(tracks) },
         .{ .label = if (allSelectedAudioWarped(tracks)) "Unwarp" else "Warp", .command = .warp, .enabled = hasSelectedAudioClips(tracks) },
-        .{ .label = "Slice to a sampler track", .command = .slice_to_sampler, .enabled = focusedWarped(tracks, selected_clip.*) },
-        .{ .label = "Audio to notes", .command = .audio_to_notes, .enabled = focusedForward(tracks, selected_clip.*) },
-        .{ .label = "Chords to notes", .command = .chords_to_notes, .enabled = focusedForward(tracks, selected_clip.*) },
-        .{ .label = "Drums to a kit", .command = .drums_to_kit, .enabled = focusedForward(tracks, selected_clip.*) },
-        .{ .label = "Split into stems", .command = .split_stems, .enabled = focusedForward(tracks, selected_clip.*) },
-        .{ .label = "Explode\u{2026}", .command = .explode, .enabled = focusedForward(tracks, selected_clip.*) },
+        .{ .label = "Extract", .id = EXTRACT_SUB, .submenu = true, .enabled = focusedForward(tracks, selected_clip.*) },
+        .{ .label = "Tempo from clip", .id = TEMPO_SUB, .submenu = true, .enabled = focusedForward(tracks, selected_clip.*) },
         .{ .label = if (focusedTuned(tracks, selected_clip.*)) "Untune" else "Tune", .command = .tune, .enabled = focusedForward(tracks, selected_clip.*) },
         .{ .label = if (has_selection and allSelectedMuted(tracks)) "Unmute" else "Mute", .command = .mute_clips, .enabled = has_selection },
         .{ .label = "Delete", .command = .delete, .enabled = has_selection },
@@ -1590,6 +1610,14 @@ pub fn draw(
         .{ .label = "Clear solos & mutes", .command = .clear_solo_mute, .enabled = anySoloOrMute(tracks) },
     };
     result.command = menu.command(ARR_CONTEXT_KEY, &arr_context_items);
+    // The audio clip's submenus: what to take out of it, and the tempo.
+    if (menu.subOpen(ARR_CONTEXT_KEY, 0)) |sub| {
+        const warped = focusedWarped(tracks, selected_clip.*);
+        const ex = extractItems(warped);
+        const te = tempoItems(warped);
+        const items: []const menu.Item = if (sub == EXTRACT_SUB) &ex else &te;
+        if (menu.subPick(ARR_CONTEXT_KEY, 1, items)) |i| result.command = items[i].command;
+    }
     if (result.command != .none) {
         result.command_beat = context_target.beat;
         result.command_track = context_target.track;

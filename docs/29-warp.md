@@ -353,7 +353,20 @@ hit within 15 % of where the period says, the period following each
 beat found), and lays a marker on every bar: the take stays on the grid
 where it sped up or slowed down.
 
-**Song follows this clip** (Logic's Smart Tempo, the other way round):
+**Tempo from clip** (the clip's right-click submenu; `tempoToClip` in
+`main.zig`) sets the song's tempo from a clip.
+
+- **The clip's tempo.** A warped clip's is what its markers say it was
+  played at over the part it plays: content beats over source seconds.
+  An unwarped clip's is detected from its hits (§Transients). Either is
+  divided by the track's tempo ratio.
+- **Song tempo to clip** makes the whole song that one tempo.
+- **Section tempo to clip** sets it from the clip's section's start to
+  its end, and keeps the tempo that was in force after the section.
+- Each is one undo step.
+
+**Song follows the clip's changes** (the third item; Logic's Smart
+Tempo, the other way round):
 the song's tempo over the clip becomes a step at each of its markers at
 that segment's SEG BPM (over the track's ratio), the tempo after it what
 it was, so the clip plays at its own speed and everything else (notes,
@@ -411,6 +424,7 @@ with `warp=True` meaning "detect".
    import (built).
 6. **Audio on the time axis**: warped clips follow the groove (composed
    into their markers), *Extract groove* from hits, *Follow its beats*,
-   *Song follows this clip* (built).
+   *Song follows the clip's changes*, *Song/Section tempo to clip*
+   (built).
 7. **Slice to drum machine**: a warped clip's slices to sampler pads and
    a pattern that plays them (built).

@@ -65,6 +65,8 @@ pub const EditCommand = enum {
     drums_to_kit,
     explode,
     split_stems,
+    song_tempo_to_clip,
+    section_tempo_to_clip,
     tune,
 };
 
