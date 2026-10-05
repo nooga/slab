@@ -6,6 +6,12 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Afterimage Express factory demo:** a complete 118 BPM synthwave
+  instrumental with extended chords, driving arps, shared effects and
+  section automation. Open it from the factory DEMOS collection. Its
+  eleven instruments use the Afterimage bank; all notes and processing
+  remain editable, with no extra samples or packs to download.
+
 - **Afterimage factory bank:** eleven instrument presets for outrun and
   synthwave: four drum kits focused on kick, snare, hats and toms, a bass,
   plucked arp, FM glass, wide pad, brass, mono lead and noise sweep. Find
