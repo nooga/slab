@@ -353,6 +353,8 @@ pub fn appendClip(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const t
         if (clip.audio.warp) {
             try appendFmt(alloc, out, "\"warp\":{{\"mode\":\"{s}\",\"offset\":{d},", .{ @tagName(clip.audio.mode), clip.audio.offset_beats });
             if (clip.audio.transpose != 0 or clip.audio.fine != 0) try appendFmt(alloc, out, "\"transpose\":{d},\"fine\":{d},", .{ clip.audio.transpose, clip.audio.fine });
+            if (clip.audio.mode == .voice) try appendFmt(alloc, out, "\"grain\":{d},", .{clip.audio.grain_ms});
+            if (clip.audio.mode == .smear) try appendFmt(alloc, out, "\"size\":{d},", .{clip.audio.smear_size});
             if (clip.audio.mode == .beats) try appendFmt(alloc, out, "\"preserve\":\"{s}\",\"gap\":\"{s}\",\"decay\":{d},", .{ @tagName(clip.audio.preserve), @tagName(clip.audio.gap), clip.audio.decay });
             try out.appendSlice(alloc, "\"markers\":[");
             for (clip.warp_markers.items, 0..) |mk, i| {
@@ -1303,6 +1305,8 @@ fn applyClip(alloc: std.mem.Allocator, t: *track_mod.Track, co: std.json.ObjectM
             aclip.audio.preserve = warp_mod.parseEnum(warp_mod.Preserve, strOf(objGet(wo, "preserve")) orelse "") orelse .hits;
             aclip.audio.gap = warp_mod.parseEnum(warp_mod.Gap, strOf(objGet(wo, "gap")) orelse "") orelse .cut;
             aclip.audio.decay = if (objGet(wo, "decay")) |x| asU8(x) else 100;
+            aclip.audio.grain_ms = if (objGet(wo, "grain")) |x| std.math.clamp(asU8(x), 10, 80) else 40;
+            aclip.audio.smear_size = if (objGet(wo, "size")) |x| @min(asU8(x), 3) else 1;
             aclip.audio.transpose = if (objGet(wo, "transpose")) |x| @intFromFloat(std.math.clamp(asF64(x), -48, 48)) else 0;
             aclip.audio.fine = if (objGet(wo, "fine")) |x| @intFromFloat(std.math.clamp(asF64(x), -50, 50)) else 0;
             if (objGet(wo, "markers")) |mv| if (mv == .array) for (mv.array.items) |pv| {

@@ -14,8 +14,7 @@ pub const Marker = struct {
     beat: f64,
 };
 
-/// How a warped clip keeps time (docs/29 §The algorithms). TAPE, BEATS and
-/// MIX are built; VOICE and SMEAR play as MIX until they are.
+/// How a warped clip keeps time (docs/29 §The algorithms).
 pub const Mode = enum(u8) {
     tape,
     beats,

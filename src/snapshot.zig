@@ -95,6 +95,8 @@ pub const AudioClipSnap = struct {
     /// TRANSPOSE and FINE as a ratio; the clip's id, for its stretcher.
     pitch: f64 = 1,
     uid: u32 = 0,
+    grain_ms: u8 = 40,
+    smear_size: u8 = 1,
 };
 
 /// A lane resolved for the audio thread: the target machine slot and its

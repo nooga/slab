@@ -302,8 +302,9 @@ pub fn draw(
 }
 
 /// The warp mode, and BEATS' own settings (docs/29 §BEATS).
-const MODES = [_][]const u8{ "TAPE", "BEATS", "MIX" };
-const MODE_OF = [_]warp_mod.Mode{ .tape, .beats, .mix };
+const MODES = [_][]const u8{ "TAPE", "BEATS", "MIX", "VOICE", "SMEAR" };
+const MODE_OF = [_]warp_mod.Mode{ .tape, .beats, .mix, .voice, .smear };
+const SIZES = [_][]const u8{ "0.3S", "0.7S", "1.4S", "2.7S" };
 const PRESERVES = [_][]const u8{ "HITS", "1/16", "1/8", "1/4" };
 const GAPS = [_][]const u8{ "CUT", "LOOP" };
 
@@ -317,18 +318,23 @@ fn warpTools(ui: *Ui, row: *Rect, clip: *clip_mod.Clip) void {
             _ = rw.cutLeft(4);
         }
     };
-    var mode: u8 = switch (a.mode) {
-        .tape => 0,
-        .beats => 1,
-        else => 2,
-    };
-    sel.one(ui, row, 56, "mode", &mode, &MODES, "TAPE: speed and pitch together. BEATS: cut at the hits, for drums. MIX: keeps pitch, for anything");
+    var mode: u8 = @intCast(std.mem.indexOfScalar(warp_mod.Mode, &MODE_OF, a.mode) orelse 0);
+    sel.one(ui, row, 56, "mode", &mode, &MODES, "TAPE: speed and pitch together. BEATS: cut at the hits, for drums. MIX: keeps pitch, for anything. VOICE: one note at a time, no phasing. SMEAR: extreme stretch into texture");
     a.mode = MODE_OF[mode];
     if (a.mode == .tape) return;
     // TRANSPOSE and FINE drag: up for higher, double-click for 0.
     dragNum(ui, row, "transpose", &a.transpose, -48, 48, 0.1, "ST", "Transpose in semitones, apart from time; double-click 0");
     dragNum(ui, row, "fine", &a.fine, -50, 50, 0.25, "CT", "Fine tune in cents; double-click 0");
     _ = row.cutLeft(4);
+    if (a.mode == .voice) {
+        dragNum(ui, row, "grain", &a.grain_ms, 10, 80, 0.25, "MS", "Grain: shorter for high voices, longer for low ones; double-click 40");
+        if (a.grain_ms == 0) a.grain_ms = 40;
+        return;
+    }
+    if (a.mode == .smear) {
+        sel.one(ui, row, 48, "size", &a.smear_size, &SIZES, "Window: longer smears more");
+        return;
+    }
     if (a.mode != .beats) return;
     var p: u8 = @intFromEnum(a.preserve);
     sel.one(ui, row, 48, "preserve", &p, &PRESERVES, "Where BEATS cuts: at the hits, or every 1/16, 1/8, 1/4");
@@ -352,7 +358,9 @@ fn warpTools(ui: *Ui, row: *Rect, clip: *clip_mod.Clip) void {
     _ = row.cutLeft(6);
 }
 
-fn dragNum(ui: *Ui, row: *Rect, key: []const u8, v: *i8, lo: i8, hi: i8, per_px: f32, unit: []const u8, tip: []const u8) void {
+/// A number dragged up and down; double-click resets it (to 0, which
+/// the caller may map to its own default).
+fn dragNum(ui: *Ui, row: *Rect, key: []const u8, v: anytype, lo: @TypeOf(v.*), hi: @TypeOf(v.*), per_px: f32, unit: []const u8, tip: []const u8) void {
     const r = row.cutLeft(48);
     const wid = ui.id(key);
     const b = ui.behavior(wid, r, false);
@@ -365,7 +373,7 @@ fn dragNum(ui: *Ui, row: *Rect, key: []const u8, v: *i8, lo: i8, hi: i8, per_px:
         }
     }
     var buf: [12]u8 = undefined;
-    const s = std.fmt.bufPrint(&buf, "{s}{d}{s}", .{ if (v.* > 0) "+" else "", v.*, unit }) catch "";
+    const s = std.fmt.bufPrint(&buf, "{s}{d}{s}", .{ if (lo < 0 and v.* > 0) "+" else "", v.*, unit }) catch "";
     ctl.display(ui, r.insetXY(0, @divFloor(r.h - ctl.displayHeight(false), 2)), s, .{ .align_ = .right, .flush = true, .color = if (ui.active == wid) ui_style.vfd_hi else ui_style.vfd });
     if (ui.isHot(wid)) ui.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 1);
     menu.tip(ui, r, tip);

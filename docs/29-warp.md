@@ -5,9 +5,9 @@ the grid: warp markers, the stretch algorithms that play it at any
 tempo and pitch, transients, and audio that follows the tempo map, the
 groove and a track's own tempo.
 
-Status: phases 1–3 built (2026-10-05): the model, TAPE, ⌘-stretch, the
+Status: phases 1–4 built (2026-10-05): the model, TAPE, ⌘-stretch, the
 band-limited reader; transients and BEATS; the stretch core, MIX,
-TRANSPOSE and FINE. Before it, an audio clip only played a window of
+TRANSPOSE and FINE; VOICE and SMEAR. Before it, an audio clip only played a window of
 its source at native rate (docs/28 §The beat axis), and that is still
 what an unwarped clip does.
 
@@ -210,12 +210,16 @@ mirrored.
 
 ### VOICE (WSOLA)
 
-Output is built from grains (window 40 ms by default, GRAIN 10–100 ms,
-hop half of it). Each grain is read near the source position the map
-gives, at the offset within ±10 ms whose cross-correlation with the
-natural continuation of the previous grain is highest, so periods line
-up and there is no phasing. One pitch at a time: chords smear into a
-chorus.
+Output is built from Hann grains (**GRAIN** 10–80 ms, 40 by default;
+hop half of it, so they sum to one) on a grid anchored at the clip's
+start, on the same stretchers as MIX. Each grain is read near the
+source position the maps give, at the offset within ±10 ms whose
+waveform best matches what would naturally follow the last grain (a
+coarse search every 4 samples on a template decimated by 4, then ±3 at
+every sample), so periods line up and there is no phasing. Pitch reads
+the grains at `step`, like MIX. One pitch at a time: chords smear into a
+chorus. Longer grains suit low voices; at 96 kHz the grain is capped at
+40 ms (the ring).
 
 ### MIX (the phase vocoder)
 
@@ -250,14 +254,19 @@ with compile-time twiddles: no allocation, no trig per transform).
   now; keeping them in place (PRESERVE FORMANTS) is later.
 - At ratio 1 and no transpose it gives the source back: a stereo mix
   through MIX nulls against TAPE to −100 dB.
-- VOICE and SMEAR play as MIX until they're built.
 
 ### SMEAR (Paulstretch)
 
-Window 0.25–2 s (SIZE), each frame's phases randomized from a seeded
-generator, overlap-added with a smooth window. Only for stretching,
+Windows of 0.34, 0.68, 1.37 or 2.73 s (**SIZE**: 16384 to 131072
+samples, a run-time power-of-two FFT), hop a quarter. Each frame keeps
+the source's magnitudes and draws every bin's phase at random, both
+channels turned alike so the image holds; frames overlap-add with a
+gain of 4/3 (unrelated frames add in power), keeping the source's
+level. The random phases come from a hash of the clip and the frame
+number, so any start renders the same samples. Meant for stretching
 ×2 and up: the attack and the rhythm dissolve into the sound's color,
-by design. Seeded, so it renders the same every time.
+by design. A track gets two smearers (about 2.5 MB each) when it first
+plays SMEAR.
 
 ## On the audio thread
 
@@ -313,7 +322,7 @@ with `warp=True` meaning "detect".
 3. **The stretch core and MIX**: the FFT, the stretcher bank, the
    phase-locked vocoder with twin frames, transient resets, stereo,
    TRANSPOSE and FINE (built).
-4. **VOICE and SMEAR**.
+4. **VOICE and SMEAR** (built).
 5. **Warp editing**: markers and pseudo-markers in the audio clip
    editor, quantize to the grid, tempo detection and auto-warp on
    import.

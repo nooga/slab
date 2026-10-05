@@ -2082,9 +2082,20 @@ fn mixWarped(
         return;
     }
     if (warp_mod.stretches(clip.mode)) if (snap.stretch) |bank| {
-        if (bank.get(clip.uid, @intFromFloat(@floor(clip_start)))) |st| {
-            mixStretched(st, clip, wmap, data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r);
-            return;
+        const t0: i64 = @intFromFloat(@floor(clip_start));
+        if (clip.mode == .smear) {
+            const n = stretch_mod.SMEAR_SIZES[@min(clip.smear_size, stretch_mod.SMEAR_SIZES.len - 1)];
+            if (bank.getSmear(clip.uid, t0, n)) |sm| {
+                mixStretched(sm, clip, wmap, data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r);
+                return;
+            }
+        } else {
+            const kind: stretch_mod.Kind = if (clip.mode == .voice) .voice else .mix;
+            const grain: i64 = @intFromFloat(@as(f64, @floatFromInt(clip.grain_ms)) * @as(f64, @floatFromInt(sample_rate)) / 1000);
+            if (bank.get(clip.uid, t0, kind, grain)) |st| {
+                mixStretched(st, clip, wmap, data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r);
+                return;
+            }
         }
     };
     // No stretcher free: it plays as TAPE.
@@ -2119,10 +2130,11 @@ fn mixWarped(
     }
 }
 
-/// MIX (docs/29 §MIX): the clip through its stretcher, whose frames ask
-/// the maps where the source is at each output time.
+/// MIX, VOICE and SMEAR (docs/29 §The algorithms): the clip through its
+/// stretcher or smearer, whose frames ask the maps where the source is at
+/// each output time.
 fn mixStretched(
-    st: *stretch_mod.Stretcher,
+    st: anytype,
     clip: snap_mod.AudioClipSnap,
     wmap: warp_mod.Map,
     data: [*]const f64,
@@ -2168,7 +2180,7 @@ fn mixStretched(
         }
     };
     const ctx = Ctx{ .clip = clip, .wmap = wmap, .map = map, .sr = sample_rate, .step = clip.source_rate / engine_rate * clip.pitch };
-    const src = stretch_mod.Source{ .l = data, .r = clip.data_r, .len = clip.len, .reversed = clip.reversed };
+    const src = stretch_mod.Source{ .l = data, .r = clip.data_r, .len = clip.len, .reversed = clip.reversed, .rate = clip.source_rate };
     const fade_in = clip.fade_in_samples / clip.source_rate * engine_rate;
     const fade_out = clip.fade_out_samples / clip.source_rate * engine_rate;
     var i: usize = @intFromFloat(@max(0, @ceil(lo - block_lo)));

@@ -236,7 +236,10 @@ pub const Track = struct {
         self.lanes.deinit(alloc);
         alloc.destroy(self.snap[0]);
         alloc.destroy(self.snap[1]);
-        if (self.stretch) |b| std.heap.page_allocator.destroy(b);
+        if (self.stretch) |b| {
+            b.deinit();
+            std.heap.page_allocator.destroy(b);
+        }
     }
 
     pub fn replaceMachine(self: *Track, alloc: std.mem.Allocator, mach: machine.Machine) void {
@@ -582,6 +585,8 @@ pub const Track = struct {
                     snap.decay = @as(f32, @floatFromInt(@min(clip.audio.decay, 100))) / 100;
                     snap.pitch = clip.audio.pitch();
                     snap.uid = clip.uid;
+                    snap.grain_ms = clip.audio.grain_ms;
+                    snap.smear_size = clip.audio.smear_size;
                     if (warp_mod.stretches(clip.audio.mode) and self.stretch == null) {
                         if (std.heap.page_allocator.create(stretch_mod.Bank)) |b| {
                             b.* = .{};
@@ -589,6 +594,7 @@ pub const Track = struct {
                             dst.stretch = b;
                         } else |_| {}
                     }
+                    if (clip.audio.mode == .smear) if (self.stretch) |b| b.needSmear();
                     if (pool.get(clip.audio.source)) |src| if (src.onsets()) |on| {
                         snap.onsets = on.ptr;
                         snap.onset_count = @intCast(on.len);

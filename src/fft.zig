@@ -94,6 +94,62 @@ pub fn Fft(comptime n: usize) type {
     };
 }
 
+/// Twiddles for transforms of any power-of-two size up to `max`, made at
+/// run time (on the UI thread) for sizes too big to build at compile time.
+pub fn twiddles(t: []C) void {
+    const max = t.len * 2;
+    for (t, 0..) |*v, k| {
+        const a = -2.0 * std.math.pi * @as(f64, @floatFromInt(k)) / @as(f64, @floatFromInt(max));
+        v.* = .{ .re = @floatCast(@cos(a)), .im = @floatCast(@sin(a)) };
+    }
+}
+
+/// In place, any power-of-two `x.len` up to the table's; the inverse is
+/// scaled by 1/n.
+pub fn transform(x: []C, tw: []const C, inv: bool) void {
+    const n = x.len;
+    var j: usize = 0;
+    for (1..n) |i| {
+        var bit = n >> 1;
+        while (j & bit != 0) : (bit >>= 1) j ^= bit;
+        j |= bit;
+        if (i < j) std.mem.swap(C, &x[i], &x[j]);
+    }
+    const max = tw.len * 2;
+    var len: usize = 2;
+    while (len <= n) : (len <<= 1) {
+        const half = len / 2;
+        const stride = max / len;
+        var i: usize = 0;
+        while (i < n) : (i += len) {
+            for (0..half) |k| {
+                var w = tw[k * stride];
+                if (inv) w.im = -w.im;
+                const u = x[i + k];
+                const v = x[i + k + half].mul(w);
+                x[i + k] = u.add(v);
+                x[i + k + half] = u.sub(v);
+            }
+        }
+    }
+    if (inv) {
+        const sc: f32 = 1.0 / @as(f32, @floatFromInt(n));
+        for (x) |*v| v.* = v.scale(sc);
+    }
+}
+
+test "fft: the run-time transform agrees with the fixed one" {
+    var tw: [128]C = undefined;
+    twiddles(&tw);
+    var a: [64]C = undefined;
+    var rng = std.Random.DefaultPrng.init(9);
+    for (&a) |*v| v.* = .{ .re = rng.random().float(f32), .im = rng.random().float(f32) };
+    var b = a;
+    Fft(64).forward(&a);
+    transform(&b, &tw, false);
+    for (a, b) |x, y| try std.testing.expectApproxEqAbs(x.re, y.re, 1e-4);
+}
+
 test "fft: matches a direct DFT and inverts" {
     const F = Fft(64);
     var x: [64]C = undefined;

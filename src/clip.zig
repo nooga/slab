@@ -57,6 +57,10 @@ pub const AudioRef = struct {
     /// TAPE: semitones and cents.
     transpose: i8 = 0,
     fine: i8 = 0,
+    /// VOICE's grain in ms (10–80), SMEAR's window (stretch.SMEAR_SIZES
+    /// index: 0.34, 0.68, 1.37, 2.73 s).
+    grain_ms: u8 = 40,
+    smear_size: u8 = 1,
 
     pub fn pitch(self: AudioRef) f64 {
         if (self.mode == .tape) return 1;

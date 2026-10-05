@@ -726,7 +726,7 @@ class Track:
     def audio(self, path, section=None, at_bar=0, at_beat=None, start_sec=0.0, dur_sec=None,
               gain=1.0, fade_in=0.0, fade_out=0.0, reverse=False, name=None,
               warp=None, fit_beats=None, mode="tape", preserve="hits", gap="cut", decay=100,
-              transpose=0, fine=0):
+              transpose=0, fine=0, grain=40, size=0.7):
         """Place a WAV: at a section's start plus `at_bar` bars, or at
         `at_beat`. dur_sec defaults to the rest of the file. reverse=True
         plays it backwards (a swell into the downbeat: end it on the bar).
@@ -735,7 +735,9 @@ class Track:
         beats instead. mode: "tape" (speed and pitch together) or "beats"
         (cut at the hits, each at its own speed: drums), with preserve=
         "hits" | "1/16" | "1/8" | "1/4", gap="cut" | "loop" and decay=1..100
-        (% of each slice that sounds), or "mix" (keeps pitch, for anything).
+        (% of each slice that sounds), "mix" (keeps pitch, for anything),
+        "voice" (one note at a time, grain= 10..80 ms) or "smear" (extreme
+        stretch into texture, size= 0.3 | 0.7 | 1.4 | 2.7 s windows).
         transpose= semitones and fine= cents move the pitch apart from time
         (not in "tape")."""
         where = f"track {self.name} audio {path}"
@@ -750,8 +752,13 @@ class Track:
             raise SlabError(f"{where}: nothing to play (start_sec {start_sec} past the end)")
         bb = self.song.bar_beats
         start = at_beat if at_beat is not None else (section.start if section else 0) + at_bar * bb
-        if mode not in ("tape", "beats", "mix"):
-            raise SlabError(f"{where}: mode {mode!r}: \"tape\", \"beats\" or \"mix\" so far")
+        if mode not in ("tape", "beats", "mix", "voice", "smear"):
+            raise SlabError(f"{where}: mode {mode!r}: tape, beats, mix, voice or smear")
+        if not 10 <= grain <= 80:
+            raise SlabError(f"{where}: grain {grain} ms must be 10..80")
+        sizes = {0.3: 0, 0.7: 1, 1.4: 2, 2.7: 3}
+        if size not in sizes:
+            raise SlabError(f"{where}: size {size} s: one of 0.3, 0.7, 1.4, 2.7")
         if not -48 <= transpose <= 48 or not -50 <= fine <= 50:
             raise SlabError(f"{where}: transpose -48..48 semitones, fine -50..50 cents")
         if (transpose or fine) and mode == "tape":
@@ -766,6 +773,10 @@ class Track:
         beats = {"preserve": preserves[preserve], "gap": gap, "decay": int(decay)} if mode == "beats" else {}
         if transpose or fine:
             beats.update(transpose=int(transpose), fine=int(fine))
+        if mode == "voice":
+            beats["grain"] = int(grain)
+        if mode == "smear":
+            beats["size"] = sizes[size]
         if mode != "tape" and warp is None and fit_beats is None:
             raise SlabError(f"{where}: mode={mode!r} needs warp= or fit_beats=")
         if warp is True:

@@ -28,12 +28,16 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   a phase vocoder locked to the spectrum's peaks, resetting on hits,
   holding the stereo image. Warping a clip now picks BEATS for short
   loops full of hits and MIX for everything else.
-- **TRANSPOSE and FINE** in BEATS and MIX: pitch apart from time.
+- **VOICE mode** for vocals, bass and leads (one note at a time): grains
+  matched to each other, so no phasing; GRAIN sets their length.
+- **SMEAR mode**: Paulstretch-style extreme stretching into texture, with
+  a SIZE for how much it smears; renders the same every time.
+- **TRANSPOSE and FINE** in every mode but TAPE: pitch apart from time.
 - Slab finds the hits in every audio file, shown as ticks in the audio
   clip editor.
 - slabkit: `track.audio(..., warp=bpm)` and `fit_beats=`, `mode="beats"`
-  with `preserve=`, `gap=`, `decay=`, `mode="mix"`, `transpose=`,
-  `fine=`.
+  with `preserve=`, `gap=`, `decay=`, `mode="mix"`, `"voice"` with
+  `grain=`, `"smear"` with `size=`, `transpose=`, `fine=`.
 
 ## 0.0.7 — 2026-10-05
 
