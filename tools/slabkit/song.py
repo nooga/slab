@@ -114,8 +114,8 @@ class Clip:
         where = f"clip {self.track.name}/{self.name} automation {target}"
         _add_points(self.lanes, self.track._auto_target(target), where, points)
         for b, *_ in self.lanes[self.track._auto_target(target)[0]]:
-            if b > self.length + 1e-9:
-                self.song.warn(f"{where}: point at beat {b:g} is past the clip's end ({self.length:g}) and won't play")
+            if b > self.span + 1e-9:
+                self.song.warn(f"{where}: point at beat {b:g} is past the clip's end ({self.span:g}) and won't play")
         return self
 
     def ramp(self, target, frm, to, v0, v1, tension=0.0):
@@ -182,7 +182,15 @@ class Clip:
 
     @property
     def bar(self):
-        return self.song.bar_beats
+        """Beats in a bar of the track's meter (its own, or the song's)."""
+        return self.track.bar_beats
+
+    @property
+    def span(self):
+        """The clip's length in its track's own beats: with a tempo ratio
+        p:q (Track.time) they run p/q as fast as the song's, so a clip
+        `length` song beats long holds length·p/q of them (docs/28)."""
+        return self.length * self.track.rate
 
     def __repr__(self):
         return f"Clip({self.track.name}/{self.name}, beat {self.start:g}+{self.length:g}, {len(self.notes)} notes)"
@@ -232,7 +240,7 @@ class Clip:
         The 303 idiom: accents and slides make the line, not the notes."""
         toks = text.replace("|", " ").split()
         plen = len(toks) * step
-        span = (bars * self.bar) if bars else self.length - at
+        span = (bars * self.bar) if bars else self.span - at
         reps = max(1, int(round(span / plen)))
         parsed = []  # (step_index, pitch, steps_long, accent, slide)
         for i, tok in enumerate(toks):
@@ -262,7 +270,7 @@ class Clip:
         snare, clap, ch, oh, tom), common aliases (bd, sd, hh…), or a MIDI
         pitch. X accent, x hit, o ghost; `vel` overrides the char map."""
         vmap = dict(rhythm.VEL, **(vel or {}))
-        span = (bars * self.bar) if bars else self.length - at
+        span = (bars * self.bar) if bars else self.span - at
         for lane, pat in lanes.items():
             pitch = self.track.drum_pitch(lane)
             plen = rhythm.length(pat, step)
@@ -284,10 +292,10 @@ class Clip:
             prog = [(c, None) if isinstance(c, Chord) else c for c in prog]
         bpc = beats_per_chord or self.bar
         t, i = at, 0
-        while t < self.length - 1e-9:
+        while t < self.span - 1e-9:
             ch, beats = prog[i % len(prog)]
             ln = beats or bpc
-            yield ch, t, min(ln, self.length - t)
+            yield ch, t, min(ln, self.span - t)
             t += ln
             i += 1
 
@@ -374,9 +382,9 @@ class Clip:
         base = [n for n in self.notes if n["start"] < every - 1e-9]
         self.notes = list(base)
         k = every
-        while k < self.length - 1e-9:
+        while k < self.span - 1e-9:
             for n in base:
-                if n["start"] + k < self.length - 1e-9:
+                if n["start"] + k < self.span - 1e-9:
                     self.notes.append(dict(n, start=n["start"] + k))
             k += every
         return self
@@ -553,6 +561,40 @@ class Track:
 
     def __repr__(self):
         return f"Track({self.name}: {self.machine.id}, {len(self.clips)} clips)"
+
+    def time(self, meter=None, ratio=None):
+        """The track's own time (docs/28 §Polymeter and polytempo):
+        meter=(5, 4) counts its bars in 5/4 (its machines' bar position,
+        clip.bar); ratio=(3, 2) runs its beats 3/2 as fast as the song's
+        from each clip's start, so its clips hold 3/2 as many of them
+        (write their notes in its own beats; clip.span is how many)."""
+        if meter is not None:
+            if not (1 <= meter[0] <= 32 and meter[1] in (1, 2, 4, 8, 16, 32)):
+                raise SlabError(f"track {self.name}: meter {meter}?")
+            self.meter = tuple(meter)
+        if ratio is not None:
+            if not (1 <= ratio[0] <= 16 and 1 <= ratio[1] <= 16):
+                raise SlabError(f"track {self.name}: ratio {ratio} must be p:q with 1..16")
+            self.ratio = tuple(ratio)
+        return self
+
+    @property
+    def rate(self):
+        r = getattr(self, "ratio", None)
+        return r[0] / r[1] if r else 1.0
+
+    @property
+    def bar_beats(self):
+        m = getattr(self, "meter", None)
+        return m[0] * 4 / m[1] if m else self.song.bar_beats
+
+    def _time_json(self):
+        out = {}
+        if getattr(self, "meter", None):
+            out["meter"] = list(self.meter)
+        if getattr(self, "ratio", None) and self.ratio[0] != self.ratio[1]:
+            out["ratio"] = list(self.ratio)
+        return {"time": out} if out else {}
 
     def groove(self, name=None, amount=1.0, shift_ms=0.0):
         """How this track plays its notes (docs/28 §Groove): a groove by
@@ -765,8 +807,8 @@ class Track:
             for n in c.notes:
                 if not 0 <= n["pitch"] <= 127:
                     raise SlabError(f"{where}/{c.name}: pitch {n['pitch']} out of MIDI range")
-                if n["start"] >= c.length - 1e-9 or n["start"] < 0:
-                    self.song.warn(f"{where}/{c.name}: note at beat {n['start']:g} is outside the clip (0..{c.length:g}) and won't play")
+                if n["start"] >= c.span - 1e-9 or n["start"] < 0:
+                    self.song.warn(f"{where}/{c.name}: note at beat {n['start']:g} is outside the clip (0..{c.span:g}) and won't play")
             if self.machine.mono and not self.machine.note_pitch:
                 starts = {}
                 for n in c.notes:
@@ -786,6 +828,7 @@ class Track:
             "clips": [c.to_json() for c in sorted(self.clips, key=lambda c: c.start)],
             **({"automation": _lanes_json(self.lanes)} if self.lanes else {}),
             **({"groove": self.groove_json} if getattr(self, "groove_json", None) else {}),
+            **self._time_json(),
             **self._routing_json(index or {}),
         }
 

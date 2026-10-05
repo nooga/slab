@@ -20,6 +20,7 @@ verse = song.section("verse", 8)                     # sections run end to end
 chorus = song.section("chorus", 8)
 song.tempo(16, 132, ramp=True).tempo(24, 140)       # changes at bar starts (docs/28)
 # Song("Title", groove="MPC 58 1/16"); section(..., groove="NONE"); track.groove("SAMBA 1/16", amount=0.7, shift_ms=-5)
+# track.time(meter=(5, 4), ratio=(3, 2)): its own bars and a tempo ratio; clip.span = its beats in the clip
 
 drums = song.track("KIT", "drum2", "gated-snare-kit", volume=1.0,
                    params=dict(snare_decay=0.26),    # prefix optional, _ for -
