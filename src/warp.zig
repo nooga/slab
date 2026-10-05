@@ -312,14 +312,15 @@ pub fn detectAndFollow(alloc: std.mem.Allocator, clip: *clip_mod.Clip, hits: *co
 
 /// The song's tempo that plays a warped clip at its own speed (docs/29
 /// §Audio on the time axis): a step at each marker inside it, at that
-/// segment's SEG BPM over the track's ratio. Song beats and tempos into
+/// segment's SEG BPM over the track's ratio `rate` (the clip's song beats
+/// hold `length_beats · rate` content beats). Song beats and tempos into
 /// `out`; how many.
 pub fn songTempo(clip: *const clip_mod.Clip, rate: f64, out: []tempo_mod.TempoPoint) usize {
     const m = clip.warp_markers.items;
     if (!valid(m)) return 0;
     const map = Map.init(m);
     const o = clip.audio.offset_beats;
-    const end = o + clip.length_beats;
+    const end = o + clip.length_beats * rate;
     var n: usize = 0;
     var b = o;
     while (b < end - 1e-9 and n < out.len) {

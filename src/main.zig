@@ -3038,7 +3038,7 @@ fn songFollowsClip(tracks: []track_mod.Track, sel: ?clip_mod.ClipRef, transport:
     const n = warp_mod.songTempo(clip, rate, &pts);
     if (n == 0) return false;
     const start = clip.start_beat;
-    const end = start + clip.length_beats / rate;
+    const end = start + clip.length_beats;
     const m = transport.tempo.edit();
     const after = m.bpmAt(end);
     var i = m.len;
@@ -3052,6 +3052,32 @@ fn songFollowsClip(tracks: []track_mod.Track, sel: ?clip_mod.ClipRef, transport:
     if (m.find(end) == null) _ = m.put(end, after);
     transport.tempo.publish();
     return true;
+}
+
+test "songFollowsClip: a clip on a track at 3:2 sets the song's tempo over its song beats" {
+    const alloc = std.testing.allocator;
+    const col = c.rl.Color{ .r = 10, .g = 20, .b = 30, .a = 255 };
+    var tracks = [_]track_mod.Track{try track_mod.Track.init(alloc, "Loop", col, silent_machine)};
+    defer tracks[0].deinit(alloc);
+    tracks[0].time = .{ .p = 3, .q = 2 };
+    // Four song beats from beat 4 hold six content beats: 120 BPM for
+    // four, then 240.
+    var clip = clip_mod.Clip.initAudio("loop", 4, 4, 0);
+    clip.audio.warp = true;
+    try clip.warp_markers.appendSlice(alloc, &.{ .{ .sec = 0, .beat = 0 }, .{ .sec = 2, .beat = 4 }, .{ .sec = 3, .beat = 8 } });
+    try tracks[0].addClip(alloc, clip);
+    var transport = transport_mod.Transport{};
+    transport.tempo.set(&tempo_mod.TempoMap.constant(100));
+    try std.testing.expect(songFollowsClip(&tracks, .{ .track = 0, .clip = 0 }, &transport));
+    const m = &transport.tempo.live;
+    try std.testing.expectApproxEqAbs(@as(f64, 100), m.bpmAt(3.5), 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 80), m.bpmAt(5), 1e-9);
+    // Content beat 4 is 8/3 song beats in, at 240 over 3:2.
+    try std.testing.expect(m.find(4.0 + 8.0 / 3.0) != null);
+    try std.testing.expectApproxEqAbs(@as(f64, 160), m.bpmAt(7.5), 1e-9);
+    // Back to the tempo before at the clip's end, song beat 8.
+    try std.testing.expect(m.find(8) != null);
+    try std.testing.expectApproxEqAbs(@as(f64, 100), m.bpmAt(8.5), 1e-9);
 }
 
 /// A groove from an audio clip's hits (docs/28 §Groove): where they fall

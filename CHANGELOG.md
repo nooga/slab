@@ -39,6 +39,9 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 - **Slice to sampler on a track at its own tempo ratio** (3:2 and the
   like): the new pattern is as long as the clip, and the slices cover all
   of it, the last one included.
+- **Song follows clip on a track at its own tempo ratio**: the tempo
+  changes cover the whole clip, and the song's own tempo comes back where
+  the clip ends.
 
 ## 0.0.8 — 2026-10-05
 
