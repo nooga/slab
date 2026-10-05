@@ -14,6 +14,7 @@ const text_field = @import("text_field.zig");
 const markers_mod = @import("../markers.zig");
 const tempo_mod = @import("../tempo.zig");
 const meter_mod = @import("../meter.zig");
+const groove_mod = @import("../groove.zig");
 
 const Ui = core.Ui;
 const Rect = core.Rect;
@@ -63,6 +64,9 @@ pub const State = struct {
     bpm: f64 = 120,
     /// 0 = FOLLOW, else 1 + METERS index, or METER_KEEP.
     meter: u8 = 0,
+    /// The groove tracks following the song play from here (groove.zig's
+    /// picks).
+    groove: u8 = 0,
     /// What METER_KEEP shows.
     meter_buf: [8]u8 = undefined,
     meter_len: usize = 0,
@@ -84,6 +88,7 @@ pub fn open(state: *State, mk: *const markers_mod.Markers, kind: markers_mod.Kin
             state.beat = s.beat;
             state.name.set(s.name.get());
             state.color = s.color;
+            state.groove = s.groove;
             state.first = s.beat <= 1e-6;
             state.tempo_on = state.first or tempo.find(s.beat) != null;
             state.bpm = tempo.bpmAt(s.beat);
@@ -109,7 +114,7 @@ const ROW_H: i32 = 20;
 pub fn draw(ui: *Ui, screen: Rect, state: *State) Result {
     if (!state.active) return .none;
     const section = state.kind == .section;
-    const h: i32 = dialog.TITLE_H + dialog.BUTTONS_H + 12 + (if (section) 4 * (ROW_H + 6) + 18 else ROW_H + 6);
+    const h: i32 = dialog.TITLE_H + dialog.BUTTONS_H + 12 + (if (section) 5 * (ROW_H + 6) + 18 else ROW_H + 6);
     const f = dialog.begin(ui, screen, "marker-dialog", if (section) "SECTION" else "LOCATOR", W, h);
     defer dialog.end(ui);
     const editing = state.editing;
@@ -140,6 +145,14 @@ pub fn draw(ui: *Ui, screen: Rect, state: *State) Result {
             const shown: ?[]const u8 = if (state.meter == METER_KEEP) state.meter_buf[0..state.meter_len] else if (state.first and state.meter == 0) "4/4" else null;
             if (ctl.displaySelectEx(ui, r.cutLeft(88).center(88, hh), "meter", &v, &METER_LABELS, "METER", .{ .align_ = .left, .shown = shown })) state.meter = v;
         }
+        if (groove_mod.active) |cx| {
+            var r = dialog.rowW(ui, &body, "GROOVE", ROW_H, LABEL_W);
+            groove_labels[0] = if (state.first) "THE SONG'S" else "FOLLOW";
+            groove_labels[1] = "STRAIGHT";
+            for (cx.pool.slice(), 0..) |*g, i| groove_labels[i + 2] = g.name.get();
+            const hh = ctl.displayHeight(false);
+            _ = ctl.displaySelectEx(ui, r.cutLeft(160).center(160, hh), "groove", &state.groove, groove_labels[0 .. cx.pool.count + 2], "GROOVE", .{ .align_ = .left });
+        }
         dialog.hint(ui, &body, if (state.first) "THE SONG STARTS WITH THESE" else "OFF AND FOLLOW CARRY ON FROM THE SECTION BEFORE", 0);
     }
     var bar = f.buttons;
@@ -149,6 +162,8 @@ pub fn draw(ui: *Ui, screen: Rect, state: *State) Result {
     if (f.enter) return .ok;
     return .none;
 }
+
+var groove_labels: [groove_mod.MAX_GROOVES + 2][]const u8 = undefined;
 
 fn swatches(ui: *Ui, r: Rect, state: *State) void {
     ui.pushId("color");
@@ -194,6 +209,7 @@ pub fn apply(state: *const State, mk: *markers_mod.Markers, tempo: *tempo_mod.Te
             const sec = &mk.sections[state.index];
             sec.name.set(state.name.text());
             sec.color = state.color;
+            sec.groove = state.groove;
             const m = tempo.edit();
             if (state.tempo_on) {
                 _ = m.put(sec.beat, state.bpm);

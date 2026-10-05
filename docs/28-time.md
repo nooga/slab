@@ -5,7 +5,7 @@ that path: the tempo map, locators and sections, grooves, polymeter and
 polytempo, and the freeze that has to know when any of them changed.
 
 Status: the meter map (docs/07 §Meter map), the tempo map, locators and
-sections, and export by section are built (2026-10-05); the rest is
+sections, export by section and groove are built (2026-10-05); the rest is
 design, built in the order of [Phasing](#phasing).
 
 ## The beat axis
@@ -240,45 +240,62 @@ aksak and swung odd meters become presets instead of workarounds.
 
 ### Who uses which
 
-- The project has a **groove pool**: the built-ins (MPC 54–71 % on
-  1/16 and 1/8, triplet, shuffle, samba, aksak cells, laid-back) plus
-  any the user made or extracted, saved with the project.
-- Each **track** picks a groove (or the project's default, or none), an
-  **AMOUNT** 0–100 %, and a **SHIFT** in milliseconds, −50..+50, for
-  pushing or dragging. These live on the mixer strip under the fader,
-  where ReGroove's per-channel amount sat.
-- A **section** can change the project's default groove, so the verse
-  swings and the chorus plays straight.
+- The project has a **groove pool** (`src/groove.zig`): the built-ins
+  (MPC 54/58/62/66/71 on 1/16, MPC 58/66 on 1/8, TRIPLET 1/8 and 1/16,
+  SAMBA 1/16, LAID BACK 2+4, LOOSE 1/16, and the meter-group AKSAK and
+  GROUP SWING 58) plus the ones extracted from clips, saved with the
+  project.
+- The **song** has a groove (STRAIGHT by default; right-click the ruler
+  → *Song groove*) and a seed for the random timing.
+- A **section** can change it from its start (its dialog's GROOVE:
+  FOLLOW the section before, STRAIGHT, or a groove), so the verse swings
+  and the chorus plays straight.
+- Each **track** picks **GROOVE** — SONG (the song's and its sections'),
+  STRAIGHT, or one of its own — with an **AMOUNT** 0–100 % and a
+  **SHIFT** in milliseconds, −50..+50, to push or drag it. They sit in
+  the piano roll's header, for the open clip's track (drag the numbers;
+  double-click resets).
 
 ### Playing it
 
-- The engine applies the groove where it schedules notes: a note's on
-  and off go through the warp, then the tempo map. Shifts are under half
-  a step, so finding a block's notes means widening the search by the
-  largest shift, a constant. A groove is a small table; nothing
-  allocates.
-- **Random** comes from a hash of the note's id, its position and the
-  project's seed, never a running generator, so every play, export and
+- The groove is applied where a track **publishes its notes** to the
+  audio thread (`Track.publishSnapshot`): each note's on and off go
+  through the warp (and SHIFT, at the tempo there), its velocity through
+  its step's scale. The engine plays the snapshot as ever, looking a
+  little before each clip for notes that moved ahead of it. Nothing new
+  runs on the audio thread, and playback, export and bounce hear the
+  same notes. Anything a groove depends on (the pool, the song's, the
+  sections', the tempo and meter maps, a track's settings) changing
+  republishes the tracks.
+- **Random** comes from a hash of the note's position, pitch and the
+  song's seed, never a running generator, so every play, export and
   bounce is identical and Bounce's stale check keeps working.
-- **Machines get the groove.** MachineCtx carries the track's resolved
-  groove (the table and the amount) and fy gets a word that moves a
-  step's position through it, so the drum machine's steps and the
-  arpeggiators swing with the track.
+- **Machines.** No machine sequences notes of its own yet (the drum
+  machine plays the track's notes, so it swings with them). The first
+  one that does (an arpeggiator, a step sequencer) gets the track's
+  resolved groove in MachineCtx and an fy word to move a step through it.
 - **Audio clips get only SHIFT.** Moving audio onto a groove needs
   time-stretching, which Slab doesn't have.
 
 ### Editing
 
-- The piano roll draws the grooved grid and Quantize snaps to it.
-  The editor's global SWING slider becomes the track's groove.
-- **Extract groove** from a MIDI clip: average each step's timing and
-  velocity over the clip into a new pool groove. From audio it needs
-  onset detection (later).
-- **Commit groove** writes the played positions and velocities into the
-  notes and sets the track to no groove. One undo step.
+- Notes are written on the straight grid (drawing and Quantize snap
+  to it; the old SWING slider is gone); a tick on a note marks where
+  the groove plays it.
+- **Extract groove** (the piano roll's right-click menu): the clip's
+  notes (or the selected ones), on the edit grid over a beat, each
+  step's average timing and velocity into a pool groove named after the
+  clip, which its track then plays. From audio it needs onset detection
+  (later).
+- **Commit groove** writes the track's groove into its notes, every
+  clip, as they play, and sets the track to STRAIGHT. One undo step.
 
-Saved as `"grooves": [...]` (the user's), `"groove": {"default": "MPC 58 1/16", "seed": 1234}`,
-and per track `"groove": {"name": "...", "amount": 0.8, "shift_ms": -6}`.
+Saved as `"grooves": [{"name", "cycle", "sub", "cells": [{"steps",
+"shift", "vel", "rand"}]}]` (the project's own), `"groove": {"song":
+"MPC 58 1/16", "seed": 1234}`, a section's `"groove": "NONE"`, and a
+track's `"groove": {"name": "", "amount": 0.8, "shift_ms": -6}` (`""`
+follows the song, `"NONE"` plays straight). slabkit: `Song(groove=)`,
+`section(groove=)`, `Track.groove(name, amount, shift_ms)`.
 
 ## Polymeter and polytempo
 
@@ -330,7 +347,8 @@ does not save CPU. **Freeze** does:
 3. **Export by section**: SECTIONS, `{section}`, cue points, `acid`
    (built).
 4. **Groove**: the pool, per-track groove/AMOUNT/SHIFT, playback,
-   the ctx table and the fy word, extract, commit, sections' default.
+   extract, commit, the song's and sections' grooves (built; the ctx
+   table and fy word wait for a machine that sequences).
 5. **Freeze**: freeze, unfreeze, flatten, stale.
 6. **Arranging by section**: duplicate, move, delete.
 7. **Polymeter and polytempo** per track.

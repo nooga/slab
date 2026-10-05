@@ -1294,6 +1294,11 @@ pub fn main(init: std.process.Init) !void {
             arrangement.applyMarkerEdit(&markers, me);
             dirty = true;
         }
+        if (ares.song_groove) |sg| {
+            pushHistorySnapshot(alloc, &history, tracks, &transport);
+            groove_cx.song = sg;
+            dirty = true;
+        }
         if (ares.marker_open) |mo| marker_dialog.open(&marker_dlg, &markers, mo.kind, mo.index, transport.map(), meter_state.liveMap());
         if (ares.command == .bounce) {
             openBounce(&bounce_dlg, tracks, &status);
@@ -4949,6 +4954,16 @@ fn executeEditCommand(
         .humanize => {
             changed = if (focus == .piano_roll) clip_editor.humanizeSelectedNotes(tracks, selected_clip.*, edit_snap) else false;
             if (changed) status.set("Humanized", .{});
+        },
+        .extract_groove => {
+            if (clip_editor.extractGroove(tracks, selected_clip.*, edit_snap)) |name| {
+                changed = true;
+                status.set("Groove {s} extracted; the track plays it", .{name});
+            }
+        },
+        .commit_groove => {
+            changed = clip_editor.commitGroove(tracks, selected_clip.*);
+            if (changed) status.set("Groove written into the notes", .{});
         },
         .snap_to_scale => {
             changed = if (focus == .piano_roll) clip_editor.snapSelectedToScale(tracks, selected_clip.*) else false;

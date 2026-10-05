@@ -35,6 +35,7 @@ const meter_mod = @import("../meter.zig");
 const meter_gen = @import("../meter_gen.zig");
 const tempo_mod = @import("../tempo.zig");
 const markers_mod = @import("../markers.zig");
+const groove_mod = @import("../groove.zig");
 const recorder_mod = @import("../recorder.zig");
 const automation = @import("../automation.zig");
 const auto_lane = @import("automation_lane.zig");
@@ -421,6 +422,9 @@ pub const Result = struct {
     marker_edit: ?MarkerEdit = null,
     /// Double-click or "Edit…": open the marker dialog on this one.
     marker_open: ?MarkerRef = null,
+    /// The ruler menu's Song groove: main takes the undo snapshot and
+    /// sets it (a groove.zig pick: NONE or the pool's).
+    song_groove: ?u8 = null,
 };
 
 pub const MarkerRef = struct { kind: markers_mod.Kind, index: usize };
@@ -1931,6 +1935,8 @@ const METER_GROUPS_ID: u32 = 1001;
 const TEMPO_ADD_ID: u32 = 3000;
 const TEMPO_RAMP_ID: u32 = 3001;
 const TEMPO_REMOVE_ID: u32 = 3002;
+const SONG_GROOVE_ID: u32 = 3003;
+var song_groove_labels: [groove_mod.MAX_GROOVES + 1][40]u8 = undefined;
 // Grouping submenu rows: DEFAULT, then GROUP_BASE + choice index.
 const GROUP_DEFAULT_ID: u32 = 3000;
 const GROUP_BASE: u32 = 3001;
@@ -1988,7 +1994,7 @@ var gen_nums: [64]u8 = undefined;
 
 fn meterMenuTick(meter_state: *meter_mod.MeterState, result: *Result) void {
     if (!menu.isOpen(METER_MENU_KEY)) return;
-    var items: [METER_CHOICES.len + 3 + METER_GENS.len + 4]menu.Item = undefined;
+    var items: [METER_CHOICES.len + 3 + METER_GENS.len + 5]menu.Item = undefined;
     inline for (METER_CHOICES, 0..) |ch, i| items[i] = .{ .label = ch.label, .id = @intCast(i) };
     // A change can be removed only if one starts exactly on the target bar
     // (and never bar 0, the base meter).
@@ -2012,6 +2018,7 @@ fn meterMenuTick(meter_state: *meter_mod.MeterState, result: *Result) void {
     items[t0 + 1] = .{ .label = "Tempo change here", .id = TEMPO_ADD_ID, .enabled = at == null };
     items[t0 + 2] = .{ .label = if (tm.points[seg_i].ramp) "\u{2022} Ramp to next tempo" else "Ramp to next tempo", .id = TEMPO_RAMP_ID, .enabled = seg_i + 1 < tm.len };
     items[t0 + 3] = .{ .label = "Remove tempo change", .id = TEMPO_REMOVE_ID, .enabled = if (at) |i| i > 0 else false };
+    items[t0 + 4] = .{ .label = "Song groove", .id = SONG_GROOVE_ID, .submenu = true, .enabled = groove_mod.active != null };
 
     if (menu.pick(METER_MENU_KEY, &items)) |id| {
         if (id == TEMPO_ADD_ID or id == TEMPO_RAMP_ID or id == TEMPO_REMOVE_ID) {
@@ -2037,6 +2044,17 @@ fn meterMenuTick(meter_state: *meter_mod.MeterState, result: *Result) void {
             meter_state.insertChange(meter_menu_bar, ch.num, ch.den);
         }
     }
+    if (menu.subOpen(METER_MENU_KEY, 0)) |sid| if (sid == SONG_GROOVE_ID) if (groove_mod.active) |cx| {
+        // STRAIGHT, then the pool; the current one bulleted.
+        var sub: [groove_mod.MAX_GROOVES + 1]menu.Item = undefined;
+        const n = cx.pool.count + 1;
+        for (0..n) |i| {
+            const pick: u8 = if (i == 0) groove_mod.PICK_NONE else @intCast(groove_mod.PICK_POOL + i - 1);
+            const name = if (i == 0) "STRAIGHT" else cx.pool.grooves[i - 1].name.get();
+            sub[i] = .{ .label = if (cx.song == pick) (std.fmt.bufPrint(&song_groove_labels[i], "\u{2022} {s}", .{name}) catch name) else name, .id = pick };
+        }
+        if (menu.subPick(METER_MENU_KEY, 1, sub[0..n])) |pick| result.song_groove = @intCast(pick);
+    };
     if (menu.subOpen(METER_MENU_KEY, 0)) |sid| if (sid == METER_GROUPS_ID) {
         var sub: [meter_mod.MAX_CHOICES + 1]menu.Item = undefined;
         var dbuf: [meter_mod.MAX_GROUPS]u8 = undefined;

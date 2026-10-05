@@ -743,8 +743,7 @@ fn appendGrooves(alloc: std.mem.Allocator, out: *std.ArrayList(u8), cx: *const g
 }
 
 fn applyGrooves(root: std.json.ObjectMap, cx: *groove_mod.Context) void {
-    // The pool is shared through `cx`, mutable only here and in main.
-    const pool: *groove_mod.Pool = @constCast(cx.pool);
+    const pool = cx.pool;
     pool.reset();
     if (objGet(root, "grooves")) |v| if (v == .array) for (v.array.items) |gv| {
         if (gv != .object) continue;

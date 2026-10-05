@@ -165,7 +165,7 @@ pub const Pool = struct {
 /// The song's groove settings and what playing one needs, set by main
 /// (and by headless renders) and read where tracks publish their notes.
 pub const Context = struct {
-    pool: *const Pool,
+    pool: *Pool,
     /// The song's groove: NONE or a pool pick.
     song: u8 = PICK_NONE,
     /// Random timing's seed, saved with the project.
