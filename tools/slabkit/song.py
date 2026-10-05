@@ -725,7 +725,8 @@ class Track:
 
     def audio(self, path, section=None, at_bar=0, at_beat=None, start_sec=0.0, dur_sec=None,
               gain=1.0, fade_in=0.0, fade_out=0.0, reverse=False, name=None,
-              warp=None, fit_beats=None, mode="tape", preserve="hits", gap="cut", decay=100):
+              warp=None, fit_beats=None, mode="tape", preserve="hits", gap="cut", decay=100,
+              transpose=0, fine=0):
         """Place a WAV: at a section's start plus `at_bar` bars, or at
         `at_beat`. dur_sec defaults to the rest of the file. reverse=True
         plays it backwards (a swell into the downbeat: end it on the bar).
@@ -734,7 +735,9 @@ class Track:
         beats instead. mode: "tape" (speed and pitch together) or "beats"
         (cut at the hits, each at its own speed: drums), with preserve=
         "hits" | "1/16" | "1/8" | "1/4", gap="cut" | "loop" and decay=1..100
-        (% of each slice that sounds)."""
+        (% of each slice that sounds), or "mix" (keeps pitch, for anything).
+        transpose= semitones and fine= cents move the pitch apart from time
+        (not in "tape")."""
         where = f"track {self.name} audio {path}"
         if not os.path.exists(path):
             raise SlabError(f"{where}: file not found")
@@ -747,8 +750,12 @@ class Track:
             raise SlabError(f"{where}: nothing to play (start_sec {start_sec} past the end)")
         bb = self.song.bar_beats
         start = at_beat if at_beat is not None else (section.start if section else 0) + at_bar * bb
-        if mode not in ("tape", "beats"):
-            raise SlabError(f"{where}: mode {mode!r}: \"tape\" or \"beats\" so far")
+        if mode not in ("tape", "beats", "mix"):
+            raise SlabError(f"{where}: mode {mode!r}: \"tape\", \"beats\" or \"mix\" so far")
+        if not -48 <= transpose <= 48 or not -50 <= fine <= 50:
+            raise SlabError(f"{where}: transpose -48..48 semitones, fine -50..50 cents")
+        if (transpose or fine) and mode == "tape":
+            raise SlabError(f"{where}: transpose/fine need mode=\"beats\" or \"mix\" (tape's pitch is its speed)")
         preserves = {"hits": "hits", "1/16": "d16", "1/8": "d8", "1/4": "d4"}
         if preserve not in preserves:
             raise SlabError(f"{where}: preserve {preserve!r}: one of {', '.join(preserves)}")
@@ -756,7 +763,9 @@ class Track:
             raise SlabError(f"{where}: gap {gap!r}: \"cut\" or \"loop\"")
         if not 1 <= decay <= 100:
             raise SlabError(f"{where}: decay {decay} must be 1..100")
-        beats = {"preserve": preserves[preserve], "gap": gap, "decay": int(decay)} if mode == "beats" else None
+        beats = {"preserve": preserves[preserve], "gap": gap, "decay": int(decay)} if mode == "beats" else {}
+        if transpose or fine:
+            beats.update(transpose=int(transpose), fine=int(fine))
         if mode != "tape" and warp is None and fit_beats is None:
             raise SlabError(f"{where}: mode={mode!r} needs warp= or fit_beats=")
         if warp is True:

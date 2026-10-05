@@ -14,8 +14,8 @@ pub const Marker = struct {
     beat: f64,
 };
 
-/// How a warped clip keeps time (docs/29 §The algorithms). TAPE and BEATS
-/// are built; the others play as TAPE until they are.
+/// How a warped clip keeps time (docs/29 §The algorithms). TAPE, BEATS and
+/// MIX are built; VOICE and SMEAR play as MIX until they are.
 pub const Mode = enum(u8) {
     tape,
     beats,
@@ -80,6 +80,11 @@ pub const Gap = enum(u8) {
         };
     }
 };
+
+/// Whether a mode runs on a stretcher (state kept between blocks).
+pub fn stretches(m: Mode) bool {
+    return m == .mix or m == .voice or m == .smear;
+}
 
 pub fn parseEnum(comptime E: type, s: []const u8) ?E {
     inline for (std.meta.fields(E)) |f| if (std.mem.eql(u8, s, f.name)) return @field(E, f.name);
@@ -174,11 +179,21 @@ pub fn valid(m: []const Marker) bool {
 
 // ── Clip edits (UI thread) ───────────────────────────────────────────
 
+/// The mode a clip warps in first (docs/29 §The algorithms): BEATS for a
+/// loop dense with hits, MIX for the rest (and while the hits aren't
+/// found yet).
+pub fn defaultMode(onsets: ?[]const f64, len: f64) Mode {
+    const on = onsets orelse return .mix;
+    if (len <= 0 or len > 30) return .mix;
+    return if (@as(f64, @floatFromInt(on.len)) / len >= 2) .beats else .mix;
+}
+
 /// Warp an unwarped clip on, keeping its sound where it sits: the source
 /// laid on beats at the tempo under its start, its window as the offset
-/// and length. `len` is the source's length in seconds.
-pub fn warpOn(alloc: std.mem.Allocator, clip: *clip_mod.Clip, tmap: *const tempo_mod.TempoMap, len: f64) !void {
+/// and length, in `defaultMode`. `len` is the source's length in seconds.
+pub fn warpOn(alloc: std.mem.Allocator, clip: *clip_mod.Clip, tmap: *const tempo_mod.TempoMap, len: f64, onsets: ?[]const f64) !void {
     if (clip.audio.warp) return;
+    clip.audio.mode = defaultMode(onsets, len);
     const bps = tmap.bpmAt(clip.start_beat) / 60.0;
     const total = @max(len, clip.audio.start_sec + clip.audio.dur_sec, 0.001);
     clip.warp_markers.clearRetainingCapacity();

@@ -791,7 +791,7 @@ pub fn toggleWarp(tracks: []Track, alloc: std.mem.Allocator, pool: ?*const audio
         fn one(a: std.mem.Allocator, clip: *Clip, pl: *const audio_pool_mod.AudioPool, m: *const tempo_mod.TempoMap, on: bool) bool {
             const src = pl.get(clip.audio.source) orelse return false;
             if (on) {
-                warp_mod.warpOn(a, clip, m, src.seconds()) catch return false;
+                warp_mod.warpOn(a, clip, m, src.seconds(), src.onsets()) catch return false;
             } else {
                 warp_mod.warpOff(clip, src.seconds());
                 clip.length_beats = @max(MIN_CLIP_BEATS, m.beatAfter(clip.start_beat, clip.audio.dur_sec) - clip.start_beat);
@@ -1641,7 +1641,8 @@ fn sourceSeconds(clip: *const Clip) ?f64 {
 fn stretchClip(alloc: std.mem.Allocator, clip: *Clip, new_len: f64) void {
     if (!clip.audio.warp) {
         const len = sourceSeconds(clip) orelse return;
-        warp_mod.warpOn(alloc, clip, cur_tempo, len) catch return;
+        const src = cur_pool.?.get(clip.audio.source).?;
+        warp_mod.warpOn(alloc, clip, cur_tempo, len, src.onsets()) catch return;
     }
     if (clip.length_beats <= 0) return;
     warp_mod.stretch(clip, new_len / clip.length_beats);

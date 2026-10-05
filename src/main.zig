@@ -81,6 +81,8 @@ test {
     _ = @import("arrange.zig");
     _ = @import("warp.zig");
     _ = @import("transients.zig");
+    _ = @import("stretch.zig");
+    _ = @import("fft.zig");
     _ = @import("ui/marker_dialog.zig");
     _ = @import("routing.zig");
     _ = @import("export.zig");

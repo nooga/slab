@@ -53,6 +53,15 @@ pub const AudioRef = struct {
     preserve: warp.Preserve = .hits,
     gap: warp.Gap = .cut,
     decay: u8 = 100,
+    /// Pitch apart from time (docs/29 §The algorithms), in every mode but
+    /// TAPE: semitones and cents.
+    transpose: i8 = 0,
+    fine: i8 = 0,
+
+    pub fn pitch(self: AudioRef) f64 {
+        if (self.mode == .tape) return 1;
+        return std.math.pow(f64, 2, (@as(f64, @floatFromInt(self.transpose)) + @as(f64, @floatFromInt(self.fine)) / 100) / 12);
+    }
 };
 
 pub const Note = struct {

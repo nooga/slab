@@ -11,6 +11,7 @@
 
 const automation = @import("automation.zig");
 const warp = @import("warp.zig");
+const stretch = @import("stretch.zig");
 
 pub const MAX_CLIPS_PER_TRACK: usize = 64;
 pub const MAX_LANES_PER_TRACK: usize = 128; // track + clip lanes
@@ -91,6 +92,9 @@ pub const AudioClipSnap = struct {
     preserve: warp.Preserve = .hits,
     gap: warp.Gap = .cut,
     decay: f32 = 1,
+    /// TRANSPOSE and FINE as a ratio; the clip's id, for its stretcher.
+    pitch: f64 = 1,
+    uid: u32 = 0,
 };
 
 /// A lane resolved for the audio thread: the target machine slot and its
@@ -203,6 +207,9 @@ pub const TrackSnapshot = struct {
     expr_point_count: u32 = 0,
     warp_points: [MAX_WARP_POINTS_PER_TRACK]warp.Marker = undefined,
     warp_point_count: u32 = 0,
+    /// The track's stretchers (MIX), when it has warped clips that need
+    /// them; the audio thread reuses them, the track owns them.
+    stretch: ?*stretch.Bank = null,
 
     /// Track volume or pan at `beat`, or null when no lane speaks. Lanes
     /// are published track lanes first, then clip lanes by clip start, so

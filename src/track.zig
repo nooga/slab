@@ -9,6 +9,7 @@ const clip_mod = @import("clip.zig");
 const snap_mod = @import("snapshot.zig");
 const groove_mod = @import("groove.zig");
 const warp_mod = @import("warp.zig");
+const stretch_mod = @import("stretch.zig");
 const audio_pool_mod = @import("audio_pool.zig");
 const automation = @import("automation.zig");
 const routing = @import("routing.zig");
@@ -154,6 +155,9 @@ pub const Track = struct {
     freeze: ?Freeze = null,
     /// The audio thread's view: no instrument or insert latency.
     frozen: std.atomic.Value(bool) = .init(false),
+    /// Its stretchers (docs/29 §On the audio thread), made when a warped
+    /// clip first needs them, freed with the track.
+    stretch: ?*stretch_mod.Bank = null,
     next_fx_uid: u16 = 1,
     /// Audio-thread-owned per-lane segment cursors (automation.evalCursor).
     auto_cursors: [snap_mod.MAX_LANES_PER_TRACK]u32 = [_]u32{0} ** snap_mod.MAX_LANES_PER_TRACK,
@@ -232,6 +236,7 @@ pub const Track = struct {
         self.lanes.deinit(alloc);
         alloc.destroy(self.snap[0]);
         alloc.destroy(self.snap[1]);
+        if (self.stretch) |b| std.heap.page_allocator.destroy(b);
     }
 
     pub fn replaceMachine(self: *Track, alloc: std.mem.Allocator, mach: machine.Machine) void {
@@ -534,6 +539,7 @@ pub const Track = struct {
         dst.audio_clip_count = 0;
         dst.expr_point_count = 0;
         dst.warp_point_count = 0;
+        dst.stretch = self.stretch;
         self.publishLanes(dst);
 
         for (self.clips.items) |*clip| {
@@ -574,6 +580,15 @@ pub const Track = struct {
                     snap.preserve = clip.audio.preserve;
                     snap.gap = clip.audio.gap;
                     snap.decay = @as(f32, @floatFromInt(@min(clip.audio.decay, 100))) / 100;
+                    snap.pitch = clip.audio.pitch();
+                    snap.uid = clip.uid;
+                    if (warp_mod.stretches(clip.audio.mode) and self.stretch == null) {
+                        if (std.heap.page_allocator.create(stretch_mod.Bank)) |b| {
+                            b.* = .{};
+                            self.stretch = b;
+                            dst.stretch = b;
+                        } else |_| {}
+                    }
                     if (pool.get(clip.audio.source)) |src| if (src.onsets()) |on| {
                         snap.onsets = on.ptr;
                         snap.onset_count = @intCast(on.len);

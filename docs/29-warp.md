@@ -5,8 +5,9 @@ the grid: warp markers, the stretch algorithms that play it at any
 tempo and pitch, transients, and audio that follows the tempo map, the
 groove and a track's own tempo.
 
-Status: phases 1 and 2 built (2026-10-05): the model, TAPE, ⌘-stretch,
-the band-limited reader; transients and BEATS. Before it, an audio clip only played a window of
+Status: phases 1–3 built (2026-10-05): the model, TAPE, ⌘-stretch, the
+band-limited reader; transients and BEATS; the stretch core, MIX,
+TRANSPOSE and FINE. Before it, an audio clip only played a window of
 its source at native rate (docs/28 §The beat axis), and that is still
 what an unwarped clip does.
 
@@ -177,8 +178,8 @@ Five modes, named for what they're for:
 | **MIX** | full mixes, pads, chords, anything | phase vocoder, phase-locked, transients reset | kept |
 | **SMEAR** | extreme stretch, textures | Paulstretch: long windows, random phases | kept |
 
-New clips warp in MIX, unless their transients say percussive (onset
-density and strength), then BEATS.
+A clip warps first in BEATS when it's a loop dense with hits (30 s or
+less, two or more a second), in MIX otherwise (`warp.defaultMode`).
 
 ### The band-limited reader
 
@@ -218,30 +219,38 @@ chorus.
 
 ### MIX (the phase vocoder)
 
-- **Frames.** Window 4096 at 48 kHz (Hann), output hop 1024 (4×
-  overlap), FFT on our own split-radix real transform with precomputed
-  twiddles: no allocation, NEON via `@Vector`.
-- **Instantaneous frequency without history.** Each output frame
-  analyses the source at its mapped position `s` *and* at `s − hop`
-  (a twin frame one hop back), and takes each bin's frequency from the
-  phase difference of the two. Because the source is in memory and
-  random access, the stretcher needs no analysis history: any ratio,
-  changing every frame, and a jump to anywhere costs one frame.
-- **Phase locking** (Laroche–Dolson identity locking): peaks are
-  found in the magnitude spectrum; a peak's phase advances by its
-  frequency times the output hop; the bins in its region keep their
-  analysis phase offset from the peak. That keeps a partial's bins
-  coherent and is what removes the phasiness of a plain vocoder.
-- **Transients**: a frame that contains a transient takes the analysis
-  phases as they are (a phase reset) and its window is shortened
-  around the hit, so attacks stay sharp instead of smeared.
-- **Stereo**: both channels advance with the mid's phase increments and
-  keep their own analysis phase difference, so the image doesn't
-  wander.
-- **Pitch**: the vocoder stretches by `ratio × pitch` and the reader
-  resamples its output by `pitch`, so TRANSPOSE and FINE cost nothing
-  extra. Formants move with the pitch for now; a cepstral envelope
-  keeping them in place (PRESERVE FORMANTS) is later.
+Built in `src/stretch.zig` on `src/fft.zig` (a fixed-size radix-2 FFT
+with compile-time twiddles: no allocation, no trig per transform).
+
+- **Frames.** Window 4096 (Hann), output hop 1024 (4× overlap), on a
+  grid of output samples anchored at the clip's start. Each frame reads
+  the source around the position the maps give for its center.
+- **Instantaneous frequency without history.** Each frame also reads a
+  twin one hop back (`pos − hop·step`), packed with it into one complex
+  transform, and takes each peak's frequency from the phase difference
+  of the two. The source is in memory and random access, so the
+  stretcher needs no analysis history: the ratio may change every frame,
+  and a jump to anywhere costs a restart, a few frames and a phase reset.
+- **Phase locking** (Laroche–Dolson identity locking): peaks are local
+  maxima over ±2 bins of the mid's magnitude; a peak's phase advances by
+  its frequency times the hop, and every bin keeps its analysis phase
+  offset from the peak whose region it's in (regions split halfway
+  between peaks).
+- **Transients**: a frame whose position passed one of the source's
+  transients since the last frame takes the analysis phases as they are
+  (a phase reset), so attacks start clean.
+- **Stereo**: the phases are worked out on the mid, and both channels
+  are turned by the same correction (output phase − mid's analysis
+  phase), so the image doesn't wander; their two inverse transforms
+  share one.
+- **Pitch**: each frame reads the source at `step = source rate /
+  engine rate × pitch` per frame sample (through the band-limited
+  reader, or straight when the step is 1), so TRANSPOSE, FINE and the
+  source's own rate cost nothing extra. Formants move with the pitch for
+  now; keeping them in place (PRESERVE FORMANTS) is later.
+- At ratio 1 and no transpose it gives the source back: a stereo mix
+  through MIX nulls against TAPE to −100 dB.
+- VOICE and SMEAR play as MIX until they're built.
 
 ### SMEAR (Paulstretch)
 
@@ -258,21 +267,21 @@ next block, and there is no cache to invalidate or go stale.
 
 - **TAPE and BEATS need no state**: each output sample is a read at a
   position computed from the maps.
-- **VOICE, MIX and SMEAR** keep state (the last grain's offset, output
-  phases, the overlap-add tail). A track with such clips gets a bank of
-  four **stretchers**, allocated on the UI thread when its first one is
-  published and freed with the track, never by the audio thread. A clip
-  that starts sounding takes a free stretcher by its uid; one that
-  stops gives it back. At most four warped clips sound at once on one
-  track; a fifth plays TAPE.
+- **VOICE, MIX and SMEAR** keep state (output phases, the overlap-add
+  ring). A track with such clips gets a bank of four **stretchers**
+  (about half a megabyte), allocated on the UI thread when its first one
+  is published and freed with the track, never by the audio thread. A
+  clip that starts sounding takes a free stretcher by its uid; one not
+  used in the previous mix call is free again. At most four such clips
+  sound at once on one track; a fifth plays TAPE.
 - **No latency.** The output frame at time `t` reads the source around
   `s(t)`, which is known ahead from the maps; the overlap-add's half
   window ahead is computed in the same block. Nothing is reported to
   PDC.
 - **Seeks.** A stretcher whose next sample isn't the block's first (the
-  playhead jumped, the loop wrapped) resets its phases from the
-  analysis: one frame of work and a phase reset, which sounds like
-  nothing.
+  playhead jumped, the loop wrapped) restarts: the frames that reach the
+  new position (four) and a phase reset. Frames only add into positions
+  not yet played, so a restart never leaves old output in the ring.
 - **Determinism.** Exports and bounces play straight through from their
   start, so they render the same every time and at any `--threads`
   (stretchers are per track). Playback started from a different point
@@ -301,9 +310,9 @@ with `warp=True` meaning "detect".
    (built).
 2. **Transients and BEATS**: onset analysis on a worker, ticks on the
    waveform, slices with PRESERVE, GAP and DECAY (built).
-3. **The stretch core and MIX**: the real FFT, the stretcher bank, the
+3. **The stretch core and MIX**: the FFT, the stretcher bank, the
    phase-locked vocoder with twin frames, transient resets, stereo,
-   TRANSPOSE and FINE.
+   TRANSPOSE and FINE (built).
 4. **VOICE and SMEAR**.
 5. **Warp editing**: markers and pseudo-markers in the audio clip
    editor, quantize to the grid, tempo detection and auto-warp on

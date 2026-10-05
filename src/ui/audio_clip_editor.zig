@@ -302,7 +302,8 @@ pub fn draw(
 }
 
 /// The warp mode, and BEATS' own settings (docs/29 §BEATS).
-const MODES = [_][]const u8{ "TAPE", "BEATS" };
+const MODES = [_][]const u8{ "TAPE", "BEATS", "MIX" };
+const MODE_OF = [_]warp_mod.Mode{ .tape, .beats, .mix };
 const PRESERVES = [_][]const u8{ "HITS", "1/16", "1/8", "1/4" };
 const GAPS = [_][]const u8{ "CUT", "LOOP" };
 
@@ -316,9 +317,18 @@ fn warpTools(ui: *Ui, row: *Rect, clip: *clip_mod.Clip) void {
             _ = rw.cutLeft(4);
         }
     };
-    var mode: u8 = if (a.mode == .beats) 1 else 0;
-    sel.one(ui, row, 56, "mode", &mode, &MODES, "TAPE: speed and pitch together. BEATS: cut at the hits, each at its own speed");
-    a.mode = if (mode == 1) .beats else .tape;
+    var mode: u8 = switch (a.mode) {
+        .tape => 0,
+        .beats => 1,
+        else => 2,
+    };
+    sel.one(ui, row, 56, "mode", &mode, &MODES, "TAPE: speed and pitch together. BEATS: cut at the hits, for drums. MIX: keeps pitch, for anything");
+    a.mode = MODE_OF[mode];
+    if (a.mode == .tape) return;
+    // TRANSPOSE and FINE drag: up for higher, double-click for 0.
+    dragNum(ui, row, "transpose", &a.transpose, -48, 48, 0.1, "ST", "Transpose in semitones, apart from time; double-click 0");
+    dragNum(ui, row, "fine", &a.fine, -50, 50, 0.25, "CT", "Fine tune in cents; double-click 0");
+    _ = row.cutLeft(4);
     if (a.mode != .beats) return;
     var p: u8 = @intFromEnum(a.preserve);
     sel.one(ui, row, 48, "preserve", &p, &PRESERVES, "Where BEATS cuts: at the hits, or every 1/16, 1/8, 1/4");
@@ -341,6 +351,29 @@ fn warpTools(ui: *Ui, row: *Rect, clip: *clip_mod.Clip) void {
     menu.tip(ui, dr, "Decay: how much of each slice sounds before it fades; drag, double-click 100%");
     _ = row.cutLeft(6);
 }
+
+fn dragNum(ui: *Ui, row: *Rect, key: []const u8, v: *i8, lo: i8, hi: i8, per_px: f32, unit: []const u8, tip: []const u8) void {
+    const r = row.cutLeft(48);
+    const wid = ui.id(key);
+    const b = ui.behavior(wid, r, false);
+    if (b.double) v.* = 0 else if (b.held) {
+        drag_acc += -ui.in.dy * ui.renderer.zoom * per_px;
+        const whole = @trunc(drag_acc);
+        if (whole != 0) {
+            drag_acc -= whole;
+            v.* = @intFromFloat(std.math.clamp(@as(f32, @floatFromInt(v.*)) + whole, @as(f32, @floatFromInt(lo)), @as(f32, @floatFromInt(hi))));
+        }
+    }
+    var buf: [12]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "{s}{d}{s}", .{ if (v.* > 0) "+" else "", v.*, unit }) catch "";
+    ctl.display(ui, r.insetXY(0, @divFloor(r.h - ctl.displayHeight(false), 2)), s, .{ .align_ = .right, .flush = true, .color = if (ui.active == wid) ui_style.vfd_hi else ui_style.vfd });
+    if (ui.isHot(wid)) ui.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 1);
+    menu.tip(ui, r, tip);
+    _ = row.cutLeft(2);
+}
+
+/// Sub-step drag motion carried between frames.
+var drag_acc: f32 = 0;
 
 // ── Axis helpers ─────────────────────────────────────────────────────
 

@@ -13,6 +13,7 @@ const meter = @import("meter.zig");
 const tempo = @import("tempo.zig");
 const groove_mod = @import("groove.zig");
 const warp_mod = @import("warp.zig");
+const stretch_mod = @import("stretch.zig");
 const automation = @import("automation.zig");
 const routing = @import("routing.zig");
 const render_pool = @import("render_pool.zig");
@@ -1999,6 +2000,7 @@ fn mixAudioClips(
 ) void {
     const block_lo: f64 = @floatFromInt(block_start);
     const block_hi: f64 = block_lo + @as(f64, @floatFromInt(frames));
+    if (snap.stretch) |b| b.beginBlock();
 
     for (snap.audio_clips[0..snap.audio_clip_count]) |clip| {
         const data = clip.data orelse continue;
@@ -2079,6 +2081,13 @@ fn mixWarped(
         mixBeats(clip, wmap, data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r);
         return;
     }
+    if (warp_mod.stretches(clip.mode)) if (snap.stretch) |bank| {
+        if (bank.get(clip.uid, @intFromFloat(@floor(clip_start)))) |st| {
+            mixStretched(st, clip, wmap, data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r);
+            return;
+        }
+    };
+    // No stretcher free: it plays as TAPE.
     const engine_rate: f64 = @floatFromInt(sample_rate);
     const flen: f64 = @floatFromInt(clip.len);
     const fade_in = clip.fade_in_samples / clip.source_rate * engine_rate;
@@ -2110,6 +2119,77 @@ fn mixWarped(
     }
 }
 
+/// MIX (docs/29 §MIX): the clip through its stretcher, whose frames ask
+/// the maps where the source is at each output time.
+fn mixStretched(
+    st: *stretch_mod.Stretcher,
+    clip: snap_mod.AudioClipSnap,
+    wmap: warp_mod.Map,
+    data: [*]const f64,
+    block_lo: f64,
+    lo: f64,
+    hi: f64,
+    clip_start: f64,
+    clip_end: f64,
+    frames: u32,
+    map: *const tempo.TempoMap,
+    sample_rate: u32,
+    l: []f32,
+    r: []f32,
+) void {
+    const engine_rate: f64 = @floatFromInt(sample_rate);
+    const Ctx = struct {
+        clip: snap_mod.AudioClipSnap,
+        wmap: warp_mod.Map,
+        map: *const tempo.TempoMap,
+        sr: u32,
+        step: f64,
+
+        pub fn pos(self: @This(), t: f64) f64 {
+            const b = self.map.beatAtSample(t, self.sr);
+            return self.wmap.secAt((b - self.clip.start_beat) * self.clip.rate + self.clip.offset_beats) * self.clip.source_rate;
+        }
+
+        /// A transient between two source positions: a phase reset. Reversed
+        /// clips have their hits' tails there, so they don't reset.
+        pub fn hit(self: @This(), p0: f64, p1: f64) bool {
+            const on = self.clip.onsets orelse return false;
+            if (self.clip.reversed or p1 <= p0) return false;
+            const s0 = p0 / self.clip.source_rate;
+            const s1 = p1 / self.clip.source_rate;
+            const xs = on[0..self.clip.onset_count];
+            var lo_i: usize = 0;
+            var hi_i: usize = xs.len;
+            while (lo_i < hi_i) {
+                const mid = (lo_i + hi_i) / 2;
+                if (xs[mid] <= s0) lo_i = mid + 1 else hi_i = mid;
+            }
+            return lo_i < xs.len and xs[lo_i] <= s1;
+        }
+    };
+    const ctx = Ctx{ .clip = clip, .wmap = wmap, .map = map, .sr = sample_rate, .step = clip.source_rate / engine_rate * clip.pitch };
+    const src = stretch_mod.Source{ .l = data, .r = clip.data_r, .len = clip.len, .reversed = clip.reversed };
+    const fade_in = clip.fade_in_samples / clip.source_rate * engine_rate;
+    const fade_out = clip.fade_out_samples / clip.source_rate * engine_rate;
+    var i: usize = @intFromFloat(@max(0, @ceil(lo - block_lo)));
+    const end: usize = @min(frames, @as(usize, @intFromFloat(@max(0, @ceil(hi - block_lo)))));
+    var gains: [256]f32 = undefined;
+    while (i < end) {
+        const n = @min(gains.len, end - i);
+        for (gains[0..n], 0..) |*g, k| {
+            const a = block_lo + @as(f64, @floatFromInt(i + k));
+            var fade: f64 = 1.0;
+            const from_start = a - clip_start;
+            const to_end = clip_end - a;
+            if (fade_in > 0 and from_start < fade_in) fade = @max(0, from_start) / fade_in;
+            if (fade_out > 0 and to_end < fade_out) fade = @min(fade, @max(0.0, to_end) / fade_out);
+            g.* = clip.gain * @as(f32, @floatCast(fade));
+        }
+        st.render(src, ctx, @as(i64, @intFromFloat(block_lo)) + @as(i64, @intCast(i)), l[i..][0..n], r[i..][0..n], gains[0..n]);
+        i += n;
+    }
+}
+
 /// BEATS (docs/29 §BEATS): the content cut into slices, at the source's
 /// transients or on a grid of content beats; each slice starts where its
 /// first moment maps to and plays at native speed. A stretched slice runs
@@ -2133,7 +2213,8 @@ fn mixBeats(
     r: []f32,
 ) void {
     const engine_rate: f64 = @floatFromInt(sample_rate);
-    const step = clip.source_rate / engine_rate;
+    // Native speed, re-pitched by TRANSPOSE and FINE.
+    const step = clip.source_rate / engine_rate * clip.pitch;
     const fade_in = clip.fade_in_samples / clip.source_rate * engine_rate;
     const fade_out = clip.fade_out_samples / clip.source_rate * engine_rate;
     const xf = 0.001 * engine_rate; // the seam

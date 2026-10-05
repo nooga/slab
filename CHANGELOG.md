@@ -10,7 +10,8 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 - **Warp an audio clip** (right-click → *Warp*, or WARP in the audio clip
   editor): it locks to the beat and follows the tempo, tempo changes and
-  ramps included. TAPE mode for now: speed and pitch move together.
+  ramps included. TAPE mode plays it like a tape: speed and pitch move
+  together.
 - **⌘-drag a clip's edge to stretch it**; a plain drag still trims.
 - Unwarped clips no longer drag past the end of their audio, and the
   waveform no longer stretches across silence.
@@ -21,10 +22,16 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   it lands on the grid, so hits stay sharp at any tempo. PRESERVE cuts at
   the hits or every 1/16, 1/8, 1/4; GAP fills a stretched slice with
   silence or its looped tail; DECAY shortens each slice.
+- **MIX mode** keeps the pitch for anything (full mixes, pads, vocals):
+  a phase vocoder locked to the spectrum's peaks, resetting on hits,
+  holding the stereo image. Warping a clip now picks BEATS for short
+  loops full of hits and MIX for everything else.
+- **TRANSPOSE and FINE** in BEATS and MIX: pitch apart from time.
 - Slab finds the hits in every audio file, shown as ticks in the audio
   clip editor.
 - slabkit: `track.audio(..., warp=bpm)` and `fit_beats=`, `mode="beats"`
-  with `preserve=`, `gap=`, `decay=`.
+  with `preserve=`, `gap=`, `decay=`, `mode="mix"`, `transpose=`,
+  `fine=`.
 
 ## 0.0.7 — 2026-10-05
 
