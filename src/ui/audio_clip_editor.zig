@@ -170,9 +170,9 @@ pub fn draw(
                 if (x1 <= x0 + 1) continue;
                 const wr = frect(x0, grid.y + 2, x1 - x0, grid.height - 4);
                 if (rev)
-                    surf.waveformDir(ui, wr, &src.cache, (source_sec - sp.s1) * rate, (source_sec - sp.s0) * rate, track_color, true)
+                    surf.waveformLanes(ui, wr, src.waves(), (source_sec - sp.s1) * rate, (source_sec - sp.s0) * rate, track_color, true)
                 else
-                    surf.waveformDir(ui, wr, &src.cache, sp.s0 * rate, sp.s1 * rate, track_color, false);
+                    surf.waveformLanes(ui, wr, src.waves(), sp.s0 * rate, sp.s1 * rate, track_color, false);
             }
         } else if (vx1 > vx0 + 1) {
             const bl = xToBeat(grid, vx0);
@@ -182,7 +182,7 @@ pub fn draw(
             const d_r = std.math.clamp(br * sec_per_beat * rate, 0, total);
             const s_l = if (rev) total - d_r else d_l;
             const s_r = if (rev) total - d_l else d_r;
-            surf.waveformDir(ui, frect(vx0, grid.y + 2, vx1 - vx0, grid.height - 4), &src.cache, s_l, s_r, track_color, rev);
+            surf.waveformLanes(ui, frect(vx0, grid.y + 2, vx1 - vx0, grid.height - 4), src.waves(), s_l, s_r, track_color, rev);
         }
     }
 

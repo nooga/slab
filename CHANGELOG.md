@@ -15,6 +15,8 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 - **⌘-drag a clip's edge to stretch it**; a plain drag still trims.
 - Unwarped clips no longer drag past the end of their audio, and the
   waveform no longer stretches across silence.
+- Stereo audio clips draw both channels, left over right, in the
+  arrangement and the audio clip editor.
 - Audio clips play through a band-limited resampler: cleaner rate
   changes, no aliasing when sped up.
 - **BEATS mode** for drums and loops (MODE in the audio clip editor):

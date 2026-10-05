@@ -38,7 +38,10 @@ pub const MAX_PATH = storage.MAX_PATH;
 
 pub const Source = struct {
     sample: wav.Sample,
+    /// The mid (mono: the signal), and for a stereo source each side.
     cache: waveform.PeakCache = .{},
+    cache_l: waveform.PeakCache = .{},
+    cache_r: waveform.PeakCache = .{},
     path_buf: [MAX_PATH]u8 = [_]u8{0} ** MAX_PATH,
     path_len: u16 = 0,
     name_off: u16 = 0, // basename start within path_buf
@@ -50,6 +53,12 @@ pub const Source = struct {
         const a = self.analysis orelse return null;
         if (!a.ready.load(.acquire)) return null;
         return a.onsets.sec;
+    }
+
+    /// What a waveform draws: the side caches when stereo.
+    pub fn waves(self: *const Source) waveform.Waves {
+        if (self.cache_r.sample_count > 0) return .{ .mid = &self.cache, .l = &self.cache_l, .r = &self.cache_r };
+        return .{ .mid = &self.cache };
     }
 
     pub fn path(self: *const Source) []const u8 {
@@ -84,6 +93,8 @@ pub const AudioPool = struct {
             }
             s.sample.deinit(self.alloc);
             s.cache.deinit(self.alloc);
+            s.cache_l.deinit(self.alloc);
+            s.cache_r.deinit(self.alloc);
         }
         self.sources.deinit(self.alloc);
     }
@@ -132,8 +143,16 @@ pub const AudioPool = struct {
             defer self.alloc.free(mid);
             for (mid, sample.data, sample.right) |*m, l, r| m.* = (l + r) * 0.5;
             try src.cache.build(self.alloc, mid);
+            errdefer src.cache.deinit(self.alloc);
+            try src.cache_l.build(self.alloc, sample.data);
+            errdefer src.cache_l.deinit(self.alloc);
+            try src.cache_r.build(self.alloc, sample.right);
         } else try src.cache.build(self.alloc, sample.data);
-        errdefer src.cache.deinit(self.alloc);
+        errdefer {
+            src.cache.deinit(self.alloc);
+            src.cache_l.deinit(self.alloc);
+            src.cache_r.deinit(self.alloc);
+        }
 
         @memcpy(src.path_buf[0..path.len], path);
         src.path_len = @intCast(path.len);

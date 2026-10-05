@@ -3393,7 +3393,7 @@ fn drawLiveRecordClip(ui: *Ui, lane: c.rl.Rectangle, rec: *const recorder_mod.Re
 /// A warped clip's waveform, span by span through its markers (docs/29
 /// §Editing): each linear stretch of content beats draws its source
 /// seconds.
-fn drawWarpedWave(ui: *Ui, body: Rect, clip: Clip, cache: *const waveform.PeakCache, rate: f64, total: f64, col: ui_style.Color) void {
+fn drawWarpedWave(ui: *Ui, body: Rect, clip: Clip, waves: waveform.Waves, rate: f64, total: f64, col: ui_style.Color) void {
     const map = warp_mod.Map{ .m = clip.warp_markers.items };
     const len_sec = total / rate;
     const o = clip.audio.offset_beats;
@@ -3405,9 +3405,9 @@ fn drawWarpedWave(ui: *Ui, body: Rect, clip: Clip, cache: *const waveform.PeakCa
         if (x1 <= x0) continue;
         const r = Rect.xywh(x0, body.y, x1 - x0, body.h);
         if (clip.audio.reversed)
-            surf.waveformDir(ui, r, cache, (len_sec - sp.s1) * rate, (len_sec - sp.s0) * rate, col, true)
+            surf.waveformLanes(ui, r, waves, (len_sec - sp.s1) * rate, (len_sec - sp.s0) * rate, col, true)
         else
-            surf.waveformDir(ui, r, cache, sp.s0 * rate, sp.s1 * rate, col, false);
+            surf.waveformLanes(ui, r, waves, sp.s0 * rate, sp.s1 * rate, col, false);
     }
 }
 
@@ -3437,7 +3437,7 @@ fn drawClip(ui: *Ui, r_: c.rl.Rectangle, clip: Clip, color_: c.rl.Color, selecte
                     const rate = src.sample.sample_rate;
                     const total: f64 = @floatFromInt(src.cache.sample_count);
                     if (clip.audio.warp and warp_mod.valid(clip.warp_markers.items)) {
-                        drawWarpedWave(ui, body, clip, &src.cache, rate, total, preview);
+                        drawWarpedWave(ui, body, clip, src.waves(), rate, total, preview);
                     } else {
                         const win_start = clip.audio.start_sec * rate;
                         const want = clip.audio.dur_sec * rate;
@@ -3447,7 +3447,7 @@ fn drawClip(ui: *Ui, r_: c.rl.Rectangle, clip: Clip, color_: c.rl.Color, selecte
                         var wr = body;
                         if (want > 0 and win_end - win_start < want)
                             wr.w = @intFromFloat(@as(f64, @floatFromInt(body.w)) * @max(0.0, win_end - win_start) / want);
-                        surf.waveformDir(ui, wr, &src.cache, win_start, win_end, preview, clip.audio.reversed);
+                        surf.waveformLanes(ui, wr, src.waves(), win_start, win_end, preview, clip.audio.reversed);
                     }
                 }
             }
