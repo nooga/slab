@@ -6,7 +6,13 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
-### Audio into notes
+## 0.0.9 — 2026-10-05
+
+Audio into music: hum a line and get notes, put a voice in key, hear a
+clip's chords and drums back as Slab instruments, and take a whole song
+apart into stems with a neural network running on your Mac.
+
+### Audio into music
 
 - **Audio to notes**: right-click an audio clip and its sung, hummed,
   whistled or played line comes out as notes on a new Cream track under
@@ -40,7 +46,9 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   vocals, each on its own track under the clip and playing in its place.
   It uses HTDemucs, a neural network, running on your Mac through
   CoreML: a three-minute song takes about 15 s. It needs the **Extract**
-  pack (Browser, Packs), which downloads and sets up the model once.
+  pack (Browser, Packs), which downloads and sets up the model once
+  (about 1 GB of tools and 200 MB of model; it needs `uv`, `brew
+  install uv`).
 - **Explode…**: one sheet for all of it. Pick stems, drums, bass,
   chords and melody, and a song comes back as stems, a drum kit with its
   pattern, the bassline and melody as notes, and the chords on a pad.
