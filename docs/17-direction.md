@@ -205,7 +205,7 @@ impulse case).
 | D6 | Voice allocation stays a **Zig host service** (poly, mono, legato, glide, unison), configured from the manifest and delivered as voice events in ctx. | It's control logic, not DSP, and nobody needs to livecode it. |
 | D7 | Tables are computed in **normal fy at load time** (`table:`) into the asset arena, swapped atomically on reload, and cached on disk by source hash. | Normal fy can allocate and call libm; the audio thread just reads. |
 | D8 | The workbench is **host-in-a-box**: same adapter, same ctx, scripted instead of a sound card. It outputs PNG contact sheets drawn with raylib; no Python. | One code path; cheap for agents to read. |
-| D9 | The Live-style graph stays: sends/returns, sidechains, racks (parallel chains), and groups. No free node graph yet. | CLAUDE.md non-goal ordering. |
+| D9 | The Live-style graph stays: sends/returns, sidechains, racks (parallel chains), and groups. No free node graph yet. | AGENTS.md non-goal ordering. |
 
 ## Track A — fy `dsp:` language
 

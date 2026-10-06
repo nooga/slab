@@ -6,7 +6,7 @@
     .fingerprint = 0xc659b8b8e507d92d,
     .dependencies = .{
         .fy = .{
-            // fy is in tree: Slab's DSP fork of nooga/fy (CLAUDE.md §fy).
+            // fy is in tree: Slab's DSP fork of nooga/fy (AGENTS.md §fy).
             .path = "fy",
         },
     },

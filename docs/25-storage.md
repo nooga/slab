@@ -602,7 +602,7 @@ Loaders:
   optional field doesn't need a bump, since older loaders ignore what
   they don't know.
 - **Pre-1.0:** we still change formats freely and rewrite the shipped
-  files rather than carry migrations (CLAUDE.md).
+  files rather than carry migrations (AGENTS.md).
 
 The asset table and a Rack's state are parts of a project or a preset
 and carry no version of their own.

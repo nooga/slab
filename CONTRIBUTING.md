@@ -1,6 +1,6 @@
 # Contributing to Slab
 
-Start with [CLAUDE.md](CLAUDE.md) and [docs/README.md](docs/README.md):
+Start with [AGENTS.md](AGENTS.md) and [docs/README.md](docs/README.md):
 the design docs are the plan, and code follows them.
 
 ## Before your first pull request
@@ -34,5 +34,5 @@ the licenses each kind of item may use are listed there.
 ## Commits
 
 `area: short imperative summary`, one logical change per commit, and
-the doc section a commit implements in its summary. See CLAUDE.md
+the doc section a commit implements in its summary. See AGENTS.md
 §Commit style.
