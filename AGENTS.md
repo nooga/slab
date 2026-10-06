@@ -102,7 +102,7 @@ Copy *ideas*, not code. fuvid is MIT-or-whatever-license independent
 of Slab; keep the codebases disjoint.
 
 Reference docs in fuvid:
-- `fuvid/AGENTS.md` — architecture summary (short and good)
+- `fuvid/CLAUDE.md` — architecture summary (short and good)
 
 ## Build and run
 
@@ -146,14 +146,23 @@ the four-arena model (block, persistent, voice, asset).
 
 ### UI / widget style
 
-Brutalist grey, 1px bevels, bitmap fonts. Don't soften this. See
+2000s pro hardware, pixel-exact: 1px bevels, chamfered faceplates,
+Tamzen bitmap type, dot-matrix displays. Don't soften this. See
 [docs/06-ui-widgets.md](docs/06-ui-widgets.md). Concretely:
 
-- No anti-aliasing on rectangles or lines.
-- No gradients, drop shadows, or rounded corners.
-- Grid snap at 4px. Standard row height 16 or 20.
-- Palette is fixed: five greys + three accents (in the doc).
-- Bitmap fonts only — vector fonts at 11px look wrong.
+- UI rects are `i32` logical pixels on a 4px grid; the renderer owns the
+  logical → device scale. Integer scales are the reference look.
+- No rounded corners or drop shadows. Materials (noise, faint vertical
+  gradients, engraving) are token-limited and only on hardware
+  surfaces; data sits on flat dark wells.
+- Tamzen at integer scales; the vector face only for fractional scales,
+  rasterized at exact device size (never filtered down).
+- Palette is tokens (in the doc). Accent amber means "active", nothing
+  else; displays glow the deeper `vfd` orange behind glass.
+- Controls come from the catalogue in fixed sizes; panels pick one tier,
+  never shrink controls to fit.
+- Widget ids are explicit keys, never rect hashes. Nothing outside the
+  renderer calls raylib.
 
 ### fy-side style
 
@@ -201,6 +210,9 @@ stale status paragraph.
 - `area` examples: `fy-embed`, `audio`, `arena`, `ui`, `machine`,
   `kernel`, `docs`
 - One logical change per commit
+- A change users will notice gets a line under **Unreleased** in
+  [CHANGELOG.md](CHANGELOG.md), in the same commit; a release renames that
+  section to its version (`tools/release.sh` publishes it as the notes)
 - No "WIP", "fix typo", "more stuff" — squash before merging
 - Reference doc sections when a commit implements them:
   `kernel: implement vec-each combinator (docs/05 §combinators)`
