@@ -341,7 +341,7 @@ pub const Error = error{
     BadVoiceFile,
 } || wav.Error;
 
-/// Load a keymap from a .wav, a .sfz or a folder.
+/// Load a keymap from a sample file (WAV, AIFF, FLAC), a .sfz or a folder.
 pub fn load(alloc: std.mem.Allocator, path: []const u8) Error!Keymap {
     var b = Builder.init(alloc);
     defer b.deinit();
@@ -366,7 +366,7 @@ pub fn load(alloc: std.mem.Allocator, path: []const u8) Error!Keymap {
 // ── the files a keymap reads ───────────────────────────────────────────
 
 /// Every file loading `path` reads (docs/25 §Collect on save): an SFZ and
-/// the samples its regions name that exist, a folder's WAVs and .VCs, or
+/// the samples its regions name that exist, a folder's samples and .VCs, or
 /// the file itself. The SFZ or the file comes first. Free with freeFiles.
 pub fn memberFiles(alloc: std.mem.Allocator, path: []const u8) Error![][]u8 {
     var out: std.ArrayList([]u8) = .empty;
@@ -402,7 +402,7 @@ pub fn memberFiles(alloc: std.mem.Allocator, path: []const u8) Error![][]u8 {
         while (readdir(d)) |e| {
             const name = e.d_name[0..e.d_namlen];
             if (name.len == 0 or name[0] == '.' or e.d_type == DT_DIR) continue;
-            if (!(endsWithIgnoreCase(name, ".wav") or endsWithIgnoreCase(name, ".flac") or endsWithIgnoreCase(name, ".vc"))) continue;
+            if (!(wav.isAudioFile(name) or endsWithIgnoreCase(name, ".vc"))) continue;
             try out.append(alloc, try std.fmt.allocPrint(alloc, "{s}/{s}", .{ path, name }));
         }
         std.mem.sort([]u8, out.items, {}, lessOwned);
@@ -532,7 +532,7 @@ fn loadFolder(b: *Builder, dir: []const u8) Error!void {
         while (readdir(d)) |e| {
             const name = e.d_name[0..e.d_namlen];
             if (name.len == 0 or name[0] == '.' or e.d_type == DT_DIR) continue;
-            if (!(endsWithIgnoreCase(name, ".wav") or endsWithIgnoreCase(name, ".flac") or endsWithIgnoreCase(name, ".vc")) or name.len > 255) continue;
+            if (!(wav.isAudioFile(name) or endsWithIgnoreCase(name, ".vc")) or name.len > 255) continue;
             if (n == MAX_FILES) break;
             @memcpy(names_buf[n][0..name.len], name);
             names_len[n] = name.len;
