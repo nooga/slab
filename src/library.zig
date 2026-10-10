@@ -10,6 +10,8 @@
 //! | table  | tables/*.wav           | Wavetables/*.wav   | machines/*/assets (clm)|               |
 //! | clip   |                        | Clips/*.slabclip   | clips/*.slabclip      |                |
 //! | sample | audio/*.wav            | Samples/**.wav     |                       | Library/**.wav |
+//!
+//! Samples are WAV or FLAC (`isAudioFile`) wherever the table says .wav.
 //! | song   |                        | Projects/*.slab    | demos/, songs/        |                |
 //!
 //! Packs (`packs.zig`) say which library folders may be shared; the scan
@@ -244,8 +246,9 @@ pub const Library = struct {
         }
     }
 
-    /// Files ending in `ext` in `dir` (and below, to `depth`), under one
-    /// group, or, with no group, a group per first-level folder.
+    /// Files ending in `ext` (samples: any `isAudioFile`) in `dir` (and
+    /// below, to `depth`), under one group, or, with no group, a group per
+    /// first-level folder.
     fn walk(self: *Library, kind: Kind, source: Source, dir: []const u8, group: ?[]const u8, depth: u8, ext: []const u8) void {
         if (kind == .sample and group == null) {
             // Home Samples: loose files under SAMPLES, a folder a group.
@@ -269,7 +272,7 @@ pub const Library = struct {
         defer d.close();
         while (d.next()) |e| {
             if (e.name[0] == '.') continue;
-            if (!std.ascii.endsWithIgnoreCase(e.name, ext)) continue;
+            if (!(if (kind == .sample) isAudioFile(e.name) else std.ascii.endsWithIgnoreCase(e.name, ext))) continue;
             // A project is a folder (a package) or, from before, a file.
             if (e.dir and kind != .song) continue;
             var pb: [storage.MAX_PATH]u8 = undefined;
@@ -289,10 +292,10 @@ pub const Library = struct {
                 if (depth > 0) self.walkSamples(source, root, path, group, depth - 1, shareable);
                 continue;
             }
-            if (!std.ascii.endsWithIgnoreCase(e.name, ".wav")) continue;
+            if (!isAudioFile(e.name)) continue;
             // Named by its path below the group's folder.
             const rel = if (path.len > root.len + 1) path[root.len + 1 ..] else e.name;
-            self.add(.{ .kind = .sample, .source = source, .name = self.dupe(rel[0 .. rel.len - 4]), .folder = group, .path = self.dupe(path), .shareable = shareable });
+            self.add(.{ .kind = .sample, .source = source, .name = self.dupe(stem(rel)), .folder = group, .path = self.dupe(path), .shareable = shareable });
         }
     }
 
@@ -408,6 +411,11 @@ fn sub(buf: []u8, dir: []const u8, name: []const u8) []const u8 {
     return std.fmt.bufPrint(buf, "{s}/{s}", .{ dir, name }) catch "";
 }
 
+/// A sample file the browser lists and audio clips load (wav.load).
+pub fn isAudioFile(name: []const u8) bool {
+    return std.ascii.endsWithIgnoreCase(name, ".wav") or std.ascii.endsWithIgnoreCase(name, ".flac");
+}
+
 fn stem(name: []const u8) []const u8 {
     const dot = std.mem.lastIndexOfScalar(u8, name, '.') orelse return name;
     return if (dot == 0) name else name[0..dot];
@@ -519,6 +527,7 @@ test "library lists the home folder's files and keeps favorites" {
     writeAll(std.fmt.bufPrint(&b, "{s}/Clips/bass line.slabclip", .{tmp}) catch unreachable, "{}");
     writeAll(std.fmt.bufPrint(&b, "{s}/Samples/Drums/kick.wav", .{tmp}) catch unreachable, "RIFF");
     writeAll(std.fmt.bufPrint(&b, "{s}/Samples/loose.wav", .{tmp}) catch unreachable, "RIFF");
+    writeAll(std.fmt.bufPrint(&b, "{s}/Samples/Drums/snare.flac", .{tmp}) catch unreachable, "fLaC");
     var zb: [512:0]u8 = undefined;
     _ = setenv("SLAB_HOME", zpathSmall(&zb, tmp), 1);
     var sb: [512:0]u8 = undefined;
@@ -539,12 +548,14 @@ test "library lists the home folder's files and keeps favorites" {
     var clip: ?usize = null;
     var kick = false;
     var loose = false;
+    var snare = false;
     for (lib.items.items, 0..) |it, i| {
         if (it.kind == .clip and it.source == .user and std.mem.eql(u8, it.name, "bass line")) clip = i;
         if (it.kind == .sample and std.mem.eql(u8, it.folder, "Drums") and std.mem.eql(u8, it.name, "kick")) kick = true;
         if (it.kind == .sample and std.mem.eql(u8, it.folder, "SAMPLES") and std.mem.eql(u8, it.name, "loose")) loose = true;
+        if (it.kind == .sample and std.mem.eql(u8, it.folder, "Drums") and std.mem.eql(u8, it.name, "snare")) snare = true;
     }
-    try t.expect(clip != null and kick and loose);
+    try t.expect(clip != null and kick and loose and snare);
     lib.setFav(clip.?, true);
     // A fresh library reads the favorite back.
     var again = Library.init(t.allocator);

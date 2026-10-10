@@ -476,6 +476,8 @@ lists them; the gallery's BROWSER page is where its look was tried out.
 | sample | `audio/` | `Samples/`, a group per folder | | `Library/<pack>/`, a group per folder |
 | song | | `Projects/` | `demos/`, `songs/` | |
 
+Samples are WAV or FLAC files.
+
 - **Finding.** Search as you type: any letter while the browser has
   focus, or ⌘F. Every word must match the name, the folder or the kind.
   Source tabs and kind chips narrow it; the chips count what matches.

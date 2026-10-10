@@ -6,6 +6,9 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **FLAC files import as audio clips**: Import audio… and the sampler's
+  file picker accept .flac, and the browser lists FLAC samples in your
+  Samples folder, a project's audio and library packs.
 - A composing walkthrough (docs/33) takes you from a musical brief to an
   editable sketch with GEQ, a shared delay and a mix and stem export; the
   production guide is updated for sends, clip automation and GEQ.

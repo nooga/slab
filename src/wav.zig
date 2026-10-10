@@ -549,3 +549,63 @@ test "loads a FLAC: the factory kalimba's first sample" {
     for (s.data) |x| peak = @max(peak, @abs(x));
     try std.testing.expect(peak > 0.01 and peak <= 1.0);
 }
+
+extern fn write(fd: c_int, buf: [*]const u8, count: usize) isize;
+
+fn writeTestFile(path: [:0]const u8, bytes: []const u8) !void {
+    const fd = open(path.ptr, 0x601, @as(c_uint, 0o644)); // O_WRONLY | O_CREAT | O_TRUNC
+    if (fd < 0) return error.OpenFailed;
+    defer _ = close(fd);
+    if (write(fd, bytes.ptr, bytes.len) != @as(isize, @intCast(bytes.len))) return error.WriteFailed;
+}
+
+test "a FLAC from slab's encoder loads sample-exact: 16 and 24 bits, mono and stereo" {
+    const flac = @import("flac.zig");
+    const alloc = testing.allocator;
+    const frames = flac.BLOCK + 777;
+    inline for (.{ 16, 24 }) |bits| {
+        inline for (.{ 1, 2 }) |ch| {
+            const ints = try alloc.alloc(i32, frames * ch);
+            defer alloc.free(ints);
+            const full: f64 = @floatFromInt((@as(i32, 1) << (bits - 1)) - 1);
+            for (0..frames) |i| {
+                const t: f64 = @floatFromInt(i);
+                ints[i * ch] = @intFromFloat(@round(0.9 * full * @sin(t * 0.013 + 0.0004 * t * t / 100)));
+                if (ch == 2) ints[i * ch + 1] = @intFromFloat(@round(-0.4 * full * @sin(t * 0.031)));
+            }
+            const bytes = try flac.encode(alloc, ints, .{ .sample_rate = 32_000, .bits = bits, .channels = ch });
+            defer alloc.free(bytes);
+            var pb: [256]u8 = undefined;
+            const path = try std.fmt.bufPrintZ(&pb, "/tmp/slab-wav-flac-{d}-{d}-{d}.flac", .{ std.c.getpid(), bits, ch });
+            try writeTestFile(path, bytes);
+
+            const scale: f64 = @floatFromInt(@as(i32, 1) << (bits - 1));
+            var s = try loadStereo(alloc, path);
+            defer s.deinit(alloc);
+            try testing.expectEqual(@as(f64, 32_000), s.sample_rate);
+            try testing.expectEqual(@as(usize, frames), s.data.len);
+            try testing.expectEqual(ch == 2, s.isStereo());
+            for (0..frames) |i| {
+                try testing.expectEqual(@as(f64, @floatFromInt(ints[i * ch])) / scale, s.data[i]);
+                if (ch == 2) try testing.expectEqual(@as(f64, @floatFromInt(ints[i * ch + 1])) / scale, s.right[i]);
+            }
+        }
+    }
+}
+
+// The fixtures in src/testdata: a sweep written by Python's wave module,
+// then `afconvert -f flac -d flac x.wav x.flac` (macOS; afconvert writes
+// an empty file for anything shorter than its 4608-frame packet).
+test "a FLAC from an external encoder (afconvert) matches its source WAV" {
+    const alloc = testing.allocator;
+    inline for (.{ .{ "src/testdata/sweep-s24-44k", true, 44_100 }, .{ "src/testdata/sweep-m16-22k", false, 22_050 } }) |f| {
+        var w = try loadStereo(alloc, f[0] ++ ".wav");
+        defer w.deinit(alloc);
+        var c = try loadStereo(alloc, f[0] ++ ".flac");
+        defer c.deinit(alloc);
+        try testing.expectEqual(@as(f64, f[2]), c.sample_rate);
+        try testing.expectEqual(f[1], c.isStereo());
+        try testing.expectEqualSlices(f64, w.data, c.data);
+        try testing.expectEqualSlices(f64, w.right, c.right);
+    }
+}
