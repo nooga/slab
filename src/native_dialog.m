@@ -82,7 +82,7 @@ char *slab_open_audio_dialog(void) {
         [panel setCanChooseFiles:YES];
         [panel setCanChooseDirectories:NO];
         [panel setAllowsMultipleSelection:NO];
-        [panel setAllowedFileTypes:@[@"wav", @"wave", @"aif", @"aiff"]];
+        [panel setAllowedFileTypes:@[@"wav", @"wave", @"flac", @"aif", @"aiff", @"aifc"]];
         [panel setTitle:@"Load Audio Sample"];
         if ([panel runModal] != NSModalResponseOK) return NULL;
         return copy_path([[panel URL] path]);
@@ -95,7 +95,7 @@ char *slab_open_keymap_dialog(void) {
         [panel setCanChooseFiles:YES];
         [panel setCanChooseDirectories:YES];
         [panel setAllowsMultipleSelection:NO];
-        [panel setAllowedFileTypes:@[@"wav", @"wave", @"sfz"]];
+        [panel setAllowedFileTypes:@[@"wav", @"wave", @"flac", @"aif", @"aiff", @"aifc", @"sfz"]];
         [panel setTitle:@"Load Sample, SFZ or Folder of Samples"];
         if ([panel runModal] != NSModalResponseOK) return NULL;
         return copy_path([[panel URL] path]);

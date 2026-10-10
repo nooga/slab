@@ -65,7 +65,7 @@ one. Every other project keeps the factory machine.
   Presets/       <machine id>/<bank>/<name>.preset
   Wavetables/    .wav, Serum-compatible, 2048-sample frames
   Clips/         .slabclip
-  Samples/       the user's own samples, kits, keymaps (.wav, .flac, .sfz, folders)
+  Samples/       the user's own samples, kits, keymaps (.wav, .aif, .flac, .sfz, folders)
   Machines/      <id>/<id>.fy, with presets/ and assets/ like machines/ in the repo
   Library/       lib: packs (VCSL, the drum machines, …), one folder each
   Cache/         slab: downloads and anything slab can rebuild
@@ -475,6 +475,8 @@ lists them; the gallery's BROWSER page is where its look was tried out.
 | clip | | `Clips/` | `clips/` | |
 | sample | `audio/` | `Samples/`, a group per folder | | `Library/<pack>/`, a group per folder |
 | song | | `Projects/` | `demos/`, `songs/` | |
+
+Samples are WAV, AIFF or FLAC files.
 
 - **Finding.** Search as you type: any letter while the browser has
   focus, or ⌘F. Every word must match the name, the folder or the kind.

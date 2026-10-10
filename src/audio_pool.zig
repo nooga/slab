@@ -297,3 +297,13 @@ test "get out of range is null" {
     defer pool.deinit();
     try testing.expect(pool.get(0) == null);
 }
+
+test "loadFile reads a FLAC as a stereo source" {
+    var pool = AudioPool.init(testing.allocator);
+    defer pool.deinit();
+    const src = pool.get(try pool.loadFile("src/testdata/sweep-s24-44k.flac")).?;
+    try testing.expectEqualStrings("sweep-s24-44k.flac", src.name());
+    try testing.expect(src.sample.isStereo());
+    try testing.expectEqual(@as(usize, 6000), src.sample.data.len);
+    try testing.expectEqual(@as(f64, 44_100), src.sample.sample_rate);
+}

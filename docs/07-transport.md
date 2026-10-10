@@ -146,7 +146,9 @@ runs out — speed/warp and a trim window are Phase D. Sources are pool-indexed
 and never freed mid-session, so the snapshot pointer stays valid without a
 fence. The pool survives undo/redo; the document persists audio clips by
 file path (`ACLIP` line) and re-resolves to a pool index on load (dedup by
-path). Import via the arrangement's right-click **Import audio…**. Unlike
+path). Import via the arrangement's right-click **Import audio…** (WAV,
+AIFF/AIFF-C or FLAC; `wav.loadStereo` parses WAV and AIFF itself and
+decodes FLAC with miniaudio). Unlike
 the doc's "audio-head track" split above, an audio clip can sit on any
 track and coexists with that track's instrument — the engine simply sums.
 

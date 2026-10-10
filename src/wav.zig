@@ -1,11 +1,14 @@
-//! Minimal RIFF/WAVE loader → f64 mono. The asset arena's first consumer
-//! (samplers, wavetables): load a file on the UI thread into host memory,
-//! then inject a pointer + length into a machine's params so a `dsp:` voice
-//! can read it with `p@64` / `f@i`. Read-only and shared across voices.
+//! Minimal RIFF/WAVE and AIFF loader → f64 mono. The asset arena's first
+//! consumer (samplers, wavetables): load a file on the UI thread into host
+//! memory, then inject a pointer + length into a machine's params so a
+//! `dsp:` voice can read it with `p@64` / `f@i`. Read-only and shared
+//! across voices.
 //!
 //! Supports PCM 8/16/24/32-bit and IEEE-float 32/64-bit, mono or multi-
-//! channel (folded to mono by averaging), and FLAC (a .flac path, decoded
-//! by miniaudio; the factory sample sets ship as FLAC). The std.fs surface moved in zig
+//! channel (folded to mono by averaging); AIFF and AIFF-C the same
+//! (big-endian or `sowt` PCM, `fl32`/`fl64` float), told apart from WAV by
+//! their FORM header; and FLAC (a .flac path, decoded by miniaudio; the
+//! factory sample sets ship as FLAC). The std.fs surface moved in zig
 //! 0.16, so IO is direct libc externs (the codebase convention; see
 //! presets.zig, machine_registry.zig).
 
@@ -74,6 +77,14 @@ fn rdU16(b: []const u8, o: usize) u16 {
 }
 fn rdU32(b: []const u8, o: usize) u32 {
     return @as(u32, b[o]) | (@as(u32, b[o + 1]) << 8) | (@as(u32, b[o + 2]) << 16) | (@as(u32, b[o + 3]) << 24);
+}
+
+/// A file name this loader reads: WAV, AIFF/AIFF-C or FLAC. The browser
+/// lists these as samples and keymap folders take them.
+pub fn isAudioFile(name: []const u8) bool {
+    const exts = [_][]const u8{ ".wav", ".flac", ".aif", ".aiff", ".aifc" };
+    for (exts) |e| if (std.ascii.endsWithIgnoreCase(name, e)) return true;
+    return false;
 }
 
 /// Load `path` into a freshly allocated f64 mono buffer. Caller owns the
@@ -158,13 +169,15 @@ fn loadFlac(alloc: std.mem.Allocator, zpath: [*:0]const u8, stereo: bool) Error!
     return .{ .data = data, .sample_rate = @floatFromInt(dec.outputSampleRate) };
 }
 
-/// Parse an in-memory RIFF/WAVE image into f64 mono. Exposed for tests.
+/// Parse an in-memory RIFF/WAVE or AIFF image into f64 mono. Exposed for
+/// tests.
 pub fn parse(alloc: std.mem.Allocator, buf: []const u8) Error!Sample {
     return parseAs(alloc, buf, false);
 }
 
 fn parseAs(alloc: std.mem.Allocator, buf: []const u8, stereo: bool) Error!Sample {
     if (buf.len < 12) return Error.NotRiffWave;
+    if (std.mem.eql(u8, buf[0..4], "FORM")) return parseAiff(alloc, buf, stereo);
     if (!std.mem.eql(u8, buf[0..4], "RIFF") or !std.mem.eql(u8, buf[8..12], "WAVE")) return Error.NotRiffWave;
 
     var audio_format: u16 = 0;
@@ -238,81 +251,187 @@ fn parseAs(alloc: std.mem.Allocator, buf: []const u8, stereo: bool) Error!Sample
     if (data_off == 0 or data_len == 0) return Error.NoDataChunk;
     if (channels == 0 or sample_rate == 0) return Error.UnsupportedFormat;
 
-    const bytes_per = bits / 8;
-    if (bytes_per == 0) return Error.UnsupportedFormat;
-    const frame_bytes = bytes_per * channels;
-    const frames = data_len / frame_bytes;
+    // fmt 1 = PCM int (8-bit unsigned), fmt 3 = IEEE float.
+    const layout: Layout = switch (audio_format) {
+        1 => switch (bits) {
+            8, 16, 24, 32 => .{ .bytes = bits / 8, .unsigned8 = true },
+            else => return Error.UnsupportedFormat,
+        },
+        3 => switch (bits) {
+            32, 64 => .{ .float = true, .bytes = bits / 8 },
+            else => return Error.UnsupportedFormat,
+        },
+        else => return Error.UnsupportedFormat,
+    };
+    var s = try decodeFrames(alloc, buf[data_off..][0..data_len], channels, layout, stereo);
+    s.sample_rate = @floatFromInt(sample_rate);
+    s.root_key = root_key;
+    s.loop_start = @min(loop_start, s.data.len);
+    s.loop_end = @min(loop_end, s.data.len);
+    s.frame_size = frame_size;
+    s.levels_kept = levels_kept;
+    return s;
+}
+
+/// How a file stores one sample.
+const Layout = struct {
+    float: bool = false,
+    /// 1–4 for integers (left-justified: a 12-bit AIFF sample sits in 2),
+    /// 4 or 8 for float.
+    bytes: usize,
+    big: bool = false,
+    /// WAV's 8-bit is unsigned, AIFF's signed.
+    unsigned8: bool = false,
+};
+
+/// Interleaved frames to f64: mono (channels averaged), or the first two
+/// channels apart with `stereo`. Sets `data` and `right` only.
+fn decodeFrames(alloc: std.mem.Allocator, data: []const u8, channels: usize, l: Layout, stereo: bool) Error!Sample {
+    const frame_bytes = l.bytes * channels;
+    const frames = data.len / frame_bytes;
     if (frames == 0) return Error.Empty;
     if (frames > MAX_SAMPLES) return Error.TooLarge;
 
     const out = alloc.alloc(f64, frames) catch return Error.OutOfMemory;
     errdefer alloc.free(out);
-
-    const data = buf[data_off..][0..data_len];
-    var right: []f64 = &.{};
-    errdefer if (right.len > 0) alloc.free(right);
     if (stereo and channels >= 2) {
-        right = alloc.alloc(f64, frames) catch return Error.OutOfMemory;
+        const right = alloc.alloc(f64, frames) catch return Error.OutOfMemory;
         for (0..frames) |i| {
-            out[i] = decodeSample(data, i * frame_bytes, audio_format, bits) catch return Error.UnsupportedFormat;
-            right[i] = decodeSample(data, i * frame_bytes + bytes_per, audio_format, bits) catch return Error.UnsupportedFormat;
+            out[i] = decodeSample(data, i * frame_bytes, l);
+            right[i] = decodeSample(data, i * frame_bytes + l.bytes, l);
         }
+        return .{ .data = out, .right = right, .sample_rate = 0 };
     }
-    var fi: usize = if (right.len > 0) frames else 0;
-    while (fi < frames) : (fi += 1) {
+    for (0..frames) |i| {
         var acc: f64 = 0;
-        var ch: usize = 0;
-        while (ch < channels) : (ch += 1) {
-            const so = fi * frame_bytes + ch * bytes_per;
-            acc += decodeSample(data, so, audio_format, bits) catch return Error.UnsupportedFormat;
-        }
-        out[fi] = acc / @as(f64, @floatFromInt(channels));
+        for (0..channels) |ch| acc += decodeSample(data, i * frame_bytes + ch * l.bytes, l);
+        out[i] = acc / @as(f64, @floatFromInt(channels));
     }
-
-    return .{
-        .data = out,
-        .sample_rate = @floatFromInt(sample_rate),
-        .root_key = root_key,
-        .loop_start = @min(loop_start, frames),
-        .loop_end = @min(loop_end, frames),
-        .frame_size = frame_size,
-        .levels_kept = levels_kept,
-        .right = right,
-    };
+    return .{ .data = out, .sample_rate = 0 };
 }
 
-fn decodeSample(d: []const u8, o: usize, fmt: u16, bits: u16) Error!f64 {
-    // fmt 1 = PCM int, fmt 3 = IEEE float.
-    if (fmt == 1) {
-        switch (bits) {
-            8 => return (@as(f64, @floatFromInt(d[o])) - 128.0) / 128.0, // 8-bit is unsigned
-            16 => {
-                const v: i16 = @bitCast(rdU16(d, o));
-                return @as(f64, @floatFromInt(v)) / 32768.0;
-            },
-            24 => {
-                const u: u32 = @as(u32, d[o]) | (@as(u32, d[o + 1]) << 8) | (@as(u32, d[o + 2]) << 16);
-                const v: i32 = if (u & 0x800000 != 0) @as(i32, @bitCast(u | 0xFF000000)) else @intCast(u);
-                return @as(f64, @floatFromInt(v)) / 8388608.0;
-            },
-            32 => {
-                const v: i32 = @bitCast(rdU32(d, o));
-                return @as(f64, @floatFromInt(v)) / 2147483648.0;
-            },
-            else => return Error.UnsupportedFormat,
+fn decodeSample(d: []const u8, o: usize, l: Layout) f64 {
+    var word: u64 = 0;
+    for (0..l.bytes) |k| {
+        const b: u64 = d[o + if (l.big) l.bytes - 1 - k else k];
+        word |= b << @intCast(8 * k);
+    }
+    if (l.float) {
+        if (l.bytes == 4) return @as(f32, @bitCast(@as(u32, @truncate(word))));
+        return @bitCast(word);
+    }
+    if (l.unsigned8 and l.bytes == 1) return (@as(f64, @floatFromInt(word)) - 128.0) / 128.0;
+    // Sign-extend from the container's top bit, scale to ±1.
+    const width: u6 = @intCast(8 * l.bytes);
+    const v: i64 = @as(i64, @bitCast(word << (63 - width + 1))) >> (63 - width + 1);
+    return @as(f64, @floatFromInt(v)) / @as(f64, @floatFromInt(@as(i64, 1) << (width - 1)));
+}
+
+fn rdBe16(b: []const u8, o: usize) u16 {
+    return std.mem.readInt(u16, b[o..][0..2], .big);
+}
+fn rdBe32(b: []const u8, o: usize) u32 {
+    return std.mem.readInt(u32, b[o..][0..4], .big);
+}
+
+/// An 80-bit IEEE extended float (AIFF's sample rate).
+fn extended80(b: []const u8) f64 {
+    const exp: i32 = @as(i32, rdBe16(b, 0) & 0x7FFF);
+    const mant = std.mem.readInt(u64, b[2..10], .big);
+    if (exp == 0 or mant == 0) return 0;
+    return std.math.ldexp(@as(f64, @floatFromInt(mant)), exp - 16383 - 63);
+}
+
+/// An AIFF or AIFF-C image: COMM says the format, SSND holds the frames
+/// (big-endian), INST's base note is the root key and its sustain loop,
+/// two MARK positions, the loop.
+fn parseAiff(alloc: std.mem.Allocator, buf: []const u8, stereo: bool) Error!Sample {
+    const aifc = std.mem.eql(u8, buf[8..12], "AIFC");
+    if (!aifc and !std.mem.eql(u8, buf[8..12], "AIFF")) return Error.NotRiffWave;
+
+    var channels: usize = 0;
+    var frames: usize = 0;
+    var bits: usize = 0;
+    var rate: f64 = 0;
+    var comp: [4]u8 = "NONE".*;
+    var have_comm = false;
+    var data_off: usize = 0;
+    var data_len: usize = 0;
+    var root_key: f64 = -1;
+    var loop_ids: ?[2]u16 = null;
+    var mark_off: usize = 0;
+    var mark_len: usize = 0;
+
+    var pos: usize = 12;
+    while (pos + 8 <= buf.len) {
+        const id = buf[pos .. pos + 4];
+        const size: usize = rdBe32(buf, pos + 4);
+        const body = pos + 8;
+        if (std.mem.eql(u8, id, "COMM") and body + 18 <= buf.len) {
+            channels = rdBe16(buf, body);
+            frames = rdBe32(buf, body + 2);
+            bits = rdBe16(buf, body + 6);
+            rate = extended80(buf[body + 8 .. body + 18]);
+            if (aifc and body + 22 <= buf.len) @memcpy(&comp, buf[body + 18 .. body + 22]);
+            have_comm = true;
+        } else if (std.mem.eql(u8, id, "SSND") and body + 8 <= buf.len) {
+            data_off = body + 8 + rdBe32(buf, body);
+            // A truncated file (or a size never patched) runs to EOF.
+            const end = if (size < 8 or body + size > buf.len) buf.len else body + size;
+            data_len = if (data_off < end) end - data_off else 0;
+        } else if (std.mem.eql(u8, id, "INST") and body + 20 <= buf.len) {
+            // baseNote, detune, low/high note and velocity, gain (2), then
+            // the sustain loop: play mode, begin and end marker ids.
+            const base = buf[body];
+            if (base < 128) root_key = @floatFromInt(base);
+            if (rdBe16(buf, body + 8) != 0) loop_ids = .{ rdBe16(buf, body + 10), rdBe16(buf, body + 12) };
+        } else if (std.mem.eql(u8, id, "MARK")) {
+            mark_off = body;
+            mark_len = @min(size, buf.len -| body);
         }
-    } else if (fmt == 3) {
-        switch (bits) {
-            32 => return @as(f64, @as(f32, @bitCast(rdU32(d, o)))),
-            64 => {
-                var word: u64 = 0;
-                inline for (0..8) |k| word |= @as(u64, d[o + k]) << (8 * k);
-                return @bitCast(word);
-            },
-            else => return Error.UnsupportedFormat,
+        pos = body + size + (size & 1); // chunks are word-aligned
+    }
+
+    if (!have_comm) return Error.NoFmtChunk;
+    if (data_off == 0 or data_len == 0) return Error.NoDataChunk;
+    if (channels == 0 or rate <= 0 or bits == 0) return Error.UnsupportedFormat;
+
+    const ieq = std.ascii.eqlIgnoreCase;
+    const layout: Layout = if (ieq(&comp, "NONE") or ieq(&comp, "twos") or ieq(&comp, "sowt")) blk: {
+        if (bits > 32) return Error.UnsupportedFormat;
+        break :blk .{ .bytes = (bits + 7) / 8, .big = !ieq(&comp, "sowt") };
+    } else if (ieq(&comp, "fl32")) .{ .float = true, .bytes = 4, .big = true } else if (ieq(&comp, "fl64")) .{ .float = true, .bytes = 8, .big = true } else return Error.UnsupportedFormat;
+
+    // COMM's frame count bounds the data (SSND may be padded).
+    const want = frames * layout.bytes * channels;
+    var s = try decodeFrames(alloc, buf[data_off..][0..@min(data_len, want)], channels, layout, stereo);
+    s.sample_rate = rate;
+    s.root_key = root_key;
+    if (loop_ids) |ids| {
+        const a = markerPos(buf[mark_off..][0..mark_len], ids[0]);
+        const b = markerPos(buf[mark_off..][0..mark_len], ids[1]);
+        if (a != null and b != null and b.? > a.?) {
+            // Markers sit between samples: the end is exclusive already.
+            s.loop_start = @min(a.?, s.data.len);
+            s.loop_end = @min(b.?, s.data.len);
         }
     }
-    return Error.UnsupportedFormat;
+    return s;
+}
+
+/// A MARK chunk's position for marker `id`: count (2), then per marker id
+/// (2), position (4) and a pascal string padded to an even length.
+fn markerPos(mark: []const u8, id: u16) ?usize {
+    if (mark.len < 2) return null;
+    const n = rdBe16(mark, 0);
+    var o: usize = 2;
+    for (0..n) |_| {
+        if (o + 7 > mark.len) return null;
+        const pstr: usize = 1 + @as(usize, mark[o + 6]);
+        if (rdBe16(mark, o) == id) return rdBe32(mark, o + 2);
+        o += 6 + pstr + (pstr & 1);
+    }
+    return null;
 }
 
 // ── 32-bit float stereo encoder (bounces) ──────────────────────────────
@@ -548,4 +667,200 @@ test "loads a FLAC: the factory kalimba's first sample" {
     var peak: f64 = 0;
     for (s.data) |x| peak = @max(peak, @abs(x));
     try std.testing.expect(peak > 0.01 and peak <= 1.0);
+}
+
+extern fn write(fd: c_int, buf: [*]const u8, count: usize) isize;
+
+fn writeTestFile(path: [:0]const u8, bytes: []const u8) !void {
+    const fd = open(path.ptr, 0x601, @as(c_uint, 0o644)); // O_WRONLY | O_CREAT | O_TRUNC
+    if (fd < 0) return error.OpenFailed;
+    defer _ = close(fd);
+    if (write(fd, bytes.ptr, bytes.len) != @as(isize, @intCast(bytes.len))) return error.WriteFailed;
+}
+
+test "a FLAC from slab's encoder loads sample-exact: 16 and 24 bits, mono and stereo" {
+    const flac = @import("flac.zig");
+    const alloc = testing.allocator;
+    const frames = flac.BLOCK + 777;
+    inline for (.{ 16, 24 }) |bits| {
+        inline for (.{ 1, 2 }) |ch| {
+            const ints = try alloc.alloc(i32, frames * ch);
+            defer alloc.free(ints);
+            const full: f64 = @floatFromInt((@as(i32, 1) << (bits - 1)) - 1);
+            for (0..frames) |i| {
+                const t: f64 = @floatFromInt(i);
+                ints[i * ch] = @intFromFloat(@round(0.9 * full * @sin(t * 0.013 + 0.0004 * t * t / 100)));
+                if (ch == 2) ints[i * ch + 1] = @intFromFloat(@round(-0.4 * full * @sin(t * 0.031)));
+            }
+            const bytes = try flac.encode(alloc, ints, .{ .sample_rate = 32_000, .bits = bits, .channels = ch });
+            defer alloc.free(bytes);
+            var pb: [256]u8 = undefined;
+            const path = try std.fmt.bufPrintZ(&pb, "/tmp/slab-wav-flac-{d}-{d}-{d}.flac", .{ std.c.getpid(), bits, ch });
+            try writeTestFile(path, bytes);
+
+            const scale: f64 = @floatFromInt(@as(i32, 1) << (bits - 1));
+            var s = try loadStereo(alloc, path);
+            defer s.deinit(alloc);
+            try testing.expectEqual(@as(f64, 32_000), s.sample_rate);
+            try testing.expectEqual(@as(usize, frames), s.data.len);
+            try testing.expectEqual(ch == 2, s.isStereo());
+            for (0..frames) |i| {
+                try testing.expectEqual(@as(f64, @floatFromInt(ints[i * ch])) / scale, s.data[i]);
+                if (ch == 2) try testing.expectEqual(@as(f64, @floatFromInt(ints[i * ch + 1])) / scale, s.right[i]);
+            }
+        }
+    }
+}
+
+// The fixtures in src/testdata: a sweep written by Python's wave module,
+// then `afconvert -f flac -d flac x.wav x.flac` (macOS; afconvert writes
+// an empty file for anything shorter than its 4608-frame packet).
+test "a FLAC from an external encoder (afconvert) matches its source WAV" {
+    const alloc = testing.allocator;
+    inline for (.{ .{ "src/testdata/sweep-s24-44k", true, 44_100 }, .{ "src/testdata/sweep-m16-22k", false, 22_050 } }) |f| {
+        var w = try loadStereo(alloc, f[0] ++ ".wav");
+        defer w.deinit(alloc);
+        var c = try loadStereo(alloc, f[0] ++ ".flac");
+        defer c.deinit(alloc);
+        try testing.expectEqual(@as(f64, f[2]), c.sample_rate);
+        try testing.expectEqual(f[1], c.isStereo());
+        try testing.expectEqualSlices(f64, w.data, c.data);
+        try testing.expectEqualSlices(f64, w.right, c.right);
+    }
+}
+
+test "AIFF from slab's exporter loads like its WAV: 16, 24 and float, mono and stereo" {
+    const export_mod = @import("export.zig");
+    const alloc = testing.allocator;
+    var s: [2 * 1001]f32 = undefined;
+    for (&s, 0..) |*x, i| x.* = 0.8 * @sin(@as(f32, @floatFromInt(i)) * 0.07) - 0.1;
+    inline for (.{ export_mod.Bits.pcm16, export_mod.Bits.pcm24, export_mod.Bits.float32 }) |bits| {
+        inline for (.{ 1, 2 }) |ch| {
+            const f: export_mod.Format = .{ .bits = bits, .channels = ch, .sample_rate = 44_100, .dither = false };
+            var g = f;
+            g.container = .aiff;
+            const w = try export_mod.encode(alloc, &s, f);
+            defer alloc.free(w);
+            const a = try export_mod.encode(alloc, &s, g);
+            defer alloc.free(a);
+            var sw = try parseAs(alloc, w, true);
+            defer sw.deinit(alloc);
+            var sa = try parseAs(alloc, a, true);
+            defer sa.deinit(alloc);
+            try testing.expectEqual(@as(f64, 44_100), sa.sample_rate);
+            try testing.expectEqual(ch == 2, sa.isStereo());
+            try testing.expectEqualSlices(f64, sw.data, sa.data);
+            try testing.expectEqualSlices(f64, sw.right, sa.right);
+        }
+    }
+}
+
+/// A hand-built AIFF-C: COMM with compression `comp`, SSND of `data`, and
+/// optionally INST (base note 64, sustain loop markers 1→2) with MARK.
+fn testAifc(alloc: std.mem.Allocator, channels: u16, bits: u16, comp: *const [4]u8, data: []const u8, loop: ?[2]u32) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    const Be = struct {
+        fn u16_(o: *std.ArrayList(u8), a: std.mem.Allocator, v: u16) !void {
+            var b: [2]u8 = undefined;
+            std.mem.writeInt(u16, &b, v, .big);
+            try o.appendSlice(a, &b);
+        }
+        fn u32_(o: *std.ArrayList(u8), a: std.mem.Allocator, v: u32) !void {
+            var b: [4]u8 = undefined;
+            std.mem.writeInt(u32, &b, v, .big);
+            try o.appendSlice(a, &b);
+        }
+    };
+    const frame_bytes = channels * ((bits + 7) / 8);
+    try out.appendSlice(alloc, "FORM\x00\x00\x00\x00AIFCCOMM");
+    try Be.u32_(&out, alloc, 24);
+    try Be.u16_(&out, alloc, channels);
+    try Be.u32_(&out, alloc, @intCast(data.len / frame_bytes));
+    try Be.u16_(&out, alloc, bits);
+    try out.appendSlice(alloc, &.{ 0x40, 0x0D, 0xFA, 0, 0, 0, 0, 0, 0, 0 }); // 32000
+    try out.appendSlice(alloc, comp);
+    try out.appendSlice(alloc, &.{ 0, 0 });
+    if (loop) |l| {
+        // Names of 2 and 3 letters: the first string pads to even.
+        try out.appendSlice(alloc, "MARK");
+        try Be.u32_(&out, alloc, 2 + 10 + 10);
+        try Be.u16_(&out, alloc, 2);
+        try Be.u16_(&out, alloc, 1);
+        try Be.u32_(&out, alloc, l[0]);
+        try out.appendSlice(alloc, &.{ 2, 'a', 'b', 0 });
+        try Be.u16_(&out, alloc, 2);
+        try Be.u32_(&out, alloc, l[1]);
+        try out.appendSlice(alloc, &.{ 3, 'e', 'n', 'd' });
+        try out.appendSlice(alloc, "INST");
+        try Be.u32_(&out, alloc, 20);
+        try out.appendSlice(alloc, &.{ 64, 0, 0, 127, 1, 127, 0, 0 });
+        try Be.u16_(&out, alloc, 1); // forward
+        try Be.u16_(&out, alloc, 1);
+        try Be.u16_(&out, alloc, 2);
+        try out.appendSlice(alloc, &.{ 0, 0, 0, 0, 0, 0 }); // release loop off
+    }
+    try out.appendSlice(alloc, "SSND");
+    try Be.u32_(&out, alloc, @intCast(8 + 4 + data.len));
+    try Be.u32_(&out, alloc, 4); // offset: 4 bytes before the frames
+    try Be.u32_(&out, alloc, 0);
+    try out.appendSlice(alloc, &.{ 0xAA, 0xAA, 0xAA, 0xAA });
+    try out.appendSlice(alloc, data);
+    if (data.len & 1 != 0) try out.append(alloc, 0);
+    std.mem.writeInt(u32, out.items[4..8], @intCast(out.items.len - 8), .big);
+    return out.toOwnedSlice(alloc);
+}
+
+test "AIFF-C sowt, signed 8-bit, 12-bit, and the sustain loop and base note" {
+    const alloc = testing.allocator;
+    // sowt: little-endian 16-bit stereo.
+    const le = [_]u8{ 0x00, 0x40, 0x00, 0xC0, 0xFF, 0x7F, 0x00, 0x80 };
+    const a = try testAifc(alloc, 2, 16, "sowt", &le, null);
+    defer alloc.free(a);
+    var sa = try parseAs(alloc, a, true);
+    defer sa.deinit(alloc);
+    try testing.expectEqual(@as(f64, 32_000), sa.sample_rate);
+    try testing.expectEqualSlices(f64, &.{ 0.5, 32767.0 / 32768.0 }, sa.data);
+    try testing.expectEqualSlices(f64, &.{ -0.5, -1.0 }, sa.right);
+    try testing.expectEqual(@as(f64, -1), sa.root_key);
+
+    // AIFF's 8-bit is signed; an odd SSND length is padded.
+    const s8 = [_]u8{ 0x40, 0xC0, 0x80, 0x00, 0x7F };
+    const b = try testAifc(alloc, 1, 8, "NONE", &s8, .{ 1, 4 });
+    defer alloc.free(b);
+    var sb = try parse(alloc, b);
+    defer sb.deinit(alloc);
+    try testing.expectEqualSlices(f64, &.{ 0.5, -0.5, -1.0, 0.0, 127.0 / 128.0 }, sb.data);
+    try testing.expectEqual(@as(f64, 64), sb.root_key);
+    try testing.expectEqual(@as(usize, 1), sb.loop_start);
+    try testing.expectEqual(@as(usize, 4), sb.loop_end);
+
+    // 12 bits, left-justified in two bytes.
+    const s12 = [_]u8{ 0x7F, 0xF0, 0x80, 0x00, 0x08, 0x00 };
+    const c = try testAifc(alloc, 1, 12, "NONE", &s12, null);
+    defer alloc.free(c);
+    var sc = try parse(alloc, c);
+    defer sc.deinit(alloc);
+    try testing.expectEqualSlices(f64, &.{ 2047.0 / 2048.0, -1.0, 1.0 / 16.0 }, sc.data);
+
+    // Compressed AIFF-C isn't read.
+    const d = try testAifc(alloc, 1, 16, "ima4", &le, null);
+    defer alloc.free(d);
+    try testing.expectError(Error.UnsupportedFormat, parse(alloc, d));
+}
+
+// Made from the WAV fixtures with `afconvert -f AIFF -d BEI24` and
+// `afconvert -f AIFC -d BEF32` (afconvert adds a FLLR chunk and an SSND
+// offset to page-align the frames).
+test "AIFF and AIFF-C from an external encoder (afconvert) match their source WAVs" {
+    const alloc = testing.allocator;
+    inline for (.{ .{ "sweep-s24-44k.wav", "sweep-s24-44k.aif", 44_100 }, .{ "sweep-m16-22k.wav", "sweep-m16-22k-fl32.aifc", 22_050 } }) |f| {
+        var w = try loadStereo(alloc, "src/testdata/" ++ f[0]);
+        defer w.deinit(alloc);
+        var a = try loadStereo(alloc, "src/testdata/" ++ f[1]);
+        defer a.deinit(alloc);
+        try testing.expectEqual(@as(f64, f[2]), a.sample_rate);
+        try testing.expectEqualSlices(f64, w.data, a.data);
+        try testing.expectEqualSlices(f64, w.right, a.right);
+    }
 }
