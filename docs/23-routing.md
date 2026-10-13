@@ -184,13 +184,14 @@ that isn't worth a second track type yet.
 
 ### Publishing
 
-A `Routing` snapshot, double-buffered on the `Engine` like track
-snapshots: the render order, and per track its output, send targets
-(bus, pre) and each effect's key. The UI rebuilds and flips it after any
-routing edit. Send levels are atomics on the track and are not in the
-snapshot, so dragging a send knob publishes nothing. Mute and solo stay
-atomics too; the engine derives the audible set from them and the
-snapshot's edges once per block (32 nodes, a few hundred ops).
+A `Routing` snapshot uses three explicitly owned slots on the `Engine`,
+like track snapshots: the render order, and per track its output, send
+targets, tap positions, levels and each effect's key. The UI rebuilds and
+publishes complete versions, including send-knob edits; the rendering
+thread adopts before dispatch and holds that version until all readers
+finish. Mute and solo remain independent atomics; the engine derives the
+audible set from them and the snapshot's edges once per block. See
+[docs/37](37-realtime-safety.md) for ownership and regression checks.
 
 ### Buffers
 

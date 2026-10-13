@@ -202,10 +202,10 @@ pub const Engine = struct {
     /// release, so its tail is heard.
     aud_tail: u32 = 0,
     /// The browser's audition (docs/25 §The browser): a sample played
-    /// straight to the output, over whatever plays. The UI fills the slot
-    /// it isn't publishing and bumps the request; the audio thread copies
-    /// the slot at its next block. Pool sources are never freed, so the
-    /// data stays valid however long it plays.
+    /// straight to the output, over whatever plays. UI publishes the sample
+    /// binding and request number together through an owned handoff. Audio
+    /// adopts at a block boundary; the caller retains the sample until a
+    /// later request is acknowledged or the device is stopped.
     preview_req: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     preview_handoff: handoff.Latest(Preview) = .init(.{}),
     preview_seen: u32 = 0,
@@ -662,6 +662,9 @@ pub const Engine = struct {
         self.was_playing = false;
     }
 
+    // Callback owns adopted versions. Preparation/reclamation stay on UI;
+    // this path never takes the control/compiler lock. Parallel rendering
+    // still joins admitted realtime workers before reusing their block data.
     fn render(self: *Engine, out: [*]f32, frames: u32) void {
         self.live_callback = true;
         defer self.live_callback = false;

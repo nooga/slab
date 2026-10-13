@@ -5,17 +5,17 @@
 //! is mixed, waiting only for workers still inside it.
 //!
 //! Idle workers sleep; the rendering thread sleeps for completions only
-//! when all remaining work has been claimed. Live callbacks only enlist
+//! when no ready node can be claimed. Live callbacks only enlist
 //! workers admitted to realtime scheduling and the current I/O workgroup.
-//! No allocation or control-thread mutex is reachable here. A worker woken late (descheduled, or a stale signal)
-//! finds the block closed and goes back to sleep; the audio thread renders
-//! whatever no worker took, so a missing worker costs time, never output.
+//! Pool setup allocates on control; block dispatch/completion do not allocate
+//! or acquire control-thread mutexes. The work function must obey the audio
+//! contract too. Audio can render unclaimed nodes itself, but a helper that
+//! has claimed a node must finish before the callback can complete.
 //!
-//! Real-time workers (the default; `--no-rt-workers` for none): each worker takes Mach's
-//! time-constraint policy for the block period and joins the device's I/O
-//! workgroup (setWorkgroup), so the scheduler treats it like the audio
-//! thread: it keeps it on performance cores and runs it at real-time
-//! priority. Off, workers run at user-interactive QoS.
+//! Workers request Mach time-constraint policy and join the device's I/O
+//! workgroup. Admission failure makes live callbacks render serially. These
+//! requests do not guarantee core placement or that DSP meets its deadline.
+//! With `--no-rt-workers`, QoS workers are used for offline rendering only.
 
 const std = @import("std");
 

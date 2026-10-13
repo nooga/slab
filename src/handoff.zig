@@ -1,7 +1,8 @@
 //! Single-producer/single-consumer latest-value handoff. Three slots have
 //! explicit ownership: producer, consumer, and the atomic exchange slot.
-//! Publication coalesces intermediate versions. Neither side waits or
-//! retries; a stalled producer cannot stop the consumer using its slot.
+//! Publication coalesces intermediate versions. Neither side waits for its
+//! peer or runs an algorithmic retry loop; a stalled producer cannot stop
+//! the consumer using its slot.
 //! A consumer pointer remains valid until its next adopt(), not until
 //! some assumed number of milliseconds elapses. All readers of that
 //! pointer must finish before the consumer adopts again.

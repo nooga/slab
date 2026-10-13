@@ -7,7 +7,11 @@ reachable from `dsp:` code by construction.
 
 ## Four arenas
 
-All host-owned. All allocated up front.
+The following is the arena design target. The current raw-DSP adapter uses
+host-allocated state, parameter and voice buffers, plus owned control/asset
+versions; it does not implement every arena interface below. See
+[docs/37](37-realtime-safety.md) for the implemented ownership contract.
+The target arenas are host-owned and allocated ahead of rendering.
 
 ### Block arena
 

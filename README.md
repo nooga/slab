@@ -103,16 +103,17 @@ in [fy](fy/), a small concatenative language that lives in this repo.
   written as `dsp:` words, which fy compiles straight to ARM64, with
   NEON for paired voices and stereo effects. There's no interpreter on
   the audio path and no garbage collector.
-- **Hot-patching is a branch swap.** Every fy word sits behind a
-  trampoline. Redefining one writes new code and repoints a single
-  branch, so the next call runs the new version and every caller
-  follows. Today Slab recompiles a machine when its files change on
-  disk, and new instances pick it up; carrying the patch into the
-  instances already playing is the next step
-  ([docs/09-hot-reload.md](docs/09-hot-reload.md)).
-- **The audio thread never allocates or locks.** Memory comes from four
-  arenas (block, persistent, voice, asset) set up ahead of time, and the
-  UI talks to the audio thread over lock-free rings.
+- **Code replacements are prepared before publication.** fy supports word
+  trampolines, but Slab's raw DSP callers embed compiled bodies and
+  addresses. Active definitions stay sealed; new machine instances get
+  prepared code. Preserving playing DSP state across source edits remains
+  planned ([docs/09-hot-reload.md](docs/09-hot-reload.md)).
+- **Audio uses prepared storage and owned versions.** UI prepares controls,
+  assets and machine configurations; audio adopts complete versions without
+  waiting on UI/compiler locks. UI frees replaced resources after audio
+  acknowledges adoption. Parallel callbacks still join admitted realtime
+  workers before finishing; admission failure selects serial playback. See
+  [the safety contracts and regression evidence](docs/37-realtime-safety.md).
 - **A machine is a declaration over kernels.** Its file lists
   parameters, panel layout and presets on top of shared kernels:
   oscillators, filters, envelopes, oversamplers. A panel is laid out

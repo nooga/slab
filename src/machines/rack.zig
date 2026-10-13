@@ -191,8 +191,8 @@ pub const Rack = struct {
 
     // ── parts ────────────────────────────────────────────────────────
 
-    /// A fresh machine for a part: instantiate compiles fy, which shares
-    /// state with the audio thread's renders, so it runs under their lock.
+    /// UI thread: prepare a part in a private compiler/image and reset it
+    /// before publication. Audio keeps using its adopted configuration.
     fn instantiate(self: *Rack, reg_idx: usize) !Machine {
         const m = try self.reg.instantiatePrepared(reg_idx);
         m.reset(m.state);

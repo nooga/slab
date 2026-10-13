@@ -11,7 +11,8 @@
 //!
 //! Thread-local ctx: `setCtx` / `clearCtx` set a per-thread pointer that
 //! the host builtins read.  Set it before calling any audio word, clear
-//! after.  Audio-thread safe: no heap allocation, no locks.
+//! after. These pointer assignments do not allocate or acquire locks; the
+//! called words must independently obey the audio execution contract.
 
 const std = @import("std");
 const Fy = @import("fy").Fy;
@@ -327,8 +328,9 @@ fn slab_debug_mode() callconv(.c) i64 {
 pub const FyHost = struct {
     fy: Fy,
     alloc: std.mem.Allocator,
-    /// Incremented atomically after each successful hot-patch recompile.
-    /// Callers poll this to know when to refresh their callbacks.
+    /// Standalone, unsealed hosts only: incremented after TCP recompilation.
+    /// Active Slab raw-DSP instances reject this path; replacements prepare
+    /// their own host/image before publication.
     hot_reload_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     hot_server_fd: c_int = -1,
     sealed: std.atomic.Value(bool) = .init(false),
@@ -485,10 +487,11 @@ pub const FyHost = struct {
     }
 
     /// Create a C-callable trampoline for the named fy word.
-    /// The trampoline has its own private malloc'd data stack — safe to call
-    /// from any thread, including the audio callback thread.
-    /// Returns a bare function pointer; the caller owns no cleanup (the
-    /// trampoline's stack is freed when the Fy instance is deinit'd).
+    /// Creation allocates a private data stack on control. Calls must not
+    /// overlap on the same trampoline, and the host must outlive every call.
+    /// Audio use additionally requires a bounded, allocation-free word and
+    /// stable definitions; a private stack alone does not establish safety.
+    /// The host frees the stack at teardown after callers have stopped.
     pub fn createAudioCallback(self: *FyHost, word_name: []const u8) !*const fn () callconv(.c) void {
         const src = try std.fmt.allocPrint(self.alloc, "callback: :v {s}", .{word_name});
         defer self.alloc.free(src);
@@ -498,10 +501,11 @@ pub const FyHost = struct {
         return @ptrFromInt(tramp_ptr);
     }
 
-    /// Start the hot-patch TCP server.  Returns the bound port.
-    /// Writes `.fy-port` so the VSCode fy extension auto-connects.
-    /// After each successful recompile `hot_reload_count` is incremented;
-    /// callers should poll it and call `createAudioCallback` to refresh.
+    /// Standalone control/test host only; sealed DSP hosts return PublishedCode.
+    /// Returns the port and writes `.fy-port` for the fy editor. A recompile
+    /// increments `hot_reload_count`; callback refresh/execution requires
+    /// caller-managed exclusion from compilation. Slab playback instead
+    /// publishes prepared replacement instances.
     pub fn startHotPatchServer(self: *FyHost) !u16 {
         if (self.sealed.load(.acquire)) return error.PublishedCode;
         const fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -580,8 +584,8 @@ fn hotPatchHandleConn(host: *FyHost, fd: c_int) void {
     }
 
     // Compile and execute under the hot-patch mutex.
-    // runWithBaseDir re-runs top-level statements (e.g. phase reset) which
-    // is desirable on hot-patch.
+    // runWithBaseDir also re-runs top-level statements (e.g. phase reset).
+    // This standalone path does not preserve a playing machine's DSP state.
     host.fy.hot_mutex.lock();
     defer host.fy.hot_mutex.unlock();
 

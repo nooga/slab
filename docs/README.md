@@ -31,8 +31,8 @@ status and the source before assuming a feature is absent or complete.
    process model, embedding fy
 3. [02-machines.md](02-machines.md) — the machine as the extensibility
    unit; manifest, lifecycle, versioning
-4. [03-memory-model.md](03-memory-model.md) — arenas, double-buffered
-   params, the no-GC-on-audio invariant
+4. [03-memory-model.md](03-memory-model.md) — arena design, owned control
+   versions, the no-GC-on-audio invariant
 5. [04-block-contract.md](04-block-contract.md) — the `ctx` struct
    passed to every machine's `process`; note events; port model
 6. [05-kernels.md](05-kernels.md) — `dsp:` mode, NEON assembler

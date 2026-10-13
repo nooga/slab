@@ -287,6 +287,9 @@ pub const Audio = struct {
             return error.AudioStartFailed;
     }
 
+    /// UI thread: publish the render hook and context as one version. Keep
+    /// the replaced context alive until callback_ack reaches this generation
+    /// or the device has synchronously stopped, as with setCapture.
     pub fn setRender(self: *Audio, ctx: ?*anyopaque, func: ?RenderFn) void {
         std.debug.assert(func == null or ctx != null);
         self.callbacks_ui.render_ctx = ctx;

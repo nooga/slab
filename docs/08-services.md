@@ -1,5 +1,10 @@
 # 08 — Host services
 
+**Design proposal.** The service table and interfaces below are not a
+complete description of the current raw-DSP adapter. Implemented control
+publication, storage lifetime and regression evidence are in
+[docs/37](37-realtime-safety.md).
+
 Things the host provides to machines so every machine author isn't
 reimplementing them (badly). Each service lives in Zig, is reachable
 from fy via `bind:` or via pointers on `ctx.services`, and is
@@ -178,11 +183,12 @@ struct: UnoParams
 ;
 ```
 
-### Why double-buffer + smooth
+### Why owned versions + smoothing
 
-Double-buffer solves torn writes and enables lock-free swap. Smooth
-solves zipper noise. Both are needed: double-buffer without smooth
-still gets zippers; smooth without double-buffer races on writes.
+Publication requires explicit ownership: a producer must not overwrite a
+version while audio reads it. A pointer swap or two buffers alone does not
+establish that lifetime. The implemented three-slot handoff provides this
+ownership; audio-owned smoothing separately handles zipper noise.
 
 ## 3. Oversampler wrapper
 
@@ -344,7 +350,9 @@ ctx services log: "cutoff: " cutoff f.s
 ```
 
 UI thread reads an SPSC ring and displays in a console panel.
-Audio-safe (lock-free, allocation-free, bounded).
+The proposed audio-side logger would write bounded records to a
+preallocated ring, without formatting, allocation or I/O. Current live
+callback probes do not print; offline diagnostics remain available.
 
 ## Service resolution from fy
 

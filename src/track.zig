@@ -1,6 +1,6 @@
-//! Track: one audio path hosting an instrument plus a small fixed insert
-//! chain. Volume/mute/solo are UI-owned atomics consumed by the engine on
-//! the audio thread.
+//! Track: one audio path hosting an instrument and a bounded insert chain.
+//! UI prepares and publishes complete chains; audio owns its adopted chain
+//! until the next adoption. Volume/mute/solo use independent atomic targets.
 
 const std = @import("std");
 const c = @import("c.zig");
@@ -19,9 +19,10 @@ pub const MAX_NAME = 32;
 
 /// One slot in a track's insert chain: the effect machine, its registry
 /// index (for persistence/forward-compat), and a per-effect bypass flag.
-/// `bypass` is a plain atomic the audio thread reads each block; chain
-/// UI mutations publish a separate audio chain. The editable ArrayList
-/// and its allocations are never traversed by a render worker.
+/// UI bypass edits publish with the complete chain; audio reads its adopted
+/// copy. The editable ArrayList and its allocations are never traversed by
+/// a render worker. Peak telemetry uses stable atomic storage shared by
+/// both copies.
 pub const Effect = struct {
     mach: machine.Machine,
     idx: ?u8 = null,
@@ -1005,15 +1006,15 @@ pub const Track = struct {
         return self.pan();
     }
 
-    /// Called by the audio thread. Returns a pointer to the currently
-    /// published snapshot. Load the pointer once per block and hold it
-    /// for the block's duration — never call this inside inner loops.
-    /// Read-only block view. The rendering thread adopts before workers
-    /// start; they never independently release a slot inside the chunk.
+    /// Read-only view of the consumer-owned snapshot; this does not adopt.
+    /// The rendering thread adopts before workers start and holds the slot
+    /// until all readers finish the chunk. Workers never adopt independently.
     pub fn audioSnapshot(self: *const Track) *const snap_mod.TrackSnapshot {
         return self.snap[self.snap_slots.reader];
     }
 
+    /// Rendering thread only: adopt after all readers of the previous
+    /// version have finished. UI must never call this during rendering.
     pub fn currentSnapshot(self: *Track) *const snap_mod.TrackSnapshot {
         if (self.snap_slots.adopt()) self.frozen.store(self.snap[self.snap_slots.reader].frozen != null, .release);
         return self.audioSnapshot();

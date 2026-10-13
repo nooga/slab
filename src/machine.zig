@@ -306,8 +306,8 @@ pub const NoteLabel = struct {
 /// the side voices at BLEND under the centre and the group's power held
 /// at one voice's. A poly machine shares its pool (notes = pool / count);
 /// a mono one gets `count` clones of its voice. The UI thread writes, the
-/// audio thread reads each block; a torn read across fields only lasts a
-/// block.
+/// audio thread reads independent atomic targets. A block may observe fields
+/// from different UI edits; these settings do not form a grouped transaction.
 pub const Unison = struct {
     pub const MAX_COUNT: u8 = 8;
     pub const MAX_POOL: u8 = 16;

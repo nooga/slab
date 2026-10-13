@@ -3,8 +3,9 @@
 //!
 //! Slots have explicit producer/consumer ownership (handoff.zig). UI
 //! publications cannot recycle the consumer's slot until it adopts again.
-//! No callback/UI frequency assumption is needed. A render worker adopts
-//! once and holds that version until it completes its track's block.
+//! No callback/UI frequency assumption is needed. The rendering thread
+//! adopts before dispatch; workers share that version for the chunk. All
+//! workers must finish before the rendering thread adopts another version.
 
 const automation = @import("automation.zig");
 const warp = @import("warp.zig");

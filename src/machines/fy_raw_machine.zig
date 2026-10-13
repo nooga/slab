@@ -1470,9 +1470,6 @@ fn presetNameImpl(state: *anyopaque, index: machine.PresetIndex) [*:0]const u8 {
     return self.presets.names[index].z();
 }
 
-// Apply = parse `id|value` lines and store each matching control's value
-// (clamped via valueToNorm; switches store the option index raw). Runs on
-// the UI thread; the audio thread sees the atomics next block.
 fn currentPresetImpl(state: *anyopaque) i32 {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     return self.current_preset_idx;
@@ -1589,6 +1586,9 @@ fn remapEdits(edits: *const keymap.ZoneEdits, old: *const keymap.Keymap, new: *c
     return out;
 }
 
+// UI thread: parse/load a preset and publish grouped control targets with
+// their snap generations when the edit ends. Asset bindings use their own
+// owned handoff; audio never parses the preset or loads the referenced files.
 fn applyPresetImpl(state: *anyopaque, index: machine.PresetIndex) void {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     self.beginControlEdit();
@@ -5912,7 +5912,8 @@ fn keyName(buf: []u8, key: f64) []const u8 {
 }
 
 /// Draggable marker bound to control `id`: dragging writes its normalized
-/// value live (the audio thread reads it atomically) and the knob follows.
+/// target on UI and publishes a control version; audio adopts and smooths it.
+/// The panel knob follows the same UI target.
 fn drawMarker(self: *FyRawMachine, ui: *Ui, area: Rect, id: []const u8, col: ui_style.Color) void {
     const idx = for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
         if (std.mem.eql(u8, ctl.idSlice(), id)) break i;
