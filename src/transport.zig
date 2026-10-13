@@ -5,6 +5,19 @@
 
 const std = @import("std");
 const tempo_mod = @import("tempo.zig");
+const handoff = @import("handoff.zig");
+
+pub const Loop = struct {
+    enabled: bool = false,
+    start_milli: u64 = 0,
+    end_milli: u64 = 16_000,
+    pub fn startBeats(self: Loop) f64 {
+        return @as(f64, @floatFromInt(self.start_milli)) / 1000.0;
+    }
+    pub fn endBeats(self: Loop) f64 {
+        return @as(f64, @floatFromInt(self.end_milli)) / 1000.0;
+    }
+};
 
 pub const Transport = struct {
     sample_rate: u32 = 48_000,
@@ -12,6 +25,9 @@ pub const Transport = struct {
     /// Monotonic sample counter; only advanced by the audio thread.
     sample_pos: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     tempo: tempo_mod.TempoState = .{},
+    // UI targets; audio reads only its coherently adopted loop version.
+    loop_audio: Loop = .{},
+    loop_versions: handoff.Latest(Loop) = .init(.{}),
     loop_enabled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// Loop bounds in beats × 1000.
     loop_start_milli: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -98,10 +114,11 @@ pub const Transport = struct {
 
     pub fn setLoopEnabled(self: *Transport, enabled: bool) void {
         self.loop_enabled.store(enabled, .monotonic);
+        self.publishLoop();
     }
 
     pub fn toggleLoop(self: *Transport) void {
-        self.loop_enabled.store(!self.loopEnabled(), .monotonic);
+        self.setLoopEnabled(!self.loopEnabled());
     }
 
     pub fn loopStartBeats(self: *const Transport) f64 {
@@ -118,12 +135,28 @@ pub const Transport = struct {
         self.loop_start_milli.store(@intFromFloat(s * 1000.0), .monotonic);
         self.loop_end_milli.store(@intFromFloat(e * 1000.0), .monotonic);
         self.loop_enabled.store(true, .monotonic);
+        self.publishLoop();
         const cur_b = self.beats();
         if (cur_b < s or cur_b >= e) self.seekToBeats(s);
     }
 
     pub fn clearLoop(self: *Transport) void {
-        self.loop_enabled.store(false, .monotonic);
+        self.setLoopEnabled(false);
+    }
+
+    fn publishLoop(self: *Transport) void {
+        self.loop_versions.write().* = .{
+            .enabled = self.loop_enabled.load(.monotonic),
+            .start_milli = self.loop_start_milli.load(.monotonic),
+            .end_milli = self.loop_end_milli.load(.monotonic),
+        };
+        self.loop_versions.publish();
+    }
+
+    /// Rendering thread, before using either bound. UI target stores do
+    /// not affect this version until a whole loop edit is published.
+    pub fn adoptLoop(self: *Transport) void {
+        if (self.loop_versions.adopt()) self.loop_audio = self.loop_versions.current().*;
     }
 
     pub fn rewind(self: *Transport) void {
@@ -138,3 +171,27 @@ pub const Transport = struct {
         self.sample_pos.store(self.beatsToSamples(b), .monotonic);
     }
 };
+
+test "realtime: loop enable and both bounds adopt as one version" {
+    var t = Transport{};
+    t.setLoopBeats(1, 2);
+    t.adoptLoop();
+    try std.testing.expect(t.loop_audio.enabled);
+    try std.testing.expectEqual(@as(f64, 1), t.loop_audio.startBeats());
+    try std.testing.expectEqual(@as(f64, 2), t.loop_audio.endBeats());
+    // Producer is interrupted between target stores: audio retains its
+    // complete old range, rather than wrapping through mismatched bounds.
+    t.loop_start_milli.store(15000, .monotonic);
+    t.adoptLoop();
+    try std.testing.expectEqual(@as(f64, 1), t.loop_audio.startBeats());
+    try std.testing.expectEqual(@as(f64, 2), t.loop_audio.endBeats());
+    t.loop_end_milli.store(18000, .monotonic);
+    t.publishLoop();
+    t.adoptLoop();
+    try std.testing.expectEqual(@as(f64, 15), t.loop_audio.startBeats());
+    try std.testing.expectEqual(@as(f64, 18), t.loop_audio.endBeats());
+    t.clearLoop();
+    try std.testing.expect(t.loop_audio.enabled);
+    t.adoptLoop();
+    try std.testing.expect(!t.loop_audio.enabled);
+}

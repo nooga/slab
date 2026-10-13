@@ -376,7 +376,13 @@ pub const Unison = struct {
         return u.voices() == 1 and (u.mono() or u.pool.load(.monotonic) == u.native);
     }
     pub fn reset(u: *Unison) void {
-        u.* = init(u.native);
+        // UI reset may overlap audio reads; retain atomic stores for each
+        // independent target rather than overwriting the atomic storage.
+        u.count.store(1, .monotonic);
+        u.pool.store(u.native, .monotonic);
+        u.detune_bits.store(@bitCast(DEF_DETUNE), .monotonic);
+        u.spread_bits.store(@bitCast(DEF_SPREAD), .monotonic);
+        u.blend_bits.store(@bitCast(DEF_BLEND), .monotonic);
     }
 
     /// `{"count":4,"detune":20,"spread":0.7,"blend":0.75,"voices":8}`

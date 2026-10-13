@@ -70,10 +70,6 @@ fn setTimeConstraint(period_ns: u64) bool {
 
 pub const MAX_WORKERS = 7;
 
-/// This thread's render slot: 0 on the audio thread (and any other that
-/// renders), 1… on the workers. For per-thread load (Engine.thread_busy).
-pub threadlocal var slot: usize = 0;
-
 /// Workers to run by default: one fewer than the performance cores (the
 /// audio thread is the other), at most MAX_WORKERS.
 pub fn defaultWorkers() usize {
@@ -86,10 +82,10 @@ pub fn defaultWorkers() usize {
     return @min(cores -| 1, MAX_WORKERS);
 }
 
-/// A pool running `work(ctx, scratch)` until the block closes; `work`
+/// A pool running `work(ctx, scratch, render_slot)` until the block closes; `work`
 /// returns false when it found nothing to do. `Scratch` lives on each
 /// worker's stack.
-pub fn Pool(comptime Ctx: type, comptime Scratch: type, comptime work: fn (*Ctx, *Scratch) bool) type {
+pub fn Pool(comptime Ctx: type, comptime Scratch: type, comptime work: fn (*Ctx, *Scratch, usize) bool) type {
     return struct {
         const Self = @This();
 
@@ -214,7 +210,6 @@ pub fn Pool(comptime Ctx: type, comptime Scratch: type, comptime work: fn (*Ctx,
         }
 
         fn run(self: *Self, my_slot: usize) void {
-            slot = my_slot;
             _ = pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
             if (self.rt) |rt| {
                 if (setTimeConstraint(rt.period_ns)) {
@@ -249,7 +244,7 @@ pub fn Pool(comptime Ctx: type, comptime Scratch: type, comptime work: fn (*Ctx,
                 // the block closed (one total order over both atomics).
                 _ = self.inflight.fetchAdd(1, .seq_cst);
                 while (self.active.load(.seq_cst)) {
-                    if (!work(self.ctx, &scratch)) break;
+                    if (!work(self.ctx, &scratch, my_slot)) break;
                     self.notifyProgress();
                 }
                 _ = self.inflight.fetchSub(1, .seq_cst);

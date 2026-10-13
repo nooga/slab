@@ -79,6 +79,9 @@ const color_picker = @import("ui/color_picker.zig");
 const browser = @import("ui/browser.zig");
 
 test {
+    _ = @import("preview.zig");
+    _ = @import("recorder.zig");
+    _ = @import("stretch.zig");
     _ = @import("handoff.zig");
     _ = @import("audio.zig");
     _ = @import("machines/fy_raw_machine.zig");

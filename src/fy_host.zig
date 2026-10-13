@@ -9,10 +9,10 @@
 //! Integer returns come from Zig already tagged (`Fy.makeInt(n)`) so
 //! `bind: :i` pushes the correct fy value without an extra tag step.
 //!
-//! Thread-local ctx: `setCtx` / `clearCtx` set a per-thread pointer that
-//! the host builtins read.  Set it before calling any audio word, clear
-//! after. These pointer assignments do not allocate or acquire locks; the
-//! called words must independently obey the audio execution contract.
+//! The standalone boxed ABI uses thread-local context for host builtins.
+//! TLS setup on macOS can allocate on first access. Slab's raw DSP path
+//! passes explicit kernel pointers through callRealtime and never uses
+//! these TLS setters or legacy interpreter callbacks while rendering.
 
 const std = @import("std");
 const Fy = @import("fy").Fy;
@@ -489,10 +489,12 @@ pub const FyHost = struct {
     /// Create a C-callable trampoline for the named fy word.
     /// Creation allocates a private data stack on control. Calls must not
     /// overlap on the same trampoline, and the host must outlive every call.
-    /// Audio use additionally requires a bounded, allocation-free word and
-    /// stable definitions; a private stack alone does not establish safety.
+    /// This standalone boxed ABI can use interpreter TLS. Slab audio uses
+    /// prepared raw DSP callers; a private stack alone does not establish
+    /// callback safety.
     /// The host frees the stack at teardown after callers have stopped.
     pub fn createAudioCallback(self: *FyHost, word_name: []const u8) !*const fn () callconv(.c) void {
+        if (self.sealed.load(.acquire)) return error.PublishedCode;
         const src = try std.fmt.allocPrint(self.alloc, "callback: :v {s}", .{word_name});
         defer self.alloc.free(src);
         const cb_val = try self.fy.run(src);

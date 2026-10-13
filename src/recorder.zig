@@ -38,7 +38,6 @@ const O_CREAT: c_int = 0x0200;
 const O_TRUNC: c_int = 0x0400;
 const SEEK_SET: c_int = 0;
 
-
 /// Single-producer / single-consumer lock-free ring of f32. The audio thread
 /// is the sole producer; the writer thread the sole consumer. Capacity is a
 /// power of two; indices are free-running `usize` masked into the buffer.
@@ -51,6 +50,7 @@ pub const Ring = struct {
     pub fn init(alloc: std.mem.Allocator, capacity_pow2: usize) !Ring {
         std.debug.assert(std.math.isPowerOfTwo(capacity_pow2));
         const buf = try alloc.alloc(f32, capacity_pow2);
+        @memset(buf, 0); // touch ring pages before the first capture callback
         return .{ .buf = buf, .mask = capacity_pow2 - 1 };
     }
 
@@ -106,6 +106,9 @@ pub const Recorder = struct {
     ring: Ring,
 
     state: std.atomic.Value(u32) = std.atomic.Value(u32).init(@intFromEnum(State.idle)),
+    // Entry/exit handshake: setting idle does not cancel an in-flight push.
+    // The writer waits for quiescence before its final drain; audio never waits.
+    capture_inflight: std.atomic.Value(bool) = .init(false),
     stop_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     writer: ?std.Thread = null,
@@ -148,8 +151,7 @@ pub const Recorder = struct {
 
     pub fn deinit(self: *Recorder) void {
         if (self.writer) |t| {
-            self.stop_requested.store(true, .release);
-            self.state.store(@intFromEnum(State.idle), .release);
+            self.requestStop();
             t.join();
             self.writer = null;
         }
@@ -181,7 +183,8 @@ pub const Recorder = struct {
     /// half of the duplex callback), or null if the device has no input.
     pub fn captureFn(ctx: *anyopaque, in: ?[*]const f32, frames: u32) void {
         const self: *Recorder = @ptrCast(@alignCast(ctx));
-        if (self.state.load(.acquire) != @intFromEnum(State.recording)) return;
+        if (!self.beginCapture()) return;
+        defer self.endCapture();
         const ptr = in orelse return;
         if (!self.start_stamped.load(.acquire)) {
             self.start_sample.store(self.transport.samples(), .monotonic);
@@ -193,6 +196,17 @@ pub const Recorder = struct {
             _ = self.overruns.fetchAdd(@intCast(frames - accepted), .monotonic);
         }
         _ = self.frames_captured.fetchAdd(accepted, .monotonic);
+    }
+
+    fn beginCapture(self: *Recorder) bool {
+        self.capture_inflight.store(true, .seq_cst);
+        if (self.state.load(.seq_cst) == @intFromEnum(State.recording)) return true;
+        self.endCapture();
+        return false;
+    }
+
+    fn endCapture(self: *Recorder) void {
+        self.capture_inflight.store(false, .seq_cst);
     }
 
     /// UI thread. Opens a fresh take file, primes the ring, and spawns the
@@ -232,21 +246,23 @@ pub const Recorder = struct {
         self.done.store(false, .release);
         self.stop_requested.store(false, .release);
 
-        self.state.store(@intFromEnum(State.recording), .release);
         self.writer = std.Thread.spawn(.{}, writerMain, .{self}) catch |err| {
             self.state.store(@intFromEnum(State.idle), .release);
             _ = close(self.fd);
             self.fd = -1;
             return err;
         };
+        // Publish recording only once the writer exists. Spawn failure must
+        // not admit a callback that could overlap the next ring reset.
+        self.state.store(@intFromEnum(State.recording), .seq_cst);
     }
 
     /// UI thread. Signals the audio thread to stop capturing and the writer
     /// to drain and finalize. Non-blocking — poll `isFinished()`.
     pub fn requestStop(self: *Recorder) void {
-        // Order matters: stop captures first so the writer's final drain sees
-        // no concurrent producer, then ask it to finalize.
-        self.state.store(@intFromEnum(State.idle), .release);
+        // Close entry first. A callback already inside can still push; the
+        // writer must observe its exit before finalizing or allowing restart.
+        self.state.store(@intFromEnum(State.idle), .seq_cst);
         self.stop_requested.store(true, .release);
     }
 
@@ -282,8 +298,9 @@ pub const Recorder = struct {
                 self.writeSamples(scratch[0..n]);
                 continue;
             }
-            if (self.stop_requested.load(.acquire)) {
-                // One final drain in case the producer pushed during the gap.
+            if (self.stop_requested.load(.acquire) and !self.capture_inflight.load(.seq_cst)) {
+                // Entry is closed and any producer that saw recording has
+                // exited. Its final block is now visible to this drain.
                 const m = self.ring.pop(&scratch);
                 if (m > 0) {
                     self.writeSamples(scratch[0..m]);
@@ -430,4 +447,40 @@ test "ring wraps around the buffer boundary" {
         try testing.expectEqual(@as(usize, 3), ring.pop(scratch[0..3]));
         try testing.expectEqualSlices(f32, &in, scratch[0..3]);
     }
+}
+
+test "realtime: recording stop drains a callback already inside capture" {
+    const a = testing.allocator;
+    var transport = Transport{};
+    var rec = try Recorder.init(a, &transport);
+    defer rec.deinit();
+    rec.setDir("/tmp/slab-recording-audit");
+    try rec.start();
+    const path = try a.dupeZ(u8, rec.path_buf[0..rec.path_len]);
+    defer a.free(path);
+    defer _ = struct {
+        extern "c" fn unlink(p: [*:0]const u8) c_int;
+    }.unlink(path);
+    // Hold the actual capture-entry gate open across the UI stop, then
+    // deliver the final producer block. An idle flag alone loses this block.
+    try testing.expect(rec.beginCapture());
+    errdefer rec.endCapture();
+    rec.requestStop();
+    const pause = timespec{ .sec = 0, .nsec = 20 * std.time.ns_per_ms };
+    _ = nanosleep(&pause, null);
+    try testing.expect(!rec.isFinished());
+    const samples = [_]f32{0.25} ** 64;
+    try testing.expectEqual(samples.len, rec.ring.push(&samples));
+    _ = rec.frames_captured.fetchAdd(samples.len, .monotonic);
+    rec.endCapture();
+    var tries: usize = 0;
+    while (!rec.isFinished() and tries < 100) : (tries += 1) _ = nanosleep(&pause, null);
+    try testing.expect(rec.isFinished());
+    const result = rec.finish();
+    try testing.expectEqual(@as(u64, 64), result.frames);
+    var loaded = try @import("wav.zig").load(a, result.path);
+    defer loaded.deinit(a);
+    try testing.expectEqual(@as(usize, 64), loaded.data.len);
+    for (loaded.data) |v| try testing.expectEqual(@as(f64, 0.25), v);
+    try testing.expect(!rec.beginCapture());
 }

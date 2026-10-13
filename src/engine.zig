@@ -93,8 +93,8 @@ const Block = struct {
     bar_info: meter.MeterMap.BarInfo = undefined,
 };
 
-fn renderWork(e: *Engine, s: *Scratch) bool {
-    return e.renderReady(s);
+fn renderWork(e: *Engine, s: *Scratch, render_slot: usize) bool {
+    return e.renderReady(s, render_slot);
 }
 pub const RenderPool = render_pool.Pool(Engine, Scratch, renderWork);
 
@@ -306,7 +306,7 @@ pub const Engine = struct {
     /// Workers helping this thread render; null renders on it alone. The
     /// output is the same either way.
     pool: ?*RenderPool = null,
-    /// Per render thread (render_pool.slot: the audio thread, then the
+    /// Per render thread (explicit slot: the audio thread, then the
     /// workers): timebase ticks spent rendering and mixing nodes, and the
     /// frames rendered beside them, for the UI's thread lamps
     /// (takeThreadLoad).
@@ -668,6 +668,7 @@ pub const Engine = struct {
     fn render(self: *Engine, out: [*]f32, frames: u32) void {
         self.live_callback = true;
         defer self.live_callback = false;
+        self.transport.adoptLoop();
         self.adoptMachines();
         const n: usize = frames;
         const total = n * audio.CHANNELS;
@@ -851,9 +852,9 @@ pub const Engine = struct {
 
     fn nextRenderChunk(self: *Engine, max_frames: u32, pos: u64) usize {
         const frames = self.tempoChunk(max_frames, pos);
-        if (!self.transport.loopEnabled()) return frames;
-        const start_b = self.transport.loopStartBeats();
-        const end_b = self.transport.loopEndBeats();
+        if (!self.transport.loop_audio.enabled) return frames;
+        const start_b = self.transport.loop_audio.startBeats();
+        const end_b = self.transport.loop_audio.endBeats();
         if (end_b <= start_b) return frames;
         const start_s = self.sampleAtBeat(start_b);
         const end_s = self.sampleAtBeat(end_b);
@@ -865,9 +866,9 @@ pub const Engine = struct {
 
     fn advanceRenderPos(self: *Engine, pos: u64, frames: u32) u64 {
         var next = pos + frames;
-        if (!self.transport.loopEnabled()) return next;
-        const start_b = self.transport.loopStartBeats();
-        const end_b = self.transport.loopEndBeats();
+        if (!self.transport.loop_audio.enabled) return next;
+        const start_b = self.transport.loop_audio.startBeats();
+        const end_b = self.transport.loop_audio.endBeats();
         if (end_b <= start_b) return next;
         const start_s = self.sampleAtBeat(start_b);
         const end_s = self.sampleAtBeat(end_b);
@@ -1088,7 +1089,7 @@ pub const Engine = struct {
         while (true) {
             const done = self.nodes_done.load(.seq_cst);
             if (done >= order.len) break;
-            if (!self.renderReady(&scratch)) {
+            if (!self.renderReady(&scratch, 0)) {
                 // With no helpers every unfinished node has an input ready
                 // in this acyclic graph; a failure is a scheduler bug.
                 std.debug.assert(helped);
@@ -1152,6 +1153,8 @@ pub const Engine = struct {
         while (true) {
             // seq_cst here, on the done store and on the look-again: a node
             // finishing while we hold the flag either sees it free or is seen.
+            // Try once and return on contention. The outer rescan only
+            // follows completed contributions; it never spins on the owner.
             if (self.dest_busy[d].cmpxchgStrong(false, true, .seq_cst, .seq_cst) != null) return;
             var k = self.dest_cursor[d].load(.monotonic);
             while (k < items.len and self.node_state[items[k].node].load(.acquire) == NODE_DONE) : (k += 1) {
@@ -1187,7 +1190,7 @@ pub const Engine = struct {
 
     /// Render the most critical ready node, if there is one, then hand on
     /// what it feeds; any thread.
-    fn renderReady(self: *Engine, scratch: *Scratch) bool {
+    fn renderReady(self: *Engine, scratch: *Scratch, render_slot: usize) bool {
         const graph = self.blk.graph;
         const order = graph.renderOrder();
         while (true) {
@@ -1206,7 +1209,7 @@ pub const Engine = struct {
             const t0 = std.c.mach_absolute_time();
             self.renderNode(ti, scratch);
             const t1 = std.c.mach_absolute_time();
-            defer _ = self.thread_busy[render_pool.slot].fetchAdd(std.c.mach_absolute_time() - t0, .monotonic);
+            defer _ = self.thread_busy[render_slot].fetchAdd(std.c.mach_absolute_time() - t0, .monotonic);
             const ns: f32 = @floatFromInt(t1 - t0);
             // Its cost (in timebase ticks; only their ratios matter) for the next blocks' priorities, smoothed.
             self.node_cost[ti] += (ns - self.node_cost[ti]) * 0.125;
@@ -4594,7 +4597,46 @@ test "realtime: a deferred bus sum makes work ready before the renderer sleeps" 
     @memset(e.master_l[0..16], 0);
     @memset(e.master_r[0..16], 0);
     var scratch: Scratch = undefined;
-    try testing.expect(e.renderReady(&scratch));
+    try testing.expect(e.renderReady(&scratch, 0));
     try testing.expectEqual(NODE_DONE, e.node_state[1].load(.acquire));
     try testing.expectEqual(@as(usize, 2), e.nodes_done.load(.acquire));
+}
+
+test "realtime: snapped limiter lookahead participates in PDC in its first block" {
+    const a = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const raw = @import("machines/fy_raw_machine.zig");
+    const limiter = try raw.FyRawMachine.create(a, "machines/limiter2/limiter2.fy");
+    const lm = limiter.machineInterface();
+    lm.reset(lm.state);
+    var level_a: f32 = 0.2;
+    var level_b: f32 = 0.2;
+    var tracks = [_]Track{
+        try Track.init(a, "limited", col, PdcTestMachines.impulse(&level_a)),
+        try Track.init(a, "direct", col, PdcTestMachines.impulse(&level_b)),
+    };
+    defer for (&tracks) |*t| t.deinit(a);
+    for (&tracks) |*t| t.setVolume(1);
+    try tracks[0].addEffect(a, lm, 0);
+    var audio_pool = @import("audio_pool.zig").AudioPool.init(a);
+    defer audio_pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&audio_pool);
+    var transport = Transport{};
+    const e = try a.create(Engine);
+    defer a.destroy(e);
+    e.* = .{ .transport = &transport, .tracks = &tracks };
+    try e.initPdc(a);
+    defer e.deinitPdc(a);
+    e.publishRouting();
+    try testing.expectEqual(@as(u32, 97), lm.latency.?(lm.state));
+    // Project/preset setters snap: the next render must align both paths
+    // using 10 ms, rather than reporting the previous 2 ms for that block.
+    lm.set_param.?(lm.state, "lim-look", 10);
+    transport.play();
+    var out: [1024 * 2]f32 = undefined;
+    e.render(&out, 1024);
+    // The exp control mapping is just above 10 ms in f64; the kernel
+    // reports/reads ceil(look-spl), so both paths must meet at sample 481.
+    try testing.expectEqual(@as(?usize, 481), onlyPeakAt(&out));
+    try testing.expectEqual(@as(u32, 481), e.master_latency.load(.monotonic));
 }

@@ -1276,11 +1276,22 @@ pub const Fy = struct {
         pub fn call(self: *Dsp2RawRepeatedCaller, iterations: u64, args: []const Dsp2RawArg) !Value {
             if (iterations == 0) return makeInt(0);
             if (args.len != self.arg_count) return error.RegisterExhausted;
+            Builtins.fyPtr = @intFromPtr(self.fy);
+            return self.callRealtime(iterations, args);
+        }
+
+        /// Execute a prepared raw DSP body without touching interpreter TLS.
+        /// Raw bodies use registers/pointers and return zero; they do not
+        /// need the boxed-word host context. On macOS first-use TLS may
+        /// allocate in dyld, so audio callers must use this entry point.
+        /// Caller owns the argument slots exclusively until execution ends.
+        pub fn callRealtime(self: *Dsp2RawRepeatedCaller, iterations: u64, args: []const Dsp2RawArg) !Value {
+            if (iterations == 0) return makeInt(0);
+            if (args.len != self.arg_count) return error.RegisterExhausted;
             self.slots.iterations = iterations;
             for (args, 0..) |arg, i| {
                 self.slots.arg_bits[i] = arg.bits();
             }
-            Builtins.fyPtr = @intFromPtr(self.fy);
             return self.entry();
         }
     };

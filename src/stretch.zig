@@ -408,6 +408,9 @@ const SMEAR_GAIN: f32 = 4.0 / 3.0;
 /// Paulstretch: long windows, each frame's phases drawn at random, seeded
 /// by the clip and the frame, so any start renders the same. A few
 /// megabytes; a track gets two when it first plays SMEAR.
+// This synchronous long-window FFT can exceed a small callback budget.
+// Pointer publication avoids UI waits; it does not bound the FFT to the
+// device deadline. See docs/37 for measured costs and the remaining work.
 pub const Smearer = struct {
     uid: u32 = 0,
     used: u64 = 0,
@@ -424,6 +427,10 @@ pub const Smearer = struct {
     /// After allocating (UI thread): the twiddles.
     pub fn init(self: *Smearer) void {
         self.* = .{};
+        // Touch working pages on UI before publishing to the audio thread.
+        @memset(&self.buf, .{ .re = 0, .im = 0 });
+        @memset(&self.ring_l, 0);
+        @memset(&self.ring_r, 0);
         fft.twiddles(&self.tw);
     }
 
@@ -526,17 +533,17 @@ pub const Bank = struct {
     pub const SIZE = 4;
     st: [SIZE]Stretcher = [_]Stretcher{.{}} ** SIZE,
     /// SMEAR's, made on the UI thread when a clip first needs them.
-    smear: [2]?*Smearer = .{ null, null },
+    smear: [2]std.atomic.Value(?*Smearer) = @splat(.init(null)),
     tick: u64 = 0,
 
     /// The smearer playing clip `uid`, or a free one claimed for it.
     pub fn getSmear(self: *Bank, uid: u32, t0: i64, n: usize) ?*Smearer {
-        for (self.smear) |o| if (o) |s| if (s.uid == uid and s.used + 1 >= self.tick) {
+        for (&self.smear) |*o| if (o.load(.acquire)) |s| if (s.uid == uid and s.used + 1 >= self.tick) {
             if (s.t0 != t0 or s.n != n) s.claim(uid, t0, n);
             s.used = self.tick;
             return s;
         };
-        for (self.smear) |o| if (o) |s| if (s.uid == 0 or s.used + 1 < self.tick) {
+        for (&self.smear) |*o| if (o.load(.acquire)) |s| if (s.uid == 0 or s.used + 1 < self.tick) {
             s.claim(uid, t0, n);
             s.used = self.tick;
             return s;
@@ -544,20 +551,21 @@ pub const Bank = struct {
         return null;
     }
 
-    /// UI thread: make the smearers if they aren't.
+    /// UI thread: initialize fully before release-publishing each pointer.
+    /// Published allocations stay alive until device-stopped teardown.
     pub fn needSmear(self: *Bank) void {
-        for (&self.smear) |*o| if (o.* == null) {
+        for (&self.smear) |*o| if (o.load(.acquire) == null) {
             const s = std.heap.page_allocator.create(Smearer) catch return;
             s.init();
-            o.* = s;
+            o.store(s, .release);
         };
     }
 
     /// UI thread, with the audio thread off the track: free the smearers.
     pub fn deinit(self: *Bank) void {
-        for (&self.smear) |*o| if (o.*) |s| {
+        for (&self.smear) |*o| if (o.load(.acquire)) |s| {
             std.heap.page_allocator.destroy(s);
-            o.* = null;
+            o.store(null, .monotonic);
         };
     }
 
@@ -815,5 +823,64 @@ test "tune: grains move the pitch, keep the level, and stretch time" {
         var e1: f64 = 0;
         for (y[0..20_000]) |v| e1 += v * v;
         try std.testing.expect(@abs(10 * std.math.log10(e1 / e0)) < 1);
+    }
+}
+
+test "realtime: lazy smear publication exposes only initialized processors" {
+    const a = std.testing.allocator;
+    const bank = try a.create(Bank);
+    defer a.destroy(bank);
+    bank.* = .{};
+    defer bank.deinit();
+    var done = std.atomic.Value(bool).init(false);
+    var invalid = std.atomic.Value(bool).init(false);
+    const Reader = struct {
+        fn run(b: *Bank, stop: *std.atomic.Value(bool), bad: *std.atomic.Value(bool)) void {
+            while (!stop.load(.acquire)) {
+                if (b.getSmear(1, 0, SMEAR_SIZES[0])) |sm| {
+                    // The last twiddle is initialized near the end of setup.
+                    const z = sm.tw[sm.tw.len - 1];
+                    if (!std.math.isFinite(z.re) or @abs(z.re * z.re + z.im * z.im - 1) > 1e-5) bad.store(true, .release);
+                }
+            }
+        }
+    };
+    const reader = try std.Thread.spawn(.{}, Reader.run, .{ bank, &done, &invalid });
+    bank.needSmear();
+    done.store(true, .release);
+    reader.join();
+    try std.testing.expect(!invalid.load(.acquire));
+    for (&bank.smear) |*slot| try std.testing.expect(slot.load(.acquire) != null);
+}
+
+test "realtime audit benchmark: smear first block and peak render cost" {
+    if (std.c.getenv("SLAB_RT_AUDIT_BENCH") == null) return;
+    const a = std.testing.allocator;
+    const x = try sine(a, 200000, 330);
+    defer a.free(x);
+    const sm = try a.create(Smearer);
+    defer a.destroy(sm);
+    sm.init();
+    const src = Source{ .l = x.ptr, .r = null, .len = x.len, .reversed = false };
+    var tb: std.c.mach_timebase_info_data = undefined;
+    _ = std.c.mach_timebase_info(&tb);
+    const scale = @as(f64, @floatFromInt(tb.numer)) / @as(f64, @floatFromInt(tb.denom)) / 1e6;
+    for (SMEAR_SIZES) |n| {
+        sm.claim(1, 0, n);
+        var cold: f64 = 0;
+        var peak: f64 = 0;
+        var l: [256]f32 = undefined;
+        var r: [256]f32 = undefined;
+        const gain = [_]f32{1} ** 256;
+        for (0..160) |block| {
+            @memset(&l, 0);
+            @memset(&r, 0);
+            const start = std.c.mach_absolute_time();
+            sm.render(src, Lin{ .rate = 0.25, .p0 = 80000 }, @intCast(block * 256), &l, &r, &gain);
+            const ms = @as(f64, @floatFromInt(std.c.mach_absolute_time() - start)) * scale;
+            if (block == 0) cold = ms;
+            peak = @max(peak, ms);
+        }
+        std.debug.print("SLAB_AUDIT smear size={d} cold_ms={d:.3} peak_ms={d:.3} budget_ms=5.333\n", .{ n, cold, peak });
     }
 }

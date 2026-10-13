@@ -74,9 +74,13 @@ dsp: lim-block-prepare
   -> params.gain-lin
   params.ceil-db db>lin
   -> params.ceil-lin
-  params.look-ms 0.001 f* sr f* 1.0 4800.0 fclamp | ls |
+  params.look-ms 0.001 f* sr f* 1.0 4800.0 fclamp | raw-look |
+  ( Quantize once: the ring read and reported PDC delay must agree.
+    A tiny negative fractional read can round up to len when wrapped,
+    crossing into the adjacent channel's storage. Integer positions avoid it. )
+  0.0 0.0 raw-look f- floor f- | ls |
   ls -> params.look-spl
-  0.0  0.0 ls f- floor  f- -> params.lat
+  ls -> params.lat
   3.0 ls f/ 0.0 1.0 fclamp
   -> params.atk-c
   1.0 params.rel-s sr f* f/ 0.0 1.0 fclamp

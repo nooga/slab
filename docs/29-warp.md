@@ -296,9 +296,11 @@ plays SMEAR.
 
 ## On the audio thread
 
-Warped clips stretch **in real time**, in the block, like everything
-else the engine plays: a tempo drag or a marker drag is heard on the
-next block, and there is no cache to invalidate or go stale.
+Warped clips currently compute interpolation/stretching in the audio
+callback; published tempo/marker edits affect the next adopted version.
+There is no prepared audio cache. Large SMEAR windows can exceed the live
+callback deadline even though they allocate no storage there. See the
+[measured deadline limitations](37-realtime-safety.md#remaining-deadlinetiming-limitations).
 
 - **TAPE and BEATS need no state**: each output sample is a read at a
   position computed from the maps.
@@ -322,9 +324,9 @@ next block, and there is no cache to invalidate or go stale.
   (stretchers are per track). Playback started from a different point
   can differ in phase, inaudibly.
 - **Cost.** MIX is two FFT pairs per channel per output hop: about 380
-  4096-point transforms a second for a stereo clip, a fraction of a
-  percent of a core. SMEAR's long windows are the most expensive and
-  only run when chosen.
+  4096-point transforms a second for a stereo clip. Average CPU does not
+  establish the peak cost of a callback; SMEAR's long synchronous windows
+  can overrun a 256-frame budget even for one clip.
 
 ## Audio on the time axis
 

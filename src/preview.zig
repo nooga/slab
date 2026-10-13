@@ -44,7 +44,7 @@ pub const Previewer = struct {
     /// before stops and is retired. Null if it won't load.
     pub fn select(self: *Previewer, engine: *engine_mod.Engine, file: []const u8) ?*const wav.Sample {
         if (self.cur != null and std.mem.eql(u8, self.path(), file)) return &self.cur.?;
-        self.release(engine);
+        if (!self.release(engine)) return null;
         if (file.len > self.path_buf.len) return null;
         const s = wav.load(self.alloc, file) catch return null;
         self.cur = s;
@@ -84,20 +84,49 @@ pub const Previewer = struct {
         };
     }
 
-    fn release(self: *Previewer, engine: *engine_mod.Engine) void {
-        var s = self.cur orelse return;
+    fn release(self: *Previewer, engine: *engine_mod.Engine) bool {
+        const s = self.cur orelse return true;
+        self.collect(engine);
+        var slot: ?*?Retired = null;
+        for (&self.retired) |*r| if (r.* == null) {
+            slot = r;
+            break;
+        };
+        // Backpressure stays on UI. Keep ownership of the current sample
+        // when audio has not released enough retired samples; never leak it.
+        const dst = slot orelse return false;
         self.cur = null;
         self.path_len = 0;
         // Stop the voice; the data lives until the engine took that.
         const after = engine.stopPreview();
         self.playing = false;
-        for (&self.retired) |*r| if (r.* == null) {
-            r.* = .{ .sample = s, .after = after };
-            return;
-        };
-        // No room (the device isn't running blocks): keep it rather than
-        // free what the audio thread might read.
-        std.log.warn("preview: no room to retire a sample; keeping it", .{});
-        _ = &s;
+        dst.* = .{ .sample = s, .after = after };
+        return true;
     }
 };
+
+test "realtime: preview retirement backpressure retains sample ownership" {
+    const a = std.testing.allocator;
+    var transport = @import("transport.zig").Transport{};
+    const engine = try a.create(engine_mod.Engine);
+    defer a.destroy(engine);
+    engine.* = .{ .transport = &transport, .tracks = &.{} };
+    var p = Previewer.init(a);
+    defer p.deinit(); // no device/callback exists in this test
+    for (0..MAX_RETIRED) |_| {
+        const data = try a.alloc(f64, 32);
+        @memset(data, 0);
+        p.cur = .{ .data = data, .sample_rate = 48000 };
+        try std.testing.expect(p.release(engine));
+    }
+    const data = try a.alloc(f64, 32);
+    @memset(data, 0);
+    p.cur = .{ .data = data, .sample_rate = 48000 };
+    const request = engine.preview_req.load(.monotonic);
+    try std.testing.expect(!p.release(engine));
+    try std.testing.expectEqual(@intFromPtr(data.ptr), @intFromPtr(p.cur.?.data.ptr));
+    try std.testing.expectEqual(request, engine.preview_req.load(.monotonic));
+    engine.preview_ack.store(request, .release); // callback has released old data
+    try std.testing.expect(p.release(engine));
+    try std.testing.expect(p.cur == null);
+}

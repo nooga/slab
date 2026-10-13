@@ -6,6 +6,13 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Limiter changes keep parallel paths aligned.** Snapped lookahead changes
+  update compensation before their first block, and the limiter uses its
+  reported whole-sample delay consistently at ring boundaries. Machine
+  displays read completed DSP snapshots; recording stop retains the final
+  in-flight capture block, and preview replacement keeps ownership when
+  its retirement queue is full.
+
 - **Playback keeps running through machine and asset edits.** Instruments,
   insert chains, rack parts, samples and wavetables are prepared off audio
   and adopted at block boundaries; the callback no longer waits for UI or
