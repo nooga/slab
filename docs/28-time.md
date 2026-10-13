@@ -80,7 +80,7 @@ The playhead is a sample counter on the audio thread. A tempo edit
 would make that counter mean a different beat, so the engine **rebases
 it** when it adopts a new map: `pos = new.sampleAt(old.beatAt(pos))`.
 The music keeps its place and only the speed changes. Edits are staged
-under a seqlock like the meter map's and adopted at the next block
+through an ownership handoff like the meter map's and adopted at the next block
 (tempo can't wait for a bar line the way meter does: a ramp drawn
 under the playhead should be heard now).
 

@@ -349,9 +349,10 @@ exactly where it lands:
 
 ### Snapshot
 
-Lanes publish with the track, in the existing double-buffered
+Lanes publish with the track, in the owned three-slot
 `TrackSnapshot` (`src/snapshot.zig`). The UI writes the idle slot and
-flips; the audio thread reads the published one for the block.
+exchanges ownership; the rendering thread adopts once per chunk and every
+worker reads that immutable version until it finishes.
 New fixed arrays:
 
 ```zig

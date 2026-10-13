@@ -275,6 +275,14 @@ pub const Registry = struct {
         return raw.machineInterface();
     }
 
+    /// Build a private version while audio uses existing registry machines.
+    pub fn instantiatePrepared(self: *Registry, idx: usize) !machine.Machine {
+        if (idx >= self.count) return error.InvalidMachineIndex;
+        const e = &self.entries[idx];
+        if (e.native == .rack) return (try rack_mod.Rack.create(self.alloc, self)).machineInterface();
+        return (try fy_raw_machine_mod.FyRawMachine.createIsolated(self.alloc, e.pathSlice())).machineInterface();
+    }
+
     /// Resolve a stable machine id (directory name) to its current index.
     pub fn findById(self: *const Registry, id: []const u8) ?usize {
         for (self.entries[0..self.count], 0..) |*e, i| {

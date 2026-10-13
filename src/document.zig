@@ -347,8 +347,9 @@ pub fn appendClip(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const t
         try out.appendSlice(alloc, "{\"type\":\"audio\",\"name\":");
         try appendJsonString(alloc, out, clip.name());
         try appendFmt(alloc, out, ",\"start\":{d},\"len\":{d},\"gain\":{d},\"start_sec\":{d},\"dur_sec\":{d},\"fade_in\":{d},\"fade_out\":{d},", .{
-            clip.start_beat, clip.length_beats, clip.audio.gain,
-            clip.audio.start_sec, clip.audio.dur_sec, clip.audio.fade_in_sec, clip.audio.fade_out_sec,
+            clip.start_beat,         clip.length_beats,  clip.audio.gain,
+            clip.audio.start_sec,    clip.audio.dur_sec, clip.audio.fade_in_sec,
+            clip.audio.fade_out_sec,
         });
         if (clip.audio.reversed) try out.appendSlice(alloc, "\"reversed\":true,");
         if (clip.audio.warp) {
@@ -990,9 +991,13 @@ pub fn apply(
         if (objGet(mo, "volume")) |x| m.setVolume(@floatCast(asF64(x)));
         if (objGet(mo, "pan")) |x| m.setPan(@floatCast(asF64(x)));
         m.subsonic.store(if (objGet(mo, "subsonic")) |x| asBool(x) else false, .monotonic);
-        for (m.effects.items) |*fx| if (fx.mach.deinit) |d| d(fx.mach.state, alloc);
+        for (m.effects.items) |*fx| {
+            if (fx.mach.deinit) |d| d(fx.mach.state, alloc);
+            if (fx.shared_io) |io| alloc.destroy(io);
+        }
         m.effects.clearRetainingCapacity();
         if (objGet(mo, "effects")) |ev| try applyEffects(alloc, reg, m, ev);
+        m.publishMachines();
     };
 }
 
@@ -1377,7 +1382,6 @@ fn applyClip(alloc: std.mem.Allocator, t: *track_mod.Track, co: std.json.ObjectM
     if (objGet(co, "automation")) |av| try applyLaneList(alloc, t, &clip.lanes, av);
     try t.addClip(alloc, clip);
 }
-
 
 fn appendFmt(alloc: std.mem.Allocator, out: *std.ArrayList(u8), comptime fmt: []const u8, args: anytype) !void {
     const s = try std.fmt.allocPrint(alloc, fmt, args);

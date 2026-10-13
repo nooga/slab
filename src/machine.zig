@@ -159,6 +159,8 @@ pub const DrawPanelFn = *const fn (
 /// Called when the transport stops or the host otherwise wants the
 /// machine to drop any sustained voices and reset to silence.
 pub const ResetFn = *const fn (state: *anyopaque) void;
+/// Bounded block-boundary adoption; never allocate, wait, compile or free.
+pub const AdoptFn = *const fn (state: *anyopaque) void;
 pub const DeinitFn = *const fn (state: *anyopaque, alloc: std.mem.Allocator) void;
 /// A fingerprint of the code the machine runs (docs/27 §Provenance).
 pub const CodeHashFn = *const fn (state: *anyopaque) u64;
@@ -419,6 +421,7 @@ pub const Machine = struct {
     render: RenderFn,
     draw_panel: DrawPanelFn,
     reset: ResetFn,
+    adopt_updates: ?AdoptFn = null,
     deinit: ?DeinitFn = null,
     /// Its code's fingerprint; null for machines whose code is the host's.
     code_hash: ?CodeHashFn = null,

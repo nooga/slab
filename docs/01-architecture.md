@@ -78,22 +78,23 @@ which, by construction, cannot reach the heap. It calls non-`dsp:`
 words *never* — no rendering from audio, no control-rate decisions,
 no MIDI parsing.
 
-The hot-patch thread compiles under a mutex shared with the main
-thread. When a `dsp:` word's trampoline target is patched, the audio
-thread picks up the new target on its next block (the
-`pthread_jit_write_protect_np` dance plus `__clear_cache` handles the
-W^X and icache invalidation — fy already does this).
+The standalone fy hot-patch server serializes control execution. Active
+Slab raw DSP definitions are sealed: callers embed compiled bodies/resolved
+addresses, so editing a trampoline does not update their kernels. Live UI
+replacement prepares a private instance and publishes it at a block boundary;
+audio never acquires the compiler mutex. State-preserving source hot-reload
+remains a proposal. See [37-realtime-safety.md](37-realtime-safety.md).
 
 ## Control flow per block
 
 1. Audio callback fires (miniaudio): `n` frames requested.
 2. Host computes `block_start_sample`, resets the block arena.
 3. Host walks the active graph in topo order. For each machine:
-   a. Swap params double-buffer if a new pending copy is ready.
+   a. Adopt ready control/asset versions from owned handoff slots.
    b. Advance param smoothers toward pending values.
    c. Build a `MachineCtx` for this machine (see
       [04-block-contract.md](04-block-contract.md)).
-   d. Call the machine's compiled `process` trampoline. Pointer in,
+   d. Call the machine's compiled raw DSP caller. Pointer in,
       nothing out — the machine writes audio to its output ports via
       pointers in ctx.
 4. Host sums/routes outputs through sends and master.

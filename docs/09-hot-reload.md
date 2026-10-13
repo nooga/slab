@@ -1,5 +1,12 @@
 # 09 — Hot-reload and livecoding
 
+> **Design proposal:** running machine source is not replaced by saving a
+> file. Source changes reach the next prepared instance. Active raw DSP
+> callers embed bodies/resolved addresses; trampoline retargeting alone
+> does not replace them. Published hosts reject in-place definitions and
+> standalone TCP patching. The current publication contract is docs/37.
+
+
 The "pop the face off" gesture. Users edit machine source in Slab's
 built-in editor or in VSCode, save, and the running
 audio picks up the change on the next block. This is the signature

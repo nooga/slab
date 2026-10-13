@@ -1,6 +1,7 @@
 //! Slab's fy runtime host.
 //!
-//! Owns a single `Fy` instance shared across all machines.
+//! Owns a `Fy` instance. Initial loads may share a host; replacements use
+//! private hosts so preparation cannot rewrite executing code.
 //! Host builtins (slab:sr, slab:block-size, etc.) are registered once via
 //! `registerSlabBuiltins()` using fy's `bind:` injection pattern: we pass
 //! Zig function pointers as integer literals so fy can call them via the
@@ -19,24 +20,23 @@ const MachineCtx = machine_mod.MachineCtx;
 const c = @import("c.zig");
 const storage = @import("storage.zig");
 
-/// fy currently exposes callback/runtime state through global variables
-/// (`Fy.Builtins.fyPtr` among them). Until that state is made thread-local
-/// in fy, only one Slab fy callback may execute at a time.
-pub var callback_mutex: std.atomic.Mutex = .unlocked;
+/// Control-thread compiler serialization. Audio executes prepared callers
+/// and never acquires this mutex. Runtime assets use publication/retirement.
+pub var control_mutex: std.atomic.Mutex = .unlocked;
 
 /// Compile a file with fy's instruction-cache flushes held, invalidating
 /// what it linked in one pass at the end instead of once per word
 /// (docs/25 §Load time). `--flush-each` turns it off.
 pub var batch_flush: bool = true;
 
-pub fn lockCallbacks() void {
-    while (!callback_mutex.tryLock()) {
+pub fn lockControl() void {
+    while (!control_mutex.tryLock()) {
         std.Thread.yield() catch {};
     }
 }
 
-pub fn unlockCallbacks() void {
-    callback_mutex.unlock();
+pub fn unlockControl() void {
+    control_mutex.unlock();
 }
 
 // ── Minimal TCP server using libc directly ────────────────────────────
@@ -331,6 +331,13 @@ pub const FyHost = struct {
     /// Callers poll this to know when to refresh their callbacks.
     hot_reload_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     hot_server_fd: c_int = -1,
+    sealed: std.atomic.Value(bool) = .init(false),
+
+    /// Prepared DSP callers embed bodies/addresses; their word definitions
+    /// must remain stable. New source is compiled into a separate host.
+    pub fn sealDefinitions(self: *FyHost) void {
+        self.sealed.store(true, .release);
+    }
 
     pub fn init(alloc: std.mem.Allocator) FyHost {
         return .{ .fy = Fy.init(alloc), .alloc = alloc };
@@ -344,12 +351,14 @@ pub const FyHost = struct {
     /// Compile a fy source string; definitions persist in the runtime.
     /// Stack top after the snippet runs is discarded.
     pub fn compile(self: *FyHost, src: []const u8) !void {
+        if (self.sealed.load(.acquire)) return error.PublishedCode;
         _ = try self.fy.run(src);
     }
 
     /// Compile a fy file; definitions persist. Imports resolve relative
     /// to the file's directory (uses the now-public runWithBaseDir).
     pub fn compileFile(self: *FyHost, path: []const u8) !void {
+        if (self.sealed.load(.acquire)) return error.PublishedCode;
         if (batch_flush) self.fy.holdFlush();
         defer if (batch_flush) self.fy.releaseFlush();
         const src = try readFilePosix(self.alloc, path);
@@ -494,6 +503,7 @@ pub const FyHost = struct {
     /// After each successful recompile `hot_reload_count` is incremented;
     /// callers should poll it and call `createAudioCallback` to refresh.
     pub fn startHotPatchServer(self: *FyHost) !u16 {
+        if (self.sealed.load(.acquire)) return error.PublishedCode;
         const fd = socket(AF_INET, SOCK_STREAM, 0);
         if (fd < 0) return error.SocketFailed;
         const one: c_int = 1;
@@ -558,11 +568,16 @@ fn hotPatchHandleConn(host: *FyHost, fd: c_int) void {
         return;
     }
 
-    // Compile and execute while no audio callback is inside fy. The audio
-    // thread uses callback_mutex around JIT entry; hot-patch mutates the same
-    // image/trampolines and user-word table, so it must join that exclusion.
-    lockCallbacks();
-    defer unlockCallbacks();
+    // This standalone server serializes control execution. Active Slab DSP
+    // versions are not patched through this server; prepare a replacement
+    // host/caller version before handing code to a machine.
+    lockControl();
+    defer unlockControl();
+
+    if (host.sealed.load(.acquire)) {
+        fdWrite(fd, "error: published code requires a prepared replacement\n");
+        return;
+    }
 
     // Compile and execute under the hot-patch mutex.
     // runWithBaseDir re-runs top-level statements (e.g. phase reset) which

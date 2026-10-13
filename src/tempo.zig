@@ -9,6 +9,7 @@
 //! rebases its sample counter on adoption so the playhead keeps its beat.
 
 const std = @import("std");
+const handoff = @import("handoff.zig");
 
 pub const MIN_BPM: f64 = 20;
 pub const MAX_BPM: f64 = 400;
@@ -195,25 +196,23 @@ pub const TempoMap = struct {
     }
 };
 
-/// The UI edits `live` (under the seqlock, through `edit`/`publish`); the
+/// The UI edits `live` and publishes an owned version; the
 /// audio thread reads `audio` and adopts a pending edit at a block start.
 pub const TempoState = struct {
     live: TempoMap = TempoMap.constant(120),
     audio: TempoMap = TempoMap.constant(120),
-    seq: std.atomic.Value(u32) = .init(0),
-    dirty: std.atomic.Value(bool) = .init(false),
+    versions: handoff.Latest(TempoMap) = .init(TempoMap.constant(120)),
 
-    /// UI thread: open the live map for an edit. Pair with `publish`.
+    /// UI thread: edit its private live map. Pair with `publish`.
     pub fn edit(self: *TempoState) *TempoMap {
-        _ = self.seq.fetchAdd(1, .release); // odd: writing
         return &self.live;
     }
 
     /// UI thread: close an edit; the audio thread adopts it next block.
     pub fn publish(self: *TempoState) void {
         self.live.rebuild();
-        _ = self.seq.fetchAdd(1, .release); // even: stable
-        self.dirty.store(true, .release);
+        self.versions.write().* = self.live;
+        self.versions.publish();
     }
 
     /// UI thread: replace the map.
@@ -224,36 +223,23 @@ pub const TempoState = struct {
     }
 
     pub fn pending(self: *const TempoState) bool {
-        return self.dirty.load(.acquire);
+        return self.versions.pending();
     }
 
-    /// Audio thread: adopt a pending edit. False when nothing changed or
-    /// the copy was torn by a concurrent edit (it stays pending).
+    /// Audio thread: adopt a complete version with no retries or torn reads.
     pub fn adopt(self: *TempoState) bool {
-        if (!self.dirty.swap(false, .acq_rel)) return false;
-        const s1 = self.seq.load(.acquire);
-        if (s1 & 1 == 0) {
-            const n = self.live.len;
-            var tmp: TempoMap = undefined;
-            @memcpy(tmp.points[0..n], self.live.points[0..n]);
-            @memcpy(tmp.secs[0..n], self.live.secs[0..n]);
-            if (self.seq.load(.acquire) == s1 and n > 0) {
-                @memcpy(self.audio.points[0..n], tmp.points[0..n]);
-                @memcpy(self.audio.secs[0..n], tmp.secs[0..n]);
-                self.audio.len = n;
-                return true;
-            }
-        }
-        self.dirty.store(true, .release);
-        return false;
+        if (!self.versions.adopt()) return false;
+        self.audio = self.versions.current().*;
+        return true;
     }
 
     /// Non-realtime (load, offline render, tests): the audio copy matches
     /// live now. The caller guarantees no concurrent render.
     pub fn commitImmediate(self: *TempoState) void {
         self.live.rebuild();
-        self.audio = self.live;
-        self.dirty.store(false, .release);
+        self.versions.write().* = self.live;
+        self.versions.publish();
+        _ = self.adopt();
     }
 };
 
@@ -331,4 +317,18 @@ test "the audio copy adopts a published edit" {
     try testing.expectEqual(@as(usize, 2), st.audio.len);
     try testing.expectApproxEqAbs(@as(f64, 2), st.audio.secs[1], 1e-12);
     try testing.expect(!st.adopt());
+}
+
+test "handoff: tempo adoption never reads an unfinished UI edit" {
+    var st: TempoState = .{};
+    st.set(&TempoMap.constant(90));
+    try testing.expect(st.adopt());
+    _ = st.edit().put(0, 180); // producer stalls before publish
+    for (0..1000) |_| {
+        try testing.expect(!st.adopt());
+        try testing.expectEqual(@as(f64, 90), st.audio.base());
+    }
+    st.publish();
+    try testing.expect(st.adopt());
+    try testing.expectEqual(@as(f64, 180), st.audio.base());
 }

@@ -1,7 +1,7 @@
 //! Routing graph (docs/23): where each track's signal goes after its
 //! insert chain (output, sends) and which tracks key which effects. The
 //! UI thread builds a `Routing` from the tracks after any routing edit and
-//! the engine publishes it double-buffered; the audio thread only reads it.
+//! the engine publishes it through an ownership handoff; the audio thread only reads it.
 //! Pure data and bit-mask graph walks, no allocation.
 
 const std = @import("std");
@@ -18,7 +18,7 @@ comptime {
     std.debug.assert(MAX_TRACKS <= @bitSizeOf(Mask));
 }
 
-pub const SendSlot = struct { bus: u8, pre: bool = false };
+pub const SendSlot = struct { bus: u8, pre: bool = false, level: f32 = 1 };
 pub const KeySlot = struct { fx_uid: u16, src: u8 };
 
 /// One track as the graph sees it.

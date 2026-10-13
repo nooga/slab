@@ -74,39 +74,51 @@ Same physical page backs every instance referring to the same file.
 Loading ten instances of a sampler with the same library costs one
 copy of the library.
 
-## Double-buffered params
+## Publication at block boundaries (implemented)
 
-The params struct lives in the persistent arena **twice**:
+`src/handoff.zig` gives each single producer/consumer pair three slots:
+producer-owned, consumer-owned, and an atomic exchange slot. UI builds a
+complete version in its own slot and publishes with an acquire/release
+exchange. Audio adopts with one readiness check and at most one exchange.
+It keeps its current slot when no new version is ready. Neither path has a
+retry loop. Intermediate publications coalesce, retaining the latest one.
 
-```
-persistent_arena:
-  ┌──────────────────────────┐
-  │ params_a (UnoParams)     │   ← UI may be writing here (pending)
-  ├──────────────────────────┤
-  │ params_b (UnoParams)     │   ← audio is reading here (current)
-  ├──────────────────────────┤
-  │ smoother_state           │   ← one f32 per smoothed field
-  ├──────────────────────────┤
-  │ ... delay lines, etc.    │
-  └──────────────────────────┘
-```
+The producer cannot recycle the consumer's slot until the consumer returns
+it at its next adoption. Every reader, including render workers, must finish
+before that adoption. Callback frequency versus UI frame rate is irrelevant.
+This is used for notes/automation snapshots, routing, tempo, meter, preview
+requests, machine controls, asset bindings, rack configurations and insert
+chains. Tempo retains its beat-rebase policy; meter still adopts at bars.
 
-Plus two atomic pointers (`current_ptr`, `pending_ptr`) and a "dirty"
-flag.
+Machine params, smoothers, held notes and DSP state belong to audio. UI
+publishes control targets (and snap generations), never writes those params
+or smoothers. Model switches and presets publish grouped controls together.
+Sampler zone settings and related pool/zone pointers share one publication;
+zone-hit telemetry is copied back through atomics.
 
-**Write path (UI thread):**
-1. UI reads `pending_ptr`, writes field(s).
-2. Marks `dirty = true`.
+Asset and machine replacements also need lifetime protection. Their UI-owned
+bounded retirement lists carry publication generations; audio acknowledges
+only after replacing all old references. UI collects acknowledged entries.
+No audio callback frees storage, waits for a producer, or needs a free slot
+in a return queue. If retirement storage is full, control work is rejected
+or deferred, keeping the current audio version valid. Destruction with the
+device stopped drains outstanding retired versions directly.
 
-**Read path (audio thread), start of each block:**
-1. If `dirty`, atomically swap `current_ptr` and `pending_ptr`,
-   `memcpy` the new "current" into the old "pending" (so pending
-   starts from the current state), clear `dirty`.
-2. Advance smoother toward `pending_ptr`'s values for the next
-   block's worth of samples.
+A sample/keymap replacement retains its previous policy of stopping voices
+whose positions refer to the old pool. Wavetable edits and anti-alias pool
+replacements keep sounding voices. Wavetable levels are prepared in a new
+table; UI never edits the published table in place. Machine update adoption
+also runs for muted/idle tracks, so reclamation does not wait for a note.
 
-This gives: lock-free, torn-write-tolerant, O(params_size) per block
-in the worst case (typically <1kB → irrelevant).
+Prepared source replacements compile into a private fy host and include all
+DSP callers. Published word definitions are sealed against in-place
+compilation and the standalone TCP patch server. Replacing an instrument
+still initializes its new state; state-preserving live source replacement
+is not implemented. See [37-realtime-safety.md](37-realtime-safety.md).
+
+The four-arena sections above describe the architectural model. Today's raw
+adapter uses bounded state/params arrays and host-allocated buffers/assets;
+its kernel ABI and implemented storage are described in docs/02 and docs/04.
 
 ## Smoothing
 

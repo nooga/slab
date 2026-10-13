@@ -79,6 +79,10 @@ const color_picker = @import("ui/color_picker.zig");
 const browser = @import("ui/browser.zig");
 
 test {
+    _ = @import("handoff.zig");
+    _ = @import("audio.zig");
+    _ = @import("machines/fy_raw_machine.zig");
+    _ = @import("machines/rack.zig");
     _ = @import("ui/sprites.zig");
     _ = @import("ui/core.zig");
     _ = @import("ui/controls.zig");
@@ -435,16 +439,11 @@ fn assignMachineToTrack(
     t: *track_mod.Track,
     reg_idx: usize,
 ) !void {
-    audio.stop();
-    defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
-
-    const mach = blk: {
-        fy_host_mod.lockCallbacks();
-        defer fy_host_mod.unlockCallbacks();
-        break :blk try reg.instantiate(reg_idx);
-    };
+    _ = audio;
+    const mach = try reg.instantiatePrepared(reg_idx);
+    errdefer if (mach.deinit) |d| d(mach.state, alloc);
     mach.reset(mach.state);
-    t.replaceMachine(alloc, mach);
+    try t.replaceMachine(alloc, mach);
     t.machine_idx = @intCast(reg_idx);
 }
 
@@ -455,14 +454,9 @@ fn addEffectToTrack(
     t: *track_mod.Track,
     reg_idx: usize,
 ) !void {
-    audio.stop();
-    defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
-
-    const mach = blk: {
-        fy_host_mod.lockCallbacks();
-        defer fy_host_mod.unlockCallbacks();
-        break :blk try reg.instantiate(reg_idx);
-    };
+    _ = audio;
+    const mach = try reg.instantiatePrepared(reg_idx);
+    errdefer if (mach.deinit) |d| d(mach.state, alloc);
     mach.reset(mach.state);
     try t.addEffect(alloc, mach, @intCast(reg_idx));
 }
@@ -475,16 +469,11 @@ fn replaceEffectOnTrack(
     i: usize,
     reg_idx: usize,
 ) !void {
-    audio.stop();
-    defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
-
-    const mach = blk: {
-        fy_host_mod.lockCallbacks();
-        defer fy_host_mod.unlockCallbacks();
-        break :blk try reg.instantiate(reg_idx);
-    };
+    _ = audio;
+    const mach = try reg.instantiatePrepared(reg_idx);
+    errdefer if (mach.deinit) |d| d(mach.state, alloc);
     mach.reset(mach.state);
-    t.replaceEffect(alloc, i, mach, @intCast(reg_idx));
+    try t.replaceEffect(alloc, i, mach, @intCast(reg_idx));
 }
 
 // DeviceRef → effect index (null = instrument), for resolving a machine.
@@ -939,9 +928,11 @@ pub fn main(init: std.process.Init) !void {
     audio.setRender(&engine, engine_mod.Engine.renderCallback);
     var audio_gen = audio.device_gen;
     if (engine.pool) |p| {
+        audio.stop();
         const wg = audio.workgroup();
         if (cli.rt_workers) std.log.info("render workers: real-time, {s}", .{if (wg != null) "in the audio workgroup" else "no audio workgroup"});
         p.setWorkgroup(wg);
+        try audio.start();
     }
 
     // ── Recorder ─────────────────────────────────────────────────────
@@ -949,7 +940,11 @@ pub fn main(init: std.process.Init) !void {
     // through `captureFn` each block. Only active when the device opened a
     // capture half (duplex).
     var recorder = try recorder_mod.Recorder.init(alloc, &transport);
-    defer recorder.deinit();
+    defer {
+        audio.stop(); // no capture callback can still reference the ring
+        audio.setCapture(null, null);
+        recorder.deinit();
+    }
     // Installed for good: the hook gets no input while the device is
     // playback-only (no track armed).
     audio.setCapture(&recorder, recorder_mod.Recorder.captureFn);
@@ -1171,7 +1166,14 @@ pub fn main(init: std.process.Init) !void {
         // A reopened device has a new I/O workgroup for the workers.
         if (audio.device_gen != audio_gen) {
             audio_gen = audio.device_gen;
-            if (engine.pool) |p| p.setWorkgroup(audio.workgroup());
+            if (engine.pool) |p| {
+                audio.stop();
+                p.setWorkgroup(audio.workgroup());
+                audio.start() catch |err| {
+                    std.log.err("audio restart failed: {s}", .{@errorName(err)});
+                    status.set("Audio device failed", .{});
+                };
+            }
         }
 
         // Refresh the input-device list ~once/sec and resolve the active one.
@@ -1741,9 +1743,10 @@ pub fn main(init: std.process.Init) !void {
             switch (ref) {
                 .instrument => if (!bay_is_bus and dev.machine_idx != null) {
                     pushHistorySnapshot(alloc, &history, tracks, &transport);
-                    audio.stop();
-                    defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
-                    dev.replaceMachine(alloc, silent_machine);
+                    dev.replaceMachine(alloc, silent_machine) catch |err| {
+                        status.set("Remove failed: {s}", .{@errorName(err)});
+                        continue;
+                    };
                     dev.machine_idx = null;
                     dev.setEnabled(true);
                     dirty = true;
@@ -1753,9 +1756,10 @@ pub fn main(init: std.process.Init) !void {
                     // Audio-track effect removals are undoable; master FX aren't
                     // captured by the snapshot (FX chains aren't serialized yet).
                     if (!bay_is_bus) pushHistorySnapshot(alloc, &history, tracks, &transport);
-                    audio.stop();
-                    defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
-                    dev.removeEffect(alloc, fx_i);
+                    dev.removeEffect(alloc, fx_i) catch |err| {
+                        status.set("Remove failed: {s}", .{@errorName(err)});
+                        continue;
+                    };
                     dirty = true;
                     status.set("Removed effect", .{});
                 },
@@ -1764,8 +1768,6 @@ pub fn main(init: std.process.Init) !void {
         // Drag-reorder effects.
         if (mbres.reorder_from) |from| if (mbres.reorder_to) |to| if (bay_dev) |dev| {
             if (!bay_is_bus) pushHistorySnapshot(alloc, &history, tracks, &transport);
-            audio.stop();
-            defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
             dev.moveEffect(from, to);
             dirty = true;
             status.set("Reordered effects", .{});
@@ -4727,10 +4729,10 @@ fn flattenTrack(alloc: std.mem.Allocator, audio: *audio_mod.Audio, pool: *audio_
     errdefer clip.deinit(alloc);
     audio.stop();
     defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
-    t.replaceMachine(alloc, silent_machine);
+    try t.replaceMachine(alloc, silent_machine);
     t.machine_idx = null;
     t.setEnabled(true);
-    while (t.effects.items.len > 0) t.removeEffect(alloc, t.effects.items.len - 1);
+    while (t.effects.items.len > 0) try t.removeEffect(alloc, t.effects.items.len - 1);
     for (t.clips.items) |*cl| cl.deinit(alloc);
     t.clips.clearRetainingCapacity();
     var li = t.lanes.items.len;
@@ -6089,7 +6091,7 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
     const took = @as(f64, @floatFromInt(nowNs() - t0)) / 1e9;
     if (cli.render) |out| {
         std.debug.print("rendered {s} -> {s}: {d:.1} s in {d:.2} s ({d:.1}x real time), peak {d:.1} dBFS, rms {d:.1} dBFS, {d} samples at the rail, {d:.1} LUFS, LRA {d:.1} LU, true peak {d:.1} dBTP{s}\n", .{
-            project, out, secs, took, secs / took, 20 * std.math.log10(@max(r.peak, 1e-9)), 20 * std.math.log10(@max(r.rms, 1e-12)), r.over,
+            project,               out,            secs,                 took,                                        secs / took, 20 * std.math.log10(@max(r.peak, 1e-9)), 20 * std.math.log10(@max(r.rms, 1e-12)), r.over,
             r.loudness.integrated, r.loudness.lra, r.loudness.true_peak, if (r.gain_db != 0) " (normalized)" else "",
         });
     }
@@ -6979,7 +6981,6 @@ fn arrowKeyPressed() bool {
     return c.rl.IsKeyPressed(c.rl.KEY_LEFT) or c.rl.IsKeyPressed(c.rl.KEY_RIGHT) or
         c.rl.IsKeyPressed(c.rl.KEY_UP) or c.rl.IsKeyPressed(c.rl.KEY_DOWN);
 }
-
 
 fn deletePressed() bool {
     return c.rl.IsKeyPressed(c.rl.KEY_DELETE) or c.rl.IsKeyPressed(c.rl.KEY_BACKSPACE);

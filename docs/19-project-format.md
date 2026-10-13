@@ -19,6 +19,12 @@ and `tools/slabkit`.
 The render runs the same engine as playback, including the master
 soft-clip, so what it writes is what you'd hear.
 
+Each track supports at most 128 insert effects. Existing project syntax is
+unchanged; a file exceeding this limit fails loading with `TooManyEffects`
+instead of silently truncating its chain. Runtime replacement retirement
+lists are bounded; `PublicationFull` defers/rejects an edit without changing
+the active audio version.
+
 ## Preset
 
 A machine's presets come from three places ([25-storage.md](25-storage.md)

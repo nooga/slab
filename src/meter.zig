@@ -11,6 +11,7 @@
 //! keyed by bar index, not by sample or beat.
 
 const std = @import("std");
+const handoff = @import("handoff.zig");
 
 /// Ticks per quarter note for the sub-beat field of `BarPos` (standard
 /// MIDI PPQN). A meter-beat of length `4/D` quarter-notes therefore holds
@@ -414,19 +415,17 @@ pub const MeterStore = struct {
 /// only refreshes it at a bar boundary (docs/07 §runtime-change), so a
 /// meter change never re-lays bars under a moving playhead mid-bar.
 ///
-/// Concurrency: a seqlock guards `live`. `stage()` brackets a full
-/// rewrite (odd→write→even, Release) and marks `dirty`. `adoptIfPending()`
-/// runs on the audio thread at a boundary: it snapshots `live` under the
-/// seqlock and commits to `audio_copy` only if no write straddled the
-/// copy — a torn read keeps the old copy and stays dirty for next time.
-/// `commitImmediate()` is the non-realtime path (project load, edits while
-/// stopped) and assumes no concurrent render.
-///
+/// Concurrency: explicit slot ownership, no reads from the UI's live store.
+/// `commitImmediate` requires no concurrent render.
 pub const MeterState = struct {
     live: MeterStore = .{},
     audio_copy: MeterStore = .{},
-    seq: std.atomic.Value(u32) = .init(0),
-    dirty: std.atomic.Value(bool) = .init(false),
+    versions: handoff.Latest(MeterStore) = .init(.{}),
+
+    fn publish(self: *MeterState) void {
+        self.versions.write().* = self.live;
+        self.versions.publish();
+    }
 
     /// Audio thread: the map to use this block.
     pub fn map(self: *const MeterState) MeterMap {
@@ -448,37 +447,22 @@ pub const MeterState = struct {
     /// UI/generator thread: replace the live map and mark it for adoption
     /// at the next bar boundary.
     pub fn stage(self: *MeterState, points: []const MeterPoint) void {
-        _ = self.seq.fetchAdd(1, .release); // -> odd: write in progress
         self.live.clear();
         for (points) |p| self.live.append(p);
         if (self.live.len == 0) self.live.reset();
-        _ = self.seq.fetchAdd(1, .release); // -> even: stable
-        self.dirty.store(true, .release);
+        self.publish();
     }
 
     /// Audio thread: adopt a pending edit, only safe to call at a bar
     /// boundary (or when not rendering). No-op when nothing is pending.
     pub fn adoptIfPending(self: *MeterState) void {
-        if (!self.dirty.load(.acquire)) return;
-        const s1 = self.seq.load(.acquire);
-        if (s1 & 1 != 0) return; // writer mid-update; try next boundary
-        var tmp: MeterStore = undefined;
-        const n = self.live.len;
-        var i: usize = 0;
-        while (i < n and i < MAX_POINTS) : (i += 1) tmp.buf[i] = self.live.buf[i];
-        if (self.seq.load(.acquire) != s1) return; // torn; keep old copy
-        // Validated — publish into the audio copy.
-        i = 0;
-        while (i < n) : (i += 1) self.audio_copy.buf[i] = tmp.buf[i];
-        self.audio_copy.len = n;
-        self.dirty.store(false, .release);
+        if (self.versions.adopt()) self.audio_copy = self.versions.current().*;
     }
 
     /// UI thread: edit one live point's numerator/denominator in place
-    /// (seqlock-bracketed) and mark it pending for adoption at the next
+    /// (published as a complete version) and mark it pending for adoption at the next
     /// bar boundary. No-op if `index` is out of range.
     pub fn editMeterAt(self: *MeterState, index: usize, numerator: u8, denominator: u8) void {
-        _ = self.seq.fetchAdd(1, .release); // -> odd
         if (index < self.live.len) {
             const p = &self.live.buf[index];
             // a new numerator invalidates the grouping
@@ -486,24 +470,20 @@ pub const MeterState = struct {
             p.numerator = numerator;
             p.denominator = denominator;
         }
-        _ = self.seq.fetchAdd(1, .release); // -> even
-        self.dirty.store(true, .release);
+        self.publish();
     }
 
     /// UI thread: insert or replace a meter change at `start_bar`
     /// (start_bar 0 edits the base meter), pending adoption at the next
     /// bar boundary.
     pub fn insertChange(self: *MeterState, start_bar: u32, numerator: u8, denominator: u8) void {
-        _ = self.seq.fetchAdd(1, .release);
         self.live.insertSorted(.{ .start_bar = start_bar, .numerator = numerator, .denominator = denominator });
-        _ = self.seq.fetchAdd(1, .release);
-        self.dirty.store(true, .release);
+        self.publish();
     }
 
     /// UI thread: set the grouping of the meter segment that contains
     /// `bar` (empty = the default), pending adoption like any edit.
     pub fn setGroupsAtBar(self: *MeterState, bar: u32, groups: Groups) void {
-        _ = self.seq.fetchAdd(1, .release);
         var i: usize = self.live.len;
         while (i > 0) {
             i -= 1;
@@ -512,25 +492,20 @@ pub const MeterState = struct {
                 break;
             }
         }
-        _ = self.seq.fetchAdd(1, .release);
-        self.dirty.store(true, .release);
+        self.publish();
     }
 
     /// UI thread: remove the meter change at `start_bar` (bar 0 is kept).
     pub fn removeChange(self: *MeterState, start_bar: u32) void {
-        _ = self.seq.fetchAdd(1, .release);
         self.live.removeAt(start_bar);
-        _ = self.seq.fetchAdd(1, .release);
-        self.dirty.store(true, .release);
+        self.publish();
     }
 
     /// Non-realtime: force the audio copy to match live immediately.
     /// Caller guarantees no concurrent render (load / stopped).
     pub fn commitImmediate(self: *MeterState) void {
-        var i: usize = 0;
-        while (i < self.live.len) : (i += 1) self.audio_copy.buf[i] = self.live.buf[i];
-        self.audio_copy.len = self.live.len;
-        self.dirty.store(false, .release);
+        self.publish();
+        self.adoptIfPending();
     }
 };
 

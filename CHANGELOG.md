@@ -6,6 +6,13 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Playback keeps running through machine and asset edits.** Instruments,
+  insert chains, rack parts, samples and wavetables are prepared off audio
+  and adopted at block boundaries; the callback no longer waits for UI or
+  compiler locks. Snapshot storage cannot be overwritten while audio uses
+  it. Parallel workers sleep when idle, and live playback uses serial
+  rendering when realtime worker admission is unavailable.
+
 ## 0.0.12 — 2026-10-12
 
 Machines from your own folder, four new effects, and Slab on raylib 6.

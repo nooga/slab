@@ -13,26 +13,29 @@ const stretch_mod = @import("stretch.zig");
 const audio_pool_mod = @import("audio_pool.zig");
 const automation = @import("automation.zig");
 const routing = @import("routing.zig");
+const handoff = @import("handoff.zig");
 
 pub const MAX_NAME = 32;
 
 /// One slot in a track's insert chain: the effect machine, its registry
 /// index (for persistence/forward-compat), and a per-effect bypass flag.
 /// `bypass` is a plain atomic the audio thread reads each block; chain
-/// mutations (add/remove/move/replace) happen with the device stopped, so
-/// the backing `ArrayList` only reallocs while the engine is idle.
+/// UI mutations publish a separate audio chain. The editable ArrayList
+/// and its allocations are never traversed by a render worker.
 pub const Effect = struct {
     mach: machine.Machine,
     idx: ?u8 = null,
     /// Stable per-track id that automation lanes address (docs/22 §Targets):
     /// it survives reordering the chain.
     uid: u16 = 0,
+    version: u64 = 0,
     bypass: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// Sidechain key (docs/23 §Sidechain keys): the track whose pre tap
     /// drives this effect's detector, or routing.NONE.
     key: u8 = routing.NONE,
     /// Block peaks the engine writes after each render and the bay's I/O
     /// meters read: in L, in R, out L, out R, as f32 bits.
+    shared_io: ?*[4]std.atomic.Value(u32) = null,
     io_peak: [4]std.atomic.Value(u32) = [_]std.atomic.Value(u32){std.atomic.Value(u32).init(0)} ** 4,
     /// Audio thread: samples its input and output have both been silent,
     /// saturating; past the machine's hold it isn't rendered (docs/04
@@ -41,14 +44,27 @@ pub const Effect = struct {
 
     pub fn setIo(self: *Effect, in: [2]f32, out: [2]f32) void {
         const v = [4]f32{ in[0], in[1], out[0], out[1] };
-        for (&self.io_peak, v) |*a, x| a.store(@bitCast(x), .monotonic);
+        for (self.shared_io orelse &self.io_peak, v) |*a, x| a.store(@bitCast(x), .monotonic);
     }
 
     pub fn io(self: *const Effect) struct { in: [2]f32, out: [2]f32 } {
         var v: [4]f32 = undefined;
-        for (&v, &self.io_peak) |*x, *a| x.* = @bitCast(a.load(.monotonic));
+        for (&v, self.shared_io orelse &self.io_peak) |*x, *a| x.* = @bitCast(a.load(.monotonic));
         return .{ .in = .{ v[0], v[1] }, .out = .{ v[2], v[3] } };
     }
+};
+
+pub const MAX_EFFECTS: usize = 128;
+const RetiredMachine = struct { mach: machine.Machine, io: ?*[4]std.atomic.Value(u32) = null };
+const Chain = struct { instrument: machine.Machine, effects: [MAX_EFFECTS]Effect = undefined, count: usize = 0, generation: u64 = 0, instrument_generation: u64 = 0 };
+
+const PublishedEffect = struct { uid: u16, version: u64, bypass: bool };
+const ChainState = struct {
+    chain: handoff.Latest(Chain),
+    retired: handoff.Retirement(RetiredMachine, 128) = .{},
+    audio_effects: [MAX_EFFECTS]Effect = undefined,
+    previous_effects: [MAX_EFFECTS]Effect = undefined,
+    published_effects: [MAX_EFFECTS]PublishedEffect = undefined,
 };
 
 /// What role a Track plays in the signal graph (docs/23). Audio tracks
@@ -83,7 +99,7 @@ pub const StemPlan = struct {
 
 /// A copy of the track's signal into a bus (docs/23 §Model). The target and
 /// tap are routing (published through `routing.Routing`); the level is an
-/// atomic the engine reads per block, so dragging it publishes nothing.
+/// UI-owned atomic target copied with its routing slot on publication.
 pub const Send = struct {
     bus: u8,
     pre: bool = false,
@@ -110,12 +126,23 @@ pub const Track = struct {
     send_count: u8 = 0,
     color: c.rl.Color,
     machine: machine.Machine,
+    chain_state: *ChainState,
+    chain: *handoff.Latest(Chain),
+    retired_machines: *handoff.Retirement(RetiredMachine, 128),
+    chain_generation: u64 = 0,
+    instrument_generation: u64 = 0,
+    audio_instrument_generation: u64 = 0,
+    published_instrument_generation: u64 = std.math.maxInt(u64),
+    published_effect_count: usize = std.math.maxInt(usize),
+    published_effects: *[MAX_EFFECTS]PublishedEffect,
+    audio_machine: machine.Machine,
+    audio_effects: *[MAX_EFFECTS]Effect,
+    audio_effect_count: usize = 0,
+
     /// Registry index for persistence. Null means the silent placeholder.
     machine_idx: ?u8 = null,
-    /// Insert chain — UI-thread-owned, heap-backed, unbounded. The audio
-    /// thread reads `effects.items` fresh each block; all mutations run
-    /// with the device stopped (see main.zig), so a realloc never races a
-    /// render.
+    /// Editable insert chain: UI-owned, at most MAX_EFFECTS. Audio reads
+    /// a separate adopted chain, so UI allocation/reordering cannot race it.
     effects: std.ArrayList(Effect) = .empty,
     /// Audio thread: samples the instrument has been silent with no note
     /// near, saturating (docs/04 §Idle skipping).
@@ -170,10 +197,10 @@ pub const Track = struct {
     touch_vol: bool = false,
     touch_pan: bool = false,
 
-    /// Double-buffered clip/note snapshot for lock-free audio access.
-    /// UI writes to the non-published slot then flips snap_published.
-    snap: [2]*snap_mod.TrackSnapshot,
-    snap_published: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    /// Three explicitly owned snapshots. Only the consumer adopts; UI
+    /// never writes the slot held by a render worker.
+    snap: [3]*snap_mod.TrackSnapshot,
+    snap_slots: handoff.Slots = .{},
 
     /// 0..1 linear gain, bit-cast for atomic.
     volume_bits: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0.8))),
@@ -211,13 +238,25 @@ pub const Track = struct {
         const s0 = try alloc.create(snap_mod.TrackSnapshot);
         errdefer alloc.destroy(s0);
         const s1 = try alloc.create(snap_mod.TrackSnapshot);
+        errdefer alloc.destroy(s1);
+        const s2 = try alloc.create(snap_mod.TrackSnapshot);
+        errdefer alloc.destroy(s2);
+        const chain_state = try alloc.create(ChainState);
+        chain_state.* = .{ .chain = .init(.{ .instrument = mach }) };
         s0.* = .{};
         s1.* = .{};
+        s2.* = .{};
 
         var t = Track{
             .color = color,
             .machine = mach,
-            .snap = .{ s0, s1 },
+            .audio_machine = mach,
+            .chain_state = chain_state,
+            .chain = &chain_state.chain,
+            .retired_machines = &chain_state.retired,
+            .audio_effects = &chain_state.audio_effects,
+            .published_effects = &chain_state.published_effects,
+            .snap = .{ s0, s1, s2 },
         };
         const n = @min(track_name.len, MAX_NAME);
         @memcpy(t.name_buf[0..n], track_name[0..n]);
@@ -279,38 +318,117 @@ pub const Track = struct {
     }
 
     pub fn deinit(self: *Track, alloc: std.mem.Allocator) void {
+        self.retired_machines.drain(alloc, disposeMachine);
         if (self.machine.deinit) |deinit_fn| {
             deinit_fn(self.machine.state, alloc);
         }
         for (self.effects.items) |*fx| {
-            if (fx.mach.deinit) |deinit_fn| {
-                deinit_fn(fx.mach.state, alloc);
-            }
+            if (fx.mach.deinit) |deinit_fn| deinit_fn(fx.mach.state, alloc);
+            if (fx.shared_io) |io| alloc.destroy(io);
         }
         self.effects.deinit(alloc);
         for (self.clips.items) |*clip| clip.deinit(alloc);
         self.clips.deinit(alloc);
         for (self.lanes.items) |*lane| lane.deinit(alloc);
         self.lanes.deinit(alloc);
-        alloc.destroy(self.snap[0]);
-        alloc.destroy(self.snap[1]);
+        for (self.snap) |s| alloc.destroy(s);
+        alloc.destroy(self.chain_state);
         if (self.stretch) |b| {
             b.deinit();
             std.heap.page_allocator.destroy(b);
         }
     }
 
-    pub fn replaceMachine(self: *Track, alloc: std.mem.Allocator, mach: machine.Machine) void {
-        if (self.machine.deinit) |deinit_fn| {
-            deinit_fn(self.machine.state, alloc);
+    fn disposeMachine(alloc: std.mem.Allocator, old: RetiredMachine) void {
+        if (old.mach.deinit) |d| d(old.mach.state, alloc);
+        if (old.io) |io| alloc.destroy(io);
+    }
+
+    pub fn collectMachines(self: *Track, alloc: std.mem.Allocator) void {
+        self.retired_machines.collect(alloc, disposeMachine);
+    }
+
+    fn reserveRetirement(self: *Track, alloc: std.mem.Allocator) !void {
+        self.collectMachines(alloc);
+        if (!self.retired_machines.available()) return error.PublicationFull;
+    }
+
+    pub fn publishMachines(self: *Track) void {
+        var changed = self.published_instrument_generation != self.instrument_generation or self.published_effect_count != self.effects.items.len;
+        if (!changed) for (self.effects.items, 0..) |*fx, i| {
+            const old = self.published_effects[i];
+            if (old.uid != fx.uid or old.version != fx.version or old.bypass != fx.bypass.load(.monotonic)) {
+                changed = true;
+                break;
+            }
+        };
+        if (!changed) return;
+        self.published_instrument_generation = self.instrument_generation;
+        self.published_effect_count = self.effects.items.len;
+        self.chain_generation += 1;
+        const v = self.chain.write();
+        v.instrument = self.machine;
+        v.instrument_generation = self.instrument_generation;
+        v.generation = self.chain_generation;
+        v.count = self.effects.items.len;
+        std.debug.assert(v.count <= MAX_EFFECTS);
+        for (self.effects.items, 0..) |*fx, i| {
+            const bypass = fx.bypass.load(.monotonic);
+            v.effects[i] = .{ .mach = fx.mach, .idx = fx.idx, .uid = fx.uid, .version = fx.version, .key = fx.key, .shared_io = fx.shared_io };
+            v.effects[i].bypass.store(bypass, .monotonic);
+            self.published_effects[i] = .{ .uid = fx.uid, .version = fx.version, .bypass = bypass };
         }
+        self.chain.publish();
+    }
+
+    /// Audio only, before latency calculation or any render worker runs.
+    pub fn adoptMachines(self: *Track) void {
+        if (!self.chain.adopt()) return;
+        const v = self.chain.current();
+        const previous_count = self.audio_effect_count;
+        const previous = self.chain_state.previous_effects[0..previous_count];
+        @memcpy(previous, self.audioEffects());
+        for (v.effects[0..v.count], 0..) |fx, i| {
+            self.audio_effects[i] = fx;
+            for (previous) |old| if (old.uid == fx.uid and old.version == fx.version) {
+                self.audio_effects[i].quiet = old.quiet;
+                break;
+            };
+        }
+        if (self.audio_instrument_generation != v.instrument_generation) {
+            self.inst_quiet = 0;
+            self.clearSounding();
+        }
+        self.audio_instrument_generation = v.instrument_generation;
+        self.audio_machine = v.instrument;
+        self.audio_effect_count = v.count;
+        self.retired_machines.acknowledge(v.generation);
+    }
+
+    pub fn audioEffects(self: *Track) []Effect {
+        return self.audio_effects[0..self.audio_effect_count];
+    }
+    pub fn audioEffectBypassed(self: *const Track, i: usize) bool {
+        return self.audio_effects[i].bypass.load(.monotonic);
+    }
+
+    pub fn replaceMachine(self: *Track, alloc: std.mem.Allocator, mach: machine.Machine) !void {
+        try self.reserveRetirement(alloc);
+        const old = self.machine;
         self.machine = mach;
-        self.inst_quiet = 0;
+        self.instrument_generation += 1;
+        self.publishMachines();
+        self.retired_machines.append(self.chain_generation, .{ .mach = old });
     }
 
     pub fn addEffect(self: *Track, alloc: std.mem.Allocator, mach: machine.Machine, idx: u8) !void {
-        try self.effects.append(alloc, .{ .mach = mach, .idx = idx, .uid = self.next_fx_uid });
+        if (self.effects.items.len >= MAX_EFFECTS) return error.TooManyEffects;
+        const io = try alloc.create([4]std.atomic.Value(u32));
+        errdefer alloc.destroy(io);
+        io.* = @splat(.init(0));
+        try self.effects.append(alloc, .{ .mach = mach, .idx = idx, .uid = self.next_fx_uid, .shared_io = io });
         self.next_fx_uid +%= 1;
+        self.publishMachines();
     }
 
     pub fn effectByUid(self: *const Track, uid: u16) ?*Effect {
@@ -346,34 +464,33 @@ pub const Track = struct {
         };
     }
 
-    /// Remove effect `i`, deinit it, and shift the tail down. Caller must
-    /// hold the audio thread (stop the device) — this mutates the chain
-    /// the engine reads.
-    pub fn removeEffect(self: *Track, alloc: std.mem.Allocator, i: usize) void {
+    /// UI edits the chain; audio keeps the previous version until adoption.
+    pub fn removeEffect(self: *Track, alloc: std.mem.Allocator, i: usize) !void {
         if (i >= self.effects.items.len) return;
-        if (self.effects.items[i].mach.deinit) |deinit_fn| deinit_fn(self.effects.items[i].mach.state, alloc);
-        _ = self.effects.orderedRemove(i);
+        try self.reserveRetirement(alloc);
+        const old = self.effects.orderedRemove(i);
+        self.publishMachines();
+        self.retired_machines.append(self.chain_generation, .{ .mach = old.mach, .io = old.shared_io });
     }
 
-    /// Move effect `from` to position `to`, preserving the order of the
-    /// rest. Per-effect bypass travels with the element. Audio-stopped.
     pub fn moveEffect(self: *Track, from: usize, to: usize) void {
         const n = self.effects.items.len;
         if (from >= n or to >= n or from == to) return;
         const e = self.effects.orderedRemove(from);
-        // orderedRemove shifts the tail down; clamp the insert index.
         self.effects.insertAssumeCapacity(@min(to, self.effects.items.len), e);
+        self.publishMachines();
     }
 
-    /// Swap effect `i`'s machine for a new one, deinit the old, keeping the
-    /// slot's position and bypass state. Audio-stopped.
-    pub fn replaceEffect(self: *Track, alloc: std.mem.Allocator, i: usize, mach: machine.Machine, idx: u8) void {
-        if (i >= self.effects.items.len) return;
+    pub fn replaceEffect(self: *Track, alloc: std.mem.Allocator, i: usize, mach: machine.Machine, idx: u8) !void {
+        if (i >= self.effects.items.len) return error.InvalidEffect;
+        try self.reserveRetirement(alloc);
         const slot = &self.effects.items[i];
-        if (slot.mach.deinit) |deinit_fn| deinit_fn(slot.mach.state, alloc);
+        const old = slot.mach;
         slot.mach = mach;
         slot.idx = idx;
-        slot.quiet = 0;
+        slot.version += 1;
+        self.publishMachines();
+        self.retired_machines.append(self.chain_generation, .{ .mach = old });
     }
 
     pub fn isBus(self: *const Track) bool {
@@ -455,7 +572,7 @@ pub const Track = struct {
     pub fn routingNode(self: *const Track) routing.Node {
         var nd = routing.Node{ .is_bus = self.isBus(), .output = self.output };
         for (self.sends[0..self.send_count]) |s| {
-            nd.sends[nd.send_count] = .{ .bus = s.bus, .pre = s.pre };
+            nd.sends[nd.send_count] = .{ .bus = s.bus, .pre = s.pre, .level = s.level() };
             nd.send_count += 1;
         }
         for (self.effects.items) |fx| {
@@ -499,10 +616,14 @@ pub const Track = struct {
         return self.effects.items[i].bypass.load(.monotonic);
     }
 
-    pub fn toggleEffectBypass(self: *Track, i: usize) void {
+    pub fn setEffectBypassed(self: *Track, i: usize, bypass: bool) void {
         if (i >= self.effects.items.len) return;
-        const e = &self.effects.items[i];
-        e.bypass.store(!e.bypass.load(.monotonic), .monotonic);
+        self.effects.items[i].bypass.store(bypass, .monotonic);
+        self.publishMachines();
+    }
+
+    pub fn toggleEffectBypass(self: *Track, i: usize) void {
+        self.setEffectBypassed(i, !self.effectBypassed(i));
     }
 
     /// Audio thread: signal that a note-on hit the instrument this block.
@@ -616,12 +737,12 @@ pub const Track = struct {
     }
 
     /// Called by the UI thread once per frame (after all mutations) to
-    /// publish a frozen snapshot for the audio thread. Writes to the
-    /// non-published slot, then flips the atomic index with Release ordering.
+    /// publish a frozen snapshot for the audio thread. Intermediate
+    /// versions coalesce; the audio-owned slot is never overwritten.
     pub fn publishSnapshot(self: *Track, pool: *const audio_pool_mod.AudioPool) void {
-        const published = self.snap_published.load(.monotonic);
-        const write_idx: u32 = 1 - published;
-        const dst = self.snap[write_idx];
+        self.collectMachines(pool.alloc);
+        self.publishMachines();
+        const dst = self.snap[self.snap_slots.writer];
 
         dst.frozen = null;
         if (!self.play_live) if (self.freeze) |f| if (pool.get(f.source)) |src| if (src.sample.data.len > 0) {
@@ -632,7 +753,6 @@ pub const Track = struct {
                 .step = src.sample.sample_rate / 48_000.0,
             };
         };
-        self.frozen.store(dst.frozen != null, .release);
         dst.time = self.time;
         const time_rate = self.time.rate();
         dst.clip_count = 0;
@@ -775,7 +895,7 @@ pub const Track = struct {
             dst.clip_count += 1;
         }
 
-        self.snap_published.store(write_idx, .release);
+        self.snap_slots.publish();
     }
 
     /// Whether `clip` reaches the audio thread: not muted, and selected
@@ -888,9 +1008,15 @@ pub const Track = struct {
     /// Called by the audio thread. Returns a pointer to the currently
     /// published snapshot. Load the pointer once per block and hold it
     /// for the block's duration — never call this inside inner loops.
-    pub fn currentSnapshot(self: *const Track) *const snap_mod.TrackSnapshot {
-        const idx = self.snap_published.load(.acquire);
-        return self.snap[idx];
+    /// Read-only block view. The rendering thread adopts before workers
+    /// start; they never independently release a slot inside the chunk.
+    pub fn audioSnapshot(self: *const Track) *const snap_mod.TrackSnapshot {
+        return self.snap[self.snap_slots.reader];
+    }
+
+    pub fn currentSnapshot(self: *Track) *const snap_mod.TrackSnapshot {
+        if (self.snap_slots.adopt()) self.frozen.store(self.snap[self.snap_slots.reader].frozen != null, .release);
+        return self.audioSnapshot();
     }
 };
 
@@ -1032,19 +1158,19 @@ test "removeEffect shifts chain and bypass travels with the slot" {
     try testing.expect(t.effectBypassed(18));
 
     // Removing the last effect is fine; nothing shifts into the freed slot.
-    t.removeEffect(alloc, 19);
+    try t.removeEffect(alloc, 19);
     try testing.expectEqual(@as(usize, 19), t.effectCount());
     try testing.expect(t.effectBypassed(18));
 
     // Removing a middle effect shifts higher bypass flags down by one.
-    t.removeEffect(alloc, 0); // bypass at 5 moves to index 4
+    try t.removeEffect(alloc, 0); // bypass at 5 moves to index 4
     try testing.expect(!t.effectBypassed(0));
     try testing.expect(t.effectBypassed(4));
     try testing.expectEqual(@as(usize, 18), t.effectCount());
 
     // Out-of-range removal is a no-op.
     const before = t.effectCount();
-    t.removeEffect(alloc, 999);
+    try t.removeEffect(alloc, 999);
     try testing.expectEqual(before, t.effectCount());
 }
 
@@ -1121,4 +1247,74 @@ test "splitting a clip's lanes keeps both halves playing the same curve" {
     try testing.expectApproxEqAbs(@as(f32, 0.3), right.lanes.items[0].value(0).?, 1e-6);
     try testing.expectApproxEqAbs(@as(f32, 0.5), right.lanes.items[0].value(2).?, 1e-6);
     try testing.expectApproxEqAbs(@as(f32, 0.8), right.lanes.items[0].value(5).?, 1e-6);
+}
+
+test "handoff: repeated UI snapshots cannot recycle an active track block" {
+    const T = struct {
+        fn render(_: *anyopaque, _: *const machine.MachineCtx, l: []f32, rr: []f32) void {
+            @memset(l, 0);
+            @memset(rr, 0);
+        }
+        fn reset(_: *anyopaque) void {}
+        fn panel(_: *anyopaque, _: *@import("ui/core.zig").Ui, _: @import("ui/core.zig").Rect) void {}
+    };
+    var dummy: u8 = 0;
+    var t = try Track.init(std.testing.allocator, "hold", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, .{ .name = "silence", .state = &dummy, .render = T.render, .reset = T.reset, .draw_panel = T.panel });
+    defer t.deinit(std.testing.allocator);
+    var pool = audio_pool_mod.AudioPool.init(std.testing.allocator);
+    defer pool.deinit();
+    t.publishSnapshot(&pool);
+    const held = t.currentSnapshot();
+    for (0..100) |_| t.publishSnapshot(&pool);
+    try testing.expectEqual(@as(usize, 0), held.note_count);
+    try testing.expectEqual(@as(usize, 0), held.clip_count);
+    try testing.expect(held != t.snap[t.snap_slots.writer]);
+}
+
+test "realtime: instrument and effect retirement happens only after audio adoption" {
+    const M = struct {
+        count: usize = 0,
+        fn render(_: *anyopaque, _: *const machine.MachineCtx, l: []f32, rr: []f32) void {
+            @memset(l, 0.1);
+            @memset(rr, 0.1);
+        }
+        fn reset(_: *anyopaque) void {}
+        fn panel(_: *anyopaque, _: *@import("ui/core.zig").Ui, _: @import("ui/core.zig").Rect) void {}
+        fn destroy(st: *anyopaque, _: std.mem.Allocator) void {
+            const x: *@This() = @ptrCast(@alignCast(st));
+            x.count += 1;
+        }
+        fn interface(x: *@This()) machine.Machine {
+            return .{ .name = "test", .state = x, .render = render, .reset = reset, .draw_panel = panel, .deinit = destroy };
+        }
+    };
+    const a = std.testing.allocator;
+    var old = M{};
+    var new = M{};
+    var fx = M{};
+    var t = try Track.init(a, "versions", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, old.interface());
+    defer t.deinit(a);
+    try t.addEffect(a, fx.interface(), 0);
+    t.adoptMachines();
+    const io = t.audioEffects()[0].shared_io.?;
+    try t.replaceMachine(a, new.interface());
+    try t.removeEffect(a, 0);
+    t.collectMachines(a);
+    try std.testing.expectEqual(@as(usize, 0), old.count);
+    try std.testing.expectEqual(@as(usize, 0), fx.count);
+    try std.testing.expect(@intFromPtr(t.audio_machine.state) == @intFromPtr(&old));
+    t.audioEffects()[0].setIo(.{ 0.2, 0.3 }, .{ 0.4, 0.5 });
+    try std.testing.expectEqual(@as(u32, @bitCast(@as(f32, 0.2))), io[0].load(.monotonic));
+    t.adoptMachines();
+    try std.testing.expect(@intFromPtr(t.audio_machine.state) == @intFromPtr(&new));
+    try std.testing.expectEqual(@as(usize, 0), t.audio_effect_count);
+    t.collectMachines(a);
+    try std.testing.expectEqual(@as(usize, 1), old.count);
+    try std.testing.expectEqual(@as(usize, 1), fx.count);
+}
+
+test "realtime: track handles keep project load stack usage bounded" {
+    // Project load and main both keep 32 handles in stack arrays. Large
+    // handoff payloads must stay in their stable UI-allocated storage.
+    try std.testing.expect(@sizeOf(Track) <= 16 * 1024);
 }

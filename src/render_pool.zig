@@ -4,8 +4,10 @@
 //! and mixes alongside them, and closes the block (`end`) once every node
 //! is mixed, waiting only for workers still inside it.
 //!
-//! Real-time rules: waking is a Mach semaphore signal and nothing here
-//! allocates or locks. A worker woken late (descheduled, or a stale signal)
+//! Idle workers sleep; the rendering thread sleeps for completions only
+//! when all remaining work has been claimed. Live callbacks only enlist
+//! workers admitted to realtime scheduling and the current I/O workgroup.
+//! No allocation or control-thread mutex is reachable here. A worker woken late (descheduled, or a stale signal)
 //! finds the block closed and goes back to sleep; the audio thread renders
 //! whatever no worker took, so a missing worker costs time, never output.
 //!
@@ -94,6 +96,10 @@ pub fn Pool(comptime Ctx: type, comptime Scratch: type, comptime work: fn (*Ctx,
         threads: [MAX_WORKERS]std.Thread = undefined,
         n: usize = 0,
         sem: u32 = 0,
+        completion: u32 = 0,
+        waiting: std.atomic.Value(bool) = .init(false),
+        rt_ready: std.atomic.Value(u32) = .init(0),
+        wg_ready: std.atomic.Value(u32) = .init(0),
         ctx: *Ctx,
         /// A block is open: workers may take its nodes.
         active: std.atomic.Value(bool) = .init(false),
@@ -113,6 +119,8 @@ pub fn Pool(comptime Ctx: type, comptime Scratch: type, comptime work: fn (*Ctx,
             self.* = .{ .ctx = ctx, .rt = rt };
             if (semaphore_create(mach_task_self_, &self.sem, SYNC_POLICY_FIFO, 0) != 0) return error.SemaphoreCreate;
             errdefer _ = semaphore_destroy(mach_task_self_, self.sem);
+            if (semaphore_create(mach_task_self_, &self.completion, SYNC_POLICY_FIFO, 0) != 0) return error.SemaphoreCreate;
+            errdefer _ = semaphore_destroy(mach_task_self_, self.completion);
             const n = @min(workers, MAX_WORKERS);
             errdefer self.stopWorkers();
             while (self.n < n) : (self.n += 1) {
@@ -125,18 +133,21 @@ pub fn Pool(comptime Ctx: type, comptime Scratch: type, comptime work: fn (*Ctx,
             self.stopWorkers();
             if (self.wg.load(.seq_cst)) |wg| os_release(wg);
             _ = semaphore_destroy(mach_task_self_, self.sem);
+            _ = semaphore_destroy(mach_task_self_, self.completion);
             alloc.destroy(self);
         }
 
-        /// UI thread: move the workers into the I/O workgroup `wg` (taking
+        /// Device stopped, UI thread: move the workers into the I/O workgroup `wg` (taking
         /// over its retain; null: none), each as it next wakes. Waits until
         /// every worker has left the old one, then releases it. Without
         /// real-time workers, `wg` is released at once.
         pub fn setWorkgroup(self: *Self, wg: ?*anyopaque) void {
+            std.debug.assert(!self.active.load(.seq_cst));
             if (self.rt == null or self.n == 0) {
                 if (wg) |w| os_release(w);
                 return;
             }
+            self.wg_ready.store(0, .seq_cst);
             const old = self.wg.swap(wg, .seq_cst);
             self.wg_acks.store(0, .seq_cst);
             _ = self.wg_gen.fetchAdd(1, .seq_cst);
@@ -159,7 +170,8 @@ pub fn Pool(comptime Ctx: type, comptime Scratch: type, comptime work: fn (*Ctx,
 
         /// Open a block with `nodes` nodes and wake up to nodes - 1
         /// workers. False when none were woken: no `end` needed.
-        pub fn begin(self: *Self, nodes: usize) bool {
+        pub fn begin(self: *Self, nodes: usize, realtime: bool) bool {
+            if (realtime and !self.liveReady()) return false;
             const k = @min(self.n, nodes -| 1);
             if (k == 0) return false;
             self.active.store(true, .seq_cst);
@@ -171,15 +183,43 @@ pub fn Pool(comptime Ctx: type, comptime Scratch: type, comptime work: fn (*Ctx,
         /// still inside it to leave.
         pub fn end(self: *Self) void {
             self.active.store(false, .seq_cst);
-            while (self.inflight.load(.seq_cst) != 0) std.atomic.spinLoopHint();
+            while (true) {
+                const n = self.inflight.load(.seq_cst);
+                if (n == 0) return;
+                self.waitForChange(&self.inflight, n);
+            }
+        }
+
+        /// A live callback may depend only on workers that obtained both
+        /// realtime scheduling and membership in the current I/O workgroup.
+        pub fn liveReady(self: *const Self) bool {
+            if (self.rt == null or self.wg.load(.seq_cst) == null) return false;
+            const mask = (@as(u32, 1) << @intCast(self.n)) - 1;
+            return self.rt_ready.load(.seq_cst) == mask and self.wg_ready.load(.seq_cst) == mask;
+        }
+
+        fn notifyProgress(self: *Self) void {
+            if (self.waiting.swap(false, .seq_cst)) _ = semaphore_signal(self.completion);
+        }
+
+        /// The rendering thread alone waits here. Arm before rechecking a
+        /// seq_cst counter: a completion either changes the counter before
+        /// the check, or observes the waiter and signals. No lost wakeup.
+        pub fn waitForChange(self: *Self, counter: anytype, observed: anytype) void {
+            self.waiting.store(true, .seq_cst);
+            if (counter.load(.seq_cst) == observed) {
+                _ = semaphore_wait(self.completion);
+            }
+            self.waiting.store(false, .seq_cst);
         }
 
         fn run(self: *Self, my_slot: usize) void {
             slot = my_slot;
             _ = pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
             if (self.rt) |rt| {
-                if (!setTimeConstraint(rt.period_ns))
-                    std.log.warn("render worker {}: real-time scheduling refused", .{my_slot});
+                if (setTimeConstraint(rt.period_ns)) {
+                    _ = self.rt_ready.fetchOr(@as(u32, 1) << @intCast(my_slot - 1), .seq_cst);
+                } else std.log.warn("render worker {}: real-time scheduling refused; live callbacks use serial rendering", .{my_slot});
             }
             var scratch: Scratch = undefined;
             var joined: ?*anyopaque = null;
@@ -201,7 +241,7 @@ pub fn Pool(comptime Ctx: type, comptime Scratch: type, comptime work: fn (*Ctx,
                         if (os_workgroup_join(w, &token) != 0) {
                             std.log.warn("render worker {}: could not join the audio workgroup", .{my_slot});
                             joined = null;
-                        }
+                        } else _ = self.wg_ready.fetchOr(@as(u32, 1) << @intCast(my_slot - 1), .seq_cst);
                     }
                     _ = self.wg_acks.fetchAdd(1, .seq_cst);
                 }
@@ -209,9 +249,11 @@ pub fn Pool(comptime Ctx: type, comptime Scratch: type, comptime work: fn (*Ctx,
                 // the block closed (one total order over both atomics).
                 _ = self.inflight.fetchAdd(1, .seq_cst);
                 while (self.active.load(.seq_cst)) {
-                    if (!work(self.ctx, &scratch)) std.atomic.spinLoopHint();
+                    if (!work(self.ctx, &scratch)) break;
+                    self.notifyProgress();
                 }
                 _ = self.inflight.fetchSub(1, .seq_cst);
+                self.notifyProgress();
             }
         }
     };

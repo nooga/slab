@@ -19,7 +19,7 @@ const pitch_mod = @import("pitch.zig");
 const automation = @import("automation.zig");
 const routing = @import("routing.zig");
 const render_pool = @import("render_pool.zig");
-const fy_host = @import("fy_host.zig");
+const handoff = @import("handoff.zig");
 
 pub const MAX_BLOCK = audio.BLOCK_FRAMES * 4;
 pub const MAX_EVENTS_PER_TRACK = 1024;
@@ -103,6 +103,7 @@ pub const Preview = struct {
     data: []const f64 = &.{},
     /// Source frames per output frame.
     step: f64 = 1,
+    request: u32 = 0,
 };
 
 /// Where an offline render copies a track's signal (docs/27 §Tap).
@@ -174,6 +175,7 @@ pub const Engine = struct {
     /// which a staged meter edit may be adopted.
     meter_last_bar: ?u32 = null,
     was_playing: bool = false,
+    live_callback: bool = false,
     /// Where the last played block left the transport. Finding it elsewhere
     /// at the next block means the UI moved the playhead mid-play.
     played_to: u64 = 0,
@@ -205,8 +207,7 @@ pub const Engine = struct {
     /// the slot at its next block. Pool sources are never freed, so the
     /// data stays valid however long it plays.
     preview_req: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
-    preview_slots: [2]Preview = .{ .{}, .{} },
-    preview_slot: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    preview_handoff: handoff.Latest(Preview) = .init(.{}),
     preview_seen: u32 = 0,
     /// The last request the audio thread took: data an older request
     /// published is no longer read once this passes it.
@@ -252,11 +253,9 @@ pub const Engine = struct {
     /// declares no `tail!`. `--no-idle-skip` on the command line.
     idle_skip: bool = true,
 
-    /// Routing (docs/23), double-buffered like track snapshots: the UI
-    /// builds into the unpublished slot and flips; the audio thread holds
-    /// the published one for one renderChunk.
-    routing_bufs: [2]routing.Routing = .{ .{}, .{} },
-    routing_published: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    /// Routing (docs/23): UI publishes complete versions; audio owns
+    /// its current slot until all workers have finished the chunk.
+    routing_handoff: handoff.Latest(routing.Routing) = .init(.{}),
     /// Each track's pre tap (after inserts, before the fader), kept for the
     /// block so keys and pre-fader sends can read it.
     pre_l: [routing.MAX_TRACKS][MAX_BLOCK]f32 = undefined,
@@ -374,8 +373,8 @@ pub const Engine = struct {
             if (nd.key_count > 0 and !self.tracks[ti].frozen.load(.acquire)) {
                 const t = &self.tracks[ti];
                 var p = instLatency(t, nd.is_bus);
-                for (t.effects.items, 0..) |*fx, i| {
-                    if (t.effectBypassed(i)) continue;
+                for (t.audioEffects(), 0..) |*fx, i| {
+                    if (t.audioEffectBypassed(i)) continue;
                     if (fx.mach.takes_key) if (nd.keyFor(fx.uid)) |src| {
                         self.lat_in[ti] = @max(self.lat_in[ti], self.lat_out[src] -| p);
                     };
@@ -398,7 +397,8 @@ pub const Engine = struct {
     /// The published routing, or plain track → master when it doesn't
     /// cover the track list yet (a track added since the last publish).
     fn currentGraph(self: *Engine, fallback: *routing.Routing) *const routing.Routing {
-        const rt = &self.routing_bufs[self.routing_published.load(.acquire)];
+        _ = self.routing_handoff.adopt();
+        const rt = self.routing_handoff.current();
         if (rt.count == self.tracks.len) return rt;
         var nodes: [routing.MAX_TRACKS]routing.Node = undefined;
         const n = @min(self.tracks.len, routing.MAX_TRACKS);
@@ -409,24 +409,23 @@ pub const Engine = struct {
 
     /// UI thread: rebuild the routing from the tracks and publish it.
     pub fn publishRouting(self: *Engine) void {
-        const published = self.routing_published.load(.monotonic);
-        const dst = &self.routing_bufs[1 - published];
+        const dst = self.routing_handoff.write();
         var nodes: [routing.MAX_TRACKS]routing.Node = undefined;
         const n = @min(self.tracks.len, routing.MAX_TRACKS);
         for (self.tracks[0..n], 0..) |*t, i| nodes[i] = t.routingNode();
         dst.* = routing.Routing.build(nodes[0..n]);
-        self.routing_published.store(1 - published, .release);
+        self.routing_handoff.publish();
     }
 
     /// Play `data` (mono, at `rate` Hz) through the preview voice; empty
     /// stops it. UI thread.
     /// Returns the request's number (see `preview_ack`).
     pub fn previewSample(self: *Engine, data: []const f64, rate: f64) u32 {
-        const slot = 1 - self.preview_slot.load(.monotonic);
         const sr: f64 = @floatFromInt(@max(1, self.transport.sample_rate));
-        self.preview_slots[slot] = .{ .data = data, .step = if (rate > 0) rate / sr else 1 };
-        self.preview_slot.store(slot, .release);
-        return self.preview_req.fetchAdd(1, .release) +% 1;
+        const req = self.preview_req.fetchAdd(1, .monotonic) +% 1;
+        self.preview_handoff.write().* = .{ .data = data, .step = if (rate > 0) rate / sr else 1, .request = req };
+        self.preview_handoff.publish();
+        return req;
     }
 
     pub fn stopPreview(self: *Engine) u32 {
@@ -440,12 +439,11 @@ pub const Engine = struct {
     }
 
     fn mixPreview(self: *Engine, out: []f32, frames: usize) void {
-        const req = self.preview_req.load(.acquire);
-        if (req != self.preview_seen) {
-            self.preview_seen = req;
-            self.preview = self.preview_slots[self.preview_slot.load(.acquire)];
+        if (self.preview_handoff.adopt()) {
+            self.preview = self.preview_handoff.current().*;
+            self.preview_seen = self.preview.request;
             self.preview_pos = 0;
-            self.preview_ack.store(req, .release);
+            self.preview_ack.store(self.preview.request, .release);
         }
         const d = self.preview.data;
         if (d.len == 0) {
@@ -543,6 +541,18 @@ pub const Engine = struct {
         return j + keep;
     }
 
+    fn adoptMachines(self: *Engine) void {
+        for (self.tracks) |*t| adoptTrack(t);
+        if (self.master) |t| adoptTrack(t);
+    }
+
+    fn adoptTrack(t: *Track) void {
+        _ = t.currentSnapshot();
+        t.adoptMachines();
+        if (t.audio_machine.adopt_updates) |f| f(t.audio_machine.state);
+        for (t.audioEffects()) |*fx| if (fx.mach.adopt_updates) |f| f(fx.mach.state);
+    }
+
     /// Kill all sound: every machine and effect is reset on the audio
     /// thread's next block (hung notes, reverb and delay tails) and any
     /// audition is cut. Callable from the UI thread; the caller stops the
@@ -581,8 +591,6 @@ pub const Engine = struct {
         cancel: ?*std.atomic.Value(bool),
     ) void {
         {
-            fy_host.lockCallbacks();
-            defer fy_host.unlockCallbacks();
             self.resetAllMachines();
         }
         self.transport.tempo.commitImmediate();
@@ -622,8 +630,6 @@ pub const Engine = struct {
             const direct = dropped == 0 and out.len > 0;
             const slice = if (direct) out[done * audio.CHANNELS ..][0 .. chunk * audio.CHANNELS] else scratch[0 .. chunk * audio.CHANNELS];
             {
-                fy_host.lockCallbacks();
-                defer fy_host.unlockCallbacks();
                 self.renderChunk(slice, chunk, pos);
             }
             self.master_clip.apply(slice);
@@ -652,18 +658,14 @@ pub const Engine = struct {
                 if (cap.done(rendered, done)) break;
             }
         }
-        fy_host.lockCallbacks();
-        defer fy_host.unlockCallbacks();
         self.resetAllMachines();
         self.was_playing = false;
     }
 
     fn render(self: *Engine, out: [*]f32, frames: u32) void {
-        // One hold of the fy callback lock covers every machine this block
-        // renders, on every render thread: hot-patch and runtime asset
-        // swaps wait for the block's end.
-        fy_host.lockCallbacks();
-        defer fy_host.unlockCallbacks();
+        self.live_callback = true;
+        defer self.live_callback = false;
+        self.adoptMachines();
         const n: usize = frames;
         const total = n * audio.CHANNELS;
         var out_slice = out[0..total];
@@ -683,8 +685,8 @@ pub const Engine = struct {
             if (self.was_playing) {
                 // play → stop transition: drop all sustained notes.
                 for (self.tracks) |*t| {
-                    t.machine.reset(t.machine.state);
-                    for (t.effects.items) |*fx| fx.mach.reset(fx.mach.state);
+                    t.audio_machine.reset(t.audio_machine.state);
+                    for (t.audioEffects()) |*fx| fx.mach.reset(fx.mach.state);
                     t.setMeter(0, 0);
                     t.clearSounding();
                 }
@@ -693,7 +695,7 @@ pub const Engine = struct {
                     if (self.aud_held[pi / 64] & (@as(u64, 1) << @intCast(pi % 64)) != 0) self.pushHeld(at, @intCast(pi), true);
                 };
                 if (self.master) |mb| {
-                    for (mb.effects.items) |*fx| fx.mach.reset(fx.mach.state);
+                    for (mb.audioEffects()) |*fx| fx.mach.reset(fx.mach.state);
                 }
                 self.was_playing = false;
                 // Force the first block on resume to be a boundary, so a
@@ -741,8 +743,8 @@ pub const Engine = struct {
 
         // Master output stage [MasterClip]: the float mix has no headroom
         // limit; this decides only what happens past full scale.
-        const trace_audio = audioTraceEnabled();
-        const trace_signal = signalProbeEnabled();
+        const trace_audio = !self.live_callback and audioTraceEnabled();
+        const trace_signal = !self.live_callback and signalProbeEnabled();
         const pre_clip_peak = if (trace_audio) peakInterleaved(out_slice) else 0;
         const pre_stats = if (trace_signal) signalStatsInterleaved(out_slice) else SignalStats{};
         self.master_clip.apply(out_slice);
@@ -782,12 +784,13 @@ pub const Engine = struct {
     }
 
     fn resetAllMachines(self: *Engine) void {
+        self.adoptMachines();
         for (self.tracks) |*t| {
-            t.machine.reset(t.machine.state);
-            for (t.effects.items) |*fx| fx.mach.reset(fx.mach.state);
+            t.audio_machine.reset(t.audio_machine.state);
+            for (t.audioEffects()) |*fx| fx.mach.reset(fx.mach.state);
         }
         if (self.master) |mb| {
-            for (mb.effects.items) |*fx| fx.mach.reset(fx.mach.state);
+            for (mb.audioEffects()) |*fx| fx.mach.reset(fx.mach.state);
         }
         self.master_subsonic.reset();
     }
@@ -869,7 +872,7 @@ pub const Engine = struct {
 
         const len = end_s - start_s;
         next = start_s + ((next - end_s) % len);
-        if (audioTraceEnabled()) {
+        if (!self.live_callback and audioTraceEnabled()) {
             std.debug.print(
                 "audio loop wrap pos={} frames={} next={} loop={}..{}\n",
                 .{ pos, frames, next, start_s, end_s },
@@ -907,7 +910,7 @@ pub const Engine = struct {
 
         // Stopped: automation holds its value at the playhead.
         const t = &self.tracks[ti];
-        const snap = t.currentSnapshot();
+        const snap = t.audioSnapshot();
         const beat = self.beatAtSample(self.transport.samples());
         const inst_view = snap_mod.AutoView{ .snap = snap, .cursors = &t.auto_cursors, .kind = .inst };
         const ctx = machine.MachineCtx{
@@ -927,7 +930,7 @@ pub const Engine = struct {
             break;
         };
         t.noteSounding(events[0..event_count]);
-        t.machine.render(t.machine.state, &ctx, l, r);
+        t.audio_machine.render(t.audio_machine.state, &ctx, l, r);
         const rendered = renderEffects(t, ctx, l, r, fx_l_buf[0..n], fx_r_buf[0..n], .{});
         const final_l = rendered.l;
         const final_r = rendered.r;
@@ -952,6 +955,7 @@ pub const Engine = struct {
     }
 
     fn renderChunk(self: *Engine, out: []f32, frames: u32, block_start: u64) void {
+        self.adoptMachines();
         _ = self.busy_frames.fetchAdd(frames, .monotonic);
         // Tracks accumulate into the master bus (planar), not into `out`,
         // so the master FX chain can process the sum in finishMaster.
@@ -1023,7 +1027,6 @@ pub const Engine = struct {
         }
         self.meter_last_bar = bar_info.bar;
 
-
         // Tracks render in parallel, mix in order (docs/07 §Parallel
         // rendering). Any thread renders a ready node (renderNode:
         // instrument, inserts, fader, PDC history). Each sum (a bus's
@@ -1078,9 +1081,16 @@ pub const Engine = struct {
         }
         self.nodes_done.store(0, .release);
         var scratch: Scratch = undefined;
-        const helped = if (self.pool) |p| p.begin(order.len) else false;
-        while (self.nodes_done.load(.acquire) < order.len) {
-            if (!self.renderReady(&scratch)) std.atomic.spinLoopHint();
+        const helped = if (self.pool) |p| p.begin(order.len, self.live_callback) else false;
+        while (true) {
+            const done = self.nodes_done.load(.seq_cst);
+            if (done >= order.len) break;
+            if (!self.renderReady(&scratch)) {
+                // With no helpers every unfinished node has an input ready
+                // in this acyclic graph; a failure is a scheduler bug.
+                std.debug.assert(helped);
+                if (helped) self.pool.?.waitForChange(&self.nodes_done, done);
+            }
         }
         if (helped) self.pool.?.end();
         // Every node is in: finish the sums a busy flag left behind.
@@ -1155,10 +1165,16 @@ pub const Engine = struct {
 
     /// Nothing to render: advance any sum still waiting, in case a hand-off
     /// raced (cheap; most are done or held).
-    fn sweepDests(self: *Engine) void {
+    fn sweepDests(self: *Engine) bool {
+        var progressed = false;
         for (0..MASTER_DEST + 1) |d| {
-            if (self.dest_cursor[d].load(.acquire) < self.dest_len[d]) self.advanceDest(d);
+            const before = self.dest_cursor[d].load(.acquire);
+            if (before < self.dest_len[d]) {
+                self.advanceDest(d);
+                if (self.dest_cursor[d].load(.acquire) != before) progressed = true;
+            }
         }
+        return progressed;
     }
 
     /// One of node `j`'s inputs is in; the last makes it ready.
@@ -1178,7 +1194,9 @@ pub const Engine = struct {
                 if (best == null or self.node_prio[ti] > self.node_prio[best.?]) best = ti;
             }
             const ti = best orelse {
-                self.sweepDests();
+                // A deferred sum can make a bus ready without changing
+                // nodes_done. Rescan before allowing the caller to sleep.
+                if (self.sweepDests()) continue;
                 return false;
             };
             if (self.node_state[ti].cmpxchgStrong(NODE_READY, NODE_RUNNING, .acquire, .monotonic) != null) continue;
@@ -1202,7 +1220,7 @@ pub const Engine = struct {
                 const bus = if (o == 0) node.output else node.sends[o - 1].bus;
                 self.advanceDest(if (bus == routing.NONE) MASTER_DEST else bus);
             }
-            _ = self.nodes_done.fetchAdd(1, .acq_rel);
+            _ = self.nodes_done.fetchAdd(1, .seq_cst);
             return true;
         }
     }
@@ -1244,9 +1262,8 @@ pub const Engine = struct {
             @memset(r, 0);
         }
 
-        // Load the snapshot pointer once per track per block.
-        // See snapshot.zig for the double-buffer invariant.
-        const snap = t.currentSnapshot();
+        // Hold the snapshot the rendering thread adopted for this chunk.
+        const snap = t.audioSnapshot();
         const n_events = self.injectHeld(ti, &scratch.events, gatherEvents(snap, beat_start, beat_end, spb, frames, chase, release_at, &scratch.events));
         t.noteSounding(scratch.events[0..n_events]);
         const held_here = if (self.aud_track) |at| at == ti and self.aud_held[0] | self.aud_held[1] != 0 else false;
@@ -1280,7 +1297,7 @@ pub const Engine = struct {
             }
         }
 
-        const track_probe = trackProbeEnabled();
+        const track_probe = !self.live_callback and trackProbeEnabled();
         const inst_start = if (track_probe) probeNowNs() else 0;
         // A note sounding or close keeps the whole track awake.
         var wake = false;
@@ -1293,18 +1310,18 @@ pub const Engine = struct {
             // Disabled instrument → feed silence into the effect chain.
             if (t.isEnabled()) {
                 if (!self.idle_skip) {
-                    t.machine.render(t.machine.state, &ctx, l, r);
+                    t.audio_machine.render(t.audio_machine.state, &ctx, l, r);
                 } else {
                     const ahead = IDLE_WAKE_AHEAD_S * bpm / 60.0;
                     // A control edit wakes it too, so its params and
                     // displays catch up (the edit may be all there is).
-                    const edited = t.machine.takeWake();
+                    const edited = t.audio_machine.takeWake();
                     wake = n_events > 0 or held_here or notesNear(snap, beat_start, beat_end + ahead);
                     if (edited) t.inst_quiet = 0;
-                    const hold = t.machine.idleHold(@floatFromInt(sr), idleHoldSamples(sr));
+                    const hold = t.audio_machine.idleHold(@floatFromInt(sr), idleHoldSamples(sr));
                     // Asleep: `l`/`r` stay silent.
                     if (wake or hold == machine.TAIL_FOREVER or t.inst_quiet < hold) {
-                        t.machine.render(t.machine.state, &ctx, l, r);
+                        t.audio_machine.render(t.audio_machine.state, &ctx, l, r);
                         const loud = @max(blockPeak(l), blockPeak(r)) > IDLE_FLOOR;
                         t.inst_quiet = if (wake or loud) 0 else t.inst_quiet +| frames;
                     }
@@ -1392,12 +1409,12 @@ pub const Engine = struct {
                         @as(f64, @floatFromInt(fx_ns)) / 1_000_000.0,
                         @as(f64, @floatFromInt(total_ns)) / 1_000_000.0,
                         @as(f64, @floatFromInt(budget_ns)) / 1_000_000.0,
-                        t.effectCount(),
+                        t.audio_effect_count,
                     },
                 );
             }
         }
-        if (signalProbeEnabled()) {
+        if (!self.live_callback and signalProbeEnabled()) {
             const stats = signalStatsPlanar(final_l, final_r, v);
             if (stats.suspicious() or (signalProbeVerbose() and (n_events > 0 or self.trace_counter % 512 == 0))) {
                 std.debug.print(
@@ -1418,7 +1435,7 @@ pub const Engine = struct {
                 );
             }
         }
-        if (audioTraceEnabled() and (n_events > 0 or peak_l > 0.65 or peak_r > 0.65)) {
+        if (!self.live_callback and audioTraceEnabled() and (n_events > 0 or peak_l > 0.65 or peak_r > 0.65)) {
             std.debug.print(
                 "audio track \"{s}\" beat={d:.3}..{d:.3} events={} peak=({d:.3},{d:.3}) vol={d:.3}\n",
                 .{ t.name(), beat_start, beat_end, n_events, peak_l, peak_r, v },
@@ -1456,7 +1473,6 @@ pub const Engine = struct {
         const ti = it.node;
         const frames = b.frames;
         if (b.live & routing.bit(ti) == 0 or b.heard & routing.bit(ti) == 0) return;
-        const t = &self.tracks[ti];
         const node = &b.graph.nodes[ti];
         const hist_at = self.hist_at[ti];
         const post_l = self.post_l[ti][0..frames];
@@ -1472,15 +1488,12 @@ pub const Engine = struct {
             for (dst_r, out_tap.r) |*d, x| d.* += x;
             return;
         }
-        // The track's send list can be shorter than the published one for
-        // a frame after a send is removed.
         const si = it.send;
-        if (si >= t.send_count) return;
         const s = node.sends[si];
         const final_l: []const f32 = self.pre_l[ti][0..frames];
         const final_r: []const f32 = self.pre_r[ti][0..frames];
         const inv_n: f32 = 1.0 / @as(f32, @floatFromInt(frames));
-        const lvl = t.sends[si].level();
+        const lvl = s.level;
         const prev = if (self.send_prev[ti][si] < 0) lvl else self.send_prev[ti][si];
         self.send_prev[ti][si] = lvl;
         const send_tap = self.tapped(ti, if (s.pre) .pre else .post, hist_at, self.lat_in[s.bus] -| self.lat_out[ti], if (s.pre) final_l else post_l, if (s.pre) final_r else post_r, &dly_l, &dly_r);
@@ -1512,7 +1525,7 @@ pub const Engine = struct {
                 self.master_subsonic.process(l, r, @floatFromInt(self.transport.sample_rate))
             else
                 self.master_subsonic.reset();
-            if (mb.effectCount() > 0) {
+            if (mb.audio_effect_count > 0) {
                 const base = machine.MachineCtx{
                     .sample_rate = @floatFromInt(self.transport.sample_rate),
                     .block_size = frames,
@@ -1851,11 +1864,11 @@ pub const PdcHistory = struct {
 
 /// Samples a track's signal is late at its taps: its instrument's (not a
 /// bus's) and its active inserts'.
-fn chainLatency(t: *const Track, is_bus: bool) u32 {
+fn chainLatency(t: *Track, is_bus: bool) u32 {
     if (!is_bus and t.frozen.load(.acquire)) return 0;
     var n = instLatency(t, is_bus);
-    for (t.effects.items, 0..) |*fx, i| {
-        if (!t.effectBypassed(i)) n += fx.mach.latencySamples();
+    for (t.audioEffects(), 0..) |*fx, i| {
+        if (!t.audioEffectBypassed(i)) n += fx.mach.latencySamples();
     }
     return n;
 }
@@ -1886,8 +1899,8 @@ fn localTime(snap: *const snap_mod.TrackSnapshot, beat: f64, bpm: f64, song_bar:
     return .{ .bpm = bpm * r, .beat = lb, .bar = info.bar, .beat_in_bar = lb - info.bar_start_beat, .bar_len = info.bar_len_beats };
 }
 
-fn instLatency(t: *const Track, is_bus: bool) u32 {
-    return if (!is_bus and t.isEnabled() and !t.frozen.load(.acquire)) t.machine.latencySamples() else 0;
+fn instLatency(t: *Track, is_bus: bool) u32 {
+    return if (!is_bus and t.isEnabled() and !t.frozen.load(.acquire)) t.audio_machine.latencySamples() else 0;
 }
 
 /// A frozen track's audio for the block at `block_start` (it starts at
@@ -1955,9 +1968,9 @@ fn renderEffectsKeyed(
     var key_l: [MAX_BLOCK]f32 = undefined;
     var key_r: [MAX_BLOCK]f32 = undefined;
 
-    for (t.effects.items, 0..) |*fx, i| {
+    for (t.audioEffects(), 0..) |*fx, i| {
         const in_peak = [2]f32{ blockPeak(cur_l), blockPeak(cur_r) };
-        if (t.effectBypassed(i)) {
+        if (t.audioEffectBypassed(i)) {
             fx.setIo(in_peak, in_peak); // bypassed → pass through untouched
             continue;
         }
@@ -3418,7 +3431,10 @@ test "routing: a group, a pre-fader send and a return sum as their paths" {
     defer alloc.destroy(eng);
     eng.* = .{ .transport = &transport, .tracks = &tracks };
     eng.publishRouting();
-    try testing.expectEqualSlices(u8, &.{ 0, 1, 2, 3 }, eng.routing_bufs[eng.routing_published.load(.monotonic)].renderOrder());
+    try testing.expectEqualSlices(u8, &.{ 0, 1, 2, 3 }, blk: {
+        _ = eng.routing_handoff.adopt();
+        break :blk eng.routing_handoff.current().renderOrder();
+    });
 
     const c = @cos(@as(f32, std.math.pi / 4.0)); // centre pan
     const kit = 0.1 * c * 2 * c; // through the group's ×2 and fader
@@ -3528,11 +3544,12 @@ test "offline stop: audio clips fall silent at the stop, the master watch ends t
     defer alloc.free(data);
     @memset(data, 0.5);
     tracks[0].publishSnapshot(&@import("audio_pool.zig").AudioPool.init(alloc));
-    const snap = tracks[0].snap[1 - tracks[0].snap_published.load(.monotonic)];
-    snap.* = tracks[0].currentSnapshot().*;
+    const current = tracks[0].currentSnapshot();
+    const snap = tracks[0].snap[tracks[0].snap_slots.writer];
+    snap.* = current.*;
     snap.audio_clip_count = 1;
     snap.audio_clips[0] = .{ .start_beat = 0, .length_beats = 4, .data = data.ptr, .len = @intCast(data.len), .source_rate = 48_000, .dur_samples = 96_000, .gain = 1 };
-    tracks[0].snap_published.store(1 - tracks[0].snap_published.load(.monotonic), .release);
+    tracks[0].snap_slots.publish();
 
     const eng = try alloc.create(Engine);
     defer alloc.destroy(eng);
@@ -3587,6 +3604,7 @@ test "routing: a send level change ramps across the block" {
     eng.renderChunk(&out, 64, 0);
     try testing.expectApproxEqAbs(0.1 * c, out[0], 1e-6);
     tracks[0].sends[0].setLevel(0);
+    eng.publishRouting(); // UI publishes the complete send slot before audio adopts
     eng.renderChunk(&out, 64, 64);
     try testing.expectApproxEqAbs(0.1 * c, out[0], 1e-6); // ramp starts at the old level
     try testing.expect(out[2 * 32] < 0.06 * c and out[2 * 32] > 0.04 * c); // halfway
@@ -3638,7 +3656,9 @@ test "routing: a keyed effect hears its key's pre tap, even from a muted track" 
     try testing.expectApproxEqAbs(0.25 * c, out[10], 1e-6);
 
     // Without the manifest flag the effect gets no key.
-    tracks[1].effects.items[0].mach.takes_key = false;
+    var unkeyed = keyed;
+    unkeyed.takes_key = false;
+    try tracks[1].replaceEffect(alloc, 0, unkeyed, 0);
     eng.renderOffline(&out, 64, 0, null, null);
     try testing.expectEqual(@as(f32, 0), out[10]);
 }
@@ -3921,7 +3941,7 @@ test "PDC: a keyed effect meets its key on the same sample, late or early" {
     try tracks[1].addEffect(alloc, keyed, 1);
     tracks[1].effects.items[1].key = 0;
     tracks[0].mute.store(true, .monotonic);
-    tracks[1].effects.items[0].bypass.store(true, .monotonic);
+    tracks[1].setEffectBypassed(0, true);
     var pool = @import("audio_pool.zig").AudioPool.init(alloc);
     defer pool.deinit();
     for (&tracks) |*t| t.publishSnapshot(&pool);
@@ -3944,14 +3964,14 @@ test "PDC: a keyed effect meets its key on the same sample, late or early" {
 
     // An early key (the bass's own insert before the keyed effect): the
     // key is read late instead.
-    tracks[0].effects.items[0].bypass.store(true, .monotonic);
-    tracks[1].effects.items[0].bypass.store(false, .monotonic);
+    tracks[0].setEffectBypassed(0, true);
+    tracks[1].setEffectBypassed(0, false);
     eng.renderOffline(&out, 64, 0, null, null);
     try testing.expectEqual(@as(?usize, 0), onlyPeakAt(&out));
     try testing.expectEqual(@as(u32, 7), eng.master_latency.load(.monotonic));
 
     // Both: the later of the two sets the pace.
-    tracks[0].effects.items[0].bypass.store(false, .monotonic);
+    tracks[0].setEffectBypassed(0, false);
     eng.renderOffline(&out, 64, 0, null, null);
     try testing.expectEqual(@as(?usize, 0), onlyPeakAt(&out));
     try testing.expectApproxEqAbs(0.75 * c, out[0], 1e-6);
@@ -4011,7 +4031,7 @@ test "PDC: a latent track, a direct one and a send to a return all land on the s
     try testing.expectEqual(@as(?usize, 0), onlyPeakAt(&out));
 
     // Without the latent insert nothing is delayed.
-    tracks[1].effects.items[0].bypass.store(true, .monotonic);
+    tracks[1].setEffectBypassed(0, true);
     eng.renderOffline(&out, 64, 0, null, null);
     try testing.expectEqual(@as(?usize, 0), onlyPeakAt(&out));
     try testing.expectEqual(@as(u32, 0), eng.master_latency.load(.monotonic));
@@ -4376,4 +4396,202 @@ test "held notes: the editor's keys play stopped and playing, and light the trac
     eng.render(&out, 64);
     try testing.expectEqual(@as(usize, 4), Rec.n);
     try testing.expectEqual(@as(u128, 0), tracks[0].sounding128());
+}
+
+test "realtime: stalled control lock cannot stop callback progress or silence output" {
+    const a = testing.allocator;
+    var level: f32 = 0.25;
+    var tracks = [_]Track{try Track.init(a, "continuous", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, RouteTestMachines.dc(&level))};
+    defer tracks[0].deinit(a);
+    var pool = @import("audio_pool.zig").AudioPool.init(a);
+    defer pool.deinit();
+    tracks[0].publishSnapshot(&pool);
+    var transport = Transport{};
+    transport.play();
+    const e = try a.create(Engine);
+    defer a.destroy(e);
+    e.* = .{ .transport = &transport, .tracks = &tracks };
+    e.publishRouting();
+    const Runner = struct {
+        fn run(engine: *Engine, done: *std.atomic.Value(bool), audible: *bool) void {
+            var out: [128 * 2]f32 = undefined;
+            audible.* = true;
+            for (0..64) |_| {
+                Engine.renderCallback(engine, &out, 128);
+                for (out) |v| if (!std.math.isFinite(v) or v <= 0) {
+                    audible.* = false;
+                };
+            }
+            done.store(true, .release);
+        }
+    };
+    var done = std.atomic.Value(bool).init(false);
+    var audible = false;
+    const host = @import("fy_host.zig");
+    host.lockControl();
+    const t = std.Thread.spawn(.{}, Runner.run, .{ e, &done, &audible }) catch |err| {
+        host.unlockControl();
+        return err;
+    };
+    // Generous scheduling allowance, not a claimed callback deadline. On the
+    // old implementation no callback can finish until we release this lock.
+    const Sleep = struct {
+        extern "c" fn usleep(us: c_uint) c_int;
+    };
+    var waits: usize = 0;
+    while (!done.load(.acquire) and waits < 500) : (waits += 1) _ = Sleep.usleep(1000);
+    const completed_while_held = done.load(.acquire);
+    host.unlockControl();
+    t.join();
+    try testing.expect(completed_while_held);
+    try testing.expect(audible);
+    try testing.expectEqual(@as(u64, 64 * 128), transport.samples());
+}
+
+test "realtime: live callback ignores workers without realtime admission" {
+    const a = testing.allocator;
+    var level: f32 = 0.1;
+    var tracks = [_]Track{
+        try Track.init(a, "one", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, RouteTestMachines.dc(&level)),
+        try Track.init(a, "two", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, RouteTestMachines.dc(&level)),
+    };
+    defer for (&tracks) |*t| t.deinit(a);
+    var transport = Transport{};
+    transport.play();
+    const e = try a.create(Engine);
+    defer a.destroy(e);
+    e.* = .{ .transport = &transport, .tracks = &tracks };
+    e.publishRouting();
+    try e.initPool(a, 2, null);
+    defer e.deinitPool(a);
+    try testing.expect(!e.pool.?.liveReady());
+    var out: [256]f32 = undefined;
+    e.render(&out, 128);
+    try testing.expect(!e.pool.?.active.load(.seq_cst));
+    for (out) |v| try testing.expect(v > 0 and std.math.isFinite(v));
+}
+
+test "realtime benchmark: routed renders" {
+    if (std.c.getenv("SLAB_REALTIME_BENCH") == null) return;
+    const a = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const N = 12;
+    var oscs: [N]ParTestMachines.Osc = undefined;
+    var zero: f32 = 0;
+    var tracks: [N + 4]Track = undefined;
+    for (&oscs, 0..) |*o, i| o.* = .{ .inc = 0.01 + 0.0137 * @as(f32, @floatFromInt(i)) };
+    for (0..N) |i| tracks[i] = try Track.init(a, "src", col, ParTestMachines.osc(&oscs[i]));
+    for (N..N + 4) |i| {
+        tracks[i] = try Track.init(a, "bus", col, RouteTestMachines.dc(&zero));
+        tracks[i].kind = .bus;
+    }
+    defer for (&tracks) |*t| t.deinit(a);
+    for (0..N) |i| {
+        if (i % 3 == 0) tracks[i].output = N;
+        if (i % 2 == 0) try tracks[i].addSend(N + 1, false, 0.35);
+        if (i % 5 == 1) try tracks[i].addSend(N + 2, true, 0.4);
+    }
+    tracks[N].output = N + 3;
+    tracks[N + 2].output = N + 3;
+    var pool = @import("audio_pool.zig").AudioPool.init(a);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+    var transport = Transport{};
+    const e = try a.create(Engine);
+    defer a.destroy(e);
+    e.* = .{ .transport = &transport, .tracks = &tracks };
+    e.publishRouting();
+    const frames = 300 * 256;
+    const out = try a.alloc(f32, frames * 2);
+    defer a.free(out);
+    for ([_]usize{ 0, 4 }) |workers| {
+        if (workers > 0) try e.initPool(a, workers, null);
+        e.renderOffline(out, frames, 0, null, null); // warm caches
+        var ns: [9]i128 = undefined;
+        for (&ns) |*t| {
+            const start = probeNowNs();
+            e.renderOffline(out, frames, 0, null, null);
+            t.* = probeNowNs() - start;
+        }
+        std.mem.sort(i128, &ns, {}, std.sort.asc(i128));
+        std.debug.print("SLAB_PERF {{\"workers\":{d},\"median_ns\":{d},\"min_ns\":{d},\"max_ns\":{d},\"hash\":{d}}}\n", .{ workers, ns[4], ns[0], ns[8], std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(out)) });
+        e.deinitPool(a);
+    }
+}
+
+test "realtime benchmark: fy instruments and effects" {
+    if (std.c.getenv("SLAB_REALTIME_BENCH") == null) return;
+    const a = testing.allocator;
+    const Raw = @import("machines/fy_raw_machine.zig").FyRawMachine;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var tracks: [8]Track = undefined;
+    var made: usize = 0;
+    defer for (tracks[0..made]) |*t| t.deinit(a);
+    for (&tracks, 0..) |*t, i| {
+        const inst = try Raw.create(a, "machines/juno2/juno2.fy");
+        t.* = try Track.init(a, "juno", col, inst.machineInterface());
+        made += 1;
+        const fx = try Raw.create(a, "machines/phaser2/phaser2.fy");
+        try t.addEffect(a, fx.machineInterface(), 0);
+        var clip = @import("clip.zig").Clip.init("chord", 0, 8);
+        for ([_]u8{ 48, 55, 60, 64 }) |pitch| try clip.addNote(a, .{ .pitch = pitch + @as(u8, @intCast(i % 3)), .start_beat = 0, .length_beats = 8, .velocity = 90 });
+        try t.addClip(a, clip);
+    }
+    var pool = @import("audio_pool.zig").AudioPool.init(a);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+    var transport = Transport{};
+    const e = try a.create(Engine);
+    defer a.destroy(e);
+    e.* = .{ .transport = &transport, .tracks = &tracks };
+    e.publishRouting();
+    const frames = 128 * 256;
+    const out = try a.alloc(f32, frames * 2);
+    defer a.free(out);
+    for ([_]usize{ 0, 4 }) |workers| {
+        if (workers > 0) try e.initPool(a, workers, null);
+        e.renderOffline(out, frames, 0, null, null);
+        var ns: [9]i128 = undefined;
+        for (&ns) |*t| {
+            const start = probeNowNs();
+            e.renderOffline(out, frames, 0, null, null);
+            t.* = probeNowNs() - start;
+        }
+        std.mem.sort(i128, &ns, {}, std.sort.asc(i128));
+        std.debug.print("SLAB_PERF {{\"fixture\":\"fy\",\"workers\":{d},\"median_ns\":{d},\"min_ns\":{d},\"max_ns\":{d},\"hash\":{d}}}\n", .{ workers, ns[4], ns[0], ns[8], std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(out)) });
+        e.deinitPool(a);
+    }
+}
+
+test "realtime: a deferred bus sum makes work ready before the renderer sleeps" {
+    const a = testing.allocator;
+    var level: f32 = 0;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var tracks = [_]Track{ try Track.init(a, "src", col, RouteTestMachines.dc(&level)), try Track.init(a, "bus", col, RouteTestMachines.dc(&level)) };
+    defer for (&tracks) |*t| t.deinit(a);
+    tracks[1].kind = .bus;
+    const graph = routing.Routing.build(&.{ .{ .output = 1 }, .{ .is_bus = true } });
+    var transport = Transport{};
+    const e = try a.create(Engine);
+    defer a.destroy(e);
+    e.* = .{ .transport = &transport, .tracks = &tracks };
+    e.blk = .{ .graph = &graph, .live = 3, .heard = 3, .frames = 16, .spb = 24000, .bar_info = default_meter_state.map().barInfoAtBeat(0) };
+    e.blk_at[0] = 0;
+    e.blk_at[1] = 1;
+    e.buildContribs(graph.renderOrder());
+    e.node_state[0].store(NODE_DONE, .seq_cst);
+    e.node_state[1].store(NODE_WAIT, .seq_cst);
+    e.node_pending[1].store(1, .seq_cst);
+    e.node_prio[1] = 1;
+    e.nodes_done.store(1, .seq_cst);
+    @memset(e.post_l[0][0..16], 0.25);
+    @memset(e.post_r[0][0..16], 0.25);
+    @memset(e.bus_l[1][0..16], 0);
+    @memset(e.bus_r[1][0..16], 0);
+    @memset(e.master_l[0..16], 0);
+    @memset(e.master_r[0..16], 0);
+    var scratch: Scratch = undefined;
+    try testing.expect(e.renderReady(&scratch));
+    try testing.expectEqual(NODE_DONE, e.node_state[1].load(.acquire));
+    try testing.expectEqual(@as(usize, 2), e.nodes_done.load(.acquire));
 }

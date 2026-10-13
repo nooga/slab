@@ -165,24 +165,21 @@ Order:
 
 Each step within a track runs its inserts in order.
 
-## Graph swap
+## Graph and machine publication (implemented)
 
-When the user adds/removes a machine or reorders inserts, the host
-rebuilds the graph on the main thread and atomically swaps the
-pointer the audio callback reads. Double-buffering again:
+UI builds a routing version in its owned handoff slot; the rendering thread
+adopts it for the next chunk, holding it until all workers finish. Track
+instrument/insert chains and rack part lists use the same ownership protocol.
+Instances are compiled and initialized off audio before publication.
+Replaced instances are destroyed on UI after an audio acknowledgement,
+not after an assumed amount of time. Bypass changes publish with the chain;
+unchanged effects retain their audio-owned idle history on reorder.
 
-```zig
-struct Graph {
-    current: *GraphState,    // atomic<*GraphState>
-    pending: *GraphState,
-    ...
-}
-```
-
-Main thread prepares `pending`, stages new machine arenas,
-atomically swaps `current <- pending`. Old graph's machines are
-retired on the main thread after a block passes (so the audio
-thread has definitely moved on).
+Adding/replacing/removing machines and reordering inserts no longer stop the
+audio device. Document/track-list replacement, device reconfiguration and
+explicit offline bounce still use the existing device-stopped paths.
+Publication does not make mutable track-array storage safe to resize live.
+See [37-realtime-safety.md](37-realtime-safety.md) for limits and validation.
 
 ## Plugin Delay Compensation (PDC)
 
@@ -277,10 +274,13 @@ the master, plus the master chain, which runs after the sums.
 **Threads.** `--threads N` sets the total, the audio thread included;
 the default is one per performance core. Workers sleep on a Mach
 semaphore between blocks, are woken at a block's start (at most one per
-node beyond the first), spin while it is open and help render.
-A worker that wakes late finds the block closed. The audio thread
-renders anything no worker took, so a descheduled worker costs time,
-never output.
+node beyond the first), and help render. A worker returns to sleep when
+it has no ready node. The rendering thread renders available work itself;
+when unfinished nodes are already claimed it waits for completion signals,
+and likewise waits for admitted workers to leave before reusing block data.
+A worker that wakes late can only enter an open block. No idle loop spins.
+This is still synchronous parallel rendering: a descheduled worker that has
+claimed a node can delay the block.
 
 **Real-time workers.** Each worker takes Mach's time-constraint policy
 (period one block, up to half of it computing) and joins the output
@@ -288,9 +288,10 @@ device's I/O workgroup (`kAudioDevicePropertyIOThreadOSWorkgroup`), so
 it is scheduled like CoreAudio's own I/O thread. When the device is
 reopened (the mic armed, another input chosen) the workers move to the
 new workgroup as they next wake. `--no-rt-workers` leaves them at
-user-interactive QoS, which the scheduler may preempt or move to
-efficiency cores under load. Headless renders never use real-time
-workers.
+user-interactive QoS for offline work. Live callbacks use serial rendering
+unless every worker obtained realtime scheduling and joined the current I/O
+workgroup; failed policy/join requests and missing workgroups take that same
+fallback. Headless renders do not require realtime admission.
 
 **Thread lamps.** The transport bar's stats display shows a lamp per
 render thread (the audio thread first) beside CPU, lit by how much of the
@@ -300,11 +301,12 @@ audio budget that thread spent rendering and mixing nodes, and red from
 (`takeThreadLoad`) and smooths them. CPU itself stays the callback's
 wall time against the budget.
 
-**fy.** Each machine owns its fy instance and JIT image; raw kernel
-calls touch only that instance and their own slots. `Builtins.fyPtr` is
-thread-local in fy. The callback lock that keeps hot-patch and runtime
-asset swaps out of renders is taken once per block by the engine (the
-audio callback and each offline chunk), not per machine.
+**fy.** Initial document loads may share cached compiled hosts; private
+prepared replacements have independent compilers/images. Each instance owns
+its DSP state and caller slots. `Builtins.fyPtr` is thread-local. Audio does
+not acquire the control/compiler mutex. Runtime bindings are published;
+active word definitions remain sealed. Live diagnostic printing is disabled:
+`SLAB_*_PROBE`/trace output remains available for offline rendering.
 
 **Measured** (offline bounce, M-series, 8 performance cores):
 sweat_geometry 66.7 s → 21.4 s, broken_glass 4.5 s → 1.0 s, the others

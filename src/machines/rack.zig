@@ -13,18 +13,16 @@
 //! persists works inside a rack; tools (tools/library/cmi.py for CMI
 //! instruments) write the same form.
 //!
-//! Threads: the audio thread renders under the rack's own fence
-//! (`gate`), never under fy's callback lock, which each child takes for
-//! itself. The UI builds a part (instantiate compiles, under the callback
-//! lock) outside the fence and swaps it in inside, and edits settings
-//! inside it; it never holds both locks.
+//! UI owns the editable parts; audio owns its adopted parts and held notes.
+//! Prepared configurations use a latest-value handoff. Replaced machines
+//! retire on UI only after audio acknowledges a configuration without them.
 
 const std = @import("std");
 const storage = @import("../storage.zig");
 const machine = @import("../machine.zig");
 const registry_mod = @import("../machine_registry.zig");
 const presets_mod = @import("../presets.zig");
-const fy_host_mod = @import("../fy_host.zig");
+const handoff = @import("../handoff.zig");
 const ui_core = @import("../ui/core.zig");
 const ctl = @import("../ui/controls.zig");
 const ui_style = @import("../ui/style.zig");
@@ -56,8 +54,7 @@ pub const Part = struct {
     reg_idx: u8,
     label: [MAX_LABEL + 1]u8 = [_]u8{0} ** (MAX_LABEL + 1),
     label_len: u8 = 0,
-    // Settings: the UI writes them inside the fence, the audio thread reads
-    // them under it.
+    // Settings are copied from the UI configuration at block boundaries.
     lo: u8 = 0,
     hi: u8 = 127,
     vlo: u8 = 1,
@@ -92,12 +89,19 @@ pub const Part = struct {
     }
 };
 
+const PartVersion = struct { parts: [MAX_PARTS]Part = undefined, count: usize = 0, generation: u64 = 0 };
+
 pub const Rack = struct {
     alloc: std.mem.Allocator,
     reg: *registry_mod.Registry,
     parts: [MAX_PARTS]Part = undefined,
     count: usize = 0,
-    gate: std.atomic.Mutex = .unlocked,
+    versions: handoff.Latest(PartVersion) = .init(.{}),
+    retired: handoff.Retirement(Machine, 128) = .{},
+    generation: u64 = 0, // UI-owned
+    publication_depth: usize = 0,
+    audio_parts: [MAX_PARTS]Part = undefined,
+    audio_count: usize = 0,
 
     // UI
     selected: usize = 0,
@@ -123,6 +127,7 @@ pub const Rack = struct {
             .render = renderImpl,
             .draw_panel = drawPanelImpl,
             .reset = resetImpl,
+            .adopt_updates = adoptImpl,
             .deinit = deinitImpl,
             .preset_count = presetCountImpl,
             .preset_name = presetNameImpl,
@@ -141,12 +146,39 @@ pub const Rack = struct {
         };
     }
 
-    fn lock(self: *Rack) void {
-        while (!self.gate.tryLock()) std.Thread.yield() catch {};
+    fn disposePart(self: *Rack, m: Machine) void {
+        if (m.deinit) |d| d(m.state, self.alloc);
     }
 
-    fn unlock(self: *Rack) void {
-        self.gate.unlock();
+    fn collect(self: *Rack) void {
+        self.retired.collect(self, disposePart);
+    }
+
+    fn publishParts(self: *Rack) void {
+        if (self.publication_depth != 0) return;
+        self.generation += 1;
+        const v = self.versions.write();
+        v.count = self.count;
+        v.generation = self.generation;
+        @memcpy(v.parts[0..self.count], self.parts[0..self.count]);
+        self.versions.publish();
+    }
+
+    fn adoptParts(self: *Rack) void {
+        if (!self.versions.adopt()) return;
+        const v = self.versions.current();
+        const previous = self.audio_parts;
+        const n = self.audio_count;
+        for (v.parts[0..v.count], 0..) |p, i| {
+            self.audio_parts[i] = p;
+            for (previous[0..n]) |old| if (old.mach.state == p.mach.state) {
+                self.audio_parts[i].held = old.held;
+                self.audio_parts[i].held_n = old.held_n;
+                break;
+            };
+        }
+        self.audio_count = v.count;
+        self.retired.acknowledge(v.generation);
     }
 
     fn rescan(self: *Rack) void {
@@ -162,9 +194,7 @@ pub const Rack = struct {
     /// A fresh machine for a part: instantiate compiles fy, which shares
     /// state with the audio thread's renders, so it runs under their lock.
     fn instantiate(self: *Rack, reg_idx: usize) !Machine {
-        fy_host_mod.lockCallbacks();
-        defer fy_host_mod.unlockCallbacks();
-        const m = try self.reg.instantiate(reg_idx);
+        const m = try self.reg.instantiatePrepared(reg_idx);
         m.reset(m.state);
         return m;
     }
@@ -175,10 +205,9 @@ pub const Rack = struct {
         const m = try self.instantiate(reg_idx);
         var p = Part{ .mach = m, .reg_idx = @intCast(reg_idx) };
         p.setLabel(self.reg.entries[reg_idx].nameSlice());
-        self.lock();
         self.parts[self.count] = p;
         self.count += 1;
-        self.unlock();
+        self.publishParts();
         return &self.parts[self.count - 1];
     }
 
@@ -186,37 +215,43 @@ pub const Rack = struct {
     /// ranges and mix.
     pub fn replacePart(self: *Rack, i: usize, reg_idx: usize) !void {
         if (i >= self.count) return;
+        self.collect();
+        if (!self.retired.available()) return error.PublicationFull;
         const m = try self.instantiate(reg_idx);
-        self.lock();
+        const next_generation = self.generation + 1;
         const old = self.parts[i].mach;
         self.parts[i].mach = m;
         self.parts[i].reg_idx = @intCast(reg_idx);
         self.parts[i].held_n = 0;
         self.parts[i].setLabel(self.reg.entries[reg_idx].nameSlice());
-        self.unlock();
-        if (old.deinit) |d| d(old.state, self.alloc);
+        self.publishParts();
+        self.retired.append(next_generation, old);
     }
 
     pub fn removePart(self: *Rack, i: usize) void {
         if (i >= self.count) return;
-        self.lock();
+        self.collect();
+        if (!self.retired.available()) return;
+        const next_generation = self.generation + 1;
         const old = self.parts[i].mach;
         var j = i;
         while (j + 1 < self.count) : (j += 1) self.parts[j] = self.parts[j + 1];
         self.count -= 1;
-        self.unlock();
-        if (old.deinit) |d| d(old.state, self.alloc);
+        self.publishParts();
+        self.retired.append(next_generation, old);
         if (self.selected >= self.count and self.selected > 0) self.selected -= 1;
     }
 
-    pub fn clear(self: *Rack) void {
-        self.lock();
+    pub fn clear(self: *Rack) !void {
+        self.collect();
+        if (self.retired.len + self.count > 128) return error.PublicationFull;
+        const next_generation = self.generation + 1;
         const n = self.count;
         var old: [MAX_PARTS]Machine = undefined;
         for (self.parts[0..n], 0..) |*p, i| old[i] = p.mach;
         self.count = 0;
-        self.unlock();
-        for (old[0..n]) |m| if (m.deinit) |d| d(m.state, self.alloc);
+        self.publishParts();
+        for (old[0..n]) |m| self.retired.append(next_generation, m);
         self.selected = 0;
     }
 
@@ -242,7 +277,12 @@ pub const Rack = struct {
         if (v != .object) return;
         const pv = v.object.get("parts") orelse return;
         if (pv != .array) return;
-        self.clear();
+        self.publication_depth += 1;
+        defer {
+            self.publication_depth -= 1;
+            self.publishParts();
+        }
+        self.clear() catch return;
         for (pv.array.items) |item| {
             if (item != .object) continue;
             const po = item.object;
@@ -251,7 +291,6 @@ pub const Rack = struct {
             if (self.reg.entries[idx].native != .none) continue;
             const p = self.addPart(idx) catch continue;
             applyMachineJson(p.mach, po);
-            self.lock();
             if (po.get("name")) |x| if (x == .string) p.setLabel(x.string);
             if (po.get("lo")) |x| p.lo = jsonU7(x);
             if (po.get("hi")) |x| p.hi = jsonU7(x);
@@ -262,7 +301,7 @@ pub const Rack = struct {
             if (po.get("pan")) |x| p.pan = @floatCast(std.math.clamp(jsonF64(x), -1, 1));
             if (po.get("poly")) |x| p.poly = @intFromFloat(std.math.clamp(@round(jsonF64(x)), 0, 64));
             if (po.get("mute")) |x| p.mute = x == .bool and x.bool;
-            self.unlock();
+            self.publishParts();
         }
         self.selected = 0;
     }
@@ -390,15 +429,20 @@ pub const Rack = struct {
     }
 };
 
+fn adoptImpl(state: *anyopaque) void {
+    const self: *Rack = @ptrCast(@alignCast(state));
+    self.adoptParts();
+    for (self.audio_parts[0..self.audio_count]) |*p| if (p.mach.adopt_updates) |f| f(p.mach.state);
+}
+
 fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []f32) void {
     const self: *Rack = @ptrCast(@alignCast(state));
     const frames = @min(@as(usize, ctx.block_size), @min(l.len, @min(r.len, MAX_BLOCK)));
     @memset(l[0..frames], 0);
     @memset(r[0..frames], 0);
-    self.lock();
-    defer self.unlock();
+    self.adoptParts();
     const in: []const NoteEvent = if (ctx.note_in) |p| p[0..ctx.note_in_count] else &.{};
-    for (self.parts[0..self.count]) |*p| {
+    for (self.audio_parts[0..self.audio_count]) |*p| {
         const n = Rack.route(p, in, &self.events);
         var sub = ctx.*;
         sub.note_in = if (n > 0) &self.events else null;
@@ -421,9 +465,8 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
 
 fn resetImpl(state: *anyopaque) void {
     const self: *Rack = @ptrCast(@alignCast(state));
-    self.lock();
-    defer self.unlock();
-    for (self.parts[0..self.count]) |*p| {
+    self.adoptParts();
+    for (self.audio_parts[0..self.audio_count]) |*p| {
         p.held_n = 0;
         p.mach.reset(p.mach.state);
     }
@@ -431,7 +474,9 @@ fn resetImpl(state: *anyopaque) void {
 
 fn deinitImpl(state: *anyopaque, alloc: std.mem.Allocator) void {
     const self: *Rack = @ptrCast(@alignCast(state));
-    self.clear();
+    // Device/consumer stopped before destruction.
+    for (self.parts[0..self.count]) |p| self.disposePart(p.mach);
+    self.retired.drain(self, Rack.disposePart);
     alloc.destroy(self);
 }
 
@@ -571,12 +616,14 @@ fn step7(v: *u8, d: i32, lo: i32, hi: i32) void {
 }
 
 const PART_COLORS = [_]ui_style.Color{
-    ui_style.led_green, ui_style.vfd, ui_style.accent, ui_style.led_green.mix(ui_style.vfd, 0.5),
+    ui_style.led_green,                   ui_style.vfd,                            ui_style.accent,                            ui_style.led_green.mix(ui_style.vfd, 0.5),
     ui_style.vfd.mix(ui_style.text, 0.4), ui_style.accent.mix(ui_style.text, 0.4), ui_style.led_green.mix(ui_style.text, 0.4), ui_style.text_dim,
 };
 
 fn drawPanelImpl(state: *anyopaque, ui: *Ui, rect: Rect) void {
     const self: *Rack = @ptrCast(@alignCast(state));
+    self.collect();
+    defer self.publishParts();
     var body = rect;
     var side = body.cutLeft(SIDE_W);
     ui.rect(side, ui_style.chassis);
@@ -619,7 +666,7 @@ fn drawPanelImpl(state: *anyopaque, ui: *Ui, rect: Rect) void {
 
     if (self.selected < self.count) {
         const p = &self.parts[self.selected];
-        var s = p.*; // edit a copy, publish inside the fence
+        var s = p.*; // edit a copy, publish at the block boundary
         var buf: [16]u8 = undefined;
         var half = side.cutTop(FIELD_H);
         var left = half.cutLeft(@divFloor(half.w, 2) - 2);
@@ -657,7 +704,6 @@ fn drawPanelImpl(state: *anyopaque, ui: *Ui, rect: Rect) void {
         if (s.lo != p.lo or s.hi != p.hi or s.vlo != p.vlo or s.vhi != p.vhi or s.transpose != p.transpose or
             s.poly != p.poly or s.level_db != p.level_db or s.pan != p.pan or s.mute != p.mute)
         {
-            self.lock();
             p.lo = s.lo;
             p.hi = s.hi;
             p.vlo = s.vlo;
@@ -667,7 +713,7 @@ fn drawPanelImpl(state: *anyopaque, ui: *Ui, rect: Rect) void {
             p.level_db = s.level_db;
             p.pan = s.pan;
             p.mute = s.mute;
-            self.unlock();
+            self.publishParts();
         }
         _ = btns.cutRight(4);
         const del_r = btns.cutRight(20);
@@ -859,19 +905,20 @@ test "rack: a split sends each key to its part, transposed; POLY releases the ol
     }
 
     var out = [_]f32{0} ** (512 * 24);
+    rack.publishParts();
     // A2 on the lower part: the bundled pluck (A3) an octave down
     play(m, &.{noteOn(45, 1)}, &out);
     try testing.expectApproxEqRel(@as(f64, 110), acHz(out[512 * 4 ..]), 0.01);
-    try testing.expectEqual(@as(u8, 1), rack.parts[0].held_n);
-    try testing.expectEqual(@as(u8, 0), rack.parts[1].held_n);
+    try testing.expectEqual(@as(u8, 1), rack.audio_parts[0].held_n);
+    try testing.expectEqual(@as(u8, 0), rack.audio_parts[1].held_n);
     play(m, &.{noteOff(45, 1)}, &out);
-    try testing.expectEqual(@as(u8, 0), rack.parts[0].held_n);
+    try testing.expectEqual(@as(u8, 0), rack.audio_parts[0].held_n);
     // A4 on the upper part, down an octave: A3
     m.reset(m.state);
     play(m, &.{noteOn(69, 2)}, &out);
     try testing.expectApproxEqRel(@as(f64, 220), acHz(out[512 * 4 ..]), 0.01);
-    try testing.expectEqual(@as(u8, 1), rack.parts[1].held_n);
-    try testing.expectEqual(@as(f32, 57), rack.parts[1].held[0].pitch);
+    try testing.expectEqual(@as(u8, 1), rack.audio_parts[1].held_n);
+    try testing.expectEqual(@as(f32, 57), rack.audio_parts[1].held[0].pitch);
     m.reset(m.state);
 
     // POLY 1: a second note releases the first

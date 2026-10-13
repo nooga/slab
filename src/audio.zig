@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const c = @import("c.zig");
+const handoff = @import("handoff.zig");
 
 pub const SAMPLE_RATE: u32 = 48_000;
 pub const CHANNELS: u32 = 2;
@@ -39,6 +40,14 @@ pub fn blockPeriodNs() u64 {
     return @as(u64, requestedBlockFrames()) * std.time.ns_per_s / SAMPLE_RATE;
 }
 
+const Callbacks = struct {
+    render_ctx: ?*anyopaque = null,
+    render_fn: ?RenderFn = null,
+    capture_ctx: ?*anyopaque = null,
+    capture_fn: ?CaptureFn = null,
+    generation: u64 = 0,
+};
+
 pub const Audio = struct {
     device: c.ma.ma_device,
     context: c.ma.ma_context = undefined,
@@ -56,12 +65,10 @@ pub const Audio = struct {
     has_capture_id: bool = false,
     /// Bumped each time a device starts: its I/O workgroup is new.
     device_gen: u32 = 0,
-    render_ctx: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    render_fn: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    capture_ctx: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    capture_fn: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    probe_counter: u32 = 0,
-    probe_overruns: u32 = 0,
+    callbacks_ui: Callbacks = .{},
+    callbacks: handoff.Latest(Callbacks) = .init(.{}),
+    callback_ack: std.atomic.Value(u64) = .init(0),
+    timebase: std.c.mach_timebase_info_data = .{ .numer = 1, .denom = 1 },
     /// DSP load: render time over the callback's budget, smoothed, in
     /// permille (the UI's CPU readout); `load_peak` holds the worst since
     /// the UI last took it.
@@ -82,18 +89,8 @@ pub const Audio = struct {
     }
 
     pub fn init(self: *Audio) !void {
-        self.render_ctx = std.atomic.Value(usize).init(0);
-        self.render_fn = std.atomic.Value(usize).init(0);
-        self.capture_ctx = std.atomic.Value(usize).init(0);
-        self.capture_fn = std.atomic.Value(usize).init(0);
-        self.probe_counter = 0;
-        self.probe_overruns = 0;
-        self.initialized = false;
-        self.capture_available = false;
-        self.want_capture = false;
-        self.has_capture_id = false;
-        self.device_gen = 0;
-
+        self.* = .{ .device = undefined };
+        _ = std.c.mach_timebase_info(&self.timebase);
         // A persistent context backs both device init and enumeration.
         if (c.ma.ma_context_init(null, 0, null, &self.context) != c.ma.MA_SUCCESS)
             return error.AudioInitFailed;
@@ -253,11 +250,19 @@ pub const Audio = struct {
     }
 
     /// Install the input-capture hook (audio thread reads it each block).
+    /// The old context must outlive callback_ack reaching the published
+    /// generation, or a synchronous device stop. Publication is not retirement.
     pub fn setCapture(self: *Audio, ctx: ?*anyopaque, func: ?CaptureFn) void {
-        const ctx_v: usize = if (ctx) |p| @intFromPtr(p) else 0;
-        const fn_v: usize = if (func) |p| @intFromPtr(p) else 0;
-        self.capture_ctx.store(ctx_v, .monotonic);
-        self.capture_fn.store(fn_v, .release);
+        std.debug.assert(func == null or ctx != null);
+        self.callbacks_ui.capture_ctx = ctx;
+        self.callbacks_ui.capture_fn = func;
+        self.publishCallbacks();
+    }
+
+    fn publishCallbacks(self: *Audio) void {
+        self.callbacks_ui.generation += 1;
+        self.callbacks.write().* = self.callbacks_ui;
+        self.callbacks.publish();
     }
 
     pub fn deinit(self: *Audio) void {
@@ -283,12 +288,23 @@ pub const Audio = struct {
     }
 
     pub fn setRender(self: *Audio, ctx: ?*anyopaque, func: ?RenderFn) void {
-        const ctx_v: usize = if (ctx) |p| @intFromPtr(p) else 0;
-        const fn_v: usize = if (func) |p| @intFromPtr(p) else 0;
-        // ctx written first (monotonic), fn last (release) — audio thread's
-        // acquire load on fn pairs with this to guarantee a consistent ctx.
-        self.render_ctx.store(ctx_v, .monotonic);
-        self.render_fn.store(fn_v, .release);
+        std.debug.assert(func == null or ctx != null);
+        self.callbacks_ui.render_ctx = ctx;
+        self.callbacks_ui.render_fn = func;
+        self.publishCallbacks();
+    }
+
+    fn process(self: *Audio, out: [*]f32, input: ?[*]const f32, frames: u32) void {
+        if (self.callbacks.adopt()) self.callback_ack.store(self.callbacks.current().generation, .release);
+        const hooks = self.callbacks.current();
+        // One coherent set for the entire callback. Capture stamps the
+        // block-start transport position before render advances it.
+        if (hooks.capture_fn) |capture| capture(hooks.capture_ctx.?, input, frames);
+        if (hooks.render_fn) |render| {
+            const tick0 = std.c.mach_absolute_time();
+            render(hooks.render_ctx.?, out, frames);
+            self.noteLoad(std.c.mach_absolute_time() - tick0, frames);
+        } else @memset(out[0 .. @as(usize, frames) * CHANNELS], 0);
     }
 };
 
@@ -302,55 +318,8 @@ fn audioCallback(
     const out_ptr = out_raw orelse return;
     const out_f32: [*]f32 = @ptrCast(@alignCast(out_ptr));
 
-    // Capture runs first: the recorder stamps the block-start position from
-    // the transport, which render() is about to advance.
-    const cap_raw = self.capture_fn.load(.acquire);
-    if (cap_raw != 0) {
-        const cap_ctx: *anyopaque = @ptrFromInt(self.capture_ctx.load(.monotonic));
-        const capture: CaptureFn = @ptrFromInt(cap_raw);
-        const in_f32: ?[*]const f32 = if (in_raw) |p| @ptrCast(@alignCast(p)) else null;
-        capture(cap_ctx, in_f32, @intCast(frames));
-    }
-
-    const fn_raw = self.render_fn.load(.acquire);
-    if (fn_raw == 0) {
-        @memset(out_f32[0 .. @as(usize, frames) * CHANNELS], 0);
-        return;
-    }
-    const ctx: *anyopaque = @ptrFromInt(self.render_ctx.load(.monotonic));
-    const render: RenderFn = @ptrFromInt(fn_raw);
-    const probe = audioProbeEnabled();
-    const t0 = if (probe) probeNowNs() else 0;
-    const tick0 = std.c.mach_absolute_time();
-    render(ctx, out_f32, @intCast(frames));
-    self.noteLoad(std.c.mach_absolute_time() - tick0, frames);
-    if (probe) {
-        const elapsed_ns: i128 = probeNowNs() - t0;
-        const budget_ns: i128 = @divTrunc(@as(i128, @intCast(frames)) * std.time.ns_per_s, SAMPLE_RATE);
-        self.probe_counter +%= 1;
-        const over = elapsed_ns > budget_ns;
-        if (over) self.probe_overruns +%= 1;
-        if ((over and self.probe_overruns <= 8) or self.probe_counter % 256 == 0 or audioProbeVerbose()) {
-            std.debug.print(
-                "audio-callback frames={} render_ms={d:.3} budget_ms={d:.3} over={} overruns={}\n",
-                .{
-                    frames,
-                    @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0,
-                    @as(f64, @floatFromInt(budget_ns)) / 1_000_000.0,
-                    over,
-                    self.probe_overruns,
-                },
-            );
-        }
-    }
-}
-
-fn audioProbeEnabled() bool {
-    return std.c.getenv("SLAB_AUDIO_PROBE") != null;
-}
-
-fn audioProbeVerbose() bool {
-    return std.c.getenv("SLAB_AUDIO_PROBE_VERBOSE") != null;
+    const input: ?[*]const f32 = if (in_raw) |p| @ptrCast(@alignCast(p)) else null;
+    self.process(out_f32, input, @intCast(frames));
 }
 
 fn requestedBlockFrames() u32 {
@@ -363,11 +332,8 @@ fn requestedBlockFrames() u32 {
     };
 }
 
-var timebase: std.c.mach_timebase_info_data = .{ .numer = 0, .denom = 0 };
-
 fn noteLoadImpl(self: *Audio, ticks: u64, frames: u32) void {
-    if (timebase.denom == 0) _ = std.c.mach_timebase_info(&timebase);
-    const ns = @as(f64, @floatFromInt(ticks)) * @as(f64, @floatFromInt(timebase.numer)) / @as(f64, @floatFromInt(@max(timebase.denom, 1)));
+    const ns = @as(f64, @floatFromInt(ticks)) * @as(f64, @floatFromInt(self.timebase.numer)) / @as(f64, @floatFromInt(@max(self.timebase.denom, 1)));
     const budget_ns = @as(f64, @floatFromInt(frames)) * 1e9 / @as(f64, @floatFromInt(self.device.sampleRate));
     if (budget_ns <= 0) return;
     const x: f32 = @floatCast(ns / budget_ns);
@@ -378,8 +344,61 @@ fn noteLoadImpl(self: *Audio, ticks: u64, frames: u32) void {
     if (p > self.load_peak.load(.monotonic)) self.load_peak.store(p, .monotonic);
 }
 
-fn probeNowNs() i128 {
-    var info: std.c.mach_timebase_info_data = undefined;
-    _ = std.c.mach_timebase_info(&info);
-    return @divTrunc(@as(i128, @intCast(std.c.mach_absolute_time())) * @as(i128, @intCast(info.numer)), @as(i128, @intCast(info.denom)));
+test "realtime: audio hook publication keeps functions paired with their contexts" {
+    const Handler = struct {
+        value: f32,
+        fn one(ctx: *anyopaque, out: [*]f32, frames: u32) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            std.debug.assert(self.value == 1);
+            @memset(out[0 .. frames * 2], self.value);
+        }
+        fn two(ctx: *anyopaque, out: [*]f32, frames: u32) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            std.debug.assert(self.value == 2);
+            @memset(out[0 .. frames * 2], self.value);
+        }
+    };
+    var audio = Audio{ .device = std.mem.zeroes(c.ma.ma_device) };
+    audio.device.sampleRate = SAMPLE_RATE;
+    var one = Handler{ .value = 1 };
+    var two = Handler{ .value = 2 };
+    var out: [64]f32 = undefined;
+    audio.setRender(&one, Handler.one);
+    audio.process(&out, null, 32);
+    const held = audio.callbacks.current();
+    for (0..100) |_| {
+        audio.setRender(&two, Handler.two);
+        audio.setRender(&one, Handler.one);
+    }
+    try std.testing.expect(held.render_fn.? == Handler.one);
+    try std.testing.expectEqual(@intFromPtr(&one), @intFromPtr(held.render_ctx.?));
+    audio.setRender(&two, Handler.two);
+    const generation = audio.callbacks_ui.generation;
+    try std.testing.expect(audio.callback_ack.load(.acquire) < generation);
+    audio.process(&out, null, 32);
+    try std.testing.expectEqual(@as(f32, 2), out[0]);
+    try std.testing.expectEqual(generation, audio.callback_ack.load(.acquire));
+    audio.setRender(null, null);
+    audio.process(&out, null, 32);
+    for (out) |v| try std.testing.expectEqual(@as(f32, 0), v);
+}
+
+test "realtime device: output workgroup remains valid across stop and restart" {
+    if (std.c.getenv("SLAB_AUDIO_DEVICE_TEST") == null) return;
+    const Release = struct {
+        extern "c" fn os_release(obj: *anyopaque) void;
+    };
+    var audio: Audio = undefined;
+    try audio.init(); // default dispatch emits silence
+    defer audio.deinit();
+    const running = audio.workgroup() orelse return error.WorkgroupUnavailable;
+    defer Release.os_release(running);
+    audio.stop();
+    const stopped = audio.workgroup() orelse return error.WorkgroupUnavailable;
+    defer Release.os_release(stopped);
+    try audio.start();
+    const restarted = audio.workgroup() orelse return error.WorkgroupUnavailable;
+    defer Release.os_release(restarted);
+    try std.testing.expect(running == stopped);
+    try std.testing.expect(running == restarted);
 }

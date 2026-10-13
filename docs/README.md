@@ -115,6 +115,9 @@ status and the source before assuming a feature is absent or complete.
 37. [36-phaser.md](36-phaser.md) — stereo 4/6/12-stage phasing, resonance,
     beat-locked sweeps, presets and comparison demo
 
+38. [37-realtime-safety.md](37-realtime-safety.md) — ownership handoffs,
+    retirement, worker admission, regression and performance checks
+
 ## Terminology crib sheet
 
 | term | meaning |
@@ -129,7 +132,7 @@ status and the source before assuming a feature is absent or complete.
 | **arena** | a preallocated memory region with bump-pointer or slab semantics |
 | **voice pool** | host service that matches note-on/off to voice slots |
 | **PDC** | plugin delay compensation — per-chain latency alignment |
-| **params struct** | the machine's control-facing state; double-buffered |
+| **params struct** | audio-owned machine fields; targets published through owned slots |
 | **hot-patch** | redefine a word at runtime via fy's trampoline indirection |
 | **DSP workbench** | offline runner that renders Fy kernels/machines and emits WAVs, plots, metrics, perf reports, and disassembly |
 | **test ratchet** | bounded regression system for sound, compiler quality, and performance metrics |
