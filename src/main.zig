@@ -5019,7 +5019,7 @@ fn insertTrackAt(engine: *engine_mod.Engine, tracks_buf: *[MAX_TRACKS]track_mod.
     tracks_buf[pos] = t;
     tracks_buf[pos].makeRoomAt(pos);
     engine.tracks = tracks_buf[0..track_count.*];
-    engine.send_prev = @splat(@splat(-1));
+    engine.resetRamps();
     engine.clearPdc();
     engine.publishRouting();
 }
@@ -5797,7 +5797,7 @@ fn duplicateTrack(
         copy.makeRoomAt(pos);
         tracks_buf[pos] = copy;
         engine.tracks = tracks_buf[0..track_count.*];
-        engine.send_prev = @splat(@splat(-1));
+        engine.resetRamps();
         engine.publishRouting();
     }
     if (before) |b| try history.pushUndo(alloc, b);
@@ -5875,7 +5875,7 @@ fn applyMove(engine: *engine_mod.Engine, tracks_buf: *[MAX_TRACKS]track_mod.Trac
         }
         for (tracks_buf[0..track_count]) |*t| t.remapTracks(&map);
         engine.tracks = tracks_buf[0..track_count];
-        engine.send_prev = @splat(@splat(-1));
+        engine.resetRamps();
         engine.clearPdc();
         engine.publishRouting();
     }
@@ -5987,7 +5987,7 @@ fn deleteTrack(
         track_count.* -= 1;
         for (tracks_buf[0..track_count.*]) |*t| t.forgetTrack(@intCast(ti));
         engine.tracks = tracks_buf[0..track_count.*];
-        engine.send_prev = @splat(@splat(-1));
+        engine.resetRamps();
         engine.publishRouting();
     }
     if (before) |b| try history.pushUndo(alloc, b);

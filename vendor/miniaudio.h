@@ -20667,7 +20667,15 @@ static ma_result ma_device__handle_duplex_callback_playback(ma_device* pDevice, 
                     ma_device__handle_data_callback(pDevice, pDevice->playback.pInputCache, pInputFrames, inputFrameCount);
                 } else {
                     if (ma_pcm_rb_pointer_distance(pRB) == 0) {
-                        break;  /* Underrun. */
+                        /* Slab: underrun. A stalled or unplugged input must not stall playback (the
+                        engine would stop rendering and the output would go unwritten): render with
+                        silent input instead. */
+                        ma_pcm_rb_commit_read(pRB, 0);
+                        inputFrameCount = (ma_uint32)ma_min(pDevice->playback.inputCacheCap, sizeof(silentInputFrames) / ma_get_bytes_per_frame(pDevice->capture.format, pDevice->capture.channels));
+                        ma_device__handle_data_callback(pDevice, pDevice->playback.pInputCache, silentInputFrames, inputFrameCount);
+                        pDevice->playback.inputCacheConsumed  = 0;
+                        pDevice->playback.inputCacheRemaining = inputFrameCount;
+                        continue;
                     }
                 }
             } else {
@@ -20684,6 +20692,11 @@ static ma_result ma_device__handle_duplex_callback_playback(ma_device* pDevice, 
                 return result;  /* Should never happen. */
             }
         }
+    }
+
+    /* Slab: stopping mid-buffer leaves frames unwritten; never let the device replay stale audio. */
+    if (totalFramesReadOut < frameCount) {
+        ma_silence_pcm_frames(pFramesInInternalFormat, frameCount - totalFramesReadOut, pDevice->playback.internalFormat, pDevice->playback.internalChannels);
     }
 
     return MA_SUCCESS;

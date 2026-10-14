@@ -201,6 +201,9 @@ pub const Engine = struct {
     /// Stopped: samples to go on rendering the track after the last
     /// release, so its tail is heard.
     aud_tail: u32 = 0,
+    /// Auditioning while stopped: a beat that runs from the playhead, so
+    /// tempo-synced LFOs move instead of restarting every block.
+    aud_beat: ?f64 = null,
     /// The browser's audition (docs/25 §The browser): a sample played
     /// straight to the output, over whatever plays. UI publishes the sample
     /// binding and request number together through an owned handoff. Audio
@@ -243,6 +246,9 @@ pub const Engine = struct {
     master_fx_r: [MAX_BLOCK]f32 = undefined,
     /// What the output does past full scale [MasterClip].
     master_clip: MasterClip = .{},
+    /// Blocks in which non-finite samples reached the output and were
+    /// silenced (see `contain` for the per-track guard).
+    output_faults: std.atomic.Value(u32) = .init(0),
     /// The master's optional subsonic highpass [Subsonic], before its FX.
     master_subsonic: Subsonic = .{},
     /// Idle skipping (docs/04 §Idle skipping), an optimization: an
@@ -266,6 +272,11 @@ pub const Engine = struct {
     /// Last block's gain per send slot, the start of this block's ramp;
     /// negative until the slot has played.
     send_prev: [routing.MAX_TRACKS][routing.MAX_SENDS]f32 = @splat(@splat(-1)),
+    /// Fader gains each track applied at its last chunk's end (negative:
+    /// none yet), so a hand move or a jump ramps instead of stepping.
+    fader_prev: [routing.MAX_TRACKS][2]f32 = @splat(.{ -1, -1 }),
+    /// The master's volume × balance, likewise.
+    master_prev: [2]f32 = .{ -1, -1 },
 
     /// Delay compensation (docs/07 §PDC): each track's recent output, from
     /// which a path that arrives early at a sum is read late. Allocated
@@ -593,6 +604,9 @@ pub const Engine = struct {
         {
             self.resetAllMachines();
         }
+        // An offline render starts from its own values, not the last live
+        // block's: the same render twice is the same audio.
+        self.resetRamps();
         self.transport.tempo.commitImmediate();
         self.chase_pending = true;
         self.capture_start = start_sample;
@@ -632,7 +646,7 @@ pub const Engine = struct {
             {
                 self.renderChunk(slice, chunk, pos);
             }
-            self.master_clip.apply(slice);
+            if (self.master_clip.apply(slice)) self.masterFault();
             if (!direct and out.len > 0) {
                 const keep = slice[dropped * audio.CHANNELS ..];
                 @memcpy(out[done * audio.CHANNELS ..][0..keep.len], keep);
@@ -751,7 +765,7 @@ pub const Engine = struct {
         const trace_signal = !self.live_callback and signalProbeEnabled();
         const pre_clip_peak = if (trace_audio) peakInterleaved(out_slice) else 0;
         const pre_stats = if (trace_signal) signalStatsInterleaved(out_slice) else SignalStats{};
-        self.master_clip.apply(out_slice);
+        if (self.master_clip.apply(out_slice)) self.masterFault();
         const post_stats = if (trace_signal) signalStatsInterleaved(out_slice) else SignalStats{};
         if (trace_audio) {
             const post_clip_peak = peakInterleaved(out_slice);
@@ -785,6 +799,25 @@ pub const Engine = struct {
                 );
             }
         }
+    }
+
+    /// Forget the gains ramps start from (tracks moved, or a render
+    /// starts). Device stopped or rendering thread.
+    pub fn resetRamps(self: *Engine) void {
+        self.send_prev = @splat(@splat(-1));
+        self.fader_prev = @splat(.{ -1, -1 });
+        self.master_prev = .{ -1, -1 };
+    }
+
+    /// Non-finite samples reached the output (a master insert, or a sum
+    /// that overflowed): they were silenced; clear the master's recursive
+    /// state so the fault does not latch.
+    fn masterFault(self: *Engine) void {
+        if (self.master) |mb| {
+            for (mb.audioEffects()) |*fx| fx.mach.reset(fx.mach.state);
+        }
+        self.master_subsonic.reset();
+        _ = self.output_faults.fetchAdd(1, .monotonic);
     }
 
     fn resetAllMachines(self: *Engine) void {
@@ -894,7 +927,10 @@ pub const Engine = struct {
     fn renderAudition(self: *Engine, out: []f32, frames: u32) bool {
         const ti = self.aud_track orelse return false;
         if (ti >= self.tracks.len) return false;
-        if (self.aud_tail == 0 and self.aud_n == 0) return false;
+        if (self.aud_tail == 0 and self.aud_n == 0) {
+            self.aud_beat = null;
+            return false;
+        }
 
         var l_buf: [MAX_BLOCK]f32 = undefined;
         var r_buf: [MAX_BLOCK]f32 = undefined;
@@ -915,13 +951,16 @@ pub const Engine = struct {
         // Stopped: automation holds its value at the playhead.
         const t = &self.tracks[ti];
         const snap = t.audioSnapshot();
-        const beat = self.beatAtSample(self.transport.samples());
+        const playhead = self.beatAtSample(self.transport.samples());
+        const beat = self.aud_beat orelse playhead;
+        const aud_bpm = self.tmap().bpmAt(playhead);
+        self.aud_beat = beat + @as(f64, @floatFromInt(n)) * aud_bpm / 60.0 / @as(f64, @floatFromInt(self.transport.sample_rate));
         const inst_view = snap_mod.AutoView{ .snap = snap, .cursors = &t.auto_cursors, .kind = .inst };
         const ctx = machine.MachineCtx{
             .sample_rate = @floatFromInt(self.transport.sample_rate),
             .block_size = @intCast(n),
             .block_start = 0,
-            .tempo_bpm = @floatCast(self.tmap().bpmAt(beat)),
+            .tempo_bpm = @floatCast(aud_bpm),
             .ppq_position = beat,
             .transport_state = .stopped,
             .note_in = if (event_count > 0) @ptrCast(&events[0]) else null,
@@ -938,7 +977,7 @@ pub const Engine = struct {
         const rendered = renderEffects(t, ctx, l, r, fx_l_buf[0..n], fx_r_buf[0..n], .{});
         const final_l = rendered.l;
         const final_r = rendered.r;
-        const g = faderGains(t, snap, beat);
+        const g = faderGains(t, snap, playhead);
         var peak_l: f32 = 0;
         var peak_r: f32 = 0;
         var i: usize = 0;
@@ -951,7 +990,7 @@ pub const Engine = struct {
             peak_r = @max(peak_r, @abs(sr));
         }
         t.setMeter(peak_l, peak_r);
-        self.finishMaster(out, @intCast(n));
+        self.finishMaster(out, @intCast(n), 0, beat, aud_bpm);
 
         // Held, it rings on; released, until the tail is done.
         if (self.aud_held[0] | self.aud_held[1] == 0) self.aud_tail -|= frames;
@@ -1107,7 +1146,7 @@ pub const Engine = struct {
             while (self.dest_cursor[d].load(.acquire) < self.dest_len[d]) self.advanceDest(d);
         }
 
-        self.finishMaster(out, frames);
+        self.finishMaster(out, frames, block_start, self.blk.beat_start, self.blk.bpm);
     }
 
     /// Each destination's contributions this block, in render order: an
@@ -1251,7 +1290,6 @@ pub const Engine = struct {
         const spb = b.spb;
         const beat_start = b.beat_start;
         const beat_end = b.beat_end;
-        const chase = b.chase;
         const release_at = b.release_at;
         const bar_info = b.bar_info;
         const t = &self.tracks[ti];
@@ -1259,7 +1297,19 @@ pub const Engine = struct {
         if (live & routing.bit(ti) == 0) {
             if (self.pdc) |h| h.silence(ti, frames);
             t.setMeter(0, 0);
+            t.audio_parked = true;
+            self.fader_prev[ti] = .{ -1, -1 };
             return;
+        }
+        // Back from muted, soloed out or disabled: it missed its note-offs
+        // (and its voices froze mid-wave). Start clean and chase the notes
+        // sounding now.
+        const unparked = t.audio_parked and (node.is_bus or t.isEnabled());
+        if (unparked) {
+            t.audio_parked = false;
+            t.audio_machine.reset(t.audio_machine.state);
+            for (t.audioEffects()) |*fx| fx.mach.reset(fx.mach.state);
+            t.inst_quiet = 0;
         }
 
         // A bus starts from its summed input; a track from silence.
@@ -1273,6 +1323,7 @@ pub const Engine = struct {
             @memset(r, 0);
         }
 
+        const chase = b.chase or unparked;
         // Hold the snapshot the rendering thread adopted for this chunk.
         const snap = t.audioSnapshot();
         const n_events = self.injectHeld(ti, &scratch.events, gatherEvents(snap, beat_start, beat_end, spb, frames, chase, release_at, &scratch.events));
@@ -1319,6 +1370,7 @@ pub const Engine = struct {
             self.captureTap(ti, .input, block_start, l, r);
         } else if (!node.is_bus) {
             // Disabled instrument → feed silence into the effect chain.
+            if (!t.isEnabled()) t.audio_parked = true;
             if (t.isEnabled()) {
                 if (!self.idle_skip) {
                     t.audio_machine.render(t.audio_machine.state, &ctx, l, r);
@@ -1341,6 +1393,8 @@ pub const Engine = struct {
             // Audio clips mix on top of the instrument output, into the
             // same planar L/R, so the track's insert chain processes the sum.
             if (!b.ring_out) mixAudioClips(snap, block_start, frames, self.tmap(), sr, l, r);
+            // Before anything keeps it (history, keys, inserts).
+            contain(t, l, r);
             // Late for a key that arrives later still (PDC).
             if (self.pdc) |h| {
                 h.put(ti, .input, l, r);
@@ -1370,14 +1424,17 @@ pub const Engine = struct {
             }
         }
         const fx_ns = if (track_probe) probeNowNs() - fx_start else 0;
+        contain(t, l, r);
         const final_l: []const f32 = l;
         const final_r: []const f32 = r;
         self.captureTap(ti, .pre, block_start, final_l, final_r);
 
         // Fader gains at the block's ends; automated volume/pan ramp
         // between them per sample (docs/22 §Track volume and pan).
-        const g0 = faderGains(t, snap, beat_start);
         const g1 = faderGains(t, snap, beat_end);
+        const prev = self.fader_prev[ti];
+        const g0: FaderGains = if (prev[0] < 0) faderGains(t, snap, beat_start) else .{ .v = g1.v, .l = prev[0], .r = prev[1] };
+        self.fader_prev[ti] = .{ g1.l, g1.r };
         const v = g0.v;
         const inv_n: f32 = 1.0 / @as(f32, @floatFromInt(frames));
         // Post-fader signal into the free scratch pair, then summed into
@@ -1524,7 +1581,9 @@ pub const Engine = struct {
     /// `out`, and update the master meter. With no master configured (or no
     /// FX) it is fader/passthrough. The top-level master_clip then runs
     /// once over the whole device buffer.
-    fn finishMaster(self: *Engine, out: []f32, frames: u32) void {
+    /// `block_start`/`beat`/`bpm`: the chunk's time, for the master's
+    /// inserts (tempo-synced effects follow the song like track inserts).
+    fn finishMaster(self: *Engine, out: []f32, frames: u32, block_start: u64, beat: f64, bpm: f64) void {
         const n: usize = frames;
         var l: []f32 = self.master_l[0..n];
         var r: []f32 = self.master_r[0..n];
@@ -1540,9 +1599,9 @@ pub const Engine = struct {
                 const base = machine.MachineCtx{
                     .sample_rate = @floatFromInt(self.transport.sample_rate),
                     .block_size = frames,
-                    .block_start = 0,
-                    .tempo_bpm = @floatCast(self.bpmNow()),
-                    .ppq_position = 0,
+                    .block_start = block_start,
+                    .tempo_bpm = @floatCast(bpm),
+                    .ppq_position = beat,
                     .transport_state = if (self.transport.isPlaying()) .playing else .stopped,
                 };
                 const rendered = renderEffects(mb, base, l, r, self.master_fx_l[0..n], self.master_fx_r[0..n], .{ .on = self.idle_skip });
@@ -1556,12 +1615,19 @@ pub const Engine = struct {
         }
         const mvl = mv * mpl;
         const mvr = mv * mpr;
+        // Ramp from the last block's gains: a dragged master fader would
+        // otherwise step once per block.
+        const ml0 = if (self.master_prev[0] < 0) mvl else self.master_prev[0];
+        const mr0 = if (self.master_prev[0] < 0) mvr else self.master_prev[1];
+        self.master_prev = .{ mvl, mvr };
+        const inv_n: f32 = 1.0 / @as(f32, @floatFromInt(n));
         var peak_l: f32 = 0;
         var peak_r: f32 = 0;
         var i: usize = 0;
         while (i < n) : (i += 1) {
-            const sl = l[i] * mvl;
-            const sr = r[i] * mvr;
+            const f = @as(f32, @floatFromInt(i + 1)) * inv_n;
+            const sl = l[i] * (ml0 + (mvl - ml0) * f);
+            const sr = r[i] * (mr0 + (mvr - mr0) * f);
             out[i * 2] = sl;
             out[i * 2 + 1] = sr;
             peak_l = @max(peak_l, @abs(sl));
@@ -1656,14 +1722,26 @@ pub const MasterClip = struct {
         };
     }
 
-    pub fn apply(self: MasterClip, buf: []f32) void {
-        if (self.mode == .off) return;
-        for (buf) |*s| s.* = self.sample(s.*);
+    /// Clip, and never pass a non-finite sample to the device (whatever
+    /// the mode): those become silence. True if any were found.
+    pub fn apply(self: MasterClip, buf: []f32) bool {
+        const clean = allFinite(buf);
+        if (!clean) {
+            for (buf) |*s| if (!std.math.isFinite(s.*)) {
+                s.* = 0;
+            };
+        }
+        if (self.mode != .off) for (buf) |*s| {
+            s.* = self.sample(s.*);
+        };
+        return !clean;
     }
 
     inline fn soft(x: f32, k: f32) f32 {
         const ax = @abs(x);
         if (ax <= k) return x;
+        // inf / inf would be NaN: the curve's limit is ±1.
+        if (ax > 1.0e30) return if (x < 0) -1.0 else 1.0;
         const r = 1.0 - k;
         const sign: f32 = if (x < 0) -1.0 else 1.0;
         const over = ax - k;
@@ -2064,6 +2142,34 @@ fn faderGains(t: *Track, snap: *const snap_mod.TrackSnapshot, beat: f64) FaderGa
     };
     const angle = (p + 1.0) * (std.math.pi / 4.0);
     return .{ .v = v, .l = v * @cos(angle), .r = v * @sin(angle) };
+}
+
+/// True when every sample is finite. x - x is 0 for finite x and NaN for
+/// inf or NaN, and NaN survives the sum: no branch per sample.
+pub fn allFinite(buf: []const f32) bool {
+    const V = @Vector(4, f32);
+    var acc: V = @splat(0);
+    var i: usize = 0;
+    while (i + 4 <= buf.len) : (i += 4) {
+        const v: V = buf[i..][0..4].*;
+        acc += v - v;
+    }
+    var tail: f32 = @reduce(.Add, acc);
+    while (i < buf.len) : (i += 1) tail += buf[i] - buf[i];
+    return tail == 0;
+}
+
+/// A track whose signal went NaN/inf (an unstable filter, a division by
+/// zero) is silenced for the block and its machines reset, so the fault
+/// cannot reach buses, sends, the PDC history or the master, and cannot
+/// stay latched in a feedback path. Its owner (this node's thread) only.
+fn contain(t: *Track, l: []f32, r: []f32) void {
+    if (allFinite(l) and allFinite(r)) return;
+    @memset(l, 0);
+    @memset(r, 0);
+    t.audio_machine.reset(t.audio_machine.state);
+    for (t.audioEffects()) |*fx| fx.mach.reset(fx.mach.state);
+    _ = t.faults.fetchAdd(1, .monotonic);
 }
 
 fn blockPeak(buf: []const f32) f32 {
@@ -2536,15 +2642,17 @@ fn gatherEvents(
             // The note's index in the snapshot is its id: note-offs and
             // expression find their voice by it, bent or not.
             const note_id: i32 = @intCast(clip.notes_start + j);
-            if (note.hasExpression() and abs_on < beat_end and abs_off > beat_start and note.start_beat < clip.length_beats) {
+            // Past the clip's end, or nothing left of it once trimmed:
+            // an off before (or at) its on would leave the voice stuck.
+            if (note.start_beat >= clip.length_beats or abs_off <= abs_on) continue;
+            if (note.hasExpression() and abs_on < beat_end and abs_off > beat_start) {
                 count = gatherExpression(snap, note, note_id, abs_on, abs_off, beat_start, samples_per_beat, frames, out, count);
             }
 
             // A jump: notes sounding where the playhead left end, notes under
             // where it landed start (chase). One sounding at both carries on.
-            const audible = note.start_beat < clip.length_beats;
-            const held = if (release_at) |rb| audible and abs_on < rb and abs_off > rb else false;
-            const chased = chase and audible and abs_on < beat_start and abs_off > beat_start and
+            const held = if (release_at) |rb| abs_on < rb and abs_off > rb else false;
+            const chased = chase and abs_on < beat_start and abs_off > beat_start and
                 (abs_off - beat_start) * samples_per_beat >= CHASE_MIN_SAMPLES;
             if (held != chased and count < MAX_EVENTS_PER_TRACK) {
                 out[count] = .{
@@ -2557,12 +2665,20 @@ fn gatherEvents(
                 };
                 count += 1;
             }
-            if (abs_on >= beat_start and abs_on < beat_end) {
+            // Offsets in this block; a note shorter than a sample still
+            // gets its off after its on (the sort puts offs first).
+            var on_fo: ?u32 = null;
+            if (abs_on >= beat_start and abs_on < beat_end) on_fo = blockOffset(abs_on - beat_start, samples_per_beat, frames);
+            var off_fo: ?u32 = null;
+            if (abs_off > beat_start and abs_off <= beat_end) off_fo = blockOffset(abs_off - beat_start, samples_per_beat, frames);
+            if (on_fo != null and off_fo != null and off_fo.? <= on_fo.?) {
+                if (on_fo.? + 1 < frames) off_fo = on_fo.? + 1 else {
+                    on_fo = frames -| 2;
+                    off_fo = frames - 1;
+                }
+            }
+            if (on_fo) |fo| {
                 if (count < MAX_EVENTS_PER_TRACK) {
-                    const raw_fo: f64 = (abs_on - beat_start) * samples_per_beat;
-                    var fo: u32 = 0;
-                    if (raw_fo > 0) fo = @intFromFloat(@round(raw_fo));
-                    if (fo >= frames) fo = frames - 1;
                     out[count] = .{
                         .sample_offset = fo,
                         .kind = .note_on,
@@ -2574,12 +2690,8 @@ fn gatherEvents(
                     count += 1;
                 }
             }
-            if (abs_off > beat_start and abs_off <= beat_end) {
+            if (off_fo) |fo| {
                 if (count < MAX_EVENTS_PER_TRACK) {
-                    const raw_fo: f64 = (abs_off - beat_start) * samples_per_beat;
-                    var fo: u32 = 0;
-                    if (raw_fo > 0) fo = @intFromFloat(@round(raw_fo));
-                    if (fo >= frames) fo = frames - 1;
                     out[count] = .{
                         .sample_offset = fo,
                         .kind = .note_off,
@@ -2602,6 +2714,14 @@ fn gatherEvents(
         }
     }.lt);
     return count;
+}
+
+/// A beat distance into the block as a sample offset, rounded, in range.
+fn blockOffset(beats: f64, samples_per_beat: f64, frames: u32) u32 {
+    const raw = beats * samples_per_beat;
+    var fo: u32 = 0;
+    if (raw > 0) fo = @intFromFloat(@round(raw));
+    return @min(fo, frames - 1);
 }
 
 /// Whether a note sounds anywhere in [lo, hi) beats (idle skipping).
@@ -2850,6 +2970,81 @@ test "gatherEvents: note clamped to clip end" {
     try testing.expect(events[0].kind == .note_on);
     try testing.expect(events[1].kind == .note_off);
     try testing.expectEqual(@as(u32, 48), events[1].sample_offset);
+}
+
+test "gatherEvents: no stuck notes from trimmed, zero-length or sub-sample notes" {
+    const spb = 48.0;
+    const frames: u32 = 96;
+    var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
+
+    // A note starting past a trimmed clip end: its off would come first.
+    const trimmed = makeSnap(&.{.{
+        .start = 0,
+        .len = 1,
+        .notes = &.{.{ .start = 1.5, .len = 1, .pitch = 60 }},
+    }});
+    try testing.expectEqual(@as(usize, 0), gatherEvents(&trimmed, 0, 2.0, spb, frames, false, null, &events));
+
+    // Zero length at the block start: no on without an off.
+    const zero = makeSnap(&.{.{
+        .start = 0,
+        .len = 4,
+        .notes = &.{.{ .start = 1, .len = 0, .pitch = 60 }},
+    }});
+    try testing.expectEqual(@as(usize, 0), gatherEvents(&zero, 1.0, 3.0, spb, frames, false, null, &events));
+
+    // Shorter than a sample: both round to one offset; the off still
+    // follows the on.
+    const tiny = makeSnap(&.{.{
+        .start = 0,
+        .len = 4,
+        .notes = &.{.{ .start = 0.5, .len = 0.001, .pitch = 60 }},
+    }});
+    try testing.expectEqual(@as(usize, 2), gatherEvents(&tiny, 0, 2.0, spb, frames, false, null, &events));
+    try testing.expect(events[0].kind == .note_on);
+    try testing.expect(events[1].kind == .note_off);
+    try testing.expect(events[1].sample_offset > events[0].sample_offset);
+
+    // ...and at the block's last sample, both move to fit.
+    const last = makeSnap(&.{.{
+        .start = 0,
+        .len = 4,
+        .notes = &.{.{ .start = 1.99, .len = 0.001, .pitch = 60 }},
+    }});
+    try testing.expectEqual(@as(usize, 2), gatherEvents(&last, 0, 2.0, spb, frames, false, null, &events));
+    try testing.expect(events[0].kind == .note_on);
+    try testing.expect(events[1].kind == .note_off);
+    try testing.expectEqual(frames - 1, events[1].sample_offset);
+}
+
+test "MasterClip: never sends a non-finite sample, whatever the mode" {
+    const inf = std.math.inf(f32);
+    const nan = std.math.nan(f32);
+    for ([_]MasterClip.Mode{ .off, .soft, .hard }) |mode| {
+        const clip = MasterClip{ .mode = mode };
+        var buf = [_]f32{ 0.5, nan, inf, -inf, 0.25, 2.0, -0.1, 0 };
+        try testing.expect(clip.apply(&buf));
+        for (buf) |x| try testing.expect(std.math.isFinite(x));
+        try testing.expectEqual(@as(f32, 0), buf[1]);
+        try testing.expectEqual(@as(f32, 0), buf[2]);
+        var ok = [_]f32{ 0.1, -0.2, 0.3 };
+        try testing.expect(!clip.apply(&ok));
+    }
+    // The soft curve's limit at the top, not inf / inf.
+    try testing.expectEqual(@as(f32, 1), (MasterClip{}).sample(1e38));
+    try testing.expectEqual(@as(f32, -1), (MasterClip{}).sample(-1e38));
+}
+
+test "allFinite: finds NaN and inf at any position" {
+    var buf: [37]f32 = @splat(0.5);
+    try testing.expect(allFinite(&buf));
+    for (0..buf.len) |i| {
+        buf[i] = std.math.nan(f32);
+        try testing.expect(!allFinite(&buf));
+        buf[i] = -std.math.inf(f32);
+        try testing.expect(!allFinite(&buf));
+        buf[i] = 0.5;
+    }
 }
 
 /// A constant tempo of `spb` samples per beat at 48 kHz (past the BPM
@@ -3259,7 +3454,7 @@ test "MasterClip hard clamps and off passes the overs" {
     try testing.expectEqual(@as(f32, -1.0), hard.sample(-3.0));
     try testing.expectEqual(@as(f32, 0.99), hard.sample(0.99));
     var buf = [_]f32{ 2.0, -2.0, 0.5 };
-    (MasterClip{ .mode = .off }).apply(&buf);
+    _ = (MasterClip{ .mode = .off }).apply(&buf);
     try testing.expectEqualSlices(f32, &.{ 2.0, -2.0, 0.5 }, &buf);
 }
 

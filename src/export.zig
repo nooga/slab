@@ -274,7 +274,9 @@ pub const Quantizer = struct {
 
     pub fn next(self: *Quantizer, x: f32) i32 {
         const full: f64 = if (self.bits == .pcm16) 32767.0 else 8_388_607.0;
-        var v = std.math.clamp(@as(f64, x), -1, 1) * full;
+        // clamp(NaN) is +1: a non-finite sample would be full scale.
+        const xf: f64 = if (std.math.isFinite(x)) x else 0;
+        var v = std.math.clamp(xf, -1, 1) * full;
         if (self.dither) {
             const rnd = self.prng.random();
             v += rnd.float(f64) - rnd.float(f64);

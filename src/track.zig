@@ -221,6 +221,12 @@ pub const Track = struct {
 
     /// Meter levels written by engine, read by UI. Peak per channel,
     /// decaying toward zero each UI frame.
+    /// Blocks this track's signal went NaN/inf and was silenced, its
+    /// machines reset (engine `contain`). Audio counts, UI reads.
+    faults: std.atomic.Value(u32) = .init(0),
+    /// Audio only: the track was skipped (muted, soloed out, disabled)
+    /// and must reset and chase when it renders again.
+    audio_parked: bool = false,
     meter_l: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     meter_r: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 

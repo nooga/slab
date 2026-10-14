@@ -6,6 +6,29 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **A blown-up machine can no longer reach your speakers.** A track whose
+  signal turns NaN or infinite (an unstable filter, a division by zero)
+  is silenced for that block and its machines reset, so the fault cannot
+  spread into buses, sends or the master. The output stage never passes
+  a non-finite sample, in any clip mode; the hard clip used to turn one
+  into full-scale DC. Exports write silence there too.
+
+- **No more stuck notes from mute, solo or odd notes.** A track that is
+  unmuted, un-soloed or re-enabled starts clean and picks up the notes
+  sounding at that moment. Notes past a trimmed clip end, zero-length
+  notes and notes shorter than a sample no longer hang.
+
+- **Smooth faders.** Dragging a track or master fader ramps per sample
+  instead of stepping each block.
+
+- **Tempo-synced effects on the master follow the song.** A synced
+  phaser on the master used to restart every block (a buzz); auditioning
+  while stopped now runs synced LFOs too.
+
+- **Audio devices recover.** If the input stalls or is unplugged while a
+  track is armed, playback keeps running with silent input instead of
+  freezing. A device that fails to open is retried about once a second.
+
 - **Adding tracks no longer races playback.** Slicing to a sampler,
   extracting notes, chords or drums, placing stems and placing bounces
   insert tracks with the device stopped, as adding and moving tracks

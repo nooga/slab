@@ -494,7 +494,8 @@ pub fn encodeStereo24(alloc: std.mem.Allocator, interleaved: []const f32, sample
 
     var o: usize = 44;
     for (interleaved) |s| {
-        const clamped = std.math.clamp(s, -1.0, 1.0);
+        // clamp(NaN) is +1: a non-finite sample would be full scale.
+        const clamped = std.math.clamp(if (std.math.isFinite(s)) s else 0, -1.0, 1.0);
         var v: i32 = @intFromFloat(@round(clamped * 8_388_607.0));
         if (v > 8_388_607) v = 8_388_607;
         if (v < -8_388_608) v = -8_388_608;

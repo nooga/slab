@@ -35,6 +35,8 @@ fn fourcc(comptime s: *const [4]u8) u32 {
     return std.mem.readInt(u32, s, .big);
 }
 
+const REOPEN_FRAMES = 60;
+
 /// The length of one callback block, for real-time scheduling.
 pub fn blockPeriodNs() u64 {
     return @as(u64, requestedBlockFrames()) * std.time.ns_per_s / SAMPLE_RATE;
@@ -65,6 +67,8 @@ pub const Audio = struct {
     has_capture_id: bool = false,
     /// Bumped each time a device starts: its I/O workgroup is new.
     device_gen: u32 = 0,
+    /// UI frames until a failed open is tried again.
+    reopen_wait: u32 = 0,
     callbacks_ui: Callbacks = .{},
     callbacks: handoff.Latest(Callbacks) = .init(.{}),
     callback_ack: std.atomic.Value(u64) = .init(0),
@@ -195,10 +199,21 @@ pub const Audio = struct {
 
     /// Open the mic (duplex) or release it (playback-only). Re-opens the
     /// device only on a change; the render/capture hooks persist.
+    /// Called every UI frame: a device that failed to open is retried
+    /// about once a second instead of staying silent until the next arm.
     pub fn setWantCapture(self: *Audio, want: bool) !void {
-        if (want == self.want_capture) return;
+        if (want == self.want_capture and self.initialized) return;
+        if (!self.initialized and want == self.want_capture) {
+            if (self.reopen_wait > 0) {
+                self.reopen_wait -= 1;
+                return;
+            }
+        }
         self.want_capture = want;
-        try self.reopen();
+        self.reopen() catch |err| {
+            self.reopen_wait = REOPEN_FRAMES;
+            return err;
+        };
     }
 
     /// Enumerate capture (input) devices into `out`; returns the count
