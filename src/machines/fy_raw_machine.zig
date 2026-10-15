@@ -1409,7 +1409,7 @@ pub const FyRawMachine = struct {
     fn advanceSmoothing(self: *FyRawMachine, n: usize) bool {
         const a: f32 = @floatCast(1.0 - @exp(-@as(f64, @floatFromInt(n)) / (SMOOTH_TAU_S * self.kctx.sr)));
         var moving = false;
-        for (self.desc.controls[0..self.desc.control_count], 0..) |ctl, i| {
+        for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
             if (ctl.kind != .direct_f64) continue;
             const auto = self.automated(i);
             const target = if (auto) self.auto_val[i] else self.audioNorm(i);
@@ -1455,7 +1455,7 @@ pub const FyRawMachine = struct {
 
     /// True if any knob's smoothed position differs from its target.
     fn anyGliding(self: *FyRawMachine) bool {
-        for (self.desc.controls[0..self.desc.control_count], 0..) |ctl, i| {
+        for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
             if (ctl.kind != .direct_f64) continue;
             if (self.snap_req[i]) continue;
             if (self.auto_on[i]) continue; // chunked anyway while automated
@@ -1514,11 +1514,13 @@ pub const FyRawMachine = struct {
         self.synced_sr = sample_rate;
         self.synced_tempo = tempo_bpm;
         const controls = self.desc.controls[0..self.desc.control_count];
-        for (controls, 0..) |control, i| {
+        // By pointer: a Control is ~1 KB, and a by-value capture copies it
+        // per control per block.
+        for (controls, 0..) |*control, i| {
             switch (control.kind) {
-                .direct_f64 => self.writeParamF64(control.offset, normToValue(control, self.smooth_norm[i])),
-                .switch_sel => self.writeParamF64(control.offset, control.option_values[switchIndex(control, self.effRaw(i))]),
-                .int_range => self.writeParamF64(control.offset, intRangeValue(control, self.effRaw(i))),
+                .direct_f64 => self.writeParamF64(control.offset, normToValue(control.*, self.smooth_norm[i])),
+                .switch_sel => self.writeParamF64(control.offset, control.option_values[switchIndex(control.*, self.effRaw(i))]),
+                .int_range => self.writeParamF64(control.offset, intRangeValue(control.*, self.effRaw(i))),
             }
         }
 

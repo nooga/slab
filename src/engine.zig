@@ -1948,24 +1948,48 @@ pub const MasterClip = struct {
     }
 };
 
+/// Debug probe switches, read from the environment once: getenv walks
+/// the whole environment, and these are asked per chunk and per track.
+const Probe = enum(u3) { audio_trace, signal, signal_verbose, track, track_verbose };
+var probe_bits = std.atomic.Value(u8).init(0);
+
+fn probeOn(p: Probe) bool {
+    var bits = probe_bits.load(.monotonic);
+    if (bits == 0) {
+        bits = 0x80; // read
+        const env = struct {
+            fn has(name: [*:0]const u8) bool {
+                return std.c.getenv(name) != null;
+            }
+        };
+        if (env.has("SLAB_AUDIO_TRACE")) bits |= 1 << @intFromEnum(Probe.audio_trace);
+        if (env.has("SLAB_SIGNAL_PROBE") or env.has("SLAB_AUDIO_PROBE")) bits |= 1 << @intFromEnum(Probe.signal);
+        if (env.has("SLAB_SIGNAL_PROBE_VERBOSE")) bits |= 1 << @intFromEnum(Probe.signal_verbose);
+        if (env.has("SLAB_TRACK_PROBE")) bits |= 1 << @intFromEnum(Probe.track);
+        if (env.has("SLAB_TRACK_PROBE_VERBOSE")) bits |= 1 << @intFromEnum(Probe.track_verbose);
+        probe_bits.store(bits, .monotonic);
+    }
+    return bits & (@as(u8, 1) << @intFromEnum(p)) != 0;
+}
+
 fn audioTraceEnabled() bool {
-    return std.c.getenv("SLAB_AUDIO_TRACE") != null;
+    return probeOn(.audio_trace);
 }
 
 fn signalProbeEnabled() bool {
-    return std.c.getenv("SLAB_SIGNAL_PROBE") != null or std.c.getenv("SLAB_AUDIO_PROBE") != null;
+    return probeOn(.signal);
 }
 
 fn signalProbeVerbose() bool {
-    return std.c.getenv("SLAB_SIGNAL_PROBE_VERBOSE") != null;
+    return probeOn(.signal_verbose);
 }
 
 fn trackProbeEnabled() bool {
-    return std.c.getenv("SLAB_TRACK_PROBE") != null;
+    return probeOn(.track);
 }
 
 fn trackProbeVerbose() bool {
-    return std.c.getenv("SLAB_TRACK_PROBE_VERBOSE") != null;
+    return probeOn(.track_verbose);
 }
 
 fn probeNowNs() i128 {
@@ -2114,9 +2138,21 @@ pub const PdcHistory = struct {
     fn put(self: *PdcHistory, ti: usize, tap: Tap, l: []const f32, r: []const f32) void {
         const at = self.w[ti];
         for ([2][]const f32{ l, r }, 0..) |src, ch| {
-            const ring = &self.bufs[ti][@intFromEnum(tap)][ch];
-            for (src, 0..) |x, i| ring[(at + i) & (PDC_MAX - 1)] = x;
+            ringPut(&self.bufs[ti][@intFromEnum(tap)][ch], at, src);
         }
+    }
+
+    /// Copies `src` into `ring` from `at`, wrapping: at most two memcpys.
+    fn ringPut(ring: *[PDC_MAX]f32, at: usize, src: []const f32) void {
+        const n1 = @min(src.len, PDC_MAX - at);
+        @memcpy(ring[at..][0..n1], src[0..n1]);
+        @memcpy(ring[0 .. src.len - n1], src[n1..]);
+    }
+
+    fn ringGet(ring: *const [PDC_MAX]f32, at: usize, dst: []f32) void {
+        const n1 = @min(dst.len, PDC_MAX - at);
+        @memcpy(dst[0..n1], ring[at..][0..n1]);
+        @memcpy(dst[n1..], ring[0 .. dst.len - n1]);
     }
 
     /// Appends track `ti`'s taps for the block; returns where it starts.
@@ -2132,8 +2168,10 @@ pub const PdcHistory = struct {
     /// read after it comes back finds no stale audio.
     fn silence(self: *PdcHistory, ti: usize, frames: usize) void {
         const at = self.w[ti];
+        const n1 = @min(frames, PDC_MAX - at);
         for (&self.bufs[ti]) |*tap| for (tap) |*ring| {
-            for (0..frames) |i| ring[(at + i) & (PDC_MAX - 1)] = 0;
+            @memset(ring[at..][0..n1], 0);
+            @memset(ring[0 .. frames - n1], 0);
         };
         self.w[ti] = (at + frames) & (PDC_MAX - 1);
     }
@@ -2141,12 +2179,9 @@ pub const PdcHistory = struct {
     /// The block written at `at`, `delay` samples late.
     fn read(self: *const PdcHistory, ti: usize, tap: Tap, at: usize, delay: u32, l: []f32, r: []f32) void {
         const k = @intFromEnum(tap);
-        const start = at + PDC_MAX - @min(delay, PDC_LIMIT);
-        for (l, r, 0..) |*dl, *dr, i| {
-            const j = (start + i) & (PDC_MAX - 1);
-            dl.* = self.bufs[ti][k][0][j];
-            dr.* = self.bufs[ti][k][1][j];
-        }
+        const start = (at + PDC_MAX - @min(delay, PDC_LIMIT)) & (PDC_MAX - 1);
+        ringGet(&self.bufs[ti][k][0], start, l);
+        ringGet(&self.bufs[ti][k][1], start, r);
     }
 };
 
@@ -2257,8 +2292,10 @@ fn renderEffectsKeyed(
     var key_l: [MAX_BLOCK]f32 = undefined;
     var key_r: [MAX_BLOCK]f32 = undefined;
 
+    // Each effect's input peak is the previous one's output peak, scanned once.
+    var peak = [2]f32{ blockPeak(cur_l), blockPeak(cur_r) };
     for (t.audioEffects(), 0..) |*fx, i| {
-        const in_peak = [2]f32{ blockPeak(cur_l), blockPeak(cur_r) };
+        const in_peak = peak;
         const bypassed = t.audioEffectBypassed(i);
         const wet_to: f32 = if (bypassed) 0 else 1;
         const wet_from = fx.wet;
@@ -2267,8 +2304,6 @@ fn renderEffectsKeyed(
             fx.setIo(in_peak, in_peak); // bypassed → pass through untouched
             continue;
         }
-        @memset(next_l, 0);
-        @memset(next_r, 0);
         var in_ports = [_][*]const f32{ cur_l.ptr, cur_r.ptr, cur_l.ptr, cur_r.ptr };
         var ctx = base_ctx;
         ctx.note_in = null;
@@ -2326,6 +2361,7 @@ fn renderEffectsKeyed(
                 @memset(cur_l, 0);
                 @memset(cur_r, 0);
                 fx.setIo(in_peak, .{ 0, 0 });
+                peak = .{ 0, 0 };
                 continue;
             }
         }
@@ -2338,6 +2374,8 @@ fn renderEffectsKeyed(
             fx_view.fx_uid = fx.uid;
             ctx.automation = &fx_view;
         }
+        @memset(next_l, 0);
+        @memset(next_r, 0);
         fx.mach.render(fx.mach.state, &ctx, next_l, next_r);
         if (mixing) {
             const inv_n: f32 = 1.0 / @as(f32, @floatFromInt(n_fx));
@@ -2353,6 +2391,7 @@ fn renderEffectsKeyed(
             fx.dry_line = -1;
         }
         const out_peak = [2]f32{ blockPeak(next_l), blockPeak(next_r) };
+        peak = out_peak;
         fx.setIo(in_peak, out_peak);
         if (idle.on) fx.quiet = if (quiet_in and @max(out_peak[0], out_peak[1]) <= IDLE_FLOOR) fx.quiet +| @as(u32, @intCast(cur_l.len)) else 0;
 
@@ -2435,8 +2474,15 @@ fn contain(t: *Track, l: []f32, r: []f32) void {
 }
 
 fn blockPeak(buf: []const f32) f32 {
-    var p: f32 = 0;
-    for (buf) |x| p = @max(p, @abs(x));
+    const V = @Vector(8, f32);
+    var acc: V = @splat(0);
+    var i: usize = 0;
+    while (i + 8 <= buf.len) : (i += 8) {
+        const v: V = buf[i..][0..8].*;
+        acc = @max(acc, @abs(v));
+    }
+    var p: f32 = @reduce(.Max, acc);
+    while (i < buf.len) : (i += 1) p = @max(p, @abs(buf[i]));
     return p;
 }
 

@@ -21,6 +21,10 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 - **5 ms less latency.** Audio reaches the output one block sooner on
   every path.
 
+- **About 6% less CPU** for the same audio: peak scans run on vectors and
+  are shared between inserts, compensation delays copy in bulk, and
+  machines no longer copy their control tables every block.
+
 - **A blown-up machine can no longer reach your speakers.** A track whose
   signal turns NaN or infinite (an unstable filter, a division by zero)
   is silenced for that block and its machines reset, so the fault cannot
