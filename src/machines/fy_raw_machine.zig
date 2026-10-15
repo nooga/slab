@@ -1476,7 +1476,8 @@ pub const FyRawMachine = struct {
     }
 
     /// Audio thread: evaluate every lane on this machine at `beat`.
-    fn evalAutomation(self: *FyRawMachine, view: *const snapshot.AutoView, beat: f64) void {
+    fn evalAutomation(self: *FyRawMachine, view: *const snapshot.AutoView, machine_beat: f64) void {
+        const beat = view.hold_beat orelse machine_beat;
         @memset(self.auto_on[0..], false);
         const snap = view.snap;
         // Track lanes first, clip lanes by clip start: the last lane that

@@ -42,6 +42,14 @@ pub const Effect = struct {
     /// saturating; past the machine's hold it isn't rendered (docs/04
     /// §Idle skipping).
     quiet: u32 = 0,
+    /// Audio thread (docs/07 §Declicking): the wet share the last chunk
+    /// ended on; bypass crossfades it to 0 and back over a chunk.
+    wet: f32 = 1,
+    /// Audio thread: the track's dry line holding this bypassed effect's
+    /// latency (-1: none). With one, the effect keeps rendering while
+    /// bypassed and its dry path is delayed by its latency, so bypass
+    /// neither re-times the PDC graph nor brings back stale buffers.
+    dry_line: i8 = -1,
 
     pub fn setIo(self: *Effect, in: [2]f32, out: [2]f32) void {
         const v = [4]f32{ in[0], in[1], out[0], out[1] };
@@ -56,16 +64,28 @@ pub const Effect = struct {
 };
 
 pub const MAX_EFFECTS: usize = 128;
+/// A chain switch while playing: the old chain renders one chunk fading
+/// out (`out`, then `out_done` once rendered), the new one one fading in.
+pub const Swap = enum { none, out, out_done, in };
 const RetiredMachine = struct { mach: machine.Machine, io: ?*[4]std.atomic.Value(u32) = null };
 const Chain = struct { instrument: machine.Machine, effects: [MAX_EFFECTS]Effect = undefined, count: usize = 0, generation: u64 = 0, instrument_generation: u64 = 0 };
 
 const PublishedEffect = struct { uid: u16, version: u64, bypass: bool };
+pub const DRY_LINES = 4;
+/// A dry line's length: the largest latency it can hold, a power of two.
+pub const DRY_LEN = 8192;
+pub const DryLine = struct { l: [DRY_LEN]f32, r: [DRY_LEN]f32, w: usize };
+
 const ChainState = struct {
     chain: handoff.Latest(Chain),
     retired: handoff.Retirement(RetiredMachine, 128) = .{},
     audio_effects: [MAX_EFFECTS]Effect = undefined,
     previous_effects: [MAX_EFFECTS]Effect = undefined,
     published_effects: [MAX_EFFECTS]PublishedEffect = undefined,
+    /// Audio thread: delay lines for bypassed latent effects (Effect.dry_line),
+    /// touched on UI at creation so audio never takes their first faults.
+    dry: [DRY_LINES]DryLine = undefined,
+    dry_used: u8 = 0,
 };
 
 /// What role a Track plays in the signal graph (docs/23). Audio tracks
@@ -227,6 +247,14 @@ pub const Track = struct {
     /// Audio only: the track was skipped (muted, soloed out, disabled)
     /// and must reset and chase when it renders again.
     audio_parked: bool = false,
+    /// Audio only: the instrument rendered last chunk (a switch fades over
+    /// one chunk), and it was switched off long enough to miss note-offs.
+    audio_inst_on: bool = true,
+    audio_inst_parked: bool = false,
+    /// Audio only: a new instrument came in this chunk; chase.
+    audio_inst_new: bool = false,
+    /// Audio only: a chain switch in progress (adoptMachines).
+    swap: Swap = .none,
     meter_l: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     meter_r: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
@@ -250,6 +278,7 @@ pub const Track = struct {
         errdefer alloc.destroy(s2);
         const chain_state = try alloc.create(ChainState);
         chain_state.* = .{ .chain = .init(.{ .instrument = mach }) };
+        @memset(std.mem.asBytes(&chain_state.dry), 0);
         s0.* = .{};
         s1.* = .{};
         s2.* = .{};
@@ -389,23 +418,95 @@ pub const Track = struct {
     }
 
     /// Audio only, before latency calculation or any render worker runs.
-    pub fn adoptMachines(self: *Track) void {
+    /// `fade`: playing, so a change of instrument or inserts fades the old
+    /// chain out over one chunk and the new one in over the next (docs/07
+    /// §Declicking). The old machines stay unacknowledged, so alive, until
+    /// the switch. A bypass alone crossfades in the chain (Effect.wet).
+    pub fn adoptMachines(self: *Track, fade: bool) void {
+        switch (self.swap) {
+            // The old chain's last chunk is still to render; stopped, it
+            // never will: switch now.
+            .out => if (fade) return else {
+                self.applyChain();
+                self.swap = .none;
+                return;
+            },
+            .out_done => {
+                self.applyChain();
+                self.swap = if (fade) .in else .none;
+                return;
+            },
+            .in => if (!fade) {
+                self.swap = .none;
+            },
+            .none => {},
+        }
         if (!self.chain.adopt()) return;
         machine.codeBarrier();
+        if (fade and self.chainChanges(self.chain.current())) {
+            self.swap = .out;
+            return;
+        }
+        self.applyChain();
+    }
+
+    /// The adopted version swaps the instrument or the inserts, not only
+    /// bypass states.
+    fn chainChanges(self: *Track, v: *const Chain) bool {
+        if (v.instrument_generation != self.audio_instrument_generation or v.count != self.audio_effect_count) return true;
+        for (v.effects[0..v.count], self.audioEffects()) |a, b| {
+            if (a.uid != b.uid or a.version != b.version) return true;
+        }
+        return false;
+    }
+
+    fn applyChain(self: *Track) void {
         const v = self.chain.current();
         const previous_count = self.audio_effect_count;
         const previous = self.chain_state.previous_effects[0..previous_count];
         @memcpy(previous, self.audioEffects());
+        const cs = self.chain_state;
         for (v.effects[0..v.count], 0..) |fx, i| {
-            self.audio_effects[i] = fx;
+            const e = &self.audio_effects[i];
+            e.* = fx;
+            const bypass = fx.bypass.load(.monotonic);
+            // New here: it starts where it stands, no fade.
+            e.wet = if (bypass) 0 else 1;
+            e.dry_line = -1;
             for (previous) |old| if (old.uid == fx.uid and old.version == fx.version) {
-                self.audio_effects[i].quiet = old.quiet;
+                e.quiet = old.quiet;
+                e.wet = old.wet;
+                e.dry_line = old.dry_line;
+                const was = old.bypass.load(.monotonic);
+                if (bypass and !was and e.dry_line < 0 and e.mach.latencySamples() > 0) {
+                    // Keep its latency through the bypass (a free line, else
+                    // the old way: the graph re-times).
+                    if (@ctz(~cs.dry_used) < DRY_LINES) {
+                        const k: u3 = @intCast(@ctz(~cs.dry_used));
+                        e.dry_line = k;
+                        cs.dry_used |= @as(u8, 1) << k;
+                        @memset(&cs.dry[k].l, 0);
+                        @memset(&cs.dry[k].r, 0);
+                        cs.dry[k].w = 0;
+                    }
+                }
+                // Back from a bypass it was not rendered through: its
+                // buffers hold audio from before; start it clean.
+                if (!bypass and was and e.dry_line < 0) e.mach.reset(e.mach.state);
                 break;
             };
         }
+        // Lines held by effects that are gone are free again.
+        var used: u8 = 0;
+        for (self.audio_effects[0..v.count]) |e| if (e.dry_line >= 0) {
+            used |= @as(u8, 1) << @intCast(e.dry_line);
+        };
+        cs.dry_used = used;
         if (self.audio_instrument_generation != v.instrument_generation) {
             self.inst_quiet = 0;
             self.clearSounding();
+            // A new instrument hears none of the notes already held.
+            self.audio_inst_new = true;
         }
         self.audio_instrument_generation = v.instrument_generation;
         self.audio_machine = v.instrument;
@@ -1306,7 +1407,7 @@ test "realtime: instrument and effect retirement happens only after audio adopti
     var t = try Track.init(a, "versions", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, old.interface());
     defer t.deinit(a);
     try t.addEffect(a, fx.interface(), 0);
-    t.adoptMachines();
+    t.adoptMachines(false);
     const io = t.audioEffects()[0].shared_io.?;
     try t.replaceMachine(a, new.interface());
     try t.removeEffect(a, 0);
@@ -1316,7 +1417,7 @@ test "realtime: instrument and effect retirement happens only after audio adopti
     try std.testing.expect(@intFromPtr(t.audio_machine.state) == @intFromPtr(&old));
     t.audioEffects()[0].setIo(.{ 0.2, 0.3 }, .{ 0.4, 0.5 });
     try std.testing.expectEqual(@as(u32, @bitCast(@as(f32, 0.2))), io[0].load(.monotonic));
-    t.adoptMachines();
+    t.adoptMachines(false);
     try std.testing.expect(@intFromPtr(t.audio_machine.state) == @intFromPtr(&new));
     try std.testing.expectEqual(@as(usize, 0), t.audio_effect_count);
     t.collectMachines(a);

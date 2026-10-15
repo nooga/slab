@@ -7,7 +7,8 @@ const std = @import("std");
 const audio = @import("audio.zig");
 const machine = @import("machine.zig");
 const Transport = @import("transport.zig").Transport;
-const Track = @import("track.zig").Track;
+const track_mod = @import("track.zig");
+const Track = track_mod.Track;
 const snap_mod = @import("snapshot.zig");
 const meter = @import("meter.zig");
 const tempo = @import("tempo.zig");
@@ -87,9 +88,15 @@ const Block = struct {
     beat_end: f64 = 0,
     chase: bool = false,
     release_at: ?f64 = null,
-    /// Past an offline render's stop [Engine.offline_stop]: no notes or
-    /// audio clips, only what still rings.
+    /// Past a stop (live, or an offline render's [Engine.offline_stop]):
+    /// no notes or audio clips, only what still rings. `beat_start` and
+    /// `beat_end` hold at the stop.
     ring_out: bool = false,
+    /// The beat machines see: `beat_start`, except past a stop, where it
+    /// keeps running so tempo-synced LFOs move (automation holds).
+    ctx_beat: f64 = 0,
+    /// The chunk ends at the loop end: audio clips fade out into the wrap.
+    wrap_out: bool = false,
     bar_info: meter.MeterMap.BarInfo = undefined,
 };
 
@@ -235,6 +242,13 @@ pub const Engine = struct {
     /// by `renderOffline`.
     offline_stop: ?u64 = null,
     stop_released: bool = false,
+    /// Live stop (docs/07 §Stop): the sounding notes are released and the
+    /// graph keeps rendering from the stop until its tails are quiet, as
+    /// a seek keeps them. `ring_from` is where the playhead stopped.
+    ringing: bool = false,
+    ring_from: u64 = 0,
+    ring_pos: u64 = 0,
+    ring_quiet: u64 = 0,
 
     /// Master bus. Audio tracks accumulate (planar) into master_l/r, then
     /// the master Track's FX chain + fader run before the interleaved
@@ -277,6 +291,20 @@ pub const Engine = struct {
     fader_prev: [routing.MAX_TRACKS][2]f32 = @splat(.{ -1, -1 }),
     /// The master's volume × balance, likewise.
     master_prev: [2]f32 = .{ -1, -1 },
+    /// Mute/solo gates (docs/07 §Declicking): each track's contributions
+    /// ramp from `gate[ti]` to its target (heard: 1, else 0) over a chunk;
+    /// a track fading out renders that chunk, then parks. Set to their
+    /// targets without a ramp when playback or an offline render starts.
+    gate: [routing.MAX_TRACKS]f32 = @splat(0),
+    gate_to: [routing.MAX_TRACKS]f32 = @splat(0),
+    gate_snap: bool = true,
+    /// Each compensated path's delay last chunk (-1: none yet), so a
+    /// latency change crossfades (`tapped`).
+    out_dly_prev: [routing.MAX_TRACKS]i32 = @splat(-1),
+    /// The chunk being rendered ends at the loop end (Block.wrap_out).
+    wrap_next: bool = false,
+    send_dly_prev: [routing.MAX_TRACKS][routing.MAX_SENDS]i32 = @splat(@splat(-1)),
+    in_dly_prev: [routing.MAX_TRACKS]i32 = @splat(-1),
 
     /// Delay compensation (docs/07 §PDC): each track's recent output, from
     /// which a path that arrives early at a sum is read late. Allocated
@@ -553,13 +581,15 @@ pub const Engine = struct {
     }
 
     fn adoptMachines(self: *Engine) void {
-        for (self.tracks) |*t| adoptTrack(t);
-        if (self.master) |t| adoptTrack(t);
+        // Live and sounding: chain switches fade (Track.adoptMachines).
+        const fade = self.live_callback and (self.was_playing or self.ringing);
+        for (self.tracks) |*t| adoptTrack(t, fade);
+        if (self.master) |t| adoptTrack(t, fade);
     }
 
-    fn adoptTrack(t: *Track) void {
+    fn adoptTrack(t: *Track, fade: bool) void {
         _ = t.currentSnapshot();
-        t.adoptMachines();
+        t.adoptMachines(fade);
         if (t.audio_machine.adopt_updates) |f| f(t.audio_machine.state);
         for (t.audioEffects()) |*fx| if (fx.mach.adopt_updates) |f| f(fx.mach.state);
     }
@@ -607,6 +637,8 @@ pub const Engine = struct {
         // An offline render starts from its own values, not the last live
         // block's: the same render twice is the same audio.
         self.resetRamps();
+        self.ringing = false;
+        self.gate_snap = true;
         self.transport.tempo.commitImmediate();
         self.chase_pending = true;
         self.capture_start = start_sample;
@@ -690,6 +722,7 @@ pub const Engine = struct {
         @memset(out_slice, 0);
 
         if (self.panic_request.swap(false, .acquire)) {
+            self.ringing = false;
             self.resetAllMachines();
             self.aud_held = .{ 0, 0 };
             self.aud_tail = 0;
@@ -701,26 +734,28 @@ pub const Engine = struct {
         const playing = self.transport.isPlaying();
         if (!playing) {
             if (self.was_playing) {
-                // play → stop transition: drop all sustained notes.
-                for (self.tracks) |*t| {
-                    t.audio_machine.reset(t.audio_machine.state);
-                    for (t.audioEffects()) |*fx| fx.mach.reset(fx.mach.state);
-                    t.setMeter(0, 0);
-                    t.clearSounding();
-                }
+                // play → stop: the sounding notes are released and the
+                // graph rings out from the stop (renderRing), as a seek
+                // keeps tails. No reset: that cut every voice and tail at
+                // once (a click) and cost a sweep of every buffer here.
+                for (self.tracks) |*t| t.clearSounding();
                 // Whatever the editor still holds sounds again from here.
                 if (self.aud_track) |at| for (0..128) |pi| {
                     if (self.aud_held[pi / 64] & (@as(u64, 1) << @intCast(pi % 64)) != 0) self.pushHeld(at, @intCast(pi), true);
                 };
-                if (self.master) |mb| {
-                    for (mb.audioEffects()) |*fx| fx.mach.reset(fx.mach.state);
-                }
                 self.was_playing = false;
+                self.ringing = true;
+                self.ring_from = self.played_to;
+                self.ring_pos = self.played_to;
+                self.ring_quiet = 0;
+                self.stop_released = false;
                 // Force the first block on resume to be a boundary, so a
                 // meter edited while stopped is adopted immediately.
                 self.meter_last_bar = null;
             }
-            if (!self.renderAudition(out_slice, frames)) {
+            if (self.ringing) {
+                self.renderRing(out_slice, frames);
+            } else if (!self.renderAudition(out_slice, frames)) {
                 for (self.tracks) |*t| t.setMeter(0, 0);
                 if (self.master) |mb| mb.setMeter(0, 0);
             }
@@ -733,7 +768,13 @@ pub const Engine = struct {
                 self.release_from = self.beatAtSample(self.played_to);
                 self.chase_pending = true;
             }
-            if (!self.was_playing) self.chase_pending = true;
+            if (!self.was_playing) {
+                self.chase_pending = true;
+                // Unless tails are still ringing, mutes start where they stand.
+                if (!self.ringing) self.gate_snap = true;
+                // Playing again cuts a ring-out short; tails carry on.
+                self.ringing = false;
+            }
             self.was_playing = true;
 
             // Chunk the callback block down to MAX_BLOCK if needed.
@@ -741,6 +782,8 @@ pub const Engine = struct {
             var pos = start_pos;
             while (done < n) {
                 const chunk = self.nextRenderChunk(@intCast(@min(MAX_BLOCK, n - done)), pos);
+                self.wrap_next = self.endsAtLoop(pos, chunk);
+                defer self.wrap_next = false;
                 self.renderChunk(
                     out_slice[done * audio.CHANNELS ..][0 .. chunk * audio.CHANNELS],
                     @intCast(chunk),
@@ -807,6 +850,9 @@ pub const Engine = struct {
         self.send_prev = @splat(@splat(-1));
         self.fader_prev = @splat(.{ -1, -1 });
         self.master_prev = .{ -1, -1 };
+        self.out_dly_prev = @splat(-1);
+        self.send_dly_prev = @splat(@splat(-1));
+        self.in_dly_prev = @splat(-1);
     }
 
     /// Non-finite samples reached the output (a master insert, or a sum
@@ -834,10 +880,23 @@ pub const Engine = struct {
 
     /// A tap of track `ti` for this block, `delay` samples late: the block
     /// itself at 0, else read back from the history written at `at`.
-    fn tapped(self: *Engine, ti: usize, tap: PdcHistory.Tap, at: usize, delay: u32, l: []const f32, r: []const f32, buf_l: *[MAX_BLOCK]f32, buf_r: *[MAX_BLOCK]f32) struct { l: []const f32, r: []const f32 } {
+    /// `prev` is this path's delay last chunk: when the delay moves (a
+    /// latency changed), the old and new reads crossfade over the chunk
+    /// instead of jumping, which would repeat or skip audio.
+    fn tapped(self: *Engine, ti: usize, tap: PdcHistory.Tap, at: usize, delay: u32, prev: *i32, l: []const f32, r: []const f32, buf_l: *[MAX_BLOCK]f32, buf_r: *[MAX_BLOCK]f32) struct { l: []const f32, r: []const f32 } {
         const h = self.pdc orelse return .{ .l = l, .r = r };
-        if (delay == 0) return .{ .l = l, .r = r };
+        const was = prev.*;
+        prev.* = @intCast(delay);
         const n = l.len;
+        if (was >= 0 and was != delay) {
+            h.read(ti, tap, at, delay, buf_l[0..n], buf_r[0..n]);
+            var old_l: [MAX_BLOCK]f32 = undefined;
+            var old_r: [MAX_BLOCK]f32 = undefined;
+            h.read(ti, tap, at, @intCast(was), old_l[0..n], old_r[0..n]);
+            crossfadeInto(buf_l[0..n], buf_r[0..n], old_l[0..n], old_r[0..n]);
+            return .{ .l = buf_l[0..n], .r = buf_r[0..n] };
+        }
+        if (delay == 0) return .{ .l = l, .r = r };
         h.read(ti, tap, at, delay, buf_l[0..n], buf_r[0..n]);
         return .{ .l = buf_l[0..n], .r = buf_r[0..n] };
     }
@@ -897,6 +956,17 @@ pub const Engine = struct {
         return @intCast(@min(@as(u64, frames), to_end));
     }
 
+    /// Whether the chunk [pos, pos + frames) ends exactly at the loop end.
+    fn endsAtLoop(self: *Engine, pos: u64, frames: usize) bool {
+        if (!self.transport.loop_audio.enabled) return false;
+        const start_b = self.transport.loop_audio.startBeats();
+        const end_b = self.transport.loop_audio.endBeats();
+        if (end_b <= start_b) return false;
+        const start_s = self.sampleAtBeat(start_b);
+        const end_s = self.sampleAtBeat(end_b);
+        return end_s > start_s and pos < end_s and pos + frames == end_s;
+    }
+
     fn advanceRenderPos(self: *Engine, pos: u64, frames: u32) u64 {
         var next = pos + frames;
         if (!self.transport.loop_audio.enabled) return next;
@@ -920,6 +990,41 @@ pub const Engine = struct {
         self.release_from = self.beatAtSample(pos + frames);
         self.chase_pending = true;
         return next;
+    }
+
+    /// Stopped, tails ringing: the whole graph renders from the stop with
+    /// no new notes or clips, until the output has been under RING_FLOOR
+    /// for RING_QUIET_S. A ring that never falls quiet (a drone, a held
+    /// key's machine that ignores note-off) fades out over one block at
+    /// RING_MAX_S.
+    fn renderRing(self: *Engine, out: []f32, frames: u32) void {
+        const n: usize = frames;
+        var done: usize = 0;
+        while (done < n) {
+            const chunk: u32 = @intCast(@min(MAX_BLOCK, n - done));
+            self.renderChunk(out[done * audio.CHANNELS ..][0 .. @as(usize, chunk) * audio.CHANNELS], chunk, self.ring_pos);
+            self.aud_n = 0;
+            done += chunk;
+            self.ring_pos += chunk;
+        }
+        const sr: u64 = self.transport.sample_rate;
+        const held = self.aud_held[0] | self.aud_held[1] != 0;
+        if (held or peakInterleaved(out) > RING_FLOOR) self.ring_quiet = 0 else self.ring_quiet += n;
+        if (self.ring_quiet >= RING_QUIET_S * sr) {
+            self.ringing = false;
+        } else if (!held and self.ring_pos - self.ring_from >= RING_MAX_S * sr) {
+            const inv: f32 = 1.0 / @as(f32, @floatFromInt(n));
+            for (0..n) |i| {
+                const g = 1.0 - @as(f32, @floatFromInt(i + 1)) * inv;
+                out[i * 2] *= g;
+                out[i * 2 + 1] *= g;
+            }
+            self.ringing = false;
+        }
+        if (!self.ringing) {
+            for (self.tracks) |*t| t.setMeter(0, 0);
+            if (self.master) |mb| mb.setMeter(0, 0);
+        }
     }
 
     /// Stopped: the track the editor holds notes on plays alone, with
@@ -955,7 +1060,7 @@ pub const Engine = struct {
         const beat = self.aud_beat orelse playhead;
         const aud_bpm = self.tmap().bpmAt(playhead);
         self.aud_beat = beat + @as(f64, @floatFromInt(n)) * aud_bpm / 60.0 / @as(f64, @floatFromInt(self.transport.sample_rate));
-        const inst_view = snap_mod.AutoView{ .snap = snap, .cursors = &t.auto_cursors, .kind = .inst };
+        const inst_view = snap_mod.AutoView{ .snap = snap, .cursors = &t.auto_cursors, .kind = .inst, .hold_beat = playhead };
         const ctx = machine.MachineCtx{
             .sample_rate = @floatFromInt(self.transport.sample_rate),
             .block_size = @intCast(n),
@@ -1020,7 +1125,20 @@ pub const Engine = struct {
             if (t.mute.load(.monotonic)) muted |= b;
             if (t.solo.load(.monotonic)) soloed |= b;
         }
-        const heard = graph.audible(muted, soloed);
+        const target = graph.audible(muted, soloed);
+        // Fading out: still mixed (at a falling gate) for this chunk.
+        var fading: u32 = 0;
+        for (0..graph.count) |i| {
+            const on = target & routing.bit(@intCast(i)) != 0;
+            if (self.gate_snap) {
+                self.gate[i] = if (on) 1 else 0;
+                self.tracks[i].audio_inst_on = self.tracks[i].isEnabled();
+            }
+            self.gate_to[i] = if (on) 1 else 0;
+            if (!on and self.gate[i] > 0) fading |= routing.bit(@intCast(i));
+        }
+        self.gate_snap = false;
+        const heard = target | fading;
         var live = graph.rendered(heard);
         if (self.capture) |cap| {
             live |= sources;
@@ -1048,17 +1166,21 @@ pub const Engine = struct {
         self.chase_pending = false;
         var release_at = self.release_from;
         self.release_from = null;
-        // Past an offline stop the playhead holds there: the first block
-        // releases what sounds, none starts anything.
+        // Past a stop the playhead holds there: the first block releases
+        // what sounds, none starts anything. Machines' own beat runs on.
         var ring_out = false;
-        if (self.offline_stop) |stop| if (block_start >= stop) {
+        var ctx_beat = beat_start;
+        const hold: ?u64 = if (self.ringing) self.ring_from else if (self.offline_stop) |stop| (if (block_start >= stop) stop else null) else null;
+        if (hold) |stop| {
             const sb = self.beatAtSample(stop);
+            const hold_bpm = self.tmap().bpmAt(sb);
+            ctx_beat = sb + @as(f64, @floatFromInt(block_start -| stop)) * hold_bpm / 60.0 / @as(f64, @floatFromInt(sr));
             beat_start = sb;
             beat_end = sb;
             ring_out = true;
             if (!self.stop_released) release_at = sb;
             self.stop_released = true;
-        };
+        }
         // Meter position for this block (homogeneous within the block).
         // Adopt a staged meter edit only when we cross into a new bar, so
         // bars never re-lay under the playhead mid-bar (docs/07).
@@ -1093,6 +1215,8 @@ pub const Engine = struct {
             .chase = chase,
             .release_at = release_at,
             .ring_out = ring_out,
+            .ctx_beat = ctx_beat,
+            .wrap_out = self.wrap_next,
             .bar_info = bar_info,
         };
         const order = graph.renderOrder();
@@ -1146,7 +1270,8 @@ pub const Engine = struct {
             while (self.dest_cursor[d].load(.acquire) < self.dest_len[d]) self.advanceDest(d);
         }
 
-        self.finishMaster(out, frames, block_start, self.blk.beat_start, self.blk.bpm);
+        self.finishMaster(out, frames, block_start, self.blk.ctx_beat, self.blk.bpm);
+        @memcpy(self.gate[0..graph.count], self.gate_to[0..graph.count]);
     }
 
     /// Each destination's contributions this block, in render order: an
@@ -1299,11 +1424,24 @@ pub const Engine = struct {
             t.setMeter(0, 0);
             t.audio_parked = true;
             self.fader_prev[ti] = .{ -1, -1 };
+            // Silent anyway: a chain switch needs no fade.
+            switch (t.swap) {
+                .out => t.swap = .out_done,
+                .in => t.swap = .none,
+                else => {},
+            }
             return;
         }
         // Back from muted, soloed out or disabled: it missed its note-offs
         // (and its voices froze mid-wave). Start clean and chase the notes
         // sounding now.
+        // An instrument switched back on likewise missed its note-offs.
+        const inst_back = !node.is_bus and t.audio_inst_parked and t.isEnabled();
+        if (inst_back) {
+            t.audio_inst_parked = false;
+            t.audio_machine.reset(t.audio_machine.state);
+            t.inst_quiet = 0;
+        }
         const unparked = t.audio_parked and (node.is_bus or t.isEnabled());
         if (unparked) {
             t.audio_parked = false;
@@ -1323,7 +1461,9 @@ pub const Engine = struct {
             @memset(r, 0);
         }
 
-        const chase = b.chase or unparked;
+        const inst_new = t.audio_inst_new and t.swap != .out;
+        if (inst_new) t.audio_inst_new = false;
+        const chase = b.chase or unparked or inst_back or inst_new;
         // Hold the snapshot the rendering thread adopted for this chunk.
         const snap = t.audioSnapshot();
         const n_events = self.injectHeld(ti, &scratch.events, gatherEvents(snap, beat_start, beat_end, spb, frames, chase, release_at, &scratch.events));
@@ -1333,16 +1473,18 @@ pub const Engine = struct {
         // inserts (docs/28 §Freeze); the fader on is as ever.
         const frozen = if (node.is_bus) null else snap.frozen;
 
-        const inst_view = snap_mod.AutoView{ .snap = snap, .cursors = &t.auto_cursors, .kind = .inst };
-        // The track's own time (docs/28 §Polymeter and polytempo).
-        const lt = localTime(snap, beat_start, bpm, bar_info, self.meter_state.map());
+        // The track's own time (docs/28 §Polymeter and polytempo). Past a
+        // stop, automation holds at it while machines' beat runs on.
+        const lt = localTime(snap, b.ctx_beat, bpm, bar_info, self.meter_state.map());
+        const hold_beat: ?f64 = if (b.ring_out) localTime(snap, beat_start, bpm, bar_info, self.meter_state.map()).beat else null;
+        const inst_view = snap_mod.AutoView{ .snap = snap, .cursors = &t.auto_cursors, .kind = .inst, .hold_beat = hold_beat };
         const ctx = machine.MachineCtx{
             .sample_rate = @floatFromInt(sr),
             .block_size = frames,
             .block_start = block_start,
             .tempo_bpm = @floatCast(lt.bpm),
             .ppq_position = lt.beat,
-            .transport_state = .playing,
+            .transport_state = if (b.ring_out) .stopped else .playing,
             .note_in = if (n_events > 0) @ptrCast(&scratch.events[0]) else null,
             .note_in_count = @intCast(n_events),
             .bar = lt.bar,
@@ -1369,9 +1511,13 @@ pub const Engine = struct {
             if (!b.ring_out) playFrozen(fz, block_start, frames, sr, l, r);
             self.captureTap(ti, .input, block_start, l, r);
         } else if (!node.is_bus) {
-            // Disabled instrument → feed silence into the effect chain.
-            if (!t.isEnabled()) t.audio_parked = true;
-            if (t.isEnabled()) {
+            // Disabled instrument → feed silence into the effect chain,
+            // after one chunk fading it out (and in again when enabled).
+            const en = t.isEnabled();
+            const was_on = t.audio_inst_on;
+            t.audio_inst_on = en;
+            if (!en and !was_on) t.audio_inst_parked = true;
+            if (en or was_on) {
                 if (!self.idle_skip) {
                     t.audio_machine.render(t.audio_machine.state, &ctx, l, r);
                 } else {
@@ -1379,7 +1525,7 @@ pub const Engine = struct {
                     // A control edit wakes it too, so its params and
                     // displays catch up (the edit may be all there is).
                     const edited = t.audio_machine.takeWake();
-                    wake = n_events > 0 or held_here or notesNear(snap, beat_start, beat_end + ahead);
+                    wake = n_events > 0 or held_here or (!b.ring_out and notesNear(snap, beat_start, beat_end + ahead));
                     if (edited) t.inst_quiet = 0;
                     const hold = t.audio_machine.idleHold(@floatFromInt(sr), idleHoldSamples(sr));
                     // Asleep: `l`/`r` stay silent.
@@ -1389,17 +1535,26 @@ pub const Engine = struct {
                         t.inst_quiet = if (wake or loud) 0 else t.inst_quiet +| frames;
                     }
                 }
+                if (en != was_on) fadeBlock(l, r, if (was_on) 1 else 0, if (en) 1 else 0);
             }
             // Audio clips mix on top of the instrument output, into the
             // same planar L/R, so the track's insert chain processes the sum.
-            if (!b.ring_out) mixAudioClips(snap, block_start, frames, self.tmap(), sr, l, r);
+            if (!b.ring_out) mixAudioClipsEdged(snap, block_start, frames, self.tmap(), sr, l, r, .{ .on = true, .jump_in = chase, .jump_out = b.wrap_out });
             // Before anything keeps it (history, keys, inserts).
             contain(t, l, r);
             // Late for a key that arrives later still (PDC).
             if (self.pdc) |h| {
                 h.put(ti, .input, l, r);
                 const d = self.lat_in[ti];
-                if (d > 0) h.read(ti, .input, h.w[ti], d, l, r);
+                const was = self.in_dly_prev[ti];
+                self.in_dly_prev[ti] = @intCast(d);
+                if (was >= 0 and was != d) {
+                    var old_l: [MAX_BLOCK]f32 = undefined;
+                    var old_r: [MAX_BLOCK]f32 = undefined;
+                    h.read(ti, .input, h.w[ti], @intCast(was), old_l[0..frames], old_r[0..frames]);
+                    h.read(ti, .input, h.w[ti], d, l, r);
+                    crossfadeInto(l, r, old_l[0..frames], old_r[0..frames]);
+                } else if (d > 0) h.read(ti, .input, h.w[ti], d, l, r);
             }
             self.captureTap(ti, .input, block_start, l, r);
         }
@@ -1424,6 +1579,17 @@ pub const Engine = struct {
             }
         }
         const fx_ns = if (track_probe) probeNowNs() - fx_start else 0;
+        switch (t.swap) {
+            .out => {
+                fadeBlock(l, r, 1, 0);
+                t.swap = .out_done;
+            },
+            .in => {
+                fadeBlock(l, r, 0, 1);
+                t.swap = .none;
+            },
+            else => {},
+        }
         contain(t, l, r);
         const final_l: []const f32 = l;
         const final_r: []const f32 = r;
@@ -1547,32 +1713,54 @@ pub const Engine = struct {
         const post_r = self.post_r[ti][0..frames];
         var dly_l: [MAX_BLOCK]f32 = undefined;
         var dly_r: [MAX_BLOCK]f32 = undefined;
+        const inv_n: f32 = 1.0 / @as(f32, @floatFromInt(frames));
+        const g_from = self.gate[ti];
+        const g_to = self.gate_to[ti];
         if (it.send == OUTPUT) {
             const dst_l = if (node.output == routing.NONE) self.master_l[0..frames] else self.bus_l[node.output][0..frames];
             const dst_r = if (node.output == routing.NONE) self.master_r[0..frames] else self.bus_r[node.output][0..frames];
             const out_in = if (node.output == routing.NONE) self.lat_master_in else self.lat_in[node.output];
-            const out_tap = self.tapped(ti, .post, hist_at, out_in -| self.lat_out[ti], post_l, post_r, &dly_l, &dly_r);
-            for (dst_l, out_tap.l) |*d, x| d.* += x;
-            for (dst_r, out_tap.r) |*d, x| d.* += x;
+            const out_tap = self.tapped(ti, .post, hist_at, out_in -| self.lat_out[ti], &self.out_dly_prev[ti], post_l, post_r, &dly_l, &dly_r);
+            if (g_from == g_to) {
+                if (g_to == 1) {
+                    for (dst_l, out_tap.l) |*d, x| d.* += x;
+                    for (dst_r, out_tap.r) |*d, x| d.* += x;
+                }
+                return;
+            }
+            for (0..frames) |k| {
+                const g = g_from + (g_to - g_from) * (@as(f32, @floatFromInt(k + 1)) * inv_n);
+                dst_l[k] += out_tap.l[k] * g;
+                dst_r[k] += out_tap.r[k] * g;
+            }
             return;
         }
         const si = it.send;
         const s = node.sends[si];
         const final_l: []const f32 = self.pre_l[ti][0..frames];
         const final_r: []const f32 = self.pre_r[ti][0..frames];
-        const inv_n: f32 = 1.0 / @as(f32, @floatFromInt(frames));
         const lvl = s.level;
         const prev = if (self.send_prev[ti][si] < 0) lvl else self.send_prev[ti][si];
         self.send_prev[ti][si] = lvl;
-        const send_tap = self.tapped(ti, if (s.pre) .pre else .post, hist_at, self.lat_in[s.bus] -| self.lat_out[ti], if (s.pre) final_l else post_l, if (s.pre) final_r else post_r, &dly_l, &dly_r);
+        const send_tap = self.tapped(ti, if (s.pre) .pre else .post, hist_at, self.lat_in[s.bus] -| self.lat_out[ti], &self.send_dly_prev[ti][si], if (s.pre) final_l else post_l, if (s.pre) final_r else post_r, &dly_l, &dly_r);
         const src_l = send_tap.l;
         const src_r = send_tap.r;
         const bl = self.bus_l[s.bus][0..frames];
         const br = self.bus_r[s.bus][0..frames];
+        if (g_from == g_to and g_to == 1) {
+            for (0..frames) |k| {
+                const gk = prev + (lvl - prev) * (@as(f32, @floatFromInt(k)) * inv_n);
+                bl[k] += src_l[k] * gk;
+                br[k] += src_r[k] * gk;
+            }
+            return;
+        }
         for (0..frames) |k| {
-            const gk = prev + (lvl - prev) * (@as(f32, @floatFromInt(k)) * inv_n);
-            bl[k] += src_l[k] * gk;
-            br[k] += src_r[k] * gk;
+            const f = @as(f32, @floatFromInt(k)) * inv_n;
+            const gk = prev + (lvl - prev) * f;
+            const gate = g_from + (g_to - g_from) * (@as(f32, @floatFromInt(k + 1)) * inv_n);
+            bl[k] += src_l[k] * gk * gate;
+            br[k] += src_r[k] * gk * gate;
         }
     }
 
@@ -1607,6 +1795,17 @@ pub const Engine = struct {
                 const rendered = renderEffects(mb, base, l, r, self.master_fx_l[0..n], self.master_fx_r[0..n], .{ .on = self.idle_skip });
                 l = rendered.l;
                 r = rendered.r;
+            }
+            switch (mb.swap) {
+                .out => {
+                    fadeBlock(l, r, 1, 0);
+                    mb.swap = .out_done;
+                },
+                .in => {
+                    fadeBlock(l, r, 0, 1);
+                    mb.swap = .none;
+                },
+                else => {},
             }
             mv = mb.volume();
             const pg = mb.balanceGains();
@@ -1957,7 +2156,8 @@ fn chainLatency(t: *Track, is_bus: bool) u32 {
     if (!is_bus and t.frozen.load(.acquire)) return 0;
     var n = instLatency(t, is_bus);
     for (t.audioEffects(), 0..) |*fx, i| {
-        if (!t.audioEffectBypassed(i)) n += fx.mach.latencySamples();
+        // A bypass that keeps its latency (a dry line) still counts.
+        if (!t.audioEffectBypassed(i) or fx.dry_line >= 0) n += fx.mach.latencySamples();
     }
     return n;
 }
@@ -2059,7 +2259,11 @@ fn renderEffectsKeyed(
 
     for (t.audioEffects(), 0..) |*fx, i| {
         const in_peak = [2]f32{ blockPeak(cur_l), blockPeak(cur_r) };
-        if (t.audioEffectBypassed(i)) {
+        const bypassed = t.audioEffectBypassed(i);
+        const wet_to: f32 = if (bypassed) 0 else 1;
+        const wet_from = fx.wet;
+        fx.wet = wet_to;
+        if (bypassed and wet_from == 0 and fx.dry_line < 0) {
             fx.setIo(in_peak, in_peak); // bypassed → pass through untouched
             continue;
         }
@@ -2085,8 +2289,31 @@ fn renderEffectsKeyed(
             }
             ctx.audio_in_count = 4;
         };
-        lat += fx.mach.latencySamples();
-        // Its input (and key) silent: asleep past its hold, so the chain
+        const fx_lat = fx.mach.latencySamples();
+        lat += fx_lat;
+        // The dry path this chunk: the input, held back by the effect's
+        // latency when a line keeps it through a bypass (docs/07 §Declicking).
+        var dry_l: [MAX_BLOCK]f32 = undefined;
+        var dry_r: [MAX_BLOCK]f32 = undefined;
+        const n_fx = cur_l.len;
+        const mixing = wet_from != 1 or wet_to != 1;
+        if (fx.dry_line >= 0) {
+            const line = &t.chain_state.dry[@intCast(fx.dry_line)];
+            const d: usize = @min(fx_lat, track_mod.DRY_LEN - MAX_BLOCK);
+            const mask = track_mod.DRY_LEN - 1;
+            for (0..n_fx) |k| {
+                const w = (line.w + k) & mask;
+                line.l[w] = cur_l[k];
+                line.r[w] = cur_r[k];
+                const rd = (line.w + k + track_mod.DRY_LEN - d) & mask;
+                dry_l[k] = line.l[rd];
+                dry_r[k] = line.r[rd];
+            }
+            line.w = (line.w + n_fx) & mask;
+        } else if (mixing) {
+            @memcpy(dry_l[0..n_fx], cur_l);
+            @memcpy(dry_r[0..n_fx], cur_r);
+        }
         // goes on from silence. Its PDC share stays counted above.
         const quiet_in = idle.on and !idle.wake and @max(in_peak[0], in_peak[1]) <= IDLE_FLOOR and
             (ctx.audio_in_count < 4 or @max(blockPeak(in_ports[2][0..cur_l.len]), blockPeak(in_ports[3][0..cur_l.len])) <= IDLE_FLOOR);
@@ -2112,6 +2339,19 @@ fn renderEffectsKeyed(
             ctx.automation = &fx_view;
         }
         fx.mach.render(fx.mach.state, &ctx, next_l, next_r);
+        if (mixing) {
+            const inv_n: f32 = 1.0 / @as(f32, @floatFromInt(n_fx));
+            for (0..n_fx) |k| {
+                const g = wet_from + (wet_to - wet_from) * (@as(f32, @floatFromInt(k + 1)) * inv_n);
+                next_l[k] = next_l[k] * g + dry_l[k] * (1 - g);
+                next_r[k] = next_r[k] * g + dry_r[k] * (1 - g);
+            }
+        }
+        // Fully back in: its line is free again.
+        if (!bypassed and wet_from == 1 and fx.dry_line >= 0) {
+            t.chain_state.dry_used &= ~(@as(u8, 1) << @intCast(fx.dry_line));
+            fx.dry_line = -1;
+        }
         const out_peak = [2]f32{ blockPeak(next_l), blockPeak(next_r) };
         fx.setIo(in_peak, out_peak);
         if (idle.on) fx.quiet = if (quiet_in and @max(out_peak[0], out_peak[1]) <= IDLE_FLOOR) fx.quiet +| @as(u32, @intCast(cur_l.len)) else 0;
@@ -2142,6 +2382,28 @@ fn faderGains(t: *Track, snap: *const snap_mod.TrackSnapshot, beat: f64) FaderGa
     };
     const angle = (p + 1.0) * (std.math.pi / 4.0);
     return .{ .v = v, .l = v * @cos(angle), .r = v * @sin(angle) };
+}
+
+/// `new` (in place) faded in over the block from `old`: equal-gain linear,
+/// for two reads of one signal a few samples apart.
+fn crossfadeInto(new_l: []f32, new_r: []f32, old_l: []const f32, old_r: []const f32) void {
+    const inv_n: f32 = 1.0 / @as(f32, @floatFromInt(new_l.len));
+    for (new_l, new_r, old_l, old_r, 0..) |*a, *b, ol, or_, k| {
+        const g = @as(f32, @floatFromInt(k + 1)) * inv_n;
+        a.* = ol + (a.* - ol) * g;
+        b.* = or_ + (b.* - or_) * g;
+    }
+}
+
+/// Scale a block by a linear ramp from `from` to `to` (reached on the
+/// last sample): a one-chunk fade for switches that would step.
+fn fadeBlock(l: []f32, r: []f32, from: f32, to: f32) void {
+    const inv_n: f32 = 1.0 / @as(f32, @floatFromInt(l.len));
+    for (l, r, 0..) |*a, *b, k| {
+        const g = from + (to - from) * (@as(f32, @floatFromInt(k + 1)) * inv_n);
+        a.* *= g;
+        b.* *= g;
+    }
 }
 
 /// True when every sample is finite. x - x is 0 for finite x and NaN for
@@ -2191,6 +2453,66 @@ fn mixAudioClips(
     l: []f32,
     r: []f32,
 ) void {
+    mixAudioClipsEdged(snap, block_start, frames, map, sample_rate, l, r, .{});
+}
+
+/// Declicking for audio clips (docs/07 §Declicking): an edge that cuts into
+/// its source fades over EDGE_FADE samples on top of the clip's own fades
+/// (a file's own first and last samples are left as authored, and so is a
+/// split another clip plays straight through). A clip already playing
+/// fades in after a jump (play, seek, loop wrap), and one that plays on
+/// past a loop end fades out into the wrap.
+const EDGE_FADE: f64 = 64;
+const Edge = struct {
+    on: bool = false,
+    block_lo: f64 = 0,
+    frames: u32 = 0,
+    jump_in: bool = false,
+    jump_out: bool = false,
+    seam_start: bool = false,
+    seam_end: bool = false,
+
+    fn gain(e: Edge, a: f64, clip_start: f64, clip_end: f64) f64 {
+        if (!e.on) return 1;
+        var g: f64 = 1;
+        if (!e.seam_start) g = @min(g, (a - clip_start + 1) / EDGE_FADE);
+        if (!e.seam_end) g = @min(g, (clip_end - a) / EDGE_FADE);
+        const i = a - e.block_lo;
+        const block_hi = e.block_lo + @as(f64, @floatFromInt(e.frames));
+        if (e.jump_in and clip_start < e.block_lo) g = @min(g, (i + 1) / EDGE_FADE);
+        if (e.jump_out and clip_end > block_hi) g = @min(g, (@as(f64, @floatFromInt(e.frames)) - i) / EDGE_FADE);
+        return std.math.clamp(g, 0, 1);
+    }
+};
+
+/// Whether another clip on the track continues `clip`'s source without a
+/// gap at its end (`at_end`) or leads into its start: a split clip plays
+/// through, with no edge fade at the cut.
+fn seamless(snap: *const snap_mod.TrackSnapshot, clip: snap_mod.AudioClipSnap, at_end: bool) bool {
+    if (clip.warped or clip.reversed or clip.tuning != null) return false;
+    const end_beat = clip.start_beat + clip.length_beats;
+    for (snap.audio_clips[0..snap.audio_clip_count]) |c| {
+        if (c.data != clip.data or c.warped or c.reversed or c.tuning != null) continue;
+        if (at_end) {
+            if (@abs(c.start_beat - end_beat) < 1e-9 and @abs(c.start_sample - (clip.start_sample + clip.dur_samples)) < 1) return true;
+        } else {
+            const c_end = c.start_beat + c.length_beats;
+            if (@abs(c_end - clip.start_beat) < 1e-9 and @abs(clip.start_sample - (c.start_sample + c.dur_samples)) < 1) return true;
+        }
+    }
+    return false;
+}
+
+fn mixAudioClipsEdged(
+    snap: *const snap_mod.TrackSnapshot,
+    block_start: u64,
+    frames: u32,
+    map: *const tempo.TempoMap,
+    sample_rate: u32,
+    l: []f32,
+    r: []f32,
+    block_edge: Edge,
+) void {
     const block_lo: f64 = @floatFromInt(block_start);
     const block_hi: f64 = block_lo + @as(f64, @floatFromInt(frames));
     if (snap.stretch) |b| b.beginBlock();
@@ -2198,6 +2520,18 @@ fn mixAudioClips(
     for (snap.audio_clips[0..snap.audio_clip_count]) |clip| {
         const data = clip.data orelse continue;
         if (clip.len == 0 or clip.source_rate <= 0) continue;
+        var edge = block_edge;
+        edge.block_lo = block_lo;
+        edge.frames = frames;
+        if (edge.on) {
+            // No cut: the window starts at the file's head, or ends at or
+            // past its tail (then the source just runs out).
+            const flen: f64 = @floatFromInt(clip.len);
+            const at_head = if (clip.reversed) clip.start_sample + clip.dur_samples >= flen - 1 else clip.start_sample <= 0;
+            const at_tail = if (clip.reversed) clip.start_sample <= 0 else clip.start_sample + clip.dur_samples >= flen - 1;
+            edge.seam_start = at_head or seamless(snap, clip, false);
+            edge.seam_end = at_tail or seamless(snap, clip, true);
+        }
 
         const clip_start = map.sampleAt(clip.start_beat, sample_rate);
         const clip_end = map.sampleAt(clip.start_beat + clip.length_beats, sample_rate);
@@ -2209,12 +2543,12 @@ fn mixAudioClips(
         if (clip.tuning != null) if (snap.stretch) |bank| {
             if (bank.get(clip.uid, @intFromFloat(@floor(clip_start)), .tune, 0)) |st| {
                 const wmap: ?warp_mod.Map = if (clip.warped) .{ .m = snap.warp_points[clip.warp_start..][0..clip.warp_count] } else null;
-                mixStretched(st, clip, wmap, data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r);
+                mixStretched(st, clip, wmap, data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r, edge);
                 continue;
             }
         };
         if (clip.warped) {
-            mixWarped(snap, clip, data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r);
+            mixWarped(snap, clip, data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r, edge);
             continue;
         }
 
@@ -2252,7 +2586,7 @@ fn mixAudioClips(
                 if (remaining < clip.fade_out_samples)
                     fade = @min(fade, @max(0.0, remaining) / clip.fade_out_samples);
             }
-            const g = clip.gain * @as(f32, @floatCast(fade));
+            const g = clip.gain * @as(f32, @floatCast(fade * edge.gain(a, clip_start, clip_end)));
             l[i] += v[0] * g;
             r[i] += v[1] * g;
         }
@@ -2277,10 +2611,11 @@ fn mixWarped(
     sample_rate: u32,
     l: []f32,
     r: []f32,
+    edge: Edge,
 ) void {
     const wmap = warp_mod.Map{ .m = snap.warp_points[clip.warp_start..][0..clip.warp_count] };
     if (clip.mode == .beats and (clip.preserve != .hits or clip.onsets != null)) {
-        mixBeats(clip, wmap, data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r);
+        mixBeats(clip, wmap, data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r, edge);
         return;
     }
     if (warp_mod.stretches(clip.mode)) if (snap.stretch) |bank| {
@@ -2288,14 +2623,14 @@ fn mixWarped(
         if (clip.mode == .smear) {
             const n = stretch_mod.SMEAR_SIZES[@min(clip.smear_size, stretch_mod.SMEAR_SIZES.len - 1)];
             if (bank.getSmear(clip.uid, t0, n)) |sm| {
-                mixStretched(sm, clip, @as(?warp_mod.Map, wmap), data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r);
+                mixStretched(sm, clip, @as(?warp_mod.Map, wmap), data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r, edge);
                 return;
             }
         } else {
             const kind: stretch_mod.Kind = if (clip.mode == .voice) .voice else .mix;
             const grain: i64 = @intFromFloat(@as(f64, @floatFromInt(clip.grain_ms)) * @as(f64, @floatFromInt(sample_rate)) / 1000);
             if (bank.get(clip.uid, t0, kind, grain)) |st| {
-                mixStretched(st, clip, @as(?warp_mod.Map, wmap), data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r);
+                mixStretched(st, clip, @as(?warp_mod.Map, wmap), data, block_lo, lo, hi, clip_start, clip_end, frames, map, sample_rate, l, r, edge);
                 return;
             }
         }
@@ -2326,7 +2661,7 @@ fn mixWarped(
         const to_end = clip_end - a;
         if (fade_in > 0 and from_start < fade_in) fade = from_start / fade_in;
         if (fade_out > 0 and to_end < fade_out) fade = @min(fade, @max(0.0, to_end) / fade_out);
-        const g = clip.gain * @as(f32, @floatCast(fade));
+        const g = clip.gain * @as(f32, @floatCast(fade * edge.gain(a, clip_start, clip_end)));
         l[i] += v[0] * g;
         r[i] += v[1] * g;
     }
@@ -2351,6 +2686,7 @@ fn mixStretched(
     sample_rate: u32,
     l: []f32,
     r: []f32,
+    edge: Edge,
 ) void {
     const engine_rate: f64 = @floatFromInt(sample_rate);
     const Ctx = struct {
@@ -2434,7 +2770,7 @@ fn mixStretched(
             const to_end = clip_end - a;
             if (fade_in > 0 and from_start < fade_in) fade = @max(0, from_start) / fade_in;
             if (fade_out > 0 and to_end < fade_out) fade = @min(fade, @max(0.0, to_end) / fade_out);
-            g.* = clip.gain * @as(f32, @floatCast(fade));
+            g.* = clip.gain * @as(f32, @floatCast(fade * edge.gain(a, clip_start, clip_end)));
         }
         st.render(src, ctx, @as(i64, @intFromFloat(block_lo)) + @as(i64, @intCast(i)), l[i..][0..n], r[i..][0..n], gains[0..n]);
         i += n;
@@ -2462,6 +2798,7 @@ fn mixBeats(
     sample_rate: u32,
     l: []f32,
     r: []f32,
+    edge: Edge,
 ) void {
     const engine_rate: f64 = @floatFromInt(sample_rate);
     // Native speed, re-pitched by TRANSPOSE and FINE.
@@ -2502,7 +2839,7 @@ fn mixBeats(
         const to_end = clip_end - a;
         if (fade_in > 0 and from_start < fade_in) fade = from_start / fade_in;
         if (fade_out > 0 and to_end < fade_out) fade = @min(fade, @max(0.0, to_end) / fade_out);
-        const g = clip.gain * @as(f32, @floatCast(fade));
+        const g = clip.gain * @as(f32, @floatCast(fade * edge.gain(a, clip_start, clip_end)));
         l[i] += v[0] * g;
         r[i] += v[1] * g;
     }
@@ -2607,6 +2944,12 @@ const Slicer = struct {
         return .{ v[0] * g, v[1] * g };
     }
 };
+
+/// A stop's ring-out ends once the output has stayed under RING_FLOOR
+/// (−100 dBFS) this long, and fades out at RING_MAX_S regardless.
+const RING_FLOOR: f32 = 1.0e-5;
+const RING_QUIET_S: u64 = 2;
+const RING_MAX_S: u64 = 30;
 
 /// A chased note with less than this left (5 ms at 48 kHz) stays silent:
 /// it would only click.
@@ -3139,6 +3482,43 @@ test "mixAudioClips: start_sample offsets into the source (split clips)" {
     try testing.expectApproxEqAbs(@as(f32, 4), l[1], 1e-5);
     try testing.expectApproxEqAbs(@as(f32, 5), l[2], 1e-5);
     try testing.expectApproxEqAbs(@as(f32, 6), l[3], 1e-5);
+}
+
+test "declick: audio clip edges fade where they cut, not at a file's own ends or a seamless split" {
+    var data = [_]f64{1.0} ** 2048;
+    // 100 samples a beat: clip A is source 0..400, B carries on 400..800,
+    // C is cut out of the middle, 1200..1600.
+    var snap = snap_mod.TrackSnapshot{};
+    snap.audio_clip_count = 3;
+    const base = snap_mod.AudioClipSnap{ .start_beat = 0, .length_beats = 4, .data = &data, .len = data.len, .source_rate = 48_000, .dur_samples = 400, .gain = 1.0 };
+    snap.audio_clips[0] = base;
+    snap.audio_clips[1] = base;
+    snap.audio_clips[1].start_beat = 4;
+    snap.audio_clips[1].start_sample = 400;
+    snap.audio_clips[2] = base;
+    snap.audio_clips[2].start_beat = 10;
+    snap.audio_clips[2].start_sample = 1200;
+    var l = [_]f32{0} ** 1500;
+    var r = [_]f32{0} ** 1500;
+    mixAudioClipsEdged(&snap, 0, 1500, &spbMap(100.0), 48_000, &l, &r, .{ .on = true });
+    // A starts at the file's head: as authored.
+    try testing.expectApproxEqAbs(@as(f32, 1), l[0], 1e-6);
+    // A → B is one continuous read: no dip at the split.
+    for (390..410) |i| try testing.expectApproxEqAbs(@as(f32, 1), l[i], 1e-6);
+    // B ends on a cut (the source goes on): it fades out to silence.
+    try testing.expect(l[799] < 0.05);
+    try testing.expect(l[700] > 0.99);
+    // C starts on a cut: it fades in from silence over EDGE_FADE.
+    try testing.expect(l[1000] < 0.05);
+    try testing.expect(l[1000 + 32] > 0.4 and l[1000 + 32] < 0.6);
+    try testing.expectApproxEqAbs(@as(f32, 1), l[1000 + 64], 1e-6);
+
+    // Starting mid-clip (play, seek): the clip fades in over the block's start.
+    @memset(&l, 0);
+    @memset(&r, 0);
+    mixAudioClipsEdged(&snap, 100, 128, &spbMap(100.0), 48_000, l[0..128], r[0..128], .{ .on = true, .jump_in = true });
+    try testing.expect(l[0] < 0.05);
+    try testing.expectApproxEqAbs(@as(f32, 1), l[64], 1e-6);
 }
 
 test "mixAudioClips: linear fade-in/out ramps the window edges" {
@@ -4147,7 +4527,8 @@ test "PDC: a keyed effect meets its key on the same sample, late or early" {
     try tracks[1].addEffect(alloc, keyed, 1);
     tracks[1].effects.items[1].key = 0;
     tracks[0].mute.store(true, .monotonic);
-    tracks[1].setEffectBypassed(0, true);
+    // Latencies switch by length here: a bypass keeps its latency.
+    bass_d.n = 0;
     var pool = @import("audio_pool.zig").AudioPool.init(alloc);
     defer pool.deinit();
     for (&tracks) |*t| t.publishSnapshot(&pool);
@@ -4170,14 +4551,14 @@ test "PDC: a keyed effect meets its key on the same sample, late or early" {
 
     // An early key (the bass's own insert before the keyed effect): the
     // key is read late instead.
-    tracks[0].setEffectBypassed(0, true);
-    tracks[1].setEffectBypassed(0, false);
+    kick_d.n = 0;
+    bass_d.n = 7;
     eng.renderOffline(&out, 64, 0, null, null);
     try testing.expectEqual(@as(?usize, 0), onlyPeakAt(&out));
     try testing.expectEqual(@as(u32, 7), eng.master_latency.load(.monotonic));
 
     // Both: the later of the two sets the pace.
-    tracks[0].setEffectBypassed(0, false);
+    kick_d.n = 10;
     eng.renderOffline(&out, 64, 0, null, null);
     try testing.expectEqual(@as(?usize, 0), onlyPeakAt(&out));
     try testing.expectApproxEqAbs(0.75 * c, out[0], 1e-6);
@@ -4236,8 +4617,14 @@ test "PDC: a latent track, a direct one and a send to a return all land on the s
     eng.renderOffline(&out, 64, 0, null, null);
     try testing.expectEqual(@as(?usize, 0), onlyPeakAt(&out));
 
-    // Without the latent insert nothing is delayed.
+    // Bypassed, it keeps its latency (docs/07 §Declicking): no re-timing.
     tracks[1].setEffectBypassed(0, true);
+    eng.renderOffline(&out, 64, 0, null, null);
+    try testing.expectEqual(@as(?usize, 0), onlyPeakAt(&out));
+    try testing.expectEqual(@as(u32, 10), eng.master_latency.load(.monotonic));
+
+    // Without the latent insert nothing is delayed.
+    try tracks[1].removeEffect(alloc, 0);
     eng.renderOffline(&out, 64, 0, null, null);
     try testing.expectEqual(@as(?usize, 0), onlyPeakAt(&out));
     try testing.expectEqual(@as(u32, 0), eng.master_latency.load(.monotonic));
@@ -4347,6 +4734,274 @@ fn idleTestRender(alloc: std.mem.Allocator, idle_skip: bool, e: *IdleTestMachine
     defer eng.deinitPdc(alloc);
     eng.publishRouting();
     eng.renderOffline(out, out.len / 2, 0, null, null);
+}
+
+/// The largest sample-to-sample step in the left channel of `out`,
+/// counting from `prev` (the sample before it).
+fn maxStep(out: []const f32, prev: f32) f32 {
+    var last = prev;
+    var m: f32 = 0;
+    var i: usize = 0;
+    while (i < out.len) : (i += 2) {
+        m = @max(m, @abs(out[i] - last));
+        last = out[i];
+    }
+    return m;
+}
+
+test "declick: mute, solo and instrument enable fade over a chunk" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var level_a: f32 = 0.5;
+    var level_b: f32 = 0.25;
+    var tracks = [_]Track{
+        try Track.init(alloc, "a", col, RouteTestMachines.dc(&level_a)),
+        try Track.init(alloc, "b", col, RouteTestMachines.dc(&level_b)),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| {
+        t.setVolume(1.0);
+        t.publishSnapshot(&pool);
+    }
+    var transport = Transport{};
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+    const B = 128;
+    var out: [B * 2]f32 = undefined;
+    transport.play();
+    eng.render(&out, B);
+    var prev = out[(B - 1) * 2];
+    const full = prev;
+    // A step this big would be a click; a one-chunk ramp of the loudest
+    // track moves at most its level / B per sample.
+    const limit = 0.5 / @as(f32, B) + 1e-4;
+    const Step = struct {
+        fn run(e: *Engine, o: *[B * 2]f32, p: *f32) !void {
+            e.render(o, B);
+            try testing.expect(maxStep(o, p.*) <= limit);
+            p.* = o[(B - 1) * 2];
+        }
+    };
+    tracks[0].mute.store(true, .monotonic);
+    try Step.run(eng, &out, &prev);
+    try Step.run(eng, &out, &prev);
+    try testing.expect(prev < full);
+    tracks[0].mute.store(false, .monotonic);
+    try Step.run(eng, &out, &prev);
+    try Step.run(eng, &out, &prev);
+    try testing.expectApproxEqAbs(full, prev, 1e-6);
+    // Solo b: a fades out; unsolo: back.
+    tracks[1].solo.store(true, .monotonic);
+    try Step.run(eng, &out, &prev);
+    try Step.run(eng, &out, &prev);
+    tracks[1].solo.store(false, .monotonic);
+    try Step.run(eng, &out, &prev);
+    try Step.run(eng, &out, &prev);
+    try testing.expectApproxEqAbs(full, prev, 1e-6);
+    // Instrument off and on.
+    tracks[0].setEnabled(false);
+    try Step.run(eng, &out, &prev);
+    try Step.run(eng, &out, &prev);
+    try testing.expect(prev < full);
+    tracks[0].setEnabled(true);
+    try Step.run(eng, &out, &prev);
+    try Step.run(eng, &out, &prev);
+    try testing.expectApproxEqAbs(full, prev, 1e-6);
+}
+
+test "declick: bypass crossfades and keeps a latent effect's latency" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var osc = ParTestMachines.Osc{ .inc = 0.05 };
+    var dly = PdcTestMachines.Delay{ .n = 10 };
+    var echo = IdleTestMachines.Echo{ .gap = 100 };
+    var tracks = [_]Track{try Track.init(alloc, "t", col, ParTestMachines.osc(&osc))};
+    defer for (&tracks) |*t| t.deinit(alloc);
+    tracks[0].setVolume(1.0);
+    try tracks[0].addEffect(alloc, PdcTestMachines.delay(&dly), 0);
+    try tracks[0].addEffect(alloc, IdleTestMachines.echo(&echo), 1);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    tracks[0].publishSnapshot(&pool);
+    var transport = Transport{};
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    try eng.initPdc(alloc);
+    defer eng.deinitPdc(alloc);
+    eng.publishRouting();
+    const B = 128;
+    var out: [B * 2]f32 = undefined;
+    transport.play();
+    for (0..4) |_| eng.render(&out, B);
+    var prev = out[(B - 1) * 2];
+    // A sine of 0.3 × 0.71 moving 0.05 rad a sample steps at most ~0.011.
+    const limit: f32 = 0.02;
+    const lat0 = eng.lat_out[0];
+    try testing.expect(lat0 >= 10);
+    for ([_]usize{ 0, 1 }) |fx| {
+        for ([_]bool{ true, false }) |on| {
+            tracks[0].setEffectBypassed(fx, on);
+            for (0..3) |_| {
+                eng.render(&out, B);
+                try testing.expect(maxStep(&out, prev) < limit);
+                prev = out[(B - 1) * 2];
+                // The latent effect's latency stays counted throughout.
+                try testing.expectEqual(lat0, eng.lat_out[0]);
+            }
+        }
+    }
+}
+
+test "declick: a latency change crossfades the compensated paths" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var zero: f32 = 0;
+    var dly = PdcTestMachines.Delay{ .n = 4 };
+    var osc = ParTestMachines.Osc{ .inc = 0.05 };
+    var tracks = [_]Track{
+        try Track.init(alloc, "latent", col, RouteTestMachines.dc(&zero)),
+        try Track.init(alloc, "sine", col, ParTestMachines.osc(&osc)),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    try tracks[0].addEffect(alloc, PdcTestMachines.delay(&dly), 0);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| {
+        t.setVolume(1.0);
+        t.publishSnapshot(&pool);
+    }
+    var transport = Transport{};
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    try eng.initPdc(alloc);
+    defer eng.deinitPdc(alloc);
+    eng.publishRouting();
+    const B = 128;
+    var out: [B * 2]f32 = undefined;
+    transport.play();
+    for (0..4) |_| eng.render(&out, B);
+    var prev = out[(B - 1) * 2];
+    // The silent track grows 40 samples late: the sine is held back 40
+    // more to meet it. A jump would skip back 40 samples of the sine.
+    for ([_]u32{ 44, 4, 60 }) |n| {
+        dly.n = n;
+        for (0..3) |_| {
+            eng.render(&out, B);
+            try testing.expect(maxStep(&out, prev) < 0.02);
+            prev = out[(B - 1) * 2];
+        }
+    }
+}
+
+test "declick: an instrument swap and insert changes fade out and in" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var hi: f32 = 0.5;
+    var lo: f32 = 0.25;
+    var half: f32 = 0.5;
+    var tracks = [_]Track{try Track.init(alloc, "t", col, RouteTestMachines.dc(&hi))};
+    defer for (&tracks) |*t| t.deinit(alloc);
+    tracks[0].setVolume(1.0);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    tracks[0].publishSnapshot(&pool);
+    var transport = Transport{};
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+    const B = 128;
+    var out: [B * 2]f32 = undefined;
+    transport.play();
+    eng.render(&out, B);
+    var prev = out[(B - 1) * 2];
+    const limit = 0.5 / @as(f32, B) + 1e-4;
+    const c = @cos(@as(f32, std.math.pi / 4.0));
+    const Step = struct {
+        fn run(e: *Engine, o: *[B * 2]f32, p: *f32) !void {
+            e.render(o, B);
+            try testing.expect(maxStep(o, p.*) <= limit);
+            p.* = o[(B - 1) * 2];
+        }
+    };
+    try tracks[0].replaceMachine(alloc, RouteTestMachines.dc(&lo));
+    tracks[0].publishSnapshot(&pool);
+    for (0..3) |_| try Step.run(eng, &out, &prev);
+    try testing.expectApproxEqAbs(0.25 * c, prev, 1e-6);
+    try tracks[0].addEffect(alloc, RouteTestMachines.gain(&half), 0);
+    tracks[0].publishSnapshot(&pool);
+    for (0..3) |_| try Step.run(eng, &out, &prev);
+    try testing.expectApproxEqAbs(0.125 * c, prev, 1e-6);
+    try tracks[0].removeEffect(alloc, 0);
+    tracks[0].publishSnapshot(&pool);
+    for (0..3) |_| try Step.run(eng, &out, &prev);
+    try testing.expectApproxEqAbs(0.25 * c, prev, 1e-6);
+    tracks[0].collectMachines(alloc);
+}
+
+test "stop: tails ring out from the stop with no step, then rendering ends" {
+    const alloc = testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var e = IdleTestMachines.Env{};
+    var echo = IdleTestMachines.Echo{ .gap = 2000 };
+    var tracks = [_]Track{try Track.init(alloc, "t", col, IdleTestMachines.env(&e))};
+    defer for (&tracks) |*t| t.deinit(alloc);
+    tracks[0].setVolume(1.0);
+    try tracks[0].addEffect(alloc, IdleTestMachines.echo(&echo), 0);
+    var clip = @import("clip.zig").Clip.init("A", 0, 8);
+    try clip.addNote(alloc, .{ .pitch = 60, .start_beat = 0, .length_beats = 4, .velocity = 100 });
+    try tracks[0].addClip(alloc, clip);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    tracks[0].publishSnapshot(&pool);
+    var transport = Transport{};
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+
+    // Play 8 blocks of 64 (the envelope is halfway down at 512), stop.
+    const B = 64;
+    var out: [B * 2]f32 = undefined;
+    transport.play();
+    var last: f32 = 0;
+    for (0..8) |_| {
+        eng.render(&out, B);
+        last = out[(B - 1) * 2];
+    }
+    try testing.expect(last > 0.2);
+    transport.stop();
+    eng.render(&out, B);
+    // The decay carries on across the stop: one envelope step, not a cut.
+    try testing.expect(@abs(out[0] - last) < 0.01);
+    try testing.expect(eng.ringing);
+    // The echo of the note's first sample lands 2000 samples in, after
+    // the stop: a tail the old reset deleted.
+    var echo_heard = false;
+    var blocks: usize = 9;
+    while (blocks * B < 2100) : (blocks += 1) {
+        eng.render(&out, B);
+        for (0..B) |i| if (out[i * 2] > 0.3) {
+            echo_heard = true;
+        };
+    }
+    try testing.expect(echo_heard);
+    // Quiet for RING_QUIET_S: the ring ends and the graph stops rendering.
+    const renders_before = e.renders;
+    var guard: usize = 0;
+    while (eng.ringing and guard < 48_000 * 4 / B) : (guard += 1) eng.render(&out, B);
+    try testing.expect(!eng.ringing);
+    const after = e.renders;
+    eng.render(&out, B);
+    try testing.expectEqual(after, e.renders);
+    try testing.expect(after > renders_before);
+    for (out) |x| try testing.expectEqual(@as(f32, 0), x);
 }
 
 test "idle skipping: an instrument and a latent effect sleep between notes and the mix is bit-exact" {

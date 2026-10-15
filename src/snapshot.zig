@@ -137,6 +137,9 @@ pub const AutoView = struct {
     cursors: *[MAX_LANES_PER_TRACK]u32,
     kind: automation.TargetKind,
     fx_uid: u16 = 0,
+    /// Lanes read here instead of at the machine's beat: the playhead is
+    /// held (stopped, tails ringing) while synced LFOs keep running.
+    hold_beat: ?f64 = null,
 
     /// Whether any lane targets this machine (the machine then renders in
     /// sub-blocks so each chunk gets fresh values).
