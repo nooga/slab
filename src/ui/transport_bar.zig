@@ -1,7 +1,7 @@
 //! Workbench transport bar on the new Ui (docs/06 §Packing: a toolbar of
 //! flush tiles). Replaces the legacy top_bar.zig.
 //!
-//!   [file ▾][■/▶][●][▾][⟲][-][● 124.0][+][TAP][ 1.1.1][ 4/4][-][1/16][+][     ][SLAB]
+//!   [file ▾][■][▶][●][▾][⟲][-][● 124.0][+][TAP][ 1.1.1][ 4/4][-][1/16][+][     ][SLAB]
 //!
 //! Menus (file, input device, meter denominator) and tooltips still go
 //! through the legacy widgets until menus move onto the new core.
@@ -112,10 +112,18 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     menu.tip(ui, browse_r, "Browser (\u{2318}\u{2325}B)");
 
     // Transport.
+    // STOP stops; pressed again while stopped it returns to the loop's
+    // start, or the song's with the loop off.
     var playing = t.isPlaying();
+    const stop_r = bar.cutLeft(36);
+    var stop_on = false;
+    if (ctl.button(ui, stop_r, "stop", &stop_on, .{ .glyph = .square6, .glyph_on = style.text, .flush = true })) {
+        if (t.isPlaying()) t.stop() else if (t.loopEnabled()) t.seekToBeats(t.loopStartBeats()) else t.rewind();
+    }
+    menu.tip(ui, stop_r, if (playing) "Stop  Space" else if (t.loopEnabled()) "Stop again: to the loop start" else "Stop again: to the start");
     const play_r = bar.cutLeft(36);
-    if (ctl.button(ui, play_r, "play", &playing, .{ .glyph = if (playing) .square6 else .tri_right, .glyph_on = style.play, .flush = true })) t.toggle();
-    menu.tip(ui, play_r, if (playing) "Stop  Space" else "Play  Space");
+    if (ctl.button(ui, play_r, "play", &playing, .{ .glyph = .tri_right, .glyph_on = style.play, .flush = true })) t.play();
+    menu.tip(ui, play_r, "Play  Space");
     var rec_on = a.recording;
     const rec_r = bar.cutLeft(36);
     if (ctl.button(ui, rec_r, "rec", &rec_on, .{ .glyph = .round7, .glyph_on = style.rec, .flush = true, .disabled = !a.can_record })) res.record_toggle = true;

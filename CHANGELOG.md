@@ -6,6 +6,9 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Separate STOP and PLAY.** Pressing STOP again while stopped returns
+  to the loop's start, or to the song's start with the loop off.
+
 - **Musical typing.** Turn on KEYS in the transport bar to play the
   selected track from the computer keyboard. PIANO is one chromatic row.
   GRID is four rows in fourths like a Push, in key when a scale is set.
