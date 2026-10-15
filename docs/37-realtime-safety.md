@@ -353,10 +353,6 @@ bit-identical to the previous master.
 
 Known, not yet addressed (each needs its own design):
 
-- **Declicking.** Stop resets every machine in one callback (a click, and
-  tails cut); mute/solo, bypass, insert changes and instrument swaps are
-  hard switches; audio clip edges have no minimum fade; latency changes
-  move compensation delays without a crossfade; bypass drops latency.
 - **Recording.** Round-trip compensation uses period sizes only (no HAL
   device/stream latency or safety offset, nor miniaudio's two-period
   duplex prefill, which is never reset on restart); capture is the mean
@@ -364,9 +360,28 @@ Known, not yet addressed (each needs its own design):
 - **Device events.** No listeners for a device dying, a coreaudiod
   restart or an external sample-rate change; a reroute keeps miniaudio's
   in-place reinit (no 48 kHz request, no resampling warning).
-- **Resampling and load.** A device not at 48 kHz uses miniaudio's
-  linear resampler (order-4 LPF); the fixed 256-frame callback can run
-  twice per hardware period, which the CPU meter does not account for.
+- **Resampling.** A device not at 48 kHz uses miniaudio's linear
+  resampler (order-4 LPF).
 - **DSP.** limiter2 lacks a lookahead window minimum (transients clip at
   the ceiling); the sampler's CLEAN engine is not band-limited and its
   envelope and voice steals click; event overflow can drop note-offs.
+
+## Declicking and output latency (2026-10-15)
+
+- **Stop rings out instead of resetting** (docs/07 §Transport commands).
+  The play→stop transition no longer resets every instrument and insert
+  in one callback: that cut tails with a click and swept every machine's
+  buffers inside the deadline. The graph renders on from the stop with
+  no new events until quiet (bounded at 30 s, then a one-block fade).
+- **Every heard switch ramps** (docs/07 §Declicking): mute/solo/enable
+  gates, bypass crossfades (latent effects keep rendering and keep
+  their latency through per-track dry lines, preallocated and touched
+  on UI), chain switches fade out/in with acknowledgement deferred one
+  chunk, PDC delay changes crossfade, audio clip cut edges and jumps
+  fade over 64 samples.
+- **One block less output latency.** miniaudio's fixed-size callback
+  rendered into an intermediary buffer a block ahead of the device: a
+  full block (5.3 ms at 256 frames) of latency on every output path.
+  Callbacks are now variable-size (`noFixedSizedCallback`); the engine
+  already chunks any count. This also removes the double render per
+  hardware period on a resampled device.

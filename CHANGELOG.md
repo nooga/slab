@@ -6,6 +6,25 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Stop lets tails ring.** Stopping releases the notes and lets reverbs
+  and delays ring out instead of cutting everything with a click; press
+  play again and the tails carry on.
+
+- **No clicks from edits while playing.** Mute, solo, track enable and
+  insert bypass fade over a few milliseconds. Adding, removing,
+  reordering or replacing instruments and inserts fades the old chain
+  out and the new one in, and a new instrument picks up held notes.
+  Bypassing a lookahead or oversampled effect keeps its latency, so the
+  rest of the mix no longer jumps in time; any latency change crossfades.
+  Audio clips fade at cut edges and around seeks and loop wraps.
+
+- **5 ms less latency.** Audio reaches the output one block sooner on
+  every path.
+
+- **About 6% less CPU** for the same audio: peak scans run on vectors and
+  are shared between inserts, compensation delays copy in bulk, and
+  machines no longer copy their control tables every block.
+
 - **A blown-up machine can no longer reach your speakers.** A track whose
   signal turns NaN or infinite (an unstable filter, a division by zero)
   is silenced for that block and its machines reset, so the fault cannot

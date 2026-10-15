@@ -119,6 +119,10 @@ pub const Audio = struct {
         duplex.sampleRate = SAMPLE_RATE;
         duplex.periodSizeInFrames = requestedBlockFrames();
         duplex.coreaudio.allowNominalSampleRateChange = c.ma.MA_TRUE;
+        // Variable-size callbacks: the engine chunks any count itself. The
+        // fixed-size mode renders into an intermediary buffer a block ahead,
+        // a whole block (5.3 ms at 256) of output latency for nothing.
+        duplex.noFixedSizedCallback = c.ma.MA_TRUE;
         duplex.dataCallback = audioCallback;
         duplex.pUserData = self;
 
@@ -134,13 +138,11 @@ pub const Audio = struct {
         self.warnIfResampling();
     }
 
-    /// The engine renders at 48 kHz in fixed 256-frame callbacks. A device
-    /// left at another rate (MacBook speakers default to 44.1 kHz) makes
-    /// miniaudio resample, and to keep the callbacks fixed-size it sometimes
-    /// asks for two blocks inside one hardware period: a render past half the
-    /// budget then misses the deadline, and since the transport only moves
-    /// with rendered audio, playback drags. Devices are asked to switch to
-    /// 48 kHz at open (allowNominalSampleRateChange); this says when one won't.
+    /// The engine renders at 48 kHz. A device left at another rate (MacBook
+    /// speakers default to 44.1 kHz) makes miniaudio resample, with a
+    /// linear interpolator, and callbacks then vary in length around the
+    /// requested block. Devices are asked to switch to 48 kHz at open
+    /// (allowNominalSampleRateChange); this says when one won't.
     fn warnIfResampling(self: *Audio) void {
         const rate = self.device.playback.internalSampleRate;
         if (rate != SAMPLE_RATE)
@@ -154,6 +156,10 @@ pub const Audio = struct {
         play.sampleRate = SAMPLE_RATE;
         play.periodSizeInFrames = requestedBlockFrames();
         play.coreaudio.allowNominalSampleRateChange = c.ma.MA_TRUE;
+        // Variable-size callbacks: the engine chunks any count itself. The
+        // fixed-size mode renders into an intermediary buffer a block ahead,
+        // a whole block (5.3 ms at 256) of output latency for nothing.
+        play.noFixedSizedCallback = c.ma.MA_TRUE;
         play.dataCallback = audioCallback;
         play.pUserData = self;
         if (c.ma.ma_device_init(&self.context, &play, &self.device) != c.ma.MA_SUCCESS)
