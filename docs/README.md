@@ -123,6 +123,9 @@ status and the source before assuming a feature is absent or complete.
 40. [39-jp8.md](39-jp8.md) — Juniper-8, the Roland Jupiter-8 from its
     voice board: expo cross mod, VCO-2 sync, the IR3109's 24/12 dB taps,
     one shared LFO
+41. [40-musical-typing.md](40-musical-typing.md) — the computer keyboard
+    as PIANO, GRID (Push-style fourths) or CHORD plus melody, recording
+    into clips, octave echoes, ghost notes and scale marks in the piano roll
 
 ## Terminology crib sheet
 

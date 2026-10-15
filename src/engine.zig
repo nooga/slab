@@ -33,7 +33,7 @@ const AUD_EV = AUD_Q + 128;
 const AUD_TAIL_S = 3;
 
 /// Hold or release a note on a track, from an editor.
-pub const AudEvent = struct { track: u8, pitch: u8, on: bool };
+pub const AudEvent = struct { track: u8, pitch: u8, on: bool, velocity: u8 = 102 };
 /// Expression events for a bent note go out every this many samples while
 /// it sounds (docs/22 §Note expression): 0.67 ms at 48 kHz.
 pub const EXPR_STEP: u32 = 32;
@@ -509,10 +509,16 @@ pub const Engine = struct {
     /// Start (`on`) or release a held note on a track, playing or not
     /// (docs/31 §Note editing). UI thread; dropped when the ring is full.
     pub fn holdNote(self: *Engine, track_idx: usize, pitch: u8, on: bool) void {
+        self.holdNoteVel(track_idx, pitch, on, 102);
+    }
+
+    /// `holdNote` at a MIDI velocity (1..127): the computer keyboard's
+    /// notes play at its VEL (docs/40).
+    pub fn holdNoteVel(self: *Engine, track_idx: usize, pitch: u8, on: bool, velocity: u8) void {
         if (track_idx > std.math.maxInt(u8) or pitch > 127) return;
         const w = self.aud_w.load(.monotonic);
         if (w -% self.aud_r.load(.acquire) >= AUD_Q) return;
-        self.aud_q[w % AUD_Q] = .{ .track = @intCast(track_idx), .pitch = pitch, .on = on };
+        self.aud_q[w % AUD_Q] = .{ .track = @intCast(track_idx), .pitch = pitch, .on = on, .velocity = velocity };
         self.aud_w.store(w +% 1, .release);
     }
 
@@ -531,13 +537,13 @@ pub const Engine = struct {
             const was = self.aud_held[word] & bit != 0;
             if (e.on == was) continue;
             if (e.on) self.aud_held[word] |= bit else self.aud_held[word] &= ~bit;
-            self.pushHeld(e.track, e.pitch, e.on);
+            self.pushHeld(e.track, e.pitch, e.on, e.velocity);
         }
         self.aud_r.store(r, .release);
         if (self.aud_held[0] | self.aud_held[1] != 0 or self.aud_n > 0) self.aud_tail = AUD_TAIL_S * self.transport.sample_rate;
     }
 
-    fn pushHeld(self: *Engine, track: u8, pitch: u8, on: bool) void {
+    fn pushHeld(self: *Engine, track: u8, pitch: u8, on: bool, velocity: u8) void {
         if (self.aud_n >= AUD_EV) return;
         self.aud_ev[self.aud_n] = .{
             .sample_offset = 0,
@@ -545,7 +551,7 @@ pub const Engine = struct {
             .channel = 0,
             .note_id = -1,
             .pitch = @floatFromInt(pitch),
-            .velocity = if (on) 0.8 else 0,
+            .velocity = if (on) @as(f32, @floatFromInt(@min(velocity, 127))) / 127.0 else 0,
         };
         self.aud_ev_track[self.aud_n] = track;
         self.aud_n += 1;
@@ -557,7 +563,7 @@ pub const Engine = struct {
         for (0..128) |pi| {
             const bit = @as(u64, 1) << @intCast(pi % 64);
             if (self.aud_held[pi / 64] & bit == 0) continue;
-            self.pushHeld(t, @intCast(pi), false);
+            self.pushHeld(t, @intCast(pi), false, 0);
         }
         self.aud_held = .{ 0, 0 };
     }
@@ -741,7 +747,7 @@ pub const Engine = struct {
                 for (self.tracks) |*t| t.clearSounding();
                 // Whatever the editor still holds sounds again from here.
                 if (self.aud_track) |at| for (0..128) |pi| {
-                    if (self.aud_held[pi / 64] & (@as(u64, 1) << @intCast(pi % 64)) != 0) self.pushHeld(at, @intCast(pi), true);
+                    if (self.aud_held[pi / 64] & (@as(u64, 1) << @intCast(pi % 64)) != 0) self.pushHeld(at, @intCast(pi), true, 102);
                 };
                 self.was_playing = false;
                 self.ringing = true;

@@ -39,6 +39,7 @@ const auto_lane = @import("automation_lane.zig");
 const lane_targets = @import("lane_targets.zig");
 const timeline = @import("timeline.zig");
 const gesture = @import("gesture.zig");
+const musical_keys = @import("musical_keys.zig");
 const clip_mod = @import("../clip.zig");
 const Clip = clip_mod.Clip;
 const Note = clip_mod.Note;
@@ -138,6 +139,12 @@ const SCALES = [_]Scale{
 };
 
 const ROOT_NAMES = [_][*:0]const u8{ "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+
+/// The key for musical typing: the picker's root and scale (docs/40).
+pub fn keyScale() musical_keys.Scale {
+    const si = if (scale_idx < SCALES.len) scale_idx else 0;
+    return .{ .root = key_root % 12, .mask = SCALES[si].mask, .on = si > 0 };
+}
 
 fn scaleActive() bool {
     return scale_idx > 0 and scale_idx < SCALES.len and note_map.len == 0;
@@ -332,6 +339,9 @@ fn drawClipBrackets(ui: *Ui, ruler: c.rl.Rectangle, grid: c.rl.Rectangle, tracks
         ui.rect(frect(x0, ruler.y, x1 - x0, 2), if (own) col else col.alpha(110));
     }
 }
+
+/// The recording pass writes the clip on screen: show its open notes.
+var rec_here = false;
 
 /// Hear notes as they are pressed and dragged (the HEAR latch).
 var hear_notes = true;
@@ -996,6 +1006,7 @@ pub fn draw(
     ce_tracks = tracks;
     focus_req = null;
     gatherShown(tracks, selected.?, resolved.clip);
+    rec_here = if (musical_keys.take.target) |tg| tg[0] == selected.?.track and tg[1] == selected.?.clip else false;
     maybeResetOnClipChange(selected, resolved.clip);
     var body = head.body;
     const tab_focus = if (shown_n > 1) drawTabs(ui, body.cutTop(TAB_H), tracks, selected.?) else null;
@@ -1152,28 +1163,42 @@ fn drawPianoRoll(
         .loop => |l| loop = .{ clip.start_beat + l[0] / cur_rate, clip.start_beat + l[1] / cur_rate },
     };
     handleKeyboard(kbd_rect, grid_rect, clip, m);
-    drawKeyboard(ui, kbd_rect, track.sounding128() | if (kbd_pitch) |kp| @as(u128, 1) << @intCast(kp) else 0, track_color);
+    // The keys pressed now (column, computer keyboard, a note being
+    // drawn) and the note the pointer would add echo in every octave.
+    const in_expr_now = expr_mode and !collapsed();
+    const hover = if (in_expr_now) null else hoverGhost(grid_rect, clip.*, edit_snap, m);
+    var pressed: u128 = musical_keys.sounding();
+    if (kbd_pitch) |kp| pressed |= @as(u128, 1) << @intCast(kp);
+    if (draw_active) pressed |= @as(u128, 1) << @intCast(draw_pitch);
+    var echo = pitchClasses(pressed);
+    if (hover) |h| echo |= @as(u12, 1) << @intCast(h.pitch % 12);
+    if (note_map.len > 0) echo = 0;
+    drawKeyboard(ui, kbd_rect, track.sounding128() | pressed, echo, track_color);
 
     // Everything that scrolls is clipped to the grid viewport so notes and
     // draw-previews never bleed into the keyboard or the adjacent panes.
     ui.clip(bridge.fromRl(grid_rect));
-    drawGrid(ui, grid_rect, edit_snap);
+    drawGrid(ui, grid_rect, edit_snap, track_color, if (note_map.len > 0) 0 else pressed, echo);
     drawGhosts(ui, grid_rect, tracks, clip.*);
     drawExistingNotes(ui, grid_rect, clip.*, track_color, if (in_clip) local_play else null, track.sounding128());
     drawBends(ui, grid_rect, clip.*, track_color, track.machine.takes_expression, m);
     drawClipEndOverlay(ui, grid_rect, clip.*);
+    if (rec_here) drawTakePreview(ui, grid_rect, clip.*, track_color);
 
     if (draw_active) {
         const start = @min(draw_start_beat, draw_current_beat);
         const end = @max(draw_start_beat, draw_current_beat);
         const len = @max(end - start, minNoteBeats(edit_snap));
-        const nr = frectRl(noteRect(grid_rect, .{
-            .pitch = draw_pitch,
-            .start_beat = start,
-            .length_beats = len,
-        }));
+        const ghost = Note{ .pitch = draw_pitch, .start_beat = start, .length_beats = len };
+        drawOctaveGhosts(ui, grid_rect, ghost, track_color);
+        const nr = frectRl(noteRect(grid_rect, ghost));
         ui.rect(nr, track_color.mix(ui_style.text, 0.3));
         ui.bevel(nr, ui_style.text, ui_style.text);
+    } else if (hover) |h| {
+        drawOctaveGhosts(ui, grid_rect, h, track_color);
+        const nr = frectRl(noteRect(grid_rect, h));
+        ui.rect(nr, track_color.alpha(90));
+        ui.bevel(nr, track_color.mix(ui_style.text, 0.4), track_color);
     }
     drawNoteRange(ui, grid_rect);
     box.draw(ui, m);
@@ -1188,7 +1213,7 @@ fn drawPianoRoll(
     drawOverview(ui, overview_rect, grid_rect, clip.*, track_color, if (in_clip) local_play else null, m);
     if (play_beat) |b| drawPlayhead(ui, grid_rect, ruler_rect.y, env_rect.y + env_h, (b - clip.start_beat) * cur_rate, view_span);
 
-    const in_expr = expr_mode and !collapsed();
+    const in_expr = in_expr_now;
     if (in_expr and !velocity_consumed) handleExpression(ui, grid_rect, clip, edit_snap, m);
     if (!velocity_consumed and !in_expr) handleInput(ui, grid_rect, clip, alloc, edit_snap, m);
     var result = PianoRollResult{ .seek = seek, .loop = loop };
@@ -1371,7 +1396,7 @@ fn drawRuler(ui: *Ui, ruler: c.rl.Rectangle, grid: c.rl.Rectangle, edit_snap: sn
 /// Key column (hardware): white bed with black-key bars and octave labels
 /// on the Cs; with a drum note map, labelled lanes on faceplate and unmapped
 /// rows dark.
-fn drawKeyboard(ui: *Ui, r: c.rl.Rectangle, lit: u128, col: ui_style.Color) void {
+fn drawKeyboard(ui: *Ui, r: c.rl.Rectangle, lit: u128, echo: u12, col: ui_style.Color) void {
     const kr = bridge.fromRl(r);
     ui.clip(kr);
     defer ui.unclip();
@@ -1407,8 +1432,13 @@ fn drawKeyboard(ui: *Ui, r: c.rl.Rectangle, lit: u128, col: ui_style.Color) void
                 ui.rect(Rect.xywh(kr.x, y, bw, 1), ui_style.key_black.shade(30));
                 // White-key seam behind the black key's middle.
                 ui.rect(Rect.xywh(kr.x + bw, y + @divFloor(h, 2), kr.w - bw, 1), seam);
+                scaleMark(ui, kr.x, y, h, pitch, col);
             } else {
                 const n = pitch % 12;
+                // Out of the key: the key goes grey, the scale's keys stay
+                // white (docs/40 §Scale).
+                if (!inScale(pitch)) ui.rect(Rect.xywh(kr.x, y, kr.w - 1, h), ui_style.key_white.mix(ui_style.face, 0.5));
+                scaleMark(ui, kr.x, y, h, pitch, col);
                 // Adjacent white keys (E|F, B|C) meet on a row boundary.
                 if (n == 4 or n == 11) ui.rect(Rect.xywh(kr.x, y, kr.w, 1), seam);
                 if (n == 0) {
@@ -1436,16 +1466,99 @@ fn drawKeyboard(ui: *Ui, r: c.rl.Rectangle, lit: u128, col: ui_style.Color) void
             ui.rect(Rect.xywh(kr.x, y, w, h), col.alpha(200));
         }
     }
+    // The same note in the other octaves, faintly (docs/40 §Octaves).
+    if (echo != 0 and !drum) {
+        var rj: i32 = 0;
+        while (pitchOfRow(rj)) |pitch| : (rj += 1) {
+            if (echo & (@as(u12, 1) << @intCast(pitch % 12)) == 0) continue;
+            if (lit & (@as(u128, 1) << @intCast(pitch)) != 0) continue;
+            const fy = pitchTopY(r, pitch);
+            if (fy + view.row_h < r.y or fy > r.y + r.height) continue;
+            const y = ipx(fy);
+            const h = ipx(fy + view.row_h) - y;
+            const w = if (isBlackKey(pitch)) bw else kr.w - 1;
+            ui.rect(Rect.xywh(kr.x, y, w, h), col.alpha(if (isBlackKey(pitch)) 110 else 80));
+        }
+    }
     // Seam against the grid.
     ui.rect(Rect.xywh(kr.right() - 1, kr.y, 1, kr.h), ui_style.edge);
+}
+
+/// A scale's mark on a key: a track-color stripe down its left edge,
+/// solid on the root.
+fn scaleMark(ui: *Ui, x: i32, y: i32, h: i32, pitch: u8, col: ui_style.Color) void {
+    if (!scaleActive() or !inScale(pitch)) return;
+    if (isRootPitch(pitch)) {
+        ui.rect(Rect.xywh(x, y, 3, h), col);
+    } else ui.rect(Rect.xywh(x, y, 2, h), col.alpha(120));
+}
+
+fn pitchClasses(set: u128) u12 {
+    var out: u12 = 0;
+    var s = set;
+    while (s != 0) {
+        const p: u8 = @intCast(@ctz(s));
+        out |= @as(u12, 1) << @intCast(p % 12);
+        s &= s - 1;
+    }
+    return out;
+}
+
+/// The note a click would add under the pointer (DRAW, or ⌘ held, over
+/// empty grid), if any.
+fn hoverGhost(grid: c.rl.Rectangle, clip: Clip, edit_snap: snap_mod.Setting, m: pane.Mouse) ?Note {
+    if (draw_active or pane.hasActiveDrag() or box.active) return null;
+    if (mode != .draw and !gesture.mods().cmd) return null;
+    if (!pane.contains(grid, m.x, m.y) or menu.active()) return null;
+    if (findNoteAt(grid, clip, m.x, m.y) != null) return null;
+    const pitch = pitchAtY(grid, m.y) orelse return null;
+    return .{
+        .pitch = snapPitchToScale(pitch),
+        .start_beat = snap_mod.snapDownPositive(edit_snap, beatAtX(grid, m.x), altBypassSnap()),
+        .length_beats = defaultNoteBeats(edit_snap),
+    };
+}
+
+/// Outlines of `n` in every other octave on the roll.
+fn drawOctaveGhosts(ui: *Ui, grid: c.rl.Rectangle, n: Note, col: ui_style.Color) void {
+    if (note_map.len > 0) return;
+    var p: i32 = @as(i32, n.pitch % 12);
+    while (p <= KEY_HI) : (p += 12) {
+        if (p < KEY_LO or p == n.pitch) continue;
+        var g = n;
+        g.pitch = @intCast(p);
+        const nr = frectRl(noteRect(grid, g));
+        ui.rect(nr, col.alpha(22));
+        ui.bevel(nr, col.alpha(110), col.alpha(110));
+    }
+}
+
+/// The notes a recording pass holds open, growing to the playhead.
+fn drawTakePreview(ui: *Ui, grid: c.rl.Rectangle, clip: Clip, col: ui_style.Color) void {
+    const t = &musical_keys.take;
+    if (!t.active or t.open == 0) return;
+    for (0..128) |p| {
+        if (t.open & (@as(u128, 1) << @intCast(p)) == 0) continue;
+        const s = (t.open_start[p] - clip.start_beat) * cur_rate;
+        const e = (t.last_beat - clip.start_beat) * cur_rate;
+        const nr = frectRl(noteRect(grid, .{ .pitch = @intCast(p), .start_beat = s, .length_beats = @max(e - s, 1.0 / 64.0) }));
+        ui.rect(nr, col);
+        ui.bevel(nr, ui_style.rec, ui_style.rec);
+    }
 }
 
 /// Note grid (flat glass): lit rows for white keys / in-scale / mapped
 /// pitches, root rows a step brighter, octave lines under the Cs, then the
 /// swung snap sub-grid and the meter's beat and bar lines.
-fn drawGrid(ui: *Ui, r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
+fn drawGrid(ui: *Ui, r: c.rl.Rectangle, edit_snap: snap_mod.Setting, col: ui_style.Color, pressed: u128, echo: u12) void {
     const gr = bridge.fromRl(r);
     ui.rect(gr, ui_style.pane);
+    // A scale tints its rows faintly in the track's color, the root's a
+    // step more; the rest fall back a little (docs/40 §Scale).
+    const scale_on = scaleActive();
+    const in_key = ui_style.pane_alt.mix(col, 0.05);
+    const root_row = ui_style.pane_alt.mix(col, 0.12);
+    const off_key = ui_style.pane.shade(-3);
 
     var ri: i32 = 0;
     while (pitchOfRow(ri)) |pitch| : (ri += 1) {
@@ -1459,7 +1572,13 @@ fn drawGrid(ui: *Ui, r: c.rl.Rectangle, edit_snap: snap_mod.Setting) void {
                 inScale(pitch)
             else
                 !isBlackKey(pitch);
-            if (lit) ui.rect(Rect.xywh(gr.x, y, gr.w, h), if (isRootPitch(pitch)) ui_style.pane_alt.shade(8) else ui_style.pane_alt);
+            const row = Rect.xywh(gr.x, y, gr.w, h);
+            if (scale_on) {
+                ui.rect(row, if (!lit) off_key else if (isRootPitch(pitch)) root_row else in_key);
+            } else if (lit) ui.rect(row, ui_style.pane_alt);
+            if (pressed & (@as(u128, 1) << @intCast(pitch)) != 0) {
+                ui.rect(row, col.alpha(30));
+            } else if (echo & (@as(u12, 1) << @intCast(pitch % 12)) != 0) ui.rect(row, col.alpha(14));
             if (pitch % 12 == 0 and !collapsed()) ui.rect(Rect.xywh(gr.x, y + h - 1, gr.w, 1), ui_style.grid_beat);
             if (collapsed()) ui.rect(Rect.xywh(gr.x, y + h - 1, gr.w, 1), ui_style.edge);
         }

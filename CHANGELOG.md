@@ -6,6 +6,20 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Musical typing.** Turn on KEYS in the transport bar to play the
+  selected track from the computer keyboard. PIANO is one chromatic row.
+  GRID is four rows in fourths like a Push, in key when a scale is set.
+  CHORD plays in-key chords on the bottom row under a melody on the rows
+  above it. With KEYS on, REC records what you play into the open clip
+  or a new one, layering pass after pass on a loop (docs/40).
+
+- **Octaves and scale in the piano roll.** A pressed key lights the same
+  note faintly in every octave on the keys and the grid. In DRAW mode a
+  ghost shows the note a click would add, with outlines in its other
+  octaves. A picked scale now marks its keys with a stripe (solid on the
+  root), greys the keys outside it, and tints its rows in the track's
+  color.
+
 - **New Project no longer crashes while a reverb rings.** Starting a new
   project, or opening one, while the old project's master effects were
   still sounding could crash Slab.

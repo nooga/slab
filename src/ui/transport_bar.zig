@@ -18,6 +18,7 @@ const snap_mod = @import("snap.zig");
 const Transport = @import("../transport.zig").Transport;
 const audio_mod = @import("../audio.zig");
 const meter_mod = @import("../meter.zig");
+const musical_keys = @import("musical_keys.zig");
 
 const Ui = core.Ui;
 const Rect = core.Rect;
@@ -154,6 +155,8 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     if (ctl.displaySelectEx(ui, snap_r, "snap", &snap, &SNAP_LABELS, "SNAP", .{ .large = true, .flush = true })) a.edit_snap.* = @enumFromInt(snap);
     menu.tip(ui, snap_r, std.mem.span(a.edit_snap.tooltip()));
 
+    keysTile(ui, &bar);
+
     // Logo plate on the right, the master meter beside it, blank plate
     // between.
     if (logoTile(ui, bar.cutRight(logoW(bar.h)))) res.about = true;
@@ -173,6 +176,59 @@ const SNAP_LABELS = blk: {
 };
 
 // ── Tiles ────────────────────────────────────────────────────────────
+
+/// Musical typing (docs/40): KEYS on/off, the layout, the base octave, the
+/// velocity, and CHORD's chord type.
+fn keysTile(ui: *Ui, bar: *Rect) void {
+    ui.pushId("keys");
+    defer ui.popId();
+    const on_r = bar.cutLeft(52);
+    var on = musical_keys.enabled;
+    if (ctl.button(ui, on_r, "on", &on, .{ .kind = .latch, .label = "KEYS", .led = style.accent, .flush = true })) musical_keys.setEnabled(on);
+    menu.tip(ui, on_r, "Musical typing: the computer keyboard plays the selected track; REC records it");
+    const dim = !musical_keys.enabled;
+
+    const lay_r = bar.cutLeft(76);
+    var lay: u8 = @intFromEnum(musical_keys.layout);
+    if (ctl.displaySelectEx(ui, lay_r, "layout", &lay, &musical_keys.LAYOUT_LABELS, "KEYS", .{ .flush = true, .dim = dim })) musical_keys.layout = @enumFromInt(lay);
+    menu.tip(ui, lay_r, switch (musical_keys.layout) {
+        .piano => "PIANO: A W S E D F T G Y H U J K = C to C; Z X octave, C V velocity",
+        .grid => "GRID: four rows in fourths (in key with a scale); - = octave, [ ] velocity",
+        .chord => "CHORD: Z row chords, A and Q rows melody, 1-6 chord type; - = octave, [ ] velocity",
+    });
+
+    const oct_r = bar.cutLeft(52);
+    var obuf: [8]u8 = undefined;
+    // A spare cell on the right for the steps.
+    var sbuf: [10]u8 = undefined;
+    const oct_s = std.fmt.bufPrint(&sbuf, "{s} ", .{musical_keys.octaveName(&obuf)}) catch "";
+    ctl.display(ui, oct_r, oct_s, .{ .align_ = .right, .flush = true, .color = if (dim) style.text_mute else style.vfd });
+    const step = ctl.glassSteps(ui, oct_r, "oct-step");
+    if (step != 0) musical_keys.stepOctave(step);
+    menu.tip(ui, oct_r, "Octave of the keys' lowest C");
+
+    const vel_r = bar.cutLeft(44);
+    const wid = ui.id("vel");
+    const b = ui.behavior(wid, vel_r, false);
+    if (b.double) {
+        musical_keys.velocity = 100;
+    } else if (b.held) {
+        const v = @as(f32, @floatFromInt(musical_keys.velocity)) - ui.in.dy * ui.renderer.zoom * 0.5;
+        musical_keys.velocity = @intFromFloat(std.math.clamp(@round(v), 1, 127));
+    }
+    if (ui.isHot(wid)) ui.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 1);
+    var vbuf: [8]u8 = undefined;
+    const vel_s = std.fmt.bufPrint(&vbuf, "V{d}", .{musical_keys.velocity}) catch "";
+    ctl.display(ui, vel_r, vel_s, .{ .align_ = .right, .flush = true, .color = if (dim) style.text_mute else if (ui.active == wid) style.vfd_hi else style.vfd });
+    menu.tip(ui, vel_r, "Velocity of the keys' notes: drag, double-click 100");
+
+    if (musical_keys.layout == .chord) {
+        const ct_r = bar.cutLeft(64);
+        var ct: u8 = @intFromEnum(musical_keys.chord_type);
+        if (ctl.displaySelectEx(ui, ct_r, "chord", &ct, &musical_keys.CHORD_LABELS, "CHORD", .{ .flush = true, .dim = dim })) musical_keys.chord_type = @enumFromInt(ct);
+        menu.tip(ui, ct_r, "Chord the Z row plays, in key (keys 1-6)");
+    }
+}
 
 const MASTER_W: i32 = 400;
 const MASTER_MIN_W: i32 = 220;

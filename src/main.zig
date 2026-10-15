@@ -75,6 +75,7 @@ const ui_geom = @import("ui/geom.zig");
 const snap_mod = @import("ui/snap.zig");
 const arrangement = @import("ui/arrangement.zig");
 const clip_editor = @import("ui/clip_editor.zig");
+const musical_keys = @import("ui/musical_keys.zig");
 const menu = @import("ui/menu.zig");
 const text_field = @import("ui/text_field.zig");
 const splash = @import("ui/splash.zig");
@@ -114,6 +115,7 @@ test {
     _ = @import("ui/timeline.zig");
     _ = @import("ui/commands.zig");
     _ = @import("ui/clip_editor.zig");
+    _ = @import("ui/musical_keys.zig");
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
     _ = @import("tempo.zig");
@@ -214,8 +216,9 @@ const StatusMessage = struct {
 /// main starts and releases the difference each frame.
 const HeldNotes = struct { track: ?usize = null, set: u128 = 0 };
 
-fn holdNotes(engine: *engine_mod.Engine, held: *HeldNotes, track: ?usize, want_in: u128) void {
-    const want = if (track == null) 0 else want_in;
+/// `typed` are the computer keyboard's notes: they start at its velocity.
+fn holdNotes(engine: *engine_mod.Engine, held: *HeldNotes, track: ?usize, want_in: u128, typed: u128, typed_vel: u8) void {
+    const want = if (track == null) 0 else want_in | typed;
     if (held.track != track and held.set != 0) {
         // Another clip: let go of the old track's notes first.
         if (held.track) |ot| for (0..128) |pi| {
@@ -234,7 +237,7 @@ fn holdNotes(engine: *engine_mod.Engine, held: *HeldNotes, track: ?usize, want_i
     }
     for (0..128) |pi| {
         const mask = @as(u128, 1) << @intCast(pi);
-        if (diff & mask != 0 and want & mask != 0) engine.holdNote(t, @intCast(pi), true);
+        if (diff & mask != 0 and want & mask != 0) engine.holdNoteVel(t, @intCast(pi), true, if (typed & mask != 0) typed_vel else 102);
     }
     held.set = want;
 }
@@ -1128,6 +1131,13 @@ pub fn main(init: std.process.Init) !void {
         // header, the clip editor's head): docs/31 §Keys.
         if ((m.left_pressed or m.right_pressed) and !menu.active() and !modal) focus = focusFromPoint(rects, m, layout.clipShown());
 
+        // Musical typing (docs/40) reads the keys first; a text field, menu,
+        // dialog, the browser's search or ⌘ keeps them.
+        {
+            const keys_owned = modal or menu.active() or rename.active() or auto_lane.entryActive() or browser.typing(ui) or
+                (focus == .browser and layout.browser_visible);
+            musical_keys.poll(!keys_owned and !commandModifierDown(), clip_editor.keyScale());
+        }
         if (modal) {
             // Modal: only Esc/Enter act, handled after the dialog draws below.
         } else if (menu.active()) {
@@ -1179,12 +1189,12 @@ pub fn main(init: std.process.Init) !void {
             if (commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_LEFT)) transport.seekToBeats(markers.prev(transport.beats()));
             if (commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_RIGHT)) if (markers.next(transport.beats())) |b| transport.seekToBeats(b);
             if (!in_browser and c.rl.IsKeyPressed(c.rl.KEY_TAB)) layout.clip_editor_visible = !layout.clip_editor_visible;
-            if (!in_browser and !commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_M)) {
+            if (!in_browser and !commandModifierDown() and shortcutPressed(c.rl.KEY_M)) {
                 if (shiftDown()) {
                     try executeEditCommand(alloc, &history, &clipboard, &status, focus, edit_snap, .clear_solo_mute, .{}, tracks, &transport, &selected_track, &selected_clip, &rename, &dirty);
                 } else layout.mixer_visible = !layout.mixer_visible;
             }
-            if (focus == .piano_roll and !commandModifierDown() and c.rl.IsKeyPressed(c.rl.KEY_E)) clip_editor.toggleExpressionMode();
+            if (focus == .piano_roll and !commandModifierDown() and shortcutPressed(c.rl.KEY_E)) clip_editor.toggleExpressionMode();
         }
 
         c.rl.BeginDrawing();
@@ -1274,8 +1284,8 @@ pub fn main(init: std.process.Init) !void {
             .project_path = project_path,
             .project_path_chosen = project_path_chosen,
             .dirty = dirty,
-            .recording = rec_busy,
-            .can_record = audio.capture_available,
+            .recording = rec_busy or musical_keys.recording,
+            .can_record = audio.capture_available or musical_keys.enabled,
             .input_names = input_name_ptrs[0..input_count],
             .current_input_idx = current_input_idx,
             .buffer_frames = audio.block_frames,
@@ -1351,12 +1361,22 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         if (tres.record_toggle and !rec_finishing) {
-            if (recorder.isRecording()) {
-                recorder.requestStop();
-                transport.stop();
-                rec_finishing = true;
+            if (recorder.isRecording() or musical_keys.recording) {
+                if (recorder.isRecording()) {
+                    recorder.requestStop();
+                    transport.stop();
+                    rec_finishing = true;
+                }
+                musical_keys.recording = false;
             } else {
                 rec_track = firstArmedAudioTrack(tracks);
+                // With KEYS on, REC writes what the keyboard plays (docs/40);
+                // the loop keeps running so passes layer.
+                if (musical_keys.enabled) {
+                    musical_keys.recording = true;
+                    transport.play();
+                    if (rec_track == null) status.set("Recording keys\u{2026}", .{});
+                }
                 if (rec_track) |ti| {
                     // One pass, in time: a loop would wrap the take over
                     // itself, so it pauses until the take is placed.
@@ -1381,8 +1401,8 @@ pub fn main(init: std.process.Init) !void {
                         transport.setLoopEnabled(true);
                         rec_loop_paused = false;
                     }
-                } else {
-                    status.set("Arm a track (R) to record", .{});
+                } else if (!musical_keys.enabled) {
+                    status.set("Arm a track (R) or turn KEYS on to record", .{});
                 }
             }
         }
@@ -1686,8 +1706,11 @@ pub fn main(init: std.process.Init) !void {
             layout.clip_editor_visible = true;
             rects = layout.compute(sw, sh);
         }
-        // The clip editor closed: nothing stays held.
-        if (!layout.clipShown()) holdNotes(&engine, &held, null, 0);
+        recordKeys(alloc, &history, tracks, &transport, meter_state.liveMap(), &selected_clip, &selected_track, &dirty);
+        // The clip editor closed: only the computer keyboard holds notes,
+        // on the selected track.
+        const typed = musical_keys.sounding();
+        if (!layout.clipShown()) holdNotes(&engine, &held, playableTrack(tracks, selected_track), 0, typed, musical_keys.velocity);
         if (layout.clipShown()) {
             const play_beat: ?f64 = if (transport.isPlaying()) transport.beats() else null;
             const cres = if (selectedClipIsAudio(tracks, selected_clip))
@@ -1704,7 +1727,7 @@ pub fn main(init: std.process.Init) !void {
                 selected_clip = f;
                 selected_track = f.track;
             }
-            holdNotes(&engine, &held, if (selected_clip) |s| s.track else null, cres.hear);
+            holdNotes(&engine, &held, if (selected_clip) |s| s.track else playableTrack(tracks, selected_track), cres.hear, typed, musical_keys.velocity);
             if (cres.command == .slice_to_sampler) {
                 sliceToSampler(alloc, &history, &status, &engine, &audio, &reg, &audio_pool, &tracks_buf, &track_count, &transport, &selected_track, &selected_clip, &dirty);
                 tracks = tracks_buf[0..track_count];
@@ -6739,7 +6762,7 @@ fn handleFocusedEditCommands(
 
     // The command table (docs/31 §Keys): the same command a menu runs.
     if (editWhere(focus, tracks, selected_clip.*)) |where| {
-        if (commands.pressed(where, gesture.mods(), &c.rl.IsKeyPressed)) |command| {
+        if (commands.pressed(where, gesture.mods(), &shortcutPressed)) |command| {
             try executeEditCommand(alloc, history, clipboard, status, focus, edit_snap, command, editCursor(focus, transport), tracks, transport, selected_track, selected_clip, rename, dirty);
             return;
         }
@@ -7159,12 +7182,123 @@ fn commandModifierDown() bool {
         c.rl.IsKeyDown(c.rl.KEY_LEFT_CONTROL) or c.rl.IsKeyDown(c.rl.KEY_RIGHT_CONTROL);
 }
 
+/// The selected track when it can play notes (not a bus or the master).
+fn playableTrack(tracks: []track_mod.Track, sel: ?usize) ?usize {
+    const t = sel orelse return null;
+    if (t >= tracks.len or tracks[t].kind != .audio) return null;
+    return t;
+}
+
+/// One frame of recording the computer keyboard (docs/40 §Recording):
+/// notes close into the open clip under the playhead on the played track,
+/// or a new clip from the bar the pass's first note fell in. The clip
+/// grows by bars to hold what's played; one undo step per pass.
+fn recordKeys(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    tracks: []track_mod.Track,
+    transport: *transport_mod.Transport,
+    meter: meter_mod.MeterMap,
+    selected_clip: *?clip_mod.ClipRef,
+    selected_track: *?usize,
+    dirty: *bool,
+) void {
+    const take = &musical_keys.take;
+    var out: [256]musical_keys.RecNote = undefined;
+    const rolling = musical_keys.recording and transport.isPlaying();
+    var n: usize = 0;
+    if (rolling) {
+        const beat = transport.beats();
+        if (!take.active) take.begin(musical_keys.sounding(), beat);
+        n = take.update(musical_keys.sounding(), musical_keys.velocity, beat, &out);
+    } else if (take.active) {
+        // The transport stopped: the pass ends and REC lets go.
+        musical_keys.recording = false;
+        const target = take.target;
+        n = take.finish(&out);
+        take.target = target; // kept for the commit below, cleared after
+    } else return;
+    if (n == 0 and take.open == 0) {
+        if (!rolling) take.target = null;
+        return;
+    }
+    const ref = keysTarget(alloc, history, tracks, transport, meter, selected_clip, selected_track, if (n > 0) out[0].start else take.last_beat) orelse {
+        if (!rolling) take.target = null;
+        return;
+    };
+    const t = &tracks[ref.track];
+    const clip = &t.clips.items[ref.clip];
+    const rate = t.time.rate();
+    var reach = if (take.open != 0) (take.last_beat - clip.start_beat) * rate else 0;
+    for (out[0..n]) |rn| {
+        const start = (rn.start - clip.start_beat) * rate;
+        if (start < 0) continue;
+        const len = @max((rn.end - rn.start) * rate, 1.0 / 32.0);
+        clip.addNote(alloc, .{ .pitch = rn.pitch, .start_beat = start, .length_beats = len, .velocity = @max(rn.velocity, 1) }) catch |err| {
+            std.log.err("record note failed: {s}", .{@errorName(err)});
+        };
+        reach = @max(reach, start + len);
+    }
+    // Grow by whole bars of the song's meter from the clip's start.
+    var bar = meter.beatToBarPos(clip.start_beat).bar;
+    var end = clip.start_beat;
+    while ((end - clip.start_beat) * rate < reach - 1e-9 or end <= clip.start_beat) : (bar += 1) end += meter.barLenBeats(bar);
+    const local_end = (end - clip.start_beat) * rate;
+    if (local_end > clip.length_beats) clip.length_beats = local_end;
+    dirty.* = true;
+    if (!rolling) take.target = null;
+}
+
+/// The clip a recording pass writes: the pass's own, the selected one on
+/// the played track with the playhead inside it, or a new one.
+fn keysTarget(
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    tracks: []track_mod.Track,
+    transport: *transport_mod.Transport,
+    meter: meter_mod.MeterMap,
+    selected_clip: *?clip_mod.ClipRef,
+    selected_track: *?usize,
+    beat: f64,
+) ?clip_mod.ClipRef {
+    const take = &musical_keys.take;
+    if (take.target) |tg| {
+        if (tg[0] < tracks.len and tg[1] < tracks[tg[0]].clips.items.len) return .{ .track = tg[0], .clip = tg[1] };
+        take.target = null;
+    }
+    const ti = (if (selected_clip.*) |s| @as(?usize, s.track) else null) orelse playableTrack(tracks, selected_track.*) orelse return null;
+    if (ti >= tracks.len or tracks[ti].kind != .audio) return null;
+    pushHistorySnapshot(alloc, history, tracks, transport);
+    if (selected_clip.*) |s| if (s.track == ti and s.clip < tracks[ti].clips.items.len) {
+        const cl = &tracks[ti].clips.items[s.clip];
+        if (cl.kind == .note and beat >= cl.start_beat and beat < cl.start_beat + cl.length_beats / tracks[ti].time.rate()) {
+            take.target = .{ s.track, s.clip };
+            return s;
+        }
+    };
+    const pos = meter.beatToBarPos(beat);
+    const start = meter.barStartBeat(pos.bar);
+    var buf: [clip_mod.MAX_NAME]u8 = undefined;
+    const name = std.fmt.bufPrint(&buf, "Take {d}", .{tracks[ti].clips.items.len + 1}) catch "Take";
+    tracks[ti].addClip(alloc, clip_mod.Clip.init(name, start, meter.barLenBeats(pos.bar))) catch return null;
+    const ref = clip_mod.ClipRef{ .track = @intCast(ti), .clip = @intCast(tracks[ti].clips.items.len - 1) };
+    take.target = .{ ref.track, ref.clip };
+    selected_clip.* = ref;
+    selected_track.* = ti;
+    return ref;
+}
+
+/// A pane shortcut's key, unless musical typing has it (docs/40).
+fn shortcutPressed(key: c_int) callconv(.c) bool {
+    return !musical_keys.claims(key) and c.rl.IsKeyPressed(key);
+}
+
 fn handleSnapKeys(edit_snap: *snap_mod.Setting, status: *StatusMessage) void {
     if (commandModifierDown()) return;
-    if (c.rl.IsKeyPressed(c.rl.KEY_LEFT_BRACKET)) {
+    if (shortcutPressed(c.rl.KEY_LEFT_BRACKET)) {
         edit_snap.* = edit_snap.*.coarser();
         status.set("Snap {s}", .{std.mem.span(edit_snap.*.label())});
-    } else if (c.rl.IsKeyPressed(c.rl.KEY_RIGHT_BRACKET)) {
+    } else if (shortcutPressed(c.rl.KEY_RIGHT_BRACKET)) {
         edit_snap.* = edit_snap.*.finer();
         status.set("Snap {s}", .{std.mem.span(edit_snap.*.label())});
     }
