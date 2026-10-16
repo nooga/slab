@@ -6939,6 +6939,70 @@ test "raw DSP2 delay machine: two rings, injected once into the stereo region" {
     }
 }
 
+test "a machine with state over MAX_STATE gets heap regions, one per voice" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/grand/grand.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+
+    // Hammerwork Grand's mode banks are several times the inline region.
+    try testing.expect(inst.desc.state_size > MAX_STATE);
+    try testing.expect(inst.big_state.len >= MAX_REGIONS * inst.desc.state_size);
+    try testing.expect(inst.state_stride >= inst.desc.state_size);
+    try testing.expectEqual(inst.statePtrCh(0) + inst.state_stride, inst.statePtrCh(1));
+}
+
+// Render `blocks` blocks of 256 frames with `events` in the first one;
+// returns the summed |L| + |R| and fails on a non-finite sample.
+fn testEnergy(mach: machine.Machine, events: []machine.NoteEvent, blocks: usize) !f64 {
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = 256;
+    var l = [_]f32{0} ** 256;
+    var r = [_]f32{0} ** 256;
+    var e: f64 = 0;
+    for (0..blocks) |b| {
+        ctx.note_in = @ptrCast(events.ptr);
+        ctx.note_in_count = if (b == 0) @intCast(events.len) else 0;
+        testRender(mach, &ctx, &l, &r);
+        for (l, r) |sl, sr| {
+            try testing.expect(std.math.isFinite(sl) and std.math.isFinite(sr));
+            e += @abs(sl) + @abs(sr);
+        }
+    }
+    return e;
+}
+
+test "Hammerwork Grand: a struck note rings and the damper stops it" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/grand/grand.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+
+    var on = [_]machine.NoteEvent{.{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 1, .pitch = 60, .velocity = 0.7 }};
+    const struck = try testEnergy(mach, &on, 40); // ~0.2 s
+    try testing.expect(struck > 1.0);
+    // Still ringing a second later while held...
+    const held = try testEnergy(mach, on[0..0], 40);
+    try testing.expect(held > 0.05 * struck);
+    // ...and the damper takes it down once the key is up.
+    var off = [_]machine.NoteEvent{.{ .sample_offset = 0, .kind = .note_off, .channel = 0, .note_id = 1, .pitch = 60, .velocity = 0 }};
+    _ = try testEnergy(mach, &off, 300); // 1.6 s
+    const after = try testEnergy(mach, on[0..0], 20);
+    try testing.expect(after < 0.001 * struck);
+}
+
+test "Skinwork Kit: every piece of the GM map sounds and stays finite" {
+    const inst = try FyRawMachine.create(testing.allocator, "machines/kit/kit.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+
+    for ([_]u8{ 36, 37, 38, 41, 42, 44, 45, 46, 48, 49, 51, 53 }) |pitch| {
+        mach.reset(mach.state);
+        var on = [_]machine.NoteEvent{.{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 1, .pitch = pitch, .velocity = 1.0 }};
+        const e = try testEnergy(mach, &on, 20);
+        try testing.expect(e > 0.5);
+    }
+}
+
 test "raw DSP2 voice machine with a buffer: one ring per voice" {
     const inst = try FyRawMachine.create(testing.allocator, "machines/bass/bass.fy");
     const mach = inst.machineInterface();

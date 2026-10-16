@@ -1,0 +1,1 @@
+{"slab": "preset", "schema": 1, "machine": "grand", "note": "Hard-voiced hammers and a lively board: cuts through a band mix", "params": {"gp-hard": 0.6, "gp-felt": 0.25, "gp-strike": 0.0, "gp-decay": 1.5, "gp-hfdec": 4.5, "gp-stiff": 1.0, "gp-unison": 1.2, "gp-board": 1.3, "gp-width": 0.7, "gp-release": 0.25, "gp-pedal": 0.0, "gp-level": 0.7}}

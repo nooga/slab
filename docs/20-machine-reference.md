@@ -14,9 +14,11 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`cs80`](#cs80) | C-Beam 80 | instrument | 8 | `—` |
 | [`drum2`](#drum2) | DS-404 Drums | instrument | mono | `—` |
 | [`fm86`](#fm86) | FM-7.11 | instrument | 8 | `—` |
+| [`grand`](#grand) | Hammerwork Grand | instrument | 16 | `gp-` |
 | [`guitar`](#guitar) | Fretwire Guitar | instrument | 6 | `gt-` |
 | [`jp8`](#jp8) | Juniper-8 | instrument | 8 | `jp-` |
 | [`juno2`](#juno2) | Ju-Know | instrument | 8 | `jn-` |
+| [`kit`](#kit) | Skinwork Kit | instrument | 12 | `sk-` |
 | [`ms20`](#ms20) | SM-24 Mono | instrument | mono | `—` |
 | [`profit5`](#profit5) | Profit-5 | instrument | 8 | `p5-` |
 | [`rhodes`](#rhodes) | Rhodes E-Piano | instrument | 8 | `rd-` |
@@ -626,6 +628,34 @@ Presets:
 - `slab/tubular-bells` — Slab: tubular bells. A clangorous strike that settles into a long, slightly sour hum while the key is held.
 - `slab/vibes` — Slab: vibraphone. A bright mallet bar with a ringing high partial, a tink on the strike and a steady motor tremolo.
 
+## grand
+
+**Hammerwork Grand**, instrument, 16 voices.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `gp-hard` | HAMMER | HARD | -1 … 1 | 0 | linear |
+| `gp-felt` | HAMMER | FELT | 0 … 1 | 0.35 | linear |
+| `gp-strike` | HAMMER | STRIKE | -1 … 1 | 0 | linear |
+| `gp-decay` | STRING | DECAY | 0.25 … 4 | 1.5 | exp |
+| `gp-hfdec` | STRING | HF DEC | 0.2 … 8 | 3 | exp |
+| `gp-stiff` | STRING | STIFF | 0 … 3 | 1 | linear |
+| `gp-unison` | STRING | UNISON | 0 … 6 | 1.2 | linear |
+| `gp-board` | BOARD | COUPLE | 0.1 … 2 | 1 | exp |
+| `gp-width` | BOARD | WIDTH | 0 … 1 | 0.7 | linear |
+| `gp-release` | DAMPER | RELEASE | 0.05 … 2 | 0.25 | exp |
+| `gp-pedal` | DAMPER | PEDAL | 0 … 1 | 0 | linear |
+| `gp-level` | DAMPER | LEVEL | 0 … 1 | 0.7 | pow |
+
+Presets:
+
+- `bright-pop` — Hard-voiced hammers and a lively board: cuts through a band mix
+- `default` — Concert grand at its own voicing: medium felt, long sustain
+- `dry-studio` — Short, focused and close: dampers quick, sustain trimmed
+- `felt-ballad` — Soft felt and a dark top, dampers half lifted: intimate and round
+- `honky-tonk` — Unisons pulled apart and a bright hammer: the saloon upright
+- `sustain-wash` — Pedal down: every note rings into the next, wide board
+
 ## guitar
 
 **Fretwire Guitar**, instrument, 6 voices.
@@ -837,6 +867,46 @@ Presets:
 - `warm-chord-plucks` — Warm short chord plucks
 - `wide-sunny-pad` — Wide sunny melancholic pad
 - `afterimage/horizon` — Slow detuned pad without sub, with two-voice stereo unison; Afterimage Express. Upper chord voicings leave space for bass.
+
+## kit
+
+**Skinwork Kit**, instrument, 12 voices.
+Drum notes: kick = 36, snare = 38, side = 37, lt = 41, mt = 45, ht = 48, ch = 42, ph = 44, oh = 46, crash = 49, ride = 51, bell = 53.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `sk-kick-tune` | KICK | TUNE | -12 … 12 | 0 | linear |
+| `sk-kick-decay` | KICK | DECAY | 0.25 … 4 | 1 | exp |
+| `sk-kick-level` | KICK | LEVEL | 0 … 1 | 0.8 | pow |
+| `sk-snare-tune` | SNARE | TUNE | -12 … 12 | 0 | linear |
+| `sk-snare-decay` | SNARE | DECAY | 0.25 … 4 | 1 | exp |
+| `sk-snare-level` | SNARE | LEVEL | 0 … 1 | 0.8 | pow |
+| `sk-tom-tune` | TOMS | TUNE | -12 … 12 | 0 | linear |
+| `sk-tom-decay` | TOMS | DECAY | 0.25 … 4 | 1 | exp |
+| `sk-tom-level` | TOMS | LEVEL | 0 … 1 | 0.8 | pow |
+| `sk-hat-tune` | HATS | TUNE | -12 … 12 | 0 | linear |
+| `sk-hat-decay` | HATS | DECAY | 0.25 … 4 | 1 | exp |
+| `sk-hat-level` | HATS | LEVEL | 0 … 1 | 0.7 | pow |
+| `sk-crash-tune` | CRASH | TUNE | -12 … 12 | 0 | linear |
+| `sk-crash-decay` | CRASH | DECAY | 0.25 … 4 | 1 | exp |
+| `sk-crash-level` | CRASH | LEVEL | 0 … 1 | 0.7 | pow |
+| `sk-ride-tune` | RIDE | TUNE | -12 … 12 | 0 | linear |
+| `sk-ride-decay` | RIDE | DECAY | 0.25 … 4 | 1 | exp |
+| `sk-ride-level` | RIDE | LEVEL | 0 … 1 | 0.7 | pow |
+| `sk-stick` | PLAY | STICK | -1 … 1 | 0 | linear |
+| `sk-wires` | PLAY | WIRES | 0 … 1 | 0.7 | linear |
+| `sk-glide` | PLAY | GLIDE | 0 … 2 | 1 | linear |
+| `sk-bloom` | PLAY | BLOOM | 0 … 2 | 1 | linear |
+| `sk-width` | PLAY | WIDTH | 0 … 1 | 0.6 | linear |
+| `sk-level` | PLAY | LEVEL | 0 … 1 | 0.7 | pow |
+
+Presets:
+
+- `default` — A studio kit: 18-inch kick, 14-inch snare, three toms, hats, crash and ride
+- `funk-dry` — Tight and dead: short heads, crisp snare, closed hats up front
+- `gong-wash` — Cymbals left to bloom: heavy coupling and long decays for swells
+- `jazz` — Small kit tuned high, light sticks, long washy cymbals, loose wires
+- `rock` — Big low tuning, hard sticks, the toms drop in pitch when hit hard
 
 ## ms20
 

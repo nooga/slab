@@ -1,0 +1,1 @@
+{"slab": "preset", "schema": 1, "machine": "grand", "note": "Unisons pulled apart and a bright hammer: the saloon upright", "params": {"gp-hard": 0.4, "gp-felt": 0.35, "gp-strike": 0.0, "gp-decay": 0.8, "gp-hfdec": 3.0, "gp-stiff": 1.0, "gp-unison": 5.0, "gp-board": 1.4, "gp-width": 0.5, "gp-release": 0.25, "gp-pedal": 0.0, "gp-level": 0.7}}

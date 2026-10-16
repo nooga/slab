@@ -6,6 +6,19 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Hammerwork Grand, a physically modeled piano.** Felt hammers strike up
+  to three detuned strings per key, which ring into a soundboard through
+  a moving bridge. Velocity changes the tone the way a real hammer does,
+  bass and treble keep their own inharmonicity and decay, and the
+  unisons give the piano's two-stage decay. PEDAL lifts the dampers on
+  held notes too. Six presets. See docs/41.
+
+- **Skinwork Kit, a physically modeled drum kit.** Kick, snare with
+  rattling wires, side stick, three toms, closed, pedal and open hats,
+  crash, ride and ride bell on the GM drum map. Toms and kick drop in
+  pitch when hit hard, cymbals bloom into a wash, and a closed hat chokes
+  an open one. Five presets. See docs/41.
+
 - **Separate STOP and PLAY.** Pressing STOP again while stopped returns
   to the loop's start, or to the song's start with the loop off.
 

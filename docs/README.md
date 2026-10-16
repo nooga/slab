@@ -126,6 +126,9 @@ status and the source before assuming a feature is absent or complete.
 41. [40-musical-typing.md](40-musical-typing.md) — the computer keyboard
     as PIANO, GRID (Push-style fourths) or CHORD plus melody, recording
     into clips, octave echoes, ghost notes and scale marks in the piano roll
+42. [41-physical-models.md](41-physical-models.md) — Hammerwork Grand and
+    Skinwork Kit: modal strings, membranes and plates, implicit hammer and
+    stick contact, the `kernels/10-physical` building blocks
 
 ## Terminology crib sheet
 
