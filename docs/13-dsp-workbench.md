@@ -159,6 +159,10 @@ kernels/
   08-machines/
 ```
 
+In the tree today, `kernels/10-physical/` holds the physical-modeling
+layer: the exact modal step, the implicit striker contact and the
+membrane's Bessel modes (docs/41).
+
 Current first fixture:
 
 ```
