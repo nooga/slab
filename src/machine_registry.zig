@@ -205,7 +205,7 @@ test "user machines: <id>/<id>.fy folders, sorted, builtins and strays skipped" 
 }
 
 /// Machines built in Zig rather than fy.
-pub const Native = enum(u8) { none, rack };
+pub const Native = enum(u8) { none, rack, fxrack };
 
 pub const Entry = struct {
     native: Native = .none,
@@ -272,7 +272,8 @@ pub const Registry = struct {
         if (idx >= self.count) return error.InvalidMachineIndex;
         const e = &self.entries[idx];
         switch (e.native) {
-            .rack => return (try rack_mod.Rack.create(self.alloc, self)).machineInterface(),
+            .rack => return (try rack_mod.Rack.create(self.alloc, self, .instrument)).machineInterface(),
+            .fxrack => return (try rack_mod.Rack.create(self.alloc, self, .effect)).machineInterface(),
             .none => {},
         }
         const raw = try fy_raw_machine_mod.FyRawMachine.create(self.alloc, e.pathSlice());
@@ -283,7 +284,11 @@ pub const Registry = struct {
     pub fn instantiatePrepared(self: *Registry, idx: usize) !machine.Machine {
         if (idx >= self.count) return error.InvalidMachineIndex;
         const e = &self.entries[idx];
-        if (e.native == .rack) return (try rack_mod.Rack.create(self.alloc, self)).machineInterface();
+        switch (e.native) {
+            .rack => return (try rack_mod.Rack.create(self.alloc, self, .instrument)).machineInterface(),
+            .fxrack => return (try rack_mod.Rack.create(self.alloc, self, .effect)).machineInterface(),
+            .none => {},
+        }
         return (try fy_raw_machine_mod.FyRawMachine.createIsolated(self.alloc, e.pathSlice())).machineInterface();
     }
 
@@ -309,6 +314,12 @@ pub const Registry = struct {
         try copyEntryString(e.name[0..], &e.name_len, "Rack");
         try copyEntryString16(e.path[0..], &e.path_len, rack_mod.PATH);
         self.entries[self.count] = e;
+        self.count += 1;
+        try self.ensureRoom();
+        var fx = Entry{ .native = .fxrack, .in_audio = true, .out_audio = true, .panel_w = rack_mod.SIDE_W + 200 };
+        try copyEntryString(fx.name[0..], &fx.name_len, "FX Rack");
+        try copyEntryString16(fx.path[0..], &fx.path_len, rack_mod.FX_PATH);
+        self.entries[self.count] = fx;
         self.count += 1;
     }
 

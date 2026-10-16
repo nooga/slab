@@ -543,9 +543,9 @@ fn machinePickerMenu(menu_key: u64, reg: *const Registry) ?AddPick {
     return machinePickerMenuFor(menu_key, reg, .all);
 }
 
-/// Which machines a picker offers: all, or the fy instruments a rack's
-/// parts can be.
-pub const PickerFilter = enum { all, instruments };
+/// Which machines a picker offers: all, the instruments a rack lane can
+/// play, or the inserts it can hold (docs/42).
+pub const PickerFilter = enum { all, instruments, effects };
 
 pub fn machinePickerMenuFor(menu_key: u64, reg: *const Registry, filter: PickerFilter) ?AddPick {
     if (!menu.isOpen(menu_key)) return null;
@@ -553,7 +553,8 @@ pub fn machinePickerMenuFor(menu_key: u64, reg: *const Registry, filter: PickerF
     var items: [registry_mod.MAX_MACHINES]menu.Item = undefined;
     var n: usize = 0;
     for (reg.entries[0..menu_count], 0..) |*e, i| {
-        if (filter == .instruments and (e.native != .none or !e.in_notes)) continue;
+        if (filter == .instruments and !e.in_notes) continue;
+        if (filter == .effects and (!e.in_audio or e.in_notes)) continue;
         items[n] = .{ .label = std.mem.span(e.nameZ()), .id = @intCast(i), .submenu = add_scan_cache[i].count > 0 };
         n += 1;
     }

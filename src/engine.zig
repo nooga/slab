@@ -8,6 +8,7 @@ const audio = @import("audio.zig");
 const machine = @import("machine.zig");
 const Transport = @import("transport.zig").Transport;
 const track_mod = @import("track.zig");
+const chain_mod = @import("chain.zig");
 const Track = track_mod.Track;
 const snap_mod = @import("snapshot.zig");
 const meter = @import("meter.zig");
@@ -1085,7 +1086,7 @@ pub const Engine = struct {
         };
         t.noteSounding(events[0..event_count]);
         t.chain.audio_machine.render(t.chain.audio_machine.state, &ctx, l, r);
-        const rendered = renderEffects(t, ctx, l, r, fx_l_buf[0..n], fx_r_buf[0..n], .{});
+        const rendered = renderEffects(t.chain, ctx, l, r, fx_l_buf[0..n], fx_r_buf[0..n], .{});
         const final_l = rendered.l;
         const final_r = rendered.r;
         const g = faderGains(t, snap, playhead);
@@ -1577,7 +1578,7 @@ pub const Engine = struct {
             .lat = self.lat_in[ti] + instLatency(t, node.is_bus),
         } else null;
         if (frozen == null) {
-            const rendered = renderEffectsKeyed(t, ctx, l, r, scratch.fx_l[0..frames], scratch.fx_r[0..frames], keys, .{ .on = self.idle_skip, .wake = wake });
+            const rendered = renderEffectsKeyed(t.chain, ctx, l, r, scratch.fx_l[0..frames], scratch.fx_r[0..frames], keys, .{ .on = self.idle_skip, .wake = wake });
             // The chain may end in the scratch pair; the pre tap is `l`/`r`.
             if (rendered.l.ptr != l.ptr) {
                 @memcpy(l, rendered.l);
@@ -1798,7 +1799,7 @@ pub const Engine = struct {
                     .ppq_position = beat,
                     .transport_state = if (self.transport.isPlaying()) .playing else .stopped,
                 };
-                const rendered = renderEffects(mb, base, l, r, self.master_fx_l[0..n], self.master_fx_r[0..n], .{ .on = self.idle_skip });
+                const rendered = renderEffects(mb.chain, base, l, r, self.master_fx_l[0..n], self.master_fx_r[0..n], .{ .on = self.idle_skip });
                 l = rendered.l;
                 r = rendered.r;
             }
@@ -2098,7 +2099,7 @@ fn signalStatsPlanar(l: []const f32, r: []const f32, gain: f32) SignalStats {
     return stats;
 }
 
-const RenderedPair = struct {
+pub const RenderedPair = struct {
     l: []f32,
     r: []f32,
 };
@@ -2255,7 +2256,7 @@ fn playFrozen(fz: snap_mod.FrozenSnap, block_start: u64, frames: u32, sample_rat
 }
 
 /// Idle skipping for one chain (docs/04 §Idle skipping).
-const Idle = struct {
+pub const Idle = struct {
     on: bool = false,
     /// The track's instrument has a note sounding or close: every effect
     /// renders, whatever its input.
@@ -2266,8 +2267,9 @@ fn idleHoldSamples(sample_rate: u32) u32 {
     return @intFromFloat(IDLE_HOLD_S * @as(f32, @floatFromInt(sample_rate)));
 }
 
-fn renderEffects(
-    t: *Track,
+/// A chain's inserts over `src` (a track's, or a rack lane's, rack.zig).
+pub fn renderEffects(
+    ch: *chain_mod.State,
     base_ctx: machine.MachineCtx,
     src_l: []f32,
     src_r: []f32,
@@ -2275,11 +2277,11 @@ fn renderEffects(
     scratch_r: []f32,
     idle: Idle,
 ) RenderedPair {
-    return renderEffectsKeyed(t, base_ctx, src_l, src_r, scratch_l, scratch_r, null, idle);
+    return renderEffectsKeyed(ch, base_ctx, src_l, src_r, scratch_l, scratch_r, null, idle);
 }
 
 fn renderEffectsKeyed(
-    t: *Track,
+    ch: *chain_mod.State,
     base_ctx: machine.MachineCtx,
     src_l: []f32,
     src_r: []f32,
@@ -2300,9 +2302,9 @@ fn renderEffectsKeyed(
 
     // Each effect's input peak is the previous one's output peak, scanned once.
     var peak = [2]f32{ blockPeak(cur_l), blockPeak(cur_r) };
-    for (t.audioEffects(), 0..) |*fx, i| {
+    for (ch.audioEffects(), 0..) |*fx, i| {
         const in_peak = peak;
-        const bypassed = t.audioEffectBypassed(i);
+        const bypassed = ch.audio_effects[i].bypass.load(.monotonic);
         const wet_to: f32 = if (bypassed) 0 else 1;
         const wet_from = fx.wet;
         fx.wet = wet_to;
@@ -2339,7 +2341,7 @@ fn renderEffectsKeyed(
         const n_fx = cur_l.len;
         const mixing = wet_from != 1 or wet_to != 1;
         if (fx.dry_line >= 0) {
-            const line = &t.chain.dry[@intCast(fx.dry_line)];
+            const line = &ch.dry[@intCast(fx.dry_line)];
             const d: usize = @min(fx_lat, track_mod.DRY_LEN - MAX_BLOCK);
             const mask = track_mod.DRY_LEN - 1;
             for (0..n_fx) |k| {
@@ -2393,7 +2395,7 @@ fn renderEffectsKeyed(
         }
         // Fully back in: its line is free again.
         if (!bypassed and wet_from == 1 and fx.dry_line >= 0) {
-            t.chain.dry_used &= ~(@as(u8, 1) << @intCast(fx.dry_line));
+            ch.dry_used &= ~(@as(u8, 1) << @intCast(fx.dry_line));
             fx.dry_line = -1;
         }
         const out_peak = [2]f32{ blockPeak(next_l), blockPeak(next_r) };

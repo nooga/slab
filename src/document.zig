@@ -13,6 +13,7 @@ const clip_mod = @import("clip.zig");
 const warp_mod = @import("warp.zig");
 const tune_mod = @import("tune.zig");
 const registry_mod = @import("machine_registry.zig");
+const rack_mod = @import("machines/rack.zig");
 const transport_mod = @import("transport.zig");
 const machine_mod = @import("machine.zig");
 const audio_pool_mod = @import("audio_pool.zig");
@@ -1746,6 +1747,54 @@ test "JSON project round-trips an effect's loaded assets" {
     defer got.deinit(alloc);
     try m.write_assets_json.?(m.state, &got, alloc);
     try std.testing.expectEqualStrings("{\"smp\":\"factory:machines/sampler/assets\"}", got.items);
+}
+
+test "JSON project round-trips an FX Rack in an effect slot, lanes and inserts" {
+    const alloc = std.testing.allocator;
+    var reg = registry_mod.Registry.init(alloc);
+    defer reg.deinit();
+    try reg.loadFyMachine("machines/sat2/sat2.fy");
+    try reg.loadNative();
+    setRegistry(&reg);
+    defer active_reg = null;
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    setPool(&pool);
+    defer active_pool = null;
+    var master = try track_mod.Track.init(alloc, "Master", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, test_machine);
+    master.kind = .master;
+    defer master.deinit(alloc);
+    setMaster(&master);
+    defer active_master = null;
+    var transport: transport_mod.Transport = .{};
+    transport.sample_rate = 48_000;
+
+    const idx = reg.findById("fxrack").?;
+    const fx = try reg.instantiate(idx);
+    const rk: *rack_mod.Rack = @ptrCast(@alignCast(fx.state));
+    _ = try rk.addLane(null);
+    _ = try rk.addLane(reg.findById("sat2").?);
+    rk.lanes[1].level_db = -6;
+    var tracks = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "Fx", .{ .r = 1, .g = 2, .b = 3, .a = 255 }, test_machine),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    try tracks[0].addEffect(alloc, fx, @intCast(idx));
+
+    const bytes = try serialize(alloc, tracks[0..], &transport);
+    defer alloc.free(bytes);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "\"machine\":\"fxrack\"") != null);
+
+    var loaded_buf: [1]track_mod.Track = undefined;
+    var loaded_count: usize = 0;
+    var lt: transport_mod.Transport = .{};
+    lt.sample_rate = 48_000;
+    try apply(alloc, bytes, &reg, loaded_buf[0..], &loaded_count, &lt, test_machine);
+    defer for (loaded_buf[0..loaded_count]) |*t| t.deinit(alloc);
+    const got: *rack_mod.Rack = @ptrCast(@alignCast(loaded_buf[0].effects.items[0].mach.state));
+    try std.testing.expectEqual(@as(usize, 2), got.count);
+    try std.testing.expectEqual(@as(usize, 1), got.lanes[1].effects.items.len);
+    try std.testing.expectEqual(@as(f32, -6), got.lanes[1].level_db);
 }
 
 test "JSON project round-trips instrument-by-id, settings, and effect chain" {

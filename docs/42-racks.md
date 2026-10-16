@@ -1,8 +1,9 @@
 # 42 — Racks: chains in lanes, macros, rigs
 
-**Status: proposal, phase 1 built.** `src/chain.zig` holds the chain
-machinery tracks use, and effects save their `state` and `assets`. The
-rest is still to build. The Rack that ships today
+**Status: phases 1 and 2 built.** Rack lanes hold chains, the FX Rack
+plays lanes of inserts, racks nest and align their lanes' latency, and
+rack state is in its second form. Macros, the new panel, rigs and inner
+automation are still to build. The Rack that ships today
 (`src/machines/rack.zig`) is described under "Where we start".
 
 A rack packages machines into one device. Each of its lanes holds a
@@ -54,24 +55,30 @@ Rack
     macro index, target (lane, slot uid, control id), min, max, formula?
 ```
 
-**One machine, two kinds.**
-- **Instrument rack:** in an instrument slot. It routes notes to the lanes
-  whose key, velocity and chain zones hold them, as parts do now. Each
-  lane renders its instrument, then its effects.
-- **Effect rack:** in an effect slot. Every lane gets the rack's input.
-  A lane with no effects is a dry path, which is how a parallel-compression
+**One machine, two registry entries.**
+- **Rack** (`rack`): an instrument. It routes notes to the lanes whose
+  key and velocity ranges hold them, as parts did. Each lane renders its
+  instrument, then its inserts.
+- **FX Rack** (`fxrack`): an effect. Every lane gets the rack's input.
+  A lane with no inserts is a dry path, which is how a parallel-compression
   rack or a DI-plus-amp bass rig is built.
 
-The kind comes from the slot. A rack preset records its kind so the
-picker offers it only in the right slot.
+Both are `src/machines/rack.zig` with a `Kind`; being two entries, the
+picker offers each in its own slot with no new rules, and each has its
+own presets folder.
+
+**MUTE and SOLO close a lane's input.** A muted lane, or one another
+lane's SOLO leaves out, takes no new notes (an effect lane, no input);
+what it already holds rings out and is heard, as a muted part did.
 
 **Lanes reuse the track's chain.** The `Effect` slot type (uid, bypass,
 sidechain key, PDC dry line, idle skip, wet crossfade) and its
 UI→audio handoff live in `src/chain.zig` (`chain.State`). A track
 and a rack lane share that one implementation: adopting by uid and
 version, retiring replaced machines, latency, and the quiet state. It
-also means everything that works on a track's effects works inside a
-lane, sidechain keys included.
+also means what works on a track's effects works inside a lane, but two
+things: sidechain keys don't reach lane inserts yet, and a lane's chain
+changes at once, without the track's one-chunk crossfade.
 
 **Nesting.** A rack can sit inside a lane, up to three levels deep. The
 `rack.zig:292` guard becomes a depth check. A rack's latency, tail and
@@ -319,13 +326,16 @@ bit-exact.
      instrument and effects. Tracks use it unchanged: songs render
      byte-identical.
    - Projects write effect `state` and `assets`.
-2. **Lanes with chains.**
-   - Rack lanes hold an instrument plus effects; add the effect-rack
-     kind, nesting, per-lane latency alignment, tail and wake, and idle
-     skip.
-   - Rack state v2 with v1 reading.
-   - Tests: a v1 project renders bit-identically; a one-lane rack equals
-     its chain on a bare track.
+2. **Lanes with chains.** *Built.*
+   - Rack lanes hold an instrument plus inserts; the FX Rack; nesting
+     three deep; per-lane latency alignment; tail, wake and idle skip of
+     lane inserts. Lane machines get no automation until phase 6.
+   - Rack state v2, with the first form read as lanes.
+   - The panel lists a lane's inserts (ON, remove, + FX) and shows the
+     picked machine's panel, until phase 4's.
+   - Tests: a first-form project renders byte-identical; a one-lane FX
+     Rack equals its insert sample for sample; a dry lane is held to a
+     latent one.
 3. **Macros.**
    - Rack controls `rk-m1..8` and `rk-chain`; mappings, the formula
      compiler and its VM; the `set_mod` host input in `fy_raw_machine`.

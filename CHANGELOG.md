@@ -6,6 +6,15 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Rack lanes take effects, and there's an FX Rack.** Each lane of a Rack
+  now holds a chain: its instrument and up to 16 inserts (+ FX under the
+  lane's settings). The new FX Rack goes in an effect slot and runs its
+  lanes in parallel on the track's signal; an empty lane is the dry path.
+  Lanes get SOLO, racks fit inside racks three deep, and a lane with a
+  latent insert no longer smears against the others: the rack lines them
+  up and reports the latency. Old racks open and sound as before
+  (docs/42).
+
 - **Hammerwork Grand, a physically modeled piano.** Felt hammers strike up
   to three detuned strings per key, which ring into a soundboard through
   a moving bridge. Velocity changes the tone the way a real hammer does,
