@@ -128,6 +128,11 @@ The two modes:
   `note-expr!` and `control!` hook the voice lifecycle. Pools with more
   than one voice render voices in pairs, one per lane.
 
+A state region holds up to 2 KB inline. A machine whose `state-size!` is
+larger, up to 16 KB, gets its regions from the heap when it is created;
+the piano's and the kit's mode banks do (docs/41). Params are capped at
+4 KB.
+
 The entry words and their stack effects are in docs/04 §Kernel ABI.
 `prepare!` runs every block, not once. Other declarations:
 

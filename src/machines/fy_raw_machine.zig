@@ -41,6 +41,10 @@ const Ui = ui_core.Ui;
 const Rect = ui_core.Rect;
 
 const MAX_STATE = 2048;
+// A machine whose state is larger than MAX_STATE (the piano's mode banks)
+// gets its regions from the heap at create instead of the inline buffer,
+// up to this size per region.
+const MAX_STATE_BIG = 16384;
 const MAX_PARAMS = 4096;
 // State regions: polyphonic voice machines get one per voice, effect
 // machines use two (L/R). The region index reaches kernels as ctx.chan.
@@ -367,6 +371,10 @@ pub const FyRawMachine = struct {
     // region 1 so per-channel state never cross-talks; polyphonic voice
     // machines get one region per voice.
     state_buf: [MAX_REGIONS * MAX_STATE]u8 align(8) = [_]u8{0} ** (MAX_REGIONS * MAX_STATE),
+    // Heap regions for state over MAX_STATE, MAX_REGIONS of state_stride
+    // bytes; empty otherwise. Use stateRegion, never state_buf directly.
+    big_state: []align(8) u8 = &.{},
+    state_stride: usize = MAX_STATE,
     params_buf: [MAX_PARAMS]u8 align(8) = [_]u8{0} ** MAX_PARAMS,
     io: [MAX_BLOCK]IoFrame = [_]IoFrame{.{}} ** MAX_BLOCK,
     kctx: KernelCtx = .{},
@@ -649,7 +657,7 @@ pub const FyRawMachine = struct {
         };
         errdefer releaseHost(alloc, host, source);
         const desc = try machine_desc.read(host);
-        if (desc.state_size > MAX_STATE or desc.params_size > MAX_PARAMS) return error.RawMachineStorageTooLarge;
+        if (desc.state_size > MAX_STATE_BIG or desc.params_size > MAX_PARAMS) return error.RawMachineStorageTooLarge;
         if (desc.voices > MAX_REGIONS) return error.RawMachineTooManyVoices;
 
         try validateWord(host, desc.renderWord());
@@ -679,6 +687,12 @@ pub const FyRawMachine = struct {
             self.preset_dir_len = dir.len;
             self.presets = presets_mod.scanMachine(dir, self.machineId());
         }
+        if (desc.state_size > MAX_STATE) {
+            self.state_stride = std.mem.alignForward(usize, desc.state_size, 64);
+            self.big_state = try alloc.alignedAlloc(u8, .@"8", MAX_REGIONS * self.state_stride);
+            @memset(self.big_state, 0);
+        }
+        errdefer if (self.big_state.len > 0) alloc.free(self.big_state);
         try self.allocBuffers(alloc);
         errdefer self.freeBuffersUpTo(alloc, self.desc.buffer_count);
         try self.loadAssets(alloc, path);
@@ -1122,21 +1136,27 @@ pub const FyRawMachine = struct {
         }
     }
 
+    /// Region `ch`'s state bytes, desc.state_size long.
+    fn stateRegion(self: anytype, ch: usize) []align(8) u8 {
+        const bytes: []align(8) u8 = if (self.big_state.len > 0) self.big_state else @constCast(&self.state_buf);
+        return @alignCast(bytes[ch * self.state_stride ..][0..self.desc.state_size]);
+    }
+
     fn writeStateUsize(self: *FyRawMachine, ch: usize, offset: usize, value: usize) void {
         if (offset + @sizeOf(usize) > self.desc.state_size) return;
-        const ptr: *align(8) usize = @ptrCast(@alignCast(&self.state_buf[ch * MAX_STATE + offset]));
+        const ptr: *align(8) usize = @ptrCast(@alignCast(&self.stateRegion(ch)[offset]));
         ptr.* = value;
     }
 
     fn writeStateF64(self: *FyRawMachine, ch: usize, offset: usize, value: f64) void {
         if (offset + @sizeOf(f64) > self.desc.state_size) return;
-        const ptr: *align(8) f64 = @ptrCast(@alignCast(&self.state_buf[ch * MAX_STATE + offset]));
+        const ptr: *align(8) f64 = @ptrCast(@alignCast(&self.stateRegion(ch)[offset]));
         ptr.* = value;
     }
 
     fn readStateF64(self: *const FyRawMachine, ch: usize, offset: usize) f64 {
         if (offset + @sizeOf(f64) > self.desc.state_size) return 0;
-        const ptr: *align(8) const f64 = @ptrCast(@alignCast(&self.state_buf[ch * MAX_STATE + offset]));
+        const ptr: *align(8) const f64 = @ptrCast(@alignCast(&self.stateRegion(ch)[offset]));
         return ptr.*;
     }
 
@@ -1205,11 +1225,11 @@ pub const FyRawMachine = struct {
     }
 
     fn statePtr(self: *FyRawMachine) usize {
-        return @intFromPtr(&self.state_buf[0]);
+        return @intFromPtr(self.stateRegion(0).ptr);
     }
 
     fn statePtrCh(self: *FyRawMachine, ch: usize) usize {
-        return @intFromPtr(&self.state_buf[ch * MAX_STATE]);
+        return @intFromPtr(self.stateRegion(ch).ptr);
     }
 
     fn regionCount(self: *const FyRawMachine) usize {
@@ -1341,9 +1361,10 @@ pub const FyRawMachine = struct {
         v.voice = newestAudioVoice(self);
         v.pitch = if (v.voice) |vi| self.voice_pitch[vi] else 48;
         for (&v.state) |*state| @memset(state, 0);
-        for (0..v.regions) |reg| @memcpy(v.state[reg][0..self.desc.state_size], self.state_buf[reg * MAX_STATE ..][0..self.desc.state_size]);
+        const shown = @min(self.desc.state_size, MAX_STATE);
+        for (0..v.regions) |reg| @memcpy(v.state[reg][0..shown], self.stateRegion(reg)[0..shown]);
         @memset(&v.selected_state, 0);
-        if (v.voice) |vi| @memcpy(v.selected_state[0..self.desc.state_size], self.state_buf[vi * MAX_STATE ..][0..self.desc.state_size]);
+        if (v.voice) |vi| @memcpy(v.selected_state[0..shown], self.stateRegion(vi)[0..shown]);
         v.scope_head = self.scope_head.load(.monotonic);
         if (self.has_scope) @memcpy(&v.scope, &self.scope_buf);
         v.graphics = @splat(null);
@@ -3303,7 +3324,7 @@ fn resetImpl(state: *anyopaque) void {
     self.adoptZoneEdits();
     self.adoptControls();
     for (0..self.regionCount()) |reg| {
-        @memset(self.state_buf[reg * MAX_STATE ..][0..self.desc.state_size], 0);
+        @memset(self.stateRegion(reg), 0);
     }
     @memset(self.voice_gate[0..], false);
     @memset(self.voice_pitch[0..], -1);
@@ -3327,6 +3348,7 @@ fn deinitImpl(state: *anyopaque, alloc: std.mem.Allocator) void {
         alloc.destroy(t);
     }
     self.freeBuffersUpTo(alloc, self.desc.buffer_count);
+    if (self.big_state.len > 0) alloc.free(self.big_state);
     self.freeAssets(alloc);
     // derive-data is libc-malloc'd by fy's `alloc`; fy doesn't track it.
     if (self.desc.derive_data != 0) std.c.free(@ptrFromInt(self.desc.derive_data));
