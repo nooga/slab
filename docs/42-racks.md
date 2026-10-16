@@ -1,9 +1,12 @@
 # 42 — Racks: chains in lanes, macros, rigs
 
-**Status: phases 1 and 2 built.** Rack lanes hold chains, the FX Rack
-plays lanes of inserts, racks nest and align their lanes' latency, and
-rack state is in its second form. Macros, the new panel, rigs and inner
-automation are still to build. The Rack that ships today
+**Status: phases 1–3 built, and part of phase 4.** Rack lanes hold
+chains, the FX Rack plays lanes of inserts, racks nest and align their
+lanes' latency, and rack state is in its second form. Macros map to
+controls inside through ranges and formulas, with the macro block and
+MAP mode on the panel. CHAIN zones on the panel, the collapsed face,
+insert reordering, grouping, rigs and inner automation are still to
+build. The Rack that ships today
 (`src/machines/rack.zig`) is described under "Where we start".
 
 A rack packages machines into one device. Each of its lanes holds a
@@ -272,16 +275,26 @@ directly, so grouping loses nothing:
 
 ```json
 {"rack": 2, "kind": "instrument",
+ "lanes": [{"name": "CLEAN", "lo": 0, "hi": 127, "vlo": 1, "vhi": 127,
+            "clo": 0, "chi": 127, "transpose": 0, "level": 0, "pan": 0,
+            "poly": 0, "mute": false, "solo": false,
+            "instrument": {"machine": "guitar", "params": {…}, "preset": "twin-humbucker"},
+            "effects": [{"machine": "amp2", "params": {…}, "bypass": false}, …]}],
  "macros": [{"name": "DRIVE", "value": 0.4}, …],
  "chain": 0,
- "lanes": [{"name": "CLEAN", "on": true, "solo": false, "level": 0, "pan": 0,
-            "key": [0, 127], "vel": [1, 127], "select": [0, 127],
-            "transpose": 0, "poly": 0,
-            "instrument": {"machine": "guitar", "params": {…}, "preset": "twin-humbucker"},
-            "effects": [{"machine": "amp2", "uid": 1, "params": {…}, "bypass": false}, …]}],
- "maps": [{"macro": 1, "lane": 0, "slot": 1, "control": "amp-gain",
-           "min": 2.0, "max": 7.5, "formula": "x^2"}]}
+ "maps": [{"macro": 1, "lane": 1, "insert": 1, "control": "amp-gain",
+           "min": 0.2, "max": 0.95, "formula": "x^2"},
+          {"macro": 2, "lane": 2, "target": "level", "min": -40, "max": -3}]}
 ```
+
+- Macros, lanes and inserts count from 1 in `maps`. A mapping with no
+  `insert` reaches the lane's instrument; `target` is `level` or `pan`
+  for the lane's own mix, absent for a control. `min` and `max` are in
+  the target's real units (dB for level).
+- `clo`–`chi` is the lane's CHAIN zone: it plays while `chain` is inside.
+- The rack's controls also write as `params` (`rk-m1`…`rk-m8`,
+  `rk-chain`), which is how slabkit and automation set them; `macros`
+  then sets the same values.
 
 - **Old rack state still loads.** State with `"parts"` and no `"rack"`
   key reads as version 1. Each part becomes a lane holding its
@@ -341,15 +354,33 @@ bit-exact.
    - Tests: a first-form project renders byte-identical; a one-lane FX
      Rack equals its insert sample for sample; a dry lane is held to a
      latent one.
-3. **Macros.**
-   - Rack controls `rk-m1..8` and `rk-chain`; mappings, the formula
-     compiler and its VM; the `set_mod` host input in `fy_raw_machine`.
-   - Tests cover formula parsing and evaluation, and a macro sweep
-     matching the same sweep made with automation.
-4. **UI.** The macro block, CHAIN zones, collapse, MAP mode and the
-   mapping table, dragging inserts to reorder, and ⌘G group and
-   ungroup. (The lane column and the inline lane chain came with
-   phase 2.)
+3. **Macros.** *Built.*
+   - Rack controls `rk-m1..8` and `rk-chain`, automatable; mappings to a
+     lane machine's control or the lane's level or pan; the formula
+     compiler and its VM (`src/formula.zig`); the `set_mod` host input,
+     in `fy_raw_machine` and in the rack itself (a nested rack's macro is
+     a target).
+   - While a macro moves (a lane, or the hand's 20 ms glide) the rack
+     renders its lanes in 32-sample chunks and sets the mapped controls
+     between them, which then follow exactly as automation does. Steady
+     macros render whole blocks: projects without mappings are
+     byte-identical.
+   - A mapped control shows the macro's value with its automation LED
+     lit; turning it by hand moves its own value, which the macro
+     overrides.
+   - Lane CHAIN zones (`clo`–`chi`) close a lane outside them.
+   - Tests: formula parsing, precedence and run-time safety; mappings and
+     macros round-trip; an automated macro sweep equals automating the
+     control itself, sample for sample; a formula, a stepped target,
+     unmapping; CHAIN zones; a macro reaching a nested rack's macro.
+4. **UI.** *The macro block is built:* eight knobs, NAME, MAP (click a
+   control in the open lane, or LV/PN, to map it to the picked macro over
+   its whole range), and the picked macro's mappings with × , MIN and
+   MAX steps in the target's units and the f(x) field, red until it
+   parses. Still to build: CHAIN zone editing, the collapsed face,
+   outlines on mappable controls in MAP mode, hand moves on a mapped
+   knob reaching the macro, dragging inserts to reorder, and ⌘G group
+   and ungroup.
 5. **Rigs.**
    - Factory rack presets, the RACKS section of the picker, and the
      slabkit `rack/lane/macro` builders with `describe`.

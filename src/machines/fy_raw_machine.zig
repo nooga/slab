@@ -303,13 +303,15 @@ const IO_STRIDE: u12 = @sizeOf(IoFrame);
 /// glides to its target with this time constant, so exp-curve knobs sweep
 /// perceptually evenly. While any knob moves, the block renders in
 /// SMOOTH_CHUNK-sample sub-blocks with params re-synced between them.
-const SMOOTH_TAU_S: f64 = 0.02;
-const SMOOTH_CHUNK: usize = 32;
-const SMOOTH_EPS: f32 = 1e-5;
+pub const SMOOTH_TAU_S: f64 = 0.02;
+pub const SMOOTH_CHUNK: usize = 32;
+pub const SMOOTH_EPS: f32 = 1e-5;
 /// An automated knob within this of its curve stops gliding and follows it;
 /// a lane jump bigger than AUTO_JUMP in one chunk glides instead.
 const AUTO_CATCH: f32 = 1e-3;
 const AUTO_JUMP: f32 = 0.05;
+/// mod_shown when no macro sets the control: a NaN no value can be.
+const MOD_NONE: u32 = 0x7fc0_0bad;
 
 /// -120 dBFS: a released voice whose whole-block contribution stays below
 /// this stops rendering until its next note-on.
@@ -439,6 +441,12 @@ pub const FyRawMachine = struct {
     auto_on: [MAX_CONTROLS]bool = [_]bool{false} ** MAX_CONTROLS,
     auto_val: [MAX_CONTROLS]f32 = [_]f32{0} ** MAX_CONTROLS,
     auto_locked: [MAX_CONTROLS]bool = [_]bool{false} ** MAX_CONTROLS,
+    // A rack's macro (docs/42 §Reaching the target), audio-owned: it wins
+    // over the lane and the hand, and follows like a lane does. mod_shown
+    // is the value for the panel (NaN bits: none).
+    mod_on: [MAX_CONTROLS]bool = [_]bool{false} ** MAX_CONTROLS,
+    mod_val: [MAX_CONTROLS]f32 = [_]f32{0} ** MAX_CONTROLS,
+    mod_shown: [MAX_CONTROLS]std.atomic.Value(u32) = [_]std.atomic.Value(u32){std.atomic.Value(u32).init(MOD_NONE)} ** MAX_CONTROLS,
     // UI writes, audio reads: a manual override of an automated control,
     // 0 none, 1 held (touch), 2 sticky until the transport starts.
     auto_override: [MAX_CONTROLS]std.atomic.Value(u8) = [_]std.atomic.Value(u8){std.atomic.Value(u8).init(0)} ** MAX_CONTROLS,
@@ -1225,6 +1233,7 @@ pub const FyRawMachine = struct {
             .clear_overrides = clearOverridesImpl,
             .take_auto_request = takeAutoRequestImpl,
             .take_touch = takeTouchImpl,
+            .set_mod = setModImpl,
         };
     }
 
@@ -1456,8 +1465,8 @@ pub const FyRawMachine = struct {
         var moving = false;
         for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
             if (ctl.kind != .direct_f64) continue;
-            const auto = self.automated(i);
-            const target = if (auto) self.auto_val[i] else self.audioNorm(i);
+            const auto = self.driven(i);
+            const target = if (self.mod_on[i]) self.mod_val[i] else if (auto) self.auto_val[i] else self.audioNorm(i);
             if (self.snap_req[i]) {
                 self.smooth_norm[i] = target;
                 self.snap_req[i] = false;
@@ -1509,8 +1518,8 @@ pub const FyRawMachine = struct {
         for (self.desc.controls[0..self.desc.control_count], 0..) |*ctl, i| {
             if (ctl.kind != .direct_f64) continue;
             if (self.snap_req[i]) continue;
-            if (self.auto_on[i]) continue; // chunked anyway while automated
-            if (self.smooth_norm[i] != self.audioNorm(i)) return true;
+            if (self.auto_on[i] and !self.mod_on[i]) continue; // chunked anyway while automated
+            if (self.smooth_norm[i] != (if (self.mod_on[i]) self.mod_val[i] else self.audioNorm(i))) return true;
         }
         return false;
     }
@@ -1521,8 +1530,14 @@ pub const FyRawMachine = struct {
         return self.auto_on[i] and self.auto_override[i].load(.monotonic) == 0;
     }
 
+    /// Audio thread: a macro or a lane sets control `i` this chunk.
+    fn driven(self: *const FyRawMachine, i: usize) bool {
+        return self.mod_on[i] or self.automated(i);
+    }
+
     /// Audio thread: the raw value a stepped control plays this chunk.
     fn effRaw(self: *const FyRawMachine, i: usize) f32 {
+        if (self.mod_on[i]) return self.mod_val[i];
         return if (self.automated(i)) self.auto_val[i] else self.audioNorm(i);
     }
 
@@ -1544,8 +1559,15 @@ pub const FyRawMachine = struct {
     /// UI thread: the value a control shows — its automated value unless
     /// the hand overrides it.
     fn shownNorm(self: *const FyRawMachine, i: usize) f32 {
+        if (self.modShown(i)) |v| return v;
         if (self.ui_auto[i]) |v| if (self.auto_override[i].load(.monotonic) == 0) return v;
         return self.controlNorm(i);
+    }
+
+    /// UI thread: the value a macro sets control `i` to, if one does.
+    fn modShown(self: *const FyRawMachine, i: usize) ?f32 {
+        const b = self.mod_shown[i].load(.monotonic);
+        return if (b == MOD_NONE) null else @bitCast(b);
     }
 
     pub fn setControlNorm(self: *FyRawMachine, idx: usize, value: f32) void {
@@ -2270,6 +2292,22 @@ fn setAutoUiImpl(state: *anyopaque, i: usize, knob: ?f32) void {
     self.ui_auto[i] = knob;
     // Nothing left to override once the lane is gone.
     if (knob == null) self.auto_override[i].store(0, .monotonic);
+}
+
+fn setModImpl(state: *anyopaque, i: usize, knob: ?f32) void {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    if (i >= self.desc.control_count) return;
+    if (knob) |k| {
+        const v = if (self.desc.controls[i].kind == .direct_f64) std.math.clamp(k, 0, 1) else k;
+        if (!self.mod_on[i] or self.mod_val[i] != v) self.wake_req.store(true, .release);
+        self.mod_on[i] = true;
+        self.mod_val[i] = v;
+        self.mod_shown[i].store(@bitCast(v), .monotonic);
+    } else {
+        if (self.mod_on[i]) self.wake_req.store(true, .release);
+        self.mod_on[i] = false;
+        self.mod_shown[i].store(MOD_NONE, .monotonic);
+    }
 }
 
 fn clearOverridesImpl(state: *anyopaque) void {
@@ -3884,6 +3922,13 @@ fn drawAutomatable(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *cons
     if (ui.in.right_pressed and kr.contains(ui.in.ix(), ui.in.iy()) and !ui_menu.active()) {
         self.ctx_control = gi;
         ui_menu.openAt(autoMenuKey(self), ui.in.ix(), ui.in.iy());
+    }
+    if (self.modShown(gi) != null) {
+        // A macro sets it: the lit LED marks it mapped.
+        if (ui.isHot(wid) and ui.touch.time == ui.in.time) ui.touch.automated = true;
+        const at = ui_ctl.autoLedPos(ui, kr, ctl.label[0..ctl.label_len]);
+        _ = ui_ctl.autoLed(ui, at[0], at[1], .{ "auto", gi }, false);
+        return;
     }
     if (self.ui_auto[gi] == null) return;
     // The title display's value channel says the value isn't all yours.

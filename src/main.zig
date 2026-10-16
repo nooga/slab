@@ -104,6 +104,7 @@ test {
     _ = @import("audio.zig");
     _ = @import("machines/fy_raw_machine.zig");
     _ = @import("machines/rack.zig");
+    _ = @import("formula.zig");
     _ = @import("ui/sprites.zig");
     _ = @import("ui/core.zig");
     _ = @import("ui/controls.zig");

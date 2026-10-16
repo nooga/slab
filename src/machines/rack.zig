@@ -11,6 +11,14 @@
 //! slowest lane's latency, which the rack reports. A rack can sit in a
 //! lane, MAX_DEPTH deep.
 //!
+//! Macros (docs/42 §Macros) are the rack's controls `rk-m1`…`rk-m8`, with
+//! `rk-chain` beside them: they automate, take presets and nest like any
+//! control. A mapping ties a macro to a control inside (or a lane's level
+//! or pan) over a range in the target's knob space, through an optional
+//! formula. The rack sets mapped controls with `set_mod` between
+//! SMOOTH_CHUNK-sample sub-blocks while a macro moves, so a macro sweep is
+//! the same as automating the control itself.
+//!
 //! A rack preset (machines/rack/presets/*.preset) and a project store the
 //! lanes as {"rack":2,"kind":…,"lanes":[{…,"instrument":{"machine":id,
 //! "params":{…}},"effects":[…]}]}, each machine's settings in its own form,
@@ -38,6 +46,11 @@ const ui_style = @import("../ui/style.zig");
 const menu = @import("../ui/menu.zig");
 const pane = @import("../ui/pane_input.zig");
 const bay = @import("../ui/machine_bay.zig");
+const text_field = @import("../ui/text_field.zig");
+const formula = @import("../formula.zig");
+const snapshot = @import("../snapshot.zig");
+const automation = @import("../automation.zig");
+const fy_raw = @import("fy_raw_machine.zig");
 
 const Ui = ui_core.Ui;
 const Rect = ui_core.Rect;
@@ -66,6 +79,72 @@ pub const FX_PATH = "machines/fxrack/fxrack";
 
 pub const Kind = enum { instrument, effect };
 
+pub const MAX_MACROS = 8;
+pub const MAX_MAPS = 64;
+/// Control index of CHAIN, after the macros.
+pub const CHAIN = MAX_MACROS;
+pub const CONTROLS = MAX_MACROS + 1;
+const CONTROL_IDS = [CONTROLS][]const u8{ "rk-m1", "rk-m2", "rk-m3", "rk-m4", "rk-m5", "rk-m6", "rk-m7", "rk-m8", "rk-chain" };
+const MACRO_LABELS = [MAX_MACROS][]const u8{ "MACRO 1", "MACRO 2", "MACRO 3", "MACRO 4", "MACRO 5", "MACRO 6", "MACRO 7", "MACRO 8" };
+
+pub const Name = struct {
+    buf: [MAX_LABEL + 1]u8 = [_]u8{0} ** (MAX_LABEL + 1),
+    len: u8 = 0,
+
+    pub fn slice(self: *const Name) []const u8 {
+        return self.buf[0..self.len];
+    }
+    pub fn set(self: *Name, s: []const u8) void {
+        const n = @min(s.len, MAX_LABEL);
+        @memcpy(self.buf[0..n], s[0..n]);
+        self.buf[n] = 0;
+        self.len = @intCast(n);
+    }
+};
+
+/// What a mapping moves: a machine's control in the lane, or the lane's
+/// own level (dB) or pan (-1..1).
+pub const TargetKind = enum(u8) { control, level, pan };
+
+/// One macro → one target (docs/42 §Mappings). `min` and `max` are in the
+/// target's knob space (a continuous control's norm, a stepped one's raw
+/// value; dB for level), so a target with a curve keeps it.
+pub const Mapping = struct {
+    macro: u8 = 0,
+    lane: u8 = 0,
+    target: TargetKind = .control,
+    /// The insert's chain uid; null = the lane's instrument.
+    slot: ?u16 = null,
+    control: u16 = 0,
+    stepped: bool = false,
+    min: f32 = 0,
+    max: f32 = 1,
+    program: formula.Program = .{},
+    text: [formula.MAX_TEXT + 1]u8 = [_]u8{0} ** (formula.MAX_TEXT + 1),
+    text_len: u8 = 0,
+    /// The text doesn't compile; `program` is the last one that did.
+    bad: bool = false,
+
+    pub fn textSlice(self: *const Mapping) []const u8 {
+        return self.text[0..self.text_len];
+    }
+
+    /// The target's value for macro `x`, the macros being `m`.
+    pub fn value(self: *const Mapping, x: f32, m: *const [MAX_MACROS]f32) f32 {
+        const t = self.program.eval(x, m);
+        const v = self.min + (self.max - self.min) * t;
+        return if (self.stepped) @round(v) else v;
+    }
+
+    pub fn sameTarget(a: *const Mapping, b: *const Mapping) bool {
+        return a.lane == b.lane and a.target == b.target and
+            (a.target != .control or (a.slot == b.slot and a.control == b.control));
+    }
+};
+
+/// Audio: a control the rack set last chunk.
+const Applied = struct { state: *anyopaque, set: machine.SetModFn, control: u16, value: f32 };
+
 const Held = struct { channel: u8, id: i32, pitch: f32 };
 
 /// An effect rack's lanes have no instrument: this one, which plays nothing.
@@ -92,6 +171,9 @@ pub const Lane = struct {
     hi: u8 = 127,
     vlo: u8 = 1,
     vhi: u8 = 127,
+    /// The CHAIN values it plays at (docs/42 §UI zones).
+    clo: u8 = 0,
+    chi: u8 = 127,
     /// Semitones, whole: a lane's fine tuning is its instrument's.
     transpose: i8 = 0,
     level_db: f32 = 0,
@@ -146,7 +228,13 @@ pub const Lane = struct {
     }
 };
 
-const LaneVersion = struct { lanes: [MAX_LANES]Lane = undefined, count: usize = 0, generation: u64 = 0 };
+const LaneVersion = struct {
+    lanes: [MAX_LANES]Lane = undefined,
+    count: usize = 0,
+    generation: u64 = 0,
+    maps: [MAX_MAPS]Mapping = undefined,
+    map_count: usize = 0,
+};
 const RetiredLane = struct { chain: *chain_mod.State, instrument: Machine, effects: std.ArrayList(Effect), line: *chain_mod.DryLine };
 
 pub const Rack = struct {
@@ -170,6 +258,43 @@ pub const Rack = struct {
     current_preset: i32 = -1,
     /// A lane or an insert came or went since the project last asked.
     edited: bool = false,
+    macro_names: [MAX_MACROS]Name = [_]Name{.{}} ** MAX_MACROS,
+    maps: [MAX_MAPS]Mapping = undefined,
+    map_count: usize = 0,
+    /// The automated value each control shows (null: no lane), set by the
+    /// host every frame.
+    ui_auto: [CONTROLS]?f32 = [_]?f32{null} ** CONTROLS,
+    touch: ?machine.Touch = null,
+    // The macro block (UI): the picked macro and mapping, MAP armed, the
+    // control a MAP click already took, and the name and formula fields.
+    sel_macro: usize = 0,
+    sel_map: ?usize = null,
+    map_armed: bool = false,
+    map_held: ?struct { state: *anyopaque, control: u16 } = null,
+    name_tb: text_field.TextBuf = .{},
+    name_for: ?usize = null,
+    formula_tb: text_field.TextBuf = .{},
+    formula_for: ?usize = null,
+
+    // Macros, UI writes and audio reads: the hand-set value in knob space
+    // (CHAIN's raw 0..127), and a count a jump (preset, project) bumps.
+    hand: [CONTROLS]std.atomic.Value(u32) = [_]std.atomic.Value(u32){std.atomic.Value(u32).init(0)} ** CONTROLS,
+    snaps: [CONTROLS]std.atomic.Value(u32) = [_]std.atomic.Value(u32){std.atomic.Value(u32).init(0)} ** CONTROLS,
+    wake: std.atomic.Value(bool) = .init(false),
+    /// Audio: what each macro plays now, the smoothed hand value unless a
+    /// lane or an outer rack's macro drives it.
+    cur: [CONTROLS]f32 = @splat(0),
+    eff: [CONTROLS]f32 = @splat(0),
+    seen_snaps: [CONTROLS]u32 = @splat(0),
+    primed: bool = false,
+    auto_on: [CONTROLS]bool = @splat(false),
+    auto_val: [CONTROLS]f32 = @splat(0),
+    mod_on: [CONTROLS]bool = @splat(false),
+    mod_val: [CONTROLS]f32 = @splat(0),
+    applied: [MAX_MAPS]Applied = undefined,
+    applied_n: usize = 0,
+    lane_level: [MAX_LANES]?f32 = @splat(null),
+    lane_pan: [MAX_LANES]?f32 = @splat(null),
 
     // audio scratch
     sl: [MAX_BLOCK]f32 = undefined,
@@ -177,6 +302,7 @@ pub const Rack = struct {
     fl: [MAX_BLOCK]f32 = undefined,
     fr: [MAX_BLOCK]f32 = undefined,
     events: [MAX_EVENTS]NoteEvent = undefined,
+    chunk_events: [MAX_EVENTS]NoteEvent = undefined,
 
     pub fn create(alloc: std.mem.Allocator, reg: *registry_mod.Registry, kind: Kind) !*Rack {
         const self = try alloc.create(Rack);
@@ -207,11 +333,22 @@ pub const Rack = struct {
             .latency = latencyImpl,
             .tail = tailImpl,
             .take_wake = takeWakeImpl,
+            .control_count = controlCountImpl,
+            .control_info = controlInfoImpl,
+            .control_value = controlValueImpl,
+            .control_knob = controlKnobImpl,
+            .control_base = controlBaseImpl,
+            .format_control = formatControlImpl,
+            .set_auto_ui = setAutoUiImpl,
+            .take_touch = takeTouchImpl,
+            .set_mod = setModImpl,
+            .write_params_json = writeParamsJsonImpl,
+            .set_param = setParamImpl,
             .panel_w_fn = panelWImpl,
             .host_titlebar = true,
             // Lanes get the notes, bends included; most of them play it.
             .takes_expression = self.kind == .instrument,
-            .panel_w = SIDE_W + 200,
+            .panel_w = MACRO_W + SIDE_W + 200,
         };
     }
 
@@ -243,6 +380,8 @@ pub const Rack = struct {
         v.count = self.count;
         v.generation = self.generation;
         @memcpy(v.lanes[0..self.count], self.lanes[0..self.count]);
+        v.map_count = self.map_count;
+        @memcpy(v.maps[0..self.map_count], self.maps[0..self.map_count]);
         self.versions.publish();
     }
 
@@ -348,6 +487,7 @@ pub const Rack = struct {
         };
         l.reg_idx = @intCast(reg_idx);
         l.setLabel(self.reg.entries[reg_idx].nameSlice());
+        self.dropMaps(i, .instrument);
     }
 
     /// Append registry machine `reg_idx` to lane `i`'s inserts.
@@ -365,6 +505,7 @@ pub const Rack = struct {
     pub fn removeEffect(self: *Rack, i: usize, j: usize) void {
         if (i >= self.count) return;
         const l = &self.lanes[i];
+        if (j < l.effects.items.len) self.dropMaps(i, .{ .insert = l.effects.items[j].uid });
         l.chain.removeEffect(self.alloc, l.instrument, &l.effects, j) catch {};
     }
 
@@ -372,6 +513,7 @@ pub const Rack = struct {
         if (i >= self.count) return error.InvalidLane;
         const l = &self.lanes[i];
         const m = try self.instantiate(reg_idx);
+        if (j < l.effects.items.len) self.dropMaps(i, .{ .insert = l.effects.items[j].uid });
         l.chain.replaceEffect(self.alloc, l.instrument, l.effects.items, j, m, @intCast(reg_idx)) catch |e| {
             self.disposeMachine(m);
             return e;
@@ -392,6 +534,170 @@ pub const Rack = struct {
         l.chain.publish(l.instrument, l.effects.items);
     }
 
+    // ── macros and mappings ──────────────────────────────────────────
+
+    /// UI: set control `i` (a macro's 0..1, CHAIN's 0..127) by hand;
+    /// `jump` skips the glide (presets, projects).
+    pub fn setMacro(self: *Rack, i: usize, knob: f32, jump: bool) void {
+        if (i >= CONTROLS) return;
+        const v = if (i == CHAIN) std.math.clamp(@round(knob), 0, 127) else std.math.clamp(knob, 0, 1);
+        self.hand[i].store(@bitCast(v), .monotonic);
+        if (jump) _ = self.snaps[i].fetchAdd(1, .monotonic);
+        self.wake.store(true, .release);
+    }
+
+    pub fn macroBase(self: *const Rack, i: usize) f32 {
+        return @bitCast(self.hand[i].load(.monotonic));
+    }
+
+    pub fn macroLabel(self: *const Rack, i: usize) []const u8 {
+        if (i == CHAIN) return "CHAIN";
+        const n = self.macro_names[i].slice();
+        return if (n.len > 0) n else MACRO_LABELS[i];
+    }
+
+    /// The machine a mapping's target sits on, UI side.
+    pub fn targetMachine(self: *Rack, m: *const Mapping) ?Machine {
+        if (m.target != .control or m.lane >= self.count) return null;
+        const l = &self.lanes[m.lane];
+        const uid = m.slot orelse return if (l.reg_idx != null) l.instrument else null;
+        for (l.effects.items) |*fx| if (fx.uid == uid) return fx.mach;
+        return null;
+    }
+
+    /// Add mapping `m`, replacing one on the same macro and target. Its
+    /// steppedness comes from the target.
+    pub fn addMapping(self: *Rack, m: Mapping) !*Mapping {
+        var mm = m;
+        if (mm.macro >= MAX_MACROS or mm.lane >= self.count) return error.InvalidTarget;
+        if (mm.target == .control) {
+            const t = self.targetMachine(&mm) orelse return error.InvalidTarget;
+            if (mm.control >= t.controlCount()) return error.InvalidTarget;
+            mm.stepped = t.control_info.?(t.state, mm.control).stepped;
+        } else mm.stepped = false;
+        for (self.maps[0..self.map_count]) |*x| if (x.macro == mm.macro and x.sameTarget(&mm)) {
+            x.* = mm;
+            return x;
+        };
+        if (self.map_count >= MAX_MAPS) return error.TooManyMappings;
+        self.maps[self.map_count] = mm;
+        self.map_count += 1;
+        self.publishLanes();
+        return &self.maps[self.map_count - 1];
+    }
+
+    pub fn removeMapping(self: *Rack, k: usize) void {
+        if (k >= self.map_count) return;
+        var j = k;
+        while (j + 1 < self.map_count) : (j += 1) self.maps[j] = self.maps[j + 1];
+        self.map_count -= 1;
+        self.publishLanes();
+    }
+
+    /// Set a mapping's formula text. Text that doesn't compile is kept,
+    /// marked bad, and the last good program keeps running.
+    pub fn setFormula(m: *Mapping, text: []const u8) void {
+        const n = @min(text.len, formula.MAX_TEXT);
+        @memcpy(m.text[0..n], text[0..n]);
+        m.text[n] = 0;
+        m.text_len = @intCast(n);
+        if (formula.compile(m.text[0..n])) |prog| {
+            m.program = prog;
+            m.bad = false;
+        } else |_| m.bad = true;
+    }
+
+    /// The target's control name, or LEVEL / PAN.
+    pub fn targetLabel(self: *Rack, m: *const Mapping) []const u8 {
+        return switch (m.target) {
+            .level => "LEVEL",
+            .pan => "PAN",
+            .control => if (self.targetMachine(m)) |t| t.control_info.?(t.state, m.control).label else "?",
+        };
+    }
+
+    fn formatTarget(self: *Rack, m: *const Mapping, knob: f32, buf: []u8) []const u8 {
+        switch (m.target) {
+            .level => return std.fmt.bufPrint(buf, "{d:.0}", .{knob}) catch "?",
+            .pan => return std.fmt.bufPrint(buf, "{d:.1}", .{knob}) catch "?",
+            .control => {
+                const t = self.targetMachine(m) orelse return "?";
+                const f = t.format_control orelse return std.fmt.bufPrint(buf, "{d:.2}", .{knob}) catch "?";
+                return f(t.state, m.control, knob, buf);
+            },
+        }
+    }
+
+    /// One MIN/MAX step (`d` steps, Shift ×10): a hundredth of a knob's
+    /// travel, a stepped control's next value, a dB, a tenth of pan.
+    fn stepTarget(self: *Rack, m: *const Mapping, knob: f32, d: i32) f32 {
+        const df: f32 = @floatFromInt(d);
+        return switch (m.target) {
+            .level => std.math.clamp(knob + df, -60, 12),
+            .pan => std.math.clamp(knob + 0.1 * df, -1, 1),
+            .control => blk: {
+                if (!m.stepped) break :blk std.math.clamp(knob + 0.01 * df, 0, 1);
+                const t = self.targetMachine(m) orelse break :blk knob;
+                const info = t.control_info.?(t.state, m.control);
+                break :blk std.math.clamp(knob + std.math.sign(df), info.lo, info.hi);
+            },
+        };
+    }
+
+    /// MAP: put control `control` of `t` (lane `li`, insert `slot`) on the
+    /// picked macro over its whole range, once per press.
+    fn mapTouched(self: *Rack, li: usize, slot: ?u16, t: Machine, control: u16) void {
+        if (!self.map_armed) return;
+        if (self.map_held) |h| if (h.state == t.state and h.control == control) return;
+        self.map_held = .{ .state = t.state, .control = control };
+        const info = t.control_info orelse return;
+        const ci = info(t.state, control);
+        beforeEdit(self);
+        const m = self.addMapping(.{
+            .macro = @intCast(self.sel_macro),
+            .lane = @intCast(li),
+            .slot = slot,
+            .control = control,
+            .min = if (ci.stepped) ci.lo else 0,
+            .max = if (ci.stepped) ci.hi else 1,
+        }) catch return;
+        self.sel_map = (@intFromPtr(m) - @intFromPtr(&self.maps[0])) / @sizeOf(Mapping);
+        self.formula_for = null;
+    }
+
+    /// MAP: lane `li`'s level or pan on the picked macro, from off (or
+    /// hard left) up to where it is now (or hard right).
+    fn mapLane(self: *Rack, li: usize, what: TargetKind) void {
+        const l = &self.lanes[li];
+        beforeEdit(self);
+        const m = self.addMapping(.{
+            .macro = @intCast(self.sel_macro),
+            .lane = @intCast(li),
+            .target = what,
+            .min = if (what == .level) -60 else -1,
+            .max = if (what == .level) l.level_db else 1,
+        }) catch return;
+        self.sel_map = (@intFromPtr(m) - @intFromPtr(&self.maps[0])) / @sizeOf(Mapping);
+        self.formula_for = null;
+    }
+
+    const Drop = union(enum) { lane, instrument, insert: u16 };
+
+    /// Drop the mappings onto lane `i` (all of it, its instrument, or one
+    /// insert by uid).
+    fn dropMaps(self: *Rack, i: usize, what: Drop) void {
+        var k: usize = 0;
+        while (k < self.map_count) {
+            const m = &self.maps[k];
+            const hit = m.lane == i and switch (what) {
+                .lane => true,
+                .instrument => m.target == .control and m.slot == null,
+                .insert => |uid| m.target == .control and m.slot != null and m.slot.? == uid,
+            };
+            if (hit) self.removeMapping(k) else k += 1;
+        }
+    }
+
     fn retireLane(self: *Rack, generation: u64, l: *Lane) void {
         self.retired.append(generation, .{ .chain = l.chain, .instrument = l.instrument, .effects = l.effects, .line = l.line });
     }
@@ -405,6 +711,10 @@ pub const Rack = struct {
         var j = i;
         while (j + 1 < self.count) : (j += 1) self.lanes[j] = self.lanes[j + 1];
         self.count -= 1;
+        self.dropMaps(i, .lane);
+        for (self.maps[0..self.map_count]) |*m| if (m.lane > i) {
+            m.lane -= 1;
+        };
         self.publishLanes();
         self.retireLane(next_generation, &old);
         if (self.selected >= self.count and self.selected > 0) self.selected -= 1;
@@ -418,6 +728,7 @@ pub const Rack = struct {
         var old: [MAX_LANES]Lane = undefined;
         @memcpy(old[0..n], self.lanes[0..n]);
         self.count = 0;
+        self.map_count = 0;
         self.publishLanes();
         for (old[0..n]) |*l| self.retireLane(next_generation, l);
         self.selected = 0;
@@ -460,6 +771,8 @@ pub const Rack = struct {
         if (po.get("hi")) |x| l.hi = jsonU7(x);
         if (po.get("vlo")) |x| l.vlo = jsonU7(x);
         if (po.get("vhi")) |x| l.vhi = jsonU7(x);
+        if (po.get("clo")) |x| l.clo = jsonU7(x);
+        if (po.get("chi")) |x| l.chi = jsonU7(x);
         if (po.get("transpose")) |x| l.transpose = @intFromFloat(std.math.clamp(@round(jsonF64(x)), -48, 48));
         if (po.get("level")) |x| l.level_db = @floatCast(std.math.clamp(jsonF64(x), -60, 12));
         if (po.get("pan")) |x| l.pan = @floatCast(std.math.clamp(jsonF64(x), -1, 1));
@@ -501,6 +814,7 @@ pub const Rack = struct {
                 applyLaneSettings(l, po);
                 l.chain.publish(l.instrument, l.effects.items);
             }
+            self.applyMacrosJson(v.object);
         } else if (v.object.get("parts")) |pv| {
             // The first form: instrument lanes, no inserts.
             if (pv != .array or self.kind != .instrument) return;
@@ -514,6 +828,92 @@ pub const Rack = struct {
             }
         } else return;
         self.selected = 0;
+    }
+
+    /// Macro names and values, CHAIN, and the mappings, once the lanes
+    /// they reach are in.
+    fn applyMacrosJson(self: *Rack, o: std.json.ObjectMap) void {
+        for (&self.macro_names, 0..) |*n, i| {
+            n.* = .{};
+            self.setMacro(i, 0, true);
+        }
+        self.setMacro(CHAIN, 0, true);
+        if (o.get("macros")) |mv| if (mv == .array) for (mv.array.items[0..@min(mv.array.items.len, MAX_MACROS)], 0..) |item, i| {
+            if (item != .object) continue;
+            if (item.object.get("name")) |x| if (x == .string) self.macro_names[i].set(x.string);
+            if (item.object.get("value")) |x| self.setMacro(i, @floatCast(jsonF64(x)), true);
+        };
+        if (o.get("chain")) |x| self.setMacro(CHAIN, @floatCast(jsonF64(x)), true);
+        const mv = o.get("maps") orelse return;
+        if (mv != .array) return;
+        for (mv.array.items) |item| {
+            if (item != .object) continue;
+            const mo = item.object;
+            var m = Mapping{};
+            const macro = if (mo.get("macro")) |x| jsonF64(x) else continue;
+            const lane = if (mo.get("lane")) |x| jsonF64(x) else continue;
+            if (macro < 1 or macro > MAX_MACROS or lane < 1 or lane > @as(f64, @floatFromInt(self.count))) continue;
+            m.macro = @intFromFloat(macro - 1);
+            m.lane = @intFromFloat(lane - 1);
+            const l = &self.lanes[m.lane];
+            if (mo.get("target")) |x| if (x == .string) {
+                m.target = std.meta.stringToEnum(TargetKind, x.string) orelse continue;
+            };
+            var tm: ?Machine = null;
+            if (m.target == .control) {
+                if (mo.get("insert")) |x| {
+                    const n = jsonF64(x);
+                    if (n < 1 or n > @as(f64, @floatFromInt(l.effects.items.len))) continue;
+                    m.slot = l.effects.items[@intFromFloat(n - 1)].uid;
+                }
+                tm = self.targetMachine(&m) orelse continue;
+                const cid = if (mo.get("control")) |x| (if (x == .string) x.string else continue) else continue;
+                m.control = @intCast(tm.?.controlIndex(cid) orelse continue);
+            }
+            inline for (.{ "min", "max" }) |k| if (mo.get(k)) |x| {
+                const real = jsonF64(x);
+                @field(m, k) = if (tm) |t| (if (t.control_knob) |f| f(t.state, m.control, real) else @floatCast(real)) else @floatCast(real);
+            };
+            if (mo.get("formula")) |x| if (x == .string) setFormula(&m, x.string);
+            _ = self.addMapping(m) catch continue;
+        }
+    }
+
+    fn writeMacrosJson(self: *Rack, out: *std.ArrayList(u8), alloc: std.mem.Allocator) !void {
+        try out.appendSlice(alloc, ",\"macros\":[");
+        for (0..MAX_MACROS) |i| {
+            if (i > 0) try out.append(alloc, ',');
+            try out.appendSlice(alloc, "{\"name\":");
+            try jsonString(out, alloc, self.macro_names[i].slice());
+            try out.print(alloc, ",\"value\":{d}}}", .{self.macroBase(i)});
+        }
+        try out.print(alloc, "],\"chain\":{d},\"maps\":[", .{self.macroBase(CHAIN)});
+        for (self.maps[0..self.map_count], 0..) |*m, k| {
+            if (k > 0) try out.append(alloc, ',');
+            try out.print(alloc, "{{\"macro\":{d},\"lane\":{d}", .{ m.macro + 1, m.lane + 1 });
+            var lo: f64 = m.min;
+            var hi: f64 = m.max;
+            if (m.target != .control) {
+                try out.print(alloc, ",\"target\":\"{s}\"", .{@tagName(m.target)});
+            } else if (self.targetMachine(m)) |t| {
+                if (m.slot) |uid| for (self.lanes[m.lane].effects.items, 0..) |*fx, j| if (fx.uid == uid) {
+                    try out.print(alloc, ",\"insert\":{d}", .{j + 1});
+                };
+                try out.appendSlice(alloc, ",\"control\":");
+                try jsonString(out, alloc, t.control_info.?(t.state, m.control).id);
+                if (t.control_value) |f| {
+                    lo = f(t.state, m.control, m.min);
+                    hi = f(t.state, m.control, m.max);
+                }
+            }
+            try out.print(alloc, ",\"min\":{d},\"max\":{d}", .{ lo, hi });
+            if (m.text_len > 0) {
+                try out.appendSlice(alloc, ",\"formula\":");
+                try jsonString(out, alloc, m.textSlice());
+            }
+            try out.append(alloc, '}');
+        }
+        try out.append(alloc, ']');
     }
 
     fn writeMachineJson(self: *Rack, out: *std.ArrayList(u8), alloc: std.mem.Allocator, m: Machine, reg_idx: u8) !void {
@@ -551,8 +951,8 @@ pub const Rack = struct {
             if (i > 0) try out.append(alloc, ',');
             try out.appendSlice(alloc, "{\"name\":");
             try jsonString(out, alloc, l.labelSlice());
-            try out.print(alloc, ",\"lo\":{d},\"hi\":{d},\"vlo\":{d},\"vhi\":{d},\"transpose\":{d},\"level\":{d},\"pan\":{d},\"poly\":{d},\"mute\":{s},\"solo\":{s}", .{
-                l.lo, l.hi, l.vlo, l.vhi, l.transpose, l.level_db, l.pan, l.poly, if (l.mute) "true" else "false", if (l.solo) "true" else "false",
+            try out.print(alloc, ",\"lo\":{d},\"hi\":{d},\"vlo\":{d},\"vhi\":{d},\"clo\":{d},\"chi\":{d},\"transpose\":{d},\"level\":{d},\"pan\":{d},\"poly\":{d},\"mute\":{s},\"solo\":{s}", .{
+                l.lo, l.hi, l.vlo, l.vhi, l.clo, l.chi, l.transpose, l.level_db, l.pan, l.poly, if (l.mute) "true" else "false", if (l.solo) "true" else "false",
             });
             if (l.reg_idx) |ri| {
                 try out.appendSlice(alloc, ",\"instrument\":");
@@ -567,7 +967,9 @@ pub const Rack = struct {
             }
             try out.appendSlice(alloc, "]}");
         }
-        try out.appendSlice(alloc, "]}");
+        try out.append(alloc, ']');
+        try self.writeMacrosJson(out, alloc);
+        try out.append(alloc, '}');
     }
 
     // ── audio ────────────────────────────────────────────────────────
@@ -697,44 +1099,89 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
     @memset(l[0..frames], 0);
     @memset(r[0..frames], 0);
     self.adoptLanes();
-    const in: []const NoteEvent = if (ctx.note_in) |p| p[0..ctx.note_in_count] else &.{};
+    if (frames == 0) return;
+
+    // Macros that move reach their targets every SMOOTH_CHUNK samples, as
+    // automation reaches a machine's own knobs; steady ones once a block.
+    const view: ?*const snapshot.AutoView = if (ctx.automation) |p| @ptrCast(@alignCast(p)) else null;
+    const auto = if (view) |v| v.any() else false;
+    if (!auto) @memset(self.auto_on[0..], false);
+    const mapped = self.versions.current().map_count > 0;
+    const chunk: usize = if (mapped and (auto or macrosGliding(self))) fy_raw.SMOOTH_CHUNK else frames;
+    const beats_per_sample = ctx.tempo_bpm / (60.0 * ctx.sample_rate);
+    var pos: usize = 0;
+    while (pos < frames) : (pos += chunk) {
+        const n = @min(chunk, frames - pos);
+        const beat = ctx.ppq_position + @as(f64, @floatFromInt(pos)) * beats_per_sample;
+        if (auto) evalAutomation(self, view.?, beat);
+        advanceMacros(self, n, ctx.sample_rate);
+        if (mapped or self.applied_n > 0) applyMaps(self);
+        renderLanes(self, ctx, pos, n, beat, in_l[pos..], in_r[pos..], l[pos..][0..n], r[pos..][0..n]);
+    }
+}
+
+/// Frames [pos, pos+n) of the block through every lane, summed into
+/// `l`/`r`.
+fn renderLanes(self: *Rack, ctx: *const machine.MachineCtx, pos: usize, n: usize, beat: f64, in_l: []const f32, in_r: []const f32, l: []f32, r: []f32) void {
+    const whole = pos == 0 and n == ctx.block_size;
+    const all: []const NoteEvent = if (ctx.note_in) |p| p[0..ctx.note_in_count] else &.{};
+    // This window's events, re-based; late offsets land in the last one.
+    var in: []const NoteEvent = all;
+    if (!whole) {
+        var c: usize = 0;
+        const last = pos + n >= ctx.block_size;
+        for (all) |e| {
+            const at: usize = e.sample_offset;
+            if ((at >= pos and at < pos + n) or (last and at >= pos + n)) {
+                if (c == self.chunk_events.len) break;
+                self.chunk_events[c] = e;
+                self.chunk_events[c].sample_offset = @intCast(@min(at, pos + n - 1) - pos);
+                c += 1;
+            }
+        }
+        in = self.chunk_events[0..c];
+    }
     const total = self.latency();
+    const chain_at: u8 = @intFromFloat(std.math.clamp(self.eff[CHAIN], 0, 127));
     var solo = false;
     for (self.audio_lanes[0..self.audio_count]) |*p| solo = solo or p.solo;
-    for (self.audio_lanes[0..self.audio_count]) |*p| {
+    for (self.audio_lanes[0..self.audio_count], 0..) |*p, li| {
         // The lanes' machines aren't the track's: no automation reaches them.
         var sub = ctx.*;
+        sub.block_size = @intCast(n);
+        sub.ppq_position = beat;
         sub.automation = null;
         sub.note_out = null;
         sub.note_out_cap = 0;
         sub.note_out_count = null;
         sub.audio_in = null;
         sub.audio_in_count = 0;
-        // MUTE, or another lane's SOLO, closes the lane's input: no new
-        // notes, no audio in. What it holds rings out and is heard.
-        const open = !p.mute and (!solo or p.solo);
+        // MUTE, another lane's SOLO, or a CHAIN outside its zone closes the
+        // lane's input: no new notes, no audio in. What it holds rings out
+        // and is heard.
+        const open = !p.mute and (!solo or p.solo) and chain_at >= p.clo and chain_at <= p.chi;
         if (self.kind == .instrument) {
-            const n = Rack.route(p, in, &self.events, open);
-            sub.note_in = if (n > 0) &self.events else null;
-            sub.note_in_count = @intCast(n);
-            @memset(self.sl[0..frames], 0);
-            @memset(self.sr[0..frames], 0);
+            const k = Rack.route(p, in, &self.events, open);
+            sub.note_in = if (k > 0) &self.events else null;
+            sub.note_in_count = @intCast(k);
+            @memset(self.sl[0..n], 0);
+            @memset(self.sr[0..n], 0);
             const m = &p.chain.audio_machine;
-            m.render(m.state, &sub, self.sl[0..frames], self.sr[0..frames]);
+            m.render(m.state, &sub, self.sl[0..n], self.sr[0..n]);
         } else {
             sub.note_in = null;
             sub.note_in_count = 0;
             if (open) {
-                @memcpy(self.sl[0..frames], in_l[0..frames]);
-                @memcpy(self.sr[0..frames], in_r[0..frames]);
+                @memcpy(self.sl[0..n], in_l[0..n]);
+                @memcpy(self.sr[0..n], in_r[0..n]);
             } else {
-                @memset(self.sl[0..frames], 0);
-                @memset(self.sr[0..frames], 0);
+                @memset(self.sl[0..n], 0);
+                @memset(self.sr[0..n], 0);
             }
         }
-        var out = engine.RenderedPair{ .l = self.sl[0..frames], .r = self.sr[0..frames] };
+        var out = engine.RenderedPair{ .l = self.sl[0..n], .r = self.sr[0..n] };
         if (p.chain.audio_effect_count > 0) {
-            out = engine.renderEffects(p.chain, sub, self.sl[0..frames], self.sr[0..frames], self.fl[0..frames], self.fr[0..frames], .{ .on = true, .wake = p.held_n > 0 });
+            out = engine.renderEffects(p.chain, sub, self.sl[0..n], self.sr[0..n], self.fl[0..n], self.fr[0..n], .{ .on = true, .wake = p.held_n > 0 });
         }
         // Held back to the slowest lane.
         const d = total -| p.latency();
@@ -748,7 +1195,7 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
                 line.w = 0;
                 p.delay = d;
             }
-            for (0..frames) |k| {
+            for (0..n) |k| {
                 const w = (line.w + k) & mask;
                 line.l[w] = out.l[k];
                 line.r[w] = out.r[k];
@@ -756,16 +1203,199 @@ fn renderImpl(state: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []
                 out.l[k] = line.l[rd];
                 out.r[k] = line.r[rd];
             }
-            line.w = (line.w + frames) & mask;
+            line.w = (line.w + n) & mask;
         }
-        const g = std.math.pow(f32, 10, p.level_db / 20);
-        const gl = g * @min(1, 1 - p.pan);
-        const gr = g * @min(1, 1 + p.pan);
-        for (l[0..frames], r[0..frames], out.l, out.r) |*ol, *or_, a, b| {
+        const level = self.lane_level[li] orelse p.level_db;
+        const pan = self.lane_pan[li] orelse p.pan;
+        const g = std.math.pow(f32, 10, level / 20);
+        const gl = g * @min(1, 1 - pan);
+        const gr = g * @min(1, 1 + pan);
+        for (l, r, out.l, out.r) |*ol, *or_, a, b| {
             ol.* += a * gl;
             or_.* += b * gr;
         }
     }
+}
+
+// ── macros, audio side ───────────────────────────────────────────────
+
+fn handAudio(self: *const Rack, i: usize) f32 {
+    return @bitCast(self.hand[i].load(.monotonic));
+}
+
+/// Audio: a hand-set macro still gliding to where the hand left it.
+fn macrosGliding(self: *const Rack) bool {
+    if (!self.primed) return false;
+    for (0..MAX_MACROS) |i| {
+        if (self.mod_on[i] or self.auto_on[i]) continue;
+        if (self.snaps[i].load(.monotonic) != self.seen_snaps[i]) continue;
+        if (self.cur[i] != handAudio(self, i)) return true;
+    }
+    return false;
+}
+
+/// Audio: evaluate the rack's own lanes (its macros and CHAIN) at `beat`.
+fn evalAutomation(self: *Rack, view: *const snapshot.AutoView, machine_beat: f64) void {
+    const beat = view.hold_beat orelse machine_beat;
+    @memset(self.auto_on[0..], false);
+    const snap = view.snap;
+    for (snap.lanes[0..snap.lane_count], 0..) |lane, li| {
+        if (!view.matches(lane) or lane.control >= CONTROLS) continue;
+        const lb = lane.localBeat(beat) orelse continue;
+        self.auto_on[lane.control] = true;
+        self.auto_val[lane.control] = automation.evalCursor(view.points(lane), lb, &view.cursors[li]);
+    }
+}
+
+/// Audio: what each control plays over the next `n` samples. An outer
+/// rack's macro wins, then a lane; a hand-set value glides as a knob does.
+fn advanceMacros(self: *Rack, n: usize, sample_rate: f64) void {
+    const a: f32 = @floatCast(1.0 - @exp(-@as(f64, @floatFromInt(n)) / (fy_raw.SMOOTH_TAU_S * sample_rate)));
+    for (0..CONTROLS) |i| {
+        const target = handAudio(self, i);
+        const sn = self.snaps[i].load(.monotonic);
+        if (!self.primed or sn != self.seen_snaps[i] or i == CHAIN) {
+            self.cur[i] = target;
+            self.seen_snaps[i] = sn;
+        } else if (self.cur[i] != target) {
+            var c = self.cur[i] + (target - self.cur[i]) * a;
+            if (@abs(target - c) < fy_raw.SMOOTH_EPS) c = target;
+            self.cur[i] = c;
+        }
+        self.eff[i] = if (self.mod_on[i]) self.mod_val[i] else if (self.auto_on[i]) self.auto_val[i] else self.cur[i];
+    }
+    self.primed = true;
+}
+
+fn liveMachine(self: *Rack, st: *anyopaque) bool {
+    for (self.audio_lanes[0..self.audio_count]) |*p| {
+        if (p.chain.audio_machine.state == st) return true;
+        for (p.chain.audioEffects()) |*fx| if (fx.mach.state == st) return true;
+    }
+    return false;
+}
+
+/// Audio: every mapping's target to its macro's value; controls no
+/// mapping sets any more go back to their own.
+fn applyMaps(self: *Rack) void {
+    const v = self.versions.current();
+    @memset(self.lane_level[0..], null);
+    @memset(self.lane_pan[0..], null);
+    var now: [MAX_MAPS]Applied = undefined;
+    var nn: usize = 0;
+    const macros: *const [MAX_MACROS]f32 = self.eff[0..MAX_MACROS];
+    for (v.maps[0..v.map_count]) |*m| {
+        if (m.lane >= self.audio_count) continue;
+        const val = m.value(macros[m.macro], macros);
+        const p = &self.audio_lanes[m.lane];
+        switch (m.target) {
+            .level => self.lane_level[m.lane] = val,
+            .pan => self.lane_pan[m.lane] = val,
+            .control => {
+                var fx: ?*Effect = null;
+                const mach: *Machine = if (m.slot) |uid| blk: {
+                    for (p.chain.audioEffects()) |*e| if (e.uid == uid) {
+                        fx = e;
+                        break :blk &e.mach;
+                    };
+                    continue;
+                } else &p.chain.audio_machine;
+                const set = mach.set_mod orelse continue;
+                const was: ?f32 = for (self.applied[0..self.applied_n]) |x| {
+                    if (x.state == mach.state and x.control == m.control) break x.value;
+                } else null;
+                // A quiet insert wakes for a new value.
+                if (fx) |e| if (was == null or was.? != val) {
+                    e.quiet = 0;
+                };
+                set(mach.state, m.control, val);
+                const dup = for (now[0..nn]) |*x| {
+                    if (x.state == mach.state and x.control == m.control) break x;
+                } else null;
+                if (dup) |x| x.value = val else {
+                    now[nn] = .{ .state = mach.state, .set = set, .control = m.control, .value = val };
+                    nn += 1;
+                }
+            },
+        }
+    }
+    for (self.applied[0..self.applied_n]) |x| {
+        const kept = for (now[0..nn]) |y| {
+            if (y.state == x.state and y.control == x.control) break true;
+        } else false;
+        if (!kept and liveMachine(self, x.state)) x.set(x.state, x.control, null);
+    }
+    @memcpy(self.applied[0..nn], now[0..nn]);
+    self.applied_n = nn;
+}
+
+// ── controls (docs/22) ───────────────────────────────────────────────
+
+fn controlCountImpl(_: *anyopaque) usize {
+    return CONTROLS;
+}
+
+fn controlInfoImpl(state: *anyopaque, i: usize) machine.ControlInfo {
+    const self: *Rack = @ptrCast(@alignCast(state));
+    if (i == CHAIN) return .{ .id = CONTROL_IDS[i], .label = "CHAIN", .module = "MACROS", .stepped = true, .lo = 0, .hi = 127 };
+    return .{ .id = CONTROL_IDS[@min(i, CHAIN)], .label = self.macroLabel(@min(i, CHAIN)), .module = "MACROS" };
+}
+
+/// Real units are knob space: a macro's 0..1, CHAIN's 0..127.
+fn controlValueImpl(_: *anyopaque, _: usize, knob: f32) f64 {
+    return knob;
+}
+
+fn controlKnobImpl(_: *anyopaque, i: usize, value: f64) f32 {
+    const v: f32 = @floatCast(value);
+    return if (i == CHAIN) std.math.clamp(@round(v), 0, 127) else std.math.clamp(v, 0, 1);
+}
+
+fn controlBaseImpl(state: *anyopaque, i: usize) f32 {
+    const self: *Rack = @ptrCast(@alignCast(state));
+    return if (i < CONTROLS) self.macroBase(i) else 0;
+}
+
+fn formatControlImpl(_: *anyopaque, i: usize, knob: f32, buf: []u8) []const u8 {
+    if (i == CHAIN) return std.fmt.bufPrint(buf, "{d}", .{@as(i32, @intFromFloat(@round(knob)))}) catch "?";
+    return std.fmt.bufPrint(buf, "{d}%", .{@as(i32, @intFromFloat(@round(knob * 100)))}) catch "?";
+}
+
+fn setAutoUiImpl(state: *anyopaque, i: usize, knob: ?f32) void {
+    const self: *Rack = @ptrCast(@alignCast(state));
+    if (i < CONTROLS) self.ui_auto[i] = knob;
+}
+
+fn takeTouchImpl(state: *anyopaque) ?machine.Touch {
+    const self: *Rack = @ptrCast(@alignCast(state));
+    const t = self.touch;
+    self.touch = null;
+    return t;
+}
+
+/// A rack in a lane: the outer rack's macro drives this one's.
+fn setModImpl(state: *anyopaque, i: usize, knob: ?f32) void {
+    const self: *Rack = @ptrCast(@alignCast(state));
+    if (i >= CONTROLS) return;
+    if (knob) |k| {
+        self.mod_on[i] = true;
+        self.mod_val[i] = if (i == CHAIN) std.math.clamp(@round(k), 0, 127) else std.math.clamp(k, 0, 1);
+    } else self.mod_on[i] = false;
+}
+
+fn writeParamsJsonImpl(state: *anyopaque, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
+    const self: *Rack = @ptrCast(@alignCast(state));
+    try out.append(alloc, '{');
+    for (CONTROL_IDS, 0..) |cid, i| {
+        if (i > 0) try out.append(alloc, ',');
+        try out.print(alloc, "\"{s}\":{d}", .{ cid, self.macroBase(i) });
+    }
+    try out.append(alloc, '}');
+}
+
+fn setParamImpl(state: *anyopaque, pid: []const u8, value: f64) void {
+    const self: *Rack = @ptrCast(@alignCast(state));
+    for (CONTROL_IDS, 0..) |cid, i| if (std.mem.eql(u8, cid, pid)) self.setMacro(i, controlKnobImpl(state, i, value), true);
 }
 
 fn latencyImpl(state: *anyopaque) u32 {
@@ -789,7 +1419,7 @@ fn tailImpl(state: *anyopaque, sample_rate: f64) u32 {
 /// landed on renders again however long it has been quiet.
 fn takeWakeImpl(state: *anyopaque) bool {
     const self: *Rack = @ptrCast(@alignCast(state));
-    var any = false;
+    var any = self.wake.swap(false, .acquire);
     for (self.audio_lanes[0..self.audio_count]) |*l| {
         if (l.chain.audio_machine.takeWake()) any = true;
         for (l.chain.audioEffects()) |*fx| if (fx.mach.takeWake()) {
@@ -956,7 +1586,7 @@ fn chainW(self: *Rack) i32 {
 
 fn panelWImpl(state: *anyopaque) f32 {
     const self: *Rack = @ptrCast(@alignCast(state));
-    return @floatFromInt(SIDE_W + chainW(self));
+    return @floatFromInt(MACRO_W + SIDE_W + chainW(self));
 }
 
 fn noteName(buf: []u8, k: u8) []const u8 {
@@ -1018,10 +1648,176 @@ fn drawPanelImpl(state: *anyopaque, ui: *Ui, rect: Rect) void {
     self.collect();
     defer self.publishLanes();
     var body = rect;
+    drawMacros(self, ui, body.cutLeft(MACRO_W));
     const side = body.cutLeft(SIDE_W);
     drawLanes(self, ui, side);
     drawChain(self, ui, body);
+    pollMapTouch(self);
 }
+
+// ── macro block ──────────────────────────────────────────────────────
+//
+//   ┌ MACROS       [MAP]┐   four knobs a row, two rows; the picked one is
+//   │ (o) (o) (o) (o)   │   underlined. NAME names it. A row a mapping:
+//   │ (o) (o) (o) (o)   │   × removes it, the label picks it, MIN and MAX
+//   │ NAME [DRIVE     ] │   step its range in the target's units. f(x)
+//   │ × 1·DRIVE  2  30  │   edits the picked mapping's formula; red until
+//   │ × 1·LEVEL  0  -6  │   it parses (the old one keeps running).
+//   │ f(x) [x^2       ] │
+//   └───────────────────┘
+
+const MACRO_W: i32 = 184;
+const RANGE_W: i32 = 44;
+const KNOB_LABELS = [MAX_MACROS][]const u8{ "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8" };
+
+fn drawMacros(self: *Rack, ui: *Ui, r: Rect) void {
+    var col = ui.plate(r, .{}).inset(3);
+    var head = col.cutTop(ROW_H);
+    _ = col.cutTop(2);
+    const mapb = head.cutRight(34);
+    _ = ui.engraved(&ui.fonts.legend, head.x + 2, head.y + 3, "MACROS", ui_style.text_dim);
+    if (ctl.button(ui, mapb, "map", &self.map_armed, .{ .kind = .latch, .label = "MAP", .flush = true, .lit = ui_style.accent })) self.map_held = null;
+    menu.tip(ui, mapb, "Map: click a control in the lane, or LV or PN, to put it on the picked macro");
+
+    const cell = ctl.knobCell(.m, true);
+    for (0..2) |ri| {
+        var row = col.cutTop(cell[1]);
+        const cw = @divFloor(row.w, 4);
+        for (0..4) |ci| {
+            const i = ri * 4 + ci;
+            const kr = if (ci == 3) row else row.cutLeft(cw);
+            ui.pushId(i);
+            defer ui.popId();
+            var v = self.ui_auto[i] orelse self.macroBase(i);
+            const before = v;
+            var vb: [8]u8 = undefined;
+            const readout = std.fmt.bufPrint(&vb, "{d}", .{@as(i32, @intFromFloat(@round(v * 100)))}) catch "?";
+            _ = ctl.knob(ui, kr, "knob", &v, .{ .size = .m, .label = if (self.macro_names[i].len > 0) self.macro_names[i].slice() else KNOB_LABELS[i], .readout = readout });
+            if (v != before) self.setMacro(i, v, false);
+            if (ui.active == ui.id("knob")) {
+                self.touch = .{ .control = @intCast(i), .knob = v };
+                if (self.sel_macro != i) self.sel_map = null;
+                self.sel_macro = i;
+            }
+            if (i == self.sel_macro) ui.rect(Rect.xywh(kr.x + 6, kr.bottom() - 1, kr.w - 12, 1), if (self.map_armed) ui_style.accent else ui_style.text_dim);
+        }
+    }
+    _ = col.cutTop(3);
+    const sel = self.sel_macro;
+
+    // NAME
+    var nrow = col.cutTop(ROW_H);
+    _ = col.cutTop(2);
+    const nl = nrow.cutLeft(ui.fonts.legend.measure("NAME") + 4);
+    ui.textIn(&ui.fonts.legend, nl, "NAME", ui_style.text_dim, .left, true);
+    if (self.name_for != sel) {
+        self.name_tb.set(self.macro_names[sel].slice());
+        self.name_for = sel;
+    }
+    switch (text_field.field(ui, nrow, "name", &self.name_tb, .{ .commit_on_blur = true })) {
+        .commit => if (!std.mem.eql(u8, self.name_tb.text(), self.macro_names[sel].slice())) {
+            beforeEdit(self);
+            self.macro_names[sel].set(std.mem.trim(u8, self.name_tb.text(), " "));
+            self.name_for = null;
+        },
+        .cancel => self.name_for = null,
+        else => {},
+    }
+
+    // f(x), at the bottom
+    var frow = col.cutBottom(ROW_H);
+    _ = col.cutBottom(2);
+
+    // a row a mapping of the picked macro
+    var shown: usize = 0;
+    var k: usize = 0;
+    while (k < self.map_count) : (k += 1) {
+        const m = &self.maps[k];
+        if (m.macro != sel) continue;
+        if (col.h < ROW_H) break;
+        shown += 1;
+        var row = col.cutTop(ROW_H);
+        _ = col.cutTop(1);
+        ui.pushId(.{ "map", k });
+        defer ui.popId();
+        const x = row.cutLeft(ROW_H);
+        _ = row.cutLeft(2);
+        if (ctl.button(ui, x, "rm", null, .{ .label = "\u{00d7}", .flush = true })) {
+            beforeEdit(self);
+            self.removeMapping(k);
+            self.sel_map = null;
+            self.formula_for = null;
+            break;
+        }
+        const hi_r = row.cutRight(RANGE_W);
+        _ = row.cutRight(2);
+        const lo_r = row.cutRight(RANGE_W);
+        _ = row.cutRight(2);
+        var lb: [40]u8 = undefined;
+        var on = self.sel_map == k;
+        const text = std.fmt.bufPrint(&lb, "{d}\u{00b7}{s}", .{ m.lane + 1, self.targetLabel(m) }) catch "?";
+        if (ctl.button(ui, row, "pick", &on, .{ .kind = .latch, .label = text, .flush = true, .lit = if (m.bad) ui_style.led_red else ui_style.text })) {
+            self.sel_map = k;
+            self.formula_for = null;
+        }
+        inline for (.{ .{ "min", lo_r }, .{ "max", hi_r } }) |pr| {
+            var vb: [24]u8 = undefined;
+            const cur = @field(m, pr[0]);
+            const d = field(ui, pr[1], pr[0], "", self.formatTarget(m, cur, &vb), 10);
+            if (d != 0) {
+                beforeEdit(self);
+                @field(m, pr[0]) = self.stepTarget(m, cur, d);
+            }
+        }
+    }
+    if (shown == 0) {
+        const hint = if (self.map_armed) "CLICK A CONTROL TO MAP" else "NO MAPPINGS";
+        ui.textIn(&ui.fonts.legend, col.cutTop(ROW_H), hint, ui_style.text_mute, .center, true);
+    }
+
+    // the picked mapping's formula
+    const fm: ?*Mapping = if (self.sel_map) |i| (if (i < self.map_count and self.maps[i].macro == sel) &self.maps[i] else null) else null;
+    const fl = frow.cutLeft(ui.fonts.legend.measure("f(x)") + 4);
+    ui.textIn(&ui.fonts.legend, fl, "f(x)", if (fm != null and fm.?.bad) ui_style.led_red else ui_style.text_dim, .left, true);
+    const m = fm orelse {
+        ui.rect(frow, ui_style.well);
+        return;
+    };
+    const mi = self.sel_map.?;
+    if (self.formula_for != mi) {
+        self.formula_tb.set(m.textSlice());
+        self.formula_for = mi;
+    }
+    switch (text_field.field(ui, frow, .{ "formula", mi }, &self.formula_tb, .{ .commit_on_blur = true })) {
+        .commit => if (!std.mem.eql(u8, self.formula_tb.text(), m.textSlice())) {
+            beforeEdit(self);
+            Rack.setFormula(m, std.mem.trim(u8, self.formula_tb.text(), " "));
+            self.formula_for = null;
+        },
+        .cancel => self.formula_for = null,
+        else => {},
+    }
+    menu.tip(ui, frow, "Shapes the macro x (0..1) before the range: x^2, 1 - x, x * (1 - m4), step(x, 3)");
+}
+
+/// MAP armed: the first frame a hand takes a control in the open lane,
+/// that control goes on the picked macro over its whole range.
+fn pollMapTouch(self: *Rack) void {
+    if (self.selected >= self.count) return;
+    const li = self.selected;
+    const l = &self.lanes[li];
+    var held = false;
+    if (l.reg_idx != null) if (l.instrument.take_touch) |tt| if (tt(l.instrument.state)) |t| {
+        held = true;
+        self.mapTouched(li, null, l.instrument, t.control);
+    };
+    for (l.effects.items) |*fx| if (fx.mach.take_touch) |tt| if (tt(fx.mach.state)) |t| {
+        held = true;
+        self.mapTouched(li, fx.uid, fx.mach, t.control);
+    };
+    if (!held) self.map_held = null;
+}
+
 
 fn drawLanes(self: *Rack, ui: *Ui, r: Rect) void {
     const inst = self.kind == .instrument;
@@ -1131,9 +1927,15 @@ fn drawLanes(self: *Rack, ui: *Ui, r: Rect) void {
         at = 2;
     }
     const dl = field(ui, c2[at], "lvl", "LV", std.fmt.bufPrint(&buf, "{d:.0}", .{s.level_db}) catch "?", 6);
-    s.level_db = std.math.clamp(s.level_db + @as(f32, @floatFromInt(dl)), -60, 12);
     const dpan = field(ui, c2[at + 1], "pan", "PN", std.fmt.bufPrint(&buf, "{d:.1}", .{s.pan}) catch "?", 5);
-    s.pan = std.math.clamp(s.pan + 0.1 * @as(f32, @floatFromInt(dpan)), -1, 1);
+    if (self.map_armed) {
+        // MAP takes the click: the lane's level or pan goes on the macro.
+        if (dl != 0) self.mapLane(self.selected, .level);
+        if (dpan != 0) self.mapLane(self.selected, .pan);
+    } else {
+        s.level_db = std.math.clamp(s.level_db + @as(f32, @floatFromInt(dl)), -60, 12);
+        s.pan = std.math.clamp(s.pan + 0.1 * @as(f32, @floatFromInt(dpan)), -1, 1);
+    }
     if (@abs(s.pan) < 0.05) s.pan = 0;
     if (s.lo != p.lo or s.hi != p.hi or s.vlo != p.vlo or s.vhi != p.vhi or s.transpose != p.transpose or
         s.poly != p.poly or s.level_db != p.level_db or s.pan != p.pan)
@@ -1561,5 +2363,224 @@ test "rack: racks nest MAX_DEPTH deep, no deeper" {
     var js: std.ArrayList(u8) = .empty;
     defer js.deinit(a);
     try top.writeJson(&js, a);
-    try testing.expect(std.mem.indexOf(u8, js.items, "\"machine\":\"fxrack\",\"state\":{\"rack\":2,\"kind\":\"effect\"") != null);
+    try testing.expect(std.mem.indexOf(u8, js.items, "\"machine\":\"fxrack\",\"params\":{\"rk-m1\":0,") != null);
+    try testing.expect(std.mem.indexOf(u8, js.items, "\"state\":{\"rack\":2,\"kind\":\"effect\"") != null);
+}
+
+fn fyOf(m: Machine) *fy_raw.FyRawMachine {
+    return @ptrCast(@alignCast(m.state));
+}
+
+/// A sat2 FX Rack lane plus its registry, for the macro tests.
+const SatRack = struct {
+    reg: registry_mod.Registry,
+    rack: *Rack,
+    m: Machine,
+
+    fn init(self: *SatRack, a: std.mem.Allocator) !void {
+        self.reg = registry_mod.Registry.init(a);
+        try self.reg.loadFyMachine("machines/sat2/sat2.fy");
+        try self.reg.loadNative();
+        self.rack = try Rack.create(a, &self.reg, .effect);
+        self.m = self.rack.machineInterface();
+        _ = try self.rack.addLane(self.reg.findById("sat2").?);
+    }
+    fn deinit(self: *SatRack, a: std.mem.Allocator) void {
+        self.m.deinit.?(self.m.state, a);
+        self.reg.deinit();
+    }
+    fn sat(self: *SatRack) Machine {
+        return self.rack.lanes[0].effects.items[0].mach;
+    }
+};
+
+test "rack: macros, names and mappings with formulas round-trip as JSON" {
+    const a = testing.allocator;
+    var t: SatRack = undefined;
+    try t.init(a);
+    defer t.deinit(a);
+    const rack = t.rack;
+    const sat = t.sat();
+    rack.macro_names[1].set("DRIVE");
+    rack.setMacro(1, 0.25, true);
+    rack.setMacro(CHAIN, 3, true);
+    const drive = sat.controlIndex("sat-drive").?;
+    const m = try rack.addMapping(.{ .macro = 1, .lane = 0, .slot = rack.lanes[0].effects.items[0].uid, .control = @intCast(drive), .min = sat.control_knob.?(sat.state, drive, 0), .max = sat.control_knob.?(sat.state, drive, 24) });
+    Rack.setFormula(m, "x^2");
+    _ = try rack.addMapping(.{ .macro = 1, .lane = 0, .target = .level, .min = 0, .max = -12 });
+    try testing.expectEqual(@as(usize, 2), rack.map_count);
+    // the same macro and target again replaces the mapping
+    _ = try rack.addMapping(.{ .macro = 1, .lane = 0, .target = .level, .min = 0, .max = -6 });
+    try testing.expectEqual(@as(usize, 2), rack.map_count);
+    try testing.expectEqualStrings("DRIVE", controlInfoImpl(rack, 1).label);
+    try testing.expectEqualStrings("MACRO 3", controlInfoImpl(rack, 2).label);
+
+    var js: std.ArrayList(u8) = .empty;
+    defer js.deinit(a);
+    try rack.writeJson(&js, a);
+    try testing.expect(std.mem.indexOf(u8, js.items, "\"maps\":[{\"macro\":2,\"lane\":1,\"insert\":1,\"control\":\"sat-drive\",\"min\":0,\"max\":24,\"formula\":\"x^2\"},{\"macro\":2,\"lane\":1,\"target\":\"level\",\"min\":0,\"max\":-6}]") != null);
+    try testing.expect(std.mem.indexOf(u8, js.items, "\"chain\":3") != null);
+
+    const back = try Rack.create(a, &t.reg, .effect);
+    const bm = back.machineInterface();
+    defer bm.deinit.?(bm.state, a);
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, js.items, .{});
+    defer parsed.deinit();
+    back.applyJson(parsed.value);
+    try testing.expectEqual(@as(usize, 2), back.map_count);
+    try testing.expectEqualStrings("x^2", back.maps[0].textSlice());
+    try testing.expectEqual(@as(f32, 0.25), back.macroBase(1));
+    try testing.expectEqual(@as(f32, 3), back.macroBase(CHAIN));
+    var js2: std.ArrayList(u8) = .empty;
+    defer js2.deinit(a);
+    try back.writeJson(&js2, a);
+    try testing.expectEqualStrings(js.items, js2.items);
+
+    // removing the insert drops its mapping, the lane's level one stays
+    rack.removeEffect(0, 0);
+    try testing.expectEqual(@as(usize, 1), rack.map_count);
+    try testing.expectEqual(TargetKind.level, rack.maps[0].target);
+}
+
+/// Blocks of 256 of `in` through effect `m`, the beat running at 120 BPM
+/// from 0, with `view` as its automation.
+fn processAuto(m: Machine, in: []const f32, out_l: []f32, out_r: []f32, view: ?*const snapshot.AutoView) void {
+    var at: usize = 0;
+    const bps = 120.0 / (60.0 * 48000.0);
+    while (at + 256 <= in.len) : (at += 256) {
+        var ctx = testCtx(&.{}, 256);
+        ctx.ppq_position = @as(f64, @floatFromInt(at)) * bps;
+        const ports = [_][*]const f32{ in[at..].ptr, in[at..].ptr };
+        ctx.audio_in = &ports;
+        ctx.audio_in_count = 2;
+        ctx.automation = view;
+        if (m.adopt_updates) |f| f(m.state);
+        m.render(m.state, &ctx, out_l[at..][0..256], out_r[at..][0..256]);
+    }
+}
+
+test "rack: an automated macro sweeps its target as automating the target does" {
+    const a = testing.allocator;
+    var t: SatRack = undefined;
+    try t.init(a);
+    defer t.deinit(a);
+    const alone = try t.reg.instantiate(t.reg.findById("sat2").?);
+    defer alone.deinit.?(alone.state, a);
+    alone.reset(alone.state);
+    const drive = alone.controlIndex("sat-drive").?;
+    _ = try t.rack.addMapping(.{ .macro = 0, .lane = 0, .slot = t.rack.lanes[0].effects.items[0].uid, .control = @intCast(drive), .min = 0, .max = 1 });
+
+    // One lane 0 → 1 over a beat, on sat-drive alone and on MACRO 1.
+    var snap = std.mem.zeroes(snapshot.TrackSnapshot);
+    snap.auto_points[0] = .{ .beat = 0, .value = 0 };
+    snap.auto_points[1] = .{ .beat = 1, .value = 1 };
+    snap.auto_point_count = 2;
+    snap.lanes[0] = .{ .kind = .inst, .control = @intCast(drive), .points_start = 0, .points_count = 2 };
+    snap.lane_count = 1;
+    var cursors = [_]u32{0} ** snapshot.MAX_LANES_PER_TRACK;
+    const view = snapshot.AutoView{ .snap = &snap, .cursors = &cursors, .kind = .inst };
+    var snap2 = snap;
+    snap2.lanes[0].control = 0;
+    var cursors2 = [_]u32{0} ** snapshot.MAX_LANES_PER_TRACK;
+    const view2 = snapshot.AutoView{ .snap = &snap2, .cursors = &cursors2, .kind = .inst };
+
+    var in: [256 * 120]f32 = undefined;
+    for (&in, 0..) |*x, i| x.* = 0.3 * @sin(@as(f32, @floatFromInt(i)) * 0.031);
+    const al = try a.alloc(f32, in.len);
+    defer a.free(al);
+    const ar = try a.alloc(f32, in.len);
+    defer a.free(ar);
+    const bl = try a.alloc(f32, in.len);
+    defer a.free(bl);
+    const br = try a.alloc(f32, in.len);
+    defer a.free(br);
+    processAuto(alone, &in, al, ar, &view);
+    processAuto(t.m, &in, bl, br, &view2);
+    // it did sweep: the end is driven harder than the start
+    try testing.expect(rms(al[al.len - 4096 ..]) > 1.5 * rms(al[0..4096]));
+    try testing.expectEqualSlices(f32, al, bl);
+    try testing.expectEqualSlices(f32, ar, br);
+}
+
+test "rack: a formula shapes the macro, a stepped target snaps, unmapping lets go" {
+    const a = testing.allocator;
+    var t: SatRack = undefined;
+    try t.init(a);
+    defer t.deinit(a);
+    const rack = t.rack;
+    const sat = t.sat();
+    const f = fyOf(sat);
+    const uid = rack.lanes[0].effects.items[0].uid;
+    const mix = sat.controlIndex("sat-mix").?;
+    const mode = sat.controlIndex("sat-mode").?;
+    const m = try rack.addMapping(.{ .macro = 0, .lane = 0, .slot = uid, .control = @intCast(mix), .min = 0.2, .max = 0.6 });
+    Rack.setFormula(m, "1 - x");
+    const sw = try rack.addMapping(.{ .macro = 0, .lane = 0, .slot = uid, .control = @intCast(mode), .min = 0, .max = 3 });
+    try testing.expect(sw.stepped);
+    rack.setMacro(0, 0.25, true);
+    rack.publishLanes();
+    var in: [256 * 4]f32 = @splat(0.1);
+    var ol: [in.len]f32 = undefined;
+    var or_: [in.len]f32 = undefined;
+    process(t.m, &in, &ol, &or_);
+    try testing.expect(f.mod_on[mix]);
+    try testing.expectApproxEqAbs(@as(f32, 0.2 + 0.4 * 0.75), f.mod_val[mix], 1e-6);
+    try testing.expectEqual(@as(f32, 1), f.mod_val[mode]); // round(0.75)
+    try testing.expectApproxEqAbs(@as(f32, 0.5), f.smooth_norm[mix], 1e-6);
+    // A typo keeps the old program running.
+    Rack.setFormula(&rack.maps[0], "1 - ");
+    try testing.expect(rack.maps[0].bad);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), rack.maps[0].value(0.25, &@as([MAX_MACROS]f32, @splat(0))), 1e-6);
+    rack.removeMapping(0);
+    rack.publishLanes();
+    process(t.m, &in, &ol, &or_);
+    try testing.expect(!f.mod_on[mix]);
+    try testing.expect(f.mod_on[mode]);
+}
+
+test "rack: CHAIN closes the lanes whose zone it leaves" {
+    const a = testing.allocator;
+    var t: SatRack = undefined;
+    try t.init(a);
+    defer t.deinit(a);
+    t.rack.lanes[0].clo = 10;
+    t.rack.lanes[0].chi = 20;
+    t.rack.publishLanes();
+    var in: [256 * 8]f32 = undefined;
+    for (&in, 0..) |*x, i| x.* = 0.3 * @sin(@as(f32, @floatFromInt(i)) * 0.031);
+    var ol: [in.len]f32 = undefined;
+    var or_: [in.len]f32 = undefined;
+    process(t.m, &in, &ol, &or_);
+    try testing.expect(rms(ol[1024..]) < 1e-6);
+    t.rack.setMacro(CHAIN, 15, false);
+    process(t.m, &in, &ol, &or_);
+    try testing.expect(rms(ol[1024..]) > 0.05);
+}
+
+test "rack: a macro reaches through a nested rack's macro" {
+    const a = testing.allocator;
+    var reg = registry_mod.Registry.init(a);
+    defer reg.deinit();
+    try reg.loadFyMachine("machines/sat2/sat2.fy");
+    try reg.loadNative();
+    const top = try Rack.create(a, &reg, .effect);
+    const m = top.machineInterface();
+    defer m.deinit.?(m.state, a);
+    _ = try top.addLane(reg.findById("fxrack").?);
+    const inner_m = top.lanes[0].effects.items[0].mach;
+    const inner: *Rack = @ptrCast(@alignCast(inner_m.state));
+    _ = try inner.addLane(reg.findById("sat2").?);
+    const sat = inner.lanes[0].effects.items[0].mach;
+    const mix = sat.controlIndex("sat-mix").?;
+    _ = try inner.addMapping(.{ .macro = 2, .lane = 0, .slot = inner.lanes[0].effects.items[0].uid, .control = @intCast(mix), .min = 0, .max = 1 });
+    _ = try top.addMapping(.{ .macro = 0, .lane = 0, .slot = top.lanes[0].effects.items[0].uid, .control = 2, .min = 0, .max = 0.5 });
+    inner.publishLanes();
+    top.publishLanes();
+    top.setMacro(0, 1, true);
+    var in: [256 * 4]f32 = @splat(0.1);
+    var ol: [in.len]f32 = undefined;
+    var or_: [in.len]f32 = undefined;
+    process(m, &in, &ol, &or_);
+    try testing.expectEqual(@as(f32, 0.5), inner.eff[2]);
+    try testing.expectEqual(@as(f32, 0.5), fyOf(sat).mod_val[mix]);
 }

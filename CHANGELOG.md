@@ -6,6 +6,13 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Rack macros.** Racks and FX Racks get eight macro knobs (`rk-m1`…`rk-m8`)
+  and a CHAIN control that automate like any knob. MAP, then click a
+  control inside the open lane (or a lane's LV or PN), puts it on the
+  picked macro; each mapping has a MIN and MAX in the control's own units
+  and an optional formula such as `x^2` or `x * (1 - m4)`. A macro can
+  drive a rack nested inside. Mapped controls light their automation LED
+  and follow the macro smoothly, and macros save with the rack's presets.
 - **Headless renders play Racks.** `slab --render` and `--stems` rendered
   a track with a Rack on it as silence; they now load it as the app does.
 
