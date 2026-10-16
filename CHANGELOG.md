@@ -10,8 +10,9 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   a track with a Rack on it as silence; they now load it as the app does.
 
 - **Rack lanes take effects, and there's an FX Rack.** Each lane of a Rack
-  now holds a chain: its instrument and up to 16 inserts (+ FX under the
-  lane's settings). The new FX Rack goes in an effect slot and runs its
+  now holds a chain: its instrument and up to 16 inserts, shown beside the
+  lane list the way the bay shows a track's, each with its own preset
+  menu, bypass, replace and remove, and + to add one. The new FX Rack goes in an effect slot and runs its
   lanes in parallel on the track's signal; an empty lane is the dry path.
   Lanes get SOLO, racks fit inside racks three deep, and a lane with a
   latent insert no longer smears against the others: the rack lines them

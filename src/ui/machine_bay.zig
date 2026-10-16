@@ -74,6 +74,28 @@ pub const Result = struct {
     unison_at: ?[2]i32 = null,
 };
 
+/// A preset action on a machine drawn inside another's panel (a rack
+/// lane's, docs/42): main runs it as it does the bay's own, on `mach`.
+pub const NestedPreset = struct {
+    mach: Machine,
+    apply: ?u16 = null,
+    save: bool = false,
+    save_library: bool = false,
+    rename: ?u16 = null,
+    anchor: c.rl.Rectangle = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+};
+pub var nested_preset: ?NestedPreset = null;
+
+/// Called by a machine's panel just before it changes what it holds (a
+/// rack adding or removing a lane or an insert), so the edit is an undo
+/// step like the bay's own. Main sets it before drawing the bay.
+pub const BeforeEdit = struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque) void };
+pub var before_nested_edit: ?BeforeEdit = null;
+
+pub fn beforeNestedEdit() void {
+    if (before_nested_edit) |b| b.f(b.ctx);
+}
+
 // The tracks and the edited track's index, for the KEY latch's label.
 var bay_tracks: []const Track = &.{};
 /// For the latency readouts in ms; main sets it from the transport.
@@ -88,7 +110,7 @@ const DEFAULT_PANEL_W: i32 = 200;
 const DRAG_THRESHOLD: f32 = 6;
 
 const ADD_MENU_KEY: u64 = 0x4d414444; // "MADD"
-const REPLACE_MENU_KEY: u64 = 0x5245504c; // "REPL"
+pub const REPLACE_MENU_KEY: u64 = 0x5245504c; // "REPL"
 const PRESET_MENU_KEY: u64 = 0x50524553; // "PRES"
 const CONFIRM_MENU_KEY: u64 = 0x434f4e46; // "CONF"
 const SAVE_ITEM_ID: u32 = 9001;
@@ -120,18 +142,18 @@ var fx_drag: ReorderDrag = .{};
 var led_seen: [16]u32 = [_]u32{0} ** 16;
 var led_glow: [16]f32 = [_]f32{0} ** 16;
 
-fn panelW(mach: *const Machine) i32 {
+pub fn panelW(mach: *const Machine) i32 {
     if (mach.panel_w_fn) |f| return @intFromFloat(@round(f(mach.state)));
     return if (mach.panel_w > 0) @intFromFloat(@round(mach.panel_w)) else DEFAULT_PANEL_W;
 }
 
 /// An effect card: its panel plus the I/O meter column.
-fn effectW(fx: *const Effect) i32 {
+pub fn effectW(fx: *const Effect) i32 {
     return panelW(&fx.mach) + IO_W;
 }
 
 /// IN | scale | OUT: two stereo bars sharing one graduated scale.
-const IO_W: i32 = 48;
+pub const IO_W: i32 = 48;
 const IO_BAR_W: i32 = 10;
 
 fn ioMeters(ui: *Ui, r: Rect, fx: *const Effect) void {
@@ -333,7 +355,7 @@ fn drawMinimap(ui: *Ui, r: Rect, view_w: i32, content_w: i32, max_scroll: i32, i
     }
 }
 
-const DeviceOut = struct {
+pub const DeviceOut = struct {
     toggle: bool = false, // mute / bypass clicked
     name_pressed: bool = false, // name tile pressed (effects arm a drag)
     name_released: bool = false,
@@ -350,7 +372,7 @@ fn isInstrument(ref: DeviceRef) bool {
 // Draw one device column: the title strip, its menus, and the machine's
 // panel body. Folds the name (replace), preset and delete-confirm outcomes
 // into `result`, scoped to `ref`.
-fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, fx: ?*const Effect, active: bool, glow: ?f32, reg: *const Registry, result: *Result) DeviceOut {
+pub fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, fx: ?*const Effect, active: bool, glow: ?f32, reg: *const Registry, result: *Result) DeviceOut {
     var out = DeviceOut{};
     ui.pushId(mach.state);
     defer ui.popId();

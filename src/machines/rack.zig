@@ -55,7 +55,7 @@ const MAX_EVENTS = 512;
 const MAX_HELD = 32;
 const MAX_LABEL = 31;
 const PRESET_FILE = 256 * 1024;
-pub const SIDE_W: i32 = 232;
+pub const SIDE_W: i32 = 200;
 const PICK_MENU_KEY: u64 = 0x5241434b; // "RACK"
 /// The longest latency lanes are aligned over: what a lane's line holds.
 const MAX_ALIGN = chain_mod.DRY_LEN - MAX_BLOCK;
@@ -166,11 +166,10 @@ pub const Rack = struct {
 
     // UI
     selected: usize = 0,
-    /// The selected lane's machine on the panel: -1 its instrument, else
-    /// an insert.
-    selected_fx: i32 = -1,
     presets: presets_mod.List = .{},
     current_preset: i32 = -1,
+    /// A lane or an insert came or went since the project last asked.
+    edited: bool = false,
 
     // audio scratch
     sl: [MAX_BLOCK]f32 = undefined,
@@ -409,7 +408,6 @@ pub const Rack = struct {
         self.publishLanes();
         self.retireLane(next_generation, &old);
         if (self.selected >= self.count and self.selected > 0) self.selected -= 1;
-        self.selected_fx = -1;
     }
 
     pub fn clear(self: *Rack) !void {
@@ -423,7 +421,6 @@ pub const Rack = struct {
         self.publishLanes();
         for (old[0..n]) |*l| self.retireLane(next_generation, l);
         self.selected = 0;
-        self.selected_fx = -1;
     }
 
     /// Apply one machine's saved settings (params, then files, then zone
@@ -441,6 +438,12 @@ pub const Rack = struct {
         };
         if (po.get("zones")) |zv| if (m.apply_zones_json) |f| f(m.state, zv);
         if (po.get("state")) |sv| if (m.apply_state_json) |f| f(m.state, sv);
+        // The preset it was set from, for its title strip (the label only).
+        if (po.get("preset")) |nv| if (nv == .string) if (m.mark_preset) |mark| if (m.preset_count) |count| if (m.preset_name) |name_of| {
+            for (0..count(m.state)) |i| {
+                if (std.mem.eql(u8, std.mem.span(name_of(m.state, @intCast(i))), nv.string)) mark(m.state, @intCast(i));
+            }
+        };
     }
 
     fn machineOf(self: *Rack, v: ?std.json.Value) ?usize {
@@ -511,7 +514,6 @@ pub const Rack = struct {
             }
         } else return;
         self.selected = 0;
-        self.selected_fx = -1;
     }
 
     fn writeMachineJson(self: *Rack, out: *std.ArrayList(u8), alloc: std.mem.Allocator, m: Machine, reg_idx: u8) !void {
@@ -534,6 +536,13 @@ pub const Rack = struct {
             try out.appendSlice(alloc, ",\"state\":");
             try f(m.state, out, alloc);
         }
+        if (m.current_preset) |cf| if (m.preset_name) |name_of| {
+            const cur = cf(m.state);
+            if (cur >= 0) {
+                try out.appendSlice(alloc, ",\"preset\":");
+                try jsonString(out, alloc, std.mem.span(name_of(m.state, @intCast(cur))));
+            }
+        };
     }
 
     pub fn writeJson(self: *Rack, out: *std.ArrayList(u8), alloc: std.mem.Allocator) !void {
@@ -793,7 +802,8 @@ fn takeWakeImpl(state: *anyopaque) bool {
 
 fn takeEditedImpl(state: *anyopaque) bool {
     const self: *Rack = @ptrCast(@alignCast(state));
-    var any = false;
+    var any = self.edited;
+    self.edited = false;
     for (self.lanes[0..self.count]) |*l| {
         if (l.instrument.takeEdited()) any = true;
         for (l.effects.items) |*fx| if (fx.mach.takeEdited()) {
@@ -919,35 +929,35 @@ fn applyStateJsonImpl(state: *anyopaque, v: std.json.Value) void {
 
 // ── panel ────────────────────────────────────────────────────────────
 //
-//   ┌ LANES ───────────┐┌ the selected machine's own panel ┐
-//   │ 1 ALTO1        ● ││                                  │
-//   │ 2 ALTO2          ││                                  │
-//   │ [key map lanes]  ││                                  │
-//   │ LO HI VLO VHI    ││  (instrument racks)              │
-//   │ TRN POLY LVL PAN ││                                  │
-//   │ [MACHINE] [+][−] ││                                  │
-//   │ FX: inserts [−]  ││                                  │
-//   │ [+ FX] [+ LANE]  ││                                  │
-//   └──────────────────┘└──────────────────────────────────┘
+//   ┌ LANES    [+][−]┐┌[×][INSTRUMENT][preset▾][ON]┐┌[×][INSERT][preset▾][BYP]┐┌+┐
+//   │ 1 BASS    [M][S]││ its panel                   ││ its panel            │IO││ │
+//   │ 2 CLEAN   [M][S]││                             ││                      │  ││ │
+//   │ ▬▬▬▬ key map    ││                             ││                      │  ││ │
+//   │ LO  HI  VLO VHI ││                             ││                      │  ││ │
+//   │ TRN PLY LVL PAN ││                             ││                      │  ││ │
+//   └─────────────────┘└─────────────────────────────┘└──────────────────────┘└──┘
+//
+// The selected lane's chain draws as the bay draws a track's (nested
+// device columns with their own title strips: preset, ON/BYP, replace,
+// remove); the + tile adds an insert.
 
-/// The machine the panel shows: the selected lane's instrument or insert.
-fn shown(self: *Rack) ?*Machine {
-    if (self.selected >= self.count) return null;
+const ROW_H: i32 = 16;
+const FIELD_H: i32 = 18;
+
+fn chainW(self: *Rack) i32 {
+    if (self.selected >= self.count) return bay.TITLE_H * 6;
     const l = &self.lanes[self.selected];
-    if (self.selected_fx >= 0 and self.selected_fx < l.effects.items.len) return &l.effects.items[@intCast(self.selected_fx)].mach;
-    if (l.reg_idx != null) return &l.instrument;
-    return null;
+    var w: i32 = bay.TITLE_H;
+    if (l.reg_idx != null) w += bay.panelW(&l.instrument);
+    for (l.effects.items) |*fx| w += bay.effectW(fx);
+    if (l.reg_idx == null and l.effects.items.len == 0) w += 160;
+    return w;
 }
 
 fn panelWImpl(state: *anyopaque) f32 {
     const self: *Rack = @ptrCast(@alignCast(state));
-    var w: f32 = 200;
-    if (shown(self)) |m| w = if (m.panel_w_fn) |f| f(m.state) else if (m.panel_w > 0) m.panel_w else 200;
-    return @as(f32, @floatFromInt(SIDE_W)) + w;
+    return @floatFromInt(SIDE_W + chainW(self));
 }
-
-const ROW_H: i32 = 16;
-const FIELD_H: i32 = 20;
 
 fn noteName(buf: []u8, k: u8) []const u8 {
     const names = [_][]const u8{ "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
@@ -955,17 +965,30 @@ fn noteName(buf: []u8, k: u8) []const u8 {
     return std.fmt.bufPrint(buf, "{s}{d}", .{ names[k % 12], oct }) catch "?";
 }
 
-/// A labelled readout with ▴▾ steps in its glass; returns the step (+/-1,
-/// x `big` with Shift).
+/// A packed readout: a short legend, then the value in glass with ▴▾
+/// steps; returns the step (+/-1, x `big` with Shift).
 fn field(ui: *Ui, r: Rect, key: []const u8, label: []const u8, value: []const u8, big: i32) i32 {
     ui.pushId(key);
     defer ui.popId();
     var row = r;
-    const lab = row.cutLeft(28);
+    const lab = row.cutLeft(ui.fonts.legend.measure(label) + 3);
     ui.textIn(&ui.fonts.legend, lab, label, ui_style.text_dim, .left, true);
     ctl.display(ui, row, value, .{ .flush = true });
     const d = ctl.glassSteps(ui, row, "step");
     return if (ui.in.shift) d * big else d;
+}
+
+/// `n` equal cells across `r`, 2 px apart.
+fn cells(r: Rect, comptime n: usize) [n]Rect {
+    var out: [n]Rect = undefined;
+    var row = r;
+    const ni: i32 = @intCast(n);
+    const w = @divFloor(r.w - 2 * (ni - 1), ni);
+    for (&out, 0..) |*c, i| {
+        c.* = if (i + 1 == n) row else row.cutLeft(w);
+        if (i + 1 < n) _ = row.cutLeft(2);
+    }
+    return out;
 }
 
 fn step7(v: *u8, d: i32, lo: i32, hi: i32) void {
@@ -983,27 +1006,78 @@ fn labelFromPreset(l: *Lane, m: Machine, pi: machine.PresetIndex) void {
     if (m.preset_name) |pn| l.setLabel(std.fmt.bufPrint(&buf, "{s}", .{lastSegment(std.mem.span(pn(m.state, pi)))}) catch "");
 }
 
+/// Before the panel changes what the rack holds: an undo step, and the
+/// project is edited.
+fn beforeEdit(self: *Rack) void {
+    bay.beforeNestedEdit();
+    self.edited = true;
+}
+
 fn drawPanelImpl(state: *anyopaque, ui: *Ui, rect: Rect) void {
     const self: *Rack = @ptrCast(@alignCast(state));
     self.collect();
     defer self.publishLanes();
     var body = rect;
-    var side = body.cutLeft(SIDE_W);
-    ui.rect(side, ui_style.chassis);
-    side = ctl.strip(ui, side.inset(4), "LANES");
-    const inst = self.kind == .instrument;
+    const side = body.cutLeft(SIDE_W);
+    drawLanes(self, ui, side);
+    drawChain(self, ui, body);
+}
 
-    // lane list
-    var i: usize = 0;
-    while (i < MAX_LANES) : (i += 1) {
-        const row = side.cutTop(ROW_H);
-        if (i >= self.count) {
-            ui.rect(row.insetXY(0, 1), ui_style.well.alpha(120));
-            continue;
+fn drawLanes(self: *Rack, ui: *Ui, r: Rect) void {
+    const inst = self.kind == .instrument;
+    var side = ui.plate(r, .{}).inset(3);
+
+    // header: LANES, + and −
+    var head = side.cutTop(ROW_H);
+    _ = side.cutTop(2);
+    const rm = head.cutRight(ROW_H);
+    _ = head.cutRight(2);
+    const add = head.cutRight(ROW_H);
+    _ = ui.engraved(&ui.fonts.legend, head.x + 2, head.y + 3, "LANES", ui_style.text_dim);
+    const akey = pane.keyFromIds(PICK_MENU_KEY, @intFromPtr(self), 2);
+    if (self.count < MAX_LANES) {
+        if (ctl.button(ui, add, "add", null, .{ .label = "+", .flush = true })) {
+            if (inst) {
+                if (!menu.isOpen(akey)) {
+                    bay.scanRegistryPresets(self.reg);
+                    menu.openBelow(akey, add);
+                }
+            } else if (blk: {
+                beforeEdit(self);
+                break :blk self.addLane(null);
+            }) |_| {
+                self.selected = self.count - 1;
+            } else |_| {}
         }
-        const p = &self.lanes[i];
+        menu.tip(ui, add, if (inst) "Add a lane: another instrument layered or split" else "Add a lane: a dry path to put inserts on");
+    }
+    if (inst) if (bay.machinePickerMenuFor(akey, self.reg, .instruments)) |pick| {
+        beforeEdit(self);
+        if (self.addLane(pick.reg_idx)) |np| {
+            self.selected = self.count - 1;
+            if (pick.preset) |pi| if (np.instrument.apply_preset) |ap| {
+                ap(np.instrument.state, pi);
+                labelFromPreset(np, np.instrument, pi);
+            };
+        } else |_| {}
+    };
+    if (self.count > 0) {
+        if (ctl.button(ui, rm, "rm", null, .{ .label = "\u{2212}", .flush = true })) {
+            beforeEdit(self);
+            self.removeLane(self.selected);
+            return;
+        }
+        menu.tip(ui, rm, "Remove the selected lane");
+    }
+
+    // one row a lane: select, MUTE, SOLO
+    for (self.lanes[0..self.count], 0..) |*p, i| {
+        var row = side.cutTop(ROW_H);
         ui.pushId(i);
         defer ui.popId();
+        const so = row.cutRight(ROW_H);
+        const mu = row.cutRight(ROW_H);
+        _ = row.cutRight(2);
         var on = i == self.selected;
         var lb: [48]u8 = undefined;
         var a: [4]u8 = undefined;
@@ -1011,202 +1085,169 @@ fn drawPanelImpl(state: *anyopaque, ui: *Ui, rect: Rect) void {
         const text = if (inst)
             std.fmt.bufPrint(&lb, "{d} {s}  {s}-{s}", .{ i + 1, p.labelSlice(), noteName(&a, p.lo), noteName(&b, p.hi) }) catch "?"
         else
-            std.fmt.bufPrint(&lb, "{d} {s}  {d} FX", .{ i + 1, p.labelSlice(), p.effects.items.len }) catch "?";
-        if (ctl.button(ui, row, "sel", &on, .{ .kind = .latch, .label = text, .flush = true, .lit = LANE_COLORS[i] })) {
-            if (self.selected != i) self.selected_fx = -1;
-            self.selected = i;
-        }
+            std.fmt.bufPrint(&lb, "{d} {s}", .{ i + 1, p.labelSlice() }) catch "?";
+        if (ctl.button(ui, row, "sel", &on, .{ .kind = .latch, .label = text, .flush = true, .lit = LANE_COLORS[i] })) self.selected = i;
+        if (ctl.button(ui, mu, "mute", &p.mute, .{ .kind = .latch, .label = "M", .flush = true, .lit = ui_style.accent })) self.publishLanes();
+        menu.tip(ui, mu, "Mute: the lane takes no new notes or input");
+        if (ctl.button(ui, so, "solo", &p.solo, .{ .kind = .latch, .label = "S", .flush = true, .lit = ui_style.accent })) self.publishLanes();
+        menu.tip(ui, so, "Solo: only soloed lanes take notes or input");
     }
-    _ = side.cutTop(4);
+    _ = side.cutTop(3);
 
-    if (inst) {
-        // key map: a lane per lane over the 128 keys
-        const map = side.cutTop(@intCast(4 * MAX_LANES / 2 + 4));
+    if (inst and self.count > 0) {
+        // key map: a stripe per lane over the 128 keys
+        const map = side.cutTop(@intCast(2 * self.count + 6));
         ui.rect(map, ui_style.well);
-        const lane_h: i32 = 2;
         for (self.lanes[0..self.count], 0..) |*p, pi| {
             const x0 = map.x + 2 + @divFloor((map.w - 4) * @as(i32, p.lo), 128);
             const x1 = map.x + 2 + @divFloor((map.w - 4) * (@as(i32, p.hi) + 1), 128);
             const col = if (p.mute) ui_style.text_mute else LANE_COLORS[pi];
-            ui.rect(Rect.xywh(x0, map.y + 2 + @as(i32, @intCast(pi)) * lane_h, @max(1, x1 - x0), lane_h), if (pi == self.selected) col else col.alpha(140));
+            ui.rect(Rect.xywh(x0, map.y + 2 + @as(i32, @intCast(pi)) * 2, @max(1, x1 - x0), 2), if (pi == self.selected) col else col.alpha(140));
         }
-        // octave ticks at the Cs
         var k: i32 = 0;
-        while (k < 128) : (k += 12) ui.rect(Rect.xywh(map.x + 2 + @divFloor((map.w - 4) * k, 128), map.bottom() - 3, 1, 3), ui_style.text_mute);
-        _ = side.cutTop(4);
+        while (k < 128) : (k += 12) ui.rect(Rect.xywh(map.x + 2 + @divFloor((map.w - 4) * k, 128), map.bottom() - 2, 1, 2), ui_style.text_mute);
+        _ = side.cutTop(3);
     }
 
-    if (self.selected < self.count) {
-        const p = &self.lanes[self.selected];
-        var s = p.*; // edit a copy, publish at the block boundary
-        var buf: [16]u8 = undefined;
-        var half: Rect = undefined;
-        var left: Rect = undefined;
-        if (inst) {
-            half = side.cutTop(FIELD_H);
-            left = half.cutLeft(@divFloor(half.w, 2) - 2);
-            _ = half.cutLeft(4);
-            step7(&s.lo, field(ui, left, "lo", "LO", noteName(&buf, s.lo), 12), 0, s.hi);
-            step7(&s.hi, field(ui, half, "hi", "HI", noteName(&buf, s.hi), 12), s.lo, 127);
-            _ = side.cutTop(2);
-            half = side.cutTop(FIELD_H);
-            left = half.cutLeft(@divFloor(half.w, 2) - 2);
-            _ = half.cutLeft(4);
-            step7(&s.vlo, field(ui, left, "vlo", "VLO", std.fmt.bufPrint(&buf, "{d}", .{s.vlo}) catch "?", 16), 1, s.vhi);
-            step7(&s.vhi, field(ui, half, "vhi", "VHI", std.fmt.bufPrint(&buf, "{d}", .{s.vhi}) catch "?", 16), s.vlo, 127);
-            _ = side.cutTop(2);
-            half = side.cutTop(FIELD_H);
-            left = half.cutLeft(@divFloor(half.w, 2) - 2);
-            _ = half.cutLeft(4);
-            const dt = field(ui, left, "trn", "TRN", std.fmt.bufPrint(&buf, "{s}{d}", .{ if (s.transpose > 0) "+" else "", s.transpose }) catch "?", 12);
-            s.transpose = @intCast(std.math.clamp(@as(i32, s.transpose) + dt, -48, 48));
-            const dp = field(ui, half, "poly", "POLY", if (s.poly == 0) "ALL" else std.fmt.bufPrint(&buf, "{d}", .{s.poly}) catch "?", 4);
-            s.poly = @intCast(std.math.clamp(@as(i32, s.poly) + dp, 0, 32));
-            _ = side.cutTop(2);
-        }
-        half = side.cutTop(FIELD_H);
-        left = half.cutLeft(@divFloor(half.w, 2) - 2);
-        _ = half.cutLeft(4);
-        const dl = field(ui, left, "lvl", "LVL", std.fmt.bufPrint(&buf, "{d:.0}dB", .{s.level_db}) catch "?", 6);
-        s.level_db = std.math.clamp(s.level_db + @as(f32, @floatFromInt(dl)), -60, 12);
-        const dpan = field(ui, half, "pan", "PAN", std.fmt.bufPrint(&buf, "{d:.1}", .{s.pan}) catch "?", 5);
-        s.pan = std.math.clamp(s.pan + 0.1 * @as(f32, @floatFromInt(dpan)), -1, 1);
-        if (@abs(s.pan) < 0.05) s.pan = 0;
-        _ = side.cutTop(4);
+    if (self.selected >= self.count) return;
+    const p = &self.lanes[self.selected];
+    var s = p.*; // edit a copy, publish at the block boundary
+    var buf: [16]u8 = undefined;
+    if (inst) {
+        const c1 = cells(side.cutTop(FIELD_H), 4);
+        step7(&s.lo, field(ui, c1[0], "lo", "LO", noteName(&buf, s.lo), 12), 0, s.hi);
+        step7(&s.hi, field(ui, c1[1], "hi", "HI", noteName(&buf, s.hi), 12), s.lo, 127);
+        step7(&s.vlo, field(ui, c1[2], "vlo", "V", std.fmt.bufPrint(&buf, "{d}", .{s.vlo}) catch "?", 16), 1, s.vhi);
+        step7(&s.vhi, field(ui, c1[3], "vhi", "-", std.fmt.bufPrint(&buf, "{d}", .{s.vhi}) catch "?", 16), s.vlo, 127);
+        _ = side.cutTop(2);
+    }
+    const c2 = cells(side.cutTop(FIELD_H), 4);
+    var at: usize = 0;
+    if (inst) {
+        const dt = field(ui, c2[0], "trn", "TR", std.fmt.bufPrint(&buf, "{s}{d}", .{ if (s.transpose > 0) "+" else "", s.transpose }) catch "?", 12);
+        s.transpose = @intCast(std.math.clamp(@as(i32, s.transpose) + dt, -48, 48));
+        const dp = field(ui, c2[1], "poly", "PL", if (s.poly == 0) "ALL" else std.fmt.bufPrint(&buf, "{d}", .{s.poly}) catch "?", 4);
+        s.poly = @intCast(std.math.clamp(@as(i32, s.poly) + dp, 0, 32));
+        at = 2;
+    }
+    const dl = field(ui, c2[at], "lvl", "LV", std.fmt.bufPrint(&buf, "{d:.0}", .{s.level_db}) catch "?", 6);
+    s.level_db = std.math.clamp(s.level_db + @as(f32, @floatFromInt(dl)), -60, 12);
+    const dpan = field(ui, c2[at + 1], "pan", "PN", std.fmt.bufPrint(&buf, "{d:.1}", .{s.pan}) catch "?", 5);
+    s.pan = std.math.clamp(s.pan + 0.1 * @as(f32, @floatFromInt(dpan)), -1, 1);
+    if (@abs(s.pan) < 0.05) s.pan = 0;
+    if (s.lo != p.lo or s.hi != p.hi or s.vlo != p.vlo or s.vhi != p.vhi or s.transpose != p.transpose or
+        s.poly != p.poly or s.level_db != p.level_db or s.pan != p.pan)
+    {
+        p.lo = s.lo;
+        p.hi = s.hi;
+        p.vlo = s.vlo;
+        p.vhi = s.vhi;
+        p.transpose = s.transpose;
+        p.poly = s.poly;
+        p.level_db = s.level_db;
+        p.pan = s.pan;
+        self.publishLanes();
+    }
+}
 
-        var btns = side.cutTop(FIELD_H);
-        const mute_r = btns.cutRight(36);
-        _ = ctl.button(ui, mute_r, "mute", &s.mute, .{ .kind = .latch, .label = "MUTE", .led = ui_style.accent });
-        _ = btns.cutRight(2);
-        const solo_r = btns.cutRight(36);
-        _ = ctl.button(ui, solo_r, "solo", &s.solo, .{ .kind = .latch, .label = "SOLO", .led = ui_style.accent });
-        if (s.lo != p.lo or s.hi != p.hi or s.vlo != p.vlo or s.vhi != p.vhi or s.transpose != p.transpose or
-            s.poly != p.poly or s.level_db != p.level_db or s.pan != p.pan or s.mute != p.mute or s.solo != p.solo)
-        {
-            p.lo = s.lo;
-            p.hi = s.hi;
-            p.vlo = s.vlo;
-            p.vhi = s.vhi;
-            p.transpose = s.transpose;
-            p.poly = s.poly;
-            p.level_db = s.level_db;
-            p.pan = s.pan;
-            p.mute = s.mute;
-            p.solo = s.solo;
+/// The selected lane's chain as nested bay devices, then the + tile.
+fn drawChain(self: *Rack, ui: *Ui, r: Rect) void {
+    if (self.selected >= self.count) {
+        ui.rect(r, ui_style.well);
+        ui.textIn(&ui.fonts.legend, r, "ADD A LANE", ui_style.text_mute, .center, true);
+        return;
+    }
+    const li = self.selected;
+    const l = &self.lanes[li];
+    ui.pushId(@intFromPtr(l.chain));
+    defer ui.popId();
+    var res = bay.Result{};
+    var x = r.x;
+    if (l.reg_idx != null) {
+        const w = bay.panelW(&l.instrument);
+        const out = bay.drawDevice(ui, Rect.xywh(x, r.y, w, r.h), &l.instrument, .instrument, null, !l.mute, null, self.reg, &res);
+        if (out.toggle) {
+            l.mute = !l.mute;
             self.publishLanes();
         }
-        _ = btns.cutRight(4);
-        const del_r = btns.cutRight(20);
-        if (ctl.button(ui, del_r, "del", null, .{ .label = "\u{2212}" })) {
-            self.removeLane(self.selected);
+        x += w;
+    }
+    for (l.effects.items, 0..) |*fx, j| {
+        const w = bay.effectW(fx);
+        const out = bay.drawDevice(ui, Rect.xywh(x, r.y, w, r.h), &fx.mach, .{ .effect = j }, fx, !fx.bypass.load(.monotonic), null, self.reg, &res);
+        if (out.toggle) self.setEffectBypass(li, j, !fx.bypass.load(.monotonic));
+        // A click on an insert's name opens its replace menu, as the bay's.
+        if (out.name_released) {
+            const key = pane.keyFromIds(bay.REPLACE_MENU_KEY, @intFromPtr(fx.mach.state), 0);
+            if (!menu.isOpen(key)) {
+                bay.scanRegistryPresets(self.reg);
+                menu.openBelow(key, out.name_rect);
+            }
+        }
+        x += w;
+    }
+    if (l.reg_idx == null and l.effects.items.len == 0) {
+        const hint = Rect.xywh(x, r.y, 160, r.h);
+        ui.rect(hint, ui_style.well);
+        ui.textIn(&ui.fonts.legend, hint, "DRY: + ADDS AN INSERT", ui_style.text_mute, .center, true);
+        x += 160;
+    }
+    // + : an insert at the end of the lane
+    const plus = Rect.xywh(x, r.y, bay.TITLE_H, bay.TITLE_H);
+    const fkey = pane.keyFromIds(PICK_MENU_KEY, @intFromPtr(self), 3);
+    var open = menu.isOpen(fkey);
+    if (ctl.button(ui, plus, "addfx", &open, .{ .label = "+", .flush = true }) and !menu.isOpen(fkey)) {
+        bay.scanRegistryPresets(self.reg);
+        menu.openBelow(fkey, plus);
+    }
+    menu.tip(ui, plus, "Add an insert to this lane");
+    if (x + bay.TITLE_H <= r.right()) _ = ui.plate(Rect.xywh(x, r.y + bay.TITLE_H, bay.TITLE_H, r.h - bay.TITLE_H), .{});
+    if (bay.machinePickerMenuFor(fkey, self.reg, .effects)) |pick| {
+        beforeEdit(self);
+        if (self.addEffect(li, pick.reg_idx)) {
+            const fx = &l.effects.items[l.effects.items.len - 1];
+            if (pick.preset) |pi| if (fx.mach.apply_preset) |ap| ap(fx.mach.state, pi);
+        } else |_| {}
+    }
+
+    // What the title strips asked for.
+    if (res.remove_ref != null or res.replace_ref != null) beforeEdit(self);
+    if (res.remove_ref) |ref| switch (ref) {
+        // An instrument lane is its instrument: removing it removes the lane.
+        .instrument => {
+            self.removeLane(li);
             return;
+        },
+        .effect => |j| self.removeEffect(li, j),
+    };
+    if (res.replace_ref) |ref| if (res.replace_machine) |idx| {
+        switch (ref) {
+            .instrument => self.replaceInstrument(li, idx) catch {},
+            .effect => |j| self.replaceEffect(li, j, idx) catch {},
         }
-        menu.tip(ui, del_r, "Remove lane");
-        _ = btns.cutRight(4);
-        if (inst) {
-            const mkey = pane.keyFromIds(PICK_MENU_KEY, @intFromPtr(self), 1);
-            var sel_inst = self.selected_fx < 0;
-            if (ctl.button(ui, btns, "machine", &sel_inst, .{ .kind = .latch, .label = self.reg.entries[p.reg_idx orelse 0].nameSlice(), .flush = true })) {
-                if (self.selected_fx < 0 and !menu.isOpen(mkey)) {
-                    bay.scanRegistryPresets(self.reg);
-                    menu.openBelow(mkey, btns);
-                }
-                self.selected_fx = -1;
-            }
-            menu.tip(ui, btns, "This lane's instrument: click again to replace it");
-            if (bay.machinePickerMenuFor(mkey, self.reg, .instruments)) |pick| {
-                self.replaceInstrument(self.selected, pick.reg_idx) catch {};
-                const np = &self.lanes[self.selected];
-                if (pick.preset) |pi| if (np.instrument.apply_preset) |ap| {
-                    ap(np.instrument.state, pi);
-                    labelFromPreset(np, np.instrument, pi);
-                };
-            }
-        }
-        _ = side.cutTop(4);
-
-        // the lane's inserts
-        var j: usize = 0;
-        while (j < p.effects.items.len) : (j += 1) {
-            var row = side.cutTop(ROW_H);
-            if (row.h < ROW_H) break;
-            const fx = &p.effects.items[j];
-            ui.pushId(@as(usize, 0x100) + j);
-            defer ui.popId();
-            const rm = row.cutRight(20);
-            _ = row.cutRight(2);
-            const byp = row.cutRight(28);
-            _ = row.cutRight(2);
-            var lb: [48]u8 = undefined;
-            var on = self.selected_fx == @as(i32, @intCast(j));
-            const name = if (fx.idx) |fi| self.reg.entries[fi].nameSlice() else fx.mach.name;
-            if (ctl.button(ui, row, "fx", &on, .{ .kind = .latch, .label = std.fmt.bufPrint(&lb, "FX{d} {s}", .{ j + 1, name }) catch "?", .flush = true })) self.selected_fx = @intCast(j);
-            var active = !fx.bypass.load(.monotonic);
-            if (ctl.button(ui, byp, "on", &active, .{ .kind = .latch, .label = "ON", .led = ui_style.accent })) self.setEffectBypass(self.selected, j, !active);
-            if (ctl.button(ui, rm, "rm", null, .{ .label = "\u{2212}" })) {
-                self.removeEffect(self.selected, j);
-                self.selected_fx = -1;
-                break;
-            }
-        }
-        if (p.effects.items.len < MAX_LANE_EFFECTS) {
-            const add = side.cutTop(FIELD_H);
-            const fkey = pane.keyFromIds(PICK_MENU_KEY, @intFromPtr(self), 3);
-            if (ctl.button(ui, add, "addfx", null, .{ .label = "+ FX" }) and !menu.isOpen(fkey)) {
-                bay.scanRegistryPresets(self.reg);
-                menu.openBelow(fkey, add);
-            }
-            menu.tip(ui, add, "Add an insert to this lane");
-            if (bay.machinePickerMenuFor(fkey, self.reg, .effects)) |pick| {
-                if (self.addEffect(self.selected, pick.reg_idx)) {
-                    const fx = &self.lanes[self.selected].effects.items[self.lanes[self.selected].effects.items.len - 1];
-                    if (pick.preset) |pi| if (fx.mach.apply_preset) |ap| ap(fx.mach.state, pi);
-                    self.selected_fx = @intCast(self.lanes[self.selected].effects.items.len - 1);
-                } else |_| {}
-            }
-            _ = side.cutTop(4);
-        }
-    }
-
-    // add a lane
-    if (self.count < MAX_LANES) {
-        const add = side.cutTop(FIELD_H);
-        const akey = pane.keyFromIds(PICK_MENU_KEY, @intFromPtr(self), 2);
-        if (inst) {
-            if (ctl.button(ui, add, "add", null, .{ .label = "+ LANE" }) and !menu.isOpen(akey)) {
-                bay.scanRegistryPresets(self.reg);
-                menu.openBelow(akey, add);
-            }
-            menu.tip(ui, add, "Add a lane: another instrument layered or split");
-            if (bay.machinePickerMenuFor(akey, self.reg, .instruments)) |pick| {
-                if (self.addLane(pick.reg_idx)) |np| {
-                    self.selected = self.count - 1;
-                    self.selected_fx = -1;
-                    if (pick.preset) |pi| if (np.instrument.apply_preset) |ap| {
-                        ap(np.instrument.state, pi);
-                        labelFromPreset(np, np.instrument, pi);
-                    };
-                } else |_| {}
-            }
-        } else {
-            if (ctl.button(ui, add, "add", null, .{ .label = "+ LANE" })) {
-                if (self.addLane(null)) |_| {
-                    self.selected = self.count - 1;
-                    self.selected_fx = -1;
-                } else |_| {}
-            }
-            menu.tip(ui, add, "Add a lane: a dry path to put inserts on");
-        }
-    }
-
-    // the selected machine's own panel
-    if (shown(self)) |m| {
-        ui.pushId(m.state);
-        defer ui.popId();
-        m.draw_panel(m.state, ui, body);
-    } else {
-        ui.rect(body, ui_style.well);
-        ui.textIn(&ui.fonts.body, body, if (self.count == 0) "Add a lane" else "Dry: add an insert", ui_style.text_mute, .center, true);
+        const m: ?Machine = switch (ref) {
+            .instrument => l.instrument,
+            .effect => |j| if (j < l.effects.items.len) l.effects.items[j].mach else null,
+        };
+        if (res.replace_preset) |pi| if (m) |mm| if (mm.apply_preset) |ap| {
+            ap(mm.state, pi);
+            if (ref == .instrument) labelFromPreset(l, mm, pi);
+        };
+    };
+    const target: ?bay.DeviceRef = res.preset_apply_ref orelse res.preset_save_ref orelse res.preset_rename_ref;
+    if (target) |ref| {
+        const m: ?Machine = switch (ref) {
+            .instrument => l.instrument,
+            .effect => |j| if (j < l.effects.items.len) l.effects.items[j].mach else null,
+        };
+        if (m) |mm| bay.nested_preset = .{
+            .mach = mm,
+            .apply = res.preset_apply,
+            .save = res.preset_save_ref != null and !res.preset_save_library,
+            .save_library = res.preset_save_ref != null and res.preset_save_library,
+            .rename = if (res.preset_rename_ref != null) res.preset_rename_index else null,
+            .anchor = res.preset_anchor,
+        };
     }
 }
 

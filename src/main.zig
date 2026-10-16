@@ -426,6 +426,8 @@ const RenameState = struct {
     /// instrument, else the effect index.
     device_track: ?*track_mod.Track = null,
     device_effect: ?usize = null,
+    /// Or the machine itself, when it sits inside another (a rack lane's).
+    device_mach: ?@import("machine.zig").Machine = null,
     /// For preset_rename: the preset index being renamed.
     preset_index: u16 = 0,
     tb: text_field.TextBuf = .{ .limit = track_mod.MAX_NAME },
@@ -1768,6 +1770,10 @@ pub fn main(init: std.process.Init) !void {
         }
 
         machine_bay.sample_rate = transport.sample_rate;
+        // A rack's panel edits what it holds: an undo step first (docs/42).
+        var nested_undo = NestedUndo{ .alloc = alloc, .history = &history, .tracks = tracks, .transport = &transport };
+        machine_bay.before_nested_edit = .{ .ctx = &nested_undo, .f = NestedUndo.push };
+        defer machine_bay.before_nested_edit = null;
         const mbres = machine_bay.draw(ui, rects.machine_bay, bay_dev, bay_idx, bay_is_bus, layout.machine_bay_collapsed, &reg, tracks);
         if (mbres.key_menu_fx) |uid| if (bay_idx) |ti| @import("ui/route_menu.zig").openKey(ti, uid, mbres.key_menu_at[0], mbres.key_menu_at[1]);
         if (mbres.unison_at) |at| if (bay_idx) |ti| if (!bay_is_bus) {
@@ -1913,6 +1919,31 @@ pub fn main(init: std.process.Init) !void {
         if (mbres.preset_save_ref) |ref| if (bay_dev) |dev| {
             beginPresetSave(&rename, dev, refEffect(ref), mbres.preset_anchor, mbres.preset_save_library);
         };
+        // A machine inside a rack lane asked for a preset action (docs/42).
+        if (machine_bay.nested_preset) |np| {
+            machine_bay.nested_preset = null;
+            const mach = np.mach;
+            if (np.apply) |preset| if (mach.apply_preset) |apply| {
+                if (!bay_is_bus) pushHistorySnapshot(alloc, &history, tracks, &transport);
+                audio.stop();
+                defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+                apply(mach.state, preset);
+                dirty = true;
+                status.set("Preset {s}", .{if (mach.preset_name) |name| name(mach.state, preset) else ""});
+            };
+            if (np.save or np.save_library) {
+                rename = .{ .kind = if (np.save_library) .preset_save_library else .preset_save, .device_mach = mach };
+                anchorRenameRect(&rename, np.anchor);
+            }
+            if (np.rename) |idx| {
+                var cur: []const u8 = "";
+                if (mach.preset_name) |nf| cur = std.mem.span(nf(mach.state, idx));
+                if (std.mem.lastIndexOfScalar(u8, cur, '/')) |slash| cur = cur[slash + 1 ..];
+                rename = .{ .kind = .preset_rename, .device_mach = mach, .preset_index = idx };
+                renameSetText(&rename, cur);
+                anchorRenameRect(&rename, np.anchor);
+            }
+        }
         if (mbres.preset_rename_ref) |ref| if (mbres.preset_rename_index) |idx| if (bay_dev) |dev| {
             const eff = refEffect(ref);
             if (deviceMachineOf(dev, eff)) |mach| {
@@ -6541,6 +6572,18 @@ fn serviceMachineAutoRequest(
     }
 }
 
+const NestedUndo = struct {
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    tracks: []track_mod.Track,
+    transport: *transport_mod.Transport,
+
+    fn push(ctx: *anyopaque) void {
+        const self: *NestedUndo = @ptrCast(@alignCast(ctx));
+        pushHistorySnapshot(self.alloc, self.history, self.tracks, self.transport);
+    }
+};
+
 fn pushHistorySnapshot(alloc: std.mem.Allocator, history: *history_mod.History, tracks: []track_mod.Track, transport: *transport_mod.Transport) void {
     const snapshot = document_mod.serialize(alloc, tracks, transport) catch |err| {
         std.log.err("history snapshot failed: {s}", .{@errorName(err)});
@@ -6679,13 +6722,16 @@ fn commitRename(
 // live next to the machine, so there's no document snapshot/undo here.
 fn commitPreset(rename: *RenameState, tracks: []track_mod.Track, dirty: *bool, status: *StatusMessage) void {
     _ = tracks;
-    const t = rename.device_track orelse {
-        status.set("Preset target gone", .{});
-        return;
-    };
-    const mach = deviceMachineOf(t, rename.device_effect) orelse {
-        status.set("Preset target gone", .{});
-        return;
+    var nested = rename.device_mach;
+    const mach = if (nested) |*m| m else blk: {
+        const t = rename.device_track orelse {
+            status.set("Preset target gone", .{});
+            return;
+        };
+        break :blk deviceMachineOf(t, rename.device_effect) orelse {
+            status.set("Preset target gone", .{});
+            return;
+        };
     };
     const name = rename.tb.text();
     if (name.len == 0) {

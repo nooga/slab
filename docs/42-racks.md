@@ -331,8 +331,13 @@ bit-exact.
      three deep; per-lane latency alignment; tail, wake and idle skip of
      lane inserts. Lane machines get no automation until phase 6.
    - Rack state v2, with the first form read as lanes.
-   - The panel lists a lane's inserts (ON, remove, + FX) and shows the
-     picked machine's panel, until phase 4's.
+   - The panel: a packed lane column (lanes with M and S, + and − for
+     lanes, the key map, zone and mix fields four to a row) beside the
+     selected lane's chain, drawn as the bay draws a track's: each
+     machine its own title strip (preset menu, ON/BYP, click the name to
+     replace it, × to remove it), inserts with I/O meters, + to add one.
+     Preset actions inside go through the bay's (`NestedPreset`), and
+     adding, removing or replacing is an undo step.
    - Tests: a first-form project renders byte-identical; a one-lane FX
      Rack equals its insert sample for sample; a dry lane is held to a
      latent one.
@@ -341,9 +346,10 @@ bit-exact.
      compiler and its VM; the `set_mod` host input in `fy_raw_machine`.
    - Tests cover formula parsing and evaluation, and a macro sweep
      matching the same sweep made with automation.
-4. **UI.** The macro block, the lane list and zones, the inline lane
-   chain, collapse, MAP mode and the mapping table, and ⌘G group and
-   ungroup.
+4. **UI.** The macro block, CHAIN zones, collapse, MAP mode and the
+   mapping table, dragging inserts to reorder, and ⌘G group and
+   ungroup. (The lane column and the inline lane chain came with
+   phase 2.)
 5. **Rigs.**
    - Factory rack presets, the RACKS section of the picker, and the
      slabkit `rack/lane/macro` builders with `describe`.
