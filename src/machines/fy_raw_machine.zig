@@ -44,7 +44,7 @@ const MAX_STATE = 2048;
 // A machine whose state is larger than MAX_STATE (the piano's mode banks)
 // gets its regions from the heap at create instead of the inline buffer,
 // up to this size per region.
-const MAX_STATE_BIG = 16384;
+const MAX_STATE_BIG = 32768;
 const MAX_PARAMS = 4096;
 // State regions: polyphonic voice machines get one per voice, effect
 // machines use two (L/R). The region index reaches kernels as ctx.chan.
@@ -2773,6 +2773,11 @@ fn renderShared(self: *FyRawMachine, start: usize, end: usize) !void {
     const snap = self.voice_snap[0..io.len];
     for (snap, io) |*d, f| d.* = f.out_l;
     self.kctx.chan = 0;
+    // The word sees its step's first sample on ctx.clock, constant over
+    // the call, so it can branch on where the step falls (docs/04).
+    const block_clock = self.kctx.clock;
+    self.kctx.clock = @floatFromInt(self.clock + start);
+    defer self.kctx.clock = block_clock;
     const args = [_]Fy.Dsp2RawArg{
         .{ .ptr = @intFromPtr(&io[0]) },          .{ .ptr = @intFromPtr(&self.kctx) },
         .{ .ptr = @intFromPtr(self.shared_mem.ptr) }, .{ .ptr = self.paramsPtr() },
@@ -2934,6 +2939,8 @@ fn renderVoice(self: *FyRawMachine, caller: *RawCaller, voice: usize, io: []IoFr
     }
     var pk = self.voice_peak[voice];
     for (snap, io) |b, f| pk = @max(pk, @abs(f.out_l - b));
+    // A voice heard through a shared word reports its own level.
+    if (self.desc.voice_level_sel > 0) pk = @max(pk, @abs(self.readStateF64(voice, self.desc.voice_level_sel - 1)));
     self.voice_peak[voice] = pk;
 }
 
@@ -7314,6 +7321,47 @@ test "shared state: voices and the shared word alternate per step, then the word
     try testing.expect(!inst.shared_awake); // under the floor all block
     testRender(mach, &ctx, &l, &r);
     for (l) |s| try testing.expectEqual(@as(f32, 0), s);
+}
+
+test "shared state: the shared word sees each step's sample clock; voice-level! keeps a silent voice awake" {
+    const block = 63; // odd, so the clock's parity flips between blocks
+    const inst = try FyRawMachine.create(testing.allocator, "machines/raw_fixtures/shared_clock.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = block;
+    var l = [_]f32{0} ** block;
+    var r = [_]f32{0} ** block;
+    const on = [_]machine.NoteEvent{.{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = -1, .pitch = 60, .velocity = 1 }};
+    ctx.note_in = &on;
+    ctx.note_in_count = on.len;
+    // The output is 1 on odd samples of the host clock, across blocks.
+    var clock: usize = 0;
+    for (0..2) |_| {
+        testRender(mach, &ctx, &l, &r);
+        ctx.note_in = null;
+        ctx.note_in_count = 0;
+        for (l, 0..) |s, i| try testing.expectEqual(@as(f32, if ((clock + i) % 2 == 1) 1 else 0), s);
+        clock += block;
+    }
+
+    const off = [_]machine.NoteEvent{.{ .sample_offset = 0, .kind = .note_off, .channel = 0, .note_id = -1, .pitch = 60, .velocity = 0 }};
+    ctx.note_in = &off;
+    ctx.note_in_count = off.len;
+    testRender(mach, &ctx, &l, &r);
+    ctx.note_in = null;
+    ctx.note_in_count = 0;
+    // Released and silent, the voice stays awake while its level field
+    // peaks over IDLE_FLOOR in a block (read after every step): 0.9, 0.9^64
+    // and 0.9^127 do, 0.9^190 doesn't.
+    for (0..2) |_| {
+        try testing.expect(!inst.voice_idle[0]);
+        testRender(mach, &ctx, &l, &r);
+    }
+    try testing.expect(!inst.voice_idle[0]);
+    testRender(mach, &ctx, &l, &r);
+    try testing.expect(inst.voice_idle[0]);
 }
 
 test "stereo flag: stereo voices write L and R, stereo effects get one true-stereo pass" {

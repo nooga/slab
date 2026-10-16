@@ -489,7 +489,13 @@ zeroes them, passes the pointer, and orders the calls.
   repeats. With a period of 1 a voice reads, each sample, what the shared
   word left after the previous one, and the shared word sees everything
   the voices wrote during that sample. Longer periods cost fewer calls
-  and delay the coupling by up to that many samples.
+  and delay the coupling by up to that many samples. During the call
+  `ctx.clock` is the step's first sample, so the word can branch on it
+  (an `ifte` on the clock is versioned: the arm not taken costs nothing).
+- `offset voice-level!` names a voice state field that reports the
+  voice's level for idle skipping, for a voice heard only through the
+  shared word. A released voice sleeps once both its own output and that
+  field stay under `IDLE_FLOOR` for a block.
 - Voices of a machine with a shared region render one at a time, in
   voice order, never in lane pairs, so their writes into the region land
   in a fixed order and renders stay bit-exact at any thread count. The

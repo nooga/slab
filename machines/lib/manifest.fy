@@ -98,6 +98,9 @@ struct: MachineDesc
                        steps this long )
   ptr shared-size    ( int bytes of the shared region, 0 = none; every entry
                        word sees it as ctx.shared )
+  ptr voice-level    ( int: state byte offset + 1 of an f64 a voice keeps at
+                       its own level, which idling watches as well as its
+                       output; 0 = output only [docs/04 §Shared state] )
 ;
 
 struct: ControlDesc
@@ -247,6 +250,12 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
 : shared!  ( str period -- )
   _mf-md@ MachineDesc.shared-period! drop
   cstr-new _mf-md@ MachineDesc.shared! drop ;
+( offset voice-level! : the state f64 at `offset` is the voice's own
+  level, kept by its render word.  A voice goes idle when it is released
+  and both its output and this level stay under the idle floor for a
+  block - for voices whose sound reaches the output through a shared
+  word rather than their own io [docs/04 §Shared state] )
+: voice-level!  ( offset -- )  1 + _mf-md@ MachineDesc.voice-level! drop ;
 : render-lite!  ( str offset -- )
   _mf-md@ MachineDesc.render-lite-sel! drop
   cstr-new _mf-md@ MachineDesc.render-lite! drop ;

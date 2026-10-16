@@ -404,6 +404,9 @@ pub const Desc = struct {
     shared_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
     shared_word_len: usize = 0,
     shared_period: usize = 0,
+    /// State byte offset + 1 of the f64 a voice keeps at its own level,
+    /// which idling watches besides its output; 0 = output only.
+    voice_level_sel: usize = 0,
     /// Params byte offset + 1 of the f64 holding the machine's latency in
     /// samples (docs/07 §PDC); 0 = none.
     latency_sel: usize = 0,
@@ -572,6 +575,7 @@ const MachineDescRaw = extern struct {
     shared: Fy.Value,
     shared_period: Fy.Value,
     shared_size: Fy.Value,
+    voice_level: Fy.Value,
 };
 
 const ModRaw = extern struct { next: Fy.Value, kind: Fy.Value, name: Fy.Value, index: Fy.Value, offset: Fy.Value, flag: Fy.Value };
@@ -714,6 +718,7 @@ pub fn read(host: *FyHost) !Desc {
     if (d.shared_size > MAX_SHARED) return error.InvalidMachineDesc;
     if (d.shared_word_len > 0 and (d.mode != .voice_sample or d.shared_period == 0 or d.shared_size == 0))
         return error.InvalidMachineDesc;
+    d.voice_level_sel = @intCast(@max(0, asInt(md.voice_level)));
     // derive-data is an opaque heap pointer (fy `alloc` returns the raw address
     // as a tagged int); >>2 recovers it. 0 = none.
     d.derive_data = @intCast(@as(u64, @bitCast(md.derive_data)) >> 2);
