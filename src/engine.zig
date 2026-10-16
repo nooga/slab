@@ -596,7 +596,7 @@ pub const Engine = struct {
     fn adoptTrack(t: *Track, fade: bool) void {
         _ = t.currentSnapshot();
         t.adoptMachines(fade);
-        if (t.audio_machine.adopt_updates) |f| f(t.audio_machine.state);
+        if (t.chain.audio_machine.adopt_updates) |f| f(t.chain.audio_machine.state);
         for (t.audioEffects()) |*fx| if (fx.mach.adopt_updates) |f| f(fx.mach.state);
     }
 
@@ -875,7 +875,7 @@ pub const Engine = struct {
     fn resetAllMachines(self: *Engine) void {
         self.adoptMachines();
         for (self.tracks) |*t| {
-            t.audio_machine.reset(t.audio_machine.state);
+            t.chain.audio_machine.reset(t.chain.audio_machine.state);
             for (t.audioEffects()) |*fx| fx.mach.reset(fx.mach.state);
         }
         if (self.master) |mb| {
@@ -1084,7 +1084,7 @@ pub const Engine = struct {
             break;
         };
         t.noteSounding(events[0..event_count]);
-        t.audio_machine.render(t.audio_machine.state, &ctx, l, r);
+        t.chain.audio_machine.render(t.chain.audio_machine.state, &ctx, l, r);
         const rendered = renderEffects(t, ctx, l, r, fx_l_buf[0..n], fx_r_buf[0..n], .{});
         const final_l = rendered.l;
         const final_r = rendered.r;
@@ -1445,13 +1445,13 @@ pub const Engine = struct {
         const inst_back = !node.is_bus and t.audio_inst_parked and t.isEnabled();
         if (inst_back) {
             t.audio_inst_parked = false;
-            t.audio_machine.reset(t.audio_machine.state);
+            t.chain.audio_machine.reset(t.chain.audio_machine.state);
             t.inst_quiet = 0;
         }
         const unparked = t.audio_parked and (node.is_bus or t.isEnabled());
         if (unparked) {
             t.audio_parked = false;
-            t.audio_machine.reset(t.audio_machine.state);
+            t.chain.audio_machine.reset(t.chain.audio_machine.state);
             for (t.audioEffects()) |*fx| fx.mach.reset(fx.mach.state);
             t.inst_quiet = 0;
         }
@@ -1525,18 +1525,18 @@ pub const Engine = struct {
             if (!en and !was_on) t.audio_inst_parked = true;
             if (en or was_on) {
                 if (!self.idle_skip) {
-                    t.audio_machine.render(t.audio_machine.state, &ctx, l, r);
+                    t.chain.audio_machine.render(t.chain.audio_machine.state, &ctx, l, r);
                 } else {
                     const ahead = IDLE_WAKE_AHEAD_S * bpm / 60.0;
                     // A control edit wakes it too, so its params and
                     // displays catch up (the edit may be all there is).
-                    const edited = t.audio_machine.takeWake();
+                    const edited = t.chain.audio_machine.takeWake();
                     wake = n_events > 0 or held_here or (!b.ring_out and notesNear(snap, beat_start, beat_end + ahead));
                     if (edited) t.inst_quiet = 0;
-                    const hold = t.audio_machine.idleHold(@floatFromInt(sr), idleHoldSamples(sr));
+                    const hold = t.chain.audio_machine.idleHold(@floatFromInt(sr), idleHoldSamples(sr));
                     // Asleep: `l`/`r` stay silent.
                     if (wake or hold == machine.TAIL_FOREVER or t.inst_quiet < hold) {
-                        t.audio_machine.render(t.audio_machine.state, &ctx, l, r);
+                        t.chain.audio_machine.render(t.chain.audio_machine.state, &ctx, l, r);
                         const loud = @max(blockPeak(l), blockPeak(r)) > IDLE_FLOOR;
                         t.inst_quiet = if (wake or loud) 0 else t.inst_quiet +| frames;
                     }
@@ -1649,7 +1649,7 @@ pub const Engine = struct {
                         @as(f64, @floatFromInt(fx_ns)) / 1_000_000.0,
                         @as(f64, @floatFromInt(total_ns)) / 1_000_000.0,
                         @as(f64, @floatFromInt(budget_ns)) / 1_000_000.0,
-                        t.audio_effect_count,
+                        t.chain.audio_effect_count,
                     },
                 );
             }
@@ -1789,7 +1789,7 @@ pub const Engine = struct {
                 self.master_subsonic.process(l, r, @floatFromInt(self.transport.sample_rate))
             else
                 self.master_subsonic.reset();
-            if (mb.audio_effect_count > 0) {
+            if (mb.chain.audio_effect_count > 0) {
                 const base = machine.MachineCtx{
                     .sample_rate = @floatFromInt(self.transport.sample_rate),
                     .block_size = frames,
@@ -2230,7 +2230,7 @@ fn localTime(snap: *const snap_mod.TrackSnapshot, beat: f64, bpm: f64, song_bar:
 }
 
 fn instLatency(t: *Track, is_bus: bool) u32 {
-    return if (!is_bus and t.isEnabled() and !t.frozen.load(.acquire)) t.audio_machine.latencySamples() else 0;
+    return if (!is_bus and t.isEnabled() and !t.frozen.load(.acquire)) t.chain.audio_machine.latencySamples() else 0;
 }
 
 /// A frozen track's audio for the block at `block_start` (it starts at
@@ -2339,7 +2339,7 @@ fn renderEffectsKeyed(
         const n_fx = cur_l.len;
         const mixing = wet_from != 1 or wet_to != 1;
         if (fx.dry_line >= 0) {
-            const line = &t.chain_state.dry[@intCast(fx.dry_line)];
+            const line = &t.chain.dry[@intCast(fx.dry_line)];
             const d: usize = @min(fx_lat, track_mod.DRY_LEN - MAX_BLOCK);
             const mask = track_mod.DRY_LEN - 1;
             for (0..n_fx) |k| {
@@ -2393,7 +2393,7 @@ fn renderEffectsKeyed(
         }
         // Fully back in: its line is free again.
         if (!bypassed and wet_from == 1 and fx.dry_line >= 0) {
-            t.chain_state.dry_used &= ~(@as(u8, 1) << @intCast(fx.dry_line));
+            t.chain.dry_used &= ~(@as(u8, 1) << @intCast(fx.dry_line));
             fx.dry_line = -1;
         }
         const out_peak = [2]f32{ blockPeak(next_l), blockPeak(next_r) };
@@ -2474,7 +2474,7 @@ fn contain(t: *Track, l: []f32, r: []f32) void {
     if (allFinite(l) and allFinite(r)) return;
     @memset(l, 0);
     @memset(r, 0);
-    t.audio_machine.reset(t.audio_machine.state);
+    t.chain.audio_machine.reset(t.chain.audio_machine.state);
     for (t.audioEffects()) |*fx| fx.mach.reset(fx.mach.state);
     _ = t.faults.fetchAdd(1, .monotonic);
 }

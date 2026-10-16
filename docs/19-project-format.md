@@ -155,7 +155,7 @@ The document is JSON. Top level:
 | `instrument.preset` / effect `preset` | the preset the settings started from, by its full name (`slab/glass-lead`), for the panel's label. `params` stay authoritative: loading marks the preset current without applying it. Missing or unknown = no label ("init"). |
 | `instrument.unison` | host unison (docs/08 §Unison), when on or the pool is resized: `{"count": 4, "detune": 50, "spread": 0.7, "blend": 0.75, "voices": 8}`. count is voices per note (1–8), detune is cents from lowest to highest voice, spread and blend are 0–1, voices is a poly machine's pool (1–16). Missing fields take their defaults. |
 | `instrument.state` | settings a machine keeps beyond flat params: a Rack's `{"parts": […]}`, the same form as its presets. |
-| `effects` | insert chain, run in order, stereo. `bypass: true` passes audio through untouched. `key` (an index into `tracks`) sidechains the effect's detector from that track's pre-fader signal ([23-routing.md](23-routing.md)). |
+| `effects` | insert chain, run in order, stereo. `bypass: true` passes audio through untouched. `key` (an index into `tracks`) sidechains the effect's detector from that track's pre-fader signal ([23-routing.md](23-routing.md)). An effect also writes `assets` and `state` the way an instrument does, when its machine has them; files without them load as before. |
 | `kind` | `"bus"` for a bus (a group or a return: no instrument, no clips; its input is what's routed to it). Missing = an audio track. |
 | `folded` | On a bus: `true` hides a group's members in the arrangement and mixer. UI state only; missing = unfolded. |
 | `output` | index into `tracks` of the bus the post-fader signal goes to. Missing = the master. |
