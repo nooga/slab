@@ -33,6 +33,8 @@ pub const MAX_NOTE_LABELS = 32;
 pub const MAX_BUFFERS = 8;
 pub const MAX_ASSETS = 4;
 pub const MAX_PATH = 128;
+/// Largest shared region a machine may ask for (docs/04 §Shared state).
+pub const MAX_SHARED = 1 << 20;
 /// Largest integer range a display select steps through.
 pub const MAX_DISPLAY_STEPS = 128;
 
@@ -395,6 +397,13 @@ pub const Desc = struct {
     control_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
     control_word_len: usize = 0,
     control_period: usize = 0,
+    /// Voice machines: one region shared by every voice (docs/04 §Shared
+    /// state), and the render word that runs over it in lockstep with the
+    /// voices, `shared_period` samples at a time. 0 / empty = none.
+    shared_size: usize = 0,
+    shared_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
+    shared_word_len: usize = 0,
+    shared_period: usize = 0,
     /// Params byte offset + 1 of the f64 holding the machine's latency in
     /// samples (docs/07 §PDC); 0 = none.
     latency_sel: usize = 0,
@@ -489,6 +498,10 @@ pub const Desc = struct {
         return if (self.control_word_len == 0) null else self.control_word[0..self.control_word_len];
     }
 
+    pub fn sharedWord(self: *const Desc) ?[]const u8 {
+        return if (self.shared_word_len == 0) null else self.shared_word[0..self.shared_word_len];
+    }
+
     pub fn renderLiteWord(self: *const Desc) ?[]const u8 {
         return if (self.render_lite_word_len == 0) null else self.render_lite_word[0..self.render_lite_word_len];
     }
@@ -556,6 +569,9 @@ const MachineDescRaw = extern struct {
     matrix: Fy.Value,
     matrix_slots: Fy.Value,
     legato_span: Fy.Value,
+    shared: Fy.Value,
+    shared_period: Fy.Value,
+    shared_size: Fy.Value,
 };
 
 const ModRaw = extern struct { next: Fy.Value, kind: Fy.Value, name: Fy.Value, index: Fy.Value, offset: Fy.Value, flag: Fy.Value };
@@ -692,6 +708,12 @@ pub fn read(host: *FyHost) !Desc {
     d.control_word_len = try copyBuf(d.control_word[0..], cstrSlice(md.control));
     d.control_period = @intCast(asInt(md.control_period));
     if (d.control_word_len > 0 and (d.mode != .voice_sample or d.control_period == 0)) return error.InvalidMachineDesc;
+    d.shared_size = @intCast(@max(0, asInt(md.shared_size)));
+    d.shared_word_len = try copyBuf(d.shared_word[0..], cstrSlice(md.shared));
+    d.shared_period = @intCast(@max(0, asInt(md.shared_period)));
+    if (d.shared_size > MAX_SHARED) return error.InvalidMachineDesc;
+    if (d.shared_word_len > 0 and (d.mode != .voice_sample or d.shared_period == 0 or d.shared_size == 0))
+        return error.InvalidMachineDesc;
     // derive-data is an opaque heap pointer (fy `alloc` returns the raw address
     // as a tagged int); >>2 recovers it. 0 = none.
     d.derive_data = @intCast(@as(u64, @bitCast(md.derive_data)) >> 2);

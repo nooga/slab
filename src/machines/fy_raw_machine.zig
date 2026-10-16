@@ -280,6 +280,8 @@ pub const KernelCtx = extern struct {
     // in note hooks. Voices that share one modulator (a global LFO, a
     // shared noise source) agree on its phase through it.
     clock: f64 = 0,
+    // The machine's shared region (manifest `shared-size!`), 0 = none.
+    shared: usize = 0,
 };
 
 /// One sample's audio lanes, mirrored by `Io` in ctx.fy. Render words get a
@@ -375,6 +377,14 @@ pub const FyRawMachine = struct {
     // bytes; empty otherwise. Use stateRegion, never state_buf directly.
     big_state: []align(8) u8 = &.{},
     state_stride: usize = MAX_STATE,
+    // The machine's shared region and its render word (docs/04 §Shared
+    // state). The word runs while a voice sounds, and after, until its own
+    // output stays under IDLE_FLOOR for a block.
+    shared_mem: []align(8) u8 = &.{},
+    shared_slots: RawSlots = .{},
+    shared_caller: ?RawCaller = null,
+    shared_awake: bool = false,
+    shared_peak: f64 = 0,
     params_buf: [MAX_PARAMS]u8 align(8) = [_]u8{0} ** MAX_PARAMS,
     io: [MAX_BLOCK]IoFrame = [_]IoFrame{.{}} ** MAX_BLOCK,
     kctx: KernelCtx = .{},
@@ -693,6 +703,12 @@ pub const FyRawMachine = struct {
             @memset(self.big_state, 0);
         }
         errdefer if (self.big_state.len > 0) alloc.free(self.big_state);
+        if (desc.shared_size > 0) {
+            self.shared_mem = try alloc.alignedAlloc(u8, .@"8", std.mem.alignForward(usize, desc.shared_size, 8));
+            @memset(self.shared_mem, 0);
+            self.kctx.shared = @intFromPtr(self.shared_mem.ptr);
+        }
+        errdefer if (self.shared_mem.len > 0) alloc.free(self.shared_mem);
         try self.allocBuffers(alloc);
         errdefer self.freeBuffersUpTo(alloc, self.desc.buffer_count);
         try self.loadAssets(alloc, path);
@@ -1267,9 +1283,11 @@ pub const FyRawMachine = struct {
         if (self.desc.deriveWord()) |w| self.derive_caller = try self.compileEntry(w, &self.derive_slots, false);
         self.render_caller = try self.compileEntry(self.desc.renderWord(), &self.render_slots, true);
         if (self.desc.renderLiteWord()) |w| self.render_lite_caller = try self.compileEntry(w, &self.render_lite_slots, true);
+        if (self.desc.sharedWord()) |w| self.shared_caller = try self.compileEntry(w, &self.shared_slots, true);
         // Poly voices pair up whatever their output; effects need one pass
-        // per channel to pair (a stereo effect already runs once).
-        if (if (self.desc.mode == .voice_sample) self.desc.voices > 1 else !self.desc.stereo) {
+        // per channel to pair (a stereo effect already runs once). Voices
+        // that act on a shared region render one at a time, in voice order.
+        if (if (self.desc.mode == .voice_sample) self.desc.voices > 1 and self.desc.shared_size == 0 else !self.desc.stereo) {
             self.render_lanes_caller = self.compileLanes(self.desc.renderWord(), &self.render_lanes_slots);
             if (self.desc.renderLiteWord()) |w| self.render_lite_lanes_caller = self.compileLanes(w, &self.render_lite_lanes_slots);
         }
@@ -1474,10 +1492,16 @@ pub const FyRawMachine = struct {
     /// Block end: released voices that stayed under the floor all block go
     /// idle.
     fn updateIdle(self: *FyRawMachine) void {
+        var any = false;
         for (0..self.regionCount()) |v| {
             if (!self.voice_idle[v] and !self.voice_gate[v] and self.voice_peak[v] < IDLE_FLOOR) self.voice_idle[v] = true;
             self.voice_peak[v] = 0;
+            if (!self.voice_idle[v]) any = true;
         }
+        // The shared word sleeps once no voice sounds and its own output
+        // stayed under the floor all block.
+        if (!any and self.shared_peak < IDLE_FLOOR) self.shared_awake = false;
+        self.shared_peak = 0;
     }
 
     /// True if any knob's smoothed position differs from its target.
@@ -2728,6 +2752,38 @@ fn renderVoiceSample(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
 
 fn renderVoiceSegment(self: *FyRawMachine, start: usize, end: usize) !void {
     if (end <= start) return;
+    if (self.shared_caller == null) return renderVoices(self, start, end);
+    // Shared state (docs/04): the voices, then the shared word, in steps
+    // of shared_period samples.
+    if (!self.shared_awake) return renderVoices(self, start, end);
+    const period = self.desc.shared_period;
+    var at = start;
+    while (at < end) {
+        const n = @min(period, end - at);
+        try renderVoices(self, at, at + n);
+        try renderShared(self, at, at + n);
+        at += n;
+    }
+}
+
+/// The shared word over io[start, end), accumulating like a voice; its
+/// contribution is what keeps it awake.
+fn renderShared(self: *FyRawMachine, start: usize, end: usize) !void {
+    const io = self.io[start..end];
+    const snap = self.voice_snap[0..io.len];
+    for (snap, io) |*d, f| d.* = f.out_l;
+    self.kctx.chan = 0;
+    const args = [_]Fy.Dsp2RawArg{
+        .{ .ptr = @intFromPtr(&io[0]) },          .{ .ptr = @intFromPtr(&self.kctx) },
+        .{ .ptr = @intFromPtr(self.shared_mem.ptr) }, .{ .ptr = self.paramsPtr() },
+    };
+    _ = try self.shared_caller.?.callRealtime(@intCast(io.len), &args);
+    var pk = self.shared_peak;
+    for (snap, io) |b, f| pk = @max(pk, @abs(f.out_l - b));
+    self.shared_peak = pk;
+}
+
+fn renderVoices(self: *FyRawMachine, start: usize, end: usize) !void {
     const caller = try effectCaller(self);
     // Polyphonic machines render every sounding voice; kernels of
     // multi-voice machines ACCUMULATE into the host-zeroed out buffer, in
@@ -3057,6 +3113,7 @@ fn startVoice(self: *FyRawMachine, v: usize, k: usize, n: usize, ev: machine.Not
     self.voice_gate[v] = true;
     self.voice_idle[v] = false;
     self.voice_peak[v] = 0;
+    self.shared_awake = self.shared_caller != null;
     self.voice_ctl_left[v] = 0; // control runs before the note's first sample
     self.voice_uni_k[v] = @intCast(k);
     self.voice_uni_n[v] = @intCast(n);
@@ -3326,6 +3383,9 @@ fn resetImpl(state: *anyopaque) void {
     for (0..self.regionCount()) |reg| {
         @memset(self.stateRegion(reg), 0);
     }
+    @memset(self.shared_mem, 0);
+    self.shared_awake = false;
+    self.shared_peak = 0;
     @memset(self.voice_gate[0..], false);
     @memset(self.voice_pitch[0..], -1);
     @memset(self.voice_note_id[0..], -1);
@@ -3349,6 +3409,7 @@ fn deinitImpl(state: *anyopaque, alloc: std.mem.Allocator) void {
     }
     self.freeBuffersUpTo(alloc, self.desc.buffer_count);
     if (self.big_state.len > 0) alloc.free(self.big_state);
+    if (self.shared_mem.len > 0) alloc.free(self.shared_mem);
     self.freeAssets(alloc);
     // derive-data is libc-malloc'd by fy's `alloc`; fy doesn't track it.
     if (self.desc.derive_data != 0) std.c.free(@ptrFromInt(self.desc.derive_data));
@@ -7208,6 +7269,51 @@ test "kernel ABI: KernelCtx and IoFrame match ctx.fy's Ctx and Io" {
         const v = try host.callWord(f.name);
         try testing.expectEqual(Fy.makeInt(@intCast(f.off)), v);
     }
+}
+
+test "shared state: voices and the shared word alternate per step, then the word sleeps" {
+    const block = 64;
+    const inst = try FyRawMachine.create(testing.allocator, "machines/raw_fixtures/shared_body.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    try testing.expect(inst.shared_caller != null);
+    try testing.expect(inst.render_lanes_caller == null); // one voice at a time
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = block;
+    var l = [_]f32{0} ** block;
+    var r = [_]f32{0} ** block;
+    const on = [_]machine.NoteEvent{
+        .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = -1, .pitch = 60, .velocity = 1 },
+        .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = -1, .pitch = 64, .velocity = 0.5 },
+    };
+    ctx.note_in = &on;
+    ctx.note_in_count = on.len;
+    testRender(mach, &ctx, &l, &r);
+    // y[n] = y[n-1]/2 + 1.5: 1.5, 2.25, ... -> 3.
+    try testing.expectEqual(@as(f32, 1.5), l[0]);
+    try testing.expectEqual(@as(f32, 2.25), l[1]);
+    try testing.expectApproxEqAbs(@as(f32, 3), l[block - 1], 1e-6);
+    // A voice reads the level the shared word left after the step before.
+    const seen: *align(1) const f64 = @ptrCast(&inst.stateRegion(0)[16]);
+    try testing.expectApproxEqAbs(@as(f64, l[block - 2]) * 0.5, seen.*, 1e-6);
+
+    const off = [_]machine.NoteEvent{
+        .{ .sample_offset = 0, .kind = .note_off, .channel = 0, .note_id = -1, .pitch = 60, .velocity = 0 },
+        .{ .sample_offset = 0, .kind = .note_off, .channel = 0, .note_id = -1, .pitch = 64, .velocity = 0 },
+    };
+    ctx.note_in = &off;
+    ctx.note_in_count = off.len;
+    testRender(mach, &ctx, &l, &r);
+    ctx.note_in = null;
+    ctx.note_in_count = 0;
+    // The body rings down after the voices stop driving it.
+    try testing.expect(l[0] > 1.0 and l[0] < 3.0);
+    try testing.expect(inst.shared_awake); // its output was loud this block
+    testRender(mach, &ctx, &l, &r);
+    try testing.expect(!inst.shared_awake); // under the floor all block
+    testRender(mach, &ctx, &l, &r);
+    for (l) |s| try testing.expectEqual(@as(f32, 0), s);
 }
 
 test "stereo flag: stereo voices write L and R, stereo effects get one true-stereo pass" {

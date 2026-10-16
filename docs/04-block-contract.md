@@ -471,6 +471,37 @@ is empty before its machine sleeps and delays correctly when it wakes.
 `Track.inst_quiet`, `Effect.quiet`, and samples of silence (saturating).
 Replacing a machine resets its counter.
 
+## Shared state (implemented, 2026-10-16)
+
+A voice machine can keep one region for the whole machine, next to its
+per-voice state: a body every voice acts on, such as a piano's
+soundboard, a kit's shared shell or a resonator all notes ring into. The
+host knows nothing of what the region holds. It allocates the bytes,
+zeroes them, passes the pointer, and orders the calls.
+
+- `bytes shared-size!` asks for the region (up to 1 MiB,
+  `MAX_SHARED`). It is zeroed at load and on reset. Every entry word,
+  note hooks, block-prepare, control and render included, finds it at
+  `ctx.shared` (`ctx.shared& p@64 | body:MyBody |`).
+- `"word" period shared!` names the region's render word,
+  `( io ctx shared params -- )`. The host renders the sounding voices
+  for `period` samples, then this word over the same samples, and
+  repeats. With a period of 1 a voice reads, each sample, what the shared
+  word left after the previous one, and the shared word sees everything
+  the voices wrote during that sample. Longer periods cost fewer calls
+  and delay the coupling by up to that many samples.
+- Voices of a machine with a shared region render one at a time, in
+  voice order, never in lane pairs, so their writes into the region land
+  in a fixed order and renders stay bit-exact at any thread count. The
+  convention for writing is to add into fields the shared word clears.
+- The shared word accumulates into io like a voice. It wakes on any
+  note-on and runs while a voice sounds; once none does, it sleeps after
+  a block whose own output stayed under `IDLE_FLOOR`, until the next
+  note-on. Its output counts as the machine's for idle skipping.
+
+The fixture `machines/raw_fixtures/shared_body.fy` and the test "shared
+state: voices and the shared word alternate per step" show the order.
+
 ## Why one ctx pointer and not varargs
 
 - Stable ABI surface. Adding a field at the end (in `_reserved`)

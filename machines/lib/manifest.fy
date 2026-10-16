@@ -91,6 +91,13 @@ struct: MachineDesc
                        30 ms after it, takes over that note's voice with
                        ctx.legato = 1 instead of a voice of its own: a
                        hammer-on or pull-off on a string [docs/08] )
+  ptr shared         ( cstr or 0 - voice machines: a render word [io ctx
+                       shared params --] over the machine's shared region,
+                       run in lockstep with the voices [docs/04 §Shared state] )
+  ptr shared-period  ( int samples: voices and the shared word alternate in
+                       steps this long )
+  ptr shared-size    ( int bytes of the shared region, 0 = none; every entry
+                       word sees it as ctx.shared )
 ;
 
 struct: ControlDesc
@@ -224,6 +231,22 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
 ( semitones legato-span! : overlapping single notes within this interval
   play legato on one voice [see MachineDesc.legato-span] )
 : legato-span!  ( f -- )  _mf-md@ MachineDesc.legato-span! drop ;
+( bytes shared-size! : one region of this size for the whole machine,
+  zeroed at load and reset, that every entry word reads and writes
+  through ctx.shared [read the pointer with ctx.shared& p@64] - a body all
+  the voices act on, such as a soundboard or a shared resonator )
+: shared-size!  ( n -- )  _mf-md@ MachineDesc.shared-size! drop ;
+( "word" period shared! : the shared region's render word [io ctx shared
+  params --].  The host renders the sounding voices for `period` samples,
+  one voice at a time in voice order, then this word over the same
+  samples, and so on: a voice sees what the shared word left after the
+  previous step, and the shared word sees what every voice added during
+  it.  It accumulates into io like a voice, and keeps running after the
+  voices sleep until its own output falls under the idle floor
+  [docs/04 §Shared state] )
+: shared!  ( str period -- )
+  _mf-md@ MachineDesc.shared-period! drop
+  cstr-new _mf-md@ MachineDesc.shared! drop ;
 : render-lite!  ( str offset -- )
   _mf-md@ MachineDesc.render-lite-sel! drop
   cstr-new _mf-md@ MachineDesc.render-lite! drop ;

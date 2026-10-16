@@ -27,6 +27,8 @@ ustruct: Ctx
   f64 phase    ( note-on: unison start phase 0..1 for free-running oscillators; 0 alone )
   f64 clock    ( the sample clock: the block start in prepare / block-prepare /
                  derive, the event's sample in note hooks )
+  f64 shared   ( pointer: the machine's shared region [shared-size!], or 0;
+                 read with ctx.shared& p@64 )
 ;
 
 ustruct: Io
