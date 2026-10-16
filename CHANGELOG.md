@@ -6,6 +6,9 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Headless renders play Racks.** `slab --render` and `--stems` rendered
+  a track with a Rack on it as silence; they now load it as the app does.
+
 - **Rack lanes take effects, and there's an FX Rack.** Each lane of a Rack
   now holds a chain: its instrument and up to 16 inserts (+ FX under the
   lane's settings). The new FX Rack goes in an effect slot and runs its

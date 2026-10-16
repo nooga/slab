@@ -6133,6 +6133,8 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
     defer reg.deinit();
     for (registry_mod.builtin_machines) |path| try reg.loadFyMachine(path);
     reg.loadUserMachines();
+    // Racks, as the app has them: a project with one renders it.
+    try reg.loadNative();
     var pool = audio_pool_mod.AudioPool.init(alloc);
     defer pool.deinit();
     document_mod.setPool(&pool);
