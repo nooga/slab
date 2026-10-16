@@ -404,6 +404,13 @@ Leave pads alone; they're already even.
   or `bass-grind`. Guitars: `guitar-clean`, `guitar-crunch`,
   `guitar-lead`, `guitar-heavy`. Leave CAB on unless another cabinet
   follows, and use BLEND, not a parallel track, to keep the DI's low end.
+- **Pick the instrument before the amp.** Fretwire's GUITAR or BASS page
+  is the instrument: pickups (SELECT, TYPE, HEIGHT), wiring (TONE and VOL
+  pots) and BODY (docs/41). Start from a preset: `twin-humbucker` or
+  `p90-crunch` for a driven amp, `funk` for chops, `jazz` or
+  `semi-hollow` for warm clean parts; on bass, `jazz-both`, `p-bass` or
+  `hollow`. Roll VOL back to clean up an amp's drive. The `acoustic`
+  presets are miked bodies with a little piezo: skip Ampstack for them.
 - `chorus2`: `juno-i` / `juno-ii` for pads and keys. Never on bass or
   kick; it smears the low end out of mono.
 - **Share spaces with sends.** Put a fully wet reverb on a bus and send

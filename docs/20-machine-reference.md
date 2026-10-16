@@ -60,10 +60,22 @@ project or preset stores (docs/19): real units for knobs, the option
 | `bs-soft` | PLUCK | SOFT | 0.05 … 6 | 2 | exp |
 | `bs-shape` | PLUCK | SHAPE | 0 … 1 | 0 | linear |
 | `bs-noise` | PLUCK | NOISE | 0 … 1 | 0.15 | pow |
-| `bs-pickup` | PICKUP | POS | 0.04 … 0.5 | 0.2 | linear |
-| `bs-hand` | PICKUP | HAND | 0 … 12 | 5 | linear |
-| `bs-tone` | PICKUP | TONE | 300 … 12000 | 3200 | exp |
-| `bs-res` | PICKUP | RES | 0 … 1 | 0.3 | linear |
+| `bs-hand` | PLUCK | HAND | 0 … 12 | 5 | linear |
+| `bs-pickup` | PICKUPS | NECK | 0.04 … 0.5 | 0.2 | linear |
+| `bs-pickup-b` | PICKUPS | BRIDGE | 0.04 … 0.5 | 0.1 | linear |
+| `bs-sel` | PICKUPS | SELECT | 0 NECK / 1 BOTH / 2 BRIDGE / 3 OUT | 0 | switch |
+| `bs-type-n` | PICKUPS | N TYPE | 0 SINGLE / 1 SPLIT / 2 HUMBUCK | 0 | switch |
+| `bs-type-b` | PICKUPS | B TYPE | 0 SINGLE / 1 SPLIT / 2 HUMBUCK | 0 | switch |
+| `bs-height` | PICKUPS | HEIGHT | 0 … 1 | 0 | linear |
+| `bs-tone` | WIRING | RESO | 300 … 12000 | 3200 | exp |
+| `bs-res` | WIRING | PEAK | 0 … 1 | 0.3 | linear |
+| `bs-tpot` | WIRING | TONE | 0 … 1 | 1 | linear |
+| `bs-vol` | WIRING | VOL | 0 … 1 | 1 | linear |
+| `bs-body` | BODY | BODY | 0 SOLID / 1 HOLLOW / 2 ACOUSTIC | 0 | switch |
+| `bs-couple` | BODY | COUPLE | 0 … 2 | 1 | linear |
+| `bs-air` | BODY | AIR | 0 … 1 | 0 | pow |
+| `bs-piezo` | BODY | PIEZO | 0 … 1 | 0 | pow |
+| `bs-symp` | BODY | SYMP | 0 … 1 | 0 | linear |
 | `bs-thump` | FEEL | THUMP | 0 … 1 | 0.5 | linear |
 | `bs-buzz` | FEEL | BUZZ | 0 … 1 | 0 | linear |
 | `bs-motion` | FEEL | MOTION | 0 AUTO / 1 BEND / 2 SLIDE | 0 | switch |
@@ -74,13 +86,17 @@ project or preset stores (docs/19): real units for knobs, the option
 
 Presets:
 
+- `acoustic` — An acoustic bass guitar, miked, with some piezo and the open strings in sympathy
 - `default` — Fingers on the neck pickup: roundwounds, direct
 - `fingers-bridge` — Fingers over the bridge pickup: nasal, growly, more mids
 - `flatwound` — Old flatwounds, tone rolled off: short, thumpy, dub and Motown
+- `hollow` — A hollow violin bass on flatwounds: short, woody, a little air
+- `jazz-both` — Both single coils of a Jazz-type bass, fingers: fitted to Karoryfer's Growlybass
+- `p-bass` — A split-coil P-type pickup, roundwounds, tone a little back: the punchy middle of a mix
 - `palm-mute` — Muted with the palm: a short pick thud
 - `pick` — Played with a pick near the bridge: bright attack, click, rounder sustain
-- `pop` — Popped string: pulled and snapped, hard push, buzz
-- `slap` — Thumb slap over the end of the neck: narrow strike, fret rattle, bright
+- `pop` — Popped string over a bridge humbucker: pulled and snapped, hard push, buzz
+- `slap` — Thumb slap over the end of the neck, a bridge humbucker: narrow strike, fret rattle, bright
 
 ## concoction
 
@@ -671,10 +687,22 @@ Presets:
 | `gt-soft` | PLUCK | SOFT | 0.05 … 6 | 1 | exp |
 | `gt-shape` | PLUCK | SHAPE | 0 … 1 | 0.4 | linear |
 | `gt-noise` | PLUCK | NOISE | 0 … 1 | 0.15 | pow |
-| `gt-pickup` | PICKUP | POS | 0.04 … 0.5 | 0.24 | linear |
-| `gt-hand` | PICKUP | HAND | 0 … 12 | 0 | linear |
-| `gt-tone` | PICKUP | TONE | 300 … 12000 | 4500 | exp |
-| `gt-res` | PICKUP | RES | 0 … 1 | 0.4 | linear |
+| `gt-hand` | PLUCK | HAND | 0 … 12 | 0 | linear |
+| `gt-pickup` | PICKUPS | NECK | 0.04 … 0.5 | 0.24 | linear |
+| `gt-pickup-b` | PICKUPS | BRIDGE | 0.04 … 0.5 | 0.07 | linear |
+| `gt-sel` | PICKUPS | SELECT | 0 NECK / 1 BOTH / 2 BRIDGE / 3 OUT | 0 | switch |
+| `gt-type-n` | PICKUPS | N TYPE | 0 SINGLE / 1 P-90 / 2 HUMBUCK | 0 | switch |
+| `gt-type-b` | PICKUPS | B TYPE | 0 SINGLE / 1 P-90 / 2 HUMBUCK | 0 | switch |
+| `gt-height` | PICKUPS | HEIGHT | 0 … 1 | 0 | linear |
+| `gt-tone` | WIRING | RESO | 300 … 12000 | 4500 | exp |
+| `gt-res` | WIRING | PEAK | 0 … 1 | 0.4 | linear |
+| `gt-tpot` | WIRING | TONE | 0 … 1 | 1 | linear |
+| `gt-vol` | WIRING | VOL | 0 … 1 | 1 | linear |
+| `gt-body` | BODY | BODY | 0 SOLID / 1 SEMI / 2 HOLLOW / 3 ACOUSTIC | 0 | switch |
+| `gt-couple` | BODY | COUPLE | 0 … 2 | 1 | linear |
+| `gt-air` | BODY | AIR | 0 … 1 | 0 | pow |
+| `gt-piezo` | BODY | PIEZO | 0 … 1 | 0 | pow |
+| `gt-symp` | BODY | SYMP | 0 … 1 | 0 | linear |
 | `gt-thump` | FEEL | THUMP | 0 … 1 | 0.3 | linear |
 | `gt-buzz` | FEEL | BUZZ | 0 … 1 | 0 | linear |
 | `gt-motion` | FEEL | MOTION | 0 AUTO / 1 BEND / 2 SLIDE | 0 | switch |
@@ -685,13 +713,18 @@ Presets:
 
 Presets:
 
+- `acoustic` — A flat-top acoustic, miked, with a little under-saddle piezo and the open strings ringing along
 - `bridge` — Picked on the bridge pickup: thin, bright, cutting; for crunch and leads into an amp
 - `default` — Picked, neck pickup, open position: the clean electric
 - `fingers` — Fingerstyle, thumb and fingers over the neck: round and soft
-- `funk` — Bright, tight, short: bridge-and-middle funk chops
-- `jazz` — Archtop jazz: neck pickup, tone rolled off, flatwound thump
-- `palm-mute` — Palm-muted picking: a short chug, give it a high-gain amp
+- `funk` — Middle and bridge single coils together: the bright, quacky funk chop
+- `jazz` — Archtop jazz: a hollow body, the neck humbucker, tone rolled back, a little air
+- `out-of-phase` — Neck and middle out of phase: the thin, hollow, nasal tone
+- `p90-crunch` — A bridge P-90 set close to the strings: fat, raw mids that break up early in an amp
+- `palm-mute` — Palm-muted picking on a bridge humbucker: a short, tight chug for a high-gain amp
+- `semi-hollow` — A semi-hollow with two humbuckers: warm, woody, a touch of sympathetic ring
 - `slide` — Bottleneck slide: long sustain, pitch curves glide fret by fret with the rasp
+- `twin-humbucker` — Two humbuckers together, picked near the bridge, direct: fitted to Karoryfer's Emily
 
 ## jp8
 

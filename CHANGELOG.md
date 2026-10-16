@@ -19,6 +19,19 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   pitch when hit hard, cymbals bloom into a wash, and a closed hat chokes
   an open one. Five presets. See docs/41.
 
+- **Fretwire gets pickups, wiring and bodies.** The bass and guitar have
+  a second page. Choose the neck pickup, the bridge pickup, both, or both
+  out of phase. Pick single coil, P-90, humbucker or split coil, and set
+  how close the magnets sit. Real tone and volume pots roll the tone into
+  the mids and clean up an amp's drive. The strings now share a body,
+  SOLID, SEMI, HOLLOW or ACOUSTIC, that colors their decay and can be
+  miked (AIR). There is also an under-saddle piezo, and open strings that
+  ring in sympathy. New presets include twin-humbucker, p90-crunch,
+  semi-hollow, out-of-phase and acoustic guitars, and jazz-both, p-bass,
+  hollow and acoustic basses. Saved bass and guitar parts now sound
+  slightly different on the default solid body's dead spots; set COUPLE
+  to 0 for the old sound. See docs/41.
+
 - **Separate STOP and PLAY.** Pressing STOP again while stopped returns
   to the loop's start, or to the song's start with the loop off.
 

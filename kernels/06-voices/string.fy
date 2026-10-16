@@ -94,6 +94,16 @@ ustruct: StringState
   f64 vib-t     ( finger vibrato depth asked for, 0..1 [expression slide] )
   f64 vib       ( the depth, smoothed )
   f64 vib-ph
+  ( pickups and bridge [string_body.fy] )
+  f64 si        ( string the note is on, 0 = lowest )
+  f64 z         ( string impedance relative to the low string: ref-hz / open hz )
+  f64 pn1 f64 pn2   ( neck pickup taps, samples )
+  f64 pb1 f64 pb2   ( bridge pickup taps )
+  f64 xn f64 xb     ( string displacement over each pickup, for HEIGHT )
+  f64 nw        ( this sample's ring write, for the pickup stage )
+  f64 wc        ( the index it was written at )
+  f64 yb        ( the wave arriving at the bridge this sample )
+  f64 fade      ( the old note's read, fading out )
 ;
 
 ustruct: StringParams
@@ -118,12 +128,30 @@ ustruct: StringParams
   f64 slide      ( 0..1 slide noise: the finger on the windings, fret ticks )
   f64 vib-rate   ( Hz: finger vibrato )
   f64 vib-depth  ( semitones at full depth: how far the finger bends the string )
+  f64 sel        ( pickup selector: 0 NECK, 1 BOTH, 2 BRIDGE, 3 BOTH out of phase )
+  f64 pickup-b   ( bridge pickup point, fraction of the open string from the bridge )
+  f64 type-n     ( neck pickup: 0 SINGLE, 1 WIDE [P-90], 2 HUMBUCK, 3 SPLIT )
+  f64 type-b     ( bridge pickup )
+  f64 height     ( 0..1 how close the magnets sit: output and magnetic pull )
+  f64 tpot       ( tone pot 0..1; 1 is open and unloaded )
+  f64 vol        ( volume pot 0..1 )
+  f64 body       ( body: index into this instrument's bodies )
+  f64 couple     ( bridge coupling, x the body's own )
+  f64 air        ( the body's radiated sound, mixed in )
+  f64 piezo      ( an under-saddle piezo: the bridge force, mixed in )
+  f64 symp       ( the open strings ringing in sympathy, 0..1 )
   ( the instrument, set by the machine [const-f64] )
   f64 ref-hz     ( the pitch HF DEC, SOFT and THUMP are stated at: the low string )
   f64 b-ref      ( the pitch STIFF's B is stated at )
   f64 hf-track   ( HF DEC scales as [ref-hz / f]^hf-track: 0.75 a bass, 0 a guitar )
   f64 out-g      ( output gain: LEVEL 0.55 sits with the other instruments )
   f64 o1 f64 o2 f64 o3 f64 o4 f64 o5 f64 o6   ( open strings, low to high, Hz; unused 1e9 )
+  f64 n-str      ( strings on the instrument )
+  f64 body-base  ( this instrument's first body in the body tables )
+  f64 coil-k     ( pickup coil widths and spacing, x the guitar's: the scale's share )
+  f64 l-coil     ( H: a single coil's inductance )
+  f64 r-coil     ( ohm: its resistance )
+  f64 c-tone     ( F: the tone capacitor )
   ( derived — string-block-prepare )
   f64 sr
   f64 inv-sr
@@ -132,7 +160,48 @@ ustruct: StringParams
   f64 tens-a
   f64 sl-hpa  f64 sl-lpa  f64 sl-dec
   f64 vib-inc  f64 vib-a
+  f64 on1 f64 on2 f64 ob1 f64 ob2   ( tap offsets per pickup, fraction of the string )
+  f64 split-n f64 split-b           ( 1 if that pickup is a split coil )
+  f64 wn f64 wb       ( selector weights: each pickup's share of the output )
+  f64 ht-k f64 ht-a   ( HEIGHT: magnetic pull per displacement, displacement leak )
+  f64 l-eff           ( the selected coils' inductance, x a single coil's )
 ;
+
+
+( The body every string shares [string_body.fy]: the bridge, the body's
+  modes, the wiring and the open strings.  Voices add their bridge force
+  and pickup signal; the body word [period 1] reads them, steps, and
+  clears them. )
+:: BM 48 ;       ( body modes: 8 measured-style low modes, 40 dense )
+:: BMF 48.0 ;
+:: SYM-N 6 ;     ( open strings ringing in sympathy, at most )
+:: SYM-RL 4096 ; ( cells per open string's ring )
+:: SYM-RLF 4096.0 ;
+ustruct: FwBody
+  f64 f      ( bridge force this step: voices and open strings add )
+  f64 pu     ( pickup signal this step: voices and open strings add )
+  f64 vb     ( bridge velocity the last step left )
+  f64 vba    ( bridge velocity being summed )
+  f64 rada   ( radiated sound being summed )
+  f64 mute 8 ( a note is on that string: its open ring stops )
+  f64 q 48  f64 v 48   ( body modes: displacement, velocity at the bridge )
+  f64 mc 48  f64 msw 48  f64 mws 48  f64 mrho 48  f64 mb1 48  f64 mb2 48
+  f64 mal 48 ( drive per unit force: 2 sigma x the mode's peak coupling )
+  f64 mr 48  ( radiation weight )
+  f64 ea1 f64 ea2 f64 ea3 f64 eb0 f64 eb1 f64 eb2 f64 eb3   ( wiring, tone pot down )
+  f64 eg f64 ed   ( wiring, tone pot open: the pickup's resonance )
+  f64 e1 f64 e2 f64 e3   ( wiring states )
+  f64 s1 f64 s2
+  f64 vl f64 va f64 vg   ( volume pot: cable lowpass state, coefficient, gain )
+  f64 pz-lp f64 pz-a     ( piezo: DC block )
+  f64 rf-lp f64 rf-a f64 rflat   ( the body's flat radiation above its modes )
+  f64 rv     ( radiating velocity, the last step's )
+  f64 air-g f64 pz-g f64 mag-g    ( output gains )
+  f64 sw 8  f64 sd 8  f64 sg 8  f64 sla 8  f64 slp 8  f64 sz 8  f64 spn 8  f64 spb 8
+  ( the open strings' rings follow the struct: SYM-N x SYM-RL cells,
+    FW-RING-BYTES, at FwBody.size [a ustruct tops out at 64 KB] )
+;
+:: FW-RING-BYTES 196608 ;
 
 ( |x| <= 1: atan to ~1e-5 rad, enough for phase-delay tuning. )
 dsp: st-atan-small | x -- y |
@@ -150,7 +219,23 @@ dsp: st-atan | x -- y |
   select
 ;
 
-dsp: string-block-prepare | ctx:Ctx state params:StringParams |
+( type -- offset : a coil type's taps either side of its centre, as a
+  fraction of the guitar's open string: a wide P-90 bobbin's edges, a
+  humbucker's two coils 18 mm apart; a single coil and a split coil are
+  one point. )
+dsp: st-coil-off | t -- o |
+  t 0.5 f> t 1.5 f< and  0.018  t 1.5 f> t 2.5 f< and 0.014 0.0 select  select
+;
+
+( type -- l : a coil type's inductance, x a single coil's. )
+dsp: st-coil-l | t -- l |
+  t 0.5 f> t 1.5 f< and  1.8  t 1.5 f> t 2.5 f< and 1.8  t 2.5 f> 1.4 1.0 select  select  select
+;
+
+( HEIGHT: magnetic pull per unit displacement at full height )
+:: HT-K 600.0 ;
+
+dsp: st-prep-core | ctx:Ctx state params:StringParams |
   ctx.sr | sr |
   sr -> params.sr
   1.0 sr f/ -> params.inv-sr
@@ -166,6 +251,27 @@ dsp: string-block-prepare | ctx:Ctx state params:StringParams |
   params.vib-rate params.inv-sr f* -> params.vib-inc
   ( vibrato depth follows its curve over ~30 ms: the 32-sample steps vanish )
   sr 5.0 svf-dc-coeff -> params.vib-a
+  ( the pickups: each type's tap offsets, inductance and output, then
+    the selector.  Two coils in parallel split the signal by inductance:
+    each is heard in the share of the other's. )
+  params.type-n st-coil-off params.coil-k f* | on |
+  on fneg -> params.on1  on -> params.on2
+  params.type-b st-coil-off params.coil-k f* | ob |
+  ob fneg -> params.ob1  ob -> params.ob2
+  params.type-n 2.5 f> mask>f -> params.split-n
+  params.type-b 2.5 f> mask>f -> params.split-b
+  params.type-n st-coil-l | ln |  params.type-b st-coil-l | lb |
+  1.0 params.height 0.5 f* f+ | hg |
+  ln fsqrt hg f* | sn |  lb fsqrt hg f* | sb |
+  ln lb f+ | lt |
+  params.sel | sel |
+  sel 0.5 f< | neck |  sel 1.5 f> sel 2.5 f< and | bridge |
+  sel 2.5 f> 1.0 -1.0 select | ph |
+  neck  sn  bridge 0.0  sn lb f* lt f/  select  select -> params.wn
+  neck  0.0  bridge sb  sb ln f* lt f/ ph f*  select  select -> params.wb
+  neck  ln  bridge lb  ln lb f* lt f/  select  select -> params.l-eff
+  params.height HT-K f* params.inv-sr f* -> params.ht-k
+  1.0  sr 5.0 svf-dc-coeff f- -> params.ht-a
 ;
 
 ( params hz hand -- ratio : how much shorter than open the vibrating
@@ -184,6 +290,17 @@ dsp: st-fret | params:StringParams hz hand -- ratio |
   hz params.o5 h f* f>=  hz params.o5 f/  rot select
   hz params.o6 h f* f>=  hz params.o6 f/  rot select
   1.0 fmax
+;
+
+( params hz hand -- i : the string st-fret puts the note on, 0 = lowest. )
+dsp: st-string | params:StringParams hz hand -- i |
+  hand 0.08333333333333333 f* exp2 | h |
+  0.0
+  hz params.o2 h f* f>=  1.0  rot select
+  hz params.o3 h f* f>=  2.0  rot select
+  hz params.o4 h f* f>=  3.0  rot select
+  hz params.o5 h f* f>=  4.0  rot select
+  hz params.o6 h f* f>=  5.0  rot select
 ;
 
 ( Per-note loop coefficients from hz and the knobs.  Runs at note-on, on
@@ -241,7 +358,22 @@ dsp: string-tune | state:StringState params:StringParams -- |
   ac -> state.apc
   1.0  ac sw f*  1.0 ac cw f* f+  f/ st-atan 2.0 f* w0 f/  f- | pda |
   n pdl f- pda AP-NF f* f-  4.0  state.buf-len 16.0 f-  fclamp -> state.dl-tgt
-  params.pickup params hz params.hand st-fret f* 0.5 fmin n f* 1.0 fmax -> state.pk
+  params hz params.hand st-fret | ratio |
+  params.pickup ratio f* 0.5 fmin n f* 1.0 fmax -> state.pk
+  ( the pickups' taps: each coil sees the string at its own point, a
+    humbucker's two coils or a wide coil's edges either side of it, a
+    split coil's half nearer the neck under the low strings )
+  params hz params.hand st-string | si |
+  si -> state.si
+  hz ratio f/ | fo |
+  params.ref-hz fo f/ -> state.z
+  si params.n-str 0.5 f* f< 1.0 -1.0 select | side |
+  params.pickup  params.split-n side f* 0.012 f* params.coil-k f* f+ | cn |
+  params.pickup-b  params.split-b side f* 0.012 f* params.coil-k f* f+ | cb |
+  cn params.on1 f+ ratio f* 0.5 fmin n f* 1.0 fmax -> state.pn1
+  cn params.on2 f+ ratio f* 0.5 fmin n f* 1.0 fmax -> state.pn2
+  cb params.ob1 f+ ratio f* 0.5 fmin n f* 1.0 fmax -> state.pb1
+  cb params.ob2 f+ ratio f* 0.5 fmin n f* 1.0 fmax -> state.pb2
   ( THUMP: pitch rises with displacement squared, velocity / f )
   params.ref-hz hz f/ dup f*  params.thump f* THUMP-K f* -> state.th-k
 ;
@@ -273,6 +405,8 @@ dsp: string-note-on | ctx:Ctx state:StringState params:StringParams -- |
   state.apx& | xs |  state.apy& | ys |
   0.0 AP-N [ | i |  leg xs i f@i 0.0 select xs i f!i  leg ys i f@i 0.0 select ys i f!i  i 1.0 f+ ] times drop
   leg state.tens 0.0 select -> state.tens
+  leg state.xn 0.0 select -> state.xn
+  leg state.xb 0.0 select -> state.xb
   leg state.vib-t 0.0 select -> state.vib-t
   leg state.vib 0.0 select -> state.vib
   ctx.vel 0.0001 1.0 fclamp log2 1.3 f* exp2 | a |
@@ -366,7 +500,7 @@ dsp: string-excite | state:StringState params:StringParams -- e |
   state.nz-env state.nz-k f* -> state.nz-env
 ;
 
-dsp: k-string-voice | io:Io ctx state:StringState params:StringParams -- |
+dsp: st-loop | io ctx:Ctx state:StringState params:StringParams -- |
   state.buf& p@64 | buf |  state.buf-len 4.0 f- | len |
   state.age | t |
   t state.clear-n f>= | live |
@@ -407,20 +541,64 @@ dsp: k-string-voice | io:Io ctx state:StringState params:StringParams -- |
     [ y ]
   ifte | y |
   state params string-excite  state params st-slide-noise f+ | e |
-  y e f+ | nw |
+  ( the bridge: the string pushes on it with the wave arriving there, and
+    moves with it [string_body.fy] )
+  ctx.shared& p@64 | body:FwBody |
+  body.vb | vb |
+  body.f  y 2.0 f* vb f+ state.z f* f-  -> body.f
+  y e f+ vb f+ | nw |
   nw buf w f!i
+  nw -> state.nw
+  w -> state.wc
   w 1.0 f+ dup len f>= 0.0 rot select -> state.w
   state.tens  nw fabs state.tens f- params.tens-a f* f+ -> state.tens
-  ( pickup comb, linear tap )
-  w state.pk f- len f+ | pp |
+  ( old note fading out while the ring refills )
+  r  1.0 t 0.015625 f* f- 0.0 fmax f*  live 0.0 rot select -> state.fade
+  t 1.0 f+ -> state.age
+  state.et 1.0 f+ -> state.et
+;
+
+( buf len w nw d -- y : the string seen d samples back along the ring
+  from this sample's write: the pickup comb, a linear tap. )
+dsp: st-tap | buf len w nw d -- y |
+  w d f- len f+ | pp |
   pp floor | pi |  pp pi f- | pf |
   buf  pi dup len f>= len 0.0 select f-  f@i | p0 |
   buf  pi 1.0 f+ dup len f>= len 0.0 select f-  f@i | p1 |
   nw  p1 p0 f- pf f* p0 f+  f-
-  ( old note fading out while the ring refills )
-  r  1.0 t 0.015625 f* f- 0.0 fmax f*  live 0.0 rot select  f+ | o |
-  state.s1& state.s2& o params.pk-g params.pk-d tpt-svf-lp-step | out |
-  io.out-l  out params.level f* params.out-g f* f+ -> io.out-l
-  t 1.0 f+ -> state.age
-  state.et 1.0 f+ -> state.et
+;
+
+( x y k -- y' : a pickup's magnetic pull.  The string swinging toward the
+  magnet sees more flux than swinging away, so the coil's output is the
+  string's velocity times 1 / [1 - k x]^2, x its displacement there:
+  even harmonics that grow with the swing [Horton and Moore 2009]. )
+dsp: st-magnet | x y k -- o |
+  1.0  x k f* -0.5 0.5 fclamp  f- | g |
+  y g g f* f/
+;
+
+( io ctx state params -- : the pickups.  Each coil sees the string at its
+  taps; the selector mixes them as the wiring would; the result joins the
+  other strings' on the body's pickup line, ahead of the shared wiring. )
+dsp: st-pickup | io ctx:Ctx state:StringState params:StringParams -- |
+  ctx.shared& p@64 | body:FwBody |
+  state.buf& p@64 | buf |  state.buf-len 4.0 f- | len |
+  state.wc | w |  state.nw | nw |
+  buf len w nw state.pn1 st-tap  buf len w nw state.pn2 st-tap  f+ 0.5 f* | yn |
+  buf len w nw state.pb1 st-tap  buf len w nw state.pb2 st-tap  f+ 0.5 f* | yb |
+  params.height 0.0 f>
+    [ state.xn params.ht-a f* yn f+ | xn |  xn -> state.xn
+      state.xb params.ht-a f* yb f+ | xb |  xb -> state.xb
+      xn yn params.ht-k st-magnet  xb yb params.ht-k st-magnet ]
+    [ yn yb ]
+  ifte | yn yb |
+  body.pu  yn params.wn f*  yb params.wb f* f+  state.fade f+  f+ -> body.pu
+  1.0 body.mute& state.si f!i
+;
+
+( io ctx state params -- : one voice sample.  It is heard through the
+  body word: its pickup signal and bridge force go there. )
+dsp: k-string-voice | io ctx state params |
+  io ctx state params call: st-loop
+  io ctx state params call: st-pickup
 ;
