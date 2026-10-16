@@ -634,7 +634,7 @@ Presets:
 
 | param | section | label | range | default | notes |
 |---|---|---|---|---|---|
-| `gp-hard` | HAMMER | HARD | -1 … 1 | 0 | linear |
+| `gp-hard` | HAMMER | HARD | -1 … 1 | -0.6 | linear |
 | `gp-felt` | HAMMER | FELT | 0 … 1 | 0.35 | linear |
 | `gp-strike` | HAMMER | STRIKE | -1 … 1 | 0 | linear |
 | `gp-decay` | STRING | DECAY | 0.25 … 4 | 1.5 | exp |

@@ -22,7 +22,7 @@ include "../lib/manifest.fy"
   PianoParams.size params-size!
   560.0 panel-w!
 
-  "HAMMER" "HARD"   "gp-hard"   PianoParams.hard   -1.0 1.0 0.0 curve-lin knob
+  "HAMMER" "HARD"   "gp-hard"   PianoParams.hard   -1.0 1.0 -0.6 curve-lin knob
   "HAMMER" "FELT"   "gp-felt"   PianoParams.felt   0.0 1.0 0.35 curve-lin knob
   "HAMMER" "STRIKE" "gp-strike" PianoParams.strike -1.0 1.0 0.0 curve-lin knob
   "HAMMER" 3 strip
