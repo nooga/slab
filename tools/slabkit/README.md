@@ -56,6 +56,8 @@ song.track("HITS", "sampler", "sp1200-kit", samples="/path/to/kit")
 # a preset that names its samples brings them: a library kit, a CMI voice
 song.track("CR-78", "sampler", "drums/roland-cr-78/kit")
 song.track("VOICE", "unfairlight", "sararr")
+# Magenta RealTime 2 plays a clip's notes onto a new track under it (MRT2 pack, docs/42)
+keys.clip(chorus).chords("Gmaj7 A F#m7 Bm7").mrt2("warm rhodes, neo soul", seed=1)
 
 song.save()                    # songs/title.slab, prints warnings
 song.render(stems=True)        # mix + report; temporary stems are deleted

@@ -6,6 +6,7 @@ clip's own start. On top of that, a song has *sections* — named runs of
 bars laid end to end — and clips are normally placed on a section, so
 the arrangement reads like the song form.
 """
+import hashlib
 import json
 import math
 import os
@@ -15,8 +16,8 @@ import subprocess
 import wave
 import zlib
 
-from . import rhythm
-from .machines import ROOT, SLAB, SlabError, library_path, machine, ref as file_ref, preset as load_preset, preset_assets, preset_name
+from . import rhythm, smf
+from .machines import ROOT, SLAB, SlabError, home_dir, library_dir, library_path, machine, ref as file_ref, preset as load_preset, preset_assets, preset_name
 from .theory import Chord, Key, guitar_voicing, note, voice_lead
 
 MAX_TRACKS = 32  # buses count (docs/23)
@@ -491,6 +492,64 @@ class Clip:
         c.notes = [{**n, **({"expr": {k: list(v) for k, v in n["expr"].items()}} if n.get("expr") else {})} for n in self.notes]
         c.lanes = {k: list(v) for k, v in self.lanes.items()}
         return c
+
+    # ── Magenta RealTime 2 (docs/42) ─────────────────────────────────
+
+    def mrt2(self, prompt, seed=0, tail=2.0, name=None, volume=0.8):
+        """Have Magenta RealTime 2 play this clip's notes in the style of
+        `prompt`, as *Render with MRT2…* does (docs/42): the render goes on
+        a new track right under this one, starting where the clip does.
+        Same notes, prompt and seed, same audio, so renders are cached in
+        <home>/Cache/mrt2/ and a re-run script reuses them. Needs the MRT2
+        pack. Returns the new track; mute this one to hear it alone."""
+        where = f"clip {self.track.name}/{self.name} mrt2"
+        lib = os.path.join(library_dir(), "mrt2")
+        binary = os.path.join(lib, "bin", "mrt_render")
+        model = os.path.join(lib, "models", "mrt2_small", "mrt2_small.mlxfn")
+        if not (os.path.exists(binary) and os.path.exists(model)):
+            raise SlabError(f"{where}: needs the MRT2 pack (Browser, PACKS, or python3 tools/mrt2/mrt2.py)")
+        if not self.notes:
+            raise SlabError(f"{where}: the clip has no notes")
+        song = self.song
+        if self.track.rate != 1:
+            song.warn(f"{where}: the track's tempo ratio doesn't apply to the render (docs/42 §Timing)")
+        # The menu item's timing: song beats through the tempo map, cut at the clip's end.
+        t0 = song.seconds_at(self.start)
+        at = lambda b: song.seconds_at(self.start + min(b, self.length)) - t0
+        notes = [(at(n["start"]), at(n["start"] + n["len"]), n["pitch"])
+                 for n in self.notes if n["start"] < self.length and 0 <= n["pitch"] <= 127]
+        length = f"{at(self.length) + tail:.3f}"
+
+        cache = os.path.join(home_dir(), "Cache", "mrt2")
+        os.makedirs(cache, exist_ok=True)
+        midi = smf.encode(notes)
+        key = hashlib.sha256(midi + f"\0{prompt}\0{seed}\0{length}".encode()).hexdigest()[:16]
+        wav = os.path.join(cache, f"slabkit-{key}.wav")
+        if not os.path.exists(wav):
+            # Files named by the render's inputs and this process: scripts running at
+            # once never hand each other's notes to the renderer.
+            mid = os.path.join(cache, f"slabkit-{key}-{os.getpid()}.mid")
+            part = os.path.join(cache, f"slabkit-{key}-{os.getpid()}.wav.part")
+            with open(mid, "wb") as f:
+                f.write(midi)
+            try:
+                r = subprocess.run([binary, model, os.path.join(lib, "resources"), "-o", part, "--midi", mid,
+                                    "--seconds", length, "--prompt", prompt, "--seed", str(seed)],
+                                   capture_output=True, text=True)
+                if r.returncode:
+                    last = (r.stdout + r.stderr).strip().splitlines()[-1:] or ["no output"]
+                    raise SlabError(f"{where}: mrt_render failed: {last[0]}")
+                os.replace(part, wav)
+            finally:
+                os.remove(mid)
+                if os.path.exists(part):
+                    os.remove(part)
+
+        t = song.track(name or f"{self.track.name} MRT2", "sampler", volume=volume, output=self.track.output)
+        song.tracks.insert(song.tracks.index(self.track) + 1, song.tracks.pop())
+        # Whole 40 ms frames; the wave module can't read the float WAV's length.
+        t.audio(wav, at_beat=self.start, dur_sec=math.ceil(float(length) / 0.04 - 1e-9) * 0.04, name=f"seed {seed}")
+        return t
 
     def to_json(self):
         notes = sorted(self.notes, key=lambda n: (n["start"], n["pitch"]))

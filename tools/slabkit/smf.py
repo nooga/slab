@@ -1,4 +1,4 @@
-"""Minimal Standard MIDI File reader: each track as notes (beat, length, pitch, velocity, channel), with names, programs and tempos."""
+"""Minimal Standard MIDI File reader (and a one-track writer): each track as notes (beat, length, pitch, velocity, channel), with names, programs and tempos."""
 import struct, sys
 GM=["Acoustic Grand","Bright Acoustic","Electric Grand","Honky-tonk","E.Piano 1","E.Piano 2","Harpsichord","Clavinet","Celesta","Glockenspiel","Music Box","Vibraphone","Marimba","Xylophone","Tubular Bells","Dulcimer","Drawbar Organ","Perc Organ","Rock Organ","Church Organ","Reed Organ","Accordion","Harmonica","Tango Acc","Nylon Gtr","Steel Gtr","Jazz Gtr","Clean Gtr","Muted Gtr","Overdrive Gtr","Distortion Gtr","Harmonics","Acoustic Bass","Fingered Bass","Picked Bass","Fretless","Slap 1","Slap 2","Synth Bass 1","Synth Bass 2","Violin","Viola","Cello","Contrabass","Tremolo Str","Pizzicato","Harp","Timpani","Strings","Slow Strings","Synth Str 1","Synth Str 2","Choir Aahs","Voice Oohs","Synth Voice","Orch Hit","Trumpet","Trombone","Tuba","Muted Tpt","French Horn","Brass Sect","Synth Brass 1","Synth Brass 2","Soprano Sax","Alto Sax","Tenor Sax","Bari Sax","Oboe","English Horn","Bassoon","Clarinet","Piccolo","Flute","Recorder","Pan Flute","Blown Bottle","Shakuhachi","Whistle","Ocarina","Square Lead","Saw Lead","Calliope","Chiff Lead","Charang","Voice Lead","Fifths Lead","Bass+Lead","New Age Pad","Warm Pad","Polysynth","Choir Pad","Bowed Pad","Metallic Pad","Halo Pad","Sweep Pad","Rain","Soundtrack","Crystal","Atmosphere","Brightness","Goblin","Echoes","Sci-fi","Sitar","Banjo","Shamisen","Koto","Kalimba","Bagpipe","Fiddle","Shanai","Tinkle Bell","Agogo","Steel Drums","Woodblock","Taiko","Melodic Tom","Synth Drum","Reverse Cymbal","Fret Noise","Breath","Seashore","Bird","Telephone","Helicopter","Applause","Gunshot"]
 def vlq(d,i):
@@ -33,6 +33,21 @@ def read(path):
             elif hi==0xc0: progs.setdefault(ch,a)
         tracks.append(dict(name=name,notes=notes,progs=progs,texts=texts))
     return div,tracks,tempos
+def encode(notes):
+    """notes: (on_sec, off_sec, pitch) -> SMF bytes. One track at 60 BPM, a tick a millisecond,
+    so times in seconds (a song's tempo changes already applied) go straight in."""
+    ev=sorted([(round(a*1000),1,p) for a,b,p in notes]+[(max(round(b*1000),round(a*1000)+1),0,p) for a,b,p in notes])
+    def vq(v):
+        out=[v&0x7f]
+        while v>0x7f: v>>=7; out.insert(0,(v&0x7f)|0x80)
+        return bytes(out)
+    trk=bytearray(b'\x00\xff\x51\x03\x0f\x42\x40'); last=0
+    for t,on,p in ev:  # offs sort before ons at a tick: a repeated pitch sounds again
+        trk+=vq(t-last)+bytes([0x90 if on else 0x80,p,100 if on else 0]); last=t
+    trk+=b'\x00\xff\x2f\x00'
+    return b'MThd'+struct.pack('>IHHH',6,0,1,1000)+b'MTrk'+struct.pack('>I',len(trk))+trk
+def write(path,notes):
+    with open(path,'wb') as f: f.write(encode(notes))
 if __name__=="__main__":
     div,tr,tempos=read(sys.argv[1]); print("div",div,"tempos",tempos[:6])
     for k,t in enumerate(tr):

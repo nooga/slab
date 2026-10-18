@@ -1222,6 +1222,14 @@ fn allSelectedMuted(tracks: []Track) bool {
 }
 
 /// The focused clip is a bounce with a recipe (docs/27 §Provenance).
+/// The focused clip is a pattern with notes to play (docs/42).
+fn focusedNotes(tracks: []Track, focused: ?ClipRef) bool {
+    const f = focused orelse return false;
+    if (f.track >= tracks.len or f.clip >= tracks[f.track].clips.items.len) return false;
+    const cl = &tracks[f.track].clips.items[f.clip];
+    return !cl.isAudio() and cl.notes.items.len > 0;
+}
+
 fn focusedIsBounce(tracks: []Track, focused: ?ClipRef) bool {
     const f = focused orelse return false;
     if (f.track >= tracks.len or f.clip >= tracks[f.track].clips.items.len) return false;
@@ -1900,6 +1908,7 @@ pub fn draw(
         .{ .label = if (has_selection and allSelectedMuted(tracks)) "Unmute" else "Mute", .command = .mute_clips, .enabled = has_selection },
         .{ .label = "Extract", .id = EXTRACT_SUB, .submenu = true, .enabled = focusedForward(tracks, selected_clip.*) },
         .{ .label = "Tempo from clip", .id = TEMPO_SUB, .submenu = true, .enabled = focusedForward(tracks, selected_clip.*) },
+        .{ .label = "Render with MRT2\u{2026}", .command = .mrt2_render, .enabled = focusedNotes(tracks, selected_clip.*) },
         .{ .label = "Bounce\u{2026}", .command = .bounce, .enabled = has_selection },
         .{ .label = "Re-bounce", .command = .rebounce, .enabled = focusedIsBounce(tracks, selected_clip.*) },
         .{ .label = "Thaw", .command = .thaw, .enabled = focusedIsBounce(tracks, selected_clip.*) },

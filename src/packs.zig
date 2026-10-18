@@ -407,6 +407,7 @@ fn command(import: []const u8) ?Command {
     if (std.mem.eql(u8, import, "vsco")) return .{ .tool = "tools/library/vsco.py" };
     if (std.mem.eql(u8, import, "cmi")) return .{ .tool = "tools/library/cmi.py", .args = &.{ "--collection", "disks", "$sources" } };
     if (std.mem.eql(u8, import, "extract")) return .{ .tool = "tools/extract/extract.py" };
+    if (std.mem.eql(u8, import, "mrt2")) return .{ .tool = "tools/mrt2/mrt2.py" };
     return null;
 }
 
@@ -619,7 +620,9 @@ test "the shipped manifests parse" {
     try t.expect(cat.redistributable("karoryfer"));
     try t.expect(cat.redistributable("vsco"));
     // every shipped importer has its tool
-    for ([_][]const u8{ "karoryfer", "vsco" }) |id| try t.expect(cat.find(id).?.canImport());
+    for ([_][]const u8{ "karoryfer", "vsco", "mrt2" }) |id| try t.expect(cat.find(id).?.canImport());
+    try t.expect(cat.find("mrt2").?.known);
+    try t.expect(cat.redistributable("mrt2"));
     try t.expect(!cat.redistributable("cmi"));
     try t.expect(!cat.redistributable("drum-machines"));
     try t.expect(cat.find("cmi").?.m.get.supply.?.expect.len == 3);

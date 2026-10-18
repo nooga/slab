@@ -129,6 +129,8 @@ status and the source before assuming a feature is absent or complete.
 42. [41-physical-models.md](41-physical-models.md) — Hammerwork Grand and
     Skinwork Kit: modal strings, membranes and plates, implicit hammer and
     stick contact, the `kernels/10-physical` building blocks
+43. [42-mrt2.md](42-mrt2.md) — Render with MRT2: a pattern clip played by
+    Magenta RealTime 2 into audio, the MRT2 pack, `mrt_render`
 
 ## Terminology crib sheet
 

@@ -43,6 +43,8 @@ const stems_mod = @import("stems.zig");
 const ml_mod = @import("ml.zig");
 const resample_mod = @import("resample.zig");
 const explode_dialog = @import("ui/explode_dialog.zig");
+const mrt2_dialog = @import("ui/mrt2_dialog.zig");
+const mrt2_mod = @import("mrt2.zig");
 const track_mod = @import("track.zig");
 const clip_mod = @import("clip.zig");
 const audio_pool_mod = @import("audio_pool.zig");
@@ -154,6 +156,7 @@ test {
     _ = @import("ui/follow.zig");
     _ = @import("library.zig");
     _ = @import("packs.zig");
+    _ = @import("mrt2.zig");
     _ = @import("ui/browser.zig");
 }
 
@@ -986,6 +989,11 @@ pub fn main(init: std.process.Init) !void {
     var explode_uid: u32 = 0;
     var stems_job: StemsJob = .{};
     defer stems_job.abandon(alloc);
+    // Render with MRT2 (docs/42): its dialog, the clip it plays, the renderer.
+    var mrt2_dlg: mrt2_dialog.State = .{};
+    var mrt2_uid: u32 = 0;
+    var mrt2_job: mrt2_mod.Job = .{};
+    defer mrt2_job.abandon();
 
     // Input-device picker state. Re-enumerated periodically (picks up hotplug
     // within ~1s). `input_name_ptrs` are C-string views into `input_devices`.
@@ -1102,7 +1110,7 @@ pub fn main(init: std.process.Init) !void {
         // One owner of the pointer at a time: a legacy menu, modal or drag
         // hides input from the new Ui, and a new-Ui drag hides it from the
         // legacy panes.
-        const modal = render_dlg.active or bounce_dlg.active or explode_dlg.active or marker_dlg.active or about_card.active or pending_delete != null or pending_delete_set != null or uni_panel.active or color_pick.active;
+        const modal = render_dlg.active or bounce_dlg.active or explode_dlg.active or mrt2_dlg.active or marker_dlg.active or about_card.active or pending_delete != null or pending_delete_set != null or uni_panel.active or color_pick.active;
         if (menu.active() or modal or pane.hasActiveDrag()) ui.suppressInput();
 
         // While a menu is open it's modal for the mouse: panes get a
@@ -1569,6 +1577,8 @@ pub fn main(init: std.process.Init) !void {
             tempoToClip(alloc, ares.command == .section_tempo_to_clip, &history, &status, &audio_pool, tracks, &transport, &markers, selected_clip, &dirty);
         } else if (ares.command == .explode or ares.command == .split_stems) {
             openExplode(&explode_dlg, &explode_uid, &stems_job, alloc, &audio_pool, tracks, selected_clip, ares.command == .split_stems, &status);
+        } else if (ares.command == .mrt2_render) {
+            openMrt2(&mrt2_dlg, &mrt2_uid, &mrt2_job, tracks, selected_clip, &status);
         } else if (ares.command == .chords_to_notes or ares.command == .drums_to_kit) {
             extractTrack(alloc, ares.command, &history, &status, &engine, &audio, &reg, &audio_pool, &tracks_buf, &track_count, &transport, &selected_track, &selected_clip, &dirty, null);
             tracks = tracks_buf[0..track_count];
@@ -2044,6 +2054,24 @@ pub fn main(init: std.process.Init) !void {
                 },
             }
         }
+        if (mrt2_dlg.active) {
+            mrt2_dlg.busy = mrt2_job.running;
+            mrt2_dlg.line = mrt2_job.lastLine();
+            const ref = findClip(tracks, mrt2_uid);
+            const name = if (ref) |r| tracks[r.track].clips.items[r.clip].name() else "";
+            switch (mrt2_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &mrt2_dlg, name)) {
+                .none => {},
+                .cancel => if (mrt2_job.running) mrt2_job.cancel() else {
+                    mrt2_dlg.active = false;
+                },
+                .go => if (ref) |r| {
+                    const settings: mrt2_mod.Settings = .{ .prompt = mrt2_dlg.prompt.text(), .seed = mrt2_dlg.seedValue() orelse 0 };
+                    if (mrt2_job.start(alloc, &tracks[r.track].clips.items[r.clip], transport.map(), settings)) |why| status.set("MRT2: {s}", .{why});
+                } else {
+                    mrt2_dlg.active = false;
+                },
+            }
+        }
         if (marker_dlg.active) switch (marker_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &marker_dlg)) {
             .none => {},
             .cancel => marker_dlg.active = false,
@@ -2250,6 +2278,23 @@ pub fn main(init: std.process.Init) !void {
             if (rec_loop_paused) {
                 transport.setLoopEnabled(true);
                 rec_loop_paused = false;
+            }
+        }
+
+        // An MRT2 render, once the renderer exits: its WAV on a new track.
+        if (mrt2_job.active and mrt2_job.poll()) {
+            mrt2_job.active = false;
+            mrt2_dlg.active = false;
+            if (mrt2_job.ok) {
+                if (placeMrt2(alloc, &mrt2_job, &history, &engine, &audio_pool, &tracks_buf, &track_count, &transport, &selected_track, &selected_clip, &dirty)) |_| {
+                    status.set("Rendered with MRT2, seed {d}", .{mrt2_job.seed});
+                } else |err| status.set("MRT2 render not placed: {s}", .{@errorName(err)});
+                tracks = tracks_buf[0..track_count];
+                engine.tracks = tracks;
+            } else if (mrt2_job.cancelled) {
+                status.set("MRT2 render canceled", .{});
+            } else {
+                status.set("MRT2 render failed: {s}", .{mrt2_job.lastLine()});
             }
         }
 
@@ -2972,6 +3017,70 @@ const NotesQueue = struct {
 };
 
 /// Where clip `uid` is now.
+/// Render with MRT2 on the focused clip (docs/42): open its dialog.
+fn openMrt2(dlg: *mrt2_dialog.State, uid: *u32, job: *const mrt2_mod.Job, tracks: []track_mod.Track, focused: ?clip_mod.ClipRef, status: *StatusMessage) void {
+    if (job.running) {
+        dlg.active = true;
+        return;
+    }
+    const f = focused orelse return;
+    if (f.track >= tracks.len or f.clip >= tracks[f.track].clips.items.len) return;
+    const cl = &tracks[f.track].clips.items[f.clip];
+    if (cl.isAudio() or cl.notes.items.len == 0) {
+        status.set("Render with MRT2 plays a pattern clip's notes", .{});
+        return;
+    }
+    uid.* = cl.uid;
+    dlg.have_pack = mrt2_mod.present();
+    dlg.active = true;
+}
+
+/// The finished render on a new track under its clip, starting where the
+/// clip does (docs/42 §What it makes). One undo step.
+fn placeMrt2(
+    alloc: std.mem.Allocator,
+    job: *const mrt2_mod.Job,
+    history: *history_mod.History,
+    engine: *engine_mod.Engine,
+    pool: *audio_pool_mod.AudioPool,
+    tracks_buf: *[MAX_TRACKS]track_mod.Track,
+    track_count: *usize,
+    transport: *transport_mod.Transport,
+    selected_track: *?usize,
+    selected_clip: *?clip_mod.ClipRef,
+    dirty: *bool,
+) !void {
+    const ref = findClip(tracks_buf[0..track_count.*], job.uid) orelse return error.ClipGone;
+    if (track_count.* + 1 > MAX_TRACKS) return error.TooManyTracks;
+    const ti = ref.track;
+    const source = try pool.loadFile(job.wavPath());
+    const src = pool.get(source) orelse return error.NoAudio;
+    const dur = src.seconds();
+    const orig = &tracks_buf[ti].clips.items[ref.clip];
+
+    const before = try document_mod.serialize(alloc, tracks_buf[0..track_count.*], transport);
+    errdefer alloc.free(before);
+    _ = arrangement.clearSelection(tracks_buf[0..track_count.*], selected_clip);
+    var nb: [track_mod.MAX_NAME]u8 = undefined;
+    const name = std.fmt.bufPrint(&nb, "{s} MRT2", .{orig.name()[0..@min(orig.name().len, track_mod.MAX_NAME - 5)]}) catch "MRT2";
+    var cl = clip_mod.Clip.initAudio(name, orig.start_beat, transport.secondsToBeats(orig.start_beat, dur), source);
+    cl.audio.start_sec = 0;
+    cl.audio.dur_sec = dur;
+    cl.selected = true;
+    var t = try track_mod.Track.init(alloc, name, tracks_buf[ti].color, silent_machine);
+    t.output = tracks_buf[ti].output;
+    t.addClip(alloc, cl) catch |err| {
+        cl.deinit(alloc);
+        t.deinit(alloc);
+        return err;
+    };
+    insertTrackAt(engine, tracks_buf, track_count, @intCast(ti + 1), t);
+    selected_track.* = ti + 1;
+    selected_clip.* = .{ .track = @intCast(ti + 1), .clip = 0 };
+    try history.pushUndo(alloc, before);
+    dirty.* = true;
+}
+
 fn findClip(tracks: []const track_mod.Track, uid: u32) ?clip_mod.ClipRef {
     for (tracks, 0..) |*t, ti| for (t.clips.items, 0..) |*cl, ci| if (cl.uid == uid) {
         return .{ .track = @intCast(ti), .clip = @intCast(ci) };
@@ -7091,7 +7200,7 @@ fn executeEditCommand(
         },
         // `import_audio` is intercepted in the arrangement-result handler
         // (it needs the audio pool + file dialog); never reaches here.
-        .none, .copy, .select_all, .clear_selection, .rename, .file_new, .file_open, .file_save, .file_save_as, .file_clean_up, .render_audio, .import_audio, .bounce, .rebounce, .thaw, .save_to_library, .slice_to_sampler, .audio_to_notes, .chords_to_notes, .drums_to_kit, .explode, .split_stems, .song_tempo_to_clip, .section_tempo_to_clip, .zoom_to_selection => {},
+        .none, .copy, .select_all, .clear_selection, .rename, .file_new, .file_open, .file_save, .file_save_as, .file_clean_up, .render_audio, .import_audio, .bounce, .rebounce, .thaw, .save_to_library, .slice_to_sampler, .audio_to_notes, .chords_to_notes, .drums_to_kit, .explode, .split_stems, .mrt2_render, .song_tempo_to_clip, .section_tempo_to_clip, .zoom_to_selection => {},
     }
 
     if (changed) {

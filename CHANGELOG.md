@@ -6,6 +6,13 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Render with MRT2.** Right-click a pattern clip, or call `Clip.mrt2`
+  in slabkit, to have Google DeepMind's Magenta RealTime 2 play its notes
+  in the style of a text prompt. The result lands on a new audio track
+  under the clip. The same notes, prompt and seed always give the same
+  audio. It needs the MRT2 pack (Browser, PACKS), which downloads the
+  model and builds its renderer once. See docs/42.
+
 - **Hammerwork Grand, a physically modeled piano.** Felt hammers strike up
   to three detuned strings per key, which ring into a soundboard through
   a moving bridge. Velocity changes the tone the way a real hammer does,
