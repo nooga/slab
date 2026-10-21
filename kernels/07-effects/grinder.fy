@@ -21,15 +21,18 @@
 
   EMPH is a pair of bells mirrored around the drive: LO and HI boost a
   band into the curve and cut it back after, so that band distorts
-  harder while the balance stays where it was.  SIZZLE adds noise where
-  the waveform is near zero relative to its envelope, with its sign -
-  grit in the zero crossings.  FLUX drives the curve harder as the low
+  harder while the balance stays where it was.  SIZZLE adds noise in a
+  narrow window around each zero crossing [within 15 % of the
+  envelope]: the drive turns it into hash on every crossing while the
+  note stays on top.  FLUX drives the curve harder as the low
   band [under 200 Hz] gets louder, so the bass pushes everything above
   it into the clip.  PHASE is self-modulated delay: the signal delayed
   by a lowpassed copy of itself, watery at low settings, sideband hash
   at the top.
 
-  AUTO holds the wet's level to the input's.  CLIP is the last word:
+  AUTO matches the wet's peak level to the input's, each held with a
+  1 s release, and holds through silence: the gain stays put through a
+  note, so a sustained note keeps its distorted sustain.  CLIP is the last word:
   OFF, SOFT [a knee into 0 dBFS] or HARD.  4x oversampled; dual mono. )
 
 include "../00-primitives/ctx.fy"
@@ -49,7 +52,8 @@ ustruct: GrindState
   BellSt lo-pre BellSt hi-pre BellSt lo-post BellSt hi-post
   Follow ein
   Follow elow
-  Follow ewet
+  Follow ain
+  Follow awet
   f64 low-lp
   f64 seed
   f64 dc-x f64 dc-y
@@ -82,7 +86,7 @@ ustruct: GrindParams
   f64 ph-spl
   f64 tone-g
   f64 dc-r
-  f64 atk-c f64 rel-c f64 auto-c
+  f64 atk-c f64 rel-c f64 auto-c f64 lvl-atk f64 lvl-rel
   f64 out
   f64 lat
 ;
@@ -106,6 +110,8 @@ dsp: grinder-block-prepare | ctx:Ctx s p:GrindParams -- |
   0.003 sr follow-coef -> p.atk-c
   0.08 sr follow-coef -> p.rel-c
   0.05 sr follow-coef -> p.auto-c
+  0.005 sr follow-coef -> p.lvl-atk
+  1.0 sr follow-coef -> p.lvl-rel
   p.out-db db>lin -> p.out
   0.0 p.mix  OS4-LATENCY 0.0  fsel-lt -> p.lat
 ;
@@ -174,9 +180,10 @@ dsp: k-grinder-tick | out:Io ctx s:GrindState p:GrindParams -- |
   s.lo-pre& p.lo-up& x0 bell-tick | x1 |
   s.hi-pre& p.hi-up& x1 bell-tick | x2 |
   s.ein& x2 p.atk-c p.rel-c follow-step | e |
-  ( SIZZLE: noise in the zero crossings, signed with the wave )
+  ( SIZZLE: noise in a window around the zero crossings )
   s.seed& rand-b | n |
-  e x2 fabs f- 0.0 fmax  p.sizzle f* 4.0 f*  n f*  x2 gr-sign f* | sz |
+  1.0  x2 fabs  e 0.15 f* 1.0e-6 f+  f/  f-  0.0 fmax | win |
+  win  e f*  p.sizzle f* 0.3 f*  n f* | sz |
   x2 sz f+ | x3 |
   ( FLUX: the low band's level drives the curve harder )
   s.low-lp  x2 s.low-lp f-  p.low-g f*  f+ | lo |
@@ -198,10 +205,12 @@ dsp: k-grinder-tick | out:Io ctx s:GrindState p:GrindParams -- |
   t1 GR-FLUSH f+ GR-FLUSH f- -> s.t1
   s.t2  t1 s.t2 f-  p.tone-g f*  f+ | t2 |
   t2 GR-FLUSH f+ GR-FLUSH f- -> s.t2
-  ( AUTO: the wet's level held to the input's, slowly )
-  s.ewet& t2 p.atk-c p.rel-c follow-step | ew |
-  e 1.0e-5 fmax  ew 1.0e-5 fmax f/  0.03 4.0 fclamp | ratio |
-  s.auto 0.0 f=  ratio s.auto select | a |
+  ( AUTO: the wet's held peak matched to the input's, held in silence )
+  s.ain& x2 p.lvl-atk p.lvl-rel follow-step | li |
+  s.awet& t2 p.lvl-atk p.lvl-rel follow-step | lw |
+  li  lw 1.0e-6 fmax f/  0.03 4.0 fclamp | r0 |
+  s.auto 0.0 f=  1.0 s.auto select | a |
+  li 1.0e-4 f<  a r0 select | ratio |
   a  ratio a f-  1.0 p.auto-c f-  f*  f+ | ag |
   ag -> s.auto
   p.auto-on 0.5 f<  1.0 ag select | gain |

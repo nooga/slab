@@ -264,13 +264,18 @@ A stacked distortion with the harsh algorithms, 4× oversampled.
     modulator reusing Sideband's Hilbert pair.
 - **DRIVE** (0–60 dB), **STAGES** (1–4; each later stage flips polarity
   and drops 3 dB), and **BIAS** (fixed plus envelope-tracking asymmetry).
-- **SIZZLE**: envelope-gated noise at the zero crossings. **FLUX**: low
+- **SIZZLE**: noise in a window around each zero crossing (within 15 %
+  of the envelope), at most 0.3 of the envelope at full SIZZLE. **FLUX**: low
   band level drives the highs' clipping (the Rubidium idea), 0 = off.
 - **TONE** post low-pass, **CLIP** output soft-clip with knee, **MIX**
   (latency-aligned), **OUT** with auto gain compensation (AUTO on/off).
+  AUTO compares peak levels, each held with a 1 s release, and holds
+  through silence, so its gain stays put through a note. A fast
+  follower re-imposed the dry note's decay on the distortion and
+  killed its sustain.
 - **Targets.** Each algorithm has a measured signature on the bench (THD,
   odd/even balance, nonharm on a sine and a bass phrase). AUTO holds
-  loudness within 1.5 dB across DRIVE. Aliasing stays below −60 dB on
+  loudness within about 2 dB across DRIVE. Aliasing stays below −60 dB on
   a 2 kHz sine at 30 dB drive (FOLD excepted, which says so).
 
 ### Smaller changes
@@ -292,10 +297,10 @@ where the rig says so). Section 42's rig format; banked under
 | Rig | Chain | Macros |
 |---|---|---|
 | **Octavia Portal** (the second reference) | Octaver UP + FUZZ → Wobble WAH on ENV → Grinder FOLD → Chorus choke → Grinder OVERDRIVE + SIZZLE → Phaser | OCTAVE, WAH, DIRT, CHOKE, BURGER, PHASE |
-| **Kodiak** (big, gnarly bass) | lane SUB: clean low-passed sub; lane GNARL: Octaver OCT1 → Folder with DYN → Grinder RAT → Multi OTT | SIZE, GNARL, FOLD, SQUASH |
+| **Kodiak** (big, gnarly bass) | lane SUB: clean low-passed sub; lane GNARL: Octaver OCT1 → Folder with DYN → Grinder RAT → Multi OTT (mixed in at 0.45) → Grinder SOFT to catch OTT's onset spikes | SIZE, GNARL, FOLD, SQUASH |
 | **Wobble Oktaver** | Octaver (FLIP, OCT1) → Wobble (LFO 1/8, LP 24) → Saturator FUZZ | RATE, DEPTH, SUB, FUZZ |
 | **Sandwich** (the reference chain) | Wobble Oktaver → Grinder (OVERDRIVE ×2) → Chorus (I+II, INVERT, choked) → Grinder (FOLD + SIZZLE) → Multi OTT | WOBBLE, DIRT, CHOKE, BURGER, OTT |
-| **Cross Bass** | lane SUB: EQ LP 150 → Saturator TAPE; lane DIRT: EQ HP 250 → Era 12-bit → Grinder OVERDRIVE → Ampstack BRIT 4x12 → Char FET (fastest) → Tape | DIRT, CRUSH, SQUASH, SUB |
+| **Cross Bass** | lane SUB: EQ LP 150 → Saturator TAPE; lane DIRT: EQ HP 250 → Era 12-bit → Grinder OVERDRIVE → Ampstack BRIT 4x12 (treble and presence up) → Char FET (fastest). No tape: it took the top off. | DIRT, CRUSH, SQUASH, SUB |
 | **Phantom Stack** | Grinder SOFT → Grinder RAT → Grinder HARD, then Phaser | STACK, TONE, PHASE |
 | **Gated Fuzz** | Saturator FUZZ with SAG → Gate (fast) | FUZZ, CHOP |
 | **Ring Growl** | dry lane + Sideband RING at 40–90 Hz → Grinder | GROWL, CARRIER |
@@ -324,7 +329,7 @@ single-coil guitars and P-basses (new Fretwire presets).
   41 Hz to 196 Hz the f/2 sub tracks within the FFT's resolution (a few
   cents), with the f/4 sub 7.6 dB under it.
 - **Folder** measures −74 dB nonharmonics at full FOLD with four stages
-  (1 kHz sine). AUTO holds the level within about 2 dB.
+  (1 kHz sine). AUTO holds the level within about 2 dB (rechecked after AUTO moved to a held-peak match).
 - **Grinder** has no ALGO PHASE. PHASE is a separate knob, so it works
   with every curve. At moderate drive the ten curves measure apart (H3
   from −33 to −11 dB, FUZZ's H2 at −18 dB, RECT dropping the

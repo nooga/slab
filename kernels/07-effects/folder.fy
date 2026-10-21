@@ -26,7 +26,9 @@
   SYMM offsets the input: the folds go lopsided and even harmonics come
   in.  DYN lets the input's envelope move FOLD: harder on loud notes and
   unfolding as they decay [negative: quiet notes fold harder].  AUTO
-  holds the loudness to the input's as FOLD climbs.  Dual mono. )
+  matches the peak level to the input's as FOLD climbs [each held with
+  a 1 s release, and held through silence], so it never reshapes a
+  note's decay.  Dual mono. )
 
 include "../00-primitives/ctx.fy"
 include "../00-primitives/math.fy"
@@ -43,7 +45,8 @@ ustruct: FoldState
   FoldCell c3
   FoldCell c4
   Follow ein
-  Follow ewet
+  Follow ain
+  Follow awet
   f64 hp-x f64 hp-y
   f64 dc-x f64 dc-y
   f64 lp
@@ -68,7 +71,7 @@ ustruct: FoldParams
   f64 hp-r
   f64 tone-g
   f64 dc-r
-  f64 atk-c f64 rel-c f64 auto-c
+  f64 atk-c f64 rel-c f64 auto-c f64 lvl-atk f64 lvl-rel
   f64 out
   f64 lat
 ;
@@ -87,6 +90,8 @@ dsp: folder-block-prepare | ctx:Ctx s p:FoldParams -- |
   0.003 sr follow-coef -> p.atk-c
   0.08 sr follow-coef -> p.rel-c
   0.05 sr follow-coef -> p.auto-c
+  0.005 sr follow-coef -> p.lvl-atk
+  1.0 sr follow-coef -> p.lvl-rel
   p.out-db db>lin -> p.out
   0.0 p.mix  OS4-LATENCY 0.0  fsel-lt -> p.lat
 ;
@@ -157,10 +162,12 @@ dsp: k-folder-tick | out:Io ctx s:FoldState p:FoldParams -- |
   dcy FD-FLUSH f+ FD-FLUSH f- -> s.dc-y
   s.lp  dcy s.lp f-  p.tone-g f*  f+ | toned |
   toned FD-FLUSH f+ FD-FLUSH f- -> s.lp
-  ( AUTO: the wet's level held to the input's, slowly )
-  s.ewet& toned p.atk-c p.rel-c follow-step | ew |
-  e 1.0e-5 fmax  ew 1.0e-5 fmax f/  0.05 4.0 fclamp | ratio |
-  s.auto 0.0 f=  ratio s.auto select | a0 |
+  ( AUTO: the wet's held peak matched to the input's, held in silence )
+  s.ain& dry p.lvl-atk p.lvl-rel follow-step | li |
+  s.awet& toned p.lvl-atk p.lvl-rel follow-step | lw |
+  li  lw 1.0e-6 fmax f/  0.05 4.0 fclamp | r0 |
+  s.auto 0.0 f=  1.0 s.auto select | a0 |
+  li 1.0e-4 f<  a0 r0 select | ratio |
   a0  ratio a0 f-  1.0 p.auto-c f-  f*  f+ | ag |
   ag -> s.auto
   p.auto-on 0.5 f<  1.0 ag select | gain |

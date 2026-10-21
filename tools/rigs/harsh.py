@@ -49,7 +49,7 @@ def sandwich():
         fx("wob2", "wobble-eighths", cutoff=220, depth=4.0),
         fx("grind2", "blood-overdrive", stages=1),
         fx("chorus2", mode="I+II", depth=2.0, mix=0.5, fb=0.35, hp=150, invert="ON"),
-        fx("grind2", "grill", tone=6500),
+        fx("grind2", "grill", tone=11000),
         fx("multi2", "ott", multi_mix=0.6),
     ], level=-3)
     r.map(r.macro(1, "WOBBLE", 0.7), l, "wob-depth", insert=2, min=0.0, max=6.0)
@@ -68,7 +68,7 @@ def octavia_portal():
         fx("wob2", "auto-wah-guitar"),
         fx("grind2", "phase-smear", algo="FOLD", drive=16, phase=0.35),
         fx("chorus2", mode="I+II", mix=0.5, invert="ON", hp=200),
-        fx("grind2", "blood-overdrive", sizzle=0.4, tone=6000),
+        fx("grind2", "blood-overdrive", sizzle=0.4, tone=11000),
         fx("phaser2", "four-stage-bite"),
     ], level=5)
     r.map(r.macro(1, "OCTAVE", 1.0), l, "oct-up", insert=1, min=0.0, max=1.0)
@@ -89,16 +89,17 @@ def kodiak():
         fx("oct2", "oc-sub", oct1=0.5),
         fx("fold2", "dynamic-fold"),
         fx("grind2", "rat"),
-        fx("multi2", "ott", multi_mix=0.7),
+        fx("multi2", "ott", multi_mix=0.45),
+        fx("grind2", "soft-clipper", drive=4),
     ], level=-5)
     r.map(r.macro(1, "SIZE", 0.7), sub, "level", min=-30.0, max=0.0)
     r.map(r.macro(2, "GNARL", 0.5), gnarl, "grind-drive", insert=4, min=14.0, max=44.0)
     r.map(r.macro(3, "FOLD", 0.4), gnarl, "fold-fold", insert=3, min=0.0, max=24.0)
-    r.map(r.macro(4, "SQUASH", 0.7), gnarl, "multi-mix", insert=5, min=0.0, max=1.0)
+    r.map(r.macro(4, "SQUASH", 0.45), gnarl, "multi-mix", insert=5, min=0.0, max=0.8)
     return r
 
 
-@rig("cross-bass", "Justice-style bass: a clean sub lane, and a dirty lane cut below 250 Hz, crushed to 12 bits, overdriven, through a Brit 4x12, slammed by a FET and taped.")
+@rig("cross-bass", "Justice-style bass: a clean sub lane, and a dirty lane cut below 250 Hz, crushed to 12 bits, overdriven, through a bright Brit 4x12 and slammed by a FET.")
 def cross_bass():
     r = rack("Cross Bass", kind="effect", collapsed=True)
     sub = r.lane("SUB", fx=[static_lp(150), fx("sat2", mode="TAPE", drive=4)])
@@ -106,9 +107,8 @@ def cross_bass():
         fx("eq2", hpf_on="ON", hpf_hz=250),
         fx("era", "lofi-12"),
         fx("grind2", "cross-dirt"),
-        fx("amp2", "guitar-crunch", cab="4x12"),
+        fx("amp2", "guitar-crunch", cab="4x12", treble=0.75, pres=0.7),
         fx("char2", "fet-smash"),
-        fx("tape2", "metal-hot"),
     ], level=2)
     r.map(r.macro(1, "DIRT", 0.5), dirt, "grind-drive", insert=3, min=12.0, max=40.0)
     r.map(r.macro(2, "CRUSH", 0.3), dirt, "era-bits", insert=2, min=16.0, max=6.0)
