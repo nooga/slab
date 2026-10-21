@@ -1,0 +1,273 @@
+# 43 — Harsh effects: octaves, wobble, grind and the rigs that use them
+
+**Status: proposal.** Nothing here is built yet.
+
+This document plans a set of effects and rigs for harsh bass and guitar
+sounds. The targets are the distorted, compressed, chopped basses of
+Justice and the Ed Banger records, and the blog-house guitar chains that
+producers build in FL Studio from Guitar Rig 6, Distructor, Vintage
+Chorus, Hamburger and OTT. One chain is the reference throughout:
+
+> a wobble oktaver preset from Guitar Rig 6, then Distructor, then choked
+> with Vintage Chorus, then brought back with Hamburger distortion
+> (mrmoustachemusic)
+
+Slab already does part of this. Ampstack, Saturator, Era, Char, Multi and
+Chorus cover amps, saturation, crushing, character compression,
+multiband and the Juno chorus, and racks (docs/42) can chain and macro
+them. What's missing is an analog octave-down, LFO and step-driven
+filters, and a distortion that stacks stages and has the newer harsh
+algorithms. We copy ideas, not code; the plugins named here are
+references for what a sound should do.
+
+## What the references do
+
+**Guitar Rig 6** (the v6 manual, components chapter):
+
+- **Oktaver** adds one and two octaves down to the dry signal, each sub
+  voice through its own resonant filter (OCT1/OCT2 CUTOFF and RESO). It
+  is mono: it tracks single notes, not chords, and wants to sit early in
+  the chain. The filters on each sub voice point to a divider design that
+  makes a new tone, not a pitch shifter.
+- **Modifiers** make the wobble: LFO (sine, triangle, square, saw,
+  random, synced, retriggered), a 16-step sequencer with attack and
+  decay, an analog sequencer with slide, a breakpoint envelope, and an
+  input-level follower. Each drives up to four parameters. The manual's
+  own example is Pro-Filter (continuous LP/BP/HP, 12–24 dB slope,
+  self-oscillating) synced to the step sequencer.
+- **Harmonic Synthesizer** (SUB, OCT up, SQR with an envelope filter),
+  **DIRT** (two diode stages that fold past half their range, bias,
+  A>B, B>A or parallel), **BITE** (crusher with a DC mode that buzzes
+  on quiet input), and **FREAK** (diode ring morphing AM, ring and
+  frequency shift).
+- Splits and crossovers run parallel chains; 8 or 16 macros each drive up
+  to 8 parameters through a range. Racks already do this.
+
+**Analog octave-down** (OC-2, U-Boat): low-pass and amplify the input, a
+comparator squares it, a flip-flop halves it. Either the half-rate square
+is the sub, or it flips the polarity of every other cycle of the filtered
+input (smoother, the OC-2 way). A second flip-flop gives two octaves down.
+Chords, harmonics and weak input make the comparator chatter. That
+glitch is part of the sound.
+
+**Distructor** (FL Studio): four slots of Distortion, Filter, Chorus or
+AMP/CAB, each with In, Mix and Out, and a soft-clip on the output. Its
+distortion algorithms come from Blood Overdrive (pre low-pass, drive with
+×100, post low-pass, the classic fizz control), Fast Dist (threshold and
+two curves), Soft Clipper, Delay 3's waveshaper (Limit, or Sat with knee
+and symmetry), Transistor Bass (a RAT: high-pass, drive, tone),
+Harmor's ten modes (classic, flathat, cube, log, softsat, rubber,
+ribbon, sincrush, bitcrush, bitjam), and its own Wavefolder, Aperture
+("warping") and Abrasive ("noise modulation"). The math isn't published.
+
+**Hamburger** (Aviary Audio, AGPL; studied for ideas only):
+
+- A chain: emphasis EQ before and mirrored after, dynamics, noise,
+  pre-distortion, the main distortion repeated up to four **stages**
+  (each later stage flips polarity, −3 dB), a hard clipper with a soft
+  knee, and mix, all oversampled.
+- **Sizzle** puts noise where the waveform is near zero relative to its
+  envelope, with the waveform's sign: grit at the zero crossings.
+- **Grill** is bias that follows the envelope, a triangle fold that
+  reflects forever, a sine-segment diode shaper and a soft clip.
+- **Phase** delays the signal by a low-passed, optionally rectified and
+  frequency-shifted copy of itself: self-FM that runs from watery to
+  sideband hash.
+- **Rubidium** saturates the highs as hard as the low-frequency "flux"
+  is large, so the bass drives the clipping of everything above it.
+- A dead-zone gate zeroes small signals and steps the rest away from
+  zero: brutal crossover distortion.
+- A Dolby-A style band compander, and a disperser (a cascade of up to
+  50 allpasses that smears bass transients).
+
+**Vintage Chorus** models the Juno-6 chorus (modes I, II, I+II), plus
+feedback, an H Pass on the wet path, LR phase, Invert Wet, noise and
+mix. On a distorted bass the moving comb notches cancel strong harmonics
+and the BBD filtering dulls it, which "chokes" it. Distorting again turns
+those moving notches into moving harmonics: a wide, animated buzz.
+
+**OTT** is Ableton's OTT multiband preset as a plugin: crossovers at 88.3
+Hz and 2.5 kHz, every band compressed downward (66.7:1, ∞:1 on the highs)
+and upward (4:1) from very low thresholds, +5.2 dB in, +10 dB out on the
+outer bands. DEPTH is dry/wet, TIME scales attack and release,
+UPWARD% and DOWNWARD% scale the ratios. It pulls tails, noise and fizz up
+to full level.
+
+**Supercharger** is a tube compressor whose COMPRESS knob sets threshold,
+makeup, release and saturation together; GT adds Mild/Moderate/Hot
+saturation and Fat/Warm/Bright character.
+
+**Justice and the Ed Banger bass.** Cross was made in the computer, with
+a Juno-106 on the "Genesis" bass; the band calls distortion the easy part.
+The recreations agree on the shape:
+
+1. a saw, sync or sampled bass;
+2. filter drive;
+3. low cut at 150–300 Hz on the dirty layer;
+4. 12-bit or reduced-rate crush;
+5. a guitar overdrive;
+6. a JMP or 800-style amp and cab;
+7. a fast FET compressor on its fastest attack;
+8. tape;
+9. a clean sub in parallel;
+10. glue or sidechain to the kick;
+11. bounce, chop and gate.
+
+## What Slab has, and the gaps
+
+| Need | Slab today | Gap |
+|---|---|---|
+| Octave down | synth sub oscillators only | **No divider for audio input.** |
+| Octave up | — | No rectifier. |
+| LFO / step filter (wobble) | Phaser has the only swept filter; Funk is envelope-driven | **No LFO, step or envelope filter for audio.** |
+| Stacked, foldy distortion | Saturator (8 modes, one stage, sine fold, SAG gating) | **No stages, no endless fold, no RAT/Blood topologies, no sizzle, phase or dead zone.** |
+| Crush | Era (rate, bits, μ-law, aliasing on purpose) | Covered. |
+| Amp and cab | Ampstack (4 voices, parametric cabs) | Covered for now; IRs stay an open choice. |
+| Juno chorus | Chorus (I, II, I+II) | No feedback, wet high-pass or invert, which choking wants. |
+| OTT | Multi (3 bands, UP) | RATIO stops at 10; no single DEPTH or TIME. |
+| Tube compression | Char (FET, OPTO, VARI, SMUSH, DRIVE) | A preset. |
+| Ring and frequency shift | Sideband (shift, ring) | Covered. |
+| Parallel, splits, macros | Racks and FX Racks | Covered. |
+
+## New machines
+
+### Octaver (`oct2`)
+
+An analog-style octave divider, mono in, stereo out.
+
+- **Tracker.** Pre low-pass (TRACK, 200 Hz–2 kHz) and gain into a
+  comparator with hysteresis, then two flip-flops for −1 and −2 octaves.
+  The input envelope (a follower) gates and scales the subs.
+- **GLITCH** narrows the hysteresis and opens the tracking low-pass, so
+  chords and harmonics chatter the divider the way a pushed OC-2 does. At 0
+  it tracks cleanly.
+- **MODE.** SQUARE: the divided square, scaled by the envelope (the
+  buzzy synth sub). FLIP: the filtered input with every other cycle
+  inverted (the OC-2's rounder sub).
+- **UP.** Full-wave rectified octave up, DC-blocked.
+- **Mix.** DIRECT, OCT1, OCT2 and UP levels. Each sub has CUT and RES (a
+  resonant low-pass, as in GR's Oktaver), plus THRESH for the gate.
+- **Targets.** On a Fretwire bass single note the steady sub sits at
+  f0/2 within 1 cent; it releases cleanly below THRESH. With GLITCH at 0
+  the sub has no octave jumps across a two-octave scale; at 1 a two-note
+  chord chatters audibly.
+
+### Wobble (`wob2`)
+
+A modulated multimode filter: GR's modifiers and Pro-Filter in one
+device.
+
+- **Filter.** TPT SVF with continuous LP→BP→HP MORPH, 12 or 24 dB
+  SLOPE, CUTOFF, RES up to self-oscillation, and DRIVE inside the loop
+  (tanh). A VOWEL mode is an open choice.
+- **SOURCE.**
+  - LFO: sine, triangle, saw up, saw down, square, S&H, smooth random;
+    RATE or SYNC with DIV including triplets and dotted; PHASE;
+    RETRIG on each new note onset (from the follower).
+  - STEP: 16 steps (values 0–1), LENGTH, DIV, GLIDE.
+  - ENV: a follower with ATK and REL, the AutoFilter or Funk sweep.
+- **Routing.** DEPTH in octaves (bipolar) drives cutoff. AMP depth drives
+  level, so the same source tremolos or gates. SPREAD offsets the right
+  channel's phase for stereo wobble. MIX.
+- **Shared kernels.** The LFO and the follower become shared kernels
+  (`kernels/00-primitives/lfo.fy`, `follow.fy`), since today every
+  machine has its own copy.
+- **Targets.** The synced LFO lands on the beat grid sample-exact against
+  the transport. RES at max self-oscillates at the cutoff within 2 %.
+  STEP with GLIDE 0 is a clean stepped gate with no clicks (a 2 ms ramp).
+
+### Grinder (`grind2`)
+
+A stacked distortion with the harsh algorithms, 4× oversampled.
+
+- **EMPH.** LO and HI emphasis bells (frequency and gain) before the
+  drive, mirrored after it, so you choose which band gets dirty and keep
+  the balance. This is Blood Overdrive's PreBand and Hamburger's emphasis
+  in one.
+- **ALGO.**
+  - OVERDRIVE: soft asymmetric op-amp drive.
+  - RAT: hard-clip op-amp with filter.
+  - FUZZ: Muff-ish, biased.
+  - SOFT: knee clip.
+  - HARD: limit.
+  - FOLD: triangle fold that reflects forever.
+  - SINE: sine shaper with ripple, Hamburger's Jeff and Harmor's
+    sincrush.
+  - CUBE.
+  - RECT: half or full rectify.
+  - DEAD: dead zone plus step.
+  - PHASE: self-modulated delay, with an optional frequency-shifted
+    modulator reusing Sideband's Hilbert pair.
+- **DRIVE** (0–60 dB), **STAGES** (1–4; each later stage flips polarity
+  and drops 3 dB), and **BIAS** (fixed plus envelope-tracking asymmetry).
+- **SIZZLE**: envelope-gated noise at the zero crossings. **FLUX**: low
+  band level drives the highs' clipping (the Rubidium idea), 0 = off.
+- **TONE** post low-pass, **CLIP** output soft-clip with knee, **MIX**
+  (latency-aligned), **OUT** with auto gain compensation (AUTO on/off).
+- **Targets.** Each algorithm has a measured signature on the bench (THD,
+  odd/even balance, nonharm on a sine and a bass phrase). AUTO holds
+  loudness within 1.5 dB across DRIVE. Aliasing stays below −60 dB on
+  a 2 kHz sine at 30 dB drive (FOLD excepted, which says so).
+
+### Smaller changes
+
+- **Chorus**: FEEDBACK, WET HP and INVERT, all defaulting off, so
+  existing projects are untouched. That gives the choke.
+- **Multi**: RATIO up to 100 (∞ as the top step). DEPTH as a dry/wet
+  alias of MIX, and TIME, which scales ATK and REL together. An OTT
+  preset with OTT's crossovers, ratios and gains.
+- **Phaser**: an 18- or 24-stage option, if the rigs need it.
+
+## Rigs
+
+FX Racks unless noted, each with named macros on the collapsed face and
+measured targets (loudness matched to bypass within 2 dB, sub kept mono
+where the rig says so). Section 42's rig format; banked under
+`machines/fxrack/presets/harsh/`.
+
+| Rig | Chain | Macros |
+|---|---|---|
+| **Wobble Oktaver** | Octaver (FLIP, OCT1) → Wobble (LFO 1/8, LP 24) → Saturator FUZZ | RATE, DEPTH, SUB, FUZZ |
+| **Sandwich** (the reference chain) | Wobble Oktaver → Grinder (OVERDRIVE ×2) → Chorus (I+II, INVERT, choked) → Grinder (FOLD + SIZZLE) → Multi OTT | WOBBLE, DIRT, CHOKE, BURGER, OTT |
+| **Cross Bass** | lane SUB: EQ LP 150 → Saturator TAPE; lane DIRT: EQ HP 250 → Era 12-bit → Grinder OVERDRIVE → Ampstack BRIT 4x12 → Char FET (fastest) → Tape | DIRT, CRUSH, SQUASH, SUB |
+| **Phantom Stack** | Grinder SOFT → Grinder RAT → Grinder HARD, then Phaser | STACK, TONE, PHASE |
+| **Gated Fuzz** | Saturator FUZZ with SAG → Gate (fast) | FUZZ, CHOP |
+| **Ring Growl** | dry lane + Sideband RING at 40–90 Hz → Grinder | GROWL, CARRIER |
+| **OTT** | Multi OTT preset (a Multi preset, not a rack) | — |
+| **OTT Sandwich** | OTT → Grinder → OTT | DEPTH, DIRT |
+| **Four Slot** (Distructor's layout) | four lanes in series as Grinder, Wobble, Chorus, Ampstack, each lane's MIX on a macro | the four MIXes, plus OUT |
+| **Bit Guitar** | EQ HP → Era 8-bit 11 kHz → Ampstack CLEAN | BITS, RATE |
+| **Royal Split** (rack) | Fretwire Bass → Octaver UP+OCT1 → lane AMP (Ampstack HIGAIN 4x12) and lane BASS (Ampstack BASS 8x10) | BLEND, GAIN |
+| **Supercharge** | a Char preset: VARI, DRIVE high, auto makeup | — |
+
+Instrument rigs pair them with the Fretwire models voiced as cheap
+single-coil guitars and P-basses (new Fretwire presets).
+
+## Build phases
+
+1. **Presets and the small changes.** OTT (Multi RATIO, DEPTH, TIME),
+   Supercharge, Chorus choke controls, and the rigs that need no new
+   machine (Cross Bass, Gated Fuzz, Ring Growl, Bit Guitar, OTT Sandwich
+   on Saturator). Bench goldens stay bit-exact for existing presets.
+2. **Shared LFO and follower kernels, and Wobble.** Port Phaser's and
+   Funk's copies only if bit-exact.
+3. **Octaver**, then the Wobble Oktaver and Royal Split rigs.
+4. **Grinder**, then Sandwich, Phantom Stack and Four Slot; Cross Bass
+   moves its overdrive onto Grinder.
+5. **A demo song** in slabkit: a blog-house track built from these rigs,
+   with a stem report against targets.
+6. **Docs**: this file becomes a reference; docs/20, CHANGELOG.
+
+## Open choices
+
+- **Cab IRs.** Distructor and GR use convolution cabs; Ampstack's
+  parametric cab avoids IR licensing and CPU. A short (≤ 2048-tap)
+  partitioned convolution with CC0 IRs is possible later.
+- **Harmor's ten modes** are unpublished; Grinder's ALGO list covers
+  their families (cube, softsat, sincrush, bitcrush through Era) rather
+  than copying names.
+- **Pitch-shifting octaves** (POG-style, polyphonic) are a different
+  machine; the divider is the point here.
+- **Modulation as a host service.** Wobble owns its LFO. A host-level
+  modulator that drives any knob (GR's modifiers) could come after, on
+  top of rack macros.
