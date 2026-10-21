@@ -6,6 +6,15 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **SM-24 Mono sounds like an MS-20.** Its LPF MODE gains **K35** and
+  **OTA**, the early and late MS-20 filters. Bass stays full at any PEAK,
+  the peak sits on CUT, and both the HPF and LPF resonate up to
+  self-oscillation. K35 is the default: grittier and lopsided when driven.
+  OTA is cleaner and sings. HOT and WET are still there for the acid
+  sound. New presets: `k35-scream`, `k35-round-bass`, `ota-singing-lead`.
+  A new SM-24 starts from a re-voiced init patch; saved songs and presets
+  keep their mode and sound as before.
+
 - **Building from source needs Zig 0.17.** 0.16 no longer builds Slab,
   and 0.17 no longer fails on the build script (#3).
 

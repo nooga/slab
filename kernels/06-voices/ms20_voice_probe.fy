@@ -45,6 +45,7 @@ include "../03-envelopes/primitives/env_rc.fy"
 include "../04-filters/coeffs.fy"   ( svf-g, svf-damping )
 include "../04-filters/ms20_hpf.fy"
 include "../04-filters/ms20_lpf.fy"
+include "../04-filters/ms20_sk.fy"
 
 ustruct: Ms20VoiceState
   f64 phase1
@@ -65,6 +66,7 @@ ustruct: Ms20VoiceState
   Up4 up
   Drift dr1  Drift dr2  Drift drc  Drift drv
   f64 dro-x  f64 dro-y   ( the mix's coupling cap )
+  Ms20Sk sk-hp  Ms20Sk sk-lp   ( K35/OTA modes: the HPF and LPF, at 4x )
 ;
 
 ustruct: Ms20VoiceParams
@@ -76,7 +78,7 @@ ustruct: Ms20VoiceParams
   f64 resonance        ( LPF resonance 0..2 )
   f64 drive            ( LPF input drive, x the mode's own )
   f64 level
-  f64 lpf-mode         ( 0 HOT 1 WET - switch )
+  f64 lpf-mode         ( 0 HOT 1 WET [the acid pair, ms20_lpf.fy], 2 K35 3 OTA [ms20_sk.fy] - switch )
   f64 amp-attack
   f64 amp-decay
   f64 amp-sustain
@@ -110,6 +112,7 @@ ustruct: Ms20VoiceParams
   EnvRcCoefs amp-co
   EnvRcCoefs flt-co
   Ms20LpfProfile lpf-pr
+  Ms20SkProfile sk-pr
   f64 detune-ratio     ( 2^[detune/12] )
   f64 hpf-f            ( HPF Chamberlin f )
   f64 hpf-q            ( HPF damping )
@@ -232,6 +235,11 @@ dsp: v-lpf-sub | state:Ms20VoiceState params:Ms20VoiceParams x g -- y |
   state.lpf&  params.lpf-pr&  x g  ms20-lpf-step
 ;
 
+( One K35/OTA substep: the series HPF -> LPF pair. )
+dsp: v-sk-sub | state:Ms20VoiceState params:Ms20VoiceParams x g -- y |
+  state.sk-hp&  state.sk-lp&  params.sk-pr&  x g  ms20-sk-step
+;
+
 ( io ctx state params -- : render one mono voice sample. )
 dsp: k-ms20-voice-sample | io ctx state:Ms20VoiceState params:Ms20VoiceParams -- |
   ( portamento, in octaves )
@@ -261,21 +269,32 @@ dsp: k-ms20-voice-sample | io ctx state:Ms20VoiceState params:Ms20VoiceParams --
   m state.dro-x state.dro-y params.dro-a droop-hp | md |
   m -> state.dro-x
   md -> state.dro-y
-  state params md v-hpf
-    fenv params.bleed f* f+
-    state.noise-rng 2.0 f* 1.0 f- 0.0001 f* f+ | x |
+  fenv params.bleed f*  state.noise-rng 2.0 f* 1.0 f- 0.0001 f* | bl nf |
   ( cutoff in octaves, like control voltage: base * 2^[env + MG] )
   fenv params.env-amount f*  mg params.mg-cutoff f*  f+
   state.drc& params.cut-drift-c drift-step  params.age-amt 0.07 f* f*  f+
-  exp2  params.cutoff f*
-    params.osr svf-g | g |
-  state.up& x up4 | x0 x1 x2 x3 |
-  state.dec&
-    state params x0 g v-lpf-sub
-    state params x1 g v-lpf-sub
-    state params x2 g v-lpf-sub
-    state params x3 g v-lpf-sub
-  dec4 | y |
+  exp2  params.cutoff f* | hz |
+  ( MODE: HOT/WET run the acid pair [1x HPF, ladder-style LPF]; K35/OTA
+    the MS-20's own filters, both at 4x, the cutoff held to 15 kHz )
+  params.lpf-mode 1.5 f<
+  [ state params md v-hpf  bl f+  nf f+ | x |
+    hz params.osr svf-g | g |
+    state.up& x up4 | x0 x1 x2 x3 |
+    state.dec&
+      state params x0 g v-lpf-sub
+      state params x1 g v-lpf-sub
+      state params x2 g v-lpf-sub
+      state params x3 g v-lpf-sub
+    dec4 ]
+  [ md bl f+  nf f+ | x |
+    hz 15000.0 fmin params.osr svf-g | g |
+    state.up& x up4 | x0 x1 x2 x3 |
+    state.dec&
+      state params x0 g v-sk-sub
+      state params x1 g v-sk-sub
+      state params x2 g v-sk-sub
+      state params x3 g v-sk-sub
+    dec4 ]  ifte | y |
   ( VCA: envelope, velocity, level; then a ~20 Hz DC block )
   y aenv f*  state.vel f*  params.level f*  1.78 f* | v |
   v state.dc-prev-x f-  state.dc-prev-y 0.9974 f*  f+ | o |

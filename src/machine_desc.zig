@@ -1148,8 +1148,8 @@ test "descriptor walker reads the MS-20 manifest from fy" {
     try testing.expectEqualStrings("k-ms20-voice-sample", d.renderWord());
     try testing.expect(d.prepareWord() == null);
     try testing.expectEqualStrings("ms20-block-prepare", d.blockPrepareWord().?);
-    try testing.expectEqual(@as(usize, 712), d.state_size);
-    try testing.expectEqual(@as(usize, 576), d.params_size);
+    try testing.expectEqual(@as(usize, 744), d.state_size);
+    try testing.expectEqual(@as(usize, 656), d.params_size);
     try testing.expectEqual(@as(f32, 940.0), d.panel_w);
     try testing.expectEqual(@as(usize, 35), d.control_count);
     try testing.expectEqual(@as(usize, 10), d.strip_count);
@@ -1172,7 +1172,7 @@ test "descriptor walker reads the MS-20 manifest from fy" {
         if (std.mem.eql(u8, ctl.idSlice(), "cutoff")) {
             try testing.expectEqual(@as(usize, 32), ctl.offset);
             try testing.expectEqual(ParamCurve.exp, ctl.curve);
-            try testing.expectApproxEqAbs(@as(f64, 700.0), ctl.default, 1e-12);
+            try testing.expectApproxEqAbs(@as(f64, 1200.0), ctl.default, 1e-12);
             found = true;
         }
     }

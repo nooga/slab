@@ -25,6 +25,8 @@ dsp: ms20-block-prepare | ctx:Ctx state params:Ms20VoiceParams -- |
     1.0  -3.0  params.portamento ctx.sr f* f/  exp  f-
   fsel-lt -> params.porta-c
   params.lpf-pr&  params.drive  params.resonance 0.8 f*  params.lpf-mode osr ms20-lpf-set
+  params.sk-pr&  params.drive  params.resonance  params.hpf-resonance  params.lpf-mode
+    params.hpf-cutoff  osr  ms20-sk-set
   params.detune 0.08333333333333333 f* exp2 -> params.detune-ratio
   params.hpf-cutoff ctx.sr svf-g 2.0 f* -> params.hpf-f
   ( HPF damping [q = 1/Q] 1.4 [1 - RES/2]^2: flat at 0, Q 3 at 1, Q 18 at
@@ -73,12 +75,12 @@ dsp: ms20-block-prepare | ctx:Ctx state params:Ms20VoiceParams -- |
   "HPF" "CUT"  "hpf-cutoff"    Ms20VoiceParams.hpf-cutoff    20.0 15000.0 20.0 curve-exp knob
   "HPF" "PEAK" "hpf-resonance" Ms20VoiceParams.hpf-resonance 0.0 2.0 0.0 curve-lin knob
 
-  "LPF" "CUT"  "cutoff"    Ms20VoiceParams.cutoff    20.0 18000.0 700.0 curve-exp knob
-  "LPF" "PEAK" "resonance" Ms20VoiceParams.resonance 0.0 2.0 0.7 curve-lin knob
+  "LPF" "CUT"  "cutoff"    Ms20VoiceParams.cutoff    20.0 18000.0 1200.0 curve-exp knob
+  "LPF" "PEAK" "resonance" Ms20VoiceParams.resonance 0.0 2.0 1.0 curve-lin knob
   "LPF" "DRV"  "drive"     Ms20VoiceParams.drive     0.25 4.0 1.0 curve-exp knob
-  "LPF" "MODE" "lpf-mode"  Ms20VoiceParams.lpf-mode  0 switch
-    "HOT" 0.0 opt  "WET" 1.0 opt
-  "LPF" "ENV"  "env-amount" Ms20VoiceParams.env-amount 0.0 8.0 4.8 curve-lin knob
+  "LPF" "MODE" "lpf-mode"  Ms20VoiceParams.lpf-mode  2 switch
+    "HOT" 0.0 opt  "WET" 1.0 opt  "K35" 2.0 opt  "OTA" 3.0 opt
+  "LPF" "ENV"  "env-amount" Ms20VoiceParams.env-amount 0.0 8.0 2.0 curve-lin knob
 
   "VCA" "LVL" "level" Ms20VoiceParams.level 0.0 1.0 0.44 curve-pow knob
   "VCA" "AGE" "age"   Ms20VoiceParams.age-amt 0.0 1.0 0.4 curve-lin knob
@@ -91,8 +93,8 @@ dsp: ms20-block-prepare | ctx:Ctx state params:Ms20VoiceParams -- |
 
   "FLT ENV" "DLY" "filter-delay"   Ms20VoiceParams.filter-delay   0.0 10.0 0.0 curve-pow knob
   "FLT ENV" "ATK" "filter-attack"  Ms20VoiceParams.filter-attack  0.001 10.0 0.014 curve-exp knob
-  "FLT ENV" "DEC" "filter-decay"   Ms20VoiceParams.filter-decay   0.01 10.0 0.14 curve-exp knob
-  "FLT ENV" "SUS" "filter-sustain" Ms20VoiceParams.filter-sustain 0.0 1.0 0.18 curve-lin knob
+  "FLT ENV" "DEC" "filter-decay"   Ms20VoiceParams.filter-decay   0.01 10.0 0.3 curve-exp knob
+  "FLT ENV" "SUS" "filter-sustain" Ms20VoiceParams.filter-sustain 0.0 1.0 0.2 curve-lin knob
   "FLT ENV" "REL" "filter-release" Ms20VoiceParams.filter-release 0.01 10.0 0.11 curve-exp knob
 
   "MG" "FREQ" "mg-freq" Ms20VoiceParams.mg-freq 0.1 20.0 3.0 curve-exp knob

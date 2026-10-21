@@ -960,11 +960,11 @@ Presets:
 | `noise-level` | MIX | NOISE | 0 … 1 | 0 | pow |
 | `hpf-cutoff` | HPF | CUT | 20 … 15000 | 20 | exp |
 | `hpf-resonance` | HPF | PEAK | 0 … 2 | 0 | linear |
-| `cutoff` | LPF | CUT | 20 … 18000 | 700 | exp |
-| `resonance` | LPF | PEAK | 0 … 2 | 0.7 | linear |
+| `cutoff` | LPF | CUT | 20 … 18000 | 1200 | exp |
+| `resonance` | LPF | PEAK | 0 … 2 | 1 | linear |
 | `drive` | LPF | DRV | 0.25 … 4 | 1 | exp |
-| `lpf-mode` | LPF | MODE | 0 HOT / 1 WET | 0 | switch |
-| `env-amount` | LPF | ENV | 0 … 8 | 4.8 | linear |
+| `lpf-mode` | LPF | MODE | 0 HOT / 1 WET / 2 K35 / 3 OTA | 2 | switch |
+| `env-amount` | LPF | ENV | 0 … 8 | 2 | linear |
 | `level` | VCA | LVL | 0 … 1 | 0.44 | pow |
 | `age` | VCA | AGE | 0 … 1 | 0.4 | linear |
 | `amp-hold` | AMP ENV | HOLD | 0 … 20 | 0 | pow |
@@ -974,8 +974,8 @@ Presets:
 | `amp-release` | AMP ENV | REL | 0.01 … 10 | 0.13 | exp |
 | `filter-delay` | FLT ENV | DLY | 0 … 10 | 0 | pow |
 | `filter-attack` | FLT ENV | ATK | 0.001 … 10 | 0.014 | exp |
-| `filter-decay` | FLT ENV | DEC | 0.01 … 10 | 0.14 | exp |
-| `filter-sustain` | FLT ENV | SUS | 0 … 1 | 0.18 | linear |
+| `filter-decay` | FLT ENV | DEC | 0.01 … 10 | 0.3 | exp |
+| `filter-sustain` | FLT ENV | SUS | 0 … 1 | 0.2 | linear |
 | `filter-release` | FLT ENV | REL | 0.01 … 10 | 0.11 | exp |
 | `mg-freq` | MG | FREQ | 0.1 … 20 | 3 | exp |
 | `mg-wave` | MG | WAVE | 0 … 1 | 0.5 | linear |
@@ -990,10 +990,13 @@ Presets:
 - `acid-bass` — Squelchy resonant bass — play low, ride LPF CUT
 - `aggressive-fill-lead` — Short aggressive lead / fill
 - `buzz-lead` — Bright buzzy lead with a touch of MG wobble
+- `k35-round-bass` — K35 bass: full low end, a gentle peak, short EG2 sweep
+- `k35-scream` — K35 filters both peaked and driven: the early MS-20 scream
 - `mild-acid-bass` — Mild acid, not techno
 - `minimal-8th-bass` — Minimal 8th-note spoken-verse bass
 - `nasal-sneer-lead` — Nasal sneering mono lead
 - `octave-night-bass` — Faster octave night-drive bass
+- `ota-singing-lead` — OTA LPF, peak high and clean: the later MS-20, symmetric and singing
 - `portamento-highway-lead` — Smooth portamento highway lead
 - `resonant-funk-bass` — Resonant funky bass with filter bite
 - `rising-filter-fx` — Overdriven rising-filter FX sweep
