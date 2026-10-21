@@ -19,6 +19,7 @@ const machine_desc = @import("../machine_desc.zig");
 const dx7_algorithms = @import("../dx7_algorithms.zig");
 const presets_mod = @import("../presets.zig");
 const wav = @import("../wav.zig");
+const convolver = @import("../convolver.zig");
 const waveform = @import("../waveform.zig");
 const keymap = @import("../keymap.zig");
 const wavetable = @import("../wavetable.zig");
@@ -54,6 +55,9 @@ const MAX_REGIONS: usize = machine.Unison.MAX_POOL;
 // run at; kernels read the element count back from state and clamp, so a
 // lower device rate just means extra headroom.
 const BUFFER_SR = 96_000.0;
+/// The rate a `convolver` IR is built for. The sample rate is only known
+/// once rendering starts, and rebuilding for another one isn't done yet.
+const CONV_SR = 48_000.0;
 const MAX_BLOCK = 4096;
 const MAX_OPTS = machine_desc.MAX_OPTS;
 const MAX_CONTROLS = machine_desc.MAX_CONTROLS;
@@ -297,6 +301,9 @@ pub const IoFrame = extern struct {
     /// pair; never swapped for the dual-mono R pass (docs/24 §Prerequisites).
     sc_l: f64 = 0,
     sc_r: f64 = 0,
+    /// The input convolved with the machine's `convolver` IR, N late.
+    cv_l: f64 = 0,
+    cv_r: f64 = 0,
 };
 const IO_STRIDE: u12 = @sizeOf(IoFrame);
 /// Knob smoothing (docs/17 D, docs/08 §2): the normalized knob position
@@ -326,12 +333,14 @@ const AssetVersion = struct {
     generation: u64 = 0,
     reset_generation: u64 = 0,
     edits: keymap.ZoneEdits = .{},
+    conv: ?*convolver.Convolver = null,
 };
 const RetiredAsset = struct {
     sample: wav.Sample = .{ .data = &.{}, .sample_rate = 0 },
     table: wavetable.Table = .{},
     map: keymap.Keymap = .{},
     aa: []f64 = &.{},
+    conv: ?*convolver.Convolver = null,
 };
 
 // Audio -> UI telemetry. UI never dereferences mutable DSP state/rings.
@@ -513,6 +522,11 @@ pub const FyRawMachine = struct {
     // Wavetable assets (manifest `wavetable`): the mipmapped frames built
     // from asset_mem, which stays loaded for the waveform display.
     asset_wt: [machine_desc.MAX_ASSETS]wavetable.Table = @splat(.{}),
+    /// The `convolver` asset's engine, built for CONV_SR; null without
+    /// one. UI owns the latest and publishes it with the asset bindings;
+    /// renderEffectBlock fills io.cv-l / io.cv-r from the adopted one.
+    conv: ?*convolver.Convolver = null,
+    conv_audio: ?*convolver.Convolver = null,
     // Keymap assets (manifest `keymap`): the loaded pool + zone table.
     asset_keymap: [machine_desc.MAX_ASSETS]keymap.Keymap = @splat(.{}),
     /// A keymap's pool low-passed ahead of its stored rate
@@ -746,6 +760,7 @@ pub const FyRawMachine = struct {
                 if (req.wavetable and self.asset_mem[ai].data.len > 0) {
                     self.asset_wt[ai] = wt_cache.acquire(alloc, self.asset_mem[ai].data, self.asset_mem[ai].frame_size, !self.asset_mem[ai].levels_kept) catch .{};
                 }
+                if (req.convolver and self.conv == null) self.conv = buildConvolver(alloc, full);
             }
             self.setAssetSource(ai, full);
         }
@@ -776,7 +791,16 @@ pub const FyRawMachine = struct {
         return self.asset_path[ai][0..self.asset_path_len[ai]];
     }
 
+    fn buildConvolver(alloc: std.mem.Allocator, path: []const u8) ?*convolver.Convolver {
+        var ir = wav.loadStereo(alloc, path) catch return null;
+        defer ir.deinit(alloc);
+        if (ir.data.len == 0) return null;
+        return convolver.Convolver.init(alloc, ir.data, if (ir.isStereo()) ir.right else null, ir.sample_rate, CONV_SR) catch null;
+    }
+
     fn freeAssets(self: *FyRawMachine, alloc: std.mem.Allocator) void {
+        if (self.conv) |cv| cv.deinit(alloc);
+        self.conv = null;
         self.asset_retired.drain(self, disposeAsset);
         for (self.asset_mem[0..self.desc.asset_count], 0..) |*s, ai| {
             if (s.data.len > 0) alloc.free(s.data);
@@ -856,14 +880,26 @@ pub const FyRawMachine = struct {
             wt_cache.release(self.alloc, &new_wt);
             return false;
         };
+        // A new IR swaps in whole; there is no crossfade yet, so a swap
+        // while the tail rings cuts it.
+        var new_conv: ?*convolver.Convolver = null;
+        if (self.desc.assets[ai].convolver) {
+            new_conv = buildConvolver(self.alloc, src) orelse {
+                loaded.deinit(self.alloc);
+                new_cache.deinit(self.alloc);
+                return false;
+            };
+        }
 
         if (!self.reserveAssetRetirement()) {
             loaded.deinit(self.alloc);
             wt_cache.release(self.alloc, &new_wt);
             new_cache.deinit(self.alloc);
+            if (new_conv) |cv| cv.deinit(self.alloc);
             return false;
         }
-        self.asset_retired.append(self.asset_generation + 1, .{ .sample = self.asset_mem[ai], .table = self.asset_wt[ai] });
+        self.asset_retired.append(self.asset_generation + 1, .{ .sample = self.asset_mem[ai], .table = self.asset_wt[ai], .conv = if (new_conv != null) self.conv else null });
+        if (new_conv != null) self.conv = new_conv;
         self.asset_mem[ai] = loaded;
         self.asset_wt[ai] = new_wt;
         self.publishAssets(true);
@@ -1043,6 +1079,7 @@ pub const FyRawMachine = struct {
         wt_cache.release(self.alloc, &old.table);
         old.map.deinit(self.alloc);
         if (old.aa.len > 0) self.alloc.free(old.aa);
+        if (old.conv) |cv| cv.deinit(self.alloc);
     }
 
     fn reserveAssetRetirement(self: *FyRawMachine) bool {
@@ -1073,6 +1110,7 @@ pub const FyRawMachine = struct {
                 v.bindings[ai] = .{ .ptr = if (sample.data.len > 0) @intFromPtr(sample.data.ptr) else @intFromPtr(&self.asset_silence), .len = sample.data.len, .sr = if (sample.sample_rate > 0) sample.sample_rate else 48_000 };
             }
         }
+        v.conv = self.conv;
         self.published_zone_edits = self.zone_edits;
         self.asset_versions.publish();
         self.wake_req.store(true, .release);
@@ -1089,6 +1127,7 @@ pub const FyRawMachine = struct {
         }
         self.injectAssets();
         self.adoptZoneEdits();
+        self.conv_audio = v.conv;
         self.asset_retired.acknowledge(v.generation);
     }
 
@@ -3371,6 +3410,9 @@ fn renderEffectBlock(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
         f.sc_r = if (key) |kp| kp[1][i] else f.in_r;
         f.det = @max(@abs(f.sc_l), @abs(f.sc_r));
     }
+    if (self.conv_audio) |cv| for (io) |*f| {
+        f.cv_l, f.cv_r = cv.process(f.in_l, f.in_r);
+    };
     if (self.desc.stereo) {
         // True stereo: one pass sees both inputs and writes both outputs.
         const e = self.entryArgs(0);
@@ -3439,6 +3481,7 @@ fn resetImpl(state: *anyopaque) void {
         @memset(self.stateRegion(reg), 0);
     }
     @memset(self.shared_mem, 0);
+    if (self.conv_audio) |cv| cv.reset();
     self.shared_awake = false;
     self.shared_peak = 0;
     @memset(self.voice_gate[0..], false);
@@ -7337,6 +7380,8 @@ test "kernel ABI: KernelCtx and IoFrame match ctx.fy's Ctx and Io" {
         .{ .name = "Io.det", .off = @offsetOf(IoFrame, "det") },
         .{ .name = "Io.sc-l", .off = @offsetOf(IoFrame, "sc_l") },
         .{ .name = "Io.sc-r", .off = @offsetOf(IoFrame, "sc_r") },
+        .{ .name = "Io.cv-l", .off = @offsetOf(IoFrame, "cv_l") },
+        .{ .name = "Io.cv-r", .off = @offsetOf(IoFrame, "cv_r") },
     };
     for (ctx_fields) |f| {
         const v = try host.callWord(f.name);

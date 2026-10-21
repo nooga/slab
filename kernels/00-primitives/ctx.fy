@@ -41,4 +41,6 @@ ustruct: Io
   f64 det      ( max of |L| |R| of the effect input: stereo-linked detector )
   f64 sc-l     ( signed detector audio: the key pair when keyed, else the )
   f64 sc-r     ( input pair; never swapped for a dual-mono R pass )
+  f64 cv-l     ( the input convolved with the machine's `convolver` IR, )
+  f64 cv-r     ( 256 samples late; 0 without one [src/convolver.zig] )
 ;

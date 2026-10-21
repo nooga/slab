@@ -210,6 +210,11 @@ pub const AssetReq = struct {
     /// mipmapped frames (src/wavetable.zig) and writes the table's pointer
     /// at ptr_offset and its frame count at len_offset (sr_offset unused).
     wavetable: bool = false,
+    /// `convolver` instead of `asset`: an impulse response, loaded as an
+    /// asset (offsets as for one) and also convolved with the machine's
+    /// input by the host, which hands the kernel io.cv-l / io.cv-r
+    /// (src/convolver.zig).
+    convolver: bool = false,
     /// Keymaps: where the per-zone edits pointer goes in PARAMS.
     edits_offset: usize = 0,
     /// Keymaps: low-pass the pool at `aa_ratio` x this control's value
@@ -912,6 +917,7 @@ pub fn read(host: *FyHost) !Desc {
         out.sr_offset = @intCast(asInt(as.sr_offset));
         out.keymap = asInt(as.kind) == 1;
         out.wavetable = asInt(as.kind) == 2;
+        out.convolver = asInt(as.kind) == 3;
         if (out.keymap) {
             out.edits_offset = @intCast(asInt(as.edits_offset));
             if (out.edits_offset + 8 > d.params_size) return error.InvalidMachineDesc;
