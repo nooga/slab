@@ -283,17 +283,22 @@ up against unkeyed. Keyed cost 148 ns/sample (bench, Debug host).
   is `x − 2k·bp` of one more SVF. Seven SVFs a channel, coefficients
   per block from `svf-g`. States are flushed below ~1e−34 (`x + c − c`),
   so tails reach 0 instead of crawling through denormals.
-- **Per band:** THRESH (−48…0), RATIO (1…10, pow), GAIN (±12); linked
+- **Per band:** THRESH (−48…0), RATIO (1…100, exp; 100 is OTT's
+  near-brickwall), GAIN (±12); linked
   peak detector on `max(|L|,|R|)` of the band with a hold that decays
   over 20 / 5 / 2 ms (low / mid / high), comp.fy's log-domain gain
   computer with a fixed 4 dB knee, gain smoothing at ATK / REL × 2 for
   the low band and × 0.5 for the high one. Each band has its own
   transfer-curve display (`dyn-display` with prefixes `mlo` / `mmid` /
   `mhi`).
-- **UP** (0…1): upward compression in the same gain computer. Below
+- **UP** (0…1.5): upward compression in the same gain computer. Below
   THRESH − 10 dB the band is lifted by 0.5·UP per dB under that point
-  (UP 1 = 2:1 upward), capped at +12 dB and limited to the distance
-  above −60 dBFS, so the noise floor isn't raised.
+  (UP 1 = 2:1 upward, 1.5 = 4:1), capped at +12 dB up to UP 1 and
+  opening to +24 dB at 1.5, and limited to the distance above −60 dBFS,
+  so the noise floor isn't raised.
+- **OTT** is a preset (docs/43): crossovers at 88 Hz and 2.5 kHz,
+  ratios 66.7/66.7/100, UP 1.5, band gains +10.3/+5.7/+10.3 dB. Lower
+  MIX for OTT's DEPTH; ATK and REL together are its TIME.
 - **MIX** blends with the crossover's own sum, not the raw input: the
   dry path goes through the same allpasses and a parallel mix doesn't
   comb at the crossovers. OUT ±12 dB.

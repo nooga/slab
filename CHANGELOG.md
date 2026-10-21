@@ -6,6 +6,27 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **A harsh effects pack** (docs/43).
+  - **Octaver** gives one and two octaves down the way analog divider
+    pedals do, with a GLITCH knob to make it chatter, plus an
+    Octavia-style octave-up fuzz.
+  - **Wobble** is a filter or wah swept by a synced LFO, a 16-step
+    sequence, the playing's envelope (auto-wah) or a pedal, and doubles
+    as a tremolo or gate.
+  - **Folder** is an anti-aliased wavefolder.
+  - **Grinder** stacks ten distortion curves up to four deep, from a
+    rounded overdrive to a dead zone, with sizzle, bass-driven flux and
+    phase distortion.
+- **Harsh rigs.** Twelve FX Racks under `harsh/`, among them Wobble
+  Oktaver, the distortion-chorus-distortion Sandwich, Octavia Portal,
+  Kodiak (big, gnarly bass), Cross Bass (Justice-style) and Four Slot.
+  `songs/kodiak_club.py` is a demo built from them.
+- **OTT and Supercharge.** Multi's RATIO now reaches 100 and its UP 4:1,
+  with an OTT preset; Char has a Supercharge preset.
+- **Chorus can choke.** FEEDBACK, WET HP and INVERT go past the Juno:
+  inverted at half mix, it hollows out a distorted bass for a second
+  distortion to bring back. Existing chorus settings sound the same.
+
 - **Building from source needs Zig 0.17.** 0.16 no longer builds Slab,
   and 0.17 no longer fails on the build script (#3).
 

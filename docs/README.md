@@ -132,7 +132,7 @@ status and the source before assuming a feature is absent or complete.
 43. [42-racks.md](42-racks.md) — racks (built): chains in parallel
     lanes, macro knobs with ranges and formulas, rig presets, grouping,
     automation inside racks
-44. [43-harsh-fx.md](43-harsh-fx.md) — harsh effects (proposal): Octaver,
+44. [43-harsh-fx.md](43-harsh-fx.md) — harsh effects (built): Octaver,
     Wobble and Grinder, OTT and chorus choke, and rigs for Justice-style
     bass and blog-house guitar chains
 
