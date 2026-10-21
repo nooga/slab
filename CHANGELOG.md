@@ -9,6 +9,28 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 - **Building from source needs Zig 0.17.** 0.16 no longer builds Slab,
   and 0.17 no longer fails on the build script (#3).
 
+- **Rigs.** Rack and FX Rack sit under a RACKS heading in the machine
+  picker, with factory rigs in their preset menus: Fretwire Clean Rig and
+  Crunch Rig, Bass DI + Amp, and Parallel Squash (an FX Rack). A rig
+  opens folded to its named macro knobs; the fold button shows the lanes.
+  The old split and layer racks are rewritten as lanes.
+- **Group into a rack.** Shift-click devices in the bay to select a run,
+  then ⌘G moves them into a new Rack (or FX Rack) with their settings and
+  automation; ⌘⇧G on a one-lane rack takes them back out. ⌘G still groups
+  tracks when no devices are selected.
+- **Rack panel.** KEY, VEL and CHAIN tabs edit each lane's zones as bars,
+  inserts reorder by dragging their title strip, MAP outlines every
+  control it can map, and turning a mapped control by hand moves its
+  macro.
+- **Automate inside a rack.** Controls of the machines in a rack's lanes
+  now get automation lanes, named with the machine (`AMP2 GAIN`), and
+  they keep working when lanes or inserts move. Files write them as
+  paths such as `fx1/2.1:amp-gain` (docs/22).
+- **slabkit builds racks.** `rack()`, `.lane()`, `.macro()` and `.map()`
+  make racks in Python, `song.track("Bass", "rack", "bass-di-amp")` loads
+  a rig, and `slab --describe` lists Rack and FX Rack with their macros.
+  `songs/rack_rigs.py` is a demo.
+
 - **Rack macros.** Racks and FX Racks get eight macro knobs (`rk-m1`…`rk-m8`)
   and a CHAIN control that automate like any knob. MAP, then click a
   control inside the open lane (or a lane's LV or PN), puts it on the

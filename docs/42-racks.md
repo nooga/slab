@@ -1,13 +1,14 @@
 # 42 — Racks: chains in lanes, macros, rigs
 
-**Status: phases 1–3 built, and part of phase 4.** Rack lanes hold
-chains, the FX Rack plays lanes of inserts, racks nest and align their
-lanes' latency, and rack state is in its second form. Macros map to
-controls inside through ranges and formulas, with the macro block and
-MAP mode on the panel. CHAIN zones on the panel, the collapsed face,
-insert reordering, grouping, rigs and inner automation are still to
-build. The Rack that ships today
-(`src/machines/rack.zig`) is described under "Where we start".
+**Status: built (phases 1–6).** This is the reference for racks.
+Rack lanes hold chains, the FX Rack plays lanes of inserts, racks nest
+three deep and align their lanes' latency. Macros map to controls inside
+through ranges and formulas. The panel has the macro block, MAP mode,
+KEY/VEL/CHAIN zone tabs, the collapsed face and insert reordering; ⌘G
+groups devices into a rack and ⌘⇧G ungroups. Factory rigs ship under
+RACKS in the picker, slabkit builds racks, and automation reaches
+controls inside a rack by path. "Where we start" describes the first
+Rack, which the second form replaced; its files still load.
 
 A rack packages machines into one device. Each of its lanes holds a
 chain, an instrument and its effects or just effects, and the lanes play
@@ -21,7 +22,7 @@ hardware look.
 
 ## Where we start
 
-The current Rack is an instrument rack only:
+The first Rack was an instrument rack only:
 
 - Up to 8 parts. Each is one instrument with a key range, a velocity
   range, transpose, level, pan, a polyphony cap and mute.
@@ -198,26 +199,38 @@ left to right:
 3. **The selected lane's chain:** its devices are drawn inline as nested
    bay columns, under a bracket header that shows the depth.
 
-**Collapsed face.** The ▾ in the title strip collapses the rack to its
-macro knobs. A rack loaded from a preset opens collapsed, showing only
-its macros. That face is the pseudomachine: on the track it reads as one
-device, GUITAR RIG, with four knobs.
+**Collapsed face.** The fold button in the title strip collapses the
+rack to its named macro knobs. A rack loaded from a preset opens
+collapsed. That face is the pseudomachine: on the track it reads as one
+device, GUITAR RIG, with four knobs. The fold state saves as
+`"collapsed"` in the rack's state.
 
 **MAP mode.** Pick a macro and arm MAP. Every mappable control in the
-open lane gets an outline, and clicking one adds a mapping. Under the
+open lane gets an amber outline, and clicking one adds a mapping. Under the
 macros, a table lists the picked macro's mappings: target, MIN, MAX and
 the formula as a text field. Dragging MIN or MAX on a row sets the range
-the same way dragging the target's knob does.
+the same way dragging the target's knob does. With MAP off, turning a
+mapped control by hand moves the macro instead: the macro takes the
+value whose mapping lands closest to where the hand put the control.
+
+**Zones.** KEY, VEL and CHAIN tabs under the lane list show one bar per
+lane; drag a bar's ends to set its range. CHAIN is also a field beside
+the macros (`rk-chain`, 0–127).
+
+**Reordering.** Drag an insert's title strip along the lane's chain to
+move it.
 
 The colors and widgets are the existing tokens: amber marks the armed
 MAP and the selected lane and nothing else. No new widget kinds are
 needed except the zone bars and the mapping table rows.
 
-**Group into a rack.** Select a run of devices on a track (the
-instrument and some effects, or only effects) and press ⌘G. The run
-moves into a new rack's first lane, with its settings and automation
-intact (see "Automation inside a rack"). Ungroup does the reverse when
-the rack has one lane and no mappings.
+**Group into a rack.** Shift-click devices in the bay to select a run
+(the instrument and some effects, or only effects) and press ⌘G. The
+run moves into a new rack's first lane, with its settings and automation
+intact (see "Automation inside a rack"); an instrument run makes a Rack,
+an effect run an FX Rack. With a rack selected, ⌘⇧G ungroups it when it
+has one lane and no mappings. ⌘G groups tracks only while no devices are
+selected in the bay.
 
 ## Presets: rigs
 
@@ -227,8 +240,8 @@ settings, macros and mappings.
 
 - Factory rack presets live in `machines/rack/presets/`, banked by
   folder.
-- The machine picker lists them under **RACKS**, filtered by kind.
-  Picking one inserts a rack and loads the preset.
+- The machine picker lists Rack and FX Rack under **RACKS**, filtered
+  by kind; their preset submenus hold the rigs.
 - The bay's preset menu saves User and Project racks as it does for any
   machine.
 
@@ -236,7 +249,7 @@ Existing preset storage carries this with no new item kind (docs/25):
 racks are a machine with presets. The one change is that a preset can
 hold `state` beside `params`, which the rack already relies on.
 
-**Factory rigs to ship with phase 5:**
+**Factory rigs:**
 
 - **Fretwire Clean Rig.** Guitar → amp2 (clean) → delay2 → verb2.
   Macros: PICKUP (SELECT stepped), TONE (TONE pot + amp treble), ECHO,
@@ -248,8 +261,8 @@ hold `state` beside `params`, which the rack already relies on.
   levels, opposite ways), GROWL, PUNCH.
 - **Parallel Squash** (effect rack). Lane 1 is dry, lane 2 is a heavy
   comp2 with sat2. Macro AMOUNT.
-- **Split and layer.** The current rack presets, rewritten in the new
-  form.
+- **Split and layer.** The first Rack's presets (`bass-pad-split`,
+  `epiano-pad-layer`), rewritten in the second form.
 
 ## Automation inside a rack
 
@@ -257,17 +270,27 @@ The macros cover most needs. Inner controls can also be automated
 directly, so grouping loses nothing:
 
 - **The target path** extends `automation.Target` with a path of up to
-  three `(lane, slot uid)` steps under the rack's own target. Files
-  write slot positions, which load back to uids.
-- **In files** it reads as the rack's target, then the path:
-  `fx1/2.1:amp-gain` is the rack in effect slot 1, lane 2, slot 1, control
-  `amp-gain`.
-- **Resolving lanes.** `publishLanes` resolves the path to the inner
-  machine. `AutoView` gains the path, so `matches` stays a cheap compare.
-- **Mapped controls.** A mapped control can't hold automation of its
-  own: the macro owns it. Grouping moves such lanes onto the macro when
-  the mapping is one-to-one, and otherwise keeps the lane and leaves the
-  control unmapped.
+  three steps under the rack's own target. Each step is a lane uid and a
+  slot (0 for the lane's instrument, else the insert's uid), so lanes
+  and inserts can move without breaking it. Files write positions,
+  which load back to uids.
+- **In files** it reads as the rack's target, then `/L.P` per step:
+  lane L counted from 1, place P 0 for the lane's instrument and n for
+  its n-th insert. `fx1/2.1:amp-gain` is the rack in effect slot 1,
+  lane 2, first insert, control `amp-gain`; `inst/1.1/2.1:amp-gain` goes
+  through the track's instrument rack and the FX Rack in its lane 1.
+- **Resolving lanes.** `Machine.child` lists a container's machines and
+  `Machine.inner(path)` walks it; the track resolves a lane to the inner
+  machine when it publishes. `AutoView` gains the path, so `matches`
+  stays a cheap compare, and `into(step)` hands a nested rack the view
+  one step down.
+- **Grouping** retargets the moved machines' lanes (the track's and its
+  clips') one step down the new rack, and ungrouping strips that step.
+  A lane past three steps is dropped. Ungrouping also drops the lanes on
+  the rack's own macros, which go with it. A mapped control's own lane
+  still plays, but the macro overrides it while it moves.
+- The lane menu names an inner target with the machine first
+  (`AMP2 GAIN`).
 
 ## Files and compatibility
 
@@ -313,20 +336,38 @@ directly, so grouping loses nothing:
 
 ## slabkit
 
-```python
-from slabkit import Song, fx, rack, lane, macro
+`tools/slabkit/rack.py`:
 
-rig = rack(
-    lanes=[lane("CLEAN", "guitar", "twin-humbucker",
-                fx=[fx("amp2", "guitar-clean"), fx("delay2", "slapback"), fx("verb2", "chamber")])],
-    macros=[macro("DRIVE", 0.3, maps=[("CLEAN.1:amp-gain", 2, 7.5, "x^2"),
-                                      ("CLEAN.1:amp-level", 0.8, 0.5)])])
+```python
+from slabkit import Song, fx, rack
+
+rig = rack("Guitar")
+clean = rig.lane("CLEAN", "guitar", "twin-humbucker",
+                 fx=[fx("amp2", "guitar-clean"), fx("delay2", "slapback")])
+drive = rig.macro(1, "DRIVE", 0.3)
+rig.map(drive, clean, "amp-gain", insert=1, min=0.2, max=0.95, formula="x^2")
+rig.map(rig.macro(2, "LEVEL", 1.0), clean, "level", min=-40, max=0)
 t = song.track("GTR", rig)               # or song.track("GTR", "rack", "fretwire-clean-rig")
-t.automate("rk-m1", {"chorus": (0.3, 0.8)})
+t.automate("rk-m1", (0, 0.3), (32, 0.8))
+t.automate("inst/1.1:amp-treble", (0, 0.5), (32, 0.7))
 ```
 
-`describe.zig` lists the rack, its controls and its presets, so
-`slab --describe` and the machine database see it.
+- `rack(name, kind="instrument"|"effect", preset=None, chain=0,
+  collapsed=False)`; `lane(name, machine, preset, params, fx, keys=,
+  vel=, chain= (lo, hi) zones, transpose, level, pan, poly, mute)`; a
+  lane's machine may be another `rack()`, an insert `fx(rack(kind=
+  "effect"))`.
+- `macro(n, name, value)` returns the macro for `map(macro, lane,
+  target, insert=0, min, max, formula)`. Targets are `"level"`,
+  `"pan"`, or a control id (prefix optional), checked against the
+  machine's range.
+- `fx("fxrack", "parallel-squash")` and `song.track(name, "rack",
+  "<rig>")` load rigs as saved; automation paths into them resolve
+  against the preset's state.
+- `songs/rack_rigs.py` is the demo.
+
+`slab --describe` lists `rack` and `fxrack` (`"native": true`) with
+`rk-m1`…`rk-m8` and `rk-chain` under MACROS.
 
 ## Build phases
 
@@ -373,25 +414,23 @@ bit-exact.
      macros round-trip; an automated macro sweep equals automating the
      control itself, sample for sample; a formula, a stepped target,
      unmapping; CHAIN zones; a macro reaching a nested rack's macro.
-4. **UI.** *The macro block is built:* eight knobs, NAME, MAP (click a
+4. **UI.** *Built.* The macro block: eight knobs, NAME, MAP (click a
    control in the open lane, or LV/PN, to map it to the picked macro over
    its whole range), and the picked macro's mappings with × , MIN and
    MAX steps in the target's units and the f(x) field, red until it
-   parses. Still to build: CHAIN zone editing, the collapsed face,
-   outlines on mappable controls in MAP mode, hand moves on a mapped
-   knob reaching the macro, dragging inserts to reorder, and ⌘G group
-   and ungroup.
-5. **Rigs.**
-   - Factory rack presets, the RACKS section of the picker, and the
-     slabkit `rack/lane/macro` builders with `describe`.
-   - Docs: this file moves from proposal to reference, plus docs/19,
-     docs/20, docs/22 and CHANGELOG.
-6. **Inner automation.** Target paths, AutoView paths, and moving lanes
-   on group.
+   parses. KEY/VEL/CHAIN zone tabs, the collapsed face, MAP outlines,
+   hand moves on a mapped knob reaching the macro, insert drag
+   reordering, and ⌘G group / ⌘⇧G ungroup from a bay selection.
+5. **Rigs.** *Built.* Factory rack presets, the RACKS section of the
+   picker, the slabkit builders and `describe`, and these docs.
+6. **Inner automation.** *Built.* Target paths, AutoView paths, and
+   moving lanes on group and ungroup. Tests: a path lane drives the
+   insert inside as a track lane would; `fx0/2.1:` round-trips; group
+   and ungroup keep automation.
 
 ## Open choices
 
-These are my defaults. Each is worth a word before phase 3.
+These were the defaults going in, and are what got built.
 
 - **8 macros.** Live 12 allows up to 16. Eight fits two rows at the large
   tier and has been enough for Live rigs for a decade.

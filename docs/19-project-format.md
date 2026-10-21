@@ -68,29 +68,38 @@ copies of the files only the project has: into the home folder's
 A track's `instrument.params` and an effect's `params` in a project use
 exactly the same map.
 
-A **Rack** preset (`machines/rack/presets/`) holds parts instead of
-params, each part a machine with its settings in that machine's own
-form:
+A **Rack** or **FX Rack** preset (`machines/rack/presets/`,
+`machines/fxrack/presets/`) holds the rack's state beside the header:
+lanes, each a chain of machines in their own saved form, then macros
+and mappings ([42-racks.md](42-racks.md) §Files):
 
 ```json
-{"slab": "preset", "schema": 1, "machine": "rack", "note": "CMI tour / gabriel2 / FISHINET",
- "parts": [{"machine": "unfairlight", "name": "VOC1", "lo": 0, "hi": 40,
-            "vlo": 1, "vhi": 127, "transpose": 12, "level": 0, "pan": 0,
-            "poly": 2, "mute": false,
-            "params": {"cmi-filter": 144, "cmi-atk": 0.47},
-            "assets": {"voice": "lib:cmi/tour/gabriel2/VOC1.vc"},
-            "zones": {}}]}
+{"slab": "preset", "schema": 1, "machine": "rack", "note": "…",
+ "rack": 2, "kind": "instrument",
+ "lanes": [{"name": "BASS", "lo": 0, "hi": 127, "vlo": 1, "vhi": 127,
+            "clo": 0, "chi": 127, "transpose": 0, "level": 0, "pan": 0, "poly": 0,
+            "instrument": {"machine": "bass", "preset": "p-bass"},
+            "effects": [{"machine": "amp2", "preset": "bass-vintage-15"}]}],
+ "macros": [{"name": "GROWL", "value": 0.4}, …],
+ "chain": 0,
+ "maps": [{"macro": 1, "lane": 1, "insert": 1, "control": "amp-gain", "min": 0.15, "max": 0.85}],
+ "collapsed": true}
 ```
 
-- A note goes to every part whose key range (`lo`–`hi`) and velocity
-  range (`vlo`–`vhi`, 1–127) hold it, `transpose` semitones away, so
-  splits and layers are ranges that don't or do overlap.
-- `poly` caps a part's notes at once (0 = the machine's own voices): at
+- A note goes to every lane whose key range (`lo`–`hi`), velocity
+  range (`vlo`–`vhi`, 1–127) and CHAIN zone (`clo`–`chi`, against
+  `rk-chain`) hold it, `transpose` semitones away, so splits and layers
+  are ranges that don't or do overlap. An FX Rack's lanes all get the
+  input and have no `instrument`.
+- `poly` caps a lane's notes at once (0 = the machine's own voices): at
   the cap its oldest note is released first.
 - `level` is dB (−60..+12), `pan` −1..1 (a balance).
-- `params`, `assets` and `zones` are what the part's machine would take
-  as a track's instrument. Parts naming an unknown machine are dropped;
-  racks don't nest.
+- A lane machine is what a track's instrument or effect would hold:
+  `params`, `assets`, `zones`, `state`. With `preset` and no `params`
+  it loads that preset. Machines the registry lacks are dropped; racks
+  nest three deep.
+- The first form, `{"parts": [{"machine": …, "lo": …, "params": …}]}`,
+  still loads, each part a lane with no inserts.
 
 ## Project
 

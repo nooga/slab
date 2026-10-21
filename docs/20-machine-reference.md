@@ -21,6 +21,7 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`kit`](#kit) | Skinwork Kit | instrument | 12 | `sk-` |
 | [`ms20`](#ms20) | SM-24 Mono | instrument | mono | `—` |
 | [`profit5`](#profit5) | Profit-5 | instrument | 8 | `p5-` |
+| [`rack`](#rack) | Rack | instrument | 0 | `rk-` |
 | [`rhodes`](#rhodes) | Rhodes E-Piano | instrument | 8 | `rd-` |
 | [`sampler`](#sampler) | Sampler | instrument | 8 | `smp-` |
 | [`unfairlight`](#unfairlight) | Unfairlight TMI | instrument | 8 | `cmi-` |
@@ -34,6 +35,7 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`eq2`](#eq2) | EQ | effect | — | `eq-` |
 | [`era`](#era) | Era | effect | — | `era-` |
 | [`funk`](#funk) | Funk Overload | effect | — | `funk-` |
+| [`fxrack`](#fxrack) | FX Rack | effect | — | `rk-` |
 | [`gate2`](#gate2) | Gate | effect | — | `gate-` |
 | [`geq8`](#geq8) | GEQ | effect | — | `geq-` |
 | [`limiter2`](#limiter2) | Limiter | effect | — | `lim-` |
@@ -1076,6 +1078,30 @@ Presets:
 - `afterimage/solar-brass` — Short Oberheim-mode brass with a soft attack and detuned oscillators; Afterimage Express.
 - `afterimage/vector-arp` — Narrow-pulse pluck with two-voice unison; Afterimage Express. Try sixteenths above middle C; delay is not included.
 
+## rack
+
+**Rack**, instrument, 0 voices.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `rk-m1` | MACROS | MACRO 1 | 0 … 1 | 0 | linear |
+| `rk-m2` | MACROS | MACRO 2 | 0 … 1 | 0 | linear |
+| `rk-m3` | MACROS | MACRO 3 | 0 … 1 | 0 | linear |
+| `rk-m4` | MACROS | MACRO 4 | 0 … 1 | 0 | linear |
+| `rk-m5` | MACROS | MACRO 5 | 0 … 1 | 0 | linear |
+| `rk-m6` | MACROS | MACRO 6 | 0 … 1 | 0 | linear |
+| `rk-m7` | MACROS | MACRO 7 | 0 … 1 | 0 | linear |
+| `rk-m8` | MACROS | MACRO 8 | 0 … 1 | 0 | linear |
+| `rk-chain` | MACROS | CHAIN | 0 … 127 | 0 | integer |
+
+Presets:
+
+- `bass-di-amp` — Fretwire Bass split into a compressed DI and a 15-inch amp. BLEND crossfades them, GROWL drives the amp, PUNCH squeezes the DI.
+- `bass-pad-split` — Juno bass under the split point, string pad over it
+- `epiano-pad-layer` — FM e-piano layered over a quiet Juno pad
+- `fretwire-clean-rig` — Fretwire into a clean amp, slapback and a small room. PICKUP picks neck, both or bridge; TONE opens the tone pot and the amp's treble together.
+- `fretwire-crunch-rig` — Fretwire into a crunch amp. DRIVE turns the gain up and the amp's level down with it, so the rig holds its loudness.
+
 ## rhodes
 
 **Rhodes E-Piano**, instrument, 8 voices.
@@ -1539,6 +1565,26 @@ Presets:
 - `rubber-bass` — Round envelope-filter bass, the notes bloom and close
 - `squelch-bass` — Tight squeezed bass wah, every note the same bite
 - `touch-wah` — Gentle touch wah on guitar or clav: each note opens by how hard it hits
+
+## fxrack
+
+**FX Rack**, stereo insert effect.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `rk-m1` | MACROS | MACRO 1 | 0 … 1 | 0 | linear |
+| `rk-m2` | MACROS | MACRO 2 | 0 … 1 | 0 | linear |
+| `rk-m3` | MACROS | MACRO 3 | 0 … 1 | 0 | linear |
+| `rk-m4` | MACROS | MACRO 4 | 0 … 1 | 0 | linear |
+| `rk-m5` | MACROS | MACRO 5 | 0 … 1 | 0 | linear |
+| `rk-m6` | MACROS | MACRO 6 | 0 … 1 | 0 | linear |
+| `rk-m7` | MACROS | MACRO 7 | 0 … 1 | 0 | linear |
+| `rk-m8` | MACROS | MACRO 8 | 0 … 1 | 0 | linear |
+| `rk-chain` | MACROS | CHAIN | 0 … 127 | 0 | integer |
+
+Presets:
+
+- `parallel-squash` — Parallel compression: the dry signal beside a crushed, saturated copy. AMOUNT brings the copy up under it.
 
 ## gate2
 
