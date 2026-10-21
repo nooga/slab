@@ -157,7 +157,7 @@ pub fn takeStart(start_sample: u64, round_trip: u32, backlog: u32, pdc: u32) u64
     return start_sample -| late;
 }
 
-const ZEROS = [_]f32{0} ** 512;
+const ZEROS: [512]f32 = @splat(0);
 const CHUNK = 256;
 
 pub const Recorder = struct {
@@ -204,7 +204,7 @@ pub const Recorder = struct {
     data_bytes: u64 = 0,
 
     take_counter: u32 = 0,
-    path_buf: [MAX_PATH]u8 = [_]u8{0} ** MAX_PATH,
+    path_buf: [MAX_PATH]u8 = @splat(0),
     path_len: usize = 0,
     // A folder set with setDir; empty: storage.recordingsDir at each take.
     dir_buf: [MAX_PATH]u8 = undefined,
@@ -533,7 +533,7 @@ pub const Recorder = struct {
     fn buildTakePath(self: *Recorder) void {
         while (self.take_counter < 9999) {
             self.take_counter += 1;
-            const s = std.fmt.bufPrintZ(&self.path_buf, "{s}/take-{d:0>3}.wav", .{ self.dir(), self.take_counter }) catch break;
+            const s = std.mem.printSentinel(&self.path_buf, "{s}/take-{d:0>3}.wav", .{ self.dir(), self.take_counter }, 0) catch break;
             self.path_len = s.len;
             if (access(s.ptr, 0) != 0) return;
         }
@@ -559,7 +559,7 @@ test "ring push/pop round-trips and reports overrun on overflow" {
     try testing.expectEqualSlices(f32, &a, out[0..5]);
 
     // Capacity 8 → at most 8 frames live at once; a 10-frame push truncates.
-    const big = [_]f32{0} ** 10;
+    const big: [10]f32 = @splat(0);
     try testing.expectEqual(@as(usize, 8), ring.push(&big));
 }
 
@@ -585,7 +585,7 @@ test "realtime: recording stop drains a callback already inside capture" {
     defer rec.deinit();
     rec.setDir("/tmp/slab-recording-audit");
     try rec.start();
-    const path = try a.dupeZ(u8, rec.path_buf[0..rec.path_len]);
+    const path = try a.dupeSentinel(u8, rec.path_buf[0..rec.path_len], 0);
     defer a.free(path);
     defer _ = struct {
         extern "c" fn unlink(p: [*:0]const u8) c_int;
@@ -598,7 +598,7 @@ test "realtime: recording stop drains a callback already inside capture" {
     const pause = timespec{ .sec = 0, .nsec = 20 * std.time.ns_per_ms };
     _ = nanosleep(&pause, null);
     try testing.expect(!rec.isFinished());
-    const samples = [_]f32{0.25} ** 64;
+    const samples: [64]f32 = @splat(0.25);
     try testing.expectEqual(samples.len, rec.ring.push(&samples));
     _ = rec.frames_captured.fetchAdd(samples.len, .monotonic);
     rec.endCapture();
@@ -679,7 +679,7 @@ test "an overrun comes back as silence, so the rest of the take keeps its time" 
     try testing.expectEqual(@as(usize, 16), rec.ring.pop(&out));
     // drained: the 8 owed frames go in as zeros before the next block
     transport.sample_pos.store(24, .monotonic);
-    var b = [_]f32{0.5} ** 4;
+    var b: [4]f32 = @splat(0.5);
     Recorder.captureFn(&rec, &b, 4, 1, 0);
     const n = rec.ring.pop(&out);
     try testing.expectEqual(@as(usize, 12), n);
@@ -694,7 +694,7 @@ test "a take notices the transport jumping, and stamps its first block's backlog
     var rec = try testRecorder(&transport, 1024);
     defer rec.deinit();
     defer rec.state.store(@intFromEnum(State.idle), .seq_cst);
-    var a = [_]f32{0} ** 64;
+    var a: [64]f32 = @splat(0);
     transport.sample_pos.store(1000, .monotonic);
     Recorder.captureFn(&rec, &a, 64, 1, 512);
     transport.sample_pos.store(1064, .monotonic);

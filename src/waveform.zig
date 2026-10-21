@@ -26,8 +26,8 @@ const BASE: usize = 64;
 pub const PeakCache = struct {
     // Concatenated pyramid: levels[level] is a slice into `peaks`.
     peaks: []Peak = &.{},
-    level_off: [24]usize = [_]usize{0} ** 24,
-    level_len: [24]usize = [_]usize{0} ** 24,
+    level_off: [24]usize = @splat(0),
+    level_len: [24]usize = @splat(0),
     level_count: usize = 0,
     sample_count: usize = 0,
 

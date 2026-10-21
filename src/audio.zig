@@ -32,7 +32,7 @@ pub const MA_NAME_CAP = 255;
 pub const MAX_INPUT_DEVICES = 32;
 pub const InputDevice = struct {
     id: c.ma.ma_device_id,
-    name: [MA_NAME_CAP:0]u8 = [_:0]u8{0} ** MA_NAME_CAP,
+    name: [MA_NAME_CAP:0]u8 = @splat(0),
 };
 
 const AudioObjectPropertyAddress = extern struct { selector: u32, scope: u32, element: u32 };

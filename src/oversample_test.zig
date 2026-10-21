@@ -32,7 +32,7 @@ fn db(x: f64) f64 {
 
 /// Decimate a 4x-rate sine at `hz`; return the output amplitude at `probe`.
 fn decimated(host: *FyHost, hz: f64, probe: f64) !f64 {
-    var state = [_]f64{0} ** 26;
+    var state: [26]f64 = @splat(0);
     var out: f64 = 0;
     var ys: [4800]f64 = undefined;
     var n: usize = 0;
@@ -78,8 +78,8 @@ test "4x interpolator: images rejected" {
     try host.compile(PROBES);
     Fy.Builtins.fyPtr = @intFromPtr(&host.fy);
 
-    var state = [_]f64{0} ** 26;
-    var quad = [_]f64{0} ** 4;
+    var state: [26]f64 = @splat(0);
+    var quad: [4]f64 = @splat(0);
     var ys: [4 * 4800]f64 = undefined;
     const hz = 5000.0;
     for (0..4800 + 480) |n| {

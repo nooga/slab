@@ -67,6 +67,7 @@ const pane = @import("ui/pane_input.zig");
 const gesture = @import("ui/gesture.zig");
 const commands = @import("ui/commands.zig");
 const ui_style = @import("ui/style.zig");
+const ui_draw = @import("ui/draw.zig");
 const ui_gallery = @import("ui/gallery.zig");
 const layout_mod = @import("ui/layout.zig");
 const transport_bar = @import("ui/transport_bar.zig");
@@ -198,11 +199,11 @@ const EditClipboard = struct {
 };
 
 const StatusMessage = struct {
-    buf: [128:0]u8 = [_:0]u8{0} ** 128,
+    buf: [128:0]u8 = @splat(0),
     until: f64 = 0,
 
     fn set(self: *StatusMessage, comptime fmt: []const u8, args: anytype) void {
-        const s = std.fmt.bufPrintZ(&self.buf, fmt, args) catch "status";
+        const s = std.mem.printSentinel(&self.buf, fmt, args, 0) catch "status";
         self.buf[s.len] = 0;
         self.until = c.rl.GetTime() + 2.0;
     }
@@ -717,7 +718,7 @@ fn enterBundleResources() void {
     const macos = std.fs.path.dirname(exe) orelse return;
     if (!std.mem.endsWith(u8, macos, ".app/Contents/MacOS")) return;
     var rb: [storage.MAX_PATH]u8 = undefined;
-    const res = std.fmt.bufPrintZ(&rb, "{s}/../Resources", .{macos}) catch return;
+    const res = std.mem.printSentinel(&rb, "{s}/../Resources", .{macos}, 0) catch return;
     _ = chdir(res);
 }
 
@@ -896,7 +897,7 @@ pub fn main(init: std.process.Init) !void {
     // Master bus — a standalone Track (silent instrument, effects-only,
     // its volume() is the master fader and meter() the master meter). It
     // lives outside tracks_buf so no audio-track index ever shifts.
-    var master = try track_mod.Track.init(alloc, "Master", @bitCast(ui_style.face_hi), silent_machine);
+    var master = try track_mod.Track.init(alloc, "Master", ui_draw.rl(ui_style.face_hi), silent_machine);
     master.kind = .master;
     master.setVolume(1.0); // unity — Track defaults to 0.8, which would quiet the mix
     defer master.deinit(alloc);
@@ -1201,7 +1202,7 @@ pub fn main(init: std.process.Init) !void {
         }
 
         c.rl.BeginDrawing();
-        c.rl.ClearBackground(@bitCast(ui_style.chassis));
+        c.rl.ClearBackground(ui_draw.rl(ui_style.chassis));
 
         const rec_busy = recorder.isRecording() or rec_finishing;
         // An offline render (export, bounce, freeze) owns the engine with
@@ -2467,7 +2468,8 @@ test "slices' SFZ: each on its key, at its pitch, one shot" {
     const root = storage.absolute(&root_buf, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
     var sfz: std.ArrayList(u8) = .empty;
     defer sfz.deinit(alloc);
-    const tone = [_]f32{ 0.5, -0.5, 0.25, -0.25 } ** 100;
+    var tone: [400]f32 = undefined;
+    for (&tone, 0..) |*t, i| t.* = ([_]f32{ 0.5, -0.5, 0.25, -0.25 })[i % 4];
     for (0..2) |k| {
         var nb: [24]u8 = undefined;
         const file = try std.fmt.bufPrint(&nb, "slice-{d:0>2}.wav", .{k + 1});
@@ -3568,7 +3570,7 @@ const ExtractBench = struct {
         var rb: [storage.MAX_PATH]u8 = undefined;
         const root = storage.absolute(&self.root_buf, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{self.tmp.sub_path}));
         var hb: [storage.MAX_PATH]u8 = undefined;
-        _ = env.setenv("SLAB_HOME", (try std.fmt.bufPrintZ(&hb, "{s}/home", .{root})).ptr, 1);
+        _ = env.setenv("SLAB_HOME", (try std.mem.printSentinel(&hb, "{s}/home", .{root}, 0)).ptr, 1);
         storage.setProject(null);
         const buf = try alloc.alloc(f32, x.len);
         defer alloc.free(buf);
@@ -5684,7 +5686,7 @@ fn screenRect() ui_geom.Rect {
 
 /// Default color for the n-th new track (the track palette, cycled).
 fn trackColor(n: usize) c.rl.Color {
-    return @bitCast(ui_style.track[n % ui_style.track.len]);
+    return ui_draw.rl(ui_style.track[n % ui_style.track.len]);
 }
 
 fn uiRect(r: c.rl.Rectangle) ui_geom.Rect {
@@ -6174,7 +6176,7 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
 
     var transport: transport_mod.Transport = .{};
     transport.sample_rate = audio_mod.SAMPLE_RATE;
-    var master = try track_mod.Track.init(alloc, "Master", @bitCast(ui_style.face_hi), silent_machine);
+    var master = try track_mod.Track.init(alloc, "Master", ui_draw.rl(ui_style.face_hi), silent_machine);
     master.kind = .master;
     master.setVolume(1.0);
     defer master.deinit(alloc);
@@ -6739,7 +6741,7 @@ fn commitPreset(rename: *RenameState, tracks: []track_mod.Track, dirty: *bool, s
         status.set("Preset name empty", .{});
         return;
     }
-    var name_buf: [track_mod.MAX_NAME + 1:0]u8 = [_:0]u8{0} ** (track_mod.MAX_NAME + 1);
+    var name_buf: [track_mod.MAX_NAME + 1:0]u8 = @splat(0);
     @memcpy(name_buf[0..name.len], name);
     const name_z: [*:0]const u8 = @ptrCast(&name_buf[0]);
     switch (rename.kind) {
@@ -7480,7 +7482,7 @@ test "bounce: the selected clip lands on a new track below its source, the origi
     var root_buf: [storage.MAX_PATH]u8 = undefined;
     const root = storage.absolute(&root_buf, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
     var hb: [storage.MAX_PATH]u8 = undefined;
-    _ = env.setenv("SLAB_HOME", (try std.fmt.bufPrintZ(&hb, "{s}/home", .{root})).ptr, 1);
+    _ = env.setenv("SLAB_HOME", (try std.mem.printSentinel(&hb, "{s}/home", .{root}, 0)).ptr, 1);
     defer _ = env.unsetenv("SLAB_HOME");
     storage.setProject(null);
 
@@ -7567,7 +7569,7 @@ test "bounce provenance: a recipe stays fresh, goes stale with its source, re-bo
     var root_buf: [storage.MAX_PATH]u8 = undefined;
     const root = storage.absolute(&root_buf, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
     var hb: [storage.MAX_PATH]u8 = undefined;
-    _ = env.setenv("SLAB_HOME", (try std.fmt.bufPrintZ(&hb, "{s}/home", .{root})).ptr, 1);
+    _ = env.setenv("SLAB_HOME", (try std.mem.printSentinel(&hb, "{s}/home", .{root}, 0)).ptr, 1);
     defer _ = env.unsetenv("SLAB_HOME");
     storage.setProject(null);
 
@@ -7707,7 +7709,7 @@ test "freeze: a track renders to its frozen audio, plays the same frozen, and go
     var root_buf: [storage.MAX_PATH]u8 = undefined;
     const root = storage.absolute(&root_buf, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
     var hb: [storage.MAX_PATH]u8 = undefined;
-    _ = env.setenv("SLAB_HOME", (try std.fmt.bufPrintZ(&hb, "{s}/home", .{root})).ptr, 1);
+    _ = env.setenv("SLAB_HOME", (try std.mem.printSentinel(&hb, "{s}/home", .{root}, 0)).ptr, 1);
     defer _ = env.unsetenv("SLAB_HOME");
     storage.setProject(null);
 

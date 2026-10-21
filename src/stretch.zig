@@ -98,9 +98,9 @@ pub const Stretcher = struct {
     reset_phase: bool = true,
     prev_pos: f64 = 0,
     /// Output phases (the mid's), per bin.
-    psi: [BINS]f32 = [_]f32{0} ** BINS,
-    ring_l: [N]f32 = [_]f32{0} ** N,
-    ring_r: [N]f32 = [_]f32{0} ** N,
+    psi: [BINS]f32 = @splat(0),
+    ring_l: [N]f32 = @splat(0),
+    ring_r: [N]f32 = @splat(0),
     bl: [N]C = undefined,
     br: [N]C = undefined,
     mag: [BINS]f32 = undefined,
@@ -531,7 +531,7 @@ fn splitmix(x0: u64) u64 {
 /// A track's stretchers: one per clip sounding at once.
 pub const Bank = struct {
     pub const SIZE = 4;
-    st: [SIZE]Stretcher = [_]Stretcher{.{}} ** SIZE,
+    st: [SIZE]Stretcher = @splat(.{}),
     /// SMEAR's, made on the UI thread when a clip first needs them.
     smear: [2]std.atomic.Value(?*Smearer) = @splat(.init(null)),
     tick: u64 = 0,
@@ -637,9 +637,9 @@ test "stretch: at ratio 1 it gives the source back" {
     defer alloc.destroy(st);
     st.* = .{};
     st.claim(1, 0, .mix, 0);
-    var l = [_]f32{0} ** 20_000;
-    var r = [_]f32{0} ** 20_000;
-    const g = [_]f32{1} ** 512;
+    var l: [20_000]f32 = @splat(0);
+    var r: [20_000]f32 = @splat(0);
+    const g: [512]f32 = @splat(1);
     var a: usize = 0;
     while (a < l.len) : (a += 512) {
         const n = @min(512, l.len - a);
@@ -657,9 +657,9 @@ test "stretch: twice as long, same pitch; an octave up, same length" {
     defer alloc.free(x);
     const st = try alloc.create(Stretcher);
     defer alloc.destroy(st);
-    var l = [_]f32{0} ** 24_000;
-    var r = [_]f32{0} ** 24_000;
-    const g = [_]f32{1} ** 24_000;
+    var l: [24_000]f32 = @splat(0);
+    var r: [24_000]f32 = @splat(0);
+    const g: [24_000]f32 = @splat(1);
     st.* = .{};
     st.claim(1, 0, .mix, 0);
     st.render(.{ .l = x.ptr, .r = null, .len = x.len, .reversed = false }, Lin{ .rate = 0.5, .p0 = 20_000 }, 0, &l, &r, &g);
@@ -686,9 +686,9 @@ test "stretch: a stereo image keeps its channels apart" {
     defer alloc.destroy(st);
     st.* = .{};
     st.claim(1, 0, .mix, 0);
-    var l = [_]f32{0} ** 24_000;
-    var r = [_]f32{0} ** 24_000;
-    const g = [_]f32{1} ** 24_000;
+    var l: [24_000]f32 = @splat(0);
+    var r: [24_000]f32 = @splat(0);
+    const g: [24_000]f32 = @splat(1);
     st.render(.{ .l = xl.ptr, .r = xr.ptr, .len = xl.len, .reversed = false }, Lin{ .rate = 0.7, .p0 = 20_000 }, 0, &l, &r, &g);
     try std.testing.expectApproxEqAbs(@as(f64, 300), hz(l[4096..20_000]), 1.5);
     try std.testing.expectApproxEqAbs(@as(f64, 1200), hz(r[4096..20_000]), 3);
@@ -700,9 +700,9 @@ test "voice: grains keep the pitch and the level, stretched and squeezed" {
     defer alloc.free(x);
     const st = try alloc.create(Stretcher);
     defer alloc.destroy(st);
-    var l = [_]f32{0} ** 24_000;
-    var r = [_]f32{0} ** 24_000;
-    const g = [_]f32{1} ** 24_000;
+    var l: [24_000]f32 = @splat(0);
+    var r: [24_000]f32 = @splat(0);
+    const g: [24_000]f32 = @splat(1);
     for ([_]f64{ 0.6, 1.5 }) |rate| {
         st.* = .{};
         st.claim(1, 0, .voice, 1920);
@@ -771,7 +771,7 @@ const Psola = struct {
     fn hit(_: Psola, _: f64, _: f64) bool {
         return false;
     }
-    fn tuneAt(self: Psola, s: f64) TuneGrain {
+    pub fn tuneAt(self: Psola, s: f64) TuneGrain {
         const k = @round((s - self.mark0) / self.period);
         return .{ .center = self.mark0 + k * self.period, .period = self.period, .beta = self.beta };
     }
@@ -799,9 +799,9 @@ test "tune: grains move the pitch, keep the level, and stretch time" {
     const st = try alloc.create(Stretcher);
     defer alloc.destroy(st);
     const n = 47 * 512;
-    var l = [_]f32{0} ** n;
-    var r = [_]f32{0} ** n;
-    const g = [_]f32{1} ** n;
+    var l: [n]f32 = @splat(0);
+    var r: [n]f32 = @splat(0);
+    const g: [n]f32 = @splat(1);
     const Case = struct { rate: f64, beta: f64 };
     for ([_]Case{ .{ .rate = 1, .beta = 1 }, .{ .rate = 1, .beta = std.math.pow(f64, 2, 2.0 / 12.0) }, .{ .rate = 0.5, .beta = std.math.pow(f64, 2, -1.0 / 12.0) } }) |cs| {
         st.* = .{};
@@ -871,7 +871,7 @@ test "realtime audit benchmark: smear first block and peak render cost" {
         var peak: f64 = 0;
         var l: [256]f32 = undefined;
         var r: [256]f32 = undefined;
-        const gain = [_]f32{1} ** 256;
+        const gain: [256]f32 = @splat(1);
         for (0..160) |block| {
             @memset(&l, 0);
             @memset(&r, 0);

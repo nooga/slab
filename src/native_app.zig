@@ -100,9 +100,9 @@ pub const TitleBar = struct {
         const base = std.fs.path.basename(std.mem.trimEnd(u8, path, "/"));
         const name = if (!chosen) "Untitled" else if (std.mem.endsWith(u8, base, ".slab")) base[0 .. base.len - 5] else base;
         var tbuf: [256]u8 = undefined;
-        const title = std.fmt.bufPrintZ(&tbuf, "SLAB \u{2014} {s}", .{name}) catch "SLAB";
+        const title = std.mem.printSentinel(&tbuf, "SLAB \u{2014} {s}", .{name}, 0) catch "SLAB";
         var pbuf: [1025]u8 = undefined;
-        const zpath: ?[*:0]const u8 = if (chosen) (std.fmt.bufPrintZ(&pbuf, "{s}", .{path}) catch null) else null;
+        const zpath: ?[*:0]const u8 = if (chosen) (std.mem.printSentinel(&pbuf, "{s}", .{path}, 0) catch null) else null;
         slab_set_window_document(window, title.ptr, zpath, @intFromBool(dirty));
     }
 };

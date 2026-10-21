@@ -141,7 +141,7 @@ var just_opened: bool = false;
 var armed: bool = true;
 var open_mx: f32 = 0;
 var open_my: f32 = 0;
-var levels: [MAX_DEPTH]Level = [_]Level{.{}} ** MAX_DEPTH;
+var levels: [MAX_DEPTH]Level = @splat(.{});
 var level_count: usize = 0;
 /// Last frame's level rects, for this frame's outside-click test.
 var prev_rects: [MAX_DEPTH]Rect = undefined;

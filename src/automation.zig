@@ -111,7 +111,7 @@ pub const TargetKind = enum(u8) { volume, pan, inst, fx };
 pub const Target = struct {
     kind: TargetKind,
     fx_uid: u16 = 0,
-    param_buf: [MAX_PARAM_ID]u8 = [_]u8{0} ** MAX_PARAM_ID,
+    param_buf: [MAX_PARAM_ID]u8 = @splat(0),
     param_len: u8 = 0,
 
     pub fn volume() Target {

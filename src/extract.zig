@@ -46,7 +46,7 @@ pub fn placeNotes(alloc: std.mem.Allocator, clip: *const clip_mod.Clip, rate: f6
 /// The middle pitch of a pattern's notes (a bass's is under C3).
 pub fn medianPitch(notes: []const clip_mod.Note) u8 {
     if (notes.len == 0) return 60;
-    var hist = [_]u32{0} ** 128;
+    var hist: [128]u32 = @splat(0);
     for (notes) |nt| hist[nt.pitch] += 1;
     var seen: usize = 0;
     for (hist, 0..) |h, p| {

@@ -1894,10 +1894,10 @@ const Codegen = struct {
     // Spilling state. owner_*: the value living in a register, if any (only
     // pool registers; raw arg registers are never owned). Pins protect a
     // register from eviction while an instruction still needs it.
-    owner_d: [32]?usize = [_]?usize{null} ** 32,
-    owner_x: [32]?usize = [_]?usize{null} ** 32,
-    pin_d: [32]u16 = [_]u16{0} ** 32,
-    pin_x: [32]u16 = [_]u16{0} ** 32,
+    owner_d: [32]?usize = @splat(null),
+    owner_x: [32]?usize = @splat(null),
+    pin_d: [32]u16 = @splat(0),
+    pin_x: [32]u16 = @splat(0),
     pin_log: [1024]u8 = undefined,
     pin_len: usize = 0,
     trace: ?*compat.ArrayList(usize) = null,

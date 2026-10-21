@@ -152,14 +152,14 @@ pub const host_cache = struct {
         overflow: bool = false,
     };
 
-    var entries: [MAX]Entry = [_]Entry{.{}} ** MAX;
+    var entries: [MAX]Entry = @splat(.{});
 
     // std.c.stat names a symbol std doesn't declare on aarch64 macOS.
     extern "c" fn stat(path: [*:0]const u8, buf: *std.c.Stat) c_int;
 
     fn stamp(path: []const u8) ?Stamp {
         var zb: [1024]u8 = undefined;
-        const z = std.fmt.bufPrintZ(&zb, "{s}", .{path}) catch return null;
+        const z = std.mem.printSentinel(&zb, "{s}", .{path}, 0) catch return null;
         var st: std.c.Stat = undefined;
         if (stat(z.ptr, &st) != 0) return null;
         const t = st.mtime();
@@ -374,7 +374,7 @@ pub const FyRawMachine = struct {
     // Per-region state: effect machines run L through region 0 and R through
     // region 1 so per-channel state never cross-talks; polyphonic voice
     // machines get one region per voice.
-    state_buf: [MAX_REGIONS * MAX_STATE]u8 align(8) = [_]u8{0} ** (MAX_REGIONS * MAX_STATE),
+    state_buf: [MAX_REGIONS * MAX_STATE]u8 align(8) = @splat(0),
     // Heap regions for state over MAX_STATE, MAX_REGIONS of state_stride
     // bytes; empty otherwise. Use stateRegion, never state_buf directly.
     big_state: []align(8) u8 = &.{},
@@ -387,15 +387,15 @@ pub const FyRawMachine = struct {
     shared_caller: ?RawCaller = null,
     shared_awake: bool = false,
     shared_peak: f64 = 0,
-    params_buf: [MAX_PARAMS]u8 align(8) = [_]u8{0} ** MAX_PARAMS,
-    io: [MAX_BLOCK]IoFrame = [_]IoFrame{.{}} ** MAX_BLOCK,
+    params_buf: [MAX_PARAMS]u8 align(8) = @splat(0),
+    io: [MAX_BLOCK]IoFrame = @splat(.{}),
     kctx: KernelCtx = .{},
     /// Lane mode's right channel: its io frames (in_l holds R) and ctx
     /// (chan = 1), beside `io` and `kctx` for the left.
-    io_r: [MAX_BLOCK]IoFrame = [_]IoFrame{.{}} ** MAX_BLOCK,
+    io_r: [MAX_BLOCK]IoFrame = @splat(.{}),
     kctx_r: KernelCtx = .{},
     /// A unison voice's own frames, panned into `io` after its pass.
-    io_u: [MAX_BLOCK]IoFrame = [_]IoFrame{.{}} ** MAX_BLOCK,
+    io_u: [MAX_BLOCK]IoFrame = @splat(.{}),
     render_lanes_slots: RawSlots = .{},
     render_lite_lanes_slots: RawSlots = .{},
     render_lanes_caller: ?RawCaller = null,
@@ -418,7 +418,7 @@ pub const FyRawMachine = struct {
     // many samples each voice has before its next call.
     control_slots: RawSlots = .{},
     control_caller: ?RawCaller = null,
-    voice_ctl_left: [MAX_REGIONS]usize = [_]usize{0} ** MAX_REGIONS,
+    voice_ctl_left: [MAX_REGIONS]usize = @splat(0),
     // Optional per-block dsp2 word (params sample-rate --): coefficient fills
     // that must not run per sample, e.g. the MS-20 svf profile region.
     block_prepare_caller: ?RawCaller = null,
@@ -430,7 +430,7 @@ pub const FyRawMachine = struct {
     raw_control_bits: [MAX_CONTROLS]std.atomic.Value(u32) = undefined,
     // Audio-owned smoothing and snap requests adopted with control targets:
     // preset/project/param sets jump, drags glide.
-    smooth_norm: [MAX_CONTROLS]f32 = [_]f32{0} ** MAX_CONTROLS,
+    smooth_norm: [MAX_CONTROLS]f32 = @splat(0),
     // Set by a control edit (UI thread), taken by the engine's idle skip:
     // a sleeping machine renders again so the edit reaches its params.
     wake_req: std.atomic.Value(bool) = .init(false),
@@ -438,21 +438,21 @@ pub const FyRawMachine = struct {
     // Automation (docs/22). Audio thread: this chunk's lane value per
     // control, and whether a gliding control has caught up with its curve
     // (then it follows exactly instead of lagging the 20 ms smoother).
-    auto_on: [MAX_CONTROLS]bool = [_]bool{false} ** MAX_CONTROLS,
-    auto_val: [MAX_CONTROLS]f32 = [_]f32{0} ** MAX_CONTROLS,
-    auto_locked: [MAX_CONTROLS]bool = [_]bool{false} ** MAX_CONTROLS,
+    auto_on: [MAX_CONTROLS]bool = @splat(false),
+    auto_val: [MAX_CONTROLS]f32 = @splat(0),
+    auto_locked: [MAX_CONTROLS]bool = @splat(false),
     // A rack's macro (docs/42 §Reaching the target), audio-owned: it wins
     // over the lane and the hand, and follows like a lane does. mod_shown
     // is the value for the panel (NaN bits: none).
-    mod_on: [MAX_CONTROLS]bool = [_]bool{false} ** MAX_CONTROLS,
-    mod_val: [MAX_CONTROLS]f32 = [_]f32{0} ** MAX_CONTROLS,
-    mod_shown: [MAX_CONTROLS]std.atomic.Value(u32) = [_]std.atomic.Value(u32){std.atomic.Value(u32).init(MOD_NONE)} ** MAX_CONTROLS,
+    mod_on: [MAX_CONTROLS]bool = @splat(false),
+    mod_val: [MAX_CONTROLS]f32 = @splat(0),
+    mod_shown: [MAX_CONTROLS]std.atomic.Value(u32) = @splat(std.atomic.Value(u32).init(MOD_NONE)),
     // UI writes, audio reads: a manual override of an automated control,
     // 0 none, 1 held (touch), 2 sticky until the transport starts.
-    auto_override: [MAX_CONTROLS]std.atomic.Value(u8) = [_]std.atomic.Value(u8){std.atomic.Value(u8).init(0)} ** MAX_CONTROLS,
+    auto_override: [MAX_CONTROLS]std.atomic.Value(u8) = @splat(std.atomic.Value(u8).init(0)),
     // UI thread: the automated value each control shows (null = no lane),
     // set by the host every frame, and a pending request for the host.
-    ui_auto: [MAX_CONTROLS]?f32 = [_]?f32{null} ** MAX_CONTROLS,
+    ui_auto: [MAX_CONTROLS]?f32 = @splat(null),
     auto_request: ?machine.AutoRequest = null,
     // The control a drag holds this frame (automation recording).
     touch: ?machine.Touch = null,
@@ -479,13 +479,13 @@ pub const FyRawMachine = struct {
     // A scope-display's ring: the audio thread appends each block's
     // output, mono, and moves the head. UI reads an owned telemetry copy.
     has_scope: bool = false,
-    scope_buf: [SCOPE_LEN]f32 = [_]f32{0} ** SCOPE_LEN,
+    scope_buf: [SCOPE_LEN]f32 = @splat(0),
     scope_head: std.atomic.Value(usize) = .init(0),
     // Generic derived-params hook (params derive-data --): a machine-declared
     // dsp2 word run each block to compute params from controls + opaque data.
     derive_slots: RawSlots = .{},
     derive_caller: ?RawCaller = null,
-    preset_dir: [512]u8 = [_]u8{0} ** 512,
+    preset_dir: [512]u8 = @splat(0),
     preset_dir_len: usize = 0,
     presets: presets_mod.List = .{},
     current_preset_idx: i32 = -1,
@@ -495,13 +495,13 @@ pub const FyRawMachine = struct {
     // What the current preset sets each control to (stored form: norm, or
     // the option index), and which controls it names - the panel's
     // "modified" marker compares the knobs against these. UI thread.
-    preset_ref: [MAX_CONTROLS]f32 = [_]f32{0} ** MAX_CONTROLS,
-    preset_ref_on: [MAX_CONTROLS]bool = [_]bool{false} ** MAX_CONTROLS,
+    preset_ref: [MAX_CONTROLS]f32 = @splat(0),
+    preset_ref_on: [MAX_CONTROLS]bool = @splat(false),
     // Host-allocated audio buffers (manifest `buffer` requests), one per
     // state region: per channel for effects, per voice for voice machines.
     // Base pointer + element count are injected into each region's state
     // at the request's introspected offsets.
-    buffer_mem: [machine_desc.MAX_BUFFERS][MAX_REGIONS][]f64 = [_][MAX_REGIONS][]f64{[_][]f64{&.{}} ** MAX_REGIONS} ** machine_desc.MAX_BUFFERS,
+    buffer_mem: [machine_desc.MAX_BUFFERS][MAX_REGIONS][]f64 = @splat(@as([MAX_REGIONS][]f64, @splat(&.{}))),
     // Read-only audio assets loaded from disk at create (manifest `asset`),
     // shared across voices via params.
     asset_versions: handoff.Latest(AssetVersion) = .init(.{}),
@@ -509,27 +509,27 @@ pub const FyRawMachine = struct {
     asset_generation: u64 = 0, // UI-owned
     asset_reset_generation: u64 = 0, // UI-owned
     audio_reset_generation: u64 = 0,
-    asset_mem: [machine_desc.MAX_ASSETS]wav.Sample = [_]wav.Sample{.{ .data = &.{}, .sample_rate = 0 }} ** machine_desc.MAX_ASSETS,
+    asset_mem: [machine_desc.MAX_ASSETS]wav.Sample = @splat(.{ .data = &.{}, .sample_rate = 0 }),
     // Wavetable assets (manifest `wavetable`): the mipmapped frames built
     // from asset_mem, which stays loaded for the waveform display.
-    asset_wt: [machine_desc.MAX_ASSETS]wavetable.Table = [_]wavetable.Table{.{}} ** machine_desc.MAX_ASSETS,
+    asset_wt: [machine_desc.MAX_ASSETS]wavetable.Table = @splat(.{}),
     // Keymap assets (manifest `keymap`): the loaded pool + zone table.
-    asset_keymap: [machine_desc.MAX_ASSETS]keymap.Keymap = [_]keymap.Keymap{.{}} ** machine_desc.MAX_ASSETS,
+    asset_keymap: [machine_desc.MAX_ASSETS]keymap.Keymap = @splat(.{}),
     /// A keymap's pool low-passed ahead of its stored rate
     /// (`keymap-antialias`), what the kernel reads when present, and the
     /// control value it was built for.
-    aa_pool: [machine_desc.MAX_ASSETS][]f64 = [_][]f64{&.{}} ** machine_desc.MAX_ASSETS,
-    aa_built: [machine_desc.MAX_ASSETS]f64 = [_]f64{-1} ** machine_desc.MAX_ASSETS,
+    aa_pool: [machine_desc.MAX_ASSETS][]f64 = @splat(&.{}),
+    aa_built: [machine_desc.MAX_ASSETS]f64 = @splat(-1),
     // A valid silent target for assets that failed to load, so a kernel's
     // clamped read hits real zeroed memory instead of an empty slice's ptr.
     // Long enough for an interpolator reading around the guard index.
-    asset_silence: [32]f64 align(8) = [_]f64{0} ** 32, // covers the voice's 26-tap read
+    asset_silence: [32]f64 align(8) = @splat(0), // covers the voice's 26-tap read
     // The zone table an empty keymap points at: every slot unused.
-    empty_zones: [keymap.MAX_ZONES]keymap.Zone = [_]keymap.Zone{keymap.unused_zone} ** keymap.MAX_ZONES,
+    empty_zones: [keymap.MAX_ZONES]keymap.Zone = @splat(keymap.unused_zone),
     // Each asset's current source path (the manifest default, or what LOAD
     // picked), for the project file.
     asset_path: [machine_desc.MAX_ASSETS][storage.MAX_PATH]u8 = undefined,
-    asset_path_len: [machine_desc.MAX_ASSETS]usize = [_]usize{0} ** machine_desc.MAX_ASSETS,
+    asset_path_len: [machine_desc.MAX_ASSETS]usize = @splat(0),
     // Sampler zone editing, for the keymap asset: the per-zone edits the
     // voice reads through a params pointer, the zone the panel has
     // selected, the piano roll's key names for a kit, and the zone list's
@@ -553,8 +553,8 @@ pub const FyRawMachine = struct {
     zone_follow: bool = false,
     zone_scroll: usize = 0,
     zone_last_seen: f64 = -1,
-    zone_hit_seen: [keymap.MAX_ZONES]f64 = [_]f64{0} ** keymap.MAX_ZONES,
-    zone_flash: [keymap.MAX_ZONES]f32 = [_]f32{0} ** keymap.MAX_ZONES,
+    zone_hit_seen: [keymap.MAX_ZONES]f64 = @splat(0),
+    zone_flash: [keymap.MAX_ZONES]f32 = @splat(0),
     // The zone the waveform's peak cache holds (maxInt: rebuild), and its
     // sample's peak, for the normalized drawing and the readout.
     wave_zone: usize = std.math.maxInt(usize),
@@ -562,18 +562,18 @@ pub const FyRawMachine = struct {
     km_labels: [keymap.MAX_ZONES]machine.NoteLabel = undefined,
     km_label_count: usize = 0,
     // True once LOAD, a preset or a project replaced the manifest default.
-    asset_loaded: [machine_desc.MAX_ASSETS]bool = [_]bool{false} ** machine_desc.MAX_ASSETS,
+    asset_loaded: [machine_desc.MAX_ASSETS]bool = @splat(false),
     // Peak pyramid per asset for oscillogram drawing (UI thread only).
-    asset_cache: [machine_desc.MAX_ASSETS]waveform.PeakCache = [_]waveform.PeakCache{.{}} ** machine_desc.MAX_ASSETS,
+    asset_cache: [machine_desc.MAX_ASSETS]waveform.PeakCache = @splat(.{}),
     // Display name (basename) of each asset's currently loaded file.
     asset_label: [machine_desc.MAX_ASSETS][96]u8 = undefined,
-    asset_label_len: [machine_desc.MAX_ASSETS]usize = [_]usize{0} ** machine_desc.MAX_ASSETS,
+    asset_label_len: [machine_desc.MAX_ASSETS]usize = @splat(0),
     // The wavetable editor (docs/15 §Wavetable editor): a doc for each
     // wavetable asset EDIT has opened, whether it changed since its file
     // was written, and the asset the editor has open over the panel (with
     // its oscillator's name for the caption).
-    wt_docs: [machine_desc.MAX_ASSETS]?*wte.Doc = [_]?*wte.Doc{null} ** machine_desc.MAX_ASSETS,
-    wt_unsaved: [machine_desc.MAX_ASSETS]bool = [_]bool{false} ** machine_desc.MAX_ASSETS,
+    wt_docs: [machine_desc.MAX_ASSETS]?*wte.Doc = @splat(null),
+    wt_unsaved: [machine_desc.MAX_ASSETS]bool = @splat(false),
     /// A table edit since the host last asked (take_edited).
     wt_edited: bool = false,
     wt_editing: ?usize = null,
@@ -590,15 +590,15 @@ pub const FyRawMachine = struct {
     // never freed — like the Juno-106, every voice always renders; note-on
     // takes the oldest un-gated voice, else steals the oldest gated one.
     // note_id is -1 throughout the sequencer, so matching is by pitch.
-    voice_pitch: [MAX_REGIONS]f32 = [_]f32{-1} ** MAX_REGIONS,
-    voice_gate: [MAX_REGIONS]bool = [_]bool{false} ** MAX_REGIONS,
-    voice_age: [MAX_REGIONS]u64 = [_]u64{0} ** MAX_REGIONS,
+    voice_pitch: [MAX_REGIONS]f32 = @splat(-1),
+    voice_gate: [MAX_REGIONS]bool = @splat(false),
+    voice_age: [MAX_REGIONS]u64 = @splat(0),
     age_counter: u64 = 0,
     // Samples rendered so far, and when each voice's note started on that
     // clock: poly legato tells a hammer-on from a chord by the gap.
     clock: u64 = 0,
     event_clock: u64 = 0,
-    voice_on_clock: [MAX_REGIONS]u64 = [_]u64{0} ** MAX_REGIONS,
+    voice_on_clock: [MAX_REGIONS]u64 = @splat(0),
     // Mono machines (1 voice, melodic): held-note stack, newest last, for
     // last-note priority. Releasing the sounding note falls back to the
     // newest still-held one as a legato retrigger.
@@ -613,15 +613,15 @@ pub const FyRawMachine = struct {
     synced_tempo: f64 = 120,
     // The note id each voice plays (-1: a source without ids). Note-offs
     // and expression match by id, so a bent note is still found.
-    voice_note_id: [MAX_REGIONS]i32 = [_]i32{-1} ** MAX_REGIONS,
+    voice_note_id: [MAX_REGIONS]i32 = @splat(-1),
     // Idle voices are skipped entirely (docs/17 D6). A voice wakes on
     // note-on and goes idle once released and its contribution stays under
     // IDLE_FLOOR for a whole block. voice_peak is this block's max |delta|
     // the voice added to the shared out lane.
-    voice_idle: [MAX_REGIONS]bool = [_]bool{true} ** MAX_REGIONS,
-    voice_peak: [MAX_REGIONS]f64 = [_]f64{0} ** MAX_REGIONS,
+    voice_idle: [MAX_REGIONS]bool = @splat(true),
+    voice_peak: [MAX_REGIONS]f64 = @splat(0),
     // out_l before a voice's pass, to measure what that voice added.
-    voice_snap: [MAX_BLOCK]f64 = [_]f64{0} ** MAX_BLOCK,
+    voice_snap: [MAX_BLOCK]f64 = @splat(0),
     // Host unison (docs/08 §Unison). `unison` is the UI's settings; the
     // rest is the audio thread's. `pool` is the regions in use. A note's
     // voices share one voice_age; voice_uni_k/_n place each in its group
@@ -637,10 +637,10 @@ pub const FyRawMachine = struct {
     uni_rng: u64 = 0x9E37_79B9_7F4A_7C15,
     // Some voice renders through the panned path this block.
     uni_panned: bool = false,
-    voice_uni_k: [MAX_REGIONS]u8 = [_]u8{0} ** MAX_REGIONS,
-    voice_uni_n: [MAX_REGIONS]u8 = [_]u8{1} ** MAX_REGIONS,
-    voice_jit: [MAX_REGIONS]f32 = [_]f32{0} ** MAX_REGIONS,
-    voice_expr: [MAX_REGIONS][4]f64 = [_][4]f64{.{ 60, 0.5, 0, 1 }} ** MAX_REGIONS,
+    voice_uni_k: [MAX_REGIONS]u8 = @splat(0),
+    voice_uni_n: [MAX_REGIONS]u8 = @splat(1),
+    voice_jit: [MAX_REGIONS]f32 = @splat(0),
+    voice_expr: [MAX_REGIONS][4]f64 = @splat(.{ 60, 0.5, 0, 1 }),
     // Per-frame meter ballistics (meter display kind). One per machine; a
     // limiter has a single meter. Updated on the UI thread from live state.
     meter_ui: MeterUi = .{},
@@ -1000,7 +1000,7 @@ pub const FyRawMachine = struct {
         self.km_label_count = 0;
         const km = &self.asset_keymap[ai];
         if (!km.isKit()) return;
-        var seen = [_]bool{false} ** 128;
+        var seen: [128]bool = @splat(false);
         for (km.zones[0..km.count], km.names) |z, nm| {
             const key: usize = @intFromFloat(std.math.clamp(z.lo_key, 0, 127));
             if (seen[key]) continue;
@@ -2566,7 +2566,7 @@ fn codeHashOf(host: *FyHost, path: []const u8) u64 {
     for (paths[0..n]) |p| {
         h.update(std.fs.path.basename(p));
         var zb: [1024]u8 = undefined;
-        const z = std.fmt.bufPrintZ(&zb, "{s}", .{p}) catch continue;
+        const z = std.mem.printSentinel(&zb, "{s}", .{p}, 0) catch continue;
         const fd = std.c.open(z.ptr, .{});
         if (fd < 0) continue;
         defer _ = std.c.close(fd);
@@ -3193,7 +3193,7 @@ fn noteOnEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
     // The note's voices: a mono group is always the first regions.
     const n = self.uni_count;
     var group: [MAX_REGIONS]usize = undefined;
-    var taken = [_]bool{false} ** MAX_REGIONS;
+    var taken: [MAX_REGIONS]bool = @splat(false);
     for (0..n) |k| {
         group[k] = if (mono) k else allocVoice(self, &taken);
         taken[group[k]] = true;
@@ -3802,8 +3802,8 @@ fn drawStrip(self: *FyRawMachine, ui: *Ui, r: Rect, view: StripView, tier: ui_ct
 /// its widest control and each row as tall as its tallest, at the tier's
 /// natural sizes.
 const StripTable = struct {
-    col_w: [MAX_CONTROLS]i32 = [_]i32{0} ** MAX_CONTROLS,
-    row_h: [MAX_CONTROLS]i32 = [_]i32{0} ** MAX_CONTROLS,
+    col_w: [MAX_CONTROLS]i32 = @splat(0),
+    row_h: [MAX_CONTROLS]i32 = @splat(0),
     cols: usize = 0,
     rows: usize = 0,
     /// Leading columns taken whole by `span-rows` controls; the grid of
@@ -5308,7 +5308,7 @@ const SPEC_RELEASE_DB: f32 = 30.0; // per second
 const SPEC_STILL_S: f32 = 0.08;
 
 const GraphicUi = struct {
-    db: [GRAPHIC_COLS]f32 = [_]f32{SPEC_FLOOR_DB} ** GRAPHIC_COLS,
+    db: [GRAPHIC_COLS]f32 = @splat(SPEC_FLOOR_DB),
     last_wpos: f64 = -1,
     still: f32 = 0,
     // A band handle press: where it began, and whether it has moved far
@@ -6274,17 +6274,17 @@ fn capSeg(ui: *Ui, xa: f32, la: f32, xb: f32, lb: f32, base: f32, h: f32, col: u
 fn formatControlValue(buf: *[16:0]u8, v: f64) [*:0]const u8 {
     const av = @abs(v);
     const s = if (av >= 10_000.0)
-        std.fmt.bufPrintZ(buf, "{d:.1}k", .{v / 1000.0})
+        std.mem.printSentinel(buf, "{d:.1}k", .{v / 1000.0}, 0)
     else if (av >= 1000.0)
-        std.fmt.bufPrintZ(buf, "{d:.2}k", .{v / 1000.0})
+        std.mem.printSentinel(buf, "{d:.2}k", .{v / 1000.0}, 0)
     else if (av >= 100.0)
-        std.fmt.bufPrintZ(buf, "{d:.0}", .{v})
+        std.mem.printSentinel(buf, "{d:.0}", .{v}, 0)
     else if (av >= 10.0)
-        std.fmt.bufPrintZ(buf, "{d:.1}", .{v})
+        std.mem.printSentinel(buf, "{d:.1}", .{v}, 0)
     else if (av >= 1.0)
-        std.fmt.bufPrintZ(buf, "{d:.2}", .{v})
+        std.mem.printSentinel(buf, "{d:.2}", .{v}, 0)
     else
-        std.fmt.bufPrintZ(buf, "{d:.3}", .{v});
+        std.mem.printSentinel(buf, "{d:.3}", .{v}, 0);
     return (s catch return "?").ptr;
 }
 
@@ -6306,8 +6306,8 @@ test "raw DSP2 silence fixture renders zeros through generic adapter" {
     var ctx = std.mem.zeroes(machine.MachineCtx);
     ctx.sample_rate = 48_000;
     ctx.block_size = 32;
-    var l = [_]f32{1} ** 32;
-    var r = [_]f32{1} ** 32;
+    var l: [32]f32 = @splat(1);
+    var r: [32]f32 = @splat(1);
     testRender(mach, &ctx, &l, &r);
 
     for (l, r) |sl, sr| {
@@ -6331,8 +6331,8 @@ test "raw DSP2 oscillator fixture responds to note events" {
     ctx.note_in = @ptrCast(events[0..].ptr);
     ctx.note_in_count = events.len;
 
-    var l = [_]f32{0} ** 64;
-    var r = [_]f32{0} ** 64;
+    var l: [64]f32 = @splat(0);
+    var r: [64]f32 = @splat(0);
     testRender(mach, &ctx, &l, &r);
 
     var pre_off_energy: f64 = 0;
@@ -6362,8 +6362,8 @@ test "FM-86 plays a note end to end (routing hook + staged voice)" {
     ctx.note_in = @ptrCast(events[0..].ptr);
     ctx.note_in_count = events.len;
 
-    var l = [_]f32{0} ** 1024;
-    var r = [_]f32{0} ** 1024;
+    var l: [1024]f32 = @splat(0);
+    var r: [1024]f32 = @splat(0);
     testRender(mach, &ctx, &l, &r);
 
     // Finite, mono-duplicated, and within the clamp.
@@ -6398,8 +6398,8 @@ test "FM-86 fy derive routing matches the dx7_algorithms oracle (all 32)" {
     var ctx = std.mem.zeroes(machine.MachineCtx);
     ctx.sample_rate = 48_000;
     ctx.block_size = 16;
-    var l = [_]f32{0} ** 16;
-    var r = [_]f32{0} ** 16;
+    var l: [16]f32 = @splat(0);
+    var r: [16]f32 = @splat(0);
 
     // The ALGO int-step selects each algorithm; the fy derive word fills the
     // routing from its own table. Pin all 27 routing fields against the
@@ -6487,8 +6487,8 @@ test "FM-86 plays an imported DX7 preset (E.PIANO 1)" {
             ctx.note_in = null;
             ctx.note_in_count = 0;
         }
-        var l = [_]f32{0} ** 4096;
-        var r = [_]f32{0} ** 4096;
+        var l: [4096]f32 = @splat(0);
+        var r: [4096]f32 = @splat(0);
         testRender(mach, &ctx, &l, &r);
         var sum: f64 = 0;
         for (l, r) |sl, sr| {
@@ -6697,8 +6697,8 @@ test "FM-86 is polyphonic — a chord sounds all three notes" {
     ctx.block_size = 4096;
     ctx.note_in = @ptrCast(events[0..].ptr);
     ctx.note_in_count = events.len;
-    var l = [_]f32{0} ** 4096;
-    var r = [_]f32{0} ** 4096;
+    var l: [4096]f32 = @splat(0);
+    var r: [4096]f32 = @splat(0);
     testRender(mach, &ctx, &l, &r);
 
     // Goertzel magnitude at each note's fundamental; all three must be present.
@@ -6728,8 +6728,8 @@ test "DS-404 stays finite and bounded under live-style blocks" {
     }
     const sizes = [_]usize{ 512, 471, 64, 256, 1, 333, 128, 512 };
     const pitches = [_]f32{ 36, 38, 39, 42, 45, 46, 60, 64, 0, 127 };
-    var l = [_]f32{0} ** 512;
-    var r = [_]f32{0} ** 512;
+    var l: [512]f32 = @splat(0);
+    var r: [512]f32 = @splat(0);
     for ([_]f64{ 44_100, 48_000 }) |sr| {
         var ctx = std.mem.zeroes(machine.MachineCtx);
         ctx.sample_rate = sr;
@@ -6771,8 +6771,8 @@ test "FM-86 survives many small live-style blocks with note churn" {
     var ctx = std.mem.zeroes(machine.MachineCtx);
     ctx.sample_rate = 44_100;
     ctx.block_size = 256;
-    var l = [_]f32{0} ** 256;
-    var r = [_]f32{0} ** 256;
+    var l: [256]f32 = @splat(0);
+    var r: [256]f32 = @splat(0);
 
     var blk: usize = 0;
     while (blk < 300) : (blk += 1) {
@@ -6898,7 +6898,7 @@ fn fm86RenderBlocks(out: []f32, sizes: []const usize) !void {
     defer mach.deinit.?(mach.state, testing.allocator);
     var ctx = std.mem.zeroes(machine.MachineCtx);
     ctx.sample_rate = 48_000;
-    var r = [_]f32{0} ** 1024;
+    var r: [1024]f32 = @splat(0);
     const on_at: usize = 100;
     const off_at: usize = 12_000;
     var pos: usize = 0;
@@ -6951,8 +6951,8 @@ test "raw DSP2 saturator fixture processes audio input through generic adapter" 
     const mach = inst.machineInterface();
     defer mach.deinit.?(mach.state, testing.allocator);
 
-    var in_l = [_]f32{0.75} ** 32;
-    var in_r = [_]f32{-0.75} ** 32;
+    var in_l: [32]f32 = @splat(0.75);
+    var in_r: [32]f32 = @splat(-0.75);
     const in_ports = [_][*]const f32{ &in_l, &in_r };
     var ctx = std.mem.zeroes(machine.MachineCtx);
     ctx.sample_rate = 48_000;
@@ -6960,8 +6960,8 @@ test "raw DSP2 saturator fixture processes audio input through generic adapter" 
     ctx.audio_in = @ptrCast(&in_ports[0]);
     ctx.audio_in_count = 2;
 
-    var l = [_]f32{0} ** 32;
-    var r = [_]f32{0} ** 32;
+    var l: [32]f32 = @splat(0);
+    var r: [32]f32 = @splat(0);
     testRender(mach, &ctx, &l, &r);
 
     try testing.expect(l[0] > in_l[0]);
@@ -6988,8 +6988,8 @@ test "raw DSP2 MS-20 fixture renders a finite note through generic adapter" {
     ctx.note_in = @ptrCast(events[0..].ptr);
     ctx.note_in_count = events.len;
 
-    var l = [_]f32{0} ** 512;
-    var r = [_]f32{0} ** 512;
+    var l: [512]f32 = @splat(0);
+    var r: [512]f32 = @splat(0);
     testRender(mach, &ctx, &l, &r);
 
     var peak: f32 = 0;
@@ -7070,8 +7070,8 @@ fn testEnergy(mach: machine.Machine, events: []machine.NoteEvent, blocks: usize)
     var ctx = std.mem.zeroes(machine.MachineCtx);
     ctx.sample_rate = 48_000;
     ctx.block_size = 256;
-    var l = [_]f32{0} ** 256;
-    var r = [_]f32{0} ** 256;
+    var l: [256]f32 = @splat(0);
+    var r: [256]f32 = @splat(0);
     var e: f64 = 0;
     for (0..blocks) |b| {
         ctx.note_in = @ptrCast(events.ptr);
@@ -7146,8 +7146,8 @@ fn renderEffectImpulse(path: []const u8, sets: []const ParamSet, amp_l: f32, amp
     defer mach.deinit.?(mach.state, testing.allocator);
     for (sets) |st| mach.set_param.?(mach.state, st[0], st[1]);
     const block = 256;
-    var in_l = [_]f32{0} ** block;
-    var in_r = [_]f32{0} ** block;
+    var in_l: [block]f32 = @splat(0);
+    var in_r: [block]f32 = @splat(0);
     const in_ports = [_][*]const f32{ &in_l, &in_r };
     var ctx = std.mem.zeroes(machine.MachineCtx);
     ctx.sample_rate = 48_000;
@@ -7236,15 +7236,15 @@ test "delay FREEZE holds the loop; TAPE at FB 1.1 self-oscillates but stays boun
         mach.set_param.?(mach.state, "delay-fb", 0);
         mach.set_param.?(mach.state, "delay-mix", 1);
         const block = 256;
-        var in_l = [_]f32{0} ** block;
+        var in_l: [block]f32 = @splat(0);
         const in_ports = [_][*]const f32{ &in_l, &in_l };
         var ctx = std.mem.zeroes(machine.MachineCtx);
         ctx.sample_rate = 48_000;
         ctx.block_size = block;
         ctx.audio_in = @ptrCast(&in_ports[0]);
         ctx.audio_in_count = 2;
-        var l = [_]f32{0} ** block;
-        var r = [_]f32{0} ** block;
+        var l: [block]f32 = @splat(0);
+        var r: [block]f32 = @splat(0);
         in_l[0] = 1;
         testRender(mach, &ctx, &l, &r);
         in_l[0] = 0;
@@ -7333,8 +7333,8 @@ test "shared state: voices and the shared word alternate per step, then the word
     var ctx = std.mem.zeroes(machine.MachineCtx);
     ctx.sample_rate = 48_000;
     ctx.block_size = block;
-    var l = [_]f32{0} ** block;
-    var r = [_]f32{0} ** block;
+    var l: [block]f32 = @splat(0);
+    var r: [block]f32 = @splat(0);
     const on = [_]machine.NoteEvent{
         .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = -1, .pitch = 60, .velocity = 1 },
         .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = -1, .pitch = 64, .velocity = 0.5 },
@@ -7376,8 +7376,8 @@ test "shared state: the shared word sees each step's sample clock; voice-level! 
     var ctx = std.mem.zeroes(machine.MachineCtx);
     ctx.sample_rate = 48_000;
     ctx.block_size = block;
-    var l = [_]f32{0} ** block;
-    var r = [_]f32{0} ** block;
+    var l: [block]f32 = @splat(0);
+    var r: [block]f32 = @splat(0);
     const on = [_]machine.NoteEvent{.{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = -1, .pitch = 60, .velocity = 1 }};
     ctx.note_in = &on;
     ctx.note_in_count = on.len;
@@ -7414,8 +7414,8 @@ test "stereo flag: stereo voices write L and R, stereo effects get one true-ster
     var ctx = std.mem.zeroes(machine.MachineCtx);
     ctx.sample_rate = 48_000;
     ctx.block_size = block;
-    var l = [_]f32{0} ** block;
-    var r = [_]f32{0} ** block;
+    var l: [block]f32 = @splat(0);
+    var r: [block]f32 = @splat(0);
     {
         const inst = try FyRawMachine.create(testing.allocator, "machines/raw_fixtures/stereo_voice.fy");
         const mach = inst.machineInterface();
@@ -7433,8 +7433,8 @@ test "stereo flag: stereo voices write L and R, stereo effects get one true-ster
         const inst = try FyRawMachine.create(testing.allocator, "machines/raw_fixtures/stereo_swap.fy");
         const mach = inst.machineInterface();
         defer mach.deinit.?(mach.state, testing.allocator);
-        var in_l = [_]f32{0.5} ** block;
-        var in_r = [_]f32{-0.75} ** block;
+        var in_l: [block]f32 = @splat(0.5);
+        var in_r: [block]f32 = @splat(-0.75);
         const ports = [_][*]const f32{ &in_l, &in_r };
         ctx.audio_in = @ptrCast(&ports[0]);
         ctx.audio_in_count = 2;
@@ -7452,8 +7452,8 @@ test "mono note stack: last-note priority, releasing the sounding note falls bac
     var ctx = std.mem.zeroes(machine.MachineCtx);
     ctx.sample_rate = 48_000;
     ctx.block_size = block;
-    var l = [_]f32{0} ** block;
-    var r = [_]f32{0} ** block;
+    var l: [block]f32 = @splat(0);
+    var r: [block]f32 = @splat(0);
     const Ev = struct {
         fn on(p: f32) machine.NoteEvent {
             return .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = -1, .pitch = p, .velocity = 0.8 };
@@ -7491,8 +7491,8 @@ test "knob smoothing: drags glide over ~20 ms, param sets snap" {
     var ctx = std.mem.zeroes(machine.MachineCtx);
     ctx.sample_rate = 48_000;
     ctx.block_size = block;
-    var l = [_]f32{0} ** block;
-    var r = [_]f32{0} ** block;
+    var l: [block]f32 = @splat(0);
+    var r: [block]f32 = @splat(0);
     testRender(mach, &ctx, &l, &r); // settle
 
     inst.setControlNormSnap(ci, 0.0);
@@ -7523,8 +7523,8 @@ test "voice service: idle voices are skipped, wake on note-on, sleep after relea
     var ctx = std.mem.zeroes(machine.MachineCtx);
     ctx.sample_rate = 48_000;
     ctx.block_size = block;
-    var l = [_]f32{0} ** block;
-    var r = [_]f32{0} ** block;
+    var l: [block]f32 = @splat(0);
+    var r: [block]f32 = @splat(0);
     const on = [_]machine.NoteEvent{.{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = -1, .pitch = 60, .velocity = 0.8 }};
     ctx.note_in = &on;
     ctx.note_in_count = 1;
@@ -7559,7 +7559,7 @@ test "delay SYNC follows ctx.tempo: quarter-note echo lands on the beat" {
         mach.set_param.?(mach.state, "delay-mix", 1);
 
         const block = 256;
-        var in_l = [_]f32{0} ** block;
+        var in_l: [block]f32 = @splat(0);
         const in_ports = [_][*]const f32{ &in_l, &in_l };
         var ctx = std.mem.zeroes(machine.MachineCtx);
         ctx.sample_rate = 48_000;
@@ -7567,8 +7567,8 @@ test "delay SYNC follows ctx.tempo: quarter-note echo lands on the beat" {
         ctx.tempo_bpm = cs.bpm;
         ctx.audio_in = @ptrCast(&in_ports[0]);
         ctx.audio_in_count = 2;
-        var l = [_]f32{0} ** block;
-        var r = [_]f32{0} ** block;
+        var l: [block]f32 = @splat(0);
+        var r: [block]f32 = @splat(0);
         var best: f32 = 0;
         var best_at: usize = 0;
         var pos: usize = 0;
@@ -7692,8 +7692,8 @@ test "verb: sweeping SIZE and DECAY while it rings stays finite and bounded" {
     ctx.block_size = block;
     ctx.audio_in = @ptrCast(&in_ports[0]);
     ctx.audio_in_count = 2;
-    var l = [_]f32{0} ** block;
-    var r = [_]f32{0} ** block;
+    var l: [block]f32 = @splat(0);
+    var r: [block]f32 = @splat(0);
     var seed: u32 = 1;
     for (0..600) |bi| {
         for (&in_l, &in_r) |*a, *b| {
@@ -7782,8 +7782,8 @@ test "raw DSP2 reverb machine: wide decorrelated tail" {
     // Centered impulse in: the tail must ring on both channels but differ
     // between them (decorrelated tap sets), and stay finite.
     const block = 512;
-    var in_l = [_]f32{0} ** block;
-    var in_r = [_]f32{0} ** block;
+    var in_l: [block]f32 = @splat(0);
+    var in_r: [block]f32 = @splat(0);
     in_l[0] = 0.9;
     in_r[0] = 0.9;
     const in_ports = [_][*]const f32{ &in_l, &in_r };
@@ -7793,8 +7793,8 @@ test "raw DSP2 reverb machine: wide decorrelated tail" {
     ctx.audio_in = @ptrCast(&in_ports[0]);
     ctx.audio_in_count = 2;
 
-    var l = [_]f32{0} ** block;
-    var r = [_]f32{0} ** block;
+    var l: [block]f32 = @splat(0);
+    var r: [block]f32 = @splat(0);
     var tail_l: f64 = 0;
     var tail_r: f64 = 0;
     var lr_diff: f64 = 0;
@@ -7993,8 +7993,8 @@ test "raw DSP2 juno machine: polyphonic chord through the voice pool" {
     ctx.note_in = @ptrCast(events[0..].ptr);
     ctx.note_in_count = events.len;
 
-    var l = [_]f32{0} ** 512;
-    var r = [_]f32{0} ** 512;
+    var l: [512]f32 = @splat(0);
+    var r: [512]f32 = @splat(0);
     testRender(mach, &ctx, &l, &r);
 
     // Three voices gated on distinct pitches.
@@ -8137,8 +8137,8 @@ test "raw DSP2 sampler machine: asset loads and polyphonic notes sound" {
     ctx.note_in = @ptrCast(events[0..].ptr);
     ctx.note_in_count = events.len;
 
-    var l = [_]f32{0} ** 512;
-    var r = [_]f32{0} ** 512;
+    var l: [512]f32 = @splat(0);
+    var r: [512]f32 = @splat(0);
     var energy: f64 = 0;
     var blk: usize = 0;
     while (blk < 8) : (blk += 1) {
@@ -8354,7 +8354,7 @@ const keymap_test = struct {
         ctx.block_size = 512;
         ctx.note_in = @ptrCast(events.ptr);
         ctx.note_in_count = @intCast(events.len);
-        var r = [_]f32{0} ** 512;
+        var r: [512]f32 = @splat(0);
         for (0..blocks) |bi| {
             testRender(mach, &ctx, out[bi * 512 ..][0..512], &r);
             ctx.note_in_count = 0;
@@ -8401,7 +8401,7 @@ test "sampler keymap: a folder of note-named samples maps by key, pitch follows 
     try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/tones"));
     try testing.expectEqual(@as(usize, 2), inst.asset_keymap[0].count);
 
-    var out = [_]f32{0} ** (512 * 16);
+    var out: [(512 * 16)]f32 = @splat(0);
     // E3 falls in C3's half (0..60): 130.81 * 2^(4/12)
     var e1 = [_]machine.NoteEvent{T.on(52, 1)};
     T.play(inst, &e1, 16, &out);
@@ -8427,7 +8427,7 @@ test "sampler keymap: smpl root and loop hold a note past the sample's end" {
     const z = inst.asset_keymap[0].zones[0];
     try testing.expectEqual(@as(f64, 71), z.root);
     try testing.expectEqual(keymap.LOOP_ON, z.loop_mode);
-    var out = [_]f32{0} ** (512 * 24);
+    var out: [(512 * 24)]f32 = @splat(0);
     var ev = [_]machine.NoteEvent{T.on(71, 1)};
     T.play(inst, &ev, 24, &out);
     // 0.25 s in, long past the 0.1 s sample, still sounding at pitch
@@ -8449,7 +8449,7 @@ test "sampler keymap: drum folder, one-shots ignore note-off, closed hat chokes 
     try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/kit"));
     try testing.expectEqual(@as(usize, 3), inst.asset_keymap[0].count);
 
-    var out = [_]f32{0} ** (512 * 8);
+    var out: [(512 * 8)]f32 = @splat(0);
     // kick on and straight off: a one-shot keeps playing
     var k = [_]machine.NoteEvent{ T.on(36, 1), T.off(36) };
     T.play(inst, &k, 8, &out);
@@ -8457,7 +8457,7 @@ test "sampler keymap: drum folder, one-shots ignore note-off, closed hat chokes 
     try testing.expectApproxEqRel(@as(f64, 60), T.freq(out[512..]), 0.02);
     // let the kick finish
     var none = [_]machine.NoteEvent{};
-    var long = [_]f32{0} ** (512 * 48);
+    var long: [(512 * 48)]f32 = @splat(0);
     T.play(inst, &none, 48, &long);
 
     // open hat rings; a closed hat silences it within a few ms
@@ -8496,10 +8496,10 @@ test "sampler MODEL sets the engine knobs; VARI and FIXED at a low RATE stay in 
     try testing.expectApproxEqRel(@as(f64, 26040), normToValue(inst.desc.controls[rate], inst.controlNorm(rate)), 1e-3);
     try testing.expectEqual(@as(usize, 2), switchIndex(inst.desc.controls[find(inst, "smp-engine")], inst.controlNorm(find(inst, "smp-engine"))));
 
-    var vari = [_]f32{0} ** (512 * 8);
-    var fixed = [_]f32{0} ** (512 * 8);
+    var vari: [(512 * 8)]f32 = @splat(0);
+    var fixed: [(512 * 8)]f32 = @splat(0);
     var none = [_]machine.NoteEvent{};
-    var tail = [_]f32{0} ** (512 * 64);
+    var tail: [(512 * 64)]f32 = @splat(0);
     // the filter keeps the images out of the zero-crossing count
     applyControlValue(inst, "smp-filter", 2000);
     applyControlValue(inst, "smp-rate", 8000);
@@ -8537,9 +8537,9 @@ test "sampler zones: CUT overrides the pack's choke per zone" {
             unreachable;
         }
     }.of;
-    var out = [_]f32{0} ** (512 * 8);
+    var out: [(512 * 8)]f32 = @splat(0);
     var none = [_]machine.NoteEvent{};
-    var long = [_]f32{0} ** (512 * 96);
+    var long: [(512 * 96)]f32 = @splat(0);
 
     // OFF on the open hat: the closed hat no longer cuts it
     inst.zone_edits.cut[idx(km, "open hat")] = 1;
@@ -8587,7 +8587,7 @@ test "sampler zones: a reversed copy loads from the zones JSON, plays and writes
     try testing.expectEqual(@as(f64, -6), inst.zone_edits.level[1]);
     try testing.expectEqual(@as(f64, -3), inst.zone_edits.level[0]);
 
-    var out = [_]f32{0} ** (512 * 4);
+    var out: [(512 * 4)]f32 = @splat(0);
     var ev = [_]machine.NoteEvent{T.on(60, 1)};
     T.play(inst, &ev, 4, &out);
     try testing.expect(T.rms(out[0..]) > 0.01);
@@ -8618,7 +8618,7 @@ test "sampler keymap: sfz round robin alternates per key" {
     const mach = inst.machineInterface();
     defer mach.deinit.?(mach.state, a);
     try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/rr/test.sfz"));
-    var out = [_]f32{0} ** (512 * 24);
+    var out: [(512 * 24)]f32 = @splat(0);
     var ev = [_]machine.NoteEvent{T.on(57, 1)};
     for ([_]f64{ 220, 330, 220, 330 }) |want| {
         // 24 blocks outlast the 0.2 s one-shot, so notes don't overlap
@@ -8642,7 +8642,7 @@ test "sampler keymap: a release zone plays at note-off, in the same voice" {
     defer mach.deinit.?(mach.state, a);
     try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/relz/test.sfz"));
     applyControlValue(inst, "smp-rel", 0.01);
-    var out = [_]f32{0} ** (512 * 12);
+    var out: [(512 * 12)]f32 = @splat(0);
     // held: only the body, at pitch
     var on = [_]machine.NoteEvent{T.on(57, 1)};
     T.play(inst, &on, 12, &out);
@@ -8658,9 +8658,9 @@ test "sampler keymap: a release zone plays at note-off, in the same voice" {
     try testing.expectApproxEqRel(want, T.rms(out[2048 .. 512 * 8]), 0.1);
     // a second note-off starts nothing
     var none = [_]machine.NoteEvent{};
-    var tail = [_]f32{0} ** (512 * 32);
+    var tail: [(512 * 32)]f32 = @splat(0);
     T.play(inst, &none, 32, &tail);
-    var again = [_]f32{0} ** (512 * 8);
+    var again: [(512 * 8)]f32 = @splat(0);
     T.play(inst, &off, 8, &again);
     try testing.expect(T.rms(&again) < 1e-4);
 }
@@ -8675,13 +8675,13 @@ test "sampler keymap: swapping to a smaller keymap mid-note doesn't read the old
     const mach = inst.machineInterface();
     defer mach.deinit.?(mach.state, a);
     try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/swap/long_A3.wav"));
-    var out = [_]f32{0} ** (512 * 200);
+    var out: [(512 * 200)]f32 = @splat(0);
     // a note deep into the 3 s sample, far past the short one's end
     var ev = [_]machine.NoteEvent{T.on(57, 1)};
     T.play(inst, &ev, 200, &out);
     try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/swap/short_A3.wav"));
     var none = [_]machine.NoteEvent{};
-    var after = [_]f32{0} ** (512 * 4);
+    var after: [(512 * 4)]f32 = @splat(0);
     T.play(inst, &none, 4, &after);
     for (after) |x| try testing.expectEqual(@as(f32, 0), x);
     // and the new map plays
@@ -8700,8 +8700,8 @@ test "unfairlight: 16 KB of voice RAM at RATE, segment loops, in tune on the car
     try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/cmi/tone_A3.wav"));
     applyControlValue(inst, "cmi-rate", 16384);
     applyControlValue(inst, "cmi-filter", 255);
-    var out = [_]f32{0} ** (512 * 150);
-    var tail = [_]f32{0} ** (512 * 40);
+    var out: [(512 * 150)]f32 = @splat(0);
+    var tail: [(512 * 40)]f32 = @splat(0);
     // a fifth up, held: in tune, and the RAM (16384 samples at 16384 Hz,
     // 1 s at the root, 2/3 s a fifth up) runs out
     var ev = [_]machine.NoteEvent{T.on(64, 1)};
@@ -8759,7 +8759,7 @@ test "sampler keymap: sfz velocity layers and ranges" {
     defer mach.deinit.?(mach.state, a);
     try testing.expect(inst.loadAssetRuntime(0, T.dir ++ "/sfz/test.sfz"));
     try testing.expectEqual(@as(usize, 2), inst.asset_keymap[0].count);
-    var out = [_]f32{0} ** (512 * 12);
+    var out: [(512 * 12)]f32 = @splat(0);
     var soft = [_]machine.NoteEvent{T.on(57, 0.3)};
     T.play(inst, &soft, 12, &out);
     try testing.expectApproxEqRel(@as(f64, 220), T.freq(out[1024..]), 0.01);
@@ -8780,7 +8780,7 @@ test "sampler CLOCK engine: drop-sample playback at BITS stays in tune" {
     applyControlValue(inst, "smp-bits", 8);
     applyControlValue(inst, "smp-filter", 8000);
     applyControlValue(inst, "smp-trk", 1);
-    var out = [_]f32{0} ** (512 * 8);
+    var out: [(512 * 8)]f32 = @splat(0);
     // the bundled pluck is A3 = 220 Hz; an octave up
     var ev = [_]machine.NoteEvent{T.on(69, 1)};
     T.play(inst, &ev, 8, &out);
@@ -8810,12 +8810,12 @@ test "sampler zones: per-zone level, tune and decay; kit labels; edits follow na
     try testing.expectEqualStrings("KICK", labels[0].labelSlice());
     try testing.expectEqualStrings("CLAP", labels[1].labelSlice());
 
-    var out = [_]f32{0} ** (512 * 8);
+    var out: [(512 * 8)]f32 = @splat(0);
     var ev = [_]machine.NoteEvent{T.on(39, 1)};
     T.play(inst, &ev, 8, &out);
     const flat = T.rms(out[512 * 2 ..]);
     var none = [_]machine.NoteEvent{};
-    var long = [_]f32{0} ** (512 * 96);
+    var long: [(512 * 96)]f32 = @splat(0);
     T.play(inst, &none, 96, &long);
 
     // LEVEL -12 dB on the clap only, +12 st TUNE on it
@@ -8830,7 +8830,7 @@ test "sampler zones: per-zone level, tune and decay; kit labels; edits follow na
     // DECAY 50 ms on the kick: gone 0.2 s in
     inst.zone_edits.decay[1] = 0.05;
     var k = [_]machine.NoteEvent{T.on(36, 1)};
-    var kout = [_]f32{0} ** (512 * 24);
+    var kout: [(512 * 24)]f32 = @splat(0);
     T.play(inst, &k, 24, &kout);
     try testing.expect(T.rms(kout[512 * 20 ..]) < 1e-4);
     try testing.expect(T.rms(kout[0..1024]) > 0.05);
@@ -8896,7 +8896,7 @@ const TestHome = struct {
         const abs = storage.absolute(&h.buf, rel);
         h.len = abs.len;
         var zb: [storage.MAX_PATH]u8 = undefined;
-        _ = setenv("SLAB_HOME", (try std.fmt.bufPrintZ(&zb, "{s}", .{abs})).ptr, 1);
+        _ = setenv("SLAB_HOME", (try std.mem.printSentinel(&zb, "{s}", .{abs}, 0)).ptr, 1);
         return h;
     }
 
@@ -8931,10 +8931,10 @@ test "raw machine presets: a project's presets live in its package, the library'
     try testing.expectEqualStrings("User/kick-fat", inst.presets.names[l].slice());
 
     var fb: [storage.MAX_PATH]u8 = undefined;
-    const in_pkg = try std.fmt.bufPrintZ(&fb, "{s}/presets/drum2/kick-fat.preset", .{storage.projectDir()});
+    const in_pkg = try std.mem.printSentinel(&fb, "{s}/presets/drum2/kick-fat.preset", .{storage.projectDir()}, 0);
     try testing.expect(std.c.access(in_pkg.ptr, 0) == 0);
     var hb: [storage.MAX_PATH]u8 = undefined;
-    const in_home = try std.fmt.bufPrintZ(&hb, "{s}/Presets/drum2/kick-fat.preset", .{home.path()});
+    const in_home = try std.mem.printSentinel(&hb, "{s}/Presets/drum2/kick-fat.preset", .{home.path()}, 0);
     try testing.expect(std.c.access(in_home.ptr, 0) == 0);
 
     // A new instance sees both banks; factory presets can't be renamed.
@@ -9019,7 +9019,7 @@ test "automation drives a knob per chunk, follows the curve, and yields to a han
     snap.auto_point_count = 2;
     snap.lanes[0] = .{ .kind = .inst, .control = @intCast(ci), .points_start = 0, .points_count = 2 };
     snap.lane_count = 1;
-    var cursors = [_]u32{0} ** snapshot.MAX_LANES_PER_TRACK;
+    var cursors: [snapshot.MAX_LANES_PER_TRACK]u32 = @splat(0);
     const view = snapshot.AutoView{ .snap = &snap, .cursors = &cursors, .kind = .inst };
 
     const block = 256;
@@ -9028,8 +9028,8 @@ test "automation drives a knob per chunk, follows the curve, and yields to a han
     ctx.tempo_bpm = 120;
     ctx.block_size = block;
     ctx.automation = &view;
-    var l = [_]f32{0} ** block;
-    var r = [_]f32{0} ** block;
+    var l: [block]f32 = @splat(0);
+    var r: [block]f32 = @splat(0);
     inst.setControlNormSnap(ci, 0.9);
 
     // Playing forward from beat 2: it glides onto the curve, then follows it
@@ -9071,8 +9071,8 @@ test "note ids: a note-off finds its voice by id after the voice was bent" {
     ctx.sample_rate = 48_000;
     ctx.tempo_bpm = 120;
     ctx.block_size = block;
-    var l = [_]f32{0} ** block;
-    var r = [_]f32{0} ** block;
+    var l: [block]f32 = @splat(0);
+    var r: [block]f32 = @splat(0);
     // Two notes, then bend note 1 onto note 2's pitch: they're one pitch now.
     var evs = [_]machine.NoteEvent{
         .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 1, .pitch = 60, .velocity = 0.9 },
@@ -9128,8 +9128,8 @@ test "every pitched voice machine takes note expression" {
         ctx.sample_rate = 48_000;
         ctx.tempo_bpm = 120;
         ctx.block_size = 256;
-        var l = [_]f32{0} ** 256;
-        var r = [_]f32{0} ** 256;
+        var l: [256]f32 = @splat(0);
+        var r: [256]f32 = @splat(0);
         var evs = [_]machine.NoteEvent{
             .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 3, .pitch = 48, .velocity = 0.9 },
             .{ .sample_offset = 128, .kind = .expression, .channel = 0, .note_id = 3, .pitch = 60, .velocity = 0 },
@@ -9160,7 +9160,7 @@ test "an automated cutoff sweep renders like the knob set by hand at each chunk"
     snap.auto_point_count = 2;
     snap.lanes[0] = .{ .kind = .inst, .control = @intCast(ci), .points_start = 0, .points_count = 2 };
     snap.lane_count = 1;
-    var cursors = [_]u32{0} ** snapshot.MAX_LANES_PER_TRACK;
+    var cursors: [snapshot.MAX_LANES_PER_TRACK]u32 = @splat(0);
     const view = snapshot.AutoView{ .snap = &snap, .cursors = &cursors, .kind = .inst };
     a.setControlNormSnap(ci, 0.2);
     b.setControlNormSnap(ci, 0.2);
@@ -9172,10 +9172,10 @@ test "an automated cutoff sweep renders like the knob set by hand at each chunk"
     ctx.sample_rate = sr;
     ctx.tempo_bpm = 120;
     var on = [_]machine.NoteEvent{.{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 1, .pitch = 48, .velocity = 0.9 }};
-    var la = [_]f32{0} ** block;
-    var ra = [_]f32{0} ** block;
-    var lb = [_]f32{0} ** 32;
-    var rb = [_]f32{0} ** 32;
+    var la: [block]f32 = @splat(0);
+    var ra: [block]f32 = @splat(0);
+    var lb: [32]f32 = @splat(0);
+    var rb: [32]f32 = @splat(0);
     var max_diff: f32 = 0;
     var energy: f32 = 0;
     var pos: usize = 0;
@@ -9217,8 +9217,8 @@ test "per-note gain scales the sampler voice from its onset" {
     ctx.sample_rate = 48_000;
     ctx.tempo_bpm = 120;
     ctx.block_size = 64;
-    var l = [_]f32{0} ** 64;
-    var r = [_]f32{0} ** 64;
+    var l: [64]f32 = @splat(0);
+    var r: [64]f32 = @splat(0);
     var evs = [_]machine.NoteEvent{
         .{ .sample_offset = 0, .kind = .note_on, .channel = 0, .note_id = 1, .pitch = 60, .velocity = 0.9 },
         .{ .sample_offset = 0, .kind = .expression, .channel = 0, .note_id = 1, .pitch = 60, .velocity = 0, .value = -30 },
@@ -9355,8 +9355,8 @@ test "sidechain: verb2 GATED opens on the key, not the input" {
     // An impulse fills the tank at block 0; the key stays silent until a
     // hit at block 8. Wet only, so what comes out is the gated tail.
     const block = 512;
-    var in_l = [_]f32{0} ** block;
-    var key_l = [_]f32{0} ** block;
+    var in_l: [block]f32 = @splat(0);
+    var key_l: [block]f32 = @splat(0);
     const ports = [_][*]const f32{ &in_l, &in_l, &key_l, &key_l };
     var ctx = std.mem.zeroes(machine.MachineCtx);
     ctx.sample_rate = 48_000;
@@ -9366,8 +9366,8 @@ test "sidechain: verb2 GATED opens on the key, not the input" {
     mach.set_param.?(mach.state, "verb-mode", 1); // GATED
     mach.set_param.?(mach.state, "verb-mix", 1.0);
     mach.set_param.?(mach.state, "verb-decay", 0.95);
-    var l = [_]f32{0} ** block;
-    var r = [_]f32{0} ** block;
+    var l: [block]f32 = @splat(0);
+    var r: [block]f32 = @splat(0);
     var before: f64 = 0;
     var after: f64 = 0;
     for (0..16) |blk| {
@@ -9565,8 +9565,8 @@ test "unison: a poly note takes a group from the pool, steals and releases whole
     u.setCount(4);
     try testing.expectEqual(@as(u8, 2), u.notes());
 
-    var l = [_]f32{0} ** 128;
-    var r = [_]f32{0} ** 128;
+    var l: [128]f32 = @splat(0);
+    var r: [128]f32 = @splat(0);
     uniBlock(mach, &.{uniNote(.note_on, 60)}, &l, &r);
     try testing.expectEqual(@as(usize, 4), uniGroup(inst, 60));
     uniBlock(mach, &.{uniNote(.note_on, 64)}, &l, &r);
@@ -9577,7 +9577,7 @@ test "unison: a poly note takes a group from the pool, steals and releases whole
     try testing.expectEqual(@as(usize, 0), uniGroup(inst, 60));
     try testing.expectEqual(@as(usize, 4), uniGroup(inst, 64));
     // Each group holds places 0..3 of four.
-    var places = [_]bool{false} ** 4;
+    var places: [4]bool = @splat(false);
     for (0..inst.pool) |v| if (inst.voice_gate[v] and inst.voice_pitch[v] == 67) {
         try testing.expectEqual(@as(u8, 4), inst.voice_uni_n[v]);
         places[inst.voice_uni_k[v]] = true;
@@ -9608,8 +9608,8 @@ test "unison: DETUNE spreads a group's pitch and retunes it while held" {
     u.setCount(3);
     u.setDetune(0);
     const hz_off = try fyFieldOffset(inst, "JunoState.note-hz");
-    var l = [_]f32{0} ** 128;
-    var r = [_]f32{0} ** 128;
+    var l: [128]f32 = @splat(0);
+    var r: [128]f32 = @splat(0);
     uniBlock(mach, &.{uniNote(.note_on, 69)}, &l, &r);
     var hz: [3]f64 = undefined;
     for (0..inst.pool) |v| if (inst.voice_gate[v]) {
@@ -9688,8 +9688,8 @@ test "unison: a mono machine plays its clones as one voice, legato and all" {
     const u = mach.unison.?;
     try testing.expect(u.mono());
     u.setCount(3);
-    var l = [_]f32{0} ** 128;
-    var r = [_]f32{0} ** 128;
+    var l: [128]f32 = @splat(0);
+    var r: [128]f32 = @splat(0);
     uniBlock(mach, &.{uniNote(.note_on, 48)}, &l, &r);
     try testing.expectEqual(@as(usize, 3), inst.pool);
     try testing.expectEqual(@as(usize, 3), uniGroup(inst, 48));
@@ -9755,10 +9755,10 @@ test "wavetable editor: LIBRARY copies the table into the home folder, the proje
     saveTableToLibrary(inst, ai);
     saveTableToLibrary(inst, ai); // a second copy doesn't overwrite the first
     var pb: [storage.MAX_PATH]u8 = undefined;
-    const first = try std.fmt.bufPrintZ(&pb, "{s}/Wavetables/sync.wav", .{home.path()});
+    const first = try std.mem.printSentinel(&pb, "{s}/Wavetables/sync.wav", .{home.path()}, 0);
     try testing.expect(std.c.access(first.ptr, 0) == 0);
     var qb: [storage.MAX_PATH]u8 = undefined;
-    const second = try std.fmt.bufPrintZ(&qb, "{s}/Wavetables/sync-2.wav", .{home.path()});
+    const second = try std.mem.printSentinel(&qb, "{s}/Wavetables/sync-2.wav", .{home.path()}, 0);
     try testing.expect(std.c.access(second.ptr, 0) == 0);
     try testing.expectEqualStrings("sync-2", inst.wt_lib[0..inst.wt_lib_len]);
     // Still the project's table, still to be written with the project.
@@ -9835,8 +9835,8 @@ test "poly legato: an overlapping single note takes over the ringing voice" {
     var ctx = std.mem.zeroes(machine.MachineCtx);
     ctx.sample_rate = 48_000;
     ctx.block_size = 4096;
-    var l = [_]f32{0} ** 4096;
-    var r = [_]f32{0} ** 4096;
+    var l: [4096]f32 = @splat(0);
+    var r: [4096]f32 = @splat(0);
     const gated = struct {
         fn count(m: *FyRawMachine) usize {
             var n: usize = 0;
@@ -10007,7 +10007,7 @@ test "industrial buffer2: frozen repeat survives new input, reverses, and reset 
     const n = 24000;
     var il: [n]f32 = undefined;
     for (&il, 0..) |*x, i| x.* = @floatCast(0.2 * @sin(2 * std.math.pi * 400 * @as(f64, @floatFromInt(i)) / 48000));
-    const zero = [_]f32{0} ** n;
+    const zero: [n]f32 = @splat(0);
     var ol: [n]f32 = undefined;
     var or_: [n]f32 = undefined;
     industrialStream(mach, 48000, 128, &il, &zero, &ol, &or_);
@@ -10116,7 +10116,7 @@ test "industrial buffer2: dense pitch-jitter feedback stays bounded and frozen-e
         mach.set_param.?(mach.state, p[0], p[1]);
     var il: [256]f32 = undefined;
     for (&il, 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 31)) / 31 - 0.5;
-    const zero = [_]f32{0} ** 256;
+    const zero: [256]f32 = @splat(0);
     var ol: [256]f32 = undefined;
     var or_: [256]f32 = undefined;
     for ([_]f64{ 44100, 48000, 96000 }) |sr| {
@@ -10174,7 +10174,7 @@ test "phaser2: static 4/6/12-stage notch positions and feedback response at thre
     mach.set_param.?(mach.state, "ph-spread", 0);
     const n = 24000;
     var il: [n]f32 = undefined;
-    const zero = [_]f32{0} ** n;
+    const zero: [n]f32 = @splat(0);
     var ol: [n]f32 = undefined;
     var or_: [n]f32 = undefined;
     for ([_]f64{ 44100, 48000, 96000 }) |sr| {
@@ -10348,7 +10348,7 @@ test "phaser2: no-op automation keeps the synchronized sweep aligned at a nonzer
     snap.auto_point_count = 2;
     snap.lanes[0] = .{ .kind = .inst, .control = @intCast(ci), .points_start = 0, .points_count = 2 };
     snap.lane_count = 1;
-    var cursors = [_]u32{0} ** snapshot.MAX_LANES_PER_TRACK;
+    var cursors: [snapshot.MAX_LANES_PER_TRACK]u32 = @splat(0);
     const view = snapshot.AutoView{ .snap = &snap, .cursors = &cursors, .kind = .inst };
     const block = 256;
     var input: [block]f32 = undefined;
@@ -10517,8 +10517,8 @@ test "realtime: spectrum windows are copied from DSP into owned UI storage" {
     const inst = try FyRawMachine.create(a, "machines/geq8/geq8.fy");
     defer deinitImpl(inst, a);
     inst.requestDisplay();
-    var il = [_]f32{0.25} ** 256;
-    var ir = [_]f32{-0.25} ** 256;
+    var il: [256]f32 = @splat(0.25);
+    var ir: [256]f32 = @splat(-0.25);
     var l: [256]f32 = undefined;
     var r: [256]f32 = undefined;
     const ports = [2][*]const f32{ &il, &ir };

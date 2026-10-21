@@ -113,15 +113,18 @@ zig-out/bin/slab songs/paper_boulevard.slab  # open a saved project
 zig build test         # run unit tests
 ```
 
-Requires zig >= 0.16 (see `build.zig.zon`). macOS on Apple Silicon only
+Requires zig 0.17 (see `build.zig.zon`). macOS on Apple Silicon only
 — fy's JIT uses `MAP_JIT` + `pthread_jit_write_protect_np`.
 
 ## Coding conventions
 
 ### General Zig style
 
-- Zig >= 0.16 idioms. Use `std.Build.Module` / `createModule` for
+- Zig 0.17 idioms. Use `std.Build.Module` / `createModule` for
   build targets (already done in `build.zig`).
+- 0.17 has no `**` array repetition and no `@cImport`: fill arrays
+  with `@splat`, and include C headers from `src/c_*.h` (fy: `fy/src/c.h`),
+  which `build.zig` translates into modules.
 - Avoid allocations in hot paths. Use bounded arrays where size is
   known (`[256]ClipId` over `ArrayList(ClipId)`).
 - Prefer `extern struct` for any layout that crosses the Zig↔fy

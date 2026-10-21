@@ -133,7 +133,7 @@ pub const UserMachines = struct {
         const home = storage.home(&hb);
         if (home.len == 0) return;
         var db: [storage.MAX_PATH:0]u8 = undefined;
-        const dir_path = std.fmt.bufPrintZ(&db, "{s}/Machines", .{home}) catch return;
+        const dir_path = std.mem.printSentinel(&db, "{s}/Machines", .{home}, 0) catch return;
         self.scanDir(dir_path);
     }
 
@@ -145,7 +145,7 @@ pub const UserMachines = struct {
             const id = e.d_name[0..e.d_namlen];
             if (id.len == 0 or id[0] == '.') continue;
             var pb: [MAX_PATH:0]u8 = undefined;
-            const p = std.fmt.bufPrintZ(&pb, "{s}/{s}/{s}.fy", .{ dir_path, id, id }) catch continue;
+            const p = std.mem.printSentinel(&pb, "{s}/{s}/{s}.fy", .{ dir_path, id, id }, 0) catch continue;
             if (access(p, 0) != 0) continue;
             if (isBuiltin(id)) {
                 std.log.warn("user machine {s} skipped: a builtin machine has that id", .{p});
@@ -173,11 +173,11 @@ pub const UserMachines = struct {
 
 test "user machines: <id>/<id>.fy folders, sorted, builtins and strays skipped" {
     var tb: [MAX_PATH:0]u8 = undefined;
-    const root = std.fmt.bufPrintZ(&tb, "/tmp/slab-user-machines-test-{d}", .{std.c.getpid()}) catch unreachable;
+    const root = std.mem.printSentinel(&tb, "/tmp/slab-user-machines-test-{d}", .{std.c.getpid()}, 0) catch unreachable;
     const dirs = [_][]const u8{ "", "/zeta", "/alpha", "/juno2", "/stray" };
     for (dirs) |d| {
         var b: [MAX_PATH:0]u8 = undefined;
-        _ = std.c.mkdir(std.fmt.bufPrintZ(&b, "{s}{s}", .{ root, d }) catch unreachable, 0o755);
+        _ = std.c.mkdir(std.mem.printSentinel(&b, "{s}{s}", .{ root, d }, 0) catch unreachable, 0o755);
     }
     for ([_][]const u8{ "zeta", "alpha", "juno2" }) |id| {
         var b: [MAX_PATH]u8 = undefined;
@@ -187,11 +187,11 @@ test "user machines: <id>/<id>.fy folders, sorted, builtins and strays skipped" 
     // defers run last first: the files go, then the folders
     defer for (0..dirs.len) |k| {
         var b: [MAX_PATH:0]u8 = undefined;
-        _ = std.c.rmdir(std.fmt.bufPrintZ(&b, "{s}{s}", .{ root, dirs[dirs.len - 1 - k] }) catch unreachable);
+        _ = std.c.rmdir(std.mem.printSentinel(&b, "{s}{s}", .{ root, dirs[dirs.len - 1 - k] }, 0) catch unreachable);
     };
     defer for ([_][]const u8{ "zeta", "alpha", "juno2" }) |id| {
         var b: [MAX_PATH:0]u8 = undefined;
-        _ = std.c.unlink(std.fmt.bufPrintZ(&b, "{s}/{s}/{s}.fy", .{ root, id, id }) catch unreachable);
+        _ = std.c.unlink(std.mem.printSentinel(&b, "{s}/{s}/{s}.fy", .{ root, id, id }, 0) catch unreachable);
     };
     // the juno2 folder's skip is expected: keep its warning out of the run
     const saved_level = std.testing.log_level;
@@ -209,9 +209,9 @@ pub const Native = enum(u8) { none, rack, fxrack };
 
 pub const Entry = struct {
     native: Native = .none,
-    name: [MAX_NAME]u8 = [_]u8{0} ** MAX_NAME,
+    name: [MAX_NAME]u8 = @splat(0),
     name_len: u8 = 0,
-    path: [MAX_PATH]u8 = [_]u8{0} ** MAX_PATH,
+    path: [MAX_PATH]u8 = @splat(0),
     path_len: u16 = 0,
     raw_mode: fy_raw_machine_mod.Mode = .voice_sample,
     raw_state_size: usize = 0,

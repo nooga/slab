@@ -5,7 +5,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Pass no options through — fy's build.zig registers its own `target`
-    // and `optimize` via standard*Option, and zig 0.16 surfaces a warning
+    // and `optimize` via standard*Option, and zig surfaces a warning
     // when we forward them. Our exe module takes the locally-resolved
     // target/optimize anyway; fy just needs to compile to the same ABI,
     // which matches since both default to the host.
@@ -29,7 +29,7 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
 
-    configureNativeDeps(b, exe_mod);
+    configureNativeDeps(b, exe_mod, target, optimize);
 
     const kernel_probe_mod = b.createModule(.{
         .root_source_file = b.path("src/kernel_probe.zig"),
@@ -37,7 +37,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     kernel_probe_mod.addImport("fy", fy_mod);
-    configureNativeDeps(b, kernel_probe_mod);
+    configureNativeDeps(b, kernel_probe_mod, target, optimize);
 
     const kernel_probe = b.addExecutable(.{
         .name = "kernel-probe",
@@ -45,7 +45,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const kernel_probe_cmd = b.addRunArtifact(kernel_probe);
-    if (b.args) |args| kernel_probe_cmd.addArgs(args);
+    kernel_probe_cmd.addPassthruArgs();
     const kernel_probe_step = b.step("kernel-probe", "Run a testable Fy DSP kernel fixture");
     kernel_probe_step.dependOn(&kernel_probe_cmd.step);
 
@@ -56,13 +56,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     bench_mod.addImport("fy", fy_mod);
-    configureNativeDeps(b, bench_mod);
+    configureNativeDeps(b, bench_mod, target, optimize);
     const bench = b.addExecutable(.{
         .name = "bench",
         .root_module = bench_mod,
     });
     const bench_cmd = b.addRunArtifact(bench);
-    if (b.args) |args| bench_cmd.addArgs(args);
+    bench_cmd.addPassthruArgs();
     const bench_step = b.step("bench", "Render machines headless: sheets, reports, goldens");
     bench_step.dependOn(&bench_cmd.step);
 
@@ -74,13 +74,13 @@ pub fn build(b: *std.Build) void {
     const codesign = b.addSystemCommand(&[_][]const u8{
         "codesign", "-s", "-", "--force", "--entitlements", "entitlements.plist", "--options", "runtime",
     });
-    codesign.addArg(b.getInstallPath(.bin, exe.out_filename));
+    codesign.addFileArg(.{ .relative = .{ .base = .install_bin, .sub_path = exe.out_filename } });
     codesign.step.dependOn(&install.step);
     b.getInstallStep().dependOn(&codesign.step);
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    run_cmd.addPassthruArgs();
 
     const run_step = b.step("run", "Run Slab");
     run_step.dependOn(&run_cmd.step);
@@ -97,8 +97,16 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(bench_tests).step);
 }
 
-fn configureNativeDeps(b: *std.Build, mod: *std.Build.Module) void {
-    // raylib via homebrew — @cImport in src/c.zig picks up the header here.
+fn configureNativeDeps(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    // C headers become modules src/c.zig imports (zig 0.17 has no @cImport).
+    const rl_c = b.addTranslateC(.{ .root_source_file = b.path("src/c_raylib.h"), .target = target, .optimize = optimize });
+    rl_c.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+    mod.addImport("raylib_c", rl_c.createModule());
+    const ma_c = b.addTranslateC(.{ .root_source_file = b.path("src/c_miniaudio.h"), .target = target, .optimize = optimize });
+    ma_c.addIncludePath(b.path("vendor"));
+    mod.addImport("miniaudio_c", ma_c.createModule());
+
+    // raylib via homebrew.
     mod.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
     mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
     mod.linkSystemLibrary("raylib", .{});

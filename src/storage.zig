@@ -237,9 +237,9 @@ pub fn freshPath(buf: []u8, dir: []const u8, stem: []const u8, ext: []const u8) 
     var n: usize = 1;
     while (n < 1000) : (n += 1) {
         const p = if (n == 1)
-            std.fmt.bufPrintZ(buf, "{s}/{s}{s}", .{ dir, stem, ext }) catch return ""
+            std.mem.printSentinel(buf, "{s}/{s}{s}", .{ dir, stem, ext }, 0) catch return ""
         else
-            std.fmt.bufPrintZ(buf, "{s}/{s}-{d}{s}", .{ dir, stem, n, ext }) catch return "";
+            std.mem.printSentinel(buf, "{s}/{s}-{d}{s}", .{ dir, stem, n, ext }, 0) catch return "";
         if (access(p.ptr, 0) != 0) return p;
     }
     return "";
@@ -252,7 +252,7 @@ pub const HOME_DIRS = [_][]const u8{ "Projects", "Presets", "Wavetables", "Clips
 
 fn makeDir(path: []const u8) void {
     var zb: [MAX_PATH]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&zb, "{s}", .{path}) catch return;
+    const z = std.mem.printSentinel(&zb, "{s}", .{path}, 0) catch return;
     _ = mkdir(z.ptr, 0o755); // EEXIST is fine
 }
 
@@ -346,7 +346,7 @@ extern "c" fn write(fd: c_int, buf: [*]const u8, count: usize) isize;
 
 fn readFile(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
     var zb: [MAX_PATH]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&zb, "{s}", .{path}) catch return null;
+    const z = std.mem.printSentinel(&zb, "{s}", .{path}, 0) catch return null;
     const fd = open(z.ptr, 0);
     if (fd < 0) return null;
     defer _ = close(fd);
@@ -369,7 +369,7 @@ fn readFile(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
 
 fn writeFile(path: []const u8, bytes: []const u8) void {
     var zb: [MAX_PATH]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&zb, "{s}", .{path}) catch return;
+    const z = std.mem.printSentinel(&zb, "{s}", .{path}, 0) catch return;
     const fd = open(z.ptr, 0x0001 | 0x0200 | 0x0400, @as(c_uint, 0o644)); // O_WRONLY|O_CREAT|O_TRUNC
     if (fd < 0) return;
     defer _ = close(fd);
@@ -452,7 +452,7 @@ test "storage: the home folder is created, and settings move it" {
     const base = root_buf[0..root.len];
 
     var sb: [MAX_PATH]u8 = undefined;
-    const settings = try std.fmt.bufPrintZ(&sb, "{s}/settings.json", .{base});
+    const settings = try std.mem.printSentinel(&sb, "{s}/settings.json", .{base}, 0);
     var hb: [MAX_PATH]u8 = undefined;
     const moved = try std.fmt.bufPrint(&hb, "{s}/My Slab", .{base});
     const saved_home = home_setting_len;
@@ -478,7 +478,7 @@ test "storage: the home folder is created, and settings move it" {
     ensureHome();
     for (HOME_DIRS) |d| {
         var pb: [MAX_PATH]u8 = undefined;
-        const p = try std.fmt.bufPrintZ(&pb, "{s}/{s}", .{ moved, d });
+        const p = try std.mem.printSentinel(&pb, "{s}/{s}", .{ moved, d }, 0);
         try std.testing.expect(access(p.ptr, 0) == 0);
     }
 }

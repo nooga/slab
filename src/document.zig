@@ -123,7 +123,7 @@ fn machineId(idx: u8) []const u8 {
 pub fn readFile(alloc: std.mem.Allocator, given: []const u8) ![]u8 {
     var db: [storage.MAX_PATH]u8 = undefined;
     const path = package.docPath(&db, given);
-    const z = try alloc.dupeZ(u8, path);
+    const z = try alloc.dupeSentinel(u8, path, 0);
     defer alloc.free(z);
     const fd = open(z, O_RDONLY);
     if (fd < 0) return error.FileOpenFailed;
@@ -146,7 +146,7 @@ pub fn readFile(alloc: std.mem.Allocator, given: []const u8) ![]u8 {
 }
 
 pub fn writeFile(alloc: std.mem.Allocator, path: []const u8, data: []const u8) !void {
-    const z = try alloc.dupeZ(u8, path);
+    const z = try alloc.dupeSentinel(u8, path, 0);
     defer alloc.free(z);
     const fd = open(z, O_WRONLY | O_CREAT | O_TRUNC, @as(c_int, 0o644));
     if (fd < 0) return error.FileOpenFailed;
@@ -1379,10 +1379,10 @@ fn applyClip(alloc: std.mem.Allocator, t: *track_mod.Track, co: std.json.ObjectM
                         _ = note.addBend(pt);
                     }
                 };
-                inline for (std.meta.fields(clip_mod.ExprDim)) |fd| {
-                    const d: clip_mod.ExprDim = @enumFromInt(fd.value);
+                inline for (@typeInfo(clip_mod.ExprDim).@"enum".field_names) |dim_name| {
+                    const d = @field(clip_mod.ExprDim, dim_name);
                     const rg = clip_mod.dimRange(d);
-                    if (objGet(ev.object, fd.name)) |pv| if (pv == .array) {
+                    if (objGet(ev.object, dim_name)) |pv| if (pv == .array) {
                         for (pv.array.items) |ptv| {
                             const pt = parsePoint(ptv) orelse continue;
                             _ = note.dim(d).add(pt, rg.lo, rg.hi);
@@ -1514,7 +1514,7 @@ test "a clip saved as a .slabclip comes back on another track where it's put; a 
     var root_buf: [storage.MAX_PATH]u8 = undefined;
     const root = storage.absolute(&root_buf, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
     var hb: [storage.MAX_PATH]u8 = undefined;
-    const home = try std.fmt.bufPrintZ(&hb, "{s}/home", .{root});
+    const home = try std.mem.printSentinel(&hb, "{s}/home", .{root}, 0);
     _ = setenv("SLAB_HOME", home.ptr, 1);
     defer _ = unsetenv("SLAB_HOME");
 
@@ -1593,7 +1593,7 @@ test "a project saved as a package carries the outside sample it loaded, and loa
     const root_rel = try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     const root = storage.absolute(&root_buf, root_rel);
     var fb: [storage.MAX_PATH]u8 = undefined;
-    const fac = try std.fmt.bufPrintZ(&fb, "{s}/factory", .{root});
+    const fac = try std.mem.printSentinel(&fb, "{s}/factory", .{root}, 0);
     storage.makeParents(fac);
     _ = setenv("SLAB_FACTORY", fac.ptr, 1);
     defer _ = unsetenv("SLAB_FACTORY");
@@ -1635,7 +1635,7 @@ test "a project saved as a package carries the outside sample it loaded, and loa
     try std.testing.expect(std.mem.indexOf(u8, doc, "\"smp\":\"samples/pluck.wav\"") != null);
 
     // The original goes; the package still loads whole.
-    try std.testing.expectEqual(@as(c_int, 0), std.c.unlink(try std.fmt.bufPrintZ(&ob, "{s}/elsewhere/pluck.wav", .{root})));
+    try std.testing.expectEqual(@as(c_int, 0), std.c.unlink(try std.mem.printSentinel(&ob, "{s}/elsewhere/pluck.wav", .{root}, 0)));
     const bytes = try readFile(alloc, pkg);
     defer alloc.free(bytes);
     try std.testing.expectEqual(@as(usize, 0), package.missing(alloc, bytes).count);

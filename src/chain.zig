@@ -34,7 +34,7 @@ pub const Effect = struct {
     /// Block peaks the engine writes after each render and the bay's I/O
     /// meters read: in L, in R, out L, out R, as f32 bits.
     shared_io: ?*[4]std.atomic.Value(u32) = null,
-    io_peak: [4]std.atomic.Value(u32) = [_]std.atomic.Value(u32){std.atomic.Value(u32).init(0)} ** 4,
+    io_peak: [4]std.atomic.Value(u32) = @splat(std.atomic.Value(u32).init(0)),
     /// Audio thread: samples its input and output have both been silent,
     /// saturating; past the machine's hold it isn't rendered (docs/04
     /// §Idle skipping).

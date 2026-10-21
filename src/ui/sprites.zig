@@ -116,7 +116,7 @@ pub const Art = struct {
     sliders: [3]SliderArt,
     /// Lever positions: up, mid, down.
     lever: [3]Region,
-    leds: [std.meta.fields(LedShape).len]LedArt,
+    leds: [@typeInfo(LedShape).@"enum".field_names.len]LedArt,
     /// Halo versions of each display-font glyph (same index as the font).
     display_halo: [256]Region,
 };
@@ -127,7 +127,7 @@ pub fn build(a: *Atlas, display_font: *const font_mod.Font) !Art {
     inline for (.{ Size.s, Size.m, Size.l }, 0..) |sz, i| art.knobs[i] = try buildKnob(a, sz);
     inline for (.{ SliderKind.fader, SliderKind.slider, SliderKind.mini }, 0..) |k, i| art.sliders[i] = try buildSlider(a, k);
     for (0..3) |i| art.lever[i] = try buildLever(a, @intCast(i));
-    inline for (std.meta.fields(LedShape), 0..) |f, i| art.leds[i] = try buildLed(a, @field(LedShape, f.name));
+    inline for (@typeInfo(LedShape).@"enum".field_names, 0..) |name, i| art.leds[i] = try buildLed(a, @field(LedShape, name));
     for (&art.display_halo, 0..) |*h, i| {
         const g = &display_font.glyphs[i];
         h.* = if (g.present and g.src.w > 0) try buildHalo(a, g.src) else .{};

@@ -332,12 +332,14 @@ pub fn read(s: *Settings, o: std.json.ObjectMap) void {
     };
 }
 
+const recipe_info = @typeInfo(Recipe).@"struct";
+
 /// The recipe's fields, each as `,"name":value`.
 fn writeFields(alloc: std.mem.Allocator, out: *std.ArrayList(u8), r: *const Recipe) !void {
-    inline for (std.meta.fields(Recipe)) |fd| {
-        try out.appendSlice(alloc, ",\"" ++ fd.name ++ "\":");
-        const v = @field(r.*, fd.name);
-        switch (@typeInfo(fd.type)) {
+    inline for (recipe_info.field_names, recipe_info.field_types) |name, T| {
+        try out.appendSlice(alloc, ",\"" ++ name ++ "\":");
+        const v = @field(r.*, name);
+        switch (@typeInfo(T)) {
             .bool => try out.appendSlice(alloc, if (v) "true" else "false"),
             .@"enum" => try jsonString(alloc, out, @tagName(v)),
             .int, .float => {
@@ -345,20 +347,20 @@ fn writeFields(alloc: std.mem.Allocator, out: *std.ArrayList(u8), r: *const Reci
                 try out.appendSlice(alloc, std.fmt.bufPrint(&b, "{d}", .{v}) catch "0");
             },
             .@"struct" => try jsonString(alloc, out, v.get()),
-            else => @compileError("export setting " ++ fd.name),
+            else => @compileError("export setting " ++ name),
         }
     }
 }
 
 fn readFields(r: *Recipe, o: std.json.ObjectMap) void {
-    inline for (std.meta.fields(Recipe)) |fd| if (o.get(fd.name)) |v| {
-        const p = &@field(r.*, fd.name);
-        switch (@typeInfo(fd.type)) {
+    inline for (recipe_info.field_names, recipe_info.field_types) |name, T| if (o.get(name)) |v| {
+        const p = &@field(r.*, name);
+        switch (@typeInfo(T)) {
             .bool => if (v == .bool) {
                 p.* = v.bool;
             },
             .@"enum" => if (v == .string) {
-                if (std.meta.stringToEnum(fd.type, v.string)) |e| p.* = e;
+                if (std.meta.stringToEnum(T, v.string)) |e| p.* = e;
             },
             .int => {
                 const x: f64 = switch (v) {

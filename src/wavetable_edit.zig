@@ -40,7 +40,7 @@ pub const Doc = struct {
     count: usize = 1,
     /// Keyframes: the frames a morph keeps and fills between. The first
     /// and the last frame are always keys.
-    keys: Keys = Keys.initEmpty(),
+    keys: Keys = Keys.empty,
     /// The frame being edited.
     sel: usize = 0,
     undo_s: [UNDO]Snap = undefined,
@@ -125,7 +125,7 @@ pub const Doc = struct {
 
     fn reset(d: *Doc, count: usize) void {
         d.count = count;
-        d.keys = Keys.initEmpty();
+        d.keys = Keys.empty;
         d.sel = 0;
         d.clearHistory();
         d.markResized();
@@ -377,7 +377,7 @@ pub const Doc = struct {
         const tail = (d.count - i - 1) * N;
         std.mem.copyBackwards(f32, d.data[(i + 2) * N ..][0..tail], d.data[(i + 1) * N ..][0..tail]);
         @memcpy(d.frame(i + 1), d.frameConst(i));
-        var keys = Keys.initEmpty();
+        var keys = Keys.empty;
         for (0..d.count) |k| if (d.keys.isSet(k)) keys.set(if (k > i) k + 1 else k);
         d.keys = keys;
         d.count += 1;
@@ -389,7 +389,7 @@ pub const Doc = struct {
         if (d.count == 1) return;
         const tail = (d.count - i - 1) * N;
         std.mem.copyForwards(f32, d.data[i * N ..][0..tail], d.data[(i + 1) * N ..][0..tail]);
-        var keys = Keys.initEmpty();
+        var keys = Keys.empty;
         for (0..d.count) |k| {
             if (k != i and d.keys.isSet(k)) keys.set(if (k > i) k - 1 else k);
         }

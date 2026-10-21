@@ -3471,8 +3471,8 @@ test "mixAudioClips: places source at clip start and resamples by rate" {
     };
 
     const spb: f64 = 100.0; // samples per beat → clip starts at sample 100
-    var l = [_]f32{0} ** 8;
-    var r = [_]f32{0} ** 8;
+    var l: [8]f32 = @splat(0);
+    var r: [8]f32 = @splat(0);
     // Block starting exactly at the clip's first sample.
     mixAudioClips(&snap, 100, 8, &spbMap(spb), 48_000, &l, &r);
 
@@ -3500,8 +3500,8 @@ test "mixAudioClips: silent before clip start and after source ends" {
     };
     const spb: f64 = 4.0; // clip starts at sample 4
 
-    var l = [_]f32{0} ** 8;
-    var r = [_]f32{0} ** 8;
+    var l: [8]f32 = @splat(0);
+    var r: [8]f32 = @splat(0);
     // Block [0,8): samples 0..3 are before the clip, 4..5 read the source,
     // 6..7 are past the 2-sample source (silent).
     mixAudioClips(&snap, 0, 8, &spbMap(spb), 48_000, &l, &r);
@@ -3528,8 +3528,8 @@ test "mixAudioClips: start_sample offsets into the source (split clips)" {
         .start_sample = 3, // begin reading at source sample 3
         .gain = 1.0,
     };
-    var l = [_]f32{0} ** 4;
-    var r = [_]f32{0} ** 4;
+    var l: [4]f32 = @splat(0);
+    var r: [4]f32 = @splat(0);
     // Engine rate == source rate → step 1, so out[i] = data[3+i].
     mixAudioClips(&snap, 0, 4, &spbMap(100.0), 48_000, &l, &r);
     try testing.expectApproxEqAbs(@as(f32, 3), l[0], 1e-5);
@@ -3539,7 +3539,7 @@ test "mixAudioClips: start_sample offsets into the source (split clips)" {
 }
 
 test "declick: audio clip edges fade where they cut, not at a file's own ends or a seamless split" {
-    var data = [_]f64{1.0} ** 2048;
+    var data: [2048]f64 = @splat(1.0);
     // 100 samples a beat: clip A is source 0..400, B carries on 400..800,
     // C is cut out of the middle, 1200..1600.
     var snap = snap_mod.TrackSnapshot{};
@@ -3552,8 +3552,8 @@ test "declick: audio clip edges fade where they cut, not at a file's own ends or
     snap.audio_clips[2] = base;
     snap.audio_clips[2].start_beat = 10;
     snap.audio_clips[2].start_sample = 1200;
-    var l = [_]f32{0} ** 1500;
-    var r = [_]f32{0} ** 1500;
+    var l: [1500]f32 = @splat(0);
+    var r: [1500]f32 = @splat(0);
     mixAudioClipsEdged(&snap, 0, 1500, &spbMap(100.0), 48_000, &l, &r, .{ .on = true });
     // A starts at the file's head: as authored.
     try testing.expectApproxEqAbs(@as(f32, 1), l[0], 1e-6);
@@ -3577,7 +3577,7 @@ test "declick: audio clip edges fade where they cut, not at a file's own ends or
 
 test "mixAudioClips: linear fade-in/out ramps the window edges" {
     // 8-sample window, value 1.0 everywhere; fade in/out of 2 samples each.
-    var data = [_]f64{1.0} ** 8;
+    var data: [8]f64 = @splat(1.0);
     var snap = snap_mod.TrackSnapshot{};
     snap.audio_clip_count = 1;
     snap.audio_clips[0] = .{
@@ -3592,8 +3592,8 @@ test "mixAudioClips: linear fade-in/out ramps the window edges" {
         .fade_out_samples = 2,
         .gain = 1.0,
     };
-    var l = [_]f32{0} ** 8;
-    var r = [_]f32{0} ** 8;
+    var l: [8]f32 = @splat(0);
+    var r: [8]f32 = @splat(0);
     mixAudioClips(&snap, 0, 8, &spbMap(100.0), 48_000, &l, &r);
     // fade-in: pos 0 → 0.0, pos 1 → 0.5; middle → 1.0; fade-out near the end.
     try testing.expectApproxEqAbs(@as(f32, 0.0), l[0], 1e-5);
@@ -3620,8 +3620,8 @@ test "mixAudioClips: a reversed clip reads its window end to start, fades in cli
         .gain = 1.0,
         .reversed = true,
     };
-    var l = [_]f32{0} ** 6;
-    var r = [_]f32{0} ** 6;
+    var l: [6]f32 = @splat(0);
+    var r: [6]f32 = @splat(0);
     mixAudioClips(&snap, 0, 6, &spbMap(6.0), 48_000, &l, &r);
     // 7, 6, 5, 4, 3, 2 with the fade-in on the first two (0, 0.5).
     try testing.expectApproxEqAbs(@as(f32, 0), l[0], 1e-5);
@@ -3645,8 +3645,8 @@ test "mixAudioClips: a stereo source plays its channels apart" {
         .dur_samples = 4,
         .gain = 0.5,
     };
-    var l = [_]f32{0} ** 4;
-    var r = [_]f32{0} ** 4;
+    var l: [4]f32 = @splat(0);
+    var r: [4]f32 = @splat(0);
     mixAudioClips(&snap, 0, 4, &spbMap(4.0), 48_000, &l, &r);
     try testing.expectApproxEqAbs(@as(f32, 0.5), l[0], 1e-6);
     try testing.expectApproxEqAbs(@as(f32, -0.5), r[0], 1e-6);
@@ -3675,8 +3675,8 @@ test "mixAudioClips: a warped clip reads through its markers, offset and reverse
         .warp_start = 0,
         .warp_count = 2,
     };
-    var l = [_]f32{0} ** 16;
-    var r = [_]f32{0} ** 16;
+    var l: [16]f32 = @splat(0);
+    var r: [16]f32 = @splat(0);
     mixAudioClips(&snap, 0, 16, &spbMap(4.0), 48_000, &l, &r);
     for (l, 0..) |v, k| try testing.expectApproxEqAbs(@as(f32, @floatCast(data[128 + 2 * k])), v, 2e-3);
 
@@ -3812,8 +3812,8 @@ test "mixAudioClips: missing source data is skipped" {
     var snap = snap_mod.TrackSnapshot{};
     snap.audio_clip_count = 1;
     snap.audio_clips[0] = .{ .start_beat = 0, .length_beats = 4, .data = null };
-    var l = [_]f32{0} ** 4;
-    var r = [_]f32{0} ** 4;
+    var l: [4]f32 = @splat(0);
+    var r: [4]f32 = @splat(0);
     mixAudioClips(&snap, 0, 4, &spbMap(10.0), 48_000, &l, &r);
     for (l) |v| try testing.expectEqual(@as(f32, 0), v);
 }
@@ -4440,7 +4440,7 @@ test "a loop wrap releases the note ending on the loop end, and the ones past it
     const alloc = testing.allocator;
     const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const Held = struct {
-        var on: [128]i32 = [_]i32{0} ** 128;
+        var on: [128]i32 = @splat(0);
         fn machine_() machine.Machine {
             var level: f32 = 0;
             var m = RouteTestMachines.dc(&level);

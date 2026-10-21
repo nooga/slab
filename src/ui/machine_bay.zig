@@ -139,8 +139,8 @@ var fx_drag: ReorderDrag = .{};
 
 // Note-activity LED glow, keyed by track index. Bumped to 1.0 when the
 // engine's note sequence advances, decayed each frame for a soft pulse.
-var led_seen: [16]u32 = [_]u32{0} ** 16;
-var led_glow: [16]f32 = [_]f32{0} ** 16;
+var led_seen: [16]u32 = @splat(0);
+var led_glow: [16]f32 = @splat(0);
 
 pub fn panelW(mach: *const Machine) i32 {
     if (mach.panel_w_fn) |f| return @intFromFloat(@round(f(mach.state)));

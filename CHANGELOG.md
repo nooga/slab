@@ -6,6 +6,9 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Building from source needs Zig 0.17.** 0.16 no longer builds Slab,
+  and 0.17 no longer fails on the build script (#3).
+
 - **Rack macros.** Racks and FX Racks get eight macro knobs (`rk-m1`…`rk-m8`)
   and a CHAIN control that automate like any knob. MAP, then click a
   control inside the open lane (or a lane's LV or PN), puts it on the

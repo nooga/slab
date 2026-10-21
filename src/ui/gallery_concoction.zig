@@ -275,8 +275,8 @@ pub const State = struct {
 // ── The modulation model ─────────────────────────────────────────────
 
 const Mods = struct {
-    src: [SRCS.len]f32 = [_]f32{0} ** SRCS.len,
-    dst: [DSTS.len]f32 = [_]f32{0} ** DSTS.len,
+    src: [SRCS.len]f32 = @splat(0),
+    dst: [DSTS.len]f32 = @splat(0),
     since: f64 = 0,
     lfo_ph: [2]f32 = .{ 0, 0 },
     note: i32 = 0,

@@ -52,8 +52,14 @@ pub const DrawList = struct {
     }
 };
 
-inline fn rl(col: Color) c.rl.Color {
-    return @bitCast(col);
+/// The same color as raylib's struct (zig 0.17 no longer bit-casts
+/// between extern structs).
+pub inline fn rl(col: Color) c.rl.Color {
+    return .{ .r = col.r, .g = col.g, .b = col.b, .a = col.a };
+}
+
+pub inline fn fromRl(col: c.rl.Color) Color {
+    return .{ .r = col.r, .g = col.g, .b = col.b, .a = col.a };
 }
 
 pub const Renderer = struct {

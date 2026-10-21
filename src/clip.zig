@@ -88,7 +88,7 @@ pub const Note = struct {
     bend: [MAX_BEND]automation.Point = undefined,
     bend_n: u8 = 0,
     /// Pressure, slide and gain curves (ExprDim order).
-    dims: [EXPR_DIMS]Curve = [_]Curve{.{}} ** EXPR_DIMS,
+    dims: [EXPR_DIMS]Curve = @splat(.{}),
 
     pub fn dim(self: *Note, d: ExprDim) *Curve {
         return &self.dims[@intFromEnum(d)];
@@ -231,7 +231,7 @@ pub const Clip = struct {
     /// Length of the clip in beats.
     length_beats: f64,
     /// Display name (null-terminated within name_buf[0..name_len]).
-    name_buf: [MAX_NAME]u8 = [_]u8{0} ** MAX_NAME,
+    name_buf: [MAX_NAME]u8 = @splat(0),
     name_len: u8 = 0,
     /// Transient UI flag — not persisted, not consumed by the engine.
     selected: bool = false,

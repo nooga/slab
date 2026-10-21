@@ -484,8 +484,8 @@ fn kindIn(mask: u8, k: Kind) bool {
 fn matches(it: *const Item, query: []const u8) bool {
     var words = std.mem.tokenizeScalar(u8, query, ' ');
     while (words.next()) |w| {
-        if (std.ascii.indexOfIgnoreCase(it.nameS(), w) == null and
-            std.ascii.indexOfIgnoreCase(it.folderS(), w) == null and
+        if (std.ascii.findIgnoreCase(it.nameS(), w) == null and
+            std.ascii.findIgnoreCase(it.folderS(), w) == null and
             !std.ascii.startsWithIgnoreCase(KIND_NAMES[@intFromEnum(it.kind)], w)) return false;
     }
     return true;
@@ -657,7 +657,7 @@ fn chips(ui: *Ui, r: Rect, st: *State) void {
     const body = ui.plate(r, .{});
     var row = body.insetXY(4, 3);
     // Counts under the current source and search, ignoring the kind mask.
-    var counts = [_]u16{0} ** KIND_CHIPS.len;
+    var counts: [KIND_CHIPS.len]u16 = @splat(0);
     var favs: u16 = 0;
     for (st.items[0..st.n_items]) |*it| {
         if (!sourceIn(st.tab, it.source) or !matches(it, st.query.text())) continue;
@@ -1223,7 +1223,7 @@ fn tagChips(ui: *Ui, r: *Rect, it: *const Item) void {
     var nf: usize = 0;
     for (words) |wd| {
         if (nf == found.len) break;
-        if (std.ascii.indexOfIgnoreCase(it.nameS(), wd.w) == null) continue;
+        if (std.ascii.findIgnoreCase(it.nameS(), wd.w) == null) continue;
         if (nf == 1 and std.mem.eql(u8, found[0], wd.tag)) continue;
         found[nf] = wd.tag;
         nf += 1;
@@ -1518,10 +1518,10 @@ fn ellipsizeMiddle(buf: []u8, f: *const core.Font, s: []const u8, w: i32) []cons
 
 /// Draw `s` in `r`, the spans matching any query word in bold white.
 fn highlighted(ui: *Ui, r: Rect, s: []const u8, query: []const u8, col: Color, playing: bool) void {
-    var mark = [_]bool{false} ** 64;
+    var mark: [64]bool = @splat(false);
     var words = std.mem.tokenizeScalar(u8, query, ' ');
     while (words.next()) |w| {
-        if (std.ascii.indexOfIgnoreCase(s, w)) |at| {
+        if (std.ascii.findIgnoreCase(s, w)) |at| {
             for (at..@min(at + w.len, mark.len)) |i| mark[i] = true;
         }
     }

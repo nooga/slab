@@ -248,7 +248,7 @@ fn smooth(t: *const Tuning, k: usize, tau: f32, key: u8, mask: u12, one_note: bo
 /// The key a take is sung in, from how long each pitch class is held
 /// (docs/30 §Tune).
 pub fn detectKey(t: *const Tuning) struct { key: u8, scale: Scale } {
-    var hist = [_]f32{0} ** 12;
+    var hist: [12]f32 = @splat(0);
     for (t.held) |h| if (h != 0) {
         hist[@intCast(@mod(@as(i32, @intFromFloat(@round(h))), 12))] += 1;
     };

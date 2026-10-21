@@ -77,7 +77,7 @@ pub const Send = struct {
 };
 
 pub const Track = struct {
-    name_buf: [MAX_NAME]u8 = [_]u8{0} ** MAX_NAME,
+    name_buf: [MAX_NAME]u8 = @splat(0),
     name_len: u8 = 0,
     kind: Kind = .audio,
     /// Where the post-fader signal goes: a bus's track index, or
@@ -137,7 +137,7 @@ pub const Track = struct {
     /// clip first needs them, freed with the track.
     stretch: ?*stretch_mod.Bank = null,
     /// Audio-thread-owned per-lane segment cursors (automation.evalCursor).
-    auto_cursors: [snap_mod.MAX_LANES_PER_TRACK]u32 = [_]u32{0} ** snap_mod.MAX_LANES_PER_TRACK,
+    auto_cursors: [snap_mod.MAX_LANES_PER_TRACK]u32 = @splat(0),
     /// Manual overrides of automated volume/pan (docs/22 §Manual changes):
     /// 0 none, 1 held (touch), 2 sticky until the transport starts.
     vol_override: std.atomic.Value(u8) = std.atomic.Value(u8).init(0),

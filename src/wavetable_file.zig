@@ -63,7 +63,7 @@ pub fn save(alloc: std.mem.Allocator, doc: *const wte.Doc, path: []const u8) boo
     const bytes = encode(alloc, doc) catch return false;
     defer alloc.free(bytes);
     var zb: [1024]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&zb, "{s}", .{path}) catch return false;
+    const z = std.mem.printSentinel(&zb, "{s}", .{path}, 0) catch return false;
     const fd = open(z.ptr, O_WRONLY | O_CREAT | O_TRUNC, @as(c_uint, 0o644));
     if (fd < 0) return false;
     defer _ = close(fd);
@@ -83,13 +83,13 @@ pub fn tablesDir(buf: []u8, project_path: []const u8) []const u8 {
 
 pub fn makeDir(path: []const u8) void {
     var zb: [1024]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&zb, "{s}", .{path}) catch return;
+    const z = std.mem.printSentinel(&zb, "{s}", .{path}, 0) catch return;
     _ = mkdir(z.ptr, 0o755); // EEXIST is fine
 }
 
 pub fn exists(path: []const u8) bool {
     var zb: [1024]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&zb, "{s}", .{path}) catch return false;
+    const z = std.mem.printSentinel(&zb, "{s}", .{path}, 0) catch return false;
     return access(z.ptr, 0) == 0;
 }
 

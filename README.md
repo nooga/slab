@@ -128,7 +128,7 @@ in [fy](fy/), a small concatenative language that lives in this repo.
 
 ### Build from source
 
-You need [Zig](https://ziglang.org) 0.16 or later and raylib
+You need [Zig](https://ziglang.org) 0.17 and raylib
 (`brew install raylib`).
 
 ```bash

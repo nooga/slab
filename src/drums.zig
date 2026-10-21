@@ -43,6 +43,13 @@ pub const Class = enum(u8) {
     }
 };
 
+const CLASSES = blk: {
+    const names = @typeInfo(Class).@"enum".field_names;
+    var out: [names.len]Class = undefined;
+    for (names, 0..) |name, i| out[i] = @field(Class, name);
+    break :blk out;
+};
+
 pub const Feature = struct {
     /// The energy the hit adds, by third octaves (its first ~40 ms
     /// against the ~40 ms before it): the share of that under 150 Hz,
@@ -104,7 +111,7 @@ pub fn feature(l: []const f64, r: ?[]const f64, rate: f64, sec: f64, next: f64) 
     // Before, as the most each bin held over a few windows a little apart:
     // notes beating against each other, or a partial's phase, swing a
     // bin's energy, and its peak is what a hit has to beat.
-    var before_e: [WIN / 2]f64 = [_]f64{0} ** (WIN / 2);
+    var before_e: [WIN / 2]f64 = @splat(0);
     for (BEFORE_OFFSETS) |off| {
         for (&buf, 0..) |*b, i| {
             const ib = a0 - WIN - off + @as(isize, @intCast(i));
@@ -293,7 +300,7 @@ fn kmeans(pts: []const [4]f32, k: usize, assign: []u8, cent: *[MAX_GROUPS][4]f32
             sse += dist(p, cent[best]);
         }
         var sum: [MAX_GROUPS][4]f32 = undefined;
-        var cnt = [_]f32{0} ** MAX_GROUPS;
+        var cnt: [MAX_GROUPS]f32 = @splat(0);
         for (sum[0..k]) |*s| s.* = .{ 0, 0, 0, 0 };
         for (pts, assign) |p, a| {
             for (0..4) |j| sum[a][j] += p[j];
@@ -345,8 +352,8 @@ pub fn kit(alloc: std.mem.Allocator, l: []const f64, r: ?[]const f64, rate: f64,
     const idx = try alloc.alloc(usize, n);
     defer alloc.free(idx);
     var k: usize = 0;
-    var used = [_]u8{0} ** std.enums.values(Class).len;
-    for (std.enums.values(Class)) |cl| {
+    var used: [CLASSES.len]u8 = @splat(0);
+    for (CLASSES) |cl| {
         var m: usize = 0;
         for (class_of, 0..) |c, i| if (c == cl and hits.strength[i] >= MIN_STRENGTH) {
             sel[m] = pts[i];

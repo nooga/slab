@@ -301,7 +301,7 @@ pub const NOTE_LABEL_TEXT = 23;
 /// drum-lane piano roll instead of the chromatic keyboard.
 pub const NoteLabel = struct {
     pitch: u8 = 0,
-    label: [NOTE_LABEL_TEXT:0]u8 = [_:0]u8{0} ** NOTE_LABEL_TEXT,
+    label: [NOTE_LABEL_TEXT:0]u8 = @splat(0),
     label_len: u8 = 0,
 
     pub fn labelSlice(self: *const NoteLabel) []const u8 {

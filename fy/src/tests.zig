@@ -969,7 +969,7 @@ test "dsp: raw repeated wrapper can advance output and input streams" {
         \\;
     );
 
-    var out = [_]f64{0} ** 4;
+    var out: [4]f64 = @splat(0);
     var input = [_]f64{ 0.25, -0.5, 0.75, -1.0 };
     var state: f64 = 0;
     var params: f64 = 0;
@@ -1013,7 +1013,7 @@ test "dsp: cached raw repeated caller reuses wrapper with new slots" {
 
     var state: f64 = 0;
     var params: f64 = 0;
-    var out_a = [_]f64{0} ** 2;
+    var out_a: [2]f64 = @splat(0);
     var in_a = [_]f64{ 0.5, -0.25 };
     const args_a = [_]Fy.Dsp2RawArg{
         .{ .ptr = @intFromPtr(&out_a[0]) },
@@ -1025,7 +1025,7 @@ test "dsp: cached raw repeated caller reuses wrapper with new slots" {
     try std.testing.expectApproxEqAbs(1.0, out_a[0], 0.000000000001);
     try std.testing.expectApproxEqAbs(-0.5, out_a[1], 0.000000000001);
 
-    var out_b = [_]f64{0} ** 3;
+    var out_b: [3]f64 = @splat(0);
     var in_b = [_]f64{ 1.0, 1.25, -1.5 };
     const args_b = [_]Fy.Dsp2RawArg{
         .{ .ptr = @intFromPtr(&out_b[0]) },
@@ -1402,7 +1402,7 @@ test "dsp: composition repeated caller loops with auto-advanced output" {
 
     var slots: Fy.Dsp2RawRepeatedSlots = .{};
     var caller = try fy.compileDsp2CompositionCaller("t-rep", &slots, 8, false);
-    var out = [_]f64{0} ** 4;
+    var out: [4]f64 = @splat(0);
     const args = [_]Fy.Dsp2RawArg{.{ .ptr = @intFromPtr(&out[0]) }};
     _ = try caller.call(4, &args);
     for (out) |v| try std.testing.expectApproxEqAbs(1.5, v, 0.000000000001);
@@ -1429,7 +1429,7 @@ test "dsp: 4-arg composition caller with auto-advanced out and in" {
 
     var slots: Fy.Dsp2RawRepeatedSlots = .{};
     var caller = try fy.compileDsp2CompositionCaller("t-fx", &slots, 8, true);
-    var out = [_]f64{0} ** 4;
+    var out: [4]f64 = @splat(0);
     const in = [_]f64{ 1.0, 2.0, 3.0, 4.0 };
     var state: f64 = 0;
     var params: f64 = 10.0;
@@ -1714,7 +1714,7 @@ test "dsp: n [ ... ] times unrolls into straight-line code" {
     _ = try fy.callDsp2RawRepeatedWithArgsNoResult("t-fwd", 1, &fwd_args);
     try std.testing.expectEqual(@as(f64, 5), out);
     try std.testing.expectEqual(@as(f64, 5), buf[2]);
-    var far = [_]f64{0} ** 1001;
+    var far: [1001]f64 = @splat(0);
     far[1000] = 2.5;
     far[3] = 0.25;
     const far_args = [_]Fy.Dsp2RawArg{ .{ .ptr = @intFromPtr(&out) }, .{ .ptr = @intFromPtr(&far) } };
@@ -1755,7 +1755,7 @@ test "ustruct: counted and embedded fields" {
     try std.testing.expectEqual(@as(i64, 40), Fy.getInt(try fy.run("Box.p")));
     try std.testing.expectEqual(@as(i64, 56), Fy.getInt(try fy.run("Box.y")));
 
-    var box = [_]f64{0} ** 8;
+    var box: [8]f64 = @splat(0);
     box[4] = 1.5; // taps[3]
     const args = [_]Fy.Dsp2RawArg{.{ .ptr = @intFromPtr(&box) }};
     _ = try fy.callDsp2RawRepeatedWithArgsNoResult("t-box", 1, &args);
@@ -2031,12 +2031,12 @@ test "dsp ifte: versioned and if-converted bodies both compute what the arms say
         var ctx = [_]f64{0};
         var ref_io: [48]IfIo = undefined;
         ifInputs(&ref_io);
-        var ref_st = [_]f64{ 0.5, 0 } ++ [_]f64{0} ** 6;
+        var ref_st = [_]f64{ 0.5, 0 } ++ @as([6]f64, @splat(0));
         ifRef(&ref_io, &ref_st, &params);
         for ([_]bool{ true, false }) |versioning| {
             var ios: [48]IfIo = undefined;
             ifInputs(&ios);
-            var st = [_]f64{ 0.5, 0 } ++ [_]f64{0} ** 6;
+            var st = [_]f64{ 0.5, 0 } ++ @as([6]f64, @splat(0));
             try ifRun(&fy, "k-if1", versioning, &ios, &ctx, &st, &params);
             try expectSameBits(@ptrCast(&ref_io), @ptrCast(&ios));
             try expectSameBits(&ref_st, &st);
@@ -2078,7 +2078,7 @@ test "dsp ifte: a mask from stored state or the advancing io if-converts, from c
     // if-converted body follows it sample by sample.
     var ios: [64]IfIo = undefined;
     ifInputs(&ios);
-    var st = [_]f64{0.2} ++ [_]f64{0} ** 7;
+    var st = [_]f64{0.2} ++ @as([7]f64, @splat(0));
     var ctx = [_]f64{0};
     var params = [_]f64{0};
     try ifRun(&fy, "k-g-state", true, &ios, &ctx, &st, &params);
@@ -2273,11 +2273,11 @@ test "dsp ifte: indexed stores in converted arms happen only where their arm is 
     for ([_]bool{ true, false }) |versioning| {
         var ios: [48]IfIo = undefined;
         ifInputs(&ios);
-        var st = [_]f64{0} ** 9;
+        var st: [9]f64 = @splat(0);
         var ctx = [_]f64{0};
         var params = [_]f64{0};
         try ifRun(&fy, "k-cst", versioning, &ios, &ctx, &st, &params);
-        var ring = [_]f64{0} ** 8;
+        var ring: [8]f64 = @splat(0);
         var w: usize = 0;
         for (ios) |f| {
             try std.testing.expectEqual(ring[w], f.out);
@@ -2294,7 +2294,7 @@ test "dsp ifte: indexed stores in converted arms happen only where their arm is 
 
         // One conditional store and nothing else: the unstashed path.
         ifInputs(&ios);
-        var st1 = [_]f64{0} ** 9;
+        var st1: [9]f64 = @splat(0);
         st1[0] = 3;
         try ifRun(&fy, "k-cst1", versioning, &ios, &ctx, &st1, &params);
         var last: f64 = 0;
@@ -2335,7 +2335,7 @@ test "dsp ifte: spilling bodies and compound masks dispatch to the right variant
         var sts: [2][8]f64 = undefined;
         for ([_]bool{ true, false }, 0..) |versioning, v| {
             ifInputs(&outs[v]);
-            sts[v] = [_]f64{0} ** 8;
+            sts[v] = @as([8]f64, @splat(0));
             var ctx = [_]f64{0};
             try ifRun(&fy, "k-sbig", versioning, &outs[v], &ctx, &sts[v], &params);
         }

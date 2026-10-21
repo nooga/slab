@@ -106,7 +106,7 @@ extern fn slab_write_m4a(path: [*:0]const u8, ints: ?[*]const c_int, floats: ?[*
 /// Write `samples` (interleaved by `f.channels`) to `path` in format `f`.
 pub fn writeFile(alloc: std.mem.Allocator, path: []const u8, samples: []const f32, f: Format) !void {
     if (f.container == .alac or f.container == .aac) {
-        const z = try alloc.dupeZ(u8, path);
+        const z = try alloc.dupeSentinel(u8, path, 0);
         defer alloc.free(z);
         const ch: usize = f.channels;
         const frames = samples.len / ch;
@@ -814,7 +814,7 @@ test "fillName fills the fields and keeps paths flat" {
 
 test "WAV cue points and the acid chunk" {
     const alloc = std.testing.allocator;
-    const x = [_]f32{0} ** 64;
+    const x: [64]f32 = @splat(0);
     const bytes = try encode(alloc, &x, .{ .bits = .pcm16, .cues = &.{ .{ .frame = 0, .name = "intro" }, .{ .frame = 20, .name = "drop!" } }, .acid = .{ .beats = 16, .num = 7, .den = 8, .bpm = 140 } });
     defer alloc.free(bytes);
     try std.testing.expectEqual(@as(u32, @intCast(bytes.len - 8)), std.mem.readInt(u32, bytes[4..8], .little));

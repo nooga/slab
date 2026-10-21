@@ -18,7 +18,7 @@ pub const Glyph = struct {
 };
 
 pub const Font = struct {
-    glyphs: [256]Glyph = [_]Glyph{.{}} ** 256,
+    glyphs: [256]Glyph = @splat(.{}),
     ascent: i32 = 0,
     descent: i32 = 0,
     /// Nominal cell width (these are monospaced fonts).

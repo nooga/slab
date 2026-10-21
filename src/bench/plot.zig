@@ -127,7 +127,7 @@ pub const Canvas = struct {
     }
 
     pub fn savePng(self: *Canvas, alloc: std.mem.Allocator, path: []const u8) !void {
-        const z = try alloc.dupeZ(u8, path);
+        const z = try alloc.dupeSentinel(u8, path, 0);
         defer alloc.free(z);
         const img = c.rl.Image{
             .data = self.px.ptr,

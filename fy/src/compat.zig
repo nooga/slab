@@ -125,14 +125,7 @@ pub fn stdinReader() FdReader {
 // synchronous blocking; we call libc directly.
 // ------------------------------------------------------------------
 
-const c = @cImport({
-    @cInclude("fcntl.h");
-    @cInclude("unistd.h");
-    @cInclude("sys/stat.h");
-    @cInclude("dirent.h");
-    @cInclude("stdlib.h");
-    @cInclude("errno.h");
-});
+const c = @import("c"); // src/c.h, translated by build.zig
 
 pub const FileError = error{
     OpenFailed,

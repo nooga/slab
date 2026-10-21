@@ -293,7 +293,7 @@ fn runMachine(alloc: std.mem.Allocator, cli: *const Cli, path: []const u8) !usiz
     const kind: []const u8 = if (isEffect(probe)) "effect" else if (isDrum(probe)) "drum voice" else "voice";
     try rep.print(alloc, "# bench: {s} ({s}, {s}, {d} voices)\n", .{ name, probe.desc.name[0..probe.desc.name_len], kind, probe.desc.voices });
     try rep.print(alloc, "sr {d} block {d} build {s}", .{ @as(u32, @intFromFloat(SR)), BLOCK, @tagName(@import("builtin").mode) });
-    if (@import("builtin").mode == .Debug) try rep.print(alloc, " (cpu numbers include Debug host overhead; use -Doptimize=ReleaseFast)", .{});
+    if (@import("builtin").mode == .debug) try rep.print(alloc, " (cpu numbers include Debug host overhead; use -Doptimize=ReleaseFast)", .{});
     if (cli.preset) |p| try rep.print(alloc, " preset {s}", .{p});
     for (cli.params[0..cli.param_count]) |ps| try rep.print(alloc, " {s}={d}", .{ ps.id, ps.value });
     try rep.print(alloc, "\n\n", .{});
@@ -1381,7 +1381,7 @@ fn mkdirs(alloc: std.mem.Allocator, path: []const u8) !void {
     while (i <= path.len) : (i += 1) {
         if (i == path.len or path[i] == '/') {
             if (i == 0) continue;
-            const z = try alloc.dupeZ(u8, path[0..i]);
+            const z = try alloc.dupeSentinel(u8, path[0..i], 0);
             defer alloc.free(z);
             if (std.c.mkdir(z, 0o755) != 0 and std.c._errno().* != 17) return error.MkdirFailed;
         }
@@ -1389,7 +1389,7 @@ fn mkdirs(alloc: std.mem.Allocator, path: []const u8) !void {
 }
 
 fn writeFile(alloc: std.mem.Allocator, path: []const u8, data: []const u8) !void {
-    const z = try alloc.dupeZ(u8, path);
+    const z = try alloc.dupeSentinel(u8, path, 0);
     defer alloc.free(z);
     const f = std.c.fopen(z, "wb") orelse return error.FileOpenFailed;
     defer _ = std.c.fclose(f);
@@ -1397,7 +1397,7 @@ fn writeFile(alloc: std.mem.Allocator, path: []const u8, data: []const u8) !void
 }
 
 fn readFile(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
-    const z = try alloc.dupeZ(u8, path);
+    const z = try alloc.dupeSentinel(u8, path, 0);
     defer alloc.free(z);
     const f = std.c.fopen(z, "rb") orelse return error.FileNotFound;
     defer _ = std.c.fclose(f);

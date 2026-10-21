@@ -88,7 +88,7 @@ const CONTROL_IDS = [CONTROLS][]const u8{ "rk-m1", "rk-m2", "rk-m3", "rk-m4", "r
 const MACRO_LABELS = [MAX_MACROS][]const u8{ "MACRO 1", "MACRO 2", "MACRO 3", "MACRO 4", "MACRO 5", "MACRO 6", "MACRO 7", "MACRO 8" };
 
 pub const Name = struct {
-    buf: [MAX_LABEL + 1]u8 = [_]u8{0} ** (MAX_LABEL + 1),
+    buf: [MAX_LABEL + 1]u8 = @splat(0),
     len: u8 = 0,
 
     pub fn slice(self: *const Name) []const u8 {
@@ -120,7 +120,7 @@ pub const Mapping = struct {
     min: f32 = 0,
     max: f32 = 1,
     program: formula.Program = .{},
-    text: [formula.MAX_TEXT + 1]u8 = [_]u8{0} ** (formula.MAX_TEXT + 1),
+    text: [formula.MAX_TEXT + 1]u8 = @splat(0),
     text_len: u8 = 0,
     /// The text doesn't compile; `program` is the last one that did.
     bad: bool = false,
@@ -164,7 +164,7 @@ pub const Lane = struct {
     effects: std.ArrayList(Effect) = .empty,
     /// The line that holds this lane back to the slowest lane (audio).
     line: *chain_mod.DryLine,
-    label: [MAX_LABEL + 1]u8 = [_]u8{0} ** (MAX_LABEL + 1),
+    label: [MAX_LABEL + 1]u8 = @splat(0),
     label_len: u8 = 0,
     // Settings are copied from the UI configuration at block boundaries.
     lo: u8 = 0,
@@ -258,12 +258,12 @@ pub const Rack = struct {
     current_preset: i32 = -1,
     /// A lane or an insert came or went since the project last asked.
     edited: bool = false,
-    macro_names: [MAX_MACROS]Name = [_]Name{.{}} ** MAX_MACROS,
+    macro_names: [MAX_MACROS]Name = @splat(.{}),
     maps: [MAX_MAPS]Mapping = undefined,
     map_count: usize = 0,
     /// The automated value each control shows (null: no lane), set by the
     /// host every frame.
-    ui_auto: [CONTROLS]?f32 = [_]?f32{null} ** CONTROLS,
+    ui_auto: [CONTROLS]?f32 = @splat(null),
     touch: ?machine.Touch = null,
     // The macro block (UI): the picked macro and mapping, MAP armed, the
     // control a MAP click already took, and the name and formula fields.
@@ -278,8 +278,8 @@ pub const Rack = struct {
 
     // Macros, UI writes and audio reads: the hand-set value in knob space
     // (CHAIN's raw 0..127), and a count a jump (preset, project) bumps.
-    hand: [CONTROLS]std.atomic.Value(u32) = [_]std.atomic.Value(u32){std.atomic.Value(u32).init(0)} ** CONTROLS,
-    snaps: [CONTROLS]std.atomic.Value(u32) = [_]std.atomic.Value(u32){std.atomic.Value(u32).init(0)} ** CONTROLS,
+    hand: [CONTROLS]std.atomic.Value(u32) = @splat(std.atomic.Value(u32).init(0)),
+    snaps: [CONTROLS]std.atomic.Value(u32) = @splat(std.atomic.Value(u32).init(0)),
     wake: std.atomic.Value(bool) = .init(false),
     /// Audio: what each macro plays now, the smoothed hand value unless a
     /// lane or an outer rack's macro drives it.
@@ -2198,7 +2198,7 @@ test "rack: a split sends each key to its lane, transposed; POLY releases the ol
         p.instrument.set_param.?(p.instrument.state, "cmi-loop", 1);
     }
 
-    var out = [_]f32{0} ** (512 * 24);
+    var out: [(512 * 24)]f32 = @splat(0);
     rack.publishLanes();
     // A2 on the lower lane: the bundled pluck (A3) an octave down
     play(m, &.{noteOn(45, 1)}, &out);
@@ -2278,7 +2278,7 @@ test "rack: the first form's parts load as lanes and play as they did" {
     try testing.expectEqual(@as(u8, 2), rack.lanes[0].poly);
     try testing.expect(rack.lanes[1].mute);
     try testing.expectEqual(@as(usize, 0), rack.lanes[0].effects.items.len);
-    var out = [_]f32{0} ** (512 * 8);
+    var out: [(512 * 8)]f32 = @splat(0);
     play(m, &.{noteOn(45, 1)}, &out);
     try testing.expect(rms(out[512 * 2 ..]) > 0.01);
     // the muted upper lane takes nothing
@@ -2332,7 +2332,7 @@ test "fxrack: a dry lane is held back to a latent lane, and the rack reports tha
     wet.mute = true; // only the dry path is heard
     rack.publishLanes();
 
-    var in = [_]f32{0} ** (256 * 8);
+    var in: [(256 * 8)]f32 = @splat(0);
     in[300] = 1;
     var ol: [in.len]f32 = undefined;
     var or_: [in.len]f32 = undefined;
@@ -2477,11 +2477,11 @@ test "rack: an automated macro sweeps its target as automating the target does" 
     snap.auto_point_count = 2;
     snap.lanes[0] = .{ .kind = .inst, .control = @intCast(drive), .points_start = 0, .points_count = 2 };
     snap.lane_count = 1;
-    var cursors = [_]u32{0} ** snapshot.MAX_LANES_PER_TRACK;
+    var cursors: [snapshot.MAX_LANES_PER_TRACK]u32 = @splat(0);
     const view = snapshot.AutoView{ .snap = &snap, .cursors = &cursors, .kind = .inst };
     var snap2 = snap;
     snap2.lanes[0].control = 0;
-    var cursors2 = [_]u32{0} ** snapshot.MAX_LANES_PER_TRACK;
+    var cursors2: [snapshot.MAX_LANES_PER_TRACK]u32 = @splat(0);
     const view2 = snapshot.AutoView{ .snap = &snap2, .cursors = &cursors2, .kind = .inst };
 
     var in: [256 * 120]f32 = undefined;

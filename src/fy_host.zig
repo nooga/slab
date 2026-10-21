@@ -54,7 +54,7 @@ const SockAddrIn = extern struct {
     sin_family: u8 = 2, // AF_INET
     sin_port: u16, // big-endian
     sin_addr: u32, // big-endian
-    sin_zero: [8]u8 = .{0} ** 8,
+    sin_zero: [8]u8 = @splat(0),
 };
 
 extern fn socket(domain: c_int, @"type": c_int, protocol: c_int) c_int;
@@ -79,7 +79,7 @@ const O_CREAT: c_int = 0x200;
 const O_TRUNC: c_int = 0x400;
 
 fn readFilePosix(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
-    const z = try alloc.dupeZ(u8, path);
+    const z = try alloc.dupeSentinel(u8, path, 0);
     defer alloc.free(z);
     const fd = open(z, O_RDONLY);
     if (fd < 0) return error.FileOpenFailed;
@@ -811,8 +811,8 @@ test "Stage 4: hot-patch recompiles file and callback reflects new GAIN" {
 
     // Original callback: GAIN = 0.25. Capture sample[1] as amplitude baseline.
     const cb_orig = try host.createAudioCallback("sine-audio");
-    var l_buf = [_]f32{0.0} ** FRAMES;
-    var r_buf = [_]f32{0.0} ** FRAMES;
+    var l_buf: [FRAMES]f32 = @splat(0.0);
+    var r_buf: [FRAMES]f32 = @splat(0.0);
     var ctx = std.mem.zeroes(MachineCtx);
     var on_event = [_]machine_mod.NoteEvent{.{
         .sample_offset = 0,
@@ -895,8 +895,8 @@ test "Stage 3: audio callback runs and writes to L/R buffers" {
     const render = try host.createAudioCallback("sine-audio");
 
     // Allocate L/R scratch buffers (zeroed).
-    var l_buf = [_]f32{0.0} ** FRAMES;
-    var r_buf = [_]f32{0.0} ** FRAMES;
+    var l_buf: [FRAMES]f32 = @splat(0.0);
+    var r_buf: [FRAMES]f32 = @splat(0.0);
 
     // Set up ctx + audio buffers, call the trampoline, tear down.
     var ctx = std.mem.zeroes(MachineCtx);

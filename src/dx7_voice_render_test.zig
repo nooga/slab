@@ -190,17 +190,17 @@ test "complete voice (eg-bank + voice) matches the Zig reference" {
     vp.w01 = 1.0;
     vp.c0 = 1.0;
 
-    var ep = [_]f64{0} ** 60;
+    var ep: [60]f64 = @splat(0);
     // op0 carrier env, op1 modulator env. Others silent (ol=0).
     setEg(&ep, 0, 0.01, 0.004, 0.003, 0.005, 1.0, 0.8, 0.7, 0.0, 1.0, 1.0);
     setEg(&ep, 1, 0.008, 0.004, 0.003, 0.006, 1.0, 0.6, 0.5, 0.0, 1.0, 0.16);
 
     var fy_vp = vp;
     var ref_vp = vp;
-    var fy_vs = [_]f64{0} ** 18;
-    var fy_es = [_]f64{0} ** 18;
-    var ref_vs = [_]f64{0} ** 18;
-    var ref_es = [_]f64{0} ** 18;
+    var fy_vs: [18]f64 = @splat(0);
+    var fy_es: [18]f64 = @splat(0);
+    var ref_vs: [18]f64 = @splat(0);
+    var ref_es: [18]f64 = @splat(0);
     initEgBank(&fy_es);
     initEgBank(&ref_es);
     var fy_out: f64 = 0;
@@ -231,7 +231,7 @@ test "dx7 voice envelope shapes amplitude (silent -> swell -> release)" {
     vp.inc1 = 0.02;
     vp.w01 = 1.0;
     vp.c0 = 1.0;
-    var ep = [_]f64{0} ** 60;
+    var ep: [60]f64 = @splat(0);
     // Attack carrier with a loud sustain (L3 near 0 dB) and a quick release;
     // modulator with its own env. (L=0.95 -> ~-0.8 dB; lower L maps deep into
     // dB.) Rates are brisk so the swell/release fit a short sample window —
@@ -239,8 +239,8 @@ test "dx7 voice envelope shapes amplitude (silent -> swell -> release)" {
     setEg(&ep, 0, 0.01, 0.01, 0.005, 0.01, 1.0, 0.97, 0.95, 0.0, 1.0, 1.0);
     setEg(&ep, 1, 0.01, 0.01, 0.005, 0.01, 1.0, 0.8, 0.7, 0.0, 1.0, 0.16);
 
-    var vs = [_]f64{0} ** 18;
-    var es = [_]f64{0} ** 18;
+    var vs: [18]f64 = @splat(0);
+    var es: [18]f64 = @splat(0);
     initEgBank(&es);
     var out: f64 = 0;
     const n = 900;

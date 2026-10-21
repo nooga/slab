@@ -243,9 +243,9 @@ fn writeF64ScalarLiteralReturn(code: *compat.ArrayList(u32), value: f64) bool {
 }
 
 fn optimizeF64LiteralOps(code: *compat.ArrayList(u32)) bool {
-    var x_known = [_]bool{false} ** 32;
+    var x_known: [32]bool = @splat(false);
     var x_value: [32]u64 = undefined;
-    var d_known = [_]bool{false} ** 32;
+    var d_known: [32]bool = @splat(false);
     var d_value: [32]f64 = undefined;
     var saw_float_op = false;
 
