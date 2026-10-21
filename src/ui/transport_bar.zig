@@ -177,9 +177,9 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
 }
 
 const SNAP_LABELS = blk: {
-    const fields = @typeInfo(snap_mod.Setting).@"enum".fields;
-    var out: [fields.len][]const u8 = undefined;
-    for (fields, 0..) |f, i| out[i] = std.mem.span(@as(snap_mod.Setting, @enumFromInt(f.value)).label());
+    const names = @typeInfo(snap_mod.Setting).@"enum".field_names;
+    var out: [names.len][]const u8 = undefined;
+    for (names, 0..) |name, i| out[i] = std.mem.span(@field(snap_mod.Setting, name).label());
     break :blk out;
 };
 

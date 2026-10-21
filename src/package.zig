@@ -58,7 +58,7 @@ const O_CREAT: c_int = 0x200;
 const O_TRUNC: c_int = 0x400;
 
 fn z(buf: []u8, path: []const u8) ?[*:0]const u8 {
-    const s = std.fmt.bufPrintZ(buf, "{s}", .{path}) catch return null;
+    const s = std.mem.printSentinel(buf, "{s}", .{path}, 0) catch return null;
     return s.ptr;
 }
 
@@ -200,7 +200,7 @@ pub const Sha = [32]u8;
 const HashCache = struct {
     const N = 1024;
     const Entry = struct { path: [MAX_PATH]u8 = undefined, len: usize = 0, size: i64 = 0, sec: i64 = 0, nsec: i64 = 0, sha: Sha = undefined };
-    var entries: [N]Entry = [_]Entry{.{}} ** N;
+    var entries: [N]Entry = @splat(.{});
     var next: usize = 0;
 };
 
@@ -637,7 +637,7 @@ test "package: a bare file becomes a package, files are collected once, Clean Up
     // The factory is a folder of its own here: the test's files sit in the
     // repo, which a dev build takes for the factory.
     var fab: [MAX_PATH]u8 = undefined;
-    const fac = try std.fmt.bufPrintZ(&fab, "{s}/factory", .{root});
+    const fac = try std.mem.printSentinel(&fab, "{s}/factory", .{root}, 0);
     try writeFileMaking(try std.fmt.bufPrint(&ab, "{s}/machines/sampler/assets/default.wav", .{fac}), "RIFF-f");
     _ = setenv("SLAB_FACTORY", fac.ptr, 1);
     defer _ = unsetenv("SLAB_FACTORY");

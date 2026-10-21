@@ -172,7 +172,7 @@ fn frame(x: []const f32, center: isize, lo: f64, hi: f64, buf: *[NFFT]C, prod: *
     for (tr[0..nt], 0..) |t, i| if (dn[t] < dn[tr[gmin]]) {
         gmin = i;
     };
-    var p: [64]f64 = [_]f64{0} ** 64;
+    var p: [64]f64 = @splat(0);
     for (PRIOR, 0..) |w, i| {
         const s = @as(f64, @floatFromInt(i + 1)) / THRESHOLDS;
         var hit: ?usize = null;

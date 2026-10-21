@@ -53,7 +53,7 @@ pub fn Fft(comptime n: usize) type {
         const rev: [n]u32 = blk: {
             @setEvalBranchQuota(100_000_000);
             var t: [n]u32 = undefined;
-            for (&t, 0..) |*v, i| v.* = @bitReverse(@as(std.meta.Int(.unsigned, bits), @intCast(i)));
+            for (&t, 0..) |*v, i| v.* = @bitReverse(@as(@Int(.unsigned, bits), @intCast(i)));
             break :blk t;
         };
 

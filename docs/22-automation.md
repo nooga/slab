@@ -92,14 +92,19 @@ A lane targets one value:
 - `volume` or `pan` of the track.
 - A control of the track's instrument or of one of its effects, by the
   control's param id.
+- A control inside a rack, by a path below the rack's target:
+  `fx1/2.1:amp-gain` (lane 2, first insert of the rack in effect 1),
+  `inst/1.0:jn-cutoff` (lane 1's instrument of the track's instrument
+  rack). Up to three steps; see [42-racks.md](42-racks.md) §Automation
+  inside a rack.
 
 In memory, a target is (slot, control index), where a slot is the
 instrument or a stable id for an effect instance. Reordering effects
 therefore keeps each lane attached to its machine. Files write the
 effect's position at save time (§Project format).
 
-Not targets for now: the master bus, Rack parts' inner params, and
-tempo (no tempo map yet, docs/19).
+Not targets for now: the master bus and tempo (no tempo map yet,
+docs/19).
 
 ## Precedence
 
@@ -501,6 +506,9 @@ option indices.
   - `inst:<param>`
   - `fx<N>:<param>`: `N` is the effect's 0-based position in the chain
     at save time.
+  - `inst/<L>.<P>:<param>` or `fx<N>/<L>.<P>:<param>`, with up to three
+    `/<L>.<P>` steps: down a rack to lane `L` (from 1), place `P` (0 the
+    lane's instrument, n its n-th insert), as positions at save time.
 - A point is `[beat, value]` or `[beat, value, shape, tension]`.
   `shape` defaults to `linear` and `tension` to 0.
 - Unknown targets and ids are dropped, matching the loader's leniency

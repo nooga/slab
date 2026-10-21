@@ -46,7 +46,7 @@ pub fn mipHarmonics(m: usize) usize {
 pub const STRIDE: usize = mipOffset(MIPS);
 
 /// One frame of zeros: what an oscillator reads with no table loaded.
-pub const silent_frame = [_]f64{0} ** STRIDE;
+pub const silent_frame: [STRIDE]f64 = @splat(0);
 
 pub const Table = struct {
     data: []f64 = &.{},

@@ -1,17 +1,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const darwin = builtin.os.tag == .macos;
-const darwin_c = if (darwin) @cImport({
-    @cInclude("sys/mman.h");
-    @cInclude("pthread.h");
-}) else struct {};
-const posix_dl = @cImport({
-    @cInclude("dlfcn.h");
-});
-const c_std = @cImport({
-    @cInclude("stdlib.h");
-    @cInclude("stdio.h");
-});
+const c_headers = @import("c"); // src/c.h, translated by build.zig
+const darwin_c = if (darwin) c_headers else struct {};
+const posix_dl = c_headers;
+const c_std = c_headers;
 // NOTE: zigline dependency removed pending 0.16 port — the REPL is stubbed
 // out below. The fy library target (src/lib.zig) does not need it.
 const Asm = @import("asm.zig");
@@ -759,10 +752,10 @@ pub const Fy = struct {
         @setEvalBranchQuota(4000);
         const T = @TypeOf(fun);
         const typeinfo = @typeInfo(T).@"fn";
-        const paramCount = typeinfo.params.len;
+        const paramCount = typeinfo.param_types.len;
         var returnCount = 0;
         for (0..paramCount) |i| {
-            if (typeinfo.params[i].type.? != Value) {
+            if (typeinfo.param_types[i].? != Value) {
                 @compileError("fnToWord: param {} must be Value");
             }
         }
@@ -778,7 +771,7 @@ pub const Fy = struct {
         // 1 for call slot, 1 for each param, 1 for each return value
         const codeLen: usize = 1 + paramCount + returnCount;
 
-        var code = [1]u32{undefined} ** codeLen;
+        var code: [codeLen]u32 = @splat(undefined);
 
         // pop all params
         for (0..paramCount) |i| {
@@ -1276,7 +1269,7 @@ pub const Fy = struct {
 
     pub const Dsp2RawRepeatedSlots = extern struct {
         iterations: u64 = 0,
-        arg_bits: [Dsp2.RAW_X_ARG_REGS.len]u64 = [_]u64{0} ** Dsp2.RAW_X_ARG_REGS.len,
+        arg_bits: [Dsp2.RAW_X_ARG_REGS.len]u64 = @splat(0),
     };
 
     pub const Dsp2RawRepeatedCaller = struct {
@@ -2248,7 +2241,7 @@ pub const Fy = struct {
         stride: u12,
     ) !Dsp2RawRepeatedCaller {
         if (lane_args.len == 0 or lane_args[0] != .pair) return error.LaneUnsupported;
-        var used = [_]bool{false} ** Dsp2.RAW_X_ARG_REGS.len;
+        var used: [Dsp2.RAW_X_ARG_REGS.len]bool = @splat(false);
         for (lane_args) |la| switch (la) {
             .uniform => |r| {
                 if (r >= used.len) return error.RegisterExhausted;
@@ -5456,7 +5449,7 @@ pub const Fy = struct {
         }
 
         fn fileExists(alloc: std.mem.Allocator, path: []const u8) bool {
-            const z = alloc.dupeZ(u8, path) catch return false;
+            const z = alloc.dupeSentinel(u8, path, 0) catch return false;
             defer alloc.free(z);
             return std.c.access(z, 0) == 0;
         }

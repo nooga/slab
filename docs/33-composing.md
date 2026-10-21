@@ -27,7 +27,7 @@ movement, articulation, register and silence can do the same job.
 
 ## Discover the instruments before programming
 
-From a source checkout on an Apple Silicon Mac with Zig 0.16:
+From a source checkout on an Apple Silicon Mac with Zig 0.17:
 
 ```sh
 zig build -Doptimize=ReleaseFast

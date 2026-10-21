@@ -68,29 +68,38 @@ copies of the files only the project has: into the home folder's
 A track's `instrument.params` and an effect's `params` in a project use
 exactly the same map.
 
-A **Rack** preset (`machines/rack/presets/`) holds parts instead of
-params, each part a machine with its settings in that machine's own
-form:
+A **Rack** or **FX Rack** preset (`machines/rack/presets/`,
+`machines/fxrack/presets/`) holds the rack's state beside the header:
+lanes, each a chain of machines in their own saved form, then macros
+and mappings ([42-racks.md](42-racks.md) §Files):
 
 ```json
-{"slab": "preset", "schema": 1, "machine": "rack", "note": "CMI tour / gabriel2 / FISHINET",
- "parts": [{"machine": "unfairlight", "name": "VOC1", "lo": 0, "hi": 40,
-            "vlo": 1, "vhi": 127, "transpose": 12, "level": 0, "pan": 0,
-            "poly": 2, "mute": false,
-            "params": {"cmi-filter": 144, "cmi-atk": 0.47},
-            "assets": {"voice": "lib:cmi/tour/gabriel2/VOC1.vc"},
-            "zones": {}}]}
+{"slab": "preset", "schema": 1, "machine": "rack", "note": "…",
+ "rack": 2, "kind": "instrument",
+ "lanes": [{"name": "BASS", "lo": 0, "hi": 127, "vlo": 1, "vhi": 127,
+            "clo": 0, "chi": 127, "transpose": 0, "level": 0, "pan": 0, "poly": 0,
+            "instrument": {"machine": "bass", "preset": "p-bass"},
+            "effects": [{"machine": "amp2", "preset": "bass-vintage-15"}]}],
+ "macros": [{"name": "GROWL", "value": 0.4}, …],
+ "chain": 0,
+ "maps": [{"macro": 1, "lane": 1, "insert": 1, "control": "amp-gain", "min": 0.15, "max": 0.85}],
+ "collapsed": true}
 ```
 
-- A note goes to every part whose key range (`lo`–`hi`) and velocity
-  range (`vlo`–`vhi`, 1–127) hold it, `transpose` semitones away, so
-  splits and layers are ranges that don't or do overlap.
-- `poly` caps a part's notes at once (0 = the machine's own voices): at
+- A note goes to every lane whose key range (`lo`–`hi`), velocity
+  range (`vlo`–`vhi`, 1–127) and CHAIN zone (`clo`–`chi`, against
+  `rk-chain`) hold it, `transpose` semitones away, so splits and layers
+  are ranges that don't or do overlap. An FX Rack's lanes all get the
+  input and have no `instrument`.
+- `poly` caps a lane's notes at once (0 = the machine's own voices): at
   the cap its oldest note is released first.
 - `level` is dB (−60..+12), `pan` −1..1 (a balance).
-- `params`, `assets` and `zones` are what the part's machine would take
-  as a track's instrument. Parts naming an unknown machine are dropped;
-  racks don't nest.
+- A lane machine is what a track's instrument or effect would hold:
+  `params`, `assets`, `zones`, `state`. With `preset` and no `params`
+  it loads that preset. Machines the registry lacks are dropped; racks
+  nest three deep.
+- The first form, `{"parts": [{"machine": …, "lo": …, "params": …}]}`,
+  still loads, each part a lane with no inserts.
 
 ## Project
 
@@ -154,8 +163,8 @@ The document is JSON. Top level:
 | `instrument.zones` | the sampler's per-zone edits, by zone name (the sample's file stem): `{"clap": {"level": -6, "tune": 0, "decay": 0, "tone": 0, "cut": 0}}`. level in dB, tune in semitones, decay in seconds to −60 dB (0 = off), tone in octaves of filter offset, cut the choke: 0 the pack's (`group`/`off_by`), 1 none, n+1 choke group n (the zone joins it and is cut by it). Zones sharing a name (an SFZ label, a sample's layers and round robins) take the same edits. Only edited zones are written; names that don't match the loaded keymap are ignored. `"reverse": true` plays the sound backwards (a reversed copy of its samples, loop mirrored). A **copy** is a sound of its own, `"snare 2": {"copy": "snare", "key": 39, …}`: every zone of the named one-key sound on `key`, pitched as the original, with its own edits (sampler and Unfairlight kits). |
 | `instrument.preset` / effect `preset` | the preset the settings started from, by its full name (`slab/glass-lead`), for the panel's label. `params` stay authoritative: loading marks the preset current without applying it. Missing or unknown = no label ("init"). |
 | `instrument.unison` | host unison (docs/08 §Unison), when on or the pool is resized: `{"count": 4, "detune": 50, "spread": 0.7, "blend": 0.75, "voices": 8}`. count is voices per note (1–8), detune is cents from lowest to highest voice, spread and blend are 0–1, voices is a poly machine's pool (1–16). Missing fields take their defaults. |
-| `instrument.state` | settings a machine keeps beyond flat params: a Rack's `{"parts": […]}`, the same form as its presets. |
-| `effects` | insert chain, run in order, stereo. `bypass: true` passes audio through untouched. `key` (an index into `tracks`) sidechains the effect's detector from that track's pre-fader signal ([23-routing.md](23-routing.md)). |
+| `instrument.state` | settings a machine keeps beyond flat params: a Rack's lanes, `{"rack": 2, "kind": "instrument", "lanes": [{…, "instrument": {"machine": id, "params": {…}}, "effects": […]}]}`, the same form as its presets, with its `macros`, `chain` and `maps` ([42-racks.md](42-racks.md) §Files). The first form, `{"parts": […]}`, still reads, as lanes without inserts. |
+| `effects` | insert chain, run in order, stereo. `bypass: true` passes audio through untouched. `key` (an index into `tracks`) sidechains the effect's detector from that track's pre-fader signal ([23-routing.md](23-routing.md)). An effect also writes `assets` and `state` the way an instrument does, when its machine has them; files without them load as before. |
 | `kind` | `"bus"` for a bus (a group or a return: no instrument, no clips; its input is what's routed to it). Missing = an audio track. |
 | `folded` | On a bus: `true` hides a group's members in the arrangement and mixer. UI state only; missing = unfolded. |
 | `output` | index into `tracks` of the bus the post-fader signal goes to. Missing = the master. |

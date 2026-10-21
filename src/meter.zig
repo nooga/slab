@@ -59,7 +59,7 @@ fn defaultGroups(num: u8, den: u8, out: *[MAX_GROUPS]u8) []const u8 {
 /// no storage behind it. `len` 0 means "use the default".
 pub const Groups = struct {
     len: u8 = 0,
-    v: [MAX_GROUPS]u8 = [_]u8{0} ** MAX_GROUPS,
+    v: [MAX_GROUPS]u8 = @splat(0),
 
     /// Groups from a slice; longer than MAX_GROUPS is truncated (and so
     /// won't sum to the numerator, falling back to the default).
@@ -357,7 +357,7 @@ pub const MAX_POINTS: usize = 256;
 /// (docs/07 §runtime-change) is a separate slice.
 pub const MeterStore = struct {
     buf: [MAX_POINTS]MeterPoint =
-        [_]MeterPoint{.{ .start_bar = 0, .numerator = 4, .denominator = 4 }} ** MAX_POINTS,
+        @splat(.{ .start_bar = 0, .numerator = 4, .denominator = 4 }),
     len: usize = 1,
 
     pub fn map(self: *const MeterStore) MeterMap {

@@ -8,6 +8,7 @@ const audio = @import("audio.zig");
 const machine = @import("machine.zig");
 const Transport = @import("transport.zig").Transport;
 const track_mod = @import("track.zig");
+const chain_mod = @import("chain.zig");
 const Track = track_mod.Track;
 const snap_mod = @import("snapshot.zig");
 const meter = @import("meter.zig");
@@ -596,7 +597,7 @@ pub const Engine = struct {
     fn adoptTrack(t: *Track, fade: bool) void {
         _ = t.currentSnapshot();
         t.adoptMachines(fade);
-        if (t.audio_machine.adopt_updates) |f| f(t.audio_machine.state);
+        if (t.chain.audio_machine.adopt_updates) |f| f(t.chain.audio_machine.state);
         for (t.audioEffects()) |*fx| if (fx.mach.adopt_updates) |f| f(fx.mach.state);
     }
 
@@ -875,7 +876,7 @@ pub const Engine = struct {
     fn resetAllMachines(self: *Engine) void {
         self.adoptMachines();
         for (self.tracks) |*t| {
-            t.audio_machine.reset(t.audio_machine.state);
+            t.chain.audio_machine.reset(t.chain.audio_machine.state);
             for (t.audioEffects()) |*fx| fx.mach.reset(fx.mach.state);
         }
         if (self.master) |mb| {
@@ -1084,8 +1085,8 @@ pub const Engine = struct {
             break;
         };
         t.noteSounding(events[0..event_count]);
-        t.audio_machine.render(t.audio_machine.state, &ctx, l, r);
-        const rendered = renderEffects(t, ctx, l, r, fx_l_buf[0..n], fx_r_buf[0..n], .{});
+        t.chain.audio_machine.render(t.chain.audio_machine.state, &ctx, l, r);
+        const rendered = renderEffects(t.chain, ctx, l, r, fx_l_buf[0..n], fx_r_buf[0..n], .{});
         const final_l = rendered.l;
         const final_r = rendered.r;
         const g = faderGains(t, snap, playhead);
@@ -1445,13 +1446,13 @@ pub const Engine = struct {
         const inst_back = !node.is_bus and t.audio_inst_parked and t.isEnabled();
         if (inst_back) {
             t.audio_inst_parked = false;
-            t.audio_machine.reset(t.audio_machine.state);
+            t.chain.audio_machine.reset(t.chain.audio_machine.state);
             t.inst_quiet = 0;
         }
         const unparked = t.audio_parked and (node.is_bus or t.isEnabled());
         if (unparked) {
             t.audio_parked = false;
-            t.audio_machine.reset(t.audio_machine.state);
+            t.chain.audio_machine.reset(t.chain.audio_machine.state);
             for (t.audioEffects()) |*fx| fx.mach.reset(fx.mach.state);
             t.inst_quiet = 0;
         }
@@ -1525,18 +1526,18 @@ pub const Engine = struct {
             if (!en and !was_on) t.audio_inst_parked = true;
             if (en or was_on) {
                 if (!self.idle_skip) {
-                    t.audio_machine.render(t.audio_machine.state, &ctx, l, r);
+                    t.chain.audio_machine.render(t.chain.audio_machine.state, &ctx, l, r);
                 } else {
                     const ahead = IDLE_WAKE_AHEAD_S * bpm / 60.0;
                     // A control edit wakes it too, so its params and
                     // displays catch up (the edit may be all there is).
-                    const edited = t.audio_machine.takeWake();
+                    const edited = t.chain.audio_machine.takeWake();
                     wake = n_events > 0 or held_here or (!b.ring_out and notesNear(snap, beat_start, beat_end + ahead));
                     if (edited) t.inst_quiet = 0;
-                    const hold = t.audio_machine.idleHold(@floatFromInt(sr), idleHoldSamples(sr));
+                    const hold = t.chain.audio_machine.idleHold(@floatFromInt(sr), idleHoldSamples(sr));
                     // Asleep: `l`/`r` stay silent.
                     if (wake or hold == machine.TAIL_FOREVER or t.inst_quiet < hold) {
-                        t.audio_machine.render(t.audio_machine.state, &ctx, l, r);
+                        t.chain.audio_machine.render(t.chain.audio_machine.state, &ctx, l, r);
                         const loud = @max(blockPeak(l), blockPeak(r)) > IDLE_FLOOR;
                         t.inst_quiet = if (wake or loud) 0 else t.inst_quiet +| frames;
                     }
@@ -1577,7 +1578,7 @@ pub const Engine = struct {
             .lat = self.lat_in[ti] + instLatency(t, node.is_bus),
         } else null;
         if (frozen == null) {
-            const rendered = renderEffectsKeyed(t, ctx, l, r, scratch.fx_l[0..frames], scratch.fx_r[0..frames], keys, .{ .on = self.idle_skip, .wake = wake });
+            const rendered = renderEffectsKeyed(t.chain, ctx, l, r, scratch.fx_l[0..frames], scratch.fx_r[0..frames], keys, .{ .on = self.idle_skip, .wake = wake });
             // The chain may end in the scratch pair; the pre tap is `l`/`r`.
             if (rendered.l.ptr != l.ptr) {
                 @memcpy(l, rendered.l);
@@ -1649,7 +1650,7 @@ pub const Engine = struct {
                         @as(f64, @floatFromInt(fx_ns)) / 1_000_000.0,
                         @as(f64, @floatFromInt(total_ns)) / 1_000_000.0,
                         @as(f64, @floatFromInt(budget_ns)) / 1_000_000.0,
-                        t.audio_effect_count,
+                        t.chain.audio_effect_count,
                     },
                 );
             }
@@ -1789,7 +1790,7 @@ pub const Engine = struct {
                 self.master_subsonic.process(l, r, @floatFromInt(self.transport.sample_rate))
             else
                 self.master_subsonic.reset();
-            if (mb.audio_effect_count > 0) {
+            if (mb.chain.audio_effect_count > 0) {
                 const base = machine.MachineCtx{
                     .sample_rate = @floatFromInt(self.transport.sample_rate),
                     .block_size = frames,
@@ -1798,7 +1799,7 @@ pub const Engine = struct {
                     .ppq_position = beat,
                     .transport_state = if (self.transport.isPlaying()) .playing else .stopped,
                 };
-                const rendered = renderEffects(mb, base, l, r, self.master_fx_l[0..n], self.master_fx_r[0..n], .{ .on = self.idle_skip });
+                const rendered = renderEffects(mb.chain, base, l, r, self.master_fx_l[0..n], self.master_fx_r[0..n], .{ .on = self.idle_skip });
                 l = rendered.l;
                 r = rendered.r;
             }
@@ -2098,7 +2099,7 @@ fn signalStatsPlanar(l: []const f32, r: []const f32, gain: f32) SignalStats {
     return stats;
 }
 
-const RenderedPair = struct {
+pub const RenderedPair = struct {
     l: []f32,
     r: []f32,
 };
@@ -2230,7 +2231,7 @@ fn localTime(snap: *const snap_mod.TrackSnapshot, beat: f64, bpm: f64, song_bar:
 }
 
 fn instLatency(t: *Track, is_bus: bool) u32 {
-    return if (!is_bus and t.isEnabled() and !t.frozen.load(.acquire)) t.audio_machine.latencySamples() else 0;
+    return if (!is_bus and t.isEnabled() and !t.frozen.load(.acquire)) t.chain.audio_machine.latencySamples() else 0;
 }
 
 /// A frozen track's audio for the block at `block_start` (it starts at
@@ -2255,7 +2256,7 @@ fn playFrozen(fz: snap_mod.FrozenSnap, block_start: u64, frames: u32, sample_rat
 }
 
 /// Idle skipping for one chain (docs/04 §Idle skipping).
-const Idle = struct {
+pub const Idle = struct {
     on: bool = false,
     /// The track's instrument has a note sounding or close: every effect
     /// renders, whatever its input.
@@ -2266,8 +2267,9 @@ fn idleHoldSamples(sample_rate: u32) u32 {
     return @intFromFloat(IDLE_HOLD_S * @as(f32, @floatFromInt(sample_rate)));
 }
 
-fn renderEffects(
-    t: *Track,
+/// A chain's inserts over `src` (a track's, or a rack lane's, rack.zig).
+pub fn renderEffects(
+    ch: *chain_mod.State,
     base_ctx: machine.MachineCtx,
     src_l: []f32,
     src_r: []f32,
@@ -2275,11 +2277,11 @@ fn renderEffects(
     scratch_r: []f32,
     idle: Idle,
 ) RenderedPair {
-    return renderEffectsKeyed(t, base_ctx, src_l, src_r, scratch_l, scratch_r, null, idle);
+    return renderEffectsKeyed(ch, base_ctx, src_l, src_r, scratch_l, scratch_r, null, idle);
 }
 
 fn renderEffectsKeyed(
-    t: *Track,
+    ch: *chain_mod.State,
     base_ctx: machine.MachineCtx,
     src_l: []f32,
     src_r: []f32,
@@ -2300,9 +2302,9 @@ fn renderEffectsKeyed(
 
     // Each effect's input peak is the previous one's output peak, scanned once.
     var peak = [2]f32{ blockPeak(cur_l), blockPeak(cur_r) };
-    for (t.audioEffects(), 0..) |*fx, i| {
+    for (ch.audioEffects(), 0..) |*fx, i| {
         const in_peak = peak;
-        const bypassed = t.audioEffectBypassed(i);
+        const bypassed = ch.audio_effects[i].bypass.load(.monotonic);
         const wet_to: f32 = if (bypassed) 0 else 1;
         const wet_from = fx.wet;
         fx.wet = wet_to;
@@ -2339,7 +2341,7 @@ fn renderEffectsKeyed(
         const n_fx = cur_l.len;
         const mixing = wet_from != 1 or wet_to != 1;
         if (fx.dry_line >= 0) {
-            const line = &t.chain_state.dry[@intCast(fx.dry_line)];
+            const line = &ch.dry[@intCast(fx.dry_line)];
             const d: usize = @min(fx_lat, track_mod.DRY_LEN - MAX_BLOCK);
             const mask = track_mod.DRY_LEN - 1;
             for (0..n_fx) |k| {
@@ -2376,8 +2378,13 @@ fn renderEffectsKeyed(
         if (base_ctx.automation) |p| {
             const inst: *const snap_mod.AutoView = @ptrCast(@alignCast(p));
             fx_view = inst.*;
-            fx_view.kind = .fx;
-            fx_view.fx_uid = fx.uid;
+            if (inst.path.len > 0) {
+                // A rack lane's chain: the insert is the last step's slot.
+                fx_view.path.steps[inst.path.len - 1].slot = fx.uid;
+            } else {
+                fx_view.kind = .fx;
+                fx_view.fx_uid = fx.uid;
+            }
             ctx.automation = &fx_view;
         }
         @memset(next_l, 0);
@@ -2393,7 +2400,7 @@ fn renderEffectsKeyed(
         }
         // Fully back in: its line is free again.
         if (!bypassed and wet_from == 1 and fx.dry_line >= 0) {
-            t.chain_state.dry_used &= ~(@as(u8, 1) << @intCast(fx.dry_line));
+            ch.dry_used &= ~(@as(u8, 1) << @intCast(fx.dry_line));
             fx.dry_line = -1;
         }
         const out_peak = [2]f32{ blockPeak(next_l), blockPeak(next_r) };
@@ -2474,7 +2481,7 @@ fn contain(t: *Track, l: []f32, r: []f32) void {
     if (allFinite(l) and allFinite(r)) return;
     @memset(l, 0);
     @memset(r, 0);
-    t.audio_machine.reset(t.audio_machine.state);
+    t.chain.audio_machine.reset(t.chain.audio_machine.state);
     for (t.audioEffects()) |*fx| fx.mach.reset(fx.mach.state);
     _ = t.faults.fetchAdd(1, .monotonic);
 }
@@ -3469,8 +3476,8 @@ test "mixAudioClips: places source at clip start and resamples by rate" {
     };
 
     const spb: f64 = 100.0; // samples per beat → clip starts at sample 100
-    var l = [_]f32{0} ** 8;
-    var r = [_]f32{0} ** 8;
+    var l: [8]f32 = @splat(0);
+    var r: [8]f32 = @splat(0);
     // Block starting exactly at the clip's first sample.
     mixAudioClips(&snap, 100, 8, &spbMap(spb), 48_000, &l, &r);
 
@@ -3498,8 +3505,8 @@ test "mixAudioClips: silent before clip start and after source ends" {
     };
     const spb: f64 = 4.0; // clip starts at sample 4
 
-    var l = [_]f32{0} ** 8;
-    var r = [_]f32{0} ** 8;
+    var l: [8]f32 = @splat(0);
+    var r: [8]f32 = @splat(0);
     // Block [0,8): samples 0..3 are before the clip, 4..5 read the source,
     // 6..7 are past the 2-sample source (silent).
     mixAudioClips(&snap, 0, 8, &spbMap(spb), 48_000, &l, &r);
@@ -3526,8 +3533,8 @@ test "mixAudioClips: start_sample offsets into the source (split clips)" {
         .start_sample = 3, // begin reading at source sample 3
         .gain = 1.0,
     };
-    var l = [_]f32{0} ** 4;
-    var r = [_]f32{0} ** 4;
+    var l: [4]f32 = @splat(0);
+    var r: [4]f32 = @splat(0);
     // Engine rate == source rate → step 1, so out[i] = data[3+i].
     mixAudioClips(&snap, 0, 4, &spbMap(100.0), 48_000, &l, &r);
     try testing.expectApproxEqAbs(@as(f32, 3), l[0], 1e-5);
@@ -3537,7 +3544,7 @@ test "mixAudioClips: start_sample offsets into the source (split clips)" {
 }
 
 test "declick: audio clip edges fade where they cut, not at a file's own ends or a seamless split" {
-    var data = [_]f64{1.0} ** 2048;
+    var data: [2048]f64 = @splat(1.0);
     // 100 samples a beat: clip A is source 0..400, B carries on 400..800,
     // C is cut out of the middle, 1200..1600.
     var snap = snap_mod.TrackSnapshot{};
@@ -3550,8 +3557,8 @@ test "declick: audio clip edges fade where they cut, not at a file's own ends or
     snap.audio_clips[2] = base;
     snap.audio_clips[2].start_beat = 10;
     snap.audio_clips[2].start_sample = 1200;
-    var l = [_]f32{0} ** 1500;
-    var r = [_]f32{0} ** 1500;
+    var l: [1500]f32 = @splat(0);
+    var r: [1500]f32 = @splat(0);
     mixAudioClipsEdged(&snap, 0, 1500, &spbMap(100.0), 48_000, &l, &r, .{ .on = true });
     // A starts at the file's head: as authored.
     try testing.expectApproxEqAbs(@as(f32, 1), l[0], 1e-6);
@@ -3575,7 +3582,7 @@ test "declick: audio clip edges fade where they cut, not at a file's own ends or
 
 test "mixAudioClips: linear fade-in/out ramps the window edges" {
     // 8-sample window, value 1.0 everywhere; fade in/out of 2 samples each.
-    var data = [_]f64{1.0} ** 8;
+    var data: [8]f64 = @splat(1.0);
     var snap = snap_mod.TrackSnapshot{};
     snap.audio_clip_count = 1;
     snap.audio_clips[0] = .{
@@ -3590,8 +3597,8 @@ test "mixAudioClips: linear fade-in/out ramps the window edges" {
         .fade_out_samples = 2,
         .gain = 1.0,
     };
-    var l = [_]f32{0} ** 8;
-    var r = [_]f32{0} ** 8;
+    var l: [8]f32 = @splat(0);
+    var r: [8]f32 = @splat(0);
     mixAudioClips(&snap, 0, 8, &spbMap(100.0), 48_000, &l, &r);
     // fade-in: pos 0 → 0.0, pos 1 → 0.5; middle → 1.0; fade-out near the end.
     try testing.expectApproxEqAbs(@as(f32, 0.0), l[0], 1e-5);
@@ -3618,8 +3625,8 @@ test "mixAudioClips: a reversed clip reads its window end to start, fades in cli
         .gain = 1.0,
         .reversed = true,
     };
-    var l = [_]f32{0} ** 6;
-    var r = [_]f32{0} ** 6;
+    var l: [6]f32 = @splat(0);
+    var r: [6]f32 = @splat(0);
     mixAudioClips(&snap, 0, 6, &spbMap(6.0), 48_000, &l, &r);
     // 7, 6, 5, 4, 3, 2 with the fade-in on the first two (0, 0.5).
     try testing.expectApproxEqAbs(@as(f32, 0), l[0], 1e-5);
@@ -3643,8 +3650,8 @@ test "mixAudioClips: a stereo source plays its channels apart" {
         .dur_samples = 4,
         .gain = 0.5,
     };
-    var l = [_]f32{0} ** 4;
-    var r = [_]f32{0} ** 4;
+    var l: [4]f32 = @splat(0);
+    var r: [4]f32 = @splat(0);
     mixAudioClips(&snap, 0, 4, &spbMap(4.0), 48_000, &l, &r);
     try testing.expectApproxEqAbs(@as(f32, 0.5), l[0], 1e-6);
     try testing.expectApproxEqAbs(@as(f32, -0.5), r[0], 1e-6);
@@ -3673,8 +3680,8 @@ test "mixAudioClips: a warped clip reads through its markers, offset and reverse
         .warp_start = 0,
         .warp_count = 2,
     };
-    var l = [_]f32{0} ** 16;
-    var r = [_]f32{0} ** 16;
+    var l: [16]f32 = @splat(0);
+    var r: [16]f32 = @splat(0);
     mixAudioClips(&snap, 0, 16, &spbMap(4.0), 48_000, &l, &r);
     for (l, 0..) |v, k| try testing.expectApproxEqAbs(@as(f32, @floatCast(data[128 + 2 * k])), v, 2e-3);
 
@@ -3810,8 +3817,8 @@ test "mixAudioClips: missing source data is skipped" {
     var snap = snap_mod.TrackSnapshot{};
     snap.audio_clip_count = 1;
     snap.audio_clips[0] = .{ .start_beat = 0, .length_beats = 4, .data = null };
-    var l = [_]f32{0} ** 4;
-    var r = [_]f32{0} ** 4;
+    var l: [4]f32 = @splat(0);
+    var r: [4]f32 = @splat(0);
     mixAudioClips(&snap, 0, 4, &spbMap(10.0), 48_000, &l, &r);
     for (l) |v| try testing.expectEqual(@as(f32, 0), v);
 }
@@ -4438,7 +4445,7 @@ test "a loop wrap releases the note ending on the loop end, and the ones past it
     const alloc = testing.allocator;
     const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const Held = struct {
-        var on: [128]i32 = [_]i32{0} ** 128;
+        var on: [128]i32 = @splat(0);
         fn machine_() machine.Machine {
             var level: f32 = 0;
             var m = RouteTestMachines.dc(&level);

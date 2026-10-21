@@ -403,7 +403,7 @@ fn emit(alloc: std.mem.Allocator, opts: *const Options, names: *Names, report: *
 
 fn exists(path: []const u8) bool {
     var z: [storage.MAX_PATH + 1]u8 = undefined;
-    const p = std.fmt.bufPrintZ(&z, "{s}", .{path}) catch return false;
+    const p = std.mem.printSentinel(&z, "{s}", .{path}, 0) catch return false;
     return std.c.access(p, 0) == 0;
 }
 

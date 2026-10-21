@@ -38,7 +38,7 @@ pub const Output = struct {
 pub const Model = struct {
     handle: *anyopaque,
     /// Why the last call failed.
-    err: [256]u8 = [_]u8{0} ** 256,
+    err: [256]u8 = @splat(0),
 
     pub fn load(path: []const u8) !Model {
         var pz: [1024:0]u8 = undefined;

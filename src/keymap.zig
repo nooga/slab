@@ -98,12 +98,12 @@ comptime {
 /// injects a pointer; the voice reads its zone's cells at note-on and
 /// writes `hit` / `last` for the panel.
 pub const ZoneEdits = extern struct {
-    level: [MAX_ZONES]f64 = [_]f64{0} ** MAX_ZONES, // dB
-    tune: [MAX_ZONES]f64 = [_]f64{0} ** MAX_ZONES, // semitones
-    decay: [MAX_ZONES]f64 = [_]f64{0} ** MAX_ZONES, // seconds to -60 dB; 0 = off
-    tone: [MAX_ZONES]f64 = [_]f64{0} ** MAX_ZONES, // filter offset, octaves
-    cut: [MAX_ZONES]f64 = [_]f64{0} ** MAX_ZONES, // choke: 0 the pack's, 1 none, n+1 group n
-    hit: [MAX_ZONES]f64 = [_]f64{0} ** MAX_ZONES, // sequence number of the zone's newest note
+    level: [MAX_ZONES]f64 = @splat(0), // dB
+    tune: [MAX_ZONES]f64 = @splat(0), // semitones
+    decay: [MAX_ZONES]f64 = @splat(0), // seconds to -60 dB; 0 = off
+    tone: [MAX_ZONES]f64 = @splat(0), // filter offset, octaves
+    cut: [MAX_ZONES]f64 = @splat(0), // choke: 0 the pack's, 1 none, n+1 group n
+    hit: [MAX_ZONES]f64 = @splat(0), // sequence number of the zone's newest note
     last: f64 = -1, // the zone of the newest note
 };
 
@@ -489,7 +489,7 @@ test "octave copies: band-limited, decimated, shared by zones on one sample" {
 
 /// The nearest key to `key` that no zone plays, looking up first.
 pub fn freeKey(km: *const Keymap, key: u8) ?u8 {
-    var used = [_]bool{false} ** 128;
+    var used: [128]bool = @splat(false);
     for (km.zones[0..km.count]) |z| {
         const lo: usize = @intFromFloat(std.math.clamp(z.lo_key, 0, 127));
         const hi: usize = @intFromFloat(std.math.clamp(z.hi_key, 0, 127));
@@ -797,7 +797,7 @@ fn mapMelodic(specs: []Spec) void {
 
 /// General MIDI placement by keyword; the rest fill free keys from 36 up.
 fn mapDrums(specs: []Spec) void {
-    var used = [_]bool{false} ** 128;
+    var used: [128]bool = @splat(false);
     for (specs) |*sp| {
         const key = gmKey(stem(sp.name));
         if (key) |k| if (!used[k]) {
@@ -1235,7 +1235,7 @@ test "antialias passes the band and stops what would fold" {
     const n = 48_000;
     var pool = try a.alloc(f64, n);
     defer a.free(pool);
-    var zones = [_]Zone{.{}} ** 1;
+    var zones: [1]Zone = @splat(.{});
     zones[0].start = 0;
     zones[0].len = n;
     zones[0].sr = 48_000;
@@ -1306,7 +1306,7 @@ fn loadVc(alloc: std.mem.Allocator, path: []const u8) Error!wav.Sample {
 }
 
 test "a .VC file loads its 8-bit RAM and segment loop" {
-    var bytes = [_]u8{0} ** VC_SIZE;
+    var bytes: [VC_SIZE]u8 = @splat(0);
     for (bytes[VC_RAM..][0..16_384], 0..) |*b, i| b.* = if (i % 128 < 64) 0xC0 else 0x40;
     bytes[VC_LOOP_ON] = 1;
     bytes[VC_LOOP_START] = 2;

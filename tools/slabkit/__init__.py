@@ -14,10 +14,11 @@ from .theory import Key, Chord, note, note_name, SCALES
 from .rhythm import steps, euclid
 from .machines import machines, machine, presets, preset
 from .song import Song, Section, Track, Bus, Clip, fx
+from .rack import Rack, rack
 from .analyze import analyze_wav
 
 __all__ = [
-    "Song", "Section", "Track", "Clip", "fx",
+    "Song", "Section", "Track", "Clip", "fx", "Rack", "rack",
     "Key", "Chord", "note", "note_name", "SCALES",
     "steps", "euclid",
     "machines", "machine", "presets", "preset",

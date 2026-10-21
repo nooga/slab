@@ -17,6 +17,7 @@ import zlib
 
 from . import rhythm
 from .machines import ROOT, SLAB, SlabError, library_path, machine, ref as file_ref, preset as load_preset, preset_assets, preset_name
+from .rack import Rack, rack as make_rack
 from .theory import Chord, Key, guitar_voicing, note, voice_lead
 
 MAX_TRACKS = 32  # buses count (docs/23)
@@ -60,6 +61,12 @@ class Section:
 
 class FX:
     def __init__(self, machine_id, preset=None, bypass=False, key=None, **params):
+        # An effect rack (docs/42): a Rack, or "fxrack" with a rig preset.
+        self.rack = machine_id if isinstance(machine_id, Rack) else None
+        if self.rack is None and machine_id == "fxrack" and preset:
+            self.rack = make_rack(kind="effect", preset=preset)
+        if self.rack is not None:
+            machine_id, preset = self.rack.machine_id, None
         self.machine_id = machine_id
         self.preset = preset
         self.bypass = bypass
@@ -67,13 +74,21 @@ class FX:
         self.key = key
         self.params = params
 
-    def build(self, where, index=None):
+    def build(self, where, index=None, depth=1):
         m = machine(self.machine_id)
         if m.kind != "effect":
             raise SlabError(f"{where}: {self.machine_id} is an instrument, not an effect")
+        if m.native and self.rack is None:
+            raise SlabError(f"{where}: an fxrack takes a rack(kind='effect') or a preset")
         values = dict(load_preset(m.id, self.preset)) if self.preset else {}
+        if self.rack is not None:
+            values = self.rack.params
         values.update(m.params_from(self.params, where))
         out = {"machine": m.id, "params": values, "bypass": self.bypass}
+        if self.rack is not None:
+            out["state"] = self.rack.build(where, depth)
+            if self.rack.preset:
+                out["preset"] = self.rack.preset
         if self.preset:
             out["preset"] = preset_name(m.id, self.preset)
         if self.key is not None:
@@ -601,11 +616,24 @@ class Track:
         # and sends as (bus, linear level, pre).
         self.output = output
         self.sends = []
+        # An instrument rack (docs/42): a Rack, or "rack" with a rig preset.
+        self.rack = machine_id if isinstance(machine_id, Rack) else None
+        if self.rack is None and machine_id == "rack":
+            if not preset:
+                raise SlabError(f"track {name}: a rack track takes a rack(...) or a preset")
+            self.rack = make_rack(preset=preset)
+        if self.rack is not None:
+            if self.rack.kind != "instrument":
+                raise SlabError(f"track {name}: an effect rack goes in fx=[…]")
+            machine_id, preset = self.rack.machine_id, None
         self.machine = machine(machine_id)
         if self.machine.kind != "instrument":
             raise SlabError(f"track {name}: {machine_id} is an effect; put it in fx=[…]")
         self.preset = preset_name(machine_id, preset) if preset else None
         self.params = dict(load_preset(machine_id, preset)) if preset else {}
+        if self.rack is not None:
+            self.params = self.rack.params
+            self.preset = self.rack.preset
         if params:
             self.set(**params)
         self.volume = volume
@@ -724,6 +752,24 @@ class Track:
                     raise SlabError(f"{where}: pan {v} is outside [-1, 1]")
                 return v
             return "pan", check, False
+        m = re.fullmatch(r"(inst|fx\d+)((?:/\d+\.\d+)+):(.+)", target)
+        if m:
+            # Inside a rack (docs/42 §Automation): lane.place steps, place 0
+            # the lane's instrument, n its n-th insert.
+            head, path = m.group(1), m.group(2)
+            if head == "inst":
+                outer = self.rack
+            else:
+                i = int(head[2:])
+                if i >= len(self.fx):
+                    raise SlabError(f"{where}: {target} names effect {i}, but the track has {len(self.fx)}")
+                outer = self.fx[i].rack
+            if outer is None:
+                raise SlabError(f"{where}: {target} steps into {head}, which isn't a rack")
+            steps = [tuple(int(x) for x in st.split(".")) for st in path.strip("/").split("/")]
+            mach, pid = outer.resolve_path(steps, m.group(3), where)
+            param = mach.params[pid]
+            return f"{head}{path}:{pid}", (lambda v: param.coerce(v, where)), param.type != "float"
         m = re.fullmatch(r"fx(\d+):(.+)", target)
         if m:
             i = int(m.group(1))
@@ -967,7 +1013,8 @@ class Track:
                            **({"preset": self.preset} if self.preset else {}),
                            **({"assets": self.assets} if self.assets else {}),
                            **({"unison": self.unison} if self.unison else {}),
-                           **({"zones": self.zones} if self.zones else {})},
+                           **({"zones": self.zones} if self.zones else {}),
+                           **({"state": self.rack.build(where)} if self.rack is not None else {})},
             "effects": [f.build(f"{where} fx {i}", index) for i, f in enumerate(self.fx)],
             "clips": [c.to_json() for c in sorted(self.clips, key=lambda c: c.start)],
             **({"automation": _lanes_json(self.lanes)} if self.lanes else {}),
@@ -1017,7 +1064,7 @@ class Bus(Track):
         self._no("clips")
 
     def _auto_target(self, target):
-        if target not in ("volume", "pan") and not re.fullmatch(r"fx\d+:.+", target):
+        if target not in ("volume", "pan") and not re.fullmatch(r"fx\d+[:/].+", target):
             self._no(f"instrument param {target!r} to automate")
         return super()._auto_target(target)
 

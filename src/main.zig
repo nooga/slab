@@ -67,7 +67,9 @@ const pane = @import("ui/pane_input.zig");
 const gesture = @import("ui/gesture.zig");
 const commands = @import("ui/commands.zig");
 const ui_style = @import("ui/style.zig");
+const ui_draw = @import("ui/draw.zig");
 const ui_gallery = @import("ui/gallery.zig");
+const rack_group = @import("rack_group.zig");
 const layout_mod = @import("ui/layout.zig");
 const transport_bar = @import("ui/transport_bar.zig");
 const ui_core = @import("ui/core.zig");
@@ -104,6 +106,7 @@ test {
     _ = @import("audio.zig");
     _ = @import("machines/fy_raw_machine.zig");
     _ = @import("machines/rack.zig");
+    _ = @import("formula.zig");
     _ = @import("ui/sprites.zig");
     _ = @import("ui/core.zig");
     _ = @import("ui/controls.zig");
@@ -146,6 +149,7 @@ test {
     _ = @import("engine.zig");
     _ = @import("track.zig");
     _ = @import("document.zig");
+    _ = @import("rack_group.zig");
     _ = @import("meter_gen.zig");
     _ = @import("automation.zig");
     _ = @import("ui/automation_lane.zig");
@@ -197,11 +201,11 @@ const EditClipboard = struct {
 };
 
 const StatusMessage = struct {
-    buf: [128:0]u8 = [_:0]u8{0} ** 128,
+    buf: [128:0]u8 = @splat(0),
     until: f64 = 0,
 
     fn set(self: *StatusMessage, comptime fmt: []const u8, args: anytype) void {
-        const s = std.fmt.bufPrintZ(&self.buf, fmt, args) catch "status";
+        const s = std.mem.printSentinel(&self.buf, fmt, args, 0) catch "status";
         self.buf[s.len] = 0;
         self.until = c.rl.GetTime() + 2.0;
     }
@@ -426,6 +430,8 @@ const RenameState = struct {
     /// instrument, else the effect index.
     device_track: ?*track_mod.Track = null,
     device_effect: ?usize = null,
+    /// Or the machine itself, when it sits inside another (a rack lane's).
+    device_mach: ?@import("machine.zig").Machine = null,
     /// For preset_rename: the preset index being renamed.
     preset_index: u16 = 0,
     tb: text_field.TextBuf = .{ .limit = track_mod.MAX_NAME },
@@ -714,7 +720,7 @@ fn enterBundleResources() void {
     const macos = std.fs.path.dirname(exe) orelse return;
     if (!std.mem.endsWith(u8, macos, ".app/Contents/MacOS")) return;
     var rb: [storage.MAX_PATH]u8 = undefined;
-    const res = std.fmt.bufPrintZ(&rb, "{s}/../Resources", .{macos}) catch return;
+    const res = std.mem.printSentinel(&rb, "{s}/../Resources", .{macos}, 0) catch return;
     _ = chdir(res);
 }
 
@@ -893,7 +899,7 @@ pub fn main(init: std.process.Init) !void {
     // Master bus — a standalone Track (silent instrument, effects-only,
     // its volume() is the master fader and meter() the master meter). It
     // lives outside tracks_buf so no audio-track index ever shifts.
-    var master = try track_mod.Track.init(alloc, "Master", @bitCast(ui_style.face_hi), silent_machine);
+    var master = try track_mod.Track.init(alloc, "Master", ui_draw.rl(ui_style.face_hi), silent_machine);
     master.kind = .master;
     master.setVolume(1.0); // unity — Track defaults to 0.8, which would quiet the mix
     defer master.deinit(alloc);
@@ -1198,7 +1204,7 @@ pub fn main(init: std.process.Init) !void {
         }
 
         c.rl.BeginDrawing();
-        c.rl.ClearBackground(@bitCast(ui_style.chassis));
+        c.rl.ClearBackground(ui_draw.rl(ui_style.chassis));
 
         const rec_busy = recorder.isRecording() or rec_finishing;
         // An offline render (export, bounce, freeze) owns the engine with
@@ -1588,9 +1594,10 @@ pub fn main(init: std.process.Init) !void {
                 status.set("Added {s}", .{tracks[ti].name()});
             } else |err| status.set("Can't add: {s}", .{@errorName(err)});
         }
-        // ⌘G groups the selection (or the selected track).
+        // ⌘G groups the selection (or the selected track); with devices
+        // selected in the bay it groups those into a rack instead (below).
         var route_edit = ares.route;
-        if (route_edit == null and !modal and !rename.active() and ui.in.cmd and c.rl.IsKeyPressed(c.rl.KEY_G)) if (selected_track) |st| {
+        if (route_edit == null and machine_bay.selection == null and !modal and !rename.active() and ui.in.cmd and c.rl.IsKeyPressed(c.rl.KEY_G)) if (selected_track) |st| {
             route_edit = .{ .track = st, .what = .group, .selection = true };
         };
         // Dev hook: SLAB_SHOT_GROUP=NAME,NAME,… selects those tracks and
@@ -1768,6 +1775,10 @@ pub fn main(init: std.process.Init) !void {
         }
 
         machine_bay.sample_rate = transport.sample_rate;
+        // A rack's panel edits what it holds: an undo step first (docs/42).
+        var nested_undo = NestedUndo{ .alloc = alloc, .history = &history, .tracks = tracks, .transport = &transport };
+        machine_bay.before_nested_edit = .{ .ctx = &nested_undo, .f = NestedUndo.push };
+        defer machine_bay.before_nested_edit = null;
         const mbres = machine_bay.draw(ui, rects.machine_bay, bay_dev, bay_idx, bay_is_bus, layout.machine_bay_collapsed, &reg, tracks);
         if (mbres.key_menu_fx) |uid| if (bay_idx) |ti| @import("ui/route_menu.zig").openKey(ti, uid, mbres.key_menu_at[0], mbres.key_menu_at[1]);
         if (mbres.unison_at) |at| if (bay_idx) |ti| if (!bay_is_bus) {
@@ -1776,6 +1787,27 @@ pub fn main(init: std.process.Init) !void {
             uni_panel.open(ti, at);
         };
         if (mbres.minimize) layout.machine_bay_collapsed = !layout.machine_bay_collapsed;
+        // ⌘G: the devices selected in the bay go into a rack; ⌘⇧G puts the
+        // one selected rack's lane back (docs/42 §UI).
+        if (!modal and !rename.active() and ui.in.cmd and c.rl.IsKeyPressed(c.rl.KEY_G)) if (machine_bay.selection) |sel| if (bay_dev) |dev| if (sel.dev == dev) {
+            machine_bay.selection = null;
+            if (!bay_is_bus) pushHistorySnapshot(alloc, &history, tracks, &transport);
+            if (ui.in.shift) {
+                if (sel.first != sel.last) {
+                    status.set("Select one rack to ungroup", .{});
+                } else if (rack_group.ungroup(alloc, &reg, dev, sel.first)) {
+                    status.set("Ungrouped the rack", .{});
+                    dirty = true;
+                } else |err| status.set("Can't ungroup: {s}", .{switch (err) {
+                    error.NotARack => "not a rack",
+                    error.RackNotSimple => "it has more than one lane, or mappings",
+                    else => @errorName(err),
+                }});
+            } else if (rack_group.group(alloc, &reg, dev, sel.first, sel.last)) |g| {
+                if (g.dropped_keys) status.set("Grouped into a rack; sidechain keys don't reach rack lanes yet", .{}) else status.set("Grouped into a rack", .{});
+                dirty = true;
+            } else |err| status.set("Can't group: {s}", .{@errorName(err)});
+        };
         if (mbres.add_machine) |reg_idx| {
             if (bay_dev) |dev| {
                 const entry = &reg.entries[reg_idx];
@@ -1913,6 +1945,31 @@ pub fn main(init: std.process.Init) !void {
         if (mbres.preset_save_ref) |ref| if (bay_dev) |dev| {
             beginPresetSave(&rename, dev, refEffect(ref), mbres.preset_anchor, mbres.preset_save_library);
         };
+        // A machine inside a rack lane asked for a preset action (docs/42).
+        if (machine_bay.nested_preset) |np| {
+            machine_bay.nested_preset = null;
+            const mach = np.mach;
+            if (np.apply) |preset| if (mach.apply_preset) |apply| {
+                if (!bay_is_bus) pushHistorySnapshot(alloc, &history, tracks, &transport);
+                audio.stop();
+                defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+                apply(mach.state, preset);
+                dirty = true;
+                status.set("Preset {s}", .{if (mach.preset_name) |name| name(mach.state, preset) else ""});
+            };
+            if (np.save or np.save_library) {
+                rename = .{ .kind = if (np.save_library) .preset_save_library else .preset_save, .device_mach = mach };
+                anchorRenameRect(&rename, np.anchor);
+            }
+            if (np.rename) |idx| {
+                var cur: []const u8 = "";
+                if (mach.preset_name) |nf| cur = std.mem.span(nf(mach.state, idx));
+                if (std.mem.lastIndexOfScalar(u8, cur, '/')) |slash| cur = cur[slash + 1 ..];
+                rename = .{ .kind = .preset_rename, .device_mach = mach, .preset_index = idx };
+                renameSetText(&rename, cur);
+                anchorRenameRect(&rename, np.anchor);
+            }
+        }
         if (mbres.preset_rename_ref) |ref| if (mbres.preset_rename_index) |idx| if (bay_dev) |dev| {
             const eff = refEffect(ref);
             if (deviceMachineOf(dev, eff)) |mach| {
@@ -2435,7 +2492,8 @@ test "slices' SFZ: each on its key, at its pitch, one shot" {
     const root = storage.absolute(&root_buf, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
     var sfz: std.ArrayList(u8) = .empty;
     defer sfz.deinit(alloc);
-    const tone = [_]f32{ 0.5, -0.5, 0.25, -0.25 } ** 100;
+    var tone: [400]f32 = undefined;
+    for (&tone, 0..) |*t, i| t.* = ([_]f32{ 0.5, -0.5, 0.25, -0.25 })[i % 4];
     for (0..2) |k| {
         var nb: [24]u8 = undefined;
         const file = try std.fmt.bufPrint(&nb, "slice-{d:0>2}.wav", .{k + 1});
@@ -3536,7 +3594,7 @@ const ExtractBench = struct {
         var rb: [storage.MAX_PATH]u8 = undefined;
         const root = storage.absolute(&self.root_buf, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{self.tmp.sub_path}));
         var hb: [storage.MAX_PATH]u8 = undefined;
-        _ = env.setenv("SLAB_HOME", (try std.fmt.bufPrintZ(&hb, "{s}/home", .{root})).ptr, 1);
+        _ = env.setenv("SLAB_HOME", (try std.mem.printSentinel(&hb, "{s}/home", .{root}, 0)).ptr, 1);
         storage.setProject(null);
         const buf = try alloc.alloc(f32, x.len);
         defer alloc.free(buf);
@@ -5652,7 +5710,7 @@ fn screenRect() ui_geom.Rect {
 
 /// Default color for the n-th new track (the track palette, cycled).
 fn trackColor(n: usize) c.rl.Color {
-    return @bitCast(ui_style.track[n % ui_style.track.len]);
+    return ui_draw.rl(ui_style.track[n % ui_style.track.len]);
 }
 
 fn uiRect(r: c.rl.Rectangle) ui_geom.Rect {
@@ -6133,6 +6191,8 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
     defer reg.deinit();
     for (registry_mod.builtin_machines) |path| try reg.loadFyMachine(path);
     reg.loadUserMachines();
+    // Racks, as the app has them: a project with one renders it.
+    try reg.loadNative();
     var pool = audio_pool_mod.AudioPool.init(alloc);
     defer pool.deinit();
     document_mod.setPool(&pool);
@@ -6140,7 +6200,7 @@ fn renderHeadless(alloc: std.mem.Allocator, project: []const u8, cli: Cli) !void
 
     var transport: transport_mod.Transport = .{};
     transport.sample_rate = audio_mod.SAMPLE_RATE;
-    var master = try track_mod.Track.init(alloc, "Master", @bitCast(ui_style.face_hi), silent_machine);
+    var master = try track_mod.Track.init(alloc, "Master", ui_draw.rl(ui_style.face_hi), silent_machine);
     master.kind = .master;
     master.setVolume(1.0);
     defer master.deinit(alloc);
@@ -6446,16 +6506,22 @@ const AutoRecorder = struct {
 /// and null into every control no lane drives.
 fn syncAutomationUi(tracks: []track_mod.Track, beat: f64) void {
     for (tracks) |*t| {
-        syncMachineAutoUi(t, &t.machine, .inst, 0, beat);
-        for (t.effects.items) |*fx| syncMachineAutoUi(t, &fx.mach, .fx, fx.uid, beat);
+        syncMachineAutoUi(t, &t.machine, .inst, 0, .{}, beat);
+        for (t.effects.items) |*fx| syncMachineAutoUi(t, &fx.mach, .fx, fx.uid, .{}, beat);
     }
 }
 
-fn syncMachineAutoUi(t: *track_mod.Track, m: *const @import("machine.zig").Machine, kind: automation.TargetKind, uid: u16, beat: f64) void {
+/// `m` and, in a rack, every machine inside it, `path` down from the
+/// track's slot (docs/42 §Automation inside a rack).
+fn syncMachineAutoUi(t: *track_mod.Track, m: *const @import("machine.zig").Machine, kind: automation.TargetKind, uid: u16, path: automation.Path, beat: f64) void {
+    if (m.child) |f| if (path.len < automation.MAX_PATH) {
+        var i: usize = 0;
+        while (f(m.state, i)) |ch| : (i += 1) syncMachineAutoUi(t, ch.mach, kind, uid, path.plus(ch.step), beat);
+    };
     const set = m.set_auto_ui orelse return;
     const info = m.control_info orelse return;
     for (0..m.controlCount()) |i| {
-        const target = automation.Target.control(kind, uid, info(m.state, i).id);
+        const target = automation.Target.control(kind, uid, info(m.state, i).id).inside(path);
         if (!t.isAutomated(target)) {
             set(m.state, i, null);
             continue;
@@ -6470,9 +6536,17 @@ fn clearAutomationOverrides(tracks: []track_mod.Track) void {
     for (tracks) |*t| {
         t.vol_override.store(0, .monotonic);
         t.pan_override.store(0, .monotonic);
-        if (t.machine.clear_overrides) |f| f(t.machine.state);
-        for (t.effects.items) |*fx| if (fx.mach.clear_overrides) |f| f(fx.mach.state);
+        clearMachineOverrides(&t.machine, 0);
+        for (t.effects.items) |*fx| clearMachineOverrides(&fx.mach, 0);
     }
+}
+
+fn clearMachineOverrides(m: *const @import("machine.zig").Machine, depth: usize) void {
+    if (m.clear_overrides) |f| f(m.state);
+    if (m.child) |f| if (depth < automation.MAX_PATH) {
+        var i: usize = 0;
+        while (f(m.state, i)) |ch| : (i += 1) clearMachineOverrides(ch.mach, depth + 1);
+    };
 }
 
 /// Serve panels' Show/Clear automation requests. Returns true on an edit.
@@ -6486,12 +6560,12 @@ fn serviceAutomationRequests(
 ) bool {
     var edited = false;
     for (tracks, 0..) |*t, ti| {
-        if (serviceMachineAutoRequest(alloc, history, tracks, transport, t, &t.machine, .inst, 0, status)) |e| {
+        if (serviceMachineAutoRequest(alloc, history, tracks, transport, t, &t.machine, .inst, 0, .{}, status)) |e| {
             edited = edited or e;
             selected_track.* = ti;
         }
         for (t.effects.items) |*fx| {
-            if (serviceMachineAutoRequest(alloc, history, tracks, transport, t, &fx.mach, .fx, fx.uid, status)) |e| {
+            if (serviceMachineAutoRequest(alloc, history, tracks, transport, t, &fx.mach, .fx, fx.uid, .{}, status)) |e| {
                 edited = edited or e;
                 selected_track.* = ti;
             }
@@ -6510,14 +6584,22 @@ fn serviceMachineAutoRequest(
     m: *const @import("machine.zig").Machine,
     kind: automation.TargetKind,
     uid: u16,
+    path: automation.Path,
     status: *StatusMessage,
 ) ?bool {
+    // A rack's machines ask too, a step further down.
+    if (m.child) |f| if (path.len < automation.MAX_PATH) {
+        var i: usize = 0;
+        while (f(m.state, i)) |ch| : (i += 1) {
+            if (serviceMachineAutoRequest(alloc, history, tracks, transport, t, ch.mach, kind, uid, path.plus(ch.step), status)) |e| return e;
+        }
+    };
     const take = m.take_auto_request orelse return null;
     const req = take(m.state) orelse return null;
     const info_fn = m.control_info orelse return false;
     if (req.control >= m.controlCount()) return false;
     const info = info_fn(m.state, req.control);
-    const target = automation.Target.control(kind, uid, info.id);
+    const target = automation.Target.control(kind, uid, info.id).inside(path);
     switch (req.action) {
         .show => {
             t.lanes_shown = true;
@@ -6538,6 +6620,18 @@ fn serviceMachineAutoRequest(
         },
     }
 }
+
+const NestedUndo = struct {
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    tracks: []track_mod.Track,
+    transport: *transport_mod.Transport,
+
+    fn push(ctx: *anyopaque) void {
+        const self: *NestedUndo = @ptrCast(@alignCast(ctx));
+        pushHistorySnapshot(self.alloc, self.history, self.tracks, self.transport);
+    }
+};
 
 fn pushHistorySnapshot(alloc: std.mem.Allocator, history: *history_mod.History, tracks: []track_mod.Track, transport: *transport_mod.Transport) void {
     const snapshot = document_mod.serialize(alloc, tracks, transport) catch |err| {
@@ -6677,20 +6771,23 @@ fn commitRename(
 // live next to the machine, so there's no document snapshot/undo here.
 fn commitPreset(rename: *RenameState, tracks: []track_mod.Track, dirty: *bool, status: *StatusMessage) void {
     _ = tracks;
-    const t = rename.device_track orelse {
-        status.set("Preset target gone", .{});
-        return;
-    };
-    const mach = deviceMachineOf(t, rename.device_effect) orelse {
-        status.set("Preset target gone", .{});
-        return;
+    var nested = rename.device_mach;
+    const mach = if (nested) |*m| m else blk: {
+        const t = rename.device_track orelse {
+            status.set("Preset target gone", .{});
+            return;
+        };
+        break :blk deviceMachineOf(t, rename.device_effect) orelse {
+            status.set("Preset target gone", .{});
+            return;
+        };
     };
     const name = rename.tb.text();
     if (name.len == 0) {
         status.set("Preset name empty", .{});
         return;
     }
-    var name_buf: [track_mod.MAX_NAME + 1:0]u8 = [_:0]u8{0} ** (track_mod.MAX_NAME + 1);
+    var name_buf: [track_mod.MAX_NAME + 1:0]u8 = @splat(0);
     @memcpy(name_buf[0..name.len], name);
     const name_z: [*:0]const u8 = @ptrCast(&name_buf[0]);
     switch (rename.kind) {
@@ -7431,7 +7528,7 @@ test "bounce: the selected clip lands on a new track below its source, the origi
     var root_buf: [storage.MAX_PATH]u8 = undefined;
     const root = storage.absolute(&root_buf, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
     var hb: [storage.MAX_PATH]u8 = undefined;
-    _ = env.setenv("SLAB_HOME", (try std.fmt.bufPrintZ(&hb, "{s}/home", .{root})).ptr, 1);
+    _ = env.setenv("SLAB_HOME", (try std.mem.printSentinel(&hb, "{s}/home", .{root}, 0)).ptr, 1);
     defer _ = env.unsetenv("SLAB_HOME");
     storage.setProject(null);
 
@@ -7518,7 +7615,7 @@ test "bounce provenance: a recipe stays fresh, goes stale with its source, re-bo
     var root_buf: [storage.MAX_PATH]u8 = undefined;
     const root = storage.absolute(&root_buf, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
     var hb: [storage.MAX_PATH]u8 = undefined;
-    _ = env.setenv("SLAB_HOME", (try std.fmt.bufPrintZ(&hb, "{s}/home", .{root})).ptr, 1);
+    _ = env.setenv("SLAB_HOME", (try std.mem.printSentinel(&hb, "{s}/home", .{root}, 0)).ptr, 1);
     defer _ = env.unsetenv("SLAB_HOME");
     storage.setProject(null);
 
@@ -7658,7 +7755,7 @@ test "freeze: a track renders to its frozen audio, plays the same frozen, and go
     var root_buf: [storage.MAX_PATH]u8 = undefined;
     const root = storage.absolute(&root_buf, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
     var hb: [storage.MAX_PATH]u8 = undefined;
-    _ = env.setenv("SLAB_HOME", (try std.fmt.bufPrintZ(&hb, "{s}/home", .{root})).ptr, 1);
+    _ = env.setenv("SLAB_HOME", (try std.mem.printSentinel(&hb, "{s}/home", .{root}, 0)).ptr, 1);
     defer _ = env.unsetenv("SLAB_HOME");
     storage.setProject(null);
 

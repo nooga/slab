@@ -74,6 +74,28 @@ pub const Result = struct {
     unison_at: ?[2]i32 = null,
 };
 
+/// A preset action on a machine drawn inside another's panel (a rack
+/// lane's, docs/42): main runs it as it does the bay's own, on `mach`.
+pub const NestedPreset = struct {
+    mach: Machine,
+    apply: ?u16 = null,
+    save: bool = false,
+    save_library: bool = false,
+    rename: ?u16 = null,
+    anchor: c.rl.Rectangle = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+};
+pub var nested_preset: ?NestedPreset = null;
+
+/// Called by a machine's panel just before it changes what it holds (a
+/// rack adding or removing a lane or an insert), so the edit is an undo
+/// step like the bay's own. Main sets it before drawing the bay.
+pub const BeforeEdit = struct { ctx: *anyopaque, f: *const fn (ctx: *anyopaque) void };
+pub var before_nested_edit: ?BeforeEdit = null;
+
+pub fn beforeNestedEdit() void {
+    if (before_nested_edit) |b| b.f(b.ctx);
+}
+
 // The tracks and the edited track's index, for the KEY latch's label.
 var bay_tracks: []const Track = &.{};
 /// For the latency readouts in ms; main sets it from the transport.
@@ -88,7 +110,7 @@ const DEFAULT_PANEL_W: i32 = 200;
 const DRAG_THRESHOLD: f32 = 6;
 
 const ADD_MENU_KEY: u64 = 0x4d414444; // "MADD"
-const REPLACE_MENU_KEY: u64 = 0x5245504c; // "REPL"
+pub const REPLACE_MENU_KEY: u64 = 0x5245504c; // "REPL"
 const PRESET_MENU_KEY: u64 = 0x50524553; // "PRES"
 const CONFIRM_MENU_KEY: u64 = 0x434f4e46; // "CONF"
 const SAVE_ITEM_ID: u32 = 9001;
@@ -115,23 +137,54 @@ const ReorderDrag = struct {
 };
 var fx_drag: ReorderDrag = .{};
 
+/// A run of devices Shift-clicked on one chain, for ⌘G (group into a rack)
+/// and ⌘⇧G (ungroup one): chain positions, 0 the instrument, n the n-th
+/// effect (docs/42 §UI).
+pub const Selection = struct { dev: *const Track, first: usize, last: usize };
+pub var selection: ?Selection = null;
+
+/// Shift-click on position `p`: start a run, grow it to `p`, or drop a
+/// lone pick clicked again.
+fn shiftSelect(dev: *const Track, p: usize) void {
+    if (selection) |*sel| if (sel.dev == dev) {
+        if (sel.first == p and sel.last == p) {
+            selection = null;
+        } else {
+            sel.first = @min(sel.first, p);
+            sel.last = @max(sel.last, p);
+        }
+        return;
+    };
+    selection = .{ .dev = dev, .first = p, .last = p };
+}
+
+fn selected(dev: *const Track, p: usize) bool {
+    const sel = selection orelse return false;
+    return sel.dev == dev and p >= sel.first and p <= sel.last;
+}
+
+fn markSelected(ui: *Ui, card: Rect) void {
+    ui.rect(Rect.xywh(card.x, card.y + TITLE_H - 2, card.w, 2), ui_style.accent);
+    ui.overlayRect(card, ui_style.accent.alpha(24));
+}
+
 // Note-activity LED glow, keyed by track index. Bumped to 1.0 when the
 // engine's note sequence advances, decayed each frame for a soft pulse.
-var led_seen: [16]u32 = [_]u32{0} ** 16;
-var led_glow: [16]f32 = [_]f32{0} ** 16;
+var led_seen: [16]u32 = @splat(0);
+var led_glow: [16]f32 = @splat(0);
 
-fn panelW(mach: *const Machine) i32 {
+pub fn panelW(mach: *const Machine) i32 {
     if (mach.panel_w_fn) |f| return @intFromFloat(@round(f(mach.state)));
     return if (mach.panel_w > 0) @intFromFloat(@round(mach.panel_w)) else DEFAULT_PANEL_W;
 }
 
 /// An effect card: its panel plus the I/O meter column.
-fn effectW(fx: *const Effect) i32 {
+pub fn effectW(fx: *const Effect) i32 {
     return panelW(&fx.mach) + IO_W;
 }
 
 /// IN | scale | OUT: two stereo bars sharing one graduated scale.
-const IO_W: i32 = 48;
+pub const IO_W: i32 = 48;
 const IO_BAR_W: i32 = 10;
 
 fn ioMeters(ui: *Ui, r: Rect, fx: *const Effect) void {
@@ -176,6 +229,9 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
         emptyBay(ui, area, "SELECT A TRACK");
         return result;
     };
+    if (selection) |sel| if (sel.dev != t or sel.last > t.effects.items.len) {
+        selection = null;
+    };
 
     // Measure the chain: (instrument) + effects + the trailing "+".
     const has_instrument = !is_bus and t.machine_idx != null;
@@ -212,8 +268,13 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
             glow = led_glow[ti];
             if (glow > 0) ui.animate();
         };
-        const out = drawDevice(ui, Rect.xywh(x, area.y, inst_w, area.h), &t.machine, .instrument, null, t.isEnabled(), glow, reg, &result);
+        const card = Rect.xywh(x, area.y, inst_w, area.h);
+        const out = drawDevice(ui, card, &t.machine, .instrument, null, t.isEnabled(), glow, reg, &result);
         if (out.toggle) t.toggleEnabled();
+        if (out.name_pressed) {
+            if (ui.in.shift) shiftSelect(t, 0) else selection = null;
+        }
+        if (selected(t, 0)) markSelected(ui, card);
         x += inst_w;
     }
 
@@ -238,7 +299,13 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
         const card = Rect.xywh(x, area.y, fw, area.h);
         const out = drawDevice(ui, card, &fx.mach, .{ .effect = i }, fx, !t.effectBypassed(i), null, reg, &result);
         if (out.toggle) t.toggleEffectBypass(i);
-        if (out.name_pressed and !fx_drag.armed) fx_drag = .{ .armed = true, .src = i, .press_x = ui.in.mx };
+        if (out.name_pressed and ui.in.shift) {
+            shiftSelect(t, i + 1);
+        } else if (out.name_pressed and !fx_drag.armed) {
+            selection = null;
+            fx_drag = .{ .armed = true, .src = i, .press_x = ui.in.mx };
+        }
+        if (selected(t, i + 1)) markSelected(ui, card);
         if (out.name_released and fx_drag.armed and fx_drag.src == i) {
             if (fx_drag.active) {
                 var to = drop_idx;
@@ -333,7 +400,7 @@ fn drawMinimap(ui: *Ui, r: Rect, view_w: i32, content_w: i32, max_scroll: i32, i
     }
 }
 
-const DeviceOut = struct {
+pub const DeviceOut = struct {
     toggle: bool = false, // mute / bypass clicked
     name_pressed: bool = false, // name tile pressed (effects arm a drag)
     name_released: bool = false,
@@ -350,7 +417,7 @@ fn isInstrument(ref: DeviceRef) bool {
 // Draw one device column: the title strip, its menus, and the machine's
 // panel body. Folds the name (replace), preset and delete-confirm outcomes
 // into `result`, scoped to `ref`.
-fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, fx: ?*const Effect, active: bool, glow: ?f32, reg: *const Registry, result: *Result) DeviceOut {
+pub fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, fx: ?*const Effect, active: bool, glow: ?f32, reg: *const Registry, result: *Result) DeviceOut {
     var out = DeviceOut{};
     ui.pushId(mach.state);
     defer ui.popId();
@@ -432,12 +499,12 @@ fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, fx: ?*const E
     _ = ctl.button(ui, name_r, "name-cap", null, .{ .flush = true, .disabled = true });
     ui.textIn(&ui.fonts.body_bold, Rect.xywh(name_r.x + 6, name_r.y, name_r.w - 8 - led_w, name_r.h - 1), name, if (ui.isHot(nid)) ui_style.text else ui_style.text_dim, .left, true);
     if (glow) |g| ctl.led(ui, name_r.right() - led_w - 2, name_r.y + @divFloor(name_r.h - 1 - 5, 2), .round5, if (g > 0.2) .on else .off, ui_style.led_green);
-    const what: []const u8 = if (is_inst) "Replace machine" else "Drag to reorder, click to replace";
+    const what: []const u8 = if (is_inst) "Replace machine. Shift-click to select, \u{2318}G groups into a rack" else "Drag to reorder, click to replace. Shift-click to select, \u{2318}G groups into a rack";
     const lat = mach.latencySamples();
     var lbuf: [96]u8 = undefined;
     menu.tip(ui, name_r, if (lat == 0) what else std.fmt.bufPrint(&lbuf, "{s}. Latency {d} smp ({d:.1} ms)", .{ what, lat, latencyMs(lat, sample_rate) }) catch what);
     const replace_key = pane.keyFromIds(REPLACE_MENU_KEY, @intFromPtr(mach.state), 0);
-    if (is_inst and nb.clicked and !menu.isOpen(replace_key)) {
+    if (is_inst and nb.clicked and !ui.in.shift and !menu.isOpen(replace_key)) {
         scanRegistryPresets(reg);
         menu.openBelow(replace_key, name_r);
     }
@@ -543,19 +610,30 @@ fn machinePickerMenu(menu_key: u64, reg: *const Registry) ?AddPick {
     return machinePickerMenuFor(menu_key, reg, .all);
 }
 
-/// Which machines a picker offers: all, or the fy instruments a rack's
-/// parts can be.
-pub const PickerFilter = enum { all, instruments };
+/// Which machines a picker offers: all, the instruments a rack lane can
+/// play, or the inserts it can hold (docs/42).
+pub const PickerFilter = enum { all, instruments, effects };
 
 pub fn machinePickerMenuFor(menu_key: u64, reg: *const Registry, filter: PickerFilter) ?AddPick {
     if (!menu.isOpen(menu_key)) return null;
     const menu_count = @min(reg.count, registry_mod.MAX_MACHINES);
-    var items: [registry_mod.MAX_MACHINES]menu.Item = undefined;
+    var items: [registry_mod.MAX_MACHINES + 2]menu.Item = undefined;
     var n: usize = 0;
-    for (reg.entries[0..menu_count], 0..) |*e, i| {
-        if (filter == .instruments and (e.native != .none or !e.in_notes)) continue;
-        items[n] = .{ .label = std.mem.span(e.nameZ()), .id = @intCast(i), .submenu = add_scan_cache[i].count > 0 };
-        n += 1;
+    // Machines first, then the racks under their own heading (docs/42).
+    for ([_]bool{ false, true }) |natives| {
+        const head = n;
+        for (reg.entries[0..menu_count], 0..) |*e, i| {
+            if ((e.native != .none) != natives) continue;
+            if (filter == .instruments and !e.in_notes) continue;
+            if (filter == .effects and (!e.in_audio or e.in_notes)) continue;
+            if (natives and n == head) {
+                items[n] = .{ .separator = true };
+                items[n + 1] = .{ .label = "RACKS", .enabled = false };
+                n += 2;
+            }
+            items[n] = .{ .label = std.mem.span(e.nameZ()), .id = @intCast(i), .submenu = add_scan_cache[i].count > 0 };
+            n += 1;
+        }
     }
     if (menu.pick(menu_key, items[0..n])) |id| return .{ .reg_idx = @intCast(id) };
 

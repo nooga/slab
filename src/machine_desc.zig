@@ -80,7 +80,7 @@ pub const Widget = enum {
 pub const OptSet = struct {
     ctl: u16 = 0,
     opt: u8 = 0,
-    id: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
+    id: [MAX_TEXT:0]u8 = @splat(0),
     id_len: usize = 0,
     value: f64 = 0,
 
@@ -90,11 +90,11 @@ pub const OptSet = struct {
 };
 
 pub const Control = struct {
-    module: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
+    module: [MAX_TEXT:0]u8 = @splat(0),
     module_len: usize = 0,
-    label: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
+    label: [MAX_TEXT:0]u8 = @splat(0),
     label_len: usize = 0,
-    id: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
+    id: [MAX_TEXT:0]u8 = @splat(0),
     id_len: usize = 0,
     kind: ParamKind = .direct_f64,
     offset: usize = 0,
@@ -108,8 +108,8 @@ pub const Control = struct {
     // switch_sel only: discrete options. The control stores the selected
     // index; sync writes option_values[index] to the param offset.
     option_count: usize = 0,
-    option_values: [MAX_OPTS]f64 = [_]f64{0} ** MAX_OPTS,
-    option_labels: [MAX_OPTS][MAX_TEXT:0]u8 = [_][MAX_TEXT:0]u8{[_:0]u8{0} ** MAX_TEXT} ** MAX_OPTS,
+    option_values: [MAX_OPTS]f64 = @splat(0),
+    option_labels: [MAX_OPTS][MAX_TEXT:0]u8 = @splat(@as([MAX_TEXT:0]u8, @splat(0))),
 
     pub fn optionLabelZ(self: *const Control, i: usize) [*:0]const u8 {
         return @ptrCast(&self.option_labels[i][0]);
@@ -181,7 +181,7 @@ pub const ConstF64 = struct {
 /// seconds. The host allocates per channel and writes the base pointer +
 /// element count into that channel's state at the two introspected offsets.
 pub const BufferReq = struct {
-    name: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
+    name: [MAX_TEXT:0]u8 = @splat(0),
     name_len: usize = 0,
     ptr_offset: usize = 0,
     len_offset: usize = 0,
@@ -196,12 +196,12 @@ pub const BufferReq = struct {
 /// base pointer, sample count, and native sample rate into PARAMS at the
 /// three introspected offsets (shared across voices).
 pub const AssetReq = struct {
-    name: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
+    name: [MAX_TEXT:0]u8 = @splat(0),
     name_len: usize = 0,
     ptr_offset: usize = 0,
     len_offset: usize = 0,
     sr_offset: usize = 0,
-    file: [MAX_PATH:0]u8 = [_:0]u8{0} ** MAX_PATH,
+    file: [MAX_PATH:0]u8 = @splat(0),
     file_len: usize = 0,
     /// `keymap` instead of `asset`: the three offsets take the sample
     /// pool's pointer, the zone table's pointer and the zone count.
@@ -214,7 +214,7 @@ pub const AssetReq = struct {
     edits_offset: usize = 0,
     /// Keymaps: low-pass the pool at `aa_ratio` x this control's value
     /// (`keymap-antialias`); empty = never.
-    aa_control: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
+    aa_control: [MAX_TEXT:0]u8 = @splat(0),
     aa_control_len: usize = 0,
     aa_ratio: f64 = 0,
     aa_cap: usize = 0,
@@ -233,7 +233,7 @@ pub const AssetReq = struct {
 };
 
 pub const Strip = struct {
-    module: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
+    module: [MAX_TEXT:0]u8 = @splat(0),
     module_len: usize = 0,
     cols: usize = 1,
 
@@ -265,7 +265,7 @@ pub const Mod = struct {
     /// that sets how much a source moves a destination outside the
     /// matrix, like a filter's ENV amount).
     kind: enum { source, dest, fixed } = .source,
-    name: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
+    name: [MAX_TEXT:0]u8 = @splat(0),
     name_len: usize = 0,
     /// The matrix's SRC or DEST option index.
     index: usize = 0,
@@ -300,13 +300,13 @@ pub const MeterOffset = enum(usize) { gmin = 0, ipk, opk, msm, mss, msum, mn };
 pub const DynOffset = enum(usize) { gr = 0, lvl, knee };
 
 pub const Display = struct {
-    name: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
+    name: [MAX_TEXT:0]u8 = @splat(0),
     name_len: usize = 0,
     kind: DisplayKind = .adsr,
-    source: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
+    source: [MAX_TEXT:0]u8 = @splat(0),
     source_len: usize = 0,
     /// Meter kind only: state byte offsets, see MeterOffset.
-    offsets: [METER_OFFSETS]usize = [_]usize{0} ** METER_OFFSETS,
+    offsets: [METER_OFFSETS]usize = @splat(0),
 
     pub fn nameSlice(self: *const Display) []const u8 {
         return self.name[0..self.name_len];
@@ -352,7 +352,7 @@ pub const LayoutRow = struct {
 /// One tab of a paged panel: a name and its own layout-row tree. Built only
 /// when the manifest declares `page`s; otherwise the panel uses `Desc.rows`.
 pub const Page = struct {
-    name: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
+    name: [MAX_TEXT:0]u8 = @splat(0),
     name_len: usize = 0,
     rows: [MAX_ROWS]LayoutRow = undefined,
     row_count: usize = 0,
@@ -367,25 +367,25 @@ pub const Page = struct {
 };
 
 pub const Desc = struct {
-    name: [MAX_NAME]u8 = [_]u8{0} ** MAX_NAME,
+    name: [MAX_NAME]u8 = @splat(0),
     name_len: usize = 0,
     mode: Mode = .voice_sample,
-    render_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
+    render_word: [MAX_WORD]u8 = @splat(0),
     render_word_len: usize = 0,
-    prepare_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
+    prepare_word: [MAX_WORD]u8 = @splat(0),
     prepare_word_len: usize = 0,
-    note_on_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
+    note_on_word: [MAX_WORD]u8 = @splat(0),
     note_on_word_len: usize = 0,
-    note_off_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
+    note_off_word: [MAX_WORD]u8 = @splat(0),
     note_off_word_len: usize = 0,
-    block_prepare_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
+    block_prepare_word: [MAX_WORD]u8 = @splat(0),
     block_prepare_word_len: usize = 0,
     // Per-note expression hook (docs/22): retunes the voice to ctx.pitch.
-    note_expr_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
+    note_expr_word: [MAX_WORD]u8 = @splat(0),
     note_expr_word_len: usize = 0,
     /// A cheaper render word for blocks where the params f64 at
     /// `render_lite_sel` (byte offset) is exactly 0.
-    render_lite_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
+    render_lite_word: [MAX_WORD]u8 = @splat(0),
     render_lite_word_len: usize = 0,
     render_lite_sel: usize = 0,
     /// Params byte offset + 1 of the f64 the host sets to 1.0 while a
@@ -394,14 +394,14 @@ pub const Desc = struct {
     key_flag: usize = 0,
     /// Voice machines: a control-rate word the host runs on each voice every
     /// `control_period` samples, counted from its note-on (docs/04).
-    control_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
+    control_word: [MAX_WORD]u8 = @splat(0),
     control_word_len: usize = 0,
     control_period: usize = 0,
     /// Voice machines: one region shared by every voice (docs/04 §Shared
     /// state), and the render word that runs over it in lockstep with the
     /// voices, `shared_period` samples at a time. 0 / empty = none.
     shared_size: usize = 0,
-    shared_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
+    shared_word: [MAX_WORD]u8 = @splat(0),
     shared_word_len: usize = 0,
     shared_period: usize = 0,
     /// State byte offset + 1 of the f64 a voice keeps at its own level,
@@ -422,7 +422,7 @@ pub const Desc = struct {
     // calls each block, plus an opaque machine-built data pointer. Lets a
     // machine keep all its specific logic in fy (e.g. FM-86 algorithm routing)
     // instead of the frame.
-    derive_word: [MAX_WORD]u8 = [_]u8{0} ** MAX_WORD,
+    derive_word: [MAX_WORD]u8 = @splat(0),
     derive_word_len: usize = 0,
     derive_data: usize = 0,
     state_size: usize = 0,
@@ -461,7 +461,7 @@ pub const Desc = struct {
     mods: [MAX_MODS]Mod = undefined,
     mod_count: usize = 0,
     /// The mod matrix: slots of `<prefix><n>-src`, -dst, -amt controls.
-    matrix: [MAX_TEXT:0]u8 = [_:0]u8{0} ** MAX_TEXT,
+    matrix: [MAX_TEXT:0]u8 = @splat(0),
     matrix_len: usize = 0,
     matrix_slots: usize = 0,
 
@@ -770,7 +770,7 @@ pub fn read(host: *FyHost) !Desc {
         if (out.kind == .switch_sel and out.option_count == 0) return error.InvalidMachineDesc;
         if (out.kind == .int_range and !(out.max > out.min)) return error.InvalidMachineDesc;
         const widget = asInt(ctl.widget);
-        if (widget < 0 or widget >= std.meta.fields(Widget).len) return error.InvalidMachineDesc;
+        if (widget < 0 or widget >= @typeInfo(Widget).@"enum".field_names.len) return error.InvalidMachineDesc;
         out.widget = @enumFromInt(widget);
         if (!out.widgetFits(out.widget)) return error.InvalidMachineDesc;
         out.span_rows = asInt(ctl.span) != 0;

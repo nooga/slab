@@ -248,8 +248,8 @@ fn kindIn(mask: u8, k: Kind) bool {
 fn matches(it: *const Item, query: []const u8) bool {
     var words = std.mem.tokenizeScalar(u8, query, ' ');
     while (words.next()) |w| {
-        if (std.ascii.indexOfIgnoreCase(it.name, w) == null and
-            std.ascii.indexOfIgnoreCase(it.folder, w) == null and
+        if (std.ascii.findIgnoreCase(it.name, w) == null and
+            std.ascii.findIgnoreCase(it.folder, w) == null and
             !std.ascii.startsWithIgnoreCase(KIND_NAMES[@intFromEnum(it.kind)], w)) return false;
     }
     return true;
@@ -402,7 +402,7 @@ fn typeAhead(ui: *Ui, st: *State, focused: bool) void {
     };
 }
 
-const Counts = struct { kinds: [KIND_CHIPS.len]u32 = [_]u32{0} ** KIND_CHIPS.len, favs: u32 = 0 };
+const Counts = struct { kinds: [KIND_CHIPS.len]u32 = @splat(0), favs: u32 = 0 };
 
 /// What each chip counts: the source and search, ignoring the kind mask.
 fn chipCounts(st: *const State, items: []const Item) Counts {
@@ -1532,10 +1532,10 @@ fn ellipsizeMiddle(buf: []u8, f: *const core.Font, s: []const u8, w: i32) []cons
 
 /// `s` in `r`, the spans matching a query word bold and underlined.
 fn highlighted(ui: *Ui, r: Rect, s: []const u8, query: []const u8, col: Color, playing: bool) void {
-    var mark = [_]bool{false} ** 128;
+    var mark: [128]bool = @splat(false);
     var words = std.mem.tokenizeScalar(u8, query, ' ');
     while (words.next()) |w| {
-        if (std.ascii.indexOfIgnoreCase(s, w)) |at| {
+        if (std.ascii.findIgnoreCase(s, w)) |at| {
             for (at..@min(at + w.len, mark.len)) |i| mark[i] = true;
         }
     }

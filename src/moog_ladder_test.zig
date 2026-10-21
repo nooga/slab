@@ -18,8 +18,8 @@ const SR: f64 = 48_000.0;
 const Rig = struct {
     host: FyHost,
     /// One MoogLadder (13 fields) and one Dec4 (26).
-    m: [13]f64 = [_]f64{0} ** 13,
-    d: [26]f64 = [_]f64{0} ** 26,
+    m: [13]f64 = @splat(0),
+    d: [26]f64 = @splat(0),
 
     fn step(self: *Rig, x: f64, cutoff: f64, res: f64) !f64 {
         var out: f64 = 0;
@@ -50,8 +50,8 @@ fn db(x: f64) f64 {
 }
 
 fn gainAt(rig: *Rig, hz: f64, cutoff: f64) !f64 {
-    rig.m = [_]f64{0} ** 13;
-    rig.d = [_]f64{0} ** 26;
+    rig.m = @splat(0);
+    rig.d = @splat(0);
     var ys: [4800]f64 = undefined;
     for (0..4800 + 2400) |n| {
         const x = 0.01 * @sin(2.0 * std.math.pi * hz * @as(f64, @floatFromInt(n)) / SR);
@@ -63,8 +63,8 @@ fn gainAt(rig: *Rig, hz: f64, cutoff: f64) !f64 {
 
 /// Frequency of the self-oscillation: zero crossings over one second.
 fn oscHz(rig: *Rig, cutoff: f64) !f64 {
-    rig.m = [_]f64{0} ** 13;
-    rig.d = [_]f64{0} ** 26;
+    rig.m = @splat(0);
+    rig.d = @splat(0);
     var prev: f64 = 0;
     var first: ?usize = null;
     var last: usize = 0;

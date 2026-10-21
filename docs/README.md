@@ -129,6 +129,8 @@ status and the source before assuming a feature is absent or complete.
 42. [41-physical-models.md](41-physical-models.md) — Hammerwork Grand and
     Skinwork Kit: modal strings, membranes and plates, implicit hammer and
     stick contact, the `kernels/10-physical` building blocks
+43. [42-racks.md](42-racks.md) — racks (proposal, phase 1 built): chains
+    in parallel lanes, macro knobs with ranges and formulas, rig presets
 
 ## Terminology crib sheet
 

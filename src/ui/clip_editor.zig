@@ -78,7 +78,7 @@ fn collapsed() bool {
 /// notes on a key the kit doesn't map stay visible and editable.
 fn setNoteMap(map: []const machine_mod.NoteLabel, clip: ?*const Clip) void {
     note_map = map;
-    var seen = [_]bool{false} ** 128;
+    var seen: [128]bool = @splat(false);
     for (map) |*nl| seen[nl.pitch & 127] = true;
     if (map.len > 0) if (clip) |cl| for (cl.notes.items) |n| {
         seen[n.pitch & 127] = true;

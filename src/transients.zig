@@ -55,7 +55,7 @@ pub fn detect(alloc: std.mem.Allocator, l: []const f64, r: ?[]const f64, rate: f
     defer alloc.free(odf);
     var win: [N]f64 = undefined;
     for (&win, 0..) |*w, i| w.* = 0.5 - 0.5 * @cos(2 * std.math.pi * @as(f64, @floatFromInt(i)) / N);
-    var prev = [_]f32{0} ** BINS;
+    var prev: [BINS]f32 = @splat(0);
     var buf: [N]Complex = undefined;
     for (0..frames) |k| {
         const c0: isize = @as(isize, @intCast(k * HOP)) - N / 2;

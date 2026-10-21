@@ -69,7 +69,7 @@ fn bankOf(name: []const u8) []const u8 {
 fn matches(name: []const u8, query: []const u8) bool {
     var it = std.mem.tokenizeScalar(u8, query, ' ');
     while (it.next()) |w| {
-        if (std.ascii.indexOfIgnoreCase(name, w) == null) return false;
+        if (std.ascii.findIgnoreCase(name, w) == null) return false;
     }
     return true;
 }

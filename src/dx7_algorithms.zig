@@ -275,7 +275,7 @@ test "alg32 routing drives the voice to six partials" {
     }
     inline for (.{ "lvl0", "lvl1", "lvl2", "lvl3", "lvl4", "lvl5" }) |f| @field(vp, f) = 0.3;
 
-    var st = [_]f64{0} ** 18;
+    var st: [18]f64 = @splat(0);
     var out: f64 = 0;
     var buf: [n]f64 = undefined;
     for (&buf) |*s| {

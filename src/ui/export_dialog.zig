@@ -9,6 +9,7 @@
 const std = @import("std");
 const core = @import("core.zig");
 const style = @import("style.zig");
+const ui_draw = @import("draw.zig");
 const ctl = @import("controls.zig");
 const dialog = @import("dialog.zig");
 const text_field = @import("text_field.zig");
@@ -450,7 +451,7 @@ fn tracksTab(ui: *Ui, body_in: Rect, state: *State, cx: Context) void {
         var on = on_now;
         if (ctl.ledToggle(ui, c.led, "on", &on, !live)) t.stem.on = on;
         const name_r = c.name;
-        ui.rect(Rect.xywh(name_r.x, name_r.y + 4, 4, name_r.h - 8), @bitCast(t.color));
+        ui.rect(Rect.xywh(name_r.x, name_r.y + 4, 4, name_r.h - 8), ui_draw.fromRl(t.color));
         ui.textIn(&ui.fonts.body, Rect.xywh(name_r.x + 10, name_r.y, name_r.w - 10, name_r.h), t.name(), if (live and on) style.text else style.text_mute, .left, false);
         ui.textIn(&ui.fonts.legend, c.kind, kindOf(cx.tracks, ti), style.text_mute, .left, false);
         const h = ctl.displayHeight(false);
@@ -909,10 +910,10 @@ test "the footer sums up every format" {
     var presets = xs.UserPresets{};
     const cx = Context{ .settings = &s, .presets = &presets, .tracks = &.{}, .project = "song", .bpm = 120, .range_secs = .{ 192.4, null, null, null } };
     var buf: [160]u8 = undefined;
-    inline for (std.meta.fields(export_mod.Container)) |f| {
-        s.recipe.container = @enumFromInt(f.value);
-        inline for (std.meta.fields(export_mod.Bits)) |b| {
-            s.recipe.bits = @enumFromInt(b.value);
+    inline for (@typeInfo(export_mod.Container).@"enum".field_names) |cn| {
+        s.recipe.container = @field(export_mod.Container, cn);
+        inline for (@typeInfo(export_mod.Bits).@"enum".field_names) |bn| {
+            s.recipe.bits = @field(export_mod.Bits, bn);
             const out = summary(&buf, cx);
             try std.testing.expect(std.mem.startsWith(u8, out, "1 FILE · "));
         }

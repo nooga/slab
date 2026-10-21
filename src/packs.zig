@@ -327,7 +327,7 @@ pub const Catalog = struct {
             ne += 1;
         }
         var lib_env: [storage.MAX_PATH + 16:0]u8 = undefined;
-        const le = std.fmt.bufPrintZ(&lib_env, "SLAB_LIBRARY={s}", .{lib}) catch return "PATH TOO LONG";
+        const le = std.mem.printSentinel(&lib_env, "SLAB_LIBRARY={s}", .{lib}, 0) catch return "PATH TOO LONG";
         env_buf[ne] = le.ptr;
 
         var fa: SpawnActions = null;

@@ -20,7 +20,7 @@ const Entry = struct {
     refs: usize = 0,
 };
 
-var entries: [MAX]Entry = [_]Entry{.{}} ** MAX;
+var entries: [MAX]Entry = @splat(.{});
 var lock: @import("fy").UnfairLock = .{};
 
 fn take() void {

@@ -1,7 +1,7 @@
 .{
     .name = .slab,
     .version = "0.0.14",
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .paths = .{""},
     .fingerprint = 0xc659b8b8e507d92d,
     .dependencies = .{

@@ -125,7 +125,7 @@ pub const Trail = struct {
     id: Id = 0,
     used: u64 = 0,
     pts: [TRAIL][TRAIL_PTS]f32 = undefined,
-    lens: [TRAIL]usize = [_]usize{0} ** TRAIL,
+    lens: [TRAIL]usize = @splat(0),
     head: usize = 0,
 };
 const TRAIL_SLOTS = 8;
@@ -177,11 +177,14 @@ pub const Ui = struct {
     /// the machine bay sets it around a panel so every control in it,
     /// however deeply scoped, feeds that machine's title display.
     touch_scope: ?Id = null,
+    /// A rack's MAP is armed around the panels it draws: every control a
+    /// macro can take is outlined (docs/42 §UI).
+    map_mode: bool = false,
     wants_frame: bool = true,
     frame: u64 = 0,
     white: atlas_mod.Region,
-    memos: [MEMO_SLOTS]Memo = [_]Memo{.{}} ** MEMO_SLOTS,
-    trails: [TRAIL_SLOTS]Trail = [_]Trail{.{}} ** TRAIL_SLOTS,
+    memos: [MEMO_SLOTS]Memo = @splat(.{}),
+    trails: [TRAIL_SLOTS]Trail = @splat(.{}),
 
     last_click_t: f64 = -1,
     last_click_x: f32 = 0,
@@ -334,7 +337,7 @@ pub const Ui = struct {
     /// Whole-window present for a screen the Ui owns entirely (gallery).
     pub fn present(ui: *Ui) void {
         c.rl.BeginDrawing();
-        c.rl.ClearBackground(@bitCast(style.chassis));
+        c.rl.ClearBackground(draw.rl(style.chassis));
         ui.render();
         c.rl.EndDrawing();
     }
@@ -783,7 +786,7 @@ fn hashKey(h: *std.hash.Wyhash, key: anytype) void {
             const v: u64 = @intFromEnum(key);
             h.update(std.mem.asBytes(&v));
         },
-        .@"struct" => |s| inline for (s.fields) |f| hashKey(h, @field(key, f.name)),
+        .@"struct" => |s| inline for (s.field_names) |name| hashKey(h, @field(key, name)),
         else => @compileError("unsupported id key type " ++ @typeName(T)),
     }
 }

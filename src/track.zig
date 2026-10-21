@@ -15,79 +15,18 @@ const automation = @import("automation.zig");
 const recorder_mod = @import("recorder.zig");
 const routing = @import("routing.zig");
 const handoff = @import("handoff.zig");
+const chain_mod = @import("chain.zig");
 
 pub const MAX_NAME = 32;
 
-/// One slot in a track's insert chain: the effect machine, its registry
-/// index (for persistence/forward-compat), and a per-effect bypass flag.
-/// UI bypass edits publish with the complete chain; audio reads its adopted
-/// copy. The editable ArrayList and its allocations are never traversed by
-/// a render worker. Peak telemetry uses stable atomic storage shared by
-/// both copies.
-pub const Effect = struct {
-    mach: machine.Machine,
-    idx: ?u8 = null,
-    /// Stable per-track id that automation lanes address (docs/22 §Targets):
-    /// it survives reordering the chain.
-    uid: u16 = 0,
-    version: u64 = 0,
-    bypass: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    /// Sidechain key (docs/23 §Sidechain keys): the track whose pre tap
-    /// drives this effect's detector, or routing.NONE.
-    key: u8 = routing.NONE,
-    /// Block peaks the engine writes after each render and the bay's I/O
-    /// meters read: in L, in R, out L, out R, as f32 bits.
-    shared_io: ?*[4]std.atomic.Value(u32) = null,
-    io_peak: [4]std.atomic.Value(u32) = [_]std.atomic.Value(u32){std.atomic.Value(u32).init(0)} ** 4,
-    /// Audio thread: samples its input and output have both been silent,
-    /// saturating; past the machine's hold it isn't rendered (docs/04
-    /// §Idle skipping).
-    quiet: u32 = 0,
-    /// Audio thread (docs/07 §Declicking): the wet share the last chunk
-    /// ended on; bypass crossfades it to 0 and back over a chunk.
-    wet: f32 = 1,
-    /// Audio thread: the track's dry line holding this bypassed effect's
-    /// latency (-1: none). With one, the effect keeps rendering while
-    /// bypassed and its dry path is delayed by its latency, so bypass
-    /// neither re-times the PDC graph nor brings back stale buffers.
-    dry_line: i8 = -1,
-
-    pub fn setIo(self: *Effect, in: [2]f32, out: [2]f32) void {
-        const v = [4]f32{ in[0], in[1], out[0], out[1] };
-        for (self.shared_io orelse &self.io_peak, v) |*a, x| a.store(@bitCast(x), .monotonic);
-    }
-
-    pub fn io(self: *const Effect) struct { in: [2]f32, out: [2]f32 } {
-        var v: [4]f32 = undefined;
-        for (&v, self.shared_io orelse &self.io_peak) |*x, *a| x.* = @bitCast(a.load(.monotonic));
-        return .{ .in = .{ v[0], v[1] }, .out = .{ v[2], v[3] } };
-    }
-};
-
-pub const MAX_EFFECTS: usize = 128;
+pub const Effect = chain_mod.Effect;
+pub const MAX_EFFECTS = chain_mod.MAX_EFFECTS;
+pub const DRY_LINES = chain_mod.DRY_LINES;
+pub const DRY_LEN = chain_mod.DRY_LEN;
+pub const DryLine = chain_mod.DryLine;
 /// A chain switch while playing: the old chain renders one chunk fading
 /// out (`out`, then `out_done` once rendered), the new one one fading in.
 pub const Swap = enum { none, out, out_done, in };
-const RetiredMachine = struct { mach: machine.Machine, io: ?*[4]std.atomic.Value(u32) = null };
-const Chain = struct { instrument: machine.Machine, effects: [MAX_EFFECTS]Effect = undefined, count: usize = 0, generation: u64 = 0, instrument_generation: u64 = 0 };
-
-const PublishedEffect = struct { uid: u16, version: u64, bypass: bool };
-pub const DRY_LINES = 4;
-/// A dry line's length: the largest latency it can hold, a power of two.
-pub const DRY_LEN = 8192;
-pub const DryLine = struct { l: [DRY_LEN]f32, r: [DRY_LEN]f32, w: usize };
-
-const ChainState = struct {
-    chain: handoff.Latest(Chain),
-    retired: handoff.Retirement(RetiredMachine, 128) = .{},
-    audio_effects: [MAX_EFFECTS]Effect = undefined,
-    previous_effects: [MAX_EFFECTS]Effect = undefined,
-    published_effects: [MAX_EFFECTS]PublishedEffect = undefined,
-    /// Audio thread: delay lines for bypassed latent effects (Effect.dry_line),
-    /// touched on UI at creation so audio never takes their first faults.
-    dry: [DRY_LINES]DryLine = undefined,
-    dry_used: u8 = 0,
-};
 
 /// What role a Track plays in the signal graph (docs/23). Audio tracks
 /// have an instrument + clips. A `bus` has neither: its input is the sum of
@@ -138,7 +77,7 @@ pub const Send = struct {
 };
 
 pub const Track = struct {
-    name_buf: [MAX_NAME]u8 = [_]u8{0} ** MAX_NAME,
+    name_buf: [MAX_NAME]u8 = @splat(0),
     name_len: u8 = 0,
     kind: Kind = .audio,
     /// Where the post-fader signal goes: a bus's track index, or
@@ -148,18 +87,8 @@ pub const Track = struct {
     send_count: u8 = 0,
     color: c.rl.Color,
     machine: machine.Machine,
-    chain_state: *ChainState,
-    chain: *handoff.Latest(Chain),
-    retired_machines: *handoff.Retirement(RetiredMachine, 128),
-    chain_generation: u64 = 0,
-    instrument_generation: u64 = 0,
-    audio_instrument_generation: u64 = 0,
-    published_instrument_generation: u64 = std.math.maxInt(u64),
-    published_effect_count: usize = std.math.maxInt(usize),
-    published_effects: *[MAX_EFFECTS]PublishedEffect,
-    audio_machine: machine.Machine,
-    audio_effects: *[MAX_EFFECTS]Effect,
-    audio_effect_count: usize = 0,
+    /// The chain's publication, retirement and audio copy (chain.zig).
+    chain: *chain_mod.State,
 
     /// Registry index for persistence. Null means the silent placeholder.
     machine_idx: ?u8 = null,
@@ -207,9 +136,8 @@ pub const Track = struct {
     /// Its stretchers (docs/29 §On the audio thread), made when a warped
     /// clip first needs them, freed with the track.
     stretch: ?*stretch_mod.Bank = null,
-    next_fx_uid: u16 = 1,
     /// Audio-thread-owned per-lane segment cursors (automation.evalCursor).
-    auto_cursors: [snap_mod.MAX_LANES_PER_TRACK]u32 = [_]u32{0} ** snap_mod.MAX_LANES_PER_TRACK,
+    auto_cursors: [snap_mod.MAX_LANES_PER_TRACK]u32 = @splat(0),
     /// Manual overrides of automated volume/pan (docs/22 §Manual changes):
     /// 0 none, 1 held (touch), 2 sticky until the transport starts.
     vol_override: std.atomic.Value(u8) = std.atomic.Value(u8).init(0),
@@ -280,9 +208,7 @@ pub const Track = struct {
         errdefer alloc.destroy(s1);
         const s2 = try alloc.create(snap_mod.TrackSnapshot);
         errdefer alloc.destroy(s2);
-        const chain_state = try alloc.create(ChainState);
-        chain_state.* = .{ .chain = .init(.{ .instrument = mach }) };
-        @memset(std.mem.asBytes(&chain_state.dry), 0);
+        const chain = try chain_mod.State.create(alloc, mach);
         s0.* = .{};
         s1.* = .{};
         s2.* = .{};
@@ -290,12 +216,7 @@ pub const Track = struct {
         var t = Track{
             .color = color,
             .machine = mach,
-            .audio_machine = mach,
-            .chain_state = chain_state,
-            .chain = &chain_state.chain,
-            .retired_machines = &chain_state.retired,
-            .audio_effects = &chain_state.audio_effects,
-            .published_effects = &chain_state.published_effects,
+            .chain = chain,
             .snap = .{ s0, s1, s2 },
         };
         const n = @min(track_name.len, MAX_NAME);
@@ -358,7 +279,6 @@ pub const Track = struct {
     }
 
     pub fn deinit(self: *Track, alloc: std.mem.Allocator) void {
-        self.retired_machines.drain(alloc, disposeMachine);
         if (self.machine.deinit) |deinit_fn| {
             deinit_fn(self.machine.state, alloc);
         }
@@ -372,53 +292,19 @@ pub const Track = struct {
         for (self.lanes.items) |*lane| lane.deinit(alloc);
         self.lanes.deinit(alloc);
         for (self.snap) |s| alloc.destroy(s);
-        alloc.destroy(self.chain_state);
+        self.chain.destroy(alloc);
         if (self.stretch) |b| {
             b.deinit();
             std.heap.page_allocator.destroy(b);
         }
     }
 
-    fn disposeMachine(alloc: std.mem.Allocator, old: RetiredMachine) void {
-        if (old.mach.deinit) |d| d(old.mach.state, alloc);
-        if (old.io) |io| alloc.destroy(io);
-    }
-
     pub fn collectMachines(self: *Track, alloc: std.mem.Allocator) void {
-        self.retired_machines.collect(alloc, disposeMachine);
-    }
-
-    fn reserveRetirement(self: *Track, alloc: std.mem.Allocator) !void {
-        self.collectMachines(alloc);
-        if (!self.retired_machines.available()) return error.PublicationFull;
+        self.chain.collect(alloc);
     }
 
     pub fn publishMachines(self: *Track) void {
-        var changed = self.published_instrument_generation != self.instrument_generation or self.published_effect_count != self.effects.items.len;
-        if (!changed) for (self.effects.items, 0..) |*fx, i| {
-            const old = self.published_effects[i];
-            if (old.uid != fx.uid or old.version != fx.version or old.bypass != fx.bypass.load(.monotonic)) {
-                changed = true;
-                break;
-            }
-        };
-        if (!changed) return;
-        self.published_instrument_generation = self.instrument_generation;
-        self.published_effect_count = self.effects.items.len;
-        self.chain_generation += 1;
-        const v = self.chain.write();
-        v.instrument = self.machine;
-        v.instrument_generation = self.instrument_generation;
-        v.generation = self.chain_generation;
-        v.count = self.effects.items.len;
-        std.debug.assert(v.count <= MAX_EFFECTS);
-        for (self.effects.items, 0..) |*fx, i| {
-            const bypass = fx.bypass.load(.monotonic);
-            v.effects[i] = .{ .mach = fx.mach, .idx = fx.idx, .uid = fx.uid, .version = fx.version, .key = fx.key, .shared_io = fx.shared_io };
-            v.effects[i].bypass.store(bypass, .monotonic);
-            self.published_effects[i] = .{ .uid = fx.uid, .version = fx.version, .bypass = bypass };
-        }
-        self.chain.publish();
+        self.chain.publish(self.machine, self.effects.items);
     }
 
     /// Audio only, before latency calculation or any render worker runs.
@@ -446,102 +332,35 @@ pub const Track = struct {
             .none => {},
         }
         if (!self.chain.adopt()) return;
-        machine.codeBarrier();
-        if (fade and self.chainChanges(self.chain.current())) {
+        if (fade and self.chain.changes()) {
             self.swap = .out;
             return;
         }
         self.applyChain();
     }
 
-    /// The adopted version swaps the instrument or the inserts, not only
-    /// bypass states.
-    fn chainChanges(self: *Track, v: *const Chain) bool {
-        if (v.instrument_generation != self.audio_instrument_generation or v.count != self.audio_effect_count) return true;
-        for (v.effects[0..v.count], self.audioEffects()) |a, b| {
-            if (a.uid != b.uid or a.version != b.version) return true;
-        }
-        return false;
-    }
-
     fn applyChain(self: *Track) void {
-        const v = self.chain.current();
-        const previous_count = self.audio_effect_count;
-        const previous = self.chain_state.previous_effects[0..previous_count];
-        @memcpy(previous, self.audioEffects());
-        const cs = self.chain_state;
-        for (v.effects[0..v.count], 0..) |fx, i| {
-            const e = &self.audio_effects[i];
-            e.* = fx;
-            const bypass = fx.bypass.load(.monotonic);
-            // New here: it starts where it stands, no fade.
-            e.wet = if (bypass) 0 else 1;
-            e.dry_line = -1;
-            for (previous) |old| if (old.uid == fx.uid and old.version == fx.version) {
-                e.quiet = old.quiet;
-                e.wet = old.wet;
-                e.dry_line = old.dry_line;
-                const was = old.bypass.load(.monotonic);
-                if (bypass and !was and e.dry_line < 0 and e.mach.latencySamples() > 0) {
-                    // Keep its latency through the bypass (a free line, else
-                    // the old way: the graph re-times).
-                    if (@ctz(~cs.dry_used) < DRY_LINES) {
-                        const k: u3 = @intCast(@ctz(~cs.dry_used));
-                        e.dry_line = k;
-                        cs.dry_used |= @as(u8, 1) << k;
-                        @memset(&cs.dry[k].l, 0);
-                        @memset(&cs.dry[k].r, 0);
-                        cs.dry[k].w = 0;
-                    }
-                }
-                // Back from a bypass it was not rendered through: its
-                // buffers hold audio from before; start it clean.
-                if (!bypass and was and e.dry_line < 0) e.mach.reset(e.mach.state);
-                break;
-            };
-        }
-        // Lines held by effects that are gone are free again.
-        var used: u8 = 0;
-        for (self.audio_effects[0..v.count]) |e| if (e.dry_line >= 0) {
-            used |= @as(u8, 1) << @intCast(e.dry_line);
-        };
-        cs.dry_used = used;
-        if (self.audio_instrument_generation != v.instrument_generation) {
+        if (self.chain.apply()) {
             self.inst_quiet = 0;
             self.clearSounding();
             // A new instrument hears none of the notes already held.
             self.audio_inst_new = true;
         }
-        self.audio_instrument_generation = v.instrument_generation;
-        self.audio_machine = v.instrument;
-        self.audio_effect_count = v.count;
-        self.retired_machines.acknowledge(v.generation);
     }
 
     pub fn audioEffects(self: *Track) []Effect {
-        return self.audio_effects[0..self.audio_effect_count];
+        return self.chain.audioEffects();
     }
     pub fn audioEffectBypassed(self: *const Track, i: usize) bool {
-        return self.audio_effects[i].bypass.load(.monotonic);
+        return self.chain.audio_effects[i].bypass.load(.monotonic);
     }
 
     pub fn replaceMachine(self: *Track, alloc: std.mem.Allocator, mach: machine.Machine) !void {
-        try self.reserveRetirement(alloc);
-        const old = self.machine;
-        self.machine = mach;
-        self.instrument_generation += 1;
-        self.publishMachines();
-        self.retired_machines.append(self.chain_generation, .{ .mach = old });
+        try self.chain.replaceInstrument(alloc, &self.machine, self.effects.items, mach);
     }
 
     pub fn addEffect(self: *Track, alloc: std.mem.Allocator, mach: machine.Machine, idx: u8) !void {
-        if (self.effects.items.len >= MAX_EFFECTS) return error.TooManyEffects;
-        const io = try alloc.create([4]std.atomic.Value(u32));
-        errdefer alloc.destroy(io);
-        io.* = @splat(.init(0));
-        try self.effects.append(alloc, .{ .mach = mach, .idx = idx, .uid = self.next_fx_uid, .shared_io = io });
-        self.next_fx_uid +%= 1;
-        self.publishMachines();
+        try self.chain.addEffect(alloc, self.machine, &self.effects, mach, idx);
     }
 
     pub fn effectByUid(self: *const Track, uid: u16) ?*Effect {
@@ -570,40 +389,25 @@ pub const Track = struct {
 
     /// The machine a control target lives on, if it still exists.
     pub fn targetMachine(self: *const Track, target: automation.Target) ?*const machine.Machine {
-        return switch (target.kind) {
-            .volume, .pan => null,
+        const m: *const machine.Machine = switch (target.kind) {
+            .volume, .pan => return null,
             .inst => &self.machine,
-            .fx => if (self.effectByUid(target.fx_uid)) |fx| &fx.mach else null,
+            .fx => if (self.effectByUid(target.fx_uid)) |fx| &fx.mach else return null,
         };
+        return m.inner(target.path);
     }
 
     /// UI edits the chain; audio keeps the previous version until adoption.
     pub fn removeEffect(self: *Track, alloc: std.mem.Allocator, i: usize) !void {
-        if (i >= self.effects.items.len) return;
-        try self.reserveRetirement(alloc);
-        const old = self.effects.orderedRemove(i);
-        self.publishMachines();
-        self.retired_machines.append(self.chain_generation, .{ .mach = old.mach, .io = old.shared_io });
+        try self.chain.removeEffect(alloc, self.machine, &self.effects, i);
     }
 
     pub fn moveEffect(self: *Track, from: usize, to: usize) void {
-        const n = self.effects.items.len;
-        if (from >= n or to >= n or from == to) return;
-        const e = self.effects.orderedRemove(from);
-        self.effects.insertAssumeCapacity(@min(to, self.effects.items.len), e);
-        self.publishMachines();
+        self.chain.moveEffect(self.machine, &self.effects, from, to);
     }
 
     pub fn replaceEffect(self: *Track, alloc: std.mem.Allocator, i: usize, mach: machine.Machine, idx: u8) !void {
-        if (i >= self.effects.items.len) return error.InvalidEffect;
-        try self.reserveRetirement(alloc);
-        const slot = &self.effects.items[i];
-        const old = slot.mach;
-        slot.mach = mach;
-        slot.idx = idx;
-        slot.version += 1;
-        self.publishMachines();
-        self.retired_machines.append(self.chain_generation, .{ .mach = old });
+        try self.chain.replaceEffect(alloc, self.machine, self.effects.items, i, mach, idx);
     }
 
     pub fn isBus(self: *const Track) bool {
@@ -1057,6 +861,7 @@ pub const Track = struct {
         var ls = snap_mod.LaneSnap{
             .kind = lane.target.kind,
             .fx_uid = lane.target.fx_uid,
+            .path = lane.target.path,
             .points_start = dst.auto_point_count,
             .points_count = @intCast(pts.len),
         };
@@ -1418,12 +1223,12 @@ test "realtime: instrument and effect retirement happens only after audio adopti
     t.collectMachines(a);
     try std.testing.expectEqual(@as(usize, 0), old.count);
     try std.testing.expectEqual(@as(usize, 0), fx.count);
-    try std.testing.expect(@intFromPtr(t.audio_machine.state) == @intFromPtr(&old));
+    try std.testing.expect(@intFromPtr(t.chain.audio_machine.state) == @intFromPtr(&old));
     t.audioEffects()[0].setIo(.{ 0.2, 0.3 }, .{ 0.4, 0.5 });
     try std.testing.expectEqual(@as(u32, @bitCast(@as(f32, 0.2))), io[0].load(.monotonic));
     t.adoptMachines(false);
-    try std.testing.expect(@intFromPtr(t.audio_machine.state) == @intFromPtr(&new));
-    try std.testing.expectEqual(@as(usize, 0), t.audio_effect_count);
+    try std.testing.expect(@intFromPtr(t.chain.audio_machine.state) == @intFromPtr(&new));
+    try std.testing.expectEqual(@as(usize, 0), t.chain.audio_effect_count);
     t.collectMachines(a);
     try std.testing.expectEqual(@as(usize, 1), old.count);
     try std.testing.expectEqual(@as(usize, 1), fx.count);

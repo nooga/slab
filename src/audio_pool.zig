@@ -61,7 +61,7 @@ pub const Source = struct {
     cache: waveform.PeakCache = .{},
     cache_l: waveform.PeakCache = .{},
     cache_r: waveform.PeakCache = .{},
-    path_buf: [MAX_PATH]u8 = [_]u8{0} ** MAX_PATH,
+    path_buf: [MAX_PATH]u8 = @splat(0),
     path_len: u16 = 0,
     name_off: u16 = 0, // basename start within path_buf
     /// Heap-owned so it stays put when the pool's list grows.

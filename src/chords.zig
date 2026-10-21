@@ -220,7 +220,12 @@ pub fn perSpan(alloc: std.mem.Allocator, ch: *const Chroma, edges: []const f64) 
     return .{ .treble = t, .bass = b };
 }
 
-const QUALITIES = std.enums.values(Quality);
+const QUALITIES = blk: {
+    const names = @typeInfo(Quality).@"enum".field_names;
+    var out: [names.len]Quality = undefined;
+    for (names, 0..) |name, i| out[i] = @field(Quality, name);
+    break :blk out;
+};
 const STATES = 12 * QUALITIES.len + 1;
 const NONE = STATES - 1;
 
@@ -231,7 +236,7 @@ const TEMPLATES: [STATES - 1][12]f32 = blk: {
     var t: [STATES - 1][12]f32 = undefined;
     const harm = [_]struct { st: u8, w: f32 }{ .{ .st = 0, .w = 1 }, .{ .st = 12, .w = 0.6 }, .{ .st = 19, .w = 0.4 }, .{ .st = 24, .w = 0.3 } };
     for (QUALITIES, 0..) |q, qi| for (0..12) |root| {
-        var v = [_]f32{0} ** 12;
+        var v: [12]f32 = @splat(0);
         for (q.intervals()) |iv| for (harm) |h| {
             v[(root + iv + h.st) % 12] += h.w;
         };
@@ -265,7 +270,7 @@ pub fn decode(alloc: std.mem.Allocator, treble: []const [12]f32, bass: []const [
     }
     const back = try alloc.alloc([STATES]u16, n);
     defer alloc.free(back);
-    var delta: [STATES]f32 = [_]f32{0} ** STATES;
+    var delta: [STATES]f32 = @splat(0);
     var next: [STATES]f32 = undefined;
     // How sharply a fit counts, and what a change costs: a chord that
     // fits clearly better (by 0.1) takes over within two beats; one that
@@ -341,7 +346,7 @@ pub fn decode(alloc: std.mem.Allocator, treble: []const [12]f32, bass: []const [
 
 /// The key of everything heard (docs/30 §Chords and key).
 pub fn key(ch: *const Chroma) struct { key: u8, scale: tune.Scale } {
-    var hist = [_]f32{0} ** 12;
+    var hist: [12]f32 = @splat(0);
     for (ch.treble) |v| for (v, 0..) |x, pc| {
         hist[pc] += x;
     };

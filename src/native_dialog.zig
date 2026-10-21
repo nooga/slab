@@ -16,21 +16,21 @@ extern fn slab_open(target: [*:0]const u8) void;
 /// Open a folder in Finder, or a link in the browser.
 pub fn open(target: []const u8) void {
     var zb: [2048]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&zb, "{s}", .{target}) catch return;
+    const z = std.mem.printSentinel(&zb, "{s}", .{target}, 0) catch return;
     slab_open(z.ptr);
 }
 
 /// Show a file selected in a Finder window.
 pub fn reveal(path: []const u8) void {
     var zb: [1024]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&zb, "{s}", .{path}) catch return;
+    const z = std.mem.printSentinel(&zb, "{s}", .{path}, 0) catch return;
     slab_reveal(z.ptr);
 }
 
 /// Move a file to the Trash. False if it couldn't.
 pub fn trash(path: []const u8) bool {
     var zb: [1024]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&zb, "{s}", .{path}) catch return false;
+    const z = std.mem.printSentinel(&zb, "{s}", .{path}, 0) catch return false;
     return slab_trash(z.ptr) == 1;
 }
 
@@ -41,7 +41,7 @@ pub fn openProject(alloc: std.mem.Allocator) !?[]u8 {
 }
 
 pub fn saveProject(alloc: std.mem.Allocator, default_name: []const u8) !?[]u8 {
-    const z = try alloc.dupeZ(u8, default_name);
+    const z = try alloc.dupeSentinel(u8, default_name, 0);
     defer alloc.free(z);
     const raw = slab_save_project_dialog(z) orelse return null;
     defer slab_free_dialog_path(raw);
@@ -66,7 +66,7 @@ pub fn openKeymap(alloc: std.mem.Allocator) !?[]u8 {
 /// Native folder panel (an export's destination), opening at `start`.
 /// Returns the chosen folder, or null if cancelled. Caller owns it.
 pub fn chooseFolder(alloc: std.mem.Allocator, start: []const u8) !?[]u8 {
-    const z = try alloc.dupeZ(u8, start);
+    const z = try alloc.dupeSentinel(u8, start, 0);
     defer alloc.free(z);
     const raw = slab_choose_folder_dialog(z) orelse return null;
     defer slab_free_dialog_path(raw);
@@ -77,9 +77,9 @@ pub fn chooseFolder(alloc: std.mem.Allocator, start: []const u8) !?[]u8 {
 /// Returns the chosen path, or null if cancelled. Caller owns the
 /// returned slice.
 pub fn saveAudioFile(alloc: std.mem.Allocator, default_name: []const u8, ext: []const u8) !?[]u8 {
-    const z = try alloc.dupeZ(u8, default_name);
+    const z = try alloc.dupeSentinel(u8, default_name, 0);
     defer alloc.free(z);
-    const ez = try alloc.dupeZ(u8, ext);
+    const ez = try alloc.dupeSentinel(u8, ext, 0);
     defer alloc.free(ez);
     const raw = slab_save_audio_dialog(z, ez) orelse return null;
     defer slab_free_dialog_path(raw);

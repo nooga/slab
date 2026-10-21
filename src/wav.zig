@@ -616,7 +616,7 @@ test "parse stereo folds to mono" {
 }
 
 test "rejects non-RIFF" {
-    var buf = [_]u8{0} ** 64;
+    var buf: [64]u8 = @splat(0);
     @memcpy(buf[0..4], "JUNK");
     try testing.expectError(Error.NotRiffWave, parse(testing.allocator, &buf));
 }
@@ -696,7 +696,7 @@ test "a FLAC from slab's encoder loads sample-exact: 16 and 24 bits, mono and st
             const bytes = try flac.encode(alloc, ints, .{ .sample_rate = 32_000, .bits = bits, .channels = ch });
             defer alloc.free(bytes);
             var pb: [256]u8 = undefined;
-            const path = try std.fmt.bufPrintZ(&pb, "/tmp/slab-wav-flac-{d}-{d}-{d}.flac", .{ std.c.getpid(), bits, ch });
+            const path = try std.mem.printSentinel(&pb, "/tmp/slab-wav-flac-{d}-{d}-{d}.flac", .{ std.c.getpid(), bits, ch }, 0);
             try writeTestFile(path, bytes);
 
             const scale: f64 = @floatFromInt(@as(i32, 1) << (bits - 1));

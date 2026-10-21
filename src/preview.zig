@@ -20,7 +20,7 @@ pub const Previewer = struct {
     path_len: usize = 0,
     /// Data the audio thread may still hold, and the request after which
     /// it doesn't.
-    retired: [MAX_RETIRED]?Retired = [_]?Retired{null} ** MAX_RETIRED,
+    retired: [MAX_RETIRED]?Retired = @splat(null),
     playing: bool = false,
 
     pub fn init(alloc: std.mem.Allocator) Previewer {

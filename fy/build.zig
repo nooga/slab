@@ -22,6 +22,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // C headers (zig 0.17 has no @cImport): src/c.h becomes module "c".
+    const c_mod = b.addTranslateC(.{
+        .root_source_file = b.path("src/c.h"),
+        .target = target,
+        .optimize = optimize,
+    }).createModule();
+    fy_mod.addImport("c", c_mod);
+
     // Static library artifact — for C consumers of the C-ABI.
     const lib = b.addLibrary(.{
         .name = "fy",
@@ -66,7 +74,7 @@ pub fn build(b: *std.Build) void {
         .root_module = bench_mod,
     });
     const run_bench = b.addRunArtifact(bench_exe);
-    if (b.args) |args| run_bench.addArgs(args);
+    run_bench.addPassthruArgs();
 
     if (builtin.os.tag == .macos) {
         const sign_bench_enabled = b.option(bool, "codesign-bench", "Codesign benchmark executable for macOS JIT (default: false)") orelse false;
@@ -94,6 +102,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+        exe_mod.addImport("c", c_mod);
         const exe = b.addExecutable(.{
             .name = "fy",
             .root_module = exe_mod,
@@ -102,7 +111,7 @@ pub fn build(b: *std.Build) void {
 
         const run_cmd = b.addRunArtifact(exe);
         run_cmd.step.dependOn(b.getInstallStep());
-        if (b.args) |args| run_cmd.addArgs(args);
+        run_cmd.addPassthruArgs();
         const run_step = b.step("run", "Run fy CLI");
         run_step.dependOn(&run_cmd.step);
 

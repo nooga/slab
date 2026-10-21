@@ -466,7 +466,7 @@ fn tuneTools(ui: *Ui, row: *Rect, clip: *clip_mod.Clip, src: *const audio_pool_m
 }
 
 const SCALES = blk: {
-    var out: [@typeInfo(tune_mod.Scale).@"enum".fields.len][]const u8 = undefined;
+    var out: [@typeInfo(tune_mod.Scale).@"enum".field_names.len][]const u8 = undefined;
     for (&out, 0..) |*o, i| o.* = @as(tune_mod.Scale, @enumFromInt(i)).label();
     break :blk out;
 };

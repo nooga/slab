@@ -13,6 +13,7 @@ const clip_mod = @import("clip.zig");
 const warp_mod = @import("warp.zig");
 const tune_mod = @import("tune.zig");
 const registry_mod = @import("machine_registry.zig");
+const rack_mod = @import("machines/rack.zig");
 const transport_mod = @import("transport.zig");
 const machine_mod = @import("machine.zig");
 const audio_pool_mod = @import("audio_pool.zig");
@@ -122,7 +123,7 @@ fn machineId(idx: u8) []const u8 {
 pub fn readFile(alloc: std.mem.Allocator, given: []const u8) ![]u8 {
     var db: [storage.MAX_PATH]u8 = undefined;
     const path = package.docPath(&db, given);
-    const z = try alloc.dupeZ(u8, path);
+    const z = try alloc.dupeSentinel(u8, path, 0);
     defer alloc.free(z);
     const fd = open(z, O_RDONLY);
     if (fd < 0) return error.FileOpenFailed;
@@ -145,7 +146,7 @@ pub fn readFile(alloc: std.mem.Allocator, given: []const u8) ![]u8 {
 }
 
 pub fn writeFile(alloc: std.mem.Allocator, path: []const u8, data: []const u8) !void {
-    const z = try alloc.dupeZ(u8, path);
+    const z = try alloc.dupeSentinel(u8, path, 0);
     defer alloc.free(z);
     const fd = open(z, O_WRONLY | O_CREAT | O_TRUNC, @as(c_int, 0o644));
     if (fd < 0) return error.FileOpenFailed;
@@ -557,6 +558,11 @@ fn appendEffects(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const tr
         try appendFmt(alloc, out, ",\"bypass\":{s},\"params\":", .{boolStr(t.effectBypassed(ei))});
         try appendParams(alloc, out, fx.mach);
         try appendPreset(alloc, out, fx.mach);
+        try appendAssets(alloc, out, fx.mach);
+        if (fx.mach.write_state_json) |f| {
+            try out.appendSlice(alloc, ",\"state\":");
+            try f(fx.mach.state, out, alloc);
+        }
         if (fx.key != routing.NONE) try appendFmt(alloc, out, ",\"key\":{d}", .{fx.key});
         try out.append(alloc, '}');
     }
@@ -564,20 +570,35 @@ fn appendEffects(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const tr
 }
 
 /// A lane's target as the file names it: `volume`, `pan`, `inst:<id>`,
-/// `fx<N>:<id>` (N = the effect's chain position now). Null when the
-/// target no longer resolves.
+/// `fx<N>:<id>` (N = the effect's chain position now). A control inside a
+/// rack adds a `/L.P` per step down (L its lane from 1, P its place in the
+/// lane: 0 the instrument, n the n-th insert), as `inst/2.1:amp-gain`
+/// (docs/42 §Automation inside a rack). Null when the target no longer
+/// resolves.
 fn laneTargetName(buf: []u8, t: *const track_mod.Track, target: automation.Target) ?[]const u8 {
-    return switch (target.kind) {
-        .volume => "volume",
-        .pan => "pan",
-        .inst => std.fmt.bufPrint(buf, "inst:{s}", .{target.param()}) catch null,
+    var w = std.Io.Writer.fixed(buf);
+    var m: *const machine_mod.Machine = switch (target.kind) {
+        .volume => return "volume",
+        .pan => return "pan",
+        .inst => blk: {
+            w.writeAll("inst") catch return null;
+            break :blk &t.machine;
+        },
         .fx => blk: {
-            for (t.effects.items, 0..) |*fx, i| {
-                if (fx.uid == target.fx_uid) break :blk std.fmt.bufPrint(buf, "fx{d}:{s}", .{ i, target.param() }) catch null;
-            }
-            break :blk null;
+            for (t.effects.items, 0..) |*fx, i| if (fx.uid == target.fx_uid) {
+                w.print("fx{d}", .{i}) catch return null;
+                break :blk &fx.mach;
+            };
+            return null;
         },
     };
+    for (target.path.slice()) |st| {
+        const ch = m.childAt(st) orelse return null;
+        w.print("/{d}.{d}", .{ @as(usize, ch.lane) + 1, ch.pos }) catch return null;
+        m = ch.mach;
+    }
+    w.print(":{s}", .{target.param()}) catch return null;
+    return w.buffered();
 }
 
 /// Knob-space lane value → real units (fader gain, pan, control value).
@@ -633,15 +654,35 @@ fn parseLaneTarget(t: *const track_mod.Track, name: []const u8) ?automation.Targ
     if (std.mem.eql(u8, name, "volume")) return automation.Target.volume();
     if (std.mem.eql(u8, name, "pan")) return automation.Target.pan();
     const colon = std.mem.indexOfScalar(u8, name, ':') orelse return null;
-    const head = name[0..colon];
+    var steps = std.mem.splitScalar(u8, name[0..colon], '/');
+    const head = steps.first();
     const id = name[colon + 1 ..];
-    if (std.mem.eql(u8, head, "inst")) return automation.Target.control(.inst, 0, id);
-    if (head.len > 2 and std.mem.startsWith(u8, head, "fx")) {
+    var target: automation.Target = undefined;
+    var m: *const machine_mod.Machine = undefined;
+    if (std.mem.eql(u8, head, "inst")) {
+        target = automation.Target.control(.inst, 0, id);
+        m = &t.machine;
+    } else if (head.len > 2 and std.mem.startsWith(u8, head, "fx")) {
         const n = std.fmt.parseInt(usize, head[2..], 10) catch return null;
         if (n >= t.effects.items.len) return null;
-        return automation.Target.control(.fx, t.effects.items[n].uid, id);
+        target = automation.Target.control(.fx, t.effects.items[n].uid, id);
+        m = &t.effects.items[n].mach;
+    } else return null;
+    // Down through racks: lane L, place P (the rack's machines must be in).
+    while (steps.next()) |sv| {
+        const dot = std.mem.indexOfScalar(u8, sv, '.') orelse return null;
+        const lane = std.fmt.parseInt(usize, sv[0..dot], 10) catch return null;
+        const pos = std.fmt.parseInt(usize, sv[dot + 1 ..], 10) catch return null;
+        if (lane < 1 or target.path.len >= automation.MAX_PATH) return null;
+        const f = m.child orelse return null;
+        var i: usize = 0;
+        const ch = while (f(m.state, i)) |ch| : (i += 1) {
+            if (ch.lane == lane - 1 and ch.pos == pos) break ch;
+        } else return null;
+        target.path = target.path.plus(ch.step);
+        m = ch.mach;
     }
-    return null;
+    return target;
 }
 
 fn applyLanes(alloc: std.mem.Allocator, t: *track_mod.Track, av: std.json.Value) !void {
@@ -1138,6 +1179,8 @@ fn applyEffects(alloc: std.mem.Allocator, reg: *registry_mod.Registry, t: *track
         fxmach.reset(fxmach.state);
         try t.addEffect(alloc, fxmach, @intCast(idx));
         if (objGet(fo, "params")) |pv| applyParams(fxmach, pv);
+        if (objGet(fo, "assets")) |av| applyAssets(fxmach, av);
+        if (objGet(fo, "state")) |sv| if (fxmach.apply_state_json) |f| f(fxmach.state, sv);
         markPreset(fxmach, objGet(fo, "preset"));
         if (objGet(fo, "bypass")) |bv| if (asBool(bv)) t.toggleEffectBypass(t.effects.items.len - 1);
         if (objGet(fo, "key")) |kv| t.effects.items[t.effects.items.len - 1].key = asTrackRef(kv);
@@ -1371,10 +1414,10 @@ fn applyClip(alloc: std.mem.Allocator, t: *track_mod.Track, co: std.json.ObjectM
                         _ = note.addBend(pt);
                     }
                 };
-                inline for (std.meta.fields(clip_mod.ExprDim)) |fd| {
-                    const d: clip_mod.ExprDim = @enumFromInt(fd.value);
+                inline for (@typeInfo(clip_mod.ExprDim).@"enum".field_names) |dim_name| {
+                    const d = @field(clip_mod.ExprDim, dim_name);
                     const rg = clip_mod.dimRange(d);
-                    if (objGet(ev.object, fd.name)) |pv| if (pv == .array) {
+                    if (objGet(ev.object, dim_name)) |pv| if (pv == .array) {
                         for (pv.array.items) |ptv| {
                             const pt = parsePoint(ptv) orelse continue;
                             _ = note.dim(d).add(pt, rg.lo, rg.hi);
@@ -1506,7 +1549,7 @@ test "a clip saved as a .slabclip comes back on another track where it's put; a 
     var root_buf: [storage.MAX_PATH]u8 = undefined;
     const root = storage.absolute(&root_buf, try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
     var hb: [storage.MAX_PATH]u8 = undefined;
-    const home = try std.fmt.bufPrintZ(&hb, "{s}/home", .{root});
+    const home = try std.mem.printSentinel(&hb, "{s}/home", .{root}, 0);
     _ = setenv("SLAB_HOME", home.ptr, 1);
     defer _ = unsetenv("SLAB_HOME");
 
@@ -1585,7 +1628,7 @@ test "a project saved as a package carries the outside sample it loaded, and loa
     const root_rel = try std.fmt.bufPrint(&rb, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     const root = storage.absolute(&root_buf, root_rel);
     var fb: [storage.MAX_PATH]u8 = undefined;
-    const fac = try std.fmt.bufPrintZ(&fb, "{s}/factory", .{root});
+    const fac = try std.mem.printSentinel(&fb, "{s}/factory", .{root}, 0);
     storage.makeParents(fac);
     _ = setenv("SLAB_FACTORY", fac.ptr, 1);
     defer _ = unsetenv("SLAB_FACTORY");
@@ -1627,7 +1670,7 @@ test "a project saved as a package carries the outside sample it loaded, and loa
     try std.testing.expect(std.mem.indexOf(u8, doc, "\"smp\":\"samples/pluck.wav\"") != null);
 
     // The original goes; the package still loads whole.
-    try std.testing.expectEqual(@as(c_int, 0), std.c.unlink(try std.fmt.bufPrintZ(&ob, "{s}/elsewhere/pluck.wav", .{root})));
+    try std.testing.expectEqual(@as(c_int, 0), std.c.unlink(try std.mem.printSentinel(&ob, "{s}/elsewhere/pluck.wav", .{root}, 0)));
     const bytes = try readFile(alloc, pkg);
     defer alloc.free(bytes);
     try std.testing.expectEqual(@as(usize, 0), package.missing(alloc, bytes).count);
@@ -1691,6 +1734,158 @@ test "JSON project round-trips a sampler's loaded keymap path" {
     defer got.deinit(alloc);
     try loaded_buf[0].machine.write_assets_json.?(loaded_buf[0].machine.state, &got, alloc);
     try std.testing.expectEqualStrings("{\"smp\":\"factory:machines/sampler/assets\"}", got.items);
+}
+
+test "JSON project round-trips an effect's loaded assets" {
+    // Any machine in an effect slot keeps its files (docs/42 §Files): the
+    // sampler stands in for an effect that loads one.
+    const alloc = std.testing.allocator;
+    var reg = registry_mod.Registry.init(alloc);
+    defer reg.deinit();
+    try reg.loadFyMachine("machines/sampler/sampler.fy");
+    setRegistry(&reg);
+    defer active_reg = null;
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    setPool(&pool);
+    defer active_pool = null;
+    var master = try track_mod.Track.init(alloc, "Master", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, test_machine);
+    master.kind = .master;
+    defer master.deinit(alloc);
+    setMaster(&master);
+    defer active_master = null;
+    var transport: transport_mod.Transport = .{};
+    transport.sample_rate = 48_000;
+
+    const idx = reg.findById("sampler").?;
+    const fx = try reg.instantiate(idx);
+    try std.testing.expect(fx.load_asset.?(fx.state, "smp", "machines/sampler/assets"));
+    var tracks = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "Fx", .{ .r = 1, .g = 2, .b = 3, .a = 255 }, test_machine),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    try tracks[0].addEffect(alloc, fx, @intCast(idx));
+
+    const bytes = try serialize(alloc, tracks[0..], &transport);
+    defer alloc.free(bytes);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "\"assets\":{\"smp\":\"factory:machines/sampler/assets\"}") != null);
+
+    var loaded_buf: [1]track_mod.Track = undefined;
+    var loaded_count: usize = 0;
+    var lt: transport_mod.Transport = .{};
+    lt.sample_rate = 48_000;
+    try apply(alloc, bytes, &reg, loaded_buf[0..], &loaded_count, &lt, test_machine);
+    defer for (loaded_buf[0..loaded_count]) |*t| t.deinit(alloc);
+    try std.testing.expectEqual(@as(usize, 1), loaded_buf[0].effects.items.len);
+    const m = loaded_buf[0].effects.items[0].mach;
+    var got: std.ArrayList(u8) = .empty;
+    defer got.deinit(alloc);
+    try m.write_assets_json.?(m.state, &got, alloc);
+    try std.testing.expectEqualStrings("{\"smp\":\"factory:machines/sampler/assets\"}", got.items);
+}
+
+test "JSON project round-trips an FX Rack in an effect slot, lanes and inserts" {
+    const alloc = std.testing.allocator;
+    var reg = registry_mod.Registry.init(alloc);
+    defer reg.deinit();
+    try reg.loadFyMachine("machines/sat2/sat2.fy");
+    try reg.loadNative();
+    setRegistry(&reg);
+    defer active_reg = null;
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    setPool(&pool);
+    defer active_pool = null;
+    var master = try track_mod.Track.init(alloc, "Master", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, test_machine);
+    master.kind = .master;
+    defer master.deinit(alloc);
+    setMaster(&master);
+    defer active_master = null;
+    var transport: transport_mod.Transport = .{};
+    transport.sample_rate = 48_000;
+
+    const idx = reg.findById("fxrack").?;
+    const fx = try reg.instantiate(idx);
+    const rk: *rack_mod.Rack = @ptrCast(@alignCast(fx.state));
+    _ = try rk.addLane(null);
+    _ = try rk.addLane(reg.findById("sat2").?);
+    rk.lanes[1].level_db = -6;
+    var tracks = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "Fx", .{ .r = 1, .g = 2, .b = 3, .a = 255 }, test_machine),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    try tracks[0].addEffect(alloc, fx, @intCast(idx));
+
+    const bytes = try serialize(alloc, tracks[0..], &transport);
+    defer alloc.free(bytes);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "\"machine\":\"fxrack\"") != null);
+
+    var loaded_buf: [1]track_mod.Track = undefined;
+    var loaded_count: usize = 0;
+    var lt: transport_mod.Transport = .{};
+    lt.sample_rate = 48_000;
+    try apply(alloc, bytes, &reg, loaded_buf[0..], &loaded_count, &lt, test_machine);
+    defer for (loaded_buf[0..loaded_count]) |*t| t.deinit(alloc);
+    const got: *rack_mod.Rack = @ptrCast(@alignCast(loaded_buf[0].effects.items[0].mach.state));
+    try std.testing.expectEqual(@as(usize, 2), got.count);
+    try std.testing.expectEqual(@as(usize, 1), got.lanes[1].effects.items.len);
+    try std.testing.expectEqual(@as(f32, -6), got.lanes[1].level_db);
+}
+
+test "automation inside a rack round-trips by lane and place: fx0/2.1:<id>" {
+    const alloc = std.testing.allocator;
+    var reg = registry_mod.Registry.init(alloc);
+    defer reg.deinit();
+    try reg.loadFyMachine("machines/sat2/sat2.fy");
+    try reg.loadNative();
+    setRegistry(&reg);
+    defer active_reg = null;
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    setPool(&pool);
+    defer active_pool = null;
+    var master = try track_mod.Track.init(alloc, "Master", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, test_machine);
+    master.kind = .master;
+    defer master.deinit(alloc);
+    setMaster(&master);
+    defer active_master = null;
+    var transport: transport_mod.Transport = .{};
+    transport.sample_rate = 48_000;
+
+    const idx = reg.findById("fxrack").?;
+    const fx = try reg.instantiate(idx);
+    const rk: *rack_mod.Rack = @ptrCast(@alignCast(fx.state));
+    _ = try rk.addLane(null);
+    _ = try rk.addLane(reg.findById("sat2").?);
+    var tracks = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "Fx", .{ .r = 1, .g = 2, .b = 3, .a = 255 }, test_machine),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    try tracks[0].addEffect(alloc, fx, @intCast(idx));
+    const step = automation.Step{ .lane = rk.lanes[1].uid, .slot = rk.lanes[1].effects.items[0].uid };
+    const target = automation.Target.control(.fx, tracks[0].effects.items[0].uid, "sat-drive").inside(automation.Path.plus(.{}, step));
+    try std.testing.expect(tracks[0].targetMachine(target) != null);
+    const lane = try tracks[0].laneFor(alloc, target, false);
+    _ = try lane.insert(alloc, .{ .beat = 0, .value = 0.25 });
+    _ = try lane.insert(alloc, .{ .beat = 4, .value = 0.75 });
+
+    const bytes = try serialize(alloc, tracks[0..], &transport);
+    defer alloc.free(bytes);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "\"target\":\"fx0/2.1:sat-drive\"") != null);
+
+    var loaded_buf: [1]track_mod.Track = undefined;
+    var loaded_count: usize = 0;
+    var lt: transport_mod.Transport = .{};
+    lt.sample_rate = 48_000;
+    try apply(alloc, bytes, &reg, loaded_buf[0..], &loaded_count, &lt, test_machine);
+    defer for (loaded_buf[0..loaded_count]) |*t| t.deinit(alloc);
+    const lt0 = &loaded_buf[0];
+    try std.testing.expectEqual(@as(usize, 1), lt0.lanes.items.len);
+    const back = lt0.lanes.items[0];
+    try std.testing.expectEqual(@as(u8, 1), back.target.path.len);
+    const got: *rack_mod.Rack = @ptrCast(@alignCast(lt0.effects.items[0].mach.state));
+    try std.testing.expectEqual(got.lanes[1].effects.items[0].mach.state, lt0.targetMachine(back.target).?.state);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.75), back.points.items[1].value, 1e-5);
 }
 
 test "JSON project round-trips instrument-by-id, settings, and effect chain" {

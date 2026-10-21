@@ -74,6 +74,8 @@ class Machine:
         self.note_pitch = d["note_pitch"]
         # The detector takes a sidechain key: fx(..., key=track) (docs/23).
         self.sidechain = d.get("sidechain", False)
+        # Rack and FX Rack (docs/42): built in Zig, set up with slabkit.rack.
+        self.native = d.get("native", False)
         self.note_labels = {n["label"].lower(): n["pitch"] for n in d["note_labels"]}
         self.params = {p["id"]: Param(p) for p in d["params"]}
         # Most machines prefix every id ("jn-cutoff", "comp-thresh"); knowing
@@ -218,7 +220,7 @@ def _preset_file(mid, name):
 def preset(mid, name):
     """A preset's params, keyed by param id. `name` may omit the bank when
     it is unique ("glass-lead" finds "slab/glass-lead")."""
-    return dict(_preset_file(mid, name)["params"])
+    return dict(_preset_file(mid, name).get("params") or {})
 
 
 def preset_assets(mid, name):

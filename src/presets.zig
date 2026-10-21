@@ -56,7 +56,7 @@ pub const MAX_NAME = 63;
 pub const MAX_FILE = 8192;
 
 pub const Name = struct {
-    text: [MAX_NAME:0]u8 = [_:0]u8{0} ** MAX_NAME,
+    text: [MAX_NAME:0]u8 = @splat(0),
     len: u8 = 0,
 
     pub fn slice(self: *const Name) []const u8 {
@@ -333,7 +333,7 @@ fn sortList(list: *List) void {
 /// Read `<dir>/<name>.preset` into buf; null on any failure.
 pub fn readFileBuf(buf: []u8, dir_path: []const u8, name: []const u8) ?[]const u8 {
     var path_buf: [1024:0]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buf, "{s}/{s}.preset", .{ dir_path, name }) catch return null;
+    const path = std.mem.printSentinel(&path_buf, "{s}/{s}.preset", .{ dir_path, name }, 0) catch return null;
     const fd = open(path.ptr, O_RDONLY);
     if (fd < 0) return null;
     defer _ = close(fd);
@@ -357,12 +357,12 @@ pub fn writeFile(dir_path: []const u8, name: []const u8, content: []const u8) bo
     _ = mkdir(@ptrCast(&dir_z[0]), 0o755); // EEXIST is fine
     if (std.mem.indexOfScalar(u8, name, '/')) |slash| {
         var sub_z: [1024:0]u8 = undefined;
-        const sub = std.fmt.bufPrintZ(&sub_z, "{s}/{s}", .{ dir_path, name[0..slash] }) catch return false;
+        const sub = std.mem.printSentinel(&sub_z, "{s}/{s}", .{ dir_path, name[0..slash] }, 0) catch return false;
         _ = mkdir(sub.ptr, 0o755);
     }
 
     var path_buf: [1024:0]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buf, "{s}/{s}.preset", .{ dir_path, name }) catch return false;
+    const path = std.mem.printSentinel(&path_buf, "{s}/{s}.preset", .{ dir_path, name }, 0) catch return false;
     const fd = open(path.ptr, O_WRONLY | O_CREAT | O_TRUNC, @as(c_uint, 0o644));
     if (fd < 0) return false;
     defer _ = close(fd);
@@ -382,8 +382,8 @@ pub fn writeFile(dir_path: []const u8, name: []const u8, content: []const u8) bo
 pub fn renameFile(dir_path: []const u8, old_name: []const u8, new_name: []const u8) bool {
     var old_z: [1024:0]u8 = undefined;
     var new_z: [1024:0]u8 = undefined;
-    const old_p = std.fmt.bufPrintZ(&old_z, "{s}/{s}.preset", .{ dir_path, old_name }) catch return false;
-    const new_p = std.fmt.bufPrintZ(&new_z, "{s}/{s}.preset", .{ dir_path, new_name }) catch return false;
+    const old_p = std.mem.printSentinel(&old_z, "{s}/{s}.preset", .{ dir_path, old_name }, 0) catch return false;
+    const new_p = std.mem.printSentinel(&new_z, "{s}/{s}.preset", .{ dir_path, new_name }, 0) catch return false;
     // Don't overwrite a different existing preset.
     if (!std.mem.eql(u8, old_name, new_name)) {
         const probe = open(new_p.ptr, O_RDONLY);

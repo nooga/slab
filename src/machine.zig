@@ -279,6 +279,16 @@ pub const TakeAutoRequestFn = *const fn (state: *anyopaque) ?AutoRequest;
 /// space), for automation recording. Taking it clears it.
 pub const Touch = struct { control: u16, knob: f32 };
 pub const TakeTouchFn = *const fn (state: *anyopaque) ?Touch;
+/// UI thread: the `i`-th machine a container holds, null past the last (a
+/// rack's lanes, each its instrument then its inserts; docs/42 §Automation
+/// inside a rack). `lane` is the lane's place in the rack and `pos` the
+/// machine's in its lane: 0 for the instrument, n for the n-th insert.
+pub const Child = struct { step: @import("automation.zig").Step, lane: u8, pos: u16, mach: *Machine };
+pub const ChildFn = *const fn (state: *anyopaque, i: usize) ?Child;
+/// Audio thread, between renders: a rack's macro drives control `i` at
+/// `knob` (knob space), over its automation and its hand-set value, until
+/// it is set to null (docs/42 §Reaching the target).
+pub const SetModFn = *const fn (state: *anyopaque, i: usize, knob: ?f32) void;
 /// Audio thread, each block: how many samples later the output is than the
 /// input (docs/07 §PDC).
 pub const LatencyFn = *const fn (state: *anyopaque) u32;
@@ -297,7 +307,7 @@ pub const NOTE_LABEL_TEXT = 23;
 /// drum-lane piano roll instead of the chromatic keyboard.
 pub const NoteLabel = struct {
     pitch: u8 = 0,
-    label: [NOTE_LABEL_TEXT:0]u8 = [_:0]u8{0} ** NOTE_LABEL_TEXT,
+    label: [NOTE_LABEL_TEXT:0]u8 = @splat(0),
     label_len: u8 = 0,
 
     pub fn labelSlice(self: *const NoteLabel) []const u8 {
@@ -498,6 +508,9 @@ pub const Machine = struct {
     clear_overrides: ?ClearOverridesFn = null,
     take_auto_request: ?TakeAutoRequestFn = null,
     take_touch: ?TakeTouchFn = null,
+    set_mod: ?SetModFn = null,
+    /// A container's machines (a rack's), for automation inside it.
+    child: ?ChildFn = null,
     /// Delay compensation (docs/07 §PDC); none = no latency.
     latency: ?LatencyFn = null,
     /// Idle skipping (docs/04 §Idle skipping); none = no stored sound
@@ -547,6 +560,23 @@ pub const Machine = struct {
             if (std.mem.eql(u8, info(self.state, i).id, id)) return i;
         }
         return null;
+    }
+
+    /// The machine one step inside this one, if it holds it.
+    pub fn childAt(self: *const Machine, step: @import("automation.zig").Step) ?Child {
+        const f = self.child orelse return null;
+        var i: usize = 0;
+        while (f(self.state, i)) |ch| : (i += 1) {
+            if (ch.step.lane == step.lane and ch.step.slot == step.slot) return ch;
+        }
+        return null;
+    }
+
+    /// The machine `path` leads to from this one (itself when it's empty).
+    pub fn inner(self: *const Machine, path: @import("automation.zig").Path) ?*const Machine {
+        var m: *const Machine = self;
+        for (path.slice()) |st| m = (m.childAt(st) orelse return null).mach;
+        return m;
     }
 
     /// The note map to draw: the live one if the machine has it.

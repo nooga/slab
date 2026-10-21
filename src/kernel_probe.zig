@@ -1740,7 +1740,7 @@ fn putU32(dst: []u8, v: u32) void {
 }
 
 fn writeFile(alloc: std.mem.Allocator, path: []const u8, data: []const u8) !void {
-    const z = try alloc.dupeZ(u8, path);
+    const z = try alloc.dupeSentinel(u8, path, 0);
     defer alloc.free(z);
     const fd = open(z, O_WRONLY | O_CREAT | O_TRUNC, @as(c_int, 0o644));
     if (fd < 0) return error.FileOpenFailed;
@@ -1913,8 +1913,8 @@ fn runDrumVoiceCase(alloc: std.mem.Allocator, cli: Cli, host: *FyHost, cfg: Drum
     defer alloc.free(out);
     @memset(out, 0);
 
-    var state align(8) = [_]f64{0} ** MAX_DRUM_CELLS;
-    var params align(8) = [_]f64{0} ** MAX_DRUM_CELLS;
+    var state align(8) = @as([MAX_DRUM_CELLS]f64, @splat(0));
+    var params align(8) = @as([MAX_DRUM_CELLS]f64, @splat(0));
     if (cfg.state_f64s > MAX_DRUM_CELLS or cfg.params_f64s > MAX_DRUM_CELLS) return error.InvalidCase;
     @memcpy(params[0..cfg.param_defaults.len], cfg.param_defaults);
 

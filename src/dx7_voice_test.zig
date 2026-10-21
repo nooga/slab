@@ -135,8 +135,8 @@ test "k-dx7-voice matches the Zig reference (codegen pin)" {
     p.c1 = 1.0;
     p.c2 = 0.5;
 
-    var fy_state = [_]f64{0} ** 18;
-    var ref_state = [_]f64{0} ** 18;
+    var fy_state: [18]f64 = @splat(0);
+    var ref_state: [18]f64 = @splat(0);
     var fy_out: f64 = 0;
     var max_err: f64 = 0;
 
@@ -168,7 +168,7 @@ test "dx7 voice 2-op stack makes FM sidebands" {
     p.w01 = 1.0;
     p.c0 = 1.0;
 
-    var st = [_]f64{0} ** 18;
+    var st: [18]f64 = @splat(0);
     var out: f64 = 0;
     var buf: [n]f64 = undefined;
     for (&buf) |*s| {
@@ -198,7 +198,7 @@ test "dx7 voice six carriers make six independent partials" {
     inline for (.{ "lvl0", "lvl1", "lvl2", "lvl3", "lvl4", "lvl5" }) |f| @field(p, f) = lvl;
     inline for (.{ "c0", "c1", "c2", "c3", "c4", "c5" }) |f| @field(p, f) = 1.0;
 
-    var st = [_]f64{0} ** 18;
+    var st: [18]f64 = @splat(0);
     var out: f64 = 0;
     var buf: [n]f64 = undefined;
     for (&buf) |*s| {

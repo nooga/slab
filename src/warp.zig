@@ -35,8 +35,7 @@ pub const Mode = enum(u8) {
     }
 
     pub fn parse(s: []const u8) ?Mode {
-        inline for (std.meta.fields(Mode)) |f| if (std.mem.eql(u8, s, f.name)) return @field(Mode, f.name);
-        return null;
+        return std.meta.stringToEnum(Mode, s);
     }
 };
 
@@ -88,8 +87,7 @@ pub fn stretches(m: Mode) bool {
 }
 
 pub fn parseEnum(comptime E: type, s: []const u8) ?E {
-    inline for (std.meta.fields(E)) |f| if (std.mem.eql(u8, s, f.name)) return @field(E, f.name);
-    return null;
+    return std.meta.stringToEnum(E, s);
 }
 
 // ── The map ──────────────────────────────────────────────────────────
