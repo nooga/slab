@@ -1,0 +1,6 @@
+# bench goldens for grind2: case sha256(f32 L ++ f32 R) [nonharm_db thd_db]
+impulse ddef90ed65766c4ed8e803692346ec45be5d86a56b1546e18057ad28965c863f
+sine 475b85fa9ae483aa92d769da89bdfcc7f72961ebc92b0815a4a17f30983ef09b -70.3 -10.5
+sweep 2a95d0a8acfb5d7b671c9ee2246c75bfcaa2465122b75b20aedb0653b254a1c1
+ladder ff13ebbd0f5700ab84df6730ece6dfc3fccc901d1d4ceb4b235600297255f9d8
+burst d8fe95dbcf54a2ddfbf00e574b94d74af436f8b913324841db5c1e54c389503c
