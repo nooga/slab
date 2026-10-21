@@ -6,11 +6,25 @@ This document plans a set of effects and rigs for harsh bass and guitar
 sounds. The targets are the distorted, compressed, chopped basses of
 Justice and the Ed Banger records, and the blog-house guitar chains that
 producers build in FL Studio from Guitar Rig 6, Distructor, Vintage
-Chorus, Hamburger and OTT. One chain is the reference throughout:
+Chorus, Hamburger and OTT. The sound is "kodiak bear": big and gnarly.
+Two chains from one player (mrmoustachemusic) are the references
+throughout:
 
 > a wobble oktaver preset from Guitar Rig 6, then Distructor, then choked
 > with Vintage Chorus, then brought back with Hamburger distortion
-> (mrmoustachemusic)
+
+> Guitar Rig 6 Octavia-ish preset > autowah > Distructor "Portals"
+> preset > Vintage Chorus > Hamburger > Fruity Phaser
+
+Both chains have the same shape:
+1. an octave effect, down or up;
+2. a moving filter;
+3. distortion;
+4. chorus to choke it;
+5. distortion again;
+6. optionally a phaser on top.
+
+The contents of the "Portals" preset aren't public.
 
 Slab already does part of this. Ampstack, Saturator, Era, Char, Multi and
 Chorus cover amps, saturation, crushing, character compression,
@@ -49,6 +63,22 @@ is the sub, or it flips the polarity of every other cycle of the filtered
 input (smoother, the OC-2 way). A second flip-flop gives two octaves down.
 Chords, harmonics and weak input make the comparator chatter. That
 glitch is part of the sound.
+
+**Octavia** (Roger Mayer's, for Hendrix): a transformer phase splitter
+and two diodes full-wave rectify the guitar, which doubles its frequency,
+then a fuzz squares it. It is strongest on single notes high on the neck
+and turns ring-mod-like on chords and low notes.
+
+**Wah and auto-wah.** A wah is a resonant peaking bandpass swept by the
+pedal, roughly 350 Hz to 2.2 kHz with a high Q; an auto-wah sweeps it from
+an envelope follower instead.
+
+**Wavefolders** (Buchla 259 and Serge style) reflect the waveform back
+on itself each time it passes a threshold, so drive adds folds rather
+than flattening it. SYMMETRY (an offset) brings in even harmonics, and
+dynamic folding (the envelope driving the fold amount) makes it speak
+with the playing. Naive folding aliases hard, so it wants oversampling
+plus antiderivative anti-aliasing.
 
 **Distructor** (FL Studio): four slots of Distortion, Filter, Chorus or
 AMP/CAB, each with In, Mix and Out, and a soft-clip on the output. Its
@@ -118,8 +148,9 @@ The recreations agree on the shape:
 | Need | Slab today | Gap |
 |---|---|---|
 | Octave down | synth sub oscillators only | **No divider for audio input.** |
-| Octave up | — | No rectifier. |
-| LFO / step filter (wobble) | Phaser has the only swept filter; Funk is envelope-driven | **No LFO, step or envelope filter for audio.** |
+| Octave up (Octavia) | — | No rectifier into fuzz. |
+| LFO / step filter (wobble), wah, auto-wah | Phaser has the only swept filter; Funk is a one-knob envelope wah | **No LFO, step or envelope filter for audio, and no pedal wah.** |
+| Wavefolder | Saturator FOLD, a single sine fold | **No multi-fold with symmetry, dynamics and anti-aliasing.** |
 | Stacked, foldy distortion | Saturator (8 modes, one stage, sine fold, SAG gating) | **No stages, no endless fold, no RAT/Blood topologies, no sizzle, phase or dead zone.** |
 | Crush | Era (rate, bits, μ-law, aliasing on purpose) | Covered. |
 | Amp and cab | Ampstack (4 voices, parametric cabs) | Covered for now; IRs stay an open choice. |
@@ -144,7 +175,8 @@ An analog-style octave divider, mono in, stereo out.
 - **MODE.** SQUARE: the divided square, scaled by the envelope (the
   buzzy synth sub). FLIP: the filtered input with every other cycle
   inverted (the OC-2's rounder sub).
-- **UP.** Full-wave rectified octave up, DC-blocked.
+- **UP.** Full-wave rectified octave up, DC-blocked, with **FUZZ**
+  after it, which makes the Octavia. At FUZZ 0 it is a clean rectifier.
 - **Mix.** DIRECT, OCT1, OCT2 and UP levels. Each sub has CUT and RES (a
   resonant low-pass, as in GR's Oktaver), plus THRESH for the gate.
 - **Targets.** On a Fretwire bass single note the steady sub sits at
@@ -154,18 +186,25 @@ An analog-style octave divider, mono in, stereo out.
 
 ### Wobble (`wob2`)
 
-A modulated multimode filter: GR's modifiers and Pro-Filter in one
-device.
+A modulated filter: GR's modifiers, Pro-Filter, a wah and an auto-wah in
+one device.
 
-- **Filter.** TPT SVF with continuous LP→BP→HP MORPH, 12 or 24 dB
-  SLOPE, CUTOFF, RES up to self-oscillation, and DRIVE inside the loop
-  (tanh). A VOWEL mode is an open choice.
+- **TYPE.**
+  - SVF: continuous LP→BP→HP MORPH, 12 or 24 dB SLOPE, CUTOFF, RES up
+    to self-oscillation, and DRIVE inside the loop (tanh).
+  - WAH: an inductor-wah peaking bandpass with the pedal's sweep
+    (350 Hz–2.2 kHz by default, RANGE moves it for bass), Q, and the
+    wah's volume boost and low-end loss.
+  - VOWEL: is an open choice.
 - **SOURCE.**
   - LFO: sine, triangle, saw up, saw down, square, S&H, smooth random;
     RATE or SYNC with DIV including triplets and dotted; PHASE;
     RETRIG on each new note onset (from the follower).
   - STEP: 16 steps (values 0–1), LENGTH, DIV, GLIDE.
-  - ENV: a follower with ATK and REL, the AutoFilter or Funk sweep.
+  - ENV: a follower with ATK, REL, SENS and UP/DOWN, the auto-wah
+    and AutoFilter sweep.
+  - PEDAL: a plain POS knob, the rocking pedal, for automation or a
+    macro.
 - **Routing.** DEPTH in octaves (bipolar) drives cutoff. AMP depth drives
   level, so the same source tremolos or gates. SPREAD offsets the right
   channel's phase for stereo wobble. MIX.
@@ -175,6 +214,24 @@ device.
 - **Targets.** The synced LFO lands on the beat grid sample-exact against
   the transport. RES at max self-oscillates at the cutoff within 2 %.
   STEP with GLIDE 0 is a clean stepped gate with no clicks (a 2 ms ramp).
+
+### Folder (`fold2`)
+
+A wavefolder in its own box, because folding wants more controls than a
+Grinder mode.
+
+- **FOLD** (gain into the folder, 0–40 dB), **SYMM** (offset, for even
+  harmonics), **STAGES** (1–4 cascaded fold cells, Serge-style), and
+  **SHAPE** (triangle → sine → soft Buchla-style curve).
+- **DYN.** Input envelope drives FOLD, so it folds harder on louder
+  notes, and the release tail unfolds. With negative DYN, quieter notes
+  fold harder.
+- Pre HP and post LP (**TONE**), **MIX**, **OUT** with auto gain.
+- Anti-aliasing: 4× oversampling plus first-order antiderivative (ADAA)
+  on the triangle and sine folds.
+- **Targets.** Partial count grows with FOLD with no level jump
+  (AUTO). Aliasing stays below −60 dB on a 1 kHz sine at full FOLD
+  with one stage.
 
 ### Grinder (`grind2`)
 
@@ -227,6 +284,8 @@ where the rig says so). Section 42's rig format; banked under
 
 | Rig | Chain | Macros |
 |---|---|---|
+| **Octavia Portal** (the second reference) | Octaver UP + FUZZ → Wobble WAH on ENV → Grinder FOLD → Chorus choke → Grinder OVERDRIVE + SIZZLE → Phaser | OCTAVE, WAH, DIRT, CHOKE, BURGER, PHASE |
+| **Kodiak** (big, gnarly bass) | lane SUB: clean low-passed sub; lane GNARL: Octaver OCT1 → Folder with DYN → Grinder RAT → Multi OTT | SIZE, GNARL, FOLD, SQUASH |
 | **Wobble Oktaver** | Octaver (FLIP, OCT1) → Wobble (LFO 1/8, LP 24) → Saturator FUZZ | RATE, DEPTH, SUB, FUZZ |
 | **Sandwich** (the reference chain) | Wobble Oktaver → Grinder (OVERDRIVE ×2) → Chorus (I+II, INVERT, choked) → Grinder (FOLD + SIZZLE) → Multi OTT | WOBBLE, DIRT, CHOKE, BURGER, OTT |
 | **Cross Bass** | lane SUB: EQ LP 150 → Saturator TAPE; lane DIRT: EQ HP 250 → Era 12-bit → Grinder OVERDRIVE → Ampstack BRIT 4x12 → Char FET (fastest) → Tape | DIRT, CRUSH, SQUASH, SUB |
@@ -249,14 +308,16 @@ single-coil guitars and P-basses (new Fretwire presets).
    Supercharge, Chorus choke controls, and the rigs that need no new
    machine (Cross Bass, Gated Fuzz, Ring Growl, Bit Guitar, OTT Sandwich
    on Saturator). Bench goldens stay bit-exact for existing presets.
-2. **Shared LFO and follower kernels, and Wobble.** Port Phaser's and
-   Funk's copies only if bit-exact.
-3. **Octaver**, then the Wobble Oktaver and Royal Split rigs.
-4. **Grinder**, then Sandwich, Phantom Stack and Four Slot; Cross Bass
-   moves its overdrive onto Grinder.
-5. **A demo song** in slabkit: a blog-house track built from these rigs,
+2. **Shared LFO and follower kernels, and Wobble with WAH.** Port
+   Phaser's and Funk's copies only if bit-exact.
+3. **Octaver** with the Octavia, then the Wobble Oktaver and Royal Split
+   rigs.
+4. **Folder**.
+5. **Grinder**, then Sandwich, Octavia Portal, Kodiak, Phantom Stack
+   and Four Slot; Cross Bass moves its overdrive onto Grinder.
+6. **A demo song** in slabkit: a blog-house track built from these rigs,
    with a stem report against targets.
-6. **Docs**: this file becomes a reference; docs/20, CHANGELOG.
+7. **Docs**: this file becomes a reference; docs/20, CHANGELOG.
 
 ## Open choices
 
