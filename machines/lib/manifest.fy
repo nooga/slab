@@ -826,6 +826,18 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   2 _mf-last-asset @64 AssetDesc.kind! drop
 ;
 
+( Request an impulse response to convolve the machine's input with: a
+  WAV relative to the machine's directory, mono or stereo [L feeds L, R
+  feeds R].  It loads as an asset [the same three PARAMS offsets], and
+  each sample the host hands the kernel the input convolved with it as
+  io.cv-l / io.cv-r, 256 samples late: the machine reports that with
+  latency!.  The host scales the IR so noise keeps its level.  Effects
+  only, one per machine. )
+: convolver  ( name ptr-offset len-offset sr-offset file -- )
+  asset
+  3 _mf-last-asset @64 AssetDesc.kind! drop
+;
+
 ( Request a keymap: a .wav or .flac, a .sfz or a folder of them [relative to the
   machine's directory; src/keymap.zig says how each maps], loaded into
   one sample pool and a table of 128 zones.  The host writes the pool's
