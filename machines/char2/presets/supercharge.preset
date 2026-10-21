@@ -1,0 +1,1 @@
+{"slab": "preset", "schema": 1, "machine": "char2", "note": "a tube compressor pushed: VARI's rising ratio, slow enough to let the attack through, and the color driven hard - fat and forward on bass, drums or a whole bus", "params": {"char-mode": 2, "char-ratio": 6, "char-atk": 0.012, "char-rel": 0.25, "char-drive": 0.85, "char-mix": 1, "char-makeup": 7, "char-thresh": -26}}

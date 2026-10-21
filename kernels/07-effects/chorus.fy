@@ -12,7 +12,15 @@
     mode I+II  LFO 9.75 Hz    center 3.20 ms   depth +-0.20 ms
 
   SPREAD scales the right channel's LFO inversion: 1 = full Juno wide,
-  0 = mono chorus.  Probe case: chorus-render - impulse train, the wet
+  0 = mono chorus.
+
+  The choke controls [docs/43] go past the Juno: FEEDBACK sends the wet
+  tap back into the line [a flanger's comb, sharper notches], WET HP
+  high-passes the wet so the lows stay dry and centered, and INVERT
+  flips the wet's polarity, so at MIX 0.5 the low end cancels and the
+  moving notches eat the harmonics of whatever runs through it - the
+  "choked" distorted bass that a second distortion brings back.  All
+  three default off and leave the Juno exactly as it was.  Probe case: chorus-render - impulse train, the wet
   tap's delay trace is recovered per impulse and ratcheted against
   center/depth/rate. )
 
@@ -23,6 +31,7 @@ ustruct: ChorusState
   f64 wpos
   f64 lfo-phase
   f64 lpf-z      ( BBD tone filter state )
+  f64 hp-z       ( WET HP: the lowpass it subtracts )
 ;
 
 ustruct: ChorusParams
@@ -33,11 +42,16 @@ ustruct: ChorusParams
   f64 tone-hz
   f64 spread
   f64 mix
+  f64 feedback   ( 0..0.9 )
+  f64 hp-hz      ( 0 = off )
+  f64 invert     ( 0 / 1 )
   ( derived - filled by chorus-block-prepare )
   f64 lfo-inc
   f64 center-spl
   f64 depth-spl
   f64 tone-a
+  f64 hp-a
+  f64 wet-sign
 ;
 
 ( ctx state params -- : mode voicing times the musical multipliers. )
@@ -55,6 +69,10 @@ dsp: chorus-block-prepare
   -> params.depth-spl
   params.tone-hz 6.2831853 f* sr f/ 0.0 1.0 fclamp
   -> params.tone-a
+  params.hp-hz 6.2831853 f* sr f/ 0.0 1.0 fclamp
+  -> params.hp-a
+  1.0  params.invert 2.0 f*  f-
+  -> params.wet-sign
 ;
 
 ( io ctx state params -- : one BBD tick.  The triangle argument gets a
@@ -73,7 +91,8 @@ dsp: k-chorus-tick
   1.0  len 4.0 f-  fclamp | d |
   out.in-l | x |
   state.wpos | w |
-  x buf w f!i
+  params.feedback 0.0 f=  [ x ]  [ x  state.lpf-z params.feedback f*  f+ ]  ifte
+  buf w f!i
   w d f- | rp0 |
   rp0 0.0  rp0 len f+  rp0 fsel-lt | rp |
   buf rp f@i | s0 |
@@ -84,10 +103,14 @@ dsp: k-chorus-tick
   state.lpf-z | z |
   z  v z f-  params.tone-a f*  f+ | zn |
   zn -> state.lpf-z
+  state.hp-z | hz |
+  hz  zn hz f-  params.hp-a f*  f+ | hzn |
+  hzn -> state.hp-z
+  zn hzn f-  params.wet-sign f* | wet |
   w 1.0 f+ | w1 |
   w1 len  w1  w1 len f-  fsel-lt
   -> state.wpos
   x  1.0 params.mix f-  f*
-  zn params.mix f*  f+
+  wet params.mix f*  f+
   out f!64
 ;
