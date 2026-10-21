@@ -109,6 +109,8 @@ pub const AudioClipSnap = struct {
 pub const LaneSnap = struct {
     kind: automation.TargetKind,
     fx_uid: u16 = 0,
+    /// Into a rack: the lane drives a machine there (docs/42).
+    path: automation.Path = .{},
     control: u16 = 0,
     points_start: u32,
     points_count: u32,
@@ -137,6 +139,8 @@ pub const AutoView = struct {
     cursors: *[MAX_LANES_PER_TRACK]u32,
     kind: automation.TargetKind,
     fx_uid: u16 = 0,
+    /// The machine sits in a rack on that slot, this far down.
+    path: automation.Path = .{},
     /// Lanes read here instead of at the machine's beat: the playhead is
     /// held (stopped, tails ringing) while synced LFOs keep running.
     hold_beat: ?f64 = null,
@@ -151,7 +155,14 @@ pub const AutoView = struct {
     }
 
     pub fn matches(self: *const AutoView, l: LaneSnap) bool {
-        return l.kind == self.kind and (self.kind != .fx or l.fx_uid == self.fx_uid);
+        return l.kind == self.kind and (self.kind != .fx or l.fx_uid == self.fx_uid) and l.path.eql(self.path);
+    }
+
+    /// The view of the machine one step into the rack this one shows.
+    pub fn into(self: *const AutoView, step: automation.Step) AutoView {
+        var v = self.*;
+        v.path = self.path.plus(step);
+        return v;
     }
 
     pub fn points(self: *const AutoView, l: LaneSnap) []const automation.Point {

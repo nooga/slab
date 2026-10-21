@@ -105,12 +105,52 @@ pub const MAX_PARAM_ID = 24;
 
 pub const TargetKind = enum(u8) { volume, pan, inst, fx };
 
+/// Racks nest this deep (docs/42 §Automation inside a rack).
+pub const MAX_PATH = 3;
+
+/// One step into a rack: its lane (by the lane's uid, stable while lanes
+/// come and go), and the machine in it (0 is the lane's instrument,
+/// otherwise an insert's uid in the lane's chain).
+pub const Step = struct {
+    lane: u8 = 0,
+    slot: u16 = 0,
+};
+
+/// From the machine a target's kind names, down through racks to the
+/// machine that holds the control. Empty for every machine on a track.
+pub const Path = struct {
+    steps: [MAX_PATH]Step = @splat(.{}),
+    len: u8 = 0,
+
+    pub fn slice(self: *const Path) []const Step {
+        return self.steps[0..self.len];
+    }
+
+    pub fn eql(a: Path, b: Path) bool {
+        if (a.len != b.len) return false;
+        for (a.steps[0..a.len], b.steps[0..b.len]) |x, y| if (x.lane != y.lane or x.slot != y.slot) return false;
+        return true;
+    }
+
+    /// This path one step deeper; unchanged when it is already MAX_PATH deep.
+    pub fn plus(self: Path, step: Step) Path {
+        var p = self;
+        if (p.len < MAX_PATH) {
+            p.steps[p.len] = step;
+            p.len += 1;
+        }
+        return p;
+    }
+};
+
 /// What a lane drives. Effects are addressed by their instance uid (stable
 /// under reordering); machine controls by param id (stable under machine
 /// swaps and manifest reloads — a lane whose id is missing goes quiet).
 pub const Target = struct {
     kind: TargetKind,
     fx_uid: u16 = 0,
+    /// Into a rack on that slot, down to the machine with the control.
+    path: Path = .{},
     param_buf: [MAX_PARAM_ID]u8 = @splat(0),
     param_len: u8 = 0,
 
@@ -134,8 +174,15 @@ pub const Target = struct {
         return self.param_buf[0..self.param_len];
     }
 
+    /// The same control, `path` deeper.
+    pub fn inside(self: Target, path: Path) Target {
+        var t = self;
+        t.path = path;
+        return t;
+    }
+
     pub fn eql(a: Target, b: Target) bool {
-        if (a.kind != b.kind) return false;
+        if (a.kind != b.kind or !a.path.eql(b.path)) return false;
         return switch (a.kind) {
             .volume, .pan => true,
             .inst => std.mem.eql(u8, a.param(), b.param()),

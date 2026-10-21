@@ -113,7 +113,7 @@ pub fn laneInfo(buf: []u8, t: *const Track, lane: *const automation.Lane) LaneIn
                 .fmt = .{ .mach = null, .kind = lane.target.kind },
             };
             const info = m.control_info.?(m.state, ci);
-            const prefix: []const u8 = if (lane.target.kind == .fx) m.name else "";
+            const prefix: []const u8 = if (lane.target.kind == .fx or lane.target.path.len > 0) m.name else "";
             const name = std.fmt.bufPrint(buf, "{s}{s}{s} {s}", .{ prefix, if (prefix.len > 0) " " else "", info.module, info.label }) catch info.label;
             break :blk .{
                 .name = name,

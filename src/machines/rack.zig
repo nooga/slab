@@ -79,6 +79,10 @@ pub const FX_PATH = "machines/fxrack/fxrack";
 
 pub const Kind = enum { instrument, effect };
 
+/// A lane's three zones (docs/42 §UI): the keys, velocities and CHAIN
+/// values it plays at.
+pub const Zone = enum { key, vel, chain };
+
 pub const MAX_MACROS = 8;
 pub const MAX_MAPS = 64;
 /// Control index of CHAIN, after the macros.
@@ -158,6 +162,9 @@ pub const Lane = struct {
     /// The chain's publication; `instrument` and `effects` are its
     /// editable side (UI only).
     chain: *chain_mod.State,
+    /// Which lane it is while others come and go: automation inside the
+    /// rack addresses it by this (docs/42 §Automation inside a rack).
+    uid: u8 = 0,
     instrument: Machine = silent,
     /// Registry index of the instrument; null in an effect rack.
     reg_idx: ?u8 = null,
@@ -192,11 +199,20 @@ pub const Lane = struct {
         return self.label[0..self.label_len];
     }
 
-    fn setLabel(self: *Lane, s: []const u8) void {
+    pub fn setLabel(self: *Lane, s: []const u8) void {
         const n = @min(s.len, MAX_LABEL);
         @memcpy(self.label[0..n], s[0..n]);
         self.label[n] = 0;
         self.label_len = @intCast(n);
+    }
+
+    /// The lane's `z` zone, lo and hi.
+    pub fn zone(self: *Lane, z: Zone) [2]*u8 {
+        return switch (z) {
+            .key => .{ &self.lo, &self.hi },
+            .vel => .{ &self.vlo, &self.vhi },
+            .chain => .{ &self.clo, &self.chi },
+        };
     }
 
     fn takes(self: *const Lane, pitch: f32, vel: f32) bool {
@@ -248,12 +264,15 @@ pub const Rack = struct {
     versions: handoff.Latest(LaneVersion) = .init(.{}),
     retired: handoff.Retirement(RetiredLane, 128) = .{},
     generation: u64 = 0, // UI-owned
+    next_lane_uid: u8 = 0,
     publication_depth: usize = 0,
     audio_lanes: [MAX_LANES]Lane = undefined,
     audio_count: usize = 0,
 
     // UI
     selected: usize = 0,
+    /// Folded to its face: the macro knobs alone (docs/42 §Collapsed face).
+    collapsed: bool = false,
     presets: presets_mod.List = .{},
     current_preset: i32 = -1,
     /// A lane or an insert came or went since the project last asked.
@@ -275,6 +294,12 @@ pub const Rack = struct {
     name_for: ?usize = null,
     formula_tb: text_field.TextBuf = .{},
     formula_for: ?usize = null,
+    /// Which zones the lane map shows and the range fields edit.
+    zone_tab: Zone = .key,
+    /// Where a drag on the lane map started (0..127).
+    zone_from: ?u8 = null,
+    /// An insert's name tile pressed (`armed`), dragging once it travels.
+    fx_drag: struct { armed: bool = false, active: bool = false, src: usize = 0, press_x: f32 = 0 } = .{},
 
     // Macros, UI writes and audio reads: the hand-set value in knob space
     // (CHAIN's raw 0..127), and a count a jump (preset, project) bumps.
@@ -342,6 +367,7 @@ pub const Rack = struct {
             .set_auto_ui = setAutoUiImpl,
             .take_touch = takeTouchImpl,
             .set_mod = setModImpl,
+            .child = childImpl,
             .write_params_json = writeParamsJsonImpl,
             .set_param = setParamImpl,
             .panel_w_fn = panelWImpl,
@@ -441,13 +467,24 @@ pub const Rack = struct {
         return m;
     }
 
+    /// The next uid no lane has.
+    fn freeLaneUid(self: *Rack) u8 {
+        while (true) {
+            const u = self.next_lane_uid;
+            self.next_lane_uid +%= 1;
+            for (self.lanes[0..self.count]) |*l| {
+                if (l.uid == u) break;
+            } else return u;
+        }
+    }
+
     fn newLane(self: *Rack, inst: Machine, reg_idx: ?u8) !*Lane {
         if (self.count >= MAX_LANES) return error.RackFull;
         const ch = try chain_mod.State.create(self.alloc, inst);
         errdefer ch.destroy(self.alloc);
         const line = try self.alloc.create(chain_mod.DryLine);
         @memset(std.mem.asBytes(line), 0);
-        self.lanes[self.count] = .{ .chain = ch, .instrument = inst, .reg_idx = reg_idx, .line = line };
+        self.lanes[self.count] = .{ .chain = ch, .uid = self.freeLaneUid(), .instrument = inst, .reg_idx = reg_idx, .line = line };
         self.count += 1;
         self.publishLanes();
         return &self.lanes[self.count - 1];
@@ -698,6 +735,28 @@ pub const Rack = struct {
         }
     }
 
+    /// Move lane `from` to `to`, its mappings with it.
+    pub fn moveLane(self: *Rack, from: usize, to: usize) void {
+        if (from >= self.count or to >= self.count or from == to) return;
+        const l = self.lanes[from];
+        if (from < to) {
+            var j = from;
+            while (j < to) : (j += 1) self.lanes[j] = self.lanes[j + 1];
+        } else {
+            var j = from;
+            while (j > to) : (j -= 1) self.lanes[j] = self.lanes[j - 1];
+        }
+        self.lanes[to] = l;
+        for (self.maps[0..self.map_count]) |*m| {
+            if (m.lane == from) {
+                m.lane = @intCast(to);
+            } else if (from < to and m.lane > from and m.lane <= to) {
+                m.lane -= 1;
+            } else if (to < from and m.lane >= to and m.lane < from) m.lane += 1;
+        }
+        self.publishLanes();
+    }
+
     fn retireLane(self: *Rack, generation: u64, l: *Lane) void {
         self.retired.append(generation, .{ .chain = l.chain, .instrument = l.instrument, .effects = l.effects, .line = l.line });
     }
@@ -736,7 +795,11 @@ pub const Rack = struct {
 
     /// Apply one machine's saved settings (params, then files, then zone
     /// edits, then its own state), as a project load does for a track's.
+    /// With no params, a named preset is the settings (rigs written by
+    /// hand: {"machine":"amp2","preset":"guitar-clean"}).
     fn applyMachineJson(m: Machine, po: std.json.ObjectMap) void {
+        const preset: ?usize = if (po.get("preset")) |nv| (if (nv == .string) presetIndex(m, nv.string) else null) else null;
+        if (po.get("params") == null) if (preset) |pi| if (m.apply_preset) |apply| apply(m.state, @intCast(pi));
         if (po.get("params")) |pv| if (pv == .object) if (m.set_param) |set| {
             var it = pv.object.iterator();
             while (it.next()) |kv| set(m.state, kv.key_ptr.*, jsonF64(kv.value_ptr.*));
@@ -749,12 +812,30 @@ pub const Rack = struct {
         };
         if (po.get("zones")) |zv| if (m.apply_zones_json) |f| f(m.state, zv);
         if (po.get("state")) |sv| if (m.apply_state_json) |f| f(m.state, sv);
-        // The preset it was set from, for its title strip (the label only).
-        if (po.get("preset")) |nv| if (nv == .string) if (m.mark_preset) |mark| if (m.preset_count) |count| if (m.preset_name) |name_of| {
-            for (0..count(m.state)) |i| {
-                if (std.mem.eql(u8, std.mem.span(name_of(m.state, @intCast(i))), nv.string)) mark(m.state, @intCast(i));
-            }
-        };
+        // The preset it was set from, for its title strip.
+        if (preset) |pi| if (m.mark_preset) |mark| mark(m.state, @intCast(pi));
+    }
+
+    /// Give `to` the settings of `from`, the same machine (registry entry
+    /// `reg_idx`), through the form a rack saves it in: params, files, zones,
+    /// state and preset label. Grouping into a rack and out of one use it.
+    pub fn copySettings(self: *Rack, from: Machine, to: Machine, reg_idx: u8) !void {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(self.alloc);
+        try self.writeMachineJson(&out, self.alloc, from, reg_idx);
+        try out.append(self.alloc, '}');
+        var parsed = try std.json.parseFromSlice(std.json.Value, self.alloc, out.items, .{});
+        defer parsed.deinit();
+        if (parsed.value == .object) applyMachineJson(to, parsed.value.object);
+    }
+
+    fn presetIndex(m: Machine, name: []const u8) ?usize {
+        const count = m.preset_count orelse return null;
+        const name_of = m.preset_name orelse return null;
+        for (0..count(m.state)) |i| {
+            if (std.mem.eql(u8, std.mem.span(name_of(m.state, @intCast(i))), name)) return i;
+        }
+        return null;
     }
 
     fn machineOf(self: *Rack, v: ?std.json.Value) ?usize {
@@ -815,6 +896,7 @@ pub const Rack = struct {
                 l.chain.publish(l.instrument, l.effects.items);
             }
             self.applyMacrosJson(v.object);
+            if (v.object.get("collapsed")) |x| self.collapsed = x == .bool and x.bool;
         } else if (v.object.get("parts")) |pv| {
             // The first form: instrument lanes, no inserts.
             if (pv != .array or self.kind != .instrument) return;
@@ -969,6 +1051,7 @@ pub const Rack = struct {
         }
         try out.append(alloc, ']');
         try self.writeMacrosJson(out, alloc);
+        if (self.collapsed) try out.appendSlice(alloc, ",\"collapsed\":true");
         try out.append(alloc, '}');
     }
 
@@ -1145,12 +1228,20 @@ fn renderLanes(self: *Rack, ctx: *const machine.MachineCtx, pos: usize, n: usize
     const chain_at: u8 = @intFromFloat(std.math.clamp(self.eff[CHAIN], 0, 127));
     var solo = false;
     for (self.audio_lanes[0..self.audio_count]) |*p| solo = solo or p.solo;
+    const view: ?*const snapshot.AutoView = if (ctx.automation) |v| @ptrCast(@alignCast(v)) else null;
     for (self.audio_lanes[0..self.audio_count], 0..) |*p, li| {
-        // The lanes' machines aren't the track's: no automation reaches them.
+        // The track's lanes reach a lane's machines a step down the rack:
+        // its instrument at slot 0, each insert at its uid (renderEffects
+        // moves the step's slot along the chain).
+        var lane_view: snapshot.AutoView = undefined;
         var sub = ctx.*;
         sub.block_size = @intCast(n);
         sub.ppq_position = beat;
         sub.automation = null;
+        if (view) |v| {
+            lane_view = v.into(.{ .lane = p.uid, .slot = 0 });
+            sub.automation = &lane_view;
+        }
         sub.note_out = null;
         sub.note_out_cap = 0;
         sub.note_out_count = null;
@@ -1373,6 +1464,26 @@ fn takeTouchImpl(state: *anyopaque) ?machine.Touch {
     return t;
 }
 
+/// UI: the lanes' machines in order, each lane's instrument (slot 0) then
+/// its inserts (their uids).
+fn childImpl(state: *anyopaque, i: usize) ?machine.Child {
+    const self: *Rack = @ptrCast(@alignCast(state));
+    var k = i;
+    for (self.lanes[0..self.count], 0..) |*l, li| {
+        const has_inst = l.reg_idx != null;
+        const n = l.effects.items.len + @intFromBool(has_inst);
+        if (k >= n) {
+            k -= n;
+            continue;
+        }
+        if (has_inst and k == 0) return .{ .step = .{ .lane = l.uid, .slot = 0 }, .lane = @intCast(li), .pos = 0, .mach = &l.instrument };
+        const j = k - @intFromBool(has_inst);
+        const fx = &l.effects.items[j];
+        return .{ .step = .{ .lane = l.uid, .slot = fx.uid }, .lane = @intCast(li), .pos = @intCast(j + 1), .mach = &fx.mach };
+    }
+    return null;
+}
+
 /// A rack in a lane: the outer rack's macro drives this one's.
 fn setModImpl(state: *anyopaque, i: usize, knob: ?f32) void {
     const self: *Rack = @ptrCast(@alignCast(state));
@@ -1502,6 +1613,8 @@ fn applyPresetImpl(state: *anyopaque, index: machine.PresetIndex) void {
     defer parsed.deinit();
     self.applyJson(parsed.value);
     self.current_preset = index;
+    // A rig opens as its face: the macros it was built to be played by.
+    self.collapsed = true;
 }
 
 fn savePresetNamedImpl(state: *anyopaque, name_z: [*:0]const u8) ?machine.PresetIndex {
@@ -1586,6 +1699,7 @@ fn chainW(self: *Rack) i32 {
 
 fn panelWImpl(state: *anyopaque) f32 {
     const self: *Rack = @ptrCast(@alignCast(state));
+    if (self.collapsed) return @floatFromInt(MACRO_W);
     return @floatFromInt(MACRO_W + SIDE_W + chainW(self));
 }
 
@@ -1648,6 +1762,10 @@ fn drawPanelImpl(state: *anyopaque, ui: *Ui, rect: Rect) void {
     self.collect();
     defer self.publishLanes();
     var body = rect;
+    if (self.collapsed) {
+        drawFace(self, ui, body);
+        return;
+    }
     drawMacros(self, ui, body.cutLeft(MACRO_W));
     const side = body.cutLeft(SIDE_W);
     drawLanes(self, ui, side);
@@ -1675,6 +1793,8 @@ fn drawMacros(self: *Rack, ui: *Ui, r: Rect) void {
     var head = col.cutTop(ROW_H);
     _ = col.cutTop(2);
     const mapb = head.cutRight(34);
+    _ = head.cutRight(2);
+    foldButton(self, ui, head.cutRight(ROW_H));
     _ = ui.engraved(&ui.fonts.legend, head.x + 2, head.y + 3, "MACROS", ui_style.text_dim);
     if (ctl.button(ui, mapb, "map", &self.map_armed, .{ .kind = .latch, .label = "MAP", .flush = true, .lit = ui_style.accent })) self.map_held = null;
     menu.tip(ui, mapb, "Map: click a control in the lane, or LV or PN, to put it on the picked macro");
@@ -1686,19 +1806,7 @@ fn drawMacros(self: *Rack, ui: *Ui, r: Rect) void {
         for (0..4) |ci| {
             const i = ri * 4 + ci;
             const kr = if (ci == 3) row else row.cutLeft(cw);
-            ui.pushId(i);
-            defer ui.popId();
-            var v = self.ui_auto[i] orelse self.macroBase(i);
-            const before = v;
-            var vb: [8]u8 = undefined;
-            const readout = std.fmt.bufPrint(&vb, "{d}", .{@as(i32, @intFromFloat(@round(v * 100)))}) catch "?";
-            _ = ctl.knob(ui, kr, "knob", &v, .{ .size = .m, .label = if (self.macro_names[i].len > 0) self.macro_names[i].slice() else KNOB_LABELS[i], .readout = readout });
-            if (v != before) self.setMacro(i, v, false);
-            if (ui.active == ui.id("knob")) {
-                self.touch = .{ .control = @intCast(i), .knob = v };
-                if (self.sel_macro != i) self.sel_map = null;
-                self.sel_macro = i;
-            }
+            macroKnob(self, ui, kr, i);
             if (i == self.sel_macro) ui.rect(Rect.xywh(kr.x + 6, kr.bottom() - 1, kr.w - 12, 1), if (self.map_armed) ui_style.accent else ui_style.text_dim);
         }
     }
@@ -1800,8 +1908,71 @@ fn drawMacros(self: *Rack, ui: *Ui, r: Rect) void {
     menu.tip(ui, frow, "Shapes the macro x (0..1) before the range: x^2, 1 - x, x * (1 - m4), step(x, 3)");
 }
 
-/// MAP armed: the first frame a hand takes a control in the open lane,
-/// that control goes on the picked macro over its whole range.
+/// Macro `i`'s knob, its name for a legend; taking it picks the macro.
+fn macroKnob(self: *Rack, ui: *Ui, kr: Rect, i: usize) void {
+    ui.pushId(i);
+    defer ui.popId();
+    var v = self.ui_auto[i] orelse self.macroBase(i);
+    const before = v;
+    var vb: [8]u8 = undefined;
+    const readout = std.fmt.bufPrint(&vb, "{d}", .{@as(i32, @intFromFloat(@round(v * 100)))}) catch "?";
+    _ = ctl.knob(ui, kr, "knob", &v, .{ .size = .m, .label = if (self.macro_names[i].len > 0) self.macro_names[i].slice() else KNOB_LABELS[i], .readout = readout });
+    if (v != before) self.setMacro(i, v, false);
+    if (ui.active == ui.id("knob")) {
+        self.touch = .{ .control = @intCast(i), .knob = v };
+        if (self.sel_macro != i) self.sel_map = null;
+        self.sel_macro = i;
+    }
+}
+
+fn foldButton(self: *Rack, ui: *Ui, r: Rect) void {
+    if (ctl.button(ui, r, "fold", null, .{ .glyph = if (self.collapsed) .tri_right else .tri_left, .flush = true })) {
+        self.collapsed = !self.collapsed;
+        self.edited = true;
+    }
+    menu.tip(ui, r, if (self.collapsed) "Open the rack: its lanes and their chains" else "Fold the rack to its macro knobs");
+}
+
+/// The folded rack: the macros that do something (named or mapped; all
+/// eight when none are), four a row, under a strip with the unfold button.
+fn drawFace(self: *Rack, ui: *Ui, r: Rect) void {
+    var col = ui.plate(r, .{}).inset(3);
+    var head = col.cutTop(ROW_H);
+    _ = col.cutTop(2);
+    foldButton(self, ui, head.cutRight(ROW_H));
+    _ = ui.engraved(&ui.fonts.legend, head.x + 2, head.y + 3, "MACROS", ui_style.text_dim);
+    var shown: [MAX_MACROS]usize = undefined;
+    var n: usize = 0;
+    for (0..MAX_MACROS) |i| {
+        const used = self.macro_names[i].len > 0 or for (self.maps[0..self.map_count]) |*m| {
+            if (m.macro == i) break true;
+        } else false;
+        if (used) {
+            shown[n] = i;
+            n += 1;
+        }
+    }
+    if (n == 0) {
+        for (0..MAX_MACROS) |i| shown[i] = i;
+        n = MAX_MACROS;
+    }
+    const cell = ctl.knobCell(.m, true);
+    var k: usize = 0;
+    while (k < n) {
+        var row = col.cutTop(cell[1]);
+        const cw = @divFloor(row.w, 4);
+        for (0..4) |ci| {
+            if (k >= n) break;
+            macroKnob(self, ui, row.cutLeft(cw), shown[k]);
+            _ = ci;
+            k += 1;
+        }
+    }
+}
+
+/// A hand on a control in the open lane: with MAP armed, the first frame
+/// puts it on the picked macro over its whole range; otherwise, a control
+/// a macro owns moves that macro instead (docs/42 §Reaching the target).
 fn pollMapTouch(self: *Rack) void {
     if (self.selected >= self.count) return;
     const li = self.selected;
@@ -1809,15 +1980,106 @@ fn pollMapTouch(self: *Rack) void {
     var held = false;
     if (l.reg_idx != null) if (l.instrument.take_touch) |tt| if (tt(l.instrument.state)) |t| {
         held = true;
-        self.mapTouched(li, null, l.instrument, t.control);
+        if (self.map_armed) self.mapTouched(li, null, l.instrument, t.control) else handOnMapped(self, li, null, t);
     };
     for (l.effects.items) |*fx| if (fx.mach.take_touch) |tt| if (tt(fx.mach.state)) |t| {
         held = true;
-        self.mapTouched(li, fx.uid, fx.mach, t.control);
+        if (self.map_armed) self.mapTouched(li, fx.uid, fx.mach, t.control) else handOnMapped(self, li, fx.uid, t);
     };
     if (!held) self.map_held = null;
 }
 
+/// UI: the macros as the formulas see them.
+fn macroValues(self: *const Rack) [MAX_MACROS]f32 {
+    var out: [MAX_MACROS]f32 = undefined;
+    for (&out, 0..) |*v, i| v.* = self.ui_auto[i] orelse self.macroBase(i);
+    return out;
+}
+
+/// The macro value that puts mapping `m`'s target nearest `knob`: the
+/// formula has no inverse in general, so the best of 257 points, then a
+/// finer look around it.
+fn invertMapping(m: *const Mapping, knob: f32, macros: [MAX_MACROS]f32) f32 {
+    var ms = macros;
+    var best: f32 = 0;
+    var best_d: f32 = std.math.inf(f32);
+    var lo: f32 = 0;
+    var span: f32 = 1;
+    for (0..2) |_| {
+        for (0..257) |k| {
+            const x = std.math.clamp(lo + span * @as(f32, @floatFromInt(k)) / 256, 0, 1);
+            ms[m.macro] = x;
+            const d = @abs(m.value(x, &ms) - knob);
+            // Ties go to the point nearest where the macro is.
+            if (d < best_d - 1e-6 or (d <= best_d + 1e-6 and @abs(x - macros[m.macro]) < @abs(best - macros[m.macro]))) {
+                best = x;
+                best_d = d;
+            }
+        }
+        lo = best - 1.0 / 256.0;
+        span = 2.0 / 256.0;
+    }
+    return best;
+}
+
+fn handOnMapped(self: *Rack, li: usize, slot: ?u16, t: machine.Touch) void {
+    const macros = macroValues(self);
+    for (self.maps[0..self.map_count]) |*m| {
+        if (m.target != .control or m.lane != li or m.slot != slot or m.control != t.control) continue;
+        if (@abs(m.value(macros[m.macro], &macros) - t.knob) < 1e-4) return;
+        self.setMacro(m.macro, invertMapping(m, t.knob, macros), false);
+        self.touch = .{ .control = m.macro, .knob = self.macroBase(m.macro) };
+        return;
+    }
+}
+
+fn zoneText(buf: []u8, z: Zone, v: u8) []const u8 {
+    return if (z == .key) noteName(buf, v) else std.fmt.bufPrint(buf, "{d}", .{v}) catch "?";
+}
+
+/// The lane map: a stripe a lane over 0..127 for the shown zone, the
+/// selected lane bright; a press and drag sets the selected lane's range.
+/// Octave ticks for keys, CHAIN's position for chain zones.
+fn drawZoneMap(self: *Rack, ui: *Ui, map: Rect, chain_now: f32) void {
+    ui.rect(map, ui_style.well);
+    const inner_w = map.w - 4;
+    for (self.lanes[0..self.count], 0..) |*p, pi| {
+        const z = p.zone(self.zone_tab);
+        const x0 = map.x + 2 + @divFloor(inner_w * @as(i32, z[0].*), 128);
+        const x1 = map.x + 2 + @divFloor(inner_w * (@as(i32, z[1].*) + 1), 128);
+        const col = if (p.mute) ui_style.text_mute else LANE_COLORS[pi];
+        ui.rect(Rect.xywh(x0, map.y + 2 + @as(i32, @intCast(pi)) * 3, @max(1, x1 - x0), 2), if (pi == self.selected) col else col.alpha(140));
+    }
+    switch (self.zone_tab) {
+        .key => {
+            var k: i32 = 0;
+            while (k < 128) : (k += 12) ui.rect(Rect.xywh(map.x + 2 + @divFloor(inner_w * k, 128), map.bottom() - 2, 1, 2), ui_style.text_mute);
+        },
+        .chain => {
+            const cx = map.x + 2 + @divFloor(inner_w * (@as(i32, @intFromFloat(chain_now)) * 2 + 1), 256);
+            ui.rect(Rect.xywh(cx, map.y, 1, map.h), ui_style.accent);
+        },
+        .vel => {},
+    }
+    if (self.selected >= self.count) return;
+    const b = ui.behaviorEx(ui.id("zone-map"), map, .{ .focusable = false });
+    const at: u8 = @intCast(std.math.clamp(@divFloor((ui.in.ix() - map.x - 2) * 128, @max(1, inner_w)), 0, 127));
+    if (b.pressed) self.zone_from = at;
+    if (b.held) if (self.zone_from) |from| {
+        const z = self.lanes[self.selected].zone(self.zone_tab);
+        const lo = @max(@min(from, at), @as(u8, if (self.zone_tab == .vel) 1 else 0));
+        const hi = @max(from, at);
+        if (z[0].* != lo or z[1].* != hi) {
+            if (b.pressed) beforeEdit(self);
+            z[0].* = lo;
+            z[1].* = hi;
+            self.edited = true;
+            self.publishLanes();
+        }
+    };
+    if (!b.held) self.zone_from = null;
+    menu.tip(ui, map, "Drag to set the selected lane's zone");
+}
 
 fn drawLanes(self: *Rack, ui: *Ui, r: Rect) void {
     const inst = self.kind == .instrument;
@@ -1890,31 +2152,51 @@ fn drawLanes(self: *Rack, ui: *Ui, r: Rect) void {
     }
     _ = side.cutTop(3);
 
-    if (inst and self.count > 0) {
-        // key map: a stripe per lane over the 128 keys
-        const map = side.cutTop(@intCast(2 * self.count + 6));
-        ui.rect(map, ui_style.well);
-        for (self.lanes[0..self.count], 0..) |*p, pi| {
-            const x0 = map.x + 2 + @divFloor((map.w - 4) * @as(i32, p.lo), 128);
-            const x1 = map.x + 2 + @divFloor((map.w - 4) * (@as(i32, p.hi) + 1), 128);
-            const col = if (p.mute) ui_style.text_mute else LANE_COLORS[pi];
-            ui.rect(Rect.xywh(x0, map.y + 2 + @as(i32, @intCast(pi)) * 2, @max(1, x1 - x0), 2), if (pi == self.selected) col else col.alpha(140));
+    // Zones: KEY, VEL and CHN tabs (an effect rack has CHAIN only), a
+    // stripe a lane over 0..127 that a drag sets for the selected lane, and
+    // the selected lane's range of it.
+    if (!inst) self.zone_tab = .chain;
+    if (self.count > 0) {
+        var tabs = side.cutTop(ROW_H);
+        _ = side.cutTop(2);
+        const chain_r = tabs.cutRight(64);
+        _ = tabs.cutRight(4);
+        if (inst) {
+            const tc = cells(tabs, 3);
+            inline for (.{ .{ Zone.key, "KEY", "Key zones: the notes each lane plays" }, .{ Zone.vel, "VEL", "Velocity zones: how hard a note must be for each lane" }, .{ Zone.chain, "CHN", "Chain zones: the CHAIN values each lane plays at" } }, 0..) |t, ti| {
+                var on = self.zone_tab == t[0];
+                if (ctl.button(ui, tc[ti], t[1], &on, .{ .kind = .latch, .label = t[1], .flush = true, .lit = ui_style.text })) self.zone_tab = t[0];
+                menu.tip(ui, tc[ti], t[2]);
+            }
+        } else _ = ui.engraved(&ui.fonts.legend, tabs.x + 2, tabs.y + 3, "CHAIN ZONES", ui_style.text_dim);
+        // CHAIN itself, which the chain zones answer to.
+        var cb: [8]u8 = undefined;
+        const chain_now = self.ui_auto[CHAIN] orelse self.macroBase(CHAIN);
+        const dc = field(ui, chain_r, "chain", "CHAIN", std.fmt.bufPrint(&cb, "{d}", .{@as(i32, @intFromFloat(chain_now))}) catch "?", 8);
+        if (dc != 0) {
+            self.setMacro(CHAIN, chain_now + @as(f32, @floatFromInt(dc)), true);
+            self.touch = .{ .control = CHAIN, .knob = self.macroBase(CHAIN) };
+            self.edited = true;
         }
-        var k: i32 = 0;
-        while (k < 128) : (k += 12) ui.rect(Rect.xywh(map.x + 2 + @divFloor((map.w - 4) * k, 128), map.bottom() - 2, 1, 2), ui_style.text_mute);
+        menu.tip(ui, chain_r, "CHAIN: lanes play while it sits inside their chain zone");
+
+        const map = side.cutTop(@intCast(3 * self.count + 6));
         _ = side.cutTop(3);
+        drawZoneMap(self, ui, map, chain_now);
     }
 
     if (self.selected >= self.count) return;
     const p = &self.lanes[self.selected];
     var s = p.*; // edit a copy, publish at the block boundary
     var buf: [16]u8 = undefined;
-    if (inst) {
-        const c1 = cells(side.cutTop(FIELD_H), 4);
-        step7(&s.lo, field(ui, c1[0], "lo", "LO", noteName(&buf, s.lo), 12), 0, s.hi);
-        step7(&s.hi, field(ui, c1[1], "hi", "HI", noteName(&buf, s.hi), 12), s.lo, 127);
-        step7(&s.vlo, field(ui, c1[2], "vlo", "V", std.fmt.bufPrint(&buf, "{d}", .{s.vlo}) catch "?", 16), 1, s.vhi);
-        step7(&s.vhi, field(ui, c1[3], "vhi", "-", std.fmt.bufPrint(&buf, "{d}", .{s.vhi}) catch "?", 16), s.vlo, 127);
+    {
+        const z = s.zone(self.zone_tab);
+        const c1 = cells(side.cutTop(FIELD_H), 2);
+        const big: i32 = if (self.zone_tab == .key) 12 else 16;
+        const lo_lo: i32 = if (self.zone_tab == .vel) 1 else 0;
+        var b2: [16]u8 = undefined;
+        step7(z[0], field(ui, c1[0], "zlo", "LO", zoneText(&buf, self.zone_tab, z[0].*), big), lo_lo, z[1].*);
+        step7(z[1], field(ui, c1[1], "zhi", "HI", zoneText(&b2, self.zone_tab, z[1].*), big), z[0].*, 127);
         _ = side.cutTop(2);
     }
     const c2 = cells(side.cutTop(FIELD_H), 4);
@@ -1937,13 +2219,16 @@ fn drawLanes(self: *Rack, ui: *Ui, r: Rect) void {
         s.pan = std.math.clamp(s.pan + 0.1 * @as(f32, @floatFromInt(dpan)), -1, 1);
     }
     if (@abs(s.pan) < 0.05) s.pan = 0;
-    if (s.lo != p.lo or s.hi != p.hi or s.vlo != p.vlo or s.vhi != p.vhi or s.transpose != p.transpose or
-        s.poly != p.poly or s.level_db != p.level_db or s.pan != p.pan)
+    if (s.lo != p.lo or s.hi != p.hi or s.vlo != p.vlo or s.vhi != p.vhi or s.clo != p.clo or s.chi != p.chi or
+        s.transpose != p.transpose or s.poly != p.poly or s.level_db != p.level_db or s.pan != p.pan)
     {
+        if (s.lo != p.lo or s.hi != p.hi or s.vlo != p.vlo or s.vhi != p.vhi or s.clo != p.clo or s.chi != p.chi) self.edited = true;
         p.lo = s.lo;
         p.hi = s.hi;
         p.vlo = s.vlo;
         p.vhi = s.vhi;
+        p.clo = s.clo;
+        p.chi = s.chi;
         p.transpose = s.transpose;
         p.poly = s.poly;
         p.level_db = s.level_db;
@@ -1963,8 +2248,28 @@ fn drawChain(self: *Rack, ui: *Ui, r: Rect) void {
     const l = &self.lanes[li];
     ui.pushId(@intFromPtr(l.chain));
     defer ui.popId();
+    const map_was = ui.map_mode;
+    ui.map_mode = self.map_armed;
+    defer ui.map_mode = map_was;
     var res = bay.Result{};
     var x = r.x;
+    // Dragging an insert's name tile: the drop slot is the first card whose
+    // middle lies right of the pointer, as in the bay.
+    var drop_idx: usize = l.effects.items.len;
+    var drop_x: i32 = 0;
+    {
+        var ex = x + (if (l.reg_idx != null) bay.panelW(&l.instrument) else 0);
+        for (l.effects.items, 0..) |*fx, j| {
+            const fw = bay.effectW(fx);
+            if (self.fx_drag.active and drop_idx == l.effects.items.len and ui.in.mx < @as(f32, @floatFromInt(ex + @divFloor(fw, 2)))) {
+                drop_idx = j;
+                drop_x = ex;
+            }
+            ex += fw;
+        }
+        if (drop_idx == l.effects.items.len) drop_x = ex;
+    }
+    var reorder: ?[2]usize = null;
     if (l.reg_idx != null) {
         const w = bay.panelW(&l.instrument);
         const out = bay.drawDevice(ui, Rect.xywh(x, r.y, w, r.h), &l.instrument, .instrument, null, !l.mute, null, self.reg, &res);
@@ -1978,15 +2283,31 @@ fn drawChain(self: *Rack, ui: *Ui, r: Rect) void {
         const w = bay.effectW(fx);
         const out = bay.drawDevice(ui, Rect.xywh(x, r.y, w, r.h), &fx.mach, .{ .effect = j }, fx, !fx.bypass.load(.monotonic), null, self.reg, &res);
         if (out.toggle) self.setEffectBypass(li, j, !fx.bypass.load(.monotonic));
-        // A click on an insert's name opens its replace menu, as the bay's.
-        if (out.name_released) {
-            const key = pane.keyFromIds(bay.REPLACE_MENU_KEY, @intFromPtr(fx.mach.state), 0);
-            if (!menu.isOpen(key)) {
-                bay.scanRegistryPresets(self.reg);
-                menu.openBelow(key, out.name_rect);
+        if (out.name_pressed and !self.fx_drag.armed) self.fx_drag = .{ .armed = true, .src = j, .press_x = ui.in.mx };
+        if (out.name_released and self.fx_drag.armed and self.fx_drag.src == j) {
+            if (self.fx_drag.active) {
+                // Taking the source out shifts the cards after it left.
+                const to = if (drop_idx > j) drop_idx - 1 else drop_idx;
+                if (to != j) reorder = .{ j, to };
+            } else {
+                // A click, not a drag: the insert's replace menu, as the bay's.
+                const key = pane.keyFromIds(bay.REPLACE_MENU_KEY, @intFromPtr(fx.mach.state), 0);
+                if (!menu.isOpen(key)) {
+                    bay.scanRegistryPresets(self.reg);
+                    menu.openBelow(key, out.name_rect);
+                }
             }
+            self.fx_drag = .{};
         }
+        if (self.fx_drag.active and self.fx_drag.src == j) ui.overlayRect(Rect.xywh(x, r.y, w, r.h), ui_style.accent.alpha(40));
         x += w;
+    }
+    if (self.fx_drag.armed and ui.in.down and @abs(ui.in.mx - self.fx_drag.press_x) > 6) self.fx_drag.active = true;
+    if (self.fx_drag.armed and !ui.in.down and !ui.in.released) self.fx_drag = .{};
+    if (self.fx_drag.active) ui.overlayRect(Rect.xywh(drop_x - 1, r.y, 2, r.h), ui_style.accent);
+    if (reorder) |mv| {
+        beforeEdit(self);
+        self.moveEffect(li, mv[0], mv[1]);
     }
     if (l.reg_idx == null and l.effects.items.len == 0) {
         const hint = Rect.xywh(x, r.y, 160, r.h);
@@ -2500,6 +2821,65 @@ test "rack: an automated macro sweeps its target as automating the target does" 
     try testing.expect(rms(al[al.len - 4096 ..]) > 1.5 * rms(al[0..4096]));
     try testing.expectEqualSlices(f32, al, bl);
     try testing.expectEqualSlices(f32, ar, br);
+}
+
+test "rack: a track lane down the rack's path automates the insert inside as on a track" {
+    const a = testing.allocator;
+    var t: SatRack = undefined;
+    try t.init(a);
+    defer t.deinit(a);
+    const alone = try t.reg.instantiate(t.reg.findById("sat2").?);
+    defer alone.deinit.?(alone.state, a);
+    alone.reset(alone.state);
+    const drive = alone.controlIndex("sat-drive").?;
+    // A dry lane first, so the insert's lane isn't the first.
+    _ = try t.rack.addLane(null);
+    t.rack.moveLane(1, 0);
+    const lane = &t.rack.lanes[1];
+    const step = automation.Step{ .lane = lane.uid, .slot = lane.effects.items[0].uid };
+    // The path resolves to that insert, and back to its place.
+    const found = t.m.childAt(step).?;
+    try testing.expectEqual(@as(u8, 1), found.lane);
+    try testing.expectEqual(@as(u16, 1), found.pos);
+    try testing.expectEqual(lane.effects.items[0].mach.state, found.mach.state);
+    try testing.expectEqual(lane.effects.items[0].mach.state, t.m.inner(automation.Path.plus(.{}, step)).?.state);
+
+    var snap = std.mem.zeroes(snapshot.TrackSnapshot);
+    snap.auto_points[0] = .{ .beat = 0, .value = 0 };
+    snap.auto_points[1] = .{ .beat = 1, .value = 1 };
+    snap.auto_point_count = 2;
+    snap.lanes[0] = .{ .kind = .fx, .fx_uid = 3, .control = @intCast(drive), .points_start = 0, .points_count = 2 };
+    snap.lane_count = 1;
+    var cursors: [snapshot.MAX_LANES_PER_TRACK]u32 = @splat(0);
+    const view = snapshot.AutoView{ .snap = &snap, .cursors = &cursors, .kind = .fx, .fx_uid = 3 };
+    var snap2 = snap;
+    snap2.lanes[0].path = automation.Path.plus(.{}, step);
+    var cursors2: [snapshot.MAX_LANES_PER_TRACK]u32 = @splat(0);
+    const view2 = snapshot.AutoView{ .snap = &snap2, .cursors = &cursors2, .kind = .fx, .fx_uid = 3 };
+
+    var in: [256 * 120]f32 = undefined;
+    for (&in, 0..) |*x, i| x.* = 0.3 * @sin(@as(f32, @floatFromInt(i)) * 0.031);
+    const al = try a.alloc(f32, in.len);
+    defer a.free(al);
+    const ar = try a.alloc(f32, in.len);
+    defer a.free(ar);
+    const bl = try a.alloc(f32, in.len);
+    defer a.free(bl);
+    const br = try a.alloc(f32, in.len);
+    defer a.free(br);
+    processAuto(alone, &in, al, ar, &view);
+    // The dry lane is silent here: only the insert's lane is heard.
+    t.rack.lanes[0].mute = true;
+    t.rack.publishLanes();
+    processAuto(t.m, &in, bl, br, &view2);
+    try testing.expect(rms(al[al.len - 4096 ..]) > 1.5 * rms(al[0..4096]));
+    try testing.expectEqualSlices(f32, al, bl);
+    try testing.expectEqualSlices(f32, ar, br);
+
+    // Removing the lane before it leaves the path on the same insert.
+    t.rack.removeLane(0);
+    try testing.expectEqual(lane.effects.items.len, 1);
+    try testing.expectEqual(t.rack.lanes[0].effects.items[0].mach.state, t.m.childAt(step).?.mach.state);
 }
 
 test "rack: a formula shapes the macro, a stepped target snaps, unmapping lets go" {

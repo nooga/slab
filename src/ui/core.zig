@@ -177,6 +177,9 @@ pub const Ui = struct {
     /// the machine bay sets it around a panel so every control in it,
     /// however deeply scoped, feeds that machine's title display.
     touch_scope: ?Id = null,
+    /// A rack's MAP is armed around the panels it draws: every control a
+    /// macro can take is outlined (docs/42 §UI).
+    map_mode: bool = false,
     wants_frame: bool = true,
     frame: u64 = 0,
     white: atlas_mod.Region,

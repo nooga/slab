@@ -2378,8 +2378,13 @@ fn renderEffectsKeyed(
         if (base_ctx.automation) |p| {
             const inst: *const snap_mod.AutoView = @ptrCast(@alignCast(p));
             fx_view = inst.*;
-            fx_view.kind = .fx;
-            fx_view.fx_uid = fx.uid;
+            if (inst.path.len > 0) {
+                // A rack lane's chain: the insert is the last step's slot.
+                fx_view.path.steps[inst.path.len - 1].slot = fx.uid;
+            } else {
+                fx_view.kind = .fx;
+                fx_view.fx_uid = fx.uid;
+            }
             ctx.automation = &fx_view;
         }
         @memset(next_l, 0);

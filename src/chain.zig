@@ -170,7 +170,9 @@ pub const State = struct {
         errdefer alloc.destroy(io);
         io.* = @splat(.init(0));
         try effects.append(alloc, .{ .mach = mach, .idx = idx, .uid = self.next_uid, .shared_io = io });
+        // 0 is no insert: a rack lane's instrument in automation paths.
         self.next_uid +%= 1;
+        if (self.next_uid == 0) self.next_uid = 1;
         self.publish(instrument, effects.items);
     }
 

@@ -389,11 +389,12 @@ pub const Track = struct {
 
     /// The machine a control target lives on, if it still exists.
     pub fn targetMachine(self: *const Track, target: automation.Target) ?*const machine.Machine {
-        return switch (target.kind) {
-            .volume, .pan => null,
+        const m: *const machine.Machine = switch (target.kind) {
+            .volume, .pan => return null,
             .inst => &self.machine,
-            .fx => if (self.effectByUid(target.fx_uid)) |fx| &fx.mach else null,
+            .fx => if (self.effectByUid(target.fx_uid)) |fx| &fx.mach else return null,
         };
+        return m.inner(target.path);
     }
 
     /// UI edits the chain; audio keeps the previous version until adoption.
@@ -860,6 +861,7 @@ pub const Track = struct {
         var ls = snap_mod.LaneSnap{
             .kind = lane.target.kind,
             .fx_uid = lane.target.fx_uid,
+            .path = lane.target.path,
             .points_start = dst.auto_point_count,
             .points_count = @intCast(pts.len),
         };

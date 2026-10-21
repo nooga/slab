@@ -137,6 +137,37 @@ const ReorderDrag = struct {
 };
 var fx_drag: ReorderDrag = .{};
 
+/// A run of devices Shift-clicked on one chain, for ⌘G (group into a rack)
+/// and ⌘⇧G (ungroup one): chain positions, 0 the instrument, n the n-th
+/// effect (docs/42 §UI).
+pub const Selection = struct { dev: *const Track, first: usize, last: usize };
+pub var selection: ?Selection = null;
+
+/// Shift-click on position `p`: start a run, grow it to `p`, or drop a
+/// lone pick clicked again.
+fn shiftSelect(dev: *const Track, p: usize) void {
+    if (selection) |*sel| if (sel.dev == dev) {
+        if (sel.first == p and sel.last == p) {
+            selection = null;
+        } else {
+            sel.first = @min(sel.first, p);
+            sel.last = @max(sel.last, p);
+        }
+        return;
+    };
+    selection = .{ .dev = dev, .first = p, .last = p };
+}
+
+fn selected(dev: *const Track, p: usize) bool {
+    const sel = selection orelse return false;
+    return sel.dev == dev and p >= sel.first and p <= sel.last;
+}
+
+fn markSelected(ui: *Ui, card: Rect) void {
+    ui.rect(Rect.xywh(card.x, card.y + TITLE_H - 2, card.w, 2), ui_style.accent);
+    ui.overlayRect(card, ui_style.accent.alpha(24));
+}
+
 // Note-activity LED glow, keyed by track index. Bumped to 1.0 when the
 // engine's note sequence advances, decayed each frame for a soft pulse.
 var led_seen: [16]u32 = @splat(0);
@@ -198,6 +229,9 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
         emptyBay(ui, area, "SELECT A TRACK");
         return result;
     };
+    if (selection) |sel| if (sel.dev != t or sel.last > t.effects.items.len) {
+        selection = null;
+    };
 
     // Measure the chain: (instrument) + effects + the trailing "+".
     const has_instrument = !is_bus and t.machine_idx != null;
@@ -234,8 +268,13 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
             glow = led_glow[ti];
             if (glow > 0) ui.animate();
         };
-        const out = drawDevice(ui, Rect.xywh(x, area.y, inst_w, area.h), &t.machine, .instrument, null, t.isEnabled(), glow, reg, &result);
+        const card = Rect.xywh(x, area.y, inst_w, area.h);
+        const out = drawDevice(ui, card, &t.machine, .instrument, null, t.isEnabled(), glow, reg, &result);
         if (out.toggle) t.toggleEnabled();
+        if (out.name_pressed) {
+            if (ui.in.shift) shiftSelect(t, 0) else selection = null;
+        }
+        if (selected(t, 0)) markSelected(ui, card);
         x += inst_w;
     }
 
@@ -260,7 +299,13 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
         const card = Rect.xywh(x, area.y, fw, area.h);
         const out = drawDevice(ui, card, &fx.mach, .{ .effect = i }, fx, !t.effectBypassed(i), null, reg, &result);
         if (out.toggle) t.toggleEffectBypass(i);
-        if (out.name_pressed and !fx_drag.armed) fx_drag = .{ .armed = true, .src = i, .press_x = ui.in.mx };
+        if (out.name_pressed and ui.in.shift) {
+            shiftSelect(t, i + 1);
+        } else if (out.name_pressed and !fx_drag.armed) {
+            selection = null;
+            fx_drag = .{ .armed = true, .src = i, .press_x = ui.in.mx };
+        }
+        if (selected(t, i + 1)) markSelected(ui, card);
         if (out.name_released and fx_drag.armed and fx_drag.src == i) {
             if (fx_drag.active) {
                 var to = drop_idx;
@@ -454,12 +499,12 @@ pub fn drawDevice(ui: *Ui, card: Rect, mach: *Machine, ref: DeviceRef, fx: ?*con
     _ = ctl.button(ui, name_r, "name-cap", null, .{ .flush = true, .disabled = true });
     ui.textIn(&ui.fonts.body_bold, Rect.xywh(name_r.x + 6, name_r.y, name_r.w - 8 - led_w, name_r.h - 1), name, if (ui.isHot(nid)) ui_style.text else ui_style.text_dim, .left, true);
     if (glow) |g| ctl.led(ui, name_r.right() - led_w - 2, name_r.y + @divFloor(name_r.h - 1 - 5, 2), .round5, if (g > 0.2) .on else .off, ui_style.led_green);
-    const what: []const u8 = if (is_inst) "Replace machine" else "Drag to reorder, click to replace";
+    const what: []const u8 = if (is_inst) "Replace machine. Shift-click to select, \u{2318}G groups into a rack" else "Drag to reorder, click to replace. Shift-click to select, \u{2318}G groups into a rack";
     const lat = mach.latencySamples();
     var lbuf: [96]u8 = undefined;
     menu.tip(ui, name_r, if (lat == 0) what else std.fmt.bufPrint(&lbuf, "{s}. Latency {d} smp ({d:.1} ms)", .{ what, lat, latencyMs(lat, sample_rate) }) catch what);
     const replace_key = pane.keyFromIds(REPLACE_MENU_KEY, @intFromPtr(mach.state), 0);
-    if (is_inst and nb.clicked and !menu.isOpen(replace_key)) {
+    if (is_inst and nb.clicked and !ui.in.shift and !menu.isOpen(replace_key)) {
         scanRegistryPresets(reg);
         menu.openBelow(replace_key, name_r);
     }
@@ -572,13 +617,23 @@ pub const PickerFilter = enum { all, instruments, effects };
 pub fn machinePickerMenuFor(menu_key: u64, reg: *const Registry, filter: PickerFilter) ?AddPick {
     if (!menu.isOpen(menu_key)) return null;
     const menu_count = @min(reg.count, registry_mod.MAX_MACHINES);
-    var items: [registry_mod.MAX_MACHINES]menu.Item = undefined;
+    var items: [registry_mod.MAX_MACHINES + 2]menu.Item = undefined;
     var n: usize = 0;
-    for (reg.entries[0..menu_count], 0..) |*e, i| {
-        if (filter == .instruments and !e.in_notes) continue;
-        if (filter == .effects and (!e.in_audio or e.in_notes)) continue;
-        items[n] = .{ .label = std.mem.span(e.nameZ()), .id = @intCast(i), .submenu = add_scan_cache[i].count > 0 };
-        n += 1;
+    // Machines first, then the racks under their own heading (docs/42).
+    for ([_]bool{ false, true }) |natives| {
+        const head = n;
+        for (reg.entries[0..menu_count], 0..) |*e, i| {
+            if ((e.native != .none) != natives) continue;
+            if (filter == .instruments and !e.in_notes) continue;
+            if (filter == .effects and (!e.in_audio or e.in_notes)) continue;
+            if (natives and n == head) {
+                items[n] = .{ .separator = true };
+                items[n + 1] = .{ .label = "RACKS", .enabled = false };
+                n += 2;
+            }
+            items[n] = .{ .label = std.mem.span(e.nameZ()), .id = @intCast(i), .submenu = add_scan_cache[i].count > 0 };
+            n += 1;
+        }
     }
     if (menu.pick(menu_key, items[0..n])) |id| return .{ .reg_idx = @intCast(id) };
 

@@ -69,6 +69,7 @@ const commands = @import("ui/commands.zig");
 const ui_style = @import("ui/style.zig");
 const ui_draw = @import("ui/draw.zig");
 const ui_gallery = @import("ui/gallery.zig");
+const rack_group = @import("rack_group.zig");
 const layout_mod = @import("ui/layout.zig");
 const transport_bar = @import("ui/transport_bar.zig");
 const ui_core = @import("ui/core.zig");
@@ -148,6 +149,7 @@ test {
     _ = @import("engine.zig");
     _ = @import("track.zig");
     _ = @import("document.zig");
+    _ = @import("rack_group.zig");
     _ = @import("meter_gen.zig");
     _ = @import("automation.zig");
     _ = @import("ui/automation_lane.zig");
@@ -1592,9 +1594,10 @@ pub fn main(init: std.process.Init) !void {
                 status.set("Added {s}", .{tracks[ti].name()});
             } else |err| status.set("Can't add: {s}", .{@errorName(err)});
         }
-        // ⌘G groups the selection (or the selected track).
+        // ⌘G groups the selection (or the selected track); with devices
+        // selected in the bay it groups those into a rack instead (below).
         var route_edit = ares.route;
-        if (route_edit == null and !modal and !rename.active() and ui.in.cmd and c.rl.IsKeyPressed(c.rl.KEY_G)) if (selected_track) |st| {
+        if (route_edit == null and machine_bay.selection == null and !modal and !rename.active() and ui.in.cmd and c.rl.IsKeyPressed(c.rl.KEY_G)) if (selected_track) |st| {
             route_edit = .{ .track = st, .what = .group, .selection = true };
         };
         // Dev hook: SLAB_SHOT_GROUP=NAME,NAME,… selects those tracks and
@@ -1784,6 +1787,27 @@ pub fn main(init: std.process.Init) !void {
             uni_panel.open(ti, at);
         };
         if (mbres.minimize) layout.machine_bay_collapsed = !layout.machine_bay_collapsed;
+        // ⌘G: the devices selected in the bay go into a rack; ⌘⇧G puts the
+        // one selected rack's lane back (docs/42 §UI).
+        if (!modal and !rename.active() and ui.in.cmd and c.rl.IsKeyPressed(c.rl.KEY_G)) if (machine_bay.selection) |sel| if (bay_dev) |dev| if (sel.dev == dev) {
+            machine_bay.selection = null;
+            if (!bay_is_bus) pushHistorySnapshot(alloc, &history, tracks, &transport);
+            if (ui.in.shift) {
+                if (sel.first != sel.last) {
+                    status.set("Select one rack to ungroup", .{});
+                } else if (rack_group.ungroup(alloc, &reg, dev, sel.first)) {
+                    status.set("Ungrouped the rack", .{});
+                    dirty = true;
+                } else |err| status.set("Can't ungroup: {s}", .{switch (err) {
+                    error.NotARack => "not a rack",
+                    error.RackNotSimple => "it has more than one lane, or mappings",
+                    else => @errorName(err),
+                }});
+            } else if (rack_group.group(alloc, &reg, dev, sel.first, sel.last)) |g| {
+                if (g.dropped_keys) status.set("Grouped into a rack; sidechain keys don't reach rack lanes yet", .{}) else status.set("Grouped into a rack", .{});
+                dirty = true;
+            } else |err| status.set("Can't group: {s}", .{@errorName(err)});
+        };
         if (mbres.add_machine) |reg_idx| {
             if (bay_dev) |dev| {
                 const entry = &reg.entries[reg_idx];
@@ -6482,16 +6506,22 @@ const AutoRecorder = struct {
 /// and null into every control no lane drives.
 fn syncAutomationUi(tracks: []track_mod.Track, beat: f64) void {
     for (tracks) |*t| {
-        syncMachineAutoUi(t, &t.machine, .inst, 0, beat);
-        for (t.effects.items) |*fx| syncMachineAutoUi(t, &fx.mach, .fx, fx.uid, beat);
+        syncMachineAutoUi(t, &t.machine, .inst, 0, .{}, beat);
+        for (t.effects.items) |*fx| syncMachineAutoUi(t, &fx.mach, .fx, fx.uid, .{}, beat);
     }
 }
 
-fn syncMachineAutoUi(t: *track_mod.Track, m: *const @import("machine.zig").Machine, kind: automation.TargetKind, uid: u16, beat: f64) void {
+/// `m` and, in a rack, every machine inside it, `path` down from the
+/// track's slot (docs/42 §Automation inside a rack).
+fn syncMachineAutoUi(t: *track_mod.Track, m: *const @import("machine.zig").Machine, kind: automation.TargetKind, uid: u16, path: automation.Path, beat: f64) void {
+    if (m.child) |f| if (path.len < automation.MAX_PATH) {
+        var i: usize = 0;
+        while (f(m.state, i)) |ch| : (i += 1) syncMachineAutoUi(t, ch.mach, kind, uid, path.plus(ch.step), beat);
+    };
     const set = m.set_auto_ui orelse return;
     const info = m.control_info orelse return;
     for (0..m.controlCount()) |i| {
-        const target = automation.Target.control(kind, uid, info(m.state, i).id);
+        const target = automation.Target.control(kind, uid, info(m.state, i).id).inside(path);
         if (!t.isAutomated(target)) {
             set(m.state, i, null);
             continue;
@@ -6506,9 +6536,17 @@ fn clearAutomationOverrides(tracks: []track_mod.Track) void {
     for (tracks) |*t| {
         t.vol_override.store(0, .monotonic);
         t.pan_override.store(0, .monotonic);
-        if (t.machine.clear_overrides) |f| f(t.machine.state);
-        for (t.effects.items) |*fx| if (fx.mach.clear_overrides) |f| f(fx.mach.state);
+        clearMachineOverrides(&t.machine, 0);
+        for (t.effects.items) |*fx| clearMachineOverrides(&fx.mach, 0);
     }
+}
+
+fn clearMachineOverrides(m: *const @import("machine.zig").Machine, depth: usize) void {
+    if (m.clear_overrides) |f| f(m.state);
+    if (m.child) |f| if (depth < automation.MAX_PATH) {
+        var i: usize = 0;
+        while (f(m.state, i)) |ch| : (i += 1) clearMachineOverrides(ch.mach, depth + 1);
+    };
 }
 
 /// Serve panels' Show/Clear automation requests. Returns true on an edit.
@@ -6522,12 +6560,12 @@ fn serviceAutomationRequests(
 ) bool {
     var edited = false;
     for (tracks, 0..) |*t, ti| {
-        if (serviceMachineAutoRequest(alloc, history, tracks, transport, t, &t.machine, .inst, 0, status)) |e| {
+        if (serviceMachineAutoRequest(alloc, history, tracks, transport, t, &t.machine, .inst, 0, .{}, status)) |e| {
             edited = edited or e;
             selected_track.* = ti;
         }
         for (t.effects.items) |*fx| {
-            if (serviceMachineAutoRequest(alloc, history, tracks, transport, t, &fx.mach, .fx, fx.uid, status)) |e| {
+            if (serviceMachineAutoRequest(alloc, history, tracks, transport, t, &fx.mach, .fx, fx.uid, .{}, status)) |e| {
                 edited = edited or e;
                 selected_track.* = ti;
             }
@@ -6546,14 +6584,22 @@ fn serviceMachineAutoRequest(
     m: *const @import("machine.zig").Machine,
     kind: automation.TargetKind,
     uid: u16,
+    path: automation.Path,
     status: *StatusMessage,
 ) ?bool {
+    // A rack's machines ask too, a step further down.
+    if (m.child) |f| if (path.len < automation.MAX_PATH) {
+        var i: usize = 0;
+        while (f(m.state, i)) |ch| : (i += 1) {
+            if (serviceMachineAutoRequest(alloc, history, tracks, transport, t, ch.mach, kind, uid, path.plus(ch.step), status)) |e| return e;
+        }
+    };
     const take = m.take_auto_request orelse return null;
     const req = take(m.state) orelse return null;
     const info_fn = m.control_info orelse return false;
     if (req.control >= m.controlCount()) return false;
     const info = info_fn(m.state, req.control);
-    const target = automation.Target.control(kind, uid, info.id);
+    const target = automation.Target.control(kind, uid, info.id).inside(path);
     switch (req.action) {
         .show => {
             t.lanes_shown = true;

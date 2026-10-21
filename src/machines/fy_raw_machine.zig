@@ -3912,6 +3912,7 @@ fn drawAutomatable(self: *FyRawMachine, ui: *Ui, kr: Rect, gi: usize, ctl: *cons
     const was_pressed = ui.in.pressed;
     drawControl(self, ui, kr, gi, ctl, tier);
     modTarget(self, kr, gi);
+    if (ui.map_mode) ui.bevel(kr.inset(1), ui_style.accent.alpha(160), ui_style.accent.alpha(160));
     if (kr.contains(ui.in.ix(), ui.in.iy())) {
         if (modDestFor(self, gi)) |m| self.mod_hot_next = m.index;
     }

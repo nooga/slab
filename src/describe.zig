@@ -9,6 +9,7 @@ const registry_mod = @import("machine_registry.zig");
 const machine_desc = @import("machine_desc.zig");
 const document_mod = @import("document.zig");
 const FyHost = @import("fy_host.zig").FyHost;
+const rack_mod = @import("machines/rack.zig");
 
 pub fn run(alloc: std.mem.Allocator, out_path: []const u8) !void {
     var out: std.ArrayList(u8) = .empty;
@@ -36,6 +37,9 @@ pub fn run(alloc: std.mem.Allocator, out_path: []const u8) !void {
         first = false;
         try writeMachine(alloc, &out, path, d);
     }
+    // The native racks (docs/42): no fy manifest, a fixed control set.
+    try writeRack(alloc, &out, rack_mod.PATH, "Rack", "instrument");
+    try writeRack(alloc, &out, rack_mod.FX_PATH, "FX Rack", "effect");
     try out.appendSlice(alloc, "]}\n");
     try document_mod.writeFile(alloc, out_path, out.items);
 }
@@ -97,6 +101,21 @@ fn writeMachine(alloc: std.mem.Allocator, out: *std.ArrayList(u8), path: []const
         try out.append(alloc, '}');
     }
     try out.appendSlice(alloc, "]}");
+}
+
+/// A rack's controls: macros `rk-m1`…`rk-m8` (0..1) and `rk-chain`
+/// (0..127, the chain selector zones key on).
+fn writeRack(alloc: std.mem.Allocator, out: *std.ArrayList(u8), path: []const u8, name: []const u8, kind: []const u8) !void {
+    const id = std.fs.path.basename(std.fs.path.dirname(path) orelse path);
+    try out.appendSlice(alloc, ",\n{\"id\":");
+    try document_mod.appendJsonString(alloc, out, id);
+    try out.appendSlice(alloc, ",\"name\":");
+    try document_mod.appendJsonString(alloc, out, name);
+    try out.appendSlice(alloc, ",\"path\":");
+    try document_mod.appendJsonString(alloc, out, path);
+    try fmt(alloc, out, ",\"kind\":\"{s}\",\"native\":true,\"voices\":0,\"stereo\":true,\"note_pitch\":false,\"sidechain\":false,\"note_labels\":[],\"params\":[", .{kind});
+    for (0..8) |i| try fmt(alloc, out, "\n {{\"id\":\"rk-m{d}\",\"module\":\"MACROS\",\"label\":\"MACRO {d}\",\"type\":\"float\",\"min\":0,\"max\":1,\"default\":0,\"curve\":\"linear\"}},", .{ i + 1, i + 1 });
+    try out.appendSlice(alloc, "\n {\"id\":\"rk-chain\",\"module\":\"MACROS\",\"label\":\"CHAIN\",\"type\":\"int\",\"min\":0,\"max\":127,\"default\":0,\"curve\":\"linear\"}]}");
 }
 
 fn fmt(alloc: std.mem.Allocator, out: *std.ArrayList(u8), comptime f: []const u8, args: anytype) !void {
