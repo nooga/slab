@@ -6,6 +6,31 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **The SM-24 Mono has a patch panel.** Its new PATCH page holds four
+  cords. Drag a jack from the dock onto a ringed knob (LPF CUT, HPF CUT,
+  PW, VCO2 PITCH, LVL, MG FREQ), or pick SRC and DEST on a cord row. The
+  jacks are FENV, AENV and AENV inverted, MG, MG PUL, S&H, NOISE, KBD, VEL,
+  PRESS, VCO1, VCO2 and VCA OUT. The cords run at audio rate, so VCO2 can
+  FM the cutoff and the output can feed back into the filter. A patch
+  with no cords sounds exactly as before. Five new patches show it off
+  (`patch-*`), with the demo `songs/ms20_patch_bay.py`.
+
+- **Squelch 33, an acid bassline synth.** A new mono machine built on the
+  HOT/WET filter the SM-24 Mono used to have: one SAW or SQR oscillator,
+  CUT, RES, ENV MOD, DECAY, ACCENT and SLIDE. Loud notes (the `!` in a
+  slabkit seq) are accented: louder, brighter, and a run of them climbs
+  higher with RES up. Overlapping notes slide. Presets: `classic-squelch`,
+  `square-bounce`, `wet-scream`, `round-line`; demo `songs/squelch_acid.py`.
+
+- **SM-24 Mono sounds like an MS-20.** Its LPF MODE gains **K35** and
+  **OTA**, the early and late MS-20 filters. Bass stays full at any PEAK,
+  the peak sits on CUT, and both the HPF and LPF resonate up to
+  self-oscillation. K35 is the default: grittier and lopsided when driven.
+  OTA is cleaner and sings. HOT and WET are still there for the acid
+  sound. New presets: `k35-scream`, `k35-round-bass`, `ota-singing-lead`.
+  A new SM-24 starts from a re-voiced init patch; saved songs and presets
+  keep their mode and sound as before.
+
 - **A harsh effects pack** (docs/43).
   - **Octaver** gives one and two octaves down the way analog divider
     pedals do, with a GLITCH knob to make it chatter, plus an

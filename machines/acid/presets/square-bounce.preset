@@ -1,0 +1,1 @@
+{"slab": "preset", "schema": 1, "machine": "acid", "note": "Square, short decay, moderate RES: a hollow rubbery line", "params": {"tune": 0, "wave": 1, "cutoff": 300, "resonance": 0.5, "env-mod": 0.45, "decay": 0.28, "accent": 0.7, "slide": 0.06, "drive": 1.0, "mode": 0, "level": 0.5}}

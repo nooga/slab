@@ -44,6 +44,7 @@ test {
 /// walks the same list.
 pub const builtin_machines = [_][]const u8{
     "machines/ms20/ms20.fy",
+    "machines/acid/acid.fy",
     "machines/cream/cream.fy",
     "machines/fm86/fm86.fy",
     "machines/drum2/drum2.fy",
@@ -409,8 +410,8 @@ test "fy manifest loads MS-20 machine entry" {
     try std.testing.expectEqual(@as(?usize, null), reg.findById("nope"));
     try std.testing.expect(e.in_notes);
     try std.testing.expect(!e.in_audio);
-    try std.testing.expectEqual(@as(usize, 712), e.raw_state_size);
-    try std.testing.expectEqual(@as(usize, 576), e.params_size);
+    try std.testing.expectEqual(@as(usize, 928), e.raw_state_size);
+    try std.testing.expectEqual(@as(usize, 768), e.params_size);
     try std.testing.expectEqual(@as(f32, 940.0), e.panel_w);
 }
 

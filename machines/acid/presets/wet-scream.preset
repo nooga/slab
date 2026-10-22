@@ -1,0 +1,1 @@
+{"slab": "preset", "schema": 1, "machine": "acid", "note": "WET mode driven, RES near the top: screaming accents", "params": {"tune": 0, "wave": 0, "cutoff": 380, "resonance": 0.95, "env-mod": 0.7, "decay": 0.6, "accent": 1.0, "slide": 0.08, "drive": 2.0, "mode": 1, "level": 0.225}}

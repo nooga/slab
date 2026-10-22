@@ -10,6 +10,72 @@ Scope call: **no full semi-modular patch bay.** We implement the MS-20's
 *hardwired* routing (MG/EG→pitch, MG→cutoff, EG→cutoff/VCA, PWM, ring) with
 fixed intensity controls. A general routing matrix can come later.
 
+## K35 and OTA: the MS-20's own filters (2026-10-21)
+
+HOT and WET sound acid: a TB-303, not an MS-20. Their loop subtracts a
+clipped, 18 Hz high-passed copy of the lowpass from the input. That is the
+ladder structure (the 303 even has the high-pass in its loop). Measured
+with a numpy port of `ms20_lpf.fy` at CUT 500 Hz and a quiet input:
+
+- PEAK costs 16 dB of bass at its old default (0.7), and 22–25 dB at the
+  acid presets.
+- The peak sits 1.5–2.2 octaves above CUT.
+- The peak moves about 0.7 octave with input level, which is the rubbery
+  squelch.
+- The slope is −8 to −11 dB/oct.
+
+Stinchcombe's study of the MS-10/MS-20 filters
+([MS20_study.pdf](http://www.timstinchcombe.co.uk/synth/MS20_study.pdf))
+gives both hardware generations LP = 1/(s² + (a − k)s + 1) and
+HP = s²/(same). Here a = 2⅓ for the Korg35 Sallen-Key and 2 for the
+LM13600 OTA pair. So the DC gain doesn't depend on PEAK, the cutoff
+doesn't move, and the slope is 12 dB/oct.
+`kernels/04-filters/ms20_sk.fy` implements it as **MODE K35** and
+**MODE OTA**. HOT and WET stay as they were.
+
+```
+v      = x − (a + g)·s1 − s2
+bp-lin = (g·h·v + s1) / (1 − g·h·k)          h = 1/(1 + a·g + g²)
+fb     = vd·tanh(k·bp-lin / vd)              feedback diodes
+u      = vf·(tanh((drive·x + fb)/vf + fo) − tanh fo)
+TPT SVF with base damping a → hp, bp, lp
+```
+
+- **K35:** the diodes sit in the forward amplifier (vf 0.55), so loud
+  input distorts every frequency. A small offset (fo 0.12) makes the
+  resonance lopsided: the self-oscillation's 2nd harmonic is −37 to
+  −46 dB. Both are Stinchcombe §4–5.
+- **OTA:** the feedback diodes set the peak and the forward stage is soft
+  (vf 1.6), so the passband stays clean at normal DRIVE. The
+  self-oscillation is symmetric (2nd harmonic below −115 dB).
+- **Both filters resonate.** In these modes the HPF is the same core with
+  its own PEAK. The series HPF → LPF pair runs at 4× between `up4` and
+  `dec4`, and both cutoffs stop at 15 kHz (Korg's spec).
+- **PEAK taper:** k = a·(1 − u²) with u = 1 − (PEAK/2)/0.9, rising
+  linearly past 90%. This is a design choice, not a measured pot. A linear
+  pot repeats the 2026-09-26 OTA probe's "resonance invisible until the
+  top" (+1 dB at noon). This taper gives +6 dB at noon, and
+  self-oscillation from 1.82 of 2.
+
+Measured through the voice in the bench, with noise in (CUT 500 Hz, HPF
+1 kHz):
+
+| | K35 | OTA |
+|---|---|---|
+| bass at 60 Hz, PEAK 0 → 2, small signal | −0.2 … +0.4 dB | −0.1 … +0.2 dB |
+| peak position, PEAK ≥ 1.4 | within 0.02 oct of CUT | within 0.02 oct |
+| slope, 2 → 3 octaves past the corner | −10.7 … −11.8 dB/oct | −11.2 … −12.1 dB/oct |
+| peak at PEAK 1 (noon) | +6.4 dB | +8.1 dB |
+| peak, quiet → loud input, PEAK 1.75 | 23.5 → 8.3 dB | 32.5 → 15.3 dB |
+| HPF peak position / slope | within 0.04 oct / +11.5 … +12.6 | within 0.04 oct / +11.3 … +12.7 |
+| default notes, non-harmonic energy | −31 … −41 dB (HOT −18 … −22) | −31 … −42 dB |
+| cost, ReleaseFast, held note | ~2× HOT (≈ 350 vs 184 ns/smp) | same |
+
+K35 is the default for new instances. The init patch was re-voiced
+because CUT now means the corner: 1200 Hz, PEAK 1, ENV 2 octaves,
+filter decay 0.3 s, sustain 0.2. The acid pair is kept, both here and in
+`ms20_lpf.fy` for a future acid machine.
+
 ## LPF v3: the June probe's driven SVF, in fy (2026-09-27)
 
 The reference is `scratch/ms20_saw_filter_sweeps_f-hot.wav`, rendered by
@@ -285,3 +351,67 @@ hatch) is a good early proof.
 7. Panel: declare the strips (docs/15); custom ADSR cell.
 8. Global spilling (durable follow-up) to optionally collapse hot stages back
    inline; polyphony via a higher-order voice-pool machine (docs/15).
+
+## Squelch 33: the acid filter's own synth (2026-10-22)
+
+HOT/WET stayed in the SM-24 Mono, and the same kernel (`ms20_lpf.fy`,
+unchanged) now also drives `machines/acid`, a 303-style mono voice in
+`kernels/06-voices/acid_voice.fy`: one VCO (saw, or a square with a
+little of the ramp on its tops), the LPF at 4x, a decay-only MEG with
+ENV MOD (5 octaves at full), a VCA that decays over 3 s and closes in
+8 ms on key-up.
+
+- **Accent** is velocity over 0.8. An accented note runs a second MEG
+  at the 200 ms minimum decay; that envelope pushes the VCA directly
+  (x[1 + 1.2 ACC]) and feeds the accent RC (15 ms, 60 ms at full RES),
+  whose output adds 4 octaves x level to the cutoff. With RES up the RC
+  does not empty between notes, so accents in a row stack.
+- **Slide**: a note that overlaps the last (`ctx.legato`) glides on an
+  RC covering 3 time constants in SLIDE, and retriggers nothing.
+
+Measured (slabkit renders, A1 lines, 120-128 BPM):
+
+| | target | result |
+|---|---|---|
+| accent level | +4..6 dB | +4.3..5.3 dB at RES 0.3, +3.3..4.6 at 0.9 |
+| accent attack centroid | brighter | +40% at RES 0.3, +20% at 0.9 |
+| accent stacking, 3 in a row | climbs at high RES | +15% at RES 0.9, +5% at 0.3 |
+| fundamental loss, RES 0 -> 1 | the acid thinning | -13 dB HOT, -13.4 dB WET |
+| loudest partial, CUT 400 | 1.5-2 oct up | 654 Hz HOT, 785 Hz WET |
+| slide 60 ms | lands in ~60 ms | ~50-60 ms, no retrigger |
+| preset loudness on a line | -20 dB RMS +-1 | -20.0 .. -19.6 |
+| cost | | 233 ns/sample ReleaseFast |
+
+## The patch panel (2026-10-22)
+
+Four cords, evaluated every sample in the voice (`ms20-bay`,
+`ms20-cord-to` in `kernels/06-voices/ms20_voice_probe.fy`), declared to
+the panel the way Concoction's matrix is (docs/15 §Modulation): controls
+`ms20-c1-src` / `-dst` / `-amt` ... `ms20-c4-*`, `mod-source` jacks in the
+dock, `mod-dest` rings, the normalled routes (ENV and MG to LPF CUT, EG
+and MG to PITCH, MG to PW) as fixed rows, a PATCH page with the dock,
+the CORDS matrix display and a scope.
+
+- **Jacks** are an array in the voice state (`jk`), one per SRC option,
+  stored each sample and read by a runtime index, which sees the state
+  as the word found it: every source arrives one sample late. That is
+  what lets VCA OUT go back into the filter without a zero-delay loop.
+- **Destinations** and their range at AMT 1: PITCH and VCO2 +-2
+  octaves, PW +-0.45, HPF CUT and LPF CUT +-5 octaves (KBD at AMT 0.2
+  tracks the keyboard 1:1), VCA gain +-1, MG FREQ +-4 octaves, FLT IN the
+  source as audio at the mixer's level, ahead of both filters.
+- **Free when empty.** The bay sits behind `bay-on` (a cord with SRC and
+  DEST set), the per-sample HPF coefficients behind `bay-hpf`; both are
+  versioned `ifte`s, and every unpatched path adds exact zeros, so all
+  goldens stay bit-exact. VCO1's wave became a select so the voice fits
+  fy's 32 versioned bodies (VCO2 wave 4 x MODE 2 x 2 x 2); past that the
+  bay if-converted and cost 609 ns/sample unpatched.
+- Cost, ReleaseFast: 413 ns/sample unpatched, 470 with a cord.
+
+Measured on a held C3 (K35, CUT 600, PEAK 1, ENV 0): MG -> LPF CUT 0.3
+triples the centroid's swing (66 -> 190 Hz); MG -> PITCH 0.05 gives
+vibrato; AENV -> VCA -0.5 takes 6 dB off; VCO2 a fifth up -> LPF CUT
+0.3 doubles the centroid (418 -> 866 Hz) at audio rate; VCA OUT -> FLT IN
+0.8 stays bounded (peak -6.9 dBFS). The `patch-*` presets sit at -21 to
+-22 dB RMS on a bassline (the vowel patch, a band-pass, -22 two octaves
+up).

@@ -8,6 +8,7 @@ project or preset stores (docs/19): real units for knobs, the option
 
 | id | name | kind | voices | prefix |
 |---|---|---|---|---|
+| [`acid`](#acid) | Squelch 33 | instrument | mono | `—` |
 | [`bass`](#bass) | Fretwire | instrument | 4 | `bs-` |
 | [`concoction`](#concoction) | Concoction | instrument | 8 | `cn-` |
 | [`cream`](#cream) | Mog Passenger | instrument | mono | `cr-` |
@@ -50,6 +51,31 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`tape2`](#tape2) | Tape | effect | — | `tape-` |
 | [`verb2`](#verb2) | Verb | effect | — | `verb-` |
 | [`wob2`](#wob2) | Wobble | effect | — | `wob-` |
+
+## acid
+
+**Squelch 33**, instrument, mono.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `tune` | VCO | TUNE | -12 … 12 | 0 | linear |
+| `wave` | VCO | WAVE | 0 SAW / 1 SQR | 0 | switch |
+| `cutoff` | VCF | CUT | 30 … 8000 | 260 | exp |
+| `resonance` | VCF | RES | 0 … 1 | 0.6 | linear |
+| `env-mod` | VCF | ENV | 0 … 1 | 0.5 | linear |
+| `decay` | VCF | DEC | 0.2 … 2 | 0.5 | exp |
+| `accent` | PLAY | ACC | 0 … 1 | 0.7 | linear |
+| `slide` | PLAY | SLIDE | 0.02 … 0.3 | 0.06 | exp |
+| `drive` | DRIVE | DRV | 0.25 … 4 | 1 | exp |
+| `mode` | DRIVE | MODE | 0 HOT / 1 WET | 0 | switch |
+| `level` | OUT | LVL | 0 … 1 | 0.68 | pow |
+
+Presets:
+
+- `classic-squelch` — Saw, RES high, a medium sweep: accents bark and stack
+- `round-line` — Low RES and little sweep: a round bassline under a mix
+- `square-bounce` — Square, short decay, moderate RES: a hollow rubbery line
+- `wet-scream` — WET mode driven, RES near the top: screaming accents
 
 ## bass
 
@@ -964,11 +990,11 @@ Presets:
 | `noise-level` | MIX | NOISE | 0 … 1 | 0 | pow |
 | `hpf-cutoff` | HPF | CUT | 20 … 15000 | 20 | exp |
 | `hpf-resonance` | HPF | PEAK | 0 … 2 | 0 | linear |
-| `cutoff` | LPF | CUT | 20 … 18000 | 700 | exp |
-| `resonance` | LPF | PEAK | 0 … 2 | 0.7 | linear |
+| `cutoff` | LPF | CUT | 20 … 18000 | 1200 | exp |
+| `resonance` | LPF | PEAK | 0 … 2 | 1 | linear |
 | `drive` | LPF | DRV | 0.25 … 4 | 1 | exp |
-| `lpf-mode` | LPF | MODE | 0 HOT / 1 WET | 0 | switch |
-| `env-amount` | LPF | ENV | 0 … 8 | 4.8 | linear |
+| `lpf-mode` | LPF | MODE | 0 HOT / 1 WET / 2 K35 / 3 OTA | 2 | switch |
+| `env-amount` | LPF | ENV | 0 … 8 | 2 | linear |
 | `level` | VCA | LVL | 0 … 1 | 0.44 | pow |
 | `age` | VCA | AGE | 0 … 1 | 0.4 | linear |
 | `amp-hold` | AMP ENV | HOLD | 0 … 20 | 0 | pow |
@@ -978,8 +1004,8 @@ Presets:
 | `amp-release` | AMP ENV | REL | 0.01 … 10 | 0.13 | exp |
 | `filter-delay` | FLT ENV | DLY | 0 … 10 | 0 | pow |
 | `filter-attack` | FLT ENV | ATK | 0.001 … 10 | 0.014 | exp |
-| `filter-decay` | FLT ENV | DEC | 0.01 … 10 | 0.14 | exp |
-| `filter-sustain` | FLT ENV | SUS | 0 … 1 | 0.18 | linear |
+| `filter-decay` | FLT ENV | DEC | 0.01 … 10 | 0.3 | exp |
+| `filter-sustain` | FLT ENV | SUS | 0 … 1 | 0.2 | linear |
 | `filter-release` | FLT ENV | REL | 0.01 … 10 | 0.11 | exp |
 | `mg-freq` | MG | FREQ | 0.1 … 20 | 3 | exp |
 | `mg-wave` | MG | WAVE | 0 … 1 | 0.5 | linear |
@@ -988,16 +1014,36 @@ Presets:
 | `mg-cutoff` | MOD | MG>CUT | 0 … 4 | 0 | pow |
 | `eg-pitch` | MOD | EG>PIT | 0 … 1 | 0 | pow |
 | `portamento` | MOD | PORTA | 0 … 10 | 0 | pow |
+| `ms20-c1-src` | CORD 1 | SRC | 0 OFF / 1 FENV / 2 AENV / 3 AENV- / 4 MG / 5 MG PUL / 6 S&H / 7 NOISE / 8 KBD / 9 VEL / 10 PRESS / 11 VCO1 / 12 VCO2 / 13 VCA OUT | 0 | switch |
+| `ms20-c1-dst` | CORD 1 | DEST | 0 OFF / 1 PITCH / 2 VCO2 / 3 PW / 4 HPF CUT / 5 LPF CUT / 6 VCA / 7 MG FREQ / 8 FLT IN | 0 | switch |
+| `ms20-c1-amt` | CORD 1 | AMT | -1 … 1 | 0 | linear |
+| `ms20-c2-src` | CORD 2 | SRC | 0 OFF / 1 FENV / 2 AENV / 3 AENV- / 4 MG / 5 MG PUL / 6 S&H / 7 NOISE / 8 KBD / 9 VEL / 10 PRESS / 11 VCO1 / 12 VCO2 / 13 VCA OUT | 0 | switch |
+| `ms20-c2-dst` | CORD 2 | DEST | 0 OFF / 1 PITCH / 2 VCO2 / 3 PW / 4 HPF CUT / 5 LPF CUT / 6 VCA / 7 MG FREQ / 8 FLT IN | 0 | switch |
+| `ms20-c2-amt` | CORD 2 | AMT | -1 … 1 | 0 | linear |
+| `ms20-c3-src` | CORD 3 | SRC | 0 OFF / 1 FENV / 2 AENV / 3 AENV- / 4 MG / 5 MG PUL / 6 S&H / 7 NOISE / 8 KBD / 9 VEL / 10 PRESS / 11 VCO1 / 12 VCO2 / 13 VCA OUT | 0 | switch |
+| `ms20-c3-dst` | CORD 3 | DEST | 0 OFF / 1 PITCH / 2 VCO2 / 3 PW / 4 HPF CUT / 5 LPF CUT / 6 VCA / 7 MG FREQ / 8 FLT IN | 0 | switch |
+| `ms20-c3-amt` | CORD 3 | AMT | -1 … 1 | 0 | linear |
+| `ms20-c4-src` | CORD 4 | SRC | 0 OFF / 1 FENV / 2 AENV / 3 AENV- / 4 MG / 5 MG PUL / 6 S&H / 7 NOISE / 8 KBD / 9 VEL / 10 PRESS / 11 VCO1 / 12 VCO2 / 13 VCA OUT | 0 | switch |
+| `ms20-c4-dst` | CORD 4 | DEST | 0 OFF / 1 PITCH / 2 VCO2 / 3 PW / 4 HPF CUT / 5 LPF CUT / 6 VCA / 7 MG FREQ / 8 FLT IN | 0 | switch |
+| `ms20-c4-amt` | CORD 4 | AMT | -1 … 1 | 0 | linear |
 
 Presets:
 
 - `acid-bass` — Squelchy resonant bass — play low, ride LPF CUT
 - `aggressive-fill-lead` — Short aggressive lead / fill
 - `buzz-lead` — Bright buzzy lead with a touch of MG wobble
+- `k35-round-bass` — K35 bass: full low end, a gentle peak, short EG2 sweep
+- `k35-scream` — K35 filters both peaked and driven: the early MS-20 scream
 - `mild-acid-bass` — Mild acid, not techno
 - `minimal-8th-bass` — Minimal 8th-note spoken-verse bass
 - `nasal-sneer-lead` — Nasal sneering mono lead
 - `octave-night-bass` — Faster octave night-drive bass
+- `ota-singing-lead` — OTA LPF, peak high and clean: the later MS-20, symmetric and singing
+- `patch-feedback-growl` — VCA OUT back into FLT IN: the OTA growls and sings as the note swells
+- `patch-fm-metal-bass` — VCO2 a fifth up into LPF CUT at audio rate: a metallic, clangy bass
+- `patch-sh-bubbles` — S&H on LPF CUT, clocked by the MG: random bubbling under a peaked K35
+- `patch-tracking-lead` — KBD on LPF CUT for full tracking, MG on PITCH for a slow vibrato, PRESS opens it
+- `patch-vowel-sweep` — FENV on HPF CUT with both filters peaked: a talking band-pass sweep
 - `portamento-highway-lead` — Smooth portamento highway lead
 - `resonant-funk-bass` — Resonant funky bass with filter bite
 - `rising-filter-fx` — Overdriven rising-filter FX sweep
@@ -1620,7 +1666,7 @@ Presets:
 
 - `parallel-squash` — Parallel compression: the dry signal beside a crushed, saturated copy. AMOUNT brings the copy up under it.
 - `harsh/bit-guitar` — Lows cut, crushed to 8 bits at 11 kHz, into a clean amp: aliased, zippy guitar.
-- `harsh/cross-bass` — Justice-style bass: a clean sub lane, and a dirty lane cut below 250 Hz, crushed to 12 bits, overdriven, through a Brit 4x12, slammed by a FET and taped.
+- `harsh/cross-bass` — Justice-style bass: a clean sub lane, and a dirty lane cut below 250 Hz, crushed to 12 bits, overdriven, through a bright Brit 4x12 and slammed by a FET.
 - `harsh/four-slot` — Distructor's layout: distortion, filter, chorus and amp in four slots, each slot's mix on a knob.
 - `harsh/gated-fuzz` — A starved fuzz into a fast gate: notes sputter and cut off dead.
 - `harsh/kodiak` — Big and gnarly: a clean low-passed sub lane under a lane of octave-down, dynamic folding, RAT and OTT. SIZE is the sub, GNARL the dirt.

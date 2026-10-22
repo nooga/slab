@@ -1,0 +1,5 @@
+# bench goldens for acid: case sha256(f32 L ++ f32 R) [nonharm_db thd_db]
+notes 8bc59d45b766ad9007c4db1dbfcdd24b75f1c631ccc33814cc4ea2cc68ca9f61
+velocity b52ab388bda9c4e65b9ebf3b22a557d2771ad44628677afb3fd1ac0e190fccfd
+held 35a9aa5abc0a2babbc8df5521f5f2bd9614e162a47bd05b034765f7a33802a9c -76.1 5.5
+high 0cd64ed21d5ec2f2fb40eb5b4fbcf3d60c2435d8efaf6f3f7a79a694ac46c5b1 -48.3 1.5

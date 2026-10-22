@@ -1,0 +1,1 @@
+{"slab": "preset", "schema": 1, "machine": "acid", "note": "Low RES and little sweep: a round bassline under a mix", "params": {"tune": 0, "wave": 0, "cutoff": 160, "resonance": 0.25, "env-mod": 0.25, "decay": 0.6, "accent": 0.5, "slide": 0.06, "drive": 1.0, "mode": 0, "level": 0.45}}

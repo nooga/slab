@@ -7019,13 +7019,23 @@ test "MS-20 block-prepare derives the LPF, HPF and envelope coefficients in fy" 
     const drive = inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.drive"));
     const hres = inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.hpf-resonance"));
     // Defaults land raw: env amount in octaves, resonance and drive knobs.
-    try testing.expectApproxEqAbs(@as(f64, 4.8), inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.env-amount")), 1e-6); // knobs store f32 positions
-    // LPF profile, HOT mode: drive 2.1 x DRV, feedback 10.125 x 0.8 RES,
-    // damping 0.62 / (1 + 5.2 x 0.8 RES); the LPF runs at 4x.
+    try testing.expectApproxEqAbs(@as(f64, 2.0), inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.env-amount")), 1e-6); // knobs store f32 positions
+    // The default MODE is K35 [2]: its profile [ms20_sk.fy] has base damping
+    // 7/3, drive 0.9 x DRV, and loop gain a [1 - u^2], u = 1 - [RES/2] / 0.9.
+    try testing.expectApproxEqAbs(@as(f64, 2.0), inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.lpf-mode")), 1e-12);
+    const sk = try fyFieldOffset(inst, "Ms20VoiceParams.sk-pr");
+    const a_k35: f64 = 7.0 / 3.0;
+    const u_lp = 1.0 - 0.5 * res / 0.9;
+    try testing.expectApproxEqAbs(a_k35, inst.readParamF64(sk + try fyFieldOffset(inst, "Ms20SkProfile.a")), 1e-12);
+    try testing.expectApproxEqAbs(0.9 * drive, inst.readParamF64(sk + try fyFieldOffset(inst, "Ms20SkProfile.drive")), 1e-12);
+    try testing.expectApproxEqAbs(a_k35 * (1.0 - u_lp * u_lp), inst.readParamF64(sk + try fyFieldOffset(inst, "Ms20SkProfile.k-lp")), 1e-12);
+    // The acid pair's profile [ms20_lpf.fy] is derived in every mode; any
+    // MODE but HOT takes WET's numbers: drive 1.9 x DRV, feedback
+    // 14.58 x 0.8 RES, damping 0.58 / (1 + 6.2 x 0.8 RES); the LPF runs at 4x.
     const pr = try fyFieldOffset(inst, "Ms20VoiceParams.lpf-pr");
-    try testing.expectApproxEqAbs(2.1 * drive, inst.readParamF64(pr + try fyFieldOffset(inst, "Ms20LpfProfile.drive")), 1e-12);
-    try testing.expectApproxEqAbs(10.125 * 0.8 * res, inst.readParamF64(pr + try fyFieldOffset(inst, "Ms20LpfProfile.fb-amt")), 1e-12);
-    try testing.expectApproxEqAbs(@max(0.035, 0.62 / (1.0 + 5.2 * 0.8 * res)), inst.readParamF64(pr + try fyFieldOffset(inst, "Ms20LpfProfile.damping")), 1e-12);
+    try testing.expectApproxEqAbs(1.9 * drive, inst.readParamF64(pr + try fyFieldOffset(inst, "Ms20LpfProfile.drive")), 1e-12);
+    try testing.expectApproxEqAbs(14.58 * 0.8 * res, inst.readParamF64(pr + try fyFieldOffset(inst, "Ms20LpfProfile.fb-amt")), 1e-12);
+    try testing.expectApproxEqAbs(@max(0.035, 0.58 / (1.0 + 6.2 * 0.8 * res)), inst.readParamF64(pr + try fyFieldOffset(inst, "Ms20LpfProfile.damping")), 1e-12);
     try testing.expectApproxEqAbs(4.0 * 48_000.0, inst.readParamF64(try fyFieldOffset(inst, "Ms20VoiceParams.osr")), 1e-9);
     // HPF damping 1.4 (1 - RES/2)^2.
     const u = @max(0.0, 1.0 - 0.5 * hres);

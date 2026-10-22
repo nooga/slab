@@ -1,0 +1,1 @@
+{"slab": "preset", "schema": 1, "machine": "acid", "note": "Saw, RES high, a medium sweep: accents bark and stack", "params": {"tune": 0, "wave": 0, "cutoff": 220, "resonance": 0.78, "env-mod": 0.6, "decay": 0.45, "accent": 0.8, "slide": 0.06, "drive": 1.0, "mode": 0, "level": 0.63}}
