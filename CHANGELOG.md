@@ -6,6 +6,13 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Squelch 33, an acid bassline synth.** A new mono machine built on the
+  HOT/WET filter the SM-24 Mono used to have: one SAW or SQR oscillator,
+  CUT, RES, ENV MOD, DECAY, ACCENT and SLIDE. Loud notes (the `!` in a
+  slabkit seq) are accented: louder, brighter, and a run of them climbs
+  higher with RES up. Overlapping notes slide. Presets: `classic-squelch`,
+  `square-bounce`, `wet-scream`, `round-line`; demo `songs/squelch_acid.py`.
+
 - **SM-24 Mono sounds like an MS-20.** Its LPF MODE gains **K35** and
   **OTA**, the early and late MS-20 filters. Bass stays full at any PEAK,
   the peak sits on CUT, and both the HPF and LPF resonate up to

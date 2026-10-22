@@ -44,6 +44,7 @@ test {
 /// walks the same list.
 pub const builtin_machines = [_][]const u8{
     "machines/ms20/ms20.fy",
+    "machines/acid/acid.fy",
     "machines/cream/cream.fy",
     "machines/fm86/fm86.fy",
     "machines/drum2/drum2.fy",

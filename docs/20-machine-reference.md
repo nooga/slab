@@ -8,6 +8,7 @@ project or preset stores (docs/19): real units for knobs, the option
 
 | id | name | kind | voices | prefix |
 |---|---|---|---|---|
+| [`acid`](#acid) | Squelch 33 | instrument | mono | `—` |
 | [`bass`](#bass) | Fretwire | instrument | 4 | `bs-` |
 | [`concoction`](#concoction) | Concoction | instrument | 8 | `cn-` |
 | [`cream`](#cream) | Mog Passenger | instrument | mono | `cr-` |
@@ -46,6 +47,31 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`shift2`](#shift2) | Sideband | effect | — | `shift-` |
 | [`tape2`](#tape2) | Tape | effect | — | `tape-` |
 | [`verb2`](#verb2) | Verb | effect | — | `verb-` |
+
+## acid
+
+**Squelch 33**, instrument, mono.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `tune` | VCO | TUNE | -12 … 12 | 0 | linear |
+| `wave` | VCO | WAVE | 0 SAW / 1 SQR | 0 | switch |
+| `cutoff` | VCF | CUT | 30 … 8000 | 260 | exp |
+| `resonance` | VCF | RES | 0 … 1 | 0.6 | linear |
+| `env-mod` | VCF | ENV | 0 … 1 | 0.5 | linear |
+| `decay` | VCF | DEC | 0.2 … 2 | 0.5 | exp |
+| `accent` | PLAY | ACC | 0 … 1 | 0.7 | linear |
+| `slide` | PLAY | SLIDE | 0.02 … 0.3 | 0.06 | exp |
+| `drive` | DRIVE | DRV | 0.25 … 4 | 1 | exp |
+| `mode` | DRIVE | MODE | 0 HOT / 1 WET | 0 | switch |
+| `level` | OUT | LVL | 0 … 1 | 0.68 | pow |
+
+Presets:
+
+- `classic-squelch` — Saw, RES high, a medium sweep: accents bark and stack
+- `round-line` — Low RES and little sweep: a round bassline under a mix
+- `square-bounce` — Square, short decay, moderate RES: a hollow rubbery line
+- `wet-scream` — WET mode driven, RES near the top: screaming accents
 
 ## bass
 

@@ -351,3 +351,33 @@ hatch) is a good early proof.
 7. Panel: declare the strips (docs/15); custom ADSR cell.
 8. Global spilling (durable follow-up) to optionally collapse hot stages back
    inline; polyphony via a higher-order voice-pool machine (docs/15).
+
+## Squelch 33: the acid filter's own synth (2026-10-22)
+
+HOT/WET stayed in the SM-24 Mono, and the same kernel (`ms20_lpf.fy`,
+unchanged) now also drives `machines/acid`, a 303-style mono voice in
+`kernels/06-voices/acid_voice.fy`: one VCO (saw, or a square with a
+little of the ramp on its tops), the LPF at 4x, a decay-only MEG with
+ENV MOD (5 octaves at full), a VCA that decays over 3 s and closes in
+8 ms on key-up.
+
+- **Accent** is velocity over 0.8. An accented note runs a second MEG
+  at the 200 ms minimum decay; that envelope pushes the VCA directly
+  (x[1 + 1.2 ACC]) and feeds the accent RC (15 ms, 60 ms at full RES),
+  whose output adds 4 octaves x level to the cutoff. With RES up the RC
+  does not empty between notes, so accents in a row stack.
+- **Slide**: a note that overlaps the last (`ctx.legato`) glides on an
+  RC covering 3 time constants in SLIDE, and retriggers nothing.
+
+Measured (slabkit renders, A1 lines, 120-128 BPM):
+
+| | target | result |
+|---|---|---|
+| accent level | +4..6 dB | +4.3..5.3 dB at RES 0.3, +3.3..4.6 at 0.9 |
+| accent attack centroid | brighter | +40% at RES 0.3, +20% at 0.9 |
+| accent stacking, 3 in a row | climbs at high RES | +15% at RES 0.9, +5% at 0.3 |
+| fundamental loss, RES 0 -> 1 | the acid thinning | -13 dB HOT, -13.4 dB WET |
+| loudest partial, CUT 400 | 1.5-2 oct up | 654 Hz HOT, 785 Hz WET |
+| slide 60 ms | lands in ~60 ms | ~50-60 ms, no retrigger |
+| preset loudness on a line | -20 dB RMS +-1 | -20.0 .. -19.6 |
+| cost | | 233 ns/sample ReleaseFast |
