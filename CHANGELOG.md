@@ -6,6 +6,8 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+## 0.0.15 — 2026-10-22
+
 - **The SM-24 Mono has a patch panel.** Its new PATCH page holds four
   cords. Drag a jack from the dock onto a ringed knob (LPF CUT, HPF CUT,
   PW, VCO2 PITCH, LVL, MG FREQ), or pick SRC and DEST on a cord row. The
