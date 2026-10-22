@@ -67,6 +67,15 @@ class FX:
             self.rack = make_rack(kind="effect", preset=preset)
         if self.rack is not None:
             machine_id, preset = self.rack.machine_id, None
+            # rk_m1=… turns the rig's macro; rk_chain=… its CHAIN.
+            for k in [k for k in params if re.fullmatch(r"rk[-_]m[1-8]", k)]:
+                self.rack.macro(int(k[-1]), value=params.pop(k))
+            if "rk_chain" in params or "rk-chain" in params:
+                v = params.pop("rk_chain", params.pop("rk-chain", 0))
+                if self.rack._state is not None:
+                    self.rack._state["chain"] = v
+                else:
+                    self.rack.chain = v
         self.machine_id = machine_id
         self.preset = preset
         self.bypass = bypass

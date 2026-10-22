@@ -25,19 +25,19 @@ include "../lib/manifest.fy"
   sidechain
 
   "LOW" "THRESH" "mlo-thresh" MultiParams.lo MbBandP.thresh-db + -48.0 0.0 -18.0 curve-lin knob
-  "LOW" "RATIO"  "mlo-ratio"  MultiParams.lo MbBandP.ratio +      1.0 10.0 2.0 curve-pow knob
+  "LOW" "RATIO"  "mlo-ratio"  MultiParams.lo MbBandP.ratio +      1.0 100.0 2.0 curve-exp knob
   "LOW" "GAIN"   "mlo-gain"   MultiParams.lo MbBandP.gain-db +  -12.0 12.0 0.0 curve-lin knob
   "MID" "THRESH" "mmid-thresh" MultiParams.mid MbBandP.thresh-db + -48.0 0.0 -18.0 curve-lin knob
-  "MID" "RATIO"  "mmid-ratio"  MultiParams.mid MbBandP.ratio +      1.0 10.0 2.0 curve-pow knob
+  "MID" "RATIO"  "mmid-ratio"  MultiParams.mid MbBandP.ratio +      1.0 100.0 2.0 curve-exp knob
   "MID" "GAIN"   "mmid-gain"   MultiParams.mid MbBandP.gain-db +  -12.0 12.0 0.0 curve-lin knob
   "HIGH" "THRESH" "mhi-thresh" MultiParams.hi MbBandP.thresh-db + -48.0 0.0 -18.0 curve-lin knob
-  "HIGH" "RATIO"  "mhi-ratio"  MultiParams.hi MbBandP.ratio +      1.0 10.0 2.0 curve-pow knob
+  "HIGH" "RATIO"  "mhi-ratio"  MultiParams.hi MbBandP.ratio +      1.0 100.0 2.0 curve-exp knob
   "HIGH" "GAIN"   "mhi-gain"   MultiParams.hi MbBandP.gain-db +  -12.0 12.0 0.0 curve-lin knob
   "XOVER" "LO"  "multi-xlo" MultiParams.xlo-hz 40.0  400.0  120.0  curve-exp knob
   "XOVER" "HI"  "multi-xhi" MultiParams.xhi-hz 1000.0 8000.0 2500.0 curve-exp knob
   "TIME" "ATK"  "multi-atk" MultiParams.atk-s 0.0005 0.1 0.01 curve-exp knob
   "TIME" "REL"  "multi-rel" MultiParams.rel-s 0.02   1.0 0.15 curve-exp knob
-  "OUT" "UP"    "multi-up"  MultiParams.up     0.0   1.0 0.0 curve-lin knob
+  "OUT" "UP"    "multi-up"  MultiParams.up     0.0   1.5 0.0 curve-lin knob
   "OUT" "MIX"   "multi-mix" MultiParams.mix    0.0   1.0 1.0 curve-pow knob
   "OUT" "OUT"   "multi-out" MultiParams.out-db -12.0 12.0 0.0 curve-lin knob
   "LOW" 3 strip

@@ -127,13 +127,21 @@ class Rack:
         """Macro 1..8: name it, set its value (0..1); returns it for map()."""
         if not 1 <= number <= MAX_MACROS:
             raise SlabError(f"rack {self.name}: macros are 1..{MAX_MACROS}, not {number}")
-        self._own()
+        if value is not None and not 0 <= value <= 1:
+            raise SlabError(f"rack {self.name}: macro {number} value {value} is outside [0, 1]")
+        if self._state is not None:
+            # A rig from a preset: its macros can still be turned and renamed.
+            saved = self._state.setdefault("macros", [{"name": "", "value": 0}] * MAX_MACROS)
+            saved[number - 1] = dict(saved[number - 1])
+            if name is not None:
+                saved[number - 1]["name"] = name
+            if value is not None:
+                saved[number - 1]["value"] = value
+            return Macro(number, saved[number - 1]["name"], saved[number - 1]["value"])
         m = self.macros[number - 1]
         if name is not None:
             m.name = name
         if value is not None:
-            if not 0 <= value <= 1:
-                raise SlabError(f"rack {self.name}: macro {number} value {value} is outside [0, 1]")
             m.value = value
         return m
 

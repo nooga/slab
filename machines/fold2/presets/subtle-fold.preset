@@ -1,0 +1,1 @@
+{"slab": "preset", "schema": 1, "machine": "fold2", "note": "A touch of folding in parallel: harmonics added without losing the note", "params": {"fold-fold": 7, "fold-symm": 0, "fold-shape": 0, "fold-dyn": 0, "fold-stages": 0, "fold-tight": 20, "fold-tone": 16000, "fold-auto": 1, "fold-mix": 0.45, "fold-out": 0}}
