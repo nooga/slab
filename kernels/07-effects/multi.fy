@@ -23,7 +23,9 @@
   UP adds upward compression under every band: below THRESH - 10 dB
   the band is lifted by UP x [the distance down], so UP 1 is 2:1
   upward, capped at +12 dB and faded out towards -60 dBFS so the noise
-  floor stays put.  Downward above, upward below: the band's level is
+  floor stays put.  UP runs on to 1.5 for OTT [docs/43]: 4:1 upward at
+  1.5, the cap opening from 12 dB at UP 1 to 24 dB at 1.5.  RATIO runs
+  to 100, OTT's near-brickwall.  Downward above, upward below: the band's level is
   pulled towards a window around its threshold.
 
   MIX blends with the crossover's own sum [the dry path goes through the
@@ -71,6 +73,7 @@ ustruct: MbBandP
   f64 rel-c
   f64 pk-c
   f64 gain-lin
+  f64 up-cap    ( log2 )
 ;
 
 ustruct: MultiParams
@@ -113,6 +116,7 @@ dsp: mb-band-prepare | bp:MbBandP sr atk rel pk up |
   t MB-UP-BELOW f- -> bp.uthr-l2
   1.0 bp.ratio 1.0 fmax f/ 1.0 f- -> bp.slope
   up MB-UP-SLOPE f* -> bp.up-k
+  up 1.0 f- 0.0 fmax 2.0 f* 1.0 f+  MB-UP-CAP f* -> bp.up-cap
   atk sr comp-tau-coeff -> bp.atk-c
   rel sr comp-tau-coeff -> bp.rel-c
   pk sr comp-tau-coeff -> bp.pk-c
@@ -178,7 +182,7 @@ dsp: mb-band | b:MbBand bp:MbBandP x -- gain |
   l  0.0 MB-KNEE-HALF f-  0.0  sel  fsel-lt  bp.slope f* | down |
   ( upward: lift below uthr, capped, faded in from the floor )
   bp.uthr-l2 la f-  bp.up-k f* | lift0 |
-  lift0  MB-UP-CAP fmin  la MB-FLOOR f-  fmin  0.0 fmax | lift |
+  lift0  bp.up-cap fmin  la MB-FLOOR f-  fmin  0.0 fmax | lift |
   down lift f+ | gt |
   b.g | g0 |
   gt g0 bp.atk-c bp.rel-c fsel-lt | c |

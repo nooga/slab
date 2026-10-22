@@ -80,6 +80,10 @@ pub const builtin_machines = [_][]const u8{
     "machines/resonator2/resonator2.fy",
     "machines/buffer2/buffer2.fy",
     "machines/phaser2/phaser2.fy",
+    "machines/wob2/wob2.fy",
+    "machines/oct2/oct2.fy",
+    "machines/fold2/fold2.fy",
+    "machines/grind2/grind2.fy",
 };
 
 // Soft cap used to size UI-side menu arrays; the registry itself is a

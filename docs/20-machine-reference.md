@@ -35,18 +35,22 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`delay2`](#delay2) | Delay | effect | — | `delay-` |
 | [`eq2`](#eq2) | EQ | effect | — | `eq-` |
 | [`era`](#era) | Era | effect | — | `era-` |
+| [`fold2`](#fold2) | Folder | effect | — | `fold-` |
 | [`funk`](#funk) | Funk Overload | effect | — | `funk-` |
 | [`fxrack`](#fxrack) | FX Rack | effect | — | `rk-` |
 | [`gate2`](#gate2) | Gate | effect | — | `gate-` |
 | [`geq8`](#geq8) | GEQ | effect | — | `geq-` |
+| [`grind2`](#grind2) | Grinder | effect | — | `grind-` |
 | [`limiter2`](#limiter2) | Limiter | effect | — | `lim-` |
 | [`multi2`](#multi2) | Multi | effect | — | `—` |
+| [`oct2`](#oct2) | Octaver | effect | — | `oct-` |
 | [`phaser2`](#phaser2) | Phaser | effect | — | `ph-` |
 | [`resonator2`](#resonator2) | Modal Bank | effect | — | `rs-` |
 | [`sat2`](#sat2) | Saturator | effect | — | `sat-` |
 | [`shift2`](#shift2) | Sideband | effect | — | `shift-` |
 | [`tape2`](#tape2) | Tape | effect | — | `tape-` |
 | [`verb2`](#verb2) | Verb | effect | — | `verb-` |
+| [`wob2`](#wob2) | Wobble | effect | — | `wob-` |
 
 ## acid
 
@@ -1430,6 +1434,7 @@ Presets:
 - `smush-1200` — SP-1200 crunch: 12-bit 26 kHz grit under a hard SMUSH squash, no wow
 - `smush-slam` — SMUSH slam: everything flattened and dirty, 50% under the dry kit
 - `smush-vinyl` — SP-303 Vinyl Sim pump on a drum loop: SMUSH 20:1, the room and hiss breathe up between hits, LO-FI analog, a little wow
+- `supercharge` — a tube compressor pushed: VARI's rising ratio, slow enough to let the attack through, and the color driven hard - fat and forward on bass, drums or a whole bus
 - `vari-drums` — vari-mu on drums: VARI 4:1, thick and warm
 - `vari-glue` — Fairchild on the mix bus: VARI 2:1 over its wide knee, slow floor, warm
 
@@ -1445,6 +1450,9 @@ Presets:
 | `chorus-tone` | CHORUS | TONE | 2000 … 16000 | 8000 | exp |
 | `chorus-spread` | CHORUS | SPREAD | 0 … 1 | 1 | linear |
 | `chorus-mix` | CHORUS | MIX | 0 … 1 | 0.5 | pow |
+| `chorus-fb` | CHOKE | FDBK | 0 … 0.9 | 0 | linear |
+| `chorus-hp` | CHOKE | WET HP | 0 … 800 | 0 | pow |
+| `chorus-invert` | CHOKE | INVERT | 0 OFF / 1 ON | 0 | switch |
 
 Presets:
 
@@ -1593,6 +1601,32 @@ Presets:
 - `sp1200` — E-mu SP-1200, channels 3-6: 26.04 kHz, 12-bit, fixed output lowpass
 - `sp1200-open` — E-mu SP-1200, channels 7-8: 26.04 kHz, 12-bit, unfiltered
 
+## fold2
+
+**Folder**, stereo insert effect.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `fold-fold` | FOLD | FOLD | 0 … 40 | 12 | linear |
+| `fold-symm` | FOLD | SYMM | -1 … 1 | 0 | linear |
+| `fold-shape` | FOLD | SHAPE | 0 … 1 | 0 | linear |
+| `fold-dyn` | FOLD | DYN | -1 … 1 | 0 | linear |
+| `fold-stages` | FOLD | STAGES | 0 1 / 1 2 / 2 3 / 3 4 | 0 | switch |
+| `fold-tight` | VOICE | TIGHT | 10 … 500 | 20 | exp |
+| `fold-tone` | VOICE | TONE | 500 … 20000 | 16000 | exp |
+| `fold-auto` | OUT | AUTO | 0 OFF / 1 ON | 1 | switch |
+| `fold-mix` | OUT | MIX | 0 … 1 | 1 | pow |
+| `fold-out` | OUT | LEVEL | -24 … 12 | 0 | linear |
+
+Presets:
+
+- `buchla-ring` — Sine folds with a little offset: rounder, ringing, bell-ish on held notes
+- `dynamic-fold` — Folds with the playing: hard picks fold over, the tail unfolds back to the note
+- `fold-lead` — Three stages, halfway to sine: a screaming lead that stays articulate
+- `gnarl-bass` — Bass growl: lopsided folds for even harmonics, top rolled off, the dry low end blended under
+- `serge-buzz` — Triangle folds, two stages: the West Coast buzz, every harmonic up to the top
+- `subtle-fold` — A touch of folding in parallel: harmonics added without losing the note
+
 ## funk
 
 **Funk Overload**, stereo insert effect.
@@ -1631,6 +1665,18 @@ Presets:
 Presets:
 
 - `parallel-squash` — Parallel compression: the dry signal beside a crushed, saturated copy. AMOUNT brings the copy up under it.
+- `harsh/bit-guitar` — Lows cut, crushed to 8 bits at 11 kHz, into a clean amp: aliased, zippy guitar.
+- `harsh/cross-bass` — Justice-style bass: a clean sub lane, and a dirty lane cut below 250 Hz, crushed to 12 bits, overdriven, through a bright Brit 4x12 and slammed by a FET.
+- `harsh/four-slot` — Distructor's layout: distortion, filter, chorus and amp in four slots, each slot's mix on a knob.
+- `harsh/gated-fuzz` — A starved fuzz into a fast gate: notes sputter and cut off dead.
+- `harsh/kodiak` — Big and gnarly: a clean low-passed sub lane under a lane of octave-down, dynamic folding, RAT and OTT. SIZE is the sub, GNARL the dirt.
+- `harsh/octavia-portal` — Octavia into an auto-wah, folded, choked by the chorus, ground back up with sizzle and swept by a phaser - the second reference chain.
+- `harsh/ott-sandwich` — OTT, overdrive, OTT: tails and fizz pulled up, ground, and pulled up again.
+- `harsh/phantom-stack` — Three Grinders in a row - soft, RAT, hard - then a phaser: stacked clipping that turns any saw into a wall.
+- `harsh/ring-growl` — The dry signal beside a lane ring-modulated by a low carrier and overdriven: growl and clang under the note.
+- `harsh/royal-split` — One bass, two amps: an octave-up lane through a high-gain 4x12 beside an octave-down lane through a bass 8x10.
+- `harsh/sandwich` — Octave and wobble into overdrive, choked with an inverted chorus, then brought back with a grill distortion and OTT on top - the distortion-chorus-distortion sandwich.
+- `harsh/wobble-oktaver` — The GR6 wobble oktaver: the OC-2 sub under the note, a synced lowpass wobble on eighths, into fuzz. RATE steps the division, DEPTH opens the sweep.
 
 ## gate2
 
@@ -1713,6 +1759,45 @@ Presets:
 - `snare-crack` — Snare: low cut, body, ring out, crack and air
 - `telephone` — Phone line: 400 Hz to 3 kHz, honky
 
+## grind2
+
+**Grinder**, stereo insert effect.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `grind-algo` | GRIND | ALGO | 0 OVERDRIVE / 1 RAT / 2 FUZZ / 3 SOFT / 4 HARD / 5 FOLD / 6 SINE / 7 CUBE / 8 RECT / 9 DEAD | 0 | switch |
+| `grind-drive` | GRIND | DRIVE | 0 … 60 | 18 | linear |
+| `grind-bias` | GRIND | BIAS | -1 … 1 | 0 | linear |
+| `grind-stages` | GRIND | STAGES | 0 1 / 1 2 / 2 3 / 3 4 | 0 | switch |
+| `grind-lo-hz` | EMPH | LO HZ | 40 … 800 | 120 | exp |
+| `grind-lo-db` | EMPH | LO DB | -18 … 18 | 0 | linear |
+| `grind-hi-hz` | EMPH | HI HZ | 800 … 12000 | 3000 | exp |
+| `grind-hi-db` | EMPH | HI DB | -18 … 18 | 0 | linear |
+| `grind-sizzle` | TEXTURE | SIZZLE | 0 … 1 | 0 | pow |
+| `grind-flux` | TEXTURE | FLUX | 0 … 1 | 0 | linear |
+| `grind-phase` | TEXTURE | PHASE | 0 … 1 | 0 | linear |
+| `grind-tone` | OUT | TONE | 500 … 20000 | 12000 | exp |
+| `grind-auto` | OUT | AUTO | 0 OFF / 1 ON | 1 | switch |
+| `grind-clip` | OUT | CLIP | 0 OFF / 1 SOFT / 2 HARD | 1 | switch |
+| `grind-mix` | OUT | MIX | 0 … 1 | 1 | pow |
+| `grind-out` | OUT | LEVEL | -24 … 12 | 0 | linear |
+
+Presets:
+
+- `blood-overdrive` — Op-amp overdrive with the lows trimmed going in and the fizz rolled off after: the all-purpose dirt
+- `burger-stack` — Cube curve three deep, highs emphasized, sizzle on: dense, wide, gnarly
+- `cross-dirt` — Electro bass dirt: lows out of the clip, upper mids into it, two stages - the dirty layer over a clean sub
+- `dead-zone` — The dead zone twice: quiet parts drop out and edges step - sputtering crossover grit
+- `fast-dist` — A straight limit at high gain: square and loud, still bright
+- `flux-bass` — The low end drives the clip: every bass hit pushes the top into the grit
+- `grill` — Folds, bias that follows the playing and zero-crossing sizzle, twice: the burger grill
+- `muff-fuzz` — Biased fuzz, sustain for days, the top rolled to a wool
+- `phase-smear` — Phase distortion into a soft clip: the note wobbles against itself, watery to hashy
+- `rat` — Hard clip after a mid push, lows cut before: the RAT on a bass or a synth
+- `rect-hash` — Rectified: an octave-up hash under the note, half wet
+- `ripple` — Sine ripple on the curve: a glassy, metallic grind with sizzle in the gaps
+- `soft-clipper` — Just the corners rounded: glue on a bass or a drum bus
+
 ## limiter2
 
 **Limiter**, stereo insert effect.
@@ -1731,19 +1816,19 @@ Presets:
 | param | section | label | range | default | notes |
 |---|---|---|---|---|---|
 | `mlo-thresh` | LOW | THRESH | -48 … 0 | -18 | linear |
-| `mlo-ratio` | LOW | RATIO | 1 … 10 | 2 | pow |
+| `mlo-ratio` | LOW | RATIO | 1 … 100 | 2 | exp |
 | `mlo-gain` | LOW | GAIN | -12 … 12 | 0 | linear |
 | `mmid-thresh` | MID | THRESH | -48 … 0 | -18 | linear |
-| `mmid-ratio` | MID | RATIO | 1 … 10 | 2 | pow |
+| `mmid-ratio` | MID | RATIO | 1 … 100 | 2 | exp |
 | `mmid-gain` | MID | GAIN | -12 … 12 | 0 | linear |
 | `mhi-thresh` | HIGH | THRESH | -48 … 0 | -18 | linear |
-| `mhi-ratio` | HIGH | RATIO | 1 … 10 | 2 | pow |
+| `mhi-ratio` | HIGH | RATIO | 1 … 100 | 2 | exp |
 | `mhi-gain` | HIGH | GAIN | -12 … 12 | 0 | linear |
 | `multi-xlo` | XOVER | LO | 40 … 400 | 120 | exp |
 | `multi-xhi` | XOVER | HI | 1000 … 8000 | 2500 | exp |
 | `multi-atk` | TIME | ATK | 0.0005 … 0.1 | 0.01 | exp |
 | `multi-rel` | TIME | REL | 0.02 … 1 | 0.15 | exp |
-| `multi-up` | OUT | UP | 0 … 1 | 0 | linear |
+| `multi-up` | OUT | UP | 0 … 1.5 | 0 | linear |
 | `multi-mix` | OUT | MIX | 0 … 1 | 1 | pow |
 | `multi-out` | OUT | OUT | -12 … 12 | 0 | linear |
 
@@ -1752,8 +1837,40 @@ Presets:
 - `de-harsh` — a fast 4:1 on the top above 4.5 kHz for cymbals and harsh synths
 - `low-control` — holds kick and bass to one level under 150 Hz, 3:1; mid and top untouched
 - `master-balance` — mastering: every band a little - low 2:1 slow, mid 1.5:1, top 2:1 on peaks
+- `ott` — OTT: three bands at 88 Hz and 2.5 kHz squashed from both sides - near-brickwall down, 4:1 up - so tails, noise and fizz come up to full level. Lower MIX for depth.
 - `radio` — dense and loud: all bands 4:1, quick, upward lift under the quiet parts
 - `upward-lift` — brings the detail up: gentle downward, strong upward below each threshold
+
+## oct2
+
+**Octaver**, stereo insert effect.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `oct-track` | TRACK | TRACK | 150 … 2000 | 600 | exp |
+| `oct-glitch` | TRACK | GLITCH | 0 … 1 | 0 | linear |
+| `oct-thresh` | TRACK | THRESH | -70 … -20 | -50 | linear |
+| `oct-mode` | TRACK | MODE | 0 SQUARE / 1 FLIP | 1 | switch |
+| `oct-oct1` | SUB | OCT 1 | 0 … 1 | 0.8 | pow |
+| `oct-cut1` | SUB | CUT 1 | 60 … 3000 | 700 | exp |
+| `oct-res1` | SUB | RES 1 | 0 … 1 | 0.2 | linear |
+| `oct-oct2` | SUB | OCT 2 | 0 … 1 | 0 | pow |
+| `oct-cut2` | SUB | CUT 2 | 40 … 2000 | 350 | exp |
+| `oct-res2` | SUB | RES 2 | 0 … 1 | 0.2 | linear |
+| `oct-up` | UP | UP | 0 … 1 | 0 | pow |
+| `oct-fuzz` | UP | FUZZ | 0 … 1 | 0.5 | linear |
+| `oct-direct` | OUT | DIRECT | 0 … 1 | 1 | pow |
+| `oct-out` | OUT | LEVEL | -24 … 12 | 0 | linear |
+
+Presets:
+
+- `glitch-sub` — The pedal pushed: GLITCH chatters the divider on chords and fret noise, the sub jumps and sputters
+- `oc-sub` — The OC-2 sub: one octave down, round, under the dry note
+- `octavia` — The Octavia: rectified octave up into a fuzz, dry mostly out - best high on the neck, ring-mod on chords
+- `octavia-clean` — Clean rectifier octave up beside the dry: a glassy doubled note
+- `sub-and-up` — Octave up fuzz and an octave down at once around the dry: one note, three registers
+- `synth-sub` — The divider's square an octave down, resonant lowpass on it: a buzzy synth bass from a guitar
+- `two-down` — One and two octaves down under the dry: organ-deep single notes
 
 ## phaser2
 
@@ -1951,3 +2068,63 @@ Presets:
 - `velvet-room` — Dense, flutter-free room for drums and guitars: velvet scattering, no input smear
 - `vocal-hall` — Smooth hall for a lead vocal: a sixteenth of predelay, the bottom cut
 - `vocal-plate` — Aperitivo: vocal / lead plate
+
+## wob2
+
+**Wobble**, stereo insert effect.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `wob-type` | FILTER | TYPE | 0 SVF / 1 WAH | 0 | switch |
+| `wob-cutoff` | FILTER | CUTOFF | 20 … 18000 | 400 | exp |
+| `wob-res` | FILTER | RES | 0 … 1 | 0.5 | linear |
+| `wob-morph` | FILTER | MORPH | 0 … 1 | 0 | linear |
+| `wob-slope` | FILTER | SLOPE | 0 12 / 1 24 | 0 | switch |
+| `wob-drive` | FILTER | DRIVE | 0 … 24 | 0 | linear |
+| `wob-source` | MOD | SOURCE | 0 LFO / 1 STEP / 2 ENV / 3 PEDAL | 0 | switch |
+| `wob-depth` | MOD | DEPTH | -6 … 6 | 3 | linear |
+| `wob-amp` | MOD | AMP | 0 … 1 | 0 | linear |
+| `wob-glide` | MOD | GLIDE | 0 … 1 | 0 | linear |
+| `wob-pos` | MOD | POS | 0 … 1 | 0.5 | linear |
+| `wob-shape` | LFO | SHAPE | 0 SINE / 1 TRI / 2 SAW UP / 3 SAW DN / 4 SQUARE / 5 S&H / 6 RANDOM | 0 | switch |
+| `wob-rate` | LFO | RATE | 0.05 … 40 | 2 | exp |
+| `wob-sync` | LFO | SYNC | 0 FREE / 1 SYNC | 1 | switch |
+| `wob-div` | LFO | DIV | 0 4 BAR / 1 2 BAR / 2 1 BAR / 3 1/2 / 4 1/4 / 5 1/8 / 6 1/16 / 7 1/32 / 8 1/4D / 9 1/8D / 10 1/16D / 11 1/4T / 12 1/8T / 13 1/16T | 5 | switch |
+| `wob-phase` | LFO | PHASE | 0 … 1 | 0 | linear |
+| `wob-spread` | LFO | SPREAD | 0 … 180 | 0 | linear |
+| `wob-retrig` | LFO | RETRIG | 0 OFF / 1 ON | 0 | switch |
+| `wob-s1` | STEP | 1 | 0 … 1 | 1 | linear |
+| `wob-s2` | STEP | 2 | 0 … 1 | 0 | linear |
+| `wob-s3` | STEP | 3 | 0 … 1 | 0.5 | linear |
+| `wob-s4` | STEP | 4 | 0 … 1 | 0 | linear |
+| `wob-s5` | STEP | 5 | 0 … 1 | 1 | linear |
+| `wob-s6` | STEP | 6 | 0 … 1 | 0 | linear |
+| `wob-s7` | STEP | 7 | 0 … 1 | 0.75 | linear |
+| `wob-s8` | STEP | 8 | 0 … 1 | 0.25 | linear |
+| `wob-s9` | STEP | 9 | 0 … 1 | 1 | linear |
+| `wob-s10` | STEP | 10 | 0 … 1 | 0 | linear |
+| `wob-s11` | STEP | 11 | 0 … 1 | 0.5 | linear |
+| `wob-s12` | STEP | 12 | 0 … 1 | 0.25 | linear |
+| `wob-s13` | STEP | 13 | 0 … 1 | 1 | linear |
+| `wob-s14` | STEP | 14 | 0 … 1 | 0.5 | linear |
+| `wob-s15` | STEP | 15 | 0 … 1 | 0.75 | linear |
+| `wob-s16` | STEP | 16 | 0 … 1 | 0 | linear |
+| `wob-length` | STEP | LEN | 1 … 16 | 16 | linear |
+| `wob-sens` | ENV | SENS | -12 … 36 | 12 | linear |
+| `wob-atk` | ENV | ATK | 0.001 … 0.1 | 0.005 | exp |
+| `wob-rel` | ENV | REL | 0.02 … 1 | 0.15 | exp |
+| `wob-mix` | OUT | MIX | 0 … 1 | 1 | linear |
+| `wob-out` | OUT | LEVEL | -24 … 12 | 0 | linear |
+
+Presets:
+
+- `auto-wah-bass` — Envelope wah an octave down for bass: the quack starts at 180 Hz
+- `auto-wah-guitar` — Envelope wah for guitar: each pick throws the wah from heel to toe and it settles as the note dies
+- `envelope-filter` — Envelope-swept resonant lowpass, the funk bass envelope filter: harder notes open it further
+- `pedal-wah` — A wah pedal: POS is the treadle, for automation or a macro; 0 heel, 1 toe
+- `sample-hold` — Random bandpass steps on sixteenths, stereo-spread: the robot burble
+- `step-filter` — A 16-step filter pattern on sixteenths, slightly glided: the sequenced squelch
+- `trance-gate` — The step pattern on the level only: a sixteenth-note gate, filter left open
+- `tremolo` — Sine tremolo on eighths, the filter open: AMP does the work
+- `wobble-eighths` — Sine wobble on eighth notes: a 24 dB lowpass breathing from 120 Hz up five octaves, driven - the dubstep and electro bass move
+- `wub-triplets` — Saw-down wub on eighth triplets: each beat opens hard and closes, the lowpass resonant

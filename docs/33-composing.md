@@ -167,6 +167,31 @@ Extended chords can live above a simple root bass. Let short arps and
 long pads occupy different registers or different moments. Sparse calls
 and responses often leave more character than a continuous lead line.
 
+### Check where the bass really sounds
+
+The written bass line and the pitch you hear can be octaves apart. The
+preset decides, not the clip. A Juno `RANGE` of 16' plays an octave
+under the written note. A sub oscillator adds another octave below
+that, and an octaver effect or rig goes lower again. Write `octave=1`
+into a 16' preset with SUB up, and F#1 (46 Hz) sounds at 23 Hz, with a
+sub at 11.5 Hz. That is felt, not heard, and the limiter spends its
+headroom on it.
+
+Before writing the line, work out the sounding pitch:
+
+```text
+written note × RANGE (16' 0.5, 8' 1, 4' 2) → fundamental
+fundamental ÷ 2 for SUB, ÷ 2 or ÷ 4 for an octaver → lowest part
+```
+
+Keep a synth bass's fundamental between about 40 and 110 Hz (E1–A2)
+and its lowest part, sub included, at or above about 30 Hz. Pick the
+octave argument and the preset's range together. A bass that should
+growl wants its fundamental near the top of that window, so its second
+and third harmonics land in the 150–400 Hz range that small speakers
+reproduce. After rendering, measure the stem's lowest strong peak in
+the spectrum and compare it with the line you wrote.
+
 There are **32 tracks including buses**, with **64 note clips and 2,048
 notes per track**. Eight bars of straight sixteenth notes use 128 notes;
 128 bars use the whole 2,048-note budget before any extra layer. More

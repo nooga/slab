@@ -1,0 +1,1 @@
+{"slab": "preset", "schema": 1, "machine": "fold2", "note": "Three stages, halfway to sine: a screaming lead that stays articulate", "params": {"fold-fold": 24, "fold-symm": 0, "fold-shape": 0.5, "fold-dyn": 0, "fold-stages": 2, "fold-tight": 20, "fold-tone": 9000, "fold-auto": 1, "fold-mix": 1, "fold-out": 0}}
