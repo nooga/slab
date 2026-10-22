@@ -67,6 +67,12 @@ ustruct: Ms20VoiceState
   Drift dr1  Drift dr2  Drift drc  Drift drv
   f64 dro-x  f64 dro-y   ( the mix's coupling cap )
   Ms20Sk sk-hp  Ms20Sk sk-lp   ( K35/OTA modes: the HPF and LPF, at 4x )
+  ( the patch panel [ms20-cord-to] )
+  f64 jk 14            ( the jacks, by SRC option: written each sample, read the next )
+  f64 sh               ( S&H: noise held at each MG cycle )
+  f64 press            ( per-note pressure )
+  f64 mg-oct           ( MG FREQ from the cords, octaves, a sample late )
+  f64 cut-hz  f64 hpf-hz  f64 pw-v  f64 vca-v  f64 mg-hz  f64 det-v   ( what the cords make of the knobs )
 ;
 
 ustruct: Ms20VoiceParams
@@ -108,6 +114,9 @@ ustruct: Ms20VoiceParams
   f64 filter-delay     ( filter EG: key-down -> attack, seconds [EG1 DELAY] )
   f64 amp-hold         ( amp EG: key-up -> release, seconds [EG2 HOLD] )
   f64 age-amt          ( AGE 0..1: the analog layer )
+  f64 p-src 4          ( the four cords: SRC, DEST and AMT options [ms20.fy] )
+  f64 p-dst 4
+  f64 p-amt 4
   ( derived per block by ms20-block-prepare )
   EnvRcCoefs amp-co
   EnvRcCoefs flt-co
@@ -121,6 +130,8 @@ ustruct: Ms20VoiceParams
   f64 drift-c  f64 cut-drift-c
   f64 bleed
   f64 dro-a
+  f64 bay-on           ( 1 when a cord is in )
+  f64 bay-hpf          ( 1 when a cord reaches HPF CUT )
 ;
 
 ( ctx state params -- : a note.  A fresh note gates both envelopes from
@@ -143,6 +154,7 @@ dsp: ms20-voice-note-on
   state.phase2 0.0 f=  ctx.phase 2.618 f* ffrac  state.phase2  select -> state.phase2
   state.amp-env& params.amp-co& ctx.legato env-rc-trigger
   state.flt-env& params.flt-co& ctx.legato env-rc-trigger
+  ctx.pressure -> state.press
 ;
 
 ( ctx state params -- : per-note expression [docs/22]: the bend is
@@ -152,6 +164,7 @@ dsp: ms20-voice-note-expr
   ctx.hz 1.0 fmax log2 | o |
   o -> state.target-oct
   o -> state.oct
+  ctx.pressure -> state.press
 ;
 
 ( ctx state params -- : release both envelopes from where they are. )
@@ -161,8 +174,7 @@ dsp: ms20-voice-note-off
   state.flt-env& params.flt-co& env-rc-release
 ;
 
-( VCO1 with waveform select (tri/saw/pulse), octave scaled, phase advanced.
-  WAVE is a switch: only its wave is computed. pmod is the frequency
+( VCO1 with waveform select (tri/saw/pulse), octave scaled, phase advanced. pmod is the frequency
   multiplier from MG/EG routing, pw the effective pulse width. )
 dsp: v-vco1 | state:Ms20VoiceState params:Ms20VoiceParams pmod pw -- y |
   state.phase1
@@ -172,11 +184,12 @@ dsp: v-vco1 | state:Ms20VoiceState params:Ms20VoiceParams pmod pw -- y |
   | phase dt |
   phase dt phase-advance01
   -> state.phase1
-  params.vco1-wave 0.5 f<
-  [ phase tri-raw ]
-  [ params.vco1-wave 1.5 f<
-    [ phase dt params.curve1 vco-saw fneg ]
-    [ phase dt pw pulse-polyblep ]  ifte ]  ifte
+  ( a select, not an ifte: the three waves are cheap, and the versioned
+    bodies [32 at most] go to VCO2's waves, the filter MODE and the
+    patch panel )
+  params.vco1-wave 0.5 f<  phase tri-raw
+    params.vco1-wave 1.5 f<  phase dt params.curve1 vco-saw fneg
+      phase dt pw pulse-polyblep  select  select
 ;
 
 ( VCO2 with waveform select (saw/square/pulse/ring), detuned and
@@ -207,9 +220,9 @@ dsp: v-noise-raw | state:Ms20VoiceState -- y |
 ;
 
 ( VCO1*lvl + VCO2*lvl + noise*lvl at 0.62 per unit: clean. )
-dsp: v-osc-mix | state params:Ms20VoiceParams pmod1 pmod2 pw -- y |
-  state params pmod1 pw v-vco1  params.saw-level f*
-  state params pmod2 pw v-vco2  params.pulse-level f*  f+
+dsp: v-osc-mix | state:Ms20VoiceState params:Ms20VoiceParams pmod1 pmod2 pw -- y |
+  state params pmod1 pw v-vco1  dup state.jk& 11.0 f!i  params.saw-level f*
+  state params pmod2 pw v-vco2  dup state.jk& 12.0 f!i  params.pulse-level f*  f+
   state v-noise-raw  params.noise-level f*  f+
   0.62 f*
 ;
@@ -240,6 +253,38 @@ dsp: v-sk-sub | state:Ms20VoiceState params:Ms20VoiceParams x g -- y |
   state.sk-hp&  state.sk-lp&  params.sk-pr&  x g  ms20-sk-step
 ;
 
+( g pr -- : a cord on HPF CUT sets the K35/OTA HPF's g per sample. )
+dsp: ms20-sk-set-ghp | g pr:Ms20SkProfile -- |  g -> pr.g-hp ;
+
+( state params k -- s : the patch panel's pull on DEST option k: every
+  cord plugged into it, its jack x AMT.  The jack holds its source's
+  value from the sample before [a runtime-indexed load reads the state
+  as the word found it], so a cord can loop the VCA back into the
+  filter. )
+dsp: ms20-cord-to | state:Ms20VoiceState params:Ms20VoiceParams k -- s |
+  0.0 0.0 4 [ | i acc |
+    i 1.0 f+
+    acc
+      params.p-dst& i f@i k f=
+      state.jk& params.p-src& i f@i f@i  params.p-amt& i f@i f*
+      0.0 select
+    f+ ] times nip
+;
+
+( state params -- dests : the eight destinations, in their units:
+  PITCH and VCO2 +-2 octaves, PW +-0.45, the cutoffs +-5 octaves, VCA
+  gain +-1, MG FREQ +-4 octaves, FLT IN the signal at the mixer's level. )
+dsp: ms20-bay | state:Ms20VoiceState params:Ms20VoiceParams -- dpit d2 dpw dhc dlc dvca dmg din |
+  state params 1.0 ms20-cord-to 2.0 f*
+  state params 2.0 ms20-cord-to 2.0 f*
+  state params 3.0 ms20-cord-to 0.45 f*
+  state params 4.0 ms20-cord-to 5.0 f*
+  state params 5.0 ms20-cord-to 5.0 f*
+  state params 6.0 ms20-cord-to
+  state params 7.0 ms20-cord-to 4.0 f*
+  state params 8.0 ms20-cord-to 0.62 f*
+;
+
 ( io ctx state params -- : render one mono voice sample. )
 dsp: k-ms20-voice-sample | io ctx state:Ms20VoiceState params:Ms20VoiceParams -- |
   ( portamento, in octaves )
@@ -247,33 +292,67 @@ dsp: k-ms20-voice-sample | io ctx state:Ms20VoiceState params:Ms20VoiceParams --
   oct -> state.oct
   oct exp2 -> params.note-hz
   ( MG and the envelopes )
-  state.mg-phase  params.mg-freq params.inv-sample-rate f*  phase-advance01
-  dup -> state.mg-phase
-  params.mg-wave 0.02 0.98 fclamp mg-shape | mg |
+  state.mg-phase | mph0 |
+  params.mg-freq  state.mg-oct exp2 f* | mghz |
+  mghz -> state.mg-hz
+  mph0  mghz params.inv-sample-rate f*  phase-advance01 | mph |
+  mph -> state.mg-phase
+  mph params.mg-wave 0.02 0.98 fclamp mg-shape | mg |
   state.flt-env&  params.flt-co&  env-rc-step | fenv |
   state.amp-env&  params.amp-co&  env-rc-step | aenv |
+  ( the patch panel: the cords' pull on each destination, 0 with none in )
+  params.bay-on 0.5 f>
+  [ state params ms20-bay ]
+  [ 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 ]  ifte | dpit d2 dpw dhc dlc dvca dmg din |
+  dmg -> state.mg-oct
+  ( the jacks the next sample reads; VCO1, VCO2 and the VCA store theirs
+    below.  S&H takes the noise when the MG wraps. )
+  state.noise-rng 2.0 f* 1.0 f- | wn |
+  mph mph0  wn state.sh  fsel-lt | sh |
+  sh -> state.sh
+  fenv state.jk& 1.0 f!i
+  aenv state.jk& 2.0 f!i
+  aenv fneg state.jk& 3.0 f!i
+  mg state.jk& 4.0 f!i
+  mph 0.5  1.0 -1.0  fsel-lt state.jk& 5.0 f!i
+  sh state.jk& 6.0 f!i
+  wn state.jk& 7.0 f!i
+  oct 8.031359 f- state.jk& 8.0 f!i
+  state.vel state.jk& 9.0 f!i
+  state.press state.jk& 10.0 f!i
   ( pitch-mod = 1 + mg*mg-pitch + fenv*eg-pitch )
-  1.0  mg params.mg-pitch f* f+  fenv params.eg-pitch f* f+ | pmod |
+  1.0  mg params.mg-pitch f* f+  fenv params.eg-pitch f* f+  dpit exp2 f* | pmod |
   ( pw = clamp[pulse-width + mg*mg-pw, 0.02, 0.98] )
-  params.pulse-width  mg params.mg-pw f* f+  0.02 0.98 fclamp | pw |
+  params.pulse-width  mg params.mg-pw f* f+  dpw f+  0.02 0.98 fclamp | pw |
+  pw -> state.pw-v
+  params.detune  d2 12.0 f* f+ -> state.det-v
   ( AGE: the VCOs share a board, so most of their drift is common
     [~6 cents RMS at 1] and a third of it their own - the pitch wanders,
     the interval between them barely does )
   params.age-amt 0.0035 f* | dscale |
   state.drv& params.drift-c drift-step | dv |
   state.dr1& params.drift-c drift-step 0.35 f* dv f+ dscale f* 1.0 f+ pmod f* | pmod1 |
-  state.dr2& params.drift-c drift-step 0.35 f* dv f+ dscale f* 1.0 f+ pmod f* | pmod2 |
+  state.dr2& params.drift-c drift-step 0.35 f* dv f+ dscale f* 1.0 f+ pmod f*  d2 exp2 f* | pmod2 |
   state params pmod1 pmod2 pw v-osc-mix | m |
   ( the coupling cap, then the HPF; the EG's bleed and the noise floor
     join after it )
   m state.dro-x state.dro-y params.dro-a droop-hp | md |
   m -> state.dro-x
   md -> state.dro-y
-  fenv params.bleed f*  state.noise-rng 2.0 f* 1.0 f- 0.0001 f* | bl nf |
+  ( the noise floor reads the rng after the mixer's noise moved it )
+  fenv params.bleed f*  state.noise-rng 2.0 f* 1.0 f- 0.0001 f*  din f+ | bl nf |
   ( cutoff in octaves, like control voltage: base * 2^[env + MG] )
   fenv params.env-amount f*  mg params.mg-cutoff f*  f+
   state.drc& params.cut-drift-c drift-step  params.age-amt 0.07 f* f*  f+
-  exp2  params.cutoff f* | hz |
+  dlc f+  exp2  params.cutoff f* | hz |
+  hz -> state.cut-hz
+  ( a cord on HPF CUT moves its coefficients every sample )
+  params.bay-hpf 0.5 f>
+  [ params.hpf-cutoff dhc exp2 f* | hh |
+    hh -> state.hpf-hz
+    hh  1.0 params.inv-sample-rate f/  svf-g 2.0 f* -> params.hpf-f
+    hh 20.0 15000.0 fclamp 3.141592653589793 f* params.osr f/ tan-warp  params.sk-pr& ms20-sk-set-ghp ]
+  [ params.hpf-cutoff -> state.hpf-hz ]  ifte
   ( MODE: HOT/WET run the acid pair [1x HPF, ladder-style LPF]; K35/OTA
     the MS-20's own filters, both at 4x, the cutoff held to 15 kHz )
   params.lpf-mode 1.5 f<
@@ -296,9 +375,12 @@ dsp: k-ms20-voice-sample | io ctx state:Ms20VoiceState params:Ms20VoiceParams --
       state params x3 g v-sk-sub
     dec4 ]  ifte | y |
   ( VCA: envelope, velocity, level; then a ~20 Hz DC block )
-  y aenv f*  state.vel f*  params.level f*  1.78 f* | v |
+  1.0 dvca f+ 0.0 fmax  params.level f* | lv |
+  lv -> state.vca-v
+  y aenv f*  state.vel f*  lv f*  1.78 f* | v |
   v state.dc-prev-x f-  state.dc-prev-y 0.9974 f*  f+ | o |
   v -> state.dc-prev-x
   o -> state.dc-prev-y
+  o state.jk& 13.0 f!i
   o io f!64
 ;

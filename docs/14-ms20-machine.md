@@ -381,3 +381,37 @@ Measured (slabkit renders, A1 lines, 120-128 BPM):
 | slide 60 ms | lands in ~60 ms | ~50-60 ms, no retrigger |
 | preset loudness on a line | -20 dB RMS +-1 | -20.0 .. -19.6 |
 | cost | | 233 ns/sample ReleaseFast |
+
+## The patch panel (2026-10-22)
+
+Four cords, evaluated every sample in the voice (`ms20-bay`,
+`ms20-cord-to` in `kernels/06-voices/ms20_voice_probe.fy`), declared to
+the panel the way Concoction's matrix is (docs/15 §Modulation): controls
+`ms20-c1-src` / `-dst` / `-amt` ... `ms20-c4-*`, `mod-source` jacks in the
+dock, `mod-dest` rings, the normalled routes (ENV and MG to LPF CUT, EG
+and MG to PITCH, MG to PW) as fixed rows, a PATCH page with the dock,
+the CORDS matrix display and a scope.
+
+- **Jacks** are an array in the voice state (`jk`), one per SRC option,
+  stored each sample and read by a runtime index, which sees the state
+  as the word found it: every source arrives one sample late. That is
+  what lets VCA OUT go back into the filter without a zero-delay loop.
+- **Destinations** and their range at AMT 1: PITCH and VCO2 +-2
+  octaves, PW +-0.45, HPF CUT and LPF CUT +-5 octaves (KBD at AMT 0.2
+  tracks the keyboard 1:1), VCA gain +-1, MG FREQ +-4 octaves, FLT IN the
+  source as audio at the mixer's level, ahead of both filters.
+- **Free when empty.** The bay sits behind `bay-on` (a cord with SRC and
+  DEST set), the per-sample HPF coefficients behind `bay-hpf`; both are
+  versioned `ifte`s, and every unpatched path adds exact zeros, so all
+  goldens stay bit-exact. VCO1's wave became a select so the voice fits
+  fy's 32 versioned bodies (VCO2 wave 4 x MODE 2 x 2 x 2); past that the
+  bay if-converted and cost 609 ns/sample unpatched.
+- Cost, ReleaseFast: 413 ns/sample unpatched, 470 with a cord.
+
+Measured on a held C3 (K35, CUT 600, PEAK 1, ENV 0): MG -> LPF CUT 0.3
+triples the centroid's swing (66 -> 190 Hz); MG -> PITCH 0.05 gives
+vibrato; AENV -> VCA -0.5 takes 6 dB off; VCO2 a fifth up -> LPF CUT
+0.3 doubles the centroid (418 -> 866 Hz) at audio rate; VCA OUT -> FLT IN
+0.8 stays bounded (peak -6.9 dBFS). The `patch-*` presets sit at -21 to
+-22 dB RMS on a bassline (the vowel patch, a band-pass, -22 two octaves
+up).

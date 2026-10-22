@@ -43,7 +43,35 @@ dsp: ms20-block-prepare | ctx:Ctx state params:Ms20VoiceParams -- |
   0.0 -> params.bleed
   1.0  1.0  6.283185307179586 15.0 f* ctx.inv-sr f*  f+  f/ -> params.dro-a
   params.lpf-pr&  0.1 ag 0.2 f* f+  ms20-lpf-set-offs
+  ( the patch panel: is a cord in [SRC and DEST both set], does one
+    reach HPF CUT [its coefficients then move per sample] )
+  0.0 0.0 4 [ | i on |
+    i 1.0 f+
+    on
+      params.p-src& i f@i 0.5  0.0
+        params.p-dst& i f@i 0.5  0.0 1.0  fsel-lt  fsel-lt
+    fmax ] times nip -> params.bay-on
+  0.0 0.0 4 [ | i on |
+    i 1.0 f+
+    on
+      params.p-src& i f@i 0.5  0.0
+        params.p-dst& i f@i 4.0 f- fabs 0.5  1.0 0.0  fsel-lt  fsel-lt
+    fmax ] times nip -> params.bay-hpf
 ;
+
+( The patch panel's jacks and where they plug in [ms20_voice_probe.fy,
+  ms20-bay]: a cord's AMT at 1 moves PITCH and VCO2 2 octaves, PW 0.45,
+  the cutoffs 5 octaves, the VCA's gain by 1, MG FREQ 4 octaves; FLT IN
+  takes the source as audio into the filters. )
+: ms20-srcs
+  "OFF" 0.0 opt  "FENV" 1.0 opt  "AENV" 2.0 opt  "AENV-" 3.0 opt  "MG" 4.0 opt
+  "MG PUL" 5.0 opt  "S&H" 6.0 opt  "NOISE" 7.0 opt  "KBD" 8.0 opt  "VEL" 9.0 opt
+  "PRESS" 10.0 opt  "VCO1" 11.0 opt  "VCO2" 12.0 opt  "VCA OUT" 13.0 opt
+  as-display ;
+: ms20-dsts
+  "OFF" 0.0 opt  "PITCH" 1.0 opt  "VCO2" 2.0 opt  "PW" 3.0 opt  "HPF CUT" 4.0 opt
+  "LPF CUT" 5.0 opt  "VCA" 6.0 opt  "MG FREQ" 7.0 opt  "FLT IN" 8.0 opt
+  as-display ;
 
 : manifest
   "SM-24 Mono" voice-sample machine*
@@ -106,6 +134,51 @@ dsp: ms20-block-prepare | ctx:Ctx state params:Ms20VoiceParams -- |
   "MOD" "EG>PIT" "eg-pitch"  Ms20VoiceParams.eg-pitch  0.0 1.0 0.0 curve-pow knob
   "MOD" "PORTA"  "portamento" Ms20VoiceParams.portamento 0.0 10.0 0.0 curve-pow knob
 
+  ( ── the patch panel: SRC, DEST, AMT per cord ── )
+  "CORD 1" "SRC"  "ms20-c1-src" Ms20VoiceParams.p-src 0 + 0 switch ms20-srcs
+  "CORD 1" "DEST" "ms20-c1-dst" Ms20VoiceParams.p-dst 0 + 0 switch ms20-dsts
+  "CORD 1" "AMT"  "ms20-c1-amt" Ms20VoiceParams.p-amt 0 + -1.0 1.0 0.0 curve-lin knob
+  "CORD 2" "SRC"  "ms20-c2-src" Ms20VoiceParams.p-src 8 + 0 switch ms20-srcs
+  "CORD 2" "DEST" "ms20-c2-dst" Ms20VoiceParams.p-dst 8 + 0 switch ms20-dsts
+  "CORD 2" "AMT"  "ms20-c2-amt" Ms20VoiceParams.p-amt 8 + -1.0 1.0 0.0 curve-lin knob
+  "CORD 3" "SRC"  "ms20-c3-src" Ms20VoiceParams.p-src 16 + 0 switch ms20-srcs
+  "CORD 3" "DEST" "ms20-c3-dst" Ms20VoiceParams.p-dst 16 + 0 switch ms20-dsts
+  "CORD 3" "AMT"  "ms20-c3-amt" Ms20VoiceParams.p-amt 16 + -1.0 1.0 0.0 curve-lin knob
+  "CORD 4" "SRC"  "ms20-c4-src" Ms20VoiceParams.p-src 24 + 0 switch ms20-srcs
+  "CORD 4" "DEST" "ms20-c4-dst" Ms20VoiceParams.p-dst 24 + 0 switch ms20-dsts
+  "CORD 4" "AMT"  "ms20-c4-amt" Ms20VoiceParams.p-amt 24 + -1.0 1.0 0.0 curve-lin knob
+  "CORD 1" 3 strip  "CORD 2" 3 strip  "CORD 3" 3 strip  "CORD 4" 3 strip
+
+  ( the jacks in the dock, and the knobs a cord can reach [docs/15 §Modulation] )
+  "FENV"    1 Ms20VoiceState.flt-env EnvRc.level + 0 mod-source
+  "AENV"    2 Ms20VoiceState.amp-env EnvRc.level + 0 mod-source
+  "MG"      4 Ms20VoiceState.jk 32 + 1 mod-source
+  "MG PUL"  5 Ms20VoiceState.jk 40 + 1 mod-source
+  "S&H"     6 Ms20VoiceState.sh 1 mod-source
+  "NOISE"   7 Ms20VoiceState.jk 56 + 1 mod-source
+  "KBD"     8 Ms20VoiceState.jk 64 + 1 mod-source
+  "VEL"     9 Ms20VoiceState.vel 0 mod-source
+  "PRESS"  10 Ms20VoiceState.press 0 mod-source
+  "VCO1"   11 Ms20VoiceState.jk 88 + 1 mod-source
+  "VCO2"   12 Ms20VoiceState.jk 96 + 1 mod-source
+  "VCA OUT" 13 Ms20VoiceState.jk 104 + 1 mod-source
+  "detune"      2 Ms20VoiceState.det-v  mod-dest
+  "pulse-width" 3 Ms20VoiceState.pw-v   mod-dest
+  "hpf-cutoff"  4 Ms20VoiceState.hpf-hz mod-dest
+  "cutoff"      5 Ms20VoiceState.cut-hz mod-dest
+  "level"       6 Ms20VoiceState.vca-v  mod-dest
+  "mg-freq"     7 Ms20VoiceState.mg-hz  mod-dest
+  ( the MS-20's normalled routes, as fixed rows )
+  "env-amount" 1 5 mod-fixed   ( FENV -> LPF CUT )
+  "mg-cutoff"  4 5 mod-fixed   ( MG -> LPF CUT )
+  "eg-pitch"   1 1 mod-fixed   ( FENV -> PITCH )
+  "mg-pitch"   4 1 mod-fixed   ( MG -> PITCH )
+  "mg-pw"      4 3 mod-fixed   ( MG -> PW )
+  "ms20-c" 4 mod-matrix
+  "PATCH DOCK" mod-dock
+  "CORDS" matrix-display
+  "SCOPE" scope-display
+
   ( The MS-20 face in two rows: the signal path left to right over the
     modulation section.  Waves and scales are LED lists. )
   "VCO1" 2 strip
@@ -122,6 +195,9 @@ dsp: ms20-block-prepare | ctx:Ctx state params:Ms20VoiceParams -- |
   ( built-in visualizer cell [docs/15]; comma-separated sources overlay )
   "EG" "FLT ENV,AMP ENV" adsr-display
 
+  "PANEL" page
+  0.16 row
+    1.0 cell  "PATCH DOCK" 1.0 item
   1.0 row
     1.0 cell  "VCO1" 1.0 item
     1.0 cell  "VCO2" 1.0 item
@@ -135,6 +211,13 @@ dsp: ms20-block-prepare | ctx:Ctx state params:Ms20VoiceParams -- |
     1.0 cell  "FLT ENV" 1.0 item
     1.0 cell  "AMP ENV" 1.0 item
     4.0 cell  "EG" 1.0 item
+  ( the patch panel: drag a jack onto a ringed knob, or onto a cord )
+  "PATCH" page
+  0.16 row
+    1.0 cell  "PATCH DOCK" 1.0 item
+  1.0 row
+    2.0 cell  "CORDS" 1.0 item
+    1.0 cell  "SCOPE" 1.0 item
 
   machine-desc
 ;

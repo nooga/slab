@@ -6,6 +6,15 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **The SM-24 Mono has a patch panel.** Its new PATCH page holds four
+  cords. Drag a jack from the dock onto a ringed knob (LPF CUT, HPF CUT,
+  PW, VCO2 PITCH, LVL, MG FREQ), or pick SRC and DEST on a cord row. The
+  jacks are FENV, AENV and AENV inverted, MG, MG PUL, S&H, NOISE, KBD, VEL,
+  PRESS, VCO1, VCO2 and VCA OUT. The cords run at audio rate, so VCO2 can
+  FM the cutoff and the output can feed back into the filter. A patch
+  with no cords sounds exactly as before. Five new patches show it off
+  (`patch-*`), with the demo `songs/ms20_patch_bay.py`.
+
 - **Squelch 33, an acid bassline synth.** A new mono machine built on the
   HOT/WET filter the SM-24 Mono used to have: one SAW or SQR oscillator,
   CUT, RES, ENV MOD, DECAY, ACCENT and SLIDE. Loud notes (the `!` in a

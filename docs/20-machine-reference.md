@@ -1010,6 +1010,18 @@ Presets:
 | `mg-cutoff` | MOD | MG>CUT | 0 … 4 | 0 | pow |
 | `eg-pitch` | MOD | EG>PIT | 0 … 1 | 0 | pow |
 | `portamento` | MOD | PORTA | 0 … 10 | 0 | pow |
+| `ms20-c1-src` | CORD 1 | SRC | 0 OFF / 1 FENV / 2 AENV / 3 AENV- / 4 MG / 5 MG PUL / 6 S&H / 7 NOISE / 8 KBD / 9 VEL / 10 PRESS / 11 VCO1 / 12 VCO2 / 13 VCA OUT | 0 | switch |
+| `ms20-c1-dst` | CORD 1 | DEST | 0 OFF / 1 PITCH / 2 VCO2 / 3 PW / 4 HPF CUT / 5 LPF CUT / 6 VCA / 7 MG FREQ / 8 FLT IN | 0 | switch |
+| `ms20-c1-amt` | CORD 1 | AMT | -1 … 1 | 0 | linear |
+| `ms20-c2-src` | CORD 2 | SRC | 0 OFF / 1 FENV / 2 AENV / 3 AENV- / 4 MG / 5 MG PUL / 6 S&H / 7 NOISE / 8 KBD / 9 VEL / 10 PRESS / 11 VCO1 / 12 VCO2 / 13 VCA OUT | 0 | switch |
+| `ms20-c2-dst` | CORD 2 | DEST | 0 OFF / 1 PITCH / 2 VCO2 / 3 PW / 4 HPF CUT / 5 LPF CUT / 6 VCA / 7 MG FREQ / 8 FLT IN | 0 | switch |
+| `ms20-c2-amt` | CORD 2 | AMT | -1 … 1 | 0 | linear |
+| `ms20-c3-src` | CORD 3 | SRC | 0 OFF / 1 FENV / 2 AENV / 3 AENV- / 4 MG / 5 MG PUL / 6 S&H / 7 NOISE / 8 KBD / 9 VEL / 10 PRESS / 11 VCO1 / 12 VCO2 / 13 VCA OUT | 0 | switch |
+| `ms20-c3-dst` | CORD 3 | DEST | 0 OFF / 1 PITCH / 2 VCO2 / 3 PW / 4 HPF CUT / 5 LPF CUT / 6 VCA / 7 MG FREQ / 8 FLT IN | 0 | switch |
+| `ms20-c3-amt` | CORD 3 | AMT | -1 … 1 | 0 | linear |
+| `ms20-c4-src` | CORD 4 | SRC | 0 OFF / 1 FENV / 2 AENV / 3 AENV- / 4 MG / 5 MG PUL / 6 S&H / 7 NOISE / 8 KBD / 9 VEL / 10 PRESS / 11 VCO1 / 12 VCO2 / 13 VCA OUT | 0 | switch |
+| `ms20-c4-dst` | CORD 4 | DEST | 0 OFF / 1 PITCH / 2 VCO2 / 3 PW / 4 HPF CUT / 5 LPF CUT / 6 VCA / 7 MG FREQ / 8 FLT IN | 0 | switch |
+| `ms20-c4-amt` | CORD 4 | AMT | -1 … 1 | 0 | linear |
 
 Presets:
 
@@ -1023,6 +1035,11 @@ Presets:
 - `nasal-sneer-lead` — Nasal sneering mono lead
 - `octave-night-bass` — Faster octave night-drive bass
 - `ota-singing-lead` — OTA LPF, peak high and clean: the later MS-20, symmetric and singing
+- `patch-feedback-growl` — VCA OUT back into FLT IN: the OTA growls and sings as the note swells
+- `patch-fm-metal-bass` — VCO2 a fifth up into LPF CUT at audio rate: a metallic, clangy bass
+- `patch-sh-bubbles` — S&H on LPF CUT, clocked by the MG: random bubbling under a peaked K35
+- `patch-tracking-lead` — KBD on LPF CUT for full tracking, MG on PITCH for a slow vibrato, PRESS opens it
+- `patch-vowel-sweep` — FENV on HPF CUT with both filters peaked: a talking band-pass sweep
 - `portamento-highway-lead` — Smooth portamento highway lead
 - `resonant-funk-bass` — Resonant funky bass with filter bite
 - `rising-filter-fx` — Overdriven rising-filter FX sweep
