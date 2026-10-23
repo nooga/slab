@@ -344,6 +344,9 @@ pub const Unison = struct {
     detune_bits: std.atomic.Value(u32) = .init(@bitCast(DEF_DETUNE)),
     spread_bits: std.atomic.Value(u32) = .init(@bitCast(DEF_SPREAD)),
     blend_bits: std.atomic.Value(u32) = .init(@bitCast(DEF_BLEND)),
+    /// WALL: the stack adds up instead of holding one voice's power, and
+    /// its voices pan in pitch order (docs/08 §Unison, WALL).
+    wall: std.atomic.Value(bool) = .init(false),
 
     pub fn init(native: u8) Unison {
         return .{ .native = native, .pool = .init(native) };
@@ -373,6 +376,12 @@ pub const Unison = struct {
     pub fn blend(u: *const Unison) f32 {
         return @bitCast(u.blend_bits.load(.monotonic));
     }
+    pub fn isWall(u: *const Unison) bool {
+        return u.wall.load(.monotonic);
+    }
+    pub fn setWall(u: *Unison, on: bool) void {
+        u.wall.store(on, .monotonic);
+    }
     pub fn setCount(u: *Unison, n: u8) void {
         u.count.store(std.math.clamp(n, 1, MAX_COUNT), .monotonic);
     }
@@ -391,7 +400,7 @@ pub const Unison = struct {
 
     /// Off, on the machine's own pool: nothing to save.
     pub fn isDefault(u: *const Unison) bool {
-        return u.voices() == 1 and (u.mono() or u.pool.load(.monotonic) == u.native);
+        return u.voices() == 1 and !u.isWall() and (u.mono() or u.pool.load(.monotonic) == u.native);
     }
     pub fn reset(u: *Unison) void {
         // UI reset may overlap audio reads; retain atomic stores for each
@@ -401,10 +410,11 @@ pub const Unison = struct {
         u.detune_bits.store(@bitCast(DEF_DETUNE), .monotonic);
         u.spread_bits.store(@bitCast(DEF_SPREAD), .monotonic);
         u.blend_bits.store(@bitCast(DEF_BLEND), .monotonic);
+        u.wall.store(false, .monotonic);
     }
 
-    /// `{"count":4,"detune":20,"spread":0.7,"blend":0.75,"voices":8}`
-    /// (voices only for a poly machine).
+    /// `{"count":4,"detune":20,"spread":0.7,"blend":0.75,"voices":8,"wall":true}`
+    /// (voices only for a poly machine, wall only when on).
     pub fn writeJson(u: *const Unison, out: *std.ArrayList(u8), alloc: std.mem.Allocator) !void {
         var buf: [160]u8 = undefined;
         const s = try std.fmt.bufPrint(&buf, "{{\"count\":{d},\"detune\":{d},\"spread\":{d},\"blend\":{d}", .{ u.voices(), u.detune(), u.spread(), u.blend() });
@@ -413,6 +423,8 @@ pub const Unison = struct {
             const p = try std.fmt.bufPrint(&buf, ",\"voices\":{d}", .{u.pool.load(.monotonic)});
             try out.appendSlice(alloc, p);
         }
+        // Only when on: a project saved before WALL, or with it off, is byte-identical.
+        if (u.isWall()) try out.appendSlice(alloc, ",\"wall\":true");
         try out.append(alloc, '}');
     }
 
@@ -436,6 +448,7 @@ pub const Unison = struct {
         if (num(o, "detune")) |x| u.setDetune(@floatCast(x));
         if (num(o, "spread")) |x| u.setSpread(@floatCast(x));
         if (num(o, "blend")) |x| u.setBlend(@floatCast(x));
+        if (o.get("wall")) |w| if (w == .bool) u.setWall(w.bool);
     }
 };
 
@@ -585,3 +598,31 @@ pub const Machine = struct {
         return self.note_labels;
     }
 };
+
+test "unison WALL is saved only when on and old projects load without it" {
+    const alloc = std.testing.allocator;
+    var u = Unison.init(8);
+    u.setCount(4);
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    try u.writeJson(&out, alloc);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "wall") == null);
+
+    u.setWall(true);
+    out.clearRetainingCapacity();
+    try u.writeJson(&out, alloc);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"wall\":true") != null);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, out.items, .{});
+    defer parsed.deinit();
+    var v = Unison.init(8);
+    v.applyJson(parsed.value);
+    try std.testing.expect(v.isWall());
+    try std.testing.expect(!v.isDefault());
+
+    var old = try std.json.parseFromSlice(std.json.Value, alloc, "{\"count\":4,\"detune\":20,\"spread\":0.7,\"blend\":0.75,\"voices\":8}", .{});
+    defer old.deinit();
+    v.applyJson(old.value);
+    try std.testing.expect(!v.isWall());
+}

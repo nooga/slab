@@ -6,6 +6,12 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Unison can be a wall.** The UNI panel has a WALL switch. On, a stack
+  gets louder as voices are added (about +6 dB at 5) instead of staying at
+  one voice's level, and its voices spread across the stereo field in
+  pitch order, so the channels beat apart and the stack sounds wider.
+  Off by default; existing projects sound the same.
+
 ## 0.0.15 — 2026-10-22
 
 - **The SM-24 Mono has a patch panel.** Its new PATCH page holds four

@@ -634,6 +634,7 @@ pub const FyRawMachine = struct {
     uni_detune: f32 = machine.Unison.DEF_DETUNE,
     uni_spread: f32 = machine.Unison.DEF_SPREAD,
     uni_blend: f32 = machine.Unison.DEF_BLEND,
+    uni_wall: bool = false,
     uni_rng: u64 = 0x9E37_79B9_7F4A_7C15,
     // Some voice renders through the panned path this block.
     uni_panned: bool = false,
@@ -3097,6 +3098,12 @@ fn voiceHz(self: *const FyRawMachine, v: usize, pitch: f32) f64 {
 /// sides at BLEND, the group's power at one voice's; outer pairs panned
 /// across SPREAD, alternating sides from one pair to the next so pitch
 /// and place don't line up. Equal power, 1/1 in the middle.
+///
+/// WALL changes two things, after measuring a Virus TI's unison: the stack
+/// is not held at one voice's power but grows as n^0.42 in amplitude
+/// (+4 dB at 3 voices, +6 at 5, +7.6 at 8; the hardware reads +3.8, +6.4,
+/// +6.9), and the voices pan in pitch order, the lowest hard left and the
+/// highest hard right at full SPREAD, so each channel beats at its own rate.
 fn voiceGains(self: *const FyRawMachine, v: usize) [2]f64 {
     const n: usize = self.voice_uni_n[v];
     if (n <= 1) return .{ 1, 1 };
@@ -3105,9 +3112,13 @@ fn voiceGains(self: *const FyRawMachine, v: usize) [2]f64 {
     const centres: f64 = if (n % 2 == 1) 1 else 2;
     const b: f64 = self.uni_blend;
     const w: f64 = if (j == (n - 1) / 2) 1 else b;
-    const g = w / @sqrt(centres + (@as(f64, @floatFromInt(n)) - centres) * b * b);
-    const side: f64 = if (j % 2 == 1) -1 else 1;
-    const pan = @as(f64, self.uni_spread) * uniPos(k, n) * side;
+    var g = w / @sqrt(centres + (@as(f64, @floatFromInt(n)) - centres) * b * b);
+    if (self.uni_wall) g *= std.math.pow(f64, @floatFromInt(n), 0.42);
+    const side: f64 = if (self.uni_wall or j % 2 == 0) 1 else -1;
+    const place = uniPos(k, n);
+    // WALL bends the places outward (|p|^0.5) so the inner voices sit well off centre too.
+    const spot = if (self.uni_wall) std.math.copysign(@sqrt(@abs(place)), place) else place;
+    const pan = @as(f64, self.uni_spread) * spot * side;
     const th = (pan + 1.0) * (std.math.pi / 4.0);
     return .{ g * std.math.sqrt2 * @cos(th), g * std.math.sqrt2 * @sin(th) };
 }
@@ -3128,6 +3139,7 @@ fn syncUnison(self: *FyRawMachine) !void {
     self.uni_count = @min(u.voices(), pool);
     self.uni_spread = u.spread();
     self.uni_blend = u.blend();
+    self.uni_wall = u.isWall();
     const det = u.detune();
     if (det != self.uni_detune) {
         self.uni_detune = det;
