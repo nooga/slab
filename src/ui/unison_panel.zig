@@ -1,7 +1,7 @@
 //! Unison panel (docs/08 §Unison): the context panel an instrument's UNI
 //! chip opens. A small faceplate hung under the chip with the stack's
 //! knobs: VOICES (a poly machine's pool), UNISON (voices per note), DETUNE,
-//! SPREAD and BLEND, over a readout of what the pool plays. Modal like a
+//! SPREAD, BLEND and the WALL switch, over a readout of what the pool plays. Modal like a
 //! dialog (main suppresses the input behind it while `active`); Esc or a
 //! click outside closes it.
 
@@ -43,7 +43,7 @@ pub fn draw(ui: *Ui, screen: Rect, st: *State, u: *Unison) bool {
     defer ui.popId();
 
     const poly = !u.mono();
-    const cols: i32 = if (poly) 5 else 4;
+    const cols: i32 = if (poly) 6 else 5;
     const cell = ctl.knobCell(KNOB, true);
     const cw = cell[0] + 8;
     const w = cols * cw + 2 * PAD;
@@ -114,6 +114,14 @@ pub fn draw(ui: *Ui, screen: Rect, st: *State, u: *Unison) bool {
         const s = std.fmt.bufPrint(&buf, "{d:.0}%", .{v * 100}) catch "";
         if (ctl.knob(ui, row.cutLeft(cw), "blend", &v, .{ .size = KNOB, .label = "BLEND", .readout = s, .default = Unison.DEF_BLEND, .disabled = off })) {
             u.setBlend(v);
+            changed = true;
+        }
+    }
+
+    {
+        var on = u.isWall();
+        if (ctl.latch(ui, row.cutLeft(cw), "wall", &on, .{ .label = "WALL", .led = style.accent })) {
+            u.setWall(on);
             changed = true;
         }
     }
