@@ -13,6 +13,12 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   takes -13 LUFS to -11 at the default, -9 at 0.8 and -8 at full, with the
   peak-to-average gap falling from 15 dB to 11. GLUE, CLIP and CEIL
   trim it. Put it last on the master.
+- **The machine menu shows every machine again.** The "+" and replace
+  menus stopped at 40 rows, so FX Rack, Rack and the newest effects (the
+  harsh pack) were cut off the end. The cap is 72, and "+" on the master
+  lists effects only. Dropping an effect or rack preset from the browser
+  onto the machine bay while the master is selected now lands on the
+  master chain, not the first track.
 
 ## 0.0.15 — 2026-10-22
 

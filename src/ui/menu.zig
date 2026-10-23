@@ -97,7 +97,7 @@ fn commandShortcut(cmd: EditCommand) ?[]const u8 {
 // ── Metrics ──────────────────────────────────────────────────────────
 
 pub const MAX_DEPTH = 4;
-const MAX_ITEMS = 40;
+const MAX_ITEMS = 72;
 const LABEL_MAX = 64;
 const HINT_MAX = 16;
 const ROW_H: i32 = 18;

@@ -1471,7 +1471,7 @@ pub fn main(init: std.process.Init) !void {
                     .preset, .table => if (sel_t) |t| .{ .header = t } else .new_track,
                     else => if (sel_t) |t| .{ .lane = .{ .track = t, .beat = trackEnd(&tracks[t]) } } else .new_track,
                 };
-                const app = App{ .alloc = alloc, .history = &history, .tracks_buf = &tracks_buf, .track_count = &track_count, .tracks = &tracks, .transport = &transport, .engine = &engine, .audio = &audio, .reg = &reg, .pool = &audio_pool, .selected_track = &selected_track, .selected_clip = &selected_clip, .prev_selected_clip = &prev_selected_clip, .project_path = &project_path, .project_path_chosen = &project_path_chosen, .dirty = &dirty, .status = &status, .edit_snap = edit_snap };
+                const app = App{ .alloc = alloc, .history = &history, .tracks_buf = &tracks_buf, .track_count = &track_count, .tracks = &tracks, .transport = &transport, .engine = &engine, .audio = &audio, .reg = &reg, .pool = &audio_pool, .selected_track = &selected_track, .selected_clip = &selected_clip, .prev_selected_clip = &prev_selected_clip, .project_path = &project_path, .project_path_chosen = &project_path_chosen, .dirty = &dirty, .status = &status, .edit_snap = edit_snap, .master = &master };
                 if (browserDrop(app, &lib, br.selection(), cur, target)) lib_stale = true;
                 rects = layout.compute(sw, sh);
             };
@@ -2013,8 +2013,8 @@ pub fn main(init: std.process.Init) !void {
                     .new_track => browser.drawNewTrack(ui, hit.lane, drop_ok),
                     else => {},
                 }
-            } else if (bay.contains(@intFromFloat(mx), @intFromFloat(my)) and selected_track != null) {
-                target = .{ .header = selected_track.? };
+            } else if (bay.contains(@intFromFloat(mx), @intFromFloat(my)) and (device_sel == .master or selected_track != null)) {
+                target = if (device_sel == .master) .master else .{ .header = selected_track.? };
                 drop_ok = dropAccepts(kind, target, tracks);
                 browser.drawTarget(ui, bay, drop_ok, if (kind == .table) "LOAD TABLE" else if (kind == .preset) "LOAD PRESET" else "");
             }
@@ -2024,7 +2024,7 @@ pub fn main(init: std.process.Init) !void {
             } else if (!ui.raw_in.down) {
                 browser.endDrag(ui, &br);
                 if (drop_ok) {
-                    const app = App{ .alloc = alloc, .history = &history, .tracks_buf = &tracks_buf, .track_count = &track_count, .tracks = &tracks, .transport = &transport, .engine = &engine, .audio = &audio, .reg = &reg, .pool = &audio_pool, .selected_track = &selected_track, .selected_clip = &selected_clip, .prev_selected_clip = &prev_selected_clip, .project_path = &project_path, .project_path_chosen = &project_path_chosen, .dirty = &dirty, .status = &status, .edit_snap = edit_snap };
+                    const app = App{ .alloc = alloc, .history = &history, .tracks_buf = &tracks_buf, .track_count = &track_count, .tracks = &tracks, .transport = &transport, .engine = &engine, .audio = &audio, .reg = &reg, .pool = &audio_pool, .selected_track = &selected_track, .selected_clip = &selected_clip, .prev_selected_clip = &prev_selected_clip, .project_path = &project_path, .project_path_chosen = &project_path_chosen, .dirty = &dirty, .status = &status, .edit_snap = edit_snap, .master = &master };
                     if (browserDrop(app, &lib, br.selection(), cur, target)) lib_stale = true;
                     rects = layout.compute(sw, sh);
                 }
@@ -5337,6 +5337,9 @@ const BrowserDrop = union(enum) {
     header: usize,
     /// Below the tracks: a new track with the item on it.
     new_track,
+    /// The master chain (the machine bay while the master is selected):
+    /// an effect preset joins it.
+    master,
     open_song,
 };
 
@@ -5360,6 +5363,7 @@ const App = struct {
     dirty: *bool,
     status: *StatusMessage,
     edit_snap: snap_mod.Setting,
+    master: *track_mod.Track,
 };
 
 /// The beat after a track's last clip.
@@ -5380,6 +5384,7 @@ fn dropAccepts(kind: library_mod.Kind, d: BrowserDrop, tracks: []const track_mod
             else => false,
         },
         .header => kind == .preset or kind == .table,
+        .master => kind == .preset,
     };
 }
 
@@ -5407,6 +5412,10 @@ fn browserDrop(app: App, lib: *library_mod.Library, sel: []const u32, first: u32
     if (target == .open_song) {
         queueOpen(app.alloc, it.path);
         return true;
+    }
+    if (target == .master) {
+        if (it.kind == .preset and dropPreset(app, app.master, it, false)) app.dirty.* = true;
+        return false;
     }
     // One undo step for the whole drop, a new track included.
     const before = document_mod.serialize(app.alloc, app.tracks.*, app.transport) catch return false;
