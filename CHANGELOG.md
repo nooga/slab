@@ -18,7 +18,8 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   harsh pack) were cut off the end. The cap is 72, and "+" on the master
   lists effects only. Dropping an effect or rack preset from the browser
   onto the machine bay while the master is selected now lands on the
-  master chain, not the first track.
+  master chain, not the first track. In the mixer, dropping a preset on a
+  strip (a track, a bus or the master) loads it there.
 
 ## 0.0.15 — 2026-10-22
 

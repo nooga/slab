@@ -1995,6 +1995,11 @@ pub fn main(init: std.process.Init) !void {
             if (kind == .song and pane.contains(rects.arrangement, mx, my)) {
                 target = .open_song;
                 browser.drawTarget(ui, uiRect(rects.arrangement), true, "OPEN THIS SONG");
+            } else if (layout.mixer_visible and mixer.dropHit(mx, my) != null) {
+                const hit = mixer.dropHit(mx, my).?;
+                target = if (hit.master) .master else .{ .header = hit.track };
+                drop_ok = dropAccepts(kind, target, tracks);
+                browser.drawTarget(ui, hit.rect, drop_ok, if (kind == .table) "LOAD TABLE" else if (kind == .preset) "LOAD PRESET" else "");
             } else if (!layout.mixer_visible and arrangement.dropHit(tracks, mx, my) != null) {
                 const hit = arrangement.dropHit(tracks, mx, my).?;
                 if (hit.track) |ti| {
