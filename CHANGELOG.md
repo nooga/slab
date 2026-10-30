@@ -6,6 +6,21 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **A loudness stage for the master.** The FX Rack has a new `master-loud`
+  preset: glue compression, a diode clip that rounds off the peaks, and a
+  limiter, behind four macros. LOUD drives the clip and the limiter
+  together, so the mix gets denser instead of just hotter: on neon_tide it
+  takes -13 LUFS to -11 at the default, -9 at 0.8 and -8 at full, with the
+  peak-to-average gap falling from 15 dB to 11. GLUE, CLIP and CEIL
+  trim it. Put it last on the master.
+- **The machine menu shows every machine again.** The "+" and replace
+  menus stopped at 40 rows, so FX Rack, Rack and the newest effects (the
+  harsh pack) were cut off the end. The cap is 72, and "+" on the master
+  lists effects only. Dropping an effect or rack preset from the browser
+  onto the machine bay while the master is selected now lands on the
+  master chain, not the first track. In the mixer, dropping a preset on a
+  strip (a track, a bus or the master) loads it there.
+
 ## 0.0.15 — 2026-10-22
 
 - **The SM-24 Mono has a patch panel.** Its new PATCH page holds four

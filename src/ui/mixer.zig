@@ -64,6 +64,19 @@ pub const Result = struct {
     color_pick: ?arrangement.ColorPick = null,
 };
 
+/// Where a browser drop lands in the last drawn mixer: a strip, or the
+/// master (`master`). Rebuilt every frame by `draw`.
+pub const StripHit = struct { track: usize = 0, master: bool = false, rect: Rect = .{} };
+var hits: [routing.MAX_TRACKS + 1]StripHit = undefined;
+var hit_n: usize = 0;
+
+pub fn dropHit(x: f32, y: f32) ?StripHit {
+    const ix: i32 = @intFromFloat(x);
+    const iy: i32 = @intFromFloat(y);
+    for (hits[0..hit_n]) |h| if (h.rect.contains(ix, iy)) return h;
+    return null;
+}
+
 pub fn draw(
     ui: *Ui,
     r_legacy: c.rl.Rectangle,
@@ -74,6 +87,7 @@ pub fn draw(
     beat: f64,
 ) Result {
     var res: Result = .{};
+    hit_n = 0;
     const r = bridge.fromRl(r_legacy);
     ui.rect(r, ui_style.chassis);
     var area = r;
@@ -136,24 +150,39 @@ pub fn draw(
     ui.clip(strips_r);
     var x = strips_r.x - scroll_x;
     for (o.main()) |row| {
-        drawStrip(ui, Rect.xywh(x, strips_r.y, STRIP_W, strips_r.h), tracks, &o, row.ti, send_rows, device_sel, selected_track, beat, &res);
+        const sr = Rect.xywh(x, strips_r.y, STRIP_W, strips_r.h);
+        drawStrip(ui, sr, tracks, &o, row.ti, send_rows, device_sel, selected_track, beat, &res);
+        addHit(row.ti, false, sr, strips_r);
         x += STRIP_W;
     }
     // Nothing shows bare chassis (docs/06 §Packing).
     if (x < strips_r.right()) _ = ui.plate(Rect.xywh(x, strips_r.y, strips_r.right() - x, strips_r.h), .{ .fill = ui_style.face.shade(-4) });
     ui.unclip();
 
+    const bus_area_full = bus_area;
     ui.clip(bus_area);
     for (o.returns()) |row| {
-        drawStrip(ui, bus_area.cutLeft(STRIP_W), tracks, &o, row.ti, send_rows, device_sel, selected_track, beat, &res);
+        const sr = bus_area.cutLeft(STRIP_W);
+        drawStrip(ui, sr, tracks, &o, row.ti, send_rows, device_sel, selected_track, beat, &res);
+        addHit(row.ti, false, sr, bus_area_full);
     }
     ui.unclip();
 
     drawMasterStrip(ui, master_r, master, send_rows, device_sel);
+    addHit(0, true, master_r, master_r);
     dragStrips(ui, tracks, &o, selected_track, band, strips_r, bus_x0, &res);
     if (route_menu.tick(tracks, selected_track.*)) |e| res.route = e;
     input_menu.tick(tracks);
     return res;
+}
+
+fn addHit(ti: usize, is_master: bool, r: Rect, clip: Rect) void {
+    if (hit_n >= hits.len) return;
+    const x0 = @max(r.x, clip.x);
+    const x1 = @min(r.right(), clip.right());
+    if (x1 <= x0) return;
+    hits[hit_n] = .{ .track = ti, .master = is_master, .rect = Rect.xywh(x0, r.y, x1 - x0, r.h) };
+    hit_n += 1;
 }
 
 /// The rows every strip shares, so sections line up across the page.

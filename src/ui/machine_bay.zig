@@ -343,7 +343,7 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
         _ = ui.plate(Rect.xywh(x + TITLE_H, area.y, area.right() - x - TITLE_H, TITLE_H), .{});
         _ = ui.plate(Rect.xywh(x, area.y + TITLE_H, area.right() - x, area.h - TITLE_H), .{});
     }
-    if (machinePickerMenu(ADD_MENU_KEY, reg)) |pick| {
+    if (machinePickerMenuFor(ADD_MENU_KEY, reg, if (is_bus) .effects else .all)) |pick| {
         result.add_machine = pick.reg_idx;
         result.add_preset = pick.preset;
     }
