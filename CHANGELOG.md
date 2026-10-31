@@ -6,6 +6,12 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **CONVO, a convolution reverb.** Play a track through a recorded or made
+  space: an impulse response, any WAV. It ships with a synthetic stereo
+  hall and a bowed cymbal that every note swells through, and takes
+  PREDELAY, LO CUT, HI CUT, WIDTH, LEVEL and MIX. Effect machines can ask
+  for an impulse response of their own (docs/46).
+
 ## 0.0.16 — 2026-10-31
 
 - **An arpeggiator, in a new note slot.** Every instrument track can take

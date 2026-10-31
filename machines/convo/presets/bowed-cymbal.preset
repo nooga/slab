@@ -1,0 +1,1 @@
+{"slab": "preset", "schema": 1, "machine": "convo", "note": "A bowed cymbal as the room: every note swells through it", "params": {"convo-predelay": 0.0, "convo-lowcut": 200.0, "convo-highcut": 16000.0, "convo-width": 1.0, "convo-level": -4.0, "convo-mix": 0.5}, "assets": {"room": "factory:machines/convo/assets/bowed-cymbal.wav"}}

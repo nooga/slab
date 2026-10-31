@@ -1,0 +1,1 @@
+{"slab": "preset", "schema": 1, "machine": "convo", "note": "The synthetic stereo hall", "params": {"convo-predelay": 10.0, "convo-lowcut": 80.0, "convo-highcut": 16000.0, "convo-width": 1.0, "convo-level": 0.0, "convo-mix": 0.35}, "assets": {"room": "factory:machines/convo/assets/hall.wav"}}

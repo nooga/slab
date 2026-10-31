@@ -1,4 +1,4 @@
-//! Partitioned convolution for the audio thread (proposal, docs/43): a
+//! Partitioned convolution for the audio thread (prototype, docs/46): a
 //! machine declares an impulse response with `convolver`, and the host
 //! convolves the machine's stereo input with it, handing the kernel the
 //! result per sample as io.cv-l / io.cv-r.

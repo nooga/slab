@@ -139,6 +139,9 @@ status and the source before assuming a feature is absent or complete.
     notes into the selected track, recording, LEARN, the MPK mini map
 46. [45-arpeggiator.md](45-arpeggiator.md) — the note slot ahead of the
     instrument and the arpeggiator (built)
+47. [46-convolver.md](46-convolver.md) — the convolver (prototype): a
+    host service that convolves an effect's input with an impulse response,
+    and CONVO, the convolution reverb on it
 
 ## Terminology crib sheet
 
