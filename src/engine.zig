@@ -569,6 +569,17 @@ pub const Engine = struct {
         self.aud_held = .{ 0, 0 };
     }
 
+    /// Run the track's note slot (docs/45) over this block's events, in
+    /// place; the count after.
+    fn applyNoteFx(t: *Track, events: []machine.NoteEvent, n: usize, ppq: f64, bpm: f64, sr: f64, frames: usize) usize {
+        const a = t.note_fx;
+        if (a.present.load(.monotonic) == 0) return if (a.was_on) a.flush(events, n) else n;
+        const out = a.process(events[0..n], ppq, bpm, sr, @intCast(frames));
+        const m = @min(out.len, events.len);
+        @memcpy(events[0..m], out[0..m]);
+        return m;
+    }
+
     /// Put this block's held-note events for track `ti` ahead of its own.
     fn injectHeld(self: *const Engine, ti: u8, events: []machine.NoteEvent, n: usize) usize {
         var k: usize = 0;
@@ -877,6 +888,7 @@ pub const Engine = struct {
         self.adoptMachines();
         for (self.tracks) |*t| {
             t.chain.audio_machine.reset(t.chain.audio_machine.state);
+            t.note_fx.reset();
             for (t.audioEffects()) |*fx| fx.mach.reset(fx.mach.state);
         }
         if (self.master) |mb| {
@@ -1057,7 +1069,7 @@ pub const Engine = struct {
         @memset(self.master_r[0..n], 0);
 
         var events: [AUD_EV]machine.NoteEvent = undefined;
-        const event_count = self.injectHeld(ti, &events, 0);
+        var event_count = self.injectHeld(ti, &events, 0);
         self.aud_n = 0;
 
         // Stopped: automation holds its value at the playhead.
@@ -1066,6 +1078,8 @@ pub const Engine = struct {
         const playhead = self.beatAtSample(self.transport.samples());
         const beat = self.aud_beat orelse playhead;
         const aud_bpm = self.tmap().bpmAt(playhead);
+        t.noteSounding(events[0..event_count]);
+        event_count = applyNoteFx(t, &events, event_count, beat, aud_bpm, @floatFromInt(self.transport.sample_rate), n);
         self.aud_beat = beat + @as(f64, @floatFromInt(n)) * aud_bpm / 60.0 / @as(f64, @floatFromInt(self.transport.sample_rate));
         const inst_view = snap_mod.AutoView{ .snap = snap, .cursors = &t.auto_cursors, .kind = .inst, .hold_beat = playhead };
         const ctx = machine.MachineCtx{
@@ -1084,7 +1098,6 @@ pub const Engine = struct {
             t.pulseNote();
             break;
         };
-        t.noteSounding(events[0..event_count]);
         t.chain.audio_machine.render(t.chain.audio_machine.state, &ctx, l, r);
         const rendered = renderEffects(t.chain, ctx, l, r, fx_l_buf[0..n], fx_r_buf[0..n], .{});
         const final_l = rendered.l;
@@ -1105,7 +1118,8 @@ pub const Engine = struct {
         self.finishMaster(out, @intCast(n), 0, beat, aud_bpm);
 
         // Held, it rings on; released, until the tail is done.
-        if (self.aud_held[0] | self.aud_held[1] == 0) self.aud_tail -|= frames;
+        const arp_busy = t.note_fx.present.load(.monotonic) != 0 and t.note_fx.busy();
+        if (self.aud_held[0] | self.aud_held[1] == 0 and !arp_busy) self.aud_tail -|= frames;
         return true;
     }
 
@@ -1447,6 +1461,7 @@ pub const Engine = struct {
         if (inst_back) {
             t.audio_inst_parked = false;
             t.chain.audio_machine.reset(t.chain.audio_machine.state);
+            t.note_fx.reset();
             t.inst_quiet = 0;
         }
         const unparked = t.audio_parked and (node.is_bus or t.isEnabled());
@@ -1473,7 +1488,7 @@ pub const Engine = struct {
         const chase = b.chase or unparked or inst_back or inst_new;
         // Hold the snapshot the rendering thread adopted for this chunk.
         const snap = t.audioSnapshot();
-        const n_events = self.injectHeld(ti, &scratch.events, gatherEvents(snap, beat_start, beat_end, spb, frames, chase, release_at, &scratch.events));
+        var n_events = self.injectHeld(ti, &scratch.events, gatherEvents(snap, beat_start, beat_end, spb, frames, chase, release_at, &scratch.events));
         t.noteSounding(scratch.events[0..n_events]);
         const held_here = if (self.aud_track) |at| at == ti and self.aud_held[0] | self.aud_held[1] != 0 else false;
         // Frozen: its audio stands in for the instrument, audio clips and
@@ -1484,6 +1499,9 @@ pub const Engine = struct {
         // stop, automation holds at it while machines' beat runs on.
         const lt = localTime(snap, b.ctx_beat, bpm, bar_info, self.meter_state.map());
         const hold_beat: ?f64 = if (b.ring_out) localTime(snap, beat_start, bpm, bar_info, self.meter_state.map()).beat else null;
+        // The note slot (docs/45) turns the track's notes into the
+        // instrument's, on the track's own beat.
+        if (!node.is_bus) n_events = applyNoteFx(t, &scratch.events, n_events, lt.beat, lt.bpm, @floatFromInt(sr), frames);
         const inst_view = snap_mod.AutoView{ .snap = snap, .cursors = &t.auto_cursors, .kind = .inst, .hold_beat = hold_beat };
         const ctx = machine.MachineCtx{
             .sample_rate = @floatFromInt(sr),
@@ -1532,7 +1550,7 @@ pub const Engine = struct {
                     // A control edit wakes it too, so its params and
                     // displays catch up (the edit may be all there is).
                     const edited = t.chain.audio_machine.takeWake();
-                    wake = n_events > 0 or held_here or (!b.ring_out and notesNear(snap, beat_start, beat_end + ahead));
+                    wake = n_events > 0 or held_here or (t.note_fx.present.load(.monotonic) != 0 and t.note_fx.busy()) or (!b.ring_out and notesNear(snap, beat_start, beat_end + ahead));
                     if (edited) t.inst_quiet = 0;
                     const hold = t.chain.audio_machine.idleHold(@floatFromInt(sr), idleHoldSamples(sr));
                     // Asleep: `l`/`r` stay silent.

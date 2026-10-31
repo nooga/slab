@@ -12,6 +12,7 @@ const std = @import("std");
 const c = @import("../c.zig");
 const pane = @import("pane_input.zig");
 const menu = @import("menu.zig");
+const arp_panel = @import("arp_panel.zig");
 const bridge = @import("bridge.zig");
 const track_mod = @import("../track.zig");
 const Track = track_mod.Track;
@@ -41,6 +42,12 @@ pub const Result = struct {
     unfreeze: bool = false,
 
     // Trailing "+" — add a brand-new device to the chain.
+    /// The "+" menu's ARPEGGIATOR: give the track a note slot (docs/45).
+    add_note_fx: bool = false,
+    /// The note slot's ×.
+    remove_note_fx: bool = false,
+    /// A note slot setting changed.
+    note_fx_changed: bool = false,
     add_machine: ?usize = null, // registry index to add
     add_preset: ?u16 = null, // preset (by sorted index) to apply after add
 
@@ -236,7 +243,9 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
     // Measure the chain: (instrument) + effects + the trailing "+".
     const has_instrument = !is_bus and t.machine_idx != null;
     const inst_w: i32 = if (has_instrument) panelW(&t.machine) else 0;
-    var content_w: i32 = inst_w + TITLE_H;
+    const has_notefx = !is_bus and t.note_fx.present.load(.monotonic) != 0;
+    const notefx_w: i32 = if (has_notefx) arp_panel.W else 0;
+    var content_w: i32 = notefx_w + inst_w + TITLE_H;
     for (t.effects.items) |*fx| content_w += effectW(fx);
     const overflow = content_w > area.w;
     const minimap = if (overflow) area.cutBottom(MINIMAP_H) else Rect{};
@@ -256,6 +265,14 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
     if (frozen) ui.suppressInput();
     ui.clip(area);
     var x = area.x - bay_scroll_x;
+
+    // The note slot sits ahead of the instrument: notes flow left to right.
+    if (has_notefx) {
+        const nout = arp_panel.draw(ui, Rect.xywh(x, area.y, notefx_w, area.h), t.note_fx);
+        if (nout.remove) result.remove_note_fx = true;
+        if (nout.changed) result.note_fx_changed = true;
+        x += notefx_w;
+    }
 
     if (has_instrument) {
         var glow: f32 = 0;
@@ -344,8 +361,12 @@ pub fn draw(ui: *Ui, r_legacy: c.rl.Rectangle, device: ?*Track, track_idx: ?usiz
         _ = ui.plate(Rect.xywh(x, area.y + TITLE_H, area.right() - x, area.h - TITLE_H), .{});
     }
     if (machinePickerMenuFor(ADD_MENU_KEY, reg, if (is_bus) .effects else .all)) |pick| {
-        result.add_machine = pick.reg_idx;
-        result.add_preset = pick.preset;
+        if (pick.reg_idx == NOTE_ARP_ID) {
+            result.add_note_fx = true;
+        } else {
+            result.add_machine = pick.reg_idx;
+            result.add_preset = pick.preset;
+        }
     }
     ui.unclip();
     if (frozen) {
@@ -583,6 +604,10 @@ fn titleDisplay(ui: *Ui, r: Rect, panel_scope: ui_core.Id, preset: []const u8, h
     ctl.display(ui, r, s, .{ .flush = true, .color = if (hot or live) ui_style.vfd else ui_style.vfd.mix(ui_style.well, 0.15) });
 }
 
+/// The add menu's id for the note slot's arpeggiator (past every registry
+/// index).
+const NOTE_ARP_ID: usize = 0xFFFF;
+
 pub const AddPick = struct {
     reg_idx: usize,
     preset: ?u16 = null,
@@ -617,8 +642,14 @@ pub const PickerFilter = enum { all, instruments, effects };
 pub fn machinePickerMenuFor(menu_key: u64, reg: *const Registry, filter: PickerFilter) ?AddPick {
     if (!menu.isOpen(menu_key)) return null;
     const menu_count = @min(reg.count, registry_mod.MAX_MACHINES);
-    var items: [registry_mod.MAX_MACHINES + 2]menu.Item = undefined;
+    var items: [registry_mod.MAX_MACHINES + 6]menu.Item = undefined;
     var n: usize = 0;
+    // The bay's "+" on a track also offers the note slot (docs/45).
+    if (menu_key == ADD_MENU_KEY and filter == .all) {
+        items[0] = .{ .label = "ARPEGGIATOR  (notes)", .id = NOTE_ARP_ID };
+        items[1] = .{ .separator = true };
+        n = 2;
+    }
     // Machines first, then the racks under their own heading (docs/42).
     for ([_]bool{ false, true }) |natives| {
         const head = n;

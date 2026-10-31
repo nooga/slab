@@ -129,10 +129,12 @@ fn configureNativeDeps(b: *std.Build, mod: *std.Build.Module, target: std.Build.
         .flags = &.{"-fobjc-arc"},
     });
     mod.addCSourceFile(.{ .file = b.path("src/native_audio.c") });
+    mod.addCSourceFile(.{ .file = b.path("src/native_midi.c") });
     mod.addIncludePath(b.path("vendor"));
 
     // macOS frameworks needed by raylib + miniaudio.
     mod.linkFramework("CoreAudio", .{});
+    mod.linkFramework("CoreMIDI", .{});
     mod.linkFramework("AudioToolbox", .{});
     mod.linkFramework("CoreFoundation", .{});
     mod.linkFramework("Cocoa", .{});

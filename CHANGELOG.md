@@ -6,6 +6,20 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **An arpeggiator, in a new note slot.** Every instrument track can take
+  a note machine ahead of its instrument: "+" in the machine bay, then
+  ARPEGGIATOR. Nine modes, rates from 1/4 to 1/32 with dotted and triplet
+  values, 1 to 4 octaves, gate, swing, humanize, accent, latch and a
+  16-step rest/note/accent/tie pattern. It arpeggiates clips, KEYS and a
+  MIDI keyboard, locked to the song's beat, and is saved in the project
+  (docs/45).
+- **MIDI keyboards and pads.** Plug in a MIDI device and it plays the
+  selected track at its own velocity, and REC records it into a clip,
+  with or without KEYS on. LEARN on the transport bar binds a knob to the
+  control you last touched, a pad to PLAY/STOP, STOP, REC, LOOP, track
+  or knob-page steps, or a knob to one of the eight knob slots, which
+  drive the selected instrument's controls a page at a time. An Akai MPK
+  mini 3 works out of the box (docs/44).
 - **A loudness stage for the master.** The FX Rack has a new `master-loud`
   preset: glue compression, a diode clip that rounds off the peaks, and a
   limiter, behind four macros. LOUD drives the clip and the limiter

@@ -78,6 +78,8 @@ const snap_mod = @import("ui/snap.zig");
 const arrangement = @import("ui/arrangement.zig");
 const clip_editor = @import("ui/clip_editor.zig");
 const musical_keys = @import("ui/musical_keys.zig");
+const midi_in = @import("midi_in.zig");
+const midi_map = @import("midi_map.zig");
 const menu = @import("ui/menu.zig");
 const text_field = @import("ui/text_field.zig");
 const splash = @import("ui/splash.zig");
@@ -119,6 +121,9 @@ test {
     _ = @import("ui/commands.zig");
     _ = @import("ui/clip_editor.zig");
     _ = @import("ui/musical_keys.zig");
+    _ = @import("midi_in.zig");
+    _ = @import("midi_map.zig");
+    _ = @import("arp.zig");
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
     _ = @import("tempo.zig");
@@ -241,7 +246,7 @@ fn holdNotes(engine: *engine_mod.Engine, held: *HeldNotes, track: ?usize, want_i
     }
     for (0..128) |pi| {
         const mask = @as(u128, 1) << @intCast(pi);
-        if (diff & mask != 0 and want & mask != 0) engine.holdNoteVel(t, @intCast(pi), true, if (typed & mask != 0) typed_vel else 102);
+        if (diff & mask != 0 and want & mask != 0) engine.holdNoteVel(t, @intCast(pi), true, if (typed & mask != 0) musical_keys.velocityOf(@intCast(pi), typed_vel) else 102);
     }
     held.set = want;
 }
@@ -1022,6 +1027,10 @@ pub fn main(init: std.process.Init) !void {
     var shot_frame: u32 = 0;
     var clipboard: EditClipboard = .{};
     defer clipboard.deinit(alloc);
+    midi_in.start();
+    midi_map.load(alloc);
+    midi_in.claim = midi_map.claims;
+    var midi_record = false;
     var status: StatusMessage = .{};
     var edit_snap: snap_mod.Setting = .note_16;
     var rename: RenameState = .{};
@@ -1143,6 +1152,14 @@ pub fn main(init: std.process.Init) !void {
             const keys_owned = modal or menu.active() or rename.active() or auto_lane.entryActive() or browser.typing(ui) or
                 (focus == .browser and layout.browser_visible);
             musical_keys.poll(!keys_owned and !commandModifierDown(), clip_editor.keyScale());
+        }
+        // MIDI devices (docs/44): what they sent this frame joins the notes
+        // the keys hold.
+        var midi_msgs: [256]midi_in.Msg = undefined;
+        const midi_n = midi_in.poll(&midi_msgs);
+        applyMidi(alloc, midi_msgs[0..midi_n], tracks, &transport, &selected_track, &status, &midi_record, &dirty);
+        if (midi_in.takeChanged()) {
+            if (midi_in.connected()) status.set("MIDI in: {s}", .{midi_in.sourceName(0)}) else status.set("MIDI in: no device", .{});
         }
         if (modal) {
             // Modal: only Esc/Enter act, handled after the dialog draws below.
@@ -1291,7 +1308,7 @@ pub fn main(init: std.process.Init) !void {
             .project_path_chosen = project_path_chosen,
             .dirty = dirty,
             .recording = rec_busy or musical_keys.recording,
-            .can_record = audio.capture_available or musical_keys.enabled,
+            .can_record = audio.capture_available or musical_keys.inputLive(),
             .input_names = input_name_ptrs[0..input_count],
             .current_input_idx = current_input_idx,
             .buffer_frames = audio.block_frames,
@@ -1366,6 +1383,10 @@ pub fn main(init: std.process.Init) !void {
                     status.set("Buffer {d} ({d:.1} ms)", .{ frames, @as(f32, @floatFromInt(frames)) / 48.0 });
             }
         }
+        if (midi_record) {
+            tres.record_toggle = true;
+            midi_record = false;
+        }
         if (tres.record_toggle and !rec_finishing) {
             if (recorder.isRecording() or musical_keys.recording) {
                 if (recorder.isRecording()) {
@@ -1378,7 +1399,7 @@ pub fn main(init: std.process.Init) !void {
                 rec_track = firstArmedAudioTrack(tracks);
                 // With KEYS on, REC writes what the keyboard plays (docs/40);
                 // the loop keeps running so passes layer.
-                if (musical_keys.enabled) {
+                if (musical_keys.inputLive()) {
                     musical_keys.recording = true;
                     transport.play();
                     if (rec_track == null) status.set("Recording keys\u{2026}", .{});
@@ -1407,8 +1428,8 @@ pub fn main(init: std.process.Init) !void {
                         transport.setLoopEnabled(true);
                         rec_loop_paused = false;
                     }
-                } else if (!musical_keys.enabled) {
-                    status.set("Arm a track (R) or turn KEYS on to record", .{});
+                } else if (!musical_keys.inputLive()) {
+                    status.set("Arm a track (R), turn KEYS on or plug in a MIDI device to record", .{});
                 }
             }
         }
@@ -1808,6 +1829,18 @@ pub fn main(init: std.process.Init) !void {
                 dirty = true;
             } else |err| status.set("Can't group: {s}", .{@errorName(err)});
         };
+        if (mbres.add_note_fx) if (bay_dev) |dev| if (!bay_is_bus) {
+            pushHistorySnapshot(alloc, &history, tracks, &transport);
+            dev.note_fx.present.store(1, .monotonic);
+            dirty = true;
+            status.set("Added the arpeggiator: it runs ahead of the instrument", .{});
+        };
+        if (mbres.remove_note_fx) if (bay_dev) |dev| {
+            pushHistorySnapshot(alloc, &history, tracks, &transport);
+            dev.note_fx.present.store(0, .monotonic);
+            dirty = true;
+        };
+        if (mbres.note_fx_changed) dirty = true;
         if (mbres.add_machine) |reg_idx| {
             if (bay_dev) |dev| {
                 const entry = &reg.entries[reg_idx];
@@ -6418,6 +6451,114 @@ fn envU32(name: [*:0]const u8) ?u32 {
     return std.fmt.parseInt(u32, std.mem.span(v), 10) catch null;
 }
 
+/// The control the mouse touched last, for MIDI learn (docs/44).
+var midi_touch: ?midi_map.Param = null;
+
+/// What this frame's MIDI messages do (docs/44): LEARN binds, a bound
+/// pad runs its action, a bound knob sets its control.
+fn applyMidi(
+    alloc: std.mem.Allocator,
+    msgs: []const midi_in.Msg,
+    tracks: []track_mod.Track,
+    transport: *transport_mod.Transport,
+    selected_track: *?usize,
+    status: *StatusMessage,
+    want_record: *bool,
+    dirty: *bool,
+) void {
+    for (msgs) |m| {
+        if (midi_map.learn_armed) {
+            var why: []const u8 = "";
+            if (midi_map.learnFrom(m, midi_touch, &why)) |l| {
+                midi_map.save(alloc);
+                var nb: [64]u8 = undefined;
+                const what = switch (l.dest) {
+                    .action => |a| a.label(),
+                    .knob => |k| std.fmt.bufPrint(&nb, "KNOB {d}", .{k + 1}) catch "knob",
+                    .param => "the control",
+                };
+                status.set("Learned {s} {d} \u{2192} {s}", .{ if (l.src.kind == .cc) "CC" else "note", l.src.number, what });
+            } else if (why.len > 0) status.set("{s}", .{why});
+            continue;
+        }
+        const b = midi_map.find(m) orelse continue;
+        switch (b.dest) {
+            .action => |a| {
+                const fire = switch (m.kind) {
+                    .note_on => true,
+                    .cc => midi_map.rising(m),
+                    else => false,
+                };
+                if (fire) runMidiAction(a, tracks, transport, selected_track, status, want_record);
+            },
+            .knob => |k| if (m.kind == .cc) {
+                const ti = playableTrack(tracks, selected_track.*) orelse continue;
+                const mach = &tracks[ti].machine;
+                const ci = @as(usize, midi_map.page) * midi_map.KNOBS + k;
+                if (ci >= mach.controlCount()) continue;
+                setMidiKnob(mach, ci, m.b, status);
+                dirty.* = true;
+            },
+            .param => |p| if (m.kind == .cc and p.track < tracks.len) {
+                const t = &tracks[p.track];
+                const v = @as(f32, @floatFromInt(m.b)) / 127.0;
+                switch (p.target.kind) {
+                    .volume => t.setVolume(v * 1.25),
+                    .pan => t.setPan(v * 2 - 1),
+                    .inst, .fx => {
+                        const mach = t.targetMachine(p.target) orelse continue;
+                        const ci = mach.controlIndex(p.target.param()) orelse continue;
+                        setMidiKnob(mach, ci, m.b, status);
+                    },
+                }
+                dirty.* = true;
+            },
+        }
+    }
+}
+
+fn setMidiKnob(mach: *const @import("machine.zig").Machine, ci: usize, b: u8, status: *StatusMessage) void {
+    const info = (mach.control_info orelse return)(mach.state, ci);
+    mach.setKnob(ci, midi_map.knobValue(b, info.stepped, info.lo, info.hi));
+    status.set("{s} {d}", .{ info.label, b });
+}
+
+fn runMidiAction(
+    a: midi_map.Action,
+    tracks: []track_mod.Track,
+    transport: *transport_mod.Transport,
+    selected_track: *?usize,
+    status: *StatusMessage,
+    want_record: *bool,
+) void {
+    switch (a) {
+        .play_stop => transport.toggle(),
+        .stop => transport.stop(),
+        .record => want_record.* = true,
+        .loop => transport.toggleLoop(),
+        .prev_track, .next_track => {
+            const dir: i32 = if (a == .next_track) 1 else -1;
+            var i: i32 = if (selected_track.*) |s| @intCast(s) else if (dir > 0) -1 else @as(i32, @intCast(tracks.len));
+            while (true) {
+                i += dir;
+                if (i < 0 or i >= tracks.len) return;
+                if (tracks[@intCast(i)].kind == .audio) break;
+            }
+            selected_track.* = @intCast(i);
+            midi_map.page = 0;
+            status.set("Track {s}", .{tracks[@intCast(i)].name()});
+        },
+        .page_prev, .page_next => {
+            const ti = playableTrack(tracks, selected_track.*) orelse return;
+            const pages = (tracks[ti].machine.controlCount() + midi_map.KNOBS - 1) / midi_map.KNOBS;
+            if (pages == 0) return;
+            const next: i32 = @as(i32, midi_map.page) + if (a == .page_next) @as(i32, 1) else -1;
+            midi_map.page = @intCast(std.math.clamp(next, 0, @as(i32, @intCast(pages)) - 1));
+            status.set("Knobs page {d}/{d}", .{ midi_map.page + 1, pages });
+        },
+    }
+}
+
 /// Automation recording (docs/22 §Manual changes): while armed and
 /// playing, a held control writes its track lane — touch-write, one undo
 /// step per pass. The stroke is thinned to 1 px at the arrangement's zoom
@@ -6460,6 +6601,7 @@ const AutoRecorder = struct {
     /// Returns true when the document changed.
     fn tick(self: *AutoRecorder, alloc: std.mem.Allocator, history: *history_mod.History, tracks: []track_mod.Track, transport: *transport_mod.Transport, recording: bool) bool {
         const h = held(tracks);
+        if (h) |hv| midi_touch = .{ .track = @intCast(hv.track), .target = hv.target };
         if (!recording) {
             self.active = false;
             return false;
