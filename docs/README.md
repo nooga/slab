@@ -145,6 +145,9 @@ status and the source before assuming a feature is absent or complete.
     releases (built)
 49. [48-ambika.md](48-ambika.md) — Ambika: the Mutable Instruments polysynth
     voicecard, first milestone (built)
+50. [49-convolver.md](49-convolver.md) — the convolver (prototype): a
+    host service that convolves an effect's input with an impulse response,
+    and CONVO, the convolution reverb on it
 
 ## Terminology crib sheet
 

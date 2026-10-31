@@ -6,6 +6,12 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **CONVO, a convolution reverb.** Play a track through a recorded or made
+  space: an impulse response, any WAV. It ships with a synthetic stereo
+  hall and a bowed cymbal that every note swells through, and takes
+  PREDELAY, LO CUT, HI CUT, WIDTH, LEVEL and MIX. Effect machines can ask
+  for an impulse response of their own (docs/49).
+
 - **Unison can be a wall.** The UNI panel has a WALL switch. On, a stack
   gets louder as voices are added (about +6 dB at 5) instead of staying at
   one voice's level, and its voices spread across the stereo field in
@@ -97,10 +103,10 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 - **Your work survives a crash.** Slab saves a recovery copy of the project
   every 30 seconds while it has unsaved changes, the untitled project
-  included, and restores it at the next start (docs/46).
+  included, and restores it at the next start (docs/49).
 - **Logs and crash reports.** Slab keeps `~/Library/Logs/Slab/slab.log` and
   writes a `crash-*.txt` with a backtrace when it crashes; send that folder
-  with a bug report (docs/46).
+  with a bug report (docs/49).
 - **Undo and redo are fast.** They used to rebuild every machine in the
   project and could stall for seconds; now only the tracks an edit touched
   are rebuilt, and your track and clip selection stays.
