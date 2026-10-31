@@ -135,6 +135,8 @@ status and the source before assuming a feature is absent or complete.
 44. [43-harsh-fx.md](43-harsh-fx.md) — harsh effects (built): Octaver,
     Wobble and Grinder, OTT and chorus choke, and rigs for Justice-style
     bass and blog-house guitar chains
+45. [44-midi-input.md](44-midi-input.md) — MIDI input (built): CoreMIDI
+    notes into the selected track, recording, LEARN, the MPK mini map
 
 ## Terminology crib sheet
 

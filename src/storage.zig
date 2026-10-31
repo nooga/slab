@@ -344,7 +344,7 @@ extern "c" fn close(fd: c_int) c_int;
 extern "c" fn read(fd: c_int, buf: [*]u8, count: usize) isize;
 extern "c" fn write(fd: c_int, buf: [*]const u8, count: usize) isize;
 
-fn readFile(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
+pub fn readFile(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
     var zb: [MAX_PATH]u8 = undefined;
     const z = std.mem.printSentinel(&zb, "{s}", .{path}, 0) catch return null;
     const fd = open(z.ptr, 0);
@@ -367,7 +367,7 @@ fn readFile(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
     return out.toOwnedSlice(alloc) catch null;
 }
 
-fn writeFile(path: []const u8, bytes: []const u8) void {
+pub fn writeFile(path: []const u8, bytes: []const u8) void {
     var zb: [MAX_PATH]u8 = undefined;
     const z = std.mem.printSentinel(&zb, "{s}", .{path}, 0) catch return;
     const fd = open(z.ptr, 0x0001 | 0x0200 | 0x0400, @as(c_uint, 0o644)); // O_WRONLY|O_CREAT|O_TRUNC

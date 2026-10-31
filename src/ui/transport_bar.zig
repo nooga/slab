@@ -19,6 +19,7 @@ const Transport = @import("../transport.zig").Transport;
 const audio_mod = @import("../audio.zig");
 const meter_mod = @import("../meter.zig");
 const musical_keys = @import("musical_keys.zig");
+const midi_map = @import("../midi_map.zig");
 
 const Ui = core.Ui;
 const Rect = core.Rect;
@@ -164,6 +165,7 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     menu.tip(ui, snap_r, std.mem.span(a.edit_snap.tooltip()));
 
     keysTile(ui, &bar);
+    midiTile(ui, &bar);
 
     // Logo plate on the right, the master meter beside it, blank plate
     // between.
@@ -184,6 +186,24 @@ const SNAP_LABELS = blk: {
 };
 
 // ── Tiles ────────────────────────────────────────────────────────────
+
+/// MIDI learn (docs/44): LEARN arms the next controller or pad; the select
+/// says what it binds. PG is the page of controls the knobs drive.
+fn midiTile(ui: *Ui, bar: *Rect) void {
+    ui.pushId("midi");
+    defer ui.popId();
+    const on_r = bar.cutLeft(52);
+    var on = midi_map.learn_armed;
+    if (ctl.button(ui, on_r, "learn", &on, .{ .kind = .latch, .label = "LEARN", .led = style.accent, .flush = true })) midi_map.learn_armed = on;
+    menu.tip(ui, on_r, "MIDI learn: pick what to bind, then move a knob or hit a pad. A control: touch it with the mouse first");
+    const pick_r = bar.cutLeft(100);
+    _ = ctl.displaySelectEx(ui, pick_r, "pick", &midi_map.learn_pick, &midi_map.LEARN_LABELS, "BIND", .{ .flush = true, .dim = !midi_map.learn_armed });
+    menu.tip(ui, pick_r, "What LEARN binds: the control last touched, a transport action, or a knob slot");
+    var pb: [8]u8 = undefined;
+    const pg_r = bar.cutLeft(48);
+    ctl.display(ui, pg_r, std.fmt.bufPrint(&pb, "PG {d}", .{midi_map.page + 1}) catch "PG", .{ .align_ = .center, .flush = true });
+    menu.tip(ui, pg_r, "The page of controls the eight knobs drive (pads: PAGE -, PAGE +)");
+}
 
 /// Musical typing (docs/40): KEYS on/off, the layout, the base octave, the
 /// velocity, and CHORD's chord type.

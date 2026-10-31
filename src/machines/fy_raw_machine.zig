@@ -1229,6 +1229,7 @@ pub const FyRawMachine = struct {
             .control_knob = controlKnobImpl,
             .control_base = controlBaseImpl,
             .format_control = formatControlImpl,
+            .set_knob = setKnobImpl,
             .set_auto_ui = setAutoUiImpl,
             .clear_overrides = clearOverridesImpl,
             .take_auto_request = takeAutoRequestImpl,
@@ -2226,6 +2227,15 @@ fn takeWakeImpl(state: *anyopaque) bool {
 fn controlCountImpl(state: *anyopaque) usize {
     const self: *FyRawMachine = @ptrCast(@alignCast(state));
     return self.desc.control_count;
+}
+
+fn setKnobImpl(state: *anyopaque, i: usize, knob: f32) void {
+    const self: *FyRawMachine = @ptrCast(@alignCast(state));
+    if (i >= self.desc.control_count) return;
+    switch (self.desc.controls[i].kind) {
+        .direct_f64 => self.setControlNorm(i, knob),
+        .switch_sel, .int_range => self.setControlRaw(i, knob),
+    }
 }
 
 fn controlInfoImpl(state: *anyopaque, i: usize) machine.ControlInfo {

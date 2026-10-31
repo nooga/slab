@@ -251,6 +251,10 @@ pub const ControlInfo = struct {
     hi: f32 = 1,
 };
 
+/// UI thread: set control `i` to `knob` (knob space) as a hand would, with
+/// the control's own smoothing (a MIDI knob, docs/44).
+pub const SetKnobFn = *const fn (state: *anyopaque, i: usize, knob: f32) void;
+
 pub const ControlCountFn = *const fn (state: *anyopaque) usize;
 pub const ControlInfoFn = *const fn (state: *anyopaque, i: usize) ControlInfo;
 /// Knob-space value → real units (what presets and projects store).
@@ -504,6 +508,7 @@ pub const Machine = struct {
     control_knob: ?ControlKnobFn = null,
     control_base: ?ControlBaseFn = null,
     format_control: ?FormatControlFn = null,
+    set_knob: ?SetKnobFn = null,
     set_auto_ui: ?SetAutoUiFn = null,
     clear_overrides: ?ClearOverridesFn = null,
     take_auto_request: ?TakeAutoRequestFn = null,
@@ -545,6 +550,15 @@ pub const Machine = struct {
     pub fn takeWake(self: *const Machine) bool {
         const f = self.take_wake orelse return false;
         return f(self.state);
+    }
+
+    /// Set control `i` to `knob` (knob space) from the UI thread: through
+    /// the machine's smoothed hand path, else as a restored value.
+    pub fn setKnob(self: *const Machine, i: usize, knob: f32) void {
+        if (self.set_knob) |f| return f(self.state, i, knob);
+        const set = self.set_param orelse return;
+        const info = (self.control_info orelse return)(self.state, i);
+        set(self.state, info.id, (self.control_value orelse return)(self.state, i, knob));
     }
 
     pub fn controlCount(self: *const Machine) usize {
