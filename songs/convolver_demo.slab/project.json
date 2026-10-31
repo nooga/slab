@@ -1,0 +1,1419 @@
+{
+ "slab": "project",
+ "schema": 1,
+ "transport": {
+  "bpm": 84.0,
+  "loop": {
+   "on": false,
+   "start": 0.0,
+   "end": 64.0
+  }
+ },
+ "meter": [
+  {
+   "bar": 0,
+   "num": 4,
+   "den": 4
+  }
+ ],
+ "sections": [
+  {
+   "beat": 0.0,
+   "name": "DRY",
+   "color": 4
+  },
+  {
+   "beat": 16.0,
+   "name": "VERB2",
+   "color": 5
+  },
+  {
+   "beat": 32.0,
+   "name": "HALL",
+   "color": 6
+  },
+  {
+   "beat": 48.0,
+   "name": "CYMBAL",
+   "color": 7
+  }
+ ],
+ "end": 64.0,
+ "tracks": [
+  {
+   "name": "KEYS DRY",
+   "color": [
+    230,
+    90,
+    120
+   ],
+   "volume": 0.7,
+   "pan": -0.15,
+   "mute": false,
+   "solo": false,
+   "instrument": {
+    "machine": "rhodes",
+    "params": {
+     "rd-tine-q": 0.85,
+     "rd-bar-q": 0.55,
+     "rd-bar-detune": 0.4,
+     "rd-pickup-drive": 0.15,
+     "rd-bark": 0.12,
+     "rd-bark-decay": 0.5,
+     "rd-warmth": 0.75,
+     "rd-damper": 0.5,
+     "rd-level": 1.0,
+     "rd-voicing": 0.2
+    },
+    "preset": "mellow"
+   },
+   "effects": [],
+   "clips": [
+    {
+     "type": "note",
+     "name": "DRY",
+     "start": 0.0,
+     "len": 16.0,
+     "notes": [
+      {
+       "pitch": 62,
+       "start": 0.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 66,
+       "start": 0.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 69,
+       "start": 0.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 59,
+       "start": 4.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 62,
+       "start": 4.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 66,
+       "start": 4.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 55,
+       "start": 8.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 59,
+       "start": 8.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 62,
+       "start": 8.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 57,
+       "start": 11.0,
+       "len": 0.5,
+       "vel": 84
+      },
+      {
+       "pitch": 61,
+       "start": 11.0,
+       "len": 0.5,
+       "vel": 84
+      },
+      {
+       "pitch": 64,
+       "start": 11.0,
+       "len": 0.5,
+       "vel": 84
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "BELL DRY",
+   "color": [
+    64,
+    206,
+    174
+   ],
+   "volume": 0.5,
+   "pan": 0.2,
+   "mute": false,
+   "solo": false,
+   "instrument": {
+    "machine": "rhodes",
+    "params": {
+     "rd-tine-q": 0.92,
+     "rd-bar-q": 0.25,
+     "rd-bar-detune": 0.15,
+     "rd-pickup-drive": 0.25,
+     "rd-bark": 0.2,
+     "rd-bark-decay": 0.15,
+     "rd-warmth": 0.45,
+     "rd-damper": 0.6,
+     "rd-level": 0.958,
+     "rd-voicing": 0.1
+    },
+    "preset": "tine-bell"
+   },
+   "effects": [],
+   "clips": [
+    {
+     "type": "note",
+     "name": "DRY",
+     "start": 0.0,
+     "len": 16.0,
+     "notes": [
+      {
+       "pitch": 81,
+       "start": 2.0,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 78,
+       "start": 2.5,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 76,
+       "start": 3.0,
+       "len": 0.6,
+       "vel": 88
+      },
+      {
+       "pitch": 78,
+       "start": 6.0,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 74,
+       "start": 6.5,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 71,
+       "start": 7.0,
+       "len": 0.6,
+       "vel": 88
+      },
+      {
+       "pitch": 74,
+       "start": 10.0,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 71,
+       "start": 10.5,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 69,
+       "start": 11.0,
+       "len": 0.6,
+       "vel": 88
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "CLAP DRY",
+   "color": [
+    150,
+    110,
+    230
+   ],
+   "volume": 0.55,
+   "pan": 0.0,
+   "mute": false,
+   "solo": false,
+   "instrument": {
+    "machine": "drum2",
+    "params": {
+     "kick-tune": 53,
+     "kick-sweep": 5,
+     "kick-bend": 0.04,
+     "kick-decay": 0.26,
+     "kick-click": 0.3,
+     "kick-drive": 1.3,
+     "kick-level": 0.9,
+     "snare-tune": 198,
+     "snare-decay": 0.13,
+     "snare-snap": 0.6,
+     "snare-sdec": 0.08,
+     "snare-tone": 2300,
+     "snare-level": 0.85,
+     "clap-tone": 1200,
+     "clap-spread": 0.01,
+     "clap-decay": 0.16,
+     "clap-level": 0.8,
+     "hat-tune": 1.05,
+     "hat-tone": 1.05,
+     "hat-chdec": 0.04,
+     "hat-ohdec": 0.4,
+     "hat-level": 0.85,
+     "tom-tune": 120,
+     "tom-sweep": 1.2,
+     "tom-decay": 0.25,
+     "tom-drive": 1.4,
+     "tom-level": 0.82,
+     "master-accent": 0.4,
+     "master-drive": 1.15,
+     "master-level": 0.9
+    },
+    "preset": "polite-studio-kit"
+   },
+   "effects": [],
+   "clips": [
+    {
+     "type": "note",
+     "name": "DRY",
+     "start": 0.0,
+     "len": 16.0,
+     "notes": [
+      {
+       "pitch": 39,
+       "start": 1.0,
+       "len": 0.1,
+       "vel": 100
+      },
+      {
+       "pitch": 39,
+       "start": 3.0,
+       "len": 0.1,
+       "vel": 100
+      },
+      {
+       "pitch": 39,
+       "start": 5.0,
+       "len": 0.1,
+       "vel": 100
+      },
+      {
+       "pitch": 39,
+       "start": 7.0,
+       "len": 0.1,
+       "vel": 100
+      },
+      {
+       "pitch": 39,
+       "start": 9.0,
+       "len": 0.1,
+       "vel": 100
+      },
+      {
+       "pitch": 39,
+       "start": 11.0,
+       "len": 0.1,
+       "vel": 100
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "KEYS VERB2",
+   "color": [
+    250,
+    190,
+    80
+   ],
+   "volume": 0.7,
+   "pan": -0.15,
+   "mute": false,
+   "solo": false,
+   "instrument": {
+    "machine": "rhodes",
+    "params": {
+     "rd-tine-q": 0.85,
+     "rd-bar-q": 0.55,
+     "rd-bar-detune": 0.4,
+     "rd-pickup-drive": 0.15,
+     "rd-bark": 0.12,
+     "rd-bark-decay": 0.5,
+     "rd-warmth": 0.75,
+     "rd-damper": 0.5,
+     "rd-level": 1.0,
+     "rd-voicing": 0.2
+    },
+    "preset": "mellow"
+   },
+   "effects": [],
+   "clips": [
+    {
+     "type": "note",
+     "name": "VERB2",
+     "start": 16.0,
+     "len": 16.0,
+     "notes": [
+      {
+       "pitch": 62,
+       "start": 0.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 66,
+       "start": 0.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 69,
+       "start": 0.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 59,
+       "start": 4.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 62,
+       "start": 4.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 66,
+       "start": 4.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 55,
+       "start": 8.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 59,
+       "start": 8.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 62,
+       "start": 8.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 57,
+       "start": 11.0,
+       "len": 0.5,
+       "vel": 84
+      },
+      {
+       "pitch": 61,
+       "start": 11.0,
+       "len": 0.5,
+       "vel": 84
+      },
+      {
+       "pitch": 64,
+       "start": 11.0,
+       "len": 0.5,
+       "vel": 84
+      }
+     ]
+    }
+   ],
+   "sends": [
+    {
+     "to": 6,
+     "level": 0.6309573444801932,
+     "pre": false
+    }
+   ]
+  },
+  {
+   "name": "BELL VERB2",
+   "color": [
+    90,
+    170,
+    250
+   ],
+   "volume": 0.5,
+   "pan": 0.2,
+   "mute": false,
+   "solo": false,
+   "instrument": {
+    "machine": "rhodes",
+    "params": {
+     "rd-tine-q": 0.92,
+     "rd-bar-q": 0.25,
+     "rd-bar-detune": 0.15,
+     "rd-pickup-drive": 0.25,
+     "rd-bark": 0.2,
+     "rd-bark-decay": 0.15,
+     "rd-warmth": 0.45,
+     "rd-damper": 0.6,
+     "rd-level": 0.958,
+     "rd-voicing": 0.1
+    },
+    "preset": "tine-bell"
+   },
+   "effects": [],
+   "clips": [
+    {
+     "type": "note",
+     "name": "VERB2",
+     "start": 16.0,
+     "len": 16.0,
+     "notes": [
+      {
+       "pitch": 81,
+       "start": 2.0,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 78,
+       "start": 2.5,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 76,
+       "start": 3.0,
+       "len": 0.6,
+       "vel": 88
+      },
+      {
+       "pitch": 78,
+       "start": 6.0,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 74,
+       "start": 6.5,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 71,
+       "start": 7.0,
+       "len": 0.6,
+       "vel": 88
+      },
+      {
+       "pitch": 74,
+       "start": 10.0,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 71,
+       "start": 10.5,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 69,
+       "start": 11.0,
+       "len": 0.6,
+       "vel": 88
+      }
+     ]
+    }
+   ],
+   "sends": [
+    {
+     "to": 6,
+     "level": 0.5011872336272722,
+     "pre": false
+    }
+   ]
+  },
+  {
+   "name": "CLAP VERB2",
+   "color": [
+    240,
+    130,
+    70
+   ],
+   "volume": 0.55,
+   "pan": 0.0,
+   "mute": false,
+   "solo": false,
+   "instrument": {
+    "machine": "drum2",
+    "params": {
+     "kick-tune": 53,
+     "kick-sweep": 5,
+     "kick-bend": 0.04,
+     "kick-decay": 0.26,
+     "kick-click": 0.3,
+     "kick-drive": 1.3,
+     "kick-level": 0.9,
+     "snare-tune": 198,
+     "snare-decay": 0.13,
+     "snare-snap": 0.6,
+     "snare-sdec": 0.08,
+     "snare-tone": 2300,
+     "snare-level": 0.85,
+     "clap-tone": 1200,
+     "clap-spread": 0.01,
+     "clap-decay": 0.16,
+     "clap-level": 0.8,
+     "hat-tune": 1.05,
+     "hat-tone": 1.05,
+     "hat-chdec": 0.04,
+     "hat-ohdec": 0.4,
+     "hat-level": 0.85,
+     "tom-tune": 120,
+     "tom-sweep": 1.2,
+     "tom-decay": 0.25,
+     "tom-drive": 1.4,
+     "tom-level": 0.82,
+     "master-accent": 0.4,
+     "master-drive": 1.15,
+     "master-level": 0.9
+    },
+    "preset": "polite-studio-kit"
+   },
+   "effects": [],
+   "clips": [
+    {
+     "type": "note",
+     "name": "VERB2",
+     "start": 16.0,
+     "len": 16.0,
+     "notes": [
+      {
+       "pitch": 39,
+       "start": 1.0,
+       "len": 0.1,
+       "vel": 100
+      },
+      {
+       "pitch": 39,
+       "start": 3.0,
+       "len": 0.1,
+       "vel": 100
+      },
+      {
+       "pitch": 39,
+       "start": 5.0,
+       "len": 0.1,
+       "vel": 100
+      },
+      {
+       "pitch": 39,
+       "start": 7.0,
+       "len": 0.1,
+       "vel": 100
+      },
+      {
+       "pitch": 39,
+       "start": 9.0,
+       "len": 0.1,
+       "vel": 100
+      },
+      {
+       "pitch": 39,
+       "start": 11.0,
+       "len": 0.1,
+       "vel": 100
+      }
+     ]
+    }
+   ],
+   "sends": [
+    {
+     "to": 6,
+     "level": 0.3981071705534972,
+     "pre": false
+    }
+   ]
+  },
+  {
+   "name": "VERB2",
+   "kind": "bus",
+   "color": [
+    120,
+    200,
+    90
+   ],
+   "volume": 1.0,
+   "pan": 0.0,
+   "mute": false,
+   "solo": false,
+   "instrument": null,
+   "effects": [
+    {
+     "machine": "verb2",
+     "params": {
+      "verb-predelay": 0.045,
+      "verb-decay": 3.2,
+      "verb-damp": 2600,
+      "verb-tone": 6500,
+      "verb-mix": 1.0,
+      "verb-mod": 12,
+      "verb-algo": 2,
+      "verb-size": 1.25,
+      "verb-early": 0.35,
+      "verb-bass": 1.3,
+      "verb-xover": 350
+     },
+     "bypass": false,
+     "preset": "big-hall"
+    }
+   ],
+   "clips": []
+  },
+  {
+   "name": "KEYS HALL",
+   "color": [
+    210,
+    120,
+    200
+   ],
+   "volume": 0.7,
+   "pan": -0.15,
+   "mute": false,
+   "solo": false,
+   "instrument": {
+    "machine": "rhodes",
+    "params": {
+     "rd-tine-q": 0.85,
+     "rd-bar-q": 0.55,
+     "rd-bar-detune": 0.4,
+     "rd-pickup-drive": 0.15,
+     "rd-bark": 0.12,
+     "rd-bark-decay": 0.5,
+     "rd-warmth": 0.75,
+     "rd-damper": 0.5,
+     "rd-level": 1.0,
+     "rd-voicing": 0.2
+    },
+    "preset": "mellow"
+   },
+   "effects": [],
+   "clips": [
+    {
+     "type": "note",
+     "name": "HALL",
+     "start": 32.0,
+     "len": 16.0,
+     "notes": [
+      {
+       "pitch": 62,
+       "start": 0.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 66,
+       "start": 0.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 69,
+       "start": 0.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 59,
+       "start": 4.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 62,
+       "start": 4.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 66,
+       "start": 4.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 55,
+       "start": 8.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 59,
+       "start": 8.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 62,
+       "start": 8.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 57,
+       "start": 11.0,
+       "len": 0.5,
+       "vel": 84
+      },
+      {
+       "pitch": 61,
+       "start": 11.0,
+       "len": 0.5,
+       "vel": 84
+      },
+      {
+       "pitch": 64,
+       "start": 11.0,
+       "len": 0.5,
+       "vel": 84
+      }
+     ]
+    }
+   ],
+   "sends": [
+    {
+     "to": 10,
+     "level": 0.6309573444801932,
+     "pre": false
+    }
+   ]
+  },
+  {
+   "name": "BELL HALL",
+   "color": [
+    230,
+    90,
+    120
+   ],
+   "volume": 0.5,
+   "pan": 0.2,
+   "mute": false,
+   "solo": false,
+   "instrument": {
+    "machine": "rhodes",
+    "params": {
+     "rd-tine-q": 0.92,
+     "rd-bar-q": 0.25,
+     "rd-bar-detune": 0.15,
+     "rd-pickup-drive": 0.25,
+     "rd-bark": 0.2,
+     "rd-bark-decay": 0.15,
+     "rd-warmth": 0.45,
+     "rd-damper": 0.6,
+     "rd-level": 0.958,
+     "rd-voicing": 0.1
+    },
+    "preset": "tine-bell"
+   },
+   "effects": [],
+   "clips": [
+    {
+     "type": "note",
+     "name": "HALL",
+     "start": 32.0,
+     "len": 16.0,
+     "notes": [
+      {
+       "pitch": 81,
+       "start": 2.0,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 78,
+       "start": 2.5,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 76,
+       "start": 3.0,
+       "len": 0.6,
+       "vel": 88
+      },
+      {
+       "pitch": 78,
+       "start": 6.0,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 74,
+       "start": 6.5,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 71,
+       "start": 7.0,
+       "len": 0.6,
+       "vel": 88
+      },
+      {
+       "pitch": 74,
+       "start": 10.0,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 71,
+       "start": 10.5,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 69,
+       "start": 11.0,
+       "len": 0.6,
+       "vel": 88
+      }
+     ]
+    }
+   ],
+   "sends": [
+    {
+     "to": 10,
+     "level": 0.5011872336272722,
+     "pre": false
+    }
+   ]
+  },
+  {
+   "name": "CLAP HALL",
+   "color": [
+    64,
+    206,
+    174
+   ],
+   "volume": 0.55,
+   "pan": 0.0,
+   "mute": false,
+   "solo": false,
+   "instrument": {
+    "machine": "drum2",
+    "params": {
+     "kick-tune": 53,
+     "kick-sweep": 5,
+     "kick-bend": 0.04,
+     "kick-decay": 0.26,
+     "kick-click": 0.3,
+     "kick-drive": 1.3,
+     "kick-level": 0.9,
+     "snare-tune": 198,
+     "snare-decay": 0.13,
+     "snare-snap": 0.6,
+     "snare-sdec": 0.08,
+     "snare-tone": 2300,
+     "snare-level": 0.85,
+     "clap-tone": 1200,
+     "clap-spread": 0.01,
+     "clap-decay": 0.16,
+     "clap-level": 0.8,
+     "hat-tune": 1.05,
+     "hat-tone": 1.05,
+     "hat-chdec": 0.04,
+     "hat-ohdec": 0.4,
+     "hat-level": 0.85,
+     "tom-tune": 120,
+     "tom-sweep": 1.2,
+     "tom-decay": 0.25,
+     "tom-drive": 1.4,
+     "tom-level": 0.82,
+     "master-accent": 0.4,
+     "master-drive": 1.15,
+     "master-level": 0.9
+    },
+    "preset": "polite-studio-kit"
+   },
+   "effects": [],
+   "clips": [
+    {
+     "type": "note",
+     "name": "HALL",
+     "start": 32.0,
+     "len": 16.0,
+     "notes": [
+      {
+       "pitch": 39,
+       "start": 1.0,
+       "len": 0.1,
+       "vel": 100
+      },
+      {
+       "pitch": 39,
+       "start": 3.0,
+       "len": 0.1,
+       "vel": 100
+      },
+      {
+       "pitch": 39,
+       "start": 5.0,
+       "len": 0.1,
+       "vel": 100
+      },
+      {
+       "pitch": 39,
+       "start": 7.0,
+       "len": 0.1,
+       "vel": 100
+      },
+      {
+       "pitch": 39,
+       "start": 9.0,
+       "len": 0.1,
+       "vel": 100
+      },
+      {
+       "pitch": 39,
+       "start": 11.0,
+       "len": 0.1,
+       "vel": 100
+      }
+     ]
+    }
+   ],
+   "sends": [
+    {
+     "to": 10,
+     "level": 0.3981071705534972,
+     "pre": false
+    }
+   ]
+  },
+  {
+   "name": "HALL",
+   "kind": "bus",
+   "color": [
+    150,
+    110,
+    230
+   ],
+   "volume": 1.0,
+   "pan": 0.0,
+   "mute": false,
+   "solo": false,
+   "instrument": null,
+   "effects": [
+    {
+     "machine": "convo",
+     "params": {
+      "convo-predelay": 10.0,
+      "convo-lowcut": 80.0,
+      "convo-highcut": 16000.0,
+      "convo-width": 1.0,
+      "convo-level": 0.0,
+      "convo-mix": 1.0
+     },
+     "bypass": false,
+     "assets": {
+      "room": "factory:machines/convo/assets/hall.wav"
+     },
+     "preset": "hall"
+    }
+   ],
+   "clips": []
+  },
+  {
+   "name": "KEYS CYMBAL",
+   "color": [
+    250,
+    190,
+    80
+   ],
+   "volume": 0.7,
+   "pan": -0.15,
+   "mute": false,
+   "solo": false,
+   "instrument": {
+    "machine": "rhodes",
+    "params": {
+     "rd-tine-q": 0.85,
+     "rd-bar-q": 0.55,
+     "rd-bar-detune": 0.4,
+     "rd-pickup-drive": 0.15,
+     "rd-bark": 0.12,
+     "rd-bark-decay": 0.5,
+     "rd-warmth": 0.75,
+     "rd-damper": 0.5,
+     "rd-level": 1.0,
+     "rd-voicing": 0.2
+    },
+    "preset": "mellow"
+   },
+   "effects": [],
+   "clips": [
+    {
+     "type": "note",
+     "name": "CYMBAL",
+     "start": 48.0,
+     "len": 16.0,
+     "notes": [
+      {
+       "pitch": 62,
+       "start": 0.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 66,
+       "start": 0.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 69,
+       "start": 0.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 59,
+       "start": 4.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 62,
+       "start": 4.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 66,
+       "start": 4.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 55,
+       "start": 8.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 59,
+       "start": 8.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 62,
+       "start": 8.0,
+       "len": 1.5,
+       "vel": 84
+      },
+      {
+       "pitch": 57,
+       "start": 11.0,
+       "len": 0.5,
+       "vel": 84
+      },
+      {
+       "pitch": 61,
+       "start": 11.0,
+       "len": 0.5,
+       "vel": 84
+      },
+      {
+       "pitch": 64,
+       "start": 11.0,
+       "len": 0.5,
+       "vel": 84
+      }
+     ]
+    }
+   ],
+   "sends": [
+    {
+     "to": 14,
+     "level": 0.6309573444801932,
+     "pre": false
+    }
+   ]
+  },
+  {
+   "name": "BELL CYMBAL",
+   "color": [
+    90,
+    170,
+    250
+   ],
+   "volume": 0.5,
+   "pan": 0.2,
+   "mute": false,
+   "solo": false,
+   "instrument": {
+    "machine": "rhodes",
+    "params": {
+     "rd-tine-q": 0.92,
+     "rd-bar-q": 0.25,
+     "rd-bar-detune": 0.15,
+     "rd-pickup-drive": 0.25,
+     "rd-bark": 0.2,
+     "rd-bark-decay": 0.15,
+     "rd-warmth": 0.45,
+     "rd-damper": 0.6,
+     "rd-level": 0.958,
+     "rd-voicing": 0.1
+    },
+    "preset": "tine-bell"
+   },
+   "effects": [],
+   "clips": [
+    {
+     "type": "note",
+     "name": "CYMBAL",
+     "start": 48.0,
+     "len": 16.0,
+     "notes": [
+      {
+       "pitch": 81,
+       "start": 2.0,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 78,
+       "start": 2.5,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 76,
+       "start": 3.0,
+       "len": 0.6,
+       "vel": 88
+      },
+      {
+       "pitch": 78,
+       "start": 6.0,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 74,
+       "start": 6.5,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 71,
+       "start": 7.0,
+       "len": 0.6,
+       "vel": 88
+      },
+      {
+       "pitch": 74,
+       "start": 10.0,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 71,
+       "start": 10.5,
+       "len": 0.3,
+       "vel": 88
+      },
+      {
+       "pitch": 69,
+       "start": 11.0,
+       "len": 0.6,
+       "vel": 88
+      }
+     ]
+    }
+   ],
+   "sends": [
+    {
+     "to": 14,
+     "level": 0.5011872336272722,
+     "pre": false
+    }
+   ]
+  },
+  {
+   "name": "CLAP CYMBAL",
+   "color": [
+    240,
+    130,
+    70
+   ],
+   "volume": 0.55,
+   "pan": 0.0,
+   "mute": false,
+   "solo": false,
+   "instrument": {
+    "machine": "drum2",
+    "params": {
+     "kick-tune": 53,
+     "kick-sweep": 5,
+     "kick-bend": 0.04,
+     "kick-decay": 0.26,
+     "kick-click": 0.3,
+     "kick-drive": 1.3,
+     "kick-level": 0.9,
+     "snare-tune": 198,
+     "snare-decay": 0.13,
+     "snare-snap": 0.6,
+     "snare-sdec": 0.08,
+     "snare-tone": 2300,
+     "snare-level": 0.85,
+     "clap-tone": 1200,
+     "clap-spread": 0.01,
+     "clap-decay": 0.16,
+     "clap-level": 0.8,
+     "hat-tune": 1.05,
+     "hat-tone": 1.05,
+     "hat-chdec": 0.04,
+     "hat-ohdec": 0.4,
+     "hat-level": 0.85,
+     "tom-tune": 120,
+     "tom-sweep": 1.2,
+     "tom-decay": 0.25,
+     "tom-drive": 1.4,
+     "tom-level": 0.82,
+     "master-accent": 0.4,
+     "master-drive": 1.15,
+     "master-level": 0.9
+    },
+    "preset": "polite-studio-kit"
+   },
+   "effects": [],
+   "clips": [
+    {
+     "type": "note",
+     "name": "CYMBAL",
+     "start": 48.0,
+     "len": 16.0,
+     "notes": [
+      {
+       "pitch": 39,
+       "start": 1.0,
+       "len": 0.1,
+       "vel": 100
+      },
+      {
+       "pitch": 39,
+       "start": 3.0,
+       "len": 0.1,
+       "vel": 100
+      },
+      {
+       "pitch": 39,
+       "start": 5.0,
+       "len": 0.1,
+       "vel": 100
+      },
+      {
+       "pitch": 39,
+       "start": 7.0,
+       "len": 0.1,
+       "vel": 100
+      },
+      {
+       "pitch": 39,
+       "start": 9.0,
+       "len": 0.1,
+       "vel": 100
+      },
+      {
+       "pitch": 39,
+       "start": 11.0,
+       "len": 0.1,
+       "vel": 100
+      }
+     ]
+    }
+   ],
+   "sends": [
+    {
+     "to": 14,
+     "level": 0.3981071705534972,
+     "pre": false
+    }
+   ]
+  },
+  {
+   "name": "CYMBAL",
+   "kind": "bus",
+   "color": [
+    120,
+    200,
+    90
+   ],
+   "volume": 1.0,
+   "pan": 0.0,
+   "mute": false,
+   "solo": false,
+   "instrument": null,
+   "effects": [
+    {
+     "machine": "convo",
+     "params": {
+      "convo-predelay": 0.0,
+      "convo-lowcut": 200.0,
+      "convo-highcut": 16000.0,
+      "convo-width": 1.0,
+      "convo-level": -4.0,
+      "convo-mix": 1.0
+     },
+     "bypass": false,
+     "assets": {
+      "room": "factory:machines/convo/assets/bowed-cymbal.wav"
+     },
+     "preset": "bowed-cymbal"
+    }
+   ],
+   "clips": []
+  }
+ ],
+ "master": {
+  "volume": 1.0,
+  "pan": 0.0,
+  "subsonic": false,
+  "effects": [
+   {
+    "machine": "limiter2",
+    "params": {
+     "lim-gain": 8,
+     "lim-ceil": -1
+    },
+    "bypass": false
+   }
+  ]
+ }
+}
