@@ -32,6 +32,7 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`char2`](#char2) | Char | effect | — | `char-` |
 | [`chorus2`](#chorus2) | Chorus | effect | — | `chorus-` |
 | [`comp2`](#comp2) | Comp | effect | — | `comp-` |
+| [`convo`](#convo) | CONVO | effect | — | `convo-` |
 | [`delay2`](#delay2) | Delay | effect | — | `delay-` |
 | [`eq2`](#eq2) | EQ | effect | — | `eq-` |
 | [`era`](#era) | Era | effect | — | `era-` |
@@ -1503,6 +1504,24 @@ Presets:
 - `smooth-pad-comp` — Soft pad / key compression
 - `soft-master-glue` — Old cue-music master control
 - `vocal-leveler` — Smooth vocal leveling
+
+## convo
+
+**CONVO**, stereo insert effect.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `convo-predelay` | SPACE | PREDELAY | 0 … 200 | 10 | pow |
+| `convo-lowcut` | SPACE | LO CUT | 20 … 1000 | 80 | exp |
+| `convo-highcut` | SPACE | HI CUT | 1000 … 20000 | 16000 | exp |
+| `convo-width` | OUT | WIDTH | 0 … 1.5 | 1 | linear |
+| `convo-level` | OUT | LEVEL | -24 … 12 | 0 | linear |
+| `convo-mix` | OUT | MIX | 0 … 1 | 0.35 | pow |
+
+Presets:
+
+- `bowed-cymbal` — A bowed cymbal as the room: every note swells through it
+- `hall` — The synthetic stereo hall
 
 ## delay2
 
