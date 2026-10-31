@@ -60,7 +60,7 @@ class Section:
 
 
 class FX:
-    def __init__(self, machine_id, preset=None, bypass=False, key=None, **params):
+    def __init__(self, machine_id, preset=None, bypass=False, key=None, assets=None, **params):
         # An effect rack (docs/42): a Rack, or "fxrack" with a rig preset.
         self.rack = machine_id if isinstance(machine_id, Rack) else None
         if self.rack is None and machine_id == "fxrack" and preset:
@@ -81,6 +81,9 @@ class FX:
         self.bypass = bypass
         # A track (or bus) whose pre-fader signal drives the detector.
         self.key = key
+        # Files to load by asset name, over the preset's, as on a track:
+        # assets={"room": "factory:machines/convo/assets/bowed-cymbal.wav"}.
+        self.assets = dict(assets or {})
         self.params = params
 
     def build(self, where, index=None, depth=1):
@@ -94,6 +97,9 @@ class FX:
             values = self.rack.params
         values.update(m.params_from(self.params, where))
         out = {"machine": m.id, "params": values, "bypass": self.bypass}
+        assets = {**(preset_assets(m.id, self.preset) if self.preset and self.rack is None else {}), **self.assets}
+        if assets:
+            out["assets"] = assets
         if self.rack is not None:
             out["state"] = self.rack.build(where, depth)
             if self.rack.preset:
@@ -109,12 +115,13 @@ class FX:
         return out
 
 
-def fx(machine_id, preset=None, bypass=False, key=None, **params):
+def fx(machine_id, preset=None, bypass=False, key=None, assets=None, **params):
     """An insert effect: fx("comp2", "drum-smash", thresh=-20). Params may
     drop the machine prefix and use underscores (thresh → comp-thresh);
     switches take an index or a label (div="1/8."). key=track sidechains a
-    comp2/gate2/verb2 detector from that track (docs/23)."""
-    return FX(machine_id, preset, bypass, key, **params)
+    comp2/gate2/verb2 detector from that track (docs/23). assets= loads
+    files by asset name, as on a track (convo's IR is "room")."""
+    return FX(machine_id, preset, bypass, key, assets, **params)
 
 
 class Clip:
