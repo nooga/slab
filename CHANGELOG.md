@@ -6,6 +6,8 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+## 0.0.16 — 2026-10-31
+
 - **An arpeggiator, in a new note slot.** Every instrument track can take
   a note machine ahead of its instrument: "+" in the machine bay, then
   ARPEGGIATOR. Nine modes, rates from 1/4 to 1/32 with dotted and triplet
