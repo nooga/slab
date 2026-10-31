@@ -137,6 +137,8 @@ status and the source before assuming a feature is absent or complete.
     bass and blog-house guitar chains
 45. [44-midi-input.md](44-midi-input.md) — MIDI input (built): CoreMIDI
     notes into the selected track, recording, LEARN, the MPK mini map
+46. [45-arpeggiator.md](45-arpeggiator.md) — the note slot ahead of the
+    instrument and the arpeggiator (built)
 
 ## Terminology crib sheet
 

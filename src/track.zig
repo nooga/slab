@@ -16,6 +16,7 @@ const recorder_mod = @import("recorder.zig");
 const routing = @import("routing.zig");
 const handoff = @import("handoff.zig");
 const chain_mod = @import("chain.zig");
+const arp_mod = @import("arp.zig");
 
 pub const MAX_NAME = 32;
 
@@ -89,6 +90,9 @@ pub const Track = struct {
     machine: machine.Machine,
     /// The chain's publication, retirement and audio copy (chain.zig).
     chain: *chain_mod.State,
+    /// The note slot ahead of the instrument (docs/45); `present` says
+    /// whether the track has it.
+    note_fx: *arp_mod.Arp,
 
     /// Registry index for persistence. Null means the silent placeholder.
     machine_idx: ?u8 = null,
@@ -209,6 +213,9 @@ pub const Track = struct {
         const s2 = try alloc.create(snap_mod.TrackSnapshot);
         errdefer alloc.destroy(s2);
         const chain = try chain_mod.State.create(alloc, mach);
+        errdefer chain.destroy(alloc);
+        const note_fx = try alloc.create(arp_mod.Arp);
+        note_fx.* = .{};
         s0.* = .{};
         s1.* = .{};
         s2.* = .{};
@@ -217,6 +224,7 @@ pub const Track = struct {
             .color = color,
             .machine = mach,
             .chain = chain,
+            .note_fx = note_fx,
             .snap = .{ s0, s1, s2 },
         };
         const n = @min(track_name.len, MAX_NAME);
@@ -293,6 +301,7 @@ pub const Track = struct {
         self.lanes.deinit(alloc);
         for (self.snap) |s| alloc.destroy(s);
         self.chain.destroy(alloc);
+        alloc.destroy(self.note_fx);
         if (self.stretch) |b| {
             b.deinit();
             std.heap.page_allocator.destroy(b);

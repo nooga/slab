@@ -123,6 +123,7 @@ test {
     _ = @import("ui/musical_keys.zig");
     _ = @import("midi_in.zig");
     _ = @import("midi_map.zig");
+    _ = @import("arp.zig");
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
     _ = @import("tempo.zig");
@@ -1828,6 +1829,18 @@ pub fn main(init: std.process.Init) !void {
                 dirty = true;
             } else |err| status.set("Can't group: {s}", .{@errorName(err)});
         };
+        if (mbres.add_note_fx) if (bay_dev) |dev| if (!bay_is_bus) {
+            pushHistorySnapshot(alloc, &history, tracks, &transport);
+            dev.note_fx.present.store(1, .monotonic);
+            dirty = true;
+            status.set("Added the arpeggiator: it runs ahead of the instrument", .{});
+        };
+        if (mbres.remove_note_fx) if (bay_dev) |dev| {
+            pushHistorySnapshot(alloc, &history, tracks, &transport);
+            dev.note_fx.present.store(0, .monotonic);
+            dirty = true;
+        };
+        if (mbres.note_fx_changed) dirty = true;
         if (mbres.add_machine) |reg_idx| {
             if (bay_dev) |dev| {
                 const entry = &reg.entries[reg_idx];
