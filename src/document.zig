@@ -994,6 +994,65 @@ pub fn apply(
     transport: *transport_mod.Transport,
     silent_machine: machine_mod.Machine,
 ) !void {
+    return applyReusing(alloc, data, reg, tracks_buf, track_count, transport, silent_machine, null);
+}
+
+/// The live project that `applyReusing` may take unchanged tracks from
+/// (undo and redo, which differ from the live project by one edit: the
+/// machines of every other track needn't be built again, and building
+/// them is what takes the time).
+pub const Reuse = struct {
+    /// The live tracks, and their project as parsed from `serialize`.
+    old: []track_mod.Track,
+    doc: std.json.Value,
+    /// Set for each live track moved into the new project; the caller
+    /// frees the rest.
+    taken: [routing.MAX_TRACKS]bool = @splat(false),
+
+    fn trackJson(self: *const Reuse, i: usize) ?std.json.Value {
+        const tv = objGet(self.doc.object, "tracks") orelse return null;
+        if (tv != .array or i >= tv.array.items.len) return null;
+        return tv.array.items[i];
+    }
+};
+
+/// Deep equality of two parsed documents written by `serialize`.
+fn jsonEql(a: std.json.Value, b: std.json.Value) bool {
+    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+    return switch (a) {
+        .null => true,
+        .bool => |x| x == b.bool,
+        .integer => |x| x == b.integer,
+        .float => |x| x == b.float,
+        .number_string => |x| std.mem.eql(u8, x, b.number_string),
+        .string => |x| std.mem.eql(u8, x, b.string),
+        .array => |x| {
+            if (x.items.len != b.array.items.len) return false;
+            for (x.items, b.array.items) |p, q| if (!jsonEql(p, q)) return false;
+            return true;
+        },
+        .object => |x| {
+            if (x.count() != b.object.count()) return false;
+            var it = x.iterator();
+            while (it.next()) |e| {
+                const other = b.object.get(e.key_ptr.*) orelse return false;
+                if (!jsonEql(e.value_ptr.*, other)) return false;
+            }
+            return true;
+        },
+    };
+}
+
+pub fn applyReusing(
+    alloc: std.mem.Allocator,
+    data: []const u8,
+    reg: *registry_mod.Registry,
+    tracks_buf: []track_mod.Track,
+    track_count: *usize,
+    transport: *transport_mod.Transport,
+    silent_machine: machine_mod.Machine,
+    reuse: ?*Reuse,
+) !void {
     var parsed = std.json.parseFromSlice(std.json.Value, alloc, data, .{}) catch return error.InvalidProject;
     defer parsed.deinit();
     if (parsed.value != .object) return error.InvalidProject;
@@ -1063,8 +1122,11 @@ pub fn apply(
 
     for (tracks_buf[0..track_count.*]) |*t| t.deinit(alloc);
     track_count.* = 0;
+    // Which new tracks were moved in from `reuse` (the caller still owns
+    // those if this fails).
+    var moved: [routing.MAX_TRACKS]bool = @splat(false);
     errdefer {
-        for (tracks_buf[0..track_count.*]) |*t| t.deinit(alloc);
+        for (tracks_buf[0..track_count.*], 0..) |*t, i| if (!moved[i]) t.deinit(alloc);
         track_count.* = 0;
     }
 
@@ -1075,6 +1137,13 @@ pub fn apply(
     for (tracks_v.array.items, 0..) |trk_v, i| {
         if (trk_v != .object) return error.InvalidProject;
         if (progress) |p| p.step(p.ctx, i, tracks_v.array.items.len, strOf(objGet(trk_v.object, "name")) orelse "");
+        if (reuse) |r| if (i < r.old.len and i < moved.len and !r.taken[i]) if (r.trackJson(i)) |ov| if (jsonEql(ov, trk_v)) {
+            tracks_buf[track_count.*] = r.old[i];
+            r.taken[i] = true;
+            moved[track_count.*] = true;
+            track_count.* += 1;
+            continue;
+        };
         tracks_buf[track_count.*] = try parseTrack(alloc, reg, trk_v.object, silent_machine);
         track_count.* += 1;
     }
@@ -1094,9 +1163,12 @@ pub fn apply(
         // The master outlives the load and the audio thread may still be
         // rendering its old chain (a fading switch plays one more chunk):
         // retire the effects, freed once audio adopts the new chain.
-        while (m.effects.items.len > 0) try m.removeEffect(alloc, m.effects.items.len - 1);
-        if (objGet(mo, "effects")) |ev| try applyEffects(alloc, reg, m, ev);
-        m.publishMachines();
+        const same = if (reuse) |r| if (objGet(r.doc.object, "master")) |old_mv| jsonEql(old_mv, mv) else false else false;
+        if (!same) {
+            while (m.effects.items.len > 0) try m.removeEffect(alloc, m.effects.items.len - 1);
+            if (objGet(mo, "effects")) |ev| try applyEffects(alloc, reg, m, ev);
+            m.publishMachines();
+        }
     };
 }
 
@@ -2566,4 +2638,45 @@ test "realtime: a project load retires the master's effects until audio adopts t
     try std.testing.expectEqual(@as(usize, 0), master.audioEffects().len);
     master.collectMachines(alloc);
     try std.testing.expectEqual(@as(usize, 1), fx.freed);
+}
+
+test "applying over live tracks keeps the unchanged ones" {
+    const alloc = std.testing.allocator;
+    var transport: transport_mod.Transport = .{};
+    transport.sample_rate = 48_000;
+    var live = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "One", .{ .r = 1, .g = 2, .b = 3, .a = 255 }, test_machine),
+        try track_mod.Track.init(alloc, "Two", .{ .r = 1, .g = 2, .b = 3, .a = 255 }, test_machine),
+    };
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    setPool(&pool);
+    defer active_pool = null;
+
+    // The project as it was, then one edit to the second track.
+    const before = try serialize(alloc, live[0..], &transport);
+    defer alloc.free(before);
+    live[1].setVolume(0.25);
+    const after = try serialize(alloc, live[0..], &transport);
+    defer alloc.free(after);
+
+    var reg = registry_mod.Registry.init(alloc);
+    defer reg.deinit();
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, after, .{});
+    defer parsed.deinit();
+    var reuse: Reuse = .{ .old = live[0..], .doc = parsed.value };
+
+    // Undo: apply `before` over the live tracks.
+    var next: [2]track_mod.Track = undefined;
+    var count: usize = 0;
+    try applyReusing(alloc, before, &reg, next[0..], &count, &transport, test_machine, &reuse);
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expect(reuse.taken[0]);
+    try std.testing.expect(!reuse.taken[1]);
+    // The first track is the very same one, the second was rebuilt.
+    try std.testing.expect(next[0].chain == live[0].chain);
+    try std.testing.expect(next[1].chain != live[1].chain);
+    try std.testing.expectEqual(@as(f32, 0.8), next[1].volume());
+    live[1].deinit(alloc);
+    for (next[0..count]) |*t| t.deinit(alloc);
 }

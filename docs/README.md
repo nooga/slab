@@ -139,6 +139,8 @@ status and the source before assuming a feature is absent or complete.
     notes into the selected track, recording, LEARN, the MPK mini map
 46. [45-arpeggiator.md](45-arpeggiator.md) — the note slot ahead of the
     instrument and the arpeggiator (built)
+47. [46-recovery-and-logs.md](46-recovery-and-logs.md) — autosave, crash
+    recovery, logs and crash reports, fast undo (built)
 
 ## Terminology crib sheet
 
