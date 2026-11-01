@@ -46,3 +46,12 @@ take seconds on a big project). The master chain is likewise kept when its
 settings did not change. The selected track and clip stay selected where
 they still exist. Undoing across a project switch (Open, New) rebuilds
 everything, as before.
+
+## Export phases
+
+An export logs each phase to slab.log with the time since the last: the wait
+for source analyses, the worker's start, the render at every tenth, the
+render's end (frames done, cancelled or not), then per file the conversion,
+the loudness measure and the write, and the audio device's restart. It also
+notes how many stems are held in memory. A render that stops shows its last
+line there.

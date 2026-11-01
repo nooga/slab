@@ -417,7 +417,10 @@ fn lastClipEnd(tracks: []const track_mod.Track) f64 {
 fn renderWorker(alloc: std.mem.Allocator, engine: *engine_mod.Engine, job: *RenderJob) void {
     if (exporter.run(alloc, engine, job.tracks, job.opts, &job.progress, &job.cancel)) |r| {
         job.result = r;
-    } else |err| job.err = err;
+    } else |err| {
+        job.err = err;
+        std.log.warn("export: stopped with {s}", .{@errorName(err)});
+    }
     job.done.store(true, .release);
 }
 
@@ -4359,11 +4362,13 @@ fn startRender(
 ) !void {
     const sr = transport.sample_rate;
     const rec = &settings.recipe;
+    std.log.info("export: waiting for the sources' analyses", .{});
     settleAnalyses(tracks);
     const range = exportRange(transport, tracks, rec.range) orelse {
         status.set("Nothing to export", .{});
         return;
     };
+    std.log.info("export: analyses settled, starting the worker", .{});
     job.* = .{
         .active = true,
         .tracks = tracks,
@@ -4515,8 +4520,10 @@ fn finishRender(alloc: std.mem.Allocator, audio: *audio_mod.Audio, engine_pool: 
     _ = alloc;
     if (job.thread) |t| t.join();
     job.thread = null;
+    std.log.info("export: worker joined, restarting the audio device", .{});
     if (engine_pool) |p| p.requestRejoin();
     audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+    std.log.info("export: audio device restarted", .{});
     if (job.result) |*r| {
         var card = export_dialog.Card{
             .has_mix = job.opts.mix_name != null,

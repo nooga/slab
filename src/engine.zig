@@ -685,6 +685,7 @@ pub const Engine = struct {
         var scratch: [MAX_BLOCK * audio.CHANNELS]f32 = undefined;
         var rendered: usize = 0;
         var done: usize = 0;
+        var logged_tenth: usize = 0;
         while (done < total_frames) {
             if (cancel) |c| if (c.load(.monotonic)) break;
             var chunk: u32 = self.tempoChunk(@intCast(@min(@as(usize, MAX_BLOCK), total_frames + skip - rendered)), pos);
@@ -708,6 +709,14 @@ pub const Engine = struct {
             rendered += chunk;
             pos += chunk;
             if (progress) |p| p.store(done, .monotonic);
+            // Each tenth, in slab.log: where a stuck render stopped.
+            if (progress != null and total_frames > 0) {
+                const tenth = done * 10 / total_frames;
+                if (tenth != logged_tenth) {
+                    logged_tenth = tenth;
+                    std.log.info("export: rendering {d}%", .{tenth * 10});
+                }
+            }
             if (self.capture) |cap| {
                 cap.rendered = rendered;
                 if (cap.watch_master) {
