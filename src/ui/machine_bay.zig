@@ -646,33 +646,44 @@ pub fn machinePickerMenuFor(menu_key: u64, reg: *const Registry, filter: PickerF
     var n: usize = 0;
     // The bay's "+" on a track also offers the note slot (docs/45).
     if (menu_key == ADD_MENU_KEY and filter == .all) {
-        items[0] = .{ .label = "ARPEGGIATOR  (notes)", .id = NOTE_ARP_ID };
+        items[0] = .{ .label = "ARPEGGIATOR", .id = NOTE_ARP_ID, .icon = .note };
         items[1] = .{ .separator = true };
         n = 2;
     }
-    // Machines first, then the racks under their own heading (docs/42).
-    for ([_]bool{ false, true }) |natives| {
-        const head = n;
-        for (reg.entries[0..menu_count], 0..) |*e, i| {
-            if ((e.native != .none) != natives) continue;
-            if (filter == .instruments and !e.in_notes) continue;
-            if (filter == .effects and (!e.in_audio or e.in_notes)) continue;
-            if (natives and n == head) {
-                items[n] = .{ .separator = true };
-                items[n + 1] = .{ .label = "RACKS", .enabled = false };
-                n += 2;
-            }
-            items[n] = .{ .label = std.mem.span(e.nameZ()), .id = @intCast(i), .submenu = add_scan_cache[i].count > 0 };
-            n += 1;
+    // Every machine, racks included, A to Z; a mark says what each is.
+    var order: [registry_mod.MAX_MACHINES]u8 = undefined;
+    var count: usize = 0;
+    for (reg.entries[0..menu_count], 0..) |*e, i| {
+        if (filter == .instruments and !e.in_notes) continue;
+        if (filter == .effects and (!e.in_audio or e.in_notes)) continue;
+        order[count] = @intCast(i);
+        count += 1;
+    }
+    std.sort.pdq(u8, order[0..count], reg, struct {
+        fn before(r: *const Registry, a: u8, b: u8) bool {
+            return std.ascii.lessThanIgnoreCase(std.mem.span(r.entries[a].nameZ()), std.mem.span(r.entries[b].nameZ()));
         }
+    }.before);
+    for (order[0..count]) |i| {
+        const e = &reg.entries[i];
+        items[n] = .{
+            .label = std.mem.span(e.nameZ()),
+            .id = i,
+            .submenu = add_scan_cache[i].count > 0,
+            .icon = if (e.in_notes) .instrument else .effect,
+        };
+        n += 1;
     }
     if (menu.pick(menu_key, items[0..n])) |id| return .{ .reg_idx = @intCast(id) };
 
     if (menu.subOpen(menu_key, 0)) |mach_id| {
         const list = &add_scan_cache[mach_id];
         var pitems: [presets_mod.MAX_PRESETS + 1]menu.Item = undefined;
-        pitems[0] = .{ .label = "(default)", .id = DEFAULT_ITEM_ID };
+        pitems[0] = .{ .label = "(default)", .id = DEFAULT_ITEM_ID, .icon = .preset };
         const pn = 1 + presetTopItems(list, pitems[1..]);
+        for (pitems[1..pn]) |*it| if (!it.separator and it.id < DIR_ID_BASE) {
+            it.icon = .preset;
+        };
         if (menu.subPick(menu_key, 1, pitems[0..pn])) |sel| {
             return .{ .reg_idx = @intCast(mach_id), .preset = if (sel == DEFAULT_ITEM_ID) null else @intCast(sel) };
         }

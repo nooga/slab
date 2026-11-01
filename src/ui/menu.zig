@@ -21,6 +21,7 @@ const commands = @import("commands.zig");
 
 const Ui = core.Ui;
 const Rect = core.Rect;
+const Color = core.Color;
 const Input = core.Input;
 
 pub const EditCommand = enum {
@@ -86,7 +87,46 @@ pub const Item = struct {
     submenu: bool = false,
     /// Right-aligned shortcut hint; derived from `command` when null.
     shortcut: ?[]const u8 = null,
+    /// A small pixel mark before the label (a level where any row has one
+    /// keeps a gutter for them).
+    icon: Icon = .none,
 };
+
+/// What a row is, for pickers that mix kinds (docs/45 §The menu).
+pub const Icon = enum { none, instrument, effect, note, preset };
+
+const ICON_W: i32 = 7;
+const ICON_GUTTER: i32 = ICON_W + 5;
+
+// 7 columns by up to 7 rows, '#' lit.
+fn iconRows(icon: Icon) []const []const u8 {
+    return switch (icon) {
+        .none => &.{},
+        // Keys.
+        .instrument => &.{ "#######", "#.#.#.#", "#.#.#.#", "#.#.#.#", "#.#.#.#", "#######" },
+        // A wave.
+        .effect => &.{ ".##....", "#..#...", "#..#...", "...#..#", "...#..#", "....##." },
+        // A note.
+        .note => &.{ "...##..", "...#.#.", "...#...", "...#...", ".###...", "####...", ".##...." },
+        // A diamond.
+        .preset => &.{ "...#...", "..###..", ".#####.", "..###..", "...#..." },
+    };
+}
+
+fn drawIcon(ui: *Ui, x: i32, row: Rect, icon: Icon, col: Color) void {
+    const rows = iconRows(icon);
+    const top = row.y + @divFloor(row.h - 7, 2);
+    const off = @divFloor(7 - @as(i32, @intCast(rows.len)), 2);
+    for (rows, 0..) |line, ry| for (line, 0..) |ch, cx| {
+        if (ch != '#') continue;
+        ui.rect(Rect.xywh(x + @as(i32, @intCast(cx)), top + off + @as(i32, @intCast(ry)), 1, 1), col);
+    };
+}
+
+fn hasIcons(l: *const Level) bool {
+    for (l.items[0..l.len]) |it| if (it.icon != .none) return true;
+    return false;
+}
 
 /// Keybind hints come from the command table (key symbols are
 /// synthesized into the Tamzen legend face, see font.zig).
@@ -379,7 +419,7 @@ fn levelWidth(l: *const Level) i32 {
         } else if (it.shortcut) |h| {
             extra = HINT_GAP + legend.measure(h);
         }
-        w = @max(w, body.measure(it.label) + PAD_X * 2 + extra + 2);
+        w = @max(w, body.measure(it.label) + PAD_X * 2 + extra + 2 + if (hasIcons(l)) ICON_GUTTER else 0);
     }
     return w;
 }
@@ -420,6 +460,7 @@ pub fn draw(ui: *Ui) void {
 fn drawLevel(ui: *Ui, l: *const Level, level: usize) void {
     // Floating hardware: a 1px hard edge around a faceplate.
     _ = ui.plate(l.rect, .{ .outline = .all });
+    const icons = hasIcons(l);
     for (l.items[0..l.len], 0..) |it, i| {
         const row = l.rowRect(i);
         if (it.separator) {
@@ -433,7 +474,9 @@ fn drawLevel(ui: *Ui, l: *const Level, level: usize) void {
         const inner = row.insetXY(1, 0);
         if (lit) ui.rect(inner, style.accent);
         const col = if (!it.enabled) style.text_mute else if (lit) style.chassis else style.text;
-        ui.textIn(&ui.fonts.body, Rect.xywh(row.x + PAD_X, row.y, row.w - PAD_X * 2, row.h), it.label, col, .left, false);
+        const gutter: i32 = if (icons) ICON_GUTTER else 0;
+        if (it.icon != .none) drawIcon(ui, row.x + PAD_X, row, it.icon, col);
+        ui.textIn(&ui.fonts.body, Rect.xywh(row.x + PAD_X + gutter, row.y, row.w - PAD_X * 2 - gutter, row.h), it.label, col, .left, false);
         const hint_col = if (lit) style.chassis else style.text_mute;
         const hint_r = Rect.xywh(row.x + PAD_X, row.y, row.w - PAD_X * 2, row.h);
         if (it.submenu) {
