@@ -6,6 +6,12 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Velocity stems of a chord are separate.** In the piano roll's velocity
+  lane the notes of a chord used to sit on one line, and only the topmost
+  could be grabbed (anywhere along its whole length). Now they fan out side
+  by side where there is room, and where there is not, the lowest draws in
+  front; a click picks the stem whose cap is nearest the pointer, and only
+  the stem itself is a target.
 - **Box select scrolls.** Drag a box on the tracks or in the piano roll to
   the edge of the view and it scrolls along (faster the
   further out), so you can select past what is on screen.

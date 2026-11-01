@@ -1664,14 +1664,71 @@ fn drawVelocityLane(ui: *Ui, label_r: c.rl.Rectangle, r: c.rl.Rectangle, grid: c
     const base_y = r.y + r.height - velBottomPad();
     const max_h = base_y - (r.y + velTopPad());
     ui.rect(frect(r.x, base_y, r.width, 1), ui_style.grid_bar);
-    for (clip.notes.items) |note| {
+    const n = layoutStems(r, grid, clip);
+    for (stems[0..n]) |st| {
+        const note = clip.notes.items[st.idx];
+        const stem = frect(st.x, base_y - stemHeight(note, max_h), STEM_W, stemHeight(note, max_h));
+        ui.rect(stem, if (note.selected) col else col.mix(ui_style.pane, 0.5));
+        ui.rect(Rect.xywh(stem.x, stem.y, STEM_W, 2), if (note.selected) ui_style.accent else col);
+    }
+}
+
+const STEM_W: i32 = 3;
+const STEM_STEP: f32 = 4;
+const MAX_STEMS: usize = 4096;
+
+/// One note's stem in the velocity lane.
+const Stem = struct { idx: u32, x: f32 };
+var stems: [MAX_STEMS]Stem = undefined;
+
+fn stemHeight(note: Note, max_h: f32) f32 {
+    return @max(2, (@as(f32, @floatFromInt(note.velocity)) / 127.0) * max_h);
+}
+
+/// Where each visible note's stem stands, into `stems` (draw order). Notes
+/// that start together (a chord) would hide each other on one line, so
+/// they fan out to the right, as far as the next start leaves room; where
+/// there is none, the lowest velocity draws last so every cap shows.
+fn layoutStems(r: c.rl.Rectangle, grid: c.rl.Rectangle, clip: Clip) usize {
+    var n: usize = 0;
+    for (clip.notes.items, 0..) |note, i| {
         const nr = noteRect(grid, note);
         if (nr.x + nr.width < r.x or nr.x > r.x + r.width) continue;
-        const bar_h = @max(2, (@as(f32, @floatFromInt(note.velocity)) / 127.0) * max_h);
-        const stem = frect(nr.x, base_y - bar_h, 3, bar_h);
-        ui.rect(stem, if (note.selected) col else col.mix(ui_style.pane, 0.5));
-        ui.rect(Rect.xywh(stem.x, stem.y, 3, 2), if (note.selected) ui_style.accent else col);
+        if (n >= MAX_STEMS) break;
+        stems[n] = .{ .idx = @intCast(i), .x = nr.x };
+        n += 1;
     }
+    const notes = clip.notes.items;
+    std.sort.pdq(Stem, stems[0..n], notes, struct {
+        fn before(ns: []const Note, a: Stem, b: Stem) bool {
+            const na = ns[a.idx];
+            const nb = ns[b.idx];
+            if (na.start_beat != nb.start_beat) return na.start_beat < nb.start_beat;
+            return na.pitch < nb.pitch;
+        }
+    }.before);
+    var i: usize = 0;
+    while (i < n) {
+        var j = i + 1;
+        while (j < n and @abs(notes[stems[j].idx].start_beat - notes[stems[i].idx].start_beat) < 1e-4) j += 1;
+        const count = j - i;
+        if (count > 1) {
+            const room = (if (j < n) stems[j].x else r.x + r.width) - stems[i].x;
+            const step = std.math.clamp(@floor((room - @as(f32, STEM_W) - 1) / @as(f32, @floatFromInt(count - 1))), 0, STEM_STEP);
+            if (step >= 2) {
+                for (stems[i..j], 0..) |*st, k| st.x += step * @as(f32, @floatFromInt(k));
+            } else {
+                // Tallest first, so the shorter ones stay in front.
+                std.sort.insertion(Stem, stems[i..j], notes, struct {
+                    fn before(ns: []const Note, a: Stem, b: Stem) bool {
+                        return ns[a.idx].velocity > ns[b.idx].velocity;
+                    }
+                }.before);
+            }
+        }
+        i = j;
+    }
+    return n;
 }
 
 /// The ENV strip: the clip lane picked in its menu, edited with the lane
@@ -1915,7 +1972,7 @@ fn handleVelocityLane(r: c.rl.Rectangle, grid: c.rl.Rectangle, clip: *Clip, m: p
     if (!pane.contains(r, m.x, m.y)) return false;
     pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 1);
     if (!m.left_pressed or pane.hasActiveDrag()) return true;
-    const idx = findVelocityBarAt(r, grid, clip.*, m.x) orelse return true;
+    const idx = findVelocityBarAt(r, grid, clip.*, m.x, m.y) orelse return true;
     if (!pane.tryStartDrag(VELOCITY_KEY)) return true;
     velocity_active = true;
     velocity_drag_idx = idx;
@@ -1946,15 +2003,26 @@ fn applyVelocityAt(r: c.rl.Rectangle, clip: *Clip, y: f32) void {
     }
 }
 
-fn findVelocityBarAt(r: c.rl.Rectangle, grid: c.rl.Rectangle, clip: Clip, x: f32) ?usize {
-    var i = clip.notes.items.len;
-    while (i > 0) {
-        i -= 1;
-        const nr = noteRect(grid, clip.notes.items[i]);
-        const bar = pane.rect(nr.x, r.y, @max(nr.width, 3), r.height);
-        if (pane.contains(bar, x, r.y + r.height / 2)) return i;
+/// The stem under x, and among stems stacked there the one whose cap is
+/// nearest the pointer's height `y`.
+fn findVelocityBarAt(r: c.rl.Rectangle, grid: c.rl.Rectangle, clip: Clip, x: f32, y: f32) ?usize {
+    const base_y = r.y + r.height - velBottomPad();
+    const max_h = base_y - (r.y + velTopPad());
+    const n = layoutStems(r, grid, clip);
+    var best: ?usize = null;
+    var best_d: f32 = std.math.inf(f32);
+    for (stems[0..n]) |st| {
+        const note = clip.notes.items[st.idx];
+        if (x < st.x - 2 or x > st.x + @as(f32, STEM_W) + 2) continue;
+        const cap = base_y - stemHeight(note, max_h);
+        // A selected stem wins a near tie: it is the one being worked.
+        const d = @abs(y - cap) - if (note.selected) @as(f32, 1) else 0;
+        if (d < best_d) {
+            best_d = d;
+            best = st.idx;
+        }
     }
-    return null;
+    return best;
 }
 
 /// A folded-away pitch lands far above the grid, so its notes neither draw
@@ -2772,4 +2840,43 @@ test "several selected note clips show together, the span covering them all" {
     gatherShown(&tracks, .{ .track = 0, .clip = 0 }, &tracks[0].clips.items[0]);
     try std.testing.expectEqual(@as(usize, 1), shown_n);
     try std.testing.expectEqual(@as(f64, 0), view_span[0]);
+}
+
+test "a chord's velocity stems fan out and the pointer picks the nearest cap" {
+    const alloc = std.testing.allocator;
+    var clip = Clip.init("chord", 0, 4);
+    defer clip.deinit(alloc);
+    try clip.addNote(alloc, .{ .pitch = 60, .start_beat = 1, .length_beats = 1, .velocity = 120 });
+    try clip.addNote(alloc, .{ .pitch = 64, .start_beat = 1, .length_beats = 1, .velocity = 80 });
+    try clip.addNote(alloc, .{ .pitch = 67, .start_beat = 1, .length_beats = 1, .velocity = 40 });
+    try clip.addNote(alloc, .{ .pitch = 60, .start_beat = 3, .length_beats = 1, .velocity = 100 });
+
+    const saved = view;
+    defer view = saved;
+    view = .{ .px_per_beat = 48, .row_h = 10 };
+    const grid = pane.rect(0, 0, 400, 300);
+    const lane = pane.rect(0, 300, 400, 64);
+
+    const n = layoutStems(lane, grid, clip);
+    try std.testing.expectEqual(@as(usize, 4), n);
+    // The chord's three stems stand apart; none sits on the next chord.
+    try std.testing.expect(stems[1].x - stems[0].x >= 2);
+    try std.testing.expect(stems[2].x - stems[1].x >= 2);
+    try std.testing.expect(stems[2].x < stems[3].x);
+
+    // Each is reachable: the pointer at its own cap picks it.
+    const base_y = lane.y + lane.height - velBottomPad();
+    const max_h = base_y - (lane.y + velTopPad());
+    for (stems[0..3]) |st| {
+        const cap = base_y - stemHeight(clip.notes.items[st.idx], max_h);
+        const hit = findVelocityBarAt(lane, grid, clip, st.x + 1, cap).?;
+        try std.testing.expectEqual(@as(usize, st.idx), hit);
+    }
+    // And with no room to fan out they stack, the nearest cap still wins.
+    view.px_per_beat = 4;
+    clip.notes.items[3].start_beat = 1.1;
+    _ = layoutStems(lane, grid, clip);
+    const cap = base_y - stemHeight(clip.notes.items[1], max_h);
+    const x = noteRect(grid, clip.notes.items[1]).x + 1;
+    try std.testing.expectEqual(@as(usize, 1), findVelocityBarAt(lane, grid, clip, x, cap).?);
 }
