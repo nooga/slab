@@ -1346,6 +1346,7 @@ pub fn main(init: std.process.Init) !void {
             .thread_load = thread_load[0..n_threads],
             .cpu_peak = cpu_load.peak,
             .browser_visible = layout.browser_visible,
+            .song_end_beats = markers.end orelse lastClipEnd(tracks_buf[0..track_count]),
         });
         // The menu bar's commands run as the in-app File menu's do.
         const menu_cmds = native_app.takeCommands();
