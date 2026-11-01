@@ -6,6 +6,8 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+## 0.0.17 — 2026-11-01
+
 - **Your work survives a crash.** Slab saves a recovery copy of the project
   every 30 seconds while it has unsaved changes, the untitled project
   included, and restores it at the next start (docs/46).
