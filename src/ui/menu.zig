@@ -72,6 +72,7 @@ pub const EditCommand = enum {
     tune,
     zoom_to_selection,
     join,
+    trim_overlaps,
     insert_time,
     delete_time,
 };

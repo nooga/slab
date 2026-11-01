@@ -7374,6 +7374,11 @@ fn executeEditCommand(
             changed = focus == .arrangement and arrangement.joinSelectedClips(tracks, alloc, selected_track, selected_clip);
             if (changed) status.set("Joined", .{}) else status.set("Select two or more note clips on a track to join", .{});
         },
+        .trim_overlaps => {
+            const n = if (focus == .arrangement) arrangement.trimOverlappingClips(tracks, alloc, selected_track.*, selected_clip, transport.map()) else 0;
+            changed = n > 0;
+            if (changed) status.set("Trimmed {d} overlapping clips", .{n}) else if (focus == .arrangement) status.set("No clips overlap here", .{});
+        },
         .insert_time, .delete_time => if (focus == .arrangement) if (arrange_ctx) |ctx| {
             const r = arrangement.timeRange() orelse {
                 status.set("Drag across the lanes to pick the time first", .{});

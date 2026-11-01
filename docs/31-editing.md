@@ -30,6 +30,12 @@ its rules move there and this doc keeps the plan and the reasons.
   around the pointer (⌥-pinch sizes piano-roll rows) in the arrangement
   and both clip editors. A box drag held at an edge of the lanes or grid
   scrolls them (`Box.edgePull`), faster the further out.
+- **Overlaps are marked, not hidden.** Clips may overlap on a track (they
+  layer), but only the top one shows, so it carries a hatched strip over
+  the stretch it covers. ⌘T (`arrange.trimOverlaps`) resolves them on the
+  tracks holding selected clips, else the selected track: the clip later
+  in the track's list (the one placed or moved last, drawn on top) keeps
+  its stretch, the others are cut around it or removed.
 - **Time selection, not just objects.** Live's arrangement and editors
   select a stretch of time across tracks; ⌘D duplicates it (gaps too),
   ⌘L loops it, ⌘E splits at its edges, Insert/Delete Time works on it.

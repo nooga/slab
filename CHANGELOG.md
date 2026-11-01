@@ -6,6 +6,11 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Overlapping clips are marked, and ⌘T trims them.** Where a clip lies
+  over another on a track, a hatched strip along its foot shows the stretch
+  it covers. ⌘T (or "Trim overlaps" in the clip menu) cuts the clips on the
+  tracks you have selected so none overlap: the one on top keeps its
+  stretch, and a clip lying wholly under another goes.
 - **Velocity stems of a chord are separate.** In the piano roll's velocity
   lane the notes of a chord used to sit on one line, and only the topmost
   could be grabbed (anywhere along its whole length). Now they fan out side

@@ -68,6 +68,7 @@ pub const TABLE = [_]Entry{
     .{ .command = .loop_selection, .keys = .{ cmdK(c.rl.KEY_L), null }, .hint = "\u{2318}L", .scope = .{ .arrangement = true, .notes = true } },
     .{ .command = .split_at_playhead, .keys = .{ cmdK(c.rl.KEY_E), null }, .hint = "\u{2318}E", .scope = .{ .arrangement = true } },
     .{ .command = .join, .keys = .{ cmdK(c.rl.KEY_J), null }, .hint = "\u{2318}J", .scope = .{ .arrangement = true } },
+    .{ .command = .trim_overlaps, .keys = .{ cmdK(c.rl.KEY_T), null }, .hint = "\u{2318}T", .scope = .{ .arrangement = true } },
     .{ .command = .insert_time, .keys = .{ cmdK(c.rl.KEY_I), null }, .hint = "\u{2318}I", .scope = .{ .arrangement = true } },
     .{ .command = .delete_time, .keys = .{ .{ .key = c.rl.KEY_BACKSPACE, .cmd = true, .shift = true }, .{ .key = c.rl.KEY_DELETE, .cmd = true, .shift = true } }, .hint = "\u{2318}\u{21E7}\u{232B}", .scope = .{ .arrangement = true } },
     .{ .command = .quantize, .keys = .{ k(c.rl.KEY_Q), null }, .hint = "Q", .scope = .{ .notes = true } },
