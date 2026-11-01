@@ -20,6 +20,7 @@ const audio_mod = @import("../audio.zig");
 const meter_mod = @import("../meter.zig");
 const musical_keys = @import("musical_keys.zig");
 const midi_map = @import("../midi_map.zig");
+const click_mod = @import("../click.zig");
 
 const Ui = core.Ui;
 const Rect = core.Rect;
@@ -48,6 +49,8 @@ pub const Result = struct {
     toggle_browser: bool = false,
     /// The logo was clicked: open About.
     about: bool = false,
+    /// The metronome was switched or its level moved (save the setting).
+    click_changed: bool = false,
 };
 
 pub const Args = struct {
@@ -82,6 +85,8 @@ pub const Args = struct {
     browser_visible: bool = false,
     /// Where the song ends (the END marker, else the last clip), in beats.
     song_end_beats: f64 = 0,
+    /// The metronome the CLICK tile drives.
+    click: *click_mod.Click,
 };
 
 /// The position readout shows minutes and seconds instead of bar.beat.sub
@@ -189,6 +194,7 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     ctl.display(ui, len_r, len_s, .{ .align_ = .right, .large = true, .flush = true, .color = style.vfd.mix(style.well, 0.15) });
     menu.tip(ui, len_r, "Song length: to the END marker, else the last clip");
     meterTile(ui, bar.cutLeft(76), a.meter_state);
+    clickTile(ui, bar.cutLeft(CLICK_W), a.click, &res);
 
     // Snap: a select, finer upward.
     const snap_r = bar.cutLeft(92);
@@ -486,6 +492,35 @@ fn bpmTile(ui: *Ui, r: Rect, t: *Transport, map: meter_mod.MeterMap) void {
     ctl.led(ui, r.x + 5, r.y + @divFloor(r.h - 1 - 5, 2), .round5, if (on) .on else .off, col);
     if (t.isPlaying()) ui.animate();
     menu.tip(ui, r, "Tempo: drag, \u{2318}-scroll, \u{25B4}\u{25BE} step, double-click 120");
+}
+
+const CLICK_W: i32 = 100;
+
+/// Metronome: CLICK on/off and its level. It follows the meter map (an
+/// accent on the downbeat and the group starts) and plays while the
+/// transport does.
+fn clickTile(ui: *Ui, r: Rect, click: *click_mod.Click, res: *Result) void {
+    ui.pushId("click");
+    defer ui.popId();
+    var row = r;
+    const btn_r = row.cutLeft(52);
+    var on = click.isOn();
+    if (ctl.button(ui, btn_r, "on", &on, .{ .kind = .latch, .label = "CLICK", .led = style.accent, .flush = true })) {
+        click.setOn(on);
+        res.click_changed = true;
+    }
+    menu.tip(ui, btn_r, "Metronome: a click on every beat of the meter, accented on the downbeat and group starts");
+    var vol = ui.plate(row, .{});
+    _ = vol.cutLeft(4);
+    _ = vol.cutRight(6);
+    const vol_r = vol.center(vol.w, 14);
+    var v = click.gain();
+    if (ctl.slider(ui, vol_r, "vol", &v, .{ .kind = .mini, .horizontal = true, .show_readout = false, .ticks = 0, .default = click_mod.Click.DEFAULT_GAIN })) {
+        click.setGain(v);
+        res.click_changed = true;
+    }
+    var tbuf: [40]u8 = undefined;
+    menu.tip(ui, vol_r, std.fmt.bufPrint(&tbuf, "Metronome level {d:.0}% (double-click: reset)", .{v * 100}) catch "Metronome level");
 }
 
 /// Time signature of bar 0: drag the numerator, right-click for the

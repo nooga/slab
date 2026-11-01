@@ -6,6 +6,11 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Metronome.** CLICK on the transport bar clicks on every beat while
+  playing, with a slider for its level. It follows the meter, including odd
+  and changing ones: the downbeat and each group start are accented. It is
+  heard live only: never in bounces or renders, and not through master effects.
+
 ## 0.0.18 — 2026-11-01
 
 - **Song length and a time readout.** The transport bar shows the song's

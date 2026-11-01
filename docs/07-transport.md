@@ -539,6 +539,23 @@ is what makes livecoding the *structure of time* safe: edit the
 generator word, and the next bar lays out the new grid while the audio
 path is untouched.
 
+## Metronome
+
+`src/click.zig`. **CLICK** on the transport bar switches it, the slider
+beside it sets the level (both are kept in settings.json). It clicks on
+every beat of the meter map: the downbeat is the highest, the start of each
+group (7/8 as 2+2+3, say) a step lower, the other beats the softest, so odd
+and changing meters are heard as written. `MeterMap.tickAtOrAfter` finds the
+next boundary; the tempo map turns it into a sample, so tempo changes and
+ramps keep it on the beat.
+
+It plays while the transport does, not while stopped or ringing out. The
+engine mixes it into the live output *after* the master chain, delayed by
+the master's PDC latency so it lines up with what is heard: the master
+effects and meter never see it, and bounces, renders and stems never
+contain it. A boundary belongs to the one block holding its sample, so a
+seek, a loop wrap or a different buffer size cannot double or drop a click.
+
 ## Markers
 
 The arrangement ruler carries **markers** — positioned annotations in

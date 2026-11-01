@@ -233,6 +233,23 @@ pub const MeterMap = struct {
         };
     }
 
+    /// A meter-beat boundary: where it falls and how strong it is.
+    pub const Tick = struct { beat: f64, accent: Accent };
+
+    /// The first meter-beat boundary at or after `beat_q` (a metronome's
+    /// next click): the bar's beats follow its meter, the bar after the
+    /// last one is a downbeat of whatever meter governs it.
+    pub fn tickAtOrAfter(self: MeterMap, beat_q: f64) Tick {
+        const q = @max(beat_q, 0.0);
+        const info = self.barInfoAtBeat(q);
+        const seg = self.segmentForBar(info.bar);
+        const unit = seg.unitBeats();
+        const k = @ceil((q - info.bar_start_beat) / unit - 1e-9);
+        if (k * unit < info.bar_len_beats - 1e-9)
+            return .{ .beat = info.bar_start_beat + k * unit, .accent = seg.accentAt(@intFromFloat(k)) };
+        return .{ .beat = info.bar_start_beat + info.bar_len_beats, .accent = .downbeat };
+    }
+
     /// Quarter-beats in the given bar.
     pub fn barLenBeats(self: MeterMap, bar: u32) f64 {
         return self.segmentForBar(bar).barLenBeats();
@@ -774,4 +791,25 @@ test "segmentForBar picks the governing point" {
     try testing.expectEqual(@as(u8, 7), m.segmentForBar(7).numerator);
     try testing.expectEqual(@as(u8, 5), m.segmentForBar(8).numerator);
     try testing.expectEqual(@as(u8, 5), m.segmentForBar(100).numerator);
+}
+
+test "ticks follow the meter: 7/8 groups, then 4/4 downbeat" {
+    var pts = [_]MeterPoint{
+        .{ .start_bar = 0, .numerator = 7, .denominator = 8 },
+        .{ .start_bar = 1, .numerator = 4, .denominator = 4 },
+    };
+    const m = MeterMap{ .points = &pts };
+    const t0 = m.tickAtOrAfter(0);
+    try std.testing.expectEqual(Accent.downbeat, t0.accent);
+    try std.testing.expectEqual(@as(f64, 0), t0.beat);
+    // Just past the downbeat: the next eighth, a weak or group beat.
+    const t1 = m.tickAtOrAfter(0.01);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.5), t1.beat, 1e-9);
+    // Past the 7th eighth: the next bar, 4/4, begins at 3.5.
+    const t7 = m.tickAtOrAfter(3.2);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.5), t7.beat, 1e-9);
+    try std.testing.expectEqual(Accent.downbeat, t7.accent);
+    // Then quarter notes.
+    const t8 = m.tickAtOrAfter(3.51);
+    try std.testing.expectApproxEqAbs(@as(f64, 4.5), t8.beat, 1e-9);
 }

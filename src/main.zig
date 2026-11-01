@@ -946,6 +946,8 @@ pub fn main(init: std.process.Init) !void {
         .meter_state = &meter_state,
         .idle_skip = cli.idle_skip,
     };
+    engine.click.setOn(storage.click_on);
+    engine.click.setGain(storage.click_gain);
     try engine.initPdc(alloc);
     defer engine.deinitPdc(alloc);
     try engine.initPool(alloc, cli.workers(), if (cli.rt_workers) .{ .period_ns = audio_mod.blockPeriodNs(storage.buffer_frames) } else null);
@@ -1027,6 +1029,7 @@ pub fn main(init: std.process.Init) !void {
     var dirty = false;
     var auto_was_playing = false;
     var auto_arm = false;
+    var click_unsaved = false;
     var auto_rec: AutoRecorder = .{};
     var shot_frame: u32 = 0;
     var clipboard: EditClipboard = .{};
@@ -1328,6 +1331,7 @@ pub fn main(init: std.process.Init) !void {
         var tres = transport_bar.draw(ui, uiRect(rects.top_bar), .{
             .transport = &transport,
             .meter_state = &meter_state,
+            .click = &engine.click,
             .edit_snap = &edit_snap,
             .project_path = project_path,
             .project_path_chosen = project_path_chosen,
@@ -1367,6 +1371,14 @@ pub fn main(init: std.process.Init) !void {
         if (tres.auto_arm_toggle) {
             auto_arm = !auto_arm;
             status.set("{s}", .{if (auto_arm) "Automation recording armed" else "Automation recording off"});
+        }
+        // The metronome's setting is kept once the drag lets go.
+        if (tres.click_changed) click_unsaved = true;
+        if (click_unsaved and !c.rl.IsMouseButtonDown(c.rl.MOUSE_BUTTON_LEFT)) {
+            click_unsaved = false;
+            storage.click_on = engine.click.isOn();
+            storage.click_gain = engine.click.gain();
+            storage.saveSettings(alloc);
         }
         if (tres.render_audio) export_dialog.open(&render_dlg);
         if (menu_cmds.has(.bounce)) openBounce(&bounce_dlg, tracks, &status);

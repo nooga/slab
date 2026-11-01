@@ -12,6 +12,7 @@ const chain_mod = @import("chain.zig");
 const Track = track_mod.Track;
 const snap_mod = @import("snapshot.zig");
 const meter = @import("meter.zig");
+const click_mod = @import("click.zig");
 const tempo = @import("tempo.zig");
 const groove_mod = @import("groove.zig");
 const warp_mod = @import("warp.zig");
@@ -261,6 +262,8 @@ pub const Engine = struct {
     master_fx_r: [MAX_BLOCK]f32 = undefined,
     /// What the output does past full scale [MasterClip].
     master_clip: MasterClip = .{},
+    /// The metronome (docs/07 §Metronome): live playback only.
+    click: click_mod.Click = .{},
     /// Blocks in which non-finite samples reached the output and were
     /// silenced (see `contain` for the per-track guard).
     output_faults: std.atomic.Value(u32) = .init(0),
@@ -808,6 +811,10 @@ pub const Engine = struct {
                     pos,
                 );
                 self.aud_n = 0; // the first chunk took them
+                // The master is late by the project's latency; the click
+                // waits for it.
+                const heard = @as(i64, @intCast(pos)) - self.master_latency.load(.monotonic);
+                self.click.mix(out_slice[done * audio.CHANNELS ..][0 .. chunk * audio.CHANNELS], chunk, heard, self.tmap(), self.transport.sample_rate, self.meter_state.map());
                 done += chunk;
                 pos = self.advanceRenderPos(pos, @intCast(chunk));
             }
