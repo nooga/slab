@@ -1459,6 +1459,21 @@ pub fn draw(
     // ── Continue an in-progress clip drag ─────────────────────────────
     continueDrag(tracks, alloc, selected_clip, edit_snap, m, lanes_top);
     updateDrawClip(tracks, alloc, selected_track, selected_clip, timeline_x0, edit_snap, m);
+    // A box dragged to the edge of the lanes scrolls them (the box keeps
+    // its place on the tracks).
+    if (box.active) {
+        const pull = box.edgePull(m, pane.rect(timeline_x, lanes_top, timeline_w, lanes_bottom - lanes_top), c.rl.GetFrameTime());
+        if (pull[0] != 0 or pull[1] != 0) {
+            const sx = view.scroll_x;
+            const sy = view.scroll_y;
+            view.scroll_x += pull[0];
+            view.scroll_y += pull[1];
+            clampScroll(content_beats, timeline_w);
+            clampScrollY(contentH(tracks), lanes_bottom - lanes_top);
+            box.shift(view.scroll_x - sx, view.scroll_y - sy);
+            ui.animate();
+        }
+    }
     updateBoxSelect(tracks, selected_track, selected_clip, m, timeline_x, timeline_w, timeline_x0, lanes_top, edit_snap);
 
     if (zoom_req) {
@@ -1960,6 +1975,7 @@ fn handleWheel(zone: c.rl.Rectangle, timeline_x0: f32, content_beats: f64, timel
     if (!pane.contains(zone, m.x, m.y)) return;
     if (m.y < zone.y + overviewH()) return;
     view.wheel(timeline_x0, zone.y, m, gesture.mods(), limits(content_beats, timeline_w), c.rl.GetTime());
+    view.pinchZoom(timeline_x0, zone.y, m, gesture.mods(), limits(content_beats, timeline_w), c.rl.GetTime());
 }
 
 /// Over the track headers the wheel scrolls the tracks up and down (the

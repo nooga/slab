@@ -6,6 +6,12 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Box select scrolls.** Drag a box on the tracks or in the piano roll to
+  the edge of the view and it scrolls along (faster the
+  further out), so you can select past what is on screen.
+- **Pinch to zoom.** On a trackpad, pinching zooms time around the pointer
+  in the arrangement, the piano roll and the audio editor; ⌥-pinch sizes
+  the piano roll's rows.
 ## 0.0.17 — 2026-11-01
 
 - **Your work survives a crash.** Slab saves a recovery copy of the project

@@ -24,7 +24,12 @@ its rules move there and this doc keeps the plan and the reasons.
   Learning one teaches the others.
 - **⌘-wheel or pinch zooms; the wheel scrolls.** Live: ⌘-scroll zooms,
   ⌥-scroll sizes tracks; Logic: ⌘/⌥ scroll zoom; Bitwig: ⌘/pinch. Shift
-  turns a mouse wheel horizontal, as macOS does everywhere.
+  turns a mouse wheel horizontal, as macOS does everywhere. The trackpad
+  pinch is built: `native_app.m` sums the OS magnify events, the app hands
+  the total to `timeline.pinch` each frame and `View.pinchZoom` zooms time
+  around the pointer (⌥-pinch sizes piano-roll rows) in the arrangement
+  and both clip editors. A box drag held at an edge of the lanes or grid
+  scrolls them (`Box.edgePull`), faster the further out.
 - **Time selection, not just objects.** Live's arrangement and editors
   select a stretch of time across tracks; ⌘D duplicates it (gaps too),
   ⌘L loops it, ⌘E splits at its edges, Insert/Delete Time works on it.

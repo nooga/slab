@@ -1349,6 +1349,7 @@ fn limits(grid: c.rl.Rectangle, clip: Clip) timeline.Limits {
 fn handleWheel(grid: c.rl.Rectangle, clip: Clip, m: pane.Mouse) void {
     if (!pane.contains(grid, m.x, m.y)) return;
     view.wheel(grid.x, grid.y, m, gesture.mods(), limits(grid, clip), c.rl.GetTime());
+    view.pinchZoom(grid.x, grid.y, m, gesture.mods(), limits(grid, clip), c.rl.GetTime());
 }
 
 /// The song's bars across the clip: local beat 0 is song beat
@@ -2148,6 +2149,16 @@ fn updateDraw(grid: c.rl.Rectangle, clip: *Clip, alloc: std.mem.Allocator, edit_
 }
 
 fn updateBox(grid: c.rl.Rectangle, clip: *Clip, edit_snap: snap_mod.Setting, m: pane.Mouse) void {
+    // A box dragged to the edge of the grid scrolls it.
+    const pull = box.edgePull(m, grid, c.rl.GetFrameTime());
+    if (pull[0] != 0 or pull[1] != 0) {
+        const sx = view.scroll_x;
+        const sy = view.scroll_y;
+        view.scroll_x += pull[0];
+        view.scroll_y += pull[1];
+        clampScroll(grid, clip.*);
+        box.shift(view.scroll_x - sx, view.scroll_y - sy);
+    }
     if (box.active and box.moved(m)) {
         // The box's stretch of time is the time selection (docs/31).
         const a = snap_mod.snapNearest(edit_snap, @max(0, beatAtX(grid, box.x0)), altBypassSnap());

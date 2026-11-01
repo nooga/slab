@@ -190,3 +190,25 @@ void slab_wake_ui(void) {
         [NSApp postEvent:e atStart:YES];
     }
 }
+
+// Trackpad pinch (docs/31 §View): GLFW reports no magnify gestures, so a
+// local event monitor sums them for the UI thread, which takes the total
+// once a frame. Main thread only.
+static double g_pinch = 0;
+
+void slab_install_pinch(void) {
+    static id monitor = nil;
+    if (monitor) return;
+    monitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskMagnify
+                                                    handler:^NSEvent *(NSEvent *e) {
+        g_pinch += e.magnification;
+        return e;
+    }];
+}
+
+// The magnification since the last call (positive spreads: zoom in).
+double slab_take_pinch(void) {
+    double v = g_pinch;
+    g_pinch = 0;
+    return v;
+}

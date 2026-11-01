@@ -1134,6 +1134,7 @@ pub fn main(init: std.process.Init) !void {
         const sw: f32 = @floatFromInt(c.rl.GetScreenWidth());
         const sh: f32 = @floatFromInt(c.rl.GetScreenHeight());
         ui.beginFrame();
+        @import("ui/timeline.zig").pinch = native_app.takePinch();
         devDrag(ui, shot_frame);
         pane.beginFrame();
         const m = pane.Mouse.fromInput(&ui.raw_in);
