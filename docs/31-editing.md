@@ -271,7 +271,7 @@ an empty lane draws a clip (a click makes one bar).
   - the head's key button cycles **ALL KEYS** (every semitone), **KIT KEYS**
     (the kit's mapped keys, plus any key the clip has notes on) and **CLIP
     KEYS** (only the keys this clip has notes on; an empty clip shows the
-    kit's). Folded lanes run top down. In CLIP KEYS a lane that loses its
+    kit's). A kit starts on KIT KEYS; a piano has no lanes to fold. Folded lanes run top down. In CLIP KEYS a lane that loses its
     last note disappears, and a new lane is added from KIT KEYS; a drag keeps
     its lanes until it lets go.
 - New notes come out selected, so a drawn note can be nudged at once

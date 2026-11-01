@@ -8,7 +8,8 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 - **Drum lanes you can read.** On a kit the piano roll's key column widens to
   fit the lane names, and the key button cycles ALL KEYS, KIT KEYS and CLIP
-  KEYS, which shows only the lanes the clip has notes on, top aligned.
+  KEYS, which shows only the lanes the clip has notes on, top aligned. Kits
+  open on KIT KEYS.
 - **Clips show their notes at a readable size.** A clip on a track draws its
   notes over its own pitch range instead of a fixed one, so low notes no
   longer squash into a line.

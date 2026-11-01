@@ -67,7 +67,7 @@ const KEY_HI: u8 = 119; // B8 (top row; inclusive)
 // only the keys this clip has notes on (CLIP). Row r is then the r-th lane
 // from the top. collapsed_pitches is rebuilt each frame, highest first.
 pub const Fold = enum { all, kit, clip };
-pub var fold: Fold = .all;
+pub var fold: Fold = .kit;
 var collapsed_pitches: [128]u8 = undefined;
 var collapsed_count: usize = 0;
 
