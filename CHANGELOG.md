@@ -6,6 +6,8 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+## 0.0.19 — 2026-11-01
+
 - **Drum lanes you can read.** On a kit the piano roll's key column widens to
   fit the lane names, and the key button cycles ALL KEYS, KIT KEYS and CLIP
   KEYS, which shows only the lanes the clip has notes on, top aligned. Kits
