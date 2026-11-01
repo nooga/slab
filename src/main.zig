@@ -79,6 +79,8 @@ const arrangement = @import("ui/arrangement.zig");
 const clip_editor = @import("ui/clip_editor.zig");
 const musical_keys = @import("ui/musical_keys.zig");
 const midi_in = @import("midi_in.zig");
+const recovery = @import("recovery.zig");
+const diag = @import("diag.zig");
 const midi_map = @import("midi_map.zig");
 const menu = @import("ui/menu.zig");
 const text_field = @import("ui/text_field.zig");
@@ -124,6 +126,7 @@ test {
     _ = @import("midi_in.zig");
     _ = @import("midi_map.zig");
     _ = @import("arp.zig");
+    _ = @import("recovery.zig");
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
     _ = @import("tempo.zig");
@@ -837,6 +840,7 @@ pub fn main(init: std.process.Init) !void {
     if (cli.render != null or cli.stems != null) return renderHeadless(alloc, cli.project orelse return error.MissingProject, cli);
 
     storage.ensureHome();
+    diag.start(build_options.version);
 
     native_app.installOpenHandler();
     c.rl.SetConfigFlags(c.rl.FLAG_WINDOW_RESIZABLE | c.rl.FLAG_VSYNC_HINT | c.rl.FLAG_WINDOW_HIGHDPI);
@@ -1073,13 +1077,29 @@ pub fn main(init: std.process.Init) !void {
             defer alloc.free(data);
             useProject(path);
             var boot_tracks = tracks_buf[0..track_count];
-            applyProjectBytes(alloc, data, &reg, &tracks_buf, &track_count, &boot_tracks, &transport, &engine, &audio, &selected_track, &selected_clip, &prev_selected_clip) catch |err| {
+            applyProjectBytes(alloc, data, &reg, &tracks_buf, &track_count, &boot_tracks, &transport, &engine, &audio, &selected_track, &selected_clip, &prev_selected_clip, false) catch |err| {
                 std.log.err("open {s} failed: {s}", .{ path, @errorName(err) });
             };
             replaceProjectPath(alloc, &project_path, try alloc.dupe(u8, path));
             project_path_chosen = true;
             reportLoaded(alloc, &status, data, project_path);
         } else |err| std.log.err("open {s} failed: {s}", .{ path, @errorName(err) });
+    } else if (recovery.takeStale(alloc)) |r| {
+        // The last session ended with unsaved work: it comes back.
+        defer r.deinit(alloc);
+        splash.bootFrame(ui, screenRect(), "RESTORING UNSAVED WORK", 0);
+        if (r.chosen) useProject(r.path) else storage.setProject(null);
+        var boot_tracks = tracks_buf[0..track_count];
+        if (applyProjectBytes(alloc, r.doc, &reg, &tracks_buf, &track_count, &boot_tracks, &transport, &engine, &audio, &selected_track, &selected_clip, &prev_selected_clip, false)) {
+            replaceProjectPath(alloc, &project_path, try alloc.dupe(u8, r.path));
+            project_path_chosen = r.chosen;
+            dirty = true;
+            var lb: [storage.MAX_PATH]u8 = undefined;
+            status.set("Slab closed unexpectedly: restored the unsaved {s} (logs: {s})", .{ if (r.chosen) basename(r.path) else "project", diag.dir(&lb) });
+        } else |err| {
+            std.log.err("restoring unsaved work failed: {s}", .{@errorName(err)});
+            storage.setProject(null);
+        }
     }
 
     splash.finishBoot();
@@ -1095,6 +1115,10 @@ pub fn main(init: std.process.Init) !void {
         IdleWaker.quit.store(true, .release);
         w.join();
     };
+    // Unsaved work is kept for the next start (a crash, or a quit without
+    // saving); a project that is all saved leaves nothing.
+    var autosave: Autosave = .{};
+    defer if (dirty) autosave.write(alloc, tracks_buf[0..track_count], &transport, project_path, project_path_chosen, true) else recovery.clear();
     while (!c.rl.WindowShouldClose()) {
         // A queued open runs here, between frames, behind the loading card.
         if (pending_open) |path| {
@@ -2247,6 +2271,7 @@ pub fn main(init: std.process.Init) !void {
         };
         devScreenshot(&shot_frame);
         c.rl.EndDrawing();
+        autosave.tick(alloc, tracks_buf[0..track_count], &transport, project_path, project_path_chosen, dirty);
 
         if (delete_set_answer) |yes| {
             const set = pending_delete_set.?;
@@ -4173,7 +4198,7 @@ fn undoRedo(
     const current = try document_mod.serialize(alloc, tracks.*, transport);
     if (try stepHistory(alloc, history, current, project_path, project_path_chosen, redo)) |entry| {
         defer entry.deinit(alloc);
-        applyProjectBytes(alloc, entry.doc, reg, tracks_buf, track_count, tracks, transport, engine, audio, selected_track, selected_clip, prev_selected_clip) catch |err| {
+        applyProjectBytes(alloc, entry.doc, reg, tracks_buf, track_count, tracks, transport, engine, audio, selected_track, selected_clip, prev_selected_clip, entry.project == null) catch |err| {
             std.log.err("history apply failed: {s}", .{@errorName(err)});
         };
         dirty.* = true;
@@ -5348,7 +5373,7 @@ fn openProjectPath(
     defer alloc.free(data);
     // The new project's relative references resolve against its folder.
     useProject(path);
-    applyProjectBytes(alloc, data, reg, tracks_buf, track_count, tracks, transport, engine, audio, selected_track, selected_clip, prev_selected_clip) catch |err| {
+    applyProjectBytes(alloc, data, reg, tracks_buf, track_count, tracks, transport, engine, audio, selected_track, selected_clip, prev_selected_clip, false) catch |err| {
         std.log.err("load failed: {s}", .{@errorName(err)});
         status.set("Load failed", .{});
         useProjectOf(.{ .path = project_path.*, .chosen = project_path_chosen.* });
@@ -5730,7 +5755,7 @@ fn newProject(
     const before = try document_mod.serialize(alloc, tracks.*, transport);
     errdefer alloc.free(before);
     storage.setProject(null);
-    applyProjectBytes(alloc, blank_project, reg, tracks_buf, track_count, tracks, transport, engine, audio, selected_track, selected_clip, prev_selected_clip) catch |err| {
+    applyProjectBytes(alloc, blank_project, reg, tracks_buf, track_count, tracks, transport, engine, audio, selected_track, selected_clip, prev_selected_clip, false) catch |err| {
         std.log.err("new project failed: {s}", .{@errorName(err)});
         status.set("New project failed", .{});
         if (project_path_chosen.*) useProject(project_path.*);
@@ -6371,6 +6396,7 @@ fn applyProjectBytes(
     selected_track: *?usize,
     selected_clip: *?clip_mod.ClipRef,
     prev_selected_clip: *?clip_mod.ClipRef,
+    reuse_tracks: bool,
 ) !void {
     transport.stop();
     audio.stop();
@@ -6380,19 +6406,44 @@ fn applyProjectBytes(
         audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
     }
 
+    // Tracks the new document leaves unchanged keep their machines:
+    // building those again (a fy compile each) is what made undo slow.
+    const live_doc: ?[]u8 = if (reuse_tracks) document_mod.serialize(alloc, tracks.*, transport) catch null else null;
+    defer if (live_doc) |d| alloc.free(d);
+    var live_parsed: ?std.json.Parsed(std.json.Value) = if (live_doc) |d| std.json.parseFromSlice(std.json.Value, alloc, d, .{}) catch null else null;
+    defer if (live_parsed) |*p| p.deinit();
+    var reuse: ?document_mod.Reuse = if (live_parsed) |p| .{ .old = tracks_buf[0..track_count.*], .doc = p.value } else null;
+
     var next_buf: [MAX_TRACKS]track_mod.Track = undefined;
     var next_count: usize = 0;
-    try document_mod.apply(alloc, data, reg, &next_buf, &next_count, transport, silent_machine);
+    try document_mod.applyReusing(alloc, data, reg, &next_buf, &next_count, transport, silent_machine, if (reuse) |*r| r else null);
 
-    for (tracks_buf[0..track_count.*]) |*t| t.deinit(alloc);
+    for (tracks_buf[0..track_count.*], 0..) |*t, i| {
+        if (reuse) |r| if (i < r.taken.len and r.taken[i]) continue;
+        t.deinit(alloc);
+    }
     for (next_buf[0..next_count], 0..) |t, i| tracks_buf[i] = t;
     track_count.* = next_count;
     tracks.* = tracks_buf[0..next_count];
     engine.tracks = tracks.*;
     engine.publishRouting();
-    selected_track.* = if (track_count.* > 0) 0 else null;
-    selected_clip.* = null;
-    prev_selected_clip.* = null;
+    // Keep what the user had selected where it still exists.
+    if (reuse_tracks) {
+        if (selected_track.*) |st| if (st >= track_count.*) {
+            selected_track.* = null;
+        };
+        if (selected_track.* == null and track_count.* > 0) selected_track.* = 0;
+        if (selected_clip.*) |sc| if (sc.track >= track_count.* or sc.clip >= tracks.*[sc.track].clips.items.len) {
+            selected_clip.* = null;
+        };
+        if (prev_selected_clip.*) |pc| if (pc.track >= track_count.* or pc.clip >= tracks.*[pc.track].clips.items.len) {
+            prev_selected_clip.* = null;
+        };
+    } else {
+        selected_track.* = if (track_count.* > 0) 0 else null;
+        selected_clip.* = null;
+        prev_selected_clip.* = null;
+    }
     if (document_mod.activePool()) |p| {
         for (tracks.*) |*t| t.publishSnapshot(p);
     }
@@ -6786,6 +6837,40 @@ const NestedUndo = struct {
     fn push(ctx: *anyopaque) void {
         const self: *NestedUndo = @ptrCast(@alignCast(ctx));
         pushHistorySnapshot(self.alloc, self.history, self.tracks, self.transport);
+    }
+};
+
+/// Periodic copy of the unsaved project for crash recovery (recovery.zig).
+const Autosave = struct {
+    const INTERVAL: f64 = 30;
+    next: f64 = INTERVAL,
+    /// Hash of the last copy written, so an unchanged project isn't rewritten.
+    hash: u64 = 0,
+    written: bool = false,
+
+    fn tick(self: *Autosave, alloc: std.mem.Allocator, tracks: []track_mod.Track, transport: *transport_mod.Transport, path: []const u8, chosen: bool, dirty: bool) void {
+        const now = c.rl.GetTime();
+        if (now < self.next) return;
+        // Not in the middle of a drag.
+        if (c.rl.IsMouseButtonDown(c.rl.MOUSE_BUTTON_LEFT)) return;
+        self.next = now + INTERVAL;
+        if (!dirty) {
+            if (self.written) recovery.clear();
+            self.written = false;
+            return;
+        }
+        self.write(alloc, tracks, transport, path, chosen, false);
+    }
+
+    fn write(self: *Autosave, alloc: std.mem.Allocator, tracks: []track_mod.Track, transport: *transport_mod.Transport, path: []const u8, chosen: bool, force: bool) void {
+        const doc = document_mod.serialize(alloc, tracks, transport) catch return;
+        defer alloc.free(doc);
+        const h = std.hash.Wyhash.hash(@intFromBool(chosen), doc);
+        if (!force and self.written and h == self.hash) return;
+        if (recovery.save(path, chosen, doc)) {
+            self.hash = h;
+            self.written = true;
+        } else std.log.warn("autosave failed", .{});
     }
 };
 

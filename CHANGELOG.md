@@ -6,6 +6,23 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Your work survives a crash.** Slab saves a recovery copy of the project
+  every 30 seconds while it has unsaved changes, the untitled project
+  included, and restores it at the next start (docs/46).
+- **Logs and crash reports.** Slab keeps `~/Library/Logs/Slab/slab.log` and
+  writes a `crash-*.txt` with a backtrace when it crashes; send that folder
+  with a bug report (docs/46).
+- **Undo and redo are fast.** They used to rebuild every machine in the
+  project and could stall for seconds; now only the tracks an edit touched
+  are rebuilt, and your track and clip selection stays.
+- **Moving several clips keeps their layout.** A selection dragged to other
+  tracks shifts as a whole (it stops at the first or last track instead of
+  squashing), and a ghost of each clip shows where it will land. Box-selecting
+  on the tracks also selects the automation points inside the box, and
+  selected points move together with clips or with each other, across lanes.
+- **The machine menu is A to Z with marks.** "+" and the replace menu list
+  every machine alphabetically, racks included, with a mark for instruments,
+  effects and presets (and the arpeggiator).
 ## 0.0.16 — 2026-10-31
 
 - **An arpeggiator, in a new note slot.** Every instrument track can take
