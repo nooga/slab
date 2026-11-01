@@ -3952,19 +3952,32 @@ fn drawClip(ui: *Ui, r_: c.rl.Rectangle, clip: Clip, color_: c.rl.Color, selecte
             }
         }
     } else if (clip.notes.items.len > 0 and body.h > 2) {
-        // Note ticks over C2..C6.
-        const pitch_lo: f32 = 36;
-        const pitch_hi: f32 = 84;
+        // Note ticks over the clip's own pitch range (at least an octave,
+        // centered), so a bass line and a lead each fill their clip.
+        var lo: f32 = 127;
+        var hi: f32 = 0;
+        for (clip.notes.items) |note| {
+            lo = @min(lo, @as(f32, @floatFromInt(note.pitch)));
+            hi = @max(hi, @as(f32, @floatFromInt(note.pitch)));
+        }
+        const min_span: f32 = 11;
+        if (hi - lo < min_span) {
+            lo -= @floor((min_span - (hi - lo)) / 2);
+            hi = lo + min_span;
+        }
+        const span = hi - lo;
         const bh: f32 = @floatFromInt(body.h);
+        // Thick enough to read when the range is narrow, a hairline when wide.
+        const th: f32 = std.math.clamp(@floor(bh / (span + 1)), 1, 3);
         for (clip.notes.items) |note| {
             const nx = r_.x + @as(f32, @floatCast(note.start_beat / note_rate)) * view.px_per_beat;
             const nw = @max(@as(f32, @floatCast(note.length_beats / note_rate)) * view.px_per_beat, 1);
             const x0 = @max(ipx(nx), body.x);
             const x1 = @min(ipx(nx + nw), body.right());
             if (x1 <= x0) continue;
-            const pn = std.math.clamp((@as(f32, @floatFromInt(note.pitch)) - pitch_lo) / (pitch_hi - pitch_lo), 0, 1);
-            const ny = body.y + @as(i32, @intFromFloat((1 - pn) * (bh - 2)));
-            ui.rect(Rect.xywh(x0, ny, @max(1, x1 - x0 - 1), 1), preview);
+            const pn = (@as(f32, @floatFromInt(note.pitch)) - lo) / span;
+            const ny = body.y + @as(i32, @intFromFloat((1 - pn) * (bh - th)));
+            ui.rect(Rect.xywh(x0, ny, @max(1, x1 - x0 - 1), @intFromFloat(th)), preview);
         }
     }
     // A stale bounce (docs/27 §Provenance): a notch cut in the band's

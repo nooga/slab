@@ -63,35 +63,55 @@ fn mapLabel(pitch: u8) ?[*:0]const u8 {
 const KEY_LO: u8 = 12; // C0 (bottom row)
 const KEY_HI: u8 = 119; // B8 (top row; inclusive)
 
-// Drum rolls can fold down to the mapped keys only (USED KEYS): row r is
-// then the r-th mapped pitch from the top. collapsed_pitches is rebuilt
-// from note_map each frame, highest first.
-pub var collapse_unused: bool = false;
+// Drum rolls can fold down to fewer lanes: the kit's mapped keys (KIT), or
+// only the keys this clip has notes on (CLIP). Row r is then the r-th lane
+// from the top. collapsed_pitches is rebuilt each frame, highest first.
+pub const Fold = enum { all, kit, clip };
+pub var fold: Fold = .all;
 var collapsed_pitches: [128]u8 = undefined;
 var collapsed_count: usize = 0;
 
 fn collapsed() bool {
-    return collapse_unused and collapsed_count > 0;
+    return fold != .all and collapsed_count > 0;
 }
 
-/// USED KEYS keeps the mapped keys plus any key the clip has notes on, so
-/// notes on a key the kit doesn't map stay visible and editable.
-fn setNoteMap(map: []const machine_mod.NoteLabel, clip: ?*const Clip) void {
-    note_map = map;
+/// The lanes of a fold: KIT keeps the mapped keys plus any key the clip has
+/// notes on, so notes on a key the kit doesn't map stay visible and
+/// editable; CLIP keeps only the keys with notes (an empty clip shows the
+/// kit, there being nothing else to go by). Highest first, into `out`.
+fn lanesFor(which: Fold, map: []const machine_mod.NoteLabel, notes: []const Note, out: *[128]u8) usize {
     var seen: [128]bool = @splat(false);
-    for (map) |*nl| seen[nl.pitch & 127] = true;
-    if (map.len > 0) if (clip) |cl| for (cl.notes.items) |n| {
+    var any_note = false;
+    for (notes) |n| {
         seen[n.pitch & 127] = true;
-    };
-    collapsed_count = 0;
+        any_note = true;
+    }
+    if (map.len > 0 and (which == .kit or (which == .clip and !any_note)))
+        for (map) |*nl| {
+            seen[nl.pitch & 127] = true;
+        };
+    var count: usize = 0;
     var p: usize = 128;
     while (p > 0) {
         p -= 1;
         if (seen[p]) {
-            collapsed_pitches[collapsed_count] = @intCast(p);
-            collapsed_count += 1;
+            out[count] = @intCast(p);
+            count += 1;
         }
     }
+    return count;
+}
+
+fn setNoteMap(map: []const machine_mod.NoteLabel, clip: ?*const Clip) void {
+    note_map = map;
+    if (map.len == 0) {
+        collapsed_count = 0;
+        return;
+    }
+    // A drag keeps the lanes it began with, so they don't shift under it.
+    if (fold == .clip and pane.hasActiveDrag() and collapsed_count > 0) return;
+    const notes: []const Note = if (clip) |cl| cl.notes.items else &.{};
+    collapsed_count = lanesFor(fold, map, notes, &collapsed_pitches);
 }
 
 fn rowCount() u32 {
@@ -173,8 +193,21 @@ fn snapPitchToScale(pitch: u8) u8 {
     }
     return pitch;
 }
+/// The key column's width: the piano's, or with a kit's lane names wide
+/// enough for the longest (and the key name beside it).
+var gutter_w: f32 = 32;
+const GUTTER_MAX: f32 = 160;
+
 fn keyboardW() f32 {
-    return 32;
+    return gutter_w;
+}
+
+/// Size the gutter to the lane names (the legend face, 3 px before, the key
+/// name's 26 px after).
+fn sizeGutter(ui: *Ui) void {
+    var w: i32 = 32;
+    for (note_map) |*nl| w = @max(w, ui.fonts.legend.measure(nl.labelSlice()) + 3 + 26);
+    gutter_w = @min(@as(f32, @floatFromInt(w)), GUTTER_MAX);
 }
 fn rulerH() f32 {
     return 16;
@@ -892,12 +925,25 @@ fn drawHeaderTools(ui: *Ui, tools: Rect, track: ?*track_mod.Track) void {
     if (note_map.len > 0) {
         // Drum lanes have no key; the slot folds the roll to the mapped keys.
         const fr = t.cutLeft(KS_W);
-        var on = collapse_unused;
-        if (ctl.button(ui, fr, "foldkeys", &on, .{ .label = if (collapse_unused) "USED KEYS" else "ALL KEYS", .flush = true })) {
-            collapse_unused = on;
+        var on = fold != .all;
+        const label = switch (fold) {
+            .all => "ALL KEYS",
+            .kit => "KIT KEYS",
+            .clip => "CLIP KEYS",
+        };
+        if (ctl.button(ui, fr, "foldkeys", &on, .{ .label = label, .flush = true })) {
+            fold = switch (fold) {
+                .all => .kit,
+                .kit => .clip,
+                .clip => .all,
+            };
             initialized_scroll = false;
         }
-        menu.tip(ui, fr, "Show only the keys that have sounds, or every key");
+        menu.tip(ui, fr, switch (fold) {
+            .all => "Every key. Click: only the kit's keys",
+            .kit => "Only the keys the kit has sounds on. Click: only the keys this clip uses",
+            .clip => "Only the keys this clip has notes on (an empty clip shows the kit's). Click: every key",
+        });
     } else {
         var buf: [24]u8 = undefined;
         const root = std.mem.span(ROOT_NAMES[key_root % 12]);
@@ -996,6 +1042,7 @@ pub fn draw(
     };
 
     setNoteMap(resolved.note_labels, resolved.clip);
+    sizeGutter(ui);
     cur_rate = resolved.track.time.rate();
     if (resolved.track.time.hasMeter()) {
         track_meter_pts[0] = .{ .start_bar = 0, .numerator = resolved.track.time.num, .denominator = resolved.track.time.den };
@@ -2879,4 +2926,23 @@ test "a chord's velocity stems fan out and the pointer picks the nearest cap" {
     const cap = base_y - stemHeight(clip.notes.items[1], max_h);
     const x = noteRect(grid, clip.notes.items[1]).x + 1;
     try std.testing.expectEqual(@as(usize, 1), findVelocityBarAt(lane, grid, clip, x, cap).?);
+}
+
+test "CLIP lanes are the keys with notes; the kit's when there are none" {
+    var map: [3]machine_mod.NoteLabel = undefined;
+    for (&map, [_]u8{ 36, 38, 42 }) |*nl, p| nl.* = .{ .pitch = p };
+    var out: [128]u8 = undefined;
+    const notes = [_]Note{
+        .{ .pitch = 42, .start_beat = 0, .length_beats = 1 },
+        .{ .pitch = 42, .start_beat = 1, .length_beats = 1 },
+        .{ .pitch = 36, .start_beat = 0, .length_beats = 1 },
+        .{ .pitch = 50, .start_beat = 2, .length_beats = 1 },
+    };
+    // Only what has notes, highest first, an unmapped key included.
+    try std.testing.expectEqual(@as(usize, 3), lanesFor(.clip, &map, &notes, &out));
+    try std.testing.expectEqualSlices(u8, &.{ 50, 42, 36 }, out[0..3]);
+    // KIT: the mapped keys and the unmapped one with a note.
+    try std.testing.expectEqual(@as(usize, 4), lanesFor(.kit, &map, &notes, &out));
+    // An empty clip falls back to the kit.
+    try std.testing.expectEqual(@as(usize, 3), lanesFor(.clip, &map, &.{}, &out));
 }

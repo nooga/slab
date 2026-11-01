@@ -266,8 +266,20 @@ an empty lane draws a clip (a click makes one bar).
     128-bit set per track the audio thread updates from the note events
     it plays (`Track.sounding`, two atomics, no allocation);
   - the same set lights the notes under the playhead.
+  - on a kit (a machine with named lanes) the column widens to fit the
+    longest lane name, and the key's name sits beside it;
+  - the head's key button cycles **ALL KEYS** (every semitone), **KIT KEYS**
+    (the kit's mapped keys, plus any key the clip has notes on) and **CLIP
+    KEYS** (only the keys this clip has notes on; an empty clip shows the
+    kit's). Folded lanes run top down. In CLIP KEYS a lane that loses its
+    last note disappears, and a new lane is added from KIT KEYS; a drag keeps
+    its lanes until it lets go.
 - New notes come out selected, so a drawn note can be nudged at once
   (built in phase 1).
+- **Clips on a track** draw their notes as ticks over the clip's own pitch
+  range (at least an octave, centered), so a bass line and a lead each fill
+  their clip; the way Ableton, Logic and Bitwig fit a clip's thumbnail to
+  its notes.
 
 ## Multi-clip editing (phase 4, built)
 
