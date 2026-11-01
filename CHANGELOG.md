@@ -11,6 +11,12 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   and changing ones: the downbeat and each group start are accented. It is
   heard live only: never in bounces or renders, and not through master effects.
 
+- **A tidier transport bar.** AUTO moved into the input menu (the caret beside
+  REC, which lights red while automation recording is armed). KEYS and LEARN
+  are single buttons that open into their controls only when on. On a narrow
+  window the bar gives up the stats, then the master meter's width, the song
+  length and those buttons, in that order, instead of cutting off its right end.
+
 ## 0.0.18 — 2026-11-01
 
 - **Song length and a time readout.** The transport bar shows the song's
