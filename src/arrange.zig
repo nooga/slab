@@ -158,6 +158,65 @@ pub fn clearSpan(alloc: std.mem.Allocator, t: *Track, a: f64, b: f64, tmap: *con
     }
 }
 
+/// Whether two clips of a track share any time.
+pub fn overlaps(a: *const Clip, b: *const Clip) bool {
+    return a.start_beat < b.start_beat + b.length_beats - EPS and b.start_beat < a.start_beat + a.length_beats - EPS;
+}
+
+/// Whether any two clips of `t` overlap.
+pub fn hasOverlaps(t: *const Track) bool {
+    for (t.clips.items, 0..) |*a, i| for (t.clips.items[i + 1 ..]) |*b| if (overlaps(a, b)) return true;
+    return false;
+}
+
+/// Make the clips of `t` not overlap: where two do, the one drawn on top
+/// (the later in the track's list: the one placed or moved last) keeps its
+/// stretch and the other is cut around it, or goes if it lies wholly under.
+/// Returns how many clips were cut or removed.
+pub fn trimOverlaps(alloc: std.mem.Allocator, t: *Track, tmap: *const tempo_mod.TempoMap) !usize {
+    var changed: usize = 0;
+    // Each pass resolves one pair; cutting never adds an overlap, so it ends.
+    outer: while (true) {
+        for (t.clips.items, 0..) |*a, i| {
+            for (t.clips.items[i + 1 ..], i + 1..) |*b, j| {
+                if (!overlaps(a, b)) continue;
+                // b is on top; a (index i) is cut around [bs, be).
+                const bs = b.start_beat;
+                const be = b.start_beat + b.length_beats;
+                const as = a.start_beat;
+                const ae = a.start_beat + a.length_beats;
+                _ = j;
+                changed += 1;
+                if (as >= bs - EPS and ae <= be + EPS) {
+                    var gone = t.clips.orderedRemove(i);
+                    gone.deinit(alloc);
+                } else if (as < bs - EPS and ae <= be + EPS) {
+                    if (try splitOff(alloc, a, bs, tmap)) |right| {
+                        var r = right;
+                        r.deinit(alloc);
+                    }
+                } else if (as >= bs - EPS) {
+                    // The head is under b: keep the part after it.
+                    const right = (try splitOff(alloc, a, be, tmap)) orelse unreachable;
+                    a.deinit(alloc);
+                    a.* = right;
+                } else {
+                    // b sits inside a: keep both ends of a.
+                    var mid = (try splitOff(alloc, a, bs, tmap)) orelse unreachable;
+                    defer mid.deinit(alloc);
+                    var tail = (try splitOff(alloc, &mid, be, tmap)) orelse unreachable;
+                    errdefer tail.deinit(alloc);
+                    // Right after a, so it keeps a's place in the stack.
+                    try t.clips.insert(alloc, i + 1, tail);
+                }
+                continue :outer;
+            }
+        }
+        break;
+    }
+    return changed;
+}
+
 /// Open `len` beats of nothing at `at` across the song: clips are cut
 /// there and everything after moves later, the tempo there held through
 /// the gap; whole bars from a downbeat move the meter map too.
@@ -869,4 +928,52 @@ test "insert time: everything after moves later, a bar of 4/4 keeps the meter" {
     try testing.expectEqual(@as(usize, 8), n2);
     try testing.expectEqual(@as(f64, 16), ns[4][0]);
     try testing.expectEqual(@as(f64, 140), f.tempo.live.bpmAt(32));
+}
+
+test "trim overlaps: the clip on top keeps its stretch, the others are cut around it" {
+    const alloc = testing.allocator;
+    var t = try Track.init(alloc, "T", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, track_mod.testMachine());
+    defer t.deinit(alloc);
+    var tm = tempo_mod.TempoMap.constant(120);
+    tm.rebuild();
+    // Under: 0..16 with a note per bar; on top of it: 4..8 (inside), then
+    // 12..24 (over its tail), then 20..22 (inside the one before).
+    var under = Clip.init("under", 0, 16);
+    for (0..4) |k| try under.addNote(alloc, .{ .pitch = 60, .start_beat = @floatFromInt(k * 4), .length_beats = 1 });
+    try t.addClip(alloc, under);
+    try t.addClip(alloc, Clip.init("inside", 4, 4));
+    try t.addClip(alloc, Clip.init("tail", 12, 12));
+    try t.addClip(alloc, Clip.init("nested", 20, 2));
+    try testing.expect(hasOverlaps(&t));
+
+    const n = try trimOverlaps(alloc, &t, &tm);
+    try testing.expect(n > 0);
+    try testing.expect(!hasOverlaps(&t));
+
+    // What each beat plays is what was on top there: under 0..4, inside
+    // 4..8, under 8..12, tail 12..20 and 22..24, nested 20..22.
+    const Want = struct { beat: f64, name: []const u8 };
+    for ([_]Want{
+        .{ .beat = 1, .name = "under" },
+        .{ .beat = 5, .name = "inside" },
+        .{ .beat = 9, .name = "under" },
+        .{ .beat = 13, .name = "tail" },
+        .{ .beat = 21, .name = "nested" },
+        .{ .beat = 23, .name = "tail" },
+    }) |w| {
+        var found: ?[]const u8 = null;
+        for (t.clips.items) |*cl| if (w.beat >= cl.start_beat and w.beat < cl.start_beat + cl.length_beats) {
+            try testing.expect(found == null);
+            found = cl.name();
+        };
+        try testing.expectEqualStrings(w.name, found.?);
+    }
+    // The cut clip keeps the notes that are still under it: beats 0, 8.
+    var kept: usize = 0;
+    for (t.clips.items) |*cl| if (std.mem.eql(u8, cl.name(), "under")) {
+        kept += cl.notes.items.len;
+    };
+    try testing.expectEqual(@as(usize, 2), kept);
+    // Nothing to do on a second run.
+    try testing.expectEqual(@as(usize, 0), try trimOverlaps(alloc, &t, &tm));
 }

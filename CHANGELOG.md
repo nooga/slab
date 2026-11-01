@@ -6,6 +6,27 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Song length and a time readout.** The transport bar shows the song's
+  length in minutes and seconds next to the position (tempo changes and
+  ramps counted, up to the END marker or else the last clip). Click the
+  position to switch it between bar.beat.sub and minutes:seconds.
+- **Overlapping clips are marked, and ⌘T trims them.** Where a clip lies
+  over another on a track, a hatched strip along its foot shows the stretch
+  it covers. ⌘T (or "Trim overlaps" in the clip menu) cuts the clips on the
+  tracks you have selected so none overlap: the one on top keeps its
+  stretch, and a clip lying wholly under another goes.
+- **Velocity stems of a chord are separate.** In the piano roll's velocity
+  lane the notes of a chord used to sit on one line, and only the topmost
+  could be grabbed (anywhere along its whole length). Now they fan out side
+  by side where there is room, and where there is not, the lowest draws in
+  front; a click picks the stem whose cap is nearest the pointer, and only
+  the stem itself is a target.
+- **Box select scrolls.** Drag a box on the tracks or in the piano roll to
+  the edge of the view and it scrolls along (faster the
+  further out), so you can select past what is on screen.
+- **Pinch to zoom.** On a trackpad, pinching zooms time around the pointer
+  in the arrangement, the piano roll and the audio editor; ⌥-pinch sizes
+  the piano roll's rows.
 ## 0.0.17 — 2026-11-01
 
 - **Your work survives a crash.** Slab saves a recovery copy of the project

@@ -521,6 +521,42 @@ pub fn pasteRange(tracks: []Track, alloc: std.mem.Allocator, selected_track: *?u
 /// ⌘J: the selected note clips on each track joined into one, from the
 /// first's start to the last's end, notes and clip lanes where they
 /// played. Audio clips are left alone (bounce joins them).
+/// ⌘T: no two clips overlap on the tracks holding selected clips (else the
+/// selected track): the one on top keeps its stretch. Returns how many
+/// clips were cut or removed.
+pub fn trimOverlappingClips(tracks: []Track, alloc: std.mem.Allocator, selected_track: ?usize, focused_clip: *?ClipRef, tmap: *const tempo_mod.TempoMap) usize {
+    var any_selected = false;
+    for (tracks) |*t| for (t.clips.items) |*cl| {
+        if (cl.selected) any_selected = true;
+    };
+    var total: usize = 0;
+    for (tracks, 0..) |*t, ti| {
+        const wanted = if (any_selected) blk: {
+            for (t.clips.items) |*cl| if (cl.selected) break :blk true;
+            break :blk false;
+        } else selected_track != null and selected_track.? == ti;
+        if (!wanted) continue;
+        total += arrange.trimOverlaps(alloc, t, tmap) catch |err| {
+            std.log.err("trim overlaps failed: {s}", .{@errorName(err)});
+            continue;
+        };
+    }
+    if (total > 0) {
+        // Clips were cut and removed: the focused one is the first selected.
+        focused_clip.* = null;
+        for (tracks, 0..) |*t, ti| for (t.clips.items, 0..) |*cl, ci| {
+            if (cl.selected and focused_clip.* == null) focused_clip.* = .{ .track = @intCast(ti), .clip = @intCast(ci) };
+        };
+    }
+    return total;
+}
+
+/// Whether any track has clips lying over each other.
+fn anyOverlaps(tracks: []const Track) bool {
+    for (tracks) |*t| if (arrange.hasOverlaps(t)) return true;
+    return false;
+}
+
 pub fn joinSelectedClips(tracks: []Track, alloc: std.mem.Allocator, selected_track: *?usize, focused_clip: *?ClipRef) bool {
     var changed = false;
     var first: ?ClipRef = null;
@@ -1459,6 +1495,21 @@ pub fn draw(
     // ── Continue an in-progress clip drag ─────────────────────────────
     continueDrag(tracks, alloc, selected_clip, edit_snap, m, lanes_top);
     updateDrawClip(tracks, alloc, selected_track, selected_clip, timeline_x0, edit_snap, m);
+    // A box dragged to the edge of the lanes scrolls them (the box keeps
+    // its place on the tracks).
+    if (box.active) {
+        const pull = box.edgePull(m, pane.rect(timeline_x, lanes_top, timeline_w, lanes_bottom - lanes_top), c.rl.GetFrameTime());
+        if (pull[0] != 0 or pull[1] != 0) {
+            const sx = view.scroll_x;
+            const sy = view.scroll_y;
+            view.scroll_x += pull[0];
+            view.scroll_y += pull[1];
+            clampScroll(content_beats, timeline_w);
+            clampScrollY(contentH(tracks), lanes_bottom - lanes_top);
+            box.shift(view.scroll_x - sx, view.scroll_y - sy);
+            ui.animate();
+        }
+    }
     updateBoxSelect(tracks, selected_track, selected_clip, m, timeline_x, timeline_w, timeline_x0, lanes_top, edit_snap);
 
     if (zoom_req) {
@@ -1636,6 +1687,12 @@ pub fn draw(
             const clip_rect = clipRect(lane_timeline, clip.*, timeline_x0);
             const editing = rename_target.kind == .clip and rename_target.track == ti and rename_target.clip == ci;
             drawClip(ui, clip_rect, clip.*, t.color, clip.selected, editing, pool, t.time.rate());
+            // Clips under this one (it is drawn after them): hatch the
+            // stretch it covers, so a hidden clip shows (⌘T trims).
+            for (t.clips.items[0..ci]) |*under| {
+                if (!arrange.overlaps(under, clip)) continue;
+                drawOverlapMark(ui, clip_rect, clipRect(lane_timeline, under.*, timeline_x0));
+            }
             if (editing) result.rename_rect = clipNameRect(clip_rect);
         }
 
@@ -1909,6 +1966,7 @@ pub fn draw(
         .{ .separator = true },
         .{ .label = if (time_range != null) "Split at selection" else "Split at playhead", .command = .split_at_playhead, .enabled = has_selection or time_range != null },
         .{ .label = "Join", .command = .join, .enabled = has_selection },
+        .{ .label = "Trim overlaps", .command = .trim_overlaps, .enabled = anyOverlaps(tracks) },
         .{ .label = "Reverse", .command = .reverse, .enabled = hasSelectedAudioClips(tracks) },
         .{ .label = if (allSelectedAudioWarped(tracks)) "Unwarp" else "Warp", .command = .warp, .enabled = hasSelectedAudioClips(tracks) },
         .{ .label = if (focusedTuned(tracks, selected_clip.*)) "Untune" else "Tune", .command = .tune, .enabled = focusedForward(tracks, selected_clip.*) },
@@ -1960,6 +2018,7 @@ fn handleWheel(zone: c.rl.Rectangle, timeline_x0: f32, content_beats: f64, timel
     if (!pane.contains(zone, m.x, m.y)) return;
     if (m.y < zone.y + overviewH()) return;
     view.wheel(timeline_x0, zone.y, m, gesture.mods(), limits(content_beats, timeline_w), c.rl.GetTime());
+    view.pinchZoom(timeline_x0, zone.y, m, gesture.mods(), limits(content_beats, timeline_w), c.rl.GetTime());
 }
 
 /// Over the track headers the wheel scrolls the tracks up and down (the
@@ -3794,6 +3853,24 @@ fn drawWarpedWave(ui: *Ui, body: Rect, clip: Clip, waves: waveform.Waves, rate: 
             surf.waveformLanes(ui, r, waves, (len_sec - sp.s1) * rate, (len_sec - sp.s0) * rate, col, true)
         else
             surf.waveformLanes(ui, r, waves, sp.s0 * rate, sp.s1 * rate, col, false);
+    }
+}
+
+/// A hatched strip along the foot of `top` over the stretch it shares with
+/// the clip `under` it.
+fn drawOverlapMark(ui: *Ui, top_: c.rl.Rectangle, under_: c.rl.Rectangle) void {
+    const top = bridge.fromRl(top_);
+    const under = bridge.fromRl(under_);
+    const x0 = @max(top.x, under.x);
+    const x1 = @min(top.right(), under.right());
+    if (x1 - x0 < 2 or top.h < 10) return;
+    const y = top.bottom() - 5;
+    ui.rect(Rect.xywh(x0, y, x1 - x0, 4), ui_style.chassis);
+    var x = x0;
+    while (x < x1) : (x += 4) {
+        // Slashes: a 2px tick that steps up as it goes.
+        ui.rect(Rect.xywh(x, y + 2, @min(2, x1 - x), 2), ui_style.text);
+        if (x + 2 < x1) ui.rect(Rect.xywh(x + 2, y, @min(2, x1 - x - 2), 2), ui_style.text);
     }
 }
 

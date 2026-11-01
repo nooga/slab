@@ -156,7 +156,10 @@ pub fn draw(
         zoom_req = false;
         view.zoomTo(0, source_beats, grid.width, limits(grid, source_beats));
     }
-    if (pane.contains(grid, m.x, m.y)) view.wheel(grid.x, grid.y, m, gesture.mods(), limits(grid, source_beats), c.rl.GetTime());
+    if (pane.contains(grid, m.x, m.y)) {
+        view.wheel(grid.x, grid.y, m, gesture.mods(), limits(grid, source_beats), c.rl.GetTime());
+        view.pinchZoom(grid.x, grid.y, m, gesture.mods(), limits(grid, source_beats), c.rl.GetTime());
+    }
     clampView(grid, source_beats);
 
     // Conversions. A reversed clip shows its source mirrored, so the grid

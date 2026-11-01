@@ -80,7 +80,26 @@ pub const Args = struct {
     cpu_peak: f32 = 0,
     /// The library browser is showing.
     browser_visible: bool = false,
+    /// Where the song ends (the END marker, else the last clip), in beats.
+    song_end_beats: f64 = 0,
 };
+
+/// The position readout shows minutes and seconds instead of bar.beat.sub
+/// (a click on it switches).
+var show_time = false;
+
+/// "m:ss", "h:mm:ss" from an hour; with `tenths`, "m:ss.t".
+pub fn formatTime(buf: []u8, seconds: f64, tenths: bool) []const u8 {
+    const total = if (seconds > 0) seconds else 0;
+    if (tenths) {
+        const t: u64 = @intFromFloat(total * 10);
+        const s = t / 10;
+        return std.fmt.bufPrint(buf, "{d}:{d:0>2}.{d}", .{ s / 60, s % 60, t % 10 }) catch "?";
+    }
+    const s: u64 = @intFromFloat(@round(total));
+    if (s >= 3600) return std.fmt.bufPrint(buf, "{d}:{d:0>2}:{d:0>2}", .{ s / 3600, s / 60 % 60, s % 60 }) catch "?";
+    return std.fmt.bufPrint(buf, "{d}:{d:0>2}", .{ s / 60, s % 60 }) catch "?";
+}
 
 const FILE_MENU_KEY: u64 = 0x5346494c45; // "SFILE"
 const INPUT_MENU_KEY: u64 = 0x494e505544_4556; // "INPUDEV"
@@ -152,10 +171,23 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     var pbuf: [32]u8 = undefined;
     const pos = map.beatToBarPos(t.beats());
     const sub = pos.tick / (meter_mod.PPQN / 4) + 1;
-    const pos_s = std.fmt.bufPrint(&pbuf, "{d}.{d}.{d}", .{ pos.bar + 1, pos.beat + 1, sub }) catch "?";
+    const pos_s = if (show_time)
+        formatTime(&pbuf, t.map().secondsAt(t.beats()), true)
+    else
+        std.fmt.bufPrint(&pbuf, "{d}.{d}.{d}", .{ pos.bar + 1, pos.beat + 1, sub }) catch "?";
     const pos_r = bar.cutLeft(120);
-    ctl.display(ui, pos_r, pos_s, .{ .align_ = .right, .large = true, .flush = true });
-    menu.tip(ui, pos_r, "Position  bar.beat.sub");
+    const pos_id = ui.id("pos");
+    const pos_b = ui.behavior(pos_id, pos_r, false);
+    if (pos_b.clicked) show_time = !show_time;
+    ctl.display(ui, pos_r, pos_s, .{ .align_ = .right, .large = true, .flush = true, .color = if (ui.active == pos_id) style.vfd_hi else style.vfd });
+    menu.tip(ui, pos_r, if (show_time) "Position  minutes:seconds. Click for bar.beat.sub" else "Position  bar.beat.sub. Click for minutes:seconds");
+    // The song's length, tempo changes included.
+    var lbuf: [24]u8 = undefined;
+    var tbuf: [16]u8 = undefined;
+    const len_s = std.fmt.bufPrint(&lbuf, "/ {s}", .{formatTime(&tbuf, t.map().secondsAt(a.song_end_beats), false)}) catch "?";
+    const len_r = bar.cutLeft(84);
+    ctl.display(ui, len_r, len_s, .{ .align_ = .right, .large = true, .flush = true, .color = style.vfd.mix(style.well, 0.15) });
+    menu.tip(ui, len_r, "Song length: to the END marker, else the last clip");
     meterTile(ui, bar.cutLeft(76), a.meter_state);
 
     // Snap: a select, finer upward.
@@ -548,4 +580,13 @@ fn handleTap(t: *Transport, now: f64) void {
     if (tap_count < 2) return;
     const interval = (tap_times[tap_count - 1] - tap_times[0]) / @as(f64, @floatFromInt(tap_count - 1));
     if (interval > 0.1) t.setBpm(@floatCast(60.0 / interval));
+}
+
+test "time reads m:ss, with tenths for the position and h:mm:ss from an hour" {
+    var b: [24]u8 = undefined;
+    try std.testing.expectEqualStrings("0:00", formatTime(&b, 0, false));
+    try std.testing.expectEqualStrings("3:42", formatTime(&b, 221.6, false));
+    try std.testing.expectEqualStrings("1:01:01", formatTime(&b, 3661, false));
+    try std.testing.expectEqualStrings("1:23.4", formatTime(&b, 83.46, true));
+    try std.testing.expectEqualStrings("0:00.0", formatTime(&b, -3, true));
 }

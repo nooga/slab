@@ -1134,6 +1134,7 @@ pub fn main(init: std.process.Init) !void {
         const sw: f32 = @floatFromInt(c.rl.GetScreenWidth());
         const sh: f32 = @floatFromInt(c.rl.GetScreenHeight());
         ui.beginFrame();
+        @import("ui/timeline.zig").pinch = native_app.takePinch();
         devDrag(ui, shot_frame);
         pane.beginFrame();
         const m = pane.Mouse.fromInput(&ui.raw_in);
@@ -1345,6 +1346,7 @@ pub fn main(init: std.process.Init) !void {
             .thread_load = thread_load[0..n_threads],
             .cpu_peak = cpu_load.peak,
             .browser_visible = layout.browser_visible,
+            .song_end_beats = markers.end orelse lastClipEnd(tracks_buf[0..track_count]),
         });
         // The menu bar's commands run as the in-app File menu's do.
         const menu_cmds = native_app.takeCommands();
@@ -7372,6 +7374,11 @@ fn executeEditCommand(
         .join => {
             changed = focus == .arrangement and arrangement.joinSelectedClips(tracks, alloc, selected_track, selected_clip);
             if (changed) status.set("Joined", .{}) else status.set("Select two or more note clips on a track to join", .{});
+        },
+        .trim_overlaps => {
+            const n = if (focus == .arrangement) arrangement.trimOverlappingClips(tracks, alloc, selected_track.*, selected_clip, transport.map()) else 0;
+            changed = n > 0;
+            if (changed) status.set("Trimmed {d} overlapping clips", .{n}) else if (focus == .arrangement) status.set("No clips overlap here", .{});
         },
         .insert_time, .delete_time => if (focus == .arrangement) if (arrange_ctx) |ctx| {
             const r = arrangement.timeRange() orelse {
