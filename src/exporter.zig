@@ -197,6 +197,28 @@ pub fn hasPlayingClips(t: *const track_mod.Track) bool {
     return false;
 }
 
+/// Where an export is, in slab.log: each phase as it starts, with the time
+/// since the last one, so a render that stops says where (docs/46).
+const Lap = struct {
+    last: i64,
+
+    fn ms() i64 {
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(.MONOTONIC, &ts);
+        return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
+    }
+
+    fn start() Lap {
+        return .{ .last = ms() };
+    }
+
+    fn mark(self: *Lap, comptime fmt: []const u8, args: anytype) void {
+        const now = ms();
+        std.log.info("export: " ++ fmt ++ " (+{d} ms)", args ++ .{now - self.last});
+        self.last = now;
+    }
+};
+
 /// Render and write. `progress` counts output frames of the most
 /// `opts.end - opts.start + opts.tail_frames`. error.Cancelled when
 /// `cancel` stopped it.
@@ -229,6 +251,14 @@ pub fn run(
         @memset(cap.l[ti], 0);
         @memset(cap.r[ti], 0);
     };
+    var lap = Lap.start();
+    var stem_n: usize = 0;
+    for (cap.tap) |tp| {
+        if (tp != .none) stem_n += 1;
+    }
+    // What the capture holds: every stem's whole song, and the mix's.
+    const held_mb = ((stem_n * 2 + (if (opts.mix_name != null) @as(usize, 2) else 0)) * (total + engine_mod.PDC_MAX) * @sizeOf(f32)) >> 20;
+    lap.mark("rendering {d} frames, {d} stems, mix {}, {d} MB held", .{ total, stem_n, opts.mix_name != null, held_mb });
     const mix: []f32 = if (opts.mix_name != null) try alloc.alloc(f32, total * 2) else &.{};
     defer if (mix.len > 0) alloc.free(mix);
     @memset(mix, 0);
@@ -237,6 +267,7 @@ pub fn run(
     engine.offline_stop = opts.end;
     engine.renderOffline(mix, total, opts.start, progress, cancel);
     engine.capture = null;
+    lap.mark("rendered {d} of {d} frames{s}", .{ cap.rendered, total, if (if (cancel) |c| c.load(.monotonic) else false) ", cancelled" else "" });
     if (cancel) |c| if (c.load(.monotonic)) return error.Cancelled;
 
     // One length for every file: the range and what still sounds past it.
@@ -261,7 +292,9 @@ pub fn run(
         const src = if (opts.loop_wrap) wrap(mix[0 .. len * 2], range) else mix[0 .. len * 2];
         const m = try convert(alloc, src, rate, out_rate, opts.loop_wrap);
         defer alloc.free(m);
+        lap.mark("mix converted to {d} Hz", .{out_rate});
         const before = try loudness.measure(alloc, m, out_rate);
+        lap.mark("mix loudness measured", .{});
         report.gain_db = switch (opts.normalize) {
             .off => 0,
             .peak => opts.target - before.true_peak,
@@ -284,6 +317,7 @@ pub fn run(
         }
         report.rms = if (m.len > 0) @sqrt(sq / @as(f64, @floatFromInt(m.len))) else 0;
         try emit(alloc, &opts, &names, &report, template, 0, "", m, opts.format, opts.mix_channels, rate);
+        lap.mark("mix written", .{});
     }
     if (opts.hasStems()) {
         const stem_gain: f32 = if (opts.stem_gain == .mix) gain else 1;
@@ -311,8 +345,10 @@ pub fn run(
             var title_buf: [256]u8 = undefined;
             sf.title = if (opts.format.title.len > 0) std.fmt.bufPrint(&title_buf, "{s} - {s}", .{ opts.format.title, t.name() }) catch t.name() else t.name();
             try emit(alloc, &opts, &names, &report, opts.stem_name, nn, t.name(), out, sf, opts.stems[ti].channels, rate);
+            lap.mark("stem {d} of {d} written: {s}", .{ nn, stem_n, t.name() });
         }
     }
+    lap.mark("done, {d} files", .{report.files});
     return report;
 }
 

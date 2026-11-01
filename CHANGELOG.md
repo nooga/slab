@@ -6,6 +6,25 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Drum lanes you can read.** On a kit the piano roll's key column widens to
+  fit the lane names, and the key button cycles ALL KEYS, KIT KEYS and CLIP
+  KEYS, which shows only the lanes the clip has notes on, top aligned. Kits
+  open on KIT KEYS.
+- **Clips show their notes at a readable size.** A clip on a track draws its
+  notes over its own pitch range instead of a fixed one, so low notes no
+  longer squash into a line.
+
+- **Metronome.** CLICK on the transport bar clicks on every beat while
+  playing, with a slider for its level. It follows the meter, including odd
+  and changing ones: the downbeat and each group start are accented. It is
+  heard live only: never in bounces or renders, and not through master effects.
+
+- **A tidier transport bar.** AUTO moved into the input menu (the caret beside
+  REC, which lights red while automation recording is armed). KEYS and LEARN
+  are single buttons that open into their controls only when on. On a narrow
+  window the bar gives up the stats, then the master meter's width, the song
+  length and those buttons, in that order, instead of cutting off its right end.
+
 ## 0.0.18 — 2026-11-01
 
 - **Song length and a time readout.** The transport bar shows the song's
