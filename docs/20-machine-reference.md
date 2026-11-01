@@ -1683,6 +1683,7 @@ Presets:
 
 Presets:
 
+- `master-loud` — A loudness stage for the master: GLUE compresses, CLIP rounds off the peaks, then a limiter at CEIL. LOUD drives the clip and the limiter together, so it gets denser, not just louder.
 - `parallel-squash` — Parallel compression: the dry signal beside a crushed, saturated copy. AMOUNT brings the copy up under it.
 - `harsh/bit-guitar` — Lows cut, crushed to 8 bits at 11 kHz, into a clean amp: aliased, zippy guitar.
 - `harsh/cross-bass` — Justice-style bass: a clean sub lane, and a dirty lane cut below 250 Hz, crushed to 12 bits, overdriven, through a bright Brit 4x12 and slammed by a FET.
