@@ -6,6 +6,8 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+## 0.0.18 — 2026-11-01
+
 - **Song length and a time readout.** The transport bar shows the song's
   length in minutes and seconds next to the position (tempo changes and
   ramps counted, up to the END marker or else the last clip). Click the
