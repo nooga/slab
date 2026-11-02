@@ -6,6 +6,8 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+## 0.0.22 — 2026-11-02
+
 - **CONVO, a convolution reverb.** Play a track through a recorded or made
   space: an impulse response, any WAV. It ships with a synthetic stereo
   hall and a bowed cymbal that every note swells through, and takes
