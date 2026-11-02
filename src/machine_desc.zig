@@ -18,12 +18,15 @@ const machine = @import("machine.zig");
 pub const MAX_NAME = 64;
 pub const MAX_WORD = 64;
 pub const MAX_TEXT = 24;
+/// A switch option's label. Short, because a control holds MAX_OPTS of them and a descriptor holds
+/// MAX_CONTROLS controls: at MAX_TEXT the manifest walk overflowed the main thread's stack.
+pub const MAX_OPT_TEXT = 16;
 pub const MAX_CONTROLS = 160;
-pub const MAX_OPTS = 24;
+pub const MAX_OPTS = 40;
 /// `sets` entries across a machine's switch options.
 pub const MAX_OPT_SETS = 256;
 pub const MAX_CONSTS = 16;
-pub const MAX_STRIPS = 32;
+pub const MAX_STRIPS = 40;
 pub const MAX_DISPLAYS = 16;
 pub const MAX_ROWS = 8;
 pub const MAX_PAGES = 8;
@@ -109,7 +112,7 @@ pub const Control = struct {
     // index; sync writes option_values[index] to the param offset.
     option_count: usize = 0,
     option_values: [MAX_OPTS]f64 = @splat(0),
-    option_labels: [MAX_OPTS][MAX_TEXT:0]u8 = @splat(@as([MAX_TEXT:0]u8, @splat(0))),
+    option_labels: [MAX_OPTS][MAX_OPT_TEXT:0]u8 = @splat(@as([MAX_OPT_TEXT:0]u8, @splat(0))),
 
     pub fn optionLabelZ(self: *const Control, i: usize) [*:0]const u8 {
         return @ptrCast(&self.option_labels[i][0]);
@@ -755,7 +758,10 @@ pub fn read(host: *FyHost) !Desc {
         var opt_it = rawPtr(OptionRaw, ctl.options);
         while (opt_it) |opt| : (opt_it = rawPtr(OptionRaw, opt.next)) {
             if (out.option_count >= MAX_OPTS) return error.TooManyOptions;
-            _ = try copyText(&out.option_labels[out.option_count], cstrSlice(opt.label));
+            const label = cstrSlice(opt.label);
+            if (label.len >= MAX_OPT_TEXT) return error.MachineDescStringTooLong;
+            @memcpy(out.option_labels[out.option_count][0..label.len], label);
+            out.option_labels[out.option_count][label.len] = 0;
             out.option_values[out.option_count] = asF64(opt.value);
             var set_it = rawPtr(SetRaw, opt.sets);
             while (set_it) |st| : (set_it = rawPtr(SetRaw, st.next)) {

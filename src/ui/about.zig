@@ -33,6 +33,7 @@ const Credit = struct { name: []const u8, note: []const u8 };
 const BUILT_WITH = [_]Credit{
     .{ .name = "fy", .note = "SLAB'S FORK, GPL-3.0" },
     .{ .name = "msfa, from Dexed", .note = "APACHE-2.0" },
+    .{ .name = "Ambika, from Mutable Instruments", .note = "GPL-3.0" },
     .{ .name = "raylib", .note = "ZLIB" },
     .{ .name = "miniaudio", .note = "MIT-0" },
     .{ .name = "Tamzen font", .note = "FREE" },
@@ -98,7 +99,7 @@ fn credits(ui: *Ui, img: Rect) void {
     section(ui, &p, "SOUNDS", &SOUNDS);
     line(ui, &p, &ui.fonts.body, "Free software: GPL-3.0-or-later,", style.text_dim);
     line(ui, &p, &ui.fonts.body, "with the Slab Machine Exception.", style.text_dim);
-    line(ui, &p, &ui.fonts.body, "Factory presets and sounds: CC0.", style.text_dim);
+    line(ui, &p, &ui.fonts.body, "Factory presets and sounds: CC0, bar Ambika's.", style.text_dim);
 }
 
 fn line(ui: *Ui, p: *Rect, f: *const core.Font, s: []const u8, col: style.Color) void {

@@ -6,6 +6,19 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Menus scroll.** A menu or submenu taller than the window (a bank of
+  128 presets) scrolls with the wheel, the arrow keys and PgUp/PgDn, with ▴ and ▾
+  marking more rows; the rows per menu went from 72 to 256.
+- **Ambika.** A new instrument after Mutable Instruments' six-voice polysynth,
+  ported from its firmware: two digital oscillators with 38 shapes (the CZ
+  family, FM, vowel, 16 wavetables), a mixer with sync, ring, xor, fold and
+  bit cross-modulation, a sub-oscillator or transient, noise, fuzz and a
+  sample-rate crusher, then a four-pole filter, three envelopes, four LFOs
+  and the 14-slot modulation matrix with four modifiers. Values are the
+  hardware's. It ships with ten presets of ours and the 358 programs of the
+  unit's golden card. The SVF board's band- and high-pass and tempo-synced
+  LFOs are not in yet (docs/48).
+
 ## 0.0.21 — 2026-11-02
 
 - **MP3 export.** The Export sheet's FORMAT has MP3 at 128, 192, 256 or 320
