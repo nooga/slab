@@ -30,7 +30,7 @@ pub const State = enum(u8) {
 pub const Mode = enum {
     /// Slab replaces its own bundle.
     install,
-    /// Homebrew owns the install.
+    /// Homebrew owns the install: it upgrades after Slab exits.
     brew,
     /// A dev build or a folder Slab can't write: the release page.
     page,
@@ -90,6 +90,8 @@ pub const Updater = struct {
     /// unless the user asked.
     fail_in_check: bool = false,
     mode: Mode = .page,
+    /// Why the card only offers the release page (mode .page).
+    reason: []const u8 = "",
     tag: [32]u8 = @splat(0),
     tag_len: usize = 0,
     notes: [2048]u8 = @splat(0),
@@ -203,11 +205,45 @@ pub const Updater = struct {
         self.quit.store(true, .release);
     }
 
+    /// Quit, let Homebrew upgrade the cask, and reopen Slab: a detached
+    /// script (the tap-qualified token, since Homebrew's own `slab` cask is
+    /// a different app that "upgrading" `slab` would install in Slab's place), whose output goes to brew-upgrade.log in the logs folder.
+    pub fn brewUpgrade(self: *Updater, alloc: std.mem.Allocator) void {
+        if (self.get() != .available or self.mode != .brew) return;
+        var lb: [storage.MAX_PATH]u8 = undefined;
+        const log_dir = diag_dir(&lb);
+        storage.makeParents(log_dir);
+        var pathb: [storage.MAX_PATH + 32]u8 = undefined;
+        const log = std.fmt.bufPrint(&pathb, "{s}/brew-upgrade.log", .{log_dir}) catch return;
+        var pb: [16]u8 = undefined;
+        const pid_s = std.fmt.bufPrint(&pb, "{d}", .{std.c.getpid()}) catch return;
+        const script =
+            \\( while kill -0 "$1" 2>/dev/null; do sleep 0.2; done
+            \\  for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+            \\    if [ -x "$b" ]; then
+            \\      echo "$(date) $b upgrade --cask nooga/tap/slab"
+            \\      "$b" upgrade --cask nooga/tap/slab
+            \\      break
+            \\    fi
+            \\  done
+            \\  open -a Slab ) >>"$2" 2>&1 &
+        ;
+        if (!sh(alloc, script, &.{ pid_s, log }, false)) {
+            self.fail(false, "COULDN'T START HOMEBREW");
+            return;
+        }
+        self.quit.store(true, .release);
+    }
+
     /// The release page in the browser.
     pub fn openPage(alloc: std.mem.Allocator) void {
         _ = sh(alloc, "open \"$1\"", &.{PAGE}, false);
     }
 };
+
+fn diag_dir(buf: []u8) []const u8 {
+    return @import("diag.zig").dir(buf);
+}
 
 fn checkJob(self: *Updater, alloc: std.mem.Allocator) void {
     var dir: [storage.MAX_PATH]u8 = undefined;
@@ -241,7 +277,16 @@ fn checkJob(self: *Updater, alloc: std.mem.Allocator) void {
         if (std.mem.eql(u8, a.name, "Slab.zip.sha256")) self.sum_len = copyInto(&self.sum_url, a.browser_download_url);
     }
     self.mode = installMode(self);
-    if (self.mode == .install and (self.zip_len == 0 or self.sum_len == 0)) self.mode = .page;
+    // The test hook can also pick the mode, to see a card the dev build wouldn't show.
+    if (local) if (std.c.getenv("SLAB_UPDATE_MODE")) |m| {
+        const want = std.mem.span(m);
+        if (std.mem.eql(u8, want, "brew")) self.mode = .brew;
+        if (std.mem.eql(u8, want, "page")) self.mode = .page;
+    };
+    if (self.mode == .install and (self.zip_len == 0 or self.sum_len == 0)) {
+        self.mode = .page;
+        self.reason = "THIS RELEASE HAS NO CHECKSUM TO VERIFY";
+    }
     std.log.info("update: {s} is available ({s})", .{ self.tagName(), @tagName(self.mode) });
     self.state.store(.available, .release);
 }
@@ -279,16 +324,23 @@ fn installMode(self: *Updater) Mode {
     if (_NSGetExecutablePath(&buf, &n) != 0) return .page;
     const exe = std.mem.sliceTo(&buf, 0);
     const macos = std.fs.path.dirname(exe) orelse return .page;
-    if (!std.mem.endsWith(u8, macos, ".app/Contents/MacOS")) return .page;
+    if (!std.mem.endsWith(u8, macos, ".app/Contents/MacOS")) {
+        self.reason = "RUNNING FROM A DEV BUILD";
+        return .page;
+    }
     // Slab.app is three levels up from the binary.
     const app = std.fs.path.dirname(std.fs.path.dirname(macos).?).?;
     // (SLAB_UPDATE_API is the test hook: a fake release, whatever installed this.)
     const testing = std.c.getenv("SLAB_UPDATE_API") != null;
-    if (!testing and (access("/opt/homebrew/Caskroom/slab", 0) == 0 or access("/usr/local/Caskroom/slab", 0) == 0)) return .brew;
+    const have_brew = access("/opt/homebrew/bin/brew", 1) == 0 or access("/usr/local/bin/brew", 1) == 0;
+    if (!testing and have_brew and (access("/opt/homebrew/Caskroom/slab", 0) == 0 or access("/usr/local/Caskroom/slab", 0) == 0)) return .brew;
     var zb: [storage.MAX_PATH + 1]u8 = undefined;
     const parent = std.fs.path.dirname(app) orelse return .page;
     const pz = std.mem.printSentinel(&zb, "{s}", .{parent}, 0) catch return .page;
-    if (access(pz.ptr, 2) != 0) return .page; // W_OK
+    if (access(pz.ptr, 2) != 0) { // W_OK
+        self.reason = "SLAB CAN'T WRITE ITS OWN FOLDER";
+        return .page;
+    }
     self.bundle_len = copyInto(&self.bundle, app);
     return .install;
 }

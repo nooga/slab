@@ -2259,6 +2259,7 @@ pub fn main(init: std.process.Init) !void {
             .never => storage.saveSettings(alloc),
             .download => updater.download(alloc),
             .restart => updater.restart(alloc),
+            .brew => updater.brewUpgrade(alloc),
             .page => updater_mod.Updater.openPage(alloc),
             else => {},
         }

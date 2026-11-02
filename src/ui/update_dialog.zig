@@ -18,7 +18,7 @@ pub const State = struct {
     active: bool = false,
 };
 
-pub const Result = enum { none, close, skip, download, restart, page, check, never };
+pub const Result = enum { none, close, skip, download, restart, page, check, never, brew };
 
 const W: i32 = 400;
 const H: i32 = 220;
@@ -68,13 +68,14 @@ pub fn draw(ui: *Ui, screen: Rect, st: *State, u: *const updater_mod.Updater, ch
                         default = 2;
                     },
                     .brew => {
-                        labels = &.{ "SKIP", "LATER", "RELEASE PAGE" };
-                        default = 1;
-                        dialog.hint(ui, &body, "INSTALLED WITH HOMEBREW: brew upgrade --cask slab", 0);
+                        labels = &.{ "SKIP", "LATER", "EXIT & UPGRADE" };
+                        default = 2;
+                        dialog.hint(ui, &body, "HOMEBREW UPGRADES SLAB, THEN IT OPENS AGAIN", 0);
                     },
                     .page => {
                         labels = &.{ "SKIP", "LATER", "RELEASE PAGE" };
                         default = 2;
+                        dialog.hint(ui, &body, u.reason, 0);
                     },
                 },
             }
@@ -96,7 +97,7 @@ pub fn draw(ui: *Ui, screen: Rect, st: *State, u: *const updater_mod.Updater, ch
     if (f.enter and res == .none) if (default) |d| {
         res = pick(state, u.mode, labels[d]);
     };
-    if (res == .close or res == .skip or res == .page or res == .restart) st.active = false;
+    if (res == .close or res == .skip or res == .page or res == .restart or res == .brew) st.active = false;
     return res;
 }
 
@@ -106,6 +107,7 @@ fn pick(state: updater_mod.State, mode: updater_mod.Mode, label: []const u8) Res
     if (std.mem.eql(u8, label, "SKIP")) return .skip;
     if (std.mem.eql(u8, label, "UPDATE")) return .download;
     if (std.mem.eql(u8, label, "RESTART NOW")) return .restart;
+    if (std.mem.eql(u8, label, "EXIT & UPGRADE")) return .brew;
     if (std.mem.eql(u8, label, "RELEASE PAGE")) return .page;
     return .close;
 }

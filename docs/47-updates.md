@@ -25,7 +25,7 @@ one comes out. About's UPDATES button checks on demand.
 | Slab is | The card offers |
 |---|---|
 | in a Slab.app whose folder you can write | UPDATE, then RESTART NOW |
-| installed with Homebrew (`Caskroom/slab` exists) | `brew upgrade --cask slab` and the release page |
+| installed with Homebrew (`Caskroom/slab` exists) | EXIT & UPGRADE: Slab quits, `brew upgrade --cask nooga/tap/slab` runs, Slab reopens (output in `~/Library/Logs/Slab/brew-upgrade.log`) |
 | a dev build, or in a folder it can't write | the release page |
 
 UPDATE downloads `Slab.zip` and `Slab.zip.sha256` from the release into
@@ -44,3 +44,7 @@ releases with a key built into the app would be.
 `SLAB_UPDATE_API` points the check at any URL (`file://` works) with a
 release's JSON, and its assets may then be `file://` URLs too. It also skips
 the Homebrew check. That is how the install path was exercised end to end.
+
+The upgrade names the tap (`nooga/tap/slab`): Homebrew's own `slab` cask is the
+unrelated Slab knowledge-base app, and a bare `brew upgrade --cask slab` installs
+that over Slab.app.

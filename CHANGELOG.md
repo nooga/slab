@@ -8,8 +8,8 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 - **Updates from GitHub.** Slab checks for a newer release when it starts and
   turns the SLAB logo into an UPDATE offer. In Slab.app, UPDATE downloads the release,
-  checks it and swaps it in on a restart; Homebrew installs are pointed at
-  `brew upgrade`. SKIP passes on a version, a switch turns the check off, and
+  checks it and swaps it in on a restart; Homebrew installs get EXIT & UPGRADE,
+  which quits, runs `brew upgrade` and reopens Slab. SKIP passes on a version, a switch turns the check off, and
   About has an UPDATES button to check now.
 
 ## 0.0.19 — 2026-11-01
