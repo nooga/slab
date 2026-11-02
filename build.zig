@@ -110,6 +110,8 @@ fn configureNativeDeps(b: *std.Build, mod: *std.Build.Module, target: std.Build.
     mod.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
     mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
     mod.linkSystemLibrary("raylib", .{});
+    // LAME for MP3 export, static: the installed app needs no Homebrew.
+    mod.addObjectFile(.{ .cwd_relative = "/opt/homebrew/lib/libmp3lame.a" });
 
     // miniaudio — vendored single-header, single-TU.
     mod.addCSourceFile(.{
@@ -130,6 +132,7 @@ fn configureNativeDeps(b: *std.Build, mod: *std.Build.Module, target: std.Build.
     });
     mod.addCSourceFile(.{ .file = b.path("src/native_audio.c") });
     mod.addCSourceFile(.{ .file = b.path("src/native_midi.c") });
+    mod.addCSourceFile(.{ .file = b.path("src/native_diag.c") });
     mod.addIncludePath(b.path("vendor"));
 
     // macOS frameworks needed by raylib + miniaudio.

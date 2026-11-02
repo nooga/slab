@@ -20,6 +20,7 @@ const audio_mod = @import("../audio.zig");
 const meter_mod = @import("../meter.zig");
 const musical_keys = @import("musical_keys.zig");
 const midi_map = @import("../midi_map.zig");
+const click_mod = @import("../click.zig");
 
 const Ui = core.Ui;
 const Rect = core.Rect;
@@ -48,6 +49,10 @@ pub const Result = struct {
     toggle_browser: bool = false,
     /// The logo was clicked: open About.
     about: bool = false,
+    /// The logo was clicked while an update waits: open the update card.
+    update: bool = false,
+    /// The metronome was switched or its level moved (save the setting).
+    click_changed: bool = false,
 };
 
 pub const Args = struct {
@@ -80,7 +85,30 @@ pub const Args = struct {
     cpu_peak: f32 = 0,
     /// The library browser is showing.
     browser_visible: bool = false,
+    /// Where the song ends (the END marker, else the last clip), in beats.
+    song_end_beats: f64 = 0,
+    /// The metronome the CLICK tile drives.
+    click: *click_mod.Click,
+    /// The version of an update waiting ("0.0.20"): the logo offers it.
+    update: ?[]const u8 = null,
 };
+
+/// The position readout shows minutes and seconds instead of bar.beat.sub
+/// (a click on it switches).
+var show_time = false;
+
+/// "m:ss", "h:mm:ss" from an hour; with `tenths`, "m:ss.t".
+pub fn formatTime(buf: []u8, seconds: f64, tenths: bool) []const u8 {
+    const total = if (seconds > 0) seconds else 0;
+    if (tenths) {
+        const t: u64 = @intFromFloat(total * 10);
+        const s = t / 10;
+        return std.fmt.bufPrint(buf, "{d}:{d:0>2}.{d}", .{ s / 60, s % 60, t % 10 }) catch "?";
+    }
+    const s: u64 = @intFromFloat(@round(total));
+    if (s >= 3600) return std.fmt.bufPrint(buf, "{d}:{d:0>2}:{d:0>2}", .{ s / 3600, s / 60 % 60, s % 60 }) catch "?";
+    return std.fmt.bufPrint(buf, "{d}:{d:0>2}", .{ s / 60, s % 60 }) catch "?";
+}
 
 const FILE_MENU_KEY: u64 = 0x5346494c45; // "SFILE"
 const INPUT_MENU_KEY: u64 = 0x494e505544_4556; // "INPUDEV"
@@ -106,7 +134,32 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     const t = a.transport;
     const map = a.meter_state.liveMap();
 
-    fileTile(ui, bar.cutLeft(fileTileW(ui, a)), a, &res);
+    // Room is shared out by priority. The essentials always stay; what is
+    // left goes, in turn, to the master meter's minimum, the song length,
+    // the KEYS and LEARN chips (with what they open into), the stats, and
+    // last the master meter's full width.
+    const file_w = fileTileW(ui, a);
+    const essential = file_w + ESSENTIAL_W;
+    const logo_w = logoW(bar.h);
+    var spare = bar.w - essential - logo_w;
+    const master_min = spare >= MASTER_MIN_W;
+    if (master_min) spare -= MASTER_MIN_W;
+    const show_len = spare >= LEN_W;
+    if (show_len) spare -= LEN_W;
+    const chips_w = keysW() + midiW();
+    const show_chips = spare >= chips_w;
+    if (show_chips) spare -= chips_w;
+    const show_stats = master_min and spare >= STATS_W;
+    if (show_stats) spare -= STATS_W;
+    const master_w: i32 = if (master_min) MASTER_MIN_W + @min(spare, MASTER_W - MASTER_MIN_W) else 0;
+
+    if (logoTile(ui, bar.cutRight(logo_w), a.update)) {
+        if (a.update != null) res.update = true else res.about = true;
+    }
+    if (master_w > 0) masterTile(ui, bar.cutRight(master_w), a, &res);
+    if (show_stats) statsTile(ui, bar.cutRight(STATS_W), a);
+
+    fileTile(ui, bar.cutLeft(file_w), a, &res);
     const browse_r = bar.cutLeft(64);
     var browse_on = a.browser_visible;
     if (ctl.button(ui, browse_r, "browse", &browse_on, .{ .kind = .latch, .label = "BROWSE", .led = style.led_amber, .flush = true })) res.toggle_browser = true;
@@ -134,10 +187,6 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     const loop_r = bar.cutLeft(36);
     if (ctl.button(ui, loop_r, "loop", &loop_on, .{ .label = "LOOP", .lit = style.accent, .flush = true })) t.toggleLoop();
     menu.tip(ui, loop_r, "Loop on/off");
-    var arm = a.auto_arm;
-    const arm_r = bar.cutLeft(40);
-    if (ctl.button(ui, arm_r, "autoarm", &arm, .{ .label = "AUTO", .lit = style.rec, .flush = true })) res.auto_arm_toggle = true;
-    menu.tip(ui, arm_r, if (a.auto_arm) "Automation recording armed: drags while playing write lanes" else "Arm automation recording");
 
     // Tempo: [LED 124.0 ▴▾]  TAP
     const bpm_r = bar.cutLeft(124);
@@ -152,11 +201,27 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     var pbuf: [32]u8 = undefined;
     const pos = map.beatToBarPos(t.beats());
     const sub = pos.tick / (meter_mod.PPQN / 4) + 1;
-    const pos_s = std.fmt.bufPrint(&pbuf, "{d}.{d}.{d}", .{ pos.bar + 1, pos.beat + 1, sub }) catch "?";
+    const pos_s = if (show_time)
+        formatTime(&pbuf, t.map().secondsAt(t.beats()), true)
+    else
+        std.fmt.bufPrint(&pbuf, "{d}.{d}.{d}", .{ pos.bar + 1, pos.beat + 1, sub }) catch "?";
     const pos_r = bar.cutLeft(120);
-    ctl.display(ui, pos_r, pos_s, .{ .align_ = .right, .large = true, .flush = true });
-    menu.tip(ui, pos_r, "Position  bar.beat.sub");
+    const pos_id = ui.id("pos");
+    const pos_b = ui.behavior(pos_id, pos_r, false);
+    if (pos_b.clicked) show_time = !show_time;
+    ctl.display(ui, pos_r, pos_s, .{ .align_ = .right, .large = true, .flush = true, .color = if (ui.active == pos_id) style.vfd_hi else style.vfd });
+    menu.tip(ui, pos_r, if (show_time) "Position  minutes:seconds. Click for bar.beat.sub" else "Position  bar.beat.sub. Click for minutes:seconds");
+    // The song's length, tempo changes included.
+    var lbuf: [24]u8 = undefined;
+    var tbuf: [16]u8 = undefined;
+    const len_s = std.fmt.bufPrint(&lbuf, "/ {s}", .{formatTime(&tbuf, t.map().secondsAt(a.song_end_beats), false)}) catch "?";
+    if (show_len) {
+        const len_r = bar.cutLeft(LEN_W);
+        ctl.display(ui, len_r, len_s, .{ .align_ = .right, .large = true, .flush = true, .color = style.vfd.mix(style.well, 0.15) });
+        menu.tip(ui, len_r, "Song length: to the END marker, else the last clip");
+    }
     meterTile(ui, bar.cutLeft(76), a.meter_state);
+    clickTile(ui, bar.cutLeft(CLICK_W), a.click, &res);
 
     // Snap: a select, finer upward.
     const snap_r = bar.cutLeft(92);
@@ -164,16 +229,12 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     if (ctl.displaySelectEx(ui, snap_r, "snap", &snap, &SNAP_LABELS, "SNAP", .{ .large = true, .flush = true })) a.edit_snap.* = @enumFromInt(snap);
     menu.tip(ui, snap_r, std.mem.span(a.edit_snap.tooltip()));
 
-    keysTile(ui, &bar);
-    midiTile(ui, &bar);
+    if (show_chips) {
+        keysTile(ui, &bar);
+        midiTile(ui, &bar);
+    }
 
-    // Logo plate on the right, the master meter beside it, blank plate
-    // between.
-    if (logoTile(ui, bar.cutRight(logoW(bar.h)))) res.about = true;
-    // The stats keep their room; the master meter gives way first.
-    const stats_w: i32 = if (bar.w >= MASTER_MIN_W + STATS_W) STATS_W else 0;
-    if (bar.w >= MASTER_MIN_W) masterTile(ui, bar.cutRight(@min(MASTER_W, bar.w - stats_w)), a, &res);
-    if (stats_w > 0) statsTile(ui, bar.cutRight(stats_w), a);
+    // Blank plate between.
     _ = ui.plate(bar, .{});
     return res;
 }
@@ -196,6 +257,7 @@ fn midiTile(ui: *Ui, bar: *Rect) void {
     var on = midi_map.learn_armed;
     if (ctl.button(ui, on_r, "learn", &on, .{ .kind = .latch, .label = "LEARN", .led = style.accent, .flush = true })) midi_map.learn_armed = on;
     menu.tip(ui, on_r, "MIDI learn: pick what to bind, then move a knob or hit a pad. A control: touch it with the mouse first");
+    if (!midi_map.learn_armed) return;
     const pick_r = bar.cutLeft(100);
     _ = ctl.displaySelectEx(ui, pick_r, "pick", &midi_map.learn_pick, &midi_map.LEARN_LABELS, "BIND", .{ .flush = true, .dim = !midi_map.learn_armed });
     menu.tip(ui, pick_r, "What LEARN binds: the control last touched, a transport action, or a knob slot");
@@ -214,7 +276,8 @@ fn keysTile(ui: *Ui, bar: *Rect) void {
     var on = musical_keys.enabled;
     if (ctl.button(ui, on_r, "on", &on, .{ .kind = .latch, .label = "KEYS", .led = style.accent, .flush = true })) musical_keys.setEnabled(on);
     menu.tip(ui, on_r, "Musical typing: the computer keyboard plays the selected track; REC records it");
-    const dim = !musical_keys.enabled;
+    if (!musical_keys.enabled) return;
+    const dim = false;
 
     const lay_r = bar.cutLeft(76);
     var lay: u8 = @intFromEnum(musical_keys.layout);
@@ -384,13 +447,16 @@ fn fileTile(ui: *Ui, r: Rect, a: Args, res: *Result) void {
 }
 
 const BUFFER_ID: u32 = 0x1000;
+const AUTO_ID: u32 = 0x2000;
 var buffer_labels: [audio_mod.BLOCK_CHOICES.len][32]u8 = undefined;
 
 /// Audio caret next to record: the input device, and the buffer size.
 fn inputTile(ui: *Ui, r: Rect, a: Args, res: *Result) void {
     const have = a.input_names.len > 0;
-    var open = menu.isOpen(INPUT_MENU_KEY);
-    if (ctl.button(ui, r, "input", &open, .{ .glyph = .tri_down, .glyph_on = style.text, .flush = true }) and !menu.isOpen(INPUT_MENU_KEY)) {
+    const open = menu.isOpen(INPUT_MENU_KEY);
+    // Lit red while automation recording is armed (its switch is in the menu).
+    var lit = open or a.auto_arm;
+    if (ctl.button(ui, r, "input", &lit, .{ .glyph = .tri_down, .glyph_on = if (a.auto_arm) style.rec else style.text, .flush = true }) and !menu.isOpen(INPUT_MENU_KEY)) {
         menu.openBelow(INPUT_MENU_KEY, r);
     }
     var tb: [96]u8 = undefined;
@@ -398,12 +464,14 @@ fn inputTile(ui: *Ui, r: Rect, a: Args, res: *Result) void {
         "no input device"
     else if (a.current_input_idx) |ci| std.mem.span(a.input_names[@min(ci, a.input_names.len - 1)]) else "default input";
     const ms = @as(f32, @floatFromInt(a.period_frames)) / 48.0;
-    menu.tip(ui, r, std.fmt.bufPrint(&tb, "Audio: {s}, buffer {d} ({d:.1} ms)", .{ dev, a.period_frames, ms }) catch "Audio");
+    menu.tip(ui, r, std.fmt.bufPrint(&tb, "Audio: {s}, buffer {d} ({d:.1} ms). Automation recording {s}", .{ dev, a.period_frames, ms, if (a.auto_arm) "armed" else "off" }) catch "Audio");
     if (menu.isOpen(INPUT_MENU_KEY)) {
-        var items: [34 + audio_mod.BLOCK_CHOICES.len + 1]menu.Item = undefined;
+        var items: [2 + 34 + audio_mod.BLOCK_CHOICES.len + 1]menu.Item = undefined;
+        items[0] = .{ .label = if (a.auto_arm) "\u{2022} Record automation (drags while playing write lanes)" else "  Record automation (drags while playing write lanes)", .id = AUTO_ID };
+        items[1] = .{ .separator = true };
         const n = @min(a.input_names.len, 34);
-        for (0..n) |i| items[i] = .{ .label = std.mem.span(a.input_names[i]), .id = @intCast(i) };
-        var k = n;
+        for (0..n) |i| items[2 + i] = .{ .label = std.mem.span(a.input_names[i]), .id = @intCast(i) };
+        var k = 2 + n;
         if (n > 0) {
             items[k] = .{ .separator = true };
             k += 1;
@@ -418,7 +486,7 @@ fn inputTile(ui: *Ui, r: Rect, a: Args, res: *Result) void {
             k += 1;
         }
         if (menu.pick(INPUT_MENU_KEY, items[0..k])) |id| {
-            if (id & BUFFER_ID != 0) res.buffer_pick = id & ~BUFFER_ID else res.input_pick = @intCast(id);
+            if (id == AUTO_ID) res.auto_arm_toggle = true else if (id & BUFFER_ID != 0) res.buffer_pick = id & ~BUFFER_ID else res.input_pick = @intCast(id);
         }
     }
 }
@@ -454,6 +522,50 @@ fn bpmTile(ui: *Ui, r: Rect, t: *Transport, map: meter_mod.MeterMap) void {
     ctl.led(ui, r.x + 5, r.y + @divFloor(r.h - 1 - 5, 2), .round5, if (on) .on else .off, col);
     if (t.isPlaying()) ui.animate();
     menu.tip(ui, r, "Tempo: drag, \u{2318}-scroll, \u{25B4}\u{25BE} step, double-click 120");
+}
+
+const CLICK_W: i32 = 100;
+const LEN_W: i32 = 84;
+/// The tiles that always stay, less the file tile: BROWSE, STOP/PLAY/REC,
+/// the input caret, LOOP, tempo and TAP, position, meter, CLICK, SNAP.
+const ESSENTIAL_W: i32 = 64 + 3 * 36 + 16 + 36 + 124 + 48 + 120 + 76 + CLICK_W + 92;
+
+/// What the KEYS tile takes now: the chip, and while on its controls.
+fn keysW() i32 {
+    if (!musical_keys.enabled) return 52;
+    return 52 + 76 + 52 + 44 + (if (musical_keys.layout == .chord) @as(i32, 64) else 0);
+}
+
+/// What the LEARN tile takes now: the chip, and while armed its select.
+fn midiW() i32 {
+    return if (midi_map.learn_armed) 52 + 100 else 52;
+}
+
+/// Metronome: CLICK on/off and its level. It follows the meter map (an
+/// accent on the downbeat and the group starts) and plays while the
+/// transport does.
+fn clickTile(ui: *Ui, r: Rect, click: *click_mod.Click, res: *Result) void {
+    ui.pushId("click");
+    defer ui.popId();
+    var row = r;
+    const btn_r = row.cutLeft(52);
+    var on = click.isOn();
+    if (ctl.button(ui, btn_r, "on", &on, .{ .kind = .latch, .label = "CLICK", .led = style.accent, .flush = true })) {
+        click.setOn(on);
+        res.click_changed = true;
+    }
+    menu.tip(ui, btn_r, "Metronome: a click on every beat of the meter, accented on the downbeat and group starts");
+    var vol = ui.plate(row, .{});
+    _ = vol.cutLeft(4);
+    _ = vol.cutRight(6);
+    const vol_r = vol.center(vol.w, 14);
+    var v = click.gain();
+    if (ctl.slider(ui, vol_r, "vol", &v, .{ .kind = .mini, .horizontal = true, .show_readout = false, .ticks = 0, .default = click_mod.Click.DEFAULT_GAIN })) {
+        click.setGain(v);
+        res.click_changed = true;
+    }
+    var tbuf: [40]u8 = undefined;
+    menu.tip(ui, vol_r, std.fmt.bufPrint(&tbuf, "Metronome level {d:.0}% (double-click: reset)", .{v * 100}) catch "Metronome level");
 }
 
 /// Time signature of bar 0: drag the numerator, right-click for the
@@ -514,19 +626,60 @@ fn logoW(h: i32) i32 {
     return @divFloor(ih * tex.width, tex.height) + 2 * LOGO_PAD + 2;
 }
 
-/// The logo plate; returns true when clicked (About).
-fn logoTile(ui: *Ui, r: Rect) bool {
+/// While an update waits the plate breathes green and the logo trades
+/// places with the offer: logo, a fade, UPDATE over the version, a fade.
+const OFFER_CYCLE: f64 = 6.0;
+const OFFER_SHOWN_FROM: f64 = 3.4;
+const OFFER_SHOWN_TO: f64 = 5.6;
+const OFFER_FADE: f64 = 0.4;
+
+/// How much of the offer shows `t` seconds into a cycle, 0..1.
+fn offerAmount(t: f64) f32 {
+    const up = std.math.clamp((t - OFFER_SHOWN_FROM) / OFFER_FADE, 0, 1);
+    const down = std.math.clamp((OFFER_SHOWN_TO + OFFER_FADE - t) / OFFER_FADE, 0, 1);
+    return @floatCast(@min(up, down));
+}
+
+/// The logo plate; returns true when clicked (About, or the update card
+/// when `update` names a version waiting).
+fn logoTile(ui: *Ui, r: Rect, update: ?[]const u8) bool {
     const b = ui.behaviorEx(ui.id("logo"), r, .{ .focusable = false });
-    menu.tip(ui, r, "About Slab");
     const body = ui.plate(r, .{});
+    var offer: f32 = 0;
+    if (update) |v| {
+        const now = c.rl.GetTime();
+        offer = if (ui.isHot(ui.id("logo"))) 1 else offerAmount(@mod(now, OFFER_CYCLE));
+        var tb: [48]u8 = undefined;
+        menu.tip(ui, r, std.fmt.bufPrint(&tb, "Slab {s} is out: click to update", .{v}) catch "Update available");
+        // The breathing edge.
+        const pulse: f32 = 0.5 + 0.5 * @as(f32, @floatCast(@sin(now * 3.0)));
+        ui.bevel(r, style.play.alpha(@intFromFloat(70 + 150 * pulse)), style.play.alpha(@intFromFloat(70 + 150 * pulse)));
+    } else menu.tip(ui, r, "About Slab");
+    const logo_a: u8 = @intFromFloat(255 * (1 - offer));
     if (logoTexture()) |tex| {
         const ih = r.h - 1 - 2 * LOGO_PAD;
         const iw = @divFloor(ih * tex.width, tex.height);
-        ui.texture(tex, Rect.xywh(body.x + @divFloor(body.w - iw, 2), r.y + LOGO_PAD, iw, ih), .{ .r = 255, .g = 255, .b = 255 });
-    } else {
-        ui.textIn(&ui.fonts.body_bold, body, "SLAB", style.accent, .center, true);
+        ui.texture(tex, Rect.xywh(body.x + @divFloor(body.w - iw, 2), r.y + LOGO_PAD, iw, ih), .{ .r = 255, .g = 255, .b = 255, .a = logo_a });
+    } else if (logo_a > 0) {
+        ui.textIn(&ui.fonts.body_bold, body, "SLAB", style.accent.alpha(logo_a), .center, true);
     }
+    if (update) |v| if (offer > 0) {
+        const a: u8 = @intFromFloat(255 * offer);
+        var top = body;
+        const head = top.cutTop(@divFloor(body.h, 2) + 2);
+        ui.textIn(&ui.fonts.body_bold, head.insetXY(0, 2), "UPDATE", style.play.alpha(a), .center, true);
+        ui.textIn(&ui.fonts.legend, top, std.mem.trimStart(u8, v, "v"), style.text.alpha(a), .center, true);
+    };
     return b.clicked;
+}
+
+test "the offer fades in, holds and fades out within a cycle" {
+    try std.testing.expectEqual(@as(f32, 0), offerAmount(0));
+    try std.testing.expectEqual(@as(f32, 0), offerAmount(OFFER_SHOWN_FROM));
+    try std.testing.expectEqual(@as(f32, 1), offerAmount(OFFER_SHOWN_FROM + OFFER_FADE));
+    try std.testing.expectEqual(@as(f32, 1), offerAmount(OFFER_SHOWN_TO));
+    try std.testing.expect(offerAmount(OFFER_SHOWN_TO + OFFER_FADE / 2) > 0);
+    try std.testing.expectEqual(@as(f32, 0), offerAmount(OFFER_CYCLE));
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -548,4 +701,13 @@ fn handleTap(t: *Transport, now: f64) void {
     if (tap_count < 2) return;
     const interval = (tap_times[tap_count - 1] - tap_times[0]) / @as(f64, @floatFromInt(tap_count - 1));
     if (interval > 0.1) t.setBpm(@floatCast(60.0 / interval));
+}
+
+test "time reads m:ss, with tenths for the position and h:mm:ss from an hour" {
+    var b: [24]u8 = undefined;
+    try std.testing.expectEqualStrings("0:00", formatTime(&b, 0, false));
+    try std.testing.expectEqualStrings("3:42", formatTime(&b, 221.6, false));
+    try std.testing.expectEqualStrings("1:01:01", formatTime(&b, 3661, false));
+    try std.testing.expectEqualStrings("1:23.4", formatTime(&b, 83.46, true));
+    try std.testing.expectEqualStrings("0:00.0", formatTime(&b, -3, true));
 }

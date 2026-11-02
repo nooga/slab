@@ -93,7 +93,7 @@ status and the source before assuming a feature is absent or complete.
     hysteresis, compand)
 28. [27-bounce-export.md](27-bounce-export.md) — bounce a selection to
     a new track (taps, clip mute, thawable recipes) and export: stems
-    in one pass, sections, FLAC/ALAC/AAC, dither, loudness report
+    in one pass, sections, FLAC/ALAC/AAC/MP3, dither, loudness report
 29. [28-time.md](28-time.md) — how a beat becomes a sample: the tempo
     map, locators and sections, groove, polymeter and polytempo, freeze
 30. [29-warp.md](29-warp.md) — audio on the beat axis: warp markers,
@@ -139,7 +139,13 @@ status and the source before assuming a feature is absent or complete.
     notes into the selected track, recording, LEARN, the MPK mini map
 46. [45-arpeggiator.md](45-arpeggiator.md) — the note slot ahead of the
     instrument and the arpeggiator (built)
-47. [46-convolver.md](46-convolver.md) — the convolver (prototype): a
+47. [46-recovery-and-logs.md](46-recovery-and-logs.md) — autosave, crash
+    recovery, logs and crash reports, fast undo (built)
+48. [47-updates.md](47-updates.md) — update check and install from GitHub
+    releases (built)
+49. [48-ambika.md](48-ambika.md) — Ambika: the Mutable Instruments polysynth
+    voicecard, first milestone (built)
+50. [49-convolver.md](49-convolver.md) — the convolver (prototype): a
     host service that convolves an effect's input with an impulse response,
     and CONVO, the convolution reverb on it
 

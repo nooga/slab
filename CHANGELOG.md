@@ -10,8 +10,109 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   space: an impulse response, any WAV. It ships with a synthetic stereo
   hall and a bowed cymbal that every note swells through, and takes
   PREDELAY, LO CUT, HI CUT, WIDTH, LEVEL and MIX. Effect machines can ask
-  for an impulse response of their own (docs/46).
+  for an impulse response of their own (docs/49).
 
+- **Menus scroll.** A menu or submenu taller than the window (a bank of
+  128 presets) scrolls with the wheel, the arrow keys and PgUp/PgDn, with ▴ and ▾
+  marking more rows; the rows per menu went from 72 to 256.
+- **Ambika.** A new instrument after Mutable Instruments' six-voice polysynth,
+  ported from its firmware: two digital oscillators with 38 shapes (the CZ
+  family, FM, vowel, 16 wavetables), a mixer with sync, ring, xor, fold and
+  bit cross-modulation, a sub-oscillator or transient, noise, fuzz and a
+  sample-rate crusher, then a four-pole filter, three envelopes, four LFOs
+  and the 14-slot modulation matrix with four modifiers. Values are the
+  hardware's. It ships with ten presets of ours and the 358 programs of the
+  unit's golden card. The SVF board's band- and high-pass and tempo-synced
+  LFOs are not in yet (docs/48).
+
+## 0.0.21 — 2026-11-02
+
+- **MP3 export.** The Export sheet's FORMAT has MP3 at 128, 192, 256 or 320
+  kb/s (44.1 or 48 kHz), with title, artist, album, year and BPM tags, for
+  the mix and for stems. From the command line, `--render out.mp3 --kbps 192`.
+  It's built in: nothing to install.
+- **Exports, bounces and freezes no longer freeze the window.** Starting one
+  while Slab is still analyzing audio used to block everything until the
+  analysis finished; now the window keeps drawing ("Analyzing sources…") and
+  the export starts by itself. A render that stops advancing is reported in
+  the status line and in `slab.log`, and quitting no longer waits forever for
+  it: the project is saved for recovery and Slab exits after five seconds. A
+  failed export setup can no longer leave the Export sheet busy for good.
+  `slab.log` now also records the GPU, the display's scale, and a note when
+  the window stops drawing, for reports of freezes and misdrawn screens.
+
+## 0.0.20 — 2026-11-02
+
+- **Updates from GitHub.** Slab checks for a newer release when it starts and
+  turns the SLAB logo into an UPDATE offer. In Slab.app, UPDATE downloads the
+  release, checks it and swaps it in on a restart; Homebrew installs get EXIT &
+  UPGRADE, which quits, runs `brew upgrade` and reopens Slab. SKIP passes on a
+  version, a switch turns the check off, and About has an UPDATES button to
+  check now. (Updates are offered from 0.0.20 on: earlier versions can't check.)
+
+## 0.0.19 — 2026-11-01
+
+- **Drum lanes you can read.** On a kit the piano roll's key column widens to
+  fit the lane names, and the key button cycles ALL KEYS, KIT KEYS and CLIP
+  KEYS, which shows only the lanes the clip has notes on, top aligned. Kits
+  open on KIT KEYS.
+- **Clips show their notes at a readable size.** A clip on a track draws its
+  notes over its own pitch range instead of a fixed one, so low notes no
+  longer squash into a line.
+
+- **Metronome.** CLICK on the transport bar clicks on every beat while
+  playing, with a slider for its level. It follows the meter, including odd
+  and changing ones: the downbeat and each group start are accented. It is
+  heard live only: never in bounces or renders, and not through master effects.
+
+- **A tidier transport bar.** AUTO moved into the input menu (the caret beside
+  REC, which lights red while automation recording is armed). KEYS and LEARN
+  are single buttons that open into their controls only when on. On a narrow
+  window the bar gives up the stats, then the master meter's width, the song
+  length and those buttons, in that order, instead of cutting off its right end.
+
+## 0.0.18 — 2026-11-01
+
+- **Song length and a time readout.** The transport bar shows the song's
+  length in minutes and seconds next to the position (tempo changes and
+  ramps counted, up to the END marker or else the last clip). Click the
+  position to switch it between bar.beat.sub and minutes:seconds.
+- **Overlapping clips are marked, and ⌘T trims them.** Where a clip lies
+  over another on a track, a hatched strip along its foot shows the stretch
+  it covers. ⌘T (or "Trim overlaps" in the clip menu) cuts the clips on the
+  tracks you have selected so none overlap: the one on top keeps its
+  stretch, and a clip lying wholly under another goes.
+- **Velocity stems of a chord are separate.** In the piano roll's velocity
+  lane the notes of a chord used to sit on one line, and only the topmost
+  could be grabbed (anywhere along its whole length). Now they fan out side
+  by side where there is room, and where there is not, the lowest draws in
+  front; a click picks the stem whose cap is nearest the pointer, and only
+  the stem itself is a target.
+- **Box select scrolls.** Drag a box on the tracks or in the piano roll to
+  the edge of the view and it scrolls along (faster the
+  further out), so you can select past what is on screen.
+- **Pinch to zoom.** On a trackpad, pinching zooms time around the pointer
+  in the arrangement, the piano roll and the audio editor; ⌥-pinch sizes
+  the piano roll's rows.
+## 0.0.17 — 2026-11-01
+
+- **Your work survives a crash.** Slab saves a recovery copy of the project
+  every 30 seconds while it has unsaved changes, the untitled project
+  included, and restores it at the next start (docs/46).
+- **Logs and crash reports.** Slab keeps `~/Library/Logs/Slab/slab.log` and
+  writes a `crash-*.txt` with a backtrace when it crashes; send that folder
+  with a bug report (docs/46).
+- **Undo and redo are fast.** They used to rebuild every machine in the
+  project and could stall for seconds; now only the tracks an edit touched
+  are rebuilt, and your track and clip selection stays.
+- **Moving several clips keeps their layout.** A selection dragged to other
+  tracks shifts as a whole (it stops at the first or last track instead of
+  squashing), and a ghost of each clip shows where it will land. Box-selecting
+  on the tracks also selects the automation points inside the box, and
+  selected points move together with clips or with each other, across lanes.
+- **The machine menu is A to Z with marks.** "+" and the replace menu list
+  every machine alphabetically, racks included, with a mark for instruments,
+  effects and presets (and the arpeggiator).
 ## 0.0.16 — 2026-10-31
 
 - **An arpeggiator, in a new note slot.** Every instrument track can take

@@ -63,35 +63,55 @@ fn mapLabel(pitch: u8) ?[*:0]const u8 {
 const KEY_LO: u8 = 12; // C0 (bottom row)
 const KEY_HI: u8 = 119; // B8 (top row; inclusive)
 
-// Drum rolls can fold down to the mapped keys only (USED KEYS): row r is
-// then the r-th mapped pitch from the top. collapsed_pitches is rebuilt
-// from note_map each frame, highest first.
-pub var collapse_unused: bool = false;
+// Drum rolls can fold down to fewer lanes: the kit's mapped keys (KIT), or
+// only the keys this clip has notes on (CLIP). Row r is then the r-th lane
+// from the top. collapsed_pitches is rebuilt each frame, highest first.
+pub const Fold = enum { all, kit, clip };
+pub var fold: Fold = .kit;
 var collapsed_pitches: [128]u8 = undefined;
 var collapsed_count: usize = 0;
 
 fn collapsed() bool {
-    return collapse_unused and collapsed_count > 0;
+    return fold != .all and collapsed_count > 0;
 }
 
-/// USED KEYS keeps the mapped keys plus any key the clip has notes on, so
-/// notes on a key the kit doesn't map stay visible and editable.
-fn setNoteMap(map: []const machine_mod.NoteLabel, clip: ?*const Clip) void {
-    note_map = map;
+/// The lanes of a fold: KIT keeps the mapped keys plus any key the clip has
+/// notes on, so notes on a key the kit doesn't map stay visible and
+/// editable; CLIP keeps only the keys with notes (an empty clip shows the
+/// kit, there being nothing else to go by). Highest first, into `out`.
+fn lanesFor(which: Fold, map: []const machine_mod.NoteLabel, notes: []const Note, out: *[128]u8) usize {
     var seen: [128]bool = @splat(false);
-    for (map) |*nl| seen[nl.pitch & 127] = true;
-    if (map.len > 0) if (clip) |cl| for (cl.notes.items) |n| {
+    var any_note = false;
+    for (notes) |n| {
         seen[n.pitch & 127] = true;
-    };
-    collapsed_count = 0;
+        any_note = true;
+    }
+    if (map.len > 0 and (which == .kit or (which == .clip and !any_note)))
+        for (map) |*nl| {
+            seen[nl.pitch & 127] = true;
+        };
+    var count: usize = 0;
     var p: usize = 128;
     while (p > 0) {
         p -= 1;
         if (seen[p]) {
-            collapsed_pitches[collapsed_count] = @intCast(p);
-            collapsed_count += 1;
+            out[count] = @intCast(p);
+            count += 1;
         }
     }
+    return count;
+}
+
+fn setNoteMap(map: []const machine_mod.NoteLabel, clip: ?*const Clip) void {
+    note_map = map;
+    if (map.len == 0) {
+        collapsed_count = 0;
+        return;
+    }
+    // A drag keeps the lanes it began with, so they don't shift under it.
+    if (fold == .clip and pane.hasActiveDrag() and collapsed_count > 0) return;
+    const notes: []const Note = if (clip) |cl| cl.notes.items else &.{};
+    collapsed_count = lanesFor(fold, map, notes, &collapsed_pitches);
 }
 
 fn rowCount() u32 {
@@ -173,8 +193,21 @@ fn snapPitchToScale(pitch: u8) u8 {
     }
     return pitch;
 }
+/// The key column's width: the piano's, or with a kit's lane names wide
+/// enough for the longest (and the key name beside it).
+var gutter_w: f32 = 32;
+const GUTTER_MAX: f32 = 160;
+
 fn keyboardW() f32 {
-    return 32;
+    return gutter_w;
+}
+
+/// Size the gutter to the lane names (the legend face, 3 px before, the key
+/// name's 26 px after).
+fn sizeGutter(ui: *Ui) void {
+    var w: i32 = 32;
+    for (note_map) |*nl| w = @max(w, ui.fonts.legend.measure(nl.labelSlice()) + 3 + 26);
+    gutter_w = @min(@as(f32, @floatFromInt(w)), GUTTER_MAX);
 }
 fn rulerH() f32 {
     return 16;
@@ -892,12 +925,25 @@ fn drawHeaderTools(ui: *Ui, tools: Rect, track: ?*track_mod.Track) void {
     if (note_map.len > 0) {
         // Drum lanes have no key; the slot folds the roll to the mapped keys.
         const fr = t.cutLeft(KS_W);
-        var on = collapse_unused;
-        if (ctl.button(ui, fr, "foldkeys", &on, .{ .label = if (collapse_unused) "USED KEYS" else "ALL KEYS", .flush = true })) {
-            collapse_unused = on;
+        var on = fold != .all;
+        const label = switch (fold) {
+            .all => "ALL KEYS",
+            .kit => "KIT KEYS",
+            .clip => "CLIP KEYS",
+        };
+        if (ctl.button(ui, fr, "foldkeys", &on, .{ .label = label, .flush = true })) {
+            fold = switch (fold) {
+                .all => .kit,
+                .kit => .clip,
+                .clip => .all,
+            };
             initialized_scroll = false;
         }
-        menu.tip(ui, fr, "Show only the keys that have sounds, or every key");
+        menu.tip(ui, fr, switch (fold) {
+            .all => "Every key. Click: only the kit's keys",
+            .kit => "Only the keys the kit has sounds on. Click: only the keys this clip uses",
+            .clip => "Only the keys this clip has notes on (an empty clip shows the kit's). Click: every key",
+        });
     } else {
         var buf: [24]u8 = undefined;
         const root = std.mem.span(ROOT_NAMES[key_root % 12]);
@@ -996,6 +1042,7 @@ pub fn draw(
     };
 
     setNoteMap(resolved.note_labels, resolved.clip);
+    sizeGutter(ui);
     cur_rate = resolved.track.time.rate();
     if (resolved.track.time.hasMeter()) {
         track_meter_pts[0] = .{ .start_bar = 0, .numerator = resolved.track.time.num, .denominator = resolved.track.time.den };
@@ -1349,6 +1396,7 @@ fn limits(grid: c.rl.Rectangle, clip: Clip) timeline.Limits {
 fn handleWheel(grid: c.rl.Rectangle, clip: Clip, m: pane.Mouse) void {
     if (!pane.contains(grid, m.x, m.y)) return;
     view.wheel(grid.x, grid.y, m, gesture.mods(), limits(grid, clip), c.rl.GetTime());
+    view.pinchZoom(grid.x, grid.y, m, gesture.mods(), limits(grid, clip), c.rl.GetTime());
 }
 
 /// The song's bars across the clip: local beat 0 is song beat
@@ -1663,14 +1711,71 @@ fn drawVelocityLane(ui: *Ui, label_r: c.rl.Rectangle, r: c.rl.Rectangle, grid: c
     const base_y = r.y + r.height - velBottomPad();
     const max_h = base_y - (r.y + velTopPad());
     ui.rect(frect(r.x, base_y, r.width, 1), ui_style.grid_bar);
-    for (clip.notes.items) |note| {
+    const n = layoutStems(r, grid, clip);
+    for (stems[0..n]) |st| {
+        const note = clip.notes.items[st.idx];
+        const stem = frect(st.x, base_y - stemHeight(note, max_h), STEM_W, stemHeight(note, max_h));
+        ui.rect(stem, if (note.selected) col else col.mix(ui_style.pane, 0.5));
+        ui.rect(Rect.xywh(stem.x, stem.y, STEM_W, 2), if (note.selected) ui_style.accent else col);
+    }
+}
+
+const STEM_W: i32 = 3;
+const STEM_STEP: f32 = 4;
+const MAX_STEMS: usize = 4096;
+
+/// One note's stem in the velocity lane.
+const Stem = struct { idx: u32, x: f32 };
+var stems: [MAX_STEMS]Stem = undefined;
+
+fn stemHeight(note: Note, max_h: f32) f32 {
+    return @max(2, (@as(f32, @floatFromInt(note.velocity)) / 127.0) * max_h);
+}
+
+/// Where each visible note's stem stands, into `stems` (draw order). Notes
+/// that start together (a chord) would hide each other on one line, so
+/// they fan out to the right, as far as the next start leaves room; where
+/// there is none, the lowest velocity draws last so every cap shows.
+fn layoutStems(r: c.rl.Rectangle, grid: c.rl.Rectangle, clip: Clip) usize {
+    var n: usize = 0;
+    for (clip.notes.items, 0..) |note, i| {
         const nr = noteRect(grid, note);
         if (nr.x + nr.width < r.x or nr.x > r.x + r.width) continue;
-        const bar_h = @max(2, (@as(f32, @floatFromInt(note.velocity)) / 127.0) * max_h);
-        const stem = frect(nr.x, base_y - bar_h, 3, bar_h);
-        ui.rect(stem, if (note.selected) col else col.mix(ui_style.pane, 0.5));
-        ui.rect(Rect.xywh(stem.x, stem.y, 3, 2), if (note.selected) ui_style.accent else col);
+        if (n >= MAX_STEMS) break;
+        stems[n] = .{ .idx = @intCast(i), .x = nr.x };
+        n += 1;
     }
+    const notes = clip.notes.items;
+    std.sort.pdq(Stem, stems[0..n], notes, struct {
+        fn before(ns: []const Note, a: Stem, b: Stem) bool {
+            const na = ns[a.idx];
+            const nb = ns[b.idx];
+            if (na.start_beat != nb.start_beat) return na.start_beat < nb.start_beat;
+            return na.pitch < nb.pitch;
+        }
+    }.before);
+    var i: usize = 0;
+    while (i < n) {
+        var j = i + 1;
+        while (j < n and @abs(notes[stems[j].idx].start_beat - notes[stems[i].idx].start_beat) < 1e-4) j += 1;
+        const count = j - i;
+        if (count > 1) {
+            const room = (if (j < n) stems[j].x else r.x + r.width) - stems[i].x;
+            const step = std.math.clamp(@floor((room - @as(f32, STEM_W) - 1) / @as(f32, @floatFromInt(count - 1))), 0, STEM_STEP);
+            if (step >= 2) {
+                for (stems[i..j], 0..) |*st, k| st.x += step * @as(f32, @floatFromInt(k));
+            } else {
+                // Tallest first, so the shorter ones stay in front.
+                std.sort.insertion(Stem, stems[i..j], notes, struct {
+                    fn before(ns: []const Note, a: Stem, b: Stem) bool {
+                        return ns[a.idx].velocity > ns[b.idx].velocity;
+                    }
+                }.before);
+            }
+        }
+        i = j;
+    }
+    return n;
 }
 
 /// The ENV strip: the clip lane picked in its menu, edited with the lane
@@ -1914,7 +2019,7 @@ fn handleVelocityLane(r: c.rl.Rectangle, grid: c.rl.Rectangle, clip: *Clip, m: p
     if (!pane.contains(r, m.x, m.y)) return false;
     pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_NS, 1);
     if (!m.left_pressed or pane.hasActiveDrag()) return true;
-    const idx = findVelocityBarAt(r, grid, clip.*, m.x) orelse return true;
+    const idx = findVelocityBarAt(r, grid, clip.*, m.x, m.y) orelse return true;
     if (!pane.tryStartDrag(VELOCITY_KEY)) return true;
     velocity_active = true;
     velocity_drag_idx = idx;
@@ -1945,15 +2050,26 @@ fn applyVelocityAt(r: c.rl.Rectangle, clip: *Clip, y: f32) void {
     }
 }
 
-fn findVelocityBarAt(r: c.rl.Rectangle, grid: c.rl.Rectangle, clip: Clip, x: f32) ?usize {
-    var i = clip.notes.items.len;
-    while (i > 0) {
-        i -= 1;
-        const nr = noteRect(grid, clip.notes.items[i]);
-        const bar = pane.rect(nr.x, r.y, @max(nr.width, 3), r.height);
-        if (pane.contains(bar, x, r.y + r.height / 2)) return i;
+/// The stem under x, and among stems stacked there the one whose cap is
+/// nearest the pointer's height `y`.
+fn findVelocityBarAt(r: c.rl.Rectangle, grid: c.rl.Rectangle, clip: Clip, x: f32, y: f32) ?usize {
+    const base_y = r.y + r.height - velBottomPad();
+    const max_h = base_y - (r.y + velTopPad());
+    const n = layoutStems(r, grid, clip);
+    var best: ?usize = null;
+    var best_d: f32 = std.math.inf(f32);
+    for (stems[0..n]) |st| {
+        const note = clip.notes.items[st.idx];
+        if (x < st.x - 2 or x > st.x + @as(f32, STEM_W) + 2) continue;
+        const cap = base_y - stemHeight(note, max_h);
+        // A selected stem wins a near tie: it is the one being worked.
+        const d = @abs(y - cap) - if (note.selected) @as(f32, 1) else 0;
+        if (d < best_d) {
+            best_d = d;
+            best = st.idx;
+        }
     }
-    return null;
+    return best;
 }
 
 /// A folded-away pitch lands far above the grid, so its notes neither draw
@@ -2148,6 +2264,16 @@ fn updateDraw(grid: c.rl.Rectangle, clip: *Clip, alloc: std.mem.Allocator, edit_
 }
 
 fn updateBox(grid: c.rl.Rectangle, clip: *Clip, edit_snap: snap_mod.Setting, m: pane.Mouse) void {
+    // A box dragged to the edge of the grid scrolls it.
+    const pull = box.edgePull(m, grid, c.rl.GetFrameTime());
+    if (pull[0] != 0 or pull[1] != 0) {
+        const sx = view.scroll_x;
+        const sy = view.scroll_y;
+        view.scroll_x += pull[0];
+        view.scroll_y += pull[1];
+        clampScroll(grid, clip.*);
+        box.shift(view.scroll_x - sx, view.scroll_y - sy);
+    }
     if (box.active and box.moved(m)) {
         // The box's stretch of time is the time selection (docs/31).
         const a = snap_mod.snapNearest(edit_snap, @max(0, beatAtX(grid, box.x0)), altBypassSnap());
@@ -2761,4 +2887,62 @@ test "several selected note clips show together, the span covering them all" {
     gatherShown(&tracks, .{ .track = 0, .clip = 0 }, &tracks[0].clips.items[0]);
     try std.testing.expectEqual(@as(usize, 1), shown_n);
     try std.testing.expectEqual(@as(f64, 0), view_span[0]);
+}
+
+test "a chord's velocity stems fan out and the pointer picks the nearest cap" {
+    const alloc = std.testing.allocator;
+    var clip = Clip.init("chord", 0, 4);
+    defer clip.deinit(alloc);
+    try clip.addNote(alloc, .{ .pitch = 60, .start_beat = 1, .length_beats = 1, .velocity = 120 });
+    try clip.addNote(alloc, .{ .pitch = 64, .start_beat = 1, .length_beats = 1, .velocity = 80 });
+    try clip.addNote(alloc, .{ .pitch = 67, .start_beat = 1, .length_beats = 1, .velocity = 40 });
+    try clip.addNote(alloc, .{ .pitch = 60, .start_beat = 3, .length_beats = 1, .velocity = 100 });
+
+    const saved = view;
+    defer view = saved;
+    view = .{ .px_per_beat = 48, .row_h = 10 };
+    const grid = pane.rect(0, 0, 400, 300);
+    const lane = pane.rect(0, 300, 400, 64);
+
+    const n = layoutStems(lane, grid, clip);
+    try std.testing.expectEqual(@as(usize, 4), n);
+    // The chord's three stems stand apart; none sits on the next chord.
+    try std.testing.expect(stems[1].x - stems[0].x >= 2);
+    try std.testing.expect(stems[2].x - stems[1].x >= 2);
+    try std.testing.expect(stems[2].x < stems[3].x);
+
+    // Each is reachable: the pointer at its own cap picks it.
+    const base_y = lane.y + lane.height - velBottomPad();
+    const max_h = base_y - (lane.y + velTopPad());
+    for (stems[0..3]) |st| {
+        const cap = base_y - stemHeight(clip.notes.items[st.idx], max_h);
+        const hit = findVelocityBarAt(lane, grid, clip, st.x + 1, cap).?;
+        try std.testing.expectEqual(@as(usize, st.idx), hit);
+    }
+    // And with no room to fan out they stack, the nearest cap still wins.
+    view.px_per_beat = 4;
+    clip.notes.items[3].start_beat = 1.1;
+    _ = layoutStems(lane, grid, clip);
+    const cap = base_y - stemHeight(clip.notes.items[1], max_h);
+    const x = noteRect(grid, clip.notes.items[1]).x + 1;
+    try std.testing.expectEqual(@as(usize, 1), findVelocityBarAt(lane, grid, clip, x, cap).?);
+}
+
+test "CLIP lanes are the keys with notes; the kit's when there are none" {
+    var map: [3]machine_mod.NoteLabel = undefined;
+    for (&map, [_]u8{ 36, 38, 42 }) |*nl, p| nl.* = .{ .pitch = p };
+    var out: [128]u8 = undefined;
+    const notes = [_]Note{
+        .{ .pitch = 42, .start_beat = 0, .length_beats = 1 },
+        .{ .pitch = 42, .start_beat = 1, .length_beats = 1 },
+        .{ .pitch = 36, .start_beat = 0, .length_beats = 1 },
+        .{ .pitch = 50, .start_beat = 2, .length_beats = 1 },
+    };
+    // Only what has notes, highest first, an unmapped key included.
+    try std.testing.expectEqual(@as(usize, 3), lanesFor(.clip, &map, &notes, &out));
+    try std.testing.expectEqualSlices(u8, &.{ 50, 42, 36 }, out[0..3]);
+    // KIT: the mapped keys and the unmapped one with a note.
+    try std.testing.expectEqual(@as(usize, 4), lanesFor(.kit, &map, &notes, &out));
+    // An empty clip falls back to the kit.
+    try std.testing.expectEqual(@as(usize, 3), lanesFor(.clip, &map, &.{}, &out));
 }

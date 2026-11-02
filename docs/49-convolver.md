@@ -1,4 +1,4 @@
-# 46 — The convolver: impulse responses for effects
+# 49 — The convolver: impulse responses for effects
 
 **Status: prototype.** A host service that convolves an effect machine's
 input with an impulse response (IR), and CONVO (`convo`), the convolution

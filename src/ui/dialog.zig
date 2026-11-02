@@ -72,7 +72,9 @@ pub fn buttons(ui: *Ui, r: Rect, labels: []const []const u8, default: ?usize) ?u
     var i = labels.len;
     while (i > 0) {
         i -= 1;
-        const br = rest.cutRight(BUTTON_W).center(BUTTON_W, BUTTON_H);
+        // Long labels widen their button.
+        const bw = @max(BUTTON_W, @as(i32, @intCast(labels[i].len)) * 8 + 16);
+        const br = rest.cutRight(bw).center(bw, BUTTON_H);
         _ = rest.cutRight(6);
         var lit = true;
         const is_default = default != null and default.? == i;

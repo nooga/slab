@@ -143,8 +143,9 @@ While a control is overridden, its LED shows hollow (§Automated
 controls). During an override, drags and edits also change the base
 value (precedence step 4).
 
-**Recording** (phase 4, built: `AutoRecorder` in main.zig). An `AUTO`
-arm latch on the transport, lit `rec` when armed. While it's armed and
+**Recording** (phase 4, built: `AutoRecorder` in main.zig). A
+"Record automation" switch at the top of the transport's input menu (the
+caret beside REC, lit `rec` while armed). While it's armed and
 the transport is playing:
 
 - A drag on any control writes into that target's **track lane** for

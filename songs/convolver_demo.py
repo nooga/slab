@@ -1,4 +1,4 @@
-"""Convolver demo — what CONVO and the host convolver are for (docs/46).
+"""Convolver demo — what CONVO and the host convolver are for (docs/49).
 
 Generate: PYTHONPATH=tools python3 songs/convolver_demo.py
 Render:   ... --render

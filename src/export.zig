@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const flac = @import("flac.zig");
+const mp3 = @import("mp3.zig");
 
 pub const Container = enum(u8) {
     wav = 0,
@@ -13,6 +14,8 @@ pub const Container = enum(u8) {
     /// Apple Lossless and AAC, in .m4a through AudioToolbox.
     alac = 3,
     aac = 4,
+    /// Through LAME (src/mp3.zig); at most 48 kHz.
+    mp3 = 5,
 
     pub fn ext(self: Container) []const u8 {
         return switch (self) {
@@ -20,6 +23,7 @@ pub const Container = enum(u8) {
             .aiff => ".aif",
             .flac => ".flac",
             .alac, .aac => ".m4a",
+            .mp3 => ".mp3",
         };
     }
 
@@ -34,6 +38,7 @@ pub const Container = enum(u8) {
         if (std.ascii.endsWithIgnoreCase(path, ".aif") or std.ascii.endsWithIgnoreCase(path, ".aiff")) return .aiff;
         if (std.ascii.endsWithIgnoreCase(path, ".flac")) return .flac;
         if (std.ascii.endsWithIgnoreCase(path, ".m4a")) return .aac;
+        if (std.ascii.endsWithIgnoreCase(path, ".mp3")) return .mp3;
         return null;
     }
 };
@@ -62,7 +67,7 @@ pub const Format = struct {
     seed: u64 = 0x5eed,
     /// FLAC's compression level, 0–8.
     flac_level: u4 = 5,
-    /// AAC's bitrate.
+    /// AAC's and MP3's bitrate.
     aac_kbps: u16 = 256,
     /// 1 or 2: the samples handed to `writeFile` and `encode` are
     /// interleaved by this many channels.
@@ -105,6 +110,17 @@ extern fn slab_write_m4a(path: [*:0]const u8, ints: ?[*]const c_int, floats: ?[*
 
 /// Write `samples` (interleaved by `f.channels`) to `path` in format `f`.
 pub fn writeFile(alloc: std.mem.Allocator, path: []const u8, samples: []const f32, f: Format) !void {
+    if (f.container == .mp3) {
+        const doc = @import("document.zig");
+        const body = try mp3.encode(alloc, samples, f.channels, f.sample_rate, f.aac_kbps);
+        defer alloc.free(body);
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(alloc);
+        if (f.hasTags()) try id3v2(alloc, &out, f);
+        try out.appendSlice(alloc, body);
+        try doc.writeFile(alloc, path, out.items);
+        return;
+    }
     if (f.container == .alac or f.container == .aac) {
         const z = try alloc.dupeSentinel(u8, path, 0);
         defer alloc.free(z);
@@ -217,7 +233,7 @@ pub fn encode(alloc: std.mem.Allocator, samples: []const f32, f: Format) ![]u8 {
             if (f.acid) |a| try acidChunk(alloc, &out, a);
             std.mem.writeInt(u32, out.items[4..8], @intCast(out.items.len - 8), .little);
         },
-        .flac, .alac, .aac => unreachable,
+        .flac, .alac, .aac, .mp3 => unreachable,
         .aiff => {
             // Float needs AIFF-C ('fl32'); PCM is plain AIFF.
             const aifc = f.bits == .float32;
@@ -459,6 +475,19 @@ fn bpmText(buf: []u8, bpm: f64) []const u8 {
 fn id3Chunk(alloc: std.mem.Allocator, out: *std.ArrayList(u8), id: []const u8, f: Format, endian: std.builtin.Endian) !void {
     var tag: std.ArrayList(u8) = .empty;
     defer tag.deinit(alloc);
+    try id3v2(alloc, &tag, f);
+    try out.appendSlice(alloc, id);
+    var b: [4]u8 = undefined;
+    std.mem.writeInt(u32, &b, @intCast(tag.items.len), endian);
+    try out.appendSlice(alloc, &b);
+    try out.appendSlice(alloc, tag.items);
+    if (tag.items.len & 1 != 0) try out.append(alloc, 0);
+}
+
+/// The ID3v2.3 tag itself: its header, then the frames.
+fn id3v2(alloc: std.mem.Allocator, out: *std.ArrayList(u8), f: Format) !void {
+    var tag: std.ArrayList(u8) = .empty;
+    defer tag.deinit(alloc);
     var bpm_buf: [16]u8 = undefined;
     const frames = [_][2][]const u8{
         .{ "TIT2", f.title },
@@ -475,13 +504,8 @@ fn id3Chunk(alloc: std.mem.Allocator, out: *std.ArrayList(u8), id: []const u8, f
     var head = [10]u8{ 'I', 'D', '3', 3, 0, 0, 0, 0, 0, 0 };
     // Synchsafe size: 7 bits a byte.
     for (0..4) |k| head[6 + k] = @intCast((n >> @intCast(7 * (3 - k))) & 0x7f);
-    try out.appendSlice(alloc, id);
-    var b: [4]u8 = undefined;
-    std.mem.writeInt(u32, &b, @intCast(10 + n), endian);
-    try out.appendSlice(alloc, &b);
     try out.appendSlice(alloc, &head);
     try out.appendSlice(alloc, tag.items);
-    if ((10 + n) & 1 != 0) try out.append(alloc, 0);
 }
 
 fn id3Frame(alloc: std.mem.Allocator, tag: *std.ArrayList(u8), id: []const u8, prefix: []const u8, text: []const u8) !void {

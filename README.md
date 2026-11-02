@@ -129,7 +129,7 @@ in [fy](fy/), a small concatenative language that lives in this repo.
 ### Build from source
 
 You need [Zig](https://ziglang.org) 0.17 and raylib
-(`brew install raylib`).
+(`brew install raylib lame`).
 
 ```bash
 zig build run     # build and run Slab
