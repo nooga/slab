@@ -13,6 +13,8 @@ extern fn slab_set_browser_checked(on: c_int) void;
 extern fn slab_show_licenses() void;
 extern fn slab_set_window_document(window: ?*anyopaque, title: [*:0]const u8, path: ?[*:0]const u8, edited: c_int) void;
 extern fn slab_wake_ui() void;
+extern fn slab_install_pinch() void;
+extern fn slab_take_pinch() f64;
 
 /// Wake the UI loop out of an event wait. Any thread.
 pub fn wakeUi() void {
@@ -60,6 +62,12 @@ pub const Commands = struct {
 /// Add File, Edit and View to the menu bar. After InitWindow.
 pub fn installMenus() void {
     slab_install_menus();
+    slab_install_pinch();
+}
+
+/// The trackpad pinch since the last call: fractional, positive spreading.
+pub fn takePinch() f32 {
+    return @floatCast(slab_take_pinch());
 }
 
 /// The menu items chosen since the last call.

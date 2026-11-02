@@ -11,12 +11,32 @@ const c = @import("c.zig");
 const IdleWaker = struct {
     var on = std.atomic.Value(bool).init(false);
     var quit = std.atomic.Value(bool).init(false);
+    /// Bumped by the UI loop every frame: a frame that doesn't come is a
+    /// UI thread that is blocked, which nothing else would log.
+    var frames = std.atomic.Value(u64).init(0);
+    const STALL_TICKS = 5 * IDLE_FPS;
 
     fn run() void {
         const ts = std.c.timespec{ .sec = 0, .nsec = std.time.ns_per_s / IDLE_FPS };
+        var seen: u64 = 0;
+        var still: usize = 0;
+        var flagged = false;
         while (!quit.load(.acquire)) {
             _ = std.c.nanosleep(&ts, null);
             if (on.load(.acquire)) native_app.wakeUi();
+            const f = frames.load(.monotonic);
+            if (f != seen) {
+                if (flagged) std.log.warn("ui: frames are back after {d} s", .{still / IDLE_FPS});
+                seen = f;
+                still = 0;
+                flagged = false;
+            } else if (f > 0) {
+                still += 1;
+                if (still == STALL_TICKS) {
+                    flagged = true;
+                    std.log.warn("ui: no frame for {d} s (the UI thread is blocked, or the window is hidden)", .{STALL_TICKS / IDLE_FPS});
+                }
+            }
         }
     }
 };
@@ -78,6 +98,10 @@ const snap_mod = @import("ui/snap.zig");
 const arrangement = @import("ui/arrangement.zig");
 const clip_editor = @import("ui/clip_editor.zig");
 const musical_keys = @import("ui/musical_keys.zig");
+const midi_in = @import("midi_in.zig");
+const recovery = @import("recovery.zig");
+const diag = @import("diag.zig");
+const midi_map = @import("midi_map.zig");
 const menu = @import("ui/menu.zig");
 const text_field = @import("ui/text_field.zig");
 const splash = @import("ui/splash.zig");
@@ -94,6 +118,8 @@ const recipe_mod = @import("recipe.zig");
 const build_options = @import("build_options");
 const exporter = @import("exporter.zig");
 const about = @import("ui/about.zig");
+const update_dialog = @import("ui/update_dialog.zig");
+const updater_mod = @import("updater.zig");
 const unison_panel = @import("ui/unison_panel.zig");
 const color_picker = @import("ui/color_picker.zig");
 const browser = @import("ui/browser.zig");
@@ -119,6 +145,10 @@ test {
     _ = @import("ui/commands.zig");
     _ = @import("ui/clip_editor.zig");
     _ = @import("ui/musical_keys.zig");
+    _ = @import("midi_in.zig");
+    _ = @import("midi_map.zig");
+    _ = @import("arp.zig");
+    _ = @import("recovery.zig");
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
     _ = @import("tempo.zig");
@@ -147,6 +177,7 @@ test {
     _ = @import("resample.zig");
     _ = @import("ui/track_order.zig");
     _ = @import("engine.zig");
+    _ = @import("updater.zig");
     _ = @import("track.zig");
     _ = @import("document.zig");
     _ = @import("rack_group.zig");
@@ -241,7 +272,7 @@ fn holdNotes(engine: *engine_mod.Engine, held: *HeldNotes, track: ?usize, want_i
     }
     for (0..128) |pi| {
         const mask = @as(u128, 1) << @intCast(pi);
-        if (diff & mask != 0 and want & mask != 0) engine.holdNoteVel(t, @intCast(pi), true, if (typed & mask != 0) typed_vel else 102);
+        if (diff & mask != 0 and want & mask != 0) engine.holdNoteVel(t, @intCast(pi), true, if (typed & mask != 0) musical_keys.velocityOf(@intCast(pi), typed_vel) else 102);
     }
     held.set = want;
 }
@@ -280,6 +311,7 @@ const RenderJob = struct {
     progress: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     cancel: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    stall: Stall = .{},
 };
 
 /// An export's sections and cue points (docs/28 §Export by section), with
@@ -409,7 +441,10 @@ fn lastClipEnd(tracks: []const track_mod.Track) f64 {
 fn renderWorker(alloc: std.mem.Allocator, engine: *engine_mod.Engine, job: *RenderJob) void {
     if (exporter.run(alloc, engine, job.tracks, job.opts, &job.progress, &job.cancel)) |r| {
         job.result = r;
-    } else |err| job.err = err;
+    } else |err| {
+        job.err = err;
+        std.log.warn("export: stopped with {s}", .{@errorName(err)});
+    }
     job.done.store(true, .release);
 }
 
@@ -832,12 +867,15 @@ pub fn main(init: std.process.Init) !void {
     if (cli.render != null or cli.stems != null) return renderHeadless(alloc, cli.project orelse return error.MissingProject, cli);
 
     storage.ensureHome();
+    diag.start(build_options.version);
 
     native_app.installOpenHandler();
     c.rl.SetConfigFlags(c.rl.FLAG_WINDOW_RESIZABLE | c.rl.FLAG_VSYNC_HINT | c.rl.FLAG_WINDOW_HIGHDPI);
     c.rl.InitWindow(1400, 860, "SLAB");
     defer c.rl.CloseWindow();
     fitWindowToMonitor();
+    logGl();
+    var metrics: DisplayMetrics = .{};
     native_app.installMenus();
     var title_bar: native_app.TitleBar = .{};
     c.rl.SetTargetFPS(120);
@@ -937,6 +975,8 @@ pub fn main(init: std.process.Init) !void {
         .meter_state = &meter_state,
         .idle_skip = cli.idle_skip,
     };
+    engine.click.setOn(storage.click_on);
+    engine.click.setGain(storage.click_gain);
     try engine.initPdc(alloc);
     defer engine.deinitPdc(alloc);
     try engine.initPool(alloc, cli.workers(), if (cli.rt_workers) .{ .period_ns = audio_mod.blockPeriodNs(storage.buffer_frames) } else null);
@@ -1018,10 +1058,15 @@ pub fn main(init: std.process.Init) !void {
     var dirty = false;
     var auto_was_playing = false;
     var auto_arm = false;
+    var click_unsaved = false;
     var auto_rec: AutoRecorder = .{};
     var shot_frame: u32 = 0;
     var clipboard: EditClipboard = .{};
     defer clipboard.deinit(alloc);
+    midi_in.start();
+    midi_map.load(alloc);
+    midi_in.claim = midi_map.claims;
+    var midi_record = false;
     var status: StatusMessage = .{};
     var edit_snap: snap_mod.Setting = .note_16;
     var rename: RenameState = .{};
@@ -1029,6 +1074,9 @@ pub fn main(init: std.process.Init) !void {
     var bounce_dlg: bounce_dialog.State = .{};
     var marker_dlg: marker_dialog.State = .{};
     var about_card: about.State = .{};
+    var update_card: update_dialog.State = .{};
+    var updater: updater_mod.Updater = .{};
+    if (storage.check_updates and std.c.getenv("SLAB_NO_UPDATE") == null) updater.check(alloc);
     var uni_panel: unison_panel.State = .{};
     var color_pick: color_picker.State = .{};
     // A track awaiting the delete confirmation, and the dialog's text.
@@ -1038,6 +1086,9 @@ pub fn main(init: std.process.Init) !void {
     var pending_delete_set: ?[MAX_TRACKS]bool = null;
     var render_job: RenderJob = .{};
     var bounce_job: BounceJob = .{};
+    // An export asked for while analyses still run: it starts on the frame
+    // they finish, the window drawing meanwhile.
+    var render_wait = false;
     var next_recipe_check: f64 = 0;
     // The library browser (docs/25 §The browser): scanned on first show
     // and whenever what it lists may have changed.
@@ -1064,13 +1115,29 @@ pub fn main(init: std.process.Init) !void {
             defer alloc.free(data);
             useProject(path);
             var boot_tracks = tracks_buf[0..track_count];
-            applyProjectBytes(alloc, data, &reg, &tracks_buf, &track_count, &boot_tracks, &transport, &engine, &audio, &selected_track, &selected_clip, &prev_selected_clip) catch |err| {
+            applyProjectBytes(alloc, data, &reg, &tracks_buf, &track_count, &boot_tracks, &transport, &engine, &audio, &selected_track, &selected_clip, &prev_selected_clip, false) catch |err| {
                 std.log.err("open {s} failed: {s}", .{ path, @errorName(err) });
             };
             replaceProjectPath(alloc, &project_path, try alloc.dupe(u8, path));
             project_path_chosen = true;
             reportLoaded(alloc, &status, data, project_path);
         } else |err| std.log.err("open {s} failed: {s}", .{ path, @errorName(err) });
+    } else if (recovery.takeStale(alloc)) |r| {
+        // The last session ended with unsaved work: it comes back.
+        defer r.deinit(alloc);
+        splash.bootFrame(ui, screenRect(), "RESTORING UNSAVED WORK", 0);
+        if (r.chosen) useProject(r.path) else storage.setProject(null);
+        var boot_tracks = tracks_buf[0..track_count];
+        if (applyProjectBytes(alloc, r.doc, &reg, &tracks_buf, &track_count, &boot_tracks, &transport, &engine, &audio, &selected_track, &selected_clip, &prev_selected_clip, false)) {
+            replaceProjectPath(alloc, &project_path, try alloc.dupe(u8, r.path));
+            project_path_chosen = r.chosen;
+            dirty = true;
+            var lb: [storage.MAX_PATH]u8 = undefined;
+            status.set("Slab closed unexpectedly: restored the unsaved {s} (logs: {s})", .{ if (r.chosen) basename(r.path) else "project", diag.dir(&lb) });
+        } else |err| {
+            std.log.err("restoring unsaved work failed: {s}", .{@errorName(err)});
+            storage.setProject(null);
+        }
     }
 
     splash.finishBoot();
@@ -1086,7 +1153,11 @@ pub fn main(init: std.process.Init) !void {
         IdleWaker.quit.store(true, .release);
         w.join();
     };
-    while (!c.rl.WindowShouldClose()) {
+    // Unsaved work is kept for the next start (a crash, or a quit without
+    // saving); a project that is all saved leaves nothing.
+    var autosave: Autosave = .{};
+    defer if (dirty) autosave.write(alloc, tracks_buf[0..track_count], &transport, project_path, project_path_chosen, true) else recovery.clear();
+    while (!c.rl.WindowShouldClose() and !updater.quit.load(.acquire)) {
         // A queued open runs here, between frames, behind the loading card.
         if (pending_open) |path| {
             pending_open = null;
@@ -1100,7 +1171,11 @@ pub fn main(init: std.process.Init) !void {
         }
         const sw: f32 = @floatFromInt(c.rl.GetScreenWidth());
         const sh: f32 = @floatFromInt(c.rl.GetScreenHeight());
+        _ = IdleWaker.frames.fetchAdd(1, .monotonic);
+        metrics.watch(ui.renderer.zoom);
+        metrics.watchDraw(&ui.dl);
         ui.beginFrame();
+        @import("ui/timeline.zig").pinch = native_app.takePinch();
         devDrag(ui, shot_frame);
         pane.beginFrame();
         const m = pane.Mouse.fromInput(&ui.raw_in);
@@ -1108,7 +1183,7 @@ pub fn main(init: std.process.Init) !void {
         // One owner of the pointer at a time: a legacy menu, modal or drag
         // hides input from the new Ui, and a new-Ui drag hides it from the
         // legacy panes.
-        const modal = render_dlg.active or bounce_dlg.active or explode_dlg.active or marker_dlg.active or about_card.active or pending_delete != null or pending_delete_set != null or uni_panel.active or color_pick.active;
+        const modal = render_dlg.active or bounce_dlg.active or explode_dlg.active or marker_dlg.active or about_card.active or update_card.active or pending_delete != null or pending_delete_set != null or uni_panel.active or color_pick.active;
         if (menu.active() or modal or pane.hasActiveDrag()) ui.suppressInput();
 
         // While a menu is open it's modal for the mouse: panes get a
@@ -1143,6 +1218,14 @@ pub fn main(init: std.process.Init) !void {
             const keys_owned = modal or menu.active() or rename.active() or auto_lane.entryActive() or browser.typing(ui) or
                 (focus == .browser and layout.browser_visible);
             musical_keys.poll(!keys_owned and !commandModifierDown(), clip_editor.keyScale());
+        }
+        // MIDI devices (docs/44): what they sent this frame joins the notes
+        // the keys hold.
+        var midi_msgs: [256]midi_in.Msg = undefined;
+        const midi_n = midi_in.poll(&midi_msgs);
+        applyMidi(alloc, midi_msgs[0..midi_n], tracks, &transport, &selected_track, &status, &midi_record, &dirty);
+        if (midi_in.takeChanged()) {
+            if (midi_in.connected()) status.set("MIDI in: {s}", .{midi_in.sourceName(0)}) else status.set("MIDI in: no device", .{});
         }
         if (modal) {
             // Modal: only Esc/Enter act, handled after the dialog draws below.
@@ -1286,12 +1369,14 @@ pub fn main(init: std.process.Init) !void {
         var tres = transport_bar.draw(ui, uiRect(rects.top_bar), .{
             .transport = &transport,
             .meter_state = &meter_state,
+            .click = &engine.click,
+            .update = if (updater.pending()) updater.tagName() else null,
             .edit_snap = &edit_snap,
             .project_path = project_path,
             .project_path_chosen = project_path_chosen,
             .dirty = dirty,
             .recording = rec_busy or musical_keys.recording,
-            .can_record = audio.capture_available or musical_keys.enabled,
+            .can_record = audio.capture_available or musical_keys.inputLive(),
             .input_names = input_name_ptrs[0..input_count],
             .current_input_idx = current_input_idx,
             .buffer_frames = audio.block_frames,
@@ -1304,6 +1389,7 @@ pub fn main(init: std.process.Init) !void {
             .thread_load = thread_load[0..n_threads],
             .cpu_peak = cpu_load.peak,
             .browser_visible = layout.browser_visible,
+            .song_end_beats = markers.end orelse lastClipEnd(tracks_buf[0..track_count]),
         });
         // The menu bar's commands run as the in-app File menu's do.
         const menu_cmds = native_app.takeCommands();
@@ -1325,9 +1411,18 @@ pub fn main(init: std.process.Init) !void {
             auto_arm = !auto_arm;
             status.set("{s}", .{if (auto_arm) "Automation recording armed" else "Automation recording off"});
         }
+        // The metronome's setting is kept once the drag lets go.
+        if (tres.click_changed) click_unsaved = true;
+        if (click_unsaved and !c.rl.IsMouseButtonDown(c.rl.MOUSE_BUTTON_LEFT)) {
+            click_unsaved = false;
+            storage.click_on = engine.click.isOn();
+            storage.click_gain = engine.click.gain();
+            storage.saveSettings(alloc);
+        }
         if (tres.render_audio) export_dialog.open(&render_dlg);
         if (menu_cmds.has(.bounce)) openBounce(&bounce_dlg, tracks, &status);
         if (tres.about or menu_cmds.has(.about)) about_card.active = true;
+        if (tres.update) update_card.active = true;
         if (tres.master_volume) |v| {
             master.setVolume(v);
             dirty = true;
@@ -1366,6 +1461,10 @@ pub fn main(init: std.process.Init) !void {
                     status.set("Buffer {d} ({d:.1} ms)", .{ frames, @as(f32, @floatFromInt(frames)) / 48.0 });
             }
         }
+        if (midi_record) {
+            tres.record_toggle = true;
+            midi_record = false;
+        }
         if (tres.record_toggle and !rec_finishing) {
             if (recorder.isRecording() or musical_keys.recording) {
                 if (recorder.isRecording()) {
@@ -1378,7 +1477,7 @@ pub fn main(init: std.process.Init) !void {
                 rec_track = firstArmedAudioTrack(tracks);
                 // With KEYS on, REC writes what the keyboard plays (docs/40);
                 // the loop keeps running so passes layer.
-                if (musical_keys.enabled) {
+                if (musical_keys.inputLive()) {
                     musical_keys.recording = true;
                     transport.play();
                     if (rec_track == null) status.set("Recording keys\u{2026}", .{});
@@ -1407,8 +1506,8 @@ pub fn main(init: std.process.Init) !void {
                         transport.setLoopEnabled(true);
                         rec_loop_paused = false;
                     }
-                } else if (!musical_keys.enabled) {
-                    status.set("Arm a track (R) or turn KEYS on to record", .{});
+                } else if (!musical_keys.inputLive()) {
+                    status.set("Arm a track (R), turn KEYS on or plug in a MIDI device to record", .{});
                 }
             }
         }
@@ -1471,7 +1570,7 @@ pub fn main(init: std.process.Init) !void {
                     .preset, .table => if (sel_t) |t| .{ .header = t } else .new_track,
                     else => if (sel_t) |t| .{ .lane = .{ .track = t, .beat = trackEnd(&tracks[t]) } } else .new_track,
                 };
-                const app = App{ .alloc = alloc, .history = &history, .tracks_buf = &tracks_buf, .track_count = &track_count, .tracks = &tracks, .transport = &transport, .engine = &engine, .audio = &audio, .reg = &reg, .pool = &audio_pool, .selected_track = &selected_track, .selected_clip = &selected_clip, .prev_selected_clip = &prev_selected_clip, .project_path = &project_path, .project_path_chosen = &project_path_chosen, .dirty = &dirty, .status = &status, .edit_snap = edit_snap };
+                const app = App{ .alloc = alloc, .history = &history, .tracks_buf = &tracks_buf, .track_count = &track_count, .tracks = &tracks, .transport = &transport, .engine = &engine, .audio = &audio, .reg = &reg, .pool = &audio_pool, .selected_track = &selected_track, .selected_clip = &selected_clip, .prev_selected_clip = &prev_selected_clip, .project_path = &project_path, .project_path_chosen = &project_path_chosen, .dirty = &dirty, .status = &status, .edit_snap = edit_snap, .master = &master };
                 if (browserDrop(app, &lib, br.selection(), cur, target)) lib_stale = true;
                 rects = layout.compute(sw, sh);
             };
@@ -1808,6 +1907,18 @@ pub fn main(init: std.process.Init) !void {
                 dirty = true;
             } else |err| status.set("Can't group: {s}", .{@errorName(err)});
         };
+        if (mbres.add_note_fx) if (bay_dev) |dev| if (!bay_is_bus) {
+            pushHistorySnapshot(alloc, &history, tracks, &transport);
+            dev.note_fx.present.store(1, .monotonic);
+            dirty = true;
+            status.set("Added the arpeggiator: it runs ahead of the instrument", .{});
+        };
+        if (mbres.remove_note_fx) if (bay_dev) |dev| {
+            pushHistorySnapshot(alloc, &history, tracks, &transport);
+            dev.note_fx.present.store(0, .monotonic);
+            dirty = true;
+        };
+        if (mbres.note_fx_changed) dirty = true;
         if (mbres.add_machine) |reg_idx| {
             if (bay_dev) |dev| {
                 const entry = &reg.entries[reg_idx];
@@ -1995,6 +2106,11 @@ pub fn main(init: std.process.Init) !void {
             if (kind == .song and pane.contains(rects.arrangement, mx, my)) {
                 target = .open_song;
                 browser.drawTarget(ui, uiRect(rects.arrangement), true, "OPEN THIS SONG");
+            } else if (layout.mixer_visible and mixer.dropHit(mx, my) != null) {
+                const hit = mixer.dropHit(mx, my).?;
+                target = if (hit.master) .master else .{ .header = hit.track };
+                drop_ok = dropAccepts(kind, target, tracks);
+                browser.drawTarget(ui, hit.rect, drop_ok, if (kind == .table) "LOAD TABLE" else if (kind == .preset) "LOAD PRESET" else "");
             } else if (!layout.mixer_visible and arrangement.dropHit(tracks, mx, my) != null) {
                 const hit = arrangement.dropHit(tracks, mx, my).?;
                 if (hit.track) |ti| {
@@ -2013,8 +2129,8 @@ pub fn main(init: std.process.Init) !void {
                     .new_track => browser.drawNewTrack(ui, hit.lane, drop_ok),
                     else => {},
                 }
-            } else if (bay.contains(@intFromFloat(mx), @intFromFloat(my)) and selected_track != null) {
-                target = .{ .header = selected_track.? };
+            } else if (bay.contains(@intFromFloat(mx), @intFromFloat(my)) and (device_sel == .master or selected_track != null)) {
+                target = if (device_sel == .master) .master else .{ .header = selected_track.? };
                 drop_ok = dropAccepts(kind, target, tracks);
                 browser.drawTarget(ui, bay, drop_ok, if (kind == .table) "LOAD TABLE" else if (kind == .preset) "LOAD PRESET" else "");
             }
@@ -2024,7 +2140,7 @@ pub fn main(init: std.process.Init) !void {
             } else if (!ui.raw_in.down) {
                 browser.endDrag(ui, &br);
                 if (drop_ok) {
-                    const app = App{ .alloc = alloc, .history = &history, .tracks_buf = &tracks_buf, .track_count = &track_count, .tracks = &tracks, .transport = &transport, .engine = &engine, .audio = &audio, .reg = &reg, .pool = &audio_pool, .selected_track = &selected_track, .selected_clip = &selected_clip, .prev_selected_clip = &prev_selected_clip, .project_path = &project_path, .project_path_chosen = &project_path_chosen, .dirty = &dirty, .status = &status, .edit_snap = edit_snap };
+                    const app = App{ .alloc = alloc, .history = &history, .tracks_buf = &tracks_buf, .track_count = &track_count, .tracks = &tracks, .transport = &transport, .engine = &engine, .audio = &audio, .reg = &reg, .pool = &audio_pool, .selected_track = &selected_track, .selected_clip = &selected_clip, .prev_selected_clip = &prev_selected_clip, .project_path = &project_path, .project_path_chosen = &project_path_chosen, .dirty = &dirty, .status = &status, .edit_snap = edit_snap, .master = &master };
                     if (browserDrop(app, &lib, br.selection(), cur, target)) lib_stale = true;
                     rects = layout.compute(sw, sh);
                 }
@@ -2153,7 +2269,29 @@ pub fn main(init: std.process.Init) !void {
             } else color_pick.active = false;
         }
 
-        if (about.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &about_card) == .licenses) native_app.showLicenses();
+        switch (about.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &about_card)) {
+            .licenses => native_app.showLicenses(),
+            .updates => {
+                update_card.active = true;
+                switch (updater.get()) {
+                    .idle, .current, .failed => updater.check(alloc),
+                    else => {},
+                }
+            },
+            else => {},
+        }
+        switch (update_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &update_card, &updater, &storage.check_updates)) {
+            .skip => {
+                storage.setSkippedVersion(updater.tagName());
+                storage.saveSettings(alloc);
+            },
+            .never => storage.saveSettings(alloc),
+            .download => updater.download(alloc),
+            .restart => updater.restart(alloc),
+            .brew => updater.brewUpgrade(alloc),
+            .page => updater_mod.Updater.openPage(alloc),
+            else => {},
+        }
 
         if (browser.dragging(&br)) browser.drawGhost(ui, &br, lib.items.items, drop_ok);
         splash.overlay(ui, screenRect());
@@ -2209,6 +2347,7 @@ pub fn main(init: std.process.Init) !void {
         };
         devScreenshot(&shot_frame);
         c.rl.EndDrawing();
+        autosave.tick(alloc, tracks_buf[0..track_count], &transport, project_path, project_path_chosen, dirty);
 
         if (delete_set_answer) |yes| {
             const set = pending_delete_set.?;
@@ -2242,19 +2381,26 @@ pub fn main(init: std.process.Init) !void {
                 if (render_job.active) {
                     render_job.cancel.store(true, .monotonic); // worker stops; finalize below
                 } else {
+                    render_wait = false;
                     render_dlg.active = false;
                 }
             },
             .reveal => if (render_dlg.last().len > 0) native_dialog.reveal(render_dlg.last()),
-            .render => {
-                if (!render_job.active) {
-                    startRender(alloc, &engine, &audio, &transport, tracks, &export_cfg, project_path, &render_job, &status) catch |err| {
-                        std.log.err("render start failed: {s}", .{@errorName(err)});
-                        status.set("Render failed", .{});
-                        render_dlg.active = false;
-                    };
-                }
+            .render => if (!render_job.active) {
+                render_wait = true;
             },
+        }
+        if (render_wait and !render_job.active) {
+            if (document_mod.audioPool()) |p| if (p.analysesPending()) status.set("Analyzing sources\u{2026}", .{});
+            if (analysesSettled(tracks)) {
+                render_wait = false;
+                std.log.info("export: analyses settled, starting the worker", .{});
+                startRender(alloc, &engine, &audio, &transport, tracks, &export_cfg, project_path, &render_job, &status) catch |err| {
+                    std.log.err("render start failed: {s}", .{@errorName(err)});
+                    status.set("Render failed", .{});
+                    render_dlg.active = false;
+                };
+            }
         }
 
         switch (bounce_action) {
@@ -2281,6 +2427,16 @@ pub fn main(init: std.process.Init) !void {
             finishBouncePass(alloc, &history, &status, &audio, &engine, &audio_pool, &tracks_buf, &track_count, &transport, &bounce_job, &selected_track, &selected_clip, &prev_selected_clip, &dirty);
             tracks = tracks_buf[0..track_count];
             if (!bounce_job.active) bounce_dlg.active = false;
+        }
+
+        // A render that stopped advancing: say so, once it is clear.
+        if (render_job.active and !render_job.done.load(.acquire)) {
+            if (render_job.stall.check(render_job.progress.load(.monotonic), render_job.total_frames, "export"))
+                status.set("Export is stuck. Cancel, or quit: your project is kept for recovery", .{});
+        }
+        if (bounce_job.active and !bounce_job.done.load(.acquire)) {
+            if (bounce_job.stall.check(bounce_job.progress.load(.monotonic), bounce_job.total_frames, "bounce"))
+                status.set("Render is stuck. Quit to recover: your project is kept for recovery", .{});
         }
 
         // Finalize a worker render once it signals done (or after a cancel).
@@ -2379,8 +2535,24 @@ pub fn main(init: std.process.Init) !void {
 
     // Window closing mid-render: stop the worker and free its buffers before
     // the engine/allocator tear down (the worker holds pointers into both).
-    if (render_job.active) {
+    // A stuck worker (a machine that never returns) must not hold the quit:
+    // the project is kept for recovery and the process leaves without
+    // tearing down what the worker still uses.
+    if (render_job.active or bounce_job.active) {
         render_job.cancel.store(true, .monotonic);
+        bounce_job.cancel.store(true, .monotonic);
+        var waited: usize = 0;
+        const ts = std.c.timespec{ .sec = 0, .nsec = 50 * std.time.ns_per_ms };
+        while (waited < QUIT_WAIT_MS / 50 and
+            (render_job.active and !render_job.done.load(.acquire) or bounce_job.active and !bounce_job.done.load(.acquire))) : (waited += 1)
+            _ = std.c.nanosleep(&ts, null);
+        if (render_job.active and !render_job.done.load(.acquire) or bounce_job.active and !bounce_job.done.load(.acquire)) {
+            std.log.err("quit: the render worker did not stop in {d} s; saving for recovery and exiting", .{QUIT_WAIT_MS / 1000});
+            if (dirty) autosave.write(alloc, tracks_buf[0..track_count], &transport, project_path, project_path_chosen, true);
+            std.c._exit(0);
+        }
+    }
+    if (render_job.active) {
         if (render_job.thread) |t| t.join();
         render_job = .{};
     }
@@ -4135,7 +4307,7 @@ fn undoRedo(
     const current = try document_mod.serialize(alloc, tracks.*, transport);
     if (try stepHistory(alloc, history, current, project_path, project_path_chosen, redo)) |entry| {
         defer entry.deinit(alloc);
-        applyProjectBytes(alloc, entry.doc, reg, tracks_buf, track_count, tracks, transport, engine, audio, selected_track, selected_clip, prev_selected_clip) catch |err| {
+        applyProjectBytes(alloc, entry.doc, reg, tracks_buf, track_count, tracks, transport, engine, audio, selected_track, selected_clip, prev_selected_clip, entry.project == null) catch |err| {
             std.log.err("history apply failed: {s}", .{@errorName(err)});
         };
         dirty.* = true;
@@ -4263,10 +4435,118 @@ fn saveProject(
 /// Before a render: every source's transients found and published, so
 /// what BEATS plays doesn't depend on how fast they were (docs/29 §On the
 /// audio thread).
-fn settleAnalyses(tracks: []track_mod.Track) void {
-    const pool = document_mod.audioPool() orelse return;
-    pool.waitAnalyses();
+extern "c" fn glGetString(name: c_uint) ?[*:0]const u8;
+
+/// The GPU and driver, for reports of drawing that differs by display.
+fn logGl() void {
+    const names = [_]c_uint{ 0x1F00, 0x1F01, 0x1F02 }; // VENDOR, RENDERER, VERSION
+    var out: [3][]const u8 = .{ "?", "?", "?" };
+    for (names, 0..) |n, i| if (glGetString(n)) |p| {
+        out[i] = std.mem.span(p);
+    };
+    std.log.info("gl: {s} / {s} / {s}", .{ out[0], out[1], out[2] });
+}
+
+/// The numbers that map the mouse and the clip rectangles onto the screen:
+/// window points, framebuffer pixels, the display's scale. Logged at start
+/// and whenever one changes (a window dragged to another display, a mode
+/// switch), so a report of misplaced clicks or clipped text carries them.
+const DisplayMetrics = struct {
+    seen: [7]i32 = @splat(-1),
+    peak: usize = 0,
+    full_logged: bool = false,
+
+    /// The last frame's draw list: commands past its capacity are dropped
+    /// without a trace, and everything drawn after them goes missing. Log
+    /// the peak as it grows, and the overflow once.
+    fn watchDraw(self: *DisplayMetrics, dl: *const ui_draw.DrawList) void {
+        if (dl.overflowed and !self.full_logged) {
+            self.full_logged = true;
+            std.log.err("ui: the draw list is full ({d} commands): the rest of the frame is dropped", .{dl.cmds.len});
+        }
+        if (dl.len > self.peak + self.peak / 10 + 64) {
+            self.peak = dl.len;
+            std.log.info("ui: draw list peak {d} of {d} commands", .{ dl.len, dl.cmds.len });
+        }
+    }
+
+    fn watch(self: *DisplayMetrics, zoom: f32) void {
+        const dpi = c.rl.GetWindowScaleDPI();
+        const now = [7]i32{
+            c.rl.GetScreenWidth(),
+            c.rl.GetScreenHeight(),
+            c.rl.GetRenderWidth(),
+            c.rl.GetRenderHeight(),
+            @intFromFloat(dpi.x * 100),
+            @intFromFloat(dpi.y * 100),
+            @intFromFloat(zoom * 100),
+        };
+        if (std.mem.eql(i32, &self.seen, &now)) return;
+        self.seen = now;
+        self.peak = 0;
+        const mon = c.rl.GetCurrentMonitor();
+        std.log.info("display: window {d}x{d} pt, framebuffer {d}x{d} px, dpi {d:.2}x{d:.2}, zoom {d:.2}, monitor {d} {d}x{d} @{d} Hz", .{
+            now[0], now[1],                    now[2],                     now[3],                          dpi.x, dpi.y, zoom,
+            mon,    c.rl.GetMonitorWidth(mon), c.rl.GetMonitorHeight(mon), c.rl.GetMonitorRefreshRate(mon),
+        });
+    }
+};
+
+/// How long a quit waits for an offline render to see its cancel.
+const QUIT_WAIT_MS = 5000;
+
+/// True once every source's analyses are done and the tracks hold them.
+/// While they run it is false at once, never a wait: a long pitch track
+/// would freeze the window. The caller asks again on a later frame.
+fn analysesSettled(tracks: []track_mod.Track) bool {
+    const pool = document_mod.audioPool() orelse return true;
+    if (pool.analysesPending()) return false;
+    pool.waitAnalyses(); // finished: the joins return at once
     for (tracks) |*t| t.publishSnapshot(pool);
+    return true;
+}
+
+/// An offline render that stops advancing: a machine that never returns.
+/// The worker can't be killed, so the UI says so (and logs it) and keeps
+/// the project safe; quitting does not wait for it (see the end of `run`).
+const Stall = struct {
+    const AFTER_NS: i128 = 30 * std.time.ns_per_s;
+    seen: usize = 0,
+    since: i128 = 0,
+    flagged: bool = false,
+
+    /// Call each frame while the worker runs. True while stuck.
+    fn check(self: *Stall, progress: usize, total: usize, what: []const u8) bool {
+        return self.checkAt(nowNs(), progress, total, what);
+    }
+
+    fn checkAt(self: *Stall, now: i128, progress: usize, total: usize, what: []const u8) bool {
+        // Past the render the worker converts and writes: slow, not stuck.
+        if (self.since == 0 or progress != self.seen or progress >= total) {
+            self.seen = progress;
+            self.since = now;
+            self.flagged = false;
+            return false;
+        }
+        if (!self.flagged and now - self.since > AFTER_NS) {
+            self.flagged = true;
+            std.log.warn("{s}: no progress for {d} s at {d} of {d} frames: the render is stuck", .{ what, @divTrunc(AFTER_NS, std.time.ns_per_s), progress, total });
+        }
+        return self.flagged;
+    }
+};
+
+test "Stall flags a render that stops advancing, not one that finishes" {
+    var s: Stall = .{};
+    const t0: i128 = 1000;
+    try std.testing.expect(!s.checkAt(t0, 100, 1000, "t"));
+    try std.testing.expect(!s.checkAt(t0 + Stall.AFTER_NS - 1, 100, 1000, "t"));
+    try std.testing.expect(s.checkAt(t0 + Stall.AFTER_NS + 1, 100, 1000, "t"));
+    // It moves again: clear.
+    try std.testing.expect(!s.checkAt(t0 + Stall.AFTER_NS + 2, 200, 1000, "t"));
+    // Done rendering (writing files takes its time): never stuck.
+    try std.testing.expect(!s.checkAt(t0 + 10 * Stall.AFTER_NS, 1000, 1000, "t"));
+    try std.testing.expect(!s.checkAt(t0 + 20 * Stall.AFTER_NS, 1000, 1000, "t"));
 }
 
 fn startRender(
@@ -4282,7 +4562,8 @@ fn startRender(
 ) !void {
     const sr = transport.sample_rate;
     const rec = &settings.recipe;
-    settleAnalyses(tracks);
+    // The caller waits for the analyses (render_wait) before it starts.
+    if (!analysesSettled(tracks)) return;
     const range = exportRange(transport, tracks, rec.range) orelse {
         status.set("Nothing to export", .{});
         return;
@@ -4294,6 +4575,9 @@ fn startRender(
         .start_ns = nowNs(),
         .settings = settings.*,
     };
+    // A failed setup must not leave an active job with no worker: its
+    // `done` would never come and the sheet would stay busy for good.
+    errdefer job.* = .{};
     const s = &job.settings;
     const stem_name = projectStem(project_path);
     const project = std.fmt.bufPrint(&job.project_buf, "{s}", .{if (stem_name.len > 0) stem_name else "untitled"}) catch "untitled";
@@ -4355,7 +4639,7 @@ fn startRender(
 /// empty.
 fn rangeSeconds(transport: *const transport_mod.Transport, tracks: []const track_mod.Track) [4]?f64 {
     var out: [4]?f64 = undefined;
-    for (0..4) |i| out[i] = if (exportRange(transport, tracks, @enumFromInt(i))) |r|
+    for (0..4) |i| out[i] = if (exportRange(transport, tracks, @fromBackingInt(@intCast(i)))) |r|
         @as(f64, @floatFromInt(r.end - r.start)) / @as(f64, @floatFromInt(transport.sample_rate))
     else
         null;
@@ -4438,8 +4722,10 @@ fn finishRender(alloc: std.mem.Allocator, audio: *audio_mod.Audio, engine_pool: 
     _ = alloc;
     if (job.thread) |t| t.join();
     job.thread = null;
+    std.log.info("export: worker joined, restarting the audio device", .{});
     if (engine_pool) |p| p.requestRejoin();
     audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+    std.log.info("export: audio device restarted", .{});
     if (job.result) |*r| {
         var card = export_dialog.Card{
             .has_mix = job.opts.mix_name != null,
@@ -4508,6 +4794,7 @@ const BounceJob = struct {
     progress: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     cancel: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    stall: Stall = .{},
 };
 
 fn bounceWorker(engine: *engine_mod.Engine, job: *BounceJob) void {
@@ -4556,7 +4843,10 @@ fn startBounce(
     replace: u32,
 ) !void {
     const muted = replace != 0;
-    settleAnalyses(tracks);
+    if (!analysesSettled(tracks)) {
+        status.set("Analyzing sources\u{2026} try again in a moment", .{});
+        return;
+    }
     const sources = bounceSources(tracks, muted);
     if (sources == 0) {
         status.set("Select clips to bounce", .{});
@@ -4608,6 +4898,7 @@ fn startBounce(
         t.publishSnapshot(pool);
     }
     if (audio) |a| a.stop();
+    std.log.info("{s}: {d} frames, {d} pass(es)", .{ if (job.freeze) "freeze" else "bounce", job.total_frames, job.pass_count });
     beginBouncePass(alloc, engine, tracks, job) catch |err| {
         endBounce(audio, engine, pool, tracks, job, alloc);
         return err;
@@ -4842,7 +5133,10 @@ fn startFreeze(
     status: *StatusMessage,
 ) !void {
     var sources: u32 = 0;
-    settleAnalyses(tracks);
+    if (!analysesSettled(tracks)) {
+        status.set("Analyzing sources\u{2026} try again in a moment", .{});
+        return;
+    }
     for (tracks, 0..) |*t, ti| if (set[ti] and !t.isBus()) {
         sources |= bit(ti);
     };
@@ -4858,8 +5152,8 @@ fn startFreeze(
     }
     const sr = transport.sample_rate;
     var opts: bounce_dialog.State = .{};
-    opts.tap = @intFromEnum(bounce_dialog.Tap.fx);
-    opts.mode = @intFromEnum(bounce_dialog.Mode.each);
+    opts.tap = @backingInt(bounce_dialog.Tap.fx);
+    opts.mode = @backingInt(bounce_dialog.Mode.each);
     opts.tail_auto = true;
     opts.channels = .auto;
     job.* = .{
@@ -5139,8 +5433,8 @@ fn startRebounce(
     const opts = bounce_dialog.State{
         .active = true,
         .tap = fr.recipe.tap,
-        .mode = @intFromEnum(bounce_dialog.Mode.together),
-        .originals = @intFromEnum(bounce_dialog.Originals.keep),
+        .mode = @backingInt(bounce_dialog.Mode.together),
+        .originals = @backingInt(bounce_dialog.Originals.keep),
         .tail_auto = fr.recipe.tail_auto,
         .tail_sec = fr.recipe.tail_sec,
     };
@@ -5310,7 +5604,7 @@ fn openProjectPath(
     defer alloc.free(data);
     // The new project's relative references resolve against its folder.
     useProject(path);
-    applyProjectBytes(alloc, data, reg, tracks_buf, track_count, tracks, transport, engine, audio, selected_track, selected_clip, prev_selected_clip) catch |err| {
+    applyProjectBytes(alloc, data, reg, tracks_buf, track_count, tracks, transport, engine, audio, selected_track, selected_clip, prev_selected_clip, false) catch |err| {
         std.log.err("load failed: {s}", .{@errorName(err)});
         status.set("Load failed", .{});
         useProjectOf(.{ .path = project_path.*, .chosen = project_path_chosen.* });
@@ -5337,6 +5631,9 @@ const BrowserDrop = union(enum) {
     header: usize,
     /// Below the tracks: a new track with the item on it.
     new_track,
+    /// The master chain (the machine bay while the master is selected):
+    /// an effect preset joins it.
+    master,
     open_song,
 };
 
@@ -5360,6 +5657,7 @@ const App = struct {
     dirty: *bool,
     status: *StatusMessage,
     edit_snap: snap_mod.Setting,
+    master: *track_mod.Track,
 };
 
 /// The beat after a track's last clip.
@@ -5380,6 +5678,7 @@ fn dropAccepts(kind: library_mod.Kind, d: BrowserDrop, tracks: []const track_mod
             else => false,
         },
         .header => kind == .preset or kind == .table,
+        .master => kind == .preset,
     };
 }
 
@@ -5407,6 +5706,10 @@ fn browserDrop(app: App, lib: *library_mod.Library, sel: []const u32, first: u32
     if (target == .open_song) {
         queueOpen(app.alloc, it.path);
         return true;
+    }
+    if (target == .master) {
+        if (it.kind == .preset and dropPreset(app, app.master, it, false)) app.dirty.* = true;
+        return false;
     }
     // One undo step for the whole drop, a new track included.
     const before = document_mod.serialize(app.alloc, app.tracks.*, app.transport) catch return false;
@@ -5683,7 +5986,7 @@ fn newProject(
     const before = try document_mod.serialize(alloc, tracks.*, transport);
     errdefer alloc.free(before);
     storage.setProject(null);
-    applyProjectBytes(alloc, blank_project, reg, tracks_buf, track_count, tracks, transport, engine, audio, selected_track, selected_clip, prev_selected_clip) catch |err| {
+    applyProjectBytes(alloc, blank_project, reg, tracks_buf, track_count, tracks, transport, engine, audio, selected_track, selected_clip, prev_selected_clip, false) catch |err| {
         std.log.err("new project failed: {s}", .{@errorName(err)});
         status.set("New project failed", .{});
         if (project_path_chosen.*) useProject(project_path.*);
@@ -6324,6 +6627,7 @@ fn applyProjectBytes(
     selected_track: *?usize,
     selected_clip: *?clip_mod.ClipRef,
     prev_selected_clip: *?clip_mod.ClipRef,
+    reuse_tracks: bool,
 ) !void {
     transport.stop();
     audio.stop();
@@ -6333,19 +6637,44 @@ fn applyProjectBytes(
         audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
     }
 
+    // Tracks the new document leaves unchanged keep their machines:
+    // building those again (a fy compile each) is what made undo slow.
+    const live_doc: ?[]u8 = if (reuse_tracks) document_mod.serialize(alloc, tracks.*, transport) catch null else null;
+    defer if (live_doc) |d| alloc.free(d);
+    var live_parsed: ?std.json.Parsed(std.json.Value) = if (live_doc) |d| std.json.parseFromSlice(std.json.Value, alloc, d, .{}) catch null else null;
+    defer if (live_parsed) |*p| p.deinit();
+    var reuse: ?document_mod.Reuse = if (live_parsed) |p| .{ .old = tracks_buf[0..track_count.*], .doc = p.value } else null;
+
     var next_buf: [MAX_TRACKS]track_mod.Track = undefined;
     var next_count: usize = 0;
-    try document_mod.apply(alloc, data, reg, &next_buf, &next_count, transport, silent_machine);
+    try document_mod.applyReusing(alloc, data, reg, &next_buf, &next_count, transport, silent_machine, if (reuse) |*r| r else null);
 
-    for (tracks_buf[0..track_count.*]) |*t| t.deinit(alloc);
+    for (tracks_buf[0..track_count.*], 0..) |*t, i| {
+        if (reuse) |r| if (i < r.taken.len and r.taken[i]) continue;
+        t.deinit(alloc);
+    }
     for (next_buf[0..next_count], 0..) |t, i| tracks_buf[i] = t;
     track_count.* = next_count;
     tracks.* = tracks_buf[0..next_count];
     engine.tracks = tracks.*;
     engine.publishRouting();
-    selected_track.* = if (track_count.* > 0) 0 else null;
-    selected_clip.* = null;
-    prev_selected_clip.* = null;
+    // Keep what the user had selected where it still exists.
+    if (reuse_tracks) {
+        if (selected_track.*) |st| if (st >= track_count.*) {
+            selected_track.* = null;
+        };
+        if (selected_track.* == null and track_count.* > 0) selected_track.* = 0;
+        if (selected_clip.*) |sc| if (sc.track >= track_count.* or sc.clip >= tracks.*[sc.track].clips.items.len) {
+            selected_clip.* = null;
+        };
+        if (prev_selected_clip.*) |pc| if (pc.track >= track_count.* or pc.clip >= tracks.*[pc.track].clips.items.len) {
+            prev_selected_clip.* = null;
+        };
+    } else {
+        selected_track.* = if (track_count.* > 0) 0 else null;
+        selected_clip.* = null;
+        prev_selected_clip.* = null;
+    }
     if (document_mod.activePool()) |p| {
         for (tracks.*) |*t| t.publishSnapshot(p);
     }
@@ -6404,6 +6733,114 @@ fn envU32(name: [*:0]const u8) ?u32 {
     return std.fmt.parseInt(u32, std.mem.span(v), 10) catch null;
 }
 
+/// The control the mouse touched last, for MIDI learn (docs/44).
+var midi_touch: ?midi_map.Param = null;
+
+/// What this frame's MIDI messages do (docs/44): LEARN binds, a bound
+/// pad runs its action, a bound knob sets its control.
+fn applyMidi(
+    alloc: std.mem.Allocator,
+    msgs: []const midi_in.Msg,
+    tracks: []track_mod.Track,
+    transport: *transport_mod.Transport,
+    selected_track: *?usize,
+    status: *StatusMessage,
+    want_record: *bool,
+    dirty: *bool,
+) void {
+    for (msgs) |m| {
+        if (midi_map.learn_armed) {
+            var why: []const u8 = "";
+            if (midi_map.learnFrom(m, midi_touch, &why)) |l| {
+                midi_map.save(alloc);
+                var nb: [64]u8 = undefined;
+                const what = switch (l.dest) {
+                    .action => |a| a.label(),
+                    .knob => |k| std.fmt.bufPrint(&nb, "KNOB {d}", .{k + 1}) catch "knob",
+                    .param => "the control",
+                };
+                status.set("Learned {s} {d} \u{2192} {s}", .{ if (l.src.kind == .cc) "CC" else "note", l.src.number, what });
+            } else if (why.len > 0) status.set("{s}", .{why});
+            continue;
+        }
+        const b = midi_map.find(m) orelse continue;
+        switch (b.dest) {
+            .action => |a| {
+                const fire = switch (m.kind) {
+                    .note_on => true,
+                    .cc => midi_map.rising(m),
+                    else => false,
+                };
+                if (fire) runMidiAction(a, tracks, transport, selected_track, status, want_record);
+            },
+            .knob => |k| if (m.kind == .cc) {
+                const ti = playableTrack(tracks, selected_track.*) orelse continue;
+                const mach = &tracks[ti].machine;
+                const ci = @as(usize, midi_map.page) * midi_map.KNOBS + k;
+                if (ci >= mach.controlCount()) continue;
+                setMidiKnob(mach, ci, m.b, status);
+                dirty.* = true;
+            },
+            .param => |p| if (m.kind == .cc and p.track < tracks.len) {
+                const t = &tracks[p.track];
+                const v = @as(f32, @floatFromInt(m.b)) / 127.0;
+                switch (p.target.kind) {
+                    .volume => t.setVolume(v * 1.25),
+                    .pan => t.setPan(v * 2 - 1),
+                    .inst, .fx => {
+                        const mach = t.targetMachine(p.target) orelse continue;
+                        const ci = mach.controlIndex(p.target.param()) orelse continue;
+                        setMidiKnob(mach, ci, m.b, status);
+                    },
+                }
+                dirty.* = true;
+            },
+        }
+    }
+}
+
+fn setMidiKnob(mach: *const @import("machine.zig").Machine, ci: usize, b: u8, status: *StatusMessage) void {
+    const info = (mach.control_info orelse return)(mach.state, ci);
+    mach.setKnob(ci, midi_map.knobValue(b, info.stepped, info.lo, info.hi));
+    status.set("{s} {d}", .{ info.label, b });
+}
+
+fn runMidiAction(
+    a: midi_map.Action,
+    tracks: []track_mod.Track,
+    transport: *transport_mod.Transport,
+    selected_track: *?usize,
+    status: *StatusMessage,
+    want_record: *bool,
+) void {
+    switch (a) {
+        .play_stop => transport.toggle(),
+        .stop => transport.stop(),
+        .record => want_record.* = true,
+        .loop => transport.toggleLoop(),
+        .prev_track, .next_track => {
+            const dir: i32 = if (a == .next_track) 1 else -1;
+            var i: i32 = if (selected_track.*) |s| @intCast(s) else if (dir > 0) -1 else @as(i32, @intCast(tracks.len));
+            while (true) {
+                i += dir;
+                if (i < 0 or i >= tracks.len) return;
+                if (tracks[@intCast(i)].kind == .audio) break;
+            }
+            selected_track.* = @intCast(i);
+            midi_map.page = 0;
+            status.set("Track {s}", .{tracks[@intCast(i)].name()});
+        },
+        .page_prev, .page_next => {
+            const ti = playableTrack(tracks, selected_track.*) orelse return;
+            const pages = (tracks[ti].machine.controlCount() + midi_map.KNOBS - 1) / midi_map.KNOBS;
+            if (pages == 0) return;
+            const next: i32 = @as(i32, midi_map.page) + if (a == .page_next) @as(i32, 1) else -1;
+            midi_map.page = @intCast(std.math.clamp(next, 0, @as(i32, @intCast(pages)) - 1));
+            status.set("Knobs page {d}/{d}", .{ midi_map.page + 1, pages });
+        },
+    }
+}
+
 /// Automation recording (docs/22 §Manual changes): while armed and
 /// playing, a held control writes its track lane — touch-write, one undo
 /// step per pass. The stroke is thinned to 1 px at the arrangement's zoom
@@ -6446,6 +6883,7 @@ const AutoRecorder = struct {
     /// Returns true when the document changed.
     fn tick(self: *AutoRecorder, alloc: std.mem.Allocator, history: *history_mod.History, tracks: []track_mod.Track, transport: *transport_mod.Transport, recording: bool) bool {
         const h = held(tracks);
+        if (h) |hv| midi_touch = .{ .track = @intCast(hv.track), .target = hv.target };
         if (!recording) {
             self.active = false;
             return false;
@@ -6630,6 +7068,40 @@ const NestedUndo = struct {
     fn push(ctx: *anyopaque) void {
         const self: *NestedUndo = @ptrCast(@alignCast(ctx));
         pushHistorySnapshot(self.alloc, self.history, self.tracks, self.transport);
+    }
+};
+
+/// Periodic copy of the unsaved project for crash recovery (recovery.zig).
+const Autosave = struct {
+    const INTERVAL: f64 = 30;
+    next: f64 = INTERVAL,
+    /// Hash of the last copy written, so an unchanged project isn't rewritten.
+    hash: u64 = 0,
+    written: bool = false,
+
+    fn tick(self: *Autosave, alloc: std.mem.Allocator, tracks: []track_mod.Track, transport: *transport_mod.Transport, path: []const u8, chosen: bool, dirty: bool) void {
+        const now = c.rl.GetTime();
+        if (now < self.next) return;
+        // Not in the middle of a drag.
+        if (c.rl.IsMouseButtonDown(c.rl.MOUSE_BUTTON_LEFT)) return;
+        self.next = now + INTERVAL;
+        if (!dirty) {
+            if (self.written) recovery.clear();
+            self.written = false;
+            return;
+        }
+        self.write(alloc, tracks, transport, path, chosen, false);
+    }
+
+    fn write(self: *Autosave, alloc: std.mem.Allocator, tracks: []track_mod.Track, transport: *transport_mod.Transport, path: []const u8, chosen: bool, force: bool) void {
+        const doc = document_mod.serialize(alloc, tracks, transport) catch return;
+        defer alloc.free(doc);
+        const h = std.hash.Wyhash.hash(@intFromBool(chosen), doc);
+        if (!force and self.written and h == self.hash) return;
+        if (recovery.save(path, chosen, doc)) {
+            self.hash = h;
+            self.written = true;
+        } else std.log.warn("autosave failed", .{});
     }
 };
 
@@ -7132,6 +7604,11 @@ fn executeEditCommand(
             changed = focus == .arrangement and arrangement.joinSelectedClips(tracks, alloc, selected_track, selected_clip);
             if (changed) status.set("Joined", .{}) else status.set("Select two or more note clips on a track to join", .{});
         },
+        .trim_overlaps => {
+            const n = if (focus == .arrangement) arrangement.trimOverlappingClips(tracks, alloc, selected_track.*, selected_clip, transport.map()) else 0;
+            changed = n > 0;
+            if (changed) status.set("Trimmed {d} overlapping clips", .{n}) else if (focus == .arrangement) status.set("No clips overlap here", .{});
+        },
         .insert_time, .delete_time => if (focus == .arrangement) if (arrange_ctx) |ctx| {
             const r = arrangement.timeRange() orelse {
                 status.set("Drag across the lanes to pick the time first", .{});
@@ -7569,6 +8046,7 @@ test "bounce: the selected clip lands on a new track below its source, the origi
     var prev_clip: ?clip_mod.ClipRef = null;
     var dirty = false;
 
+    pool.waitAnalyses();
     try startBounce(alloc, eng, null, &pool, &transport, tracks_buf[0..track_count], .{}, job, &status, 0);
     try std.testing.expect(job.active);
     finishBouncePass(alloc, &history, &status, null, eng, &pool, &tracks_buf, &track_count, &transport, job, &sel_track, &sel_clip, &prev_clip, &dirty);
@@ -7651,6 +8129,7 @@ test "bounce provenance: a recipe stays fresh, goes stale with its source, re-bo
     var prev_clip: ?clip_mod.ClipRef = null;
     var dirty = false;
 
+    pool.waitAnalyses();
     try startBounce(alloc, eng, null, &pool, &transport, tracks_buf[0..track_count], .{}, job, &status, 0);
     finishBouncePass(alloc, &history, &status, null, eng, &pool, &tracks_buf, &track_count, &transport, job, &sel_track, &sel_clip, &prev_clip, &dirty);
     var tracks = tracks_buf[0..track_count];
@@ -7688,6 +8167,7 @@ test "bounce provenance: a recipe stays fresh, goes stale with its source, re-bo
             const f = recipe_mod.find(tracks, id).?;
             tracks[f.track].clips.items[f.clip].selected = true;
         }
+        pool.waitAnalyses();
         try startBounce(alloc, eng, null, &pool, &transport, tracks, .{ .tap = fr.recipe.tap, .originals = 1 }, job, &status, tracks[1].clips.items[0].uid);
     }
     finishBouncePass(alloc, &history, &status, null, eng, &pool, &tracks_buf, &track_count, &transport, job, &sel_track, &sel_clip, &prev_clip, &dirty);
@@ -7800,6 +8280,7 @@ test "freeze: a track renders to its frozen audio, plays the same frozen, and go
 
     var set: [MAX_TRACKS]bool = @splat(false);
     set[0] = true;
+    pool.waitAnalyses();
     try startFreeze(alloc, eng, null, &pool, &transport, tracks, &set, job, &status);
     try std.testing.expect(job.active and tracks[0].play_live);
     finishBouncePass(alloc, &history, &status, null, eng, &pool, &tracks_buf, &track_count, &transport, job, &sel_track, &sel_clip, &prev_clip, &dirty);

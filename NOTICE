@@ -76,3 +76,25 @@ harpsichord, marimba, kalimba, ocarina and three drum kits made from its
 percussion); the rest is the VCSL pack, which downloads it into the user's
 library. Factory sounds made from VCSL recordings are credited in their
 assets' notes.
+
+------------------------------------------------------------------------
+Ambika (Mutable Instruments)
+https://github.com/pichenettes/ambika
+Copyright 2012 Emilie Gillet
+Firmware under GPL-3.0-or-later; hardware and documentation under CC BY-SA 3.0.
+
+The Ambika machine is a port of the voicecard firmware (voicecard/ and
+common/: oscillators, mixer, envelopes, LFOs, modifiers, modulation
+matrix), written in fy and following the firmware's arithmetic. It also
+ships the firmware's lookup tables and its factory programs, which are not
+ours to release under CC0 and stay under the firmware's license:
+  kernels/06-voices/ambika.fy
+  kernels/06-voices/ambika_tables.fy
+  machines/ambika/ambika.fy
+  machines/ambika/assets/tables.wav (the firmware's tables, packed)
+  machines/ambika/presets/A, B, F, S (the golden card's programs, converted
+    by tools/ambika/import_programs.py; the programs' authors are the
+    card's; the card carries no license of its own, so it is treated as part
+    of the firmware repository, GPL-3.0-or-later)
+  tools/ambika/
+The ten presets machines/ambika/presets/01-10 are ours, under CC0 1.0.

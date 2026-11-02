@@ -56,6 +56,9 @@ pub const Result = struct {
     edited: bool = false,
     /// A press landed in the lane (callers clear other selections).
     pressed: bool = false,
+    /// The press was on a point that was already selected, so the
+    /// selection (here and in other lanes and clips) stays whole.
+    kept: bool = false,
 };
 
 const HIT: f32 = 4;
@@ -237,30 +240,59 @@ fn captureOrig(lane: *const Lane) void {
 /// Move the selection by (dbeat, dval) from the captured originals. Each
 /// selected point stays between its unselected neighbours, so order holds.
 fn applyMove(lane: *Lane, dbeat: f64, dval: f32, lo: f32, hi: f32) void {
-    const n = @min(orig_n, lane.points.items.len);
+    applyMoveFrom(lane, orig[0..orig_n], dbeat, dval, lo, hi);
+}
+
+fn applyMoveFrom(lane: *Lane, pts: []const Point, dbeat: f64, dval: f32, lo: f32, hi: f32) void {
+    const n = @min(pts.len, lane.points.items.len);
     for (0..n) |i| {
-        if (!orig[i].selected) continue;
+        if (!pts[i].selected) continue;
         var lo_b: f64 = 0;
         var j = i;
         while (j > 0) {
             j -= 1;
-            if (!orig[j].selected) {
-                lo_b = orig[j].beat;
+            if (!pts[j].selected) {
+                lo_b = pts[j].beat;
                 break;
             }
         }
         var hi_b: f64 = std.math.inf(f64);
-        for (orig[i + 1 .. n]) |q| if (!q.selected) {
+        for (pts[i + 1 .. n]) |q| if (!q.selected) {
             hi_b = q.beat;
             break;
         };
         const p = &lane.points.items[i];
-        p.beat = std.math.clamp(orig[i].beat + dbeat, lo_b, hi_b);
-        var val = std.math.clamp(orig[i].value + dval, lo, hi);
+        p.beat = std.math.clamp(pts[i].beat + dbeat, lo_b, hi_b);
+        var val = std.math.clamp(pts[i].value + dval, lo, hi);
         if (lane.stepped) val = @round(val);
         p.value = val;
     }
 }
+
+/// Move `lane`'s selected points in time by `dbeat` from `pts` (a copy of
+/// its points taken when the move began); values stay. For a move that
+/// another lane or a clip drag leads.
+pub fn shiftFrom(lane: *Lane, pts: []const Point, dbeat: f64) void {
+    applyMoveFrom(lane, pts, dbeat, 0, -std.math.inf(f32), std.math.inf(f32));
+}
+
+/// Select the points of `lane` inside the screen rectangle (a box drawn on
+/// the tracks).
+pub fn selectInRect(v: View, lane: *Lane, x0: f32, y0: f32, x1: f32, y1: f32) void {
+    for (lane.points.items) |*p| {
+        const px = xOf(&v, p.beat);
+        const py = yOf(&v, p.value);
+        if (px >= x0 and px <= x1 and py >= y0 and py <= y1) p.selected = true;
+    }
+}
+
+/// While a drag of selected points is live: the lane's key, and how far
+/// the points have moved so far (beats). Other lanes' points follow.
+pub fn leadingMove() ?struct { key: u64, dbeat: f64 } {
+    if (mode != .move or drag_lane == 0) return null;
+    return .{ .key = drag_lane, .dbeat = move_dbeat };
+}
+var move_dbeat: f64 = 0;
 
 /// Commit a freehand stroke: replace the points under its span with the
 /// stroke thinned to 1 px.
@@ -356,6 +388,7 @@ pub fn draw(ui: *Ui, alloc: std.mem.Allocator, lane: *Lane, v: View, m: pane.Mou
             .move => {
                 pane.requestCursor(c.rl.MOUSE_CURSOR_RESIZE_ALL, 3);
                 const dbeat = snap_mod.snapNearest(v.edit_snap, @as(f64, dx / v.px_per_beat), altDown());
+                move_dbeat = dbeat;
                 applyMove(lane, dbeat, valueDelta(&v, dy), v.lo, v.hi);
                 res.edited = true;
             },
@@ -439,6 +472,7 @@ pub fn draw(ui: *Ui, alloc: std.mem.Allocator, lane: *Lane, v: View, m: pane.Mou
             start_y = m.y;
             if (hot_point) |i| {
                 const p = &lane.points.items[i];
+                res.kept = p.selected and !shiftDown();
                 if (shiftDown()) {
                     p.selected = !p.selected;
                 } else if (!p.selected) {

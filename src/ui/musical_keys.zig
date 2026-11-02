@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const c = @import("../c.zig");
+const midi_in = @import("../midi_in.zig");
 
 pub const Layout = enum(u8) {
     piano,
@@ -180,11 +181,23 @@ pub fn claims(key: c_int) bool {
     return enabled and !standing_down and layoutClaims(layout, key);
 }
 
-/// The pitches the keys hold now.
+/// The pitches the keys hold now, and a MIDI device's (docs/44).
 pub fn sounding() u128 {
-    var set: u128 = 0;
+    var set: u128 = midi_in.sounding();
     for (held[0..held_n]) |h| set |= h.pitches;
     return set;
+}
+
+/// Notes can be played: KEYS is on or a MIDI device is connected. REC
+/// writes them.
+pub fn inputLive() bool {
+    return enabled or midi_in.connected();
+}
+
+/// The velocity pitch `p` sounds at: a MIDI note's own, else `fallback`
+/// (the KEYS velocity).
+pub fn velocityOf(p: u8, fallback: u8) u8 {
+    return if (midi_in.sounding() & (@as(u128, 1) << @intCast(p)) != 0) midi_in.vel[p] else fallback;
 }
 
 pub fn setEnabled(on: bool) void {
@@ -298,7 +311,7 @@ pub const Take = struct {
         if (set == 0) return;
         for (0..128) |p| if (set & (@as(u128, 1) << @intCast(p)) != 0) {
             self.open_start[p] = beat;
-            self.open_vel[p] = vel;
+            self.open_vel[p] = velocityOf(@intCast(p), vel);
         };
         self.open |= set;
     }

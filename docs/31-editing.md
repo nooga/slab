@@ -24,7 +24,18 @@ its rules move there and this doc keeps the plan and the reasons.
   Learning one teaches the others.
 - **⌘-wheel or pinch zooms; the wheel scrolls.** Live: ⌘-scroll zooms,
   ⌥-scroll sizes tracks; Logic: ⌘/⌥ scroll zoom; Bitwig: ⌘/pinch. Shift
-  turns a mouse wheel horizontal, as macOS does everywhere.
+  turns a mouse wheel horizontal, as macOS does everywhere. The trackpad
+  pinch is built: `native_app.m` sums the OS magnify events, the app hands
+  the total to `timeline.pinch` each frame and `View.pinchZoom` zooms time
+  around the pointer (⌥-pinch sizes piano-roll rows) in the arrangement
+  and both clip editors. A box drag held at an edge of the lanes or grid
+  scrolls them (`Box.edgePull`), faster the further out.
+- **Overlaps are marked, not hidden.** Clips may overlap on a track (they
+  layer), but only the top one shows, so it carries a hatched strip over
+  the stretch it covers. ⌘T (`arrange.trimOverlaps`) resolves them on the
+  tracks holding selected clips, else the selected track: the clip later
+  in the track's list (the one placed or moved last, drawn on top) keeps
+  its stretch, the others are cut around it or removed.
 - **Time selection, not just objects.** Live's arrangement and editors
   select a stretch of time across tracks; ⌘D duplicates it (gaps too),
   ⌘L loops it, ⌘E splits at its edges, Insert/Delete Time works on it.
@@ -255,8 +266,20 @@ an empty lane draws a clip (a click makes one bar).
     128-bit set per track the audio thread updates from the note events
     it plays (`Track.sounding`, two atomics, no allocation);
   - the same set lights the notes under the playhead.
+  - on a kit (a machine with named lanes) the column widens to fit the
+    longest lane name, and the key's name sits beside it;
+  - the head's key button cycles **ALL KEYS** (every semitone), **KIT KEYS**
+    (the kit's mapped keys, plus any key the clip has notes on) and **CLIP
+    KEYS** (only the keys this clip has notes on; an empty clip shows the
+    kit's). A kit starts on KIT KEYS; a piano has no lanes to fold. Folded lanes run top down. In CLIP KEYS a lane that loses its
+    last note disappears, and a new lane is added from KIT KEYS; a drag keeps
+    its lanes until it lets go.
 - New notes come out selected, so a drawn note can be nudged at once
   (built in phase 1).
+- **Clips on a track** draw their notes as ticks over the clip's own pitch
+  range (at least an octave, centered), so a bass line and a lead each fill
+  their clip; the way Ableton, Logic and Bitwig fit a clip's thumbnail to
+  its notes.
 
 ## Multi-clip editing (phase 4, built)
 

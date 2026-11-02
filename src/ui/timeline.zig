@@ -22,6 +22,10 @@ const FRect = pane.FRect;
 /// Pixels a wheel notch (or a swipe's unit) scrolls.
 pub const WHEEL_STEP: f32 = 30;
 
+/// The pinch (magnification) since the last frame; the app sets it from
+/// the OS before the panes run.
+pub var pinch: f32 = 0;
+
 pub fn zoomFactor(w: f32) f32 {
     return std.math.clamp(1.0 + w * 0.12, 0.5, 2.0);
 }
@@ -88,6 +92,21 @@ pub const View = struct {
     pub fn clamp(v: *View, w: f32, content_w: f32, h: f32, content_h: f32) void {
         v.scroll_x = std.math.clamp(v.scroll_x, 0, @max(0, content_w - w));
         v.scroll_y = std.math.clamp(v.scroll_y, 0, @max(0, content_h - h));
+    }
+
+    /// A trackpad pinch (`pinch`, set once a frame by the app): zoom time
+    /// around the pointer, rows with ⌥. The caller checks the pointer is
+    /// over the view.
+    pub fn pinchZoom(v: *View, x0: f32, y0: f32, m: pane.Mouse, md: gesture.Mods, lim: Limits, now: f64) void {
+        if (pinch == 0) return;
+        const f = std.math.clamp(1.0 + pinch, 0.5, 2.0);
+        if (md.alt) {
+            const rr = lim.rows orelse return;
+            v.zoomRows(f, m.y - y0, rr[0], rr[1]);
+        } else {
+            v.zoomTime(f, m.x - x0, lim);
+        }
+        v.last_scroll = now;
     }
 
     /// The wheel (docs/31 §View): it scrolls; ⇧ scrolls time; ⌘ zooms

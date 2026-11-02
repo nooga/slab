@@ -88,6 +88,16 @@ pub fn overlaps(a: FRect, b: FRect) bool {
 /// The one box select: the caller clears the selection on press unless ⇧
 /// (`add`), draws it while it runs, and on release selects what the
 /// rect `finish` reports touches.
+/// Scroll speed (px/s) for a pointer at `v` against the span [lo, hi]:
+/// none in the middle, rising within EDGE of an end and past it.
+fn pull(v: f32, lo: f32, hi: f32) f32 {
+    const edge: f32 = 28;
+    const per_edge: f32 = 500;
+    if (v > hi - edge) return std.math.clamp((v - (hi - edge)) / edge, 0, 4) * per_edge;
+    if (v < lo + edge) return -std.math.clamp(((lo + edge) - v) / edge, 0, 4) * per_edge;
+    return 0;
+}
+
 pub const Box = struct {
     active: bool = false,
     x0: f32 = 0,
@@ -107,6 +117,24 @@ pub const Box = struct {
 
     pub fn rect(b: *const Box, m: pane.Mouse) FRect {
         return normalized(b.x0, b.y0, m.x, m.y);
+    }
+
+    /// How far (px) the view should scroll this frame because the pointer
+    /// of a running box sits at or past an edge of `zone`: faster the
+    /// further out, `dt` seconds long. Apply it, clamp, then `shift` the
+    /// box by what the view really moved so it stays on its content.
+    pub fn edgePull(b: *const Box, m: pane.Mouse, zone: FRect, dt: f32) [2]f32 {
+        if (!b.active or !b.moved(m)) return .{ 0, 0 };
+        return .{
+            pull(m.x, zone.x, zone.x + zone.width) * dt,
+            pull(m.y, zone.y, zone.y + zone.height) * dt,
+        };
+    }
+
+    /// The view scrolled by (dx, dy): the box's anchor moves with it.
+    pub fn shift(b: *Box, dx: f32, dy: f32) void {
+        b.x0 -= dx;
+        b.y0 -= dy;
     }
 
     pub const End = union(enum) {
@@ -176,4 +204,22 @@ test "boxes touch inclusively" {
     const n = normalized(10, 20, 4, 2);
     try testing.expectEqual(@as(f32, 4), n.x);
     try testing.expectEqual(@as(f32, 18), n.height);
+}
+
+test "a box pulls the view only near an edge, harder the further out" {
+    const zone = FRect{ .x = 0, .y = 0, .width = 400, .height = 300 };
+    var b = Box{ .active = true, .x0 = 100, .y0 = 100 };
+    const mid = pane.Mouse{ .x = 200, .y = 150, .left_pressed = false, .left_down = true, .left_released = false, .right_pressed = false, .double_clicked = false, .wheel_x = 0, .wheel_y = 0 };
+    try std.testing.expectEqual([2]f32{ 0, 0 }, b.edgePull(mid, zone, 1));
+    var edge = mid;
+    edge.x = 390;
+    var far = mid;
+    far.x = 460;
+    try std.testing.expect(b.edgePull(edge, zone, 1)[0] > 0);
+    try std.testing.expect(b.edgePull(far, zone, 1)[0] > b.edgePull(edge, zone, 1)[0]);
+    far.x = -60;
+    try std.testing.expect(b.edgePull(far, zone, 1)[0] < 0);
+    b.shift(30, -10);
+    try std.testing.expectEqual(@as(f32, 70), b.x0);
+    try std.testing.expectEqual(@as(f32, 110), b.y0);
 }

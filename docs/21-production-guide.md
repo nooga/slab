@@ -452,6 +452,13 @@ eq2 (hpf 25 Hz, gentle air shelf) → comp2 gentle-bus-glue → limiter2 (ceil �
   knee changed. Compare meters on the same WAV before encoding.
 - **Limiter gain**: raise it until the integrated loudness reaches the
   target, then stop.
+- **Or use the FX Rack `master-loud`** as the last master effect: glue,
+  a diode clip and a limiter behind four macros (LOUD, GLUE, CLIP, CEIL).
+  LOUD drives clip and limiter together, so it gets denser, not only
+  hotter. A mix with a 15 dB peak-to-average gap, as an open mix with
+  only a gentle limiter leaves, reads about -11 LUFS at 0.5 and -9 at 0.8.
+  The float mix never clips on its own, so nothing makes a mix loud unless
+  something on the master does.
 
 | Target | Integrated |
 |---|---|

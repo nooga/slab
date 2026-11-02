@@ -8,6 +8,7 @@ const storage = @import("storage.zig");
 const package = @import("package.zig");
 const c = @import("c.zig");
 const track_mod = @import("track.zig");
+const arp_mod = @import("arp.zig");
 const routing = @import("routing.zig");
 const clip_mod = @import("clip.zig");
 const warp_mod = @import("warp.zig");
@@ -252,6 +253,7 @@ pub fn serialize(
         // Effect chain.
         try out.appendSlice(alloc, ",\"effects\":");
         try appendEffects(alloc, &out, t);
+        try appendNoteFx(alloc, &out, t);
 
         // Automation lanes (docs/22 §Project format).
         try appendLanes(alloc, &out, t);
@@ -440,6 +442,7 @@ pub fn appendRenderSettings(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t
     } else try out.appendSlice(alloc, "null");
     try out.appendSlice(alloc, ",\"effects\":");
     try appendEffects(alloc, out, t);
+    try appendNoteFx(alloc, out, t);
     try appendLanes(alloc, out, t);
     if (fader) try appendFmt(alloc, out, ",\"volume\":{d},\"pan\":{d}", .{ t.volume(), t.pan() });
     if (sends) try appendRouting(alloc, out, t);
@@ -547,6 +550,58 @@ fn appendRouting(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const tr
         try appendFmt(alloc, out, "{{\"to\":{d},\"level\":{d},\"pre\":{s}}}", .{ snd.bus, snd.level(), boolStr(snd.pre) });
     }
     try out.append(alloc, ']');
+}
+
+/// The note slot (docs/45), when the track has one.
+fn appendNoteFx(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track_mod.Track) !void {
+    const a = t.note_fx;
+    if (a.present.load(.monotonic) == 0) return;
+    try appendFmt(alloc, out, ",\"note_fx\":{{\"kind\":\"arp\",\"on\":{d},\"mode\":{d},\"rate\":{d},\"octaves\":{d},\"gate\":{d},\"swing\":{d},\"vel_mode\":{d},\"vel\":{d},\"accent\":{d},\"human\":{d},\"latch\":{d},\"steps\":{d},\"pattern\":{d}}}", .{
+        a.on.load(.monotonic),
+        a.mode.load(.monotonic),
+        a.rate.load(.monotonic),
+        a.octaves.load(.monotonic),
+        arp_mod.Arp.getF(&a.gate_bits),
+        arp_mod.Arp.getF(&a.swing_bits),
+        a.vel_mode.load(.monotonic),
+        a.vel_fixed.load(.monotonic),
+        arp_mod.Arp.getF(&a.accent_bits),
+        arp_mod.Arp.getF(&a.human_bits),
+        a.latch.load(.monotonic),
+        a.steps.load(.monotonic),
+        a.pattern.load(.monotonic),
+    });
+}
+
+fn applyNoteFx(t: *track_mod.Track, v: std.json.Value) void {
+    if (v != .object) return;
+    const o = v.object;
+    if (!std.mem.eql(u8, strOf(objGet(o, "kind")) orelse "arp", "arp")) return;
+    const a = t.note_fx;
+    const U = struct {
+        fn set(dst: *std.atomic.Value(u32), x: ?std.json.Value, hi: u32) void {
+            const val = x orelse return;
+            dst.store(@intCast(std.math.clamp(@as(i64, @intFromFloat(@max(asF64(val), 0))), 0, hi)), .monotonic);
+        }
+        fn setF(dst: *std.atomic.Value(u32), x: ?std.json.Value) void {
+            const val = x orelse return;
+            arp_mod.Arp.setF(dst, @floatCast(asF64(val)));
+        }
+    };
+    U.set(&a.on, objGet(o, "on"), 1);
+    U.set(&a.mode, objGet(o, "mode"), @intFromEnum(arp_mod.Mode.chord));
+    U.set(&a.rate, objGet(o, "rate"), arp_mod.RATE_BEATS.len - 1);
+    U.set(&a.octaves, objGet(o, "octaves"), arp_mod.OCTAVES_MAX);
+    U.setF(&a.gate_bits, objGet(o, "gate"));
+    U.setF(&a.swing_bits, objGet(o, "swing"));
+    U.set(&a.vel_mode, objGet(o, "vel_mode"), 1);
+    U.set(&a.vel_fixed, objGet(o, "vel"), 127);
+    U.setF(&a.accent_bits, objGet(o, "accent"));
+    U.setF(&a.human_bits, objGet(o, "human"));
+    U.set(&a.latch, objGet(o, "latch"), 1);
+    U.set(&a.steps, objGet(o, "steps"), arp_mod.MAX_STEPS);
+    U.set(&a.pattern, objGet(o, "pattern"), std.math.maxInt(u32));
+    a.present.store(1, .monotonic);
 }
 
 fn appendEffects(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const track_mod.Track) !void {
@@ -939,6 +994,65 @@ pub fn apply(
     transport: *transport_mod.Transport,
     silent_machine: machine_mod.Machine,
 ) !void {
+    return applyReusing(alloc, data, reg, tracks_buf, track_count, transport, silent_machine, null);
+}
+
+/// The live project that `applyReusing` may take unchanged tracks from
+/// (undo and redo, which differ from the live project by one edit: the
+/// machines of every other track needn't be built again, and building
+/// them is what takes the time).
+pub const Reuse = struct {
+    /// The live tracks, and their project as parsed from `serialize`.
+    old: []track_mod.Track,
+    doc: std.json.Value,
+    /// Set for each live track moved into the new project; the caller
+    /// frees the rest.
+    taken: [routing.MAX_TRACKS]bool = @splat(false),
+
+    fn trackJson(self: *const Reuse, i: usize) ?std.json.Value {
+        const tv = objGet(self.doc.object, "tracks") orelse return null;
+        if (tv != .array or i >= tv.array.items.len) return null;
+        return tv.array.items[i];
+    }
+};
+
+/// Deep equality of two parsed documents written by `serialize`.
+fn jsonEql(a: std.json.Value, b: std.json.Value) bool {
+    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+    return switch (a) {
+        .null => true,
+        .bool => |x| x == b.bool,
+        .integer => |x| x == b.integer,
+        .float => |x| x == b.float,
+        .number_string => |x| std.mem.eql(u8, x, b.number_string),
+        .string => |x| std.mem.eql(u8, x, b.string),
+        .array => |x| {
+            if (x.items.len != b.array.items.len) return false;
+            for (x.items, b.array.items) |p, q| if (!jsonEql(p, q)) return false;
+            return true;
+        },
+        .object => |x| {
+            if (x.count() != b.object.count()) return false;
+            var it = x.iterator();
+            while (it.next()) |e| {
+                const other = b.object.get(e.key_ptr.*) orelse return false;
+                if (!jsonEql(e.value_ptr.*, other)) return false;
+            }
+            return true;
+        },
+    };
+}
+
+pub fn applyReusing(
+    alloc: std.mem.Allocator,
+    data: []const u8,
+    reg: *registry_mod.Registry,
+    tracks_buf: []track_mod.Track,
+    track_count: *usize,
+    transport: *transport_mod.Transport,
+    silent_machine: machine_mod.Machine,
+    reuse: ?*Reuse,
+) !void {
     var parsed = std.json.parseFromSlice(std.json.Value, alloc, data, .{}) catch return error.InvalidProject;
     defer parsed.deinit();
     if (parsed.value != .object) return error.InvalidProject;
@@ -1008,8 +1122,11 @@ pub fn apply(
 
     for (tracks_buf[0..track_count.*]) |*t| t.deinit(alloc);
     track_count.* = 0;
+    // Which new tracks were moved in from `reuse` (the caller still owns
+    // those if this fails).
+    var moved: [routing.MAX_TRACKS]bool = @splat(false);
     errdefer {
-        for (tracks_buf[0..track_count.*]) |*t| t.deinit(alloc);
+        for (tracks_buf[0..track_count.*], 0..) |*t, i| if (!moved[i]) t.deinit(alloc);
         track_count.* = 0;
     }
 
@@ -1020,6 +1137,13 @@ pub fn apply(
     for (tracks_v.array.items, 0..) |trk_v, i| {
         if (trk_v != .object) return error.InvalidProject;
         if (progress) |p| p.step(p.ctx, i, tracks_v.array.items.len, strOf(objGet(trk_v.object, "name")) orelse "");
+        if (reuse) |r| if (i < r.old.len and i < moved.len and !r.taken[i]) if (r.trackJson(i)) |ov| if (jsonEql(ov, trk_v)) {
+            tracks_buf[track_count.*] = r.old[i];
+            r.taken[i] = true;
+            moved[track_count.*] = true;
+            track_count.* += 1;
+            continue;
+        };
         tracks_buf[track_count.*] = try parseTrack(alloc, reg, trk_v.object, silent_machine);
         track_count.* += 1;
     }
@@ -1039,9 +1163,12 @@ pub fn apply(
         // The master outlives the load and the audio thread may still be
         // rendering its old chain (a fading switch plays one more chunk):
         // retire the effects, freed once audio adopts the new chain.
-        while (m.effects.items.len > 0) try m.removeEffect(alloc, m.effects.items.len - 1);
-        if (objGet(mo, "effects")) |ev| try applyEffects(alloc, reg, m, ev);
-        m.publishMachines();
+        const same = if (reuse) |r| if (objGet(r.doc.object, "master")) |old_mv| jsonEql(old_mv, mv) else false else false;
+        if (!same) {
+            while (m.effects.items.len > 0) try m.removeEffect(alloc, m.effects.items.len - 1);
+            if (objGet(mo, "effects")) |ev| try applyEffects(alloc, reg, m, ev);
+            m.publishMachines();
+        }
     };
 }
 
@@ -1103,6 +1230,7 @@ fn parseTrack(alloc: std.mem.Allocator, reg: *registry_mod.Registry, to: std.jso
 
     // Effect chain — instantiate by id, restore params + bypass.
     if (objGet(to, "effects")) |ev| try applyEffects(alloc, reg, &t, ev);
+    if (objGet(to, "note_fx")) |nv| applyNoteFx(&t, nv);
 
     if (objGet(to, "automation")) |av| try applyLanes(alloc, &t, av);
     if (objGet(to, "show_automation")) |x| t.lanes_shown = asBool(x);
@@ -1532,6 +1660,58 @@ test "project snapshot round-trips tracks clips notes and loop" {
     try std.testing.expectEqualStrings("nooga", xs.artist.get());
     try apply(alloc, "{\"tracks\":[]}", &reg, loaded_buf[0..], &loaded_count, &loaded_transport, test_machine);
     try std.testing.expectEqualStrings("", xs.artist.get());
+}
+
+test "a track's note slot round-trips; a track without one stays without" {
+    const alloc = std.testing.allocator;
+    var transport: transport_mod.Transport = .{};
+    transport.sample_rate = 48_000;
+    var tracks = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "Arp", .{ .r = 1, .g = 2, .b = 3, .a = 255 }, test_machine),
+        try track_mod.Track.init(alloc, "Plain", .{ .r = 1, .g = 2, .b = 3, .a = 255 }, test_machine),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    const a = tracks[0].note_fx;
+    a.present.store(1, .monotonic);
+    a.mode.store(@intFromEnum(arp_mod.Mode.converge), .monotonic);
+    a.rate.store(3, .monotonic);
+    a.octaves.store(3, .monotonic);
+    arp_mod.Arp.setF(&a.gate_bits, 0.25);
+    arp_mod.Arp.setF(&a.swing_bits, 0.5);
+    a.latch.store(1, .monotonic);
+    a.steps.store(7, .monotonic);
+    a.setCell(2, .rest);
+    a.setCell(5, .accent);
+
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    setPool(&pool);
+    defer active_pool = null;
+    const bytes = try serialize(alloc, tracks[0..], &transport);
+    defer alloc.free(bytes);
+
+    var reg = registry_mod.Registry.init(alloc);
+    defer reg.deinit();
+    var loaded_transport: transport_mod.Transport = .{};
+    loaded_transport.sample_rate = 48_000;
+    var loaded: [2]track_mod.Track = undefined;
+    var count: usize = 0;
+    try apply(alloc, bytes, &reg, loaded[0..], &count, &loaded_transport, test_machine);
+    defer for (loaded[0..count]) |*t| t.deinit(alloc);
+    try std.testing.expectEqual(@as(usize, 2), count);
+    const b = loaded[0].note_fx;
+    try std.testing.expectEqual(@as(u32, 1), b.present.load(.monotonic));
+    try std.testing.expectEqual(@as(u32, @intFromEnum(arp_mod.Mode.converge)), b.mode.load(.monotonic));
+    try std.testing.expectEqual(@as(u32, 3), b.rate.load(.monotonic));
+    try std.testing.expectEqual(@as(u32, 3), b.octaves.load(.monotonic));
+    try std.testing.expectEqual(@as(f32, 0.25), arp_mod.Arp.getF(&b.gate_bits));
+    try std.testing.expectEqual(@as(f32, 0.5), arp_mod.Arp.getF(&b.swing_bits));
+    try std.testing.expectEqual(@as(u32, 1), b.latch.load(.monotonic));
+    try std.testing.expectEqual(@as(u32, 7), b.steps.load(.monotonic));
+    try std.testing.expectEqual(arp_mod.Cell.rest, b.cell(2));
+    try std.testing.expectEqual(arp_mod.Cell.accent, b.cell(5));
+    try std.testing.expectEqual(arp_mod.Cell.note, b.cell(0));
+    try std.testing.expectEqual(@as(u32, 0), loaded[1].note_fx.present.load(.monotonic));
 }
 
 const export_mod_test = @import("export.zig");
@@ -2458,4 +2638,45 @@ test "realtime: a project load retires the master's effects until audio adopts t
     try std.testing.expectEqual(@as(usize, 0), master.audioEffects().len);
     master.collectMachines(alloc);
     try std.testing.expectEqual(@as(usize, 1), fx.freed);
+}
+
+test "applying over live tracks keeps the unchanged ones" {
+    const alloc = std.testing.allocator;
+    var transport: transport_mod.Transport = .{};
+    transport.sample_rate = 48_000;
+    var live = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "One", .{ .r = 1, .g = 2, .b = 3, .a = 255 }, test_machine),
+        try track_mod.Track.init(alloc, "Two", .{ .r = 1, .g = 2, .b = 3, .a = 255 }, test_machine),
+    };
+    var pool = audio_pool_mod.AudioPool.init(alloc);
+    defer pool.deinit();
+    setPool(&pool);
+    defer active_pool = null;
+
+    // The project as it was, then one edit to the second track.
+    const before = try serialize(alloc, live[0..], &transport);
+    defer alloc.free(before);
+    live[1].setVolume(0.25);
+    const after = try serialize(alloc, live[0..], &transport);
+    defer alloc.free(after);
+
+    var reg = registry_mod.Registry.init(alloc);
+    defer reg.deinit();
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, after, .{});
+    defer parsed.deinit();
+    var reuse: Reuse = .{ .old = live[0..], .doc = parsed.value };
+
+    // Undo: apply `before` over the live tracks.
+    var next: [2]track_mod.Track = undefined;
+    var count: usize = 0;
+    try applyReusing(alloc, before, &reg, next[0..], &count, &transport, test_machine, &reuse);
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expect(reuse.taken[0]);
+    try std.testing.expect(!reuse.taken[1]);
+    // The first track is the very same one, the second was rebuilt.
+    try std.testing.expect(next[0].chain == live[0].chain);
+    try std.testing.expect(next[1].chain != live[1].chain);
+    try std.testing.expectEqual(@as(f32, 0.8), next[1].volume());
+    live[1].deinit(alloc);
+    for (next[0..count]) |*t| t.deinit(alloc);
 }

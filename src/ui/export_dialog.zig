@@ -167,7 +167,7 @@ pub fn draw(ui: *Ui, screen: Rect, state: *State, cx: Context, progress: ?Progre
     rangeBar(ui, Rect.xywh(strip.x + 4 * TAB_W, strip.y, strip.w - 4 * TAB_W, strip.h - 1), cx);
     _ = body.cutTop(strip.h - 6 + 10);
 
-    switch (@as(Tab, @enumFromInt(@min(state.tab, 3)))) {
+    switch (@as(Tab, @fromBackingInt(@intCast(@min(state.tab, 3))))) {
         .tracks => tracksTab(ui, body, state, cx),
         .format => formatTab(ui, body, cx),
         .level => levelTab(ui, body, state, cx),
@@ -314,11 +314,11 @@ fn rangeBar(ui: *Ui, r_: Rect, cx: Context) void {
     ui.textIn(&ui.fonts.legend, r.cutRight(30), "TAIL", style.text_dim, .right, true);
     _ = r.cutRight(10);
     if (ctl.displaySelectEx(ui, tail_r, "tail", &tail, &TAILS, "TAIL", .{ .align_ = .left })) setTail(rec, tail);
-    var range: u8 = @intFromEnum(rec.range);
+    var range: u8 = @backingInt(rec.range);
     const range_r = r.cutRight(88).center(88, h);
     _ = r.cutRight(4);
     ui.textIn(&ui.fonts.legend, r.cutRight(40), "RANGE", style.text_dim, .right, true);
-    if (ctl.displaySelectEx(ui, range_r, "range", &range, &.{ "PROJECT", "LOOP", "SELECTION", "SECTIONS" }, "RANGE", .{ .align_ = .left })) rec.range = @enumFromInt(range);
+    if (ctl.displaySelectEx(ui, range_r, "range", &range, &.{ "PROJECT", "LOOP", "SELECTION", "SECTIONS" }, "RANGE", .{ .align_ = .left })) rec.range = @fromBackingInt(@intCast(range));
 }
 
 /// Why the chosen range can't render, if it can't.
@@ -404,8 +404,8 @@ fn tracksTab(ui: *Ui, body_in: Rect, state: *State, cx: Context) void {
         ui.textIn(&ui.fonts.body_bold, c.name, "MIX", if (rec.mix) style.text else style.text_mute, .left, false);
         ui.textIn(&ui.fonts.legend, c.kind, "MASTER", style.text_mute, .left, false);
         ui.textIn(&ui.fonts.legend, c.signal.insetXY(3, 0), "MASTER OUT", style.text_mute, .left, false);
-        var ch: u8 = @intFromEnum(rec.mix_channels);
-        if (ctl.displaySelectEx(ui, c.channels.center(c.channels.w, ctl.displayHeight(false)), "mix-ch", &ch, &CHANNELS, "MIX CHANNELS", .{ .align_ = .left, .disabled = !rec.mix })) rec.mix_channels = @enumFromInt(ch);
+        var ch: u8 = @backingInt(rec.mix_channels);
+        if (ctl.displaySelectEx(ui, c.channels.center(c.channels.w, ctl.displayHeight(false)), "mix-ch", &ch, &CHANNELS, "MIX CHANNELS", .{ .align_ = .left, .disabled = !rec.mix })) rec.mix_channels = @fromBackingInt(@intCast(ch));
         fileCell(ui, c.file, if (rec.mix) mixFile(&name_buf, cx) else "-", rec.mix);
     }
     {
@@ -417,10 +417,10 @@ fn tracksTab(ui: *Ui, body_in: Rect, state: *State, cx: Context) void {
         ui.textIn(&ui.fonts.body_bold, c.name, "STEMS", if (rec.stems) style.text else style.text_mute, .left, false);
         ui.textIn(&ui.fonts.legend, c.kind, "DEFAULTS", style.text_mute, .left, false);
         const h = ctl.displayHeight(false);
-        var sig: u8 = @intFromEnum(rec.stem_signal);
-        if (ctl.displaySelectEx(ui, c.signal.center(c.signal.w, h), "sig", &sig, &SIGNALS, "STEM SIGNAL", .{ .align_ = .left, .disabled = !rec.stems })) rec.stem_signal = @enumFromInt(sig);
-        var ch: u8 = @intFromEnum(rec.stem_channels);
-        if (ctl.displaySelectEx(ui, c.channels.center(c.channels.w, h), "ch", &ch, &CHANNELS, "STEM CHANNELS", .{ .align_ = .left, .disabled = !rec.stems })) rec.stem_channels = @enumFromInt(ch);
+        var sig: u8 = @backingInt(rec.stem_signal);
+        if (ctl.displaySelectEx(ui, c.signal.center(c.signal.w, h), "sig", &sig, &SIGNALS, "STEM SIGNAL", .{ .align_ = .left, .disabled = !rec.stems })) rec.stem_signal = @fromBackingInt(@intCast(sig));
+        var ch: u8 = @backingInt(rec.stem_channels);
+        if (ctl.displaySelectEx(ui, c.channels.center(c.channels.w, h), "ch", &ch, &CHANNELS, "STEM CHANNELS", .{ .align_ = .left, .disabled = !rec.stems })) rec.stem_channels = @fromBackingInt(@intCast(ch));
         const n = xs.stemCount(rec, cx.tracks);
         var cb: [48]u8 = undefined;
         fileCell(ui, c.file, if (rec.stems) std.fmt.bufPrint(&cb, "{d} OF {d} SOURCES", .{ n, cx.tracks.len }) catch "" else "OFF", rec.stems);
@@ -457,10 +457,10 @@ fn tracksTab(ui: *Ui, body_in: Rect, state: *State, cx: Context) void {
         const h = ctl.displayHeight(false);
         const usable = live and on;
         var sig = t.stem.signal;
-        const sig_shown = if (sig == 0) SIGNALS[@intFromEnum(rec.stem_signal)] else null;
+        const sig_shown = if (sig == 0) SIGNALS[@backingInt(rec.stem_signal)] else null;
         if (ctl.displaySelectEx(ui, c.signal.center(c.signal.w, h), "sig", &sig, &SIGNALS_D, "SIGNAL", .{ .align_ = .left, .shown = sig_shown, .dim = sig == 0, .disabled = !usable })) t.stem.signal = sig;
         var ch = t.stem.channels;
-        const ch_shown = if (ch == 0) CHANNELS[@intFromEnum(rec.stem_channels)] else null;
+        const ch_shown = if (ch == 0) CHANNELS[@backingInt(rec.stem_channels)] else null;
         if (ctl.displaySelectEx(ui, c.channels.center(c.channels.w, h), "ch", &ch, &CHANNELS_D, "CHANNELS", .{ .align_ = .left, .shown = ch_shown, .dim = ch == 0, .disabled = !usable })) t.stem.channels = ch;
         fileCell(ui, c.file, if (usable) stemFile(&name_buf, cx, nn, t.name()) else "-", usable);
     }
@@ -530,13 +530,14 @@ fn stemFile(buf: []u8, cx: Context, nn: usize, track: []const u8) []const u8 {
 
 // ── FORMAT ───────────────────────────────────────────────────────────
 
-const FORMATS = [_][]const u8{ "WAV", "AIFF", "FLAC", "ALAC (M4A)", "AAC (M4A)" };
+const FORMATS = [_][]const u8{ "WAV", "AIFF", "FLAC", "ALAC (M4A)", "AAC (M4A)", "MP3" };
 const FORMAT_ABOUT = [_][]const u8{
     "UNCOMPRESSED; PLAYS EVERYWHERE",
     "UNCOMPRESSED; APPLE'S WAV",
     "LOSSLESS; ABOUT HALF THE SIZE OF WAV",
     "APPLE LOSSLESS; FOR MUSIC AND IOS",
     "LOSSY AND SMALL; FOR PREVIEWS",
+    "LOSSY; PLAYS ON ANYTHING; 48 KHZ AT MOST",
 };
 const DEPTHS = [_][]const u8{ "16-BIT", "24-BIT", "32-BIT FLOAT" };
 const RATES = [_][]const u8{ "44.1 KHZ", "48 KHZ", "88.2 KHZ", "96 KHZ" };
@@ -560,25 +561,28 @@ fn formatTab(ui: *Ui, body_in: Rect, cx: Context) void {
     _ = left.cutRight(16);
 
     dialog.section(ui, &left, "FILE");
-    var cont: u8 = @intFromEnum(rec.container);
-    if (select(ui, &left, "format", "FORMAT", &cont, &FORMATS, .{})) rec.container = @enumFromInt(cont);
+    var cont: u8 = @backingInt(rec.container);
+    if (select(ui, &left, "format", "FORMAT", &cont, &FORMATS, .{})) rec.container = @fromBackingInt(@intCast(cont));
     dialog.hint(ui, &left, FORMAT_ABOUT[cont], LABEL_W);
-    if (rec.container == .aac) {
+    if (rec.container == .aac or rec.container == .mp3) {
         _ = select(ui, &left, "kbps", "BITRATE", &rec.aac_kbps, &KBPS, .{});
     } else {
-        var bits: u8 = @intFromEnum(rec.bits);
+        var bits: u8 = @backingInt(rec.bits);
         const opts: []const []const u8 = if (rec.container.intOnly()) DEPTHS[0..2] else &DEPTHS;
         if (rec.container.intOnly() and bits == 2) bits = 1;
-        if (select(ui, &left, "depth", "DEPTH", &bits, opts, .{})) rec.bits = @enumFromInt(bits);
+        if (select(ui, &left, "depth", "DEPTH", &bits, opts, .{})) rec.bits = @fromBackingInt(@intCast(bits));
     }
-    _ = select(ui, &left, "rate", "SAMPLE RATE", &rec.rate, &RATES, .{});
+    // MP3 holds 48 kHz at most.
+    const rates: []const []const u8 = if (rec.container == .mp3) RATES[0..2] else &RATES;
+    if (rec.container == .mp3 and rec.rate > 1) rec.rate = 1;
+    _ = select(ui, &left, "rate", "SAMPLE RATE", &rec.rate, rates, .{});
     if (rec.container == .flac) {
         _ = select(ui, &left, "level", "COMPRESSION", &rec.flac_level, &LEVELS, .{});
         dialog.hint(ui, &left, "THE SAME AUDIO AT ANY LEVEL; HIGHER IS SMALLER, SLOWER", LABEL_W);
     }
 
     dialog.section(ui, &right, "CONVERSION");
-    const sixteen = rec.bits == .pcm16 and rec.container != .aac;
+    const sixteen = rec.bits == .pcm16 and rec.container != .aac and rec.container != .mp3;
     var dither: u8 = if (rec.dither) 0 else 1;
     if (select(ui, &right, "dither", "DITHER", &dither, &.{ "TPDF", "OFF" }, .{ .disabled = !sixteen })) rec.dither = dither == 0;
     dialog.hint(ui, &right, if (sixteen) "MASKS THE ROUNDING TO 16 BITS" else "ONLY FOR 16-BIT FILES", LABEL_W);
@@ -587,7 +591,7 @@ fn formatTab(ui: *Ui, body_in: Rect, cx: Context) void {
 
     dialog.section(ui, &right, "SIZE");
     var buf: [64]u8 = undefined;
-    const secs = cx.range_secs[@intFromEnum(rec.range)] orelse 0;
+    const secs = cx.range_secs[@backingInt(rec.range)] orelse 0;
     const per = bytesPerSec(rec);
     const files = fileCount(cx);
     const row = dialog.rowW(ui, &right, "ESTIMATE", ROW_H, LABEL_W);
@@ -602,7 +606,7 @@ fn bytesPerSec(rec: *const xs.Recipe) f64 {
     return switch (rec.container) {
         .wav, .aiff => raw,
         .flac, .alac => raw * 0.6,
-        .aac => @as(f64, @floatFromInt(f.aac_kbps)) * 1000 / 8,
+        .aac, .mp3 => @as(f64, @floatFromInt(f.aac_kbps)) * 1000 / 8,
     };
 }
 
@@ -641,8 +645,8 @@ fn levelTab(ui: *Ui, body_in: Rect, state: *State, cx: Context) void {
     _ = left.cutRight(16);
 
     dialog.section(ui, &left, "NORMALIZE");
-    var mode: u8 = @intFromEnum(rec.normalize);
-    if (select(ui, &left, "mode", "MIX", &mode, &NORMALIZE, .{ .disabled = !rec.mix })) rec.normalize = @enumFromInt(mode);
+    var mode: u8 = @backingInt(rec.normalize);
+    if (select(ui, &left, "mode", "MIX", &mode, &NORMALIZE, .{ .disabled = !rec.mix })) rec.normalize = @fromBackingInt(@intCast(mode));
     switch (rec.normalize) {
         .off => dialog.hint(ui, &left, if (rec.mix) "WRITTEN AS MIXED" else "TURN ON THE MIX TO NORMALIZE", LABEL_W),
         .peak => {
@@ -657,9 +661,9 @@ fn levelTab(ui: *Ui, body_in: Rect, state: *State, cx: Context) void {
         },
     }
     dialog.section(ui, &left, "STEMS");
-    var gain: u8 = @intFromEnum(rec.stem_gain);
+    var gain: u8 = @backingInt(rec.stem_gain);
     const normalizing = rec.normalize != .off and rec.mix;
-    if (select(ui, &left, "gain", "GAIN", &gain, &.{ "SAME AS THE MIX", "AS MIXED" }, .{ .disabled = !normalizing or !rec.stems })) rec.stem_gain = @enumFromInt(gain);
+    if (select(ui, &left, "gain", "GAIN", &gain, &.{ "SAME AS THE MIX", "AS MIXED" }, .{ .disabled = !normalizing or !rec.stems })) rec.stem_gain = @fromBackingInt(@intCast(gain));
     dialog.hint(ui, &left, if (rec.stem_gain == .mix) "THEY KEEP THEIR BALANCE AND SUM TO THE MIX" else "EACH AT ITS LEVEL IN THE SONG", LABEL_W);
 
     dialog.section(ui, &right, "LAST EXPORT");
@@ -716,8 +720,8 @@ fn filesTab(ui: *Ui, body_in: Rect, state: *State, cx: Context) void {
     dialog.hint(ui, &body, "{project} {track} {nn} {section} {sn} {date} {bpm}   / MAKES A FOLDER", LABEL_W);
     {
         var r = dialog.rowW(ui, &body, "IF IT EXISTS", ROW_H, LABEL_W);
-        var ex: u8 = @intFromEnum(rec.exists);
-        if (ctl.displaySelectEx(ui, r.cutLeft(150).center(150, ctl.displayHeight(false)), "exists", &ex, &.{ "ADD A NUMBER", "REPLACE IT" }, "IF IT EXISTS", .{ .align_ = .left })) rec.exists = @enumFromInt(ex);
+        var ex: u8 = @backingInt(rec.exists);
+        if (ctl.displaySelectEx(ui, r.cutLeft(150).center(150, ctl.displayHeight(false)), "exists", &ex, &.{ "ADD A NUMBER", "REPLACE IT" }, "IF IT EXISTS", .{ .align_ = .left })) rec.exists = @fromBackingInt(@intCast(ex));
         _ = r.cutLeft(12);
         _ = ctl.button(ui, r.cutLeft(150), "reveal", &s.reveal, .{ .kind = .latch, .label = "SHOW IN FINDER", .led = style.led_amber });
     }
@@ -769,9 +773,10 @@ fn summary(buf: []u8, cx: Context) []const u8 {
     var fb: [32]u8 = undefined;
     const fmt = switch (rec.container) {
         .aac => std.fmt.bufPrint(&fb, "AAC {d}", .{f.aac_kbps}) catch "",
+        .mp3 => std.fmt.bufPrint(&fb, "MP3 {d}", .{f.aac_kbps}) catch "",
         else => std.fmt.bufPrint(&fb, "{s} {s}/{s}", .{
-            ([_][]const u8{ "WAV", "AIFF", "FLAC", "ALAC", "AAC" })[@intFromEnum(rec.container)],
-            ([_][]const u8{ "16", "24", "32F" })[@intFromEnum(f.bits)],
+            ([_][]const u8{ "WAV", "AIFF", "FLAC", "ALAC", "AAC", "MP3" })[@backingInt(rec.container)],
+            ([_][]const u8{ "16", "24", "32F" })[@backingInt(f.bits)],
             ([_][]const u8{ "44.1", "48", "88.2", "96" })[@min(rec.rate, 3)],
         }) catch "",
     };
@@ -781,13 +786,13 @@ fn summary(buf: []u8, cx: Context) []const u8 {
         .peak => std.fmt.bufPrint(&lb, "PEAK {d} DBTP", .{rec.target()}) catch "",
         .loudness => std.fmt.bufPrint(&lb, "{d} LUFS", .{rec.target()}) catch "",
     };
-    const secs = cx.range_secs[@intFromEnum(rec.range)] orelse 0;
+    const secs = cx.range_secs[@backingInt(rec.range)] orelse 0;
     const total: u64 = @intFromFloat(@round(secs));
     var sb: [16]u8 = undefined;
     var tail_b: [16]u8 = undefined;
     const tail = if (rec.wrap) " WRAPPED" else if (rec.tail_auto) " + TAIL" else std.fmt.bufPrint(&tail_b, " + {d} S", .{rec.tail_sec}) catch "";
     return std.fmt.bufPrint(buf, "{d} FILE{s} · {s} · {s} · {d}:{d:0>2}{s} · ABOUT {s}", .{
-        files,                                                                   if (files == 1) "" else "S", fmt, level, total / 60, total % 60, tail,
+        files,                                                                             if (files == 1) "" else "S", fmt, level, total / 60, total % 60, tail,
         sizeText(&sb, bytesPerSec(rec) * secs * @as(f64, @floatFromInt(outputCount(cx)))),
     }) catch "";
 }

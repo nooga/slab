@@ -93,7 +93,7 @@ status and the source before assuming a feature is absent or complete.
     hysteresis, compand)
 28. [27-bounce-export.md](27-bounce-export.md) — bounce a selection to
     a new track (taps, clip mute, thawable recipes) and export: stems
-    in one pass, sections, FLAC/ALAC/AAC, dither, loudness report
+    in one pass, sections, FLAC/ALAC/AAC/MP3, dither, loudness report
 29. [28-time.md](28-time.md) — how a beat becomes a sample: the tempo
     map, locators and sections, groove, polymeter and polytempo, freeze
 30. [29-warp.md](29-warp.md) — audio on the beat axis: warp markers,
@@ -135,6 +135,16 @@ status and the source before assuming a feature is absent or complete.
 44. [43-harsh-fx.md](43-harsh-fx.md) — harsh effects (built): Octaver,
     Wobble and Grinder, OTT and chorus choke, and rigs for Justice-style
     bass and blog-house guitar chains
+45. [44-midi-input.md](44-midi-input.md) — MIDI input (built): CoreMIDI
+    notes into the selected track, recording, LEARN, the MPK mini map
+46. [45-arpeggiator.md](45-arpeggiator.md) — the note slot ahead of the
+    instrument and the arpeggiator (built)
+47. [46-recovery-and-logs.md](46-recovery-and-logs.md) — autosave, crash
+    recovery, logs and crash reports, fast undo (built)
+48. [47-updates.md](47-updates.md) — update check and install from GitHub
+    releases (built)
+49. [48-ambika.md](48-ambika.md) — Ambika: the Mutable Instruments polysynth
+    voicecard, first milestone (built)
 
 ## Terminology crib sheet
 

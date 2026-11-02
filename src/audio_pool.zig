@@ -155,6 +155,17 @@ pub const AudioPool = struct {
         };
     }
 
+    /// Some source's transients or pitch are still being found. The UI asks
+    /// this each frame instead of blocking in `waitAnalyses`: a long pitch
+    /// track must not freeze the window.
+    pub fn analysesPending(self: *const AudioPool) bool {
+        for (self.sources.items) |*s| {
+            if (s.analysis) |a| if (a.thread != null and !a.ready.load(.acquire)) return true;
+            if (s.pitch_job) |j| if (j.thread != null and !j.ready.load(.acquire)) return true;
+        }
+        return false;
+    }
+
     /// Wait for every source's transients and pitch: before a render that
     /// must not depend on how fast they were found (docs/29 §On the audio
     /// thread), and before the pool goes.
@@ -290,6 +301,15 @@ test "loadFile dedups by path and exposes basename" {
     try testing.expect(src.sample.data.len > 0);
     try testing.expect(src.cache.sample_count == src.sample.data.len);
     try testing.expect(src.seconds() > 0);
+}
+
+test "analysesPending clears once the analyses are done" {
+    var pool = AudioPool.init(testing.allocator);
+    defer pool.deinit();
+    _ = try pool.loadFile("machines/sampler/assets/default.wav");
+    pool.requestPitch(0);
+    pool.waitAnalyses();
+    try testing.expect(!pool.analysesPending());
 }
 
 test "get out of range is null" {
