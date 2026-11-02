@@ -111,6 +111,7 @@ its LED lit when on). It opens a small panel (`src/ui/unison_panel.zig`):
 | DETUNE | 0–400 cents | lowest voice to highest; default 50. The JP-8000 supersaw reaches about 380 |
 | SPREAD | 0–1 | the outer voices' pan, hard at 1 |
 | BLEND | 0–1 | the side voices' level against the centre one (or two) |
+| WALL | off / on | a stack that adds up and pans in pitch order (below) |
 
 **Pool.** A poly machine shares its pool: notes = VOICES / UNISON, so
 juno2's 8 voices at UNISON 4 play two notes. When one note fills the
@@ -138,6 +139,21 @@ sounding groups through the machine's `note-expr` word.
 - Pan is p·SPREAD, with the sign flipped on alternate pairs from the
   outside in, so pitch and place don't line up. The pan law is equal
   power, unity in the middle.
+
+**WALL.** Off by default, and saved only when on (`"wall":true` in the
+track's `unison` object), so earlier projects keep their sound. It changes
+two things, fitted to a Virus TI's unison measured on one oscillator with
+effects off (scratch notes: level, left/right correlation, per-voice pan):
+
+- The stack is no longer held at one voice's power. Group amplitude grows
+  as n^0.42 over the normalized stack: +2.5, +4, +6 and +7.6 dB for 2, 3,
+  5 and 8 voices (the hardware reads +1.5, +3.8, +6.4 and +6.9). Turn the
+  track down, or the master limiter will take it.
+- Voices pan in pitch order, lowest left to highest right, with the places
+  bent outward (|p|^0.5) so the inner voices sit well off centre too. Each
+  channel then beats at its own rate. Measured left/right correlation at
+  full SPREAD on Concoction, 5 voices: 0.56 without WALL, 0.47 with it
+  (8 voices 0.46 to 0.28; the hardware reads 0.23 and 0.16).
 
 **Kernel side.** Note-on gets `ctx.uni` (p) and `ctx.phase`, a random
 0–1 start phase. Oscillators that free-run from 0 seed from `phase`
