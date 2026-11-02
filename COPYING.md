@@ -12,8 +12,9 @@ Copyright (C) 2026 Marcin Gasperowicz and the Slab contributors.
 |---|---|
 | Everything not listed below: the frame (`src/`), the kernels (`kernels/`), the machines' code (`machines/*/*.fy`, `machines/lib/`), tools, docs, tests | [GPL-3.0-or-later](LICENSE), with the [Slab Machine Exception](#slab-machine-exception) |
 | The fy runtime: `fy/`, Slab's DSP fork of [nooga/fy](https://github.com/nooga/fy) | [GPL-3.0-or-later](LICENSE). Upstream fy is MIT and stays separate; see [NOTICE](NOTICE) |
-| Factory presets: `machines/*/presets/` | [CC0-1.0](LICENSES/CC0-1.0.txt) |
-| Factory sounds and tables: `machines/*/assets/` | [CC0-1.0](LICENSES/CC0-1.0.txt) |
+| Factory presets: `machines/*/presets/`, except Ambika's golden-card banks | [CC0-1.0](LICENSES/CC0-1.0.txt) |
+| Factory sounds and tables: `machines/*/assets/`, except Ambika's tables | [CC0-1.0](LICENSES/CC0-1.0.txt) |
+| Ambika's golden-card presets (`machines/ambika/presets/A`, `B`, `F`, `S`) and its tables (`machines/ambika/assets/`) | GPL-3.0-or-later, from [pichenettes/ambika](https://github.com/pichenettes/ambika). See [NOTICE](NOTICE) |
 | Demo projects: `demos/` | [CC0-1.0](LICENSES/CC0-1.0.txt) |
 | Songs: `songs/` (the compositions, their scripts and projects) | [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/), Marcin Gasperowicz |
 | The Slab name, the wordmark (`slab.png`), the app icon (`tools/app/icon.png`), the splash (`splash.png`) | Not licensed. See [The name and the look](#the-name-and-the-look) |

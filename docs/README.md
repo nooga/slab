@@ -143,6 +143,8 @@ status and the source before assuming a feature is absent or complete.
     recovery, logs and crash reports, fast undo (built)
 48. [47-updates.md](47-updates.md) — update check and install from GitHub
     releases (built)
+49. [48-ambika.md](48-ambika.md) — Ambika: the Mutable Instruments polysynth
+    voicecard, first milestone (built)
 
 ## Terminology crib sheet
 
