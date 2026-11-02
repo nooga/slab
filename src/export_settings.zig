@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const export_mod = @import("export.zig");
+const mp3 = @import("mp3.zig");
 const exporter = @import("exporter.zig");
 const engine_mod = @import("engine.zig");
 const track_mod = @import("track.zig");
@@ -97,7 +98,7 @@ pub const Recipe = struct {
         return .{
             .container = r.container,
             .bits = if (r.container.intOnly() and r.bits == .float32) .pcm24 else r.bits,
-            .sample_rate = RATES[@min(r.rate, RATES.len - 1)],
+            .sample_rate = if (r.container == .mp3) @min(RATES[@min(r.rate, RATES.len - 1)], mp3.MAX_RATE) else RATES[@min(r.rate, RATES.len - 1)],
             .dither = r.dither,
             .flac_level = @intCast(@min(r.flac_level, 8)),
             .aac_kbps = AAC_KBPS[@min(r.aac_kbps, AAC_KBPS.len - 1)],
@@ -262,11 +263,11 @@ pub fn autoSet(tracks: []track_mod.Track) u32 {
 }
 
 pub fn signalOf(r: *const Recipe, t: *const track_mod.Track) Signal {
-    return if (t.stem.signal == 0) r.stem_signal else @enumFromInt(@min(t.stem.signal - 1, 2));
+    return if (t.stem.signal == 0) r.stem_signal else @fromBackingInt(@intCast(@min(t.stem.signal - 1, 2)));
 }
 
 pub fn channelsOf(r: *const Recipe, t: *const track_mod.Track) exporter.Channels {
-    return if (t.stem.channels == 0) r.stem_channels else @enumFromInt(@min(t.stem.channels - 1, 2));
+    return if (t.stem.channels == 0) r.stem_channels else @fromBackingInt(@intCast(@min(t.stem.channels - 1, 2)));
 }
 
 /// The exporter's per-track stems for these settings.
@@ -481,7 +482,7 @@ test "stems: the default rule, a track's own choices, and STEMS off" {
     try testing.expectEqual(engine_mod.CaptureTap.none, s[1].tap);
     try testing.expectEqual(engine_mod.CaptureTap.none, s[2].tap);
     // By hand: the bus on at the fader in mono, the playing track off.
-    tracks[2].stem = .{ .on = true, .signal = 1 + @intFromEnum(Signal.fader), .channels = 1 + @intFromEnum(exporter.Channels.mono) };
+    tracks[2].stem = .{ .on = true, .signal = 1 + @backingInt(Signal.fader), .channels = 1 + @backingInt(exporter.Channels.mono) };
     tracks[0].stem.on = false;
     s = stems(&r, &tracks);
     try testing.expectEqual(engine_mod.CaptureTap.none, s[0].tap);
