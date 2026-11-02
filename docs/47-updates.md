@@ -4,7 +4,7 @@ Slab looks for a newer release on GitHub and, when it is installed as an
 app, installs it on a restart.
 
 Source: `src/updater.zig` (check, download, swap), `src/ui/update_dialog.zig`
-(chip and card), `tools/release.sh` (publishes the checksum).
+(the card; the offer is the logo tile in `src/ui/transport_bar.zig`), `tools/release.sh` (publishes the checksum).
 
 ## The check
 
@@ -15,7 +15,7 @@ compares its tag with the running version, numerically (0.0.20 is newer than
 Turn it off with the switch on the update card, or `"check_updates": false`
 in settings.json. `SLAB_NO_UPDATE=1` skips it for one run.
 
-A newer release shows an UPDATE chip in the screen's bottom-right corner. It
+A newer release shows an UPDATE offer in place of the SLAB logo. It
 opens the card: the release notes, and buttons that fit how Slab is installed.
 SKIP remembers that version (`skip_version` in settings.json) until a newer
 one comes out. About's UPDATES button checks on demand.

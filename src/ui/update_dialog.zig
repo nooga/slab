@@ -1,6 +1,6 @@
 //! The update card (docs/47): what the release brings and the one button
-//! that fits where Slab is installed. A chip at the screen's corner opens
-//! it while an update is waiting; About's UPDATES button opens it to
+//! that fits where Slab is installed. The SLAB logo in the transport bar offers
+//! it while an update is waiting (transport_bar.zig); About's UPDATES button opens it to
 //! check. A `dialog` (modal; main suppresses the input behind it while
 //! `active`).
 
@@ -23,18 +23,6 @@ pub const Result = enum { none, close, skip, download, restart, page, check, nev
 const W: i32 = 400;
 const H: i32 = 220;
 const NOTE_LINES = 9;
-const CHIP_W: i32 = 168;
-const CHIP_H: i32 = 20;
-
-/// The corner chip while an update waits. True when clicked.
-pub fn chip(ui: *Ui, screen: Rect, u: *const updater_mod.Updater) bool {
-    if (!u.pending()) return false;
-    var lb: [48]u8 = undefined;
-    const label = std.fmt.bufPrint(&lb, "UPDATE {s}", .{u.tagName()}) catch "UPDATE";
-    const r = Rect.xywh(screen.right() - CHIP_W - 8, screen.bottom() - CHIP_H - 8, CHIP_W, CHIP_H);
-    var lit = true;
-    return ctl.button(ui, r, "update-chip", &lit, .{ .label = label, .lit = style.play });
-}
 
 pub fn draw(ui: *Ui, screen: Rect, st: *State, u: *const updater_mod.Updater, check_at_launch: *bool) Result {
     if (!st.active) return .none;

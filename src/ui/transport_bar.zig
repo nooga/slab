@@ -49,6 +49,8 @@ pub const Result = struct {
     toggle_browser: bool = false,
     /// The logo was clicked: open About.
     about: bool = false,
+    /// The logo was clicked while an update waits: open the update card.
+    update: bool = false,
     /// The metronome was switched or its level moved (save the setting).
     click_changed: bool = false,
 };
@@ -87,6 +89,8 @@ pub const Args = struct {
     song_end_beats: f64 = 0,
     /// The metronome the CLICK tile drives.
     click: *click_mod.Click,
+    /// The version of an update waiting ("0.0.20"): the logo offers it.
+    update: ?[]const u8 = null,
 };
 
 /// The position readout shows minutes and seconds instead of bar.beat.sub
@@ -149,7 +153,9 @@ pub fn draw(ui: *Ui, r: Rect, a: Args) Result {
     if (show_stats) spare -= STATS_W;
     const master_w: i32 = if (master_min) MASTER_MIN_W + @min(spare, MASTER_W - MASTER_MIN_W) else 0;
 
-    if (logoTile(ui, bar.cutRight(logo_w))) res.about = true;
+    if (logoTile(ui, bar.cutRight(logo_w), a.update)) {
+        if (a.update != null) res.update = true else res.about = true;
+    }
     if (master_w > 0) masterTile(ui, bar.cutRight(master_w), a, &res);
     if (show_stats) statsTile(ui, bar.cutRight(STATS_W), a);
 
@@ -620,19 +626,60 @@ fn logoW(h: i32) i32 {
     return @divFloor(ih * tex.width, tex.height) + 2 * LOGO_PAD + 2;
 }
 
-/// The logo plate; returns true when clicked (About).
-fn logoTile(ui: *Ui, r: Rect) bool {
+/// While an update waits the plate breathes green and the logo trades
+/// places with the offer: logo, a fade, UPDATE over the version, a fade.
+const OFFER_CYCLE: f64 = 6.0;
+const OFFER_SHOWN_FROM: f64 = 3.4;
+const OFFER_SHOWN_TO: f64 = 5.6;
+const OFFER_FADE: f64 = 0.4;
+
+/// How much of the offer shows `t` seconds into a cycle, 0..1.
+fn offerAmount(t: f64) f32 {
+    const up = std.math.clamp((t - OFFER_SHOWN_FROM) / OFFER_FADE, 0, 1);
+    const down = std.math.clamp((OFFER_SHOWN_TO + OFFER_FADE - t) / OFFER_FADE, 0, 1);
+    return @floatCast(@min(up, down));
+}
+
+/// The logo plate; returns true when clicked (About, or the update card
+/// when `update` names a version waiting).
+fn logoTile(ui: *Ui, r: Rect, update: ?[]const u8) bool {
     const b = ui.behaviorEx(ui.id("logo"), r, .{ .focusable = false });
-    menu.tip(ui, r, "About Slab");
     const body = ui.plate(r, .{});
+    var offer: f32 = 0;
+    if (update) |v| {
+        const now = c.rl.GetTime();
+        offer = if (ui.isHot(ui.id("logo"))) 1 else offerAmount(@mod(now, OFFER_CYCLE));
+        var tb: [48]u8 = undefined;
+        menu.tip(ui, r, std.fmt.bufPrint(&tb, "Slab {s} is out: click to update", .{v}) catch "Update available");
+        // The breathing edge.
+        const pulse: f32 = 0.5 + 0.5 * @as(f32, @floatCast(@sin(now * 3.0)));
+        ui.bevel(r, style.play.alpha(@intFromFloat(70 + 150 * pulse)), style.play.alpha(@intFromFloat(70 + 150 * pulse)));
+    } else menu.tip(ui, r, "About Slab");
+    const logo_a: u8 = @intFromFloat(255 * (1 - offer));
     if (logoTexture()) |tex| {
         const ih = r.h - 1 - 2 * LOGO_PAD;
         const iw = @divFloor(ih * tex.width, tex.height);
-        ui.texture(tex, Rect.xywh(body.x + @divFloor(body.w - iw, 2), r.y + LOGO_PAD, iw, ih), .{ .r = 255, .g = 255, .b = 255 });
-    } else {
-        ui.textIn(&ui.fonts.body_bold, body, "SLAB", style.accent, .center, true);
+        ui.texture(tex, Rect.xywh(body.x + @divFloor(body.w - iw, 2), r.y + LOGO_PAD, iw, ih), .{ .r = 255, .g = 255, .b = 255, .a = logo_a });
+    } else if (logo_a > 0) {
+        ui.textIn(&ui.fonts.body_bold, body, "SLAB", style.accent.alpha(logo_a), .center, true);
     }
+    if (update) |v| if (offer > 0) {
+        const a: u8 = @intFromFloat(255 * offer);
+        var top = body;
+        const head = top.cutTop(@divFloor(body.h, 2) + 2);
+        ui.textIn(&ui.fonts.body_bold, head.insetXY(0, 2), "UPDATE", style.play.alpha(a), .center, true);
+        ui.textIn(&ui.fonts.legend, top, std.mem.trimStart(u8, v, "v"), style.text.alpha(a), .center, true);
+    };
     return b.clicked;
+}
+
+test "the offer fades in, holds and fades out within a cycle" {
+    try std.testing.expectEqual(@as(f32, 0), offerAmount(0));
+    try std.testing.expectEqual(@as(f32, 0), offerAmount(OFFER_SHOWN_FROM));
+    try std.testing.expectEqual(@as(f32, 1), offerAmount(OFFER_SHOWN_FROM + OFFER_FADE));
+    try std.testing.expectEqual(@as(f32, 1), offerAmount(OFFER_SHOWN_TO));
+    try std.testing.expect(offerAmount(OFFER_SHOWN_TO + OFFER_FADE / 2) > 0);
+    try std.testing.expectEqual(@as(f32, 0), offerAmount(OFFER_CYCLE));
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────

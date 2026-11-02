@@ -1341,6 +1341,7 @@ pub fn main(init: std.process.Init) !void {
             .transport = &transport,
             .meter_state = &meter_state,
             .click = &engine.click,
+            .update = if (updater.pending()) updater.tagName() else null,
             .edit_snap = &edit_snap,
             .project_path = project_path,
             .project_path_chosen = project_path_chosen,
@@ -1392,6 +1393,7 @@ pub fn main(init: std.process.Init) !void {
         if (tres.render_audio) export_dialog.open(&render_dlg);
         if (menu_cmds.has(.bounce)) openBounce(&bounce_dlg, tracks, &status);
         if (tres.about or menu_cmds.has(.about)) about_card.active = true;
+        if (tres.update) update_card.active = true;
         if (tres.master_volume) |v| {
             master.setVolume(v);
             dirty = true;
@@ -2249,7 +2251,6 @@ pub fn main(init: std.process.Init) !void {
             },
             else => {},
         }
-        if (!update_card.active and update_dialog.chip(ui, uiRect(pane.rect(0, 0, sw, sh)), &updater)) update_card.active = true;
         switch (update_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &update_card, &updater, &storage.check_updates)) {
             .skip => {
                 storage.setSkippedVersion(updater.tagName());
