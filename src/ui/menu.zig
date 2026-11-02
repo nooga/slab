@@ -138,7 +138,7 @@ fn commandShortcut(cmd: EditCommand) ?[]const u8 {
 // ── Metrics ──────────────────────────────────────────────────────────
 
 pub const MAX_DEPTH = 4;
-const MAX_ITEMS = 72;
+const MAX_ITEMS = 256;
 const LABEL_MAX = 64;
 const HINT_MAX = 16;
 const ROW_H: i32 = 18;
@@ -164,11 +164,45 @@ const Level = struct {
     sel: ?usize = null,
     /// Select the first pickable row on the next tick (opened by keyboard).
     want_first: bool = false,
+    /// A level taller than the screen scrolls: the first row shown.
+    first: usize = 0,
 
+    fn rowH(l: *const Level, i: usize) i32 {
+        return if (l.items[i].separator) SEP_H else ROW_H;
+    }
+
+    /// Rows before `first` are placed above the level, out of sight.
     fn rowRect(l: *const Level, i: usize) Rect {
+        if (i < l.first) return Rect.xywh(l.rect.x + 1, l.rect.y - 1000, l.rect.w - 2, l.rowH(i));
         var y = l.rect.y + 1;
-        for (l.items[0..i]) |it| y += if (it.separator) SEP_H else ROW_H;
-        return Rect.xywh(l.rect.x + 1, y, l.rect.w - 2, if (l.items[i].separator) SEP_H else ROW_H);
+        for (l.first..i) |j| y += l.rowH(j);
+        return Rect.xywh(l.rect.x + 1, y, l.rect.w - 2, l.rowH(i));
+    }
+
+    /// Whether row `i` is fully inside the level as scrolled.
+    fn visible(l: *const Level, i: usize) bool {
+        return i >= l.first and l.rowRect(i).bottom() <= l.rect.bottom() - 1;
+    }
+
+    /// The smallest `first` that still shows the last row.
+    fn maxFirst(l: *const Level) usize {
+        var room = l.rect.h - 2;
+        var f = l.len;
+        while (f > 0 and room >= l.rowH(f - 1)) {
+            f -= 1;
+            room -= l.rowH(f);
+        }
+        return f;
+    }
+
+    fn scrollable(l: *const Level) bool {
+        return l.maxFirst() > 0;
+    }
+
+    /// Scroll just far enough to show row `i`.
+    fn reveal(l: *Level, i: usize) void {
+        if (i < l.first) l.first = i;
+        while (!l.visible(i) and l.first < i) l.first += 1;
     }
 };
 
@@ -240,6 +274,7 @@ pub fn openAt(k: u64, x: i32, y: i32) void {
     for (&levels) |*l| {
         l.sel = null;
         l.want_first = false;
+        l.first = 0;
     }
     grid_open = false;
     tip_blocked = true;
@@ -302,6 +337,15 @@ fn step(items: []const Item, from: ?usize, dir: i32) ?usize {
     return null;
 }
 
+/// A page of rows up or down from the selection, landing on a pickable row.
+fn pageStep(l: *const Level, items: []const Item, dir: i32) ?usize {
+    const page: i32 = @max(1, @divFloor(l.rect.h - 2, ROW_H) - 1);
+    const from: i32 = if (l.sel) |sel| @intCast(sel) else if (dir > 0) 0 else @as(i32, @intCast(items.len)) - 1;
+    var i = std.math.clamp(from + dir * page, 0, @as(i32, @intCast(items.len)) - 1);
+    while (i >= 0 and i < items.len and !pickable(items[@intCast(i)])) i -= dir;
+    return if (i >= 0 and i < items.len) @intCast(i) else l.sel;
+}
+
 fn expand(level: usize, i: usize, items: []const Item, by_key: bool) void {
     path_id[level] = items[i].id;
     path_idx[level] = i;
@@ -309,6 +353,7 @@ fn expand(level: usize, i: usize, items: []const Item, by_key: bool) void {
     if (level + 1 < MAX_DEPTH) {
         levels[level + 1].sel = null;
         levels[level + 1].want_first = by_key;
+        levels[level + 1].first = 0;
     }
 }
 
@@ -318,19 +363,29 @@ fn tick(k: u64, level: usize, items_in: []const Item) ?usize {
     store(l, items_in);
     level_count = @max(level_count, level + 1);
     l.rect = levelRect(level, l);
+    l.first = @min(l.first, l.maxFirst());
     const items = l.items[0..l.len];
     if (l.want_first) {
         l.sel = step(items, null, 1);
         l.want_first = false;
+        if (l.sel) |si| l.reveal(si);
     }
 
     // Pointer.
     const px = raw.ix();
     const py = raw.iy();
     const moved = raw.dx != 0 or raw.dy != 0 or raw.pressed or raw.released;
+    if (raw.wheel_y != 0 and l.rect.contains(px, py)) {
+        const rows: usize = 3;
+        if (raw.wheel_y > 0) {
+            l.first -|= rows;
+        } else {
+            l.first = @min(l.first + rows, l.maxFirst());
+        }
+    }
     var clicked: ?usize = null;
     for (items, 0..) |it, i| {
-        if (it.separator or !l.rowRect(i).contains(px, py)) continue;
+        if (it.separator or !l.visible(i) or !l.rowRect(i).contains(px, py)) continue;
         if (moved) {
             l.sel = i;
             if (it.submenu and it.enabled) {
@@ -359,6 +414,9 @@ fn tick(k: u64, level: usize, items_in: []const Item) ?usize {
         }
         if (raw.keyPressed(c.rl.KEY_DOWN)) l.sel = step(items, l.sel, 1);
         if (raw.keyPressed(c.rl.KEY_UP)) l.sel = step(items, l.sel, -1);
+        if (raw.keyPressed(c.rl.KEY_PAGE_DOWN)) l.sel = pageStep(l, items, 1);
+        if (raw.keyPressed(c.rl.KEY_PAGE_UP)) l.sel = pageStep(l, items, -1);
+        if (l.sel) |si| l.reveal(si);
         if (raw.keyPressed(c.rl.KEY_LEFT) and level > 0) expand_depth = level - 1;
         if (l.sel) |si| {
             const it = items[si];
@@ -428,6 +486,7 @@ fn levelWidth(l: *const Level) i32 {
 fn levelRect(level: usize, l: *const Level) Rect {
     var h: i32 = 2;
     for (l.items[0..l.len]) |it| h += if (it.separator) SEP_H else ROW_H;
+    h = @min(h, screen_h - 4); // taller than the screen: scrolls
     const w = levelWidth(l);
     if (level == 0) {
         const x = @max(2, @min(anchor_x, screen_w - w - 2));
@@ -463,6 +522,7 @@ fn drawLevel(ui: *Ui, l: *const Level, level: usize) void {
     _ = ui.plate(l.rect, .{ .outline = .all });
     const icons = hasIcons(l);
     for (l.items[0..l.len], 0..) |it, i| {
+        if (!l.visible(i)) continue;
         const row = l.rowRect(i);
         if (it.separator) {
             const y = row.y + @divFloor(row.h, 2);
@@ -485,6 +545,12 @@ fn drawLevel(ui: *Ui, l: *const Level, level: usize) void {
         } else if (it.shortcut) |h| {
             ui.textIn(&ui.fonts.legend, hint_r, h, hint_col, .right, false);
         }
+    }
+    if (l.scrollable()) {
+        // Arrows on the edge say there is more; the wheel, the arrows and PgUp/PgDn scroll.
+        const mx = l.rect.right() - 12;
+        if (l.first > 0) ui.textIn(&ui.fonts.legend, Rect.xywh(mx, l.rect.y + 1, 10, 8), "\u{25B4}", style.text_dim, .center, false);
+        if (l.first < l.maxFirst()) ui.textIn(&ui.fonts.legend, Rect.xywh(mx, l.rect.bottom() - 9, 10, 8), "\u{25BE}", style.text_dim, .center, false);
     }
 }
 
