@@ -6,6 +6,8 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+## 0.0.21 — 2026-11-02
+
 - **MP3 export.** The Export sheet's FORMAT has MP3 at 128, 192, 256 or 320
   kb/s (44.1 or 48 kHz), with title, artist, album, year and BPM tags, for
   the mix and for stems. From the command line, `--render out.mp3 --kbps 192`.
