@@ -299,6 +299,10 @@ pub const Settings = struct {
     /// The metronome: on, and its level (linear, 0..1).
     click_on: bool = false,
     click_gain: f32 = 0.5,
+    /// Look for a newer release at launch (docs/47), and the version the
+    /// user chose to skip.
+    check_updates: bool = true,
+    skip_version: []const u8 = "",
 };
 
 /// settings.json's buffer_frames, as loaded or last picked.
@@ -306,6 +310,19 @@ pub var buffer_frames: u32 = 256;
 /// The metronome as loaded or last set (docs/07 §Metronome).
 pub var click_on: bool = false;
 pub var click_gain: f32 = 0.5;
+/// The update check as loaded or last set (docs/47).
+pub var check_updates: bool = true;
+var skip_buf: [32]u8 = undefined;
+var skip_len: usize = 0;
+
+pub fn skippedVersion() []const u8 {
+    return skip_buf[0..skip_len];
+}
+
+pub fn setSkippedVersion(v: []const u8) void {
+    skip_len = @min(v.len, skip_buf.len);
+    @memcpy(skip_buf[0..skip_len], v[0..skip_len]);
+}
 
 /// Read settings.json and apply it. A missing file is the defaults; the
 /// app writes them (`write_missing`) so the user can find and edit it, a
@@ -326,6 +343,8 @@ pub fn loadSettings(alloc: std.mem.Allocator, write_missing: bool) void {
     buffer_frames = parsed.value.buffer_frames;
     click_on = parsed.value.click_on;
     click_gain = std.math.clamp(parsed.value.click_gain, 0, 1);
+    check_updates = parsed.value.check_updates;
+    setSkippedVersion(parsed.value.skip_version);
 }
 
 /// Write settings.json with what's in effect now (a choice just made).
@@ -336,6 +355,8 @@ pub fn saveSettings(alloc: std.mem.Allocator) void {
         .buffer_frames = buffer_frames,
         .click_on = click_on,
         .click_gain = click_gain,
+        .check_updates = check_updates,
+        .skip_version = skip_buf[0..skip_len],
     });
 }
 

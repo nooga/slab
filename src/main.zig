@@ -98,6 +98,8 @@ const recipe_mod = @import("recipe.zig");
 const build_options = @import("build_options");
 const exporter = @import("exporter.zig");
 const about = @import("ui/about.zig");
+const update_dialog = @import("ui/update_dialog.zig");
+const updater_mod = @import("updater.zig");
 const unison_panel = @import("ui/unison_panel.zig");
 const color_picker = @import("ui/color_picker.zig");
 const browser = @import("ui/browser.zig");
@@ -155,6 +157,7 @@ test {
     _ = @import("resample.zig");
     _ = @import("ui/track_order.zig");
     _ = @import("engine.zig");
+    _ = @import("updater.zig");
     _ = @import("track.zig");
     _ = @import("document.zig");
     _ = @import("rack_group.zig");
@@ -1048,6 +1051,9 @@ pub fn main(init: std.process.Init) !void {
     var bounce_dlg: bounce_dialog.State = .{};
     var marker_dlg: marker_dialog.State = .{};
     var about_card: about.State = .{};
+    var update_card: update_dialog.State = .{};
+    var updater: updater_mod.Updater = .{};
+    if (storage.check_updates and std.c.getenv("SLAB_NO_UPDATE") == null) updater.check(alloc);
     var uni_panel: unison_panel.State = .{};
     var color_pick: color_picker.State = .{};
     // A track awaiting the delete confirmation, and the dialog's text.
@@ -1125,7 +1131,7 @@ pub fn main(init: std.process.Init) !void {
     // saving); a project that is all saved leaves nothing.
     var autosave: Autosave = .{};
     defer if (dirty) autosave.write(alloc, tracks_buf[0..track_count], &transport, project_path, project_path_chosen, true) else recovery.clear();
-    while (!c.rl.WindowShouldClose()) {
+    while (!c.rl.WindowShouldClose() and !updater.quit.load(.acquire)) {
         // A queued open runs here, between frames, behind the loading card.
         if (pending_open) |path| {
             pending_open = null;
@@ -1148,7 +1154,7 @@ pub fn main(init: std.process.Init) !void {
         // One owner of the pointer at a time: a legacy menu, modal or drag
         // hides input from the new Ui, and a new-Ui drag hides it from the
         // legacy panes.
-        const modal = render_dlg.active or bounce_dlg.active or explode_dlg.active or marker_dlg.active or about_card.active or pending_delete != null or pending_delete_set != null or uni_panel.active or color_pick.active;
+        const modal = render_dlg.active or bounce_dlg.active or explode_dlg.active or marker_dlg.active or about_card.active or update_card.active or pending_delete != null or pending_delete_set != null or uni_panel.active or color_pick.active;
         if (menu.active() or modal or pane.hasActiveDrag()) ui.suppressInput();
 
         // While a menu is open it's modal for the mouse: panes get a
@@ -2232,7 +2238,29 @@ pub fn main(init: std.process.Init) !void {
             } else color_pick.active = false;
         }
 
-        if (about.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &about_card) == .licenses) native_app.showLicenses();
+        switch (about.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &about_card)) {
+            .licenses => native_app.showLicenses(),
+            .updates => {
+                update_card.active = true;
+                switch (updater.get()) {
+                    .idle, .current, .failed => updater.check(alloc),
+                    else => {},
+                }
+            },
+            else => {},
+        }
+        if (!update_card.active and update_dialog.chip(ui, uiRect(pane.rect(0, 0, sw, sh)), &updater)) update_card.active = true;
+        switch (update_dialog.draw(ui, uiRect(pane.rect(0, 0, sw, sh)), &update_card, &updater, &storage.check_updates)) {
+            .skip => {
+                storage.setSkippedVersion(updater.tagName());
+                storage.saveSettings(alloc);
+            },
+            .never => storage.saveSettings(alloc),
+            .download => updater.download(alloc),
+            .restart => updater.restart(alloc),
+            .page => updater_mod.Updater.openPage(alloc),
+            else => {},
+        }
 
         if (browser.dragging(&br)) browser.drawGhost(ui, &br, lib.items.items, drop_ok);
         splash.overlay(ui, screenRect());

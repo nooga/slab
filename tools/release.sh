@@ -1,6 +1,6 @@
 #!/bin/bash
 # Publish a Slab release on GitHub: package HEAD and attach Slab.zip,
-# Slab-<version>.dmg and install.sh to release v<version>, with the
+# Slab.zip.sha256, Slab-<version>.dmg and install.sh to release v<version>, with the
 # version from build.zig.zon and its CHANGELOG.md section as the notes,
 # then point the Homebrew cask in nooga/homebrew-tap at it. Bump that
 # version, give it a section in CHANGELOG.md and commit first.
@@ -39,6 +39,8 @@ git worktree add --detach "$BUILD" HEAD
 trap 'git worktree remove --force "$BUILD"' EXIT
 (cd "$BUILD" && tools/package_app.sh --dmg --zip)
 OUT="$BUILD/zig-out"
+# The checksum the app's updater verifies its download against.
+(cd "$OUT" && shasum -a 256 Slab.zip > Slab.zip.sha256)
 
 git tag -a "$TAG" -m "Slab $VERSION" HEAD 2>/dev/null || echo "tag $TAG exists, reusing it"
 git push origin "$TAG"
@@ -58,7 +60,7 @@ Install:
 Or with Homebrew: \`brew install --cask nooga/tap/slab\`
 
 Or open the DMG and drag Slab to Applications. It is not notarized, so the first launch needs System Settings > Privacy & Security > Open Anyway." \
-    "$OUT/Slab.zip" "$OUT/Slab-$VERSION.dmg" tools/install.sh
+    "$OUT/Slab.zip" "$OUT/Slab.zip.sha256" "$OUT/Slab-$VERSION.dmg" tools/install.sh
 
 echo "released $TAG: https://github.com/$REPO/releases/tag/$TAG"
 

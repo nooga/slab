@@ -20,7 +20,7 @@ pub const State = struct {
     active: bool = false,
 };
 
-pub const Result = enum { none, close, licenses };
+pub const Result = enum { none, close, licenses, updates };
 
 /// The credits panel over the photo's dark left side.
 const PANEL_W: i32 = 360;
@@ -69,6 +69,7 @@ pub fn draw(ui: *Ui, screen: Rect, state: *State) Result {
     var res: Result = .none;
     if (ctl.button(ui, body.cutRight(64), "close", null, .{ .label = "CLOSE", .flush = true })) res = .close;
     if (ctl.button(ui, body.cutRight(76), "licenses", null, .{ .label = "LICENSES", .flush = true })) res = .licenses;
+    if (ctl.button(ui, body.cutRight(76), "updates", null, .{ .label = "UPDATES", .flush = true })) res = .updates;
     _ = body.cutRight(6);
     var vbuf: [64]u8 = undefined;
     const ver = std.fmt.bufPrint(&vbuf, "VERSION {s} BETA  (C) 2026 MARCIN GASPEROWICZ", .{build_options.version}) catch "";

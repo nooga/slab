@@ -6,6 +6,12 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Updates from GitHub.** Slab checks for a newer release when it starts and
+  shows an UPDATE chip in the corner. In Slab.app, UPDATE downloads the release,
+  checks it and swaps it in on a restart; Homebrew installs are pointed at
+  `brew upgrade`. SKIP passes on a version, a switch turns the check off, and
+  About has an UPDATES button to check now.
+
 ## 0.0.19 — 2026-11-01
 
 - **Drum lanes you can read.** On a kit the piano roll's key column widens to

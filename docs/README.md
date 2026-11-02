@@ -141,6 +141,8 @@ status and the source before assuming a feature is absent or complete.
     instrument and the arpeggiator (built)
 47. [46-recovery-and-logs.md](46-recovery-and-logs.md) — autosave, crash
     recovery, logs and crash reports, fast undo (built)
+48. [47-updates.md](47-updates.md) — update check and install from GitHub
+    releases (built)
 
 ## Terminology crib sheet
 
