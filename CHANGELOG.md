@@ -6,6 +6,20 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **MP3 export.** The Export sheet's FORMAT has MP3 at 128, 192, 256 or 320
+  kb/s (44.1 or 48 kHz), with title, artist, album, year and BPM tags, for
+  the mix and for stems. From the command line, `--render out.mp3 --kbps 192`.
+  It's built in: nothing to install.
+- **Exports, bounces and freezes no longer freeze the window.** Starting one
+  while Slab is still analyzing audio used to block everything until the
+  analysis finished; now the window keeps drawing ("Analyzing sources…") and
+  the export starts by itself. A render that stops advancing is reported in
+  the status line and in `slab.log`, and quitting no longer waits forever for
+  it: the project is saved for recovery and Slab exits after five seconds. A
+  failed export setup can no longer leave the Export sheet busy for good.
+  `slab.log` now also records the GPU, the display's scale, and a note when
+  the window stops drawing, for reports of freezes and misdrawn screens.
+
 ## 0.0.20 — 2026-11-02
 
 - **Updates from GitHub.** Slab checks for a newer release when it starts and

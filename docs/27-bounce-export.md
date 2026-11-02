@@ -5,7 +5,7 @@ Two ways audio leaves the live graph:
 - **Bounce** turns a selection of clips into an audio clip on a new
   track, inside the project.
 - **Export** writes the project, or part of it, to files outside it:
-  a mix, stems, sections, in WAV, AIFF, FLAC, ALAC or AAC.
+  a mix, stems, sections, in WAV, AIFF, FLAC, ALAC, AAC or MP3.
 
 Both run the offline renderer (`Engine.renderOffline`), so what they
 write is what playback sounds like, bit-exact at any `--threads`
@@ -15,7 +15,7 @@ write is what playback sounds like, bit-exact at any `--threads`
 stereo audio clips, the engine's capture and ring-out stop, Bounce
 selection with thawable recipes, Export (the Export sheet with presets,
 a per-track stem list, mix and one-pass stems, mono, project/loop/
-selection, WAV and AIFF at 16/24/32f with dither, FLAC, ALAC, AAC,
+selection, WAV and AIFF at 16/24/32f with dither, FLAC, ALAC, AAC, MP3,
 loudness and normalize with a report, 44.1/48/88.2/96 kHz, name
 templates, tags, settings saved with the project, the command line).
 Each section below says what of it is still design.
@@ -218,7 +218,7 @@ clip that isn't muted) writes a stem and buses don't; the LED overrides
 that per track, and SELECT ALL, NONE, TRACKS, BUSES or DEFAULT sets the
 whole list. The list scrolls.
 
-**FORMAT**: FORMAT (WAV, AIFF, FLAC, ALAC, AAC, each with a line on
+**FORMAT**: FORMAT (WAV, AIFF, FLAC, ALAC, AAC, MP3, each with a line on
 what it's for), DEPTH or BITRATE, SAMPLE RATE, and for FLAC its
 COMPRESSION level, 0–8; DITHER (only for 16-bit) and a size estimate.
 
@@ -302,6 +302,7 @@ Built:
 | FLAC | 16, 24 (level 0–8, 5 default) |
 | ALAC | 16, 24, in `.m4a` |
 | AAC | 128, 192, 256 (default), 320 kb/s, in `.m4a` |
+| MP3 | 128, 192, 256 (default), 320 kb/s constant, 44.1 or 48 kHz |
 
 `src/export.zig`. PCM is clamped to full scale, float written as is.
 **Dither**: TPDF at ±1 LSB for 16-bit, on by default, seeded so an
@@ -312,8 +313,15 @@ ALAC and AAC are Apple's encoders through AudioToolbox's `ExtAudioFile`
 bits of 32, so it decodes to exactly the WAV export's samples (checked
 with `afconvert`).
 
-MP3 isn't planned: AAC covers lossy delivery and MP3 encoding would
-mean vendoring LAME.
+MP3 is LAME (`src/mp3.zig`, quality 2, joint stereo, or mono for mono
+files), linked statically from `libmp3lame.a` (LGPL, compatible with the
+GPL), so an installed Slab needs nothing from Homebrew; building Slab
+needs `brew install lame`. The file is an ID3v2.3 tag (the same frames
+as WAV's), then LAME's frames with the Xing/Info frame filled in, so
+players know the length and the encoder delay. MP3 holds 48 kHz at most:
+the sheet offers 44.1 and 48 and higher rates are clamped to 48. Lossy
+files can overshoot a mix that peaks near full scale: normalize to a
+ceiling of −1 dBTP or lower for MP3.
 
 **Sample rate**: 44.1, 48 (default), 88.2 or 96 kHz. The engine runs
 at 48 kHz (`audio.SAMPLE_RATE`), so other rates go through an offline
@@ -396,6 +404,7 @@ slab song.slab --render out.flac                 # FLAC, 24-bit, level 5
 slab song.slab --render cd.wav --rate 44100 --bits 16
 slab song.slab --render loop.wav --range 16:32 --loop-wrap --tail auto
 slab song.slab --render out.m4a --kbps 320       # AAC; --alac for Apple Lossless
+slab song.slab --render out.mp3 --kbps 192       # MP3 (LAME)
 slab song.slab --render out.wav --stems stems/   # the mix and stems, one render
 slab song.slab --stems stems/ --stem-kind all --tap fx --tail auto
 slab song.slab --render out.wav --normalize -14  # or peak:-1

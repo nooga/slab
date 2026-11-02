@@ -37,6 +37,14 @@ To report a problem, send the `~/Library/Logs/Slab` folder (and the
 project, if it can be shared). The status line after a restore names the
 folder. `SLAB_LOGS` and `SLAB_RECOVERY` override both folders.
 
+What else goes in `slab.log` for a report of drawing or freezes: `gl:` (GPU
+and driver), `display:` (window points, framebuffer pixels, DPI, monitor; again
+whenever one changes, as when the window moves to another display), `ui: draw
+list peak` (how full the frame's command list gets; an overflow is an error),
+and `ui: no frame for 5 s` when the UI thread stops drawing (a heartbeat on the
+idle-wake thread), with `frames are back` when it recovers. Bounces and
+freezes log their start like an export's phases.
+
 ## Undo and redo
 
 Undo and redo restore the project from a snapshot. Tracks that the snapshot
@@ -46,6 +54,27 @@ take seconds on a big project). The master chain is likewise kept when its
 settings did not change. The selected track and clip stay selected where
 they still exist. Undoing across a project switch (Open, New) rebuilds
 everything, as before.
+
+## Offline renders and the UI thread
+
+An export, bounce or freeze owns the engine on a worker thread with the audio
+device stopped. The UI thread never waits for it or for what it needs:
+
+- Before a render starts, every source's transients and pitch must be done
+  (the audio must not depend on how fast they were found). The UI polls
+  `AudioPool.analysesPending` each frame: an export waits with "Analyzing
+  sources…" on the status line and starts on the frame they finish; a bounce or
+  freeze asks the user to try again.
+- `Stall` watches the worker's progress. Thirty seconds without a new frame
+  before the render's end logs "no progress ... the render is stuck" and says so
+  on the status line. The worker cannot be killed (it is inside a machine), but
+  the window stays usable and the project stays recoverable. Past the render's
+  end the worker converts and writes files, which may be slow: not a stall.
+- A quit cancels the worker and waits up to five seconds (`QUIT_WAIT_MS`). If
+  it is still going, Slab writes the recovery file and exits without tearing
+  down what the worker uses.
+- A failed export setup clears its job, so the sheet is never left busy
+  without a worker.
 
 ## Export phases
 

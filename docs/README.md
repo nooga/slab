@@ -93,7 +93,7 @@ status and the source before assuming a feature is absent or complete.
     hysteresis, compand)
 28. [27-bounce-export.md](27-bounce-export.md) — bounce a selection to
     a new track (taps, clip mute, thawable recipes) and export: stems
-    in one pass, sections, FLAC/ALAC/AAC, dither, loudness report
+    in one pass, sections, FLAC/ALAC/AAC/MP3, dither, loudness report
 29. [28-time.md](28-time.md) — how a beat becomes a sample: the tempo
     map, locators and sections, groove, polymeter and polytempo, freeze
 30. [29-warp.md](29-warp.md) — audio on the beat axis: warp markers,
