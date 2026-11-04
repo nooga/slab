@@ -252,13 +252,18 @@ an empty lane draws a clip (a click makes one bar).
     drawing a note holds its pitch; a box select plays nothing;
   - held for as long as the button is, through the track's instrument
     and inserts, while the transport runs too (the held notes go in with
-    the track's own events); stopped, the track plays alone until its
-    tail has rung out;
+    the track's own events); stopped, the track plays alone until it has
+    been quiet (under −100 dBFS) for 2 s after the last release, as a
+    stop rings out (30 s at most, then it fades and starts clean). When
+    the track feeds a bus (an output or a send), or a key let go on
+    another track must reach it, the whole graph rings instead, so send
+    reverbs are heard and the other track's note ends;
   - the **HEAR** latch in the editor head turns it off for notes (the
     keyboard always plays).
   - Main sends the difference between what the editor wants held and
     what is (`Engine.holdNote`, a ring the audio thread drains each
-    block), so the editor only states a set of pitches.
+    block), so the editor only states a set of pitches. A request the
+    ring can't take is sent again the next frame, so no release is lost.
 - **The keyboard column:**
   - click plays the key while held, drag plays a glissando;
   - ⇧-click selects every note of that pitch;

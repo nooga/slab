@@ -148,6 +148,7 @@ test {
     _ = @import("midi_in.zig");
     _ = @import("midi_map.zig");
     _ = @import("arp.zig");
+    _ = @import("note_ledger.zig");
     _ = @import("recovery.zig");
     _ = @import("fy_host.zig");
     _ = @import("meter.zig");
@@ -252,14 +253,17 @@ const StatusMessage = struct {
 const HeldNotes = struct { track: ?usize = null, set: u128 = 0 };
 
 /// `typed` are the computer keyboard's notes: they start at its velocity.
+/// `held` keeps what the engine took: a request its queue can't take this
+/// frame stays in the difference and goes next frame.
 fn holdNotes(engine: *engine_mod.Engine, held: *HeldNotes, track: ?usize, want_in: u128, typed: u128, typed_vel: u8) void {
     const want = if (track == null) 0 else want_in | typed;
     if (held.track != track and held.set != 0) {
         // Another clip: let go of the old track's notes first.
         if (held.track) |ot| for (0..128) |pi| {
-            if (held.set & (@as(u128, 1) << @intCast(pi)) != 0) engine.holdNote(ot, @intCast(pi), false);
+            const mask = @as(u128, 1) << @intCast(pi);
+            if (held.set & mask != 0 and engine.holdNote(ot, @intCast(pi), false)) held.set &= ~mask;
         };
-        held.set = 0;
+        if (held.set != 0) return;
     }
     held.track = track;
     const t = track orelse return;
@@ -268,13 +272,50 @@ fn holdNotes(engine: *engine_mod.Engine, held: *HeldNotes, track: ?usize, want_i
     // Releases first, so a glide from key to key doesn't overlap.
     for (0..128) |pi| {
         const mask = @as(u128, 1) << @intCast(pi);
-        if (diff & mask != 0 and want & mask == 0) engine.holdNote(t, @intCast(pi), false);
+        if (diff & mask != 0 and want & mask == 0 and engine.holdNote(t, @intCast(pi), false)) held.set &= ~mask;
     }
+    if (held.set & ~want != 0) return;
     for (0..128) |pi| {
         const mask = @as(u128, 1) << @intCast(pi);
-        if (diff & mask != 0 and want & mask != 0) engine.holdNoteVel(t, @intCast(pi), true, if (typed & mask != 0) musical_keys.velocityOf(@intCast(pi), typed_vel) else 102);
+        if (diff & mask == 0 or want & mask == 0) continue;
+        const vel = if (typed & mask != 0) musical_keys.velocityOf(@intCast(pi), typed_vel) else 102;
+        if (engine.holdNoteVel(t, @intCast(pi), true, vel)) held.set |= mask;
     }
-    held.set = want;
+}
+
+test "holdNotes: what the engine's queue can't take goes next frame" {
+    const alloc = std.testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var tracks = [_]track_mod.Track{try track_mod.Track.init(alloc, "t", col, silent_machine)};
+    defer for (&tracks) |*t| t.deinit(alloc);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    tracks[0].publishSnapshot(&pool);
+    var transport = transport_mod.Transport{};
+    const engine = try alloc.create(engine_mod.Engine);
+    defer alloc.destroy(engine);
+    engine.* = .{ .transport = &transport, .tracks = &tracks };
+    engine.publishRouting();
+    var out: [64 * 2]f32 = undefined;
+    var held = HeldNotes{};
+    // A hundred keys at once, more than the queue holds: the rest follow.
+    const many: u128 = (@as(u128, 1) << 100) - 1;
+    holdNotes(engine, &held, 0, many, 0, 100);
+    try std.testing.expect(held.set != many);
+    while (held.set != many) {
+        engine_mod.Engine.renderCallback(engine, &out, 64);
+        holdNotes(engine, &held, 0, many, 0, 100);
+    }
+    engine_mod.Engine.renderCallback(engine, &out, 64);
+    try std.testing.expectEqual(many, @as(u128, engine.aud_held[1]) << 64 | engine.aud_held[0]);
+    // All let go: every release arrives, a lost one being a stuck note.
+    holdNotes(engine, &held, 0, 0, 0, 100);
+    while (held.set != 0) {
+        engine_mod.Engine.renderCallback(engine, &out, 64);
+        holdNotes(engine, &held, 0, 0, 0, 100);
+    }
+    engine_mod.Engine.renderCallback(engine, &out, 64);
+    try std.testing.expectEqual(@as(u64, 0), engine.aud_held[0] | engine.aud_held[1]);
 }
 
 /// The song-wide state Insert and Delete time move (docs/31 §Time

@@ -6,6 +6,19 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Notes don't get stuck.** A note no longer hangs when you edit a clip
+  while it plays (deleting, adding, moving, retuning or shortening notes
+  under the playhead), when the arpeggiator is switched on or off, added or
+  removed mid-note, when a key is held through a stop, when the editor
+  moves to another track while a key sounds, or in a rack lane playing
+  two keys. A seek or a loop ends the arpeggiator's notes too.
+- **Stopped, a note rings out.** A note played with the transport stopped
+  sounds until its tail has died away, instead of cutting off three
+  seconds after the key went up, and a track that sends to a bus (a send
+  reverb, a group) is heard through it. Something that never dies away
+  (a drone) fades out after 30 seconds and doesn't come back on the next
+  play.
+
 ## 0.0.22 — 2026-11-02
 
 - **CONVO, a convolution reverb.** Play a track through a recorded or made

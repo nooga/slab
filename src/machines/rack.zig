@@ -149,7 +149,9 @@ pub const Mapping = struct {
 /// Audio: a control the rack set last chunk.
 const Applied = struct { state: *anyopaque, set: machine.SetModFn, control: u16, value: f32 };
 
-const Held = struct { channel: u8, id: i32, pitch: f32 };
+/// A note a lane plays: what it came in as (channel, id, `src` pitch) and
+/// the pitch it plays at (transposed).
+const Held = struct { channel: u8, id: i32, src: f32, pitch: f32 };
 
 /// An effect rack's lanes have no instrument: this one, which plays nothing.
 var silent_state: u8 = 0;
@@ -1081,7 +1083,7 @@ pub const Rack = struct {
                     }
                     var on = ev;
                     on.pitch = ev.pitch + @as(f32, @floatFromInt(p.transpose));
-                    p.held[p.held_n] = .{ .channel = ev.channel, .id = ev.note_id, .pitch = on.pitch };
+                    p.held[p.held_n] = .{ .channel = ev.channel, .id = ev.note_id, .src = ev.pitch, .pitch = on.pitch };
                     p.held_n += 1;
                     out[n] = on;
                     n += 1;
@@ -1120,9 +1122,12 @@ pub const Rack = struct {
         return n;
     }
 
+    /// The held note `ev` is for: by id when both carry one (clip and
+    /// arp notes), else by the pitch it came in at (keys are -1).
     fn findHeld(p: *const Lane, ev: NoteEvent) ?usize {
         for (p.held[0..p.held_n], 0..) |h, i| {
-            if (h.channel == ev.channel and h.id == ev.note_id) return i;
+            if (h.channel != ev.channel) continue;
+            if (if (h.id >= 0 and ev.note_id >= 0) h.id == ev.note_id else h.src == ev.pitch) return i;
         }
         return null;
     }
@@ -2963,4 +2968,21 @@ test "rack: a macro reaches through a nested rack's macro" {
     process(m, &in, &ol, &or_);
     try testing.expectEqual(@as(f32, 0.5), inner.eff[2]);
     try testing.expectEqual(@as(f32, 0.5), fyOf(sat).mod_val[mix]);
+}
+
+test "rack: a lane lets go of the key that went up, by pitch when notes carry no id" {
+    var lane = Lane{ .chain = undefined, .line = undefined, .transpose = 12 };
+    var evs: [8]NoteEvent = undefined;
+    // Two keys from the keyboard: held keys carry no id (-1).
+    try testing.expectEqual(@as(usize, 2), Rack.route(&lane, &.{ noteOn(60, -1), noteOn(64, -1) }, &evs, true));
+    // The 64 goes up: its note-off, at the pitch it plays; the 60 holds.
+    try testing.expectEqual(@as(usize, 1), Rack.route(&lane, &.{noteOff(64, -1)}, &evs, true));
+    try testing.expectEqual(@as(f32, 76), evs[0].pitch);
+    try testing.expectEqual(@as(u8, 1), lane.held_n);
+    try testing.expectEqual(@as(f32, 72), lane.held[0].pitch);
+    // A clip note still goes by its id.
+    _ = Rack.route(&lane, &.{noteOn(62, 7)}, &evs, true);
+    try testing.expectEqual(@as(usize, 1), Rack.route(&lane, &.{noteOff(63, 7)}, &evs, true));
+    try testing.expectEqual(@as(f32, 74), evs[0].pitch);
+    try testing.expectEqual(@as(u8, 1), lane.held_n);
 }

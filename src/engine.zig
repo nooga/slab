@@ -23,6 +23,7 @@ const automation = @import("automation.zig");
 const routing = @import("routing.zig");
 const render_pool = @import("render_pool.zig");
 const handoff = @import("handoff.zig");
+const note_ledger = @import("note_ledger.zig");
 
 pub const MAX_BLOCK = audio.BLOCK_FRAMES * 4;
 pub const MAX_EVENTS_PER_TRACK = 1024;
@@ -31,8 +32,9 @@ const AUD_Q = 64;
 /// A block's held-note events: the requests plus releasing every held
 /// pitch of a track the editor left.
 const AUD_EV = AUD_Q + 128;
-/// How long a stopped track keeps rendering after its last release.
-const AUD_TAIL_S = 3;
+/// A held key's velocity unless given (and when the arp hands one back:
+/// its own isn't kept).
+const HELD_VEL: u8 = 102;
 
 /// Hold or release a note on a track, from an editor.
 pub const AudEvent = struct { track: u8, pitch: u8, on: bool, velocity: u8 = 102 };
@@ -89,7 +91,9 @@ const Block = struct {
     beat_start: f64 = 0,
     beat_end: f64 = 0,
     chase: bool = false,
-    release_at: ?f64 = null,
+    /// The playhead jumped (a seek, a loop wrap, a stop): the notes sounding
+    /// end first thing in the block, unless chase finds them still under it.
+    jumped: bool = false,
     /// Past a stop (live, or an offline render's [Engine.offline_stop]):
     /// no notes or audio clips, only what still rings. `beat_start` and
     /// `beat_end` hold at the stop.
@@ -191,10 +195,10 @@ pub const Engine = struct {
     /// The next block starts somewhere the notes didn't lead to (play,
     /// a seek, a loop wrap): notes already sounding there start with it.
     chase_pending: bool = true,
-    /// The beat the playhead jumped away from (a seek, a loop wrap): the
-    /// next block sends note-offs to the notes that were sounding there,
-    /// so their voices release instead of hanging or being cut (a click).
-    release_from: ?f64 = null,
+    /// The playhead jumped (a seek, a loop wrap): the next block sends
+    /// note-offs to the notes that were sounding, so their voices release
+    /// instead of hanging or being cut (a click).
+    release_pending: bool = false,
     /// Notes the editors hold (docs/31 §Note editing): a ring the UI
     /// thread writes and the audio thread drains at each block's start.
     aud_q: [AUD_Q]AudEvent = undefined,
@@ -207,9 +211,14 @@ pub const Engine = struct {
     aud_ev: [AUD_EV]machine.NoteEvent = undefined,
     aud_ev_track: [AUD_EV]u8 = undefined,
     aud_n: usize = 0,
-    /// Stopped: samples to go on rendering the track after the last
-    /// release, so its tail is heard.
-    aud_tail: u32 = 0,
+    /// Stopped: the held notes' track renders on after the last release
+    /// until it falls quiet, as a stop rings out (renderAudition): it is
+    /// live, the track it renders (`aud_on`), how long it has stayed under
+    /// RING_FLOOR, and how long since the keys went up.
+    aud_live: bool = false,
+    aud_on: ?u8 = null,
+    aud_quiet: u64 = 0,
+    aud_rang: u64 = 0,
     /// Auditioning while stopped: a beat that runs from the playhead, so
     /// tempo-synced LFOs move instead of restarting every block.
     aud_beat: ?f64 = null,
@@ -511,19 +520,21 @@ pub const Engine = struct {
     }
 
     /// Start (`on`) or release a held note on a track, playing or not
-    /// (docs/31 §Note editing). UI thread; dropped when the ring is full.
-    pub fn holdNote(self: *Engine, track_idx: usize, pitch: u8, on: bool) void {
-        self.holdNoteVel(track_idx, pitch, on, 102);
+    /// (docs/31 §Note editing). UI thread; false when the ring is full
+    /// (the caller asks again later: a release lost is a note stuck).
+    pub fn holdNote(self: *Engine, track_idx: usize, pitch: u8, on: bool) bool {
+        return self.holdNoteVel(track_idx, pitch, on, HELD_VEL);
     }
 
     /// `holdNote` at a MIDI velocity (1..127): the computer keyboard's
     /// notes play at its VEL (docs/40).
-    pub fn holdNoteVel(self: *Engine, track_idx: usize, pitch: u8, on: bool, velocity: u8) void {
-        if (track_idx > std.math.maxInt(u8) or pitch > 127) return;
+    pub fn holdNoteVel(self: *Engine, track_idx: usize, pitch: u8, on: bool, velocity: u8) bool {
+        if (track_idx > std.math.maxInt(u8) or pitch > 127) return true;
         const w = self.aud_w.load(.monotonic);
-        if (w -% self.aud_r.load(.acquire) >= AUD_Q) return;
+        if (w -% self.aud_r.load(.acquire) >= AUD_Q) return false;
         self.aud_q[w % AUD_Q] = .{ .track = @intCast(track_idx), .pitch = pitch, .on = on, .velocity = velocity };
         self.aud_w.store(w +% 1, .release);
+        return true;
     }
 
     /// Audio thread, once per callback: this block's held-note events.
@@ -544,7 +555,11 @@ pub const Engine = struct {
             self.pushHeld(e.track, e.pitch, e.on, e.velocity);
         }
         self.aud_r.store(r, .release);
-        if (self.aud_held[0] | self.aud_held[1] != 0 or self.aud_n > 0) self.aud_tail = AUD_TAIL_S * self.transport.sample_rate;
+        if (self.aud_held[0] | self.aud_held[1] != 0 or self.aud_n > 0) {
+            self.aud_live = true;
+            self.aud_quiet = 0;
+            self.aud_rang = 0;
+        }
     }
 
     fn pushHeld(self: *Engine, track: u8, pitch: u8, on: bool, velocity: u8) void {
@@ -573,14 +588,79 @@ pub const Engine = struct {
     }
 
     /// Run the track's note slot (docs/45) over this block's events, in
-    /// place; the count after.
-    fn applyNoteFx(t: *Track, events: []machine.NoteEvent, n: usize, ppq: f64, bpm: f64, sr: f64, frames: usize) usize {
+    /// place; the count after. `active`: it plays this block (the caller
+    /// reads the switch once, so takeOver and handBack agree with it).
+    /// `jump`: the playhead jumped, so the arp's notes end first.
+    fn applyNoteFx(t: *Track, active: bool, jump: bool, events: []machine.NoteEvent, n: usize, ppq: f64, bpm: f64, sr: f64, frames: usize) usize {
         const a = t.note_fx;
-        if (a.present.load(.monotonic) == 0) return if (a.was_on) a.flush(events, n) else n;
-        const out = a.process(events[0..n], ppq, bpm, sr, @intCast(frames));
+        if (!active) return if (a.was_on) a.flush(events, n) else n;
+        const out = a.runAs(true, jump, events[0..n], ppq, bpm, sr, @intCast(frames));
         const m = @min(out.len, events.len);
         @memcpy(events[0..m], out[0..m]);
         return m;
+    }
+
+    /// The arp comes in (switched on, or added) over notes the instrument
+    /// plays itself: the clip notes `ledger` holds and the keys held on
+    /// the track. The arp holds them from here, and they end on the
+    /// instrument first thing: these note-offs, written to the head of
+    /// `events` (the count returned). Their own note-offs, which now stop
+    /// at the arp, leave nothing hanging.
+    fn takeOver(self: *const Engine, t: *Track, ti: u8, ledger: ?*const note_ledger.Ledger, events: []machine.NoteEvent) usize {
+        const a = t.note_fx;
+        var n: usize = 0;
+        if (ledger) |l| for (l.sounding()) |e| {
+            if (n == events.len) break;
+            a.adopt(e.pitch, e.vel);
+            events[n] = noteEvent(.note_off, e.id, e.pitch, 0);
+            n += 1;
+        };
+        // The keys held before this block's held-note events.
+        var keys = self.heldOn(ti);
+        var i = self.aud_n;
+        while (i > 0) {
+            i -= 1;
+            if (self.aud_ev_track[i] != ti) continue;
+            const ev = self.aud_ev[i];
+            setKey(&keys, @intFromFloat(ev.pitch), ev.kind == .note_off);
+        }
+        for (0..128) |p| if (hasKey(keys, @intCast(p)) and n < events.len) {
+            a.adopt(@intCast(p), HELD_VEL);
+            events[n] = noteEvent(.note_off, -1, @intCast(p), 0);
+            n += 1;
+        };
+        return n;
+    }
+
+    /// The arp went (switched off, or taken out; applyNoteFx ended its
+    /// notes): the notes it held that still sound start again on the
+    /// instrument, appended to `events[0..n]`, and all sorted again. Not
+    /// those that started in this block (their note-ons came through): a
+    /// clip note's id is newer than `id_mark` (the ledger's next id before
+    /// it), a key has a note-on in it.
+    fn handBack(self: *const Engine, ti: u8, ledger: ?*const note_ledger.Ledger, id_mark: i32, events: []machine.NoteEvent, n_in: usize) usize {
+        var n = n_in;
+        if (ledger) |l| for (l.sounding()) |e| {
+            if (n == events.len) break;
+            if (l.newSince(id_mark, e.id)) continue;
+            events[n] = noteEvent(.note_on, e.id, e.pitch, @as(f32, @floatFromInt(e.vel)) / 127.0);
+            n += 1;
+        };
+        var keys = self.heldOn(ti);
+        for (self.aud_ev[0..self.aud_n], self.aud_ev_track[0..self.aud_n]) |ev, tt| {
+            if (tt == ti and ev.kind == .note_on) setKey(&keys, @intFromFloat(ev.pitch), false);
+        }
+        for (0..128) |p| if (hasKey(keys, @intCast(p)) and n < events.len) {
+            events[n] = noteEvent(.note_on, -1, @intCast(p), @as(f32, HELD_VEL) / 127.0);
+            n += 1;
+        };
+        if (n > n_in) sortEvents(events[0..n]);
+        return n;
+    }
+
+    /// The keys the editor holds on track `ti` now.
+    fn heldOn(self: *const Engine, ti: u8) [2]u64 {
+        return if (self.aud_track == ti) self.aud_held else .{ 0, 0 };
     }
 
     /// Put this block's held-note events for track `ti` ahead of its own.
@@ -755,7 +835,8 @@ pub const Engine = struct {
             self.ringing = false;
             self.resetAllMachines();
             self.aud_held = .{ 0, 0 };
-            self.aud_tail = 0;
+            self.aud_live = false;
+            self.aud_on = null;
             for (self.tracks) |*t| t.clearSounding();
         }
 
@@ -769,20 +850,19 @@ pub const Engine = struct {
                 // keeps tails. No reset: that cut every voice and tail at
                 // once (a click) and cost a sweep of every buffer here.
                 for (self.tracks) |*t| t.clearSounding();
-                // Whatever the editor still holds sounds again from here.
-                if (self.aud_track) |at| for (0..128) |pi| {
-                    if (self.aud_held[pi / 64] & (@as(u64, 1) << @intCast(pi % 64)) != 0) self.pushHeld(at, @intCast(pi), true, 102);
-                };
+                // The editor's held keys play on through the stop (nothing
+                // ended them, nothing starts them twice): still lit.
+                if (self.aud_track) |at| if (at < self.tracks.len) self.tracks[at].setSounding(self.aud_held);
                 self.was_playing = false;
-                self.ringing = true;
-                self.ring_from = self.played_to;
-                self.ring_pos = self.played_to;
-                self.ring_quiet = 0;
+                self.startRing(self.played_to);
                 self.stop_released = false;
                 // Force the first block on resume to be a boundary, so a
                 // meter edited while stopped is adopted immediately.
                 self.meter_last_bar = null;
             }
+            // Keys played stopped need the whole graph when the track feeds
+            // a bus, or another track sounds from them: they ring out together.
+            if (!self.ringing and self.aud_n > 0 and self.auditionNeedsGraph()) self.startRing(self.transport.samples());
             if (self.ringing) {
                 self.renderRing(out_slice, frames);
             } else if (!self.renderAudition(out_slice, frames)) {
@@ -795,7 +875,7 @@ pub const Engine = struct {
             // never see their note-offs, so the instruments let go. Effects
             // keep their tails.
             if (self.was_playing and start_pos != self.played_to) {
-                self.release_from = self.beatAtSample(self.played_to);
+                self.release_pending = true;
                 self.chase_pending = true;
             }
             if (!self.was_playing) {
@@ -902,11 +982,7 @@ pub const Engine = struct {
 
     fn resetAllMachines(self: *Engine) void {
         self.adoptMachines();
-        for (self.tracks) |*t| {
-            t.chain.audio_machine.reset(t.chain.audio_machine.state);
-            t.note_fx.reset();
-            for (t.audioEffects()) |*fx| fx.mach.reset(fx.mach.state);
-        }
+        for (self.tracks) |*t| resetTrack(t);
         if (self.master) |mb| {
             for (mb.audioEffects()) |*fx| fx.mach.reset(fx.mach.state);
         }
@@ -1022,7 +1098,7 @@ pub const Engine = struct {
         }
         // Where the rendered stream stopped: the loop end rounded to a sample,
         // or past it when the playhead was seeked beyond the loop.
-        self.release_from = self.beatAtSample(pos + frames);
+        self.release_pending = true;
         self.chase_pending = true;
         return next;
     }
@@ -1032,6 +1108,27 @@ pub const Engine = struct {
     /// for RING_QUIET_S. A ring that never falls quiet (a drone, a held
     /// key's machine that ignores note-off) fades out over one block at
     /// RING_MAX_S.
+    fn startRing(self: *Engine, from: u64) void {
+        self.ringing = true;
+        self.ring_from = from;
+        self.ring_pos = from;
+        self.ring_quiet = 0;
+    }
+
+    /// Stopped, keys played on track `aud_track` this block: whether they
+    /// need the whole graph (renderRing) rather than the track alone. They
+    /// do when it feeds a bus (an output or a send), when a key let go on
+    /// another track must reach it, or when another track's audition is
+    /// still ringing.
+    fn auditionNeedsGraph(self: *Engine) bool {
+        const ti = self.aud_track orelse return false;
+        for (self.aud_ev_track[0..self.aud_n]) |tt| if (tt != ti) return true;
+        if (self.aud_on) |on| if (on != ti) return true;
+        var fallback: routing.Routing = undefined;
+        const graph = self.currentGraph(&fallback);
+        return ti < graph.count and graph.audio_succ[ti] != 0;
+    }
+
     fn renderRing(self: *Engine, out: []f32, frames: u32) void {
         const n: usize = frames;
         var done: usize = 0;
@@ -1048,29 +1145,33 @@ pub const Engine = struct {
         if (self.ring_quiet >= RING_QUIET_S * sr) {
             self.ringing = false;
         } else if (!held and self.ring_pos - self.ring_from >= RING_MAX_S * sr) {
-            const inv: f32 = 1.0 / @as(f32, @floatFromInt(n));
-            for (0..n) |i| {
-                const g = 1.0 - @as(f32, @floatFromInt(i + 1)) * inv;
-                out[i * 2] *= g;
-                out[i * 2 + 1] *= g;
-            }
+            // Never quiet (a drone, a feedback loop): faded, and started
+            // clean, so it doesn't come back with the next play.
+            fadeOutInterleaved(out[0 .. n * audio.CHANNELS]);
+            self.resetAllMachines();
             self.ringing = false;
         }
         if (!self.ringing) {
+            // An audition it carried ends with it.
+            self.aud_live = false;
+            self.aud_on = null;
             for (self.tracks) |*t| t.setMeter(0, 0);
             if (self.master) |mb| mb.setMeter(0, 0);
         }
     }
 
     /// Stopped: the track the editor holds notes on plays alone, with
-    /// its inserts and fader, until its tail has rung out.
+    /// its inserts and fader, until it falls quiet after the last release
+    /// (as a stop rings out), faded and started clean if it never does.
     fn renderAudition(self: *Engine, out: []f32, frames: u32) bool {
         const ti = self.aud_track orelse return false;
         if (ti >= self.tracks.len) return false;
-        if (self.aud_tail == 0 and self.aud_n == 0) {
+        if (!self.aud_live) {
             self.aud_beat = null;
+            self.aud_on = null;
             return false;
         }
+        self.aud_on = ti;
 
         var l_buf: [MAX_BLOCK]f32 = undefined;
         var r_buf: [MAX_BLOCK]f32 = undefined;
@@ -1084,18 +1185,31 @@ pub const Engine = struct {
         @memset(self.master_l[0..n], 0);
         @memset(self.master_r[0..n], 0);
 
-        var events: [AUD_EV]machine.NoteEvent = undefined;
-        var event_count = self.injectHeld(ti, &events, 0);
-        self.aud_n = 0;
-
         // Stopped: automation holds its value at the playhead.
         const t = &self.tracks[ti];
+        // Muted, soloed out or switched off while it played: its voices
+        // froze mid-note and missed their note-offs. Start clean.
+        if (t.audio_parked or t.audio_inst_parked) {
+            t.audio_parked = false;
+            t.audio_inst_parked = false;
+            resetTrack(t);
+        }
         const snap = t.audioSnapshot();
         const playhead = self.beatAtSample(self.transport.samples());
         const beat = self.aud_beat orelse playhead;
         const aud_bpm = self.tmap().bpmAt(playhead);
-        t.noteSounding(events[0..event_count]);
-        event_count = applyNoteFx(t, &events, event_count, beat, aud_bpm, @floatFromInt(self.transport.sample_rate), n);
+
+        // The held keys only (no clip notes sound while stopped), with the
+        // arp coming in or going out as in renderNode.
+        var events: [AUD_EV + 128]machine.NoteEvent = undefined;
+        const arp_on = t.note_fx.present.load(.monotonic) != 0 and t.note_fx.on.load(.monotonic) != 0;
+        const lead = if (arp_on and !t.note_fx.was_on) self.takeOver(t, ti, null, &events) else 0;
+        const hand_back = !arp_on and t.note_fx.was_on;
+        var event_count = lead + self.injectHeld(ti, events[lead..], 0);
+        t.noteSounding(events[lead..event_count]);
+        event_count = lead + applyNoteFx(t, arp_on, false, events[lead..], event_count - lead, beat, aud_bpm, @floatFromInt(self.transport.sample_rate), n);
+        if (hand_back) event_count = self.handBack(ti, null, 0, &events, event_count);
+        self.aud_n = 0;
         self.aud_beat = beat + @as(f64, @floatFromInt(n)) * aud_bpm / 60.0 / @as(f64, @floatFromInt(self.transport.sample_rate));
         const inst_view = snap_mod.AutoView{ .snap = snap, .cursors = &t.auto_cursors, .kind = .inst, .hold_beat = playhead };
         const ctx = machine.MachineCtx{
@@ -1133,9 +1247,22 @@ pub const Engine = struct {
         t.setMeter(peak_l, peak_r);
         self.finishMaster(out, @intCast(n), 0, beat, aud_bpm);
 
-        // Held, it rings on; released, until the tail is done.
+        // Held (or the arp still playing), it rings on; let go, until it
+        // has been quiet RING_QUIET_S, or RING_MAX_S at most.
         const arp_busy = t.note_fx.present.load(.monotonic) != 0 and t.note_fx.busy();
-        if (self.aud_held[0] | self.aud_held[1] == 0 and !arp_busy) self.aud_tail -|= frames;
+        const held = self.aud_held[0] | self.aud_held[1] != 0 or arp_busy;
+        const sr: u64 = self.transport.sample_rate;
+        const heard = out[0 .. n * audio.CHANNELS];
+        if (held or peakInterleaved(heard) > RING_FLOOR) self.aud_quiet = 0 else self.aud_quiet += n;
+        if (held) self.aud_rang = 0 else self.aud_rang += n;
+        if (self.aud_quiet >= RING_QUIET_S * sr) {
+            self.aud_live = false;
+        } else if (self.aud_rang >= RING_MAX_S * sr) {
+            fadeOutInterleaved(heard);
+            resetTrack(t);
+            self.aud_live = false;
+        }
+        if (!self.aud_live) self.aud_on = null;
         return true;
     }
 
@@ -1201,8 +1328,8 @@ pub const Engine = struct {
             60.0 * @as(f64, @floatFromInt(sr)) / bpm;
         const chase = self.chase_pending;
         self.chase_pending = false;
-        var release_at = self.release_from;
-        self.release_from = null;
+        var jumped = self.release_pending;
+        self.release_pending = false;
         // Past a stop the playhead holds there: the first block releases
         // what sounds, none starts anything. Machines' own beat runs on.
         var ring_out = false;
@@ -1215,7 +1342,7 @@ pub const Engine = struct {
             beat_start = sb;
             beat_end = sb;
             ring_out = true;
-            if (!self.stop_released) release_at = sb;
+            if (!self.stop_released) jumped = true;
             self.stop_released = true;
         }
         // Meter position for this block (homogeneous within the block).
@@ -1250,7 +1377,7 @@ pub const Engine = struct {
             .beat_start = beat_start,
             .beat_end = beat_end,
             .chase = chase,
-            .release_at = release_at,
+            .jumped = jumped,
             .ring_out = ring_out,
             .ctx_beat = ctx_beat,
             .wrap_out = self.wrap_next,
@@ -1452,7 +1579,6 @@ pub const Engine = struct {
         const spb = b.spb;
         const beat_start = b.beat_start;
         const beat_end = b.beat_end;
-        const release_at = b.release_at;
         const bar_info = b.bar_info;
         const t = &self.tracks[ti];
         const node = &graph.nodes[ti];
@@ -1470,22 +1596,21 @@ pub const Engine = struct {
             return;
         }
         // Back from muted, soloed out or disabled: it missed its note-offs
-        // (and its voices froze mid-wave). Start clean and chase the notes
-        // sounding now.
-        // An instrument switched back on likewise missed its note-offs.
+        // (and its voices froze mid-wave). Start clean (the ledger and the
+        // arp too) and chase the notes sounding now. An instrument switched
+        // back on likewise missed its note-offs.
         const inst_back = !node.is_bus and t.audio_inst_parked and t.isEnabled();
         if (inst_back) {
             t.audio_inst_parked = false;
             t.chain.audio_machine.reset(t.chain.audio_machine.state);
             t.note_fx.reset();
+            t.notes_on.clear();
             t.inst_quiet = 0;
         }
         const unparked = t.audio_parked and (node.is_bus or t.isEnabled());
         if (unparked) {
             t.audio_parked = false;
-            t.chain.audio_machine.reset(t.chain.audio_machine.state);
-            for (t.audioEffects()) |*fx| fx.mach.reset(fx.mach.state);
-            t.inst_quiet = 0;
+            resetTrack(t);
         }
 
         // A bus starts from its summed input; a track from silence.
@@ -1499,13 +1624,28 @@ pub const Engine = struct {
             @memset(r, 0);
         }
 
+        // The note slot runs ahead of the instrument this block (read once).
+        const arp_on = !node.is_bus and t.note_fx.present.load(.monotonic) != 0 and t.note_fx.on.load(.monotonic) != 0;
         const inst_new = t.audio_inst_new and t.swap != .out;
-        if (inst_new) t.audio_inst_new = false;
-        const chase = b.chase or unparked or inst_back or inst_new;
+        if (inst_new) {
+            t.audio_inst_new = false;
+            // A new instrument sounds nothing yet: the clip notes start on
+            // it again, unless the arp holds them and plays on.
+            if (!arp_on) t.notes_on.clear();
+        }
+        // Past a stop nothing starts, whatever comes back.
+        const chase = !b.ring_out and (b.chase or unparked or inst_back or inst_new);
         // Hold the snapshot the rendering thread adopted for this chunk.
         const snap = t.audioSnapshot();
-        var n_events = self.injectHeld(ti, &scratch.events, gatherEvents(snap, beat_start, beat_end, spb, frames, chase, release_at, &scratch.events));
-        t.noteSounding(scratch.events[0..n_events]);
+        // The arp coming in takes over what the instrument plays: those
+        // note-offs lead the block, ahead of the arp's output. Going out,
+        // it hands back what still sounds.
+        const lead = if (arp_on and !t.note_fx.was_on) self.takeOver(t, ti, t.notes_on, &scratch.events) else 0;
+        const hand_back = !node.is_bus and !arp_on and t.note_fx.was_on;
+        const id_mark = t.notes_on.next_id;
+        const evs = scratch.events[lead..];
+        var n_events = lead + self.injectHeld(ti, evs, gatherEvents(snap, beat_start, beat_end, spb, frames, chase, b.jumped, t.notes_on, evs));
+        t.noteSounding(scratch.events[lead..n_events]);
         const held_here = if (self.aud_track) |at| at == ti and self.aud_held[0] | self.aud_held[1] != 0 else false;
         // Frozen: its audio stands in for the instrument, audio clips and
         // inserts (docs/28 §Freeze); the fader on is as ever.
@@ -1517,7 +1657,10 @@ pub const Engine = struct {
         const hold_beat: ?f64 = if (b.ring_out) localTime(snap, beat_start, bpm, bar_info, self.meter_state.map()).beat else null;
         // The note slot (docs/45) turns the track's notes into the
         // instrument's, on the track's own beat.
-        if (!node.is_bus) n_events = applyNoteFx(t, &scratch.events, n_events, lt.beat, lt.bpm, @floatFromInt(sr), frames);
+        if (!node.is_bus) {
+            n_events = lead + applyNoteFx(t, arp_on, chase, evs, n_events - lead, lt.beat, lt.bpm, @floatFromInt(sr), frames);
+            if (hand_back) n_events = self.handBack(ti, t.notes_on, id_mark, &scratch.events, n_events);
+        }
         const inst_view = snap_mod.AutoView{ .snap = snap, .cursors = &t.auto_cursors, .kind = .inst, .hold_beat = hold_beat };
         const ctx = machine.MachineCtx{
             .sample_rate = @floatFromInt(sr),
@@ -1566,7 +1709,8 @@ pub const Engine = struct {
                     // A control edit wakes it too, so its params and
                     // displays catch up (the edit may be all there is).
                     const edited = t.chain.audio_machine.takeWake();
-                    wake = n_events > 0 or held_here or (t.note_fx.present.load(.monotonic) != 0 and t.note_fx.busy()) or (!b.ring_out and notesNear(snap, beat_start, beat_end + ahead));
+                    // A note the ledger holds sounds: no need to look.
+                    wake = n_events > 0 or t.notes_on.n > 0 or held_here or (t.note_fx.present.load(.monotonic) != 0 and t.note_fx.busy()) or (!b.ring_out and notesNear(snap, beat_start, beat_end + ahead));
                     if (edited) t.inst_quiet = 0;
                     const hold = t.chain.audio_machine.idleHold(@floatFromInt(sr), idleHoldSamples(sr));
                     // Asleep: `l`/`r` stay silent.
@@ -2037,6 +2181,25 @@ fn probeNowNs() i128 {
     var info: std.c.mach_timebase_info_data = undefined;
     _ = std.c.mach_timebase_info(&info);
     return @divTrunc(@as(i128, @intCast(std.c.mach_absolute_time())) * @as(i128, @intCast(info.numer)), @as(i128, @intCast(info.denom)));
+}
+
+/// A track's instrument, arp and inserts start clean; nothing sounds on it.
+fn resetTrack(t: *Track) void {
+    t.chain.audio_machine.reset(t.chain.audio_machine.state);
+    t.note_fx.reset();
+    t.notes_on.reset();
+    for (t.audioEffects()) |*fx| fx.mach.reset(fx.mach.state);
+    t.inst_quiet = 0;
+}
+
+/// Down to silence over the buffer (interleaved stereo).
+fn fadeOutInterleaved(buf: []f32) void {
+    const frames = buf.len / audio.CHANNELS;
+    const inv: f32 = 1.0 / @as(f32, @floatFromInt(@max(frames, 1)));
+    for (0..frames) |i| {
+        const g = 1.0 - @as(f32, @floatFromInt(i + 1)) * inv;
+        for (buf[i * audio.CHANNELS ..][0..audio.CHANNELS]) |*x| x.* *= g;
+    }
 }
 
 fn peakInterleaved(buf: []const f32) f32 {
@@ -3048,6 +3211,16 @@ const RING_MAX_S: u64 = 30;
 /// it would only click.
 const CHASE_MIN_SAMPLES: f64 = 240;
 
+/// Notes a track can start and end inside one block; past it, more don't
+/// start (a block is a few milliseconds).
+const SHORT_MAX = 128;
+
+/// The track's note events for the block, sorted by offset (note-offs
+/// first at an offset). Notes that start here start (`ledger` records
+/// them, with the id they carry); the ledger ends what it holds when the
+/// note ends, when an edit takes it away or moves its end behind the
+/// playhead, and on a jump. The note-offs keep the order the notes have
+/// in the snapshot, whichever way they come.
 fn gatherEvents(
     snap: *const snap_mod.TrackSnapshot,
     beat_start: f64,
@@ -3056,100 +3229,126 @@ fn gatherEvents(
     frames: u32,
     /// Also start the notes already sounding at beat_start (chase).
     chase: bool,
-    /// The playhead jumped here from this beat: end the notes that were
-    /// sounding there, first thing in the block.
-    release_at: ?f64,
-    out: *[MAX_EVENTS_PER_TRACK]machine.NoteEvent,
+    /// The playhead jumped (a seek, a loop wrap, a stop): the notes
+    /// sounding end first thing in the block, unless chase finds them
+    /// still sounding here.
+    jumped: bool,
+    ledger: *note_ledger.Ledger,
+    out: []machine.NoteEvent,
 ) usize {
+    // The note-offs: the ledger's, then those of notes that start and end
+    // in this block (up to SHORT_MAX), sorted by snapshot index at the end.
+    // They always fit: the rest leaves them room.
+    var ends: [note_ledger.CAP + SHORT_MAX]note_ledger.End = undefined;
+    var n_ends = ledger.due(snap, beat_start, beat_end, samples_per_beat, frames, jumped, chase, CHASE_MIN_SAMPLES, ends[0..note_ledger.CAP]);
+    const ledger_ends = n_ends;
     var count: usize = 0;
 
-    for (snap.clips[0..snap.clip_count]) |clip| {
+    // Held at a stop, nothing starts: no need to look.
+    if (beat_end > beat_start or chase) for (snap.clips[0..snap.clip_count], 0..) |clip, ci| {
         const clip_end = clip.start_beat + clip.length_beats;
         // A grooved note may play a little before its clip (docs/28 §Groove).
-        const in_block = clip_end > beat_start and clip.start_beat - groove_mod.MAX_MOVE_BEATS < beat_end;
-        const at_release = if (release_at) |rb| clip.start_beat < rb and clip_end > rb else false;
-        if (!in_block and !at_release) continue;
+        if (clip_end <= beat_start or clip.start_beat - groove_mod.MAX_MOVE_BEATS >= beat_end) continue;
 
         const note_slice = snap.notes[clip.notes_start..][0..clip.notes_count];
-        for (note_slice, 0..) |note, j| {
+        for (note_slice, clip.notes_start..) |note, si| {
             const abs_on = clip.start_beat + note.start_beat;
             const abs_off_raw = abs_on + note.length_beats;
             const abs_off = @min(abs_off_raw, clip_end);
-            // The note's index in the snapshot is its id: note-offs and
-            // expression find their voice by it, bent or not.
-            const note_id: i32 = @intCast(clip.notes_start + j);
             // Past the clip's end, or nothing left of it once trimmed:
             // an off before (or at) its on would leave the voice stuck.
             if (note.start_beat >= clip.length_beats or abs_off <= abs_on) continue;
-            if (note.hasExpression() and abs_on < beat_end and abs_off > beat_start) {
-                count = gatherExpression(snap, note, note_id, abs_on, abs_off, beat_start, samples_per_beat, frames, out, count);
-            }
+            const room = out.len -| n_ends;
 
-            // A jump: notes sounding where the playhead left end, notes under
-            // where it landed start (chase). One sounding at both carries on.
-            const held = if (release_at) |rb| abs_on < rb and abs_off > rb else false;
-            const chased = chase and abs_on < beat_start and abs_off > beat_start and
-                (abs_off - beat_start) * samples_per_beat >= CHASE_MIN_SAMPLES;
-            if (held != chased and count < MAX_EVENTS_PER_TRACK) {
-                out[count] = .{
-                    .sample_offset = 0,
-                    .kind = if (held) .note_off else .note_on,
-                    .channel = 0,
-                    .note_id = note_id,
-                    .pitch = @floatFromInt(note.pitch),
-                    .velocity = if (held) 0 else @as(f32, @floatFromInt(note.velocity)) / 127.0,
-                };
-                count += 1;
-            }
-            // Offsets in this block; a note shorter than a sample still
-            // gets its off after its on (the sort puts offs first).
-            var on_fo: ?u32 = null;
-            if (abs_on >= beat_start and abs_on < beat_end) on_fo = blockOffset(abs_on - beat_start, samples_per_beat, frames);
-            var off_fo: ?u32 = null;
-            if (abs_off > beat_start and abs_off <= beat_end) off_fo = blockOffset(abs_off - beat_start, samples_per_beat, frames);
-            if (on_fo != null and off_fo != null and off_fo.? <= on_fo.?) {
-                if (on_fo.? + 1 < frames) off_fo = on_fo.? + 1 else {
-                    on_fo = frames -| 2;
-                    off_fo = frames - 1;
+            var id: ?i32 = null;
+            if (abs_on >= beat_start and abs_on < beat_end) {
+                // Starts here; a note shorter than a sample still gets its
+                // off after its on.
+                var on_fo = blockOffset(abs_on - beat_start, samples_per_beat, frames);
+                const ends_here = abs_off <= beat_end;
+                if (count + @as(usize, if (ends_here) 2 else 1) <= room and (!ends_here or n_ends < ends.len)) {
+                    const nid = ledger.newId();
+                    var started = true;
+                    if (ends_here) {
+                        var off_fo = blockOffset(abs_off - beat_start, samples_per_beat, frames);
+                        if (off_fo <= on_fo) {
+                            if (on_fo + 1 < frames) off_fo = on_fo + 1 else {
+                                on_fo = frames -| 2;
+                                off_fo = frames - 1;
+                            }
+                        }
+                        ends[n_ends] = .{ .si = @intCast(si), .at = off_fo, .id = nid, .pitch = note.pitch, .found = true };
+                        n_ends += 1;
+                    } else started = ledger.add(.{ .on = abs_on, .off = abs_off, .id = nid, .si = @intCast(si), .ci = @intCast(ci), .pitch = note.pitch, .vel = note.velocity });
+                    if (started) {
+                        out[count] = .{
+                            .sample_offset = on_fo,
+                            .kind = .note_on,
+                            .channel = 0,
+                            .note_id = nid,
+                            .pitch = @floatFromInt(note.pitch),
+                            .velocity = @as(f32, @floatFromInt(note.velocity)) / 127.0,
+                        };
+                        count += 1;
+                        id = nid;
+                    }
+                }
+            } else if (abs_on < beat_start and abs_off > beat_start and (chase or note.hasExpression())) {
+                // Sounding here: carried on (its expression rides on the id
+                // it started with, up to its end, here if it ends here), or
+                // (chase) started now unless nearly over.
+                id = ledger.idOf(@intCast(si)) orelse endedId(ends[0..ledger_ends], si);
+                if (id == null and chase and (abs_off - beat_start) * samples_per_beat >= CHASE_MIN_SAMPLES and count < room) {
+                    const nid = ledger.newId();
+                    if (ledger.add(.{ .on = abs_on, .off = abs_off, .id = nid, .si = @intCast(si), .ci = @intCast(ci), .pitch = note.pitch, .vel = note.velocity })) {
+                        out[count] = .{
+                            .sample_offset = 0,
+                            .kind = .note_on,
+                            .channel = 0,
+                            .note_id = nid,
+                            .pitch = @floatFromInt(note.pitch),
+                            .velocity = @as(f32, @floatFromInt(note.velocity)) / 127.0,
+                        };
+                        count += 1;
+                        id = nid;
+                    }
                 }
             }
-            if (on_fo) |fo| {
-                if (count < MAX_EVENTS_PER_TRACK) {
-                    out[count] = .{
-                        .sample_offset = fo,
-                        .kind = .note_on,
-                        .channel = 0,
-                        .note_id = note_id,
-                        .pitch = @floatFromInt(note.pitch),
-                        .velocity = @as(f32, @floatFromInt(note.velocity)) / 127.0,
-                    };
-                    count += 1;
-                }
-            }
-            if (off_fo) |fo| {
-                if (count < MAX_EVENTS_PER_TRACK) {
-                    out[count] = .{
-                        .sample_offset = fo,
-                        .kind = .note_off,
-                        .channel = 0,
-                        .note_id = note_id,
-                        .pitch = @floatFromInt(note.pitch),
-                        .velocity = 0,
-                    };
-                    count += 1;
-                }
-            }
+            // Expression rides on a sounding note's id, bent or not.
+            if (id) |nid| if (note.hasExpression() and abs_on < beat_end and abs_off > beat_start) {
+                count = gatherExpression(snap, note, nid, abs_on, abs_off, beat_start, samples_per_beat, frames, out[0..room], count);
+            };
         }
-    }
+    };
 
-    // Sort ascending by sample_offset.
-    std.mem.sort(machine.NoteEvent, out[0..count], {}, struct {
-        fn lt(_: void, a: machine.NoteEvent, b: machine.NoteEvent) bool {
-            if (a.sample_offset != b.sample_offset) return a.sample_offset < b.sample_offset;
-            return noteKindOrder(a.kind) < noteKindOrder(b.kind);
+    // The note-offs, in snapshot order (the ledger's already are), then
+    // everything by offset; a stable sort keeps each kind's order.
+    if (n_ends > ledger_ends) std.sort.insertion(note_ledger.End, ends[0..n_ends], {}, struct {
+        fn lt(_: void, a: note_ledger.End, b: note_ledger.End) bool {
+            return a.si < b.si;
         }
     }.lt);
+    for (ends[0..n_ends]) |e| {
+        if (count == out.len) break;
+        out[count] = .{
+            .sample_offset = e.at,
+            .kind = .note_off,
+            .channel = 0,
+            .note_id = e.id,
+            .pitch = @floatFromInt(e.pitch),
+            .velocity = 0,
+        };
+        count += 1;
+    }
+    sortEvents(out[0..count]);
     return count;
+}
+
+/// The id of the note at snapshot index `si` among those the ledger
+/// ended this block, if it was still there.
+fn endedId(ends: []const note_ledger.End, si: usize) ?i32 {
+    for (ends) |e| if (e.found and e.si == si) return e.id;
+    return null;
 }
 
 /// A beat distance into the block as a sample offset, rounded, in range.
@@ -3186,7 +3385,7 @@ fn gatherExpression(
     beat_start: f64,
     samples_per_beat: f64,
     frames: u32,
-    out: *[MAX_EVENTS_PER_TRACK]machine.NoteEvent,
+    out: []machine.NoteEvent,
     count_in: usize,
 ) usize {
     var count = count_in;
@@ -3196,7 +3395,7 @@ fn gatherExpression(
     // A note starting in this block gets its first value at its own onset.
     const on_off: f64 = (abs_on - beat_start) * samples_per_beat;
     if (on_off > 0) k = @intFromFloat(@round(on_off));
-    while (k < frames and count < MAX_EVENTS_PER_TRACK) {
+    while (k < frames and count < out.len) {
         const beat = beat_start + @as(f64, @floatFromInt(k)) / samples_per_beat;
         if (beat >= abs_off) break;
         if (beat >= abs_on - 1e-9) {
@@ -3223,6 +3422,30 @@ fn gatherExpression(
         k = (k / EXPR_STEP + 1) * EXPR_STEP;
     }
     return count;
+}
+
+/// A note event at the block's first sample.
+fn noteEvent(kind: machine.NoteKind, id: i32, pitch: u8, velocity: f32) machine.NoteEvent {
+    return .{ .sample_offset = 0, .kind = kind, .channel = 0, .note_id = id, .pitch = @floatFromInt(pitch), .velocity = velocity };
+}
+
+fn hasKey(keys: [2]u64, p: u7) bool {
+    return keys[p / 64] & (@as(u64, 1) << @intCast(p % 64)) != 0;
+}
+
+fn setKey(keys: *[2]u64, p: u7, down: bool) void {
+    const bit = @as(u64, 1) << @intCast(p % 64);
+    if (down) keys[p / 64] |= bit else keys[p / 64] &= ~bit;
+}
+
+/// By offset, note-offs first at one; stable, so each kind keeps its order.
+fn sortEvents(events: []machine.NoteEvent) void {
+    std.mem.sort(machine.NoteEvent, events, {}, struct {
+        fn lt(_: void, a: machine.NoteEvent, b: machine.NoteEvent) bool {
+            if (a.sample_offset != b.sample_offset) return a.sample_offset < b.sample_offset;
+            return noteKindOrder(a.kind) < noteKindOrder(b.kind);
+        }
+    }.lt);
 }
 
 fn noteKindOrder(kind: machine.NoteKind) u8 {
@@ -3265,6 +3488,12 @@ fn makeSnap(clips: []const struct {
     return s;
 }
 
+/// One block of `gatherEvents` from silence: nothing sounding before it.
+fn gatherFresh(snap: *const snap_mod.TrackSnapshot, beat_start: f64, beat_end: f64, spb: f64, frames: u32, chase: bool, out: *[MAX_EVENTS_PER_TRACK]machine.NoteEvent) usize {
+    var ledger = note_ledger.Ledger{};
+    return gatherEvents(snap, beat_start, beat_end, spb, frames, chase, chase, &ledger, out);
+}
+
 test "gatherEvents: note-on and note-off in same block" {
     const spb = 48.0; // samples per beat (arbitrary)
     const frames: u32 = 96;
@@ -3277,7 +3506,7 @@ test "gatherEvents: note-on and note-off in same block" {
     var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
 
     // Block covers beats [0..2): note-on at beat 0, note-off at beat 1.
-    const n = gatherEvents(&snap, 0, 2.0, spb, frames, false, null, &events);
+    const n = gatherFresh(&snap, 0, 2.0, spb, frames, false, &events);
     try testing.expectEqual(@as(usize, 2), n);
     try testing.expect(events[0].kind == .note_on);
     try testing.expectEqual(@as(f32, 60), events[0].pitch);
@@ -3301,22 +3530,29 @@ test "gatherEvents: chase starts the notes already sounding, unless nearly over"
         },
     }});
     var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
+    const blk = @as(f64, frames) / spb;
     const b0 = 2.0;
-    const b1 = b0 + @as(f64, frames) / spb;
+    const b1 = b0 + blk;
 
-    // Playing on: nothing starts, the short note ends.
-    try testing.expectEqual(@as(usize, 1), gatherEvents(&snap, b0, b1, spb, frames, false, null, &events));
+    // Play from beat 1: the pad is chased in, the note starts on time.
+    var l = note_ledger.Ledger{};
+    try testing.expectEqual(@as(usize, 2), gatherEvents(&snap, 1.0, 1.0 + blk, spb, frames, true, true, &l, &events));
+    // Playing on at beat 2: nothing starts, the short note ends.
+    try testing.expectEqual(@as(usize, 1), gatherEvents(&snap, b0, b1, spb, frames, false, false, &l, &events));
     try testing.expect(events[0].kind == .note_off);
+    try testing.expectEqual(@as(f32, 60), events[0].pitch);
+    try testing.expectEqual(@as(u32, 120), events[0].sample_offset);
+    // A seek back to here: the pad, sounding on both sides, carries on.
+    try testing.expectEqual(@as(usize, 0), gatherEvents(&snap, b0, b1, spb, frames, true, true, &l, &events));
+    try testing.expectEqual(@as(usize, 1), l.n);
 
-    // After a seek to beat 2: the pad starts at the block's first sample;
-    // the note with 120 samples left doesn't, and ends as usual.
-    const n = gatherEvents(&snap, b0, b1, spb, frames, true, null, &events);
-    try testing.expectEqual(@as(usize, 2), n);
+    // From silence, a seek to beat 2: the pad starts at the block's first
+    // sample; the note with 120 samples left doesn't (nor ends).
+    const n = gatherFresh(&snap, b0, b1, spb, frames, true, &events);
+    try testing.expectEqual(@as(usize, 1), n);
     try testing.expect(events[0].kind == .note_on);
     try testing.expectEqual(@as(f32, 48), events[0].pitch);
     try testing.expectEqual(@as(u32, 0), events[0].sample_offset);
-    try testing.expect(events[1].kind == .note_off);
-    try testing.expectEqual(@as(f32, 60), events[1].pitch);
 }
 
 test "gatherEvents: note-off fires when note ends" {
@@ -3329,13 +3565,19 @@ test "gatherEvents: note-off fires when note ends" {
     }});
     var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
 
+    // Started in the block before, [0..0.5).
+    var l = note_ledger.Ledger{};
+    try testing.expectEqual(@as(usize, 1), gatherEvents(&snap, 0, 0.5, spb, 24, false, false, &l, &events));
     // Block covers beats [0.5..2.5): note-off at beat 1 = sample offset 24.
-    const n = gatherEvents(&snap, 0.5, 2.5, spb, frames, false, null, &events);
+    const n = gatherEvents(&snap, 0.5, 2.5, spb, frames, false, false, &l, &events);
     try testing.expectEqual(@as(usize, 1), n);
     try testing.expect(events[0].kind == .note_off);
     try testing.expectEqual(@as(u32, 24), events[0].sample_offset);
-    // An end on a block's first beat went out with the block before it.
-    try testing.expectEqual(@as(usize, 0), gatherEvents(&snap, 1.0, 3.0, spb, frames, false, null, &events));
+    try testing.expectEqual(events[0].note_id, l.next_id - 1);
+    // An end on a block's last beat goes out with it, not the next.
+    var m = note_ledger.Ledger{};
+    try testing.expectEqual(@as(usize, 2), gatherEvents(&snap, 0, 1.0, spb, 48, false, false, &m, &events));
+    try testing.expectEqual(@as(usize, 0), gatherEvents(&snap, 1.0, 3.0, spb, frames, false, false, &m, &events));
 }
 
 test "gatherEvents: note outside block produces no events" {
@@ -3349,7 +3591,7 @@ test "gatherEvents: note outside block produces no events" {
     var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
 
     // Block covers beats [0..2): note starts at beat 3 — no events.
-    const n = gatherEvents(&snap, 0, 2.0, spb, frames, false, null, &events);
+    const n = gatherFresh(&snap, 0, 2.0, spb, frames, false, &events);
     try testing.expectEqual(@as(usize, 0), n);
 }
 
@@ -3364,7 +3606,7 @@ test "gatherEvents: clip entirely before block is skipped" {
     var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
 
     // Block covers beats [4..6): clip ends at beat 2 — no events.
-    const n = gatherEvents(&snap, 4.0, 6.0, spb, frames, false, null, &events);
+    const n = gatherFresh(&snap, 4.0, 6.0, spb, frames, false, &events);
     try testing.expectEqual(@as(usize, 0), n);
 }
 
@@ -3383,7 +3625,7 @@ test "gatherEvents: events are sorted by sample_offset" {
     var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
 
     // Block [0..4): both note-ons fire. Sorted: pitch 60 (offset 0) < pitch 62 (offset 48).
-    const n = gatherEvents(&snap, 0, 4.0, spb, frames, false, null, &events);
+    const n = gatherFresh(&snap, 0, 4.0, spb, frames, false, &events);
     try testing.expect(n >= 2);
     try testing.expect(events[0].sample_offset <= events[1].sample_offset);
 }
@@ -3400,7 +3642,7 @@ test "gatherEvents: note clamped to clip end" {
     var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
 
     // Block [0..2): note-on at 0, note-off clamped to clip end at beat 1.
-    const n = gatherEvents(&snap, 0, 2.0, spb, frames, false, null, &events);
+    const n = gatherFresh(&snap, 0, 2.0, spb, frames, false, &events);
     try testing.expectEqual(@as(usize, 2), n);
     // After sort: note-on (offset 0) < note-off (offset 48).
     try testing.expect(events[0].kind == .note_on);
@@ -3419,7 +3661,7 @@ test "gatherEvents: no stuck notes from trimmed, zero-length or sub-sample notes
         .len = 1,
         .notes = &.{.{ .start = 1.5, .len = 1, .pitch = 60 }},
     }});
-    try testing.expectEqual(@as(usize, 0), gatherEvents(&trimmed, 0, 2.0, spb, frames, false, null, &events));
+    try testing.expectEqual(@as(usize, 0), gatherFresh(&trimmed, 0, 2.0, spb, frames, false, &events));
 
     // Zero length at the block start: no on without an off.
     const zero = makeSnap(&.{.{
@@ -3427,7 +3669,7 @@ test "gatherEvents: no stuck notes from trimmed, zero-length or sub-sample notes
         .len = 4,
         .notes = &.{.{ .start = 1, .len = 0, .pitch = 60 }},
     }});
-    try testing.expectEqual(@as(usize, 0), gatherEvents(&zero, 1.0, 3.0, spb, frames, false, null, &events));
+    try testing.expectEqual(@as(usize, 0), gatherFresh(&zero, 1.0, 3.0, spb, frames, false, &events));
 
     // Shorter than a sample: both round to one offset; the off still
     // follows the on.
@@ -3436,7 +3678,7 @@ test "gatherEvents: no stuck notes from trimmed, zero-length or sub-sample notes
         .len = 4,
         .notes = &.{.{ .start = 0.5, .len = 0.001, .pitch = 60 }},
     }});
-    try testing.expectEqual(@as(usize, 2), gatherEvents(&tiny, 0, 2.0, spb, frames, false, null, &events));
+    try testing.expectEqual(@as(usize, 2), gatherFresh(&tiny, 0, 2.0, spb, frames, false, &events));
     try testing.expect(events[0].kind == .note_on);
     try testing.expect(events[1].kind == .note_off);
     try testing.expect(events[1].sample_offset > events[0].sample_offset);
@@ -3447,7 +3689,7 @@ test "gatherEvents: no stuck notes from trimmed, zero-length or sub-sample notes
         .len = 4,
         .notes = &.{.{ .start = 1.99, .len = 0.001, .pitch = 60 }},
     }});
-    try testing.expectEqual(@as(usize, 2), gatherEvents(&last, 0, 2.0, spb, frames, false, null, &events));
+    try testing.expectEqual(@as(usize, 2), gatherFresh(&last, 0, 2.0, spb, frames, false, &events));
     try testing.expect(events[0].kind == .note_on);
     try testing.expect(events[1].kind == .note_off);
     try testing.expectEqual(frames - 1, events[1].sample_offset);
@@ -3972,7 +4214,7 @@ test "faderGains follows volume and pan lanes unless overridden" {
     try testing.expectApproxEqAbs(go.l, go.r, 1e-6);
 }
 
-test "gatherEvents: note ids, and expression every EXPR_STEP samples for a bent note" {
+test "gatherEvents: each note its own id, and expression every EXPR_STEP samples for a bent note" {
     const spb = 480.0;
     const frames: u32 = 128;
     var snap = makeSnap(&.{.{
@@ -3987,18 +4229,57 @@ test "gatherEvents: note ids, and expression every EXPR_STEP samples for a bent 
     snap.notes[0].expr_start = 0;
     snap.notes[0].expr_count = 2;
     var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
-    const n = gatherEvents(&snap, 0.5, 0.5 + @as(f64, frames) / spb, spb, frames, false, null, &events);
+    // Chased in at beat 0.5: each note starts with its own id.
+    const n = gatherFresh(&snap, 0.5, 0.5 + @as(f64, frames) / spb, spb, frames, true, &events);
+    var bent_id: ?i32 = null;
+    var other_id: ?i32 = null;
+    for (events[0..n]) |ev| if (ev.kind == .note_on) {
+        if (ev.pitch == 60) bent_id = ev.note_id else other_id = ev.note_id;
+    };
+    try testing.expect(bent_id.? != other_id.?);
     var exprs: usize = 0;
     for (events[0..n]) |ev| {
         try testing.expect(ev.note_id >= 0);
         if (ev.kind != .expression) continue;
-        try testing.expectEqual(@as(i32, 0), ev.note_id);
+        try testing.expectEqual(bent_id.?, ev.note_id);
         const beat = 0.5 + @as(f64, @floatFromInt(ev.sample_offset)) / spb;
         try testing.expectApproxEqAbs(@as(f32, @floatCast(60 + 12 * beat)), ev.pitch, 1e-3);
         try testing.expect(ev.sample_offset % EXPR_STEP == 0);
         exprs += 1;
     }
     try testing.expectEqual(@as(usize, frames / EXPR_STEP), exprs);
+}
+
+test "gatherEvents: a bent note's expression runs up to its end, in the block it ends" {
+    const spb = 480.0;
+    const frames: u32 = 128;
+    var snap = makeSnap(&.{.{ .start = 0, .len = 4, .notes = &.{.{ .start = 0, .len = 1, .pitch = 60 }} }});
+    snap.expr_points[0] = .{ .beat = 0, .value = 0 };
+    snap.expr_points[1] = .{ .beat = 1, .value = 12 };
+    snap.expr_point_count = 2;
+    snap.notes[0].expr_start = 0;
+    snap.notes[0].expr_count = 2;
+    var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
+    var l = note_ledger.Ledger{};
+    const blk = @as(f64, frames) / spb;
+    _ = gatherEvents(&snap, 0, blk, spb, frames, false, false, &l, &events);
+    const id = l.items[0].id;
+    // The block it ends in, halfway: expression up to its note-off, on its id.
+    const b0 = 1.0 - blk / 2;
+    const n = gatherEvents(&snap, b0, b0 + blk, spb, frames, false, false, &l, &events);
+    var exprs: usize = 0;
+    var off_at: ?u32 = null;
+    for (events[0..n]) |ev| switch (ev.kind) {
+        .expression => {
+            try testing.expectEqual(id, ev.note_id);
+            try testing.expect(ev.sample_offset < 64);
+            exprs += 1;
+        },
+        .note_off => off_at = ev.sample_offset,
+        else => {},
+    };
+    try testing.expectEqual(@as(?u32, 64), off_at);
+    try testing.expect(exprs > 0);
 }
 
 test "gatherEvents: pressure, slide and gain ride the expression event" {
@@ -4028,7 +4309,7 @@ test "gatherEvents: pressure, slide and gain ride the expression event" {
     t.publishSnapshot(&pool);
     const snap = t.currentSnapshot();
     var events: [MAX_EVENTS_PER_TRACK]machine.NoteEvent = undefined;
-    const cnt = gatherEvents(snap, 0, 2048.0 / 48_000.0, 48_000, 2048, false, null, &events);
+    const cnt = gatherFresh(snap, 0, 2048.0 / 48_000.0, 48_000, 2048, false, &events);
     var first: ?machine.NoteEvent = null;
     for (events[0..cnt]) |ev| if (ev.kind == .expression and first == null) {
         first = ev;
@@ -5326,13 +5607,13 @@ test "held notes: the editor's keys play stopped and playing, and light the trac
     var out: [64 * 2]f32 = undefined;
 
     // Stopped: held until released, then the key goes dark.
-    eng.holdNote(0, 60, true);
+    try testing.expect(eng.holdNote(0, 60, true));
     eng.render(&out, 64);
     eng.render(&out, 64);
     try testing.expectEqual(@as(usize, 1), Rec.n);
     try testing.expect(Rec.log[0].on and Rec.log[0].pitch == 60);
     try testing.expect(tracks[0].sounding128() & (@as(u128, 1) << 60) != 0);
-    eng.holdNote(0, 60, false);
+    try testing.expect(eng.holdNote(0, 60, false));
     eng.render(&out, 64);
     try testing.expectEqual(@as(usize, 2), Rec.n);
     try testing.expect(!Rec.log[1].on);
@@ -5341,12 +5622,12 @@ test "held notes: the editor's keys play stopped and playing, and light the trac
     // Playing: the held note goes in with the track's own.
     transport.play();
     eng.render(&out, 64);
-    eng.holdNote(0, 64, true);
+    try testing.expect(eng.holdNote(0, 64, true));
     eng.render(&out, 64);
     try testing.expectEqual(@as(usize, 3), Rec.n);
     try testing.expect(Rec.log[2].on and Rec.log[2].pitch == 64);
     try testing.expect(tracks[0].sounding128() & (@as(u128, 1) << 64) != 0);
-    eng.holdNote(0, 64, false);
+    try testing.expect(eng.holdNote(0, 64, false));
     eng.render(&out, 64);
     try testing.expectEqual(@as(usize, 4), Rec.n);
     try testing.expectEqual(@as(u128, 0), tracks[0].sounding128());
@@ -5587,4 +5868,368 @@ test "realtime: snapped limiter lookahead participates in PDC in its first block
     // reports/reads ceil(look-spl), so both paths must meet at sample 481.
     try testing.expectEqual(@as(?usize, 481), onlyPeakAt(&out));
     try testing.expectEqual(@as(u32, 481), e.master_latency.load(.monotonic));
+}
+
+// ── Stuck notes ─────────────────────────────────────────────────────
+
+/// Instrument for the stuck-note tests: the notes it sounds, matched as
+/// the voice allocator matches them (fy_raw_machine.sameNote: by id when
+/// both carry one, else by pitch; a note-off ends the newest), and 0.01 of
+/// DC a note, so the mix shows whatever still sounds.
+const Voices = struct {
+    const Note = struct { id: i32, pitch: f32 };
+    on: [64]Note = undefined,
+    n: usize = 0,
+    starts: usize = 0,
+
+    fn sounds(self: *const Voices, pitch: f32) usize {
+        var k: usize = 0;
+        for (self.on[0..self.n]) |v| k += @intFromBool(v.pitch == pitch);
+        return k;
+    }
+
+    fn mach(self: *Voices) machine.Machine {
+        var m = RouteTestMachines.dc(undefined);
+        m.name = "voices";
+        m.state = self;
+        m.render = struct {
+            fn f(st: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []f32) void {
+                const s: *Voices = @ptrCast(@alignCast(st));
+                const evs = if (ctx.note_in) |p| p[0..ctx.note_in_count] else &[_]machine.NoteEvent{};
+                for (evs) |ev| switch (ev.kind) {
+                    .note_on => {
+                        s.starts += 1;
+                        if (s.n < s.on.len) {
+                            s.on[s.n] = .{ .id = ev.note_id, .pitch = ev.pitch };
+                            s.n += 1;
+                        }
+                    },
+                    .note_off => {
+                        var i = s.n;
+                        while (i > 0) {
+                            i -= 1;
+                            const v = s.on[i];
+                            if (if (v.id >= 0 and ev.note_id >= 0) v.id == ev.note_id else v.pitch == ev.pitch) {
+                                std.mem.copyForwards(Note, s.on[i .. s.n - 1], s.on[i + 1 .. s.n]);
+                                s.n -= 1;
+                                break;
+                            }
+                        }
+                    },
+                    else => {},
+                };
+                const level = 0.01 * @as(f32, @floatFromInt(s.n));
+                @memset(l, level);
+                @memset(r, level);
+            }
+        }.f;
+        m.reset = struct {
+            fn f(st: *anyopaque) void {
+                const s: *Voices = @ptrCast(@alignCast(st));
+                s.n = 0;
+            }
+        }.f;
+        return m;
+    }
+};
+
+const stuck_col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+const SB: u32 = 512;
+
+/// Callbacks of SB until the playhead reaches `beat` (120 BPM).
+fn playTo(eng: *Engine, beat: f64) void {
+    var out: [SB * 2]f32 = undefined;
+    const at: u64 = @intFromFloat(beat * 24_000);
+    while (eng.transport.samples() < at) eng.render(&out, SB);
+}
+
+fn renderFor(eng: *Engine, secs: f64) [SB * 2]f32 {
+    var out: [SB * 2]f32 = undefined;
+    const n: usize = @intFromFloat(@ceil(secs * 48_000 / @as(f64, SB)));
+    for (0..n) |_| eng.render(&out, SB);
+    return out;
+}
+
+test "stuck notes: an edit under the playhead never strands a note" {
+    const alloc = testing.allocator;
+    for (0..5) |case| {
+        var v = Voices{};
+        var tracks = [_]Track{try Track.init(alloc, "t", stuck_col, v.mach())};
+        defer for (&tracks) |*t| t.deinit(alloc);
+        var a = @import("clip.zig").Clip.init("a", 0, 1);
+        try a.addNote(alloc, .{ .pitch = 36, .start_beat = 0, .length_beats = 0.25, .velocity = 100 });
+        try tracks[0].addClip(alloc, a);
+        var b = @import("clip.zig").Clip.init("b", 1, 15);
+        try b.addNote(alloc, .{ .pitch = 48, .start_beat = 0, .length_beats = 2, .velocity = 100 }); // beats 1..3
+        try b.addNote(alloc, .{ .pitch = 55, .start_beat = 5, .length_beats = 1, .velocity = 100 }); // beats 6..7
+        try tracks[0].addClip(alloc, b);
+        var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+        defer pool.deinit();
+        tracks[0].publishSnapshot(&pool);
+        var transport = Transport{};
+        const eng = try alloc.create(Engine);
+        defer alloc.destroy(eng);
+        eng.* = .{ .transport = &transport, .tracks = &tracks };
+        eng.publishRouting();
+        transport.play();
+        playTo(eng, 2);
+        try testing.expectEqual(@as(usize, 1), v.sounds(48));
+        const clips = tracks[0].clips.items;
+        switch (case) {
+            // Every note after it moves down the snapshot, or up.
+            0 => clips[0].removeNoteAt(0),
+            1 => try clips[0].addNote(alloc, .{ .pitch = 38, .start_beat = 0.5, .length_beats = 0.25, .velocity = 100 }),
+            // Shortened to end behind the playhead, deleted, retuned.
+            2 => clips[1].notes.items[0].length_beats = 0.5,
+            3 => clips[1].removeNoteAt(0),
+            else => clips[1].notes.items[0].pitch = 50,
+        }
+        tracks[0].publishSnapshot(&pool);
+        playTo(eng, 2.1);
+        // Moved in the list it plays on; changed under the playhead, it ends.
+        try testing.expectEqual(@as(usize, if (case < 2) 1 else 0), v.n);
+        playTo(eng, 6.5);
+        try testing.expectEqual(@as(usize, 1), v.sounds(55));
+        try testing.expectEqual(@as(usize, 1), v.n);
+        playTo(eng, 8);
+        try testing.expectEqual(@as(usize, 0), v.n);
+    }
+}
+
+test "stuck notes: the arp takes over a sounding note, and hands it back" {
+    const alloc = testing.allocator;
+    // Switched on and off, and added and taken out.
+    for ([_]bool{ false, true }) |slot| {
+        var v = Voices{};
+        var tracks = [_]Track{try Track.init(alloc, "t", stuck_col, v.mach())};
+        defer for (&tracks) |*t| t.deinit(alloc);
+        const arp = tracks[0].note_fx;
+        if (slot) arp.present.store(0, .monotonic) else {
+            arp.present.store(1, .monotonic);
+            arp.on.store(0, .monotonic);
+        }
+        var c = @import("clip.zig").Clip.init("c", 0, 8);
+        try c.addNote(alloc, .{ .pitch = 48, .start_beat = 0, .length_beats = 4, .velocity = 100 });
+        try tracks[0].addClip(alloc, c);
+        var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+        defer pool.deinit();
+        tracks[0].publishSnapshot(&pool);
+        var transport = Transport{};
+        const eng = try alloc.create(Engine);
+        defer alloc.destroy(eng);
+        eng.* = .{ .transport = &transport, .tracks = &tracks };
+        eng.publishRouting();
+        transport.play();
+        playTo(eng, 1);
+        try testing.expectEqual(@as(usize, 1), v.n);
+        const direct = v.on[0].id;
+        // In: the clip's 48 ends on the instrument, the arp plays it.
+        if (slot) arp.present.store(1, .monotonic) else arp.on.store(1, .monotonic);
+        playTo(eng, 1.5);
+        for (v.on[0..v.n]) |n| try testing.expect(n.id != direct);
+        try testing.expect(v.starts > 2);
+        try testing.expect(v.sounds(48) <= 1);
+        // Out: the arp's note ends, the clip's 48 plays on with its id.
+        if (slot) arp.present.store(0, .monotonic) else arp.on.store(0, .monotonic);
+        playTo(eng, 2);
+        try testing.expectEqual(@as(usize, 1), v.n);
+        try testing.expectEqual(direct, v.on[0].id);
+        // And its note-off ends it.
+        playTo(eng, 4.5);
+        try testing.expectEqual(@as(usize, 0), v.n);
+        // Back in at the end: nothing to take, nothing left after.
+        if (slot) arp.present.store(1, .monotonic) else arp.on.store(1, .monotonic);
+        playTo(eng, 5);
+        try testing.expectEqual(@as(usize, 0), v.n);
+    }
+}
+
+test "stuck notes: a key held through a stop sounds once and ends when let go" {
+    const alloc = testing.allocator;
+    var v = Voices{};
+    var tracks = [_]Track{try Track.init(alloc, "t", stuck_col, v.mach())};
+    defer for (&tracks) |*t| t.deinit(alloc);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    tracks[0].publishSnapshot(&pool);
+    var transport = Transport{};
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+    transport.play();
+    playTo(eng, 0.5);
+    try testing.expect(eng.holdNote(0, 60, true));
+    playTo(eng, 1);
+    transport.stop();
+    _ = renderFor(eng, 0.5);
+    try testing.expectEqual(@as(usize, 1), v.starts);
+    try testing.expectEqual(@as(usize, 1), v.n);
+    try testing.expect(tracks[0].sounding128() & (@as(u128, 1) << 60) != 0);
+    try testing.expect(eng.holdNote(0, 60, false));
+    _ = renderFor(eng, 0.1);
+    try testing.expectEqual(@as(usize, 0), v.n);
+}
+
+test "stuck notes: stopped, a key let go as the editor moves to another track ends there" {
+    const alloc = testing.allocator;
+    var va = Voices{};
+    var vb = Voices{};
+    var tracks = [_]Track{
+        try Track.init(alloc, "a", stuck_col, va.mach()),
+        try Track.init(alloc, "b", stuck_col, vb.mach()),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+    var transport = Transport{};
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+    try testing.expect(eng.holdNote(0, 60, true));
+    _ = renderFor(eng, 0.2);
+    try testing.expectEqual(@as(usize, 1), va.n);
+    // What main sends in one frame when the held track changes.
+    try testing.expect(eng.holdNote(0, 60, false));
+    try testing.expect(eng.holdNote(1, 64, true));
+    _ = renderFor(eng, 0.2);
+    try testing.expectEqual(@as(usize, 0), va.n);
+    try testing.expectEqual(@as(usize, 1), vb.n);
+    try testing.expect(eng.holdNote(1, 64, false));
+    const out = renderFor(eng, 3);
+    try testing.expectEqual(@as(usize, 0), vb.n);
+    for (out) |x| try testing.expectEqual(@as(f32, 0), x);
+}
+
+/// Instrument: from 1 at a note-on down to silence over `secs`, whatever
+/// the note-off (a long release, a reverb's tail).
+const SlowTail = struct {
+    secs: f32,
+    env: f32 = 0,
+    fn mach(self: *SlowTail) machine.Machine {
+        var m = RouteTestMachines.dc(undefined);
+        m.name = "tail";
+        m.state = self;
+        m.render = struct {
+            fn f(st: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []f32) void {
+                const s: *SlowTail = @ptrCast(@alignCast(st));
+                const evs = if (ctx.note_in) |p| p[0..ctx.note_in_count] else &[_]machine.NoteEvent{};
+                for (evs) |ev| if (ev.kind == .note_on) {
+                    s.env = 1;
+                };
+                for (l, r) |*a, *b| {
+                    a.* = s.env;
+                    b.* = s.env;
+                    s.env = @max(0, s.env - 1.0 / (s.secs * 48_000));
+                }
+            }
+        }.f;
+        m.reset = struct {
+            fn f(st: *anyopaque) void {
+                const s: *SlowTail = @ptrCast(@alignCast(st));
+                s.env = 0;
+            }
+        }.f;
+        return m;
+    }
+};
+
+test "audition: a tail rings until it falls quiet, and reaches a send's bus" {
+    const alloc = testing.allocator;
+    for ([_]bool{ false, true }) |send| {
+        var tail = SlowTail{ .secs = 5 };
+        var zero: f32 = 0;
+        var tracks = [_]Track{
+            try Track.init(alloc, "keys", stuck_col, tail.mach()),
+            try Track.init(alloc, "verb", stuck_col, RouteTestMachines.dc(&zero)),
+        };
+        defer for (&tracks) |*t| t.deinit(alloc);
+        tracks[1].kind = .bus;
+        tracks[1].setVolume(1.0);
+        if (send) {
+            // The dry path off: only the pre-fader send is heard.
+            tracks[0].setVolume(0);
+            try tracks[0].addSend(1, true, 1.0);
+        } else tracks[0].setVolume(1.0);
+        var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+        defer pool.deinit();
+        for (&tracks) |*t| t.publishSnapshot(&pool);
+        var transport = Transport{};
+        const eng = try alloc.create(Engine);
+        defer alloc.destroy(eng);
+        eng.* = .{ .transport = &transport, .tracks = &tracks };
+        eng.publishRouting();
+        try testing.expect(eng.holdNote(0, 60, true));
+        _ = renderFor(eng, 0.1);
+        try testing.expect(eng.holdNote(0, 60, false));
+        // Four seconds on, the tail is still heard (it was cut at three).
+        var out = renderFor(eng, 4);
+        try testing.expect(out[0] > 0.05);
+        // Quiet a while, it stops.
+        out = renderFor(eng, 4);
+        try testing.expect(!eng.ringing and !eng.aud_live);
+        for (out) |x| try testing.expectEqual(@as(f32, 0), x);
+    }
+}
+
+/// Instrument: sounds from a note-on until reset, note-offs or not.
+const Drone = struct {
+    on: bool = false,
+    fn mach(self: *Drone) machine.Machine {
+        var m = RouteTestMachines.dc(undefined);
+        m.name = "drone";
+        m.state = self;
+        m.render = struct {
+            fn f(st: *anyopaque, ctx: *const machine.MachineCtx, l: []f32, r: []f32) void {
+                const s: *Drone = @ptrCast(@alignCast(st));
+                const evs = if (ctx.note_in) |p| p[0..ctx.note_in_count] else &[_]machine.NoteEvent{};
+                for (evs) |ev| if (ev.kind == .note_on) {
+                    s.on = true;
+                };
+                @memset(l, if (s.on) 0.1 else 0);
+                @memset(r, if (s.on) 0.1 else 0);
+            }
+        }.f;
+        m.reset = struct {
+            fn f(st: *anyopaque) void {
+                const s: *Drone = @ptrCast(@alignCast(st));
+                s.on = false;
+            }
+        }.f;
+        return m;
+    }
+};
+
+test "stop: a ring that never falls quiet fades at RING_MAX_S and doesn't come back" {
+    const alloc = testing.allocator;
+    var d = Drone{};
+    var tracks = [_]Track{try Track.init(alloc, "t", stuck_col, d.mach())};
+    defer for (&tracks) |*t| t.deinit(alloc);
+    tracks[0].setVolume(1.0);
+    var c = @import("clip.zig").Clip.init("c", 0, 1);
+    try c.addNote(alloc, .{ .pitch = 48, .start_beat = 0, .length_beats = 0.5, .velocity = 100 });
+    try tracks[0].addClip(alloc, c);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    tracks[0].publishSnapshot(&pool);
+    var transport = Transport{};
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+    transport.play();
+    playTo(eng, 1);
+    transport.stop();
+    var out = renderFor(eng, @floatFromInt(RING_MAX_S - 1));
+    try testing.expect(eng.ringing and out[0] > 0.05);
+    out = renderFor(eng, 2);
+    try testing.expect(!eng.ringing);
+    for (out) |x| try testing.expectEqual(@as(f32, 0), x);
+    // Played again past the clip: silence, not the drone resumed.
+    transport.seekToBeats(4);
+    transport.play();
+    out = renderFor(eng, 0.1);
+    for (out) |x| try testing.expectEqual(@as(f32, 0), x);
 }

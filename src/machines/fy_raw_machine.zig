@@ -603,7 +603,8 @@ pub const FyRawMachine = struct {
     // Voice allocator (voice machines with desc.voices > 1). Voices are
     // never freed — like the Juno-106, every voice always renders; note-on
     // takes the oldest un-gated voice, else steals the oldest gated one.
-    // note_id is -1 throughout the sequencer, so matching is by pitch.
+    // Note-offs and expression find a voice by note id (clip and arp notes
+    // carry one), else by pitch (held keys are -1): sameNote.
     voice_pitch: [MAX_REGIONS]f32 = @splat(-1),
     voice_gate: [MAX_REGIONS]bool = @splat(false),
     voice_age: [MAX_REGIONS]u64 = @splat(0),
@@ -3302,9 +3303,9 @@ fn legatoOnto(self: *FyRawMachine, v: usize, ev: machine.NoteEvent) !void {
     self.kctx.legato = 0;
 }
 
-// note_id is -1 throughout the sequencer, so note-off matches the newest
-// gated voice holding this pitch, and releases its unison group. Mono
-// machines release every held voice.
+// A note-off releases the newest gated voice playing its note (sameNote:
+// by id, or by pitch for held keys) and its unison group. Mono machines
+// fall back to the newest note still held, else release every voice.
 fn noteOffEvent(self: *FyRawMachine, ev: machine.NoteEvent) !void {
     const n = self.regionCount();
     if (isMonoMelodic(self)) {
