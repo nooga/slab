@@ -6,6 +6,8 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+## 0.0.23 — 2026-11-04
+
 - **Notes don't get stuck.** A note no longer hangs when you edit a clip
   while it plays (deleting, adding, moving, retuning or shortening notes
   under the playhead), when the arpeggiator is switched on or off, added or
