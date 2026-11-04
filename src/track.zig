@@ -17,6 +17,7 @@ const routing = @import("routing.zig");
 const handoff = @import("handoff.zig");
 const chain_mod = @import("chain.zig");
 const arp_mod = @import("arp.zig");
+const note_ledger = @import("note_ledger.zig");
 
 pub const MAX_NAME = 32;
 
@@ -93,6 +94,9 @@ pub const Track = struct {
     /// The note slot ahead of the instrument (docs/45); `present` says
     /// whether the track has it.
     note_fx: *arp_mod.Arp,
+    /// Audio only: the clip notes sounding, with the ids they started with
+    /// (note_ledger.zig).
+    notes_on: *note_ledger.Ledger,
 
     /// Registry index for persistence. Null means the silent placeholder.
     machine_idx: ?u8 = null,
@@ -215,7 +219,10 @@ pub const Track = struct {
         const chain = try chain_mod.State.create(alloc, mach);
         errdefer chain.destroy(alloc);
         const note_fx = try alloc.create(arp_mod.Arp);
+        errdefer alloc.destroy(note_fx);
         note_fx.* = .{};
+        const notes_on = try alloc.create(note_ledger.Ledger);
+        notes_on.* = .{};
         s0.* = .{};
         s1.* = .{};
         s2.* = .{};
@@ -225,6 +232,7 @@ pub const Track = struct {
             .machine = mach,
             .chain = chain,
             .note_fx = note_fx,
+            .notes_on = notes_on,
             .snap = .{ s0, s1, s2 },
         };
         const n = @min(track_name.len, MAX_NAME);
@@ -302,6 +310,7 @@ pub const Track = struct {
         for (self.snap) |s| alloc.destroy(s);
         self.chain.destroy(alloc);
         alloc.destroy(self.note_fx);
+        alloc.destroy(self.notes_on);
         if (self.stretch) |b| {
             b.deinit();
             std.heap.page_allocator.destroy(b);
@@ -569,6 +578,12 @@ pub const Track = struct {
                 else => {},
             }
         }
+        self.sounding[0].store(bits[0], .monotonic);
+        self.sounding[1].store(bits[1], .monotonic);
+    }
+
+    /// Light exactly the pitches in `bits` (keys held through a stop).
+    pub fn setSounding(self: *Track, bits: [2]u64) void {
         self.sounding[0].store(bits[0], .monotonic);
         self.sounding[1].store(bits[1], .monotonic);
     }

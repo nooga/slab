@@ -17,6 +17,9 @@ pub const OCTAVES_MAX = 4;
 pub const MAX_SEQ = MAX_HELD * OCTAVES_MAX;
 pub const MAX_STEPS = 16;
 pub const MAX_OUT = 512;
+/// Output kept for the arp's own notes: what passes through (expression)
+/// never takes the last of it, so a step's note-offs always fit.
+const OUT_RESERVE = 4 * MAX_HELD;
 /// Ids the arp gives its notes start here, clear of clip and live ids.
 const ID_BASE: i32 = 1 << 24;
 
@@ -145,6 +148,23 @@ pub const Arp = struct {
         }
     }
 
+    /// An event the arp passes on: notes while there is room, anything
+    /// else only short of the room its own notes need.
+    fn pass(self: *Arp, n: *usize, ev: NoteEvent) void {
+        const note = ev.kind == .note_on or ev.kind == .note_off;
+        if (note or n.* + OUT_RESERVE < MAX_OUT) self.emit(n, ev);
+    }
+
+    /// The arp comes in (switched on, or added) over a note the instrument
+    /// already plays: it holds it from here, as if just pressed. The
+    /// engine ends it on the instrument.
+    pub fn adopt(self: *Arp, pitch: u8, vel: u8) void {
+        if (pitch > 127) return;
+        const latch = self.latch.load(.monotonic) != 0;
+        if (self.held_n == 0 or (latch and self.fresh)) self.step_n = 0;
+        self.press(pitch, @max(vel, 1), latch);
+    }
+
     fn noteEvent(kind: machine.NoteKind, off: u32, id: i32, pitch: u8, vel: f32) NoteEvent {
         return .{ .sample_offset = off, .kind = kind, .channel = 0, .note_id = id, .pitch = @floatFromInt(pitch), .velocity = vel };
     }
@@ -244,16 +264,25 @@ pub const Arp = struct {
     /// `ppq` the beat at its start. Returns the notes to play instead,
     /// sorted by offset; valid until the next call.
     pub fn process(self: *Arp, in: []const NoteEvent, ppq: f64, bpm: f64, sr: f64, frames: u32) []const NoteEvent {
+        return self.runAs(self.on.load(.monotonic) != 0, false, in, ppq, bpm, sr, frames);
+    }
+
+    /// `process` with the switch read once by the caller (`active`), so it
+    /// agrees with what the engine did around it. `jump`: the playhead
+    /// jumped (play, a seek, a loop wrap), so the notes the arp sounds end
+    /// first: where they were due may never come round.
+    pub fn runAs(self: *Arp, active: bool, jump: bool, in: []const NoteEvent, ppq: f64, bpm: f64, sr: f64, frames: u32) []const NoteEvent {
         var n: usize = 0;
-        if (self.on.load(.monotonic) == 0) {
+        if (!active) {
             if (self.was_on) {
                 self.releaseAll(&n, 0);
                 self.reset();
             }
-            for (in) |ev| self.emit(&n, ev);
+            for (in) |ev| self.pass(&n, ev);
             return self.out[0..n];
         }
         self.was_on = true;
+        if (jump) self.releaseAll(&n, 0);
 
         const mode: Mode = @enumFromInt(@min(self.mode.load(.monotonic), @intFromEnum(Mode.chord)));
         const step = RATE_BEATS[@min(self.rate.load(.monotonic), RATE_BEATS.len - 1)];
@@ -309,7 +338,7 @@ pub const Arp = struct {
                         self.press(@intFromFloat(@round(ev.pitch)), v, latch);
                     },
                     .note_off => if (ev.pitch >= 0 and ev.pitch < 128) self.release(@intFromFloat(@round(ev.pitch)), latch),
-                    else => self.emit(&n, ev),
+                    else => self.pass(&n, ev),
                 }
             } else {
                 const k = self.next_k;
@@ -587,4 +616,48 @@ test "a seek re-finds the grid" {
         first = e.sample_offset;
     };
     try testing.expectEqual(@as(u32, 3600), first.?);
+}
+
+test "a jump ends the sounding notes first, even with no key left to step" {
+    const a = try testing.allocator.create(Arp);
+    defer testing.allocator.destroy(a);
+    a.* = .{};
+    Arp.setF(&a.gate_bits, 1.0);
+    // At beat 100 a step plays, and the key goes up right after.
+    _ = a.process(&.{ noteOn(0, 60, 1), noteOff(10, 60) }, 100, 120, SR, 1000);
+    try testing.expectEqual(@as(usize, 1), a.act_n);
+    // A seek back to beat 0: its end, a quarter beat on at 100.25, would
+    // never come round.
+    const evs = a.runAs(true, true, &.{}, 0, 120, SR, 1000);
+    try testing.expectEqual(@as(usize, 1), evs.len);
+    try testing.expectEqual(machine.NoteKind.note_off, evs[0].kind);
+    try testing.expectEqual(@as(u32, 0), evs[0].sample_offset);
+    try testing.expect(!a.busy());
+}
+
+test "adopt: a note the instrument was playing is held and stepped from here" {
+    const a = try testing.allocator.create(Arp);
+    defer testing.allocator.destroy(a);
+    a.* = .{};
+    a.adopt(64, 90);
+    a.adopt(60, 90);
+    var buf: [8]f32 = undefined;
+    const evs = a.runAs(true, false, &.{}, 0, 120, SR, 12000);
+    try testing.expectEqualSlices(f32, &.{ 60, 64 }, pitches(evs, &buf));
+    // Its note-off (now the arp's) lets go of it.
+    _ = a.runAs(true, false, &.{ noteOff(0, 60), noteOff(0, 64) }, 0.5, 120, SR, 12000);
+    try testing.expectEqual(@as(usize, 0), a.held_n);
+}
+
+test "pass-through expression never crowds out the arp's own notes" {
+    const a = try testing.allocator.create(Arp);
+    defer testing.allocator.destroy(a);
+    a.* = .{};
+    var in: [MAX_OUT + 8]NoteEvent = undefined;
+    in[0] = noteOn(0, 60, 1);
+    for (in[1..]) |*e| e.* = .{ .sample_offset = 0, .kind = .expression, .channel = 0, .note_id = 1, .pitch = 60, .velocity = 0 };
+    const evs = a.runAs(true, false, &in, 0, 120, SR, 1000);
+    try testing.expect(evs.len < MAX_OUT);
+    var buf: [4]f32 = undefined;
+    try testing.expectEqual(@as(usize, 1), pitches(evs, &buf).len);
 }

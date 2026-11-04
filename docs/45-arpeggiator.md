@@ -6,8 +6,8 @@ the instrument in the machine bay. Notes from clips, KEYS and MIDI
 first occupant is the arpeggiator.
 
 Source: `src/arp.zig` (the algorithm and its state), `src/ui/arp_panel.zig`
-(the card), `applyNoteFx` in `src/engine.zig`, `appendNoteFx` and
-`applyNoteFx` in `src/document.zig`, the picker entry in
+(the card), `applyNoteFx`, `takeOver` and `handBack` in `src/engine.zig`,
+`appendNoteFx` and `applyNoteFx` in `src/document.zig`, the picker entry in
 `src/ui/machine_bay.zig`.
 
 ## Adding it
@@ -47,8 +47,18 @@ writes its parameters as atomics and the audio thread reads them, so adding,
 removing and editing need no hand-off. `process` merges the incoming
 events, step boundaries and gate-off times in sample order into a fixed
 output buffer; nothing allocates. Its note ids start at 2^24 so they never
-collide with clip or keyboard ids. Removing the slot (or bypassing it)
-ends any sounding arp note.
+collide with clip or keyboard ids.
+
+The engine reads ON/BYP and the slot once per block. When the arp comes
+in (switched on, or added) over notes the instrument already plays, it
+takes them over: they end on the instrument first thing and the arp
+holds them as if just pressed, so their note-offs, which now stop at the
+arp, leave nothing hanging. When it goes (bypassed or removed), its
+sounding notes end and the clip notes and keys still held start again on
+the instrument, with their own ids. A jump (play, a seek, a loop wrap)
+ends the arp's sounding notes first, since where they were due may never
+come round. Pass-through events (expression) never take the room its own
+note-offs need.
 
 ## Limits
 

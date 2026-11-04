@@ -373,25 +373,36 @@ pub fn setRecording(self: *Transport, on: bool) void;
 All called on the UI thread. The audio thread reads consistent
 state at block boundaries only.
 
+**Sounding notes.** Each track keeps a ledger of the clip notes it is
+sounding (`src/note_ledger.zig`): the id each note-on carried, where the
+note starts and where it ends now. Note-offs come from the ledger, with
+the same id, so an edit under the playhead can't strand a voice. Every
+block it finds each note in the current snapshot again: a note that only
+moved in the list (an earlier note deleted or added) plays on and ends
+where it ends; one deleted, retuned, moved, or shortened to end behind
+the playhead (or whose clip was moved, trimmed or deleted) ends at once.
+A track holds up to 256 sounding notes; past that, new ones don't start.
+
 **Discontinuities.** The engine remembers where its last block left the
 transport. Finding it elsewhere while playing means the UI seeked; a
-loop wrap is a jump too. The first block after a jump sends note-offs to
-the notes that were sounding where the playhead left, so their voices
-release (a reset would cut them mid-waveform: a click), and **chases**
-the notes under where it landed, starting them on its first sample
-unless they have under 5 ms left. A note sounding at both points just
-carries on, so scrubbing through a pad doesn't retrigger it. Effects
-keep their tails. Play start and the start of an offline render chase
-too. A seek landing mid-block survives, since the block end is written
-with a compare-exchange.
+loop wrap is a jump too. The first block after a jump ends the notes the
+ledger holds, so their voices release (a reset would cut them
+mid-waveform: a click), and **chases** the notes under where it landed,
+starting them on its first sample unless they have under 5 ms left. A
+note sounding at both points just carries on, so scrubbing through a pad
+doesn't retrigger it. Effects keep their tails. Play start and the start
+of an offline render chase too. A seek landing mid-block survives, since
+the block end is written with a compare-exchange.
 
 **Stop** works like a jump with no landing: the sounding notes are
 released and the whole graph keeps rendering from the stop point, with
 no new notes or clips, until the output has stayed under −100 dBFS for
-2 s (a ring that never decays fades out over one block after 30 s).
-Reverb and delay tails ring out, nothing is reset, and play during the
-ring-out picks the tails up. Machines' own beat keeps running from the
-stop so tempo-synced LFOs move; automation holds at the stop. An
+2 s. A ring that never decays (a drone, a feedback loop) fades out over
+one block after 30 s and every machine starts clean, so it doesn't come
+back with the next play. Reverb and delay tails ring out, nothing is
+reset, and play during the ring-out picks the tails up. Keys the editor
+holds play on through the stop. Machines' own beat keeps running from
+the stop so tempo-synced LFOs move; automation holds at the stop. An
 offline render's stop rings out the same way. Panic still resets every
 machine.
 
