@@ -4571,7 +4571,8 @@ const Stall = struct {
         }
         if (!self.flagged and now - self.since > AFTER_NS) {
             self.flagged = true;
-            std.log.warn("{s}: no progress for {d} s at {d} of {d} frames: the render is stuck", .{ what, @divTrunc(AFTER_NS, std.time.ns_per_s), progress, total });
+            // Its test stalls on purpose; a passing run stays silent.
+            if (!@import("builtin").is_test) std.log.warn("{s}: no progress for {d} s at {d} of {d} frames: the render is stuck", .{ what, @divTrunc(AFTER_NS, std.time.ns_per_s), progress, total });
         }
         return self.flagged;
     }
