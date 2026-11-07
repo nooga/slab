@@ -2967,7 +2967,9 @@ fn mixStretched(
         /// TRANSPOSE and FINE when warped).
         pub fn tuneAt(self: @This(), s: f64) stretch_mod.TuneGrain {
             const rate = self.clip.source_rate;
-            const unsung = stretch_mod.TuneGrain{ .center = s, .period = 0.005 * rate, .beta = 1 };
+            // FORMANT applies to unsung grains too, so consonants match.
+            const formant = self.clip.tune.formantRatio();
+            const unsung = stretch_mod.TuneGrain{ .center = s, .period = 0.005 * rate, .beta = 1, .formant = formant };
             const tn = self.clip.tuning orelse return unsung;
             const kf = @round(s / rate / pitch_mod.HOP_SEC);
             if (kf < 0 or kf >= @as(f64, @floatFromInt(tn.midi.len))) return unsung;
@@ -2990,7 +2992,7 @@ fn mixStretched(
                 best = @abs(tn.marks[i] - s);
                 center = tn.marks[i];
             };
-            return .{ .center = center, .period = period, .beta = beta };
+            return .{ .center = center, .period = period, .beta = beta, .formant = formant };
         }
 
         /// A transient between two source positions: a phase reset. Reversed

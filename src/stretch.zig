@@ -68,8 +68,9 @@ pub const TUNE_REACH = 1024;
 
 /// Where Tune's next grain comes from (`ctx.tuneAt`): its center in the
 /// source (a pitch mark when sung), a period there in source samples, and
-/// the pitch it plays at against the source's (1: as sung).
-pub const TuneGrain = struct { center: f64, period: f64, beta: f64 };
+/// the pitch it plays at against the source's (1: as sung), and how far
+/// its formants move (1: where they were).
+pub const TuneGrain = struct { center: f64, period: f64, beta: f64, formant: f64 = 1 };
 
 /// VOICE's grains, in output samples (10–80 ms at 48 kHz, even, within
 /// the ring).
@@ -341,20 +342,30 @@ pub const Stretcher = struct {
     /// `next_t`, read at the source's own speed (so its formants stay),
     /// laid down at `next_t`; the next grain a period at the pitch it
     /// should be later. Unsung, grains are 10 ms, 5 ms apart, as they are.
+    /// FORMANT reads the grain faster or slower, which moves its spectrum's
+    /// envelope; the hop alone sets the pitch, so the pitch stays. Grains
+    /// shorter than the hop leave gaps, which is fine: the output is still
+    /// periodic at the hop.
     fn tuneGrain(self: *Stretcher, src: Source, ctx: anytype, a: i64) void {
         const t = self.next_t;
         const g: TuneGrain = ctx.tuneAt(ctx.pos(t));
+        const phi = std.math.clamp(g.formant, 0.5, 2);
         const base: f64 = ctx.base;
-        // Output samples: half a grain (a source period) and the hop.
-        const half = @min(@as(f64, TUNE_REACH), g.period / base);
+        const step = base * phi;
+        // Output samples: half a grain (a source period, read at `step`)
+        // and the hop.
+        const half = @min(@as(f64, TUNE_REACH), g.period / step);
         const hop = @max(16, g.period / base / std.math.clamp(g.beta, 0.5, 2));
         self.next_t = t + hop;
-        // Hann grains of length 2·half a hop apart sum to half/hop.
-        const norm: f32 = @floatCast(hop / half);
+        // Hann grains of length 2·half a hop apart sum to half/hop. Apart
+        // (a formant up), their energy is what scales, by half/hop. A
+        // formant down overlaps them 1/φ more, and read at another speed
+        // that extra overlap adds as energy, not amplitude.
+        const norm: f32 = @floatCast(if (half >= hop) hop / half * @sqrt(@max(1, 1 / phi)) else @sqrt(hop / half));
         const h: i64 = @intFromFloat(@floor(half));
         const tc: i64 = @intFromFloat(@round(t));
         const frac = t - @as(f64, @floatFromInt(tc));
-        const exact = @abs(base - 1) < 1e-9 and @abs(frac) < 1e-9 and @abs(g.center - @round(g.center)) < 1e-9;
+        const exact = @abs(step - 1) < 1e-9 and @abs(frac) < 1e-9 and @abs(g.center - @round(g.center)) < 1e-9;
         var i: i64 = -h;
         while (i <= h) : (i += 1) {
             const at = tc + i;
@@ -362,7 +373,7 @@ pub const Stretcher = struct {
             const off = @as(f64, @floatFromInt(i)) - frac;
             const w: f32 = @floatCast(0.5 + 0.5 * @cos(std.math.pi * off / half));
             if (w <= 0) continue;
-            const v = if (exact) src.exact(@as(i64, @intFromFloat(g.center)) + i) else src.at(g.center + off * base, base);
+            const v = if (exact) src.exact(@as(i64, @intFromFloat(g.center)) + i) else src.at(g.center + off * step, step);
             const slot: usize = @intCast(@mod(at, N));
             self.ring_l[slot] += v[0] * w * norm;
             self.ring_r[slot] += v[1] * w * norm;
@@ -765,6 +776,7 @@ const Psola = struct {
     period: f64,
     mark0: f64,
     beta: f64,
+    formant: f64 = 1,
     fn pos(self: Psola, t: f64) f64 {
         return t * self.rate + self.p0;
     }
@@ -773,7 +785,7 @@ const Psola = struct {
     }
     pub fn tuneAt(self: Psola, s: f64) TuneGrain {
         const k = @round((s - self.mark0) / self.period);
-        return .{ .center = self.mark0 + k * self.period, .period = self.period, .beta = self.beta };
+        return .{ .center = self.mark0 + k * self.period, .period = self.period, .beta = self.beta, .formant = self.formant };
     }
 };
 
@@ -817,6 +829,83 @@ test "tune: grains move the pitch, keep the level, and stretch time" {
         defer tr.deinit(alloc);
         const f = tr.f0[tr.len() / 2];
         try std.testing.expectApproxEqRel(@as(f32, @floatCast(200 * cs.beta)), f, 0.006);
+        // The level of the source, within 1 dB.
+        var e0: f64 = 0;
+        for (x[20_000..40_000]) |v| e0 += v * v;
+        var e1: f64 = 0;
+        for (y[0..20_000]) |v| e1 += v * v;
+        try std.testing.expect(@abs(10 * std.math.log10(e1 / e0)) < 1);
+    }
+}
+
+test "tune: FORMANT moves the envelope, not the pitch" {
+    const alloc = std.testing.allocator;
+    const pitch = @import("pitch.zig");
+    // The same voice-ish 200 Hz with its formant near 800 Hz (harmonic 4).
+    const x = try alloc.alloc(f64, 96_000);
+    defer alloc.free(x);
+    for (x, 0..) |*v, i| {
+        const ph = 2 * std.math.pi * 200 * @as(f64, @floatFromInt(i)) / 48_000.0;
+        var s: f64 = 0;
+        for (1..20) |h| {
+            const f: f64 = @floatFromInt(h * 200);
+            s += (1 + 2 * @exp(-std.math.pow(f64, (f - 800) / 250, 2))) / @as(f64, @floatFromInt(h)) * @sin(@as(f64, @floatFromInt(h)) * ph);
+        }
+        v.* = 0.1 * s;
+    }
+    var mark0: usize = 0;
+    for (0..240) |i| if (x[i] > x[mark0]) {
+        mark0 = i;
+    };
+    const st = try alloc.create(Stretcher);
+    defer alloc.destroy(st);
+    const n = 47 * 512;
+    var l: [n]f32 = @splat(0);
+    var r: [n]f32 = @splat(0);
+    const g: [n]f32 = @splat(1);
+    // Semitones, and the harmonic the envelope's peak lands on: 800 Hz
+    // times 2^(st/12), nearest 200 Hz step.
+    const Case = struct { st: f64, beta: f64, peak: usize };
+    for ([_]Case{
+        .{ .st = 0, .beta = 1, .peak = 4 },
+        .{ .st = 7, .beta = 1, .peak = 6 },
+        .{ .st = -7, .beta = 1, .peak = 3 },
+        .{ .st = 7, .beta = std.math.pow(f64, 2, -2.0 / 12.0), .peak = 7 },
+    }) |cs| {
+        st.* = .{};
+        st.claim(1, 0, .tune, 0);
+        @memset(&l, 0);
+        const src = Source{ .l = x.ptr, .r = null, .len = x.len, .reversed = false };
+        const ctx = Psola{ .rate = 1, .p0 = 20_000, .period = 240, .mark0 = @floatFromInt(mark0), .beta = cs.beta, .formant = std.math.pow(f64, 2, cs.st / 12) };
+        var a: usize = 0;
+        while (a < n) : (a += 512) st.render(src, ctx, @intCast(a), l[a..][0..512], r[a..][0..512], g[0..512]);
+        const y = try alloc.alloc(f64, n - 2048);
+        defer alloc.free(y);
+        for (y, l[2048..]) |*o, v| o.* = v;
+        var tr = try pitch.track(alloc, y, null, 48_000, .voice);
+        defer tr.deinit(alloc);
+        const f0: f64 = 200 * cs.beta;
+        try std.testing.expectApproxEqRel(@as(f32, @floatCast(f0)), tr.f0[tr.len() / 2], 0.006);
+        // Each harmonic's level times its number (the source's 1/h taken
+        // out), over whole periods; the envelope's peak is the largest.
+        const len: usize = @intFromFloat(@round(48_000.0 / f0 * 60));
+        var best: usize = 0;
+        var best_e: f64 = 0;
+        for (1..10) |h| {
+            const w = 2 * std.math.pi * f0 * @as(f64, @floatFromInt(h)) / 48_000.0;
+            var re: f64 = 0;
+            var im: f64 = 0;
+            for (y[4000..][0..len], 0..) |v, i| {
+                re += v * @cos(w * @as(f64, @floatFromInt(i)));
+                im += v * @sin(w * @as(f64, @floatFromInt(i)));
+            }
+            const e = @sqrt(re * re + im * im) * @as(f64, @floatFromInt(h));
+            if (e > best_e) {
+                best_e = e;
+                best = h;
+            }
+        }
+        try std.testing.expectEqual(cs.peak, best);
         // The level of the source, within 1 dB.
         var e0: f64 = 0;
         for (x[20_000..40_000]) |v| e0 += v * v;

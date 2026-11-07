@@ -374,7 +374,10 @@ pub fn appendClip(alloc: std.mem.Allocator, out: *std.ArrayList(u8), t: *const t
         }
         if (clip.audio.tune.on) {
             const tn = clip.audio.tune;
-            try appendFmt(alloc, out, "\"tune\":{{\"key\":\"{s}\",\"scale\":\"{s}\",\"speed\":{d},\"humanize\":{d}}},", .{ tune_mod.KEYS[tn.key % 12], @tagName(tn.scale), tn.speed_ms, tn.humanize });
+            try appendFmt(alloc, out, "\"tune\":{{\"key\":\"{s}\",\"scale\":\"{s}\",\"speed\":{d},\"humanize\":{d}", .{ tune_mod.KEYS[tn.key % 12], @tagName(tn.scale), tn.speed_ms, tn.humanize });
+            // Omitted at 0, so files that don't use it read as they did.
+            if (tn.formant != 0) try appendFmt(alloc, out, ",\"formant\":{d}", .{tn.formant});
+            try out.appendSlice(alloc, "},");
         }
         if (o.identity) try appendIdentity(alloc, out, clip);
         try out.appendSlice(alloc, "\"source\":");
@@ -1514,6 +1517,7 @@ fn applyClip(alloc: std.mem.Allocator, t: *track_mod.Track, co: std.json.ObjectM
             tn.scale = warp_mod.parseEnum(tune_mod.Scale, strOf(objGet(to, "scale")) orelse "") orelse .chromatic;
             tn.speed_ms = if (objGet(to, "speed")) |x| @intFromFloat(std.math.clamp(asF64(x), 0, tune_mod.MAX_SPEED_MS)) else 20;
             tn.humanize = if (objGet(to, "humanize")) |x| @min(asU8(x), 100) else 0;
+            tn.formant = if (objGet(to, "formant")) |x| @intFromFloat(std.math.clamp(asF64(x), -tune_mod.MAX_FORMANT, tune_mod.MAX_FORMANT)) else 0;
             // Its pitch, found while the project opens.
             if (active_pool) |p| p.requestPitch(source);
         };
@@ -2283,7 +2287,7 @@ test "audio clips round-trip through the pool by path" {
     wclip.audio.decay = 40;
     wclip.audio.transpose = -7;
     wclip.audio.fine = 12;
-    wclip.audio.tune = .{ .on = true, .key = 9, .scale = .harmonic, .speed_ms = 120, .humanize = 35 };
+    wclip.audio.tune = .{ .on = true, .key = 9, .scale = .harmonic, .speed_ms = 120, .humanize = 35, .formant = -3 };
     try wclip.warp_markers.appendSlice(alloc, &.{ .{ .sec = 0, .beat = 0 }, .{ .sec = 0.75, .beat = 2 }, .{ .sec = 1.5, .beat = 3.5 } });
     try tracks[0].addClip(alloc, wclip);
 
@@ -2310,7 +2314,7 @@ test "audio clips round-trip through the pool by path" {
     try std.testing.expectEqual(@as(u8, 40), w.audio.decay);
     try std.testing.expectEqual(@as(i8, -7), w.audio.transpose);
     try std.testing.expectEqual(@as(i8, 12), w.audio.fine);
-    try std.testing.expectEqual(tune_mod.Settings{ .on = true, .key = 9, .scale = .harmonic, .speed_ms = 120, .humanize = 35 }, w.audio.tune);
+    try std.testing.expectEqual(tune_mod.Settings{ .on = true, .key = 9, .scale = .harmonic, .speed_ms = 120, .humanize = 35, .formant = -3 }, w.audio.tune);
     try std.testing.expect(!loaded_buf[0].clips.items[0].audio.tune.on);
     try std.testing.expectApproxEqAbs(@as(f64, 0.5), w.audio.offset_beats, 1e-9);
     try std.testing.expectEqual(@as(usize, 3), w.warp_markers.items.len);
