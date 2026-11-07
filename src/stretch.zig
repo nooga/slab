@@ -63,7 +63,8 @@ pub const Source = struct {
 pub const Kind = enum(u8) { mix, voice, tune };
 
 /// Tune: how far ahead of the playhead its grains are made, which bounds
-/// a grain's half (a period of 47 Hz at 48 kHz).
+/// a grain's half (a period of 47 Hz at 48 kHz, read at the source's
+/// speed; a formant down needs more and is held back to fit).
 pub const TUNE_REACH = 1024;
 
 /// Where Tune's next grain comes from (`ctx.tuneAt`): its center in the
@@ -349,19 +350,22 @@ pub const Stretcher = struct {
     fn tuneGrain(self: *Stretcher, src: Source, ctx: anytype, a: i64) void {
         const t = self.next_t;
         const g: TuneGrain = ctx.tuneAt(ctx.pos(t));
-        const phi = std.math.clamp(g.formant, 0.5, 2);
         const base: f64 = ctx.base;
+        // A formant down lengthens the grain; past TUNE_REACH it would read
+        // less than two periods, so a low voice gets only what fits (and a
+        // voice already past it, under 47 Hz, none).
+        const phi = std.math.clamp(@max(g.formant, @min(1, g.period / base / TUNE_REACH)), 0.5, 2);
         const step = base * phi;
         // Output samples: half a grain (a source period, read at `step`)
         // and the hop.
         const half = @min(@as(f64, TUNE_REACH), g.period / step);
         const hop = @max(16, g.period / base / std.math.clamp(g.beta, 0.5, 2));
         self.next_t = t + hop;
-        // Hann grains of length 2·half a hop apart sum to half/hop. Apart
-        // (a formant up), their energy is what scales, by half/hop. A
-        // formant down overlaps them 1/φ more, and read at another speed
-        // that extra overlap adds as energy, not amplitude.
-        const norm: f32 = @floatCast(if (half >= hop) hop / half * @sqrt(@max(1, 1 / phi)) else @sqrt(hop / half));
+        // Hann grains of length 2·half a hop apart sum to half/hop. Read at
+        // another speed than the source's (FORMANT), neighbours no longer
+        // line up, so their energy adds instead, and so do the gaps
+        // between grains that no longer overlap.
+        const norm: f32 = @floatCast(if (phi == 1) hop / half else @sqrt(hop / half));
         const h: i64 = @intFromFloat(@floor(half));
         const tc: i64 = @intFromFloat(@round(t));
         const frac = t - @as(f64, @floatFromInt(tc));
@@ -865,12 +869,25 @@ test "tune: FORMANT moves the envelope, not the pitch" {
     const g: [n]f32 = @splat(1);
     // Semitones, and the harmonic the envelope's peak lands on: 800 Hz
     // times 2^(st/12), nearest 200 Hz step.
+    // Level is checked across pitch changes either side of the formant's,
+    // where the grains go from overlapping to apart (0: peak not checked).
     const Case = struct { st: f64, beta: f64, peak: usize };
+    const semi = struct {
+        fn of(v: f64) f64 {
+            return std.math.pow(f64, 2, v / 12);
+        }
+    }.of;
     for ([_]Case{
         .{ .st = 0, .beta = 1, .peak = 4 },
         .{ .st = 7, .beta = 1, .peak = 6 },
         .{ .st = -7, .beta = 1, .peak = 3 },
-        .{ .st = 7, .beta = std.math.pow(f64, 2, -2.0 / 12.0), .peak = 7 },
+        .{ .st = 7, .beta = semi(-2), .peak = 7 },
+        .{ .st = 1, .beta = 1, .peak = 0 },
+        .{ .st = -1, .beta = 1, .peak = 0 },
+        .{ .st = -6, .beta = semi(-5), .peak = 0 },
+        .{ .st = -6, .beta = semi(-7), .peak = 0 },
+        .{ .st = -12, .beta = semi(-12), .peak = 0 },
+        .{ .st = 5, .beta = semi(9), .peak = 0 },
     }) |cs| {
         st.* = .{};
         st.claim(1, 0, .tune, 0);
@@ -888,7 +905,8 @@ test "tune: FORMANT moves the envelope, not the pitch" {
         try std.testing.expectApproxEqRel(@as(f32, @floatCast(f0)), tr.f0[tr.len() / 2], 0.006);
         // Each harmonic's level times its number (the source's 1/h taken
         // out), over whole periods; the envelope's peak is the largest.
-        const len: usize = @intFromFloat(@round(48_000.0 / f0 * 60));
+        const per = 48_000.0 / f0;
+        const len: usize = @intFromFloat(@round(per * @min(60, @floor(@as(f64, @floatFromInt(y.len - 4000)) / per))));
         var best: usize = 0;
         var best_e: f64 = 0;
         for (1..10) |h| {
@@ -905,14 +923,45 @@ test "tune: FORMANT moves the envelope, not the pitch" {
                 best = h;
             }
         }
-        try std.testing.expectEqual(cs.peak, best);
+        if (cs.peak != 0) try std.testing.expectEqual(cs.peak, best);
         // The level of the source, within 1 dB.
         var e0: f64 = 0;
         for (x[20_000..40_000]) |v| e0 += v * v;
         var e1: f64 = 0;
         for (y[0..20_000]) |v| e1 += v * v;
-        try std.testing.expect(@abs(10 * std.math.log10(e1 / e0)) < 1);
+        const db = 10 * std.math.log10(e1 / e0);
+        if (@abs(db) >= 1) std.debug.print("FORMANT level st={d} beta={d:.3}: {d:.2} dB\n", .{ cs.st, cs.beta, db });
+        try std.testing.expect(@abs(db) < 1);
     }
+}
+
+test "tune: a formant down is held to two periods that fit" {
+    const alloc = std.testing.allocator;
+    // A low voice, its period (1200 samples, 40 Hz) already past
+    // TUNE_REACH: FORMANT down has no room, so it plays as FORMANT 0.
+    const x = try alloc.alloc(f64, 96_000);
+    defer alloc.free(x);
+    for (x, 0..) |*v, i| {
+        const ph = 2 * std.math.pi * 40 * @as(f64, @floatFromInt(i)) / 48_000.0;
+        v.* = 0.3 * @sin(ph) + 0.1 * @sin(3 * ph) + 0.05 * @sin(7 * ph);
+    }
+    const src = Source{ .l = x.ptr, .r = null, .len = x.len, .reversed = false };
+    const st = try alloc.create(Stretcher);
+    defer alloc.destroy(st);
+    const n = 8 * 512;
+    var out: [2][n]f32 = undefined;
+    var r: [n]f32 = undefined;
+    const g: [n]f32 = @splat(1);
+    for ([_]f64{ 1, 0.5 }, 0..) |formant, k| {
+        st.* = .{};
+        st.claim(1, 0, .tune, 0);
+        @memset(&out[k], 0);
+        @memset(&r, 0);
+        const ctx = Psola{ .rate = 1, .p0 = 20_000, .period = 1200, .mark0 = 0, .beta = 1, .formant = formant };
+        var a: usize = 0;
+        while (a < n) : (a += 512) st.render(src, ctx, @intCast(a), out[k][a..][0..512], r[a..][0..512], g[0..512]);
+    }
+    try std.testing.expectEqualSlices(f32, &out[0], &out[1]);
 }
 
 test "realtime: lazy smear publication exposes only initialized processors" {

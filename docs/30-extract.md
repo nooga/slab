@@ -465,9 +465,13 @@ and VOICE, so a tuned clip plays live like a warped one:
   grain's spectrum, which is the voice's envelope, by φ. The grains stay
   a target period apart, so the pitch doesn't change. With the formant
   up past the pitch change, the grains no longer overlap, which is fine:
-  the output is still periodic at the hop. Their gain keeps the level,
-  as energy where they don't overlap and where the formant goes down.
-  Unsung grains move too, so consonants match the vowels.
+  the output is still periodic at the hop. Read at another speed,
+  neighbouring grains no longer line up, so their gain keeps the level
+  as energy rather than amplitude (within 1 dB, with or without a pitch
+  change). A formant down lengthens the grains, so it is held back where
+  a grain's half would pass 1024 samples: at −12 that is voices under
+  about 94 Hz, and under 47 Hz a formant down does nothing. Unsung
+  grains move too, so consonants match the vowels.
 - Pitch marks are found on the worker with the pitch: one a period,
   each on the waveform's highest peak within a quarter period of where
   the last one's period puts it, refined between samples by a

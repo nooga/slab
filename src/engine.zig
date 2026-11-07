@@ -2955,6 +2955,8 @@ fn mixStretched(
         /// where the clip starts (output samples).
         base: f64,
         clip_start: f64,
+        /// FORMANT as a ratio, once a block rather than once a grain.
+        formant: f64,
 
         pub fn pos(self: @This(), t: f64) f64 {
             const wm = self.wmap orelse return self.clip.start_sample + (t - self.clip_start) * self.base;
@@ -2968,7 +2970,7 @@ fn mixStretched(
         pub fn tuneAt(self: @This(), s: f64) stretch_mod.TuneGrain {
             const rate = self.clip.source_rate;
             // FORMANT applies to unsung grains too, so consonants match.
-            const formant = self.clip.tune.formantRatio();
+            const formant = self.formant;
             const unsung = stretch_mod.TuneGrain{ .center = s, .period = 0.005 * rate, .beta = 1, .formant = formant };
             const tn = self.clip.tuning orelse return unsung;
             const kf = @round(s / rate / pitch_mod.HOP_SEC);
@@ -3012,7 +3014,7 @@ fn mixStretched(
             return lo_i < xs.len and xs[lo_i] <= s1;
         }
     };
-    const ctx = Ctx{ .clip = clip, .wmap = wmap, .map = map, .sr = sample_rate, .step = clip.source_rate / engine_rate * clip.pitch, .base = clip.source_rate / engine_rate, .clip_start = clip_start };
+    const ctx = Ctx{ .clip = clip, .wmap = wmap, .map = map, .sr = sample_rate, .step = clip.source_rate / engine_rate * clip.pitch, .base = clip.source_rate / engine_rate, .clip_start = clip_start , .formant = clip.tune.formantRatio() };
     const src = stretch_mod.Source{ .l = data, .r = clip.data_r, .len = clip.len, .reversed = clip.reversed, .rate = clip.source_rate };
     const fade_in = clip.fade_in_samples / clip.source_rate * engine_rate;
     const fade_out = clip.fade_out_samples / clip.source_rate * engine_rate;
