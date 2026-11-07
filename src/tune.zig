@@ -1,8 +1,9 @@
 //! Tune (docs/30 §Tune): a voice put in key. What the audio thread needs
 //! from a source's pitch track — each frame's pitch, its held pitch and
-//! the pitch marks (one per period, on the waveform's peak) — made once on
-//! the worker, and the correction at any frame, computed from them with
-//! no state, so a seek or a loop costs nothing.
+//! the pitch marks (one per period, each on the point of the cycle the
+//! last one was on) — made once on the worker, and the correction at any
+//! frame, computed from them with no state, so a seek or a loop costs
+//! nothing.
 
 const std = @import("std");
 const pitch = @import("pitch.zig");
@@ -165,26 +166,29 @@ fn marks(alloc: std.mem.Allocator, tr: *const pitch.Track, midi: []const f32, l:
         fn at(ll: []const f64, rr: ?[]const f64, p: usize, a: usize, b: usize, n: usize) ?struct { i: usize, frac: f64 } {
             const h = n / 2;
             if (n < 4 or p < h or a < h + 1 or b + n - h + 1 >= ll.len) return null;
-            // Every fourth candidate, then each one around the best: the
-            // match is broad (a voice's low harmonics lead it), so the
-            // coarse pass lands in the right peak at a third of the cost.
-            var best = a;
-            var v = -std.math.inf(f64);
+            // Every fourth candidate, then each one around the three best.
+            // A voice's low harmonics make the match broad, but a strong
+            // formant adds lobes a few samples apart, and the coarse pass
+            // can land on a neighbouring lobe; the true one is among the
+            // three, at well under half the cost of trying every candidate.
+            const Cand = struct { c: usize, s: f64 };
+            var top: [3]Cand = @splat(.{ .c = a, .s = -std.math.inf(f64) });
             var c = a;
             while (c < b) : (c += 4) {
-                const s = score(ll, rr, p, c, n);
-                if (s > v) {
-                    v = s;
-                    best = c;
-                }
+                var cur = Cand{ .c = c, .s = score(ll, rr, p, c, n) };
+                for (&top) |*t| if (cur.s > t.s) std.mem.swap(Cand, t, &cur);
             }
-            const coarse = best;
-            for (@max(a, coarse -| 3)..@min(b, coarse + 4)) |f| {
-                if (f == coarse) continue;
-                const s = score(ll, rr, p, f, n);
-                if (s > v) {
-                    v = s;
-                    best = f;
+            var best = top[0].c;
+            var v = top[0].s;
+            for (top) |t| {
+                if (t.s == -std.math.inf(f64)) continue;
+                for (@max(a, t.c -| 3)..@min(b, t.c + 4)) |f| {
+                    if (f == t.c) continue;
+                    const s = score(ll, rr, p, f, n);
+                    if (s > v) {
+                        v = s;
+                        best = f;
+                    }
                 }
             }
             const sm = score(ll, rr, p, best - 1, n);
@@ -454,15 +458,16 @@ test "marks: no drift on a period between samples, no flips between near-equal p
     const sr: f64 = 48_000;
     const x = try alloc.alloc(f64, @intFromFloat(sr * 2));
     defer alloc.free(x);
-    // 218.3 samples a period, with a formant's ripple on the crest whose
-    // phase drifts, so its highest ripple moves an eighth of a period now
-    // and then, as a voice's does. Peak marks jump with it.
+    // 218.3 samples a period, with a formant's ripple locked to the pulse
+    // (two neighbouring harmonics) whose balance sways, so the highest
+    // ripple on the crest moves now and then, as a voice's does. Peak
+    // marks jump with it.
     const f0 = sr / 218.3;
     for (x, 0..) |*v, i| {
         const t = @as(f64, @floatFromInt(i)) / sr;
         const ph = 2 * std.math.pi * f0 * t;
-        const drift = 2.5 * @sin(2 * std.math.pi * 3 * t);
-        v.* = 0.3 * (@sin(ph) + 0.35 * @sin(8 * ph + drift));
+        const sway = 0.8 * @sin(2 * std.math.pi * 3 * t);
+        v.* = 0.3 * (@sin(ph) + 0.3 * (1 + sway) * @sin(8 * ph) + 0.3 * (1 - sway) * @sin(9 * ph));
     }
     var tr = try pitch.track(alloc, x, null, sr, .voice);
     defer tr.deinit(alloc);
@@ -473,4 +478,42 @@ test "marks: no drift on a period between samples, no flips between near-equal p
     for (t.marks[1..], t.marks[0 .. t.marks.len - 1]) |b, a| try testing.expectApproxEqAbs(@as(f64, 218.3), b - a, 1);
     const mean = (t.marks[t.marks.len - 1] - t.marks[0]) / @as(f64, @floatFromInt(t.marks.len - 1));
     try testing.expectApproxEqAbs(@as(f64, 218.3), mean, 0.02);
+    // And on the same point of the cycle all the way: chained matches
+    // don't wander off the pulse the run started on.
+    var worst: f64 = 0;
+    for (t.marks) |m| {
+        var off = @mod(m - t.marks[0], 218.3);
+        if (off > 109.15) off -= 218.3;
+        worst = @max(worst, @abs(off));
+    }
+    try testing.expect(worst < 1);
+}
+
+test "marks: a formant stronger than the fundamental doesn't pull them a lobe off" {
+    const alloc = testing.allocator;
+    const sr: f64 = 48_000;
+    const x = try alloc.alloc(f64, @intFromFloat(sr * 1));
+    defer alloc.free(x);
+    // A bright vowel, 218.3 samples a period: F2 near 2.4 kHz (lobes about
+    // 20 samples apart) carrying more than the fundamental.
+    const Formants = struct { fund: f64, h: [2]f64, a: [2]f64 };
+    for ([_]Formants{
+        .{ .fund = 0.6, .h = .{ 11, 12 }, .a = .{ 0.8, 0.7 } },
+    }) |fm| {
+        const f0 = sr / 218.3;
+        for (x, 0..) |*v, i| {
+            const ph = 2 * std.math.pi * f0 * @as(f64, @floatFromInt(i)) / sr;
+            v.* = 0.2 * (fm.fund * @sin(ph) + 0.3 * @sin(2 * ph + 0.5) + fm.a[0] * @sin(fm.h[0] * ph + 0.3) + fm.a[1] * @sin(fm.h[1] * ph + 1.1));
+        }
+        var tr = try pitch.track(alloc, x, null, sr, .voice);
+        defer tr.deinit(alloc);
+        var t = try prepare(alloc, &tr, x, null, sr);
+        defer t.deinit(alloc);
+        try testing.expect(t.marks.len > 150);
+        for (t.marks) |m| {
+            var off = @mod(m - t.marks[0], 218.3);
+            if (off > 109.15) off -= 218.3;
+            try testing.expect(@abs(off) < 1);
+        }
+    }
 }
