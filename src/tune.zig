@@ -118,8 +118,13 @@ fn mid(l: []const f64, r: ?[]const f64, i: usize) f64 {
 }
 
 /// One mark per period through each voiced run: the first on the run's
-/// highest peak in its first period, each next on the highest peak within
-/// a quarter period of where the last one's period puts it.
+/// highest peak in its first period, each next within a quarter period of
+/// where the last one's period puts it, where the waveform best matches the
+/// period just marked. A voice often has two peaks of about the same height
+/// a cycle; marking the highest one flips between them, and grains a few
+/// percent of a period off put the upper harmonics out of phase from one
+/// grain to the next (heard as grit). Matching keeps each mark on the same
+/// point of the cycle.
 fn marks(alloc: std.mem.Allocator, tr: *const pitch.Track, midi: []const f32, l: []const f64, r: ?[]const f64, rate: f64) ![]f64 {
     var out: std.ArrayList(f64) = .empty;
     errdefer out.deinit(alloc);
@@ -139,6 +144,56 @@ fn marks(alloc: std.mem.Allocator, tr: *const pitch.Track, midi: []const f32, l:
             return best;
         }
     };
+    const Match = struct {
+        /// The period starting half a period before `c`, against the one
+        /// around `p`: their correlation over the candidate's norm.
+        fn score(ll: []const f64, rr: ?[]const f64, p: usize, c: usize, n: usize) f64 {
+            const h = n / 2;
+            var d: f64 = 0;
+            var e: f64 = 0;
+            for (0..n) |j| {
+                const x = mid(ll, rr, c - h + j);
+                d += mid(ll, rr, p - h + j) * x;
+                e += x * x;
+            }
+            return d / @sqrt(e + 1e-30);
+        }
+
+        /// The best match in [a, b), and its offset between samples from a
+        /// parabola through its neighbours' scores. Null near the file's
+        /// edges, where a whole period can't be read either side.
+        fn at(ll: []const f64, rr: ?[]const f64, p: usize, a: usize, b: usize, n: usize) ?struct { i: usize, frac: f64 } {
+            const h = n / 2;
+            if (n < 4 or p < h or a < h + 1 or b + n - h + 1 >= ll.len) return null;
+            // Every fourth candidate, then each one around the best: the
+            // match is broad (a voice's low harmonics lead it), so the
+            // coarse pass lands in the right peak at a third of the cost.
+            var best = a;
+            var v = -std.math.inf(f64);
+            var c = a;
+            while (c < b) : (c += 4) {
+                const s = score(ll, rr, p, c, n);
+                if (s > v) {
+                    v = s;
+                    best = c;
+                }
+            }
+            const coarse = best;
+            for (@max(a, coarse -| 3)..@min(b, coarse + 4)) |f| {
+                if (f == coarse) continue;
+                const s = score(ll, rr, p, f, n);
+                if (s > v) {
+                    v = s;
+                    best = f;
+                }
+            }
+            const sm = score(ll, rr, p, best - 1, n);
+            const sp = score(ll, rr, p, best + 1, n);
+            const den = sm - 2 * v + sp;
+            const frac = if (den < 0) std.math.clamp(0.5 * (sm - sp) / den, -0.5, 0.5) else 0;
+            return .{ .i = best, .frac = frac };
+        }
+    };
     var k: usize = 0;
     while (k < midi.len) {
         if (midi[k] == 0) {
@@ -149,10 +204,14 @@ fn marks(alloc: std.mem.Allocator, tr: *const pitch.Track, midi: []const f32, l:
         if (start >= len) break;
         var period = rate / tr.f0[k];
         var p = Peak.at(l, r, start, @min(len, start + @as(usize, @intFromFloat(@ceil(period)))));
+        // Where a matched mark falls between samples (null: a peak's).
+        var frac: ?f64 = null;
         while (true) {
-            // On the peak between samples: a parabola through it.
             var at: f64 = @floatFromInt(p);
-            if (p > 0 and p + 1 < len) {
+            if (frac) |f| {
+                at += f;
+            } else if (p > 0 and p + 1 < len) {
+                // On the peak between samples: a parabola through it.
                 const a0 = mid(l, r, p - 1);
                 const b0 = mid(l, r, p);
                 const c0 = mid(l, r, p + 1);
@@ -179,7 +238,20 @@ fn marks(alloc: std.mem.Allocator, tr: *const pitch.Track, midi: []const f32, l:
                 k = fk + 1;
                 break;
             }
-            p = Peak.at(l, r, a, b);
+            if (Match.at(l, r, p, a, b, @intFromFloat(@round(period)))) |m| {
+                // The match lines up with the period around sample p, and
+                // this mark sits (at - p) from it. Carried, so the marks
+                // don't drift by the dropped fraction a period: a 218.3
+                // sample period rounded to 218 each time put a tuned tone
+                // 2 cents flat.
+                const next = @as(f64, @floatFromInt(m.i)) + m.frac + (at - @as(f64, @floatFromInt(p)));
+                const whole = @round(next);
+                p = @intFromFloat(@max(0, whole));
+                frac = next - whole;
+            } else {
+                p = Peak.at(l, r, a, b);
+                frac = null;
+            }
         }
     }
     return out.toOwnedSlice(alloc);
@@ -375,4 +447,30 @@ test "marks: one a period, on the peaks" {
     defer t.deinit(alloc);
     try testing.expect(t.marks.len > 80);
     for (t.marks[1..], t.marks[0 .. t.marks.len - 1]) |b, a| try testing.expectApproxEqAbs(@as(f64, 240), b - a, 2);
+}
+
+test "marks: no drift on a period between samples, no flips between near-equal peaks" {
+    const alloc = testing.allocator;
+    const sr: f64 = 48_000;
+    const x = try alloc.alloc(f64, @intFromFloat(sr * 2));
+    defer alloc.free(x);
+    // 218.3 samples a period, with a formant's ripple on the crest whose
+    // phase drifts, so its highest ripple moves an eighth of a period now
+    // and then, as a voice's does. Peak marks jump with it.
+    const f0 = sr / 218.3;
+    for (x, 0..) |*v, i| {
+        const t = @as(f64, @floatFromInt(i)) / sr;
+        const ph = 2 * std.math.pi * f0 * t;
+        const drift = 2.5 * @sin(2 * std.math.pi * 3 * t);
+        v.* = 0.3 * (@sin(ph) + 0.35 * @sin(8 * ph + drift));
+    }
+    var tr = try pitch.track(alloc, x, null, sr, .voice);
+    defer tr.deinit(alloc);
+    var t = try prepare(alloc, &tr, x, null, sr);
+    defer t.deinit(alloc);
+    try testing.expect(t.marks.len > 300);
+    // Each a period apart, and on average exactly one.
+    for (t.marks[1..], t.marks[0 .. t.marks.len - 1]) |b, a| try testing.expectApproxEqAbs(@as(f64, 218.3), b - a, 1);
+    const mean = (t.marks[t.marks.len - 1] - t.marks[0]) / @as(f64, @floatFromInt(t.marks.len - 1));
+    try testing.expectApproxEqAbs(@as(f64, 218.3), mean, 0.02);
 }
