@@ -442,7 +442,7 @@ fn warpTools(ui: *Ui, row: *Rect, clip: *clip_mod.Clip, alloc: std.mem.Allocator
     _ = row.cutLeft(6);
 }
 
-/// The tune row (docs/30 §Tune): KEY, SCALE, SPEED, HUMAN.
+/// The tune row (docs/30 §Tune): KEY, SCALE, SPEED, HUMAN, FORM.
 fn tuneTools(ui: *Ui, row: *Rect, clip: *clip_mod.Clip, src: *const audio_pool_mod.Source) void {
     const t = &clip.audio.tune;
     const lbl = row.cutLeft(34);
@@ -466,6 +466,7 @@ fn tuneTools(ui: *Ui, row: *Rect, clip: *clip_mod.Clip, src: *const audio_pool_m
     _ = row.cutLeft(6);
     dragNum(ui, row, "speed", &t.speed_ms, 0, tune_mod.MAX_SPEED_MS, 2, "MS", "Speed: how long a correction takes; 0 snaps at once (the effect), 100+ is gentle; double-click 0");
     dragNum(ui, row, "human", &t.humanize, 0, 100, 0.5, "%", "Humanize: how much vibrato and slides are kept, only where each note sits is fixed; double-click 0");
+    dragNum(ui, row, "formant", &t.formant, -tune_mod.MAX_FORMANT, tune_mod.MAX_FORMANT, 0.25, "ST", "Formant: moves the voice's resonances without its pitch; up is thinner and sharper, down is darker; double-click 0");
 }
 
 const SCALES = blk: {

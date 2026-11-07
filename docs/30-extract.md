@@ -431,6 +431,9 @@ on any audio clip played forward, warped or not:
   - **SPEED**, 0–400 ms: 0 snaps at once (the effect), 100 and up is a
     gentle correction.
   - **HUMAN**, 0–100%.
+  - **FORM**, ±12 semitones: moves the voice's formants (its
+    resonances) and leaves the pitch alone. Up thins and sharpens it
+    toward a synthetic voice; down darkens it.
 - **On the waveform**: the sung pitch is drawn dim and the tuned pitch
   bright, on a semitone scale fitted to what's in view. The scale's
   notes are ruled, and the key's root is ruled brighter.
@@ -457,6 +460,18 @@ and VOICE, so a tuned clip plays live like a warped one:
   mark nearest where the maps put it, and read at the source's own
   speed. That is why the formants stay where they were and the voice
   doesn't turn into a chipmunk.
+- **FORM** reads each grain faster or slower by φ = 2^(FORM/12), so it
+  covers two source periods in 2·period/φ output samples. That moves the
+  grain's spectrum, which is the voice's envelope, by φ. The grains stay
+  a target period apart, so the pitch doesn't change. With the formant
+  up past the pitch change, the grains no longer overlap, which is fine:
+  the output is still periodic at the hop. Read at another speed,
+  neighbouring grains no longer line up, so their gain keeps the level
+  as energy rather than amplitude (within 1 dB, with or without a pitch
+  change). A formant down lengthens the grains, so it is held back where
+  a grain's half would pass 1024 samples: at −12 that is voices under
+  about 94 Hz, and under 47 Hz a formant down does nothing. Unsung
+  grains move too, so consonants match the vowels.
 - Pitch marks are found on the worker with the pitch: one a period,
   each on the waveform's highest peak within a quarter period of where
   the last one's period puts it, refined between samples by a
@@ -497,10 +512,11 @@ Later:
 - Extracted results are ordinary clips, tracks and files, and save as
   they always do.
 - A tuned clip saves `"tune": {"key": "A", "scale": "minor", "speed":
-  20, "humanize": 0}` beside its warp (omitted when off). Opening it
+  20, "humanize": 0}` beside its warp (omitted when off), with
+  `"formant": n` when FORM isn't 0. Opening it
   asks for the source's pitch, and a headless render waits for it, like
   hits. slabkit: `audio(…, tune="A", scale="minor", speed=20,
-  humanize=0)`.
+  humanize=0, formant=0)`.
 
 ## Phasing
 

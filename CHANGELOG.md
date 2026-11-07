@@ -6,6 +6,11 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Tune moves a voice's formants.** The tune row's new **FORM** control
+  (±12 semitones) shifts a tuned clip's resonances without changing its
+  pitch: up for a thinner, synthetic voice, down for a darker one.
+  slabkit: `audio(…, tune=…, formant=3)`.
+
 ## 0.0.23 — 2026-11-04
 
 - **Notes don't get stuck.** A note no longer hangs when you edit a clip

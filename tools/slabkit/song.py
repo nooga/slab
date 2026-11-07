@@ -849,7 +849,7 @@ class Track:
               gain=1.0, fade_in=0.0, fade_out=0.0, reverse=False, name=None,
               warp=None, fit_beats=None, mode="tape", preserve="hits", gap="cut", decay=100,
               transpose=0, fine=0, grain=40, size=0.7, tune=None, scale="chromatic", speed=20,
-              humanize=0):
+              humanize=0, formant=0):
         """Place a WAV: at a section's start plus `at_bar` bars, or at
         `at_beat`. dur_sec defaults to the rest of the file. reverse=True
         plays it backwards (a swell into the downbeat: end it on the bar).
@@ -866,7 +866,8 @@ class Track:
         scale= "chromatic", "major", "minor", "harmonic", "dorian",
         "mixolydian", "penta_major", "penta_minor" or "blues", speed= ms a
         correction takes (0: the hard effect), humanize= 0..100 (% of vibrato
-        and slides kept)."""
+        and slides kept), formant= -12..12 semitones (moves the voice's
+        resonances, not its pitch: up is thinner)."""
         where = f"track {self.name} audio {path}"
         if not os.path.exists(path):
             raise SlabError(f"{where}: file not found")
@@ -926,9 +927,13 @@ class Track:
                 raise SlabError(f"{where}: scale {scale!r}: one of {', '.join(scales)}")
             if not 0 <= speed <= 400 or not 0 <= humanize <= 100:
                 raise SlabError(f"{where}: speed 0..400 ms, humanize 0..100")
+            if not -12 <= formant <= 12 or formant != int(formant):
+                raise SlabError(f"{where}: formant {formant}: whole semitones, -12..12")
             if reverse:
                 raise SlabError(f"{where}: a reversed clip can't be tuned")
             tuned = {"key": key, "scale": scale, "speed": int(speed), "humanize": int(humanize)}
+            if formant:
+                tuned["formant"] = int(formant)
         c = AudioClip(self, path, start, start_sec, dur_sec, gain, fade_in, fade_out, reverse,
                       name or os.path.splitext(os.path.basename(path))[0], warp, mode, total, beats)
         c.tune = tuned

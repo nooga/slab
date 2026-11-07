@@ -63,9 +63,17 @@ pub const Settings = struct {
     speed_ms: u16 = 20,
     /// How much of the singer's own movement is kept (0..100).
     humanize: u8 = 0,
+    /// Formant shift in semitones (±MAX_FORMANT); the pitch stays.
+    formant: i8 = 0,
+
+    /// The formant shift as a frequency ratio.
+    pub fn formantRatio(self: Settings) f64 {
+        return std.math.pow(f64, 2, @as(f64, @floatFromInt(self.formant)) / 12);
+    }
 };
 
 pub const MAX_SPEED_MS = 400;
+pub const MAX_FORMANT = 12;
 
 /// A source's pitch as the audio thread reads it: per 10 ms frame its
 /// MIDI pitch and held pitch (0: unvoiced), and the pitch marks in
