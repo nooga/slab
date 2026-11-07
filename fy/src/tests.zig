@@ -10,7 +10,7 @@ const TestCase = struct {
     fn run(self: *const TestCase, fy: *Fy) !void {
         const verbose = main.testVerbose();
         const result = fy.run(self.input) catch |err| {
-            std.debug.print("\nfy> {s}\n{t}\n", .{ self.input, err });
+            std.debug.print("\nfy> {s}\n{t}: {s}\n", .{ self.input, err, main.lastTestError() });
             return err;
         };
         if (verbose or self.expected != result) std.debug.print("\nfy> {s}\nexp {any}\n    {any}\n", .{ self.input, self.expected, result });
@@ -147,7 +147,6 @@ test "Quotes" {
 test "Conditional do?/ifte and do variants" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
-
 
     try runCases(&fy, &[_]TestCase{
         // do? with quote: true executes, false skips
