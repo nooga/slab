@@ -73,15 +73,23 @@ fn debugSlice(mem: []u8, len: usize) void {
     w.writeAll("\n") catch {};
 }
 
+/// Under test, fy's output and compile errors are silent unless
+/// FY_TEST_VERBOSE is set: many tests expect an error, and the build runner
+/// shows any stderr as a `failed command`, even when every test passes.
+pub fn testVerbose() bool {
+    return std.c.getenv("FY_TEST_VERBOSE") != null;
+}
+
 inline fn outPrint(comptime fmt: []const u8, args: anytype) void {
     if (builtin.is_test) {
-        compat.stderrWriter().print(fmt, args) catch {};
+        if (testVerbose()) compat.stderrWriter().print(fmt, args) catch {};
     } else {
         compat.stdoutWriter().print(fmt, args) catch {};
     }
 }
 
 fn errPrint(comptime fmt: []const u8, args: anytype) void {
+    if (builtin.is_test and !testVerbose()) return;
     compat.stderrWriter().print(fmt, args) catch {};
 }
 

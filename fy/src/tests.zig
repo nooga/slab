@@ -1,15 +1,19 @@
 const std = @import("std");
-const Fy = @import("main.zig").Fy;
+const main = @import("main.zig");
+const Fy = main.Fy;
 
 const TestCase = struct {
     input: []const u8,
     expected: Fy.Value,
 
+    /// Prints the case only when it fails (or with FY_TEST_VERBOSE).
     fn run(self: *const TestCase, fy: *Fy) !void {
-        std.debug.print("\nfy> {s}\n", .{self.input});
-        const input = self.input;
-        const result = try fy.run(input);
-        std.debug.print("exp {any}\n    {any}\n", .{ self.expected, result });
+        const verbose = main.testVerbose();
+        const result = fy.run(self.input) catch |err| {
+            std.debug.print("\nfy> {s}\n{t}\n", .{ self.input, err });
+            return err;
+        };
+        if (verbose or self.expected != result) std.debug.print("\nfy> {s}\nexp {any}\n    {any}\n", .{ self.input, self.expected, result });
         try std.testing.expectEqual(self.expected, result);
     }
 };
@@ -144,7 +148,6 @@ test "Conditional do?/ifte and do variants" {
     var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
 
-    std.debug.print("[tests] do?/ifte/do variants\n", .{});
 
     try runCases(&fy, &[_]TestCase{
         // do? with quote: true executes, false skips
